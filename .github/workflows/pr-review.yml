@@ -1,125 +1,32 @@
 name: PR Review Agent
 
 on:
-  workflow_call:
+  schedule:
+    # Hourly at :07 to avoid the top-of-hour cron stampede
+    - cron: "7 * * * *"
+  workflow_dispatch:
     inputs:
-      agent_ref:
-        # The .github-private ref to check out for the agent's own scripts
-        # (engine.sh, review-one-pr.sh, …). A trigger-stub caller passes its
-        # pinned channel (e.g. pr-review/stable) so the SCRIPTS run at the
-        # pinned version, not the caller's branch — closing the reusable
-        # self-ref gap (#506). Empty (the default) preserves the historical
-        # behaviour exactly: actions/checkout treats an empty ref as "default".
-        description: "Ref of petry-projects/.github-private to check out for agent scripts"
-        type: string
-        required: false
-        default: ""
-      # Mirror the workflow_dispatch inputs as workflow_call inputs so a trigger
-      # stub can forward them. The job's env block already reads `inputs.*`;
-      # these resolve from whichever trigger fired (dispatch or call).
       pr_url:
         description: "Optional: review a single PR URL instead of enumerating"
-        type: string
         required: false
-        default: ""
+        type: string
       dry_run:
         description: "If true, never submit reviews or comments"
+        required: false
+        default: "false"
         type: string
-        required: false
-        default: ""
-      force_review:
-        description: "If true, bypass idempotency and re-review at the same head SHA"
-        type: string
-        required: false
-        default: ""
-    secrets:
-      CLAUDE_CODE_OAUTH_TOKEN:
-        required: false
-      GOOGLE_API_KEY:
-        required: false
-      COPILOT_GITHUB_TOKEN:
-        required: false
-      DON_PETRY_BOT_GH_PAT:
-        required: false
-      # Classic PAT for the bot. Required for `gh pr review --approve`
-      # (addPullRequestReview), which fails for fine-grained PATs. Preferred
-      # over DON_PETRY_BOT_GH_PAT when set; see docs/pr-review-agent/machine-user-setup.md.
-      DON_PETRY_BOT_GH_PAT_CLASSIC:
-        required: false
-      GH_PAT:
-        required: false
-
-# ── Reusable-only (#497 self-host pinning) ───────────────────────────────
-# Event-driven triggering now lives in the thin caller `pr-review-trigger.yml`,
-# which invokes this workflow pinned to `pr-review.yml@pr-review/stable` and
-# passes `agent_ref: pr-review/stable` so the agent's own scripts run at the
-# pinned version too. Keeping this file reusable-only is what lets
-# .github-private's OWN PR reviews run the known-good `stable` release — not
-# whatever is on the branch under review — which is what breaks the
-# self-hosting circular dependency. The job below still reads `github.event.*`
-# (inherited from the caller's triggering event) and `inputs.*` (forwarded by
-# the stub), so its behaviour is unchanged.
 
 permissions:
   contents: read
-  pull-requests: write
-  checks: read
 
 concurrency:
-  # Event-triggered and mention-triggered runs for a specific PR get a per-PR
-  # concurrency slot so they never queue behind unrelated PRs.
-  # check_suite events carry the associated PR in pull_requests[0]; including
-  # that URL here prevents cross-PR cancellation when multiple PRs' CI suites
-  # complete simultaneously (each PR competes only with itself, which is safe
-  # since same-PR runs are idempotent on the same head SHA).
-  # Note: check_suite.pull_requests entries expose the API `url` field, not
-  # `html_url` — using `url` here matches the payload shape.
-  # Manual batch runs (workflow_dispatch without pr_url) use a shared slot.
-  group: >-
-    ${{
-      (inputs.pr_url
-       || github.event.client_payload.pr_url
-       || github.event.pull_request.html_url
-       || github.event.check_suite.pull_requests[0].url)
-      && format('pr-review-pr-{0}',
-           inputs.pr_url
-           || github.event.client_payload.pr_url
-           || github.event.pull_request.html_url
-           || github.event.check_suite.pull_requests[0].url)
-      || 'pr-review-batch'
-    }}
-  # cancel-in-progress is intentionally FALSE (#534). The per-PR group means
-  # the four trigger event types (check_suite, pull_request,
-  # pull_request_review, repository_dispatch) all land in the same slot for a
-  # given PR; with cancellation on, each new event killed the in-flight review,
-  # so reviews never completed and left a trail of `cancelled` check runs (the
-  # long-standing ~34% cancel rate). Same-head-SHA reviews are idempotent — the
-  # agent's marker makes a redundant run a fast no-op — so racing runs are safe
-  # to QUEUE rather than cancel: the first reviews, the rest no-op. No lost work,
-  # no cancelled-check noise. (Future refinement: key the group by head SHA so a
-  # new push doesn't queue behind a now-stale review; deferred because the SHA
-  # isn't in every trigger payload, e.g. workflow_dispatch's pr_url.)
+  group: pr-review
   cancel-in-progress: false
 
 jobs:
   review:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
-    # Early exit conditions (avoids spinning up the runner for guaranteed no-ops):
-    #   check_suite  — only proceed when CI succeeded and there's an associated PR.
-    #                  Failing suites are always skipped by review-one-pr.sh; empty
-    #                  pull_requests (e.g. direct pushes to main) have nothing to review.
-    #   pull_request_review — skip COMMENTED reviews; they don't change merge-readiness.
-    #                         CHANGES_REQUESTED reviews are also skipped because the PR
-    #                         is now blocked; review-one-pr.sh would skip it anyway.
-    if: >-
-      (github.event_name != 'check_suite' ||
-       (github.event.check_suite.conclusion == 'success' &&
-        github.event.check_suite.pull_requests[0] != null))
-      &&
-      (github.event_name != 'pull_request_review' ||
-       github.event.review.state == 'approved' ||
-       github.event.review.state == 'dismissed')
+    timeout-minutes: 30
     env:
       # Auth for every gh / script call in this job. The PAT must belong to BOT_USER.
       # Prefer the CLASSIC PAT (required for `gh pr review --approve` —
@@ -200,26 +107,12 @@ jobs:
 
     steps:
       - name: Checkout agent repo
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-        with:
-          # Always check out the AGENT repo (.github-private) for the scripts —
-          # NOT the caller's repo. When invoked from a consumer (e.g. markets),
-          # the default checkout would clone the consumer at `agent_ref`, which
-          # has no such ref → failure. .github-private is public, so the default
-          # token can read it. `agent_ref` (e.g. pr-review/stable) pins the
-          # scripts to the known-good channel; empty defaults to main (#506/#536).
-          repository: petry-projects/.github-private
-          ref: ${{ inputs.agent_ref || 'main' }}
+        uses: actions/checkout@v4
 
-      - name: Cache claude-code CLI
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
-        with:
-          path: ~/.npm-global
-          key: claude-code-${{ env.CLAUDE_CODE_VERSION }}-${{ runner.os }}
+      - name: Install Claude Code CLI
+        run: npm install -g @anthropic-ai/claude-code
 
-      - name: Verify auth scopes
-        # Inlined from scripts/verify-auth-scopes.sh so this step is self-contained
-        # when pr-review.yml is deployed to target repos that do not have the scripts/ dir.
+      - name: Verify auth
         run: |
           set -euo pipefail
 
@@ -468,58 +361,31 @@ jobs:
         run: bash scripts/setup-lsp-pilot.sh
 
       - name: Enumerate candidate PRs
+        id: list
         run: |
           set -euo pipefail
-
           if [ -n "${PR_URL_OVERRIDE}" ]; then
-            # Single-PR mode: workflow_dispatch with pr_url, repository_dispatch
-            # (mention), or event-triggered run with a direct PR context
-            # (pull_request_review / pull_request events).
-            printf '%s\n' "${PR_URL_OVERRIDE}" > prs.txt
-          elif [ "${CHECK_SUITE_PRS}" != "[]" ] && [ -n "${CHECK_SUITE_PRS}" ]; then
-            # check_suite event: one or more PRs share the completed suite.
-            # The payload carries API URLs (https://api.github.com/repos/…/pulls/N);
-            # convert them to HTML URLs (https://github.com/…/pull/N) for review-one-pr.sh.
-            echo "${CHECK_SUITE_PRS}" \
-              | jq -r '.[].url' \
-              | sed 's|https://api\.github\.com/repos/|https://github.com/|; s|/pulls/|/pull/|' \
-              > prs.txt
+            echo "${PR_URL_OVERRIDE}" > prs.txt
           else
             bash scripts/list-prs.sh > prs.txt
           fi
-
-          count=$(grep -c . prs.txt || true)
-          echo "::notice::Candidate pool has $count PRs (no-ops will be skipped, MAX_PRS caps actual reviews)"
+          echo "count=$(wc -l < prs.txt | tr -d ' ')" >> "$GITHUB_OUTPUT"
           echo "--- candidate PRs ---"
-          if [ -s prs.txt ]; then
-            cat prs.txt
-          else
-            echo "(empty file)"
-          fi
+          cat prs.txt || true
 
-      - name: Review each PR (cascade)
-        run: bash scripts/review-batch.sh
-
-      - name: Upload debug log on failure
-        if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        # Collect both current cascade logs and legacy/supplemental log paths.
-        with:
-          name: pr-review-debug-${{ github.run_number }}-${{ github.run_attempt }}
-          path: |
-            prs.txt
-            /tmp/cascade/**
-            /tmp/review-*.log
-            ${{ runner.temp }}/cascade/**
-            ${{ runner.temp }}/review-*.log
-          if-no-files-found: ignore
-          retention-days: 14
-
-      - name: Upload token usage log
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: token-usage-${{ github.run_id }}
-          path: /tmp/token-usage-${{ github.run_id }}.jsonl
-          if-no-files-found: ignore
-          retention-days: 30
+      - name: Review each PR
+        if: steps.list.outputs.count != '0'
+        run: |
+          set -euo pipefail
+          while IFS= read -r pr_url; do
+            [ -z "$pr_url" ] && continue
+            echo "::group::Reviewing $pr_url"
+            PR_URL="$pr_url" \
+            claude \
+              --print \
+              --permission-mode acceptEdits \
+              --allowed-tools "Bash,Read,Grep,Glob,WebFetch" \
+              "$(cat prompts/review-pr.md)" \
+              || echo "::warning::Review failed for $pr_url"
+            echo "::endgroup::"
+          done < prs.txt
