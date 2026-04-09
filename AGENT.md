@@ -47,11 +47,22 @@ Save the token, then add it as a repo secret on `don-petry/self`:
 gh secret set GH_PAT --repo don-petry/self
 ```
 
-### 2. Add your Anthropic API key
+### 2. Add your Claude Code OAuth token
+
+This routes the agent's Claude usage through your Claude Max plan instead of
+per-token API billing. Generate the token locally with:
 
 ```
-gh secret set ANTHROPIC_API_KEY --repo don-petry/self
+claude setup-token
 ```
+
+It prints a long-lived OAuth token. Store it as a repo secret:
+
+```
+gh secret set CLAUDE_CODE_OAUTH_TOKEN --repo don-petry/self
+```
+
+(Paste the token when prompted, then Ctrl+D.)
 
 ### 3. Test with a dry run
 
