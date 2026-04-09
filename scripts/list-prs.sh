@@ -24,7 +24,7 @@
 #   2. All other repos (priority 1)
 #   Within each priority tier, PRs are sorted oldest-first by createdAt.
 #
-# Output: one PR URL per line on stdout.
+# Output: one PR URL per line on stdout. Drafts are excluded.
 
 set -euo pipefail
 
