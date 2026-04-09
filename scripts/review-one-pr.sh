@@ -414,13 +414,11 @@ PR_METADATA=$(gh pr view "$PR_URL" --json "$_meta_fields,files" --jq '
   exit 1
 }
 
-export -f run_member
-
-run_member security      claude-opus-4-6              prompts/council/security.md       &
+run_member security        claude-opus-4-6           prompts/council/security.md        &
 PID_SEC=$!
-run_member correctness   claude-sonnet-4-6            prompts/council/correctness.md    &
+run_member correctness     claude-sonnet-4-6         prompts/council/correctness.md     &
 PID_COR=$!
-run_member maintainability claude-haiku-4-5-20251001  prompts/council/maintainability.md &
+run_member maintainability claude-haiku-4-5-20251001 prompts/council/maintainability.md &
 PID_MAI=$!
 
 FAILED=0
