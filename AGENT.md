@@ -19,7 +19,7 @@ quality gates, and escalates high-risk or gated PRs for human review.
    |---|---|---|
    | Security | Opus 4.6 | auth, secrets, injection, supply chain, GH Actions security smells |
    | Correctness | Sonnet 4.6 | linked-issue alignment, logic bugs, edge cases, test coverage, CI |
-   | Maintainability | Haiku 4.5 | org standards, conventions, clarity, dependency hygiene |
+   | Maintainability | Sonnet 4.6 | org standards, conventions, clarity, dependency hygiene |
    | Synthesis | Sonnet 4.6 | combines verdicts, takes max risk, dedupes findings, posts to GitHub |
 
    The three council members run in parallel, each writing a JSON verdict to
