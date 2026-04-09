@@ -11,18 +11,38 @@ quality gates, and escalates high-risk or gated PRs for human review.
 2. **Enumerate** — `scripts/list-prs.sh` queries GitHub for open PRs where
    `@me` is the author OR a requested reviewer, across every repo the PAT can
    see. Output: one URL per line.
-3. **Review** — for each PR, the workflow runs the Claude Code CLI with
-   `prompts/review-pr.md`. The prompt instructs the agent to:
-   - Fetch the PR, its diff, the linked issue, CI checks, and review threads.
-   - Classify risk as LOW / MEDIUM / HIGH using explicit rules (auth, secrets,
-     migrations, security warnings, violations of best practice / org standards).
-   - Auto-approve only if risk is LOW or MEDIUM **and** all gates pass:
-     CI green, linked issue addressed, no unresolved review threads,
-     well-structured PR.
-   - Otherwise: post a `--comment` review (not a request-changes), re-request
-     don-petry as reviewer, and add the `needs-human-review` label.
-4. **Idempotency** — the agent looks for its own footer in existing reviews and
-   skips PRs it has already reviewed at the current head SHA.
+3. **Per-PR review** — for each PR, `scripts/review-one-pr.sh` orchestrates a
+   council of three Claude models, each with a focused lens, then a synthesizer
+   that posts a single combined review:
+
+   | Lens | Model | What it looks for |
+   |---|---|---|
+   | Security | Opus 4.6 | auth, secrets, injection, supply chain, GH Actions security smells |
+   | Correctness | Sonnet 4.6 | linked-issue alignment, logic bugs, edge cases, test coverage, CI |
+   | Maintainability | Haiku 4.5 | org standards, conventions, clarity, dependency hygiene |
+   | Synthesis | Sonnet 4.6 | combines verdicts, takes max risk, dedupes findings, posts to GitHub |
+
+   The three council members run in parallel, each writing a JSON verdict to
+   `/tmp/council/<lens>.json`. None of them touch GitHub. The synthesizer then
+   reads all three, takes `max(risk)` and `escalate if any escalates`, dedupes
+   findings, and posts **one** PR review:
+   - If approved: `gh pr review --approve` with the combined summary.
+   - If escalated: `gh pr review --comment`, re-requests don-petry as a
+     reviewer, and adds the `needs-human-review` label.
+
+4. **Idempotency + iterative review cycles** — every posted review starts with
+   an HTML marker on line 1:
+
+   ```
+   <!-- pr-review-agent v1 sha=<full-commit-sha> decision=... risk=... -->
+   ```
+
+   Before invoking the council, `scripts/review-one-pr.sh` fetches the PR's
+   current head SHA and scans existing reviews/comments for the marker. If a
+   marker matching the current head SHA exists, the script skips the PR
+   without spending tokens. If a marker exists for an older SHA, the script
+   knows the PR has new commits since the last review and runs the council
+   again — handling iterative review cycles cleanly.
 
 ## Setup
 
