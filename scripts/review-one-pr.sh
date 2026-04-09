@@ -1,23 +1,21 @@
 #!/usr/bin/env bash
-# Run the cascading PR review against ONE PR.
+# Run the council + synthesizer against ONE PR.
 #
 # Inputs:
 #   $1 — PR URL
 #
 # Env:
-#   GH_TOKEN              — set by the workflow
-#   REVIEW_ENGINE         — "claude", "gemini", or "copilot" (default: claude)
-#   CLAUDE_CODE_OAUTH_TOKEN — (claude engine) set by the workflow
-#   GOOGLE_API_KEY          — (gemini engine) set by the workflow
-#   COPILOT_GITHUB_TOKEN    — (copilot engine) set by the workflow
-#   DRY_RUN               — "true" or "false"
+#   GH_TOKEN — set by the workflow
+#   CLAUDE_CODE_OAUTH_TOKEN — set by the workflow
+#   DRY_RUN — "true" or "false"
 #
 # Behavior:
 #   1. Resolve current head SHA of the PR.
 #   2. Idempotency check: scan existing reviews/comments for our marker
 #      `<!-- pr-review-agent v1 sha=<SHA> -->`. If a marker for the current
 #      head SHA exists, skip without spending tokens.
-#   3. Run cascading review: triage → deep review → security audit.
+#   3. Otherwise: run 3 council members in parallel, each writing JSON to
+#      /tmp/council/<lens>.json. Then run the synthesizer.
 
 set -euo pipefail
 
@@ -229,29 +227,16 @@ fi
 # we re-reviewed the same head SHA on every run.
 EXISTING_MARKER_SHA=$(
   gh pr view "$PR_URL" --json reviews,comments \
-    --jq '
-      ((.reviews   // [] | map({when: .submittedAt, body: .body})) +
-       (.comments  // [] | map({when: .createdAt,   body: .body})))
-      | map(select(.body != null and (.body | test("<!-- pr-review-agent v1 sha=[a-f0-9]+"))))
-      | sort_by(.when)
-      | last
-      | .body // ""
-    ' 2>/dev/null \
+    --jq '[.reviews[].body, .comments[].body] | .[] | select(. != null)' 2>/dev/null \
   | grep -oE '<!-- pr-review-agent v1 sha=[a-f0-9]+' \
   | grep -oE '[a-f0-9]+$' \
-  | head -1 || true
+  | tail -1 || true
 )
 
 if [ -n "${EXISTING_MARKER_SHA:-}" ] && [ "$EXISTING_MARKER_SHA" = "$PR_HEAD_SHA" ]; then
-  if [ "${FORCE_REVIEW:-false}" = "true" ]; then
-    echo "    force-review: prior marker $PR_HEAD_SHA matches head, but FORCE_REVIEW=true — re-running cascade"
-  else
-    echo "    noop: already reviewed at $PR_HEAD_SHA"
-    echo "{\"pr\":\"$PR_URL\",\"sha\":\"$PR_HEAD_SHA\",\"decision\":\"noop\",\"reason\":\"already-reviewed-at-head\"}"
-    # Exit 100 is the no-op sentinel: the caller can skip this PR without
-    # counting it against the MAX_PRS budget of actual reviews.
-    exit 100
-  fi
+  echo "    noop: already reviewed at $PR_HEAD_SHA"
+  echo "{\"pr\":\"$PR_URL\",\"sha\":\"$PR_HEAD_SHA\",\"decision\":\"noop\",\"reason\":\"already-reviewed-at-head\"}"
+  exit 0
 fi
 
 if [ -n "${EXISTING_MARKER_SHA:-}" ]; then
@@ -429,31 +414,34 @@ PR_METADATA=$(gh pr view "$PR_URL" --json "$_meta_fields,files" --jq '
   exit 1
 }
 
-# For Copilot, we keep context moderate (8k-16k) to avoid session costs.
-# For Claude/Gemini, we can afford more context (up to 32k+).
-if [ "${REVIEW_ENGINE:-claude}" = "copilot" ]; then
-  _diff_limit=1000
-else
-  _diff_limit=3000
-fi
+export -f run_member
 
-if gh pr diff "$PR_URL" > "$_gh_diff_tmp" 2>"$_gh_diff_err"; then
-  PR_DIFF=$(head -"$_diff_limit" "$_gh_diff_tmp")
-else
-  _gh_diff_err_content=$(cat "$_gh_diff_err" 2>/dev/null || true)
-  if is_rate_limited "$_gh_diff_err_content"; then
-    rm -f "$_gh_meta_err" "$_gh_diff_err" "$_gh_diff_tmp"
-    echo "    gh API rate limited on diff fetch — skipping PR (will retry next run)"
-    echo "{\"pr\":\"$PR_URL\",\"sha\":\"$PR_HEAD_SHA\",\"decision\":\"skip\",\"reason\":\"gh-rate-limited\"}"
-    exit 100
+run_member security      claude-opus-4-6              prompts/council/security.md       &
+PID_SEC=$!
+run_member correctness   claude-sonnet-4-6            prompts/council/correctness.md    &
+PID_COR=$!
+run_member maintainability claude-haiku-4-5-20251001  prompts/council/maintainability.md &
+PID_MAI=$!
+
+FAILED=0
+wait "$PID_SEC" || { echo "::warning::security council member failed"; FAILED=1; }
+wait "$PID_COR" || { echo "::warning::correctness council member failed"; FAILED=1; }
+wait "$PID_MAI" || { echo "::warning::maintainability council member failed"; FAILED=1; }
+
+# Verify each member produced parseable JSON
+for lens in security correctness maintainability; do
+  f="/tmp/council/${lens}.json"
+  if [ ! -s "$f" ]; then
+    echo "::warning::$lens did not produce $f"
+    echo "--- $lens log ---"
+    cat "/tmp/council/${lens}.log" || true
+    FAILED=1
+  elif ! jq empty "$f" 2>/dev/null; then
+    echo "::warning::$lens produced invalid JSON in $f"
+    cat "$f"
+    FAILED=1
   fi
-  echo "::error::gh pr diff failed during prefetch for $PR_URL"
-  [ -n "$_gh_diff_err_content" ] && echo "    $_gh_diff_err_content"
-  rm -f "$_gh_meta_err" "$_gh_diff_err" "$_gh_diff_tmp"
-  exit 1
-fi
-rm -f "$_gh_meta_err" "$_gh_diff_err" "$_gh_diff_tmp"
-unset _gh_meta_err _gh_diff_err _gh_diff_tmp _gh_meta_err_content _gh_diff_err_content
+done
 
 # Advisory bot feedback. The gate above waits for advisory bots to submit,
 # but the triage tier has NO tools — unless their findings are inlined here,
