@@ -31,7 +31,9 @@ jobs:
       # GH_PAT is a fine-grained PAT with PR read/write across the repos you
       # want the agent to act on. Stored as a repo secret.
       GH_TOKEN: ${{ secrets.GH_PAT }}
-      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      # Routes Claude Code through the Max plan subscription instead of
+      # per-token API billing. Generate with `claude setup-token` locally.
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       DRY_RUN: ${{ inputs.dry_run || 'false' }}
       PR_URL_OVERRIDE: ${{ inputs.pr_url }}
 
