@@ -227,7 +227,7 @@ fi
 # we re-reviewed the same head SHA on every run.
 EXISTING_MARKER_SHA=$(
   gh pr view "$PR_URL" --json reviews,comments \
-    --jq '[.reviews[].body, .comments[].body] | .[] | select(. != null)' 2>/dev/null \
+    --jq '((.reviews // []) + (.comments // [])) | .[].body | select(. != null)' 2>/dev/null \
   | grep -oE '<!-- pr-review-agent v1 sha=[a-f0-9]+' \
   | grep -oE '[a-f0-9]+$' \
   | tail -1 || true

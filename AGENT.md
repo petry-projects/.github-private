@@ -123,13 +123,20 @@ gh workflow run pr-review.yml --repo don-petry/self -f dry_run=false
 
 ## Tuning
 
-- **Risk rules** live in `prompts/review-pr.md`. Edit there.
+- **Risk rules** — edit `prompts/shared.md` (taxonomy), or per-lens in
+  `prompts/council/{security,correctness,maintainability}.md`.
 - **Cron frequency** — change the `cron:` line in the workflow file.
 - **Scope** — edit `scripts/list-prs.sh` to add/remove queries (e.g. to include
   PRs from a specific org, or to exclude certain repos).
+- **Max PRs per run** — defaults to 10 per cron tick to stay within the 60-min
+  job timeout (~5 min per PR with 3 council members). Override:
+  `gh variable set MAX_PRS --body 15 --repo don-petry/self`
+- **Models** — change model IDs in `scripts/review-one-pr.sh` (`run_member`
+  calls and the synthesis invocation). See the script for current assignments.
 
 ## Cost
 
-Hourly cron × ~30 days = ~720 runs/month. If most hours have zero candidate PRs
-the cost is just GitHub Actions minutes (~10s each). Anthropic API cost scales
-with PR count and diff size — expect a few cents per non-trivial PR review.
+Uses the Claude Max plan via OAuth token — no per-token API billing. GitHub
+Actions cost is ~720 runs/month (hourly × 30 days). Runs with zero candidate
+PRs finish in ~10s. Each PR reviewed costs ~5 min of runner time (4 model
+invocations: 3 council + 1 synthesis).
