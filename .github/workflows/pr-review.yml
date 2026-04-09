@@ -373,19 +373,14 @@ jobs:
           echo "--- candidate PRs ---"
           cat prs.txt || true
 
-      - name: Review each PR
+      - name: Review each PR (council + synth)
         if: steps.list.outputs.count != '0'
         run: |
           set -euo pipefail
           while IFS= read -r pr_url; do
             [ -z "$pr_url" ] && continue
             echo "::group::Reviewing $pr_url"
-            PR_URL="$pr_url" \
-            claude \
-              --print \
-              --permission-mode acceptEdits \
-              --allowed-tools "Bash,Read,Grep,Glob,WebFetch" \
-              "$(cat prompts/review-pr.md)" \
+            bash scripts/review-one-pr.sh "$pr_url" \
               || echo "::warning::Review failed for $pr_url"
             echo "::endgroup::"
           done < prs.txt
