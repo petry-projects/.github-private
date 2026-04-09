@@ -35,7 +35,7 @@ Go to <https://github.com/settings/personal-access-tokens/new>. Settings:
   agent to act on).
 - **Repository permissions:**
   - Contents: **Read**
-  - Issues: **Read**
+  - Issues: **Read and write** (needed to create labels and add `needs-human-review`)
   - Metadata: **Read** (auto)
   - Pull requests: **Read and write**
 - **Expiration:** as long as you're comfortable with. Set a calendar reminder
@@ -77,6 +77,28 @@ To review a single PR ad-hoc:
 gh workflow run pr-review.yml --repo don-petry/self \
   -f pr_url=https://github.com/owner/repo/pull/123 \
   -f dry_run=true
+```
+
+## Going live
+
+The cron defaults to **dry-run mode** — it gathers context and prints decisions
+but never posts reviews, comments, labels, or reviewer requests. To enable
+live mode:
+
+```
+gh variable set LIVE_MODE --body true --repo don-petry/self
+```
+
+To go back to dry-run:
+
+```
+gh variable delete LIVE_MODE --repo don-petry/self
+```
+
+A specific run can always be forced either way via the `dry_run` workflow input:
+
+```
+gh workflow run pr-review.yml --repo don-petry/self -f dry_run=false
 ```
 
 ## Tuning
