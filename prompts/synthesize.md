@@ -81,7 +81,7 @@ and (if `$DRY_RUN` is `false`) post a PR review.
 <from any lens — failing/pending/green count>
 
 ---
-_Reviewed automatically by the don-petry PR-review council (security: opus 4.6 · correctness: sonnet 4.6 · maintainability: haiku 4.5 · synthesis: sonnet 4.6). The marker on line 1 lets the agent detect new commits and re-review. Reply with `@don-petry` if you need a human._
+_Reviewed automatically by the don-petry PR-review council (security: opus 4.6 · correctness: sonnet 4.6 · maintainability: sonnet 4.6 · synthesis: sonnet 4.6). The marker on line 1 lets the agent detect new commits and re-review. Reply with `@don-petry` if you need a human._
 ```
 
 ## Important notes
