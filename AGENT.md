@@ -11,24 +11,31 @@ quality gates, and escalates high-risk or gated PRs for human review.
 2. **Enumerate** — `scripts/list-prs.sh` queries GitHub for open PRs where
    `@me` is the author OR a requested reviewer, across every repo the PAT can
    see. Output: one URL per line.
-3. **Per-PR review** — for each PR, `scripts/review-one-pr.sh` orchestrates a
-   council of three Claude models, each with a focused lens, then a synthesizer
-   that posts a single combined review:
+3. **Per-PR review** — `scripts/review-one-pr.sh` runs a cascading review
+   where each tier only fires if the previous one flagged concerns:
 
-   | Lens | Model | What it looks for |
-   |---|---|---|
-   | Security | Opus 4.6 | auth, secrets, injection, supply chain, GH Actions security smells |
-   | Correctness | Sonnet 4.6 | linked-issue alignment, logic bugs, edge cases, test coverage, CI |
-   | Maintainability | Sonnet 4.6 | org standards, conventions, clarity, dependency hygiene |
-   | Synthesis | Sonnet 4.6 | combines verdicts, takes max risk, dedupes findings, posts to GitHub |
+   ```
+   Tier 1: Haiku triage (~15s, no tools, pre-fetched context)
+     └─ clean? → single Opus confirmation → approve + auto-merge
+     └─ concerns? ↓
+   Tier 2: Sonnet deep review (~2 min, full agentic)
+     └─ clean? → approve + auto-merge
+     └─ HIGH risk? ↓
+   Tier 3: Opus security audit (~3 min, full agentic)
+     └─ final decision → approve or escalate
+   ```
 
-   The three council members run in parallel, each writing a JSON verdict to
-   `/tmp/council/<lens>.json`. None of them touch GitHub. The synthesizer then
-   reads all three, takes `max(risk)` and `escalate if any escalates`, dedupes
-   findings, and posts **one** PR review:
-   - If approved: `gh pr review --approve` with the combined summary.
-   - If escalated: `gh pr review --comment`, re-requests don-petry as a
-     reviewer, and adds the `needs-human-review` label.
+   | Tier | Model | Role | When |
+   |---|---|---|---|
+   | Triage | Haiku 4.5 | Fast risk classification, no tools | Every PR |
+   | Deep review | Sonnet 4.6 | Full review (security+correctness+maintainability) | Only if triage escalates |
+   | Security audit | Opus 4.6 | Paranoid security-focused review | Only if Sonnet flags HIGH risk |
+   | Action | Sonnet 4.6 | Posts review, handles delegation/merge | After resolving tier |
+
+   **Cost profile:**
+   - ~80% of PRs: Haiku triage + Opus confirm (2 calls, ~30s)
+   - ~15% of PRs: + Sonnet deep review (3 calls, ~2.5 min)
+   - ~5% of PRs: + Opus audit (4 calls, ~5.5 min)
 
 4. **Post-review actions** — after the review is posted, the synthesizer takes
    additional actions depending on the decision:
@@ -149,6 +156,8 @@ gh workflow run pr-review.yml --repo don-petry/self -f dry_run=false
 - **Max review cycles** — how many times the agent tags @claude before
   escalating to human (default 3):
   `gh variable set MAX_REVIEW_CYCLES --body 5 --repo don-petry/self`
+- **Models** — change model IDs in `scripts/review-one-pr.sh`. The cascade
+  tiers map to: triage=haiku, deep=sonnet, audit=opus, action=sonnet.
 - **Max PRs per run** — defaults to 10 per cron tick to stay within the 60-min
   job timeout (~5 min per PR with 3 council members). Override:
   `gh variable set MAX_PRS --body 15 --repo don-petry/self`
