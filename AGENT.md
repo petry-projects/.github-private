@@ -30,7 +30,22 @@ quality gates, and escalates high-risk or gated PRs for human review.
    - If escalated: `gh pr review --comment`, re-requests don-petry as a
      reviewer, and adds the `needs-human-review` label.
 
-4. **Idempotency + iterative review cycles** — every posted review starts with
+4. **Post-review actions** — after the review is posted, the synthesizer takes
+   additional actions depending on the decision:
+   - **If approved:** enables auto-merge (`gh pr merge --auto --squash`),
+     rebases the branch if behind base, and removes the `needs-human-review`
+     label. GitHub merges automatically once all required checks pass.
+   - **If escalated + Claude App available:** posts a follow-up comment tagging
+     `@claude` with specific fix instructions derived from the council findings.
+     Claude pushes fixes → next cron tick detects new SHA → council re-reviews
+     → approve + auto-merge when clean. This creates an autonomous fix loop.
+   - **If escalated + no Claude App (or max cycles reached):** labels
+     `needs-human-review` and re-requests don-petry as reviewer.
+   - **Cycle guard:** after `MAX_REVIEW_CYCLES` (default 3) rounds of @claude
+     delegation without resolution, the agent stops delegating and escalates
+     to human to prevent infinite loops.
+
+5. **Idempotency + iterative review cycles** — every posted review starts with
    an HTML marker on line 1:
 
    ```
@@ -128,6 +143,12 @@ gh workflow run pr-review.yml --repo don-petry/self -f dry_run=false
 - **Cron frequency** — change the `cron:` line in the workflow file.
 - **Scope** — edit `scripts/list-prs.sh` to add/remove queries (e.g. to include
   PRs from a specific org, or to exclude certain repos).
+- **Claude delegation** — set `CLAUDE_ORGS` to a comma-separated list of GitHub
+  orgs where the Claude App is installed:
+  `gh variable set CLAUDE_ORGS --body "petry-projects,don-petry" --repo don-petry/self`
+- **Max review cycles** — how many times the agent tags @claude before
+  escalating to human (default 3):
+  `gh variable set MAX_REVIEW_CYCLES --body 5 --repo don-petry/self`
 - **Max PRs per run** — defaults to 10 per cron tick to stay within the 60-min
   job timeout (~5 min per PR with 3 council members). Override:
   `gh variable set MAX_PRS --body 15 --repo don-petry/self`
