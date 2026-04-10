@@ -1,13 +1,8 @@
-# Cascade action — finalize verdict and prepare for posting
+# Cascade action — post review based on tier result
 
-You are the final step of the cascading PR review. A previous tier (deep review or
-security audit) has produced a verdict in `$FINAL_RESULT`. Your job is to:
-
-1. Read the verdict
-2. Compose the full review body
-3. Write a final JSON to `$OUTPUT_FILE` using the steps below
-
-The review will be posted by the bash script, not by this prompt.
+You are the final action step of the cascading PR review. A previous tier
+(Sonnet or Opus) has produced a verdict in `$FINAL_RESULT`. Your job is to
+read that verdict and post the review to GitHub.
 
 ## Inputs (environment variables)
 
@@ -26,29 +21,25 @@ The review will be posted by the bash script, not by this prompt.
 
 ## Steps
 
-1. Read the verdict JSON and extract fields:
-```bash
-DECISION=$(jq -r '.decision' "$FINAL_RESULT")
-RISK=$(jq -r '.risk' "$FINAL_RESULT")
-SUMMARY=$(jq -r '.summary' "$FINAL_RESULT")
-FINDINGS=$(jq -c '.findings // []' "$FINAL_RESULT")
-AGREEMENT=$(jq -r '.agreement // ""' "$FINAL_RESULT")
-ESCALATE_TO_AI=$(jq -r 'if .decision == "escalate" and .risk != "HIGH" then "true" else "false" end' "$FINAL_RESULT")
+1. Read the JSON at `$FINAL_RESULT`. Extract `decision`, `risk`, `findings`,
+   `summary`, and `reason_codes`.
+2. Fetch `mergeStateStatus` from the PR:
+   `gh pr view "$PR_URL" --json mergeStateStatus --jq '.mergeStateStatus'`
+3. **Idempotency check**: look for our marker at `$PR_HEAD_SHA` in existing
+   reviews/comments (same as synthesize.md step 5). If found → noop.
+4. Compose the review body using this template:
+
 ```
+<!-- pr-review-agent v1 sha=<PR_HEAD_SHA> decision=<approved|escalated> risk=<LOW|MEDIUM|HIGH> -->
 
-2. Compose the review body. Write it to a temp file to avoid shell quoting issues:
-```bash
-cat > /tmp/cascade/review-body.txt << 'BODYEOF'
-<!-- pr-review-agent v1 sha=PLACEHOLDER_SHA decision=PLACEHOLDER_DECISION risk=PLACEHOLDER_RISK -->
+## Automated review — <APPROVED|NEEDS HUMAN REVIEW>
 
-## Automated review — PLACEHOLDER_HEADING
-
-**Risk:** PLACEHOLDER_RISK
-**Reviewed commit:** `PLACEHOLDER_SHA`
-**Cascade:** triage → PLACEHOLDER_TIER (PLACEHOLDER_ENGINE_LABEL)
+**Risk:** <risk>
+**Reviewed commit:** `<SHA>`
+**Cascade:** triage(haiku) → <sonnet|sonnet → opus>
 
 ### Summary
-PLACEHOLDER_SUMMARY
+<from the verdict's summary>
 
 ### Cross-engine agreement (if deep+duck)
 <If tier is deep+duck and agreement field exists, include this section>
@@ -57,40 +48,36 @@ PLACEHOLDER_SUMMARY
 <If tier is deep+duck and agreement field exists, include this section>
 
 ### Findings
-PLACEHOLDER_FINDINGS_LIST
+<from the verdict's findings, grouped by severity>
+
+### CI status
+<from the verdict or from PR metadata>
 
 ---
-_Reviewed by the PR-review cascade (PLACEHOLDER_ENGINE_LABEL). Reply if you need a human review._
-BODYEOF
+_Reviewed by the don-petry PR-review cascade (triage: haiku 4.5 → deep: sonnet 4.6 → audit: opus 4.6). Reply with `@don-petry` if you need a human._
 ```
 
-Replace each PLACEHOLDER with the actual values using sed. Then substitute the real values:
-```bash
-HEADING=$([ "$DECISION" = "approve" ] && echo "APPROVED ✓" || echo "NEEDS HUMAN REVIEW")
-sed -i \
-  -e "s|PLACEHOLDER_SHA|$PR_HEAD_SHA|g" \
-  -e "s|PLACEHOLDER_DECISION|$DECISION|g" \
-  -e "s|PLACEHOLDER_RISK|$RISK|g" \
-  -e "s|PLACEHOLDER_HEADING|$HEADING|g" \
-  -e "s|PLACEHOLDER_TIER|$FINAL_TIER|g" \
-  -e "s|PLACEHOLDER_ENGINE_LABEL|$ENGINE_LABEL|g" \
-  -e "s|PLACEHOLDER_SUMMARY|$SUMMARY|g" \
-  /tmp/cascade/review-body.txt
-```
+5. **Act** (same logic as synthesize.md):
+   - If `$DRY_RUN` is `true`: print `--- WOULD POST ---`, the body, and
+     planned actions. Exit.
+   - If `decision` is `approve`:
+     1. `gh pr review "$PR_URL" --approve --body "$BODY"`
+     2. Rebase if `mergeStateStatus` is `BEHIND`:
+        `gh api -X PUT "repos/<owner>/<repo>/pulls/<num>/update-branch" -f expected_head_sha="$PR_HEAD_SHA"` (swallow errors)
+     3. Auto-merge: `gh pr merge "$PR_URL" --auto --squash` (swallow errors)
+     4. Remove `needs-human-review` label if present (swallow errors)
+   - If `decision` is `escalate`:
+     - If `$CLAUDE_ENABLED` is `true` AND `$REVIEW_CYCLE` < `$MAX_REVIEW_CYCLES`
+       AND `risk` is NOT `HIGH`:
+       Post fix-request issue comment (NOT a review):
+       ```
+       ## Review council — fix requested (cycle <REVIEW_CYCLE + 1>/<MAX_REVIEW_CYCLES>)
 
-For findings, format each finding as a bullet and append:
-```bash
-# Remove the PLACEHOLDER_FINDINGS_LIST line and replace with formatted findings
-FINDINGS_TEXT=$(echo "$FINDINGS" | jq -r '.[] | "- **\(.severity // "INFO")**: \(.description // .)"' 2>/dev/null || echo "- No specific findings")
-sed -i "s|PLACEHOLDER_FINDINGS_LIST|$FINDINGS_TEXT|g" /tmp/cascade/review-body.txt
-```
+       The automated review identified the following issues. Please address each one:
 
-If the agreement field is non-empty and FINAL_TIER is "deep+duck", insert a cross-engine agreement section before Findings:
-```bash
-if [ -n "$AGREEMENT" ] && [ "$FINAL_TIER" = "deep+duck" ]; then
-  sed -i "s|### Findings|### Cross-engine agreement\n$AGREEMENT\n\n### Findings|" /tmp/cascade/review-body.txt
-fi
-```
+       ### Findings to fix
+       <for each finding with severity minor/major/critical:>
+       - **[<severity>]** `<file>:<line>` — <message>
 
 If `$DOWNSTREAM_IMPACT_FILE` is set, the file exists, and its contents are not the
 literal `(none)`, insert a **Downstream impact** section before Findings so the
@@ -126,10 +113,8 @@ jq -n \
   > "$OUTPUT_FILE"
 ```
 
-4. Verify the output is valid:
-```bash
-jq -r '.decision' "$OUTPUT_FILE"
-echo "Verdict written to $OUTPUT_FILE"
-```
-
-**IMPORTANT:** Do NOT print the JSON to stdout. Write it to `$OUTPUT_FILE` only. The bash script reads it from there.
+       _The review cascade will automatically re-review after new commits are pushed._
+       ```
+     - Otherwise: add `needs-human-review` label, re-request don-petry.
+6. Print status JSON:
+   `{"pr":"<url>","sha":"<sha>","risk":"<r>","decision":"<d>","tier":"<final_tier>","delegated_to":"claude|human|none","posted":true|false}`
