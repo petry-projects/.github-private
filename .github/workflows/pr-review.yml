@@ -39,6 +39,12 @@ jobs:
       # To go live: gh variable set LIVE_MODE --body true --repo don-petry/self
       DRY_RUN: ${{ inputs.dry_run || (vars.LIVE_MODE == 'true' && 'false' || 'true') }}
       PR_URL_OVERRIDE: ${{ inputs.pr_url }}
+      # Comma-separated list of GitHub orgs where Claude App is installed.
+      # When findings exist, the agent tags @claude to fix them autonomously.
+      # gh variable set CLAUDE_ORGS --body "petry-projects,don-petry" --repo don-petry/self
+      CLAUDE_ORGS: ${{ vars.CLAUDE_ORGS || '' }}
+      # Max review cycles before stopping @claude delegation and escalating to human.
+      MAX_REVIEW_CYCLES: ${{ vars.MAX_REVIEW_CYCLES || '3' }}
 
     steps:
       - name: Checkout agent repo
