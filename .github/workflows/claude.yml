@@ -1,6 +1,6 @@
-# Claude Code — thin caller that delegates to the org-level reusable workflow.
-# All logic and prompts are maintained centrally in claude-code-reusable.yml.
-# Standard: https://github.com/petry-projects/.github/blob/main/standards/ci-standards.md#4-claude-code-claudeyml
+# Claude Code workflow — inlined from the org-level reusable workflow so this
+# repo can access its own secrets directly.
+# Original reusable: petry-projects/.github/.github/workflows/claude-code-reusable.yml
 
 name: Claude Code
 
@@ -18,9 +18,20 @@ on:
 permissions: {}
 
 jobs:
-  claude-code:
-    uses: petry-projects/.github/.github/workflows/claude-code-reusable.yml@main
-    secrets: inherit
+  # Interactive mode: PR reviews and comments from trusted contributors
+  claude:
+    if: >-
+      (github.event_name == 'pull_request' &&
+        github.event.pull_request.head.repo.full_name == github.repository &&
+        github.event.pull_request.user.login != 'dependabot[bot]') ||
+      (github.event_name == 'issue_comment' && github.event.issue.pull_request &&
+        github.event.comment.user.login != 'claude[bot]' &&
+        contains(fromJson('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)) ||
+      (github.event_name == 'pull_request_review_comment' &&
+        github.event.comment.user.login != 'claude[bot]' &&
+        contains(fromJson('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association))
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
     permissions:
       contents: write
       id-token: write
@@ -28,3 +39,100 @@ jobs:
       issues: write
       actions: read
       checks: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 1
+          token: ${{ secrets.GH_PAT_WORKFLOWS || github.token }}
+      - name: Run Claude Code
+        uses: anthropics/claude-code-action@6e2bd52842c65e914eba5c8badd17560bd26b5de # v1.0.89
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          additional_permissions: |
+            actions: read
+            checks: read
+
+  # Automation mode: issue-triggered work — implement, open PR, review, and notify
+  claude-issue:
+    if: >-
+      github.event_name == 'issues' && github.event.action == 'labeled' &&
+        github.event.label.name == 'claude'
+    concurrency:
+      group: claude-issue-${{ github.event.issue.number || github.run_id }}
+      cancel-in-progress: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write
+      id-token: write
+      pull-requests: write
+      issues: write
+      actions: read
+      checks: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 1
+          token: ${{ secrets.GH_PAT_WORKFLOWS || github.token }}
+      - name: Run Claude Code
+        uses: anthropics/claude-code-action@6e2bd52842c65e914eba5c8badd17560bd26b5de # v1.0.89
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ secrets.GH_PAT_WORKFLOWS }}
+          label_trigger: "claude"
+          track_progress: "true"
+          additional_permissions: |
+            actions: read
+            checks: read
+          # yamllint disable rule:line-length
+          claude_args: |
+            --allowedTools "Bash(gh pr create:*),Bash(gh pr view:*),Bash(gh pr comment:*),Bash(gh issue comment:*),Bash(gh run view:*),Bash(gh run watch:*),Bash(gh api:*),Bash(gh label create:*),Edit,Write"
+          # yamllint enable rule:line-length
+          prompt: |
+            Implement a fix for issue #${{ github.event.issue.number }}.
+
+            **Standards-conformance rules — read these before writing any code:**
+
+            - **For workflow files** (`.github/workflows/*.yml`): if a template
+              exists in `petry-projects/.github/standards/workflows/` for what
+              you're adding, **copy it verbatim** rather than writing from
+              scratch. Available templates: `agent-shield.yml`, `claude.yml`,
+              `dependabot-automerge.yml`, `dependabot-rebase.yml`,
+              `dependency-audit.yml`, `feature-ideation.yml`. Fetch via:
+              `gh api repos/petry-projects/.github/contents/standards/workflows/<file>.yml --jq '.content' | base64 -d`
+              Adapt only when the file genuinely needs repo-specific content.
+
+            - **For org standards** (labels, settings, rulesets, CODEOWNERS):
+              read `petry-projects/.github/standards/` first via `gh api`.
+              Match colors, names, and structure exactly. The full standards
+              tree is at `petry-projects/.github/tree/main/standards/`.
+
+            - **For SHA pinning** (Action Pinning Policy in
+              `standards/ci-standards.md`): never guess or fabricate SHAs.
+              Always look them up:
+                * Tags:     `gh api repos/{owner}/{repo}/git/refs/tags/{tag} --jq '.object.sha'`
+                * Branches: `gh api repos/{owner}/{repo}/branches/{branch} --jq '.commit.sha'`
+              If the lookup fails, do not pin — open the PR with the action
+              still using its tag and clearly explain the blocker in the PR
+              body so a human can complete the fix.
+
+            - **For CodeQL** (`codeql.yml`): all ecosystems present in the repo
+              MUST be configured as CodeQL languages. Repos with
+              `.github/workflows/*.yml` files MUST scan the `actions`
+              ecosystem. Use a matrix strategy for multi-language repos.
+
+            - **Do not skip the work** if previous comments say "blocked": the
+              prior infrastructure issues that produced those comments may
+              have been resolved. Attempt the fix; if you hit a *new* error,
+              report the actual error message rather than referring to history.
+
+            After implementing:
+            1. Create a pull request with a clear title and description. Include "Closes #${{ github.event.issue.number }}" in the PR body.
+            2. Self-review your own PR — look for bugs, style issues, missed edge cases, and test gaps. If you find problems, push fixes.
+            3. Review all comments and review threads on the PR. For each one:
+               - If you can address the feedback, make the fix, push, and mark the conversation as resolved.
+               - If the comment requires human judgment, leave a reply explaining what you need.
+            4. Check CI status. If CI fails, read the logs, fix the issues, and push again. Repeat until CI passes.
+            5. When CI is green, all actionable review comments are resolved, and the PR is ready, read the CODEOWNERS file and leave a comment tagging the relevant code owners to review and merge.
