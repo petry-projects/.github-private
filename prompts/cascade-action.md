@@ -48,7 +48,8 @@ read that verdict and post the review to GitHub.
 <If tier is deep+duck and agreement field exists, include this section>
 
 ### Findings
-<from the verdict's findings, grouped by severity>
+<from the verdict's findings, grouped by severity. If findings have a "sources"
+array, note which engine(s) flagged each finding.>
 
 ### CI status
 <from the verdict or from PR metadata>
