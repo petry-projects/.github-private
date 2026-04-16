@@ -377,34 +377,53 @@ jobs:
 
       - name: Enumerate candidate PRs
         id: list
-        env:
-          # Cap how many PRs one cron tick reviews to stay within timeout.
-          # Override via repo variable: gh variable set MAX_PRS --body 20 --repo don-petry/self
-          MAX_PRS: ${{ vars.MAX_PRS || '10' }}
         run: |
           set -euo pipefail
           if [ -n "${PR_URL_OVERRIDE}" ]; then
             echo "${PR_URL_OVERRIDE}" > prs.txt
           else
-            bash scripts/list-prs.sh > prs_all.txt
-            TOTAL=$(wc -l < prs_all.txt | tr -d ' ')
-            head -n "$MAX_PRS" prs_all.txt > prs.txt
-            if [ "$TOTAL" -gt "$MAX_PRS" ]; then
-              echo "::notice::Backlog has $TOTAL PRs but MAX_PRS=$MAX_PRS — reviewing first $MAX_PRS only. Remaining will be picked up in subsequent runs."
+            bash scripts/list-prs.sh > prs.txt
+            TOTAL=$(wc -l < prs.txt | tr -d ' ')
+            if [ "$TOTAL" -gt 0 ]; then
+              echo "::notice::Candidate pool has $TOTAL PRs. Review loop will process until MAX_PRS actual reviews are completed (no-ops are skipped)."
             fi
           fi
           echo "count=$(wc -l < prs.txt | tr -d ' ')" >> "$GITHUB_OUTPUT"
-          echo "--- candidate PRs (max $MAX_PRS) ---"
+          echo "--- candidate PRs (will filter no-ops) ---"
           cat prs.txt || true
 
       - name: Review each PR (cascade)
         if: steps.list.outputs.count != '0'
+        env:
+          MAX_PRS: ${{ vars.MAX_PRS || '10' }}
         run: |
           set -euo pipefail
+          actual=0
+          skipped_noops=0
+          failed=0
           while IFS= read -r pr_url; do
             [ -z "$pr_url" ] && continue
+            # Stop after MAX_PRS actual reviews (not counting no-ops)
+            if [ "$actual" -ge "$MAX_PRS" ]; then
+              echo "::notice::Reached MAX_PRS=$MAX_PRS actual reviews, stopping batch"
+              break
+            fi
             echo "::group::Reviewing $pr_url"
-            bash scripts/review-one-pr.sh "$pr_url" \
-              || echo "::warning::Review failed for $pr_url"
+            rc=0
+            bash scripts/review-one-pr.sh "$pr_url" || rc=$?
+            if [ "$rc" -eq 100 ]; then
+              # Exit code 100 = no-op (already reviewed), don't count toward budget
+              skipped_noops=$((skipped_noops + 1))
+              echo "::notice::No-op (already reviewed)"
+            elif [ "$rc" -eq 0 ]; then
+              # Successful review
+              actual=$((actual + 1))
+              echo "::notice::Review posted ($actual/$MAX_PRS)"
+            else
+              # Other failure
+              failed=$((failed + 1))
+              echo "::warning::Review failed for $pr_url (exit code $rc)"
+            fi
             echo "::endgroup::"
           done < prs.txt
+          echo "Summary: $actual reviews posted, $skipped_noops no-ops skipped, $failed failures"
