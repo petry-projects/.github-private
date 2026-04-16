@@ -21,26 +21,48 @@ and **Copilot**.
    Tier 1: Triage (~15s, no tools, pre-fetched context)
      └─ clean? → single confirmation → approve + auto-merge
      └─ concerns? ↓
-   Tier 2: Deep review (~2 min, full agentic)
+   Tier 2: Deep review + Rubber duck (~2 min, parallel, cross-engine)
+     └─ synthesize verdicts from both engines
      └─ clean? → approve + auto-merge
      └─ HIGH risk? ↓
    Tier 3: Security audit (~3 min, full agentic)
      └─ final decision → approve or escalate
    ```
 
+   ### Cross-engine adversarial review (Rubber Duck)
+
+   At tier 2, two reviewers analyze the PR **in parallel** using different
+   model families. The primary engine runs the deep review; the **opposite**
+   engine runs an adversarial "rubber duck" review. A synthesis step merges
+   both verdicts before deciding whether to approve or escalate.
+
+   This approach is inspired by [GitHub Copilot CLI's rubber duck feature](https://github.blog/ai-and-ml/github-copilot/github-copilot-cli-combines-model-families-for-a-second-opinion/),
+   which shows cross-model review closes ~75% of the performance gap between
+   model tiers. Different model families have different blind spots — running
+   both catches issues that either alone would miss.
+
+   The rubber duck is **always the opposite engine**: if `REVIEW_ENGINE=claude`,
+   the duck is Copilot (GPT-5.4), and vice versa. No extra configuration needed.
+
+   **Graceful degradation:** if the rubber duck fails (missing credentials,
+   CLI not installed, timeout), the cascade continues with the primary deep
+   review only. The duck is additive, never blocking.
+
    ### Engine model mapping
 
-   | Tier | Claude engine | Copilot engine |
+   | Tier | Claude primary | Copilot primary |
    |---|---|---|
    | Triage | Haiku 4.5 | GPT-5-mini |
    | Deep review | Sonnet 4.6 | GPT-5.2 |
+   | Rubber duck | GPT-5.4 (cross) | Sonnet 4.6 (cross) |
+   | Synthesis | Sonnet 4.6 | GPT-5.2 |
    | Security audit | Opus 4.6 | GPT-5.4 |
    | Action / single review | Sonnet 4.6 / Opus 4.6 | GPT-5.2 / GPT-5.4 |
 
    **Cost profile:**
    - ~80% of PRs: triage + single confirm (2 calls, ~30s)
-   - ~15% of PRs: + deep review (3 calls, ~2.5 min)
-   - ~5% of PRs: + security audit (4 calls, ~5.5 min)
+   - ~15% of PRs: + deep + duck + synthesis (5 calls, ~3 min)
+   - ~5% of PRs: + security audit (6 calls, ~6 min)
 
 4. **Post-review actions** — after the review is posted, the action tier takes
    additional actions depending on the decision:
