@@ -56,14 +56,17 @@ jobs:
       - name: Checkout agent repo
         uses: actions/checkout@v5
 
-      - name: Install review engine CLI
+      - name: Install review engine CLIs
         run: |
+          # Primary engine must install successfully; duck engine is best-effort.
           case "$REVIEW_ENGINE" in
             claude)
               npm install -g @anthropic-ai/claude-code
+              gh extension install github/gh-copilot || true
               ;;
             copilot)
               gh extension install github/gh-copilot
+              npm install -g @anthropic-ai/claude-code || true
               ;;
             *)
               echo "::error::Unknown REVIEW_ENGINE=$REVIEW_ENGINE"

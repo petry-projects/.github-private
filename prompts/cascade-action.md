@@ -14,8 +14,10 @@ read that verdict and post the review to GitHub.
 - `$REVIEW_CYCLE` — integer.
 - `$MAX_REVIEW_CYCLES` — integer.
 - `$FINAL_RESULT` — path to the JSON verdict from the resolving tier.
-- `$FINAL_TIER` — `deep` or `audit` — which tier made the final call.
+- `$FINAL_TIER` — `deep+duck`, `deep`, or `audit` — which tier made the final call.
 - `$ENGINE_LABEL` — human-readable label for the cascade models (for footer).
+- `$DUCK_ENGINE` — which engine ran the rubber duck (`claude` or `copilot`).
+- `$DUCK_MODEL` — which model ran the rubber duck.
 - `$TRIAGE_RESULT` — JSON from the triage tier (for context).
 
 ## Steps
@@ -44,7 +46,8 @@ read that verdict and post the review to GitHub.
 <If tier is deep+duck and agreement field exists, include this section>
 
 ### Findings
-<from the verdict's findings, grouped by severity>
+<from the verdict's findings, grouped by severity. If findings have a "sources"
+array, note which engine(s) flagged each finding.>
 
 ### CI status
 <from the verdict or from PR metadata>

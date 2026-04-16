@@ -5,7 +5,9 @@
 # Sourced by review-one-pr.sh — provides:
 #   run_triage <prompt_file>       — no-tool tier (stdout capture)
 #   run_agentic <prompt_file> <model>  — full-tool tier (stdout)
+#   run_duck <prompt_file> <model>     — cross-engine adversarial (stdout)
 #   ENGINE_* env vars for model names and labels
+#   DUCK_ENGINE / DUCK_MODEL for rubber-duck cross-engine review
 
 REVIEW_ENGINE="${REVIEW_ENGINE:-claude}"
 export REVIEW_ENGINE
@@ -17,8 +19,11 @@ case "$REVIEW_ENGINE" in
     ENGINE_AUDIT_MODEL="claude-opus-4-6"
     ENGINE_ACTION_MODEL="claude-sonnet-4-6"
     ENGINE_SINGLE_MODEL="claude-opus-4-6"
-    ENGINE_LABEL="triage: haiku 4.5 → deep: sonnet 4.6 → audit: opus 4.6"
+    ENGINE_LABEL="triage: haiku 4.5 → deep: sonnet 4.6 + duck: gpt-5.4 → audit: opus 4.6"
     ENGINE_SINGLE_LABEL="single-reviewer mode: opus 4.6"
+    # Cross-engine rubber duck: always the opposite engine
+    DUCK_ENGINE="copilot"
+    DUCK_MODEL="gpt-5.4"
     ;;
   copilot)
     ENGINE_TRIAGE_MODEL="gpt-5-mini"
@@ -26,8 +31,11 @@ case "$REVIEW_ENGINE" in
     ENGINE_AUDIT_MODEL="gpt-5.4"
     ENGINE_ACTION_MODEL="gpt-5.2"
     ENGINE_SINGLE_MODEL="gpt-5.4"
-    ENGINE_LABEL="triage: gpt-5-mini → deep: gpt-5.2 → audit: gpt-5.4"
+    ENGINE_LABEL="triage: gpt-5-mini → deep: gpt-5.2 + duck: sonnet 4.6 → audit: gpt-5.4"
     ENGINE_SINGLE_LABEL="single-reviewer mode: gpt-5.4"
+    # Cross-engine rubber duck: always the opposite engine
+    DUCK_ENGINE="claude"
+    DUCK_MODEL="claude-sonnet-4-6"
     ;;
   *)
     echo "::error::Unknown REVIEW_ENGINE='$REVIEW_ENGINE' (expected: claude or copilot)"
@@ -38,6 +46,7 @@ esac
 export ENGINE_TRIAGE_MODEL ENGINE_DEEP_MODEL ENGINE_AUDIT_MODEL
 export ENGINE_ACTION_MODEL ENGINE_SINGLE_MODEL
 export ENGINE_LABEL ENGINE_SINGLE_LABEL
+export DUCK_ENGINE DUCK_MODEL
 
 echo "    engine: $REVIEW_ENGINE ($ENGINE_LABEL)"
 
