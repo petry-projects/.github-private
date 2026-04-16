@@ -43,18 +43,7 @@ review_requested=$(gh search prs \
   --json url \
   --jq '.[].url')
 
-# Collect all unique PR URLs
 {
   printf '%s\n' "$authored"
   printf '%s\n' "$review_requested"
-} | sort -u | grep -v '^$' | while read -r pr_url; do
-  # Query the PR for review markers
-  # If it has a marker, skip it (continue to next iteration)
-  if gh pr view "$pr_url" --json reviews,comments \
-    --jq '((.reviews // []) + (.comments // [])) | .[].body | select(. != null)' 2>/dev/null \
-    | grep -q "<!-- pr-review-agent v1 sha="; then
-    continue
-  fi
-  # No marker found, output the URL
-  echo "$pr_url"
-done || true
+} | sort -u | grep -v '^$' || true
