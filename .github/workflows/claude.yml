@@ -1,0 +1,30 @@
+# Claude Code — thin caller that delegates to the org-level reusable workflow.
+# All logic and prompts are maintained centrally in claude-code-reusable.yml.
+# Standard: https://github.com/petry-projects/.github/blob/main/standards/ci-standards.md#4-claude-code-claudeyml
+
+name: Claude Code
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, reopened, synchronize]
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+  issues:
+    types: [labeled]
+
+permissions: {}
+
+jobs:
+  claude-code:
+    uses: petry-projects/.github/.github/workflows/claude-code-reusable.yml@main
+    secrets: inherit
+    permissions:
+      contents: write
+      id-token: write
+      pull-requests: write
+      issues: write
+      actions: read
+      checks: read
