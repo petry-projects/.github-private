@@ -24,7 +24,10 @@
 #   2. All other repos (priority 1)
 #   Within each priority tier, PRs are sorted oldest-first by createdAt.
 #
-# Output: one PR URL per line on stdout. Drafts are excluded.
+# Filters out PRs that have already been reviewed (marked with
+# <!-- pr-review-agent v1 sha=... --> in comments).
+#
+# Output: one PR URL per line on stdout. Drafts and already-reviewed PRs are excluded.
 
 set -euo pipefail
 
