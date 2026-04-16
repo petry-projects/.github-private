@@ -3672,3 +3672,34 @@ parse_reset_time_files() {
   hhmm=$(printf '%s' "$time_str" | grep -oiE '[0-9]{1,2}:[0-9]{2}(am|pm)$' || true)
   _emit_reset_iso "$hhmm"
 }
+
+# run_duck <prompt_file> <model>
+# Cross-engine adversarial "rubber duck" review.
+# Always uses the OPPOSITE engine from REVIEW_ENGINE. Output to stdout.
+# Strips the opposing engine's credentials to prevent cross-engine leakage.
+run_duck() {
+  local prompt_file="$1"
+  local model="$2"
+  case "$DUCK_ENGINE" in
+    claude)
+      unset COPILOT_GITHUB_TOKEN 2>/dev/null || true
+      timeout 300 claude --print \
+        --model "$model" \
+        --permission-mode acceptEdits \
+        --allowed-tools "Bash,Read,Grep,Glob" \
+        --max-turns 25 \
+        < "$prompt_file"
+      ;;
+    copilot)
+      unset CLAUDE_CODE_OAUTH_TOKEN 2>/dev/null || true
+      timeout 300 copilot \
+        -p "$(cat "$prompt_file")" \
+        --model "$model" \
+        -s --allow-all --no-ask-user
+      ;;
+    *)
+      echo "::error::Unknown DUCK_ENGINE='$DUCK_ENGINE'" >&2
+      return 1
+      ;;
+  esac
+}
