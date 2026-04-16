@@ -4,6 +4,9 @@ A scheduled GitHub Action that reviews open PRs on don-petry's behalf.
 Runs hourly, classifies risk, auto-approves low/medium-risk PRs that pass all
 quality gates, and escalates high-risk or gated PRs for human review.
 
+Supports two LLM engines via the `REVIEW_ENGINE` repo variable: **Claude** (default)
+and **Copilot**.
+
 ## How it works
 
 1. **Cron** — `.github/workflows/pr-review.yml` runs at `:07` every hour
@@ -15,40 +18,42 @@ quality gates, and escalates high-risk or gated PRs for human review.
    where each tier only fires if the previous one flagged concerns:
 
    ```
-   Tier 1: Haiku triage (~15s, no tools, pre-fetched context)
-     └─ clean? → single Opus confirmation → approve + auto-merge
+   Tier 1: Triage (~15s, no tools, pre-fetched context)
+     └─ clean? → single confirmation → approve + auto-merge
      └─ concerns? ↓
-   Tier 2: Sonnet deep review (~2 min, full agentic)
+   Tier 2: Deep review (~2 min, full agentic)
      └─ clean? → approve + auto-merge
      └─ HIGH risk? ↓
-   Tier 3: Opus security audit (~3 min, full agentic)
+   Tier 3: Security audit (~3 min, full agentic)
      └─ final decision → approve or escalate
    ```
 
-   | Tier | Model | Role | When |
-   |---|---|---|---|
-   | Triage | Haiku 4.5 | Fast risk classification, no tools | Every PR |
-   | Deep review | Sonnet 4.6 | Full review (security+correctness+maintainability) | Only if triage escalates |
-   | Security audit | Opus 4.6 | Paranoid security-focused review | Only if Sonnet flags HIGH risk |
-   | Action | Sonnet 4.6 | Posts review, handles delegation/merge | After resolving tier |
+   ### Engine model mapping
+
+   | Tier | Claude engine | Copilot engine |
+   |---|---|---|
+   | Triage | Haiku 4.5 | GPT-5-mini |
+   | Deep review | Sonnet 4.6 | GPT-5.2 |
+   | Security audit | Opus 4.6 | GPT-5.4 |
+   | Action / single review | Sonnet 4.6 / Opus 4.6 | GPT-5.2 / GPT-5.4 |
 
    **Cost profile:**
-   - ~80% of PRs: Haiku triage + Opus confirm (2 calls, ~30s)
-   - ~15% of PRs: + Sonnet deep review (3 calls, ~2.5 min)
-   - ~5% of PRs: + Opus audit (4 calls, ~5.5 min)
+   - ~80% of PRs: triage + single confirm (2 calls, ~30s)
+   - ~15% of PRs: + deep review (3 calls, ~2.5 min)
+   - ~5% of PRs: + security audit (4 calls, ~5.5 min)
 
-4. **Post-review actions** — after the review is posted, the synthesizer takes
+4. **Post-review actions** — after the review is posted, the action tier takes
    additional actions depending on the decision:
    - **If approved:** enables auto-merge (`gh pr merge --auto --squash`),
      rebases the branch if behind base, and removes the `needs-human-review`
      label. GitHub merges automatically once all required checks pass.
-   - **If escalated + Claude App available:** posts a follow-up comment tagging
-     `@claude` with specific fix instructions derived from the council findings.
-     Claude pushes fixes → next cron tick detects new SHA → council re-reviews
-     → approve + auto-merge when clean. This creates an autonomous fix loop.
-   - **If escalated + no Claude App (or max cycles reached):** labels
+   - **If escalated + AI delegation enabled:** posts a follow-up comment
+     with specific fix instructions. An AI agent watches for these comments,
+     pushes fixes → next cron tick detects new SHA → cascade re-reviews →
+     approve + auto-merge when clean. This creates an autonomous fix loop.
+   - **If escalated + no delegation (or max cycles reached):** labels
      `needs-human-review` and re-requests don-petry as reviewer.
-   - **Cycle guard:** after `MAX_REVIEW_CYCLES` (default 3) rounds of @claude
+   - **Cycle guard:** after `MAX_REVIEW_CYCLES` (default 3) rounds of AI
      delegation without resolution, the agent stops delegating and escalates
      to human to prevent infinite loops.
 
@@ -59,11 +64,11 @@ quality gates, and escalates high-risk or gated PRs for human review.
    <!-- pr-review-agent v1 sha=<full-commit-sha> decision=... risk=... -->
    ```
 
-   Before invoking the council, `scripts/review-one-pr.sh` fetches the PR's
+   Before invoking the cascade, `scripts/review-one-pr.sh` fetches the PR's
    current head SHA and scans existing reviews/comments for the marker. If a
    marker matching the current head SHA exists, the script skips the PR
    without spending tokens. If a marker exists for an older SHA, the script
-   knows the PR has new commits since the last review and runs the council
+   knows the PR has new commits since the last review and runs the cascade
    again — handling iterative review cycles cleanly.
 
 ## Setup
@@ -89,24 +94,41 @@ Save the token, then add it as a repo secret on `don-petry/self`:
 gh secret set GH_PAT --repo don-petry/self
 ```
 
-### 2. Add your Claude Code OAuth token
+### 2. Add your LLM engine auth token
 
-This routes the agent's Claude usage through your Claude Max plan instead of
-per-token API billing. Generate the token locally with:
+#### Claude engine (default)
+
+Routes the agent's usage through your Claude Max plan. Generate the token:
 
 ```
 claude setup-token
 ```
 
-It prints a long-lived OAuth token. Store it as a repo secret:
+Store as a repo secret:
 
 ```
 gh secret set CLAUDE_CODE_OAUTH_TOKEN --repo don-petry/self
 ```
 
-(Paste the token when prompted, then Ctrl+D.)
+#### Copilot engine
 
-### 3. Test with a dry run
+Create a GitHub PAT with Copilot scope. Store as a repo secret:
+
+```
+gh secret set COPILOT_GITHUB_TOKEN --repo don-petry/self
+```
+
+### 3. Choose your engine
+
+```
+# Use Copilot (GPT models):
+gh variable set REVIEW_ENGINE --body copilot --repo don-petry/self
+
+# Use Claude (default — no variable needed, or set explicitly):
+gh variable set REVIEW_ENGINE --body claude --repo don-petry/self
+```
+
+### 4. Test with a dry run
 
 ```
 gh workflow run pr-review.yml --repo don-petry/self -f dry_run=true
@@ -145,28 +167,46 @@ gh workflow run pr-review.yml --repo don-petry/self -f dry_run=false
 
 ## Tuning
 
-- **Risk rules** — edit `prompts/shared.md` (taxonomy), or per-lens in
-  `prompts/council/{security,correctness,maintainability}.md`.
+- **Review engine** — `REVIEW_ENGINE` repo variable: `claude` (default) or
+  `copilot`. Controls which CLI and model family is used.
+- **Risk rules** — edit `prompts/shared.md` (taxonomy), or the per-tier
+  prompts (`prompts/deep-review.md`, `prompts/security-audit.md`).
 - **Cron frequency** — change the `cron:` line in the workflow file.
 - **Scope** — edit `scripts/list-prs.sh` to add/remove queries (e.g. to include
   PRs from a specific org, or to exclude certain repos).
-- **Claude delegation** — set `CLAUDE_ORGS` to a comma-separated list of GitHub
-  orgs where the Claude App is installed:
-  `gh variable set CLAUDE_ORGS --body "petry-projects,don-petry" --repo don-petry/self`
-- **Max review cycles** — how many times the agent tags @claude before
+- **AI delegation** — set `DELEGATION_ORGS` to a comma-separated list of
+  GitHub orgs where AI-assisted fix delegation is enabled:
+  `gh variable set DELEGATION_ORGS --body "petry-projects,don-petry" --repo don-petry/self`
+- **Max review cycles** — how many times the agent delegates to AI before
   escalating to human (default 3):
   `gh variable set MAX_REVIEW_CYCLES --body 5 --repo don-petry/self`
-- **Models** — change model IDs in `scripts/review-one-pr.sh`. The cascade
-  tiers map to: triage=haiku, deep=sonnet, audit=opus, action=sonnet.
+- **Models** — change model IDs in `scripts/engine.sh`. The cascade tiers
+  map to: triage → deep → audit → action.
 - **Max PRs per run** — defaults to 10 per cron tick to stay within the 60-min
-  job timeout (~5 min per PR with 3 council members). Override:
+  job timeout. Override:
   `gh variable set MAX_PRS --body 15 --repo don-petry/self`
-- **Models** — change model IDs in `scripts/review-one-pr.sh` (`run_member`
-  calls and the synthesis invocation). See the script for current assignments.
+
+## Architecture
+
+```
+scripts/engine.sh         ← LLM abstraction (claude/copilot dispatch)
+scripts/review-one-pr.sh  ← Cascade orchestrator (sources engine.sh)
+scripts/list-prs.sh       ← PR enumeration
+
+prompts/triage.md         ← Tier 1: fast risk triage (no tools)
+prompts/deep-review.md    ← Tier 2: thorough review (agentic)
+prompts/security-audit.md ← Tier 3: paranoid security check (agentic)
+prompts/single-review.md  ← Fast path: small/incremental/triage-approved
+prompts/cascade-action.md ← Post-review: post, merge, delegate
+prompts/shared.md         ← Shared risk taxonomy and decision gates
+```
 
 ## Cost
 
-Uses the Claude Max plan via OAuth token — no per-token API billing. GitHub
-Actions cost is ~720 runs/month (hourly × 30 days). Runs with zero candidate
-PRs finish in ~10s. Each PR reviewed costs ~5 min of runner time (4 model
-invocations: 3 council + 1 synthesis).
+Uses the configured engine's billing:
+- **Claude:** Max plan via OAuth token — no per-token API billing.
+- **Copilot:** Included in GitHub Copilot subscription.
+
+GitHub Actions cost is ~720 runs/month (hourly × 30 days). Runs with zero
+candidate PRs finish in ~10s. Each PR reviewed costs ~2-5 min of runner time
+depending on how many cascade tiers fire.

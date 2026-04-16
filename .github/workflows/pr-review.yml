@@ -109,8 +109,20 @@ jobs:
       - name: Checkout agent repo
         uses: actions/checkout@v5
 
-      - name: Install Claude Code CLI
-        run: npm install -g @anthropic-ai/claude-code
+      - name: Install review engine CLI
+        run: |
+          case "$REVIEW_ENGINE" in
+            claude)
+              npm install -g @anthropic-ai/claude-code
+              ;;
+            copilot)
+              gh extension install github/gh-copilot
+              ;;
+            *)
+              echo "::error::Unknown REVIEW_ENGINE=$REVIEW_ENGINE"
+              exit 1
+              ;;
+          esac
 
       - name: Verify auth
         run: |
@@ -382,7 +394,7 @@ jobs:
           echo "--- candidate PRs (max $MAX_PRS) ---"
           cat prs.txt || true
 
-      - name: Review each PR (council + synth)
+      - name: Review each PR (cascade)
         if: steps.list.outputs.count != '0'
         run: |
           set -euo pipefail

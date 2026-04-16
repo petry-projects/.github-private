@@ -1,7 +1,7 @@
 # Cascade action — post review based on tier result
 
 You are the final action step of the cascading PR review. A previous tier
-(Sonnet or Opus) has produced a verdict in `$FINAL_RESULT`. Your job is to
+(deep review or security audit) has produced a verdict in `$FINAL_RESULT`. Your job is to
 read that verdict and post the review to GitHub.
 
 ## Inputs (environment variables)
@@ -36,7 +36,7 @@ read that verdict and post the review to GitHub.
 
 **Risk:** <risk>
 **Reviewed commit:** `<SHA>`
-**Cascade:** triage(haiku) → <sonnet|sonnet → opus>
+**Cascade:** triage → `$FINAL_TIER` (see `$ENGINE_LABEL` for models)
 
 ### Summary
 <from the verdict's summary>
@@ -54,7 +54,7 @@ read that verdict and post the review to GitHub.
 <from the verdict or from PR metadata>
 
 ---
-_Reviewed by the don-petry PR-review cascade (triage: haiku 4.5 → deep: sonnet 4.6 → audit: opus 4.6). Reply with `@don-petry` if you need a human._
+_Reviewed by the don-petry PR-review cascade ($ENGINE_LABEL). Reply with `@don-petry` if you need a human._
 ```
 
 5. **Act** (same logic as synthesize.md):
@@ -67,11 +67,11 @@ _Reviewed by the don-petry PR-review cascade (triage: haiku 4.5 → deep: sonnet
      3. Auto-merge: `gh pr merge "$PR_URL" --auto --squash` (swallow errors)
      4. Remove `needs-human-review` label if present (swallow errors)
    - If `decision` is `escalate`:
-     - If `$CLAUDE_ENABLED` is `true` AND `$REVIEW_CYCLE` < `$MAX_REVIEW_CYCLES`
+     - If `$AI_DELEGATION_ENABLED` is `true` AND `$REVIEW_CYCLE` < `$MAX_REVIEW_CYCLES`
        AND `risk` is NOT `HIGH`:
        Post fix-request issue comment (NOT a review):
        ```
-       ## Review council — fix requested (cycle <REVIEW_CYCLE + 1>/<MAX_REVIEW_CYCLES>)
+       ## Review — fix requested (cycle <REVIEW_CYCLE + 1>/<MAX_REVIEW_CYCLES>)
 
        The automated review identified the following issues. Please address each one:
 
@@ -117,4 +117,4 @@ jq -n \
        ```
      - Otherwise: add `needs-human-review` label, re-request don-petry.
 6. Print status JSON:
-   `{"pr":"<url>","sha":"<sha>","risk":"<r>","decision":"<d>","tier":"<final_tier>","delegated_to":"claude|human|none","posted":true|false}`
+   `{"pr":"<url>","sha":"<sha>","risk":"<r>","decision":"<d>","tier":"<final_tier>","delegated_to":"ai|human|none","posted":true|false}`

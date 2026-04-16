@@ -18,13 +18,13 @@ and (if `$DRY_RUN` is `false`) post a PR review.
 - `$DRY_RUN` — `true` or `false`. If `true`, do not call any `gh pr review`,
   `gh pr edit`, `gh pr merge`, or `gh api -X POST` commands. Print what you
   WOULD do.
-- `$CLAUDE_ENABLED` — `true` or `false`. Whether the PR's repo org has the
-  Claude GitHub App installed.
+- `$AI_DELEGATION_ENABLED` — `true` or `false`. Whether the PR's repo org has the
+  AI delegation installed.
 - `$REVIEW_CYCLE` — integer. How many previous review cycles exist on this PR
   (count of our markers in existing comments). Used to prevent infinite
   delegation loops.
 - `$MAX_REVIEW_CYCLES` — integer (default 3). If `$REVIEW_CYCLE >= $MAX_REVIEW_CYCLES`,
-  do NOT delegate to @claude — escalate to human instead.
+  do NOT delegate to AI — escalate to human instead.
 
 ## Steps
 
@@ -73,7 +73,7 @@ and (if `$DRY_RUN` is `false`) post a PR review.
       `gh pr edit "$PR_URL" --remove-label needs-human-review` (swallow errors).
 9. **Delegation** (only when escalating, `$DRY_RUN` is `false`):
    Decide whether to delegate to Claude or to a human:
-   - If `$CLAUDE_ENABLED` is `true` AND `$REVIEW_CYCLE` < `$MAX_REVIEW_CYCLES`
+   - If `$AI_DELEGATION_ENABLED` is `true` AND `$REVIEW_CYCLE` < `$MAX_REVIEW_CYCLES`
      AND `final_risk` is NOT `HIGH`:
      → **Delegate to Claude** (step 9a).
    - Otherwise:
@@ -125,8 +125,8 @@ and (if `$DRY_RUN` is `false`) post a PR review.
        then re-request don-petry as a reviewer
        (`gh api -X POST "repos/<owner>/<repo>/pulls/<num>/requested_reviewers" -f reviewers[]=don-petry`,
        swallowing errors).
-       If `$CLAUDE_ENABLED` is `true` but `$REVIEW_CYCLE` >= `$MAX_REVIEW_CYCLES`,
-       add a note in the escalation: "Claude delegation exhausted after
+       If `$AI_DELEGATION_ENABLED` is `true` but `$REVIEW_CYCLE` >= `$MAX_REVIEW_CYCLES`,
+       add a note in the escalation: "AI delegation exhausted after
        $REVIEW_CYCLE cycles — human review required."
 10. After all actions, print a single-line JSON status to stdout:
     `{"pr":"<url>","sha":"<sha>","risk":"<r>","decision":"<d>","delegated_to":"claude|human|none","posted":true|false}`
@@ -155,7 +155,7 @@ and (if `$DRY_RUN` is `false`) post a PR review.
 <from any lens — failing/pending/green count>
 
 ---
-_Reviewed automatically by the don-petry PR-review council (security: opus 4.6 · correctness: sonnet 4.6 · maintainability: sonnet 4.6 · synthesis: sonnet 4.6). The marker on line 1 lets the agent detect new commits and re-review. Reply with `@don-petry` if you need a human._
+_Reviewed automatically by the don-petry PR-review agent ($ENGINE_LABEL). The marker on line 1 lets the agent detect new commits and re-review. Reply with `@don-petry` if you need a human._
 ```
 
 ## Important notes
