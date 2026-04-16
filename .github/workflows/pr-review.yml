@@ -396,18 +396,29 @@ jobs:
         if: steps.list.outputs.count != '0'
         env:
           MAX_PRS: ${{ vars.MAX_PRS || '10' }}
+          CANDIDATE_LIMIT: ${{ vars.CANDIDATE_LIMIT || '100' }}
         run: |
           set -euo pipefail
           actual=0
           skipped_noops=0
           failed=0
+          processed=0
           while IFS= read -r pr_url; do
             [ -z "$pr_url" ] && continue
+            processed=$((processed + 1))
+
+            # Hard limit on candidates checked to avoid timeout
+            if [ "$processed" -gt "$CANDIDATE_LIMIT" ]; then
+              echo "::notice::Hit CANDIDATE_LIMIT=$CANDIDATE_LIMIT, stopping batch"
+              break
+            fi
+
             # Stop after MAX_PRS actual reviews (not counting no-ops)
             if [ "$actual" -ge "$MAX_PRS" ]; then
               echo "::notice::Reached MAX_PRS=$MAX_PRS actual reviews, stopping batch"
               break
             fi
+
             echo "::group::Reviewing $pr_url"
             rc=0
             bash scripts/review-one-pr.sh "$pr_url" || rc=$?
@@ -426,4 +437,4 @@ jobs:
             fi
             echo "::endgroup::"
           done < prs.txt
-          echo "Summary: $actual reviews posted, $skipped_noops no-ops skipped, $failed failures"
+          echo "Summary: $actual reviews posted, $skipped_noops no-ops skipped, $failed failures (processed $processed/$CANDIDATE_LIMIT candidates)"
