@@ -31,30 +31,45 @@ jobs:
       # GH_PAT is a fine-grained PAT with PR read/write across the repos you
       # want the agent to act on. Stored as a repo secret.
       GH_TOKEN: ${{ secrets.GH_PAT }}
-      # Routes Claude Code through the Max plan subscription instead of
-      # per-token API billing. Generate with `claude setup-token` locally.
+      # Review engine: "claude" or "copilot". Controls which CLI and models are used.
+      # gh variable set REVIEW_ENGINE --body copilot --repo don-petry/self
+      REVIEW_ENGINE: ${{ vars.REVIEW_ENGINE || 'claude' }}
+      # Claude engine auth — routes through Max plan subscription.
+      # Generate with `claude setup-token`, store as repo secret.
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      # Copilot engine auth — GitHub PAT with Copilot scope.
+      # Store as repo secret: gh secret set COPILOT_GITHUB_TOKEN --repo don-petry/self
+      COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
       # Default to dry-run unless the repo variable LIVE_MODE is set to 'true'.
       # Manual workflow_dispatch can override either way via the dry_run input.
       # To go live: gh variable set LIVE_MODE --body true --repo don-petry/self
       DRY_RUN: ${{ inputs.dry_run || (vars.LIVE_MODE == 'true' && 'false' || 'true') }}
       PR_URL_OVERRIDE: ${{ inputs.pr_url }}
-      # Comma-separated list of GitHub orgs where Claude App is installed.
-      # When findings exist, the agent tags @claude to fix them autonomously.
-      # gh variable set CLAUDE_ORGS --body "petry-projects,don-petry" --repo don-petry/self
-      CLAUDE_ORGS: ${{ vars.CLAUDE_ORGS || '' }}
-      # Max review cycles before stopping @claude delegation and escalating to human.
+      # Comma-separated list of GitHub orgs where AI delegation is enabled.
+      # When findings exist, the agent posts fix-request comments for AI to act on.
+      # gh variable set DELEGATION_ORGS --body "petry-projects,don-petry" --repo don-petry/self
+      DELEGATION_ORGS: ${{ vars.DELEGATION_ORGS || vars.CLAUDE_ORGS || '' }}
+      # Max review cycles before stopping AI delegation and escalating to human.
       MAX_REVIEW_CYCLES: ${{ vars.MAX_REVIEW_CYCLES || '3' }}
-      # PRs with fewer total changed lines than this use a single Opus call
-      # instead of the full 3-member council. Default: 10 lines.
-      SMALL_PR_THRESHOLD: ${{ vars.SMALL_PR_THRESHOLD || '10' }}
 
     steps:
       - name: Checkout agent repo
         uses: actions/checkout@v5
 
-      - name: Install Claude Code CLI
-        run: npm install -g @anthropic-ai/claude-code
+      - name: Install review engine CLI
+        run: |
+          case "$REVIEW_ENGINE" in
+            claude)
+              npm install -g @anthropic-ai/claude-code
+              ;;
+            copilot)
+              gh extension install github/gh-copilot
+              ;;
+            *)
+              echo "::error::Unknown REVIEW_ENGINE=$REVIEW_ENGINE"
+              exit 1
+              ;;
+          esac
 
       - name: Verify auth scopes
         run: bash scripts/verify-auth-scopes.sh
@@ -165,7 +180,7 @@ jobs:
           echo "--- candidate PRs (max $MAX_PRS) ---"
           cat prs.txt || true
 
-      - name: Review each PR (council + synth)
+      - name: Review each PR (cascade)
         if: steps.list.outputs.count != '0'
         run: |
           set -euo pipefail

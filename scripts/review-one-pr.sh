@@ -1,21 +1,22 @@
 #!/usr/bin/env bash
-# Run the council + synthesizer against ONE PR.
+# Run the cascading PR review against ONE PR.
 #
 # Inputs:
 #   $1 — PR URL
 #
 # Env:
-#   GH_TOKEN — set by the workflow
-#   CLAUDE_CODE_OAUTH_TOKEN — set by the workflow
-#   DRY_RUN — "true" or "false"
+#   GH_TOKEN              — set by the workflow
+#   REVIEW_ENGINE         — "claude" or "copilot" (default: claude)
+#   CLAUDE_CODE_OAUTH_TOKEN — (claude engine) set by the workflow
+#   COPILOT_GITHUB_TOKEN    — (copilot engine) set by the workflow
+#   DRY_RUN               — "true" or "false"
 #
 # Behavior:
 #   1. Resolve current head SHA of the PR.
 #   2. Idempotency check: scan existing reviews/comments for our marker
 #      `<!-- pr-review-agent v1 sha=<SHA> -->`. If a marker for the current
 #      head SHA exists, skip without spending tokens.
-#   3. Otherwise: run 3 council members in parallel, each writing JSON to
-#      /tmp/council/<lens>.json. Then run the synthesizer.
+#   3. Run cascading review: triage → deep review → security audit.
 
 set -euo pipefail
 

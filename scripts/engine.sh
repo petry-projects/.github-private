@@ -1,136 +1,44 @@
 #!/usr/bin/env bash
-set -euo pipefail
 # Engine abstraction layer for LLM invocations.
-# Supports: claude, gemini, copilot
+# Supports: claude, copilot
 #
 # Sourced by review-one-pr.sh — provides:
 #   run_triage <prompt_file>       — no-tool tier (stdout capture)
-#   run_agentic <prompt_file> <model> [tier]  — full-tool tier (stdout)
-#   run_duck <prompt_file> <model>     — cross-engine adversarial (stdout)
+#   run_agentic <prompt_file> <model>  — full-tool tier (stdout)
 #   ENGINE_* env vars for model names and labels
-#   DUCK_ENGINE / DUCK_MODEL for rubber-duck cross-engine review
-#
-# Rate-limit fallback (two layers, applied in order):
-#   1. In-Claude model fallback — per-tier CLAUDE_*_MODEL_CHAIN walks alternate
-#      Claude models (e.g. sonnet → opus) before declaring the provider
-#      rate-limited. Each Claude model has its own TPM/RPM bucket, so swapping
-#      models often recovers without leaving the provider. Does NOT help when
-#      the daily subscription cap is exhausted (cap is shared across all Claude
-#      models — see issue #206 for the proactive headroom guard).
-#   2. Cross-provider fallback — run_writer_with_fallback / review-batch.sh
-#      walk claude → gemini → copilot only after the in-engine chain is fully
-#      rate-limited (exit code 2 from the engine-layer call).
-#
-# Token logging (opt-in):
-#   Set TOKEN_LOG_FILE=<path> to capture per-call JSONL token records.
-#   TOKEN_WORKFLOW — workflow label for records (default: "unknown").
-#   Records are written via scripts/lib/token-metrics.sh (estimate-based).
-#   Unset → zero overhead, zero behaviour change.
 
 REVIEW_ENGINE="${REVIEW_ENGINE:-claude}"
 export REVIEW_ENGINE
 
-# Per-tier timeouts (seconds). The job-level 60min cap is a backstop — without
-# per-tier timeouts a single hung model invocation burns the whole hour and
-# blocks every subsequent PR in the session.
-TRIAGE_TIMEOUT_SEC="${TRIAGE_TIMEOUT_SEC:-300}"
-DEEP_TIMEOUT_SEC="${DEEP_TIMEOUT_SEC:-600}"
-AUDIT_TIMEOUT_SEC="${AUDIT_TIMEOUT_SEC:-600}"
-ACTION_TIMEOUT_SEC="${ACTION_TIMEOUT_SEC:-600}"
-DUCK_TIMEOUT_SEC="${DUCK_TIMEOUT_SEC:-300}"
+case "$REVIEW_ENGINE" in
+  claude)
+    ENGINE_TRIAGE_MODEL="claude-haiku-4-5-20251001"
+    ENGINE_DEEP_MODEL="claude-sonnet-4-6"
+    ENGINE_AUDIT_MODEL="claude-opus-4-6"
+    ENGINE_ACTION_MODEL="claude-sonnet-4-6"
+    ENGINE_SINGLE_MODEL="claude-opus-4-6"
+    ENGINE_LABEL="triage: haiku 4.5 → deep: sonnet 4.6 → audit: opus 4.6"
+    ENGINE_SINGLE_LABEL="single-reviewer mode: opus 4.6"
+    ;;
+  copilot)
+    ENGINE_TRIAGE_MODEL="gpt-5-mini"
+    ENGINE_DEEP_MODEL="gpt-5.2"
+    ENGINE_AUDIT_MODEL="gpt-5.4"
+    ENGINE_ACTION_MODEL="gpt-5.2"
+    ENGINE_SINGLE_MODEL="gpt-5.4"
+    ENGINE_LABEL="triage: gpt-5-mini → deep: gpt-5.2 → audit: gpt-5.4"
+    ENGINE_SINGLE_LABEL="single-reviewer mode: gpt-5.4"
+    ;;
+  *)
+    echo "::error::Unknown REVIEW_ENGINE='$REVIEW_ENGINE' (expected: claude or copilot)"
+    exit 1
+    ;;
+esac
 
-# Retry config for transient errors. We treat exit codes that look like
-# network/process flakiness (124=GNU timeout, 137/143=signal kills, plus a
-# couple of generic transient codes) as retryable. Rate-limit (engine-level)
-# is NOT retryable here — the workflow's engine-fallback handles that.
-RETRY_MAX_ATTEMPTS="${RETRY_MAX_ATTEMPTS:-2}"   # total attempts including first
-RETRY_BASE_DELAY_SEC="${RETRY_BASE_DELAY_SEC:-5}"
+export ENGINE_TRIAGE_MODEL ENGINE_DEEP_MODEL ENGINE_AUDIT_MODEL
+export ENGINE_ACTION_MODEL ENGINE_SINGLE_MODEL
+export ENGINE_LABEL ENGINE_SINGLE_LABEL
 
-set_engine_config() {
-  case "$REVIEW_ENGINE" in
-    claude)
-      ENGINE_TRIAGE_MODEL="claude-haiku-4-5-20251001"
-      ENGINE_DEEP_MODEL="claude-sonnet-4-6"
-      ENGINE_AUDIT_MODEL="claude-opus-4-7"
-      ENGINE_ACTION_MODEL="claude-sonnet-4-6"
-      ENGINE_SINGLE_MODEL="claude-opus-4-7"
-      ENGINE_LABEL="triage: haiku 4.5 → deep: sonnet 4.6 + duck: o4-mini → audit: opus 4.7"
-      ENGINE_SINGLE_LABEL="single-reviewer mode: opus 4.7"
-      # Cross-engine rubber duck: use Copilot when Claude is primary
-      DUCK_ENGINE="copilot"
-      DUCK_MODEL="o4-mini"
-      # Per-tier in-Claude model fallback chains (comma-separated).
-      # On rate-limit, the chain is walked left-to-right before the cross-provider
-      # fallback (claude → gemini → copilot) kicks in. Per-model TPM/RPM buckets
-      # are independent, so swapping models within Claude often recovers without
-      # leaving the provider. (Daily subscription cap is shared — see issue #206.)
-      # Override per workflow via env to tune cost/capability trade-offs.
-      CLAUDE_TRIAGE_MODEL_CHAIN="${CLAUDE_TRIAGE_MODEL_CHAIN:-claude-haiku-4-5-20251001,claude-sonnet-4-6}"
-      CLAUDE_DEEP_MODEL_CHAIN="${CLAUDE_DEEP_MODEL_CHAIN:-claude-sonnet-4-6,claude-opus-4-7}"
-      CLAUDE_AUDIT_MODEL_CHAIN="${CLAUDE_AUDIT_MODEL_CHAIN:-claude-opus-4-7,claude-sonnet-4-6}"
-      CLAUDE_ACTION_MODEL_CHAIN="${CLAUDE_ACTION_MODEL_CHAIN:-claude-sonnet-4-6,claude-opus-4-7}"
-      CLAUDE_SINGLE_MODEL_CHAIN="${CLAUDE_SINGLE_MODEL_CHAIN:-claude-opus-4-7,claude-sonnet-4-6}"
-      ;;
-    gemini)
-      ENGINE_TRIAGE_MODEL="gemini-2.0-flash"
-      ENGINE_DEEP_MODEL="gemini-2.5-pro"
-      ENGINE_AUDIT_MODEL="gemini-2.5-pro"
-      ENGINE_ACTION_MODEL="gemini-2.5-pro"
-      ENGINE_SINGLE_MODEL="gemini-2.5-pro"
-      ENGINE_LABEL="triage: gemini-2.0-flash → deep: gemini-2.5-pro + duck: sonnet 4.6 → audit: gemini-2.5-pro"
-      ENGINE_SINGLE_LABEL="single-reviewer mode: gemini-2.5-pro"
-      # Cross-engine rubber duck: use Claude for diversity
-      DUCK_ENGINE="claude"
-      DUCK_MODEL="claude-sonnet-4-6"
-      # No in-engine chain for Gemini — only one production model in use today.
-      CLAUDE_TRIAGE_MODEL_CHAIN=""
-      CLAUDE_DEEP_MODEL_CHAIN=""
-      CLAUDE_AUDIT_MODEL_CHAIN=""
-      CLAUDE_ACTION_MODEL_CHAIN=""
-      CLAUDE_SINGLE_MODEL_CHAIN=""
-      ;;
-    copilot)
-      ENGINE_TRIAGE_MODEL="o4-mini"
-      ENGINE_DEEP_MODEL="o4-mini"
-      ENGINE_AUDIT_MODEL="o4-mini"
-      ENGINE_ACTION_MODEL="o4-mini"
-      ENGINE_SINGLE_MODEL="o4-mini"
-      # GitHub Models API model identifier — must match a model available at
-      # https://models.github.ai (see GitHub Models marketplace).
-      # Override via COPILOT_API_MODEL env var if the default is unavailable.
-      # openai/o4-mini is the April-2025 o4-generation reasoning model; it is
-      # not a typo for o1-mini or gpt-4o-mini.
-      COPILOT_API_MODEL="${COPILOT_API_MODEL:-openai/o4-mini}"
-      export COPILOT_API_MODEL
-      ENGINE_LABEL="triage: o4-mini → deep: o4-mini + duck: gemini-2.0-flash → audit: o4-mini (GitHub Models API)"
-      ENGINE_SINGLE_LABEL="single-reviewer mode: o4-mini (GitHub Models API)"
-      # Cross-engine rubber duck: use Gemini when Copilot is primary
-      DUCK_ENGINE="gemini"
-      DUCK_MODEL="gemini-2.0-flash"
-      # No in-engine chain for Copilot — single GitHub Models endpoint.
-      CLAUDE_TRIAGE_MODEL_CHAIN=""
-      CLAUDE_DEEP_MODEL_CHAIN=""
-      CLAUDE_AUDIT_MODEL_CHAIN=""
-      CLAUDE_ACTION_MODEL_CHAIN=""
-      CLAUDE_SINGLE_MODEL_CHAIN=""
-      ;;
-    *)
-      echo "::error::Unknown REVIEW_ENGINE='$REVIEW_ENGINE' (expected: claude, gemini, or copilot)"
-      exit 1
-      ;;
-  esac
-
-  export ENGINE_TRIAGE_MODEL ENGINE_DEEP_MODEL ENGINE_AUDIT_MODEL
-  export ENGINE_ACTION_MODEL ENGINE_SINGLE_MODEL
-  export ENGINE_LABEL ENGINE_SINGLE_LABEL
-  export DUCK_ENGINE DUCK_MODEL COPILOT_API_MODEL
-  export CLAUDE_TRIAGE_MODEL_CHAIN CLAUDE_DEEP_MODEL_CHAIN
-  export CLAUDE_AUDIT_MODEL_CHAIN CLAUDE_ACTION_MODEL_CHAIN
-  export CLAUDE_SINGLE_MODEL_CHAIN
-}
-
-# Initial config
-set_engine_config
 echo "    engine: $REVIEW_ENGINE ($ENGINE_LABEL)"
 
 # Load token metrics library unconditionally (non-fatal).
@@ -620,70 +528,16 @@ run_triage() {
 
 # run_agentic <prompt_file> <model> [tier]
 # Full tool access (Bash, Read, Grep, Glob). Output to stdout.
-#
-# No retry here: callers redirect stdout to a file, so a retry inside this
-# function would append the second attempt's output to a partial first-attempt
-# file. Transient failures here become session-fatal via the workflow circuit
-# breaker — that's the intended trade-off for the long, expensive tier.
-# Per-tier timeout from DEEP_TIMEOUT_SEC (also applies to action/audit calls;
-# they're all the same agentic shape and similarly priced).
 run_agentic() {
   local prompt_file="$1"
   local model="$2"
-  local tier="${3:-deep}"
-  local _tok_tmp="" rc=0
-  if [ -n "${TOKEN_LOG_FILE:-}" ]; then
-    unset _ENGINE_USAGE_OUT
-    _tok_tmp="$(mktemp 2>/dev/null || true)"
-    # Per-call usage-sidecar key: a unique mktemp path, exported so the engine's
-    # pipeline subshell and _record_engine_tokens agree on it. Unique per call →
-    # concurrent run_agentic/run_duck (review-one-pr.sh) never collide.
-    [[ -n "$_tok_tmp" ]] && local -x _ENGINE_USAGE_OUT="${_tok_tmp}.usage"
-  fi
   case "$REVIEW_ENGINE" in
     claude)
-      # Resolve the in-Claude model chain for this tier. The chain is the
-      # cascade tried on rate-limit (e.g. sonnet → opus). If the caller
-      # passed a model that does NOT match the tier's default ENGINE_*_MODEL,
-      # treat it as an explicit pin: honor it as a single-element chain so
-      # callers can still force a specific model when they need to (the
-      # documented `[model]` parameter on this function). The chain is only
-      # applied when the caller used the default model for the tier.
-      local _agentic_chain _tier_default=""
-      case "$tier" in
-        deep)   _tier_default="${ENGINE_DEEP_MODEL:-}"
-                _agentic_chain="${CLAUDE_DEEP_MODEL_CHAIN:-$model}"   ;;
-        audit)  _tier_default="${ENGINE_AUDIT_MODEL:-}"
-                _agentic_chain="${CLAUDE_AUDIT_MODEL_CHAIN:-$model}"  ;;
-        action) _tier_default="${ENGINE_ACTION_MODEL:-}"
-                _agentic_chain="${CLAUDE_ACTION_MODEL_CHAIN:-$model}" ;;
-        single) _tier_default="${ENGINE_SINGLE_MODEL:-}"
-                _agentic_chain="${CLAUDE_SINGLE_MODEL_CHAIN:-$model}" ;;
-        *)      _agentic_chain="$model" ;;
-      esac
-      if [ -n "$_tier_default" ] && [ "$model" != "$_tier_default" ]; then
-        _agentic_chain="$model"
-      fi
-      if [ -n "$_tok_tmp" ]; then
-        _claude_chain_invoke "$_agentic_chain" "$prompt_file" "$DEEP_TIMEOUT_SEC" \
-          --permission-mode acceptEdits \
-          --allowed-tools "Bash,Read,Grep,Glob" \
-          | tee "$_tok_tmp" || rc=${PIPESTATUS[0]}
-      else
-        _claude_chain_invoke "$_agentic_chain" "$prompt_file" "$DEEP_TIMEOUT_SEC" \
-          --permission-mode acceptEdits \
-          --allowed-tools "Bash,Read,Grep,Glob" \
-          || rc=$?
-      fi
-      ;;
-    gemini)
-      if [ -n "$_tok_tmp" ]; then
-        _gemini_invoke "$prompt_file" "$DEEP_TIMEOUT_SEC" "$model" \
-          --approval-mode auto_edit | tee "$_tok_tmp" || rc=${PIPESTATUS[0]}
-      else
-        _gemini_invoke "$prompt_file" "$DEEP_TIMEOUT_SEC" "$model" \
-          --approval-mode auto_edit || rc=$?
-      fi
+      claude --print \
+        --model "$model" \
+        --permission-mode acceptEdits \
+        --allowed-tools "Bash,Read,Grep,Glob" \
+        < "$prompt_file"
       ;;
     gemini)
       if [ -n "$_tok_tmp" ]; then
