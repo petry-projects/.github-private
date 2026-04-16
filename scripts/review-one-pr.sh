@@ -237,7 +237,9 @@ EXISTING_MARKER_SHA=$(
 if [ -n "${EXISTING_MARKER_SHA:-}" ] && [ "$EXISTING_MARKER_SHA" = "$PR_HEAD_SHA" ]; then
   echo "    noop: already reviewed at $PR_HEAD_SHA"
   echo "{\"pr\":\"$PR_URL\",\"sha\":\"$PR_HEAD_SHA\",\"decision\":\"noop\",\"reason\":\"already-reviewed-at-head\"}"
-  exit 0
+  # Exit 100 is the no-op sentinel: the caller can skip this PR without
+  # counting it against the MAX_PRS budget of actual reviews.
+  exit 100
 fi
 
 if [ -n "${EXISTING_MARKER_SHA:-}" ]; then
