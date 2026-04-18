@@ -24,10 +24,14 @@
 #   2. All other repos (priority 1)
 #   Within each priority tier, PRs are sorted oldest-first by createdAt.
 #
-# Filters out PRs that have already been reviewed (marked with
-# <!-- pr-review-agent v1 sha=... --> in comments).
+# Filters:
+#   --draft=false       — skip work-in-progress PRs
+#   --checks passing    — only include PRs where all CI checks are green;
+#                         failing or pending CI PRs are excluded here so they
+#                         never consume a review slot. review-one-pr.sh also
+#                         enforces this per-PR as a second layer of defence.
 #
-# Output: one PR URL per line on stdout. Drafts and already-reviewed PRs are excluded.
+# Output: one PR URL per line on stdout.
 
 set -euo pipefail
 
