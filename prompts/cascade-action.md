@@ -65,6 +65,17 @@ _Reviewed by the don-petry PR-review cascade ($ENGINE_LABEL). Reply with `@don-p
      1. `gh pr review "$PR_URL" --approve --body "$BODY"`
      2. Rebase if `mergeStateStatus` is `BEHIND`:
         `gh api -X PUT "repos/<owner>/<repo>/pulls/<num>/update-branch" -f expected_head_sha="$PR_HEAD_SHA"` (swallow errors)
+        Then poll until the branch is no longer `BEHIND` (up to 30 s, 5 s interval):
+        ```
+        REBASE_STATUS="BEHIND"
+        for i in 1 2 3 4 5 6; do
+          REBASE_STATUS=$(gh pr view "$PR_URL" --json mergeStateStatus --jq '.mergeStateStatus')
+          [ "$REBASE_STATUS" != "BEHIND" ] && break
+          sleep 5
+        done
+        ```
+        If `REBASE_STATUS` is still `BEHIND` after the poll, **skip steps 3 and 4** —
+        the next review cycle will retry once the branch has caught up.
      3. Auto-merge: `gh pr merge "$PR_URL" --auto --squash` (swallow errors)
      4. Remove `needs-human-review` label if present (swallow errors)
    - If `decision` is `escalate`:

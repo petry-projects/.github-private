@@ -27,15 +27,14 @@ Output `"escalate": false` (approve) if ALL of these are true:
    - Database migrations or schema (`migrations/`, `schema.*`, `*.sql`, Prisma, Alembic)
    - GitHub Actions workflows that handle secrets or use `pull_request_target`
    - Files matching: `**/auth/**`, `**/*secret*`, `**/*credential*`, `**/*crypto*`
-2. No CI checks are failing (look at `statusCheckRollup` in metadata).
-3. No unresolved review threads requesting changes.
-4. The diff does not contain obvious security anti-patterns:
+2. No unresolved review threads requesting changes.
+3. The diff does not contain obvious security anti-patterns:
    - SQL string concatenation, `eval`/`exec` on dynamic input, `shell=True`
      with user input, hardcoded secrets/passwords, disabled TLS verification,
      broad `except:` swallowing, `dangerouslySetInnerHTML`, etc.
-5. If there's a linked issue, the diff appears to address it (use your judgment).
-6. The PR is well-structured (clear title, reasonable scope).
-7. If `$PRIOR_REVIEW_BODY` is non-empty: the new commits appear to resolve
+4. If there's a linked issue, the diff appears to address it (use your judgment).
+5. The PR is well-structured (clear title, reasonable scope).
+6. If `$PRIOR_REVIEW_BODY` is non-empty: the new commits appear to resolve
    the findings from the prior review.
 
 Output `"escalate": true` if ANY of those checks fail. When in doubt, escalate.

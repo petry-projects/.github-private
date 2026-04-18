@@ -31,6 +31,7 @@ authored=$(gh search prs \
   --state open \
   --author "@me" \
   --draft=false \
+  --checks passing \
   --limit 100 \
   --json url \
   --jq '.[].url')
@@ -39,6 +40,7 @@ review_requested=$(gh search prs \
   --state open \
   --review-requested "@me" \
   --draft=false \
+  --checks passing \
   --limit 100 \
   --json url \
   --jq '.[].url')
