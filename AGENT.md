@@ -95,28 +95,54 @@ and **Copilot**.
 
 ## Setup
 
-### 1. Create a fine-grained PAT
+### Reviewer identity
 
-Go to <https://github.com/settings/personal-access-tokens/new>. Settings:
+The agent posts PR reviews and approvals using the `GH_PAT` secret. This
+token **must belong to a different GitHub account than the PR author** —
+GitHub blocks self-approval (a user cannot approve their own PR). If the
+same account both opens PRs (via Claude automation) and tries to approve
+them, every approval will silently fail.
 
-- **Resource owner:** `don-petry`
-- **Repository access:** "All repositories" (or pick the ones you want the
-  agent to act on).
-- **Repository permissions:**
-  - Contents: **Read**
-  - Issues: **Read and write** (needed to create labels and add `needs-human-review`)
-  - Metadata: **Read** (auto)
-  - Pull requests: **Read and write**
-- **Expiration:** as long as you're comfortable with. Set a calendar reminder
-  to rotate.
+The recommended pattern: create a dedicated **reviewer bot account**
+(e.g. `petry-review-bot`) whose token is stored as `GH_PAT`. PRs are
+authored by `don-petry`; the bot approves them.
 
-Save the token, then add it as a repo secret on `don-petry/self`:
+### 1. Create the reviewer bot account
+
+1. Sign out of GitHub (or use a private browser window).
+2. Go to <https://github.com/signup> and create a new account.
+   - **Username:** e.g. `petry-review-bot`
+   - **Email:** a dedicated alias works well (e.g. `you+petry-review-bot@gmail.com`)
+3. Verify the email address.
+4. Sign back in as `don-petry`.
+5. Go to **github.com/organizations/petry-projects/settings/members** →
+   **Invite member** → enter `petry-review-bot` → Role: **Member**.
+6. Accept the invite from the bot account.
+
+### 2. Create a classic PAT for the bot
+
+A classic PAT is required — fine-grained PATs cannot satisfy the GitHub
+rulesets bypass that org-admin approval requires.
+
+1. Sign in as `petry-review-bot`.
+2. Go to **Settings → Developer settings → Personal access tokens →
+   Tokens (classic)** → **Generate new token (classic)**.
+3. Settings:
+   - **Note:** `pr-review-agent`
+   - **Expiration:** 1 year (set a calendar reminder to rotate)
+   - **Scopes:** ✅ `repo`
+4. Generate and copy the token immediately.
+5. Sign back in as `don-petry` and store the token:
 
 ```
 gh secret set GH_PAT --repo don-petry/self
 ```
 
-### 2. Add your LLM engine auth token
+> **Branch protection / rulesets:** add `petry-review-bot` as an allowed
+> approver on each protected repo. In the repo ruleset or branch protection
+> settings, ensure the bot is not excluded from the reviewer pool.
+
+### 3. Add your LLM engine auth token
 
 #### Claude engine (default)
 
@@ -140,7 +166,7 @@ Create a GitHub PAT with Copilot scope. Store as a repo secret:
 gh secret set COPILOT_GITHUB_TOKEN --repo don-petry/self
 ```
 
-### 3. Choose your engine
+### 4. Choose your engine
 
 ```
 # Use Copilot (GPT models):
@@ -150,7 +176,7 @@ gh variable set REVIEW_ENGINE --body copilot --repo don-petry/self
 gh variable set REVIEW_ENGINE --body claude --repo don-petry/self
 ```
 
-### 4. Test with a dry run
+### 5. Test with a dry run
 
 ```
 gh workflow run pr-review.yml --repo don-petry/self -f dry_run=true
