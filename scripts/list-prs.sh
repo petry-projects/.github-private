@@ -26,7 +26,7 @@
 #
 # Filters:
 #   --draft=false       — skip work-in-progress PRs
-#   --checks passing    — only include PRs where all CI checks are green;
+#   --checks success    — only include PRs where all CI checks are green;
 #                         failing or pending CI PRs are excluded here so they
 #                         never consume a review slot. review-one-pr.sh also
 #                         enforces this per-PR as a second layer of defence.
