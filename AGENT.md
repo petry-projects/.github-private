@@ -135,7 +135,7 @@ rulesets bypass that org-admin approval requires.
 5. Sign back in as `don-petry` and store the token:
 
 ```
-gh secret set GH_PAT --repo don-petry/self
+gh secret set GH_PAT --repo don-petry/pr-review-agent
 ```
 
 > **Branch protection / rulesets:** add `petry-review-bot` as an allowed
@@ -155,7 +155,7 @@ claude setup-token
 Store as a repo secret:
 
 ```
-gh secret set CLAUDE_CODE_OAUTH_TOKEN --repo don-petry/self
+gh secret set CLAUDE_CODE_OAUTH_TOKEN --repo don-petry/pr-review-agent
 ```
 
 #### Copilot engine
@@ -163,30 +163,30 @@ gh secret set CLAUDE_CODE_OAUTH_TOKEN --repo don-petry/self
 Create a GitHub PAT with Copilot scope. Store as a repo secret:
 
 ```
-gh secret set COPILOT_GITHUB_TOKEN --repo don-petry/self
+gh secret set COPILOT_GITHUB_TOKEN --repo don-petry/pr-review-agent
 ```
 
 ### 4. Choose your engine
 
 ```
 # Use Copilot (GPT models):
-gh variable set REVIEW_ENGINE --body copilot --repo don-petry/self
+gh variable set REVIEW_ENGINE --body copilot --repo don-petry/pr-review-agent
 
 # Use Claude (default — no variable needed, or set explicitly):
-gh variable set REVIEW_ENGINE --body claude --repo don-petry/self
+gh variable set REVIEW_ENGINE --body claude --repo don-petry/pr-review-agent
 ```
 
 ### 5. Test with a dry run
 
 ```
-gh workflow run pr-review.yml --repo don-petry/self -f dry_run=true
-gh run watch --repo don-petry/self
+gh workflow run pr-review.yml --repo don-petry/pr-review-agent -f dry_run=true
+gh run watch --repo don-petry/pr-review-agent
 ```
 
 To review a single PR ad-hoc:
 
 ```
-gh workflow run pr-review.yml --repo don-petry/self \
+gh workflow run pr-review.yml --repo don-petry/pr-review-agent \
   -f pr_url=https://github.com/owner/repo/pull/123 \
   -f dry_run=true
 ```
@@ -198,19 +198,19 @@ but never posts reviews, comments, labels, or reviewer requests. To enable
 live mode:
 
 ```
-gh variable set LIVE_MODE --body true --repo don-petry/self
+gh variable set LIVE_MODE --body true --repo don-petry/pr-review-agent
 ```
 
 To go back to dry-run:
 
 ```
-gh variable delete LIVE_MODE --repo don-petry/self
+gh variable delete LIVE_MODE --repo don-petry/pr-review-agent
 ```
 
 A specific run can always be forced either way via the `dry_run` workflow input:
 
 ```
-gh workflow run pr-review.yml --repo don-petry/self -f dry_run=false
+gh workflow run pr-review.yml --repo don-petry/pr-review-agent -f dry_run=false
 ```
 
 ## Tuning
@@ -224,15 +224,15 @@ gh workflow run pr-review.yml --repo don-petry/self -f dry_run=false
   PRs from a specific org, or to exclude certain repos).
 - **AI delegation** — set `DELEGATION_ORGS` to a comma-separated list of
   GitHub orgs where AI-assisted fix delegation is enabled:
-  `gh variable set DELEGATION_ORGS --body "petry-projects,don-petry" --repo don-petry/self`
+  `gh variable set DELEGATION_ORGS --body "petry-projects,don-petry" --repo don-petry/pr-review-agent`
 - **Max review cycles** — how many times the agent delegates to AI before
   escalating to human (default 3):
-  `gh variable set MAX_REVIEW_CYCLES --body 5 --repo don-petry/self`
+  `gh variable set MAX_REVIEW_CYCLES --body 5 --repo don-petry/pr-review-agent`
 - **Models** — change model IDs in `scripts/engine.sh`. The cascade tiers
   map to: triage → deep → audit → action.
 - **Max PRs per run** — defaults to 10 per cron tick to stay within the 60-min
   job timeout. Override:
-  `gh variable set MAX_PRS --body 15 --repo don-petry/self`
+  `gh variable set MAX_PRS --body 15 --repo don-petry/pr-review-agent`
 
 ## Architecture
 
