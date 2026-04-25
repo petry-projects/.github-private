@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Enumerate open, non-draft PRs the agent should consider reviewing.
 #
-# Two buckets, deduped:
-#   1. PRs authored by @me across all repos (self-review).
+# Three buckets, deduped:
+#   1. PRs authored by @me across all repos (self-review) — includes those
+#      requiring review (e.g., compliance fixes). CI validation happens
+#      per-PR in review-one-pr.sh as a second layer of defence.
 #   2. PRs where @me is a requested reviewer across all repos.
 #
 # Filters:
@@ -27,15 +29,16 @@
 
 set -euo pipefail
 
+# PRs authored by @me (no --checks filter to include those awaiting review)
 authored=$(gh search prs \
   --state open \
   --author "@me" \
   --draft=false \
-  --checks success \
   --limit 100 \
   --json url \
   --jq '.[].url')
 
+# PRs where @me is requested as reviewer (require passing checks)
 review_requested=$(gh search prs \
   --state open \
   --review-requested "@me" \
