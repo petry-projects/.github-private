@@ -12,11 +12,13 @@ on:
 jobs:
   fix:
     runs-on: ubuntu-latest
-    env:
-      GH_TOKEN: ${{ secrets.GH_PAT }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GH_PAT }}
 
       - name: Fix stuck PRs
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
           bash scripts/fix-stuck-prs.sh "${{ inputs.dry_run }}"
