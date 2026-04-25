@@ -217,27 +217,33 @@ This tells the user exactly where to look without fabricating listings.
 
 ### Craigslist
 
-Craigslist search pages use simple HTML and are reliably WebFetchable. Individual listing pages also work. However, **listings expire quickly** — always use the exact URL returned by search, never construct or guess a listing URL.
+Craigslist search pages are **not reliably WebFetchable** — they often return empty or JS-gated results. Use the WebSearch fallback as the primary approach:
 
-**Search URL pattern:**
+**Primary approach — WebSearch:**
 ```
-https://huntsville.craigslist.org/search/cta?query={make}+{model}&max_price={MAX_PRICE}&auto_miles_max={MAX_MILES}
+site:craigslist.org "{make} {model}" "{year_min}" OR "{year_max}" "{city}" cars for sale
 ```
 
-Regional Craigslist sites covering the 35243 area (use all of these):
+Examples:
+```
+site:craigslist.org "honda civic" "2015" OR "2016" OR "2017" "birmingham" cars for sale
+site:craigslist.org "toyota camry" "2013" OR "2014" OR "2015" alabama cars for sale
+```
+
+WebSearch returns indexed Craigslist listing URLs. WebFetch those individual listing pages (e.g., `bham.craigslist.org/cto/d/{slug}/{id}.html`) — individual pages are plain HTML and parse well.
+
+**Fallback — direct search URL (try if WebSearch returns too few results):**
+```
+https://bham.craigslist.org/search/cta?query={make}+{model}&max_price={MAX_PRICE}&auto_miles_max={MAX_ODOMETER}&sort=priceasc
+```
+
+Regional sites covering the 35243 area:
 - `https://bham.craigslist.org/search/cta` — Birmingham (primary)
 - `https://huntsville.craigslist.org/search/cta` — Huntsville
 - `https://chattanooga.craigslist.org/search/cta` — Chattanooga
 - `https://atlanta.craigslist.org/search/cta` — Atlanta
 
-Full example URL:
-```
-https://bham.craigslist.org/search/cta?query=toyota+camry&max_price=6000&auto_miles_max=100000&sort=priceasc
-```
-
-WebFetch the search results page — Craigslist HTML is parseable and returns real listing data including title, price, mileage (when listed), and the direct listing URL (`/cto/d/...`). Extract individual listing URLs and WebFetch those for full details.
-
-**Link rule:** Use the exact `bham.craigslist.org/cto/d/{slug}/{id}.html` URL from the page. Never use `craigslist.org` without the full listing path.
+**Link rule:** Use only the exact `bham.craigslist.org/cto/d/{slug}/{id}.html` URL scraped from the page. Never construct or guess a listing URL — Craigslist IDs are not predictable and a wrong ID is a 404.
 
 ### WebSearch Fallback (any source)
 
@@ -255,6 +261,7 @@ Then WebFetch individual listing URLs surfaced by the search results.
 
 For each listing found, extract:
 - `date_found` — today's date
+- `date_posted` — the date the listing was originally posted (shown on the listing page as "posted" or "listed on")
 - `make`, `model`, `year`, `trim`
 - `miles` — current odometer
 - `price` — asking price in USD
@@ -264,6 +271,8 @@ For each listing found, extract:
 - `notes` — any flags (rental history, accidents, new tires, warranty, etc.)
 
 If a field is not found, note it as "—" — it can be filled during deep-dive.
+
+**Staleness filter:** If `date_posted` is more than 21 days before today, **skip the listing entirely** — it has almost certainly sold or the seller is unresponsive. If `date_posted` cannot be determined, include the listing but note "Post date unknown" in Notes.
 
 ### Parallel Search Strategy
 
@@ -312,11 +321,11 @@ Present reliability cards first, then the ranked table:
 
 ─── RANKED LISTINGS (by CPM) ───────────────────────────────────
 
-| # | Make/Model | Year | Trim | Miles | Price | CPM | Life% | Source | Location | Dealer | Flags | Link |
-|---|-----------|------|------|-------|-------|-----|-------|--------|----------|--------|-------|------|
-| 1 | Honda Civic | 2021 | EX-L | 42,000 | $21,500 | $0.103 | 17% | AutoTrader | Birmingham, AL | Dealer | — | [link] |
-| 2 | Toyota Camry | 2019 | XLE | 68,000 | $21,000 | $0.091 | 23% | CarGurus | Atlanta, GA | CarMax | — | [link] |
-| 3 | Honda Accord | 2018 | Sport | 89,000 | $19,500 | $0.121 | 36% | FB Mkt | Hoover, AL | Private 🏠 | ⚠️ CAUTION YEAR | [link] |
+| # | Make/Model | Year | Trim | Miles | Price | CPM | Life% | Posted | Source | Location | Dealer | Flags | Link |
+|---|-----------|------|------|-------|-------|-----|-------|--------|--------|----------|--------|-------|------|
+| 1 | Honda Civic | 2021 | EX-L | 42,000 | $21,500 | $0.103 | 17% | Apr 20 | AutoTrader | Birmingham, AL | Dealer | — | [link] |
+| 2 | Toyota Camry | 2019 | XLE | 68,000 | $21,000 | $0.091 | 23% | Apr 18 | CarGurus | Atlanta, GA | CarMax | — | [link] |
+| 3 | Honda Accord | 2018 | Sport | 89,000 | $19,500 | $0.121 | 36% | Apr 10 | FB Mkt | Hoover, AL | Private 🏠 | ⚠️ CAUTION YEAR | [link] |
 ...
 
 ⚠️  FLAGS:
@@ -435,10 +444,11 @@ When confirmed, create a new Google Sheet via the Drive MCP using CSV→Sheets a
 ### Column Order (match original template exactly)
 
 ```
-Date | Make | Model | Year | Package | Miles | Cost | CPM | Life | Location | Dealer | Link | Notes
+Date | Make | Model | Year | Package | Miles | Cost | CPM | Life | Posted | Location | Dealer | Link | Notes
 ```
 
-- **Date** — `DD Mon YYYY` format (e.g., `25 Apr 2026`)
+- **Date** — `DD Mon YYYY` format (e.g., `25 Apr 2026`) — date the skill ran, not the listing date
+- **Posted** — date the listing was first posted (e.g., `Apr 20`) — omit year if current year; use `Unknown` if not found
 - **Miles** — numeric, no commas (e.g., `53000`)
 - **Cost** — formatted as `$4750`
 - **CPM** — formatted as `$0.019` (3 decimal places)
