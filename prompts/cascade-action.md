@@ -45,19 +45,25 @@ fi
 MERGE_STATE=$(gh pr view "$PR_URL" --json mergeStateStatus --jq '.mergeStateStatus')
 ```
 
-4. Compose the review body using this template:
+4. Compose the review body:
+```bash
+# Extract data from verdict JSON
+FINDINGS_JSON=$(jq -c '.findings // []' "$FINAL_RESULT")
+HAS_AGREEMENT=$(jq 'has("agreement")' "$FINAL_RESULT")
+AGREEMENT=$(jq -r '.agreement // ""' "$FINAL_RESULT")
 
-```
-<!-- pr-review-agent v1 sha=<PR_HEAD_SHA> decision=<approved|escalated> risk=<LOW|MEDIUM|HIGH> -->
+# Build the body
+cat > /tmp/body-parts.txt <<BODY_TEMPLATE
+<!-- pr-review-agent v1 sha=$PR_HEAD_SHA decision=$DECISION risk=$RISK -->
 
-## Automated review — <APPROVED|NEEDS HUMAN REVIEW>
+## Automated review — $([ "$DECISION" = "approve" ] && echo "APPROVED ✓" || echo "NEEDS HUMAN REVIEW")
 
-**Risk:** <risk>
-**Reviewed commit:** `<SHA>`
-**Cascade:** triage → `$FINAL_TIER` (see `$ENGINE_LABEL` for models)
+**Risk:** $RISK
+**Reviewed commit:** \`$PR_HEAD_SHA\`
+**Cascade:** triage → $FINAL_TIER (see $ENGINE_LABEL for models)
 
 ### Summary
-<from the verdict's summary>
+$SUMMARY
 
 ### Cross-engine agreement (if deep+duck)
 <If tier is deep+duck and agreement field exists, include this section>
@@ -65,15 +71,30 @@ MERGE_STATE=$(gh pr view "$PR_URL" --json mergeStateStatus --jq '.mergeStateStat
 ### Cross-engine agreement (if deep+duck)
 <If tier is deep+duck and agreement field exists, include this section>
 
-### Findings
-<from the verdict's findings, grouped by severity. If findings have a "sources"
-array, note which engine(s) flagged each finding.>
+# Add cross-engine agreement section if deep+duck
+if [ "$FINAL_TIER" = "deep+duck" ] && [ "$HAS_AGREEMENT" = "true" ]; then
+  echo "### Cross-engine agreement" >> /tmp/body-parts.txt
+  echo "$AGREEMENT agreement between primary and rubber-duck reviewers." >> /tmp/body-parts.txt
+  echo "" >> /tmp/body-parts.txt
+fi
 
-### CI status
-<from the verdict or from PR metadata>
+# Add findings section
+if [ "$(echo "$FINDINGS_JSON" | jq 'length')" -gt 0 ]; then
+  echo "### Findings" >> /tmp/body-parts.txt
+  echo "$FINDINGS_JSON" | jq -r '.[] | "- **[\(.severity)]** \(.message) (\(.file // "N/A"):\(.line // "N/A"))"' >> /tmp/body-parts.txt
+  echo "" >> /tmp/body-parts.txt
+fi
+
+# Add footer
+cat >> /tmp/body-parts.txt <<FOOTER_END
 
 ---
-_Reviewed by the don-petry PR-review cascade ($ENGINE_LABEL). Reply with `@don-petry` if you need a human._
+_Reviewed by the don-petry PR-review cascade ($ENGINE_LABEL). Reply with \`@don-petry\` if you need a human._
+FOOTER_END
+
+# Read entire body for next steps
+BODY=$(cat /tmp/body-parts.txt)
+rm /tmp/body-parts.txt
 ```
 
 5. **Act** — Execute these bash commands:
@@ -173,8 +194,9 @@ If `decision` is `"escalate"`:
 ```bash
 # Check if AI delegation is enabled and we haven't exceeded cycle limit
 if [ "$AI_DELEGATION_ENABLED" = "true" ] && [ "$REVIEW_CYCLE" -lt "$MAX_REVIEW_CYCLES" ] && [ "$RISK" != "HIGH" ]; then
-  # Post fix-request comment (NOT a review)
-  gh pr comment "$PR_URL" --body "$(cat <<'COMMENT'
+  # Post fix-request comment (NOT a review) — write to file to handle variable expansion
+  COMMENT_FILE="/tmp/pr-comment-$$.txt"
+  cat > "$COMMENT_FILE" <<COMMENT_END
 ## Review — fix requested (cycle $((REVIEW_CYCLE + 1))/$MAX_REVIEW_CYCLES)
 
 The automated review identified the following issues. Please address each one:
@@ -190,8 +212,10 @@ The automated review identified the following issues. Please address each one:
 4. Do NOT modify files unrelated to the findings above
 
 _The review cascade will automatically re-review after new commits are pushed._
-COMMENT
-)"
+COMMENT_END
+
+  gh pr comment "$PR_URL" --body "$(cat "$COMMENT_FILE")" || true
+  rm -f "$COMMENT_FILE"
 else
   # Escalate to human: add label and request review
   gh pr edit "$PR_URL" --add-label needs-human-review 2>/dev/null || true
