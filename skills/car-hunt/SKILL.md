@@ -323,13 +323,21 @@ Log all disqualified listings in a separate "Disqualified" section at the end of
 
 ### Parallel Search Strategy
 
-Launch all make/model × source searches simultaneously. Aim for **25+ listings per run**. If results are sparse, widen radius or drop year floor by 1–2 years.
+Launch all make/model × source searches simultaneously. Target **50+ raw candidates** before filtering — after disqualification and staleness filtering, 15 is not enough survivors for a useful comparison.
 
 **Exhaustive coverage is mandatory.** Do NOT stop at the first page of results, declare success after a few listings, or give up on a source after one failure. For each source:
-- Paginate all result pages until no more listings exist
+- Paginate all result pages until no more listings exist (Craigslist: `&s=120`, `&s=240`, etc.)
 - If a fetch fails, retry once then fall back to WebSearch — but always report the fallback
 - Every in-scope vehicle must be evaluated; none may be silently skipped
 - Note at the end of Step 2 exactly how many pages/results were checked per source
+
+**Batch listing-page fetches efficiently.** After extracting all URLs from a search results page, do NOT fetch each listing page one at a time sequentially. Instead:
+1. Extract ALL listing URLs from a search page in a single read
+2. Score candidates based on the brief preview data (price, mileage, year) shown in the search results — this is enough to disqualify ~60% of listings without fetching their pages
+3. Only WebFetch individual listing pages for candidates that pass the price/mileage preview filter
+4. This keeps total fetches manageable while still covering all in-scope listings
+
+**Why results are often ~15:** A single Craigslist search page has 120 results but only a fraction pass price/mileage/year filters. Working through all 4 regional sites × 3 models = 12 searches, each potentially paginating, is the only way to find 50+ qualifying candidates. Do not stop early.
 
 ---
 
