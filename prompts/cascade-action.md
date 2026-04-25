@@ -21,12 +21,30 @@ read that verdict and post the review to GitHub.
 
 ## Steps
 
-1. Read the JSON at `$FINAL_RESULT`. Extract `decision`, `risk`, `findings`,
-   `summary`, and `reason_codes`.
-2. Fetch `mergeStateStatus` from the PR:
-   `gh pr view "$PR_URL" --json mergeStateStatus --jq '.mergeStateStatus'`
-3. **Idempotency check**: look for our marker at `$PR_HEAD_SHA` in existing
-   reviews/comments (same as synthesize.md step 5). If found → noop.
+1. Read the JSON at `$FINAL_RESULT` and extract variables:
+```bash
+DECISION=$(jq -r '.decision' "$FINAL_RESULT")
+RISK=$(jq -r '.risk' "$FINAL_RESULT")
+SUMMARY=$(jq -r '.summary' "$FINAL_RESULT")
+FINDINGS=$(jq -c '.findings // []' "$FINAL_RESULT")
+REASON_CODES=$(jq -r '.reason_codes // [] | join(", ")' "$FINAL_RESULT")
+```
+
+2. **Idempotency check**: look for our marker at `$PR_HEAD_SHA` in existing
+   reviews/comments. If found → skip to step 6 (output JSON and exit).
+```bash
+EXISTING_MARKER=$(gh pr view "$PR_URL" --json reviews,comments --jq '((.reviews // []) + (.comments // [])) | .[].body | select(. != null)' 2>/dev/null | grep -c "pr-review-agent v1 sha=$PR_HEAD_SHA" || echo 0)
+if [ "$EXISTING_MARKER" -gt 0 ]; then
+  echo "Already reviewed at $PR_HEAD_SHA, skipping..."
+  # Jump to step 6
+fi
+```
+
+3. Fetch `mergeStateStatus` from the PR (needed for rebase check):
+```bash
+MERGE_STATE=$(gh pr view "$PR_URL" --json mergeStateStatus --jq '.mergeStateStatus')
+```
+
 4. Compose the review body using this template:
 
 ```
@@ -58,38 +76,36 @@ array, note which engine(s) flagged each finding.>
 _Reviewed by the don-petry PR-review cascade ($ENGINE_LABEL). Reply with `@don-petry` if you need a human._
 ```
 
-5. **Act** (same logic as synthesize.md):
-   - If `$DRY_RUN` is `true`: print `--- WOULD POST ---`, the body, and
-     planned actions. Exit.
-   - If `decision` is `approve`:
-     1. `gh pr review "$PR_URL" --approve --body "$BODY"`
-     2. Rebase if `mergeStateStatus` is `BEHIND`:
-        `gh api -X PUT "repos/<owner>/<repo>/pulls/<num>/update-branch" -f expected_head_sha="$PR_HEAD_SHA"` (swallow errors)
-        Then poll until the branch is no longer `BEHIND` (up to 30 s, 5 s interval):
-        ```
-        REBASE_STATUS="BEHIND"
-        for i in 1 2 3 4 5 6; do
-          REBASE_STATUS=$(gh pr view "$PR_URL" --json mergeStateStatus --jq '.mergeStateStatus')
-          [ "$REBASE_STATUS" != "BEHIND" ] && break
-          sleep 5
-        done
-        ```
-        If `REBASE_STATUS` is still `BEHIND` after the poll, **skip steps 3 and 4** —
-        the next review cycle will retry once the branch has caught up.
-     3. Auto-merge: `gh pr merge "$PR_URL" --auto --squash` (swallow errors)
-     4. Remove `needs-human-review` label if present (swallow errors)
-   - If `decision` is `escalate`:
-     - If `$AI_DELEGATION_ENABLED` is `true` AND `$REVIEW_CYCLE` < `$MAX_REVIEW_CYCLES`
-       AND `risk` is NOT `HIGH`:
-       Post fix-request issue comment (NOT a review):
-       ```
-       ## Review — fix requested (cycle <REVIEW_CYCLE + 1>/<MAX_REVIEW_CYCLES>)
+5. **Act** — Execute these bash commands:
 
-       The automated review identified the following issues. Please address each one:
+If `$DRY_RUN` is `"true"`:
+```bash
+echo "--- WOULD POST REVIEW ---"
+echo "Decision: $DECISION"
+echo "Risk: $RISK"
+echo "Body:"
+echo "$BODY"
+echo "---"
+echo "Would then:"
+if [ "$DECISION" = "approve" ]; then
+  echo "  1. gh pr review \"$PR_URL\" --approve --body \"\$BODY\""
+  echo "  2. Check mergeStateStatus and rebase if BEHIND"
+  echo "  3. gh pr merge \"$PR_URL\" --auto --squash"
+  echo "  4. Remove needs-human-review label"
+else
+  echo "  Escalate with fix-request comment or needs-human-review label"
+fi
+exit 0
+```
 
-       ### Findings to fix
-       <for each finding with severity minor/major/critical:>
-       - **[<severity>]** `<file>:<line>` — <message>
+If `decision` is `"approve"`:
+```bash
+# Step 1: Post the approval review (CRITICAL: use --approve flag)
+# Use a temp file to handle body with newlines and special chars safely
+BODY_FILE="/tmp/pr-review-body-$$.txt"
+cat > "$BODY_FILE" <<'BODY_END'
+$BODY
+BODY_END
 
 If `$DOWNSTREAM_IMPACT_FILE` is set, the file exists, and its contents are not the
 literal `(none)`, insert a **Downstream impact** section before Findings so the
@@ -125,8 +141,66 @@ jq -n \
   > "$OUTPUT_FILE"
 ```
 
-       _The review cascade will automatically re-review after new commits are pushed._
-       ```
-     - Otherwise: add `needs-human-review` label, re-request don-petry.
-6. Print status JSON:
-   `{"pr":"<url>","sha":"<sha>","risk":"<r>","decision":"<d>","tier":"<final_tier>","delegated_to":"ai|human|none","posted":true|false}`
+# Step 2: Check if behind and rebase if needed
+MERGE_STATE=$(gh pr view "$PR_URL" --json mergeStateStatus --jq '.mergeStateStatus')
+if [ "$MERGE_STATE" = "BEHIND" ]; then
+  OWNER_REPO=$(echo "$PR_URL" | sed -E 's|.*/([^/]+)/([^/]+)/pull/.*|\1/\2|')
+  PR_NUM=$(echo "$PR_URL" | sed -E 's|.*/([0-9]+)$|\1|')
+  gh api -X PUT "repos/$OWNER_REPO/pulls/$PR_NUM/update-branch" -f expected_head_sha="$PR_HEAD_SHA" 2>/dev/null || true
+  
+  # Poll for rebase completion (up to 30s)
+  for i in 1 2 3 4 5 6; do
+    MERGE_STATE=$(gh pr view "$PR_URL" --json mergeStateStatus --jq '.mergeStateStatus')
+    [ "$MERGE_STATE" != "BEHIND" ] && break
+    sleep 5
+  done
+  
+  # If still BEHIND, skip auto-merge (will retry next cycle)
+  if [ "$MERGE_STATE" = "BEHIND" ]; then
+    echo "PR still BEHIND after rebase wait, skipping auto-merge"
+    exit 0
+  fi
+fi
+
+# Step 3: Enable auto-merge (CRITICAL: this triggers the merge once all checks pass)
+gh pr merge "$PR_URL" --auto --squash 2>/dev/null || true
+
+# Step 4: Clean up label
+gh pr edit "$PR_URL" --remove-label needs-human-review 2>/dev/null || true
+```
+
+If `decision` is `"escalate"`:
+```bash
+# Check if AI delegation is enabled and we haven't exceeded cycle limit
+if [ "$AI_DELEGATION_ENABLED" = "true" ] && [ "$REVIEW_CYCLE" -lt "$MAX_REVIEW_CYCLES" ] && [ "$RISK" != "HIGH" ]; then
+  # Post fix-request comment (NOT a review)
+  gh pr comment "$PR_URL" --body "$(cat <<'COMMENT'
+## Review — fix requested (cycle $((REVIEW_CYCLE + 1))/$MAX_REVIEW_CYCLES)
+
+The automated review identified the following issues. Please address each one:
+
+### Findings to fix
+<for each finding with severity minor/major/critical:>
+- **[<severity>]** \`<file>:<line>\` — <message>
+
+### Additional tasks
+1. Resolve all unresolved review thread comments from other reviewers
+2. Ensure all CI checks pass after your changes
+3. Rebase on the target branch if behind
+4. Do NOT modify files unrelated to the findings above
+
+_The review cascade will automatically re-review after new commits are pushed._
+COMMENT
+)"
+else
+  # Escalate to human: add label and request review
+  gh pr edit "$PR_URL" --add-label needs-human-review 2>/dev/null || true
+  gh pr request-review "$PR_URL" --user don-petry 2>/dev/null || true
+fi
+```
+6. Print status JSON (always, even in dry-run):
+```bash
+echo "{\"pr\":\"$PR_URL\",\"sha\":\"$PR_HEAD_SHA\",\"risk\":\"$RISK\",\"decision\":\"$DECISION\",\"tier\":\"$FINAL_TIER\",\"delegated_to\":\"$([ \"$AI_DELEGATION_ENABLED\" = \"true\" ] && echo 'ai' || echo 'human')\",\"posted\":true}"
+```
+
+Then exit with code 0.
