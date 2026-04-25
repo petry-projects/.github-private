@@ -1,0 +1,22 @@
+name: Fix Stuck PRs
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run (true) or apply fixes (false)"
+        required: false
+        default: "true"
+        type: string
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GH_PAT }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fix stuck PRs
+        run: |
+          bash scripts/fix-stuck-prs.sh "${{ inputs.dry_run }}"
