@@ -70,18 +70,20 @@ Otherwise ask (combine into one prompt):
 
 > "Let's set up your search. Answer any you know:
 > 1. Which makes/models? (default: Civic, Accord, CR-V, Camry, Corolla, RAV4)
-> 2. Year range? (e.g., 2017–2023)
-> 3. Max price? (e.g., $25,000)
-> 4. Your zip code and search radius? (e.g., 35242, 200 miles)
-> 5. Max miles? (optional — leave blank to not filter)
-> 6. Min trim? (optional — e.g., 'EX or above')"
+> 2. Year range? (e.g., 2002–2023)
+> 3. Max price? (e.g., $10,000)
+> 4. Your zip code? (e.g., 35242)
+> 5. Search radius — how many miles from your zip to search? (e.g., 200)
+> 6. Max odometer — the highest mileage you'll consider on the car itself? (e.g., 150,000 — leave blank to include all)
+> 7. Min trim? (optional — e.g., 'EX or above')"
 
 Store as:
 - `MAKES_MODELS` — list of (make, model) pairs
 - `YEAR_MIN`, `YEAR_MAX`
 - `MAX_PRICE`
-- `ZIP`, `RADIUS`
-- `MAX_MILES` (optional)
+- `ZIP`
+- `RADIUS` — search radius in miles from zip (how far away the car can be)
+- `MAX_ODOMETER` — max miles on the car's odometer (optional; defaults to expected lifetime per model)
 - `MIN_TRIM` (optional)
 
 ---
@@ -495,12 +497,13 @@ When running in scheduled/automated mode:
 
 Default search parameters when running unattended (update these after each interactive session):
 ```
-MAKES_MODELS: Civic, Accord, CR-V, Camry, Corolla, RAV4
-ZIP:          35242
-RADIUS:       200
-MAX_PRICE:    (set by user)
-YEAR_MIN:     (set by user)
-YEAR_MAX:     current year
+MAKES_MODELS:   Civic, Accord, CR-V, Camry, Corolla, RAV4
+ZIP:            35242
+RADIUS:         (search radius in miles — set by user)
+MAX_PRICE:      (set by user)
+YEAR_MIN:       (set by user)
+YEAR_MAX:       current year
+MAX_ODOMETER:   (max miles on the car — set by user; not the search radius)
 ```
 
 ---
