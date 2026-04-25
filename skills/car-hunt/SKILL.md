@@ -157,15 +157,26 @@ If research contradicts the static table (e.g., a year previously flagged is now
 
 Search AutoTrader, CarGurus, and Facebook Marketplace in parallel for each make/model combination.
 
-### AutoTrader URL Pattern
+### AutoTrader
+
+AutoTrader search result pages are JavaScript-rendered and return no usable listing data via WebFetch. **Do not attempt to WebFetch AutoTrader search pages** — always use the WebSearch approach below.
+
+**Reliable approach — WebSearch to find individual listing pages:**
 
 ```
-https://www.autotrader.com/cars-for-sale/used-cars/{make}/{model}/?zip={ZIP}&radius={RADIUS}&maxPrice={MAX_PRICE}&startYear={YEAR_MIN}&endYear={YEAR_MAX}&numRecords=25
+WebSearch: site:autotrader.com used {year_min}-{year_max} {make} {model} under ${max_price} Birmingham OR Alabama OR "{nearest city}"
 ```
 
 Examples:
-- `https://www.autotrader.com/cars-for-sale/used-cars/honda/civic/?zip=35242&radius=200&maxPrice=25000&startYear=2017&endYear=2023&numRecords=25`
-- `https://www.autotrader.com/cars-for-sale/used-cars/toyota/camry/?zip=35242&radius=200&maxPrice=25000&startYear=2017&endYear=2023&numRecords=25`
+```
+site:autotrader.com used 2002-2015 honda accord under $6000 Birmingham Alabama
+site:autotrader.com used 2002-2015 toyota camry under $6000 Alabama
+site:autotrader.com used 2002-2015 honda civic 100000 miles Birmingham
+```
+
+From WebSearch results, collect individual AutoTrader listing URLs (format: `autotrader.com/cars-for-sale/vehicledetails.xhtml?listingId=...`). Then WebFetch each listing page — individual pages have price, mileage, trim, and dealer info embedded in the HTML. Extract those fields.
+
+**Run 2–3 WebSearch queries per model** (vary location terms and year ranges) to maximize coverage. Individual listing pages are far more reliable than search results pages.
 
 ### CarGurus URL Pattern
 
@@ -179,26 +190,28 @@ Examples:
 
 ### Facebook Marketplace
 
-Facebook Marketplace is login-gated and JS-heavy, so direct WebFetch is unreliable. Use this fallback approach:
+Facebook Marketplace is login-gated. **Individual listing URLs (`facebook.com/marketplace/item/...`) are not publicly accessible** — WebFetch will hit a login wall and return no data. Never put a generic `facebook.com/marketplace` placeholder URL in the output. The link column must contain either a real item URL or "Search manually."
 
-**Search query approach (preferred):**
-```
-WebSearch: site:facebook.com/marketplace "{make} {model}" "{year_min}" OR "{year_max}" "{city or state from ZIP}"
-```
+**What actually works:**
 
+**Option A — Google indexes some public listings:**
+```
+WebSearch: site:facebook.com/marketplace/item {make} {model} {year_range} {city}
+```
 Example:
 ```
-site:facebook.com/marketplace "Honda Civic" "2019" OR "2020" OR "2021" "Birmingham" OR "Alabama"
+site:facebook.com/marketplace/item "Toyota Camry" "2012" OR "2013" Birmingham Alabama
 ```
+If real `facebook.com/marketplace/item/{id}` URLs appear in search results, record them. Attempt WebFetch — if it returns listing data, extract it. If it redirects to a login page, still record the URL in the Link column so the user can open it themselves.
 
-**Direct URL attempt (try first — sometimes works):**
+**Option B — Provide the search URL for manual browsing:**
+If Google returns no results, include one row in the output table:
 ```
-https://www.facebook.com/marketplace/category/vehicles?make={MAKE}&model={MODEL}&minYear={YEAR_MIN}&maxYear={YEAR_MAX}&maxPrice={MAX_PRICE}&exact=false
+| — | Facebook Marketplace | — | — | — | — | — | — | — | {city} | — | https://www.facebook.com/marketplace/{city_id}/vehicles?minYear={YEAR_MIN}&maxPrice={MAX_PRICE} | Manual search required — FB Marketplace not publicly scrapeable |
 ```
+This tells the user exactly where to look without fabricating listings.
 
-**If both fail:** Note "Facebook Marketplace: unable to scrape — check manually at facebook.com/marketplace/vehicles" and include this reminder in the output so the user knows to look there too.
-
-**Why FB Marketplace matters:** Private-party listings appear here that aren't on AutoTrader or CarGurus. Private sellers often price below dealer, which can significantly improve CPM. Flag all FB Marketplace results as "Private" in the dealer column.
+**Why FB Marketplace matters:** Private-party listings often appear only here at prices well below dealer, with CPM 20–40% better than comparable dealer listings. Always attempt it and always report the outcome honestly.
 
 ### WebSearch Fallback (any source)
 
@@ -383,16 +396,64 @@ Present deep-dive report:
 
 ---
 
-## Step 6: Track to Google Sheet (Optional)
+## Step 6: Export to Google Sheet
 
-If the user wants to log candidates to their existing vehicle spreadsheet (ID: `1LwsZW8_nGUUJUK2kA6Na1C8dfSnNcZq0171_t2JK4eg`), ask:
+After presenting results, always offer to export:
 
-> "Want me to append these candidates to your vehicle spreadsheet on Google Drive?"
+> "Want me to save these results to a Google Sheet?"
 
-If yes, format rows matching the spreadsheet column order:
-`Date | Make | Model | Year | Package | Miles | Cost | CPM | Life | Location | Dealer | Link | Notes`
+When confirmed, create a new Google Sheet via the Drive MCP using CSV→Sheets auto-conversion. Do NOT attempt to append to the original template spreadsheet — always create a fresh dated sheet per run so results are preserved separately.
 
-Use `mcp__af7feda1-c109-4c1d-ad7b-0e864ed935d7__read_file_content` to read the current sheet, then present the formatted rows for the user to paste, or use `create_file` to write an updated version.
+### Column Order (match original template exactly)
+
+```
+Date | Make | Model | Year | Package | Miles | Cost | CPM | Life | Location | Dealer | Link | Notes
+```
+
+- **Date** — `DD Mon YYYY` format (e.g., `25 Apr 2026`)
+- **Miles** — numeric, no commas (e.g., `53000`)
+- **Cost** — formatted as `$4750`
+- **CPM** — formatted as `$0.019` (3 decimal places)
+- **Life** — formatted as `18%`
+- **Notes** — include emoji flags (✅ BEST YEAR / ⚠️ CAUTION / 🚫 AVOID / ★ BEST PICK) and the specific reason
+
+### How to Create the Sheet
+
+**Step 1** — Build the CSV content as a Python string, then base64-encode it:
+
+```python
+import base64
+csv_content = "Date,Make,Model,Year,Package,Miles,Cost,CPM,Life,Location,Dealer,Link,Notes\n"
+# ... one row per listing, sorted by CPM ascending ...
+encoded = base64.b64encode(csv_content.encode('utf-8')).decode('utf-8')
+```
+
+Run this via Bash to get the base64 string.
+
+**Step 2** — Call `mcp__af7feda1-c109-4c1d-ad7b-0e864ed935d7__create_file` with:
+```json
+{
+  "title": "Car Hunt Results — {Mon DD YYYY} ({makes/models})",
+  "mimeType": "text/csv",
+  "content": "{base64_encoded_csv}"
+}
+```
+
+The Drive MCP auto-converts `text/csv` → Google Spreadsheet. No parentId needed — it lands in Drive root.
+
+**Step 3** — The tool returns a file object with an `id`. Construct the share URL:
+```
+https://docs.google.com/spreadsheets/d/{id}/edit
+```
+
+Present this link to the user so they can open it immediately.
+
+### Row Order and Completeness
+
+- Rows sorted by CPM ascending (best value first) — same order as the ranked output
+- Include ALL scored listings, even those over the mileage filter — flag over-limit rows in Notes
+- Include unscored listings at the bottom with `—` for CPM and Life, and reason in Notes
+- Do not drop any listing silently
 
 ---
 
