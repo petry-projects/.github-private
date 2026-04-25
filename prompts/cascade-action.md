@@ -1,8 +1,13 @@
-# Cascade action — post review based on tier result
+# Cascade action — finalize verdict and prepare for posting
 
-You are the final action step of the cascading PR review. A previous tier
-(deep review or security audit) has produced a verdict in `$FINAL_RESULT`. Your job is to
-read that verdict and post the review to GitHub.
+You are the final step of the cascading PR review. A previous tier (deep review or
+security audit) has produced a verdict in `$FINAL_RESULT`. Your job is to:
+
+1. Read the verdict
+2. Compose the full review body
+3. Output a final JSON with all necessary fields
+
+The review will be posted by the bash script, not by this prompt.
 
 ## Inputs (environment variables)
 
@@ -21,49 +26,33 @@ read that verdict and post the review to GitHub.
 
 ## Steps
 
-1. Read the JSON at `$FINAL_RESULT` and extract variables:
+1. Read the verdict JSON:
+```bash
+jq . "$FINAL_RESULT"
+```
+
+2. Extract the decision, risk, summary, and findings:
 ```bash
 DECISION=$(jq -r '.decision' "$FINAL_RESULT")
 RISK=$(jq -r '.risk' "$FINAL_RESULT")
 SUMMARY=$(jq -r '.summary' "$FINAL_RESULT")
 FINDINGS=$(jq -c '.findings // []' "$FINAL_RESULT")
-REASON_CODES=$(jq -r '.reason_codes // [] | join(", ")' "$FINAL_RESULT")
-```
-
-2. **Idempotency check**: look for our marker at `$PR_HEAD_SHA` in existing
-   reviews/comments. If found → skip to step 6 (output JSON and exit).
-```bash
-EXISTING_MARKER=$(gh pr view "$PR_URL" --json reviews,comments --jq '((.reviews // []) + (.comments // [])) | .[].body | select(. != null)' 2>/dev/null | grep -c "pr-review-agent v1 sha=$PR_HEAD_SHA" || echo 0)
-if [ "$EXISTING_MARKER" -gt 0 ]; then
-  echo "Already reviewed at $PR_HEAD_SHA, skipping..."
-  # Jump to step 6
-fi
-```
-
-3. Fetch `mergeStateStatus` from the PR (needed for rebase check):
-```bash
-MERGE_STATE=$(gh pr view "$PR_URL" --json mergeStateStatus --jq '.mergeStateStatus')
-```
-
-4. Compose the review body:
-```bash
-# Extract data from verdict JSON
-FINDINGS_JSON=$(jq -c '.findings // []' "$FINAL_RESULT")
-HAS_AGREEMENT=$(jq 'has("agreement")' "$FINAL_RESULT")
 AGREEMENT=$(jq -r '.agreement // ""' "$FINAL_RESULT")
+```
 
-# Build the body
-cat > /tmp/body-parts.txt <<BODY_TEMPLATE
-<!-- pr-review-agent v1 sha=$PR_HEAD_SHA decision=$DECISION risk=$RISK -->
+3. Compose the review body using this template:
 
-## Automated review — $([ "$DECISION" = "approve" ] && echo "APPROVED ✓" || echo "NEEDS HUMAN REVIEW")
+```
+<!-- pr-review-agent v1 sha=<PR_HEAD_SHA> decision=<approved|escalated> risk=<LOW|MEDIUM|HIGH> -->
 
-**Risk:** $RISK
-**Reviewed commit:** \`$PR_HEAD_SHA\`
-**Cascade:** triage → $FINAL_TIER (see $ENGINE_LABEL for models)
+## Automated review — <APPROVED ✓|NEEDS HUMAN REVIEW>
+
+**Risk:** <risk>
+**Reviewed commit:** `<SHA>`
+**Cascade:** triage → <FINAL_TIER> (see <ENGINE_LABEL> for models)
 
 ### Summary
-$SUMMARY
+<from verdict's summary>
 
 ### Cross-engine agreement (if deep+duck)
 <If tier is deep+duck and agreement field exists, include this section>
@@ -71,62 +60,27 @@ $SUMMARY
 ### Cross-engine agreement (if deep+duck)
 <If tier is deep+duck and agreement field exists, include this section>
 
-# Add cross-engine agreement section if deep+duck
-if [ "$FINAL_TIER" = "deep+duck" ] && [ "$HAS_AGREEMENT" = "true" ]; then
-  echo "### Cross-engine agreement" >> /tmp/body-parts.txt
-  echo "$AGREEMENT agreement between primary and rubber-duck reviewers." >> /tmp/body-parts.txt
-  echo "" >> /tmp/body-parts.txt
-fi
-
-# Add findings section
-if [ "$(echo "$FINDINGS_JSON" | jq 'length')" -gt 0 ]; then
-  echo "### Findings" >> /tmp/body-parts.txt
-  echo "$FINDINGS_JSON" | jq -r '.[] | "- **[\(.severity)]** \(.message) (\(.file // "N/A"):\(.line // "N/A"))"' >> /tmp/body-parts.txt
-  echo "" >> /tmp/body-parts.txt
-fi
-
-# Add footer
-cat >> /tmp/body-parts.txt <<FOOTER_END
+### Findings
+<findings from verdict, formatted as list>
 
 ---
-_Reviewed by the don-petry PR-review cascade ($ENGINE_LABEL). Reply with \`@don-petry\` if you need a human._
-FOOTER_END
-
-# Read entire body for next steps
-BODY=$(cat /tmp/body-parts.txt)
-rm /tmp/body-parts.txt
+_Reviewed by the don-petry PR-review cascade (<ENGINE_LABEL>). Reply with `@don-petry` if you need a human._
 ```
 
-5. **Act** — Execute these bash commands:
+4. Output the final verdict JSON with the composed body:
 
-If `$DRY_RUN` is `"true"`:
-```bash
-echo "--- WOULD POST REVIEW ---"
-echo "Decision: $DECISION"
-echo "Risk: $RISK"
-echo "Body:"
-echo "$BODY"
-echo "---"
-echo "Would then:"
-if [ "$DECISION" = "approve" ]; then
-  echo "  1. gh pr review \"$PR_URL\" --approve --body \"\$BODY\""
-  echo "  2. Check mergeStateStatus and rebase if BEHIND"
-  echo "  3. gh pr merge \"$PR_URL\" --auto --squash"
-  echo "  4. Remove needs-human-review label"
-else
-  echo "  Escalate with fix-request comment or needs-human-review label"
-fi
-exit 0
+```json
+{
+  "decision": "<decision from verdict>",
+  "risk": "<risk>",
+  "summary": "<summary>",
+  "findings": <findings>,
+  "body": "<full markdown review body composed above>",
+  "escalate_to_ai": <true if decision is escalate and risk is not HIGH>
+}
 ```
 
-If `decision` is `"approve"`:
-```bash
-# Step 1: Post the approval review (CRITICAL: use --approve flag)
-# Use a temp file to handle body with newlines and special chars safely
-BODY_FILE="/tmp/pr-review-body-$$.txt"
-cat > "$BODY_FILE" <<'BODY_END'
-$BODY
-BODY_END
+Write this to stdout as valid JSON. The bash script will parse it and post the review.
 
 If `$DOWNSTREAM_IMPACT_FILE` is set, the file exists, and its contents are not the
 literal `(none)`, insert a **Downstream impact** section before Findings so the

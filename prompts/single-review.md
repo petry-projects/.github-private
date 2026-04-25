@@ -110,63 +110,27 @@ carefully. For each finding in the prior review:
 
 If all prior findings are resolved AND no new issues → approve.
 
-## Actions (same as synthesizer)
+## Output
 
-Compose a review body with the same template:
+Compose a complete review verdict with the review body, then output as JSON:
 
-```
-<!-- pr-review-agent v1 sha=<PR_HEAD_SHA> decision=<approved|escalated> risk=<LOW|MEDIUM|HIGH> -->
-
-## Automated review — <APPROVED|NEEDS HUMAN REVIEW>
-
-**Risk:** <risk>
-**Reviewed commit:** `<SHA>`
-**Review mode:** <small-pr|incremental|triage-approved> (single reviewer)
-
-### Summary
-<2-4 sentences>
-
-### Linked issue analysis
-<how the diff addresses it, or "no linked issue">
-
-### Findings
-<severity, file:line, message — cover security, correctness, AND maintainability>
-
-### CI status
-<check summary>
-
----
-_Reviewed automatically by the don-petry PR-review agent ($ENGINE_SINGLE_LABEL). Reply with `@don-petry` if you need a human._
-```
-
-Then act:
-
-- If `$DRY_RUN` is `true`: print `--- WOULD POST ---`, the body, and what
-  actions you would take. Exit.
-- If approving:
-  1. `gh pr review "$PR_URL" --approve --body "$BODY"`
-  2. Rebase if `mergeStateStatus` is `BEHIND`:
-     `gh api -X PUT "repos/<owner>/<repo>/pulls/<num>/update-branch" -f expected_head_sha="$PR_HEAD_SHA"` (swallow errors)
-     Then poll until the branch is no longer `BEHIND` (up to 30 s, 5 s interval):
-     ```
-     REBASE_STATUS="BEHIND"
-     for i in 1 2 3 4 5 6; do
-       REBASE_STATUS=$(gh pr view "$PR_URL" --json mergeStateStatus --jq '.mergeStateStatus')
-       [ "$REBASE_STATUS" != "BEHIND" ] && break
-       sleep 5
-     done
-     ```
-     If `REBASE_STATUS` is still `BEHIND` after the poll, **skip steps 3 and 4** —
-     the next review cycle will retry once the branch has caught up.
-  3. Enable auto-merge: `gh pr merge "$PR_URL" --auto --squash` (swallow errors)
-  4. Remove `needs-human-review` label if present (swallow errors)
-- If escalating:
-  - If `$AI_DELEGATION_ENABLED` is `true` AND `$REVIEW_CYCLE` < `$MAX_REVIEW_CYCLES`
-    AND risk is NOT `HIGH`:
-    Post a fix-request issue comment (see cascade-action.md step 5 escalation template).
-  - Otherwise: add `needs-human-review` label, re-request don-petry as reviewer.
-
-After acting, print:
 ```json
-{"pr":"<url>","sha":"<sha>","risk":"<r>","decision":"<d>","mode":"<small|incremental|triage-approved>","delegated_to":"ai|human|none","posted":true|false}
+{
+  "pr": "<PR_URL>",
+  "sha": "<PR_HEAD_SHA>",
+  "risk": "LOW|MEDIUM|HIGH",
+  "decision": "approve|escalate",
+  "mode": "small|incremental|triage-approved",
+  "summary": "2-4 sentence summary of review",
+  "body": "<!-- pr-review-agent v1 sha=<PR_HEAD_SHA> decision=<approved|escalated> risk=<LOW|MEDIUM|HIGH> -->\n\n## Automated review — <APPROVED ✓|NEEDS HUMAN REVIEW>\n\n**Risk:** <risk>\n**Reviewed commit:** `<SHA>`\n**Review mode:** <mode> (single reviewer)\n\n### Summary\n<summary>\n\n### Linked issue analysis\n<analysis>\n\n### Findings\n<findings>\n\n### CI status\n<status>\n\n---\n_Reviewed automatically by the don-petry PR-review agent ($ENGINE_SINGLE_LABEL). Reply with `@don-petry` if you need a human._",
+  "escalate_to_ai": false
+}
 ```
+
+The `body` field must be the complete markdown text that will be posted to GitHub.
+
+**Important:** The bash script will parse this JSON and post the review, so ensure:
+1. `decision` is either `approve` or `escalate`
+2. `body` is properly escaped JSON string with embedded newlines (\n)
+3. The review body includes the HTML marker comment on line 1
+4. Output ONLY valid JSON to stdout (no other text)
