@@ -273,6 +273,18 @@ If a field is not found, note it as "—" — it can be filled during deep-dive.
 
 **Staleness filter:** If `date_posted` is more than 21 days before today, **skip the listing entirely** — it has almost certainly sold or the seller is unresponsive. If `date_posted` cannot be determined, include the listing but note "Post date unknown" in Notes.
 
+**Hard disqualification filters — skip any listing that matches ANY of these:**
+
+1. **Dealer/finance language:** Any mention of "down payment," "monthly payment," "buy here pay here," "BHPH," "in-house financing," or "we finance" → skip. These are dealer tactics, not private party.
+2. **Title problems:** Any mention of "no title," "lost title," "salvage," "rebuilt title," "lien," or "lien release" → skip. Clean title is required.
+3. **Scam signals:** Any of the following redirect patterns → skip immediately, do not contact:
+   - "Messenger broken" / "my messenger doesn't work" / "can't receive messages"
+   - "Contact me at [email]" or "email only" when posted on a platform with messaging
+   - Asks to text an out-of-platform number as the only contact method with urgency
+   - Price is dramatically below market for no stated reason (e.g., "selling quick, moving")
+
+Log all disqualified listings in a separate "Disqualified" section at the end of output with the reason — do not silently drop them.
+
 ### Parallel Search Strategy
 
 Launch all make/model × source searches simultaneously. Aim for **25+ listings per run**. If results are sparse, widen radius or drop year floor by 1–2 years.
