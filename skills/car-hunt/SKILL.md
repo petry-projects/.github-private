@@ -180,15 +180,19 @@ From WebSearch results, collect individual AutoTrader listing URLs (format: `aut
 
 **Run 2–3 WebSearch queries per model** (vary location terms and year ranges) to maximize coverage. Individual listing pages are far more reliable than search results pages.
 
-### CarGurus URL Pattern
+**AutoTrader outage handling:** If AutoTrader returns 503 / "currently unavailable" for multiple fetch attempts, note the outage in the results summary and continue with other sources. Do NOT skip the whole search — fall back to WebSearch for any individual listing URLs that may still be cached in search indexes.
+
+### CarGurus
+
+CarGurus search page URL structure changes frequently — the `nl-Used-{Make}-{Model}?zip=...` pattern often 404s. Use WebSearch to find the current working URL:
 
 ```
-https://www.cargurus.com/Cars/new/nl-Used-{Make}-{Model}?zip={ZIP}&distance={RADIUS}&maxPrice={MAX_PRICE}&minYear={YEAR_MIN}&maxYear={YEAR_MAX}
+WebSearch: site:cargurus.com used {make} {model} {year_min}-{year_max} Birmingham Alabama under ${max_price}
 ```
 
-Examples:
-- `https://www.cargurus.com/Cars/new/nl-Used-Honda-Civic?zip=35242&distance=200&maxPrice=25000&minYear=2017&maxYear=2023`
-- `https://www.cargurus.com/Cars/new/nl-Used-Toyota-Camry?zip=35242&distance=200&maxPrice=25000&minYear=2017&maxYear=2023`
+From results, collect individual listing URLs (format: `cargurus.com/Cars/new/nl-Used-{Make}-{Model}-d{id}#listing={listingId}`). WebFetch each listing page — CarGurus individual listing pages contain price, mileage, trim, dealer, and posted date in page metadata.
+
+Run 2–3 WebSearch queries per model varying year ranges. If search results surface a working CarGurus search page URL, WebFetch it to extract multiple listings at once.
 
 ### Facebook Marketplace
 
@@ -217,33 +221,26 @@ This tells the user exactly where to look without fabricating listings.
 
 ### Craigslist
 
-Craigslist search pages are **not reliably WebFetchable** — they often return empty or JS-gated results. Use the WebSearch fallback as the primary approach:
+**Primary approach — direct WebFetch of regional search pages:**
 
-**Primary approach — WebSearch:**
-```
-site:craigslist.org "{make} {model}" "{year_min}" OR "{year_max}" "{city}" cars for sale
-```
+WebFetch each regional search URL for every make/model combination. These pages return plain HTML with real listing URLs and brief details. Paginate through all pages until exhausted (increment `s=` by 120 per page):
 
-Examples:
 ```
-site:craigslist.org "honda civic" "2015" OR "2016" OR "2017" "birmingham" cars for sale
-site:craigslist.org "toyota camry" "2013" OR "2014" OR "2015" alabama cars for sale
-```
-
-WebSearch returns indexed Craigslist listing URLs. WebFetch those individual listing pages (e.g., `bham.craigslist.org/cto/d/{slug}/{id}.html`) — individual pages are plain HTML and parse well.
-
-**Fallback — direct search URL (try if WebSearch returns too few results):**
-```
+https://atlanta.craigslist.org/search/cta?query={make}+{model}&max_price={MAX_PRICE}&auto_miles_max={MAX_ODOMETER}&sort=priceasc
+https://huntsville.craigslist.org/search/cta?query={make}+{model}&max_price={MAX_PRICE}&auto_miles_max={MAX_ODOMETER}&sort=priceasc
 https://bham.craigslist.org/search/cta?query={make}+{model}&max_price={MAX_PRICE}&auto_miles_max={MAX_ODOMETER}&sort=priceasc
+https://chattanooga.craigslist.org/search/cta?query={make}+{model}&max_price={MAX_PRICE}&auto_miles_max={MAX_ODOMETER}&sort=priceasc
 ```
 
-Regional sites covering the 35243 area:
-- `https://bham.craigslist.org/search/cta` — Birmingham (primary)
-- `https://huntsville.craigslist.org/search/cta` — Huntsville
-- `https://chattanooga.craigslist.org/search/cta` — Chattanooga
-- `https://atlanta.craigslist.org/search/cta` — Atlanta
+From the search page HTML, extract all individual listing URLs in the format `{region}.craigslist.org/{sub}/cto/d/{slug}/{id}.html` or `{sub}/ctd/d/{slug}/{id}.html`. Then WebFetch each individual page — individual listing pages are plain HTML with full details: price, odometer, year, description, post date.
 
-**Link rule:** Use only the exact `bham.craigslist.org/cto/d/{slug}/{id}.html` URL scraped from the page. Never construct or guess a listing URL — Craigslist IDs are not predictable and a wrong ID is a 404.
+**Secondary approach — WebSearch (use if regional WebFetch returns empty/gated results):**
+
+`site:craigslist.org "{make} {model}" "{year}" "{city}" -"wanted"` — but note this often returns category search pages, not individual listings; prefer regional WebFetch above.
+
+**Exhaustive coverage — do NOT stop at first page.** Check the total result count returned by the search page (e.g., "1–120 of 340 results"). If more pages exist, fetch subsequent pages by adding `&s=120`, `&s=240`, etc. until all results are retrieved.
+
+**Link rule:** Use only the exact URL scraped from the page. Never construct or guess a Craigslist listing URL — IDs are not predictable and a wrong ID is a 404.
 
 ### WebSearch Fallback (any source)
 
@@ -265,6 +262,8 @@ For each listing found, extract:
 - `make`, `model`, `year`, `trim`
 - `miles` — current odometer
 - `price` — asking price in USD
+- `doors` — `2` or `4` (coupe vs. sedan/hatchback); extract from listing text or body style
+- `transmission` — `Auto` or `Manual`; extract from listing text or specs
 - `location` — city, state
 - `dealer` — dealership name, "Private", or "Facebook Marketplace"
 - `link` — direct listing URL
@@ -277,6 +276,12 @@ If a field is not found, note it as "—" — it can be filled during deep-dive.
 ### Parallel Search Strategy
 
 Launch all make/model × source searches simultaneously. Aim for **25+ listings per run**. If results are sparse, widen radius or drop year floor by 1–2 years.
+
+**Exhaustive coverage is mandatory.** Do NOT stop at the first page of results, declare success after a few listings, or give up on a source after one failure. For each source:
+- Paginate all result pages until no more listings exist
+- If a fetch fails, retry once then fall back to WebSearch — but always report the fallback
+- Every in-scope vehicle must be evaluated; none may be silently skipped
+- Note at the end of Step 2 exactly how many pages/results were checked per source
 
 ---
 
@@ -321,11 +326,11 @@ Present reliability cards first, then the ranked table:
 
 ─── RANKED LISTINGS (by CPM) ───────────────────────────────────
 
-| # | Make/Model | Year | Trim | Miles | Price | CPM | Life% | Posted | Source | Location | Dealer | Flags | Link |
-|---|-----------|------|------|-------|-------|-----|-------|--------|--------|----------|--------|-------|------|
-| 1 | Honda Civic | 2021 | EX-L | 42,000 | $21,500 | $0.103 | 17% | Apr 20 | AutoTrader | Birmingham, AL | Dealer | — | [link] |
-| 2 | Toyota Camry | 2019 | XLE | 68,000 | $21,000 | $0.091 | 23% | Apr 18 | CarGurus | Atlanta, GA | CarMax | — | [link] |
-| 3 | Honda Accord | 2018 | Sport | 89,000 | $19,500 | $0.121 | 36% | Apr 10 | FB Mkt | Hoover, AL | Private 🏠 | ⚠️ CAUTION YEAR | [link] |
+| # | Make/Model | Year | Trim | Dr | Trans | Miles | Price | CPM | Life% | Posted | Location | Dealer | Flags | Link |
+|---|-----------|------|------|----|-------|-------|-------|-----|-------|--------|----------|--------|-------|------|
+| 1 | Honda Civic | 2021 | EX-L | 4 | Auto | 42,000 | $21,500 | $0.103 | 17% | Apr 20 | Birmingham, AL | Dealer | — | [link] |
+| 2 | Toyota Camry | 2019 | XLE | 4 | Auto | 68,000 | $21,000 | $0.091 | 23% | Apr 18 | Atlanta, GA | CarMax | — | [link] |
+| 3 | Honda Accord | 2018 | Sport | 4 | Auto | 89,000 | $19,500 | $0.121 | 36% | Apr 10 | Hoover, AL | Private 🏠 | ⚠️ CAUTION YEAR | [link] |
 ...
 
 ⚠️  FLAGS:
@@ -439,15 +444,30 @@ After presenting results, always offer to export:
 
 > "Want me to save these results to a Google Sheet?"
 
-When confirmed, create a new Google Sheet via the Drive MCP using CSV→Sheets auto-conversion. Do NOT attempt to append to the original template spreadsheet — always create a fresh dated sheet per run so results are preserved separately.
+### Update Mode vs. New Sheet
 
-### Column Order (match original template exactly)
+The skill maintains a **single persistent tracking sheet** across runs. On each run:
+
+1. Check memory (`/Users/dj/.claude/projects/-Users-dj-repos-self/memory/project_car_hunt_skill.md`) for the current sheet ID.
+2. If a sheet ID exists, **update it** — download existing rows, merge with new results (deduplicate by Link URL), and rewrite the sheet.
+3. If no sheet ID exists, **create a new sheet**, then save its ID to memory for future runs.
+
+**Deduplication logic:**
+- Match rows by `Link` URL — same URL = same listing
+- If a listing appears again with a different price, update the row and note "Price changed: was $X" in Notes
+- Mark listings that were in a prior run but are not found this run as `STALE — may be sold` in Notes (do not delete them)
+- New listings not in the prior run get added as new rows
+
+### Column Order
 
 ```
-Date | Make | Model | Year | Package | Miles | Cost | CPM | Life | Posted | Location | Dealer | Link | Notes
+Date | Make | Model | Year | Package | Doors | Trans | Miles | Cost | CPM | Life | Posted | Location | Dealer | Link | Notes
 ```
 
-- **Date** — `DD Mon YYYY` format (e.g., `25 Apr 2026`) — date the skill ran, not the listing date
+- **Date** — `DD Mon YYYY` format (e.g., `25 Apr 2026`) — date this row was last updated
+- **Package** — trim level (e.g., `LX`, `EX`, `LE`)
+- **Doors** — `2` or `4`
+- **Trans** — `Auto` or `Manual`
 - **Posted** — date the listing was first posted (e.g., `Apr 20`) — omit year if current year; use `Unknown` if not found
 - **Miles** — numeric, no commas (e.g., `53000`)
 - **Cost** — formatted as `$4750`
@@ -455,36 +475,44 @@ Date | Make | Model | Year | Package | Miles | Cost | CPM | Life | Posted | Loca
 - **Life** — formatted as `18%`
 - **Notes** — include emoji flags (✅ BEST YEAR / ⚠️ CAUTION / 🚫 AVOID / ★ BEST PICK) and the specific reason
 
-### How to Create the Sheet
+### How to Create or Update the Sheet
 
-**Step 1** — Build the CSV content as a Python string, then base64-encode it:
+**Creating a new sheet:**
+
+**Step 1** — Build the CSV content, base64-encode it via Bash:
 
 ```python
 import base64
-csv_content = "Date,Make,Model,Year,Package,Miles,Cost,CPM,Life,Location,Dealer,Link,Notes\n"
+csv_content = "Date,Make,Model,Year,Package,Doors,Trans,Miles,Cost,CPM,Life,Posted,Location,Dealer,Link,Notes\n"
 # ... one row per listing, sorted by CPM ascending ...
 encoded = base64.b64encode(csv_content.encode('utf-8')).decode('utf-8')
 ```
 
-Run this via Bash to get the base64 string.
-
 **Step 2** — Call `mcp__af7feda1-c109-4c1d-ad7b-0e864ed935d7__create_file` with:
 ```json
 {
-  "title": "Car Hunt Results — {Mon DD YYYY} ({makes/models})",
+  "title": "Car Hunt — Active Listings",
   "mimeType": "text/csv",
   "content": "{base64_encoded_csv}"
 }
 ```
 
-The Drive MCP auto-converts `text/csv` → Google Spreadsheet. No parentId needed — it lands in Drive root.
+The Drive MCP auto-converts `text/csv` → Google Spreadsheet. **IMPORTANT: Do NOT use xlsx MIME type** — it fails with a base64 validation error. Always use `text/csv`.
 
 **Step 3** — The tool returns a file object with an `id`. Construct the share URL:
 ```
 https://docs.google.com/spreadsheets/d/{id}/edit
 ```
 
-Present this link to the user so they can open it immediately.
+Save this ID to memory (`project_car_hunt_skill.md`) so future runs can update the same sheet.
+
+**Updating an existing sheet:**
+
+**Step 1** — Call `mcp__af7feda1-c109-4c1d-ad7b-0e864ed935d7__download_file_content` with the stored sheet ID to read current rows.
+
+**Step 2** — Merge with new results: deduplicate by Link URL, update prices, mark stale.
+
+**Step 3** — Rebuild the full CSV and call `mcp__af7feda1-c109-4c1d-ad7b-0e864ed935d7__create_file` with the same title — this overwrites the existing sheet content.
 
 ### Row Order and Completeness
 
@@ -507,13 +535,13 @@ When running in scheduled/automated mode:
 
 Default search parameters when running unattended (update these after each interactive session):
 ```
-MAKES_MODELS:   Civic, Accord, CR-V, Camry, Corolla, RAV4
-ZIP:            35242
-RADIUS:         (search radius in miles — set by user)
-MAX_PRICE:      (set by user)
-YEAR_MIN:       (set by user)
+MAKES_MODELS:   Civic, Accord, Camry
+ZIP:            35243
+RADIUS:         200
+MAX_PRICE:      6000
+YEAR_MIN:       2002
 YEAR_MAX:       current year
-MAX_ODOMETER:   (max miles on the car — set by user; not the search radius)
+MAX_ODOMETER:   250000
 ```
 
 ---
