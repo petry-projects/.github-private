@@ -46,10 +46,7 @@ cat > /tmp/cascade/review-body.txt << 'BODYEOF'
 ### Summary
 PLACEHOLDER_SUMMARY
 
-### Cross-engine agreement
-<If $FINAL_TIER is "deep+duck" and the verdict JSON has an "agreement" field,
-report the agreement level and highlight findings where both engines converged.
-If $FINAL_TIER is "deep" (no duck), omit this section.>
+BODY_TEMPLATE
 
 ### Findings
 PLACEHOLDER_FINDINGS_LIST
