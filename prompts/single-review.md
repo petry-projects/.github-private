@@ -97,7 +97,7 @@ carefully. For each finding in the prior review:
 
 If all prior findings are resolved AND no new issues → approve.
 
-## Actions (same as synthesizer)
+## Output
 
 Compose the review body as a markdown string, then write the verdict JSON to
 `$OUTPUT_FILE` using `jq` so all strings (especially the body) are properly
