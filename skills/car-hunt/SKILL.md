@@ -265,11 +265,47 @@ For each listing found, extract:
 - `doors` — `2` or `4` (coupe vs. sedan/hatchback); extract from listing text or body style
 - `transmission` — `Auto` or `Manual`; extract from listing text or specs
 - `location` — city, state
+- `distance_mi` — estimated driving distance from user's ZIP to listing city (see Distance Estimation below)
 - `dealer` — dealership name, "Private", or "Facebook Marketplace"
 - `link` — direct listing URL
 - `notes` — any flags (rental history, accidents, new tires, warranty, etc.)
 
 If a field is not found, note it as "—" — it can be filled during deep-dive.
+
+### Distance Estimation
+
+After collecting all unique listing cities, geocode them in bulk using the free Nominatim API (no key required) and compute driving distance estimates.
+
+**Step 1 — Geocode user ZIP:**
+```
+GET https://nominatim.openstreetmap.org/search?postalcode={ZIP}&countrycodes=us&format=json
+```
+Extract `lat` and `lon` for the user's home location.
+
+**Step 2 — Geocode each unique listing city (run in parallel):**
+```
+GET https://nominatim.openstreetmap.org/search?q={city},{state}&countrycodes=us&format=json&limit=1
+```
+Extract `lat` and `lon` for each city. Cache results — if two listings share the same city, only geocode once.
+
+**Step 3 — Compute distance via Haversine, then apply road correction:**
+```python
+import math
+
+def haversine(lat1, lon1, lat2, lon2):
+    R = 3958.8  # Earth radius in miles
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    a = math.sin(dlat/2)**2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon/2)**2
+    return R * 2 * math.asin(math.sqrt(a))
+
+straight_line = haversine(user_lat, user_lon, listing_lat, listing_lon)
+driving_est   = round(straight_line * 1.3)  # 1.3 correction factor for road routing
+```
+
+Display as `~{driving_est} mi`. If geocoding fails for a city, use `—`.
+
+**Add `Distance` column to the output table and sheet** — sort remains CPM ascending, but distance helps the user weigh travel cost against CPM savings.
 
 **Staleness filter:** If `date_posted` is more than 21 days before today, **skip the listing entirely** — it has almost certainly sold or the seller is unresponsive. If `date_posted` cannot be determined, include the listing but note "Post date unknown" in Notes.
 
@@ -338,11 +374,11 @@ Present reliability cards first, then the ranked table:
 
 ─── RANKED LISTINGS (by CPM) ───────────────────────────────────
 
-| # | Make/Model | Year | Trim | Dr | Trans | Miles | Price | CPM | Life% | Posted | Location | Dealer | Flags | Link |
-|---|-----------|------|------|----|-------|-------|-------|-----|-------|--------|----------|--------|-------|------|
-| 1 | Honda Civic | 2021 | EX-L | 4 | Auto | 42,000 | $21,500 | $0.103 | 17% | Apr 20 | Birmingham, AL | Dealer | — | [link] |
-| 2 | Toyota Camry | 2019 | XLE | 4 | Auto | 68,000 | $21,000 | $0.091 | 23% | Apr 18 | Atlanta, GA | CarMax | — | [link] |
-| 3 | Honda Accord | 2018 | Sport | 4 | Auto | 89,000 | $19,500 | $0.121 | 36% | Apr 10 | Hoover, AL | Private 🏠 | ⚠️ CAUTION YEAR | [link] |
+| # | Make/Model | Year | Trim | Dr | Trans | Miles | Price | CPM | Life% | Dist | Posted | Location | Dealer | Flags | Link |
+|---|-----------|------|------|----|-------|-------|-------|-----|-------|------|--------|----------|--------|-------|------|
+| 1 | Honda Civic | 2021 | EX-L | 4 | Auto | 42,000 | $21,500 | $0.103 | 17% | ~12 mi | Apr 20 | Birmingham, AL | Dealer | — | [link] |
+| 2 | Toyota Camry | 2019 | XLE | 4 | Auto | 68,000 | $21,000 | $0.091 | 23% | ~172 mi | Apr 18 | Atlanta, GA | CarMax | — | [link] |
+| 3 | Honda Accord | 2018 | Sport | 4 | Auto | 89,000 | $19,500 | $0.121 | 36% | ~8 mi | Apr 10 | Hoover, AL | Private 🏠 | ⚠️ CAUTION YEAR | [link] |
 ...
 
 ⚠️  FLAGS:
@@ -473,7 +509,7 @@ The skill maintains a **single persistent tracking sheet** across runs. On each 
 ### Column Order
 
 ```
-Date | Make | Model | Year | Package | Doors | Trans | Miles | Cost | CPM | Life | Posted | Location | Dealer | Link | Notes
+Date | Make | Model | Year | Package | Doors | Trans | Miles | Cost | CPM | Life | Dist | Posted | Location | Dealer | Link | Notes
 ```
 
 - **Date** — `DD Mon YYYY` format (e.g., `25 Apr 2026`) — date this row was last updated
