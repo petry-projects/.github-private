@@ -213,15 +213,41 @@ This tells the user exactly where to look without fabricating listings.
 
 **Why FB Marketplace matters:** Private-party listings often appear only here at prices well below dealer, with CPM 20–40% better than comparable dealer listings. Always attempt it and always report the outcome honestly.
 
+### Craigslist
+
+Craigslist search pages use simple HTML and are reliably WebFetchable. Individual listing pages also work. However, **listings expire quickly** — always use the exact URL returned by search, never construct or guess a listing URL.
+
+**Search URL pattern:**
+```
+https://huntsville.craigslist.org/search/cta?query={make}+{model}&max_price={MAX_PRICE}&auto_miles_max={MAX_MILES}
+```
+
+Regional Craigslist sites covering the 35243 area (use all of these):
+- `https://bham.craigslist.org/search/cta` — Birmingham (primary)
+- `https://huntsville.craigslist.org/search/cta` — Huntsville
+- `https://chattanooga.craigslist.org/search/cta` — Chattanooga
+- `https://atlanta.craigslist.org/search/cta` — Atlanta
+
+Full example URL:
+```
+https://bham.craigslist.org/search/cta?query=toyota+camry&max_price=6000&auto_miles_max=100000&sort=priceasc
+```
+
+WebFetch the search results page — Craigslist HTML is parseable and returns real listing data including title, price, mileage (when listed), and the direct listing URL (`/cto/d/...`). Extract individual listing URLs and WebFetch those for full details.
+
+**Link rule:** Use the exact `bham.craigslist.org/cto/d/{slug}/{id}.html` URL from the page. Never use `craigslist.org` without the full listing path.
+
 ### WebSearch Fallback (any source)
 
-If WebFetch returns no usable listing data (JS-heavy page):
+If a source's page is unreachable or returns no data, fall back to WebSearch:
 
 ```
-Search query: "used {year_min}-{year_max} {make} {model} under ${max_price} {city} site:autotrader.com OR site:cargurus.com"
+used {year_min}-{year_max} {make} {model} under ${max_price} Birmingham Alabama site:autotrader.com
+used {make} {model} {year_range} ${max_price} Birmingham site:cargurus.com
+used {make} {model} {year_range} Alabama craigslist.org
 ```
 
-Then WebFetch individual listing URLs from search results.
+Then WebFetch individual listing URLs surfaced by the search results.
 
 ### Data to Extract Per Listing
 
@@ -483,11 +509,11 @@ YEAR_MAX:     current year
 
 1. **Always show CPM to 3 decimal places** — `$0.103/mi` not `$0.10/mi`
 2. **Always show Life% as integer** — `17%` not `0.17`
-3. **Always link directly to the listing** — no bare dealer names without a URL
+3. **Links must be real or explicitly marked manual** — every Link column value must be one of: (a) an exact URL returned by WebFetch/WebSearch that points to a specific listing, or (b) a search URL the user can open manually, labeled "Manual search — [source]". Never use a homepage (`facebook.com/marketplace`, `craigslist.org`) as a listing link. Never construct or guess a listing URL.
 4. **Flag before ranking** — flags are informational, not disqualifying; reliability card context appears in flag detail
 5. **Never silently drop a listing** — if miles or price are missing, show the row with `—` and note it couldn't be scored
 6. **Sort by CPM always** — don't re-sort by price or miles unless user asks
-7. **Show source column** — AutoTrader / CarGurus / FB Marketplace — so the user knows where to find the listing
+7. **Show source column** — AutoTrader / CarGurus / Craigslist / FB Marketplace — so the user knows where to find the listing
 
 ---
 
