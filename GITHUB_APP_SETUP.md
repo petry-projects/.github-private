@@ -19,7 +19,7 @@ This is the **recommended approach** for automating PR reviews. GitHub Apps are 
 
    **GitHub App name:**
    ```
-   petry-review-agent
+   petry-projects-pr-review-agent
    ```
 
    **Homepage URL:**
@@ -288,6 +288,36 @@ Once GitHub App is working:
 3. Delete the bot account (optional):
    - Sign in as petry-review-bot
    - Settings → Account → Delete account
+
+## Implementation Notes (don-petry/pr-review-agent)
+
+This repository uses the GitHub App approach for authentication.
+
+**App Details:**
+- **App Name:** `petry-projects-pr-review-agent`
+- **App ID:** `3505640`
+- **Installation ID:** `127129996` (for petry-projects org)
+- **Installation URL:** https://github.com/organizations/petry-projects/settings/installations/127129996
+
+**Stored Secrets:**
+```bash
+APP_ID=3505640
+APP_INSTALLATION_ID=127129996
+APP_PRIVATE_KEY=<downloaded .pem file>
+```
+
+**Workflows Updated:**
+- `.github/workflows/pr-review.yml` — Added GitHub App token generation step
+- `.github/workflows/fix-stuck-prs.yml` — Added GitHub App token generation step
+
+Both workflows now use `actions/create-github-app-token@v1` to generate JWT tokens instead of relying on static PATs.
+
+**Testing:**
+```bash
+# Verify authentication
+gh run view <run-id> --repo don-petry/pr-review-agent --log | grep "Authenticated as"
+# Should show: petry-projects-pr-review-agent[bot]
+```
 
 ## References
 
