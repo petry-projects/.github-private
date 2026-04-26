@@ -15,7 +15,7 @@ DRY_RUN="${1:-true}"
 
 # Debug: check authentication
 echo "GH_TOKEN set: ${GH_TOKEN:+yes}${GH_TOKEN:+-masked}"
-CURRENT_USER=$(gh api user --jq '.login' 2>&1 || echo "error")
+CURRENT_USER=$(gh api user --jq '.login' 2>/dev/null || echo "app-token")
 echo "Authenticated as: $CURRENT_USER"
 
 echo "=== Finding PRs with agent marker comments but no approval reviews ==="
