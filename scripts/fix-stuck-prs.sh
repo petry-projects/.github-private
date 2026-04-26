@@ -32,7 +32,7 @@ PRSL=$(gh search prs \
 PROBLEM_PRS=0
 FIXED_PRS=0
 
-echo "$PRSL" | jq -r '.[] | "\(.repository.nameWithOwner) #\(.number) \(.url)"' | while read -r repo num url; do
+while read -r repo num url; do
   # Check if this PR has our marker comment
   MARKER_COUNT=$(gh pr view "$url" --json comments \
     --jq '[.comments[] | select(.body | contains("pr-review-agent v1"))] | length' 2>/dev/null || echo 0)
@@ -80,7 +80,7 @@ echo "$PRSL" | jq -r '.[] | "\(.repository.nameWithOwner) #\(.number) \(.url)"' 
   fi
 
   PROBLEM_PRS=$((PROBLEM_PRS + 1))
-done
+done < <(echo "$PRSL" | jq -r '.[] | "\(.repository.nameWithOwner) #\(.number) \(.url)"')
 
 echo ""
 echo "Summary:"
