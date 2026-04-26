@@ -20,10 +20,11 @@ echo "Authenticated as: $CURRENT_USER"
 
 echo "=== Finding PRs with agent marker comments but no approval reviews ==="
 
-# Get list of all open PRs authored by @me
+# Get list of all open PRs authored by don-petry
+# (can't use @me with GitHub App tokens, so use explicit author)
 PRSL=$(gh search prs \
   --state open \
-  --author "@me" \
+  --author "don-petry" \
   --draft=false \
   --json url,number,repository \
   --limit 100)
