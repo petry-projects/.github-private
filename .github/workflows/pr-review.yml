@@ -18,6 +18,8 @@ on:
 
 permissions:
   contents: read
+  pull-requests: write
+  checks: read
 
 concurrency:
   group: pr-review
@@ -27,10 +29,18 @@ jobs:
   review:
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    steps:
+      - name: Generate GitHub App token
+        uses: actions/create-github-app-token@v1
+        id: app-token
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: petry-projects
+
     env:
-      # GH_PAT is a fine-grained PAT with PR read/write across the repos you
-      # want the agent to act on. Stored as a repo secret.
-      GH_TOKEN: ${{ secrets.GH_PAT }}
+      # GitHub App token for posting reviews and managing PRs
+      GH_TOKEN: ${{ steps.app-token.outputs.token }}
       # Review engine: "claude" or "copilot". Controls which CLI and models are used.
       # gh variable set REVIEW_ENGINE --body copilot --repo don-petry/self
       REVIEW_ENGINE: ${{ vars.REVIEW_ENGINE || 'claude' }}
