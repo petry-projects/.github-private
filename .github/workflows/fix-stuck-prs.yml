@@ -9,16 +9,26 @@ on:
         default: "true"
         type: string
 
+permissions:
+  contents: read
+  pull-requests: write
+
 jobs:
   fix:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Generate GitHub App token
+        uses: actions/create-github-app-token@v1
+        id: app-token
         with:
-          token: ${{ secrets.GH_PAT }}
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: petry-projects
 
       - name: Fix stuck PRs
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           bash scripts/fix-stuck-prs.sh "${{ inputs.dry_run }}"
