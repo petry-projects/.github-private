@@ -1582,6 +1582,33 @@ parse_reset_time_files() {
   _emit_reset_iso "$hhmm"
 }
 
+# extract_verdict_json <raw_file> <dest_file>
+# Extracts the first valid JSON object containing a 'decision' field from
+# a file that may contain claude preamble text before/after the JSON.
+extract_verdict_json() {
+  local raw="$1" dest="$2"
+  if jq empty "$raw" 2>/dev/null; then
+    cp "$raw" "$dest"
+    return 0
+  fi
+  python3 -c "
+import sys, json
+text = open(sys.argv[1]).read()
+decoder = json.JSONDecoder()
+pos = text.find('{')
+while pos >= 0:
+    try:
+        obj, _ = decoder.raw_decode(text, pos)
+        if isinstance(obj, dict) and 'decision' in obj:
+            print(json.dumps(obj))
+            sys.exit(0)
+    except Exception:
+        pass
+    pos = text.find('{', pos + 1)
+sys.exit(1)
+" "$raw" > "$dest" 2>/dev/null
+}
+
 # run_duck <prompt_file> <model>
 # Cross-engine adversarial "rubber duck" review.
 # Always uses the OPPOSITE engine from REVIEW_ENGINE. Output to stdout.
