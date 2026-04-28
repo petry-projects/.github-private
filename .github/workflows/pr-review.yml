@@ -29,15 +29,6 @@ jobs:
   review:
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    steps:
-      - name: Generate GitHub App token
-        uses: actions/create-github-app-token@v1
-        id: app-token
-        with:
-          app-id: ${{ secrets.APP_ID }}
-          private-key: ${{ secrets.APP_PRIVATE_KEY }}
-          owner: petry-projects
-
     env:
       # Auth for every gh / script call in this job. The PAT must belong to BOT_USER.
       # Prefer the CLASSIC PAT (required for `gh pr review --approve` —
@@ -117,10 +108,19 @@ jobs:
       FORCE_REVIEW: ${{ github.event_name == 'repository_dispatch' && 'true' || inputs.force_review || 'false' }}
 
     steps:
+      - name: Generate GitHub App token
+        uses: actions/create-github-app-token@v1
+        id: app-token
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: petry-projects
       - name: Checkout agent repo
         uses: actions/checkout@v5
 
       - name: Install review engine CLIs
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           # Primary engine must install successfully; duck engine is best-effort.
           case "$REVIEW_ENGINE" in
@@ -139,6 +139,8 @@ jobs:
           esac
 
       - name: Verify auth
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           set -euo pipefail
 
@@ -388,6 +390,8 @@ jobs:
 
       - name: Enumerate candidate PRs
         id: list
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           set -euo pipefail
           if [ -n "${PR_URL_OVERRIDE}" ]; then
@@ -406,6 +410,7 @@ jobs:
       - name: Review each PR (cascade)
         if: steps.list.outputs.count != '0'
         env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           MAX_PRS: ${{ vars.MAX_PRS || '10' }}
           CANDIDATE_LIMIT: ${{ vars.CANDIDATE_LIMIT || '100' }}
         run: |
