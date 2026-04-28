@@ -29,18 +29,7 @@ jobs:
   review:
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    steps:
-      - name: Generate GitHub App token
-        uses: actions/create-github-app-token@v1
-        id: app-token
-        with:
-          app-id: ${{ secrets.APP_ID }}
-          private-key: ${{ secrets.APP_PRIVATE_KEY }}
-          owner: petry-projects
-
     env:
-      # GitHub App token for posting reviews and managing PRs
-      GH_TOKEN: ${{ steps.app-token.outputs.token }}
       # Review engine: "claude" or "copilot". Controls which CLI and models are used.
       # gh variable set REVIEW_ENGINE --body copilot --repo don-petry/self
       REVIEW_ENGINE: ${{ vars.REVIEW_ENGINE || 'claude' }}
@@ -63,10 +52,19 @@ jobs:
       MAX_REVIEW_CYCLES: ${{ vars.MAX_REVIEW_CYCLES || '3' }}
 
     steps:
+      - name: Generate GitHub App token
+        uses: actions/create-github-app-token@v1
+        id: app-token
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: petry-projects
       - name: Checkout agent repo
         uses: actions/checkout@v5
 
       - name: Install review engine CLIs
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           # Primary engine must install successfully; duck engine is best-effort.
           case "$REVIEW_ENGINE" in
@@ -173,6 +171,8 @@ jobs:
 
       - name: Enumerate candidate PRs
         id: list
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           set -euo pipefail
           if [ -n "${PR_URL_OVERRIDE}" ]; then
@@ -191,6 +191,7 @@ jobs:
       - name: Review each PR (cascade)
         if: steps.list.outputs.count != '0'
         env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           MAX_PRS: ${{ vars.MAX_PRS || '10' }}
           CANDIDATE_LIMIT: ${{ vars.CANDIDATE_LIMIT || '100' }}
         run: |
