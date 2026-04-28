@@ -29,7 +29,7 @@ while IFS= read -r repo; do
   echo "Checking $repo..."
 
   # Get all open PRs with approval marker comments in this repo
-  gh pr list --repo "$repo" --state open --json url,number,comments --limit 100 2>/dev/null | jq -r '.[] | select(.comments | length > 0) | {url, number} | "\(.url)|\(.number)"' | while IFS='|' read -r pr_url pr_num; do
+  while IFS='|' read -r pr_url pr_num; do
     # Check if PR has agent approval marker
     marker=$(gh pr view "$pr_url" --json comments --jq '.comments[] | select(.body | contains("pr-review-agent") and contains("decision=approved")) | .body' 2>/dev/null | head -1 || true)
     [ -z "$marker" ] && continue
@@ -61,7 +61,7 @@ while IFS= read -r repo; do
         failed=$((failed + 1))
       fi
     fi
-  done
+  done < <(gh pr list --repo "$repo" --state open --json url,number,comments --limit 100 2>/dev/null | jq -r '.[] | select(.comments | length > 0) | {url, number} | "\(.url)|\(.number)"')
 done < <(
   {
     gh repo list don-petry --json nameWithOwner --jq '.[].nameWithOwner' 2>/dev/null || true
