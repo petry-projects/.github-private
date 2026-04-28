@@ -29,7 +29,7 @@ Created in repository:
 - **Updated README.md** — Status badge and quick links
 - **Updated GITHUB_APP_SETUP.md** — Implementation notes with actual app ID and installation details
 
-### 3. Stuck PR Cleanup ✅
+### 3. Stuck PR Cleanup ✅ (Approvals Posted)
 Fixed 24 stuck PRs across three repositories:
 - **ContentTwin:** PRs #97-109 (13 PRs)
 - **TalkTerm:** PRs #112, #121 (2 PRs)
@@ -41,13 +41,23 @@ Agent was posting comments with `decision=approved` instead of actual GitHub app
 **How it was fixed:**
 `scripts/fix-stuck-prs.sh` identifies PRs with marker comments but no approval reviews, then posts actual approval reviews using the GitHub App token.
 
+**Current Status:**
+- ✅ Approval reviews posted to all 24 stuck PRs
+- ⚠️ Auto-merge failed (GitHub App lacks `enablePullRequestAutoMerge` permission)
+- ❌ PRs still OPEN (approvals in place, but manual merge or permission expansion needed)
+
 **Verification:**
 ```
-ContentTwin #109: 1 approval review(s) ✓
-ContentTwin #108: 1 approval review(s) ✓
-ContentTwin #107: 1 approval review(s) ✓
-ContentTwin #100: 2 approval review(s) ✓
+ContentTwin #109: 1 approval review(s) ✓ (status: OPEN)
+ContentTwin #108: 1 approval review(s) ✓ (status: OPEN)
+ContentTwin #107: 1 approval review(s) ✓ (status: OPEN)
+ContentTwin #100: 2 approval review(s) ✓ (status: OPEN)
 ```
+
+**Next Step:** Either:
+1. Expand GitHub App permissions to include `Pull requests: read & write & admin` for auto-merge
+2. Manually merge the PRs (they now have approvals)
+3. Enable auto-merge in branch protection settings (if configured)
 
 ## How the System Works
 
