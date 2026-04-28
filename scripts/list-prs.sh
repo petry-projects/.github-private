@@ -1,11 +1,9 @@
 #!/usr/bin/env bash
 # Enumerate open, non-draft PRs the agent should consider reviewing.
 #
-# Three buckets, deduped:
-#   1. PRs authored by @me across all repos (self-review) — includes those
-#      requiring review (e.g., compliance fixes). CI validation happens
-#      per-PR in review-one-pr.sh as a second layer of defence.
-#   2. PRs where @me is a requested reviewer across all repos.
+# Searches across two namespaces:
+#   1. All open PRs in repos owned by don-petry (personal account)
+#   2. All open PRs in repos owned by petry-projects (organization)
 #
 # Filters:
 #   --draft=false       — skip work-in-progress PRs
@@ -25,30 +23,38 @@
 #   2. All other repos (priority 1)
 #   Within each priority tier, PRs are sorted oldest-first by createdAt.
 #
+# Note: Uses repo enumeration instead of @me/@review-requested, which don't work
+# with GitHub App tokens (app tokens have no user identity).
+#
 # Output: one PR URL per line on stdout.
 
 set -euo pipefail
 
-# PRs authored by @me (no --checks filter to include those awaiting review)
-authored=$(gh search prs \
-  --state open \
-  --author "@me" \
-  --draft=false \
-  --limit 100 \
-  --json url \
-  --jq '.[].url')
+all_prs=""
 
-# PRs where @me is requested as reviewer (require passing checks)
-review_requested=$(gh search prs \
-  --state open \
-  --review-requested "@me" \
-  --draft=false \
-  --checks success \
-  --limit 100 \
-  --json url \
-  --jq '.[].url')
+# Get all repos in don-petry account and search each
+while IFS= read -r repo; do
+  prs=$(gh search prs \
+    --state open \
+    --repo "$repo" \
+    --draft=false \
+    --limit 100 \
+    --json url \
+    --jq '.[].url' 2>/dev/null || true)
+  all_prs="${all_prs}${prs}"$'\n'
+done < <(gh repo list don-petry --json nameWithOwner --jq '.[].nameWithOwner' 2>/dev/null || true)
 
-{
-  printf '%s\n' "$authored"
-  printf '%s\n' "$review_requested"
-} | sort -u | grep -v '^$' || true
+# Get all repos in petry-projects org and search each (require passing checks)
+while IFS= read -r repo; do
+  prs=$(gh search prs \
+    --state open \
+    --repo "$repo" \
+    --draft=false \
+    --checks success \
+    --limit 100 \
+    --json url \
+    --jq '.[].url' 2>/dev/null || true)
+  all_prs="${all_prs}${prs}"$'\n'
+done < <(gh repo list petry-projects --json nameWithOwner --jq '.[].nameWithOwner' 2>/dev/null || true)
+
+printf '%s\n' "$all_prs" | sort -u | grep -v '^$' || true
