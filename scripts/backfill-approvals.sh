@@ -34,11 +34,10 @@ while IFS= read -r repo; do
     marker=$(gh pr view "$pr_url" --json comments --jq '.comments[] | select(.body | contains("pr-review-agent") and contains("decision=approved")) | .body' 2>/dev/null | head -1 || true)
     [ -z "$marker" ] && continue
 
-    # Check if PR already has real APPROVED review
-    approval_count=$(gh pr view "$pr_url" --json reviews --jq '[.reviews[] | select(.state == "APPROVED")] | length' 2>/dev/null || echo 0)
-
-    if [ "$approval_count" -gt 0 ]; then
-      echo "  ✓ PR #$pr_num - already has $approval_count real approval(s)"
+    # Check if PR review decision is already satisfied (not REVIEW_REQUIRED)
+    review_decision=$(gh pr view "$pr_url" --json reviewDecision --jq '.reviewDecision' 2>/dev/null || echo "UNKNOWN")
+    if [ "$review_decision" != "REVIEW_REQUIRED" ]; then
+      echo "  ✓ PR #$pr_num - review already satisfied ($review_decision)"
       skipped=$((skipped + 1))
       continue
     fi
