@@ -31,6 +31,9 @@
 #                         never consume a review slot. review-one-pr.sh also
 #                         enforces this per-PR as a second layer of defence.
 #
+# Note: Uses repo enumeration instead of @me/@review-requested, which don't work
+# with GitHub App tokens (app tokens have no user identity).
+#
 # Output: one PR URL per line on stdout.
 
 set -euo pipefail
