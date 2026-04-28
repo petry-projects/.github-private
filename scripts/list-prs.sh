@@ -60,6 +60,9 @@
 #   2. All other repos (priority 1)
 #   Within each priority tier, PRs are sorted oldest-first by createdAt.
 #
+# Note: Uses repo enumeration instead of @me/@review-requested, which don't work
+# with GitHub App tokens (app tokens have no user identity).
+#
 # Output: one PR URL per line on stdout.
 
 set -euo pipefail
