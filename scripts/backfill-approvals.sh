@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# Backfill real approvals for PRs that have agent approval comments but no actual approvals.
+#
+# Usage: backfill-approvals.sh [dry_run]
+#   dry_run = "true" for dry-run (default: false)
+
+set -euo pipefail
+
+GH_TOKEN="${GH_TOKEN:?GH_TOKEN must be set}"
+DRY_RUN="${1:-false}"
+
+echo "=== Backfilling approvals for reviewed PRs ==="
+echo "Dry run: $DRY_RUN"
+echo ""
+
+approved=0
+failed=0
+skipped=0
+
+# Build list of all repos
+{
+  gh repo list don-petry --json nameWithOwner --jq '.[].nameWithOwner' 2>/dev/null || true
+  gh repo list petry-projects --json nameWithOwner --jq '.[].nameWithOwner' 2>/dev/null || true
+} | sort -u | while IFS= read -r repo; do
+  [ -z "$repo" ] && continue
+  echo "Checking $repo..."
+
+  # Get all open PRs with approval marker comments in this repo
+  gh pr list --repo "$repo" --state open --json url,number,comments --limit 100 2>/dev/null | jq -r '.[] | select(.comments | length > 0) | "\(.url) \(.number)"' | while IFS= read -r pr_url pr_num; do
+    # Check if PR has agent approval marker
+    marker=$(gh pr view "$pr_url" --json comments --jq '.comments[] | select(.body | contains("pr-review-agent") and contains("decision=approved")) | .body' 2>/dev/null | head -1 || true)
+    [ -z "$marker" ] && continue
+
+    # Check if PR already has real APPROVED review
+    approval_count=$(gh pr view "$pr_url" --json reviews --jq '[.reviews[] | select(.state == "APPROVED")] | length' 2>/dev/null || echo 0)
+
+    if [ "$approval_count" -gt 0 ]; then
+      echo "  ✓ PR #$pr_num - already has $approval_count real approval(s)"
+      skipped=$((skipped + 1))
+      continue
+    fi
+
+    # Get the approval comment
+    comment=$(gh pr view "$pr_url" --json comments --jq '.comments[] | select(.body | contains("pr-review-agent") and contains("decision=approved")) | .body' 2>/dev/null | tail -1 || true)
+    [ -z "$comment" ] && continue
+
+    echo "  → PR #$pr_num - posting real approval..."
+    if [ "$DRY_RUN" = "true" ]; then
+      echo "    [DRY RUN] Would post approval"
+      approved=$((approved + 1))
+    else
+      if gh pr review "$pr_url" --approve --body "$comment" 2>/dev/null; then
+        echo "    ✓ Posted real approval"
+        approved=$((approved + 1))
+      else
+        echo "    ✗ Failed to post approval"
+        failed=$((failed + 1))
+      fi
+    fi
+  done
+done
+
+echo ""
+echo "=== Summary ==="
+echo "Already have real approvals: $skipped"
+echo "Approvals posted: $approved"
+echo "Failures: $failed"
