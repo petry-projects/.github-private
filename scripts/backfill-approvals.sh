@@ -6,8 +6,14 @@
 
 set -euo pipefail
 
-GH_TOKEN="${GH_TOKEN:?GH_TOKEN must be set}"
-DRY_RUN="${1:-false}"
+# Default to dry-run (true) unless explicitly set to false
+DRY_RUN="${1:-true}"
+
+# Verify GitHub auth is available
+if ! gh auth status &>/dev/null; then
+  echo "ERROR: Not authenticated with GitHub. Run 'gh auth login' first."
+  exit 1
+fi
 
 echo "=== Backfilling approvals for reviewed PRs ==="
 echo "Dry run: $DRY_RUN"
@@ -18,15 +24,12 @@ failed=0
 skipped=0
 
 # Build list of all repos
-{
-  gh repo list don-petry --json nameWithOwner --jq '.[].nameWithOwner' 2>/dev/null || true
-  gh repo list petry-projects --json nameWithOwner --jq '.[].nameWithOwner' 2>/dev/null || true
-} | sort -u | while IFS= read -r repo; do
+while IFS= read -r repo; do
   [ -z "$repo" ] && continue
   echo "Checking $repo..."
 
   # Get all open PRs with approval marker comments in this repo
-  gh pr list --repo "$repo" --state open --json url,number,comments --limit 100 2>/dev/null | jq -r '.[] | select(.comments | length > 0) | "\(.url) \(.number)"' | while IFS= read -r pr_url pr_num; do
+  gh pr list --repo "$repo" --state open --json url,number,comments --limit 100 2>/dev/null | jq -r '.[] | select(.comments | length > 0) | {url, number} | "\(.url)|\(.number)"' | while IFS='|' read -r pr_url pr_num; do
     # Check if PR has agent approval marker
     marker=$(gh pr view "$pr_url" --json comments --jq '.comments[] | select(.body | contains("pr-review-agent") and contains("decision=approved")) | .body' 2>/dev/null | head -1 || true)
     [ -z "$marker" ] && continue
@@ -49,16 +52,22 @@ skipped=0
       echo "    [DRY RUN] Would post approval"
       approved=$((approved + 1))
     else
-      if gh pr review "$pr_url" --approve --body "$comment" 2>/dev/null; then
+      if gh pr review "$pr_url" --approve --body "$comment" 2>&1; then
         echo "    ✓ Posted real approval"
         approved=$((approved + 1))
       else
-        echo "    ✗ Failed to post approval"
+        rc=$?
+        echo "    ✗ Failed to post approval (exit code $rc)"
         failed=$((failed + 1))
       fi
     fi
   done
-done
+done < <(
+  {
+    gh repo list don-petry --json nameWithOwner --jq '.[].nameWithOwner' 2>/dev/null || true
+    gh repo list petry-projects --json nameWithOwner --jq '.[].nameWithOwner' 2>/dev/null || true
+  } | sort -u
+)
 
 echo ""
 echo "=== Summary ==="
