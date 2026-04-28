@@ -167,7 +167,13 @@ if [ "$MARKER_COUNT" -gt 0 ] && [ "$APPROVAL_COUNT" -eq 0 ]; then
 fi
 ```
 
-This script must be run with bot credentials (GitHub App token) that can approve PRs across the organization.
+This script runs with GitHub App token credentials that can approve PRs across the organization.
+
+**GitHub App Token Compatibility Fixes:**
+
+1. **Author Search:** Changed from `--author "@me"` to explicit `--author "don-petry"` because GitHub App tokens don't have user identity (no "me")
+2. **Subshell Scope:** Fixed while loop from pipe to process substitution to preserve counter variables (`PROBLEM_PRS`, `FIXED_PRS`). Piped input created a subshell where variable increments didn't persist.
+3. **Auth Check:** Silenced `gh api user` error (returns 403 as GitHub App tokens lack user scope). Script continues successfully with app-token identity.
 
 ## Rate Limiting and Fallback
 
