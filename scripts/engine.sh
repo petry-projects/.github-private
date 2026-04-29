@@ -1431,10 +1431,17 @@ sys.exit(1)
 }
 
 # extract_verdict_json <raw_file> <dest_file>
-# Extracts the first valid JSON object containing a 'decision' field from
-# a file that may contain claude preamble text before/after the JSON.
+# Resolves the verdict JSON from an agentic run, handling two output styles:
+#   1. Agent wrote JSON to $dest via Bash tool (dest already valid — use it as-is).
+#   2. Agent printed JSON to stdout captured in raw_file (scan for first valid
+#      JSON object containing a 'decision' field, ignoring preamble text).
 extract_verdict_json() {
   local raw="$1" dest="$2"
+  # Style 1: agent wrote to $dest via Bash tool (our stdout redirect didn't clobber it).
+  if jq empty "$dest" 2>/dev/null; then
+    return 0
+  fi
+  # Style 2: agent printed JSON to stdout.
   if jq empty "$raw" 2>/dev/null; then
     cp "$raw" "$dest"
     return 0
