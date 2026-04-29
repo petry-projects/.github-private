@@ -75,9 +75,14 @@ and **Copilot**.
      approve + auto-merge when clean. This creates an autonomous fix loop.
    - **If escalated + no delegation (or max cycles reached):** labels
      `needs-human-review` and re-requests don-petry as reviewer.
-   - **Cycle guard:** after `MAX_REVIEW_CYCLES` (default 3) rounds of AI
-     delegation without resolution, the agent stops delegating and escalates
-     to human to prevent infinite loops.
+   - **Cycle guard:** before running the cascade, `scripts/review-one-pr.sh`
+     counts existing review markers on the PR. If the count is
+     `>= MAX_REVIEW_CYCLES` (default 3), the cascade is skipped entirely;
+     the script posts a single human-escalation comment marked
+     `<!-- pr-review-agent escalation -->`, adds `needs-human-review`, and
+     re-requests don-petry. Subsequent runs detect the escalation marker and
+     no-op without spamming. This prevents infinite review loops on PRs
+     that aren't converging.
 
 5. **Idempotency + iterative review cycles** — every posted review starts with
    an HTML marker on line 1:
