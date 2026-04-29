@@ -228,10 +228,17 @@ fi
 # we re-reviewed the same head SHA on every run.
 EXISTING_MARKER_SHA=$(
   gh pr view "$PR_URL" --json reviews,comments \
-    --jq '((.reviews // []) + (.comments // [])) | .[].body | select(. != null)' 2>/dev/null \
+    --jq '
+      ((.reviews   // [] | map({when: .submittedAt, body: .body})) +
+       (.comments  // [] | map({when: .createdAt,   body: .body})))
+      | map(select(.body != null and (.body | test("<!-- pr-review-agent v1 sha=[a-f0-9]+"))))
+      | sort_by(.when)
+      | last
+      | .body // ""
+    ' 2>/dev/null \
   | grep -oE '<!-- pr-review-agent v1 sha=[a-f0-9]+' \
   | grep -oE '[a-f0-9]+$' \
-  | tail -1 || true
+  | head -1 || true
 )
 
 if [ -n "${EXISTING_MARKER_SHA:-}" ] && [ "$EXISTING_MARKER_SHA" = "$PR_HEAD_SHA" ]; then

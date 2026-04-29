@@ -185,6 +185,10 @@ if [ "$DECISION" = "approve" ]; then
   }
   rm -f "$BODY_FILE"
 
+  # Dismiss prior agent reviews / collapse prior agent comments now that the
+  # newest review has landed. Best-effort: failures here don't break the run.
+  mark_prior_agent_items_obsolete "$PR_URL"
+
   # Check merge state and rebase if needed
   MERGE_STATE=$(gh pr view "$PR_URL" --json mergeStateStatus --jq '.mergeStateStatus')
   if [ "$MERGE_STATE" = "BEHIND" ]; then
@@ -242,6 +246,10 @@ COMMENT_END
     echo "Posting fix-request comment..."
     gh pr comment "$PR_URL" --body "$(cat "$COMMENT_FILE")" || true
     rm -f "$COMMENT_FILE"
+
+    # Supersede prior agent reviews/comments now that the newest fix-request
+    # has landed. A new fix-request also invalidates any prior approval.
+    mark_prior_agent_items_obsolete "$PR_URL"
   else
     # Escalate to human
     echo "Escalating to human review..."

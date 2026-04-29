@@ -12,6 +12,22 @@
 REVIEW_ENGINE="${REVIEW_ENGINE:-claude}"
 export REVIEW_ENGINE
 
+# Per-tier timeouts (seconds). The job-level 60min cap is a backstop — without
+# per-tier timeouts a single hung model invocation burns the whole hour and
+# blocks every subsequent PR in the session.
+TRIAGE_TIMEOUT_SEC="${TRIAGE_TIMEOUT_SEC:-180}"
+DEEP_TIMEOUT_SEC="${DEEP_TIMEOUT_SEC:-600}"
+AUDIT_TIMEOUT_SEC="${AUDIT_TIMEOUT_SEC:-600}"
+ACTION_TIMEOUT_SEC="${ACTION_TIMEOUT_SEC:-300}"
+DUCK_TIMEOUT_SEC="${DUCK_TIMEOUT_SEC:-300}"
+
+# Retry config for transient errors. We treat exit codes that look like
+# network/process flakiness (124=GNU timeout, 137/143=signal kills, plus a
+# couple of generic transient codes) as retryable. Rate-limit (engine-level)
+# is NOT retryable here — the workflow's engine-fallback handles that.
+RETRY_MAX_ATTEMPTS="${RETRY_MAX_ATTEMPTS:-2}"   # total attempts including first
+RETRY_BASE_DELAY_SEC="${RETRY_BASE_DELAY_SEC:-5}"
+
 case "$REVIEW_ENGINE" in
   claude)
     ENGINE_TRIAGE_MODEL="claude-haiku-4-5-20251001"
@@ -537,12 +553,19 @@ run_triage() {
 
 # run_agentic <prompt_file> <model> [tier]
 # Full tool access (Bash, Read, Grep, Glob). Output to stdout.
+#
+# No retry here: callers redirect stdout to a file, so a retry inside this
+# function would append the second attempt's output to a partial first-attempt
+# file. Transient failures here become session-fatal via the workflow circuit
+# breaker — that's the intended trade-off for the long, expensive tier.
+# Per-tier timeout from DEEP_TIMEOUT_SEC (also applies to action/audit calls;
+# they're all the same agentic shape and similarly priced).
 run_agentic() {
   local prompt_file="$1"
   local model="$2"
   case "$REVIEW_ENGINE" in
     claude)
-      claude --print \
+      timeout "$DEEP_TIMEOUT_SEC" claude --print \
         --model "$model" \
         --permission-mode acceptEdits \
         --allowed-tools "Bash,Read,Grep,Glob" \
