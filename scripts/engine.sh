@@ -1465,7 +1465,7 @@ run_duck() {
   case "$DUCK_ENGINE" in
     claude)
       unset COPILOT_GITHUB_TOKEN 2>/dev/null || true
-      timeout 300 claude --print \
+      timeout "$DUCK_TIMEOUT_SEC" claude --print \
         --model "$model" \
         --permission-mode acceptEdits \
         --allowed-tools "Bash,Read,Grep,Glob" \
@@ -1474,7 +1474,7 @@ run_duck() {
       ;;
     copilot)
       unset CLAUDE_CODE_OAUTH_TOKEN 2>/dev/null || true
-      timeout 300 copilot \
+      timeout "$DUCK_TIMEOUT_SEC" copilot \
         -p "$(cat "$prompt_file")" \
         --model "$model" \
         -s --allow-all --no-ask-user
