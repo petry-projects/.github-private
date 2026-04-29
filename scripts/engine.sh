@@ -1745,6 +1745,18 @@ _mcp_review_flags() {
   fi
 }
 
+# is_transient_failure <exit_code>
+# Returns 0 (true) for exit codes suggesting a flaky network/process state:
+# 124 (GNU timeout) and 137/143 (signal kills). JSON parse failures and
+# generic exit-1s are NOT retried — those are deterministic problems.
+is_transient_failure() {
+  local rc="$1"
+  case "$rc" in
+    124|137|143) return 0 ;;
+    *)           return 1 ;;
+  esac
+}
+
 # run_triage <prompt_file>
 # Used by: review-one-pr.sh only (not the dev-lead writer pipeline).
 # No-tool mode. The prompt file already has all PR context inlined by the
@@ -3717,7 +3729,7 @@ run_duck() {
   case "$DUCK_ENGINE" in
     claude)
       unset COPILOT_GITHUB_TOKEN 2>/dev/null || true
-      timeout 300 claude --print \
+      timeout "$DUCK_TIMEOUT_SEC" claude --print \
         --model "$model" \
         --permission-mode acceptEdits \
         --allowed-tools "Bash,Read,Grep,Glob" \
@@ -3726,7 +3738,7 @@ run_duck() {
       ;;
     copilot)
       unset CLAUDE_CODE_OAUTH_TOKEN 2>/dev/null || true
-      timeout 300 copilot \
+      timeout "$DUCK_TIMEOUT_SEC" copilot \
         -p "$(cat "$prompt_file")" \
         --model "$model" \
         -s --allow-all --no-ask-user
