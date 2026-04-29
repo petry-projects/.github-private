@@ -420,6 +420,10 @@ jobs:
           failed=0
           engine_fallbacks=0
           processed=0
+          session_aborted=0
+          abort_pr=""
+          abort_reason=""
+          total_candidates=$(wc -l < prs.txt | tr -d ' ')
           while IFS= read -r pr_url; do
             [ -z "$pr_url" ] && continue
             processed=$((processed + 1))
@@ -460,18 +464,39 @@ jobs:
               actual=$((actual + 1))
               echo "::notice::Review posted ($actual/$MAX_PRS)"
             elif [ "$rc" -eq 2 ]; then
-              # Rate-limited on fallback engine too — no further fallback available
+              # Rate-limited on fallback engine too — no further fallback available.
+              # Session-fatal: subsequent PRs will hit the same wall.
               failed=$((failed + 1))
-              echo "::warning::Rate limit hit on $REVIEW_ENGINE engine, no fallback available for $pr_url"
+              echo "::error::Rate limit hit on $REVIEW_ENGINE engine, no fallback available for $pr_url"
+              session_aborted=1
+              abort_pr="$pr_url"
+              abort_reason="rate-limit on fallback engine"
             else
-              # Other failure
+              # Other failure — session-fatal. A systemic problem (model degraded,
+              # prompt regression, malformed verdicts) shouldn't burn the queue.
               failed=$((failed + 1))
-              echo "::warning::Review failed for $pr_url (exit code $rc)"
+              echo "::error::Review failed for $pr_url (exit code $rc)"
+              session_aborted=1
+              abort_pr="$pr_url"
+              abort_reason="exit code $rc"
             fi
             echo "::endgroup::"
+            if [ "$session_aborted" -eq 1 ]; then
+              break
+            fi
           done < prs.txt
+          remaining=$((total_candidates - processed))
+          if [ "$session_aborted" -eq 1 ]; then
+            echo "::error::Session aborted early after failure on $abort_pr ($abort_reason). Skipped $remaining remaining candidate(s); will retry on next scheduled run."
+          fi
           if [ "$engine_fallbacks" -gt 0 ]; then
-            echo "Summary: $actual reviews posted, $skipped_noops no-ops skipped, $failed failures, $engine_fallbacks engine fallback(s) to copilot (processed $processed/$CANDIDATE_LIMIT candidates)"
+            summary="Summary: $actual reviews posted, $skipped_noops no-ops skipped, $failed failures, $engine_fallbacks engine fallback(s) to copilot (processed $processed/$total_candidates candidates)"
           else
-            echo "Summary: $actual reviews posted, $skipped_noops no-ops skipped, $failed failures (processed $processed/$CANDIDATE_LIMIT candidates)"
+            summary="Summary: $actual reviews posted, $skipped_noops no-ops skipped, $failed failures (processed $processed/$total_candidates candidates)"
+          fi
+          if [ "$session_aborted" -eq 1 ]; then
+            echo "$summary [SESSION ABORTED EARLY]"
+            exit 1
+          else
+            echo "$summary"
           fi
