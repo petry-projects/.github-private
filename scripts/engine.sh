@@ -15,7 +15,7 @@ export REVIEW_ENGINE
 # Per-tier timeouts (seconds). The job-level 60min cap is a backstop — without
 # per-tier timeouts a single hung model invocation burns the whole hour and
 # blocks every subsequent PR in the session.
-TRIAGE_TIMEOUT_SEC="${TRIAGE_TIMEOUT_SEC:-180}"
+TRIAGE_TIMEOUT_SEC="${TRIAGE_TIMEOUT_SEC:-300}"
 DEEP_TIMEOUT_SEC="${DEEP_TIMEOUT_SEC:-600}"
 AUDIT_TIMEOUT_SEC="${AUDIT_TIMEOUT_SEC:-600}"
 ACTION_TIMEOUT_SEC="${ACTION_TIMEOUT_SEC:-300}"
