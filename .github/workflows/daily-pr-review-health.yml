@@ -2,14 +2,19 @@ name: Daily PR Review Health Check
 
 on:
   schedule:
-    # Daily at 6:00 UTC — covers same-day run history before US work hours
-    - cron: '0 6 * * *'
+    # Daily at 10:00 UTC — covers same-day run history before US work hours
+    - cron: '0 10 * * *'
   workflow_dispatch:
     inputs:
       lookback_days:
-        description: "Days of run history to inspect (time-based search)"
+        description: "Days of run history to inspect"
         required: false
-        default: "1"
+        default: "7"
+        type: string
+      run_limit:
+        description: "Max recent runs to inspect"
+        required: false
+        default: "10"
         type: string
 
 permissions:
@@ -26,42 +31,35 @@ jobs:
     timeout-minutes: 20
     env:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-      LOOKBACK_DAYS: ${{ inputs.lookback_days || '1' }}
-      # Pin via vars.CLAUDE_CODE_VERSION for reproducible caching; default
-      # 'latest' caches an install indefinitely — flush via the Actions cache
-      # UI or bump the variable to pick up new releases. Mirrors pr-review.yml.
-      CLAUDE_CODE_VERSION: ${{ vars.CLAUDE_CODE_VERSION || 'latest' }}
+      LOOKBACK_DAYS: ${{ inputs.lookback_days || '7' }}
+      RUN_LIMIT: ${{ inputs.run_limit || '10' }}
 
     steps:
+      - name: Generate GitHub App token
+        uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547  # v1
+        id: app-token
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: petry-projects
+
       - name: Checkout agent repo
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
 
       - name: Set up Node
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
         with:
           node-version: '20'
 
-      - name: Cache claude-code CLI
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
-        with:
-          path: ~/.npm-global
-          key: claude-code-${{ env.CLAUDE_CODE_VERSION }}-${{ runner.os }}
-
       - name: Install Claude Code CLI
-        run: |
-          mkdir -p "$HOME/.npm-global"
-          npm config set prefix "$HOME/.npm-global"
-          echo "$HOME/.npm-global/bin" >> "$GITHUB_PATH"
-          export PATH="$HOME/.npm-global/bin:$PATH"
-          if command -v claude >/dev/null 2>&1; then
-            echo "claude-code cache hit: $(claude --version)"
-          else
-            npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" # NOSONAR — install scripts required for native binary setup; version intentionally uses CLAUDE_CODE_VERSION var (same pattern as pr-review.yml)
-          fi
+        run: npm install -g @anthropic-ai/claude-code
 
       - name: Run health check
         env:
-          GH_TOKEN: ${{ secrets.DON_PETRY_BOT_GH_PAT }}
+          # App token covers petry-projects scope. If it lacks access to
+          # don-petry/pr-review-agent, set GH_PAT_WORKFLOWS as fallback.
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_PAT_FALLBACK: ${{ secrets.GH_PAT_WORKFLOWS }}
         run: bash scripts/pr_review_health.sh
 
       - name: Truncate report if needed
@@ -76,9 +74,9 @@ jobs:
 
       - name: Create issue with findings
         if: env.HAS_FAILURES == 'true' && hashFiles('pr_review_health_report.md') != ''
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b  # v7
         with:
-          github-token: ${{ github.token }}
+          github-token: ${{ steps.app-token.outputs.token }}
           script: |
             const fs = require('fs');
             const report = fs.readFileSync('pr_review_health_report.md', 'utf8');
@@ -88,8 +86,8 @@ jobs:
             }
             const today = new Date().toISOString().split('T')[0];
             const issue = await github.rest.issues.create({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
+              owner: 'don-petry',
+              repo: 'pr-review-agent',
               title: `PR Review Agent — failures detected ${today}`,
               body: report,
               labels: ['health-check', 'automated-report'],

@@ -14,16 +14,18 @@
 
 set -euo pipefail
 
-LOOKBACK_DAYS="${LOOKBACK_DAYS:-1}"
-WORKFLOW_REPO="${AGENT_REPO:-petry-projects/.github-private}"
-WORKFLOW_FILE="pr-review-trigger.yml"
+LOOKBACK_DAYS="${LOOKBACK_DAYS:-7}"
+RUN_LIMIT="${RUN_LIMIT:-10}"
+WORKFLOW_REPO="don-petry/pr-review-agent"
+WORKFLOW_FILE="pr-review.yml"
 REPORT_FILE="pr_review_health_report.md"
 TODAY=$(date -u +%Y-%m-%d)
 
 echo "=== PR Review Agent — Daily Health Check ==="
 echo "  Repo:         $WORKFLOW_REPO"
 echo "  Workflow:     $WORKFLOW_FILE"
-echo "  Lookback:     ${LOOKBACK_DAYS} day(s)"
+echo "  Lookback:     ${LOOKBACK_DAYS} days"
+echo "  Max runs:     $RUN_LIMIT"
 echo "  Date:         $TODAY"
 echo ""
 
@@ -50,7 +52,7 @@ CUTOFF=$(date -u -d "${LOOKBACK_DAYS} days ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null 
 echo "Fetching runs since: $CUTOFF"
 
 runs_json=$(gh api \
-  "repos/${WORKFLOW_REPO}/actions/workflows/${WORKFLOW_FILE}/runs?per_page=100&created=>=${CUTOFF}" \
+  "repos/${WORKFLOW_REPO}/actions/workflows/${WORKFLOW_FILE}/runs?per_page=${RUN_LIMIT}&created=>=${CUTOFF}" \
   --jq '.workflow_runs | map({
     id: .id,
     run_number: .run_number,
@@ -159,20 +161,13 @@ while IFS=$'\t' read -r run_id run_meta; do
 done < <(echo "$runs_json" | jq -r \
   '.[] | select(.conclusion == "failure") | [(.id | tostring), "run #\(.run_number) (\(.conclusion)) at \(.created_at)"] | @tsv')
 
-workflow_source=$(gh api "repos/${WORKFLOW_REPO}/contents/.github/workflows/${WORKFLOW_FILE}" \
-  --jq '.content' 2>/dev/null | tr -d '\n' | base64 -d 2>/dev/null \
-  || echo "(workflow source unavailable)")
-
 echo "Invoking Claude for log analysis..."
-# Claude writes errors to stdout (not stderr), so they'd silently land in
-# $REPORT_FILE with the stdout redirect below.  Wrap in `if !` so a non-zero
-# exit surfaces the file contents to the Actions log before aborting.
-if ! claude --print --model claude-sonnet-4-6 --no-session-persistence > "$REPORT_FILE" <<PROMPT
+claude --print --model claude-sonnet-4-6 > "$REPORT_FILE" <<PROMPT
 You are analyzing GitHub Actions workflow run logs for the PR Review Agent.
 
 ## Context
 - Workflow: \`${WORKFLOW_FILE}\` in repo \`${WORKFLOW_REPO}\`
-- Analysis window: last ${LOOKBACK_DAYS} days, up to 100 most recent runs
+- Analysis window: last ${LOOKBACK_DAYS} days, up to ${RUN_LIMIT} most recent runs
 - Report date: ${TODAY}
 - Total runs fetched: ${total_runs} | Successful: ${success_runs} | Failed: ${failed_runs} | Cancelled: ${cancelled_runs}
 
@@ -192,19 +187,7 @@ $(cat "$logs_file")
 Analyze these logs and produce a markdown health report with the following sections:
 
 ### 1. Executive Summary
-Use F-style layout — lead with the most critical signal, then supporting bullets. No prose paragraphs.
-
-Format:
-**Status:** BLOCKING | DEGRADED | WARNING | HEALTHY
-**Period:** <date range>
-**Result:** <X of Y runs failed (Z%)>
-
-Key findings:
-- <dominant failure cause — one line>
-- <secondary issue if any — one line>
-- <any pattern worth noting — one line>
-
-Action required: <one imperative sentence, or "None" if healthy>
+One paragraph: how many runs failed vs succeeded, the dominant failure cause, and urgency level (BLOCKING / DEGRADED / WARNING).
 
 ### 2. Failure Breakdown
 A table with columns: Failure Category | Affected Runs | Example Error Message.
@@ -236,12 +219,6 @@ Single line: \`Health: X/10 — <one-sentence verdict>\`
 
 Output ONLY the markdown report — no preamble or commentary outside the report sections.
 PROMPT
-then
-  echo "::error::Claude invocation failed. CLI output follows:"
-  cat "$REPORT_FILE" >&2
-  rm -f "$logs_file"
-  exit 1
-fi
 rm -f "$logs_file"
 
 [ -n "${GITHUB_STEP_SUMMARY:-}" ] && [ -f "$REPORT_FILE" ] && cat "$REPORT_FILE" >> "$GITHUB_STEP_SUMMARY"
