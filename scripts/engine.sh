@@ -1647,10 +1647,10 @@ run_duck() {
       ;;
     copilot)
       unset CLAUDE_CODE_OAUTH_TOKEN 2>/dev/null || true
-      timeout "$DUCK_TIMEOUT_SEC" copilot \
-        -p "$(cat "$prompt_file")" \
-        --model "$model" \
-        -s --allow-all --no-ask-user
+      # gh copilot is now a built-in; auth via GH_PAT (user token with Copilot subscription).
+      ( export GH_TOKEN="$COPILOT_GITHUB_TOKEN"
+        timeout "$DUCK_TIMEOUT_SEC" gh copilot suggest "$(cat "$prompt_file")" --target shell
+      )
       ;;
     *)
       echo "::error::Unknown DUCK_ENGINE='$DUCK_ENGINE'" >&2
