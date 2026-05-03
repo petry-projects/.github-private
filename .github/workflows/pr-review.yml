@@ -109,7 +109,7 @@ jobs:
 
     steps:
       - name: Generate GitHub App token
-        uses: actions/create-github-app-token@v1
+        uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1
         id: app-token
         with:
           app-id: ${{ secrets.APP_ID }}
@@ -126,7 +126,10 @@ jobs:
           case "$REVIEW_ENGINE" in
             claude)
               npm install -g @anthropic-ai/claude-code
-              gh extension install github/gh-copilot || true
+              gh extension install github/gh-copilot --force 2>&1 || true
+              if ! gh extension list 2>/dev/null | grep -q copilot; then
+                echo "::warning::gh-copilot extension install failed — rate-limit fallback will be unavailable."
+              fi
               ;;
             copilot)
               gh extension install github/gh-copilot
@@ -448,6 +451,12 @@ jobs:
             # If primary engine is Claude, switch to Copilot and retry this PR.
             # All subsequent PRs in this batch will also use Copilot.
             if [ "$rc" -eq 2 ] && [ "${REVIEW_ENGINE:-claude}" = "claude" ]; then
+              if ! gh extension list 2>/dev/null | grep -q copilot; then
+                echo "::warning::Copilot fallback engine unavailable (not installed) — skipping $pr_url and continuing batch"
+                failed=$((failed + 1))
+                echo "::endgroup::"
+                continue
+              fi
               echo "::warning::Claude rate limit hit — switching to Copilot engine for remaining PRs"
               export REVIEW_ENGINE=copilot
               engine_fallbacks=$((engine_fallbacks + 1))
