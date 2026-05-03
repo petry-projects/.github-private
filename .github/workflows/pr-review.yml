@@ -56,7 +56,7 @@ jobs:
         uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1
         id: app-token
         with:
-          app-id: ${{ secrets.APP_ID }}
+          client-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
           owner: petry-projects
       - name: Checkout agent repo
@@ -70,9 +70,10 @@ jobs:
           case "$REVIEW_ENGINE" in
             claude)
               npm install -g @anthropic-ai/claude-code
-              gh extension install github/gh-copilot --force 2>&1 || true
-              if ! gh extension list 2>/dev/null | grep -q copilot; then
-                echo "::warning::gh-copilot extension install failed — rate-limit fallback will be unavailable."
+              # gh copilot is now a built-in in modern gh CLI — no extension install needed.
+              # Verify the built-in is accessible with the user token (GH_PAT).
+              if ! env GH_TOKEN="$COPILOT_GITHUB_TOKEN" gh copilot --version > /dev/null 2>&1; then
+                echo "::warning::gh copilot built-in unavailable with user token — rate-limit fallback will be unavailable."
               fi
               ;;
             copilot)
