@@ -76,7 +76,41 @@ jobs:
         with:
           fetch-depth: 1
           token: ${{ secrets.GH_PAT_WORKFLOWS || github.token }}
+      - name: Check for existing open PR
+        id: dedup
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS || github.token }}
+          ISSUE: ${{ github.event.issue.number }}
+        run: |
+          # Search by branch prefix (claude/issue-NNN-*)
+          PR_URL=$(gh pr list \
+            --repo "$GITHUB_REPOSITORY" \
+            --state open \
+            --json number,url,headRefName \
+            --jq ".[] | select(.headRefName | startswith(\"claude/issue-${ISSUE}-\")) | .url" \
+            | head -1)
+
+          # Fallback: search PR body for "Closes #NNN"
+          if [ -z "$PR_URL" ]; then
+            PR_URL=$(gh pr list \
+              --repo "$GITHUB_REPOSITORY" \
+              --state open \
+              --search "Closes #${ISSUE} in:body" \
+              --json url \
+              --jq '.[0].url' 2>/dev/null || true)
+          fi
+
+          if [ -n "$PR_URL" ]; then
+            echo "existing_pr_url=$PR_URL" >> "$GITHUB_OUTPUT"
+            gh issue comment "$ISSUE" \
+              --repo "$GITHUB_REPOSITORY" \
+              --body "An open PR already addresses this issue: $PR_URL — skipping new Claude run to avoid duplicates."
+            echo "Skipping: existing PR found at $PR_URL"
+          else
+            echo "No existing open PR found — proceeding with Claude."
+          fi
       - name: Run Claude Code
+        if: steps.dedup.outputs.existing_pr_url == ''
         uses: anthropics/claude-code-action@6e2bd52842c65e914eba5c8badd17560bd26b5de # v1.0.89
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -91,6 +125,14 @@ jobs:
             --allowedTools "Bash(gh pr create:*),Bash(gh pr view:*),Bash(gh pr comment:*),Bash(gh issue comment:*),Bash(gh run view:*),Bash(gh run watch:*),Bash(gh api:*),Bash(gh label create:*),Edit,Write"
           # yamllint enable rule:line-length
           prompt: |
+            Before doing any implementation work, check for existing open PRs for
+            this issue and avoid creating duplicates:
+              gh pr list --repo "$GITHUB_REPOSITORY" --state open \
+                --json number,url,headRefName \
+                --jq '.[] | select(.headRefName | startswith("claude/issue-${{ github.event.issue.number }}-")) | .url'
+            If an open PR is found, checkout that branch and push fixes there
+            instead of creating a new PR.
+
             Implement a fix for issue #${{ github.event.issue.number }}.
 
             **Standards-conformance rules — read these before writing any code:**
