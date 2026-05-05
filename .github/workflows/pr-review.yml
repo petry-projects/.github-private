@@ -108,19 +108,12 @@ jobs:
       FORCE_REVIEW: ${{ github.event_name == 'repository_dispatch' && 'true' || inputs.force_review || 'false' }}
 
     steps:
-      - name: Generate GitHub App token
-        uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1
-        id: app-token
-        with:
-          client-id: ${{ secrets.APP_ID }}
-          private-key: ${{ secrets.APP_PRIVATE_KEY }}
-          owner: petry-projects
       - name: Checkout agent repo
         uses: actions/checkout@v5
 
       - name: Install review engine CLIs
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_TOKEN: ${{ secrets.DON_PETRY_BOT_PETRY_PROJECT_PAT }}
         run: |
           # Primary engine must install successfully; duck engine is best-effort.
           case "$REVIEW_ENGINE" in
@@ -144,7 +137,7 @@ jobs:
 
       - name: Verify auth
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_TOKEN: ${{ secrets.DON_PETRY_BOT_PETRY_PROJECT_PAT }}
         run: |
           set -euo pipefail
 
@@ -395,7 +388,7 @@ jobs:
       - name: Enumerate candidate PRs
         id: list
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_TOKEN: ${{ secrets.DON_PETRY_BOT_PETRY_PROJECT_PAT }}
         run: |
           set -euo pipefail
           if [ -n "${PR_URL_OVERRIDE}" ]; then
@@ -414,7 +407,7 @@ jobs:
       - name: Review each PR (cascade)
         if: steps.list.outputs.count != '0'
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_TOKEN: ${{ secrets.DON_PETRY_BOT_PETRY_PROJECT_PAT }}
           MAX_PRS: ${{ vars.MAX_PRS || '10' }}
           CANDIDATE_LIMIT: ${{ vars.CANDIDATE_LIMIT || '100' }}
         run: |

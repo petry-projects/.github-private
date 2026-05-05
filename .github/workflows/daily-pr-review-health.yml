@@ -35,14 +35,6 @@ jobs:
       RUN_LIMIT: ${{ inputs.run_limit || '10' }}
 
     steps:
-      - name: Generate GitHub App token
-        uses: actions/create-github-app-token@d72941d797fd3113feb6b93fd0dec494b13a2547  # v1
-        id: app-token
-        with:
-          app-id: ${{ secrets.APP_ID }}
-          private-key: ${{ secrets.APP_PRIVATE_KEY }}
-          owner: petry-projects
-
       - name: Checkout agent repo
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
 
@@ -56,9 +48,9 @@ jobs:
 
       - name: Run health check
         env:
-          # App token covers petry-projects scope. If it lacks access to
+          # DON_PETRY_BOT_PETRY_PROJECT_PAT covers petry-projects scope. If it lacks access to
           # don-petry/pr-review-agent, set GH_PAT_WORKFLOWS as fallback.
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_TOKEN: ${{ secrets.DON_PETRY_BOT_PETRY_PROJECT_PAT }}
           GH_PAT_FALLBACK: ${{ secrets.GH_PAT_WORKFLOWS }}
         run: bash scripts/pr_review_health.sh
 
@@ -76,7 +68,7 @@ jobs:
         if: env.HAS_FAILURES == 'true' && hashFiles('pr_review_health_report.md') != ''
         uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b  # v7
         with:
-          github-token: ${{ steps.app-token.outputs.token }}
+          github-token: ${{ secrets.DON_PETRY_BOT_PETRY_PROJECT_PAT }}
           script: |
             const fs = require('fs');
             const report = fs.readFileSync('pr_review_health_report.md', 'utf8');
