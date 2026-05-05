@@ -2,13 +2,13 @@
 
 Automated PR review and auto-merge for the `petry-projects` organization using Claude Code or GitHub Copilot.
 
-**Status:** ✅ Active with GitHub App authentication
+**Status:** ✅ Active with machine user PAT authentication
 
 ## Quick Links
 
 - 🚀 [Setup Guide](SETUP.md) — Configure and run the agent
 - 📖 [Full Documentation](AGENT.md) — Architecture and capabilities
-- 🔧 [GitHub App Setup](GITHUB_APP_SETUP.md) — Detailed app configuration
+- 🔧 [Machine User Setup](MACHINE_USER_SETUP.md) — PAT configuration and rotation
 - 🔑 [Security](SETUP.md#security-considerations) — Token rotation and best practices
 
 ## What It Does

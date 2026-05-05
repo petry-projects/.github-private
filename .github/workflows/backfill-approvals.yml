@@ -20,15 +20,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Generate GitHub App token
-        uses: actions/create-github-app-token@v1
-        id: app-token
-        with:
-          app-id: ${{ secrets.APP_ID }}
-          private-key: ${{ secrets.APP_PRIVATE_KEY }}
-          owner: petry-projects
-
       - name: Backfill approvals
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_TOKEN: ${{ secrets.DON_PETRY_BOT_PETRY_PROJECT_PAT }}
         run: bash scripts/backfill-approvals.sh "${{ inputs.dry_run }}"
