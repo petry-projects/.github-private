@@ -6,7 +6,7 @@ This repository automates PR reviews for the `petry-projects` organization using
 
 ### Prerequisites
 - GitHub organization: `petry-projects`
-- GitHub App: `petry-projects-pr-review-agent` (ID: `3505640`)
+- Machine user account (e.g., `petry-pr-bot`) added to org team in CODEOWNERS
 - Secrets configured in the repository
 
 ### Repository Secrets Required
@@ -16,9 +16,7 @@ Store these in the repository settings (`Settings → Secrets and variables → 
 | Secret | Description | Source |
 |--------|-------------|--------|
 | `CLAUDE_CODE_OAUTH_TOKEN` | Claude Code authentication token | `claude setup-token` |
-| `APP_ID` | GitHub App ID | `3505640` |
-| `APP_INSTALLATION_ID` | App installation ID in petry-projects org | `127129996` |
-| `APP_PRIVATE_KEY` | GitHub App private key (.pem file) | Downloaded from app settings |
+| `DON_PETRY_BOT_PETRY_PROJECT_PAT` | Machine user fine-grained PAT | Generated from machine user account settings |
 | `COPILOT_GITHUB_TOKEN` | GitHub Copilot token (optional, for fallback) | GitHub PAT with Copilot scope |
 
 ### Repository Variables (Optional)
@@ -96,39 +94,25 @@ gh run list --repo don-petry/pr-review-agent -w pr-review.yml -L 5
 ## Troubleshooting
 
 ### Workflow fails: "Resource not accessible by integration"
-- Verify GitHub App is installed to `petry-projects` organization
-- Check App has correct permissions (Contents: read, Pull requests: read/write, Checks: read)
-- Ensure `APP_ID`, `APP_INSTALLATION_ID`, and `APP_PRIVATE_KEY` secrets are set correctly
-
-### Workflow fails: "Invalid private key"
-- Download a fresh .pem file from the app settings
-- Verify no whitespace at beginning/end when pasting into secret
-- Store with: `gh secret set APP_PRIVATE_KEY --repo don-petry/pr-review-agent < path/to/file.pem`
+- Verify the `DON_PETRY_BOT_PETRY_PROJECT_PAT` secret is set and the token hasn't expired
+- Check the machine user has access to the target repos
+- Ensure the PAT has the required scopes (Contents: read, Pull requests: read/write, Checks: read)
 
 ### Reviews not posting
 - Run a dry-run to verify agent decision
 - Check `scripts/review-one-pr.sh` and `scripts/post-pr-review.sh` for errors
-- Verify branch protection rules don't block the app as a reviewer
+- Verify branch protection rules allow the machine user as a reviewer
 
 ### PRs not auto-merging despite approval
 - Check branch protection rules require approval (they do)
 - Verify auto-merge is enabled in GitHub organization settings
 - Confirm no other branch protection rules are blocking merge (e.g., required status checks)
 
-## GitHub App Details
+## Machine User Details
 
-**Name:** `petry-projects-pr-review-agent`  
-**ID:** `3505640`  
-**Homepage:** https://github.com/don-petry/pr-review-agent  
-**Installed to:** `petry-projects` organization (Installation ID: `127129996`)  
-**Permissions:**
-- Contents: Read-only
-- Pull requests: Read & write
-- Commit statuses: Read-only
-- Checks: Read-only
-- Members: Read-only (org level)
+The bot authenticates as a machine user account with a fine-grained PAT stored as the `DON_PETRY_BOT_PETRY_PROJECT_PAT` secret. The machine user is added to an org team listed in CODEOWNERS, so its approvals satisfy code owner review requirements.
 
-For full setup instructions including app creation, see [GITHUB_APP_SETUP.md](GITHUB_APP_SETUP.md).
+For full setup instructions, see [MACHINE_USER_SETUP.md](MACHINE_USER_SETUP.md).
 
 ## Architecture
 
@@ -153,13 +137,12 @@ prompts/
 
 ## Security Considerations
 
-- **GitHub App tokens** expire automatically (1 hour) — more secure than long-lived PATs
-- **Private key** stored only in GitHub Secrets, never logged or committed
-- **Fine-grained permissions** — app cannot access organization members or other sensitive data beyond PRs
-- **Audit trail** — all app actions logged in GitHub, visible in app settings → Recent deliveries
-- **Rotation** — regenerate private key quarterly; update `APP_PRIVATE_KEY` secret with new .pem
+- **Fine-grained PAT** scoped to only the permissions needed (Contents: read, Pull requests: read/write, Checks: read)
+- **90-day expiry** on PAT — set a calendar reminder to rotate
+- **PAT** stored only in GitHub Secrets, never logged or committed
+- **Rotation** — generate a new PAT, update `DON_PETRY_BOT_PETRY_PROJECT_PAT` secret, revoke old token
 
 ## Related Documentation
 
 - [AGENT.md](AGENT.md) — Full agent capabilities and design
-- [GITHUB_APP_SETUP.md](GITHUB_APP_SETUP.md) — Detailed GitHub App creation and configuration
+- [MACHINE_USER_SETUP.md](MACHINE_USER_SETUP.md) — Machine user creation, PAT setup, and rotation
