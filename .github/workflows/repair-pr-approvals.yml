@@ -18,11 +18,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+      - uses: actions/checkout@v4
 
       - name: Repair PR approvals
         env:
-          # Prefer the classic PAT (approvals need addPullRequestReview, which
-          # fails for fine-grained PATs); fall back to fine-grained if unset.
-          GH_TOKEN: ${{ secrets.DON_PETRY_BOT_GH_PAT_CLASSIC || secrets.DON_PETRY_BOT_GH_PAT }}
+          GH_TOKEN: ${{ secrets.DON_PETRY_BOT_PETRY_PROJECT_PAT }}
         run: bash scripts/repair-pr-approvals.sh "${{ inputs.dry_run }}"
