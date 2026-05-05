@@ -15,13 +15,13 @@ DRY_RUN="${1:-true}"
 
 # Debug: check authentication
 echo "GH_TOKEN set: ${GH_TOKEN:+yes}${GH_TOKEN:+-masked}"
-CURRENT_USER=$(gh api user --jq '.login' 2>/dev/null || echo "app-token")
+CURRENT_USER=$(gh api user --jq '.login' 2>/dev/null || echo "bot-pat")
 echo "Authenticated as: $CURRENT_USER"
 
 echo "=== Finding PRs with agent marker comments but no approval reviews ==="
 
 # Get list of all open PRs authored by don-petry
-# (can't use @me with GitHub App tokens, so use explicit author)
+# Use explicit author name for clarity
 PRSL=$(gh search prs \
   --state open \
   --author "don-petry" \
