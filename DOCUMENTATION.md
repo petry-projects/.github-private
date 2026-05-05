@@ -17,25 +17,19 @@ This repository contains several documentation files describing the PR Review Ag
   - Configuration options
 
 - **[IMPLEMENTATION.md](IMPLEMENTATION.md)** — Technical deep dive
-  - Why GitHub Apps over bot accounts
+  - Authentication: machine user with PAT
   - How PR enumeration works
   - Review pipeline architecture
   - Separation of agent vs infrastructure concerns
   - Rate limiting and fallback logic
   - Stuck PR cleanup explained
 
-## Setting Up GitHub App (If Rebuilding)
-- **[GITHUB_APP_SETUP.md](GITHUB_APP_SETUP.md)** — Step-by-step app creation
-  - Create the GitHub App in your organization
-  - Configure permissions
-  - Install to organization and repos
-  - Generate and store secrets
-  - Test authentication
-
-## Current Implementation Details
-- **App Name:** `petry-projects-pr-review-agent`
-- **App ID:** `3505640`
-- **Installation:** https://github.com/organizations/petry-projects/settings/installations/127129996
+## Setting Up Authentication
+- **[MACHINE_USER_SETUP.md](MACHINE_USER_SETUP.md)** — Machine user and PAT setup
+  - Create machine user account and org team
+  - Configure CODEOWNERS for code owner approvals
+  - Generate fine-grained PAT
+  - Store secrets and rotate tokens
 
 ## File Organization
 
@@ -61,7 +55,7 @@ docs/
 ├── SETUP.md                # Quick start (read first)
 ├── AGENT.md                # Full documentation
 ├── IMPLEMENTATION.md       # Technical details
-├── GITHUB_APP_SETUP.md     # App creation guide
+├── MACHINE_USER_SETUP.md   # Machine user and PAT setup
 └── DOCUMENTATION.md        # This file
 ```
 
@@ -71,7 +65,7 @@ docs/
 → Read [AGENT.md](AGENT.md)
 
 ### I need to set up the agent in a new organization
-→ Follow [GITHUB_APP_SETUP.md](GITHUB_APP_SETUP.md)
+→ Follow [MACHINE_USER_SETUP.md](MACHINE_USER_SETUP.md)
 
 ### The agent isn't working, help!
 → Check [SETUP.md#troubleshooting](SETUP.md#troubleshooting)
@@ -87,20 +81,15 @@ docs/
 
 ## Authentication Method
 
-The agent uses **GitHub Apps** for authentication:
+The agent uses a **machine user account** with a fine-grained PAT:
 
-**Why GitHub Apps?**
-- ✅ No human account required
-- ✅ Auto-expiring tokens (1 hour) — more secure
-- ✅ Fine-grained permissions
-- ✅ Better audit trail
-- ✅ GitHub's recommended approach
+**Why Machine User?**
+- ✅ Can be listed in CODEOWNERS via org team membership
+- ✅ Approvals satisfy `require_code_owner_review` branch protection
+- ✅ Simple PAT-based auth — no JWT generation step needed
+- ✅ Works identically to a human reviewer
 
-**Why not a bot user account?**
-- Would require creating and maintaining a separate GitHub user
-- Long-lived PATs (1 year) with higher security risk
-- Less audit visibility
-- More complex permissions management
+Previously used GitHub Apps, but they cannot be listed in CODEOWNERS (GitHub platform limitation). See [issue #27](https://github.com/don-petry/pr-review-agent/issues/27).
 
 ## Required Secrets
 
@@ -109,9 +98,7 @@ All secrets must be set in the repository (`Settings → Secrets and variables �
 | Secret | Purpose |
 |--------|---------|
 | `CLAUDE_CODE_OAUTH_TOKEN` | Claude Code API access |
-| `APP_ID` | GitHub App ID (3505640) |
-| `APP_INSTALLATION_ID` | App installation in org (127129996) |
-| `APP_PRIVATE_KEY` | GitHub App private key (.pem) |
+| `DON_PETRY_BOT_PETRY_PROJECT_PAT` | Machine user fine-grained PAT |
 | `COPILOT_GITHUB_TOKEN` | Optional fallback engine |
 
 ## Review Workflow
@@ -136,7 +123,7 @@ All secrets must be set in the repository (`Settings → Secrets and variables �
 
 - **Workflow failing to authenticate**: Check [SETUP.md#troubleshooting](SETUP.md#troubleshooting)
 - **Questions about design**: See [IMPLEMENTATION.md](IMPLEMENTATION.md)
-- **Setup instructions**: Follow [GITHUB_APP_SETUP.md](GITHUB_APP_SETUP.md)
+- **Setup instructions**: Follow [MACHINE_USER_SETUP.md](MACHINE_USER_SETUP.md)
 - **Agent capabilities**: Read [AGENT.md](AGENT.md)
 
 ## Document Maintenance
