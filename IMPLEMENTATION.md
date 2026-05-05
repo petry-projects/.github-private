@@ -4,38 +4,29 @@ This document describes the current implementation of the PR Review Agent and ke
 
 ## Authentication
 
-### Current Approach: GitHub App
+### Current Approach: Machine User with PAT
 
-**Why GitHub Apps?**
-- ✅ No human account required (no `petry-review-bot` user account)
-- ✅ Auto-expiring JWT tokens (1 hour) — more secure than PATs
-- ✅ Fine-grained permissions scoped to specific repos
-- ✅ Better audit trail — all actions logged and visible in app settings
-- ✅ GitHub's recommended approach for automation
+**Why Machine User?**
+- ✅ Can be listed in CODEOWNERS via org team membership
+- ✅ Approvals satisfy `require_code_owner_review` branch protection
+- ✅ Simple PAT-based auth — no JWT generation step needed
+- ✅ Works identically to a human reviewer from GitHub's perspective
 
 **Previous Approach (Deprecated):**
-- `petry-review-bot` user account with classic PAT
-- Required creating and maintaining a separate GitHub user
-- Long-lived tokens (1 year) required manual rotation
-- Less visibility into what the bot was doing
+- GitHub App (`petry-projects-pr-review-agent[bot]`) with auto-expiring JWT tokens
+- Could not be listed in CODEOWNERS (GitHub platform limitation)
+- Repos with `require_code_owner_review: true` were permanently blocked
+- See [issue #27](https://github.com/don-petry/pr-review-agent/issues/27) for details
 
-### Token Generation
+### Token Usage
 
-Both workflows generate fresh JWT tokens at runtime:
+All workflows use the `DON_PETRY_BOT_PETRY_PROJECT_PAT` org secret directly:
 ```yaml
-- name: Generate GitHub App token
-  uses: actions/create-github-app-token@v1
-  id: app-token
-  with:
-    app-id: ${{ secrets.APP_ID }}
-    private-key: ${{ secrets.APP_PRIVATE_KEY }}
-    owner: petry-projects
-
 env:
-  GH_TOKEN: ${{ steps.app-token.outputs.token }}
+  GH_TOKEN: ${{ secrets.DON_PETRY_BOT_PETRY_PROJECT_PAT }}
 ```
 
-The token is scoped to the `petry-projects` organization and expires after 1 hour.
+The PAT is a fine-grained token scoped to the `petry-projects` organization with 90-day expiry. See [MACHINE_USER_SETUP.md](MACHINE_USER_SETUP.md) for rotation instructions.
 
 ## PR Enumeration
 
@@ -167,13 +158,7 @@ if [ "$MARKER_COUNT" -gt 0 ] && [ "$APPROVAL_COUNT" -eq 0 ]; then
 fi
 ```
 
-This script runs with GitHub App token credentials that can approve PRs across the organization.
-
-**GitHub App Token Compatibility Fixes:**
-
-1. **Author Search:** Changed from `--author "@me"` to explicit `--author "don-petry"` because GitHub App tokens don't have user identity (no "me")
-2. **Subshell Scope:** Fixed while loop from pipe to process substitution to preserve counter variables (`PROBLEM_PRS`, `FIXED_PRS`). Piped input created a subshell where variable increments didn't persist.
-3. **Auth Check:** Silenced `gh api user` error (returns 403 as GitHub App tokens lack user scope). Script continues successfully with app-token identity.
+This script runs with machine user PAT credentials that can approve PRs across the organization.
 
 ## Rate Limiting and Fallback
 
@@ -225,9 +210,7 @@ gh run view <run-id> --repo don-petry/pr-review-agent --log
 | Secret | Purpose |
 |--------|---------|
 | `CLAUDE_CODE_OAUTH_TOKEN` | Claude Code authentication |
-| `APP_ID` | GitHub App ID (3505640) |
-| `APP_INSTALLATION_ID` | App installation (127129996) |
-| `APP_PRIVATE_KEY` | GitHub App private key (.pem) |
+| `DON_PETRY_BOT_PETRY_PROJECT_PAT` | Machine user PAT for GitHub API access |
 | `COPILOT_GITHUB_TOKEN` | GitHub Copilot fallback token |
 
 ## File Structure
@@ -252,7 +235,7 @@ gh run view <run-id> --repo don-petry/pr-review-agent --log
 │   └── cascade-action.md          # Review coordination (legacy)
 │
 ├── SETUP.md                       # Quick start guide
-├── GITHUB_APP_SETUP.md            # Detailed GitHub App setup
+├── MACHINE_USER_SETUP.md          # Machine user and PAT setup
 ├── IMPLEMENTATION.md              # This file
 └── README.md                       # Overview
 ```
