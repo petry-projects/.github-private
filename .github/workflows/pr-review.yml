@@ -15,6 +15,16 @@ on:
         required: false
         default: "false"
         type: string
+      force_review:
+        description: "If true, bypass idempotency check and re-review even if already reviewed at head SHA (use for @mention-triggered reviews)"
+        required: false
+        default: "false"
+        type: string
+  repository_dispatch:
+    # Triggered by the petry-projects/.github mention-listener workflow.
+    # Requires only Contents: write on this repo (not Actions: write).
+    # Payload: { pr_url: "https://github.com/...", force_review: "true" }
+    types: [pr-review-mention]
 
 permissions:
   contents: read
@@ -22,7 +32,10 @@ permissions:
   checks: read
 
 concurrency:
-  group: pr-review
+  # Scheduled and manual batch runs share one slot to prevent overlap.
+  # Mention-triggered runs (repository_dispatch or workflow_dispatch with pr_url)
+  # get per-PR slots so they don't queue behind hourly batches or each other.
+  group: ${{ (inputs.pr_url || github.event.client_payload.pr_url) && format('pr-review-mention-{0}', inputs.pr_url || github.event.client_payload.pr_url) || 'pr-review-scheduled' }}
   cancel-in-progress: false
 
 jobs:
@@ -40,16 +53,20 @@ jobs:
       # No new secret needed: gh secret set GH_PAT is already present in this repo.
       COPILOT_GITHUB_TOKEN: ${{ secrets.GH_PAT }}
       # Default to dry-run unless the repo variable LIVE_MODE is set to 'true'.
-      # Manual workflow_dispatch can override either way via the dry_run input.
+      # workflow_dispatch can override via dry_run input.
+      # repository_dispatch (mention trigger) always runs live — the human explicitly asked.
       # To go live: gh variable set LIVE_MODE --body true --repo don-petry/self
-      DRY_RUN: ${{ inputs.dry_run || (vars.LIVE_MODE == 'true' && 'false' || 'true') }}
-      PR_URL_OVERRIDE: ${{ inputs.pr_url }}
+      DRY_RUN: ${{ github.event_name == 'repository_dispatch' && 'false' || inputs.dry_run || (vars.LIVE_MODE == 'true' && 'false' || 'true') }}
+      PR_URL_OVERRIDE: ${{ inputs.pr_url || github.event.client_payload.pr_url }}
       # Comma-separated list of GitHub orgs where AI delegation is enabled.
       # When findings exist, the agent posts fix-request comments for AI to act on.
       # gh variable set DELEGATION_ORGS --body "petry-projects,don-petry" --repo don-petry/self
       DELEGATION_ORGS: ${{ vars.DELEGATION_ORGS || vars.CLAUDE_ORGS || '' }}
       # Max review cycles before stopping AI delegation and escalating to human.
       MAX_REVIEW_CYCLES: ${{ vars.MAX_REVIEW_CYCLES || '3' }}
+      # When true, bypass idempotency check so an @mention always triggers a fresh review.
+      # repository_dispatch always forces a review; workflow_dispatch respects the input.
+      FORCE_REVIEW: ${{ github.event_name == 'repository_dispatch' && 'true' || inputs.force_review || 'false' }}
 
     steps:
       - name: Checkout agent repo
