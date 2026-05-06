@@ -62,7 +62,7 @@ jobs:
         if: env.HAS_FAILURES == 'true' && hashFiles('pr_review_health_report.md') != ''
         uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b  # v7
         with:
-          github-token: ${{ secrets.DON_PETRY_BOT_PETRY_PROJECT_PAT }}
+          github-token: ${{ github.token }}
           script: |
             const fs = require('fs');
             const report = fs.readFileSync('pr_review_health_report.md', 'utf8');
