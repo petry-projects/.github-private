@@ -11,6 +11,8 @@ and **Copilot**.
 
 1. **Cron** — `.github/workflows/pr-review.yml` runs at `:07` every hour
    (and on `workflow_dispatch`).
+1a. **@mention** — comment `@petry-review-bot` on any PR to trigger an immediate
+    review, bypassing the hourly schedule. See [Mention-triggered reviews](#mention-triggered-reviews).
 2. **Enumerate** — `scripts/list-prs.sh` queries GitHub for open PRs where
    `@me` is the author OR a requested reviewer, across every repo the PAT can
    see. Output: one URL per line.
@@ -238,6 +240,46 @@ gh workflow run pr-review.yml --repo don-petry/pr-review-agent -f dry_run=false
 - **Max PRs per run** — defaults to 10 per cron tick to stay within the 60-min
   job timeout. Override:
   `gh variable set MAX_PRS --body 15 --repo don-petry/pr-review-agent`
+
+## Mention-triggered reviews
+
+Comment `@petry-review-bot` on any PR to start an immediate, on-demand review
+without waiting for the next scheduled run. The bot posts an acknowledgement
+within seconds and the full cascade result appears in a few minutes.
+
+**How it flows:**
+
+```
+PR comment "@petry-review-bot please review"
+  → petry-projects/.github: pr-review-mention.yml (listens org-wide)
+      → validates commenter trust (OWNER/MEMBER/COLLABORATOR only)
+      → posts ack comment "I'm on it..."
+      → gh workflow run pr-review.yml --field pr_url=<url> --field force_review=true
+          → don-petry/pr-review-agent: pr-review.yml (per-PR concurrency slot)
+              → scripts/review-one-pr.sh (FORCE_REVIEW=true bypasses idempotency)
+                  → cascade as normal → posts review
+```
+
+**Key behaviors vs. scheduled runs:**
+- `force_review=true` skips the "already reviewed at this SHA" no-op, so you
+  always get a fresh analysis even if the head commit hasn't changed.
+- Each mention-triggered run uses its own concurrency group (`pr-review-mention-<url>`)
+  so it doesn't queue behind hourly batch runs or other mentions.
+- Commenter trust is enforced — external contributors cannot trigger reviews.
+
+**Setup (one-time):**
+
+1. Copy [`templates/mention-listener.yml`](templates/mention-listener.yml) to
+   `petry-projects/.github` as `.github/workflows/pr-review-mention.yml`.
+
+2. Add the `DON_PETRY_BOT_PETRY_PROJECT_PAT` secret to `petry-projects/.github`
+   (org-level secret or repo secret on `.github`). The PAT needs:
+   - **Pull requests: write** — to post the ack comment across petry-projects repos
+   - **Contents: write** (scoped to `don-petry/pr-review-agent`) — to send the
+     `repository_dispatch` event (does **not** require `Actions: write`)
+
+3. Ensure `petry-review-bot` has at least **Read** collaborator access on
+   `don-petry/pr-review-agent`.
 
 ## Architecture
 
