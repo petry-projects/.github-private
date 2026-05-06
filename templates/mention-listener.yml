@@ -5,12 +5,8 @@
 #          in a PR comment or review comment within the petry-projects org.
 #
 # Prerequisites:
-#   1. Add secret DON_PETRY_BOT_PETRY_PROJECT_PAT to petry-projects/.github
-#      with the bot PAT that has:
-#        - Contents: write (scoped to don-petry/pr-review-agent) — for repository_dispatch
-#        - Pull requests: write (org-wide or per-repo) — to post the ack comment
-#   2. The PAT owner (petry-review-bot) does NOT need Actions: write.
-#      Read-level collaborator access on don-petry/pr-review-agent is sufficient.
+#   Uses GH_PAT_WORKFLOWS (org-level secret, classic PAT with repo scope) — already
+#   present in petry-projects. No additional secret setup required.
 
 name: PR Review — Mention Trigger
 
@@ -37,7 +33,7 @@ jobs:
       - name: Check commenter trust level
         id: trust
         env:
-          GH_TOKEN: ${{ secrets.DON_PETRY_BOT_PETRY_PROJECT_PAT }}
+          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
           AUTHOR_ASSOCIATION: ${{ github.event.comment.author_association }}
           COMMENTER: ${{ github.event.comment.user.login }}
         run: |
@@ -58,7 +54,7 @@ jobs:
         id: pr
         if: steps.trust.outputs.trusted == 'true'
         env:
-          GH_TOKEN: ${{ secrets.DON_PETRY_BOT_PETRY_PROJECT_PAT }}
+          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
         run: |
           if [ "${{ github.event_name }}" = "pull_request_review_comment" ]; then
             PR_URL="${{ github.event.pull_request.html_url }}"
@@ -72,7 +68,7 @@ jobs:
       - name: Post acknowledgement comment
         if: steps.trust.outputs.trusted == 'true'
         env:
-          GH_TOKEN: ${{ secrets.DON_PETRY_BOT_PETRY_PROJECT_PAT }}
+          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
           PR_URL: ${{ steps.pr.outputs.pr_url }}
           COMMENTER: ${{ github.event.comment.user.login }}
         run: |
@@ -85,7 +81,7 @@ jobs:
       - name: Trigger review agent
         if: steps.trust.outputs.trusted == 'true'
         env:
-          GH_TOKEN: ${{ secrets.DON_PETRY_BOT_PETRY_PROJECT_PAT }}
+          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
           PR_URL: ${{ steps.pr.outputs.pr_url }}
         run: |
           # Use repository_dispatch (requires only Contents: write, not Actions: write).
