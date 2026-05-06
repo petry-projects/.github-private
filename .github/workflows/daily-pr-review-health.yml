@@ -7,14 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       lookback_days:
-        description: "Days of run history to inspect"
+        description: "Days of run history to inspect (time-based search)"
         required: false
-        default: "7"
-        type: string
-      run_limit:
-        description: "Max recent runs to inspect"
-        required: false
-        default: "10"
+        default: "1"
         type: string
 
 permissions:
@@ -31,8 +26,7 @@ jobs:
     timeout-minutes: 20
     env:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-      LOOKBACK_DAYS: ${{ inputs.lookback_days || '7' }}
-      RUN_LIMIT: ${{ inputs.run_limit || '10' }}
+      LOOKBACK_DAYS: ${{ inputs.lookback_days || '1' }}
 
     steps:
       - name: Checkout agent repo
@@ -89,4 +83,4 @@ jobs:
       - name: Annotate clean run
         if: env.HAS_FAILURES != 'true'
         run: |
-          echo "::notice::Health check passed — no failures in the last ${LOOKBACK_DAYS} days (up to ${RUN_LIMIT} runs inspected)."
+          echo "::notice::Health check passed — all runs in the last ${LOOKBACK_DAYS} day(s) are healthy."

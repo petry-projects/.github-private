@@ -14,8 +14,7 @@
 
 set -euo pipefail
 
-LOOKBACK_DAYS="${LOOKBACK_DAYS:-7}"
-RUN_LIMIT="${RUN_LIMIT:-10}"
+LOOKBACK_DAYS="${LOOKBACK_DAYS:-1}"
 WORKFLOW_REPO="don-petry/pr-review-agent"
 WORKFLOW_FILE="pr-review.yml"
 REPORT_FILE="pr_review_health_report.md"
@@ -24,8 +23,7 @@ TODAY=$(date -u +%Y-%m-%d)
 echo "=== PR Review Agent — Daily Health Check ==="
 echo "  Repo:         $WORKFLOW_REPO"
 echo "  Workflow:     $WORKFLOW_FILE"
-echo "  Lookback:     ${LOOKBACK_DAYS} days"
-echo "  Max runs:     $RUN_LIMIT"
+echo "  Lookback:     ${LOOKBACK_DAYS} day(s)"
 echo "  Date:         $TODAY"
 echo ""
 
@@ -52,7 +50,7 @@ CUTOFF=$(date -u -d "${LOOKBACK_DAYS} days ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null 
 echo "Fetching runs since: $CUTOFF"
 
 runs_json=$(gh api \
-  "repos/${WORKFLOW_REPO}/actions/workflows/${WORKFLOW_FILE}/runs?per_page=${RUN_LIMIT}&created=>=${CUTOFF}" \
+  "repos/${WORKFLOW_REPO}/actions/workflows/${WORKFLOW_FILE}/runs?per_page=100&created=>=${CUTOFF}" \
   --jq '.workflow_runs | map({
     id: .id,
     run_number: .run_number,
