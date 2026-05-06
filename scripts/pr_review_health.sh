@@ -165,7 +165,7 @@ You are analyzing GitHub Actions workflow run logs for the PR Review Agent.
 
 ## Context
 - Workflow: \`${WORKFLOW_FILE}\` in repo \`${WORKFLOW_REPO}\`
-- Analysis window: last ${LOOKBACK_DAYS} days, up to ${RUN_LIMIT} most recent runs
+- Analysis window: last ${LOOKBACK_DAYS} days, up to 100 most recent runs
 - Report date: ${TODAY}
 - Total runs fetched: ${total_runs} | Successful: ${success_runs} | Failed: ${failed_runs} | Cancelled: ${cancelled_runs}
 
