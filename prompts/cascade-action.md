@@ -50,7 +50,7 @@ PLACEHOLDER_SUMMARY
 PLACEHOLDER_FINDINGS_LIST
 
 ---
-_Reviewed by the don-petry PR-review cascade (PLACEHOLDER_ENGINE_LABEL). Reply with `@don-petry` if you need a human._
+_Reviewed by the PR-review cascade (PLACEHOLDER_ENGINE_LABEL). Reply if you need a human review._
 BODYEOF
 ```
 

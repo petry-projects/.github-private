@@ -81,8 +81,8 @@ while IFS= read -r repo; do
   done < <(gh pr list --repo "$repo" --state open --json url,number,comments --limit 100 2>/dev/null | jq -r '.[] | select(.comments | length > 0) | {url, number} | "\(.url)|\(.number)"')
 done < <(
   {
-    gh repo list don-petry --json nameWithOwner --jq '.[].nameWithOwner' 2>/dev/null || true
-    gh repo list petry-projects --json nameWithOwner --jq '.[].nameWithOwner' 2>/dev/null || true
+    gh repo list "${REVIEWER_USER:-don-petry}" --json nameWithOwner --jq '.[].nameWithOwner' 2>/dev/null || true
+    gh repo list "${TARGET_ORG:-petry-projects}" --json nameWithOwner --jq '.[].nameWithOwner' 2>/dev/null || true
   } | sort -u
 )
 

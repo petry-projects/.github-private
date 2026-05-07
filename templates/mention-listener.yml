@@ -90,7 +90,7 @@ jobs:
           gh api \
             --method POST \
             --header "Accept: application/vnd.github+json" \
-            /repos/don-petry/pr-review-agent/dispatches \
+            /repos/petry-projects/.github-private/dispatches \
             --field event_type=pr-review-mention \
             --field "client_payload[pr_url]=$PR_URL"
           echo "Dispatch sent for $PR_URL"

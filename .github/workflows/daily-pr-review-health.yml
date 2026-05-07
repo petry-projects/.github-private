@@ -42,10 +42,7 @@ jobs:
 
       - name: Run health check
         env:
-          # DON_PETRY_BOT_PETRY_PROJECT_PAT covers petry-projects scope. If it lacks access to
-          # don-petry/pr-review-agent, set GH_PAT_WORKFLOWS as fallback.
-          GH_TOKEN: ${{ secrets.DON_PETRY_BOT_PETRY_PROJECT_PAT }}
-          GH_PAT_FALLBACK: ${{ secrets.GH_PAT_WORKFLOWS }}
+          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
         run: bash scripts/pr_review_health.sh
 
       - name: Truncate report if needed
@@ -72,8 +69,8 @@ jobs:
             }
             const today = new Date().toISOString().split('T')[0];
             const issue = await github.rest.issues.create({
-              owner: 'don-petry',
-              repo: 'pr-review-agent',
+              owner: context.repo.owner,
+              repo: context.repo.repo,
               title: `PR Review Agent — failures detected ${today}`,
               body: report,
               labels: ['health-check', 'automated-report'],

@@ -276,7 +276,7 @@ COMMENT_END
     # Escalate to human
     echo "Escalating to human review..."
     gh pr edit "$PR_URL" --add-label needs-human-review 2>/dev/null || true
-    gh pr request-review "$PR_URL" --user don-petry 2>/dev/null || true
+    gh pr request-review "$PR_URL" --user "${REVIEWER_USER:-don-petry}" 2>/dev/null || true
   fi
 fi
 

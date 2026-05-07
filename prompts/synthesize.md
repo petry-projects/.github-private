@@ -129,12 +129,12 @@ and (if `$DRY_RUN` is `false`) post a PR review.
        ```
 
        After posting, do NOT add `needs-human-review` label (Claude is handling it).
-       Do NOT re-request don-petry as reviewer.
+       Do NOT re-request the reviewer as reviewer.
    9b. **Escalate to human**: add the `needs-human-review` label
        (`gh pr edit "$PR_URL" --add-label needs-human-review`; create it first
        if needed via `gh label create needs-human-review --repo <owner/repo> --color FBCA04 --description "Flagged by automated PR review agent"`),
-       then re-request don-petry as a reviewer
-       (`gh api -X POST "repos/<owner>/<repo>/pulls/<num>/requested_reviewers" -f reviewers[]=don-petry`,
+       then re-request the repo owner as a reviewer
+       (`gh api -X POST "repos/<owner>/<repo>/pulls/<num>/requested_reviewers" -f reviewers[]=$REVIEWER_USER`,
        swallowing errors).
        If `$AI_DELEGATION_ENABLED` is `true` but `$REVIEW_CYCLE` >= `$MAX_REVIEW_CYCLES`,
        add a note in the escalation: "AI delegation exhausted after
@@ -166,7 +166,7 @@ and (if `$DRY_RUN` is `false`) post a PR review.
 <from any lens — failing/pending/green count>
 
 ---
-_Reviewed automatically by the don-petry PR-review agent ($ENGINE_LABEL). The marker on line 1 lets the agent detect new commits and re-review. Reply with `@don-petry` if you need a human._
+_Reviewed automatically by the PR-review agent ($ENGINE_LABEL). The marker on line 1 lets the agent detect new commits and re-review. Reply if you need a human review._
 ```
 
 ## Important notes
