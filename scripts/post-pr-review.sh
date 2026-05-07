@@ -343,16 +343,27 @@ mark_prior_agent_items_obsolete() {
     | .id
   ' "$reviews_file" 2>/dev/null || true)
 
-  local dismiss_err
+  local dismiss_err current_state
   if [ -n "$stale_review_ids" ]; then
     while IFS= read -r review_id; do
       [ -z "$review_id" ] && continue
-      echo "  dismissing prior agent review $review_id (superseded by $PR_HEAD_SHA)"
-      dismiss_err=$(gh api -X PUT "repos/$owner_repo/pulls/$pr_num/reviews/$review_id/dismissals" \
-        -f message="Superseded by automated re-review at $PR_HEAD_SHA." \
-        2>&1 >/dev/null) || {
-        echo "::warning::cleanup: failed to dismiss prior agent review $review_id on $pr_url — duplicates will stack until resolved. API said: $(echo "$dismiss_err" | head -3 | tr '\n' ' ')"
-      }
+      # Re-check the review's current state to avoid 422s from race conditions
+      # (state may have changed between enumeration and dismissal).
+      current_state=$(gh api "repos/$owner_repo/pulls/$pr_num/reviews/$review_id" \
+        --jq '.state' 2>/dev/null || echo "UNKNOWN")
+      case "$current_state" in
+        APPROVED|COMMENTED|CHANGES_REQUESTED)
+          echo "  dismissing prior agent review $review_id (superseded by $PR_HEAD_SHA)"
+          dismiss_err=$(gh api -X PUT "repos/$owner_repo/pulls/$pr_num/reviews/$review_id/dismissals" \
+            -f message="Superseded by automated re-review at $PR_HEAD_SHA." \
+            2>&1 >/dev/null) || {
+            echo "::warning::cleanup: failed to dismiss prior agent review $review_id on $pr_url — duplicates will stack until resolved. API said: $(echo "$dismiss_err" | head -3 | tr '\n' ' ')"
+          }
+          ;;
+        *)
+          echo "  skipping review $review_id (state: $current_state — already dismissed or not dismissable)"
+          ;;
+      esac
     done <<< "$stale_review_ids"
   fi
 
