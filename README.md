@@ -1,22 +1,51 @@
-# PR Review Agent
+# .github-private
 
-Automated PR review and auto-merge for the `petry-projects` organization using Claude Code or GitHub Copilot.
+Org-wide Copilot custom agents, Claude Code skills, and agentic workflow infrastructure for `petry-projects`.
 
-**Status:** ✅ Active with machine user PAT authentication
+## What This Repo Does
 
-## Quick Links
+This is the [`.github-private` convention](https://docs.github.com/en/copilot/how-tos/copilot-on-github/customize-copilot/customize-cloud-agent/create-custom-agents) repo for the petry-projects org. Agent profiles in `/agents/` are available org-wide — invocable from GitHub.com, VS Code, JetBrains, and Copilot CLI.
 
-- 🚀 [Setup Guide](SETUP.md) — Configure and run the agent
-- 📖 [Full Documentation](AGENT.md) — Architecture and capabilities
-- 🔧 [Machine User Setup](MACHINE_USER_SETUP.md) — PAT configuration and rotation
-- 🔑 [Security](SETUP.md#security-considerations) — Token rotation and best practices
+It also contains the scheduled PR review automation (workflows + scripts + prompts) that runs hourly across the org.
 
-## What It Does
+## Structure
 
-Automatically reviews open PRs across `petry-projects` organization repos:
-- Analyzes code quality, correctness, and security
-- Posts approval reviews when PRs pass all checks
-- Enables auto-merge to land approved changes
-- Escalates to human review when needed
+```
+agents/                  # Copilot custom agent profiles (org-wide)
+  pr-reviewer.md         # Multi-tier cascading PR review
+  feature-ideator.md     # Feature idea generation
+  compliance-auditor.md  # Org standards compliance checking
+prompts/                 # Prompt libraries used by workflows
+scripts/                 # Shell orchestration for GitHub Actions
+frameworks/              # Installed agentic frameworks (git subtree)
+  bmad-method/           # BMAD-METHOD: multi-agent development lifecycle
+  spec-kit/              # spec-kit: spec → plan → tasks pipeline
+  gsd/                   # get-shit-done: context engineering & milestones
+.github/workflows/       # Scheduled automation (PR review, health checks)
+```
 
-Runs hourly and can be triggered manually.
+## Agents
+
+| Agent | Purpose | Invoke with |
+|-------|---------|-------------|
+| `pr-reviewer` | Cascading PR review (triage → deep → security audit) | `@pr-reviewer` in any org PR |
+| `feature-ideator` | Generate and prioritize feature ideas | `@feature-ideator` in any org repo |
+| `compliance-auditor` | Audit repo against org standards | `@compliance-auditor` in any org repo |
+
+## PR Review Automation
+
+The scheduled workflow reviews all open PRs across `petry-projects` hourly:
+- Classifies risk (LOW/MEDIUM/HIGH) via cascading tiers
+- Auto-approves LOW/MEDIUM risk PRs with passing CI
+- Cross-engine adversarial review (Claude + Copilot rubber duck)
+- Escalates HIGH risk or failing PRs to human review
+
+Trigger manually: `gh workflow run pr-review.yml --repo petry-projects/.github-private`
+
+Mention trigger: Comment `@petry-review-bot` on any org PR for immediate review.
+
+## Documentation
+
+- [Architecture & Capabilities](AGENT.md)
+- [Setup Guide](SETUP.md)
+- [Machine User Setup](MACHINE_USER_SETUP.md)

@@ -22,5 +22,5 @@ jobs:
 
       - name: Repair PR approvals
         env:
-          GH_TOKEN: ${{ secrets.DON_PETRY_BOT_PETRY_PROJECT_PAT }}
+          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
         run: bash scripts/repair-pr-approvals.sh "${{ inputs.dry_run }}"

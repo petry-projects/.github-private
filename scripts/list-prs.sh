@@ -2,8 +2,8 @@
 # Enumerate open, non-draft PRs the agent should consider reviewing.
 #
 # Searches across two namespaces:
-#   1. All open PRs in repos owned by don-petry (personal account)
-#   2. All open PRs in repos owned by petry-projects (organization)
+#   1. All open PRs in repos owned by $REVIEWER_USER (personal account)
+#   2. All open PRs in repos owned by $TARGET_ORG (organization)
 #
 # Filters:
 #   --draft=false       — skip work-in-progress PRs
@@ -30,9 +30,13 @@
 
 set -euo pipefail
 
+# Configurable via environment / repo variables
+REVIEWER_USER="${REVIEWER_USER:-don-petry}"
+TARGET_ORG="${TARGET_ORG:-petry-projects}"
+
 all_prs=""
 
-# Get all repos in don-petry account and search each
+# Get all repos in personal account and search each
 while IFS= read -r repo; do
   prs=$(gh search prs \
     --state open \
@@ -42,9 +46,9 @@ while IFS= read -r repo; do
     --json url \
     --jq '.[].url' 2>/dev/null || true)
   all_prs="${all_prs}${prs}"$'\n'
-done < <(gh repo list don-petry --json nameWithOwner --jq '.[].nameWithOwner' 2>/dev/null || true)
+done < <(gh repo list "$REVIEWER_USER" --json nameWithOwner --jq '.[].nameWithOwner' 2>/dev/null || true)
 
-# Get all repos in petry-projects org and search each (require passing checks)
+# Get all repos in org and search each (require passing checks)
 while IFS= read -r repo; do
   prs=$(gh search prs \
     --state open \
@@ -55,6 +59,6 @@ while IFS= read -r repo; do
     --json url \
     --jq '.[].url' 2>/dev/null || true)
   all_prs="${all_prs}${prs}"$'\n'
-done < <(gh repo list petry-projects --json nameWithOwner --jq '.[].nameWithOwner' 2>/dev/null || true)
+done < <(gh repo list "$TARGET_ORG" --json nameWithOwner --jq '.[].nameWithOwner' 2>/dev/null || true)
 
 printf '%s\n' "$all_prs" | sort -u | grep -v '^$' || true
