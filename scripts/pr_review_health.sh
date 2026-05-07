@@ -185,7 +185,19 @@ $(cat "$logs_file")
 Analyze these logs and produce a markdown health report with the following sections:
 
 ### 1. Executive Summary
-One paragraph: how many runs failed vs succeeded, the dominant failure cause, and urgency level (BLOCKING / DEGRADED / WARNING).
+Use F-style layout — lead with the most critical signal, then supporting bullets. No prose paragraphs.
+
+Format:
+**Status:** BLOCKING | DEGRADED | WARNING | HEALTHY
+**Period:** <date range>
+**Result:** <X of Y runs failed (Z%)>
+
+Key findings:
+- <dominant failure cause — one line>
+- <secondary issue if any — one line>
+- <any pattern worth noting — one line>
+
+Action required: <one imperative sentence, or "None" if healthy>
 
 ### 2. Failure Breakdown
 A table with columns: Failure Category | Affected Runs | Example Error Message.
