@@ -472,7 +472,7 @@ jobs:
 
       - name: Install review engine CLIs
         env:
-          GH_TOKEN: ${{ secrets.DON_PETRY_BOT_PETRY_PROJECT_PAT }}
+          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
         run: |
           set -euo pipefail
 
