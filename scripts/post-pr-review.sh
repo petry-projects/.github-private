@@ -189,31 +189,53 @@ if [ "$DECISION" = "approve" ]; then
   # newest review has landed. Best-effort: failures here don't break the run.
   mark_prior_agent_items_obsolete "$PR_URL"
 
-  # Check merge state and rebase if needed
-  MERGE_STATE=$(gh pr view "$PR_URL" --json mergeStateStatus --jq '.mergeStateStatus')
+  # Check merge state and rebase if needed.
+  # This entire section is best-effort — the review is already posted, so a
+  # rebase failure (403 permission, 504 timeout, etc.) must never abort the
+  # batch session. Every command uses || to suppress set -e.
+  MERGE_STATE=$(gh pr view "$PR_URL" --json mergeStateStatus --jq '.mergeStateStatus' 2>/dev/null || echo "UNKNOWN")
   if [ "$MERGE_STATE" = "BEHIND" ]; then
     OWNER_REPO=$(echo "$PR_URL" | sed -E 's|.*/([^/]+)/([^/]+)/pull/.*|\1/\2|')
     PR_NUM=$(echo "$PR_URL" | sed -E 's|.*/([0-9]+)$|\1|')
 
     echo "Branch is BEHIND, requesting rebase..."
-    gh api -X PUT "repos/$OWNER_REPO/pulls/$PR_NUM/update-branch" -f expected_head_sha="$PR_HEAD_SHA" 2>/dev/null || true
-
-    # Poll for rebase completion (up to 30s)
-    for i in 1 2 3 4 5 6; do
-      MERGE_STATE=$(gh pr view "$PR_URL" --json mergeStateStatus --jq '.mergeStateStatus')
-      [ "$MERGE_STATE" != "BEHIND" ] && break
-      sleep 5
+    REBASE_OK=false
+    for attempt in 1 2 3; do
+      rebase_output=$(gh api -X PUT "repos/$OWNER_REPO/pulls/$PR_NUM/update-branch" \
+        -f expected_head_sha="$PR_HEAD_SHA" 2>&1) && { REBASE_OK=true; break; }
+      rebase_rc=$?
+      if echo "$rebase_output" | grep -qE '"status":\s*"4[0-9][0-9]"'; then
+        echo "::warning::rebase request rejected (client error) — $rebase_output"
+        break
+      fi
+      if [ "$attempt" -lt 3 ]; then
+        delay=$(( 5 * attempt ))
+        echo "  rebase attempt $attempt failed (exit $rebase_rc), retrying in ${delay}s..."
+        sleep "$delay"
+      else
+        echo "::warning::rebase request failed after $attempt attempts — $rebase_output"
+      fi
     done
 
+    if [ "$REBASE_OK" = "true" ]; then
+      # Poll for rebase completion (up to 30s)
+      for _i in 1 2 3 4 5 6; do
+        MERGE_STATE=$(gh pr view "$PR_URL" --json mergeStateStatus --jq '.mergeStateStatus' 2>/dev/null || echo "UNKNOWN")
+        [ "$MERGE_STATE" != "BEHIND" ] && break
+        sleep 5
+      done
+    fi
+
     if [ "$MERGE_STATE" = "BEHIND" ]; then
-      echo "Still BEHIND after rebase, skipping auto-merge"
-      exit 0
+      echo "::warning::still BEHIND after rebase — skipping auto-merge for $PR_URL"
     fi
   fi
 
-  # Enable auto-merge
-  echo "Enabling auto-merge..."
-  gh pr merge "$PR_URL" --auto --squash 2>/dev/null || true
+  # Enable auto-merge (skip if branch is still behind — GitHub would block it anyway)
+  if [ "$MERGE_STATE" != "BEHIND" ]; then
+    echo "Enabling auto-merge..."
+    gh pr merge "$PR_URL" --auto --squash 2>/dev/null || true
+  fi
 
   # Clean up label
   gh pr edit "$PR_URL" --remove-label needs-human-review 2>/dev/null || true
