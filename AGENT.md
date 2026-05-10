@@ -13,9 +13,12 @@ and **Copilot**.
    (and on `workflow_dispatch`).
 1a. **@mention** — comment `@petry-review-bot` on any PR to trigger an immediate
     review, bypassing the hourly schedule. See [Mention-triggered reviews](#mention-triggered-reviews).
-2. **Enumerate** — `scripts/list-prs.sh` queries GitHub for open PRs where
-   `@me` is the author OR a requested reviewer, across every repo the PAT can
-   see. Output: one URL per line.
+2. **Enumerate** — `scripts/list-prs.sh` queries GitHub for open PRs across
+   every repo the PAT can see (the bot's personal account plus `TARGET_ORG`),
+   **excluding PRs authored by `BOT_USER`** (the workflow's authenticated
+   identity, default `don-petry-bot`). GitHub's GraphQL API rejects
+   self-approval unconditionally, so self-authored PRs are unreviewable and
+   would otherwise starve the queue. Output: one URL per line.
 3. **Per-PR review** — `scripts/review-one-pr.sh` runs a cascading review
    where each tier only fires if the previous one flagged concerns:
 
