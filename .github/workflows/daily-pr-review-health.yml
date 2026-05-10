@@ -42,7 +42,7 @@ jobs:
 
       - name: Run health check
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
+          GH_TOKEN: ${{ secrets.DON_PETRY_BOT_GH_PAT }}
         run: bash scripts/pr_review_health.sh
 
       - name: Truncate report if needed
