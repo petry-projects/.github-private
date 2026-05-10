@@ -31,8 +31,10 @@
 #                         never consume a review slot. review-one-pr.sh also
 #                         enforces this per-PR as a second layer of defence.
 #
-# Note: Uses repo enumeration instead of @me/@review-requested, which don't work
-# with GitHub App tokens (app tokens have no user identity).
+# Self-authored PRs (PRs whose author is $BOT_USER) are excluded here, because
+# GitHub's GraphQL API rejects self-approval unconditionally — including such a
+# PR in the queue previously triggered a fatal session abort that starved every
+# subsequent candidate (see issue #96).
 #
 # Output: one PR URL per line on stdout.
 
