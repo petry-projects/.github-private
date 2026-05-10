@@ -471,8 +471,6 @@ jobs:
           fi
 
       - name: Install review engine CLIs
-        env:
-          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
         run: |
           set -euo pipefail
 
@@ -563,10 +561,6 @@ jobs:
               > prs.txt
           else
             bash scripts/list-prs.sh > prs.txt
-            TOTAL=$(wc -l < prs.txt | tr -d ' ')
-            if [ "$TOTAL" -gt 0 ]; then
-              echo "::notice::Candidate pool has $TOTAL PRs. Review loop will process until MAX_PRS actual reviews are completed (no-ops are skipped)."
-            fi
           fi
 
           count=$(grep -c . prs.txt || true)
