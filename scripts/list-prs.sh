@@ -2,7 +2,7 @@
 # Enumerate open, non-draft PRs the agent should consider reviewing.
 #
 # Searches across two namespaces:
-#   1. All open PRs in repos owned by $REVIEWER_USER (personal account)
+#   1. All open PRs in repos owned by $BOT_USER (the bot's personal account)
 #   2. All open PRs in repos owned by $TARGET_ORG (organization)
 #
 # Filters:
@@ -23,30 +23,46 @@
 #   2. All other repos (priority 1)
 #   Within each priority tier, PRs are sorted oldest-first by createdAt.
 #
-# Note: Uses repo enumeration instead of @me/@review-requested, which don't work
-# with GitHub App tokens (app tokens have no user identity).
+# Self-authored PRs (PRs whose author is $BOT_USER) are excluded here, because
+# GitHub's GraphQL API rejects self-approval unconditionally — including such a
+# PR in the queue previously triggered a fatal session abort that starved every
+# subsequent candidate (see issue #96).
 #
 # Output: one PR URL per line on stdout.
 
 set -euo pipefail
 
-# Configurable via environment / repo variables
-REVIEWER_USER="${REVIEWER_USER:-don-petry}"
+# Configurable via environment / repo variables. BOT_USER is the GitHub
+# identity the workflow PAT authenticates as — both the queue scope (which
+# repos to scan) and the self-approval filter use it.
+BOT_USER="${BOT_USER:-don-petry-bot}"
 TARGET_ORG="${TARGET_ORG:-petry-projects}"
+
+# Reject BOT_USER values that aren't valid GitHub usernames before
+# interpolating into a jq program. GitHub usernames are 1–39 chars of
+# [A-Za-z0-9-] and may not start or end with a hyphen. Anything else is
+# either a misconfiguration or an injection attempt — fail loud rather
+# than silently dropping PRs.
+if ! [[ "$BOT_USER" =~ ^[A-Za-z0-9](-?[A-Za-z0-9]){0,38}$ ]]; then
+  echo "::error::BOT_USER='$BOT_USER' is not a valid GitHub username" >&2
+  exit 1
+fi
 
 all_prs=""
 
-# Get all repos in personal account and search each
+JQ_NOT_SELF=".[] | select(.author.login != \"$BOT_USER\") | .url"
+
+# Get all repos in bot's personal account and search each
 while IFS= read -r repo; do
   prs=$(gh search prs \
     --state open \
     --repo "$repo" \
     --draft=false \
     --limit 100 \
-    --json url \
-    --jq '.[].url' 2>/dev/null || true)
+    --json url,author \
+    --jq "$JQ_NOT_SELF" 2>/dev/null || true)
   all_prs="${all_prs}${prs}"$'\n'
-done < <(gh repo list "$REVIEWER_USER" --json nameWithOwner --jq '.[].nameWithOwner' 2>/dev/null || true)
+done < <(gh repo list "$BOT_USER" --json nameWithOwner --jq '.[].nameWithOwner' 2>/dev/null || true)
 
 # Get all repos in org and search each (require passing checks)
 while IFS= read -r repo; do
@@ -56,8 +72,8 @@ while IFS= read -r repo; do
     --draft=false \
     --checks success \
     --limit 100 \
-    --json url \
-    --jq '.[].url' 2>/dev/null || true)
+    --json url,author \
+    --jq "$JQ_NOT_SELF" 2>/dev/null || true)
   all_prs="${all_prs}${prs}"$'\n'
 done < <(gh repo list "$TARGET_ORG" --json nameWithOwner --jq '.[].nameWithOwner' 2>/dev/null || true)
 
