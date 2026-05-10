@@ -177,13 +177,25 @@ if [ "$DECISION" = "approve" ]; then
   echo "$BODY" > "$BODY_FILE"
 
   echo "Posting APPROVED review..."
-  gh pr review "$PR_URL" --approve --body "$(cat "$BODY_FILE")" || {
+  REVIEW_ERR_FILE="/tmp/pr-review-err-$$.txt"
+  gh pr review "$PR_URL" --approve --body "$(cat "$BODY_FILE")" 2>"$REVIEW_ERR_FILE" || {
     rc=$?
+    review_err=$(cat "$REVIEW_ERR_FILE" 2>/dev/null || true)
+    cat "$REVIEW_ERR_FILE" >&2 2>/dev/null || true
+    rm -f "$BODY_FILE" "$REVIEW_ERR_FILE"
+    # Self-approval is a permanent, PR-specific constraint — never the runner's
+    # fault and never recoverable on retry. Exit 100 (no-op sentinel) so the
+    # workflow loop skips this PR without aborting the rest of the session.
+    # See issue #96: a single self-authored PR at the top of the queue
+    # previously starved every batch.
+    if echo "$review_err" | grep -qiE 'Can not approve your own pull request'; then
+      echo "::warning::Cannot self-approve $PR_URL — skipping (exit 100)"
+      exit 100
+    fi
     echo "ERROR: gh pr review failed with exit code $rc"
-    rm -f "$BODY_FILE"
     exit 1
   }
-  rm -f "$BODY_FILE"
+  rm -f "$BODY_FILE" "$REVIEW_ERR_FILE"
 
   # Dismiss prior agent reviews / collapse prior agent comments now that the
   # newest review has landed. Best-effort: failures here don't break the run.
@@ -273,10 +285,11 @@ COMMENT_END
     # has landed. A new fix-request also invalidates any prior approval.
     mark_prior_agent_items_obsolete "$PR_URL"
   else
-    # Escalate to human
+    # Escalate to human via CODEOWNERS — avoid hard-coding a single reviewer.
     echo "Escalating to human review..."
     gh pr edit "$PR_URL" --add-label needs-human-review 2>/dev/null || true
-    gh pr request-review "$PR_URL" --user "${REVIEWER_USER:-don-petry}" 2>/dev/null || true
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    bash "$SCRIPT_DIR/request-codeowners-review.sh" "$PR_URL" || true
   fi
 fi
 
