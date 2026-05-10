@@ -44,8 +44,8 @@ jobs:
     timeout-minutes: 60
     env:
       # Auth for every gh / script call in this job. The PAT must belong to BOT_USER.
-      GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
-      # Single bot identity. GH_PAT_WORKFLOWS authenticates as BOT_USER; that
+      GH_TOKEN: ${{ secrets.DON_PETRY_BOT_GH_PAT }}
+      # Single bot identity. DON_PETRY_BOT_GH_PAT authenticates as BOT_USER; that
       # account owns/has-access-to the personal repos scanned by list-prs.sh,
       # signs the cascade's escalation comments, and is filtered out of the
       # candidate queue (it can't approve its own PRs). Human reviewers are
