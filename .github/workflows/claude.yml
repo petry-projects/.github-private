@@ -44,7 +44,7 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 1
-          token: ${{ secrets.GH_PAT_WORKFLOWS || github.token }}
+          token: ${{ secrets.DON_PETRY_BOT_GH_PAT || github.token }}
       - name: Run Claude Code
         uses: anthropics/claude-code-action@6e2bd52842c65e914eba5c8badd17560bd26b5de # v1.0.89
         with:
@@ -75,11 +75,11 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 1
-          token: ${{ secrets.GH_PAT_WORKFLOWS || github.token }}
+          token: ${{ secrets.DON_PETRY_BOT_GH_PAT || github.token }}
       - name: Check for existing open PR
         id: dedup
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS || github.token }}
+          GH_TOKEN: ${{ secrets.DON_PETRY_BOT_GH_PAT || github.token }}
           ISSUE: ${{ github.event.issue.number }}
         run: |
           # Search by branch prefix (claude/issue-NNN-*)
@@ -114,7 +114,7 @@ jobs:
         uses: anthropics/claude-code-action@6e2bd52842c65e914eba5c8badd17560bd26b5de # v1.0.89
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          github_token: ${{ secrets.GH_PAT_WORKFLOWS }}
+          github_token: ${{ secrets.DON_PETRY_BOT_GH_PAT }}
           label_trigger: "claude"
           track_progress: "true"
           additional_permissions: |
