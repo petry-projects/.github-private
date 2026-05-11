@@ -1,127 +1,200 @@
 # Machine User Setup for PR Review Agent
 
-This project authenticates via a **machine user account** with a fine-grained PAT. This replaces the previous GitHub App approach, which could not satisfy CODEOWNERS approval requirements (see [issue #27](https://github.com/petry-projects/.github-private/issues/27)).
+The agent authenticates via a **machine user** GitHub account whose classic
+PAT is stored in the workflow secret `DON_PETRY_BOT_GH_PAT`. The bot posts
+approvals using this token; its review counts as a CODEOWNERS approval when
+the bot is in the team listed in `CODEOWNERS`.
 
-## Why Machine User?
+> [!IMPORTANT]
+> **Use a classic PAT. Fine-grained PATs do not work for this workflow.**
+>
+> After the migration to `petry-projects/.github-private`, fine-grained PATs
+> fail the GraphQL `addPullRequestReview` mutation with:
+>
+> ```
+> failed to create review: GraphQL: Resource not accessible by personal access token (addPullRequestReview)
+> ```
+>
+> The failure persists even when every obvious gate is satisfied: the org owner
+> has approved the token request, fine-grained PATs are allowed for
+> `petry-projects`, the bot has Write collaborator access on the target repo,
+> and the PAT lists the right repository / permissions. Classic PATs with
+> `repo` scope work; fine-grained ones do not. If you ever see the error above
+> in a workflow log, the secret is holding a fine-grained token — generate a
+> classic one and replace it.
 
-- Can be added to an org team listed in CODEOWNERS
-- Approvals count as code owner reviews
-- Simple PAT-based auth — no JWT generation step needed
-- Works identically to a human reviewer from GitHub's perspective
+## Why a machine user
 
-## Step 1: Create the Machine User Account
+- It can be added to an org team referenced in `CODEOWNERS`, so its approvals
+  satisfy code-owner review requirements.
+- It works identically to a human reviewer from GitHub's perspective —
+  no JWT exchange, no app installation flow, no opaque integration ID.
+- A simple PAT-based auth keeps the workflow short.
 
-1. Create a new GitHub account (e.g., `donpetry-bot`) with a shared org email alias
-2. Add the account to the `petry-projects` organization
-3. Create an org team (e.g., `petry-projects/pr-reviewers`) and add the machine user
+(GitHub Apps were tried and abandoned: app accounts cannot be in `CODEOWNERS`,
+so app-account approvals don't satisfy code-owner requirements. See the
+"Trade-offs" table at the bottom for the full comparison.)
 
-## Step 2: Configure CODEOWNERS
+## Step 1: Create the machine user account
 
-In each target repo, add the team to `CODEOWNERS`:
+1. Sign out of your primary account (or use a private window).
+2. Create a new GitHub account, e.g. `donpetry-bot`. Use a dedicated email
+   alias you can route to your inbox (e.g. `you+donpetry-bot@gmail.com`).
+3. Verify the email, complete account setup, and turn on 2FA.
+
+## Step 2: Add the bot to the org and the CODEOWNERS team
+
+1. Sign in as your primary account (org owner).
+2. **github.com/organizations/petry-projects/settings/members** →
+   **Invite member** → enter `donpetry-bot` → role: **Member**.
+3. Accept the invite from the bot account.
+4. Create or open the org team that's referenced in `CODEOWNERS`
+   (e.g. `petry-projects/pr-reviewers`).
+5. Add `donpetry-bot` to that team.
+6. On every target repo, ensure the bot is a **Write** collaborator
+   (org-level team membership grants the role; verify on
+   `github.com/<org>/<repo>/settings/access`).
+
+In each repo whose PRs the agent reviews, the `CODEOWNERS` file should
+reference the team:
 
 ```
 # .github/CODEOWNERS
 * @petry-projects/pr-reviewers
 ```
 
-Or use path-specific rules as needed.
+Or path-specific rules as needed.
 
-## Step 3: Generate a Fine-Grained PAT
+## Step 3: Generate a classic PAT for the bot
 
-1. Sign in as the machine user account
-2. Go to **Settings → Developer settings → Fine-grained personal access tokens**
-3. Create a new token:
-   - **Token name:** `pr-review-agent`
-   - **Expiration:** 90 days (set a calendar reminder to rotate)
-   - **Resource owner:** `petry-projects`
-   - **Repository access:** All repositories (or select specific repos)
-   - **Permissions:**
-     - **Repository → Contents:** Read-only
-     - **Repository → Pull requests:** Read and write
-     - **Repository → Commit statuses:** Read-only
-     - **Repository → Checks:** Read-only
-     - **Organization → Members:** Read-only
+1. Sign in **as the bot** (`donpetry-bot`). The PAT must be created from the
+   bot's account, not yours — sign out of your primary account first.
+2. **Settings → Developer settings → Personal access tokens → Tokens (classic)**
+   → **Generate new token (classic)**.
+3. Settings:
+   - **Note:** `pr-review-agent`
+   - **Expiration:** 1 year (set a calendar reminder to rotate)
+   - **Scopes:**
+     - ✅ `repo` (full control of private repos) — required for the
+       `addPullRequestReview` mutation
+     - ✅ `workflow` — required when AI delegation pushes workflow-file changes
+     - ✅ `read:org` — silences `Missing required token scopes: 'read:org'`
+       in workflow logs and lets the agent resolve `@org/team` mentions in
+       CODEOWNERS escalations
+4. **Generate token** and copy it immediately (you won't see it again).
 
-## Step 4: Store the PAT as an Org Secret
+## Step 4: Store the PAT in `petry-projects/.github-private`
 
-```bash
-gh secret set DON_PETRY_BOT_GH_PAT --org petry-projects --body "<paste-token>"
-```
+Sign back in as your primary account, then either via the UI:
 
-Or store at repo level if preferred:
+**github.com/petry-projects/.github-private/settings/secrets/actions**
+→ **New repository secret** (or **Update**) → name `DON_PETRY_BOT_GH_PAT`,
+value = the token from Step 3.
 
-```bash
-gh secret set DON_PETRY_BOT_GH_PAT --repo petry-projects/.github-private --body "<paste-token>"
-```
-
-### Verify the secret is set:
+Or via `gh`:
 
 ```bash
-gh secret list --repo petry-projects/.github-private
+gh secret set DON_PETRY_BOT_GH_PAT \
+  --repo petry-projects/.github-private \
+  --body "<paste-token>"
 ```
 
-Should show `DON_PETRY_BOT_GH_PAT` in the list.
-
-## Step 5: Test the Setup
+Verify:
 
 ```bash
-# Test dry-run
-gh workflow run fix-stuck-prs.yml --repo petry-projects/.github-private -f dry_run=true
-
-# Check the logs
-gh run view <run-number> --repo petry-projects/.github-private --log | grep "Logged in"
+gh secret list --repo petry-projects/.github-private | grep DON_PETRY_BOT_GH_PAT
 ```
 
-Should show the machine user account name.
+## Step 5: Verify the setup
 
-## Step 6: Clean Up Old GitHub App Secrets
-
-Once the migration is validated:
+Trigger a one-shot dry-run of the PR review workflow:
 
 ```bash
-gh secret delete APP_ID --repo petry-projects/.github-private
-gh secret delete APP_INSTALLATION_ID --repo petry-projects/.github-private
-gh secret delete APP_PRIVATE_KEY --repo petry-projects/.github-private
+gh workflow run pr-review.yml \
+  --repo petry-projects/.github-private \
+  -f dry_run=true
 ```
 
-Optionally uninstall/delete the GitHub App from [org settings](https://github.com/organizations/petry-projects/settings/apps).
+Then read the run's `Install review engine CLIs` step. The first command is
+`gh auth status`, which should report the bot's login (not yours) and the
+three scopes from Step 3:
 
-## PAT Rotation
+```
+Logged in to github.com account donpetry-bot
+- Token scopes: 'read:org', 'repo', 'workflow'
+```
 
-Fine-grained PATs have a configurable expiry (90-day recommended). To rotate:
+If the login is your primary account, the secret is holding the wrong PAT —
+recreate it from the bot's account (Step 3) and update the secret (Step 4).
 
-1. Sign in as the machine user
-2. Generate a new fine-grained PAT with the same scopes
-3. Update the secret: `gh secret set DON_PETRY_BOT_GH_PAT --repo petry-projects/.github-private --body "<new-token>"`
-4. Revoke the old token
+If the run reaches the `[approve] Posting APPROVED review...` line and
+returns the `Resource not accessible by personal access token` error, the
+secret is holding a fine-grained PAT (see the warning at the top).
+
+## PAT rotation
+
+Classic PATs expire on the date set when generated (1 year recommended).
+
+1. Sign in as the bot.
+2. Generate a new classic PAT with the same scopes.
+3. Update the secret:
+   ```bash
+   gh secret set DON_PETRY_BOT_GH_PAT \
+     --repo petry-projects/.github-private \
+     --body "<new-token>"
+   ```
+4. Revoke the old token from the bot's
+   **Settings → Developer settings → Tokens (classic)** page.
 
 ## Trade-offs vs GitHub App
 
-| Aspect | Machine User (PAT) | GitHub App (previous) |
-|--------|-------------------|----------------------|
-| CODEOWNERS support | Yes | No |
-| Token expiry | Manual (90-day fine-grained) | Automatic (1-hour JWT) |
-| Permissions | PAT scopes | Fine-grained App manifest |
-| Account overhead | Requires a GitHub seat | No human account |
-| Setup complexity | Simple | Medium |
+| Aspect              | Machine User (classic PAT)                | GitHub App                       |
+|---------------------|-------------------------------------------|----------------------------------|
+| CODEOWNERS support  | Yes (team membership grants approval)     | No (apps can't be in CODEOWNERS) |
+| Token lifetime      | Manual (1 year recommended)               | Automatic (1-hour JWT)           |
+| Permission model    | PAT scopes (org/repo coarse)              | Fine-grained app manifest        |
+| Account overhead    | Requires a free GitHub account + 2FA      | No human account                 |
+| Branch-protection / rulesets bypass | Honored when bot is on the bypass list | Sometimes blocked                |
+| Setup complexity    | Low                                       | Medium                           |
 
 ## Troubleshooting
 
-### Issue: "Resource not accessible by integration"
-- Verify the PAT has the required scopes
-- Check the machine user has access to the target repos
-- Ensure `DON_PETRY_BOT_GH_PAT` secret is set correctly
+### `Resource not accessible by personal access token (addPullRequestReview)`
 
-### Issue: Approval doesn't satisfy code owner requirement
-- Verify the machine user is in the team listed in CODEOWNERS
-- Check the repo's CODEOWNERS file is valid (`gh api repos/OWNER/REPO/codeowners/errors`)
-- Ensure branch protection has `require_code_owner_review: true`
+The PAT in `DON_PETRY_BOT_GH_PAT` is fine-grained, not classic. Generate a
+classic PAT (Step 3) and update the secret (Step 4). The fine-grained version
+is blocked by an org-policy gate that has no UI surface — there's no
+configuration that makes it work.
 
-### Issue: Token expired
-- Generate a new fine-grained PAT and update the `DON_PETRY_BOT_GH_PAT` secret
+### `Missing required token scopes: 'read:org'`
+
+The classic PAT was generated without `read:org`. Edit the token at
+**Settings → Developer settings → Tokens (classic) → Edit** and check the
+`read:org` box. (No need to regenerate — editing scopes is sufficient.)
+
+### `gh auth status` reports the wrong account
+
+The PAT was created from your primary account by mistake, not the bot.
+Sign out of your primary account, sign in as the bot, regenerate the token
+(Step 3), and update the secret (Step 4).
+
+### Approval doesn't satisfy code-owner requirement
+
+- Confirm the bot is on the team listed in the repo's `CODEOWNERS`
+  (org admin → team → Members).
+- Validate `CODEOWNERS` syntax:
+  `gh api repos/<owner>/<repo>/codeowners/errors`
+- Confirm the repo's branch protection / ruleset has
+  `Require review from Code Owners` enabled.
+
+### Token expired
+
+Sign in as the bot, regenerate the classic PAT (Step 3), and update the
+secret (Step 4).
 
 ## References
 
 - [GitHub: Managing CODEOWNERS](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners)
-- [GitHub: Fine-grained PATs](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#fine-grained-personal-access-tokens)
-- [Issue #27: Why GitHub Apps can't be in CODEOWNERS](https://github.com/petry-projects/.github-private/issues/27)
+- [GitHub: Classic PATs](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#personal-access-tokens-classic)
+- [`AGENT.md`](AGENT.md) — full agent design and runtime behavior
+- [`BOT_SETUP.md`](BOT_SETUP.md) — abbreviated setup checklist
