@@ -165,6 +165,11 @@ if [ "$DRY_RUN" = "true" ]; then
   exit 0
 fi
 
+if [ "$DECISION" = "skip" ]; then
+  REASON=$(jq -r '.reason // "unspecified"' "$VERDICT_JSON")
+  echo "    reviewer returned skip ($REASON) — treating as no-op"
+  exit 100
+fi
 if [ "$DECISION" != "approve" ] && [ "$DECISION" != "escalate" ]; then
   echo "ERROR: invalid decision '$DECISION'"
   exit 1
