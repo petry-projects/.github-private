@@ -50,7 +50,7 @@ jobs:
       # signs the cascade's escalation comments, and is filtered out of the
       # candidate queue (it can't approve its own PRs). Human reviewers are
       # routed via CODEOWNERS at escalation time, not pinned via env.
-      BOT_USER: ${{ vars.BOT_USER || 'don-petry-bot' }}
+      BOT_USER: ${{ vars.BOT_USER || 'donpetry-bot' }}
       TARGET_ORG: ${{ vars.TARGET_ORG || 'petry-projects' }}
       AGENT_REPO: ${{ github.repository }}
       # Review engine: "claude" or "copilot". Controls which CLI and models are used.
@@ -58,6 +58,8 @@ jobs:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       # Copilot engine reuses GH_PAT (a separate user PAT with Copilot subscription).
       COPILOT_GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+      # Gemini engine auth — requires GOOGLE_API_KEY repo secret.
+      GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
       # Default to dry-run. workflow_dispatch can override; repository_dispatch
       # (mention) always runs live; vars.LIVE_MODE=true switches scheduled runs live.
       DRY_RUN: ${{ github.event_name == 'repository_dispatch' && 'false' || inputs.dry_run || (vars.LIVE_MODE == 'true' && 'false' || 'true') }}
@@ -107,13 +109,23 @@ jobs:
           case "$REVIEW_ENGINE" in
             claude)
               install_claude
+              # Best-effort install of fallbacks for duck/fallback support
+              npm install -g @google/gemini-cli || true
               if ! env GH_TOKEN="$COPILOT_GITHUB_TOKEN" gh copilot --version > /dev/null 2>&1; then
                 echo "::warning::gh copilot built-in unavailable with user token — rate-limit fallback will be unavailable."
               fi
               ;;
-            copilot)
-              gh extension install github/gh-copilot
+            gemini)
+              npm install -g @google/gemini-cli
               install_claude || true
+              ;;
+            copilot)
+              # Best-effort install of copilot if built-in is missing
+              if ! gh copilot --version > /dev/null 2>&1; then
+                gh extension install github/gh-copilot || true
+              fi
+              install_claude || true
+              npm install -g @google/gemini-cli || true
               ;;
             *)
               echo "::error::Unknown REVIEW_ENGINE=$REVIEW_ENGINE"

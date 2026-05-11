@@ -6,8 +6,9 @@
 #
 # Env:
 #   GH_TOKEN              — set by the workflow
-#   REVIEW_ENGINE         — "claude" or "copilot" (default: claude)
+#   REVIEW_ENGINE         — "claude", "gemini", or "copilot" (default: claude)
 #   CLAUDE_CODE_OAUTH_TOKEN — (claude engine) set by the workflow
+#   GOOGLE_API_KEY          — (gemini engine) set by the workflow
 #   COPILOT_GITHUB_TOKEN    — (copilot engine) set by the workflow
 #   DRY_RUN               — "true" or "false"
 #

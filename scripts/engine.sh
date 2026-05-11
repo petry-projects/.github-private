@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Engine abstraction layer for LLM invocations.
-# Supports: claude, copilot
+# Supports: claude, gemini, copilot
 #
 # Sourced by review-one-pr.sh — provides:
 #   run_triage <prompt_file>       — no-tool tier (stdout capture)
@@ -41,6 +41,18 @@ case "$REVIEW_ENGINE" in
     DUCK_ENGINE="copilot"
     DUCK_MODEL="gpt-5.4"
     ;;
+  gemini)
+    ENGINE_TRIAGE_MODEL="gemini-2.0-flash"
+    ENGINE_DEEP_MODEL="gemini-1.5-pro"
+    ENGINE_AUDIT_MODEL="gemini-1.5-pro"
+    ENGINE_ACTION_MODEL="gemini-1.5-pro"
+    ENGINE_SINGLE_MODEL="gemini-1.5-pro"
+    ENGINE_LABEL="triage: gemini-2.0-flash → deep: gemini-1.5-pro + duck: sonnet 4.6 → audit: gemini-1.5-pro"
+    ENGINE_SINGLE_LABEL="single-reviewer mode: gemini-1.5-pro"
+    # Cross-engine rubber duck: use Claude for diversity
+    DUCK_ENGINE="claude"
+    DUCK_MODEL="claude-sonnet-4-6"
+    ;;
   copilot)
     ENGINE_TRIAGE_MODEL="gpt-5-mini"
     ENGINE_DEEP_MODEL="gpt-5.2"
@@ -54,7 +66,7 @@ case "$REVIEW_ENGINE" in
     DUCK_MODEL="claude-sonnet-4-6"
     ;;
   *)
-    echo "::error::Unknown REVIEW_ENGINE='$REVIEW_ENGINE' (expected: claude or copilot)"
+    echo "::error::Unknown REVIEW_ENGINE='$REVIEW_ENGINE' (expected: claude, gemini, or copilot)"
     exit 1
     ;;
 esac
@@ -1388,6 +1400,15 @@ run_duck() {
         _gemini_invoke "$prompt_file" "$DUCK_TIMEOUT_SEC" "$model" \
           --approval-mode auto_edit || rc=$?
       fi
+      ;;
+    gemini)
+      unset CLAUDE_CODE_OAUTH_TOKEN 2>/dev/null || true
+      unset COPILOT_GITHUB_TOKEN 2>/dev/null || true
+      timeout "$DUCK_TIMEOUT_SEC" gemini --prompt "" \
+        --model "$model" \
+        --approval-mode auto_edit \
+        --output-format text \
+        < "$prompt_file"
       ;;
     copilot)
       unset CLAUDE_CODE_OAUTH_TOKEN 2>/dev/null || true

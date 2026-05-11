@@ -46,6 +46,6 @@ Mention trigger: Comment `@petry-review-bot` on any org PR for immediate review.
 
 ## Documentation
 
-- [Architecture & Capabilities](AGENT.md)
-- [Setup Guide](SETUP.md)
-- [Machine User Setup](MACHINE_USER_SETUP.md)
+- [Architecture & Capabilities](docs/pr-review-agent/pr-review-agent.md)
+- [Setup Guide](docs/pr-review-agent/setup.md)
+- [Machine User Setup](docs/pr-review-agent/machine-user-setup.md)
