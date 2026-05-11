@@ -4223,6 +4223,15 @@ run_duck() {
           --approval-mode auto_edit || rc=$?
       fi
       ;;
+    gemini)
+      unset CLAUDE_CODE_OAUTH_TOKEN 2>/dev/null || true
+      unset COPILOT_GITHUB_TOKEN 2>/dev/null || true
+      timeout "$DUCK_TIMEOUT_SEC" gemini --prompt "" \
+        --model "$model" \
+        --approval-mode auto_edit \
+        --output-format text \
+        < "$prompt_file"
+      ;;
     copilot)
       unset CLAUDE_CODE_OAUTH_TOKEN 2>/dev/null || true
       unset GOOGLE_API_KEY 2>/dev/null || true
