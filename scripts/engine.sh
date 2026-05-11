@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+set -euo pipefail
 # Engine abstraction layer for LLM invocations.
 # Supports: claude, gemini, copilot
 #
@@ -32,14 +33,14 @@ case "$REVIEW_ENGINE" in
   claude)
     ENGINE_TRIAGE_MODEL="claude-haiku-4-5-20251001"
     ENGINE_DEEP_MODEL="claude-sonnet-4-6"
-    ENGINE_AUDIT_MODEL="claude-opus-4-6"
+    ENGINE_AUDIT_MODEL="claude-opus-4-7"
     ENGINE_ACTION_MODEL="claude-sonnet-4-6"
-    ENGINE_SINGLE_MODEL="claude-opus-4-6"
-    ENGINE_LABEL="triage: haiku 4.5 → deep: sonnet 4.6 + duck: gpt-5.4 → audit: opus 4.6"
-    ENGINE_SINGLE_LABEL="single-reviewer mode: opus 4.6"
+    ENGINE_SINGLE_MODEL="claude-opus-4-7"
+    ENGINE_LABEL="triage: haiku 4.5 → deep: sonnet 4.6 + duck: o4-mini → audit: opus 4.7"
+    ENGINE_SINGLE_LABEL="single-reviewer mode: opus 4.7"
     # Cross-engine rubber duck: always the opposite engine
     DUCK_ENGINE="copilot"
-    DUCK_MODEL="gpt-5.4"
+    DUCK_MODEL="o4-mini"
     ;;
   gemini)
     ENGINE_TRIAGE_MODEL="gemini-2.0-flash"
@@ -54,13 +55,13 @@ case "$REVIEW_ENGINE" in
     DUCK_MODEL="claude-sonnet-4-6"
     ;;
   copilot)
-    ENGINE_TRIAGE_MODEL="gpt-5-mini"
-    ENGINE_DEEP_MODEL="gpt-5.2"
-    ENGINE_AUDIT_MODEL="gpt-5.4"
-    ENGINE_ACTION_MODEL="gpt-5.2"
-    ENGINE_SINGLE_MODEL="gpt-5.4"
-    ENGINE_LABEL="triage: gpt-5-mini → deep: gpt-5.2 + duck: sonnet 4.6 → audit: gpt-5.4"
-    ENGINE_SINGLE_LABEL="single-reviewer mode: gpt-5.4"
+    ENGINE_TRIAGE_MODEL="o4-mini"
+    ENGINE_DEEP_MODEL="o4-mini"
+    ENGINE_AUDIT_MODEL="o4-mini"
+    ENGINE_ACTION_MODEL="o4-mini"
+    ENGINE_SINGLE_MODEL="o4-mini"
+    ENGINE_LABEL="triage: o4-mini → deep: o4-mini + duck: sonnet 4.6 → audit: o4-mini"
+    ENGINE_SINGLE_LABEL="single-reviewer mode: o4-mini"
     # Cross-engine rubber duck: always the opposite engine
     DUCK_ENGINE="claude"
     DUCK_MODEL="claude-sonnet-4-6"
