@@ -1,6 +1,40 @@
-# Claude Code workflow — inlined from the org-level reusable workflow so this
-# repo can access its own secrets directly.
-# Original reusable: petry-projects/.github/.github/workflows/claude-code-reusable.yml
+# ─────────────────────────────────────────────────────────────────────────────
+# SOURCE OF TRUTH: petry-projects/.github/standards/workflows/claude.yml
+# Standard:        petry-projects/.github/standards/ci-standards.md#4-claude-code-claudeyml
+# Reusable:        petry-projects/.github/.github/workflows/claude-code-reusable.yml
+#
+# AGENTS — READ BEFORE EDITING:
+#   • This file is a THIN CALLER STUB. All Claude Code logic, the prompt,
+#     allowedTools, and trigger gating live in the reusable workflow above.
+#   • You MAY change: nothing in this file in normal use. Adopt verbatim.
+#   • You MUST NOT change: trigger events, job permissions, the `uses:` line,
+#     or `secrets: inherit`. These are required for the reusable to work.
+#   • If you need different behaviour, open a PR against the reusable in the
+#     central repo. The change will propagate everywhere on next run.
+#
+# WHY THIS FILE IS IMMUTABLE (agents: read before opening any PR here):
+#   Anthropic's OIDC token endpoint validates that this file on a PR branch
+#   is byte-for-byte identical to the file on the default branch. Any diff —
+#   even a whitespace or comment change — causes the token exchange to fail:
+#     "401 Unauthorized — Workflow validation failed"
+#   Claude Code will not run on that PR. Do not open compliance PRs against
+#   this file. Do not SHA-pin the `uses:` line — internal reusable workflow
+#   refs are exempt from the Action Pinning Policy (ci-standards.md
+#   §Action Pinning Policy). The @v1 tag is the correct, stable reference.
+#
+#   NARROW GUARD: The paths-ignore setting (lines 38-39) under pull_request
+#   prevents the workflow from triggering only when the PR's entire changeset
+#   is limited to claude.yml alone. PRs that modify claude.yml *plus other
+#   files* will still trigger the workflow and hit the 401 error at token
+#   exchange. Other triggers (issue_comment, pull_request_review_comment,
+#   issues, check_run) are unaffected by paths-ignore and run as configured.
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Claude Code — thin caller that delegates to the org-level reusable workflow.
+# To adopt: copy this file to .github/workflows/claude.yml in your repo.
+# Required org/repo secret: CLAUDE_CODE_OAUTH_TOKEN
+# Optional org/repo secret: GH_PAT_WORKFLOWS (PAT with `workflow` scope —
+#   required if Claude needs to push changes to .github/workflows/*.yml)
 
 name: Claude Code
 
@@ -9,7 +43,7 @@ on:
     branches: [main]
     types: [opened, reopened, synchronize]
     paths-ignore:
-      - '.github/workflows/claude.yml'  # OIDC invariant — changing this file breaks token exchange
+      - '.github/workflows/claude.yml'  # OIDC invariant — see header above
   issue_comment:
     types: [created]
   pull_request_review_comment:
@@ -22,22 +56,9 @@ on:
 permissions: {}
 
 jobs:
-  # Interactive mode: PR reviews and comments from trusted contributors
-  claude:
-    if: >-
-      (github.event_name == 'pull_request' &&
-        github.event.pull_request.head.repo.full_name == github.repository &&
-        github.event.pull_request.user.login != 'dependabot[bot]') ||
-      (github.event_name == 'issue_comment' && github.event.issue.pull_request &&
-        github.event.comment.user.login != 'claude[bot]' &&
-        contains(fromJson('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)) ||
-      (github.event_name == 'pull_request_review_comment' &&
-        github.event.comment.user.login != 'claude[bot]' &&
-        (contains(fromJson('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association) ||
-          (github.event.pull_request.head.repo.full_name == github.repository &&
-            contains(fromJson('["coderabbitai[bot]","Copilot","copilot-pull-request-reviewer[bot]","gemini-code-assist[bot]"]'), github.event.comment.user.login))))
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
+  claude-code:
+    uses: petry-projects/.github/.github/workflows/claude-code-reusable.yml@v1
+    secrets: inherit
     permissions:
       contents: write
       id-token: write
@@ -45,217 +66,3 @@ jobs:
       issues: write
       actions: read
       checks: read
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          fetch-depth: 1
-          token: ${{ secrets.DON_PETRY_BOT_GH_PAT || github.token }}
-      - name: Run Claude Code
-        uses: anthropics/claude-code-action@476e359e6203e73dad705c8b322e333fabbd7416 # v1.0.119
-        with:
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          additional_permissions: |
-            actions: read
-            checks: read
-
-  # Automation mode: CI failure response — diagnose and fix failing checks on PRs
-  claude-ci-fix:
-    if: >-
-      github.event_name == 'check_run' &&
-      github.event.check_run.conclusion == 'failure' &&
-      !contains(fromJson('["claude","claude-ci-fix","claude-issue"]'), github.event.check_run.name)
-    concurrency:
-      group: claude-ci-fix-${{ github.event.check_run.head_sha }}
-      cancel-in-progress: true
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    permissions:
-      contents: write
-      id-token: write
-      pull-requests: write
-      issues: write
-      actions: read
-      checks: read
-    steps:
-      - name: Resolve PR number
-        id: pr
-        env:
-          GH_TOKEN: ${{ secrets.DON_PETRY_BOT_GH_PAT || github.token }}
-        run: |
-          PR="${{ github.event.check_run.pull_requests[0].number }}"
-          if [ -z "$PR" ]; then
-            PR=$(gh api \
-              "repos/${{ github.repository }}/commits/${{ github.event.check_run.head_sha }}/pulls" \
-              --jq '[.[] | select(.state == "open")] | first | .number // empty')
-          fi
-          # Trust gate: skip fork PRs — this job has write/secret access
-          if [ -n "$PR" ]; then
-            HEAD_REPO=$(gh api "repos/${{ github.repository }}/pulls/$PR" \
-              --jq '.head.repo.full_name // empty')
-            if [ "$HEAD_REPO" != "${{ github.repository }}" ]; then
-              echo "Skipping: fork PR (head=$HEAD_REPO)"
-              PR=""
-            fi
-          fi
-          echo "number=$PR" >> "$GITHUB_OUTPUT"
-      - name: Checkout repository
-        if: steps.pr.outputs.number != ''
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          fetch-depth: 1
-          token: ${{ secrets.DON_PETRY_BOT_GH_PAT || github.token }}
-      - name: Run Claude Code
-        if: steps.pr.outputs.number != ''
-        uses: anthropics/claude-code-action@476e359e6203e73dad705c8b322e333fabbd7416 # v1.0.119
-        with:
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          github_token: ${{ secrets.DON_PETRY_BOT_GH_PAT || github.token }}
-          # yamllint disable rule:line-length
-          claude_args: |
-            --allowedTools "Bash(gh pr checkout:*),Bash(gh pr view:*),Bash(gh pr comment:*),Bash(gh run view:*),Bash(gh run list:*),Bash(gh run watch:*),Bash(gh api:*),Edit,Write"
-          # yamllint enable rule:line-length
-          # yamllint disable rule:line-length
-          prompt: |
-            CI check "${{ github.event.check_run.name }}" has failed on PR #${{ steps.pr.outputs.number }}.
-
-            Check details:
-            - Check: ${{ github.event.check_run.name }}
-            - Conclusion: ${{ github.event.check_run.conclusion }}
-            - Head SHA: ${{ github.event.check_run.head_sha }}
-            - Details URL: ${{ github.event.check_run.details_url }}
-
-            Please diagnose and fix the failure:
-            1. Check out the PR branch: gh pr checkout ${{ steps.pr.outputs.number }}
-            2. Read the failure details — visit the details URL or use `gh run list --commit ${{ github.event.check_run.head_sha }}` and `gh run view` to read the logs. For SonarCloud or external check services, inspect the PR annotations via `gh api repos/${{ github.repository }}/check-runs/${{ github.event.check_run.id }}/annotations?per_page=100`.
-            3. Read the relevant source files and understand the root cause.
-            4. Apply the minimal fix needed to address the reported issues.
-            5. Commit and push the fix to the PR branch.
-            6. Leave a concise comment on PR #${{ steps.pr.outputs.number }} explaining what you found and what you changed.
-          # yamllint enable rule:line-length
-
-  # Automation mode: issue-triggered work — implement, open PR, review, and notify
-  claude-issue:
-    if: >-
-      github.event_name == 'issues' && github.event.action == 'labeled' &&
-        github.event.label.name == 'claude'
-    concurrency:
-      group: claude-issue-${{ github.event.issue.number || github.run_id }}
-      cancel-in-progress: true
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    permissions:
-      contents: write
-      id-token: write
-      pull-requests: write
-      issues: write
-      actions: read
-      checks: read
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          fetch-depth: 1
-          token: ${{ secrets.DON_PETRY_BOT_GH_PAT || github.token }}
-      - name: Check for existing open PR
-        id: dedup
-        env:
-          GH_TOKEN: ${{ secrets.DON_PETRY_BOT_GH_PAT || github.token }}
-          ISSUE: ${{ github.event.issue.number }}
-        run: |
-          # Search by branch prefix (claude/issue-NNN-*)
-          PR_URL=$(gh pr list \
-            --repo "$GITHUB_REPOSITORY" \
-            --state open \
-            --json number,url,headRefName \
-            --jq ".[] | select(.headRefName | startswith(\"claude/issue-${ISSUE}-\")) | .url" \
-            | head -1)
-
-          # Fallback: search PR body for "Closes #NNN"
-          if [ -z "$PR_URL" ]; then
-            PR_URL=$(gh pr list \
-              --repo "$GITHUB_REPOSITORY" \
-              --state open \
-              --search "Closes #${ISSUE} in:body" \
-              --json url \
-              --jq '.[0].url' 2>/dev/null || true)
-          fi
-
-          if [ -n "$PR_URL" ]; then
-            echo "existing_pr_url=$PR_URL" >> "$GITHUB_OUTPUT"
-            gh issue comment "$ISSUE" \
-              --repo "$GITHUB_REPOSITORY" \
-              --body "An open PR already addresses this issue: $PR_URL — skipping new Claude run to avoid duplicates."
-            echo "Skipping: existing PR found at $PR_URL"
-          else
-            echo "No existing open PR found — proceeding with Claude."
-          fi
-      - name: Run Claude Code
-        if: steps.dedup.outputs.existing_pr_url == ''
-        uses: anthropics/claude-code-action@476e359e6203e73dad705c8b322e333fabbd7416 # v1.0.119
-        with:
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          github_token: ${{ secrets.DON_PETRY_BOT_GH_PAT }}
-          label_trigger: "claude"
-          track_progress: "true"
-          additional_permissions: |
-            actions: read
-            checks: read
-          # yamllint disable rule:line-length
-          claude_args: |
-            --allowedTools "Bash(gh pr create:*),Bash(gh pr view:*),Bash(gh pr comment:*),Bash(gh issue comment:*),Bash(gh run view:*),Bash(gh run watch:*),Bash(gh api:*),Bash(gh label create:*),Edit,Write"
-          # yamllint enable rule:line-length
-          prompt: |
-            Before doing any implementation work, check for existing open PRs for
-            this issue and avoid creating duplicates:
-              gh pr list --repo "$GITHUB_REPOSITORY" --state open \
-                --json number,url,headRefName \
-                --jq '.[] | select(.headRefName | startswith("claude/issue-${{ github.event.issue.number }}-")) | .url'
-            If an open PR is found, checkout that branch and push fixes there
-            instead of creating a new PR.
-
-            Implement a fix for issue #${{ github.event.issue.number }}.
-
-            **Standards-conformance rules — read these before writing any code:**
-
-            - **For workflow files** (`.github/workflows/*.yml`): if a template
-              exists in `petry-projects/.github/standards/workflows/` for what
-              you're adding, **copy it verbatim** rather than writing from
-              scratch. Available templates: `agent-shield.yml`, `claude.yml`,
-              `dependabot-automerge.yml`, `dependabot-rebase.yml`,
-              `dependency-audit.yml`, `feature-ideation.yml`. Fetch via:
-              `gh api repos/petry-projects/.github/contents/standards/workflows/<file>.yml --jq '.content' | base64 -d`
-              Adapt only when the file genuinely needs repo-specific content.
-
-            - **For org standards** (labels, settings, rulesets, CODEOWNERS):
-              read `petry-projects/.github/standards/` first via `gh api`.
-              Match colors, names, and structure exactly. The full standards
-              tree is at `petry-projects/.github/tree/main/standards/`.
-
-            - **For SHA pinning** (Action Pinning Policy in
-              `standards/ci-standards.md`): never guess or fabricate SHAs.
-              Always look them up:
-                * Tags:     `gh api repos/{owner}/{repo}/git/refs/tags/{tag} --jq '.object.sha'`
-                * Branches: `gh api repos/{owner}/{repo}/branches/{branch} --jq '.commit.sha'`
-              If the lookup fails, do not pin — open the PR with the action
-              still using its tag and clearly explain the blocker in the PR
-              body so a human can complete the fix.
-
-            - **For CodeQL** (`codeql.yml`): all ecosystems present in the repo
-              MUST be configured as CodeQL languages. Repos with
-              `.github/workflows/*.yml` files MUST scan the `actions`
-              ecosystem. Use a matrix strategy for multi-language repos.
-
-            - **Do not skip the work** if previous comments say "blocked": the
-              prior infrastructure issues that produced those comments may
-              have been resolved. Attempt the fix; if you hit a *new* error,
-              report the actual error message rather than referring to history.
-
-            After implementing:
-            1. Create a pull request with a clear title and description. Include "Closes #${{ github.event.issue.number }}" in the PR body.
-            2. Self-review your own PR — look for bugs, style issues, missed edge cases, and test gaps. If you find problems, push fixes.
-            3. Review all comments and review threads on the PR. For each one:
-               - If you can address the feedback, make the fix, push, and mark the conversation as resolved.
-               - If the comment requires human judgment, leave a reply explaining what you need.
-            4. Check CI status. If CI fails, read the logs, fix the issues, and push again. Repeat until CI passes.
-            5. When CI is green, all actionable review comments are resolved, and the PR is ready, read the CODEOWNERS file and leave a comment tagging the relevant code owners to review and merge.
