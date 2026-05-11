@@ -4,7 +4,7 @@ A scheduled GitHub Action that reviews open PRs on don-petry's behalf.
 Runs hourly, classifies risk, auto-approves low/medium-risk PRs that pass all
 quality gates, and escalates high-risk or gated PRs for human review.
 
-Supports three LLM engines via the `REVIEW_ENGINE` repo variable: **Claude** (default), **Gemini**,
+Supports two LLM engines via the `REVIEW_ENGINE` repo variable: **Claude** (default)
 and **Copilot**.
 
 ## How it works
@@ -46,12 +46,8 @@ and **Copilot**.
    model tiers. Different model families have different blind spots — running
    both catches issues that either alone would miss.
 
-   The rubber duck is **always a diverse engine**:
-   - If `REVIEW_ENGINE=claude`, the duck is Copilot (GPT-5.4).
-   - If `REVIEW_ENGINE=gemini`, the duck is Claude (Sonnet 4.6).
-   - If `REVIEW_ENGINE=copilot`, the duck is Claude (Sonnet 4.6).
-
-   No extra configuration needed.
+   The rubber duck is **always the opposite engine**: if `REVIEW_ENGINE=claude`,
+   the duck is Copilot (GPT-5.4), and vice versa. No extra configuration needed.
 
    **Graceful degradation:** if the rubber duck fails (missing credentials,
    CLI not installed, timeout), the cascade continues with the primary deep
@@ -59,14 +55,14 @@ and **Copilot**.
 
    ### Engine model mapping
 
-   | Tier | Claude primary | Gemini primary | Copilot primary |
-   |---|---|---|---|
-   | Triage | Haiku 4.5 | Gemini 2.0 Flash | GPT-5-mini |
-   | Deep review | Sonnet 4.6 | Gemini 1.5 Pro | GPT-5.2 |
-   | Rubber duck | GPT-5.4 (cross) | Sonnet 4.6 (cross) | Sonnet 4.6 (cross) |
-   | Synthesis | Sonnet 4.6 | Gemini 1.5 Pro | GPT-5.2 |
-   | Security audit | Opus 4.6 | Gemini 1.5 Pro | GPT-5.4 |
-   | Action / single review | Sonnet 4.6 / Opus 4.6 | Gemini 1.5 Pro | GPT-5.2 / GPT-5.4 |
+   | Tier | Claude primary | Copilot primary |
+   |---|---|---|
+   | Triage | Haiku 4.5 | GPT-5-mini |
+   | Deep review | Sonnet 4.6 | GPT-5.2 |
+   | Rubber duck | GPT-5.4 (cross) | Sonnet 4.6 (cross) |
+   | Synthesis | Sonnet 4.6 | GPT-5.2 |
+   | Security audit | Opus 4.6 | GPT-5.4 |
+   | Action / single review | Sonnet 4.6 / Opus 4.6 | GPT-5.2 / GPT-5.4 |
 
    **Cost profile:**
    - ~80% of PRs: triage + single confirm (2 calls, ~30s)
@@ -111,14 +107,14 @@ and **Copilot**.
 
 ### Reviewer identity
 
-The agent posts PR reviews and approvals using the `GH_PAT` secret. This
+The agent posts PR reviews and approvals using the `DON_PETRY_BOT_GH_PAT` secret. This
 token **must belong to a different GitHub account than the PR author** —
 GitHub blocks self-approval (a user cannot approve their own PR). If the
 same account both opens PRs (via Claude automation) and tries to approve
 them, every approval will silently fail.
 
 The recommended pattern: create a dedicated **reviewer bot account**
-(e.g. `donpetry-bot`) whose token is stored as `GH_PAT`. PRs are
+(e.g. `donpetry-bot`) whose token is stored as `DON_PETRY_BOT_GH_PAT`. PRs are
 authored by `don-petry`; the bot approves them.
 
 ### 1. Create the reviewer bot account
@@ -133,24 +129,39 @@ authored by `don-petry`; the bot approves them.
    **Invite member** → enter `donpetry-bot` → Role: **Member**.
 6. Accept the invite from the bot account.
 
-### 2. Create a classic PAT for the bot
+### 2. Create a **classic** PAT for the bot
 
-A classic PAT is required — fine-grained PATs cannot satisfy the GitHub
-rulesets bypass that org-admin approval requires.
+> [!IMPORTANT]
+> **Fine-grained PATs do not work for this workflow.** Use a classic PAT only.
+>
+> Fine-grained tokens are blocked by org policy gates: even after the org owner
+> approves the token request and the bot has Write collaborator access, the
+> GraphQL `addPullRequestReview` mutation fails with:
+>
+> ```
+> failed to create review: GraphQL: Resource not accessible by personal access token (addPullRequestReview)
+> ```
+>
+> If you see that error in a workflow run, the secret holds a fine-grained
+> token. Replace it with a classic PAT generated as below. The same gate also
+> blocks the rulesets bypass that branch protections rely on.
 
-1. Sign in as `donpetry-bot`.
+1. Sign in as the bot account (e.g. `donpetry-bot`) — sign out of `don-petry`
+   first, or use a private window. The PAT must be created **from the bot's
+   account**, not yours.
 2. Go to **Settings → Developer settings → Personal access tokens →
    Tokens (classic)** → **Generate new token (classic)**.
 3. Settings:
    - **Note:** `pr-review-agent`
    - **Expiration:** 1 year (set a calendar reminder to rotate)
-   - **Scopes:** ✅ `repo`
+   - **Scopes:** ✅ `repo`, ✅ `workflow`, ✅ `read:org`
 4. Generate and copy the token immediately.
-5. Sign back in as `don-petry` and store the token:
+5. Sign back in as `don-petry` and store the token in the agent repo's secret
+   (the secret name is `DON_PETRY_BOT_GH_PAT` in `petry-projects/.github-private`).
 
-```
-gh secret set GH_PAT --repo petry-projects/.github-private
-```
+After saving, trigger a workflow run and confirm the install step's
+`gh auth status` reports the bot's login (not yours) and lists the three
+scopes above.
 
 > **Branch protection / rulesets:** add `donpetry-bot` as an allowed
 > approver on each protected repo. In the repo ruleset or branch protection
@@ -172,28 +183,17 @@ Store as a repo secret:
 gh secret set CLAUDE_CODE_OAUTH_TOKEN --repo petry-projects/.github-private
 ```
 
-#### Gemini engine
-
-Requires a Google API Key. Store as a repo secret:
-
-```
-gh secret set GOOGLE_API_KEY --repo petry-projects/.github-private
-```
-
 #### Copilot engine
 
 Create a GitHub PAT with Copilot scope. Store as a repo secret:
 
 ```
-gh secret set GH_PAT --repo petry-projects/.github-private
+gh secret set COPILOT_GITHUB_TOKEN --repo petry-projects/.github-private
 ```
 
 ### 4. Choose your engine
 
 ```
-# Use Gemini:
-gh variable set REVIEW_ENGINE --body gemini --repo petry-projects/.github-private
-
 # Use Copilot (GPT models):
 gh variable set REVIEW_ENGINE --body copilot --repo petry-projects/.github-private
 
@@ -240,7 +240,7 @@ gh workflow run pr-review.yml --repo petry-projects/.github-private -f dry_run=f
 
 ## Tuning
 
-- **Review engine** — `REVIEW_ENGINE` repo variable: `claude` (default), `gemini`, or
+- **Review engine** — `REVIEW_ENGINE` repo variable: `claude` (default) or
   `copilot`. Controls which CLI and model family is used.
 - **Risk rules** — edit `prompts/shared.md` (taxonomy), or the per-tier
   prompts (`prompts/deep-review.md`, `prompts/security-audit.md`).
@@ -291,10 +291,8 @@ PR comment "@donpetry-bot please review"
    `petry-projects/.github` as `.github/workflows/pr-review-mention.yml`.
 
 2. Add the `DON_PETRY_BOT_GH_PAT` secret to `petry-projects/.github`
-   (org-level secret or repo secret on `.github`). The PAT needs:
-   - **Pull requests: write** — to post the ack comment across petry-projects repos
-   - **Contents: write** (scoped to `petry-projects/.github-private`) — to send the
-     `repository_dispatch` event (does **not** require `Actions: write`)
+   (org-level secret or repo secret on `.github`). Use a classic PAT from
+   `donpetry-bot` with scopes: ✅ `repo`, ✅ `workflow`, ✅ `read:org`
 
 3. Ensure `donpetry-bot` has at least **Read** collaborator access on
    `petry-projects/.github-private`.
@@ -302,7 +300,7 @@ PR comment "@donpetry-bot please review"
 ## Architecture
 
 ```
-scripts/engine.sh         ← LLM abstraction (claude/gemini/copilot dispatch)
+scripts/engine.sh         ← LLM abstraction (claude/copilot dispatch)
 scripts/review-one-pr.sh  ← Cascade orchestrator (sources engine.sh)
 scripts/list-prs.sh       ← PR enumeration
 
@@ -317,9 +315,8 @@ prompts/shared.md         ← Shared risk taxonomy and decision gates
 ## Cost
 
 Uses the configured engine's billing:
-- **Claude**: Max plan via OAuth token — no per-token API billing.
-- **Gemini**: API-based billing via `GOOGLE_API_KEY`.
-- **Copilot**: Included in GitHub Copilot subscription.
+- **Claude:** Max plan via OAuth token — no per-token API billing.
+- **Copilot:** Included in GitHub Copilot subscription.
 
 GitHub Actions cost is ~720 runs/month (hourly × 30 days). Runs with zero
 candidate PRs finish in ~10s. Each PR reviewed costs ~2-5 min of runner time
