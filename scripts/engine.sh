@@ -1379,6 +1379,13 @@ run_triage() {
             --approval-mode auto_edit || rc=$?
         fi
         ;;
+      gemini)
+        timeout "$TRIAGE_TIMEOUT_SEC" gemini --prompt "" \
+          --model "$ENGINE_TRIAGE_MODEL" \
+          --approval-mode auto_edit \
+          --output-format text \
+          < "$prompt_file" || rc=$?
+        ;;
       copilot)
         # In triage mode, we deny all tools to keep it fast and restricted.
         if [ -n "$_tok_tmp" ]; then
@@ -1503,6 +1510,13 @@ run_agentic() {
         _gemini_chain_invoke "$_agentic_gemini_chain" "$prompt_file" "$DEEP_TIMEOUT_SEC" \
           --approval-mode auto_edit || rc=$?
       fi
+      ;;
+    gemini)
+      timeout "$DEEP_TIMEOUT_SEC" gemini --prompt "" \
+        --model "$model" \
+        --approval-mode auto_edit \
+        --output-format text \
+        < "$prompt_file"
       ;;
     copilot)
       # Full tool support via GitHub Copilot CLI agentic mode (--yolo).
@@ -2735,7 +2749,7 @@ sys.exit(1)
 
 # run_duck <prompt_file> <model>
 # Cross-engine adversarial "rubber duck" review.
-# Always uses the OPPOSITE engine from REVIEW_ENGINE. Output to stdout.
+# Always uses a different model family from REVIEW_ENGINE. Output to stdout.
 # Strips the opposing engine's credentials to prevent cross-engine leakage.
 run_duck() {
   local prompt_file="$1"
@@ -2743,6 +2757,7 @@ run_duck() {
   case "$DUCK_ENGINE" in
     claude)
       unset COPILOT_GITHUB_TOKEN 2>/dev/null || true
+      unset GOOGLE_API_KEY 2>/dev/null || true
       timeout "$DUCK_TIMEOUT_SEC" claude --print \
         --model "$model" \
         --permission-mode acceptEdits \
@@ -2750,8 +2765,18 @@ run_duck() {
         --max-turns 25 \
         < "$prompt_file"
       ;;
+    gemini)
+      unset CLAUDE_CODE_OAUTH_TOKEN 2>/dev/null || true
+      unset COPILOT_GITHUB_TOKEN 2>/dev/null || true
+      timeout "$DUCK_TIMEOUT_SEC" gemini --prompt "" \
+        --model "$model" \
+        --approval-mode auto_edit \
+        --output-format text \
+        < "$prompt_file"
+      ;;
     copilot)
       unset CLAUDE_CODE_OAUTH_TOKEN 2>/dev/null || true
+      unset GOOGLE_API_KEY 2>/dev/null || true
       # gh copilot is now a built-in; auth via GH_PAT (user token with Copilot subscription).
       ( export GH_TOKEN="$COPILOT_GITHUB_TOKEN"
         timeout "$DUCK_TIMEOUT_SEC" gh copilot suggest "$(cat "$prompt_file")" --agent shell
