@@ -110,6 +110,7 @@ skipped_noops=0
 deferred=0
 failed=0
 engine_fallbacks=0
+fallback_engines=""
 processed=0
 session_aborted=0
 abort_pr=""
@@ -143,8 +144,8 @@ while IFS= read -r pr_url; do
     rc=2
   fi
 
-  # Exit code 2 = engine rate-limited. Switch from claude to copilot once,
-  # then retry this PR. All later PRs in the batch use copilot too.
+  # Exit code 2 = engine rate-limited.
+  # Fallback chain: claude -> gemini -> copilot
   if [ "$rc" -eq 2 ] && [ "${REVIEW_ENGINE:-claude}" = "claude" ]; then
     # Prefer Copilot as the first cross-provider fallback.
     if [ "${COPILOT_AVAILABLE:-false}" = "true" ] && [[ "${COPILOT_GITHUB_TOKEN:-}" != ghp_* ]]; then
@@ -181,9 +182,10 @@ while IFS= read -r pr_url; do
       echo "::endgroup::"
       continue
     fi
-    echo "::warning::Claude rate limit hit — switching to Copilot engine for remaining PRs"
+    echo "::warning::Gemini rate limit hit — switching to Copilot engine for remaining PRs"
     export REVIEW_ENGINE=copilot
     engine_fallbacks=$((engine_fallbacks + 1))
+    fallback_engines="${fallback_engines:+$fallback_engines, }copilot"
     rc=0
     run_review_capture "$pr_url" || rc=$?
   fi

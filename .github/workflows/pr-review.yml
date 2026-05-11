@@ -154,13 +154,23 @@ jobs:
           case "$REVIEW_ENGINE" in
             claude)
               install_claude
+              # Best-effort install of fallbacks for duck/fallback support
+              npm install -g @google/gemini-cli || true
               if ! env GH_TOKEN="$COPILOT_GITHUB_TOKEN" gh copilot --version > /dev/null 2>&1; then
                 echo "::warning::gh copilot built-in unavailable with user token — rate-limit fallback will be unavailable."
               fi
               ;;
-            copilot)
-              gh extension install github/gh-copilot
+            gemini)
+              npm install -g @google/gemini-cli
               install_claude || true
+              ;;
+            copilot)
+              # Best-effort install of copilot if built-in is missing
+              if ! gh copilot --version > /dev/null 2>&1; then
+                gh extension install github/gh-copilot || true
+              fi
+              install_claude || true
+              npm install -g @google/gemini-cli || true
               ;;
             *)
               echo "::error::Unknown REVIEW_ENGINE=$REVIEW_ENGINE"

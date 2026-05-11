@@ -35,7 +35,7 @@ set -euo pipefail
 # Configurable via environment / repo variables. BOT_USER is the GitHub
 # identity the workflow PAT authenticates as — both the queue scope (which
 # repos to scan) and the self-approval filter use it.
-BOT_USER="${BOT_USER:-don-petry-bot}"
+BOT_USER="${BOT_USER:-donpetry-bot}"
 TARGET_ORG="${TARGET_ORG:-petry-projects}"
 
 # Reject BOT_USER values that aren't valid GitHub usernames before

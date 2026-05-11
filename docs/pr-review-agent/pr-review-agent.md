@@ -4,7 +4,7 @@ A scheduled GitHub Action that reviews open PRs on don-petry's behalf.
 Runs hourly, classifies risk, auto-approves low/medium-risk PRs that pass all
 quality gates, and escalates high-risk or gated PRs for human review.
 
-Supports two LLM engines via the `REVIEW_ENGINE` repo variable: **Claude** (default)
+Supports three LLM engines via the `REVIEW_ENGINE` repo variable: **Claude** (default), **Gemini**,
 and **Copilot**.
 
 ## How it works
@@ -46,8 +46,12 @@ and **Copilot**.
    model tiers. Different model families have different blind spots — running
    both catches issues that either alone would miss.
 
-   The rubber duck is **always the opposite engine**: if `REVIEW_ENGINE=claude`,
-   the duck is Copilot (GPT-5.4), and vice versa. No extra configuration needed.
+   The rubber duck is **always a diverse engine**:
+   - If `REVIEW_ENGINE=claude`, the duck is Copilot (GPT-5.4).
+   - If `REVIEW_ENGINE=gemini`, the duck is Claude (Sonnet 4.6).
+   - If `REVIEW_ENGINE=copilot`, the duck is Claude (Sonnet 4.6).
+
+   No extra configuration needed.
 
    **Graceful degradation:** if the rubber duck fails (missing credentials,
    CLI not installed, timeout), the cascade continues with the primary deep
@@ -55,14 +59,14 @@ and **Copilot**.
 
    ### Engine model mapping
 
-   | Tier | Claude primary | Copilot primary |
-   |---|---|---|
-   | Triage | Haiku 4.5 | GPT-5-mini |
-   | Deep review | Sonnet 4.6 | GPT-5.2 |
-   | Rubber duck | GPT-5.4 (cross) | Sonnet 4.6 (cross) |
-   | Synthesis | Sonnet 4.6 | GPT-5.2 |
-   | Security audit | Opus 4.6 | GPT-5.4 |
-   | Action / single review | Sonnet 4.6 / Opus 4.6 | GPT-5.2 / GPT-5.4 |
+   | Tier | Claude primary | Gemini primary | Copilot primary |
+   |---|---|---|---|
+   | Triage | Haiku 4.5 | Gemini 2.0 Flash | GPT-5-mini |
+   | Deep review | Sonnet 4.6 | Gemini 1.5 Pro | GPT-5.2 |
+   | Rubber duck | GPT-5.4 (cross) | Sonnet 4.6 (cross) | Sonnet 4.6 (cross) |
+   | Synthesis | Sonnet 4.6 | Gemini 1.5 Pro | GPT-5.2 |
+   | Security audit | Opus 4.6 | Gemini 1.5 Pro | GPT-5.4 |
+   | Action / single review | Sonnet 4.6 / Opus 4.6 | Gemini 1.5 Pro | GPT-5.2 / GPT-5.4 |
 
    **Cost profile:**
    - ~80% of PRs: triage + single confirm (2 calls, ~30s)
@@ -71,30 +75,23 @@ and **Copilot**.
 
 4. **Post-review actions** — after the review is posted, the action tier takes
    additional actions depending on the decision:
-   - **If approved:** removes the `needs-human-review` label if present, and
-     rebases the branch if it's behind base. The PR remains open for manual merge
-     by the author or maintainers.
+   - **If approved:** enables auto-merge (`gh pr merge --auto --squash`),
+     rebases the branch if behind base, and removes the `needs-human-review`
+     label. GitHub merges automatically once all required checks pass.
    - **If escalated + AI delegation enabled:** posts a follow-up comment
      with specific fix instructions. An AI agent watches for these comments,
      pushes fixes → next cron tick detects new SHA → cascade re-reviews →
-     approve when clean. This creates an autonomous fix loop.
+     approve + auto-merge when clean. This creates an autonomous fix loop.
    - **If escalated + no delegation (or max cycles reached):** labels
      `needs-human-review` and re-requests don-petry as reviewer.
    - **Cycle guard:** before running the cascade, `scripts/review-one-pr.sh`
-     counts *non-converging* review cycles on the PR: non-approval review
-     markers posted since the most recent reset event (the latest approval
-     marker or the latest escalation comment). If the count is
+     counts existing review markers on the PR. If the count is
      `>= MAX_REVIEW_CYCLES` (default 3), the cascade is skipped entirely;
      the script posts a single human-escalation comment marked
      `<!-- pr-review-agent escalation -->`, adds `needs-human-review`, and
-     re-requests don-petry. Subsequent runs no-op while the escalation marker
-     AND the `needs-human-review` label are both present. This prevents
-     infinite review loops on PRs that aren't converging, without punishing
-     PRs that converge (approve) and then legitimately evolve (issue #467).
-     Re-engagement paths: remove the `needs-human-review` label (cascade
-     resumes on the next run with a fresh cycle budget), or mention the bot —
-     mention-triggered runs (`FORCE_REVIEW=true`) bypass the escalation pause
-     and the cap, and drop the label so the cascade stays engaged.
+     re-requests don-petry. Subsequent runs detect the escalation marker and
+     no-op without spamming. This prevents infinite review loops on PRs
+     that aren't converging.
 
 5. **Idempotency + iterative review cycles** — every posted review starts with
    an HTML marker on line 1:
@@ -114,14 +111,14 @@ and **Copilot**.
 
 ### Reviewer identity
 
-The agent posts PR reviews and approvals using the `DON_PETRY_BOT_GH_PAT` secret. This
+The agent posts PR reviews and approvals using the `GH_PAT` secret. This
 token **must belong to a different GitHub account than the PR author** —
 GitHub blocks self-approval (a user cannot approve their own PR). If the
 same account both opens PRs (via Claude automation) and tries to approve
 them, every approval will silently fail.
 
 The recommended pattern: create a dedicated **reviewer bot account**
-(e.g. `donpetry-bot`) whose token is stored as `DON_PETRY_BOT_GH_PAT`. PRs are
+(e.g. `donpetry-bot`) whose token is stored as `GH_PAT`. PRs are
 authored by `don-petry`; the bot approves them.
 
 ### 1. Create the reviewer bot account
@@ -136,50 +133,24 @@ authored by `don-petry`; the bot approves them.
    **Invite member** → enter `donpetry-bot` → Role: **Member**.
 6. Accept the invite from the bot account.
 
-### 2. Create a PAT for the bot (classic or fine-grained)
+### 2. Create a classic PAT for the bot
 
-You can use either a **classic** or **fine-grained** PAT. Classic PATs are the
-safe default — see [bot-setup.md](bot-setup.md) for a known failure with
-fine-grained tokens in some org configurations (`addPullRequestReview` blocked
-at the org policy layer). Fine-grained tokens work when your org permits them
-and follow the principle of least privilege.
+A classic PAT is required — fine-grained PATs cannot satisfy the GitHub
+rulesets bypass that org-admin approval requires.
 
-#### Option A: Fine-grained PAT (recommended)
-
-1. Sign in as the bot account (e.g. `donpetry-bot`) — sign out of `don-petry`
-   first, or use a private window. The PAT must be created **from the bot's
-   account**, not yours.
+1. Sign in as `donpetry-bot`.
 2. Go to **Settings → Developer settings → Personal access tokens →
-   Fine-grained tokens** → **Generate new token**.
+   Tokens (classic)** → **Generate new token (classic)**.
 3. Settings:
-   - **Token name:** `pr-review-agent`
-   - **Expiration:** 90 days (set a calendar reminder to rotate — fine-grained PATs do not auto-rotate)
-   - **Resource owner:** select your organization (e.g. `petry-projects`)
-   - **Repository access:** All repositories (or specific repos if preferred)
-   - **Repository permissions:**
-     - `contents:read` — read files and diffs for analysis
-     - `pull_requests:write` — post reviews and comments
-   - **Organization permissions:**
-     - `members:read` — (optional) read org members for code owner routing at escalation time
-4. Generate and copy the token immediately.
-5. Sign back in as `don-petry` and store the token in the agent repo's secret
-   (the secret name is `DON_PETRY_BOT_GH_PAT` in `petry-projects/.github-private`).
-
-#### Option B: Classic PAT (legacy)
-
-If you prefer classic PATs or need broader scopes:
-
-1. Sign in as the bot account, go to **Settings → Developer settings →
-   Personal access tokens → Tokens (classic)** → **Generate new token (classic)**.
-2. Settings:
    - **Note:** `pr-review-agent`
-   - **Expiration:** 1 year
-   - **Scopes:** ✅ `repo`, ✅ `workflow`, ✅ `read:org`
-3. Generate and store as `DON_PETRY_BOT_GH_PAT` (same as above).
+   - **Expiration:** 1 year (set a calendar reminder to rotate)
+   - **Scopes:** ✅ `repo`
+4. Generate and copy the token immediately.
+5. Sign back in as `don-petry` and store the token:
 
-After saving either token type, trigger a workflow run and confirm the
-`gh auth status` output reports the bot's login (not yours) and lists the
-required scopes.
+```
+gh secret set GH_PAT --repo petry-projects/.github-private
+```
 
 > **Branch protection / rulesets:** add `donpetry-bot` as an allowed
 > approver on each protected repo. In the repo ruleset or branch protection
@@ -201,17 +172,28 @@ Store as a repo secret:
 gh secret set CLAUDE_CODE_OAUTH_TOKEN --repo petry-projects/.github-private
 ```
 
+#### Gemini engine
+
+Requires a Google API Key. Store as a repo secret:
+
+```
+gh secret set GOOGLE_API_KEY --repo petry-projects/.github-private
+```
+
 #### Copilot engine
 
 Create a GitHub PAT with Copilot scope. Store as a repo secret:
 
 ```
-gh secret set COPILOT_GITHUB_TOKEN --repo petry-projects/.github-private
+gh secret set GH_PAT --repo petry-projects/.github-private
 ```
 
 ### 4. Choose your engine
 
 ```
+# Use Gemini:
+gh variable set REVIEW_ENGINE --body gemini --repo petry-projects/.github-private
+
 # Use Copilot (GPT models):
 gh variable set REVIEW_ENGINE --body copilot --repo petry-projects/.github-private
 
@@ -258,7 +240,7 @@ gh workflow run pr-review.yml --repo petry-projects/.github-private -f dry_run=f
 
 ## Tuning
 
-- **Review engine** — `REVIEW_ENGINE` repo variable: `claude` (default) or
+- **Review engine** — `REVIEW_ENGINE` repo variable: `claude` (default), `gemini`, or
   `copilot`. Controls which CLI and model family is used.
 - **Risk rules** — edit `prompts/shared.md` (taxonomy), or the per-tier
   prompts (`prompts/deep-review.md`, `prompts/security-audit.md`).
@@ -276,27 +258,6 @@ gh workflow run pr-review.yml --repo petry-projects/.github-private -f dry_run=f
 - **Max PRs per run** — defaults to 10 per cron tick to stay within the 60-min
   job timeout. Override:
   `gh variable set MAX_PRS --body 15 --repo petry-projects/.github-private`
-- **MCP review (opt-in, off by default)** — the deep and rubber-duck tiers can
-  load [MCP](https://modelcontextprotocol.io) servers via `REVIEW_MCP_CONFIG`
-  (path to an MCP-servers JSON config) and `REVIEW_MCP_ALLOWED_TOOLS`
-  (comma-separated MCP tool names merged into `--allowed-tools`). The triage
-  tier never receives MCP.
-
-  Enablement is **committed-file-only** — no edit to the org-template-synced
-  `pr-review.yml` is needed. `engine.sh` resolves `REVIEW_MCP_CONFIG` as:
-  1. an explicit `REVIEW_MCP_CONFIG` env value (honored as-is, takes precedence), else
-  2. the conventional committed path `.github/review-mcp.json` — but only if that
-     file exists. If neither is present, MCP stays off and behavior is unchanged.
-
-  To turn it on, copy the no-auth Context7 sample into place and allow its tools:
-  ```bash
-  cp .github/review-mcp.json.sample .github/review-mcp.json
-  gh variable set REVIEW_MCP_ALLOWED_TOOLS --body 'mcp__context7__*' --repo petry-projects/.github-private
-  ```
-  `.github/review-mcp.json.sample` is documentation-only and inert — the scripts
-  only auto-discover the suffix-less `.github/review-mcp.json`. Context7 needs no
-  auth; an MCP server that requires a secret would need that secret wired into the
-  workflow's `env:` block as a documented per-repo exception (see AGENTS.md).
 
 ## Mention-triggered reviews
 
@@ -329,12 +290,11 @@ PR comment "@donpetry-bot please review"
 1. Copy [`templates/mention-listener.yml`](templates/mention-listener.yml) to
    `petry-projects/.github` as `.github/workflows/pr-review-mention.yml`.
 
-2. Ensure the `GH_PAT_WORKFLOWS` org-level secret is available to
-   `petry-projects/.github`. This secret is already present in the org; no
-   additional secret setup is required. The workflow template references
-   `GH_PAT_WORKFLOWS` throughout — use the same PAT created above in
-   [step 2](#2-create-a-pat-for-the-bot-classic-or-fine-grained) if you need to
-   rotate or recreate it.
+2. Add the `DON_PETRY_BOT_GH_PAT` secret to `petry-projects/.github`
+   (org-level secret or repo secret on `.github`). The PAT needs:
+   - **Pull requests: write** — to post the ack comment across petry-projects repos
+   - **Contents: write** (scoped to `petry-projects/.github-private`) — to send the
+     `repository_dispatch` event (does **not** require `Actions: write`)
 
 3. Ensure `donpetry-bot` has at least **Read** collaborator access on
    `petry-projects/.github-private`.
@@ -342,7 +302,7 @@ PR comment "@donpetry-bot please review"
 ## Architecture
 
 ```
-scripts/engine.sh         ← LLM abstraction (claude/copilot dispatch)
+scripts/engine.sh         ← LLM abstraction (claude/gemini/copilot dispatch)
 scripts/review-one-pr.sh  ← Cascade orchestrator (sources engine.sh)
 scripts/list-prs.sh       ← PR enumeration
 
@@ -357,8 +317,9 @@ prompts/shared.md         ← Shared risk taxonomy and decision gates
 ## Cost
 
 Uses the configured engine's billing:
-- **Claude:** Max plan via OAuth token — no per-token API billing.
-- **Copilot:** Included in GitHub Copilot subscription.
+- **Claude**: Max plan via OAuth token — no per-token API billing.
+- **Gemini**: API-based billing via `GOOGLE_API_KEY`.
+- **Copilot**: Included in GitHub Copilot subscription.
 
 GitHub Actions cost is ~720 runs/month (hourly × 30 days). Runs with zero
 candidate PRs finish in ~10s. Each PR reviewed costs ~2-5 min of runner time
