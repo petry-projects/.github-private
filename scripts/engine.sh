@@ -3721,7 +3721,7 @@ sys.exit(1)
 
 # run_duck <prompt_file> <model>
 # Cross-engine adversarial "rubber duck" review.
-# Always uses the OPPOSITE engine from REVIEW_ENGINE. Output to stdout.
+# Always uses a different model family from REVIEW_ENGINE. Output to stdout.
 # Strips the opposing engine's credentials to prevent cross-engine leakage.
 run_duck() {
   local prompt_file="$1"
@@ -3729,6 +3729,7 @@ run_duck() {
   case "$DUCK_ENGINE" in
     claude)
       unset COPILOT_GITHUB_TOKEN 2>/dev/null || true
+      unset GOOGLE_API_KEY 2>/dev/null || true
       timeout "$DUCK_TIMEOUT_SEC" claude --print \
         --model "$model" \
         --permission-mode acceptEdits \
@@ -3736,8 +3737,18 @@ run_duck() {
         --max-turns 25 \
         < "$prompt_file"
       ;;
+    gemini)
+      unset CLAUDE_CODE_OAUTH_TOKEN 2>/dev/null || true
+      unset COPILOT_GITHUB_TOKEN 2>/dev/null || true
+      timeout "$DUCK_TIMEOUT_SEC" gemini --prompt "" \
+        --model "$model" \
+        --approval-mode auto_edit \
+        --output-format text \
+        < "$prompt_file"
+      ;;
     copilot)
       unset CLAUDE_CODE_OAUTH_TOKEN 2>/dev/null || true
+      unset GOOGLE_API_KEY 2>/dev/null || true
       # gh copilot is now a built-in; auth via GH_PAT (user token with Copilot subscription).
       ( export GH_TOKEN="$COPILOT_GITHUB_TOKEN"
         timeout "$DUCK_TIMEOUT_SEC" gh copilot suggest "$(cat "$prompt_file")" --agent shell
