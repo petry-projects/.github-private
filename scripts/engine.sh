@@ -60,8 +60,15 @@ case "$REVIEW_ENGINE" in
     ENGINE_AUDIT_MODEL="o4-mini"
     ENGINE_ACTION_MODEL="o4-mini"
     ENGINE_SINGLE_MODEL="o4-mini"
-    ENGINE_LABEL="triage: o4-mini → deep: o4-mini + duck: sonnet 4.6 → audit: o4-mini"
-    ENGINE_SINGLE_LABEL="single-reviewer mode: o4-mini"
+    # GitHub Models API model identifier — must match a model available at
+    # https://models.github.ai (see GitHub Models marketplace).
+    # Override via COPILOT_API_MODEL env var if the default is unavailable.
+    # openai/o4-mini is the April-2025 o4-generation reasoning model; it is
+    # not a typo for o1-mini or gpt-4o-mini.
+    COPILOT_API_MODEL="${COPILOT_API_MODEL:-openai/o4-mini}"
+    export COPILOT_API_MODEL
+    ENGINE_LABEL="triage: o4-mini → deep: o4-mini + duck: sonnet 4.6 → audit: o4-mini (GitHub Models API)"
+    ENGINE_SINGLE_LABEL="single-reviewer mode: o4-mini (GitHub Models API)"
     # Cross-engine rubber duck: always the opposite engine
     DUCK_ENGINE="claude"
     DUCK_MODEL="claude-sonnet-4-6"
@@ -76,6 +83,7 @@ export ENGINE_TRIAGE_MODEL ENGINE_DEEP_MODEL ENGINE_AUDIT_MODEL
 export ENGINE_ACTION_MODEL ENGINE_SINGLE_MODEL
 export ENGINE_LABEL ENGINE_SINGLE_LABEL
 export DUCK_ENGINE DUCK_MODEL
+# COPILOT_API_MODEL is exported inside the copilot) case above (only set then).
 
 echo "    engine: $REVIEW_ENGINE ($ENGINE_LABEL)"
 
