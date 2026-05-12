@@ -235,13 +235,10 @@ while IFS= read -r pr_url; do
       abort_reason="rate-limit on fallback engine"
       ;;
     *)
-      # Other failure — session-fatal. A systemic problem (model degraded,
-      # prompt regression, malformed verdicts) shouldn't burn the queue.
+      # Per-PR failure — log and continue. Remaining candidates still run.
+      # Accumulated failures surface in the session summary.
       failed=$((failed + 1))
       echo "::error::Review failed for $pr_url (exit code $rc)"
-      session_aborted=1
-      abort_pr="$pr_url"
-      abort_reason="exit code $rc"
       ;;
   esac
 
