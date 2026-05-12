@@ -1485,10 +1485,12 @@ run_duck() {
     copilot)
       unset CLAUDE_CODE_OAUTH_TOKEN 2>/dev/null || true
       unset GOOGLE_API_KEY 2>/dev/null || true
-      # gh copilot is now a built-in; auth via GH_PAT (user token with Copilot subscription).
-      ( export GH_TOKEN="$COPILOT_GITHUB_TOKEN"
-        timeout "$DUCK_TIMEOUT_SEC" gh copilot suggest -p "$(cat "$prompt_file")"
-      )
+      if [ -n "${OUTPUT_FILE:-}" ]; then
+        copilot_chat "$prompt_file" "$DUCK_TIMEOUT_SEC" | tee "$OUTPUT_FILE"
+        return "${PIPESTATUS[0]}"
+      else
+        copilot_chat "$prompt_file" "$DUCK_TIMEOUT_SEC"
+      fi
       ;;
     *)
       echo "::error::Unknown DUCK_ENGINE='$DUCK_ENGINE'" >&2
