@@ -266,6 +266,8 @@ elif [ "$DECISION" = "escalate" ]; then
     COMMENT_FILE="/tmp/pr-comment-$$.txt"
     NEXT_CYCLE=$((REVIEW_CYCLE + 1))
     cat > "$COMMENT_FILE" <<COMMENT_END
+<!-- pr-review-agent v1 sha=$PR_HEAD_SHA --> <!-- decision=fix-requested risk=$RISK -->
+
 ## Review — fix requested (cycle $NEXT_CYCLE/$MAX_REVIEW_CYCLES)
 
 The automated review identified the following issues. Please address each one:
