@@ -26,10 +26,11 @@
 #
 # Filters:
 #   --draft=false       — skip work-in-progress PRs
-#   --checks success    — only include PRs where all CI checks are green;
-#                         failing or pending CI PRs are excluded here so they
-#                         never consume a review slot. review-one-pr.sh also
-#                         enforces this per-PR as a second layer of defence.
+#
+# CI filtering is intentionally omitted here — review-one-pr.sh enforces it
+# per-PR as a second layer. Filtering by --checks success would exclude repos
+# with no CI configured (GitHub treats "no checks" as not matching --checks
+# success), causing their PRs to never enter the candidate pool.
 #
 # Self-authored PRs (PRs whose author is $BOT_USER) are excluded here, because
 # GitHub's GraphQL API rejects self-approval unconditionally — including such a
