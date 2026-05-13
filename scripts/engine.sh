@@ -1792,7 +1792,6 @@ model  = sys.argv[2]
 sys.stdout.write(json.dumps({
     'model': model,
     'messages': [{'role': 'user', 'content': prompt}],
-    'temperature': 0,
 }))
 " "$prompt_file" "${COPILOT_API_MODEL:-openai/o4-mini}" > "$_body_file" || {
     rm -f "$_body_file"
