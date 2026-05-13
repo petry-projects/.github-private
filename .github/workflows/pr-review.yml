@@ -2,8 +2,12 @@ name: PR Review Agent
 
 on:
   schedule:
-    # Hourly at :07 to avoid the top-of-hour cron stampede
+    # Every 15 min to ensure at least one run fires per hour
+    # (GitHub Actions scheduled runs can be delayed/skipped under load)
     - cron: "7 * * * *"
+    - cron: "22 * * * *"
+    - cron: "37 * * * *"
+    - cron: "52 * * * *"
   workflow_dispatch:
     inputs:
       pr_url:
