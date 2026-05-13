@@ -45,7 +45,6 @@ model  = sys.argv[2]
 sys.stdout.write(json.dumps({
     'model': model,
     'messages': [{'role': 'user', 'content': prompt}],
-    'temperature': 0,
 }))
 " "$prompt_file" "$model"
 }
@@ -180,11 +179,13 @@ if [ "$MSG_ROLE" = "user" ]; then
 else
   fail "messages[0].role is 'user'" "got '$MSG_ROLE'"
 fi
-TEMPERATURE=$(echo "$PAYLOAD" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['temperature'])" 2>/dev/null || echo "ERROR")
-if [ "$TEMPERATURE" = "0" ]; then
-  ok "temperature is 0"
+# temperature must be absent from the payload — o4-mini (and other reasoning
+# models) only support the default value and reject temperature=0 with HTTP 400.
+TEMPERATURE=$(echo "$PAYLOAD" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('temperature', 'ABSENT'))" 2>/dev/null || echo "ERROR")
+if [ "$TEMPERATURE" = "ABSENT" ]; then
+  ok "temperature is absent from payload (required for o4-mini compatibility)"
 else
-  fail "temperature is 0" "got '$TEMPERATURE'"
+  fail "temperature is absent from payload" "got '$TEMPERATURE' — o4-mini rejects temperature != default"
 fi
 
 # ---------------------------------------------------------------------------

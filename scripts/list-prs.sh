@@ -28,6 +28,11 @@
 # PR in the queue previously triggered a fatal session abort that starved every
 # subsequent candidate (see issue #96).
 #
+# Output ordering (stable, deterministic):
+#   1. .github and .github-private PRs first (priority 0)
+#   2. All other repos (priority 1)
+#   Within each priority tier, PRs are sorted oldest-first by createdAt.
+#
 # Output: one PR URL per line on stdout.
 
 set -euo pipefail
@@ -48,33 +53,48 @@ if ! [[ "$BOT_USER" =~ ^[A-Za-z0-9](-?[A-Za-z0-9]){0,38}$ ]]; then
   exit 1
 fi
 
-all_prs=""
+all_entries=""
 
-JQ_NOT_SELF=".[] | select(.author.login != \"$BOT_USER\") | .url"
+# JQ filter: emit  <priority>|<createdAt>|<url>  for non-bot-authored PRs.
+#   Priority 0 — .github / .github-private repos (infra PRs reviewed first)
+#   Priority 1 — all other repos
+# ISO-8601 createdAt sorts lexicographically, so oldest-first within each
+# tier is achieved with a plain string sort on field 2.
+JQ_WITH_SORT=".[] | select(.author.login != \"$BOT_USER\") |
+  (if (.url | test(\"/[.]github(-private)?/pull/\")) then \"0\" else \"1\" end)
+    + \"|\" + .createdAt + \"|\" + .url"
 
 # Get all repos in bot's personal account and search each
 while IFS= read -r repo; do
-  prs=$(gh search prs \
+  entries=$(gh search prs \
     --state open \
     --repo "$repo" \
     --draft=false \
     --limit 100 \
-    --json url,author \
-    --jq "$JQ_NOT_SELF" 2>/dev/null || true)
-  all_prs="${all_prs}${prs}"$'\n'
+    --json url,author,createdAt \
+    --jq "$JQ_WITH_SORT" 2>/dev/null || true)
+  all_entries="${all_entries}${entries}"$'\n'
 done < <(gh repo list "$BOT_USER" --json nameWithOwner --jq '.[].nameWithOwner' 2>/dev/null || true)
 
 # Get all repos in org and search each (require passing checks)
 while IFS= read -r repo; do
-  prs=$(gh search prs \
+  entries=$(gh search prs \
     --state open \
     --repo "$repo" \
     --draft=false \
     --checks success \
     --limit 100 \
-    --json url,author \
-    --jq "$JQ_NOT_SELF" 2>/dev/null || true)
-  all_prs="${all_prs}${prs}"$'\n'
+    --json url,author,createdAt \
+    --jq "$JQ_WITH_SORT" 2>/dev/null || true)
+  all_entries="${all_entries}${entries}"$'\n'
 done < <(gh repo list "$TARGET_ORG" --json nameWithOwner --jq '.[].nameWithOwner' 2>/dev/null || true)
 
-printf '%s\n' "$all_prs" | sort -u | grep -v '^$' || true
+# 1. Drop blank lines
+# 2. Deduplicate by URL (field 3) keeping first occurrence
+# 3. Sort: priority (field 1) ascending, then createdAt (field 2) ascending
+# 4. Strip the sort keys — output only the URL
+grep -v '^$' <<< "$all_entries" \
+  | sort -t'|' -k3 -u \
+  | sort -t'|' -k1,1n -k2,2 \
+  | cut -d'|' -f3- \
+  || true
