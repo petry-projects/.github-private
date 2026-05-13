@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Enumerate open, non-draft PRs the agent should consider reviewing.
 #
-# Searches across two namespaces:
+# Searches across:
 #   1. All open PRs in repos owned by $BOT_USER (the bot's personal account)
 #   2. All open PRs in repos owned by $TARGET_ORG (organization)
+#   3. All open PRs in additional orgs listed in $DELEGATION_ORGS
 #
 # Filters:
 #   --draft=false       — skip work-in-progress PRs
@@ -42,6 +43,7 @@ set -euo pipefail
 # repos to scan) and the self-approval filter use it.
 BOT_USER="${BOT_USER:-donpetry-bot}"
 TARGET_ORG="${TARGET_ORG:-petry-projects}"
+DELEGATION_ORGS="${DELEGATION_ORGS:-}"
 
 # Reject BOT_USER values that aren't valid GitHub usernames before
 # interpolating into a jq program. GitHub usernames are 1–39 chars of
@@ -64,30 +66,37 @@ JQ_WITH_SORT=".[] | select(.author.login != \"$BOT_USER\") |
   (if (.url | test(\"/[.]github(-private)?/pull/\")) then \"0\" else \"1\" end)
     + \"|\" + .createdAt + \"|\" + .url"
 
-# Get all repos in bot's personal account and search each
-while IFS= read -r repo; do
-  entries=$(gh search prs \
-    --state open \
-    --repo "$repo" \
-    --draft=false \
-    --limit 100 \
-    --json url,author,createdAt \
-    --jq "$JQ_WITH_SORT" 2>/dev/null || true)
-  all_entries="${all_entries}${entries}"$'\n'
-done < <(gh repo list "$BOT_USER" --json nameWithOwner --jq '.[].nameWithOwner' 2>/dev/null || true)
+# Search all open, non-draft PRs across every repo owned by $owner.
+# --limit 200 on repo list handles orgs that grow beyond gh's default 30.
+search_namespace() {
+  local owner="$1"
+  while IFS= read -r repo; do
+    entries=$(gh search prs \
+      --state open \
+      --repo "$repo" \
+      --draft=false \
+      --limit 100 \
+      --json url,author,createdAt \
+      --jq "$JQ_WITH_SORT" 2>/dev/null || true)
+    all_entries="${all_entries}${entries}"$'\n'
+  done < <(gh repo list "$owner" --limit 200 --json nameWithOwner --jq '.[].nameWithOwner' 2>/dev/null || true)
+}
 
-# Get all repos in org and search each (require passing checks)
-while IFS= read -r repo; do
-  entries=$(gh search prs \
-    --state open \
-    --repo "$repo" \
-    --draft=false \
-    --checks success \
-    --limit 100 \
-    --json url,author,createdAt \
-    --jq "$JQ_WITH_SORT" 2>/dev/null || true)
-  all_entries="${all_entries}${entries}"$'\n'
-done < <(gh repo list "$TARGET_ORG" --json nameWithOwner --jq '.[].nameWithOwner' 2>/dev/null || true)
+# Bot's personal account
+search_namespace "$BOT_USER"
+
+# Primary org
+search_namespace "$TARGET_ORG"
+
+# Additional orgs from DELEGATION_ORGS (skip TARGET_ORG and BOT_USER — already covered above)
+if [ -n "$DELEGATION_ORGS" ]; then
+  IFS=',' read -ra _ORGS <<< "$DELEGATION_ORGS"
+  for _org in "${_ORGS[@]}"; do
+    if [ "$_org" != "$TARGET_ORG" ] && [ "$_org" != "$BOT_USER" ]; then
+      search_namespace "$_org"
+    fi
+  done
+fi
 
 # 1. Drop blank lines
 # 2. Deduplicate by URL (field 3) keeping first occurrence
