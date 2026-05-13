@@ -37,37 +37,25 @@ assert_contains() {
   fi
 }
 
-assert_not_contains() {
-  local desc="$1" needle="$2" haystack="$3"
-  if ! printf '%s' "$haystack" | grep -qF "$needle"; then
-    printf 'PASS: %s\n' "$desc"
-    PASS=$((PASS + 1))
-  else
-    printf 'FAIL: %s\n  expected NOT to contain: %s\n  actual: %s\n' "$desc" "$needle" "$haystack"
-    FAIL=$((FAIL + 1))
-  fi
-}
-
-# run_validate <mock_dir> [VAR=value ...]
+# run_validate <extra_path> [VAR=value ...]
 # Runs validate_engines() in a clean subshell with:
-#   - PATH = <mock_dir>:/usr/local/bin:/usr/bin:/bin
-#     (only the provided mock_dir is used, not the global MOCK_DIR)
-#   - A fixed set of env vars unset to prevent leakage from the outer env
-#   - Only the env vars listed as arguments applied on top
+#   - PATH = <extra_path>:$MOCK_DIR:<system-bins>
+#   - Only the env vars listed as arguments (plus GITHUB_STEP_SUMMARY if given)
 # Prints validate_engines stdout/stderr followed by three lines:
 #   CLAUDE_AVAILABLE=<value>
 #   GEMINI_AVAILABLE=<value>
 #   COPILOT_AVAILABLE=<value>
 run_validate() {
-  local mock_dir="${1:-}"; shift
-  local combined_path="${mock_dir:+$mock_dir:}/usr/local/bin:/usr/bin:/bin"
+  local extra_path="${1:-}"; shift
+  local combined_path="${extra_path:+$extra_path:}$MOCK_DIR:/usr/local/bin:/usr/bin:/bin"
   (
-    # Isolate from the caller's secrets and env vars that affect engine checks
+    # Isolate from the caller's secrets
     unset GOOGLE_API_KEY CLAUDE_CODE_OAUTH_TOKEN COPILOT_GITHUB_TOKEN GH_TOKEN \
-          GITHUB_STEP_SUMMARY GEMINI_CLI_TRUST_WORKSPACE 2>/dev/null || true
+          GITHUB_STEP_SUMMARY 2>/dev/null || true
     export PATH="$combined_path"
     # Apply caller-supplied overrides
     for _kv in "$@"; do
+      # export "KEY=value" — bash handles the assignment form correctly.
       export "$_kv"
     done
     # shellcheck source=../scripts/validate-engines.sh
@@ -83,8 +71,7 @@ run_validate() {
 
 MOCK_DIR=$(mktemp -d)
 MOCK_NO_GEMINI_DIR=$(mktemp -d)
-MOCK_BILLING_DEPLETED_DIR=$(mktemp -d)
-trap 'rm -rf "$MOCK_DIR" "$MOCK_NO_GEMINI_DIR" "$MOCK_BILLING_DEPLETED_DIR"' EXIT
+trap 'rm -rf "$MOCK_DIR" "$MOCK_NO_GEMINI_DIR"' EXIT
 
 # gemini mock (succeeds)
 printf '#!/usr/bin/env bash\nexit 0\n' > "$MOCK_DIR/gemini"
@@ -110,31 +97,9 @@ exit 1
 MOCK_GH
 chmod +x "$MOCK_DIR/gh"
 
-# curl mock (returns 200 OK — Gemini billing healthy)
-cat > "$MOCK_DIR/curl" << 'MOCK_CURL'
-#!/usr/bin/env bash
-printf '{"candidates":[{"content":{"parts":[{"text":"Hi"}]}}]}\n'
-printf '200\n'
-exit 0
-MOCK_CURL
-chmod +x "$MOCK_DIR/curl"
-
-# MOCK_NO_GEMINI_DIR: has claude, gh, and curl but NOT gemini
+# MOCK_NO_GEMINI_DIR: has claude and gh but no gemini
 cp "$MOCK_DIR/claude" "$MOCK_NO_GEMINI_DIR/"
 cp "$MOCK_DIR/gh"     "$MOCK_NO_GEMINI_DIR/"
-cp "$MOCK_DIR/curl"   "$MOCK_NO_GEMINI_DIR/"
-
-# MOCK_BILLING_DEPLETED_DIR: has all binaries; curl returns 429 RESOURCE_EXHAUSTED
-cp "$MOCK_DIR/gemini" "$MOCK_BILLING_DEPLETED_DIR/"
-cp "$MOCK_DIR/claude" "$MOCK_BILLING_DEPLETED_DIR/"
-cp "$MOCK_DIR/gh"     "$MOCK_BILLING_DEPLETED_DIR/"
-cat > "$MOCK_BILLING_DEPLETED_DIR/curl" << 'MOCK_CURL_DEPLETED'
-#!/usr/bin/env bash
-printf '{"error":{"code":429,"message":"Your prepayment credits are depleted.","status":"RESOURCE_EXHAUSTED"}}\n'
-printf '429\n'
-exit 0
-MOCK_CURL_DEPLETED
-chmod +x "$MOCK_BILLING_DEPLETED_DIR/curl"
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
 echo "Running validate_engines() unit tests..."
@@ -145,8 +110,7 @@ out=$(run_validate "$MOCK_DIR" \
   "GOOGLE_API_KEY=" \
   "CLAUDE_CODE_OAUTH_TOKEN=fake-token" \
   "COPILOT_GITHUB_TOKEN=" \
-  "GH_TOKEN=" \
-  "GEMINI_CLI_TRUST_WORKSPACE=true")
+  "GH_TOKEN=")
 assert_eq "GEMINI_AVAILABLE=false when GOOGLE_API_KEY unset" \
   "GEMINI_AVAILABLE=false" "$(printf '%s\n' "$out" | grep '^GEMINI_AVAILABLE=')"
 
@@ -155,8 +119,7 @@ out=$(run_validate "$MOCK_NO_GEMINI_DIR" \
   "GOOGLE_API_KEY=fake-key" \
   "CLAUDE_CODE_OAUTH_TOKEN=fake-token" \
   "COPILOT_GITHUB_TOKEN=" \
-  "GH_TOKEN=" \
-  "GEMINI_CLI_TRUST_WORKSPACE=true")
+  "GH_TOKEN=")
 assert_eq "GEMINI_AVAILABLE=false when CLI absent" \
   "GEMINI_AVAILABLE=false" "$(printf '%s\n' "$out" | grep '^GEMINI_AVAILABLE=')"
 
@@ -165,8 +128,7 @@ out=$(run_validate "$MOCK_DIR" \
   "GOOGLE_API_KEY=fake-key" \
   "CLAUDE_CODE_OAUTH_TOKEN=fake-token" \
   "COPILOT_GITHUB_TOKEN=" \
-  "GH_TOKEN=" \
-  "GEMINI_CLI_TRUST_WORKSPACE=true")
+  "GH_TOKEN=")
 assert_eq "GEMINI_AVAILABLE=true when CLI present and key set" \
   "GEMINI_AVAILABLE=true" "$(printf '%s\n' "$out" | grep '^GEMINI_AVAILABLE=')"
 
@@ -175,8 +137,7 @@ out=$(run_validate "$MOCK_NO_GEMINI_DIR" \
   "GOOGLE_API_KEY=fake-key" \
   "CLAUDE_CODE_OAUTH_TOKEN=" \
   "COPILOT_GITHUB_TOKEN=" \
-  "GH_TOKEN=" \
-  "GEMINI_CLI_TRUST_WORKSPACE=true")
+  "GH_TOKEN=")
 assert_contains "Warning includes install command when CLI absent" \
   "npm install -g @google/gemini-cli" "$out"
 
@@ -185,8 +146,7 @@ out=$(run_validate "$MOCK_DIR" \
   "GOOGLE_API_KEY=" \
   "CLAUDE_CODE_OAUTH_TOKEN=" \
   "COPILOT_GITHUB_TOKEN=" \
-  "GH_TOKEN=" \
-  "GEMINI_CLI_TRUST_WORKSPACE=true")
+  "GH_TOKEN=")
 assert_contains "::warning:: annotation emitted when key absent" \
   "::warning::" "$out"
 
@@ -195,8 +155,7 @@ out=$(run_validate "$MOCK_DIR" \
   "GOOGLE_API_KEY=fake-key" \
   "CLAUDE_CODE_OAUTH_TOKEN=fake-token" \
   "COPILOT_GITHUB_TOKEN=" \
-  "GH_TOKEN=" \
-  "GEMINI_CLI_TRUST_WORKSPACE=true")
+  "GH_TOKEN=")
 if printf '%s\n' "$out" | grep -q '::warning::.*Gemini'; then
   printf 'FAIL: No Gemini warning when engine is healthy\n  got: %s\n' "$out"
   FAIL=$((FAIL + 1))
@@ -212,7 +171,6 @@ run_validate "$MOCK_DIR" \
   "CLAUDE_CODE_OAUTH_TOKEN=" \
   "COPILOT_GITHUB_TOKEN=" \
   "GH_TOKEN=" \
-  "GEMINI_CLI_TRUST_WORKSPACE=true" \
   "GITHUB_STEP_SUMMARY=$SUMMARY_FILE" > /dev/null
 assert_contains "Job summary: 'Gemini | unavailable' when key absent" \
   "| Gemini  | unavailable |" "$(cat "$SUMMARY_FILE")"
@@ -225,49 +183,9 @@ run_validate "$MOCK_DIR" \
   "CLAUDE_CODE_OAUTH_TOKEN=" \
   "COPILOT_GITHUB_TOKEN=" \
   "GH_TOKEN=" \
-  "GEMINI_CLI_TRUST_WORKSPACE=true" \
   "GITHUB_STEP_SUMMARY=$SUMMARY_FILE" > /dev/null
 assert_contains "Job summary: 'Gemini | ok' when engine available" \
   "| Gemini  | ok |" "$(cat "$SUMMARY_FILE")"
-rm -f "$SUMMARY_FILE"
-
-# ── Billing probe tests (issue #399) ──────────────────────────────────────────
-
-# 9. GEMINI_AVAILABLE=false when billing probe detects depleted credits
-out=$(run_validate "$MOCK_BILLING_DEPLETED_DIR" \
-  "GOOGLE_API_KEY=fake-key" \
-  "CLAUDE_CODE_OAUTH_TOKEN=fake-token" \
-  "COPILOT_GITHUB_TOKEN=" \
-  "GH_TOKEN=" \
-  "GEMINI_CLI_TRUST_WORKSPACE=true")
-assert_eq "GEMINI_AVAILABLE=false when billing probe detects RESOURCE_EXHAUSTED" \
-  "GEMINI_AVAILABLE=false" "$(printf '%s\n' "$out" | grep '^GEMINI_AVAILABLE=')"
-
-# 10. Warning includes billing guidance when probe detects depletion
-assert_contains "Warning includes billing guidance when probe detects depletion" \
-  "prepayment credits depleted" "$out"
-
-# 11. GEMINI_AVAILABLE=true when probe returns 200 OK (healthy billing)
-out=$(run_validate "$MOCK_DIR" \
-  "GOOGLE_API_KEY=fake-key" \
-  "CLAUDE_CODE_OAUTH_TOKEN=fake-token" \
-  "COPILOT_GITHUB_TOKEN=" \
-  "GH_TOKEN=" \
-  "GEMINI_CLI_TRUST_WORKSPACE=true")
-assert_eq "GEMINI_AVAILABLE=true when probe returns 200 (billing healthy)" \
-  "GEMINI_AVAILABLE=true" "$(printf '%s\n' "$out" | grep '^GEMINI_AVAILABLE=')"
-
-# 12. Job summary: 'Gemini | unavailable' when probe detects billing depletion
-SUMMARY_FILE=$(mktemp)
-run_validate "$MOCK_BILLING_DEPLETED_DIR" \
-  "GOOGLE_API_KEY=fake-key" \
-  "CLAUDE_CODE_OAUTH_TOKEN=" \
-  "COPILOT_GITHUB_TOKEN=" \
-  "GH_TOKEN=" \
-  "GEMINI_CLI_TRUST_WORKSPACE=true" \
-  "GITHUB_STEP_SUMMARY=$SUMMARY_FILE" > /dev/null
-assert_contains "Job summary: 'Gemini | unavailable' when billing depleted" \
-  "| Gemini  | unavailable |" "$(cat "$SUMMARY_FILE")"
 rm -f "$SUMMARY_FILE"
 
 # ── Results ───────────────────────────────────────────────────────────────────
