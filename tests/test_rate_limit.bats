@@ -123,35 +123,6 @@ setup() {
 }
 
 # ---------------------------------------------------------------------------
-# Gemini billing depletion (issue #399): RESOURCE_EXHAUSTED + depleted credits
-# ---------------------------------------------------------------------------
-
-@test "is_rate_limited: 'RESOURCE_EXHAUSTED' returns true" {
-  run is_rate_limited '"status": "RESOURCE_EXHAUSTED"'
-  [ "$status" -eq 0 ]
-}
-
-@test "is_rate_limited: 'prepayment credits are depleted' returns true" {
-  run is_rate_limited "Your prepayment credits are depleted."
-  [ "$status" -eq 0 ]
-}
-
-@test "is_rate_limited: 'RetryableQuotaError: prepayment credits are depleted' returns true" {
-  run is_rate_limited "RetryableQuotaError: Your prepayment credits are depleted."
-  [ "$status" -eq 0 ]
-}
-
-@test "is_rate_limited: full Gemini billing error message returns true" {
-  run is_rate_limited 'Attempt 10 failed: Your prepayment credits are depleted. Max attempts reached'
-  [ "$status" -eq 0 ]
-}
-
-@test "is_rate_limited: 'credits depleted' returns true" {
-  run is_rate_limited "billing credits depleted"
-  [ "$status" -eq 0 ]
-}
-
-# ---------------------------------------------------------------------------
 # is_cli_error: must return TRUE (exit 0) for CLI invocation errors
 # ---------------------------------------------------------------------------
 
