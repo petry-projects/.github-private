@@ -153,7 +153,8 @@ while IFS= read -r pr_url; do
   # Exit code 2 = engine rate-limited.
   # Fallback chain: claude -> gemini -> copilot
   if [ "$rc" -eq 2 ] && [ "${REVIEW_ENGINE:-claude}" = "claude" ]; then
-    if command -v gemini >/dev/null 2>&1 && [ -n "${GOOGLE_API_KEY:-}" ]; then
+    # Use the availability flag set by validate_engines() at startup.
+    if [ "${GEMINI_AVAILABLE:-false}" = "true" ]; then
       echo "::warning::Claude rate limit hit — switching to Gemini engine for remaining PRs"
       export REVIEW_ENGINE=gemini
       engine_fallbacks=$((engine_fallbacks + 1))
@@ -161,7 +162,11 @@ while IFS= read -r pr_url; do
       rc=0
       bash scripts/review-one-pr.sh "$pr_url" || rc=$?
     else
-      echo "::warning::Claude rate limit hit but Gemini fallback unavailable (CLI not installed or GOOGLE_API_KEY missing) — falling through to Copilot"
+      # Derive the specific reason so the warning is actionable without docs.
+      _gemini_miss=""
+      command -v gemini >/dev/null 2>&1 || _gemini_miss="Gemini CLI not installed (fix: npm install -g @google/gemini-cli)"
+      [ -n "${GOOGLE_API_KEY:-}" ] || _gemini_miss="${_gemini_miss:+$_gemini_miss; }GOOGLE_API_KEY secret not set"
+      echo "::warning::Claude rate limit hit but Gemini fallback unavailable (${_gemini_miss}) — falling through to Copilot"
       rc=2
       export REVIEW_ENGINE=gemini # Set to gemini so the next block catches it
     fi
