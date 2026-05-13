@@ -36,6 +36,11 @@
 # PR in the queue previously triggered a fatal session abort that starved every
 # subsequent candidate (see issue #96).
 #
+# Output ordering (stable, deterministic):
+#   1. .github and .github-private PRs first (priority 0)
+#   2. All other repos (priority 1)
+#   Within each priority tier, PRs are sorted oldest-first by createdAt.
+#
 # Output: one PR URL per line on stdout.
 
 set -euo pipefail
