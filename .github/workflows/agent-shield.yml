@@ -30,6 +30,6 @@ permissions:
 
 jobs:
   agent-shield:
-    uses: petry-projects/.github/.github/workflows/agent-shield-reusable.yml@b79962331f28d0fc26c09b441471231ff2df04b8 # v1
+    uses: petry-projects/.github/.github/workflows/agent-shield-reusable.yml@761dd4a1a484a239429ed15d44d068de04fe2ee1 # v1
     with:
       required-files: AGENTS.md
