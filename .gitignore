@@ -4,3 +4,8 @@
 # here and emits exit-128 warnings on every run.
 .claude/worktrees/
 .claude/scheduled_tasks.lock
+
+# Secret-protection baseline (required by standards/push-protection.md)
+.env
+*.pem
+*.key
