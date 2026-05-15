@@ -829,6 +829,36 @@ Scanned on every `fix-reviews` trigger before acting.
 - [ ] All unit tests pass (11 cases)
 - [ ] Human `@dev-lead rename foo to bar` on test PR → rename applied and pushed
 - [ ] Rebase sentinel on test PR with YAML conflict → conflict resolved correctly
+      uses: actions/checkout@abc123 # v5.0.0
+EOF
+  run bash -c '
+    source scripts/dev-lead-fix-reviews.sh
+    resolve_yaml_sha_conflict /tmp/conflict.yml
+  '
+  [ "$status" -eq 0 ]
+  # Should have picked abc123 (newer semver v5.0.0 > v4.0.0)
+  grep -q "abc123" /tmp/conflict.yml
+}
+
+@test "rebase: non-YAML conflict → abort immediately" {
+  cat > /tmp/conflict.ts << 'EOF'
+  const foo = "bar";
+EOF
+  run bash -c '
+    source scripts/dev-lead-fix-reviews.sh
+    resolve_conflict /tmp/conflict.ts
+  '
+  [ "$status" -ne 0 ]
+}
+```
+
+### 4.3 Phase 4 definition of done
+
+- [ ] Human `@dev-lead` mention on a PR triggers a response and applies the requested change
+- [ ] Rebase sentinel triggers agentic rebase; workflow YAML conflicts resolved correctly
+- [ ] `auto-rebase.yml` posting the sentinel comment continues to work as the trigger
+- [ ] All unit tests pass
+>>>>>>> 70c9f18 (docs(dev-lead): add detailed implementation plan with unit and e2e tests)
 
 ---
 
