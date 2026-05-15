@@ -23,36 +23,6 @@ on:
 
 permissions: {}
 
-# ── concurrency ───────────────────────────────────────────────────────────────
-# Centralised here (single source of truth) so caller stubs no longer carry —
-# and can no longer drift into — their own concurrency group. Separate per-issue
-# and per-PR lanes ensure issue pickups are NEVER cancelled by unrelated PR
-# follow-up traffic (reviews, comments, ci-relay) — the root cause of issue
-# pickups being cancelled before they could open a PR. See petry-projects/.github#402.
-#
-# Routing (first match wins):
-#   check_run                        -> dev-lead-ci-relay-<sha>  (per-SHA relay lane)
-#   pull_request / *_review[_comment]-> dev-lead-pr-<n>          (PR lane)
-#   issue_comment on a PR            -> dev-lead-pr-<n>           (issue.pull_request set;
-#                                                                 avoids issue#/PR# collision)
-#   issues / issue_comment on issue  -> dev-lead-issue-<n>       (issue lane)
-#   repository_dispatch (ci-failure) -> dev-lead-pr-<n>          (client_payload.pr_number)
-#   anything else                    -> dev-lead-run-<run_id>    (unique; never cancelled)
-#
-# cancel-in-progress is false: a newer same-lane event queues behind the active
-# run rather than killing it, so an in-flight pickup always finishes.
-concurrency:
-  group: >-
-    ${{
-      (github.event_name == 'check_run' && format('dev-lead-ci-relay-{0}', github.event.check_run.head_sha))
-      || (github.event.pull_request.number && format('dev-lead-pr-{0}', github.event.pull_request.number))
-      || (github.event.issue.pull_request && format('dev-lead-pr-{0}', github.event.issue.number))
-      || (github.event.issue.number && format('dev-lead-issue-{0}', github.event.issue.number))
-      || (github.event.client_payload.pr_number && format('dev-lead-pr-{0}', github.event.client_payload.pr_number))
-      || format('dev-lead-run-{0}', github.run_id)
-    }}
-  cancel-in-progress: false
-
 jobs:
   # ── dispatch ────────────────────────────────────────────────────────────────
   # Handles all events except check_run (which is routed by the caller).
@@ -71,28 +41,24 @@ jobs:
       issues: write
       actions: read
       checks: read
-      statuses: read
     env:
       BOT_USER: ${{ vars.BOT_USER || 'donpetry-bot' }}
-      TRUSTED_BOTS: ${{ vars.TRUSTED_BOTS || 'copilot-pull-request-reviewer[bot],gemini-code-assist[bot],sonarqubecloud[bot],coderabbitai[bot],chatgpt-codex-connector[bot]' }}
+      TRUSTED_BOTS: ${{ vars.TRUSTED_BOTS || 'copilot-pull-request-reviewer[bot],gemini-code-assist[bot],sonarqubecloud[bot],coderabbitai[bot]' }}
       TRIGGER_PHRASES: ${{ vars.TRIGGER_PHRASES || '@dev-lead' }}
       DEV_LEAD_ENGINE: ${{ vars.DEV_LEAD_ENGINE || 'claude' }}
       DEV_LEAD_DRY_RUN: ${{ vars.DEV_LEAD_DRY_RUN || 'false' }}
       GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS || github.token }}
-      GEMINI_CLI_TRUST_WORKSPACE: "true"
       DEV_LEAD_SCRIPTS: .dev-lead/scripts
       DEV_LEAD_PROMPTS: .dev-lead/prompts/dev-lead
-      TOKEN_LOG_FILE: /tmp/token-usage-${{ github.run_id }}.jsonl
-      TOKEN_WORKFLOW: dev-lead
 
     steps:
       - name: Checkout caller repo
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           token: ${{ secrets.GH_PAT_WORKFLOWS || github.token }}
 
       - name: Checkout dev-lead scripts
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           repository: petry-projects/.github-private
           ref: main
@@ -107,16 +73,12 @@ jobs:
       - name: Protect dev-lead scripts from accidental git staging
         run: echo ".dev-lead/" >> .gitignore
 
-      - name: Revert .gitignore changes before git operations
-        run: git checkout .gitignore || true
-
       - name: Classify event intent
         id: intent
         env:
           GITHUB_EVENT_NAME: ${{ github.event_name }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-          GEMINI_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           COPILOT_GITHUB_TOKEN: ${{ secrets.GH_PAT }}
         run: bash .dev-lead/scripts/dev-lead-intent.sh
 
@@ -124,40 +86,30 @@ jobs:
         run: |
           echo "::notice::intent=$INTENT_TYPE reason=$INTENT_REASON"
 
-      - name: Parse intent context fields
-        run: |
-          ctx="${INTENT_CONTEXT:-{\}}"
-          echo "INTENT_PR_NUMBER=$(echo "$ctx"    | jq -r '.pr_number // ""')"    >> "$GITHUB_ENV"
-          echo "INTENT_HEAD_SHA=$(echo "$ctx"     | jq -r '.head_sha // ""')"     >> "$GITHUB_ENV"
-          echo "INTENT_CHECKS=$(echo "$ctx"       | jq -c '.checks // []')"       >> "$GITHUB_ENV"
-          echo "INTENT_ISSUE_NUMBER=$(echo "$ctx" | jq -r '.issue_number // ""')" >> "$GITHUB_ENV"
-          echo "INTENT_ACTOR=$(echo "$ctx"        | jq -r '.actor // ""')"        >> "$GITHUB_ENV"
-
       - name: Skip — log reason
         if: env.INTENT_TYPE == 'skip'
         run: |
           echo "::notice::Skipping event: $INTENT_REASON"
 
       - name: Pre-flight checks
-        if: env.INTENT_TYPE != 'skip' && env.INTENT_TYPE != 'enable-auto-merge'
+        if: env.INTENT_TYPE != 'skip'
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           GH_PAT_WORKFLOWS: ${{ secrets.GH_PAT_WORKFLOWS }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-          GEMINI_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           GH_PAT: ${{ secrets.GH_PAT }}
         run: bash .dev-lead/scripts/dev-lead-preflight.sh
 
       # ── Install engine CLIs ───────────────────────────────────────────────
       - name: Cache claude-code CLI
-        if: env.INTENT_TYPE != 'skip' && env.INTENT_TYPE != 'enable-auto-merge'
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        if: env.INTENT_TYPE != 'skip'
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ~/.npm-global
           key: claude-code-${{ vars.CLAUDE_CODE_VERSION || 'latest' }}-${{ runner.os }}
 
       - name: Install engine CLIs
-        if: env.INTENT_TYPE != 'skip' && env.INTENT_TYPE != 'enable-auto-merge'
+        if: env.INTENT_TYPE != 'skip'
         env:
           CLAUDE_CODE_VERSION: ${{ vars.CLAUDE_CODE_VERSION || 'latest' }}
         run: |
@@ -172,15 +124,9 @@ jobs:
           fi
 
           case "$DEV_LEAD_ENGINE" in
-            claude)
-              npm install -g @google/gemini-cli || true
-              if ! gh copilot --version >/dev/null 2>&1; then
-                gh extension install github/gh-copilot || true
-              fi ;;
             gemini)
               npm install -g @google/gemini-cli || true ;;
             copilot)
-              npm install -g @google/gemini-cli || true
               if ! gh copilot --version >/dev/null 2>&1; then
                 gh extension install github/gh-copilot || true
               fi ;;
@@ -190,14 +136,13 @@ jobs:
       - name: Run fix-ci
         if: env.INTENT_TYPE == 'fix-ci'
         env:
-          PR_NUMBER: ${{ env.INTENT_PR_NUMBER }}
-          HEAD_SHA: ${{ env.INTENT_HEAD_SHA }}
-          CHECKS_JSON: ${{ env.INTENT_CHECKS }}
+          PR_NUMBER: ${{ fromJson(env.INTENT_CONTEXT).pr_number }}
+          HEAD_SHA: ${{ fromJson(env.INTENT_CONTEXT).head_sha }}
+          CHECKS_JSON: ${{ toJson(fromJson(env.INTENT_CONTEXT).checks) }}
           REPO: ${{ github.repository }}
           REVIEW_ENGINE: ${{ env.DEV_LEAD_ENGINE }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-          GEMINI_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           COPILOT_GITHUB_TOKEN: ${{ secrets.GH_PAT }}
           PROMPTS_DIR: .dev-lead/prompts/dev-lead
         run: bash .dev-lead/scripts/dev-lead-fix-ci.sh
@@ -206,14 +151,13 @@ jobs:
       - name: Run fix-reviews
         if: env.INTENT_TYPE == 'fix-reviews'
         env:
-          PR_NUMBER: ${{ env.INTENT_PR_NUMBER }}
-          HEAD_SHA: ${{ env.INTENT_HEAD_SHA }}
+          INTENT_TYPE: fix-reviews
+          PR_NUMBER: ${{ fromJson(env.INTENT_CONTEXT).pr_number }}
+          HEAD_SHA: ${{ fromJson(env.INTENT_CONTEXT).head_sha }}
           REPO: ${{ github.repository }}
           REVIEW_ENGINE: ${{ env.DEV_LEAD_ENGINE }}
-          TRIGGERING_REVIEWER: ${{ env.INTENT_ACTOR }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-          GEMINI_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           COPILOT_GITHUB_TOKEN: ${{ secrets.GH_PAT }}
           PROMPTS_DIR: .dev-lead/prompts/dev-lead
         run: bash .dev-lead/scripts/dev-lead-fix-reviews.sh
@@ -222,43 +166,43 @@ jobs:
       - name: Run fix-bot-comment
         if: env.INTENT_TYPE == 'fix-bot-comment'
         env:
-          PR_NUMBER: ${{ env.INTENT_PR_NUMBER }}
-          HEAD_SHA: ${{ env.INTENT_HEAD_SHA }}
+          INTENT_TYPE: fix-bot-comment
+          PR_NUMBER: ${{ fromJson(env.INTENT_CONTEXT).pr_number }}
+          HEAD_SHA: ${{ fromJson(env.INTENT_CONTEXT).head_sha }}
           REPO: ${{ github.repository }}
           REVIEW_ENGINE: ${{ env.DEV_LEAD_ENGINE }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-          GEMINI_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           COPILOT_GITHUB_TOKEN: ${{ secrets.GH_PAT }}
           PROMPTS_DIR: .dev-lead/prompts/dev-lead
         run: bash .dev-lead/scripts/dev-lead-fix-reviews.sh
 
-      # ── on-mention ─────────────────────────────────────────────────────────────
-      - name: Run on-mention
-        if: env.INTENT_TYPE == 'on-mention'
+      # ── human ─────────────────────────────────────────────────────────────
+      - name: Run human
+        if: env.INTENT_TYPE == 'human'
         env:
-          PR_NUMBER: ${{ env.INTENT_PR_NUMBER }}
-          HEAD_SHA: ${{ env.INTENT_HEAD_SHA }}
+          INTENT_TYPE: human
+          PR_NUMBER: ${{ fromJson(env.INTENT_CONTEXT).pr_number }}
+          HEAD_SHA: ${{ fromJson(env.INTENT_CONTEXT).head_sha }}
           REPO: ${{ github.repository }}
           REVIEW_ENGINE: ${{ env.DEV_LEAD_ENGINE }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-          GEMINI_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           COPILOT_GITHUB_TOKEN: ${{ secrets.GH_PAT }}
           PROMPTS_DIR: .dev-lead/prompts/dev-lead
         run: bash .dev-lead/scripts/dev-lead-fix-reviews.sh
 
-      # ── review-changes ──────────────────────────────────────────────────────────
-      - name: Run review-changes
-        if: env.INTENT_TYPE == 'review-changes'
+      # ── human-pr ──────────────────────────────────────────────────────────
+      - name: Run human-pr
+        if: env.INTENT_TYPE == 'human-pr'
         env:
-          PR_NUMBER: ${{ env.INTENT_PR_NUMBER }}
-          HEAD_SHA: ${{ env.INTENT_HEAD_SHA }}
+          INTENT_TYPE: human-pr
+          PR_NUMBER: ${{ fromJson(env.INTENT_CONTEXT).pr_number }}
+          HEAD_SHA: ${{ fromJson(env.INTENT_CONTEXT).head_sha }}
           REPO: ${{ github.repository }}
           REVIEW_ENGINE: ${{ env.DEV_LEAD_ENGINE }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-          GEMINI_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           COPILOT_GITHUB_TOKEN: ${{ secrets.GH_PAT }}
           PROMPTS_DIR: .dev-lead/prompts/dev-lead
         run: bash .dev-lead/scripts/dev-lead-fix-reviews.sh
@@ -267,12 +211,11 @@ jobs:
       - name: Run issue
         if: env.INTENT_TYPE == 'issue'
         env:
-          ISSUE_NUMBER: ${{ env.INTENT_ISSUE_NUMBER }}
+          ISSUE_NUMBER: ${{ fromJson(env.INTENT_CONTEXT).issue_number }}
           REPO: ${{ github.repository }}
           REVIEW_ENGINE: ${{ env.DEV_LEAD_ENGINE }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-          GEMINI_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           COPILOT_GITHUB_TOKEN: ${{ secrets.GH_PAT }}
           PROMPTS_DIR: .dev-lead/prompts/dev-lead
         run: bash .dev-lead/scripts/dev-lead-fix-issue.sh
@@ -281,35 +224,15 @@ jobs:
       - name: Run rebase
         if: env.INTENT_TYPE == 'rebase'
         env:
-          PR_NUMBER: ${{ env.INTENT_PR_NUMBER }}
+          INTENT_TYPE: rebase
+          PR_NUMBER: ${{ fromJson(env.INTENT_CONTEXT).pr_number }}
           REPO: ${{ github.repository }}
           REVIEW_ENGINE: ${{ env.DEV_LEAD_ENGINE }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-          GEMINI_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           COPILOT_GITHUB_TOKEN: ${{ secrets.GH_PAT }}
           PROMPTS_DIR: .dev-lead/prompts/dev-lead
         run: bash .dev-lead/scripts/dev-lead-fix-reviews.sh
-
-      # ── enable-auto-merge ─────────────────────────────────────────────────
-      # Triggered when a trusted bot approves a PR. Skips engine install and
-      # pre-flight — just checks reviewDecision and enables auto-merge if APPROVED.
-      - name: Enable auto-merge on bot approval
-        if: env.INTENT_TYPE == 'enable-auto-merge' && env.INTENT_PR_NUMBER != ''
-        env:
-          PR_NUMBER: ${{ env.INTENT_PR_NUMBER }}
-          HEAD_SHA: ${{ env.INTENT_HEAD_SHA }}
-          REPO: ${{ github.repository }}
-        run: bash .dev-lead/scripts/dev-lead-fix-reviews.sh
-
-      - name: Upload token usage log
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: token-usage-${{ github.run_id }}
-          path: /tmp/token-usage-${{ github.run_id }}.jsonl
-          if-no-files-found: ignore
-          retention-days: 30
 
   # ── ci-relay ──────────────────────────────────────────────────────────────────
   # Handles check_run completed failure events. No LLM — resolves PR number and

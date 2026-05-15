@@ -4,6 +4,7 @@ set -euo pipefail
 # Called when a CI check fails on a PR.
 # Env: PR_NUMBER, HEAD_SHA, CHECKS_JSON, REPO, GITHUB_REPOSITORY,
 #      DEV_LEAD_DRY_RUN, REVIEW_ENGINE, GH_TOKEN
+# Optional: PROMPTS_DIR (defaults to prompts/dev-lead relative to CWD)
 
 source "$(dirname "$0")/engine.sh"
 source "$(dirname "$0")/lib/git-identity.sh"
@@ -17,6 +18,7 @@ REPO="${REPO:-${GITHUB_REPOSITORY:-}}"
 MAX_CI_CYCLES="${MAX_CI_CYCLES:-3}"
 LOG_MAX_LINES="${LOG_MAX_LINES:-200}"
 MARKER_PREFIX="<!-- dev-lead-fix-ci sha="
+export PROMPTS_DIR="${PROMPTS_DIR:-prompts/dev-lead}"
 
 check_idempotency() {
   local existing
@@ -38,7 +40,7 @@ collect_logs() {
 }
 
 build_prompt() {
-  local prompt_template="prompts/dev-lead/fix-ci.md"
+  local prompt_template="${PROMPTS_DIR}/fix-ci.md"
   local check_name app_slug details_url
   check_name=$(echo "$CHECKS_JSON" | jq -r '.[0].name // "unknown"')
   app_slug=$(echo "$CHECKS_JSON" | jq -r '.[0].app_slug // "github-actions"')

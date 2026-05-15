@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 # dev-lead-fix-reviews.sh — handles review-related intents
+# Optional: PROMPTS_DIR (defaults to prompts/dev-lead relative to CWD)
 
 source "$(dirname "$0")/engine.sh"
 source "$(dirname "$0")/lib/git-identity.sh"
@@ -12,6 +13,7 @@ PR_NUMBER="${PR_NUMBER:-}"
 REPO="${REPO:-${GITHUB_REPOSITORY:-}}"
 HEAD_SHA="${HEAD_SHA:-}"
 DEV_LEAD_DRY_RUN="${DEV_LEAD_DRY_RUN:-false}"
+export PROMPTS_DIR="${PROMPTS_DIR:-prompts/dev-lead}"
 
 REVIEWS_MARKER_PREFIX="<!-- dev-lead-fix-reviews pr="
 
@@ -68,7 +70,7 @@ build_and_run() {
   local template_name="$1"
   local prompt_file="/tmp/dev-lead-${template_name}-prompt-$$.md"
   # Export required vars then envsubst
-  envsubst < "prompts/dev-lead/${template_name}.md" > "$prompt_file"
+  envsubst < "${PROMPTS_DIR}/${template_name}.md" > "$prompt_file"
 
   if [ "$DEV_LEAD_DRY_RUN" = "true" ]; then
     echo "[dry-run] would run engine with prompt: $prompt_file ($(wc -l < "$prompt_file") lines)"

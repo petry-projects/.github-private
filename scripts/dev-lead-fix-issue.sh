@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 # dev-lead-fix-issue.sh — handles the issue intent
+# Optional: PROMPTS_DIR (defaults to prompts/dev-lead relative to CWD)
 
 source "$(dirname "$0")/engine.sh"
 
 ISSUE_NUMBER="${ISSUE_NUMBER:-}"
 REPO="${REPO:-${GITHUB_REPOSITORY:-}}"
 DEV_LEAD_DRY_RUN="${DEV_LEAD_DRY_RUN:-false}"
+export PROMPTS_DIR="${PROMPTS_DIR:-prompts/dev-lead}"
 
 check_existing_pr() {
   local existing
@@ -37,7 +39,7 @@ main() {
   export ISSUE_TITLE ISSUE_BODY ORG_STANDARDS_HINT
 
   local prompt_file="/tmp/dev-lead-fix-issue-prompt-$$.md"
-  envsubst < "prompts/dev-lead/fix-issue.md" > "$prompt_file"
+  envsubst < "${PROMPTS_DIR}/fix-issue.md" > "$prompt_file"
 
   if [ "$DEV_LEAD_DRY_RUN" = "true" ]; then
     echo "[dry-run] fix-issue: would implement issue #${ISSUE_NUMBER} using prompt: $prompt_file"
