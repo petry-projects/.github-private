@@ -852,7 +852,12 @@ EOF
 }
 ```
 
-### 4.3 Phase 4 definition of done
+- YAML SHA conflict: newer semver wins ✓
+- YAML SHA conflict: both sides same version → keeps base ✓
+- YAML SHA conflict: version cannot be determined → abort ✓
+- Non-YAML conflict → abort immediately ✓
+- Successful rebase → push with `--force-with-lease` ✓
+- Abort → failure comment includes manual instructions ✓
 
 - [ ] Human `@dev-lead` mention on a PR triggers a response and applies the requested change
 - [ ] Rebase sentinel triggers agentic rebase; workflow YAML conflicts resolved correctly
