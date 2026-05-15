@@ -74,6 +74,16 @@ jobs:
         run: |
           echo "::notice::intent=$INTENT_TYPE reason=$INTENT_REASON"
 
+      - name: Parse intent context fields
+        run: |
+          # Expand INTENT_CONTEXT JSON into individual GITHUB_ENV vars so subsequent
+          # step env: blocks can reference ${{ env.INTENT_PR_NUMBER }} without fromJson()
+          ctx="${INTENT_CONTEXT:-{\}}"
+          echo "INTENT_PR_NUMBER=$(echo "$ctx" | jq -r '.pr_number // ""')" >> "$GITHUB_ENV"
+          echo "INTENT_HEAD_SHA=$(echo "$ctx"  | jq -r '.head_sha // ""')"  >> "$GITHUB_ENV"
+          echo "INTENT_CHECKS=$(echo "$ctx"    | jq -c '.checks // []')"    >> "$GITHUB_ENV"
+          echo "INTENT_ISSUE_NUMBER=$(echo "$ctx" | jq -r '.issue_number // ""')" >> "$GITHUB_ENV"
+
       - name: Skip — log reason
         if: env.INTENT_TYPE == 'skip'
         run: |
@@ -119,9 +129,9 @@ jobs:
       - name: Run fix-ci
         if: env.INTENT_TYPE == 'fix-ci'
         env:
-          PR_NUMBER: ${{ fromJson(env.INTENT_CONTEXT).pr_number }}
-          HEAD_SHA: ${{ fromJson(env.INTENT_CONTEXT).head_sha }}
-          CHECKS_JSON: ${{ toJson(fromJson(env.INTENT_CONTEXT).checks) }}
+          PR_NUMBER: ${{ env.INTENT_PR_NUMBER }}
+          HEAD_SHA: ${{ env.INTENT_HEAD_SHA }}
+          CHECKS_JSON: ${{ env.INTENT_CHECKS }}
           REPO: ${{ github.repository }}
           REVIEW_ENGINE: ${{ env.DEV_LEAD_ENGINE }}
         run: bash scripts/dev-lead-fix-ci.sh
@@ -131,8 +141,8 @@ jobs:
         if: env.INTENT_TYPE == 'fix-reviews'
         env:
           INTENT_TYPE: fix-reviews
-          PR_NUMBER: ${{ fromJson(env.INTENT_CONTEXT).pr_number }}
-          HEAD_SHA: ${{ fromJson(env.INTENT_CONTEXT).head_sha }}
+          PR_NUMBER: ${{ env.INTENT_PR_NUMBER }}
+          HEAD_SHA: ${{ env.INTENT_HEAD_SHA }}
           REPO: ${{ github.repository }}
           REVIEW_ENGINE: ${{ env.DEV_LEAD_ENGINE }}
         run: bash scripts/dev-lead-fix-reviews.sh
@@ -142,8 +152,8 @@ jobs:
         if: env.INTENT_TYPE == 'fix-bot-comment'
         env:
           INTENT_TYPE: fix-bot-comment
-          PR_NUMBER: ${{ fromJson(env.INTENT_CONTEXT).pr_number }}
-          HEAD_SHA: ${{ fromJson(env.INTENT_CONTEXT).head_sha }}
+          PR_NUMBER: ${{ env.INTENT_PR_NUMBER }}
+          HEAD_SHA: ${{ env.INTENT_HEAD_SHA }}
           REPO: ${{ github.repository }}
           REVIEW_ENGINE: ${{ env.DEV_LEAD_ENGINE }}
         run: bash scripts/dev-lead-fix-reviews.sh
@@ -153,8 +163,8 @@ jobs:
         if: env.INTENT_TYPE == 'human'
         env:
           INTENT_TYPE: human
-          PR_NUMBER: ${{ fromJson(env.INTENT_CONTEXT).pr_number }}
-          HEAD_SHA: ${{ fromJson(env.INTENT_CONTEXT).head_sha }}
+          PR_NUMBER: ${{ env.INTENT_PR_NUMBER }}
+          HEAD_SHA: ${{ env.INTENT_HEAD_SHA }}
           REPO: ${{ github.repository }}
           REVIEW_ENGINE: ${{ env.DEV_LEAD_ENGINE }}
         run: bash scripts/dev-lead-fix-reviews.sh
@@ -164,8 +174,8 @@ jobs:
         if: env.INTENT_TYPE == 'human-pr'
         env:
           INTENT_TYPE: human-pr
-          PR_NUMBER: ${{ fromJson(env.INTENT_CONTEXT).pr_number }}
-          HEAD_SHA: ${{ fromJson(env.INTENT_CONTEXT).head_sha }}
+          PR_NUMBER: ${{ env.INTENT_PR_NUMBER }}
+          HEAD_SHA: ${{ env.INTENT_HEAD_SHA }}
           REPO: ${{ github.repository }}
           REVIEW_ENGINE: ${{ env.DEV_LEAD_ENGINE }}
         run: bash scripts/dev-lead-fix-reviews.sh
@@ -174,7 +184,7 @@ jobs:
       - name: Run issue
         if: env.INTENT_TYPE == 'issue'
         env:
-          ISSUE_NUMBER: ${{ fromJson(env.INTENT_CONTEXT).issue_number }}
+          ISSUE_NUMBER: ${{ env.INTENT_ISSUE_NUMBER }}
           REPO: ${{ github.repository }}
           REVIEW_ENGINE: ${{ env.DEV_LEAD_ENGINE }}
         run: bash scripts/dev-lead-fix-issue.sh
@@ -184,7 +194,7 @@ jobs:
         if: env.INTENT_TYPE == 'rebase'
         env:
           INTENT_TYPE: rebase
-          PR_NUMBER: ${{ fromJson(env.INTENT_CONTEXT).pr_number }}
+          PR_NUMBER: ${{ env.INTENT_PR_NUMBER }}
           REPO: ${{ github.repository }}
           REVIEW_ENGINE: ${{ env.DEV_LEAD_ENGINE }}
         run: bash scripts/dev-lead-fix-reviews.sh
