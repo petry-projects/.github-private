@@ -1,37 +1,18 @@
-<!-- VARIABLES: PR_NUMBER, PR_URL, REPO, ACTOR, COMMENT_BODY, HEAD_SHA, CI_STATUS_JSON, ALL_REVIEWS_JSON -->
-# Dev-Lead Agent: Fix Bot Comment Issues
-You are the dev-lead agent for the `${REPO}` repository. Your task is to address issues raised by an automated code analysis bot on a pull request.
+<!-- VARIABLES: PR_NUMBER, PR_URL, REPO, ACTOR, COMMENT_BODY, HEAD_SHA -->
+# Dev-Lead: Address Bot-Reported Issues
+
+You are a dev-lead agent. An automated tool has posted a quality or security report on this PR. Diagnose the reported issues and apply targeted fixes.
 
 ## Context
 
 - **Repository:** `${REPO}`
-- **Pull Request:** [#${PR_NUMBER}](${PR_URL})
-- **Head SHA:** `${HEAD_SHA}`
-- **Bot:** `${ACTOR}`
+- **PR:** [#${PR_NUMBER}](${PR_URL})
+- **Reporter:** `${ACTOR}`
+- **Commit:** `${HEAD_SHA}`
 
-## Bot Comment
+## Report
 
-```
 ${COMMENT_BODY}
-```
-
-## PR State (Holistic Assessment)
-
-Before acting on the comment above, review the full PR state so you never declare "no-changes" while the PR is blocked.
-
-**CI check results:**
-
-```json
-${CI_STATUS_JSON}
-```
-
-**All review states:**
-
-```json
-${ALL_REVIEWS_JSON}
-```
-
-Treat any check with `conclusion` = `"failure"`, `"timed_out"`, `"cancelled"`, `"action_required"`, `"stale"`, or `"startup_failure"` and any review with `state` = `"CHANGES_REQUESTED"` as **Tier 1 blockers** — address them in addition to the bot comment below. Only declare "no-changes" when zero Tier 1 blockers exist.
 
 ## Task
 
@@ -107,23 +88,5 @@ If `${ACTOR}` is `sonarqubecloud[bot]` and the comment reports security hotspots
 
 ## Constraints
 
-- Only fix issues that are clearly actionable from the bot's output
-- Do not fix issues marked as "informational" or "suggestion" unless they indicate a real bug
-- Do not suppress bot rules without a documented reason
-- Do not modify the bot's configuration files
-- For every thread you fix, post a reply naming the specific change before resolving — never resolve silently
-- Only resolve threads from `${ACTOR}` — do not resolve threads from other reviewers
-- Stay within the scope of the pull request's changed files where possible
-- Do not commit or push — the CI workflow handles git operations after you finish
-
-## Output Format
-
-After applying fixes, output a summary:
-```
-Bot: ${ACTOR}
-Issues addressed: N
-- <issue description>: <fix applied> [replied + thread resolved]
-- <issue description>: outdated thread resolved
-Files changed: <list of files>
-Skipped (informational): <count>
-```
+- Fix the root cause, not the symptom. Do not suppress warnings without addressing them.
+- If an issue requires a design decision (e.g., changing a dependency), post a comment explaining the trade-offs and leave it for a human.
