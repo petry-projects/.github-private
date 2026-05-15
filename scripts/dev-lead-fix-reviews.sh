@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 # dev-lead-fix-reviews.sh — handles review-related intents
-# Optional: PROMPTS_DIR (defaults to prompts/dev-lead relative to CWD)
 
 source "$(dirname "$0")/engine.sh"
 source "$(dirname "$0")/lib/git-identity.sh"
@@ -13,14 +12,6 @@ PR_NUMBER="${PR_NUMBER:-}"
 REPO="${REPO:-${GITHUB_REPOSITORY:-}}"
 HEAD_SHA="${HEAD_SHA:-}"
 DEV_LEAD_DRY_RUN="${DEV_LEAD_DRY_RUN:-false}"
-export PROMPTS_DIR="${PROMPTS_DIR:-prompts/dev-lead}"
-# Pin PROMPTS_DIR to an absolute path now, while CWD still points at the agent
-# checkout — checkout_pr_in_worktree cds into the PR worktree, after which a
-# relative PROMPTS_DIR would resolve against the PR branch (issue #448).
-PROMPTS_DIR="$(resolve_abs "$PROMPTS_DIR")"
-export PROMPTS_DIR
-
-REVIEWS_MARKER_PREFIX="<!-- dev-lead-fix-reviews pr="
 
 REVIEWS_MARKER_PREFIX="<!-- dev-lead-fix-reviews pr="
 
@@ -76,20 +67,8 @@ fi
 build_and_run() {
   local template_name="$1"
   local prompt_file="/tmp/dev-lead-${template_name}-prompt-$$.md"
-  local template_path="${PROMPTS_DIR}/${template_name}.md"
-  # Scope envsubst to only the variables declared in the <!-- VARIABLES: --> header.
-  # This prevents GraphQL $variables, $() subshells, and other $ patterns in the
-  # prompt from being silently clobbered before the agent ever sees them.
-  local vars_spec
-  vars_spec=$(grep -m1 '<!-- VARIABLES:' "$template_path" 2>/dev/null \
-    | sed 's/<!-- VARIABLES: //; s/ -->//' \
-    | tr ',' '\n' \
-    | awk '{gsub(/^ +| +$/, ""); if (length) printf "${%s}", $0}' || true)
-  if [ -n "$vars_spec" ]; then
-    envsubst "$vars_spec" < "$template_path" > "$prompt_file"
-  else
-    envsubst < "$template_path" > "$prompt_file"
-  fi
+  # Export required vars then envsubst
+  envsubst < "prompts/dev-lead/${template_name}.md" > "$prompt_file"
 
   if [ "$DEV_LEAD_DRY_RUN" = "true" ]; then
     echo "[dry-run] would run engine with prompt: $prompt_file ($(wc -l < "$prompt_file") lines)"
@@ -97,87 +76,16 @@ build_and_run() {
     return 0
   fi
 
-  local rc=0
-  run_writer_with_fallback "$prompt_file" || rc=$?
+  run_writer_with_fallback "$prompt_file"
   rm -f "$prompt_file"
-  return "$rc"
 }
 
-# post_reviews_terminal: writes a terminal status marker after a retryable
-# intent completes. This prevents the retry cron from re-dispatching the same
-# intent on subsequent runs when the SHA hasn't changed.
-post_reviews_terminal() {
-  local intent="$1" status="${2:-applied}" summary="${3:-}"
-  local sha_part=""
-  [ -n "${HEAD_SHA:-}" ] && sha_part=" sha=${HEAD_SHA}"
-  local marker="${REVIEWS_MARKER_PREFIX}${PR_NUMBER}${sha_part} intent=${intent} status=${status} -->"
-
-  local body="${marker}"
-  if [ -n "$summary" ]; then
-    body="${body}
-## Dev-Lead — ${intent} (${status})
-${summary}"
-  fi
-
+post_comment() {
+  local body="$1"
   if [ "$DEV_LEAD_DRY_RUN" = "true" ]; then
-    echo "[dry-run] would post reviews terminal marker: intent=${intent} status=${status}"
-    [ -n "$summary" ] && echo "$body"
-    return 0
-  fi
-  # Best-effort: don't fail the overall script if the marker post fails
-  gh pr comment "$PR_NUMBER" --repo "$REPO" --body "$body" 2>/dev/null || true
-}
-
-# redact_secrets: scrub common credential token formats from stdin → stdout.
-# Defense-in-depth before publishing agent session output to a PR comment —
-# Claude Code's session log can include curl/gh invocations whose stderr leaks
-# tokens, or echoed environment variables. Patterns cover GitHub, OpenAI/
-# Anthropic, AWS, Google OAuth, generic bearer tokens, and PEM private keys.
-redact_secrets() {
-  # The PEM range (-----BEGIN ... -----END ...) uses sed's c\ range-change
-  # so the *entire* multiline block is replaced — header line alone leaves
-  # the key body lines intact and still leakable.
-  sed -E \
-    -e 's/(gh[opsu]|ghr)_[A-Za-z0-9_]{20,}/***REDACTED-GH-TOKEN***/g' \
-    -e 's/github_pat_[A-Za-z0-9_]{20,}/***REDACTED-GH-PAT***/g' \
-    -e 's/sk-(ant-)?[A-Za-z0-9_-]{20,}/***REDACTED-API-KEY***/g' \
-    -e 's/AKIA[A-Z0-9]{16}/***REDACTED-AWS-KEY***/g' \
-    -e 's/AIza[A-Za-z0-9_-]{35}/***REDACTED-GOOGLE-KEY***/g' \
-    -e 's|ya29\.[A-Za-z0-9_-]+|***REDACTED-GOOGLE-OAUTH***|g' \
-    -e 's/[Bb]earer [A-Za-z0-9._-]{20,}/Bearer ***REDACTED***/g' \
-    -e '/-----BEGIN [A-Z ]*PRIVATE KEY-----/,/-----END [A-Z ]*PRIVATE KEY-----/c\
-***REDACTED-PRIVATE-KEY***'
-}
-
-# read_session_summary: extracts the agent's structured summary from the session
-# log and redacts any embedded credentials. Empty output if the file is missing
-# (e.g. dry-run paths that never invoked the writer).
-#
-# Strategy: scan the redacted stream for the *last* occurrence of a known summary
-# header (`Bot:`, `PR: #`, `Addressed N threads:`, `Human review threads
-# addressed:`, `Issues addressed:` — see prompts/dev-lead/*.md "Output Format")
-# and emit from that line to EOF, capped at 30 non-blank lines. Falls back to
-# the last 30 non-blank lines when no marker is present, preserving the prior
-# tail behaviour for unstructured output. grep -n + sed avoids loading the log
-# into an awk array (gemini medium finding).
-#
-# Redaction runs over the full log *before* the marker search, so PEM blocks
-# that straddle the marker window are fully redacted (header outside the kept
-# window, body inside the kept window would otherwise leak plaintext key
-# material).
-read_session_summary() {
-  local log="/tmp/dev-lead-session-output.txt"
-  [[ -f "$log" ]] || return 0
-  local redacted
-  redacted="$(redact_secrets < "$log")"
-  local mark
-  mark=$(printf '%s\n' "$redacted" | grep -nE \
-    '^(Bot:|PR: #|Addressed [0-9]+ threads?:|Human review threads addressed:|Issues addressed:)' \
-    | tail -1 | cut -d: -f1)
-  if [ -n "$mark" ]; then
-    printf '%s\n' "$redacted" | sed -n "${mark},\$p" | sed '/^[[:space:]]*$/d' | head -30
+    echo "[dry-run] would post comment: $body"
   else
-    printf '%s\n' "$redacted" | tail -30 | sed '/^[[:space:]]*$/d' | tail -10
+    gh pr comment "$PR_NUMBER" --repo "$REPO" --body "$body"
   fi
 }
 
@@ -1214,17 +1122,6 @@ case "$INTENT_TYPE" in
     export PR_NUMBER PR_URL="https://github.com/${REPO}/pull/${PR_NUMBER}"
     export REPO HEAD_SHA
     export BASE_REF="${BASE_REF:-main}"
-    # Normalise to GraphQL's author.login form: the GitHub Actions event login
-    # includes a "[bot]" suffix for bots, but GraphQL author.login omits it.
-    # Without this, the prompt's `author.login == ${TRIGGERING_REVIEWER}` check
-    # never matches threads from coderabbitai/chatgpt-codex/etc.
-    export TRIGGERING_REVIEWER="${TRIGGERING_REVIEWER:-}"
-    TRIGGERING_REVIEWER="${TRIGGERING_REVIEWER%\[bot\]}"
-    # resolve_actor_outdated_threads needs ACTOR (the raw GitHub Actions login,
-    # with the [bot] suffix preserved — the helper strips it for the GraphQL
-    # comparison). The workflow passes the actor via TRIGGERING_REVIEWER, so
-    # fall back to it when ACTOR is not set explicitly.
-    export ACTOR="${ACTOR:-${TRIGGERING_REVIEWER:-}}"
     OPEN_THREADS_JSON=$(gh api graphql -f query='
       query($owner:String!,$repo:String!,$pr:Int!) {
         repository(owner:$owner, name:$repo) {
@@ -1267,60 +1164,16 @@ case "$INTENT_TYPE" in
   fix-bot-comment)
     export PR_NUMBER PR_URL="https://github.com/${REPO}/pull/${PR_NUMBER}"
     export REPO ACTOR="${ACTOR:-}" COMMENT_BODY="${COMMENT_BODY:-}" HEAD_SHA
-    fetch_pr_context
-    rc=0
-    build_and_run "fix-bot-comment" || rc=$?
-    [ "$rc" -eq 2 ] && handle_rate_limit "fix-bot-comment"
-    if [ "$rc" -eq 0 ]; then
-      if commit_and_push "fix-bot-comment"; then
-        notify_coderabbit_resolve
-        post_reviews_terminal "fix-bot-comment" "applied" "Changes committed and pushed."
-      else
-        notify_coderabbit_resolve
-        if has_hard_blockers; then
-          echo "::warning::Tier-1 blockers still present (failing CI or CHANGES_REQUESTED reviews) — fix-bot-comment is not retried automatically; posting terminal marker"
-          post_no_changes "fix-bot-comment"
-        elif has_tier1_blockers; then
-          echo "::warning::Unresolved bot review threads remain — fix-bot-comment is not automatically retried; posting no-changes terminal marker"
-          post_no_changes "fix-bot-comment"
-        else
-          post_no_changes "fix-bot-comment"
-        fi
-      fi
-      # Always resolve outdated bot threads in the no-changes path as cleanup
-      resolve_bot_outdated_threads "fix-bot-comment"
-      resolve_actor_outdated_threads "fix-bot-comment"
-      try_enable_auto_merge
-    fi
-    exit "$rc"
+    build_and_run "fix-bot-comment"
     ;;
-  on-mention)
-    export PR_NUMBER="${PR_NUMBER:-}"
-    export PR_URL="https://github.com/${REPO}/pull/${PR_NUMBER}"
+  human)
+    export PR_NUMBER PR_URL="https://github.com/${REPO}/pull/${PR_NUMBER}"
     export REPO ACTOR="${ACTOR:-}" USER_INSTRUCTION="${USER_INSTRUCTION:-}" PR_DESCRIPTION="${PR_DESCRIPTION:-}"
-    rc=0
-    build_and_run "on-mention" || rc=$?
-    [ "$rc" -eq 2 ] && handle_rate_limit "on-mention"
-    if [ "$rc" -eq 0 ]; then
-      if commit_and_push "on-mention"; then
-        post_reviews_terminal "on-mention" "applied" "Changes committed and pushed."
-      else
-        post_reviews_terminal "on-mention" "no-changes" "Engine ran but made no changes."
-      fi
-      # Enable auto-merge by default when the mention targets a PR (issue mentions
-      # carry no PR_NUMBER and are skipped). GitHub holds the merge until branch
-      # protection is satisfied.
-      [[ -n "${PR_NUMBER:-}" ]] && try_enable_auto_merge
-    fi
-    exit "$rc"
+    build_and_run "human"
     ;;
-  review-changes)
-    export PR_NUMBER="${PR_NUMBER:-}"
-    export PR_URL="https://github.com/${REPO}/pull/${PR_NUMBER}"
-    # ACTOR is exported so resolve_actor_outdated_threads can scrub outdated
-    # threads from the triggering reviewer in the no-changes branch. The
-    # workflow's review-changes step passes ACTOR via env.INTENT_ACTOR.
-    export REPO ACTOR="${ACTOR:-}" PR_TITLE="${PR_TITLE:-}" PR_DESCRIPTION="${PR_DESCRIPTION:-}"
+  human-pr)
+    export PR_NUMBER PR_URL="https://github.com/${REPO}/pull/${PR_NUMBER}"
+    export REPO PR_TITLE="${PR_TITLE:-}" PR_DESCRIPTION="${PR_DESCRIPTION:-}"
     OPEN_THREADS_JSON=$(gh api graphql -f query='
       query($owner:String!,$repo:String!,$pr:Int!) {
         repository(owner:$owner, name:$repo) {
@@ -1361,8 +1214,7 @@ case "$INTENT_TYPE" in
     exit "$rc"
     ;;
   rebase)
-    export PR_NUMBER="${PR_NUMBER:-}"
-    export PR_URL="https://github.com/${REPO}/pull/${PR_NUMBER}"
+    export PR_NUMBER="${PR_NUMBER:-}" PR_URL="https://github.com/${REPO}/pull/${PR_NUMBER:-}"
     export REPO BASE_REF="${BASE_REF:-main}" HEAD_REF="${HEAD_REF:-}" CONFLICTING_FILES="${CONFLICTING_FILES:-}"
     if [ "$DEV_LEAD_DRY_RUN" = "true" ]; then
       echo "[dry-run] would run rebase for PR $PR_NUMBER"
@@ -1372,27 +1224,11 @@ case "$INTENT_TYPE" in
       echo "::error::PR_NUMBER is required for rebase"
       exit 1
     fi
+    gh pr checkout "$PR_NUMBER" --repo "$REPO"
     git fetch origin "$BASE_REF"
     CONFLICTING_FILES=$(git merge-tree "$(git merge-base HEAD "origin/${BASE_REF}")" HEAD "origin/${BASE_REF}" 2>/dev/null | grep "^changed in both" | awk '{print $NF}' || true)
     export CONFLICTING_FILES
-    rc=0
-    build_and_run "rebase" || rc=$?
-    [ "$rc" -eq 2 ] && handle_rate_limit "rebase"
-    if [ "$rc" -eq 0 ]; then
-      if commit_and_push "rebase"; then
-        post_reviews_terminal "rebase" "applied" "Rebase completed and pushed."
-      else
-        post_no_changes "rebase"
-      fi
-    fi
-    exit "$rc"
-    ;;
-  enable-auto-merge)
-    if [ -z "$PR_NUMBER" ]; then
-      echo "::error::PR_NUMBER is required for enable-auto-merge"
-      exit 1
-    fi
-    try_enable_auto_merge "true"
+    build_and_run "rebase"
     ;;
   *)
     echo "::error::Unknown intent type: $INTENT_TYPE"

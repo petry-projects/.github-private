@@ -1,46 +1,12 @@
 #!/usr/bin/env bash
-# Configurable via:
-#   STUB_ENGINE_RESPONSE, STUB_ENGINE_EXIT, STUB_ENGINE_DELAY
-#   STUB_GEMINI_USAGE    — "prompt cached candidates" emitted under
-#                          .stats.models.<model>.tokens when --output-format json
-#                          is requested. Default "120 20 40".
-#   STUB_GEMINI_THOUGHTS — thinking token count added to .tokens.thoughts.
-#                          Default 0 (omitted when 0).
-model="stub-gemini-model"
-output_format="text"
+# Configurable via: STUB_ENGINE_RESPONSE, STUB_ENGINE_EXIT, STUB_ENGINE_DELAY
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --model)
-      model="$2"; shift; shift ;;
-    --output-format)
-      output_format="$2"; shift; shift ;;
-    --prompt|--approval-mode)
+    --prompt|--model|--approval-mode|--output-format)
       shift; shift ;;
     *) shift ;;
   esac
 done
 sleep "${STUB_ENGINE_DELAY:-0}"
-
-response="${STUB_ENGINE_RESPONSE:-stub engine response}"
-
-if [ "$output_format" = "json" ]; then
-  read -r _p _c _cand <<< "${STUB_GEMINI_USAGE:-120 20 40}"
-  _th="${STUB_GEMINI_THOUGHTS:-0}"
-  if command -v jq >/dev/null 2>&1; then
-    jq -cn --arg response "$response" --arg model "$model" \
-      --argjson p "${_p:-0}" --argjson c "${_c:-0}" --argjson cand "${_cand:-0}" \
-      --argjson th "${_th:-0}" \
-      '{response:$response,
-        stats:{models:{($model):{tokens:(
-          {prompt:$p, cached:$c, candidates:$cand, total:($p + $cand)}
-          | if $th > 0 then . + {thoughts:$th} else . end
-        )}}}}'
-  else
-    printf '{"response":"%s","stats":{"models":{"%s":{"tokens":{"prompt":%s,"cached":%s,"candidates":%s}}}}}\n' \
-      "$response" "$model" "${_p:-0}" "${_c:-0}" "${_cand:-0}"
-  fi
-else
-  printf '%s\n' "$response"
-fi
-
+printf '%s\n' "${STUB_ENGINE_RESPONSE:-stub engine response}"
 exit "${STUB_ENGINE_EXIT:-0}"

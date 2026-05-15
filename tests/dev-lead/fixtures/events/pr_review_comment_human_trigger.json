@@ -9,8 +9,7 @@
     "user": {
       "login": "donpetry",
       "type": "User"
-    },
-    "author_association": "OWNER"
+    }
   },
   "pull_request": {
     "number": 59,

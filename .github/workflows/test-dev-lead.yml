@@ -4,7 +4,6 @@ on:
     paths:
       - 'scripts/dev-lead*'
       - 'scripts/engine.sh'
-      - 'scripts/lib/**'
       - '.github/workflows/dev-lead*.yml'
       - '.github/workflows/test-dev-lead.yml'
       - '.github/workflows/issue-triage-runner.yml'
@@ -15,7 +14,6 @@ on:
     paths:
       - 'scripts/dev-lead*'
       - 'scripts/engine.sh'
-      - 'scripts/lib/**'
       - 'tests/dev-lead/**'
       - 'prompts/dev-lead/**'
       # Guard the concurrency-config test on workflow changes too — otherwise a
@@ -26,16 +24,13 @@ on:
       - '.github/workflows/issue-triage-runner.yml'
   workflow_dispatch: {}
 
-permissions:
-  contents: read
-
 jobs:
   validate-fixtures:
     runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: Validate event fixtures
         run: find tests/dev-lead/fixtures/events -name '*.json' -exec jq empty {} \;
 
@@ -44,7 +39,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: Install bats
         run: |
           # Install bats-core to user-local prefix to avoid root requirement
@@ -65,7 +60,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: Verify prompt variable coverage
         run: |
           if [ -f tests/dev-lead/integration/test_prompt_coverage.sh ]; then
