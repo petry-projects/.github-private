@@ -1,551 +1,146 @@
-# Dev-Lead Agent — Implementation Plan (v2)
+# Dev-Lead Agent — Implementation Plan
 
 **Status:** Planning  
-**Version:** 0.2.0 — rubber-duck reviewed and enhanced  
+**Version:** 0.1.0  
 **Spec:** [`docs/dev-lead/spec.md`](./spec.md)  
 **Tracking:** GitHub Issues with label `dev-lead`
 
 ---
 
-## Rubber-Duck Review: Critical Gaps Addressed
+## Overview
 
-This version corrects the following issues identified in adversarial review of v0.1.0:
+This plan operationalises the [dev-lead spec](./spec.md) across seven phases. Each phase is independently releasable and leaves the system in a working state. Phases 1–2 are the critical path; the remaining phases extend coverage and eventually retire the legacy `claude.yml` caller stub (Option A: delete, not redirect).
 
-| Gap | Fix in this version |
-|---|---|
-| No dry-run mode — Phase 2 went straight to real commits | `DEV_LEAD_DRY_RUN` from Phase 0; all handlers gate on it |
-| Prompt extraction deferred to "follow-on" | Phase 0.3 — prompt library defined BEFORE any handler is written |
-| No secrets pre-flight | Phase 0.4 — `dev-lead-preflight.sh` validates secrets + engine availability |
-| `ci-relay` storm: 5 failures → 5 dispatch events → 5 concurrent fix jobs | Relay deduplicates per SHA+PR; dispatch payload includes all failing checks |
-| No anti-loop guard — agent commits trigger further bot reviews | Intent classifier detects dev-lead commit messages, emits `skip` |
-| No rollback strategy | Every fix is a single atomic commit; agent detects self-caused failures and aborts |
-| Handler scripts too monolithic — 5 intents in one file | Split: `fix-ci`, `fix-reviews`, `fix-issue`, `rebase` each in own script |
-| No prompt rendering tests — `envsubst` can silently leave gaps | Phase 0.3 tests every prompt template for variable completeness |
-| Cross-repo reusable not in plan | Phase 1.5 — `dev-lead-reusable.yml` + `.github` standard |
-| No observability plan | Phase 0.4 adds job summaries; every handler posts a structured summary |
-| No full pipeline integration test | Phase 2.8 adds end-to-end dry-run pipeline test |
-| Token scope for GraphQL thread resolution | Documented in Phase 3 — requires `GH_PAT_WORKFLOWS` with PR scope |
-| Phase 7 has no transition period | Phase 7 includes a 2-week shadow period before `claude.yml` deletion |
+**Test philosophy:**
+- Every shell function has a `bats` unit test before it ships.
+- Every intent path has an E2E test in a dedicated `test-dev-lead.yml` workflow.
+- Tests run on every PR to `.github-private` that touches `scripts/dev-lead*`, `scripts/engine.sh`, or `.github/workflows/dev-lead.yml`.
 
 ---
 
-## Phase 0 — Test Infrastructure, Dry-Run, and Pre-flight
+## Phase 0 — Test Infrastructure
 
-**Goal:** Complete test harness, dry-run capability, and secrets validation before any production code.
+**Goal:** Bootstrap the test harness before writing any production code.
 
-### 0.1 Directory structure
+### 0.1 Files to create
 
-```
-tests/dev-lead/
-├── unit/                          # bats unit tests (one file per component)
-├── integration/                   # shell integration tests (no real API calls)
-├── fixtures/
-│   ├── events/                    # GitHub webhook JSON payloads
-│   ├── engines/                   # stub claude, gemini, gh binaries
-│   ├── logs/                      # sample CI failure logs for prompt tests
-│   └── stubs/                     # mock gh binary + response config
-└── helpers/
-    ├── stub-engine.bash           # bats helper: install/remove engine stubs
-    ├── mock-gh.bash               # bats helper: configure mock gh responses
-    ├── assert-env.bash            # bats helper: assert GITHUB_ENV contents
-    └── prompt-vars.bash           # bats helper: verify template variable coverage
-```
+| File | Purpose |
+|---|---|
+| `tests/dev-lead/fixtures/events/` | JSON event payloads for unit tests |
+| `tests/dev-lead/fixtures/engines/` | Stub engine binaries (mock claude/gemini) |
+| `tests/dev-lead/helpers/stub-engine.bash` | bats helper: install/uninstall stub engine |
+| `tests/dev-lead/helpers/mock-gh.bash` | bats helper: mock `gh` CLI responses |
+| `tests/dev-lead/helpers/assert-comment.bash` | bats helper: assert PR comment was posted |
+| `.github/workflows/test-dev-lead.yml` | CI workflow that runs all dev-lead tests |
 
 ### 0.2 Event fixture files
 
-Captured from real or schema-valid GitHub webhook payloads. Validated with `jq empty` in CI.
+One JSON file per GitHub event type, covering both the "act" and "skip" cases.
 
 ```
 tests/dev-lead/fixtures/events/
-├── check_run_failure.json               # check_run, non-fork, has PR → relay
-├── check_run_failure_no_pr.json         # check_run, no associated PR → skip relay
-├── check_run_failure_fork.json          # check_run, fork PR → skip relay
-├── check_run_success.json               # check_run, success → skip relay
-├── check_run_dev_lead_self.json         # check_run name="dev-lead / dispatch" → skip
-├── pr_opened_human.json                 # pull_request opened, human non-fork
-├── pr_opened_dependabot.json            # pull_request, dependabot → skip
-├── pr_opened_fork.json                  # pull_request, fork → skip
-├── pr_sync_dev_lead_commit.json         # pull_request sync, commit by dev-lead → skip (anti-loop)
-├── pr_review_copilot_commented.json     # pull_request_review, copilot, COMMENTED
-├── pr_review_copilot_approved.json      # pull_request_review, copilot, APPROVED → skip
-├── pr_review_gemini_changes.json        # pull_request_review, gemini, CHANGES_REQUESTED
-├── pr_review_human_owner.json           # pull_request_review, OWNER
-├── pr_review_comment_copilot.json       # pull_request_review_comment, copilot
-├── pr_review_comment_human_trigger.json # pull_request_review_comment, human + @dev-lead
-├── pr_review_comment_human_no_trigger.json # human, no trigger phrase → skip
-├── issue_comment_sonarqube.json         # issue_comment on PR, sonarqubecloud[bot]
-├── issue_comment_coderabbit.json        # issue_comment on PR, coderabbitai[bot]
-├── issue_comment_human_trigger.json     # issue_comment, human, @dev-lead
-├── issue_comment_human_no_trigger.json  # human, no phrase → skip
-├── issue_comment_rebase_sentinel.json   # contains <!-- auto-rebase-conflict: -->
-├── issue_comment_dev_lead_bot.json      # actor=donpetry-bot → skip (self)
-├── issues_labeled_dev_lead.json         # issues labeled dev-lead
-├── issues_labeled_claude.json           # issues labeled claude (backward compat)
-├── issues_labeled_other.json            # issues labeled bug → skip
-└── repository_dispatch_ci_failure.json  # repository_dispatch, dev-lead-ci-failure
+├── check_run_failure.json           # check_run, conclusion=failure, has PR
+├── check_run_failure_fork.json      # check_run, conclusion=failure, fork PR → skip
+├── check_run_success.json           # check_run, conclusion=success → skip
+├── check_run_claude_self.json       # check_run name starts with "dev-lead /" → skip
+├── pr_opened.json                   # pull_request, opened, human author
+├── pr_opened_dependabot.json        # pull_request, opened, dependabot → skip
+├── pr_opened_fork.json              # pull_request, fork → skip
+├── pr_review_copilot_commented.json # pull_request_review, copilot, COMMENTED
+├── pr_review_copilot_approved.json  # pull_request_review, copilot, APPROVED → skip
+├── pr_review_gemini_changes.json    # pull_request_review, gemini, CHANGES_REQUESTED
+├── pr_review_human.json             # pull_request_review, human OWNER
+├── pr_review_comment_copilot.json   # pull_request_review_comment, copilot
+├── pr_review_comment_human.json     # pull_request_review_comment, human + @dev-lead
+├── issue_comment_sonarqube.json     # issue_comment on PR, sonarqubecloud[bot]
+├── issue_comment_coderabbit.json    # issue_comment on PR, coderabbitai[bot]
+├── issue_comment_human_mention.json # issue_comment on PR, human, contains @dev-lead
+├── issue_comment_human_no_trigger.json # issue_comment, human, no trigger phrase → skip
+├── issue_comment_rebase.json        # issue_comment, contains auto-rebase-conflict marker
+├── issue_comment_claude_self.json   # issue_comment, actor=donpetry-bot → skip
+├── issues_labeled_dev_lead.json     # issues, action=labeled, label=dev-lead
+├── issues_labeled_other.json        # issues, action=labeled, label=bug → skip
+└── repository_dispatch_ci.json      # repository_dispatch, dev-lead-ci-failure
 ```
 
-Each fixture includes a `// TEST_EXPECTED_INTENT` comment at the top documenting the expected classification.
+### 0.3 Stub engine binary
 
-### 0.3 Stub engine binaries
-
-**`tests/dev-lead/fixtures/engines/stub-claude`**
+`tests/dev-lead/fixtures/engines/stub-claude` — a minimal bash script that:
+- Accepts `--print --model <m>` flags (ignores others)
+- Reads stdin
+- Outputs a configurable response (controlled by `STUB_ENGINE_RESPONSE` env var)
+- Exits 0 by default; exits 2 if `STUB_ENGINE_RESPONSE=rate-limit`
 
 ```bash
 #!/usr/bin/env bash
-# Configurable via env:
-#   STUB_ENGINE_RESPONSE  — stdout content (default: "stub response")
-#   STUB_ENGINE_EXIT      — exit code (default: 0)
-#   STUB_ENGINE_DELAY     — sleep seconds before responding (default: 0)
-# Parses --print, --model, --permission-mode flags (ignores all).
-while [[ $# -gt 0 ]]; do
-  case "$1" in --print|--model|--permission-mode|--allowed-tools|--disallowed-tools) shift; shift ;; *) shift ;; esac
-done
-sleep "${STUB_ENGINE_DELAY:-0}"
+# Stub claude binary for unit tests.
+# Set STUB_ENGINE_RESPONSE to control output.
+# Set STUB_ENGINE_EXIT to control exit code.
 cat <<< "${STUB_ENGINE_RESPONSE:-stub engine response}"
 exit "${STUB_ENGINE_EXIT:-0}"
 ```
 
-Same stub for `stub-gemini` with appropriate flag parsing.
-
-**`tests/dev-lead/fixtures/stubs/gh`** — mock `gh` binary
-
-```bash
-#!/usr/bin/env bash
-# Configurable via env:
-#   GH_STUB_PR_NUMBER      — PR number to return for commit→PR lookup
-#   GH_STUB_PR_HEAD_REPO   — head repo full_name
-#   GH_STUB_COMMENT_BODY   — PR comment body for idempotency checks
-#   GH_STUB_CI_STATUS      — "success"|"failure" for pr checks
-#   GH_STUB_DISPATCH_CALLED — set to "true" after dispatches call
-# Intercepts: gh api, gh pr checkout, gh pr checks, gh pr comment
-case "$*" in
-  *dispatches*) export GH_STUB_DISPATCH_CALLED="true"; exit 0 ;;
-  *"commits/"*"/pulls"*) echo "[{\"number\":${GH_STUB_PR_NUMBER:-0},\"state\":\"open\"}]" ;;
-  *"pulls/${GH_STUB_PR_NUMBER:-0}"*) echo "{\"head\":{\"repo\":{\"full_name\":\"${GH_STUB_PR_HEAD_REPO:-petry-projects/.github-private}\"}}}" ;;
-  *"comments"*) echo "[{\"body\":\"${GH_STUB_COMMENT_BODY:-}\"}]" ;;
-  *"pr checks"*|*"pr check"*) echo "${GH_STUB_CI_STATUS:-success}"; exit 0 ;;
-  *"pr comment"*) exit 0 ;;
-  *"pr checkout"*) exit 0 ;;
-  *) command gh "$@" 2>/dev/null || exit 0 ;;
-esac
-```
-
-### 0.4 Dry-run mode and pre-flight
-
-**`DEV_LEAD_DRY_RUN`** env var — present in all workflow jobs. When `true`:
-- Intent classification runs normally (full output)
-- Engine CLIs are installed (to validate availability)
-- Handler scripts build prompts but do NOT call `run_writer()`
-- No commits, no pushes, no API writes
-- Outputs what WOULD happen to the job step summary
-
-**`scripts/dev-lead-preflight.sh`** — runs before every handler:
-
-```bash
-#!/usr/bin/env bash
-# Validates required secrets and engine availability.
-# Emits ::error:: and exits 1 if CLAUDE_CODE_OAUTH_TOKEN is absent.
-# Emits ::warning:: for optional secrets (GOOGLE_API_KEY, GH_PAT).
-# Appends an availability table to GITHUB_STEP_SUMMARY.
-
-check_required() {
-  local name="$1" value="$2"
-  if [ -z "$value" ]; then
-    echo "::error::$name is required but not set. Dev-lead cannot run without it."
-    exit 1
-  fi
-}
-
-check_optional() {
-  local name="$1" value="$2" purpose="$3"
-  if [ -z "$value" ]; then
-    echo "::warning::$name not set — $purpose unavailable."
-  fi
-}
-
-check_required "CLAUDE_CODE_OAUTH_TOKEN" "${CLAUDE_CODE_OAUTH_TOKEN:-}"
-check_optional "GH_PAT_WORKFLOWS" "${GH_PAT_WORKFLOWS:-}" "workflow file pushes and repository_dispatch"
-check_optional "GOOGLE_API_KEY" "${GOOGLE_API_KEY:-}" "Gemini engine fallback"
-check_optional "GH_PAT" "${GH_PAT:-}" "Copilot engine"
-```
-
-### 0.5 `test-dev-lead.yml` CI workflow
+### 0.4 `test-dev-lead.yml` CI workflow
 
 ```yaml
 name: Test Dev-Lead Agent
 on:
   pull_request:
-    paths: ['scripts/dev-lead*', 'scripts/engine.sh', '.github/workflows/dev-lead*.yml', 'tests/dev-lead/**', 'prompts/dev-lead/**']
+    paths:
+      - 'scripts/dev-lead*'
+      - 'scripts/engine.sh'
+      - '.github/workflows/dev-lead.yml'
+      - 'tests/dev-lead/**'
   push:
     branches: [main]
-    paths: ['scripts/dev-lead*', 'scripts/engine.sh', 'tests/dev-lead/**', 'prompts/dev-lead/**']
+    paths:
+      - 'scripts/dev-lead*'
+      - 'scripts/engine.sh'
+      - 'tests/dev-lead/**'
 
 jobs:
   unit:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@...
-      - name: Install bats + helpers
-        run: |
-          npm install -g bats bats-support bats-assert
-      - name: Validate event fixtures
-        run: find tests/dev-lead/fixtures/events -name '*.json' -exec jq empty {} \;
-      - name: Run unit tests
-        run: bats tests/dev-lead/unit/ --formatter tap
+      - name: Install bats
+        run: npm install -g bats
+      - name: Run dev-lead unit tests
+        run: bats tests/dev-lead/unit/
 
   integration:
     runs-on: ubuntu-latest
     needs: unit
     steps:
       - uses: actions/checkout@...
-      - name: Run integration tests
-        run: bash tests/dev-lead/integration/run-all.sh
-
-  prompt-coverage:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@...
-      - name: Verify all prompt templates have no missing variables
-        run: bash tests/dev-lead/integration/test_prompt_coverage.sh
-
-  dry-run-pipeline:
-    runs-on: ubuntu-latest
-    needs: [unit, integration]
-    env:
-      DEV_LEAD_DRY_RUN: "true"
-      REVIEW_ENGINE: "claude"
-    steps:
-      - uses: actions/checkout@...
-      - name: Install stub engine
-        run: |
-          mkdir -p ~/.local/bin
-          cp tests/dev-lead/fixtures/engines/stub-claude ~/.local/bin/claude
-          chmod +x ~/.local/bin/claude
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-      - name: Run full pipeline dry-run (fix-ci intent)
+      - name: Run dev-lead integration tests
         env:
-          GITHUB_EVENT_NAME: repository_dispatch
-          GITHUB_EVENT_PATH: tests/dev-lead/fixtures/events/repository_dispatch_ci_failure.json
-          GITHUB_ENV: /tmp/test-github-env
-          GITHUB_OUTPUT: /tmp/test-github-output
-          BOT_USER: donpetry-bot
-          TRUSTED_BOTS: copilot-pull-request-reviewer[bot]
-          TRIGGER_PHRASES: "@claude,@dev-lead"
-          INTENT_CONTEXT_FILE: /tmp/test-intent-context.json
-        run: |
-          touch /tmp/test-github-env /tmp/test-github-output
-          bash scripts/dev-lead-intent.sh
-          INTENT_TYPE=$(grep "^INTENT_TYPE=" /tmp/test-github-env | cut -d= -f2)
-          echo "Classified intent: $INTENT_TYPE"
-          [ "$INTENT_TYPE" = "fix-ci" ]
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash tests/dev-lead/integration/run-all.sh
 ```
 
-### 0.6 Phase 0 definition of done
+### 0.5 Phase 0 definition of done
 
-- [ ] All 24 fixture JSON files pass `jq empty`
-- [ ] `stub-claude` and `stub-gemini` pass smoke tests
-- [ ] Mock `gh` binary intercepts all required commands
-- [ ] `test-dev-lead.yml` workflow is green (zero tests, but harness works)
-- [ ] `DEV_LEAD_DRY_RUN=true` env var is documented in workflow
-- [ ] `dev-lead-preflight.sh` validates secrets and exits clearly
+- [ ] All fixture JSON files pass `jq empty` validation
+- [ ] `stub-claude` binary passes a smoke test: `echo "hello" | STUB_ENGINE_RESPONSE="ok" ./tests/dev-lead/fixtures/engines/stub-claude --print --model test`
+- [ ] `test-dev-lead.yml` workflow is green on an empty test suite (no tests yet = pass)
 
 ---
 
-## Phase 0.3 — Prompt Library (BEFORE handler scripts)
+## Phase 1 — Scaffold: Triggers Wired, No Agent Running
 
-**Goal:** Define all prompt templates with clear variable contracts. No handler script can be written until its prompt is reviewed and merged.
+**Goal:** `dev-lead.yml` exists with all triggers; `dispatch` job runs but always skips. Verifiable in the Actions UI without any LLM cost.
 
-### Prompt architecture
-
-Handler scripts render prompts via `envsubst` with a strict variable whitelist:
-
-```bash
-# In handler scripts:
-build_prompt() {
-  local template="prompts/dev-lead/${INTENT_TYPE}.md"
-  # Export only the variables the template declares — no accidental leakage
-  local required_vars
-  required_vars=$(grep -oP '\$\{[A-Z_]+\}' "$template" | sort -u | tr -d '${}\n' | tr '\n' ',')
-  envsubst "$(printf '${%s},' $required_vars)" < "$template"
-}
-```
-
-### Prompt files
-
-```
-prompts/dev-lead/
-├── fix-ci.md          # Variables: PR_NUMBER, PR_URL, CHECK_NAME, APP_SLUG, HEAD_SHA, DETAILS_URL, FAILURE_LOGS, ANNOTATIONS, REPO
-├── fix-reviews.md     # Variables: PR_NUMBER, PR_URL, REPO, OPEN_THREADS_JSON, BASE_REF
-├── fix-bot-comment.md # Variables: PR_NUMBER, PR_URL, REPO, ACTOR, COMMENT_BODY, HEAD_SHA
-├── human.md           # Variables: PR_NUMBER, PR_URL, REPO, ACTOR, USER_INSTRUCTION, PR_DESCRIPTION
-├── human-pr.md        # Variables: PR_NUMBER, PR_URL, REPO, PR_TITLE, PR_DESCRIPTION, OPEN_THREADS_JSON
-├── fix-issue.md       # Variables: ISSUE_NUMBER, ISSUE_URL, REPO, ISSUE_TITLE, ISSUE_BODY, ORG_STANDARDS_HINT
-└── rebase.md          # Variables: PR_NUMBER, PR_URL, REPO, BASE_REF, HEAD_REF, CONFLICTING_FILES
-```
-
-Each template must:
-1. State the agent's role and constraints in the first 3 lines
-2. Clearly section: **Context** → **Failure/Feedback** → **Task** → **Constraints** → **Output format**
-3. Include a `<!-- VARIABLES: VAR1, VAR2, ... -->` HTML comment listing all variables (used by tests)
-
-### Prompt tests: `tests/dev-lead/integration/test_prompt_coverage.sh`
-
-```bash
-#!/usr/bin/env bash
-# Verifies: every variable referenced in a template is (a) listed in its
-# <!-- VARIABLES: --> comment, and (b) present when envsubst is called.
-set -euo pipefail
-
-PROMPTS_DIR="prompts/dev-lead"
-FAILURES=0
-
-for template in "$PROMPTS_DIR"/*.md; do
-  name=$(basename "$template")
-  # Extract declared variables from the <!-- VARIABLES: --> comment
-  declared=$(grep -oP '(?<=<!-- VARIABLES: )[^>]+(?= -->)' "$template" 2>/dev/null || echo "")
-  if [ -z "$declared" ]; then
-    echo "FAIL: $name has no <!-- VARIABLES: --> declaration"
-    FAILURES=$((FAILURES + 1))
-    continue
-  fi
-
-  # Extract referenced variables from the template body
-  referenced=$(grep -oP '\$\{[A-Z_]+\}' "$template" | grep -oP '[A-Z_]+' | sort -u)
-
-  for var in $referenced; do
-    if ! echo "$declared" | grep -qw "$var"; then
-      echo "FAIL: $name references \${$var} but it is not in <!-- VARIABLES: -->"
-      FAILURES=$((FAILURES + 1))
-    fi
-  done
-
-  # Test envsubst with all declared vars set to "TEST_VALUE"
-  eval_env=""
-  for var in $(echo "$declared" | tr ',' ' '); do
-    eval_env="export $var=TEST_VALUE; $eval_env"
-  done
-  rendered=$(eval "$eval_env" envsubst < "$template" 2>&1)
-  if echo "$rendered" | grep -qP '\$\{[A-Z_]+\}'; then
-    echo "FAIL: $name has unrendered variables after envsubst"
-    FAILURES=$((FAILURES + 1))
-  else
-    echo "PASS: $name"
-  fi
-done
-
-[ "$FAILURES" -eq 0 ] || { echo "$FAILURES prompt tests failed"; exit 1; }
-```
-
-### Unit tests: `tests/dev-lead/unit/test_prompt_rendering.bats`
-
-```bash
-@test "fix-ci prompt: renders with all required variables" {
-  export PR_NUMBER="175" PR_URL="https://github.com/..." CHECK_NAME="SonarCloud"
-  export APP_SLUG="sonarqubecloud" HEAD_SHA="abc123" DETAILS_URL="https://sonarcloud.io"
-  export FAILURE_LOGS="error: unused variable" ANNOTATIONS="line 42: issue" REPO="petry-projects/.github-private"
-  run bash -c 'envsubst < prompts/dev-lead/fix-ci.md'
-  [ "$status" -eq 0 ]
-  [[ "$output" != *'${'* ]]   # no unrendered variables
-  [[ "$output" == *"175"* ]]  # PR number is present
-}
-
-@test "fix-reviews prompt: renders with all required variables" {
-  export PR_NUMBER="175" PR_URL="https://github.com/..." REPO="petry-projects/.github-private"
-  export OPEN_THREADS_JSON='[]' BASE_REF="main"
-  run bash -c 'envsubst < prompts/dev-lead/fix-reviews.md'
-  [ "$status" -eq 0 ]
-  [[ "$output" != *'${'* ]]
-}
-
-@test "prompt build_prompt() uses variable whitelist" {
-  source scripts/dev-lead-fix-ci.sh
-  export INTENT_TYPE="fix-ci"
-  export PR_NUMBER="99" PR_URL="url" CHECK_NAME="test" APP_SLUG="app"
-  export HEAD_SHA="sha" DETAILS_URL="url" FAILURE_LOGS="logs" ANNOTATIONS="ann" REPO="repo"
-  export UNRELATED_SECRET="this-should-not-appear"
-  result=$(build_prompt)
-  [[ "$result" != *"this-should-not-appear"* ]]
-}
-```
-
-### Phase 0.3 definition of done
-
-- [ ] All 7 prompt templates exist with `<!-- VARIABLES: -->` declarations
-- [ ] `test_prompt_coverage.sh` passes for all templates
-- [ ] All `test_prompt_rendering.bats` tests pass
-- [ ] No handler script is merged until its prompt template is reviewed
-
----
-
-## Phase 1 — Scaffold: Triggers and Intent Stub
-
-**Goal:** `dev-lead.yml` live on main with all triggers; `dispatch` always skips; `ci-relay` works but emits no dispatch (relay target doesn't exist yet).
-
-### 1.1 Files
+### 1.1 Files to create/modify
 
 | File | Change |
 |---|---|
-| `.github/workflows/dev-lead.yml` | CREATE — all 7 triggers, both jobs, stub intent |
-| `scripts/dev-lead-intent.sh` | CREATE — stub: always `skip` with reason `not-implemented` |
-| `scripts/dev-lead-preflight.sh` | CREATE — from Phase 0.4 spec |
+| `.github/workflows/dev-lead.yml` | **CREATE** — all triggers, both jobs, calls stub intent classifier |
+| `scripts/dev-lead-intent.sh` | **CREATE** — stub: always outputs `INTENT_TYPE=skip INTENT_SKIP_REASON=not-implemented` |
 
-### 1.2 Anti-loop guard (in intent classifier, from day 1)
-
-The intent classifier must detect commits made by the dev-lead agent itself and emit `skip` to prevent feedback loops. A dev-lead fix commit is identified by its commit message prefix `fix(dev-lead):` or `fix(ci):` when the pusher is `BOT_USER`.
-
-```bash
-# In dev-lead-intent.sh, pull_request synchronize case:
-if [ "$GITHUB_EVENT_NAME" = "pull_request" ] && [ "$ACTION" = "synchronize" ]; then
-  PUSHER=$(jq -r '.sender.login' "$GITHUB_EVENT_PATH")
-  HEAD_COMMIT_MSG=$(jq -r '.pull_request.head.commit.message // ""' "$GITHUB_EVENT_PATH" 2>/dev/null || \
-    gh api "repos/${GITHUB_REPOSITORY}/git/commits/$(jq -r '.pull_request.head.sha' "$GITHUB_EVENT_PATH")" \
-      --jq '.message' 2>/dev/null || echo "")
-  if [ "$PUSHER" = "$BOT_USER" ] || echo "$HEAD_COMMIT_MSG" | grep -qE "^fix\((dev-lead|ci|reviews)\):"; then
-    emit_skip "dev-lead-own-commit"
-    exit 0
-  fi
-fi
-```
-
-### 1.3 Unit tests: `tests/dev-lead/unit/test_intent_stub.bats`
-
-```bash
-@test "stub: all events emit skip" { ... }
-@test "anti-loop: pull_request sync from BOT_USER → skip" { ... }
-@test "anti-loop: commit message 'fix(ci):...' → skip" { ... }
-@test "pre-flight: missing CLAUDE_CODE_OAUTH_TOKEN → exits 1" { ... }
-@test "dry-run: DEV_LEAD_DRY_RUN=true logged in step summary" { ... }
-```
-
-### 1.4 Phase 1 definition of done
-
-- [ ] `dev-lead.yml` on main, all 7 triggers confirmed in Actions UI
-- [ ] `dispatch` job always shows `INTENT_TYPE=skip` cleanly
-- [ ] `ci-relay` job fires on a test `check_run` failure, logs "no dispatch target yet"
-- [ ] Anti-loop guard unit tests pass
-- [ ] Pre-flight unit tests pass
-
----
-
-## Phase 1.5 — Cross-repo Standard
-
-**Goal:** Other org repos can adopt the dev-lead agent by copying a thin caller stub. The reusable workflow in `.github-private` contains all logic.
-
-### 1.5.1 Files
-
-| File | Repo | Change |
-|---|---|---|
-| `.github/workflows/dev-lead-reusable.yml` | `.github-private` | CREATE — reusable wrapper |
-| `standards/workflows/dev-lead.yml` | `.github` | CREATE — thin caller stub standard |
-| `standards/ci-standards.md` | `.github` | UPDATE — add §5 Dev-Lead Agent |
-
-### 1.5.2 `dev-lead-reusable.yml` design
-
-The reusable workflow receives the caller's event context automatically (GitHub passes `github.event_name`, `github.event`, `github.repository`, etc. through to reusable workflows called via `workflow_call`).
-
-To access dev-lead scripts, the reusable checks out `.github-private` into a subdirectory:
+### 1.2 `dev-lead.yml` skeleton
 
 ```yaml
-name: Dev-Lead Agent (Reusable)
-on:
-  workflow_call:
-    secrets:
-      CLAUDE_CODE_OAUTH_TOKEN: { required: true }
-      GH_PAT_WORKFLOWS:        { required: false }
-      GOOGLE_API_KEY:           { required: false }
-      GH_PAT:                   { required: false }
-
-jobs:
-  dispatch:
-    if: github.event_name != 'check_run'
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    permissions:
-      contents: write
-      pull-requests: write
-      issues: write
-      actions: read
-      checks: read
-    steps:
-      - name: Checkout caller repo
-        uses: actions/checkout@...    # checks out the CALLING repo
-
-      - name: Checkout dev-lead scripts
-        uses: actions/checkout@...
-        with:
-          repository: petry-projects/.github-private
-          path: .dev-lead
-          token: ${{ secrets.GH_PAT_WORKFLOWS || github.token }}
-          sparse-checkout: |
-            scripts/
-            prompts/dev-lead/
-
-      - name: Classify intent
-        id: intent
-        env:
-          # ... all env vars ...
-        run: bash .dev-lead/scripts/dev-lead-intent.sh
-
-      - name: Install engine CLIs
-        if: steps.intent.outputs.intent_type != 'skip'
-        run: bash .dev-lead/scripts/dev-lead-install-engines.sh
-
-      - name: Run handler
-        if: steps.intent.outputs.intent_type != 'skip'
-        env:
-          DEV_LEAD_SCRIPTS: .dev-lead/scripts
-          DEV_LEAD_PROMPTS: .dev-lead/prompts/dev-lead
-        run: |
-          case "${{ steps.intent.outputs.intent_type }}" in
-            fix-ci)   bash .dev-lead/scripts/dev-lead-fix-ci.sh ;;
-            fix-reviews|fix-bot-comment|human|human-pr|rebase)
-                      bash .dev-lead/scripts/dev-lead-fix-reviews.sh ;;
-            issue)    bash .dev-lead/scripts/dev-lead-fix-issue.sh ;;
-          esac
-
-  ci-relay:
-    if: >-
-      github.event_name == 'check_run' &&
-      github.event.check_run.conclusion == 'failure' &&
-      !startsWith(github.event.check_run.name, 'dev-lead / ') &&
-      !startsWith(github.event.check_run.name, 'claude-code / ')
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      contents: read
-      pull-requests: read
-    steps:
-      - name: Resolve PR and dispatch
-        env:
-          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS || github.token }}
-        run: |
-          # ... same relay logic as dev-lead.yml ...
-```
-
-**Key design point:** Handler scripts use `$DEV_LEAD_PROMPTS` env var to locate prompt templates, so they work identically whether run from `.github-private` (where prompts are at `prompts/dev-lead/`) or from a caller repo (where they're at `.dev-lead/prompts/dev-lead/`).
-
-### 1.5.3 Caller stub standard (`petry-projects/.github/standards/workflows/dev-lead.yml`)
-
-```yaml
-# ─────────────────────────────────────────────────────────────────────────────
-# Dev-Lead Agent — thin caller stub
-# Standard: petry-projects/.github/standards/ci-standards.md#5-dev-lead-agent
-# Reusable: petry-projects/.github-private/.github/workflows/dev-lead-reusable.yml
-#
-# ADOPTING THIS WORKFLOW:
-#   1. Copy this file verbatim to .github/workflows/dev-lead.yml in your repo.
-#   2. Ensure CLAUDE_CODE_OAUTH_TOKEN org/repo secret is set.
-#   3. Optionally set GH_PAT_WORKFLOWS (required for Claude to push workflow files).
-#   4. Optionally set vars.DEV_LEAD_ENGINE = "claude" | "gemini" | "copilot".
-#
-# UNLIKE claude.yml, this file has NO OIDC byte-for-byte constraint. It may be
-# modified on PR branches to adjust triggers for repo-specific needs.
-#
-# REQUIRED org/repo secrets: CLAUDE_CODE_OAUTH_TOKEN
-# OPTIONAL org/repo secrets: GH_PAT_WORKFLOWS, GOOGLE_API_KEY, GH_PAT
-# ─────────────────────────────────────────────────────────────────────────────
-
 name: Dev-Lead Agent
 
 on:
@@ -567,262 +162,850 @@ on:
 
 permissions: {}
 
+env:
+  DEV_LEAD_ENGINE: ${{ vars.DEV_LEAD_ENGINE || 'claude' }}
+  CLAUDE_CODE_VERSION: ${{ vars.CLAUDE_CODE_VERSION || 'latest' }}
+  CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+  GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+  GEMINI_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+  COPILOT_GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+  GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS || github.token }}
+  BOT_USER: ${{ vars.BOT_USER || 'donpetry-bot' }}
+  TRUSTED_BOTS: ${{ vars.TRUSTED_BOTS || 'copilot-pull-request-reviewer[bot],gemini-code-assist[bot],coderabbitai[bot],sonarqubecloud[bot]' }}
+  TRIGGER_PHRASES: ${{ vars.TRIGGER_PHRASES || '@claude,@dev-lead' }}
+
 jobs:
-  dev-lead:
-    uses: petry-projects/.github-private/.github/workflows/dev-lead-reusable.yml@main
-    secrets: inherit
+  dispatch:
+    if: github.event_name != 'check_run'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
     permissions:
       contents: write
       pull-requests: write
       issues: write
       actions: read
       checks: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@...
+      - name: Classify intent
+        id: intent
+        run: bash scripts/dev-lead-intent.sh
+      - name: Install engine CLIs
+        if: steps.intent.outputs.intent_type != 'skip'
+        run: bash scripts/dev-lead-install-engines.sh
+      - name: Run handler
+        if: steps.intent.outputs.intent_type != 'skip'
+        run: |
+          case "${{ steps.intent.outputs.intent_type }}" in
+            fix-ci)          bash scripts/dev-lead-fix-ci.sh ;;
+            fix-reviews|\
+            fix-bot-comment|\
+            human|\
+            human-pr|\
+            rebase)          bash scripts/dev-lead-fix-reviews.sh ;;
+            issue)           bash scripts/dev-lead-fix-issue.sh ;;
+          esac
+
+  ci-relay:
+    if: >-
+      github.event_name == 'check_run' &&
+      github.event.check_run.conclusion == 'failure' &&
+      !startsWith(github.event.check_run.name, 'dev-lead / ') &&
+      !startsWith(github.event.check_run.name, 'claude-code / ')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Resolve PR and dispatch
+        env:
+          GH_TOKEN: ${{ env.GH_TOKEN }}
+        run: |
+          PR="${{ github.event.check_run.pull_requests[0].number }}"
+          if [ -z "$PR" ]; then
+            PR=$(gh api \
+              "repos/${{ github.repository }}/commits/${{ github.event.check_run.head_sha }}/pulls" \
+              --jq '[.[] | select(.state == "open")] | first | .number // empty' || true)
+          fi
+          [ -z "$PR" ] && { echo "No open PR for commit — skipping relay"; exit 0; }
+          HEAD_REPO=$(gh api "repos/${{ github.repository }}/pulls/$PR" \
+            --jq '.head.repo.full_name // empty')
+          [ "$HEAD_REPO" != "${{ github.repository }}" ] && \
+            { echo "Fork PR — skipping relay"; exit 0; }
+          gh api "repos/${{ github.repository }}/dispatches" \
+            --method POST \
+            --field event_type="dev-lead-ci-failure" \
+            --raw-field client_payload="$(jq -n \
+              --arg pr "$PR" \
+              --arg name "${{ github.event.check_run.name }}" \
+              --arg id "${{ github.event.check_run.id }}" \
+              --arg sha "${{ github.event.check_run.head_sha }}" \
+              --arg url "${{ github.event.check_run.details_url }}" \
+              --arg app "${{ github.event.check_run.app.slug }}" \
+              '{pr_number:$pr,check_name:$name,check_id:$id,head_sha:$sha,details_url:$url,app_slug:$app}')"
 ```
 
-### 1.5.4 Access configuration
+### 1.3 Unit tests: `tests/dev-lead/unit/test_intent_stub.bats`
 
-The private `.github-private` reusable must be accessible to calling repos. In GitHub org settings:
-- **Settings → Actions → General → "Allow workflows from private repositories"** — must be enabled
-- OR configure per-repo in `.github-private` → **Settings → Actions → General → "Allow access from repositories in the organization"**
+```bash
+#!/usr/bin/env bats
+# Phase 1: verify stub intent classifier always outputs skip.
 
-Document this in `standards/ci-standards.md` §5.
+setup() {
+  export GITHUB_ENV="$(mktemp)"
+  export GITHUB_OUTPUT="$(mktemp)"
+  export GITHUB_EVENT_PATH="$(mktemp)"
+  export GITHUB_EVENT_NAME="pull_request"
+  export BOT_USER="donpetry-bot"
+  export TRUSTED_BOTS="copilot-pull-request-reviewer[bot]"
+  export TRIGGER_PHRASES="@claude,@dev-lead"
+  # Write a minimal pull_request event
+  cp tests/dev-lead/fixtures/events/pr_opened.json "$GITHUB_EVENT_PATH"
+}
 
-### 1.5.5 Phase 1.5 definition of done
+teardown() {
+  rm -f "$GITHUB_ENV" "$GITHUB_OUTPUT"
+}
 
-- [ ] `dev-lead-reusable.yml` created in `.github-private`
-- [ ] `standards/workflows/dev-lead.yml` created in `.github` (caller stub)
-- [ ] `ci-standards.md` updated with §5 Dev-Lead Agent
-- [ ] A test repo in `petry-projects` adopts the stub and workflow fires correctly
-- [ ] Script path resolution (`$DEV_LEAD_SCRIPTS`, `$DEV_LEAD_PROMPTS`) works in both `.github-private` and caller repos
+@test "stub: always emits skip intent" {
+  run bash scripts/dev-lead-intent.sh
+  [ "$status" -eq 0 ]
+  grep -q "INTENT_TYPE=skip" "$GITHUB_ENV"
+}
+
+@test "stub: sets INTENT_SKIP_REASON" {
+  run bash scripts/dev-lead-intent.sh
+  grep -q "INTENT_SKIP_REASON=" "$GITHUB_ENV"
+}
+
+@test "stub: dispatch job reads intent_type output" {
+  bash scripts/dev-lead-intent.sh
+  INTENT_TYPE=$(grep "^INTENT_TYPE=" "$GITHUB_ENV" | cut -d= -f2)
+  [ "$INTENT_TYPE" = "skip" ]
+}
+```
+
+### 1.4 E2E test: trigger fires, dispatch runs, logs skip
+
+Manual verification via Actions UI after merging. Create a test PR, verify:
+- `dispatch` job appears and shows "Classify intent" step as green
+- Step log shows `INTENT_TYPE=skip`
+- No engine CLIs installed, no LLM tokens consumed
+
+### 1.5 Phase 1 definition of done
+
+- [ ] `dev-lead.yml` exists on `main`, all 7 trigger types listed
+- [ ] `ci-relay` job visible in Actions when a check_run fires
+- [ ] `dispatch` job visible for all other events, always skips cleanly
+- [ ] Phase 1 unit tests pass in `test-dev-lead.yml`
 
 ---
 
 ## Phase 2 — CI Fix Path
 
-**Goal:** `check_run` failure → relay → Claude diagnoses and fixes. Dry-run mode tested first, then live.
+**Goal:** End-to-end: `check_run` failure → relay → Claude diagnoses and fixes.
 
-### 2.1 Files
+### 2.1 Files to create/modify
 
 | File | Change |
 |---|---|
-| `scripts/dev-lead-intent.sh` | EXTEND — `repository_dispatch:dev-lead-ci-failure` → `fix-ci` |
-| `scripts/dev-lead-fix-ci.sh` | CREATE |
-| `scripts/dev-lead-install-engines.sh` | CREATE — with caching (mirrors pr-review pattern) |
-| `scripts/engine.sh` | EXTEND — `run_writer()`, `run_writer_with_fallback()` |
-| `tests/dev-lead/unit/test_intent_ci.bats` | CREATE |
-| `tests/dev-lead/unit/test_engine_writer.bats` | CREATE |
-| `tests/dev-lead/unit/test_fix_ci.bats` | CREATE |
-| `tests/dev-lead/integration/test_ci_relay.sh` | CREATE |
-| `tests/dev-lead/integration/test_full_pipeline_dryrun.sh` | CREATE |
+| `scripts/dev-lead-intent.sh` | **IMPLEMENT** classification for `repository_dispatch` → `fix-ci` |
+| `scripts/dev-lead-fix-ci.sh` | **CREATE** |
+| `scripts/dev-lead-install-engines.sh` | **CREATE** — installs claude CLI (reuses pr-review caching) |
+| `scripts/engine.sh` | **EXTEND** — add `run_writer()` function |
+| `tests/dev-lead/unit/test_intent_ci.bats` | **CREATE** |
+| `tests/dev-lead/unit/test_engine_writer.bats` | **CREATE** |
+| `tests/dev-lead/unit/test_fix_ci.bats` | **CREATE** |
+| `tests/dev-lead/integration/test_ci_relay.sh` | **CREATE** |
 
-### 2.2 CI relay deduplication
+### 2.2 `dev-lead-intent.sh` — `fix-ci` classification
 
-The relay can receive multiple `check_run` failures for the same commit (e.g., SonarCloud, CodeQL, and linting all fail). Instead of dispatching one event per failure (causing 3 concurrent fix jobs), the relay:
-
-1. Waits 10 seconds after the first failure (accumulation window)
-2. Fetches ALL failed check runs for the commit
-3. Dispatches ONE `repository_dispatch` with `client_payload.checks = [...]` (array)
-4. Uses a concurrency group keyed on `head_sha` only (not `check_id`)
+The classifier must handle `repository_dispatch` with `event_type=dev-lead-ci-failure`:
 
 ```bash
-# In ci-relay job:
-- name: Accumulate and dispatch (deduplicated)
-  run: |
-    sleep 10  # accumulation window
-    FAILED_CHECKS=$(gh api \
-      "repos/${{ github.repository }}/commits/${{ github.event.check_run.head_sha }}/check-runs" \
-      --jq '[.check_runs[] | select(.conclusion == "failure" and
-             (.name | startswith("dev-lead / ") | not) and
-             (.name | startswith("claude-code / ") | not)) |
-             {name, id, details_url, app_slug: .app.slug}]')
-    [ "$(echo "$FAILED_CHECKS" | jq 'length')" -eq 0 ] && exit 0
-    gh api "repos/${{ github.repository }}/dispatches" \
-      --method POST \
-      --field event_type="dev-lead-ci-failure" \
-      --raw-field client_payload="$(jq -n \
+# Inside dev-lead-intent.sh, repository_dispatch case:
+case "$GITHUB_EVENT_NAME" in
+  repository_dispatch)
+    EVENT_ACTION=$(jq -r '.action' "$GITHUB_EVENT_PATH")
+    if [ "$EVENT_ACTION" = "dev-lead-ci-failure" ]; then
+      PR=$(jq -r '.client_payload.pr_number' "$GITHUB_EVENT_PATH")
+      HEAD_SHA=$(jq -r '.client_payload.head_sha' "$GITHUB_EVENT_PATH")
+      CHECK_NAME=$(jq -r '.client_payload.check_name' "$GITHUB_EVENT_PATH")
+      CHECK_ID=$(jq -r '.client_payload.check_id' "$GITHUB_EVENT_PATH")
+      DETAILS_URL=$(jq -r '.client_payload.details_url' "$GITHUB_EVENT_PATH")
+      APP_SLUG=$(jq -r '.client_payload.app_slug' "$GITHUB_EVENT_PATH")
+      INTENT_TYPE="fix-ci"
+      # Build context file
+      jq -n \
+        --arg intent "fix-ci" \
         --arg pr "$PR" \
-        --arg sha "${{ github.event.check_run.head_sha }}" \
-        --argjson checks "$FAILED_CHECKS" \
-        '{pr_number:$pr,head_sha:$sha,checks:$checks}')"
+        --arg sha "$HEAD_SHA" \
+        --arg check "$CHECK_NAME" \
+        --arg check_id "$CHECK_ID" \
+        --arg url "$DETAILS_URL" \
+        --arg app "$APP_SLUG" \
+        '{intent:$intent,pr_number:$pr,head_sha:$sha,check_name:$check,check_id:$check_id,details_url:$url,app_slug:$app}' \
+        > "$INTENT_CONTEXT_FILE"
+    else
+      INTENT_TYPE="skip"
+      INTENT_SKIP_REASON="unknown repository_dispatch type: $EVENT_ACTION"
+    fi
+    ;;
+esac
 ```
 
-### 2.3 Log truncation strategy
-
-GitHub Actions logs can be megabytes. The fix-ci handler truncates to the last 200 lines of each failed step:
+### 2.3 `engine.sh` extension: `run_writer()`
 
 ```bash
-collect_artifacts() {
-  local run_id="$1" max_lines="${LOG_MAX_LINES:-200}"
-  gh run view "$run_id" --log-failed 2>&1 | tail -n "$max_lines" > /tmp/failure-logs.txt
-  # Annotations are usually compact — no truncation needed
-  gh api "repos/${GITHUB_REPOSITORY}/check-runs/${CHECK_ID}/annotations?per_page=100" \
-    > /tmp/annotations.json
+# run_writer <prompt_file> [model]
+# Full write access: Bash, Read, Write, Edit, Grep, Glob.
+# Exits 2 on rate limit (triggers engine fallback in caller).
+run_writer() {
+  local prompt_file="$1"
+  local model="${2:-$ENGINE_ACTION_MODEL}"
+  local attempt=1 rc=0
+  while [ "$attempt" -le "$RETRY_MAX_ATTEMPTS" ]; do
+    rc=0
+    case "$REVIEW_ENGINE" in
+      claude)
+        timeout "$DEEP_TIMEOUT_SEC" claude --print \
+          --model "$model" \
+          --permission-mode acceptEdits \
+          --allowed-tools "Bash,Read,Write,Edit,Grep,Glob" \
+          < "$prompt_file" || rc=$?
+        ;;
+      gemini)
+        timeout "$DEEP_TIMEOUT_SEC" gemini --prompt "" \
+          --model "$model" \
+          --approval-mode auto_edit \
+          --output-format text \
+          < "$prompt_file" || rc=$?
+        ;;
+      copilot)
+        # GitHub Models API is text-only — fall back to Claude for writes.
+        echo "::warning::Copilot engine has no tool access — using Claude for write operation" >&2
+        local saved_engine="$REVIEW_ENGINE"
+        REVIEW_ENGINE=claude run_writer "$prompt_file" "$model"
+        rc=$?
+        REVIEW_ENGINE="$saved_engine"
+        return "$rc"
+        ;;
+    esac
+    [ "$rc" -eq 0 ] && return 0
+    # Rate limit: exit 2 immediately (no retry — let caller switch engines)
+    local output
+    output=$(tail -20 "$prompt_file" 2>/dev/null || true)
+    if is_rate_limited "$output"; then
+      return 2
+    fi
+    if [ "$attempt" -lt "$RETRY_MAX_ATTEMPTS" ] && is_transient_failure "$rc"; then
+      local delay=$(( RETRY_BASE_DELAY_SEC * (2 ** (attempt - 1)) ))
+      echo "    [writer] transient failure (exit $rc), retrying in ${delay}s" >&2
+      sleep "$delay"
+      attempt=$((attempt + 1))
+      continue
+    fi
+    return "$rc"
+  done
+  return "$rc"
 }
 ```
 
-The prompt template (`prompts/dev-lead/fix-ci.md`) instructs Claude to request more context via `gh run view` if the truncated logs are insufficient.
+### 2.4 `dev-lead-fix-ci.sh` structure
 
-### 2.4 Rollback guard
+```
+dev-lead-fix-ci.sh
+  ├── read_context()        — parse $INTENT_CONTEXT_FILE
+  ├── idempotency_check()   — scan PR comments for <!-- dev-lead-fix sha=HEAD_SHA -->
+  ├── checkout_pr()         — gh pr checkout $PR
+  ├── triage_failure()      — run_triage() → classify failure type
+  ├── collect_artifacts()   — gh run view --log-failed, gh api .../annotations
+  ├── build_fix_prompt()    — assemble prompt from failure type + logs + files
+  ├── apply_fix()           — run_writer() with fix prompt
+  ├── commit_and_push()     — git add -A, git commit, git push
+  ├── wait_for_ci()         — gh pr checks --watch --interval 30
+  ├── check_new_failures()  — if failures remain and cycles < MAX, loop
+  └── post_summary()        — gh pr comment with structured result
+```
 
-After the fix commit is pushed, if a NEW check failure appears with a name that matches `dev-lead-caused-failure` (detected by comparing which checks were passing before vs. after), the handler:
+**Idempotency marker format:**
 
-1. Posts a comment: `fix(ci): agent-caused regression — reverting`
-2. Runs `git revert HEAD --no-edit` and pushes
-3. Posts a summary with the revert SHA and the detected regression
+```html
+<!-- dev-lead-fix sha=abc123def456 -->
+```
 
-### 2.5 Unit tests
+Scanned with:
+```bash
+gh pr view "$PR" --json comments \
+  --jq ".comments[] | select(.body | contains(\"<!-- dev-lead-fix sha=$HEAD_SHA -->\")) | .body" \
+  | head -1
+```
 
-**`test_intent_ci.bats`** (8 cases):
-- `fix-ci`: `repository_dispatch dev-lead-ci-failure` → `fix-ci` ✓
-- `fix-ci`: context has `pr_number` from payload ✓
-- `fix-ci`: context has `checks` array (not single check) ✓
-- `fix-ci`: unknown `repository_dispatch` type → `skip` ✓
-- `fix-ci`: `repository_dispatch` with no PR → `skip` ✓
-- `relay`: non-fork emits dispatch ✓
-- `relay`: fork suppresses dispatch ✓
-- `relay`: self-check (`dev-lead / *`) suppresses dispatch ✓
+**Summary comment format:**
 
-**`test_engine_writer.bats`** (7 cases):
-- `claude` exits 0 on success ✓
-- `claude` exits 2 on rate limit ✓
-- `claude` exits 1 on transient failure; retries once; second attempt succeeds ✓
-- `claude` exits 1 on two transient failures; gives up ✓
-- `copilot` falls back to claude (with warning) ✓
-- `gemini` exits 0 on success ✓
-- dry-run: `run_writer()` with `DEV_LEAD_DRY_RUN=true` exits 0 without calling engine ✓
+```markdown
+<!-- dev-lead-fix sha=<NEW_SHA> -->
+### Dev-Lead: CI Fix Applied
 
-**`test_fix_ci.bats`** (8 cases):
-- Idempotency: marker found → exits 0 ✓
-- Idempotency: no marker → proceeds ✓
-- Log truncation: input > 200 lines → output ≤ 200 lines ✓
-- Dry-run: `DEV_LEAD_DRY_RUN=true` builds prompt but does not commit ✓
-- Prompt build: all template variables rendered ✓
-- Exhaustion: MAX_CI_CYCLES=1, CI always failing → exhaustion comment posted ✓
-- Rollback: agent-caused regression detected → git revert triggered ✓
-- Multi-check: `checks` array with 2 entries → both included in prompt ✓
+**Triggered by:** SonarCloud Code Analysis (failure)
+**Engine:** claude (claude-sonnet-4-6)
 
-### 2.6 Integration: `test_ci_relay.sh` (6 cases)
+#### What I found
+[failure summary]
 
-1. Non-fork PR → dispatch emitted with `checks` array ✓
-2. Fork PR → no dispatch ✓
-3. Self-check → no dispatch ✓
-4. Multiple simultaneous failures → single dispatch (dedup) ✓
-5. No open PR for commit → no dispatch ✓
-6. `GH_PAT_WORKFLOWS` absent, `github.token` used → dispatch still succeeds ✓
+#### What I changed
+- `src/foo.ts` — fixed null check on line 47
+- `.github/workflows/sonarcloud.yml` — added missing coverage exclusion
 
-### 2.7 Integration: `test_full_pipeline_dryrun.sh`
+#### CI Status
+✅ All checks passing after 1 fix cycle
 
-End-to-end pipeline test with dry-run mode. Uses stub engine and mock `gh`. Verifies:
-1. Intent classification produces `fix-ci`
-2. Engine CLI is invoked (stub returns success)
-3. Prompt is rendered with all variables
-4. No commit/push occurs (`DEV_LEAD_DRY_RUN=true`)
-5. Step summary contains expected "would apply fix" message
+_Fix applied at [abc123](https://github.com/.../commit/abc123) · [View run](https://github.com/...)_
+```
 
-### 2.8 Phase 2 definition of done
+### 2.5 Unit tests: `tests/dev-lead/unit/test_intent_ci.bats`
 
-- [ ] All Phase 2 unit tests pass (23 cases)
-- [ ] Integration tests pass (12 cases)
-- [ ] Dry-run pipeline test passes in `test-dev-lead.yml`
-- [ ] Manual E2E dry-run: push deliberate lint error, verify prompt is built correctly without committing
-- [ ] Manual E2E live: same error, `DEV_LEAD_DRY_RUN=false`, verify fix committed and CI green
+```bash
+#!/usr/bin/env bats
+
+setup() {
+  export GITHUB_ENV="$(mktemp)"
+  export GITHUB_OUTPUT="$(mktemp)"
+  export GITHUB_EVENT_PATH="$(mktemp)"
+  export INTENT_CONTEXT_FILE="$(mktemp)"
+  export BOT_USER="donpetry-bot"
+  export TRUSTED_BOTS="copilot-pull-request-reviewer[bot],sonarqubecloud[bot]"
+  export TRIGGER_PHRASES="@claude,@dev-lead"
+}
+teardown() { rm -f "$GITHUB_ENV" "$GITHUB_OUTPUT" "$INTENT_CONTEXT_FILE"; }
+
+@test "fix-ci: repository_dispatch dev-lead-ci-failure → fix-ci intent" {
+  export GITHUB_EVENT_NAME="repository_dispatch"
+  cp tests/dev-lead/fixtures/events/repository_dispatch_ci.json "$GITHUB_EVENT_PATH"
+  run bash scripts/dev-lead-intent.sh
+  [ "$status" -eq 0 ]
+  grep -q "INTENT_TYPE=fix-ci" "$GITHUB_ENV"
+}
+
+@test "fix-ci: context file contains pr_number" {
+  export GITHUB_EVENT_NAME="repository_dispatch"
+  cp tests/dev-lead/fixtures/events/repository_dispatch_ci.json "$GITHUB_EVENT_PATH"
+  bash scripts/dev-lead-intent.sh
+  PR=$(jq -r '.pr_number' "$INTENT_CONTEXT_FILE")
+  [ -n "$PR" ] && [ "$PR" != "null" ]
+}
+
+@test "fix-ci: context file contains check_name" {
+  export GITHUB_EVENT_NAME="repository_dispatch"
+  cp tests/dev-lead/fixtures/events/repository_dispatch_ci.json "$GITHUB_EVENT_PATH"
+  bash scripts/dev-lead-intent.sh
+  CHECK=$(jq -r '.check_name' "$INTENT_CONTEXT_FILE")
+  [ -n "$CHECK" ] && [ "$CHECK" != "null" ]
+}
+
+@test "fix-ci: unknown repository_dispatch type → skip" {
+  export GITHUB_EVENT_NAME="repository_dispatch"
+  jq '.action = "something-else"' \
+    tests/dev-lead/fixtures/events/repository_dispatch_ci.json > "$GITHUB_EVENT_PATH"
+  bash scripts/dev-lead-intent.sh
+  grep -q "INTENT_TYPE=skip" "$GITHUB_ENV"
+}
+
+@test "fix-ci: check_run without open PR → relay emits no dispatch" {
+  # Verifies ci-relay skips gracefully when no PR found
+  export GITHUB_EVENT_NAME="check_run"
+  cp tests/dev-lead/fixtures/events/check_run_failure.json "$GITHUB_EVENT_PATH"
+  # Stub gh to return empty PR list
+  export PATH="tests/dev-lead/fixtures/stubs:$PATH"
+  GH_STUB_PULLS_RESPONSE="[]" run bash -c '
+    PR="${{ github.event.check_run.pull_requests[0].number }}"
+    [ -z "$PR" ] && echo "no PR found" && exit 0
+  '
+  [ "$status" -eq 0 ]
+}
+```
+
+### 2.6 Unit tests: `tests/dev-lead/unit/test_engine_writer.bats`
+
+```bash
+#!/usr/bin/env bats
+
+setup() {
+  export REVIEW_ENGINE="claude"
+  export STUB_DIR="tests/dev-lead/fixtures/engines"
+  export PATH="$STUB_DIR:$PATH"
+  source scripts/engine.sh >/dev/null 2>&1 || true
+  export PROMPT_FILE="$(mktemp)"
+  echo "test prompt" > "$PROMPT_FILE"
+}
+teardown() { rm -f "$PROMPT_FILE"; }
+
+@test "run_writer: claude engine exits 0 on success" {
+  export STUB_ENGINE_EXIT=0
+  export STUB_ENGINE_RESPONSE="fix applied"
+  run run_writer "$PROMPT_FILE"
+  [ "$status" -eq 0 ]
+}
+
+@test "run_writer: claude engine exits 2 on rate limit" {
+  export STUB_ENGINE_EXIT=1
+  export STUB_ENGINE_RESPONSE="You have hit your limit. Rate limit exceeded."
+  run run_writer "$PROMPT_FILE"
+  [ "$status" -eq 2 ]
+}
+
+@test "run_writer: copilot engine falls back to claude" {
+  export REVIEW_ENGINE="copilot"
+  export STUB_ENGINE_EXIT=0
+  export STUB_ENGINE_RESPONSE="fix applied via claude fallback"
+  run run_writer "$PROMPT_FILE"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"falling back to Claude"* ]] || [[ "$output" == *"fix applied"* ]]
+}
+
+@test "run_writer: gemini engine exits 0 on success" {
+  export REVIEW_ENGINE="gemini"
+  # stub-gemini must be in fixtures/engines/
+  export STUB_ENGINE_EXIT=0
+  export STUB_ENGINE_RESPONSE="gemini fix applied"
+  run run_writer "$PROMPT_FILE"
+  [ "$status" -eq 0 ]
+}
+
+@test "run_writer: transient failure (exit 124) retries once" {
+  export STUB_ENGINE_EXIT=124
+  export STUB_ENGINE_RESPONSE=""
+  export RETRY_MAX_ATTEMPTS=2
+  export RETRY_BASE_DELAY_SEC=0
+  run run_writer "$PROMPT_FILE"
+  # Both attempts fail — final exit should be non-zero
+  [ "$status" -ne 0 ]
+}
+```
+
+### 2.7 Unit tests: `tests/dev-lead/unit/test_fix_ci.bats`
+
+```bash
+#!/usr/bin/env bats
+
+setup() {
+  export INTENT_CONTEXT_FILE="$(mktemp)"
+  export GH_TOKEN="stub-token"
+  export REVIEW_ENGINE="claude"
+  export MAX_CI_CYCLES=3
+  export BOT_USER="donpetry-bot"
+  # Write minimal context
+  jq -n '{
+    intent:"fix-ci", pr_number:"175", head_sha:"abc123",
+    check_name:"SonarCloud Code Analysis", check_id:"999",
+    details_url:"https://sonarcloud.io", app_slug:"sonarqubecloud"
+  }' > "$INTENT_CONTEXT_FILE"
+  # Stub PATH
+  export PATH="tests/dev-lead/fixtures/stubs:$PATH"
+}
+teardown() { rm -f "$INTENT_CONTEXT_FILE"; }
+
+@test "fix-ci: idempotency check exits 0 when marker found" {
+  # Stub gh pr view to return a comment with the marker
+  export GH_STUB_COMMENT_BODY="<!-- dev-lead-fix sha=abc123 -->"
+  run bash -c '
+    source scripts/dev-lead-fix-ci.sh
+    idempotency_check "175" "abc123"
+  '
+  [ "$status" -eq 0 ]
+}
+
+@test "fix-ci: idempotency check returns 1 when no marker (proceed)" {
+  export GH_STUB_COMMENT_BODY=""
+  run bash -c '
+    source scripts/dev-lead-fix-ci.sh
+    idempotency_check "175" "newsha999"
+  '
+  [ "$status" -eq 1 ]
+}
+
+@test "fix-ci: triage classifies lint failure" {
+  export STUB_ENGINE_RESPONSE='{"failure_type":"lint","summary":"ESLint errors in src/"}'
+  run bash -c '
+    source scripts/dev-lead-fix-ci.sh
+    triage_failure "ESLint rule violation: no-unused-vars"
+  '
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"lint"* ]]
+}
+
+@test "fix-ci: exhaustion comment posted after MAX_CI_CYCLES" {
+  export MAX_CI_CYCLES=1
+  # Stub apply_fix to always succeed, wait_for_ci to always return failure
+  export GH_STUB_CI_STATUS="failure"
+  run bash -c '
+    source scripts/dev-lead-fix-ci.sh
+    # Override wait_for_ci for test
+    wait_for_ci() { return 1; }
+    apply_fix() { return 0; }
+    commit_and_push() { return 0; }
+    cycle_loop "175" "abc123"
+  '
+  # Should have attempted posting an exhaustion comment
+  [ "$status" -ne 0 ]
+}
+```
+
+### 2.8 Integration test: `tests/dev-lead/integration/test_ci_relay.sh`
+
+```bash
+#!/usr/bin/env bash
+# Integration test: verify ci-relay job logic with a mock check_run event.
+# Does NOT make real API calls; uses a mock gh binary.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+STUBS_DIR="$SCRIPT_DIR/../fixtures/stubs"
+
+export PATH="$STUBS_DIR:$PATH"
+export GITHUB_REPOSITORY="petry-projects/.github-private"
+export GH_TOKEN="test-token"
+
+# Test 1: non-fork PR → dispatch emitted
+echo "==> Test 1: non-fork PR emits dispatch"
+export GH_STUB_PR_HEAD_REPO="petry-projects/.github-private"
+export GH_STUB_PR_NUMBER="175"
+export CHECK_RUN_SHA="abc123"
+
+DISPATCHED=""
+gh() {
+  if [[ "$*" == *"dispatches"* ]]; then
+    DISPATCHED="true"
+    return 0
+  fi
+  command gh "$@"
+}
+export -f gh
+
+# Source and run the relay logic
+# (extracted from dev-lead.yml ci-relay job)
+bash "$SCRIPT_DIR/../../scripts/dev-lead-ci-relay.sh" \
+  --sha "$CHECK_RUN_SHA" \
+  --check-name "SonarCloud Code Analysis" \
+  --check-id "999" \
+  --details-url "https://sonarcloud.io"
+
+[ "$DISPATCHED" = "true" ] || { echo "FAIL: dispatch not emitted"; exit 1; }
+echo "PASS: Test 1"
+
+# Test 2: fork PR → no dispatch
+echo "==> Test 2: fork PR suppresses dispatch"
+export GH_STUB_PR_HEAD_REPO="external-fork/repo"
+DISPATCHED=""
+
+bash "$SCRIPT_DIR/../../scripts/dev-lead-ci-relay.sh" \
+  --sha "$CHECK_RUN_SHA" \
+  --check-name "SonarCloud Code Analysis" \
+  --check-id "999" \
+  --details-url "https://sonarcloud.io" || true
+
+[ -z "$DISPATCHED" ] || { echo "FAIL: dispatch emitted for fork"; exit 1; }
+echo "PASS: Test 2"
+
+# Test 3: check_run from dev-lead itself → no relay
+echo "==> Test 3: self-check suppresses relay"
+export GH_STUB_PR_HEAD_REPO="petry-projects/.github-private"
+
+bash "$SCRIPT_DIR/../../scripts/dev-lead-ci-relay.sh" \
+  --sha "$CHECK_RUN_SHA" \
+  --check-name "dev-lead / dispatch" \
+  --check-id "998" \
+  --details-url "" || true
+
+[ -z "$DISPATCHED" ] || { echo "FAIL: relay emitted for self-check"; exit 1; }
+echo "PASS: Test 3"
+
+echo "==> All CI relay integration tests passed"
+```
+
+### 2.9 Phase 2 definition of done
+
+- [ ] `run_writer()` added to `engine.sh`, all unit tests pass
+- [ ] `dev-lead-intent.sh` classifies `repository_dispatch:dev-lead-ci-failure` → `fix-ci`
+- [ ] `dev-lead-fix-ci.sh` implements full loop (idempotency → checkout → triage → fix → push → CI watch → summary)
+- [ ] All Phase 2 bats tests pass in `test-dev-lead.yml`
+- [ ] Integration test: `test_ci_relay.sh` passes
+- [ ] Manual E2E: push a commit with a deliberate lint error to a test branch, verify Claude fixes it within 5 minutes
 
 ---
 
 ## Phase 3 — Review Fix Path
 
-**Goal:** Bot reviews and bot PR comments trigger Claude to address all open threads.
+**Goal:** Copilot and Gemini PR reviews trigger Claude to address all open threads.
 
-### 3.1 Files
+### 3.1 Files to create/modify
 
 | File | Change |
 |---|---|
-| `scripts/dev-lead-intent.sh` | EXTEND — `pull_request_review`, `pull_request_review_comment`, `issue_comment` (bot) |
-| `scripts/dev-lead-fix-reviews.sh` | CREATE — handles `fix-reviews` and `fix-bot-comment` |
-| `tests/dev-lead/unit/test_intent_reviews.bats` | CREATE |
-| `tests/dev-lead/unit/test_fix_reviews.bats` | CREATE |
-| `tests/dev-lead/integration/test_review_intent.sh` | CREATE |
+| `scripts/dev-lead-intent.sh` | **EXTEND** — `pull_request_review` + `pull_request_review_comment` + `issue_comment` (bot) classification |
+| `scripts/dev-lead-fix-reviews.sh` | **CREATE** |
+| `tests/dev-lead/unit/test_intent_reviews.bats` | **CREATE** |
+| `tests/dev-lead/unit/test_fix_reviews.bats` | **CREATE** |
+| `tests/dev-lead/integration/test_review_intent.sh` | **CREATE** |
 
-### 3.2 Thread resolution token requirement
+### 3.2 Intent classification additions
 
-Resolving GitHub review threads via GraphQL (`resolveReviewThread`) requires the token used to authenticate the request to be from a user who either:
-- Submitted the review being resolved, OR
-- Has admin/maintain permissions on the repository
+```bash
+pull_request_review)
+  ACTOR=$(jq -r '.review.user.login' "$GITHUB_EVENT_PATH")
+  REVIEW_STATE=$(jq -r '.review.state' "$GITHUB_EVENT_PATH")
+  PR=$(jq -r '.pull_request.number' "$GITHUB_EVENT_PATH")
+  IS_FORK=$(jq -r '.pull_request.head.repo.full_name != .repository.full_name' "$GITHUB_EVENT_PATH")
 
-`GH_PAT_WORKFLOWS` (as the PAT owner, who is an `OWNER`) satisfies this. `github.token` does NOT. The `dev-lead-fix-reviews.sh` script must use `GH_PAT_WORKFLOWS` for all GraphQL mutations. If `GH_PAT_WORKFLOWS` is absent, the handler skips thread resolution and posts a warning comment.
+  [ "$IS_FORK" = "true" ] && { emit_skip "fork-pr"; exit 0; }
+  [ "$ACTOR" = "$BOT_USER" ] && { emit_skip "self-actor"; exit 0; }
 
-### 3.3 Idempotency for fix-reviews
+  if is_trusted_bot "$ACTOR"; then
+    [ "$REVIEW_STATE" = "APPROVED" ] && { emit_skip "approved-no-action"; exit 0; }
+    INTENT_TYPE="fix-reviews"
+  elif is_trusted_human; then
+    INTENT_TYPE="human-pr"
+  else
+    emit_skip "untrusted-actor"
+    exit 0
+  fi
+  ;;
 
-Marker format: `<!-- dev-lead-reviews sha=<HEAD_SHA> resolved=<count> -->`
+pull_request_review_comment)
+  ACTOR=$(jq -r '.comment.user.login' "$GITHUB_EVENT_PATH")
+  PR=$(jq -r '.pull_request.number' "$GITHUB_EVENT_PATH")
+  IS_FORK=$(jq -r '.pull_request.head.repo.full_name != .repository.full_name' "$GITHUB_EVENT_PATH")
 
-Scanned on every `fix-reviews` trigger before acting.
+  [ "$IS_FORK" = "true" ] && { emit_skip "fork-pr"; exit 0; }
+  [ "$ACTOR" = "$BOT_USER" ] && { emit_skip "self-actor"; exit 0; }
 
-### 3.4 Unit tests: `test_intent_reviews.bats` (15 cases)
+  if is_trusted_bot "$ACTOR"; then
+    INTENT_TYPE="fix-reviews"
+  elif is_trusted_human && has_trigger_phrase; then
+    INTENT_TYPE="human"
+  else
+    emit_skip "no-trigger-or-untrusted"
+  fi
+  ;;
 
-- `pull_request_review`: copilot `COMMENTED` → `fix-reviews` ✓
-- `pull_request_review`: copilot `APPROVED` → `skip` ✓
-- `pull_request_review`: gemini `CHANGES_REQUESTED` → `fix-reviews` ✓
-- `pull_request_review`: human `OWNER` → `human-pr` ✓
-- `pull_request_review`: human `NONE` (external) → `skip` ✓
-- `pull_request_review`: fork PR → `skip` ✓
-- `pull_request_review`: self-actor → `skip` ✓
-- `pull_request_review_comment`: copilot inline → `fix-reviews` ✓
-- `pull_request_review_comment`: human + `@dev-lead` → `human` ✓
-- `pull_request_review_comment`: human, no trigger → `skip` ✓
-- `issue_comment`: sonarqube on PR → `fix-bot-comment` ✓
-- `issue_comment`: coderabbit on PR → `fix-bot-comment` ✓
-- `issue_comment`: human + `@dev-lead` → `human` ✓
-- `issue_comment`: human, no trigger → `skip` ✓
-- `issue_comment`: rebase sentinel → `rebase` ✓
+issue_comment)
+  ACTOR=$(jq -r '.comment.user.login' "$GITHUB_EVENT_PATH")
+  IS_PR=$(jq -r '.issue.pull_request != null' "$GITHUB_EVENT_PATH")
+  COMMENT_BODY=$(jq -r '.comment.body' "$GITHUB_EVENT_PATH")
+  PR=$(jq -r '.issue.number' "$GITHUB_EVENT_PATH")
 
-### 3.5 Unit tests: `test_fix_reviews.bats` (9 cases)
+  [ "$IS_PR" = "false" ] && { emit_skip "not-a-pr-comment"; exit 0; }
+  [ "$ACTOR" = "$BOT_USER" ] && { emit_skip "self-actor"; exit 0; }
 
-- Thread classification: suggestion block → `apply-suggestion` ✓
-- Thread classification: code feedback → `fix-code` ✓
-- Thread classification: architectural question → `discuss` ✓
-- Apply suggestion: suggestion block applied correctly ✓
-- Idempotency: existing `<!-- dev-lead-reviews sha=... -->` → skip ✓
-- Dry-run: no commits pushed ✓
-- Missing `GH_PAT_WORKFLOWS`: thread resolution skipped, warning posted ✓
-- Rebase before fix: branch is up to date before touching files ✓
-- Multi-cycle: new threads after push re-triggers inner loop ✓
+  if is_trusted_bot "$ACTOR"; then
+    INTENT_TYPE="fix-bot-comment"
+  elif echo "$COMMENT_BODY" | grep -qF "<!-- auto-rebase-conflict:"; then
+    is_trusted_human || { emit_skip "rebase-sentinel-untrusted"; exit 0; }
+    INTENT_TYPE="rebase"
+  elif is_trusted_human && has_trigger_phrase; then
+    INTENT_TYPE="human"
+  else
+    emit_skip "no-trigger-or-untrusted"
+  fi
+  ;;
+```
 
-### 3.6 Phase 3 definition of done
+### 3.3 `dev-lead-fix-reviews.sh` structure
 
-- [ ] All unit tests pass (24 cases)
-- [ ] Integration: `test_review_intent.sh` runs all 24 fixture events and verifies classification
-- [ ] Manual E2E: Copilot review on test PR → all threads resolved, summary posted, CI green
+```
+dev-lead-fix-reviews.sh
+  ├── read_context()
+  ├── checkout_and_rebase()        — gh pr checkout; git rebase origin/<base>
+  ├── fetch_open_threads()         — GraphQL: reviewThreads(first:250) {id,isResolved,comments}
+  ├── classify_thread(thread)      — apply-suggestion | fix-code | discuss | skip-human
+  ├── apply_suggestion(thread)     — extract suggestion block, apply exactly
+  ├── fix_thread(thread)           — build targeted prompt, run_writer()
+  ├── reply_thread(thread, msg)    — gh api graphql addPullRequestReviewComment
+  ├── resolve_thread(thread_id)    — gh api graphql resolveReviewThread
+  ├── commit_and_push()
+  ├── wait_for_ci()
+  ├── check_new_threads()          — re-run fetch, return count of new unresolved
+  ├── post_summary()
+  └── cycle_loop()                 — orchestrate up to MAX_REVIEW_CYCLES
+```
+
+For `fix-bot-comment` intent: skip thread fetching, use comment body directly as the problem statement in the fix prompt.
+
+For `human` intent: prepend the user's comment body as the explicit instruction, then run `run_writer()` with full PR context.
+
+For `rebase` intent: implement `git rebase` with the conflict-resolution strategy from the spec (workflow YAML SHA comparison; abort on application code).
+
+### 3.4 Unit tests: `tests/dev-lead/unit/test_intent_reviews.bats`
+
+```bash
+#!/usr/bin/env bats
+
+setup() {
+  export GITHUB_ENV="$(mktemp)"
+  export GITHUB_OUTPUT="$(mktemp)"
+  export GITHUB_EVENT_PATH="$(mktemp)"
+  export INTENT_CONTEXT_FILE="$(mktemp)"
+  export BOT_USER="donpetry-bot"
+  export TRUSTED_BOTS="copilot-pull-request-reviewer[bot],gemini-code-assist[bot],coderabbitai[bot],sonarqubecloud[bot]"
+  export TRIGGER_PHRASES="@claude,@dev-lead"
+}
+teardown() { rm -f "$GITHUB_ENV" "$GITHUB_OUTPUT" "$INTENT_CONTEXT_FILE"; }
+
+# pull_request_review
+@test "review: copilot COMMENTED → fix-reviews" {
+  export GITHUB_EVENT_NAME="pull_request_review"
+  cp tests/dev-lead/fixtures/events/pr_review_copilot_commented.json "$GITHUB_EVENT_PATH"
+  run bash scripts/dev-lead-intent.sh
+  grep -q "INTENT_TYPE=fix-reviews" "$GITHUB_ENV"
+}
+
+@test "review: copilot APPROVED → skip" {
+  export GITHUB_EVENT_NAME="pull_request_review"
+  cp tests/dev-lead/fixtures/events/pr_review_copilot_approved.json "$GITHUB_EVENT_PATH"
+  run bash scripts/dev-lead-intent.sh
+  grep -q "INTENT_TYPE=skip" "$GITHUB_ENV"
+}
+
+@test "review: gemini CHANGES_REQUESTED → fix-reviews" {
+  export GITHUB_EVENT_NAME="pull_request_review"
+  cp tests/dev-lead/fixtures/events/pr_review_gemini_changes.json "$GITHUB_EVENT_PATH"
+  run bash scripts/dev-lead-intent.sh
+  grep -q "INTENT_TYPE=fix-reviews" "$GITHUB_ENV"
+}
+
+@test "review: human OWNER → human-pr" {
+  export GITHUB_EVENT_NAME="pull_request_review"
+  cp tests/dev-lead/fixtures/events/pr_review_human.json "$GITHUB_EVENT_PATH"
+  run bash scripts/dev-lead-intent.sh
+  grep -q "INTENT_TYPE=human-pr" "$GITHUB_ENV"
+}
+
+@test "review: fork PR → skip" {
+  export GITHUB_EVENT_NAME="pull_request_review"
+  cp tests/dev-lead/fixtures/events/pr_review_copilot_commented.json "$GITHUB_EVENT_PATH"
+  # Patch to fork
+  jq '.pull_request.head.repo.full_name = "fork/repo"' "$GITHUB_EVENT_PATH" > /tmp/fork.json
+  cp /tmp/fork.json "$GITHUB_EVENT_PATH"
+  run bash scripts/dev-lead-intent.sh
+  grep -q "INTENT_TYPE=skip" "$GITHUB_ENV"
+}
+
+@test "review: self-actor (BOT_USER) → skip" {
+  export GITHUB_EVENT_NAME="pull_request_review"
+  cp tests/dev-lead/fixtures/events/pr_review_copilot_commented.json "$GITHUB_EVENT_PATH"
+  jq '.review.user.login = "donpetry-bot"' "$GITHUB_EVENT_PATH" > /tmp/self.json
+  cp /tmp/self.json "$GITHUB_EVENT_PATH"
+  run bash scripts/dev-lead-intent.sh
+  grep -q "INTENT_TYPE=skip" "$GITHUB_ENV"
+}
+
+# pull_request_review_comment
+@test "review_comment: copilot inline → fix-reviews" {
+  export GITHUB_EVENT_NAME="pull_request_review_comment"
+  cp tests/dev-lead/fixtures/events/pr_review_comment_copilot.json "$GITHUB_EVENT_PATH"
+  run bash scripts/dev-lead-intent.sh
+  grep -q "INTENT_TYPE=fix-reviews" "$GITHUB_ENV"
+}
+
+@test "review_comment: human with @dev-lead → human intent" {
+  export GITHUB_EVENT_NAME="pull_request_review_comment"
+  cp tests/dev-lead/fixtures/events/pr_review_comment_human.json "$GITHUB_EVENT_PATH"
+  run bash scripts/dev-lead-intent.sh
+  grep -q "INTENT_TYPE=human" "$GITHUB_ENV"
+}
+
+# issue_comment
+@test "issue_comment: sonarqube on PR → fix-bot-comment" {
+  export GITHUB_EVENT_NAME="issue_comment"
+  cp tests/dev-lead/fixtures/events/issue_comment_sonarqube.json "$GITHUB_EVENT_PATH"
+  run bash scripts/dev-lead-intent.sh
+  grep -q "INTENT_TYPE=fix-bot-comment" "$GITHUB_ENV"
+}
+
+@test "issue_comment: human with @dev-lead on PR → human" {
+  export GITHUB_EVENT_NAME="issue_comment"
+  cp tests/dev-lead/fixtures/events/issue_comment_human_mention.json "$GITHUB_EVENT_PATH"
+  run bash scripts/dev-lead-intent.sh
+  grep -q "INTENT_TYPE=human" "$GITHUB_ENV"
+}
+
+@test "issue_comment: human without trigger phrase → skip" {
+  export GITHUB_EVENT_NAME="issue_comment"
+  cp tests/dev-lead/fixtures/events/issue_comment_human_no_trigger.json "$GITHUB_EVENT_PATH"
+  run bash scripts/dev-lead-intent.sh
+  grep -q "INTENT_TYPE=skip" "$GITHUB_ENV"
+}
+
+@test "issue_comment: rebase sentinel from trusted human → rebase" {
+  export GITHUB_EVENT_NAME="issue_comment"
+  cp tests/dev-lead/fixtures/events/issue_comment_rebase.json "$GITHUB_EVENT_PATH"
+  run bash scripts/dev-lead-intent.sh
+  grep -q "INTENT_TYPE=rebase" "$GITHUB_ENV"
+}
+
+@test "issue_comment: self-actor (donpetry-bot) → skip" {
+  export GITHUB_EVENT_NAME="issue_comment"
+  cp tests/dev-lead/fixtures/events/issue_comment_human_mention.json "$GITHUB_EVENT_PATH"
+  jq '.comment.user.login = "donpetry-bot"' "$GITHUB_EVENT_PATH" > /tmp/self.json
+  cp /tmp/self.json "$GITHUB_EVENT_PATH"
+  run bash scripts/dev-lead-intent.sh
+  grep -q "INTENT_TYPE=skip" "$GITHUB_ENV"
+}
+```
+
+### 3.5 Phase 3 definition of done
+
+- [ ] All intent classification for review events works correctly (all bats tests pass)
+- [ ] `dev-lead-fix-reviews.sh` handles `fix-reviews` intent: checks out PR, fetches threads, applies fixes, resolves threads, waits for CI
+- [ ] Thread GraphQL round-trip tested against a real test PR (manual E2E)
+- [ ] Copilot review on a test PR → all threads resolved, CI green, summary posted
 
 ---
 
 ## Phase 4 — Human Interaction and Rebase
 
-**Goal:** `@dev-lead` mentions and rebase sentinel work end-to-end.
+**Goal:** `@dev-lead` mentions trigger agentic responses; rebase conflicts resolved automatically.
 
-### 4.1 Files
+### 4.1 Files to create/modify
 
 | File | Change |
 |---|---|
-| `scripts/dev-lead-fix-reviews.sh` | EXTEND — `human`, `human-pr`, `rebase` intents |
-| `tests/dev-lead/unit/test_fix_reviews_human.bats` | CREATE |
-| `tests/dev-lead/unit/test_fix_rebase.bats` | CREATE |
+| `scripts/dev-lead-fix-reviews.sh` | **EXTEND** — `human`, `human-pr`, `rebase` intents |
+| `tests/dev-lead/unit/test_fix_reviews_human.bats` | **CREATE** |
+| `tests/dev-lead/unit/test_fix_reviews_rebase.bats` | **CREATE** |
 
-### 4.2 Unit tests: `test_fix_reviews_human.bats` (5 cases)
+### 4.2 Unit tests: rebase conflict resolution
 
-- Human instruction executed via `run_writer()` ✓
-- User instruction included in prompt ✓
-- Dry-run: no commit ✓
-- Anti-loop: agent's own reply to comment doesn't re-trigger ✓
-- Empty instruction (just `@dev-lead` with no text) → asks for clarification ✓
+```bash
+@test "rebase: YAML SHA conflict resolved by preferring newer SHA" {
+  # Set up a fake conflict in a .yml file
+  cat > /tmp/conflict.yml << 'EOF'
+      uses: actions/checkout@abc123 # v5.0.0
+EOF
+  run bash -c '
+    source scripts/dev-lead-fix-reviews.sh
+    resolve_yaml_sha_conflict /tmp/conflict.yml
+  '
+  [ "$status" -eq 0 ]
+  # Should have picked abc123 (newer semver v5.0.0 > v4.0.0)
+  grep -q "abc123" /tmp/conflict.yml
+}
 
-### 4.3 Unit tests: `test_fix_rebase.bats` (6 cases)
+@test "rebase: non-YAML conflict → abort immediately" {
+  cat > /tmp/conflict.ts << 'EOF'
+  const foo = "bar";
+EOF
+  run bash -c '
+    source scripts/dev-lead-fix-reviews.sh
+    resolve_conflict /tmp/conflict.ts
+  '
+  [ "$status" -ne 0 ]
+}
+```
 
-- YAML SHA conflict: newer semver wins ✓
-- YAML SHA conflict: both sides same version → keeps base ✓
-- YAML SHA conflict: version cannot be determined → abort ✓
-- Non-YAML conflict → abort immediately ✓
-- Successful rebase → push with `--force-with-lease` ✓
-- Abort → failure comment includes manual instructions ✓
+### 4.3 Phase 4 definition of done
 
 ### 4.4 Phase 4 definition of done
 
@@ -869,199 +1052,213 @@ EOF
 
 ## Phase 5 — Issue Implementation
 
-**Goal:** Issues labeled `dev-lead` trigger full implementation → PR → self-review.
+**Goal:** Issues labeled `dev-lead` or `claude` trigger full implementation → PR → self-review → CODEOWNERS tag.
 
-### 5.1 Files
-
-| File | Change |
-|---|---|
-| `scripts/dev-lead-intent.sh` | EXTEND — `issues` labeled classification |
-| `scripts/dev-lead-fix-issue.sh` | CREATE |
-| `tests/dev-lead/unit/test_intent_issue.bats` | CREATE |
-| `tests/dev-lead/unit/test_fix_issue.bats` | CREATE |
-
-### 5.2 Unit tests: `test_intent_issue.bats` (4 cases)
-
-- `labeled dev-lead` → `issue` ✓
-- `labeled claude` → `issue` (backward compat) ✓
-- `labeled bug` → `skip` ✓
-- `labeled dev-lead` without issue body → `issue` with empty context ✓
-
-### 5.3 Unit tests: `test_fix_issue.bats` (6 cases)
-
-- Dedup: existing open PR found → skip with comment ✓
-- Dedup: no existing PR → proceed ✓
-- Org standards hint included in prompt ✓
-- SHA lookup failure → PR opened without pin, blocker noted in body ✓
-- CI failure on opened PR → inline fix attempt (calls fix-ci logic) ✓
-- CODEOWNERS tagged in final comment ✓
-
-### 5.4 Phase 5 definition of done
-
-- [ ] All unit tests pass (10 cases)
-- [ ] Label test issue → PR opened, self-reviewed, CI green, CODEOWNERS tagged
-
----
-
-## Phase 6 — Engine Generalization
-
-**Goal:** All handlers work identically with Gemini as primary engine. Fallback chain tested.
-
-### 6.1 Files
+### 5.1 Files to create/modify
 
 | File | Change |
 |---|---|
-| `scripts/engine.sh` | EXTEND — `run_writer_with_fallback()` function |
-| `tests/dev-lead/unit/test_engine_fallback.bats` | CREATE |
+| `scripts/dev-lead-intent.sh` | **EXTEND** — `issues` labeled classification |
+| `scripts/dev-lead-fix-issue.sh` | **CREATE** |
+| `tests/dev-lead/unit/test_intent_issue.bats` | **CREATE** |
+| `tests/dev-lead/unit/test_fix_issue.bats` | **CREATE** |
 
-### 6.2 `run_writer_with_fallback()`
+### 5.2 Unit tests: `tests/dev-lead/unit/test_intent_issue.bats`
 
 ```bash
-run_writer_with_fallback() {
-  local prompt_file="$1"
-  local model="${2:-$ENGINE_ACTION_MODEL}"
-  local engines=("$REVIEW_ENGINE")
+@test "issues: labeled dev-lead → issue intent" {
+  export GITHUB_EVENT_NAME="issues"
+  cp tests/dev-lead/fixtures/events/issues_labeled_dev_lead.json "$GITHUB_EVENT_PATH"
+  run bash scripts/dev-lead-intent.sh
+  grep -q "INTENT_TYPE=issue" "$GITHUB_ENV"
+}
 
-  # Build fallback chain from available engines
-  for e in claude gemini copilot; do
-    [ "$e" != "$REVIEW_ENGINE" ] && engines+=("$e")
-  done
+@test "issues: labeled other label → skip" {
+  export GITHUB_EVENT_NAME="issues"
+  cp tests/dev-lead/fixtures/events/issues_labeled_other.json "$GITHUB_EVENT_PATH"
+  run bash scripts/dev-lead-intent.sh
+  grep -q "INTENT_TYPE=skip" "$GITHUB_ENV"
+}
 
-  for engine in "${engines[@]}"; do
-    local saved="$REVIEW_ENGINE"
-    REVIEW_ENGINE="$engine" run_writer "$prompt_file" "$model"
-    rc=$?
-    REVIEW_ENGINE="$saved"
-    [ "$rc" -eq 0 ] && return 0
-    [ "$rc" -eq 2 ] && { echo "::warning::$engine rate-limited, trying next engine"; continue; }
-    return "$rc"  # non-rate-limit failure: don't fallback
-  done
+@test "issues: labeled claude → issue intent (backward compat)" {
+  export GITHUB_EVENT_NAME="issues"
+  jq '.label.name = "claude"' \
+    tests/dev-lead/fixtures/events/issues_labeled_dev_lead.json > "$GITHUB_EVENT_PATH"
+  run bash scripts/dev-lead-intent.sh
+  grep -q "INTENT_TYPE=issue" "$GITHUB_ENV"
+}
 
-  echo "::error::All engines rate-limited or unavailable"
-  return 2
+@test "fix-issue: dedup detects existing open PR" {
+  export GH_STUB_PR_FOR_ISSUE="https://github.com/petry-projects/.github-private/pull/99"
+  run bash -c '
+    source scripts/dev-lead-fix-issue.sh
+    dedup_check "42"
+  '
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"existing PR"* ]]
 }
 ```
 
-### 6.3 Unit tests: `test_engine_fallback.bats` (5 cases)
+### 5.3 Phase 5 definition of done
 
-- Claude rate-limit → Gemini invoked ✓
-- Claude + Gemini rate-limit → Copilot (Claude fallback internally) ✓
-- All rate-limited → exit 2, exhaustion path triggered ✓
-- Claude non-rate-limit exit 1 → no fallback (deterministic failure) ✓
-- Available engine order respected (primary first) ✓
-
-### 6.4 Phase 6 definition of done
-
-- [ ] All unit tests pass (5 cases)
-- [ ] `DEV_LEAD_ENGINE=gemini` passes Phase 2 E2E
+- [ ] Issue labeled `dev-lead` triggers implementation
+- [ ] Dedup: second label event is a no-op (existing PR detected)
+- [ ] PR opened, self-reviewed, CI monitored, CODEOWNERS tagged on green
 
 ---
 
-## Phase 7 — Retirement (claude.yml — Option A: Delete)
+## Phase 6 — Engine Generalization and Fallback
 
-**Goal:** Remove `claude.yml` from `.github-private` after a 2-week shadow period.
+**Goal:** `DEV_LEAD_ENGINE=gemini` and fallback chain fully tested.
 
-### 7.1 Shadow period (2 weeks before deletion)
+### 6.1 Files to create/modify
 
-Both `claude.yml` and `dev-lead.yml` run in parallel. Each run is tagged in the step summary. Monitor for:
-- Events handled by `dev-lead.yml` that were previously handled by `claude.yml`
-- Any regressions (events that should trigger but don't)
-- Duplicate runs for the same event
+| File | Change |
+|---|---|
+| `scripts/engine.sh` | **EXTEND** — Gemini path in `run_writer()`, fallback chain helper |
+| `scripts/dev-lead-fix-ci.sh` | **EXTEND** — engine fallback on exit code 2 |
+| `scripts/dev-lead-fix-reviews.sh` | **EXTEND** — engine fallback on exit code 2 |
+| `tests/dev-lead/unit/test_engine_fallback.bats` | **CREATE** |
 
-### 7.2 Deletion checklist
+### 6.2 Unit tests: `tests/dev-lead/unit/test_engine_fallback.bats`
 
-- [ ] 14 days of parallel operation with no regressions
-- [ ] All intent types covered by `dev-lead.yml` (confirmed via Actions run history)
-- [ ] Delete `.github/workflows/claude.yml` from `.github-private`
-- [ ] Update `AGENTS.md` — replace `claude.yml` exemption with `dev-lead.yml`
-- [ ] Update `petry-projects/.github` — mark `claude.yml` as deprecated in `ci-standards.md`
-- [ ] Update `standards/workflows/` — `claude.yml` deprecation notice, pointer to `dev-lead.yml`
-- [ ] File issue to notify other repos using `claude.yml` to migrate to `dev-lead.yml`
+```bash
+@test "fallback: claude rate-limit → gemini" {
+  export REVIEW_ENGINE="claude"
+  export CLAUDE_AVAILABLE="true"
+  export GEMINI_AVAILABLE="true"
+  # Claude stub exits 2 (rate limit); gemini stub exits 0
+  export STUB_CLAUDE_EXIT=2
+  export STUB_GEMINI_EXIT=0
+  run bash -c '
+    source scripts/engine.sh
+    run_writer_with_fallback "$PROMPT_FILE"
+  '
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"gemini"* ]] || [[ "$output" == *"fallback"* ]]
+}
+
+@test "fallback: claude + gemini rate-limit → copilot (claude fallback)" {
+  export STUB_CLAUDE_EXIT=2
+  export STUB_GEMINI_EXIT=2
+  export COPILOT_AVAILABLE="true"
+  run bash -c '
+    source scripts/engine.sh
+    run_writer_with_fallback "$PROMPT_FILE"
+  '
+  # Copilot falls back to Claude internally; result depends on available engine
+  [ "$status" -eq 0 ] || [ "$status" -eq 1 ]
+}
+
+@test "fallback: all engines rate-limited → exhaustion comment emitted" {
+  export STUB_CLAUDE_EXIT=2
+  export STUB_GEMINI_EXIT=2
+  export COPILOT_AVAILABLE="false"
+  run bash -c '
+    source scripts/engine.sh
+    run_writer_with_fallback "$PROMPT_FILE"
+  '
+  [ "$status" -eq 2 ]
+}
+```
+
+### 6.3 Phase 6 definition of done
+
+- [ ] `DEV_LEAD_ENGINE=gemini` end-to-end: CI failure fixed by Gemini
+- [ ] Engine fallback chain verified with stub engines
+- [ ] validate-engines.sh outputs correct availability table in step summary
+- [ ] All unit tests pass
 
 ---
 
-## Phase 8 — Cross-repo Rollout
+## Phase 7 — Retirement
 
-**Goal:** Propagate the `dev-lead.yml` standard to other `petry-projects` repos.
+**Goal:** Remove `claude.yml` (Option A); update documentation.
 
-### 8.1 Rollout order
+### 7.1 Files to delete/modify
 
-1. `petry-projects/.github-private` ← already on dev-lead (this repo)
-2. `petry-projects/.github` ← adopts caller stub; becomes a user of the standard it defines
-3. High-activity repos (3–5 PRs/week) — validate in real-world conditions
-4. All other repos — batch rollout via an issue labeled `dev-lead` in each repo
+| File | Change |
+|---|---|
+| `.github/workflows/claude.yml` | **DELETE** — Option A confirmed |
+| `AGENTS.md` | **UPDATE** — remove `claude.yml` exemption from agent modification list |
+| `docs/dev-lead/spec.md` | **UPDATE** — Phase 7 completed note |
 
-### 8.2 Migration from `claude.yml` to `dev-lead.yml`
+### 7.2 Retirement checklist
 
-For each repo:
-1. Add `dev-lead.yml` (copy standard from `petry-projects/.github/standards/workflows/dev-lead.yml`)
-2. Run both in parallel for 1 week
-3. Delete `claude.yml` when no regressions observed
-
-### 8.3 Phase 8 definition of done
-
-- [ ] `dev-lead-reusable.yml` works correctly from at least 2 different repos
-- [ ] Private repo access settings configured org-wide
-- [ ] Migration guide documented in `standards/ci-standards.md` §5
+- [ ] `dev-lead.yml` has been stable for ≥ 2 weeks (no regressions)
+- [ ] All intents previously handled by `claude.yml` jobs are covered by `dev-lead.yml`
+- [ ] `claude.yml` deletion PR passes CI (no broken references)
+- [ ] `AGENTS.md` updated: `dev-lead.yml` replaces `claude.yml` in the do-not-edit exemption list
+- [ ] `petry-projects/.github/standards/workflows/claude.yml` standard updated with note that `.github-private` uses `dev-lead.yml` instead
+- [ ] GitHub Issue opened to propagate `dev-lead.yml` pattern to other repos that want the same multi-engine agent behavior
 
 ---
 
 ## Testing Summary
 
-### Unit test suite
+### Unit test suite (`bats`)
 
-| File | Phase | Cases |
+| Test file | Phase | Cases |
 |---|---|---|
-| `test_prompt_rendering.bats` | 0.3 | 3 |
-| `test_intent_stub.bats` | 1 | 5 |
-| `test_intent_ci.bats` | 2 | 8 |
-| `test_engine_writer.bats` | 2 | 7 |
-| `test_fix_ci.bats` | 2 | 8 |
-| `test_intent_reviews.bats` | 3 | 15 |
-| `test_fix_reviews.bats` | 3 | 9 |
-| `test_fix_reviews_human.bats` | 4 | 5 |
-| `test_fix_rebase.bats` | 4 | 6 |
+| `test_intent_stub.bats` | 1 | 3 |
+| `test_intent_ci.bats` | 2 | 5 |
+| `test_engine_writer.bats` | 2 | 5 |
+| `test_fix_ci.bats` | 2 | 5 |
+| `test_intent_reviews.bats` | 3 | 13 |
+| `test_fix_reviews.bats` | 3 | 8 |
+| `test_fix_reviews_human.bats` | 4 | 4 |
+| `test_fix_reviews_rebase.bats` | 4 | 4 |
 | `test_intent_issue.bats` | 5 | 4 |
-| `test_fix_issue.bats` | 5 | 6 |
-| `test_engine_fallback.bats` | 6 | 5 |
-| **Total** | | **81 cases** |
+| `test_fix_issue.bats` | 5 | 4 |
+| `test_engine_fallback.bats` | 6 | 3 |
+| **Total** | | **~58 cases** |
 
-### Integration test suite
+### Integration tests (shell scripts)
 
-| File | Phase | Cases |
+| Test file | Phase | What it validates |
 |---|---|---|
-| `test_prompt_coverage.sh` | 0.3 | 7 prompts × N vars |
-| `test_ci_relay.sh` | 2 | 6 |
-| `test_full_pipeline_dryrun.sh` | 2 | 5 |
-| `test_review_intent.sh` | 3 | 24 fixture events |
-| `test_issue_dedup.sh` | 5 | 3 |
+| `test_ci_relay.sh` | 2 | Relay: non-fork emits dispatch, fork skips, self-check skips |
+| `test_review_intent.sh` | 3 | Full intent classification pipeline against all fixture events |
+| `test_issue_dedup.sh` | 5 | Dedup check with mock gh responses |
 
-### E2E test scenarios (manual)
+### E2E test scenarios (manual, one per phase)
 
 | Phase | Scenario | Pass criteria |
 |---|---|---|
-| 1 | Open PR → `dispatch` logs `skip` | No LLM tokens consumed |
-| 2 | Dry-run: push lint error → verify prompt | No commit made |
-| 2 | Live: push lint error → CI green | Fix committed within 5 min |
-| 1.5 | Caller repo adopts stub → events fire | Reusable is invoked |
-| 3 | Copilot review → threads resolved | Summary posted, CI green |
-| 4 | `@dev-lead rename x to y` | Rename applied and pushed |
-| 5 | Issue labeled → PR → CI green | CODEOWNERS tagged |
-| 6 | `DEV_LEAD_ENGINE=gemini` + lint error | Gemini fixes it |
-| 7 | `claude.yml` deleted | `test-dev-lead.yml` still green |
+| 1 | Open a PR → dispatch job appears, logs `INTENT_TYPE=skip` | Job green, no LLM tokens |
+| 2 | Push commit with deliberate ESLint error → check_run fails | Claude fixes, pushes, CI green within 5 min |
+| 3 | Copilot submits COMMENTED review on test PR | All threads resolved, summary posted |
+| 4 | Comment `@dev-lead rename this function to foo` on PR | Rename applied, pushed, confirmed |
+| 5 | Label a test issue `dev-lead` | PR opened, CI green, CODEOWNERS tagged |
+| 6 | Set `DEV_LEAD_ENGINE=gemini`, repeat Phase 2 E2E | Gemini fixes CI failure |
+| 7 | Delete `claude.yml` on test branch | `test-dev-lead.yml` still green |
 
 ---
 
-## Open Items (Resolved)
+## Dependencies and Blockers
 
-| # | Item | Resolution |
+| Dependency | Required by | Status |
 |---|---|---|
-| 1 | Trigger phrase migration | `@claude` kept in `TRIGGER_PHRASES` default — no breaking change |
-| 2 | `claude.yml` retirement | **Option A: delete** (Phase 7, after 2-week shadow period) |
-| 3 | Cross-repo adoption | **Phase 1.5** — `dev-lead-reusable.yml` + `.github` caller stub standard |
-| 4 | Prompt extraction | **Phase 0.3** — prompt library defined before any handler is written |
-| 5 | Audit log | PR comment markers (`<!-- dev-lead-fix sha=... -->`) serve as lightweight audit trail; structured log file deferred |
+| `bats` installed in `test-dev-lead.yml` | All phases | Not yet configured |
+| `CLAUDE_CODE_OAUTH_TOKEN` org secret | Phase 2+ | Exists |
+| `GH_PAT_WORKFLOWS` org secret | Phase 1 (ci-relay dispatch) | Exists |
+| `GOOGLE_API_KEY` org secret | Phase 6 | Exists |
+| Stub engine binaries in `tests/dev-lead/fixtures/engines/` | Phase 2+ | Not yet created |
+| Mock `gh` binary for integration tests | Phase 2+ | Not yet created |
+| `dev-lead-intent.sh` must be sourced cleanly (no side effects on source) | All unit tests | Must be designed for testability |
 
 ---
 
-_See also: [Dev-Lead Spec](./spec.md) · [Engine Script](../../scripts/engine.sh) · [PR Review Agent](../pr-review-agent/implementation.md)_
+## Open Items (from Spec §14)
+
+The following open questions from the spec should be resolved before Phase 4:
+
+1. **Trigger phrase migration** — Keeping `@claude` in `TRIGGER_PHRASES` default is confirmed. No breaking change.
+2. **`claude.yml` retirement** — Option A confirmed: delete the file in Phase 7. No redirect stub.
+3. **Cross-repo scope** — Deferred. Phase 1–7 scope is `.github-private` only.
+4. **Prompt library** — Decision: keep prompts inline in handler scripts for Phase 2–5; extract to `prompts/dev-lead/` in a follow-on if tuning becomes frequent.
+5. **Audit log** — Deferred. Add `<!-- dev-lead-fix sha=... -->` markers to PR comments as the lightweight audit trail for now.
+
+---
+
+_See also: [Dev-Lead Spec](./spec.md) · [PR Review Agent Implementation](../pr-review-agent/implementation.md) · [Engine Script](../../scripts/engine.sh)_
