@@ -1615,3 +1615,83 @@ parse_reset_time_files() {
   hhmm=$(printf '%s' "$time_str" | grep -oiE '[0-9]{1,2}:[0-9]{2}(am|pm)$' || true)
   _emit_reset_iso "$hhmm"
 }
+
+# run_writer <prompt_file> [model]
+# Full write-access mode for applying code fixes.
+# When DEV_LEAD_DRY_RUN=true: builds prompt but does NOT call engine; exits 0.
+# Exit codes: 0=success, 1=non-retriable failure, 2=rate-limited
+run_writer() {
+  local prompt_file="$1"
+  local model="${2:-$ENGINE_ACTION_MODEL}"
+
+  if [ "${DEV_LEAD_DRY_RUN:-false}" = "true" ]; then
+    echo "  [dry-run] run_writer: would invoke $REVIEW_ENGINE with prompt $(wc -l < "$prompt_file") lines"
+    return 0
+  fi
+
+  local rc=0
+  case "$REVIEW_ENGINE" in
+    claude)
+      timeout "$ACTION_TIMEOUT_SEC" claude --print \
+        --model "$model" \
+        --permission-mode acceptEdits \
+        --allowed-tools "Bash,Read,Write,Edit,Grep,Glob" \
+        < "$prompt_file" || rc=$?
+      ;;
+    gemini)
+      timeout "$ACTION_TIMEOUT_SEC" gemini --prompt "" \
+        --model "$model" \
+        --approval-mode auto_edit \
+        --output-format text \
+        < "$prompt_file" || rc=$?
+      ;;
+    copilot)
+      # Copilot (gh copilot suggest) is text-only — falls back to Claude for write ops
+      echo "::warning::Copilot engine is text-only; falling back to Claude for write operations" >&2
+      local saved="$REVIEW_ENGINE"
+      REVIEW_ENGINE="claude" timeout "$ACTION_TIMEOUT_SEC" claude --print \
+        --model "$model" \
+        --permission-mode acceptEdits \
+        --allowed-tools "Bash,Read,Write,Edit,Grep,Glob" \
+        < "$prompt_file" || rc=$?
+      REVIEW_ENGINE="$saved"
+      ;;
+  esac
+
+  # Map rate-limit to exit code 2 for caller to detect
+  local output_check=""
+  if [ "$rc" -ne 0 ] && output_check=$(cat /tmp/dev-lead-writer-stderr 2>/dev/null) && is_rate_limited "$output_check"; then
+    return 2
+  fi
+  return "$rc"
+}
+
+# run_writer_with_fallback <prompt_file> [model]
+# Tries primary engine, falls back through claude → gemini → copilot on rate-limit.
+# Only rate-limit (exit 2) triggers fallback; other failures propagate immediately.
+run_writer_with_fallback() {
+  local prompt_file="$1"
+  local model="${2:-$ENGINE_ACTION_MODEL}"
+  local engines=("$REVIEW_ENGINE")
+
+  for e in claude gemini copilot; do
+    [ "$e" != "$REVIEW_ENGINE" ] && engines+=("$e")
+  done
+
+  for engine in "${engines[@]}"; do
+    local saved="$REVIEW_ENGINE"
+    export REVIEW_ENGINE="$engine"
+    local rc=0
+    run_writer "$prompt_file" "$model" || rc=$?
+    export REVIEW_ENGINE="$saved"
+    [ "$rc" -eq 0 ] && return 0
+    if [ "$rc" -eq 2 ]; then
+      echo "::warning::$engine rate-limited, trying next engine" >&2
+      continue
+    fi
+    return "$rc"
+  done
+
+  echo "::error::All engines rate-limited or unavailable" >&2
+  return 2
+}
