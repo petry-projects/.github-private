@@ -5,6 +5,7 @@ set -euo pipefail
 # Env: PR_NUMBER, HEAD_SHA, CHECKS_JSON, REPO, GITHUB_REPOSITORY,
 #      DEV_LEAD_DRY_RUN, REVIEW_ENGINE, GH_TOKEN
 # Optional: PROMPTS_DIR (defaults to prompts/dev-lead relative to CWD)
+# Optional: MAX_FAIL_ATTEMPTS — consecutive engine failures before exhaustion (default: 2)
 
 source "$(dirname "$0")/engine.sh"
 source "$(dirname "$0")/lib/git-identity.sh"
@@ -17,19 +18,43 @@ CHECKS_JSON="${CHECKS_JSON:-[]}"
 REPO="${REPO:-${GITHUB_REPOSITORY:-}}"
 MAX_CI_CYCLES="${MAX_CI_CYCLES:-3}"
 LOG_MAX_LINES="${LOG_MAX_LINES:-200}"
+MAX_FAIL_ATTEMPTS="${MAX_FAIL_ATTEMPTS:-2}"
 MARKER_PREFIX="<!-- dev-lead-fix-ci sha="
+EXHAUSTION_MARKER="<!-- dev-lead-fix-ci pr=${PR_NUMBER} status=exhausted -->"
 export PROMPTS_DIR="${PROMPTS_DIR:-prompts/dev-lead}"
 
+# check_idempotency: returns 0 (skip) if this exact SHA was already attempted,
+# OR if a PR-level exhaustion marker exists (blocks all future SHAs).
 check_idempotency() {
-  local existing
-  existing=$(gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" \
-    --jq "[.[] | select(.body | startswith(\"${MARKER_PREFIX}${HEAD_SHA}\"))] | length" 2>/dev/null || echo "0")
-  [ "$existing" -gt 0 ]
+  local comments
+  # Use standalone jq so the mock stub in tests can return raw JSON
+  comments=$(gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" 2>/dev/null \
+    | jq -r '.[].body' 2>/dev/null || true)
+
+  # PR-level exhaustion — blocks regardless of SHA
+  if echo "$comments" | grep -qF "${EXHAUSTION_MARKER}"; then
+    echo "::notice::PR #${PR_NUMBER} is exhausted (repeated engine failures) — skipping all future SHAs"
+    return 0
+  fi
+
+  # SHA-level idempotency — skip if this exact SHA was already attempted
+  if echo "$comments" | grep -qF "${MARKER_PREFIX}${HEAD_SHA}"; then
+    return 0
+  fi
+
+  return 1
+}
+
+# count_recent_failures: count status=failed markers on this PR (any SHA)
+count_recent_failures() {
+  local pattern="${MARKER_PREFIX}[a-f0-9A-F]* status=failed"
+  gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" 2>/dev/null \
+    | jq "[.[] | select(.body | test(\"${pattern}\"))] | length" 2>/dev/null \
+    || echo "0"
 }
 
 collect_logs() {
   local check_name="$1" details_url="$2"
-  # Try to get run ID from details URL
   local run_id
   run_id=$(echo "$details_url" | grep -oP '(?<=runs/)\d+' || true)
   if [ -n "$run_id" ]; then
@@ -68,7 +93,7 @@ post_summary() {
 **PR:** #${PR_NUMBER} | **SHA:** \`${HEAD_SHA}\`
 ${details}"
   if [ "${DEV_LEAD_DRY_RUN:-false}" = "true" ]; then
-    echo "[dry-run] would post PR comment:"
+    echo "[dry-run] would post PR comment: $status"
     echo "$body"
   else
     gh pr comment "$PR_NUMBER" --repo "$REPO" --body "$body"
@@ -109,7 +134,7 @@ main() {
   hold_auto_merge
 
   if check_idempotency; then
-    echo "::notice::Already handled CI failure at SHA $HEAD_SHA — skipping (idempotent)"
+    echo "::notice::Already handled CI failure at SHA $HEAD_SHA (or PR exhausted) — skipping"
     exit 0
   fi
 
@@ -129,8 +154,23 @@ main() {
   while [ "$cycle" -le "$MAX_CI_CYCLES" ]; do
     echo "  [fix-ci] cycle $cycle/$MAX_CI_CYCLES"
 
-    if ! run_writer_with_fallback "$prompt_file"; then
-      post_summary "failed" "Engine invocation failed after all retries."
+    local engine_rc=0
+    run_writer_with_fallback "$prompt_file" || engine_rc=$?
+
+    if [ "$engine_rc" -ne 0 ]; then
+      # Classify the failure: timeout (124) is a hard exhaustion candidate
+      local reason="Engine invocation failed (exit ${engine_rc})"
+      [ "$engine_rc" -eq 124 ] && reason="Engine timed out — PR may be too large for automated fixing"
+      post_summary "failed" "$reason"
+
+      # Check if we've hit the consecutive-failure threshold for this PR
+      local fail_count
+      fail_count=$(count_recent_failures)
+      echo "  [fix-ci] consecutive failures on this PR: $fail_count (threshold: $MAX_FAIL_ATTEMPTS)"
+      if [ "$fail_count" -ge "$MAX_FAIL_ATTEMPTS" ]; then
+        echo "::warning::Exhaustion threshold reached — posting PR-level block to prevent further token spend"
+        post_exhaustion "$reason"
+      fi
       exit 1
     fi
 
