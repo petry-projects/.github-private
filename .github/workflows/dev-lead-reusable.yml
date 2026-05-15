@@ -159,7 +159,6 @@ jobs:
       - name: Run fix-reviews
         if: env.INTENT_TYPE == 'fix-reviews'
         env:
-          INTENT_TYPE: fix-reviews
           PR_NUMBER: ${{ env.INTENT_PR_NUMBER }}
           HEAD_SHA: ${{ env.INTENT_HEAD_SHA }}
           REPO: ${{ github.repository }}
@@ -174,7 +173,6 @@ jobs:
       - name: Run fix-bot-comment
         if: env.INTENT_TYPE == 'fix-bot-comment'
         env:
-          INTENT_TYPE: fix-bot-comment
           PR_NUMBER: ${{ env.INTENT_PR_NUMBER }}
           HEAD_SHA: ${{ env.INTENT_HEAD_SHA }}
           REPO: ${{ github.repository }}
@@ -189,7 +187,6 @@ jobs:
       - name: Run human
         if: env.INTENT_TYPE == 'human'
         env:
-          INTENT_TYPE: human
           PR_NUMBER: ${{ env.INTENT_PR_NUMBER }}
           HEAD_SHA: ${{ env.INTENT_HEAD_SHA }}
           REPO: ${{ github.repository }}
@@ -204,7 +201,6 @@ jobs:
       - name: Run human-pr
         if: env.INTENT_TYPE == 'human-pr'
         env:
-          INTENT_TYPE: human-pr
           PR_NUMBER: ${{ env.INTENT_PR_NUMBER }}
           HEAD_SHA: ${{ env.INTENT_HEAD_SHA }}
           REPO: ${{ github.repository }}
@@ -232,7 +228,6 @@ jobs:
       - name: Run rebase
         if: env.INTENT_TYPE == 'rebase'
         env:
-          INTENT_TYPE: rebase
           PR_NUMBER: ${{ env.INTENT_PR_NUMBER }}
           REPO: ${{ github.repository }}
           REVIEW_ENGINE: ${{ env.DEV_LEAD_ENGINE }}
