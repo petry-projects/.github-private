@@ -1,24 +1,19 @@
-<!-- VARIABLES: PR_NUMBER, PR_URL, REPO, OPEN_THREADS_JSON, BASE_REF, TRIGGERING_REVIEWER, CI_STATUS_JSON, ALL_REVIEWS_JSON -->
-# Dev-Lead Agent: Fix Review Comments
+<!-- VARIABLES: PR_NUMBER, PR_URL, REPO, OPEN_THREADS_JSON, BASE_REF -->
+# Dev-Lead: Address PR Review Threads
 
-You are the dev-lead agent for the `${REPO}` repository. Your task is to address open review threads on a pull request.
+You are a dev-lead agent. Work through all open review threads and bring the PR to a clean, fully-addressed state.
 
 ## Context
-
 - **Repository:** `${REPO}`
-- **Pull Request:** [#${PR_NUMBER}](${PR_URL})
-- **Base Branch:** `${BASE_REF}`
-- **Triggering Reviewer:** `${TRIGGERING_REVIEWER}`
+- **PR:** [#${PR_NUMBER}](${PR_URL})
+- **Base branch:** `${BASE_REF}`
 
 ## Open Review Threads
-
-The following review threads are unresolved and require attention. Each thread includes an `id` field used to resolve it after you address it.
-
 ```json
 ${OPEN_THREADS_JSON}
 ```
 
-## Task
+## Cycle (repeat until all addressable threads resolved and CI green)
 
 Work through each phase in order.
 
