@@ -68,11 +68,11 @@ set_engine_config() {
       # not a typo for o1-mini or gpt-4o-mini.
       COPILOT_API_MODEL="${COPILOT_API_MODEL:-openai/o4-mini}"
       export COPILOT_API_MODEL
-      ENGINE_LABEL="triage: o4-mini → deep: o4-mini + duck: sonnet 4.6 → audit: o4-mini (GitHub Models API)"
+      ENGINE_LABEL="triage: o4-mini → deep: o4-mini + duck: gemini-2.0-flash → audit: o4-mini (GitHub Models API)"
       ENGINE_SINGLE_LABEL="single-reviewer mode: o4-mini (GitHub Models API)"
-      # Cross-engine rubber duck: use Claude when Copilot is primary
-      DUCK_ENGINE="claude"
-      DUCK_MODEL="claude-sonnet-4-6"
+      # Cross-engine rubber duck: use Gemini when Copilot is primary
+      DUCK_ENGINE="gemini"
+      DUCK_MODEL="gemini-2.0-flash"
       ;;
     *)
       echo "::error::Unknown REVIEW_ENGINE='$REVIEW_ENGINE' (expected: claude, gemini, or copilot)"
@@ -300,7 +300,7 @@ sys.exit(1)
 
 # run_duck <prompt_file> <model>
 # Cross-engine adversarial "rubber duck" review.
-# Uses Copilot when REVIEW_ENGINE=claude; otherwise uses Claude for Gemini/Copilot runs.
+# DUCK_ENGINE is set by engine.sh init: claude→copilot, gemini→claude, copilot→gemini.
 # Output to stdout. Strips non-selected engine credentials to prevent cross-engine leakage.
 run_duck() {
   local prompt_file="$1"
