@@ -22,7 +22,6 @@ setup() {
   export TEST_PROMPT
 
   export DEV_LEAD_DRY_RUN="false"
-  export GEMINI_API_KEY="dummy-test-key"
 }
 
 teardown() {
@@ -35,7 +34,7 @@ teardown() {
 _source_engine() {
   local engine="${1:-claude}"
   export REVIEW_ENGINE="$engine"
-  source "$ENGINE_SCRIPT"
+  source "$ENGINE_SCRIPT" 2>/dev/null || true
 }
 
 # Helper: create a stub that always returns a given exit code
@@ -83,11 +82,9 @@ STUBEOF
 }
 
 @test "fallback: primary exits 2 → tries next engine" {
-  # claude exits 2 (rate-limited), gemini exits 0. Copilot (now the 1st fallback)
-  # is forced to skip via a classic-PAT token so gemini remains the tested fallback.
+  # claude exits 2 (rate-limited), gemini exits 0
   _make_stub "claude" 2
   _make_stub "gemini" 0
-  export COPILOT_GITHUB_TOKEN="ghp_stub"  # ghp_* → copilot fallback is skipped
   _source_engine "claude"
 
   run run_writer_with_fallback "$TEST_PROMPT"
@@ -96,19 +93,16 @@ STUBEOF
 }
 
 @test "fallback: all rate-limited → returns 2" {
-  # All engines exit 2 (rate-limited)
+  # All engines exit 2
   _make_stub "claude" 2
   _make_stub "gemini" 2
-  # copilot uses `gh copilot`; provide token + gh stub returning rate-limit text
-  export COPILOT_GITHUB_TOKEN="stub-token"
-  cat > "$STUB_BIN_DIR/gh" <<'GHEOF'
+  # copilot falls back to claude internally, so we only need claude and gemini
+  # Create a copilot stub that also fails with 2
+  cat > "$STUB_BIN_DIR/copilot" <<'STUBEOF'
 #!/usr/bin/env bash
-case "$*" in
-  *"copilot"*) echo "rate limit exceeded"; exit 1 ;;
-  *) echo "{}" ;;
-esac
-GHEOF
-  chmod +x "$STUB_BIN_DIR/gh"
+exit 2
+STUBEOF
+  chmod +x "$STUB_BIN_DIR/copilot"
   _source_engine "claude"
 
   run run_writer_with_fallback "$TEST_PROMPT"
@@ -129,63 +123,7 @@ GHEOF
   [ "$status" -eq 1 ]
 }
 
-@test "fallback: engine not installed (exit 127) → tries next engine" {
-  # Simulates gemini not installed: exit 127 should trigger fallback, not abort
-  _make_stub "claude" 2
-  _make_stub "gemini" 127
-  # Provide token + gh stub so copilot path is deterministic (returns rate-limit)
-  export COPILOT_GITHUB_TOKEN="stub-token"
-  cat > "$STUB_BIN_DIR/gh" <<'GHEOF'
-#!/usr/bin/env bash
-case "$*" in
-  *"copilot"*) echo "rate limit exceeded"; exit 1 ;;
-  *) echo "{}" ;;
-esac
-GHEOF
-  chmod +x "$STUB_BIN_DIR/gh"
-  _source_engine "claude"
-
-  run run_writer_with_fallback "$TEST_PROMPT"
-
-  # claude rate-limited (2), gemini not installed (127), copilot rate-limited (2) → all exhausted.
-  # any_missing=1 (gemini returned 127) → hard failure exit 1 so infra problems surface loudly.
-  [ "$status" -eq 1 ]
-}
-
-@test "fallback: engine not installed (127) → remaining engines still tried" {
-  # claude rate-limited, gemini not installed, but the next engine after gemini succeeds
-  # In the actual fallback order: claude → copilot → gemini. Since copilot returns 2
-  # (text-only) in run_writer, we verify with a scenario where gemini is "not found"
-  # and a recording stub shows that claude was tried after gemini failed.
-  _make_stub "gemini" 2
-  local record_file
-  record_file="$(mktemp)"
-  _make_recording_stub "claude" 127 "$record_file"
-  # Provide token + gh stub so copilot path is deterministic (returns rate-limit)
-  export COPILOT_GITHUB_TOKEN="stub-token"
-  cat > "$STUB_BIN_DIR/gh" <<'GHEOF'
-#!/usr/bin/env bash
-case "$*" in
-  *"copilot"*) echo "rate limit exceeded"; exit 1 ;;
-  *) echo "{}" ;;
-esac
-GHEOF
-  chmod +x "$STUB_BIN_DIR/gh"
-  _source_engine "gemini"
-
-  run run_writer_with_fallback "$TEST_PROMPT"
-
-  # gemini (primary) rate-limited, claude not installed (127 → treated as unavailable),
-  # copilot rate-limited (2) → all engines exhausted.
-  # any_missing=1 (claude returned 127) → hard failure exit 1 so infra problems surface loudly.
-  [ "$status" -eq 1 ]
-  # claude was tried (even though it exited 127, it was reached)
-  [ -s "$record_file" ]
-  rm -f "$record_file"
-}
-
-
-@test "fallback: fallback engine order is claude → copilot → gemini" {
+@test "fallback: fallback engine order is claude → gemini → copilot" {
   # Primary = gemini (exits 2), then fallback order should try claude first
   _make_stub "gemini" 2
   local record_file

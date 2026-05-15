@@ -16,8 +16,7 @@
     "user": {
       "login": "donpetry",
       "type": "User"
-    },
-    "author_association": "OWNER"
+    }
   },
   "repository": { "full_name": "petry-projects/.github-private" },
   "sender": { "login": "donpetry", "type": "User" }

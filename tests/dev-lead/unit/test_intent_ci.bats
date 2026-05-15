@@ -12,33 +12,14 @@ setup() {
   export TRUSTED_BOTS="copilot-pull-request-reviewer[bot],gemini-code-assist[bot],sonarqubecloud[bot],coderabbitai[bot]"
   export TRIGGER_PHRASES="@dev-lead"
   export GITHUB_REPOSITORY="petry-projects/.github-private"
-  MOCK_BIN="$(mktemp -d)"
-  export PATH="$MOCK_BIN:$PATH"
-  # Stub gh so dispatch tests don't require an authenticated GitHub CLI.
-  # Default: no labels (unlabeled PR), exit 0.
-  cat > "$MOCK_BIN/gh" << 'GHEOF'
-#!/usr/bin/env bash
-exit 0
-GHEOF
-  chmod +x "$MOCK_BIN/gh"
 }
 
 teardown() {
   rm -f "$GITHUB_ENV" "$GITHUB_OUTPUT"
-  rm -rf "$MOCK_BIN"
 }
 
 _get_env() {
   local key="$1"
-  # Handle multiline heredoc format: KEY<<DELIM\nvalue\nDELIM
-  local delim_line delimiter
-  delim_line=$(grep "^${key}<<" "$GITHUB_ENV" 2>/dev/null | head -1)
-  if [ -n "$delim_line" ]; then
-    delimiter="${delim_line#*<<}"
-    awk -v start="${key}<<${delimiter}" -v end="${delimiter}" \
-      'found && $0==end{exit} found{print} $0==start{found=1}' "$GITHUB_ENV"
-    return
-  fi
   grep "^${key}=" "$GITHUB_ENV" | cut -d= -f2- | head -1
 }
 
@@ -139,7 +120,7 @@ EOF
   [ "$(_get_env INTENT_TYPE)" = "fix-reviews" ]
 }
 
-@test "ci: pull_request review from copilot APPROVED → enable-auto-merge" {
+@test "ci: pull_request review from copilot APPROVED → skip" {
   export GITHUB_EVENT_NAME="pull_request_review"
   export GITHUB_EVENT_PATH="$FIXTURES_DIR/pr_review_copilot_approved.json"
   export TRUSTED_BOTS="copilot-pull-request-reviewer[bot],gemini-code-assist[bot],sonarqubecloud[bot],coderabbitai[bot]"
@@ -147,7 +128,7 @@ EOF
   run bash "$INTENT_SCRIPT"
 
   [ "$status" -eq 0 ]
-  [ "$(_get_env INTENT_TYPE)" = "enable-auto-merge" ]
+  [ "$(_get_env INTENT_TYPE)" = "skip" ]
 }
 
 @test "ci: issues labeled dev-lead → issue" {

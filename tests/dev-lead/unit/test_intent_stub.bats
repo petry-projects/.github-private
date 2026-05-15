@@ -10,20 +10,10 @@ setup() {
   export GITHUB_ENV="$(mktemp)"
   export GITHUB_OUTPUT="$(mktemp)"
   export BOT_USER="donpetry-bot"
-  MOCK_BIN="$(mktemp -d)"
-  export PATH="$MOCK_BIN:$PATH"
-  # Stub gh so repository_dispatch tests don't require an authenticated GitHub CLI.
-  # Default: no labels (unlabeled PR), exit 0.
-  cat > "$MOCK_BIN/gh" << 'GHEOF'
-#!/usr/bin/env bash
-exit 0
-GHEOF
-  chmod +x "$MOCK_BIN/gh"
 }
 
 teardown() {
   rm -f "$GITHUB_ENV" "$GITHUB_OUTPUT"
-  rm -rf "$MOCK_BIN"
 }
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -60,7 +50,7 @@ _get_output() {
   [ "$(_get_env INTENT_REASON)" = "not-implemented" ]
 }
 
-@test "routing: pull_request opened by human emits review-changes" {
+@test "routing: pull_request opened by human emits human-pr" {
   export GITHUB_EVENT_NAME="pull_request"
   export GITHUB_EVENT_PATH="$FIXTURES_DIR/pr_opened_human.json"
   export GITHUB_REPOSITORY="petry-projects/.github-private"
@@ -68,7 +58,7 @@ _get_output() {
   run bash "$INTENT_SCRIPT"
 
   [ "$status" -eq 0 ]
-  [ "$(_get_env INTENT_TYPE)" = "review-changes" ]
+  [ "$(_get_env INTENT_TYPE)" = "human-pr" ]
 }
 
 @test "anti-loop: pull_request synchronize from BOT_USER emits skip" {
@@ -108,7 +98,7 @@ _get_output() {
   [ "$(_get_env INTENT_REASON)" = "check-run-handled-by-ci-relay" ]
 }
 
-@test "issue_comment human trigger event emits on-mention intent" {
+@test "issue_comment human trigger event emits human intent" {
   export GITHUB_EVENT_NAME="issue_comment"
   export GITHUB_EVENT_PATH="$FIXTURES_DIR/issue_comment_human_trigger.json"
   export TRUSTED_BOTS="copilot-pull-request-reviewer[bot],gemini-code-assist[bot],sonarqubecloud[bot],coderabbitai[bot]"
@@ -118,7 +108,7 @@ _get_output() {
   run bash "$INTENT_SCRIPT"
 
   [ "$status" -eq 0 ]
-  [ "$(_get_env INTENT_TYPE)" = "on-mention" ]
+  [ "$(_get_env INTENT_TYPE)" = "human" ]
 }
 
 @test "issues labeled dev-lead event emits issue intent" {

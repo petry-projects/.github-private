@@ -1,15 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 # dev-lead-fix-issue.sh — handles the issue intent
-# Optional: PROMPTS_DIR (defaults to prompts/dev-lead relative to CWD)
 
 source "$(dirname "$0")/engine.sh"
-source "$(dirname "$0")/lib/git-identity.sh"
 
 ISSUE_NUMBER="${ISSUE_NUMBER:-}"
 REPO="${REPO:-${GITHUB_REPOSITORY:-}}"
 DEV_LEAD_DRY_RUN="${DEV_LEAD_DRY_RUN:-false}"
-export PROMPTS_DIR="${PROMPTS_DIR:-prompts/dev-lead}"
 
 # Machine-readable marker the retry cron (dev-lead-retry.sh) scans for to requeue
 # a failed initial issue implementation. Mirrors the PR-side conventions in
@@ -188,22 +185,9 @@ main() {
   ISSUE_BODY=$(gh api "repos/${REPO}/issues/${ISSUE_NUMBER}" --jq '.body // ""' 2>/dev/null || echo "")
   ORG_STANDARDS_HINT="See AGENTS.md and docs/ for coding standards."
   export ISSUE_TITLE ISSUE_BODY ORG_STANDARDS_HINT
-  # Export lint script path so it is substituted into the rendered prompt.
-  # dirname "$0" resolves correctly in both direct (scripts/) and reusable (.dev-lead/scripts/) runs.
-  export LINT_SCRIPT="${LINT_SCRIPT:-"$(dirname "$0")/dev-lead-lint.sh"}"
 
   local prompt_file="/tmp/dev-lead-fix-issue-prompt-$$.md"
-  local template_path="${PROMPTS_DIR}/fix-issue.md"
-  local vars_spec
-  vars_spec=$(grep -m1 '<!-- VARIABLES:' "$template_path" 2>/dev/null \
-    | sed 's/<!-- VARIABLES: //; s/ -->//' \
-    | tr ',' '\n' \
-    | awk '{gsub(/^ +| +$/, ""); if (length) printf "${%s}", $0}' || true)
-  if [ -n "$vars_spec" ]; then
-    envsubst "$vars_spec" < "$template_path" > "$prompt_file"
-  else
-    envsubst < "$template_path" > "$prompt_file"
-  fi
+  envsubst < "prompts/dev-lead/fix-issue.md" > "$prompt_file"
 
   if [ "$DEV_LEAD_DRY_RUN" = "true" ]; then
     echo "[dry-run] fix-issue: would implement issue #${ISSUE_NUMBER} using prompt: $prompt_file"
@@ -211,16 +195,9 @@ main() {
     exit 0
   fi
 
-  # Configure git identity so the post-engine commit does not fail.
-  # BOT_USER is set as a job-level env var in dev-lead-reusable.yml.
-  setup_git_identity
-
   # Create feature branch
-  local branch
-  branch="dev-lead/issue-${ISSUE_NUMBER}-$(date +%Y%m%d-%H%M)"
+  local branch="dev-lead/issue-${ISSUE_NUMBER}-$(date +%Y%m%d-%H%M)"
   git checkout -b "$branch"
-  local pre_engine_sha
-  pre_engine_sha=$(git rev-parse HEAD)
 
   local engine_rc=0
   run_writer_with_fallback "$prompt_file" "fix-issue" || engine_rc=$?
@@ -231,49 +208,14 @@ main() {
     handle_engine_failure "$engine_rc"
   fi
 
-  # git status --porcelain catches untracked files that git diff misses.
-  # Compare HEAD to pre-engine SHA to detect commits the engine made via Bash.
-  local has_uncommitted=false has_unpushed=false
-  [ -n "$(git status --porcelain)" ] && has_uncommitted=true
-  [ "$(git rev-parse HEAD)" != "$pre_engine_sha" ] && has_unpushed=true
-
-  if ! $has_uncommitted && ! $has_unpushed; then
+  if git diff --quiet && git diff --cached --quiet; then
     echo "::notice::No changes made for issue #${ISSUE_NUMBER}"
     rm -f "$prompt_file"
     exit 0
   fi
 
-  # Run lint before committing to prevent avoidable CI failures.
-  # LINT_SCRIPT was exported above (resolves to the correct path in both direct and reusable runs).
-  local lint_rc=0
-  local lint_output=""
-  if [ -f "$LINT_SCRIPT" ]; then
-    lint_output=$(bash "$LINT_SCRIPT" 2>&1) || lint_rc=$?
-  fi
-
-  if [ "$lint_rc" -ne 0 ]; then
-    echo "::error::Lint check failed — aborting commit to prevent CI failure. Re-apply the dev-lead label after fixing lint errors."
-    echo "$lint_output"
-    local _lint_body
-    _lint_body="<!-- dev-lead-lint-failed -->
-## Dev-Lead: Lint Check Failed
-
-The implementation for issue #${ISSUE_NUMBER} contained lint errors. The commit was **aborted** to prevent a CI failure.
-
-\`\`\`
-${lint_output}
-\`\`\`
-
-**To retry:** fix the lint errors locally (or re-apply the \`dev-lead\` label — the agent will try again)."
-    gh issue comment "$ISSUE_NUMBER" --repo "$REPO" --body "$_lint_body" 2>/dev/null || true
-    rm -f "$prompt_file"
-    exit 1
-  fi
-
-  if $has_uncommitted; then
-    git add -A
-    git commit -m "feat: implement issue #${ISSUE_NUMBER} — ${ISSUE_TITLE}"
-  fi
+  git add -A
+  git commit -m "feat: implement issue #${ISSUE_NUMBER} — ${ISSUE_TITLE}"
   git push --set-upstream origin "$branch"
 
   gh pr create \

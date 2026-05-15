@@ -1,27 +1,48 @@
 <!-- VARIABLES: ISSUE_NUMBER, ISSUE_URL, REPO, ISSUE_TITLE, ISSUE_BODY, ORG_STANDARDS_HINT -->
-# Dev-Lead: Implement Issue
-
-You are a dev-lead agent. Implement this issue, open a PR, self-review, and hand off to CODEOWNERS when CI is green.
+# Dev-Lead Agent: Implement Issue
+You are the dev-lead agent for the `${REPO}` repository. You have been assigned to implement a GitHub issue.
 
 ## Context
+
 - **Repository:** `${REPO}`
-- **Issue:** [#${ISSUE_NUMBER}](${ISSUE_URL}) — ${ISSUE_TITLE}
+- **Issue:** [#${ISSUE_NUMBER}: ${ISSUE_TITLE}](${ISSUE_URL})
+- **Org Standards:** ${ORG_STANDARDS_HINT}
 
 ## Issue Description
-${ISSUE_BODY}
 
-## Org Standards
-${ORG_STANDARDS_HINT}
+```
+${ISSUE_BODY}
+```
 
 ## Task
-1. Branch: `git checkout -b dev-lead/issue-${ISSUE_NUMBER}-<slug>`
-2. Implement minimally. Check for standard workflow templates before writing from scratch.
-3. SHA-pin all actions — never guess, always look up via `gh api`.
-4. `gh pr create` with `Closes #${ISSUE_NUMBER}` in body.
-5. Self-review the diff. Fix bugs.
-6. `gh pr checks <number> --watch --interval 30` — fix failures.
-7. Tag CODEOWNERS when green.
+
+Implement the feature or fix described in the issue:
+
+1. Analyze the issue description to understand the full scope of work
+2. Explore the codebase using Read/Grep/Glob tools to understand the relevant patterns
+3. Create a new branch (if not already on one): `git checkout -b fix/${ISSUE_NUMBER}-brief-slug` or `feat/${ISSUE_NUMBER}-brief-slug`
+4. Implement the changes using Edit/Write/Bash tools
+5. Write or update tests as needed
+6. Commit with a message referencing the issue: `feat: implement ${ISSUE_TITLE} (closes #${ISSUE_NUMBER})`
+7. Open a pull request referencing the issue
 
 ## Constraints
-- Minimal implementation only. No scope creep.
-- Do not skip SHA pinning. If lookup fails, note it clearly in PR body.
+
+- Follow the org standards in `${ORG_STANDARDS_HINT}` — check AGENTS.md and any referenced standards docs
+- Do not implement more than what the issue requests
+- Add tests for new functionality
+- Keep commits atomic and well-described
+- Do not modify unrelated files
+- Do not push to remote without creating a PR — use `gh pr create` to open a draft PR when ready
+
+## Output Format
+
+After completing implementation, output a summary:
+```
+Issue: #${ISSUE_NUMBER} - ${ISSUE_TITLE}
+Branch: <branch name>
+Changes:
+- <file>: <description of change>
+Tests: <added/updated/none>
+PR: <PR URL or "draft opened">
+```

@@ -1,81 +1,12 @@
 #!/usr/bin/env bash
-# Configurable via:
-#   STUB_ENGINE_RESPONSE, STUB_ENGINE_EXIT, STUB_ENGINE_DELAY
-#   STUB_ENGINE_EXIT_BY_MODEL  — pipe-delimited list of "model=exit_code" pairs.
-#                                If set and a pair matches --model, that exit
-#                                code overrides STUB_ENGINE_EXIT. Models not in
-#                                the map fall back to STUB_ENGINE_EXIT.
-#   STUB_ENGINE_RESPONSE_BY_MODEL  — pipe-delimited "model=response" pairs,
-#                                    same lookup as EXIT_BY_MODEL.
-#   STUB_ENGINE_RECORD_MODELS  — if set to a writable path, every --model value
-#                                seen is appended as a new line for inspection.
-#   STUB_CLAUDE_USAGE  — "input cache_read cache_write output" emitted as the
-#                        .usage block when --output-format json is requested.
-#                        Default "100 20 30 40".
-#   STUB_ENGINE_RECORD_ARGS  — if set to a writable path, the full argv of every
-#                              invocation is appended as one line for inspection.
-if [ -n "${STUB_ENGINE_RECORD_ARGS:-}" ]; then
-  printf '%s\n' "$*" >> "$STUB_ENGINE_RECORD_ARGS" 2>/dev/null || true
-fi
-model=""
-output_format="text"
+# Configurable via: STUB_ENGINE_RESPONSE, STUB_ENGINE_EXIT, STUB_ENGINE_DELAY
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --print)
-      shift ;;
-    --permission-mode|--allowed-tools|--disallowed-tools|--max-turns)
+    --print|--model|--permission-mode|--allowed-tools|--disallowed-tools|--max-turns)
       shift; shift ;;
-    --output-format)
-      output_format="$2"; shift; shift ;;
-    --model)
-      model="$2"; shift; shift ;;
     *) shift ;;
   esac
 done
-
-if [ -n "${STUB_ENGINE_RECORD_MODELS:-}" ]; then
-  printf '%s\n' "$model" >> "$STUB_ENGINE_RECORD_MODELS" 2>/dev/null || true
-fi
-
 sleep "${STUB_ENGINE_DELAY:-0}"
-
-# Resolve response: per-model override → default.
-response="${STUB_ENGINE_RESPONSE:-stub engine response}"
-if [ -n "${STUB_ENGINE_RESPONSE_BY_MODEL:-}" ] && [ -n "$model" ]; then
-  IFS='|' read -ra _pairs <<< "$STUB_ENGINE_RESPONSE_BY_MODEL"
-  for _p in "${_pairs[@]}"; do
-    case "$_p" in
-      "$model="*) response="${_p#"$model="}"; break ;;
-    esac
-  done
-fi
-
-if [ "$output_format" = "json" ]; then
-  # Mirror `claude --print --output-format json`: a result envelope with usage.
-  read -r _in _cr _cw _out <<< "${STUB_CLAUDE_USAGE:-100 20 30 40}"
-  if command -v jq >/dev/null 2>&1; then
-    jq -cn --arg result "$response" \
-      --argjson i "${_in:-0}" --argjson cr "${_cr:-0}" \
-      --argjson cw "${_cw:-0}" --argjson o "${_out:-0}" \
-      '{type:"result", subtype:"success", is_error:false, result:$result,
-        usage:{input_tokens:$i, cache_read_input_tokens:$cr,
-               cache_creation_input_tokens:$cw, output_tokens:$o}}'
-  else
-    printf '{"type":"result","result":"%s","usage":{"input_tokens":%s,"cache_read_input_tokens":%s,"cache_creation_input_tokens":%s,"output_tokens":%s}}\n' \
-      "$response" "${_in:-0}" "${_cr:-0}" "${_cw:-0}" "${_out:-0}"
-  fi
-else
-  printf '%s\n' "$response"
-fi
-
-# Resolve exit code: per-model override → default.
-exit_code="${STUB_ENGINE_EXIT:-0}"
-if [ -n "${STUB_ENGINE_EXIT_BY_MODEL:-}" ] && [ -n "$model" ]; then
-  IFS='|' read -ra _epairs <<< "$STUB_ENGINE_EXIT_BY_MODEL"
-  for _ep in "${_epairs[@]}"; do
-    case "$_ep" in
-      "$model="*) exit_code="${_ep#"$model="}"; break ;;
-    esac
-  done
-fi
-exit "$exit_code"
+printf '%s\n' "${STUB_ENGINE_RESPONSE:-stub engine response}"
+exit "${STUB_ENGINE_EXIT:-0}"

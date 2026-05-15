@@ -1,6 +1,5 @@
 {
   "_test_expected_intent": "skip",
-  "_test_note": "ci-relay job tries commits-to-pulls API fallback; this fixture represents the case where that API also returns no PRs (truly orphan commit)",
   "action": "completed",
   "check_run": {
     "name": "lint / eslint",

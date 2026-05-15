@@ -9,7 +9,7 @@ setup() {
   export GITHUB_ENV="$(mktemp)"
   export GITHUB_OUTPUT="$(mktemp)"
   export BOT_USER="donpetry-bot"
-  export TRUSTED_BOTS="copilot-pull-request-reviewer[bot],gemini-code-assist[bot],sonarqubecloud[bot],coderabbitai[bot],chatgpt-codex-connector[bot]"
+  export TRUSTED_BOTS="copilot-pull-request-reviewer[bot],gemini-code-assist[bot],sonarqubecloud[bot],coderabbitai[bot]"
   export TRIGGER_PHRASES="@dev-lead"
   export GITHUB_REPOSITORY="petry-projects/.github-private"
 }
@@ -35,24 +35,14 @@ _get_env() {
   [ "$(_get_env INTENT_TYPE)" = "fix-reviews" ]
 }
 
-@test "reviews: pull_request_review copilot APPROVED → enable-auto-merge" {
+@test "reviews: pull_request_review copilot APPROVED → skip" {
   export GITHUB_EVENT_NAME="pull_request_review"
   export GITHUB_EVENT_PATH="$FIXTURES_DIR/pr_review_copilot_approved.json"
 
   run bash "$INTENT_SCRIPT"
 
   [ "$status" -eq 0 ]
-  [ "$(_get_env INTENT_TYPE)" = "enable-auto-merge" ]
-}
-
-@test "reviews: pull_request_review coderabbit APPROVED → enable-auto-merge" {
-  export GITHUB_EVENT_NAME="pull_request_review"
-  export GITHUB_EVENT_PATH="$FIXTURES_DIR/pr_review_coderabbit_approved.json"
-
-  run bash "$INTENT_SCRIPT"
-
-  [ "$status" -eq 0 ]
-  [ "$(_get_env INTENT_TYPE)" = "enable-auto-merge" ]
+  [ "$(_get_env INTENT_TYPE)" = "skip" ]
 }
 
 @test "reviews: pull_request_review gemini CHANGES_REQUESTED → fix-reviews" {
@@ -65,14 +55,14 @@ _get_env() {
   [ "$(_get_env INTENT_TYPE)" = "fix-reviews" ]
 }
 
-@test "reviews: pull_request_review human OWNER → review-changes" {
+@test "reviews: pull_request_review human OWNER → human-pr" {
   export GITHUB_EVENT_NAME="pull_request_review"
   export GITHUB_EVENT_PATH="$FIXTURES_DIR/pr_review_human_owner.json"
 
   run bash "$INTENT_SCRIPT"
 
   [ "$status" -eq 0 ]
-  [ "$(_get_env INTENT_TYPE)" = "review-changes" ]
+  [ "$(_get_env INTENT_TYPE)" = "human-pr" ]
 }
 
 @test "reviews: pull_request_review human NONE → skip" {
@@ -170,27 +160,7 @@ EOF
   rm -f "$tmp_event"
 }
 
-@test "reviews: pull_request_review codex COMMENTED → fix-reviews" {
-  export GITHUB_EVENT_NAME="pull_request_review"
-  export GITHUB_EVENT_PATH="$FIXTURES_DIR/pr_review_codex_commented.json"
-
-  run bash "$INTENT_SCRIPT"
-
-  [ "$status" -eq 0 ]
-  [ "$(_get_env INTENT_TYPE)" = "fix-reviews" ]
-}
-
 # ── pull_request_review_comment tests ────────────────────────────────────────
-
-@test "reviews: pull_request_review_comment codex → fix-reviews" {
-  export GITHUB_EVENT_NAME="pull_request_review_comment"
-  export GITHUB_EVENT_PATH="$FIXTURES_DIR/pr_review_comment_codex.json"
-
-  run bash "$INTENT_SCRIPT"
-
-  [ "$status" -eq 0 ]
-  [ "$(_get_env INTENT_TYPE)" = "fix-reviews" ]
-}
 
 @test "reviews: pull_request_review_comment copilot → fix-reviews" {
   export GITHUB_EVENT_NAME="pull_request_review_comment"
@@ -202,14 +172,14 @@ EOF
   [ "$(_get_env INTENT_TYPE)" = "fix-reviews" ]
 }
 
-@test "reviews: pull_request_review_comment human + @dev-lead → on-mention" {
+@test "reviews: pull_request_review_comment human + @dev-lead → human" {
   export GITHUB_EVENT_NAME="pull_request_review_comment"
   export GITHUB_EVENT_PATH="$FIXTURES_DIR/pr_review_comment_human_trigger.json"
 
   run bash "$INTENT_SCRIPT"
 
   [ "$status" -eq 0 ]
-  [ "$(_get_env INTENT_TYPE)" = "on-mention" ]
+  [ "$(_get_env INTENT_TYPE)" = "human" ]
 }
 
 @test "reviews: pull_request_review_comment human no trigger → skip" {
@@ -244,14 +214,14 @@ EOF
   [ "$(_get_env INTENT_TYPE)" = "fix-bot-comment" ]
 }
 
-@test "reviews: issue_comment human + @dev-lead → on-mention" {
+@test "reviews: issue_comment human + @dev-lead → human" {
   export GITHUB_EVENT_NAME="issue_comment"
   export GITHUB_EVENT_PATH="$FIXTURES_DIR/issue_comment_human_trigger.json"
 
   run bash "$INTENT_SCRIPT"
 
   [ "$status" -eq 0 ]
-  [ "$(_get_env INTENT_TYPE)" = "on-mention" ]
+  [ "$(_get_env INTENT_TYPE)" = "human" ]
 }
 
 @test "reviews: issue_comment human no trigger → skip" {
@@ -272,18 +242,4 @@ EOF
 
   [ "$status" -eq 0 ]
   [ "$(_get_env INTENT_TYPE)" = "rebase" ]
-}
-
-@test "reviews: issue_comment trusted-bot on already-closed PR → skip pr-already-closed" {
-  # Regression guard for issue #405: a SonarQube comment on a merged PR used to
-  # trigger fix-bot-comment, which then crashed at checkout_pr_in_worktree because
-  # the branch was deleted. The classifier must emit skip before that point.
-  export GITHUB_EVENT_NAME="issue_comment"
-  export GITHUB_EVENT_PATH="$FIXTURES_DIR/issue_comment_sonarqube_closed_pr.json"
-
-  run bash "$INTENT_SCRIPT"
-
-  [ "$status" -eq 0 ]
-  [ "$(_get_env INTENT_TYPE)" = "skip" ]
-  [ "$(_get_env INTENT_REASON)" = "pr-already-closed" ]
 }

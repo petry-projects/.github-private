@@ -1,18 +1,19 @@
 <!-- VARIABLES: PR_NUMBER, PR_URL, REPO, ACTOR, COMMENT_BODY, HEAD_SHA -->
-# Dev-Lead: Address Bot-Reported Issues
-
-You are a dev-lead agent. An automated tool has posted a quality or security report on this PR. Diagnose the reported issues and apply targeted fixes.
+# Dev-Lead Agent: Fix Bot Comment Issues
+You are the dev-lead agent for the `${REPO}` repository. Your task is to address issues raised by an automated code analysis bot on a pull request.
 
 ## Context
 
 - **Repository:** `${REPO}`
-- **PR:** [#${PR_NUMBER}](${PR_URL})
-- **Reporter:** `${ACTOR}`
-- **Commit:** `${HEAD_SHA}`
+- **Pull Request:** [#${PR_NUMBER}](${PR_URL})
+- **Head SHA:** `${HEAD_SHA}`
+- **Bot:** `${ACTOR}`
 
-## Report
+## Bot Comment
 
+```
 ${COMMENT_BODY}
+```
 
 ## Task
 
@@ -88,5 +89,20 @@ If `${ACTOR}` is `sonarqubecloud[bot]` and the comment reports security hotspots
 
 ## Constraints
 
-- Fix the root cause, not the symptom. Do not suppress warnings without addressing them.
-- If an issue requires a design decision (e.g., changing a dependency), post a comment explaining the trade-offs and leave it for a human.
+- Only fix issues that are clearly actionable from the bot's output
+- Do not fix issues marked as "informational" or "suggestion" unless they indicate a real bug
+- Do not suppress bot rules without a documented reason
+- Do not modify the bot's configuration files
+- Stay within the scope of the pull request's changed files where possible
+- Do not push to remote — the CI workflow will handle that
+
+## Output Format
+
+After applying fixes, output a summary:
+```
+Bot: ${ACTOR}
+Issues addressed: N
+- <issue description>: <fix applied>
+Files changed: <list of files>
+Skipped (informational): <count>
+```

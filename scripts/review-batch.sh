@@ -259,3 +259,5 @@ if [ "$session_aborted" -eq 1 ]; then
 fi
 
 echo "$summary"
+[ "$failed" -gt 0 ] && exit 1
+exit 0

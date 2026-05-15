@@ -10,11 +10,10 @@ set -euo pipefail
 #   fix-ci          — CI failure to auto-fix
 #   fix-reviews     — Bot review comments to address
 #   fix-bot-comment — Bot issue comment to address
-#   on-mention       — Human-directed @mention task
-#   review-changes   — Human review changes-requested
-#   issue           — Issue labeled dev-lead
+#   human           — Human-directed @mention task
+#   human-pr        — Human review changes-requested
+#   issue           — Issue labeled dev-lead/claude
 #   rebase          — Rebase conflict sentinel
-#   enable-auto-merge — Bot approval: enable auto-merge if PR is APPROVED
 #   ci-relay        — check_run relay (handled by ci-relay job, not this script)
 #   skip            — Event should be ignored
 
@@ -27,25 +26,10 @@ emit_intent() {
   local intent="$1" reason="${2:-}" context="${3:-}"
   echo "INTENT_TYPE=${intent}" >> "$GITHUB_ENV"
   echo "INTENT_REASON=${reason}" >> "$GITHUB_ENV"
+  echo "INTENT_CONTEXT=${context}" >> "$GITHUB_ENV"
   echo "intent_type=${intent}" >> "$GITHUB_OUTPUT"
   echo "intent_reason=${reason}" >> "$GITHUB_OUTPUT"
-
-  # Use a random delimiter for context to handle multiline JSON safely
-  local EOF_DELIMITER
-  EOF_DELIMITER="EOF_$(dd if=/dev/urandom bs=15 count=1 2>/dev/null | base64 | tr -dc 'a-zA-Z0-9')"
-
-  {
-    echo "INTENT_CONTEXT<<$EOF_DELIMITER"
-    echo "${context}"
-    echo "$EOF_DELIMITER"
-  } >> "$GITHUB_ENV"
-
-  {
-    echo "intent_context<<$EOF_DELIMITER"
-    echo "${context}"
-    echo "$EOF_DELIMITER"
-  } >> "$GITHUB_OUTPUT"
-
+  echo "intent_context=${context}" >> "$GITHUB_OUTPUT"
   echo "  [intent] type=${intent} reason=${reason} context=${context}"
 }
 
@@ -88,20 +72,6 @@ has_trigger_phrase() {
   return 1
 }
 
-# has_label <name>
-# Returns 0 (true) if the PR or issue in the event payload carries label <name>.
-# Reads labels straight from the payload (.pull_request.labels / .issue.labels),
-# so it stays a pure classifier with no API calls. repository_dispatch payloads
-# carry no labels; those are handled via a separate API call in the dispatch
-# branch of the routing section.
-has_label() {
-  local name="$1"
-  [ -n "$EVENT_PATH" ] && [ -f "$EVENT_PATH" ] || return 1
-  jq -e --arg n "$name" '
-    any(.pull_request.labels[]?, .issue.labels[]?; .name == $n)
-  ' "$EVENT_PATH" >/dev/null 2>&1
-}
-
 # is_fork_pr <event_path>
 # Returns 0 (true) if the PR head repo differs from GITHUB_REPOSITORY.
 is_fork_pr() {
@@ -117,7 +87,7 @@ is_fork_pr() {
 EVENT_NAME="${GITHUB_EVENT_NAME:-}"
 EVENT_PATH="${GITHUB_EVENT_PATH:-}"
 BOT_USER="${BOT_USER:-donpetry-bot}"
-TRUSTED_BOTS="${TRUSTED_BOTS:-copilot-pull-request-reviewer[bot],gemini-code-assist[bot],sonarqubecloud[bot],coderabbitai[bot],chatgpt-codex-connector[bot]}"
+TRUSTED_BOTS="${TRUSTED_BOTS:-copilot-pull-request-reviewer[bot],gemini-code-assist[bot],sonarqubecloud[bot],coderabbitai[bot]}"
 TRIGGER_PHRASES="${TRIGGER_PHRASES:-@dev-lead}"
 
 if [ -z "$EVENT_NAME" ]; then
@@ -131,20 +101,6 @@ echo "dev-lead-intent: processing event=$EVENT_NAME"
 
 if [ "$EVENT_NAME" = "check_run" ]; then
   emit_skip "check-run-handled-by-ci-relay"
-  exit 0
-fi
-
-# ── hands-off guard ───────────────────────────────────────────────────────────
-# A PR or issue labeled `dev-lead:hands-off` is intentionally excluded from the
-# agent — e.g. PRs that modify the dev-lead workflow itself, so the agent does
-# not pile commits onto its own infrastructure changes. Runs before the anti-loop
-# guard so a hands-off sync from BOT_USER emits `hands-off-label` rather than
-# `dev-lead-own-commit`, keeping the skip reason stable whenever the label is
-# present. Applies to every label-bearing event (PR opens/syncs, reviews, review
-# comments, issue comments on PRs, issue labeling). repository_dispatch payloads
-# carry no labels; those are checked via the API in the dispatch branch below.
-if has_label "dev-lead:hands-off"; then
-  emit_skip "hands-off-label"
   exit 0
 fi
 
@@ -189,12 +145,8 @@ case "$EVENT_NAME" in
           emit_skip "bot-pr"
           exit 0
         fi
-        context=$(jq -nc \
-          --argjson pr_number "${pr_number:-0}" \
-          --arg head_sha "${head_sha:-}" \
-          --arg actor "${sender_login:-}" \
-          '{"pr_number":$pr_number,"head_sha":$head_sha,"actor":$actor}')
-        emit_intent "review-changes" "pr-${pr_action}" "$context"
+        context=$(printf '{"pr_number":%s,"head_sha":"%s"}' "${pr_number:-0}" "${head_sha:-}")
+        emit_intent "human-pr" "pr-${pr_action}" "$context"
         ;;
       synchronize)
         # Anti-loop already handled above; now route human syncs
@@ -202,12 +154,8 @@ case "$EVENT_NAME" in
           emit_skip "bot-sync"
           exit 0
         fi
-        context=$(jq -nc \
-          --argjson pr_number "${pr_number:-0}" \
-          --arg head_sha "${head_sha:-}" \
-          --arg actor "${sender_login:-}" \
-          '{"pr_number":$pr_number,"head_sha":$head_sha,"actor":$actor}')
-        emit_intent "review-changes" "pr-synchronize" "$context"
+        context=$(printf '{"pr_number":%s,"head_sha":"%s"}' "${pr_number:-0}" "${head_sha:-}")
+        emit_intent "human-pr" "pr-synchronize" "$context"
         ;;
       *)
         emit_skip "pr-action-not-routed"
@@ -222,7 +170,6 @@ case "$EVENT_NAME" in
       exit 0
     fi
     reviewer=$(jq -r '.review.user.login // empty' "$EVENT_PATH" 2>/dev/null || true)
-    review_body=$(jq -r '.review.body // empty' "$EVENT_PATH" 2>/dev/null || true)
     review_state=$(jq -r '.review.state // empty' "$EVENT_PATH" 2>/dev/null || true)
     pr_number=$(jq -r '.pull_request.number // empty' "$EVENT_PATH" 2>/dev/null || true)
     head_sha=$(jq -r '.pull_request.head.sha // empty' "$EVENT_PATH" 2>/dev/null || true)
@@ -230,9 +177,7 @@ case "$EVENT_NAME" in
 
     # Skip if actor is BOT_USER (self-review)
     if [ "$reviewer" = "$BOT_USER" ]; then
-      pr_number=$(jq -r '.pull_request.number // empty' "$EVENT_PATH" 2>/dev/null || true)
-      context=$(jq -nc --argjson pr_number "${pr_number:-0}" '{"pr_number":$pr_number}')
-      emit_intent "skip" "self-review" "$context"
+      emit_skip "self-review"
       exit 0
     fi
 
@@ -242,21 +187,17 @@ case "$EVENT_NAME" in
       exit 0
     fi
 
-    context=$(jq -nc \
-      --argjson pr_number "${pr_number:-0}" \
-      --arg head_sha "${head_sha:-}" \
-      --arg actor "${reviewer:-}" \
-      --arg body "${review_body:-}" \
-      '{"pr_number":$pr_number,"head_sha":$head_sha,"actor":$actor,"body":$body}')
+    context=$(printf '{"pr_number":%s,"head_sha":"%s"}' "${pr_number:-0}" "${head_sha:-}")
 
     if is_trusted_bot "$reviewer"; then
+      # Bot review: only route non-APPROVED states
       if [ "$review_state" = "APPROVED" ]; then
-        emit_intent "enable-auto-merge" "bot-approved" "$context"
+        emit_skip "bot-approved"
       else
         emit_intent "fix-reviews" "bot-review-${review_state}" "$context"
       fi
     elif is_human_trusted "$author_assoc"; then
-      emit_intent "review-changes" "human-review-${review_state}" "$context"
+      emit_intent "human-pr" "human-review-${review_state}" "$context"
     else
       emit_skip "untrusted-reviewer"
     fi
@@ -272,19 +213,14 @@ case "$EVENT_NAME" in
     comment_body=$(jq -r '.comment.body // empty' "$EVENT_PATH" 2>/dev/null || true)
     pr_number=$(jq -r '.pull_request.number // empty' "$EVENT_PATH" 2>/dev/null || true)
     head_sha=$(jq -r '.pull_request.head.sha // empty' "$EVENT_PATH" 2>/dev/null || true)
-    author_assoc=$(jq -r '.comment.author_association // empty' "$EVENT_PATH" 2>/dev/null || true)
+    author_assoc=$(jq -r '.pull_request.author_association // empty' "$EVENT_PATH" 2>/dev/null || true)
 
-    context=$(jq -nc \
-      --argjson pr_number "${pr_number:-0}" \
-      --arg head_sha "${head_sha:-}" \
-      --arg actor "${commenter:-}" \
-      --arg body "${comment_body:-}" \
-      '{"pr_number":$pr_number,"head_sha":$head_sha,"actor":$actor,"body":$body}')
+    context=$(printf '{"pr_number":%s,"head_sha":"%s"}' "${pr_number:-0}" "${head_sha:-}")
 
     if is_trusted_bot "$commenter"; then
       emit_intent "fix-reviews" "bot-review-comment" "$context"
     elif is_human_trusted "$author_assoc" && has_trigger_phrase "$comment_body"; then
-      emit_intent "on-mention" "human-review-comment-trigger" "$context"
+      emit_intent "human" "human-review-comment-trigger" "$context"
     else
       emit_skip "no-trigger-or-untrusted"
     fi
@@ -303,19 +239,10 @@ case "$EVENT_NAME" in
       exit 0
     fi
 
-    # Skip comments on closed/merged PRs — nothing to modify on a merged branch.
-    # This is a fast-path guard; checkout_pr_in_worktree provides a deeper safety
-    # net, but failing early here avoids spending tokens on a no-op run (issue #405).
-    pr_state=$(jq -r '.issue.state // empty' "$EVENT_PATH" 2>/dev/null || true)
-    if [[ "${pr_state:-}" == "closed" ]]; then
-      emit_skip "pr-already-closed"
-      exit 0
-    fi
-
     commenter=$(jq -r '.comment.user.login // empty' "$EVENT_PATH" 2>/dev/null || true)
     comment_body=$(jq -r '.comment.body // empty' "$EVENT_PATH" 2>/dev/null || true)
     pr_number=$(jq -r '.issue.number // empty' "$EVENT_PATH" 2>/dev/null || true)
-    author_assoc=$(jq -r '.comment.author_association // empty' "$EVENT_PATH" 2>/dev/null || true)
+    author_assoc=$(jq -r '.issue.author_association // empty' "$EVENT_PATH" 2>/dev/null || true)
 
     # Rebase sentinel check (highest priority, before bot-skip)
     if echo "$comment_body" | grep -qF "<!-- auto-rebase-conflict:"; then
@@ -330,16 +257,12 @@ case "$EVENT_NAME" in
       exit 0
     fi
 
-    context=$(jq -nc \
-      --argjson pr_number "${pr_number:-0}" \
-      --arg actor "${commenter:-}" \
-      --arg body "${comment_body:-}" \
-      '{"pr_number":$pr_number,"actor":$actor,"body":$body}')
+    context=$(printf '{"pr_number":%s}' "${pr_number:-0}")
 
     if is_trusted_bot "$commenter"; then
       emit_intent "fix-bot-comment" "trusted-bot-comment" "$context"
     elif is_human_trusted "$author_assoc" && has_trigger_phrase "$comment_body"; then
-      emit_intent "on-mention" "human-comment-trigger" "$context"
+      emit_intent "human" "human-comment-trigger" "$context"
     else
       emit_skip "no-trigger-or-untrusted"
     fi
@@ -359,7 +282,7 @@ case "$EVENT_NAME" in
     label_name=$(jq -r '.label.name // empty' "$EVENT_PATH" 2>/dev/null || true)
     issue_number=$(jq -r '.issue.number // empty' "$EVENT_PATH" 2>/dev/null || true)
     case "$label_name" in
-      dev-lead)
+      dev-lead|claude)
         context=$(printf '{"issue_number":%s}' "${issue_number:-0}")
         emit_intent "issue" "issue-labeled-${label_name}" "$context"
         ;;
@@ -376,6 +299,10 @@ case "$EVENT_NAME" in
       exit 0
     fi
     dispatch_type=$(jq -r '.action // empty' "$EVENT_PATH" 2>/dev/null || true)
+    if [ "$dispatch_type" != "dev-lead-ci-failure" ]; then
+      emit_skip "unknown-dispatch-type"
+      exit 0
+    fi
     pr_number=$(jq -r '.client_payload.pr_number // empty' "$EVENT_PATH" 2>/dev/null || true)
     issue_number=$(jq -r '.client_payload.issue_number // empty' "$EVENT_PATH" 2>/dev/null || true)
     head_sha=$(jq -r '.client_payload.head_sha // empty' "$EVENT_PATH" 2>/dev/null || true)
