@@ -106,8 +106,8 @@ Every GitHub webhook event that reaches `dev-lead.yml` is classified into exactl
 | `issue_comment` created on PR | Trusted bot (`sonarqubecloud[bot]`, `coderabbitai[bot]`) | `fix-bot-comment` | `dev-lead-fix-reviews.sh` |
 | `issue_comment` created on PR | Human OWNER/MEMBER/COLLABORATOR + trigger phrase | `human` | `dev-lead-fix-reviews.sh` |
 | `issue_comment` created on PR | `<!-- auto-rebase-conflict:` marker | `rebase` | `dev-lead-fix-reviews.sh` |
-| `issues` labeled `dev-lead` | Any | `issue` | `dev-lead-fix-issue.sh` |
-| `check_run` completed, failure | Not a `dev-lead /` check | _relay only_ | `ci-relay` job |
+| `issues` labeled `dev-lead` or `claude` | Any | `issue` | `dev-lead-fix-issue.sh` |
+| `check_run` completed, failure | Not a `dev-lead / ` check | _relay only_ | `ci-relay` job |
 | `repository_dispatch` `dev-lead-ci-failure` | Dispatched by `ci-relay` | `fix-ci` | `dev-lead-fix-ci.sh` |
 | `repository_dispatch` `dev-lead-reviews-retry` | Dispatched by `dev-lead-retry` cron | _(payload `intent_type`)_ | `dev-lead-fix-reviews.sh` |
 | `repository_dispatch` `dev-lead-issue-retry` | Dispatched by `dev-lead-retry` cron (#781) | `issue` | `dev-lead-fix-issue.sh` |
@@ -125,7 +125,7 @@ Every GitHub webhook event that reaches `dev-lead.yml` is classified into exactl
 
 **`human-pr`** — A new PR was opened/synchronized or a human submitted a review. The agent reads the PR and all open review threads, addresses anything it can, and posts a status comment.
 
-**`issue`** — An issue was labeled `dev-lead`. The agent implements the issue, opens a PR, self-reviews, and tags CODEOWNERS when CI is green.
+**`issue`** — An issue was labeled `dev-lead` or `claude`. The agent implements the issue, opens a PR, self-reviews, and tags CODEOWNERS when CI is green.
 
 **`rebase`** — An auto-rebase-conflict sentinel comment was posted on a PR. The agent performs an agentic rebase, resolving conflicts per the conflict-resolution strategy, and pushes.
 
@@ -159,7 +159,7 @@ coderabbitai[bot]
 sonarqubecloud[bot]
 ```
 
-The `ci-relay` job separately gates on the check name not starting with `dev-lead /` to prevent recursive self-triggering.
+The `ci-relay` job separately gates on the check name not starting with `dev-lead / ` to prevent recursive self-triggering.
 
 ### 5.3 Trigger phrases
 
@@ -186,7 +186,7 @@ The engine is selected once per workflow run. Handler scripts do not hardcode en
 | Function | Tool access | Use |
 |---|---|---|
 | `run_triage <prompt_file>` | No tools | Fast classification, cheap model |
-| `run_agentic <prompt_file> <model> [tier]` | Bash, Read, Grep, Glob | Analysis/action/audit with file access |
+| `run_agentic <prompt_file> <model>` | Bash, Read, Grep, Glob | Analysis with file access |
 | `run_duck <prompt_file> <model>` | Bash, Read, Grep, Glob | Cross-engine adversarial check |
 
 ### 6.3 New engine function: `run_writer()`
@@ -600,9 +600,9 @@ Per-engine model names are controlled by the same env vars used by the PR Review
 | Variable | Claude default | Gemini default | Copilot default |
 |---|---|---|---|
 | `ENGINE_TRIAGE_MODEL` | `claude-haiku-4-5-20251001` | `gemini-2.0-flash` | `o4-mini` |
-| `ENGINE_ACTION_MODEL` | `claude-sonnet-4-6` | `gemini-2.5-pro` | `o4-mini` |
-| `ENGINE_DEEP_MODEL` | `claude-sonnet-4-6` | `gemini-2.5-pro` | `o4-mini` |
-| `ENGINE_SINGLE_MODEL` | `claude-opus-4-7` | `gemini-2.5-pro` | `o4-mini` |
+| `ENGINE_ACTION_MODEL` | `claude-sonnet-4-6` | `gemini-1.5-pro` | `o4-mini` |
+| `ENGINE_DEEP_MODEL` | `claude-sonnet-4-6` | `gemini-1.5-pro` | `o4-mini` |
+| `ENGINE_SINGLE_MODEL` | `claude-opus-4-7` | `gemini-1.5-pro` | `o4-mini` |
 
 ---
 
