@@ -1,19 +1,3 @@
-# ─────────────────────────────────────────────────────────────────────────────
-# SOURCE OF TRUTH: petry-projects/.github-private/.github/workflows/actions-fleet-monitor.yml
-# Standard:        petry-projects/.github/standards/ci-standards.md
-#
-# AGENTS — READ BEFORE EDITING:
-#   • This is the canonical fleet-monitor implementation; there is no external
-#     reusable. The scanning logic lives in scripts/fleet_monitor.sh and
-#     scripts/fleet_report.sh.
-#   • The "Migrate misaligned fleet-tracker issues" and "Track high-failure
-#     workflows as Issues" steps both use GH_PAT_WORKFLOWS (not github.token)
-#     because they need cross-repo issues:write on target repos.
-#     github.token only has issues:write on .github-private itself.
-#     Dev-Lead Agent is woken via repository_dispatch using GH_PAT_WORKFLOWS.
-#   • Do NOT change checkout ref from 'main' — the github.ref_name variant is
-#     for feature-branch testing only and must never reach production.
-# ─────────────────────────────────────────────────────────────────────────────
 name: Actions Fleet Monitor
 
 on:
@@ -22,10 +6,15 @@ on:
     - cron: '0 6 * * *'
   workflow_dispatch:
     inputs:
-      org:
-        description: "GitHub org to scan"
+      workflow_repo:
+        description: "owner/repo to monitor"
         required: false
-        default: "petry-projects"
+        default: "petry-projects/.github-private"
+        type: string
+      workflow_file:
+        description: "Workflow filename to monitor (e.g. pr-review.yml)"
+        required: false
+        default: "pr-review.yml"
         type: string
       lookback_days:
         description: "Days of run history to inspect"
@@ -34,10 +23,13 @@ on:
         type: string
   workflow_call:
     inputs:
-      org:
-        description: "GitHub org to scan"
-        required: false
-        default: "petry-projects"
+      workflow_repo:
+        description: "owner/repo containing the workflow to monitor"
+        required: true
+        type: string
+      workflow_file:
+        description: "Workflow filename to monitor (e.g. pr-review.yml)"
+        required: true
         type: string
       lookback_days:
         description: "Days of run history to inspect"
@@ -50,50 +42,46 @@ permissions:
   issues: write
 
 concurrency:
-  group: actions-fleet-monitor-${{ inputs.org || 'petry-projects' }}
+  group: actions-fleet-monitor-${{ inputs.workflow_repo || 'petry-projects/.github-private' }}-${{ inputs.workflow_file || 'pr-review.yml' }}
   cancel-in-progress: true
 
 jobs:
   health-check:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 5
     env:
-      ORG: ${{ inputs.org || 'petry-projects' }}
+      WORKFLOW_REPO: ${{ inputs.workflow_repo || 'petry-projects/.github-private' }}
+      WORKFLOW_FILE: ${{ inputs.workflow_file || 'pr-review.yml' }}
       LOOKBACK_DAYS: ${{ inputs.lookback_days || '1' }}
 
     steps:
       - name: Checkout agent repo
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
-        with:
-          repository: petry-projects/.github-private
-          ref: main  # Always checkout .github-private@main; workflow_call callers target @main per docs
-          token: ${{ secrets.GH_PAT_WORKFLOWS }}
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
-      - name: Run fleet monitor
+      - name: Run health check
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
-        run: bash scripts/fleet_monitor.sh
+          GH_TOKEN: ${{ secrets.DON_PETRY_BOT_GH_PAT }}
+        run: bash scripts/pr_review_health.sh
 
       - name: Create issue with findings
-        if: env.HAS_FAILURES == 'true' && hashFiles('fleet_monitor_report.md') != ''
+        if: env.HAS_FAILURES == 'true' && hashFiles('pr_review_health_report.md') != ''
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
         with:
           github-token: ${{ github.token }}
           script: |
             const fs = require('fs');
-            const MAX = 65000;
-            let report = fs.readFileSync('fleet_monitor_report.md', 'utf8');
-            if (!report.trim()) { core.setFailed('Report file is empty'); return; }
-            if (report.length > MAX) {
-              report = report.slice(0, MAX) +
-                '\n\n---\n_Report truncated — view the full output in the [workflow run summary](' +
-                `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID})._ `;
+            const report = fs.readFileSync('pr_review_health_report.md', 'utf8');
+            if (!report.trim()) {
+              core.setFailed('Report file is empty');
+              return;
             }
             const today = new Date().toISOString().split('T')[0];
+            const wfRepo = process.env.WORKFLOW_REPO;
+            const wfFile = process.env.WORKFLOW_FILE;
             const issue = await github.rest.issues.create({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              title: `${process.env.ORG} — workflow failures detected ${today}`,
+              title: `${wfFile} (${wfRepo}) — failures detected ${today}`,
               body: report,
               labels: ['health-check', 'automated-report'],
             });
