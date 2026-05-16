@@ -78,9 +78,11 @@ Or path-specific rules as needed.
      - ✅ `repo` (full control of private repos) — required for the
        `addPullRequestReview` mutation
      - ✅ `workflow` — required when AI delegation pushes workflow-file changes
-     - ✅ `read:org` — silences `Missing required token scopes: 'read:org'`
-       in workflow logs and lets the agent resolve `@org/team` mentions in
-       CODEOWNERS escalations
+     - ✅ `read:org` — **required** to read team-based review requests; the
+       `reviewRequests.requestedReviewer` GraphQL field returns
+       `Resource not accessible by personal access token` for any PR with
+       a team reviewer when this scope is absent. Also enables `@org/team`
+       resolution in CODEOWNERS escalations.
 4. **Generate token** and copy it immediately (you won't see it again).
 
 ## Step 4: Store the PAT in `petry-projects/.github-private`
@@ -166,11 +168,18 @@ classic PAT (Step 3) and update the secret (Step 4). The fine-grained version
 is blocked by an org-policy gate that has no UI surface — there's no
 configuration that makes it work.
 
-### `Missing required token scopes: 'read:org'`
+### `Missing required token scopes: 'read:org'` or `gh pr view failed during metadata prefetch`
 
-The classic PAT was generated without `read:org`. Edit the token at
-**Settings → Developer settings → Tokens (classic) → Edit** and check the
-`read:org` box. (No need to regenerate — editing scopes is sufficient.)
+The classic PAT was generated without `read:org`. This scope is required for two reasons:
+
+1. **Team-based review requests** — the `reviewRequests.requestedReviewer` GraphQL field
+   returns `Resource not accessible by personal access token` for any PR that has a team
+   (not just a user) as a requested reviewer. This causes a hard prefetch failure and the
+   PR is skipped entirely.
+2. **CODEOWNERS escalation** — `@org/team` mentions cannot be resolved without org read access.
+
+Edit the token at **Settings → Developer settings → Tokens (classic) → Edit** and check
+the `read:org` box. (No need to regenerate — editing scopes takes effect immediately.)
 
 ### `gh auth status` reports the wrong account
 
