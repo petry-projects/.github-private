@@ -112,3 +112,131 @@ _source_engine() {
   [ "$status" -eq 0 ]
   [[ "$output" == *"3 lines"* ]]
 }
+
+# ── rate-limit detection tests ────────────────────────────────────────────────
+
+@test "writer: run_writer returns exit 2 when claude outputs rate-limit text" {
+  _source_engine "claude"
+  export DEV_LEAD_DRY_RUN=false
+  # Stub claude: exits 1 and outputs a rate-limit message to stdout
+  cat > "$STUB_BIN_DIR/claude" << 'STUB'
+#!/usr/bin/env bash
+echo "You've hit your limit · resets 11:20pm (UTC)"
+exit 1
+STUB
+  chmod +x "$STUB_BIN_DIR/claude"
+
+  run run_writer "$TEST_PROMPT"
+
+  [ "$status" -eq 2 ]
+}
+
+@test "writer: run_writer returns exit 2 when gemini outputs rate-limit text" {
+  _source_engine "gemini"
+  export DEV_LEAD_DRY_RUN=false
+  cat > "$STUB_BIN_DIR/gemini" << 'STUB'
+#!/usr/bin/env bash
+echo "quota exceeded for today"
+exit 1
+STUB
+  chmod +x "$STUB_BIN_DIR/gemini"
+
+  run run_writer "$TEST_PROMPT"
+
+  [ "$status" -eq 2 ]
+}
+
+@test "writer: run_writer returns exit 1 (not 2) for non-rate-limit failure" {
+  _source_engine "claude"
+  export DEV_LEAD_DRY_RUN=false
+  export STUB_ENGINE_EXIT=1
+  # Deliberately avoid any rate-limit vocabulary so is_rate_limited returns false
+  export STUB_ENGINE_RESPONSE="compilation failed: syntax error on line 42"
+
+  run run_writer "$TEST_PROMPT"
+
+  [ "$status" -eq 1 ]
+}
+
+@test "writer: run_writer writes reset time to /tmp/dev-lead-rate-limit-reset on rate-limit" {
+  _source_engine "claude"
+  export DEV_LEAD_DRY_RUN=false
+  rm -f /tmp/dev-lead-rate-limit-reset
+  cat > "$STUB_BIN_DIR/claude" << 'STUB'
+#!/usr/bin/env bash
+echo "You've hit your limit · resets 11:20pm (UTC)"
+exit 1
+STUB
+  chmod +x "$STUB_BIN_DIR/claude"
+
+  run run_writer "$TEST_PROMPT"
+
+  [ "$status" -eq 2 ]
+  [ -f /tmp/dev-lead-rate-limit-reset ]
+}
+
+@test "writer: run_writer_with_fallback retries all engines and returns 2 when all rate-limited" {
+  _source_engine "claude"
+  export DEV_LEAD_DRY_RUN=false
+  # All engines output rate-limit text and exit 1 → run_writer returns 2 for each
+  for engine in claude gemini; do
+    cat > "$STUB_BIN_DIR/$engine" << 'STUB'
+#!/usr/bin/env bash
+echo "rate limit exceeded"
+exit 1
+STUB
+    chmod +x "$STUB_BIN_DIR/$engine"
+  done
+  # Add copilot stub (falls back to claude internally)
+  cp "$STUB_BIN_DIR/claude" "$STUB_BIN_DIR/copilot"
+
+  run run_writer_with_fallback "$TEST_PROMPT"
+
+  [ "$status" -eq 2 ]
+}
+
+@test "writer: run_writer_with_fallback succeeds on second engine if first rate-limited" {
+  _source_engine "claude"
+  export DEV_LEAD_DRY_RUN=false
+  # claude is rate-limited; gemini succeeds
+  cat > "$STUB_BIN_DIR/claude" << 'STUB'
+#!/usr/bin/env bash
+echo "hit your limit"
+exit 1
+STUB
+  chmod +x "$STUB_BIN_DIR/claude"
+  export STUB_ENGINE_EXIT=0
+  export STUB_ENGINE_RESPONSE="gemini response ok"
+
+  run run_writer_with_fallback "$TEST_PROMPT"
+
+  [ "$status" -eq 0 ]
+}
+
+# ── parse_reset_time tests ─────────────────────────────────────────────────────
+
+@test "parse_reset_time: extracts H:MMpm from 'resets 11:20pm (UTC)'" {
+  _source_engine "claude"
+  rm -f /tmp/dev-lead-rate-limit-reset
+
+  parse_reset_time "You've hit your limit · resets 11:20pm (UTC)"
+
+  [ -f /tmp/dev-lead-rate-limit-reset ]
+  # Should contain a non-empty ISO timestamp
+  local result
+  result=$(cat /tmp/dev-lead-rate-limit-reset)
+  [ -n "$result" ]
+  [[ "$result" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]
+}
+
+@test "parse_reset_time: writes empty string when no reset time found" {
+  _source_engine "claude"
+  rm -f /tmp/dev-lead-rate-limit-reset
+
+  parse_reset_time "some error without a reset time"
+
+  [ -f /tmp/dev-lead-rate-limit-reset ]
+  local result
+  result=$(cat /tmp/dev-lead-rate-limit-reset)
+  [ -z "$result" ]
+}

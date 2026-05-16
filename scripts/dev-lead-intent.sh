@@ -299,10 +299,6 @@ case "$EVENT_NAME" in
       exit 0
     fi
     dispatch_type=$(jq -r '.action // empty' "$EVENT_PATH" 2>/dev/null || true)
-    if [ "$dispatch_type" != "dev-lead-ci-failure" ]; then
-      emit_skip "unknown-dispatch-type"
-      exit 0
-    fi
     pr_number=$(jq -r '.client_payload.pr_number // empty' "$EVENT_PATH" 2>/dev/null || true)
     issue_number=$(jq -r '.client_payload.issue_number // empty' "$EVENT_PATH" 2>/dev/null || true)
     head_sha=$(jq -r '.client_payload.head_sha // empty' "$EVENT_PATH" 2>/dev/null || true)

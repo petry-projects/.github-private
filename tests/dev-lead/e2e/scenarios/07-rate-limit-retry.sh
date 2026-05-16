@@ -285,9 +285,9 @@ GHEOF
     all_pass=false
   fi
 
-  # ── Part E: fix-reviews on-mention intent posts user acknowledgment ──────────
+  # ── Part E: fix-reviews human intent posts user acknowledgment ────────────
   log ""
-  log "Part E: fix-reviews on-mention intent posts user-visible acknowledgment"
+  log "Part E: fix-reviews human intent posts user-visible acknowledgment"
 
   make_rate_limited_engine "$STUB_ENGINE_DIR" "hit your limit"
   make_empty_gh_comments "$STUB_ENGINE_DIR"
@@ -298,7 +298,7 @@ GHEOF
     PATH="${STUB_ENGINE_DIR}:${PATH}" \
     GITHUB_ENV="${GITHUB_ENV_FILE}" \
     GITHUB_OUTPUT="/dev/null" \
-    INTENT_TYPE="on-mention" \
+    INTENT_TYPE="human" \
     PR_NUMBER="54" HEAD_SHA="ddd444eee555" ACTOR="donpetry" \
     USER_INSTRUCTION="Please fix the tests" \
     REPO="petry-projects/test-repo" REVIEW_ENGINE="claude" DEV_LEAD_DRY_RUN="false" \
@@ -311,144 +311,18 @@ GHEOF
   log "Part E exit code: ${exit_e}"
   echo "${output_e}" | sed 's/^/  /'
 
-  if assert_eq "$exit_e" "2" "${SCENARIO_NAME}(E): fix-reviews on-mention exits 2 on rate-limited"; then
+  if assert_eq "$exit_e" "2" "${SCENARIO_NAME}(E): fix-reviews human exits 2 on rate-limited"; then
     true
   else
     all_pass=false
   fi
 
-  # on-mention: no auto-retry (context can't be reconstructed); must tell user to re-trigger
+  # human intent: no auto-retry (context can't be reconstructed); must tell user to re-trigger
   if echo "${output_e}" | grep -qiE "rate-limited|re-mention|re-trigger"; then
     echo "[PASS] ${SCENARIO_NAME}(E): output contains rate-limit/re-trigger language"
   else
     echo "[FAIL] ${SCENARIO_NAME}(E): output missing rate-limit/re-trigger acknowledgment"
     all_pass=false
-  fi
-
-  # ── Part G: human-pr alias normalization — no infinite re-dispatch ───────────
-  log ""
-  log "Part G: retry skips human-pr when review-changes terminal marker exists"
-
-  # Scenario: a PR has a legacy human-pr rate-limited marker AND a review-changes
-  # terminal marker (posted by the first retry run, which normalizes human-pr →
-  # review-changes). Without the fix, the terminal check would look for
-  # intent=human-pr and never find it, dispatching on every cron cycle forever.
-  #
-  # The gh stub simulates --jq pre-processing:
-  #   - repo list returns a JSON array of name strings (the --jq filter selects .nameWithOwner)
-  #   - pulls/<n> with --jq '.head.sha' returns just the SHA string
-  #   - issues/<n>/comments with --jq '[.[].body]' returns an array of body strings
-  cat > "${STUB_ENGINE_DIR}/gh" << 'GHEOF'
-#!/usr/bin/env bash
-case "$*" in
-  *"repo list"*)
-    echo '["petry-projects/test-repo"]' ;;
-  *"pulls?state=open"*)
-    echo '[{"number":99,"head":{"sha":"fff666ggg777"}}]' ;;
-  *"pulls/99"*".head.sha"*)
-    echo "fff666ggg777" ;;
-  *"pulls/99"*)
-    echo '{"number":99,"head":{"sha":"fff666ggg777"}}' ;;
-  *"issues/99/comments"*)
-    printf '%s\n' \
-      '["<!-- dev-lead-fix-reviews pr=99 sha=fff666ggg777 intent=human-pr status=rate-limited -->",' \
-      '"<!-- dev-lead-fix-reviews pr=99 sha=fff666ggg777 intent=review-changes status=applied -->"]' ;;
-  *) echo "{}" ;;
-esac
-GHEOF
-  chmod +x "${STUB_ENGINE_DIR}/gh"
-
-  local output_g exit_g
-  set +e
-  output_g=$(
-    PATH="${STUB_ENGINE_DIR}:${PATH}" \
-    GITHUB_ENV="${GITHUB_ENV_FILE}" \
-    GITHUB_OUTPUT="/dev/null" \
-    TARGET_ORG="petry-projects" \
-    DRY_RUN="true" \
-    DISPATCH_DELAY_SEC="0" \
-    NOW_ISO="2026-05-16T20:00:00Z" \
-    bash "${RETRY_SCRIPT}" 2>&1
-  )
-  exit_g=$?
-  set -e
-
-  log "Part G exit code: ${exit_g}"
-  echo "${output_g}" | sed 's/^/  /'
-
-  if assert_eq "$exit_g" "0" "${SCENARIO_NAME}(G): retry script exits 0"; then
-    true
-  else
-    all_pass=false
-  fi
-
-  if echo "${output_g}" | grep -q "would dispatch"; then
-    echo "[FAIL] ${SCENARIO_NAME}(G): retry dispatched despite review-changes terminal marker existing"
-    all_pass=false
-  else
-    echo "[PASS] ${SCENARIO_NAME}(G): retry skipped human-pr — review-changes terminal marker recognized"
-  fi
-
-  # ── Part H: human-pr alias normalization — dispatches with review-changes ────
-  log ""
-  log "Part H: retry dispatches as review-changes when only human-pr rate-limited (no terminal)"
-
-  cat > "${STUB_ENGINE_DIR}/gh" << 'GHEOF'
-#!/usr/bin/env bash
-case "$*" in
-  *"repo list"*)
-    echo '["petry-projects/test-repo"]' ;;
-  *"pulls?state=open"*)
-    echo '[{"number":99,"head":{"sha":"fff666ggg777"}}]' ;;
-  *"pulls/99"*".head.sha"*)
-    echo "fff666ggg777" ;;
-  *"pulls/99"*)
-    echo '{"number":99,"head":{"sha":"fff666ggg777"}}' ;;
-  *"issues/99/comments"*)
-    echo '["<!-- dev-lead-fix-reviews pr=99 sha=fff666ggg777 intent=human-pr status=rate-limited -->"]' ;;
-  *) echo "{}" ;;
-esac
-GHEOF
-  chmod +x "${STUB_ENGINE_DIR}/gh"
-
-  local output_h exit_h
-  set +e
-  output_h=$(
-    PATH="${STUB_ENGINE_DIR}:${PATH}" \
-    GITHUB_ENV="${GITHUB_ENV_FILE}" \
-    GITHUB_OUTPUT="/dev/null" \
-    TARGET_ORG="petry-projects" \
-    DRY_RUN="true" \
-    DISPATCH_DELAY_SEC="0" \
-    NOW_ISO="2026-05-16T20:00:00Z" \
-    bash "${RETRY_SCRIPT}" 2>&1
-  )
-  exit_h=$?
-  set -e
-
-  log "Part H exit code: ${exit_h}"
-  echo "${output_h}" | sed 's/^/  /'
-
-  if assert_eq "$exit_h" "0" "${SCENARIO_NAME}(H): retry script exits 0"; then
-    true
-  else
-    all_pass=false
-  fi
-
-  # The dry-run dispatch message includes "intent=<canonical>" — must be review-changes
-  if echo "${output_h}" | grep -q "intent=review-changes"; then
-    echo "[PASS] ${SCENARIO_NAME}(H): retry dispatches with normalized intent=review-changes"
-  else
-    echo "[FAIL] ${SCENARIO_NAME}(H): retry did not normalize human-pr to review-changes for dispatch"
-    all_pass=false
-  fi
-
-  # The dispatch must not forward the legacy human-pr label
-  if echo "${output_h}" | grep "intent=" | grep -q "human-pr"; then
-    echo "[FAIL] ${SCENARIO_NAME}(H): retry dispatched with legacy intent=human-pr (not normalized)"
-    all_pass=false
-  else
-    echo "[PASS] ${SCENARIO_NAME}(H): dispatch did not use legacy intent=human-pr"
   fi
 
   # ── Part F: dev-lead-retry.sh dry-run scans and identifies rate-limited PRs

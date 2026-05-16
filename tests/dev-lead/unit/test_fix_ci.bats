@@ -280,3 +280,160 @@ GHEOF
   # Should post sha-level marker but NOT exhaustion comment
   [[ "$output" != *"exhaustion threshold reached"* ]] || true
 }
+
+# ── rate-limit handling tests ─────────────────────────────────────────────────
+
+@test "fix-ci: rate-limited: engine exit 2 posts status=rate-limited, not status=failed" {
+  cat > "$STUB_BIN_DIR/claude" << 'STUB'
+#!/usr/bin/env bash
+echo "You've hit your limit · resets 11:20pm (UTC)"
+exit 1
+STUB
+  chmod +x "$STUB_BIN_DIR/claude"
+  # Add rate-limited gemini and copilot stubs too
+  for engine in gemini copilot; do
+    cat > "$STUB_BIN_DIR/$engine" << 'STUB'
+#!/usr/bin/env bash
+echo "rate limit exceeded"
+exit 1
+STUB
+    chmod +x "$STUB_BIN_DIR/$engine"
+  done
+
+  cat > "$STUB_BIN_DIR/gh" << 'GHEOF'
+#!/usr/bin/env bash
+case "$*" in
+  *"issues/42/comments"*) echo "[]" ;;
+  *"pr checkout"*) exit 0 ;;
+  *"pr comment"*) echo "COMMENT_POSTED: $*"; exit 0 ;;
+  *"run view"*) echo "log output" ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+  export DEV_LEAD_DRY_RUN="false"
+
+  run bash "$FIX_CI_SCRIPT"
+
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"rate-limited"* ]]
+  [[ "$output" != *"status=failed"* ]]
+}
+
+@test "fix-ci: rate-limited: does not count toward exhaustion threshold" {
+  # PR already has rate-limited markers but zero status=failed markers
+  cat > "$STUB_BIN_DIR/gh" << 'GHEOF'
+#!/usr/bin/env bash
+case "$*" in
+  *"issues/42/comments"*) echo '[
+    {"body":"<!-- dev-lead-fix-ci sha=aaa111 status=rate-limited -->\nrate limited"},
+    {"body":"<!-- dev-lead-fix-ci sha=bbb222 status=rate-limited -->\nrate limited again"}
+  ]' ;;
+  *"pr checkout"*) exit 0 ;;
+  *"pr comment"*) echo "COMMENT_POSTED"; exit 0 ;;
+  *"run view"*) echo "log output" ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+
+  # Engine also rate-limits on this run
+  for engine in claude gemini copilot; do
+    cat > "$STUB_BIN_DIR/$engine" << 'STUB'
+#!/usr/bin/env bash
+echo "rate limit exceeded"
+exit 1
+STUB
+    chmod +x "$STUB_BIN_DIR/$engine"
+  done
+
+  export DEV_LEAD_DRY_RUN="false"
+  export MAX_FAIL_ATTEMPTS="2"
+  export HEAD_SHA="ccc333new"
+
+  run bash "$FIX_CI_SCRIPT"
+
+  # Should exit 2 (rate-limited) and NOT post exhaustion
+  [ "$status" -eq 2 ]
+  [[ "$output" != *"status=exhausted"* ]]
+  [[ "$output" != *"exhaustion threshold"* ]]
+}
+
+@test "fix-ci: idempotency: rate-limited marker is retriable (not terminal)" {
+  # SHA has an existing status=rate-limited marker — should NOT skip
+  cat > "$STUB_BIN_DIR/gh" << 'GHEOF'
+#!/usr/bin/env bash
+case "$*" in
+  *"issues/42/comments"*) echo '[
+    {"body":"<!-- dev-lead-fix-ci sha=abc123def456 status=rate-limited -->\nrate limited"}
+  ]' ;;
+  *"pr checkout"*) exit 0 ;;
+  *"pr comment"*) exit 0 ;;
+  *"run view"*) echo "log output" ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+  export DEV_LEAD_DRY_RUN="true"
+
+  run bash "$FIX_CI_SCRIPT"
+
+  # Should proceed (dry-run) not skip
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"[dry-run]"* ]]
+  # Must NOT output the idempotency "skipping" message
+  [[ "$output" != *"terminal status"* ]]
+}
+
+@test "fix-ci: idempotency: applied marker is terminal (skips re-run)" {
+  cat > "$STUB_BIN_DIR/gh" << 'GHEOF'
+#!/usr/bin/env bash
+case "$*" in
+  *"issues/42/comments"*) echo '[
+    {"body":"<!-- dev-lead-fix-ci sha=abc123def456 status=applied -->\napplied"}
+  ]' ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+  export DEV_LEAD_DRY_RUN="false"
+
+  run bash "$FIX_CI_SCRIPT"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Already handled"* || "$output" == *"terminal status"* || "$output" == *"skipping"* ]]
+}
+
+@test "fix-ci: rate-limited dedup: existing rate-limited marker for same SHA skips duplicate post" {
+  # Simulate an existing rate-limited marker for HEAD_SHA (same sha)
+  cat > "$STUB_BIN_DIR/gh" << 'GHEOF'
+#!/usr/bin/env bash
+case "$*" in
+  *"issues/42/comments"*) echo '[
+    {"body":"<!-- dev-lead-fix-ci sha=abc123def456 status=rate-limited -->\nrate limited"}
+  ]' ;;
+  *"pr checkout"*) exit 0 ;;
+  *"pr comment"*) echo "COMMENT_POSTED"; exit 0 ;;
+  *"run view"*) echo "log output" ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+
+  for engine in claude gemini copilot; do
+    cat > "$STUB_BIN_DIR/$engine" << 'STUB'
+#!/usr/bin/env bash
+echo "rate limit exceeded"
+exit 1
+STUB
+    chmod +x "$STUB_BIN_DIR/$engine"
+  done
+
+  export DEV_LEAD_DRY_RUN="false"
+
+  run bash "$FIX_CI_SCRIPT"
+
+  [ "$status" -eq 2 ]
+  # Output should mention dedup skip
+  [[ "$output" == *"already posted"* || "$output" == *"skipping duplicate"* ]]
+}
