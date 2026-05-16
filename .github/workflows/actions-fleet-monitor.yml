@@ -61,17 +61,19 @@ jobs:
           github-token: ${{ github.token }}
           script: |
             const fs = require('fs');
-            const report = fs.readFileSync('fleet_monitor_report.md', 'utf8');
-            if (!report.trim()) {
-              core.setFailed('Report file is empty');
-              return;
+            const MAX = 65000;
+            let report = fs.readFileSync('fleet_monitor_report.md', 'utf8');
+            if (!report.trim()) { core.setFailed('Report file is empty'); return; }
+            if (report.length > MAX) {
+              report = report.slice(0, MAX) +
+                '\n\n---\n_Report truncated — view the full output in the [workflow run summary](' +
+                `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID})._ `;
             }
             const today = new Date().toISOString().split('T')[0];
-            const org = process.env.ORG;
             const issue = await github.rest.issues.create({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              title: `${org} — workflow failures detected ${today}`,
+              title: `${process.env.ORG} — workflow failures detected ${today}`,
               body: report,
               labels: ['health-check', 'automated-report'],
             });
