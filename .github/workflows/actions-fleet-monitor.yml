@@ -11,11 +11,6 @@ on:
         required: false
         default: "petry-projects/.github-private"
         type: string
-      workflow_file:
-        description: "Workflow filename to monitor (e.g. pr-review.yml)"
-        required: false
-        default: "pr-review.yml"
-        type: string
       lookback_days:
         description: "Days of run history to inspect"
         required: false
@@ -24,11 +19,7 @@ on:
   workflow_call:
     inputs:
       workflow_repo:
-        description: "owner/repo containing the workflow to monitor"
-        required: true
-        type: string
-      workflow_file:
-        description: "Workflow filename to monitor (e.g. pr-review.yml)"
+        description: "owner/repo containing the workflows to monitor"
         required: true
         type: string
       lookback_days:
@@ -42,46 +33,44 @@ permissions:
   issues: write
 
 concurrency:
-  group: actions-fleet-monitor-${{ inputs.workflow_repo || 'petry-projects/.github-private' }}-${{ inputs.workflow_file || 'pr-review.yml' }}
+  group: actions-fleet-monitor-${{ inputs.workflow_repo || 'petry-projects/.github-private' }}
   cancel-in-progress: true
 
 jobs:
   health-check:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 15
     env:
       WORKFLOW_REPO: ${{ inputs.workflow_repo || 'petry-projects/.github-private' }}
-      WORKFLOW_FILE: ${{ inputs.workflow_file || 'pr-review.yml' }}
       LOOKBACK_DAYS: ${{ inputs.lookback_days || '1' }}
 
     steps:
       - name: Checkout agent repo
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
-      - name: Run health check
+      - name: Run fleet monitor
         env:
           GH_TOKEN: ${{ secrets.DON_PETRY_BOT_GH_PAT }}
-        run: bash scripts/pr_review_health.sh
+        run: bash scripts/fleet_monitor.sh
 
       - name: Create issue with findings
-        if: env.HAS_FAILURES == 'true' && hashFiles('pr_review_health_report.md') != ''
+        if: env.HAS_FAILURES == 'true' && hashFiles('fleet_monitor_report.md') != ''
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
         with:
           github-token: ${{ github.token }}
           script: |
             const fs = require('fs');
-            const report = fs.readFileSync('pr_review_health_report.md', 'utf8');
+            const report = fs.readFileSync('fleet_monitor_report.md', 'utf8');
             if (!report.trim()) {
               core.setFailed('Report file is empty');
               return;
             }
             const today = new Date().toISOString().split('T')[0];
             const wfRepo = process.env.WORKFLOW_REPO;
-            const wfFile = process.env.WORKFLOW_FILE;
             const issue = await github.rest.issues.create({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              title: `${wfFile} (${wfRepo}) — failures detected ${today}`,
+              title: `${wfRepo} — workflow failures detected ${today}`,
               body: report,
               labels: ['health-check', 'automated-report'],
             });
@@ -90,4 +79,4 @@ jobs:
       - name: Annotate clean run
         if: env.HAS_FAILURES != 'true'
         run: |
-          echo "::notice::Health check passed — ${WORKFLOW_FILE} in ${WORKFLOW_REPO} is healthy over the last ${LOOKBACK_DAYS} day(s)."
+          echo "::notice::Fleet monitor passed — all workflows in ${WORKFLOW_REPO} are healthy over the last ${LOOKBACK_DAYS} day(s)."
