@@ -6,10 +6,10 @@ on:
     - cron: '0 6 * * *'
   workflow_dispatch:
     inputs:
-      workflow_repo:
-        description: "owner/repo to monitor"
+      org:
+        description: "GitHub org to scan"
         required: false
-        default: "petry-projects/.github-private"
+        default: "petry-projects"
         type: string
       lookback_days:
         description: "Days of run history to inspect"
@@ -18,9 +18,10 @@ on:
         type: string
   workflow_call:
     inputs:
-      workflow_repo:
-        description: "owner/repo containing the workflows to monitor"
-        required: true
+      org:
+        description: "GitHub org to scan"
+        required: false
+        default: "petry-projects"
         type: string
       lookback_days:
         description: "Days of run history to inspect"
@@ -33,15 +34,15 @@ permissions:
   issues: write
 
 concurrency:
-  group: actions-fleet-monitor-${{ inputs.workflow_repo || 'petry-projects/.github-private' }}
+  group: actions-fleet-monitor-${{ inputs.org || 'petry-projects' }}
   cancel-in-progress: true
 
 jobs:
   health-check:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     env:
-      WORKFLOW_REPO: ${{ inputs.workflow_repo || 'petry-projects/.github-private' }}
+      ORG: ${{ inputs.org || 'petry-projects' }}
       LOOKBACK_DAYS: ${{ inputs.lookback_days || '1' }}
 
     steps:
@@ -66,11 +67,11 @@ jobs:
               return;
             }
             const today = new Date().toISOString().split('T')[0];
-            const wfRepo = process.env.WORKFLOW_REPO;
+            const org = process.env.ORG;
             const issue = await github.rest.issues.create({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              title: `${wfRepo} — workflow failures detected ${today}`,
+              title: `${org} — workflow failures detected ${today}`,
               body: report,
               labels: ['health-check', 'automated-report'],
             });
@@ -79,4 +80,4 @@ jobs:
       - name: Annotate clean run
         if: env.HAS_FAILURES != 'true'
         run: |
-          echo "::notice::Fleet monitor passed — all workflows in ${WORKFLOW_REPO} are healthy over the last ${LOOKBACK_DAYS} day(s)."
+          echo "::notice::Fleet monitor passed — all workflows in ${ORG} are healthy over the last ${LOOKBACK_DAYS} day(s)."
