@@ -299,19 +299,42 @@ case "$EVENT_NAME" in
       exit 0
     fi
     dispatch_type=$(jq -r '.action // empty' "$EVENT_PATH" 2>/dev/null || true)
-    if [ "$dispatch_type" != "dev-lead-ci-failure" ]; then
-      emit_skip "unknown-dispatch-type"
-      exit 0
-    fi
     pr_number=$(jq -r '.client_payload.pr_number // empty' "$EVENT_PATH" 2>/dev/null || true)
     head_sha=$(jq -r '.client_payload.head_sha // empty' "$EVENT_PATH" 2>/dev/null || true)
-    checks=$(jq -c '.client_payload.checks // []' "$EVENT_PATH" 2>/dev/null || echo "[]")
     if [ -z "$pr_number" ]; then
       emit_skip "no-pr-number-in-payload"
       exit 0
     fi
-    context=$(printf '{"pr_number":%s,"head_sha":"%s","checks":%s}' "${pr_number}" "${head_sha:-}" "${checks}")
-    emit_intent "fix-ci" "ci-failure-dispatch" "$context"
+
+    case "$dispatch_type" in
+      dev-lead-ci-failure)
+        checks=$(jq -c '.client_payload.checks // []' "$EVENT_PATH" 2>/dev/null || echo "[]")
+        context=$(jq -nc \
+          --argjson pr_number "$pr_number" \
+          --arg head_sha "${head_sha:-}" \
+          --argjson checks "$checks" \
+          '{"pr_number":$pr_number,"head_sha":$head_sha,"checks":$checks}')
+        emit_intent "fix-ci" "ci-failure-dispatch" "$context"
+        ;;
+      dev-lead-reviews-retry)
+        intent_type=$(jq -r '.client_payload.intent_type // empty' "$EVENT_PATH" 2>/dev/null || true)
+        case "$intent_type" in
+          fix-reviews|fix-bot-comment|human|human-pr|rebase)
+            context=$(jq -nc \
+              --argjson pr_number "$pr_number" \
+              --arg head_sha "${head_sha:-}" \
+              '{"pr_number":$pr_number,"head_sha":$head_sha}')
+            emit_intent "$intent_type" "reviews-retry-dispatch" "$context"
+            ;;
+          *)
+            emit_skip "unknown-reviews-retry-intent-type"
+            ;;
+        esac
+        ;;
+      *)
+        emit_skip "unknown-dispatch-type"
+        ;;
+    esac
     ;;
 
   # ── everything else ───────────────────────────────────────────────────────

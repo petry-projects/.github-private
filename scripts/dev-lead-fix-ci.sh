@@ -23,12 +23,14 @@ MARKER_PREFIX="<!-- dev-lead-fix-ci sha="
 EXHAUSTION_MARKER="<!-- dev-lead-fix-ci pr=${PR_NUMBER} status=exhausted -->"
 export PROMPTS_DIR="${PROMPTS_DIR:-prompts/dev-lead}"
 
-# check_idempotency: returns 0 (skip) if this exact SHA was already attempted,
-# OR if a PR-level exhaustion marker exists (blocks all future SHAs).
+# check_idempotency: returns 0 (skip) if this exact SHA was already TERMINALLY
+# handled, OR if a PR-level exhaustion marker exists (blocks all future SHAs).
+# status=rate-limited is NOT terminal — those runs must be retriable.
 check_idempotency() {
   local comments
-  # Use standalone jq so the mock stub in tests can return raw JSON
-  comments=$(gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" 2>/dev/null \
+  # Use standalone jq so the mock stub in tests can return raw JSON.
+  # --paginate ensures markers on busy PRs (>30 comments) are not missed.
+  comments=$(gh api --paginate "repos/${REPO}/issues/${PR_NUMBER}/comments?per_page=100" 2>/dev/null \
     | jq -r '.[].body' 2>/dev/null || true)
 
   # PR-level exhaustion — blocks regardless of SHA
@@ -37,20 +39,38 @@ check_idempotency() {
     return 0
   fi
 
-  # SHA-level idempotency — skip if this exact SHA was already attempted
-  if echo "$comments" | grep -qF "${MARKER_PREFIX}${HEAD_SHA}"; then
+  # SHA-level idempotency — skip only for terminal statuses (applied, failed, no-changes).
+  # status=rate-limited is retriable: do not skip on it so the retry cron can re-run.
+  if echo "$comments" | grep -qE "${MARKER_PREFIX}${HEAD_SHA} status=(applied|failed|no-changes)"; then
+    echo "::notice::Already handled CI failure at SHA ${HEAD_SHA} with terminal status — skipping"
     return 0
   fi
 
   return 1
 }
 
-# count_recent_failures: count status=failed markers on this PR (any SHA)
+# count_recent_failures: count status=failed markers on this PR (any SHA).
+# Intentionally excludes status=rate-limited so rate limit events do not count
+# toward the exhaustion threshold — rate limits are temporary infrastructure
+# events, not evidence of repeated engine errors on this PR's content.
+# --paginate ensures an accurate count even on PRs with >30 comments.
 count_recent_failures() {
   local pattern="${MARKER_PREFIX}[a-f0-9A-F]* status=failed"
-  gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" 2>/dev/null \
+  gh api --paginate "repos/${REPO}/issues/${PR_NUMBER}/comments?per_page=100" 2>/dev/null \
     | jq "[.[] | select(.body | test(\"${pattern}\"))] | length" 2>/dev/null \
     || echo "0"
+}
+
+# has_rate_limited_marker: returns 0 if a status=rate-limited marker already
+# exists for HEAD_SHA on this PR. Used to avoid duplicate rate-limited comments.
+# --paginate ensures the dedup check is accurate on PRs with >30 comments.
+has_rate_limited_marker() {
+  local pattern="${MARKER_PREFIX}${HEAD_SHA} status=rate-limited"
+  local count
+  count=$(gh api --paginate "repos/${REPO}/issues/${PR_NUMBER}/comments?per_page=100" 2>/dev/null \
+    | jq "[.[] | select(.body | test(\"${pattern}\"))] | length" 2>/dev/null \
+    || echo "0")
+  [ "${count:-0}" -gt 0 ]
 }
 
 collect_logs() {
@@ -117,6 +137,46 @@ To re-enable, delete this comment or push a new commit with a substantially diff
   fi
 }
 
+# post_rate_limited: posts a status=rate-limited marker with embedded reset
+# time and check name. Skips if a marker already exists for HEAD_SHA (dedup).
+# The check= field lets the retry cron look up current check-run details when
+# re-dispatching, giving the engine full failure logs/annotations on retry.
+post_rate_limited() {
+  # Dedup: don't accumulate multiple rate-limited markers for the same SHA
+  if has_rate_limited_marker; then
+    echo "::notice::rate-limited marker already posted for SHA ${HEAD_SHA} — skipping duplicate"
+    return 0
+  fi
+
+  local reset_time
+  reset_time=$(cat /tmp/dev-lead-rate-limit-reset 2>/dev/null || true)
+  local reset_detail=""
+  if [ -n "$reset_time" ]; then
+    reset_detail=" reset=${reset_time}"
+  fi
+
+  # Embed check name so the retry cron can look up the current check run for logs
+  local check_name
+  check_name=$(echo "${CHECKS_JSON:-[]}" | jq -r '.[0].name // "CI failure"' 2>/dev/null || echo "CI failure")
+
+  local marker="${MARKER_PREFIX}${HEAD_SHA} status=rate-limited${reset_detail} check=${check_name} -->"
+  local details="All engines were rate-limited. The retry cron will re-attempt automatically."
+  if [ -n "$reset_time" ]; then
+    details="${details} Rate limit resets at: \`${reset_time}\`"
+  fi
+  local body="${marker}
+## Dev-Lead Fix CI — rate-limited
+**PR:** #${PR_NUMBER} | **SHA:** \`${HEAD_SHA}\`
+${details}"
+
+  if [ "${DEV_LEAD_DRY_RUN:-false}" = "true" ]; then
+    echo "[dry-run] would post PR comment: rate-limited"
+    echo "$body"
+  else
+    gh pr comment "$PR_NUMBER" --repo "$REPO" --body "$body"
+  fi
+}
+
 main() {
   if [ -z "$PR_NUMBER" ] || [ -z "$HEAD_SHA" ]; then
     echo "::error::PR_NUMBER and HEAD_SHA are required"
@@ -158,7 +218,15 @@ main() {
     run_writer_with_fallback "$prompt_file" || engine_rc=$?
 
     if [ "$engine_rc" -ne 0 ]; then
-      # Classify the failure: timeout (124) is a hard exhaustion candidate
+      if [ "$engine_rc" -eq 2 ]; then
+        # Rate-limited (all engines exhausted) — not a real failure; do not
+        # count toward exhaustion threshold. Post rate-limited marker for retry cron.
+        echo "::warning::All engines rate-limited — posting rate-limited marker for retry cron"
+        post_rate_limited
+        exit 2
+      fi
+
+      # Real engine failure (exit 1 or 124) — counts toward exhaustion threshold
       local reason="Engine invocation failed (exit ${engine_rc})"
       [ "$engine_rc" -eq 124 ] && reason="Engine timed out — PR may be too large for automated fixing"
       post_summary "failed" "$reason"

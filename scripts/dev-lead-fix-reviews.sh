@@ -78,8 +78,10 @@ build_and_run() {
     return 0
   fi
 
-  run_writer_with_fallback "$prompt_file"
+  local rc=0
+  run_writer_with_fallback "$prompt_file" || rc=$?
   rm -f "$prompt_file"
+  return "$rc"
 }
 
 post_comment() {
@@ -1166,12 +1168,18 @@ case "$INTENT_TYPE" in
   fix-bot-comment)
     export PR_NUMBER PR_URL="https://github.com/${REPO}/pull/${PR_NUMBER}"
     export REPO ACTOR="${ACTOR:-}" COMMENT_BODY="${COMMENT_BODY:-}" HEAD_SHA
-    build_and_run "fix-bot-comment"
+    rc=0
+    build_and_run "fix-bot-comment" || rc=$?
+    [ "$rc" -eq 2 ] && handle_rate_limit "fix-bot-comment"
+    exit "$rc"
     ;;
   human)
     export PR_NUMBER PR_URL="https://github.com/${REPO}/pull/${PR_NUMBER}"
     export REPO ACTOR="${ACTOR:-}" USER_INSTRUCTION="${USER_INSTRUCTION:-}" PR_DESCRIPTION="${PR_DESCRIPTION:-}"
-    build_and_run "human"
+    rc=0
+    build_and_run "human" || rc=$?
+    [ "$rc" -eq 2 ] && handle_rate_limit "human"
+    exit "$rc"
     ;;
   human-pr)
     export PR_NUMBER PR_URL="https://github.com/${REPO}/pull/${PR_NUMBER}"
@@ -1230,7 +1238,11 @@ case "$INTENT_TYPE" in
     git fetch origin "$BASE_REF"
     CONFLICTING_FILES=$(git merge-tree "$(git merge-base HEAD "origin/${BASE_REF}")" HEAD "origin/${BASE_REF}" 2>/dev/null | grep "^changed in both" | awk '{print $NF}' || true)
     export CONFLICTING_FILES
-    build_and_run "rebase"
+    rc=0
+    build_and_run "rebase" || rc=$?
+    [ "$rc" -eq 2 ] && handle_rate_limit "rebase"
+    [ "$rc" -eq 0 ] && post_reviews_terminal "rebase" "applied"
+    exit "$rc"
     ;;
   *)
     echo "::error::Unknown intent type: $INTENT_TYPE"

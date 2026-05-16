@@ -140,3 +140,46 @@ EOF
   [ "$status" -eq 0 ]
   [ "$(_get_env INTENT_TYPE)" = "issue" ]
 }
+
+# ── dev-lead-reviews-retry dispatch tests ────────────────────────────────────
+
+@test "ci: repository_dispatch dev-lead-reviews-retry fix-reviews → fix-reviews" {
+  export GITHUB_EVENT_NAME="repository_dispatch"
+  export GITHUB_EVENT_PATH="$FIXTURES_DIR/repository_dispatch_reviews_retry_fix_reviews.json"
+
+  run bash "$INTENT_SCRIPT"
+
+  [ "$status" -eq 0 ]
+  [ "$(_get_env INTENT_TYPE)" = "fix-reviews" ]
+}
+
+@test "ci: repository_dispatch dev-lead-reviews-retry human → human" {
+  export GITHUB_EVENT_NAME="repository_dispatch"
+  export GITHUB_EVENT_PATH="$FIXTURES_DIR/repository_dispatch_reviews_retry_human.json"
+
+  run bash "$INTENT_SCRIPT"
+
+  [ "$status" -eq 0 ]
+  [ "$(_get_env INTENT_TYPE)" = "human" ]
+}
+
+@test "ci: repository_dispatch dev-lead-reviews-retry unknown intent → skip" {
+  export GITHUB_EVENT_NAME="repository_dispatch"
+  export GITHUB_EVENT_PATH="$FIXTURES_DIR/repository_dispatch_reviews_retry_unknown_intent.json"
+
+  run bash "$INTENT_SCRIPT"
+
+  [ "$status" -eq 0 ]
+  [ "$(_get_env INTENT_TYPE)" = "skip" ]
+}
+
+@test "ci: repository_dispatch dev-lead-reviews-retry: context has pr_number and head_sha" {
+  export GITHUB_EVENT_NAME="repository_dispatch"
+  export GITHUB_EVENT_PATH="$FIXTURES_DIR/repository_dispatch_reviews_retry_fix_reviews.json"
+
+  run bash "$INTENT_SCRIPT"
+
+  [ "$status" -eq 0 ]
+  [ "$(_get_context_field pr_number)" = "42" ]
+  [ "$(_get_context_field head_sha)" = "abc123def456" ]
+}

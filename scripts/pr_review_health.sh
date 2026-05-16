@@ -162,90 +162,9 @@ fi
 # ---------------------------------------------------------------------------
 [ -n "${GITHUB_STEP_SUMMARY:-}" ] && cat "$REPORT_FILE" >> "$GITHUB_STEP_SUMMARY"
 
-logs_file=$(mktemp)
-# One jq pass over failed runs; append each log file in the same order
-while IFS=$'\t' read -r run_id run_meta; do
-  log_file="${LOG_DIR}/run_${run_id}.txt"
-  [ -f "$log_file" ] || continue
-  {
-    printf '=== LOG: %s ===\n' "$run_meta"
-    cat "$log_file"
-    printf '=== END LOG ===\n\n'
-  } >> "$logs_file"
-done < <(echo "$runs_json" | jq -r \
-  '.[] | select(.conclusion == "failure") | [(.id | tostring), "run #\(.run_number) (\(.conclusion)) at \(.created_at)"] | @tsv')
-
-echo "Invoking Claude for log analysis..."
-claude --print --model claude-sonnet-4-6 > "$REPORT_FILE" <<PROMPT
-You are analyzing GitHub Actions workflow run logs for the PR Review Agent.
-
-## Context
-- Workflow: \`${WORKFLOW_FILE}\` in repo \`${WORKFLOW_REPO}\`
-- Analysis window: last ${LOOKBACK_DAYS} days, up to 100 most recent runs
-- Report date: ${TODAY}
-- Total runs fetched: ${total_runs} | Successful: ${success_runs} | Failed: ${failed_runs} | Cancelled: ${cancelled_runs}
-
-## Run Summary
-${RUNS_SUMMARY}
-
-## Workflow Source (.github/workflows/${WORKFLOW_FILE})
-\`\`\`yaml
-${workflow_source}
-\`\`\`
-
-## Failed Run Logs
-$(cat "$logs_file")
-
----
-
-Analyze these logs and produce a markdown health report with the following sections:
-
-### 1. Executive Summary
-Use F-style layout — lead with the most critical signal, then supporting bullets. No prose paragraphs.
-
-Format:
-**Status:** BLOCKING | DEGRADED | WARNING | HEALTHY
-**Period:** <date range>
-**Result:** <X of Y runs failed (Z%)>
-
-Key findings:
-- <dominant failure cause — one line>
-- <secondary issue if any — one line>
-- <any pattern worth noting — one line>
-
-Action required: <one imperative sentence, or "None" if healthy>
-
-### 2. Failure Breakdown
-A table with columns: Failure Category | Affected Runs | Example Error Message.
-Categories to look for (not exhaustive):
-- CLI breaking change (e.g. invalid flag values)
-- Permission / auth error (403, 401, insufficient scope)
-- GitHub API rate limit
-- Missing token scope (e.g. read:org, read:packages)
-- Engine rate limit (Claude or Copilot quota)
-- Timeout / infrastructure
-- Other / unknown
-
-### 3. Error Patterns
-For each category found: quote the exact error message from the logs, identify which step and script it comes from, and explain the root cause.
-
-### 4. Token Scope Analysis
-From the workflow source and any gh auth status output in the logs, list:
-- Scopes currently present
-- Scopes that appear missing or insufficient based on the errors
-- Recommendation for each missing scope
-
-### 5. Recommendations
-Numbered list. For each issue include: what to change (file, line, command), why, expected impact after fix, and urgency: [CRITICAL | HIGH | MEDIUM | LOW].
-Mark CRITICAL if the issue causes 100% workflow failure.
-
-### 6. Health Score
-Single line: \`Health: X/10 — <one-sentence verdict>\`
-(10 = all runs passing; 0 = complete outage)
-
-Output ONLY the markdown report — no preamble or commentary outside the report sections.
-PROMPT
-rm -f "$logs_file"
+if [ "$failed_runs" -gt 0 ]; then
+  [ -n "${GITHUB_ENV:-}" ] && echo "HAS_FAILURES=true" >> "$GITHUB_ENV"
+fi
 
 echo ""
 echo "Report written to $REPORT_FILE ($(wc -c < "$REPORT_FILE") bytes)"

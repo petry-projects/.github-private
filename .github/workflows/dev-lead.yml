@@ -16,7 +16,7 @@ on:
   check_run:
     types: [completed]
   repository_dispatch:
-    types: [dev-lead-ci-failure]
+    types: [dev-lead-ci-failure, dev-lead-reviews-retry]
 
 permissions:
   contents: write
@@ -29,7 +29,7 @@ concurrency:
   group: >-
     ${{
       github.event_name == 'check_run' && format('dev-lead-ci-relay-{0}', github.event.check_run.head_sha) ||
-      github.event_name == 'repository_dispatch' && format('dev-lead-fix-ci-{0}', github.event.client_payload.pr_number) ||
+      github.event_name == 'repository_dispatch' && format('dev-lead-pr-{0}', github.event.client_payload.pr_number) ||
       github.event_name == 'issues' && format('dev-lead-issue-{0}', github.event.issue.number) ||
       format('dev-lead-pr-{0}', github.event.pull_request.number || github.event.issue.number || '0')
     }}
