@@ -1,17 +1,16 @@
 #!/usr/bin/env bash
-# Daily health check for the PR Review Agent workflow.
+# Daily telemetry check for the PR Review Agent workflow.
 #
-# Fetches recent pr-review.yml run logs, feeds them to Claude for pattern
-# analysis, and writes a markdown report to pr_review_health_report.md.
-# Sets HAS_FAILURES=true in $GITHUB_ENV when failed runs are detected.
+# Fetches recent pr-review.yml run data, computes health metrics, and
+# writes a structured markdown report to both GITHUB_STEP_SUMMARY and
+# pr_review_health_report.md. Sets HAS_FAILURES=true in GITHUB_ENV when
+# failed runs are detected.
 #
 # Env vars consumed:
-#   GH_TOKEN              — primary (GitHub App; must have actions:read on this repo)
-#   GH_PAT_FALLBACK       — fallback PAT if App token lacks access
-#   CLAUDE_CODE_OAUTH_TOKEN — passed through to claude CLI
-#   LOOKBACK_DAYS         — days of history to consider (default: 1, ~24 hours)
-#                           Set higher to examine longer windows (e.g., LOOKBACK_DAYS=7 for weekly review)
-#   GITHUB_ENV            — written by Actions runner; used to export HAS_FAILURES
+#   GH_TOKEN      — must have actions:read on WORKFLOW_REPO
+#   LOOKBACK_DAYS — days of history to consider (default: 1)
+#   GITHUB_ENV    — written by Actions runner
+#   GITHUB_STEP_SUMMARY — written by Actions runner
 
 set -euo pipefail
 
@@ -19,7 +18,6 @@ LOOKBACK_DAYS="${LOOKBACK_DAYS:-1}"
 WORKFLOW_REPO="${AGENT_REPO:-petry-projects/.github-private}"
 WORKFLOW_FILE="pr-review-trigger.yml"
 REPORT_FILE="pr_review_health_report.md"
-LOG_DIR="health_run_logs"
 TODAY=$(date -u +%Y-%m-%d)
 
 echo "=== PR Review Agent — Daily Health Check ==="
@@ -30,41 +28,42 @@ echo "  Date:         $TODAY"
 echo ""
 
 # ---------------------------------------------------------------------------
-# 0. Token selection — verify GH_TOKEN has access to workflow run logs
+# 0. Token selection
 # ---------------------------------------------------------------------------
 if ! gh api "repos/${WORKFLOW_REPO}/actions/workflows/${WORKFLOW_FILE}/runs?per_page=1" \
      >/dev/null 2>&1; then
   if [ -n "${GH_PAT_FALLBACK:-}" ]; then
-    echo "::warning::App token cannot access ${WORKFLOW_REPO} run logs — using GH_PAT_FALLBACK"
+    echo "::warning::GH_TOKEN cannot access ${WORKFLOW_REPO} — using GH_PAT_FALLBACK"
     export GH_TOKEN="$GH_PAT_FALLBACK"
   else
-    echo "::error::App token cannot access ${WORKFLOW_REPO} run logs and GH_PAT_FALLBACK is not set."
-    echo "::error::Grant the GitHub App access to ${WORKFLOW_REPO} or set the DON_PETRY_BOT_GH_PAT secret."
+    echo "::error::GH_TOKEN cannot access ${WORKFLOW_REPO} and GH_PAT_FALLBACK is not set."
     exit 1
   fi
 fi
 
 # ---------------------------------------------------------------------------
-# 1. Fetch recent run metadata
+# 1. Fetch run metadata
 # ---------------------------------------------------------------------------
-# GNU date: date -d "N days ago"; macOS: date -v-Nd
 CUTOFF=$(date -u -d "${LOOKBACK_DAYS} days ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
   || date -u -v-"${LOOKBACK_DAYS}"d +%Y-%m-%dT%H:%M:%SZ)
 
-echo "Fetching all runs since: $CUTOFF"
-# Fetch with per_page=100 (GitHub API max) to capture all runs in the lookback window.
-# Time-based filtering ensures we get every run created at or after CUTOFF, regardless of quantity.
+echo "Fetching runs since: $CUTOFF"
+
 runs_json=$(gh api \
   "repos/${WORKFLOW_REPO}/actions/workflows/${WORKFLOW_FILE}/runs?per_page=100&created=>=${CUTOFF}" \
   --jq '.workflow_runs | map({
     id: .id,
+    run_number: .run_number,
     status: .status,
     conclusion: .conclusion,
     created_at: .created_at,
     html_url: .html_url,
-    run_number: .run_number
+    duration_s: ((.updated_at | fromdate) - (.created_at | fromdate))
   })' 2>/dev/null || echo '[]')
 
+# ---------------------------------------------------------------------------
+# 2. Compute aggregate stats
+# ---------------------------------------------------------------------------
 read -r total_runs failed_runs success_runs cancelled_runs < <(echo "$runs_json" | jq -r '
   [
     length,
@@ -73,56 +72,59 @@ read -r total_runs failed_runs success_runs cancelled_runs < <(echo "$runs_json"
     ([.[] | select(.conclusion == "cancelled")] | length)
   ] | @tsv')
 
-echo "  Total runs:   $total_runs"
-echo "  Successful:   $success_runs"
-echo "  Failed:       $failed_runs"
-echo "  Cancelled:    $cancelled_runs"
-echo ""
+echo "  Total:      $total_runs"
+echo "  Success:    $success_runs"
+echo "  Failed:     $failed_runs"
+echo "  Cancelled:  $cancelled_runs"
 
-# ---------------------------------------------------------------------------
-# 2. Early exit when no failures
-# ---------------------------------------------------------------------------
-if [ "$failed_runs" -eq 0 ]; then
-  echo "No failed runs in the last ${LOOKBACK_DAYS} days. Health check passed."
-  printf '# PR Review Agent Health Check — %s\n\nAll %d run(s) inspected over the last %d days succeeded. No action required.\n' \
-    "$TODAY" "$total_runs" "$LOOKBACK_DAYS" > "$REPORT_FILE"
-  exit 0
+if [ "$total_runs" -gt 0 ]; then
+  failure_rate=$(echo "scale=1; $failed_runs * 100 / $total_runs" | bc)
+else
+  failure_rate="0.0"
 fi
 
-# Export flag for workflow step condition
-[ -n "${GITHUB_ENV:-}" ] && echo "HAS_FAILURES=true" >> "$GITHUB_ENV"
+# Duration percentiles across all completed runs
+read -r dur_min dur_p50 dur_p95 dur_max < <(echo "$runs_json" | jq -r '
+  [.[] | select(.conclusion != null and .duration_s > 0) | .duration_s] | sort |
+  if length == 0 then "0 0 0 0"
+  else . as $d | ($d | length) as $n |
+    "\($d | min) \($d[$n * 50 / 100 | floor]) \($d[$n * 95 / 100 | floor]) \($d | max)"
+  end')
 
 # ---------------------------------------------------------------------------
-# 3. Download logs for failed runs
+# 3. Helpers
 # ---------------------------------------------------------------------------
-mkdir -p "$LOG_DIR"
-failed_run_ids=$(echo "$runs_json" | jq -r '.[] | select(.conclusion == "failure") | .id')
-
-for run_id in $failed_run_ids; do
-  {
-    gh run view "$run_id" --repo "$WORKFLOW_REPO" --log 2>/dev/null \
-      | head -c 200000 \
-      > "${LOG_DIR}/run_${run_id}.txt" \
-      || echo "(log unavailable for run $run_id)" > "${LOG_DIR}/run_${run_id}.txt"
-  } &
-done
-wait
-
-# Surface log-retrieval failures so the operator knows the diagnosis may be incomplete.
-missing_logs=0
-for run_id in $failed_run_ids; do
-  if grep -q "^(log unavailable" "${LOG_DIR}/run_${run_id}.txt" 2>/dev/null; then
-    echo "::warning::Failed run $run_id: log could not be retrieved — diagnosis will be incomplete for this run"
-    missing_logs=$((missing_logs + 1))
+fmt_dur() {
+  local s=$1
+  if [ "$s" -ge 60 ]; then
+    printf '%dm%ds' $((s / 60)) $((s % 60))
+  else
+    printf '%ds' "$s"
   fi
-done
-if [ "$missing_logs" -gt 0 ]; then
-  echo "  $missing_logs of $failed_runs failed run log(s) could not be retrieved"
+}
+
+conclusion_icon() {
+  case "$1" in
+    success)   echo "✅" ;;
+    failure)   echo "❌" ;;
+    cancelled) echo "⚪" ;;
+    skipped)   echo "⏭️" ;;
+    *)         echo "⏳" ;;
+  esac
+}
+
+if [ "$failed_runs" -eq 0 ]; then
+  overall="HEALTHY"
+elif [ "$(echo "$failure_rate > 50" | bc)" -eq 1 ]; then
+  overall="CRITICAL"
+elif [ "$(echo "$failure_rate > 20" | bc)" -eq 1 ]; then
+  overall="DEGRADED"
+else
+  overall="WARNING"
 fi
-echo ""
 
 # ---------------------------------------------------------------------------
-# 4. Fetch workflow source for token/permission context
+# 4. Build report
 # ---------------------------------------------------------------------------
 [ -n "${GITHUB_ENV:-}" ] && {
   if [ "$failed_runs" -gt 0 ]; then
