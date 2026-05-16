@@ -27,6 +27,8 @@ REVIEWS_MARKER_PREFIX="<!-- dev-lead-fix-reviews pr="
 
 REVIEWS_MARKER_PREFIX="<!-- dev-lead-fix-reviews pr="
 
+REVIEWS_MARKER_PREFIX="<!-- dev-lead-fix-reviews pr="
+
 if [ -z "$PR_NUMBER" ] && [ "$INTENT_TYPE" != "rebase" ]; then
   echo "::error::PR_NUMBER is required"
   exit 1
