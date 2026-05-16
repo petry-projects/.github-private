@@ -2893,10 +2893,47 @@ run_duck() {
   esac
 }
 
+# parse_reset_time <text>
+# Extracts the rate-limit reset time from engine output and writes an ISO-8601
+# UTC timestamp to /tmp/dev-lead-rate-limit-reset for callers to embed in
+# status=rate-limited markers. Pattern: "resets H:MMam/pm (UTC)" or
+# "resets H:MM(am|pm) UTC".
+# Writes empty string if no reset time is found (caller treats as unknown).
+parse_reset_time() {
+  local text="$1"
+  # Match "resets 11:20pm (UTC)" or "resets 11:20pm UTC"
+  local time_str
+  time_str=$(printf '%s\n' "$text" | grep -oiE 'resets [0-9]{1,2}:[0-9]{2}(am|pm)' | head -1 || true)
+  if [ -z "$time_str" ]; then
+    printf '' > /tmp/dev-lead-rate-limit-reset
+    return 0
+  fi
+  # Extract H:MM(am|pm) part
+  local hhmm
+  hhmm=$(printf '%s' "$time_str" | grep -oiE '[0-9]{1,2}:[0-9]{2}(am|pm)$' || true)
+  if [ -z "$hhmm" ]; then
+    printf '' > /tmp/dev-lead-rate-limit-reset
+    return 0
+  fi
+  # Convert to ISO-8601 UTC using today's date (rate limits reset within 24h)
+  local today
+  today=$(date -u +%Y-%m-%d)
+  local iso
+  iso=$(date -u -d "${today} ${hhmm} UTC" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)
+  # If reset time is in the past (already reset today), it means tomorrow
+  if [ -n "$iso" ] && [ "$(date -u +%s)" -gt "$(date -u -d "$iso" +%s 2>/dev/null || echo 0)" ]; then
+    local tomorrow
+    tomorrow=$(date -u -d "tomorrow" +%Y-%m-%d)
+    iso=$(date -u -d "${tomorrow} ${hhmm} UTC" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)
+  fi
+  printf '%s' "${iso:-}" > /tmp/dev-lead-rate-limit-reset
+}
+
 # run_writer <prompt_file> [model]
 # Full write-access mode for applying code fixes.
 # When DEV_LEAD_DRY_RUN=true: builds prompt but does NOT call engine; exits 0.
 # Exit codes: 0=success, 1=non-retriable failure, 2=rate-limited
+# On exit 2, writes parsed reset timestamp to /tmp/dev-lead-rate-limit-reset.
 run_writer() {
   local prompt_file="$1"
   local model="${2:-$ENGINE_ACTION_MODEL}"
@@ -2906,21 +2943,28 @@ run_writer() {
     return 0
   fi
 
-  local rc=0
+  # Capture stdout to a temp file so is_rate_limited can inspect it, while
+  # still streaming output to the caller. The old approach read from
+  # /tmp/dev-lead-writer-stderr which was never written (claude --print outputs
+  # to stdout, not stderr), so is_rate_limited never fired and fallback engines
+  # were never tried.
+  local _tmp rc=0
+  _tmp=$(mktemp)
+
   case "$REVIEW_ENGINE" in
     claude)
       timeout "$ACTION_TIMEOUT_SEC" claude --print \
         --model "$model" \
         --permission-mode acceptEdits \
         --allowed-tools "Bash,Read,Write,Edit,Grep,Glob" \
-        < "$prompt_file" || rc=$?
+        < "$prompt_file" | tee "$_tmp" || rc=${PIPESTATUS[0]}
       ;;
     gemini)
       timeout "$ACTION_TIMEOUT_SEC" gemini --prompt "" \
         --model "$model" \
         --approval-mode auto_edit \
         --output-format text \
-        < "$prompt_file" || rc=$?
+        < "$prompt_file" | tee "$_tmp" || rc=${PIPESTATUS[0]}
       ;;
     copilot)
       # Copilot (gh copilot suggest) is text-only — falls back to Claude for write ops
@@ -2930,16 +2974,18 @@ run_writer() {
         --model "$model" \
         --permission-mode acceptEdits \
         --allowed-tools "Bash,Read,Write,Edit,Grep,Glob" \
-        < "$prompt_file" || rc=$?
+        < "$prompt_file" | tee "$_tmp" || rc=${PIPESTATUS[0]}
       REVIEW_ENGINE="$saved"
       ;;
   esac
 
-  # Map rate-limit to exit code 2 for caller to detect
-  local output_check=""
-  if [ "$rc" -ne 0 ] && output_check=$(cat /tmp/dev-lead-writer-stderr 2>/dev/null) && is_rate_limited "$output_check"; then
+  # Map rate-limit to exit code 2 for caller to detect; parse reset time for marker embedding
+  if [ "$rc" -ne 0 ] && is_rate_limited "$(cat "$_tmp")"; then
+    parse_reset_time "$(cat "$_tmp")"
+    rm -f "$_tmp"
     return 2
   fi
+  rm -f "$_tmp"
   return "$rc"
 }
 
