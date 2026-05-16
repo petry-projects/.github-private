@@ -53,7 +53,9 @@ This guide sets up the bot account that posts PR approvals on behalf of the PR R
    - **Scopes:**
      - ✅ `repo` (full control of repositories) — required for `addPullRequestReview`
      - ✅ `workflow` — required when AI delegation pushes workflow-file changes
-     - ✅ `read:org` — silences the `Missing required token scopes: 'read:org'` warning and enables team-based CODEOWNERS escalation
+     - ✅ `read:org` — **required** to read team-based review requests (`reviewRequests.requestedReviewer`
+       fails with a GraphQL permission error for any PR that has a team reviewer when this scope is absent);
+       also enables team-based CODEOWNERS escalation
 5. Click **Generate token**
 6. **Copy the token immediately** (you won't see it again)
 7. Store it temporarily (we'll add to repo secret next)
@@ -136,6 +138,14 @@ Repeat **Step 5** for any other repos where the bot should approve PRs:
 - Verify bot is a member of the organization
 - Check branch protection rules aren't blocking the bot
 - Verify bot has `repo` scope in its PAT
+
+### Issue: `gh pr view failed during metadata prefetch` / `Resource not accessible by personal access token (repository.pullRequest.reviewRequests.nodes.0.requestedReviewer)`
+- The classic PAT is missing `read:org`. This error surfaces the first time a PR
+  with a **team** requested reviewer is encountered — the `reviewRequests.requestedReviewer`
+  GraphQL field requires org-level member read access.
+- Edit the token at **Settings → Developer settings → Tokens (classic) → Edit** and
+  check the `read:org` box. No need to regenerate — editing scopes takes effect immediately.
+- Verify by re-running: `gh workflow run pr-review.yml --repo petry-projects/.github-private -f pr_url=<pr-url> -f force_review=true`
 
 ## Rotating the Token (Annually)
 
