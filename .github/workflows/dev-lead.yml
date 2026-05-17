@@ -83,6 +83,8 @@ jobs:
           echo "INTENT_HEAD_SHA=$(echo "$ctx"  | jq -r '.head_sha // ""')"  >> "$GITHUB_ENV"
           echo "INTENT_CHECKS=$(echo "$ctx"    | jq -c '.checks // []')"    >> "$GITHUB_ENV"
           echo "INTENT_ISSUE_NUMBER=$(echo "$ctx" | jq -r '.issue_number // ""')" >> "$GITHUB_ENV"
+          echo "INTENT_ACTOR=$(echo "$ctx" | jq -r '.actor // ""')" >> "$GITHUB_ENV"
+          echo "INTENT_COMMENT_BODY=$(echo "$ctx" | jq -r '.body // ""')" >> "$GITHUB_ENV"
 
       - name: Skip — log reason
         if: env.INTENT_TYPE == 'skip'
@@ -152,6 +154,8 @@ jobs:
         env:
           PR_NUMBER: ${{ env.INTENT_PR_NUMBER }}
           HEAD_SHA: ${{ env.INTENT_HEAD_SHA }}
+          ACTOR: ${{ env.INTENT_ACTOR }}
+          COMMENT_BODY: ${{ env.INTENT_COMMENT_BODY }}
           REPO: ${{ github.repository }}
           REVIEW_ENGINE: ${{ env.DEV_LEAD_ENGINE }}
         run: bash scripts/dev-lead-fix-reviews.sh
@@ -162,6 +166,8 @@ jobs:
         env:
           PR_NUMBER: ${{ env.INTENT_PR_NUMBER }}
           HEAD_SHA: ${{ env.INTENT_HEAD_SHA }}
+          ACTOR: ${{ env.INTENT_ACTOR }}
+          USER_INSTRUCTION: ${{ env.INTENT_COMMENT_BODY }}
           REPO: ${{ github.repository }}
           REVIEW_ENGINE: ${{ env.DEV_LEAD_ENGINE }}
         run: bash scripts/dev-lead-fix-reviews.sh
