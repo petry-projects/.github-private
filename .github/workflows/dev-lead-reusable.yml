@@ -133,9 +133,15 @@ jobs:
           fi
 
           case "$DEV_LEAD_ENGINE" in
+            claude)
+              npm install -g @google/gemini-cli || true
+              if ! gh copilot --version >/dev/null 2>&1; then
+                gh extension install github/gh-copilot || true
+              fi ;;
             gemini)
               npm install -g @google/gemini-cli || true ;;
             copilot)
+              npm install -g @google/gemini-cli || true
               if ! gh copilot --version >/dev/null 2>&1; then
                 gh extension install github/gh-copilot || true
               fi ;;
