@@ -71,4 +71,7 @@ teardown() {
 
   [ "$status" -eq 0 ]
   [ -f copilot_called.txt ]
+  [[ "$output" == *"Claude rate limit hit"* ]]
+  [[ "$output" == *"Engine gemini unavailable at runtime (exit 55)"* ]] || [[ "$output" == *"Gemini engine unavailable at runtime (exit 55)"* ]]
+  [[ "$output" == *"falling through to Copilot"* ]] || [[ "$output" == *"switching to Copilot engine"* ]]
 }
