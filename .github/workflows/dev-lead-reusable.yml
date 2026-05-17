@@ -302,7 +302,3 @@ jobs:
           echo "$payload" | gh api \
             --method POST "repos/$RELAY_REPO/dispatches" --input -
           echo "::notice::Relayed CI failure for PR $RELAY_PR_NUMBER"
-$conclusion,details_url:$details_url,app_slug:$app_slug}]}}')
-          echo "$payload" | gh api \
-            --method POST "repos/$RELAY_REPO/dispatches" --input -
-          echo "::notice::Relayed CI failure for PR $RELAY_PR_NUMBER"
