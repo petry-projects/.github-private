@@ -106,6 +106,11 @@ if [ "${DEV_LEAD_DRY_RUN:-false}" = "false" ] && [ -n "${PR_NUMBER:-}" ]; then
   setup_git_identity
 fi
 
+# Checkout the PR branch for modification (Requirement 1)
+if [ "${DEV_LEAD_DRY_RUN:-false}" = "false" ] && [ -n "${PR_NUMBER:-}" ]; then
+  gh pr checkout "$PR_NUMBER" --repo "$REPO"
+fi
+
 build_and_run() {
   local template_name="$1"
   local prompt_file="/tmp/dev-lead-${template_name}-prompt-$$.md"
@@ -1280,16 +1285,54 @@ handle_rate_limit() {
 # intent completes. This prevents the retry cron from re-dispatching the same
 # intent on subsequent runs when the SHA hasn't changed.
 post_reviews_terminal() {
-  local intent="$1" status="${2:-applied}"
+  local intent="$1" status="${2:-applied}" summary="${3:-}"
   local sha_part=""
   [ -n "${HEAD_SHA:-}" ] && sha_part=" sha=${HEAD_SHA}"
   local marker="${REVIEWS_MARKER_PREFIX}${PR_NUMBER}${sha_part} intent=${intent} status=${status} -->"
+
+  local body="${marker}"
+  if [ -n "$summary" ]; then
+    body="${body}
+## Dev-Lead — ${intent} (${status})
+${summary}"
+  fi
+
   if [ "$DEV_LEAD_DRY_RUN" = "true" ]; then
     echo "[dry-run] would post reviews terminal marker: intent=${intent} status=${status}"
+    [ -n "$summary" ] && echo "$body"
     return 0
   fi
   # Best-effort: don't fail the overall script if the marker post fails
-  gh pr comment "$PR_NUMBER" --repo "$REPO" --body "$marker" 2>/dev/null || true
+  gh pr comment "$PR_NUMBER" --repo "$REPO" --body "$body" 2>/dev/null || true
+}
+
+# commit_and_push: adds all changes, commits with an intent-specific message,
+# and pushes to the PR branch. Returns 0 if changes were made and pushed,
+# 1 if no changes were found.
+commit_and_push() {
+  local intent="$1"
+  if git diff --quiet && git diff --cached --quiet; then
+    echo "::notice::No changes to commit for intent=${intent}"
+    return 1
+  fi
+
+  local commit_msg
+  case "$intent" in
+    fix-reviews)     commit_msg="fix(reviews): address review comments [skip ci-relay]" ;;
+    fix-bot-comment) commit_msg="fix(bot): address bot feedback [skip ci-relay]" ;;
+    human|human-pr)  commit_msg="chore: apply manual instructions [skip ci-relay]" ;;
+    rebase)          commit_msg="chore: resolve rebase conflicts [skip ci-relay]" ;;
+    *)               commit_msg="chore: dev-lead update (${intent}) [skip ci-relay]" ;;
+  esac
+
+  if [ "$DEV_LEAD_DRY_RUN" = "true" ]; then
+    echo "[dry-run] would git add, commit with '${commit_msg}', and push"
+  else
+    git add -A
+    git commit -m "$commit_msg"
+    git push
+  fi
+  return 0
 }
 
 # has_reviews_rate_limited_marker: returns 0 if a rate-limited marker for this
