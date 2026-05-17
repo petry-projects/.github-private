@@ -79,12 +79,21 @@ jobs:
           # Expand INTENT_CONTEXT JSON into individual GITHUB_ENV vars so subsequent
           # step env: blocks can reference ${{ env.INTENT_PR_NUMBER }} without fromJson()
           ctx="${INTENT_CONTEXT:-{\}}"
-          echo "INTENT_PR_NUMBER=$(echo "$ctx" | jq -r '.pr_number // ""')" >> "$GITHUB_ENV"
-          echo "INTENT_HEAD_SHA=$(echo "$ctx"  | jq -r '.head_sha // ""')"  >> "$GITHUB_ENV"
-          echo "INTENT_CHECKS=$(echo "$ctx"    | jq -c '.checks // []')"    >> "$GITHUB_ENV"
-          echo "INTENT_ISSUE_NUMBER=$(echo "$ctx" | jq -r '.issue_number // ""')" >> "$GITHUB_ENV"
-          echo "INTENT_ACTOR=$(echo "$ctx" | jq -r '.actor // ""')" >> "$GITHUB_ENV"
-          echo "INTENT_COMMENT_BODY=$(echo "$ctx" | jq -r '.body // ""')" >> "$GITHUB_ENV"
+          EOF_DELIMITER="EOF_$(dd if=/dev/urandom bs=15 count=1 2>/dev/null | base64 | tr -dc 'a-zA-Z0-9')"
+
+          # Helper to set GITHUB_ENV safely with heredoc
+          set_env() {
+            echo "$1<<$EOF_DELIMITER" >> "$GITHUB_ENV"
+            echo "$2" >> "$GITHUB_ENV"
+            echo "$EOF_DELIMITER" >> "$GITHUB_ENV"
+          }
+
+          set_env "INTENT_PR_NUMBER" "$(echo "$ctx" | jq -r '.pr_number // ""')"
+          set_env "INTENT_HEAD_SHA" "$(echo "$ctx"  | jq -r '.head_sha // ""')"
+          set_env "INTENT_CHECKS" "$(echo "$ctx"    | jq -c '.checks // []')"
+          set_env "INTENT_ISSUE_NUMBER" "$(echo "$ctx" | jq -r '.issue_number // ""')"
+          set_env "INTENT_ACTOR" "$(echo "$ctx" | jq -r '.actor // ""')"
+          set_env "INTENT_COMMENT_BODY" "$(echo "$ctx" | jq -r '.body // ""')"
 
       - name: Skip — log reason
         if: env.INTENT_TYPE == 'skip'
@@ -107,6 +116,9 @@ jobs:
         if: env.INTENT_TYPE != 'skip'
         env:
           CLAUDE_CODE_VERSION: ${{ vars.CLAUDE_CODE_VERSION || 'latest' }}
+          # Pass keys during install if needed for extension setup
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           mkdir -p "$HOME/.npm-global"
@@ -114,18 +126,20 @@ jobs:
           echo "$HOME/.npm-global/bin" >> "$GITHUB_PATH"
           export PATH="$HOME/.npm-global/bin:$PATH"
 
+          # 1. Claude Code
           if ! command -v claude >/dev/null 2>&1; then
             npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
           fi
 
-          case "$DEV_LEAD_ENGINE" in
-            gemini)
-              npm install -g @google/gemini-cli || true ;;
-            copilot)
-              if ! gh copilot --version >/dev/null 2>&1; then
-                gh extension install github/gh-copilot || true
-              fi ;;
-          esac
+          # 2. Gemini CLI (always install as fallback)
+          if ! command -v gemini >/dev/null 2>&1; then
+            npm install -g @google/gemini-cli || true
+          fi
+
+          # 3. GitHub Copilot Extension (always install as fallback)
+          if ! gh copilot --version >/dev/null 2>&1; then
+            gh extension install github/gh-copilot || true
+          fi
 
       # ── fix-ci ────────────────────────────────────────────────────────────
       - name: Run fix-ci

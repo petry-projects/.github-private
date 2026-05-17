@@ -29,62 +29,65 @@ DUCK_TIMEOUT_SEC="${DUCK_TIMEOUT_SEC:-300}"
 RETRY_MAX_ATTEMPTS="${RETRY_MAX_ATTEMPTS:-2}"   # total attempts including first
 RETRY_BASE_DELAY_SEC="${RETRY_BASE_DELAY_SEC:-5}"
 
-case "$REVIEW_ENGINE" in
-  claude)
-    ENGINE_TRIAGE_MODEL="claude-haiku-4-5-20251001"
-    ENGINE_DEEP_MODEL="claude-sonnet-4-6"
-    ENGINE_AUDIT_MODEL="claude-opus-4-7"
-    ENGINE_ACTION_MODEL="claude-sonnet-4-6"
-    ENGINE_SINGLE_MODEL="claude-opus-4-7"
-    ENGINE_LABEL="triage: haiku 4.5 → deep: sonnet 4.6 + duck: o4-mini → audit: opus 4.7"
-    ENGINE_SINGLE_LABEL="single-reviewer mode: opus 4.7"
-    # Cross-engine rubber duck: always the opposite engine
-    DUCK_ENGINE="copilot"
-    DUCK_MODEL="o4-mini"
-    ;;
-  gemini)
-    ENGINE_TRIAGE_MODEL="gemini-2.0-flash"
-    ENGINE_DEEP_MODEL="gemini-1.5-pro"
-    ENGINE_AUDIT_MODEL="gemini-1.5-pro"
-    ENGINE_ACTION_MODEL="gemini-1.5-pro"
-    ENGINE_SINGLE_MODEL="gemini-1.5-pro"
-    ENGINE_LABEL="triage: gemini-2.0-flash → deep: gemini-1.5-pro + duck: sonnet 4.6 → audit: gemini-1.5-pro"
-    ENGINE_SINGLE_LABEL="single-reviewer mode: gemini-1.5-pro"
-    # Cross-engine rubber duck: use Claude for diversity
-    DUCK_ENGINE="claude"
-    DUCK_MODEL="claude-sonnet-4-6"
-    ;;
-  copilot)
-    ENGINE_TRIAGE_MODEL="o4-mini"
-    ENGINE_DEEP_MODEL="o4-mini"
-    ENGINE_AUDIT_MODEL="o4-mini"
-    ENGINE_ACTION_MODEL="o4-mini"
-    ENGINE_SINGLE_MODEL="o4-mini"
-    # GitHub Models API model identifier — must match a model available at
-    # https://models.github.ai (see GitHub Models marketplace).
-    # Override via COPILOT_API_MODEL env var if the default is unavailable.
-    # openai/o4-mini is the April-2025 o4-generation reasoning model; it is
-    # not a typo for o1-mini or gpt-4o-mini.
-    COPILOT_API_MODEL="${COPILOT_API_MODEL:-openai/o4-mini}"
-    export COPILOT_API_MODEL
-    ENGINE_LABEL="triage: o4-mini → deep: o4-mini + duck: sonnet 4.6 → audit: o4-mini (GitHub Models API)"
-    ENGINE_SINGLE_LABEL="single-reviewer mode: o4-mini (GitHub Models API)"
-    # Cross-engine rubber duck: always the opposite engine
-    DUCK_ENGINE="claude"
-    DUCK_MODEL="claude-sonnet-4-6"
-    ;;
-  *)
-    echo "::error::Unknown REVIEW_ENGINE='$REVIEW_ENGINE' (expected: claude, gemini, or copilot)"
-    exit 1
-    ;;
-esac
+set_engine_config() {
+  case "$REVIEW_ENGINE" in
+    claude)
+      ENGINE_TRIAGE_MODEL="claude-haiku-4-5-20251001"
+      ENGINE_DEEP_MODEL="claude-sonnet-4-6"
+      ENGINE_AUDIT_MODEL="claude-opus-4-7"
+      ENGINE_ACTION_MODEL="claude-sonnet-4-6"
+      ENGINE_SINGLE_MODEL="claude-opus-4-7"
+      ENGINE_LABEL="triage: haiku 4.5 → deep: sonnet 4.6 + duck: o4-mini → audit: opus 4.7"
+      ENGINE_SINGLE_LABEL="single-reviewer mode: opus 4.7"
+      # Cross-engine rubber duck: always the opposite engine
+      DUCK_ENGINE="copilot"
+      DUCK_MODEL="o4-mini"
+      ;;
+    gemini)
+      ENGINE_TRIAGE_MODEL="auto"
+      ENGINE_DEEP_MODEL="auto"
+      ENGINE_AUDIT_MODEL="auto"
+      ENGINE_ACTION_MODEL="auto"
+      ENGINE_SINGLE_MODEL="auto"
+      ENGINE_LABEL="auto (Gemini 2.5/3 balanced)"
+      ENGINE_SINGLE_LABEL="single-reviewer mode: auto"
+      # Cross-engine rubber duck: use Claude for diversity
+      DUCK_ENGINE="claude"
+      DUCK_MODEL="claude-sonnet-4-6"
+      ;;
+    copilot)
+      ENGINE_TRIAGE_MODEL="o4-mini"
+      ENGINE_DEEP_MODEL="o4-mini"
+      ENGINE_AUDIT_MODEL="o4-mini"
+      ENGINE_ACTION_MODEL="o4-mini"
+      ENGINE_SINGLE_MODEL="o4-mini"
+      # GitHub Models API model identifier — must match a model available at
+      # https://models.github.ai (see GitHub Models marketplace).
+      # Override via COPILOT_API_MODEL env var if the default is unavailable.
+      # openai/o4-mini is the April-2025 o4-generation reasoning model; it is
+      # not a typo for o1-mini or gpt-4o-mini.
+      COPILOT_API_MODEL="${COPILOT_API_MODEL:-openai/o4-mini}"
+      export COPILOT_API_MODEL
+      ENGINE_LABEL="triage: o4-mini → deep: o4-mini + duck: sonnet 4.6 → audit: o4-mini (GitHub Models API)"
+      ENGINE_SINGLE_LABEL="single-reviewer mode: o4-mini (GitHub Models API)"
+      # Cross-engine rubber duck: always the opposite engine
+      DUCK_ENGINE="claude"
+      DUCK_MODEL="claude-sonnet-4-6"
+      ;;
+    *)
+      echo "::error::Unknown REVIEW_ENGINE='$REVIEW_ENGINE' (expected: claude, gemini, or copilot)"
+      exit 1
+      ;;
+  esac
 
-export ENGINE_TRIAGE_MODEL ENGINE_DEEP_MODEL ENGINE_AUDIT_MODEL
-export ENGINE_ACTION_MODEL ENGINE_SINGLE_MODEL
-export ENGINE_LABEL ENGINE_SINGLE_LABEL
-export DUCK_ENGINE DUCK_MODEL
-# COPILOT_API_MODEL is exported inside the copilot) case above (only set then).
+  export ENGINE_TRIAGE_MODEL ENGINE_DEEP_MODEL ENGINE_AUDIT_MODEL
+  export ENGINE_ACTION_MODEL ENGINE_SINGLE_MODEL
+  export ENGINE_LABEL ENGINE_SINGLE_LABEL
+  export DUCK_ENGINE DUCK_MODEL
+}
 
+# Initial config
+set_engine_config
 echo "    engine: $REVIEW_ENGINE ($ENGINE_LABEL)"
 
 # Load token metrics library unconditionally (non-fatal).
@@ -1781,7 +1784,6 @@ run_writer() {
 # Only rate-limit (exit 2) triggers fallback; other failures propagate immediately.
 run_writer_with_fallback() {
   local prompt_file="$1"
-  local model="${2:-$ENGINE_ACTION_MODEL}"
   local engines=("$REVIEW_ENGINE")
 
   for e in claude gemini copilot; do
@@ -1791,9 +1793,14 @@ run_writer_with_fallback() {
   for engine in "${engines[@]}"; do
     local saved="$REVIEW_ENGINE"
     export REVIEW_ENGINE="$engine"
+    # Re-evaluate model names for the new engine
+    set_engine_config
     local rc=0
-    run_writer "$prompt_file" "$model" || rc=$?
+    # Don't pass 'model' argument; run_writer will use the updated $ENGINE_ACTION_MODEL
+    run_writer "$prompt_file" || rc=$?
     export REVIEW_ENGINE="$saved"
+    # Restore original config for subsequent PRs in the same session
+    set_engine_config
     [ "$rc" -eq 0 ] && return 0
     if [ "$rc" -eq 2 ]; then
       echo "::warning::$engine rate-limited, trying next engine" >&2
