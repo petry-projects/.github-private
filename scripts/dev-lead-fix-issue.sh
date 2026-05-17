@@ -198,7 +198,8 @@ main() {
   fi
 
   # Create feature branch
-  local branch="dev-lead/issue-${ISSUE_NUMBER}-$(date +%Y%m%d-%H%M)"
+  local branch
+  branch="dev-lead/issue-${ISSUE_NUMBER}-$(date +%Y%m%d-%H%M)"
   git checkout -b "$branch"
 
   local engine_rc=0
