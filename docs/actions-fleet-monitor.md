@@ -19,7 +19,6 @@ The fleet summary table is sorted by severity so the worst performers appear fir
 
 - **Step Summary** — fleet table written on every run; visible in the Actions UI without leaving GitHub.
 - **GitHub Issue** — opened when any workflow has failed runs; see [Issue destination](#issue-destination) below.
-- **Token usage (org-wide)** — each run also appends an Effective Tokens (ET) rollup to the Step Summary via `scripts/token_report.sh`, scanning token-usage artifacts across every repo. The weekly digest is delivered as a tracking-issue comment by `token-report.yml` — see [docs/token-report.md](token-report.md).
 
 ## Usage
 
