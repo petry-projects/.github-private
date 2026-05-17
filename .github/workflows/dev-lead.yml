@@ -55,6 +55,8 @@ jobs:
     env:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+      GEMINI_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+      GEMINI_CLI_TRUST_WORKSPACE: "true"
       COPILOT_GITHUB_TOKEN: ${{ secrets.GH_PAT }}
 
     steps:
