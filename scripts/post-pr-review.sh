@@ -31,7 +31,7 @@ fi
 # Extract fields from verdict
 DECISION=$(jq -r '.decision' "$VERDICT_JSON")
 RISK=$(jq -r '.risk' "$VERDICT_JSON")
-BODY=$(jq -r '.body' "$VERDICT_JSON")
+BODY=$(jq -r '.body // ""' "$VERDICT_JSON")
 
 # mark_prior_agent_items_obsolete <pr_url>
 # After successfully posting a new review/comment, dismiss prior agent reviews
@@ -265,6 +265,11 @@ elif [ "$DECISION" = "escalate" ]; then
     # Post fix-request comment
     COMMENT_FILE="/tmp/pr-comment-$$.txt"
     NEXT_CYCLE=$((REVIEW_CYCLE + 1))
+    # Strip any embedded marker from BODY before inserting — the cascade-action body
+    # already carries its own marker, and a second copy would cause review-one-pr.sh
+    # to count this cycle as 2 (grep -c counts matching lines), prematurely hitting
+    # the max-cycle escalation cap.
+    BODY_FOR_COMMENT=$(printf '%s' "$BODY" | sed 's/<!-- pr-review-agent v1 sha=[a-f0-9][^>]*-->//g')
     cat > "$COMMENT_FILE" <<COMMENT_END
 <!-- pr-review-agent v1 sha=$PR_HEAD_SHA --> <!-- decision=fix-requested risk=$RISK -->
 
@@ -273,7 +278,7 @@ elif [ "$DECISION" = "escalate" ]; then
 The automated review identified the following issues. Please address each one:
 
 ### Findings to fix
-[Findings would be inserted here]
+$BODY_FOR_COMMENT
 
 ### Additional tasks
 1. Resolve all unresolved review thread comments from other reviewers
@@ -301,3 +306,4 @@ COMMENT_END
 fi
 
 echo "Review action completed"
+
