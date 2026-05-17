@@ -48,6 +48,7 @@ jobs:
       DEV_LEAD_ENGINE: ${{ vars.DEV_LEAD_ENGINE || 'claude' }}
       DEV_LEAD_DRY_RUN: ${{ vars.DEV_LEAD_DRY_RUN || 'false' }}
       GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS || github.token }}
+      GEMINI_CLI_TRUST_WORKSPACE: "true"
       DEV_LEAD_SCRIPTS: .dev-lead/scripts
       DEV_LEAD_PROMPTS: .dev-lead/prompts/dev-lead
 
@@ -298,6 +299,10 @@ jobs:
             --arg details_url "$RELAY_DETAILS_URL" \
             --arg app_slug "$RELAY_APP_SLUG" \
             '{event_type:"dev-lead-ci-failure",client_payload:{pr_number:$pr_number,head_sha:$head_sha,repo:$repo,checks:[{name:$name,conclusion:$conclusion,details_url:$details_url,app_slug:$app_slug}]}}')
+          echo "$payload" | gh api \
+            --method POST "repos/$RELAY_REPO/dispatches" --input -
+          echo "::notice::Relayed CI failure for PR $RELAY_PR_NUMBER"
+$conclusion,details_url:$details_url,app_slug:$app_slug}]}}')
           echo "$payload" | gh api \
             --method POST "repos/$RELAY_REPO/dispatches" --input -
           echo "::notice::Relayed CI failure for PR $RELAY_PR_NUMBER"

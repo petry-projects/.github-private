@@ -55,6 +55,8 @@ jobs:
     env:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+      GEMINI_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+      GEMINI_CLI_TRUST_WORKSPACE: "true"
       COPILOT_GITHUB_TOKEN: ${{ secrets.GH_PAT }}
 
     steps:
@@ -283,6 +285,10 @@ jobs:
             }')
           echo "$payload" | gh api \
             --method POST \
+            "repos/$RELAY_REPO/dispatches" \
+            --input -
+          echo "::notice::Relayed CI failure for PR $RELAY_PR_NUMBER — dispatched dev-lead-ci-failure"
+thod POST \
             "repos/$RELAY_REPO/dispatches" \
             --input -
           echo "::notice::Relayed CI failure for PR $RELAY_PR_NUMBER — dispatched dev-lead-ci-failure"

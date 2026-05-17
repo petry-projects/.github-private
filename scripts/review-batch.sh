@@ -150,6 +150,12 @@ while IFS= read -r pr_url; do
   rc=0
   bash scripts/review-one-pr.sh "$pr_url" || rc=$?
 
+  # Treat known engine-unavailable setup/runtime errors as fallback-eligible
+  if [ "$rc" -eq 55 ] || [ "$rc" -eq 127 ]; then
+    echo "::warning::Engine ${REVIEW_ENGINE:-claude} unavailable at runtime (exit $rc) — treating as fallback-eligible"
+    rc=2
+  fi
+
   # Exit code 2 = engine rate-limited.
   # Fallback chain: claude -> gemini -> copilot
   if [ "$rc" -eq 2 ] && [ "${REVIEW_ENGINE:-claude}" = "claude" ]; then
@@ -161,6 +167,12 @@ while IFS= read -r pr_url; do
       fallback_engines="${fallback_engines:+$fallback_engines, }gemini"
       rc=0
       bash scripts/review-one-pr.sh "$pr_url" || rc=$?
+      
+      # Handle Gemini engine-unavailable setup/runtime errors post-fallback
+      if [ "$rc" -eq 55 ] || [ "$rc" -eq 127 ]; then
+        echo "::warning::Gemini engine unavailable at runtime (exit $rc) — falling through to Copilot"
+        rc=2
+      fi
     else
       # Derive the specific reason so the warning is actionable without docs.
       _gemini_miss=""

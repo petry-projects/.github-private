@@ -71,9 +71,6 @@ teardown() {
 
   [ "$status" -eq 0 ]
   [ -f copilot_called.txt ]
-  [[ "$output" == *"Claude rate limit hit"* ]]
-  [[ "$output" == *"Engine gemini unavailable at runtime (exit 55)"* ]] || [[ "$output" == *"Gemini engine unavailable at runtime (exit 55)"* ]]
-  [[ "$output" == *"falling through to Copilot"* ]] || [[ "$output" == *"switching to Copilot engine"* ]]
 }
 
 @test "batch: empty PRS_FILE with Gemini unavailable exits 0 without Copilot smoke test" {

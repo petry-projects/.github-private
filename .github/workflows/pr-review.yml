@@ -66,6 +66,7 @@ jobs:
       # versions expect GEMINI_API_KEY so we expose the same value under both names.
       GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
       GEMINI_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+      GEMINI_CLI_TRUST_WORKSPACE: "true"
       # Default to dry-run. workflow_dispatch can override; repository_dispatch
       # (mention) always runs live; vars.LIVE_MODE=true switches scheduled runs live.
       DRY_RUN: ${{ github.event_name == 'repository_dispatch' && 'false' || inputs.dry_run || (vars.LIVE_MODE == 'true' && 'false' || 'true') }}
