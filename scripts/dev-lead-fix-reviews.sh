@@ -66,6 +66,11 @@ if [ "${DEV_LEAD_DRY_RUN:-false}" = "false" ] && [ -n "${PR_NUMBER:-}" ]; then
   setup_git_identity
 fi
 
+# Checkout the PR branch for modification (Requirement 1)
+if [ "${DEV_LEAD_DRY_RUN:-false}" = "false" ] && [ -n "${PR_NUMBER:-}" ]; then
+  gh pr checkout "$PR_NUMBER" --repo "$REPO"
+fi
+
 build_and_run() {
   local template_name="$1"
   local prompt_file="/tmp/dev-lead-${template_name}-prompt-$$.md"
@@ -1171,6 +1176,13 @@ case "$INTENT_TYPE" in
     rc=0
     build_and_run "fix-bot-comment" || rc=$?
     [ "$rc" -eq 2 ] && handle_rate_limit "fix-bot-comment"
+    if [ "$rc" -eq 0 ]; then
+      if commit_and_push "fix-bot-comment"; then
+        post_reviews_terminal "fix-bot-comment" "applied" "Changes committed and pushed."
+      else
+        post_reviews_terminal "fix-bot-comment" "no-changes" "Engine ran but made no changes."
+      fi
+    fi
     exit "$rc"
     ;;
   human)
@@ -1179,6 +1191,13 @@ case "$INTENT_TYPE" in
     rc=0
     build_and_run "human" || rc=$?
     [ "$rc" -eq 2 ] && handle_rate_limit "human"
+    if [ "$rc" -eq 0 ]; then
+      if commit_and_push "human"; then
+        post_reviews_terminal "human" "applied" "Changes committed and pushed."
+      else
+        post_reviews_terminal "human" "no-changes" "Engine ran but made no changes."
+      fi
+    fi
     exit "$rc"
     ;;
   human-pr)
@@ -1234,14 +1253,16 @@ case "$INTENT_TYPE" in
       echo "::error::PR_NUMBER is required for rebase"
       exit 1
     fi
-    gh pr checkout "$PR_NUMBER" --repo "$REPO"
     git fetch origin "$BASE_REF"
     CONFLICTING_FILES=$(git merge-tree "$(git merge-base HEAD "origin/${BASE_REF}")" HEAD "origin/${BASE_REF}" 2>/dev/null | grep "^changed in both" | awk '{print $NF}' || true)
     export CONFLICTING_FILES
     rc=0
     build_and_run "rebase" || rc=$?
     [ "$rc" -eq 2 ] && handle_rate_limit "rebase"
-    [ "$rc" -eq 0 ] && post_reviews_terminal "rebase" "applied"
+    if [ "$rc" -eq 0 ]; then
+      commit_and_push "rebase"
+      post_reviews_terminal "rebase" "applied"
+    fi
     exit "$rc"
     ;;
   *)

@@ -215,7 +215,12 @@ case "$EVENT_NAME" in
     head_sha=$(jq -r '.pull_request.head.sha // empty' "$EVENT_PATH" 2>/dev/null || true)
     author_assoc=$(jq -r '.pull_request.author_association // empty' "$EVENT_PATH" 2>/dev/null || true)
 
-    context=$(printf '{"pr_number":%s,"head_sha":"%s"}' "${pr_number:-0}" "${head_sha:-}")
+    context=$(jq -nc \
+      --argjson pr_number "${pr_number:-0}" \
+      --arg head_sha "${head_sha:-}" \
+      --arg actor "${commenter:-}" \
+      --arg body "${comment_body:-}" \
+      '{"pr_number":$pr_number,"head_sha":$head_sha,"actor":$actor,"body":$body}')
 
     if is_trusted_bot "$commenter"; then
       emit_intent "fix-reviews" "bot-review-comment" "$context"
@@ -257,7 +262,11 @@ case "$EVENT_NAME" in
       exit 0
     fi
 
-    context=$(printf '{"pr_number":%s}' "${pr_number:-0}")
+    context=$(jq -nc \
+      --argjson pr_number "${pr_number:-0}" \
+      --arg actor "${commenter:-}" \
+      --arg body "${comment_body:-}" \
+      '{"pr_number":$pr_number,"actor":$actor,"body":$body}')
 
     if is_trusted_bot "$commenter"; then
       emit_intent "fix-bot-comment" "trusted-bot-comment" "$context"
