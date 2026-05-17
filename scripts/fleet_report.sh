@@ -6,20 +6,6 @@
 #   1:sort_key  2:repo  3:wf_file  4:total  5:success  6:failed
 #   7:cancelled  8:rate_display  9:p50(s)  10:p95(s)  11:label  12:rate_int
 
-# label_to_icon <label>
-# Returns the health icon matching the scorecard legend.
-label_to_icon() {
-  case "$1" in
-    CRITICAL) printf '🔴' ;;
-    DEGRADED) printf '🟠' ;;
-    WARNING)  printf '🟡' ;;
-    HEALTHY)  printf '✅' ;;
-    ERROR)    printf '⚫' ;;
-    LOW-CONF) printf '🟡' ;;
-    *)        printf '⬜' ;;
-  esac
-}
-
 # fmt_dur <seconds>
 # Formats an integer number of seconds as "XmYs" or "Zs".
 fmt_dur() {
@@ -83,15 +69,13 @@ generate_ascii_bar() {
   printf '%s' "$bar"
 }
 
-# generate_repo_rollup <metrics_file> [issues_file]
+# generate_repo_rollup <metrics_file>
 # Prints a markdown table with one row per repo: workflow count, total runs,
-# total failures, open issue links, and worst status with health icon.
-# Repos with no runs in the lookback window are omitted.
+# total failures, and worst status label.
 generate_repo_rollup() {
   local f="$1"
-  local issues_file="${2:-}"
-  printf '| Repo | Workflows | Total Runs | Failures | Issues | Worst Status |\n'
-  printf '|---|---|---|---|---|---|\n'
+  printf '| Repo | Workflows | Total Runs | Failures | Worst Status |\n'
+  printf '|---|---|---|---|---|\n'
   awk 'BEGIN { FS=OFS="\t" } {
     repo = $2
     seen[repo] = 1
@@ -106,23 +90,9 @@ generate_repo_rollup() {
   }
   END {
     for (repo in seen)
-      if (runs[repo] + 0 > 0)
-        printf "%s\t%s\t%s\t%s\t%s\n",
-          repo, wf_ct[repo], runs[repo], failed[repo], best_label[repo]
-  }' "$f" | sort -t$'\t' -k1,1 | \
-  while IFS=$'\t' read -r repo wf_ct total_runs failed label; do
-    local icon issues_links
-    icon=$(label_to_icon "$label")
-    issues_links=" "
-    if [ -n "$issues_file" ] && [ -f "$issues_file" ] && [ -s "$issues_file" ]; then
-      issues_links=$(awk -F'\t' -v r="$repo" \
-        '$1 == r { printf "[#%s](%s) ", $4, $3 }' "$issues_file")
-      issues_links="${issues_links% }"
-    fi
-    [ -z "$issues_links" ] && issues_links=" "
-    printf '| `%s` %s | %s | %s | %s | %s | %s %s |\n' \
-      "$repo" "$icon" "$wf_ct" "$total_runs" "$failed" "$issues_links" "$icon" "$label"
-  done
+      printf "| `%s` | %s | %s | %s | %s |\n",
+        repo, wf_ct[repo], runs[repo], failed[repo], best_label[repo]
+  }' "$f" | sort -t'|' -k2
 }
 
 # generate_mermaid_pie <metrics_file>
@@ -181,14 +151,13 @@ generate_mermaid_bar() {
   printf '```\n'
 }
 
-# generate_report <metrics_file> <failed_file> <with_mermaid> [issues_file]
+# generate_report <metrics_file> <failed_file> <with_mermaid>
 # Generates the complete fleet report. with_mermaid="true" includes Mermaid
 # charts (suitable for GitHub Issues); "false" omits them (for Step Summary).
 generate_report() {
   local metrics_file="$1"
   local failed_file="$2"
   local with_mermaid="${3:-false}"
-  local issues_file="${4:-}"
 
   # Apply confidence filter and sort by severity
   local filtered
@@ -229,31 +198,23 @@ generate_report() {
 
   # --- Per-repo rollup ---
   printf '## Per-Repo Summary\n\n'
-  generate_repo_rollup "$filtered" "$issues_file"
+  generate_repo_rollup "$filtered"
   printf '\n'
 
   # --- Fleet detail table ---
   printf '## Fleet Detail\n\n'
-  printf '| Repo | Workflow | Issues | Total | ✅ | ❌ | ⚪ | Failure Rate | | p50 | p95 | Status |\n'
-  printf '|---|---|---|---|---|---|---|---|---|---|---|---|\n'
+  printf '| Repo | Workflow | Total | ✅ | ❌ | ⚪ | Failure Rate | | p50 | p95 | Status |\n'
+  printf '|---|---|---|---|---|---|---|---|---|---|---|\n'
 
   while IFS=$'\t' read -r _key repo wf_file total success failed cancelled \
                               rate_display p50 p95 label rate_int; do
-    [ "$total" = "0" ] && continue
-    local bar vflag icon issues_link
+    local bar vflag
     bar=$(generate_ascii_bar "$rate_int")
     vflag=$(flag_duration_variance "$p50" "$p95")
-    icon=$(label_to_icon "$label")
-    issues_link=" "
-    if [ -n "$issues_file" ] && [ -f "$issues_file" ] && [ -s "$issues_file" ]; then
-      issues_link=$(awk -F'\t' -v r="$repo" -v w="$wf_file" \
-        '$1 == r && $2 == w { printf "[#%s](%s)", $4, $3; exit }' "$issues_file")
-    fi
-    [ -z "$issues_link" ] && issues_link=" "
-    printf '| `%s` %s | `%s` | %s | %s | %s | %s | %s | %s | %s | %s | %s%s | %s %s |\n' \
-      "$repo" "$icon" "$wf_file" "$issues_link" "$total" "$success" "$failed" "$cancelled" \
+    printf '| `%s` | `%s` | %s | %s | %s | %s | %s | %s | %s | %s%s | %s |\n' \
+      "$repo" "$wf_file" "$total" "$success" "$failed" "$cancelled" \
       "$rate_display" "$bar" \
-      "$(fmt_dur "$p50")" "$(fmt_dur "$p95")" "$vflag" "$icon" "$label"
+      "$(fmt_dur "$p50")" "$(fmt_dur "$p95")" "$vflag" "$label"
   done < "$filtered"
 
   # --- Failed runs ---
