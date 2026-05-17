@@ -366,3 +366,7 @@ jobs:
             "repos/$RELAY_REPO/dispatches" \
             --input -
           echo "::notice::Relayed CI failure for PR $RELAY_PR_NUMBER — dispatched dev-lead-ci-failure"
+thod POST \
+            "repos/$RELAY_REPO/dispatches" \
+            --input -
+          echo "::notice::Relayed CI failure for PR $RELAY_PR_NUMBER — dispatched dev-lead-ci-failure"
