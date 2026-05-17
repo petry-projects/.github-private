@@ -3966,7 +3966,6 @@ run_writer() {
 # Only rate-limit (exit 2) triggers fallback; other failures propagate immediately.
 run_writer_with_fallback() {
   local prompt_file="$1"
-  local model="${2:-$ENGINE_ACTION_MODEL}"
   local engines=("$REVIEW_ENGINE")
 
   for e in claude gemini copilot; do
@@ -3976,9 +3975,14 @@ run_writer_with_fallback() {
   for engine in "${engines[@]}"; do
     local saved="$REVIEW_ENGINE"
     export REVIEW_ENGINE="$engine"
+    # Re-evaluate model names for the new engine
+    set_engine_config
     local rc=0
-    run_writer "$prompt_file" "$model" || rc=$?
+    # Don't pass 'model' argument; run_writer will use the updated $ENGINE_ACTION_MODEL
+    run_writer "$prompt_file" || rc=$?
     export REVIEW_ENGINE="$saved"
+    # Restore original config for subsequent PRs in the same session
+    set_engine_config
     [ "$rc" -eq 0 ] && return 0
     if [ "$rc" -eq 2 ]; then
       echo "::warning::$engine rate-limited, trying next engine" >&2
