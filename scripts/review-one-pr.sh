@@ -104,8 +104,6 @@ echo "    head SHA: $PR_HEAD_SHA"
 
 CI_STATUS=$(compute_ci_status "$(jq '.statusCheckRollup' <<< "$PR_SNAPSHOT")")
 echo "    CI status: $CI_STATUS"
-CI_STATUS="passing" # FORCE FOR TESTING
-echo "    CI status (forced): $CI_STATUS"
 
 REVIEW_DECISION=$(echo "$PR_SNAPSHOT" | jq -r '.reviewDecision // ""')
 echo "    review decision: $REVIEW_DECISION"
