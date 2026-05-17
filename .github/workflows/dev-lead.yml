@@ -1,6 +1,4 @@
 name: Dev-Lead Agent
-# Phase 7 shadow period: dev-lead.yml and claude.yml run in parallel until ~2026-05-29.
-# Tracking: petry-projects/.github-private#180
 
 on:
   pull_request:
