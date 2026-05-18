@@ -854,9 +854,12 @@ ${summary}"
   gh pr comment "$PR_NUMBER" --repo "$REPO" --body "$body" 2>/dev/null || true
 }
 
-# commit_and_push: adds all changes, commits with an intent-specific message,
-# and pushes to the PR branch. Returns 0 if changes were made and pushed,
-# 1 if no changes were found.
+# commit_and_push: stages any uncommitted changes, commits if needed, and pushes.
+# Returns 0 if changes were pushed, 1 if nothing to push.
+# Handles two cases:
+#   (a) Engine left uncommitted working-tree changes — stage, commit, push.
+#   (b) Engine committed via Bash but didn't push — detected via git log @{u}..HEAD
+#       so changes are not silently dropped when the ephemeral runner exits.
 commit_and_push() {
   local intent="$1"
   local has_uncommitted=false has_unpushed=false
