@@ -23,13 +23,12 @@ permissions:
   checks: read
 
 concurrency:
-  # Per-PR slots for most events; ci-relay is ephemeral and runs immediately
+  # One active run per repo; ci-relay (check_run) keeps an ephemeral per-SHA slot
+  # so it can fire immediately without blocking or being blocked by the dispatch queue.
   group: >-
     ${{
       github.event_name == 'check_run' && format('dev-lead-ci-relay-{0}', github.event.check_run.head_sha) ||
-      github.event_name == 'repository_dispatch' && format('dev-lead-pr-{0}', github.event.client_payload.pr_number) ||
-      github.event_name == 'issues' && format('dev-lead-issue-{0}', github.event.issue.number) ||
-      format('dev-lead-pr-{0}', github.event.pull_request.number || github.event.issue.number || '0')
+      'dev-lead'
     }}
   cancel-in-progress: false
 
