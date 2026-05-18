@@ -30,7 +30,6 @@ Address every open review thread from the human reviewers:
 2. Use Read/Grep/Glob tools to examine the referenced code and surrounding context
 3. Apply the requested changes using Edit/Write tools
 4. Ensure your changes align with the PR's overall purpose and do not break existing functionality
-5. Commit the changes with: `fix(pr): address review feedback on PR #${PR_NUMBER}`
 
 ## Constraints
 
@@ -39,7 +38,7 @@ Address every open review thread from the human reviewers:
 - Do not dismiss or skip any thread without a documented reason
 - Maintain the existing code style and patterns
 - Run any available test commands to verify fixes where possible
-- Do not push to remote — the CI workflow will handle that
+- Do not commit or push — the CI workflow handles git operations after you finish
 
 ## Output Format
 

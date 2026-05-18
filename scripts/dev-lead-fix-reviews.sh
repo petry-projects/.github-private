@@ -74,12 +74,20 @@ ${summary}"
   gh pr comment "$PR_NUMBER" --repo "$REPO" --body "$body" 2>/dev/null || true
 }
 
-# commit_and_push: adds all changes, commits with an intent-specific message,
-# and pushes to the PR branch. Returns 0 if changes were made and pushed,
-# 1 if no changes were found.
+# commit_and_push: stages any uncommitted changes, commits if needed, and pushes.
+# Returns 0 if changes were pushed, 1 if nothing to push.
+# Handles two cases:
+#   (a) Engine left uncommitted working-tree changes — stage, commit, push.
+#   (b) Engine committed via Bash but didn't push — detected via git log @{u}..HEAD
+#       so changes are not silently dropped when the ephemeral runner exits.
 commit_and_push() {
   local intent="$1"
-  if git diff --quiet && git diff --cached --quiet; then
+  local has_uncommitted=false has_unpushed=false
+
+  git diff --quiet && git diff --cached --quiet || has_uncommitted=true
+  git log "@{u}..HEAD" --oneline 2>/dev/null | grep -q . && has_unpushed=true
+
+  if ! $has_uncommitted && ! $has_unpushed; then
     echo "::notice::No changes to commit for intent=${intent}"
     return 1
   fi
@@ -95,9 +103,12 @@ commit_and_push() {
 
   if [ "$DEV_LEAD_DRY_RUN" = "true" ]; then
     echo "[dry-run] would git add, commit with '${commit_msg}', and push"
+    $has_unpushed && echo "[dry-run] note: engine already committed — would push existing commit(s)"
   else
-    git add -A
-    git commit -m "$commit_msg"
+    if $has_uncommitted; then
+      git add -A
+      git commit -m "$commit_msg"
+    fi
     git push
   fi
   return 0
