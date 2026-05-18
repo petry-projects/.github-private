@@ -114,6 +114,9 @@ REVIEW_MCP_DEBUG="${REVIEW_MCP_DEBUG:-}"
 export REVIEW_MCP_CONFIG REVIEW_MCP_ALLOWED_TOOLS REVIEW_MCP_DEBUG
 
 set_engine_config() {
+  # Default Copilot model — ensures the variable is bound for set -u
+  COPILOT_API_MODEL="${COPILOT_API_MODEL:-gpt-5.4}"
+
   case "$REVIEW_ENGINE" in
     claude)
       ENGINE_TRIAGE_MODEL="claude-haiku-4-5-20251001"
@@ -4868,15 +4871,8 @@ run_writer() {
         < "$prompt_file" | tee "$_tmp" || rc=${PIPESTATUS[0]}
       ;;
     copilot)
-      # Copilot (gh copilot suggest) is text-only — falls back to Claude for write ops
-      echo "::warning::Copilot engine is text-only; falling back to Claude for write operations" >&2
-      local saved="$REVIEW_ENGINE"
-      REVIEW_ENGINE="claude" timeout "$ACTION_TIMEOUT_SEC" claude --print \
-        --model "$model" \
-        --permission-mode acceptEdits \
-        --allowed-tools "Bash,Read,Write,Edit,Grep,Glob" \
-        < "$prompt_file" | tee "$_tmp" || rc=${PIPESTATUS[0]}
-      REVIEW_ENGINE="$saved"
+      # Self-sufficient write support via gh copilot --yolo
+      copilot_chat "$prompt_file" "$ACTION_TIMEOUT_SEC" --yolo | tee "$_tmp" || rc=${PIPESTATUS[0]}
       ;;
   esac
 
@@ -4890,7 +4886,7 @@ run_writer() {
   return "$rc"
 }
 
-# run_writer_with_fallback <prompt_file> [model]
+# run_writer_with_fallback <prompt_file>
 # Tries primary engine, falls back through claude → gemini → copilot on rate-limit.
 # Only rate-limit (exit 2) triggers fallback; other failures propagate immediately.
 run_writer_with_fallback() {
