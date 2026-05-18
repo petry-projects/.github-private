@@ -242,7 +242,7 @@ case "$EVENT_NAME" in
     comment_body=$(jq -r '.comment.body // empty' "$EVENT_PATH" 2>/dev/null || true)
     pr_number=$(jq -r '.pull_request.number // empty' "$EVENT_PATH" 2>/dev/null || true)
     head_sha=$(jq -r '.pull_request.head.sha // empty' "$EVENT_PATH" 2>/dev/null || true)
-    author_assoc=$(jq -r '.pull_request.author_association // empty' "$EVENT_PATH" 2>/dev/null || true)
+    author_assoc=$(jq -r '.comment.author_association // empty' "$EVENT_PATH" 2>/dev/null || true)
 
     context=$(jq -nc \
       --argjson pr_number "${pr_number:-0}" \
@@ -276,7 +276,7 @@ case "$EVENT_NAME" in
     commenter=$(jq -r '.comment.user.login // empty' "$EVENT_PATH" 2>/dev/null || true)
     comment_body=$(jq -r '.comment.body // empty' "$EVENT_PATH" 2>/dev/null || true)
     pr_number=$(jq -r '.issue.number // empty' "$EVENT_PATH" 2>/dev/null || true)
-    author_assoc=$(jq -r '.issue.author_association // empty' "$EVENT_PATH" 2>/dev/null || true)
+    author_assoc=$(jq -r '.comment.author_association // empty' "$EVENT_PATH" 2>/dev/null || true)
 
     # Rebase sentinel check (highest priority, before bot-skip)
     if echo "$comment_body" | grep -qF "<!-- auto-rebase-conflict:"; then
