@@ -33,6 +33,19 @@ Analyze the CI failure logs and annotations above, then fix the root cause(s). Y
 3. Apply targeted fixes using the Edit/Write tools
 4. Verify your fixes are consistent with the rest of the codebase
 
+### External quality gate (SonarCloud, CodeQL, etc.)
+
+If **Failure Logs** begins with `# External quality gate`, this check is not a GitHub Actions workflow — it is an external service that reported a quality gate failure. In this case:
+
+- **Failure Logs** contains the PR diff instead of log output; **Annotations** will be empty
+- Use the PR diff to identify what the gate likely flagged
+- For **SonarQube / SonarCloud Security Hotspots**, scan changed files for:
+  - `curl … | bash` / `wget … | sh` — script injection hotspot (replace with a pinned install or `gh extension install`)
+  - Hardcoded credentials, tokens, or API keys
+  - `eval` / `exec` with dynamic input
+  - HTTP (non-HTTPS) URLs for script or package downloads
+- Fix each identified hotspot and commit
+
 ## Constraints
 
 - Fix only what is broken — do not refactor unrelated code

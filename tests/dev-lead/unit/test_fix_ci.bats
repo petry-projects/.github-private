@@ -437,3 +437,50 @@ STUB
   # Output should mention dedup skip
   [[ "$output" == *"already posted"* || "$output" == *"skipping duplicate"* ]]
 }
+
+# ── external quality gate (Fix 3) ─────────────────────────────────────────────
+
+@test "fix-ci: external quality gate: non-GHA details_url → PR diff in logs" {
+  cat > "$STUB_BIN_DIR/gh" <<'GHEOF'
+#!/usr/bin/env bash
+ARGS="$*"
+case "$ARGS" in
+  *"issues/"*"/comments"*) echo "[]" ;;
+  *"pr comment"*) exit 0 ;;
+  *"pr diff"*) printf 'diff --git a/lint.yml b/lint.yml\n+run: curl -sL https://example.com/install.sh | bash\n' ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+  export DEV_LEAD_DRY_RUN="true"
+  export CHECKS_JSON='[{"name":"SonarCloud Code Analysis","conclusion":"failure","details_url":"https://sonarcloud.io","app_slug":"sonarcloud"}]'
+
+  run bash "$FIX_CI_SCRIPT"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"[dry-run]"* ]]
+}
+
+@test "fix-ci: external quality gate: GHA details_url → uses run view, not pr diff" {
+  local ran_run_view=0
+  local ran_pr_diff=0
+  cat > "$STUB_BIN_DIR/gh" <<'GHEOF'
+#!/usr/bin/env bash
+ARGS="$*"
+case "$ARGS" in
+  *"issues/"*"/comments"*) echo "[]" ;;
+  *"pr comment"*) exit 0 ;;
+  *"run view"*) echo "github-actions log output" ;;
+  *"pr diff"*) echo "SHOULD_NOT_APPEAR_IN_GHA_PATH" ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+  export DEV_LEAD_DRY_RUN="true"
+  export CHECKS_JSON='[{"name":"lint / eslint","conclusion":"failure","details_url":"https://github.com/petry-projects/.github-private/actions/runs/12345","app_slug":"github-actions"}]'
+
+  run bash "$FIX_CI_SCRIPT"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"SHOULD_NOT_APPEAR_IN_GHA_PATH"* ]]
+}
