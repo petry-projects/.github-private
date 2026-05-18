@@ -30,6 +30,9 @@ RETRY_MAX_ATTEMPTS="${RETRY_MAX_ATTEMPTS:-2}"   # total attempts including first
 RETRY_BASE_DELAY_SEC="${RETRY_BASE_DELAY_SEC:-5}"
 
 set_engine_config() {
+  # Default Copilot model — ensures the variable is bound for set -u
+  COPILOT_API_MODEL="${COPILOT_API_MODEL:-gpt-5.4}"
+
   case "$REVIEW_ENGINE" in
     claude)
       ENGINE_TRIAGE_MODEL="claude-haiku-4-5-20251001"
@@ -37,11 +40,11 @@ set_engine_config() {
       ENGINE_AUDIT_MODEL="claude-opus-4-7"
       ENGINE_ACTION_MODEL="claude-sonnet-4-6"
       ENGINE_SINGLE_MODEL="claude-opus-4-7"
-      ENGINE_LABEL="triage: haiku 4.5 → deep: sonnet 4.6 + duck: o4-mini → audit: opus 4.7"
+      ENGINE_LABEL="triage: haiku 4.5 → deep: sonnet 4.6 + duck: gpt-5.4 → audit: opus 4.7"
       ENGINE_SINGLE_LABEL="single-reviewer mode: opus 4.7"
       # Cross-engine rubber duck: always the opposite engine
       DUCK_ENGINE="copilot"
-      DUCK_MODEL="o4-mini"
+      DUCK_MODEL="gpt-5.4"
       ;;
     gemini)
       ENGINE_TRIAGE_MODEL="auto"
@@ -56,21 +59,14 @@ set_engine_config() {
       DUCK_MODEL="claude-sonnet-4-6"
       ;;
     copilot)
-      ENGINE_TRIAGE_MODEL="o4-mini"
-      ENGINE_DEEP_MODEL="o4-mini"
-      ENGINE_AUDIT_MODEL="o4-mini"
-      ENGINE_ACTION_MODEL="o4-mini"
-      ENGINE_SINGLE_MODEL="o4-mini"
-      # GitHub Models API model identifier — must match a model available at
-      # https://models.github.ai (see GitHub Models marketplace).
-      # Override via COPILOT_API_MODEL env var if the default is unavailable.
-      # openai/o4-mini is the April-2025 o4-generation reasoning model; it is
-      # not a typo for o1-mini or gpt-4o-mini.
-      COPILOT_API_MODEL="${COPILOT_API_MODEL:-openai/o4-mini}"
-      export COPILOT_API_MODEL
-      ENGINE_LABEL="triage: o4-mini → deep: o4-mini + duck: sonnet 4.6 → audit: o4-mini (GitHub Models API)"
-      ENGINE_SINGLE_LABEL="single-reviewer mode: o4-mini (GitHub Models API)"
-      # Cross-engine rubber duck: always the opposite engine
+      ENGINE_TRIAGE_MODEL="gpt-5.4"
+      ENGINE_DEEP_MODEL="gpt-5.4"
+      ENGINE_AUDIT_MODEL="gpt-5.4"
+      ENGINE_ACTION_MODEL="gpt-5.4"
+      ENGINE_SINGLE_MODEL="gpt-5.4"
+      ENGINE_LABEL="triage: gpt-5.4 → deep: gpt-5.4 + duck: sonnet 4.6 → audit: gpt-5.4 (GitHub Copilot CLI)"
+      ENGINE_SINGLE_LABEL="single-reviewer mode: gpt-5.4 (GitHub Copilot CLI)"
+      # Cross-engine rubber duck: use Claude for diversity
       DUCK_ENGINE="claude"
       DUCK_MODEL="claude-sonnet-4-6"
       ;;
@@ -83,7 +79,7 @@ set_engine_config() {
   export ENGINE_TRIAGE_MODEL ENGINE_DEEP_MODEL ENGINE_AUDIT_MODEL
   export ENGINE_ACTION_MODEL ENGINE_SINGLE_MODEL
   export ENGINE_LABEL ENGINE_SINGLE_LABEL
-  export DUCK_ENGINE DUCK_MODEL
+  export DUCK_ENGINE DUCK_MODEL COPILOT_API_MODEL
 }
 
 # Initial config
@@ -1757,15 +1753,8 @@ run_writer() {
         < "$prompt_file" | tee "$_tmp" || rc=${PIPESTATUS[0]}
       ;;
     copilot)
-      # Copilot (gh copilot suggest) is text-only — falls back to Claude for write ops
-      echo "::warning::Copilot engine is text-only; falling back to Claude for write operations" >&2
-      local saved="$REVIEW_ENGINE"
-      REVIEW_ENGINE="claude" timeout "$ACTION_TIMEOUT_SEC" claude --print \
-        --model "$model" \
-        --permission-mode acceptEdits \
-        --allowed-tools "Bash,Read,Write,Edit,Grep,Glob" \
-        < "$prompt_file" | tee "$_tmp" || rc=${PIPESTATUS[0]}
-      REVIEW_ENGINE="$saved"
+      # Self-sufficient write support via gh copilot --yolo
+      copilot_chat "$prompt_file" "$ACTION_TIMEOUT_SEC" --yolo | tee "$_tmp" || rc=${PIPESTATUS[0]}
       ;;
   esac
 
@@ -1779,7 +1768,7 @@ run_writer() {
   return "$rc"
 }
 
-# run_writer_with_fallback <prompt_file> [model]
+# run_writer_with_fallback <prompt_file>
 # Tries primary engine, falls back through claude → gemini → copilot on rate-limit.
 # Only rate-limit (exit 2) triggers fallback; other failures propagate immediately.
 run_writer_with_fallback() {
