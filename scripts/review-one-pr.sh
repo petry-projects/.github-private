@@ -258,7 +258,18 @@ echo "    [tier1] triage ($ENGINE_TRIAGE_MODEL)"
 _gh_meta_err=/tmp/cascade/gh-meta-prefetch.err
 _gh_diff_err=/tmp/cascade/gh-diff-prefetch.err
 _gh_diff_tmp=/tmp/cascade/gh-diff-raw.txt
-PR_METADATA=$(gh pr view "$PR_URL" --json number,title,body,author,isDraft,baseRefName,headRefName,headRefOid,url,headRepository,headRepositoryOwner,labels,reviewDecision,mergeable,mergeStateStatus,statusCheckRollup,reviewRequests,reviews,comments,commits,closingIssuesReferences,additions,deletions,changedFiles,files 2>"$_gh_meta_err") || {
+
+# Use a selective list of fields to avoid hitting payload limits with 
+# massive comment histories or redundant file lists.
+_meta_fields="number,title,body,author,isDraft,baseRefName,headRefName,headRefOid,url,labels,reviewDecision,mergeable,mergeStateStatus,statusCheckRollup,reviewRequests,closingIssuesReferences,additions,deletions,changedFiles"
+# We exclude 'comments', 'reviews', 'commits', 'files' from the primary JSON
+# if they are likely to be massive. We'll add a simplified summary of them.
+
+PR_METADATA=$(gh pr view "$PR_URL" --json "$_meta_fields,files" --jq '
+  # Simplify the files list to just path + status + changes to save tokens
+  .files |= map({path: .path, status: .status, additions: .additions, deletions: .deletions})
+  | .
+' 2>"$_gh_meta_err") || {
   _gh_meta_err_content=$(cat "$_gh_meta_err" 2>/dev/null || true)
   if is_rate_limited "$_gh_meta_err_content"; then
     rm -f "$_gh_meta_err" "$_gh_diff_err" "$_gh_diff_tmp"
@@ -271,8 +282,17 @@ PR_METADATA=$(gh pr view "$PR_URL" --json number,title,body,author,isDraft,baseR
   rm -f "$_gh_meta_err" "$_gh_diff_err" "$_gh_diff_tmp"
   exit 1
 }
+
+# For Copilot, we keep context moderate (8k-16k) to avoid session costs.
+# For Claude/Gemini, we can afford more context (up to 32k+).
+if [ "${REVIEW_ENGINE:-claude}" = "copilot" ]; then
+  _diff_limit=1000
+else
+  _diff_limit=3000
+fi
+
 if gh pr diff "$PR_URL" > "$_gh_diff_tmp" 2>"$_gh_diff_err"; then
-  PR_DIFF=$(head -3000 "$_gh_diff_tmp")
+  PR_DIFF=$(head -"$_diff_limit" "$_gh_diff_tmp")
 else
   _gh_diff_err_content=$(cat "$_gh_diff_err" 2>/dev/null || true)
   if is_rate_limited "$_gh_diff_err_content"; then
@@ -319,19 +339,24 @@ unset PR_DIFF PR_METADATA
 
 # Detect error category before JSON validation.
 # Claude Code writes its usage-cap error to stdout (captured in TRIAGE_RESULT);
-# some other providers write to stderr (TRIAGE_LOG) — check both channels.
+# some other providers (like gh copilot) write to stderr (TRIAGE_LOG) — check both.
 TRIAGE_STDERR=$(cat "$TRIAGE_LOG" 2>/dev/null || true)
-# TRIAGE_STDERR is always process output — safe to check unconditionally.
-# TRIAGE_RESULT is gated on rc != 0 to avoid false positives: the triage prompt
-# inlines the full PR diff, so a PR adding "429 rate-limit handling" could
-# produce valid JSON with matching text in signals/summary, incorrectly
-# triggering engine fallback on a healthy call that exited 0.
+
+# Always check stderr for rate limits (common channel for CLI/gateway errors).
 if is_rate_limited "$TRIAGE_STDERR"; then
-  echo "    [tier1] usage/rate limit detected — exiting with code 2 for engine fallback"
-  echo "    limit message: (stderr: $TRIAGE_STDERR)"
+  echo "    [tier1] usage/rate limit detected on stderr — exiting with code 2 for engine fallback"
+  echo "    limit stderr: $TRIAGE_STDERR"
   exit 2
 fi
+
+# If triage failed at the process level, check stdout for rate limits (common for claude --print).
 if [ "$TRIAGE_RC" -ne 0 ]; then
+  if is_rate_limited "$TRIAGE_RESULT"; then
+    echo "    [tier1] usage/rate limit detected on stdout — exiting with code 2 for engine fallback"
+    echo "    limit message: $TRIAGE_RESULT"
+    exit 2
+  fi
+
   # CLI invocation errors (bad flags, wrong syntax) are per-PR failures — exit 1
   # so the session can continue with the next PR rather than aborting entirely.
   if is_cli_error "$TRIAGE_RESULT" || is_cli_error "$TRIAGE_STDERR"; then
@@ -339,42 +364,36 @@ if [ "$TRIAGE_RC" -ne 0 ]; then
     echo "    error message: ${TRIAGE_RESULT:-}${TRIAGE_STDERR:+ (stderr: $TRIAGE_STDERR)}"
     exit 1
   fi
-  # Rate-limit / overload — exit 2 so the caller can fall back to a different engine.
-  if is_rate_limited "$TRIAGE_RESULT"; then
-    echo "    [tier1] usage/rate limit detected — exiting with code 2 for engine fallback"
-    echo "    limit message: ${TRIAGE_RESULT:-}"
-    exit 2
-  fi
-fi
 
-# Hard-fail on triage process exit. Previously this silently synthesized a
-# fake "escalate=true, MEDIUM" verdict, which masked real model regressions
-# (a broken triage prompt or model endpoint would still cost a deep review on
-# every PR while looking healthy). With the session circuit breaker upstream,
-# letting this fail loudly is the right call — the workflow aborts the rest
-# of the session and the next hourly run retries fresh.
-if [ "$TRIAGE_RC" -ne 0 ]; then
   echo "::warning::triage exited with code $TRIAGE_RC"
-  # claude --print writes errors to stdout (TRIAGE_RESULT), not stderr — surface
-  # both channels so the actual failure message is always visible in CI logs.
   [ -n "$TRIAGE_RESULT" ] && echo "    triage stdout: $TRIAGE_RESULT"
   [ -n "$TRIAGE_STDERR" ] && echo "    triage stderr: $TRIAGE_STDERR"
   echo "::error::cascade failed at tier 1 (triage process exit $TRIAGE_RC) for $PR_URL"
   exit 1
 fi
 
+# Process exit was 0, but check for JSON validity before checking stdout for rate limits.
+# (Prevents false positives if a healthy diff contains rate-limit strings).
 # Strip ```json ... ``` markdown fences if the model wrapped its JSON in
 # them. Haiku tends to add fences despite explicit instructions not to.
-TRIAGE_RESULT=$(printf '%s' "$TRIAGE_RESULT" | sed -E '/^```[a-zA-Z]*$/d; /^```$/d')
+TRIAGE_RESULT_CLEAN=$(printf '%s' "$TRIAGE_RESULT" | sed -E '/^```[a-zA-Z]*$/d; /^```$/d')
 
-if ! echo "$TRIAGE_RESULT" | jq empty 2>/dev/null; then
+if ! echo "$TRIAGE_RESULT_CLEAN" | jq empty 2>/dev/null; then
+  # Not valid JSON. NOW it is safe to check for rate limits in stdout.
+  if is_rate_limited "$TRIAGE_RESULT"; then
+    echo "    [tier1] usage/rate limit detected in non-JSON stdout — exiting with code 2 for engine fallback"
+    echo "    limit message: $TRIAGE_RESULT"
+    exit 2
+  fi
+
   echo "::warning::triage returned non-JSON output"
   echo "    triage stdout: $TRIAGE_RESULT"
-  cat "$TRIAGE_LOG" 2>/dev/null || true
+  [ -n "$TRIAGE_STDERR" ] && echo "    triage stderr: $TRIAGE_STDERR"
   echo "::error::cascade failed at tier 1 (triage non-JSON) for $PR_URL"
   exit 1
 fi
 
+TRIAGE_RESULT="$TRIAGE_RESULT_CLEAN"
 export TRIAGE_RESULT
 TRIAGE_ESCALATE=$(echo "$TRIAGE_RESULT" | jq -r '.escalate')
 TRIAGE_RISK=$(echo "$TRIAGE_RESULT" | jq -r '.risk')
