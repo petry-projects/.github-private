@@ -854,18 +854,28 @@ ${summary}"
   gh pr comment "$PR_NUMBER" --repo "$REPO" --body "$body" 2>/dev/null || true
 }
 
-# commit_and_push: stages any uncommitted changes, commits if needed, and pushes.
-# Returns 0 if changes were pushed, 1 if nothing to push.
+# commit_and_push: stages any uncommitted changes (including untracked files),
+# commits if needed, and pushes. Returns 0 if changes were pushed, 1 if nothing to push.
 # Handles two cases:
-#   (a) Engine left uncommitted working-tree changes — stage, commit, push.
-#   (b) Engine committed via Bash but didn't push — detected via git log @{u}..HEAD
+#   (a) Engine left uncommitted/untracked working-tree changes — stage, commit, push.
+#   (b) Engine committed via Bash but didn't push — detected via upstream comparison
 #       so changes are not silently dropped when the ephemeral runner exits.
 commit_and_push() {
   local intent="$1"
   local has_uncommitted=false has_unpushed=false
 
-  git diff --quiet && git diff --cached --quiet || has_uncommitted=true
-  git log "@{u}..HEAD" --oneline 2>/dev/null | grep -q . && has_unpushed=true
+  # git status --porcelain covers untracked files that git diff misses
+  [ -n "$(git status --porcelain)" ] && has_uncommitted=true
+
+  # Detect engine-committed but not pushed: prefer @{u} if upstream is configured,
+  # fall back to HEAD_SHA (resolved from PR API at script startup) for fork checkouts.
+  local upstream
+  upstream=$(git rev-parse --abbrev-ref --symbolic-full-name "@{u}" 2>/dev/null || true)
+  if [ -n "$upstream" ]; then
+    git log "${upstream}..HEAD" --oneline 2>/dev/null | grep -q . && has_unpushed=true
+  elif [ -n "${HEAD_SHA:-}" ]; then
+    git log "${HEAD_SHA}..HEAD" --oneline 2>/dev/null | grep -q . && has_unpushed=true
+  fi
 
   if ! $has_uncommitted && ! $has_unpushed; then
     echo "::notice::No changes to commit for intent=${intent}"
