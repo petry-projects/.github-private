@@ -26,10 +26,25 @@ emit_intent() {
   local intent="$1" reason="${2:-}" context="${3:-}"
   echo "INTENT_TYPE=${intent}" >> "$GITHUB_ENV"
   echo "INTENT_REASON=${reason}" >> "$GITHUB_ENV"
-  echo "INTENT_CONTEXT=${context}" >> "$GITHUB_ENV"
   echo "intent_type=${intent}" >> "$GITHUB_OUTPUT"
   echo "intent_reason=${reason}" >> "$GITHUB_OUTPUT"
-  echo "intent_context=${context}" >> "$GITHUB_OUTPUT"
+
+  # Use a random delimiter for context to handle multiline JSON safely
+  local EOF_DELIMITER
+  EOF_DELIMITER="EOF_$(dd if=/dev/urandom bs=15 count=1 2>/dev/null | base64 | tr -dc 'a-zA-Z0-9')"
+
+  {
+    echo "INTENT_CONTEXT<<$EOF_DELIMITER"
+    echo "${context}"
+    echo "$EOF_DELIMITER"
+  } >> "$GITHUB_ENV"
+
+  {
+    echo "intent_context<<$EOF_DELIMITER"
+    echo "${context}"
+    echo "$EOF_DELIMITER"
+  } >> "$GITHUB_OUTPUT"
+
   echo "  [intent] type=${intent} reason=${reason} context=${context}"
 }
 
@@ -145,7 +160,11 @@ case "$EVENT_NAME" in
           emit_skip "bot-pr"
           exit 0
         fi
-        context=$(printf '{"pr_number":%s,"head_sha":"%s"}' "${pr_number:-0}" "${head_sha:-}")
+        context=$(jq -nc \
+          --argjson pr_number "${pr_number:-0}" \
+          --arg head_sha "${head_sha:-}" \
+          --arg actor "${sender_login:-}" \
+          '{"pr_number":$pr_number,"head_sha":$head_sha,"actor":$actor}')
         emit_intent "human-pr" "pr-${pr_action}" "$context"
         ;;
       synchronize)
@@ -154,7 +173,11 @@ case "$EVENT_NAME" in
           emit_skip "bot-sync"
           exit 0
         fi
-        context=$(printf '{"pr_number":%s,"head_sha":"%s"}' "${pr_number:-0}" "${head_sha:-}")
+        context=$(jq -nc \
+          --argjson pr_number "${pr_number:-0}" \
+          --arg head_sha "${head_sha:-}" \
+          --arg actor "${sender_login:-}" \
+          '{"pr_number":$pr_number,"head_sha":$head_sha,"actor":$actor}')
         emit_intent "human-pr" "pr-synchronize" "$context"
         ;;
       *)
@@ -170,6 +193,7 @@ case "$EVENT_NAME" in
       exit 0
     fi
     reviewer=$(jq -r '.review.user.login // empty' "$EVENT_PATH" 2>/dev/null || true)
+    review_body=$(jq -r '.review.body // empty' "$EVENT_PATH" 2>/dev/null || true)
     review_state=$(jq -r '.review.state // empty' "$EVENT_PATH" 2>/dev/null || true)
     pr_number=$(jq -r '.pull_request.number // empty' "$EVENT_PATH" 2>/dev/null || true)
     head_sha=$(jq -r '.pull_request.head.sha // empty' "$EVENT_PATH" 2>/dev/null || true)
@@ -187,7 +211,12 @@ case "$EVENT_NAME" in
       exit 0
     fi
 
-    context=$(printf '{"pr_number":%s,"head_sha":"%s"}' "${pr_number:-0}" "${head_sha:-}")
+    context=$(jq -nc \
+      --argjson pr_number "${pr_number:-0}" \
+      --arg head_sha "${head_sha:-}" \
+      --arg actor "${reviewer:-}" \
+      --arg body "${review_body:-}" \
+      '{"pr_number":$pr_number,"head_sha":$head_sha,"actor":$actor,"body":$body}')
 
     if is_trusted_bot "$reviewer"; then
       # Bot review: only route non-APPROVED states

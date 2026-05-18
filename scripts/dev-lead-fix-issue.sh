@@ -49,7 +49,8 @@ main() {
   fi
 
   # Create feature branch
-  local branch="dev-lead/issue-${ISSUE_NUMBER}-$(date +%Y%m%d-%H%M)"
+  local branch
+  branch="dev-lead/issue-${ISSUE_NUMBER}-$(date +%Y%m%d-%H%M)"
   git checkout -b "$branch"
 
   if ! run_writer_with_fallback "$prompt_file" "$(model_for_intent "$INTENT_TYPE")"; then

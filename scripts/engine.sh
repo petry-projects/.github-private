@@ -49,6 +49,7 @@ _setup_engine_vars() {
       ENGINE_SINGLE_MODEL="claude-opus-4-7"
       ENGINE_LABEL="triage: haiku 4.5 → deep: sonnet 4.6 + duck: o4-mini → audit: opus 4.7"
       ENGINE_SINGLE_LABEL="single-reviewer mode: opus 4.7"
+      # Cross-engine rubber duck: always the opposite engine
       DUCK_ENGINE="copilot"
       DUCK_MODEL="o4-mini"
       ;;
@@ -60,6 +61,7 @@ _setup_engine_vars() {
       ENGINE_SINGLE_MODEL="gemini-1.5-pro"
       ENGINE_LABEL="triage: gemini-2.0-flash → deep: gemini-1.5-pro + duck: sonnet 4.6 → audit: gemini-1.5-pro"
       ENGINE_SINGLE_LABEL="single-reviewer mode: gemini-1.5-pro"
+      # Cross-engine rubber duck: use Claude for diversity
       DUCK_ENGINE="claude"
       DUCK_MODEL="claude-sonnet-4-6"
       ;;
@@ -78,6 +80,7 @@ _setup_engine_vars() {
       export COPILOT_API_MODEL
       ENGINE_LABEL="triage: o4-mini → deep: o4-mini + duck: sonnet 4.6 → audit: o4-mini (GitHub Models API)"
       ENGINE_SINGLE_LABEL="single-reviewer mode: o4-mini (GitHub Models API)"
+      # Cross-engine rubber duck: always the opposite engine
       DUCK_ENGINE="claude"
       DUCK_MODEL="claude-sonnet-4-6"
       ;;
