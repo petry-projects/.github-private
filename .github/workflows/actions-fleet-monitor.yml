@@ -83,6 +83,99 @@ jobs:
             });
             core.notice(`Issue created: ${issue.data.html_url}`);
 
+
+      - name: Track high-failure workflows as Issues
+        if: hashFiles('fleet_high_failure.json') != ''
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
+        env:
+          ORG: ${{ env.ORG }}
+        with:
+          # Use the PAT so label creation and cross-repo context both work
+          github-token: ${{ secrets.DON_PETRY_BOT_GH_PAT }}
+          script: |
+            const fs = require('fs');
+
+            const raw = fs.readFileSync('fleet_high_failure.json', 'utf8').trim();
+            const items = JSON.parse(raw || '[]');
+            if (!items.length) {
+              core.info('No workflows with >10% failure rate — nothing to track.');
+              return;
+            }
+
+            // Ensure required labels exist (422 = already exists — safe to ignore)
+            for (const [name, color, desc] of [
+              ['dev-lead',      'd93f0b', 'Requires dev-lead attention'],
+              ['fleet-tracker', '0075ca', 'Tracked by the Actions Fleet Monitor'],
+            ]) {
+              try {
+                await github.rest.issues.createLabel({
+                  owner: context.repo.owner, repo: context.repo.repo,
+                  name, color, description: desc,
+                });
+              } catch (e) { if (e.status !== 422) throw e; }
+            }
+
+            const labelEmoji = { CRITICAL: '🔴', DEGRADED: '🟠', WARNING: '🟡', ERROR: '⚫' };
+            const today = new Date().toISOString().split('T')[0];
+            const runUrl = `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`;
+
+            for (const item of items) {
+              const emoji   = labelEmoji[item.label] ?? '🔴';
+              const title   = `[Fleet Monitor] ${item.repo} — ${item.workflow}`;
+              const body    = [
+                `## ${emoji} ${item.label}: \`${item.repo}\` / \`${item.workflow}\``,
+                '',
+                `| Metric | Value |`,
+                `|---|---|`,
+                `| **Failure Rate** | ${item.rate} (${item.failed} / ${item.total} runs) |`,
+                `| **Status** | ${item.label} |`,
+                `| **p50 Duration** | ${item.p50}s |`,
+                `| **p95 Duration** | ${item.p95}s |`,
+                `| **Successful Runs** | ${item.success} |`,
+                `| **Cancelled Runs** | ${item.cancelled} |`,
+                '',
+                `**Workflow:** [\`${item.workflow}\`](https://github.com/${item.repo}/actions)`,
+                '',
+                `> _Last updated by [Fleet Monitor run](${runUrl}) on ${today}._`,
+                `> _Threshold: failure rate > 10% over the monitored window._`,
+              ].join('\n');
+
+              // Search for an existing open issue with this exact title
+              const { data: results } = await github.rest.search.issuesAndPullRequests({
+                q: [
+                  `repo:${context.repo.owner}/${context.repo.repo}`,
+                  'is:issue',
+                  'is:open',
+                  `in:title`,
+                  `"${title}"`,
+                ].join('+'),
+              });
+              const existing = results.items.find(i => i.title === title);
+
+              if (existing) {
+                await github.rest.issues.update({
+                  owner: context.repo.owner, repo: context.repo.repo,
+                  issue_number: existing.number,
+                  body,
+                });
+                // Ensure dev-lead label is present (addLabels is idempotent)
+                await github.rest.issues.addLabels({
+                  owner: context.repo.owner, repo: context.repo.repo,
+                  issue_number: existing.number,
+                  labels: ['dev-lead', 'fleet-tracker'],
+                });
+                core.notice(`Updated issue #${existing.number}: ${existing.html_url}`);
+              } else {
+                const created = await github.rest.issues.create({
+                  owner: context.repo.owner, repo: context.repo.repo,
+                  title,
+                  body,
+                  labels: ['dev-lead', 'fleet-tracker', 'health-check'],
+                });
+                core.notice(`Created issue #${created.data.number}: ${created.data.html_url}`);
+              }
+            }
+
       - name: Annotate clean run
         if: env.HAS_FAILURES != 'true'
         run: |
