@@ -114,6 +114,9 @@ REVIEW_MCP_DEBUG="${REVIEW_MCP_DEBUG:-}"
 export REVIEW_MCP_CONFIG REVIEW_MCP_ALLOWED_TOOLS REVIEW_MCP_DEBUG
 
 set_engine_config() {
+  # Default Copilot model — ensures the variable is bound for set -u
+  COPILOT_API_MODEL="${COPILOT_API_MODEL:-gpt-5.4}"
+
   case "$REVIEW_ENGINE" in
     claude)
       ENGINE_TRIAGE_MODEL="claude-haiku-4-5-20251001"
