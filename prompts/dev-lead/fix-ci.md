@@ -32,7 +32,6 @@ Analyze the CI failure logs and annotations above, then fix the root cause(s). Y
 2. Locate the relevant source files using Read/Grep/Glob tools
 3. Apply targeted fixes using the Edit/Write tools
 4. Verify your fixes are consistent with the rest of the codebase
-5. Commit the changes with a descriptive message: `fix(ci): resolve ${CHECK_NAME} failures`
 
 ## Constraints
 
@@ -40,7 +39,7 @@ Analyze the CI failure logs and annotations above, then fix the root cause(s). Y
 - Do not modify test expectations to make tests pass artificially
 - Do not suppress linting rules unless absolutely necessary (add a comment explaining why)
 - Stay within the scope of the failing check: `${CHECK_NAME}`
-- Do not push to remote — the CI workflow will handle that
+- Do not commit or push — the CI workflow handles git operations after you finish
 
 ## Output Format
 
@@ -48,5 +47,4 @@ After applying fixes, output a brief summary:
 ```
 Fixed: <description of what was fixed>
 Files changed: <list of files>
-Commit: <commit SHA or "pending">
 ```
