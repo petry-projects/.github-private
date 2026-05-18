@@ -1,3 +1,18 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# SOURCE OF TRUTH: petry-projects/.github-private/.github/workflows/actions-fleet-monitor.yml
+# Standard:        petry-projects/.github/standards/ci-standards.md
+#
+# AGENTS — READ BEFORE EDITING:
+#   • This is the canonical fleet-monitor implementation; there is no external
+#     reusable. The scanning logic lives in scripts/fleet_monitor.sh and
+#     scripts/fleet_report.sh.
+#   • The "Track high-failure workflows as Issues" step uses github.token (not
+#     the PAT) because the PAT lacks label-assignment rights on this repo.
+#     Dev-Lead Agent is explicitly woken via repository_dispatch in the
+#     "Dispatch dev-lead for critical items" step below.
+#   • Do NOT change checkout ref from 'main' — the github.ref_name variant is
+#     for feature-branch testing only and must never reach production.
+# ─────────────────────────────────────────────────────────────────────────────
 name: Actions Fleet Monitor
 
 on:
