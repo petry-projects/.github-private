@@ -1331,8 +1331,11 @@ commit_and_push() {
   esac
 
   if [ "$DEV_LEAD_DRY_RUN" = "true" ]; then
-    echo "[dry-run] would git add, commit with '${commit_msg}', and push"
-    $has_unpushed && echo "[dry-run] note: engine already committed — would push existing commit(s)"
+    if $has_uncommitted; then
+      echo "[dry-run] would git add -A, commit '${commit_msg}', and push"
+    else
+      echo "[dry-run] engine already committed — would push existing commit(s) without re-committing"
+    fi
   else
     if $has_uncommitted; then
       git add -A
