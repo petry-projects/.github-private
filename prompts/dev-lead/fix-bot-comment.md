@@ -23,7 +23,6 @@ Analyze the bot's findings and address each actionable issue:
 2. Locate the referenced files and line numbers using Read/Grep/Glob tools
 3. Apply targeted fixes using Edit/Write tools
 4. Verify that the fixes are complete and do not introduce regressions
-5. Commit changes with a message: `fix(bot): address ${ACTOR} findings on PR #${PR_NUMBER}`
 
 ## Constraints
 
@@ -32,7 +31,7 @@ Analyze the bot's findings and address each actionable issue:
 - Do not suppress bot rules without a documented reason
 - Do not modify the bot's configuration files
 - Stay within the scope of the pull request's changed files where possible
-- Do not push to remote — the CI workflow will handle that
+- Do not commit or push — the CI workflow handles git operations after you finish
 
 ## Output Format
 

@@ -229,15 +229,29 @@ main() {
       exit 1
     fi
 
-    # Check if there are changes to commit
-    if git diff --quiet && git diff --cached --quiet; then
+    # Check if there are changes to push.
+    # git status --porcelain catches untracked files that git diff misses.
+    # Also detect engine-committed-but-not-pushed changes via upstream comparison.
+    local has_uncommitted=false has_unpushed=false
+    [ -n "$(git status --porcelain)" ] && has_uncommitted=true
+    local upstream
+    upstream=$(git rev-parse --abbrev-ref --symbolic-full-name "@{u}" 2>/dev/null || true)
+    if [ -n "$upstream" ]; then
+      git log "${upstream}..HEAD" --oneline 2>/dev/null | grep -q . && has_unpushed=true
+    elif [ -n "${HEAD_SHA:-}" ]; then
+      git log "${HEAD_SHA}..HEAD" --oneline 2>/dev/null | grep -q . && has_unpushed=true
+    fi
+
+    if ! $has_uncommitted && ! $has_unpushed; then
       echo "  [fix-ci] no changes made by engine"
       post_summary "no-changes" "Engine ran but made no changes."
       exit 0
     fi
 
-    git add -A
-    git commit -m "fix(ci): auto-fix for $(echo "$CHECKS_JSON" | jq -r '.[0].name // "CI failure"') [skip ci-relay]"
+    if $has_uncommitted; then
+      git add -A
+      git commit -m "fix(ci): auto-fix for $(echo "$CHECKS_JSON" | jq -r '.[0].name // "CI failure"') [skip ci-relay]"
+    fi
     git push
 
     post_summary "applied" "Fix committed and pushed. Waiting for CI."
