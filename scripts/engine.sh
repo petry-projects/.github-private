@@ -157,10 +157,8 @@ copilot_chat() {
     return 1
   fi
 
-  # Avoid ARG_MAX by using an env var for the prompt if possible, or attachment.
-  # The Copilot CLI supports COPILOT_PROMPT env var as an alternative to -p.
-  # (Assuming this in 2026 based on common patterns).
-  # If not, we'll just use -p with the file content but very carefully.
+  # Avoid ARG_MAX by using -p with the file content. On Linux, ARG_MAX is
+  # typically ~2MB, which is enough for most PR diffs and metadata.
   local prompt_text
   prompt_text=$(cat "$prompt_file")
   
@@ -429,7 +427,7 @@ run_writer() {
   return "$rc"
 }
 
-# run_writer_with_fallback <prompt_file> [model]
+# run_writer_with_fallback <prompt_file>
 # Tries primary engine, falls back through claude → gemini → copilot on rate-limit.
 # Only rate-limit (exit 2) triggers fallback; other failures propagate immediately.
 run_writer_with_fallback() {

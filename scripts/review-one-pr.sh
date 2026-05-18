@@ -341,14 +341,22 @@ unset PR_DIFF PR_METADATA
 # Claude Code writes its usage-cap error to stdout (captured in TRIAGE_RESULT);
 # some other providers (like gh copilot) write to stderr (TRIAGE_LOG) — check both.
 TRIAGE_STDERR=$(cat "$TRIAGE_LOG" 2>/dev/null || true)
-if is_rate_limited "$TRIAGE_STDERR" || is_rate_limited "$TRIAGE_RESULT"; then
-  echo "    [tier1] usage/rate limit detected — exiting with code 2 for engine fallback"
-  [ -n "$TRIAGE_RESULT" ] && echo "    limit message: $TRIAGE_RESULT"
-  [ -n "$TRIAGE_STDERR" ] && echo "    limit stderr: $TRIAGE_STDERR"
+
+# Always check stderr for rate limits (common channel for CLI/gateway errors).
+if is_rate_limited "$TRIAGE_STDERR"; then
+  echo "    [tier1] usage/rate limit detected on stderr — exiting with code 2 for engine fallback"
+  echo "    limit stderr: $TRIAGE_STDERR"
   exit 2
 fi
 
+# If triage failed at the process level, check stdout for rate limits (common for claude --print).
 if [ "$TRIAGE_RC" -ne 0 ]; then
+  if is_rate_limited "$TRIAGE_RESULT"; then
+    echo "    [tier1] usage/rate limit detected on stdout — exiting with code 2 for engine fallback"
+    echo "    limit message: $TRIAGE_RESULT"
+    exit 2
+  fi
+
   # CLI invocation errors (bad flags, wrong syntax) are per-PR failures — exit 1
   # so the session can continue with the next PR rather than aborting entirely.
   if is_cli_error "$TRIAGE_RESULT" || is_cli_error "$TRIAGE_STDERR"; then
@@ -356,11 +364,7 @@ if [ "$TRIAGE_RC" -ne 0 ]; then
     echo "    error message: ${TRIAGE_RESULT:-}${TRIAGE_STDERR:+ (stderr: $TRIAGE_STDERR)}"
     exit 1
   fi
-fi
 
-# Hard-fail on triage process exit. Previously this silently synthesized a
-# fake "escalate=true, MEDIUM" verdict, which masked real model regressions.
-if [ "$TRIAGE_RC" -ne 0 ]; then
   echo "::warning::triage exited with code $TRIAGE_RC"
   [ -n "$TRIAGE_RESULT" ] && echo "    triage stdout: $TRIAGE_RESULT"
   [ -n "$TRIAGE_STDERR" ] && echo "    triage stderr: $TRIAGE_STDERR"
@@ -368,18 +372,28 @@ if [ "$TRIAGE_RC" -ne 0 ]; then
   exit 1
 fi
 
+# Process exit was 0, but check for JSON validity before checking stdout for rate limits.
+# (Prevents false positives if a healthy diff contains rate-limit strings).
 # Strip ```json ... ``` markdown fences if the model wrapped its JSON in
 # them. Haiku tends to add fences despite explicit instructions not to.
-TRIAGE_RESULT=$(printf '%s' "$TRIAGE_RESULT" | sed -E '/^```[a-zA-Z]*$/d; /^```$/d')
+TRIAGE_RESULT_CLEAN=$(printf '%s' "$TRIAGE_RESULT" | sed -E '/^```[a-zA-Z]*$/d; /^```$/d')
 
-if ! echo "$TRIAGE_RESULT" | jq empty 2>/dev/null; then
+if ! echo "$TRIAGE_RESULT_CLEAN" | jq empty 2>/dev/null; then
+  # Not valid JSON. NOW it is safe to check for rate limits in stdout.
+  if is_rate_limited "$TRIAGE_RESULT"; then
+    echo "    [tier1] usage/rate limit detected in non-JSON stdout — exiting with code 2 for engine fallback"
+    echo "    limit message: $TRIAGE_RESULT"
+    exit 2
+  fi
+
   echo "::warning::triage returned non-JSON output"
   echo "    triage stdout: $TRIAGE_RESULT"
-  cat "$TRIAGE_LOG" 2>/dev/null || true
+  [ -n "$TRIAGE_STDERR" ] && echo "    triage stderr: $TRIAGE_STDERR"
   echo "::error::cascade failed at tier 1 (triage non-JSON) for $PR_URL"
   exit 1
 fi
 
+TRIAGE_RESULT="$TRIAGE_RESULT_CLEAN"
 export TRIAGE_RESULT
 TRIAGE_ESCALATE=$(echo "$TRIAGE_RESULT" | jq -r '.escalate')
 TRIAGE_RISK=$(echo "$TRIAGE_RESULT" | jq -r '.risk')
