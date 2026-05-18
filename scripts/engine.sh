@@ -56,17 +56,17 @@ set_engine_config() {
       DUCK_MODEL="claude-sonnet-4-6"
       ;;
     copilot)
-      ENGINE_TRIAGE_MODEL="gpt-4o"
-      ENGINE_DEEP_MODEL="gpt-4o"
-      ENGINE_AUDIT_MODEL="gpt-4o"
-      ENGINE_ACTION_MODEL="gpt-4o"
-      ENGINE_SINGLE_MODEL="gpt-4o"
-      # GitHub Models API model identifier. openai/gpt-4o is a flagship model
+      ENGINE_TRIAGE_MODEL="gpt-5.4"
+      ENGINE_DEEP_MODEL="gpt-5.4"
+      ENGINE_AUDIT_MODEL="gpt-5.4"
+      ENGINE_ACTION_MODEL="gpt-5.4"
+      ENGINE_SINGLE_MODEL="gpt-5.4"
+      # GitHub Copilot CLI model identifier. gpt-5.4 is a flagship model
       # with full tool support in the Copilot CLI.
-      COPILOT_API_MODEL="${COPILOT_API_MODEL:-openai/gpt-4o}"
+      COPILOT_API_MODEL="${COPILOT_API_MODEL:-gpt-5.4}"
       export COPILOT_API_MODEL
-      ENGINE_LABEL="triage: gpt-4o → deep: gpt-4o + duck: sonnet 4.6 → audit: gpt-4o (GitHub Copilot CLI)"
-      ENGINE_SINGLE_LABEL="single-reviewer mode: gpt-4o (GitHub Copilot CLI)"
+      ENGINE_LABEL="triage: gpt-5.4 → deep: gpt-5.4 + duck: sonnet 4.6 → audit: gpt-5.4 (GitHub Copilot CLI)"
+      ENGINE_SINGLE_LABEL="single-reviewer mode: gpt-5.4 (GitHub Copilot CLI)"
       # Cross-engine rubber duck: use Claude for diversity
       DUCK_ENGINE="claude"
       DUCK_MODEL="claude-sonnet-4-6"
@@ -167,11 +167,12 @@ copilot_chat() {
   
   echo "    [copilot] calling gh copilot (model=$COPILOT_API_MODEL, timeout=${timeout_sec}s, flags=$*)" >&2
 
-  # We use -p for the prompt.
+  # We use -p for the prompt. Redirect /dev/null to stdin to ensure
+  # non-interactive mode.
   timeout "$timeout_sec" gh copilot \
     --model "$COPILOT_API_MODEL" \
     -p "$prompt_text" \
-    -s "$@"
+    -s "$@" < /dev/null
 }
 
 # run_triage <prompt_file>
