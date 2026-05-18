@@ -30,6 +30,9 @@ RETRY_MAX_ATTEMPTS="${RETRY_MAX_ATTEMPTS:-2}"   # total attempts including first
 RETRY_BASE_DELAY_SEC="${RETRY_BASE_DELAY_SEC:-5}"
 
 set_engine_config() {
+  # Default Copilot model — ensures the variable is bound for set -u
+  COPILOT_API_MODEL="${COPILOT_API_MODEL:-gpt-5.4}"
+
   case "$REVIEW_ENGINE" in
     claude)
       ENGINE_TRIAGE_MODEL="claude-haiku-4-5-20251001"
@@ -37,11 +40,11 @@ set_engine_config() {
       ENGINE_AUDIT_MODEL="claude-opus-4-7"
       ENGINE_ACTION_MODEL="claude-sonnet-4-6"
       ENGINE_SINGLE_MODEL="claude-opus-4-7"
-      ENGINE_LABEL="triage: haiku 4.5 → deep: sonnet 4.6 + duck: o4-mini → audit: opus 4.7"
+      ENGINE_LABEL="triage: haiku 4.5 → deep: sonnet 4.6 + duck: gpt-5.4 → audit: opus 4.7"
       ENGINE_SINGLE_LABEL="single-reviewer mode: opus 4.7"
       # Cross-engine rubber duck: always the opposite engine
       DUCK_ENGINE="copilot"
-      DUCK_MODEL="o4-mini"
+      DUCK_MODEL="gpt-5.4"
       ;;
     gemini)
       ENGINE_TRIAGE_MODEL="auto"
@@ -61,10 +64,6 @@ set_engine_config() {
       ENGINE_AUDIT_MODEL="gpt-5.4"
       ENGINE_ACTION_MODEL="gpt-5.4"
       ENGINE_SINGLE_MODEL="gpt-5.4"
-      # GitHub Copilot CLI model identifier. gpt-5.4 is a flagship model
-      # with full tool support in the Copilot CLI.
-      COPILOT_API_MODEL="${COPILOT_API_MODEL:-gpt-5.4}"
-      export COPILOT_API_MODEL
       ENGINE_LABEL="triage: gpt-5.4 → deep: gpt-5.4 + duck: sonnet 4.6 → audit: gpt-5.4 (GitHub Copilot CLI)"
       ENGINE_SINGLE_LABEL="single-reviewer mode: gpt-5.4 (GitHub Copilot CLI)"
       # Cross-engine rubber duck: use Claude for diversity
@@ -80,7 +79,7 @@ set_engine_config() {
   export ENGINE_TRIAGE_MODEL ENGINE_DEEP_MODEL ENGINE_AUDIT_MODEL
   export ENGINE_ACTION_MODEL ENGINE_SINGLE_MODEL
   export ENGINE_LABEL ENGINE_SINGLE_LABEL
-  export DUCK_ENGINE DUCK_MODEL
+  export DUCK_ENGINE DUCK_MODEL COPILOT_API_MODEL
 }
 
 # Initial config
