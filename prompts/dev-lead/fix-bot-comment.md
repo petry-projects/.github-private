@@ -94,7 +94,7 @@ If `${ACTOR}` is `sonarqubecloud[bot]` and the comment reports security hotspots
 - Do not suppress bot rules without a documented reason
 - Do not modify the bot's configuration files
 - Stay within the scope of the pull request's changed files where possible
-- Do not push to remote — the CI workflow will handle that
+- Do not commit or push — the CI workflow handles git operations after you finish
 
 ## Output Format
 

@@ -124,11 +124,11 @@ Read every changed line as if you are the reviewer seeing the response:
 
 ## Constraints
 
-- Address each open thread individually — do not batch unrelated changes into one commit
+- Address each open thread individually
 - Do not make changes beyond what the review threads request
 - If a review thread is ambiguous, apply the most conservative interpretation
 - Do not modify files that are not referenced in the review threads
-- Do not push to remote — the CI workflow will handle that
+- Do not commit or push — the CI workflow handles git operations after you finish
 
 ## Output Format
 
