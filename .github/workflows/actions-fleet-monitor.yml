@@ -50,7 +50,8 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           repository: petry-projects/.github-private
-          ref: main  # Always checkout .github-private@main; workflow_call callers target @main per docs
+          # TEST: use calling branch so feature-branch scripts are available; revert to 'main' before merge
+          ref: ${{ github.ref_name }}
           token: ${{ secrets.DON_PETRY_BOT_GH_PAT }}
 
       - name: Run fleet monitor
