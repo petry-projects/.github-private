@@ -61,3 +61,12 @@ jobs:
           else
             echo "Prompt coverage test not yet implemented"
           fi
+
+  concurrency-config:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Validate concurrency config (per-repo serialization)
+        run: bash tests/dev-lead/integration/test_concurrency_config.sh
