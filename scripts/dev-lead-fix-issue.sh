@@ -201,6 +201,8 @@ main() {
   local branch
   branch="dev-lead/issue-${ISSUE_NUMBER}-$(date +%Y%m%d-%H%M)"
   git checkout -b "$branch"
+  local pre_engine_sha
+  pre_engine_sha=$(git rev-parse HEAD)
 
   local engine_rc=0
   run_writer_with_fallback "$prompt_file" "fix-issue" || engine_rc=$?
@@ -211,14 +213,22 @@ main() {
     handle_engine_failure "$engine_rc"
   fi
 
-  if git diff --quiet && git diff --cached --quiet; then
+  # git status --porcelain catches untracked files that git diff misses.
+  # Compare HEAD to pre-engine SHA to detect commits the engine made via Bash.
+  local has_uncommitted=false has_unpushed=false
+  [ -n "$(git status --porcelain)" ] && has_uncommitted=true
+  [ "$(git rev-parse HEAD)" != "$pre_engine_sha" ] && has_unpushed=true
+
+  if ! $has_uncommitted && ! $has_unpushed; then
     echo "::notice::No changes made for issue #${ISSUE_NUMBER}"
     rm -f "$prompt_file"
     exit 0
   fi
 
-  git add -A
-  git commit -m "feat: implement issue #${ISSUE_NUMBER} — ${ISSUE_TITLE}"
+  if $has_uncommitted; then
+    git add -A
+    git commit -m "feat: implement issue #${ISSUE_NUMBER} — ${ISSUE_TITLE}"
+  fi
   git push --set-upstream origin "$branch"
 
   gh pr create \
