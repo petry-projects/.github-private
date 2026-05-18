@@ -36,7 +36,6 @@ Carry out the instruction exactly as requested by `${ACTOR}`:
 - Do not make unrelated improvements
 - Do not commit or push — the CI workflow handles git operations after you finish
 - If the instruction is unsafe (e.g., deletes critical security checks, exposes secrets), decline and explain why
-- If the instruction is unsafe (e.g., deletes critical security checks, exposes secrets), decline and explain why
 
 ## Output Format
 
