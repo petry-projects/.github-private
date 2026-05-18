@@ -47,6 +47,9 @@ RETRY_MAX_ATTEMPTS="${RETRY_MAX_ATTEMPTS:-2}"   # total attempts including first
 RETRY_BASE_DELAY_SEC="${RETRY_BASE_DELAY_SEC:-5}"
 
 set_engine_config() {
+  # Default Copilot model — ensures the variable is bound for set -u
+  COPILOT_API_MODEL="${COPILOT_API_MODEL:-gpt-5.4}"
+
   case "$REVIEW_ENGINE" in
     claude)
       ENGINE_TRIAGE_MODEL="claude-haiku-4-5-20251001"
@@ -54,7 +57,7 @@ set_engine_config() {
       ENGINE_AUDIT_MODEL="claude-opus-4-7"
       ENGINE_ACTION_MODEL="claude-sonnet-4-6"
       ENGINE_SINGLE_MODEL="claude-opus-4-7"
-      ENGINE_LABEL="triage: haiku 4.5 → deep: sonnet 4.6 + duck: o4-mini → audit: opus 4.7"
+      ENGINE_LABEL="triage: haiku 4.5 → deep: sonnet 4.6 + duck: gpt-5.4 → audit: opus 4.7"
       ENGINE_SINGLE_LABEL="single-reviewer mode: opus 4.7"
       # Cross-engine rubber duck: use Copilot when Claude is primary
       DUCK_ENGINE="copilot"
@@ -1486,10 +1489,10 @@ run_duck() {
       unset CLAUDE_CODE_OAUTH_TOKEN 2>/dev/null || true
       unset GOOGLE_API_KEY 2>/dev/null || true
       if [ -n "${OUTPUT_FILE:-}" ]; then
-        copilot_chat "$prompt_file" "$DUCK_TIMEOUT_SEC" | tee "$OUTPUT_FILE"
+        copilot_chat "$prompt_file" "$DUCK_TIMEOUT_SEC" --yolo | tee "$OUTPUT_FILE"
         return "${PIPESTATUS[0]}"
       else
-        copilot_chat "$prompt_file" "$DUCK_TIMEOUT_SEC"
+        copilot_chat "$prompt_file" "$DUCK_TIMEOUT_SEC" --yolo
       fi
       ;;
     *)
@@ -1573,15 +1576,8 @@ run_writer() {
         < "$prompt_file" | tee "$_tmp" || rc=${PIPESTATUS[0]}
       ;;
     copilot)
-      # Copilot (gh copilot suggest) is text-only — falls back to Claude for write ops
-      echo "::warning::Copilot engine is text-only; falling back to Claude for write operations" >&2
-      local saved="$REVIEW_ENGINE"
-      REVIEW_ENGINE="claude" timeout "$ACTION_TIMEOUT_SEC" claude --print \
-        --model "$model" \
-        --permission-mode acceptEdits \
-        --allowed-tools "Bash,Read,Write,Edit,Grep,Glob" \
-        < "$prompt_file" | tee "$_tmp" || rc=${PIPESTATUS[0]}
-      REVIEW_ENGINE="$saved"
+      # Self-sufficient write support via gh copilot --yolo
+      copilot_chat "$prompt_file" "$ACTION_TIMEOUT_SEC" --yolo | tee "$_tmp" || rc=${PIPESTATUS[0]}
       ;;
   esac
 
@@ -1595,7 +1591,7 @@ run_writer() {
   return "$rc"
 }
 
-# run_writer_with_fallback <prompt_file> [model]
+# run_writer_with_fallback <prompt_file>
 # Tries primary engine, falls back through claude → gemini → copilot on rate-limit.
 # Only rate-limit (exit 2) triggers fallback; other failures propagate immediately.
 run_writer_with_fallback() {
