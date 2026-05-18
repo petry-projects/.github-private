@@ -26,16 +26,15 @@ For each open review thread, address the feedback by:
 4. Ensuring the fix aligns with existing code patterns and style
 
 After addressing all threads:
-- Commit all changes with a message like: `fix(reviews): address PR #${PR_NUMBER} review feedback`
 - Do not resolve the threads yourself — they will be resolved automatically when the conversation is updated
 
 ## Constraints
 
-- Address each open thread individually — do not batch unrelated changes into one commit
+- Address each open thread individually
 - Do not make changes beyond what the review threads request
 - If a review thread is ambiguous, apply the most conservative interpretation
 - Do not modify files that are not referenced in the review threads
-- Do not push to remote — the CI workflow will handle that
+- Do not commit or push — the CI workflow handles git operations after you finish
 
 ## Output Format
 
