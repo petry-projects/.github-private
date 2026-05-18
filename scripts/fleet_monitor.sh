@@ -196,6 +196,45 @@ fi
 { report_header; generate_report "$metrics_file" "$failed_file" "true"; } \
   > "$REPORT_FILE"
 
+# ---------------------------------------------------------------------------
+# 3b. Export high-failure items as JSON for per-workflow issue tracking (>10%)
+# ---------------------------------------------------------------------------
+# Reads the raw metrics TSV and produces fleet_high_failure.json — an array of
+# objects for every workflow whose failure rate exceeds 10%. The downstream
+# "Track high-failure workflows" step reads this file to find/update or create
+# a tracked GitHub Issue for each item and apply the dev-lead label.
+HIGH_FAILURE_FILE="fleet_high_failure.json"
+if [ -s "$metrics_file" ]; then
+  jq -Rsn '
+    [inputs | split("\n")[] | select(length > 0) | split("\t") |
+     select(length >= 12) |
+     {
+       sort_key:  .[0],
+       repo:      .[1],
+       workflow:  .[2],
+       total:    (.[3]  | tonumber? // 0),
+       success:  (.[4]  | tonumber? // 0),
+       failed:   (.[5]  | tonumber? // 0),
+       cancelled:(.[6]  | tonumber? // 0),
+       rate:      .[7],
+       p50:      (.[8]  | tonumber? // 0),
+       p95:      (.[9]  | tonumber? // 0),
+       label:     .[10],
+       rate_int: (.[11] | tonumber? // 0)
+     }] |
+    map(select(
+      .rate_int > 10 and
+      (.label | IN("WARNING","DEGRADED","CRITICAL","ERROR"))
+    )) |
+    sort_by(.rate_int) | reverse
+  ' < "$metrics_file" > "$HIGH_FAILURE_FILE"
+  hf_count=$(jq 'length' "$HIGH_FAILURE_FILE")
+  echo "High-failure items (>10%): ${hf_count}"
+  [ -n "${GITHUB_ENV:-}" ] && echo "HIGH_FAILURE_COUNT=${hf_count}" >> "$GITHUB_ENV"
+else
+  echo "[]" > "$HIGH_FAILURE_FILE"
+fi
+
 rm -f "$metrics_file" "$failed_file"
 
 # ---------------------------------------------------------------------------
