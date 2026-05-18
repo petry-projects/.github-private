@@ -114,6 +114,9 @@ REVIEW_MCP_DEBUG="${REVIEW_MCP_DEBUG:-}"
 export REVIEW_MCP_CONFIG REVIEW_MCP_ALLOWED_TOOLS REVIEW_MCP_DEBUG
 
 set_engine_config() {
+  # Default Copilot model — ensures the variable is bound for set -u
+  COPILOT_API_MODEL="${COPILOT_API_MODEL:-gpt-5.4}"
+
   case "$REVIEW_ENGINE" in
     claude)
       ENGINE_TRIAGE_MODEL="claude-haiku-4-5-20251001"
@@ -901,106 +904,39 @@ is_transient_failure() {
   esac
 }
 
-# copilot_chat <prompt_file> [timeout_sec]
-# Calls the GitHub Models REST API (OpenAI-compatible) for text completion.
+# copilot_chat <prompt_file> [timeout_sec] [extra_flags...]
+# Calls the GitHub Copilot CLI for completions and agentic actions.
 #
-# Replaces the broken `gh copilot suggest -p "$(cat <file>)"` invocation:
-#   • The -p flag is not valid syntax in modern gh CLI versions (produces
-#     "Invalid command format" and causes a non-zero exit that the session
-#     circuit-breaker misclassifies as a rate-limit).
-#   • gh copilot suggest is a shell-command suggestion tool; it does NOT
-#     support arbitrary prompt text or return structured JSON.
-#   • $(cat <file>) as a shell argument fails for large PR prompts (ARG_MAX).
+# Supports tool usage via the --yolo flag (passed in extra_flags).
+# Uses COPILOT_API_MODEL (default: openai/gpt-4o).
 #
-# This function uses curl + the GitHub Models REST API instead:
-#   https://models.github.ai/inference/chat/completions
-# The endpoint is versioned (X-GitHub-Api-Version header) and stable against
-# gh CLI version changes. Auth uses COPILOT_GITHUB_TOKEN (user PAT with a
-# Copilot subscription). Model is COPILOT_API_MODEL (default: openai/o4-mini).
-#
-# Rate-limit responses (HTTP 429) are echoed to stdout so the caller's
+# Rate-limit responses from the CLI are echoed to stdout/stderr so the caller's
 # is_rate_limited() check can detect them and exit 2 for engine fallback.
 copilot_chat() {
   local prompt_file="$1"
   local timeout_sec="${2:-300}"
+  shift 2 || true
 
-  # Build JSON payload via python3 into a temp file — safely encodes arbitrary
-  # prompt text (special chars, newlines, quotes, Unicode, large files) and
-  # avoids ARG_MAX limits when passing large diffs to curl via --data-binary.
-  local _body_file rc=0
-  _body_file=$(mktemp) || { echo "copilot_chat: mktemp failed" >&2; return 1; }
-  python3 -c "
-import json, sys
-prompt = open(sys.argv[1]).read()
-model  = sys.argv[2]
-sys.stdout.write(json.dumps({
-    'model': model,
-    'messages': [{'role': 'user', 'content': prompt}],
-}))
-" "$prompt_file" "${COPILOT_API_MODEL:-openai/o4-mini}" > "$_body_file" || {
-    rm -f "$_body_file"
-    echo "copilot_chat: failed to build JSON payload from $prompt_file" >&2
-    return 1
-  }
-
-  # Call GitHub Models REST API. -w '\n%{http_code}' appends the HTTP status
-  # on its own line so we can split body from code in pure shell.
-  local raw
-  raw=$(
-    timeout "$timeout_sec" curl -sSL \
-      -H "Authorization: Bearer ${COPILOT_GITHUB_TOKEN:?COPILOT_GITHUB_TOKEN is required for copilot engine}" \
-      -H "Content-Type: application/json" \
-      -H "X-GitHub-Api-Version: 2022-11-28" \
-      https://models.github.ai/inference/chat/completions \
-      --data-binary @"$_body_file" \
-      -w '\n%{http_code}'
-  ) || rc=$?
-  rm -f "$_body_file"
-
-  if [ "$rc" -ne 0 ]; then
-    echo "copilot_chat: curl exited $rc (timeout=${timeout_sec}s)" >&2
-    return "$rc"
-  fi
-
-  # Split the appended HTTP code from the response body.
-  local http_code response_body
-  http_code=$(printf '%s' "$raw" | tail -n 1)
-  response_body=$(printf '%s' "$raw" | head -n -1)
-
-  # Rate-limit: echo to stdout so is_rate_limited() in review-one-pr.sh fires.
-  if [ "$http_code" -eq 429 ]; then
-    echo "error: GitHub Models API rate limit (HTTP 429 — quota exceeded)"
-    printf '%s\n' "$response_body"
+  # Ensure GH_TOKEN is set for gh copilot. It falls back to COPILOT_GITHUB_TOKEN.
+  export GH_TOKEN="${COPILOT_GITHUB_TOKEN:-${GH_TOKEN:-}}"
+  if [ -z "$GH_TOKEN" ]; then
+    echo "copilot_chat: GH_TOKEN or COPILOT_GITHUB_TOKEN is required for copilot engine" >&2
     return 1
   fi
 
-  # Other HTTP errors: log to stderr and fail.
-  if [ "$http_code" -ge 400 ]; then
-    echo "copilot_chat: HTTP $http_code from GitHub Models API" >&2
-    printf '%s\n' "$response_body" >&2
-    return 1
-  fi
+  # Avoid ARG_MAX by using -p with the file content. On Linux, ARG_MAX is
+  # typically ~2MB, which is enough for most PR diffs and metadata.
+  local prompt_text
+  prompt_text=$(cat "$prompt_file")
+  
+  echo "    [copilot] calling gh copilot (model=$COPILOT_API_MODEL, timeout=${timeout_sec}s, flags=$*)" >&2
 
-  # Extract the assistant message from the JSON response.
-  printf '%s' "$response_body" | python3 -c "
-import json, sys
-try:
-    data = json.load(sys.stdin)
-except json.JSONDecodeError as e:
-    print('copilot_chat: invalid JSON response: ' + str(e), file=sys.stderr)
-    sys.exit(1)
-if 'error' in data:
-    err = data['error']
-    msg = err.get('message', str(err)) if isinstance(err, dict) else str(err)
-    print('copilot_chat: API error: ' + str(msg), file=sys.stderr)
-    sys.exit(1)
-choices = data.get('choices', [])
-if not choices:
-    print('copilot_chat: empty choices in response', file=sys.stderr)
-    sys.exit(1)
-content = choices[0].get('message', {}).get('content', '')
-print(content, end='')
-" || return 1
+  # We use -p for the prompt. Redirect /dev/null to stdin to ensure
+  # non-interactive mode.
+  timeout "$timeout_sec" gh copilot \
+    --model "$COPILOT_API_MODEL" \
+    -p "$prompt_text" \
+    -s "$@" < /dev/null
 }
 
 # run_triage <prompt_file>
@@ -1775,10 +1711,10 @@ run_duck() {
       unset CLAUDE_CODE_OAUTH_TOKEN 2>/dev/null || true
       unset GOOGLE_API_KEY 2>/dev/null || true
       if [ -n "${OUTPUT_FILE:-}" ]; then
-        copilot_chat "$prompt_file" "$DUCK_TIMEOUT_SEC" | tee "$OUTPUT_FILE"
+        copilot_chat "$prompt_file" "$DUCK_TIMEOUT_SEC" --yolo | tee "$OUTPUT_FILE"
         return "${PIPESTATUS[0]}"
       else
-        copilot_chat "$prompt_file" "$DUCK_TIMEOUT_SEC"
+        copilot_chat "$prompt_file" "$DUCK_TIMEOUT_SEC" --yolo
       fi
       ;;
     *)
@@ -1862,15 +1798,8 @@ run_writer() {
         < "$prompt_file" | tee "$_tmp" || rc=${PIPESTATUS[0]}
       ;;
     copilot)
-      # Copilot (gh copilot suggest) is text-only — falls back to Claude for write ops
-      echo "::warning::Copilot engine is text-only; falling back to Claude for write operations" >&2
-      local saved="$REVIEW_ENGINE"
-      REVIEW_ENGINE="claude" timeout "$ACTION_TIMEOUT_SEC" claude --print \
-        --model "$model" \
-        --permission-mode acceptEdits \
-        --allowed-tools "Bash,Read,Write,Edit,Grep,Glob" \
-        < "$prompt_file" | tee "$_tmp" || rc=${PIPESTATUS[0]}
-      REVIEW_ENGINE="$saved"
+      # Self-sufficient write support via gh copilot --yolo
+      copilot_chat "$prompt_file" "$ACTION_TIMEOUT_SEC" --yolo | tee "$_tmp" || rc=${PIPESTATUS[0]}
       ;;
   esac
 
@@ -1884,7 +1813,7 @@ run_writer() {
   return "$rc"
 }
 
-# run_writer_with_fallback <prompt_file> [model]
+# run_writer_with_fallback <prompt_file>
 # Tries primary engine, falls back through claude → gemini → copilot on rate-limit.
 # Only rate-limit (exit 2) triggers fallback; other failures propagate immediately.
 run_writer_with_fallback() {
