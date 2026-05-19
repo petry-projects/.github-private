@@ -91,14 +91,21 @@ _source_engine() {
 }
 
 @test "writer: copilot falls back to claude in run_writer (internal)" {
-  # When REVIEW_ENGINE=copilot, run_writer internally falls back to claude
+  # When REVIEW_ENGINE=copilot, run_writer calls copilot_chat → gh copilot
   _source_engine "copilot"
-  export STUB_ENGINE_EXIT=0
   export DEV_LEAD_DRY_RUN=false
+  export COPILOT_GITHUB_TOKEN="stub-token"
+  cat > "$STUB_BIN_DIR/gh" <<'GHEOF'
+#!/usr/bin/env bash
+case "$*" in
+  *"copilot"*) exit 0 ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
 
   run run_writer "$TEST_PROMPT"
 
-  # Should succeed because the internal claude stub is present
   [ "$status" -eq 0 ]
 }
 
@@ -187,8 +194,16 @@ exit 1
 STUB
     chmod +x "$STUB_BIN_DIR/$engine"
   done
-  # Add copilot stub (falls back to claude internally)
-  cp "$STUB_BIN_DIR/claude" "$STUB_BIN_DIR/copilot"
+  # copilot uses `gh copilot`; provide token + gh stub returning rate-limit text
+  export COPILOT_GITHUB_TOKEN="stub-token"
+  cat > "$STUB_BIN_DIR/gh" << 'GHEOF'
+#!/usr/bin/env bash
+case "$*" in
+  *"copilot"*) echo "rate limit exceeded"; exit 1 ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
 
   run run_writer_with_fallback "$TEST_PROMPT"
 

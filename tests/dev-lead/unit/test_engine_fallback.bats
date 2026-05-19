@@ -93,16 +93,19 @@ STUBEOF
 }
 
 @test "fallback: all rate-limited → returns 2" {
-  # All engines exit 2
+  # All engines exit 2 (rate-limited)
   _make_stub "claude" 2
   _make_stub "gemini" 2
-  # copilot falls back to claude internally, so we only need claude and gemini
-  # Create a copilot stub that also fails with 2
-  cat > "$STUB_BIN_DIR/copilot" <<'STUBEOF'
+  # copilot uses `gh copilot`; provide token + gh stub returning rate-limit text
+  export COPILOT_GITHUB_TOKEN="stub-token"
+  cat > "$STUB_BIN_DIR/gh" <<'GHEOF'
 #!/usr/bin/env bash
-exit 2
-STUBEOF
-  chmod +x "$STUB_BIN_DIR/copilot"
+case "$*" in
+  *"copilot"*) echo "rate limit exceeded"; exit 1 ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
   _source_engine "claude"
 
   run run_writer_with_fallback "$TEST_PROMPT"

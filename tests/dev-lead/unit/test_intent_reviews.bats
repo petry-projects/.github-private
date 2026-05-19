@@ -9,7 +9,7 @@ setup() {
   export GITHUB_ENV="$(mktemp)"
   export GITHUB_OUTPUT="$(mktemp)"
   export BOT_USER="donpetry-bot"
-  export TRUSTED_BOTS="copilot-pull-request-reviewer[bot],gemini-code-assist[bot],sonarqubecloud[bot],coderabbitai[bot]"
+  export TRUSTED_BOTS="copilot-pull-request-reviewer[bot],gemini-code-assist[bot],sonarqubecloud[bot],coderabbitai[bot],chatgpt-codex-connector[bot]"
   export TRIGGER_PHRASES="@dev-lead"
   export GITHUB_REPOSITORY="petry-projects/.github-private"
 }
@@ -160,7 +160,27 @@ EOF
   rm -f "$tmp_event"
 }
 
+@test "reviews: pull_request_review codex COMMENTED → fix-reviews" {
+  export GITHUB_EVENT_NAME="pull_request_review"
+  export GITHUB_EVENT_PATH="$FIXTURES_DIR/pr_review_codex_commented.json"
+
+  run bash "$INTENT_SCRIPT"
+
+  [ "$status" -eq 0 ]
+  [ "$(_get_env INTENT_TYPE)" = "fix-reviews" ]
+}
+
 # ── pull_request_review_comment tests ────────────────────────────────────────
+
+@test "reviews: pull_request_review_comment codex → fix-reviews" {
+  export GITHUB_EVENT_NAME="pull_request_review_comment"
+  export GITHUB_EVENT_PATH="$FIXTURES_DIR/pr_review_comment_codex.json"
+
+  run bash "$INTENT_SCRIPT"
+
+  [ "$status" -eq 0 ]
+  [ "$(_get_env INTENT_TYPE)" = "fix-reviews" ]
+}
 
 @test "reviews: pull_request_review_comment copilot → fix-reviews" {
   export GITHUB_EVENT_NAME="pull_request_review_comment"
