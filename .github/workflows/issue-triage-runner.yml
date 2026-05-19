@@ -2,7 +2,7 @@ name: Issue Triage
 
 on:
   issues:
-    types: [opened, reopened]
+    types: [opened]
 
 # Two-job pattern: triage runs with read-only issue access and produces a
 # staged JSON artifact; apply runs with write access and calls safe-output.
@@ -30,7 +30,6 @@ jobs:
       - name: Run issue-triage (staged)
         id: run
         env:
-          GITHUB_TOKEN:    ${{ secrets.GITHUB_TOKEN }}
           ISSUE_NUMBER:    ${{ github.event.issue.number }}
           ISSUE_TITLE:     ${{ github.event.issue.title }}
           ISSUE_BODY:      ${{ github.event.issue.body }}

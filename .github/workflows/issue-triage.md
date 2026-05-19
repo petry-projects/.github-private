@@ -2,7 +2,7 @@
 name: issue-triage
 trigger:
   issues:
-    types: [opened, reopened]
+    types: [opened]
 engine: claude-sonnet-4-6
 permissions:
   issues: read

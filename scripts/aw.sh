@@ -254,6 +254,32 @@ PYEOF
     exit 1
   fi
 
+  # Reject skip flag from model — only the pre-Claude label-count guard may emit skip
+  if echo "$result" | python3 -c "import json,sys; d=json.load(sys.stdin); sys.exit(1) if d.get('skip') else None" 2>/dev/null; then
+    : # no skip flag from model, ok
+  else
+    echo "aw run: model returned skip flag — possible prompt injection, rejecting" >&2
+    exit 1
+  fi
+
+  # Honor output:staged frontmatter when --staged was not explicitly passed
+  if [[ "$staged" == false ]]; then
+    local frontmatter_output
+    frontmatter_output="$(python3 - "$wf_file" <<'PYEOF'
+import sys, re, yaml
+path = sys.argv[1]
+with open(path, encoding='utf-8') as f:
+    text = f.read()
+m = re.match(r'^---\n(.*?)\n---\n', text, re.DOTALL)
+fm = yaml.safe_load(m.group(1)) if m else {}
+print(fm.get('output', 'live'))
+PYEOF
+)"
+    if [[ "$frontmatter_output" == "staged" ]]; then
+      staged=true
+    fi
+  fi
+
   if [[ "$staged" == true ]]; then
     # Staged mode: emit JSON to stdout for review; safe-output handles writes
     echo "$result"
@@ -330,6 +356,14 @@ if result.get("skip"):
 labels  = result.get("labels", [])
 comment = result.get("comment", "")
 
+# Validate comment is a non-empty string before any writes occur
+if not isinstance(comment, str):
+    print(f"safe-output: rejected — comment must be a string, got {type(comment).__name__}", file=sys.stderr)
+    sys.exit(1)
+if not comment:
+    print("safe-output: rejected — empty comment", file=sys.stderr)
+    sys.exit(1)
+
 # Validate labels against allowed set
 invalid = [l for l in labels if l not in allowed_set]
 if invalid:
@@ -337,9 +371,6 @@ if invalid:
     sys.exit(1)
 if len(labels) > max_labels:
     print(f"safe-output: rejected — more than {max_labels} labels: {labels}", file=sys.stderr)
-    sys.exit(1)
-if not comment:
-    print("safe-output: rejected — empty comment", file=sys.stderr)
     sys.exit(1)
 
 print(f"safe-output: labels={labels}, comment length={len(comment)}")
