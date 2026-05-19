@@ -70,5 +70,7 @@ jobs:
           ISSUE_NUMBER:      ${{ github.event.issue.number }}
           TRIAGE_RESULT:     ${{ needs.triage.outputs.result }}
         run: |
-          echo "$TRIAGE_RESULT" | base64 -d > /tmp/triage-result.json
-          bash scripts/aw.sh safe-output apply issue-triage /tmp/triage-result.json
+          result_file=$(mktemp)
+          echo "$TRIAGE_RESULT" | base64 -d > "$result_file"
+          bash scripts/aw.sh safe-output apply issue-triage "$result_file"
+          rm -f "$result_file"
