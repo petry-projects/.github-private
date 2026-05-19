@@ -22,7 +22,39 @@ Analyze the bot's findings and address each actionable issue:
 1. Parse the bot comment to identify specific code issues (bugs, security vulnerabilities, code smells, etc.)
 2. Locate the referenced files and line numbers using Read/Grep/Glob tools
 3. Apply targeted fixes using Edit/Write tools
-4. Verify that the fixes are complete and do not introduce regressions
+4. **Resolve open review threads** from this bot that are now fixed or outdated (see below)
+
+### Resolving threads from this bot
+
+After fixing an issue, resolve the corresponding review thread so the bot gets a clean slate to re-review. First, find open threads from this bot:
+
+```bash
+# Pipe through jq --arg to safely pass the bot login as a variable
+gh api graphql -f query='
+  query($owner: String!, $repo: String!, $pr: Int!) {
+    repository(owner: $owner, name: $repo) {
+      pullRequest(number: $pr) {
+        reviewThreads(first: 50) {
+          nodes {
+            id isResolved isOutdated
+            comments(first: 1) { nodes { author { login } body } }
+          }
+        }
+      }
+    }
+  }' -F owner="${REPO%%/*}" -F repo="${REPO##*/}" -F pr=${PR_NUMBER} \
+  | jq --arg actor "${ACTOR}" '
+      .data.repository.pullRequest.reviewThreads.nodes
+      | map(select(.isResolved == false
+            and .comments.nodes[0].author.login == $actor))'
+```
+
+Then resolve each thread you addressed (and any from this bot marked `isOutdated: true`):
+
+```bash
+# Replace THREAD_NODE_ID with the id value from the query above
+gh api graphql -f query='mutation { resolveReviewThread(input: {threadId: "THREAD_NODE_ID"}) { thread { isResolved } } }'
+```
 
 ## SonarQube / SonarCloud comments
 
@@ -43,6 +75,7 @@ If `${ACTOR}` is `sonarqubecloud[bot]` and the comment reports security hotspots
 - Do not fix issues marked as "informational" or "suggestion" unless they indicate a real bug
 - Do not suppress bot rules without a documented reason
 - Do not modify the bot's configuration files
+- Only resolve threads from `${ACTOR}` — do not resolve threads from other reviewers
 - Stay within the scope of the pull request's changed files where possible
 - Do not commit or push — the CI workflow handles git operations after you finish
 
@@ -52,7 +85,8 @@ After applying fixes, output a summary:
 ```
 Bot: ${ACTOR}
 Issues addressed: N
-- <issue description>: <fix applied>
+- <issue description>: <fix applied> [thread resolved]
+- <issue description>: outdated thread resolved
 Files changed: <list of files>
 Skipped (informational): <count>
 ```
