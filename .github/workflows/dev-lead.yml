@@ -227,32 +227,17 @@ jobs:
     timeout-minutes: 5
 
     steps:
+      - name: Checkout agent repo
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
       - name: Check for associated non-fork PR
         id: check-pr
         env:
           CHECK_RUN_PRS: ${{ toJson(github.event.check_run.pull_requests) }}
+          CHECK_RUN_HEAD_SHA: ${{ github.event.check_run.head_sha }}
           REPO_FULL_NAME: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          # Require at least one PR in the check_run.pull_requests array
-          pr_count=$(echo "$CHECK_RUN_PRS" | jq 'length')
-          if [ "$pr_count" -eq 0 ]; then
-            echo "::notice::check_run has no associated PRs — skipping relay"
-            echo "should_relay=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          # Fork check: check_run.pull_requests[*].head.repo only contains id/url/name
-          # (not full_name), so compare the API URL pattern against the expected repo URL.
-          head_repo_url=$(echo "$CHECK_RUN_PRS" | jq -r '.[0].head.repo.url // empty')
-          expected_url="https://api.github.com/repos/${REPO_FULL_NAME}"
-          if [ -n "$head_repo_url" ] && [ "$head_repo_url" != "$expected_url" ]; then
-            echo "::notice::check_run PR head repo URL ($head_repo_url) does not match expected ($expected_url) — fork, skipping relay"
-            echo "should_relay=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          pr_number=$(echo "$CHECK_RUN_PRS" | jq -r '.[0].number')
-          echo "should_relay=true" >> "$GITHUB_OUTPUT"
-          echo "pr_number=$pr_number" >> "$GITHUB_OUTPUT"
+          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS || secrets.GITHUB_TOKEN }}
+        run: bash scripts/dev-lead-ci-relay.sh
 
       - name: Emit repository_dispatch dev-lead-ci-failure
         if: steps.check-pr.outputs.should_relay == 'true'

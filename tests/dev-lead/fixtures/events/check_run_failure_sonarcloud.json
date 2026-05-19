@@ -1,0 +1,15 @@
+{
+  "_test_expected_intent": "ci-relay",
+  "_test_note": "GitHub App check_run with empty pull_requests — ci-relay must use commits-to-pulls fallback",
+  "action": "completed",
+  "check_run": {
+    "name": "SonarCloud Code Analysis",
+    "conclusion": "failure",
+    "head_sha": "abc123def456",
+    "details_url": "https://sonarcloud.io",
+    "app": { "slug": "sonarcloud" },
+    "pull_requests": []
+  },
+  "repository": { "full_name": "petry-projects/.github-private" },
+  "sender": { "login": "sonarcloud[bot]", "type": "Bot" }
+}
