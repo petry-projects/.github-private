@@ -77,7 +77,12 @@ collect_logs() {
   if [ -n "$run_id" ]; then
     gh run view "$run_id" --log-failed 2>/dev/null | tail -n "$LOG_MAX_LINES" || true
   else
-    echo "# No run logs available for check: $check_name"
+    # External quality gate (e.g. SonarCloud) — no GitHub Actions run logs exist.
+    # Provide the PR diff so the agent can identify what the gate likely flagged.
+    printf '# External quality gate — no GitHub Actions run logs available\n'
+    printf '# Check: %s | Details: %s\n\n' "$check_name" "$details_url"
+    printf '# PR diff (scan for hotspots / quality issues):\n'
+    gh pr diff "$PR_NUMBER" --repo "$REPO" 2>/dev/null | head -n 1000 || true
   fi
 }
 

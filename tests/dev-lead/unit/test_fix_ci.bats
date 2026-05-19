@@ -437,3 +437,59 @@ STUB
   # Output should mention dedup skip
   [[ "$output" == *"already posted"* || "$output" == *"skipping duplicate"* ]]
 }
+
+# ── external quality gate (Fix 3) ─────────────────────────────────────────────
+
+@test "fix-ci: external quality gate: non-GHA details_url → PR diff embedded in prompt" {
+  cat > "$STUB_BIN_DIR/gh" <<'GHEOF'
+#!/usr/bin/env bash
+ARGS="$*"
+case "$ARGS" in
+  *"issues/"*"/comments"*) echo "[]" ;;
+  *"pr comment"*) exit 0 ;;
+  *"pr diff"*) printf 'diff --git a/lint.yml b/lint.yml\n+run: curl -sL https://example.com/install.sh | bash\n' ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+  export DEV_LEAD_DRY_RUN="true"
+  export CHECKS_JSON='[{"name":"SonarCloud Code Analysis","conclusion":"failure","details_url":"https://sonarcloud.io","app_slug":"sonarcloud"}]'
+
+  run bash "$FIX_CI_SCRIPT"
+
+  [ "$status" -eq 0 ]
+  # Extract the rendered prompt file path from the dry-run notice line
+  local prompt_file
+  prompt_file=$(echo "$output" | awk '/would run engine with prompt:/{print $NF}')
+  [ -n "$prompt_file" ]
+  [ -f "$prompt_file" ]
+  grep -q "External quality gate" "$prompt_file"
+  grep -q "curl -sL" "$prompt_file"
+  rm -f "$prompt_file"
+}
+
+@test "fix-ci: external quality gate: GHA details_url → uses run view, not pr diff" {
+  local sentinel_dir
+  sentinel_dir="$(mktemp -d)"
+  cat > "$STUB_BIN_DIR/gh" <<GHEOF
+#!/usr/bin/env bash
+ARGS="\$*"
+case "\$ARGS" in
+  *"issues/"*"/comments"*) echo "[]" ;;
+  *"pr comment"*) exit 0 ;;
+  *"run view"*) touch "${sentinel_dir}/.ran_run_view"; echo "github-actions log output" ;;
+  *"pr diff"*) touch "${sentinel_dir}/.ran_pr_diff"; echo "diff output" ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+  export DEV_LEAD_DRY_RUN="true"
+  export CHECKS_JSON='[{"name":"lint / eslint","conclusion":"failure","details_url":"https://github.com/petry-projects/.github-private/actions/runs/12345","app_slug":"github-actions"}]'
+
+  run bash "$FIX_CI_SCRIPT"
+
+  [ "$status" -eq 0 ]
+  [ -f "${sentinel_dir}/.ran_run_view" ]
+  [ ! -f "${sentinel_dir}/.ran_pr_diff" ]
+  rm -rf "$sentinel_dir"
+}
