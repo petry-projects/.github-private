@@ -3864,7 +3864,7 @@ run_writer() {
       timeout "$ACTION_TIMEOUT_SEC" claude --print \
         --model "$model" \
         --permission-mode acceptEdits \
-        --allowed-tools "Bash,Read,Write,Edit,Grep,Glob" \
+        --allowed-tools "Bash,Read,Write,Edit,Grep,Glob,WebFetch" \
         < "$prompt_file" | tee "$_tmp" || rc=${PIPESTATUS[0]}
       ;;
     gemini)
