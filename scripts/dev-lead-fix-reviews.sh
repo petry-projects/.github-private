@@ -1123,9 +1123,16 @@ commit_and_push() {
   else
     if $has_uncommitted; then
       git add -A
-      git commit -m "$commit_msg"
+      # Explicit exit on failure: set -e is suspended when commit_and_push is called from
+      # an if-statement condition, so git commit failures would be silently swallowed
+      # otherwise. Using exit (not return) ensures CI fails visibly instead of posting a
+      # false "Changes committed and pushed" comment.
+      git commit -m "$commit_msg" || { echo "::error::git commit failed — check git identity configuration on the runner" >&2; exit 1; }
     fi
-    git push
+    git push || {
+      echo "::error::git push failed — check remote access and branch permissions" >&2
+      exit 1
+    }
   fi
   return 0
 }
