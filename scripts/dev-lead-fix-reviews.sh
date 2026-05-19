@@ -74,8 +74,20 @@ fi
 build_and_run() {
   local template_name="$1"
   local prompt_file="/tmp/dev-lead-${template_name}-prompt-$$.md"
-  # Export required vars then envsubst
-  envsubst < "${PROMPTS_DIR}/${template_name}.md" > "$prompt_file"
+  local template_path="${PROMPTS_DIR}/${template_name}.md"
+  # Scope envsubst to only the variables declared in the <!-- VARIABLES: --> header.
+  # This prevents GraphQL $variables, $() subshells, and other $ patterns in the
+  # prompt from being silently clobbered before the agent ever sees them.
+  local vars_spec
+  vars_spec=$(grep -m1 '<!-- VARIABLES:' "$template_path" 2>/dev/null \
+    | sed 's/<!-- VARIABLES: //; s/ -->//' \
+    | tr ',' '\n' \
+    | awk '{gsub(/^ +| +$/, ""); if (length) printf "${%s}", $0}' || true)
+  if [ -n "$vars_spec" ]; then
+    envsubst "$vars_spec" < "$template_path" > "$prompt_file"
+  else
+    envsubst < "$template_path" > "$prompt_file"
+  fi
 
   if [ "$DEV_LEAD_DRY_RUN" = "true" ]; then
     echo "[dry-run] would run engine with prompt: $prompt_file ($(wc -l < "$prompt_file") lines)"
@@ -854,6 +866,26 @@ ${summary}"
   gh pr comment "$PR_NUMBER" --repo "$REPO" --body "$body" 2>/dev/null || true
 }
 
+# notify_coderabbit_resolve: posts @coderabbitai resolve if coderabbitai[bot]'s
+# most recent review on the PR is CHANGES_REQUESTED. Uses --paginate so it sees
+# all reviews even on long-lived PRs, and checks only the latest review state
+# (not any historical one) to avoid noisy re-posts after a prior approval or dismissal.
+notify_coderabbit_resolve() {
+  if [ "${DEV_LEAD_DRY_RUN:-false}" = "true" ]; then
+    echo "[dry-run] would check for coderabbitai CHANGES_REQUESTED and post @coderabbitai resolve"
+    return 0
+  fi
+  # Emit one state per CodeRabbit review in chronological order; tail -1 = latest.
+  local latest_cr_state
+  latest_cr_state=$(gh api --paginate "repos/${REPO}/pulls/${PR_NUMBER}/reviews" \
+    --jq '.[] | select(.user.login == "coderabbitai[bot]") | .state' \
+    2>/dev/null | tail -1)
+  if [ "${latest_cr_state:-}" = "CHANGES_REQUESTED" ]; then
+    echo "::notice::coderabbitai[bot] latest review is CHANGES_REQUESTED — posting @coderabbitai resolve"
+    gh pr comment "$PR_NUMBER" --repo "$REPO" --body "@coderabbitai resolve" 2>/dev/null || true
+  fi
+}
+
 # commit_and_push: stages any uncommitted changes (including untracked files),
 # commits if needed, and pushes. Returns 0 if changes were pushed, 1 if nothing to push.
 # Handles two cases:
@@ -1191,6 +1223,7 @@ case "$INTENT_TYPE" in
     [ "$rc" -eq 2 ] && handle_rate_limit "fix-bot-comment"
     if [ "$rc" -eq 0 ]; then
       if commit_and_push "fix-bot-comment"; then
+        notify_coderabbit_resolve
         post_reviews_terminal "fix-bot-comment" "applied" "Changes committed and pushed."
       else
         post_reviews_terminal "fix-bot-comment" "no-changes" "Engine ran but made no changes."

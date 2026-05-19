@@ -10,7 +10,7 @@ You are the dev-lead agent for the `${REPO}` repository. Your task is to address
 
 ## Open Review Threads
 
-The following review threads are unresolved and require attention:
+The following review threads are unresolved and require attention. Each thread includes an `id` field used to resolve it after you address it.
 
 ```json
 ${OPEN_THREADS_JSON}
