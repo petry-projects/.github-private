@@ -54,8 +54,9 @@ jobs:
 
       - name: Install gh-aw
         if: steps.check-aw-files.outputs.found == 'true'
-        # TODO: pin to a specific release tag/SHA — see https://github.com/github/gh-aw/releases
-        run: curl -sSfL https://raw.githubusercontent.com/github/gh-aw/main/install-gh-aw.sh | bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh extension install github/gh-aw
 
       - name: Compile agentic workflows
         if: steps.check-aw-files.outputs.found == 'true'

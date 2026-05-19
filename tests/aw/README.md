@@ -42,7 +42,7 @@ A scenario spec block:
 ## Running compile validation locally
 
 ```bash
-curl -sSfL https://raw.githubusercontent.com/github/gh-aw/main/install-gh-aw.sh | bash
+gh extension install github/gh-aw
 gh aw compile
 ```
 
