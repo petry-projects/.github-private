@@ -20,3 +20,12 @@ jobs:
 
       - name: Run list-prs sort tests
         run: bash tests/test_list_prs_sort.sh
+
+  aw-compile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Compile gh-aw workflow definitions
+        run: bash scripts/aw.sh compile --all

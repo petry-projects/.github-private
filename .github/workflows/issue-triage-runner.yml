@@ -1,0 +1,60 @@
+name: Issue Triage
+
+on:
+  issues:
+    types: [opened, reopened]
+
+# Two-job pattern: triage runs with read-only issue access and produces a
+# staged JSON artifact; apply runs with write access and calls safe-output.
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: read
+    outputs:
+      result: ${{ steps.run.outputs.result }}
+      skip: ${{ steps.run.outputs.skip }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Install claude CLI
+        uses: anthropics/claude-code-action/setup@main
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+
+      - name: Run issue-triage (staged)
+        id: run
+        env:
+          GITHUB_TOKEN:    ${{ secrets.GITHUB_TOKEN }}
+          ISSUE_NUMBER:    ${{ github.event.issue.number }}
+          ISSUE_TITLE:     ${{ github.event.issue.title }}
+          ISSUE_BODY:      ${{ github.event.issue.body }}
+          ISSUE_LABELS:    ${{ join(github.event.issue.labels.*.name, ',') }}
+          ISSUE_URL:       ${{ github.event.issue.html_url }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          result=$(bash scripts/aw.sh run issue-triage --staged)
+          skip=$(echo "$result" | python3 -c "import json,sys; print(json.load(sys.stdin).get('skip', False))")
+          # Store encoded to survive multi-line JSON in GITHUB_OUTPUT
+          echo "result=$(echo "$result" | base64 -w0)" >> "$GITHUB_OUTPUT"
+          echo "skip=$skip" >> "$GITHUB_OUTPUT"
+
+  apply:
+    needs: triage
+    if: needs.triage.outputs.skip != 'True'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      issues: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Apply triage output (safe-output)
+        env:
+          GITHUB_TOKEN:      ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          ISSUE_NUMBER:      ${{ github.event.issue.number }}
+        run: |
+          echo "${{ needs.triage.outputs.result }}" | base64 -d > /tmp/triage-result.json
+          bash scripts/aw.sh safe-output apply issue-triage /tmp/triage-result.json

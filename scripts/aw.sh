@@ -1,0 +1,367 @@
+#!/usr/bin/env bash
+# gh aw — GitHub Agentic Workflows CLI
+# Subcommands: compile, run, safe-output
+set -euo pipefail
+
+WORKFLOWS_DIR=".github/workflows"
+COMMAND="${1:-}"
+shift || true
+
+usage() {
+  cat >&2 <<'EOF'
+Usage:
+  aw.sh compile [<file.md>|--all]
+  aw.sh run <workflow-name> [--staged]
+  aw.sh safe-output apply <workflow-name> <result-file>
+EOF
+  exit 1
+}
+
+# ---------------------------------------------------------------------------
+# compile — validate one or all workflow definition files
+# ---------------------------------------------------------------------------
+cmd_compile() {
+  local target="${1:---all}"
+  local files=()
+
+  if [[ "$target" == "--all" ]]; then
+    while IFS= read -r -d '' f; do
+      files+=("$f")
+    done < <(find "$WORKFLOWS_DIR" -maxdepth 1 -name '*.md' -print0 2>/dev/null)
+    if [[ ${#files[@]} -eq 0 ]]; then
+      echo "aw compile: no workflow definitions found in $WORKFLOWS_DIR" >&2
+      exit 0
+    fi
+  else
+    files=("$target")
+  fi
+
+  local errors=0
+  for file in "${files[@]}"; do
+    if ! validate_workflow "$file"; then
+      errors=$(( errors + 1 ))
+    fi
+  done
+
+  if [[ $errors -gt 0 ]]; then
+    echo "aw compile: $errors file(s) failed validation" >&2
+    exit 1
+  fi
+
+  echo "aw compile: all workflow definitions are valid"
+}
+
+# Validate a single workflow .md file.
+# Uses python3 to parse the YAML frontmatter — always available on GitHub Actions runners.
+validate_workflow() {
+  local file="$1"
+
+  if [[ ! -f "$file" ]]; then
+    echo "aw compile: $file: file not found" >&2
+    return 1
+  fi
+
+  python3 - "$file" <<'PYEOF'
+import sys, re
+
+path = sys.argv[1]
+text = open(path).read()
+
+# Extract YAML frontmatter
+m = re.match(r'^---\n(.*?)\n---\n', text, re.DOTALL)
+if not m:
+    print(f"aw compile: {path}: missing YAML frontmatter", file=sys.stderr)
+    sys.exit(1)
+
+import yaml
+try:
+    fm = yaml.safe_load(m.group(1))
+except yaml.YAMLError as e:
+    print(f"aw compile: {path}: invalid YAML frontmatter: {e}", file=sys.stderr)
+    sys.exit(1)
+
+errors = []
+
+# Required fields
+for field in ("name", "trigger", "engine", "permissions"):
+    if field not in fm:
+        errors.append(f"missing required field: {field!r}")
+
+# Validate engine
+valid_engines = {
+    "claude-sonnet-4-6", "claude-haiku-4-5-20251001", "claude-opus-4-7",
+    "claude-haiku-4-5",
+}
+engine = fm.get("engine", "")
+if engine and engine not in valid_engines:
+    errors.append(f"unknown engine {engine!r}; valid: {sorted(valid_engines)}")
+
+# Validate output mode if present
+output_mode = fm.get("output")
+if output_mode and output_mode not in ("staged", "live"):
+    errors.append(f"output must be 'staged' or 'live', got {output_mode!r}")
+
+# Validate trigger has at least one event
+trigger = fm.get("trigger") or {}
+if not isinstance(trigger, dict) or not trigger:
+    errors.append("trigger must be a non-empty mapping of event types")
+
+# Instructions body must not be empty
+body = text[m.end():].strip()
+if not body:
+    errors.append("workflow body (instructions) must not be empty")
+
+if errors:
+    for e in errors:
+        print(f"aw compile: {path}: {e}", file=sys.stderr)
+    sys.exit(1)
+
+print(f"aw compile: {path}: ok")
+PYEOF
+}
+
+# ---------------------------------------------------------------------------
+# run — execute a workflow against GitHub context (or a fixture)
+# ---------------------------------------------------------------------------
+cmd_run() {
+  local name=""
+  local staged=false
+  local fixture=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --staged)     staged=true ;;
+      --fixture)    fixture="${2:-}"; shift ;;
+      -*)           echo "aw run: unknown flag $1" >&2; exit 1 ;;
+      *)            name="$1" ;;
+    esac
+    shift
+  done
+
+  if [[ -z "$name" ]]; then
+    echo "aw run: workflow name required" >&2
+    exit 1
+  fi
+
+  local wf_file="$WORKFLOWS_DIR/${name}.md"
+  if [[ ! -f "$wf_file" ]]; then
+    echo "aw run: workflow file not found: $wf_file" >&2
+    exit 1
+  fi
+
+  # Build context from environment or fixture
+  local issue_number issue_title issue_body issue_labels issue_url repo
+  if [[ -n "$fixture" ]]; then
+    issue_number="$(python3 -c "import json,sys; d=json.load(open('$fixture')); print(d['issue']['number'])")"
+    issue_title="$(python3  -c "import json,sys; d=json.load(open('$fixture')); print(d['issue']['title'])")"
+    issue_body="$( python3  -c "import json,sys; d=json.load(open('$fixture')); print(d['issue']['body'] or '')")"
+    issue_labels="$(python3 -c "import json,sys; d=json.load(open('$fixture')); print(','.join(l['name'] for l in d['issue'].get('labels',[])))")"
+    issue_url="$(   python3 -c "import json,sys; d=json.load(open('$fixture')); print(d['issue']['html_url'])")"
+    repo="$(        python3 -c "import json,sys; d=json.load(open('$fixture')); print(d['repository']['full_name'])")"
+  else
+    issue_number="${ISSUE_NUMBER:-}"
+    issue_title="${ISSUE_TITLE:-}"
+    issue_body="${ISSUE_BODY:-}"
+    issue_labels="${ISSUE_LABELS:-}"
+    issue_url="${ISSUE_URL:-https://github.com/${GITHUB_REPOSITORY:-unknown}/issues/${ISSUE_NUMBER:-0}}"
+    repo="${GITHUB_REPOSITORY:-unknown}"
+  fi
+
+  # Skip guard: if 2+ labels already applied, emit skip immediately
+  local label_count
+  label_count="$(echo "$issue_labels" | python3 -c "
+import sys
+raw = sys.stdin.read().strip()
+labels = [l for l in raw.split(',') if l]
+print(len(labels))
+")"
+  if [[ "$label_count" -ge 2 ]]; then
+    echo '{"skip": true}'
+    return 0
+  fi
+
+  # Substitute variables into workflow body
+  local prompt
+  prompt="$(python3 - "$wf_file" <<PYEOF
+import sys, re
+
+path = sys.argv[1]
+text = open(path).read()
+m = re.match(r'^---\n.*?\n---\n', text, re.DOTALL)
+body = text[m.end():] if m else text
+
+subs = {
+    'ISSUE_NUMBER': '''${issue_number}''',
+    'ISSUE_TITLE':  '''${issue_title}''',
+    'ISSUE_BODY':   '''${issue_body}''',
+    'ISSUE_LABELS': '''${issue_labels}''',
+    'ISSUE_URL':    '''${issue_url}''',
+    'REPO':         '''${repo}''',
+}
+for k, v in subs.items():
+    body = body.replace('\${' + k + '}', v)
+print(body)
+PYEOF
+)"
+
+  # Select engine from frontmatter
+  local engine
+  engine="$(python3 - "$wf_file" <<'PYEOF'
+import sys, re, yaml
+path = sys.argv[1]
+text = open(path).read()
+m = re.match(r'^---\n(.*?)\n---\n', text, re.DOTALL)
+fm = yaml.safe_load(m.group(1))
+print(fm.get("engine", "claude-sonnet-4-6"))
+PYEOF
+)"
+
+  # Call Claude
+  local result
+  result="$(echo "$prompt" | claude --model "$engine" --print --no-markdown 2>/dev/null \
+    || { echo '{"error": "claude invocation failed"}'; return 1; })"
+
+  # Validate JSON output
+  if ! echo "$result" | python3 -c "import json,sys; json.load(sys.stdin)" 2>/dev/null; then
+    echo "aw run: claude returned non-JSON output" >&2
+    echo "$result" >&2
+    exit 1
+  fi
+
+  if [[ "$staged" == true ]]; then
+    # Staged mode: emit JSON to stdout for review; safe-output handles writes
+    echo "$result"
+  else
+    # Live mode: apply immediately
+    apply_result "$name" "$result" "$issue_number"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# safe-output apply — validate and apply a staged result artifact
+# ---------------------------------------------------------------------------
+cmd_safe_output() {
+  local subcommand="${1:-}"
+  shift || true
+
+  case "$subcommand" in
+    apply) cmd_safe_output_apply "$@" ;;
+    *)     echo "aw safe-output: unknown subcommand ${subcommand}" >&2; exit 1 ;;
+  esac
+}
+
+cmd_safe_output_apply() {
+  local name="${1:-}"
+  local result_file="${2:-}"
+
+  if [[ -z "$name" || -z "$result_file" ]]; then
+    echo "aw safe-output apply: requires <workflow-name> <result-file>" >&2
+    exit 1
+  fi
+  if [[ ! -f "$result_file" ]]; then
+    echo "aw safe-output apply: result file not found: $result_file" >&2
+    exit 1
+  fi
+
+  local wf_file="$WORKFLOWS_DIR/${name}.md"
+  local allowed_labels
+  allowed_labels="$(python3 - "$wf_file" <<'PYEOF'
+import sys, re, yaml, json
+path = sys.argv[1]
+text = open(path).read()
+m = re.match(r'^---\n(.*?)\n---\n', text, re.DOTALL)
+fm = yaml.safe_load(m.group(1))
+print(json.dumps(fm.get("allowed-labels", [])))
+PYEOF
+)"
+
+  # Validate and apply via GitHub API
+  python3 - "$result_file" "$allowed_labels" <<'PYEOF'
+import sys, json
+
+result_file  = sys.argv[1]
+allowed_set  = set(json.loads(sys.argv[2]))
+
+result = json.load(open(result_file))
+
+if result.get("skip"):
+    print("safe-output: skip flag set — no writes applied")
+    sys.exit(0)
+
+labels  = result.get("labels", [])
+comment = result.get("comment", "")
+
+# Validate labels against allowed set
+invalid = [l for l in labels if l not in allowed_set]
+if invalid:
+    print(f"safe-output: rejected — labels not in allowed set: {invalid}", file=sys.stderr)
+    sys.exit(1)
+if len(labels) > 3:
+    print(f"safe-output: rejected — more than 3 labels: {labels}", file=sys.stderr)
+    sys.exit(1)
+if not comment:
+    print("safe-output: rejected — empty comment", file=sys.stderr)
+    sys.exit(1)
+
+print(f"safe-output: labels={labels}, comment length={len(comment)}")
+print("safe-output: validation passed — ready for API writes")
+PYEOF
+
+  # Apply writes via gh CLI
+  local issue_number="${ISSUE_NUMBER:-}"
+  local repo="${GITHUB_REPOSITORY:-}"
+
+  if [[ -z "$issue_number" || -z "$repo" ]]; then
+    echo "safe-output apply: ISSUE_NUMBER and GITHUB_REPOSITORY must be set for live writes" >&2
+    exit 1
+  fi
+
+  local result_json
+  result_json="$(cat "$result_file")"
+
+  # Apply labels
+  local labels_array
+  labels_array="$(echo "$result_json" | python3 -c "
+import json,sys
+r=json.load(sys.stdin)
+if not r.get('skip'): print(' '.join(r.get('labels',[])))
+")"
+  if [[ -n "$labels_array" ]]; then
+    # shellcheck disable=SC2086
+    gh issue edit "$issue_number" --repo "$repo" --add-label "$labels_array"
+  fi
+
+  # Post comment
+  local comment
+  comment="$(echo "$result_json" | python3 -c "
+import json,sys
+r=json.load(sys.stdin)
+if not r.get('skip'): print(r.get('comment',''))
+")"
+  if [[ -n "$comment" ]]; then
+    gh issue comment "$issue_number" --repo "$repo" --body "$comment"
+  fi
+
+  echo "safe-output apply: done"
+}
+
+# Apply result inline (live mode, called from cmd_run)
+apply_result() {
+  local name="$1" result="$2" issue_number="$3"
+  local tmp
+  tmp="$(mktemp)"
+  echo "$result" > "$tmp"
+  ISSUE_NUMBER="$issue_number" cmd_safe_output_apply "$name" "$tmp"
+  rm -f "$tmp"
+}
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+case "$COMMAND" in
+  compile)      cmd_compile "$@" ;;
+  run)          cmd_run "$@" ;;
+  safe-output)  cmd_safe_output "$@" ;;
+  "")           usage ;;
+  *)            echo "aw.sh: unknown command '$COMMAND'" >&2; usage ;;
+esac
