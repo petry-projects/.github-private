@@ -152,12 +152,13 @@ cmd_run() {
   # Build context from environment or fixture
   local issue_number issue_title issue_body issue_labels issue_url repo
   if [[ -n "$fixture" ]]; then
-    issue_number="$(python3 -c "import json,sys; d=json.load(open('$fixture')); print(d['issue']['number'])")"
-    issue_title="$(python3  -c "import json,sys; d=json.load(open('$fixture')); print(d['issue']['title'])")"
-    issue_body="$( python3  -c "import json,sys; d=json.load(open('$fixture')); print(d['issue']['body'] or '')")"
-    issue_labels="$(python3 -c "import json,sys; d=json.load(open('$fixture')); print(','.join(l['name'] for l in d['issue'].get('labels',[])))")"
-    issue_url="$(   python3 -c "import json,sys; d=json.load(open('$fixture')); print(d['issue']['html_url'])")"
-    repo="$(        python3 -c "import json,sys; d=json.load(open('$fixture')); print(d['repository']['full_name'])")"
+    # Pass path via env var to avoid injecting user-controlled paths into Python -c source
+    issue_number="$(AW_FIXTURE="$fixture" python3 -c "import json,os; d=json.load(open(os.environ['AW_FIXTURE'])); print(d['issue']['number'])")"
+    issue_title="$(AW_FIXTURE="$fixture"  python3 -c "import json,os; d=json.load(open(os.environ['AW_FIXTURE'])); print(d['issue']['title'])")"
+    issue_body="$(AW_FIXTURE="$fixture"   python3 -c "import json,os; d=json.load(open(os.environ['AW_FIXTURE'])); print(d['issue']['body'] or '')")"
+    issue_labels="$(AW_FIXTURE="$fixture" python3 -c "import json,os; d=json.load(open(os.environ['AW_FIXTURE'])); print(','.join(l['name'] for l in d['issue'].get('labels',[])))")"
+    issue_url="$(AW_FIXTURE="$fixture"    python3 -c "import json,os; d=json.load(open(os.environ['AW_FIXTURE'])); print(d['issue']['html_url'])")"
+    repo="$(AW_FIXTURE="$fixture"         python3 -c "import json,os; d=json.load(open(os.environ['AW_FIXTURE'])); print(d['repository']['full_name'])")"
   else
     issue_number="${ISSUE_NUMBER:-}"
     issue_title="${ISSUE_TITLE:-}"
@@ -180,10 +181,18 @@ print(len(labels))
     return 0
   fi
 
-  # Substitute variables into workflow body
+  # Substitute variables into workflow body.
+  # Use a quoted heredoc and env vars so user-controlled issue data cannot
+  # escape into Python source code (code injection hotspot).
   local prompt
-  prompt="$(python3 - "$wf_file" <<PYEOF
-import sys, re
+  prompt="$(AW_ISSUE_NUMBER="$issue_number" \
+            AW_ISSUE_TITLE="$issue_title" \
+            AW_ISSUE_BODY="$issue_body" \
+            AW_ISSUE_LABELS="$issue_labels" \
+            AW_ISSUE_URL="$issue_url" \
+            AW_REPO="$repo" \
+            python3 - "$wf_file" <<'PYEOF'
+import sys, re, os
 
 path = sys.argv[1]
 text = open(path).read()
@@ -191,15 +200,15 @@ m = re.match(r'^---\n.*?\n---\n', text, re.DOTALL)
 body = text[m.end():] if m else text
 
 subs = {
-    'ISSUE_NUMBER': '''${issue_number}''',
-    'ISSUE_TITLE':  '''${issue_title}''',
-    'ISSUE_BODY':   '''${issue_body}''',
-    'ISSUE_LABELS': '''${issue_labels}''',
-    'ISSUE_URL':    '''${issue_url}''',
-    'REPO':         '''${repo}''',
+    'ISSUE_NUMBER': os.environ.get('AW_ISSUE_NUMBER', ''),
+    'ISSUE_TITLE':  os.environ.get('AW_ISSUE_TITLE', ''),
+    'ISSUE_BODY':   os.environ.get('AW_ISSUE_BODY', ''),
+    'ISSUE_LABELS': os.environ.get('AW_ISSUE_LABELS', ''),
+    'ISSUE_URL':    os.environ.get('AW_ISSUE_URL', ''),
+    'REPO':         os.environ.get('AW_REPO', ''),
 }
 for k, v in subs.items():
-    body = body.replace('\${' + k + '}', v)
+    body = body.replace('${' + k + '}', v)
 print(body)
 PYEOF
 )"
@@ -319,16 +328,15 @@ PYEOF
   local result_json
   result_json="$(cat "$result_file")"
 
-  # Apply labels
-  local labels_array
-  labels_array="$(echo "$result_json" | python3 -c "
+  # Apply labels — pass as comma-separated string so the argument stays quoted
+  local labels_csv
+  labels_csv="$(echo "$result_json" | python3 -c "
 import json,sys
 r=json.load(sys.stdin)
-if not r.get('skip'): print(' '.join(r.get('labels',[])))
+if not r.get('skip'): print(','.join(r.get('labels',[])))
 ")"
-  if [[ -n "$labels_array" ]]; then
-    # shellcheck disable=SC2086
-    gh issue edit "$issue_number" --repo "$repo" --add-label "$labels_array"
+  if [[ -n "$labels_csv" ]]; then
+    gh issue edit "$issue_number" --repo "$repo" --add-label "$labels_csv"
   fi
 
   # Post comment
