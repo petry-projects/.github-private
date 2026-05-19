@@ -37,6 +37,7 @@ jobs:
           ISSUE_BODY:      ${{ github.event.issue.body }}
           ISSUE_LABELS:    ${{ join(github.event.issue.labels.*.name, ',') }}
           ISSUE_URL:       ${{ github.event.issue.html_url }}
+          ISSUE_ACTION:    ${{ github.event.action }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
