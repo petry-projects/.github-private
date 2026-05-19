@@ -151,7 +151,7 @@ cmd_run() {
   fi
 
   # Build context from environment or fixture
-  local issue_number issue_title issue_body issue_labels issue_url repo
+  local issue_number issue_title issue_body issue_labels issue_url repo issue_action
   if [[ -n "$fixture" ]]; then
     # Pass path via env var to avoid injecting user-controlled paths into Python -c source
     issue_number="$(AW_FIXTURE="$fixture" python3 -c "import json,os; d=json.load(open(os.environ['AW_FIXTURE'])); print(d['issue']['number'])")"
@@ -160,6 +160,7 @@ cmd_run() {
     issue_labels="$(AW_FIXTURE="$fixture" python3 -c "import json,os; d=json.load(open(os.environ['AW_FIXTURE'])); print(','.join(l['name'] for l in d['issue'].get('labels',[])))")"
     issue_url="$(AW_FIXTURE="$fixture"    python3 -c "import json,os; d=json.load(open(os.environ['AW_FIXTURE'])); print(d['issue']['html_url'])")"
     repo="$(AW_FIXTURE="$fixture"         python3 -c "import json,os; d=json.load(open(os.environ['AW_FIXTURE'])); print(d['repository']['full_name'])")"
+    issue_action="$(AW_FIXTURE="$fixture" python3 -c "import json,os; d=json.load(open(os.environ['AW_FIXTURE'])); print(d.get('action','opened'))")"
   else
     issue_number="${ISSUE_NUMBER:-}"
     issue_title="${ISSUE_TITLE:-}"
@@ -167,6 +168,7 @@ cmd_run() {
     issue_labels="${ISSUE_LABELS:-}"
     issue_url="${ISSUE_URL:-https://github.com/${GITHUB_REPOSITORY:-unknown}/issues/${ISSUE_NUMBER:-0}}"
     repo="${GITHUB_REPOSITORY:-unknown}"
+    issue_action="${ISSUE_ACTION:-opened}"
   fi
 
   # Skip guard: read threshold from frontmatter (default 2), skip if label count >= threshold
@@ -212,7 +214,7 @@ allowed = set(json.loads(os.environ.get('AW_ALLOWED', '[]')))
 print('true' if current & allowed else 'false')
 PYEOF
 )"
-  if [[ "$has_triage_label" == "true" ]]; then
+  if [[ "$has_triage_label" == "true" && "$issue_action" == "reopened" ]]; then
     echo '{"skip": true}'
     return 0
   fi
@@ -380,6 +382,11 @@ if result.get("skip"):
 
 labels  = result.get("labels", [])
 comment = result.get("comment", "")
+
+# Validate labels is a JSON array of strings before any further checks
+if not isinstance(labels, list) or not all(isinstance(l, str) for l in labels):
+    print(f"safe-output: rejected — labels must be a JSON array of strings, got {type(labels).__name__}", file=sys.stderr)
+    sys.exit(1)
 
 # Validate comment is a non-empty string before any writes occur
 if not isinstance(comment, str):
