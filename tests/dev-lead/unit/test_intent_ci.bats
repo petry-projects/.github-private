@@ -20,6 +20,15 @@ teardown() {
 
 _get_env() {
   local key="$1"
+  # Handle multiline heredoc format: KEY<<DELIM\nvalue\nDELIM
+  local delim_line delimiter
+  delim_line=$(grep "^${key}<<" "$GITHUB_ENV" 2>/dev/null | head -1)
+  if [ -n "$delim_line" ]; then
+    delimiter="${delim_line#*<<}"
+    awk -v start="${key}<<${delimiter}" -v end="${delimiter}" \
+      'found && $0==end{exit} found{print} $0==start{found=1}' "$GITHUB_ENV"
+    return
+  fi
   grep "^${key}=" "$GITHUB_ENV" | cut -d= -f2- | head -1
 }
 

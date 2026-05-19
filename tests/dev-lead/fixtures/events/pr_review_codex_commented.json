@@ -1,0 +1,30 @@
+{
+  "_test_expected_intent": "fix-reviews",
+  "action": "submitted",
+  "review": {
+    "id": 3050,
+    "state": "COMMENTED",
+    "body": "Please address the naming inconsistencies noted inline.",
+    "user": {
+      "login": "chatgpt-codex-connector[bot]",
+      "type": "Bot"
+    }
+  },
+  "pull_request": {
+    "number": 284,
+    "title": "feat: implement issue #232",
+    "state": "open",
+    "author_association": "OWNER",
+    "head": {
+      "sha": "aaa111bbb222",
+      "ref": "feat/issue-232",
+      "repo": { "full_name": "petry-projects/.github-private" }
+    },
+    "base": {
+      "ref": "main",
+      "repo": { "full_name": "petry-projects/.github-private" }
+    }
+  },
+  "repository": { "full_name": "petry-projects/.github-private" },
+  "sender": { "login": "chatgpt-codex-connector[bot]", "type": "Bot" }
+}
