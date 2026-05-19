@@ -159,9 +159,10 @@ teardown() {
   export INTENT_TYPE="fix-reviews"
   export DEV_LEAD_DRY_RUN="false"
   export HEAD_SHA="ddd444eee555"
+  export COPILOT_GITHUB_TOKEN="stub-token"
 
-  # All engines rate-limited
-  for engine in claude gemini copilot; do
+  # claude and gemini engines rate-limited
+  for engine in claude gemini; do
     cat > "$STUB_BIN_DIR/$engine" << 'STUB'
 #!/usr/bin/env bash
 echo "rate limit exceeded"
@@ -180,6 +181,8 @@ case "$ARGS" in
     echo "[]" ;;
   *"pr comment"*)
     echo "COMMENT_POSTED: $ARGS"; exit 0 ;;
+  *"copilot"*)
+    echo "rate limit exceeded"; exit 1 ;;
   *) echo "{}" ;;
 esac
 GHEOF
@@ -198,9 +201,10 @@ GHEOF
   export HEAD_SHA="ddd444eee555"
   export ACTOR="donpetry"
   export USER_INSTRUCTION="Please fix the failing tests"
+  export COPILOT_GITHUB_TOKEN="stub-token"
 
-  # All engines rate-limited
-  for engine in claude gemini copilot; do
+  # claude and gemini engines rate-limited
+  for engine in claude gemini; do
     cat > "$STUB_BIN_DIR/$engine" << 'STUB'
 #!/usr/bin/env bash
 echo "hit your limit"
@@ -219,6 +223,8 @@ case "$ARGS" in
     echo "COMMENT_POSTED: $ARGS"; exit 0 ;;
   *"pulls/"*)
     echo '{"head":{"sha":"ddd444eee555"}}' ;;
+  *"copilot"*)
+    echo "hit your limit"; exit 1 ;;
   *) echo "{}" ;;
 esac
 GHEOF
@@ -245,7 +251,8 @@ GHEOF
   comment_count_file=$(mktemp)
   echo "0" > "$comment_count_file"
 
-  for engine in claude gemini copilot; do
+  export COPILOT_GITHUB_TOKEN="stub-token"
+  for engine in claude gemini; do
     cat > "$STUB_BIN_DIR/$engine" << 'STUB'
 #!/usr/bin/env bash
 echo "quota exceeded"
@@ -266,6 +273,8 @@ case "\$ARGS" in
     count=\$(cat "${comment_count_file}")
     echo \$((count + 1)) > "${comment_count_file}"
     echo "COMMENT_POSTED #\$((count + 1))"; exit 0 ;;
+  *"copilot"*)
+    echo "quota exceeded"; exit 1 ;;
   *) echo "{}" ;;
 esac
 GHEOF
@@ -287,8 +296,9 @@ GHEOF
   export DEV_LEAD_DRY_RUN="false"
   export HEAD_SHA="ddd444eee555"
   export COMMENT_BODY="SonarQube found issues"
+  export COPILOT_GITHUB_TOKEN="stub-token"
 
-  for engine in claude gemini copilot; do
+  for engine in claude gemini; do
     cat > "$STUB_BIN_DIR/$engine" << 'STUB'
 #!/usr/bin/env bash
 echo "rate limit exceeded"
@@ -305,6 +315,8 @@ case "$ARGS" in
     echo "[]" ;;
   *"pr comment"*)
     echo "COMMENT_POSTED"; exit 0 ;;
+  *"copilot"*)
+    echo "rate limit exceeded"; exit 1 ;;
   *) echo "{}" ;;
 esac
 GHEOF
@@ -320,6 +332,7 @@ GHEOF
   export INTENT_TYPE="fix-reviews"
   export DEV_LEAD_DRY_RUN="false"
   export HEAD_SHA="ddd444eee555"
+  export COPILOT_GITHUB_TOKEN="stub-token"
 
   # Returns existing rate-limited marker for this sha+intent
   cat > "$STUB_BIN_DIR/gh" << 'GHEOF'
@@ -332,12 +345,14 @@ case "$ARGS" in
     echo '[{"body":"<!-- dev-lead-fix-reviews pr=54 sha=ddd444eee555 intent=fix-reviews status=rate-limited -->"}]' ;;
   *"pr comment"*)
     echo "COMMENT_POSTED"; exit 0 ;;
+  *"copilot"*)
+    echo "rate limit exceeded"; exit 1 ;;
   *) echo "{}" ;;
 esac
 GHEOF
   chmod +x "$STUB_BIN_DIR/gh"
 
-  for engine in claude gemini copilot; do
+  for engine in claude gemini; do
     cat > "$STUB_BIN_DIR/$engine" << 'STUB'
 #!/usr/bin/env bash
 echo "rate limit exceeded"
