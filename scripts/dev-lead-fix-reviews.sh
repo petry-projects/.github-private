@@ -74,6 +74,25 @@ ${summary}"
   gh pr comment "$PR_NUMBER" --repo "$REPO" --body "$body" 2>/dev/null || true
 }
 
+# notify_coderabbit_resolve: posts @coderabbitai resolve if coderabbitai[bot]
+# has an outstanding CHANGES_REQUESTED review on the PR. This triggers CodeRabbit
+# to mark all its comment threads as resolved and post an APPROVED review when
+# request_changes_workflow is enabled.
+notify_coderabbit_resolve() {
+  if [ "${DEV_LEAD_DRY_RUN:-false}" = "true" ]; then
+    echo "[dry-run] would check for coderabbitai CHANGES_REQUESTED and post @coderabbitai resolve"
+    return 0
+  fi
+  local has_cr_changes_requested
+  has_cr_changes_requested=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/reviews" \
+    --jq '[.[] | select(.user.login == "coderabbitai[bot]" and .state == "CHANGES_REQUESTED")] | length' \
+    2>/dev/null || echo "0")
+  if [ "${has_cr_changes_requested:-0}" -gt 0 ]; then
+    echo "::notice::coderabbitai has CHANGES_REQUESTED — posting @coderabbitai resolve"
+    gh pr comment "$PR_NUMBER" --repo "$REPO" --body "@coderabbitai resolve" 2>/dev/null || true
+  fi
+}
+
 # commit_and_push: stages any uncommitted changes (including untracked files),
 # commits if needed, and pushes. Returns 0 if changes were pushed, 1 if nothing to push.
 # Handles two cases:
@@ -255,7 +274,7 @@ case "$INTENT_TYPE" in
         repository(owner:$owner, name:$repo) {
           pullRequest(number:$pr) {
             reviewThreads(first:50) {
-              nodes { isResolved line path comments(first:5) { nodes { body author { login } } } }
+              nodes { id isResolved isOutdated line path comments(first:5) { nodes { body author { login } } } }
             }
           }
         }
@@ -268,6 +287,7 @@ case "$INTENT_TYPE" in
     [ "$rc" -eq 2 ] && handle_rate_limit "fix-reviews"
     if [ "$rc" -eq 0 ]; then
       if commit_and_push "fix-reviews"; then
+        notify_coderabbit_resolve
         post_reviews_terminal "fix-reviews" "applied"
       else
         post_reviews_terminal "fix-reviews" "no-changes" "No changes were needed for the open review threads."
@@ -283,6 +303,7 @@ case "$INTENT_TYPE" in
     [ "$rc" -eq 2 ] && handle_rate_limit "fix-bot-comment"
     if [ "$rc" -eq 0 ]; then
       if commit_and_push "fix-bot-comment"; then
+        notify_coderabbit_resolve
         post_reviews_terminal "fix-bot-comment" "applied" "Changes committed and pushed."
       else
         post_reviews_terminal "fix-bot-comment" "no-changes" "Engine ran but made no changes."
@@ -315,7 +336,7 @@ case "$INTENT_TYPE" in
         repository(owner:$owner, name:$repo) {
           pullRequest(number:$pr) {
             reviewThreads(first:50) {
-              nodes { isResolved line path comments(first:5) { nodes { body author { login } } } }
+              nodes { id isResolved isOutdated line path comments(first:5) { nodes { body author { login } } } }
             }
           }
         }
@@ -328,6 +349,7 @@ case "$INTENT_TYPE" in
     [ "$rc" -eq 2 ] && handle_rate_limit "human-pr"
     if [ "$rc" -eq 0 ]; then
       if commit_and_push "human-pr"; then
+        notify_coderabbit_resolve
         post_reviews_terminal "human-pr" "applied"
       else
         post_reviews_terminal "human-pr" "no-changes" "No changes were needed for this PR."

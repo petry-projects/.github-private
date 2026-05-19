@@ -22,7 +22,41 @@ Analyze the bot's findings and address each actionable issue:
 1. Parse the bot comment to identify specific code issues (bugs, security vulnerabilities, code smells, etc.)
 2. Locate the referenced files and line numbers using Read/Grep/Glob tools
 3. Apply targeted fixes using Edit/Write tools
-4. Verify that the fixes are complete and do not introduce regressions
+4. **Resolve any open review threads** from this bot that are now fixed or outdated (see below)
+
+### Resolving threads from this bot
+
+After fixing an issue, resolve the corresponding review thread so the bot gets a clean slate to re-review:
+
+```bash
+# List open threads from this bot
+gh api graphql -f query='
+  query($owner: String!, $repo: String!, $pr: Int!) {
+    repository(owner: $owner, name: $repo) {
+      pullRequest(number: $pr) {
+        reviewThreads(first: 50) {
+          nodes {
+            id isResolved isOutdated
+            comments(first: 1) { nodes { author { login } body } }
+          }
+        }
+      }
+    }
+  }' -F owner="${REPO%%/*}" -F repo="${REPO##*/}" -F pr=${PR_NUMBER} \
+  --jq '.data.repository.pullRequest.reviewThreads.nodes
+        | map(select(.isResolved == false
+              and (.comments.nodes[0].author.login == "${ACTOR}" or .isOutdated == true)))'
+
+# Resolve a thread
+gh api graphql -f query='
+  mutation($id: ID!) {
+    resolveReviewThread(input: {threadId: $id}) {
+      thread { isResolved }
+    }
+  }' -F id="<threadId>"
+```
+
+Resolve every thread you fixed and every thread marked `isOutdated: true` from this bot.
 
 ## SonarQube / SonarCloud comments
 
@@ -52,7 +86,8 @@ After applying fixes, output a summary:
 ```
 Bot: ${ACTOR}
 Issues addressed: N
-- <issue description>: <fix applied>
+- <issue description>: <fix applied> [thread resolved]
+- <issue description>: outdated thread resolved
 Files changed: <list of files>
 Skipped (informational): <count>
 ```
