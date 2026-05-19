@@ -173,16 +173,18 @@ STUB
 
   cat > "$STUB_BIN_DIR/gh" << 'GHEOF'
 #!/usr/bin/env bash
+# copilot must be checked first — its -p prompt text may contain "graphql"
+case "$1" in
+  copilot) echo "rate limit exceeded"; exit 1 ;;
+esac
 ARGS="$*"
 case "$ARGS" in
-  *"api"*"graphql"*)
+  *"graphql"*)
     echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}' ;;
   *"api"*"repos/"*"issues/"*)
     echo "[]" ;;
   *"pr comment"*)
     echo "COMMENT_POSTED: $ARGS"; exit 0 ;;
-  *"copilot"*)
-    echo "rate limit exceeded"; exit 1 ;;
   *) echo "{}" ;;
 esac
 GHEOF
@@ -263,9 +265,13 @@ STUB
 
   cat > "$STUB_BIN_DIR/gh" << GHEOF
 #!/usr/bin/env bash
+# copilot must be checked first — its -p prompt text may contain "graphql"
+case "\$1" in
+  copilot) echo "quota exceeded"; exit 1 ;;
+esac
 ARGS="\$*"
 case "\$ARGS" in
-  *"api"*"graphql"*)
+  *"graphql"*)
     echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}' ;;
   *"api"*"repos/"*"issues/"*)
     echo "[]" ;;
@@ -273,8 +279,6 @@ case "\$ARGS" in
     count=\$(cat "${comment_count_file}")
     echo \$((count + 1)) > "${comment_count_file}"
     echo "COMMENT_POSTED #\$((count + 1))"; exit 0 ;;
-  *"copilot"*)
-    echo "quota exceeded"; exit 1 ;;
   *) echo "{}" ;;
 esac
 GHEOF
@@ -337,16 +341,18 @@ GHEOF
   # Returns existing rate-limited marker for this sha+intent
   cat > "$STUB_BIN_DIR/gh" << 'GHEOF'
 #!/usr/bin/env bash
+# copilot must be checked first — its -p prompt text may contain "graphql"
+case "$1" in
+  copilot) echo "rate limit exceeded"; exit 1 ;;
+esac
 ARGS="$*"
 case "$ARGS" in
-  *"api"*"graphql"*)
+  *"graphql"*)
     echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}' ;;
   *"api"*"repos/"*"issues/"*)
     echo '[{"body":"<!-- dev-lead-fix-reviews pr=54 sha=ddd444eee555 intent=fix-reviews status=rate-limited -->"}]' ;;
   *"pr comment"*)
     echo "COMMENT_POSTED"; exit 0 ;;
-  *"copilot"*)
-    echo "rate limit exceeded"; exit 1 ;;
   *) echo "{}" ;;
 esac
 GHEOF
