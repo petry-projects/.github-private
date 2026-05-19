@@ -8,9 +8,9 @@ Tests follow a three-level approach:
 
 1. **Compile validation (CI gate)** — `gh aw compile` runs on every PR that touches `.github/workflows/*.md`. A compile failure blocks merge. No runtime required.
 
-2. **Staged smoke tests (pre-merge)** — Run a workflow against a fixture payload without posting real GitHub API side-effects. Use `--staged` to dry-run:
+2. **Staged smoke tests (pre-merge)** — Run a workflow against a fixture payload without posting real GitHub API side-effects. Use `--dry-run` to validate without executing side-effects:
    ```
-   gh aw run <workflow-name> --staged --payload tests/aw/<workflow-name>/fixtures/<fixture>.json
+   gh aw run <workflow-name> --dry-run -F payload=@tests/aw/<workflow-name>/fixtures/<fixture>.json
    ```
    Smoke tests assert that the workflow reaches the expected terminal state and produces the expected output structure.
 
@@ -42,7 +42,7 @@ A scenario spec block:
 ## Running compile validation locally
 
 ```bash
-curl -sL https://raw.githubusercontent.com/github/gh-aw/main/install-gh-aw.sh | bash
+curl -sSfL https://raw.githubusercontent.com/github/gh-aw/main/install-gh-aw.sh | bash
 gh aw compile
 ```
 
@@ -52,7 +52,7 @@ The compile step validates all `*.md` files in `.github/workflows/` against the 
 
 ```bash
 # Run a single workflow against a fixture payload
-gh aw run issue-triage --staged --payload tests/aw/issue-triage/fixtures/new-bug.json
+gh aw run issue-triage --dry-run -F payload=@tests/aw/issue-triage/fixtures/new-bug.json
 
 # Run all smoke tests for a workflow
 bash tests/aw/issue-triage/smoke.sh
@@ -65,6 +65,6 @@ A workflow is ready to merge when:
 - [ ] Scenario specs written in `tests/aw/<name>/README.md` before implementation starts
 - [ ] `gh aw compile` passes with no errors
 - [ ] At least one fixture payload exists under `tests/aw/<name>/fixtures/`
-- [ ] Staged smoke test passes: `gh aw run <name> --staged` exits 0
+- [ ] Staged smoke test passes: `gh aw run <name> --dry-run` exits 0
 - [ ] CI lint job (`gh-aw-compile`) is green on the PR
 - [ ] Workflow markdown reviewed by a second author or the pr-reviewer agent

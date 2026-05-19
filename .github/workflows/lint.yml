@@ -41,13 +41,23 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
-      - name: Install gh-aw
-        run: curl -sL https://raw.githubusercontent.com/github/gh-aw/main/install-gh-aw.sh | bash
-
-      - name: Compile agentic workflows
+      - name: Check for agentic workflow files
+        id: check-aw-files
         run: |
-          if ls .github/workflows/*.md > /dev/null 2>&1; then
-            gh aw compile
+          if find .github/workflows -name '*.md' -print -quit 2>/dev/null | grep -q .; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
           else
+            echo "found=false" >> "$GITHUB_OUTPUT"
             echo "No .github/workflows/*.md files found — skipping compile."
           fi
+
+      - name: Install gh-aw
+        if: steps.check-aw-files.outputs.found == 'true'
+        # TODO: pin to a specific release tag/SHA — see https://github.com/github/gh-aw/releases
+        run: curl -sSfL https://raw.githubusercontent.com/github/gh-aw/main/install-gh-aw.sh | bash
+
+      - name: Compile agentic workflows
+        if: steps.check-aw-files.outputs.found == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh aw compile --no-emit
