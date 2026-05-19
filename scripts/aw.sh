@@ -144,6 +144,12 @@ cmd_run() {
     exit 1
   fi
 
+  # Validate workflow name to prevent path traversal
+  if [[ ! "$name" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]]; then
+    echo "aw run: invalid workflow name: $name" >&2
+    exit 1
+  fi
+
   local wf_file="$WORKFLOWS_DIR/${name}.md"
   if [[ ! -f "$wf_file" ]]; then
     echo "aw run: workflow file not found: $wf_file" >&2
@@ -302,6 +308,12 @@ print(fm.get("engine", "claude-sonnet-4-6"))
 PYEOF
 )"
 
+  # Validate engine to prevent command injection before passing to claude
+  if [[ ! "$engine" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]]; then
+    echo "aw run: invalid engine value: $engine" >&2
+    exit 1
+  fi
+
   # Call Claude
   local result rc=0
   result="$(echo "$prompt" | claude --model "$engine" --print --output-format text 2>/dev/null)" || rc=$?
@@ -458,6 +470,16 @@ PYEOF
 
   if [[ -z "$issue_number" || -z "$repo" ]]; then
     echo "safe-output apply: ISSUE_NUMBER and GITHUB_REPOSITORY must be set for live writes" >&2
+    exit 1
+  fi
+
+  # Validate inputs before passing to gh CLI to prevent command injection
+  if [[ ! "$issue_number" =~ ^[0-9]+$ ]]; then
+    echo "safe-output apply: ISSUE_NUMBER must be a positive integer, got: $issue_number" >&2
+    exit 1
+  fi
+  if [[ ! "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+    echo "safe-output apply: GITHUB_REPOSITORY has unexpected format: $repo" >&2
     exit 1
   fi
 
