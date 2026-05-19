@@ -33,13 +33,11 @@ Address every open review thread from the human reviewers:
 
 ### Resolving a thread
 
+After fixing (or confirming outdated), resolve the thread using the `id` from the JSON above. Only resolve threads from human reviewers — do not resolve threads posted by bots.
+
 ```bash
-gh api graphql -f query='
-  mutation($id: ID!) {
-    resolveReviewThread(input: {threadId: $id}) {
-      thread { isResolved }
-    }
-  }' -F id="<threadId>"
+# Replace THREAD_NODE_ID with the id value from the thread JSON
+gh api graphql -f query='mutation { resolveReviewThread(input: {threadId: "THREAD_NODE_ID"}) { thread { isResolved } } }'
 ```
 
 Resolving signals to the reviewer that the issue is handled and gives them a chance to re-review if anything remains.
@@ -48,6 +46,7 @@ Resolving signals to the reviewer that the issue is handled and gives them a cha
 
 - Treat human reviewer feedback with high priority — implement exactly what is asked
 - Resolve every thread you fix; resolve outdated threads without a corresponding code change
+- Only resolve threads from human reviewers — do not resolve bot review threads
 - Do not resolve threads you are intentionally skipping — leave those open and explain why
 - If multiple threads conflict, prioritize in this order: security > correctness > style
 - Maintain the existing code style and patterns

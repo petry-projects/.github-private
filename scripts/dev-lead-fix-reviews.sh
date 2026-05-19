@@ -34,8 +34,20 @@ fi
 build_and_run() {
   local template_name="$1"
   local prompt_file="/tmp/dev-lead-${template_name}-prompt-$$.md"
-  # Export required vars then envsubst
-  envsubst < "${PROMPTS_DIR}/${template_name}.md" > "$prompt_file"
+  local template_path="${PROMPTS_DIR}/${template_name}.md"
+  # Scope envsubst to only the variables declared in the <!-- VARIABLES: --> header.
+  # This prevents GraphQL $variables, $() subshells, and other $ patterns in the
+  # prompt from being silently clobbered before the agent ever sees them.
+  local vars_spec
+  vars_spec=$(grep -m1 '<!-- VARIABLES:' "$template_path" 2>/dev/null \
+    | sed 's/<!-- VARIABLES: //; s/ -->//' \
+    | tr ',' '\n' \
+    | awk '{gsub(/^ +| +$/, ""); if (length) printf "${%s}", $0}' || true)
+  if [ -n "$vars_spec" ]; then
+    envsubst "$vars_spec" < "$template_path" > "$prompt_file"
+  else
+    envsubst < "$template_path" > "$prompt_file"
+  fi
 
   if [ "$DEV_LEAD_DRY_RUN" = "true" ]; then
     echo "[dry-run] would run engine with prompt: $prompt_file ($(wc -l < "$prompt_file") lines)"

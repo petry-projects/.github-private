@@ -22,14 +22,14 @@ Analyze the bot's findings and address each actionable issue:
 1. Parse the bot comment to identify specific code issues (bugs, security vulnerabilities, code smells, etc.)
 2. Locate the referenced files and line numbers using Read/Grep/Glob tools
 3. Apply targeted fixes using Edit/Write tools
-4. **Resolve any open review threads** from this bot that are now fixed or outdated (see below)
+4. **Resolve open review threads** from this bot that are now fixed or outdated (see below)
 
 ### Resolving threads from this bot
 
-After fixing an issue, resolve the corresponding review thread so the bot gets a clean slate to re-review:
+After fixing an issue, resolve the corresponding review thread so the bot gets a clean slate to re-review. First, find open threads from this bot:
 
 ```bash
-# List open threads from this bot (pass ACTOR as --arg so it expands in jq)
+# Pipe through jq --arg to safely pass the bot login as a variable
 gh api graphql -f query='
   query($owner: String!, $repo: String!, $pr: Int!) {
     repository(owner: $owner, name: $repo) {
@@ -43,22 +43,18 @@ gh api graphql -f query='
       }
     }
   }' -F owner="${REPO%%/*}" -F repo="${REPO##*/}" -F pr=${PR_NUMBER} \
-  --jq --arg actor "${ACTOR}" \
-  '.data.repository.pullRequest.reviewThreads.nodes
-   | map(select(.isResolved == false
-         and (.comments.nodes[0].author.login == $actor or
-              (.isOutdated == true and .comments.nodes[0].author.login == $actor))))'
-
-# Resolve a thread
-gh api graphql -f query='
-  mutation($id: ID!) {
-    resolveReviewThread(input: {threadId: $id}) {
-      thread { isResolved }
-    }
-  }' -F id="<threadId>"
+  | jq --arg actor "${ACTOR}" '
+      .data.repository.pullRequest.reviewThreads.nodes
+      | map(select(.isResolved == false
+            and .comments.nodes[0].author.login == $actor))'
 ```
 
-Resolve every thread you fixed and every thread marked `isOutdated: true` from this bot.
+Then resolve each thread you addressed (and any from this bot marked `isOutdated: true`):
+
+```bash
+# Replace THREAD_NODE_ID with the id value from the query above
+gh api graphql -f query='mutation { resolveReviewThread(input: {threadId: "THREAD_NODE_ID"}) { thread { isResolved } } }'
+```
 
 ## SonarQube / SonarCloud comments
 
@@ -79,6 +75,7 @@ If `${ACTOR}` is `sonarqubecloud[bot]` and the comment reports security hotspots
 - Do not fix issues marked as "informational" or "suggestion" unless they indicate a real bug
 - Do not suppress bot rules without a documented reason
 - Do not modify the bot's configuration files
+- Only resolve threads from `${ACTOR}` — do not resolve threads from other reviewers
 - Stay within the scope of the pull request's changed files where possible
 - Do not commit or push — the CI workflow handles git operations after you finish
 
