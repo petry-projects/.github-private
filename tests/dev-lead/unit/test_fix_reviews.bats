@@ -363,3 +363,124 @@ STUB
   # In dry-run mode, the terminal marker post is announced
   [[ "$output" == *"terminal marker"* || "$output" == *"[dry-run]"* ]]
 }
+
+# ── commit_and_push failure tests ─────────────────────────────────────────────
+
+@test "fix-reviews: commit_and_push: git commit failure exits 1 (not silently swallowed)" {
+  export INTENT_TYPE="human"
+  export DEV_LEAD_DRY_RUN="false"
+  export HEAD_SHA="abc123"
+  export ACTOR="donpetry"
+  export USER_INSTRUCTION="fix something"
+  # Use absolute path so envsubst can find the prompt even when running from git_repo dir
+  export PROMPTS_DIR="$SCRIPT_DIR/prompts/dev-lead"
+
+  # Real temp git repo with one uncommitted change to trigger commit_and_push
+  local git_repo
+  git_repo="$(mktemp -d)"
+  git -C "$git_repo" init -q
+  echo "initial" > "$git_repo/file.txt"
+  git -C "$git_repo" add .
+  git -C "$git_repo" -c user.email="init@test" -c user.name="Init" commit -q -m "initial"
+  echo "change" >> "$git_repo/file.txt"
+
+  cat > "$STUB_BIN_DIR/claude" << 'STUB'
+#!/usr/bin/env bash
+echo "Changes applied."
+STUB
+  chmod +x "$STUB_BIN_DIR/claude"
+
+  cat > "$STUB_BIN_DIR/gh" << 'GHEOF'
+#!/usr/bin/env bash
+ARGS="$*"
+case "$ARGS" in
+  *"pr checkout"*) exit 0 ;;
+  *"pr comment"*) echo "COMMENT_POSTED"; exit 0 ;;
+  *"pulls/"*) echo '{"head":{"sha":"abc123"}}' ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+
+  # Stub git to fail on commit (simulates missing identity) but pass everything else to real git
+  cat > "$STUB_BIN_DIR/git" << 'GITEOF'
+#!/usr/bin/env bash
+if [[ "$*" == *"commit"* ]]; then
+  echo "::error::git commit failed — check git identity configuration on the runner"
+  echo "fatal: empty ident name not allowed" >&2
+  exit 128
+fi
+exec /usr/bin/git "$@"
+GITEOF
+  chmod +x "$STUB_BIN_DIR/git"
+
+  # Run from git_repo so git status/add/commit/push operate on the temp repo
+  cd "$git_repo"
+  # Capture stderr too so ::error:: messages appear in $output
+  run bash "$FIX_REVIEWS_SCRIPT" 2>&1
+
+  # Must exit non-zero — git commit failure must NOT be silently swallowed
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"error"* || "$output" == *"failed"* || "$output" == *"fatal"* ]]
+}
+
+@test "fix-reviews: commit_and_push: no false 'applied' marker posted on git commit failure" {
+  export INTENT_TYPE="human"
+  export DEV_LEAD_DRY_RUN="false"
+  export HEAD_SHA="abc123"
+  export ACTOR="donpetry"
+  export USER_INSTRUCTION="fix something"
+  export PROMPTS_DIR="$SCRIPT_DIR/prompts/dev-lead"
+
+  local git_repo
+  git_repo="$(mktemp -d)"
+  git -C "$git_repo" init -q
+  echo "initial" > "$git_repo/file.txt"
+  git -C "$git_repo" add .
+  git -C "$git_repo" -c user.email="init@test" -c user.name="Init" commit -q -m "initial"
+  echo "change" >> "$git_repo/file.txt"
+
+  local comment_file
+  comment_file="$(mktemp)"
+
+  cat > "$STUB_BIN_DIR/claude" << 'STUB'
+#!/usr/bin/env bash
+echo "Changes applied."
+STUB
+  chmod +x "$STUB_BIN_DIR/claude"
+
+  cat > "$STUB_BIN_DIR/gh" << GHEOF
+#!/usr/bin/env bash
+ARGS="\$*"
+case "\$ARGS" in
+  *"pr checkout"*) exit 0 ;;
+  *"pr comment"*)
+    echo "\$*" >> "$comment_file"
+    exit 0 ;;
+  *"pulls/"*) echo '{"head":{"sha":"abc123"}}' ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+
+  cat > "$STUB_BIN_DIR/git" << 'GITEOF'
+#!/usr/bin/env bash
+if [[ "$*" == *"commit"* ]]; then
+  echo "::error::git commit failed — check git identity configuration on the runner"
+  exit 128
+fi
+exec /usr/bin/git "$@"
+GITEOF
+  chmod +x "$STUB_BIN_DIR/git"
+
+  cd "$git_repo"
+  run bash "$FIX_REVIEWS_SCRIPT" 2>&1
+
+  # Script must exit non-zero when commit fails
+  [ "$status" -ne 0 ]
+  # The "applied" status must NOT have been posted since commit failed
+  if [ -f "$comment_file" ]; then
+    ! grep -q "status=applied" "$comment_file"
+  fi
+  rm -f "$comment_file"
+}
