@@ -42,7 +42,7 @@ A scenario spec block:
 ## Running compile validation locally
 
 ```bash
-gh extension install github/gh-aw
+gh extension install github/gh-aw --pin v0.74.4
 gh aw compile
 ```
 
