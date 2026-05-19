@@ -476,6 +476,7 @@ GITEOF
   cd "$git_repo"
   run bash "$FIX_REVIEWS_SCRIPT" 2>&1
 
+  # Script must exit non-zero when commit fails
   [ "$status" -ne 0 ]
   # The "applied" status must NOT have been posted since commit failed
   if [ -f "$comment_file" ]; then

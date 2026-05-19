@@ -127,7 +127,7 @@ commit_and_push() {
       git commit -m "$commit_msg" || { echo "::error::git commit failed — check git identity configuration on the runner" >&2; exit 1; }
     fi
     git push || {
-      echo "::error::git push failed — changes were not published" >&2
+      echo "::error::git push failed — check remote access and branch permissions" >&2
       exit 1
     }
   fi
