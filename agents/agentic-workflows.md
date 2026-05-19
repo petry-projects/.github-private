@@ -3,7 +3,7 @@ name: agentic-workflows
 description: >
   Copilot custom agent for authoring, updating, debugging, and compiling
   gh-aw agentic workflow markdown files in petry-projects/.github-private.
-engine: claude
+model: claude
 tools: ["read", "search", "execute", "edit"]
 ---
 

@@ -36,6 +36,38 @@ jobs:
       - name: Run tests
         run: bats tests/fleet_report.bats
 
+  validate-agent-profiles:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Validate agent profile frontmatter
+        run: |
+          set -euo pipefail
+          fail=0
+          for f in agents/*.md; do
+            [ -e "$f" ] || continue
+            name_from_file=$(basename "$f" .md)
+            frontmatter=$(awk 'BEGIN{found=0} /^---/{found++; if(found==2) exit; next} found==1{print}' "$f")
+            name_from_front=$(printf '%s\n' "$frontmatter" | grep '^name:' | awk '{print $2}' | head -1)
+            if [ -z "$name_from_front" ]; then
+              echo "FAIL: $f — missing 'name' field in frontmatter"
+              fail=1
+            elif [ "$name_from_front" != "$name_from_file" ]; then
+              echo "FAIL: $f — name '$name_from_front' does not match filename '$name_from_file'"
+              fail=1
+            fi
+            for field in description tools; do
+              if ! printf '%s\n' "$frontmatter" | grep -q "^${field}:"; then
+                echo "FAIL: $f — missing '${field}' field in frontmatter"
+                fail=1
+              fi
+            done
+            echo "OK: $f"
+          done
+          [ "$fail" -eq 0 ] || exit 1
+
   gh-aw-compile:
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -45,11 +77,11 @@ jobs:
       - name: Check for agentic workflow files
         id: check-aw-files
         run: |
-          if find .github/workflows -name '*.md' -print -quit 2>/dev/null | grep -q .; then
+          if find .github/workflows \( -name '*.md' -o -name '*.lock.yml' \) -print -quit 2>/dev/null | grep -q .; then
             echo "found=true" >> "$GITHUB_OUTPUT"
           else
             echo "found=false" >> "$GITHUB_OUTPUT"
-            echo "No .github/workflows/*.md files found — skipping compile."
+            echo "No .github/workflows/*.md or *.lock.yml files found — skipping compile."
           fi
 
       - name: Install gh-aw
