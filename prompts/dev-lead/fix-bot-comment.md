@@ -29,7 +29,7 @@ Analyze the bot's findings and address each actionable issue:
 After fixing an issue, resolve the corresponding review thread so the bot gets a clean slate to re-review:
 
 ```bash
-# List open threads from this bot
+# List open threads from this bot (pass ACTOR as --arg so it expands in jq)
 gh api graphql -f query='
   query($owner: String!, $repo: String!, $pr: Int!) {
     repository(owner: $owner, name: $repo) {
@@ -43,9 +43,11 @@ gh api graphql -f query='
       }
     }
   }' -F owner="${REPO%%/*}" -F repo="${REPO##*/}" -F pr=${PR_NUMBER} \
-  --jq '.data.repository.pullRequest.reviewThreads.nodes
-        | map(select(.isResolved == false
-              and (.comments.nodes[0].author.login == "${ACTOR}" or .isOutdated == true)))'
+  --jq --arg actor "${ACTOR}" \
+  '.data.repository.pullRequest.reviewThreads.nodes
+   | map(select(.isResolved == false
+         and (.comments.nodes[0].author.login == $actor or
+              (.isOutdated == true and .comments.nodes[0].author.login == $actor))))'
 
 # Resolve a thread
 gh api graphql -f query='
