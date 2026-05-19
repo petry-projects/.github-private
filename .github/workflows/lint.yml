@@ -49,8 +49,18 @@ jobs:
           for f in agents/*.md; do
             [ -e "$f" ] || continue
             name_from_file=$(basename "$f" .md)
+            if ! awk 'BEGIN{found=0} /^---/{found++; if(found==2) exit} END{exit (found<2)}' "$f"; then
+              echo "FAIL: $f — frontmatter is not closed (missing closing '---')"
+              fail=1
+              continue
+            fi
             frontmatter=$(awk 'BEGIN{found=0} /^---/{found++; if(found==2) exit; next} found==1{print}' "$f")
-            name_from_front=$(printf '%s\n' "$frontmatter" | grep '^name:' | awk '{print $2}' | head -1)
+            if ! printf '%s\n' "$frontmatter" | python3 -c "import sys, yaml; yaml.safe_load(sys.stdin)" 2>/dev/null; then
+              echo "FAIL: $f — invalid YAML in frontmatter"
+              fail=1
+              continue
+            fi
+            name_from_front=$(printf '%s\n' "$frontmatter" | grep '^name:' | sed 's/^name:[[:space:]]*//' | sed "s/^['\"]//;s/['\"]$//" | head -1)
             if [ -z "$name_from_front" ]; then
               echo "FAIL: $f — missing 'name' field in frontmatter"
               fail=1
@@ -95,3 +105,17 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh aw compile --no-emit
+
+      - name: Detect orphaned lock files
+        if: steps.check-aw-files.outputs.found == 'true'
+        run: |
+          orphan=0
+          for lock in .github/workflows/*.lock.yml; do
+            [ -e "$lock" ] || continue
+            md="${lock%.lock.yml}.md"
+            if [ ! -f "$md" ]; then
+              echo "FAIL: orphaned lock file $lock — no corresponding source $md"
+              orphan=1
+            fi
+          done
+          [ "$orphan" -eq 0 ] || exit 1
