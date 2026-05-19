@@ -42,7 +42,12 @@ jobs:
         run: |
           set -euo pipefail
           result=$(bash scripts/aw.sh run issue-triage --staged)
-          skip=$(echo "$result" | python3 -c "import json,sys; d=json.load(sys.stdin); print('true' if d.get('skip') else 'false')")
+          skip=$(echo "$result" | python3 - <<'PYEOF'
+import json, sys
+d = json.load(sys.stdin)
+print('true' if d.get('skip') else 'false')
+PYEOF
+)
           # Store encoded to survive multi-line JSON in GITHUB_OUTPUT
           echo "result=$(echo "$result" | base64 -w0)" >> "$GITHUB_OUTPUT"
           echo "skip=$skip" >> "$GITHUB_OUTPUT"

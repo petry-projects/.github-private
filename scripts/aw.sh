@@ -153,14 +153,49 @@ cmd_run() {
   # Build context from environment or fixture
   local issue_number issue_title issue_body issue_labels issue_url repo issue_action
   if [[ -n "$fixture" ]]; then
-    # Pass path via env var to avoid injecting user-controlled paths into Python -c source
-    issue_number="$(AW_FIXTURE="$fixture" python3 -c "import json,os; d=json.load(open(os.environ['AW_FIXTURE'])); print(d['issue']['number'])")"
-    issue_title="$(AW_FIXTURE="$fixture"  python3 -c "import json,os; d=json.load(open(os.environ['AW_FIXTURE'])); print(d['issue']['title'])")"
-    issue_body="$(AW_FIXTURE="$fixture"   python3 -c "import json,os; d=json.load(open(os.environ['AW_FIXTURE'])); print(d['issue']['body'] or '')")"
-    issue_labels="$(AW_FIXTURE="$fixture" python3 -c "import json,os; d=json.load(open(os.environ['AW_FIXTURE'])); print(','.join(l['name'] for l in d['issue'].get('labels',[])))")"
-    issue_url="$(AW_FIXTURE="$fixture"    python3 -c "import json,os; d=json.load(open(os.environ['AW_FIXTURE'])); print(d['issue']['html_url'])")"
-    repo="$(AW_FIXTURE="$fixture"         python3 -c "import json,os; d=json.load(open(os.environ['AW_FIXTURE'])); print(d['repository']['full_name'])")"
-    issue_action="$(AW_FIXTURE="$fixture" python3 -c "import json,os; d=json.load(open(os.environ['AW_FIXTURE'])); print(d.get('action','opened'))")"
+    # Pass path via env var to avoid injecting user-controlled paths into Python source
+    issue_number="$(AW_FIXTURE="$fixture" python3 - <<'PYEOF'
+import json, os
+d = json.load(open(os.environ['AW_FIXTURE']))
+print(d['issue']['number'])
+PYEOF
+)"
+    issue_title="$(AW_FIXTURE="$fixture" python3 - <<'PYEOF'
+import json, os
+d = json.load(open(os.environ['AW_FIXTURE']))
+print(d['issue']['title'])
+PYEOF
+)"
+    issue_body="$(AW_FIXTURE="$fixture" python3 - <<'PYEOF'
+import json, os
+d = json.load(open(os.environ['AW_FIXTURE']))
+print(d['issue']['body'] or '')
+PYEOF
+)"
+    issue_labels="$(AW_FIXTURE="$fixture" python3 - <<'PYEOF'
+import json, os
+d = json.load(open(os.environ['AW_FIXTURE']))
+print(','.join(l['name'] for l in d['issue'].get('labels', [])))
+PYEOF
+)"
+    issue_url="$(AW_FIXTURE="$fixture" python3 - <<'PYEOF'
+import json, os
+d = json.load(open(os.environ['AW_FIXTURE']))
+print(d['issue']['html_url'])
+PYEOF
+)"
+    repo="$(AW_FIXTURE="$fixture" python3 - <<'PYEOF'
+import json, os
+d = json.load(open(os.environ['AW_FIXTURE']))
+print(d['repository']['full_name'])
+PYEOF
+)"
+    issue_action="$(AW_FIXTURE="$fixture" python3 - <<'PYEOF'
+import json, os
+d = json.load(open(os.environ['AW_FIXTURE']))
+print(d.get('action', 'opened'))
+PYEOF
+)"
   else
     issue_number="${ISSUE_NUMBER:-}"
     issue_title="${ISSUE_TITLE:-}"
@@ -173,12 +208,13 @@ cmd_run() {
 
   # Skip guard: read threshold from frontmatter (default 2), skip if label count >= threshold
   local label_count skip_threshold
-  label_count="$(echo "$issue_labels" | python3 -c "
+  label_count="$(echo "$issue_labels" | python3 - <<'PYEOF'
 import sys
 raw = sys.stdin.read().strip()
 labels = [l for l in raw.split(',') if l]
 print(len(labels))
-")"
+PYEOF
+)"
   skip_threshold="$(python3 - "$wf_file" <<'PYEOF'
 import sys, re, yaml
 path = sys.argv[1]
@@ -275,14 +311,21 @@ PYEOF
   fi
 
   # Validate JSON output
-  if ! echo "$result" | python3 -c "import json,sys; json.load(sys.stdin)" 2>/dev/null; then
+  if ! echo "$result" | python3 - 2>/dev/null <<'PYEOF'; then
+import json, sys
+json.load(sys.stdin)
+PYEOF
     echo "aw run: claude returned non-JSON output" >&2
     echo "$result" >&2
     exit 1
   fi
 
   # Reject skip flag from model — only the pre-Claude label-count guard may emit skip
-  if echo "$result" | python3 -c "import json,sys; d=json.load(sys.stdin); sys.exit(1) if d.get('skip') else None" 2>/dev/null; then
+  if echo "$result" | python3 - 2>/dev/null <<'PYEOF'; then
+import json, sys
+d = json.load(sys.stdin)
+sys.exit(1) if d.get('skip') else None
+PYEOF
     : # no skip flag from model, ok
   else
     echo "aw run: model returned skip flag — possible prompt injection, rejecting" >&2
@@ -423,11 +466,13 @@ PYEOF
 
   # Apply labels — pass as comma-separated string so the argument stays quoted
   local labels_csv
-  labels_csv="$(echo "$result_json" | python3 -c "
-import json,sys
-r=json.load(sys.stdin)
-if not r.get('skip'): print(','.join(r.get('labels',[])))
-")"
+  labels_csv="$(echo "$result_json" | python3 - <<'PYEOF'
+import json, sys
+r = json.load(sys.stdin)
+if not r.get('skip'):
+    print(','.join(r.get('labels', [])))
+PYEOF
+)"
   if [[ -n "$labels_csv" ]]; then
     gh issue edit "$issue_number" --repo "$repo" --add-label "$labels_csv"
   fi
