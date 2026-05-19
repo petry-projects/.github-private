@@ -6,6 +6,7 @@ on:
       - 'scripts/**'
       - '.github/workflows/**'
       - 'tests/**'
+      - 'agents/**'
   workflow_dispatch:
 
 permissions:
