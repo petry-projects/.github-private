@@ -55,6 +55,7 @@ jobs:
           GITHUB_TOKEN:      ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           ISSUE_NUMBER:      ${{ github.event.issue.number }}
+          TRIAGE_RESULT:     ${{ needs.triage.outputs.result }}
         run: |
-          echo "${{ needs.triage.outputs.result }}" | base64 -d > /tmp/triage-result.json
+          echo "$TRIAGE_RESULT" | base64 -d > /tmp/triage-result.json
           bash scripts/aw.sh safe-output apply issue-triage /tmp/triage-result.json
