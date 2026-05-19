@@ -82,7 +82,7 @@ collect_logs() {
     printf '# External quality gate — no GitHub Actions run logs available\n'
     printf '# Check: %s | Details: %s\n\n' "$check_name" "$details_url"
     printf '# PR diff (scan for hotspots / quality issues):\n'
-    gh pr diff "$PR_NUMBER" --repo "$REPO" 2>/dev/null | head -n "$LOG_MAX_LINES" || true
+    gh pr diff "$PR_NUMBER" --repo "$REPO" 2>/dev/null | head -n 1000 || true
   fi
 }
 

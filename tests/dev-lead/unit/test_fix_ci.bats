@@ -440,7 +440,7 @@ STUB
 
 # ── external quality gate (Fix 3) ─────────────────────────────────────────────
 
-@test "fix-ci: external quality gate: non-GHA details_url → PR diff in logs" {
+@test "fix-ci: external quality gate: non-GHA details_url → PR diff embedded in prompt" {
   cat > "$STUB_BIN_DIR/gh" <<'GHEOF'
 #!/usr/bin/env bash
 ARGS="$*"
@@ -458,20 +458,27 @@ GHEOF
   run bash "$FIX_CI_SCRIPT"
 
   [ "$status" -eq 0 ]
-  [[ "$output" == *"[dry-run]"* ]]
+  # Extract the rendered prompt file path from the dry-run notice line
+  local prompt_file
+  prompt_file=$(echo "$output" | awk '/would run engine with prompt:/{print $NF}')
+  [ -n "$prompt_file" ]
+  [ -f "$prompt_file" ]
+  grep -q "External quality gate" "$prompt_file"
+  grep -q "curl -sL" "$prompt_file"
+  rm -f "$prompt_file"
 }
 
 @test "fix-ci: external quality gate: GHA details_url → uses run view, not pr diff" {
-  local ran_run_view=0
-  local ran_pr_diff=0
-  cat > "$STUB_BIN_DIR/gh" <<'GHEOF'
+  local sentinel_dir
+  sentinel_dir="$(mktemp -d)"
+  cat > "$STUB_BIN_DIR/gh" <<GHEOF
 #!/usr/bin/env bash
-ARGS="$*"
-case "$ARGS" in
+ARGS="\$*"
+case "\$ARGS" in
   *"issues/"*"/comments"*) echo "[]" ;;
   *"pr comment"*) exit 0 ;;
-  *"run view"*) echo "github-actions log output" ;;
-  *"pr diff"*) echo "SHOULD_NOT_APPEAR_IN_GHA_PATH" ;;
+  *"run view"*) touch "${sentinel_dir}/.ran_run_view"; echo "github-actions log output" ;;
+  *"pr diff"*) touch "${sentinel_dir}/.ran_pr_diff"; echo "diff output" ;;
   *) echo "{}" ;;
 esac
 GHEOF
@@ -482,5 +489,7 @@ GHEOF
   run bash "$FIX_CI_SCRIPT"
 
   [ "$status" -eq 0 ]
-  [[ "$output" != *"SHOULD_NOT_APPEAR_IN_GHA_PATH"* ]]
+  [ -f "${sentinel_dir}/.ran_run_view" ]
+  [ ! -f "${sentinel_dir}/.ran_pr_diff" ]
+  rm -rf "$sentinel_dir"
 }
