@@ -27,7 +27,7 @@ cmd_compile() {
   if [[ "$target" == "--all" ]]; then
     while IFS= read -r -d '' f; do
       files+=("$f")
-    done < <(find "$WORKFLOWS_DIR" -maxdepth 1 -name '*.md' -print0 2>/dev/null)
+    done < <(find "$WORKFLOWS_DIR" -name '*.md' -print0 2>/dev/null)
     if [[ ${#files[@]} -eq 0 ]]; then
       echo "aw compile: no workflow definitions found in $WORKFLOWS_DIR" >&2
       exit 0
@@ -65,7 +65,8 @@ validate_workflow() {
 import sys, re
 
 path = sys.argv[1]
-text = open(path).read()
+with open(path, encoding='utf-8') as f:
+    text = f.read()
 
 # Extract YAML frontmatter
 m = re.match(r'^---\n(.*?)\n---\n', text, re.DOTALL)
@@ -87,14 +88,14 @@ for field in ("name", "trigger", "engine", "permissions"):
     if field not in fm:
         errors.append(f"missing required field: {field!r}")
 
-# Validate engine
-valid_engines = {
+# Validate engine — warn on unknown but don't fail (new models can be added without a code change)
+known_engines = {
     "claude-sonnet-4-6", "claude-haiku-4-5-20251001", "claude-opus-4-7",
     "claude-haiku-4-5",
 }
 engine = fm.get("engine", "")
-if engine and engine not in valid_engines:
-    errors.append(f"unknown engine {engine!r}; valid: {sorted(valid_engines)}")
+if engine and engine not in known_engines:
+    print(f"aw compile: {path}: warning: unknown engine {engine!r}", file=sys.stderr)
 
 # Validate output mode if present
 output_mode = fm.get("output")
@@ -168,15 +169,25 @@ cmd_run() {
     repo="${GITHUB_REPOSITORY:-unknown}"
   fi
 
-  # Skip guard: if 2+ labels already applied, emit skip immediately
-  local label_count
+  # Skip guard: read threshold from frontmatter (default 2), skip if label count >= threshold
+  local label_count skip_threshold
   label_count="$(echo "$issue_labels" | python3 -c "
 import sys
 raw = sys.stdin.read().strip()
 labels = [l for l in raw.split(',') if l]
 print(len(labels))
 ")"
-  if [[ "$label_count" -ge 2 ]]; then
+  skip_threshold="$(python3 - "$wf_file" <<'PYEOF'
+import sys, re, yaml
+path = sys.argv[1]
+with open(path, encoding='utf-8') as f:
+    text = f.read()
+m = re.match(r'^---\n(.*?)\n---\n', text, re.DOTALL)
+fm = yaml.safe_load(m.group(1)) if m else {}
+print(fm.get('skip-if-labels-ge', 2))
+PYEOF
+)"
+  if [[ "$label_count" -ge "$skip_threshold" ]]; then
     echo '{"skip": true}'
     return 0
   fi
@@ -195,15 +206,17 @@ print(len(labels))
 import sys, re, os
 
 path = sys.argv[1]
-text = open(path).read()
+with open(path, encoding='utf-8') as f:
+    text = f.read()
 m = re.match(r'^---\n.*?\n---\n', text, re.DOTALL)
 body = text[m.end():] if m else text
 
+labels_val = os.environ.get('AW_ISSUE_LABELS', '')
 subs = {
     'ISSUE_NUMBER': os.environ.get('AW_ISSUE_NUMBER', ''),
     'ISSUE_TITLE':  os.environ.get('AW_ISSUE_TITLE', ''),
     'ISSUE_BODY':   os.environ.get('AW_ISSUE_BODY', ''),
-    'ISSUE_LABELS': os.environ.get('AW_ISSUE_LABELS', ''),
+    'ISSUE_LABELS': labels_val if labels_val else '(none)',
     'ISSUE_URL':    os.environ.get('AW_ISSUE_URL', ''),
     'REPO':         os.environ.get('AW_REPO', ''),
 }
@@ -218,7 +231,8 @@ PYEOF
   engine="$(python3 - "$wf_file" <<'PYEOF'
 import sys, re, yaml
 path = sys.argv[1]
-text = open(path).read()
+with open(path, encoding='utf-8') as f:
+    text = f.read()
 m = re.match(r'^---\n(.*?)\n---\n', text, re.DOTALL)
 fm = yaml.safe_load(m.group(1))
 print(fm.get("engine", "claude-sonnet-4-6"))
@@ -226,9 +240,12 @@ PYEOF
 )"
 
   # Call Claude
-  local result
-  result="$(echo "$prompt" | claude --model "$engine" --print --no-markdown 2>/dev/null \
-    || { echo '{"error": "claude invocation failed"}'; return 1; })"
+  local result rc=0
+  result="$(echo "$prompt" | claude --model "$engine" --print --no-markdown 2>/dev/null)" || rc=$?
+  if [[ $rc -ne 0 ]]; then
+    echo "aw run: claude invocation failed" >&2
+    exit 1
+  fi
 
   # Validate JSON output
   if ! echo "$result" | python3 -c "import json,sys; json.load(sys.stdin)" 2>/dev/null; then
@@ -273,25 +290,38 @@ cmd_safe_output_apply() {
   fi
 
   local wf_file="$WORKFLOWS_DIR/${name}.md"
-  local allowed_labels
+  local allowed_labels max_labels
   allowed_labels="$(python3 - "$wf_file" <<'PYEOF'
 import sys, re, yaml, json
 path = sys.argv[1]
-text = open(path).read()
+with open(path, encoding='utf-8') as f:
+    text = f.read()
 m = re.match(r'^---\n(.*?)\n---\n', text, re.DOTALL)
-fm = yaml.safe_load(m.group(1))
+fm = yaml.safe_load(m.group(1)) if m else {}
 print(json.dumps(fm.get("allowed-labels", [])))
+PYEOF
+)"
+  max_labels="$(python3 - "$wf_file" <<'PYEOF'
+import sys, re, yaml
+path = sys.argv[1]
+with open(path, encoding='utf-8') as f:
+    text = f.read()
+m = re.match(r'^---\n(.*?)\n---\n', text, re.DOTALL)
+fm = yaml.safe_load(m.group(1)) if m else {}
+print(fm.get('max-labels', 3))
 PYEOF
 )"
 
   # Validate and apply via GitHub API
-  python3 - "$result_file" "$allowed_labels" <<'PYEOF'
+  python3 - "$result_file" "$allowed_labels" "$max_labels" <<'PYEOF'
 import sys, json
 
 result_file  = sys.argv[1]
 allowed_set  = set(json.loads(sys.argv[2]))
+max_labels   = int(sys.argv[3])
 
-result = json.load(open(result_file))
+with open(result_file, encoding='utf-8') as f:
+    result = json.load(f)
 
 if result.get("skip"):
     print("safe-output: skip flag set — no writes applied")
@@ -305,8 +335,8 @@ invalid = [l for l in labels if l not in allowed_set]
 if invalid:
     print(f"safe-output: rejected — labels not in allowed set: {invalid}", file=sys.stderr)
     sys.exit(1)
-if len(labels) > 3:
-    print(f"safe-output: rejected — more than 3 labels: {labels}", file=sys.stderr)
+if len(labels) > max_labels:
+    print(f"safe-output: rejected — more than {max_labels} labels: {labels}", file=sys.stderr)
     sys.exit(1)
 if not comment:
     print("safe-output: rejected — empty comment", file=sys.stderr)
@@ -339,16 +369,20 @@ if not r.get('skip'): print(','.join(r.get('labels',[])))
     gh issue edit "$issue_number" --repo "$repo" --add-label "$labels_csv"
   fi
 
-  # Post comment
-  local comment
-  comment="$(echo "$result_json" | python3 -c "
-import json,sys
-r=json.load(sys.stdin)
-if not r.get('skip'): print(r.get('comment',''))
-")"
-  if [[ -n "$comment" ]]; then
-    gh issue comment "$issue_number" --repo "$repo" --body "$comment"
+  # Post comment via temp file to avoid ARG_MAX limits on large comment bodies
+  local comment_file
+  comment_file="$(mktemp)"
+  python3 - "$result_file" <<'PYEOF' > "$comment_file"
+import json, sys
+with open(sys.argv[1], encoding='utf-8') as f:
+    r = json.load(f)
+c = r.get('comment', '') if not r.get('skip') else ''
+sys.stdout.write(c)
+PYEOF
+  if [[ -s "$comment_file" ]]; then
+    gh issue comment "$issue_number" --repo "$repo" --body-file "$comment_file"
   fi
+  rm -f "$comment_file"
 
   echo "safe-output apply: done"
 }

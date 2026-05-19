@@ -1,0 +1,12 @@
+{
+  "issue": {
+    "number": 101,
+    "title": "Login button is broken",
+    "body": "When I click the login button nothing happens.",
+    "labels": [],
+    "html_url": "https://github.com/example/repo/issues/101"
+  },
+  "repository": {
+    "full_name": "example/repo"
+  }
+}
