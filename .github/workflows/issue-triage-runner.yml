@@ -2,7 +2,7 @@ name: Issue Triage
 
 on:
   issues:
-    types: [opened]
+    types: [opened, reopened]
 
 # Two-job pattern: triage runs with read-only issue access and produces a
 # staged JSON artifact; apply runs with write access and calls safe-output.
@@ -18,6 +18,8 @@ jobs:
       skip: ${{ steps.run.outputs.skip }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
 
       - name: Install claude CLI
         uses: anthropics/claude-code-action/setup@24492741e0ccfdef4c1d19da8e11e0f373d07494  # main

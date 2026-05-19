@@ -192,6 +192,31 @@ PYEOF
     return 0
   fi
 
+  # Skip if any existing label is in the allowed-labels set (prevents re-triage on reopen)
+  local allowed_json
+  allowed_json="$(python3 - "$wf_file" <<'PYEOF'
+import sys, re, yaml, json
+path = sys.argv[1]
+with open(path, encoding='utf-8') as f:
+    text = f.read()
+m = re.match(r'^---\n(.*?)\n---\n', text, re.DOTALL)
+fm = yaml.safe_load(m.group(1)) if m else {}
+print(json.dumps(fm.get('allowed-labels', [])))
+PYEOF
+)"
+  local has_triage_label
+  has_triage_label="$(AW_ALLOWED="$allowed_json" AW_LABELS="$issue_labels" python3 - <<'PYEOF'
+import os, json
+current = set(l for l in os.environ.get('AW_LABELS', '').split(',') if l)
+allowed = set(json.loads(os.environ.get('AW_ALLOWED', '[]')))
+print('true' if current & allowed else 'false')
+PYEOF
+)"
+  if [[ "$has_triage_label" == "true" ]]; then
+    echo '{"skip": true}'
+    return 0
+  fi
+
   # Substitute variables into workflow body.
   # Use a quoted heredoc and env vars so user-controlled issue data cannot
   # escape into Python source code (code injection hotspot).
@@ -220,8 +245,8 @@ subs = {
     'ISSUE_URL':    os.environ.get('AW_ISSUE_URL', ''),
     'REPO':         os.environ.get('AW_REPO', ''),
 }
-for k, v in subs.items():
-    body = body.replace('${' + k + '}', v)
+pattern = re.compile('|'.join(re.escape('${' + k + '}') for k in subs))
+body = pattern.sub(lambda m: subs[m.group(0)[2:-1]], body)
 print(body)
 PYEOF
 )"

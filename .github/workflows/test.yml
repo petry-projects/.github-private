@@ -32,3 +32,6 @@ jobs:
 
       - name: Compile gh-aw workflow definitions
         run: bash scripts/aw.sh compile --all
+
+      - name: Run aw issue-triage tests
+        run: bash tests/aw/issue-triage/test_aw_run.sh
