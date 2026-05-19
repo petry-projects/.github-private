@@ -300,6 +300,7 @@ STUB
     chmod +x "$STUB_BIN_DIR/$engine"
   done
 
+  export COPILOT_GITHUB_TOKEN="stub-token"
   cat > "$STUB_BIN_DIR/gh" << 'GHEOF'
 #!/usr/bin/env bash
 case "$*" in
@@ -307,6 +308,7 @@ case "$*" in
   *"pr checkout"*) exit 0 ;;
   *"pr comment"*) echo "COMMENT_POSTED: $*"; exit 0 ;;
   *"run view"*) echo "log output" ;;
+  *"copilot"*) echo "rate limit exceeded"; exit 1 ;;
   *) echo "{}" ;;
 esac
 GHEOF
@@ -322,6 +324,7 @@ GHEOF
 
 @test "fix-ci: rate-limited: does not count toward exhaustion threshold" {
   # PR already has rate-limited markers but zero status=failed markers
+  export COPILOT_GITHUB_TOKEN="stub-token"
   cat > "$STUB_BIN_DIR/gh" << 'GHEOF'
 #!/usr/bin/env bash
 case "$*" in
@@ -332,13 +335,14 @@ case "$*" in
   *"pr checkout"*) exit 0 ;;
   *"pr comment"*) echo "COMMENT_POSTED"; exit 0 ;;
   *"run view"*) echo "log output" ;;
+  *"copilot"*) echo "rate limit exceeded"; exit 1 ;;
   *) echo "{}" ;;
 esac
 GHEOF
   chmod +x "$STUB_BIN_DIR/gh"
 
   # Engine also rate-limits on this run
-  for engine in claude gemini copilot; do
+  for engine in claude gemini; do
     cat > "$STUB_BIN_DIR/$engine" << 'STUB'
 #!/usr/bin/env bash
 echo "rate limit exceeded"
@@ -406,6 +410,7 @@ GHEOF
 
 @test "fix-ci: rate-limited dedup: existing rate-limited marker for same SHA skips duplicate post" {
   # Simulate an existing rate-limited marker for HEAD_SHA (same sha)
+  export COPILOT_GITHUB_TOKEN="stub-token"
   cat > "$STUB_BIN_DIR/gh" << 'GHEOF'
 #!/usr/bin/env bash
 case "$*" in
@@ -415,12 +420,13 @@ case "$*" in
   *"pr checkout"*) exit 0 ;;
   *"pr comment"*) echo "COMMENT_POSTED"; exit 0 ;;
   *"run view"*) echo "log output" ;;
+  *"copilot"*) echo "rate limit exceeded"; exit 1 ;;
   *) echo "{}" ;;
 esac
 GHEOF
   chmod +x "$STUB_BIN_DIR/gh"
 
-  for engine in claude gemini copilot; do
+  for engine in claude gemini; do
     cat > "$STUB_BIN_DIR/$engine" << 'STUB'
 #!/usr/bin/env bash
 echo "rate limit exceeded"
