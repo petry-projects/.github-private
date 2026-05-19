@@ -175,7 +175,7 @@ STUB
 #!/usr/bin/env bash
 ARGS="$*"
 case "$ARGS" in
-  *"graphql"*)
+  *"api"*"graphql"*)
     echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}' ;;
   *"api"*"repos/"*"issues/"*)
     echo "[]" ;;
@@ -265,7 +265,7 @@ STUB
 #!/usr/bin/env bash
 ARGS="\$*"
 case "\$ARGS" in
-  *"graphql"*)
+  *"api"*"graphql"*)
     echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}' ;;
   *"api"*"repos/"*"issues/"*)
     echo "[]" ;;
@@ -339,7 +339,7 @@ GHEOF
 #!/usr/bin/env bash
 ARGS="$*"
 case "$ARGS" in
-  *"graphql"*)
+  *"api"*"graphql"*)
     echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}' ;;
   *"api"*"repos/"*"issues/"*)
     echo '[{"body":"<!-- dev-lead-fix-reviews pr=54 sha=ddd444eee555 intent=fix-reviews status=rate-limited -->"}]' ;;
