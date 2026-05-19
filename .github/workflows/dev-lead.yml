@@ -103,6 +103,12 @@ jobs:
         if: env.INTENT_TYPE != 'skip'
         run: bash scripts/dev-lead-preflight.sh
 
+      - name: Configure git identity
+        if: env.INTENT_TYPE != 'skip'
+        run: |
+          git config --global user.email "donpetry-bot@users.noreply.github.com"
+          git config --global user.name "donpetry-bot"
+
       # ── Install engine CLIs ───────────────────────────────────────────────
       - name: Cache claude-code CLI
         if: env.INTENT_TYPE != 'skip'
