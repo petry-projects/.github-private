@@ -10,7 +10,7 @@ You are the dev-lead agent for the `${REPO}` repository. Your task is to address
 
 ## Open Review Threads
 
-The following review threads are unresolved and require attention:
+The following review threads are unresolved and require attention. Each thread includes an `id` field used to resolve it after you address it.
 
 ```json
 ${OPEN_THREADS_JSON}
@@ -125,9 +125,11 @@ Read every changed line as if you are the reviewer seeing the response:
 ## Constraints
 
 - Address each open thread individually
+- Resolve every thread you fix; resolve outdated threads without a corresponding code change
+- Only resolve threads from the reviewer who triggered this run — leave other reviewers' threads open
+- Do not resolve threads you are skipping due to ambiguity — leave those open and note them in your output
 - Do not make changes beyond what the review threads request
 - If a review thread is ambiguous, apply the most conservative interpretation
-- Do not modify files that are not referenced in the review threads
 - Do not commit or push — the CI workflow handles git operations after you finish
 
 ## Output Format
@@ -135,7 +137,8 @@ Read every changed line as if you are the reviewer seeing the response:
 After applying fixes, output a summary:
 ```
 Addressed N threads:
-- Thread <id>: <brief description of fix>
-- Thread <id>: <brief description of fix>
+- Thread <id>: <brief description of fix> [resolved]
+- Thread <id>: outdated — resolved without change
+- Thread <id>: skipped — <reason> [left open]
 Files changed: <list of files>
 ```

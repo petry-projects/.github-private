@@ -106,6 +106,7 @@ If `${ACTOR}` is `sonarqubecloud[bot]` and the comment reports security hotspots
 - Do not fix issues marked as "informational" or "suggestion" unless they indicate a real bug
 - Do not suppress bot rules without a documented reason
 - Do not modify the bot's configuration files
+- Only resolve threads from `${ACTOR}` — do not resolve threads from other reviewers
 - Stay within the scope of the pull request's changed files where possible
 - Do not commit or push — the CI workflow handles git operations after you finish
 
@@ -115,7 +116,8 @@ After applying fixes, output a summary:
 ```
 Bot: ${ACTOR}
 Issues addressed: N
-- <issue description>: <fix applied>
+- <issue description>: <fix applied> [thread resolved]
+- <issue description>: outdated thread resolved
 Files changed: <list of files>
 Skipped (informational): <count>
 ```
