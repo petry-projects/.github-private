@@ -38,6 +38,7 @@ env:
   TRIGGER_PHRASES: ${{ vars.TRIGGER_PHRASES || '@dev-lead' }}
   DEV_LEAD_ENGINE: ${{ vars.DEV_LEAD_ENGINE || 'claude' }}
   DEV_LEAD_DRY_RUN: ${{ vars.DEV_LEAD_DRY_RUN || 'false' }}
+  DEEP_TIMEOUT_SEC: ${{ vars.DEEP_TIMEOUT_SEC || '600' }}
   GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS || secrets.GITHUB_TOKEN }}
 
 jobs:
