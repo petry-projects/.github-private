@@ -27,5 +27,8 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Install Python dependencies
+        run: pip install pyyaml --quiet
+
       - name: Compile gh-aw workflow definitions
         run: bash scripts/aw.sh compile --all

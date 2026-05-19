@@ -241,7 +241,7 @@ PYEOF
 
   # Call Claude
   local result rc=0
-  result="$(echo "$prompt" | claude --model "$engine" --print --no-markdown 2>/dev/null)" || rc=$?
+  result="$(echo "$prompt" | claude --model "$engine" --print --output-format text 2>/dev/null)" || rc=$?
   if [[ $rc -ne 0 ]]; then
     echo "aw run: claude invocation failed" >&2
     exit 1

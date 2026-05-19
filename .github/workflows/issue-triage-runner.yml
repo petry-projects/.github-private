@@ -11,6 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
+      contents: read
       issues: read
     outputs:
       result: ${{ steps.run.outputs.result }}
@@ -22,6 +23,9 @@ jobs:
         uses: anthropics/claude-code-action/setup@24492741e0ccfdef4c1d19da8e11e0f373d07494  # main
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+
+      - name: Install Python dependencies
+        run: pip install pyyaml --quiet
 
       - name: Run issue-triage (staged)
         id: run
@@ -47,9 +51,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 3
     permissions:
+      contents: read
       issues: write
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Install Python dependencies
+        run: pip install pyyaml --quiet
 
       - name: Apply triage output (safe-output)
         env:
