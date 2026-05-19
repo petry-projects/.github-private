@@ -126,7 +126,10 @@ commit_and_push() {
       # false "Changes committed and pushed" comment.
       git commit -m "$commit_msg" || { echo "::error::git commit failed — check git identity configuration on the runner" >&2; exit 1; }
     fi
-    git push
+    git push || {
+      echo "::error::git push failed — changes were not published" >&2
+      exit 1
+    }
   fi
   return 0
 }
