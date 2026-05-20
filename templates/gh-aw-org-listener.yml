@@ -1,0 +1,169 @@
+# Deploy this file to target repos as: .github/workflows/gh-aw-listener.yml
+#
+# Purpose: Thin listener for GitHub Agentic Workflows (gh-aw).
+#   - Issue Triage: dispatches when an issue is labeled by an org member
+#   - CI Failure Analyst: dispatches when a check run fails on a non-fork PR
+#
+# All logic lives in petry-projects/.github-private (gh-aw-cross-org.yml).
+# This stub is intentionally minimal — do not add business logic here.
+#
+# Requires:
+#   GH_PAT_WORKFLOWS  org secret — cross-repo dispatch and API calls
+#                     (inherited automatically from the petry-projects org)
+#
+# Architecture: docs/aw/cross-org-deployment.md
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: GitHub Agentic Workflows — Listener
+
+on:
+  issues:
+    types: [labeled]
+  check_run:
+    types: [completed]
+
+permissions: {}
+
+jobs:
+  # ── Issue Triage ─────────────────────────────────────────────────────────────
+  # Fires when an org member labels an issue. Routes to the gh-aw Issue Triage
+  # capability in .github-private, which will open a PR implementing the issue.
+  issue-triage:
+    if: github.event_name == 'issues'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+
+    steps:
+      - name: Check sender is org member
+        id: trust
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
+          SENDER_LOGIN: ${{ github.event.sender.login }}
+          SENDER_TYPE: ${{ github.event.sender.type }}
+          TARGET_ORG: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          if [ "$SENDER_TYPE" = "Bot" ]; then
+            echo "trusted=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Sender is a bot — skipping issue triage"
+            exit 0
+          fi
+          if gh api "orgs/${TARGET_ORG}/members/${SENDER_LOGIN}" --silent 2>/dev/null; then
+            echo "trusted=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Sender @${SENDER_LOGIN} is an org member — trusted"
+          else
+            echo "trusted=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Sender @${SENDER_LOGIN} is not an org member — skipping"
+          fi
+
+      - name: Dispatch issue triage
+        if: steps.trust.outputs.trusted == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
+          SOURCE_REPO: ${{ github.repository }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_LABEL: ${{ github.event.label.name }}
+        run: |
+          set -euo pipefail
+          payload=$(jq -n \
+            --arg source_repo "$SOURCE_REPO" \
+            --argjson issue_number "$ISSUE_NUMBER" \
+            --arg label "$ISSUE_LABEL" \
+            '{
+              event_type: "gh-aw-issue-triage",
+              client_payload: {
+                source_repo: $source_repo,
+                issue_number: $issue_number,
+                label: $label
+              }
+            }')
+          echo "$payload" | gh api \
+            --method POST \
+            "repos/petry-projects/.github-private/dispatches" \
+            --input -
+          echo "::notice::Dispatched gh-aw-issue-triage for issue #${ISSUE_NUMBER} in ${SOURCE_REPO}"
+
+  # ── CI Failure Analyst ───────────────────────────────────────────────────────
+  # Fires when a check run fails on a non-fork PR. Routes to the gh-aw CI Failure
+  # Analyst capability in .github-private, which will diagnose and fix the failure.
+  ci-failure:
+    if: >-
+      github.event_name == 'check_run' &&
+      github.event.check_run.conclusion == 'failure' &&
+      !startsWith(github.event.check_run.name, 'gh-aw / ')
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Resolve non-fork PR for check run
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
+          CHECK_RUN_PRS: ${{ toJson(github.event.check_run.pull_requests) }}
+          HEAD_SHA: ${{ github.event.check_run.head_sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # Prefer the pull_requests array embedded in the check_run payload (fastest path).
+          pr_number=$(echo "$CHECK_RUN_PRS" \
+            | jq -r 'first // empty | .number // empty')
+
+          if [ -z "$pr_number" ]; then
+            # Fallback: search open PRs with this head SHA from this repo (not a fork).
+            pr_number=$(gh api \
+              "repos/${REPO}/pulls?state=open&per_page=100" \
+              --jq "[.[] | select(.head.sha == \"$HEAD_SHA\" and .head.repo.full_name == \"$REPO\")] | first | .number // empty" \
+              2>/dev/null || true)
+          fi
+
+          if [ -z "$pr_number" ]; then
+            echo "has_pr=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No non-fork PR found for SHA ${HEAD_SHA} — skipping CI relay"
+            exit 0
+          fi
+          echo "has_pr=true" >> "$GITHUB_OUTPUT"
+          echo "pr_number=$pr_number" >> "$GITHUB_OUTPUT"
+
+      - name: Dispatch CI failure
+        if: steps.pr.outputs.has_pr == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
+          SOURCE_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ steps.pr.outputs.pr_number }}
+          HEAD_SHA: ${{ github.event.check_run.head_sha }}
+          CHECK_NAME: ${{ github.event.check_run.name }}
+          CHECK_ID: ${{ github.event.check_run.id }}
+          CONCLUSION: ${{ github.event.check_run.conclusion }}
+          DETAILS_URL: ${{ github.event.check_run.details_url }}
+          APP_SLUG: ${{ github.event.check_run.app.slug }}
+        run: |
+          set -euo pipefail
+          payload=$(jq -n \
+            --arg source_repo "$SOURCE_REPO" \
+            --argjson pr_number "$PR_NUMBER" \
+            --arg head_sha "$HEAD_SHA" \
+            --arg name "$CHECK_NAME" \
+            --argjson check_id "$CHECK_ID" \
+            --arg conclusion "$CONCLUSION" \
+            --arg details_url "$DETAILS_URL" \
+            --arg app_slug "$APP_SLUG" \
+            '{
+              event_type: "gh-aw-ci-failure",
+              client_payload: {
+                source_repo: $source_repo,
+                pr_number: $pr_number,
+                head_sha: $head_sha,
+                checks: [{
+                  id: $check_id,
+                  name: $name,
+                  conclusion: $conclusion,
+                  details_url: $details_url,
+                  app_slug: $app_slug
+                }]
+              }
+            }')
+          echo "$payload" | gh api \
+            --method POST \
+            "repos/petry-projects/.github-private/dispatches" \
+            --input -
+          echo "::notice::Dispatched gh-aw-ci-failure for PR #${PR_NUMBER} in ${SOURCE_REPO}"
