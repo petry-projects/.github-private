@@ -20,6 +20,7 @@ safe-outputs:
 
 
 
+
 trigger:
   issues:
     types: [opened]
