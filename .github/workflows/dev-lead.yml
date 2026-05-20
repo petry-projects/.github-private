@@ -157,6 +157,7 @@ jobs:
             claude)  claude --version ;;
             gemini)  gemini --version ;;
             copilot) gh copilot --version ;;
+            *) echo "::error::Unknown DEV_LEAD_ENGINE value: '${DEV_LEAD_ENGINE}'. Must be one of: claude, gemini, copilot"; exit 1 ;;
           esac
 
       # ── fix-ci ────────────────────────────────────────────────────────────
