@@ -285,6 +285,18 @@ jobs:
           REPO: ${{ github.repository }}
         run: bash scripts/dev-lead-fix-reviews.sh
 
+      # ── enable-auto-merge ─────────────────────────────────────────────────
+      # Triggered when a trusted bot approves a PR. Skips engine install and
+      # pre-flight — just checks reviewDecision and enables auto-merge if APPROVED.
+      - name: Enable auto-merge on bot approval
+        if: env.INTENT_TYPE == 'enable-auto-merge'
+        env:
+          INTENT_TYPE: enable-auto-merge
+          PR_NUMBER: ${{ env.INTENT_PR_NUMBER }}
+          HEAD_SHA: ${{ env.INTENT_HEAD_SHA }}
+          REPO: ${{ github.repository }}
+        run: bash scripts/dev-lead-fix-reviews.sh
+
   # ── ci-relay ────────────────────────────────────────────────────────────────
   # Handles check_run completed events only.
   # No LLM involved — resolves the PR number from the check and fires
