@@ -1,5 +1,4 @@
 ---
-name: issue-triage
 trigger:
   issues:
     types: [opened]
