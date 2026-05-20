@@ -92,9 +92,56 @@ required additions.
 **When** the run completes
 **Then**
 - a summary issue is opened in `.github-private` listing compliance status
-- the issue shows: total repos scanned, compliant count, PRs opened count
+- the issue shows: total repos scanned, compliant count, PRs opened count, security settings applied count
 
 **Assertions:**
 - A summary issue is created in `petry-projects/.github-private`
 - Issue body contains a compliance table or list
 - Issue is labelled `standards-sync` and `automated-report`
+
+---
+
+## Scenario 7: Repo missing secret_scanning_ai_detection
+
+**Given** a repo in the `petry-projects` org has `secret_scanning_ai_detection` set to `null` (not enabled)
+**When** the monthly schedule fires
+**Then**
+- the workflow detects the missing security setting via the GitHub API
+- it applies a PATCH to `repos/{repo}` enabling `secret_scanning_ai_detection`
+- the setting change is reflected in the summary issue action column
+
+**Assertions:**
+- `settings_applied` counter increments for the affected repo
+- Summary row for the repo notes the security setting was enabled
+- No PR is opened (security settings are applied directly via API, not via PR)
+
+---
+
+## Scenario 8: Repo already has secret_scanning_ai_detection enabled
+
+**Given** a repo already has `secret_scanning_ai_detection` set to `enabled`
+**When** the monthly schedule fires
+**Then**
+- the workflow reads the current setting and skips the PATCH call
+- no change is made to the repo
+
+**Assertions:**
+- `settings_applied` counter does NOT increment for this repo
+- Script logs `[ok]` for the repo (not `[fix]`)
+- Idempotency: running twice produces the same state
+
+---
+
+## Scenario 9: secret_scanning_ai_detection cannot be enabled (Advanced Security unavailable)
+
+**Given** a repo does not have GitHub Advanced Security enabled
+**When** the monthly schedule fires and the PATCH to enable `secret_scanning_ai_detection` fails
+**Then**
+- the workflow logs a warning for the repo
+- no crash or exit-1 occurs (graceful degradation)
+- the summary issue notes an error for the setting
+
+**Assertions:**
+- Script continues processing remaining repos after the failed PATCH
+- Warning message includes the setting name and a note about Advanced Security
+- `settings_applied` counter does NOT increment for the failed repo
