@@ -1,3 +1,1 @@
 .github/workflows/*.lock.yml linguist-generated=true merge=ours
-# Vendored BMAD Method skill trees (src/ from upstream tags; see frameworks/*/VENDOR.md).
-frameworks/** linguist-vendored=true
