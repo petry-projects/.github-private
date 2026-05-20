@@ -1,0 +1,103 @@
+name: Docs Health Check
+
+on:
+  schedule:
+    # Weekly — Sunday at 00:00 UTC
+    - cron: '0 0 * * 0'
+  workflow_dispatch:
+    inputs:
+      stale_days:
+        description: "Days without update before a doc is considered stale"
+        required: false
+        default: "90"
+        type: string
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: docs-health-check
+  cancel-in-progress: true
+
+jobs:
+  health-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      ORG: ${{ vars.ORG || 'petry-projects' }}
+      STALE_DAYS: ${{ inputs.stale_days || vars.DOCS_STALE_DAYS || '90' }}
+      DOCS_STALENESS_IGNORE: ${{ vars.DOCS_STALENESS_IGNORE || '' }}
+      REPORT_REPO: ${{ vars.ORG || 'petry-projects' }}/.github-private
+      # Pin via vars.CLAUDE_CODE_VERSION for reproducible caching; mirrors pr-review.yml.
+      CLAUDE_CODE_VERSION: ${{ vars.CLAUDE_CODE_VERSION || 'latest' }}
+
+    steps:
+      - name: Checkout agent repo
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Set up Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+        with:
+          node-version: '20'
+
+      - name: Cache claude-code CLI
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4
+        with:
+          path: ~/.npm-global
+          key: claude-code-${{ env.CLAUDE_CODE_VERSION }}-${{ runner.os }}
+
+      - name: Install Claude Code CLI
+        run: |
+          mkdir -p "$HOME/.npm-global"
+          npm config set prefix "$HOME/.npm-global"
+          echo "$HOME/.npm-global/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.npm-global/bin:$PATH"
+          if command -v claude >/dev/null 2>&1; then
+            echo "claude-code cache hit: $(claude --version)"
+          else
+            npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" # NOSONAR
+          fi
+
+      - name: Run docs health check
+        env:
+          GH_TOKEN: ${{ secrets.DON_PETRY_BOT_GH_PAT }}
+        run: bash scripts/aw-docs-health-check.sh
+
+      - name: Truncate report if needed
+        run: |
+          if [ -f docs_health_report.md ]; then
+            if [ "$(wc -c < docs_health_report.md)" -gt 60000 ]; then
+              head -c 60000 docs_health_report.md > docs_health_report.md.tmp
+              mv docs_health_report.md.tmp docs_health_report.md
+              printf '\n\n---\n_Report truncated at 60 000 bytes._\n' >> docs_health_report.md
+            fi
+          fi
+
+      - name: Create issue with findings
+        if: env.HAS_STALE_DOCS == 'true' && hashFiles('docs_health_report.md') != ''
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const fs = require('fs');
+            const report = fs.readFileSync('docs_health_report.md', 'utf8');
+            if (!report.trim()) {
+              core.setFailed('Report file is empty');
+              return;
+            }
+            const today = new Date().toISOString().split('T')[0];
+            const issue = await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `Docs Health Check — stale files detected ${today}`,
+              body: report,
+              labels: ['health-check', 'automated-report'],
+            });
+            core.notice(`Issue created: ${issue.data.html_url}`);
+
+      - name: Annotate clean run
+        if: env.HAS_STALE_DOCS != 'true'
+        run: |
+          echo "::notice::Docs health check passed — no stale files found (threshold: ${STALE_DAYS} days)."
