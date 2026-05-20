@@ -17,11 +17,12 @@ If the check run is not associated with a PR, or if the conclusion is anything o
 
 ```yaml
 on:
-  check_run:
+  workflow_run:
+    workflows: [CI, Lint, Tests]
     types: [completed]
 ```
 
-The workflow handles `conclusion != failure` as a no-op in its instructions. All `check_run.completed` events are accepted by GitHub Actions; the analyst itself guards on conclusion.
+The workflow handles `conclusion != failure` as a no-op in its instructions. The `workflow_run` trigger fires for GitHub Actions workflow completions, including this repo's own CI workflows (`ci.yml`, `lint.yml`, `test.yml`). The analyst itself guards on conclusion.
 
 ## Root cause categories
 
@@ -60,9 +61,10 @@ The `<!-- ci-analyst sha=... -->` marker enables idempotency: if the workflow tr
 |---|---|
 | `actions: read` | Fetch workflow run logs via the actions toolset |
 | `checks: read` | Read check run details and annotations |
+| `contents: read` | Check out the repository for agent context |
 | `pull-requests: read` | List PR comments for idempotency check |
 
-Write access (posting the comment) is handled by the `safe-outputs` job with its own scoped `pull-requests: write` permission.
+Write access (posting the comment) is handled by the `safe-outputs` job using the `GH_AW_GITHUB_TOKEN` secret (or `GITHUB_TOKEN` as a fallback). The `safe-outputs` job runs with `permissions: {}` and relies on an external token for the write operation, so `GITHUB_TOKEN` alone is not sufficient without `GH_AW_GITHUB_TOKEN` set.
 
 ## Engine and model
 
@@ -76,9 +78,11 @@ The `add-comment` safe-output is configured with `staged: true`. During the init
 ## Setup
 
 1. Ensure the `ANTHROPIC_API_KEY` secret is set in the repository (or org-level secrets).
-2. Set the `GH_AW_MODEL_AGENT_CLAUDE` repository variable to `claude-sonnet-4-6`.
-3. Compile the workflow: `gh aw compile ci-failure-analyst --approve`.
-4. Commit both `ci-failure-analyst.md` and `ci-failure-analyst.lock.yml`.
+2. Set `GH_AW_GITHUB_TOKEN` to a PAT with `pull-requests: write` permission. This token is used by the `safe-outputs` job to post the diagnostic comment. Without it, `GITHUB_TOKEN` will be used as a fallback but will lack write permission (the `safe-outputs` job runs with `permissions: {}`).
+3. Optionally set `GH_AW_GITHUB_MCP_SERVER_TOKEN` to a PAT for MCP GitHub API access. Falls back to `GH_AW_GITHUB_TOKEN`, then `GITHUB_TOKEN`.
+4. Set the `GH_AW_MODEL_AGENT_CLAUDE` repository variable to `claude-sonnet-4-6`.
+5. Compile the workflow: `gh aw compile ci-failure-analyst --approve`.
+6. Commit both `ci-failure-analyst.md` and `ci-failure-analyst.lock.yml`.
 
 ## Scenario spec
 
