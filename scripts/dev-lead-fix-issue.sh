@@ -197,6 +197,10 @@ main() {
     exit 0
   fi
 
+  # Configure git identity so the post-engine commit does not fail.
+  # BOT_USER is set as a job-level env var in dev-lead-reusable.yml.
+  setup_git_identity
+
   # Create feature branch
   local branch
   branch="dev-lead/issue-${ISSUE_NUMBER}-$(date +%Y%m%d-%H%M)"
