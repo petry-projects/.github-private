@@ -1,0 +1,35 @@
+name: Standards Sync
+
+on:
+  schedule:
+    # First Monday of each month at 09:00 UTC
+    # Runs on days 1–7 of the month that fall on Monday (day-of-week 1)
+    - cron: '0 9 1-7 * 1'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: standards-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      ORG: ${{ vars.ORG || 'petry-projects' }}
+      STANDARDS_REPO: ${{ vars.STANDARDS_REPO || 'petry-projects/.github' }}
+      SYNC_LABEL: ${{ vars.STANDARDS_SYNC_LABEL || 'standards-sync' }}
+      SKIP_REPOS: ${{ vars.STANDARDS_SYNC_SKIP_REPOS || '' }}
+
+    steps:
+      - name: Checkout agent repo
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Run standards sync
+        env:
+          GH_TOKEN: ${{ secrets.DON_PETRY_BOT_GH_PAT }}
+        run: bash scripts/aw-standards-sync.sh

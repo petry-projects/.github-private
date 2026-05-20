@@ -1,0 +1,215 @@
+#!/usr/bin/env bash
+# Standards Sync — checks all org repos for required files (AGENTS.md, CODEOWNERS)
+# and opens PRs on non-compliant repos. Opens a summary issue in .github-private.
+#
+# Env vars consumed:
+#   GH_TOKEN          — PAT with repo scope (create branches and PRs cross-repo)
+#   ORG               — GitHub org to scan (default: petry-projects)
+#   STANDARDS_REPO    — repo containing org standards templates (default: petry-projects/.github)
+#   REPORT_REPO       — repo for summary issue (default: ORG/.github-private)
+#   SYNC_LABEL        — label for opened PRs and summary issue (default: standards-sync)
+#   SKIP_REPOS        — comma-separated list of repos to skip
+#   GITHUB_ENV        — set by Actions runner
+
+set -euo pipefail
+
+ORG="${ORG:-petry-projects}"
+STANDARDS_REPO="${STANDARDS_REPO:-${ORG}/.github}"
+REPORT_REPO="${REPORT_REPO:-${ORG}/.github-private}"
+SYNC_LABEL="${SYNC_LABEL:-standards-sync}"
+TODAY=$(date -u +%Y-%m-%d)
+BRANCH_NAME="standards-sync/${TODAY}"
+
+# Required files: format "local_path_in_repo|template_path_in_standards_repo"
+REQUIRED_FILES=(
+  "AGENTS.md|standards/AGENTS.md"
+  ".github/CODEOWNERS|standards/CODEOWNERS"
+)
+
+echo "=== Standards Sync ==="
+echo "  Org:            ${ORG}"
+echo "  Standards repo: ${STANDARDS_REPO}"
+echo "  Report repo:    ${REPORT_REPO}"
+echo "  Date:           ${TODAY}"
+echo ""
+
+# ---------------------------------------------------------------------------
+# 1. Build skip list
+# ---------------------------------------------------------------------------
+IFS=',' read -ra _SKIP_RAW <<< "${SKIP_REPOS:-}"
+SKIP_LIST=()
+for _r in "${_SKIP_RAW[@]+"${_SKIP_RAW[@]}"}"; do
+  _r="${_r#"${_r%%[![:space:]]*}"}"
+  _r="${_r%"${_r##*[![:space:]]}"}"
+  [ -n "$_r" ] && SKIP_LIST+=("$_r")
+done
+
+_is_skipped() {
+  local repo="$1"
+  for skip in "${SKIP_LIST[@]+"${SKIP_LIST[@]}"}"; do
+    [ "$repo" = "$skip" ] && return 0
+    [ "${repo##*/}" = "$skip" ] && return 0
+  done
+  return 1
+}
+
+# ---------------------------------------------------------------------------
+# 2. Enumerate active repos
+# ---------------------------------------------------------------------------
+echo "Enumerating repos in ${ORG}..."
+repos=$(gh api "orgs/${ORG}/repos?per_page=100&type=all" \
+  --jq '[.[] | select(.archived == false)] | .[].full_name' 2>/dev/null || true)
+
+if [ -z "$repos" ]; then
+  echo "::error::Could not enumerate repos for org ${ORG}."
+  exit 1
+fi
+
+repo_count=$(echo "$repos" | wc -l | tr -d ' ')
+echo "  Found ${repo_count} active repos."
+echo ""
+
+# ---------------------------------------------------------------------------
+# 3. For each required file, fetch template content from standards repo
+# ---------------------------------------------------------------------------
+declare -A TEMPLATE_CONTENT
+for entry in "${REQUIRED_FILES[@]}"; do
+  _template="${entry#*|}"
+  content=$(gh api "repos/${STANDARDS_REPO}/contents/${_template}" \
+    --jq '.content' 2>/dev/null | base64 -d 2>/dev/null || true)
+  if [ -z "$content" ]; then
+    echo "::warning::Template not found in ${STANDARDS_REPO}: ${_template} — skipping this requirement."
+  fi
+  TEMPLATE_CONTENT["$_template"]="$content"
+done
+
+# ---------------------------------------------------------------------------
+# 4. Scan repos for compliance and open PRs
+# ---------------------------------------------------------------------------
+prs_opened=0
+compliant_count=0
+
+# Collect summary rows for the final issue
+summary_rows=""
+
+while IFS= read -r repo; do
+  _is_skipped "$repo" && {
+    echo "  [skip] ${repo}"
+    continue
+  }
+
+  missing_files=()
+
+  for entry in "${REQUIRED_FILES[@]}"; do
+    required_path="${entry%%|*}"
+    # Check existence via contents API; 200 = exists, 404 = missing
+    if ! gh api "repos/${repo}/contents/${required_path}" --silent 2>/dev/null; then
+      missing_files+=("$entry")
+    fi
+  done
+
+  if [ "${#missing_files[@]}" -eq 0 ]; then
+    compliant_count=$((compliant_count + 1))
+    echo "  [ok]   ${repo}"
+    summary_rows="${summary_rows}| \`${repo}\` | ✅ | ✅ | Compliant |\n"
+    continue
+  fi
+
+  # Check for existing open standards-sync PR
+  existing_pr=$(gh pr list \
+    --repo "$repo" \
+    --label "$SYNC_LABEL" \
+    --state open \
+    --json number \
+    --jq '.[0].number // ""' 2>/dev/null || true)
+
+  if [ -n "$existing_pr" ]; then
+    echo "  [skip] ${repo} — PR #${existing_pr} already open"
+    summary_rows="${summary_rows}| \`${repo}\` | (see PR) | (see PR) | PR #${existing_pr} already open |\n"
+    continue
+  fi
+
+  # Get default branch SHA for creating the branch
+  default_branch=$(gh api "repos/${repo}" --jq '.default_branch' 2>/dev/null || echo "main")
+  base_sha=$(gh api "repos/${repo}/git/ref/heads/${default_branch}" \
+    --jq '.object.sha' 2>/dev/null || true)
+
+  if [ -z "$base_sha" ]; then
+    echo "  [warn] ${repo} — could not get SHA for ${default_branch}, skipping"
+    continue
+  fi
+
+  # Create the sync branch
+  gh api "repos/${repo}/git/refs" \
+    --method POST \
+    --field "ref=refs/heads/${BRANCH_NAME}" \
+    --field "sha=${base_sha}" \
+    --silent 2>/dev/null || {
+    echo "  [warn] ${repo} — branch ${BRANCH_NAME} may already exist, skipping"
+    continue
+  }
+
+  # Create each missing file via the Contents API
+  missing_labels=""
+  for entry in "${missing_files[@]}"; do
+    required_path="${entry%%|*}"
+    template_key="${entry#*|}"
+    file_content="${TEMPLATE_CONTENT[$template_key]:-}"
+
+    if [ -z "$file_content" ]; then
+      echo "  [warn] ${repo} — no template for ${required_path}, skipping file"
+      continue
+    fi
+
+    encoded=$(printf '%s' "$file_content" | base64 -w 0)
+    gh api "repos/${repo}/contents/${required_path}" \
+      --method PUT \
+      --field "message=chore: add ${required_path} (standards-sync)" \
+      --field "content=${encoded}" \
+      --field "branch=${BRANCH_NAME}" \
+      --silent 2>/dev/null || \
+      echo "  [warn] ${repo} — could not create ${required_path}"
+
+    missing_labels="${missing_labels} \`${required_path}\`"
+  done
+
+  # Open PR
+  pr_url=$(gh pr create \
+    --repo "$repo" \
+    --head "$BRANCH_NAME" \
+    --base "$default_branch" \
+    --title "chore: add missing org standard files (standards-sync)" \
+    --body "$(printf 'This PR adds files required by the \`petry-projects\` org standards.\n\n**Missing files added:**%s\n\nOpened by the [standards-sync](%s) workflow.\n' "$missing_labels" "https://github.com/${REPORT_REPO}/actions")" \
+    --label "$SYNC_LABEL" \
+    2>/dev/null || true)
+
+  if [ -n "$pr_url" ]; then
+    prs_opened=$((prs_opened + 1))
+    echo "  [pr]   ${repo} — opened ${pr_url}"
+    summary_rows="${summary_rows}| \`${repo}\` | ❌ | ❌ | PR opened: ${pr_url} |\n"
+  else
+    echo "  [warn] ${repo} — could not open PR"
+    summary_rows="${summary_rows}| \`${repo}\` | ❌ | ❌ | PR creation failed |\n"
+  fi
+done <<< "$repos"
+
+# ---------------------------------------------------------------------------
+# 5. Open summary issue in report repo
+# ---------------------------------------------------------------------------
+total_scanned=$(echo "$repos" | wc -l | tr -d ' ')
+
+summary_body="$(printf '## Standards Sync — %s\n\n| Repo | AGENTS.md | CODEOWNERS | Action |\n|------|-----------|------------|--------|\n%b\n**Total:** %d repos scanned · %d compliant · %d PRs opened\n\n---\n_Generated by standards-sync workflow on %s._\n' \
+  "$TODAY" "$summary_rows" "$total_scanned" "$compliant_count" "$prs_opened" "$TODAY")"
+
+echo ""
+echo "Opening summary issue in ${REPORT_REPO}..."
+gh api "repos/${REPORT_REPO}/issues" \
+  --method POST \
+  --field "title=Standards Sync — ${TODAY}" \
+  --field "body=${summary_body}" \
+  --field "labels[]=${SYNC_LABEL}" \
+  --field "labels[]=automated-report" \
+  --silent && echo "  Summary issue created."
+
+echo ""
+echo "=== Standards sync complete: ${total_scanned} scanned, ${compliant_count} compliant, ${prs_opened} PRs opened ==="
