@@ -85,14 +85,22 @@ Read every changed line as if you are a reviewer:
 
 If **Failure Logs** begins with `# External quality gate`, this check is not a GitHub Actions workflow — it is an external service that reported a quality gate failure. In this case:
 
-- **Failure Logs** contains the PR diff instead of log output; **Annotations** will be empty
-- Use the PR diff to identify what the gate likely flagged
-- For **SonarQube / SonarCloud Security Hotspots**, scan changed files for:
-  - `curl … | bash` / `wget … | sh` — script injection hotspot (replace with a pinned install or `gh extension install`)
-  - Hardcoded credentials, tokens, or API keys
-  - `eval` / `exec` with dynamic input
-  - HTTP (non-HTTPS) URLs for script or package downloads
-- Fix each identified hotspot and commit
+- **Annotations** contains the specific lines and rule messages flagged by the gate — read it carefully
+- If **Annotations** is empty, **Failure Logs** contains the PR diff to identify what the gate likely flagged
+- For **SonarQube / SonarCloud**, note: `# NOSONAR` suppresses Bugs/Code Smells but **not Security Hotspots** — hotspots require code changes or UI acknowledgment in SonarCloud
+
+Common SonarCloud Security Hotspot patterns to look for in changed files:
+
+| Pattern | Typical fix |
+|---|---|
+| `curl … \| bash` / `wget … \| sh` | Replace with pinned download + verify checksum, or `gh extension install` |
+| Hardcoded credentials / API keys | Move to secrets / env vars |
+| `eval` / `exec` with dynamic input | Remove dynamic execution or sanitize input |
+| HTTP (non-HTTPS) download URLs | Change to `https://` |
+| `npm install` without `--ignore-scripts` | Add `--ignore-scripts` if install scripts are not required; otherwise, this may require manual acknowledgment in the SonarCloud UI |
+| `npm install pkg@variable` or `@latest` | Pin to an exact version number (e.g. `pkg@1.2.3`), or exclude the file in `sonar-project.properties` if version is intentionally managed via a CI variable |
+
+- Fix each identified issue.
 
 ## Constraints
 
