@@ -1310,7 +1310,7 @@ case "$INTENT_TYPE" in
     [ "$rc" -eq 2 ] && handle_rate_limit "rebase"
     if [ "$rc" -eq 0 ]; then
       if commit_and_push "rebase"; then
-        post_reviews_terminal "rebase" "applied"
+        post_reviews_terminal "rebase" "applied" "Rebase completed and pushed."
       else
         post_reviews_terminal "rebase" "no-changes" "PR is already up to date."
       fi
