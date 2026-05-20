@@ -35,14 +35,24 @@ _get_env() {
   [ "$(_get_env INTENT_TYPE)" = "fix-reviews" ]
 }
 
-@test "reviews: pull_request_review copilot APPROVED → skip" {
+@test "reviews: pull_request_review copilot APPROVED → enable-auto-merge" {
   export GITHUB_EVENT_NAME="pull_request_review"
   export GITHUB_EVENT_PATH="$FIXTURES_DIR/pr_review_copilot_approved.json"
 
   run bash "$INTENT_SCRIPT"
 
   [ "$status" -eq 0 ]
-  [ "$(_get_env INTENT_TYPE)" = "skip" ]
+  [ "$(_get_env INTENT_TYPE)" = "enable-auto-merge" ]
+}
+
+@test "reviews: pull_request_review coderabbit APPROVED → enable-auto-merge" {
+  export GITHUB_EVENT_NAME="pull_request_review"
+  export GITHUB_EVENT_PATH="$FIXTURES_DIR/pr_review_coderabbit_approved.json"
+
+  run bash "$INTENT_SCRIPT"
+
+  [ "$status" -eq 0 ]
+  [ "$(_get_env INTENT_TYPE)" = "enable-auto-merge" ]
 }
 
 @test "reviews: pull_request_review gemini CHANGES_REQUESTED → fix-reviews" {
