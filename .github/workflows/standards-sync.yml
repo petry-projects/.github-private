@@ -1,0 +1,53 @@
+name: Standards Sync
+
+on:
+  schedule:
+    # Every Monday at 09:00 UTC; the guard step below enforces first-Monday-only
+    - cron: '0 9 * * 1'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: standards-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      ORG: ${{ vars.ORG || 'petry-projects' }}
+      STANDARDS_REPO: ${{ vars.STANDARDS_REPO || 'petry-projects/.github' }}
+      SYNC_LABEL: ${{ vars.STANDARDS_SYNC_LABEL || 'standards-sync' }}
+      SKIP_REPOS: ${{ vars.STANDARDS_SYNC_SKIP_REPOS || '' }}
+
+    steps:
+      - name: Guard — first Monday of month only
+        id: guard
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "Manual trigger — bypassing first-Monday guard."
+            echo "proceed=true" >> "$GITHUB_OUTPUT"
+          else
+            day=$(date -u +%-d)
+            if [ "$day" -gt 7 ]; then
+              echo "Not the first Monday of the month (day=$day) — skipping."
+              echo "proceed=false" >> "$GITHUB_OUTPUT"
+            else
+              echo "First Monday confirmed (day=$day) — proceeding."
+              echo "proceed=true" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
+      - name: Checkout agent repo
+        if: steps.guard.outputs.proceed == 'true'
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Run standards sync
+        if: steps.guard.outputs.proceed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.DON_PETRY_BOT_GH_PAT }}
+        run: bash scripts/aw-standards-sync.sh
