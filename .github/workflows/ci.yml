@@ -43,7 +43,7 @@ jobs:
             comments:
               min-spaces-from-content: 1
           YAMLLINTRC
-          ) .github/workflows/
+          ) $(find .github/workflows -name '*.yml' ! -name '*.lock.yml')
 
       - name: Lint GitHub Actions
         run: |
