@@ -1,0 +1,50 @@
+{
+  // Markdownlint configuration for .github-private.
+  //
+  // Rules are calibrated against the existing file baseline (2026-05-08).
+  // Rules listed as "disabled" below had widespread pre-existing violations
+  // when markdownlint CI was introduced. Enable them one by one via a
+  // follow-up PR once the violations are fixed.
+  //
+  // Reference: https://github.com/DavidAnson/markdownlint/blob/main/doc/Rules.md
+  "config": {
+    "default": true,
+
+    // Line length — relaxed to cover docs with long tables/URLs.
+    // Matches the spirit of the org yamllint config (line-length: 200),
+    // but raised higher for investigation reports with long prose lines.
+    "MD013": {
+      "line_length": 400,
+      "heading_line_length": 400,
+      "code_block_line_length": 400
+    },
+
+    // -- Rules disabled pending cleanup of pre-existing violations --
+    // MD022: blanks-around-headings — many docs use compact heading+list blocks.
+    "MD022": false,
+    // MD026: trailing-punctuation — headings like "### Issue: Token expired" and
+    //        "### The agent isn't working, help!" would require rewrites.
+    "MD026": false,
+    // MD031: blanks-around-fences — widespread in IMPLEMENTATION.md etc.
+    "MD031": false,
+    // MD032: blanks-around-lists — widespread across most docs.
+    "MD032": false,
+    // MD034: no-bare-urls — BOT_SETUP.md uses bare URLs in a setup guide.
+    "MD034": false,
+    // MD040: fenced-code-language — many code blocks lack language specifiers.
+    "MD040": false,
+    // MD041: first-line-heading — agents/*.md files are prompt files, not docs.
+    "MD041": false,
+    // MD029: ol-prefix — some docs use cross-section sequential numbering (1/2/3)
+    //        that renderers handle correctly but linter expects 1/1/1 style.
+    "MD029": false,
+    // MD060: table-column-style — newer rule; many tables use compact style.
+    "MD060": false
+  },
+  // Exclude generated/internal directories from linting.
+  "ignores": [
+    ".claude/**",
+    "frameworks/**",
+    "prompts/**"
+  ]
+}
