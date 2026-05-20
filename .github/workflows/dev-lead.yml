@@ -227,31 +227,10 @@ jobs:
       - name: Enable auto-merge on bot approval
         if: env.INTENT_TYPE == 'enable-auto-merge'
         env:
+          INTENT_TYPE: enable-auto-merge
           PR_NUMBER: ${{ env.INTENT_PR_NUMBER }}
           REPO: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          auto_merge=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}" \
-            --jq '.auto_merge // empty' 2>/dev/null || true)
-          if [ -n "$auto_merge" ]; then
-            echo "::notice::PR #${PR_NUMBER} auto-merge already enabled"
-            exit 0
-          fi
-          review_decision=$(gh api graphql -f query='
-            query($owner:String!,$repo:String!,$pr:Int!){
-              repository(owner:$owner,name:$repo){
-                pullRequest(number:$pr){reviewDecision}
-              }
-            }' \
-            -F owner="${REPO%%/*}" -F repo="${REPO##*/}" -F pr="${PR_NUMBER}" \
-            --jq '.data.repository.pullRequest.reviewDecision' 2>/dev/null || true)
-          if [ "${review_decision:-}" = "APPROVED" ]; then
-            echo "::notice::PR #${PR_NUMBER} is APPROVED — enabling auto-merge (squash)"
-            gh pr merge "${PR_NUMBER}" --repo "${REPO}" --auto --squash || \
-              echo "::warning::auto-merge could not be enabled — check repository settings and token permissions"
-          else
-            echo "::notice::PR #${PR_NUMBER} reviewDecision=${review_decision:-unknown} — not yet eligible for auto-merge"
-          fi
+        run: bash scripts/dev-lead-fix-reviews.sh
 
   # ── ci-relay ────────────────────────────────────────────────────────────────
   # Handles check_run completed events only.

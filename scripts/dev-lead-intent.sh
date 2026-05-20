@@ -14,6 +14,7 @@ set -euo pipefail
 #   human-pr        — Human review changes-requested
 #   issue           — Issue labeled dev-lead/claude
 #   rebase          — Rebase conflict sentinel
+#   enable-auto-merge — Bot approval: enable auto-merge if PR is APPROVED
 #   ci-relay        — check_run relay (handled by ci-relay job, not this script)
 #   skip            — Event should be ignored
 

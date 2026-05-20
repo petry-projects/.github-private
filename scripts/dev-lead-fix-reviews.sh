@@ -436,6 +436,13 @@ case "$INTENT_TYPE" in
     fi
     exit "$rc"
     ;;
+  enable-auto-merge)
+    if [ -z "$PR_NUMBER" ]; then
+      echo "::error::PR_NUMBER is required for enable-auto-merge"
+      exit 1
+    fi
+    try_enable_auto_merge
+    ;;
   *)
     echo "::error::Unknown intent type: $INTENT_TYPE"
     exit 1

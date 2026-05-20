@@ -380,7 +380,7 @@ STUB
   run bash "$FIX_REVIEWS_SCRIPT"
 
   [ "$status" -eq 0 ]
-  [[ "$output" == *"coderabbitai"* || "$output" == *"resolve"* || "$output" == *"[dry-run]"* ]]
+  [[ "$output" == *"would check for coderabbitai CHANGES_REQUESTED"* ]]
 }
 
 @test "fix-reviews: try_enable_auto_merge dry-run output present for fix-reviews" {
@@ -390,7 +390,7 @@ STUB
   run bash "$FIX_REVIEWS_SCRIPT"
 
   [ "$status" -eq 0 ]
-  [[ "$output" == *"auto-merge"* || "$output" == *"[dry-run]"* ]]
+  [[ "$output" == *"would enable auto-merge"* ]]
 }
 
 @test "fix-reviews: try_enable_auto_merge dry-run output present for fix-bot-comment" {
@@ -401,7 +401,7 @@ STUB
   run bash "$FIX_REVIEWS_SCRIPT"
 
   [ "$status" -eq 0 ]
-  [[ "$output" == *"auto-merge"* || "$output" == *"[dry-run]"* ]]
+  [[ "$output" == *"would enable auto-merge"* ]]
 }
 
 @test "fix-reviews: try_enable_auto_merge dry-run output present for human-pr" {
@@ -413,7 +413,7 @@ STUB
   run bash "$FIX_REVIEWS_SCRIPT"
 
   [ "$status" -eq 0 ]
-  [[ "$output" == *"auto-merge"* || "$output" == *"[dry-run]"* ]]
+  [[ "$output" == *"would enable auto-merge"* ]]
 }
 
 @test "fix-reviews: terminal marker written after successful fix-reviews run" {
