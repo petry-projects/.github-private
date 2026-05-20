@@ -30,9 +30,6 @@ RETRY_MAX_ATTEMPTS="${RETRY_MAX_ATTEMPTS:-2}"   # total attempts including first
 RETRY_BASE_DELAY_SEC="${RETRY_BASE_DELAY_SEC:-5}"
 
 set_engine_config() {
-  # Default Copilot model — ensures the variable is bound for set -u
-  COPILOT_API_MODEL="${COPILOT_API_MODEL:-gpt-5.4}"
-
   case "$REVIEW_ENGINE" in
     claude)
       ENGINE_TRIAGE_MODEL="claude-haiku-4-5-20251001"
@@ -40,35 +37,42 @@ set_engine_config() {
       ENGINE_AUDIT_MODEL="claude-opus-4-7"
       ENGINE_ACTION_MODEL="claude-sonnet-4-6"
       ENGINE_SINGLE_MODEL="claude-opus-4-7"
-      ENGINE_LABEL="triage: haiku 4.5 → deep: sonnet 4.6 + duck: gpt-5.4 → audit: opus 4.7"
+      ENGINE_LABEL="triage: haiku 4.5 → deep: sonnet 4.6 + duck: o4-mini → audit: opus 4.7"
       ENGINE_SINGLE_LABEL="single-reviewer mode: opus 4.7"
-      # Cross-engine rubber duck: always the opposite engine
+      # Cross-engine rubber duck: use Copilot when Claude is primary
       DUCK_ENGINE="copilot"
-      DUCK_MODEL="gpt-5.4"
+      DUCK_MODEL="o4-mini"
       ;;
     gemini)
-      ENGINE_TRIAGE_MODEL="auto"
-      ENGINE_DEEP_MODEL="auto"
-      ENGINE_AUDIT_MODEL="auto"
-      ENGINE_ACTION_MODEL="auto"
-      ENGINE_SINGLE_MODEL="auto"
-      ENGINE_LABEL="auto (Gemini 2.5/3 balanced)"
-      ENGINE_SINGLE_LABEL="single-reviewer mode: auto"
+      ENGINE_TRIAGE_MODEL="gemini-2.0-flash"
+      ENGINE_DEEP_MODEL="gemini-1.5-pro"
+      ENGINE_AUDIT_MODEL="gemini-1.5-pro"
+      ENGINE_ACTION_MODEL="gemini-1.5-pro"
+      ENGINE_SINGLE_MODEL="gemini-1.5-pro"
+      ENGINE_LABEL="triage: gemini-2.0-flash → deep: gemini-1.5-pro + duck: sonnet 4.6 → audit: gemini-1.5-pro"
+      ENGINE_SINGLE_LABEL="single-reviewer mode: gemini-1.5-pro"
       # Cross-engine rubber duck: use Claude for diversity
       DUCK_ENGINE="claude"
       DUCK_MODEL="claude-sonnet-4-6"
       ;;
     copilot)
-      ENGINE_TRIAGE_MODEL="gpt-5.4"
-      ENGINE_DEEP_MODEL="gpt-5.4"
-      ENGINE_AUDIT_MODEL="gpt-5.4"
-      ENGINE_ACTION_MODEL="gpt-5.4"
-      ENGINE_SINGLE_MODEL="gpt-5.4"
-      ENGINE_LABEL="triage: gpt-5.4 → deep: gpt-5.4 + duck: sonnet 4.6 → audit: gpt-5.4 (GitHub Copilot CLI)"
-      ENGINE_SINGLE_LABEL="single-reviewer mode: gpt-5.4 (GitHub Copilot CLI)"
-      # Cross-engine rubber duck: use Claude for diversity
-      DUCK_ENGINE="claude"
-      DUCK_MODEL="claude-sonnet-4-6"
+      ENGINE_TRIAGE_MODEL="o4-mini"
+      ENGINE_DEEP_MODEL="o4-mini"
+      ENGINE_AUDIT_MODEL="o4-mini"
+      ENGINE_ACTION_MODEL="o4-mini"
+      ENGINE_SINGLE_MODEL="o4-mini"
+      # GitHub Models API model identifier — must match a model available at
+      # https://models.github.ai (see GitHub Models marketplace).
+      # Override via COPILOT_API_MODEL env var if the default is unavailable.
+      # openai/o4-mini is the April-2025 o4-generation reasoning model; it is
+      # not a typo for o1-mini or gpt-4o-mini.
+      COPILOT_API_MODEL="${COPILOT_API_MODEL:-openai/o4-mini}"
+      export COPILOT_API_MODEL
+      ENGINE_LABEL="triage: o4-mini → deep: o4-mini + duck: gemini-2.0-flash → audit: o4-mini (GitHub Models API)"
+      ENGINE_SINGLE_LABEL="single-reviewer mode: o4-mini (GitHub Models API)"
+      # Cross-engine rubber duck: use Gemini when Copilot is primary
+      DUCK_ENGINE="gemini"
+      DUCK_MODEL="gemini-2.0-flash"
       ;;
     *)
       echo "::error::Unknown REVIEW_ENGINE='$REVIEW_ENGINE' (expected: claude, gemini, or copilot)"

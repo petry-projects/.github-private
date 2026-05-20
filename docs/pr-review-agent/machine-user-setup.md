@@ -107,6 +107,14 @@ Verify:
 gh secret list --repo petry-projects/.github-private | grep DON_PETRY_BOT_GH_PAT
 ```
 
+### Secret naming reference
+
+| Secret | Purpose |
+|--------|---------|
+| `DON_PETRY_BOT_GH_PAT` | Machine user / bot reviewer PAT. Used by `pr-review.yml`, `repair-pr-approvals.yml`, `daily-pr-review-health.yml`, and `claude.yml` for GitHub API authentication as the bot. |
+| `GH_PAT` | User PAT with a Copilot subscription. Exposed as `COPILOT_GITHUB_TOKEN` in `pr-review.yml` for Copilot CLI access. Do **not** store the bot reviewer PAT here. |
+| `GOOGLE_API_KEY` | API key for Google AI (Gemini). Used by the `gemini` engine for triage, deep review, and audit tiers. |
+
 ## Step 5: Verify the setup
 
 Trigger a one-shot dry-run of the PR review workflow:
