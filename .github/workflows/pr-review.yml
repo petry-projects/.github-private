@@ -36,16 +36,41 @@ permissions:
   checks: read
 
 concurrency:
-  # Scheduled and manual batch runs share one slot to prevent overlap.
-  # Mention-triggered runs (repository_dispatch or workflow_dispatch with pr_url)
-  # get per-PR slots so they don't queue behind hourly batches or each other.
-  group: ${{ (inputs.pr_url || github.event.client_payload.pr_url) && format('pr-review-mention-{0}', inputs.pr_url || github.event.client_payload.pr_url) || 'pr-review-scheduled' }}
+  # Event-triggered and mention-triggered runs for a specific PR get a per-PR
+  # concurrency slot so they never queue behind unrelated PRs.
+  # Manual batch runs (workflow_dispatch without pr_url) use a shared slot.
+  group: >-
+    ${{
+      (inputs.pr_url
+       || github.event.client_payload.pr_url
+       || github.event.pull_request.html_url)
+      && format('pr-review-pr-{0}',
+           inputs.pr_url
+           || github.event.client_payload.pr_url
+           || github.event.pull_request.html_url)
+      || 'pr-review-batch'
+    }}
   cancel-in-progress: false
 
 jobs:
   review:
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    # Early exit conditions (avoids spinning up the runner for guaranteed no-ops):
+    #   check_suite  — only proceed when CI succeeded and there's an associated PR.
+    #                  Failing suites are always skipped by review-one-pr.sh; empty
+    #                  pull_requests (e.g. direct pushes to main) have nothing to review.
+    #   pull_request_review — skip COMMENTED reviews; they don't change merge-readiness.
+    #                         CHANGES_REQUESTED reviews are also skipped because the PR
+    #                         is now blocked; review-one-pr.sh would skip it anyway.
+    if: >-
+      (github.event_name != 'check_suite' ||
+       (github.event.check_suite.conclusion == 'success' &&
+        github.event.check_suite.pull_requests[0] != null))
+      &&
+      (github.event_name != 'pull_request_review' ||
+       github.event.review.state == 'approved' ||
+       github.event.review.state == 'dismissed')
     env:
       # Auth for every gh / script call in this job. The PAT must belong to BOT_USER.
       GH_TOKEN: ${{ secrets.DON_PETRY_BOT_GH_PAT }}
@@ -67,10 +92,30 @@ jobs:
       GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
       GEMINI_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
       GEMINI_CLI_TRUST_WORKSPACE: "true"
-      # Default to dry-run. workflow_dispatch can override; repository_dispatch
-      # (mention) always runs live; vars.LIVE_MODE=true switches scheduled runs live.
+      # Event-triggered runs respect LIVE_MODE (same semantics as the former schedule).
+      # repository_dispatch (mention) always runs live.
+      # workflow_dispatch respects the dry_run input.
       DRY_RUN: ${{ github.event_name == 'repository_dispatch' && 'false' || inputs.dry_run || (vars.LIVE_MODE == 'true' && 'false' || 'true') }}
-      PR_URL_OVERRIDE: ${{ inputs.pr_url || github.event.client_payload.pr_url }}
+      # PR URL to review. Populated from inputs (workflow_dispatch), client_payload
+      # (repository_dispatch), or the PR context for event-triggered runs.
+      # check_suite events may have multiple PRs; those are handled separately via
+      # CHECK_SUITE_PRS in the "Enumerate candidate PRs" step.
+      PR_URL_OVERRIDE: >-
+        ${{
+          inputs.pr_url
+          || github.event.client_payload.pr_url
+          || (github.event_name == 'pull_request_review' && github.event.pull_request.html_url)
+          || (github.event_name == 'pull_request' && github.event.pull_request.html_url)
+          || ''
+        }}
+      # JSON array of PRs associated with a check_suite event. Empty for all
+      # other event types. Consumed by "Enumerate candidate PRs" to extract URLs.
+      CHECK_SUITE_PRS: >-
+        ${{
+          github.event_name == 'check_suite'
+          && toJSON(github.event.check_suite.pull_requests)
+          || '[]'
+        }}
       DELEGATION_ORGS: ${{ vars.DELEGATION_ORGS || vars.CLAUDE_ORGS || '' }}
       MAX_REVIEW_CYCLES: ${{ vars.MAX_REVIEW_CYCLES || '3' }}
       MAX_PRS: ${{ vars.MAX_PRS || '10' }}
@@ -79,7 +124,8 @@ jobs:
       # 'latest' caches an install indefinitely under that key — flush via the
       # Actions cache UI or bump the variable to pick up new releases.
       CLAUDE_CODE_VERSION: ${{ vars.CLAUDE_CODE_VERSION || 'latest' }}
-      # Mention-triggered reviews always force; workflow_dispatch respects the input.
+      # Mention-triggered reviews always force a re-review; all other triggers
+      # respect the idempotency check (no double-reviews on the same head SHA).
       FORCE_REVIEW: ${{ github.event_name == 'repository_dispatch' && 'true' || inputs.force_review || 'false' }}
 
     steps:
@@ -231,7 +277,18 @@ jobs:
         run: |
           set -euo pipefail
           if [ -n "${PR_URL_OVERRIDE}" ]; then
+            # Single-PR mode: workflow_dispatch with pr_url, repository_dispatch
+            # (mention), or event-triggered run with a direct PR context
+            # (pull_request_review / pull_request events).
             printf '%s\n' "${PR_URL_OVERRIDE}" > prs.txt
+          elif [ "${CHECK_SUITE_PRS}" != "[]" ] && [ -n "${CHECK_SUITE_PRS}" ]; then
+            # check_suite event: one or more PRs share the completed suite.
+            # The payload carries API URLs (https://api.github.com/repos/…/pulls/N);
+            # convert them to HTML URLs (https://github.com/…/pull/N) for review-one-pr.sh.
+            echo "${CHECK_SUITE_PRS}" \
+              | jq -r '.[].url' \
+              | sed 's|https://api\.github\.com/repos/|https://github.com/|; s|/pulls/|/pull/|' \
+              > prs.txt
           else
             bash scripts/list-prs.sh > prs.txt
           fi
