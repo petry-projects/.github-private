@@ -36,8 +36,7 @@ jobs:
           fi
 
       - name: Install Python dependencies
-        run: |
-          pip install "pyyaml==6.0.3" --only-binary=":all:" --quiet
+        run: pip install "pyyaml==6.0.3" --only-binary :all: --quiet
 
       - name: Run issue-triage (staged)
         id: run
@@ -53,7 +52,12 @@ jobs:
         run: |
           set -euo pipefail
           result=$(bash scripts/aw.sh run issue-triage --staged)
-          skip=$(AW_RESULT="$result" python3 -c "import json,os; d=json.loads(os.environ['AW_RESULT']); print('true' if d.get('skip') else 'false')")
+          skip=$(AW_RESULT="$result" python3 - <<'PYEOF'
+import json, os
+d = json.loads(os.environ['AW_RESULT'])
+print('true' if d.get('skip') else 'false')
+PYEOF
+)
           # Store encoded to survive multi-line JSON in GITHUB_OUTPUT
           encoded=$(printf '%s\n' "$result" | base64 -w0)
           echo "result=$encoded" >> "$GITHUB_OUTPUT"
@@ -73,15 +77,14 @@ jobs:
           persist-credentials: false
 
       - name: Install Python dependencies
-        run: |
-          pip install "pyyaml==6.0.3" --only-binary=":all:" --quiet
+        run: pip install "pyyaml==6.0.3" --only-binary :all: --quiet
 
       - name: Apply triage output (safe-output)
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN:      ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-          ISSUE_NUMBER: ${{ github.event.issue.number }}
-          TRIAGE_RESULT: ${{ needs.triage.outputs.result }}
+          ISSUE_NUMBER:      ${{ github.event.issue.number }}
+          TRIAGE_RESULT:     ${{ needs.triage.outputs.result }}
         run: |
           result_file=$(mktemp)
           printf '%s\n' "$TRIAGE_RESULT" | base64 -d > "$result_file"
