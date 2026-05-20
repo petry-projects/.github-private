@@ -92,7 +92,7 @@ required additions.
 **When** the run completes
 **Then**
 - a summary issue is opened in `.github-private` listing compliance status
-- the issue shows: total repos scanned, compliant count, PRs opened count
+- the issue shows: total repos scanned, compliant count, PRs opened count, security settings applied count
 
 **Assertions:**
 - A summary issue is created in `petry-projects/.github-private`
