@@ -1,0 +1,149 @@
+name: GitHub Agentic Workflows — Cross-Org Dispatcher
+
+# Handles gh-aw workflow triggers dispatched from other petry-projects repos.
+# Listener stubs (templates/gh-aw-org-listener.yml) in org repos dispatch here.
+#
+# Architecture: docs/aw/cross-org-deployment.md
+
+on:
+  repository_dispatch:
+    types: [gh-aw-issue-triage, gh-aw-ci-failure]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  # Serialise per issue or per PR within each source repo to avoid double-fixes.
+  # cancel-in-progress: false matches dev-lead.yml's queue-not-cancel policy.
+  group: >-
+    ${{
+      github.event.action == 'gh-aw-issue-triage' &&
+        format('gh-aw-issue-{0}-{1}',
+          github.event.client_payload.source_repo,
+          github.event.client_payload.issue_number) ||
+        format('gh-aw-ci-{0}-{1}',
+          github.event.client_payload.source_repo,
+          github.event.client_payload.pr_number)
+    }}
+  cancel-in-progress: false
+
+env:
+  SOURCE_REPO: ${{ github.event.client_payload.source_repo }}
+  BOT_USER: ${{ vars.BOT_USER || 'donpetry-bot' }}
+  DEV_LEAD_ENGINE: ${{ vars.DEV_LEAD_ENGINE || 'claude' }}
+  DEV_LEAD_DRY_RUN: ${{ vars.DEV_LEAD_DRY_RUN || 'false' }}
+  GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+      GEMINI_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+      GEMINI_CLI_TRUST_WORKSPACE: "true"
+      COPILOT_GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+
+    steps:
+      - name: Validate source repo
+        run: |
+          set -euo pipefail
+          if [[ "$SOURCE_REPO" != "petry-projects/"* ]]; then
+            echo "::error::source_repo '${SOURCE_REPO}' must be within petry-projects org — rejecting dispatch"
+            exit 1
+          fi
+          echo "::notice::Cross-org event: ${{ github.event.action }} from ${SOURCE_REPO}"
+
+      # Checkout .github-private to get scripts/ and prompts/.
+      # Placed at dotgithub-private/ so it does not conflict with target-repo/.
+      - name: Checkout .github-private (scripts and prompts)
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          token: ${{ secrets.GH_PAT_WORKFLOWS || secrets.GITHUB_TOKEN }}
+          path: dotgithub-private
+
+      # Checkout the target (source) repo so the engine can read and modify its code.
+      # GH_PAT_WORKFLOWS must have write access to target repos.
+      - name: Checkout target repo
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: ${{ github.event.client_payload.source_repo }}
+          token: ${{ secrets.GH_PAT_WORKFLOWS }}
+          path: target-repo
+
+      - name: Configure git identity for target repo
+        run: |
+          git -C target-repo config user.email "${BOT_USER}@users.noreply.github.com"
+          git -C target-repo config user.name "${BOT_USER}"
+
+      - name: Cache claude-code CLI
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.npm-global
+          key: claude-code-${{ vars.CLAUDE_CODE_VERSION || 'latest' }}-${{ runner.os }}
+
+      - name: Install engine CLIs
+        env:
+          CLAUDE_CODE_VERSION: ${{ vars.CLAUDE_CODE_VERSION || 'latest' }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.npm-global"
+          npm config set prefix "$HOME/.npm-global"
+          echo "$HOME/.npm-global/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.npm-global/bin:$PATH"
+
+          if ! command -v claude >/dev/null 2>&1; then
+            npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
+          fi
+          if ! command -v gemini >/dev/null 2>&1; then
+            npm install -g @google/gemini-cli || true
+          fi
+          if ! gh copilot --version >/dev/null 2>&1; then
+            gh extension install github/gh-copilot || true
+          fi
+
+      - name: Verify primary engine CLI
+        run: |
+          case "${DEV_LEAD_ENGINE:-claude}" in
+            claude)  claude --version ;;
+            gemini)  gemini --version ;;
+            copilot) gh copilot --version ;;
+            *) echo "::error::Unknown DEV_LEAD_ENGINE: '${DEV_LEAD_ENGINE}'"; exit 1 ;;
+          esac
+
+      # ── Issue Triage ──────────────────────────────────────────────────────────
+      # Implements the issue in the source repo and opens a PR there.
+      # working-directory: target-repo ensures git operations (branch, push) land
+      # in the target repo, not in .github-private.
+      - name: Run issue triage
+        if: github.event.action == 'gh-aw-issue-triage'
+        env:
+          ISSUE_NUMBER: ${{ github.event.client_payload.issue_number }}
+          REPO: ${{ github.event.client_payload.source_repo }}
+          PROMPTS_DIR: ${{ github.workspace }}/dotgithub-private/prompts/dev-lead
+          REVIEW_ENGINE: ${{ env.DEV_LEAD_ENGINE }}
+          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
+        working-directory: target-repo
+        run: bash ${{ github.workspace }}/dotgithub-private/scripts/dev-lead-fix-issue.sh
+
+      # ── CI Failure Analyst ────────────────────────────────────────────────────
+      # Diagnoses CI failures and pushes a fix commit to the PR branch.
+      # working-directory: target-repo ensures gh pr checkout operates on the
+      # target repo's clone (origin is already set to the target repo).
+      - name: Run CI failure analyst
+        if: github.event.action == 'gh-aw-ci-failure'
+        env:
+          PR_NUMBER: ${{ github.event.client_payload.pr_number }}
+          HEAD_SHA: ${{ github.event.client_payload.head_sha }}
+          CHECKS_JSON: ${{ toJson(github.event.client_payload.checks) }}
+          REPO: ${{ github.event.client_payload.source_repo }}
+          PROMPTS_DIR: ${{ github.workspace }}/dotgithub-private/prompts/dev-lead
+          REVIEW_ENGINE: ${{ env.DEV_LEAD_ENGINE }}
+          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
+        working-directory: target-repo
+        run: bash ${{ github.workspace }}/dotgithub-private/scripts/dev-lead-fix-ci.sh
