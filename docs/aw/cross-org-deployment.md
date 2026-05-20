@@ -109,7 +109,7 @@ The following capabilities are available cross-org via this pattern:
 ## Deploying to a New Org Repo
 
 1. Copy `templates/gh-aw-org-listener.yml` to the target repo as `.github/workflows/gh-aw-listener.yml`.
-2. Ensure the repo has access to the `GH_PAT_WORKFLOWS` org secret (it is org-level, so all org repos inherit it automatically).
+2. Ensure the repo has access to the `GH_PAT_WORKFLOWS` org secret (it is org-level, but repos must be explicitly granted access in org secret settings — it is not automatic for all repos).
 3. Open a PR in the target repo with the new workflow file. Merge it.
 4. Verify:
    - Label an issue in the target repo with any label as an org member. The `gh-aw-listener.yml` workflow should run and a `gh-aw-cross-org` run should appear in `.github-private`.

@@ -34,7 +34,7 @@ env:
   BOT_USER: ${{ vars.BOT_USER || 'donpetry-bot' }}
   DEV_LEAD_ENGINE: ${{ vars.DEV_LEAD_ENGINE || 'claude' }}
   DEV_LEAD_DRY_RUN: ${{ vars.DEV_LEAD_DRY_RUN || 'false' }}
-  GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS || secrets.GITHUB_TOKEN }}
+  GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
 
 jobs:
   dispatch:

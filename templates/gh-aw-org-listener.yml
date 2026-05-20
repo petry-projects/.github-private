@@ -9,7 +9,8 @@
 #
 # Requires:
 #   GH_PAT_WORKFLOWS  org secret — cross-repo dispatch and API calls
-#                     (inherited automatically from the petry-projects org)
+#                     (must be explicitly granted to this repo in org secret settings;
+#                      requires read:org scope for the org-member trust gate)
 #
 # Architecture: docs/aw/cross-org-deployment.md
 # ─────────────────────────────────────────────────────────────────────────────
@@ -29,7 +30,7 @@ jobs:
   # Fires when an org member labels an issue. Routes to the gh-aw Issue Triage
   # capability in .github-private, which will open a PR implementing the issue.
   issue-triage:
-    if: github.event_name == 'issues'
+    if: github.event_name == 'issues' && github.event.issue.pull_request == null
     runs-on: ubuntu-latest
     permissions:
       issues: write
@@ -105,15 +106,18 @@ jobs:
         run: |
           set -euo pipefail
           # Prefer the pull_requests array embedded in the check_run payload (fastest path).
+          # Filter for non-fork PRs only (head repo must match base repo).
           pr_number=$(echo "$CHECK_RUN_PRS" \
-            | jq -r 'first // empty | .number // empty')
+            | jq -r '.[] | select(.head.repo.id == .base.repo.id) | .number' \
+            | head -n 1)
 
           if [ -z "$pr_number" ]; then
-            # Fallback: search open PRs with this head SHA from this repo (not a fork).
-            pr_number=$(gh api \
-              "repos/${REPO}/pulls?state=open&per_page=100" \
-              --jq "[.[] | select(.head.sha == \"$HEAD_SHA\" and .head.repo.full_name == \"$REPO\")] | first | .number // empty" \
-              2>/dev/null || true)
+            # Fallback: use the commits-to-pulls API — avoids the 100-PR limit and correctly
+            # handles external checks that complete after a newer commit is pushed.
+            pr_number=$(gh api "repos/${REPO}/commits/${HEAD_SHA}/pulls" \
+              --arg repo "$REPO" \
+              --jq '.[] | select(.head.repo.full_name == $repo) | .number' \
+              2>/dev/null | head -n 1 || true)
           fi
 
           if [ -z "$pr_number" ]; then
