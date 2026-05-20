@@ -191,10 +191,10 @@ apply_action() {
 process_item() {
   local repo="$1" item_json="$2" item_type="$3"
   local number title last_updated labels_json
-  number=$(echo "$item_json"    | jq -r '.number')
-  title=$(echo "$item_json"     | jq -r '.title')
-  last_updated=$(echo "$item_json" | jq -r '.updated_at')
-  labels_json=$(echo "$item_json"  | jq -c '.labels')
+  # Extract fields in one call for efficiency
+  IFS=$'\t' read -r number title last_updated labels_json < <(
+    echo "$item_json" | jq -r '[.number, .title, .updated_at, (.labels|tojson)] | @tsv'
+  )
 
   local stale_threshold
   if [ "$item_type" = "PR" ]; then

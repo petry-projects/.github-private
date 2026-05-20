@@ -92,17 +92,21 @@ find_merged_prs() {
   unique_prs=$(printf '%s\n' "${pr_numbers[@]}" | sort -u)
 
   # Fetch PR metadata and filter for merged PRs
-  local prs_json="[]"
+  local pr_data_list=()
   while IFS= read -r pr_num; do
     [ -z "$pr_num" ] && continue
     local pr_data
+    # Omit body to keep payload small and avoid ARG_MAX issues with envsubst
     pr_data=$(gh api "repos/$REPO/pulls/$pr_num" \
-      --jq '{number: .number, title: .title, body: (.body // ""), labels: [.labels[].name], merged_at: .merged_at, html_url: .html_url}' \
+      --jq 'select(.merged_at != null) | {number: .number, title: .title, labels: [.labels[].name], merged_at: .merged_at, html_url: .html_url}' \
       2>/dev/null || echo "")
-    if [ -n "$pr_data" ] && echo "$pr_data" | jq -e '.merged_at != null' >/dev/null 2>&1; then
-      prs_json=$(echo "$prs_json" | jq --argjson pr "$pr_data" '. + [$pr]')
-    fi
+    [ -n "$pr_data" ] && pr_data_list+=("$pr_data")
   done < <(echo "$unique_prs")
+
+  local prs_json="[]"
+  if [ ${#pr_data_list[@]} -gt 0 ]; then
+    prs_json=$(printf '%s\n' "${pr_data_list[@]}" | jq -s '.')
+  fi
 
   echo "$prs_json"
 }
@@ -134,15 +138,21 @@ generate_changelog_block() {
     return
   fi
 
-  local rendered_prompt
+  local tmp_json rendered_prompt
+  tmp_json=$(mktemp)
+  printf '%s' "$pr_list_json" > "$tmp_json"
   rendered_prompt=$(
     REPO="$REPO" \
     HEAD_SHA="$HEAD_SHA" \
     SHORT_SHA="$SHORT_SHA" \
-    PR_LIST_JSON="$pr_list_json" \
-    envsubst '${REPO},${HEAD_SHA},${SHORT_SHA},${PR_LIST_JSON}' \
-    < "$prompt_template"
+    envsubst '${REPO},${HEAD_SHA},${SHORT_SHA}' \
+    < "$prompt_template" \
+    | awk -v json_file="$tmp_json" '
+        /\$\{PR_LIST_JSON\}/ { while ((getline line < json_file) > 0) print line; close(json_file); next }
+        { print }
+      '
   )
+  rm -f "$tmp_json"
 
   local tmp_prompt
   tmp_prompt=$(mktemp --suffix=.md)
