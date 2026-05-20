@@ -6,19 +6,10 @@ engine: claude-sonnet-4-6
 permissions:
   issues: read
 safe-outputs:
-  label-issue:
+  add-labels:
     enabled: true
-    max-labels: 3
-    allowed-labels:
-      - bug
-      - enhancement
-      - documentation
-      - question
-      - needs-triage
-      - good-first-issue
-      - security
-
 ---
+
 
 trigger:
   issues:
