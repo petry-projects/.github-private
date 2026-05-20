@@ -1,0 +1,30 @@
+{
+  "_test_expected_intent": "enable-auto-merge",
+  "action": "submitted",
+  "review": {
+    "id": 1010,
+    "state": "APPROVED",
+    "body": "All comments resolved. LGTM!",
+    "user": {
+      "login": "coderabbitai[bot]",
+      "type": "Bot"
+    }
+  },
+  "pull_request": {
+    "number": 80,
+    "title": "ci: add required ci.yml workflow",
+    "state": "open",
+    "author_association": "OWNER",
+    "head": {
+      "sha": "03b4349fda588edd13a7a78b823d9a7a9973f5e2",
+      "ref": "claude/issue-46-20260508-1409",
+      "repo": { "full_name": "petry-projects/.github-private" }
+    },
+    "base": {
+      "ref": "main",
+      "repo": { "full_name": "petry-projects/.github-private" }
+    }
+  },
+  "repository": { "full_name": "petry-projects/.github-private" },
+  "sender": { "login": "coderabbitai[bot]", "type": "Bot" }
+}
