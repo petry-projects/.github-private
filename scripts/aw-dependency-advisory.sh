@@ -86,6 +86,14 @@ echo "  Dep diff:   ${diff_lines} lines"
 ADVISORY_FILE=$(mktemp)
 trap 'rm -f "$ADVISORY_FILE"' EXIT
 
+# Skip Claude invocation when fork PR secrets are unavailable (GitHub does not
+# pass repository secrets to fork PRs, so CLAUDE_CODE_OAUTH_TOKEN will be unset).
+if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+  echo "::notice::CLAUDE_CODE_OAUTH_TOKEN not available (fork PR) — skipping dependency advisory."
+  echo "=== Dependency advisory complete (skipped — no Claude token) ==="
+  exit 0
+fi
+
 echo "Invoking Claude for dependency risk assessment..."
 if ! claude --print --model claude-sonnet-4-6 --no-session-persistence \
      > "$ADVISORY_FILE" <<PROMPT
@@ -136,9 +144,10 @@ advisory_body=$(cat "$ADVISORY_FILE")
 # ---------------------------------------------------------------------------
 # 5. Post or update PR comment
 # ---------------------------------------------------------------------------
-# Skip comment writes when the token is read-only (e.g. forked PR with GITHUB_TOKEN)
-if ! gh api "repos/${REPO}" --jq '.permissions.push' 2>/dev/null | grep -q "^true$"; then
-  echo "::notice::Token lacks write access to ${REPO} — skipping advisory comment (read-only context)."
+# Skip comment writes when the token cannot create PR/issue comments.
+# Commenting needs triage-level access or higher — do not require push.
+if ! gh api "repos/${REPO}" --jq '.permissions.triage // false' 2>/dev/null | grep -q "^true$"; then
+  echo "::notice::Token lacks comment access to ${REPO} — skipping advisory comment (read-only context)."
   echo "=== Dependency advisory complete (comment skipped — no write access) ==="
   exit 0
 fi

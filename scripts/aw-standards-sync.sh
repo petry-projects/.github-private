@@ -212,7 +212,8 @@ gh api "repos/${REPORT_REPO}/issues" \
   --field "body=${summary_body}" \
   --field "labels[]=${SYNC_LABEL}" \
   --field "labels[]=automated-report" \
-  --silent && echo "  Summary issue created."
+  --silent
+echo "  Summary issue created."
 
 echo ""
 echo "=== Standards sync complete: ${total_scanned} scanned, ${compliant_count} compliant, ${prs_opened} PRs opened ==="

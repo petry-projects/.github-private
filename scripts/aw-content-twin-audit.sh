@@ -79,10 +79,10 @@ if [ "$queue_files" = "0" ] || [ -z "$queue_files" ]; then
   queue_last_commit=$(gh api "repos/${CONTENT_TWIN_REPO}/commits?path=queue&per_page=1" \
     --jq '.[0].commit.author.date // ""' 2>/dev/null || true)
   if [ -n "$queue_last_commit" ]; then
-    queue_commit_epoch=$(date -u -d "${queue_last_commit:0:10}" +%s 2>/dev/null \
-      || date -u -j -f '%Y-%m-%d' "${queue_last_commit:0:10}" +%s)
-    today_epoch=$(date -u -d "$TODAY" +%s 2>/dev/null || date -u -j -f '%Y-%m-%d' "$TODAY" +%s)
-    queue_empty_hours=$(( (today_epoch - queue_commit_epoch) / 3600 ))
+    queue_commit_epoch=$(date -u -d "${queue_last_commit}" +%s 2>/dev/null \
+      || date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "${queue_last_commit}" +%s)
+    now_epoch=$(date -u +%s)
+    queue_empty_hours=$(( (now_epoch - queue_commit_epoch) / 3600 ))
     if [ "$queue_empty_hours" -ge 24 ]; then
       queue_empty=true
       echo "  Queue is empty and has been since ${queue_last_commit:0:10} (${queue_empty_hours}h ago)"
@@ -219,7 +219,8 @@ else
     --field "body=${report_body}" \
     --field "labels[]=${AUDIT_LABEL}" \
     --field "labels[]=automated-report" \
-    --silent && echo "  Issue created."
+    --silent
+  echo "  Issue created."
 fi
 
 echo ""
