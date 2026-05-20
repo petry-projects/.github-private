@@ -1549,6 +1549,7 @@ case "$INTENT_TYPE" in
         resolve_actor_outdated_threads "fix-reviews"
         try_enable_auto_merge
       fi
+      try_enable_auto_merge
     fi
     exit "$rc"
     ;;
@@ -1588,6 +1589,7 @@ case "$INTENT_TYPE" in
         resolve_actor_outdated_threads "fix-bot-comment"
         try_enable_auto_merge
       fi
+      try_enable_auto_merge
     fi
     exit "$rc"
     ;;
