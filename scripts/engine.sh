@@ -114,9 +114,6 @@ REVIEW_MCP_DEBUG="${REVIEW_MCP_DEBUG:-}"
 export REVIEW_MCP_CONFIG REVIEW_MCP_ALLOWED_TOOLS REVIEW_MCP_DEBUG
 
 set_engine_config() {
-  # Default Copilot model — ensures the variable is bound for set -u
-  COPILOT_API_MODEL="${COPILOT_API_MODEL:-gpt-5.4}"
-
   case "$REVIEW_ENGINE" in
     claude)
       ENGINE_TRIAGE_MODEL="claude-haiku-4-5-20251001"
@@ -3759,8 +3756,10 @@ sys.exit(1)
 
 # run_duck <prompt_file> <model>
 # Cross-engine adversarial "rubber duck" review.
-# Always uses a different model family from REVIEW_ENGINE. Output to stdout.
-# Strips the opposing engine's credentials to prevent cross-engine leakage.
+# DUCK_ENGINE is set by engine.sh init: claude→copilot, gemini→claude, copilot→gemini.
+# All three engine branches (claude, gemini, copilot) are reachable — the gemini
+# branch executes when REVIEW_ENGINE=copilot (copilot primary → gemini duck).
+# Output to stdout. Strips non-selected engine credentials to prevent cross-engine leakage.
 run_duck() {
   local prompt_file="$1"
   local model="$2"
