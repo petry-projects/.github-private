@@ -153,7 +153,7 @@ Add a verification step to the workflow:
 
 ## Deployment Status
 
-**Status:** ✅ **FIXED** 
+**Status:** ✅ **FIXED**
 
 **Applied:** Commit `522dc75` to main branch
 

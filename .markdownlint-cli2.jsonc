@@ -16,8 +16,7 @@
     "MD013": {
       "line_length": 400,
       "heading_line_length": 400,
-      "code_block_line_length": 400,
-      "tables": false
+      "code_block_line_length": 400
     },
 
     // -- Rules disabled pending cleanup of pre-existing violations --

@@ -107,7 +107,7 @@ Every GitHub webhook event that reaches `dev-lead.yml` is classified into exactl
 | `issue_comment` created on PR | Human OWNER/MEMBER/COLLABORATOR + trigger phrase | `human` | `dev-lead-fix-reviews.sh` |
 | `issue_comment` created on PR | `<!-- auto-rebase-conflict:` marker | `rebase` | `dev-lead-fix-reviews.sh` |
 | `issues` labeled `dev-lead` or `claude` | Any | `issue` | `dev-lead-fix-issue.sh` |
-| `check_run` completed, failure | Not a `dev-lead / ` check | _relay only_ | `ci-relay` job |
+| `check_run` completed, failure | Not a `dev-lead /` check | _relay only_ | `ci-relay` job |
 | `repository_dispatch` `dev-lead-ci-failure` | Dispatched by `ci-relay` | `fix-ci` | `dev-lead-fix-ci.sh` |
 | `repository_dispatch` `dev-lead-reviews-retry` | Dispatched by `dev-lead-retry` cron | _(payload `intent_type`)_ | `dev-lead-fix-reviews.sh` |
 | `repository_dispatch` `dev-lead-issue-retry` | Dispatched by `dev-lead-retry` cron (#781) | `issue` | `dev-lead-fix-issue.sh` |
@@ -159,7 +159,7 @@ coderabbitai[bot]
 sonarqubecloud[bot]
 ```
 
-The `ci-relay` job separately gates on the check name not starting with `dev-lead / ` to prevent recursive self-triggering.
+The `ci-relay` job separately gates on the check name not starting with `dev-lead /` to prevent recursive self-triggering.
 
 ### 5.3 Trigger phrases
 
