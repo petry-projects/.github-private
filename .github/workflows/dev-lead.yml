@@ -148,6 +148,18 @@ jobs:
             gh extension install github/gh-copilot || true
           fi
 
+      - name: Verify primary engine CLI
+        if: env.INTENT_TYPE != 'skip' && env.INTENT_TYPE != 'enable-auto-merge'
+        run: |
+          # Fail fast if the primary engine binary is missing — a silent exit 127
+          # later would waste tokens and incorrectly count toward PR exhaustion.
+          case "${DEV_LEAD_ENGINE:-claude}" in
+            claude)  claude --version ;;
+            gemini)  gemini --version ;;
+            copilot) gh copilot --version ;;
+            *) echo "::error::Unknown DEV_LEAD_ENGINE value: '${DEV_LEAD_ENGINE}'. Must be one of: claude, gemini, copilot"; exit 1 ;;
+          esac
+
       # ── fix-ci ────────────────────────────────────────────────────────────
       - name: Run fix-ci
         if: env.INTENT_TYPE == 'fix-ci'
