@@ -18,27 +18,6 @@ safe-outputs:
     max: 3
 ---
 
-
-
-
-trigger:
-  issues:
-    types: [opened]
-engine: claude-sonnet-4-6
-permissions:
-  issues: read
-output: staged
-allowed-labels:
-  - bug
-  - enhancement
-  - documentation
-  - question
-  - needs-triage
-  - good-first-issue
-  - security
-max-labels: 3
----
-
 # Issue Triage
 
 You are triaging a new GitHub issue for the `${REPO}` repository.
