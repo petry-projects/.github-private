@@ -248,15 +248,11 @@ process_item() {
         SUMMARY_ROWS+=("| $repo | $item_type #$number | $days_inactive days | grace period |")
       fi
     else
-      # Fallback when stale label event is unavailable: use updated_at-based logic
-      if [ "$days_inactive" -lt "$stale_threshold" ]; then
-        apply_action "unstale" "$repo" "$item_type" "$number" "$title" "$last_updated" "$labels_json"
-      elif [ "$days_inactive" -ge $(( stale_threshold + GRACE_DAYS )) ]; then
-        apply_action "close" "$repo" "$item_type" "$number" "$title" "$last_updated" "$labels_json"
-      else
-        log "Stale $item_type #$number in $repo still in grace period ($days_inactive days)"
-        SUMMARY_ROWS+=("| $repo | $item_type #$number | $days_inactive days | grace period |")
-      fi
+      # Stale label timestamp unavailable (transient API/event failure) — skip rather
+      # than falling back to updated_at, which label actions refresh and would
+      # incorrectly unstale recently-warned items on the very next run.
+      log "Stale $item_type #$number in $repo: skipping — stale label timestamp unavailable"
+      SUMMARY_ROWS+=("| $repo | $item_type #$number | $days_inactive days | stale (ts unavailable) |")
     fi
   else
     if [ "$days_inactive" -ge "$stale_threshold" ]; then

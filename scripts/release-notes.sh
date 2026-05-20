@@ -200,17 +200,24 @@ prepend_changelog() {
   local today
   today=$(date -u +%Y-%m-%d)
 
-  local new_section
-  new_section=$(printf '\n## [Unreleased] — %s\n\n%s\n' "$today" "$block")
-
-  # Insert after the header (first line starting with #)
   local tmp
   tmp=$(mktemp)
-  awk -v section="$new_section" '
-    /^## / && !inserted { print section; inserted=1 }
-    { print }
-    END { if (!inserted) print section }
-  ' "$CHANGELOG_FILE" > "$tmp"
+
+  if grep -q '^## \[Unreleased\]' "$CHANGELOG_FILE"; then
+    # Reuse the existing Unreleased section — insert entries right after its heading
+    awk -v block="$block" '
+      /^## \[Unreleased\]/ && !inserted { print; printf "\n%s\n", block; inserted=1; next }
+      { print }
+    ' "$CHANGELOG_FILE" > "$tmp"
+  else
+    local new_section
+    new_section=$(printf '\n## [Unreleased] — %s\n\n%s\n' "$today" "$block")
+    awk -v section="$new_section" '
+      /^## / && !inserted { print section; inserted=1 }
+      { print }
+      END { if (!inserted) print section }
+    ' "$CHANGELOG_FILE" > "$tmp"
+  fi
   mv "$tmp" "$CHANGELOG_FILE"
 }
 

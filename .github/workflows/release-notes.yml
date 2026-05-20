@@ -37,8 +37,9 @@ jobs:
       BEFORE_SHA: ${{ inputs.before_sha || github.event.before || '' }}
       CHANGELOG_FILE: ${{ vars.CHANGELOG_FILE || 'CHANGELOG.md' }}
       CHANGELOG_LABELS: ${{ vars.CHANGELOG_LABELS || 'feat,fix' }}
-      # Staged by default: set LIVE_MODE=true repo variable to enable PR creation
-      DRY_RUN: ${{ inputs.dry_run || (vars.LIVE_MODE == 'true' && 'false' || 'true') }}
+      # Staged by default: set LIVE_MODE=true repo variable to enable PR creation.
+      # LIVE_MODE is the authoritative gate — dispatch input cannot bypass it.
+      DRY_RUN: ${{ vars.LIVE_MODE == 'true' && 'false' || 'true' }}
       REVIEW_ENGINE: ${{ vars.REVIEW_ENGINE || 'claude' }}
       ACTION_TIMEOUT_SEC: ${{ vars.ACTION_TIMEOUT_SEC || '120' }}
       CLAUDE_CODE_VERSION: ${{ vars.CLAUDE_CODE_VERSION || '2.1.138' }}

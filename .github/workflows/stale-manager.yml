@@ -36,8 +36,9 @@ jobs:
       STALE_DAYS_ISSUE: ${{ vars.STALE_DAYS_ISSUE || '60' }}
       STALE_DAYS_PR: ${{ vars.STALE_DAYS_PR || '30' }}
       GRACE_DAYS: ${{ vars.GRACE_DAYS || '7' }}
-      # Staged by default: set LIVE_MODE=true repo variable to enable writes
-      DRY_RUN: ${{ inputs.dry_run || (vars.LIVE_MODE == 'true' && 'false' || 'true') }}
+      # Staged by default: set LIVE_MODE=true repo variable to enable writes.
+      # LIVE_MODE is the authoritative gate — dispatch input cannot bypass it.
+      DRY_RUN: ${{ vars.LIVE_MODE == 'true' && 'false' || 'true' }}
       REVIEW_ENGINE: ${{ vars.REVIEW_ENGINE || 'claude' }}
       ACTION_TIMEOUT_SEC: ${{ vars.ACTION_TIMEOUT_SEC || '120' }}
       CLAUDE_CODE_VERSION: ${{ vars.CLAUDE_CODE_VERSION || '2.1.138' }}
