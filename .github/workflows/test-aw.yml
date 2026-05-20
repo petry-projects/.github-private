@@ -1,0 +1,52 @@
+name: Test AW Workflows
+
+on:
+  pull_request:
+    paths:
+      - 'tests/aw/**'
+      - 'docs/aw/**'
+      - 'scripts/aw-*.sh'
+      - '.github/workflows/docs-health-check.yml'
+      - '.github/workflows/dependency-advisory.yml'
+      - '.github/workflows/standards-sync.yml'
+      - '.github/workflows/content-twin-audit.yml'
+      - '.github/workflows/test-aw.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'tests/aw/**'
+      - 'docs/aw/**'
+      - 'scripts/aw-*.sh'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  validate-specs:
+    name: Validate AW specs, docs, and workflows
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Install PyYAML
+        run: pip install --quiet pyyaml
+
+      - name: Run spec validator
+        run: bash tests/aw/validate-specs.sh
+
+  shellcheck-aw-scripts:
+    name: shellcheck aw-*.sh scripts
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: shellcheck
+        run: |
+          # SC2016: single-quoted strings with $vars inside heredocs are intentional
+          shellcheck --severity=warning scripts/aw-docs-health-check.sh \
+            scripts/aw-dependency-advisory.sh \
+            scripts/aw-standards-sync.sh \
+            scripts/aw-content-twin-audit.sh
