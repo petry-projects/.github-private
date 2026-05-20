@@ -14,6 +14,7 @@ set -euo pipefail
 #   human-pr        — Human review changes-requested
 #   issue           — Issue labeled dev-lead/claude
 #   rebase          — Rebase conflict sentinel
+#   enable-auto-merge — Bot approval: enable auto-merge if PR is APPROVED
 #   ci-relay        — check_run relay (handled by ci-relay job, not this script)
 #   skip            — Event should be ignored
 
@@ -219,9 +220,8 @@ case "$EVENT_NAME" in
       '{"pr_number":$pr_number,"head_sha":$head_sha,"actor":$actor,"body":$body}')
 
     if is_trusted_bot "$reviewer"; then
-      # Bot review: only route non-APPROVED states
       if [ "$review_state" = "APPROVED" ]; then
-        emit_skip "bot-approved"
+        emit_intent "enable-auto-merge" "bot-approved" "$context"
       else
         emit_intent "fix-reviews" "bot-review-${review_state}" "$context"
       fi
