@@ -49,10 +49,10 @@ Common SonarCloud Security Hotspot patterns to look for in changed files:
 | Hardcoded credentials / API keys | Move to secrets / env vars |
 | `eval` / `exec` with dynamic input | Remove dynamic execution or sanitize input |
 | HTTP (non-HTTPS) download URLs | Change to `https://` |
-| `npm install` without `--ignore-scripts` | Add `--ignore-scripts` if install scripts are not required; otherwise document why they are needed |
+| `npm install` without `--ignore-scripts` | Add `--ignore-scripts` if install scripts are not required; otherwise, this may require manual acknowledgment in the SonarCloud UI |
 | `npm install pkg@variable` or `@latest` | Pin to an exact version number (e.g. `pkg@1.2.3`), or exclude the file in `sonar-project.properties` if version is intentionally managed via a CI variable |
 
-Fix each identified issue and commit.
+- Fix each identified issue.
 
 ## Constraints
 
