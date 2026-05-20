@@ -106,6 +106,39 @@ notify_coderabbit_resolve() {
   fi
 }
 
+# try_enable_auto_merge: enables auto-merge (squash) on the PR if reviewDecision is
+# APPROVED and auto-merge is not already set. Safe to call speculatively — checks
+# eligibility first and is idempotent if auto-merge is already on.
+try_enable_auto_merge() {
+  if [ "${DEV_LEAD_DRY_RUN:-false}" = "true" ]; then
+    echo "[dry-run] would enable auto-merge if PR #${PR_NUMBER} is APPROVED"
+    return 0
+  fi
+  local auto_merge_state
+  auto_merge_state=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}" \
+    --jq '.auto_merge // empty' 2>/dev/null || true)
+  if [ -n "$auto_merge_state" ]; then
+    echo "::notice::PR #${PR_NUMBER} auto-merge already enabled"
+    return 0
+  fi
+  local review_decision
+  review_decision=$(gh api graphql -f query='
+    query($owner:String!,$repo:String!,$pr:Int!){
+      repository(owner:$owner,name:$repo){
+        pullRequest(number:$pr){reviewDecision}
+      }
+    }' \
+    -F owner="${REPO%%/*}" -F repo="${REPO##*/}" -F pr="$PR_NUMBER" \
+    --jq '.data.repository.pullRequest.reviewDecision' 2>/dev/null || true)
+  if [ "${review_decision:-}" = "APPROVED" ]; then
+    echo "::notice::PR #${PR_NUMBER} is APPROVED — enabling auto-merge (squash)"
+    gh pr merge "$PR_NUMBER" --repo "$REPO" --auto --squash 2>/dev/null || \
+      echo "::warning::auto-merge could not be enabled on PR #${PR_NUMBER} — check repository settings and token permissions"
+  else
+    echo "::notice::PR #${PR_NUMBER} reviewDecision=${review_decision:-unknown} — not yet eligible for auto-merge"
+  fi
+}
+
 # commit_and_push: stages any uncommitted changes (including untracked files),
 # commits if needed, and pushes. Returns 0 if changes were pushed, 1 if nothing to push.
 # Handles two cases:
@@ -303,8 +336,10 @@ case "$INTENT_TYPE" in
         notify_coderabbit_resolve
         post_reviews_terminal "fix-reviews" "applied" "Changes committed and pushed."
       else
+        notify_coderabbit_resolve
         post_reviews_terminal "fix-reviews" "no-changes" "No changes were needed for the open review threads."
       fi
+      try_enable_auto_merge
     fi
     exit "$rc"
     ;;
@@ -319,8 +354,10 @@ case "$INTENT_TYPE" in
         notify_coderabbit_resolve
         post_reviews_terminal "fix-bot-comment" "applied" "Changes committed and pushed."
       else
+        notify_coderabbit_resolve
         post_reviews_terminal "fix-bot-comment" "no-changes" "Engine ran but made no changes."
       fi
+      try_enable_auto_merge
     fi
     exit "$rc"
     ;;
@@ -365,8 +402,10 @@ case "$INTENT_TYPE" in
         notify_coderabbit_resolve
         post_reviews_terminal "human-pr" "applied" "Changes committed and pushed."
       else
+        notify_coderabbit_resolve
         post_reviews_terminal "human-pr" "no-changes" "No changes were needed for this PR."
       fi
+      try_enable_auto_merge
     fi
     exit "$rc"
     ;;
