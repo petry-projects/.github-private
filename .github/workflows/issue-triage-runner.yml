@@ -27,7 +27,7 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 
       - name: Install Python dependencies
-        run: pip install pyyaml --quiet
+        run: pip install "pyyaml==6.0.3" --only-binary :all: --quiet
 
       - name: Run issue-triage (staged)
         id: run
@@ -67,7 +67,7 @@ PYEOF
           persist-credentials: false
 
       - name: Install Python dependencies
-        run: pip install pyyaml --quiet
+        run: pip install "pyyaml==6.0.3" --only-binary :all: --quiet
 
       - name: Apply triage output (safe-output)
         env:
