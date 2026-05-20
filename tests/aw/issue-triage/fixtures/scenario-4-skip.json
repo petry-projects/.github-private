@@ -1,0 +1,15 @@
+{
+  "issue": {
+    "number": 102,
+    "title": "Something is wrong",
+    "body": "Not sure what's happening.",
+    "labels": [
+      {"name": "bug"},
+      {"name": "P1"}
+    ],
+    "html_url": "https://github.com/example/repo/issues/102"
+  },
+  "repository": {
+    "full_name": "example/repo"
+  }
+}
