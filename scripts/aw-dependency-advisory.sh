@@ -146,7 +146,7 @@ advisory_body=$(cat "$ADVISORY_FILE")
 # ---------------------------------------------------------------------------
 # Skip comment writes when the token cannot create PR/issue comments.
 # Commenting needs triage-level access or higher — do not require push.
-if ! gh api "repos/${REPO}" --jq '.permissions.triage // false' 2>/dev/null | grep -q "^true$"; then
+if ! gh api "repos/${REPO}" --jq '(.permissions.triage // false) or (.permissions.push // false)' 2>/dev/null | grep -q "^true$"; then
   echo "::notice::Token lacks comment access to ${REPO} — skipping advisory comment (read-only context)."
   echo "=== Dependency advisory complete (comment skipped — no write access) ==="
   exit 0

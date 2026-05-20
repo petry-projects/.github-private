@@ -28,13 +28,18 @@ jobs:
       - name: Guard — first Monday of month only
         id: guard
         run: |
-          day=$(date -u +%-d)
-          if [ "$day" -gt 7 ]; then
-            echo "Not the first Monday of the month (day=$day) — skipping."
-            echo "proceed=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "First Monday confirmed (day=$day) — proceeding."
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "Manual trigger — bypassing first-Monday guard."
             echo "proceed=true" >> "$GITHUB_OUTPUT"
+          else
+            day=$(date -u +%-d)
+            if [ "$day" -gt 7 ]; then
+              echo "Not the first Monday of the month (day=$day) — skipping."
+              echo "proceed=false" >> "$GITHUB_OUTPUT"
+            else
+              echo "First Monday confirmed (day=$day) — proceeding."
+              echo "proceed=true" >> "$GITHUB_OUTPUT"
+            fi
           fi
 
       - name: Checkout agent repo

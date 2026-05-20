@@ -71,8 +71,18 @@ fi
 echo "Checking content queue..."
 queue_empty=false
 
-queue_files=$(gh api "repos/${CONTENT_TWIN_REPO}/contents/queue" \
-  --jq 'length' 2>/dev/null || echo "0")
+_queue_err=$(mktemp)
+if ! queue_files=$(gh api "repos/${CONTENT_TWIN_REPO}/contents/queue" \
+    --jq 'length' 2>"$_queue_err"); then
+  if grep -qiE 'HTTP 404|Not Found' "$_queue_err" 2>/dev/null; then
+    queue_files="0"
+  else
+    echo "::error::Content queue API error: $(cat "$_queue_err")"
+    rm -f "$_queue_err"
+    exit 1
+  fi
+fi
+rm -f "$_queue_err"
 
 if [ "$queue_files" = "0" ] || [ -z "$queue_files" ]; then
   echo "  Queue appears empty; checking persistence before alerting..."
@@ -199,6 +209,14 @@ echo "Report written to ${REPORT_FILE} ($(wc -c < "$REPORT_FILE") bytes)."
 # ---------------------------------------------------------------------------
 existing_issue=$(gh api "repos/${CONTENT_TWIN_REPO}/issues?labels=${AUDIT_LABEL}&state=open&per_page=1" \
   --jq '[.[] | select(.pull_request == null)] | .[0].number // ""' 2>/dev/null || true)
+
+# Truncate report before publication to avoid GitHub API payload limits
+_max_bytes=60000
+if [ "$(wc -c < "$REPORT_FILE")" -gt "$_max_bytes" ]; then
+  head -c "$_max_bytes" "$REPORT_FILE" > "${REPORT_FILE}.tmp"
+  printf '\n\n---\n_Report truncated at %d bytes._\n' "$_max_bytes" >> "${REPORT_FILE}.tmp"
+  mv "${REPORT_FILE}.tmp" "$REPORT_FILE"
+fi
 
 report_body=$(cat "$REPORT_FILE")
 

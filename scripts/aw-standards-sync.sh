@@ -100,13 +100,28 @@ while IFS= read -r repo; do
 
   missing_files=()
 
+  _repo_api_error=false
   for entry in "${REQUIRED_FILES[@]}"; do
     required_path="${entry%%|*}"
-    # Check existence via contents API; 200 = exists, 404 = missing
-    if ! gh api "repos/${repo}/contents/${required_path}" --silent 2>/dev/null; then
+    _check_err=$(mktemp)
+    # Check existence via contents API; 200 = exists, 404 = missing, other = API error
+    if gh api "repos/${repo}/contents/${required_path}" --silent 2>"$_check_err"; then
+      rm -f "$_check_err"
+    elif grep -qiE 'HTTP 404|Not Found' "$_check_err" 2>/dev/null; then
+      rm -f "$_check_err"
       missing_files+=("$entry")
+    else
+      echo "  [warn] ${repo}/${required_path} — API error (skipping repo): $(head -1 "$_check_err")"
+      rm -f "$_check_err"
+      _repo_api_error=true
+      break
     fi
   done
+
+  if [ "$_repo_api_error" = "true" ]; then
+    summary_rows="${summary_rows}| \`${repo}\` | (skip) | (skip) | API error during compliance check |\n"
+    continue
+  fi
 
   if [ "${#missing_files[@]}" -eq 0 ]; then
     compliant_count=$((compliant_count + 1))
