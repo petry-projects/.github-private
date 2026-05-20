@@ -40,7 +40,7 @@ jobs:
       DRY_RUN: ${{ inputs.dry_run || (vars.LIVE_MODE == 'true' && 'false' || 'true') }}
       REVIEW_ENGINE: ${{ vars.REVIEW_ENGINE || 'claude' }}
       ACTION_TIMEOUT_SEC: ${{ vars.ACTION_TIMEOUT_SEC || '120' }}
-      CLAUDE_CODE_VERSION: ${{ vars.CLAUDE_CODE_VERSION || 'latest' }}
+      CLAUDE_CODE_VERSION: ${{ vars.CLAUDE_CODE_VERSION || '2.1.138' }}
 
     steps:
       - name: Checkout agent repo
