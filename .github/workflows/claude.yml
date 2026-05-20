@@ -20,7 +20,7 @@
 #   Claude Code will not run on that PR. Do not open compliance PRs against
 #   this file. Do not SHA-pin the `uses:` line — internal reusable workflow
 #   refs are exempt from the Action Pinning Policy (ci-standards.md
-#   §Action Pinning Policy). The @v2 tag is the correct, stable reference.
+#   §Action Pinning Policy). The @v1 tag is the correct, stable reference.
 #
 #   NARROW GUARD: The paths-ignore setting (lines 38-39) under pull_request
 #   prevents the workflow from triggering only when the PR's entire changeset
@@ -57,7 +57,7 @@ permissions: {}
 
 jobs:
   claude-code:
-    uses: petry-projects/.github/.github/workflows/claude-code-reusable.yml@v2
+    uses: petry-projects/.github/.github/workflows/claude-code-reusable.yml@v1
     secrets: inherit
     permissions:
       contents: write
