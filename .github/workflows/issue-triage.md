@@ -12,8 +12,8 @@ safe-outputs:
       - enhancement
       - documentation
       - question
-      - needs-human-review
-      - good first issue
+      - needs-triage
+      - good-first-issue
       - security
     max: 3
 ---
@@ -34,19 +34,23 @@ ${ISSUE_BODY}
 
 ## Task
 
+If the issue already has **2 or more labels**, output `{"skip": true}` and stop — do not classify, do not comment.
+
+Otherwise:
+
 1. **Classify** the issue into the best-fit category:
    - `bug` — something is not working as expected
    - `enhancement` — request for new or extended functionality
    - `documentation` — unclear, missing, or incorrect docs
    - `question` — user asking how to do something
    - `security` — potential security vulnerability
-   - `good first issue` — simple enough for a first-time contributor
+   - `good-first-issue` — simple enough for a first-time contributor
 
 2. **Select ≤ 3 labels** from the allowed set:
-   `bug`, `enhancement`, `documentation`, `question`, `needs-human-review`,
-   `good first issue`, `security`.
-   - Add `needs-human-review` for bugs and ambiguous reports that need human review.
-   - Add `good first issue` only when the scope is clearly small and
+   `bug`, `enhancement`, `documentation`, `question`, `needs-triage`,
+   `good-first-issue`, `security`.
+   - Add `needs-triage` for bugs and ambiguous reports that need human review.
+   - Add `good-first-issue` only when the scope is clearly small and
      self-contained.
 
 3. **Write one welcoming comment** that:
@@ -65,4 +69,8 @@ ${ISSUE_BODY}
 
 Output **exactly one** JSON object — no markdown fences, no preamble:
 
+For a normal triage:
 {"labels": ["label1", "label2"], "comment": "Your welcoming comment here."}
+
+For a skip (issue already has 2+ labels):
+{"skip": true}

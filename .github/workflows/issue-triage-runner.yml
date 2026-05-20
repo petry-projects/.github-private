@@ -6,8 +6,6 @@ on:
 
 # Two-job pattern: triage runs with read-only issue access and produces a
 # staged JSON artifact; apply runs with write access and calls safe-output.
-permissions: {}  # Reset to none; each job declares its own scoped block below.
-
 jobs:
   triage:
     runs-on: ubuntu-latest
@@ -19,41 +17,37 @@ jobs:
       result: ${{ steps.run.outputs.result }}
       skip: ${{ steps.run.outputs.skip }}
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           persist-credentials: false
 
       - name: Install claude CLI
-        env:
-          CLAUDE_CODE_VERSION: ${{ vars.CLAUDE_CODE_VERSION || 'latest' }}
-        run: |
-          mkdir -p "$HOME/.npm-global"
-          npm config set prefix "$HOME/.npm-global"
-          echo "$HOME/.npm-global/bin" >> "$GITHUB_PATH"
-          export PATH="$HOME/.npm-global/bin:$PATH"
-          if ! command -v claude >/dev/null 2>&1; then
-            npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
-          fi
+        uses: anthropics/claude-code-action/setup@24492741e0ccfdef4c1d19da8e11e0f373d07494  # main
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 
       - name: Install Python dependencies
-        run: |
-          pip install "pyyaml==6.0.3" --only-binary=":all:" --quiet
+        run: pip install "pyyaml==6.0.3" --only-binary :all: --quiet
 
       - name: Run issue-triage (staged)
         id: run
         env:
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          ISSUE_NUMBER: ${{ github.event.issue.number }}
-          ISSUE_TITLE: ${{ github.event.issue.title }}
-          ISSUE_BODY: ${{ github.event.issue.body }}
-          ISSUE_LABELS: ${{ join(github.event.issue.labels.*.name, ',') }}
-          ISSUE_URL: ${{ github.event.issue.html_url }}
-          ISSUE_ACTION: ${{ github.event.action }}
+          ISSUE_NUMBER:    ${{ github.event.issue.number }}
+          ISSUE_TITLE:     ${{ github.event.issue.title }}
+          ISSUE_BODY:      ${{ github.event.issue.body }}
+          ISSUE_LABELS:    ${{ join(github.event.issue.labels.*.name, ',') }}
+          ISSUE_URL:       ${{ github.event.issue.html_url }}
+          ISSUE_ACTION:    ${{ github.event.action }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
           result=$(bash scripts/aw.sh run issue-triage --staged)
-          skip=$(AW_RESULT="$result" python3 -c "import json,os; d=json.loads(os.environ['AW_RESULT']); print('true' if d.get('skip') else 'false')")
+          skip=$(AW_RESULT="$result" python3 - <<'PYEOF'
+import json, os
+d = json.loads(os.environ['AW_RESULT'])
+print('true' if d.get('skip') else 'false')
+PYEOF
+)
           # Store encoded to survive multi-line JSON in GITHUB_OUTPUT
           encoded=$(printf '%s\n' "$result" | base64 -w0)
           echo "result=$encoded" >> "$GITHUB_OUTPUT"
@@ -68,20 +62,19 @@ jobs:
       contents: read
       issues: write
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           persist-credentials: false
 
       - name: Install Python dependencies
-        run: |
-          pip install "pyyaml==6.0.3" --only-binary=":all:" --quiet
+        run: pip install "pyyaml==6.0.3" --only-binary :all: --quiet
 
       - name: Apply triage output (safe-output)
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN:      ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-          ISSUE_NUMBER: ${{ github.event.issue.number }}
-          TRIAGE_RESULT: ${{ needs.triage.outputs.result }}
+          ISSUE_NUMBER:      ${{ github.event.issue.number }}
+          TRIAGE_RESULT:     ${{ needs.triage.outputs.result }}
         run: |
           result_file=$(mktemp)
           printf '%s\n' "$TRIAGE_RESULT" | base64 -d > "$result_file"

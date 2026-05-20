@@ -157,7 +157,7 @@ cmd_run() {
   fi
 
   # Build context from environment or fixture
-  local issue_number issue_title issue_body issue_labels issue_url repo
+  local issue_number issue_title issue_body issue_labels issue_url repo issue_action
   if [[ -n "$fixture" ]]; then
     # Pass path via env var to avoid injecting user-controlled paths into Python source
     issue_number="$(AW_FIXTURE="$fixture" python3 - <<'PYEOF'
@@ -202,6 +202,13 @@ with open(os.environ['AW_FIXTURE'], encoding='utf-8') as fh:
 print(d['repository']['full_name'])
 PYEOF
 )"
+    issue_action="$(AW_FIXTURE="$fixture" python3 - <<'PYEOF'
+import json, os
+with open(os.environ['AW_FIXTURE'], encoding='utf-8') as fh:
+    d = json.load(fh)
+print(d.get('action', 'opened'))
+PYEOF
+)"
   else
     issue_number="${ISSUE_NUMBER:-}"
     issue_title="${ISSUE_TITLE:-}"
@@ -209,6 +216,7 @@ PYEOF
     issue_labels="${ISSUE_LABELS:-}"
     issue_url="${ISSUE_URL:-https://github.com/${GITHUB_REPOSITORY:-unknown}/issues/${ISSUE_NUMBER:-0}}"
     repo="${GITHUB_REPOSITORY:-unknown}"
+    issue_action="${ISSUE_ACTION:-opened}"
   fi
 
   # Skip guard: read threshold from frontmatter (default 2), skip if label count >= threshold
@@ -231,6 +239,31 @@ print(fm.get('skip-if-labels-ge', 2))
 PYEOF
 )"
   if [[ "$label_count" -ge "$skip_threshold" ]]; then
+    echo '{"skip": true}'
+    return 0
+  fi
+
+  # Skip if any existing label is in the allowed-labels set (prevents re-triage on reopen)
+  local allowed_json
+  allowed_json="$(python3 - "$wf_file" <<'PYEOF'
+import sys, re, yaml, json
+path = sys.argv[1]
+with open(path, encoding='utf-8') as f:
+    text = f.read()
+m = re.match(r'^---\n(.*?)\n---\n', text, re.DOTALL)
+fm = yaml.safe_load(m.group(1)) if m else {}
+print(json.dumps(fm.get('allowed-labels', [])))
+PYEOF
+)"
+  local has_triage_label
+  has_triage_label="$(AW_ALLOWED="$allowed_json" AW_LABELS="$issue_labels" python3 - <<'PYEOF'
+import os, json
+current = set(l for l in os.environ.get('AW_LABELS', '').split(',') if l)
+allowed = set(json.loads(os.environ.get('AW_ALLOWED', '[]')))
+print('true' if current & allowed else 'false')
+PYEOF
+)"
+  if [[ "$has_triage_label" == "true" && "$issue_action" == "reopened" ]]; then
     echo '{"skip": true}'
     return 0
   fi
@@ -383,7 +416,7 @@ with open(path, encoding='utf-8') as f:
     text = f.read()
 m = re.match(r'^---\n(.*?)\n---\n', text, re.DOTALL)
 fm = yaml.safe_load(m.group(1)) if m else {}
-print(json.dumps(fm.get("safe-outputs", {}).get("add-labels", {}).get("allowed", [])))
+print(json.dumps(fm.get("allowed-labels", [])))
 PYEOF
 )"
   max_labels="$(python3 - "$wf_file" <<'PYEOF'
@@ -393,7 +426,7 @@ with open(path, encoding='utf-8') as f:
     text = f.read()
 m = re.match(r'^---\n(.*?)\n---\n', text, re.DOTALL)
 fm = yaml.safe_load(m.group(1)) if m else {}
-print(fm.get("safe-outputs", {}).get("add-labels", {}).get("max", 3))
+print(fm.get('max-labels', 3))
 PYEOF
 )"
 
