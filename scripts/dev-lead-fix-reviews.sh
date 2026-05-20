@@ -301,7 +301,7 @@ case "$INTENT_TYPE" in
     if [ "$rc" -eq 0 ]; then
       if commit_and_push "fix-reviews"; then
         notify_coderabbit_resolve
-        post_reviews_terminal "fix-reviews" "applied"
+        post_reviews_terminal "fix-reviews" "applied" "Changes committed and pushed."
       else
         post_reviews_terminal "fix-reviews" "no-changes" "No changes were needed for the open review threads."
       fi
@@ -363,7 +363,7 @@ case "$INTENT_TYPE" in
     if [ "$rc" -eq 0 ]; then
       if commit_and_push "human-pr"; then
         notify_coderabbit_resolve
-        post_reviews_terminal "human-pr" "applied"
+        post_reviews_terminal "human-pr" "applied" "Changes committed and pushed."
       else
         post_reviews_terminal "human-pr" "no-changes" "No changes were needed for this PR."
       fi
@@ -390,7 +390,7 @@ case "$INTENT_TYPE" in
     [ "$rc" -eq 2 ] && handle_rate_limit "rebase"
     if [ "$rc" -eq 0 ]; then
       if commit_and_push "rebase"; then
-        post_reviews_terminal "rebase" "applied"
+        post_reviews_terminal "rebase" "applied" "Rebase completed and pushed."
       else
         post_reviews_terminal "rebase" "no-changes" "PR is already up to date."
       fi
