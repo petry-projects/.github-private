@@ -7,8 +7,17 @@ permissions:
   issues: read
 safe-outputs:
   add-labels:
-    enabled: true
+    allowed:
+      - bug
+      - enhancement
+      - documentation
+      - question
+      - needs-triage
+      - good-first-issue
+      - security
+    max: 3
 ---
+
 
 
 trigger:
