@@ -1,0 +1,80 @@
+name: ContentTwin Content Audit
+
+on:
+  schedule:
+    # Daily at 07:00 UTC
+    - cron: '0 7 * * *'
+  workflow_dispatch:
+    inputs:
+      stale_days:
+        description: "Days without a content commit before flagging as stale"
+        required: false
+        default: "7"
+        type: string
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: content-twin-audit
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      CONTENT_TWIN_REPO: ${{ vars.CONTENT_TWIN_REPO || 'petry-projects/ContentTwin' }}
+      STALE_DAYS: ${{ inputs.stale_days || vars.CONTENT_STALE_DAYS || '7' }}
+      PUBLISH_WORKFLOW: ${{ vars.CONTENT_TWIN_PUBLISH_WORKFLOW || 'publish.yml' }}
+      # Pin via vars.CLAUDE_CODE_VERSION for reproducible caching; mirrors pr-review.yml.
+      CLAUDE_CODE_VERSION: ${{ vars.CLAUDE_CODE_VERSION || 'latest' }}
+
+    steps:
+      - name: Checkout agent repo
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Set up Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+        with:
+          node-version: '20'
+
+      - name: Cache claude-code CLI
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4
+        with:
+          path: ~/.npm-global
+          key: claude-code-${{ env.CLAUDE_CODE_VERSION }}-${{ runner.os }}
+
+      - name: Install Claude Code CLI
+        run: |
+          mkdir -p "$HOME/.npm-global"
+          npm config set prefix "$HOME/.npm-global"
+          echo "$HOME/.npm-global/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.npm-global/bin:$PATH"
+          if command -v claude >/dev/null 2>&1; then
+            echo "claude-code cache hit: $(claude --version)"
+          else
+            npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" # NOSONAR
+          fi
+
+      - name: Run content audit
+        env:
+          GH_TOKEN: ${{ secrets.DON_PETRY_BOT_GH_PAT }}
+        run: bash scripts/aw-content-twin-audit.sh
+
+      - name: Truncate report if needed
+        run: |
+          if [ -f content_twin_audit_report.md ]; then
+            if [ "$(wc -c < content_twin_audit_report.md)" -gt 60000 ]; then
+              head -c 60000 content_twin_audit_report.md > content_twin_audit_report.md.tmp
+              mv content_twin_audit_report.md.tmp content_twin_audit_report.md
+              printf '\n\n---\n_Report truncated at 60 000 bytes._\n' >> content_twin_audit_report.md
+            fi
+          fi
+
+      - name: Annotate clean run
+        if: env.HAS_CONTENT_ISSUES != 'true'
+        run: |
+          echo "::notice::ContentTwin audit passed — all signals healthy."
