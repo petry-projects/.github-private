@@ -43,7 +43,7 @@ jobs:
             comments:
               min-spaces-from-content: 1
           YAMLLINTRC
-          ) .github/workflows/
+          ) $(find .github/workflows -name '*.yml' ! -name '*.lock.yml')
 
       - name: Lint GitHub Actions
         run: |
@@ -55,7 +55,8 @@ jobs:
           tar xzf actionlint.tar.gz actionlint
           chmod +x actionlint
           rm actionlint.tar.gz
-          ./actionlint -ignore 'SC2129' .github/workflows/*.yml
+          shopt -s extglob
+          ./actionlint -ignore 'SC2129' .github/workflows/!(*.lock).yml
 
   shellcheck:
     name: ShellCheck
