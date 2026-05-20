@@ -42,6 +42,9 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
+      - name: Install PyYAML
+        run: pip3 install --quiet pyyaml
+
       - name: Validate agent profile frontmatter
         run: |
           set -euo pipefail
@@ -49,8 +52,8 @@ jobs:
           for f in agents/*.md; do
             [ -e "$f" ] || continue
             name_from_file=$(basename "$f" .md)
-            if ! awk 'BEGIN{found=0} /^---/{found++; if(found==2) exit} END{exit (found<2)}' "$f"; then
-              echo "FAIL: $f — frontmatter is not closed (missing closing '---')"
+            if ! awk 'NR==1 && $0!="---"{exit 1} /^---/{n++; if(n==2) exit} END{exit (n<2)}' "$f"; then
+              echo "FAIL: $f — frontmatter missing or does not begin on line 1"
               fail=1
               continue
             fi
@@ -66,6 +69,9 @@ jobs:
               fail=1
             elif [ "$name_from_front" != "$name_from_file" ]; then
               echo "FAIL: $f — name '$name_from_front' does not match filename '$name_from_file'"
+              fail=1
+            elif ! printf '%s\n' "$name_from_file" | grep -qE '^[a-z0-9]+(-[a-z0-9]+)*$'; then
+              echo "FAIL: $f — name '$name_from_file' is not kebab-case (only lowercase letters, digits, and hyphens)"
               fail=1
             fi
             for field in description tools; do
@@ -110,12 +116,11 @@ jobs:
         if: steps.check-aw-files.outputs.found == 'true'
         run: |
           orphan=0
-          for lock in .github/workflows/*.lock.yml; do
-            [ -e "$lock" ] || continue
+          while IFS= read -r lock; do
             md="${lock%.lock.yml}.md"
             if [ ! -f "$md" ]; then
               echo "FAIL: orphaned lock file $lock — no corresponding source $md"
               orphan=1
             fi
-          done
+          done < <(find .github/workflows -name '*.lock.yml')
           [ "$orphan" -eq 0 ] || exit 1
