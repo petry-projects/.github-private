@@ -155,7 +155,7 @@ apply_action() {
         --silent
       gh api "repos/$repo/issues/$number/comments" \
         --method POST \
-        --field "body=$comment" \
+        --raw-field "body=$comment" \
         --silent
       log "Warned $item_type #$number in $repo (inactive $days days)"
       ACTIONS_TAKEN=$((ACTIONS_TAKEN + 1))
@@ -166,7 +166,7 @@ apply_action() {
       comment=$(generate_comment "$item_type" "$number" "$title" "" "$url" "$repo" "$days" "close")
       gh api "repos/$repo/issues/$number/comments" \
         --method POST \
-        --field "body=$comment" \
+        --raw-field "body=$comment" \
         --silent
       gh api "repos/$repo/issues/$number" \
         --method PATCH \

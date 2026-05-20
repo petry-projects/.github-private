@@ -46,7 +46,9 @@ check_existing_pr() {
     --method GET \
     -f state=open \
     -f per_page=50 \
-    --jq ".[] | select(.body | contains(\"$marker\")) | .html_url" 2>/dev/null || echo "")
+    2>/dev/null \
+    | jq -r --arg m "$marker" '.[] | select(.body != null and (.body | contains($m))) | .html_url' \
+    || echo "")
   echo "$existing"
 }
 
