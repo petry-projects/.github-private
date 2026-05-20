@@ -109,31 +109,58 @@ notify_coderabbit_resolve() {
 # try_enable_auto_merge: enables auto-merge (squash) on the PR if reviewDecision is
 # APPROVED and auto-merge is not already set. Safe to call speculatively — checks
 # eligibility first and is idempotent if auto-merge is already on.
+# Pass "true" as first arg for strict mode: API errors propagate and a merge failure
+# exits non-zero rather than emitting a warning (use for the enable-auto-merge intent).
 try_enable_auto_merge() {
+  local strict="${1:-false}"
   if [ "${DEV_LEAD_DRY_RUN:-false}" = "true" ]; then
     echo "[dry-run] would enable auto-merge if PR #${PR_NUMBER} is APPROVED"
     return 0
   fi
-  local auto_merge_state
-  auto_merge_state=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}" \
-    --jq '.auto_merge // empty' 2>/dev/null || true)
-  if [ -n "$auto_merge_state" ]; then
-    echo "::notice::PR #${PR_NUMBER} auto-merge already enabled"
-    return 0
+
+  local auto_merge_state review_decision
+
+  if [ "$strict" = "true" ]; then
+    auto_merge_state=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}" --jq '.auto_merge // empty')
+    if [ -n "$auto_merge_state" ]; then
+      echo "::notice::PR #${PR_NUMBER} auto-merge already enabled"
+      return 0
+    fi
+    review_decision=$(gh api graphql -f query='
+      query($owner:String!,$repo:String!,$pr:Int!){
+        repository(owner:$owner,name:$repo){
+          pullRequest(number:$pr){reviewDecision}
+        }
+      }' \
+      -F owner="${REPO%%/*}" -F repo="${REPO##*/}" -F pr="$PR_NUMBER" \
+      --jq '.data.repository.pullRequest.reviewDecision')
+  else
+    auto_merge_state=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}" \
+      --jq '.auto_merge // empty' 2>/dev/null || true)
+    if [ -n "$auto_merge_state" ]; then
+      echo "::notice::PR #${PR_NUMBER} auto-merge already enabled"
+      return 0
+    fi
+    review_decision=$(gh api graphql -f query='
+      query($owner:String!,$repo:String!,$pr:Int!){
+        repository(owner:$owner,name:$repo){
+          pullRequest(number:$pr){reviewDecision}
+        }
+      }' \
+      -F owner="${REPO%%/*}" -F repo="${REPO##*/}" -F pr="$PR_NUMBER" \
+      --jq '.data.repository.pullRequest.reviewDecision' 2>/dev/null || true)
   fi
-  local review_decision
-  review_decision=$(gh api graphql -f query='
-    query($owner:String!,$repo:String!,$pr:Int!){
-      repository(owner:$owner,name:$repo){
-        pullRequest(number:$pr){reviewDecision}
-      }
-    }' \
-    -F owner="${REPO%%/*}" -F repo="${REPO##*/}" -F pr="$PR_NUMBER" \
-    --jq '.data.repository.pullRequest.reviewDecision' 2>/dev/null || true)
+
   if [ "${review_decision:-}" = "APPROVED" ]; then
     echo "::notice::PR #${PR_NUMBER} is APPROVED — enabling auto-merge (squash)"
-    gh pr merge "$PR_NUMBER" --repo "$REPO" --auto --squash 2>/dev/null || \
-      echo "::warning::auto-merge could not be enabled on PR #${PR_NUMBER} — check repository settings and token permissions"
+    local merge_args=(--auto --squash)
+    [ -n "${HEAD_SHA:-}" ] && merge_args+=(--match-head-commit "$HEAD_SHA")
+    if [ "$strict" = "true" ]; then
+      gh pr merge "$PR_NUMBER" --repo "$REPO" "${merge_args[@]}"
+    else
+      gh pr merge "$PR_NUMBER" --repo "$REPO" "${merge_args[@]}" 2>/dev/null || \
+        echo "::warning::auto-merge could not be enabled on PR #${PR_NUMBER} — check repository settings and token permissions"
+    fi
   else
     echo "::notice::PR #${PR_NUMBER} reviewDecision=${review_decision:-unknown} — not yet eligible for auto-merge"
   fi
@@ -441,7 +468,7 @@ case "$INTENT_TYPE" in
       echo "::error::PR_NUMBER is required for enable-auto-merge"
       exit 1
     fi
-    try_enable_auto_merge
+    try_enable_auto_merge "true"
     ;;
   *)
     echo "::error::Unknown intent type: $INTENT_TYPE"

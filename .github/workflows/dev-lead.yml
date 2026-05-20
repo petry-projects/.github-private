@@ -229,6 +229,7 @@ jobs:
         env:
           INTENT_TYPE: enable-auto-merge
           PR_NUMBER: ${{ env.INTENT_PR_NUMBER }}
+          HEAD_SHA: ${{ env.INTENT_HEAD_SHA }}
           REPO: ${{ github.repository }}
         run: bash scripts/dev-lead-fix-reviews.sh
 
