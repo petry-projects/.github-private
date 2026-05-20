@@ -18,15 +18,23 @@ check_existing_pr() {
 }
 
 setup_git_identity() {
-  local bot="${BOT_USER:-donpetry-bot}"
+  local bot="${BOT_USER:-}"
+  if [ -z "$bot" ]; then
+    bot=$(gh api user --jq '.login' 2>/dev/null || echo "github-actions[bot]")
+  fi
   local bot_id
   bot_id=$(gh api "users/${bot}" --jq '.id' 2>/dev/null || echo "")
+  local email
   if [ -n "$bot_id" ]; then
-    git config user.email "${bot_id}+${bot}@users.noreply.github.com"
+    email="${bot_id}+${bot}@users.noreply.github.com"
   else
-    git config user.email "${bot}@users.noreply.github.com"
+    email="${bot}@users.noreply.github.com"
   fi
-  git config user.name "$bot"
+
+  export GIT_AUTHOR_NAME="$bot"
+  export GIT_AUTHOR_EMAIL="$email"
+  export GIT_COMMITTER_NAME="$bot"
+  export GIT_COMMITTER_EMAIL="$email"
 }
 
 main() {
