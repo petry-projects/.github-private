@@ -17,6 +17,18 @@ check_existing_pr() {
   [ "$existing" -gt 0 ]
 }
 
+setup_git_identity() {
+  local bot="${BOT_USER:-donpetry-bot}"
+  local bot_id
+  bot_id=$(gh api "users/${bot}" --jq '.id' 2>/dev/null || echo "")
+  if [ -n "$bot_id" ]; then
+    git config user.email "${bot_id}+${bot}@users.noreply.github.com"
+  else
+    git config user.email "${bot}@users.noreply.github.com"
+  fi
+  git config user.name "$bot"
+}
+
 main() {
   if [ -z "$ISSUE_NUMBER" ]; then
     echo "::error::ISSUE_NUMBER is required"
@@ -46,6 +58,10 @@ main() {
     rm -f "$prompt_file"
     exit 0
   fi
+
+  # Configure git identity so the post-engine commit does not fail.
+  # BOT_USER is set as a job-level env var in dev-lead-reusable.yml.
+  setup_git_identity
 
   # Create feature branch
   local branch
