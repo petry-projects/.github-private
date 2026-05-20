@@ -148,6 +148,18 @@ jobs:
             gh extension install github/gh-copilot || true
           fi
 
+      - name: Verify primary engine CLI
+        if: env.INTENT_TYPE != 'skip' && env.INTENT_TYPE != 'enable-auto-merge'
+        run: |
+          # Fail fast if the primary engine binary is missing — a silent exit 127
+          # later would waste tokens and incorrectly count toward PR exhaustion.
+          case "${DEV_LEAD_ENGINE:-claude}" in
+            claude)  claude --version ;;
+            gemini)  gemini --version ;;
+            copilot) gh copilot --version ;;
+            *) echo "::error::Unknown DEV_LEAD_ENGINE value: '${DEV_LEAD_ENGINE}'. Must be one of: claude, gemini, copilot"; exit 1 ;;
+          esac
+
       # ── fix-ci ────────────────────────────────────────────────────────────
       - name: Run fix-ci
         if: env.INTENT_TYPE == 'fix-ci'
@@ -270,6 +282,7 @@ jobs:
           RELAY_HEAD_SHA: ${{ github.event.check_run.head_sha }}
           RELAY_REPO: ${{ github.repository }}
           RELAY_CHECK_NAME: ${{ github.event.check_run.name }}
+          RELAY_CHECK_ID: ${{ github.event.check_run.id }}
           RELAY_CONCLUSION: ${{ github.event.check_run.conclusion }}
           RELAY_DETAILS_URL: ${{ github.event.check_run.details_url }}
           RELAY_APP_SLUG: ${{ github.event.check_run.app.slug }}
@@ -281,6 +294,7 @@ jobs:
             --arg head_sha "$RELAY_HEAD_SHA" \
             --arg repo "$RELAY_REPO" \
             --arg name "$RELAY_CHECK_NAME" \
+            --argjson check_id "$RELAY_CHECK_ID" \
             --arg conclusion "$RELAY_CONCLUSION" \
             --arg details_url "$RELAY_DETAILS_URL" \
             --arg app_slug "$RELAY_APP_SLUG" \
@@ -290,7 +304,7 @@ jobs:
                 pr_number: $pr_number,
                 head_sha: $head_sha,
                 repo: $repo,
-                checks: [{name: $name, conclusion: $conclusion, details_url: $details_url, app_slug: $app_slug}]
+                checks: [{id: $check_id, name: $name, conclusion: $conclusion, details_url: $details_url, app_slug: $app_slug}]
               }
             }')
           echo "$payload" | gh api \
