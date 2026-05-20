@@ -176,6 +176,20 @@ for repo in "${repos[@]}"; do
 done
 
 # ---------------------------------------------------------------------------
+# 2b. Build issue lookup for open fleet-tracker issues (linked inline in report)
+# ---------------------------------------------------------------------------
+issues_lookup_file=$(mktemp)
+if [ -n "${GITHUB_REPOSITORY:-}" ]; then
+  gh api "repos/${GITHUB_REPOSITORY}/issues?labels=fleet-tracker&state=open&per_page=100" \
+    --paginate \
+    --jq '.[] | select(.title | startswith("[Fleet Monitor] ")) |
+      (.title | ltrimstr("[Fleet Monitor] ") | split(" — ")) as $p |
+      select(($p | length) == 2) |
+      [$p[0], $p[1], .html_url, (.number | tostring)] | @tsv' \
+    > "$issues_lookup_file" 2>/dev/null || true
+fi
+
+# ---------------------------------------------------------------------------
 # 3. Generate reports
 # ---------------------------------------------------------------------------
 report_header() {
@@ -188,12 +202,12 @@ report_header() {
 # GitHub Step Summary has a 1 MB hard limit per job. At ~200 bytes per row
 # this supports ~5 000 workflows before truncation.
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
-  { report_header; generate_report "$metrics_file" "$failed_file" "false"; } \
+  { report_header; generate_report "$metrics_file" "$failed_file" "false" "$issues_lookup_file"; } \
     >> "$GITHUB_STEP_SUMMARY"
 fi
 
 # Report file — full report with Mermaid charts (used as Issue body)
-{ report_header; generate_report "$metrics_file" "$failed_file" "true"; } \
+{ report_header; generate_report "$metrics_file" "$failed_file" "true" "$issues_lookup_file"; } \
   > "$REPORT_FILE"
 
 # ---------------------------------------------------------------------------
@@ -245,7 +259,7 @@ else
   echo "[]" > "$HIGH_FAILURE_FILE"
 fi
 
-rm -f "$metrics_file" "$failed_file"
+rm -f "$metrics_file" "$failed_file" "$issues_lookup_file"
 
 # ---------------------------------------------------------------------------
 # 4. Export env flags
