@@ -18,7 +18,7 @@ ${ITEM_BODY}
 
 Write a single GitHub comment for the action specified. Rules:
 
-- **warn**: The ${ITEM_TYPE} will be closed in 7 days if there is no activity. Acknowledge
+- **warn**: The ${ITEM_TYPE} will be closed in ${GRACE_DAYS} days if there is no activity. Acknowledge
   the ${ITEM_TYPE}'s topic briefly (1 sentence), then state the closure timeline.
   Keep it under 5 sentences total. End with an HTML marker: `<!-- stale-manager: warned -->`.
 

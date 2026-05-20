@@ -44,8 +44,9 @@ check_existing_pr() {
   local existing
   existing=$(gh api "repos/$REPO/pulls" \
     --method GET \
-    -f state=open \
-    -f per_page=50 \
+    -f state=all \
+    -f per_page=100 \
+    --paginate \
     2>/dev/null \
     | jq -r --arg m "$marker" '.[] | select(.body != null and (.body | contains($m))) | .html_url' \
     || echo "")

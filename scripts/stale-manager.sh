@@ -67,6 +67,15 @@ has_stale_warning_comment() {
   | grep -qF '<!-- stale-manager: warned -->' || return 1
 }
 
+# get_stale_label_ts <repo> <number> — returns ISO 8601 timestamp when stale label was last applied, or ""
+get_stale_label_ts() {
+  local repo="$1" number="$2"
+  gh api "repos/$repo/issues/$number/events" \
+    --paginate \
+    --jq '[.[] | select(.event == "labeled" and .label.name == "stale")] | last | .created_at // empty' \
+    2>/dev/null || echo ""
+}
+
 # generate_comment <item_type> <number> <title> <body> <url> <repo> <days> <action>
 generate_comment() {
   local item_type="$1" number="$2" title="$3" body="$4" url="$5" \
@@ -89,7 +98,8 @@ generate_comment() {
     REPO="$repo" \
     DAYS_INACTIVE="$days" \
     ACTION="$action" \
-    envsubst '${ITEM_TYPE},${ITEM_NUMBER},${ITEM_TITLE},${ITEM_BODY},${ITEM_URL},${REPO},${DAYS_INACTIVE},${ACTION}' \
+    GRACE_DAYS="$GRACE_DAYS" \
+    envsubst '${ITEM_TYPE},${ITEM_NUMBER},${ITEM_TITLE},${ITEM_BODY},${ITEM_URL},${REPO},${DAYS_INACTIVE},${ACTION},${GRACE_DAYS}' \
     < "$prompt_template"
   )
 
@@ -106,7 +116,11 @@ generate_comment() {
         < "$tmp_prompt" 2>/dev/null) || comment=""
       ;;
     *)
-      comment="This ${item_type} has been inactive for ${days} days. <!-- stale-manager: warned -->"
+      if [ "$action" = "close" ]; then
+        comment="Closing this ${item_type} due to inactivity after the grace period. Feel free to re-open if it is still relevant. <!-- stale-manager: closed -->"
+      else
+        comment="This ${item_type} has been inactive for ${days} days and will be closed in ${GRACE_DAYS} days if there is no activity. <!-- stale-manager: warned -->"
+      fi
       ;;
   esac
 
@@ -142,11 +156,6 @@ apply_action() {
 
   case "$action" in
     warn)
-      if has_stale_warning_comment "$repo" "$number"; then
-        log "Idempotent skip: stale warning already posted on $item_type #$number in $repo"
-        ACTIONS_SKIPPED=$((ACTIONS_SKIPPED + 1))
-        return
-      fi
       local comment
       comment=$(generate_comment "$item_type" "$number" "$title" "" "$url" "$repo" "$days" "warn")
       gh api "repos/$repo/issues/$number/labels" \
@@ -219,15 +228,35 @@ process_item() {
   days_inactive=$(days_since "$last_updated")
 
   if [ "$has_stale_label" = "true" ]; then
-    if [ "$days_inactive" -lt "$stale_threshold" ]; then
-      # Updated since stale label was applied — remove stale
-      apply_action "unstale" "$repo" "$item_type" "$number" "$title" "$last_updated" "$labels_json"
-    elif [ "$days_inactive" -ge $(( stale_threshold + GRACE_DAYS )) ]; then
-      # Grace period elapsed — close
-      apply_action "close" "$repo" "$item_type" "$number" "$title" "$last_updated" "$labels_json"
+    local stale_ts
+    stale_ts=$(get_stale_label_ts "$repo" "$number")
+
+    if [ -n "$stale_ts" ]; then
+      local last_updated_ts stale_label_ts days_stale
+      last_updated_ts=$(iso_to_ts "$last_updated")
+      stale_label_ts=$(iso_to_ts "$stale_ts")
+      days_stale=$(( ( $(now_ts) - stale_label_ts ) / 86400 ))
+
+      if [ "$last_updated_ts" -gt "$stale_label_ts" ]; then
+        # Activity detected after stale label was applied — remove stale
+        apply_action "unstale" "$repo" "$item_type" "$number" "$title" "$last_updated" "$labels_json"
+      elif [ "$days_stale" -ge "$GRACE_DAYS" ]; then
+        # Grace period elapsed since stale label was applied — close
+        apply_action "close" "$repo" "$item_type" "$number" "$title" "$last_updated" "$labels_json"
+      else
+        log "Stale $item_type #$number in $repo still in grace period ($days_stale days since stale)"
+        SUMMARY_ROWS+=("| $repo | $item_type #$number | $days_inactive days | grace period |")
+      fi
     else
-      log "Stale $item_type #$number in $repo still in grace period ($days_inactive days)"
-      SUMMARY_ROWS+=("| $repo | $item_type #$number | $days_inactive days | grace period |")
+      # Fallback when stale label event is unavailable: use updated_at-based logic
+      if [ "$days_inactive" -lt "$stale_threshold" ]; then
+        apply_action "unstale" "$repo" "$item_type" "$number" "$title" "$last_updated" "$labels_json"
+      elif [ "$days_inactive" -ge $(( stale_threshold + GRACE_DAYS )) ]; then
+        apply_action "close" "$repo" "$item_type" "$number" "$title" "$last_updated" "$labels_json"
+      else
+        log "Stale $item_type #$number in $repo still in grace period ($days_inactive days)"
+        SUMMARY_ROWS+=("| $repo | $item_type #$number | $days_inactive days | grace period |")
+      fi
     fi
   else
     if [ "$days_inactive" -ge "$stale_threshold" ]; then
