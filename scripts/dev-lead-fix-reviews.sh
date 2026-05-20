@@ -117,6 +117,12 @@ try_enable_auto_merge() {
     echo "[dry-run] would enable auto-merge if PR #${PR_NUMBER} is APPROVED"
     return 0
   fi
+  # Refresh HEAD_SHA to the commit that is now the PR head. commit_and_push may
+  # have created a new commit after HEAD_SHA was resolved at script startup, so
+  # --match-head-commit would fail with the stale value.
+  local current_head
+  current_head=$(git rev-parse HEAD 2>/dev/null || true)
+  [ -n "$current_head" ] && HEAD_SHA="$current_head"
 
   local auto_merge_state review_decision
 
@@ -153,12 +159,12 @@ try_enable_auto_merge() {
 
   if [ "${review_decision:-}" = "APPROVED" ]; then
     echo "::notice::PR #${PR_NUMBER} is APPROVED — enabling auto-merge (squash)"
-    local merge_args=(--auto --squash)
-    [ -n "${HEAD_SHA:-}" ] && merge_args+=(--match-head-commit "$HEAD_SHA")
+    set -- --auto --squash
+    [ -n "${HEAD_SHA:-}" ] && set -- "$@" --match-head-commit "$HEAD_SHA"
     if [ "$strict" = "true" ]; then
-      gh pr merge "$PR_NUMBER" --repo "$REPO" "${merge_args[@]}"
+      gh pr merge "$PR_NUMBER" --repo "$REPO" "$@"
     else
-      gh pr merge "$PR_NUMBER" --repo "$REPO" "${merge_args[@]}" 2>/dev/null || \
+      gh pr merge "$PR_NUMBER" --repo "$REPO" "$@" 2>/dev/null || \
         echo "::warning::auto-merge could not be enabled on PR #${PR_NUMBER} — check repository settings and token permissions"
     fi
   else
