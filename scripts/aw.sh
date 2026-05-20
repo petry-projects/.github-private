@@ -162,43 +162,50 @@ cmd_run() {
     # Pass path via env var to avoid injecting user-controlled paths into Python source
     issue_number="$(AW_FIXTURE="$fixture" python3 - <<'PYEOF'
 import json, os
-d = json.load(open(os.environ['AW_FIXTURE']))
+with open(os.environ['AW_FIXTURE'], encoding='utf-8') as fh:
+    d = json.load(fh)
 print(d['issue']['number'])
 PYEOF
 )"
     issue_title="$(AW_FIXTURE="$fixture" python3 - <<'PYEOF'
 import json, os
-d = json.load(open(os.environ['AW_FIXTURE']))
+with open(os.environ['AW_FIXTURE'], encoding='utf-8') as fh:
+    d = json.load(fh)
 print(d['issue']['title'])
 PYEOF
 )"
     issue_body="$(AW_FIXTURE="$fixture" python3 - <<'PYEOF'
 import json, os
-d = json.load(open(os.environ['AW_FIXTURE']))
+with open(os.environ['AW_FIXTURE'], encoding='utf-8') as fh:
+    d = json.load(fh)
 print(d['issue']['body'] or '')
 PYEOF
 )"
     issue_labels="$(AW_FIXTURE="$fixture" python3 - <<'PYEOF'
 import json, os
-d = json.load(open(os.environ['AW_FIXTURE']))
+with open(os.environ['AW_FIXTURE'], encoding='utf-8') as fh:
+    d = json.load(fh)
 print(','.join(l['name'] for l in d['issue'].get('labels', [])))
 PYEOF
 )"
     issue_url="$(AW_FIXTURE="$fixture" python3 - <<'PYEOF'
 import json, os
-d = json.load(open(os.environ['AW_FIXTURE']))
+with open(os.environ['AW_FIXTURE'], encoding='utf-8') as fh:
+    d = json.load(fh)
 print(d['issue']['html_url'])
 PYEOF
 )"
     repo="$(AW_FIXTURE="$fixture" python3 - <<'PYEOF'
 import json, os
-d = json.load(open(os.environ['AW_FIXTURE']))
+with open(os.environ['AW_FIXTURE'], encoding='utf-8') as fh:
+    d = json.load(fh)
 print(d['repository']['full_name'])
 PYEOF
 )"
     issue_action="$(AW_FIXTURE="$fixture" python3 - <<'PYEOF'
 import json, os
-d = json.load(open(os.environ['AW_FIXTURE']))
+with open(os.environ['AW_FIXTURE'], encoding='utf-8') as fh:
+    d = json.load(fh)
 print(d.get('action', 'opened'))
 PYEOF
 )"
@@ -214,9 +221,9 @@ PYEOF
 
   # Skip guard: read threshold from frontmatter (default 2), skip if label count >= threshold
   local label_count skip_threshold
-  label_count="$(echo "$issue_labels" | python3 - <<'PYEOF'
-import sys
-raw = sys.stdin.read().strip()
+  label_count="$(AW_LABELS="$issue_labels" python3 - <<'PYEOF'
+import os
+raw = os.environ.get('AW_LABELS', '').strip()
 labels = [l for l in raw.split(',') if l]
 print(len(labels))
 PYEOF
@@ -314,18 +321,21 @@ PYEOF
     exit 1
   fi
 
-  # Call Claude
-  local result rc=0
-  result="$(echo "$prompt" | claude --model "$engine" --print --output-format text 2>/dev/null)" || rc=$?
+  # Call Claude — write prompt to a temp file to avoid echo with user-controlled data
+  local result rc=0 prompt_file
+  prompt_file="$(mktemp)"
+  printf '%s\n' "$prompt" > "$prompt_file"
+  result="$(claude --model "$engine" --print --output-format text < "$prompt_file" 2>/dev/null)" || rc=$?
+  rm -f "$prompt_file"
   if [[ $rc -ne 0 ]]; then
     echo "aw run: claude invocation failed" >&2
     exit 1
   fi
 
   # Validate JSON output
-  if ! echo "$result" | python3 - 2>/dev/null <<'PYEOF'; then
-import json, sys
-json.load(sys.stdin)
+  if ! AW_RESULT="$result" python3 - 2>/dev/null <<'PYEOF'; then
+import json, os
+json.loads(os.environ['AW_RESULT'])
 PYEOF
     echo "aw run: claude returned non-JSON output" >&2
     echo "$result" >&2
@@ -333,9 +343,9 @@ PYEOF
   fi
 
   # Reject skip flag from model — only the pre-Claude label-count guard may emit skip
-  if echo "$result" | python3 - 2>/dev/null <<'PYEOF'; then
-import json, sys
-d = json.load(sys.stdin)
+  if AW_RESULT="$result" python3 - 2>/dev/null <<'PYEOF'; then
+import json, os, sys
+d = json.loads(os.environ['AW_RESULT'])
 sys.exit(1) if d.get('skip') else None
 PYEOF
     : # no skip flag from model, ok
@@ -488,9 +498,9 @@ PYEOF
 
   # Apply labels — pass as comma-separated string so the argument stays quoted
   local labels_csv
-  labels_csv="$(echo "$result_json" | python3 - <<'PYEOF'
-import json, sys
-r = json.load(sys.stdin)
+  labels_csv="$(AW_RESULT_JSON="$result_json" python3 - <<'PYEOF'
+import json, os
+r = json.loads(os.environ['AW_RESULT_JSON'])
 if not r.get('skip'):
     print(','.join(r.get('labels', [])))
 PYEOF
@@ -522,7 +532,7 @@ apply_result() {
   local name="$1" result="$2" issue_number="$3"
   local tmp
   tmp="$(mktemp)"
-  echo "$result" > "$tmp"
+  printf '%s\n' "$result" > "$tmp"
   ISSUE_NUMBER="$issue_number" cmd_safe_output_apply "$name" "$tmp"
   rm -f "$tmp"
 }

@@ -22,9 +22,9 @@ FIXTURES="$(dirname "$0")/fixtures"
 # ---------------------------------------------------------------------------
 result=$(bash "$REPO_ROOT/scripts/aw.sh" run issue-triage \
   --fixture "$FIXTURES/scenario-4-skip.json" --staged)
-skip=$(echo "$result" | python3 - <<'PYEOF'
-import json, sys
-print(json.load(sys.stdin).get('skip', False))
+skip=$(AW_RESULT="$result" python3 - <<'PYEOF'
+import json, os
+print(json.loads(os.environ['AW_RESULT']).get('skip', False))
 PYEOF
 )
 if [[ "$skip" == "True" ]]; then

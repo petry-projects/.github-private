@@ -42,14 +42,15 @@ jobs:
         run: |
           set -euo pipefail
           result=$(bash scripts/aw.sh run issue-triage --staged)
-          skip=$(echo "$result" | python3 - <<'PYEOF'
-import json, sys
-d = json.load(sys.stdin)
+          skip=$(AW_RESULT="$result" python3 - <<'PYEOF'
+import json, os
+d = json.loads(os.environ['AW_RESULT'])
 print('true' if d.get('skip') else 'false')
 PYEOF
 )
           # Store encoded to survive multi-line JSON in GITHUB_OUTPUT
-          echo "result=$(echo "$result" | base64 -w0)" >> "$GITHUB_OUTPUT"
+          encoded=$(printf '%s\n' "$result" | base64 -w0)
+          echo "result=$encoded" >> "$GITHUB_OUTPUT"
           echo "skip=$skip" >> "$GITHUB_OUTPUT"
 
   apply:
@@ -76,6 +77,6 @@ PYEOF
           TRIAGE_RESULT:     ${{ needs.triage.outputs.result }}
         run: |
           result_file=$(mktemp)
-          echo "$TRIAGE_RESULT" | base64 -d > "$result_file"
+          printf '%s\n' "$TRIAGE_RESULT" | base64 -d > "$result_file"
           bash scripts/aw.sh safe-output apply issue-triage "$result_file"
           rm -f "$result_file"
