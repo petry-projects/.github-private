@@ -560,6 +560,7 @@ jobs:
         run: |
           # github.token events do not trigger issues:labeled workflows; use the
           # PAT to fire repository_dispatch so Dev-Lead Agent is explicitly woken.
+          # Use --input so client_payload is sent as a JSON object, not a string.
           gh api "repos/${{ github.repository }}/dispatches" \
             -X POST \
             --input - <<EOF
