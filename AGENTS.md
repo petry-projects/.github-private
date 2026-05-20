@@ -26,6 +26,10 @@ This is the `.github-private` org infrastructure repo for `petry-projects`. It c
   To change behavior across all org repos (via the cross-repo reusable), edit `dev-lead-reusable.yml`.
 - All other workflow changes must use templates from
   [`standards/workflows/`](https://github.com/petry-projects/.github/tree/main/standards/workflows) verbatim.
+- **Exception:** The `gh-aw-compile` job in `lint.yml` is a documented repo-specific addition that gates
+  agentic workflow compilation. It is not covered by the org template and must not be removed by template
+  syncs. If the org template gains a `gh-aw-compile` equivalent, remove this exception and defer to the
+  template instead.
 
 ### Agent Profiles (`agents/*.md`)
 

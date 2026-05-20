@@ -6,6 +6,7 @@ on:
       - 'scripts/**'
       - '.github/workflows/**'
       - 'tests/**'
+      - 'agents/**'
   workflow_dispatch:
 
 permissions:
@@ -34,3 +35,92 @@ jobs:
 
       - name: Run tests
         run: bats tests/fleet_report.bats
+
+  validate-agent-profiles:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Install PyYAML
+        run: pip3 install --quiet pyyaml
+
+      - name: Validate agent profile frontmatter
+        run: |
+          set -euo pipefail
+          fail=0
+          for f in agents/*.md; do
+            [ -e "$f" ] || continue
+            name_from_file=$(basename "$f" .md)
+            if ! awk 'NR==1 && $0!="---"{exit 1} /^---/{n++; if(n==2) exit} END{exit (n<2)}' "$f"; then
+              echo "FAIL: $f — frontmatter missing or does not begin on line 1"
+              fail=1
+              continue
+            fi
+            frontmatter=$(awk 'BEGIN{found=0} /^---/{found++; if(found==2) exit; next} found==1{print}' "$f")
+            if ! printf '%s\n' "$frontmatter" | python3 -c "import sys, yaml; yaml.safe_load(sys.stdin)" 2>/dev/null; then
+              echo "FAIL: $f — invalid YAML in frontmatter"
+              fail=1
+              continue
+            fi
+            name_from_front=$(printf '%s\n' "$frontmatter" | grep '^name:' | sed 's/^name:[[:space:]]*//' | sed "s/^['\"]//;s/['\"]$//" | head -1)
+            if [ -z "$name_from_front" ]; then
+              echo "FAIL: $f — missing 'name' field in frontmatter"
+              fail=1
+            elif [ "$name_from_front" != "$name_from_file" ]; then
+              echo "FAIL: $f — name '$name_from_front' does not match filename '$name_from_file'"
+              fail=1
+            elif ! printf '%s\n' "$name_from_file" | grep -qE '^[a-z0-9]+(-[a-z0-9]+)*$'; then
+              echo "FAIL: $f — name '$name_from_file' is not kebab-case (only lowercase letters, digits, and hyphens)"
+              fail=1
+            fi
+            for field in description tools; do
+              if ! printf '%s\n' "$frontmatter" | grep -q "^${field}:"; then
+                echo "FAIL: $f — missing '${field}' field in frontmatter"
+                fail=1
+              fi
+            done
+            echo "OK: $f"
+          done
+          [ "$fail" -eq 0 ] || exit 1
+
+  gh-aw-compile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Check for agentic workflow files
+        id: check-aw-files
+        run: |
+          if find .github/workflows \( -name '*.md' -o -name '*.lock.yml' \) -print -quit 2>/dev/null | grep -q .; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            echo "No .github/workflows/*.md or *.lock.yml files found — skipping compile."
+          fi
+
+      - name: Install gh-aw
+        if: steps.check-aw-files.outputs.found == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh extension install github/gh-aw --pin v0.74.4
+
+      - name: Compile agentic workflows
+        if: steps.check-aw-files.outputs.found == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh aw compile --no-emit
+
+      - name: Detect orphaned lock files
+        if: steps.check-aw-files.outputs.found == 'true'
+        run: |
+          orphan=0
+          while IFS= read -r lock; do
+            md="${lock%.lock.yml}.md"
+            if [ ! -f "$md" ]; then
+              echo "FAIL: orphaned lock file $lock — no corresponding source $md"
+              orphan=1
+            fi
+          done < <(find .github/workflows -name '*.lock.yml')
+          [ "$orphan" -eq 0 ] || exit 1
