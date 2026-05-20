@@ -75,7 +75,7 @@ no second PR is opened.
 **Expected:**
 - Workflow detects the existing PR (searching by SHA marker in PR title or body)
 - Workflow exits without opening a second PR
-- Notice logged: "CHANGELOG PR already exists for SHA <sha> — skipping"
+- Notice logged: "CHANGELOG PR already exists for SHA `<sha>` — skipping"
 
 ---
 
