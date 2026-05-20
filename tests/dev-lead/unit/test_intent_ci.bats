@@ -129,7 +129,7 @@ EOF
   [ "$(_get_env INTENT_TYPE)" = "fix-reviews" ]
 }
 
-@test "ci: pull_request review from copilot APPROVED → skip" {
+@test "ci: pull_request review from copilot APPROVED → enable-auto-merge" {
   export GITHUB_EVENT_NAME="pull_request_review"
   export GITHUB_EVENT_PATH="$FIXTURES_DIR/pr_review_copilot_approved.json"
   export TRUSTED_BOTS="copilot-pull-request-reviewer[bot],gemini-code-assist[bot],sonarqubecloud[bot],coderabbitai[bot]"
@@ -137,7 +137,7 @@ EOF
   run bash "$INTENT_SCRIPT"
 
   [ "$status" -eq 0 ]
-  [ "$(_get_env INTENT_TYPE)" = "skip" ]
+  [ "$(_get_env INTENT_TYPE)" = "enable-auto-merge" ]
 }
 
 @test "ci: issues labeled dev-lead → issue" {
