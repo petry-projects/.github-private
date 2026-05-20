@@ -7,9 +7,9 @@
 #     reusable. The scanning logic lives in scripts/fleet_monitor.sh and
 #     scripts/fleet_report.sh.
 #   • The "Track high-failure workflows as Issues" step uses github.token (not
-#     the PAT) because the PAT lacks label-assignment rights on this repo.
-#     Dev-Lead Agent is explicitly woken via repository_dispatch in the
-#     "Dispatch dev-lead for critical items" step below.
+#     GH_PAT_WORKFLOWS) because github.token has explicit issues:write on this
+#     repo. Dev-Lead Agent is explicitly woken via repository_dispatch (which
+#     requires contents:write) using GH_PAT_WORKFLOWS in the step below.
 #   • Do NOT change checkout ref from 'main' — the github.ref_name variant is
 #     for feature-branch testing only and must never reach production.
 # ─────────────────────────────────────────────────────────────────────────────
@@ -66,11 +66,11 @@ jobs:
         with:
           repository: petry-projects/.github-private
           ref: main  # Always checkout .github-private@main; workflow_call callers target @main per docs
-          token: ${{ secrets.DON_PETRY_BOT_GH_PAT }}
+          token: ${{ secrets.GH_PAT_WORKFLOWS }}
 
       - name: Run fleet monitor
         env:
-          GH_TOKEN: ${{ secrets.DON_PETRY_BOT_GH_PAT }}
+          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
         run: bash scripts/fleet_monitor.sh
 
       - name: Create issue with findings
