@@ -49,20 +49,28 @@ fi
 # 2. Check for existing advisory comment (dedup)
 # ---------------------------------------------------------------------------
 existing_comment_id=$(gh api "repos/${REPO}/issues/${PR_NUMBER}/comments" \
+  --paginate \
   --jq "[.[] | select(.body | startswith(\"${COMMENT_MARKER}\"))] | .[0].id // \"\"" \
   2>/dev/null || true)
 
 # ---------------------------------------------------------------------------
 # 3. Get diff for dependency files only
 # ---------------------------------------------------------------------------
-dep_diff=$(gh pr diff "$PR_NUMBER" --repo "$REPO" 2>/dev/null | \
-  awk '
-    /^diff --git/ { in_dep=0; header=$0; next }
-    /package\.json|package-lock\.json|yarn\.lock|go\.mod|go\.sum|requirements\.txt|Pipfile|Gemfile|Cargo\.toml|pyproject\.toml|pom\.xml|build\.gradle/ {
-      in_dep=1; print header; print; next
-    }
-    in_dep { print }
-  ' || true)
+_diff_tmp=$(mktemp)
+if ! gh pr diff "$PR_NUMBER" --repo "$REPO" > "$_diff_tmp"; then
+  rm -f "$_diff_tmp"
+  echo "::error::Failed to retrieve diff for PR #${PR_NUMBER} in ${REPO}."
+  exit 1
+fi
+dep_diff=$(awk '
+  /^diff --git/ {
+    in_dep = ($0 ~ /package\.json|package-lock\.json|yarn\.lock|go\.mod|go\.sum|requirements\.txt|Pipfile|Gemfile|Cargo\.toml|pyproject\.toml|pom\.xml|build\.gradle/)
+    if (in_dep) print
+    next
+  }
+  in_dep { print }
+' "$_diff_tmp")
+rm -f "$_diff_tmp"
 
 if [ -z "$dep_diff" ]; then
   echo "::notice::No dependency file changes found in diff — skipping advisory."
@@ -128,6 +136,13 @@ advisory_body=$(cat "$ADVISORY_FILE")
 # ---------------------------------------------------------------------------
 # 5. Post or update PR comment
 # ---------------------------------------------------------------------------
+# Skip comment writes when the token is read-only (e.g. forked PR with GITHUB_TOKEN)
+if ! gh api "repos/${REPO}" --jq '.permissions.push' 2>/dev/null | grep -q "^true$"; then
+  echo "::notice::Token lacks write access to ${REPO} — skipping advisory comment (read-only context)."
+  echo "=== Dependency advisory complete (comment skipped — no write access) ==="
+  exit 0
+fi
+
 if [ -n "$existing_comment_id" ]; then
   echo "Updating existing advisory comment #${existing_comment_id}..."
   gh api "repos/${REPO}/issues/comments/${existing_comment_id}" \

@@ -70,11 +70,19 @@ echo ""
 # 3. Scan docs files per repo
 # ---------------------------------------------------------------------------
 stale_entries=""
+_api_tmpfile=$(mktemp)
+trap 'rm -f "$_api_tmpfile"' EXIT
 
 while IFS= read -r repo; do
-  # Fetch docs/ directory listing; skip repos that have none
-  docs_listing=$(gh api "repos/${repo}/contents/docs" \
-    --jq '.[].name' 2>/dev/null || true)
+  # Fetch docs/ directory listing; 404 means no docs dir (skip), any other error is fatal
+  if ! docs_listing=$(gh api "repos/${repo}/contents/docs" \
+      --jq '.[].name' 2>"$_api_tmpfile"); then
+    if grep -qi "404\|not found" "$_api_tmpfile" 2>/dev/null; then
+      continue
+    fi
+    echo "::error::API failure listing docs/ for ${repo}: $(cat "$_api_tmpfile")"
+    exit 1
+  fi
 
   [ -z "$docs_listing" ] && continue
 
@@ -83,10 +91,13 @@ while IFS= read -r repo; do
 
     _is_ignored "$full_path" && continue
 
-    # Get last commit date for this file
-    last_commit=$(gh api \
-      "repos/${repo}/commits?path=docs/${doc_name}&per_page=1" \
-      --jq '.[0].commit.author.date // ""' 2>/dev/null || true)
+    # Get last commit date for this file; API failures are fatal (not silently skipped)
+    if ! last_commit=$(gh api \
+        "repos/${repo}/commits?path=docs/${doc_name}&per_page=1" \
+        --jq '.[0].commit.author.date // ""' 2>"$_api_tmpfile"); then
+      echo "::error::API failure fetching commits for ${repo}/docs/${doc_name}: $(cat "$_api_tmpfile")"
+      exit 1
+    fi
 
     [ -z "$last_commit" ] && continue
 

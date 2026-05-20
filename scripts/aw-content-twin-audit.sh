@@ -75,8 +75,24 @@ queue_files=$(gh api "repos/${CONTENT_TWIN_REPO}/contents/queue" \
   --jq 'length' 2>/dev/null || echo "0")
 
 if [ "$queue_files" = "0" ] || [ -z "$queue_files" ]; then
-  queue_empty=true
-  echo "  Queue is empty (0 items in queue/)"
+  echo "  Queue appears empty; checking persistence before alerting..."
+  queue_last_commit=$(gh api "repos/${CONTENT_TWIN_REPO}/commits?path=queue&per_page=1" \
+    --jq '.[0].commit.author.date // ""' 2>/dev/null || true)
+  if [ -n "$queue_last_commit" ]; then
+    queue_commit_epoch=$(date -u -d "${queue_last_commit:0:10}" +%s 2>/dev/null \
+      || date -u -j -f '%Y-%m-%d' "${queue_last_commit:0:10}" +%s)
+    today_epoch=$(date -u -d "$TODAY" +%s 2>/dev/null || date -u -j -f '%Y-%m-%d' "$TODAY" +%s)
+    queue_empty_hours=$(( (today_epoch - queue_commit_epoch) / 3600 ))
+    if [ "$queue_empty_hours" -ge 24 ]; then
+      queue_empty=true
+      echo "  Queue is empty and has been since ${queue_last_commit:0:10} (${queue_empty_hours}h ago)"
+    else
+      echo "  Queue is empty but last activity was ${queue_empty_hours}h ago — treating as transient"
+    fi
+  else
+    queue_empty=true
+    echo "  Queue is empty (0 items in queue/)"
+  fi
 else
   echo "  Queue has ${queue_files} item(s)"
 fi
@@ -182,7 +198,7 @@ echo "Report written to ${REPORT_FILE} ($(wc -c < "$REPORT_FILE") bytes)."
 # 6. Check for existing open issue (dedup)
 # ---------------------------------------------------------------------------
 existing_issue=$(gh api "repos/${CONTENT_TWIN_REPO}/issues?labels=${AUDIT_LABEL}&state=open&per_page=1" \
-  --jq '.[0].number // ""' 2>/dev/null || true)
+  --jq '[.[] | select(.pull_request == null)] | .[0].number // ""' 2>/dev/null || true)
 
 report_body=$(cat "$REPORT_FILE")
 

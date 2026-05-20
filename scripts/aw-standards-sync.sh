@@ -139,15 +139,18 @@ while IFS= read -r repo; do
     continue
   fi
 
-  # Create the sync branch
-  gh api "repos/${repo}/git/refs" \
-    --method POST \
-    --field "ref=refs/heads/${BRANCH_NAME}" \
-    --field "sha=${base_sha}" \
-    --silent 2>/dev/null || {
-    echo "  [warn] ${repo} — branch ${BRANCH_NAME} may already exist, skipping"
-    continue
-  }
+  # Create the sync branch; if it already exists (failed previous run) reuse it
+  if ! gh api "repos/${repo}/git/refs" \
+      --method POST \
+      --field "ref=refs/heads/${BRANCH_NAME}" \
+      --field "sha=${base_sha}" \
+      --silent 2>/dev/null; then
+    if ! gh api "repos/${repo}/git/ref/heads/${BRANCH_NAME}" --silent 2>/dev/null; then
+      echo "  [warn] ${repo} — could not create branch ${BRANCH_NAME}, skipping"
+      continue
+    fi
+    echo "  [info] ${repo} — branch ${BRANCH_NAME} already exists, reusing for PR creation"
+  fi
 
   # Create each missing file via the Contents API
   missing_labels=""

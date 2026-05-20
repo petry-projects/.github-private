@@ -2,9 +2,8 @@ name: Standards Sync
 
 on:
   schedule:
-    # First Monday of each month at 09:00 UTC
-    # Runs on days 1–7 of the month that fall on Monday (day-of-week 1)
-    - cron: '0 9 1-7 * 1'
+    # Every Monday at 09:00 UTC; the guard step below enforces first-Monday-only
+    - cron: '0 9 * * 1'
   workflow_dispatch: {}
 
 permissions:
@@ -26,10 +25,24 @@ jobs:
       SKIP_REPOS: ${{ vars.STANDARDS_SYNC_SKIP_REPOS || '' }}
 
     steps:
+      - name: Guard — first Monday of month only
+        id: guard
+        run: |
+          day=$(date -u +%-d)
+          if [ "$day" -gt 7 ]; then
+            echo "Not the first Monday of the month (day=$day) — skipping."
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "First Monday confirmed (day=$day) — proceeding."
+            echo "proceed=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Checkout agent repo
+        if: steps.guard.outputs.proceed == 'true'
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
       - name: Run standards sync
+        if: steps.guard.outputs.proceed == 'true'
         env:
           GH_TOKEN: ${{ secrets.DON_PETRY_BOT_GH_PAT }}
         run: bash scripts/aw-standards-sync.sh
