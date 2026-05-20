@@ -18,6 +18,18 @@ check_existing_pr() {
   [ "$existing" -gt 0 ]
 }
 
+setup_git_identity() {
+  local bot="${BOT_USER:-donpetry-bot}"
+  local bot_id
+  bot_id=$(gh api "users/${bot}" --jq '.id' 2>/dev/null || echo "")
+  if [ -n "$bot_id" ]; then
+    git config user.email "${bot_id}+${bot}@users.noreply.github.com"
+  else
+    git config user.email "${bot}@users.noreply.github.com"
+  fi
+  git config user.name "$bot"
+}
+
 main() {
   if [ -z "$ISSUE_NUMBER" ]; then
     echo "::error::ISSUE_NUMBER is required"
