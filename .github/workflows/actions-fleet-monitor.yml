@@ -199,10 +199,12 @@ jobs:
         run: |
           # github.token events do not trigger issues:labeled workflows; use the
           # PAT to fire repository_dispatch so Dev-Lead Agent is explicitly woken.
+          # Use --input so client_payload is sent as a JSON object, not a string.
           gh api "repos/${{ github.repository }}/dispatches" \
             -X POST \
-            -f event_type=dev-lead-ci-failure \
-            -f 'client_payload={"source":"fleet-monitor","count":"${{ env.HIGH_FAILURE_COUNT }}"}'
+            --input - <<EOF
+          {"event_type":"dev-lead-ci-failure","client_payload":{"source":"fleet-monitor","count":"${{ env.HIGH_FAILURE_COUNT }}"}}
+          EOF
 
       - name: Annotate clean run
         if: env.HAS_FAILURES != 'true'
