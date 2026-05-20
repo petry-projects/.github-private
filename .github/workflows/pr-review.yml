@@ -67,16 +67,24 @@ permissions:
 concurrency:
   # Event-triggered and mention-triggered runs for a specific PR get a per-PR
   # concurrency slot so they never queue behind unrelated PRs.
+  # check_suite events carry the associated PR in pull_requests[0]; including
+  # that URL here prevents cross-PR cancellation when multiple PRs' CI suites
+  # complete simultaneously (each PR competes only with itself, which is safe
+  # since same-PR runs are idempotent on the same head SHA).
+  # Note: check_suite.pull_requests entries expose the API `url` field, not
+  # `html_url` — using `url` here matches the payload shape.
   # Manual batch runs (workflow_dispatch without pr_url) use a shared slot.
   group: >-
     ${{
       (inputs.pr_url
        || github.event.client_payload.pr_url
-       || github.event.pull_request.html_url)
+       || github.event.pull_request.html_url
+       || github.event.check_suite.pull_requests[0].url)
       && format('pr-review-pr-{0}',
            inputs.pr_url
            || github.event.client_payload.pr_url
-           || github.event.pull_request.html_url)
+           || github.event.pull_request.html_url
+           || github.event.check_suite.pull_requests[0].url)
       || 'pr-review-batch'
     }}
   cancel-in-progress: false
@@ -193,6 +201,9 @@ jobs:
               install_claude
               # Best-effort install of fallbacks for duck/fallback support
               npm install -g @google/gemini-cli || true
+              if ! command -v gemini >/dev/null 2>&1; then
+                echo "::warning::gemini CLI unavailable — Gemini rate-limit fallback will be unavailable"
+              fi
               if ! env GH_TOKEN="$COPILOT_GITHUB_TOKEN" gh copilot --version > /dev/null 2>&1; then
                 echo "::warning::gh copilot built-in unavailable with user token — rate-limit fallback will be unavailable."
               fi
@@ -208,6 +219,9 @@ jobs:
               fi
               install_claude || true
               npm install -g @google/gemini-cli || true
+              if ! command -v gemini >/dev/null 2>&1; then
+                echo "::warning::gemini CLI unavailable — Gemini duck review will be skipped"
+              fi
               ;;
             *)
               echo "::error::Unknown REVIEW_ENGINE=$REVIEW_ENGINE"
