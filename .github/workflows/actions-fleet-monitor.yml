@@ -195,7 +195,7 @@ jobs:
       - name: Dispatch dev-lead for critical items
         if: env.HIGH_FAILURE_COUNT != '' && env.HIGH_FAILURE_COUNT != '0'
         env:
-          GH_TOKEN: ${{ secrets.DON_PETRY_BOT_GH_PAT }}
+          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
         run: |
           # github.token events do not trigger issues:labeled workflows; use the
           # PAT to fire repository_dispatch so Dev-Lead Agent is explicitly woken.
