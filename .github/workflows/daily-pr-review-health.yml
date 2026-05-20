@@ -1,0 +1,102 @@
+name: Daily PR Review Health Check
+
+on:
+  schedule:
+    # Daily at 6:00 UTC — covers same-day run history before US work hours
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+    inputs:
+      lookback_days:
+        description: "Days of run history to inspect (time-based search)"
+        required: false
+        default: "1"
+        type: string
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: daily-pr-review-health
+  cancel-in-progress: true
+
+jobs:
+  health-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      LOOKBACK_DAYS: ${{ inputs.lookback_days || '1' }}
+      # Pin via vars.CLAUDE_CODE_VERSION for reproducible caching; default
+      # 'latest' caches an install indefinitely — flush via the Actions cache
+      # UI or bump the variable to pick up new releases. Mirrors pr-review.yml.
+      CLAUDE_CODE_VERSION: ${{ vars.CLAUDE_CODE_VERSION || 'latest' }}
+
+    steps:
+      - name: Checkout agent repo
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Set up Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+        with:
+          node-version: '20'
+
+      - name: Cache claude-code CLI
+        uses: actions/cache@v5
+        with:
+          path: ~/.npm-global
+          key: claude-code-${{ env.CLAUDE_CODE_VERSION }}-${{ runner.os }}
+
+      - name: Install Claude Code CLI
+        run: |
+          mkdir -p "$HOME/.npm-global"
+          npm config set prefix "$HOME/.npm-global"
+          echo "$HOME/.npm-global/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.npm-global/bin:$PATH"
+          if command -v claude >/dev/null 2>&1; then
+            echo "claude-code cache hit: $(claude --version)"
+          else
+            npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" # NOSONAR — install scripts required for native binary setup; version intentionally uses CLAUDE_CODE_VERSION var (same pattern as pr-review.yml)
+          fi
+
+      - name: Run health check
+        env:
+          GH_TOKEN: ${{ secrets.DON_PETRY_BOT_GH_PAT }}
+        run: bash scripts/pr_review_health.sh
+
+      - name: Truncate report if needed
+        run: |
+          if [ -f pr_review_health_report.md ]; then
+            if [ "$(wc -c < pr_review_health_report.md)" -gt 60000 ]; then
+              head -c 60000 pr_review_health_report.md > pr_review_health_report.md.tmp
+              mv pr_review_health_report.md.tmp pr_review_health_report.md
+              printf '\n\n---\n_Report truncated at 60 000 bytes._\n' >> pr_review_health_report.md
+            fi
+          fi
+
+      - name: Create issue with findings
+        if: env.HAS_FAILURES == 'true' && hashFiles('pr_review_health_report.md') != ''
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const fs = require('fs');
+            const report = fs.readFileSync('pr_review_health_report.md', 'utf8');
+            if (!report.trim()) {
+              core.setFailed('Report file is empty');
+              return;
+            }
+            const today = new Date().toISOString().split('T')[0];
+            const issue = await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `PR Review Agent — failures detected ${today}`,
+              body: report,
+              labels: ['health-check', 'automated-report'],
+            });
+            core.notice(`Issue created: ${issue.data.html_url}`);
+
+      - name: Annotate clean run
+        if: env.HAS_FAILURES != 'true'
+        run: |
+          echo "::notice::Health check passed — all runs in the last ${LOOKBACK_DAYS} day(s) are healthy."
