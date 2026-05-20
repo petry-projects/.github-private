@@ -47,9 +47,6 @@ RETRY_MAX_ATTEMPTS="${RETRY_MAX_ATTEMPTS:-2}"   # total attempts including first
 RETRY_BASE_DELAY_SEC="${RETRY_BASE_DELAY_SEC:-5}"
 
 set_engine_config() {
-  # Default Copilot model — ensures the variable is bound for set -u
-  COPILOT_API_MODEL="${COPILOT_API_MODEL:-gpt-5.4}"
-
   case "$REVIEW_ENGINE" in
     claude)
       ENGINE_TRIAGE_MODEL="claude-haiku-4-5-20251001"
@@ -57,7 +54,7 @@ set_engine_config() {
       ENGINE_AUDIT_MODEL="claude-opus-4-7"
       ENGINE_ACTION_MODEL="claude-sonnet-4-6"
       ENGINE_SINGLE_MODEL="claude-opus-4-7"
-      ENGINE_LABEL="triage: haiku 4.5 → deep: sonnet 4.6 + duck: gpt-5.4 → audit: opus 4.7"
+      ENGINE_LABEL="triage: haiku 4.5 → deep: sonnet 4.6 + duck: o4-mini → audit: opus 4.7"
       ENGINE_SINGLE_LABEL="single-reviewer mode: opus 4.7"
       # Cross-engine rubber duck: use Copilot when Claude is primary
       DUCK_ENGINE="copilot"
@@ -1107,8 +1104,10 @@ sys.exit(1)
 
 # run_duck <prompt_file> <model>
 # Cross-engine adversarial "rubber duck" review.
-# Always uses a different model family from REVIEW_ENGINE. Output to stdout.
-# Strips the opposing engine's credentials to prevent cross-engine leakage.
+# DUCK_ENGINE is set by engine.sh init: claude→copilot, gemini→claude, copilot→gemini.
+# All three engine branches (claude, gemini, copilot) are reachable — the gemini
+# branch executes when REVIEW_ENGINE=copilot (copilot primary → gemini duck).
+# Output to stdout. Strips non-selected engine credentials to prevent cross-engine leakage.
 run_duck() {
   local prompt_file="$1"
   local model="$2"
