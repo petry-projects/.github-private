@@ -193,6 +193,9 @@ jobs:
               install_claude
               # Best-effort install of fallbacks for duck/fallback support
               npm install -g @google/gemini-cli || true
+              if ! command -v gemini >/dev/null 2>&1; then
+                echo "::warning::gemini CLI unavailable — Gemini rate-limit fallback will be unavailable"
+              fi
               if ! env GH_TOKEN="$COPILOT_GITHUB_TOKEN" gh copilot --version > /dev/null 2>&1; then
                 echo "::warning::gh copilot built-in unavailable with user token — rate-limit fallback will be unavailable."
               fi
@@ -208,6 +211,9 @@ jobs:
               fi
               install_claude || true
               npm install -g @google/gemini-cli || true
+              if ! command -v gemini >/dev/null 2>&1; then
+                echo "::warning::gemini CLI unavailable — Gemini duck review will be skipped"
+              fi
               ;;
             *)
               echo "::error::Unknown REVIEW_ENGINE=$REVIEW_ENGINE"

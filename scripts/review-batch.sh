@@ -6,8 +6,8 @@
 #   PRS_FILE          — path to candidate list (default: prs.txt)
 #   MAX_PRS           — stop after this many actual reviews (no-ops don't count)
 #   CANDIDATE_LIMIT   — hard cap on candidates inspected (timeout backstop)
-#   REVIEW_ENGINE     — primary engine (claude|copilot); may be flipped on
-#                       rate-limit fallback
+#   REVIEW_ENGINE     — primary engine (claude|gemini|copilot); may follow
+#                       fallback chain claude -> gemini -> copilot
 #   GH_TOKEN          — workflow auth (set at job level)
 #
 # Exit:
