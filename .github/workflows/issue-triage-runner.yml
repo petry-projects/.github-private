@@ -22,7 +22,7 @@ jobs:
           persist-credentials: false
 
       - name: Install claude CLI
-        uses: anthropics/claude-code-action/setup@24492741e0ccfdef4c1d19da8e11e0f373d07494  # main
+        uses: anthropics/claude-code-action/setup@20c8abf165d5f85ab3fc970db9498436377dc9d1  # main
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 
