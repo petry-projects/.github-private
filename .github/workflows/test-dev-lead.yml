@@ -19,6 +19,9 @@ on:
       - 'prompts/dev-lead/**'
   workflow_dispatch: {}
 
+permissions:
+  contents: read
+
 jobs:
   validate-fixtures:
     runs-on: ubuntu-latest
