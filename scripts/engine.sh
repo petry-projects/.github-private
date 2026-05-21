@@ -5,10 +5,16 @@ set -euo pipefail
 #
 # Sourced by review-one-pr.sh — provides:
 #   run_triage <prompt_file>       — no-tool tier (stdout capture)
-#   run_agentic <prompt_file> <model>  — full-tool tier (stdout)
+#   run_agentic <prompt_file> <model> [tier]  — full-tool tier (stdout)
 #   run_duck <prompt_file> <model>     — cross-engine adversarial (stdout)
 #   ENGINE_* env vars for model names and labels
 #   DUCK_ENGINE / DUCK_MODEL for rubber-duck cross-engine review
+#
+# Token logging (opt-in):
+#   Set TOKEN_LOG_FILE=<path> to capture per-call JSONL token records.
+#   TOKEN_WORKFLOW — workflow label for records (default: "unknown").
+#   Records are written via scripts/lib/token-metrics.sh (estimate-based).
+#   Unset → zero overhead, zero behaviour change.
 
 REVIEW_ENGINE="${REVIEW_ENGINE:-claude}"
 export REVIEW_ENGINE
@@ -89,6 +95,13 @@ set_engine_config() {
 # Initial config
 set_engine_config
 echo "    engine: $REVIEW_ENGINE ($ENGINE_LABEL)"
+
+# Load token metrics library unconditionally (non-fatal).
+# emit_token_record and friends are no-ops when TOKEN_LOG_FILE is unset.
+_TOKEN_LIB="$(dirname "${BASH_SOURCE[0]}")/lib/token-metrics.sh"
+# shellcheck source=lib/token-metrics.sh
+[ -f "$_TOKEN_LIB" ] && source "$_TOKEN_LIB" 2>/dev/null || true
+unset _TOKEN_LIB
 
 # is_rate_limited <text>
 # Returns 0 (true) if the text looks like a provider usage/rate-limit block —
@@ -176,6 +189,24 @@ copilot_chat() {
     -s "$@" < /dev/null
 }
 
+# _record_engine_tokens <tier> <engine> <model> <prompt_file> [output_file]
+# Writes one token record to TOKEN_LOG_FILE using estimate_tokens_from_file.
+# No-op when TOKEN_LOG_FILE is unset or the token-metrics library is not loaded.
+# Always succeeds (non-fatal): token logging must never abort a real workflow.
+_record_engine_tokens() {
+  [ -n "${TOKEN_LOG_FILE:-}" ] || return 0
+  declare -f emit_token_record >/dev/null 2>&1 || return 0
+
+  local tier="$1" engine="$2" model="$3" prompt_file="$4" output_file="${5:-}"
+  local workflow="${TOKEN_WORKFLOW:-unknown}"
+  local input_tokens output_tokens context
+  input_tokens=$(estimate_tokens_from_file "$prompt_file")
+  output_tokens=$(estimate_tokens_from_file "$output_file")
+  context="${PR_URL:-}"
+  emit_token_record "$workflow" "$tier" "$engine" "$model" \
+    "$input_tokens" 0 "$output_tokens" "$context" || true
+}
+
 # run_triage <prompt_file>
 # No-tool mode. The prompt file already has all PR context inlined by the
 # caller (review-one-pr.sh builds it). Every tool is denied so the model
@@ -188,28 +219,55 @@ copilot_chat() {
 run_triage() {
   local prompt_file="$1"
   local attempt=1 rc=0
+  # Capture output for token estimation when logging is enabled (tee is a no-op otherwise).
+  local _tok_tmp=""
+  if [ -n "${TOKEN_LOG_FILE:-}" ]; then
+    _tok_tmp="$(mktemp 2>/dev/null || true)"
+  fi
   while [ "$attempt" -le "$RETRY_MAX_ATTEMPTS" ]; do
     rc=0
+    [ -n "$_tok_tmp" ] && : > "$_tok_tmp"
     case "$REVIEW_ENGINE" in
       claude)
-        timeout "$TRIAGE_TIMEOUT_SEC" claude --print \
-          --model "$ENGINE_TRIAGE_MODEL" \
-          --disallowed-tools "Bash,Read,Write,Edit,Grep,Glob,WebFetch,WebSearch,Task,TodoWrite,NotebookEdit" \
-          < "$prompt_file" || rc=$?
+        if [ -n "$_tok_tmp" ]; then
+          timeout "$TRIAGE_TIMEOUT_SEC" claude --print \
+            --model "$ENGINE_TRIAGE_MODEL" \
+            --disallowed-tools "Bash,Read,Write,Edit,Grep,Glob,WebFetch,WebSearch,Task,TodoWrite,NotebookEdit" \
+            < "$prompt_file" | tee "$_tok_tmp" || rc=${PIPESTATUS[0]}
+        else
+          timeout "$TRIAGE_TIMEOUT_SEC" claude --print \
+            --model "$ENGINE_TRIAGE_MODEL" \
+            --disallowed-tools "Bash,Read,Write,Edit,Grep,Glob,WebFetch,WebSearch,Task,TodoWrite,NotebookEdit" \
+            < "$prompt_file" || rc=$?
+        fi
         ;;
       gemini)
-        timeout "$TRIAGE_TIMEOUT_SEC" gemini --prompt "" \
-          --model "$ENGINE_TRIAGE_MODEL" \
-          --approval-mode auto_edit \
-          --output-format text \
-          < "$prompt_file" || rc=$?
+        if [ -n "$_tok_tmp" ]; then
+          timeout "$TRIAGE_TIMEOUT_SEC" gemini --prompt "" \
+            --model "$ENGINE_TRIAGE_MODEL" \
+            --approval-mode auto_edit \
+            --output-format text \
+            < "$prompt_file" | tee "$_tok_tmp" || rc=${PIPESTATUS[0]}
+        else
+          timeout "$TRIAGE_TIMEOUT_SEC" gemini --prompt "" \
+            --model "$ENGINE_TRIAGE_MODEL" \
+            --approval-mode auto_edit \
+            --output-format text \
+            < "$prompt_file" || rc=$?
+        fi
         ;;
       copilot)
         # In triage mode, we deny all tools to keep it fast and restricted.
-        copilot_chat "$prompt_file" "$TRIAGE_TIMEOUT_SEC" --deny-tool "*" || rc=$?
+        if [ -n "$_tok_tmp" ]; then
+          copilot_chat "$prompt_file" "$TRIAGE_TIMEOUT_SEC" --deny-tool "*" | tee "$_tok_tmp" || rc=${PIPESTATUS[0]}
+        else
+          copilot_chat "$prompt_file" "$TRIAGE_TIMEOUT_SEC" --deny-tool "*" || rc=$?
+        fi
         ;;
     esac
     if [ "$rc" -eq 0 ]; then
+      _record_engine_tokens "triage" "$REVIEW_ENGINE" "$ENGINE_TRIAGE_MODEL" "$prompt_file" "$_tok_tmp"
+      [ -n "$_tok_tmp" ] && rm -f "$_tok_tmp"
       return 0
     fi
     if [ "$attempt" -lt "$RETRY_MAX_ATTEMPTS" ] && is_transient_failure "$rc"; then
@@ -219,12 +277,14 @@ run_triage() {
       attempt=$((attempt + 1))
       continue
     fi
+    [ -n "$_tok_tmp" ] && rm -f "$_tok_tmp"
     return "$rc"
   done
+  [ -n "$_tok_tmp" ] && rm -f "$_tok_tmp"
   return "$rc"
 }
 
-# run_agentic <prompt_file> <model>
+# run_agentic <prompt_file> <model> [tier]
 # Full tool access (Bash, Read, Grep, Glob). Output to stdout.
 #
 # No retry here: callers redirect stdout to a file, so a retry inside this
@@ -236,32 +296,65 @@ run_triage() {
 run_agentic() {
   local prompt_file="$1"
   local model="$2"
+  local tier="${3:-deep}"
+  local _tok_tmp="" rc=0
+  if [ -n "${TOKEN_LOG_FILE:-}" ]; then
+    _tok_tmp="$(mktemp 2>/dev/null || true)"
+  fi
   case "$REVIEW_ENGINE" in
     claude)
-      timeout "$DEEP_TIMEOUT_SEC" claude --print \
-        --model "$model" \
-        --permission-mode acceptEdits \
-        --allowed-tools "Bash,Read,Grep,Glob" \
-        < "$prompt_file"
+      if [ -n "$_tok_tmp" ]; then
+        timeout "$DEEP_TIMEOUT_SEC" claude --print \
+          --model "$model" \
+          --permission-mode acceptEdits \
+          --allowed-tools "Bash,Read,Grep,Glob" \
+          < "$prompt_file" | tee "$_tok_tmp" || rc=${PIPESTATUS[0]}
+      else
+        timeout "$DEEP_TIMEOUT_SEC" claude --print \
+          --model "$model" \
+          --permission-mode acceptEdits \
+          --allowed-tools "Bash,Read,Grep,Glob" \
+          < "$prompt_file" || rc=$?
+      fi
       ;;
     gemini)
-      timeout "$DEEP_TIMEOUT_SEC" gemini --prompt "" \
-        --model "$model" \
-        --approval-mode auto_edit \
-        --output-format text \
-        < "$prompt_file"
+      if [ -n "$_tok_tmp" ]; then
+        timeout "$DEEP_TIMEOUT_SEC" gemini --prompt "" \
+          --model "$model" \
+          --approval-mode auto_edit \
+          --output-format text \
+          < "$prompt_file" | tee "$_tok_tmp" || rc=${PIPESTATUS[0]}
+      else
+        timeout "$DEEP_TIMEOUT_SEC" gemini --prompt "" \
+          --model "$model" \
+          --approval-mode auto_edit \
+          --output-format text \
+          < "$prompt_file" || rc=$?
+      fi
       ;;
     copilot)
       # Full tool support via GitHub Copilot CLI agentic mode (--yolo).
       # Stream directly to stdout; tee to OUTPUT_FILE when set.
       if [ -n "${OUTPUT_FILE:-}" ]; then
-        copilot_chat "$prompt_file" "$DEEP_TIMEOUT_SEC" --yolo | tee "$OUTPUT_FILE"
-        return "${PIPESTATUS[0]}"
+        if [ -n "$_tok_tmp" ]; then
+          copilot_chat "$prompt_file" "$DEEP_TIMEOUT_SEC" --yolo | tee "$OUTPUT_FILE" "$_tok_tmp" || rc=${PIPESTATUS[0]}
+        else
+          copilot_chat "$prompt_file" "$DEEP_TIMEOUT_SEC" --yolo | tee "$OUTPUT_FILE" || rc=${PIPESTATUS[0]}
+        fi
       else
-        copilot_chat "$prompt_file" "$DEEP_TIMEOUT_SEC" --yolo
+        if [ -n "$_tok_tmp" ]; then
+          copilot_chat "$prompt_file" "$DEEP_TIMEOUT_SEC" --yolo | tee "$_tok_tmp" || rc=${PIPESTATUS[0]}
+        else
+          copilot_chat "$prompt_file" "$DEEP_TIMEOUT_SEC" --yolo || rc=$?
+        fi
       fi
       ;;
   esac
+  if [ "$rc" -eq 0 ]; then
+    _record_engine_tokens "$tier" "$REVIEW_ENGINE" "$model" "$prompt_file" "$_tok_tmp"
+  fi
+  [ -n "$_tok_tmp" ] && rm -f "$_tok_tmp"
+  return "$rc"
 }
 
 # extract_verdict_json <raw_file> <dest_file>
@@ -307,41 +400,75 @@ sys.exit(1)
 run_duck() {
   local prompt_file="$1"
   local model="$2"
+  local _tok_tmp="" rc=0
+  if [ -n "${TOKEN_LOG_FILE:-}" ]; then
+    _tok_tmp="$(mktemp 2>/dev/null || true)"
+  fi
   case "$DUCK_ENGINE" in
     claude)
       unset COPILOT_GITHUB_TOKEN 2>/dev/null || true
       unset GOOGLE_API_KEY 2>/dev/null || true
-      timeout "$DUCK_TIMEOUT_SEC" claude --print \
-        --model "$model" \
-        --permission-mode acceptEdits \
-        --allowed-tools "Bash,Read,Grep,Glob" \
-        --max-turns 25 \
-        < "$prompt_file"
+      if [ -n "$_tok_tmp" ]; then
+        timeout "$DUCK_TIMEOUT_SEC" claude --print \
+          --model "$model" \
+          --permission-mode acceptEdits \
+          --allowed-tools "Bash,Read,Grep,Glob" \
+          --max-turns 25 \
+          < "$prompt_file" | tee "$_tok_tmp" || rc=${PIPESTATUS[0]}
+      else
+        timeout "$DUCK_TIMEOUT_SEC" claude --print \
+          --model "$model" \
+          --permission-mode acceptEdits \
+          --allowed-tools "Bash,Read,Grep,Glob" \
+          --max-turns 25 \
+          < "$prompt_file" || rc=$?
+      fi
       ;;
     gemini)
       unset CLAUDE_CODE_OAUTH_TOKEN 2>/dev/null || true
       unset COPILOT_GITHUB_TOKEN 2>/dev/null || true
-      timeout "$DUCK_TIMEOUT_SEC" gemini --prompt "" \
-        --model "$model" \
-        --approval-mode auto_edit \
-        --output-format text \
-        < "$prompt_file"
+      if [ -n "$_tok_tmp" ]; then
+        timeout "$DUCK_TIMEOUT_SEC" gemini --prompt "" \
+          --model "$model" \
+          --approval-mode auto_edit \
+          --output-format text \
+          < "$prompt_file" | tee "$_tok_tmp" || rc=${PIPESTATUS[0]}
+      else
+        timeout "$DUCK_TIMEOUT_SEC" gemini --prompt "" \
+          --model "$model" \
+          --approval-mode auto_edit \
+          --output-format text \
+          < "$prompt_file" || rc=$?
+      fi
       ;;
     copilot)
       unset CLAUDE_CODE_OAUTH_TOKEN 2>/dev/null || true
       unset GOOGLE_API_KEY 2>/dev/null || true
       if [ -n "${OUTPUT_FILE:-}" ]; then
-        copilot_chat "$prompt_file" "$DUCK_TIMEOUT_SEC" --yolo | tee "$OUTPUT_FILE"
-        return "${PIPESTATUS[0]}"
+        if [ -n "$_tok_tmp" ]; then
+          copilot_chat "$prompt_file" "$DUCK_TIMEOUT_SEC" --yolo | tee "$OUTPUT_FILE" "$_tok_tmp" || rc=${PIPESTATUS[0]}
+        else
+          copilot_chat "$prompt_file" "$DUCK_TIMEOUT_SEC" --yolo | tee "$OUTPUT_FILE" || rc=${PIPESTATUS[0]}
+        fi
       else
-        copilot_chat "$prompt_file" "$DUCK_TIMEOUT_SEC" --yolo
+        if [ -n "$_tok_tmp" ]; then
+          copilot_chat "$prompt_file" "$DUCK_TIMEOUT_SEC" --yolo | tee "$_tok_tmp" || rc=${PIPESTATUS[0]}
+        else
+          copilot_chat "$prompt_file" "$DUCK_TIMEOUT_SEC" --yolo || rc=$?
+        fi
       fi
       ;;
     *)
       echo "::error::Unknown DUCK_ENGINE='$DUCK_ENGINE'" >&2
+      [ -n "$_tok_tmp" ] && rm -f "$_tok_tmp"
       return 1
       ;;
   esac
+  if [ "$rc" -eq 0 ]; then
+    _record_engine_tokens "duck" "$DUCK_ENGINE" "$model" "$prompt_file" "$_tok_tmp"
+  fi
+  [ -n "$_tok_tmp" ] && rm -f "$_tok_tmp"
+  return "$rc"
 }
 
 # parse_reset_time <text>
@@ -400,36 +527,59 @@ run_writer() {
   # to stdout, not stderr), so is_rate_limited never fired and fallback engines
   # were never tried.
   local _tmp rc=0
-  _tmp=$(mktemp)
+  _tmp="$(mktemp 2>/dev/null || true)"
 
   case "$REVIEW_ENGINE" in
     claude)
-      timeout "$ACTION_TIMEOUT_SEC" claude --print \
-        --model "$model" \
-        --permission-mode acceptEdits \
-        --allowed-tools "Bash,Read,Write,Edit,Grep,Glob,WebFetch" \
-        < "$prompt_file" | tee "$_tmp" || rc=${PIPESTATUS[0]}
+      if [ -n "$_tmp" ]; then
+        timeout "$ACTION_TIMEOUT_SEC" claude --print \
+          --model "$model" \
+          --permission-mode acceptEdits \
+          --allowed-tools "Bash,Read,Write,Edit,Grep,Glob,WebFetch" \
+          < "$prompt_file" | tee "$_tmp" || rc=${PIPESTATUS[0]}
+      else
+        timeout "$ACTION_TIMEOUT_SEC" claude --print \
+          --model "$model" \
+          --permission-mode acceptEdits \
+          --allowed-tools "Bash,Read,Write,Edit,Grep,Glob,WebFetch" \
+          < "$prompt_file" || rc=$?
+      fi
       ;;
     gemini)
-      timeout "$ACTION_TIMEOUT_SEC" gemini --prompt "" \
-        --model "$model" \
-        --approval-mode auto_edit \
-        --output-format text \
-        < "$prompt_file" | tee "$_tmp" || rc=${PIPESTATUS[0]}
+      if [ -n "$_tmp" ]; then
+        timeout "$ACTION_TIMEOUT_SEC" gemini --prompt "" \
+          --model "$model" \
+          --approval-mode auto_edit \
+          --output-format text \
+          < "$prompt_file" | tee "$_tmp" || rc=${PIPESTATUS[0]}
+      else
+        timeout "$ACTION_TIMEOUT_SEC" gemini --prompt "" \
+          --model "$model" \
+          --approval-mode auto_edit \
+          --output-format text \
+          < "$prompt_file" || rc=$?
+      fi
       ;;
     copilot)
       # Self-sufficient write support via gh copilot --yolo
-      copilot_chat "$prompt_file" "$ACTION_TIMEOUT_SEC" --yolo | tee "$_tmp" || rc=${PIPESTATUS[0]}
+      if [ -n "$_tmp" ]; then
+        copilot_chat "$prompt_file" "$ACTION_TIMEOUT_SEC" --yolo | tee "$_tmp" || rc=${PIPESTATUS[0]}
+      else
+        copilot_chat "$prompt_file" "$ACTION_TIMEOUT_SEC" --yolo || rc=$?
+      fi
       ;;
   esac
 
   # Map rate-limit to exit code 2 for caller to detect; parse reset time for marker embedding
-  if [ "$rc" -ne 0 ] && is_rate_limited "$(cat "$_tmp")"; then
+  if [ "$rc" -ne 0 ] && [ -n "$_tmp" ] && is_rate_limited "$(cat "$_tmp")"; then
     parse_reset_time "$(cat "$_tmp")"
-    rm -f "$_tmp"
+    [ -n "$_tmp" ] && rm -f "$_tmp"
     return 2
   fi
-  rm -f "$_tmp"
+  if [ "$rc" -eq 0 ]; then
+    _record_engine_tokens "writer" "$REVIEW_ENGINE" "$model" "$prompt_file" "$_tmp"
+  fi
+  [ -n "$_tmp" ] && rm -f "$_tmp"
   return "$rc"
 }
 

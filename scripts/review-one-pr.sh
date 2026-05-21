@@ -419,7 +419,7 @@ if [ "$TRIAGE_ESCALATE" = "false" ]; then
     SINGLE_LOG="/tmp/cascade/single-review-attempt-${single_attempt}.log"
 
     single_rc=0
-    run_agentic prompts/single-review.md "$ENGINE_SINGLE_MODEL" \
+    run_agentic prompts/single-review.md "$ENGINE_SINGLE_MODEL" "single" \
       > "$VERDICT_JSON.raw" 2>"$SINGLE_LOG" || single_rc=$?
 
     # Check error category on failure only — guards against false positives from
@@ -492,7 +492,7 @@ echo "    [tier2] deep review ($ENGINE_DEEP_MODEL) + rubber duck ($DUCK_MODEL vi
 # or tool-execution noise that could cause false positives.
 OUTPUT_FILE="/tmp/cascade/deep.json"
 export OUTPUT_FILE
-run_agentic prompts/deep-review.md "$ENGINE_DEEP_MODEL" \
+run_agentic prompts/deep-review.md "$ENGINE_DEEP_MODEL" "deep" \
   > /tmp/cascade/deep-stdout.txt 2>/tmp/cascade/deep.log &
 DEEP_PID=$!
 
@@ -566,7 +566,7 @@ if [ "$DUCK_VALID" = "true" ]; then
   DUCK_RESULT="$DUCK_OUTPUT"
   OUTPUT_FILE="/tmp/cascade/combined.json"
   export DEEP_RESULT DUCK_RESULT OUTPUT_FILE
-  run_agentic prompts/synthesize-duck.md "$ENGINE_ACTION_MODEL" \
+  run_agentic prompts/synthesize-duck.md "$ENGINE_ACTION_MODEL" "action" \
     > /tmp/cascade/synth-stdout.txt 2>/tmp/cascade/synth.log || true
 
   if [ -s "$OUTPUT_FILE" ] && jq empty "$OUTPUT_FILE" 2>/dev/null; then
@@ -612,7 +612,7 @@ if [ "$COMBINED_ESCALATE" != "true" ]; then
   VERDICT_JSON="/tmp/cascade/cascade-action-verdict.json"
   OUTPUT_FILE="$VERDICT_JSON"
   export OUTPUT_FILE
-  run_agentic prompts/cascade-action.md "$ENGINE_ACTION_MODEL" > "$VERDICT_JSON.raw" 2>/tmp/cascade/action.log || true
+  run_agentic prompts/cascade-action.md "$ENGINE_ACTION_MODEL" "action" > "$VERDICT_JSON.raw" 2>/tmp/cascade/action.log || true
   if ! extract_verdict_json "$VERDICT_JSON.raw" "$VERDICT_JSON"; then
     ACTION_STDOUT=$(cat "$VERDICT_JSON.raw" 2>/dev/null || true)
     ACTION_STDERR=$(cat /tmp/cascade/action.log 2>/dev/null || true)
@@ -650,7 +650,7 @@ export OUTPUT_FILE
 
 # Audit tier: separate stdout and stderr to safely detect rate limits without
 # false positives from PR diff content in stdout.
-run_agentic prompts/security-audit.md "$ENGINE_AUDIT_MODEL" \
+run_agentic prompts/security-audit.md "$ENGINE_AUDIT_MODEL" "audit" \
   > /tmp/cascade/audit-stdout.txt 2>/tmp/cascade/audit.log || true
 
 if [ ! -s "$OUTPUT_FILE" ] || ! jq empty "$OUTPUT_FILE" 2>/dev/null; then
@@ -685,7 +685,7 @@ VERDICT_JSON="/tmp/cascade/cascade-action-verdict-audit.json"
 OUTPUT_FILE="$VERDICT_JSON"
 export OUTPUT_FILE
 
-run_agentic prompts/cascade-action.md "$ENGINE_ACTION_MODEL" > "$VERDICT_JSON.raw" 2>/tmp/cascade/action-audit.log || true
+run_agentic prompts/cascade-action.md "$ENGINE_ACTION_MODEL" "action" > "$VERDICT_JSON.raw" 2>/tmp/cascade/action-audit.log || true
 if ! extract_verdict_json "$VERDICT_JSON.raw" "$VERDICT_JSON"; then
   ACTION_STDOUT=$(cat "$VERDICT_JSON.raw" 2>/dev/null || true)
   ACTION_STDERR=$(cat /tmp/cascade/action-audit.log 2>/dev/null || true)
