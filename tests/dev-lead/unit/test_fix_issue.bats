@@ -144,3 +144,102 @@ GHEOF
   # Dry-run message contains reference to the issue
   [[ "$output" == *"issue #${ISSUE_NUMBER}"* ]]
 }
+
+# ── rate-limit handling tests ─────────────────────────────────────────────────
+
+@test "fix-issue: rate-limited: all engines rate-limited → exits 2, not 1" {
+  # Override engine stubs to emit a rate-limit message and exit 1
+  for engine in claude gemini; do
+    cat > "$STUB_BIN_DIR/$engine" <<'STUB'
+#!/usr/bin/env bash
+echo "You've hit your limit · resets 11:20pm (UTC)"
+exit 1
+STUB
+    chmod +x "$STUB_BIN_DIR/$engine"
+  done
+  export COPILOT_GITHUB_TOKEN="stub-token"
+
+  # Stub git to avoid real branch creation in the workspace
+  cat > "$STUB_BIN_DIR/git" <<'GITEOF'
+#!/usr/bin/env bash
+case "$*" in
+  "config"*) exit 0 ;;
+  "checkout"*) exit 0 ;;
+  "rev-parse HEAD") echo "abc123deadbeef" ;;
+  *) exit 0 ;;
+esac
+GITEOF
+  chmod +x "$STUB_BIN_DIR/git"
+
+  # gh stub: no existing PRs, issue API, comment posts ok, copilot rate-limited
+  cat > "$STUB_BIN_DIR/gh" <<'GHEOF'
+#!/usr/bin/env bash
+case "$*" in
+  *"pulls?state=open"*) echo "[]" ;;
+  *"api"*"repos/"*"issues/"*) echo '{"title":"Test Issue","body":"Test body"}' ;;
+  *"api"*"users/"*) echo '{"id":12345}' ;;
+  *"issue comment"*) exit 0 ;;
+  *"copilot"*) echo "rate limit exceeded"; exit 1 ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+
+  export DEV_LEAD_DRY_RUN="false"
+
+  run bash "$FIX_ISSUE_SCRIPT"
+
+  # Must exit 2 (rate-limited), not 1 (engine error)
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"rate-limited"* ]] || [[ "$output" == *"rate limited"* ]]
+  [[ "$output" != *"Engine failed"* ]]
+}
+
+@test "fix-issue: rate-limited: posts comment on issue before exiting" {
+  for engine in claude gemini; do
+    cat > "$STUB_BIN_DIR/$engine" <<'STUB'
+#!/usr/bin/env bash
+echo "rate limit exceeded"
+exit 1
+STUB
+    chmod +x "$STUB_BIN_DIR/$engine"
+  done
+  export COPILOT_GITHUB_TOKEN="stub-token"
+
+  local comment_posted_sentinel
+  comment_posted_sentinel="$(mktemp)"
+  rm "$comment_posted_sentinel"  # deleted; presence after run = was posted
+
+  cat > "$STUB_BIN_DIR/git" <<'GITEOF'
+#!/usr/bin/env bash
+case "$*" in
+  "config"*) exit 0 ;;
+  "checkout"*) exit 0 ;;
+  "rev-parse HEAD") echo "abc123deadbeef" ;;
+  *) exit 0 ;;
+esac
+GITEOF
+  chmod +x "$STUB_BIN_DIR/git"
+
+  cat > "$STUB_BIN_DIR/gh" <<GHEOF
+#!/usr/bin/env bash
+case "\$*" in
+  *"pulls?state=open"*) echo "[]" ;;
+  *"api"*"repos/"*"issues/"*) echo '{"title":"Test","body":"body"}' ;;
+  *"api"*"users/"*) echo '{"id":12345}' ;;
+  *"issue comment"*) touch "${comment_posted_sentinel}"; exit 0 ;;
+  *"copilot"*) echo "rate limit exceeded"; exit 1 ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+
+  export DEV_LEAD_DRY_RUN="false"
+
+  run bash "$FIX_ISSUE_SCRIPT"
+
+  [ "$status" -eq 2 ]
+  [ -f "$comment_posted_sentinel" ]
+
+  rm -f "$comment_posted_sentinel" 2>/dev/null || true
+}
