@@ -19,28 +19,15 @@ set -euo pipefail
 #
 # All functions are safe to call even when TOKEN_LOG_FILE is unset or unwritable.
 
-# Load the dated price table so ET multipliers derive from the same source as USD cost
-# (and can never drift apart). Best-effort: if the lib is absent, model_multiplier_for
-# falls back to a static table so this file stays self-contained.
-if [ -f "$(dirname "${BASH_SOURCE[0]}")/model-pricing.sh" ]; then
-  # shellcheck source=scripts/lib/model-pricing.sh
-  source "$(dirname "${BASH_SOURCE[0]}")/model-pricing.sh"
-fi
-
 # model_multiplier_for <model_name>
-# Returns a float cost multiplier relative to claude-haiku-4-5 = 1.0, derived from
-# model-pricing.tsv at today's rate. Prints 1.0 for unknown models (safe default).
+# Returns a float cost multiplier relative to claude-haiku-4-5 = 1.0.
+# Prints 1.0 for unknown models (safe default — never fails).
 model_multiplier_for() {
   local model="$1"
-  if declare -f et_multiplier_for >/dev/null 2>&1; then
-    et_multiplier_for "$model"
-    return
-  fi
-  # Fallback static table (used only if model-pricing.sh failed to load).
   case "$model" in
     *haiku*)                    echo "1.0" ;;
     *sonnet*)                   echo "3.0" ;;
-    *opus*)                     echo "5.0" ;;
+    *opus*)                     echo "15.0" ;;
     o4-mini | *o4-mini*)        echo "2.0" ;;
     *gemini*flash*)             echo "0.5" ;;
     *gemini*pro*)               echo "2.0" ;;
@@ -67,18 +54,14 @@ estimate_tokens_from_file() {
 }
 
 # emit_token_record <workflow> <tier> <engine> <model>
-#                   <input_tokens> <cache_read_tokens> <output_tokens> <context>
-#                   [cache_write_tokens]
+#                   <input_tokens> <cache_tokens> <output_tokens> <context>
 # Appends one JSONL record to TOKEN_LOG_FILE. No-op when TOKEN_LOG_FILE is unset.
 # Silently swallows I/O errors so token logging never aborts a workflow run.
-# cache_write_tokens (cache-creation) is optional and defaults to 0 for callers
-# that do not capture it (backward compatible).
 emit_token_record() {
   [ -n "${TOKEN_LOG_FILE:-}" ] || return 0
 
   local workflow="$1" tier="$2" engine="$3" model="$4"
   local input="${5:-0}" cache="${6:-0}" output="${7:-0}" context="${8:-}"
-  local cache_write="${9:-0}"
 
   local mult et ts run_id record
   mult=$(model_multiplier_for "$model")
@@ -94,7 +77,6 @@ emit_token_record() {
     --arg model "$model" \
     --arg input "$input" \
     --arg cache "$cache" \
-    --arg cache_write "$cache_write" \
     --arg output "$output" \
     --arg et "$et" \
     --arg run_id "$run_id" \
@@ -107,7 +89,6 @@ emit_token_record() {
       model: $model,
       input_tokens: ($input | tonumber? // 0),
       cache_read_tokens: ($cache | tonumber? // 0),
-      cache_creation_tokens: ($cache_write | tonumber? // 0),
       output_tokens: ($output | tonumber? // 0),
       et: ($et | tonumber? // 0),
       run_id: $run_id,

@@ -24,6 +24,10 @@ setup() {
 teardown() {
   rm -f "$GITHUB_ENV" "$GITHUB_OUTPUT" "$TEST_PROMPT"
   rm -rf "$STUB_BIN_DIR"
+  if [ -n "${TEST_OWNED_TOKEN_LOG:-}" ] && [ "${TOKEN_LOG_FILE:-}" = "$TEST_OWNED_TOKEN_LOG" ]; then
+    rm -f "$TEST_OWNED_TOKEN_LOG"
+  fi
+  unset TOKEN_LOG_FILE TEST_OWNED_TOKEN_LOG
 }
 
 # Helper: source engine with a given engine type (suppresses info line)
@@ -254,4 +258,170 @@ STUB
   local result
   result=$(cat /tmp/dev-lead-rate-limit-reset)
   [ -z "$result" ]
+}
+
+# ── token logging tests ───────────────────────────────────────────────────────
+
+@test "token: run_writer writes a record to TOKEN_LOG_FILE when set" {
+  _source_engine "claude"
+  export STUB_ENGINE_EXIT=0
+  export STUB_ENGINE_RESPONSE="fixed the bug"
+  export DEV_LEAD_DRY_RUN=false
+  local log; log=$(mktemp)
+  export TOKEN_LOG_FILE="$log"
+  export TEST_OWNED_TOKEN_LOG="$log"
+
+  run run_writer "$TEST_PROMPT"
+
+  [ "$status" -eq 0 ]
+  [ -s "$log" ]
+  jq empty < "$log"
+}
+
+@test "token: run_writer record contains tier=writer" {
+  _source_engine "claude"
+  export STUB_ENGINE_EXIT=0
+  export DEV_LEAD_DRY_RUN=false
+  local log; log=$(mktemp)
+  export TOKEN_LOG_FILE="$log"
+  export TEST_OWNED_TOKEN_LOG="$log"
+
+  run_writer "$TEST_PROMPT"
+
+  local tier; tier=$(jq -r '.tier' < "$log")
+  [ "$tier" = "writer" ]
+}
+
+@test "token: run_writer record contains correct engine and model" {
+  _source_engine "claude"
+  export STUB_ENGINE_EXIT=0
+  export DEV_LEAD_DRY_RUN=false
+  local log; log=$(mktemp)
+  export TOKEN_LOG_FILE="$log"
+  export TEST_OWNED_TOKEN_LOG="$log"
+
+  run_writer "$TEST_PROMPT"
+
+  local engine model
+  engine=$(jq -r '.engine' < "$log")
+  model=$(jq -r '.model' < "$log")
+  [ "$engine" = "claude" ]
+  [ "$model" = "$ENGINE_ACTION_MODEL" ]
+}
+
+@test "token: run_writer is a no-op for token logging when TOKEN_LOG_FILE unset" {
+  _source_engine "claude"
+  export STUB_ENGINE_EXIT=0
+  export DEV_LEAD_DRY_RUN=false
+  unset TOKEN_LOG_FILE
+
+  run run_writer "$TEST_PROMPT"
+
+  [ "$status" -eq 0 ]
+}
+
+@test "token: dry-run does not write a token record" {
+  _source_engine "claude"
+  export DEV_LEAD_DRY_RUN=true
+  local log; log=$(mktemp)
+  export TOKEN_LOG_FILE="$log"
+  export TEST_OWNED_TOKEN_LOG="$log"
+
+  run run_writer "$TEST_PROMPT"
+
+  [ "$status" -eq 0 ]
+  # Log should remain empty (dry-run produces no engine call)
+  [ ! -s "$log" ]
+}
+
+@test "token: run_writer token capture is non-fatal on unwritable log path" {
+  _source_engine "claude"
+  export STUB_ENGINE_EXIT=0
+  export DEV_LEAD_DRY_RUN=false
+  export TOKEN_LOG_FILE="/proc/nonexistent-readonly-path/token.jsonl"
+
+  run run_writer "$TEST_PROMPT"
+
+  [ "$status" -eq 0 ]
+}
+
+@test "token: run_triage writes a record to TOKEN_LOG_FILE when set" {
+  _source_engine "claude"
+  export STUB_ENGINE_EXIT=0
+  export STUB_ENGINE_RESPONSE="LOW risk verdict"
+  local log; log=$(mktemp)
+  export TOKEN_LOG_FILE="$log"
+  export TEST_OWNED_TOKEN_LOG="$log"
+
+  run run_triage "$TEST_PROMPT"
+
+  [ "$status" -eq 0 ]
+  [ -s "$log" ]
+  jq empty < "$log"
+  local tier; tier=$(jq -r '.tier' < "$log")
+  [ "$tier" = "triage" ]
+}
+
+@test "token: run_triage is a no-op for token logging when TOKEN_LOG_FILE unset" {
+  _source_engine "claude"
+  export STUB_ENGINE_EXIT=0
+  unset TOKEN_LOG_FILE
+
+  run run_triage "$TEST_PROMPT"
+
+  [ "$status" -eq 0 ]
+}
+
+@test "token: run_writer_with_fallback logs the fallback engine (not rate-limited primary)" {
+  _source_engine "claude"
+  export DEV_LEAD_DRY_RUN=false
+  local log; log=$(mktemp)
+  export TOKEN_LOG_FILE="$log"
+  export TEST_OWNED_TOKEN_LOG="$log"
+
+  # Make claude output rate-limit text (exit 1 → is_rate_limited → returns 2)
+  cat > "$STUB_BIN_DIR/claude" << 'STUB'
+#!/usr/bin/env bash
+echo "hit your limit"
+exit 1
+STUB
+  chmod +x "$STUB_BIN_DIR/claude"
+
+  # Gemini stub succeeds
+  export STUB_ENGINE_EXIT=0
+  export STUB_ENGINE_RESPONSE="gemini fixed it"
+
+  run run_writer_with_fallback "$TEST_PROMPT"
+
+  [ "$status" -eq 0 ]
+  # Token record must exist and belong to the gemini fallback, not claude
+  [ -s "$log" ]
+  jq empty < "$log"
+  local engine tier
+  engine=$(jq -r '.engine' < "$log")
+  tier=$(jq -r '.tier' < "$log")
+  [ "$engine" = "gemini" ]
+  [ "$tier" = "writer" ]
+}
+
+@test "token: rate-limited primary engine writes NO token record" {
+  _source_engine "claude"
+  export DEV_LEAD_DRY_RUN=false
+  local log; log=$(mktemp)
+  export TOKEN_LOG_FILE="$log"
+  export TEST_OWNED_TOKEN_LOG="$log"
+
+  # Claude outputs rate-limit text → run_writer returns 2 and must not log tokens
+  cat > "$STUB_BIN_DIR/claude" << 'STUB'
+#!/usr/bin/env bash
+echo "hit your limit"
+exit 1
+STUB
+  chmod +x "$STUB_BIN_DIR/claude"
+
+  run run_writer "$TEST_PROMPT"
+
+  [ "$status" -eq 2 ]
+  # Rate-limited → no successful completion → token log must be empty
+  [ ! -s "$log" ]
 }

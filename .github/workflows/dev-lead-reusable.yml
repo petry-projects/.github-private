@@ -83,6 +83,8 @@ jobs:
       GEMINI_CLI_TRUST_WORKSPACE: "true"
       DEV_LEAD_SCRIPTS: .dev-lead/scripts
       DEV_LEAD_PROMPTS: .dev-lead/prompts/dev-lead
+      TOKEN_LOG_FILE: /tmp/token-usage-${{ github.run_id }}.jsonl
+      TOKEN_WORKFLOW: dev-lead
 
     steps:
       - name: Checkout caller repo
@@ -286,6 +288,15 @@ jobs:
           HEAD_SHA: ${{ env.INTENT_HEAD_SHA }}
           REPO: ${{ github.repository }}
         run: bash .dev-lead/scripts/dev-lead-fix-reviews.sh
+
+      - name: Upload token usage log
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: token-usage-${{ github.run_id }}
+          path: /tmp/token-usage-${{ github.run_id }}.jsonl
+          if-no-files-found: ignore
+          retention-days: 30
 
   # ── ci-relay ──────────────────────────────────────────────────────────────────
   # Handles check_run completed failure events. No LLM — resolves PR number and

@@ -186,7 +186,7 @@ The engine is selected once per workflow run. Handler scripts do not hardcode en
 | Function | Tool access | Use |
 |---|---|---|
 | `run_triage <prompt_file>` | No tools | Fast classification, cheap model |
-| `run_agentic <prompt_file> <model>` | Bash, Read, Grep, Glob | Analysis with file access |
+| `run_agentic <prompt_file> <model> [tier]` | Bash, Read, Grep, Glob | Analysis/action/audit with file access |
 | `run_duck <prompt_file> <model>` | Bash, Read, Grep, Glob | Cross-engine adversarial check |
 
 ### 6.3 New engine function: `run_writer()`
