@@ -60,7 +60,7 @@ jobs:
       # Checkout .github-private to get scripts/ and prompts/.
       # Placed at dotgithub-private/ so it does not conflict with target-repo/.
       - name: Checkout .github-private (scripts and prompts)
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           token: ${{ secrets.GH_PAT_WORKFLOWS || secrets.GITHUB_TOKEN }}
           path: dotgithub-private
@@ -68,7 +68,7 @@ jobs:
       # Checkout the target (source) repo so the engine can read and modify its code.
       # GH_PAT_WORKFLOWS must have write access to target repos.
       - name: Checkout target repo
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           repository: ${{ github.event.client_payload.source_repo }}
           token: ${{ secrets.GH_PAT_WORKFLOWS }}
