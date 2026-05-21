@@ -4,6 +4,7 @@ on:
     paths:
       - 'scripts/dev-lead*'
       - 'scripts/engine.sh'
+      - 'scripts/lib/**'
       - '.github/workflows/dev-lead*.yml'
       - '.github/workflows/test-dev-lead.yml'
       - '.github/workflows/issue-triage-runner.yml'
@@ -14,6 +15,7 @@ on:
     paths:
       - 'scripts/dev-lead*'
       - 'scripts/engine.sh'
+      - 'scripts/lib/**'
       - 'tests/dev-lead/**'
       - 'prompts/dev-lead/**'
       # Guard the concurrency-config test on workflow changes too — otherwise a
