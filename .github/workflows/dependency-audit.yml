@@ -30,4 +30,4 @@ permissions:
 
 jobs:
   dependency-audit:
-    uses: petry-projects/.github/.github/workflows/dependency-audit-reusable.yml@v1
+    uses: petry-projects/.github/.github/workflows/dependency-audit-reusable.yml@v2
