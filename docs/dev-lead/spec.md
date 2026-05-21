@@ -600,9 +600,9 @@ Per-engine model names are controlled by the same env vars used by the PR Review
 | Variable | Claude default | Gemini default | Copilot default |
 |---|---|---|---|
 | `ENGINE_TRIAGE_MODEL` | `claude-haiku-4-5-20251001` | `gemini-2.0-flash` | `o4-mini` |
-| `ENGINE_ACTION_MODEL` | `claude-sonnet-4-6` | `gemini-1.5-pro` | `o4-mini` |
-| `ENGINE_DEEP_MODEL` | `claude-sonnet-4-6` | `gemini-1.5-pro` | `o4-mini` |
-| `ENGINE_SINGLE_MODEL` | `claude-opus-4-7` | `gemini-1.5-pro` | `o4-mini` |
+| `ENGINE_ACTION_MODEL` | `claude-sonnet-4-6` | `gemini-2.5-pro` | `o4-mini` |
+| `ENGINE_DEEP_MODEL` | `claude-sonnet-4-6` | `gemini-2.5-pro` | `o4-mini` |
+| `ENGINE_SINGLE_MODEL` | `claude-opus-4-7` | `gemini-2.5-pro` | `o4-mini` |
 
 ---
 
