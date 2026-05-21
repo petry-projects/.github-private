@@ -364,3 +364,55 @@ STUB
 
   [ "$status" -eq 0 ]
 }
+
+@test "token: run_writer_with_fallback logs the fallback engine (not rate-limited primary)" {
+  _source_engine "claude"
+  export DEV_LEAD_DRY_RUN=false
+  local log; log=$(mktemp)
+  export TOKEN_LOG_FILE="$log"
+
+  # Make claude output rate-limit text (exit 1 → is_rate_limited → returns 2)
+  cat > "$STUB_BIN_DIR/claude" << 'STUB'
+#!/usr/bin/env bash
+echo "hit your limit"
+exit 1
+STUB
+  chmod +x "$STUB_BIN_DIR/claude"
+
+  # Gemini stub succeeds
+  export STUB_ENGINE_EXIT=0
+  export STUB_ENGINE_RESPONSE="gemini fixed it"
+
+  run run_writer_with_fallback "$TEST_PROMPT"
+
+  [ "$status" -eq 0 ]
+  # Token record must exist and belong to the gemini fallback, not claude
+  [ -s "$log" ]
+  jq empty < "$log"
+  local engine tier
+  engine=$(jq -r '.engine' < "$log")
+  tier=$(jq -r '.tier' < "$log")
+  [ "$engine" = "gemini" ]
+  [ "$tier" = "writer" ]
+}
+
+@test "token: rate-limited primary engine writes NO token record" {
+  _source_engine "claude"
+  export DEV_LEAD_DRY_RUN=false
+  local log; log=$(mktemp)
+  export TOKEN_LOG_FILE="$log"
+
+  # Claude outputs rate-limit text → run_writer returns 2 and must not log tokens
+  cat > "$STUB_BIN_DIR/claude" << 'STUB'
+#!/usr/bin/env bash
+echo "hit your limit"
+exit 1
+STUB
+  chmod +x "$STUB_BIN_DIR/claude"
+
+  run run_writer "$TEST_PROMPT"
+
+  [ "$status" -eq 2 ]
+  # Rate-limited → no successful completion → token log must be empty
+  [ ! -s "$log" ]
+}
