@@ -163,6 +163,8 @@ jobs:
       CLAUDE_CODE_VERSION: ${{ vars.CLAUDE_CODE_VERSION || 'latest' }}
       # Mention-triggered reviews always force a re-review; all other triggers
       # respect the idempotency check (no double-reviews on the same head SHA).
+      TOKEN_LOG_FILE: ${{ runner.temp }}/token-usage-${{ github.run_id }}.jsonl
+      TOKEN_WORKFLOW: pr-review
       FORCE_REVIEW: ${{ github.event_name == 'repository_dispatch' && 'true' || inputs.force_review || 'false' }}
 
     steps:
@@ -255,3 +257,12 @@ jobs:
 
       - name: Review each PR (cascade)
         run: bash scripts/review-batch.sh
+
+      - name: Upload token usage log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: token-usage-${{ github.run_id }}
+          path: ${{ runner.temp }}/token-usage-${{ github.run_id }}.jsonl
+          if-no-files-found: ignore
+          retention-days: 30

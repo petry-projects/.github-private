@@ -51,6 +51,8 @@ jobs:
       GEMINI_CLI_TRUST_WORKSPACE: "true"
       DEV_LEAD_SCRIPTS: .dev-lead/scripts
       DEV_LEAD_PROMPTS: .dev-lead/prompts/dev-lead
+      TOKEN_LOG_FILE: ${{ runner.temp }}/token-usage-${{ github.run_id }}.jsonl
+      TOKEN_WORKFLOW: dev-lead
 
     steps:
       - name: Checkout caller repo
@@ -319,3 +321,12 @@ jobs:
           echo "$payload" | gh api \
             --method POST "repos/$RELAY_REPO/dispatches" --input -
           echo "::notice::Relayed CI failure for PR $RELAY_PR_NUMBER"
+
+      - name: Upload token usage log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: token-usage-${{ github.run_id }}
+          path: ${{ runner.temp }}/token-usage-${{ github.run_id }}.jsonl
+          if-no-files-found: ignore
+          retention-days: 30
