@@ -4226,11 +4226,19 @@ run_duck() {
     gemini)
       unset CLAUDE_CODE_OAUTH_TOKEN 2>/dev/null || true
       unset COPILOT_GITHUB_TOKEN 2>/dev/null || true
-      timeout "$DUCK_TIMEOUT_SEC" gemini --prompt "" \
-        --model "$model" \
-        --approval-mode auto_edit \
-        --output-format text \
-        < "$prompt_file"
+      if [ -n "$_tok_tmp" ]; then
+        timeout "$DUCK_TIMEOUT_SEC" gemini --prompt "" \
+          --model "$model" \
+          --approval-mode auto_edit \
+          --output-format text \
+          < "$prompt_file" | tee "$_tok_tmp" || rc=${PIPESTATUS[0]}
+      else
+        timeout "$DUCK_TIMEOUT_SEC" gemini --prompt "" \
+          --model "$model" \
+          --approval-mode auto_edit \
+          --output-format text \
+          < "$prompt_file" || rc=$?
+      fi
       ;;
     copilot)
       unset CLAUDE_CODE_OAUTH_TOKEN 2>/dev/null || true
@@ -4850,36 +4858,59 @@ run_writer() {
   # to stdout, not stderr), so is_rate_limited never fired and fallback engines
   # were never tried.
   local _tmp rc=0
-  _tmp=$(mktemp)
+  _tmp="$(mktemp 2>/dev/null || true)"
 
   case "$REVIEW_ENGINE" in
     claude)
-      timeout "$ACTION_TIMEOUT_SEC" claude --print \
-        --model "$model" \
-        --permission-mode acceptEdits \
-        --allowed-tools "Bash,Read,Write,Edit,Grep,Glob,WebFetch" \
-        < "$prompt_file" | tee "$_tmp" || rc=${PIPESTATUS[0]}
+      if [ -n "$_tmp" ]; then
+        timeout "$ACTION_TIMEOUT_SEC" claude --print \
+          --model "$model" \
+          --permission-mode acceptEdits \
+          --allowed-tools "Bash,Read,Write,Edit,Grep,Glob,WebFetch" \
+          < "$prompt_file" | tee "$_tmp" || rc=${PIPESTATUS[0]}
+      else
+        timeout "$ACTION_TIMEOUT_SEC" claude --print \
+          --model "$model" \
+          --permission-mode acceptEdits \
+          --allowed-tools "Bash,Read,Write,Edit,Grep,Glob,WebFetch" \
+          < "$prompt_file" || rc=$?
+      fi
       ;;
     gemini)
-      timeout "$ACTION_TIMEOUT_SEC" gemini --prompt "" \
-        --model "$model" \
-        --approval-mode auto_edit \
-        --output-format text \
-        < "$prompt_file" | tee "$_tmp" || rc=${PIPESTATUS[0]}
+      if [ -n "$_tmp" ]; then
+        timeout "$ACTION_TIMEOUT_SEC" gemini --prompt "" \
+          --model "$model" \
+          --approval-mode auto_edit \
+          --output-format text \
+          < "$prompt_file" | tee "$_tmp" || rc=${PIPESTATUS[0]}
+      else
+        timeout "$ACTION_TIMEOUT_SEC" gemini --prompt "" \
+          --model "$model" \
+          --approval-mode auto_edit \
+          --output-format text \
+          < "$prompt_file" || rc=$?
+      fi
       ;;
     copilot)
       # Self-sufficient write support via gh copilot --yolo
-      copilot_chat "$prompt_file" "$ACTION_TIMEOUT_SEC" --yolo | tee "$_tmp" || rc=${PIPESTATUS[0]}
+      if [ -n "$_tmp" ]; then
+        copilot_chat "$prompt_file" "$ACTION_TIMEOUT_SEC" --yolo | tee "$_tmp" || rc=${PIPESTATUS[0]}
+      else
+        copilot_chat "$prompt_file" "$ACTION_TIMEOUT_SEC" --yolo || rc=$?
+      fi
       ;;
   esac
 
   # Map rate-limit to exit code 2 for caller to detect; parse reset time for marker embedding
-  if [ "$rc" -ne 0 ] && is_rate_limited "$(cat "$_tmp")"; then
+  if [ "$rc" -ne 0 ] && [ -n "$_tmp" ] && is_rate_limited "$(cat "$_tmp")"; then
     parse_reset_time "$(cat "$_tmp")"
-    rm -f "$_tmp"
+    [ -n "$_tmp" ] && rm -f "$_tmp"
     return 2
   fi
-  rm -f "$_tmp"
+  if [ "$rc" -eq 0 ]; then
+    _record_engine_tokens "writer" "$REVIEW_ENGINE" "$model" "$prompt_file" "$_tmp"
+  fi
+  [ -n "$_tmp" ] && rm -f "$_tmp"
   return "$rc"
 }
 
