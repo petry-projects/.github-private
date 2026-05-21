@@ -180,7 +180,7 @@ done
 # Issues now live in their target repo, so search org-wide.
 # ---------------------------------------------------------------------------
 issues_lookup_file=$(mktemp)
-gh api "search/issues?q=org:${ORG}+label:fleet-tracker+is:open&per_page=100" \
+gh api "search/issues?q=org:${ORG}+label:fleet-tracker+is:open+is:issue&per_page=100" \
   --paginate \
   --jq '.items[] | select(.title | startswith("[Fleet Monitor] ")) |
     (.title | ltrimstr("[Fleet Monitor] ") | split(" — ")) as $p |

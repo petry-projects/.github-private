@@ -184,76 +184,79 @@ jobs:
             for (const item of items) {
               // Issues are created in the repo they pertain to, not in .github-private
               const [targetOwner, targetRepo] = item.repo.split('/');
-
-              // Ensure required labels exist in the target repo (once per repo)
-              if (!labelledRepos.has(item.repo)) {
-                for (const [name, color, desc] of [
-                  ['dev-lead',      'd93f0b', 'Requires dev-lead attention'],
-                  ['fleet-tracker', '0075ca', 'Tracked by the Actions Fleet Monitor'],
-                  ['health-check',  '0e8a16', 'Automated health check result'],
-                ]) {
-                  try {
-                    await github.rest.issues.createLabel({
-                      owner: targetOwner, repo: targetRepo,
-                      name, color, description: desc,
-                    });
-                  } catch (e) { if (e.status !== 422) throw e; }
+              try {
+                // Ensure required labels exist in the target repo (once per repo)
+                if (!labelledRepos.has(item.repo)) {
+                  for (const [name, color, desc] of [
+                    ['dev-lead',      'd93f0b', 'Requires dev-lead attention'],
+                    ['fleet-tracker', '0075ca', 'Tracked by the Actions Fleet Monitor'],
+                    ['health-check',  '0e8a16', 'Automated health check result'],
+                  ]) {
+                    try {
+                      await github.rest.issues.createLabel({
+                        owner: targetOwner, repo: targetRepo,
+                        name, color, description: desc,
+                      });
+                    } catch (e) { if (e.status !== 422) throw e; }
+                  }
+                  labelledRepos.add(item.repo);
                 }
-                labelledRepos.add(item.repo);
-              }
 
-              const emoji   = labelEmoji[item.label] ?? '🔴';
-              const title   = `[Fleet Monitor] ${item.repo} — ${item.workflow}`;
-              const body    = [
-                `## ${emoji} ${item.label}: \`${item.repo}\` / \`${item.workflow}\``,
-                '',
-                `| Metric | Value |`,
-                `|---|---|`,
-                `| **Failure Rate** | ${item.rate} (${item.failed} / ${item.total} runs) |`,
-                `| **Status** | ${item.label} |`,
-                `| **p50 Duration** | ${item.p50}s |`,
-                `| **p95 Duration** | ${item.p95}s |`,
-                `| **Successful Runs** | ${item.success} |`,
-                `| **Cancelled Runs** | ${item.cancelled} |`,
-                '',
-                `**Workflow:** [\`${item.workflow}\`](https://github.com/${item.repo}/actions)`,
-                '',
-                `> _Last updated by [Fleet Monitor run](${runUrl}) on ${today}._`,
-                `> _Threshold: failure rate > 10% over the monitored window._`,
-              ].join('\n');
+                const emoji   = labelEmoji[item.label] ?? '🔴';
+                const title   = `[Fleet Monitor] ${item.repo} — ${item.workflow}`;
+                const body    = [
+                  `## ${emoji} ${item.label}: \`${item.repo}\` / \`${item.workflow}\``,
+                  '',
+                  `| Metric | Value |`,
+                  `|---|---|`,
+                  `| **Failure Rate** | ${item.rate} (${item.failed} / ${item.total} runs) |`,
+                  `| **Status** | ${item.label} |`,
+                  `| **p50 Duration** | ${item.p50}s |`,
+                  `| **p95 Duration** | ${item.p95}s |`,
+                  `| **Successful Runs** | ${item.success} |`,
+                  `| **Cancelled Runs** | ${item.cancelled} |`,
+                  '',
+                  `**Workflow:** [\`${item.workflow}\`](https://github.com/${item.repo}/actions)`,
+                  '',
+                  `> _Last updated by [Fleet Monitor run](${runUrl}) on ${today}._`,
+                  `> _Threshold: failure rate > 10% over the monitored window._`,
+                ].join('\n');
 
-              // Search for an existing open issue in the target repo
-              const { data: results } = await github.rest.search.issuesAndPullRequests({
-                q: [
-                  `repo:${targetOwner}/${targetRepo}`,
-                  'is:issue',
-                  'is:open',
-                  `in:title`,
-                  `"${title}"`,
-                ].join(' '),
-              });
-              const existing = results.items.find(i => i.title === title);
+                // Search for an existing open issue in the target repo
+                const { data: results } = await github.rest.search.issuesAndPullRequests({
+                  q: [
+                    `repo:${targetOwner}/${targetRepo}`,
+                    'is:issue',
+                    'is:open',
+                    `in:title`,
+                    `"${title}"`,
+                  ].join(' '),
+                });
+                const existing = results.items.find(i => i.title === title);
 
-              if (existing) {
-                await github.rest.issues.update({
-                  owner: targetOwner, repo: targetRepo,
-                  issue_number: existing.number,
-                  body,
-                });
-                await github.rest.issues.addLabels({
-                  owner: targetOwner, repo: targetRepo,
-                  issue_number: existing.number,
-                  labels: ['dev-lead', 'fleet-tracker', 'health-check'],
-                });
-                core.notice(`Updated issue #${existing.number}: ${existing.html_url}`);
-              } else {
-                const created = await github.rest.issues.create({
-                  owner: targetOwner, repo: targetRepo,
-                  title,
-                  body,
-                  labels: ['dev-lead', 'fleet-tracker', 'health-check'],
-                });
-                core.notice(`Created issue #${created.data.number}: ${created.data.html_url}`);
+                if (existing) {
+                  await github.rest.issues.update({
+                    owner: targetOwner, repo: targetRepo,
+                    issue_number: existing.number,
+                    body,
+                  });
+                  await github.rest.issues.addLabels({
+                    owner: targetOwner, repo: targetRepo,
+                    issue_number: existing.number,
+                    labels: ['dev-lead', 'fleet-tracker', 'health-check'],
+                  });
+                  core.notice(`Updated issue #${existing.number}: ${existing.html_url}`);
+                } else {
+                  const created = await github.rest.issues.create({
+                    owner: targetOwner, repo: targetRepo,
+                    title,
+                    body,
+                    labels: ['dev-lead', 'fleet-tracker', 'health-check'],
+                  });
+                  core.notice(`Created issue #${created.data.number}: ${created.data.html_url}`);
+                }
+              } catch (err) {
+                core.warning(`Failed to track ${item.repo}/${item.workflow}: ${err.message}`);
               }
             }
 
