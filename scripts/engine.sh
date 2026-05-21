@@ -3917,7 +3917,7 @@ run_writer() {
           --model "$model" \
           --permission-mode acceptEdits \
           --allowed-tools "Bash,Read,Write,Edit,Grep,Glob,WebFetch" \
-          < "$prompt_file" | tee "$_tmp" || rc=${PIPESTATUS[0]}
+          < "$prompt_file" 2>&1 | tee "$_tmp" || rc=${PIPESTATUS[0]}
       else
         timeout "$ACTION_TIMEOUT_SEC" claude --print \
           --model "$model" \
@@ -3932,7 +3932,7 @@ run_writer() {
           --model "$model" \
           --approval-mode auto_edit \
           --output-format text \
-          < "$prompt_file" | tee "$_tmp" || rc=${PIPESTATUS[0]}
+          < "$prompt_file" 2>&1 | tee "$_tmp" || rc=${PIPESTATUS[0]}
       else
         timeout "$ACTION_TIMEOUT_SEC" gemini --prompt "" \
           --model "$model" \
@@ -3944,7 +3944,7 @@ run_writer() {
     copilot)
       # Self-sufficient write support via gh copilot --yolo
       if [ -n "$_tmp" ]; then
-        copilot_chat "$prompt_file" "$ACTION_TIMEOUT_SEC" --yolo | tee "$_tmp" || rc=${PIPESTATUS[0]}
+        copilot_chat "$prompt_file" "$ACTION_TIMEOUT_SEC" --yolo 2>&1 | tee "$_tmp" || rc=${PIPESTATUS[0]}
       else
         copilot_chat "$prompt_file" "$ACTION_TIMEOUT_SEC" --yolo || rc=$?
       fi
@@ -3976,6 +3976,11 @@ run_writer_with_fallback() {
   done
 
   for engine in "${engines[@]}"; do
+    if [ "$engine" = "copilot" ] && [[ "${COPILOT_GITHUB_TOKEN:-}" == ghp_* ]]; then
+      echo "::warning::Skipping copilot fallback: classic PAT in COPILOT_GITHUB_TOKEN is unsupported" >&2
+      continue
+    fi
+
     local saved="$REVIEW_ENGINE"
     export REVIEW_ENGINE="$engine"
     # Re-evaluate model names for the new engine
