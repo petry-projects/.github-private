@@ -157,6 +157,21 @@ STUB
   [ "$status" -eq 2 ]
 }
 
+@test "writer: run_writer returns exit 2 when gemini writes rate-limit text to stderr" {
+  _source_engine "gemini"
+  export DEV_LEAD_DRY_RUN=false
+  cat > "$STUB_BIN_DIR/gemini" << 'STUB'
+#!/usr/bin/env bash
+echo "quota exceeded for today" >&2
+exit 1
+STUB
+  chmod +x "$STUB_BIN_DIR/gemini"
+
+  run run_writer "$TEST_PROMPT"
+
+  [ "$status" -eq 2 ]
+}
+
 @test "writer: run_writer returns exit 1 (not 2) for non-rate-limit failure" {
   _source_engine "claude"
   export DEV_LEAD_DRY_RUN=false
@@ -206,6 +221,34 @@ case "$*" in
   *"copilot"*) echo "rate limit exceeded"; exit 1 ;;
   *) echo "{}" ;;
 esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+
+  run run_writer_with_fallback "$TEST_PROMPT"
+
+  [ "$status" -eq 2 ]
+}
+
+@test "writer: run_writer_with_fallback skips copilot when token is classic PAT" {
+  _source_engine "claude"
+  export DEV_LEAD_DRY_RUN=false
+  export COPILOT_GITHUB_TOKEN="ghp_classic_token"
+
+  # Claude and Gemini both rate-limit.
+  for engine in claude gemini; do
+    cat > "$STUB_BIN_DIR/$engine" << 'STUB'
+#!/usr/bin/env bash
+echo "quota exceeded" >&2
+exit 1
+STUB
+    chmod +x "$STUB_BIN_DIR/$engine"
+  done
+
+  # If copilot is invoked, this stub would fail the test via status 1 path.
+  cat > "$STUB_BIN_DIR/gh" << 'GHEOF'
+#!/usr/bin/env bash
+echo "copilot should have been skipped" >&2
+exit 1
 GHEOF
   chmod +x "$STUB_BIN_DIR/gh"
 
