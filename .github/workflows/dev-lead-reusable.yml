@@ -51,7 +51,7 @@ jobs:
       GEMINI_CLI_TRUST_WORKSPACE: "true"
       DEV_LEAD_SCRIPTS: .dev-lead/scripts
       DEV_LEAD_PROMPTS: .dev-lead/prompts/dev-lead
-      TOKEN_LOG_FILE: ${{ runner.temp }}/token-usage-${{ github.run_id }}.jsonl
+      TOKEN_LOG_FILE: /tmp/token-usage-${{ github.run_id }}.jsonl
       TOKEN_WORKFLOW: dev-lead
 
     steps:
@@ -262,7 +262,7 @@ jobs:
         uses: actions/upload-artifact@6f51ac03d0773f2457e7b1f7c5a4f48b5965c01 # v4.6.2
         with:
           name: token-usage-${{ github.run_id }}
-          path: ${{ runner.temp }}/token-usage-${{ github.run_id }}.jsonl
+          path: /tmp/token-usage-${{ github.run_id }}.jsonl
           if-no-files-found: ignore
           retention-days: 30
 

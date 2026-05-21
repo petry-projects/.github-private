@@ -163,7 +163,7 @@ jobs:
       CLAUDE_CODE_VERSION: ${{ vars.CLAUDE_CODE_VERSION || 'latest' }}
       # Mention-triggered reviews always force a re-review; all other triggers
       # respect the idempotency check (no double-reviews on the same head SHA).
-      TOKEN_LOG_FILE: ${{ runner.temp }}/token-usage-${{ github.run_id }}.jsonl
+      TOKEN_LOG_FILE: /tmp/token-usage-${{ github.run_id }}.jsonl
       TOKEN_WORKFLOW: pr-review
       FORCE_REVIEW: ${{ github.event_name == 'repository_dispatch' && 'true' || inputs.force_review || 'false' }}
 
@@ -263,6 +263,6 @@ jobs:
         uses: actions/upload-artifact@6f51ac03d0773f2457e7b1f7c5a4f48b5965c01 # v4.6.2
         with:
           name: token-usage-${{ github.run_id }}
-          path: ${{ runner.temp }}/token-usage-${{ github.run_id }}.jsonl
+          path: /tmp/token-usage-${{ github.run_id }}.jsonl
           if-no-files-found: ignore
           retention-days: 30
