@@ -187,7 +187,19 @@ jobs:
           key: claude-code-${{ env.CLAUDE_CODE_VERSION }}-${{ runner.os }}
 
       - name: Verify auth scopes
-        run: gh auth status
+        run: |
+          set -euo pipefail
+          auth_status="$(gh auth status 2>&1)"
+          echo "$auth_status"
+          scopes_line="$(printf '%s\n' "$auth_status" | grep 'Token scopes:' || true)"
+          normalized_scopes="$(printf '%s' "$scopes_line" | sed "s/[',]/ /g")"
+          required_scopes=(repo read:org)
+          for required_scope in "${required_scopes[@]}"; do
+            if ! grep -qE "(^|[[:space:]])${required_scope}([[:space:]]|$)" <<< "$normalized_scopes"; then
+              echo "::error::GH_TOKEN is missing required scope: ${required_scope}"
+              exit 1
+            fi
+          done
 
       - name: Install review engine CLIs
         run: |
@@ -202,6 +214,7 @@ jobs:
           export PATH="$HOME/.npm-global/bin:$PATH"
 
           npm_install_retry() {
+            # npm_install_retry <package> [attempts=3] [delay_seconds=15]
             local package="$1"
             local attempts="${2:-3}"
             local delay="${3:-15}"
@@ -293,9 +306,14 @@ jobs:
         with:
           name: pr-review-debug-${{ github.run_number }}
           path: |
+            # Current scripts emit diagnostics under /tmp/cascade.
             prs.txt
             /tmp/cascade/**
+            # Legacy/supplemental review logs from earlier review scripts.
             /tmp/review-*.log
+            # Keep runner.temp paths too for cross-runner compatibility.
+            ${{ runner.temp }}/cascade/**
+            ${{ runner.temp }}/review-*.log
           if-no-files-found: ignore
           retention-days: 14
 
