@@ -169,7 +169,11 @@ jobs:
           CHECKS_JSON: ${{ env.INTENT_CHECKS }}
           REPO: ${{ github.repository }}
           REVIEW_ENGINE: ${{ env.DEV_LEAD_ENGINE }}
-        run: bash scripts/dev-lead-fix-ci.sh
+        run: |
+          rc=0
+          bash scripts/dev-lead-fix-ci.sh || rc=$?
+          # exit 2 = rate-limited; script already posted a marker — not a workflow failure
+          [ "$rc" -eq 2 ] && exit 0 || exit "$rc"
 
       # ── fix-reviews ───────────────────────────────────────────────────────
       - name: Run fix-reviews
@@ -179,7 +183,10 @@ jobs:
           HEAD_SHA: ${{ env.INTENT_HEAD_SHA }}
           REPO: ${{ github.repository }}
           REVIEW_ENGINE: ${{ env.DEV_LEAD_ENGINE }}
-        run: bash scripts/dev-lead-fix-reviews.sh
+        run: |
+          rc=0
+          bash scripts/dev-lead-fix-reviews.sh || rc=$?
+          [ "$rc" -eq 2 ] && exit 0 || exit "$rc"
 
       # ── fix-bot-comment ───────────────────────────────────────────────────
       - name: Run fix-bot-comment
@@ -191,7 +198,10 @@ jobs:
           COMMENT_BODY: ${{ env.INTENT_COMMENT_BODY }}
           REPO: ${{ github.repository }}
           REVIEW_ENGINE: ${{ env.DEV_LEAD_ENGINE }}
-        run: bash scripts/dev-lead-fix-reviews.sh
+        run: |
+          rc=0
+          bash scripts/dev-lead-fix-reviews.sh || rc=$?
+          [ "$rc" -eq 2 ] && exit 0 || exit "$rc"
 
       # ── human ─────────────────────────────────────────────────────────────
       - name: Run human
@@ -203,7 +213,10 @@ jobs:
           USER_INSTRUCTION: ${{ env.INTENT_COMMENT_BODY }}
           REPO: ${{ github.repository }}
           REVIEW_ENGINE: ${{ env.DEV_LEAD_ENGINE }}
-        run: bash scripts/dev-lead-fix-reviews.sh
+        run: |
+          rc=0
+          bash scripts/dev-lead-fix-reviews.sh || rc=$?
+          [ "$rc" -eq 2 ] && exit 0 || exit "$rc"
 
       # ── human-pr ──────────────────────────────────────────────────────────
       - name: Run human-pr
@@ -213,7 +226,10 @@ jobs:
           HEAD_SHA: ${{ env.INTENT_HEAD_SHA }}
           REPO: ${{ github.repository }}
           REVIEW_ENGINE: ${{ env.DEV_LEAD_ENGINE }}
-        run: bash scripts/dev-lead-fix-reviews.sh
+        run: |
+          rc=0
+          bash scripts/dev-lead-fix-reviews.sh || rc=$?
+          [ "$rc" -eq 2 ] && exit 0 || exit "$rc"
 
       # ── issue ─────────────────────────────────────────────────────────────
       - name: Run issue
@@ -222,7 +238,10 @@ jobs:
           ISSUE_NUMBER: ${{ env.INTENT_ISSUE_NUMBER }}
           REPO: ${{ github.repository }}
           REVIEW_ENGINE: ${{ env.DEV_LEAD_ENGINE }}
-        run: bash scripts/dev-lead-fix-issue.sh
+        run: |
+          rc=0
+          bash scripts/dev-lead-fix-issue.sh || rc=$?
+          [ "$rc" -eq 2 ] && exit 0 || exit "$rc"
 
       # ── rebase ────────────────────────────────────────────────────────────
       - name: Run rebase
@@ -231,7 +250,10 @@ jobs:
           PR_NUMBER: ${{ env.INTENT_PR_NUMBER }}
           REPO: ${{ github.repository }}
           REVIEW_ENGINE: ${{ env.DEV_LEAD_ENGINE }}
-        run: bash scripts/dev-lead-fix-reviews.sh
+        run: |
+          rc=0
+          bash scripts/dev-lead-fix-reviews.sh || rc=$?
+          [ "$rc" -eq 2 ] && exit 0 || exit "$rc"
 
       # ── enable-auto-merge ─────────────────────────────────────────────────
       # Triggered when a trusted bot approves a PR. Skips engine install and
