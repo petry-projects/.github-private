@@ -177,17 +177,16 @@ done
 
 # ---------------------------------------------------------------------------
 # 2b. Build issue lookup for open fleet-tracker issues (linked inline in report)
+# Issues now live in their target repo, so search org-wide.
 # ---------------------------------------------------------------------------
 issues_lookup_file=$(mktemp)
-if [ -n "${GITHUB_REPOSITORY:-}" ]; then
-  gh api "repos/${GITHUB_REPOSITORY}/issues?labels=fleet-tracker&state=open&per_page=100" \
-    --paginate \
-    --jq '.[] | select(.title | startswith("[Fleet Monitor] ")) |
-      (.title | ltrimstr("[Fleet Monitor] ") | split(" — ")) as $p |
-      select(($p | length) == 2) |
-      [$p[0], $p[1], .html_url, (.number | tostring)] | @tsv' \
-    > "$issues_lookup_file" 2>/dev/null || true
-fi
+gh api "search/issues?q=org:${ORG}+label:fleet-tracker+is:open&per_page=100" \
+  --paginate \
+  --jq '.items[] | select(.title | startswith("[Fleet Monitor] ")) |
+    (.title | ltrimstr("[Fleet Monitor] ") | split(" — ")) as $p |
+    select(($p | length) == 2) |
+    [$p[0], $p[1], .html_url, (.number | tostring)] | @tsv' \
+  > "$issues_lookup_file" 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
 # 3. Generate reports
