@@ -26,6 +26,9 @@ on:
       - '.github/workflows/issue-triage-runner.yml'
   workflow_dispatch: {}
 
+permissions:
+  contents: read
+
 jobs:
   validate-fixtures:
     runs-on: ubuntu-latest
