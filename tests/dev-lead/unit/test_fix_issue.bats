@@ -175,7 +175,7 @@ GITEOF
   cat > "$STUB_BIN_DIR/gh" <<'GHEOF'
 #!/usr/bin/env bash
 case "$*" in
-  *"pulls?state=open"*) echo "[]" ;;
+  *"pulls?state=open"*) echo "0" ;;
   *"api"*"repos/"*"issues/"*) echo '{"title":"Test Issue","body":"Test body"}' ;;
   *"api"*"users/"*) echo '{"id":12345}' ;;
   *"issue comment"*) exit 0 ;;
@@ -224,7 +224,7 @@ GITEOF
   cat > "$STUB_BIN_DIR/gh" <<GHEOF
 #!/usr/bin/env bash
 case "\$*" in
-  *"pulls?state=open"*) echo "[]" ;;
+  *"pulls?state=open"*) echo "0" ;;
   *"api"*"repos/"*"issues/"*) echo '{"title":"Test","body":"body"}' ;;
   *"api"*"users/"*) echo '{"id":12345}' ;;
   *"issue comment"*) touch "${comment_posted_sentinel}"; exit 0 ;;
