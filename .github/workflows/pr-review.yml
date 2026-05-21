@@ -189,15 +189,15 @@ jobs:
       - name: Verify auth scopes
         run: |
           set -euo pipefail
-          set +e
-          auth_status="$(gh auth status 2>&1)"
-          auth_rc=$?
-          set -e
-          echo "$auth_status"
-          if [ "$auth_rc" -ne 0 ]; then
+          if auth_status="$(gh auth status 2>&1)"; then
+            :
+          else
+            auth_rc=$?
+            echo "$auth_status"
             echo "::error::gh auth status failed"
             exit "$auth_rc"
           fi
+          echo "$auth_status"
           scopes_line="$(printf '%s\n' "$auth_status" | grep 'Token scopes:' || true)"
           normalized_scopes="$(printf '%s' "$scopes_line" | sed "s/[',]/ /g")"
           required_scopes=(repo read:org)
