@@ -77,7 +77,7 @@ jobs:
       - name: Summarize token usage by workflow
         env:
           GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
-          REPO: ${{ github.repository }}
+          REPO: petry-projects/.github-private
           LOOKBACK_DAYS: ${{ env.LOOKBACK_DAYS }}
         run: |
           set -euo pipefail
@@ -85,10 +85,15 @@ jobs:
           workdir="$(mktemp -d)"
           trap 'rm -rf "$workdir"' EXIT
           jsonl_dir="$workdir/jsonl"
+          artifacts_file="$workdir/token-artifacts.base64"
           mkdir -p "$jsonl_dir"
 
           cutoff_epoch="$(date -u -d "-${LOOKBACK_DAYS} days" +%s)"
           artifact_count=0
+
+          gh api "repos/$REPO/actions/artifacts" --paginate \
+            --jq '.artifacts[] | select(.name | startswith("token-usage-")) | @base64' \
+            > "$artifacts_file"
 
           while IFS= read -r encoded; do
             [ -n "$encoded" ] || continue
@@ -117,10 +122,7 @@ jobs:
             if [ "$found_any" = true ]; then
               artifact_count=$((artifact_count + 1))
             fi
-          done < <(
-            gh api "repos/$REPO/actions/artifacts" --paginate \
-              --jq '.artifacts[] | select(.name | startswith("token-usage-")) | @base64'
-          )
+          done < "$artifacts_file"
 
           if ! find "$jsonl_dir" -type f -name '*.jsonl' | grep -q .; then
             {
