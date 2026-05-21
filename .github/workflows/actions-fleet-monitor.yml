@@ -104,14 +104,16 @@ jobs:
 
             zip_file="$workdir/artifact-$id.zip"
             unzip_dir="$workdir/unzip-$id"
+            artifact_jsonl_dir="$jsonl_dir/$id"
             mkdir -p "$unzip_dir"
+            mkdir -p "$artifact_jsonl_dir"
             gh api "repos/$REPO/actions/artifacts/$id/zip" > "$zip_file"
             unzip -q -o "$zip_file" -d "$unzip_dir"
 
             found_any=false
             while IFS= read -r f; do
               found_any=true
-              cp "$f" "$jsonl_dir/"
+              cp "$f" "$artifact_jsonl_dir/"
             done < <(find "$unzip_dir" -type f -name '*.jsonl' -print)
 
             if [ "$found_any" = true ]; then
@@ -133,6 +135,7 @@ jobs:
 
           aggregate="$workdir/token-usage-summary.json"
           jq -s '
+            sort_by(.workflow) |
             group_by(.workflow) |
             map({
               workflow: (.[0].workflow // "unknown"),
