@@ -70,7 +70,20 @@ main() {
   local pre_engine_sha
   pre_engine_sha=$(git rev-parse HEAD)
 
-  if ! run_writer_with_fallback "$prompt_file"; then
+  local engine_rc=0
+  run_writer_with_fallback "$prompt_file" || engine_rc=$?
+  if [ "$engine_rc" -eq 2 ]; then
+    echo "::warning::All engines rate-limited — cannot implement issue #${ISSUE_NUMBER}; re-apply the label to retry"
+    local reset_msg=""
+    if [ -f /tmp/dev-lead-rate-limit-reset ]; then
+      local reset_time
+      reset_time=$(cat /tmp/dev-lead-rate-limit-reset)
+      [ -n "$reset_time" ] && reset_msg=" The limit is expected to reset at ${reset_time}."
+    fi
+    gh issue comment "$ISSUE_NUMBER" --repo "$REPO" --body "<!-- dev-lead-rate-limited -->All engines are currently rate-limited.${reset_msg} Please re-apply the \`dev-lead\` label when the rate limit clears to retry." 2>/dev/null || true
+    rm -f "$prompt_file"
+    exit 2
+  elif [ "$engine_rc" -ne 0 ]; then
     echo "::error::Engine failed to implement issue #${ISSUE_NUMBER}"
     rm -f "$prompt_file"
     exit 1
