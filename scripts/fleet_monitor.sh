@@ -178,15 +178,22 @@ done
 # ---------------------------------------------------------------------------
 # 2b. Build issue lookup for open fleet-tracker issues (linked inline in report)
 # Issues now live in their target repo, so search org-wide.
+# Note: the Search API caps at 1,000 results total; if the org has >1,000 open
+# fleet-tracker issues the lookup may be incomplete, but that is not expected in
+# practice. On search failure (auth error, rate-limit, etc.) inline links will
+# simply be absent from the report — non-fatal for the monitoring workflow.
 # ---------------------------------------------------------------------------
 issues_lookup_file=$(mktemp)
-gh api "search/issues?q=org:${ORG}+label:fleet-tracker+is:open+is:issue&per_page=100" \
+if ! gh api "search/issues?q=org:${ORG}+label:fleet-tracker+is:open+is:issue&per_page=100" \
   --paginate \
   --jq '.items[] | select(.title | startswith("[Fleet Monitor] ")) |
     (.title | ltrimstr("[Fleet Monitor] ") | split(" — ")) as $p |
     select(($p | length) == 2) |
     [$p[0], $p[1], .html_url, (.number | tostring)] | @tsv' \
-  > "$issues_lookup_file" 2>/dev/null || true
+  > "$issues_lookup_file" 2>&1; then
+  echo "::warning::Could not fetch fleet-tracker issues org-wide — inline issue links may be incomplete. Check token auth/rate-limit."
+  : > "$issues_lookup_file"  # ensure file exists but is empty on failure
+fi
 
 # ---------------------------------------------------------------------------
 # 3. Generate reports

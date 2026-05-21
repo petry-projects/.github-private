@@ -197,7 +197,15 @@ jobs:
                         owner: targetOwner, repo: targetRepo,
                         name, color, description: desc,
                       });
-                    } catch (e) { if (e.status !== 422) throw e; }
+                    } catch (e) {
+                      if (e.status === 422) { /* already exists — ok */ }
+                      else if (e.status === 403 || e.status === 410) {
+                        // 403: no write access; 410: issues disabled on this repo
+                        core.warning(`Cannot create label '${name}' in ${targetOwner}/${targetRepo} (${e.status}) — skipping`);
+                      } else {
+                        throw e;  // propagate to outer catch for unexpected errors
+                      }
+                    }
                   }
                   labelledRepos.add(item.repo);
                 }
