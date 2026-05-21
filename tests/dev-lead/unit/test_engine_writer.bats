@@ -24,8 +24,10 @@ setup() {
 teardown() {
   rm -f "$GITHUB_ENV" "$GITHUB_OUTPUT" "$TEST_PROMPT"
   rm -rf "$STUB_BIN_DIR"
-  [ -n "${TOKEN_LOG_FILE:-}" ] && rm -f "$TOKEN_LOG_FILE"
-  unset TOKEN_LOG_FILE
+  if [ -n "${TEST_OWNED_TOKEN_LOG:-}" ] && [ "${TOKEN_LOG_FILE:-}" = "$TEST_OWNED_TOKEN_LOG" ]; then
+    rm -f "$TEST_OWNED_TOKEN_LOG"
+  fi
+  unset TOKEN_LOG_FILE TEST_OWNED_TOKEN_LOG
 }
 
 # Helper: source engine with a given engine type (suppresses info line)
@@ -267,6 +269,7 @@ STUB
   export DEV_LEAD_DRY_RUN=false
   local log; log=$(mktemp)
   export TOKEN_LOG_FILE="$log"
+  export TEST_OWNED_TOKEN_LOG="$log"
 
   run run_writer "$TEST_PROMPT"
 
@@ -281,6 +284,7 @@ STUB
   export DEV_LEAD_DRY_RUN=false
   local log; log=$(mktemp)
   export TOKEN_LOG_FILE="$log"
+  export TEST_OWNED_TOKEN_LOG="$log"
 
   run_writer "$TEST_PROMPT"
 
@@ -294,6 +298,7 @@ STUB
   export DEV_LEAD_DRY_RUN=false
   local log; log=$(mktemp)
   export TOKEN_LOG_FILE="$log"
+  export TEST_OWNED_TOKEN_LOG="$log"
 
   run_writer "$TEST_PROMPT"
 
@@ -320,6 +325,7 @@ STUB
   export DEV_LEAD_DRY_RUN=true
   local log; log=$(mktemp)
   export TOKEN_LOG_FILE="$log"
+  export TEST_OWNED_TOKEN_LOG="$log"
 
   run run_writer "$TEST_PROMPT"
 
@@ -345,6 +351,7 @@ STUB
   export STUB_ENGINE_RESPONSE="LOW risk verdict"
   local log; log=$(mktemp)
   export TOKEN_LOG_FILE="$log"
+  export TEST_OWNED_TOKEN_LOG="$log"
 
   run run_triage "$TEST_PROMPT"
 
@@ -370,6 +377,7 @@ STUB
   export DEV_LEAD_DRY_RUN=false
   local log; log=$(mktemp)
   export TOKEN_LOG_FILE="$log"
+  export TEST_OWNED_TOKEN_LOG="$log"
 
   # Make claude output rate-limit text (exit 1 → is_rate_limited → returns 2)
   cat > "$STUB_BIN_DIR/claude" << 'STUB'
@@ -401,6 +409,7 @@ STUB
   export DEV_LEAD_DRY_RUN=false
   local log; log=$(mktemp)
   export TOKEN_LOG_FILE="$log"
+  export TEST_OWNED_TOKEN_LOG="$log"
 
   # Claude outputs rate-limit text → run_writer returns 2 and must not log tokens
   cat > "$STUB_BIN_DIR/claude" << 'STUB'

@@ -260,7 +260,7 @@ jobs:
 
       - name: Upload token usage log
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@6f51ac03d0773f2457e7b1f7c5a4f48b5965c01 # v4.6.2
         with:
           name: token-usage-${{ github.run_id }}
           path: ${{ runner.temp }}/token-usage-${{ github.run_id }}.jsonl

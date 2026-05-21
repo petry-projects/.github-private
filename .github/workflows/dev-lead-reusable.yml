@@ -257,6 +257,15 @@ jobs:
           REPO: ${{ github.repository }}
         run: bash .dev-lead/scripts/dev-lead-fix-reviews.sh
 
+      - name: Upload token usage log
+        if: always()
+        uses: actions/upload-artifact@6f51ac03d0773f2457e7b1f7c5a4f48b5965c01 # v4.6.2
+        with:
+          name: token-usage-${{ github.run_id }}
+          path: ${{ runner.temp }}/token-usage-${{ github.run_id }}.jsonl
+          if-no-files-found: ignore
+          retention-days: 30
+
   # ── ci-relay ──────────────────────────────────────────────────────────────────
   # Handles check_run completed failure events. No LLM — resolves PR number and
   # fires repository_dispatch dev-lead-ci-failure back to the calling repo.
@@ -321,12 +330,3 @@ jobs:
           echo "$payload" | gh api \
             --method POST "repos/$RELAY_REPO/dispatches" --input -
           echo "::notice::Relayed CI failure for PR $RELAY_PR_NUMBER"
-
-      - name: Upload token usage log
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: token-usage-${{ github.run_id }}
-          path: ${{ runner.temp }}/token-usage-${{ github.run_id }}.jsonl
-          if-no-files-found: ignore
-          retention-days: 30

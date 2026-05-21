@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+set -euo pipefail
+
 # Token Metrics Library — Effective Tokens (ET) metric + JSONL logging
 #
 # Provides cost visibility for the pr-review and dev-lead agents.
@@ -67,10 +69,31 @@ emit_token_record() {
   ts=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "")
   run_id="${GITHUB_RUN_ID:-}"
 
-  record=$(printf \
-    '{"ts":"%s","workflow":"%s","tier":"%s","engine":"%s","model":"%s","input_tokens":%s,"cache_read_tokens":%s,"output_tokens":%s,"et":%s,"run_id":"%s","context":"%s"}' \
-    "$ts" "$workflow" "$tier" "$engine" "$model" \
-    "$input" "$cache" "$output" "$et" "$run_id" "$context")
+  record=$(jq -cn \
+    --arg ts "$ts" \
+    --arg workflow "$workflow" \
+    --arg tier "$tier" \
+    --arg engine "$engine" \
+    --arg model "$model" \
+    --arg input "$input" \
+    --arg cache "$cache" \
+    --arg output "$output" \
+    --arg et "$et" \
+    --arg run_id "$run_id" \
+    --arg context "$context" \
+    '{
+      ts: $ts,
+      workflow: $workflow,
+      tier: $tier,
+      engine: $engine,
+      model: $model,
+      input_tokens: ($input | tonumber? // 0),
+      cache_read_tokens: ($cache | tonumber? // 0),
+      output_tokens: ($output | tonumber? // 0),
+      et: ($et | tonumber? // 0),
+      run_id: $run_id,
+      context: $context
+    }' 2>/dev/null) || return 0
 
   printf '%s\n' "$record" >> "$TOKEN_LOG_FILE" 2>/dev/null || true
 }

@@ -220,6 +220,16 @@ teardown() {
   [ "$context" = "https://github.com/org/repo/pull/42" ]
 }
 
+@test "emit_token_record: escapes quoted and multiline context as valid JSONL" {
+  local context='line "one"
+line two'
+  emit_token_record "pr-review" "deep" "claude" "claude-sonnet-4-6" 5000 0 300 "$context"
+  jq empty < "$TOKEN_LOG_FILE"
+  local parsed
+  parsed=$(jq -r '.context' < "$TOKEN_LOG_FILE")
+  [ "$parsed" = "$context" ]
+}
+
 @test "emit_token_record: is non-fatal when TOKEN_LOG_FILE path is unwritable" {
   export TOKEN_LOG_FILE="/proc/nonexistent-readonly-path/token.jsonl"
   run emit_token_record "pr-review" "triage" "claude" "haiku" 100 0 50 ""
