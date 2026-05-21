@@ -595,6 +595,11 @@ run_writer_with_fallback() {
   done
 
   for engine in "${engines[@]}"; do
+    if [ "$engine" = "copilot" ] && [[ "${COPILOT_GITHUB_TOKEN:-}" == ghp_* ]]; then
+      echo "::warning::Skipping copilot fallback: classic PAT in COPILOT_GITHUB_TOKEN is unsupported" >&2
+      continue
+    fi
+
     local saved="$REVIEW_ENGINE"
     export REVIEW_ENGINE="$engine"
     # Re-evaluate model names for the new engine

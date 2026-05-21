@@ -229,6 +229,34 @@ GHEOF
   [ "$status" -eq 2 ]
 }
 
+@test "writer: run_writer_with_fallback skips copilot when token is classic PAT" {
+  _source_engine "claude"
+  export DEV_LEAD_DRY_RUN=false
+  export COPILOT_GITHUB_TOKEN="ghp_classic_token"
+
+  # Claude and Gemini both rate-limit.
+  for engine in claude gemini; do
+    cat > "$STUB_BIN_DIR/$engine" << 'STUB'
+#!/usr/bin/env bash
+echo "quota exceeded" >&2
+exit 1
+STUB
+    chmod +x "$STUB_BIN_DIR/$engine"
+  done
+
+  # If copilot is invoked, this stub would fail the test via status 1 path.
+  cat > "$STUB_BIN_DIR/gh" << 'GHEOF'
+#!/usr/bin/env bash
+echo "copilot should have been skipped" >&2
+exit 1
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+
+  run run_writer_with_fallback "$TEST_PROMPT"
+
+  [ "$status" -eq 2 ]
+}
+
 @test "writer: run_writer_with_fallback succeeds on second engine if first rate-limited" {
   _source_engine "claude"
   export DEV_LEAD_DRY_RUN=false
