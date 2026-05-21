@@ -339,8 +339,7 @@ run_agentic() {
         if [ -n "$_tok_tmp" ]; then
           copilot_chat "$prompt_file" "$DEEP_TIMEOUT_SEC" --yolo | tee "$OUTPUT_FILE" "$_tok_tmp" || rc=${PIPESTATUS[0]}
         else
-          copilot_chat "$prompt_file" "$DEEP_TIMEOUT_SEC" --yolo | tee "$OUTPUT_FILE"
-          rc=${PIPESTATUS[0]}
+          copilot_chat "$prompt_file" "$DEEP_TIMEOUT_SEC" --yolo | tee "$OUTPUT_FILE" || rc=${PIPESTATUS[0]}
         fi
       else
         if [ -n "$_tok_tmp" ]; then
@@ -449,8 +448,7 @@ run_duck() {
         if [ -n "$_tok_tmp" ]; then
           copilot_chat "$prompt_file" "$DUCK_TIMEOUT_SEC" --yolo | tee "$OUTPUT_FILE" "$_tok_tmp" || rc=${PIPESTATUS[0]}
         else
-          copilot_chat "$prompt_file" "$DUCK_TIMEOUT_SEC" --yolo | tee "$OUTPUT_FILE"
-          rc=${PIPESTATUS[0]}
+          copilot_chat "$prompt_file" "$DUCK_TIMEOUT_SEC" --yolo | tee "$OUTPUT_FILE" || rc=${PIPESTATUS[0]}
         fi
       else
         if [ -n "$_tok_tmp" ]; then
