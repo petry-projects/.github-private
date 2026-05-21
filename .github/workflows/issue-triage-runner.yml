@@ -27,27 +27,22 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 
       - name: Install Python dependencies
-        run: pip install "pyyaml==6.0.3" --only-binary :all: --quiet
+        run: pip install "pyyaml==6.0.3" --only-binary=":all:" --quiet
 
       - name: Run issue-triage (staged)
         id: run
         env:
-          ISSUE_NUMBER:    ${{ github.event.issue.number }}
-          ISSUE_TITLE:     ${{ github.event.issue.title }}
-          ISSUE_BODY:      ${{ github.event.issue.body }}
-          ISSUE_LABELS:    ${{ join(github.event.issue.labels.*.name, ',') }}
-          ISSUE_URL:       ${{ github.event.issue.html_url }}
-          ISSUE_ACTION:    ${{ github.event.action }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+          ISSUE_LABELS: ${{ join(github.event.issue.labels.*.name, ',') }}
+          ISSUE_URL: ${{ github.event.issue.html_url }}
+          ISSUE_ACTION: ${{ github.event.action }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
           result=$(bash scripts/aw.sh run issue-triage --staged)
-          skip=$(AW_RESULT="$result" python3 - <<'PYEOF'
-import json, os
-d = json.loads(os.environ['AW_RESULT'])
-print('true' if d.get('skip') else 'false')
-PYEOF
-)
+          skip=$(AW_RESULT="$result" python3 -c "import json,os; d=json.loads(os.environ['AW_RESULT']); print('true' if d.get('skip') else 'false')")
           # Store encoded to survive multi-line JSON in GITHUB_OUTPUT
           encoded=$(printf '%s\n' "$result" | base64 -w0)
           echo "result=$encoded" >> "$GITHUB_OUTPUT"
@@ -67,14 +62,14 @@ PYEOF
           persist-credentials: false
 
       - name: Install Python dependencies
-        run: pip install "pyyaml==6.0.3" --only-binary :all: --quiet
+        run: pip install "pyyaml==6.0.3" --only-binary=":all:" --quiet
 
       - name: Apply triage output (safe-output)
         env:
-          GITHUB_TOKEN:      ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-          ISSUE_NUMBER:      ${{ github.event.issue.number }}
-          TRIAGE_RESULT:     ${{ needs.triage.outputs.result }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          TRIAGE_RESULT: ${{ needs.triage.outputs.result }}
         run: |
           result_file=$(mktemp)
           printf '%s\n' "$TRIAGE_RESULT" | base64 -d > "$result_file"

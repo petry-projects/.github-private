@@ -6,10 +6,11 @@
 #   • This is the canonical fleet-monitor implementation; there is no external
 #     reusable. The scanning logic lives in scripts/fleet_monitor.sh and
 #     scripts/fleet_report.sh.
-#   • The "Track high-failure workflows as Issues" step uses github.token (not
-#     GH_PAT_WORKFLOWS) because github.token has explicit issues:write on this
-#     repo. Dev-Lead Agent is explicitly woken via repository_dispatch (which
-#     requires contents:write) using GH_PAT_WORKFLOWS in the step below.
+#   • The "Migrate misaligned fleet-tracker issues" and "Track high-failure
+#     workflows as Issues" steps both use GH_PAT_WORKFLOWS (not github.token)
+#     because they need cross-repo issues:write on target repos.
+#     github.token only has issues:write on .github-private itself.
+#     Dev-Lead Agent is woken via repository_dispatch using GH_PAT_WORKFLOWS.
 #   • Do NOT change checkout ref from 'main' — the github.ref_name variant is
 #     for feature-branch testing only and must never reach production.
 # ─────────────────────────────────────────────────────────────────────────────
