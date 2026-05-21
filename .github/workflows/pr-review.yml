@@ -189,8 +189,15 @@ jobs:
       - name: Verify auth scopes
         run: |
           set -euo pipefail
+          set +e
           auth_status="$(gh auth status 2>&1)"
+          auth_rc=$?
+          set -e
           echo "$auth_status"
+          if [ "$auth_rc" -ne 0 ]; then
+            echo "::error::gh auth status failed"
+            exit "$auth_rc"
+          fi
           scopes_line="$(printf '%s\n' "$auth_status" | grep 'Token scopes:' || true)"
           normalized_scopes="$(printf '%s' "$scopes_line" | sed "s/[',]/ /g")"
           required_scopes=(repo read:org)
@@ -303,15 +310,13 @@ jobs:
       - name: Upload debug log on failure
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        # Collect both current cascade logs and legacy/supplemental log paths.
         with:
           name: pr-review-debug-${{ github.run_number }}
           path: |
-            # Current scripts emit diagnostics under /tmp/cascade.
             prs.txt
             /tmp/cascade/**
-            # Legacy/supplemental review logs from earlier review scripts.
             /tmp/review-*.log
-            # Keep runner.temp paths too for cross-runner compatibility.
             ${{ runner.temp }}/cascade/**
             ${{ runner.temp }}/review-*.log
           if-no-files-found: ignore
