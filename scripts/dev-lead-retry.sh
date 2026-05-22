@@ -213,14 +213,23 @@ scan_pr_for_rate_limits() {
         continue
       fi
 
+      # Normalize legacy intent aliases to their canonical names before checking
+      # terminal markers and dispatching. "human-pr" was renamed to "review-changes";
+      # dev-lead-intent.sh rewrites human-pr → review-changes, so the retried run
+      # posts terminal markers as intent=review-changes, not intent=human-pr.
+      # Without normalization here the terminal check never matches and the same
+      # SHA is re-dispatched on every cron cycle indefinitely.
+      local dispatch_intent="${intent_type}"
+      [ "$dispatch_intent" = "human-pr" ] && dispatch_intent="review-changes"
+
       # Skip if a terminal marker was already posted (prior retry ran to completion)
-      local reviews_terminal="${REVIEWS_MARKER_PREFIX}${pr_number} sha=${head_sha} intent=${intent_type} status=(applied|no-changes|failed)"
+      local reviews_terminal="${REVIEWS_MARKER_PREFIX}${pr_number} sha=${head_sha} intent=${dispatch_intent} status=(applied|no-changes|failed)"
       if echo "$comments_json" | jq -e --arg pat "$reviews_terminal" '[.[] | select(. | test($pat))] | length > 0' >/dev/null 2>&1; then
         echo "  [skip] ${intent_type} already has terminal result for PR ${pr_number} SHA ${head_sha:0:8}" >&2
         continue
       fi
 
-      dispatch_reviews_retry "$repo" "$pr_number" "$head_sha" "$intent_type"
+      dispatch_reviews_retry "$repo" "$pr_number" "$head_sha" "$dispatch_intent"
       dispatched=$(( dispatched + 1 ))
     fi
   done
