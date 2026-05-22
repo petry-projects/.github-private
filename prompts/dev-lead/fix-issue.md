@@ -35,7 +35,8 @@ Before writing any code:
 
 ```bash
 # Use --body-file to avoid shell quoting issues with issue metadata
-cat > /tmp/dev-lead-plan.md << 'PLAN'
+export PLAN_FILE="$(mktemp /tmp/dev-lead-plan.XXXXXX.md)"
+cat > "$PLAN_FILE" << 'PLAN'
 ## Dev-Lead Implementation Plan
 
 **Issue:** #ISSUE_NUM — ISSUE_TITLE
@@ -54,9 +55,17 @@ cat > /tmp/dev-lead-plan.md << 'PLAN'
 ### Test Command
 `<command>`
 PLAN
-# Substitute the actual values before posting
-sed -i "s/ISSUE_NUM/${ISSUE_NUMBER}/g; s/ISSUE_TITLE/${ISSUE_TITLE}/g" /tmp/dev-lead-plan.md
-gh issue comment "${ISSUE_NUMBER}" --repo "${REPO}" --body-file /tmp/dev-lead-plan.md
+# Substitute the actual values before posting (python avoids sed brittleness with special chars in titles)
+python3 << 'PY'
+from pathlib import Path
+import os
+p = Path(os.environ["PLAN_FILE"])
+text = p.read_text()
+text = text.replace("ISSUE_NUM", os.environ["ISSUE_NUMBER"])
+text = text.replace("ISSUE_TITLE", os.environ["ISSUE_TITLE"])
+p.write_text(text)
+PY
+gh issue comment "${ISSUE_NUMBER}" --repo "${REPO}" --body-file "$PLAN_FILE"
 ```
 
 ---
@@ -118,7 +127,8 @@ Post a completion summary as a comment on Issue #${ISSUE_NUMBER}:
 
 ```bash
 # Use --body-file to safely handle test output and file paths that may contain special characters
-cat > /tmp/dev-lead-report.md << 'REPORT'
+REPORT_FILE="$(mktemp /tmp/dev-lead-report.XXXXXX.md)"
+cat > "$REPORT_FILE" << 'REPORT'
 ## Dev-Lead: Implementation Complete
 
 ### Plan Execution
@@ -136,7 +146,7 @@ cat > /tmp/dev-lead-report.md << 'REPORT'
 ### Notes
 <edge cases handled, known limitations, follow-up issues to open, or 'none'>
 REPORT
-gh issue comment "${ISSUE_NUMBER}" --repo "${REPO}" --body-file /tmp/dev-lead-report.md
+gh issue comment "${ISSUE_NUMBER}" --repo "${REPO}" --body-file "$REPORT_FILE"
 ```
 
 ---

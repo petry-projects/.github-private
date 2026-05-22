@@ -36,9 +36,10 @@ Carry out the instruction exactly as requested by `${ACTOR}`. Work through each 
 
 After completing the instruction:
 
-1. Run the test suite to confirm no regressions were introduced
-2. If the instruction introduces new behavior, add or update tests to cover it
-3. If tests break because the instruction conflicts with existing behavior, note it in your output — do not silently delete failing tests
+1. Identify the test command by checking `AGENTS.md`, `CLAUDE.md`, `package.json` (`scripts.test`), `Makefile`, and common CI config files; fall back to `npm test`, `pytest`, `go test ./...`, or `cargo test` if no explicit command is found — report the chosen command before running it
+2. Run the test suite to confirm no regressions were introduced
+3. If the instruction introduces new behavior, add or update tests to cover it
+4. If tests break because the instruction conflicts with existing behavior, note it in your output — do not silently delete failing tests
 
 ### Phase 3 — Rubber Duck
 

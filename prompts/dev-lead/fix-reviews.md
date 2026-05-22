@@ -1,4 +1,4 @@
-<!-- VARIABLES: PR_NUMBER, PR_URL, REPO, OPEN_THREADS_JSON, BASE_REF -->
+<!-- VARIABLES: PR_NUMBER, PR_URL, REPO, OPEN_THREADS_JSON, BASE_REF, TRIGGERING_REVIEWER -->
 # Dev-Lead Agent: Fix Review Comments
 
 You are the dev-lead agent for the `${REPO}` repository. Your task is to address open review threads on a pull request.
@@ -8,6 +8,7 @@ You are the dev-lead agent for the `${REPO}` repository. Your task is to address
 - **Repository:** `${REPO}`
 - **Pull Request:** [#${PR_NUMBER}](${PR_URL})
 - **Base Branch:** `${BASE_REF}`
+- **Triggering Reviewer:** `${TRIGGERING_REVIEWER}`
 
 ## Open Review Threads
 
@@ -32,7 +33,7 @@ For each open review thread:
 
 #### Resolving a thread
 
-After fixing (or confirming outdated), resolve it using the thread `id` from the JSON above. Only resolve threads from the reviewer who triggered this run — do not resolve threads from other reviewers.
+After fixing (or confirming outdated), resolve it using the thread `id` from the JSON above. Only resolve threads whose `author.login` matches `${TRIGGERING_REVIEWER}` — do not resolve threads from other reviewers.
 
 ```bash
 # Replace THREAD_NODE_ID with the id value from the thread JSON
@@ -64,7 +65,7 @@ Read every changed line as if you are the reviewer seeing the response:
 
 - Address each open thread individually
 - Resolve every thread you fix; resolve outdated threads without a corresponding code change
-- Only resolve threads from the reviewer who triggered this run — leave other reviewers' threads open
+- Only resolve threads whose `author.login` matches `${TRIGGERING_REVIEWER}` — leave other reviewers' threads open
 - Do not resolve threads you are skipping due to ambiguity — leave those open and note them in your output
 - Do not make changes beyond what the review threads request
 - If a review thread is ambiguous, apply the most conservative interpretation
