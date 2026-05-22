@@ -428,6 +428,31 @@ STUB
   [[ "$output" == *"terminal marker"* || "$output" == *"[dry-run]"* ]]
 }
 
+@test "fix-reviews: no-changes dry-run: does not post visible heading in comment body" {
+  export INTENT_TYPE="fix-reviews"
+  export DEV_LEAD_DRY_RUN="true"
+  export HEAD_SHA="ddd444eee555"
+
+  run bash "$FIX_REVIEWS_SCRIPT"
+
+  [ "$status" -eq 0 ]
+  # no-changes posts only the invisible HTML marker — no visible ## heading
+  [[ "$output" != *"## Dev-Lead —"* ]]
+}
+
+@test "fix-reviews: no-changes dry-run human-pr: does not post visible heading" {
+  export INTENT_TYPE="human-pr"
+  export DEV_LEAD_DRY_RUN="true"
+  export HEAD_SHA="ddd444eee555"
+  export PR_TITLE="Test PR"
+  export PR_DESCRIPTION="A test pull request"
+
+  run bash "$FIX_REVIEWS_SCRIPT"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"## Dev-Lead —"* ]]
+}
+
 # ── commit_and_push failure tests ─────────────────────────────────────────────
 
 @test "fix-reviews: commit_and_push: git commit failure exits 1 (not silently swallowed)" {
