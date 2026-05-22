@@ -49,6 +49,7 @@ prompts/                # Agent prompt library
 ## Required Environment Variables
 
 - `GH_TOKEN`: Secret used varies by workflow — `pr-review.yml`, `release-notes.yml`, and `stale-manager.yml` use `DON_PETRY_BOT_GH_PAT` (no fallback); orchestration workflows (`dev-lead-reusable.yml`, `actions-fleet-monitor.yml`) use `GH_PAT_WORKFLOWS`; CI jobs use `GITHUB_TOKEN`
+- `GH_PAT`: Used as `COPILOT_GITHUB_TOKEN` in Copilot-invoking workflows (`dev-lead.yml`, `dev-lead-reusable.yml`, `pr-review.yml`, `gh-aw-cross-org.yml`) — no fallback; required for `gh copilot` commands
 - `CLAUDE_CODE_OAUTH_TOKEN`: Used by dev-lead and pr-review workflows (stored as Actions secret)
 
 ## Testing Framework
