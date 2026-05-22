@@ -33,7 +33,7 @@ For each open review thread:
 
 #### Resolving a thread
 
-After fixing (or confirming outdated), resolve it using the thread `id` from the JSON above. Only resolve threads whose `author.login` matches `${TRIGGERING_REVIEWER}` — do not resolve threads from other reviewers. If `${TRIGGERING_REVIEWER}` is empty, this is a retry run with unknown origin: resolve threads from any author.
+After fixing (or confirming outdated), resolve it using the thread `id` from the JSON above. Only resolve threads whose `author.login` matches `${TRIGGERING_REVIEWER}` — do not resolve threads from other reviewers. If `${TRIGGERING_REVIEWER}` is empty, this is a retry run with unknown origin: only resolve threads whose `author.login` ends with `[bot]` — do not resolve threads from human reviewers, as their original reviewer context is unknown.
 
 ```bash
 # Replace THREAD_NODE_ID with the id value from the thread JSON
@@ -65,7 +65,7 @@ Read every changed line as if you are the reviewer seeing the response:
 
 - Address each open thread individually
 - Resolve every thread you fix; resolve outdated threads without a corresponding code change
-- Only resolve threads whose `author.login` matches `${TRIGGERING_REVIEWER}` — leave other reviewers' threads open; if `${TRIGGERING_REVIEWER}` is empty (retry run), resolve threads from any author
+- Only resolve threads whose `author.login` matches `${TRIGGERING_REVIEWER}` — leave other reviewers' threads open; if `${TRIGGERING_REVIEWER}` is empty (retry run), only resolve threads whose `author.login` ends with `[bot]` — leave human reviewers' threads open
 - Do not resolve threads you are skipping due to ambiguity — leave those open and note them in your output
 - Do not make changes beyond what the review threads request
 - If a review thread is ambiguous, apply the most conservative interpretation
