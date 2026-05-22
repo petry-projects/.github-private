@@ -10,9 +10,9 @@
 
 - **Runtime:** Bash (scripts) · GitHub-hosted runners (Actions)
 - **Framework:** GitHub Actions (YAML) · BMad Method (via `frameworks/` git subtrees)
-- **Testing:** ShellCheck (scripts) · `gh-aw compile` (agentic workflow YAML linting — CI-gated in `lint.yml`)
-- **Linting:** ShellCheck (zero warnings) · markdownlint (agent profiles + docs) · `gh-aw compile` (`.github/aw/` workflows)
-- **Key tools:** `gh` CLI · `gh-aw` (agentic workflow compiler)
+- **Testing:** ShellCheck (scripts) · `gh aw compile` (agentic workflow YAML linting — CI-gated in `lint.yml`)
+- **Linting:** ShellCheck (zero warnings) · markdownlint (agent profiles + docs) · `gh aw compile` (`.github/workflows/*.md` / `*.lock.yml`)
+- **Key tools:** `gh` CLI · `gh aw` (agentic workflow compiler)
 
 ## Project Structure
 
@@ -35,7 +35,6 @@ agents/                 # Copilot custom agent profiles (org-wide effect)
     ...
   aw/                   # Agentic workflow definitions (compiled by gh-aw)
   rulesets/             # Branch protection ruleset JSON
-frameworks/             # git subtree managed — do not edit directly
 scripts/                # Shell orchestration for GitHub Actions
 docs/                   # Workflow documentation
 prompts/                # Agent prompt library
@@ -43,31 +42,29 @@ prompts/                # Agent prompt library
 
 ## Local Dev Commands
 
-- Lint scripts:         `shellcheck scripts/*.sh`
-- Lint agentic flows:   `gh-aw compile .github/aw/`
-- No install or test commands (infrastructure-only)
+- Lint scripts:         `shellcheck -x scripts/**/*.sh`
+- Lint agentic flows:   `gh aw compile --no-emit`
+- Run tests:            `bats tests/fleet_report.bats`
 
 ## Required Environment Variables
 
-- `GITHUB_TOKEN`: Auto-provided by Actions; PAT with org scopes for manual runs
-- `ANTHROPIC_API_KEY`: Used by dev-lead and pr-review workflows (stored as Actions secret)
+- `GH_TOKEN`: Set from `GH_PAT_WORKFLOWS` secret (falls back to `GITHUB_TOKEN`); used by all `gh` CLI calls
+- `CLAUDE_CODE_OAUTH_TOKEN`: Used by dev-lead and pr-review workflows (stored as Actions secret)
 
 ## Testing Framework
 
-- Runner: `gh-aw compile` (agentic workflow YAML compilation — required CI gate in `lint.yml`)
+- Runner: `gh aw compile` (agentic workflow YAML compilation — required CI gate in `lint.yml`)
 - Shell: ShellCheck (required CI gate)
 - Coverage: N/A
 - Mutation testing: N/A
 
 ## Repo-Specific Overrides
 
-**Never modify `agent-shield.yml`** — exempted from agent modification per org agent-standards.md.
+**`agent-shield.yml` is a thin caller stub** — only `with:` inputs (`min-severity`, `agentshield-version`, `required-files`, `org-standards-ref`) may change if the repo needs a different policy. Never change trigger events, the `uses:` line, or the job name (it is a required status check).
 
 **`dev-lead.yml` vs `dev-lead-reusable.yml`:** To change AI automation behavior for this repo only, edit `dev-lead.yml`. To change behavior across all org repos, edit `dev-lead-reusable.yml` (the cross-org reusable).
 
 **`lint.yml` `gh-aw-compile` job** is a documented repo-specific addition — do not remove it when syncing org CI templates; if the org template gains an equivalent, remove this note and defer to the template.
-
-**`frameworks/` directories** are managed via `git subtree` — do not edit them directly. Use `git subtree pull` against the upstream remote to update.
 
 **Agent profiles** in `agents/*.md` must have YAML frontmatter with `name`, `description`, and `tools`. Agent names must be kebab-case matching the filename. Changes are org-wide.
 

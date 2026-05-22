@@ -10,7 +10,7 @@ helper utilities, compliance automation, and infrastructure orchestration.
 
 ## Safety Flags
 
-Every shell script MUST begin with:
+Every shell script MUST include the following near the top — immediately after the shebang and any optional header comment block:
 
 ```bash
 #!/usr/bin/env bash
