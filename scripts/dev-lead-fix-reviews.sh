@@ -348,6 +348,7 @@ case "$INTENT_TYPE" in
     export PR_NUMBER PR_URL="https://github.com/${REPO}/pull/${PR_NUMBER}"
     export REPO HEAD_SHA
     export BASE_REF="${BASE_REF:-main}"
+    export TRIGGERING_REVIEWER="${TRIGGERING_REVIEWER:-}"
     OPEN_THREADS_JSON=$(gh api graphql -f query='
       query($owner:String!,$repo:String!,$pr:Int!) {
         repository(owner:$owner, name:$repo) {

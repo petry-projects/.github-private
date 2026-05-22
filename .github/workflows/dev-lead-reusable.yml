@@ -96,6 +96,7 @@ jobs:
           echo "INTENT_HEAD_SHA=$(echo "$ctx"     | jq -r '.head_sha // ""')"     >> "$GITHUB_ENV"
           echo "INTENT_CHECKS=$(echo "$ctx"       | jq -c '.checks // []')"       >> "$GITHUB_ENV"
           echo "INTENT_ISSUE_NUMBER=$(echo "$ctx" | jq -r '.issue_number // ""')" >> "$GITHUB_ENV"
+          echo "INTENT_ACTOR=$(echo "$ctx"        | jq -r '.actor // ""')"        >> "$GITHUB_ENV"
 
       - name: Skip — log reason
         if: env.INTENT_TYPE == 'skip'
@@ -172,6 +173,7 @@ jobs:
           HEAD_SHA: ${{ env.INTENT_HEAD_SHA }}
           REPO: ${{ github.repository }}
           REVIEW_ENGINE: ${{ env.DEV_LEAD_ENGINE }}
+          TRIGGERING_REVIEWER: ${{ env.INTENT_ACTOR }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           COPILOT_GITHUB_TOKEN: ${{ secrets.GH_PAT }}
