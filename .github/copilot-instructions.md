@@ -70,4 +70,8 @@ prompts/                # Agent prompt library
 
 ## Org Standards
 
-See [petry-projects/.github — AGENTS.md](https://github.com/petry-projects/.github/blob/main/AGENTS.md).
+See [petry-projects/.github — AGENTS.md](https://github.com/petry-projects/.github/blob/main/AGENTS.md) for org-wide development standards.
+
+**Language-specific instructions** (applied automatically by Copilot when you open matching file types):
+
+- [Shell](.github/instructions/shell.instructions.md) — safety flags, ShellCheck, quoting, error handling, Makefile standards
