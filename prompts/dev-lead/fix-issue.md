@@ -34,9 +34,11 @@ Before writing any code:
 5. **Post the plan as a comment on Issue #${ISSUE_NUMBER} before touching any source files:**
 
 ```bash
-gh issue comment "${ISSUE_NUMBER}" --repo "${REPO}" --body "## Dev-Lead Implementation Plan
+# Use --body-file to avoid shell quoting issues with issue metadata
+cat > /tmp/dev-lead-plan.md << 'PLAN'
+## Dev-Lead Implementation Plan
 
-**Issue:** #${ISSUE_NUMBER} — ${ISSUE_TITLE}
+**Issue:** #ISSUE_NUM — ISSUE_TITLE
 
 ### Scope
 <one-sentence summary of what will be implemented>
@@ -50,7 +52,11 @@ gh issue comment "${ISSUE_NUMBER}" --repo "${REPO}" --body "## Dev-Lead Implemen
 - [ ] <next test>
 
 ### Test Command
-\`<command>\`"
+`<command>`
+PLAN
+# Substitute the actual values before posting
+sed -i "s/ISSUE_NUM/${ISSUE_NUMBER}/g; s/ISSUE_TITLE/${ISSUE_TITLE}/g" /tmp/dev-lead-plan.md
+gh issue comment "${ISSUE_NUMBER}" --repo "${REPO}" --body-file /tmp/dev-lead-plan.md
 ```
 
 ---
@@ -111,22 +117,26 @@ Perform a self-review of all changes as if you are a code reviewer seeing this f
 Post a completion summary as a comment on Issue #${ISSUE_NUMBER}:
 
 ```bash
-gh issue comment "${ISSUE_NUMBER}" --repo "${REPO}" --body "## Dev-Lead: Implementation Complete
+# Use --body-file to safely handle test output and file paths that may contain special characters
+cat > /tmp/dev-lead-report.md << 'REPORT'
+## Dev-Lead: Implementation Complete
 
 ### Plan Execution
 - [x] <completed step>
 - [x] <completed step>
 
 ### Test Results
-\`\`\`
-<paste full test output here>
-\`\`\`
+```
+<paste full test output — trim to last 50 lines if long>
+```
 
 ### Files Changed
-- \`<file>\`: <description of change>
+- `<file>`: <description of change>
 
 ### Notes
-<edge cases handled, known limitations, follow-up issues to open, or 'none'>"
+<edge cases handled, known limitations, follow-up issues to open, or 'none'>
+REPORT
+gh issue comment "${ISSUE_NUMBER}" --repo "${REPO}" --body-file /tmp/dev-lead-report.md
 ```
 
 ---

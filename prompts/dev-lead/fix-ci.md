@@ -64,12 +64,12 @@ Common SonarCloud Security Hotspot patterns to look for in changed files:
 
 ### Phase 3 — Verify Locally
 
-After applying fixes, run the local equivalent of the failing check to confirm the fix works before pushing:
+After applying fixes, run the local equivalent of the failing check to confirm the fix works before finishing:
 
 1. Identify the test/lint command this repo uses (check AGENTS.md, `package.json`, `Makefile`, etc.)
 2. Run the full test suite — every test must pass, not just the ones that were failing
 3. Run any lint/format checks relevant to the failing check
-4. **If the local run still fails, diagnose and fix before proceeding — do not push a broken fix**
+4. **If the local run still fails, diagnose and fix before finishing — the CI workflow will push and re-run checks; hand it a working fix**
 
 ### Phase 4 — Rubber Duck Review
 
