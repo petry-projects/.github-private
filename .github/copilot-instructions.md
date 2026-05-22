@@ -42,7 +42,7 @@ prompts/                # Agent prompt library
 
 ## Local Dev Commands
 
-- Lint scripts:         `shellcheck --severity=warning -x scripts/**/*.sh`
+- Lint scripts:         `find scripts -name "*.sh" -exec shellcheck --severity=warning -x {} +`
 - Lint agentic flows:   `gh aw compile --no-emit`
 - Run tests:            `bats tests/fleet_report.bats`
 
