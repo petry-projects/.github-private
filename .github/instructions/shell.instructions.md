@@ -125,10 +125,10 @@ Run ShellCheck before committing. Common issues to fix proactively:
   .PHONY: test lint
 
   test: ## Run the full test suite with coverage
-  	go test ./... -coverprofile=coverage.out
+    go test ./... -coverprofile=coverage.out
 
   lint: ## Run golangci-lint
-  	golangci-lint run
+    golangci-lint run
   ```
 
 ## Testing Shell Scripts
