@@ -33,7 +33,7 @@ agents/                 # Copilot custom agent profiles (org-wide effect)
     ci-failure-analyst.*    # CI failure triage automation
     stale-manager.*         # Stale PR/issue management
     ...
-  aw/                   # Agentic workflow definitions (compiled by gh-aw)
+  aw/                   # Compiler metadata only (actions-lock.json); workflow sources are in workflows/*.md
   rulesets/             # Branch protection ruleset JSON
 scripts/                # Shell orchestration for GitHub Actions
 docs/                   # Workflow documentation
@@ -48,7 +48,7 @@ prompts/                # Agent prompt library
 
 ## Required Environment Variables
 
-- `GH_TOKEN`: Set from `GH_PAT_WORKFLOWS` secret (falls back to `GITHUB_TOKEN`); used by all `gh` CLI calls
+- `GH_TOKEN`: Secret used varies by workflow — `pr-review.yml`, `release-notes.yml`, and `stale-manager.yml` use `DON_PETRY_BOT_GH_PAT` (no fallback); orchestration workflows (`dev-lead-reusable.yml`, `actions-fleet-monitor.yml`) use `GH_PAT_WORKFLOWS`; CI jobs use `GITHUB_TOKEN`
 - `CLAUDE_CODE_OAUTH_TOKEN`: Used by dev-lead and pr-review workflows (stored as Actions secret)
 
 ## Testing Framework
@@ -60,7 +60,7 @@ prompts/                # Agent prompt library
 
 ## Repo-Specific Overrides
 
-**`agent-shield.yml` is a thin caller stub** — only `with:` inputs (`min-severity`, `agentshield-version`, `required-files`, `org-standards-ref`) may change if the repo needs a different policy. Never change trigger events, the `uses:` line, or the job name (it is a required status check).
+**`agent-shield.yml` must not be modified** — this workflow is protected per `AGENTS.md` and is exempt from agent modification. If a policy change is needed, raise it with a human maintainer.
 
 **`dev-lead.yml` vs `dev-lead-reusable.yml`:** To change AI automation behavior for this repo only, edit `dev-lead.yml`. To change behavior across all org repos, edit `dev-lead-reusable.yml` (the cross-org reusable).
 
