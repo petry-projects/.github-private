@@ -194,9 +194,9 @@ jobs:
           PROMPTS_DIR: .dev-lead/prompts/dev-lead
         run: bash .dev-lead/scripts/dev-lead-fix-reviews.sh
 
-      # ── human ─────────────────────────────────────────────────────────────
-      - name: Run human
-        if: env.INTENT_TYPE == 'human'
+      # ── on-mention ─────────────────────────────────────────────────────────────
+      - name: Run on-mention
+        if: env.INTENT_TYPE == 'on-mention'
         env:
           PR_NUMBER: ${{ env.INTENT_PR_NUMBER }}
           HEAD_SHA: ${{ env.INTENT_HEAD_SHA }}
@@ -208,9 +208,9 @@ jobs:
           PROMPTS_DIR: .dev-lead/prompts/dev-lead
         run: bash .dev-lead/scripts/dev-lead-fix-reviews.sh
 
-      # ── human-pr ──────────────────────────────────────────────────────────
-      - name: Run human-pr
-        if: env.INTENT_TYPE == 'human-pr'
+      # ── review-changes ──────────────────────────────────────────────────────────
+      - name: Run review-changes
+        if: env.INTENT_TYPE == 'review-changes'
         env:
           PR_NUMBER: ${{ env.INTENT_PR_NUMBER }}
           HEAD_SHA: ${{ env.INTENT_HEAD_SHA }}

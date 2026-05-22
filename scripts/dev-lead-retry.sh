@@ -18,11 +18,11 @@ set -euo pipefail
 #   DRY_RUN             — if "true", log what would be dispatched but don't send
 #   NOW_ISO             — override current time for testing (ISO-8601 UTC)
 #
-# Retryable intents: fix-reviews, human-pr, rebase
+# Retryable intents: fix-reviews, review-changes, rebase
 #   These intents fetch all needed context (open threads, PR metadata) fresh
 #   from the GitHub API at run time, so a re-dispatch has full fidelity.
 #
-# NOT retried automatically: human, fix-bot-comment
+# NOT retried automatically: on-mention, fix-bot-comment
 #   These intents require USER_INSTRUCTION / COMMENT_BODY from the original
 #   triggering event, which cannot be reconstructed from the PR's current
 #   state. Users are asked to re-trigger manually.
@@ -36,7 +36,7 @@ CI_MARKER_PREFIX="<!-- dev-lead-fix-ci sha="
 REVIEWS_MARKER_PREFIX="<!-- dev-lead-fix-reviews pr="
 
 # Intents whose context can be fully reconstructed at retry time
-RETRYABLE_REVIEW_INTENTS="fix-reviews human-pr rebase"
+RETRYABLE_REVIEW_INTENTS="fix-reviews review-changes rebase"
 
 # get_now_epoch: current UTC time as unix epoch (overridable for tests)
 get_now_epoch() {
@@ -195,7 +195,7 @@ scan_pr_for_rate_limits() {
 
   # ── Check for retryable fix-reviews rate-limited markers on HEAD SHA ───────
   # Only intents that can reconstruct their full context at retry time.
-  # human and fix-bot-comment are excluded: their USER_INSTRUCTION/COMMENT_BODY
+  # on-mention and fix-bot-comment are excluded: their USER_INSTRUCTION/COMMENT_BODY
   # cannot be recovered from the PR's current state.
   for intent_type in $RETRYABLE_REVIEW_INTENTS; do
     local reviews_pattern="${REVIEWS_MARKER_PREFIX}${pr_number} sha=${head_sha} intent=${intent_type} status=rate-limited"
