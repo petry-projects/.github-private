@@ -1293,7 +1293,7 @@ case "$INTENT_TYPE" in
         post_reviews_terminal "fix-bot-comment" "applied" "Changes committed and pushed."
       else
         notify_coderabbit_resolve
-        post_reviews_terminal "fix-bot-comment" "no-changes" "Engine ran but made no changes."
+        post_reviews_terminal "fix-bot-comment" "no-changes"
       fi
       try_enable_auto_merge
     fi
@@ -1310,7 +1310,7 @@ case "$INTENT_TYPE" in
       if commit_and_push "human"; then
         post_reviews_terminal "human" "applied" "Changes committed and pushed."
       else
-        post_reviews_terminal "human" "no-changes" "Engine ran but made no changes."
+        post_reviews_terminal "human" "no-changes"
       fi
     fi
     exit "$rc"
@@ -1380,7 +1380,7 @@ case "$INTENT_TYPE" in
       if commit_and_push "rebase"; then
         post_reviews_terminal "rebase" "applied" "Rebase completed and pushed."
       else
-        post_reviews_terminal "rebase" "no-changes" "PR is already up to date."
+        post_reviews_terminal "rebase" "no-changes"
       fi
     fi
     exit "$rc"
