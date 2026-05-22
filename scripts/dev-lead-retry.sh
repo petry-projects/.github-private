@@ -35,8 +35,10 @@ DRY_RUN="${DRY_RUN:-false}"
 CI_MARKER_PREFIX="<!-- dev-lead-fix-ci sha="
 REVIEWS_MARKER_PREFIX="<!-- dev-lead-fix-reviews pr="
 
-# Intents whose context can be fully reconstructed at retry time
-RETRYABLE_REVIEW_INTENTS="fix-reviews review-changes rebase"
+# Intents whose context can be fully reconstructed at retry time.
+# human-pr is included as a legacy alias for review-changes so that PRs already
+# marked status=rate-limited with the old intent name are retried during migration.
+RETRYABLE_REVIEW_INTENTS="fix-reviews review-changes human-pr rebase"
 
 # get_now_epoch: current UTC time as unix epoch (overridable for tests)
 get_now_epoch() {

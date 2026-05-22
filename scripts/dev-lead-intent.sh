@@ -364,6 +364,14 @@ case "$EVENT_NAME" in
               '{"pr_number":$pr_number,"head_sha":$head_sha}')
             emit_intent "$intent_type" "reviews-retry-dispatch" "$context"
             ;;
+          human-pr)
+            # Legacy alias: human-pr was renamed to review-changes.
+            context=$(jq -nc \
+              --argjson pr_number "$pr_number" \
+              --arg head_sha "${head_sha:-}" \
+              '{"pr_number":$pr_number,"head_sha":$head_sha}')
+            emit_intent "review-changes" "reviews-retry-dispatch" "$context"
+            ;;
           *)
             emit_skip "unknown-reviews-retry-intent-type"
             ;;
