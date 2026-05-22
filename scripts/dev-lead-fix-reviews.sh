@@ -33,8 +33,15 @@ fi
 
 build_and_run() {
   local template_name="$1"
+  # Map internal intent types to their (more descriptive) prompt file names.
+  local template_file
+  case "$template_name" in
+    human)    template_file="on-mention" ;;
+    human-pr) template_file="review-changes" ;;
+    *)        template_file="$template_name" ;;
+  esac
   local prompt_file="/tmp/dev-lead-${template_name}-prompt-$$.md"
-  local template_path="${PROMPTS_DIR}/${template_name}.md"
+  local template_path="${PROMPTS_DIR}/${template_file}.md"
   # Scope envsubst to only the variables declared in the <!-- VARIABLES: --> header.
   # This prevents GraphQL $variables, $() subshells, and other $ patterns in the
   # prompt from being silently clobbered before the agent ever sees them.
