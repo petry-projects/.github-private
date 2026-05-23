@@ -218,6 +218,10 @@ commit_and_push() {
   else
     if $has_uncommitted; then
       git add -A
+      # Ensure git identity is set — actions/checkout only sets local config for the
+      # repo it checks out (.github-private), not for target repos cloned separately.
+      git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+      git config user.name "github-actions[bot]"
       # Explicit exit on failure: set -e is suspended when commit_and_push is called from
       # an if-statement condition, so git commit failures would be silently swallowed
       # otherwise. Using exit (not return) ensures CI fails visibly instead of posting a
