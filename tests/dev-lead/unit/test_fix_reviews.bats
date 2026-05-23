@@ -540,8 +540,8 @@ GHEOF
   [[ "$output" == *"would enable auto-merge"* ]]
 }
 
-@test "fix-reviews: try_enable_auto_merge dry-run output present for human-pr" {
-  export INTENT_TYPE="human-pr"
+@test "fix-reviews: try_enable_auto_merge dry-run output present for review-changes" {
+  export INTENT_TYPE="review-changes"
   export DEV_LEAD_DRY_RUN="true"
   export PR_TITLE="Test PR"
   export PR_DESCRIPTION="A test pull request"
