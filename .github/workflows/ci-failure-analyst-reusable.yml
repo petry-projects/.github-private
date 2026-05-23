@@ -4,6 +4,9 @@ name: "CI Failure Analyst — Reusable"
 
 on:
   workflow_call:
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: true
 
 jobs:
   analyze:
