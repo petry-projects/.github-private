@@ -1899,7 +1899,18 @@ run_writer() {
   if [ "$rc" -eq 0 ]; then
     _record_engine_tokens "writer" "$REVIEW_ENGINE" "$model" "$prompt_file" "$_tmp"
   fi
-  [ -n "$_tmp" ] && rm -f "$_tmp"
+  if [ -n "$_tmp" ]; then
+    if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+      echo "## Dev-Lead session output" >> "$GITHUB_STEP_SUMMARY"
+      echo "<details><summary>Click to expand session logs</summary>" >> "$GITHUB_STEP_SUMMARY"
+      echo "" >> "$GITHUB_STEP_SUMMARY"
+      cat "$_tmp" >> "$GITHUB_STEP_SUMMARY"
+      echo "" >> "$GITHUB_STEP_SUMMARY"
+      echo "</details>" >> "$GITHUB_STEP_SUMMARY"
+    fi
+    cp "$_tmp" /tmp/dev-lead-session-output.txt
+    rm -f "$_tmp"
+  fi
   return "$rc"
 }
 
