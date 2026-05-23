@@ -130,6 +130,25 @@ Read every changed line as if you are the reviewer seeing the response:
 5. Ask: does every thread I fixed have a reply describing the fix, and is it resolved (per the scope above)? Reply/resolve any I missed.
 6. Fix anything found, then re-run Phase 2
 
+### Phase 2 — Test Verification
+
+After addressing all threads, run the test suite to ensure no regressions were introduced:
+
+1. Identify the test command this repo uses (check AGENTS.md, `package.json`, `Makefile`, etc.)
+2. Run the full test suite — all tests must pass
+3. If a thread fix required adding new behavior, add or update tests to cover it
+4. **Do not suppress or delete tests to force a pass — fix the code instead**
+
+### Phase 3 — Rubber Duck Review
+
+Read every changed line as if you are the reviewer seeing the response:
+
+1. Run `git diff HEAD` (or equivalent) to see all changes made this session
+2. Ask: does each change directly and completely address its thread?
+3. Ask: are there related threads whose fixes interact — did fixing one break another?
+4. Ask: would the reviewer be satisfied, or is there still an issue?
+5. Fix anything found, then re-run Phase 2
+
 ## Constraints
 
 - Address each open thread individually

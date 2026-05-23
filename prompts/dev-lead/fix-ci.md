@@ -129,7 +129,15 @@ Read every changed line as if you are a reviewer:
 4. Ask: is there a simpler fix that achieves the same result with less risk?
 5. Fix anything found, then re-run Phase 3
 
-### External quality gate (SonarCloud, CodeQL, etc.)
+### Phase 2 — Fix
+
+Apply targeted fixes using the Edit/Write tools:
+
+1. Address each root cause identified in Phase 1
+2. Fix only what is broken — do not refactor unrelated code
+3. Do not modify test expectations to make tests pass artificially
+
+#### External quality gate (SonarCloud, CodeQL, etc.)
 
 If **Failure Logs** begins with `# External quality gate`, this check is not a GitHub Actions workflow — it is an external service that reported a quality gate failure. In this case:
 
@@ -148,7 +156,24 @@ Common SonarCloud Security Hotspot patterns to look for in changed files:
 | `npm install` without `--ignore-scripts` | Add `--ignore-scripts` if install scripts are not required; otherwise, this may require manual acknowledgment in the SonarCloud UI |
 | `npm install pkg@variable` or `@latest` | Pin to an exact version number (e.g. `pkg@1.2.3`), or exclude the file in `sonar-project.properties` if version is intentionally managed via a CI variable |
 
-- Fix each identified issue.
+### Phase 3 — Verify Locally
+
+After applying fixes, run the local equivalent of the failing check to confirm the fix works before finishing:
+
+1. Identify the test/lint command this repo uses (check AGENTS.md, `package.json`, `Makefile`, etc.)
+2. Run the full test suite — every test must pass, not just the ones that were failing
+3. Run any lint/format checks relevant to the failing check
+4. **If the local run still fails, diagnose and fix before finishing — the CI workflow will push and re-run checks; hand it a working fix**
+
+### Phase 4 — Rubber Duck Review
+
+Read every changed line as if you are a reviewer:
+
+1. Run `git diff HEAD` to see all changes made during this session
+2. Ask: does each change directly address a root cause from Phase 1?
+3. Ask: could any fix introduce a regression in code that was previously passing?
+4. Ask: is there a simpler fix that achieves the same result with less risk?
+5. Fix anything found, then re-run Phase 3
 
 ## Constraints
 

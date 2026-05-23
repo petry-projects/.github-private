@@ -2184,7 +2184,7 @@ commit_and_push() {
   case "$intent" in
     fix-reviews)     commit_msg="fix(reviews): address review comments [skip ci-relay]" ;;
     fix-bot-comment) commit_msg="fix(bot): address bot feedback [skip ci-relay]" ;;
-    human|human-pr)  commit_msg="chore: apply manual instructions [skip ci-relay]" ;;
+    on-mention|review-changes)  commit_msg="chore: apply manual instructions [skip ci-relay]" ;;
     rebase)          commit_msg="chore: resolve rebase conflicts [skip ci-relay]" ;;
     *)               commit_msg="chore: dev-lead update (${intent}) [skip ci-relay]" ;;
   esac
@@ -2227,8 +2227,8 @@ has_reviews_rate_limited_marker() {
 }
 
 # post_reviews_rate_limited: posts a rate-limited marker for fix-reviews intents.
-# For retryable intents (fix-reviews, human-pr, rebase), the cron will re-dispatch.
-# For non-retryable intents (human, fix-bot-comment), asks the user to re-trigger
+# For retryable intents (fix-reviews, review-changes, rebase), the cron will re-dispatch.
+# For non-retryable intents (on-mention, fix-bot-comment), asks the user to re-trigger
 # since USER_INSTRUCTION/COMMENT_BODY cannot be reconstructed at retry time.
 post_reviews_rate_limited() {
   local intent="$1"
@@ -2256,10 +2256,10 @@ post_reviews_rate_limited() {
   # Retry message depends on whether the intent can be re-dispatched automatically
   local retry_msg
   case "$intent" in
-    fix-reviews|human-pr|rebase)
+    fix-reviews|review-changes|rebase)
       retry_msg="The retry cron will re-attempt automatically."
       ;;
-    human|fix-bot-comment)
+    on-mention|fix-bot-comment)
       retry_msg="Please re-trigger manually (re-mention \`@dev-lead\`) when the rate limit clears — the original request cannot be reconstructed automatically."
       ;;
     *)
@@ -2283,9 +2283,9 @@ ${retry_msg}"
   fi
 
   # For user-triggered intents, post a separate visible acknowledgment.
-  # human-pr is retried automatically; human/fix-bot-comment require manual re-trigger.
+  # review-changes is retried automatically; human/fix-bot-comment require manual re-trigger.
   case "$intent" in
-    human-pr)
+    review-changes)
       local actor_mention=""
       [ -n "${ACTOR:-}" ] && actor_mention="@${ACTOR} "
       local reset_display="${reset_time:-unknown}"
@@ -2299,7 +2299,7 @@ ${retry_msg}"
         gh pr comment "$PR_NUMBER" --repo "$REPO" --body "$ack_body"
       fi
       ;;
-    human)
+    on-mention)
       local actor_mention=""
       [ -n "${ACTOR:-}" ] && actor_mention="@${ACTOR} "
       local reset_display="${reset_time:-unknown}"
