@@ -44,9 +44,15 @@ gh api graphql -f query='
     }
   }' -F owner="${REPO%%/*}" -F repo="${REPO##*/}" -F pr=${PR_NUMBER} \
   | jq --arg actor "${ACTOR}" '
-      .data.repository.pullRequest.reviewThreads.nodes
-      | map(select(.isResolved == false
-            and .comments.nodes[0].author.login == $actor))'
+      # GraphQL omits the "[bot]" suffix that GitHub Actions includes in the
+      # login (e.g. ACTOR=coderabbitai[bot] → author.login=coderabbitai).
+      # Match on both forms so threads from any trusted bot can be resolved.
+      (.data.repository.pullRequest.reviewThreads.nodes
+        | map(select(.isResolved == false
+              and (
+                .comments.nodes[0].author.login == $actor
+                or .comments.nodes[0].author.login == ($actor | gsub("\\[bot\\]$"; ""))
+              ))))'
 ```
 
 Then resolve each thread you addressed (and any from this bot marked `isOutdated: true`):
