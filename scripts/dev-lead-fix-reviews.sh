@@ -86,6 +86,30 @@ ${summary}"
   gh pr comment "$PR_NUMBER" --repo "$REPO" --body "$body" 2>/dev/null || true
 }
 
+read_session_summary() {
+  local log="/tmp/dev-lead-session-output.txt"
+  [ -f "$log" ] || return
+  # The agent output format is always at the end; grab last non-empty paragraph
+  tail -30 "$log" | sed '/^$/d' | tail -10
+}
+
+post_no_changes() {
+  local intent="$1"
+  local _summary
+  _summary=$(read_session_summary)
+  if [ -n "$_summary" ]; then
+    post_reviews_terminal "$intent" "no-changes" \
+      "<details><summary>Agent reasoning</summary>
+
+\`\`\`
+${_summary}
+\`\`\`
+</details>"
+  else
+    post_reviews_terminal "$intent" "no-changes"
+  fi
+}
+
 # notify_coderabbit_resolve: posts @coderabbitai resolve if coderabbitai[bot]'s
 # most recent review on the PR is CHANGES_REQUESTED. Uses --paginate so it sees
 # all reviews even on long-lived PRs, and checks only the latest review state
@@ -371,7 +395,7 @@ case "$INTENT_TYPE" in
         post_reviews_terminal "fix-reviews" "applied" "Changes committed and pushed."
       else
         notify_coderabbit_resolve
-        post_reviews_terminal "fix-reviews" "no-changes"
+        post_no_changes "fix-reviews"
       fi
       try_enable_auto_merge
     fi
@@ -389,7 +413,7 @@ case "$INTENT_TYPE" in
         post_reviews_terminal "fix-bot-comment" "applied" "Changes committed and pushed."
       else
         notify_coderabbit_resolve
-        post_reviews_terminal "fix-bot-comment" "no-changes"
+        post_no_changes "fix-bot-comment"
       fi
       try_enable_auto_merge
     fi
@@ -406,7 +430,7 @@ case "$INTENT_TYPE" in
       if commit_and_push "on-mention"; then
         post_reviews_terminal "on-mention" "applied" "Changes committed and pushed."
       else
-        post_reviews_terminal "on-mention" "no-changes" "Engine ran but made no changes."
+        post_no_changes "on-mention"
       fi
     fi
     exit "$rc"
@@ -437,7 +461,7 @@ case "$INTENT_TYPE" in
         post_reviews_terminal "review-changes" "applied" "Changes committed and pushed."
       else
         notify_coderabbit_resolve
-        post_reviews_terminal "review-changes" "no-changes" "No changes were needed for this PR."
+        post_no_changes "review-changes"
       fi
       try_enable_auto_merge
     fi
@@ -465,7 +489,7 @@ case "$INTENT_TYPE" in
       if commit_and_push "rebase"; then
         post_reviews_terminal "rebase" "applied" "Rebase completed and pushed."
       else
-        post_reviews_terminal "rebase" "no-changes"
+        post_no_changes "rebase"
       fi
     fi
     exit "$rc"

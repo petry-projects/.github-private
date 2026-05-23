@@ -9,6 +9,7 @@ GH_STUBS_DIR="$SCRIPT_DIR/tests/dev-lead/fixtures/stubs"
 setup() {
   export GITHUB_ENV="$(mktemp)"
   export GITHUB_OUTPUT="$(mktemp)"
+  rm -f /tmp/dev-lead-session-output.txt
 
   STUB_BIN_DIR="$(mktemp -d)"
   cp "$STUB_ENGINES_DIR/stub-claude" "$STUB_BIN_DIR/claude"
@@ -53,6 +54,7 @@ GHEOF
 
 teardown() {
   rm -f "$GITHUB_ENV" "$GITHUB_OUTPUT"
+  rm -f /tmp/dev-lead-session-output.txt
   rm -rf "$STUB_BIN_DIR"
 }
 
@@ -572,4 +574,47 @@ GITEOF
     ! grep -q "status=applied" "$comment_file"
   fi
   rm -f "$comment_file"
+}
+
+# ── read_session_summary / post_no_changes tests ──────────────────────────────
+
+@test "fix-reviews: no-changes dry-run: includes details block when session output exists" {
+  export INTENT_TYPE="fix-reviews"
+  export DEV_LEAD_DRY_RUN="true"
+  export HEAD_SHA="ddd444eee555"
+  printf 'Issues addressed: 0\nSkipped: 3\n' > /tmp/dev-lead-session-output.txt
+
+  run bash "$FIX_REVIEWS_SCRIPT"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Agent reasoning"* ]]
+  [[ "$output" == *"Issues addressed: 0"* ]]
+}
+
+@test "fix-reviews: no-changes dry-run: no details block when session output absent" {
+  export INTENT_TYPE="fix-reviews"
+  export DEV_LEAD_DRY_RUN="true"
+  export HEAD_SHA="ddd444eee555"
+  rm -f /tmp/dev-lead-session-output.txt
+
+  run bash "$FIX_REVIEWS_SCRIPT"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"Agent reasoning"* ]]
+}
+
+@test "fix-reviews: no-changes dry-run human-pr: includes details block when session output exists" {
+  export INTENT_TYPE="human-pr"
+  export DEV_LEAD_DRY_RUN="true"
+  export HEAD_SHA="ddd444eee555"
+  export PR_TITLE="Test PR"
+  export PR_DESCRIPTION="A test pull request"
+  printf 'PR: #54 - feat: thing\nHuman review threads addressed: 0\nFiles changed: none\n' \
+    > /tmp/dev-lead-session-output.txt
+
+  run bash "$FIX_REVIEWS_SCRIPT"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Agent reasoning"* ]]
+  [[ "$output" == *"Files changed: none"* ]]
 }
