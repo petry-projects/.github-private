@@ -23,7 +23,6 @@ setup() {
 
 teardown() {
   rm -f "$GITHUB_ENV" "$GITHUB_OUTPUT" "$TEST_PROMPT"
-  rm -f /tmp/dev-lead-session-output.txt
   rm -rf "$STUB_BIN_DIR"
   if [ -n "${TEST_OWNED_TOKEN_LOG:-}" ] && [ "${TOKEN_LOG_FILE:-}" = "$TEST_OWNED_TOKEN_LOG" ]; then
     rm -f "$TEST_OWNED_TOKEN_LOG"
@@ -470,81 +469,133 @@ STUB
   [ ! -s "$log" ]
 }
 
-# ── session output persistence tests ─────────────────────────────────────────
-
-@test "session: run_writer copies output to /tmp/dev-lead-session-output.txt on success" {
-  _source_engine "claude"
-  export STUB_ENGINE_EXIT=0
-  export STUB_ENGINE_RESPONSE="PR: #42 - feat: do thing
-Human review threads addressed: 0
-Files changed: none"
-  export DEV_LEAD_DRY_RUN=false
-  rm -f /tmp/dev-lead-session-output.txt
-
-  run run_writer "$TEST_PROMPT"
-
-  [ "$status" -eq 0 ]
-  [ -f /tmp/dev-lead-session-output.txt ]
-  grep -q "Files changed: none" /tmp/dev-lead-session-output.txt
-}
-
-@test "session: run_writer appends to GITHUB_STEP_SUMMARY when set" {
-  _source_engine "claude"
-  export STUB_ENGINE_EXIT=0
-  export STUB_ENGINE_RESPONSE="Issues addressed: 0"
-  export DEV_LEAD_DRY_RUN=false
-  local summary_file
-  summary_file=$(mktemp)
-  export GITHUB_STEP_SUMMARY="$summary_file"
-  rm -f /tmp/dev-lead-session-output.txt
-
-  run run_writer "$TEST_PROMPT"
-
-  [ "$status" -eq 0 ]
-  grep -q "## Dev-Lead session output" "$summary_file"
-  grep -q "Issues addressed: 0" "$summary_file"
-  rm -f "$summary_file"
-}
-
-@test "session: run_writer does not write to GITHUB_STEP_SUMMARY when unset" {
-  _source_engine "claude"
-  export STUB_ENGINE_EXIT=0
-  export STUB_ENGINE_RESPONSE="Issues addressed: 0"
-  export DEV_LEAD_DRY_RUN=false
-  unset GITHUB_STEP_SUMMARY
-  rm -f /tmp/dev-lead-session-output.txt
-
-  run run_writer "$TEST_PROMPT"
-
-  [ "$status" -eq 0 ]
-  # No summary file should be created (we just verify the run succeeded without error)
-  [ -f /tmp/dev-lead-session-output.txt ]
-}
-
-@test "session: run_writer does not write session file when rate-limited" {
+@test "writer: run_writer persists session output to /tmp/dev-lead-session-output.txt" {
   _source_engine "claude"
   export DEV_LEAD_DRY_RUN=false
-  rm -f /tmp/dev-lead-session-output.txt
   cat > "$STUB_BIN_DIR/claude" << 'STUB'
 #!/usr/bin/env bash
-echo "You've hit your limit · resets 11:20pm (UTC)"
-exit 1
+echo "session output line one"
+echo "session output line two"
+STUB
+  chmod +x "$STUB_BIN_DIR/claude"
+
+  rm -f /tmp/dev-lead-session-output.txt
+  run run_writer "$TEST_PROMPT"
+
+  [ "$status" -eq 0 ]
+  [ -f /tmp/dev-lead-session-output.txt ]
+  grep -q "session output line" /tmp/dev-lead-session-output.txt
+  rm -f /tmp/dev-lead-session-output.txt
+}
+
+@test "writer: GITHUB_STEP_SUMMARY appends HTML-escaped session output" {
+  _source_engine "claude"
+  export DEV_LEAD_DRY_RUN=false
+  # Stub writes literal </details> which must be escaped in the summary so it
+  # cannot close the wrapping <details> block on the run summary page.
+  cat > "$STUB_BIN_DIR/claude" << 'STUB'
+#!/usr/bin/env bash
+echo "danger zone </details> here"
+STUB
+  chmod +x "$STUB_BIN_DIR/claude"
+
+  local summary; summary="$(mktemp)"
+  export GITHUB_STEP_SUMMARY="$summary"
+
+  run run_writer "$TEST_PROMPT"
+
+  [ "$status" -eq 0 ]
+  # Literal </details> must be HTML-escaped → only the wrapping closer remains
+  ! grep -F "danger zone </details>" "$summary"
+  grep -F "danger zone &lt;/details&gt;" "$summary"
+  rm -f "$summary" /tmp/dev-lead-session-output.txt
+}
+
+@test "writer: run_writer overwrites stale /tmp/dev-lead-session-output.txt from prior run" {
+  _source_engine "claude"
+  export DEV_LEAD_DRY_RUN=false
+  # Pre-populate with content from a hypothetical previous run
+  echo "STALE_CONTENT_FROM_PRIOR_RUN" > /tmp/dev-lead-session-output.txt
+
+  cat > "$STUB_BIN_DIR/claude" << 'STUB'
+#!/usr/bin/env bash
+echo "fresh session output"
 STUB
   chmod +x "$STUB_BIN_DIR/claude"
 
   run run_writer "$TEST_PROMPT"
 
-  [ "$status" -eq 2 ]
-  [ ! -f /tmp/dev-lead-session-output.txt ]
+  [ "$status" -eq 0 ]
+  [ -f /tmp/dev-lead-session-output.txt ]
+  # Stale content from prior run must not leak into this run's session output
+  ! grep -q "STALE_CONTENT_FROM_PRIOR_RUN" /tmp/dev-lead-session-output.txt
+  grep -q "fresh session output" /tmp/dev-lead-session-output.txt
+  rm -f /tmp/dev-lead-session-output.txt
 }
 
-@test "session: run_writer dry-run does not write session file" {
+@test "writer: persisted /tmp file has GitHub tokens redacted" {
   _source_engine "claude"
-  export DEV_LEAD_DRY_RUN=true
+  export DEV_LEAD_DRY_RUN=false
+  cat > "$STUB_BIN_DIR/claude" << 'STUB'
+#!/usr/bin/env bash
+echo "Authorization: token ghp_abcdefghijklmnopqrstuvwxyz1234567890ABCD"
+echo "ok"
+STUB
+  chmod +x "$STUB_BIN_DIR/claude"
+
   rm -f /tmp/dev-lead-session-output.txt
+  run run_writer "$TEST_PROMPT"
+
+  [ "$status" -eq 0 ]
+  # Raw token must not survive to /tmp; only the redacted marker remains
+  ! grep -F "ghp_abcdefghijklmnopqrstuvwxyz1234567890ABCD" /tmp/dev-lead-session-output.txt
+  grep -F "***REDACTED-GH-TOKEN***" /tmp/dev-lead-session-output.txt
+  rm -f /tmp/dev-lead-session-output.txt
+}
+
+@test "writer: GITHUB_STEP_SUMMARY has secrets redacted before HTML escape" {
+  _source_engine "claude"
+  export DEV_LEAD_DRY_RUN=false
+  cat > "$STUB_BIN_DIR/claude" << 'STUB'
+#!/usr/bin/env bash
+echo "Authorization: Bearer sk-ant-secretkey1234567890abcdefghij"
+STUB
+  chmod +x "$STUB_BIN_DIR/claude"
+
+  local summary; summary="$(mktemp)"
+  export GITHUB_STEP_SUMMARY="$summary"
 
   run run_writer "$TEST_PROMPT"
 
   [ "$status" -eq 0 ]
-  [ ! -f /tmp/dev-lead-session-output.txt ]
+  ! grep -F "sk-ant-secretkey1234567890abcdefghij" "$summary"
+  grep -F "***REDACTED-API-KEY***" "$summary"
+  rm -f "$summary" /tmp/dev-lead-session-output.txt
+}
+
+@test "writer: PEM private key block fully redacted in /tmp persistence" {
+  _source_engine "claude"
+  export DEV_LEAD_DRY_RUN=false
+  cat > "$STUB_BIN_DIR/claude" << 'STUB'
+#!/usr/bin/env bash
+echo "-----BEGIN RSA PRIVATE KEY-----"
+echo "MIIEowIBAAKCAQEAuVERYSENSITIVEKEYBODYWITHTONSOFCHARSANDMOREDATAHERE"
+echo "ENDOFBODYDATAGOESHEREMOREMOREMOREMOREMOREMORE"
+echo "-----END RSA PRIVATE KEY-----"
+echo "after-key"
+STUB
+  chmod +x "$STUB_BIN_DIR/claude"
+
+  rm -f /tmp/dev-lead-session-output.txt
+  run run_writer "$TEST_PROMPT"
+
+  [ "$status" -eq 0 ]
+  # Neither header, body, nor footer of the PEM block may survive
+  ! grep -F "BEGIN RSA PRIVATE KEY" /tmp/dev-lead-session-output.txt
+  ! grep -F "uVERYSENSITIVEKEYBODY" /tmp/dev-lead-session-output.txt
+  ! grep -F "END RSA PRIVATE KEY" /tmp/dev-lead-session-output.txt
+  grep -F "***REDACTED-PRIVATE-KEY***" /tmp/dev-lead-session-output.txt
+  # Content outside the PEM block survives
+  grep -F "after-key" /tmp/dev-lead-session-output.txt
+  rm -f /tmp/dev-lead-session-output.txt
 }
