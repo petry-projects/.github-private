@@ -70,9 +70,15 @@ Written before the workflow per the TDD cycle in issue #233.
 
 **Expected output:**
 
-- The **existing** comment is updated in-place.
-- No new comment is created.
+- The workflow is a **no-op** — the existing comment is left as-is.
+- No new comment is created and the existing comment is not modified.
 - PR comment count does not increase.
+
+> **Note:** The analyst intentionally skips (rather than updates) when a comment for
+> the same SHA already exists. This keeps the first diagnostic intact and avoids
+> overwriting it when multiple check runs fail for the same SHA. If a Lint failure
+> is followed by a Test failure on the same SHA, only the first failure processed
+> will produce a diagnostic comment.
 
 ---
 
