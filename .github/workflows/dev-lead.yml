@@ -225,6 +225,7 @@ jobs:
         env:
           PR_NUMBER: ${{ env.INTENT_PR_NUMBER }}
           HEAD_SHA: ${{ env.INTENT_HEAD_SHA }}
+          ACTOR: ${{ env.INTENT_ACTOR }}
           REPO: ${{ github.repository }}
           REVIEW_ENGINE: ${{ env.DEV_LEAD_ENGINE }}
         run: |
