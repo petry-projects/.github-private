@@ -2997,7 +2997,7 @@ commit_and_push() {
   case "$intent" in
     fix-reviews)     commit_msg="fix(reviews): address review comments [skip ci-relay]" ;;
     fix-bot-comment) commit_msg="fix(bot): address bot feedback [skip ci-relay]" ;;
-    human|human-pr)  commit_msg="chore: apply manual instructions [skip ci-relay]" ;;
+    on-mention|review-changes)  commit_msg="chore: apply manual instructions [skip ci-relay]" ;;
     rebase)          commit_msg="chore: resolve rebase conflicts [skip ci-relay]" ;;
     *)               commit_msg="chore: dev-lead update (${intent}) [skip ci-relay]" ;;
   esac
