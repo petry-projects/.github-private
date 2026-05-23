@@ -1604,7 +1604,7 @@ case "$INTENT_TYPE" in
       if commit_and_push "on-mention"; then
         post_reviews_terminal "on-mention" "applied" "Changes committed and pushed."
       else
-        post_no_changes "on-mention"
+        post_reviews_terminal "on-mention" "no-changes" "Engine ran but made no changes."
       fi
       # Enable auto-merge by default when the mention targets a PR (issue mentions
       # carry no PR_NUMBER and are skipped). GitHub holds the merge until branch

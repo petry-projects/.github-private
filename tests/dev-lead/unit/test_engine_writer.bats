@@ -24,7 +24,6 @@ setup() {
 
 teardown() {
   rm -f "$GITHUB_ENV" "$GITHUB_OUTPUT" "$TEST_PROMPT"
-  rm -f /tmp/dev-lead-session-output.txt
   rm -rf "$STUB_BIN_DIR"
   if [ -n "${TEST_OWNED_TOKEN_LOG:-}" ] && [ "${TOKEN_LOG_FILE:-}" = "$TEST_OWNED_TOKEN_LOG" ]; then
     rm -f "$TEST_OWNED_TOKEN_LOG"
