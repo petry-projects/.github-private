@@ -582,7 +582,11 @@ run_writer() {
   if [ -n "$_tmp" ]; then
     if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
       echo "## Dev-Lead session output" >> "$GITHUB_STEP_SUMMARY"
+      echo "<details><summary>Click to expand session logs</summary>" >> "$GITHUB_STEP_SUMMARY"
+      echo "" >> "$GITHUB_STEP_SUMMARY"
       cat "$_tmp" >> "$GITHUB_STEP_SUMMARY"
+      echo "" >> "$GITHUB_STEP_SUMMARY"
+      echo "</details>" >> "$GITHUB_STEP_SUMMARY"
     fi
     cp "$_tmp" /tmp/dev-lead-session-output.txt
     rm -f "$_tmp"

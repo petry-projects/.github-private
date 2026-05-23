@@ -90,7 +90,7 @@ read_session_summary() {
   local log="/tmp/dev-lead-session-output.txt"
   [ -f "$log" ] || return
   # The agent output format is always at the end; grab last non-empty paragraph
-  tail -30 "$log" | sed '/^$/d' | tail -10
+  tail -30 "$log" | sed '/^[[:space:]]*$/d' | tail -10
 }
 
 post_no_changes() {
