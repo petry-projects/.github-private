@@ -597,10 +597,14 @@ STUB
   run run_writer "$TEST_PROMPT"
 
   [ "$status" -eq 0 ]
-  # Neither header, body, nor footer of the PEM block may survive
-  ! grep -F "$begin" /tmp/dev-lead-session-output.txt
+  # Neither header, body, nor footer of the PEM block may survive. Substring
+  # match (without the surrounding dashes) so a partial leak that trims the
+  # delimiters still fails the assertion. Safe vs. gitleaks: the substring
+  # alone does not satisfy the private-key rule's `-----BEGIN ... -----`
+  # regex.
+  ! grep -F "BEGIN RSA PRIVATE KEY" /tmp/dev-lead-session-output.txt
   ! grep -F "uVERYSENSITIVEKEYBODY" /tmp/dev-lead-session-output.txt
-  ! grep -F "$end" /tmp/dev-lead-session-output.txt
+  ! grep -F "END RSA PRIVATE KEY" /tmp/dev-lead-session-output.txt
   grep -F "***REDACTED-PRIVATE-KEY***" /tmp/dev-lead-session-output.txt
   # Content outside the PEM block survives
   grep -F "after-key" /tmp/dev-lead-session-output.txt
