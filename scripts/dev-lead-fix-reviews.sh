@@ -99,28 +99,73 @@ ${summary}"
   gh pr comment "$PR_NUMBER" --repo "$REPO" --body "$body" 2>/dev/null || true
 }
 
-read_session_summary() {
-  local log="/tmp/dev-lead-session-output.txt"
-  [ -f "$log" ] || return 0
-  # The agent output format is always at the end; grab last non-empty paragraph
-  tail -30 "$log" | sed '/^[[:space:]]*$/d' | tail -10
+# redact_secrets: scrub common credential token formats from stdin → stdout.
+# Defense-in-depth before publishing agent session output to a PR comment —
+# Claude Code's session log can include curl/gh invocations whose stderr leaks
+# tokens, or echoed environment variables. Patterns cover GitHub, OpenAI/
+# Anthropic, AWS, Google OAuth, generic bearer tokens, and PEM private keys.
+redact_secrets() {
+  # The PEM range (-----BEGIN ... -----END ...) uses sed's c\ range-change
+  # so the *entire* multiline block is replaced — header line alone leaves
+  # the key body lines intact and still leakable.
+  sed -E \
+    -e 's/(gh[opsu]|ghr)_[A-Za-z0-9_]{20,}/***REDACTED-GH-TOKEN***/g' \
+    -e 's/github_pat_[A-Za-z0-9_]{20,}/***REDACTED-GH-PAT***/g' \
+    -e 's/sk-(ant-)?[A-Za-z0-9_-]{20,}/***REDACTED-API-KEY***/g' \
+    -e 's/AKIA[A-Z0-9]{16}/***REDACTED-AWS-KEY***/g' \
+    -e 's/AIza[A-Za-z0-9_-]{35}/***REDACTED-GOOGLE-KEY***/g' \
+    -e 's|ya29\.[A-Za-z0-9_-]+|***REDACTED-GOOGLE-OAUTH***|g' \
+    -e 's/[Bb]earer [A-Za-z0-9._-]{20,}/Bearer ***REDACTED***/g' \
+    -e '/-----BEGIN [A-Z ]*PRIVATE KEY-----/,/-----END [A-Z ]*PRIVATE KEY-----/c\
+***REDACTED-PRIVATE-KEY***'
 }
 
+# read_session_summary: reads the last 10 non-blank lines of the agent session
+# output and redacts any embedded credentials. Empty output if the file is
+# missing (e.g. dry-run paths that never invoked the writer). Redaction runs
+# over the full log *before* tailing, so PEM blocks that straddle the tail
+# boundary are fully redacted (header in the discarded window, body in the
+# kept window would otherwise leak as plaintext key material).
+read_session_summary() {
+  local log="/tmp/dev-lead-session-output.txt"
+  [[ -f "$log" ]] || return 0
+  redact_secrets < "$log" | tail -30 | sed '/^[[:space:]]*$/d' | tail -10
+}
+
+# pick_fence: emit a tilde fence longer than any tilde run in $1 (min 4).
+# Ensures the wrapping ~~~~ code block cannot be terminated early by content
+# that happens to contain a tilde sequence.
+pick_fence() {
+  local content="$1"
+  local fence="~~~~"
+  while printf '%s' "$content" | grep -qF "$fence"; do
+    fence="${fence}~"
+  done
+  printf '%s' "$fence"
+}
+
+# post_no_changes: posts a terminal no-changes marker with redacted agent
+# reasoning when available, or a plain fallback when the session log is
+# absent. Picks a tilde fence that cannot be broken by the content, and
+# neutralises any literal </details> so the wrapping <details> stays intact.
 post_no_changes() {
   local intent="$1"
   local _summary
-  _summary=$(read_session_summary)
-  if [ -n "$_summary" ]; then
-    post_reviews_terminal "$intent" "no-changes" \
-      "<details><summary>Agent reasoning</summary>
+  _summary=$(read_session_summary || true)
+  local msg="No actionable items found."
+  if [[ -n "$_summary" ]]; then
+    # Neutralise any </details> in summary so it cannot close the outer block.
+    _summary=$(printf '%s' "$_summary" | sed 's|</details>|<\\/details>|g')
+    local fence
+    fence=$(pick_fence "$_summary")
+    msg="<details><summary>Agent reasoning</summary>
 
-\`\`\`
+${fence}
 ${_summary}
-\`\`\`
+${fence}
 </details>"
-  else
-    post_reviews_terminal "$intent" "no-changes"
   fi
+  post_reviews_terminal "$intent" "no-changes" "$msg"
 }
 
 # notify_coderabbit_resolve: posts @coderabbitai resolve if coderabbitai[bot]'s
@@ -388,7 +433,12 @@ case "$INTENT_TYPE" in
     export PR_NUMBER PR_URL="https://github.com/${REPO}/pull/${PR_NUMBER}"
     export REPO HEAD_SHA
     export BASE_REF="${BASE_REF:-main}"
+    # Normalise to GraphQL's author.login form: the GitHub Actions event login
+    # includes a "[bot]" suffix for bots, but GraphQL author.login omits it.
+    # Without this, the prompt's `author.login == ${TRIGGERING_REVIEWER}` check
+    # never matches threads from coderabbitai/chatgpt-codex/etc.
     export TRIGGERING_REVIEWER="${TRIGGERING_REVIEWER:-}"
+    TRIGGERING_REVIEWER="${TRIGGERING_REVIEWER%\[bot\]}"
     OPEN_THREADS_JSON=$(gh api graphql -f query='
       query($owner:String!,$repo:String!,$pr:Int!) {
         repository(owner:$owner, name:$repo) {
@@ -446,7 +496,7 @@ case "$INTENT_TYPE" in
       if commit_and_push "on-mention"; then
         post_reviews_terminal "on-mention" "applied" "Changes committed and pushed."
       else
-        post_no_changes "on-mention"
+        post_reviews_terminal "on-mention" "no-changes" "Engine ran but made no changes."
       fi
     fi
     exit "$rc"
@@ -477,7 +527,7 @@ case "$INTENT_TYPE" in
         post_reviews_terminal "review-changes" "applied" "Changes committed and pushed."
       else
         notify_coderabbit_resolve
-        post_no_changes "review-changes"
+        post_reviews_terminal "review-changes" "no-changes" "No changes were needed for this PR."
       fi
       try_enable_auto_merge
     fi

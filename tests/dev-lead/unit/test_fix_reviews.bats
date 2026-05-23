@@ -9,7 +9,6 @@ GH_STUBS_DIR="$SCRIPT_DIR/tests/dev-lead/fixtures/stubs"
 setup() {
   export GITHUB_ENV="$(mktemp)"
   export GITHUB_OUTPUT="$(mktemp)"
-  rm -f /tmp/dev-lead-session-output.txt
 
   STUB_BIN_DIR="$(mktemp -d)"
   cp "$STUB_ENGINES_DIR/stub-claude" "$STUB_BIN_DIR/claude"
@@ -54,7 +53,6 @@ GHEOF
 
 teardown() {
   rm -f "$GITHUB_ENV" "$GITHUB_OUTPUT"
-  rm -f /tmp/dev-lead-session-output.txt
   rm -rf "$STUB_BIN_DIR"
 }
 
@@ -430,29 +428,178 @@ STUB
   [[ "$output" == *"terminal marker"* || "$output" == *"[dry-run]"* ]]
 }
 
-@test "fix-reviews: no-changes dry-run: does not post visible heading in comment body" {
-  export INTENT_TYPE="fix-reviews"
-  export DEV_LEAD_DRY_RUN="true"
-  export HEAD_SHA="ddd444eee555"
+@test "post_no_changes: posts visible heading with fallback when no session log" {
+  # Run from a non-git tmpdir so commit_and_push reports no changes → no-changes path
+  local tmpdir
+  tmpdir="$(mktemp -d)"
+  rm -f /tmp/dev-lead-session-output.txt
 
-  run bash "$FIX_REVIEWS_SCRIPT"
+  run bash -c "
+    cd '$tmpdir'
+    export INTENT_TYPE=fix-reviews DEV_LEAD_DRY_RUN=true
+    export PR_NUMBER=54 HEAD_SHA=abc123 REPO='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export PATH=\"$STUB_BIN_DIR:\$PATH\"
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+  rm -rf "$tmpdir"
 
-  [ "$status" -eq 0 ]
-  # no-changes posts only the invisible HTML marker — no visible ## heading
-  [[ "$output" != *"## Dev-Lead —"* ]]
+  [[ "$output" == *"## Dev-Lead — fix-reviews (no-changes)"* ]]
+  [[ "$output" == *"No actionable items found"* ]]
 }
 
-@test "fix-reviews: no-changes dry-run review-changes: does not post visible heading" {
-  export INTENT_TYPE="review-changes"
-  export DEV_LEAD_DRY_RUN="true"
-  export HEAD_SHA="ddd444eee555"
-  export PR_TITLE="Test PR"
-  export PR_DESCRIPTION="A test pull request"
+@test "post_no_changes: includes agent reasoning when session log is present" {
+  local tmpdir
+  tmpdir="$(mktemp -d)"
+  local session_log="/tmp/dev-lead-session-output.txt"
+  printf 'Agent determined no code changes required.\n' > "$session_log"
 
-  run bash "$FIX_REVIEWS_SCRIPT"
+  run bash -c "
+    cd '$tmpdir'
+    export INTENT_TYPE=fix-reviews DEV_LEAD_DRY_RUN=true
+    export PR_NUMBER=54 HEAD_SHA=abc123 REPO='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export PATH=\"$STUB_BIN_DIR:\$PATH\"
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+  rm -rf "$tmpdir" "$session_log"
 
-  [ "$status" -eq 0 ]
-  [[ "$output" != *"## Dev-Lead —"* ]]
+  [[ "$output" == *"## Dev-Lead — fix-reviews (no-changes)"* ]]
+  [[ "$output" == *"Agent determined no code changes"* ]]
+}
+
+@test "post_no_changes: redacts GitHub tokens from session log" {
+  local tmpdir
+  tmpdir="$(mktemp -d)"
+  local session_log="/tmp/dev-lead-session-output.txt"
+  # Embed a fake GitHub PAT — redact_secrets should mask it before publishing.
+  # Build the token at runtime so the literal doesn't appear in this source file
+  # (avoids tripping gitleaks on our own test fixture).
+  local fake_prefix='ghp' fake_body='_abcdefghij1234567890ABCDEFGHIJ'
+  printf 'curl -H "Auth: %s%s" url\n' "$fake_prefix" "$fake_body" > "$session_log"
+
+  run bash -c "
+    cd '$tmpdir'
+    export INTENT_TYPE=fix-reviews DEV_LEAD_DRY_RUN=true
+    export PR_NUMBER=54 HEAD_SHA=abc123 REPO='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export PATH=\"$STUB_BIN_DIR:\$PATH\"
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+  rm -rf "$tmpdir" "$session_log"
+
+  [[ "$output" == *"***REDACTED-GH-TOKEN***"* ]]
+  [[ "$output" != *"${fake_prefix}${fake_body}"* ]]
+}
+
+@test "post_no_changes: pick_fence outgrows tilde sequences in content" {
+  local tmpdir
+  tmpdir="$(mktemp -d)"
+  local session_log="/tmp/dev-lead-session-output.txt"
+  # Content has a 4-tilde sequence — fence must be 5+ to wrap cleanly
+  printf 'output line one\n~~~~ this looks like a fence\noutput line two\n' > "$session_log"
+
+  run bash -c "
+    cd '$tmpdir'
+    export INTENT_TYPE=fix-reviews DEV_LEAD_DRY_RUN=true
+    export PR_NUMBER=54 HEAD_SHA=abc123 REPO='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export PATH=\"$STUB_BIN_DIR:\$PATH\"
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+  rm -rf "$tmpdir" "$session_log"
+
+  # Fence must be longer than the embedded 4-tilde run
+  [[ "$output" == *"~~~~~"* ]]
+}
+
+@test "post_no_changes: redacts entire PEM private key block, not just header" {
+  local tmpdir
+  tmpdir="$(mktemp -d)"
+  local session_log="/tmp/dev-lead-session-output.txt"
+  # Build the PEM markers at runtime so the literal "-----BEGIN RSA PRIVATE
+  # KEY-----" never appears in this source file (avoids tripping our own
+  # gitleaks check on a test fixture).
+  local dashes="-----"
+  local begin="${dashes}BEGIN RSA PRIVATE KEY${dashes}"
+  local end="${dashes}END RSA PRIVATE KEY${dashes}"
+  {
+    echo "some preamble text"
+    echo "$begin"
+    echo "MIIEpAIBAAKCAQEAabcdefghij1234567890BODY_LINE_ONE_SHOULD_BE_REDACTED"
+    echo "ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZBODY_LINE_TWO_SHOULD_BE_REDACTEDZZZZ"
+    echo "$end"
+    echo "some postamble text"
+  } > "$session_log"
+
+  run bash -c "
+    cd '$tmpdir'
+    export INTENT_TYPE=fix-reviews DEV_LEAD_DRY_RUN=true
+    export PR_NUMBER=54 HEAD_SHA=abc123 REPO='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export PATH=\"$STUB_BIN_DIR:\$PATH\"
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+  rm -rf "$tmpdir" "$session_log"
+
+  [[ "$output" == *"***REDACTED-PRIVATE-KEY***"* ]]
+  # Body and footer lines must be gone — leaking ANY part of the key is a fail
+  [[ "$output" != *"BODY_LINE_ONE_SHOULD_BE_REDACTED"* ]]
+  [[ "$output" != *"BODY_LINE_TWO_SHOULD_BE_REDACTED"* ]]
+  [[ "$output" != *"$end"* ]]
+}
+
+@test "post_no_changes: redacts PEM block straddling the tail-30 boundary" {
+  local tmpdir
+  tmpdir="$(mktemp -d)"
+  local session_log="/tmp/dev-lead-session-output.txt"
+  local dashes="-----"
+  local begin="${dashes}BEGIN RSA PRIVATE KEY${dashes}"
+  local end="${dashes}END RSA PRIVATE KEY${dashes}"
+  # Build a log where the BEGIN marker sits BEFORE the last-30 window. Without
+  # redact-then-tail, the body/END would be tailed without a matching BEGIN and
+  # the c\ range would never fire, leaking key material.
+  {
+    echo "$begin"
+    for i in $(seq 1 50); do echo "filler-line-$i"; done
+    echo "STRADDLE_KEY_BODY_MUST_NOT_LEAK_XYZ"
+    echo "$end"
+    echo "trailing summary line"
+  } > "$session_log"
+
+  run bash -c "
+    cd '$tmpdir'
+    export INTENT_TYPE=fix-reviews DEV_LEAD_DRY_RUN=true
+    export PR_NUMBER=54 HEAD_SHA=abc123 REPO='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export PATH=\"$STUB_BIN_DIR:\$PATH\"
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+  rm -rf "$tmpdir" "$session_log"
+
+  [[ "$output" != *"STRADDLE_KEY_BODY_MUST_NOT_LEAK_XYZ"* ]]
+  [[ "$output" != *"$end"* ]]
+}
+
+@test "post_no_changes: neutralises literal </details> in session output" {
+  local tmpdir
+  tmpdir="$(mktemp -d)"
+  local session_log="/tmp/dev-lead-session-output.txt"
+  printf 'discussing </details> tag\n' > "$session_log"
+
+  run bash -c "
+    cd '$tmpdir'
+    export INTENT_TYPE=fix-reviews DEV_LEAD_DRY_RUN=true
+    export PR_NUMBER=54 HEAD_SHA=abc123 REPO='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export PATH=\"$STUB_BIN_DIR:\$PATH\"
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+  rm -rf "$tmpdir" "$session_log"
+
+  # The literal </details> from session content must be escaped so it cannot
+  # close the wrapping <details> block early.
+  [[ "$output" == *"<\\/details>"* ]]
 }
 
 # ── commit_and_push failure tests ─────────────────────────────────────────────
@@ -574,47 +721,4 @@ GITEOF
     ! grep -q "status=applied" "$comment_file"
   fi
   rm -f "$comment_file"
-}
-
-# ── read_session_summary / post_no_changes tests ──────────────────────────────
-
-@test "fix-reviews: no-changes dry-run: includes details block when session output exists" {
-  export INTENT_TYPE="fix-reviews"
-  export DEV_LEAD_DRY_RUN="true"
-  export HEAD_SHA="ddd444eee555"
-  printf 'Issues addressed: 0\nSkipped: 3\n' > /tmp/dev-lead-session-output.txt
-
-  run bash "$FIX_REVIEWS_SCRIPT"
-
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"Agent reasoning"* ]]
-  [[ "$output" == *"Issues addressed: 0"* ]]
-}
-
-@test "fix-reviews: no-changes dry-run: no details block when session output absent" {
-  export INTENT_TYPE="fix-reviews"
-  export DEV_LEAD_DRY_RUN="true"
-  export HEAD_SHA="ddd444eee555"
-  rm -f /tmp/dev-lead-session-output.txt
-
-  run bash "$FIX_REVIEWS_SCRIPT"
-
-  [ "$status" -eq 0 ]
-  [[ "$output" != *"Agent reasoning"* ]]
-}
-
-@test "fix-reviews: no-changes dry-run human-pr: includes details block when session output exists" {
-  export INTENT_TYPE="human-pr"
-  export DEV_LEAD_DRY_RUN="true"
-  export HEAD_SHA="ddd444eee555"
-  export PR_TITLE="Test PR"
-  export PR_DESCRIPTION="A test pull request"
-  printf 'PR: #54 - feat: thing\nHuman review threads addressed: 0\nFiles changed: none\n' \
-    > /tmp/dev-lead-session-output.txt
-
-  run bash "$FIX_REVIEWS_SCRIPT"
-
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"Agent reasoning"* ]]
-  [[ "$output" == *"Files changed: none"* ]]
 }
