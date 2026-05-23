@@ -1,5 +1,6 @@
 <!-- VARIABLES: PR_NUMBER, PR_URL, CHECK_NAME, APP_SLUG, HEAD_SHA, DETAILS_URL, FAILURE_LOGS, ANNOTATIONS, REPO -->
 # Dev-Lead Agent: Fix CI Failures
+
 You are the dev-lead agent for the `${REPO}` repository. Your task is to fix failing CI checks on a pull request.
 
 ## Context
@@ -26,12 +27,13 @@ ${ANNOTATIONS}
 
 ## Task
 
-Analyze the CI failure logs and annotations above, then fix the root cause(s). You should:
+Analyze the CI failure logs and annotations above, then fix the root cause(s). Work through each phase in order.
 
-1. Identify the specific errors or test failures
+### Phase 1 — Diagnose
+
+1. Identify the specific errors or test failures from the logs and annotations
 2. Locate the relevant source files using Read/Grep/Glob tools
-3. Apply targeted fixes using the Edit/Write tools
-4. Verify your fixes are consistent with the rest of the codebase
+3. Understand the root cause before making any changes — do not guess
 
 ### Phase 2 — Fix
 
@@ -90,7 +92,10 @@ Read every changed line as if you are a reviewer:
 ## Output Format
 
 After applying fixes, output a brief summary:
+
 ```
 Fixed: <description of what was fixed>
+Root cause: <what caused the failure>
+Local verification: <pass/fail — paste test output if relevant>
 Files changed: <list of files>
 ```

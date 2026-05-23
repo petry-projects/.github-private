@@ -16,8 +16,8 @@ EXPECTED_PROMPTS=(
   "fix-ci.md"
   "fix-reviews.md"
   "fix-bot-comment.md"
-  "human.md"
-  "human-pr.md"
+  "on-mention.md"
+  "review-changes.md"
   "fix-issue.md"
   "rebase.md"
 )

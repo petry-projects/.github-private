@@ -50,7 +50,7 @@ _get_output() {
   [ "$(_get_env INTENT_REASON)" = "not-implemented" ]
 }
 
-@test "routing: pull_request opened by human emits human-pr" {
+@test "routing: pull_request opened by human emits review-changes" {
   export GITHUB_EVENT_NAME="pull_request"
   export GITHUB_EVENT_PATH="$FIXTURES_DIR/pr_opened_human.json"
   export GITHUB_REPOSITORY="petry-projects/.github-private"
@@ -58,7 +58,7 @@ _get_output() {
   run bash "$INTENT_SCRIPT"
 
   [ "$status" -eq 0 ]
-  [ "$(_get_env INTENT_TYPE)" = "human-pr" ]
+  [ "$(_get_env INTENT_TYPE)" = "review-changes" ]
 }
 
 @test "anti-loop: pull_request synchronize from BOT_USER emits skip" {
@@ -98,7 +98,7 @@ _get_output() {
   [ "$(_get_env INTENT_REASON)" = "check-run-handled-by-ci-relay" ]
 }
 
-@test "issue_comment human trigger event emits human intent" {
+@test "issue_comment human trigger event emits on-mention intent" {
   export GITHUB_EVENT_NAME="issue_comment"
   export GITHUB_EVENT_PATH="$FIXTURES_DIR/issue_comment_human_trigger.json"
   export TRUSTED_BOTS="copilot-pull-request-reviewer[bot],gemini-code-assist[bot],sonarqubecloud[bot],coderabbitai[bot]"
@@ -108,7 +108,7 @@ _get_output() {
   run bash "$INTENT_SCRIPT"
 
   [ "$status" -eq 0 ]
-  [ "$(_get_env INTENT_TYPE)" = "human" ]
+  [ "$(_get_env INTENT_TYPE)" = "on-mention" ]
 }
 
 @test "issues labeled dev-lead event emits issue intent" {

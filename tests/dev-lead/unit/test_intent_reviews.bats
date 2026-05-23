@@ -65,14 +65,14 @@ _get_env() {
   [ "$(_get_env INTENT_TYPE)" = "fix-reviews" ]
 }
 
-@test "reviews: pull_request_review human OWNER → human-pr" {
+@test "reviews: pull_request_review human OWNER → review-changes" {
   export GITHUB_EVENT_NAME="pull_request_review"
   export GITHUB_EVENT_PATH="$FIXTURES_DIR/pr_review_human_owner.json"
 
   run bash "$INTENT_SCRIPT"
 
   [ "$status" -eq 0 ]
-  [ "$(_get_env INTENT_TYPE)" = "human-pr" ]
+  [ "$(_get_env INTENT_TYPE)" = "review-changes" ]
 }
 
 @test "reviews: pull_request_review human NONE → skip" {
@@ -202,14 +202,14 @@ EOF
   [ "$(_get_env INTENT_TYPE)" = "fix-reviews" ]
 }
 
-@test "reviews: pull_request_review_comment human + @dev-lead → human" {
+@test "reviews: pull_request_review_comment human + @dev-lead → on-mention" {
   export GITHUB_EVENT_NAME="pull_request_review_comment"
   export GITHUB_EVENT_PATH="$FIXTURES_DIR/pr_review_comment_human_trigger.json"
 
   run bash "$INTENT_SCRIPT"
 
   [ "$status" -eq 0 ]
-  [ "$(_get_env INTENT_TYPE)" = "human" ]
+  [ "$(_get_env INTENT_TYPE)" = "on-mention" ]
 }
 
 @test "reviews: pull_request_review_comment human no trigger → skip" {
@@ -244,14 +244,14 @@ EOF
   [ "$(_get_env INTENT_TYPE)" = "fix-bot-comment" ]
 }
 
-@test "reviews: issue_comment human + @dev-lead → human" {
+@test "reviews: issue_comment human + @dev-lead → on-mention" {
   export GITHUB_EVENT_NAME="issue_comment"
   export GITHUB_EVENT_PATH="$FIXTURES_DIR/issue_comment_human_trigger.json"
 
   run bash "$INTENT_SCRIPT"
 
   [ "$status" -eq 0 ]
-  [ "$(_get_env INTENT_TYPE)" = "human" ]
+  [ "$(_get_env INTENT_TYPE)" = "on-mention" ]
 }
 
 @test "reviews: issue_comment human no trigger → skip" {

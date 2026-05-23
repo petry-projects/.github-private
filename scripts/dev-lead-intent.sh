@@ -10,8 +10,8 @@ set -euo pipefail
 #   fix-ci          — CI failure to auto-fix
 #   fix-reviews     — Bot review comments to address
 #   fix-bot-comment — Bot issue comment to address
-#   human           — Human-directed @mention task
-#   human-pr        — Human review changes-requested
+#   on-mention       — Human-directed @mention task
+#   review-changes   — Human review changes-requested
 #   issue           — Issue labeled dev-lead/claude
 #   rebase          — Rebase conflict sentinel
 #   enable-auto-merge — Bot approval: enable auto-merge if PR is APPROVED
@@ -166,7 +166,7 @@ case "$EVENT_NAME" in
           --arg head_sha "${head_sha:-}" \
           --arg actor "${sender_login:-}" \
           '{"pr_number":$pr_number,"head_sha":$head_sha,"actor":$actor}')
-        emit_intent "human-pr" "pr-${pr_action}" "$context"
+        emit_intent "review-changes" "pr-${pr_action}" "$context"
         ;;
       synchronize)
         # Anti-loop already handled above; now route human syncs
@@ -179,7 +179,7 @@ case "$EVENT_NAME" in
           --arg head_sha "${head_sha:-}" \
           --arg actor "${sender_login:-}" \
           '{"pr_number":$pr_number,"head_sha":$head_sha,"actor":$actor}')
-        emit_intent "human-pr" "pr-synchronize" "$context"
+        emit_intent "review-changes" "pr-synchronize" "$context"
         ;;
       *)
         emit_skip "pr-action-not-routed"
@@ -226,7 +226,7 @@ case "$EVENT_NAME" in
         emit_intent "fix-reviews" "bot-review-${review_state}" "$context"
       fi
     elif is_human_trusted "$author_assoc"; then
-      emit_intent "human-pr" "human-review-${review_state}" "$context"
+      emit_intent "review-changes" "human-review-${review_state}" "$context"
     else
       emit_skip "untrusted-reviewer"
     fi
@@ -254,7 +254,7 @@ case "$EVENT_NAME" in
     if is_trusted_bot "$commenter"; then
       emit_intent "fix-reviews" "bot-review-comment" "$context"
     elif is_human_trusted "$author_assoc" && has_trigger_phrase "$comment_body"; then
-      emit_intent "human" "human-review-comment-trigger" "$context"
+      emit_intent "on-mention" "human-review-comment-trigger" "$context"
     else
       emit_skip "no-trigger-or-untrusted"
     fi
@@ -300,7 +300,7 @@ case "$EVENT_NAME" in
     if is_trusted_bot "$commenter"; then
       emit_intent "fix-bot-comment" "trusted-bot-comment" "$context"
     elif is_human_trusted "$author_assoc" && has_trigger_phrase "$comment_body"; then
-      emit_intent "human" "human-comment-trigger" "$context"
+      emit_intent "on-mention" "human-comment-trigger" "$context"
     else
       emit_skip "no-trigger-or-untrusted"
     fi

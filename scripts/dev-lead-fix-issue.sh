@@ -189,7 +189,17 @@ main() {
   export ISSUE_TITLE ISSUE_BODY ORG_STANDARDS_HINT
 
   local prompt_file="/tmp/dev-lead-fix-issue-prompt-$$.md"
-  envsubst < "${PROMPTS_DIR}/fix-issue.md" > "$prompt_file"
+  local template_path="${PROMPTS_DIR}/fix-issue.md"
+  local vars_spec
+  vars_spec=$(grep -m1 '<!-- VARIABLES:' "$template_path" 2>/dev/null \
+    | sed 's/<!-- VARIABLES: //; s/ -->//' \
+    | tr ',' '\n' \
+    | awk '{gsub(/^ +| +$/, ""); if (length) printf "${%s}", $0}' || true)
+  if [ -n "$vars_spec" ]; then
+    envsubst "$vars_spec" < "$template_path" > "$prompt_file"
+  else
+    envsubst < "$template_path" > "$prompt_file"
+  fi
 
   if [ "$DEV_LEAD_DRY_RUN" = "true" ]; then
     echo "[dry-run] fix-issue: would implement issue #${ISSUE_NUMBER} using prompt: $prompt_file"

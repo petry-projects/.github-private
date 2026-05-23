@@ -25,11 +25,11 @@ set -euo pipefail
 #   DRY_RUN             — if "true", log what would be dispatched but don't send
 #   NOW_ISO             — override current time for testing (ISO-8601 UTC)
 #
-# Retryable intents: fix-reviews, human-pr, rebase
+# Retryable intents: fix-reviews, review-changes, rebase
 #   These intents fetch all needed context (open threads, PR metadata) fresh
 #   from the GitHub API at run time, so a re-dispatch has full fidelity.
 #
-# NOT retried automatically: human, fix-bot-comment
+# NOT retried automatically: on-mention, fix-bot-comment
 #   These intents require USER_INSTRUCTION / COMMENT_BODY from the original
 #   triggering event, which cannot be reconstructed from the PR's current
 #   state. Users are asked to re-trigger manually.
@@ -50,8 +50,10 @@ MAX_ATTEMPTS="${MAX_ATTEMPTS:-3}"
 DEV_LEAD_LABEL="${DEV_LEAD_LABEL:-dev-lead}"
 NEEDS_HUMAN_LABEL="${NEEDS_HUMAN_LABEL:-dev-lead:needs-human}"
 
-# Intents whose context can be fully reconstructed at retry time
-RETRYABLE_REVIEW_INTENTS="fix-reviews human-pr rebase"
+# Intents whose context can be fully reconstructed at retry time.
+# human-pr is included as a legacy alias for review-changes so that PRs already
+# marked status=rate-limited with the old intent name are retried during migration.
+RETRYABLE_REVIEW_INTENTS="fix-reviews review-changes human-pr rebase"
 
 # get_now_epoch: current UTC time as unix epoch (overridable for tests)
 get_now_epoch() {
@@ -240,7 +242,7 @@ scan_pr_for_rate_limits() {
 
   # ── Check for retryable fix-reviews rate-limited markers on HEAD SHA ───────
   # Only intents that can reconstruct their full context at retry time.
-  # human and fix-bot-comment are excluded: their USER_INSTRUCTION/COMMENT_BODY
+  # on-mention and fix-bot-comment are excluded: their USER_INSTRUCTION/COMMENT_BODY
   # cannot be recovered from the PR's current state.
   for intent_type in $RETRYABLE_REVIEW_INTENTS; do
     local reviews_pattern="${REVIEWS_MARKER_PREFIX}${pr_number} sha=${head_sha} intent=${intent_type} status=rate-limited"
@@ -256,14 +258,23 @@ scan_pr_for_rate_limits() {
         continue
       fi
 
+      # Normalize legacy intent aliases to their canonical names before checking
+      # terminal markers and dispatching. "human-pr" was renamed to "review-changes";
+      # dev-lead-intent.sh rewrites human-pr → review-changes, so the retried run
+      # posts terminal markers as intent=review-changes, not intent=human-pr.
+      # Without normalization here the terminal check never matches and the same
+      # SHA is re-dispatched on every cron cycle indefinitely.
+      local dispatch_intent="${intent_type}"
+      [ "$dispatch_intent" = "human-pr" ] && dispatch_intent="review-changes"
+
       # Skip if a terminal marker was already posted (prior retry ran to completion)
-      local reviews_terminal="${REVIEWS_MARKER_PREFIX}${pr_number} sha=${head_sha} intent=${intent_type} status=(applied|no-changes|failed)"
+      local reviews_terminal="${REVIEWS_MARKER_PREFIX}${pr_number} sha=${head_sha} intent=${dispatch_intent} status=(applied|no-changes|failed)"
       if echo "$comments_json" | jq -e --arg pat "$reviews_terminal" '[.[] | select(. | test($pat))] | length > 0' >/dev/null 2>&1; then
         echo "  [skip] ${intent_type} already has terminal result for PR ${pr_number} SHA ${head_sha:0:8}" >&2
         continue
       fi
 
-      dispatch_reviews_retry "$repo" "$pr_number" "$head_sha" "$intent_type"
+      dispatch_reviews_retry "$repo" "$pr_number" "$head_sha" "$dispatch_intent"
       dispatched=$(( dispatched + 1 ))
     fi
   done
