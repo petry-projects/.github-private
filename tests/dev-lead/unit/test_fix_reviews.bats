@@ -80,8 +80,8 @@ teardown() {
   [[ "$output" == *"[dry-run]"* ]]
 }
 
-@test "fix-reviews: INTENT_TYPE=human → runs human intent" {
-  export INTENT_TYPE="human"
+@test "fix-reviews: INTENT_TYPE=on-mention → runs on-mention intent" {
+  export INTENT_TYPE="on-mention"
   export DEV_LEAD_DRY_RUN="true"
   export USER_INSTRUCTION="Please fix the tests"
   export PR_DESCRIPTION="Test PR"
@@ -132,8 +132,8 @@ teardown() {
   [[ "$output" == *"[dry-run]"* ]]
 }
 
-@test "fix-reviews: human-pr in dry-run: outputs [dry-run] message" {
-  export INTENT_TYPE="human-pr"
+@test "fix-reviews: review-changes in dry-run: outputs [dry-run] message" {
+  export INTENT_TYPE="review-changes"
   export DEV_LEAD_DRY_RUN="true"
   export PR_TITLE="Test PR"
   export PR_DESCRIPTION="A test pull request"
@@ -197,8 +197,8 @@ GHEOF
   [[ "$output" == *"intent=fix-reviews"* ]]
 }
 
-@test "fix-reviews: rate-limited: human intent posts re-trigger ack (not auto-retry)" {
-  export INTENT_TYPE="human"
+@test "fix-reviews: rate-limited: on-mention intent posts re-trigger ack (not auto-retry)" {
+  export INTENT_TYPE="on-mention"
   export DEV_LEAD_DRY_RUN="false"
   export HEAD_SHA="ddd444eee555"
   export ACTOR="donpetry"
@@ -240,15 +240,15 @@ GHEOF
   [[ "$output" == *"re-trigger"* || "$output" == *"re-mention"* ]]
 }
 
-@test "fix-reviews: rate-limited: human-pr intent posts user-visible acknowledgment" {
-  export INTENT_TYPE="human-pr"
+@test "fix-reviews: rate-limited: review-changes intent posts user-visible acknowledgment" {
+  export INTENT_TYPE="review-changes"
   export DEV_LEAD_DRY_RUN="false"
   export HEAD_SHA="ddd444eee555"
   export ACTOR="donpetry"
   export PR_TITLE="Test PR"
   export PR_DESCRIPTION="A description"
 
-  # Track how many times pr comment is called (marker + ack = 2 calls for human-pr)
+  # Track how many times pr comment is called (marker + ack = 2 calls for review-changes)
   local comment_count_file
   comment_count_file=$(mktemp)
   echo "0" > "$comment_count_file"
@@ -288,7 +288,7 @@ GHEOF
 
   [ "$status" -eq 2 ]
   [[ "$output" == *"rate-limited"* ]]
-  # human-pr should post 2 comments: the rate-limited marker + the user acknowledgment
+  # review-changes should post 2 comments: the rate-limited marker + the user acknowledgment
   local final_count
   final_count=$(cat "$comment_count_file")
   rm -f "$comment_count_file"
@@ -404,8 +404,8 @@ STUB
   [[ "$output" == *"would enable auto-merge"* ]]
 }
 
-@test "fix-reviews: try_enable_auto_merge dry-run output present for human-pr" {
-  export INTENT_TYPE="human-pr"
+@test "fix-reviews: try_enable_auto_merge dry-run output present for review-changes" {
+  export INTENT_TYPE="review-changes"
   export DEV_LEAD_DRY_RUN="true"
   export PR_TITLE="Test PR"
   export PR_DESCRIPTION="A test pull request"
@@ -440,8 +440,8 @@ STUB
   [[ "$output" != *"## Dev-Lead —"* ]]
 }
 
-@test "fix-reviews: no-changes dry-run human-pr: does not post visible heading" {
-  export INTENT_TYPE="human-pr"
+@test "fix-reviews: no-changes dry-run review-changes: does not post visible heading" {
+  export INTENT_TYPE="review-changes"
   export DEV_LEAD_DRY_RUN="true"
   export HEAD_SHA="ddd444eee555"
   export PR_TITLE="Test PR"
@@ -456,7 +456,7 @@ STUB
 # ── commit_and_push failure tests ─────────────────────────────────────────────
 
 @test "fix-reviews: commit_and_push: git commit failure exits 1 (not silently swallowed)" {
-  export INTENT_TYPE="human"
+  export INTENT_TYPE="on-mention"
   export DEV_LEAD_DRY_RUN="false"
   export HEAD_SHA="abc123"
   export ACTOR="donpetry"
@@ -514,7 +514,7 @@ GITEOF
 }
 
 @test "fix-reviews: commit_and_push: no false 'applied' marker posted on git commit failure" {
-  export INTENT_TYPE="human"
+  export INTENT_TYPE="on-mention"
   export DEV_LEAD_DRY_RUN="false"
   export HEAD_SHA="abc123"
   export ACTOR="donpetry"

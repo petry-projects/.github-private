@@ -162,14 +162,14 @@ EOF
   [ "$(_get_env INTENT_TYPE)" = "fix-reviews" ]
 }
 
-@test "ci: repository_dispatch dev-lead-reviews-retry human → human" {
+@test "ci: repository_dispatch dev-lead-reviews-retry on-mention → on-mention" {
   export GITHUB_EVENT_NAME="repository_dispatch"
   export GITHUB_EVENT_PATH="$FIXTURES_DIR/repository_dispatch_reviews_retry_human.json"
 
   run bash "$INTENT_SCRIPT"
 
   [ "$status" -eq 0 ]
-  [ "$(_get_env INTENT_TYPE)" = "human" ]
+  [ "$(_get_env INTENT_TYPE)" = "on-mention" ]
 }
 
 @test "ci: repository_dispatch dev-lead-reviews-retry unknown intent → skip" {

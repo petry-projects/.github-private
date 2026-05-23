@@ -32,7 +32,7 @@ if [ -z "$PR_NUMBER" ] && [ "$INTENT_TYPE" != "rebase" ]; then
 fi
 
 # Resolve HEAD_SHA from the PR API when not provided by the triggering event.
-# issue_comment intents (human, fix-bot-comment) only carry pr_number, not head_sha.
+# issue_comment intents (on-mention, fix-bot-comment) only carry pr_number, not head_sha.
 # A resolved SHA ensures rate-limited markers are scannable by the retry cron.
 if [ -z "${HEAD_SHA:-}" ] && [ -n "${PR_NUMBER:-}" ] && [ "${DEV_LEAD_DRY_RUN:-false}" = "false" ]; then
   HEAD_SHA=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}" --jq '.head.sha' 2>/dev/null || true)
@@ -217,7 +217,7 @@ commit_and_push() {
   case "$intent" in
     fix-reviews)     commit_msg="fix(reviews): address review comments [skip ci-relay]" ;;
     fix-bot-comment) commit_msg="fix(bot): address bot feedback [skip ci-relay]" ;;
-    human|human-pr)  commit_msg="chore: apply manual instructions [skip ci-relay]" ;;
+    on-mention|review-changes)  commit_msg="chore: apply manual instructions [skip ci-relay]" ;;
     rebase)          commit_msg="chore: resolve rebase conflicts [skip ci-relay]" ;;
     *)               commit_msg="chore: dev-lead update (${intent}) [skip ci-relay]" ;;
   esac
@@ -263,8 +263,8 @@ has_reviews_rate_limited_marker() {
 }
 
 # post_reviews_rate_limited: posts a rate-limited marker for fix-reviews intents.
-# For retryable intents (fix-reviews, human-pr, rebase), the cron will re-dispatch.
-# For non-retryable intents (human, fix-bot-comment), asks the user to re-trigger
+# For retryable intents (fix-reviews, review-changes, rebase), the cron will re-dispatch.
+# For non-retryable intents (on-mention, fix-bot-comment), asks the user to re-trigger
 # since USER_INSTRUCTION/COMMENT_BODY cannot be reconstructed at retry time.
 post_reviews_rate_limited() {
   local intent="$1"
@@ -292,10 +292,10 @@ post_reviews_rate_limited() {
   # Retry message depends on whether the intent can be re-dispatched automatically
   local retry_msg
   case "$intent" in
-    fix-reviews|human-pr|rebase)
+    fix-reviews|review-changes|rebase)
       retry_msg="The retry cron will re-attempt automatically."
       ;;
-    human|fix-bot-comment)
+    on-mention|fix-bot-comment)
       retry_msg="Please re-trigger manually (re-mention \`@dev-lead\`) when the rate limit clears — the original request cannot be reconstructed automatically."
       ;;
     *)
@@ -319,9 +319,9 @@ ${retry_msg}"
   fi
 
   # For user-triggered intents, post a separate visible acknowledgment.
-  # human-pr is retried automatically; human/fix-bot-comment require manual re-trigger.
+  # review-changes is retried automatically; human/fix-bot-comment require manual re-trigger.
   case "$intent" in
-    human-pr)
+    review-changes)
       local actor_mention=""
       [ -n "${ACTOR:-}" ] && actor_mention="@${ACTOR} "
       local reset_display="${reset_time:-unknown}"
@@ -335,7 +335,7 @@ ${retry_msg}"
         gh pr comment "$PR_NUMBER" --repo "$REPO" --body "$ack_body"
       fi
       ;;
-    human)
+    on-mention)
       local actor_mention=""
       [ -n "${ACTOR:-}" ] && actor_mention="@${ACTOR} "
       local reset_display="${reset_time:-unknown}"
@@ -364,6 +364,7 @@ case "$INTENT_TYPE" in
     export PR_NUMBER PR_URL="https://github.com/${REPO}/pull/${PR_NUMBER}"
     export REPO HEAD_SHA
     export BASE_REF="${BASE_REF:-main}"
+    export TRIGGERING_REVIEWER="${TRIGGERING_REVIEWER:-}"
     OPEN_THREADS_JSON=$(gh api graphql -f query='
       query($owner:String!,$repo:String!,$pr:Int!) {
         repository(owner:$owner, name:$repo) {
@@ -410,23 +411,23 @@ case "$INTENT_TYPE" in
     fi
     exit "$rc"
     ;;
-  human)
+  on-mention)
     export PR_NUMBER="${PR_NUMBER:-}"
     export PR_URL="https://github.com/${REPO}/pull/${PR_NUMBER}"
     export REPO ACTOR="${ACTOR:-}" USER_INSTRUCTION="${USER_INSTRUCTION:-}" PR_DESCRIPTION="${PR_DESCRIPTION:-}"
     rc=0
-    build_and_run "human" || rc=$?
-    [ "$rc" -eq 2 ] && handle_rate_limit "human"
+    build_and_run "on-mention" || rc=$?
+    [ "$rc" -eq 2 ] && handle_rate_limit "on-mention"
     if [ "$rc" -eq 0 ]; then
-      if commit_and_push "human"; then
-        post_reviews_terminal "human" "applied" "Changes committed and pushed."
+      if commit_and_push "on-mention"; then
+        post_reviews_terminal "on-mention" "applied" "Changes committed and pushed."
       else
-        post_reviews_terminal "human" "no-changes"
+        post_reviews_terminal "on-mention" "no-changes" "Engine ran but made no changes."
       fi
     fi
     exit "$rc"
     ;;
-  human-pr)
+  review-changes)
     export PR_NUMBER="${PR_NUMBER:-}"
     export PR_URL="https://github.com/${REPO}/pull/${PR_NUMBER}"
     export REPO PR_TITLE="${PR_TITLE:-}" PR_DESCRIPTION="${PR_DESCRIPTION:-}"
@@ -444,15 +445,15 @@ case "$INTENT_TYPE" in
       --jq '.data.repository.pullRequest.reviewThreads.nodes | map(select(.isResolved == false))' 2>/dev/null || echo "[]")
     export OPEN_THREADS_JSON BASE_REF="${BASE_REF:-main}"
     rc=0
-    build_and_run "human-pr" || rc=$?
-    [ "$rc" -eq 2 ] && handle_rate_limit "human-pr"
+    build_and_run "review-changes" || rc=$?
+    [ "$rc" -eq 2 ] && handle_rate_limit "review-changes"
     if [ "$rc" -eq 0 ]; then
-      if commit_and_push "human-pr"; then
+      if commit_and_push "review-changes"; then
         notify_coderabbit_resolve
-        post_reviews_terminal "human-pr" "applied" "Changes committed and pushed."
+        post_reviews_terminal "review-changes" "applied" "Changes committed and pushed."
       else
         notify_coderabbit_resolve
-        post_reviews_terminal "human-pr" "no-changes"
+        post_reviews_terminal "review-changes" "no-changes" "No changes were needed for this PR."
       fi
       try_enable_auto_merge
     fi
