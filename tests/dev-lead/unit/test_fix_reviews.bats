@@ -9,7 +9,6 @@ GH_STUBS_DIR="$SCRIPT_DIR/tests/dev-lead/fixtures/stubs"
 setup() {
   export GITHUB_ENV="$(mktemp)"
   export GITHUB_OUTPUT="$(mktemp)"
-  rm -f /tmp/dev-lead-session-output.txt
 
   STUB_BIN_DIR="$(mktemp -d)"
   cp "$STUB_ENGINES_DIR/stub-claude" "$STUB_BIN_DIR/claude"
@@ -54,7 +53,6 @@ GHEOF
 
 teardown() {
   rm -f "$GITHUB_ENV" "$GITHUB_OUTPUT"
-  rm -f /tmp/dev-lead-session-output.txt
   rm -rf "$STUB_BIN_DIR"
 }
 
