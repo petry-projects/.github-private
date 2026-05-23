@@ -722,3 +722,158 @@ GITEOF
   fi
   rm -f "$comment_file"
 }
+
+# ── read_session_summary: marker-based extraction ─────────────────────────────
+
+@test "read_session_summary: extracts buried summary block past the tail-30 window" {
+  local tmpdir session_log
+  tmpdir="$(mktemp -d)"
+  session_log="/tmp/dev-lead-session-output.txt"
+
+  # Summary at line 3, then 200 lines of trailing tool output — the prior tail -30
+  # implementation would have missed this entirely.
+  {
+    echo "tool: Read foo.sh"
+    echo "tool: Grep something"
+    echo "Addressed 1 threads:"
+    echo "- Thread PRRT_xxx: applied fix [resolved]"
+    echo "Files changed: foo.sh"
+    for i in $(seq 1 200); do echo "tool: extra log line $i"; done
+  } > "$session_log"
+
+  run bash -c "
+    cd '$tmpdir'
+    export INTENT_TYPE=fix-reviews DEV_LEAD_DRY_RUN=true
+    export PR_NUMBER=54 HEAD_SHA=abc123 REPO='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export PATH='$STUB_BIN_DIR:$PATH'
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+  rm -rf "$tmpdir" "$session_log"
+
+  [[ "$output" == *"## Dev-Lead — fix-reviews (no-changes)"* ]]
+  # The structured summary line should be present even though it's far before the EOF.
+  [[ "$output" == *"Addressed 1 threads"* ]]
+  [[ "$output" == *"PRRT_xxx"* ]]
+}
+
+@test "read_session_summary: falls back to tail when no marker is found" {
+  local tmpdir session_log
+  tmpdir="$(mktemp -d)"
+  session_log="/tmp/dev-lead-session-output.txt"
+
+  # Unstructured output with no recognised marker — should still surface the last lines.
+  {
+    for i in $(seq 1 50); do echo "log line $i"; done
+    echo "final completion notice"
+  } > "$session_log"
+
+  run bash -c "
+    cd '$tmpdir'
+    export INTENT_TYPE=fix-reviews DEV_LEAD_DRY_RUN=true
+    export PR_NUMBER=54 HEAD_SHA=abc123 REPO='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export PATH='$STUB_BIN_DIR:$PATH'
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+  rm -rf "$tmpdir" "$session_log"
+
+  [[ "$output" == *"final completion notice"* ]]
+}
+
+# ── resolve_actor_outdated_threads: safety net for no-changes path ────────────
+
+@test "resolve_actor_outdated_threads: dry-run announces and skips API calls" {
+  local tmpdir
+  tmpdir="$(mktemp -d)"
+  rm -f /tmp/dev-lead-session-output.txt
+
+  run bash -c "
+    cd '$tmpdir'
+    export INTENT_TYPE=fix-bot-comment DEV_LEAD_DRY_RUN=true
+    export PR_NUMBER=54 HEAD_SHA=abc123 REPO='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export ACTOR='chatgpt-codex-connector[bot]' COMMENT_BODY='something'
+    export PATH='$STUB_BIN_DIR:$PATH'
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+  rm -rf "$tmpdir"
+
+  [[ "$output" == *"would resolve outdated review threads authored by chatgpt-codex-connector[bot]"* ]]
+}
+
+@test "resolve_actor_outdated_threads: matches actor with [bot] suffix stripped" {
+  local tmpdir mutations_file
+  tmpdir="$(mktemp -d)"
+  mutations_file="$(mktemp)"
+  rm -f /tmp/dev-lead-session-output.txt
+
+  # gh stub: returns the JSON unfiltered (we pipe to real jq), and records mutations.
+  cat > "$STUB_BIN_DIR/gh" << GHEOF
+#!/usr/bin/env bash
+ARGS="\$*"
+case "\$ARGS" in
+  *"resolveReviewThread"*)
+    echo "\$*" >> "$mutations_file"
+    echo '{"data":{"resolveReviewThread":{"thread":{"isResolved":true}}}}'
+    ;;
+  *"reviewThreads"*)
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"id":"PRRT_outdated_thread_id","isResolved":false,"isOutdated":true,"comments":{"nodes":[{"author":{"login":"chatgpt-codex-connector"}}]}}]}}}}}'
+    ;;
+  *"pulls/"*) echo '{"head":{"sha":"abc123"}}' ;;
+  *"pr checkout"*) exit 0 ;;
+  *"pr comment"*) exit 0 ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+
+  # Use a real git repo so commit_and_push returns "no changes"
+  git -C "$tmpdir" init -q
+  echo "initial" > "$tmpdir/file.txt"
+  git -C "$tmpdir" add .
+  git -C "$tmpdir" -c user.email="t@test" -c user.name="T" commit -q -m "init"
+
+  cat > "$STUB_BIN_DIR/claude" << 'STUB'
+#!/usr/bin/env bash
+echo "No actionable items."
+STUB
+  chmod +x "$STUB_BIN_DIR/claude"
+
+  run bash -c "
+    cd '$tmpdir'
+    export INTENT_TYPE=fix-bot-comment DEV_LEAD_DRY_RUN=false
+    export PR_NUMBER=54 HEAD_SHA=abc123 REPO='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export ACTOR='chatgpt-codex-connector[bot]' COMMENT_BODY='something'
+    export PATH='$STUB_BIN_DIR:$PATH'
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+
+  # Mutation must have been invoked for the matched thread id
+  grep -q "resolveReviewThread" "$mutations_file"
+  grep -q "PRRT_outdated_thread_id" "$mutations_file"
+
+  rm -rf "$tmpdir"
+  rm -f "$mutations_file"
+}
+
+@test "resolve_actor_outdated_threads: skips when ACTOR is unset" {
+  local tmpdir
+  tmpdir="$(mktemp -d)"
+  rm -f /tmp/dev-lead-session-output.txt
+
+  # No ACTOR set and no TRIGGERING_REVIEWER fallback — helper should log and skip.
+  run bash -c "
+    cd '$tmpdir'
+    export INTENT_TYPE=fix-reviews DEV_LEAD_DRY_RUN=true
+    export PR_NUMBER=54 HEAD_SHA=abc123 REPO='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    unset ACTOR TRIGGERING_REVIEWER
+    export PATH='$STUB_BIN_DIR:$PATH'
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+  rm -rf "$tmpdir"
+
+  [[ "$output" == *"ACTOR not set for intent=fix-reviews"* ]]
+}
