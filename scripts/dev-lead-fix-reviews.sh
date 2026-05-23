@@ -14,6 +14,18 @@ export PROMPTS_DIR="${PROMPTS_DIR:-prompts/dev-lead}"
 
 REVIEWS_MARKER_PREFIX="<!-- dev-lead-fix-reviews pr="
 
+setup_git_identity() {
+  local bot="${BOT_USER:-donpetry-bot}"
+  local bot_id
+  bot_id=$(gh api "users/${bot}" --jq '.id' 2>/dev/null || echo "")
+  if [ -n "$bot_id" ]; then
+    git config user.email "${bot_id}+${bot}@users.noreply.github.com"
+  else
+    git config user.email "${bot}@users.noreply.github.com"
+  fi
+  git config user.name "$bot"
+}
+
 if [ -z "$PR_NUMBER" ] && [ "$INTENT_TYPE" != "rebase" ]; then
   echo "::error::PR_NUMBER is required"
   exit 1
@@ -29,6 +41,7 @@ fi
 # Checkout the PR branch for modification (Requirement 1)
 if [ "${DEV_LEAD_DRY_RUN:-false}" = "false" ] && [ -n "${PR_NUMBER:-}" ]; then
   gh pr checkout "$PR_NUMBER" --repo "$REPO"
+  setup_git_identity
 fi
 
 build_and_run() {
@@ -220,8 +233,7 @@ commit_and_push() {
       git add -A
       # Ensure git identity is set — actions/checkout only sets local config for the
       # repo it checks out (.github-private), not for target repos cloned separately.
-      git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-      git config user.name "github-actions[bot]"
+      setup_git_identity
       # Explicit exit on failure: set -e is suspended when commit_and_push is called from
       # an if-statement condition, so git commit failures would be silently swallowed
       # otherwise. Using exit (not return) ensures CI fails visibly instead of posting a
