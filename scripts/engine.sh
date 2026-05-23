@@ -1900,15 +1900,41 @@ run_writer() {
     _record_engine_tokens "writer" "$REVIEW_ENGINE" "$model" "$prompt_file" "$_tmp"
   fi
   if [ -n "$_tmp" ]; then
-    if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
-      echo "## Dev-Lead session output" >> "$GITHUB_STEP_SUMMARY"
-      echo "<details><summary>Click to expand session logs</summary>" >> "$GITHUB_STEP_SUMMARY"
-      echo "" >> "$GITHUB_STEP_SUMMARY"
-      cat "$_tmp" >> "$GITHUB_STEP_SUMMARY"
-      echo "" >> "$GITHUB_STEP_SUMMARY"
-      echo "</details>" >> "$GITHUB_STEP_SUMMARY"
+    # Redact once: write secret-scrubbed content to the persisted path, then
+    # use that redacted file as the source for the step summary so credentials
+    # cannot leak via /tmp persistence or the public run summary. Patterns
+    # kept in sync with scripts/dev-lead-fix-reviews.sh:redact_secrets.
+    rm -f /tmp/dev-lead-session-output.txt
+    if ! sed -E \
+      -e 's/(gh[opsu]|ghr)_[A-Za-z0-9_]{20,}/***REDACTED-GH-TOKEN***/g' \
+      -e 's/github_pat_[A-Za-z0-9_]{20,}/***REDACTED-GH-PAT***/g' \
+      -e 's/sk-(ant-)?[A-Za-z0-9_-]{20,}/***REDACTED-API-KEY***/g' \
+      -e 's/AKIA[A-Z0-9]{16}/***REDACTED-AWS-KEY***/g' \
+      -e 's/AIza[A-Za-z0-9_-]{35}/***REDACTED-GOOGLE-KEY***/g' \
+      -e 's|ya29\.[A-Za-z0-9_-]+|***REDACTED-GOOGLE-OAUTH***|g' \
+      -e 's/[Bb]earer [A-Za-z0-9._-]{20,}/Bearer ***REDACTED***/g' \
+      -e '/-----BEGIN [A-Z ]*PRIVATE KEY-----/,/-----END [A-Z ]*PRIVATE KEY-----/c\
+***REDACTED-PRIVATE-KEY***' \
+      "$_tmp" > /tmp/dev-lead-session-output.txt; then
+      : > /tmp/dev-lead-session-output.txt 2>/dev/null || true
+      echo "::warning::Failed to redact/persist /tmp/dev-lead-session-output.txt" >&2
     fi
-    cp "$_tmp" /tmp/dev-lead-session-output.txt
+    if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+      # HTML-escape the redacted log so literal </details> or </summary> in
+      # the agent output cannot break the wrapping <details> block on the run
+      # summary page.
+      {
+        echo "## Dev-Lead session output"
+        echo "<details><summary>Click to expand session logs</summary>"
+        echo ""
+        echo "<pre>"
+        sed 's|&|\&amp;|g; s|<|\&lt;|g; s|>|\&gt;|g' /tmp/dev-lead-session-output.txt
+        echo "</pre>"
+        echo ""
+        echo "</details>"
+      } >> "$GITHUB_STEP_SUMMARY" || \
+        echo "::warning::Failed to append session output to GITHUB_STEP_SUMMARY" >&2
+    fi
     rm -f "$_tmp"
   fi
   return "$rc"
