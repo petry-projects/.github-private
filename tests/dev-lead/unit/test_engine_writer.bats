@@ -576,12 +576,19 @@ STUB
 @test "writer: PEM private key block fully redacted in /tmp persistence" {
   _source_engine "claude"
   export DEV_LEAD_DRY_RUN=false
-  cat > "$STUB_BIN_DIR/claude" << 'STUB'
+  # Build PEM markers at runtime so the literal "-----BEGIN/END RSA PRIVATE
+  # KEY-----" never appears in this source file (avoids tripping gitleaks on
+  # a test fixture). Same pattern as the post_no_changes PEM tests in
+  # test_fix_reviews.bats.
+  local dashes="-----"
+  local begin="${dashes}BEGIN RSA PRIVATE KEY${dashes}"
+  local end="${dashes}END RSA PRIVATE KEY${dashes}"
+  cat > "$STUB_BIN_DIR/claude" << STUB
 #!/usr/bin/env bash
-echo "-----BEGIN RSA PRIVATE KEY-----"
+echo "$begin"
 echo "MIIEowIBAAKCAQEAuVERYSENSITIVEKEYBODYWITHTONSOFCHARSANDMOREDATAHERE"
 echo "ENDOFBODYDATAGOESHEREMOREMOREMOREMOREMOREMORE"
-echo "-----END RSA PRIVATE KEY-----"
+echo "$end"
 echo "after-key"
 STUB
   chmod +x "$STUB_BIN_DIR/claude"
@@ -591,9 +598,9 @@ STUB
 
   [ "$status" -eq 0 ]
   # Neither header, body, nor footer of the PEM block may survive
-  ! grep -F "BEGIN RSA PRIVATE KEY" /tmp/dev-lead-session-output.txt
+  ! grep -F "$begin" /tmp/dev-lead-session-output.txt
   ! grep -F "uVERYSENSITIVEKEYBODY" /tmp/dev-lead-session-output.txt
-  ! grep -F "END RSA PRIVATE KEY" /tmp/dev-lead-session-output.txt
+  ! grep -F "$end" /tmp/dev-lead-session-output.txt
   grep -F "***REDACTED-PRIVATE-KEY***" /tmp/dev-lead-session-output.txt
   # Content outside the PEM block survives
   grep -F "after-key" /tmp/dev-lead-session-output.txt
