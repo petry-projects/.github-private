@@ -30,6 +30,7 @@ jobs:
           if [ -z "$pr_number" ]; then
             # Fallback: commits-to-pulls API handles edge cases (e.g. a second
             # push arrived before this check_run completed).
+            # shellcheck disable=SC2016  # $ENV.REPO is jq built-in syntax, not a shell variable
             pr_number=$(gh api "repos/$REPO/commits/$HEAD_SHA/pulls" \
               --jq '.[] | select(.head.repo.full_name == $ENV.REPO) | .number' \
               2>/dev/null | head -n 1 || true)
