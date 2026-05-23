@@ -13,6 +13,7 @@ on:
 
 permissions:
   pull-requests: write
+  issues: write        # post/read PR comments via the Issues comments API
   actions: read
   contents: read
   checks: read
@@ -29,5 +30,6 @@ jobs:
     if: >-
       github.event.check_run.conclusion == 'failure' &&
       !startsWith(github.event.check_run.name, 'CI Failure Analyst')
-    uses: petry-projects/.github-private/.github/workflows/ci-failure-analyst-reusable.yml@main
-    secrets: inherit
+    uses: petry-projects/.github-private/.github/workflows/ci-failure-analyst-reusable.yml@69e9774818d45846f3a850ca13f31c7e9d6345cc # main
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
