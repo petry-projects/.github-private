@@ -23,6 +23,7 @@ setup() {
 
 teardown() {
   rm -f "$GITHUB_ENV" "$GITHUB_OUTPUT" "$TEST_PROMPT"
+  rm -f /tmp/dev-lead-session-output.txt
   rm -rf "$STUB_BIN_DIR"
   if [ -n "${TEST_OWNED_TOKEN_LOG:-}" ] && [ "${TOKEN_LOG_FILE:-}" = "$TEST_OWNED_TOKEN_LOG" ]; then
     rm -f "$TEST_OWNED_TOKEN_LOG"
@@ -467,4 +468,83 @@ STUB
   [ "$status" -eq 2 ]
   # Rate-limited → no successful completion → token log must be empty
   [ ! -s "$log" ]
+}
+
+# ── session output persistence tests ─────────────────────────────────────────
+
+@test "session: run_writer copies output to /tmp/dev-lead-session-output.txt on success" {
+  _source_engine "claude"
+  export STUB_ENGINE_EXIT=0
+  export STUB_ENGINE_RESPONSE="PR: #42 - feat: do thing
+Human review threads addressed: 0
+Files changed: none"
+  export DEV_LEAD_DRY_RUN=false
+  rm -f /tmp/dev-lead-session-output.txt
+
+  run run_writer "$TEST_PROMPT"
+
+  [ "$status" -eq 0 ]
+  [ -f /tmp/dev-lead-session-output.txt ]
+  grep -q "Files changed: none" /tmp/dev-lead-session-output.txt
+}
+
+@test "session: run_writer appends to GITHUB_STEP_SUMMARY when set" {
+  _source_engine "claude"
+  export STUB_ENGINE_EXIT=0
+  export STUB_ENGINE_RESPONSE="Issues addressed: 0"
+  export DEV_LEAD_DRY_RUN=false
+  local summary_file
+  summary_file=$(mktemp)
+  export GITHUB_STEP_SUMMARY="$summary_file"
+  rm -f /tmp/dev-lead-session-output.txt
+
+  run run_writer "$TEST_PROMPT"
+
+  [ "$status" -eq 0 ]
+  grep -q "## Dev-Lead session output" "$summary_file"
+  grep -q "Issues addressed: 0" "$summary_file"
+  rm -f "$summary_file"
+}
+
+@test "session: run_writer does not write to GITHUB_STEP_SUMMARY when unset" {
+  _source_engine "claude"
+  export STUB_ENGINE_EXIT=0
+  export STUB_ENGINE_RESPONSE="Issues addressed: 0"
+  export DEV_LEAD_DRY_RUN=false
+  unset GITHUB_STEP_SUMMARY
+  rm -f /tmp/dev-lead-session-output.txt
+
+  run run_writer "$TEST_PROMPT"
+
+  [ "$status" -eq 0 ]
+  # No summary file should be created (we just verify the run succeeded without error)
+  [ -f /tmp/dev-lead-session-output.txt ]
+}
+
+@test "session: run_writer does not write session file when rate-limited" {
+  _source_engine "claude"
+  export DEV_LEAD_DRY_RUN=false
+  rm -f /tmp/dev-lead-session-output.txt
+  cat > "$STUB_BIN_DIR/claude" << 'STUB'
+#!/usr/bin/env bash
+echo "You've hit your limit · resets 11:20pm (UTC)"
+exit 1
+STUB
+  chmod +x "$STUB_BIN_DIR/claude"
+
+  run run_writer "$TEST_PROMPT"
+
+  [ "$status" -eq 2 ]
+  [ ! -f /tmp/dev-lead-session-output.txt ]
+}
+
+@test "session: run_writer dry-run does not write session file" {
+  _source_engine "claude"
+  export DEV_LEAD_DRY_RUN=true
+  rm -f /tmp/dev-lead-session-output.txt
+
+  run run_writer "$TEST_PROMPT"
+
+  [ "$status" -eq 0 ]
+  [ ! -f /tmp/dev-lead-session-output.txt ]
 }
