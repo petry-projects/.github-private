@@ -1,13 +1,19 @@
-# Hand-written replacement for gh-aw compiled workflow.
-# Uses CLAUDE_CODE_OAUTH_TOKEN (same pattern as dev-lead) instead of ANTHROPIC_API_KEY.
-# Source prompt: .github/workflows/ci-failure-analyst.md
+# Thin caller stub — handles CI check_run failures in this repository.
+# All analysis logic lives in ci-failure-analyst-reusable.yml.
+#
+# To deploy CI Failure Analyst to another org repo, copy
+# templates/ci-failure-analyst.yml into that repo's .github/workflows/.
+#
+# Docs: docs/aw/ci-failure-analyst.md
 name: "CI Failure Analyst"
+
 on:
   check_run:
     types: [completed]
 
 permissions:
   pull-requests: write
+  issues: write        # post/read PR comments via the Issues comments API
   actions: read
   contents: read
   checks: read
@@ -20,142 +26,10 @@ run-name: "CI Failure Analyst"
 
 jobs:
   analyze:
-    if: github.event.check_run.conclusion == 'failure'
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    env:
+    # Skip non-failures and the analyst's own check run to prevent loops.
+    if: >-
+      github.event.check_run.conclusion == 'failure' &&
+      !startsWith(github.event.check_run.name, 'CI Failure Analyst')
+    uses: petry-projects/.github-private/.github/workflows/ci-failure-analyst-reusable.yml@69e9774818d45846f3a850ca13f31c7e9d6345cc # main
+    secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-      GH_TOKEN: ${{ secrets.GH_AW_GITHUB_TOKEN || secrets.GITHUB_TOKEN }}
-      REPO: ${{ github.repository }}
-
-    steps:
-      - name: Resolve PR number
-        id: pr
-        env:
-          HEAD_SHA: ${{ github.event.check_run.head_sha }}
-          CHECK_RUN_PRS: ${{ toJson(github.event.check_run.pull_requests) }}
-        run: |
-          set -euo pipefail
-          pr_number=$(echo "$CHECK_RUN_PRS" | jq -r 'first | .number // empty')
-          if [ -z "$pr_number" ]; then
-            pr_number=$(gh api "repos/$REPO/commits/$HEAD_SHA/pulls" \
-              --jq 'first | .number // empty' 2>/dev/null || true)
-          fi
-          if [ -z "$pr_number" ]; then
-            echo "No associated PR — skipping"
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "pr_number=$pr_number" >> "$GITHUB_OUTPUT"
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Check idempotency
-        if: steps.pr.outputs.skip == 'false'
-        id: idem
-        env:
-          PR_NUMBER: ${{ steps.pr.outputs.pr_number }}
-          HEAD_SHA: ${{ github.event.check_run.head_sha }}
-        run: |
-          set -euo pipefail
-          existing=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments" \
-            --paginate \
-            --jq ".[] | select(.body | startswith(\"<!-- ci-analyst sha=$HEAD_SHA -->\")) | .id" \
-            2>/dev/null | head -1 || true)
-          if [ -n "$existing" ]; then
-            echo "Comment already posted (id=$existing) — idempotency skip"
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Install Claude Code
-        if: steps.pr.outputs.skip == 'false' && steps.idem.outputs.exists == 'false'
-        env:
-          CLAUDE_CODE_VERSION: ${{ vars.CLAUDE_CODE_VERSION || 'latest' }}
-        run: |
-          mkdir -p "$HOME/.npm-global"
-          npm config set prefix "$HOME/.npm-global"
-          echo "$HOME/.npm-global/bin" >> "$GITHUB_PATH"
-          npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
-
-      - name: Analyze failure and post comment
-        if: steps.pr.outputs.skip == 'false' && steps.idem.outputs.exists == 'false'
-        env:
-          PR_NUMBER: ${{ steps.pr.outputs.pr_number }}
-          HEAD_SHA: ${{ github.event.check_run.head_sha }}
-          WORKFLOW_NAME: ${{ github.event.check_run.name }}
-          DETAILS_URL: ${{ github.event.check_run.details_url }}
-          CHECK_RUN_ID: ${{ github.event.check_run.id }}
-        run: |
-          set -euo pipefail
-          export PATH="$HOME/.npm-global/bin:$PATH"
-
-          # Expand env vars into the prompt
-          cat > /tmp/prompt-template.txt << 'TMPL'
-          A CI check named "$WORKFLOW_NAME" just failed on PR #$PR_NUMBER in repository $REPO.
-
-          Key facts:
-          - PR number: $PR_NUMBER
-          - Head SHA: $HEAD_SHA
-          - Workflow/check name: $WORKFLOW_NAME
-          - Details URL: $DETAILS_URL
-          - Check run ID: $CHECK_RUN_ID
-
-          Follow these steps in order:
-
-          ### 1. Fetch failure logs
-          Extract the GitHub Actions run ID from the details URL using:
-            run_id=$(echo "$DETAILS_URL" | grep -oP '(?<=runs/)\d+' || true)
-          If a run_id is found, fetch the failed-step logs:
-            gh run view "$run_id" --log-failed --repo $REPO 2>/dev/null | tail -200
-          If no run_id (e.g. external quality gate like SonarCloud), use the PR diff instead:
-            gh pr diff $PR_NUMBER --repo $REPO 2>/dev/null | head -200
-
-          ### 2. Identify the failing step and error
-          From the logs, extract:
-          - The specific step name that failed
-          - The key error message or assertion
-
-          ### 3. Classify the root cause
-          Choose exactly one category:
-          | Category | Indicators |
-          |---|---|
-          | Test failure | Assertion failed, FAIL, AssertionError, Expected…got… |
-          | Env issue | Missing secret/env var, command not found, permission denied, auth error |
-          | Flaky test | Timeout, connection reset, port conflict, ECONNREFUSED, intermittent HTTP error |
-          | Config error | Malformed YAML, missing required field, invalid syntax, wrong runner |
-          | Lint/style | eslint, shellcheck, markdownlint, yamllint, ruff, golangci-lint errors |
-          | Build error | Compilation error, npm ERR!, cargo build failed, dependency resolution failure |
-
-          If the workflow name is lint, shellcheck, markdownlint, yamllint, or similar → must be Lint/style.
-
-          ### 4. Post a comment on PR #$PR_NUMBER
-          Use this exact bash command to post the comment (fill in the placeholders):
-
-          gh api "repos/$REPO/issues/$PR_NUMBER/comments" \
-            -f body='<!-- ci-analyst sha=$HEAD_SHA -->
-          ## CI Failure: $WORKFLOW_NAME
-
-          **Step:** FAILING_STEP_NAME
-          **Root cause:** ROOT_CAUSE_CATEGORY
-
-          BRIEF_EXPLANATION (2–3 sentences: what failed, why it likely failed, what the error means)
-
-          **Suggested fix:** ONE_CONCRETE_ACTION
-
-          [View run logs]($DETAILS_URL)'
-
-          Rules:
-          - The <!-- ci-analyst sha=$HEAD_SHA --> marker MUST be the very first line of the comment body
-          - Root cause must be one of the six categories above
-          - Suggested fix must be one specific, actionable step
-          - Keep the entire comment under 300 words
-          - Pass PR number $PR_NUMBER explicitly in the gh api command
-          TMPL
-
-          PROMPT=$(envsubst < /tmp/prompt-template.txt)
-
-          claude --print \
-            --permission-mode bypassPermissions \
-            --allowedTools Bash \
-            -p "$PROMPT"

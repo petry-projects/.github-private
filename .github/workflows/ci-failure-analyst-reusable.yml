@@ -146,18 +146,7 @@ jobs:
           TMPL
 
           PROMPT=$(envsubst < /tmp/prompt-template.txt)
-          _analyst_out=$(mktemp)
-          _analyst_rc=0
           claude --print \
             --permission-mode bypassPermissions \
             --allowedTools Bash \
-            --fallback-model opus \
-            -p "$PROMPT" 2>&1 | tee "$_analyst_out" || _analyst_rc=${PIPESTATUS[0]}
-          if [ "$_analyst_rc" -ne 0 ] && \
-             grep -qiE "hit your.*(session )?limit|rate.?limit|session limit|usage limit|quota exceeded|too many requests" "$_analyst_out"; then
-            echo "::notice::Claude rate-limited — skipping CI analysis for PR #${PR_NUMBER} (will retry on next CI failure)"
-            rm -f "$_analyst_out"
-            exit 0
-          fi
-          rm -f "$_analyst_out"
-          exit "$_analyst_rc"
+            -p "$PROMPT"
