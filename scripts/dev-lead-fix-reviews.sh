@@ -107,16 +107,36 @@ redact_secrets() {
 ***REDACTED-PRIVATE-KEY***'
 }
 
-# read_session_summary: reads the last 10 non-blank lines of the agent session
-# output and redacts any embedded credentials. Empty output if the file is
-# missing (e.g. dry-run paths that never invoked the writer). Redaction runs
-# over the full log *before* tailing, so PEM blocks that straddle the tail
-# boundary are fully redacted (header in the discarded window, body in the
-# kept window would otherwise leak as plaintext key material).
+# read_session_summary: extracts the agent's structured summary from the session
+# log and redacts any embedded credentials. Empty output if the file is missing
+# (e.g. dry-run paths that never invoked the writer).
+#
+# Strategy: scan the redacted stream for the *last* occurrence of a known summary
+# header (`Bot:`, `PR: #`, `Addressed N threads:`, `Human review threads
+# addressed:`, `Issues addressed:` — see prompts/dev-lead/*.md "Output Format")
+# and emit from that line to EOF, capped at 30 non-blank lines. Falls back to
+# the last 30 non-blank lines when no marker is present, preserving the prior
+# tail behaviour for unstructured output. grep -n + sed avoids loading the log
+# into an awk array (gemini medium finding).
+#
+# Redaction runs over the full log *before* the marker search, so PEM blocks
+# that straddle the marker window are fully redacted (header outside the kept
+# window, body inside the kept window would otherwise leak plaintext key
+# material).
 read_session_summary() {
   local log="/tmp/dev-lead-session-output.txt"
   [[ -f "$log" ]] || return 0
-  redact_secrets < "$log" | tail -30 | sed '/^[[:space:]]*$/d' | tail -10
+  local redacted
+  redacted="$(redact_secrets < "$log")"
+  local mark
+  mark=$(printf '%s\n' "$redacted" | grep -nE \
+    '^(Bot:|PR: #|Addressed [0-9]+ threads?:|Human review threads addressed:|Issues addressed:)' \
+    | tail -1 | cut -d: -f1)
+  if [ -n "$mark" ]; then
+    printf '%s\n' "$redacted" | sed -n "${mark},\$p" | sed '/^[[:space:]]*$/d' | head -30
+  else
+    printf '%s\n' "$redacted" | tail -30 | sed '/^[[:space:]]*$/d' | tail -10
+  fi
 }
 
 # pick_fence: emit a tilde fence longer than any tilde run in $1 (min 4).
@@ -173,6 +193,70 @@ notify_coderabbit_resolve() {
     echo "::notice::coderabbitai[bot] latest review is CHANGES_REQUESTED — posting @coderabbitai resolve"
     gh pr comment "$PR_NUMBER" --repo "$REPO" --body "@coderabbitai resolve" 2>/dev/null || true
   fi
+}
+
+# resolve_actor_outdated_threads: best-effort safety net for the no-changes path.
+# Resolves any open review threads on this PR that are isOutdated AND authored by ACTOR
+# (matched against both the raw ACTOR string and ACTOR with any "[bot]" suffix stripped,
+# since GitHub Actions includes the suffix but GraphQL author.login does not).
+# Outdated threads reference code that no longer exists, so resolution is unambiguously
+# safe. Independent of whether the agent decided to resolve them.
+#
+# ACTOR is passed to jq via --arg (not shell interpolation) so a hostile actor value
+# can't escape the filter. reviewThreads(first:100) is the GraphQL max for a single
+# page — PRs with >100 review threads will still leave some outdated ones unresolved,
+# but full cursor pagination is overkill for a best-effort safety net.
+resolve_actor_outdated_threads() {
+  local intent="$1"
+  if [ -z "${ACTOR:-}" ]; then
+    echo "::notice::resolve_actor_outdated_threads: ACTOR not set for intent=${intent} — skipping"
+    return 0
+  fi
+  if [ "${DEV_LEAD_DRY_RUN:-false}" = "true" ]; then
+    echo "[dry-run] would resolve outdated review threads authored by ${ACTOR} on PR #${PR_NUMBER}"
+    return 0
+  fi
+
+  local actor_stripped="${ACTOR%\[bot\]}"
+  local ids
+  # gh api's --jq does not accept --arg, so pipe to jq directly to bind the actor
+  # values as data (not shell-interpolated into the filter source).
+  ids=$(gh api graphql -f query='
+    query($owner:String!,$repo:String!,$pr:Int!) {
+      repository(owner:$owner, name:$repo) {
+        pullRequest(number:$pr) {
+          reviewThreads(first:100) {
+            nodes { id isResolved isOutdated comments(first:1) { nodes { author { login } } } }
+          }
+        }
+      }
+    }' \
+    -F owner="${REPO%%/*}" -F repo="${REPO##*/}" -F pr="$PR_NUMBER" 2>/dev/null \
+    | jq -r --arg actor "$ACTOR" --arg actor_stripped "$actor_stripped" \
+        '.data.repository.pullRequest.reviewThreads.nodes
+          | map(select(.isResolved == false
+                       and .isOutdated == true
+                       and (.comments.nodes[0].author.login == $actor
+                            or .comments.nodes[0].author.login == $actor_stripped)))
+          | .[].id' 2>/dev/null || true)
+
+  if [ -z "$ids" ]; then
+    echo "::notice::no outdated unresolved threads from ${ACTOR} on PR #${PR_NUMBER}"
+    return 0
+  fi
+
+  local resolved_count=0
+  while IFS= read -r id; do
+    [ -z "$id" ] && continue
+    if gh api graphql -f query='mutation($id: ID!) { resolveReviewThread(input: {threadId: $id}) { thread { isResolved } } }' \
+        -f id="$id" >/dev/null 2>&1; then
+      resolved_count=$((resolved_count + 1))
+      echo "::notice::resolved outdated thread ${id} (author=${ACTOR})"
+    else
+      echo "::warning::failed to resolve outdated thread ${id}"
+    fi
+  done <<< "$ids"
+  echo "::notice::resolve_actor_outdated_threads: resolved ${resolved_count} outdated thread(s) on PR #${PR_NUMBER}"
 }
 
 # try_enable_auto_merge: enables auto-merge (squash) on the PR if reviewDecision is
@@ -423,6 +507,11 @@ case "$INTENT_TYPE" in
     # never matches threads from coderabbitai/chatgpt-codex/etc.
     export TRIGGERING_REVIEWER="${TRIGGERING_REVIEWER:-}"
     TRIGGERING_REVIEWER="${TRIGGERING_REVIEWER%\[bot\]}"
+    # resolve_actor_outdated_threads needs ACTOR (the raw GitHub Actions login,
+    # with the [bot] suffix preserved — the helper strips it for the GraphQL
+    # comparison). The workflow passes the actor via TRIGGERING_REVIEWER, so
+    # fall back to it when ACTOR is not set explicitly.
+    export ACTOR="${ACTOR:-${TRIGGERING_REVIEWER:-}}"
     OPEN_THREADS_JSON=$(gh api graphql -f query='
       query($owner:String!,$repo:String!,$pr:Int!) {
         repository(owner:$owner, name:$repo) {
@@ -445,6 +534,7 @@ case "$INTENT_TYPE" in
         post_reviews_terminal "fix-reviews" "applied" "Changes committed and pushed."
       else
         notify_coderabbit_resolve
+        resolve_actor_outdated_threads "fix-reviews"
         post_no_changes "fix-reviews"
       fi
       try_enable_auto_merge
@@ -463,6 +553,7 @@ case "$INTENT_TYPE" in
         post_reviews_terminal "fix-bot-comment" "applied" "Changes committed and pushed."
       else
         notify_coderabbit_resolve
+        resolve_actor_outdated_threads "fix-bot-comment"
         post_no_changes "fix-bot-comment"
       fi
       try_enable_auto_merge
@@ -488,7 +579,10 @@ case "$INTENT_TYPE" in
   review-changes)
     export PR_NUMBER="${PR_NUMBER:-}"
     export PR_URL="https://github.com/${REPO}/pull/${PR_NUMBER}"
-    export REPO PR_TITLE="${PR_TITLE:-}" PR_DESCRIPTION="${PR_DESCRIPTION:-}"
+    # ACTOR is exported so resolve_actor_outdated_threads can scrub outdated
+    # threads from the triggering reviewer in the no-changes branch. The
+    # workflow's review-changes step passes ACTOR via env.INTENT_ACTOR.
+    export REPO ACTOR="${ACTOR:-}" PR_TITLE="${PR_TITLE:-}" PR_DESCRIPTION="${PR_DESCRIPTION:-}"
     OPEN_THREADS_JSON=$(gh api graphql -f query='
       query($owner:String!,$repo:String!,$pr:Int!) {
         repository(owner:$owner, name:$repo) {
@@ -511,6 +605,7 @@ case "$INTENT_TYPE" in
         post_reviews_terminal "review-changes" "applied" "Changes committed and pushed."
       else
         notify_coderabbit_resolve
+        resolve_actor_outdated_threads "review-changes"
         post_reviews_terminal "review-changes" "no-changes" "No changes were needed for this PR."
       fi
       try_enable_auto_merge
