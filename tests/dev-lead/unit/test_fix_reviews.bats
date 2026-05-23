@@ -80,8 +80,8 @@ teardown() {
   [[ "$output" == *"[dry-run]"* ]]
 }
 
-@test "fix-reviews: INTENT_TYPE=human → runs human intent" {
-  export INTENT_TYPE="human"
+@test "fix-reviews: INTENT_TYPE=on-mention → runs on-mention intent" {
+  export INTENT_TYPE="on-mention"
   export DEV_LEAD_DRY_RUN="true"
   export USER_INSTRUCTION="Please fix the tests"
   export PR_DESCRIPTION="Test PR"
@@ -132,8 +132,8 @@ teardown() {
   [[ "$output" == *"[dry-run]"* ]]
 }
 
-@test "fix-reviews: human-pr in dry-run: outputs [dry-run] message" {
-  export INTENT_TYPE="human-pr"
+@test "fix-reviews: review-changes in dry-run: outputs [dry-run] message" {
+  export INTENT_TYPE="review-changes"
   export DEV_LEAD_DRY_RUN="true"
   export PR_TITLE="Test PR"
   export PR_DESCRIPTION="A test pull request"
@@ -571,8 +571,8 @@ GHEOF
   [[ "$output" == *"would enable auto-merge"* ]]
 }
 
-@test "fix-reviews: try_enable_auto_merge dry-run output present for human-pr" {
-  export INTENT_TYPE="human-pr"
+@test "fix-reviews: try_enable_auto_merge dry-run output present for review-changes" {
+  export INTENT_TYPE="review-changes"
   export DEV_LEAD_DRY_RUN="true"
   export PR_TITLE="Test PR"
   export PR_DESCRIPTION="A test pull request"

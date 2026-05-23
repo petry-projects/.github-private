@@ -984,7 +984,7 @@ commit_and_push() {
   case "$intent" in
     fix-reviews)     commit_msg="fix(reviews): address review comments [skip ci-relay]" ;;
     fix-bot-comment) commit_msg="fix(bot): address bot feedback [skip ci-relay]" ;;
-    human|human-pr)  commit_msg="chore: apply manual instructions [skip ci-relay]" ;;
+    on-mention|review-changes)  commit_msg="chore: apply manual instructions [skip ci-relay]" ;;
     rebase)          commit_msg="chore: resolve rebase conflicts [skip ci-relay]" ;;
     *)               commit_msg="chore: dev-lead update (${intent}) [skip ci-relay]" ;;
   esac
@@ -1242,6 +1242,7 @@ case "$INTENT_TYPE" in
     export PR_NUMBER PR_URL="https://github.com/${REPO}/pull/${PR_NUMBER}"
     export REPO HEAD_SHA
     export BASE_REF="${BASE_REF:-main}"
+    export TRIGGERING_REVIEWER="${TRIGGERING_REVIEWER:-}"
     OPEN_THREADS_JSON=$(gh api graphql -f query='
       query($owner:String!,$repo:String!,$pr:Int!) {
         repository(owner:$owner, name:$repo) {
@@ -1299,23 +1300,23 @@ case "$INTENT_TYPE" in
     fi
     exit "$rc"
     ;;
-  human)
+  on-mention)
     export PR_NUMBER="${PR_NUMBER:-}"
     export PR_URL="https://github.com/${REPO}/pull/${PR_NUMBER}"
     export REPO ACTOR="${ACTOR:-}" USER_INSTRUCTION="${USER_INSTRUCTION:-}" PR_DESCRIPTION="${PR_DESCRIPTION:-}"
     rc=0
-    build_and_run "human" || rc=$?
-    [ "$rc" -eq 2 ] && handle_rate_limit "human"
+    build_and_run "on-mention" || rc=$?
+    [ "$rc" -eq 2 ] && handle_rate_limit "on-mention"
     if [ "$rc" -eq 0 ]; then
-      if commit_and_push "human"; then
-        post_reviews_terminal "human" "applied" "Changes committed and pushed."
+      if commit_and_push "on-mention"; then
+        post_reviews_terminal "on-mention" "applied" "Changes committed and pushed."
       else
-        post_reviews_terminal "human" "no-changes"
+        post_reviews_terminal "on-mention" "no-changes" "Engine ran but made no changes."
       fi
     fi
     exit "$rc"
     ;;
-  human-pr)
+  review-changes)
     export PR_NUMBER="${PR_NUMBER:-}"
     export PR_URL="https://github.com/${REPO}/pull/${PR_NUMBER}"
     export REPO PR_TITLE="${PR_TITLE:-}" PR_DESCRIPTION="${PR_DESCRIPTION:-}"
