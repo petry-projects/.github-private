@@ -22,7 +22,7 @@ The workflow uses the **reusable workflow** (`workflow_call`) pattern — the sa
 ```
 repo-x (check_run: failure)
   └─ .github/workflows/ci-failure-analyst.yml   ← ~20-line stub (no logic)
-      └─ uses: petry-projects/.github-private/.github/workflows/ci-failure-analyst-reusable.yml@main
+      └─ uses: petry-projects/.github-private/.github/workflows/ci-failure-analyst-reusable.yml@69e9774818d45846f3a850ca13f31c7e9d6345cc # main
           ├─ resolves PR (non-fork only)
           ├─ idempotency check (<!-- ci-analyst sha=... -->)
           ├─ installs Claude Code
@@ -105,10 +105,11 @@ The caller stub declares these permissions (inherited by the reusable):
 
 | Permission | Reason |
 |---|---|
-| `pull-requests: write` | Post the diagnostic comment on the PR |
+| `pull-requests: write` | Read PR metadata |
+| `issues: write` | Post and read PR comments (GitHub uses the Issues comments API for PR comments) |
 | `actions: read` | Fetch workflow run logs |
 | `checks: read` | Read check run details |
-| `contents: read` | Required for `workflow_call` reusable workflows |
+| `contents: read` | Checkout access required by the reusable runner environment |
 
 The reusable workflow uses `github.token` (the caller's `GITHUB_TOKEN`) for all GitHub API calls. No additional tokens are needed.
 
