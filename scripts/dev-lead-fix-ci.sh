@@ -8,6 +8,7 @@ set -euo pipefail
 # Optional: MAX_FAIL_ATTEMPTS — consecutive engine failures before exhaustion (default: 2)
 
 source "$(dirname "$0")/engine.sh"
+source "$(dirname "$0")/lib/git-identity.sh"
 
 PR_NUMBER="${PR_NUMBER:-}"
 HEAD_SHA="${HEAD_SHA:-}"
@@ -254,6 +255,9 @@ main() {
     fi
 
     if $has_uncommitted; then
+      # GitHub-hosted runners have no default git identity; configure it
+      # before committing or commit fails with "fatal: empty ident name".
+      setup_git_identity
       git add -A
       git commit -m "fix(ci): auto-fix for $(echo "$CHECKS_JSON" | jq -r '.[0].name // "CI failure"') [skip ci-relay]"
     fi
