@@ -260,8 +260,17 @@ jobs:
       # ── enable-auto-merge ─────────────────────────────────────────────────
       # Triggered when a trusted bot approves a PR. Skips engine install and
       # pre-flight — just checks reviewDecision and enables auto-merge if APPROVED.
+      #
+      # Gate on the step output of `intent` (not env.INTENT_TYPE): a step's own
+      # env block is in scope when evaluating its `if:`, so the literal
+      # `INTENT_TYPE: enable-auto-merge` we set below would make env.INTENT_TYPE
+      # always equal 'enable-auto-merge' at gate-evaluation time, defeating the
+      # check. Step outputs are not shadowed. Also require a non-empty PR number
+      # to mirror the guard already present in dev-lead-reusable.yml.
       - name: Enable auto-merge on bot approval
-        if: env.INTENT_TYPE == 'enable-auto-merge'
+        if: >-
+          steps.intent.outputs.intent_type == 'enable-auto-merge'
+          && env.INTENT_PR_NUMBER != ''
         env:
           INTENT_TYPE: enable-auto-merge
           PR_NUMBER: ${{ env.INTENT_PR_NUMBER }}
