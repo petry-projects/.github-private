@@ -4,6 +4,7 @@ set -euo pipefail
 # Optional: PROMPTS_DIR (defaults to prompts/dev-lead relative to CWD)
 
 source "$(dirname "$0")/engine.sh"
+source "$(dirname "$0")/lib/git-identity.sh"
 
 ISSUE_NUMBER="${ISSUE_NUMBER:-}"
 REPO="${REPO:-${GITHUB_REPOSITORY:-}}"
@@ -15,18 +16,6 @@ check_existing_pr() {
   existing=$(gh api "repos/${REPO}/pulls?state=open" \
     --jq "[.[] | select(.head.ref | startswith(\"dev-lead/issue-${ISSUE_NUMBER}\"))] | length" 2>/dev/null || echo "0")
   [ "$existing" -gt 0 ]
-}
-
-setup_git_identity() {
-  local bot="${BOT_USER:-donpetry-bot}"
-  local bot_id
-  bot_id=$(gh api "users/${bot}" --jq '.id' 2>/dev/null || echo "")
-  if [ -n "$bot_id" ]; then
-    git config user.email "${bot_id}+${bot}@users.noreply.github.com"
-  else
-    git config user.email "${bot}@users.noreply.github.com"
-  fi
-  git config user.name "$bot"
 }
 
 main() {
