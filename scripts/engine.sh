@@ -10,6 +10,17 @@ set -euo pipefail
 #   ENGINE_* env vars for model names and labels
 #   DUCK_ENGINE / DUCK_MODEL for rubber-duck cross-engine review
 #
+# Rate-limit fallback (two layers, applied in order):
+#   1. In-Claude model fallback — per-tier CLAUDE_*_MODEL_CHAIN walks alternate
+#      Claude models (e.g. sonnet → opus) before declaring the provider
+#      rate-limited. Each Claude model has its own TPM/RPM bucket, so swapping
+#      models often recovers without leaving the provider. Does NOT help when
+#      the daily subscription cap is exhausted (cap is shared across all Claude
+#      models — see issue #206 for the proactive headroom guard).
+#   2. Cross-provider fallback — run_writer_with_fallback / review-batch.sh
+#      walk claude → gemini → copilot only after the in-engine chain is fully
+#      rate-limited (exit code 2 from the engine-layer call).
+#
 # Token logging (opt-in):
 #   Set TOKEN_LOG_FILE=<path> to capture per-call JSONL token records.
 #   TOKEN_WORKFLOW — workflow label for records (default: "unknown").
@@ -48,6 +59,17 @@ set_engine_config() {
       # Cross-engine rubber duck: use Copilot when Claude is primary
       DUCK_ENGINE="copilot"
       DUCK_MODEL="o4-mini"
+      # Per-tier in-Claude model fallback chains (comma-separated).
+      # On rate-limit, the chain is walked left-to-right before the cross-provider
+      # fallback (claude → gemini → copilot) kicks in. Per-model TPM/RPM buckets
+      # are independent, so swapping models within Claude often recovers without
+      # leaving the provider. (Daily subscription cap is shared — see issue #206.)
+      # Override per workflow via env to tune cost/capability trade-offs.
+      CLAUDE_TRIAGE_MODEL_CHAIN="${CLAUDE_TRIAGE_MODEL_CHAIN:-claude-haiku-4-5-20251001,claude-sonnet-4-6}"
+      CLAUDE_DEEP_MODEL_CHAIN="${CLAUDE_DEEP_MODEL_CHAIN:-claude-sonnet-4-6,claude-opus-4-7}"
+      CLAUDE_AUDIT_MODEL_CHAIN="${CLAUDE_AUDIT_MODEL_CHAIN:-claude-opus-4-7,claude-sonnet-4-6}"
+      CLAUDE_ACTION_MODEL_CHAIN="${CLAUDE_ACTION_MODEL_CHAIN:-claude-sonnet-4-6,claude-opus-4-7}"
+      CLAUDE_SINGLE_MODEL_CHAIN="${CLAUDE_SINGLE_MODEL_CHAIN:-claude-opus-4-7,claude-sonnet-4-6}"
       ;;
     gemini)
       ENGINE_TRIAGE_MODEL="gemini-2.0-flash"
@@ -60,6 +82,12 @@ set_engine_config() {
       # Cross-engine rubber duck: use Claude for diversity
       DUCK_ENGINE="claude"
       DUCK_MODEL="claude-sonnet-4-6"
+      # No in-engine chain for Gemini — only one production model in use today.
+      CLAUDE_TRIAGE_MODEL_CHAIN=""
+      CLAUDE_DEEP_MODEL_CHAIN=""
+      CLAUDE_AUDIT_MODEL_CHAIN=""
+      CLAUDE_ACTION_MODEL_CHAIN=""
+      CLAUDE_SINGLE_MODEL_CHAIN=""
       ;;
     copilot)
       ENGINE_TRIAGE_MODEL="o4-mini"
@@ -79,6 +107,12 @@ set_engine_config() {
       # Cross-engine rubber duck: use Gemini when Copilot is primary
       DUCK_ENGINE="gemini"
       DUCK_MODEL="gemini-2.0-flash"
+      # No in-engine chain for Copilot — single GitHub Models endpoint.
+      CLAUDE_TRIAGE_MODEL_CHAIN=""
+      CLAUDE_DEEP_MODEL_CHAIN=""
+      CLAUDE_AUDIT_MODEL_CHAIN=""
+      CLAUDE_ACTION_MODEL_CHAIN=""
+      CLAUDE_SINGLE_MODEL_CHAIN=""
       ;;
     *)
       echo "::error::Unknown REVIEW_ENGINE='$REVIEW_ENGINE' (expected: claude, gemini, or copilot)"
@@ -90,6 +124,9 @@ set_engine_config() {
   export ENGINE_ACTION_MODEL ENGINE_SINGLE_MODEL
   export ENGINE_LABEL ENGINE_SINGLE_LABEL
   export DUCK_ENGINE DUCK_MODEL COPILOT_API_MODEL
+  export CLAUDE_TRIAGE_MODEL_CHAIN CLAUDE_DEEP_MODEL_CHAIN
+  export CLAUDE_AUDIT_MODEL_CHAIN CLAUDE_ACTION_MODEL_CHAIN
+  export CLAUDE_SINGLE_MODEL_CHAIN
 }
 
 # Initial config
@@ -189,6 +226,104 @@ copilot_chat() {
     -s "$@" < /dev/null
 }
 
+# _claude_chain_invoke <chain_csv> <prompt_file> <timeout_sec> [extra_args...]
+# Walks a comma-separated list of Claude models, invoking `claude --print --model X`
+# with the given extra arguments. The first model whose run does NOT trigger
+# is_rate_limited() wins: its captured stdout is written to fd1, stderr to fd2,
+# and its exit code is returned. Rate-limited attempts are discarded and the
+# next model is tried. If every model in the chain rate-limits, returns 2 and
+# writes the parsed reset time to /tmp/dev-lead-rate-limit-reset.
+#
+# Empty chain → no-op return 0 (callers should fall back to the single-model
+# legacy path; this is only used when CLAUDE_*_MODEL_CHAIN is set).
+#
+# Sets _CLAUDE_CHAIN_MODEL_USED to the model that produced the final output
+# (success or last attempt) so callers can log which model actually ran.
+_claude_chain_invoke() {
+  local chain_csv="$1" prompt_file="$2" timeout_sec="$3"
+  shift 3
+  local extra_args=("$@")
+
+  if [ -z "$chain_csv" ]; then
+    echo "::error::_claude_chain_invoke called with empty chain" >&2
+    return 1
+  fi
+
+  local saved_ifs="$IFS"
+  IFS=',' read -ra models <<< "$chain_csv"
+  IFS="$saved_ifs"
+
+  local stdout_tmp="" stderr_tmp=""
+  local final_stdout="" final_stderr="" final_model="" final_rc=2
+  local rc=0 attempted=0 all_rl=1
+  local model
+
+  for model in "${models[@]}"; do
+    # Trim whitespace
+    model="${model#"${model%%[![:space:]]*}"}"
+    model="${model%"${model##*[![:space:]]}"}"
+    [ -z "$model" ] && continue
+
+    attempted=$((attempted + 1))
+    stdout_tmp="$(mktemp 2>/dev/null)" || stdout_tmp=""
+    stderr_tmp="$(mktemp 2>/dev/null)" || stderr_tmp=""
+    rc=0
+
+    if [ -n "$stdout_tmp" ] && [ -n "$stderr_tmp" ]; then
+      timeout "$timeout_sec" claude --print --model "$model" "${extra_args[@]}" \
+        < "$prompt_file" > "$stdout_tmp" 2> "$stderr_tmp" || rc=$?
+    else
+      # mktemp failure — degrade to direct stdout/stderr passthrough, no chain
+      timeout "$timeout_sec" claude --print --model "$model" "${extra_args[@]}" \
+        < "$prompt_file" || rc=$?
+      _CLAUDE_CHAIN_MODEL_USED="$model"
+      export _CLAUDE_CHAIN_MODEL_USED
+      return "$rc"
+    fi
+
+    # Drop any previous final-attempt buffers (we keep only the latest)
+    [ -n "$final_stdout" ] && rm -f "$final_stdout"
+    [ -n "$final_stderr" ] && rm -f "$final_stderr"
+    final_stdout="$stdout_tmp"
+    final_stderr="$stderr_tmp"
+    final_model="$model"
+
+    if [ "$rc" -eq 0 ]; then
+      final_rc=0
+      all_rl=0
+      break
+    fi
+    if ! is_rate_limited "$(cat "$stdout_tmp" "$stderr_tmp" 2>/dev/null)"; then
+      # Non-rate-limit failure — propagate immediately, do not try next model.
+      final_rc="$rc"
+      all_rl=0
+      break
+    fi
+    # Rate-limited; record the message for diagnosis and try the next model.
+    echo "::warning::[claude] model $model rate-limited (rc=$rc) — trying next in chain" >&2
+  done
+
+  # If every attempt was rate-limited, parse the last reset time and return 2.
+  if [ "$all_rl" -eq 1 ] && [ "$attempted" -gt 0 ]; then
+    parse_reset_time "$(cat "${final_stdout:-/dev/null}" "${final_stderr:-/dev/null}" 2>/dev/null)"
+    final_rc=2
+  fi
+
+  # Emit the final attempt's captured output to the caller.
+  if [ -n "$final_stdout" ]; then
+    cat "$final_stdout"
+    rm -f "$final_stdout"
+  fi
+  if [ -n "$final_stderr" ]; then
+    cat "$final_stderr" >&2
+    rm -f "$final_stderr"
+  fi
+
+  _CLAUDE_CHAIN_MODEL_USED="$final_model"
+  export _CLAUDE_CHAIN_MODEL_USED
+  return "$final_rc"
+}
+
 # _record_engine_tokens <tier> <engine> <model> <prompt_file> [output_file]
 # Writes one token record to TOKEN_LOG_FILE using estimate_tokens_from_file.
 # No-op when TOKEN_LOG_FILE is unset or the token-metrics library is not loaded.
@@ -229,16 +364,15 @@ run_triage() {
     [ -n "$_tok_tmp" ] && : > "$_tok_tmp"
     case "$REVIEW_ENGINE" in
       claude)
+        local _triage_chain="${CLAUDE_TRIAGE_MODEL_CHAIN:-$ENGINE_TRIAGE_MODEL}"
         if [ -n "$_tok_tmp" ]; then
-          timeout "$TRIAGE_TIMEOUT_SEC" claude --print \
-            --model "$ENGINE_TRIAGE_MODEL" \
+          _claude_chain_invoke "$_triage_chain" "$prompt_file" "$TRIAGE_TIMEOUT_SEC" \
             --disallowed-tools "Bash,Read,Write,Edit,Grep,Glob,WebFetch,WebSearch,Task,TodoWrite,NotebookEdit" \
-            < "$prompt_file" | tee "$_tok_tmp" || rc=${PIPESTATUS[0]}
+            | tee "$_tok_tmp" || rc=${PIPESTATUS[0]}
         else
-          timeout "$TRIAGE_TIMEOUT_SEC" claude --print \
-            --model "$ENGINE_TRIAGE_MODEL" \
+          _claude_chain_invoke "$_triage_chain" "$prompt_file" "$TRIAGE_TIMEOUT_SEC" \
             --disallowed-tools "Bash,Read,Write,Edit,Grep,Glob,WebFetch,WebSearch,Task,TodoWrite,NotebookEdit" \
-            < "$prompt_file" || rc=$?
+            || rc=$?
         fi
         ;;
       gemini)
@@ -266,7 +400,8 @@ run_triage() {
         ;;
     esac
     if [ "$rc" -eq 0 ]; then
-      _record_engine_tokens "triage" "$REVIEW_ENGINE" "$ENGINE_TRIAGE_MODEL" "$prompt_file" "$_tok_tmp"
+      local _triage_used="${_CLAUDE_CHAIN_MODEL_USED:-$ENGINE_TRIAGE_MODEL}"
+      _record_engine_tokens "triage" "$REVIEW_ENGINE" "$_triage_used" "$prompt_file" "$_tok_tmp"
       [ -n "$_tok_tmp" ] && rm -f "$_tok_tmp"
       return 0
     fi
@@ -303,18 +438,24 @@ run_agentic() {
   fi
   case "$REVIEW_ENGINE" in
     claude)
+      local _agentic_chain
+      case "$tier" in
+        deep)   _agentic_chain="${CLAUDE_DEEP_MODEL_CHAIN:-$model}" ;;
+        audit)  _agentic_chain="${CLAUDE_AUDIT_MODEL_CHAIN:-$model}" ;;
+        action) _agentic_chain="${CLAUDE_ACTION_MODEL_CHAIN:-$model}" ;;
+        single) _agentic_chain="${CLAUDE_SINGLE_MODEL_CHAIN:-$model}" ;;
+        *)      _agentic_chain="$model" ;;
+      esac
       if [ -n "$_tok_tmp" ]; then
-        timeout "$DEEP_TIMEOUT_SEC" claude --print \
-          --model "$model" \
+        _claude_chain_invoke "$_agentic_chain" "$prompt_file" "$DEEP_TIMEOUT_SEC" \
           --permission-mode acceptEdits \
           --allowed-tools "Bash,Read,Grep,Glob" \
-          < "$prompt_file" | tee "$_tok_tmp" || rc=${PIPESTATUS[0]}
+          | tee "$_tok_tmp" || rc=${PIPESTATUS[0]}
       else
-        timeout "$DEEP_TIMEOUT_SEC" claude --print \
-          --model "$model" \
+        _claude_chain_invoke "$_agentic_chain" "$prompt_file" "$DEEP_TIMEOUT_SEC" \
           --permission-mode acceptEdits \
           --allowed-tools "Bash,Read,Grep,Glob" \
-          < "$prompt_file" || rc=$?
+          || rc=$?
       fi
       ;;
     gemini)
@@ -351,7 +492,11 @@ run_agentic() {
       ;;
   esac
   if [ "$rc" -eq 0 ]; then
-    _record_engine_tokens "$tier" "$REVIEW_ENGINE" "$model" "$prompt_file" "$_tok_tmp"
+    local _agentic_used="$model"
+    if [ "$REVIEW_ENGINE" = "claude" ] && [ -n "${_CLAUDE_CHAIN_MODEL_USED:-}" ]; then
+      _agentic_used="$_CLAUDE_CHAIN_MODEL_USED"
+    fi
+    _record_engine_tokens "$tier" "$REVIEW_ENGINE" "$_agentic_used" "$prompt_file" "$_tok_tmp"
   fi
   [ -n "$_tok_tmp" ] && rm -f "$_tok_tmp"
   return "$rc"
@@ -531,18 +676,17 @@ run_writer() {
 
   case "$REVIEW_ENGINE" in
     claude)
+      local _writer_chain="${CLAUDE_ACTION_MODEL_CHAIN:-$model}"
       if [ -n "$_tmp" ]; then
-        timeout "$ACTION_TIMEOUT_SEC" claude --print \
-          --model "$model" \
+        _claude_chain_invoke "$_writer_chain" "$prompt_file" "$ACTION_TIMEOUT_SEC" \
           --permission-mode acceptEdits \
           --allowed-tools "Bash,Read,Write,Edit,Grep,Glob,WebFetch" \
-          < "$prompt_file" 2>&1 | tee "$_tmp" || rc=${PIPESTATUS[0]}
+          2>&1 | tee "$_tmp" || rc=${PIPESTATUS[0]}
       else
-        timeout "$ACTION_TIMEOUT_SEC" claude --print \
-          --model "$model" \
+        _claude_chain_invoke "$_writer_chain" "$prompt_file" "$ACTION_TIMEOUT_SEC" \
           --permission-mode acceptEdits \
           --allowed-tools "Bash,Read,Write,Edit,Grep,Glob,WebFetch" \
-          < "$prompt_file" || rc=$?
+          || rc=$?
       fi
       ;;
     gemini)
@@ -577,7 +721,11 @@ run_writer() {
     return 2
   fi
   if [ "$rc" -eq 0 ]; then
-    _record_engine_tokens "writer" "$REVIEW_ENGINE" "$model" "$prompt_file" "$_tmp"
+    local _writer_used="$model"
+    if [ "$REVIEW_ENGINE" = "claude" ] && [ -n "${_CLAUDE_CHAIN_MODEL_USED:-}" ]; then
+      _writer_used="$_CLAUDE_CHAIN_MODEL_USED"
+    fi
+    _record_engine_tokens "writer" "$REVIEW_ENGINE" "$_writer_used" "$prompt_file" "$_tmp"
   fi
   if [ -n "$_tmp" ]; then
     # Redact once: write secret-scrubbed content to the persisted path, then

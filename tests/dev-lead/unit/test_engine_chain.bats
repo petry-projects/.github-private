@@ -1,0 +1,194 @@
+#!/usr/bin/env bats
+# Unit tests for engine.sh — in-Claude model-tier fallback chain.
+#
+# Verifies that when the first model in a CLAUDE_*_MODEL_CHAIN hits a
+# rate-limit, the next model is tried before the call gives up with exit 2
+# (which triggers the outer cross-provider fallback).
+
+SCRIPT_DIR="$(cd "$(dirname "$BATS_TEST_FILENAME")/../../.." && pwd)"
+ENGINE_SCRIPT="$SCRIPT_DIR/scripts/engine.sh"
+STUB_ENGINES_DIR="$SCRIPT_DIR/tests/dev-lead/fixtures/engines"
+
+setup() {
+  export GITHUB_ENV="$(mktemp)"
+  export GITHUB_OUTPUT="$(mktemp)"
+
+  STUB_BIN_DIR="$(mktemp -d)"
+  cp "$STUB_ENGINES_DIR/stub-claude" "$STUB_BIN_DIR/claude"
+  cp "$STUB_ENGINES_DIR/stub-gemini" "$STUB_BIN_DIR/gemini"
+  chmod +x "$STUB_BIN_DIR/claude" "$STUB_BIN_DIR/gemini"
+  export PATH="$STUB_BIN_DIR:$PATH"
+  export STUB_BIN_DIR
+
+  TEST_PROMPT="$(mktemp)"
+  echo "test prompt content" > "$TEST_PROMPT"
+  export TEST_PROMPT
+
+  MODEL_RECORD="$(mktemp)"
+  export STUB_ENGINE_RECORD_MODELS="$MODEL_RECORD"
+
+  export DEV_LEAD_DRY_RUN="false"
+}
+
+teardown() {
+  rm -f "$GITHUB_ENV" "$GITHUB_OUTPUT" "$TEST_PROMPT" "$MODEL_RECORD"
+  rm -rf "$STUB_BIN_DIR"
+  unset STUB_ENGINE_EXIT_BY_MODEL STUB_ENGINE_RESPONSE_BY_MODEL
+  unset STUB_ENGINE_RECORD_MODELS STUB_ENGINE_EXIT STUB_ENGINE_RESPONSE
+  unset CLAUDE_ACTION_MODEL_CHAIN CLAUDE_DEEP_MODEL_CHAIN
+  unset CLAUDE_TRIAGE_MODEL_CHAIN CLAUDE_AUDIT_MODEL_CHAIN
+}
+
+_source_engine() {
+  local engine="${1:-claude}"
+  export REVIEW_ENGINE="$engine"
+  source "$ENGINE_SCRIPT" 2>/dev/null || true
+}
+
+# ── _claude_chain_invoke unit tests ───────────────────────────────────────────
+
+@test "chain: first model succeeds → no fallback attempted" {
+  _source_engine "claude"
+  export STUB_ENGINE_EXIT=0
+
+  run _claude_chain_invoke "claude-sonnet-4-6,claude-opus-4-7" \
+    "$TEST_PROMPT" 30 --allowed-tools Read
+
+  [ "$status" -eq 0 ]
+  # Only one model invocation recorded
+  [ "$(wc -l < "$MODEL_RECORD")" -eq 1 ]
+  grep -q "claude-sonnet-4-6" "$MODEL_RECORD"
+  ! grep -q "claude-opus-4-7" "$MODEL_RECORD"
+}
+
+@test "chain: first model rate-limited → falls through to second" {
+  _source_engine "claude"
+  # sonnet returns a rate-limit message with non-zero exit; opus succeeds.
+  export STUB_ENGINE_EXIT_BY_MODEL="claude-sonnet-4-6=1|claude-opus-4-7=0"
+  export STUB_ENGINE_RESPONSE_BY_MODEL="claude-sonnet-4-6=You've hit your limit · resets 5pm (UTC)|claude-opus-4-7=opus response"
+
+  run _claude_chain_invoke "claude-sonnet-4-6,claude-opus-4-7" \
+    "$TEST_PROMPT" 30 --allowed-tools Read
+
+  [ "$status" -eq 0 ]
+  # Both models were invoked
+  grep -q "claude-sonnet-4-6" "$MODEL_RECORD"
+  grep -q "claude-opus-4-7" "$MODEL_RECORD"
+  # Final output is the opus response, not the rate-limit text
+  [[ "$output" == *"opus response"* ]]
+  [[ "$output" != *"hit your limit"* ]]
+}
+
+@test "chain: all models rate-limited → returns exit 2" {
+  _source_engine "claude"
+  export STUB_ENGINE_EXIT_BY_MODEL="claude-sonnet-4-6=1|claude-opus-4-7=1"
+  export STUB_ENGINE_RESPONSE_BY_MODEL="claude-sonnet-4-6=429 too many requests|claude-opus-4-7=429 too many requests"
+
+  run _claude_chain_invoke "claude-sonnet-4-6,claude-opus-4-7" \
+    "$TEST_PROMPT" 30 --allowed-tools Read
+
+  [ "$status" -eq 2 ]
+  grep -q "claude-sonnet-4-6" "$MODEL_RECORD"
+  grep -q "claude-opus-4-7" "$MODEL_RECORD"
+}
+
+@test "chain: non-rate-limit failure → propagates immediately without trying next" {
+  _source_engine "claude"
+  # sonnet fails with a non-rate-limit error; chain must NOT advance
+  export STUB_ENGINE_EXIT_BY_MODEL="claude-sonnet-4-6=1|claude-opus-4-7=0"
+  export STUB_ENGINE_RESPONSE_BY_MODEL="claude-sonnet-4-6=unexpected internal error|claude-opus-4-7=should not run"
+
+  run _claude_chain_invoke "claude-sonnet-4-6,claude-opus-4-7" \
+    "$TEST_PROMPT" 30 --allowed-tools Read
+
+  [ "$status" -eq 1 ]
+  grep -q "claude-sonnet-4-6" "$MODEL_RECORD"
+  ! grep -q "claude-opus-4-7" "$MODEL_RECORD"
+}
+
+@test "chain: whitespace and empty entries are tolerated" {
+  _source_engine "claude"
+  export STUB_ENGINE_EXIT_BY_MODEL="claude-sonnet-4-6=1|claude-opus-4-7=0"
+  export STUB_ENGINE_RESPONSE_BY_MODEL="claude-sonnet-4-6=rate limit exceeded|claude-opus-4-7=ok"
+
+  run _claude_chain_invoke "  claude-sonnet-4-6 , , claude-opus-4-7 " \
+    "$TEST_PROMPT" 30 --allowed-tools Read
+
+  [ "$status" -eq 0 ]
+  [ "$(wc -l < "$MODEL_RECORD")" -eq 2 ]
+}
+
+# ── End-to-end: writer uses the chain via CLAUDE_ACTION_MODEL_CHAIN ────────────
+
+@test "writer: sonnet rate-limited → opus tried via CLAUDE_ACTION_MODEL_CHAIN" {
+  _source_engine "claude"
+  # Defaults from set_engine_config: CLAUDE_ACTION_MODEL_CHAIN=sonnet,opus
+  export STUB_ENGINE_EXIT_BY_MODEL="claude-sonnet-4-6=1|claude-opus-4-7=0"
+  export STUB_ENGINE_RESPONSE_BY_MODEL="claude-sonnet-4-6=too many requests (429)|claude-opus-4-7=opus did the work"
+
+  run run_writer "$TEST_PROMPT"
+
+  [ "$status" -eq 0 ]
+  grep -q "claude-sonnet-4-6" "$MODEL_RECORD"
+  grep -q "claude-opus-4-7" "$MODEL_RECORD"
+}
+
+@test "writer: sonnet rate-limited and opus rate-limited → exit 2 (cross-provider fallback signal)" {
+  _source_engine "claude"
+  export STUB_ENGINE_EXIT_BY_MODEL="claude-sonnet-4-6=1|claude-opus-4-7=1"
+  export STUB_ENGINE_RESPONSE_BY_MODEL="claude-sonnet-4-6=quota exceeded|claude-opus-4-7=quota exceeded"
+
+  run run_writer "$TEST_PROMPT"
+
+  [ "$status" -eq 2 ]
+}
+
+@test "writer: custom chain via env override is honored" {
+  _source_engine "claude"
+  # Override the chain so opus is tried FIRST
+  export CLAUDE_ACTION_MODEL_CHAIN="claude-opus-4-7,claude-sonnet-4-6"
+  export STUB_ENGINE_EXIT=0
+
+  run run_writer "$TEST_PROMPT"
+
+  [ "$status" -eq 0 ]
+  head -1 "$MODEL_RECORD" | grep -q "claude-opus-4-7"
+}
+
+# ── End-to-end: agentic respects per-tier chain selection ────────────────────
+
+@test "agentic: deep tier sonnet rate-limited → opus tried (CLAUDE_DEEP_MODEL_CHAIN)" {
+  _source_engine "claude"
+  export STUB_ENGINE_EXIT_BY_MODEL="claude-sonnet-4-6=1|claude-opus-4-7=0"
+  export STUB_ENGINE_RESPONSE_BY_MODEL="claude-sonnet-4-6=service overload|claude-opus-4-7=deep result"
+
+  run run_agentic "$TEST_PROMPT" "claude-sonnet-4-6" "deep"
+
+  [ "$status" -eq 0 ]
+  grep -q "claude-opus-4-7" "$MODEL_RECORD"
+}
+
+@test "agentic: audit tier opus rate-limited → sonnet tried (CLAUDE_AUDIT_MODEL_CHAIN)" {
+  _source_engine "claude"
+  # Default CLAUDE_AUDIT_MODEL_CHAIN = opus,sonnet — opus is first
+  export STUB_ENGINE_EXIT_BY_MODEL="claude-opus-4-7=1|claude-sonnet-4-6=0"
+  export STUB_ENGINE_RESPONSE_BY_MODEL="claude-opus-4-7=usage limit reached|claude-sonnet-4-6=audit ok"
+
+  run run_agentic "$TEST_PROMPT" "claude-opus-4-7" "audit"
+
+  [ "$status" -eq 0 ]
+  grep -q "claude-sonnet-4-6" "$MODEL_RECORD"
+}
+
+# ── Gemini/Copilot unchanged: no chain applied ────────────────────────────────
+
+@test "gemini: no in-engine chain; single-model behavior unchanged" {
+  _source_engine "gemini"
+  export STUB_ENGINE_EXIT=0
+
+  run run_writer "$TEST_PROMPT"
+
+  [ "$status" -eq 0 ]
+  # No claude model recorded (we ran gemini)
+  [ ! -s "$MODEL_RECORD" ]
+}
