@@ -277,7 +277,7 @@ _claude_chain_invoke() {
   IFS="$saved_ifs"
 
   local stdout_tmp="" stderr_tmp=""
-  local final_stdout="" final_stderr="" final_model="" final_rc=2
+  local final_stdout="" final_stderr="" final_model="" final_rc=0
   local rc=0 attempted=0 all_rl=1
   local model
 
@@ -329,12 +329,23 @@ _claude_chain_invoke() {
       all_rl=0
       break
     fi
-    # Rate-limited; record the message for diagnosis and try the next model.
-    echo "::warning::[claude] model $model rate-limited (rc=$rc) — trying next in chain" >&2
+    # Rate-limited; record diagnosis and try the next model.
+    # Phrasing intentionally avoids "rate-limit"/"429"/"quota" etc. — those
+    # tokens match is_rate_limited()/_rate_limit_pattern, and downstream
+    # callers (e.g. review-one-pr.sh) that scan our stderr would then
+    # misclassify a successful chain fallback as a provider rate-limit.
+    echo "::warning::[claude] model $model throttled (rc=$rc) — trying next in chain" >&2
   done
 
+  # Empty/whitespace-only chain → configuration error, not a rate-limit. Returning
+  # 2 here would trigger the cross-provider fallback as if quotas were exhausted.
+  if [ "$attempted" -eq 0 ]; then
+    echo "::error::_claude_chain_invoke: chain '$chain_csv' had no valid model entries" >&2
+    return 1
+  fi
+
   # If every attempt was rate-limited, parse the last reset time and return 2.
-  if [ "$all_rl" -eq 1 ] && [ "$attempted" -gt 0 ]; then
+  if [ "$all_rl" -eq 1 ]; then
     parse_reset_time_files "$final_stdout" "$final_stderr"
     final_rc=2
   fi
@@ -468,14 +479,28 @@ run_agentic() {
   fi
   case "$REVIEW_ENGINE" in
     claude)
-      local _agentic_chain
+      # Resolve the in-Claude model chain for this tier. The chain is the
+      # cascade tried on rate-limit (e.g. sonnet → opus). If the caller
+      # passed a model that does NOT match the tier's default ENGINE_*_MODEL,
+      # treat it as an explicit pin: honor it as a single-element chain so
+      # callers can still force a specific model when they need to (the
+      # documented `[model]` parameter on this function). The chain is only
+      # applied when the caller used the default model for the tier.
+      local _agentic_chain _tier_default=""
       case "$tier" in
-        deep)   _agentic_chain="${CLAUDE_DEEP_MODEL_CHAIN:-$model}" ;;
-        audit)  _agentic_chain="${CLAUDE_AUDIT_MODEL_CHAIN:-$model}" ;;
-        action) _agentic_chain="${CLAUDE_ACTION_MODEL_CHAIN:-$model}" ;;
-        single) _agentic_chain="${CLAUDE_SINGLE_MODEL_CHAIN:-$model}" ;;
+        deep)   _tier_default="${ENGINE_DEEP_MODEL:-}"
+                _agentic_chain="${CLAUDE_DEEP_MODEL_CHAIN:-$model}"   ;;
+        audit)  _tier_default="${ENGINE_AUDIT_MODEL:-}"
+                _agentic_chain="${CLAUDE_AUDIT_MODEL_CHAIN:-$model}"  ;;
+        action) _tier_default="${ENGINE_ACTION_MODEL:-}"
+                _agentic_chain="${CLAUDE_ACTION_MODEL_CHAIN:-$model}" ;;
+        single) _tier_default="${ENGINE_SINGLE_MODEL:-}"
+                _agentic_chain="${CLAUDE_SINGLE_MODEL_CHAIN:-$model}" ;;
         *)      _agentic_chain="$model" ;;
       esac
+      if [ -n "$_tier_default" ] && [ "$model" != "$_tier_default" ]; then
+        _agentic_chain="$model"
+      fi
       if [ -n "$_tok_tmp" ]; then
         _claude_chain_invoke "$_agentic_chain" "$prompt_file" "$DEEP_TIMEOUT_SEC" \
           --permission-mode acceptEdits \
@@ -741,7 +766,13 @@ run_writer() {
 
   case "$REVIEW_ENGINE" in
     claude)
+      # See run_agentic — honor caller's explicit model pin when it differs
+      # from the tier default. Chain only applies when the caller used the
+      # default action model for this engine.
       local _writer_chain="${CLAUDE_ACTION_MODEL_CHAIN:-$model}"
+      if [ -n "${ENGINE_ACTION_MODEL:-}" ] && [ "$model" != "$ENGINE_ACTION_MODEL" ]; then
+        _writer_chain="$model"
+      fi
       if [ -n "$_tmp" ]; then
         _claude_chain_invoke "$_writer_chain" "$prompt_file" "$ACTION_TIMEOUT_SEC" \
           --permission-mode acceptEdits \

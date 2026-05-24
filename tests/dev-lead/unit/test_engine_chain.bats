@@ -246,3 +246,80 @@ _source_engine() {
   [ -f /tmp/dev-lead-rate-limit-reset ]
   [ ! -s /tmp/dev-lead-rate-limit-reset ]
 }
+
+# ── Codex review findings: warning phrasing + config errors + model pin ─────
+
+@test "chain: throttled warning phrase does NOT match is_rate_limited" {
+  # The warning must not contain any token that _rate_limit_pattern matches —
+  # otherwise downstream callers that scan our stderr (e.g. review-one-pr.sh
+  # triage) would misclassify a successful chain fallback as a rate-limit.
+  _source_engine "claude"
+  run is_rate_limited \
+    "::warning::[claude] model claude-sonnet-4-6 throttled (rc=1) — trying next in chain"
+  [ "$status" -ne 0 ]
+}
+
+@test "chain: writer non-RL failure after RL attempt propagates correctly (not remapped to 2)" {
+  # Model A (sonnet) rate-limited → warning emitted → 2>&1 merges into _tmp.
+  # Model B (opus) fails with a non-rate-limit error. run_writer must return
+  # opus's exit code, not 2, even though _tmp contains the throttled warning.
+  _source_engine "claude"
+  export STUB_ENGINE_EXIT_BY_MODEL="claude-sonnet-4-6=1|claude-opus-4-7=1"
+  export STUB_ENGINE_RESPONSE_BY_MODEL="claude-sonnet-4-6=rate limit exceeded|claude-opus-4-7=segfault in agent runtime"
+
+  run run_writer "$TEST_PROMPT"
+
+  # opus's non-RL failure → exit 1 (NOT 2). If the throttled-warning text
+  # matched is_rate_limited, this would incorrectly return 2.
+  [ "$status" -eq 1 ]
+}
+
+@test "chain: empty/whitespace-only chain → config error (rc=1), not rate-limited (rc=2)" {
+  _source_engine "claude"
+  run _claude_chain_invoke "  ,  ,  " "$TEST_PROMPT" 30 --allowed-tools Read
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"no valid model entries"* ]] || [[ "$stderr" == *"no valid model entries"* ]]
+}
+
+@test "agentic: explicit model arg differing from tier default is honored (no chain expansion)" {
+  _source_engine "claude"
+  # Caller pins haiku for deep tier (overriding default sonnet → opus chain).
+  # Chain expansion would record sonnet+opus; pinning must record ONLY haiku.
+  export STUB_ENGINE_EXIT=0
+
+  run run_agentic "$TEST_PROMPT" "claude-haiku-4-5-20251001" "deep"
+
+  [ "$status" -eq 0 ]
+  # Only one invocation, and it's the pinned model — not sonnet or opus.
+  [ "$(wc -l < "$MODEL_RECORD")" -eq 1 ]
+  grep -q "claude-haiku-4-5-20251001" "$MODEL_RECORD"
+  ! grep -q "claude-sonnet-4-6" "$MODEL_RECORD"
+  ! grep -q "claude-opus-4-7" "$MODEL_RECORD"
+}
+
+@test "writer: explicit model arg differing from action default is honored (no chain expansion)" {
+  _source_engine "claude"
+  export STUB_ENGINE_EXIT=0
+
+  run run_writer "$TEST_PROMPT" "claude-haiku-4-5-20251001"
+
+  [ "$status" -eq 0 ]
+  [ "$(wc -l < "$MODEL_RECORD")" -eq 1 ]
+  grep -q "claude-haiku-4-5-20251001" "$MODEL_RECORD"
+  ! grep -q "claude-sonnet-4-6" "$MODEL_RECORD"
+  ! grep -q "claude-opus-4-7" "$MODEL_RECORD"
+}
+
+@test "agentic: passing tier default model still expands to full chain on rate-limit" {
+  # Regression guard for the pin-check above: when caller passes the tier
+  # default (sonnet), chain expansion still works (sonnet → opus fallback).
+  _source_engine "claude"
+  export STUB_ENGINE_EXIT_BY_MODEL="claude-sonnet-4-6=1|claude-opus-4-7=0"
+  export STUB_ENGINE_RESPONSE_BY_MODEL="claude-sonnet-4-6=429 too many|claude-opus-4-7=ok"
+
+  run run_agentic "$TEST_PROMPT" "claude-sonnet-4-6" "deep"
+
+  [ "$status" -eq 0 ]
+  grep -q "claude-sonnet-4-6" "$MODEL_RECORD"
+  grep -q "claude-opus-4-7" "$MODEL_RECORD"
+}
