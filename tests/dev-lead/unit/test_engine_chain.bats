@@ -192,3 +192,57 @@ _source_engine() {
   # No claude model recorded (we ran gemini)
   [ ! -s "$MODEL_RECORD" ]
 }
+
+# ── File-based rate-limit + reset-time helpers ─────────────────────────────
+
+@test "is_rate_limited_files: detects rate-limit text across multiple files" {
+  _source_engine "claude"
+  local f1 f2
+  f1="$(mktemp)"; f2="$(mktemp)"
+  echo "all good" > "$f1"
+  echo "Error 429: too many requests" > "$f2"
+  run is_rate_limited_files "$f1" "$f2"
+  rm -f "$f1" "$f2"
+  [ "$status" -eq 0 ]
+}
+
+@test "is_rate_limited_files: returns 1 when nothing matches" {
+  _source_engine "claude"
+  local f1
+  f1="$(mktemp)"
+  echo "completed normally" > "$f1"
+  run is_rate_limited_files "$f1"
+  rm -f "$f1"
+  [ "$status" -ne 0 ]
+}
+
+@test "is_rate_limited_files: tolerates empty/missing paths" {
+  _source_engine "claude"
+  # No files → no match → exit 1
+  run is_rate_limited_files "" "/nonexistent/path/xyz"
+  [ "$status" -ne 0 ]
+}
+
+@test "parse_reset_time_files: writes ISO timestamp from rate-limit message in file" {
+  _source_engine "claude"
+  local f
+  f="$(mktemp)"
+  echo "You've hit your limit · resets 11:20pm (UTC)" > "$f"
+  rm -f /tmp/dev-lead-rate-limit-reset
+  parse_reset_time_files "$f"
+  rm -f "$f"
+  [ -f /tmp/dev-lead-rate-limit-reset ]
+  # Result should look like an ISO-8601 UTC timestamp ending in Z
+  grep -qE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$' /tmp/dev-lead-rate-limit-reset
+}
+
+@test "parse_reset_time_files: writes empty when no reset time present" {
+  _source_engine "claude"
+  local f
+  f="$(mktemp)"
+  echo "ordinary failure with no reset hint" > "$f"
+  parse_reset_time_files "$f"
+  rm -f "$f"
+  [ -f /tmp/dev-lead-rate-limit-reset ]
+  [ ! -s /tmp/dev-lead-rate-limit-reset ]
+}

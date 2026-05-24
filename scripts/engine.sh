@@ -141,8 +141,12 @@ _TOKEN_LIB="$(dirname "${BASH_SOURCE[0]}")/lib/token-metrics.sh"
 unset _TOKEN_LIB
 
 # _rate_limit_pattern
-# Emits the (ERE) pattern that classifies a provider usage/rate-limit block.
-# Shared by is_rate_limited and is_rate_limited_files so both stay in sync.
+# Single source of truth for the rate-limit regex used by both is_rate_limited
+# (text) and is_rate_limited_files (paths). Patterns intentionally excluded to
+# prevent false positives:
+#   - bare "exhausted" (too broad: matches "retry attempts exhausted", OS errors, etc.)
+#     Retained as "token.*exhaust" / "out of.*token" for the specific token-depletion case.
+#   - CLI syntax errors ("Invalid command format", "unknown flag", etc.) — see is_cli_error.
 _rate_limit_pattern() {
   local _pat
   _pat="hit your limit|rate[ -]?limit|resets [0-9]+(am|pm)|reached.*limit" # soft cap / throttle
@@ -155,7 +159,7 @@ _rate_limit_pattern() {
   _pat="$_pat|plan.*limit|subscription.*limit|billing.*limit|daily.*limit|monthly.*limit|weekly.*limit"
   _pat="$_pat|([^0-9]|^)402([^0-9]|$)"                               # HTTP 402 (payment)
   _pat="$_pat|tokens_limit_reached|body too large|([^0-9]|^)413([^0-9]|$)" # Context / Request size
-  printf '(%s)' "$_pat"
+  printf '%s' "($_pat)"
 }
 
 # is_rate_limited <text>
@@ -164,21 +168,26 @@ _rate_limit_pattern() {
 # or service overload acting as a hard block (529).
 # review-one-pr.sh exits with code 2 when this fires so the caller can switch engines.
 #
-# Patterns intentionally excluded to prevent false positives:
-#   - bare "exhausted" (too broad: matches "retry attempts exhausted", OS errors, etc.)
-#     Retained as "token.*exhaust" / "out of.*token" for the specific token-depletion case.
-#   - CLI syntax errors ("Invalid command format", "unknown flag", etc.) — see is_cli_error.
+# Prefer is_rate_limited_files for large LLM-output captures — it scans files
+# directly with grep instead of materializing the contents in a shell variable,
+# which avoids OOM and shell-substitution length limits on big payloads.
 is_rate_limited() {
   local text="$1"
   printf '%s\n' "$text" | grep -qiE "$(_rate_limit_pattern)"
 }
 
-# is_rate_limited_files <file...>
-# File-aware variant of is_rate_limited that greps the files directly rather
-# than loading them into a shell variable. Use when output may be large enough
-# to risk ARG_MAX / OOM via $(cat file).
+# is_rate_limited_files <file>...
+# File-aware variant of is_rate_limited. Returns 0 if any of the given files
+# matches the rate-limit pattern. Empty paths are skipped silently so callers
+# can pass optional tmp files without pre-checks.
 is_rate_limited_files() {
-  grep -qiE "$(_rate_limit_pattern)" "$@" 2>/dev/null
+  local files=()
+  local f
+  for f in "$@"; do
+    [ -n "$f" ] && [ -f "$f" ] && files+=("$f")
+  done
+  [ "${#files[@]}" -eq 0 ] && return 1
+  grep -qiE "$(_rate_limit_pattern)" "${files[@]}"
 }
 
 # is_cli_error <text>
@@ -287,11 +296,12 @@ _claude_chain_invoke() {
       timeout "$timeout_sec" claude --print --model "$model" "${extra_args[@]}" \
         < "$prompt_file" > "$stdout_tmp" 2> "$stderr_tmp" || rc=$?
     else
-      # mktemp failure — clean up any partial temp file, then degrade to direct
-      # stdout/stderr passthrough (no chain). Without this, a half-successful
-      # mktemp pair would leak the surviving file into /tmp.
+      # mktemp failure (one or both) — clean up the partial tmp before degrading
+      # to direct stdout/stderr passthrough so we don't leak a half-allocated fd.
       [ -n "$stdout_tmp" ] && rm -f "$stdout_tmp"
       [ -n "$stderr_tmp" ] && rm -f "$stderr_tmp"
+      [ -n "$final_stdout" ] && rm -f "$final_stdout"
+      [ -n "$final_stderr" ] && rm -f "$final_stderr"
       timeout "$timeout_sec" claude --print --model "$model" "${extra_args[@]}" \
         < "$prompt_file" || rc=$?
       _CLAUDE_CHAIN_MODEL_USED="$model"
@@ -311,6 +321,8 @@ _claude_chain_invoke() {
       all_rl=0
       break
     fi
+    # File-based rate-limit detection — avoids loading large agent output into
+    # a shell variable via $(cat ...) (OOM risk on big captures).
     if ! is_rate_limited_files "$stdout_tmp" "$stderr_tmp"; then
       # Non-rate-limit failure — propagate immediately, do not try next model.
       final_rc="$rc"
@@ -323,7 +335,7 @@ _claude_chain_invoke() {
 
   # If every attempt was rate-limited, parse the last reset time and return 2.
   if [ "$all_rl" -eq 1 ] && [ "$attempted" -gt 0 ]; then
-    parse_reset_time_files "${final_stdout:-/dev/null}" "${final_stderr:-/dev/null}"
+    parse_reset_time_files "$final_stdout" "$final_stderr"
     final_rc=2
   fi
 
@@ -634,21 +646,19 @@ run_duck() {
   return "$rc"
 }
 
-# _write_reset_time <hhmm>
-# Converts an H:MM(am|pm) string to ISO-8601 UTC and writes it to
-# /tmp/dev-lead-rate-limit-reset. Empty input → empty file (unknown).
-_write_reset_time() {
+# _emit_reset_iso <hhmm_with_meridiem>
+# Shared helper: converts e.g. "11:20pm" into an ISO-8601 UTC timestamp
+# (writing to /tmp/dev-lead-rate-limit-reset), advancing to tomorrow if the
+# computed time is already in the past for today.
+_emit_reset_iso() {
   local hhmm="$1"
   if [ -z "$hhmm" ]; then
     printf '' > /tmp/dev-lead-rate-limit-reset
     return 0
   fi
-  # Convert to ISO-8601 UTC using today's date (rate limits reset within 24h)
-  local today
+  local today iso
   today=$(date -u +%Y-%m-%d)
-  local iso
   iso=$(date -u -d "${today} ${hhmm} UTC" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)
-  # If reset time is in the past (already reset today), it means tomorrow
   if [ -n "$iso" ] && [ "$(date -u +%s)" -gt "$(date -u -d "$iso" +%s 2>/dev/null || echo 0)" ]; then
     local tomorrow
     tomorrow=$(date -u -d "tomorrow" +%Y-%m-%d)
@@ -663,26 +673,48 @@ _write_reset_time() {
 # status=rate-limited markers. Pattern: "resets H:MMam/pm (UTC)" or
 # "resets H:MM(am|pm) UTC".
 # Writes empty string if no reset time is found (caller treats as unknown).
+#
+# Prefer parse_reset_time_files for large captures — same OOM rationale as
+# is_rate_limited / is_rate_limited_files above.
 parse_reset_time() {
   local text="$1"
   # Match "resets 11:20pm (UTC)" or "resets 11:20pm UTC"
   local time_str
   time_str=$(printf '%s\n' "$text" | grep -oiE 'resets [0-9]{1,2}:[0-9]{2}(am|pm)' | head -1 || true)
+  if [ -z "$time_str" ]; then
+    printf '' > /tmp/dev-lead-rate-limit-reset
+    return 0
+  fi
+  # Extract H:MM(am|pm) part
   local hhmm
   hhmm=$(printf '%s' "$time_str" | grep -oiE '[0-9]{1,2}:[0-9]{2}(am|pm)$' || true)
-  _write_reset_time "$hhmm"
+  _emit_reset_iso "$hhmm"
 }
 
-# parse_reset_time_files <file...>
-# File-aware variant of parse_reset_time that greps the files directly rather
-# than loading them into a shell variable. Use when output may be large enough
-# to risk ARG_MAX / OOM via $(cat file).
+# parse_reset_time_files <file>...
+# File-aware variant of parse_reset_time. Scans each non-empty existing file
+# for the first "resets H:MMam/pm" match and writes the ISO timestamp via
+# _emit_reset_iso. Uses grep directly on files to avoid loading large LLM
+# outputs into a shell variable.
 parse_reset_time_files() {
+  local files=()
+  local f
+  for f in "$@"; do
+    [ -n "$f" ] && [ -f "$f" ] && files+=("$f")
+  done
+  if [ "${#files[@]}" -eq 0 ]; then
+    printf '' > /tmp/dev-lead-rate-limit-reset
+    return 0
+  fi
   local time_str
-  time_str=$(grep -hoiE 'resets [0-9]{1,2}:[0-9]{2}(am|pm)' "$@" 2>/dev/null | head -1 || true)
+  time_str=$(grep -hoiE 'resets [0-9]{1,2}:[0-9]{2}(am|pm)' "${files[@]}" 2>/dev/null | head -1 || true)
+  if [ -z "$time_str" ]; then
+    printf '' > /tmp/dev-lead-rate-limit-reset
+    return 0
+  fi
   local hhmm
   hhmm=$(printf '%s' "$time_str" | grep -oiE '[0-9]{1,2}:[0-9]{2}(am|pm)$' || true)
-  _write_reset_time "$hhmm"
+  _emit_reset_iso "$hhmm"
 }
 
 # run_writer <prompt_file> [model]
@@ -747,9 +779,10 @@ run_writer() {
       ;;
   esac
 
-  # Map rate-limit to exit code 2 for caller to detect; parse reset time for marker embedding
-  if [ "$rc" -ne 0 ] && [ -n "$_tmp" ] && is_rate_limited "$(cat "$_tmp")"; then
-    parse_reset_time "$(cat "$_tmp")"
+  # Map rate-limit to exit code 2 for caller to detect; parse reset time for
+  # marker embedding. Use the file-based helpers to avoid OOM on large captures.
+  if [ "$rc" -ne 0 ] && [ -n "$_tmp" ] && is_rate_limited_files "$_tmp"; then
+    parse_reset_time_files "$_tmp"
     [ -n "$_tmp" ] && rm -f "$_tmp"
     return 2
   fi

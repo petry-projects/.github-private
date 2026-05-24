@@ -171,15 +171,26 @@ esac
 GITEOF
   chmod +x "$STUB_BIN_DIR/git"
 
-  # gh stub: no existing PRs, issue API, comment posts ok, copilot rate-limited
+  # gh stub: no existing PRs, issue API, comment posts ok, copilot rate-limited.
+  # Dispatch on the gh subcommand ($1), NOT a pattern match against the full
+  # args string — the prompt body contains literal "gh api .../issues/..."
+  # examples that would otherwise hit the api branch and mask the copilot path.
   cat > "$STUB_BIN_DIR/gh" <<'GHEOF'
 #!/usr/bin/env bash
-case "$*" in
-  *"pulls?state=open"*) echo "0" ;;
-  *"api"*"repos/"*"issues/"*) echo '{"title":"Test Issue","body":"Test body"}' ;;
-  *"api"*"users/"*) echo '{"id":12345}' ;;
-  *"issue comment"*) exit 0 ;;
-  *"copilot"*) echo "rate limit exceeded"; exit 1 ;;
+cmd="$1"; shift || true
+case "$cmd" in
+  copilot) echo "rate limit exceeded"; exit 1 ;;
+  api)
+    case "$*" in
+      *"pulls?state=open"*) echo "0" ;;
+      *"users/"*) echo '{"id":12345}' ;;
+      *) echo '{"title":"Test Issue","body":"Test body"}' ;;
+    esac ;;
+  issue)
+    case "$*" in
+      comment*) exit 0 ;;
+      *) echo "{}" ;;
+    esac ;;
   *) echo "{}" ;;
 esac
 GHEOF
@@ -221,14 +232,24 @@ esac
 GITEOF
   chmod +x "$STUB_BIN_DIR/git"
 
+  # Dispatch on subcommand ($1) so the prompt body's literal "gh api .../issues/..."
+  # text does not match the api branch and mask the copilot rate-limit path.
   cat > "$STUB_BIN_DIR/gh" <<GHEOF
 #!/usr/bin/env bash
-case "\$*" in
-  *"pulls?state=open"*) echo "0" ;;
-  *"api"*"repos/"*"issues/"*) echo '{"title":"Test","body":"body"}' ;;
-  *"api"*"users/"*) echo '{"id":12345}' ;;
-  *"issue comment"*) touch "${comment_posted_sentinel}"; exit 0 ;;
-  *"copilot"*) echo "rate limit exceeded"; exit 1 ;;
+cmd="\$1"; shift || true
+case "\$cmd" in
+  copilot) echo "rate limit exceeded"; exit 1 ;;
+  api)
+    case "\$*" in
+      *"pulls?state=open"*) echo "0" ;;
+      *"users/"*) echo '{"id":12345}' ;;
+      *) echo '{"title":"Test","body":"body"}' ;;
+    esac ;;
+  issue)
+    case "\$*" in
+      comment*) touch "${comment_posted_sentinel}"; exit 0 ;;
+      *) echo "{}" ;;
+    esac ;;
   *) echo "{}" ;;
 esac
 GHEOF
