@@ -4,6 +4,7 @@ set -euo pipefail
 # Optional: PROMPTS_DIR (defaults to prompts/dev-lead relative to CWD)
 
 source "$(dirname "$0")/engine.sh"
+source "$(dirname "$0")/lib/git-identity.sh"
 
 INTENT_TYPE="${INTENT_TYPE:-fix-reviews}"
 PR_NUMBER="${PR_NUMBER:-}"
@@ -428,6 +429,9 @@ commit_and_push() {
     fi
   else
     if $has_uncommitted; then
+      # GitHub-hosted runners have no default git identity; configure it
+      # before committing or commit fails with "fatal: empty ident name".
+      setup_git_identity
       git add -A
       # Explicit exit on failure: set -e is suspended when commit_and_push is called from
       # an if-statement condition, so git commit failures would be silently swallowed
