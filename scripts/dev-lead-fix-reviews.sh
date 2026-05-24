@@ -15,18 +15,6 @@ export PROMPTS_DIR="${PROMPTS_DIR:-prompts/dev-lead}"
 
 REVIEWS_MARKER_PREFIX="<!-- dev-lead-fix-reviews pr="
 
-setup_git_identity() {
-  local bot="${BOT_USER:-donpetry-bot}"
-  local bot_id
-  bot_id=$(gh api "users/${bot}" --jq '.id' 2>/dev/null || echo "")
-  if [ -n "$bot_id" ]; then
-    git config user.email "${bot_id}+${bot}@users.noreply.github.com"
-  else
-    git config user.email "${bot}@users.noreply.github.com"
-  fi
-  git config user.name "$bot"
-}
-
 if [ -z "$PR_NUMBER" ] && [ "$INTENT_TYPE" != "rebase" ]; then
   echo "::error::PR_NUMBER is required"
   exit 1
