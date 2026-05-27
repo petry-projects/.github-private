@@ -15,6 +15,9 @@
 
 # setup_git_identity — configure git user.name/user.email for the bot user.
 #
+# GitHub-hosted runners lack git identity by default; this helper ensures
+# commits succeed whether we're committing to the primary repo or secondary checkouts.
+#
 # BOT_USER env var (default: donpetry-bot) determines the identity. The
 # canonical noreply form (<id>+<login>@users.noreply.github.com) is preferred
 # because it links commits to the bot's GitHub profile; fall back to the
@@ -23,7 +26,7 @@ setup_git_identity() {
   local bot="${BOT_USER:-donpetry-bot}"
   local bot_id
   bot_id=$(gh api "users/${bot}" --jq '.id' 2>/dev/null || echo "")
-  if [ -n "$bot_id" ]; then
+  if [[ -n $bot_id ]]; then
     git config user.email "${bot_id}+${bot}@users.noreply.github.com"
   else
     git config user.email "${bot}@users.noreply.github.com"
