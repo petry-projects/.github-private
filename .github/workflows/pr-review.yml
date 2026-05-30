@@ -150,8 +150,7 @@ jobs:
         ${{
           inputs.pr_url
           || github.event.client_payload.pr_url
-          || (github.event_name == 'pull_request_review' && github.event.pull_request.html_url)
-          || (github.event_name == 'pull_request' && github.event.pull_request.html_url)
+          || github.event.pull_request.html_url
           || ''
         }}
       # JSON array of PRs associated with a check_suite event. Empty for all
