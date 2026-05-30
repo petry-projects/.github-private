@@ -877,3 +877,44 @@ STUB
 
   [[ "$output" == *"ACTOR not set for intent=fix-reviews"* ]]
 }
+
+# ── resolve_actor_outdated_threads: called in both branches ─────────────────
+
+@test "fix-reviews: resolve_actor_outdated_threads called in applied path (dry-run)" {
+  export INTENT_TYPE="fix-reviews"
+  export DEV_LEAD_DRY_RUN="true"
+  export ACTOR="chatgpt-codex-connector[bot]"
+
+  run bash "$FIX_REVIEWS_SCRIPT"
+
+  [ "$status" -eq 0 ]
+  # In dry-run, resolve_actor_outdated_threads should announce it would resolve
+  [[ "$output" == *"would resolve outdated review threads authored by chatgpt-codex-connector[bot]"* ]]
+}
+
+@test "fix-bot-comment: resolve_actor_outdated_threads called in applied path (dry-run)" {
+  export INTENT_TYPE="fix-bot-comment"
+  export DEV_LEAD_DRY_RUN="true"
+  export ACTOR="sonarqubecloud[bot]"
+  export COMMENT_BODY="SonarQube found issues"
+
+  run bash "$FIX_REVIEWS_SCRIPT"
+
+  [ "$status" -eq 0 ]
+  # Should call resolve_actor_outdated_threads in dry-run mode
+  [[ "$output" == *"would resolve outdated review threads authored by sonarqubecloud[bot]"* ]]
+}
+
+@test "review-changes: resolve_actor_outdated_threads called in applied path (dry-run)" {
+  export INTENT_TYPE="review-changes"
+  export DEV_LEAD_DRY_RUN="true"
+  export ACTOR="donpetry"
+  export PR_TITLE="Test PR"
+  export PR_DESCRIPTION="A test PR"
+
+  run bash "$FIX_REVIEWS_SCRIPT"
+
+  [ "$status" -eq 0 ]
+  # Should call resolve_actor_outdated_threads in dry-run mode
+  [[ "$output" == *"would resolve outdated review threads authored by donpetry"* ]]
+}
