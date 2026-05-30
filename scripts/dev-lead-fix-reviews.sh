@@ -601,13 +601,13 @@ case "$INTENT_TYPE" in
         post_reviews_terminal "fix-reviews" "applied" "Changes committed and pushed."
       else
         notify_coderabbit_resolve
-        resolve_actor_outdated_threads "fix-reviews"
         if has_tier1_blockers; then
           echo "::warning::Tier-1 blockers still present (failing CI or CHANGES_REQUESTED reviews) — skipping no-changes marker to allow retries"
         else
           post_no_changes "fix-reviews"
         fi
       fi
+      resolve_actor_outdated_threads "fix-reviews"
       try_enable_auto_merge
     fi
     exit "$rc"
@@ -625,13 +625,13 @@ case "$INTENT_TYPE" in
         post_reviews_terminal "fix-bot-comment" "applied" "Changes committed and pushed."
       else
         notify_coderabbit_resolve
-        resolve_actor_outdated_threads "fix-bot-comment"
         if has_tier1_blockers; then
           echo "::warning::Tier-1 blockers still present (failing CI or CHANGES_REQUESTED reviews) — skipping no-changes marker to allow retries"
         else
           post_no_changes "fix-bot-comment"
         fi
       fi
+      resolve_actor_outdated_threads "fix-bot-comment"
       try_enable_auto_merge
     fi
     exit "$rc"
@@ -682,13 +682,13 @@ case "$INTENT_TYPE" in
         post_reviews_terminal "review-changes" "applied" "Changes committed and pushed."
       else
         notify_coderabbit_resolve
-        resolve_actor_outdated_threads "review-changes"
         if has_tier1_blockers; then
           echo "::warning::Tier-1 blockers still present (failing CI or CHANGES_REQUESTED reviews) — skipping no-changes marker to allow retries"
         else
           post_reviews_terminal "review-changes" "no-changes" "No changes were needed for this PR."
         fi
       fi
+      resolve_actor_outdated_threads "review-changes"
       try_enable_auto_merge
     fi
     exit "$rc"
