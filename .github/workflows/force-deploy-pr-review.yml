@@ -13,22 +13,18 @@ jobs:
       matrix:
         repo: [bmad-bgreat-suite, google-app-scripts]
       max-parallel: 1
-
+    
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-        with:
-          persist-credentials: false
-
-      - name: Deploy pr-review.yml to ${{ matrix.repo }} via Actions
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REPO: ${{ matrix.repo }}
+      - uses: actions/checkout@v4
+      
+      - name: Deploy to ${{ matrix.repo }}
         run: |
-          # Clone target repo
-          git clone "https://$GITHUB_TOKEN@github.com/petry-projects/$REPO.git" target_repo
-          cd target_repo
-
-          # Configure git
+          mkdir -p temp_repo
+          cd temp_repo
+          
+          git clone https://${{ secrets.GITHUB_TOKEN }}@github.com/petry-projects/${{ matrix.repo }}.git
+          cd ${{ matrix.repo }}
+          
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
