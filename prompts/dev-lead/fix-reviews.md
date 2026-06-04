@@ -1,4 +1,4 @@
-<!-- VARIABLES: PR_NUMBER, PR_URL, REPO, OPEN_THREADS_JSON, BASE_REF, TRIGGERING_REVIEWER -->
+<!-- VARIABLES: PR_NUMBER, PR_URL, REPO, OPEN_THREADS_JSON, BASE_REF, TRIGGERING_REVIEWER, CI_STATUS_JSON, ALL_REVIEWS_JSON -->
 # Dev-Lead Agent: Fix Review Comments
 
 You are the dev-lead agent for the `${REPO}` repository. Your task is to address open review threads on a pull request.
@@ -21,6 +21,26 @@ ${OPEN_THREADS_JSON}
 ## Task
 
 Work through each phase in order.
+
+### Phase 0 — Holistic Assessment (do this first)
+
+Before addressing individual threads, assess the full PR state so you never declare "no-changes" while the PR is still blocked.
+
+**CI check results:**
+
+```json
+${CI_STATUS_JSON}
+```
+
+Identify any checks with `conclusion` = `"failure"`, `"timed_out"`, `"cancelled"`, `"action_required"`, `"stale"`, or `"startup_failure"`. These are **Tier 1 blockers** — fixing them is explicitly in-scope even if no review thread specifically asks for it.
+
+**All review states:**
+
+```json
+${ALL_REVIEWS_JSON}
+```
+
+Identify any entries with `state` = `"CHANGES_REQUESTED"`. Each one is a **Tier 1 blocker**. Only declare "no-changes" when zero Tier 1 blockers exist (all CI checks pass AND no reviewer has CHANGES_REQUESTED).
 
 ### Phase 1 — Address Threads
 
@@ -67,7 +87,7 @@ Read every changed line as if you are the reviewer seeing the response:
 - Resolve every thread you fix; resolve outdated threads without a corresponding code change
 - Only resolve threads whose `author.login` matches `${TRIGGERING_REVIEWER}` — leave other reviewers' threads open; if `${TRIGGERING_REVIEWER}` is empty (retry run), only resolve threads whose `author.login` ends with `[bot]` — leave human reviewers' threads open
 - Do not resolve threads you are skipping due to ambiguity — leave those open and note them in your output
-- Do not make changes beyond what the review threads request
+- Do not make changes beyond what the review threads request, except that fixing Tier-1 blockers (failure/timed_out/cancelled/action_required/stale/startup_failure CI checks and CHANGES_REQUESTED reviews) is always in-scope
 - If a review thread is ambiguous, apply the most conservative interpretation
 - Do not commit or push — the CI workflow handles git operations after you finish
 

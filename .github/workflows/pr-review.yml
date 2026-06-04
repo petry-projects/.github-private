@@ -9,6 +9,10 @@ on:
         required: false
       COPILOT_GITHUB_TOKEN:
         required: false
+      DON_PETRY_BOT_GH_PAT:
+        required: false
+      GH_PAT:
+        required: false
 
   # ── Event-driven triggers ────────────────────────────────────────────────
   # These replace the former time-based schedule. The review engine's own
