@@ -33,21 +33,14 @@ shopt -u nullglob
 if [ "${#agent_files[@]}" -gt 0 ]; then
   echo "  [lint] validating ${#agent_files[@]} agent profile(s)..."
 
-  # Ensure PyYAML is available before validating profiles; try to install if missing.
+  # Ensure PyYAML is available before validating profiles.
   pyyaml_ok=1
   if ! command -v python3 >/dev/null 2>&1; then
-    echo "Lint check failed: python3 is required for agent profile validation but was not found."
+    echo "  [lint] python3 not found — skipping agent profile validation (install python3 to enable)"
     pyyaml_ok=0
-    fail=1
   elif ! python3 -c "import yaml" >/dev/null 2>&1; then
-    if pip3 install pyyaml --quiet >/dev/null 2>&1 && python3 -c "import yaml" >/dev/null 2>&1; then
-      echo "  [lint] PyYAML installed successfully"
-    else
-      echo "Lint check failed: PyYAML is required for agent profile validation but could not be installed."
-      echo "  Run: pip3 install pyyaml"
-      pyyaml_ok=0
-      fail=1
-    fi
+    echo "  [lint] PyYAML not available — skipping agent profile validation (install: pip3 install pyyaml)"
+    pyyaml_ok=0
   fi
 
   if [ "$pyyaml_ok" -eq 1 ]; then

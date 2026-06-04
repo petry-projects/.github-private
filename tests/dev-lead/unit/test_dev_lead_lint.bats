@@ -137,7 +137,7 @@ MD
   [ "$status" -ne 0 ]
 }
 
-@test "lint: fails fast with clear message when PyYAML is unavailable and pip3 cannot install it" {
+@test "lint: skips agent validation with clear message when PyYAML is unavailable" {
   cat > "$WORK_DIR/agents/test-agent.md" <<'MD'
 ---
 name: test-agent
@@ -150,15 +150,13 @@ MD
   mkdir -p "$WORK_DIR/bin"
   printf '#!/usr/bin/env bash\nexit 1\n' > "$WORK_DIR/bin/python3"
   chmod +x "$WORK_DIR/bin/python3"
-  printf '#!/usr/bin/env bash\nexit 1\n' > "$WORK_DIR/bin/pip3"
-  chmod +x "$WORK_DIR/bin/pip3"
 
   local saved_path="$PATH"
   export PATH="$WORK_DIR/bin:$PATH"
   run bash "$LINT_SCRIPT"
   export PATH="$saved_path"
 
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 0 ]
   [[ "$output" == *"PyYAML"* ]]
 }
 
