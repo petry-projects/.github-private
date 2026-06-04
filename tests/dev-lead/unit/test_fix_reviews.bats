@@ -925,7 +925,7 @@ STUB
 # The jq filter in collect_assessment_data must keep only the latest per user,
 # but COMMENTED reviews must not clear a prior CHANGES_REQUESTED or APPROVED
 # (GitHub does not count COMMENTED as a blocking state change).
-readonly JQ_DEDUP_REVIEWS='[ [.[].[] | select(.user != null)] | group_by(.user.login)[] | (. as $g | ($g | map(select(.state != "COMMENTED")) | sort_by(.id) | last) // ($g | sort_by(.id) | last)) | {id:.id, user:.user.login, state:.state, submitted_at:.submitted_at} ]'
+readonly JQ_DEDUP_REVIEWS='[ [.[].[] | select(.user != null)] | group_by(.user.login)[] | (. as $g | ($g | map(select(.state != "COMMENTED")) | sort_by(.id) | last) // ($g | sort_by(.id) | last)) | {id:.id, user:.user.login, state:.state, submitted_at:.submitted_at, body:.body} ]'
 
 @test "collect_assessment_data: jq dedup expression keeps only latest review per user" {
   # Feed sample multi-review JSON through the exact jq expression used in the script
@@ -980,6 +980,20 @@ readonly JQ_DEDUP_REVIEWS='[ [.[].[] | select(.user != null)] | group_by(.user.l
   [ "$status" -eq 0 ]
   [[ "$output" == *'"CHANGES_REQUESTED"'* ]]
   [[ "$output" != *'"COMMENTED"'* ]]
+}
+
+@test "collect_assessment_data: jq dedup preserves review body in output" {
+  # When a reviewer uses only the review summary (no line threads), the body field
+  # must be preserved in ALL_REVIEWS_JSON so the agent can read the instructions.
+  local input='[
+    {"id":1,"user":{"login":"alice"},"state":"CHANGES_REQUESTED","submitted_at":"2024-01-01T00:00:00Z","body":"Please fix the type errors before merging."}
+  ]'
+
+  run bash -c "printf '%s' '$input' | jq -s '$JQ_DEDUP_REVIEWS'"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'"body"'* ]]
+  [[ "$output" == *'Please fix the type errors before merging.'* ]]
 }
 
 # ── holistic assessment: CI_STATUS_JSON and ALL_REVIEWS_JSON fetching ──────────
@@ -1201,7 +1215,10 @@ GHEOF
   [[ "$output" == *"Tier-1 blockers still present"* ]]
 }
 
-@test "fix-reviews: does not post no-changes when Tier-1 blockers exist (fix-bot-comment)" {
+@test "fix-reviews: fix-bot-comment with hard blockers posts terminal no-changes (not silently skipped)" {
+  # fix-bot-comment is excluded from RETRYABLE_REVIEW_INTENTS, so when hard blockers
+  # exist (failing CI or CHANGES_REQUESTED) and no code changes were made, we must
+  # post a terminal no-changes marker rather than leaving the SHA without any marker.
   local calls_file tmpdir
   calls_file="$(mktemp)"
   tmpdir="$(mktemp -d)"
@@ -1219,8 +1236,11 @@ GHEOF
   rm -rf "$tmpdir" "$calls_file"
 
   [ "$status" -eq 0 ]
-  [[ "$output" != *"status=no-changes"* ]]
+  # Hard blockers present + no code changes → must post terminal marker (not silently skip)
+  [[ "$output" == *"status=no-changes"* ]]
   [[ "$output" == *"Tier-1 blockers still present"* ]]
+  # Must not post a rate-limited marker (fix-bot-comment is not retried automatically)
+  [[ "$output" != *"[dry-run] would post rate-limited marker"* ]]
 }
 
 @test "fix-reviews: does not post no-changes when Tier-1 blockers exist (review-changes)" {
@@ -1688,6 +1708,8 @@ GHEOF
   [[ "$output" != *"Unresolved bot review threads remain"* ]]
   [[ "$output" != *"status=no-changes"* ]]
   [[ "$output" == *"rate-limited marker"* ]]
+  # Must include a future reset time so the retry cron backs off instead of re-dispatching immediately
+  [[ "$output" == *"reset="* ]]
 }
 
 @test "fix-reviews: hard blockers path posts rate-limited marker for retry" {
@@ -1731,6 +1753,8 @@ GHEOF
   [[ "$output" == *"Tier-1 blockers still present"* ]]
   [[ "$output" == *"rate-limited marker"* ]]
   [[ "$output" != *"status=no-changes"* ]]
+  # Must include a future reset time so the retry cron backs off instead of re-dispatching immediately
+  [[ "$output" == *"reset="* ]]
 }
 
 @test "review-changes: hard blockers path posts rate-limited marker for retry" {
@@ -1773,6 +1797,8 @@ GHEOF
   [[ "$output" == *"Tier-1 blockers still present"* ]]
   [[ "$output" == *"rate-limited marker"* ]]
   [[ "$output" != *"status=no-changes"* ]]
+  # Must include a future reset time so the retry cron backs off instead of re-dispatching immediately
+  [[ "$output" == *"reset="* ]]
 }
 
 @test "fix-reviews: bot-thread-only blocker posts no-changes terminal marker (fix-reviews intent)" {

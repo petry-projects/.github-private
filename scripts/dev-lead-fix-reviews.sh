@@ -303,7 +303,7 @@ fetch_pr_context() {
   # non-COMMENTED reviews determine the effective blocking state per user.
   if ! ALL_REVIEWS_JSON=$(gh api --paginate "repos/${REPO}/pulls/${PR_NUMBER}/reviews?per_page=100" \
     2>/dev/null \
-    | jq -s '[ [.[].[] | select(.user != null)] | group_by(.user.login)[] | (. as $g | ($g | map(select(.state != "COMMENTED")) | sort_by(.id) | last) // ($g | sort_by(.id) | last)) | {id:.id, user:.user.login, state:.state, submitted_at:.submitted_at} ]' \
+    | jq -s '[ [.[].[] | select(.user != null)] | group_by(.user.login)[] | (. as $g | ($g | map(select(.state != "COMMENTED")) | sort_by(.id) | last) // ($g | sort_by(.id) | last)) | {id:.id, user:.user.login, state:.state, submitted_at:.submitted_at, body:.body} ]' \
     2>/dev/null); then
     echo "::error::fetch_pr_context: failed to fetch PR reviews for #${PR_NUMBER} — cannot assess PR state" >&2
     return 1
@@ -761,7 +761,8 @@ case "$INTENT_TYPE" in
       else
         notify_coderabbit_resolve
         if has_hard_blockers; then
-          echo "::warning::Tier-1 blockers still present (failing CI or CHANGES_REQUESTED reviews) — posting retry marker for later re-check"
+          echo "::warning::Tier-1 blockers still present (failing CI or CHANGES_REQUESTED reviews) — posting retry marker with backoff"
+          printf '%s' "$(date -u -d '+30 minutes' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)" > /tmp/dev-lead-rate-limit-reset
           post_reviews_rate_limited "fix-reviews"
         else
           post_no_changes "fix-reviews"
@@ -788,7 +789,8 @@ case "$INTENT_TYPE" in
       else
         notify_coderabbit_resolve
         if has_hard_blockers; then
-          echo "::warning::Tier-1 blockers still present (failing CI or CHANGES_REQUESTED reviews) — skipping no-changes marker to allow retries"
+          echo "::warning::Tier-1 blockers still present (failing CI or CHANGES_REQUESTED reviews) — fix-bot-comment is not retried automatically; posting terminal marker"
+          post_no_changes "fix-bot-comment"
         elif has_tier1_blockers; then
           echo "::warning::Unresolved bot review threads remain — fix-bot-comment is not automatically retried; posting no-changes terminal marker"
           post_no_changes "fix-bot-comment"
@@ -850,7 +852,8 @@ case "$INTENT_TYPE" in
       else
         notify_coderabbit_resolve
         if has_hard_blockers; then
-          echo "::warning::Tier-1 blockers still present (failing CI or CHANGES_REQUESTED reviews) — posting retry marker for later re-check"
+          echo "::warning::Tier-1 blockers still present (failing CI or CHANGES_REQUESTED reviews) — posting retry marker with backoff"
+          printf '%s' "$(date -u -d '+30 minutes' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)" > /tmp/dev-lead-rate-limit-reset
           post_reviews_rate_limited "review-changes"
         else
           post_reviews_terminal "review-changes" "no-changes" "No changes were needed for this PR."
