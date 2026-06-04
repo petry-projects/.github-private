@@ -149,5 +149,4 @@ jobs:
           claude --print \
             --permission-mode bypassPermissions \
             --allowedTools Bash \
-            --fallback-model opus \
             -p "$PROMPT"

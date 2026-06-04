@@ -247,31 +247,24 @@ jobs:
         run: |
           set -euo pipefail
 
-          # DEBUG: Log env vars and enumeration path
-          echo "::group::PR Enumeration Debug Info"
-          echo "PR_URL_OVERRIDE='${PR_URL_OVERRIDE}' (${#PR_URL_OVERRIDE} chars)"
-          echo "CHECK_SUITE_PRS='${CHECK_SUITE_PRS}'"
-          echo "GitHub event_name: ${{ github.event_name }}"
-
           if [ -n "${PR_URL_OVERRIDE}" ]; then
-            echo "PATH: Using PR_URL_OVERRIDE (direct mode)"
+            # Single-PR mode: workflow_dispatch with pr_url, repository_dispatch
+            # (mention), or event-triggered run with a direct PR context
+            # (pull_request_review / pull_request events).
             printf '%s\n' "${PR_URL_OVERRIDE}" > prs.txt
           elif [ "${CHECK_SUITE_PRS}" != "[]" ] && [ -n "${CHECK_SUITE_PRS}" ]; then
-            echo "PATH: Using CHECK_SUITE_PRS (check_suite event)"
+            # check_suite event: one or more PRs share the completed suite.
+            # The payload carries API URLs (https://api.github.com/repos/…/pulls/N);
+            # convert them to HTML URLs (https://github.com/…/pull/N) for review-one-pr.sh.
             echo "${CHECK_SUITE_PRS}" \
               | jq -r '.[].url' \
               | sed 's|https://api\.github\.com/repos/|https://github.com/|; s|/pulls/|/pull/|' \
               > prs.txt
           else
-            echo "PATH: Falling back to list-prs.sh"
             bash scripts/list-prs.sh > prs.txt
           fi
 
           count=$(grep -c . prs.txt || true)
-          echo "Result: $count PRs in candidate pool"
-          cat prs.txt || echo "(empty)"
-          echo "::endgroup::"
-
           echo "::notice::Candidate pool has $count PRs (no-ops will be skipped, MAX_PRS caps actual reviews)"
           echo "--- candidate PRs ---"
           cat prs.txt || true

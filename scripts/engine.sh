@@ -83,11 +83,13 @@ set_engine_config() {
       DUCK_ENGINE="claude"
       DUCK_MODEL="claude-sonnet-4-6"
       # No in-engine chain for Gemini — only one production model in use today.
-      CLAUDE_TRIAGE_MODEL_CHAIN=""
-      CLAUDE_DEEP_MODEL_CHAIN=""
-      CLAUDE_AUDIT_MODEL_CHAIN=""
-      CLAUDE_ACTION_MODEL_CHAIN=""
-      CLAUDE_SINGLE_MODEL_CHAIN=""
+      # Preserve any caller-provided values so Claude fallback chains survive
+      # a Gemini-primary run that switches to Claude on rate-limit.
+      CLAUDE_TRIAGE_MODEL_CHAIN="${CLAUDE_TRIAGE_MODEL_CHAIN:-}"
+      CLAUDE_DEEP_MODEL_CHAIN="${CLAUDE_DEEP_MODEL_CHAIN:-}"
+      CLAUDE_AUDIT_MODEL_CHAIN="${CLAUDE_AUDIT_MODEL_CHAIN:-}"
+      CLAUDE_ACTION_MODEL_CHAIN="${CLAUDE_ACTION_MODEL_CHAIN:-}"
+      CLAUDE_SINGLE_MODEL_CHAIN="${CLAUDE_SINGLE_MODEL_CHAIN:-}"
       ;;
     copilot)
       ENGINE_TRIAGE_MODEL="o4-mini"
@@ -108,11 +110,13 @@ set_engine_config() {
       DUCK_ENGINE="gemini"
       DUCK_MODEL="gemini-2.0-flash"
       # No in-engine chain for Copilot — single GitHub Models endpoint.
-      CLAUDE_TRIAGE_MODEL_CHAIN=""
-      CLAUDE_DEEP_MODEL_CHAIN=""
-      CLAUDE_AUDIT_MODEL_CHAIN=""
-      CLAUDE_ACTION_MODEL_CHAIN=""
-      CLAUDE_SINGLE_MODEL_CHAIN=""
+      # Preserve any caller-provided values so Claude fallback chains survive
+      # a Copilot-primary run that switches to Claude on rate-limit.
+      CLAUDE_TRIAGE_MODEL_CHAIN="${CLAUDE_TRIAGE_MODEL_CHAIN:-}"
+      CLAUDE_DEEP_MODEL_CHAIN="${CLAUDE_DEEP_MODEL_CHAIN:-}"
+      CLAUDE_AUDIT_MODEL_CHAIN="${CLAUDE_AUDIT_MODEL_CHAIN:-}"
+      CLAUDE_ACTION_MODEL_CHAIN="${CLAUDE_ACTION_MODEL_CHAIN:-}"
+      CLAUDE_SINGLE_MODEL_CHAIN="${CLAUDE_SINGLE_MODEL_CHAIN:-}"
       ;;
     *)
       echo "::error::Unknown REVIEW_ENGINE='$REVIEW_ENGINE' (expected: claude, gemini, or copilot)"
