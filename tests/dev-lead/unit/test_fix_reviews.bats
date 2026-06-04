@@ -886,14 +886,16 @@ STUB
 @test "collect_assessment_data: jq dedup expression keeps only latest review per user" {
   # Feed sample multi-review JSON through the exact jq expression used in the script
   # to verify that CHANGES_REQUESTED is superseded by a later APPROVED from the same user.
+  # Input is a single-page array; jq -s simulates --paginate output (wraps to [[...]])
+  # so .[].[] correctly flattens across pages.
   local input='[
     {"id":1,"user":{"login":"alice"},"state":"CHANGES_REQUESTED","submitted_at":"2024-01-01T00:00:00Z"},
     {"id":2,"user":{"login":"bob"},"state":"APPROVED","submitted_at":"2024-01-02T00:00:00Z"},
     {"id":3,"user":{"login":"alice"},"state":"APPROVED","submitted_at":"2024-01-03T00:00:00Z"}
   ]'
-  local jq_expr='[ [.[] | select(.user != null)] | group_by(.user.login)[] | sort_by(.id) | last | {id:.id, user:.user.login, state:.state, submitted_at:.submitted_at} ]'
+  local jq_expr='[ [.[].[] | select(.user != null)] | group_by(.user.login)[] | sort_by(.id) | last | {id:.id, user:.user.login, state:.state, submitted_at:.submitted_at} ]'
 
-  run bash -c "printf '%s' '$input' | jq -r '$jq_expr'"
+  run bash -c "printf '%s' '$input' | jq -s '$jq_expr'"
 
   [ "$status" -eq 0 ]
   # alice's latest review (id=3) is APPROVED — CHANGES_REQUESTED (id=1) must not appear
@@ -912,9 +914,9 @@ STUB
     {"id":1,"user":null,"state":"APPROVED","submitted_at":"2024-01-01T00:00:00Z"},
     {"id":2,"user":{"login":"alice"},"state":"APPROVED","submitted_at":"2024-01-02T00:00:00Z"}
   ]'
-  local jq_expr='[ [.[] | select(.user != null)] | group_by(.user.login)[] | sort_by(.id) | last | {id:.id, user:.user.login, state:.state, submitted_at:.submitted_at} ]'
+  local jq_expr='[ [.[].[] | select(.user != null)] | group_by(.user.login)[] | sort_by(.id) | last | {id:.id, user:.user.login, state:.state, submitted_at:.submitted_at} ]'
 
-  run bash -c "printf '%s' '$input' | jq -r '$jq_expr'"
+  run bash -c "printf '%s' '$input' | jq -s '$jq_expr'"
 
   [ "$status" -eq 0 ]
   # Result should have only alice; the null-user entry is filtered out
@@ -938,13 +940,13 @@ printf '%s\n' "\$*" >> "${calls_file}"
 ARGS="\$*"
 case "\$ARGS" in
   *"commits/"*"check-runs"*)
-    # Return jq-processed array format (as real gh --jq would produce)
-    echo '[{"name":"Lint","status":"completed","conclusion":"failure","details_url":"https://example.com"}]' ;;
+    # Return raw GitHub API format — script now uses --paginate piped to jq -s
+    echo '{"check_runs":[{"name":"Lint","status":"completed","conclusion":"failure","details_url":"https://example.com"}]}' ;;
   *"commits/"*"statuses"*)
     echo '[]' ;;
   *"pulls/"*"/reviews"*)
-    # Return jq-processed format with user as login string
-    echo '[{"id":1,"user":"gemini-code-assist[bot]","state":"CHANGES_REQUESTED","submitted_at":"2024-01-01T00:00:00Z"}]' ;;
+    # Return raw GitHub API format with user as object — script now uses --paginate piped to jq -s
+    echo '[{"id":1,"user":{"login":"gemini-code-assist[bot]"},"state":"CHANGES_REQUESTED","submitted_at":"2024-01-01T00:00:00Z"}]' ;;
   *"graphql"*)
     echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
   *"issues/"*"comments"*)
@@ -1196,7 +1198,7 @@ GHEOF
 ARGS="$*"
 case "$ARGS" in
   *"commits/"*"check-runs"*)
-    echo '[{"name":"Lint","status":"completed","conclusion":"success","details_url":"https://example.com"}]' ;;
+    echo '{"check_runs":[{"name":"Lint","status":"completed","conclusion":"success","details_url":"https://example.com"}]}' ;;
   *"commits/"*"statuses"*)
     echo '[]' ;;
   *"pulls/"*"reviews"*)

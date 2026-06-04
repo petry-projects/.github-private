@@ -268,25 +268,28 @@ fetch_pr_context() {
   # (e.g., review-changes in dry-run where the PR API call is skipped).
   CI_STATUS_JSON="[]"
   if [ -n "${HEAD_SHA:-}" ]; then
-    CI_STATUS_JSON=$(gh api "repos/${REPO}/commits/${HEAD_SHA}/check-runs?per_page=100" \
-      --jq '[.check_runs[] | {name:.name, status:.status, conclusion:.conclusion, details_url:.details_url}]' \
+    CI_STATUS_JSON=$(gh api --paginate "repos/${REPO}/commits/${HEAD_SHA}/check-runs?per_page=100" \
+      2>/dev/null \
+      | jq -s '[.[].check_runs[] | {name:.name, status:.status, conclusion:.conclusion, details_url:.details_url}]' \
       2>/dev/null || echo "[]")
     # Also include legacy commit statuses (Jenkins, external CI, etc.) that use
     # the separate statuses API rather than check-runs. Merge into CI_STATUS_JSON
     # so the agent sees a unified picture of all required status checks.
     local statuses_json
-    statuses_json=$(gh api "repos/${REPO}/commits/${HEAD_SHA}/statuses?per_page=100" \
-      --jq '[.[] | {name:.context, status:(if .state == "pending" then "in_progress" else "completed" end), conclusion:(if .state == "success" then "success" elif .state == "failure" or .state == "error" then "failure" else null end), details_url:.target_url}]' \
+    statuses_json=$(gh api --paginate "repos/${REPO}/commits/${HEAD_SHA}/statuses?per_page=100" \
+      2>/dev/null \
+      | jq -s '[.[].[] | {name:.context, status:(if .state == "pending" then "in_progress" else "completed" end), conclusion:(if .state == "success" then "success" elif .state == "failure" or .state == "error" then "failure" else null end), details_url:.target_url}]' \
       2>/dev/null || echo "[]")
     CI_STATUS_JSON=$(printf '%s\n%s' "$CI_STATUS_JSON" "$statuses_json" \
       | jq -s 'add // []' 2>/dev/null || echo "$CI_STATUS_JSON")
   fi
   export CI_STATUS_JSON
 
-  # All PR reviews with state — includes APPROVED, CHANGES_REQUESTED, COMMENTED from
-  # every reviewer (human and bot). Gives the agent a full picture of who is blocking.
-  ALL_REVIEWS_JSON=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/reviews?per_page=100" \
-    --jq '[ [.[] | select(.user != null)] | group_by(.user.login)[] | sort_by(.id) | last | {id:.id, user:.user.login, state:.state, submitted_at:.submitted_at} ]' \
+  # All PR reviews with state — deduplicated per reviewer (latest review per user only).
+  # Uses --paginate so PRs with more than 100 reviews are fully covered.
+  ALL_REVIEWS_JSON=$(gh api --paginate "repos/${REPO}/pulls/${PR_NUMBER}/reviews?per_page=100" \
+    2>/dev/null \
+    | jq -s '[ [.[].[] | select(.user != null)] | group_by(.user.login)[] | sort_by(.id) | last | {id:.id, user:.user.login, state:.state, submitted_at:.submitted_at} ]' \
     2>/dev/null || echo "[]")
   export ALL_REVIEWS_JSON
 }
