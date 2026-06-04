@@ -37,7 +37,7 @@ Before addressing review threads, assess the full PR state so you never declare 
 ${CI_STATUS_JSON}
 ```
 
-Identify any checks with `conclusion` = `"failure"` or `"timed_out"`. These are **Tier 1 blockers** — fix them before anything else.
+Identify any checks with `conclusion` = `"failure"`, `"timed_out"`, `"cancelled"`, `"action_required"`, `"stale"`, or `"startup_failure"`. These are **Tier 1 blockers** — fix them before anything else.
 
 **All review states:**
 

@@ -31,7 +31,7 @@ ${CI_STATUS_JSON}
 ${ALL_REVIEWS_JSON}
 ```
 
-Treat any check with `conclusion` = `"failure"` or `"timed_out"` and any review with `state` = `"CHANGES_REQUESTED"` as **Tier 1 blockers** — address them in addition to the bot comment below. Only declare "no-changes" when zero Tier 1 blockers exist.
+Treat any check with `conclusion` = `"failure"`, `"timed_out"`, `"cancelled"`, `"action_required"`, `"stale"`, or `"startup_failure"` and any review with `state` = `"CHANGES_REQUESTED"` as **Tier 1 blockers** — address them in addition to the bot comment below. Only declare "no-changes" when zero Tier 1 blockers exist.
 
 ## Task
 
