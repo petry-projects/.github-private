@@ -289,8 +289,8 @@ GHEOF
 
   run bash "$FIX_ISSUE_SCRIPT"
 
-  # Should not fail because of lint
-  [[ "$output" != *"lint check failed"* ]]
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"Lint check failed"* ]]
 }
 
 @test "fix-issue: lint fails → posts issue comment and exits without committing" {
@@ -342,6 +342,7 @@ GHEOF
 
   run bash "$FIX_ISSUE_SCRIPT"
 
+  [ "$status" -ne 0 ]
   # Lint failure must block the commit
   [ ! -f "$commit_sentinel" ]   # commit must NOT have been called
 
@@ -389,6 +390,7 @@ GHEOF
 
   run bash "$FIX_ISSUE_SCRIPT"
 
+  [ "$status" -ne 0 ]
   # A comment explaining the lint failure must be posted on the issue
   [ -f "$comment_sentinel" ]
 

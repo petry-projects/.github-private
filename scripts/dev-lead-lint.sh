@@ -32,54 +32,70 @@ agent_files=(agents/*.md)
 shopt -u nullglob
 if [ "${#agent_files[@]}" -gt 0 ]; then
   echo "  [lint] validating ${#agent_files[@]} agent profile(s)..."
-  profile_fail=0
-  for f in "${agent_files[@]}"; do
-    name_from_file=$(basename "$f" .md)
 
-    if ! awk 'NR==1 && $0!="---"{exit 1} /^---/{n++; if(n==2) exit} END{exit (n<2)}' "$f" 2>/dev/null; then
-      echo "FAIL: $f — frontmatter missing or does not begin on line 1"
-      profile_fail=1
-      continue
+  # Ensure PyYAML is available before validating profiles; try to install if missing.
+  pyyaml_ok=1
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "Lint check failed: python3 is required for agent profile validation but was not found."
+    pyyaml_ok=0
+    fail=1
+  elif ! python3 -c "import yaml" >/dev/null 2>&1; then
+    if pip3 install pyyaml --quiet >/dev/null 2>&1 && python3 -c "import yaml" >/dev/null 2>&1; then
+      echo "  [lint] PyYAML installed successfully"
+    else
+      echo "Lint check failed: PyYAML is required for agent profile validation but could not be installed."
+      echo "  Run: pip3 install pyyaml"
+      pyyaml_ok=0
+      fail=1
     fi
+  fi
 
-    frontmatter=$(awk 'BEGIN{found=0} /^---/{found++; if(found==2) exit; next} found==1{print}' "$f")
+  if [ "$pyyaml_ok" -eq 1 ]; then
+    profile_fail=0
+    for f in "${agent_files[@]}"; do
+      name_from_file=$(basename "$f" .md)
 
-    if command -v python3 >/dev/null 2>&1 && python3 -c "import yaml" >/dev/null 2>&1; then
+      if ! awk 'NR==1 && $0!="---"{exit 1} /^---/{n++; if(n==2) exit} END{exit (n<2)}' "$f" 2>/dev/null; then
+        echo "FAIL: $f — frontmatter missing or does not begin on line 1"
+        profile_fail=1
+        continue
+      fi
+
+      frontmatter=$(awk 'BEGIN{found=0} /^---/{found++; if(found==2) exit; next} found==1{print}' "$f")
+
       if ! printf '%s\n' "$frontmatter" | python3 -c "import sys, yaml; yaml.safe_load(sys.stdin)" 2>/dev/null; then
         echo "FAIL: $f — invalid YAML in frontmatter"
         profile_fail=1
         continue
       fi
-    else
-      echo "  [lint] python3 or PyYAML not found — skipping YAML syntax validation for $f"
-    fi
 
-    name_from_front=$(printf '%s\n' "$frontmatter" \
-      | sed -n 's/^name:[[:space:]]*//p' \
-      | sed "s/^['\"]//;s/['\"]$//" \
-      | head -1)
+      name_from_front=$(printf '%s\n' "$frontmatter" \
+        | sed -n 's/^name:[[:space:]]*//p' \
+        | sed "s/^['\"]//;s/['\"]$//" \
+        | head -1)
 
-    if [ -z "$name_from_front" ]; then
-      echo "FAIL: $f — missing 'name' field in frontmatter"
-      profile_fail=1
-    elif [ "$name_from_front" != "$name_from_file" ]; then
-      echo "FAIL: $f — name '$name_from_front' does not match filename '$name_from_file'"
-      profile_fail=1
-    elif ! printf '%s\n' "$name_from_file" | grep -qE '^[a-z0-9]+(-[a-z0-9]+)*$'; then
-      echo "FAIL: $f — name '$name_from_file' is not kebab-case"
-      profile_fail=1
-    fi
-
-    for field in description tools; do
-      if ! printf '%s\n' "$frontmatter" | grep -q "^${field}:"; then
-        echo "FAIL: $f — missing '${field}' field in frontmatter"
+      if [ -z "$name_from_front" ]; then
+        echo "FAIL: $f — missing 'name' field in frontmatter"
+        profile_fail=1
+      elif [ "$name_from_front" != "$name_from_file" ]; then
+        echo "FAIL: $f — name '$name_from_front' does not match filename '$name_from_file'"
+        profile_fail=1
+      elif ! printf '%s\n' "$name_from_file" | grep -qE '^[a-z0-9]+(-[a-z0-9]+)*$'; then
+        echo "FAIL: $f — name '$name_from_file' is not kebab-case"
         profile_fail=1
       fi
-    done
 
-    [ "$profile_fail" -eq 0 ] && echo "OK: $f"
-  done
-  [ "$profile_fail" -eq 0 ] || fail=1
+      for field in description tools; do
+        if ! printf '%s\n' "$frontmatter" | grep -q "^${field}:"; then
+          echo "FAIL: $f — missing '${field}' field in frontmatter"
+          profile_fail=1
+        fi
+      done
+
+      [ "$profile_fail" -eq 0 ] && echo "OK: $f"
+    done
+    [ "$profile_fail" -eq 0 ] || fail=1
+  fi
 fi
 
 if [ "$fail" -eq 0 ]; then
