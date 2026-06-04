@@ -259,6 +259,29 @@ resolve_actor_outdated_threads() {
   echo "::notice::resolve_actor_outdated_threads: resolved ${resolved_count} outdated thread(s) on PR #${PR_NUMBER}"
 }
 
+# fetch_pr_context: exports CI_STATUS_JSON and ALL_REVIEWS_JSON for holistic assessment.
+# Called before engine invocation in fix-reviews, fix-bot-comment, and review-changes
+# so the agent can identify Tier-1 blockers (failing CI + CHANGES_REQUESTED reviews)
+# and never wrongly declare "no-changes" while the PR is still blocked.
+fetch_pr_context() {
+  # CI check results: requires HEAD_SHA. Gracefully degrade to empty array when not set
+  # (e.g., review-changes in dry-run where the PR API call is skipped).
+  CI_STATUS_JSON="[]"
+  if [ -n "${HEAD_SHA:-}" ]; then
+    CI_STATUS_JSON=$(gh api "repos/${REPO}/commits/${HEAD_SHA}/check-runs?per_page=100" \
+      --jq '[.check_runs[] | {name:.name, status:.status, conclusion:.conclusion, details_url:.details_url}]' \
+      2>/dev/null || echo "[]")
+  fi
+  export CI_STATUS_JSON
+
+  # All PR reviews with state — includes APPROVED, CHANGES_REQUESTED, COMMENTED from
+  # every reviewer (human and bot). Gives the agent a full picture of who is blocking.
+  ALL_REVIEWS_JSON=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/reviews?per_page=100" \
+    --jq '[.[] | {id:.id, user:.user.login, state:.state, submitted_at:.submitted_at}]' \
+    2>/dev/null || echo "[]")
+  export ALL_REVIEWS_JSON
+}
+
 # try_enable_auto_merge: enables auto-merge (squash) on the PR if reviewDecision is
 # APPROVED and auto-merge is not already set. Safe to call speculatively — checks
 # eligibility first and is idempotent if auto-merge is already on.
@@ -525,6 +548,7 @@ case "$INTENT_TYPE" in
       -F owner="${REPO%%/*}" -F repo="${REPO##*/}" -F pr="$PR_NUMBER" \
       --jq '.data.repository.pullRequest.reviewThreads.nodes | map(select(.isResolved == false))' 2>/dev/null || echo "[]")
     export OPEN_THREADS_JSON
+    fetch_pr_context
     rc=0
     build_and_run "fix-reviews" || rc=$?
     [ "$rc" -eq 2 ] && handle_rate_limit "fix-reviews"
@@ -544,6 +568,7 @@ case "$INTENT_TYPE" in
   fix-bot-comment)
     export PR_NUMBER PR_URL="https://github.com/${REPO}/pull/${PR_NUMBER}"
     export REPO ACTOR="${ACTOR:-}" COMMENT_BODY="${COMMENT_BODY:-}" HEAD_SHA
+    fetch_pr_context
     rc=0
     build_and_run "fix-bot-comment" || rc=$?
     [ "$rc" -eq 2 ] && handle_rate_limit "fix-bot-comment"
@@ -596,6 +621,7 @@ case "$INTENT_TYPE" in
       -F owner="${REPO%%/*}" -F repo="${REPO##*/}" -F pr="$PR_NUMBER" \
       --jq '.data.repository.pullRequest.reviewThreads.nodes | map(select(.isResolved == false))' 2>/dev/null || echo "[]")
     export OPEN_THREADS_JSON BASE_REF="${BASE_REF:-main}"
+    fetch_pr_context
     rc=0
     build_and_run "review-changes" || rc=$?
     [ "$rc" -eq 2 ] && handle_rate_limit "review-changes"

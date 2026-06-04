@@ -877,3 +877,139 @@ STUB
 
   [[ "$output" == *"ACTOR not set for intent=fix-reviews"* ]]
 }
+
+# ── holistic assessment: CI_STATUS_JSON and ALL_REVIEWS_JSON fetching ──────────
+# These tests verify that fix-reviews, review-changes, and fix-bot-comment all
+# fetch CI check results and all PR reviews before running the engine, so the
+# agent can detect Tier-1 blockers (failing CI + CHANGES_REQUESTED reviews) and
+# never wrongly declare "no-changes" while the PR is still blocked.
+
+_make_assessment_gh_stub() {
+  local calls_file="$1"
+  cat > "$STUB_BIN_DIR/gh" << GHEOF
+#!/usr/bin/env bash
+# Record every invocation for assertion
+printf '%s\n' "\$*" >> "${calls_file}"
+ARGS="\$*"
+case "\$ARGS" in
+  *"commits/"*"check-runs"*)
+    echo '{"check_runs":[{"name":"Lint","status":"completed","conclusion":"failure","details_url":"https://example.com"}]}' ;;
+  *"pulls/"*"/reviews"*)
+    echo '[{"id":1,"user":{"login":"gemini-code-assist[bot]"},"state":"CHANGES_REQUESTED","submitted_at":"2024-01-01T00:00:00Z"}]' ;;
+  *"graphql"*)
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+  *"issues/"*"comments"*)
+    echo "[]" ;;
+  *"pr checkout"*) exit 0 ;;
+  *"pr comment"*) exit 0 ;;
+  *"pr merge"*) exit 0 ;;
+  *"pulls/"*) echo '{"head":{"sha":"ddd444eee555"},"auto_merge":null}' ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+}
+
+@test "fix-reviews: fix-reviews case fetches CI check-runs endpoint" {
+  export INTENT_TYPE="fix-reviews"
+  export DEV_LEAD_DRY_RUN="true"
+  export HEAD_SHA="ddd444eee555"
+
+  local calls_file
+  calls_file="$(mktemp)"
+  _make_assessment_gh_stub "$calls_file"
+
+  run bash "$FIX_REVIEWS_SCRIPT"
+
+  [ "$status" -eq 0 ]
+  # Script must have called the check-runs API endpoint
+  grep -q "commits/.*check-runs" "$calls_file"
+  rm -f "$calls_file"
+}
+
+@test "fix-reviews: fix-reviews case fetches all PR reviews endpoint" {
+  export INTENT_TYPE="fix-reviews"
+  export DEV_LEAD_DRY_RUN="true"
+  export HEAD_SHA="ddd444eee555"
+
+  local calls_file
+  calls_file="$(mktemp)"
+  _make_assessment_gh_stub "$calls_file"
+
+  run bash "$FIX_REVIEWS_SCRIPT"
+
+  [ "$status" -eq 0 ]
+  # Script must have called the reviews API endpoint
+  grep -q "pulls/.*reviews" "$calls_file"
+  rm -f "$calls_file"
+}
+
+@test "fix-reviews: review-changes case fetches CI check-runs endpoint" {
+  export INTENT_TYPE="review-changes"
+  export DEV_LEAD_DRY_RUN="true"
+  export HEAD_SHA="ddd444eee555"
+  export PR_TITLE="Test PR"
+  export PR_DESCRIPTION="A test pull request"
+
+  local calls_file
+  calls_file="$(mktemp)"
+  _make_assessment_gh_stub "$calls_file"
+
+  run bash "$FIX_REVIEWS_SCRIPT"
+
+  [ "$status" -eq 0 ]
+  grep -q "commits/.*check-runs" "$calls_file"
+  rm -f "$calls_file"
+}
+
+@test "fix-reviews: review-changes case fetches all PR reviews endpoint" {
+  export INTENT_TYPE="review-changes"
+  export DEV_LEAD_DRY_RUN="true"
+  export HEAD_SHA="ddd444eee555"
+  export PR_TITLE="Test PR"
+  export PR_DESCRIPTION="A test pull request"
+
+  local calls_file
+  calls_file="$(mktemp)"
+  _make_assessment_gh_stub "$calls_file"
+
+  run bash "$FIX_REVIEWS_SCRIPT"
+
+  [ "$status" -eq 0 ]
+  grep -q "pulls/.*reviews" "$calls_file"
+  rm -f "$calls_file"
+}
+
+@test "fix-reviews: fix-bot-comment case fetches CI check-runs endpoint" {
+  export INTENT_TYPE="fix-bot-comment"
+  export DEV_LEAD_DRY_RUN="true"
+  export HEAD_SHA="ddd444eee555"
+  export COMMENT_BODY="SonarQube found issues"
+
+  local calls_file
+  calls_file="$(mktemp)"
+  _make_assessment_gh_stub "$calls_file"
+
+  run bash "$FIX_REVIEWS_SCRIPT"
+
+  [ "$status" -eq 0 ]
+  grep -q "commits/.*check-runs" "$calls_file"
+  rm -f "$calls_file"
+}
+
+@test "fix-reviews: fix-bot-comment case fetches all PR reviews endpoint" {
+  export INTENT_TYPE="fix-bot-comment"
+  export DEV_LEAD_DRY_RUN="true"
+  export HEAD_SHA="ddd444eee555"
+  export COMMENT_BODY="SonarQube found issues"
+
+  local calls_file
+  calls_file="$(mktemp)"
+  _make_assessment_gh_stub "$calls_file"
+
+  run bash "$FIX_REVIEWS_SCRIPT"
+
+  [ "$status" -eq 0 ]
+  grep -q "pulls/.*reviews" "$calls_file"
+  rm -f "$calls_file"
+}
