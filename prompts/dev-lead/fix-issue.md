@@ -1,4 +1,4 @@
-<!-- VARIABLES: ISSUE_NUMBER, ISSUE_URL, REPO, ISSUE_TITLE, ISSUE_BODY, ORG_STANDARDS_HINT -->
+<!-- VARIABLES: ISSUE_NUMBER, ISSUE_URL, REPO, ISSUE_TITLE, ISSUE_BODY, ORG_STANDARDS_HINT, LINT_SCRIPT -->
 # Dev-Lead Agent: Implement Issue
 
 You are the dev-lead agent for the `${REPO}` repository. You have been assigned to implement a GitHub issue.
@@ -99,14 +99,20 @@ Follow the checklist from Phase 1:
 Before declaring done:
 
 1. Run the **full** test suite — every test must pass, not just the new ones
-2. Run the repo lint check — this is **required** and must pass before you finish:
+2. Run the required repo lint check — this **must** pass before you finish:
    ```bash
-   bash scripts/dev-lead-lint.sh
+   bash "${LINT_SCRIPT}"
    ```
    This checks shellcheck (warning level) on all `scripts/**/*.sh` files and validates
    `agents/*.md` frontmatter. Fix any failures it reports before proceeding.
-3. **Do not suppress or delete tests to force a pass — fix the implementation instead**
-4. If linting requires changes, apply them and re-run tests to confirm nothing broke
+3. Discover and run any repo-specific lint and format tools available in this repo:
+   - `package.json` with `lint`/`format`/`check` scripts → `npm run lint`, etc.
+   - Python projects → `ruff check .`, `flake8`, or `black --check .` if present
+   - Go projects → `golangci-lint run` if present
+   - Any other linter implied by config files (`.eslintrc*`, `pyproject.toml`, `golangci.yml`, etc.)
+   Fix any failures before proceeding.
+4. **Do not suppress or delete tests to force a pass — fix the implementation instead**
+5. If linting requires changes, apply them and re-run tests to confirm nothing broke
 
 ---
 

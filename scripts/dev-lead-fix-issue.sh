@@ -49,6 +49,9 @@ main() {
   ISSUE_BODY=$(gh api "repos/${REPO}/issues/${ISSUE_NUMBER}" --jq '.body // ""' 2>/dev/null || echo "")
   ORG_STANDARDS_HINT="See AGENTS.md and docs/ for coding standards."
   export ISSUE_TITLE ISSUE_BODY ORG_STANDARDS_HINT
+  # Export lint script path so it is substituted into the rendered prompt.
+  # dirname "$0" resolves correctly in both direct (scripts/) and reusable (.dev-lead/scripts/) runs.
+  export LINT_SCRIPT="${LINT_SCRIPT:-"$(dirname "$0")/dev-lead-lint.sh"}"
 
   local prompt_file="/tmp/dev-lead-fix-issue-prompt-$$.md"
   local template_path="${PROMPTS_DIR}/fix-issue.md"
@@ -112,12 +115,11 @@ main() {
   fi
 
   # Run lint before committing to prevent avoidable CI failures.
-  # LINT_SCRIPT can be overridden in tests; defaults to sibling script.
-  local _lint_script="${LINT_SCRIPT:-"$(dirname "$0")/dev-lead-lint.sh"}"
+  # LINT_SCRIPT was exported above (resolves to the correct path in both direct and reusable runs).
   local lint_rc=0
   local lint_output=""
-  if [ -f "$_lint_script" ]; then
-    lint_output=$(bash "$_lint_script" 2>&1) || lint_rc=$?
+  if [ -f "$LINT_SCRIPT" ]; then
+    lint_output=$(bash "$LINT_SCRIPT" 2>&1) || lint_rc=$?
   fi
 
   if [ "$lint_rc" -ne 0 ]; then
