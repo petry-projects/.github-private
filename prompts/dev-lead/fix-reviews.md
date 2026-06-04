@@ -1,4 +1,4 @@
-<!-- VARIABLES: PR_NUMBER, PR_URL, REPO, OPEN_THREADS_JSON, BASE_REF, TRIGGERING_REVIEWER -->
+<!-- VARIABLES: PR_NUMBER, PR_URL, REPO, OPEN_THREADS_JSON, BASE_REF, TRIGGERING_REVIEWER, CI_STATUS_JSON, ALL_REVIEWS_JSON -->
 # Dev-Lead Agent: Fix Review Comments
 
 You are the dev-lead agent for the `${REPO}` repository. Your task is to address open review threads on a pull request.

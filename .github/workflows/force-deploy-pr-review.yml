@@ -13,18 +13,18 @@ jobs:
       matrix:
         repo: [bmad-bgreat-suite, google-app-scripts]
       max-parallel: 1
-    
+
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Deploy to ${{ matrix.repo }}
         run: |
           mkdir -p temp_repo
           cd temp_repo
-          
+
           git clone https://${{ secrets.GITHUB_TOKEN }}@github.com/petry-projects/${{ matrix.repo }}.git
           cd ${{ matrix.repo }}
-          
+
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
