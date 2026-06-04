@@ -19,6 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     strategy:
+      fail-fast: false
       matrix:
         repo: [bmad-bgreat-suite, google-app-scripts, markets, ContentTwin]
 
@@ -36,8 +37,18 @@ jobs:
 
           CONTENT_B64=$(base64 -w0 < .github/workflows/pr-review.yml)
 
-          CURRENT_SHA=$(gh api "repos/petry-projects/$REPO/contents/.github/workflows/pr-review.yml" \
-            --jq '.sha' 2>/dev/null || echo "")
+          GH_ERR=$(mktemp)
+          if ! CURRENT_SHA=$(gh api "repos/petry-projects/$REPO/contents/.github/workflows/pr-review.yml" \
+            --jq '.sha' 2>"$GH_ERR"); then
+            if grep -q '"Not Found"' "$GH_ERR"; then
+              CURRENT_SHA=""
+            else
+              cat "$GH_ERR" >&2
+              rm -f "$GH_ERR"
+              exit 1
+            fi
+          fi
+          rm -f "$GH_ERR"
 
           SHA_ARGS=()
           if [ -n "$CURRENT_SHA" ]; then
