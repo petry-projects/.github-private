@@ -1445,9 +1445,9 @@ GHEOF
   rm -rf "$tmpdir"
 
   [ "$status" -eq 0 ]
-  # When unresolved bot threads exist, blockers are present
-  [[ "$output" == *"Tier-1 blockers still present"* ]]
-  [[ "$output" == *"unresolved bot threads"* ]]
+  # When bot threads are the only blocker, the retry marker is posted (not the hard-blocker warning)
+  [[ "$output" == *"Unresolved bot review threads remain"* ]]
+  [[ "$output" == *"rate-limited marker"* ]]
 }
 
 @test "fix-reviews: does not post no-changes when unresolved bot threads exist" {
@@ -1502,8 +1502,126 @@ GHEOF
   rm -rf "$tmpdir"
 
   [ "$status" -eq 0 ]
-  # Unresolved bot threads present → has_tier1_blockers returns true → no-changes marker NOT posted
+  # Unresolved bot threads present → bot-only path: retry marker posted, no-changes marker NOT posted
   [[ "$output" != *"status=no-changes"* ]]
+  [[ "$output" == *"Unresolved bot review threads remain"* ]]
+  [[ "$output" == *"rate-limited marker"* ]]
+}
+
+@test "fix-reviews: detects bot threads via __typename Bot (login without [bot] suffix)" {
+  local tmpdir
+  tmpdir="$(mktemp -d)"
+
+  # Stub: graphql returns a bot thread where login has no [bot] suffix but __typename is "Bot"
+  cat > "$STUB_BIN_DIR/gh" <<'GHEOF'
+#!/usr/bin/env bash
+ARGS="$*"
+case "$ARGS" in
+  *"check-runs"*)
+    echo '{"check_runs":[{"name":"Lint","status":"completed","conclusion":"success","details_url":"https://example.com"}]}' ;;
+  *"statuses"*)
+    echo '[]' ;;
+  *"pulls/"*"reviews"*)
+    echo '[]' ;;
+  *"graphql"*)
+    echo '{
+      "data": {
+        "repository": {
+          "pullRequest": {
+            "reviewThreads": {
+              "nodes": [
+                {
+                  "isResolved": false,
+                  "comments": {"nodes": [{"author": {"login": "some-bot-without-suffix", "__typename": "Bot"}}]}
+                }
+              ]
+            },
+            "reviewDecision": null
+          }
+        }
+      }
+    }' ;;
+  *"pr checkout"*) exit 0 ;;
+  *"pr comment"*) exit 0 ;;
+  *"pr merge"*) exit 0 ;;
+  *"pulls/"*) echo '{"head":{"sha":"abc123"},"auto_merge":null}' ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+
+  run bash -c "
+    cd '$tmpdir'
+    export INTENT_TYPE=review-changes DEV_LEAD_DRY_RUN=true
+    export PR_NUMBER=422 HEAD_SHA=abc123 REPO='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export PATH=\"$STUB_BIN_DIR:\$PATH\"
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+  rm -rf "$tmpdir"
+
+  [ "$status" -eq 0 ]
+  # Bot detected via __typename == "Bot" even without [bot] suffix → retry marker posted
+  [[ "$output" == *"Unresolved bot review threads remain"* ]]
+  [[ "$output" == *"rate-limited marker"* ]]
+  [[ "$output" != *"status=no-changes"* ]]
+}
+
+@test "fix-reviews: hard blockers take precedence over bot thread warning" {
+  local tmpdir
+  tmpdir="$(mktemp -d)"
+
+  # Stub: failing CI + unresolved bot thread → hard blocker wins, no retry marker
+  cat > "$STUB_BIN_DIR/gh" <<'GHEOF'
+#!/usr/bin/env bash
+ARGS="$*"
+case "$ARGS" in
+  *"check-runs"*)
+    echo '{"check_runs":[{"name":"Lint","status":"completed","conclusion":"failure","details_url":"https://example.com"}]}' ;;
+  *"statuses"*)
+    echo '[]' ;;
+  *"pulls/"*"reviews"*)
+    echo '[]' ;;
+  *"graphql"*)
+    echo '{
+      "data": {
+        "repository": {
+          "pullRequest": {
+            "reviewThreads": {
+              "nodes": [
+                {
+                  "isResolved": false,
+                  "comments": {"nodes": [{"author": {"login": "coderabbitai[bot]", "__typename": "Bot"}}]}
+                }
+              ]
+            },
+            "reviewDecision": null
+          }
+        }
+      }
+    }' ;;
+  *"pr checkout"*) exit 0 ;;
+  *"pr comment"*) exit 0 ;;
+  *"pr merge"*) exit 0 ;;
+  *"pulls/"*) echo '{"head":{"sha":"abc123"},"auto_merge":null}' ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+
+  run bash -c "
+    cd '$tmpdir'
+    export INTENT_TYPE=review-changes DEV_LEAD_DRY_RUN=true
+    export PR_NUMBER=422 HEAD_SHA=abc123 REPO='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export PATH=\"$STUB_BIN_DIR:\$PATH\"
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+  rm -rf "$tmpdir"
+
+  [ "$status" -eq 0 ]
+  # Hard blocker (failing CI) → shows hard-blocker warning, NOT the bot-thread retry path
   [[ "$output" == *"Tier-1 blockers still present"* ]]
-  [[ "$output" == *"unresolved bot threads"* ]]
+  [[ "$output" != *"Unresolved bot review threads remain"* ]]
+  [[ "$output" != *"status=no-changes"* ]]
 }

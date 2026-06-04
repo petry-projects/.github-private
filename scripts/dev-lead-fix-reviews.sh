@@ -300,13 +300,14 @@ fetch_pr_context() {
   export ALL_REVIEWS_JSON
 }
 
-# resolve_bot_outdated_threads: resolves all outdated review threads from bot reviewers.
+# resolve_bot_outdated_threads: resolves up to 100 outdated review threads from bot reviewers.
 # This is a cleanup function for the no-changes path: when no code changes are needed,
 # we still want to mark outdated bot comments as resolved so they don't clutter the PR.
 # Outdated threads reference code that no longer exists, so resolution is unambiguous.
 #
+# Best-effort: fetches the first 100 threads only (not paginated — acceptable for cleanup).
 # Unlike resolve_actor_outdated_threads, this resolves threads from ANY bot author
-# (author login ends with [bot]), not just a specific ACTOR.
+# (author __typename == "Bot", or login ends with [bot]).
 resolve_bot_outdated_threads() {
   local intent="$1"
   if [ "${DEV_LEAD_DRY_RUN:-false}" = "true" ]; then
@@ -320,22 +321,25 @@ resolve_bot_outdated_threads() {
   fi
 
   local ids
-  # Query for all unresolved outdated threads where the author is a bot (login ends with [bot])
+  # Query for unresolved outdated threads where the author is a bot.
+  # __typename == "Bot" covers bots whose GraphQL login omits the [bot] suffix;
+  # endswith("[bot]") covers bots that include it — both checks together are belt-and-suspenders.
   ids=$(gh api graphql -f query='
     query($owner:String!,$repo:String!,$pr:Int!) {
       repository(owner:$owner, name:$repo) {
         pullRequest(number:$pr) {
           reviewThreads(first:100) {
-            nodes { id isResolved isOutdated comments(first:1) { nodes { author { login } } } }
+            nodes { id isResolved isOutdated comments(first:1) { nodes { author { login __typename } } } }
           }
         }
       }
     }' \
     -F owner="${REPO%%/*}" -F repo="${REPO##*/}" -F pr="$PR_NUMBER" 2>/dev/null \
-    | jq -r '.data.repository.pullRequest.reviewThreads.nodes
+    | jq -r '.data?.repository?.pullRequest?.reviewThreads?.nodes // []
       | map(select(.isResolved == false
                    and .isOutdated == true
-                   and (.comments.nodes[0].author.login | endswith("[bot]"))))
+                   and (((.comments.nodes?[0]?.author?.login // "") | endswith("[bot]"))
+                        or ((.comments.nodes?[0]?.author?.__typename // "") == "Bot"))))
       | .[].id' 2>/dev/null || true)
 
   if [ -z "$ids" ]; then
@@ -355,6 +359,28 @@ resolve_bot_outdated_threads() {
     fi
   done <<< "$ids"
   echo "::notice::resolve_bot_outdated_threads: resolved ${resolved_count} outdated bot thread(s) on PR #${PR_NUMBER}"
+}
+
+# has_hard_blockers: returns 0 (true) if CI_STATUS_JSON or ALL_REVIEWS_JSON contain
+# hard Tier-1 blockers (failing CI checks or CHANGES_REQUESTED reviews).
+# Unlike has_tier1_blockers, does NOT check for unresolved bot threads — used to
+# distinguish "bot threads are the sole blocker" from "hard blockers present", so
+# callers can post a retry marker instead of silently stalling on bot feedback.
+has_hard_blockers() {
+  local failing_checks changes_requested
+
+  failing_checks=$(printf '%s' "${CI_STATUS_JSON:-[]}" | \
+    jq '[.[] | select(.conclusion != null and (
+          .conclusion == "failure" or .conclusion == "timed_out" or
+          .conclusion == "cancelled" or .conclusion == "action_required" or
+          .conclusion == "stale" or .conclusion == "startup_failure"
+        ))] | length' 2>/dev/null || echo "0")
+
+  changes_requested=$(printf '%s' "${ALL_REVIEWS_JSON:-[]}" | \
+    jq '[.[] | select(.state == "CHANGES_REQUESTED")] | length' \
+    2>/dev/null || echo "0")
+
+  [ "${failing_checks:-0}" -gt 0 ] || [ "${changes_requested:-0}" -gt 0 ]
 }
 
 # has_tier1_blockers: returns 0 (true) if CI_STATUS_JSON, ALL_REVIEWS_JSON, or unresolved
@@ -378,25 +404,43 @@ has_tier1_blockers() {
     jq '[.[] | select(.state == "CHANGES_REQUESTED")] | length' \
     2>/dev/null || echo "0")
 
-  # Check for unresolved bot reviewer threads. This prevents declaring "no-changes"
-  # when bot comments still need addressing. Use GraphQL to fetch thread status.
+  # Count unresolved bot reviewer threads with cursor pagination to cover PRs with >100 threads.
+  # Detects bots via __typename == "Bot" (covers bots whose GraphQL login omits [bot] suffix)
+  # or login ending with [bot] (belt-and-suspenders for bots that include the suffix).
   unresolved_bot_threads=0
   if [ -n "${PR_NUMBER:-}" ]; then
-    unresolved_bot_threads=$(gh api graphql -f query='
-      query($owner:String!,$repo:String!,$pr:Int!) {
-        repository(owner:$owner, name:$repo) {
-          pullRequest(number:$pr) {
-            reviewThreads(first:100) {
-              nodes { isResolved comments(first:1) { nodes { author { login } } } }
-            }
+    local cursor="" has_next_page="true" page_response page_count
+    local cursor_args=()
+    local bot_thread_query='query($owner:String!,$repo:String!,$pr:Int!,$cursor:String){
+      repository(owner:$owner,name:$repo){
+        pullRequest(number:$pr){
+          reviewThreads(first:100,after:$cursor){
+            pageInfo{hasNextPage endCursor}
+            nodes{isResolved comments(first:1){nodes{author{login __typename}}}}
           }
         }
-      }' \
-      -F owner="${REPO%%/*}" -F repo="${REPO##*/}" -F pr="$PR_NUMBER" 2>/dev/null \
-      | jq '[.data.repository.pullRequest.reviewThreads.nodes
+      }
+    }'
+    while [ "$has_next_page" = "true" ]; do
+      page_response=$(gh api graphql -f query="$bot_thread_query" \
+        -F owner="${REPO%%/*}" -F repo="${REPO##*/}" -F pr="$PR_NUMBER" \
+        "${cursor_args[@]}" 2>/dev/null || echo "{}")
+      page_count=$(printf '%s' "$page_response" | jq \
+        '[.data?.repository?.pullRequest?.reviewThreads?.nodes // []
         | map(select(.isResolved == false
-                     and (.comments.nodes[0].author.login | endswith("[bot]"))))
+                     and (((.comments.nodes?[0]?.author?.login // "") | endswith("[bot]"))
+                          or ((.comments.nodes?[0]?.author?.__typename // "") == "Bot"))))
         | length] | .[0]' 2>/dev/null || echo "0")
+      unresolved_bot_threads=$(( ${unresolved_bot_threads:-0} + ${page_count:-0} ))
+      has_next_page=$(printf '%s' "$page_response" | jq -r \
+        '.data?.repository?.pullRequest?.reviewThreads?.pageInfo?.hasNextPage // false' \
+        2>/dev/null || echo "false")
+      cursor=$(printf '%s' "$page_response" | jq -r \
+        '.data?.repository?.pullRequest?.reviewThreads?.pageInfo?.endCursor // ""' \
+        2>/dev/null || echo "")
+      [ -z "$cursor" ] && has_next_page="false"
+      cursor_args=("-f" "cursor=${cursor}")
+    done
   fi
 
   [ "${failing_checks:-0}" -gt 0 ] || [ "${changes_requested:-0}" -gt 0 ] || [ "${unresolved_bot_threads:-0}" -gt 0 ]
@@ -684,8 +728,11 @@ case "$INTENT_TYPE" in
         post_reviews_terminal "fix-reviews" "applied" "Changes committed and pushed."
       else
         notify_coderabbit_resolve
-        if has_tier1_blockers; then
-          echo "::warning::Tier-1 blockers still present (failing CI, CHANGES_REQUESTED reviews, or unresolved bot threads) — skipping no-changes marker to allow retries"
+        if has_hard_blockers; then
+          echo "::warning::Tier-1 blockers still present (failing CI or CHANGES_REQUESTED reviews) — skipping no-changes marker to allow retries"
+        elif has_tier1_blockers; then
+          echo "::warning::Unresolved bot review threads remain — posting retry marker so the cron re-dispatches after the bot resolves its feedback"
+          post_reviews_rate_limited "fix-reviews"
         else
           post_no_changes "fix-reviews"
         fi
@@ -710,8 +757,11 @@ case "$INTENT_TYPE" in
         post_reviews_terminal "fix-bot-comment" "applied" "Changes committed and pushed."
       else
         notify_coderabbit_resolve
-        if has_tier1_blockers; then
-          echo "::warning::Tier-1 blockers still present (failing CI, CHANGES_REQUESTED reviews, or unresolved bot threads) — skipping no-changes marker to allow retries"
+        if has_hard_blockers; then
+          echo "::warning::Tier-1 blockers still present (failing CI or CHANGES_REQUESTED reviews) — skipping no-changes marker to allow retries"
+        elif has_tier1_blockers; then
+          echo "::warning::Unresolved bot review threads remain — posting retry marker so the cron re-dispatches after the bot resolves its feedback"
+          post_reviews_rate_limited "fix-bot-comment"
         else
           post_no_changes "fix-bot-comment"
         fi
@@ -769,8 +819,11 @@ case "$INTENT_TYPE" in
         post_reviews_terminal "review-changes" "applied" "Changes committed and pushed."
       else
         notify_coderabbit_resolve
-        if has_tier1_blockers; then
-          echo "::warning::Tier-1 blockers still present (failing CI, CHANGES_REQUESTED reviews, or unresolved bot threads) — skipping no-changes marker to allow retries"
+        if has_hard_blockers; then
+          echo "::warning::Tier-1 blockers still present (failing CI or CHANGES_REQUESTED reviews) — skipping no-changes marker to allow retries"
+        elif has_tier1_blockers; then
+          echo "::warning::Unresolved bot review threads remain — posting retry marker so the cron re-dispatches after the bot resolves its feedback"
+          post_reviews_rate_limited "review-changes"
         else
           post_reviews_terminal "review-changes" "no-changes" "No changes were needed for this PR."
         fi
