@@ -287,12 +287,13 @@ fetch_pr_context() {
     # so `first` picks the newest entry for each context.
     if statuses_json=$(gh api --paginate "repos/${REPO}/commits/${HEAD_SHA}/statuses?per_page=100" \
       2>/dev/null \
-      | jq -s '[ [.[].[] | select(.context != null)] | group_by(.context)[] | first | {name:.context, status:(if .state == "pending" then "in_progress" else "completed" end), conclusion:(if .state == "success" then "success" elif .state == "failure" or .state == "error" then "failure" else null end), details_url:.target_url} ]' \
+      | jq -s '[ [.[].[] | select(.context != null)] | group_by(.context)[] | first | {name:.context, status:(if .state == "pending" then "in_progress" else "completed" end), conclusion:(if .state == "success" then "success" elif .state == "failure" or .state == "error" then "failure" else "pending" end), details_url:.target_url} ]' \
       2>/dev/null); then
       CI_STATUS_JSON=$(printf '%s\n%s' "$CI_STATUS_JSON" "$statuses_json" \
         | jq -s 'add // []' 2>/dev/null || echo "$CI_STATUS_JSON")
     else
-      echo "::warning::fetch_pr_context: failed to fetch legacy commit statuses for ${HEAD_SHA} — using check-runs only" >&2
+      echo "::error::fetch_pr_context: failed to fetch legacy commit statuses for ${HEAD_SHA} — cannot assess PR state" >&2
+      return 1
     fi
   fi
   export CI_STATUS_JSON
@@ -402,7 +403,8 @@ has_hard_blockers() {
     jq '[.[] | select(.conclusion != null and (
           .conclusion == "failure" or .conclusion == "timed_out" or
           .conclusion == "cancelled" or .conclusion == "action_required" or
-          .conclusion == "stale" or .conclusion == "startup_failure"
+          .conclusion == "stale" or .conclusion == "startup_failure" or
+          .conclusion == "pending"
         ))] | length' 2>/dev/null || echo "0")
 
   changes_requested=$(printf '%s' "${ALL_REVIEWS_JSON:-[]}" | \
@@ -426,7 +428,8 @@ has_tier1_blockers() {
     jq '[.[] | select(.conclusion != null and (
           .conclusion == "failure" or .conclusion == "timed_out" or
           .conclusion == "cancelled" or .conclusion == "action_required" or
-          .conclusion == "stale" or .conclusion == "startup_failure"
+          .conclusion == "stale" or .conclusion == "startup_failure" or
+          .conclusion == "pending"
         ))] | length' 2>/dev/null || echo "0")
 
   changes_requested=$(printf '%s' "${ALL_REVIEWS_JSON:-[]}" | \
@@ -610,6 +613,29 @@ commit_and_push() {
   return 0
 }
 
+# expire_stale_no_changes_marker: deletes any existing no-changes terminal comment for
+# this SHA+intent before a hard-blocker retry marker is posted. Without this, the retry
+# cron sees the stale terminal and skips re-dispatch even though a new hard blocker
+# (e.g. a CHANGES_REQUESTED review added after the no-changes run) now requires retry.
+expire_stale_no_changes_marker() {
+  local intent="$1"
+  local sha="${HEAD_SHA:-}"
+  [ -z "$sha" ] && return 0
+  if [ "${DEV_LEAD_DRY_RUN:-false}" = "true" ]; then
+    echo "[dry-run] would expire stale no-changes marker for intent=${intent} sha=${sha}"
+    return 0
+  fi
+  local pattern="${REVIEWS_MARKER_PREFIX}${PR_NUMBER} sha=${sha} intent=${intent} status=no-changes"
+  local stale_ids
+  stale_ids=$(gh api --paginate "repos/${REPO}/issues/${PR_NUMBER}/comments?per_page=100" 2>/dev/null \
+    | jq -r --arg pat "$pattern" '[.[] | select(.body | test($pat))] | .[].id' 2>/dev/null || true)
+  for comment_id in $stale_ids; do
+    echo "::notice::expire_stale_no_changes_marker: deleting stale no-changes comment ${comment_id} for intent=${intent} SHA=${sha}"
+    gh api -X DELETE "repos/${REPO}/issues/comments/${comment_id}" 2>/dev/null || \
+      echo "::warning::expire_stale_no_changes_marker: failed to delete comment ${comment_id}" >&2
+  done
+}
+
 # has_reviews_rate_limited_marker: returns 0 if a rate-limited marker for this
 # intent+SHA already exists on the PR (dedup check).
 has_reviews_rate_limited_marker() {
@@ -763,6 +789,7 @@ case "$INTENT_TYPE" in
         if has_hard_blockers; then
           echo "::warning::Tier-1 blockers still present (failing CI or CHANGES_REQUESTED reviews) — posting retry marker with backoff"
           printf '%s' "$(date -u -d '+30 minutes' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)" > /tmp/dev-lead-rate-limit-reset
+          expire_stale_no_changes_marker "fix-reviews"
           post_reviews_rate_limited "fix-reviews"
         else
           post_no_changes "fix-reviews"
@@ -854,6 +881,7 @@ case "$INTENT_TYPE" in
         if has_hard_blockers; then
           echo "::warning::Tier-1 blockers still present (failing CI or CHANGES_REQUESTED reviews) — posting retry marker with backoff"
           printf '%s' "$(date -u -d '+30 minutes' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)" > /tmp/dev-lead-rate-limit-reset
+          expire_stale_no_changes_marker "review-changes"
           post_reviews_rate_limited "review-changes"
         else
           post_reviews_terminal "review-changes" "no-changes" "No changes were needed for this PR."

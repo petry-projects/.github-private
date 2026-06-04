@@ -1313,7 +1313,7 @@ GHEOF
 # The /statuses API returns the full history per context (newest first). A stale
 # failure followed by a newer success for the same context must not suppress
 # no-changes — only the latest entry per context should be considered.
-readonly JQ_DEDUP_STATUSES='[ [.[].[] | select(.context != null)] | group_by(.context)[] | first | {name:.context, conclusion:(if .state == "success" then "success" elif .state == "failure" or .state == "error" then "failure" else null end)} ]'
+readonly JQ_DEDUP_STATUSES='[ [.[].[] | select(.context != null)] | group_by(.context)[] | first | {name:.context, conclusion:(if .state == "success" then "success" elif .state == "failure" or .state == "error" then "failure" else "pending" end)} ]'
 
 @test "collect_assessment_data: jq statuses dedup keeps only latest entry per context" {
   # GitHub /statuses API returns newest-first. Here jenkins/build had a failure then a
@@ -1918,4 +1918,218 @@ GHEOF
   [[ "$output" == *"fix-bot-comment is not automatically retried"* ]]
   [[ "$output" == *"status=no-changes"* ]]
   [[ "$output" != *"[dry-run] would post rate-limited marker"* ]]
+}
+
+# ── Thread 1: pending legacy statuses are treated as Tier-1 blockers ─────────
+
+@test "fix-reviews: pending legacy status is treated as Tier-1 blocker" {
+  local tmpdir
+  tmpdir="$(mktemp -d)"
+
+  # Stub: check-runs all pass, but an external legacy status is still pending
+  cat > "$STUB_BIN_DIR/gh" <<'GHEOF'
+#!/usr/bin/env bash
+ARGS="$*"
+case "$ARGS" in
+  *"check-runs"*)
+    echo '{"check_runs":[{"name":"Lint","status":"completed","conclusion":"success","details_url":"https://example.com"}]}' ;;
+  *"statuses"*)
+    echo '[{"context":"jenkins/build","state":"pending","target_url":"https://ci.example.com/1"}]' ;;
+  *"pulls/"*"reviews"*)
+    echo '[]' ;;
+  *"graphql"*)
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+  *"issues/"*"comments"*)
+    echo "[]" ;;
+  *"pr checkout"*) exit 0 ;;
+  *"pr comment"*) exit 0 ;;
+  *"pr merge"*) exit 0 ;;
+  *"pulls/"*) echo '{"head":{"sha":"ddd444eee555"},"auto_merge":null}' ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+
+  run bash -c "
+    cd '$tmpdir'
+    export INTENT_TYPE=fix-reviews DEV_LEAD_DRY_RUN=true
+    export PR_NUMBER=54 HEAD_SHA=ddd444eee555 REPO='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export PATH=\"$STUB_BIN_DIR:\$PATH\"
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+  rm -rf "$tmpdir"
+
+  [ "$status" -eq 0 ]
+  # A pending legacy status must block no-changes — it may still fail and workflows
+  # don't listen for status events, so we cannot safely declare completion.
+  [[ "$output" != *"status=no-changes"* ]]
+  [[ "$output" == *"Tier-1 blockers still present"* ]]
+}
+
+@test "collect_assessment_data: jq statuses maps pending state to pending conclusion" {
+  # Pending external statuses must produce conclusion="pending" so has_hard_blockers
+  # treats them as blockers — unlike null, "pending" is in the explicit blocker list.
+  local input='[
+    {"context":"jenkins/build","state":"pending","target_url":"https://ci.example.com/1"}
+  ]'
+
+  run bash -c "printf '%s' '$input' | jq -s '$JQ_DEDUP_STATUSES'"
+
+  [ "$status" -eq 0 ]
+  local jenkins_conclusion
+  jenkins_conclusion=$(echo "$output" | jq -r '.[] | select(.name == "jenkins/build") | .conclusion')
+  [ "$jenkins_conclusion" = "pending" ]
+}
+
+# ── Thread 2: statuses fetch failure fails closed ────────────────────────────
+
+@test "fix-reviews: statuses API fetch failure exits non-zero (fails closed)" {
+  local tmpdir
+  tmpdir="$(mktemp -d)"
+
+  # Stub: check-runs pass, but statuses API call fails (token scope / transient error)
+  cat > "$STUB_BIN_DIR/gh" <<'GHEOF'
+#!/usr/bin/env bash
+ARGS="$*"
+case "$ARGS" in
+  *"check-runs"*)
+    echo '{"check_runs":[{"name":"Lint","status":"completed","conclusion":"success","details_url":"https://example.com"}]}' ;;
+  *"statuses"*)
+    echo "API error: resource not accessible" >&2; exit 1 ;;
+  *"pulls/"*"reviews"*)
+    echo '[]' ;;
+  *"graphql"*)
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+  *"pr checkout"*) exit 0 ;;
+  *"pr comment"*) exit 0 ;;
+  *"pr merge"*) exit 0 ;;
+  *"pulls/"*) echo '{"head":{"sha":"ddd444eee555"},"auto_merge":null}' ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+
+  run bash -c "
+    cd '$tmpdir'
+    export INTENT_TYPE=fix-reviews DEV_LEAD_DRY_RUN=true
+    export PR_NUMBER=54 HEAD_SHA=ddd444eee555 REPO='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export PATH=\"$STUB_BIN_DIR:\$PATH\"
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+  rm -rf "$tmpdir"
+
+  # When legacy statuses cannot be fetched we cannot safely assess CI state —
+  # the script must exit non-zero rather than posting a terminal no-changes marker.
+  [ "$status" -ne 0 ]
+  [[ "$output" != *"status=no-changes"* ]]
+}
+
+# ── Thread 3: stale no-changes marker is expired before hard-blocker retry ───
+
+@test "fix-reviews: hard-blocker retry expires stale no-changes marker (dry-run)" {
+  local tmpdir
+  tmpdir="$(mktemp -d)"
+
+  # Stub: failing CI triggers the hard-blocker retry path
+  cat > "$STUB_BIN_DIR/gh" <<'GHEOF'
+#!/usr/bin/env bash
+ARGS="$*"
+case "$ARGS" in
+  *"check-runs"*)
+    echo '{"check_runs":[{"name":"Lint","status":"completed","conclusion":"failure","details_url":"https://example.com"}]}' ;;
+  *"statuses"*)
+    echo '[]' ;;
+  *"pulls/"*"reviews"*)
+    echo '[]' ;;
+  *"graphql"*)
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+  *"issues/"*"comments"*)
+    echo "[]" ;;
+  *"pr checkout"*) exit 0 ;;
+  *"pr comment"*) exit 0 ;;
+  *"pr merge"*) exit 0 ;;
+  *"pulls/"*) echo '{"head":{"sha":"abc123"},"auto_merge":null}' ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+
+  run bash -c "
+    cd '$tmpdir'
+    export INTENT_TYPE=fix-reviews DEV_LEAD_DRY_RUN=true
+    export PR_NUMBER=54 HEAD_SHA=abc123 REPO='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export PATH=\"$STUB_BIN_DIR:\$PATH\"
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+  rm -rf "$tmpdir"
+
+  [ "$status" -eq 0 ]
+  # Hard-blocker path must announce it would expire stale no-changes markers so the
+  # retry cron is not blocked by a prior terminal marker for the same SHA+intent.
+  [[ "$output" == *"would expire stale no-changes marker"* ]]
+  [[ "$output" == *"rate-limited marker"* ]]
+}
+
+@test "fix-reviews: hard-blocker retry deletes existing no-changes comment (non-dry-run)" {
+  local tmpdir deletions_file
+  tmpdir="$(mktemp -d)"
+  deletions_file="$(mktemp)"
+
+  # Set up a real git repo so commit_and_push reports "no changes"
+  git -C "$tmpdir" init -q
+  echo "initial" > "$tmpdir/file.txt"
+  git -C "$tmpdir" add .
+  git -C "$tmpdir" -c user.email="t@test" -c user.name="T" commit -q -m "init"
+
+  # Stub: failing CI + a stale no-changes comment in issues/comments
+  cat > "$STUB_BIN_DIR/gh" << GHEOF
+#!/usr/bin/env bash
+ARGS="\$*"
+case "\$ARGS" in
+  *"check-runs"*)
+    echo '{"check_runs":[{"name":"Lint","status":"completed","conclusion":"failure","details_url":"https://example.com"}]}' ;;
+  *"statuses"*)
+    echo '[]' ;;
+  *"pulls/"*"reviews"*)
+    echo '[]' ;;
+  *"graphql"*)
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+  *"-X DELETE"*)
+    # Record DELETE calls (must come before the generic issues/comments match)
+    echo "\$*" >> "${deletions_file}"; exit 0 ;;
+  *"issues/"*"comments"*)
+    # Return a stale no-changes terminal marker for same SHA+intent
+    echo '[{"id":9001,"body":"<!-- dev-lead-fix-reviews pr=54 sha=abc123 intent=fix-reviews status=no-changes -->"}]' ;;
+  *"pr checkout"*) exit 0 ;;
+  *"pr comment"*) echo "COMMENT_POSTED"; exit 0 ;;
+  *"pr merge"*) exit 0 ;;
+  *"pulls/"*) echo '{"head":{"sha":"abc123"},"auto_merge":null}' ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+
+  cat > "$STUB_BIN_DIR/claude" << 'STUB'
+#!/usr/bin/env bash
+echo "No actionable items."
+STUB
+  chmod +x "$STUB_BIN_DIR/claude"
+
+  run bash -c "
+    cd '$tmpdir'
+    export INTENT_TYPE=fix-reviews DEV_LEAD_DRY_RUN=false
+    export PR_NUMBER=54 HEAD_SHA=abc123 REPO='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export PATH=\"$STUB_BIN_DIR:\$PATH\"
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+
+  [ "$status" -eq 0 ]
+  # The stale no-changes comment must have been deleted
+  grep -q "9001" "$deletions_file"
+  rm -rf "$tmpdir"
+  rm -f "$deletions_file"
 }
