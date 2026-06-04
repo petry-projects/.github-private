@@ -246,13 +246,13 @@ jobs:
       - name: Enumerate candidate PRs
         run: |
           set -euo pipefail
-          
+
           # DEBUG: Log env vars and enumeration path
           echo "::group::PR Enumeration Debug Info"
           echo "PR_URL_OVERRIDE='${PR_URL_OVERRIDE}' (${#PR_URL_OVERRIDE} chars)"
           echo "CHECK_SUITE_PRS='${CHECK_SUITE_PRS}'"
           echo "GitHub event_name: ${{ github.event_name }}"
-          
+
           if [ -n "${PR_URL_OVERRIDE}" ]; then
             echo "PATH: Using PR_URL_OVERRIDE (direct mode)"
             printf '%s\n' "${PR_URL_OVERRIDE}" > prs.txt
@@ -266,12 +266,12 @@ jobs:
             echo "PATH: Falling back to list-prs.sh"
             bash scripts/list-prs.sh > prs.txt
           fi
-          
+
           count=$(grep -c . prs.txt || true)
           echo "Result: $count PRs in candidate pool"
           cat prs.txt || echo "(empty)"
           echo "::endgroup::"
-          
+
           echo "::notice::Candidate pool has $count PRs (no-ops will be skipped, MAX_PRS caps actual reviews)"
           echo "--- candidate PRs ---"
           cat prs.txt || true
