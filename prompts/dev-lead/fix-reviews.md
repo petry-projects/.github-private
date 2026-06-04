@@ -32,7 +32,7 @@ Before addressing individual threads, assess the full PR state so you never decl
 ${CI_STATUS_JSON}
 ```
 
-Identify any checks with `conclusion` = `"failure"` or `"timed_out"`. These are **Tier 1 blockers** — fix them even if no review thread specifically asks for it.
+Identify any checks with `conclusion` = `"failure"`, `"timed_out"`, `"cancelled"`, `"action_required"`, or `"stale"`. These are **Tier 1 blockers** — fixing them is explicitly in-scope even if no review thread specifically asks for it.
 
 **All review states:**
 
@@ -87,7 +87,7 @@ Read every changed line as if you are the reviewer seeing the response:
 - Resolve every thread you fix; resolve outdated threads without a corresponding code change
 - Only resolve threads whose `author.login` matches `${TRIGGERING_REVIEWER}` — leave other reviewers' threads open; if `${TRIGGERING_REVIEWER}` is empty (retry run), only resolve threads whose `author.login` ends with `[bot]` — leave human reviewers' threads open
 - Do not resolve threads you are skipping due to ambiguity — leave those open and note them in your output
-- Do not make changes beyond what the review threads request
+- Do not make changes beyond what the review threads request, except that fixing Tier-1 blockers (failing/cancelled/action_required/stale CI checks and CHANGES_REQUESTED reviews) is always in-scope
 - If a review thread is ambiguous, apply the most conservative interpretation
 - Do not commit or push — the CI workflow handles git operations after you finish
 

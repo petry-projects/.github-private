@@ -271,6 +271,15 @@ fetch_pr_context() {
     CI_STATUS_JSON=$(gh api "repos/${REPO}/commits/${HEAD_SHA}/check-runs?per_page=100" \
       --jq '[.check_runs[] | {name:.name, status:.status, conclusion:.conclusion, details_url:.details_url}]' \
       2>/dev/null || echo "[]")
+    # Also include legacy commit statuses (Jenkins, external CI, etc.) that use
+    # the separate statuses API rather than check-runs. Merge into CI_STATUS_JSON
+    # so the agent sees a unified picture of all required status checks.
+    local statuses_json
+    statuses_json=$(gh api "repos/${REPO}/commits/${HEAD_SHA}/statuses?per_page=100" \
+      --jq '[.[] | {name:.context, status:(if .state == "pending" then "in_progress" else "completed" end), conclusion:(if .state == "success" then "success" elif .state == "failure" or .state == "error" then "failure" else null end), details_url:.target_url}]' \
+      2>/dev/null || echo "[]")
+    CI_STATUS_JSON=$(printf '%s\n%s' "$CI_STATUS_JSON" "$statuses_json" \
+      | jq -s 'add // []' 2>/dev/null || echo "$CI_STATUS_JSON")
   fi
   export CI_STATUS_JSON
 
@@ -280,6 +289,25 @@ fetch_pr_context() {
     --jq '[ [.[] | select(.user != null)] | group_by(.user.login)[] | sort_by(.id) | last | {id:.id, user:.user.login, state:.state, submitted_at:.submitted_at} ]' \
     2>/dev/null || echo "[]")
   export ALL_REVIEWS_JSON
+}
+
+# has_tier1_blockers: returns 0 (true) if CI_STATUS_JSON or ALL_REVIEWS_JSON contain
+# Tier-1 blockers: CI checks with a non-success conclusion (failure, timed_out,
+# cancelled, action_required, stale, startup_failure) or CHANGES_REQUESTED reviews.
+# Used to gate post_no_changes — never post a terminal no-changes marker while blockers
+# exist, so the retry cron can re-attempt on the same SHA.
+has_tier1_blockers() {
+  local failing_checks changes_requested
+  failing_checks=$(printf '%s' "${CI_STATUS_JSON:-[]}" | \
+    jq '[.[] | select(.conclusion != null and (
+          .conclusion == "failure" or .conclusion == "timed_out" or
+          .conclusion == "cancelled" or .conclusion == "action_required" or
+          .conclusion == "stale" or .conclusion == "startup_failure"
+        ))] | length' 2>/dev/null || echo "0")
+  changes_requested=$(printf '%s' "${ALL_REVIEWS_JSON:-[]}" | \
+    jq '[.[] | select(.state == "CHANGES_REQUESTED")] | length' \
+    2>/dev/null || echo "0")
+  [ "${failing_checks:-0}" -gt 0 ] || [ "${changes_requested:-0}" -gt 0 ]
 }
 
 # try_enable_auto_merge: enables auto-merge (squash) on the PR if reviewDecision is
@@ -559,7 +587,11 @@ case "$INTENT_TYPE" in
       else
         notify_coderabbit_resolve
         resolve_actor_outdated_threads "fix-reviews"
-        post_no_changes "fix-reviews"
+        if has_tier1_blockers; then
+          echo "::warning::Tier-1 blockers still present (failing CI or CHANGES_REQUESTED reviews) — skipping no-changes marker to allow retries"
+        else
+          post_no_changes "fix-reviews"
+        fi
       fi
       try_enable_auto_merge
     fi
@@ -579,7 +611,11 @@ case "$INTENT_TYPE" in
       else
         notify_coderabbit_resolve
         resolve_actor_outdated_threads "fix-bot-comment"
-        post_no_changes "fix-bot-comment"
+        if has_tier1_blockers; then
+          echo "::warning::Tier-1 blockers still present (failing CI or CHANGES_REQUESTED reviews) — skipping no-changes marker to allow retries"
+        else
+          post_no_changes "fix-bot-comment"
+        fi
       fi
       try_enable_auto_merge
     fi
@@ -632,7 +668,11 @@ case "$INTENT_TYPE" in
       else
         notify_coderabbit_resolve
         resolve_actor_outdated_threads "review-changes"
-        post_reviews_terminal "review-changes" "no-changes" "No changes were needed for this PR."
+        if has_tier1_blockers; then
+          echo "::warning::Tier-1 blockers still present (failing CI or CHANGES_REQUESTED reviews) — skipping no-changes marker to allow retries"
+        else
+          post_reviews_terminal "review-changes" "no-changes" "No changes were needed for this PR."
+        fi
       fi
       try_enable_auto_merge
     fi

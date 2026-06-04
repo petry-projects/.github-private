@@ -938,9 +938,13 @@ printf '%s\n' "\$*" >> "${calls_file}"
 ARGS="\$*"
 case "\$ARGS" in
   *"commits/"*"check-runs"*)
-    echo '{"check_runs":[{"name":"Lint","status":"completed","conclusion":"failure","details_url":"https://example.com"}]}' ;;
+    # Return jq-processed array format (as real gh --jq would produce)
+    echo '[{"name":"Lint","status":"completed","conclusion":"failure","details_url":"https://example.com"}]' ;;
+  *"commits/"*"statuses"*)
+    echo '[]' ;;
   *"pulls/"*"/reviews"*)
-    echo '[{"id":1,"user":{"login":"gemini-code-assist[bot]"},"state":"CHANGES_REQUESTED","submitted_at":"2024-01-01T00:00:00Z"}]' ;;
+    # Return jq-processed format with user as login string
+    echo '[{"id":1,"user":"gemini-code-assist[bot]","state":"CHANGES_REQUESTED","submitted_at":"2024-01-01T00:00:00Z"}]' ;;
   *"graphql"*)
     echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
   *"issues/"*"comments"*)
@@ -1057,4 +1061,171 @@ GHEOF
   [ "$status" -eq 0 ]
   grep -q "pulls/.*reviews" "$calls_file"
   rm -f "$calls_file"
+}
+
+@test "fix-reviews: fix-reviews case fetches commit statuses endpoint" {
+  export INTENT_TYPE="fix-reviews"
+  export DEV_LEAD_DRY_RUN="true"
+  export HEAD_SHA="ddd444eee555"
+
+  local calls_file
+  calls_file="$(mktemp)"
+  _make_assessment_gh_stub "$calls_file"
+
+  run bash "$FIX_REVIEWS_SCRIPT"
+
+  [ "$status" -eq 0 ]
+  grep -q "commits/.*statuses" "$calls_file"
+  rm -f "$calls_file"
+}
+
+@test "fix-reviews: review-changes case fetches commit statuses endpoint" {
+  export INTENT_TYPE="review-changes"
+  export DEV_LEAD_DRY_RUN="true"
+  export HEAD_SHA="ddd444eee555"
+  export PR_TITLE="Test PR"
+  export PR_DESCRIPTION="A test pull request"
+
+  local calls_file
+  calls_file="$(mktemp)"
+  _make_assessment_gh_stub "$calls_file"
+
+  run bash "$FIX_REVIEWS_SCRIPT"
+
+  [ "$status" -eq 0 ]
+  grep -q "commits/.*statuses" "$calls_file"
+  rm -f "$calls_file"
+}
+
+@test "fix-reviews: fix-bot-comment case fetches commit statuses endpoint" {
+  export INTENT_TYPE="fix-bot-comment"
+  export DEV_LEAD_DRY_RUN="true"
+  export HEAD_SHA="ddd444eee555"
+  export COMMENT_BODY="SonarQube found issues"
+
+  local calls_file
+  calls_file="$(mktemp)"
+  _make_assessment_gh_stub "$calls_file"
+
+  run bash "$FIX_REVIEWS_SCRIPT"
+
+  [ "$status" -eq 0 ]
+  grep -q "commits/.*statuses" "$calls_file"
+  rm -f "$calls_file"
+}
+
+# ── Tier-1 blocker gating: no-changes must not be posted while blockers exist ──
+# Regression tests for issue #425: the agent must not declare "no-changes" while
+# CI is failing or a reviewer has CHANGES_REQUESTED.
+
+@test "fix-reviews: does not post no-changes when Tier-1 blockers exist (fix-reviews)" {
+  local calls_file tmpdir
+  calls_file="$(mktemp)"
+  tmpdir="$(mktemp -d)"
+  _make_assessment_gh_stub "$calls_file"
+
+  # Run from a non-git tmpdir so commit_and_push returns 1 (no changes), taking the no-changes path
+  run bash -c "
+    cd '$tmpdir'
+    export INTENT_TYPE=fix-reviews DEV_LEAD_DRY_RUN=true
+    export PR_NUMBER=54 HEAD_SHA=ddd444eee555 REPO='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export PATH=\"$STUB_BIN_DIR:\$PATH\"
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+  rm -rf "$tmpdir" "$calls_file"
+
+  [ "$status" -eq 0 ]
+  # Must NOT post a terminal no-changes marker while CI is failing + CHANGES_REQUESTED
+  [[ "$output" != *"status=no-changes"* ]]
+  # Must emit the warning explaining why no-changes was skipped
+  [[ "$output" == *"Tier-1 blockers still present"* ]]
+}
+
+@test "fix-reviews: does not post no-changes when Tier-1 blockers exist (fix-bot-comment)" {
+  local calls_file tmpdir
+  calls_file="$(mktemp)"
+  tmpdir="$(mktemp -d)"
+  _make_assessment_gh_stub "$calls_file"
+
+  run bash -c "
+    cd '$tmpdir'
+    export INTENT_TYPE=fix-bot-comment DEV_LEAD_DRY_RUN=true
+    export PR_NUMBER=54 HEAD_SHA=ddd444eee555 REPO='petry-projects/.github-private'
+    export COMMENT_BODY='SonarQube found issues'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export PATH=\"$STUB_BIN_DIR:\$PATH\"
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+  rm -rf "$tmpdir" "$calls_file"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"status=no-changes"* ]]
+  [[ "$output" == *"Tier-1 blockers still present"* ]]
+}
+
+@test "fix-reviews: does not post no-changes when Tier-1 blockers exist (review-changes)" {
+  local calls_file tmpdir
+  calls_file="$(mktemp)"
+  tmpdir="$(mktemp -d)"
+  _make_assessment_gh_stub "$calls_file"
+
+  run bash -c "
+    cd '$tmpdir'
+    export INTENT_TYPE=review-changes DEV_LEAD_DRY_RUN=true
+    export PR_NUMBER=54 HEAD_SHA=ddd444eee555 REPO='petry-projects/.github-private'
+    export PR_TITLE='Test PR' PR_DESCRIPTION='A test pull request'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export PATH=\"$STUB_BIN_DIR:\$PATH\"
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+  rm -rf "$tmpdir" "$calls_file"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"status=no-changes"* ]]
+  [[ "$output" == *"Tier-1 blockers still present"* ]]
+}
+
+@test "fix-reviews: posts no-changes when no Tier-1 blockers exist (fix-reviews)" {
+  local tmpdir
+  tmpdir="$(mktemp -d)"
+
+  # Stub with all-success CI and no CHANGES_REQUESTED reviews
+  cat > "$STUB_BIN_DIR/gh" <<'GHEOF'
+#!/usr/bin/env bash
+ARGS="$*"
+case "$ARGS" in
+  *"commits/"*"check-runs"*)
+    echo '[{"name":"Lint","status":"completed","conclusion":"success","details_url":"https://example.com"}]' ;;
+  *"commits/"*"statuses"*)
+    echo '[]' ;;
+  *"pulls/"*"reviews"*)
+    echo '[]' ;;
+  *"graphql"*)
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+  *"issues/"*"comments"*)
+    echo "[]" ;;
+  *"pr checkout"*) exit 0 ;;
+  *"pr comment"*) exit 0 ;;
+  *"pr merge"*) exit 0 ;;
+  *"pulls/"*) echo '{"head":{"sha":"ddd444eee555"},"auto_merge":null}' ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+
+  # Run from a non-git tmpdir so commit_and_push returns 1 (no changes), taking the no-changes path
+  run bash -c "
+    cd '$tmpdir'
+    export INTENT_TYPE=fix-reviews DEV_LEAD_DRY_RUN=true
+    export PR_NUMBER=54 HEAD_SHA=ddd444eee555 REPO='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export PATH=\"$STUB_BIN_DIR:\$PATH\"
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+  rm -rf "$tmpdir"
+
+  [ "$status" -eq 0 ]
+  # No blockers → no-changes marker should be posted
+  [[ "$output" == *"status=no-changes"* ]]
 }
