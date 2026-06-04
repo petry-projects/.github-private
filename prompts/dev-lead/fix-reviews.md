@@ -1,4 +1,4 @@
-<!-- VARIABLES: PR_NUMBER, PR_URL, REPO, OPEN_THREADS_JSON, BASE_REF, TRIGGERING_REVIEWER -->
+<!-- VARIABLES: PR_NUMBER, PR_URL, REPO, OPEN_THREADS_JSON, BASE_REF, TRIGGERING_REVIEWER, CI_STATUS_JSON, ALL_REVIEWS_JSON -->
 # Dev-Lead Agent: Fix Review Comments
 
 You are the dev-lead agent for the `${REPO}` repository. Your task is to address open review threads on a pull request.
@@ -149,7 +149,7 @@ Read every changed line as if you are the reviewer seeing the response:
 - Resolve every thread you fix; resolve outdated threads without a corresponding code change
 - Only resolve threads whose `author.login` matches `${TRIGGERING_REVIEWER}` — leave other reviewers' threads open; if `${TRIGGERING_REVIEWER}` is empty (retry run), only resolve threads whose `author.login` ends with `[bot]` — leave human reviewers' threads open
 - Do not resolve threads you are skipping due to ambiguity — leave those open and note them in your output
-- Do not make changes beyond what the review threads request
+- Do not make changes beyond what the review threads request, except that fixing Tier-1 blockers (failure/timed_out/cancelled/action_required/stale/startup_failure CI checks and CHANGES_REQUESTED reviews) is always in-scope
 - If a review thread is ambiguous, apply the most conservative interpretation
 - Do not commit or push — the CI workflow handles git operations after you finish
 
