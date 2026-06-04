@@ -474,6 +474,7 @@ jobs:
       - name: Enumerate candidate PRs
         run: |
           set -euo pipefail
+
           if [ -n "${PR_URL_OVERRIDE}" ]; then
             # Single-PR mode: workflow_dispatch with pr_url, repository_dispatch
             # (mention), or event-triggered run with a direct PR context
@@ -490,10 +491,15 @@ jobs:
           else
             bash scripts/list-prs.sh > prs.txt
           fi
+
           count=$(grep -c . prs.txt || true)
           echo "::notice::Candidate pool has $count PRs (no-ops will be skipped, MAX_PRS caps actual reviews)"
           echo "--- candidate PRs ---"
-          cat prs.txt || true
+          if [ -s prs.txt ]; then
+            cat prs.txt
+          else
+            echo "(empty file)"
+          fi
 
       - name: Review each PR (cascade)
         run: bash scripts/review-batch.sh

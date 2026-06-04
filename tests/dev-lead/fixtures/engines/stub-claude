@@ -1,12 +1,53 @@
 #!/usr/bin/env bash
-# Configurable via: STUB_ENGINE_RESPONSE, STUB_ENGINE_EXIT, STUB_ENGINE_DELAY
+# Configurable via:
+#   STUB_ENGINE_RESPONSE, STUB_ENGINE_EXIT, STUB_ENGINE_DELAY
+#   STUB_ENGINE_EXIT_BY_MODEL  — pipe-delimited list of "model=exit_code" pairs.
+#                                If set and a pair matches --model, that exit
+#                                code overrides STUB_ENGINE_EXIT. Models not in
+#                                the map fall back to STUB_ENGINE_EXIT.
+#   STUB_ENGINE_RESPONSE_BY_MODEL  — pipe-delimited "model=response" pairs,
+#                                    same lookup as EXIT_BY_MODEL.
+#   STUB_ENGINE_RECORD_MODELS  — if set to a writable path, every --model value
+#                                seen is appended as a new line for inspection.
+model=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --print|--model|--permission-mode|--allowed-tools|--disallowed-tools|--max-turns)
+    --print)
+      shift ;;
+    --permission-mode|--allowed-tools|--disallowed-tools|--max-turns)
       shift; shift ;;
+    --model)
+      model="$2"; shift; shift ;;
     *) shift ;;
   esac
 done
+
+if [ -n "${STUB_ENGINE_RECORD_MODELS:-}" ]; then
+  printf '%s\n' "$model" >> "$STUB_ENGINE_RECORD_MODELS" 2>/dev/null || true
+fi
+
 sleep "${STUB_ENGINE_DELAY:-0}"
-printf '%s\n' "${STUB_ENGINE_RESPONSE:-stub engine response}"
-exit "${STUB_ENGINE_EXIT:-0}"
+
+# Resolve response: per-model override → default.
+response="${STUB_ENGINE_RESPONSE:-stub engine response}"
+if [ -n "${STUB_ENGINE_RESPONSE_BY_MODEL:-}" ] && [ -n "$model" ]; then
+  IFS='|' read -ra _pairs <<< "$STUB_ENGINE_RESPONSE_BY_MODEL"
+  for _p in "${_pairs[@]}"; do
+    case "$_p" in
+      "$model="*) response="${_p#"$model="}"; break ;;
+    esac
+  done
+fi
+printf '%s\n' "$response"
+
+# Resolve exit code: per-model override → default.
+exit_code="${STUB_ENGINE_EXIT:-0}"
+if [ -n "${STUB_ENGINE_EXIT_BY_MODEL:-}" ] && [ -n "$model" ]; then
+  IFS='|' read -ra _epairs <<< "$STUB_ENGINE_EXIT_BY_MODEL"
+  for _ep in "${_epairs[@]}"; do
+    case "$_ep" in
+      "$model="*) exit_code="${_ep#"$model="}"; break ;;
+    esac
+  done
+fi
+exit "$exit_code"

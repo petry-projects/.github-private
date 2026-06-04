@@ -4,6 +4,7 @@ set -euo pipefail
 # Optional: PROMPTS_DIR (defaults to prompts/dev-lead relative to CWD)
 
 source "$(dirname "$0")/engine.sh"
+source "$(dirname "$0")/lib/git-identity.sh"
 
 ISSUE_NUMBER="${ISSUE_NUMBER:-}"
 REPO="${REPO:-${GITHUB_REPOSITORY:-}}"

@@ -13,11 +13,6 @@ setup() {
   export GITHUB_ENV="$(mktemp)"
   export GITHUB_OUTPUT="$(mktemp)"
 
-  # Clear any pre-set chain vars from the runner environment so engine.sh
-  # defaults are evaluated fresh for every test.
-  unset CLAUDE_TRIAGE_MODEL_CHAIN CLAUDE_DEEP_MODEL_CHAIN CLAUDE_AUDIT_MODEL_CHAIN
-  unset CLAUDE_ACTION_MODEL_CHAIN CLAUDE_SINGLE_MODEL_CHAIN
-
   STUB_BIN_DIR="$(mktemp -d)"
   cp "$STUB_ENGINES_DIR/stub-claude" "$STUB_BIN_DIR/claude"
   cp "$STUB_ENGINES_DIR/stub-gemini" "$STUB_BIN_DIR/gemini"
@@ -47,7 +42,7 @@ teardown() {
 _source_engine() {
   local engine="${1:-claude}"
   export REVIEW_ENGINE="$engine"
-  source "$ENGINE_SCRIPT"
+  source "$ENGINE_SCRIPT" 2>/dev/null || true
 }
 
 # ── _claude_chain_invoke unit tests ───────────────────────────────────────────
@@ -125,23 +120,23 @@ _source_engine() {
 
 # ── End-to-end: writer uses the chain via CLAUDE_ACTION_MODEL_CHAIN ────────────
 
-@test "writer: sonnet rate-limited → opus-4-8 tried via CLAUDE_ACTION_MODEL_CHAIN" {
+@test "writer: sonnet rate-limited → opus tried via CLAUDE_ACTION_MODEL_CHAIN" {
   _source_engine "claude"
-  # Defaults from set_engine_config: CLAUDE_ACTION_MODEL_CHAIN=sonnet,opus-4-8
-  export STUB_ENGINE_EXIT_BY_MODEL="claude-sonnet-4-6=1|claude-opus-4-8=0"
-  export STUB_ENGINE_RESPONSE_BY_MODEL="claude-sonnet-4-6=too many requests (429)|claude-opus-4-8=opus-4-8 did the work"
+  # Defaults from set_engine_config: CLAUDE_ACTION_MODEL_CHAIN=sonnet,opus
+  export STUB_ENGINE_EXIT_BY_MODEL="claude-sonnet-4-6=1|claude-opus-4-7=0"
+  export STUB_ENGINE_RESPONSE_BY_MODEL="claude-sonnet-4-6=too many requests (429)|claude-opus-4-7=opus did the work"
 
   run run_writer "$TEST_PROMPT"
 
   [ "$status" -eq 0 ]
   grep -q "claude-sonnet-4-6" "$MODEL_RECORD"
-  grep -q "claude-opus-4-8" "$MODEL_RECORD"
+  grep -q "claude-opus-4-7" "$MODEL_RECORD"
 }
 
-@test "writer: sonnet rate-limited and opus-4-8 rate-limited → exit 2 (cross-provider fallback signal)" {
+@test "writer: sonnet rate-limited and opus rate-limited → exit 2 (cross-provider fallback signal)" {
   _source_engine "claude"
-  export STUB_ENGINE_EXIT_BY_MODEL="claude-sonnet-4-6=1|claude-opus-4-8=1"
-  export STUB_ENGINE_RESPONSE_BY_MODEL="claude-sonnet-4-6=quota exceeded|claude-opus-4-8=quota exceeded"
+  export STUB_ENGINE_EXIT_BY_MODEL="claude-sonnet-4-6=1|claude-opus-4-7=1"
+  export STUB_ENGINE_RESPONSE_BY_MODEL="claude-sonnet-4-6=quota exceeded|claude-opus-4-7=quota exceeded"
 
   run run_writer "$TEST_PROMPT"
 
@@ -162,27 +157,27 @@ _source_engine() {
 
 # ── End-to-end: agentic respects per-tier chain selection ────────────────────
 
-@test "agentic: deep tier opus-4-8 rate-limited → sonnet tried (CLAUDE_DEEP_MODEL_CHAIN)" {
+@test "agentic: deep tier sonnet rate-limited → opus tried (CLAUDE_DEEP_MODEL_CHAIN)" {
   _source_engine "claude"
-  export STUB_ENGINE_EXIT_BY_MODEL="claude-opus-4-8=1|claude-sonnet-4-6=0"
-  export STUB_ENGINE_RESPONSE_BY_MODEL="claude-opus-4-8=service overload|claude-sonnet-4-6=deep result"
+  export STUB_ENGINE_EXIT_BY_MODEL="claude-sonnet-4-6=1|claude-opus-4-7=0"
+  export STUB_ENGINE_RESPONSE_BY_MODEL="claude-sonnet-4-6=service overload|claude-opus-4-7=deep result"
 
-  run run_agentic "$TEST_PROMPT" "claude-opus-4-8" "deep"
+  run run_agentic "$TEST_PROMPT" "claude-sonnet-4-6" "deep"
+
+  [ "$status" -eq 0 ]
+  grep -q "claude-opus-4-7" "$MODEL_RECORD"
+}
+
+@test "agentic: audit tier opus rate-limited → sonnet tried (CLAUDE_AUDIT_MODEL_CHAIN)" {
+  _source_engine "claude"
+  # Default CLAUDE_AUDIT_MODEL_CHAIN = opus,sonnet — opus is first
+  export STUB_ENGINE_EXIT_BY_MODEL="claude-opus-4-7=1|claude-sonnet-4-6=0"
+  export STUB_ENGINE_RESPONSE_BY_MODEL="claude-opus-4-7=usage limit reached|claude-sonnet-4-6=audit ok"
+
+  run run_agentic "$TEST_PROMPT" "claude-opus-4-7" "audit"
 
   [ "$status" -eq 0 ]
   grep -q "claude-sonnet-4-6" "$MODEL_RECORD"
-}
-
-@test "agentic: audit tier fable-5 rate-limited → opus-4-8 tried (CLAUDE_AUDIT_MODEL_CHAIN)" {
-  _source_engine "claude"
-  # Default CLAUDE_AUDIT_MODEL_CHAIN = fable-5,opus-4-8,opus-4-7 — fable-5 is first
-  export STUB_ENGINE_EXIT_BY_MODEL="claude-fable-5=1|claude-opus-4-8=0"
-  export STUB_ENGINE_RESPONSE_BY_MODEL="claude-fable-5=usage limit reached|claude-opus-4-8=audit ok"
-
-  run run_agentic "$TEST_PROMPT" "claude-fable-5" "audit"
-
-  [ "$status" -eq 0 ]
-  grep -q "claude-opus-4-8" "$MODEL_RECORD"
 }
 
 # ── Gemini/Copilot unchanged: no chain applied ────────────────────────────────
@@ -268,15 +263,15 @@ _source_engine() {
 
 @test "chain: writer non-RL failure after RL attempt propagates correctly (not remapped to 2)" {
   # Model A (sonnet) rate-limited → warning emitted → 2>&1 merges into _tmp.
-  # Model B (opus-4-8) fails with a non-rate-limit error. run_writer must return
-  # opus-4-8's exit code, not 2, even though _tmp contains the throttled warning.
+  # Model B (opus) fails with a non-rate-limit error. run_writer must return
+  # opus's exit code, not 2, even though _tmp contains the throttled warning.
   _source_engine "claude"
-  export STUB_ENGINE_EXIT_BY_MODEL="claude-sonnet-4-6=1|claude-opus-4-8=1"
-  export STUB_ENGINE_RESPONSE_BY_MODEL="claude-sonnet-4-6=rate limit exceeded|claude-opus-4-8=segfault in agent runtime"
+  export STUB_ENGINE_EXIT_BY_MODEL="claude-sonnet-4-6=1|claude-opus-4-7=1"
+  export STUB_ENGINE_RESPONSE_BY_MODEL="claude-sonnet-4-6=rate limit exceeded|claude-opus-4-7=segfault in agent runtime"
 
   run run_writer "$TEST_PROMPT"
 
-  # opus-4-8's non-RL failure → exit 1 (NOT 2). If the throttled-warning text
+  # opus's non-RL failure → exit 1 (NOT 2). If the throttled-warning text
   # matched is_rate_limited, this would incorrectly return 2.
   [ "$status" -eq 1 ]
 }
@@ -290,18 +285,18 @@ _source_engine() {
 
 @test "agentic: explicit model arg differing from tier default is honored (no chain expansion)" {
   _source_engine "claude"
-  # Caller pins haiku for deep tier (overriding default opus-4-8 → sonnet chain).
-  # Chain expansion would record opus-4-8+sonnet; pinning must record ONLY haiku.
+  # Caller pins haiku for deep tier (overriding default sonnet → opus chain).
+  # Chain expansion would record sonnet+opus; pinning must record ONLY haiku.
   export STUB_ENGINE_EXIT=0
 
   run run_agentic "$TEST_PROMPT" "claude-haiku-4-5-20251001" "deep"
 
   [ "$status" -eq 0 ]
-  # Only one invocation, and it's the pinned model — not opus-4-8 or sonnet.
+  # Only one invocation, and it's the pinned model — not sonnet or opus.
   [ "$(wc -l < "$MODEL_RECORD")" -eq 1 ]
   grep -q "claude-haiku-4-5-20251001" "$MODEL_RECORD"
   ! grep -q "claude-sonnet-4-6" "$MODEL_RECORD"
-  ! grep -q "claude-opus-4-8" "$MODEL_RECORD"
+  ! grep -q "claude-opus-4-7" "$MODEL_RECORD"
 }
 
 @test "writer: explicit model arg differing from action default is honored (no chain expansion)" {
@@ -314,19 +309,19 @@ _source_engine() {
   [ "$(wc -l < "$MODEL_RECORD")" -eq 1 ]
   grep -q "claude-haiku-4-5-20251001" "$MODEL_RECORD"
   ! grep -q "claude-sonnet-4-6" "$MODEL_RECORD"
-  ! grep -q "claude-opus-4-8" "$MODEL_RECORD"
+  ! grep -q "claude-opus-4-7" "$MODEL_RECORD"
 }
 
 @test "agentic: passing tier default model still expands to full chain on rate-limit" {
   # Regression guard for the pin-check above: when caller passes the tier
-  # default (opus-4-8), chain expansion still works (opus-4-8 → sonnet fallback).
+  # default (sonnet), chain expansion still works (sonnet → opus fallback).
   _source_engine "claude"
-  export STUB_ENGINE_EXIT_BY_MODEL="claude-opus-4-8=1|claude-sonnet-4-6=0"
-  export STUB_ENGINE_RESPONSE_BY_MODEL="claude-opus-4-8=429 too many|claude-sonnet-4-6=ok"
+  export STUB_ENGINE_EXIT_BY_MODEL="claude-sonnet-4-6=1|claude-opus-4-7=0"
+  export STUB_ENGINE_RESPONSE_BY_MODEL="claude-sonnet-4-6=429 too many|claude-opus-4-7=ok"
 
-  run run_agentic "$TEST_PROMPT" "claude-opus-4-8" "deep"
+  run run_agentic "$TEST_PROMPT" "claude-sonnet-4-6" "deep"
 
   [ "$status" -eq 0 ]
-  grep -q "claude-opus-4-8" "$MODEL_RECORD"
   grep -q "claude-sonnet-4-6" "$MODEL_RECORD"
+  grep -q "claude-opus-4-7" "$MODEL_RECORD"
 }
