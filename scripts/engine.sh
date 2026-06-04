@@ -1792,6 +1792,122 @@ copilot_chat() {
     -s "$@" < /dev/null
 }
 
+# _claude_chain_invoke <chain_csv> <prompt_file> <timeout_sec> [extra_args...]
+# Walks a comma-separated list of Claude models, invoking `claude --print --model X`
+# with the given extra arguments. The first model whose run does NOT trigger
+# is_rate_limited() wins: its captured stdout is written to fd1, stderr to fd2,
+# and its exit code is returned. Rate-limited attempts are discarded and the
+# next model is tried. If every model in the chain rate-limits, returns 2 and
+# writes the parsed reset time to /tmp/dev-lead-rate-limit-reset.
+#
+# Empty chain → no-op return 0 (callers should fall back to the single-model
+# legacy path; this is only used when CLAUDE_*_MODEL_CHAIN is set).
+#
+# Sets _CLAUDE_CHAIN_MODEL_USED to the model that produced the final output
+# (success or last attempt) so callers can log which model actually ran.
+_claude_chain_invoke() {
+  local chain_csv="$1" prompt_file="$2" timeout_sec="$3"
+  shift 3
+  local extra_args=("$@")
+
+  if [ -z "$chain_csv" ]; then
+    echo "::error::_claude_chain_invoke called with empty chain" >&2
+    return 1
+  fi
+
+  local saved_ifs="$IFS"
+  IFS=',' read -ra models <<< "$chain_csv"
+  IFS="$saved_ifs"
+
+  local stdout_tmp="" stderr_tmp=""
+  local final_stdout="" final_stderr="" final_model="" final_rc=0
+  local rc=0 attempted=0 all_rl=1
+  local model
+
+  for model in "${models[@]}"; do
+    # Trim whitespace
+    model="${model#"${model%%[![:space:]]*}"}"
+    model="${model%"${model##*[![:space:]]}"}"
+    [ -z "$model" ] && continue
+
+    attempted=$((attempted + 1))
+    stdout_tmp="$(mktemp 2>/dev/null)" || stdout_tmp=""
+    stderr_tmp="$(mktemp 2>/dev/null)" || stderr_tmp=""
+    rc=0
+
+    if [ -n "$stdout_tmp" ] && [ -n "$stderr_tmp" ]; then
+      timeout "$timeout_sec" claude --print --model "$model" "${extra_args[@]}" \
+        < "$prompt_file" > "$stdout_tmp" 2> "$stderr_tmp" || rc=$?
+    else
+      # mktemp failure (one or both) — clean up the partial tmp before degrading
+      # to direct stdout/stderr passthrough so we don't leak a half-allocated fd.
+      [ -n "$stdout_tmp" ] && rm -f "$stdout_tmp"
+      [ -n "$stderr_tmp" ] && rm -f "$stderr_tmp"
+      [ -n "$final_stdout" ] && rm -f "$final_stdout"
+      [ -n "$final_stderr" ] && rm -f "$final_stderr"
+      timeout "$timeout_sec" claude --print --model "$model" "${extra_args[@]}" \
+        < "$prompt_file" || rc=$?
+      _CLAUDE_CHAIN_MODEL_USED="$model"
+      export _CLAUDE_CHAIN_MODEL_USED
+      return "$rc"
+    fi
+
+    # Drop any previous final-attempt buffers (we keep only the latest)
+    [ -n "$final_stdout" ] && rm -f "$final_stdout"
+    [ -n "$final_stderr" ] && rm -f "$final_stderr"
+    final_stdout="$stdout_tmp"
+    final_stderr="$stderr_tmp"
+    final_model="$model"
+
+    if [ "$rc" -eq 0 ]; then
+      final_rc=0
+      all_rl=0
+      break
+    fi
+    # File-based rate-limit detection — avoids loading large agent output into
+    # a shell variable via $(cat ...) (OOM risk on big captures).
+    if ! is_rate_limited_files "$stdout_tmp" "$stderr_tmp"; then
+      # Non-rate-limit failure — propagate immediately, do not try next model.
+      final_rc="$rc"
+      all_rl=0
+      break
+    fi
+    # Rate-limited; record diagnosis and try the next model.
+    # Phrasing intentionally avoids "rate-limit"/"429"/"quota" etc. — those
+    # tokens match is_rate_limited()/_rate_limit_pattern, and downstream
+    # callers (e.g. review-one-pr.sh) that scan our stderr would then
+    # misclassify a successful chain fallback as a provider rate-limit.
+    echo "::warning::[claude] model $model throttled (rc=$rc) — trying next in chain" >&2
+  done
+
+  # Empty/whitespace-only chain → configuration error, not a rate-limit. Returning
+  # 2 here would trigger the cross-provider fallback as if quotas were exhausted.
+  if [ "$attempted" -eq 0 ]; then
+    echo "::error::_claude_chain_invoke: chain '$chain_csv' had no valid model entries" >&2
+    return 1
+  fi
+
+  # If every attempt was rate-limited, parse the last reset time and return 2.
+  if [ "$all_rl" -eq 1 ]; then
+    parse_reset_time_files "$final_stdout" "$final_stderr"
+    final_rc=2
+  fi
+
+  # Emit the final attempt's captured output to the caller.
+  if [ -n "$final_stdout" ]; then
+    cat "$final_stdout"
+    rm -f "$final_stdout"
+  fi
+  if [ -n "$final_stderr" ]; then
+    cat "$final_stderr" >&2
+    rm -f "$final_stderr"
+  fi
+
+  _CLAUDE_CHAIN_MODEL_USED="$final_model"
+  export _CLAUDE_CHAIN_MODEL_USED
+  return "$final_rc"
+}
+
 # _record_engine_tokens <tier> <engine> <model> <prompt_file> [output_file]
 # Writes one token record to TOKEN_LOG_FILE using estimate_tokens_from_file.
 # No-op when TOKEN_LOG_FILE is unset or the token-metrics library is not loaded.
@@ -3852,12 +3968,36 @@ run_duck() {
   return "$rc"
 }
 
+# _emit_reset_iso <hhmm_with_meridiem>
+# Shared helper: converts e.g. "11:20pm" into an ISO-8601 UTC timestamp
+# (writing to /tmp/dev-lead-rate-limit-reset), advancing to tomorrow if the
+# computed time is already in the past for today.
+_emit_reset_iso() {
+  local hhmm="$1"
+  if [ -z "$hhmm" ]; then
+    printf '' > /tmp/dev-lead-rate-limit-reset
+    return 0
+  fi
+  local today iso
+  today=$(date -u +%Y-%m-%d)
+  iso=$(date -u -d "${today} ${hhmm} UTC" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)
+  if [ -n "$iso" ] && [ "$(date -u +%s)" -gt "$(date -u -d "$iso" +%s 2>/dev/null || echo 0)" ]; then
+    local tomorrow
+    tomorrow=$(date -u -d "tomorrow" +%Y-%m-%d)
+    iso=$(date -u -d "${tomorrow} ${hhmm} UTC" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)
+  fi
+  printf '%s' "${iso:-}" > /tmp/dev-lead-rate-limit-reset
+}
+
 # parse_reset_time <text>
 # Extracts the rate-limit reset time from engine output and writes an ISO-8601
 # UTC timestamp to /tmp/dev-lead-rate-limit-reset for callers to embed in
 # status=rate-limited markers. Pattern: "resets H:MMam/pm (UTC)" or
 # "resets H:MM(am|pm) UTC".
 # Writes empty string if no reset time is found (caller treats as unknown).
+#
+# Prefer parse_reset_time_files for large captures — same OOM rationale as
+# is_rate_limited / is_rate_limited_files above.
 parse_reset_time() {
   local text="$1"
   # Match "resets 11:20pm (UTC)" or "resets 11:20pm UTC"
@@ -3870,22 +4010,33 @@ parse_reset_time() {
   # Extract H:MM(am|pm) part
   local hhmm
   hhmm=$(printf '%s' "$time_str" | grep -oiE '[0-9]{1,2}:[0-9]{2}(am|pm)$' || true)
-  if [ -z "$hhmm" ]; then
+  _emit_reset_iso "$hhmm"
+}
+
+# parse_reset_time_files <file>...
+# File-aware variant of parse_reset_time. Scans each non-empty existing file
+# for the first "resets H:MMam/pm" match and writes the ISO timestamp via
+# _emit_reset_iso. Uses grep directly on files to avoid loading large LLM
+# outputs into a shell variable.
+parse_reset_time_files() {
+  local files=()
+  local f
+  for f in "$@"; do
+    [ -n "$f" ] && [ -f "$f" ] && files+=("$f")
+  done
+  if [ "${#files[@]}" -eq 0 ]; then
     printf '' > /tmp/dev-lead-rate-limit-reset
     return 0
   fi
-  # Convert to ISO-8601 UTC using today's date (rate limits reset within 24h)
-  local today
-  today=$(date -u +%Y-%m-%d)
-  local iso
-  iso=$(date -u -d "${today} ${hhmm} UTC" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)
-  # If reset time is in the past (already reset today), it means tomorrow
-  if [ -n "$iso" ] && [ "$(date -u +%s)" -gt "$(date -u -d "$iso" +%s 2>/dev/null || echo 0)" ]; then
-    local tomorrow
-    tomorrow=$(date -u -d "tomorrow" +%Y-%m-%d)
-    iso=$(date -u -d "${tomorrow} ${hhmm} UTC" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)
+  local time_str
+  time_str=$(grep -hoiE 'resets [0-9]{1,2}:[0-9]{2}(am|pm)' "${files[@]}" 2>/dev/null | head -1 || true)
+  if [ -z "$time_str" ]; then
+    printf '' > /tmp/dev-lead-rate-limit-reset
+    return 0
   fi
-  printf '%s' "${iso:-}" > /tmp/dev-lead-rate-limit-reset
+  local hhmm
+  hhmm=$(printf '%s' "$time_str" | grep -oiE '[0-9]{1,2}:[0-9]{2}(am|pm)$' || true)
+  _emit_reset_iso "$hhmm"
 }
 
 # run_writer <prompt_file> [model]
@@ -3912,18 +4063,23 @@ run_writer() {
 
   case "$REVIEW_ENGINE" in
     claude)
+      # See run_agentic — honor caller's explicit model pin when it differs
+      # from the tier default. Chain only applies when the caller used the
+      # default action model for this engine.
+      local _writer_chain="${CLAUDE_ACTION_MODEL_CHAIN:-$model}"
+      if [ -n "${ENGINE_ACTION_MODEL:-}" ] && [ "$model" != "$ENGINE_ACTION_MODEL" ]; then
+        _writer_chain="$model"
+      fi
       if [ -n "$_tmp" ]; then
-        timeout "$ACTION_TIMEOUT_SEC" claude --print \
-          --model "$model" \
+        _claude_chain_invoke "$_writer_chain" "$prompt_file" "$ACTION_TIMEOUT_SEC" \
           --permission-mode acceptEdits \
           --allowed-tools "Bash,Read,Write,Edit,Grep,Glob,WebFetch" \
-          < "$prompt_file" 2>&1 | tee "$_tmp" || rc=${PIPESTATUS[0]}
+          2>&1 | tee "$_tmp" || rc=${PIPESTATUS[0]}
       else
-        timeout "$ACTION_TIMEOUT_SEC" claude --print \
-          --model "$model" \
+        _claude_chain_invoke "$_writer_chain" "$prompt_file" "$ACTION_TIMEOUT_SEC" \
           --permission-mode acceptEdits \
           --allowed-tools "Bash,Read,Write,Edit,Grep,Glob,WebFetch" \
-          < "$prompt_file" || rc=$?
+          || rc=$?
       fi
       ;;
     gemini)
@@ -3951,14 +4107,19 @@ run_writer() {
       ;;
   esac
 
-  # Map rate-limit to exit code 2 for caller to detect; parse reset time for marker embedding
-  if [ "$rc" -ne 0 ] && [ -n "$_tmp" ] && is_rate_limited "$(cat "$_tmp")"; then
-    parse_reset_time "$(cat "$_tmp")"
+  # Map rate-limit to exit code 2 for caller to detect; parse reset time for
+  # marker embedding. Use the file-based helpers to avoid OOM on large captures.
+  if [ "$rc" -ne 0 ] && [ -n "$_tmp" ] && is_rate_limited_files "$_tmp"; then
+    parse_reset_time_files "$_tmp"
     [ -n "$_tmp" ] && rm -f "$_tmp"
     return 2
   fi
   if [ "$rc" -eq 0 ]; then
-    _record_engine_tokens "writer" "$REVIEW_ENGINE" "$model" "$prompt_file" "$_tmp"
+    local _writer_used="$model"
+    if [ "$REVIEW_ENGINE" = "claude" ] && [ -n "${_CLAUDE_CHAIN_MODEL_USED:-}" ]; then
+      _writer_used="$_CLAUDE_CHAIN_MODEL_USED"
+    fi
+    _record_engine_tokens "writer" "$REVIEW_ENGINE" "$_writer_used" "$prompt_file" "$_tmp"
   fi
   if [ -n "$_tmp" ]; then
     # Redact once: write secret-scrubbed content to the persisted path, then
