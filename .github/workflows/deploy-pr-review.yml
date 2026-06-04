@@ -40,7 +40,7 @@ jobs:
           GH_ERR=$(mktemp)
           if ! CURRENT_SHA=$(gh api "repos/petry-projects/$REPO/contents/.github/workflows/pr-review.yml" \
             --jq '.sha' 2>"$GH_ERR"); then
-            if grep -q '"Not Found"' "$GH_ERR"; then
+            if grep -q 'HTTP 404' "$GH_ERR"; then
               CURRENT_SHA=""
             else
               cat "$GH_ERR" >&2
