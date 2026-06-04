@@ -58,7 +58,7 @@ concurrency:
            || github.event.check_suite.pull_requests[0].url)
       || 'pr-review-batch'
     }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   review:
