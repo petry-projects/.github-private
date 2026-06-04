@@ -1636,8 +1636,216 @@ GHEOF
   rm -rf "$tmpdir"
 
   [ "$status" -eq 0 ]
-  # Hard blocker (failing CI) → shows hard-blocker warning, NOT the bot-thread retry path
+  # Hard blocker (failing CI) → shows hard-blocker warning, NOT the bot-thread retry path,
+  # and now posts a rate-limited marker so the cron can retry later.
   [[ "$output" == *"Tier-1 blockers still present"* ]]
   [[ "$output" != *"Unresolved bot review threads remain"* ]]
   [[ "$output" != *"status=no-changes"* ]]
+  [[ "$output" == *"rate-limited marker"* ]]
+}
+
+@test "fix-reviews: hard blockers path posts rate-limited marker for retry" {
+  local tmpdir
+  tmpdir="$(mktemp -d)"
+
+  # Stub: failing CI, no bot threads — hard blocker only
+  cat > "$STUB_BIN_DIR/gh" <<'GHEOF'
+#!/usr/bin/env bash
+ARGS="$*"
+case "$ARGS" in
+  *"check-runs"*)
+    echo '{"check_runs":[{"name":"Lint","status":"completed","conclusion":"failure","details_url":"https://example.com"}]}' ;;
+  *"statuses"*)
+    echo '[]' ;;
+  *"pulls/"*"reviews"*)
+    echo '[]' ;;
+  *"graphql"*)
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+  *"pr checkout"*) exit 0 ;;
+  *"pr comment"*) exit 0 ;;
+  *"pr merge"*) exit 0 ;;
+  *"pulls/"*) echo '{"head":{"sha":"abc123"},"auto_merge":null}' ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+
+  run bash -c "
+    cd '$tmpdir'
+    export INTENT_TYPE=fix-reviews DEV_LEAD_DRY_RUN=true
+    export PR_NUMBER=422 HEAD_SHA=abc123 REPO='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export PATH=\"$STUB_BIN_DIR:\$PATH\"
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+  rm -rf "$tmpdir"
+
+  [ "$status" -eq 0 ]
+  # Hard blockers path must post a rate-limited marker so the retry cron can re-dispatch
+  [[ "$output" == *"Tier-1 blockers still present"* ]]
+  [[ "$output" == *"rate-limited marker"* ]]
+  [[ "$output" != *"status=no-changes"* ]]
+}
+
+@test "review-changes: hard blockers path posts rate-limited marker for retry" {
+  local tmpdir
+  tmpdir="$(mktemp -d)"
+
+  # Stub: failing CI, no bot threads — hard blocker only
+  cat > "$STUB_BIN_DIR/gh" <<'GHEOF'
+#!/usr/bin/env bash
+ARGS="$*"
+case "$ARGS" in
+  *"check-runs"*)
+    echo '{"check_runs":[{"name":"Lint","status":"completed","conclusion":"failure","details_url":"https://example.com"}]}' ;;
+  *"statuses"*)
+    echo '[]' ;;
+  *"pulls/"*"reviews"*)
+    echo '[]' ;;
+  *"graphql"*)
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+  *"pr checkout"*) exit 0 ;;
+  *"pr comment"*) exit 0 ;;
+  *"pr merge"*) exit 0 ;;
+  *"pulls/"*) echo '{"head":{"sha":"abc123"},"auto_merge":null}' ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+
+  run bash -c "
+    cd '$tmpdir'
+    export INTENT_TYPE=review-changes DEV_LEAD_DRY_RUN=true
+    export PR_NUMBER=422 HEAD_SHA=abc123 REPO='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export PATH=\"$STUB_BIN_DIR:\$PATH\"
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+  rm -rf "$tmpdir"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Tier-1 blockers still present"* ]]
+  [[ "$output" == *"rate-limited marker"* ]]
+  [[ "$output" != *"status=no-changes"* ]]
+}
+
+@test "fix-reviews: bot thread retry marker includes future reset time to avoid spin loop" {
+  local tmpdir
+  tmpdir="$(mktemp -d)"
+  rm -f /tmp/dev-lead-rate-limit-reset
+
+  # Stub: success CI, no CHANGES_REQUESTED, unresolved bot thread
+  cat > "$STUB_BIN_DIR/gh" <<'GHEOF'
+#!/usr/bin/env bash
+ARGS="$*"
+case "$ARGS" in
+  *"check-runs"*)
+    echo '{"check_runs":[{"name":"Lint","status":"completed","conclusion":"success","details_url":"https://example.com"}]}' ;;
+  *"statuses"*)
+    echo '[]' ;;
+  *"pulls/"*"reviews"*)
+    echo '[]' ;;
+  *"graphql"*)
+    echo '{
+      "data": {
+        "repository": {
+          "pullRequest": {
+            "reviewThreads": {
+              "nodes": [
+                {
+                  "isResolved": false,
+                  "comments": {"nodes": [{"author": {"login": "copilot-pull-request-reviewer[bot]"}}]}
+                }
+              ]
+            },
+            "reviewDecision": null
+          }
+        }
+      }
+    }' ;;
+  *"pr checkout"*) exit 0 ;;
+  *"pr comment"*) exit 0 ;;
+  *"pr merge"*) exit 0 ;;
+  *"pulls/"*) echo '{"head":{"sha":"abc123"},"auto_merge":null}' ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+
+  run bash -c "
+    cd '$tmpdir'
+    export INTENT_TYPE=fix-reviews DEV_LEAD_DRY_RUN=true
+    export PR_NUMBER=422 HEAD_SHA=abc123 REPO='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export PATH=\"$STUB_BIN_DIR:\$PATH\"
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+  rm -rf "$tmpdir"
+
+  [ "$status" -eq 0 ]
+  # Bot thread retry marker must include a future reset= timestamp so the cron doesn't spin
+  [[ "$output" == *"Unresolved bot review threads remain"* ]]
+  [[ "$output" == *"rate-limited marker"* ]]
+  [[ "$output" == *"reset="* ]]
+  [[ "$output" != *"status=no-changes"* ]]
+}
+
+@test "fix-bot-comment: unresolved bot threads posts no-changes terminal marker" {
+  local tmpdir
+  tmpdir="$(mktemp -d)"
+
+  # Stub: success CI, no CHANGES_REQUESTED, unresolved bot thread
+  cat > "$STUB_BIN_DIR/gh" <<'GHEOF'
+#!/usr/bin/env bash
+ARGS="$*"
+case "$ARGS" in
+  *"check-runs"*)
+    echo '{"check_runs":[{"name":"Lint","status":"completed","conclusion":"success","details_url":"https://example.com"}]}' ;;
+  *"statuses"*)
+    echo '[]' ;;
+  *"pulls/"*"reviews"*)
+    echo '[]' ;;
+  *"graphql"*)
+    echo '{
+      "data": {
+        "repository": {
+          "pullRequest": {
+            "reviewThreads": {
+              "nodes": [
+                {
+                  "isResolved": false,
+                  "comments": {"nodes": [{"author": {"login": "copilot-pull-request-reviewer[bot]"}}]}
+                }
+              ]
+            },
+            "reviewDecision": null
+          }
+        }
+      }
+    }' ;;
+  *"pr checkout"*) exit 0 ;;
+  *"pr comment"*) exit 0 ;;
+  *"pr merge"*) exit 0 ;;
+  *"pulls/"*) echo '{"head":{"sha":"abc123"},"auto_merge":null}' ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+
+  run bash -c "
+    cd '$tmpdir'
+    export INTENT_TYPE=fix-bot-comment DEV_LEAD_DRY_RUN=true
+    export PR_NUMBER=422 HEAD_SHA=abc123 REPO='petry-projects/.github-private'
+    export COMMENT_BODY='bot feedback' ACTOR='copilot-pull-request-reviewer[bot]'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export PATH=\"$STUB_BIN_DIR:\$PATH\"
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+  rm -rf "$tmpdir"
+
+  [ "$status" -eq 0 ]
+  # fix-bot-comment is not retryable, so bot-thread blocker posts terminal no-changes (not rate-limited)
+  [[ "$output" == *"fix-bot-comment is not automatically retried"* ]]
+  [[ "$output" == *"status=no-changes"* ]]
+  [[ "$output" != *"[dry-run] would post rate-limited marker"* ]]
 }
