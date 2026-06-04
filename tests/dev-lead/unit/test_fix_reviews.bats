@@ -922,7 +922,10 @@ STUB
 # ── ALL_REVIEWS_JSON deduplication: latest review per user ───────────────────
 # The GitHub Reviews API returns the full history of all reviews. If a reviewer
 # previously requested changes but later approved, both entries are present.
-# The jq filter in collect_assessment_data must keep only the latest per user.
+# The jq filter in collect_assessment_data must keep only the latest per user,
+# but COMMENTED reviews must not clear a prior CHANGES_REQUESTED or APPROVED
+# (GitHub does not count COMMENTED as a blocking state change).
+readonly JQ_DEDUP_REVIEWS='[ [.[].[] | select(.user != null)] | group_by(.user.login)[] | (. as $g | ($g | map(select(.state != "COMMENTED")) | sort_by(.id) | last) // ($g | sort_by(.id) | last)) | {id:.id, user:.user.login, state:.state, submitted_at:.submitted_at} ]'
 
 @test "collect_assessment_data: jq dedup expression keeps only latest review per user" {
   # Feed sample multi-review JSON through the exact jq expression used in the script
@@ -934,9 +937,8 @@ STUB
     {"id":2,"user":{"login":"bob"},"state":"APPROVED","submitted_at":"2024-01-02T00:00:00Z"},
     {"id":3,"user":{"login":"alice"},"state":"APPROVED","submitted_at":"2024-01-03T00:00:00Z"}
   ]'
-  local jq_expr='[ [.[].[] | select(.user != null)] | group_by(.user.login)[] | sort_by(.id) | last | {id:.id, user:.user.login, state:.state, submitted_at:.submitted_at} ]'
 
-  run bash -c "printf '%s' '$input' | jq -s '$jq_expr'"
+  run bash -c "printf '%s' '$input' | jq -s '$JQ_DEDUP_REVIEWS'"
 
   [ "$status" -eq 0 ]
   # alice's latest review (id=3) is APPROVED — CHANGES_REQUESTED (id=1) must not appear
@@ -955,15 +957,29 @@ STUB
     {"id":1,"user":null,"state":"APPROVED","submitted_at":"2024-01-01T00:00:00Z"},
     {"id":2,"user":{"login":"alice"},"state":"APPROVED","submitted_at":"2024-01-02T00:00:00Z"}
   ]'
-  local jq_expr='[ [.[].[] | select(.user != null)] | group_by(.user.login)[] | sort_by(.id) | last | {id:.id, user:.user.login, state:.state, submitted_at:.submitted_at} ]'
 
-  run bash -c "printf '%s' '$input' | jq -s '$jq_expr'"
+  run bash -c "printf '%s' '$input' | jq -s '$JQ_DEDUP_REVIEWS'"
 
   [ "$status" -eq 0 ]
   # Result should have only alice; the null-user entry is filtered out
   local count
   count=$(echo "$output" | jq 'length')
   [ "$count" -eq 1 ]
+}
+
+@test "collect_assessment_data: jq dedup keeps CHANGES_REQUESTED when later COMMENTED review exists" {
+  # A COMMENTED review must not supersede a prior CHANGES_REQUESTED — GitHub only
+  # clears the blocking state when the reviewer submits APPROVED or is dismissed.
+  local input='[
+    {"id":1,"user":{"login":"alice"},"state":"CHANGES_REQUESTED","submitted_at":"2024-01-01T00:00:00Z"},
+    {"id":2,"user":{"login":"alice"},"state":"COMMENTED","submitted_at":"2024-01-02T00:00:00Z"}
+  ]'
+
+  run bash -c "printf '%s' '$input' | jq -s '$JQ_DEDUP_REVIEWS'"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'"CHANGES_REQUESTED"'* ]]
+  [[ "$output" != *'"COMMENTED"'* ]]
 }
 
 # ── holistic assessment: CI_STATUS_JSON and ALL_REVIEWS_JSON fetching ──────────
@@ -1277,6 +1293,7 @@ GHEOF
 # The /statuses API returns the full history per context (newest first). A stale
 # failure followed by a newer success for the same context must not suppress
 # no-changes — only the latest entry per context should be considered.
+readonly JQ_DEDUP_STATUSES='[ [.[].[] | select(.context != null)] | group_by(.context)[] | first | {name:.context, conclusion:(if .state == "success" then "success" elif .state == "failure" or .state == "error" then "failure" else null end)} ]'
 
 @test "collect_assessment_data: jq statuses dedup keeps only latest entry per context" {
   # GitHub /statuses API returns newest-first. Here jenkins/build had a failure then a
@@ -1287,9 +1304,8 @@ GHEOF
     {"context":"jenkins/build","state":"failure","target_url":"https://ci.example.com/1"},
     {"context":"other/check","state":"success","target_url":"https://ci.example.com/3"}
   ]'
-  local jq_expr='[ [.[].[] | select(.context != null)] | group_by(.context)[] | first | {name:.context, conclusion:(if .state == "success" then "success" elif .state == "failure" or .state == "error" then "failure" else null end)} ]'
 
-  run bash -c "printf '%s' '$input' | jq -s '$jq_expr'"
+  run bash -c "printf '%s' '$input' | jq -s '$JQ_DEDUP_STATUSES'"
 
   [ "$status" -eq 0 ]
   # The newer success for jenkins/build must appear; the old failure must not

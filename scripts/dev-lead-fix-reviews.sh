@@ -270,10 +270,13 @@ fetch_pr_context() {
   # (e.g., review-changes in dry-run where the PR API call is skipped).
   CI_STATUS_JSON="[]"
   if [ -n "${HEAD_SHA:-}" ]; then
-    CI_STATUS_JSON=$(gh api --paginate "repos/${REPO}/commits/${HEAD_SHA}/check-runs?per_page=100" \
+    if ! CI_STATUS_JSON=$(gh api --paginate "repos/${REPO}/commits/${HEAD_SHA}/check-runs?per_page=100" \
       2>/dev/null \
-      | jq -s '[.[].check_runs[] | {name:.name, status:.status, conclusion:.conclusion, details_url:.details_url}]' \
-      2>/dev/null || echo "[]")
+      | jq -s '[.[].check_runs[]? | {name:.name, status:.status, conclusion:.conclusion, details_url:.details_url}]' \
+      2>/dev/null); then
+      echo "::error::fetch_pr_context: failed to fetch CI check-runs for ${HEAD_SHA} — cannot assess PR state" >&2
+      return 1
+    fi
     # Also include legacy commit statuses (Jenkins, external CI, etc.) that use
     # the separate statuses API rather than check-runs. Merge into CI_STATUS_JSON
     # so the agent sees a unified picture of all required status checks.
@@ -282,32 +285,40 @@ fetch_pr_context() {
     # Dedupe by context so a stale failure overwritten by a later success does not
     # appear as a Tier-1 blocker: group_by preserves input order within each group,
     # so `first` picks the newest entry for each context.
-    statuses_json=$(gh api --paginate "repos/${REPO}/commits/${HEAD_SHA}/statuses?per_page=100" \
+    if statuses_json=$(gh api --paginate "repos/${REPO}/commits/${HEAD_SHA}/statuses?per_page=100" \
       2>/dev/null \
       | jq -s '[ [.[].[] | select(.context != null)] | group_by(.context)[] | first | {name:.context, status:(if .state == "pending" then "in_progress" else "completed" end), conclusion:(if .state == "success" then "success" elif .state == "failure" or .state == "error" then "failure" else null end), details_url:.target_url} ]' \
-      2>/dev/null || echo "[]")
-    CI_STATUS_JSON=$(printf '%s\n%s' "$CI_STATUS_JSON" "$statuses_json" \
-      | jq -s 'add // []' 2>/dev/null || echo "$CI_STATUS_JSON")
+      2>/dev/null); then
+      CI_STATUS_JSON=$(printf '%s\n%s' "$CI_STATUS_JSON" "$statuses_json" \
+        | jq -s 'add // []' 2>/dev/null || echo "$CI_STATUS_JSON")
+    else
+      echo "::warning::fetch_pr_context: failed to fetch legacy commit statuses for ${HEAD_SHA} — using check-runs only" >&2
+    fi
   fi
   export CI_STATUS_JSON
 
   # All PR reviews with state — deduplicated per reviewer (latest review per user only).
   # Uses --paginate so PRs with more than 100 reviews are fully covered.
-  ALL_REVIEWS_JSON=$(gh api --paginate "repos/${REPO}/pulls/${PR_NUMBER}/reviews?per_page=100" \
+  # COMMENTED reviews do not supersede a prior CHANGES_REQUESTED or APPROVED — only
+  # non-COMMENTED reviews determine the effective blocking state per user.
+  if ! ALL_REVIEWS_JSON=$(gh api --paginate "repos/${REPO}/pulls/${PR_NUMBER}/reviews?per_page=100" \
     2>/dev/null \
-    | jq -s '[ [.[].[] | select(.user != null)] | group_by(.user.login)[] | sort_by(.id) | last | {id:.id, user:.user.login, state:.state, submitted_at:.submitted_at} ]' \
-    2>/dev/null || echo "[]")
+    | jq -s '[ [.[].[] | select(.user != null)] | group_by(.user.login)[] | (. as $g | ($g | map(select(.state != "COMMENTED")) | sort_by(.id) | last) // ($g | sort_by(.id) | last)) | {id:.id, user:.user.login, state:.state, submitted_at:.submitted_at} ]' \
+    2>/dev/null); then
+    echo "::error::fetch_pr_context: failed to fetch PR reviews for #${PR_NUMBER} — cannot assess PR state" >&2
+    return 1
+  fi
   export ALL_REVIEWS_JSON
 }
 
-# resolve_bot_outdated_threads: resolves up to 100 outdated review threads from bot reviewers.
+# resolve_bot_outdated_threads: resolves all outdated review threads from bot reviewers.
 # This is a cleanup function for the no-changes path: when no code changes are needed,
 # we still want to mark outdated bot comments as resolved so they don't clutter the PR.
 # Outdated threads reference code that no longer exists, so resolution is unambiguous.
 #
-# Best-effort: fetches the first 100 threads only (not paginated — acceptable for cleanup).
-# Unlike resolve_actor_outdated_threads, this resolves threads from ANY bot author
-# (author __typename == "Bot", or login ends with [bot]).
+# Paginated: fetches all threads via cursor pagination so PRs with >100 threads are
+# fully covered. Unlike resolve_actor_outdated_threads, this resolves threads from ANY
+# bot author (__typename == "Bot", or login ends with [bot]).
 resolve_bot_outdated_threads() {
   local intent="$1"
   if [ "${DEV_LEAD_DRY_RUN:-false}" = "true" ]; then
@@ -320,27 +331,45 @@ resolve_bot_outdated_threads() {
     return 0
   fi
 
-  local ids
-  # Query for unresolved outdated threads where the author is a bot.
+  # Collect IDs of all outdated unresolved bot threads via cursor pagination.
   # __typename == "Bot" covers bots whose GraphQL login omits the [bot] suffix;
   # endswith("[bot]") covers bots that include it — both checks together are belt-and-suspenders.
-  ids=$(gh api graphql -f query='
-    query($owner:String!,$repo:String!,$pr:Int!) {
-      repository(owner:$owner, name:$repo) {
-        pullRequest(number:$pr) {
-          reviewThreads(first:100) {
-            nodes { id isResolved isOutdated comments(first:1) { nodes { author { login __typename } } } }
-          }
+  local ids=""
+  local cursor="" has_next_page="true" page_response page_ids
+  local cursor_args=()
+  local bot_outdated_query='query($owner:String!,$repo:String!,$pr:Int!,$cursor:String){
+    repository(owner:$owner,name:$repo){
+      pullRequest(number:$pr){
+        reviewThreads(first:100,after:$cursor){
+          pageInfo{hasNextPage endCursor}
+          nodes{id isResolved isOutdated comments(first:1){nodes{author{login __typename}}}}
         }
       }
-    }' \
-    -F owner="${REPO%%/*}" -F repo="${REPO##*/}" -F pr="$PR_NUMBER" 2>/dev/null \
-    | jq -r '.data?.repository?.pullRequest?.reviewThreads?.nodes // []
-      | map(select(.isResolved == false
-                   and .isOutdated == true
-                   and (((.comments.nodes?[0]?.author?.login // "") | endswith("[bot]"))
-                        or ((.comments.nodes?[0]?.author?.__typename // "") == "Bot"))))
-      | .[].id' 2>/dev/null || true)
+    }
+  }'
+  while [ "$has_next_page" = "true" ]; do
+    page_response=$(gh api graphql -f query="$bot_outdated_query" \
+      -F owner="${REPO%%/*}" -F repo="${REPO##*/}" -F pr="$PR_NUMBER" \
+      "${cursor_args[@]}" 2>/dev/null || echo "{}")
+    page_ids=$(printf '%s' "$page_response" | jq -r \
+      '.data?.repository?.pullRequest?.reviewThreads?.nodes // []
+       | map(select(.isResolved == false
+                    and .isOutdated == true
+                    and (((.comments.nodes?[0]?.author?.login // "") | endswith("[bot]"))
+                         or ((.comments.nodes?[0]?.author?.__typename // "") == "Bot"))))
+       | .[].id' 2>/dev/null || true)
+    [ -n "$page_ids" ] && ids=$(printf '%s\n%s' "$ids" "$page_ids")
+    has_next_page=$(printf '%s' "$page_response" | jq -r \
+      '.data?.repository?.pullRequest?.reviewThreads?.pageInfo?.hasNextPage // false' \
+      2>/dev/null || echo "false")
+    cursor=$(printf '%s' "$page_response" | jq -r \
+      '.data?.repository?.pullRequest?.reviewThreads?.pageInfo?.endCursor // ""' \
+      2>/dev/null || echo "")
+    [ -z "$cursor" ] && has_next_page="false"
+    cursor_args=("-f" "cursor=${cursor}")
+  done
+  # Strip leading/trailing blank lines from accumulated ids
+  ids=$(printf '%s' "$ids" | sed '/^[[:space:]]*$/d')
 
   if [ -z "$ids" ]; then
     echo "::notice::no outdated unresolved threads from bot reviewers on PR #${PR_NUMBER}"
