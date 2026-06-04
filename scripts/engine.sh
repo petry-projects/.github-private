@@ -10,6 +10,17 @@ set -euo pipefail
 #   ENGINE_* env vars for model names and labels
 #   DUCK_ENGINE / DUCK_MODEL for rubber-duck cross-engine review
 #
+# Rate-limit fallback (two layers, applied in order):
+#   1. In-Claude model fallback — per-tier CLAUDE_*_MODEL_CHAIN walks alternate
+#      Claude models (e.g. sonnet → opus) before declaring the provider
+#      rate-limited. Each Claude model has its own TPM/RPM bucket, so swapping
+#      models often recovers without leaving the provider. Does NOT help when
+#      the daily subscription cap is exhausted (cap is shared across all Claude
+#      models — see issue #206 for the proactive headroom guard).
+#   2. Cross-provider fallback — run_writer_with_fallback / review-batch.sh
+#      walk claude → gemini → copilot only after the in-engine chain is fully
+#      rate-limited (exit code 2 from the engine-layer call).
+#
 # Token logging (opt-in):
 #   Set TOKEN_LOG_FILE=<path> to capture per-call JSONL token records.
 #   TOKEN_WORKFLOW — workflow label for records (default: "unknown").
@@ -48,6 +59,17 @@ set_engine_config() {
       # Cross-engine rubber duck: use Copilot when Claude is primary
       DUCK_ENGINE="copilot"
       DUCK_MODEL="o4-mini"
+      # Per-tier in-Claude model fallback chains (comma-separated).
+      # On rate-limit, the chain is walked left-to-right before the cross-provider
+      # fallback (claude → gemini → copilot) kicks in. Per-model TPM/RPM buckets
+      # are independent, so swapping models within Claude often recovers without
+      # leaving the provider. (Daily subscription cap is shared — see issue #206.)
+      # Override per workflow via env to tune cost/capability trade-offs.
+      CLAUDE_TRIAGE_MODEL_CHAIN="${CLAUDE_TRIAGE_MODEL_CHAIN:-claude-haiku-4-5-20251001,claude-sonnet-4-6}"
+      CLAUDE_DEEP_MODEL_CHAIN="${CLAUDE_DEEP_MODEL_CHAIN:-claude-sonnet-4-6,claude-opus-4-7}"
+      CLAUDE_AUDIT_MODEL_CHAIN="${CLAUDE_AUDIT_MODEL_CHAIN:-claude-opus-4-7,claude-sonnet-4-6}"
+      CLAUDE_ACTION_MODEL_CHAIN="${CLAUDE_ACTION_MODEL_CHAIN:-claude-sonnet-4-6,claude-opus-4-7}"
+      CLAUDE_SINGLE_MODEL_CHAIN="${CLAUDE_SINGLE_MODEL_CHAIN:-claude-opus-4-7,claude-sonnet-4-6}"
       ;;
     gemini)
       ENGINE_TRIAGE_MODEL="gemini-2.0-flash"
@@ -60,6 +82,14 @@ set_engine_config() {
       # Cross-engine rubber duck: use Claude for diversity
       DUCK_ENGINE="claude"
       DUCK_MODEL="claude-sonnet-4-6"
+      # No in-engine chain for Gemini — only one production model in use today.
+      # Preserve any caller-provided values so Claude fallback chains survive
+      # a Gemini-primary run that switches to Claude on rate-limit.
+      CLAUDE_TRIAGE_MODEL_CHAIN="${CLAUDE_TRIAGE_MODEL_CHAIN:-}"
+      CLAUDE_DEEP_MODEL_CHAIN="${CLAUDE_DEEP_MODEL_CHAIN:-}"
+      CLAUDE_AUDIT_MODEL_CHAIN="${CLAUDE_AUDIT_MODEL_CHAIN:-}"
+      CLAUDE_ACTION_MODEL_CHAIN="${CLAUDE_ACTION_MODEL_CHAIN:-}"
+      CLAUDE_SINGLE_MODEL_CHAIN="${CLAUDE_SINGLE_MODEL_CHAIN:-}"
       ;;
     copilot)
       ENGINE_TRIAGE_MODEL="o4-mini"
@@ -79,6 +109,14 @@ set_engine_config() {
       # Cross-engine rubber duck: use Gemini when Copilot is primary
       DUCK_ENGINE="gemini"
       DUCK_MODEL="gemini-2.0-flash"
+      # No in-engine chain for Copilot — single GitHub Models endpoint.
+      # Preserve any caller-provided values so Claude fallback chains survive
+      # a Copilot-primary run that switches to Claude on rate-limit.
+      CLAUDE_TRIAGE_MODEL_CHAIN="${CLAUDE_TRIAGE_MODEL_CHAIN:-}"
+      CLAUDE_DEEP_MODEL_CHAIN="${CLAUDE_DEEP_MODEL_CHAIN:-}"
+      CLAUDE_AUDIT_MODEL_CHAIN="${CLAUDE_AUDIT_MODEL_CHAIN:-}"
+      CLAUDE_ACTION_MODEL_CHAIN="${CLAUDE_ACTION_MODEL_CHAIN:-}"
+      CLAUDE_SINGLE_MODEL_CHAIN="${CLAUDE_SINGLE_MODEL_CHAIN:-}"
       ;;
     *)
       echo "::error::Unknown REVIEW_ENGINE='$REVIEW_ENGINE' (expected: claude, gemini, or copilot)"
@@ -90,6 +128,9 @@ set_engine_config() {
   export ENGINE_ACTION_MODEL ENGINE_SINGLE_MODEL
   export ENGINE_LABEL ENGINE_SINGLE_LABEL
   export DUCK_ENGINE DUCK_MODEL COPILOT_API_MODEL
+  export CLAUDE_TRIAGE_MODEL_CHAIN CLAUDE_DEEP_MODEL_CHAIN
+  export CLAUDE_AUDIT_MODEL_CHAIN CLAUDE_ACTION_MODEL_CHAIN
+  export CLAUDE_SINGLE_MODEL_CHAIN
 }
 
 # Initial config
@@ -600,18 +641,38 @@ run_agentic() {
   fi
   case "$REVIEW_ENGINE" in
     claude)
+      # Resolve the in-Claude model chain for this tier. The chain is the
+      # cascade tried on rate-limit (e.g. sonnet → opus). If the caller
+      # passed a model that does NOT match the tier's default ENGINE_*_MODEL,
+      # treat it as an explicit pin: honor it as a single-element chain so
+      # callers can still force a specific model when they need to (the
+      # documented `[model]` parameter on this function). The chain is only
+      # applied when the caller used the default model for the tier.
+      local _agentic_chain _tier_default=""
+      case "$tier" in
+        deep)   _tier_default="${ENGINE_DEEP_MODEL:-}"
+                _agentic_chain="${CLAUDE_DEEP_MODEL_CHAIN:-$model}"   ;;
+        audit)  _tier_default="${ENGINE_AUDIT_MODEL:-}"
+                _agentic_chain="${CLAUDE_AUDIT_MODEL_CHAIN:-$model}"  ;;
+        action) _tier_default="${ENGINE_ACTION_MODEL:-}"
+                _agentic_chain="${CLAUDE_ACTION_MODEL_CHAIN:-$model}" ;;
+        single) _tier_default="${ENGINE_SINGLE_MODEL:-}"
+                _agentic_chain="${CLAUDE_SINGLE_MODEL_CHAIN:-$model}" ;;
+        *)      _agentic_chain="$model" ;;
+      esac
+      if [ -n "$_tier_default" ] && [ "$model" != "$_tier_default" ]; then
+        _agentic_chain="$model"
+      fi
       if [ -n "$_tok_tmp" ]; then
-        timeout "$DEEP_TIMEOUT_SEC" claude --print \
-          --model "$model" \
+        _claude_chain_invoke "$_agentic_chain" "$prompt_file" "$DEEP_TIMEOUT_SEC" \
           --permission-mode acceptEdits \
           --allowed-tools "Bash,Read,Grep,Glob" \
-          < "$prompt_file" | tee "$_tok_tmp" || rc=${PIPESTATUS[0]}
+          | tee "$_tok_tmp" || rc=${PIPESTATUS[0]}
       else
-        timeout "$DEEP_TIMEOUT_SEC" claude --print \
-          --model "$model" \
+        _claude_chain_invoke "$_agentic_chain" "$prompt_file" "$DEEP_TIMEOUT_SEC" \
           --permission-mode acceptEdits \
           --allowed-tools "Bash,Read,Grep,Glob" \
-          < "$prompt_file" || rc=$?
+          || rc=$?
       fi
       ;;
     gemini)
@@ -1716,6 +1777,9 @@ run_writer_with_fallback() {
 # status=rate-limited markers. Pattern: "resets H:MMam/pm (UTC)" or
 # "resets H:MM(am|pm) UTC".
 # Writes empty string if no reset time is found (caller treats as unknown).
+#
+# Prefer parse_reset_time_files for large captures — same OOM rationale as
+# is_rate_limited / is_rate_limited_files above.
 parse_reset_time() {
   local text="$1"
   # Match "resets 11:20pm (UTC)" or "resets 11:20pm UTC"
@@ -1728,22 +1792,33 @@ parse_reset_time() {
   # Extract H:MM(am|pm) part
   local hhmm
   hhmm=$(printf '%s' "$time_str" | grep -oiE '[0-9]{1,2}:[0-9]{2}(am|pm)$' || true)
-  if [ -z "$hhmm" ]; then
+  _emit_reset_iso "$hhmm"
+}
+
+# parse_reset_time_files <file>...
+# File-aware variant of parse_reset_time. Scans each non-empty existing file
+# for the first "resets H:MMam/pm" match and writes the ISO timestamp via
+# _emit_reset_iso. Uses grep directly on files to avoid loading large LLM
+# outputs into a shell variable.
+parse_reset_time_files() {
+  local files=()
+  local f
+  for f in "$@"; do
+    [ -n "$f" ] && [ -f "$f" ] && files+=("$f")
+  done
+  if [ "${#files[@]}" -eq 0 ]; then
     printf '' > /tmp/dev-lead-rate-limit-reset
     return 0
   fi
-  # Convert to ISO-8601 UTC using today's date (rate limits reset within 24h)
-  local today
-  today=$(date -u +%Y-%m-%d)
-  local iso
-  iso=$(date -u -d "${today} ${hhmm} UTC" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)
-  # If reset time is in the past (already reset today), it means tomorrow
-  if [ -n "$iso" ] && [ "$(date -u +%s)" -gt "$(date -u -d "$iso" +%s 2>/dev/null || echo 0)" ]; then
-    local tomorrow
-    tomorrow=$(date -u -d "tomorrow" +%Y-%m-%d)
-    iso=$(date -u -d "${tomorrow} ${hhmm} UTC" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)
+  local time_str
+  time_str=$(grep -hoiE 'resets [0-9]{1,2}:[0-9]{2}(am|pm)' "${files[@]}" 2>/dev/null | head -1 || true)
+  if [ -z "$time_str" ]; then
+    printf '' > /tmp/dev-lead-rate-limit-reset
+    return 0
   fi
-  printf '%s' "${iso:-}" > /tmp/dev-lead-rate-limit-reset
+  local hhmm
+  hhmm=$(printf '%s' "$time_str" | grep -oiE '[0-9]{1,2}:[0-9]{2}(am|pm)$' || true)
+  _emit_reset_iso "$hhmm"
 }
 
 # run_writer <prompt_file> [model]
@@ -1770,18 +1845,23 @@ run_writer() {
 
   case "$REVIEW_ENGINE" in
     claude)
+      # See run_agentic — honor caller's explicit model pin when it differs
+      # from the tier default. Chain only applies when the caller used the
+      # default action model for this engine.
+      local _writer_chain="${CLAUDE_ACTION_MODEL_CHAIN:-$model}"
+      if [ -n "${ENGINE_ACTION_MODEL:-}" ] && [ "$model" != "$ENGINE_ACTION_MODEL" ]; then
+        _writer_chain="$model"
+      fi
       if [ -n "$_tmp" ]; then
-        timeout "$ACTION_TIMEOUT_SEC" claude --print \
-          --model "$model" \
+        _claude_chain_invoke "$_writer_chain" "$prompt_file" "$ACTION_TIMEOUT_SEC" \
           --permission-mode acceptEdits \
           --allowed-tools "Bash,Read,Write,Edit,Grep,Glob,WebFetch" \
-          < "$prompt_file" 2>&1 | tee "$_tmp" || rc=${PIPESTATUS[0]}
+          2>&1 | tee "$_tmp" || rc=${PIPESTATUS[0]}
       else
-        timeout "$ACTION_TIMEOUT_SEC" claude --print \
-          --model "$model" \
+        _claude_chain_invoke "$_writer_chain" "$prompt_file" "$ACTION_TIMEOUT_SEC" \
           --permission-mode acceptEdits \
           --allowed-tools "Bash,Read,Write,Edit,Grep,Glob,WebFetch" \
-          < "$prompt_file" || rc=$?
+          || rc=$?
       fi
       ;;
     gemini)
@@ -1809,14 +1889,19 @@ run_writer() {
       ;;
   esac
 
-  # Map rate-limit to exit code 2 for caller to detect; parse reset time for marker embedding
-  if [ "$rc" -ne 0 ] && [ -n "$_tmp" ] && is_rate_limited "$(cat "$_tmp")"; then
-    parse_reset_time "$(cat "$_tmp")"
+  # Map rate-limit to exit code 2 for caller to detect; parse reset time for
+  # marker embedding. Use the file-based helpers to avoid OOM on large captures.
+  if [ "$rc" -ne 0 ] && [ -n "$_tmp" ] && is_rate_limited_files "$_tmp"; then
+    parse_reset_time_files "$_tmp"
     [ -n "$_tmp" ] && rm -f "$_tmp"
     return 2
   fi
   if [ "$rc" -eq 0 ]; then
-    _record_engine_tokens "writer" "$REVIEW_ENGINE" "$model" "$prompt_file" "$_tmp"
+    local _writer_used="$model"
+    if [ "$REVIEW_ENGINE" = "claude" ] && [ -n "${_CLAUDE_CHAIN_MODEL_USED:-}" ]; then
+      _writer_used="$_CLAUDE_CHAIN_MODEL_USED"
+    fi
+    _record_engine_tokens "writer" "$REVIEW_ENGINE" "$_writer_used" "$prompt_file" "$_tmp"
   fi
   if [ -n "$_tmp" ]; then
     # Redact once: write secret-scrubbed content to the persisted path, then
