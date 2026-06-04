@@ -332,13 +332,13 @@ GHEOF
   [[ "$output" == *"rate-limited"* ]]
 }
 
-@test "fix-reviews: rate-limited dedup: existing marker for same SHA+intent skips duplicate" {
+@test "fix-reviews: rate-limited: existing marker for same SHA+intent is replaced with fresh reset" {
   export INTENT_TYPE="fix-reviews"
   export DEV_LEAD_DRY_RUN="false"
   export HEAD_SHA="ddd444eee555"
   export COPILOT_GITHUB_TOKEN="stub-token"
 
-  # Returns existing rate-limited marker for this sha+intent
+  # Returns existing rate-limited marker for this sha+intent — must be replaced, not skipped
   cat > "$STUB_BIN_DIR/gh" << 'GHEOF'
 #!/usr/bin/env bash
 # copilot must be checked first — its -p prompt text may contain "graphql"
@@ -349,8 +349,10 @@ ARGS="$*"
 case "$ARGS" in
   *"graphql"*)
     echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}' ;;
+  *"-X DELETE"*)
+    exit 0 ;;
   *"api"*"repos/"*"issues/"*)
-    echo '[{"body":"<!-- dev-lead-fix-reviews pr=54 sha=ddd444eee555 intent=fix-reviews status=rate-limited -->"}]' ;;
+    echo '[{"id":1,"body":"<!-- dev-lead-fix-reviews pr=54 sha=ddd444eee555 intent=fix-reviews status=rate-limited -->"}]' ;;
   *"pr comment"*)
     echo "COMMENT_POSTED"; exit 0 ;;
   *) echo "{}" ;;
@@ -370,7 +372,9 @@ STUB
   run bash "$FIX_REVIEWS_SCRIPT"
 
   [ "$status" -eq 2 ]
-  [[ "$output" == *"skipping duplicate"* ]]
+  # Stale rate-limited marker must be replaced with a fresh one (not skipped as duplicate)
+  [[ "$output" != *"skipping duplicate"* ]]
+  [[ "$output" == *"COMMENT_POSTED"* ]]
 }
 
 @test "fix-reviews: no-changes path also calls notify_coderabbit_resolve (dry-run)" {
@@ -2343,6 +2347,10 @@ STUB
   [ "$status" -eq 0 ]
   # The stale rate-limited comment must have been deleted so a fresh one can be posted
   grep -q "9003" "$deletions_file"
+  # A fresh rate-limited marker must be posted after the stale one is deleted —
+  # without this the retry cron sees only the old marker (past reset_time) and
+  # dispatches on every scan indefinitely.
+  [[ "$output" == *"COMMENT_POSTED"* ]]
   rm -rf "$tmpdir"
   rm -f "$deletions_file"
 }

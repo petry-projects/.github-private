@@ -682,11 +682,18 @@ has_reviews_rate_limited_marker() {
 post_reviews_rate_limited() {
   local intent="$1"
 
-  # Dedup: don't accumulate multiple rate-limited markers for the same SHA+intent
-  if has_reviews_rate_limited_marker "$intent"; then
-    echo "::notice::rate-limited marker already posted for intent=${intent} SHA=${HEAD_SHA:-none} — skipping duplicate"
-    return 0
-  fi
+  # Expire any stale terminal markers (applied/no-changes/failed) for this SHA+intent
+  # so the retry cron is not masked by a prior terminal that predates the current blocker.
+  # Without this, a no-changes terminal from before a reviewer's CHANGES_REQUESTED would
+  # cause the cron to skip dispatch even though a new rate-limited marker was just posted.
+  expire_stale_terminal_markers "$intent"
+
+  # Always expire any existing rate-limited marker and post a fresh one with an updated
+  # reset_time. When a hard blocker persists past the prior backoff window, the retry
+  # cron re-dispatches and reaches this path again. The old marker's reset_time is then
+  # in the past; if we skip posting a fresh one the cron dispatches on every scan
+  # indefinitely instead of extending the backoff.
+  expire_stale_rate_limited_marker "$intent"
 
   local reset_time
   reset_time=$(cat /tmp/dev-lead-rate-limit-reset 2>/dev/null || true)
@@ -814,8 +821,6 @@ case "$INTENT_TYPE" in
         if has_hard_blockers; then
           echo "::warning::Tier-1 blockers still present (failing CI or CHANGES_REQUESTED reviews) — posting retry marker with backoff"
           printf '%s' "$(date -u -d '+30 minutes' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)" > /tmp/dev-lead-rate-limit-reset
-          expire_stale_terminal_markers "fix-reviews"
-          expire_stale_rate_limited_marker "fix-reviews"
           post_reviews_rate_limited "fix-reviews"
         else
           post_no_changes "fix-reviews"
@@ -907,8 +912,6 @@ case "$INTENT_TYPE" in
         if has_hard_blockers; then
           echo "::warning::Tier-1 blockers still present (failing CI or CHANGES_REQUESTED reviews) — posting retry marker with backoff"
           printf '%s' "$(date -u -d '+30 minutes' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)" > /tmp/dev-lead-rate-limit-reset
-          expire_stale_terminal_markers "review-changes"
-          expire_stale_rate_limited_marker "review-changes"
           post_reviews_rate_limited "review-changes"
         else
           post_reviews_terminal "review-changes" "no-changes" "No changes were needed for this PR."
