@@ -172,14 +172,17 @@ GITEOF
   chmod +x "$STUB_BIN_DIR/git"
 
   # gh stub: no existing PRs, issue API, comment posts ok, copilot rate-limited
+  # copilot* must be checked first — the copilot_chat call passes the full
+  # prompt text via -p, and that text contains "issue comment" examples which
+  # would match *"issue comment"* before reaching *"copilot"*.
   cat > "$STUB_BIN_DIR/gh" <<'GHEOF'
 #!/usr/bin/env bash
 case "$*" in
+  copilot*) echo "rate limit exceeded"; exit 1 ;;
   *"pulls?state=open"*) echo "0" ;;
   *"api"*"repos/"*"issues/"*) echo '{"title":"Test Issue","body":"Test body"}' ;;
   *"api"*"users/"*) echo '{"id":12345}' ;;
   *"issue comment"*) exit 0 ;;
-  *"copilot"*) echo "rate limit exceeded"; exit 1 ;;
   *) echo "{}" ;;
 esac
 GHEOF
@@ -224,11 +227,11 @@ GITEOF
   cat > "$STUB_BIN_DIR/gh" <<GHEOF
 #!/usr/bin/env bash
 case "\$*" in
+  copilot*) echo "rate limit exceeded"; exit 1 ;;
   *"pulls?state=open"*) echo "0" ;;
   *"api"*"repos/"*"issues/"*) echo '{"title":"Test","body":"body"}' ;;
   *"api"*"users/"*) echo '{"id":12345}' ;;
   *"issue comment"*) touch "${comment_posted_sentinel}"; exit 0 ;;
-  *"copilot"*) echo "rate limit exceeded"; exit 1 ;;
   *) echo "{}" ;;
 esac
 GHEOF
