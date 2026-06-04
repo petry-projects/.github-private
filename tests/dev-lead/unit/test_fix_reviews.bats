@@ -918,3 +918,592 @@ STUB
   # Should call resolve_actor_outdated_threads in dry-run mode
   [[ "$output" == *"would resolve outdated review threads authored by donpetry"* ]]
 }
+
+# ── ALL_REVIEWS_JSON deduplication: latest review per user ───────────────────
+# The GitHub Reviews API returns the full history of all reviews. If a reviewer
+# previously requested changes but later approved, both entries are present.
+# The jq filter in collect_assessment_data must keep only the latest per user.
+
+@test "collect_assessment_data: jq dedup expression keeps only latest review per user" {
+  # Feed sample multi-review JSON through the exact jq expression used in the script
+  # to verify that CHANGES_REQUESTED is superseded by a later APPROVED from the same user.
+  # Input is a single-page array; jq -s simulates --paginate output (wraps to [[...]])
+  # so .[].[] correctly flattens across pages.
+  local input='[
+    {"id":1,"user":{"login":"alice"},"state":"CHANGES_REQUESTED","submitted_at":"2024-01-01T00:00:00Z"},
+    {"id":2,"user":{"login":"bob"},"state":"APPROVED","submitted_at":"2024-01-02T00:00:00Z"},
+    {"id":3,"user":{"login":"alice"},"state":"APPROVED","submitted_at":"2024-01-03T00:00:00Z"}
+  ]'
+  local jq_expr='[ [.[].[] | select(.user != null)] | group_by(.user.login)[] | sort_by(.id) | last | {id:.id, user:.user.login, state:.state, submitted_at:.submitted_at} ]'
+
+  run bash -c "printf '%s' '$input' | jq -s '$jq_expr'"
+
+  [ "$status" -eq 0 ]
+  # alice's latest review (id=3) is APPROVED — CHANGES_REQUESTED (id=1) must not appear
+  [[ "$output" == *'"alice"'* ]]
+  [[ "$output" == *'"APPROVED"'* ]]
+  # Only one entry for alice — no duplicate
+  local alice_count
+  alice_count=$(echo "$output" | grep -c '"alice"')
+  [ "$alice_count" -eq 1 ]
+  # CHANGES_REQUESTED should not appear in output
+  [[ "$output" != *'"CHANGES_REQUESTED"'* ]]
+}
+
+@test "collect_assessment_data: jq dedup expression filters out null-user entries" {
+  local input='[
+    {"id":1,"user":null,"state":"APPROVED","submitted_at":"2024-01-01T00:00:00Z"},
+    {"id":2,"user":{"login":"alice"},"state":"APPROVED","submitted_at":"2024-01-02T00:00:00Z"}
+  ]'
+  local jq_expr='[ [.[].[] | select(.user != null)] | group_by(.user.login)[] | sort_by(.id) | last | {id:.id, user:.user.login, state:.state, submitted_at:.submitted_at} ]'
+
+  run bash -c "printf '%s' '$input' | jq -s '$jq_expr'"
+
+  [ "$status" -eq 0 ]
+  # Result should have only alice; the null-user entry is filtered out
+  local count
+  count=$(echo "$output" | jq 'length')
+  [ "$count" -eq 1 ]
+}
+
+# ── holistic assessment: CI_STATUS_JSON and ALL_REVIEWS_JSON fetching ──────────
+# These tests verify that fix-reviews, review-changes, and fix-bot-comment all
+# fetch CI check results and all PR reviews before running the engine, so the
+# agent can detect Tier-1 blockers (failing CI + CHANGES_REQUESTED reviews) and
+# never wrongly declare "no-changes" while the PR is still blocked.
+
+_make_assessment_gh_stub() {
+  local calls_file="$1"
+  cat > "$STUB_BIN_DIR/gh" << GHEOF
+#!/usr/bin/env bash
+# Record every invocation for assertion
+printf '%s\n' "\$*" >> "${calls_file}"
+ARGS="\$*"
+case "\$ARGS" in
+  *"commits/"*"check-runs"*)
+    # Return raw GitHub API format — script now uses --paginate piped to jq -s
+    echo '{"check_runs":[{"name":"Lint","status":"completed","conclusion":"failure","details_url":"https://example.com"}]}' ;;
+  *"commits/"*"statuses"*)
+    echo '[]' ;;
+  *"pulls/"*"/reviews"*)
+    # Return raw GitHub API format with user as object — script now uses --paginate piped to jq -s
+    echo '[{"id":1,"user":{"login":"gemini-code-assist[bot]"},"state":"CHANGES_REQUESTED","submitted_at":"2024-01-01T00:00:00Z"}]' ;;
+  *"graphql"*)
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+  *"issues/"*"comments"*)
+    echo "[]" ;;
+  *"pr checkout"*) exit 0 ;;
+  *"pr comment"*) exit 0 ;;
+  *"pr merge"*) exit 0 ;;
+  *"pulls/"*) echo '{"head":{"sha":"ddd444eee555"},"auto_merge":null}' ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+}
+
+@test "fix-reviews: fix-reviews case fetches CI check-runs endpoint" {
+  export INTENT_TYPE="fix-reviews"
+  export DEV_LEAD_DRY_RUN="true"
+  export HEAD_SHA="ddd444eee555"
+
+  local calls_file
+  calls_file="$(mktemp)"
+  _make_assessment_gh_stub "$calls_file"
+
+  run bash "$FIX_REVIEWS_SCRIPT"
+
+  [ "$status" -eq 0 ]
+  # Script must have called the check-runs API endpoint
+  grep -q "commits/.*check-runs" "$calls_file"
+  rm -f "$calls_file"
+}
+
+@test "fix-reviews: fix-reviews case fetches all PR reviews endpoint" {
+  export INTENT_TYPE="fix-reviews"
+  export DEV_LEAD_DRY_RUN="true"
+  export HEAD_SHA="ddd444eee555"
+
+  local calls_file
+  calls_file="$(mktemp)"
+  _make_assessment_gh_stub "$calls_file"
+
+  run bash "$FIX_REVIEWS_SCRIPT"
+
+  [ "$status" -eq 0 ]
+  # Script must have called the reviews API endpoint
+  grep -q "pulls/.*reviews" "$calls_file"
+  rm -f "$calls_file"
+}
+
+@test "fix-reviews: review-changes case fetches CI check-runs endpoint" {
+  export INTENT_TYPE="review-changes"
+  export DEV_LEAD_DRY_RUN="true"
+  export HEAD_SHA="ddd444eee555"
+  export PR_TITLE="Test PR"
+  export PR_DESCRIPTION="A test pull request"
+
+  local calls_file
+  calls_file="$(mktemp)"
+  _make_assessment_gh_stub "$calls_file"
+
+  run bash "$FIX_REVIEWS_SCRIPT"
+
+  [ "$status" -eq 0 ]
+  grep -q "commits/.*check-runs" "$calls_file"
+  rm -f "$calls_file"
+}
+
+@test "fix-reviews: review-changes case fetches all PR reviews endpoint" {
+  export INTENT_TYPE="review-changes"
+  export DEV_LEAD_DRY_RUN="true"
+  export HEAD_SHA="ddd444eee555"
+  export PR_TITLE="Test PR"
+  export PR_DESCRIPTION="A test pull request"
+
+  local calls_file
+  calls_file="$(mktemp)"
+  _make_assessment_gh_stub "$calls_file"
+
+  run bash "$FIX_REVIEWS_SCRIPT"
+
+  [ "$status" -eq 0 ]
+  grep -q "pulls/.*reviews" "$calls_file"
+  rm -f "$calls_file"
+}
+
+@test "fix-reviews: fix-bot-comment case fetches CI check-runs endpoint" {
+  export INTENT_TYPE="fix-bot-comment"
+  export DEV_LEAD_DRY_RUN="true"
+  export HEAD_SHA="ddd444eee555"
+  export COMMENT_BODY="SonarQube found issues"
+
+  local calls_file
+  calls_file="$(mktemp)"
+  _make_assessment_gh_stub "$calls_file"
+
+  run bash "$FIX_REVIEWS_SCRIPT"
+
+  [ "$status" -eq 0 ]
+  grep -q "commits/.*check-runs" "$calls_file"
+  rm -f "$calls_file"
+}
+
+@test "fix-reviews: fix-bot-comment case fetches all PR reviews endpoint" {
+  export INTENT_TYPE="fix-bot-comment"
+  export DEV_LEAD_DRY_RUN="true"
+  export HEAD_SHA="ddd444eee555"
+  export COMMENT_BODY="SonarQube found issues"
+
+  local calls_file
+  calls_file="$(mktemp)"
+  _make_assessment_gh_stub "$calls_file"
+
+  run bash "$FIX_REVIEWS_SCRIPT"
+
+  [ "$status" -eq 0 ]
+  grep -q "pulls/.*reviews" "$calls_file"
+  rm -f "$calls_file"
+}
+
+@test "fix-reviews: fix-reviews case fetches commit statuses endpoint" {
+  export INTENT_TYPE="fix-reviews"
+  export DEV_LEAD_DRY_RUN="true"
+  export HEAD_SHA="ddd444eee555"
+
+  local calls_file
+  calls_file="$(mktemp)"
+  _make_assessment_gh_stub "$calls_file"
+
+  run bash "$FIX_REVIEWS_SCRIPT"
+
+  [ "$status" -eq 0 ]
+  grep -q "commits/.*statuses" "$calls_file"
+  rm -f "$calls_file"
+}
+
+@test "fix-reviews: review-changes case fetches commit statuses endpoint" {
+  export INTENT_TYPE="review-changes"
+  export DEV_LEAD_DRY_RUN="true"
+  export HEAD_SHA="ddd444eee555"
+  export PR_TITLE="Test PR"
+  export PR_DESCRIPTION="A test pull request"
+
+  local calls_file
+  calls_file="$(mktemp)"
+  _make_assessment_gh_stub "$calls_file"
+
+  run bash "$FIX_REVIEWS_SCRIPT"
+
+  [ "$status" -eq 0 ]
+  grep -q "commits/.*statuses" "$calls_file"
+  rm -f "$calls_file"
+}
+
+@test "fix-reviews: fix-bot-comment case fetches commit statuses endpoint" {
+  export INTENT_TYPE="fix-bot-comment"
+  export DEV_LEAD_DRY_RUN="true"
+  export HEAD_SHA="ddd444eee555"
+  export COMMENT_BODY="SonarQube found issues"
+
+  local calls_file
+  calls_file="$(mktemp)"
+  _make_assessment_gh_stub "$calls_file"
+
+  run bash "$FIX_REVIEWS_SCRIPT"
+
+  [ "$status" -eq 0 ]
+  grep -q "commits/.*statuses" "$calls_file"
+  rm -f "$calls_file"
+}
+
+# ── Tier-1 blocker gating: no-changes must not be posted while blockers exist ──
+# Regression tests for issue #425: the agent must not declare "no-changes" while
+# CI is failing or a reviewer has CHANGES_REQUESTED.
+
+@test "fix-reviews: does not post no-changes when Tier-1 blockers exist (fix-reviews)" {
+  local calls_file tmpdir
+  calls_file="$(mktemp)"
+  tmpdir="$(mktemp -d)"
+  _make_assessment_gh_stub "$calls_file"
+
+  # Run from a non-git tmpdir so commit_and_push returns 1 (no changes), taking the no-changes path
+  run bash -c "
+    cd '$tmpdir'
+    export INTENT_TYPE=fix-reviews DEV_LEAD_DRY_RUN=true
+    export PR_NUMBER=54 HEAD_SHA=ddd444eee555 REPO='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export PATH=\"$STUB_BIN_DIR:\$PATH\"
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+  rm -rf "$tmpdir" "$calls_file"
+
+  [ "$status" -eq 0 ]
+  # Must NOT post a terminal no-changes marker while CI is failing + CHANGES_REQUESTED
+  [[ "$output" != *"status=no-changes"* ]]
+  # Must emit the warning explaining why no-changes was skipped
+  [[ "$output" == *"Tier-1 blockers still present"* ]]
+}
+
+@test "fix-reviews: does not post no-changes when Tier-1 blockers exist (fix-bot-comment)" {
+  local calls_file tmpdir
+  calls_file="$(mktemp)"
+  tmpdir="$(mktemp -d)"
+  _make_assessment_gh_stub "$calls_file"
+
+  run bash -c "
+    cd '$tmpdir'
+    export INTENT_TYPE=fix-bot-comment DEV_LEAD_DRY_RUN=true
+    export PR_NUMBER=54 HEAD_SHA=ddd444eee555 REPO='petry-projects/.github-private'
+    export COMMENT_BODY='SonarQube found issues'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export PATH=\"$STUB_BIN_DIR:\$PATH\"
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+  rm -rf "$tmpdir" "$calls_file"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"status=no-changes"* ]]
+  [[ "$output" == *"Tier-1 blockers still present"* ]]
+}
+
+@test "fix-reviews: does not post no-changes when Tier-1 blockers exist (review-changes)" {
+  local calls_file tmpdir
+  calls_file="$(mktemp)"
+  tmpdir="$(mktemp -d)"
+  _make_assessment_gh_stub "$calls_file"
+
+  run bash -c "
+    cd '$tmpdir'
+    export INTENT_TYPE=review-changes DEV_LEAD_DRY_RUN=true
+    export PR_NUMBER=54 HEAD_SHA=ddd444eee555 REPO='petry-projects/.github-private'
+    export PR_TITLE='Test PR' PR_DESCRIPTION='A test pull request'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export PATH=\"$STUB_BIN_DIR:\$PATH\"
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+  rm -rf "$tmpdir" "$calls_file"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"status=no-changes"* ]]
+  [[ "$output" == *"Tier-1 blockers still present"* ]]
+}
+
+@test "fix-reviews: posts no-changes when no Tier-1 blockers exist (fix-reviews)" {
+  local tmpdir
+  tmpdir="$(mktemp -d)"
+
+  # Stub with all-success CI and no CHANGES_REQUESTED reviews
+  cat > "$STUB_BIN_DIR/gh" <<'GHEOF'
+#!/usr/bin/env bash
+ARGS="$*"
+case "$ARGS" in
+  *"commits/"*"check-runs"*)
+    echo '{"check_runs":[{"name":"Lint","status":"completed","conclusion":"success","details_url":"https://example.com"}]}' ;;
+  *"commits/"*"statuses"*)
+    echo '[]' ;;
+  *"pulls/"*"reviews"*)
+    echo '[]' ;;
+  *"graphql"*)
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+  *"issues/"*"comments"*)
+    echo "[]" ;;
+  *"pr checkout"*) exit 0 ;;
+  *"pr comment"*) exit 0 ;;
+  *"pr merge"*) exit 0 ;;
+  *"pulls/"*) echo '{"head":{"sha":"ddd444eee555"},"auto_merge":null}' ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+
+  # Run from a non-git tmpdir so commit_and_push returns 1 (no changes), taking the no-changes path
+  run bash -c "
+    cd '$tmpdir'
+    export INTENT_TYPE=fix-reviews DEV_LEAD_DRY_RUN=true
+    export PR_NUMBER=54 HEAD_SHA=ddd444eee555 REPO='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export PATH=\"$STUB_BIN_DIR:\$PATH\"
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+  rm -rf "$tmpdir"
+
+  [ "$status" -eq 0 ]
+  # No blockers → no-changes marker should be posted
+  [[ "$output" == *"status=no-changes"* ]]
+}
+
+# ── Legacy commit statuses dedup: latest state per context wins ────────────────
+# The /statuses API returns the full history per context (newest first). A stale
+# failure followed by a newer success for the same context must not suppress
+# no-changes — only the latest entry per context should be considered.
+
+@test "collect_assessment_data: jq statuses dedup keeps only latest entry per context" {
+  # GitHub /statuses API returns newest-first. Here jenkins/build had a failure then a
+  # newer success, so success appears first in the array (= newest). After dedup, only
+  # the success (first entry per context) should remain.
+  local input='[
+    {"context":"jenkins/build","state":"success","target_url":"https://ci.example.com/2"},
+    {"context":"jenkins/build","state":"failure","target_url":"https://ci.example.com/1"},
+    {"context":"other/check","state":"success","target_url":"https://ci.example.com/3"}
+  ]'
+  local jq_expr='[ [.[].[] | select(.context != null)] | group_by(.context)[] | first | {name:.context, conclusion:(if .state == "success" then "success" elif .state == "failure" or .state == "error" then "failure" else null end)} ]'
+
+  run bash -c "printf '%s' '$input' | jq -s '$jq_expr'"
+
+  [ "$status" -eq 0 ]
+  # The newer success for jenkins/build must appear; the old failure must not
+  local jenkins_conclusion
+  jenkins_conclusion=$(echo "$output" | jq -r '.[] | select(.name == "jenkins/build") | .conclusion')
+  [ "$jenkins_conclusion" = "success" ]
+  # Only one entry for jenkins/build — no duplicate
+  local jenkins_count
+  jenkins_count=$(echo "$output" | jq '[.[] | select(.name == "jenkins/build")] | length')
+  [ "$jenkins_count" -eq 1 ]
+}
+
+@test "fix-reviews: does not treat superseded legacy CI failure as Tier-1 blocker (fix-reviews)" {
+  local tmpdir
+  tmpdir="$(mktemp -d)"
+
+  # Stub: check-runs all success; statuses has old failure then new success for same context
+  cat > "$STUB_BIN_DIR/gh" <<'GHEOF'
+#!/usr/bin/env bash
+ARGS="$*"
+case "$ARGS" in
+  *"commits/"*"check-runs"*)
+    echo '{"check_runs":[{"name":"Lint","status":"completed","conclusion":"success","details_url":"https://example.com"}]}' ;;
+  *"commits/"*"statuses"*)
+    # Newest-first: success (newer) comes before failure (older) in the history
+    echo '[{"context":"jenkins/build","state":"success","target_url":"https://ci.example.com/2"},{"context":"jenkins/build","state":"failure","target_url":"https://ci.example.com/1"}]' ;;
+  *"pulls/"*"reviews"*)
+    echo '[]' ;;
+  *"graphql"*)
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+  *"issues/"*"comments"*)
+    echo "[]" ;;
+  *"pr checkout"*) exit 0 ;;
+  *"pr comment"*) exit 0 ;;
+  *"pr merge"*) exit 0 ;;
+  *"pulls/"*) echo '{"head":{"sha":"ddd444eee555"},"auto_merge":null}' ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+
+  # Run from a non-git tmpdir so commit_and_push returns 1 (no changes), taking the no-changes path
+  run bash -c "
+    cd '$tmpdir'
+    export INTENT_TYPE=fix-reviews DEV_LEAD_DRY_RUN=true
+    export PR_NUMBER=54 HEAD_SHA=ddd444eee555 REPO='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export PATH=\"$STUB_BIN_DIR:\$PATH\"
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+  rm -rf "$tmpdir"
+
+  [ "$status" -eq 0 ]
+  # The old failure is superseded by the newer success → no Tier-1 blockers → no-changes is posted
+  [[ "$output" == *"status=no-changes"* ]]
+  [[ "$output" != *"Tier-1 blockers still present"* ]]
+}
+
+@test "fix-reviews: resolve_bot_outdated_threads called in no-changes path (dry-run)" {
+  local tmpdir
+  tmpdir="$(mktemp -d)"
+
+  cat > "$STUB_BIN_DIR/gh" <<'GHEOF'
+#!/usr/bin/env bash
+ARGS="$*"
+case "$ARGS" in
+  *"check-runs"*)
+    echo '{"check_runs":[{"name":"Lint","status":"completed","conclusion":"success","details_url":"https://example.com"}]}' ;;
+  *"statuses"*)
+    echo '[]' ;;
+  *"pulls/"*"reviews"*)
+    echo '[]' ;;
+  *"graphql"*)
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+  *"pr checkout"*) exit 0 ;;
+  *"pr comment"*) exit 0 ;;
+  *"pr merge"*) exit 0 ;;
+  *"pulls/"*) echo '{"head":{"sha":"abc123"},"auto_merge":null}' ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+
+  run bash -c "
+    cd '$tmpdir'
+    export INTENT_TYPE=fix-reviews DEV_LEAD_DRY_RUN=true
+    export PR_NUMBER=422 HEAD_SHA=abc123 REPO='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export PATH=\"$STUB_BIN_DIR:\$PATH\"
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+  rm -rf "$tmpdir"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"resolve outdated review threads from bot reviewers"* ]]
+}
+
+@test "fix-reviews: has_tier1_blockers includes unresolved bot threads" {
+  local tmpdir
+  tmpdir="$(mktemp -d)"
+
+  # Stub: check-runs success, statuses none, but graphql returns unresolved bot threads
+  cat > "$STUB_BIN_DIR/gh" <<'GHEOF'
+#!/usr/bin/env bash
+ARGS="$*"
+case "$ARGS" in
+  *"check-runs"*)
+    echo '{"check_runs":[{"name":"Lint","status":"completed","conclusion":"success","details_url":"https://example.com"}]}' ;;
+  *"statuses"*)
+    echo '[]' ;;
+  *"pulls/"*"reviews"*)
+    echo '[]' ;;
+  *"graphql"*)
+    # First query (for has_tier1_blockers) or review-changes context query returns bot threads
+    echo '{
+      "data": {
+        "repository": {
+          "pullRequest": {
+            "reviewThreads": {
+              "nodes": [
+                {
+                  "isResolved": false,
+                  "comments": {"nodes": [{"author": {"login": "copilot-pull-request-reviewer[bot]"}}]}
+                },
+                {
+                  "isResolved": false,
+                  "comments": {"nodes": [{"author": {"login": "coderabbitai[bot]"}}]}
+                }
+              ]
+            },
+            "reviewDecision": null
+          }
+        }
+      }
+    }' ;;
+  *"pr checkout"*) exit 0 ;;
+  *"pr comment"*) exit 0 ;;
+  *"pr merge"*) exit 0 ;;
+  *"pulls/"*) echo '{"head":{"sha":"abc123"},"auto_merge":null}' ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+
+  run bash -c "
+    cd '$tmpdir'
+    export INTENT_TYPE=review-changes DEV_LEAD_DRY_RUN=true
+    export PR_NUMBER=422 HEAD_SHA=abc123 REPO='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export PATH=\"$STUB_BIN_DIR:\$PATH\"
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+  rm -rf "$tmpdir"
+
+  [ "$status" -eq 0 ]
+  # When unresolved bot threads exist, blockers are present
+  [[ "$output" == *"Tier-1 blockers still present"* ]]
+  [[ "$output" == *"unresolved bot threads"* ]]
+}
+
+@test "fix-reviews: does not post no-changes when unresolved bot threads exist" {
+  local tmpdir
+  tmpdir="$(mktemp -d)"
+
+  # Stub: graphql returns unresolved bot threads
+  cat > "$STUB_BIN_DIR/gh" <<'GHEOF'
+#!/usr/bin/env bash
+ARGS="$*"
+case "$ARGS" in
+  *"check-runs"*)
+    echo '{"check_runs":[{"name":"Lint","status":"completed","conclusion":"success","details_url":"https://example.com"}]}' ;;
+  *"statuses"*)
+    echo '[]' ;;
+  *"pulls/"*"reviews"*)
+    echo '[]' ;;
+  *"graphql"*)
+    echo '{
+      "data": {
+        "repository": {
+          "pullRequest": {
+            "reviewThreads": {
+              "nodes": [
+                {
+                  "isResolved": false,
+                  "comments": {"nodes": [{"author": {"login": "copilot-pull-request-reviewer[bot]"}}]}
+                }
+              ]
+            }
+          }
+        }
+      }
+    }' ;;
+  *"pr checkout"*) exit 0 ;;
+  *"pr comment"*) exit 0 ;;
+  *"pr merge"*) exit 0 ;;
+  *"pulls/"*) echo '{"head":{"sha":"abc123"},"auto_merge":null}' ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+
+  run bash -c "
+    cd '$tmpdir'
+    export INTENT_TYPE=review-changes DEV_LEAD_DRY_RUN=true
+    export PR_NUMBER=422 HEAD_SHA=abc123 REPO='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export PATH=\"$STUB_BIN_DIR:\$PATH\"
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+  rm -rf "$tmpdir"
+
+  [ "$status" -eq 0 ]
+  # Unresolved bot threads present → has_tier1_blockers returns true → no-changes marker NOT posted
+  [[ "$output" != *"status=no-changes"* ]]
+  [[ "$output" == *"Tier-1 blockers still present"* ]]
+  [[ "$output" == *"unresolved bot threads"* ]]
+}
