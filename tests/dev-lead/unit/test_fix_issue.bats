@@ -178,8 +178,10 @@ case "$*" in
   *"pulls?state=open"*) echo "0" ;;
   *"api"*"repos/"*"issues/"*) echo '{"title":"Test Issue","body":"Test body"}' ;;
   *"api"*"users/"*) echo '{"id":12345}' ;;
-  *"issue comment"*) exit 0 ;;
+  # copilot must come before "issue comment" — the prompt passed via -p contains
+  # "gh issue comment" so the broader pattern would match first otherwise.
   *"copilot"*) echo "rate limit exceeded"; exit 1 ;;
+  *"issue comment"*) exit 0 ;;
   *) echo "{}" ;;
 esac
 GHEOF
@@ -227,8 +229,8 @@ case "\$*" in
   *"pulls?state=open"*) echo "0" ;;
   *"api"*"repos/"*"issues/"*) echo '{"title":"Test","body":"body"}' ;;
   *"api"*"users/"*) echo '{"id":12345}' ;;
-  *"issue comment"*) touch "${comment_posted_sentinel}"; exit 0 ;;
   *"copilot"*) echo "rate limit exceeded"; exit 1 ;;
+  *"issue comment"*) touch "${comment_posted_sentinel}"; exit 0 ;;
   *) echo "{}" ;;
 esac
 GHEOF
