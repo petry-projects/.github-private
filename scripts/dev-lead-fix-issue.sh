@@ -111,6 +111,34 @@ main() {
     exit 0
   fi
 
+  # Run lint before committing to prevent avoidable CI failures.
+  # LINT_SCRIPT can be overridden in tests; defaults to sibling script.
+  local _lint_script="${LINT_SCRIPT:-"$(dirname "$0")/dev-lead-lint.sh"}"
+  local lint_rc=0
+  local lint_output=""
+  if [ -f "$_lint_script" ]; then
+    lint_output=$(bash "$_lint_script" 2>&1) || lint_rc=$?
+  fi
+
+  if [ "$lint_rc" -ne 0 ]; then
+    echo "::error::Lint check failed — aborting commit to prevent CI failure. Re-apply the dev-lead label after fixing lint errors."
+    echo "$lint_output"
+    local _lint_body
+    _lint_body="<!-- dev-lead-lint-failed -->
+## Dev-Lead: Lint Check Failed
+
+The implementation for issue #${ISSUE_NUMBER} contained lint errors. The commit was **aborted** to prevent a CI failure.
+
+\`\`\`
+${lint_output}
+\`\`\`
+
+**To retry:** fix the lint errors locally (or re-apply the \`dev-lead\` label — the agent will try again)."
+    gh issue comment "$ISSUE_NUMBER" --repo "$REPO" --body "$_lint_body" 2>/dev/null || true
+    rm -f "$prompt_file"
+    exit 1
+  fi
+
   if $has_uncommitted; then
     git add -A
     git commit -m "feat: implement issue #${ISSUE_NUMBER} — ${ISSUE_TITLE}"

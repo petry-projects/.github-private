@@ -99,8 +99,12 @@ Follow the checklist from Phase 1:
 Before declaring done:
 
 1. Run the **full** test suite — every test must pass, not just the new ones
-2. Run any available lint/format checks (check AGENTS.md or CI config for the commands):
-   - Common examples: `npm run lint`, `ruff check .`, `golangci-lint run`, `cargo clippy`
+2. Run the repo lint check — this is **required** and must pass before you finish:
+   ```bash
+   bash scripts/dev-lead-lint.sh
+   ```
+   This checks shellcheck (warning level) on all `scripts/**/*.sh` files and validates
+   `agents/*.md` frontmatter. Fix any failures it reports before proceeding.
 3. **Do not suppress or delete tests to force a pass — fix the implementation instead**
 4. If linting requires changes, apply them and re-run tests to confirm nothing broke
 
