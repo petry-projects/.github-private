@@ -167,10 +167,31 @@ jobs:
           path: ~/.npm-global
           key: claude-code-${{ env.CLAUDE_CODE_VERSION }}-${{ runner.os }}
 
+      - name: Verify auth scopes
+        run: |
+          set -euo pipefail
+          if auth_status="$(gh auth status 2>&1)"; then
+            :
+          else
+            auth_rc=$?
+            echo "$auth_status"
+            echo "::error::gh auth status failed"
+            exit "$auth_rc"
+          fi
+          echo "$auth_status"
+          scopes_line="$(printf '%s\n' "$auth_status" | grep 'Token scopes:' || true)"
+          normalized_scopes="$(printf '%s' "$scopes_line" | sed "s/[',]/ /g")"
+          required_scopes=(repo read:org)
+          for required_scope in "${required_scopes[@]}"; do
+            if ! grep -qE "(^|[[:space:]])${required_scope}([[:space:]]|$)" <<< "$normalized_scopes"; then
+              echo "::error::GH_TOKEN is missing required scope: ${required_scope}"
+              exit 1
+            fi
+          done
+
       - name: Install review engine CLIs
         run: |
           set -euo pipefail
-          gh auth status
 
           # Use a per-user prefix so actions/cache (above) can persist the
           # install across runs without needing root. Add the bin dir to PATH
@@ -180,19 +201,38 @@ jobs:
           echo "$HOME/.npm-global/bin" >> "$GITHUB_PATH"
           export PATH="$HOME/.npm-global/bin:$PATH"
 
+          npm_install_retry() {
+            # npm_install_retry <package> [attempts=3] [delay_seconds=15]
+            local package="$1"
+            local attempts="${2:-3}"
+            local delay="${3:-15}"
+            local attempt=1
+            while [ "$attempt" -le "$attempts" ]; do
+              if npm install -g "$package"; then
+                return 0
+              fi
+              if [ "$attempt" -lt "$attempts" ]; then
+                echo "::warning::npm install failed for $package (attempt $attempt/$attempts); retrying in ${delay}s"
+                sleep "$delay"
+              fi
+              attempt=$((attempt + 1))
+            done
+            return 1
+          }
+
           install_claude() {
             if command -v claude >/dev/null 2>&1; then
               echo "claude-code cache hit: $(claude --version)"
               return 0
             fi
-            npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
+            npm_install_retry "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
           }
 
           case "$REVIEW_ENGINE" in
             claude)
               install_claude
               # Best-effort install of fallbacks for duck/fallback support
-              npm install -g @google/gemini-cli || true
+              npm_install_retry "@google/gemini-cli" || true
               if ! command -v gemini >/dev/null 2>&1; then
                 echo "::warning::gemini CLI unavailable — Gemini rate-limit fallback will be unavailable"
               fi
@@ -201,7 +241,7 @@ jobs:
               fi
               ;;
             gemini)
-              npm install -g @google/gemini-cli
+              npm_install_retry "@google/gemini-cli"
               install_claude || true
               ;;
             copilot)
@@ -210,7 +250,7 @@ jobs:
                 gh extension install github/gh-copilot || true
               fi
               install_claude || true
-              npm install -g @google/gemini-cli || true
+              npm_install_retry "@google/gemini-cli" || true
               if ! command -v gemini >/dev/null 2>&1; then
                 echo "::warning::gemini CLI unavailable — Gemini duck review will be skipped"
               fi
@@ -503,6 +543,21 @@ jobs:
 
       - name: Review each PR (cascade)
         run: bash scripts/review-batch.sh
+
+      - name: Upload debug log on failure
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        # Collect both current cascade logs and legacy/supplemental log paths.
+        with:
+          name: pr-review-debug-${{ github.run_number }}-${{ github.run_attempt }}
+          path: |
+            prs.txt
+            /tmp/cascade/**
+            /tmp/review-*.log
+            ${{ runner.temp }}/cascade/**
+            ${{ runner.temp }}/review-*.log
+          if-no-files-found: ignore
+          retention-days: 14
 
       - name: Upload token usage log
         if: always()

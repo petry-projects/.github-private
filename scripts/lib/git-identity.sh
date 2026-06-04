@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-set -euo pipefail
 # git-identity.sh — shared helper for dev-lead scripts.
 #
 # All dev-lead entry points (fix-issue, fix-ci, fix-reviews) must call
