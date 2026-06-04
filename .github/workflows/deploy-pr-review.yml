@@ -1,0 +1,47 @@
+name: Deploy pr-review.yml
+
+on:
+  workflow_dispatch:
+    inputs:
+      repos:
+        description: 'Repos to deploy to (comma-separated)'
+        required: true
+        default: 'bmad-bgreat-suite,google-app-scripts,markets,ContentTwin'
+
+permissions:
+  contents: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        repo: [bmad-bgreat-suite, google-app-scripts, markets, ContentTwin]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy pr-review.yml to ${{ matrix.repo }}
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
+        run: |
+          # Read the file
+          CONTENT=$(cat .github/workflows/pr-review.yml)
+
+          # Create base64 encoded content
+          CONTENT_B64=$(echo "$CONTENT" | base64 -w0)
+
+          # Try to deploy via API
+          gh api repos/petry-projects/${{ matrix.repo }}/contents/.github/workflows/pr-review.yml \
+            -X PUT \
+            -f message="deploy: add pr-review.yml workflow" \
+            -f content="$CONTENT_B64" 2>&1 | tee deploy.log
+          
+          # Check if successful
+          if grep -q '"commit"' deploy.log; then
+            echo "✅ Deployed to ${{ matrix.repo }}"
+          else
+            echo "⚠️ Deployment to ${{ matrix.repo }} may have failed"
+            cat deploy.log
+          fi
