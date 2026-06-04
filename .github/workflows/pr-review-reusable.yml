@@ -9,6 +9,10 @@ on:
         required: false
       COPILOT_GITHUB_TOKEN:
         required: false
+      DON_PETRY_BOT_GH_PAT:
+        required: false
+      GH_PAT:
+        required: false
 
 permissions: {}
 
@@ -19,3 +23,5 @@ jobs:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
       COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+      DON_PETRY_BOT_GH_PAT: ${{ secrets.DON_PETRY_BOT_GH_PAT }}
+      GH_PAT: ${{ secrets.GH_PAT }}
