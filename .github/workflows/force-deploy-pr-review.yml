@@ -13,27 +13,28 @@ jobs:
       matrix:
         repo: [bmad-bgreat-suite, google-app-scripts]
       max-parallel: 1
-
+    
     steps:
-      - uses: actions/checkout@v6
-
-      - name: Deploy to ${{ matrix.repo }}
+      - uses: actions/checkout@v4
+      
+      - name: Deploy pr-review.yml to ${{ matrix.repo }} via Actions
         run: |
-          mkdir -p temp_repo
-          cd temp_repo
-
-          git clone https://${{ secrets.GITHUB_TOKEN }}@github.com/petry-projects/${{ matrix.repo }}.git
-          cd ${{ matrix.repo }}
-
+          # Clone target repo
+          git clone https://${{ secrets.GITHUB_TOKEN }}@github.com/petry-projects/${{ matrix.repo }}.git target_repo
+          cd target_repo
+          
+          # Configure git
           git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # Copy pr-review.yml
           mkdir -p .github/workflows
-          cp ../../.github/workflows/pr-review.yml .github/workflows/
-
+          cp ../.github/workflows/pr-review.yml .github/workflows/
+          
+          # Commit and push
           git add .github/workflows/pr-review.yml
-          if git commit -m "deploy: add pr-review.yml workflow"; then
-            git push origin main && echo "✅ Deployed" || echo "⚠️ Push failed"
+          if git commit -m "deploy: add pr-review.yml workflow [skip ci]"; then
+            git push origin HEAD:main && echo "✅ Pushed to main" || echo "⚠️ Push failed"
           else
             echo "ℹ️ Nothing to commit"
           fi
