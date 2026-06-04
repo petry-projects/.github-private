@@ -1,64 +1,47 @@
-# SOURCE OF TRUTH: petry-projects/.github-private/.github/workflows/deploy-pr-review.yml
-# Bespoke deployment utility — no org template equivalent in standards/workflows/.
-# Exception: this is a repo-specific operational tool, not a reusable org workflow.
 name: Deploy pr-review.yml
 
 on:
   workflow_dispatch:
-
-concurrency:
-  group: deploy-pr-review
-  cancel-in-progress: false
+    inputs:
+      repos:
+        description: 'Repos to deploy to (comma-separated)'
+        required: true
+        default: 'bmad-bgreat-suite,google-app-scripts,markets,ContentTwin'
 
 permissions:
-  contents: read  # checkout only; writes to target repos use GH_PAT_WORKFLOWS
+  contents: write
 
 jobs:
   deploy:
-    name: Deploy to ${{ matrix.repo }}
     runs-on: ubuntu-latest
-    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
         repo: [bmad-bgreat-suite, google-app-scripts, markets, ContentTwin]
 
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-        with:
-          persist-credentials: false
+      - uses: actions/checkout@v4
 
       - name: Deploy pr-review.yml to ${{ matrix.repo }}
         env:
           GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
-          REPO: ${{ matrix.repo }}
         run: |
-          set -euo pipefail
+          # Read the file
+          CONTENT=$(cat .github/workflows/pr-review.yml)
 
-          CONTENT_B64=$(base64 -w0 < .github/workflows/pr-review.yml)
+          # Create base64 encoded content
+          CONTENT_B64=$(echo "$CONTENT" | base64 -w0)
 
-          GH_ERR=$(mktemp)
-          if ! CURRENT_SHA=$(gh api "repos/petry-projects/$REPO/contents/.github/workflows/pr-review.yml" \
-            --jq '.sha' 2>"$GH_ERR"); then
-            if grep -q 'HTTP 404' "$GH_ERR"; then
-              CURRENT_SHA=""
-            else
-              cat "$GH_ERR" >&2
-              rm -f "$GH_ERR"
-              exit 1
-            fi
-          fi
-          rm -f "$GH_ERR"
-
-          SHA_ARGS=()
-          if [ -n "$CURRENT_SHA" ]; then
-            SHA_ARGS=(-f "sha=$CURRENT_SHA")
-          fi
-
-          gh api "repos/petry-projects/$REPO/contents/.github/workflows/pr-review.yml" \
+          # Try to deploy via API
+          gh api repos/petry-projects/${{ matrix.repo }}/contents/.github/workflows/pr-review.yml \
             -X PUT \
             -f message="deploy: add pr-review.yml workflow" \
-            -f content="$CONTENT_B64" \
-            "${SHA_ARGS[@]}"
-
-          echo "Deployed to $REPO"
+            -f content="$CONTENT_B64" 2>&1 | tee deploy.log
+          
+          # Check if successful
+          if grep -q '"commit"' deploy.log; then
+            echo "✅ Deployed to ${{ matrix.repo }}"
+          else
+            echo "⚠️ Deployment to ${{ matrix.repo }} may have failed"
+            cat deploy.log
+          fi
