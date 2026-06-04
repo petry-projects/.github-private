@@ -1403,7 +1403,7 @@ GHEOF
   [[ "$output" == *"resolve outdated review threads from bot reviewers"* ]]
 }
 
-@test "fix-reviews: has_tier1_blockers includes unresolved bot threads" {
+@test "fix-reviews: bot-thread-only blocker posts no-changes terminal marker (not rate-limited)" {
   local tmpdir
   tmpdir="$(mktemp -d)"
 
@@ -1461,16 +1461,16 @@ GHEOF
   rm -rf "$tmpdir"
 
   [ "$status" -eq 0 ]
-  # When bot threads are the only blocker, the retry marker is posted (not the hard-blocker warning)
-  [[ "$output" == *"Unresolved bot review threads remain"* ]]
-  [[ "$output" == *"rate-limited marker"* ]]
+  # Bot threads only → no hard blockers → posts terminal no-changes (not rate-limited)
+  [[ "$output" == *"status=no-changes"* ]]
+  [[ "$output" != *"rate-limited marker"* ]]
 }
 
-@test "fix-reviews: does not post no-changes when unresolved bot threads exist" {
+@test "fix-reviews: posts no-changes terminal marker when only bot threads block (no hard blockers)" {
   local tmpdir
   tmpdir="$(mktemp -d)"
 
-  # Stub: graphql returns unresolved bot threads
+  # Stub: graphql returns unresolved bot threads but no failing CI
   cat > "$STUB_BIN_DIR/gh" <<'GHEOF'
 #!/usr/bin/env bash
 ARGS="$*"
@@ -1518,10 +1518,9 @@ GHEOF
   rm -rf "$tmpdir"
 
   [ "$status" -eq 0 ]
-  # Unresolved bot threads present → bot-only path: retry marker posted, no-changes marker NOT posted
-  [[ "$output" != *"status=no-changes"* ]]
-  [[ "$output" == *"Unresolved bot review threads remain"* ]]
-  [[ "$output" == *"rate-limited marker"* ]]
+  # Bot threads only, no hard blockers → posts terminal no-changes; no rate-limited retry loop
+  [[ "$output" == *"status=no-changes"* ]]
+  [[ "$output" != *"rate-limited marker"* ]]
 }
 
 @test "fix-reviews: detects bot threads via __typename Bot (login without [bot] suffix)" {
@@ -1577,10 +1576,57 @@ GHEOF
   rm -rf "$tmpdir"
 
   [ "$status" -eq 0 ]
-  # Bot detected via __typename == "Bot" even without [bot] suffix → retry marker posted
-  [[ "$output" == *"Unresolved bot review threads remain"* ]]
-  [[ "$output" == *"rate-limited marker"* ]]
-  [[ "$output" != *"status=no-changes"* ]]
+  # Bot detected via __typename == "Bot" even without [bot] suffix → no-changes posted (no rate-limited retry loop)
+  [[ "$output" == *"status=no-changes"* ]]
+  [[ "$output" != *"rate-limited marker"* ]]
+}
+
+@test "fix-reviews: bot-thread query failure is treated conservatively (as blocked)" {
+  local tmpdir
+  tmpdir="$(mktemp -d)"
+
+  # Stub: graphql call exits nonzero (simulates transient GitHub error / secondary rate limit).
+  # Uses fix-bot-comment intent because has_tier1_blockers is still called there.
+  cat > "$STUB_BIN_DIR/gh" <<'GHEOF'
+#!/usr/bin/env bash
+ARGS="$*"
+case "$ARGS" in
+  *"check-runs"*)
+    echo '{"check_runs":[{"name":"Lint","status":"completed","conclusion":"success","details_url":"https://example.com"}]}' ;;
+  *"statuses"*)
+    echo '[]' ;;
+  *"pulls/"*"reviews"*)
+    echo '[]' ;;
+  *"graphql"*)
+    # Simulate transient API failure — exit nonzero
+    echo "GraphQL error: secondary rate limit" >&2
+    exit 1 ;;
+  *"pr checkout"*) exit 0 ;;
+  *"pr comment"*) exit 0 ;;
+  *"pr merge"*) exit 0 ;;
+  *"pulls/"*) echo '{"head":{"sha":"abc123"},"auto_merge":null}' ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+
+  run bash -c "
+    cd '$tmpdir'
+    export INTENT_TYPE=fix-bot-comment DEV_LEAD_DRY_RUN=true
+    export PR_NUMBER=422 HEAD_SHA=abc123 REPO='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export COMMENT_BODY='SonarQube found issues'
+    export PATH=\"$STUB_BIN_DIR:\$PATH\"
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+  rm -rf "$tmpdir"
+
+  [ "$status" -eq 0 ]
+  # Query failure → has_tier1_blockers returns 0 (conservatively blocked) → warning emitted
+  # → no-changes terminal is still posted (fix-bot-comment elif branch), not silently skipped
+  [[ "$output" == *"bot-thread query failed"* ]]
+  [[ "$output" == *"status=no-changes"* ]]
+  [[ "$output" != *"rate-limited marker"* ]]
 }
 
 @test "fix-reviews: hard blockers take precedence over bot thread warning" {
@@ -1729,12 +1775,11 @@ GHEOF
   [[ "$output" != *"status=no-changes"* ]]
 }
 
-@test "fix-reviews: bot thread retry marker includes future reset time to avoid spin loop" {
+@test "fix-reviews: bot-thread-only blocker posts no-changes terminal marker (fix-reviews intent)" {
   local tmpdir
   tmpdir="$(mktemp -d)"
-  rm -f /tmp/dev-lead-rate-limit-reset
 
-  # Stub: success CI, no CHANGES_REQUESTED, unresolved bot thread
+  # Stub: success CI, no CHANGES_REQUESTED, unresolved bot thread only
   cat > "$STUB_BIN_DIR/gh" <<'GHEOF'
 #!/usr/bin/env bash
 ARGS="$*"
@@ -1783,11 +1828,10 @@ GHEOF
   rm -rf "$tmpdir"
 
   [ "$status" -eq 0 ]
-  # Bot thread retry marker must include a future reset= timestamp so the cron doesn't spin
-  [[ "$output" == *"Unresolved bot review threads remain"* ]]
-  [[ "$output" == *"rate-limited marker"* ]]
-  [[ "$output" == *"reset="* ]]
-  [[ "$output" != *"status=no-changes"* ]]
+  # Bot threads only → no hard blockers → posts terminal no-changes; no rate-limited retry loop
+  [[ "$output" == *"status=no-changes"* ]]
+  [[ "$output" != *"rate-limited marker"* ]]
+  [[ "$output" != *"reset="* ]]
 }
 
 @test "fix-bot-comment: unresolved bot threads posts no-changes terminal marker" {

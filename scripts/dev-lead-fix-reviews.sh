@@ -453,7 +453,10 @@ has_tier1_blockers() {
     while [ "$has_next_page" = "true" ]; do
       page_response=$(gh api graphql -f query="$bot_thread_query" \
         -F owner="${REPO%%/*}" -F repo="${REPO##*/}" -F pr="$PR_NUMBER" \
-        "${cursor_args[@]}" 2>/dev/null || echo "{}")
+        "${cursor_args[@]}" 2>/dev/null) || {
+        echo "::warning::has_tier1_blockers: bot-thread query failed — treating as blocked"
+        return 0
+      }
       page_count=$(printf '%s' "$page_response" | jq \
         '[.data?.repository?.pullRequest?.reviewThreads?.nodes // []
         | map(select(.isResolved == false
@@ -760,10 +763,6 @@ case "$INTENT_TYPE" in
         if has_hard_blockers; then
           echo "::warning::Tier-1 blockers still present (failing CI or CHANGES_REQUESTED reviews) — posting retry marker for later re-check"
           post_reviews_rate_limited "fix-reviews"
-        elif has_tier1_blockers; then
-          echo "::warning::Unresolved bot review threads remain — posting retry marker so the cron re-dispatches after the bot resolves its feedback"
-          date -u -d "+1 hour" '+%Y-%m-%dT%H:%M:%SZ' > /tmp/dev-lead-rate-limit-reset 2>/dev/null || true
-          post_reviews_rate_limited "fix-reviews"
         else
           post_no_changes "fix-reviews"
         fi
@@ -852,10 +851,6 @@ case "$INTENT_TYPE" in
         notify_coderabbit_resolve
         if has_hard_blockers; then
           echo "::warning::Tier-1 blockers still present (failing CI or CHANGES_REQUESTED reviews) — posting retry marker for later re-check"
-          post_reviews_rate_limited "review-changes"
-        elif has_tier1_blockers; then
-          echo "::warning::Unresolved bot review threads remain — posting retry marker so the cron re-dispatches after the bot resolves its feedback"
-          date -u -d "+1 hour" '+%Y-%m-%dT%H:%M:%SZ' > /tmp/dev-lead-rate-limit-reset 2>/dev/null || true
           post_reviews_rate_limited "review-changes"
         else
           post_reviews_terminal "review-changes" "no-changes" "No changes were needed for this PR."
