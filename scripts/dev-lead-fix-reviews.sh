@@ -4,6 +4,7 @@ set -euo pipefail
 # Optional: PROMPTS_DIR (defaults to prompts/dev-lead relative to CWD)
 
 source "$(dirname "$0")/engine.sh"
+source "$(dirname "$0")/lib/git-identity.sh"
 
 INTENT_TYPE="${INTENT_TYPE:-fix-reviews}"
 PR_NUMBER="${PR_NUMBER:-}"
@@ -29,6 +30,7 @@ fi
 # Checkout the PR branch for modification (Requirement 1)
 if [ "${DEV_LEAD_DRY_RUN:-false}" = "false" ] && [ -n "${PR_NUMBER:-}" ]; then
   gh pr checkout "$PR_NUMBER" --repo "$REPO"
+  setup_git_identity
 fi
 
 build_and_run() {
@@ -428,7 +430,13 @@ commit_and_push() {
     fi
   else
     if $has_uncommitted; then
+      # GitHub-hosted runners have no default git identity; configure it
+      # before committing or commit fails with "fatal: empty ident name".
+      setup_git_identity
       git add -A
+      # Ensure git identity is set — actions/checkout only sets local config for the
+      # repo it checks out (.github-private), not for target repos cloned separately.
+      setup_git_identity
       # Explicit exit on failure: set -e is suspended when commit_and_push is called from
       # an if-statement condition, so git commit failures would be silently swallowed
       # otherwise. Using exit (not return) ensures CI fails visibly instead of posting a
@@ -593,13 +601,13 @@ case "$INTENT_TYPE" in
         post_reviews_terminal "fix-reviews" "applied" "Changes committed and pushed."
       else
         notify_coderabbit_resolve
-        resolve_actor_outdated_threads "fix-reviews"
         if has_tier1_blockers; then
           echo "::warning::Tier-1 blockers still present (failing CI or CHANGES_REQUESTED reviews) — skipping no-changes marker to allow retries"
         else
           post_no_changes "fix-reviews"
         fi
       fi
+      resolve_actor_outdated_threads "fix-reviews"
       try_enable_auto_merge
     fi
     exit "$rc"
@@ -617,13 +625,13 @@ case "$INTENT_TYPE" in
         post_reviews_terminal "fix-bot-comment" "applied" "Changes committed and pushed."
       else
         notify_coderabbit_resolve
-        resolve_actor_outdated_threads "fix-bot-comment"
         if has_tier1_blockers; then
           echo "::warning::Tier-1 blockers still present (failing CI or CHANGES_REQUESTED reviews) — skipping no-changes marker to allow retries"
         else
           post_no_changes "fix-bot-comment"
         fi
       fi
+      resolve_actor_outdated_threads "fix-bot-comment"
       try_enable_auto_merge
     fi
     exit "$rc"
@@ -674,13 +682,13 @@ case "$INTENT_TYPE" in
         post_reviews_terminal "review-changes" "applied" "Changes committed and pushed."
       else
         notify_coderabbit_resolve
-        resolve_actor_outdated_threads "review-changes"
         if has_tier1_blockers; then
           echo "::warning::Tier-1 blockers still present (failing CI or CHANGES_REQUESTED reviews) — skipping no-changes marker to allow retries"
         else
           post_reviews_terminal "review-changes" "no-changes" "No changes were needed for this PR."
         fi
       fi
+      resolve_actor_outdated_threads "review-changes"
       try_enable_auto_merge
     fi
     exit "$rc"

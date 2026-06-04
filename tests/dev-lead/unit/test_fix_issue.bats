@@ -171,18 +171,26 @@ esac
 GITEOF
   chmod +x "$STUB_BIN_DIR/git"
 
-  # gh stub: no existing PRs, issue API, comment posts ok, copilot rate-limited
-  # copilot* must be checked first — the copilot_chat call passes the full
-  # prompt text via -p, and that text contains "issue comment" examples which
-  # would match *"issue comment"* before reaching *"copilot"*.
+  # gh stub: no existing PRs, issue API, comment posts ok, copilot rate-limited.
+  # Dispatch on the gh subcommand ($1), NOT a pattern match against the full
+  # args string — the prompt body contains literal "gh api .../issues/..."
+  # examples that would otherwise hit the api branch and mask the copilot path.
   cat > "$STUB_BIN_DIR/gh" <<'GHEOF'
 #!/usr/bin/env bash
-case "$*" in
-  copilot*) echo "rate limit exceeded"; exit 1 ;;
-  *"pulls?state=open"*) echo "0" ;;
-  *"api"*"repos/"*"issues/"*) echo '{"title":"Test Issue","body":"Test body"}' ;;
-  *"api"*"users/"*) echo '{"id":12345}' ;;
-  *"issue comment"*) exit 0 ;;
+cmd="$1"; shift || true
+case "$cmd" in
+  copilot) echo "rate limit exceeded"; exit 1 ;;
+  api)
+    case "$*" in
+      *"pulls?state=open"*) echo "0" ;;
+      *"users/"*) echo '{"id":12345}' ;;
+      *) echo '{"title":"Test Issue","body":"Test body"}' ;;
+    esac ;;
+  issue)
+    case "$*" in
+      comment*) exit 0 ;;
+      *) echo "{}" ;;
+    esac ;;
   *) echo "{}" ;;
 esac
 GHEOF
@@ -224,14 +232,24 @@ esac
 GITEOF
   chmod +x "$STUB_BIN_DIR/git"
 
+  # Dispatch on subcommand ($1) so the prompt body's literal "gh api .../issues/..."
+  # text does not match the api branch and mask the copilot rate-limit path.
   cat > "$STUB_BIN_DIR/gh" <<GHEOF
 #!/usr/bin/env bash
-case "\$*" in
-  copilot*) echo "rate limit exceeded"; exit 1 ;;
-  *"pulls?state=open"*) echo "0" ;;
-  *"api"*"repos/"*"issues/"*) echo '{"title":"Test","body":"body"}' ;;
-  *"api"*"users/"*) echo '{"id":12345}' ;;
-  *"issue comment"*) touch "${comment_posted_sentinel}"; exit 0 ;;
+cmd="\$1"; shift || true
+case "\$cmd" in
+  copilot) echo "rate limit exceeded"; exit 1 ;;
+  api)
+    case "\$*" in
+      *"pulls?state=open"*) echo "0" ;;
+      *"users/"*) echo '{"id":12345}' ;;
+      *) echo '{"title":"Test","body":"body"}' ;;
+    esac ;;
+  issue)
+    case "\$*" in
+      comment*) touch "${comment_posted_sentinel}"; exit 0 ;;
+      *) echo "{}" ;;
+    esac ;;
   *) echo "{}" ;;
 esac
 GHEOF
@@ -245,4 +263,157 @@ GHEOF
   [ -f "$comment_posted_sentinel" ]
 
   rm -f "$comment_posted_sentinel" 2>/dev/null || true
+}
+
+# ── lint-before-commit tests ──────────────────────────────────────────────────
+
+@test "fix-issue: lint passes → proceeds to commit without error" {
+  # Stub dev-lead-lint.sh to pass
+  cat > "$STUB_BIN_DIR/dev-lead-lint.sh" <<'LINTEOF'
+#!/usr/bin/env bash
+echo "  [lint] all checks passed (stub)"
+exit 0
+LINTEOF
+  chmod +x "$STUB_BIN_DIR/dev-lead-lint.sh"
+
+  # Stub git to simulate a clean commit path
+  cat > "$STUB_BIN_DIR/git" <<'GITEOF'
+#!/usr/bin/env bash
+case "$*" in
+  "config"*)           exit 0 ;;
+  "checkout -b"*)      exit 0 ;;
+  "rev-parse HEAD")    echo "abc123" ;;
+  "status --porcelain") echo "M scripts/foo.sh" ;;
+  "add -A")            exit 0 ;;
+  "commit"*)           exit 0 ;;
+  "push"*)             exit 0 ;;
+  *)                   exit 0 ;;
+esac
+GITEOF
+  chmod +x "$STUB_BIN_DIR/git"
+
+  cat > "$STUB_BIN_DIR/gh" <<'GHEOF'
+#!/usr/bin/env bash
+case "$*" in
+  *"pulls?state=open"*) echo "0" ;;
+  *"api"*"repos/"*"issues/"*) echo '{"title":"Test","body":"body"}' ;;
+  *"api"*"users/"*)     echo '{"id":12345}' ;;
+  *"pr create"*)        exit 0 ;;
+  *"issue comment"*)    exit 0 ;;
+  *)                    echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+
+  export DEV_LEAD_DRY_RUN="false"
+  export LINT_SCRIPT="$STUB_BIN_DIR/dev-lead-lint.sh"
+
+  run bash "$FIX_ISSUE_SCRIPT"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"Lint check failed"* ]]
+}
+
+@test "fix-issue: lint fails → posts issue comment and exits without committing" {
+  # Stub dev-lead-lint.sh to fail
+  cat > "$STUB_BIN_DIR/dev-lead-lint.sh" <<'LINTEOF'
+#!/usr/bin/env bash
+echo "::error::shellcheck: SC2086 unquoted variable in scripts/bad.sh line 3"
+exit 1
+LINTEOF
+  chmod +x "$STUB_BIN_DIR/dev-lead-lint.sh"
+
+  local commit_sentinel
+  commit_sentinel="$(mktemp)"
+  rm "$commit_sentinel"
+
+  cat > "$STUB_BIN_DIR/git" <<GITEOF
+#!/usr/bin/env bash
+case "\$*" in
+  "config"*)           exit 0 ;;
+  "checkout -b"*)      exit 0 ;;
+  "rev-parse HEAD")    echo "abc123" ;;
+  "status --porcelain") echo "M scripts/bad.sh" ;;
+  "commit"*)           touch "${commit_sentinel}"; exit 0 ;;
+  "add -A")            exit 0 ;;
+  "push"*)             exit 0 ;;
+  *)                   exit 0 ;;
+esac
+GITEOF
+  chmod +x "$STUB_BIN_DIR/git"
+
+  local comment_sentinel
+  comment_sentinel="$(mktemp)"
+  rm "$comment_sentinel"
+
+  cat > "$STUB_BIN_DIR/gh" <<GHEOF
+#!/usr/bin/env bash
+case "\$*" in
+  *"pulls?state=open"*) echo "0" ;;
+  *"api"*"repos/"*"issues/"*) echo '{"title":"Test","body":"body"}' ;;
+  *"api"*"users/"*) echo '{"id":12345}' ;;
+  *"issue comment"*) touch "${comment_sentinel}"; exit 0 ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+
+  export DEV_LEAD_DRY_RUN="false"
+  export LINT_SCRIPT="$STUB_BIN_DIR/dev-lead-lint.sh"
+
+  run bash "$FIX_ISSUE_SCRIPT"
+
+  [ "$status" -ne 0 ]
+  # Lint failure must block the commit
+  [ ! -f "$commit_sentinel" ]   # commit must NOT have been called
+
+  rm -f "$comment_sentinel" "$commit_sentinel" 2>/dev/null || true
+}
+
+@test "fix-issue: lint fails → posts lint-failure comment on the issue" {
+  cat > "$STUB_BIN_DIR/dev-lead-lint.sh" <<'LINTEOF'
+#!/usr/bin/env bash
+echo "SC2086: Double quote to prevent globbing" >&2
+exit 1
+LINTEOF
+  chmod +x "$STUB_BIN_DIR/dev-lead-lint.sh"
+
+  cat > "$STUB_BIN_DIR/git" <<'GITEOF'
+#!/usr/bin/env bash
+case "$*" in
+  "config"*)           exit 0 ;;
+  "checkout -b"*)      exit 0 ;;
+  "rev-parse HEAD")    echo "abc123" ;;
+  "status --porcelain") echo "M scripts/bad.sh" ;;
+  *)                   exit 0 ;;
+esac
+GITEOF
+  chmod +x "$STUB_BIN_DIR/git"
+
+  local comment_sentinel
+  comment_sentinel="$(mktemp)"
+  rm "$comment_sentinel"
+
+  cat > "$STUB_BIN_DIR/gh" <<GHEOF
+#!/usr/bin/env bash
+case "\$*" in
+  *"pulls?state=open"*) echo "0" ;;
+  *"api"*"repos/"*"issues/"*) echo '{"title":"Test","body":"body"}' ;;
+  *"api"*"users/"*) echo '{"id":12345}' ;;
+  *"issue comment"*) touch "${comment_sentinel}"; exit 0 ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+
+  export DEV_LEAD_DRY_RUN="false"
+  export LINT_SCRIPT="$STUB_BIN_DIR/dev-lead-lint.sh"
+
+  run bash "$FIX_ISSUE_SCRIPT"
+
+  [ "$status" -ne 0 ]
+  # A comment explaining the lint failure must be posted on the issue
+  [ -f "$comment_sentinel" ]
+
+  rm -f "$comment_sentinel" 2>/dev/null || true
 }

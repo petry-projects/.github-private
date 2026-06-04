@@ -4,6 +4,7 @@ set -euo pipefail
 # Optional: PROMPTS_DIR (defaults to prompts/dev-lead relative to CWD)
 
 source "$(dirname "$0")/engine.sh"
+source "$(dirname "$0")/lib/git-identity.sh"
 
 ISSUE_NUMBER="${ISSUE_NUMBER:-}"
 REPO="${REPO:-${GITHUB_REPOSITORY:-}}"
@@ -15,18 +16,6 @@ check_existing_pr() {
   existing=$(gh api "repos/${REPO}/pulls?state=open" \
     --jq "[.[] | select(.head.ref | startswith(\"dev-lead/issue-${ISSUE_NUMBER}\"))] | length" 2>/dev/null || echo "0")
   [ "$existing" -gt 0 ]
-}
-
-setup_git_identity() {
-  local bot="${BOT_USER:-donpetry-bot}"
-  local bot_id
-  bot_id=$(gh api "users/${bot}" --jq '.id' 2>/dev/null || echo "")
-  if [ -n "$bot_id" ]; then
-    git config user.email "${bot_id}+${bot}@users.noreply.github.com"
-  else
-    git config user.email "${bot}@users.noreply.github.com"
-  fi
-  git config user.name "$bot"
 }
 
 main() {
@@ -49,6 +38,9 @@ main() {
   ISSUE_BODY=$(gh api "repos/${REPO}/issues/${ISSUE_NUMBER}" --jq '.body // ""' 2>/dev/null || echo "")
   ORG_STANDARDS_HINT="See AGENTS.md and docs/ for coding standards."
   export ISSUE_TITLE ISSUE_BODY ORG_STANDARDS_HINT
+  # Export lint script path so it is substituted into the rendered prompt.
+  # dirname "$0" resolves correctly in both direct (scripts/) and reusable (.dev-lead/scripts/) runs.
+  export LINT_SCRIPT="${LINT_SCRIPT:-"$(dirname "$0")/dev-lead-lint.sh"}"
 
   local prompt_file="/tmp/dev-lead-fix-issue-prompt-$$.md"
   local template_path="${PROMPTS_DIR}/fix-issue.md"
@@ -109,6 +101,33 @@ main() {
     echo "::notice::No changes made for issue #${ISSUE_NUMBER}"
     rm -f "$prompt_file"
     exit 0
+  fi
+
+  # Run lint before committing to prevent avoidable CI failures.
+  # LINT_SCRIPT was exported above (resolves to the correct path in both direct and reusable runs).
+  local lint_rc=0
+  local lint_output=""
+  if [ -f "$LINT_SCRIPT" ]; then
+    lint_output=$(bash "$LINT_SCRIPT" 2>&1) || lint_rc=$?
+  fi
+
+  if [ "$lint_rc" -ne 0 ]; then
+    echo "::error::Lint check failed — aborting commit to prevent CI failure. Re-apply the dev-lead label after fixing lint errors."
+    echo "$lint_output"
+    local _lint_body
+    _lint_body="<!-- dev-lead-lint-failed -->
+## Dev-Lead: Lint Check Failed
+
+The implementation for issue #${ISSUE_NUMBER} contained lint errors. The commit was **aborted** to prevent a CI failure.
+
+\`\`\`
+${lint_output}
+\`\`\`
+
+**To retry:** fix the lint errors locally (or re-apply the \`dev-lead\` label — the agent will try again)."
+    gh issue comment "$ISSUE_NUMBER" --repo "$REPO" --body "$_lint_body" 2>/dev/null || true
+    rm -f "$prompt_file"
+    exit 1
   fi
 
   if $has_uncommitted; then
