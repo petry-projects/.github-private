@@ -109,6 +109,7 @@ fi
 # Checkout the PR branch for modification (Requirement 1)
 if [ "${DEV_LEAD_DRY_RUN:-false}" = "false" ] && [ -n "${PR_NUMBER:-}" ]; then
   gh pr checkout "$PR_NUMBER" --repo "$REPO"
+  setup_git_identity
 fi
 
 build_and_run() {
@@ -1339,6 +1340,9 @@ commit_and_push() {
   else
     if $has_uncommitted; then
       git add -A
+      # Ensure git identity is set — actions/checkout only sets local config for the
+      # repo it checks out (.github-private), not for target repos cloned separately.
+      setup_git_identity
       # Explicit exit on failure: set -e is suspended when commit_and_push is called from
       # an if-statement condition, so git commit failures would be silently swallowed
       # otherwise. Using exit (not return) ensures CI fails visibly instead of posting a
