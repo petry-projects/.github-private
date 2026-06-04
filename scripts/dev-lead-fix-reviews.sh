@@ -276,9 +276,13 @@ fetch_pr_context() {
     # the separate statuses API rather than check-runs. Merge into CI_STATUS_JSON
     # so the agent sees a unified picture of all required status checks.
     local statuses_json
+    # The statuses API returns the full history per context (newest first).
+    # Dedupe by context so a stale failure overwritten by a later success does not
+    # appear as a Tier-1 blocker: group_by preserves input order within each group,
+    # so `first` picks the newest entry for each context.
     statuses_json=$(gh api --paginate "repos/${REPO}/commits/${HEAD_SHA}/statuses?per_page=100" \
       2>/dev/null \
-      | jq -s '[.[].[] | {name:.context, status:(if .state == "pending" then "in_progress" else "completed" end), conclusion:(if .state == "success" then "success" elif .state == "failure" or .state == "error" then "failure" else null end), details_url:.target_url}]' \
+      | jq -s '[ [.[].[] | select(.context != null)] | group_by(.context)[] | first | {name:.context, status:(if .state == "pending" then "in_progress" else "completed" end), conclusion:(if .state == "success" then "success" elif .state == "failure" or .state == "error" then "failure" else null end), details_url:.target_url} ]' \
       2>/dev/null || echo "[]")
     CI_STATUS_JSON=$(printf '%s\n%s' "$CI_STATUS_JSON" "$statuses_json" \
       | jq -s 'add // []' 2>/dev/null || echo "$CI_STATUS_JSON")

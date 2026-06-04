@@ -1231,3 +1231,78 @@ GHEOF
   # No blockers → no-changes marker should be posted
   [[ "$output" == *"status=no-changes"* ]]
 }
+
+# ── Legacy commit statuses dedup: latest state per context wins ────────────────
+# The /statuses API returns the full history per context (newest first). A stale
+# failure followed by a newer success for the same context must not suppress
+# no-changes — only the latest entry per context should be considered.
+
+@test "collect_assessment_data: jq statuses dedup keeps only latest entry per context" {
+  # GitHub /statuses API returns newest-first. Here jenkins/build had a failure then a
+  # newer success, so success appears first in the array (= newest). After dedup, only
+  # the success (first entry per context) should remain.
+  local input='[
+    {"context":"jenkins/build","state":"success","target_url":"https://ci.example.com/2"},
+    {"context":"jenkins/build","state":"failure","target_url":"https://ci.example.com/1"},
+    {"context":"other/check","state":"success","target_url":"https://ci.example.com/3"}
+  ]'
+  local jq_expr='[ [.[].[] | select(.context != null)] | group_by(.context)[] | first | {name:.context, conclusion:(if .state == "success" then "success" elif .state == "failure" or .state == "error" then "failure" else null end)} ]'
+
+  run bash -c "printf '%s' '$input' | jq -s '$jq_expr'"
+
+  [ "$status" -eq 0 ]
+  # The newer success for jenkins/build must appear; the old failure must not
+  local jenkins_conclusion
+  jenkins_conclusion=$(echo "$output" | jq -r '.[] | select(.name == "jenkins/build") | .conclusion')
+  [ "$jenkins_conclusion" = "success" ]
+  # Only one entry for jenkins/build — no duplicate
+  local jenkins_count
+  jenkins_count=$(echo "$output" | jq '[.[] | select(.name == "jenkins/build")] | length')
+  [ "$jenkins_count" -eq 1 ]
+}
+
+@test "fix-reviews: does not treat superseded legacy CI failure as Tier-1 blocker (fix-reviews)" {
+  local tmpdir
+  tmpdir="$(mktemp -d)"
+
+  # Stub: check-runs all success; statuses has old failure then new success for same context
+  cat > "$STUB_BIN_DIR/gh" <<'GHEOF'
+#!/usr/bin/env bash
+ARGS="$*"
+case "$ARGS" in
+  *"commits/"*"check-runs"*)
+    echo '{"check_runs":[{"name":"Lint","status":"completed","conclusion":"success","details_url":"https://example.com"}]}' ;;
+  *"commits/"*"statuses"*)
+    # Newest-first: success (newer) comes before failure (older) in the history
+    echo '[{"context":"jenkins/build","state":"success","target_url":"https://ci.example.com/2"},{"context":"jenkins/build","state":"failure","target_url":"https://ci.example.com/1"}]' ;;
+  *"pulls/"*"reviews"*)
+    echo '[]' ;;
+  *"graphql"*)
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+  *"issues/"*"comments"*)
+    echo "[]" ;;
+  *"pr checkout"*) exit 0 ;;
+  *"pr comment"*) exit 0 ;;
+  *"pr merge"*) exit 0 ;;
+  *"pulls/"*) echo '{"head":{"sha":"ddd444eee555"},"auto_merge":null}' ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+
+  # Run from a non-git tmpdir so commit_and_push returns 1 (no changes), taking the no-changes path
+  run bash -c "
+    cd '$tmpdir'
+    export INTENT_TYPE=fix-reviews DEV_LEAD_DRY_RUN=true
+    export PR_NUMBER=54 HEAD_SHA=ddd444eee555 REPO='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export PATH=\"$STUB_BIN_DIR:\$PATH\"
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+  rm -rf "$tmpdir"
+
+  [ "$status" -eq 0 ]
+  # The old failure is superseded by the newer success → no Tier-1 blockers → no-changes is posted
+  [[ "$output" == *"status=no-changes"* ]]
+  [[ "$output" != *"Tier-1 blockers still present"* ]]
+}
