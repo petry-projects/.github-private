@@ -613,26 +613,51 @@ commit_and_push() {
   return 0
 }
 
-# expire_stale_no_changes_marker: deletes any existing no-changes terminal comment for
-# this SHA+intent before a hard-blocker retry marker is posted. Without this, the retry
-# cron sees the stale terminal and skips re-dispatch even though a new hard blocker
-# (e.g. a CHANGES_REQUESTED review added after the no-changes run) now requires retry.
-expire_stale_no_changes_marker() {
+# expire_stale_terminal_markers: deletes any existing terminal comments (applied,
+# no-changes, or failed) for this SHA+intent before a hard-blocker retry marker is
+# posted. Without this, the retry cron sees a stale terminal and skips re-dispatch
+# even though a new hard blocker (e.g. a CHANGES_REQUESTED review added after the
+# prior run) now requires retry.
+expire_stale_terminal_markers() {
   local intent="$1"
   local sha="${HEAD_SHA:-}"
   [ -z "$sha" ] && return 0
   if [ "${DEV_LEAD_DRY_RUN:-false}" = "true" ]; then
-    echo "[dry-run] would expire stale no-changes marker for intent=${intent} sha=${sha}"
+    echo "[dry-run] would expire stale terminal markers for intent=${intent} sha=${sha}"
     return 0
   fi
-  local pattern="${REVIEWS_MARKER_PREFIX}${PR_NUMBER} sha=${sha} intent=${intent} status=no-changes"
+  local pattern="${REVIEWS_MARKER_PREFIX}${PR_NUMBER} sha=${sha} intent=${intent} status=(applied|no-changes|failed)"
   local stale_ids
   stale_ids=$(gh api --paginate "repos/${REPO}/issues/${PR_NUMBER}/comments?per_page=100" 2>/dev/null \
     | jq -r --arg pat "$pattern" '[.[] | select(.body | test($pat))] | .[].id' 2>/dev/null || true)
   for comment_id in $stale_ids; do
-    echo "::notice::expire_stale_no_changes_marker: deleting stale no-changes comment ${comment_id} for intent=${intent} SHA=${sha}"
+    echo "::notice::expire_stale_terminal_markers: deleting stale terminal comment ${comment_id} for intent=${intent} SHA=${sha}"
     gh api -X DELETE "repos/${REPO}/issues/comments/${comment_id}" 2>/dev/null || \
-      echo "::warning::expire_stale_no_changes_marker: failed to delete comment ${comment_id}" >&2
+      echo "::warning::expire_stale_terminal_markers: failed to delete comment ${comment_id}" >&2
+  done
+}
+
+# expire_stale_rate_limited_marker: deletes any existing rate-limited marker for this
+# SHA+intent before a new one is posted. Without this, when a hard blocker persists
+# past the initial backoff window the dedup check in post_reviews_rate_limited skips
+# posting, leaving a marker whose reset_time is already in the past. The retry cron
+# then dispatches on every scan indefinitely instead of extending the backoff.
+expire_stale_rate_limited_marker() {
+  local intent="$1"
+  local sha="${HEAD_SHA:-}"
+  [ -z "$sha" ] && return 0
+  if [ "${DEV_LEAD_DRY_RUN:-false}" = "true" ]; then
+    echo "[dry-run] would expire stale rate-limited marker for intent=${intent} sha=${sha}"
+    return 0
+  fi
+  local pattern="${REVIEWS_MARKER_PREFIX}${PR_NUMBER} sha=${sha} intent=${intent} status=rate-limited"
+  local stale_ids
+  stale_ids=$(gh api --paginate "repos/${REPO}/issues/${PR_NUMBER}/comments?per_page=100" 2>/dev/null \
+    | jq -r --arg pat "$pattern" '[.[] | select(.body | test($pat))] | .[].id' 2>/dev/null || true)
+  for comment_id in $stale_ids; do
+    echo "::notice::expire_stale_rate_limited_marker: deleting stale rate-limited comment ${comment_id} for intent=${intent} SHA=${sha}"
+    gh api -X DELETE "repos/${REPO}/issues/comments/${comment_id}" 2>/dev/null || \
+      echo "::warning::expire_stale_rate_limited_marker: failed to delete comment ${comment_id}" >&2
   done
 }
 
@@ -789,7 +814,8 @@ case "$INTENT_TYPE" in
         if has_hard_blockers; then
           echo "::warning::Tier-1 blockers still present (failing CI or CHANGES_REQUESTED reviews) — posting retry marker with backoff"
           printf '%s' "$(date -u -d '+30 minutes' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)" > /tmp/dev-lead-rate-limit-reset
-          expire_stale_no_changes_marker "fix-reviews"
+          expire_stale_terminal_markers "fix-reviews"
+          expire_stale_rate_limited_marker "fix-reviews"
           post_reviews_rate_limited "fix-reviews"
         else
           post_no_changes "fix-reviews"
@@ -881,7 +907,8 @@ case "$INTENT_TYPE" in
         if has_hard_blockers; then
           echo "::warning::Tier-1 blockers still present (failing CI or CHANGES_REQUESTED reviews) — posting retry marker with backoff"
           printf '%s' "$(date -u -d '+30 minutes' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)" > /tmp/dev-lead-rate-limit-reset
-          expire_stale_no_changes_marker "review-changes"
+          expire_stale_terminal_markers "review-changes"
+          expire_stale_rate_limited_marker "review-changes"
           post_reviews_rate_limited "review-changes"
         else
           post_reviews_terminal "review-changes" "no-changes" "No changes were needed for this PR."

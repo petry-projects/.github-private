@@ -2067,9 +2067,9 @@ GHEOF
   rm -rf "$tmpdir"
 
   [ "$status" -eq 0 ]
-  # Hard-blocker path must announce it would expire stale no-changes markers so the
+  # Hard-blocker path must announce it would expire stale terminal markers so the
   # retry cron is not blocked by a prior terminal marker for the same SHA+intent.
-  [[ "$output" == *"would expire stale no-changes marker"* ]]
+  [[ "$output" == *"would expire stale terminal markers"* ]]
   [[ "$output" == *"rate-limited marker"* ]]
 }
 
@@ -2130,6 +2130,219 @@ STUB
   [ "$status" -eq 0 ]
   # The stale no-changes comment must have been deleted
   grep -q "9001" "$deletions_file"
+  rm -rf "$tmpdir"
+  rm -f "$deletions_file"
+}
+
+# ── Thread 1: all terminal statuses (applied/no-changes/failed) are expired ──
+
+@test "fix-reviews: hard-blocker retry expires stale applied terminal marker (dry-run)" {
+  local tmpdir
+  tmpdir="$(mktemp -d)"
+
+  # Stub: failing CI triggers the hard-blocker retry path
+  cat > "$STUB_BIN_DIR/gh" <<'GHEOF'
+#!/usr/bin/env bash
+ARGS="$*"
+case "$ARGS" in
+  *"check-runs"*)
+    echo '{"check_runs":[{"name":"Lint","status":"completed","conclusion":"failure","details_url":"https://example.com"}]}' ;;
+  *"statuses"*)
+    echo '[]' ;;
+  *"pulls/"*"reviews"*)
+    echo '[]' ;;
+  *"graphql"*)
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+  *"issues/"*"comments"*)
+    echo "[]" ;;
+  *"pr checkout"*) exit 0 ;;
+  *"pr comment"*) exit 0 ;;
+  *"pr merge"*) exit 0 ;;
+  *"pulls/"*) echo '{"head":{"sha":"abc123"},"auto_merge":null}' ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+
+  run bash -c "
+    cd '$tmpdir'
+    export INTENT_TYPE=fix-reviews DEV_LEAD_DRY_RUN=true
+    export PR_NUMBER=54 HEAD_SHA=abc123 REPO='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export PATH=\"$STUB_BIN_DIR:\$PATH\"
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+  rm -rf "$tmpdir"
+
+  [ "$status" -eq 0 ]
+  # Hard-blocker path must announce expiration of ALL terminal markers (not just no-changes)
+  # so that prior applied/failed terminals cannot mask a new retry on the same SHA.
+  [[ "$output" == *"would expire stale terminal markers"* ]]
+  [[ "$output" == *"rate-limited marker"* ]]
+}
+
+@test "fix-reviews: hard-blocker retry deletes existing applied terminal comment (non-dry-run)" {
+  local tmpdir deletions_file
+  tmpdir="$(mktemp -d)"
+  deletions_file="$(mktemp)"
+
+  # Set up a real git repo so commit_and_push reports "no changes"
+  git -C "$tmpdir" init -q
+  echo "initial" > "$tmpdir/file.txt"
+  git -C "$tmpdir" add .
+  git -C "$tmpdir" -c user.email="t@test" -c user.name="T" commit -q -m "init"
+
+  # Stub: failing CI + a stale applied terminal for same SHA+intent
+  cat > "$STUB_BIN_DIR/gh" << GHEOF
+#!/usr/bin/env bash
+ARGS="\$*"
+case "\$ARGS" in
+  *"check-runs"*)
+    echo '{"check_runs":[{"name":"Lint","status":"completed","conclusion":"failure","details_url":"https://example.com"}]}' ;;
+  *"statuses"*)
+    echo '[]' ;;
+  *"pulls/"*"reviews"*)
+    echo '[]' ;;
+  *"graphql"*)
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+  *"-X DELETE"*)
+    echo "\$*" >> "${deletions_file}"; exit 0 ;;
+  *"issues/"*"comments"*)
+    echo '[{"id":9002,"body":"<!-- dev-lead-fix-reviews pr=54 sha=abc123 intent=fix-reviews status=applied -->"}]' ;;
+  *"pr checkout"*) exit 0 ;;
+  *"pr comment"*) echo "COMMENT_POSTED"; exit 0 ;;
+  *"pr merge"*) exit 0 ;;
+  *"pulls/"*) echo '{"head":{"sha":"abc123"},"auto_merge":null}' ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+
+  cat > "$STUB_BIN_DIR/claude" << 'STUB'
+#!/usr/bin/env bash
+echo "No actionable items."
+STUB
+  chmod +x "$STUB_BIN_DIR/claude"
+
+  run bash -c "
+    cd '$tmpdir'
+    export INTENT_TYPE=fix-reviews DEV_LEAD_DRY_RUN=false
+    export PR_NUMBER=54 HEAD_SHA=abc123 REPO='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export PATH=\"$STUB_BIN_DIR:\$PATH\"
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+
+  [ "$status" -eq 0 ]
+  # The stale applied terminal must have been deleted so the retry cron is not blocked
+  grep -q "9002" "$deletions_file"
+  rm -rf "$tmpdir"
+  rm -f "$deletions_file"
+}
+
+# ── Thread 2: stale rate-limited marker is replaced with a fresh reset_time ──
+
+@test "fix-reviews: hard-blocker retry expires stale rate-limited marker for refresh (dry-run)" {
+  local tmpdir
+  tmpdir="$(mktemp -d)"
+
+  # Stub: failing CI triggers the hard-blocker retry path
+  cat > "$STUB_BIN_DIR/gh" <<'GHEOF'
+#!/usr/bin/env bash
+ARGS="$*"
+case "$ARGS" in
+  *"check-runs"*)
+    echo '{"check_runs":[{"name":"Lint","status":"completed","conclusion":"failure","details_url":"https://example.com"}]}' ;;
+  *"statuses"*)
+    echo '[]' ;;
+  *"pulls/"*"reviews"*)
+    echo '[]' ;;
+  *"graphql"*)
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+  *"issues/"*"comments"*)
+    echo "[]" ;;
+  *"pr checkout"*) exit 0 ;;
+  *"pr comment"*) exit 0 ;;
+  *"pr merge"*) exit 0 ;;
+  *"pulls/"*) echo '{"head":{"sha":"abc123"},"auto_merge":null}' ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+
+  run bash -c "
+    cd '$tmpdir'
+    export INTENT_TYPE=fix-reviews DEV_LEAD_DRY_RUN=true
+    export PR_NUMBER=54 HEAD_SHA=abc123 REPO='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export PATH=\"$STUB_BIN_DIR:\$PATH\"
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+  rm -rf "$tmpdir"
+
+  [ "$status" -eq 0 ]
+  # Hard-blocker path must announce expiration of the old rate-limited marker so that
+  # a fresh one with an updated reset_time is posted (prevents indefinite retry loop).
+  [[ "$output" == *"would expire stale rate-limited marker"* ]]
+  [[ "$output" == *"rate-limited marker"* ]]
+}
+
+@test "fix-reviews: hard-blocker retry deletes existing rate-limited comment (non-dry-run)" {
+  local tmpdir deletions_file
+  tmpdir="$(mktemp -d)"
+  deletions_file="$(mktemp)"
+
+  # Set up a real git repo so commit_and_push reports "no changes"
+  git -C "$tmpdir" init -q
+  echo "initial" > "$tmpdir/file.txt"
+  git -C "$tmpdir" add .
+  git -C "$tmpdir" -c user.email="t@test" -c user.name="T" commit -q -m "init"
+
+  # Stub: failing CI + a stale rate-limited marker for same SHA+intent
+  cat > "$STUB_BIN_DIR/gh" << GHEOF
+#!/usr/bin/env bash
+ARGS="\$*"
+case "\$ARGS" in
+  *"check-runs"*)
+    echo '{"check_runs":[{"name":"Lint","status":"completed","conclusion":"failure","details_url":"https://example.com"}]}' ;;
+  *"statuses"*)
+    echo '[]' ;;
+  *"pulls/"*"reviews"*)
+    echo '[]' ;;
+  *"graphql"*)
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+  *"-X DELETE"*)
+    echo "\$*" >> "${deletions_file}"; exit 0 ;;
+  *"issues/"*"comments"*)
+    # Return a stale rate-limited marker for same SHA+intent — must be replaced with fresh reset_time
+    echo '[{"id":9003,"body":"<!-- dev-lead-fix-reviews pr=54 sha=abc123 intent=fix-reviews status=rate-limited reset=2020-01-01T00:00:00Z -->"}]' ;;
+  *"pr checkout"*) exit 0 ;;
+  *"pr comment"*) echo "COMMENT_POSTED"; exit 0 ;;
+  *"pr merge"*) exit 0 ;;
+  *"pulls/"*) echo '{"head":{"sha":"abc123"},"auto_merge":null}' ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+
+  cat > "$STUB_BIN_DIR/claude" << 'STUB'
+#!/usr/bin/env bash
+echo "No actionable items."
+STUB
+  chmod +x "$STUB_BIN_DIR/claude"
+
+  run bash -c "
+    cd '$tmpdir'
+    export INTENT_TYPE=fix-reviews DEV_LEAD_DRY_RUN=false
+    export PR_NUMBER=54 HEAD_SHA=abc123 REPO='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export PATH=\"$STUB_BIN_DIR:\$PATH\"
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+
+  [ "$status" -eq 0 ]
+  # The stale rate-limited comment must have been deleted so a fresh one can be posted
+  grep -q "9003" "$deletions_file"
   rm -rf "$tmpdir"
   rm -f "$deletions_file"
 }
