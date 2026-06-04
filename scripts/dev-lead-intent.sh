@@ -202,7 +202,9 @@ case "$EVENT_NAME" in
 
     # Skip if actor is BOT_USER (self-review)
     if [ "$reviewer" = "$BOT_USER" ]; then
-      emit_skip "self-review"
+      pr_number=$(jq -r '.pull_request.number // empty' "$EVENT_PATH" 2>/dev/null || true)
+      context=$(jq -nc --argjson pr_number "${pr_number:-0}" '{"pr_number":$pr_number}')
+      emit_intent "skip" "self-review" "$context"
       exit 0
     fi
 
