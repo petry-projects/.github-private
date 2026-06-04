@@ -289,7 +289,9 @@ jobs:
       # Triggered when a trusted bot approves a PR. Skips engine install and
       # pre-flight — just checks reviewDecision and enables auto-merge if APPROVED.
       - name: Enable auto-merge on bot approval
-        if: env.INTENT_TYPE == 'enable-auto-merge'
+        if: >-
+          steps.intent.outputs.intent_type == 'enable-auto-merge'
+          && env.INTENT_PR_NUMBER != ''
         env:
           INTENT_TYPE: enable-auto-merge
           PR_NUMBER: ${{ env.INTENT_PR_NUMBER }}
