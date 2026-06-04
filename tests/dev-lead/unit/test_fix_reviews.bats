@@ -1427,7 +1427,7 @@ GHEOF
   [[ "$output" == *"resolve outdated review threads from bot reviewers"* ]]
 }
 
-@test "fix-reviews: bot-thread-only blocker posts no-changes terminal marker (not rate-limited)" {
+@test "fix-reviews: bot-thread-only blocker suppresses no-changes terminal (review-changes)" {
   local tmpdir
   tmpdir="$(mktemp -d)"
 
@@ -1485,12 +1485,13 @@ GHEOF
   rm -rf "$tmpdir"
 
   [ "$status" -eq 0 ]
-  # Bot threads only → no hard blockers → posts terminal no-changes (not rate-limited)
-  [[ "$output" == *"status=no-changes"* ]]
+  # Bot threads only → no hard blockers → must NOT post terminal no-changes (would mask future retries)
+  [[ "$output" != *"status=no-changes"* ]]
+  [[ "$output" == *"Unresolved bot review threads remain"* ]]
   [[ "$output" != *"rate-limited marker"* ]]
 }
 
-@test "fix-reviews: posts no-changes terminal marker when only bot threads block (no hard blockers)" {
+@test "fix-reviews: suppresses no-changes terminal when only bot threads block (review-changes)" {
   local tmpdir
   tmpdir="$(mktemp -d)"
 
@@ -1542,12 +1543,13 @@ GHEOF
   rm -rf "$tmpdir"
 
   [ "$status" -eq 0 ]
-  # Bot threads only, no hard blockers → posts terminal no-changes; no rate-limited retry loop
-  [[ "$output" == *"status=no-changes"* ]]
+  # Bot threads only, no hard blockers → must NOT post terminal no-changes (would mask future retries)
+  [[ "$output" != *"status=no-changes"* ]]
+  [[ "$output" == *"Unresolved bot review threads remain"* ]]
   [[ "$output" != *"rate-limited marker"* ]]
 }
 
-@test "fix-reviews: detects bot threads via __typename Bot (login without [bot] suffix)" {
+@test "fix-reviews: detects bot threads via __typename Bot and suppresses no-changes (review-changes)" {
   local tmpdir
   tmpdir="$(mktemp -d)"
 
@@ -1600,8 +1602,9 @@ GHEOF
   rm -rf "$tmpdir"
 
   [ "$status" -eq 0 ]
-  # Bot detected via __typename == "Bot" even without [bot] suffix → no-changes posted (no rate-limited retry loop)
-  [[ "$output" == *"status=no-changes"* ]]
+  # Bot detected via __typename == "Bot" even without [bot] suffix → must NOT post no-changes
+  [[ "$output" != *"status=no-changes"* ]]
+  [[ "$output" == *"Unresolved bot review threads remain"* ]]
   [[ "$output" != *"rate-limited marker"* ]]
 }
 
@@ -1805,7 +1808,7 @@ GHEOF
   [[ "$output" == *"reset="* ]]
 }
 
-@test "fix-reviews: bot-thread-only blocker posts no-changes terminal marker (fix-reviews intent)" {
+@test "fix-reviews: bot-thread-only blocker suppresses no-changes terminal (fix-reviews intent)" {
   local tmpdir
   tmpdir="$(mktemp -d)"
 
@@ -1858,8 +1861,9 @@ GHEOF
   rm -rf "$tmpdir"
 
   [ "$status" -eq 0 ]
-  # Bot threads only → no hard blockers → posts terminal no-changes; no rate-limited retry loop
-  [[ "$output" == *"status=no-changes"* ]]
+  # Bot threads only → no hard blockers → must NOT post terminal no-changes (would mask future retries)
+  [[ "$output" != *"status=no-changes"* ]]
+  [[ "$output" == *"Unresolved bot review threads remain"* ]]
   [[ "$output" != *"rate-limited marker"* ]]
   [[ "$output" != *"reset="* ]]
 }

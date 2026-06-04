@@ -822,6 +822,8 @@ case "$INTENT_TYPE" in
           echo "::warning::Tier-1 blockers still present (failing CI or CHANGES_REQUESTED reviews) — posting retry marker with backoff"
           printf '%s' "$(date -u -d '+30 minutes' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)" > /tmp/dev-lead-rate-limit-reset
           post_reviews_rate_limited "fix-reviews"
+        elif has_tier1_blockers; then
+          echo "::notice::Unresolved bot review threads remain — not posting no-changes terminal to allow future retries"
         else
           post_no_changes "fix-reviews"
         fi
@@ -913,6 +915,8 @@ case "$INTENT_TYPE" in
           echo "::warning::Tier-1 blockers still present (failing CI or CHANGES_REQUESTED reviews) — posting retry marker with backoff"
           printf '%s' "$(date -u -d '+30 minutes' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)" > /tmp/dev-lead-rate-limit-reset
           post_reviews_rate_limited "review-changes"
+        elif has_tier1_blockers; then
+          echo "::notice::Unresolved bot review threads remain — not posting no-changes terminal to allow future retries"
         else
           post_reviews_terminal "review-changes" "no-changes" "No changes were needed for this PR."
         fi
