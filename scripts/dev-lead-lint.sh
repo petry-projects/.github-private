@@ -44,15 +44,18 @@ if [ "${#agent_files[@]}" -gt 0 ]; then
 
     frontmatter=$(awk 'BEGIN{found=0} /^---/{found++; if(found==2) exit; next} found==1{print}' "$f")
 
-    if ! printf '%s\n' "$frontmatter" | python3 -c "import sys, yaml; yaml.safe_load(sys.stdin)" 2>/dev/null; then
-      echo "FAIL: $f — invalid YAML in frontmatter"
-      profile_fail=1
-      continue
+    if command -v python3 >/dev/null 2>&1 && python3 -c "import yaml" >/dev/null 2>&1; then
+      if ! printf '%s\n' "$frontmatter" | python3 -c "import sys, yaml; yaml.safe_load(sys.stdin)" 2>/dev/null; then
+        echo "FAIL: $f — invalid YAML in frontmatter"
+        profile_fail=1
+        continue
+      fi
+    else
+      echo "  [lint] python3 or PyYAML not found — skipping YAML syntax validation for $f"
     fi
 
     name_from_front=$(printf '%s\n' "$frontmatter" \
-      | grep '^name:' \
-      | sed 's/^name:[[:space:]]*//' \
+      | sed -n 's/^name:[[:space:]]*//p' \
       | sed "s/^['\"]//;s/['\"]$//" \
       | head -1)
 
