@@ -878,6 +878,51 @@ STUB
   [[ "$output" == *"ACTOR not set for intent=fix-reviews"* ]]
 }
 
+# ── ALL_REVIEWS_JSON deduplication: latest review per user ───────────────────
+# The GitHub Reviews API returns the full history of all reviews. If a reviewer
+# previously requested changes but later approved, both entries are present.
+# The jq filter in collect_assessment_data must keep only the latest per user.
+
+@test "collect_assessment_data: jq dedup expression keeps only latest review per user" {
+  # Feed sample multi-review JSON through the exact jq expression used in the script
+  # to verify that CHANGES_REQUESTED is superseded by a later APPROVED from the same user.
+  local input='[
+    {"id":1,"user":{"login":"alice"},"state":"CHANGES_REQUESTED","submitted_at":"2024-01-01T00:00:00Z"},
+    {"id":2,"user":{"login":"bob"},"state":"APPROVED","submitted_at":"2024-01-02T00:00:00Z"},
+    {"id":3,"user":{"login":"alice"},"state":"APPROVED","submitted_at":"2024-01-03T00:00:00Z"}
+  ]'
+  local jq_expr='[ [.[] | select(.user != null)] | group_by(.user.login)[] | sort_by(.id) | last | {id:.id, user:.user.login, state:.state, submitted_at:.submitted_at} ]'
+
+  run bash -c "printf '%s' '$input' | jq -r '$jq_expr'"
+
+  [ "$status" -eq 0 ]
+  # alice's latest review (id=3) is APPROVED — CHANGES_REQUESTED (id=1) must not appear
+  [[ "$output" == *'"alice"'* ]]
+  [[ "$output" == *'"APPROVED"'* ]]
+  # Only one entry for alice — no duplicate
+  local alice_count
+  alice_count=$(echo "$output" | grep -c '"alice"')
+  [ "$alice_count" -eq 1 ]
+  # CHANGES_REQUESTED should not appear in output
+  [[ "$output" != *'"CHANGES_REQUESTED"'* ]]
+}
+
+@test "collect_assessment_data: jq dedup expression filters out null-user entries" {
+  local input='[
+    {"id":1,"user":null,"state":"APPROVED","submitted_at":"2024-01-01T00:00:00Z"},
+    {"id":2,"user":{"login":"alice"},"state":"APPROVED","submitted_at":"2024-01-02T00:00:00Z"}
+  ]'
+  local jq_expr='[ [.[] | select(.user != null)] | group_by(.user.login)[] | sort_by(.id) | last | {id:.id, user:.user.login, state:.state, submitted_at:.submitted_at} ]'
+
+  run bash -c "printf '%s' '$input' | jq -r '$jq_expr'"
+
+  [ "$status" -eq 0 ]
+  # Result should have only alice; the null-user entry is filtered out
+  local count
+  count=$(echo "$output" | jq 'length')
+  [ "$count" -eq 1 ]
+}
+
 # ── holistic assessment: CI_STATUS_JSON and ALL_REVIEWS_JSON fetching ──────────
 # These tests verify that fix-reviews, review-changes, and fix-bot-comment all
 # fetch CI check results and all PR reviews before running the engine, so the

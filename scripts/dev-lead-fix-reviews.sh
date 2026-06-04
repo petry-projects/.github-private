@@ -277,7 +277,7 @@ fetch_pr_context() {
   # All PR reviews with state — includes APPROVED, CHANGES_REQUESTED, COMMENTED from
   # every reviewer (human and bot). Gives the agent a full picture of who is blocking.
   ALL_REVIEWS_JSON=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/reviews?per_page=100" \
-    --jq '[.[] | {id:.id, user:.user.login, state:.state, submitted_at:.submitted_at}]' \
+    --jq '[ [.[] | select(.user != null)] | group_by(.user.login)[] | sort_by(.id) | last | {id:.id, user:.user.login, state:.state, submitted_at:.submitted_at} ]' \
     2>/dev/null || echo "[]")
   export ALL_REVIEWS_JSON
 }
