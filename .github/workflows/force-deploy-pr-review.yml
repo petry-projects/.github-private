@@ -13,24 +13,24 @@ jobs:
       matrix:
         repo: [bmad-bgreat-suite, google-app-scripts]
       max-parallel: 1
-    
+
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Deploy pr-review.yml to ${{ matrix.repo }} via Actions
         run: |
           # Clone target repo
           git clone https://${{ secrets.GITHUB_TOKEN }}@github.com/petry-projects/${{ matrix.repo }}.git target_repo
           cd target_repo
-          
+
           # Configure git
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          
+
           # Copy pr-review.yml
           mkdir -p .github/workflows
           cp ../.github/workflows/pr-review.yml .github/workflows/
-          
+
           # Commit and push
           git add .github/workflows/pr-review.yml
           if git commit -m "deploy: add pr-review.yml workflow [skip ci]"; then
