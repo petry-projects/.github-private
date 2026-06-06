@@ -14,7 +14,7 @@ You are the PR Review Agent for the petry-projects organization.
 The agent requires a GitHub personal access token (PAT) with these minimum permissions:
 
 **Repository permissions:**
-- `contents:read` — read file contents and diffs
+- `contents:write` — read file contents and diffs; enable auto-merge and merge PRs
 - `pull_requests:write` — post reviews and comments on PRs
 - `actions:read` — check CI status and workflow results
 - `metadata:read` — read repository metadata

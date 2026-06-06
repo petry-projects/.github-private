@@ -147,7 +147,7 @@ recommended for better security (principle of least privilege).
    - **Resource owner:** select your organization (e.g. `petry-projects`)
    - **Repository access:** All repositories (or specific repos if preferred)
    - **Repository permissions:**
-     - `contents:read` — read files and diffs
+     - `contents:write` — read files and diffs; enable auto-merge and merge PRs
      - `pull_requests:write` — post reviews and comments
      - `actions:read` — check CI status
      - `metadata:read` — read repo metadata
@@ -300,9 +300,12 @@ PR comment "@donpetry-bot please review"
 1. Copy [`templates/mention-listener.yml`](templates/mention-listener.yml) to
    `petry-projects/.github` as `.github/workflows/pr-review-mention.yml`.
 
-2. Add the `DON_PETRY_BOT_GH_PAT` secret to `petry-projects/.github`
-   (org-level secret or repo secret on `.github`). Use the same PAT created above
-   in [step 2](#2-create-a-pat-for-the-bot-classic-or-fine-grained).
+2. Ensure the `GH_PAT_WORKFLOWS` org-level secret is available to
+   `petry-projects/.github`. This secret is already present in the org; no
+   additional secret setup is required. The workflow template references
+   `GH_PAT_WORKFLOWS` throughout — use the same PAT created above in
+   [step 2](#2-create-a-pat-for-the-bot-classic-or-fine-grained) if you need to
+   rotate or recreate it.
 
 3. Ensure `donpetry-bot` has at least **Read** collaborator access on
    `petry-projects/.github-private`.
