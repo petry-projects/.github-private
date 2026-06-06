@@ -203,13 +203,23 @@ jobs:
           echo "$auth_status"
           scopes_line="$(printf '%s\n' "$auth_status" | grep 'Token scopes:' || true)"
           normalized_scopes="$(printf '%s' "$scopes_line" | sed "s/[',]/ /g")"
-          required_scopes=(repo read:org)
-          for required_scope in "${required_scopes[@]}"; do
-            if ! grep -qE "(^|[[:space:]])${required_scope}([[:space:]]|$)" <<< "$normalized_scopes"; then
-              echo "::error::GH_TOKEN is missing required scope: ${required_scope}"
-              exit 1
-            fi
-          done
+
+          # Check for required scopes. Accept either:
+          # - Classic PAT: 'repo' scope (grants full repo access)
+          # - Fine-grained: 'contents' + 'pull_requests' (minimal permissions)
+          if grep -qE "(^|[[:space:]])repo([[:space:]]|$)" <<< "$normalized_scopes"; then
+            # Classic PAT with repo scope — sufficient
+            :
+          else
+            # Fine-grained token — verify minimal scopes
+            for required_scope in contents pull_requests; do
+              if ! grep -qE "(^|[[:space:]])${required_scope}([[:space:]]|$)" <<< "$normalized_scopes"; then
+                echo "::error::GH_TOKEN is missing required scope: ${required_scope}"
+                echo "::error::Token must have either 'repo' scope (classic) or both 'contents' and 'pull_requests' (fine-grained)"
+                exit 1
+              fi
+            done
+          fi
 
       - name: Install review engine CLIs
         run: |

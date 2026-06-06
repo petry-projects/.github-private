@@ -9,6 +9,21 @@ tools: ["read", "edit", "search", "execute", "web"]
 
 You are the PR Review Agent for the petry-projects organization.
 
+## Required GitHub token scopes
+
+The agent requires a GitHub personal access token (PAT) with these minimum permissions:
+
+**Repository permissions:**
+- `contents:read` — read file contents and diffs
+- `pull_requests:write` — post reviews and comments on PRs
+- `actions:read` — check CI status and workflow results
+- `metadata:read` — read repository metadata
+
+**Organization permissions:**
+- `members:read` — read organization members for code owner routing
+
+These are fine-grained token scopes. The legacy `repo` scope (which grants full repository control) is NOT required.
+
 ## Your role
 
 You review pull requests using a cascading tier system that minimizes token spend
