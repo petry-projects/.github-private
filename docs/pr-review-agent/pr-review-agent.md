@@ -129,39 +129,49 @@ authored by `don-petry`; the bot approves them.
    **Invite member** → enter `donpetry-bot` → Role: **Member**.
 6. Accept the invite from the bot account.
 
-### 2. Create a **classic** PAT for the bot
+### 2. Create a PAT for the bot (classic or fine-grained)
 
-> [!IMPORTANT]
-> **Fine-grained PATs do not work for this workflow.** Use a classic PAT only.
->
-> Fine-grained tokens are blocked by org policy gates: even after the org owner
-> approves the token request and the bot has Write collaborator access, the
-> GraphQL `addPullRequestReview` mutation fails with:
->
-> ```
-> failed to create review: GraphQL: Resource not accessible by personal access token (addPullRequestReview)
-> ```
->
-> If you see that error in a workflow run, the secret holds a fine-grained
-> token. Replace it with a classic PAT generated as below. The same gate also
-> blocks the rulesets bypass that branch protections rely on.
+You can use either a **classic** or **fine-grained** PAT. Fine-grained tokens are
+recommended for better security (principle of least privilege).
+
+#### Option A: Fine-grained PAT (recommended)
 
 1. Sign in as the bot account (e.g. `donpetry-bot`) — sign out of `don-petry`
    first, or use a private window. The PAT must be created **from the bot's
    account**, not yours.
 2. Go to **Settings → Developer settings → Personal access tokens →
-   Tokens (classic)** → **Generate new token (classic)**.
+   Fine-grained tokens** → **Generate new token**.
 3. Settings:
-   - **Note:** `pr-review-agent`
-   - **Expiration:** 1 year (set a calendar reminder to rotate)
-   - **Scopes:** ✅ `repo`, ✅ `workflow`, ✅ `read:org`
+   - **Token name:** `pr-review-agent`
+   - **Expiration:** 90 days (auto-rotate for security)
+   - **Resource owner:** select your organization (e.g. `petry-projects`)
+   - **Repository access:** All repositories (or specific repos if preferred)
+   - **Repository permissions:**
+     - `contents:read` — read files and diffs
+     - `pull_requests:write` — post reviews and comments
+     - `actions:read` — check CI status
+     - `metadata:read` — read repo metadata
+   - **Organization permissions:**
+     - `members:read` — read org members for code owner routing
 4. Generate and copy the token immediately.
 5. Sign back in as `don-petry` and store the token in the agent repo's secret
    (the secret name is `DON_PETRY_BOT_GH_PAT` in `petry-projects/.github-private`).
 
-After saving, trigger a workflow run and confirm the install step's
-`gh auth status` reports the bot's login (not yours) and lists the three
-scopes above.
+#### Option B: Classic PAT (legacy)
+
+If you prefer classic PATs or need broader scopes:
+
+1. Sign in as the bot account, go to **Settings → Developer settings → 
+   Personal access tokens → Tokens (classic)** → **Generate new token (classic)**.
+2. Settings:
+   - **Note:** `pr-review-agent`
+   - **Expiration:** 1 year
+   - **Scopes:** ✅ `repo`, ✅ `workflow`, ✅ `read:org`
+3. Generate and store as `DON_PETRY_BOT_GH_PAT` (same as above).
+
+After saving either token type, trigger a workflow run and confirm the
+`gh auth status` output reports the bot's login (not yours) and lists the
+required scopes.
 
 > **Branch protection / rulesets:** add `donpetry-bot` as an allowed
 > approver on each protected repo. In the repo ruleset or branch protection
@@ -291,8 +301,8 @@ PR comment "@donpetry-bot please review"
    `petry-projects/.github` as `.github/workflows/pr-review-mention.yml`.
 
 2. Add the `DON_PETRY_BOT_GH_PAT` secret to `petry-projects/.github`
-   (org-level secret or repo secret on `.github`). Use a classic PAT from
-   `donpetry-bot` with scopes: ✅ `repo`, ✅ `workflow`, ✅ `read:org`
+   (org-level secret or repo secret on `.github`). Use the same PAT created above
+   in [step 2](#2-create-a-pat-for-the-bot-classic-or-fine-grained).
 
 3. Ensure `donpetry-bot` has at least **Read** collaborator access on
    `petry-projects/.github-private`.
