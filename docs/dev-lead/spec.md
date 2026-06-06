@@ -106,7 +106,7 @@ Every GitHub webhook event that reaches `dev-lead.yml` is classified into exactl
 | `issue_comment` created on PR | Trusted bot (`sonarqubecloud[bot]`, `coderabbitai[bot]`) | `fix-bot-comment` | `dev-lead-fix-reviews.sh` |
 | `issue_comment` created on PR | Human OWNER/MEMBER/COLLABORATOR + trigger phrase | `human` | `dev-lead-fix-reviews.sh` |
 | `issue_comment` created on PR | `<!-- auto-rebase-conflict:` marker | `rebase` | `dev-lead-fix-reviews.sh` |
-| `issues` labeled `dev-lead` or `claude` | Any | `issue` | `dev-lead-fix-issue.sh` |
+| `issues` labeled `dev-lead` | Any | `issue` | `dev-lead-fix-issue.sh` |
 | `check_run` completed, failure | Not a `dev-lead /` check | _relay only_ | `ci-relay` job |
 | `repository_dispatch` `dev-lead-ci-failure` | Dispatched by `ci-relay` | `fix-ci` | `dev-lead-fix-ci.sh` |
 | `repository_dispatch` `dev-lead-reviews-retry` | Dispatched by `dev-lead-retry` cron | _(payload `intent_type`)_ | `dev-lead-fix-reviews.sh` |
@@ -125,7 +125,7 @@ Every GitHub webhook event that reaches `dev-lead.yml` is classified into exactl
 
 **`human-pr`** — A new PR was opened/synchronized or a human submitted a review. The agent reads the PR and all open review threads, addresses anything it can, and posts a status comment.
 
-**`issue`** — An issue was labeled `dev-lead` or `claude`. The agent implements the issue, opens a PR, self-reviews, and tags CODEOWNERS when CI is green.
+**`issue`** — An issue was labeled `dev-lead`. The agent implements the issue, opens a PR, self-reviews, and tags CODEOWNERS when CI is green.
 
 **`rebase`** — An auto-rebase-conflict sentinel comment was posted on a PR. The agent performs an agentic rebase, resolving conflicts per the conflict-resolution strategy, and pushes.
 
