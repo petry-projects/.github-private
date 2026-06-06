@@ -492,7 +492,7 @@ has_tier1_blockers() {
 # exits non-zero rather than emitting a warning (use for the enable-auto-merge intent).
 try_enable_auto_merge() {
   local strict="${1:-false}"
-  if [ "${DEV_LEAD_DRY_RUN:-false}" = "true" ]; then
+  if [[ "${DEV_LEAD_DRY_RUN:-false}" == "true" ]]; then
     echo "[dry-run] would enable auto-merge (squash) on PR #${PR_NUMBER}"
     return 0
   fi
@@ -501,24 +501,24 @@ try_enable_auto_merge() {
   # --match-head-commit would fail with the stale value.
   local current_head
   current_head=$(git rev-parse HEAD 2>/dev/null || true)
-  [ -n "$current_head" ] && HEAD_SHA="$current_head"
+  [[ -n "$current_head" ]] && HEAD_SHA="$current_head"
 
   local auto_merge_state
-  if [ "$strict" = "true" ]; then
+  if [[ "$strict" == "true" ]]; then
     auto_merge_state=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}" --jq '.auto_merge // empty')
   else
     auto_merge_state=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}" \
       --jq '.auto_merge // empty' 2>/dev/null || true)
   fi
-  if [ -n "$auto_merge_state" ]; then
+  if [[ -n "$auto_merge_state" ]]; then
     echo "::notice::PR #${PR_NUMBER} auto-merge already enabled"
     return 0
   fi
 
   echo "::notice::PR #${PR_NUMBER} — enabling auto-merge (squash); GitHub will merge once branch protection is satisfied"
   local merge_args=("--auto" "--squash")
-  [ -n "${HEAD_SHA:-}" ] && merge_args+=("--match-head-commit" "$HEAD_SHA")
-  if [ "$strict" = "true" ]; then
+  [[ -n "${HEAD_SHA:-}" ]] && merge_args+=("--match-head-commit" "$HEAD_SHA")
+  if [[ "$strict" == "true" ]]; then
     gh pr merge "$PR_NUMBER" --repo "$REPO" "${merge_args[@]}"
   else
     gh pr merge "$PR_NUMBER" --repo "$REPO" "${merge_args[@]}" 2>/dev/null || \
@@ -781,6 +781,7 @@ handle_rate_limit() {
   local intent="$1"
   echo "::warning::All engines rate-limited for intent=${intent} — posting rate-limited marker"
   post_reviews_rate_limited "$intent"
+  [[ -n "${PR_NUMBER:-}" ]] && try_enable_auto_merge
   exit 2
 }
 
@@ -887,7 +888,7 @@ case "$INTENT_TYPE" in
       # Enable auto-merge by default when the mention targets a PR (issue mentions
       # carry no PR_NUMBER and are skipped). GitHub holds the merge until branch
       # protection is satisfied.
-      [ -n "${PR_NUMBER:-}" ] && try_enable_auto_merge
+      [[ -n "${PR_NUMBER:-}" ]] && try_enable_auto_merge
     fi
     exit "$rc"
     ;;

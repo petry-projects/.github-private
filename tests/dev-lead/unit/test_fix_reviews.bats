@@ -446,6 +446,54 @@ STUB
   [[ "$output" != *"if PR #"*"is APPROVED"* ]]
 }
 
+@test "fix-reviews: rate-limited run still attempts auto-merge" {
+  # Regression guard: handle_rate_limit() must call try_enable_auto_merge so that
+  # a rate-limited dev-lead run still enables auto-merge before exiting.
+  export INTENT_TYPE="on-mention"
+  export DEV_LEAD_DRY_RUN="false"
+  export USER_INSTRUCTION="Please review"
+  export COPILOT_GITHUB_TOKEN="stub-token"
+
+  for engine in claude gemini; do
+    cat > "$STUB_BIN_DIR/$engine" <<'STUB'
+#!/usr/bin/env bash
+echo "rate limit exceeded"
+exit 1
+STUB
+    chmod +x "$STUB_BIN_DIR/$engine"
+  done
+
+  cat > "$STUB_BIN_DIR/gh" <<'GHEOF'
+#!/usr/bin/env bash
+case "$1" in
+  copilot) echo "rate limit exceeded"; exit 1 ;;
+esac
+ARGS="$*"
+case "$ARGS" in
+  *"graphql"*)
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}' ;;
+  *"api"*"repos/"*"issues/"*)
+    echo "[]" ;;
+  *"api"*"repos/"*"pulls/"*)
+    echo '{}' ;;
+  *"pr merge"*)
+    echo "AUTO_MERGE_CALLED: $ARGS"; exit 0 ;;
+  *"pr comment"*)
+    echo "COMMENT_POSTED: $ARGS"; exit 0 ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+
+  run bash "$FIX_REVIEWS_SCRIPT"
+
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"rate-limited"* ]]
+  # try_enable_auto_merge is called by handle_rate_limit — either "already enabled"
+  # or "enabling auto-merge" appears depending on stub state; both prove the call happened.
+  [[ "$output" == *"auto-merge"* ]]
+}
+
 @test "fix-reviews: terminal marker written after successful fix-reviews run" {
   export INTENT_TYPE="fix-reviews"
   export DEV_LEAD_DRY_RUN="true"
