@@ -131,8 +131,11 @@ authored by `don-petry`; the bot approves them.
 
 ### 2. Create a PAT for the bot (classic or fine-grained)
 
-You can use either a **classic** or **fine-grained** PAT. Fine-grained tokens are
-recommended for better security (principle of least privilege).
+You can use either a **classic** or **fine-grained** PAT. Classic PATs are the
+safe default — see [bot-setup.md](bot-setup.md) for a known failure with
+fine-grained tokens in some org configurations (`addPullRequestReview` blocked
+at the org policy layer). Fine-grained tokens work when your org permits them
+and follow the principle of least privilege.
 
 #### Option A: Fine-grained PAT (recommended)
 
@@ -143,7 +146,7 @@ recommended for better security (principle of least privilege).
    Fine-grained tokens** → **Generate new token**.
 3. Settings:
    - **Token name:** `pr-review-agent`
-   - **Expiration:** 90 days (auto-rotate for security)
+   - **Expiration:** 90 days (set a calendar reminder to rotate — fine-grained PATs do not auto-rotate)
    - **Resource owner:** select your organization (e.g. `petry-projects`)
    - **Repository access:** All repositories (or specific repos if preferred)
    - **Repository permissions:**

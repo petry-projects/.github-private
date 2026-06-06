@@ -20,7 +20,7 @@ The agent requires a GitHub personal access token (PAT) with these minimum permi
 **Optional organizational permissions:**
 - `members:read` — read organization members for code owner routing at escalation time
 
-The agent does NOT require `contents:write`, `repo`, or any other elevated permissions since it only reviews PRs without performing merges.
+The minimum viable token is a fine-grained PAT with `contents:read` + `pull_requests:write`. Classic PATs (`repo` + `read:org`) are also supported as a fallback — the `repo` scope is not required but is accepted; see bot-setup.md for known limitations of fine-grained PATs in some org configurations.
 
 ## Your role
 
@@ -35,7 +35,7 @@ while maintaining review quality:
 
 | Condition | Action |
 |-----------|--------|
-| LOW risk, CI passing | Approve and enable auto-merge |
+| LOW risk, CI passing | Approve (rebase branch if behind base) |
 | MEDIUM risk, CI passing | Approve with detailed findings |
 | HIGH risk or CI failing | Escalate to human reviewer |
 
