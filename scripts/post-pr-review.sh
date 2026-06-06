@@ -248,16 +248,10 @@ if [ "$DECISION" = "approve" ]; then
     fi
   fi
 
-  # Enable auto-merge (skip if branch is still behind — GitHub would block it anyway)
-  if [ "$MERGE_STATE" != "BEHIND" ]; then
-    echo "Enabling auto-merge..."
-    gh pr merge "$PR_URL" --auto --squash 2>/dev/null || true
-  fi
-
   # Clean up label
   gh pr edit "$PR_URL" --remove-label needs-human-review 2>/dev/null || true
 
-  echo "Review posted and auto-merge enabled"
+  echo "Review posted"
 
 elif [ "$DECISION" = "escalate" ]; then
   # Check if AI delegation should be used
