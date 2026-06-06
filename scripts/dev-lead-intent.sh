@@ -12,7 +12,7 @@ set -euo pipefail
 #   fix-bot-comment — Bot issue comment to address
 #   on-mention       — Human-directed @mention task
 #   review-changes   — Human review changes-requested
-#   issue           — Issue labeled dev-lead/claude
+#   issue           — Issue labeled dev-lead
 #   rebase          — Rebase conflict sentinel
 #   enable-auto-merge — Bot approval: enable auto-merge if PR is APPROVED
 #   ci-relay        — check_run relay (handled by ci-relay job, not this script)
@@ -322,7 +322,7 @@ case "$EVENT_NAME" in
     label_name=$(jq -r '.label.name // empty' "$EVENT_PATH" 2>/dev/null || true)
     issue_number=$(jq -r '.issue.number // empty' "$EVENT_PATH" 2>/dev/null || true)
     case "$label_name" in
-      dev-lead|claude)
+      dev-lead)
         context=$(printf '{"issue_number":%s}' "${issue_number:-0}")
         emit_intent "issue" "issue-labeled-${label_name}" "$context"
         ;;
