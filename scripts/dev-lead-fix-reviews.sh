@@ -481,15 +481,18 @@ has_tier1_blockers() {
   [ "${failing_checks:-0}" -gt 0 ] || [ "${changes_requested:-0}" -gt 0 ] || [ "${unresolved_bot_threads:-0}" -gt 0 ]
 }
 
-# try_enable_auto_merge: enables auto-merge (squash) on the PR if reviewDecision is
-# APPROVED and auto-merge is not already set. Safe to call speculatively — checks
-# eligibility first and is idempotent if auto-merge is already on.
+# try_enable_auto_merge: enables auto-merge (squash) on the PR by default whenever
+# dev-lead works on it. We do NOT gate on reviewDecision here: GitHub holds the
+# merge until branch protection is satisfied (required reviews approved, review
+# threads resolved, required checks green), so enabling early is safe and means a
+# PR merges the moment it becomes mergeable — with no further dev-lead event needed.
+# Safe to call speculatively: it is idempotent when auto-merge is already on.
 # Pass "true" as first arg for strict mode: API errors propagate and a merge failure
 # exits non-zero rather than emitting a warning (use for the enable-auto-merge intent).
 try_enable_auto_merge() {
   local strict="${1:-false}"
   if [ "${DEV_LEAD_DRY_RUN:-false}" = "true" ]; then
-    echo "[dry-run] would enable auto-merge if PR #${PR_NUMBER} is APPROVED"
+    echo "[dry-run] would enable auto-merge (squash) on PR #${PR_NUMBER}"
     return 0
   fi
   # Refresh HEAD_SHA to the commit that is now the PR head. commit_and_push may
@@ -499,51 +502,26 @@ try_enable_auto_merge() {
   current_head=$(git rev-parse HEAD 2>/dev/null || true)
   [ -n "$current_head" ] && HEAD_SHA="$current_head"
 
-  local auto_merge_state review_decision
-
+  local auto_merge_state
   if [ "$strict" = "true" ]; then
     auto_merge_state=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}" --jq '.auto_merge // empty')
-    if [ -n "$auto_merge_state" ]; then
-      echo "::notice::PR #${PR_NUMBER} auto-merge already enabled"
-      return 0
-    fi
-    review_decision=$(gh api graphql -f query='
-      query($owner:String!,$repo:String!,$pr:Int!){
-        repository(owner:$owner,name:$repo){
-          pullRequest(number:$pr){reviewDecision}
-        }
-      }' \
-      -F owner="${REPO%%/*}" -F repo="${REPO##*/}" -F pr="$PR_NUMBER" \
-      --jq '.data.repository.pullRequest.reviewDecision')
   else
     auto_merge_state=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}" \
       --jq '.auto_merge // empty' 2>/dev/null || true)
-    if [ -n "$auto_merge_state" ]; then
-      echo "::notice::PR #${PR_NUMBER} auto-merge already enabled"
-      return 0
-    fi
-    review_decision=$(gh api graphql -f query='
-      query($owner:String!,$repo:String!,$pr:Int!){
-        repository(owner:$owner,name:$repo){
-          pullRequest(number:$pr){reviewDecision}
-        }
-      }' \
-      -F owner="${REPO%%/*}" -F repo="${REPO##*/}" -F pr="$PR_NUMBER" \
-      --jq '.data.repository.pullRequest.reviewDecision' 2>/dev/null || true)
+  fi
+  if [ -n "$auto_merge_state" ]; then
+    echo "::notice::PR #${PR_NUMBER} auto-merge already enabled"
+    return 0
   fi
 
-  if [ "${review_decision:-}" = "APPROVED" ]; then
-    echo "::notice::PR #${PR_NUMBER} is APPROVED — enabling auto-merge (squash)"
-    set -- --auto --squash
-    [ -n "${HEAD_SHA:-}" ] && set -- "$@" --match-head-commit "$HEAD_SHA"
-    if [ "$strict" = "true" ]; then
-      gh pr merge "$PR_NUMBER" --repo "$REPO" "$@"
-    else
-      gh pr merge "$PR_NUMBER" --repo "$REPO" "$@" 2>/dev/null || \
-        echo "::warning::auto-merge could not be enabled on PR #${PR_NUMBER} — check repository settings and token permissions"
-    fi
+  echo "::notice::PR #${PR_NUMBER} — enabling auto-merge (squash); GitHub will merge once branch protection is satisfied"
+  set -- --auto --squash
+  [ -n "${HEAD_SHA:-}" ] && set -- "$@" --match-head-commit "$HEAD_SHA"
+  if [ "$strict" = "true" ]; then
+    gh pr merge "$PR_NUMBER" --repo "$REPO" "$@"
   else
-    echo "::notice::PR #${PR_NUMBER} reviewDecision=${review_decision:-unknown} — not yet eligible for auto-merge"
+    gh pr merge "$PR_NUMBER" --repo "$REPO" "$@" 2>/dev/null || \
+      echo "::warning::auto-merge could not be enabled on PR #${PR_NUMBER} — check repository settings and token permissions"
   fi
 }
 
@@ -905,6 +883,10 @@ case "$INTENT_TYPE" in
       else
         post_reviews_terminal "on-mention" "no-changes" "Engine ran but made no changes."
       fi
+      # Enable auto-merge by default when the mention targets a PR (issue mentions
+      # carry no PR_NUMBER and are skipped). GitHub holds the merge until branch
+      # protection is satisfied.
+      [ -n "${PR_NUMBER:-}" ] && try_enable_auto_merge
     fi
     exit "$rc"
     ;;

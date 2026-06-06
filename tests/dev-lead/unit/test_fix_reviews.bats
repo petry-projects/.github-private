@@ -420,6 +420,32 @@ STUB
   [[ "$output" == *"would enable auto-merge"* ]]
 }
 
+@test "fix-reviews: try_enable_auto_merge dry-run output present for on-mention" {
+  export INTENT_TYPE="on-mention"
+  export DEV_LEAD_DRY_RUN="true"
+  export USER_INSTRUCTION="Please fix the tests"
+  export PR_DESCRIPTION="A test pull request"
+
+  run bash "$FIX_REVIEWS_SCRIPT"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"would enable auto-merge"* ]]
+}
+
+@test "fix-reviews: auto-merge enabled by default (not gated on APPROVED reviewDecision)" {
+  # Regression guard: dev-lead enables auto-merge whenever it works on a PR;
+  # GitHub holds the merge until branch protection is satisfied. The dry-run
+  # message must not reintroduce an "if APPROVED" eligibility gate.
+  export INTENT_TYPE="fix-reviews"
+  export DEV_LEAD_DRY_RUN="true"
+
+  run bash "$FIX_REVIEWS_SCRIPT"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"would enable auto-merge"* ]]
+  [[ "$output" != *"if PR #"*"is APPROVED"* ]]
+}
+
 @test "fix-reviews: terminal marker written after successful fix-reviews run" {
   export INTENT_TYPE="fix-reviews"
   export DEV_LEAD_DRY_RUN="true"
