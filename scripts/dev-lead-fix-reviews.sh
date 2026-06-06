@@ -481,11 +481,12 @@ has_tier1_blockers() {
   [ "${failing_checks:-0}" -gt 0 ] || [ "${changes_requested:-0}" -gt 0 ] || [ "${unresolved_bot_threads:-0}" -gt 0 ]
 }
 
-# try_enable_auto_merge: enables auto-merge (squash) on the PR by default whenever
-# dev-lead works on it. We do NOT gate on reviewDecision here: GitHub holds the
-# merge until branch protection is satisfied (required reviews approved, review
-# threads resolved, required checks green), so enabling early is safe and means a
-# PR merges the moment it becomes mergeable — with no further dev-lead event needed.
+# try_enable_auto_merge: enables auto-merge (squash) on the PR when the engine run
+# succeeds (rc==0). We do NOT gate on reviewDecision here: GitHub holds the merge
+# until branch protection is satisfied (required reviews approved, review threads
+# resolved, required checks green), so enabling early is safe and means a PR merges
+# the moment it becomes mergeable. If the engine run fails the call is skipped, so a
+# new dev-lead event is required in that case.
 # Safe to call speculatively: it is idempotent when auto-merge is already on.
 # Pass "true" as first arg for strict mode: API errors propagate and a merge failure
 # exits non-zero rather than emitting a warning (use for the enable-auto-merge intent).
@@ -515,12 +516,12 @@ try_enable_auto_merge() {
   fi
 
   echo "::notice::PR #${PR_NUMBER} — enabling auto-merge (squash); GitHub will merge once branch protection is satisfied"
-  set -- --auto --squash
-  [ -n "${HEAD_SHA:-}" ] && set -- "$@" --match-head-commit "$HEAD_SHA"
+  local merge_args=("--auto" "--squash")
+  [ -n "${HEAD_SHA:-}" ] && merge_args+=("--match-head-commit" "$HEAD_SHA")
   if [ "$strict" = "true" ]; then
-    gh pr merge "$PR_NUMBER" --repo "$REPO" "$@"
+    gh pr merge "$PR_NUMBER" --repo "$REPO" "${merge_args[@]}"
   else
-    gh pr merge "$PR_NUMBER" --repo "$REPO" "$@" 2>/dev/null || \
+    gh pr merge "$PR_NUMBER" --repo "$REPO" "${merge_args[@]}" 2>/dev/null || \
       echo "::warning::auto-merge could not be enabled on PR #${PR_NUMBER} — check repository settings and token permissions"
   fi
 }
