@@ -103,7 +103,7 @@ is_fork_pr() {
 EVENT_NAME="${GITHUB_EVENT_NAME:-}"
 EVENT_PATH="${GITHUB_EVENT_PATH:-}"
 BOT_USER="${BOT_USER:-donpetry-bot}"
-TRUSTED_BOTS="${TRUSTED_BOTS:-copilot-pull-request-reviewer[bot],gemini-code-assist[bot],sonarqubecloud[bot],coderabbitai[bot]}"
+TRUSTED_BOTS="${TRUSTED_BOTS:-copilot-pull-request-reviewer[bot],gemini-code-assist[bot],sonarqubecloud[bot],coderabbitai[bot],chatgpt-codex-connector[bot]}"
 TRIGGER_PHRASES="${TRIGGER_PHRASES:-@dev-lead}"
 
 if [ -z "$EVENT_NAME" ]; then
