@@ -1357,6 +1357,54 @@ commit_and_push() {
   return 0
 }
 
+# expire_stale_terminal_markers: deletes any existing terminal comments (applied,
+# no-changes, or failed) for this SHA+intent before a hard-blocker retry marker is
+# posted. Without this, the retry cron sees a stale terminal and skips re-dispatch
+# even though a new hard blocker (e.g. a CHANGES_REQUESTED review added after the
+# prior run) now requires retry.
+expire_stale_terminal_markers() {
+  local intent="$1"
+  local sha="${HEAD_SHA:-}"
+  [ -z "$sha" ] && return 0
+  if [ "${DEV_LEAD_DRY_RUN:-false}" = "true" ]; then
+    echo "[dry-run] would expire stale terminal markers for intent=${intent} sha=${sha}"
+    return 0
+  fi
+  local pattern="${REVIEWS_MARKER_PREFIX}${PR_NUMBER} sha=${sha} intent=${intent} status=(applied|no-changes|failed)"
+  local stale_ids
+  stale_ids=$(gh api --paginate "repos/${REPO}/issues/${PR_NUMBER}/comments?per_page=100" 2>/dev/null \
+    | jq -r --arg pat "$pattern" '[.[] | select(.body | test($pat))] | .[].id' 2>/dev/null || true)
+  for comment_id in $stale_ids; do
+    echo "::notice::expire_stale_terminal_markers: deleting stale terminal comment ${comment_id} for intent=${intent} SHA=${sha}"
+    gh api -X DELETE "repos/${REPO}/issues/comments/${comment_id}" 2>/dev/null || \
+      echo "::warning::expire_stale_terminal_markers: failed to delete comment ${comment_id}" >&2
+  done
+}
+
+# expire_stale_rate_limited_marker: deletes any existing rate-limited marker for this
+# SHA+intent before a new one is posted. Without this, when a hard blocker persists
+# past the initial backoff window the dedup check in post_reviews_rate_limited skips
+# posting, leaving a marker whose reset_time is already in the past. The retry cron
+# then dispatches on every scan indefinitely instead of extending the backoff.
+expire_stale_rate_limited_marker() {
+  local intent="$1"
+  local sha="${HEAD_SHA:-}"
+  [ -z "$sha" ] && return 0
+  if [ "${DEV_LEAD_DRY_RUN:-false}" = "true" ]; then
+    echo "[dry-run] would expire stale rate-limited marker for intent=${intent} sha=${sha}"
+    return 0
+  fi
+  local pattern="${REVIEWS_MARKER_PREFIX}${PR_NUMBER} sha=${sha} intent=${intent} status=rate-limited"
+  local stale_ids
+  stale_ids=$(gh api --paginate "repos/${REPO}/issues/${PR_NUMBER}/comments?per_page=100" 2>/dev/null \
+    | jq -r --arg pat "$pattern" '[.[] | select(.body | test($pat))] | .[].id' 2>/dev/null || true)
+  for comment_id in $stale_ids; do
+    echo "::notice::expire_stale_rate_limited_marker: deleting stale rate-limited comment ${comment_id} for intent=${intent} SHA=${sha}"
+    gh api -X DELETE "repos/${REPO}/issues/comments/${comment_id}" 2>/dev/null || \
+      echo "::warning::expire_stale_rate_limited_marker: failed to delete comment ${comment_id}" >&2
+  done
+}
+
 # has_reviews_rate_limited_marker: returns 0 if a rate-limited marker for this
 # intent+SHA already exists on the PR (dedup check).
 has_reviews_rate_limited_marker() {
@@ -1378,10 +1426,32 @@ has_reviews_rate_limited_marker() {
 post_reviews_rate_limited() {
   local intent="$1"
 
-  # Dedup: don't accumulate multiple rate-limited markers for the same SHA+intent
-  if has_reviews_rate_limited_marker "$intent"; then
-    echo "::notice::rate-limited marker already posted for intent=${intent} SHA=${HEAD_SHA:-none} — skipping duplicate"
-    return 0
+  # Expire any stale terminal markers (applied/no-changes/failed) for this SHA+intent
+  # so the retry cron is not masked by a prior terminal that predates the current blocker.
+  # Without this, a no-changes terminal from before a reviewer's CHANGES_REQUESTED would
+  # cause the cron to skip dispatch even though a new rate-limited marker was just posted.
+  expire_stale_terminal_markers "$intent"
+
+  # Detect whether a prior rate-limited marker exists BEFORE posting the new one.
+  # Used to suppress duplicate visible ack comments when a persistent blocker keeps
+  # triggering retries — the user-facing ack is only shown on the first cycle.
+  local had_prior_rl_marker=false
+  if [ "${DEV_LEAD_DRY_RUN:-false}" = "false" ]; then
+    has_reviews_rate_limited_marker "$intent" && had_prior_rl_marker=true
+  fi
+
+  # Collect IDs of existing rate-limited markers BEFORE posting the new one. The new
+  # marker is posted first so the old one remains as a safety net if the post fails
+  # transiently; old markers are only removed after the replacement is confirmed posted.
+  local stale_rl_ids=""
+  if [ -n "${HEAD_SHA:-}" ]; then
+    if [ "${DEV_LEAD_DRY_RUN:-false}" = "true" ]; then
+      echo "[dry-run] would expire stale rate-limited marker for intent=${intent} sha=${HEAD_SHA}"
+    else
+      local rl_pattern="${REVIEWS_MARKER_PREFIX}${PR_NUMBER} sha=${HEAD_SHA} intent=${intent} status=rate-limited"
+      stale_rl_ids=$(gh api --paginate "repos/${REPO}/issues/${PR_NUMBER}/comments?per_page=100" 2>/dev/null \
+        | jq -r --arg pat "$rl_pattern" '[.[] | select(.body | test($pat))] | .[].id' 2>/dev/null || true)
+    fi
   fi
 
   local reset_time
@@ -1424,40 +1494,52 @@ ${retry_msg}"
     echo "[dry-run] would post rate-limited marker for intent=${intent}"
     echo "$marker_body"
   else
-    gh pr comment "$PR_NUMBER" --repo "$REPO" --body "$marker_body"
+    # Post the new marker FIRST, then remove old marker(s) only after the replacement
+    # is confirmed. If the post fails transiently, the old marker remains as a safety net
+    # so the retry cron does not lose track of this SHA+intent.
+    if gh pr comment "$PR_NUMBER" --repo "$REPO" --body "$marker_body"; then
+      for _stale_id in $stale_rl_ids; do
+        echo "::notice::post_reviews_rate_limited: deleting superseded rate-limited marker ${_stale_id} for intent=${intent}"
+        gh api -X DELETE "repos/${REPO}/issues/comments/${_stale_id}" 2>/dev/null || \
+          echo "::warning::post_reviews_rate_limited: failed to delete old rate-limited marker ${_stale_id}" >&2
+      done
+    fi
   fi
 
-  # For user-triggered intents, post a separate visible acknowledgment.
-  # review-changes is retried automatically; human/fix-bot-comment require manual re-trigger.
-  case "$intent" in
-    review-changes)
-      local actor_mention=""
-      [ -n "${ACTOR:-}" ] && actor_mention="@${ACTOR} "
-      local reset_display="${reset_time:-unknown}"
-      local ack_body="> [!NOTE]
+  # For user-triggered intents, post a separate visible acknowledgment on the first
+  # rate-limit cycle only. Suppress repeat acks when a persistent blocker keeps the
+  # backoff interval cycling — the old ack is still visible and a repeat is misleading.
+  if [ "$had_prior_rl_marker" = "false" ]; then
+    case "$intent" in
+      review-changes)
+        local actor_mention=""
+        [ -n "${ACTOR:-}" ] && actor_mention="@${ACTOR} "
+        local reset_display="${reset_time:-unknown}"
+        local ack_body="> [!NOTE]
 > ${actor_mention}I received your request but all AI engines are currently rate-limited. I'll retry automatically once the rate limit clears.
 > Rate limit resets at: \`${reset_display}\`"
-      if [ "$DEV_LEAD_DRY_RUN" = "true" ]; then
-        echo "[dry-run] would post user-visible rate-limit acknowledgment"
-        echo "$ack_body"
-      else
-        gh pr comment "$PR_NUMBER" --repo "$REPO" --body "$ack_body"
-      fi
-      ;;
-    on-mention)
-      local actor_mention=""
-      [ -n "${ACTOR:-}" ] && actor_mention="@${ACTOR} "
-      local reset_display="${reset_time:-unknown}"
-      local ack_body="> [!NOTE]
+        if [ "$DEV_LEAD_DRY_RUN" = "true" ]; then
+          echo "[dry-run] would post user-visible rate-limit acknowledgment"
+          echo "$ack_body"
+        else
+          gh pr comment "$PR_NUMBER" --repo "$REPO" --body "$ack_body"
+        fi
+        ;;
+      on-mention)
+        local actor_mention=""
+        [ -n "${ACTOR:-}" ] && actor_mention="@${ACTOR} "
+        local reset_display="${reset_time:-unknown}"
+        local ack_body="> [!NOTE]
 > ${actor_mention}I received your request but all AI engines are currently rate-limited. Please re-mention \`@dev-lead\` when the rate limit clears (estimated: \`${reset_display}\`) — I cannot reconstruct the original instruction automatically."
-      if [ "$DEV_LEAD_DRY_RUN" = "true" ]; then
-        echo "[dry-run] would post user-visible rate-limit acknowledgment"
-        echo "$ack_body"
-      else
-        gh pr comment "$PR_NUMBER" --repo "$REPO" --body "$ack_body"
-      fi
-      ;;
-  esac
+        if [ "$DEV_LEAD_DRY_RUN" = "true" ]; then
+          echo "[dry-run] would post user-visible rate-limit acknowledgment"
+          echo "$ack_body"
+        else
+          gh pr comment "$PR_NUMBER" --repo "$REPO" --body "$ack_body"
+        fi
+        ;;
+    esac
+  fi
 }
 
 handle_rate_limit() {
@@ -1497,6 +1579,7 @@ case "$INTENT_TYPE" in
       -F owner="${REPO%%/*}" -F repo="${REPO##*/}" -F pr="$PR_NUMBER" \
       --jq '.data.repository.pullRequest.reviewThreads.nodes | map(select(.isResolved == false))' 2>/dev/null || echo "[]")
     export OPEN_THREADS_JSON
+    fetch_pr_context
     rc=0
     build_and_run "fix-reviews" || rc=$?
     [ "$rc" -eq 2 ] && handle_rate_limit "fix-reviews"
@@ -1525,6 +1608,7 @@ case "$INTENT_TYPE" in
   fix-bot-comment)
     export PR_NUMBER PR_URL="https://github.com/${REPO}/pull/${PR_NUMBER}"
     export REPO ACTOR="${ACTOR:-}" COMMENT_BODY="${COMMENT_BODY:-}" HEAD_SHA
+    fetch_pr_context
     rc=0
     build_and_run "fix-bot-comment" || rc=$?
     [ "$rc" -eq 2 ] && handle_rate_limit "fix-bot-comment"
@@ -1591,6 +1675,7 @@ case "$INTENT_TYPE" in
       -F owner="${REPO%%/*}" -F repo="${REPO##*/}" -F pr="$PR_NUMBER" \
       --jq '.data.repository.pullRequest.reviewThreads.nodes | map(select(.isResolved == false))' 2>/dev/null || echo "[]")
     export OPEN_THREADS_JSON BASE_REF="${BASE_REF:-main}"
+    fetch_pr_context
     rc=0
     build_and_run "review-changes" || rc=$?
     [ "$rc" -eq 2 ] && handle_rate_limit "review-changes"
