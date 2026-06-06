@@ -73,6 +73,7 @@ jobs:
       issues: write
       actions: read
       checks: read
+      statuses: read
     env:
       BOT_USER: ${{ vars.BOT_USER || 'donpetry-bot' }}
       TRUSTED_BOTS: ${{ vars.TRUSTED_BOTS || 'copilot-pull-request-reviewer[bot],gemini-code-assist[bot],sonarqubecloud[bot],coderabbitai[bot]' }}

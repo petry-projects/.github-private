@@ -21,6 +21,7 @@ permissions:
   pull-requests: write
   issues: write
   checks: read
+  statuses: read
 
 concurrency:
   # One active run per repo; ci-relay (check_run) keeps an ephemeral per-SHA slot
