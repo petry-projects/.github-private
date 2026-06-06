@@ -205,12 +205,14 @@ jobs:
           normalized_scopes="$(printf '%s' "$scopes_line" | sed "s/[',]/ /g")"
 
           # Fine-grained PATs don't expose OAuth-style scopes in `gh auth status` —
-          # the CLI omits the "Token scopes:" line or reports it cannot determine
-          # scopes. Skip validation in that case (emit a warning only).
+          # the CLI omits the "Token scopes:" line, reports "(none)", or reports
+          # that it cannot determine scopes. Skip validation in that case (warn only).
           # For classic PATs, validate both 'repo' and 'read:org':
           #   - 'repo' alone is insufficient: `gh pr view --json reviewRequests`
           #     hard-fails on PRs with team reviewers when 'read:org' is absent.
-          if [ -z "$normalized_scopes" ] || printf '%s' "$auth_status" | grep -qiE '(cannot determine|fine.grained)'; then
+          if [ -z "$normalized_scopes" ] || \
+             printf '%s' "$auth_status" | grep -qiE '(cannot determine|fine.grained)' || \
+             printf '%s' "$scopes_line" | grep -qiE '\(none\)'; then
             echo "::warning::Token scopes could not be determined (fine-grained PAT). Skipping scope validation."
             echo "::warning::Ensure the token has: contents:read and pull_requests:write (fine-grained), or repo + read:org (classic PAT)."
           elif grep -qE "(^|[[:space:]])repo([[:space:]]|$)" <<< "$normalized_scopes"; then
