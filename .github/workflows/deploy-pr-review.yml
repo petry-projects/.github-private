@@ -37,7 +37,7 @@ jobs:
             -X PUT \
             -f message="deploy: add pr-review.yml workflow" \
             -f content="$CONTENT_B64" 2>&1 | tee deploy.log
-          
+
           # Check if successful
           if grep -q '"commit"' deploy.log; then
             echo "✅ Deployed to ${{ matrix.repo }}"
