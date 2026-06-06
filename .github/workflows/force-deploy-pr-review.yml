@@ -25,7 +25,7 @@ jobs:
           REPO: ${{ matrix.repo }}
         run: |
           # Clone target repo
-          git clone https://$GITHUB_TOKEN@github.com/petry-projects/$REPO.git target_repo
+          git clone "https://$GITHUB_TOKEN@github.com/petry-projects/$REPO.git" target_repo
           cd target_repo
 
           # Configure git
