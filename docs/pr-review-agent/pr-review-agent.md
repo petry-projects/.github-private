@@ -161,7 +161,7 @@ recommended for better security (principle of least privilege).
 
 If you prefer classic PATs or need broader scopes:
 
-1. Sign in as the bot account, go to **Settings → Developer settings → 
+1. Sign in as the bot account, go to **Settings → Developer settings →
    Personal access tokens → Tokens (classic)** → **Generate new token (classic)**.
 2. Settings:
    - **Note:** `pr-review-agent`
