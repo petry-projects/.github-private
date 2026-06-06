@@ -1040,6 +1040,226 @@ resolve_actor_outdated_threads() {
   echo "::notice::resolve_actor_outdated_threads: resolved ${resolved_count} outdated thread(s) on PR #${PR_NUMBER}"
 }
 
+# fetch_pr_context: exports CI_STATUS_JSON and ALL_REVIEWS_JSON for holistic assessment.
+# Called before engine invocation in fix-reviews, fix-bot-comment, and review-changes
+# so the agent can identify Tier-1 blockers (failing CI + CHANGES_REQUESTED reviews)
+# and never wrongly declare "no-changes" while the PR is still blocked.
+fetch_pr_context() {
+  # CI check results: requires HEAD_SHA. Gracefully degrade to empty array when not set
+  # (e.g., review-changes in dry-run where the PR API call is skipped).
+  CI_STATUS_JSON="[]"
+  if [ -n "${HEAD_SHA:-}" ]; then
+    if ! CI_STATUS_JSON=$(gh api --paginate "repos/${REPO}/commits/${HEAD_SHA}/check-runs?per_page=100" \
+      2>/dev/null \
+      | jq -s '[.[].check_runs[]? | {name:.name, status:.status, conclusion:.conclusion, details_url:.details_url}]' \
+      2>/dev/null); then
+      echo "::error::fetch_pr_context: failed to fetch CI check-runs for ${HEAD_SHA} — cannot assess PR state" >&2
+      return 1
+    fi
+    # Also include legacy commit statuses (Jenkins, external CI, etc.) that use
+    # the separate statuses API rather than check-runs. Merge into CI_STATUS_JSON
+    # so the agent sees a unified picture of all required status checks.
+    local statuses_json
+    # The statuses API returns the full history per context (newest first).
+    # Dedupe by context so a stale failure overwritten by a later success does not
+    # appear as a Tier-1 blocker: group_by preserves input order within each group,
+    # so `first` picks the newest entry for each context.
+    if statuses_json=$(gh api --paginate "repos/${REPO}/commits/${HEAD_SHA}/statuses?per_page=100" \
+      2>/dev/null \
+      | jq -s '[ [.[].[] | select(.context != null)] | group_by(.context)[] | first | {name:.context, status:(if .state == "pending" then "in_progress" else "completed" end), conclusion:(if .state == "success" then "success" elif .state == "failure" or .state == "error" then "failure" else "pending" end), details_url:.target_url} ]' \
+      2>/dev/null); then
+      CI_STATUS_JSON=$(printf '%s\n%s' "$CI_STATUS_JSON" "$statuses_json" \
+        | jq -s 'add // []' 2>/dev/null || echo "$CI_STATUS_JSON")
+    else
+      echo "::error::fetch_pr_context: failed to fetch legacy commit statuses for ${HEAD_SHA} — cannot assess PR state" >&2
+      return 1
+    fi
+  fi
+  export CI_STATUS_JSON
+
+  # All PR reviews with state — deduplicated per reviewer (latest review per user only).
+  # Uses --paginate so PRs with more than 100 reviews are fully covered.
+  # COMMENTED reviews do not supersede a prior CHANGES_REQUESTED or APPROVED — only
+  # non-COMMENTED reviews determine the effective blocking state per user.
+  if ! ALL_REVIEWS_JSON=$(gh api --paginate "repos/${REPO}/pulls/${PR_NUMBER}/reviews?per_page=100" \
+    2>/dev/null \
+    | jq -s '[ [.[].[] | select(.user != null)] | group_by(.user.login)[] | . as $g | (($g | map(select(.state != "COMMENTED")) | sort_by(.id) | last) // ($g | sort_by(.id) | last)) | {id:.id, user:.user.login, state:.state, submitted_at:.submitted_at, body:.body, all_change_request_bodies:($g | map(select(.state == "CHANGES_REQUESTED")) | sort_by(.id) | map(.body))} ]' \
+    2>/dev/null); then
+    echo "::error::fetch_pr_context: failed to fetch PR reviews for #${PR_NUMBER} — cannot assess PR state" >&2
+    return 1
+  fi
+  export ALL_REVIEWS_JSON
+}
+
+# resolve_bot_outdated_threads: resolves all outdated review threads from bot reviewers.
+# This is a cleanup function for the no-changes path: when no code changes are needed,
+# we still want to mark outdated bot comments as resolved so they don't clutter the PR.
+# Outdated threads reference code that no longer exists, so resolution is unambiguous.
+#
+# Paginated: fetches all threads via cursor pagination so PRs with >100 threads are
+# fully covered. Unlike resolve_actor_outdated_threads, this resolves threads from ANY
+# bot author (__typename == "Bot", or login ends with [bot]).
+resolve_bot_outdated_threads() {
+  local intent="$1"
+  if [ "${DEV_LEAD_DRY_RUN:-false}" = "true" ]; then
+    echo "[dry-run] would resolve outdated review threads from bot reviewers on PR #${PR_NUMBER}"
+    return 0
+  fi
+
+  if [ -z "${PR_NUMBER:-}" ]; then
+    echo "::notice::resolve_bot_outdated_threads: PR_NUMBER not set for intent=${intent} — skipping"
+    return 0
+  fi
+
+  # Collect IDs of all outdated unresolved bot threads via cursor pagination.
+  # __typename == "Bot" covers bots whose GraphQL login omits the [bot] suffix;
+  # endswith("[bot]") covers bots that include it — both checks together are belt-and-suspenders.
+  local ids=""
+  local cursor="" has_next_page="true" page_response page_ids
+  local cursor_args=()
+  local bot_outdated_query='query($owner:String!,$repo:String!,$pr:Int!,$cursor:String){
+    repository(owner:$owner,name:$repo){
+      pullRequest(number:$pr){
+        reviewThreads(first:100,after:$cursor){
+          pageInfo{hasNextPage endCursor}
+          nodes{id isResolved isOutdated comments(first:1){nodes{author{login __typename}}}}
+        }
+      }
+    }
+  }'
+  while [ "$has_next_page" = "true" ]; do
+    page_response=$(gh api graphql -f query="$bot_outdated_query" \
+      -F owner="${REPO%%/*}" -F repo="${REPO##*/}" -F pr="$PR_NUMBER" \
+      "${cursor_args[@]}" 2>/dev/null || echo "{}")
+    page_ids=$(printf '%s' "$page_response" | jq -r \
+      '.data?.repository?.pullRequest?.reviewThreads?.nodes // []
+       | map(select(.isResolved == false
+                    and .isOutdated == true
+                    and (((.comments.nodes?[0]?.author?.login // "") | endswith("[bot]"))
+                         or ((.comments.nodes?[0]?.author?.__typename // "") == "Bot"))))
+       | .[].id' 2>/dev/null || true)
+    [ -n "$page_ids" ] && ids=$(printf '%s\n%s' "$ids" "$page_ids")
+    has_next_page=$(printf '%s' "$page_response" | jq -r \
+      '.data?.repository?.pullRequest?.reviewThreads?.pageInfo?.hasNextPage // false' \
+      2>/dev/null || echo "false")
+    cursor=$(printf '%s' "$page_response" | jq -r \
+      '.data?.repository?.pullRequest?.reviewThreads?.pageInfo?.endCursor // ""' \
+      2>/dev/null || echo "")
+    [ -z "$cursor" ] && has_next_page="false"
+    cursor_args=("-f" "cursor=${cursor}")
+  done
+  # Strip leading/trailing blank lines from accumulated ids
+  ids=$(printf '%s' "$ids" | sed '/^[[:space:]]*$/d')
+
+  if [ -z "$ids" ]; then
+    echo "::notice::no outdated unresolved threads from bot reviewers on PR #${PR_NUMBER}"
+    return 0
+  fi
+
+  local resolved_count=0
+  while IFS= read -r id; do
+    [ -z "$id" ] && continue
+    if gh api graphql -f query='mutation($id: ID!) { resolveReviewThread(input: {threadId: $id}) { thread { isResolved } } }' \
+        -f id="$id" >/dev/null 2>&1; then
+      resolved_count=$((resolved_count + 1))
+      echo "::notice::resolved outdated bot thread ${id}"
+    else
+      echo "::warning::failed to resolve outdated bot thread ${id}"
+    fi
+  done <<< "$ids"
+  echo "::notice::resolve_bot_outdated_threads: resolved ${resolved_count} outdated bot thread(s) on PR #${PR_NUMBER}"
+}
+
+# has_hard_blockers: returns 0 (true) if CI_STATUS_JSON or ALL_REVIEWS_JSON contain
+# hard Tier-1 blockers (failing CI checks or CHANGES_REQUESTED reviews).
+# Unlike has_tier1_blockers, does NOT check for unresolved bot threads — used to
+# distinguish "bot threads are the sole blocker" from "hard blockers present", so
+# callers can post a retry marker instead of silently stalling on bot feedback.
+has_hard_blockers() {
+  local failing_checks changes_requested
+
+  failing_checks=$(printf '%s' "${CI_STATUS_JSON:-[]}" | \
+    jq '[.[] | select(.conclusion != null and (
+          .conclusion == "failure" or .conclusion == "timed_out" or
+          .conclusion == "cancelled" or .conclusion == "action_required" or
+          .conclusion == "stale" or .conclusion == "startup_failure" or
+          .conclusion == "pending"
+        ))] | length' 2>/dev/null || echo "0")
+
+  changes_requested=$(printf '%s' "${ALL_REVIEWS_JSON:-[]}" | \
+    jq '[.[] | select(.state == "CHANGES_REQUESTED")] | length' \
+    2>/dev/null || echo "0")
+
+  [ "${failing_checks:-0}" -gt 0 ] || [ "${changes_requested:-0}" -gt 0 ]
+}
+
+# has_tier1_blockers: returns 0 (true) if CI_STATUS_JSON, ALL_REVIEWS_JSON, or unresolved
+# bot reviewer threads contain Tier-1 blockers:
+# - CI checks with non-success conclusion (failure, timed_out, cancelled, action_required, stale, startup_failure)
+# - Any reviewer with state = CHANGES_REQUESTED
+# - Unresolved review threads from bot reviewers (prevents review-changes from ignoring bot feedback)
+# Used to gate post_no_changes — never post a terminal no-changes marker while blockers
+# exist, so the retry cron can re-attempt on the same SHA.
+has_tier1_blockers() {
+  local failing_checks changes_requested unresolved_bot_threads
+
+  failing_checks=$(printf '%s' "${CI_STATUS_JSON:-[]}" | \
+    jq '[.[] | select(.conclusion != null and (
+          .conclusion == "failure" or .conclusion == "timed_out" or
+          .conclusion == "cancelled" or .conclusion == "action_required" or
+          .conclusion == "stale" or .conclusion == "startup_failure" or
+          .conclusion == "pending"
+        ))] | length' 2>/dev/null || echo "0")
+
+  changes_requested=$(printf '%s' "${ALL_REVIEWS_JSON:-[]}" | \
+    jq '[.[] | select(.state == "CHANGES_REQUESTED")] | length' \
+    2>/dev/null || echo "0")
+
+  # Count unresolved bot reviewer threads with cursor pagination to cover PRs with >100 threads.
+  # Detects bots via __typename == "Bot" (covers bots whose GraphQL login omits [bot] suffix)
+  # or login ending with [bot] (belt-and-suspenders for bots that include the suffix).
+  unresolved_bot_threads=0
+  if [ -n "${PR_NUMBER:-}" ]; then
+    local cursor="" has_next_page="true" page_response page_count
+    local cursor_args=()
+    local bot_thread_query='query($owner:String!,$repo:String!,$pr:Int!,$cursor:String){
+      repository(owner:$owner,name:$repo){
+        pullRequest(number:$pr){
+          reviewThreads(first:100,after:$cursor){
+            pageInfo{hasNextPage endCursor}
+            nodes{isResolved comments(first:1){nodes{author{login __typename}}}}
+          }
+        }
+      }
+    }'
+    while [ "$has_next_page" = "true" ]; do
+      page_response=$(gh api graphql -f query="$bot_thread_query" \
+        -F owner="${REPO%%/*}" -F repo="${REPO##*/}" -F pr="$PR_NUMBER" \
+        "${cursor_args[@]}" 2>/dev/null) || {
+        echo "::warning::has_tier1_blockers: bot-thread query failed — treating as blocked"
+        return 0
+      }
+      page_count=$(printf '%s' "$page_response" | jq \
+        '[.data?.repository?.pullRequest?.reviewThreads?.nodes // []
+        | map(select(.isResolved == false
+                     and (((.comments.nodes?[0]?.author?.login // "") | endswith("[bot]"))
+                          or ((.comments.nodes?[0]?.author?.__typename // "") == "Bot"))))
+        | length] | .[0]' 2>/dev/null || echo "0")
+      unresolved_bot_threads=$(( ${unresolved_bot_threads:-0} + ${page_count:-0} ))
+      has_next_page=$(printf '%s' "$page_response" | jq -r \
+        '.data?.repository?.pullRequest?.reviewThreads?.pageInfo?.hasNextPage // false' \
+        2>/dev/null || echo "false")
+      cursor=$(printf '%s' "$page_response" | jq -r \
+        '.data?.repository?.pullRequest?.reviewThreads?.pageInfo?.endCursor // ""' \
+        2>/dev/null || echo "")
+      [ -z "$cursor" ] && has_next_page="false"
+      cursor_args=("-f" "cursor=${cursor}")
+    done
+  fi
+
+  [ "${failing_checks:-0}" -gt 0 ] || [ "${changes_requested:-0}" -gt 0 ] || [ "${unresolved_bot_threads:-0}" -gt 0 ]
+}
+
 # try_enable_auto_merge: enables auto-merge (squash) on the PR if reviewDecision is
 # APPROVED and auto-merge is not already set. Safe to call speculatively — checks
 # eligibility first and is idempotent if auto-merge is already on.
@@ -1423,6 +1643,7 @@ case "$INTENT_TYPE" in
       -F owner="${REPO%%/*}" -F repo="${REPO##*/}" -F pr="$PR_NUMBER" \
       --jq '.data.repository.pullRequest.reviewThreads.nodes | map(select(.isResolved == false))' 2>/dev/null || echo "[]")
     export OPEN_THREADS_JSON
+    fetch_pr_context
     rc=0
     build_and_run "fix-reviews" || rc=$?
     [ "$rc" -eq 2 ] && handle_rate_limit "fix-reviews"
@@ -1451,6 +1672,7 @@ case "$INTENT_TYPE" in
   fix-bot-comment)
     export PR_NUMBER PR_URL="https://github.com/${REPO}/pull/${PR_NUMBER}"
     export REPO ACTOR="${ACTOR:-}" COMMENT_BODY="${COMMENT_BODY:-}" HEAD_SHA
+    fetch_pr_context
     rc=0
     build_and_run "fix-bot-comment" || rc=$?
     [ "$rc" -eq 2 ] && handle_rate_limit "fix-bot-comment"
@@ -1460,8 +1682,18 @@ case "$INTENT_TYPE" in
         post_reviews_terminal "fix-bot-comment" "applied" "Changes committed and pushed."
       else
         notify_coderabbit_resolve
-        post_no_changes "fix-bot-comment"
+        if has_hard_blockers; then
+          echo "::warning::Tier-1 blockers still present (failing CI or CHANGES_REQUESTED reviews) — fix-bot-comment is not retried automatically; posting terminal marker"
+          post_no_changes "fix-bot-comment"
+        elif has_tier1_blockers; then
+          echo "::warning::Unresolved bot review threads remain — fix-bot-comment is not automatically retried; posting no-changes terminal marker"
+          post_no_changes "fix-bot-comment"
+        else
+          post_no_changes "fix-bot-comment"
+        fi
       fi
+      # Always resolve outdated bot threads in the no-changes path as cleanup
+      resolve_bot_outdated_threads "fix-bot-comment"
       resolve_actor_outdated_threads "fix-bot-comment"
       try_enable_auto_merge
     fi
@@ -1503,6 +1735,7 @@ case "$INTENT_TYPE" in
       -F owner="${REPO%%/*}" -F repo="${REPO##*/}" -F pr="$PR_NUMBER" \
       --jq '.data.repository.pullRequest.reviewThreads.nodes | map(select(.isResolved == false))' 2>/dev/null || echo "[]")
     export OPEN_THREADS_JSON BASE_REF="${BASE_REF:-main}"
+    fetch_pr_context
     rc=0
     build_and_run "review-changes" || rc=$?
     [ "$rc" -eq 2 ] && handle_rate_limit "review-changes"
