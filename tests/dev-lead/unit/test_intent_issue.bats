@@ -51,14 +51,16 @@ _get_context_field() {
   [ "$(_get_env INTENT_TYPE)" = "issue" ]
 }
 
-@test "issue: issues labeled claude → issue (backward compat)" {
+@test "issue: issues labeled claude → skip (legacy label retired)" {
+  # The `claude` label was retired in favour of `dev-lead`; it no longer
+  # triggers the issue intent.
   export GITHUB_EVENT_NAME="issues"
   export GITHUB_EVENT_PATH="$FIXTURES_DIR/issues_labeled_claude.json"
 
   run bash "$INTENT_SCRIPT"
 
   [ "$status" -eq 0 ]
-  [ "$(_get_env INTENT_TYPE)" = "issue" ]
+  [ "$(_get_env INTENT_TYPE)" = "skip" ]
 }
 
 @test "issue: issues labeled bug → skip" {
