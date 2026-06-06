@@ -1333,6 +1333,7 @@ handle_rate_limit() {
   local intent="$1"
   echo "::warning::All engines rate-limited for intent=${intent} — posting rate-limited marker"
   post_reviews_rate_limited "$intent"
+  [[ -n "${PR_NUMBER:-}" ]] && try_enable_auto_merge
   exit 2
 }
 
