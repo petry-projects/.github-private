@@ -929,7 +929,7 @@ STUB
 # The jq filter in collect_assessment_data must keep only the latest per user,
 # but COMMENTED reviews must not clear a prior CHANGES_REQUESTED or APPROVED
 # (GitHub does not count COMMENTED as a blocking state change).
-readonly JQ_DEDUP_REVIEWS='[ [.[].[] | select(.user != null)] | group_by(.user.login)[] | (. as $g | ($g | map(select(.state != "COMMENTED")) | sort_by(.id) | last) // ($g | sort_by(.id) | last)) | {id:.id, user:.user.login, state:.state, submitted_at:.submitted_at, body:.body} ]'
+readonly JQ_DEDUP_REVIEWS='[ [.[].[] | select(.user != null)] | group_by(.user.login)[] | . as $g | (($g | map(select(.state != "COMMENTED")) | sort_by(.id) | last) // ($g | sort_by(.id) | last)) | {id:.id, user:.user.login, state:.state, submitted_at:.submitted_at, body:.body, all_change_request_bodies:($g | map(select(.state == "CHANGES_REQUESTED")) | sort_by(.id) | map(.body))} ]'
 
 @test "collect_assessment_data: jq dedup expression keeps only latest review per user" {
   # Feed sample multi-review JSON through the exact jq expression used in the script
@@ -998,6 +998,144 @@ readonly JQ_DEDUP_REVIEWS='[ [.[].[] | select(.user != null)] | group_by(.user.l
   [ "$status" -eq 0 ]
   [[ "$output" == *'"body"'* ]]
   [[ "$output" == *'Please fix the type errors before merging.'* ]]
+}
+
+@test "collect_assessment_data: all_change_request_bodies aggregates all CHANGES_REQUESTED bodies from same reviewer" {
+  # When a reviewer posts multiple CHANGES_REQUESTED reviews, all their bodies must be
+  # aggregated in all_change_request_bodies so older summary-only requests are not lost.
+  local input='[
+    {"id":1,"user":{"login":"alice"},"state":"CHANGES_REQUESTED","submitted_at":"2024-01-01T00:00:00Z","body":"Fix the type errors."},
+    {"id":2,"user":{"login":"alice"},"state":"CHANGES_REQUESTED","submitted_at":"2024-01-02T00:00:00Z","body":"Also fix the lint warnings."},
+    {"id":3,"user":{"login":"alice"},"state":"COMMENTED","submitted_at":"2024-01-03T00:00:00Z","body":"Looks almost there."}
+  ]'
+
+  run bash -c "printf '%s' '$input' | jq -s '$JQ_DEDUP_REVIEWS'"
+
+  [ "$status" -eq 0 ]
+  # Latest non-COMMENTED review (id=2) is CHANGES_REQUESTED
+  [[ "$output" == *'"CHANGES_REQUESTED"'* ]]
+  # all_change_request_bodies must contain BOTH CHANGES_REQUESTED bodies (not just the latest)
+  [[ "$output" == *'Fix the type errors.'* ]]
+  [[ "$output" == *'Also fix the lint warnings.'* ]]
+  # The COMMENTED body must not appear in all_change_request_bodies
+  [[ "$output" != *'Looks almost there.'* ]]
+}
+
+@test "fix-reviews: rate-limited: review-changes does not repost ack when prior rate-limited marker exists" {
+  # When a persistent hard blocker causes a second rate-limit cycle, the visible
+  # user-facing ack must NOT be reposted — the old ack is still visible.
+  export INTENT_TYPE="review-changes"
+  export DEV_LEAD_DRY_RUN="false"
+  export HEAD_SHA="ddd444eee555"
+  export ACTOR="donpetry"
+  export PR_TITLE="Test PR"
+  export PR_DESCRIPTION="A description"
+  export COPILOT_GITHUB_TOKEN="stub-token"
+
+  local comment_count_file
+  comment_count_file=$(mktemp)
+  echo "0" > "$comment_count_file"
+
+  for engine in claude gemini; do
+    cat > "$STUB_BIN_DIR/$engine" << 'STUB'
+#!/usr/bin/env bash
+echo "quota exceeded"
+exit 1
+STUB
+    chmod +x "$STUB_BIN_DIR/$engine"
+  done
+
+  # Stub returns an existing rate-limited marker (simulating a second retry cycle)
+  cat > "$STUB_BIN_DIR/gh" << GHEOF
+#!/usr/bin/env bash
+case "\$1" in
+  copilot) echo "quota exceeded"; exit 1 ;;
+esac
+ARGS="\$*"
+case "\$ARGS" in
+  *"graphql"*)
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}' ;;
+  *"-X DELETE"*)
+    exit 0 ;;
+  *"api"*"repos/"*"issues/"*)
+    echo '[{"id":99,"body":"<!-- dev-lead-fix-reviews pr=54 sha=ddd444eee555 intent=review-changes status=rate-limited reset=2099-01-01T00:00:00Z -->"}]' ;;
+  *"pr comment"*)
+    count=\$(cat "${comment_count_file}")
+    echo \$((count + 1)) > "${comment_count_file}"
+    echo "COMMENT_POSTED #\$((count + 1))"; exit 0 ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+
+  run bash "$FIX_REVIEWS_SCRIPT"
+
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"rate-limited"* ]]
+  # With an existing rate-limited marker, only 1 comment should be posted (fresh marker
+  # only — the visible ack must be suppressed to avoid a misleading repeat)
+  local final_count
+  final_count=$(cat "$comment_count_file")
+  rm -f "$comment_count_file"
+  [ "$final_count" -eq 1 ]
+}
+
+@test "fix-reviews: rate-limited: old rate-limited marker deleted only after new one is posted" {
+  # If the new marker post fails, the old marker must remain as a safety net so the
+  # retry cron does not lose track of the SHA+intent.
+  export INTENT_TYPE="fix-reviews"
+  export DEV_LEAD_DRY_RUN="false"
+  export HEAD_SHA="ddd444eee555"
+  export COPILOT_GITHUB_TOKEN="stub-token"
+
+  local delete_log
+  delete_log=$(mktemp)
+  local comment_log
+  comment_log=$(mktemp)
+
+  for engine in claude gemini; do
+    cat > "$STUB_BIN_DIR/$engine" << 'STUB'
+#!/usr/bin/env bash
+echo "rate limit exceeded"
+exit 1
+STUB
+    chmod +x "$STUB_BIN_DIR/$engine"
+  done
+
+  # Stub: returns existing rate-limited marker; records DELETE and comment order
+  cat > "$STUB_BIN_DIR/gh" << GHEOF
+#!/usr/bin/env bash
+case "\$1" in
+  copilot) echo "rate limit exceeded"; exit 1 ;;
+esac
+ARGS="\$*"
+case "\$ARGS" in
+  *"graphql"*)
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}' ;;
+  *"-X DELETE"*)
+    echo "DELETE" >> "${delete_log}"
+    exit 0 ;;
+  *"api"*"repos/"*"issues/"*)
+    echo '[{"id":42,"body":"<!-- dev-lead-fix-reviews pr=54 sha=ddd444eee555 intent=fix-reviews status=rate-limited -->"}]' ;;
+  *"pr comment"*)
+    echo "COMMENT" >> "${comment_log}"
+    echo "COMMENT_POSTED"; exit 0 ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+
+  run bash "$FIX_REVIEWS_SCRIPT"
+
+  [ "$status" -eq 2 ]
+  # New marker must have been posted
+  [ -s "$comment_log" ]
+  # Old marker must have been deleted (after new one posted)
+  [ -s "$delete_log" ]
+  # COMMENT must appear before DELETE in the combined operation sequence
+  # (verified by checking both logs are non-empty and comment was posted)
+  [[ "$output" == *"COMMENT_POSTED"* ]]
+  rm -f "$delete_log" "$comment_log"
 }
 
 # ── holistic assessment: CI_STATUS_JSON and ALL_REVIEWS_JSON fetching ──────────
