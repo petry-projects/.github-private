@@ -71,13 +71,13 @@ and **Copilot**.
 
 4. **Post-review actions** — after the review is posted, the action tier takes
    additional actions depending on the decision:
-   - **If approved:** enables auto-merge (`gh pr merge --auto --squash`),
-     rebases the branch if behind base, and removes the `needs-human-review`
-     label. GitHub merges automatically once all required checks pass.
+   - **If approved:** removes the `needs-human-review` label if present, and
+     rebases the branch if it's behind base. The PR remains open for manual merge
+     by the author or maintainers.
    - **If escalated + AI delegation enabled:** posts a follow-up comment
      with specific fix instructions. An AI agent watches for these comments,
      pushes fixes → next cron tick detects new SHA → cascade re-reviews →
-     approve + auto-merge when clean. This creates an autonomous fix loop.
+     approve when clean. This creates an autonomous fix loop.
    - **If escalated + no delegation (or max cycles reached):** labels
      `needs-human-review` and re-requests don-petry as reviewer.
    - **Cycle guard:** before running the cascade, `scripts/review-one-pr.sh`
@@ -147,12 +147,10 @@ recommended for better security (principle of least privilege).
    - **Resource owner:** select your organization (e.g. `petry-projects`)
    - **Repository access:** All repositories (or specific repos if preferred)
    - **Repository permissions:**
-     - `contents:write` — read files and diffs; enable auto-merge and merge PRs
+     - `contents:read` — read files and diffs for analysis
      - `pull_requests:write` — post reviews and comments
-     - `actions:read` — check CI status
-     - `metadata:read` — read repo metadata
    - **Organization permissions:**
-     - `members:read` — read org members for code owner routing
+     - `members:read` — (optional) read org members for code owner routing at escalation time
 4. Generate and copy the token immediately.
 5. Sign back in as `don-petry` and store the token in the agent repo's secret
    (the secret name is `DON_PETRY_BOT_GH_PAT` in `petry-projects/.github-private`).
