@@ -120,12 +120,12 @@ teardown() { rm -rf "$STUB_BIN_DIR" "$GH_CALLS"; }
   ! grep -q -- "--auto" "$GH_CALLS"
 }
 
-@test "restore_auto_merge: passes --match-head-commit when HEAD_SHA is set" {
+@test "restore_auto_merge: passes --match-head-commit when _AM_HEAD_SHA is set" {
   source "$LIB"
   _AM_NEEDS_RESTORE=1
   PR_STATE="open"
   AM_STATE=""
-  export HEAD_SHA="abc123"
+  _AM_HEAD_SHA="abc123"
   run restore_auto_merge
   [ "$status" -eq 0 ]
   grep -q -- "--match-head-commit abc123" "$GH_CALLS"
@@ -197,19 +197,27 @@ EOF
   [ "${_AM_COMMIT_MESSAGE}" = "My PR body" ]
 }
 
+@test "hold_auto_merge: captures PR head SHA into _AM_HEAD_SHA at hold time" {
+  source "$LIB"
+  AM_STATE="squash"
+  export HEAD_SHA_API="deadbeef1234"
+  hold_auto_merge
+  [ "${_AM_HEAD_SHA}" = "deadbeef1234" ]
+}
+
 # ── restore_auto_merge — HEAD_SHA refresh and commit text replay ──────────────
 
-@test "restore_auto_merge: preserves original HEAD_SHA for --match-head-commit guard" {
+@test "restore_auto_merge: uses held-head SHA, not stale event-payload HEAD_SHA" {
   source "$LIB"
   _AM_NEEDS_RESTORE=1
   PR_STATE="open"
   AM_STATE=""
-  export HEAD_SHA="original_sha"
-  export HEAD_SHA_API="newer_sha"
+  _AM_HEAD_SHA="held_sha"
+  export HEAD_SHA="stale_event_sha"
   run restore_auto_merge
   [ "$status" -eq 0 ]
-  grep -q -- "--match-head-commit original_sha" "$GH_CALLS"
-  ! grep -q -- "--match-head-commit newer_sha" "$GH_CALLS"
+  grep -q -- "--match-head-commit held_sha" "$GH_CALLS"
+  ! grep -q -- "--match-head-commit stale_event_sha" "$GH_CALLS"
 }
 
 @test "restore_auto_merge: passes --subject and --body when commit text was captured" {

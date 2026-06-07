@@ -25,7 +25,7 @@ set -euo pipefail
 #  - push_with_merge_guard  treats "branch merged/closed mid-run" as a benign
 #                           success instead of a hard, red-X failure.
 #
-# All functions read PR_NUMBER / REPO / DEV_LEAD_DRY_RUN / HEAD_SHA from the environment.
+# All functions read PR_NUMBER / REPO / DEV_LEAD_DRY_RUN from the environment.
 
 # Set to 1 by hold_auto_merge only when it actually turned auto-merge off, so
 # restore_auto_merge re-enables exactly what we disabled and nothing else (it
@@ -38,6 +38,10 @@ _AM_MERGE_METHOD="squash"
 # user's selected merge message is not lost when auto-merge is re-enabled.
 _AM_COMMIT_TITLE=""
 _AM_COMMIT_MESSAGE=""
+# PR head SHA captured at hold time; used by restore_auto_merge so a stale
+# HEAD_SHA from the event payload doesn't cause GitHub to reject the restore
+# when the PR has advanced since the event was queued.
+_AM_HEAD_SHA=""
 
 # hold_auto_merge — disable auto-merge for the duration of the run, if it is on.
 hold_auto_merge() {
@@ -52,6 +56,7 @@ hold_auto_merge() {
   _AM_MERGE_METHOD="$state"
   _AM_COMMIT_TITLE=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}" --jq '.auto_merge.commit_title // empty' 2>/dev/null || true)
   _AM_COMMIT_MESSAGE=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}" --jq '.auto_merge.commit_message // empty' 2>/dev/null || true)
+  _AM_HEAD_SHA=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}" --jq '.head.sha' 2>/dev/null || true)
   echo "::notice::PR #${PR_NUMBER} — holding auto-merge OFF while dev-lead works"
   if gh pr merge "$PR_NUMBER" --repo "$REPO" --disable-auto 2>/dev/null; then
     _AM_NEEDS_RESTORE=1
@@ -85,7 +90,7 @@ restore_auto_merge() {
   local restore_args=("--auto" "$merge_flag")
   [[ -n "${_AM_COMMIT_TITLE:-}" ]] && restore_args+=("--subject" "${_AM_COMMIT_TITLE}")
   [[ -n "${_AM_COMMIT_MESSAGE:-}" ]] && restore_args+=("--body" "${_AM_COMMIT_MESSAGE}")
-  [[ -n "${HEAD_SHA:-}" ]] && restore_args+=("--match-head-commit" "${HEAD_SHA}")
+  [[ -n "${_AM_HEAD_SHA:-}" ]] && restore_args+=("--match-head-commit" "${_AM_HEAD_SHA}")
   echo "::notice::PR #${PR_NUMBER} — restoring auto-merge (${_AM_MERGE_METHOD:-squash})"
   gh pr merge "$PR_NUMBER" --repo "$REPO" "${restore_args[@]}" 2>/dev/null \
     || echo "::warning::could not restore auto-merge on PR #${PR_NUMBER}"
