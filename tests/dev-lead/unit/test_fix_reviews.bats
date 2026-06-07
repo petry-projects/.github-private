@@ -2134,6 +2134,53 @@ GHEOF
   [[ "$output" != *"status=no-changes"* ]]
 }
 
+@test "review-changes: same-named check runs from different apps are not collapsed" {
+  local tmpdir
+  tmpdir="$(mktemp -d)"
+
+  # Stub: two check runs with the same name but from different GitHub Apps.
+  # App 111 (success, newer) must not hide app 222 (cancelled, older) — they are
+  # distinct logical checks and both must be evaluated independently.
+  cat > "$STUB_BIN_DIR/gh" <<'GHEOF'
+#!/usr/bin/env bash
+ARGS="$*"
+case "$ARGS" in
+  *"check-runs"*)
+    echo '{"check_runs":[{"id":301,"name":"ShellCheck","status":"completed","conclusion":"success","started_at":"2026-06-07T14:00:00Z","details_url":"https://example.com/1","app":{"id":111}},{"id":302,"name":"ShellCheck","status":"completed","conclusion":"cancelled","started_at":"2026-06-07T13:55:00Z","details_url":"https://example.com/2","app":{"id":222}}]}' ;;
+  *"statuses"*)
+    echo '[]' ;;
+  *"pulls/"*"reviews"*)
+    echo '[]' ;;
+  *"graphql"*)
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+  *"pr checkout"*) exit 0 ;;
+  *"pr comment"*) exit 0 ;;
+  *"pr merge"*) exit 0 ;;
+  *"pulls/"*) echo '{"head":{"sha":"abc123"},"auto_merge":null}' ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+
+  run bash -c "
+    cd '$tmpdir'
+    export INTENT_TYPE=review-changes DEV_LEAD_DRY_RUN=true
+    export PR_NUMBER=422 HEAD_SHA=abc123 REPO='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export PATH=\"$STUB_BIN_DIR:\$PATH\"
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+  rm -rf "$tmpdir"
+
+  [ "$status" -eq 0 ]
+  # The cancelled run from a different app must not be hidden by the same-named success.
+  # Both must remain distinct in CI_STATUS_JSON, so the cancelled one still blocks.
+  [[ "$output" == *"Tier-1 blockers still present"* ]]
+  [[ "$output" == *"rate-limited marker"* ]]
+  [[ "$output" == *"reason=blocked"* ]]
+  [[ "$output" != *"status=no-changes"* ]]
+}
+
 @test "fix-reviews: bot-thread-only blocker suppresses no-changes terminal (fix-reviews intent)" {
   local tmpdir
   tmpdir="$(mktemp -d)"

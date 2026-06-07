@@ -278,18 +278,19 @@ fetch_pr_context() {
   # (e.g., review-changes in dry-run where the PR API call is skipped).
   CI_STATUS_JSON="[]"
   if [ -n "${HEAD_SHA:-}" ]; then
-    # Dedupe check runs by name, keeping the newest run (started_at, then id).
+    # Dedupe check runs by (name, app.id), keeping the newest run (started_at, then id).
     # Each triggering event creates a new check suite, so the API's default
     # filter=latest does NOT collapse runs across suites: a concurrency-cancelled
     # run sits forever next to its successful same-named replacement and would
-    # otherwise register as a permanent Tier-1 blocker (issue #461). Branch
-    # protection keys required checks by name, so name-level dedup matches
-    # GitHub's own merge semantics; a run that is genuinely the latest of its
-    # name (e.g. a lone cancelled run) still counts.
+    # otherwise register as a permanent Tier-1 blocker (issue #461). Using app.id
+    # as a discriminator ensures that two independent checks with the same name
+    # from different GitHub Apps are not collapsed: each (name, app) pair is its
+    # own logical check. A run that is genuinely the latest of its (name, app)
+    # pair (e.g. a lone cancelled run) still counts as a blocker.
     if ! CI_STATUS_JSON=$(gh api --paginate "repos/${REPO}/commits/${HEAD_SHA}/check-runs?per_page=100" \
       2>/dev/null \
       | jq -s '[.[].check_runs[]?]
-               | group_by(.name)
+               | group_by([.name, (.app.id // null)])
                | map(sort_by([.started_at // "", .id // 0]) | last
                      | {name:.name, status:.status, conclusion:.conclusion, details_url:.details_url})' \
       2>/dev/null); then
