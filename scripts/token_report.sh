@@ -59,6 +59,7 @@ aggregate_by_workflow() {
   fi
   jq -s '
     map(select(type == "object"))
+    | sort_by((.workflow // "unknown") + "|" + (.tier // "-") + "|" + (.model // "-"))
     | group_by((.workflow // "unknown") + "|" + (.tier // "-") + "|" + (.model // "-"))
     | map({
         workflow: (.[0].workflow // "unknown"),
@@ -85,6 +86,7 @@ aggregate_by_repo() {
   fi
   jq -s '
     map(select(type == "object"))
+    | sort_by(.repo // "unknown")
     | group_by(.repo // "unknown")
     | map({
         repo:  (.[0].repo // "unknown"),
@@ -194,7 +196,7 @@ collect_org_jsonl() {
 
   local repos_raw
   repos_raw="$(gh api "orgs/${ORG}/repos?per_page=100&type=all" --paginate \
-    --jq '.[] | select(.archived == false) | .full_name' 2>/dev/null || true)"
+    --jq '.[] | select(.archived == false) | .full_name')"
   [ -n "$repos_raw" ] || { echo "0 0"; return 0; }
 
   local cutoff repo_count=0 artifact_count=0
@@ -213,12 +215,12 @@ collect_org_jsonl() {
     local arts
     arts="$(gh api "repos/${repo}/actions/artifacts" --paginate 2>/dev/null \
       | jq -r --arg cutoff "$cutoff" \
-      '.artifacts[] | select(.name | startswith("token-usage-")) | select(.expired == false) | select(.created_at >= $cutoff) | [.id, .created_at] | @tsv' \
+      '.artifacts[] | select(.name | startswith("token-usage-")) | select(.expired == false) | select(.created_at >= $cutoff) | .id | tostring' \
       || true)"
     [ -n "$arts" ] || continue
 
-    local id created_at
-    while IFS=$'\t' read -r id created_at; do
+    local id
+    while IFS= read -r id; do
       [ -n "$id" ] || continue
 
       local zip="$workdir/a-$id.zip" ex="$workdir/x-$id"

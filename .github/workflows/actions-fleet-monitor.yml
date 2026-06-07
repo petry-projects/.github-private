@@ -74,17 +74,6 @@ jobs:
           GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
         run: bash scripts/fleet_monitor.sh
 
-      - name: Summarize token usage (org-wide)
-        # Org-wide ET rollup via the shared script. The agents run as reusable
-        # workflows in each *caller* repo, so their token-usage artifacts land
-        # there — scripts/token_report.sh scans every non-archived repo, not just
-        # .github-private. The weekly digest lives in token-report.yml.
-        env:
-          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
-          ORG: ${{ env.ORG }}
-          LOOKBACK_DAYS: ${{ env.LOOKBACK_DAYS }}
-        run: bash scripts/token_report.sh >> "$GITHUB_STEP_SUMMARY"
-
       - name: Create issue with findings
         if: env.HAS_FAILURES == 'true' && hashFiles('fleet_monitor_report.md') != ''
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
@@ -293,6 +282,17 @@ jobs:
             --input - <<EOF
           {"event_type":"dev-lead-ci-failure","client_payload":{"source":"fleet-monitor","count":"${{ env.HIGH_FAILURE_COUNT }}"}}
           EOF
+
+      - name: Summarize token usage (org-wide)
+        # Runs after all alerting steps so a token-report failure or timeout does
+        # not prevent monitoring findings from being created or dispatched.
+        # continue-on-error keeps this informational step non-blocking.
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
+          ORG: ${{ env.ORG }}
+          LOOKBACK_DAYS: ${{ env.LOOKBACK_DAYS }}
+        run: bash scripts/token_report.sh >> "$GITHUB_STEP_SUMMARY"
 
       - name: Annotate clean run
         if: env.HAS_FAILURES != 'true'
