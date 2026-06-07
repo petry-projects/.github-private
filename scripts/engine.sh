@@ -299,6 +299,18 @@ _claude_chain_invoke() {
     return 1
   fi
 
+  # When token logging is on, capture real usage by running claude with
+  # --output-format json and emitting the extracted .result text to the caller.
+  # Gated by ENGINE_USAGE_JSON (default on) so it can be disabled without a code
+  # change. Falls back to raw output if extraction yields nothing.
+  declare -f reset_engine_usage >/dev/null 2>&1 && reset_engine_usage
+  local _usage_json=0 fmt_args=()
+  if [ -n "${TOKEN_LOG_FILE:-}" ] && [ "${ENGINE_USAGE_JSON:-1}" != "0" ] \
+     && declare -f parse_engine_usage >/dev/null 2>&1; then
+    _usage_json=1
+    fmt_args=(--output-format json)
+  fi
+
   local saved_ifs="$IFS"
   IFS=',' read -ra models <<< "$chain_csv"
   IFS="$saved_ifs"
@@ -321,7 +333,7 @@ _claude_chain_invoke() {
     rc=0
 
     if [ -n "$stdout_tmp" ] && [ -n "$stderr_tmp" ]; then
-      timeout "$timeout_sec" claude --print --model "$model" "${extra_args[@]}" \
+      timeout "$timeout_sec" claude --print --model "$model" "${fmt_args[@]}" "${extra_args[@]}" \
         < "$prompt_file" > "$stdout_tmp" 2> "$stderr_tmp" || rc=$?
     else
       # mktemp failure (one or both) — clean up partial temps and try fixed
@@ -419,9 +431,24 @@ _claude_chain_invoke() {
     final_rc=2
   fi
 
-  # Emit the final attempt's captured output to the caller.
+  # Emit the final attempt's captured output. In JSON-usage mode, parse the usage
+  # block and emit the extracted .result text; fall back to the raw payload if
+  # extraction yields nothing or the call failed (preserves error/rate-limit text
+  # for downstream detection). Degraded paths (mktemp failure) already ran without
+  # fmt_args so their output is plain text regardless of _usage_json.
   if [ -n "$final_stdout" ]; then
-    cat "$final_stdout"
+    if [ "$_usage_json" -eq 1 ] && [ "$final_rc" -eq 0 ]; then
+      parse_engine_usage claude "$final_stdout" || true
+      local _txt
+      _txt="$(extract_engine_text claude "$final_stdout")"
+      if [ -n "$_txt" ]; then
+        printf '%s\n' "$_txt"
+      else
+        cat "$final_stdout"
+      fi
+    else
+      cat "$final_stdout"
+    fi
     rm -f "$final_stdout"
   fi
   if [ -n "$final_stderr" ]; then
@@ -474,6 +501,20 @@ _gemini_chain_invoke() {
     return 1
   fi
 
+  # When token logging is on, capture real usage by running gemini with
+  # --output-format json and emitting the extracted text to the caller.
+  # Gated by ENGINE_USAGE_JSON (default on) so it can be disabled without a code
+  # change. Falls back to raw output if extraction yields nothing. Degraded paths
+  # (/tmp fallback, last-resort in-memory) keep --output-format text because
+  # parse_engine_usage requires a well-formed JSON file.
+  declare -f reset_engine_usage >/dev/null 2>&1 && reset_engine_usage
+  local _usage_json=0 fmt_args=(--output-format text)
+  if [ -n "${TOKEN_LOG_FILE:-}" ] && [ "${ENGINE_USAGE_JSON:-1}" != "0" ] \
+     && declare -f parse_engine_usage >/dev/null 2>&1; then
+    _usage_json=1
+    fmt_args=(--output-format json)
+  fi
+
   local saved_ifs="$IFS"
   IFS=',' read -ra models <<< "$chain_csv"
   IFS="$saved_ifs"
@@ -498,7 +539,7 @@ _gemini_chain_invoke() {
       timeout "$timeout_sec" gemini --prompt "" \
         --model "$model" \
         --approval-mode auto_edit \
-        --output-format text \
+        "${fmt_args[@]}" \
         "${extra_args[@]}" \
         < "$prompt_file" > "$stdout_tmp" 2> "$stderr_tmp" || rc=$?
     else
@@ -624,8 +665,24 @@ _gemini_chain_invoke() {
     final_rc=2
   fi
 
+  # Emit the final attempt's captured output. In JSON-usage mode (happy path
+  # where mktemp succeeded), parse the usage block and emit the extracted text;
+  # fall back to the raw payload if extraction yields nothing or the call failed.
+  # Degraded paths (/tmp fallback, last-resort in-memory) ran with --output-format
+  # text, so their output is plain text regardless of _usage_json.
   if [ -n "$final_stdout" ]; then
-    cat "$final_stdout"
+    if [ "$_usage_json" -eq 1 ] && [ "$final_rc" -eq 0 ]; then
+      parse_engine_usage gemini "$final_stdout" || true
+      local _txt
+      _txt="$(extract_engine_text gemini "$final_stdout")"
+      if [ -n "$_txt" ]; then
+        printf '%s\n' "$_txt"
+      else
+        cat "$final_stdout"
+      fi
+    else
+      cat "$final_stdout"
+    fi
     rm -f "$final_stdout"
   fi
   if [ -n "$final_stderr" ]; then
@@ -649,21 +706,49 @@ _gemini_chain_invoke() {
 }
 
 # _record_engine_tokens <tier> <engine> <model> <prompt_file> [output_file]
-# Writes one token record to TOKEN_LOG_FILE using estimate_tokens_from_file.
-# No-op when TOKEN_LOG_FILE is unset or the token-metrics library is not loaded.
-# Always succeeds (non-fatal): token logging must never abort a real workflow.
+# Writes one token record to TOKEN_LOG_FILE. Prefers real usage from the engine
+# sidecar (populated by parse_engine_usage inside chain_invoke) or LAST_* globals;
+# falls back to byte-count estimates when no usage block was captured (e.g. copilot
+# or degraded/text-mode runs). No-op when TOKEN_LOG_FILE is unset or the
+# token-metrics library is not loaded. Always succeeds (non-fatal).
 _record_engine_tokens() {
   [ -n "${TOKEN_LOG_FILE:-}" ] || return 0
   declare -f emit_token_record >/dev/null 2>&1 || return 0
 
   local tier="$1" engine="$2" model="$3" prompt_file="$4" output_file="${5:-}"
-  local workflow="${TOKEN_WORKFLOW:-unknown}"
-  local input_tokens output_tokens context
-  input_tokens=$(estimate_tokens_from_file "$prompt_file")
-  output_tokens=$(estimate_tokens_from_file "$output_file")
-  context="${PR_URL:-}"
+  local workflow="${TOKEN_WORKFLOW:-unknown}" context="${PR_URL:-}"
+  local input_tokens cache_read_tokens cache_write_tokens output_tokens
+  local _have_usage=0
+
+  # Prefer real usage captured by the engine. Read from the sidecar file first
+  # (written by parse_engine_usage even when the engine ran inside a subshell);
+  # fall back to LAST_* globals for non-piped callers.
+  local _uf=""
+  declare -f _engine_usage_sidecar >/dev/null 2>&1 && _uf="$(_engine_usage_sidecar)"
+  if [ -n "$_uf" ] && [ -s "$_uf" ]; then
+    IFS=$'\t' read -r input_tokens cache_read_tokens cache_write_tokens output_tokens < "$_uf"
+    rm -f "$_uf" 2>/dev/null || true
+    case "${input_tokens}${cache_read_tokens}${cache_write_tokens}${output_tokens}" in
+      ''|*[!0-9]*) _have_usage=0 ;;
+      *)           _have_usage=1 ;;
+    esac
+  elif [ "${LAST_USAGE_OK:-0}" = "1" ]; then
+    input_tokens="${LAST_INPUT_TOKENS:-0}"
+    cache_read_tokens="${LAST_CACHE_READ_TOKENS:-0}"
+    cache_write_tokens="${LAST_CACHE_WRITE_TOKENS:-0}"
+    output_tokens="${LAST_OUTPUT_TOKENS:-0}"
+    _have_usage=1
+  fi
+
+  if [ "$_have_usage" -ne 1 ]; then
+    input_tokens=$(estimate_tokens_from_file "$prompt_file")
+    output_tokens=$(estimate_tokens_from_file "$output_file")
+    cache_read_tokens=0
+    cache_write_tokens=0
+  fi
+
   emit_token_record "$workflow" "$tier" "$engine" "$model" \
-    "$input_tokens" 0 "$output_tokens" "$context" || true
+    "$input_tokens" "$cache_read_tokens" "$output_tokens" "$context" "$cache_write_tokens" || true
 }
 
 # is_transient_failure <exit_code>
