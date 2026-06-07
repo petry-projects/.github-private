@@ -49,18 +49,38 @@ For each open review thread:
 1. Read the relevant file(s) using Read/Grep/Glob tools
 2. Understand the reviewer's concern
 3. Apply the appropriate fix using Edit/Write tools
-4. **Resolve the thread** — do this for every thread you fix *and* for every thread with `isOutdated: true` (the code it referenced no longer exists)
+4. **Reply to the thread with the specific fix** — see below
+5. **Resolve the thread** — do this for every thread you fix *and* for every thread with `isOutdated: true` (the code it referenced no longer exists)
+
+#### Replying to a thread
+
+For every thread you fix, post a reply to that thread that states **specifically what you changed** — name the file(s)/function(s) you touched and how the change addresses the concern (one or two concrete sentences; never just "done" or "fixed"). This gives the reviewer a precise record before the thread is resolved. Pass the body as a GraphQL variable so quotes and newlines in your message are safe:
+
+```bash
+# Replace THREAD_NODE_ID with the id value from the thread JSON.
+gh api graphql \
+  -f query='mutation($tid: ID!, $body: String!) { addPullRequestReviewThreadReply(input: {pullRequestReviewThreadId: $tid, body: $body}) { comment { id } } }' \
+  -f tid="THREAD_NODE_ID" \
+  -f body="Fixed in scripts/lib/auto-merge.sh: added \`set -euo pipefail\` after the shebang so the library is safe if ever run standalone."
+```
+
+For a thread that is `isOutdated: true` with no code change, a reply is optional — a one-line note that the referenced code no longer exists is helpful but not required.
 
 #### Resolving a thread
 
-After fixing (or confirming outdated), resolve it using the thread `id` from the JSON above. Only resolve threads whose `author.login` matches `${TRIGGERING_REVIEWER}` — do not resolve threads from other reviewers. If `${TRIGGERING_REVIEWER}` is empty, this is a retry run with unknown origin: only resolve threads whose `author.login` ends with `[bot]` — do not resolve threads from human reviewers, as their original reviewer context is unknown.
+After replying, resolve the thread using its `id` from the JSON above:
 
 ```bash
 # Replace THREAD_NODE_ID with the id value from the thread JSON
 gh api graphql -f query='mutation { resolveReviewThread(input: {threadId: "THREAD_NODE_ID"}) { thread { isResolved } } }'
 ```
 
-Resolving signals to the reviewer that the issue is handled and gives them a clean slate to re-review if anything remains.
+Resolve a thread when **you actually fixed it** (or it is `isOutdated: true`), per this scope:
+
+- **Bot threads** (`author.login` ends with `[bot]`): resolve every one you fixed, **regardless of which reviewer triggered this run**. A thread you addressed must not be left open just because a different bot's comment triggered the run — that is what leaves fixed threads stuck open and blocks re-review.
+- **Human threads**: resolve only when `author.login` matches `${TRIGGERING_REVIEWER}`. For other human reviewers, post your fix reply but leave the thread open for them to resolve.
+
+Never resolve a thread you did not fix (except `isOutdated: true` ones). Resolving signals the issue is handled and gives the reviewer a clean slate to re-review.
 
 ### Phase 2 — Test Verification
 
@@ -79,13 +99,14 @@ Read every changed line as if you are the reviewer seeing the response:
 2. Ask: does each change directly and completely address its thread?
 3. Ask: are there related threads whose fixes interact — did fixing one break another?
 4. Ask: would the reviewer be satisfied, or is there still an issue?
-5. Fix anything found, then re-run Phase 2
+5. Ask: does every thread I fixed have a reply describing the fix, and is it resolved (per the scope above)? Reply/resolve any I missed.
+6. Fix anything found, then re-run Phase 2
 
 ## Constraints
 
 - Address each open thread individually
-- Resolve every thread you fix; resolve outdated threads without a corresponding code change
-- Only resolve threads whose `author.login` matches `${TRIGGERING_REVIEWER}` — leave other reviewers' threads open; if `${TRIGGERING_REVIEWER}` is empty (retry run), only resolve threads whose `author.login` ends with `[bot]` — leave human reviewers' threads open
+- For every thread you fix, post a reply naming the specific change before resolving — never resolve silently
+- Resolve every bot thread you fix (regardless of which reviewer triggered this run) and outdated threads; for human threads, resolve only the triggering reviewer's and leave other humans' open (replied)
 - Do not resolve threads you are skipping due to ambiguity — leave those open and note them in your output
 - Do not make changes beyond what the review threads request, except that fixing Tier-1 blockers (failure/timed_out/cancelled/action_required/stale/startup_failure CI checks and CHANGES_REQUESTED reviews) is always in-scope
 - If a review thread is ambiguous, apply the most conservative interpretation
@@ -97,7 +118,7 @@ After applying fixes, output a summary:
 
 ```
 Addressed N threads:
-- Thread <id>: <brief description of fix> [resolved]
+- Thread <id>: <brief description of fix> [replied + resolved]
 - Thread <id>: outdated — resolved without change
 - Thread <id>: skipped — <reason> [left open]
 Test verification: <pass/fail — paste output if relevant>

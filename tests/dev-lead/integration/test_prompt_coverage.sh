@@ -76,6 +76,31 @@ for prompt in "${EXPECTED_PROMPTS[@]}"; do
   fi
 done
 
+# ── 4. review prompts must reply-with-specifics, then resolve ────────────────
+# Regression for issue #452: dev-lead resolved (or silently left) review threads
+# without replying what it fixed, and bot threads fixed during another
+# reviewer's run stayed unresolved. Each review prompt must instruct the engine
+# to post a thread reply (addPullRequestReviewThreadReply) describing the
+# specific change, then resolve the thread (resolveReviewThread).
+
+echo ""
+echo "Checking review prompts reply-with-specifics then resolve..."
+REVIEW_PROMPTS=("fix-reviews.md" "review-changes.md" "fix-bot-comment.md")
+for prompt in "${REVIEW_PROMPTS[@]}"; do
+  path="$PROMPTS_DIR/$prompt"
+  [ -f "$path" ] || { echo "  FAIL: $prompt — missing"; FAILED=1; continue; }
+  missing=""
+  grep -q "addPullRequestReviewThreadReply" "$path" || missing="$missing reply-mutation"
+  grep -q "resolveReviewThread"             "$path" || missing="$missing resolve-mutation"
+  grep -qiE "specific(ally)?" "$path"               || missing="$missing specific-details"
+  if [ -n "$missing" ]; then
+    echo "  FAIL: $prompt — missing:$missing"
+    FAILED=1
+  else
+    echo "  ok: $prompt (replies with specifics, then resolves)"
+  fi
+done
+
 # ── result ────────────────────────────────────────────────────────────────────
 
 echo ""
