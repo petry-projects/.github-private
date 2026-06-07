@@ -246,10 +246,11 @@ teardown() {
   [ "$LAST_OUTPUT_TOKENS" = "85" ]   # 60 candidates + 25 thoughts
 }
 
-@test "_engine_usage_sidecar: path includes shell PID to isolate parallel invocations" {
-  # $$ is constant across pipeline subshells (left-hand side inherits parent PID)
-  # so both the writing subshell and the reading parent agree on the same path,
-  # while separate background processes each get their own distinct $$.
+@test "_engine_usage_sidecar: fallback path is \$\$-keyed when no per-call key set" {
+  # Without a per-call _ENGINE_USAGE_OUT the sidecar falls back to a $$-keyed path.
+  # NOTE: $$ does NOT isolate concurrent background jobs (they share the parent PID)
+  # — per-call isolation comes from _ENGINE_USAGE_OUT (see the concurrency test).
+  unset _ENGINE_USAGE_OUT
   local sidecar
   sidecar="$(_engine_usage_sidecar)"
   [ -n "$sidecar" ]
@@ -319,4 +320,54 @@ line two'
   export TOKEN_LOG_FILE="/proc/nonexistent-readonly-path/token.jsonl"
   run emit_token_record "pr-review" "triage" "claude" "haiku" 100 0 50 ""
   [ "$status" -eq 0 ]
+}
+
+# ── usage sidecar keying (concurrency safety) ─────────────────────────────────
+
+@test "_engine_usage_sidecar: uses the exported per-call key when set" {
+  export _ENGINE_USAGE_OUT="$TOKEN_LOG_FILE.callX.usage"
+  run _engine_usage_sidecar
+  unset _ENGINE_USAGE_OUT
+  [ "$output" = "$TOKEN_LOG_FILE.callX.usage" ]
+}
+
+@test "_engine_usage_sidecar: set-but-empty key falls back to \$\$ (mktemp-failure state)" {
+  # run_* clears _ENGINE_USAGE_OUT before mktemp; if mktemp fails the key is empty/
+  # unset and MUST fall back rather than reuse a prior/inherited key.
+  export _ENGINE_USAGE_OUT=""
+  run _engine_usage_sidecar
+  unset _ENGINE_USAGE_OUT
+  [ "$output" = "$TOKEN_LOG_FILE.last-usage.$$" ]
+}
+
+@test "_engine_usage_sidecar: empty when TOKEN_LOG_FILE is unset" {
+  unset TOKEN_LOG_FILE _ENGINE_USAGE_OUT
+  run _engine_usage_sidecar
+  [ -z "$output" ]
+}
+
+@test "usage sidecar: concurrent calls sharing \$\$ stay isolated (no cross-read)" {
+  # Reproduces the review-one-pr.sh pattern: two engine calls backgrounded at once.
+  # Background subshells share the parent's $$, so a $$-keyed sidecar would collide;
+  # the per-call _ENGINE_USAGE_OUT (unique mktemp path) must keep them isolated.
+  local dir; dir="$(mktemp -d)"
+  printf '%s' '{"result":"a","usage":{"input_tokens":111,"cache_read_input_tokens":1,"cache_creation_input_tokens":2,"output_tokens":11}}' > "$dir/a.json"
+  printf '%s' '{"result":"b","usage":{"input_tokens":222,"cache_read_input_tokens":3,"cache_creation_input_tokens":4,"output_tokens":22}}' > "$dir/b.json"
+  (
+    export _ENGINE_USAGE_OUT="$dir/A.usage"
+    parse_engine_usage claude "$dir/a.json"
+    sleep 0.3   # widen the race window for any colliding writer
+    cut -f1 < "$(_engine_usage_sidecar)" > "$dir/a.out"
+  ) &
+  (
+    export _ENGINE_USAGE_OUT="$dir/B.usage"
+    parse_engine_usage claude "$dir/b.json"
+    sleep 0.3
+    cut -f1 < "$(_engine_usage_sidecar)" > "$dir/b.out"
+  ) &
+  wait
+  local a b; a="$(cat "$dir/a.out")"; b="$(cat "$dir/b.out")"
+  rm -rf "$dir"
+  [ "$a" = "111" ]
+  [ "$b" = "222" ]
 }
