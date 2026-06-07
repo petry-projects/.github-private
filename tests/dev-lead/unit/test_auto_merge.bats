@@ -199,17 +199,17 @@ EOF
 
 # ── restore_auto_merge — HEAD_SHA refresh and commit text replay ──────────────
 
-@test "restore_auto_merge: refreshes HEAD_SHA from current PR head before restoring" {
+@test "restore_auto_merge: preserves original HEAD_SHA for --match-head-commit guard" {
   source "$LIB"
   _AM_NEEDS_RESTORE=1
   PR_STATE="open"
   AM_STATE=""
-  export HEAD_SHA="stale_sha"
-  export HEAD_SHA_API="fresh_sha"
+  export HEAD_SHA="original_sha"
+  export HEAD_SHA_API="newer_sha"
   run restore_auto_merge
   [ "$status" -eq 0 ]
-  grep -q -- "--match-head-commit fresh_sha" "$GH_CALLS"
-  ! grep -q -- "--match-head-commit stale_sha" "$GH_CALLS"
+  grep -q -- "--match-head-commit original_sha" "$GH_CALLS"
+  ! grep -q -- "--match-head-commit newer_sha" "$GH_CALLS"
 }
 
 @test "restore_auto_merge: passes --subject and --body when commit text was captured" {
