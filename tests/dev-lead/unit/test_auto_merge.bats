@@ -284,15 +284,14 @@ EOF
   [[ "$output" == *"merged/closed before hold could be set"* ]]
 }
 
-@test "hold_auto_merge: warns but continues when disable-auto fails and PR is still open" {
+@test "hold_auto_merge: exits 1 (aborts) when disable-auto fails and PR is still open" {
   source "$LIB"
   AM_STATE="squash"
   GH_MERGE_RC=1    # --disable-auto fails
-  PR_STATE="open"  # PR is still open — transient API error
+  PR_STATE="open"  # PR is still open — cannot safely continue with auto-merge enabled
   run hold_auto_merge
-  [ "$status" -eq 0 ]
+  [ "$status" -eq 1 ]
   [[ "$output" == *"could not disable auto-merge"* ]]
-  [[ "$output" != *"exiting cleanly"* ]]
 }
 
 # ── push_with_merge_guard — HEAD SHA refresh after push ───────────────────────

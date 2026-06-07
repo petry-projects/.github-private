@@ -71,7 +71,8 @@ hold_auto_merge() {
       echo "::notice::PR #${PR_NUMBER} is ${merged_state} — merged/closed before hold could be set; exiting cleanly."
       exit 0
     fi
-    echo "::warning::could not disable auto-merge on PR #${PR_NUMBER}"
+    echo "::error::could not disable auto-merge on PR #${PR_NUMBER} — aborting to prevent mid-run merge race" >&2
+    exit 1
   fi
 }
 
