@@ -1,0 +1,45 @@
+{
+  "_test_expected_intent": "skip",
+  "action": "created",
+  "comment": {
+    "id": 2001,
+    "body": "This function has a potential null pointer dereference on line 42.",
+    "path": "src/utils/helpers.js",
+    "line": 42,
+    "user": {
+      "login": "copilot-pull-request-reviewer[bot]",
+      "type": "Bot"
+    }
+  },
+  "pull_request": {
+    "number": 58,
+    "title": "feat: utility functions",
+    "state": "open",
+    "author_association": "OWNER",
+    "head": {
+      "sha": "hhh888iii999",
+      "ref": "feat/utilities",
+      "repo": {
+        "full_name": "petry-projects/.github-private"
+      }
+    },
+    "base": {
+      "ref": "main",
+      "repo": {
+        "full_name": "petry-projects/.github-private"
+      }
+    },
+    "labels": [
+      {
+        "name": "dev-lead:hands-off"
+      }
+    ]
+  },
+  "repository": {
+    "full_name": "petry-projects/.github-private"
+  },
+  "sender": {
+    "login": "copilot-pull-request-reviewer[bot]",
+    "type": "Bot"
+  }
+}
