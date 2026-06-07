@@ -1,6 +1,18 @@
 #!/usr/bin/env bash
-# Validates that dev-lead workflow files use per-repo serialized concurrency
-# (a single 'dev-lead' group) rather than per-PR or per-issue groups.
+# Validates that dev-lead workflow files use per-issue / per-PR concurrency lanes
+# (dev-lead-issue-<n>, dev-lead-pr-<n>) plus a per-SHA ci-relay lane, rather than a
+# single repo-wide 'dev-lead' group.
+#
+# History: #278 collapsed everything into one per-repo 'dev-lead' group so at most
+# one dispatch ran at a time — needed only because the agent checked out PR branches
+# IN PLACE, so concurrent runs corrupted each other's working tree. That serialization
+# then starved issue pickups: PR follow-up traffic (reviews/comments/ci-relay) held the
+# single slot and queued issue-labeled runs were superseded and cancelled before they
+# could open a PR (petry-projects/.github#402).
+#
+# #449 (#448) removed the root hazard by checking out each PR branch in an isolated
+# git worktree, so different issues/PRs can now run in parallel safely. #450 restored
+# per-issue / per-PR lanes. This test guards that design against regression.
 set -euo pipefail
 
 FAIL=0
@@ -25,20 +37,28 @@ check_present() {
   fi
 }
 
-WORKFLOW=".github/workflows/dev-lead.yml"
+# Both the inline workflow and the reusable (source of truth for all consumer
+# stubs) must carry the per-lane routing.
+for WORKFLOW in \
+  ".github/workflows/dev-lead.yml" \
+  ".github/workflows/dev-lead-reusable.yml"; do
+  echo "── $WORKFLOW ──"
 
-# Must not have per-PR or per-issue group keys (those allowed parallel runs)
-check_absent "$WORKFLOW" "dev-lead-pr-"    "no per-PR group"
-check_absent "$WORKFLOW" "dev-lead-issue-" "no per-issue group"
+  # Per-issue and per-PR lanes must be present so a labeled-issue pickup is never
+  # cancelled by unrelated PR follow-up traffic.
+  check_present "$WORKFLOW" "dev-lead-pr-"    "per-PR lane"
+  check_present "$WORKFLOW" "dev-lead-issue-" "per-issue lane"
 
-# ci-relay must still get its own ephemeral per-SHA slot
-check_present "$WORKFLOW" "dev-lead-ci-relay-" "ci-relay per-SHA group preserved"
+  # ci-relay keeps its own ephemeral per-SHA slot so it fires immediately.
+  check_present "$WORKFLOW" "dev-lead-ci-relay-" "ci-relay per-SHA lane"
 
-# The fallback group must be the bare repo-scoped key
-check_present "$WORKFLOW" "'dev-lead'" "per-repo 'dev-lead' fallback group"
+  # Must NOT collapse back into a single repo-wide group (the #278 regression).
+  check_absent "$WORKFLOW" "'dev-lead'" "no repo-wide 'dev-lead' group"
 
-# cancel-in-progress must be false so queued runs aren't dropped
-check_present "$WORKFLOW" "cancel-in-progress: false" "cancel-in-progress is false"
+  # cancel-in-progress must be false so a queued same-lane run waits for the active
+  # run to finish instead of cancelling it (in-flight pickups always complete).
+  check_present "$WORKFLOW" "cancel-in-progress: false" "cancel-in-progress is false"
+done
 
 echo ""
 if [ "$FAIL" -eq 0 ]; then
