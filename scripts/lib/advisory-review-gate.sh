@@ -24,6 +24,7 @@ set -euo pipefail
 
 # Define advisory bots we wait for
 # Ordered by typical response time (fastest first)
+# shellcheck disable=SC2034
 declare -A ADVISORY_BOTS=(
   [gemini-code-assist]="Gemini Code Assist (advisory)"
   [copilot-pull-request-reviewer]="Copilot PR Reviewer (advisory)"
@@ -119,7 +120,6 @@ all_bots_submitted() {
 # Main wait logic with proper early-exit conditions
 wait_for_advisory_reviews() {
   local start_time elapsed current_states participating_bots
-  local tier1_reached=false tier2_reached=false
 
   start_time=$(date +%s)
 
@@ -160,7 +160,6 @@ wait_for_advisory_reviews() {
 
     if [ $elapsed -ge $TIER1_WAIT ]; then
       log_info "Tier 1 timeout reached ($TIER1_WAIT seconds)"
-      tier1_reached=true
       break
     fi
 
@@ -199,7 +198,6 @@ wait_for_advisory_reviews() {
 
     if [ $elapsed -ge $TIER2_WAIT ]; then
       log_info "Tier 2 timeout reached ($TIER2_WAIT seconds)"
-      tier2_reached=true
       break
     fi
 
