@@ -22,6 +22,11 @@ MAX_FAIL_ATTEMPTS="${MAX_FAIL_ATTEMPTS:-2}"
 MARKER_PREFIX="<!-- dev-lead-fix-ci sha="
 EXHAUSTION_MARKER="<!-- dev-lead-fix-ci pr=${PR_NUMBER} status=exhausted -->"
 export PROMPTS_DIR="${PROMPTS_DIR:-prompts/dev-lead}"
+# Pin PROMPTS_DIR to an absolute path now, while CWD still points at the agent
+# checkout — checkout_pr_in_worktree cds into the PR worktree, after which a
+# relative PROMPTS_DIR would resolve against the PR branch (issue #448).
+PROMPTS_DIR="$(resolve_abs "$PROMPTS_DIR")"
+export PROMPTS_DIR
 
 # check_idempotency: returns 0 (skip) if this exact SHA was already TERMINALLY
 # handled, OR if a PR-level exhaustion marker exists (blocks all future SHAs).
@@ -212,8 +217,9 @@ main() {
     exit 0
   fi
 
-  # Checkout the PR branch for modification
-  gh pr checkout "$PR_NUMBER" --repo "$REPO"
+  # Checkout the PR branch for modification, in an isolated worktree so the
+  # branch switch never overwrites the agent's own prompts/scripts (issue #448).
+  checkout_pr_in_worktree "$PR_NUMBER" "$REPO"
 
   local cycle=1
   while [ "$cycle" -le "$MAX_CI_CYCLES" ]; do
