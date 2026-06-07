@@ -52,6 +52,11 @@ _fmt_int() {
 # Emits a JSON array of {workflow,tier,model,calls,input,cache,output,et}, ET-desc.
 aggregate_by_workflow() {
   local dir="$1"
+  local files=("$dir"/*.jsonl)
+  if [ ! -e "${files[0]}" ]; then
+    echo "[]"
+    return 0
+  fi
   jq -s '
     map(select(type == "object"))
     | group_by((.workflow // "unknown") + "|" + (.tier // "-") + "|" + (.model // "-"))
@@ -66,13 +71,18 @@ aggregate_by_workflow() {
         et:       (map(.et // 0)                 | add)
       })
     | sort_by(.et) | reverse
-  ' "$dir"/*.jsonl 2>/dev/null
+  ' "${files[@]}" 2>/dev/null
 }
 
 # aggregate_by_repo <jsonl_dir>
 # Emits a JSON array of {repo,calls,et}, ET-desc. Requires a .repo field per record.
 aggregate_by_repo() {
   local dir="$1"
+  local files=("$dir"/*.jsonl)
+  if [ ! -e "${files[0]}" ]; then
+    echo "[]"
+    return 0
+  fi
   jq -s '
     map(select(type == "object"))
     | group_by(.repo // "unknown")
@@ -82,7 +92,7 @@ aggregate_by_repo() {
         et:    (map(.et // 0) | add)
       })
     | sort_by(.et) | reverse
-  ' "$dir"/*.jsonl 2>/dev/null
+  ' "${files[@]}" 2>/dev/null
 }
 
 # render_token_report <jsonl_dir> <lookback_days> <repo_count> <artifact_count> [generated_at]
@@ -187,8 +197,9 @@ collect_org_jsonl() {
     --jq '.[] | select(.archived == false) | .full_name' 2>/dev/null || true)"
   [ -n "$repos_raw" ] || { echo "0 0"; return 0; }
 
-  local cutoff_epoch repo_count=0 artifact_count=0
-  cutoff_epoch="$(date -u -d "-${LOOKBACK_DAYS} days" +%s)"
+  local cutoff repo_count=0 artifact_count=0
+  cutoff="$(date -u -d "${LOOKBACK_DAYS} days ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+    || date -u -v-"${LOOKBACK_DAYS}"d +%Y-%m-%dT%H:%M:%SZ)"
 
   local workdir; workdir="$(mktemp -d)"
   # shellcheck disable=SC2064
@@ -200,16 +211,15 @@ collect_org_jsonl() {
     repo_count=$((repo_count + 1))
 
     local arts
-    arts="$(gh api "repos/${repo}/actions/artifacts" --paginate \
-      --jq '.artifacts[] | select(.name | startswith("token-usage-")) | select(.expired == false) | [.id, .created_at] | @tsv' \
-      2>/dev/null || true)"
+    arts="$(gh api "repos/${repo}/actions/artifacts" --paginate 2>/dev/null \
+      | jq -r --arg cutoff "$cutoff" \
+      '.artifacts[] | select(.name | startswith("token-usage-")) | select(.expired == false) | select(.created_at >= $cutoff) | [.id, .created_at] | @tsv' \
+      || true)"
     [ -n "$arts" ] || continue
 
-    local id created_at created_epoch
+    local id created_at
     while IFS=$'\t' read -r id created_at; do
       [ -n "$id" ] || continue
-      created_epoch="$(date -u -d "$created_at" +%s 2>/dev/null || echo 0)"
-      [ "$created_epoch" -ge "$cutoff_epoch" ] || continue
 
       local zip="$workdir/a-$id.zip" ex="$workdir/x-$id"
       mkdir -p "$ex"
