@@ -388,11 +388,18 @@ ADVISORY_REVIEW_BODIES=$(gh pr view "$PR_URL" --json reviews --jq "
   | group_by(.author.login) | map(sort_by(.submittedAt) | last)
   | .[] | \"--- \(.author.login) (\(.state), \(.submittedAt)) ---\n\(.body[0:800])\"
 " 2>/dev/null || true)
-ADVISORY_INLINE_COMMENTS=$(gh api "repos/$_owner_repo/pulls/$_pr_num/comments" --paginate --jq "
-  [.[] | select([.user.login] | inside($_adv_bots))]
-  | sort_by(.created_at) | reverse | .[0:15] | .[]
-  | \"--- \(.user.login) @ \(.path):\(.line // .original_line) (\(.created_at)) ---\n\(.body[0:600])\"
-" 2>/dev/null || true)
+# REST user.login carries a "[bot]" suffix (e.g. "gemini-code-assist[bot]"),
+# unlike the GraphQL-backed `gh pr view` — strip it before matching. --slurp
+# is required with --paginate: pages arrive as separate JSON arrays, and
+# without slurping the sort/limit would apply per page, not across all pages.
+# gh rejects --slurp together with --jq, so pipe to external jq instead.
+ADVISORY_INLINE_COMMENTS=$(gh api "repos/$_owner_repo/pulls/$_pr_num/comments" --paginate --slurp 2>/dev/null \
+  | jq -r --argjson bots "$_adv_bots" '
+      add
+      | map(select([.user.login | sub("\\[bot\\]$"; "")] | inside($bots)))
+      | sort_by(.created_at) | reverse | .[0:15] | .[]
+      | "--- \(.user.login) @ \(.path):\(.line // .original_line) (\(.created_at)) ---\n\(.body[0:600])"
+    ' 2>/dev/null || true)
 ADVISORY_BOT_FEEDBACK=$(printf '%s\n%s' "$ADVISORY_REVIEW_BODIES" "$ADVISORY_INLINE_COMMENTS")
 # Cap total size so huge bot histories can't blow up the prompt.
 ADVISORY_BOT_FEEDBACK="${ADVISORY_BOT_FEEDBACK:0:8000}"
