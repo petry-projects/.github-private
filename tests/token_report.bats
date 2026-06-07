@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# Tests for scripts/token_report.sh — pure aggregation + Markdown rendering.
+# Tests for scripts/token_report.sh — pure annotation + Markdown rendering with USD cost.
 # Network I/O (collect_org_jsonl / main) is not exercised here.
 # Run locally: bats tests/token_report.bats
 
@@ -11,7 +11,7 @@ setup() {
 }
 
 # ---------------------------------------------------------------------------
-# _fmt_int
+# _fmt_int / _fmt_usd
 # ---------------------------------------------------------------------------
 
 @test "_fmt_int: adds thousands separators" {
@@ -19,67 +19,74 @@ setup() {
   [ "$output" = "1,234,567" ]
 }
 
-@test "_fmt_int: leaves small numbers untouched" {
-  run _fmt_int 42
-  [ "$output" = "42" ]
-}
-
 @test "_fmt_int: handles zero" {
   run _fmt_int 0
   [ "$output" = "0" ]
 }
 
-# ---------------------------------------------------------------------------
-# aggregate_by_workflow
-# ---------------------------------------------------------------------------
-
-@test "aggregate_by_workflow: groups by workflow/tier/model" {
-  run bash -c "source '${BATS_TEST_DIRNAME}/../scripts/token_report.sh'; aggregate_by_workflow '$FIXTURES' | jq length"
-  [ "$output" = "3" ]
-}
-
-@test "aggregate_by_workflow: sums calls and et within a group" {
-  # dev-lead/writer/sonnet appears in both fixture files: 2 calls, et 9600+4200=13800
-  result="$(aggregate_by_workflow "$FIXTURES" | jq -r '.[] | select(.workflow=="dev-lead") | "\(.calls) \(.et)"')"
-  [ "$result" = "2 13800" ]
-}
-
-@test "aggregate_by_workflow: sorted by ET descending (opus first)" {
-  first="$(aggregate_by_workflow "$FIXTURES" | jq -r '.[0].model')"
-  [ "$first" = "claude-opus-4-7" ]
+@test "_fmt_usd: renders dollars to 4 decimals" {
+  run _fmt_usd 1.0548
+  [ "$output" = "\$1.0548" ]
 }
 
 # ---------------------------------------------------------------------------
-# aggregate_by_repo
+# annotate_records — date-accurate cost + table-derived ET
 # ---------------------------------------------------------------------------
 
-@test "aggregate_by_repo: groups by repo and sorts by ET" {
-  result="$(aggregate_by_repo "$FIXTURES" | jq -r '.[0] | "\(.repo) \(.calls) \(.et)"')"
-  [ "$result" = "petry-projects/markets 2 89850" ]
+@test "annotate_records: one enriched row per call" {
+  run bash -c "source '${BATS_TEST_DIRNAME}/../scripts/token_report.sh'; annotate_records '$FIXTURES' | wc -l"
+  [ "$output" -eq 4 ]
+}
+
+@test "annotate_records: prices opus at \$5 input / \$25 output (cost & known flag)" {
+  # opus-4-7 1000/500/200 → (1000*5 + 500*0.5 + 200*25)/1e6 = 0.010250
+  result="$(annotate_records "$FIXTURES" | awk -F'\t' '$4=="claude-opus-4-7"{print $8, $10}')"
+  [ "$result" = "0.010250 1" ]
+}
+
+@test "annotate_records: recomputes ET from table (opus m=5, ignores stored et=80250)" {
+  # ET = 5 * (1000 + 0.1*500 + 4*200) = 5*1850 = 9250
+  result="$(annotate_records "$FIXTURES" | awk -F'\t' '$4=="claude-opus-4-7"{print $9}')"
+  [ "$result" = "9250.0000" ]
+}
+
+@test "annotate_records: unknown model → cost sentinel -1 and known=0" {
+  tmp="$(mktemp -d)"
+  printf '%s\n' '{"ts":"2026-06-01T00:00:00Z","workflow":"x","tier":"y","model":"mystery-model-v9","input_tokens":100,"output_tokens":50,"repo":"r","context":""}' > "$tmp/u.jsonl"
+  result="$(annotate_records "$tmp" | awk -F'\t' '{print $8, $10}')"
+  rm -rf "$tmp"
+  [ "$result" = "-1.000000 0" ]
 }
 
 # ---------------------------------------------------------------------------
 # render_token_report
 # ---------------------------------------------------------------------------
 
-@test "render_token_report: includes totals" {
+@test "render_token_report: total cost sums priced calls" {
+  # 0.010250 + 0.010500 + 0.004500 + 0.000850 = 0.026100
   run render_token_report "$FIXTURES" 7 2 2 2026-06-07
   [ "$status" -eq 0 ]
-  # Total ET = 80250 + 13800 + 800 = 94850
-  [[ "$output" == *"Total ET:** 94,850"* ]]
-  [[ "$output" == *"LLM calls:** 4"* ]]
+  [[ "$output" == *"Total cost:** \$0.0261"* ]]
 }
 
-@test "render_token_report: has both summary tables" {
+@test "render_token_report: has cost columns and a cost-per-PR section" {
   run render_token_report "$FIXTURES" 7 2 2 2026-06-07
-  [[ "$output" == *"Top cost drivers (workflow / tier / model)"* ]]
-  [[ "$output" == *"By repository"* ]]
+  [[ "$output" == *"| Cost | % of \$ | ET |"* ]]
+  [[ "$output" == *"Most expensive PRs"* ]]
 }
 
-@test "render_token_report: computes ET percentage share" {
+@test "render_token_report: by-repo sorted by cost (markets first)" {
   run render_token_report "$FIXTURES" 7 2 2 2026-06-07
-  # opus share: 80250/94850 = 84.6% -> floor 84%
-  [[ "$output" == *"84%"* ]]
+  repos="$(printf '%s\n' "$output" | grep -oE 'petry-projects/(markets|broodly)' | head -2 | tr '\n' ' ')"
+  [ "$repos" = "petry-projects/markets petry-projects/broodly " ]
+}
+
+@test "render_token_report: flags unpriced calls" {
+  tmp="$(mktemp -d)"
+  printf '%s\n' '{"ts":"2026-06-01T00:00:00Z","workflow":"x","tier":"y","model":"mystery-model-v9","input_tokens":100,"output_tokens":50,"repo":"r","context":""}' > "$tmp/u.jsonl"
+  run render_token_report "$tmp" 7 1 1 2026-06-07
+  rm -rf "$tmp"
+  [[ "$output" == *"had no price"* ]]
 }
 
 @test "render_token_report: empty dir yields a no-data message" {

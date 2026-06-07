@@ -30,10 +30,10 @@ teardown() {
   [ "$output" = "3.0" ]
 }
 
-@test "model_multiplier_for: opus 4.7 returns 15.0" {
+@test "model_multiplier_for: opus 4.7 returns 5.0 (table-derived: \$5 input / \$1 haiku)" {
   run model_multiplier_for "claude-opus-4-7"
   [ "$status" -eq 0 ]
-  [ "$output" = "15.0" ]
+  [ "$output" = "5.0" ]
 }
 
 @test "model_multiplier_for: o4-mini returns 2.0" {
@@ -180,11 +180,11 @@ teardown() {
 }
 
 @test "emit_token_record: et value matches formula for opus" {
-  # m=15.0, I=1000, C=500, O=100 → ET = 15.0*(1000+50+400) = 21750.00
+  # m=5.0 (Opus 4.5+ = \$5 input), I=1000, C=500, O=100 → ET = 5.0*(1000+50+400) = 7250.00
   emit_token_record "pr-review" "audit" "claude" "claude-opus-4-7" 1000 500 100 ""
   local et
   et=$(jq -r '.et' < "$TOKEN_LOG_FILE")
-  [ "$et" = "21750.00" ]
+  [ "$et" = "7250.00" ]
 }
 
 @test "emit_token_record: is a no-op when TOKEN_LOG_FILE is unset" {

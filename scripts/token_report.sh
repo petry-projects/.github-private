@@ -33,6 +33,14 @@ ORG="${ORG:-petry-projects}"
 LOOKBACK_DAYS="${LOOKBACK_DAYS:-7}"
 
 # ---------------------------------------------------------------------------
+# Pricing — load the dated price table so cost + ET share one source of truth.
+# ---------------------------------------------------------------------------
+if [ -f "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/model-pricing.sh" ]; then
+  # shellcheck source=scripts/lib/model-pricing.sh
+  source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/model-pricing.sh"
+fi
+
+# ---------------------------------------------------------------------------
 # Pure rendering helpers (unit-tested)
 # ---------------------------------------------------------------------------
 
@@ -48,123 +56,167 @@ _fmt_int() {
   }'
 }
 
-# aggregate_by_workflow <jsonl_dir>
-# Emits a JSON array of {workflow,tier,model,calls,input,cache,output,et}, ET-desc.
-aggregate_by_workflow() {
-  local dir="$1"
-  local files=("$dir"/*.jsonl)
-  if [ ! -e "${files[0]}" ]; then
-    echo "[]"
-    return 0
-  fi
-  jq -s '
-    map(select(type == "object"))
-    | sort_by((.workflow // "unknown") + "|" + (.tier // "-") + "|" + (.model // "-"))
-    | group_by((.workflow // "unknown") + "|" + (.tier // "-") + "|" + (.model // "-"))
-    | map({
-        workflow: (.[0].workflow // "unknown"),
-        tier:     (.[0].tier // "-"),
-        model:    (.[0].model // "-"),
-        calls:    length,
-        input:    (map(.input_tokens // 0)      | add),
-        cache:    (map(.cache_read_tokens // 0)  | add),
-        output:   (map(.output_tokens // 0)      | add),
-        et:       (map(.et // 0)                 | add)
-      })
-    | sort_by(.et) | reverse
-  ' "${files[@]}" 2>/dev/null
+# _fmt_usd <dollars>
+# Renders a USD amount to 4 decimals (small per-window costs stay legible), e.g. $1.0548.
+_fmt_usd() {
+  awk -v v="${1:-0}" 'BEGIN { printf "$%.4f", v }'
 }
 
-# aggregate_by_repo <jsonl_dir>
-# Emits a JSON array of {repo,calls,et}, ET-desc. Requires a .repo field per record.
-aggregate_by_repo() {
+# annotate_records <jsonl_dir>
+# Joins every record against the dated price table and emits enriched TSV (one row per
+# call), pricing each call at the rate in effect on its OWN timestamp. Columns:
+#   1 repo  2 workflow  3 tier  4 model  5 input  6 cache  7 output
+#   8 cost_usd (-1 when the model price is unknown)  9 et  10 known(1/0)  11 context
+# ET is recomputed here from the table (m = input(model)/input(haiku)), so it can never
+# drift from the dollar figure.
+annotate_records() {
   local dir="$1"
   local files=("$dir"/*.jsonl)
-  if [ ! -e "${files[0]}" ]; then
-    echo "[]"
-    return 0
-  fi
-  jq -s '
-    map(select(type == "object"))
-    | sort_by(.repo // "unknown")
-    | group_by(.repo // "unknown")
-    | map({
-        repo:  (.[0].repo // "unknown"),
-        calls: length,
-        et:    (map(.et // 0) | add)
-      })
-    | sort_by(.et) | reverse
-  ' "${files[@]}" 2>/dev/null
+  [ -e "${files[0]}" ] || return 0   # no JSONL files → no rows
+  jq -r 'select(type == "object") | [
+      (.repo // "unknown"), (.workflow // "unknown"), (.tier // "-"), (.model // "-"),
+      (.input_tokens // 0), (.cache_read_tokens // 0), (.output_tokens // 0),
+      (.ts // "-"), (.context // "")
+    ] | @tsv' "${files[@]}" 2>/dev/null \
+  | awk -F'\t' -v table="${PRICING_TABLE:-}" -v baseline="${ET_BASELINE_MODEL:-claude-haiku-4-5}" '
+      function glob2re(g,   re) {
+        re = g
+        gsub(/[.[\]()^$+{}|\\]/, "\\\\&", re); gsub(/\*/, ".*", re); gsub(/\?/, ".", re)
+        return "^" re "$"
+      }
+      function best_idx(model, d,   i, bs, be, bi) {
+        bs = -1; be = ""; bi = 0
+        for (i = 1; i <= nr; i++)
+          if (model ~ gre[i] && eff[i] <= d)
+            if (spec[i] > bs || (spec[i] == bs && eff[i] > be)) { bs = spec[i]; be = eff[i]; bi = i }
+        return bi
+      }
+      BEGIN {
+        nr = 0
+        if (table != "")
+          while ((getline line < table) > 0) {
+            if (line ~ /^[[:space:]]*#/) continue
+            n = split(line, f, "\t"); if (n < 5) continue
+            nr++; gre[nr] = glob2re(f[1]); eff[nr] = f[2]; tin[nr] = f[3]; tcr[nr] = f[4]; tout[nr] = f[5]
+            lit = f[1]; gsub(/[*?]/, "", lit); spec[nr] = length(lit)
+          }
+      }
+      {
+        repo = $1; wf = $2; tier = $3; model = $4
+        inp = $5 + 0; ca = $6 + 0; out = $7 + 0; d = substr($8, 1, 10); ctx = $9
+        mi = best_idx(model, d)
+        bi = best_idx(baseline, d)
+        bpin = (bi > 0) ? tin[bi] : 0
+        if (mi > 0) {
+          known = 1
+          cost = (inp * tin[mi] + ca * tcr[mi] + out * tout[mi]) / 1000000
+          m = (bpin > 0) ? tin[mi] / bpin : 1.0
+        } else { known = 0; cost = -1; m = 1.0 }
+        et = m * (1.0 * inp + 0.1 * ca + 4.0 * out)
+        printf "%s\t%s\t%s\t%s\t%d\t%d\t%d\t%.6f\t%.4f\t%d\t%s\n",
+          repo, wf, tier, model, inp, ca, out, cost, et, known, ctx
+      }'
 }
 
 # render_token_report <jsonl_dir> <lookback_days> <repo_count> <artifact_count> [generated_at]
-# Writes the full Markdown report to stdout. Pure: no network, only reads <jsonl_dir>.
+# Writes the full Markdown report (with USD cost) to stdout. Pure: no network.
 render_token_report() {
   local dir="$1" lookback="$2" repo_count="$3" artifact_count="$4" generated_at="${5:-}"
 
-  local by_wf by_repo total_et total_calls total_in total_out record_count
-  by_wf="$(aggregate_by_workflow "$dir")"
-  by_repo="$(aggregate_by_repo "$dir")"
-  total_et="$(printf '%s' "$by_wf"   | jq '[.[].et]    | add // 0')"
-  total_calls="$(printf '%s' "$by_wf" | jq '[.[].calls] | add // 0')"
-  total_in="$(printf '%s' "$by_wf"   | jq '[.[].input]  | add // 0')"
-  total_out="$(printf '%s' "$by_wf"  | jq '[.[].output] | add // 0')"
-  record_count="$total_calls"
+  local enriched; enriched="$(mktemp)"
+  annotate_records "$dir" > "$enriched"
+
+  local total_calls
+  total_calls="$(wc -l < "$enriched" | tr -d ' ')"
 
   printf '# 📊 Token Cost Observatory — %s-day Report\n\n' "$lookback"
   if [ -n "$generated_at" ]; then
     printf '_Generated %s · org `%s` · %s repos scanned · %s agent runs · %s LLM calls_\n\n' \
-      "$generated_at" "$ORG" "$repo_count" "$artifact_count" "$(_fmt_int "$record_count")"
+      "$generated_at" "$ORG" "$repo_count" "$artifact_count" "$(_fmt_int "$total_calls")"
   else
     printf '_org `%s` · %s repos scanned · %s agent runs · %s LLM calls_\n\n' \
-      "$ORG" "$repo_count" "$artifact_count" "$(_fmt_int "$record_count")"
+      "$ORG" "$repo_count" "$artifact_count" "$(_fmt_int "$total_calls")"
   fi
 
-  if [ "$(printf '%s' "$by_wf" | jq 'length')" -eq 0 ]; then
+  if [ "$total_calls" -eq 0 ]; then
+    rm -f "$enriched"
     printf 'No token-usage records found in the last %s days.\n' "$lookback"
     return 0
   fi
 
+  # Totals (cost over priced calls; ET over all): et, cost, input, output, unknown
+  local totals total_et total_cost total_in total_out unpriced
+  totals="$(awk -F'\t' '{ et += $9; inp += $5; out += $7; if ($10 == 1) cost += $8; else unk++ }
+    END { printf "%.4f\t%.6f\t%d\t%d\t%d", et, cost, inp, out, unk }' "$enriched")"
+  IFS=$'\t' read -r total_et total_cost total_in total_out unpriced <<< "$totals"
+
+  printf 'Estimated USD cost, priced per `scripts/lib/model-pricing.tsv` at each call'"'"'s date. '
   printf 'Effective Tokens (ET) `= m × (1.0·input + 0.1·cache + 4.0·output)`, '
-  printf 'where `m` is the model cost multiplier (haiku 1× · sonnet 3× · o4-mini/gemini-pro 2× · opus 15×). '
-  printf 'Higher ET ≈ higher cost.\n\n'
+  printf 'where `m` = model input price ÷ haiku input price (haiku 1× · sonnet 3× · opus 5×).\n\n'
 
   printf '## Totals\n\n'
+  printf -- '- **Total cost:** %s\n' "$(_fmt_usd "$total_cost")"
   printf -- '- **Total ET:** %s\n' "$(_fmt_int "$total_et")"
-  printf -- '- **LLM calls:** %s\n' "$(_fmt_int "$total_calls")"
-  printf -- '- **Input tokens:** %s   ·   **Output tokens:** %s\n\n' \
-    "$(_fmt_int "$total_in")" "$(_fmt_int "$total_out")"
+  printf -- '- **LLM calls:** %s   ·   **Input tokens:** %s   ·   **Output tokens:** %s\n' \
+    "$(_fmt_int "$total_calls")" "$(_fmt_int "$total_in")" "$(_fmt_int "$total_out")"
+  if [ "${unpriced:-0}" -gt 0 ]; then
+    printf -- '- ⚠️ **%s call(s) had no price** in the table and are excluded from cost (marked `*`).\n' \
+      "$(_fmt_int "$unpriced")"
+  fi
+  printf '\n'
 
   printf '## Top cost drivers (workflow / tier / model)\n\n'
-  printf '| Workflow | Tier | Model | Calls | Input | Cache | Output | Total ET | %% of ET |\n'
-  printf '|---|---|---|---:|---:|---:|---:|---:|---:|\n'
-  printf '%s' "$by_wf" | jq -r --argjson tot "$total_et" '
-    .[] | [
-      .workflow, .tier, .model, (.calls|tostring),
-      (.input|tostring), (.cache|tostring), (.output|tostring),
-      (.et|floor|tostring),
-      (if $tot > 0 then (.et / $tot * 100 | floor | tostring) + "%" else "—" end)
-    ] | @tsv' \
-  | while IFS=$'\t' read -r wf tier model calls input cache output et pct; do
-      printf '| `%s` | %s | `%s` | %s | %s | %s | %s | %s | %s |\n' \
+  printf '| Workflow | Tier | Model | Calls | Input | Cache | Output | Cost | %% of $ | ET |\n'
+  printf '|---|---|---|---:|---:|---:|---:|---:|---:|---:|\n'
+  awk -F'\t' '{ k = $2"\t"$3"\t"$4
+      calls[k]++; inp[k] += $5; ca[k] += $6; out[k] += $7; et[k] += $9
+      if ($10 == 1) cost[k] += $8; else unk[k]++ }
+    END { for (k in calls)
+      printf "%.6f\t%.4f\t%d\t%d\t%d\t%d\t%d\t%s\n",
+        cost[k], et[k], calls[k], inp[k], ca[k], out[k], unk[k], k }' "$enriched" \
+  | sort -t$'\t' -k1,1rn \
+  | while IFS=$'\t' read -r cost et calls input cache output unk wf tier model; do
+      local pct mark=""; [ "$unk" -gt 0 ] && mark="*"
+      pct="$(awk -v c="$cost" -v t="$total_cost" 'BEGIN { printf "%d%%", (t > 0 ? c / t * 100 : 0) }')"
+      printf '| `%s` | %s | `%s` | %s | %s | %s | %s | %s%s | %s | %s |\n' \
         "$wf" "$tier" "$model" "$(_fmt_int "$calls")" "$(_fmt_int "$input")" \
-        "$(_fmt_int "$cache")" "$(_fmt_int "$output")" "$(_fmt_int "$et")" "$pct"
+        "$(_fmt_int "$cache")" "$(_fmt_int "$output")" "$(_fmt_usd "$cost")" "$mark" "$pct" "$(_fmt_int "$et")"
     done
   printf '\n'
 
   printf '## By repository\n\n'
-  printf '| Repository | Calls | Total ET | %% of ET |\n'
-  printf '|---|---:|---:|---:|\n'
-  printf '%s' "$by_repo" | jq -r --argjson tot "$total_et" '
-    .[] | [
-      .repo, (.calls|tostring), (.et|floor|tostring),
-      (if $tot > 0 then (.et / $tot * 100 | floor | tostring) + "%" else "—" end)
-    ] | @tsv' \
-  | while IFS=$'\t' read -r repo calls et pct; do
-      printf '| `%s` | %s | %s | %s |\n' \
-        "$repo" "$(_fmt_int "$calls")" "$(_fmt_int "$et")" "$pct"
+  printf '| Repository | Calls | Cost | %% of $ | ET |\n'
+  printf '|---|---:|---:|---:|---:|\n'
+  awk -F'\t' '{ k = $1
+      calls[k]++; et[k] += $9; if ($10 == 1) cost[k] += $8; else unk[k]++ }
+    END { for (k in calls)
+      printf "%.6f\t%.4f\t%d\t%d\t%s\n", cost[k], et[k], calls[k], unk[k], k }' "$enriched" \
+  | sort -t$'\t' -k1,1rn \
+  | while IFS=$'\t' read -r cost et calls unk repo; do
+      local pct mark=""; [ "$unk" -gt 0 ] && mark="*"
+      pct="$(awk -v c="$cost" -v t="$total_cost" 'BEGIN { printf "%d%%", (t > 0 ? c / t * 100 : 0) }')"
+      printf '| `%s` | %s | %s%s | %s | %s |\n' \
+        "$repo" "$(_fmt_int "$calls")" "$(_fmt_usd "$cost")" "$mark" "$pct" "$(_fmt_int "$et")"
     done
   printf '\n'
+
+  # Cost-per-PR — each record carries its PR URL in context; surface the priciest PRs.
+  local pr_rows
+  pr_rows="$(awk -F'\t' '$11 ~ /\/pull\// { k = $11
+      calls[k]++; if ($10 == 1) cost[k] += $8 }
+    END { for (k in calls) printf "%.6f\t%d\t%s\n", cost[k], calls[k], k }' "$enriched" \
+    | sort -t$'\t' -k1,1rn | head -10)"
+  if [ -n "$pr_rows" ]; then
+    printf '## Most expensive PRs (top 10)\n\n'
+    printf '| PR | Calls | Cost |\n|---|---:|---:|\n'
+    while IFS=$'\t' read -r cost calls pr; do
+      [ -n "$pr" ] || continue
+      printf '| %s | %s | %s |\n' "$pr" "$(_fmt_int "$calls")" "$(_fmt_usd "$cost")"
+    done <<< "$pr_rows"
+    printf '\n'
+  fi
+
+  rm -f "$enriched"
 }
 
 # ---------------------------------------------------------------------------

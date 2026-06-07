@@ -19,15 +19,28 @@ set -euo pipefail
 #
 # All functions are safe to call even when TOKEN_LOG_FILE is unset or unwritable.
 
+# Load the dated price table so ET multipliers derive from the same source as USD cost
+# (and can never drift apart). Best-effort: if the lib is absent, model_multiplier_for
+# falls back to a static table so this file stays self-contained.
+if [ -f "$(dirname "${BASH_SOURCE[0]}")/model-pricing.sh" ]; then
+  # shellcheck source=scripts/lib/model-pricing.sh
+  source "$(dirname "${BASH_SOURCE[0]}")/model-pricing.sh"
+fi
+
 # model_multiplier_for <model_name>
-# Returns a float cost multiplier relative to claude-haiku-4-5 = 1.0.
-# Prints 1.0 for unknown models (safe default — never fails).
+# Returns a float cost multiplier relative to claude-haiku-4-5 = 1.0, derived from
+# model-pricing.tsv at today's rate. Prints 1.0 for unknown models (safe default).
 model_multiplier_for() {
   local model="$1"
+  if declare -f et_multiplier_for >/dev/null 2>&1; then
+    et_multiplier_for "$model"
+    return
+  fi
+  # Fallback static table (used only if model-pricing.sh failed to load).
   case "$model" in
     *haiku*)                    echo "1.0" ;;
     *sonnet*)                   echo "3.0" ;;
-    *opus*)                     echo "15.0" ;;
+    *opus*)                     echo "5.0" ;;
     o4-mini | *o4-mini*)        echo "2.0" ;;
     *gemini*flash*)             echo "0.5" ;;
     *gemini*pro*)               echo "2.0" ;;

@@ -1,0 +1,42 @@
+# model-pricing.tsv — single source of truth for LLM token prices (USD per 1M tokens).
+#
+# Consumed by scripts/lib/model-pricing.sh (price_for / cost_usd / et_multiplier_for).
+# Every price change is a reviewed PR — prices are DATA, not code.
+#
+# Columns (TAB-separated):
+#   1 model_glob      shell glob matched against the record's model string ('*' wildcard)
+#   2 effective_from  ISO date (UTC) this rate took effect; rows are date-versioned
+#   3 input           USD / MTok for base input tokens
+#   4 cache_read      USD / MTok for cache-read (hit) tokens
+#   5 output          USD / MTok for output tokens
+#
+# SELECTION (deterministic): for a record with model M and timestamp T, pick the row
+# whose glob matches M AND whose effective_from <= T, choosing the MOST SPECIFIC glob
+# (most literal characters); ties break to the LATEST effective_from. So a call is
+# always priced at the rate in effect on the day it ran.
+#
+# PRICE CHANGES: never edit an existing row — APPEND a new row for the same glob with a
+# later effective_from. Old records keep their historical rate; new ones pick up the new
+# rate automatically. Example (Sonnet drops to $2.50 on 2026-09-01):
+#   claude-sonnet-4-*    2026-09-01    2.50    0.25    12.50
+#
+# Cache-write, batch (-50%), fast-mode, data-residency (1.1x) and server-tool surcharges
+# are NOT modelled here — our token records only carry input/cache_read/output.
+#
+# Claude rates verified against https://platform.claude.com/docs/en/docs/about-claude/pricing
+# (2026-06-06). Non-Claude rows are best-effort — verify before trusting (marked VERIFY).
+#
+# model_glob	effective_from	input	cache_read	output
+
+# ── Anthropic Claude (authoritative) ──────────────────────────────────────────
+claude-opus-4-1*	2025-01-01	15.00	1.50	75.00
+claude-opus-4-0*	2025-01-01	15.00	1.50	75.00
+claude-opus-4-*	2025-11-01	5.00	0.50	25.00
+claude-sonnet-4-*	2025-01-01	3.00	0.30	15.00
+claude-haiku-4-5*	2025-10-01	1.00	0.10	5.00
+claude-haiku-3-5*	2024-01-01	0.80	0.08	4.00
+
+# ── Cross-engine (VERIFY — provisional, preserve legacy ET multipliers) ────────
+o4-mini*	2025-01-01	2.00	0.50	8.00
+*gemini*flash*	2025-01-01	0.50	0.05	2.00
+*gemini*pro*	2025-01-01	2.00	0.20	8.00
