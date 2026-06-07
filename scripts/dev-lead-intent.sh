@@ -380,7 +380,7 @@ case "$EVENT_NAME" in
     # skip rather than route with unknown label state.
     _dispatch_labels=""
     if ! _dispatch_labels=$(gh api "repos/${GITHUB_REPOSITORY}/issues/${pr_number}/labels" \
-        --jq '.[].name' 2>/dev/null); then
+        --paginate --jq '.[].name' 2>/dev/null); then
       emit_skip "label-lookup-error"
       exit 0
     fi
