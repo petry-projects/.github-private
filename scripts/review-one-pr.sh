@@ -25,6 +25,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=engine.sh
 source "$SCRIPT_DIR/engine.sh"
+# Cycle-cap helpers: compute_review_cycle, has_escalation_marker (issue #467).
+# shellcheck source=lib/review-cycle.sh
+source "$SCRIPT_DIR/lib/review-cycle.sh"
 
 PR_URL="${1:?usage: review-one-pr.sh <pr-url>}"
 export PR_URL
@@ -40,7 +43,7 @@ echo "==> $PR_URL"
 #                NEUTRAL covers informational checks that don't gate merging.
 #      failing — anything else (FAILURE, ACTION_REQUIRED, TIMED_OUT, CANCELLED,
 #                STALE, STARTUP_FAILURE, or unknown conclusions)
-PR_SNAPSHOT=$(gh pr view "$PR_URL" --json headRefOid,statusCheckRollup,reviewDecision,reviews)
+PR_SNAPSHOT=$(gh pr view "$PR_URL" --json headRefOid,statusCheckRollup,reviewDecision,reviews,labels,comments)
 PR_HEAD_SHA=$(echo "$PR_SNAPSHOT" | jq -r '.headRefOid')
 export PR_HEAD_SHA
 echo "    head SHA: $PR_HEAD_SHA"
@@ -174,38 +177,61 @@ if [ -n "${EXISTING_MARKER_SHA:-}" ]; then
   echo "    re-review: prior marker was $EXISTING_MARKER_SHA, head is $PR_HEAD_SHA"
 fi
 
-# Count how many review cycles we've already done on this PR (number of distinct markers).
-# This prevents infinite review loops (AI-delegation OR cascade-only).
-PR_BODIES=$(
-  gh pr view "$PR_URL" --json reviews,comments \
-    --jq '((.reviews // []) + (.comments // [])) | .[].body | select(. != null)' 2>/dev/null || true
+# Count how many NON-CONVERGING review cycles we've done on this PR.
+# This prevents infinite review loops (AI-delegation OR cascade-only) without
+# punishing PRs that are converging (issue #467): compute_review_cycle counts
+# only non-approval markers newer than the most recent reset event (latest
+# approval marker or latest escalation comment). An approval, or a human
+# re-engaging after escalation, grants a fresh budget of MAX_REVIEW_CYCLES.
+# Reuse the snapshot fetched at the top of the script instead of a second
+# `gh pr view` round-trip (review feedback: saves an API call per PR).
+PR_ITEMS=$(
+  echo "$PR_SNAPSHOT" | jq '
+    ((.reviews  // [] | map({when: .submittedAt, body: .body})) +
+     (.comments // [] | map({when: .createdAt,   body: .body})))
+    | map(select(.body != null))' 2>/dev/null || echo '[]'
 )
-# grep -c always prints a count line (including "0" for no matches) and exits 1
-# when there are no matches. Under `set -o pipefail`, a non-zero exit in the
-# pipe causes the substitution to fail; the previous `|| echo 0` then appended
-# a second "0", yielding the literal string "0\n0" — which broke the integer
-# comparison at the cycle cap below ("integer expression expected"). Use
-# `|| true` so we keep grep's count and don't add a duplicate.
-# `printf '%s\n'` instead of `echo` because PR body content is user-authored
-# and could begin with `-n`/`-e` or contain backslash escapes that some
-# `echo` builtins reinterpret.
-REVIEW_CYCLE=$(printf '%s\n' "$PR_BODIES" | grep -cE '<!-- pr-review-agent v1 sha=[a-f0-9]+' || true)
-REVIEW_CYCLE="${REVIEW_CYCLE:-0}"
+REVIEW_CYCLE=$(compute_review_cycle "$PR_ITEMS")
 export REVIEW_CYCLE
 MAX_CYCLES="${MAX_REVIEW_CYCLES:-3}"
 echo "    review cycle: $REVIEW_CYCLE (max: $MAX_CYCLES)"
 
-# Cycle cap: once we've reviewed this PR MAX_REVIEW_CYCLES times without it
-# merging, stop running the cascade and escalate to a human. We post a single
-# escalation comment marked with `<!-- pr-review-agent escalation -->` so
-# subsequent runs detect the marker and no-op without spamming.
-if printf '%s\n' "$PR_BODIES" | grep -qE '<!-- pr-review-agent escalation -->'; then
-  echo "    noop: human-escalation marker present — cascade already capped"
-  echo "{\"pr\":\"$PR_URL\",\"sha\":\"$PR_HEAD_SHA\",\"decision\":\"noop\",\"reason\":\"human-escalated\"}"
-  exit 100
+# Escalation handling (issue #467). Once a PR is escalated to a human, the
+# cascade pauses — but not unconditionally:
+#   1. FORCE_REVIEW=true (mention-triggered) always proceeds. An explicit
+#      human request IS the human-in-the-loop the cap exists to obtain; we
+#      also drop the needs-human-review label so the cascade stays engaged
+#      on subsequent scheduled runs.
+#   2. Otherwise we pause only while the `needs-human-review` label is still
+#      present. Removing the label re-engages the cascade exactly as the
+#      escalation comment promises (previously the label was never consulted,
+#      so a capped PR was permanently un-reviewable).
+# Markers older than the escalation comment don't count toward the next cap
+# (see compute_review_cycle), so re-engagement starts with a fresh budget
+# instead of immediately re-escalating.
+if has_escalation_marker "$PR_ITEMS"; then
+  HAS_HUMAN_LABEL=$(echo "$PR_SNAPSHOT" | jq -r '[.labels // [] | .[].name] | any(. == "needs-human-review")')
+  if [ "${FORCE_REVIEW:-false}" = "true" ]; then
+    echo "    force-review: escalation marker present, but FORCE_REVIEW=true — re-engaging cascade"
+    if [ "${DRY_RUN:-false}" != "true" ]; then
+      gh pr edit "$PR_URL" --remove-label needs-human-review 2>/dev/null || true
+    fi
+  elif [ "$HAS_HUMAN_LABEL" = "true" ]; then
+    echo "    noop: human-escalation active (needs-human-review label present) — remove the label or mention the bot to re-engage"
+    echo "{\"pr\":\"$PR_URL\",\"sha\":\"$PR_HEAD_SHA\",\"decision\":\"noop\",\"reason\":\"human-escalated\"}"
+    exit 100
+  else
+    echo "    re-engage: escalation marker present but needs-human-review label removed — resuming cascade"
+  fi
 fi
 
-if [ "$REVIEW_CYCLE" -ge "$MAX_CYCLES" ]; then
+# Cycle cap: MAX_REVIEW_CYCLES consecutive non-converging cycles → escalate to
+# a human. We post a single escalation comment marked with
+# `<!-- pr-review-agent escalation -->`; the block above detects it (together
+# with the needs-human-review label) and no-ops without spamming.
+# FORCE_REVIEW bypasses the cap: a mention-triggered run must deliver the
+# review it acknowledged, never silently no-op.
+if [ "${FORCE_REVIEW:-false}" != "true" ] && [ "$REVIEW_CYCLE" -ge "$MAX_CYCLES" ]; then
   echo "    cap: review cycle $REVIEW_CYCLE >= max $MAX_CYCLES — escalating to human"
   if [ "${DRY_RUN:-false}" = "true" ]; then
     echo "    DRY_RUN: would post escalation comment, add label, request reviewer"
@@ -217,9 +243,9 @@ if [ "$REVIEW_CYCLE" -ge "$MAX_CYCLES" ]; then
 
 ## Automated review — human attention needed
 
-This PR has been through $REVIEW_CYCLE automated review cycles (cap: $MAX_CYCLES) without converging on an approval-and-merge state. Further automated review has been paused to avoid infinite loops.
+This PR has been through $REVIEW_CYCLE automated review cycles since the last approval or escalation (cap: $MAX_CYCLES) without converging. Further automated review has been paused to avoid infinite loops.
 
-Please take a look manually, or close this PR if it's no longer needed. Once a human review resolves the situation, remove the \`needs-human-review\` label and the cascade can be re-engaged on the next push.
+Please take a look manually, or close this PR if it's no longer needed. To re-engage the automated cascade with a fresh cycle budget, either remove the \`needs-human-review\` label, or mention the bot (e.g. \`@${BOT_USER:-donpetry-bot} review\`) for an immediate re-review.
 
 _Posted by the ${BOT_USER:-donpetry-bot} PR-review cascade._
 ESCALATION_END
