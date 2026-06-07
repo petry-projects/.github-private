@@ -71,8 +71,8 @@ The gate uses a 3-tier timeout strategy:
 **Target**: Catch remaining stragglers (e.g., slow Codex)
 
 **Latency coverage**:
-- ✓ All bots when they participate
-- ✓ P95 percentile for all bots (including outliers)
+- ✓ All bots at median latency
+- ~ Gemini P95 (348s) and Copilot P95 (444s) are covered; SonarCloud P95 (~26 hours) and Codex P95 (~13 hours) are not — outlier submissions will be caught on subsequent re-trigger
 
 **Action**: If all participating bots have now submitted, proceed.
 

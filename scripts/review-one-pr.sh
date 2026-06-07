@@ -99,11 +99,17 @@ fi
 } || {
   gate_rc=$?
   if [ $gate_rc -eq 1 ]; then
-    # Bots are still reviewing — skip this run, will re-check on next bot review submission
-    # Exit 100 (no-op) prevents workflow from consuming budget while awaiting bots
-    echo "    skip: advisory bots still reviewing (non-blocking, will re-check on bot submission)"
-    echo "{\"pr\":\"$PR_URL\",\"sha\":\"$PR_HEAD_SHA\",\"decision\":\"skip\",\"reason\":\"waiting-for-advisory-bots\"}"
-    exit 100
+    if [ "${FORCE_REVIEW:-false}" = "true" ]; then
+      # FORCE_REVIEW overrides the gate — mention/dispatch-triggered runs must proceed
+      # even when advisory bots haven't submitted yet, so the force-review path works.
+      echo "    force-review: advisory bots not all submitted, but FORCE_REVIEW=true — proceeding"
+    else
+      # Bots are still reviewing — skip this run, will re-check on next bot review submission
+      # Exit 100 (no-op) prevents workflow from consuming budget while awaiting bots
+      echo "    skip: advisory bots still reviewing (non-blocking, will re-check on bot submission)"
+      echo "{\"pr\":\"$PR_URL\",\"sha\":\"$PR_HEAD_SHA\",\"decision\":\"skip\",\"reason\":\"waiting-for-advisory-bots\"}"
+      exit 100
+    fi
   else
     # Unexpected error (gate_rc should only be 0 or 1)
     exit $gate_rc

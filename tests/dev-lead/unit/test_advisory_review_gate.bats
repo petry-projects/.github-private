@@ -102,8 +102,8 @@ teardown() {
   grep -q 'grep -oE' "$SCRIPT_DIR/lib/advisory-review-gate.sh"
 }
 
-@test "Advisory gate: jq query selects latest bot submission (.[−1])" {
-  grep -q '\.\[-1\]' "$SCRIPT_DIR/lib/advisory-review-gate.sh"
+@test "Advisory gate: jq query selects latest bot submission (sort_by time)" {
+  grep -q 'sort_by(.time)' "$SCRIPT_DIR/lib/advisory-review-gate.sh"
 }
 
 @test "Advisory gate: BASH_SOURCE check prevents source-time execution" {

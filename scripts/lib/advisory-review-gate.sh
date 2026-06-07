@@ -70,12 +70,12 @@ get_advisory_bot_states() {
   gh pr view "$PR_URL" --json reviews,comments | jq -r '
     # Collect all bot submissions with their state
     (
-      [.reviews[] | select(.author.login | IN("gemini-code-assist", "copilot-pull-request-reviewer", "sonarqubecloud", "chatgpt-codex-connector")) | {bot: .author.login, state: .state, time: .submittedAt}] +
-      [.comments[] | select(.author.login | IN("gemini-code-assist", "copilot-pull-request-reviewer", "sonarqubecloud", "chatgpt-codex-connector")) | {bot: .author.login, state: "COMMENTED", time: .createdAt}]
+      [(.reviews // [])[] | select(.author.login | IN("gemini-code-assist", "copilot-pull-request-reviewer", "sonarqubecloud", "chatgpt-codex-connector")) | {bot: .author.login, state: .state, time: .submittedAt}] +
+      [(.comments // [])[] | select(.author.login | IN("gemini-code-assist", "copilot-pull-request-reviewer", "sonarqubecloud", "chatgpt-codex-connector")) | {bot: .author.login, state: "COMMENTED", time: .createdAt}]
     ) |
-    # Group by bot (keep latest submission per bot)
+    # Group by bot, sort by time within each group, keep latest submission per bot
     group_by(.bot) |
-    map({bot: .[0].bot, state: .[-1].state, time: .[-1].time, count: length}) |
+    map(sort_by(.time) | last | {bot: .bot, state: .state, time: .time}) |
     sort_by(.bot) |
     .[]
   '
