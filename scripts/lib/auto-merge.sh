@@ -129,27 +129,6 @@ push_with_merge_guard() {
     _AM_HEAD_SHA=$(git rev-parse HEAD 2>/dev/null || true)
     return 0
   fi
-
-  # A non-fast-forward rejection while the local branch has diverged from its
-  # upstream means the engine rewrote history — e.g. it resolved a rebase under
-  # an intent (on-mention, review-changes) whose plain push can never publish
-  # the rewritten branch. Retry once with --force-with-lease, which still aborts
-  # if the remote ref advanced under us (the lease = our remote-tracking ref, so
-  # a concurrent push by someone else is never clobbered). This mirrors the
-  # dedicated rebase intent's own force-push (prompts/dev-lead/rebase.md).
-  local upstream
-  upstream=$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)
-  if grep -qiE 'non-fast-forward|\[rejected\]|fetch first' "$errf" \
-     && [ -n "$upstream" ] \
-     && ! git merge-base --is-ancestor "$upstream" HEAD 2>/dev/null; then
-    echo "::notice::push rejected (non-fast-forward) and HEAD has diverged from ${upstream} — history was rewritten (likely a rebase); retrying with --force-with-lease" >&2
-    if git push --force-with-lease "$@" 2>>"$errf"; then
-      rm -f "$errf"
-      _AM_HEAD_SHA=$(git rev-parse HEAD 2>/dev/null || true)
-      return 0
-    fi
-  fi
-
   cat "$errf" >&2
   rm -f "$errf"
 

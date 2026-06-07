@@ -1,119 +1,92 @@
 #!/usr/bin/env bash
-# Validates that dev-lead workflow files use per-issue / per-PR concurrency lanes
-# (dev-lead-issue-<n>, dev-lead-pr-<n>) plus a per-SHA ci-relay lane, rather than a
-# single repo-wide 'dev-lead' group.
+# Validates dev-lead's concurrency model: per-PR and per-issue lanes with
+# cancel-in-progress:false, which serialize runs WITHIN a PR/issue (one active
+# run at a time, the rest queued) while letting unrelated PRs/issues proceed in
+# their own lanes.
 #
-# History: #278 collapsed everything into one per-repo 'dev-lead' group so at most
-# one dispatch ran at a time — needed only because the agent checked out PR branches
-# IN PLACE, so concurrent runs corrupted each other's working tree. That serialization
-# then starved issue pickups: PR follow-up traffic (reviews/comments/ci-relay) held the
-# single slot and queued issue-labeled runs were superseded and cancelled before they
-# could open a PR (petry-projects/.github#402).
+# Same-PR serialization matters: two dev-lead runs editing one PR's branch in
+# parallel would push over each other (and, with auto-merge on, race a merge).
+# A per-PR group + cancel-in-progress:false is what guarantees one-at-a-time.
 #
-# #449 (#448) removed the root hazard by checking out each PR branch in an isolated
-# git worktree, so different issues/PRs can now run in parallel safely. #450 restored
-# per-issue / per-PR lanes. This test guards that design against regression.
+# Regression note: this previously asserted a single repo-wide 'dev-lead' group
+# (#278). #450 replaced that with per-PR/per-issue lanes so issue pickups are no
+# longer cancelled by unrelated PR traffic — this test was updated to match.
 set -euo pipefail
 
 FAIL=0
 
-check_absent() {
+# check_concurrency_field: grep within the concurrency: YAML block only.
+# Extracts lines from '^concurrency:' to the next top-level key, then strips
+# comment-only lines so the assertion cannot be satisfied by comment text
+# (dev-lead-reusable.yml has the routing strings in comments at lines 33-39;
+# without this isolation, deleting the actual concurrency.group entries would
+# leave the test green).
+check_concurrency_field() {
   local file="$1" pattern="$2" label="$3"
-  if grep -qF "$pattern" "$file"; then
-    echo "FAIL [$label]: '$pattern' found in $file (should have been removed)"
-    FAIL=$((FAIL + 1))
+  local block
+  block=$(awk '/^concurrency:/{found=1} found && /^[a-z]/ && !/^concurrency:/{found=0} found{print}' "$file" \
+    | grep -v '^\s*#')
+  if printf '%s\n' "$block" | grep -qF "$pattern"; then
+    echo "PASS [$label]: '$pattern' present in concurrency YAML of $(basename "$file")"
   else
-    echo "PASS [$label]: '$pattern' absent"
-  fi
-}
-
-check_present() {
-  local file="$1" pattern="$2" label="$3"
-  if grep -qF "$pattern" "$file"; then
-    echo "PASS [$label]: '$pattern' present"
-  else
-    echo "FAIL [$label]: '$pattern' not found in $file"
+    echo "FAIL [$label]: '$pattern' not found in concurrency YAML of $file"
     FAIL=$((FAIL + 1))
   fi
 }
 
-check_order() {
-  local file="$1" first="$2" second="$3" label="$4"
-  local line_first line_second
-  line_first=$(grep -nF "$first"  "$file" | head -1 | cut -d: -f1)
-  line_second=$(grep -nF "$second" "$file" | head -1 | cut -d: -f1)
-  if [ -z "$line_first" ] || [ -z "$line_second" ]; then
-    echo "FAIL [$label]: could not find both patterns in $file"
+# check_concurrency_order: verify $before appears at a lower line number than
+# $after within the concurrency: block. Presence alone is insufficient for
+# short-circuit || chains: swapping two predicates keeps all tokens present
+# while silently mis-routing events (e.g. issue.number before issue.pull_request
+# would route PR-comment events to the issue lane instead of the PR lane).
+check_concurrency_order() {
+  local file="$1" before="$2" after="$3" label="$4"
+  local block
+  block=$(awk '/^concurrency:/{found=1} found && /^[a-z]/ && !/^concurrency:/{found=0} found{print}' "$file" \
+    | grep -v '^\s*#')
+  local line_before line_after
+  line_before=$(printf '%s\n' "$block" | grep -nF "$before" | head -1 | cut -d: -f1)
+  line_after=$(printf '%s\n' "$block" | grep -nF "$after" | head -1 | cut -d: -f1)
+  if [[ -z "$line_before" || -z "$line_after" ]]; then
+    echo "FAIL [$label]: '$before' or '$after' not found in concurrency YAML of $file"
     FAIL=$((FAIL + 1))
-  elif [ "$line_first" -lt "$line_second" ]; then
-    echo "PASS [$label]: correct ordering in $file"
+    return
+  fi
+  if [[ "$line_before" -lt "$line_after" ]]; then
+    echo "PASS [$label]: '$before' precedes '$after' in concurrency YAML of $(basename "$file")"
   else
-    echo "FAIL [$label]: '$first' must appear before '$second' in $file (first-match-wins routing)"
+    echo "FAIL [$label]: '$before' must precede '$after' in concurrency YAML of $file"
     FAIL=$((FAIL + 1))
   fi
 }
 
-# Both the inline workflow and the reusable (source of truth for all consumer
-# stubs) must carry the per-lane routing.
-for WORKFLOW in \
-  ".github/workflows/dev-lead.yml" \
-  ".github/workflows/dev-lead-reusable.yml"; do
-  echo "── $WORKFLOW ──"
-  if [ ! -f "$WORKFLOW" ]; then
-    echo "FAIL: $WORKFLOW does not exist. Please run this script from the repository root."
-    FAIL=$((FAIL + 1))
-    continue
-  fi
+# Both the inline caller workflow and the reusable workflow must carry the same
+# routing, so external callers get identical per-PR serialization.
+WORKFLOWS=(
+  ".github/workflows/dev-lead.yml"
+  ".github/workflows/dev-lead-reusable.yml"
+)
 
-  # Per-issue and per-PR lanes must be present so a labeled-issue pickup is never
-  # cancelled by unrelated PR follow-up traffic.
-  # Match format('dev-lead-…') to target the concurrency expression, not comments.
-  check_present "$WORKFLOW" "format('dev-lead-pr-"    "per-PR lane"
-  check_present "$WORKFLOW" "format('dev-lead-issue-" "per-issue lane"
-
-  # ci-relay keeps its own ephemeral per-SHA slot so it fires immediately.
-  check_present "$WORKFLOW" "format('dev-lead-ci-relay-" "ci-relay per-SHA lane"
-
-  # Assert the actual predicate-to-lane bindings, not just token presence.
-  # issue_comment on a PR has issue.pull_request set; that predicate must route
-  # to the PR lane so PR follow-up traffic shares the PR slot with other PR events.
-  check_present "$WORKFLOW" \
-    "github.event.issue.pull_request && format('dev-lead-pr-" \
-    "issue_comment-on-PR predicate routes to PR lane"
-  # repository_dispatch (ci-failure relay) carries client_payload.pr_number.
-  check_present "$WORKFLOW" \
-    "github.event.client_payload.pr_number && format('dev-lead-pr-" \
-    "repository_dispatch routes to PR lane via client_payload.pr_number"
-  # client_payload.pr_number predicate must appear BEFORE the final run-id fallback.
-  # If reordered, the fallback is always truthy and every repository_dispatch
-  # (ci-failure relay) gets a unique run lane instead of sharing the PR lane.
-  check_order "$WORKFLOW" \
-    "github.event.client_payload.pr_number && format('dev-lead-pr-" \
-    "format('dev-lead-run-{0}', github.run_id)" \
-    "repository_dispatch predicate before run-id fallback"
-  # issue.pull_request must appear BEFORE issue.number in the || chain.
-  # If reordered, an issue_comment on a PR would fall through to the issue lane
-  # and share a slot with issue pickups, allowing cancellation.
-  check_order "$WORKFLOW" \
-    "github.event.issue.pull_request && format('dev-lead-pr-" \
-    "github.event.issue.number && format('dev-lead-issue-" \
-    "issue_comment-on-PR predicate before generic issue predicate"
-
-  # Must NOT collapse back into a single repo-wide group (the #278 regression).
-  # Guard all common bare-value spellings so a regression can't slip through
-  # on quote-style changes.
-  check_absent "$WORKFLOW" "group: dev-lead"    "no bare unquoted group: dev-lead"
-  check_absent "$WORKFLOW" "group: 'dev-lead'"  "no bare single-quoted group: dev-lead"
-  check_absent "$WORKFLOW" 'group: "dev-lead"'  "no bare double-quoted group: dev-lead"
-  # Also reject a repo-wide fallback hidden inside the ${{ ... }} expression.
-  # The group: >- form puts the value on the next lines starting with ||, so
-  # "group: dev-lead" patterns above would miss a regression like || 'dev-lead'.
-  check_absent "$WORKFLOW" "|| 'dev-lead'"      "no repo-wide || 'dev-lead' fallback in expression"
-  check_absent "$WORKFLOW" '|| "dev-lead"'      'no repo-wide || "dev-lead" fallback in expression'
-
-  # cancel-in-progress must be false so a queued same-lane run waits for the active
-  # run to finish instead of cancelling it (in-flight pickups always complete).
-  check_present "$WORKFLOW" "cancel-in-progress: false" "cancel-in-progress is false"
+for wf in "${WORKFLOWS[@]}"; do
+  # Per-PR lane → serializes all runs touching one PR (PR, review, review
+  # comment, issue_comment-on-PR, and repository_dispatch all map here).
+  check_concurrency_field "$wf" "dev-lead-pr-" "per-PR serialization lane"
+  # Per-issue lane → serializes runs working a single issue.
+  check_concurrency_field "$wf" "dev-lead-issue-" "per-issue serialization lane"
+  # ci-relay keeps its own ephemeral per-SHA slot so it fires without blocking
+  # or being blocked by the dispatch queue.
+  check_concurrency_field "$wf" "dev-lead-ci-relay-" "ci-relay per-SHA group"
+  # cancel-in-progress:false is what makes same-lane runs QUEUE (serialize)
+  # rather than cancel — dropping queued runs would lose pickups.
+  check_concurrency_field "$wf" "cancel-in-progress: false" "cancel-in-progress is false"
+  # issue.pull_request must precede issue.number in the || chain: an
+  # issue_comment on a PR has both issue.pull_request and issue.number truthy,
+  # so the first match wins — reversing them would route PR comments to the
+  # issue lane (dev-lead-issue-*) instead of the PR lane (dev-lead-pr-*).
+  check_concurrency_order "$wf" "issue.pull_request" "dev-lead-issue-" "issue.pull_request before issue lane"
+  # client_payload.pr_number must precede the run-id fallback so
+  # repository_dispatch events land in the correct PR lane, not a unique slot.
+  check_concurrency_order "$wf" "client_payload.pr_number" "github.run_id" "client_payload.pr_number before run-id fallback"
 done
 
 echo ""

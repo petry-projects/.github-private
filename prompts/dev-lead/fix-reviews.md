@@ -141,13 +141,14 @@ Read every changed line as if you are the reviewer seeing the response:
 2. Ask: does each change directly and completely address its thread?
 3. Ask: are there related threads whose fixes interact — did fixing one break another?
 4. Ask: would the reviewer be satisfied, or is there still an issue?
-5. Fix anything found, then re-run Phase 2
+5. Ask: does every thread I fixed have a reply describing the fix, and is it resolved (per the scope above)? Reply/resolve any I missed.
+6. Fix anything found, then re-run Phase 2
 
 ## Constraints
 
 - Address each open thread individually
-- Resolve every thread you fix; resolve outdated threads without a corresponding code change
-- Only resolve threads whose `author.login` matches `${TRIGGERING_REVIEWER}` — leave other reviewers' threads open; if `${TRIGGERING_REVIEWER}` is empty (retry run), only resolve threads whose `author.login` ends with `[bot]` — leave human reviewers' threads open
+- For every thread you fix, post a reply naming the specific change before resolving — never resolve silently
+- Resolve every bot thread you fix (regardless of which reviewer triggered this run) and outdated threads; for human threads, resolve only the triggering reviewer's and leave other humans' open (replied)
 - Do not resolve threads you are skipping due to ambiguity — leave those open and note them in your output
 - Do not make changes beyond what the review threads request, except that fixing Tier-1 blockers (failure/timed_out/cancelled/action_required/stale/startup_failure CI checks and CHANGES_REQUESTED reviews) is always in-scope
 - If a review thread is ambiguous, apply the most conservative interpretation
@@ -159,7 +160,7 @@ After applying fixes, output a summary:
 
 ```
 Addressed N threads:
-- Thread <id>: <brief description of fix> [resolved]
+- Thread <id>: <brief description of fix> [replied + resolved]
 - Thread <id>: outdated — resolved without change
 - Thread <id>: skipped — <reason> [left open]
 Test verification: <pass/fail — paste output if relevant>
