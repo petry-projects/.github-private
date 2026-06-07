@@ -59,14 +59,14 @@ checkout_pr_in_worktree() {
   parent="$(mktemp -d "${TMPDIR:-/tmp}/dev-lead-wt-XXXXXX")"
   PR_WORKTREE_DIR="${parent}/pr-${pr}"
 
+  # Tear the worktree down on exit (success or failure) so /tmp and the repo's
+  # worktree registry don't accumulate stale entries across runs.
+  trap cleanup_pr_worktree EXIT
+
   # Start detached at the agent checkout's HEAD so `gh pr checkout` can create or
   # switch to the PR branch inside the worktree without colliding with whatever
   # branch the agent checkout already has out.
   git worktree add --detach "$PR_WORKTREE_DIR" HEAD >/dev/null
-
-  # Tear the worktree down on exit (success or failure) so /tmp and the repo's
-  # worktree registry don't accumulate stale entries across runs.
-  trap cleanup_pr_worktree EXIT
 
   cd "$PR_WORKTREE_DIR" || return 1
   gh pr checkout "$pr" --repo "$repo"
@@ -83,6 +83,8 @@ cleanup_pr_worktree() {
   cd "${PR_WORKTREE_AGENT_DIR:-/}" 2>/dev/null || true
   git worktree remove --force "$wt" 2>/dev/null || true
   # Best-effort: drop the mktemp parent and prune any dangling registry entry.
-  rm -rf "$parent" 2>/dev/null || true
+  if [ -n "$parent" ] && [ "$parent" != "/" ] && [[ "$parent" == *"/dev-lead-wt-"* ]]; then
+    rm -rf "$parent" 2>/dev/null || true
+  fi
   git worktree prune 2>/dev/null || true
 }
