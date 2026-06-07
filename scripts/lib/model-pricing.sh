@@ -24,9 +24,9 @@ fi
 : "${ET_BASELINE_MODEL:=claude-haiku-4-5}"
 
 # price_for <model> [iso_date]
-# Echoes "input cache_read output" (USD/MTok) for the rate in effect at iso_date,
-# selecting the most-specific matching glob (ties → latest effective_from). Echoes
-# nothing when no row matches (caller treats as unknown price).
+# Echoes "input cache_read cache_write output" (USD/MTok) for the rate in effect at
+# iso_date, selecting the most-specific matching glob (ties → latest effective_from).
+# Echoes nothing when no row matches (caller treats as unknown price).
 price_for() {
   local model="$1" date="${2:-}"
   [ -n "$date" ] || date="$(date -u +%Y-%m-%d 2>/dev/null || echo '9999-12-31')"
@@ -41,30 +41,32 @@ price_for() {
       return "^" re "$"
     }
     /^[[:space:]]*#/ { next }                    # comments
-    NF < 5          { next }                     # blanks / malformed
+    NF < 6          { next }                     # blanks / malformed
     {
       glob = $1; eff = $2
       if (model ~ glob2re(glob) && eff <= d) {
         lit = glob; gsub(/[*?]/, "", lit); spec = length(lit)
         if (spec > best_spec || (spec == best_spec && eff > best_eff)) {
-          best_spec = spec; best_eff = eff; bi = $3; bc = $4; bo = $5; found = 1
+          best_spec = spec; best_eff = eff; bi = $3; bc = $4; bw = $5; bo = $6; found = 1
         }
       }
     }
-    END { if (found) printf "%s %s %s", bi, bc, bo }
+    END { if (found) printf "%s %s %s %s", bi, bc, bw, bo }
   ' "$PRICING_TABLE"
 }
 
-# cost_usd <model> <input> <cache_read> <output> [iso_date]
+# cost_usd <model> <input> <cache_read> <output> [iso_date] [cache_write]
 # Echoes the USD cost (6 decimals) using the date-accurate rate. Echoes nothing when
 # the model's price is unknown — callers MUST surface that (never treat as $0).
+# cache_write defaults to 0 so existing 4-arg callers are unaffected.
 cost_usd() {
-  local model="$1" in="${2:-0}" cr="${3:-0}" out="${4:-0}" date="${5:-}"
+  local model="$1" in="${2:-0}" cr="${3:-0}" out="${4:-0}" date="${5:-}" cw="${6:-0}"
   local p; p="$(price_for "$model" "$date")"
   [ -n "$p" ] || return 0
-  local pin pcr pout; read -r pin pcr pout <<< "$p"
-  awk -v i="$in" -v c="$cr" -v o="$out" -v pin="$pin" -v pcr="$pcr" -v pout="$pout" \
-    'BEGIN { printf "%.6f", (i * pin + c * pcr + o * pout) / 1000000 }'
+  local pin pcr pcw pout; read -r pin pcr pcw pout <<< "$p"
+  awk -v i="$in" -v c="$cr" -v w="$cw" -v o="$out" \
+      -v pin="$pin" -v pcr="$pcr" -v pcw="$pcw" -v pout="$pout" \
+    'BEGIN { printf "%.6f", (i * pin + c * pcr + w * pcw + o * pout) / 1000000 }'
 }
 
 # et_multiplier_for <model> [iso_date]

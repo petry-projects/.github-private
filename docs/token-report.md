@@ -45,9 +45,29 @@ glob with a later `effective_from`. Records before that date keep their historic
 later records pick up the new rate automatically. Example (Sonnet drops on 2026-09-01):
 
 ```
-claude-sonnet-4-*    2025-01-01    3.00    0.30    15.00
-claude-sonnet-4-*    2026-09-01    2.50    0.25    12.50   # ← append, don't edit
+claude-sonnet-4-*    2025-01-01    3.00    0.30    3.75    15.00
+claude-sonnet-4-*    2026-09-01    2.50    0.25    3.125   12.50   # ← append, don't edit
 ```
+
+(Columns: `input  cache_read  cache_write  output`, USD/MTok.)
+
+### Real token usage (incl. cache)
+
+Cost is computed from **actual API usage**, not estimates. When `TOKEN_LOG_FILE` is set,
+`scripts/engine.sh` runs Claude/Gemini with `--output-format json`, extracts the model's
+text for downstream consumers, and records the real `input` / `cache_read` /
+`cache_write` (cache-creation) / `output` token counts (`scripts/lib/token-metrics.sh:
+parse_engine_usage`). This replaced the earlier `char_count / 4` estimate, which always
+reported zero cache.
+
+- **Safety switch:** set `ENGINE_USAGE_JSON=0` to instantly revert to text output + the
+  estimate path (no code change). JSON capture only engages when `TOKEN_LOG_FILE` is set,
+  and falls back to the raw output if extraction yields nothing — so a parse hiccup never
+  breaks a review.
+- **Copilot:** the GitHub Copilot CLI exposes no machine-readable token usage, so copilot
+  runs remain estimate-based (cache = 0). This is a CLI limitation, not a gap in the report.
+- **Cache-write** (cache-creation, billed at 1.25× input by Anthropic) is now both captured
+  and priced. One-shot agent calls typically show more cache-write than cache-read.
 
 ### Reliability guarantees
 
@@ -132,7 +152,8 @@ ORG=petry-projects LOOKBACK_DAYS=7 GH_TOKEN="$(gh auth token)" \
 
 - **Artifact retention**: token-usage artifacts use GitHub's default retention. A
   lookback longer than the retention window will silently miss expired artifacts.
-- **Cache tokens**: ET counts `cache_read_tokens` at 0.1×, but only when the engine
-  reports them. Engines that don't surface cache usage contribute 0 cache.
+- **Cache tokens**: captured from real API usage for Claude/Gemini. Copilot exposes no
+  usage, so copilot calls fall back to estimates with 0 cache. Records written before this
+  capture landed have 0 cache (the old estimate path).
 - **Per-repo artifact API**: one `actions/artifacts` listing per repo per run. For
   very large orgs this is linear in repo count.

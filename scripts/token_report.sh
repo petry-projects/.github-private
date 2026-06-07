@@ -76,7 +76,7 @@ annotate_records() {
   jq -r 'select(type == "object") | [
       (.repo // "unknown"), (.workflow // "unknown"), (.tier // "-"), (.model // "-"),
       (.input_tokens // 0), (.cache_read_tokens // 0), (.output_tokens // 0),
-      (.ts // "-"), (.context // "")
+      (.ts // "-"), (.context // ""), (.cache_creation_tokens // 0)
     ] | @tsv' "${files[@]}" 2>/dev/null \
   | awk -F'\t' -v table="${PRICING_TABLE:-}" -v baseline="${ET_BASELINE_MODEL:-claude-haiku-4-5}" '
       function glob2re(g,   re) {
@@ -96,25 +96,28 @@ annotate_records() {
         if (table != "")
           while ((getline line < table) > 0) {
             if (line ~ /^[[:space:]]*#/) continue
-            n = split(line, f, "\t"); if (n < 5) continue
-            nr++; gre[nr] = glob2re(f[1]); eff[nr] = f[2]; tin[nr] = f[3]; tcr[nr] = f[4]; tout[nr] = f[5]
+            n = split(line, f, "\t"); if (n < 6) continue
+            nr++; gre[nr] = glob2re(f[1]); eff[nr] = f[2]
+            tin[nr] = f[3]; tcr[nr] = f[4]; tcw[nr] = f[5]; tout[nr] = f[6]
             lit = f[1]; gsub(/[*?]/, "", lit); spec[nr] = length(lit)
           }
       }
       {
         repo = $1; wf = $2; tier = $3; model = $4
         inp = $5 + 0; ca = $6 + 0; out = $7 + 0; d = substr($8, 1, 10); ctx = $9
+        cw = $10 + 0
         mi = best_idx(model, d)
         bi = best_idx(baseline, d)
         bpin = (bi > 0) ? tin[bi] : 0
         if (mi > 0) {
           known = 1
-          cost = (inp * tin[mi] + ca * tcr[mi] + out * tout[mi]) / 1000000
+          cost = (inp * tin[mi] + ca * tcr[mi] + cw * tcw[mi] + out * tout[mi]) / 1000000
           m = (bpin > 0) ? tin[mi] / bpin : 1.0
         } else { known = 0; cost = -1; m = 1.0 }
         et = m * (1.0 * inp + 0.1 * ca + 4.0 * out)
-        printf "%s\t%s\t%s\t%s\t%d\t%d\t%d\t%.6f\t%.4f\t%d\t%s\n",
-          repo, wf, tier, model, inp, ca, out, cost, et, known, ctx
+        # Enriched cols 1-11 unchanged for downstream; cache_write appended as col 12.
+        printf "%s\t%s\t%s\t%s\t%d\t%d\t%d\t%.6f\t%.4f\t%d\t%s\t%d\n",
+          repo, wf, tier, model, inp, ca, out, cost, et, known, ctx, cw
       }'
 }
 
@@ -144,13 +147,15 @@ render_token_report() {
     return 0
   fi
 
-  # Totals (cost over priced calls; ET over all): et, cost, input, output, unknown
-  local totals total_et total_cost total_in total_out unpriced
-  totals="$(awk -F'\t' '{ et += $9; inp += $5; out += $7; if ($10 == 1) cost += $8; else unk++ }
-    END { printf "%.4f\t%.6f\t%d\t%d\t%d", et, cost, inp, out, unk }' "$enriched")"
-  IFS=$'\t' read -r total_et total_cost total_in total_out unpriced <<< "$totals"
+  # Totals (cost over priced calls; ET over all): et, cost, input, cache_read, cache_write, output, unknown
+  local totals total_et total_cost total_in total_cr total_cw total_out unpriced
+  totals="$(awk -F'\t' '{ et += $9; inp += $5; cr += $6; cw += $12; out += $7;
+      if ($10 == 1) cost += $8; else unk++ }
+    END { printf "%.4f\t%.6f\t%d\t%d\t%d\t%d\t%d", et, cost, inp, cr, cw, out, unk }' "$enriched")"
+  IFS=$'\t' read -r total_et total_cost total_in total_cr total_cw total_out unpriced <<< "$totals"
 
-  printf 'Estimated USD cost, priced per `scripts/lib/model-pricing.tsv` at each call'"'"'s date. '
+  printf 'Estimated USD cost, priced per `scripts/lib/model-pricing.tsv` at each call'"'"'s date '
+  printf '(input + cache-read + cache-write + output). '
   printf 'Effective Tokens (ET) `= m × (1.0·input + 0.1·cache + 4.0·output)`, '
   printf 'where `m` = model input price ÷ haiku input price (haiku 1× · sonnet 3× · opus 5×).\n\n'
 
@@ -159,6 +164,8 @@ render_token_report() {
   printf -- '- **Total ET:** %s\n' "$(_fmt_int "$total_et")"
   printf -- '- **LLM calls:** %s   ·   **Input tokens:** %s   ·   **Output tokens:** %s\n' \
     "$(_fmt_int "$total_calls")" "$(_fmt_int "$total_in")" "$(_fmt_int "$total_out")"
+  printf -- '- **Cache tokens:** %s read · %s write\n' \
+    "$(_fmt_int "$total_cr")" "$(_fmt_int "$total_cw")"
   if [ "${unpriced:-0}" -gt 0 ]; then
     printf -- '- ⚠️ **%s call(s) had no price** in the table and are excluded from cost (marked `*`).\n' \
       "$(_fmt_int "$unpriced")"

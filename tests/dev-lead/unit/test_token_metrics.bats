@@ -187,6 +187,70 @@ teardown() {
   [ "$et" = "7250.00" ]
 }
 
+@test "emit_token_record: records cache_creation_tokens from the 9th arg" {
+  emit_token_record "pr-review" "deep" "claude" "claude-sonnet-4-6" 1000 200 100 "" 350
+  local cw
+  cw=$(jq -r '.cache_creation_tokens' < "$TOKEN_LOG_FILE")
+  [ "$cw" = "350" ]
+}
+
+@test "emit_token_record: cache_creation_tokens defaults to 0 when omitted" {
+  emit_token_record "pr-review" "triage" "claude" "claude-haiku-4-5-20251001" 1000 200 100 ""
+  local cw
+  cw=$(jq -r '.cache_creation_tokens' < "$TOKEN_LOG_FILE")
+  [ "$cw" = "0" ]
+}
+
+# ── parse_engine_usage / extract_engine_text ──────────────────────────────────
+
+@test "parse_engine_usage: claude JSON sets input/cache-read/cache-write/output" {
+  local f; f=$(mktemp)
+  printf '%s\n' '{"result":"hi","usage":{"input_tokens":1234,"cache_read_input_tokens":500,"cache_creation_input_tokens":300,"output_tokens":90}}' > "$f"
+  run parse_engine_usage claude "$f"
+  rm -f "$f"
+  [ "$status" -eq 0 ]
+}
+
+@test "parse_engine_usage: claude globals carry the parsed values" {
+  local f; f=$(mktemp)
+  printf '%s\n' '{"result":"hi","usage":{"input_tokens":1234,"cache_read_input_tokens":500,"cache_creation_input_tokens":300,"output_tokens":90}}' > "$f"
+  parse_engine_usage claude "$f"
+  rm -f "$f"
+  [ "$LAST_USAGE_OK" = "1" ]
+  [ "$LAST_INPUT_TOKENS" = "1234" ]
+  [ "$LAST_CACHE_READ_TOKENS" = "500" ]
+  [ "$LAST_CACHE_WRITE_TOKENS" = "300" ]
+  [ "$LAST_OUTPUT_TOKENS" = "90" ]
+}
+
+@test "parse_engine_usage: gemini computes non-cached input = prompt - cached" {
+  local f; f=$(mktemp)
+  printf '%s\n' '{"response":"hi","stats":{"models":{"g":{"tokens":{"prompt":500,"cached":100,"candidates":60}}}}}' > "$f"
+  parse_engine_usage gemini "$f"
+  rm -f "$f"
+  [ "$LAST_USAGE_OK" = "1" ]
+  [ "$LAST_INPUT_TOKENS" = "400" ]
+  [ "$LAST_CACHE_READ_TOKENS" = "100" ]
+  [ "$LAST_CACHE_WRITE_TOKENS" = "0" ]
+  [ "$LAST_OUTPUT_TOKENS" = "60" ]
+}
+
+@test "parse_engine_usage: missing usage block returns non-zero (→ estimate)" {
+  local f; f=$(mktemp)
+  printf '%s\n' '{"result":"no usage here"}' > "$f"
+  run parse_engine_usage claude "$f"
+  rm -f "$f"
+  [ "$status" -ne 0 ]
+}
+
+@test "extract_engine_text: claude returns the .result text" {
+  local f; f=$(mktemp)
+  printf '%s\n' '{"result":"hello world","usage":{}}' > "$f"
+  run extract_engine_text claude "$f"
+  rm -f "$f"
+  [ "$output" = "hello world" ]
+}
+
 @test "emit_token_record: is a no-op when TOKEN_LOG_FILE is unset" {
   unset TOKEN_LOG_FILE
   run emit_token_record "pr-review" "triage" "claude" "haiku" 100 0 50 ""
