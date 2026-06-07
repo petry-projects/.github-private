@@ -10,6 +10,7 @@ set -euo pipefail
 source "$(dirname "$0")/engine.sh"
 source "$(dirname "$0")/lib/git-identity.sh"
 source "$(dirname "$0")/lib/pr-worktree.sh"
+source "$(dirname "$0")/lib/auto-merge.sh"
 
 PR_NUMBER="${PR_NUMBER:-}"
 HEAD_SHA="${HEAD_SHA:-}"
@@ -206,6 +207,13 @@ main() {
     exit 0
   fi
 
+  # Hold auto-merge OFF while we work so a review approval landing mid-run can't
+  # merge (and delete) the branch out from under us. restore_auto_merge (EXIT
+  # trap) puts it back however we exit; checkout_pr_in_worktree chains its own
+  # cleanup onto this trap.
+  trap restore_auto_merge EXIT
+  hold_auto_merge
+
   # Checkout the PR branch for modification, in an isolated worktree so the
   # branch switch never overwrites the agent's own prompts/scripts (issue #448).
   checkout_pr_in_worktree "$PR_NUMBER" "$REPO"
@@ -268,7 +276,9 @@ main() {
       git add -A
       git commit -m "fix(ci): auto-fix for $(echo "$CHECKS_JSON" | jq -r '.[0].name // "CI failure"') [skip ci-relay]"
     fi
-    git push
+    # push_with_merge_guard exits 0 cleanly if the PR was merged/closed mid-run
+    # (its branch deleted); a genuine push failure still aborts with exit 1.
+    push_with_merge_guard || exit 1
 
     post_summary "applied" "Fix committed and pushed. Waiting for CI."
     break

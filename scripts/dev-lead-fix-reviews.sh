@@ -6,6 +6,7 @@ set -euo pipefail
 source "$(dirname "$0")/engine.sh"
 source "$(dirname "$0")/lib/git-identity.sh"
 source "$(dirname "$0")/lib/pr-worktree.sh"
+source "$(dirname "$0")/lib/auto-merge.sh"
 
 INTENT_TYPE="${INTENT_TYPE:-fix-reviews}"
 PR_NUMBER="${PR_NUMBER:-}"
@@ -37,6 +38,12 @@ fi
 # Use an isolated worktree so switching to the PR branch never overwrites the
 # agent's own prompts/scripts in the working tree (issue #448).
 if [ "${DEV_LEAD_DRY_RUN:-false}" = "false" ] && [ -n "${PR_NUMBER:-}" ]; then
+  # Hold auto-merge OFF while we work so a review approval landing mid-run can't
+  # merge (and delete) the branch out from under us. restore_auto_merge (EXIT
+  # trap) puts it back however we exit; checkout_pr_in_worktree chains its own
+  # cleanup onto this trap.
+  trap restore_auto_merge EXIT
+  hold_auto_merge
   checkout_pr_in_worktree "$PR_NUMBER" "$REPO"
   setup_git_identity
 fi
@@ -592,10 +599,9 @@ commit_and_push() {
       # false "Changes committed and pushed" comment.
       git commit -m "$commit_msg" || { echo "::error::git commit failed — check git identity configuration on the runner" >&2; exit 1; }
     fi
-    git push || {
-      echo "::error::git push failed — check remote access and branch permissions" >&2
-      exit 1
-    }
+    # push_with_merge_guard exits 0 cleanly if the PR was merged/closed mid-run
+    # (its branch deleted); a genuine push failure still aborts with exit 1.
+    push_with_merge_guard || exit 1
   fi
   return 0
 }
