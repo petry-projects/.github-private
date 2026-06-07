@@ -148,7 +148,7 @@ GHEOF
   [ "$status" -eq 1 ]
 }
 
-@test "fallback: engine not installed (127) → next engine succeeds" {
+@test "fallback: engine not installed (127) → remaining engines still tried" {
   # claude rate-limited, gemini not installed, but the next engine after gemini succeeds
   # In the actual fallback order: claude → gemini → copilot. Since copilot returns 2
   # (text-only) in run_writer, we verify with a scenario where gemini is "not found"
