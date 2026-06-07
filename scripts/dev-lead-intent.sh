@@ -88,6 +88,21 @@ has_trigger_phrase() {
   return 1
 }
 
+# has_label <name>
+# Returns 0 (true) if the PR or issue in the event payload carries label <name>.
+# Reads labels straight from the payload (.pull_request.labels / .issue.labels),
+# so it stays a pure classifier with no API calls. repository_dispatch payloads
+# carry no labels and are not covered here (the ci-relay producer would be the
+# place to honour hands-off for those).
+has_label() {
+  local name="$1"
+  [ -n "$EVENT_PATH" ] && [ -f "$EVENT_PATH" ] || return 1
+  jq -e --arg n "$name" '
+    [ (.pull_request.labels // []), (.issue.labels // []) ]
+    | flatten | any(.name == $n)
+  ' "$EVENT_PATH" >/dev/null 2>&1
+}
+
 # is_fork_pr <event_path>
 # Returns 0 (true) if the PR head repo differs from GITHUB_REPOSITORY.
 is_fork_pr() {
@@ -133,6 +148,17 @@ if [ "$EVENT_NAME" = "pull_request" ] && [ -n "$EVENT_PATH" ] && [ -f "$EVENT_PA
       exit 0
     fi
   fi
+fi
+
+# ── hands-off guard ───────────────────────────────────────────────────────────
+# A PR or issue labeled `dev-lead:hands-off` is intentionally excluded from the
+# agent — e.g. PRs that modify the dev-lead workflow itself, so the agent does
+# not pile commits onto its own infrastructure changes. Checked before routing so
+# it applies to every label-bearing event (PR opens/syncs, reviews, review
+# comments, issue comments on PRs, issue labeling).
+if has_label "dev-lead:hands-off"; then
+  emit_skip "hands-off-label"
+  exit 0
 fi
 
 # ── routing ───────────────────────────────────────────────────────────────────

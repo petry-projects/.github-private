@@ -1,0 +1,29 @@
+{
+  "_test_expected_intent": "skip",
+  "action": "labeled",
+  "issue": {
+    "number": 100,
+    "title": "feat: implement OAuth2 support",
+    "body": "We need to add OAuth2 authentication support for third-party integrations.\n\n## Requirements\n- Support Google OAuth2\n- Support GitHub OAuth2\n- Add token refresh logic",
+    "state": "open",
+    "author_association": "OWNER",
+    "labels": [
+      {
+        "name": "dev-lead"
+      },
+      {
+        "name": "dev-lead:hands-off"
+      }
+    ]
+  },
+  "label": {
+    "name": "dev-lead"
+  },
+  "repository": {
+    "full_name": "petry-projects/.github-private"
+  },
+  "sender": {
+    "login": "donpetry",
+    "type": "User"
+  }
+}
