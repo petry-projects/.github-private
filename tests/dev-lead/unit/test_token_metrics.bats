@@ -331,6 +331,15 @@ line two'
   [ "$output" = "$TOKEN_LOG_FILE.callX.usage" ]
 }
 
+@test "_engine_usage_sidecar: set-but-empty key falls back to \$\$ (mktemp-failure state)" {
+  # run_* clears _ENGINE_USAGE_OUT before mktemp; if mktemp fails the key is empty/
+  # unset and MUST fall back rather than reuse a prior/inherited key.
+  export _ENGINE_USAGE_OUT=""
+  run _engine_usage_sidecar
+  unset _ENGINE_USAGE_OUT
+  [ "$output" = "$TOKEN_LOG_FILE.last-usage.$$" ]
+}
+
 @test "_engine_usage_sidecar: empty when TOKEN_LOG_FILE is unset" {
   unset TOKEN_LOG_FILE _ENGINE_USAGE_OUT
   run _engine_usage_sidecar
