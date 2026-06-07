@@ -4227,17 +4227,11 @@ run_duck() {
       unset CLAUDE_CODE_OAUTH_TOKEN 2>/dev/null || true
       unset COPILOT_GITHUB_TOKEN 2>/dev/null || true
       if [ -n "$_tok_tmp" ]; then
-        timeout "$DUCK_TIMEOUT_SEC" gemini --prompt "" \
-          --model "$model" \
-          --approval-mode auto_edit \
-          --output-format text \
-          < "$prompt_file" | tee "$_tok_tmp" || rc=${PIPESTATUS[0]}
+        _gemini_invoke "$prompt_file" "$DUCK_TIMEOUT_SEC" "$model" \
+          --approval-mode auto_edit | tee "$_tok_tmp" || rc=${PIPESTATUS[0]}
       else
-        timeout "$DUCK_TIMEOUT_SEC" gemini --prompt "" \
-          --model "$model" \
-          --approval-mode auto_edit \
-          --output-format text \
-          < "$prompt_file" || rc=$?
+        _gemini_invoke "$prompt_file" "$DUCK_TIMEOUT_SEC" "$model" \
+          --approval-mode auto_edit || rc=$?
       fi
       ;;
     copilot)
@@ -4897,17 +4891,11 @@ run_writer() {
       ;;
     gemini)
       if [ -n "$_tmp" ]; then
-        timeout "$ACTION_TIMEOUT_SEC" gemini --prompt "" \
-          --model "$model" \
-          --approval-mode auto_edit \
-          --output-format text \
-          < "$prompt_file" 2>&1 | tee "$_tmp" || rc=${PIPESTATUS[0]}
+        _gemini_invoke "$prompt_file" "$ACTION_TIMEOUT_SEC" "$model" \
+          --approval-mode auto_edit 2>&1 | tee "$_tmp" || rc=${PIPESTATUS[0]}
       else
-        timeout "$ACTION_TIMEOUT_SEC" gemini --prompt "" \
-          --model "$model" \
-          --approval-mode auto_edit \
-          --output-format text \
-          < "$prompt_file" || rc=$?
+        _gemini_invoke "$prompt_file" "$ACTION_TIMEOUT_SEC" "$model" \
+          --approval-mode auto_edit || rc=$?
       fi
       ;;
     copilot)
