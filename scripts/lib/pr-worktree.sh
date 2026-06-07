@@ -59,16 +59,31 @@ checkout_pr_in_worktree() {
   parent="$(mktemp -d "${TMPDIR:-/tmp}/dev-lead-wt-XXXXXX")"
   PR_WORKTREE_DIR="${parent}/pr-${pr}"
 
-  # Tear the worktree down on exit (success or failure) so /tmp and the repo's
-  # worktree registry don't accumulate stale entries across runs.
-  trap cleanup_pr_worktree EXIT
+  # Chain with any pre-existing EXIT handler rather than replacing it, so callers
+  # that register their own cleanup don't silently lose it.
+  local _prev_exit_trap
+  _prev_exit_trap="$(trap -p EXIT)"
+  if [[ -n "$_prev_exit_trap" ]]; then
+    local _prev_exit_body
+    _prev_exit_body="${_prev_exit_trap#"trap -- '"}"
+    _prev_exit_body="${_prev_exit_body%"' EXIT"}"
+    # SC2064: double-quote is intentional — we want $_prev_exit_body to expand
+    # now (at registration time) so the body is embedded in the trap string.
+    # shellcheck disable=SC2064
+    trap "cleanup_pr_worktree; ${_prev_exit_body}" EXIT
+  else
+    trap 'cleanup_pr_worktree' EXIT
+  fi
 
   # Start detached at the agent checkout's HEAD so `gh pr checkout` can create or
   # switch to the PR branch inside the worktree without colliding with whatever
   # branch the agent checkout already has out.
-  git worktree add --detach "$PR_WORKTREE_DIR" HEAD >/dev/null
+  if ! git worktree add --detach "$PR_WORKTREE_DIR" HEAD >/dev/null; then
+    cleanup_pr_worktree
+    return 1
+  fi
 
-  cd "$PR_WORKTREE_DIR" || return 1
+  cd "$PR_WORKTREE_DIR" || { cleanup_pr_worktree; return 1; }
   gh pr checkout "$pr" --repo "$repo"
 }
 

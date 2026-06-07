@@ -106,3 +106,36 @@ teardown() {
   run cleanup_pr_worktree
   [ "$status" -eq 0 ]
 }
+
+@test "checkout_pr_in_worktree: chains EXIT trap with a pre-existing handler" {
+  source "$LIB"
+  cd "$AGENT_REPO"
+  # Register a handler BEFORE calling the worktree helper.
+  trap 'echo "sentinel_cleanup"' EXIT
+  checkout_pr_in_worktree 42 owner/repo
+  # The registered EXIT trap must still contain the pre-existing handler body.
+  [[ "$(trap -p EXIT)" == *"sentinel_cleanup"* ]]
+  cleanup_pr_worktree
+}
+
+@test "checkout_pr_in_worktree: cleans up mktemp parent when git worktree add fails" {
+  source "$LIB"
+  cd "$AGENT_REPO"
+
+  # Override git with a shell function (takes precedence over PATH, no hash
+  # table issue) so worktree add fails immediately.
+  git() {
+    [[ "$1 $2" == "worktree add" ]] && return 1
+    command git "$@"
+  }
+
+  local before after
+  before="$(ls -d "${TMPDIR:-/tmp}"/dev-lead-wt-* 2>/dev/null | sort || true)"
+
+  checkout_pr_in_worktree 42 owner/repo || true
+
+  after="$(ls -d "${TMPDIR:-/tmp}"/dev-lead-wt-* 2>/dev/null | sort || true)"
+
+  # No new temp directories should linger after a failed worktree add.
+  [ "$before" = "$after" ]
+}
