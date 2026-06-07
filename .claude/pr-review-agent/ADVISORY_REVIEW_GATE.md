@@ -68,14 +68,12 @@ This avoids long-running workflow blocks while still ensuring approval doesn't r
 
 ## Smart Detection
 
-The gate intelligently handles bots that don't participate in every PR:
+The gate requires **all** configured advisory bots (`ADVISORY_BOTS`) to submit before approving. Two timeout fallbacks handle bots that never participate on a given PR:
 
-### How It Works
+1. **Head-push age > 20 min** — if the commit has been on GitHub for more than 20 minutes and not all bots have submitted, the gate proceeds anyway.
+2. **Quiescence > 10 min** — if no new bot submissions have arrived for 10 minutes (anchored to the later of head-push time and the latest submission), the gate assumes remaining bots won't participate and proceeds.
 
-1. On each check, query the PR to see which bots have already submitted
-2. **Determine participation set**: Which bots have submitted so far?
-3. **Only bots that have submitted** form the "participating set" — absent bots are not waited for indefinitely
-4. The latest submission per bot is used (not the first), so if a bot revises its review, the most recent state is evaluated
+The latest submission per bot is used (not the first), so if a bot revises its review, the most recent state is evaluated.
 
 ### Examples
 
@@ -87,8 +85,9 @@ PR #450 created
   ├─ SonarCloud submits @ 800s ✓
   └─ Codex never triggered (not on this PR)
 
-On next pull_request_review event (SonarCloud submission):
-  Gate sees 3 submitted bots, Codex absent → return 0 → APPROVE
+Gate: 3/4 bots submitted; head age 800s < 1200s, quiescence 0s < 600s → return 1 (wait)
+...10 minutes after SonarCloud submission (no new bots arrive)...
+Gate: 3/4 bots; quiescence 600s ≥ 600s — absent bot assumed non-participant → return 0 → APPROVE
 ```
 
 **Scenario B: All 4 bots triggered**
@@ -137,14 +136,21 @@ The gate is called after the CI gate passes but before approval logic:
 # CI gate passes...
 # ↓
 # Advisory bot review gate (non-blocking instant check)
-{
+(
+  # Subshell: isolates sourced functions/vars from the caller's environment
   source "$SCRIPT_DIR/lib/advisory-review-gate.sh"
   check_advisory_reviews "$PR_URL"
-} || {
+) || {
   gate_rc=$?
   if [ $gate_rc -eq 1 ]; then
-    # Bots not yet submitted — skip, re-check on next pull_request_review event
-    exit 100
+    if [ "${FORCE_REVIEW:-false}" = "true" ]; then
+      echo "force-review: advisory bots not all submitted, but FORCE_REVIEW=true — proceeding"
+    else
+      # Bots not yet submitted — skip, re-check on next pull_request_review event
+      exit 100
+    fi
+  else
+    exit $gate_rc  # Unexpected error
   fi
 }
 # ↓
