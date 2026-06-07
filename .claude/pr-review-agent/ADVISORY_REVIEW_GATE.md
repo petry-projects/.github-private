@@ -50,41 +50,21 @@ The gate waits for reviews from these bots:
 
 ⚠️ **CodeRabbit does NOT approve** (recent fix). It's treated as optional since it no longer provides the approval decision. The gate does not wait for CodeRabbit submissions.
 
-## Wait Strategy
+## Check Strategy
 
-The gate uses a 3-tier timeout strategy:
+The gate uses a **non-blocking instant check** with a re-trigger pattern. There are no polling loops or blocking waits.
 
-### Tier 1: 900 seconds (15 minutes)
+### How It Works
 
-**Target**: Catch 95% of advisory bot submissions
+1. When the pr-review workflow fires (e.g., on `check_suite` completion), the gate makes a single API call
+2. **If all detected bots have submitted** → return 0, proceed to approval
+3. **If bots are still pending** → return 1, skip this run (`exit 100`)
+4. When a bot submits its review, the `pull_request_review` event fires and re-triggers the pr-review workflow
+5. The gate runs again and, once all bots have submitted, returns 0 and allows approval
 
-**Latency coverage**:
-- ✓ Gemini (0.84 min median)
-- ✓ Copilot (3.1 min median)
-- ✓ SonarCloud (13.2 min median)
-- ~ Codex (17.7 min median) — misses ~30% of Codex submissions
+This avoids long-running workflow blocks while still ensuring approval doesn't race ahead of valid bot feedback.
 
-**Action**: If all participating bots have submitted by this time, proceed to approval.
-
-### Tier 2: 1,200 seconds (20 minutes)
-
-**Target**: Catch remaining stragglers (e.g., slow Codex)
-
-**Latency coverage**:
-- ✓ All bots at median latency
-- ~ Gemini P95 (348s) and Copilot P95 (444s) are covered; SonarCloud P95 (~26 hours) and Codex P95 (~13 hours) are not — outlier submissions will be caught on subsequent re-trigger
-
-**Action**: If all participating bots have now submitted, proceed.
-
-### Tier 3: 3,600 seconds (60 minutes)
-
-**Target**: Hard timeout before escalation
-
-**Behavior**:
-- Logs a warning
-- Suggests checking CodeRabbit plan (rate-limit), PR complexity, or bot status
-- Proceeds with approval anyway (we don't block indefinitely)
-- Exit code: 2 (soft failure with warning)
+**Cost**: ~75% savings vs. blocking (2–3 min runs vs. 10–60 min blocks)
 
 ## Smart Detection
 
@@ -92,10 +72,10 @@ The gate intelligently handles bots that don't participate in every PR:
 
 ### How It Works
 
-1. On startup, query the PR to see which bots have already submitted
+1. On each check, query the PR to see which bots have already submitted
 2. **Determine participation set**: Which bots have submitted so far?
-3. **Poll only for missing bots**: Don't wait forever for bots that never trigger
-4. **Timeout**: If a bot participated (submitted once), we wait for all subsequent ones
+3. **Only bots that have submitted** form the "participating set" — absent bots are not waited for indefinitely
+4. The latest submission per bot is used (not the first), so if a bot revises its review, the most recent state is evaluated
 
 ### Examples
 
@@ -106,47 +86,48 @@ PR #450 created
   ├─ Copilot submits @ 180s ✓
   ├─ SonarCloud submits @ 800s ✓
   └─ Codex never triggered (not on this PR)
-  
-Result: By T+15min, 3/3 participating bots submitted → APPROVE
+
+On next pull_request_review event (SonarCloud submission):
+  Gate sees 3 submitted bots, Codex absent → return 0 → APPROVE
 ```
 
 **Scenario B: All 4 bots triggered**
 ```
 PR #451 created
-  ├─ Gemini submits @ 50s ✓
-  ├─ Copilot submits @ 180s ✓
-  ├─ SonarCloud submits @ 800s ✓
-  ├─ Codex submits @ 1000s (slow) ✓
-  
-Result: By T+20min, 4/4 participating bots submitted → APPROVE
+  ├─ Gemini submits @ 50s → gate re-triggers, sees only Gemini, defers
+  ├─ Copilot submits @ 180s → gate re-triggers, sees 2/4, defers
+  ├─ SonarCloud submits @ 800s → gate re-triggers, sees 3/4, defers
+  └─ Codex submits @ 1000s → gate re-triggers, sees 4/4 → APPROVE
 ```
 
-**Scenario C: High-volume period (no bots submitted yet at T+15min)**
+**Scenario C: SonarCloud/Codex outlier (P95 outlier: hours/days)**
 ```
-PR #452 created (during compliance blitz)
-  ├─ T+900s: No bots submitted yet (unusual)
-  ├─ T+1200s: Still none
-  ├─ T+3600s: Hard timeout
-  
-Result: Escalate (check for CodeRabbit rate-limit, bot downtime)
-         Proceed anyway with warning
+PR #452 created (high-volume period)
+  ├─ Gemini submits @ 50s ✓
+  ├─ Copilot submits @ 180s ✓
+  ├─ SonarCloud: outlier (>26 hours)
+  └─ Codex: outlier (>13 hours)
+
+Result: Gate defers on each re-trigger until SonarCloud/Codex eventually submit.
+        The PR is not blocked — other PRs continue to be reviewed.
+        Note: P95 outliers (SonarCloud ~26h, Codex ~13h) are NOT covered by any
+        fixed timeout; only re-triggering on submission events resolves them.
 ```
 
 ## Implementation Details
 
 ### File: `scripts/lib/advisory-review-gate.sh`
 
-Main entry point: `wait_for_advisory_reviews <pr_url>`
+Main entry point: `check_advisory_reviews <pr_url>`
 
 **Functions**:
-- `wait_for_advisory_reviews()` — Main wait loop
-- `get_advisory_bot_states()` — Query PR reviews/comments for advisory bots
+- `check_advisory_reviews()` — Instant non-blocking check; returns 0 (ready) or 1 (waiting)
+- `get_advisory_bot_states()` — Query PR reviews/comments for advisory bots, returning the latest submission per bot
 - `format_bot_status()` — Pretty-print bot review state
-- `has_submitted()` — Check if bot has submitted
 
 **Return codes**:
-- `0` — Bots reviewed, proceeding to approval
-- `2` — Hard timeout reached, proceeding anyway with warning
+- `0` — All detected bots have submitted; proceed to approval
+- `1` — Waiting for bots; caller should skip (`exit 100`) and re-check on next review event
 
 ### Integration: `scripts/review-one-pr.sh`
 
@@ -155,9 +136,17 @@ The gate is called after the CI gate passes but before approval logic:
 ```bash
 # CI gate passes...
 # ↓
-# Advisory bot review gate (new)
-source "$SCRIPT_DIR/lib/advisory-review-gate.sh"
-wait_for_advisory_reviews "$PR_URL"
+# Advisory bot review gate (non-blocking instant check)
+{
+  source "$SCRIPT_DIR/lib/advisory-review-gate.sh"
+  check_advisory_reviews "$PR_URL"
+} || {
+  gate_rc=$?
+  if [ $gate_rc -eq 1 ]; then
+    # Bots not yet submitted — skip, re-check on next pull_request_review event
+    exit 100
+  fi
+}
 # ↓
 # Idempotency check...
 # ↓
@@ -171,25 +160,27 @@ wait_for_advisory_reviews "$PR_URL"
 The gate logs detailed information for debugging:
 
 ```
-[advisory-gate] Starting advisory bot review gate for PR #450
-[advisory-gate] Detecting participating bots...
-[advisory-gate]   ✓ gemini-code-assist → COMMENTED (advisory)
+[advisory-gate] Checking advisory bot review status for PR #450 (instant check, no polling)
+[advisory-gate] Advisory bots detected: copilot-pull-request-reviewer gemini-code-assist sonarqubecloud
 [advisory-gate]   ✓ copilot-pull-request-reviewer → COMMENTED (advisory)
-[advisory-gate]   ✓ sonarqubecloud → COMMENTED (advisory)
-[advisory-gate] Tier 1 wait: 900s (15 min) - waiting for advisory bots...
-[advisory-gate] Tier 1 timeout reached (900 seconds)
-[advisory-gate] Final advisory bot status:
 [advisory-gate]   ✓ gemini-code-assist → COMMENTED (advisory)
-[advisory-gate]   ✓ copilot-pull-request-reviewer → COMMENTED (advisory)
 [advisory-gate]   ✓ sonarqubecloud → COMMENTED (advisory)
-[advisory-gate] Advisory bot review gate passed ✓
+[advisory-gate] All detected advisory bots have submitted ✓
+[advisory-gate] Advisory bot review gate check PASSED ✓
+```
+
+When bots haven't submitted yet:
+
+```
+[advisory-gate] WARNING: No advisory bot reviews detected yet
+[advisory-gate] WARNING: Will re-check when bots submit their reviews (pull_request_review event)
 ```
 
 ### Metrics
 
 - **Wait time per PR**: Logged and can be extracted for analytics
 - **Bot participation**: Which bots triggered for which PRs
-- **Timeout incidents**: PRs that hit Tier 3 hard timeout (should be <5%)
+- **Outlier incidents**: PRs where SonarCloud/Codex P95 outliers delayed the gate for many hours
 
 ## Historical Data
 
@@ -208,21 +199,12 @@ Excluding: CodeRabbit rate-limits, PRs blocked by CodeRabbit
 
 **Notes**:
 - SonarCloud/Codex P95+ outliers from compliance blitz period (not typical)
-- Real-world typical waits: 15-20 minutes to catch all bots
+- Real-world typical approvals: 15–20 minutes to catch all bots at median latency
+- P95 outliers for SonarCloud (~26 hours) and Codex (~13 hours) are resolved by the re-trigger
+  pattern rather than by any fixed timeout — they will be covered eventually, not within 20 minutes
 - CodeRabbit excluded: doesn't approve anymore
 
 ## Configuration
-
-### Timeout Adjustment
-
-If you need to adjust wait times, edit `scripts/lib/advisory-review-gate.sh`:
-
-```bash
-TIER1_WAIT=900      # 15 min → Change here
-TIER2_WAIT=1200     # 20 min → Change here
-TIER3_WAIT=3600     # 60 min → Change here
-POLL_INTERVAL=10    # Check every 10s → Change here
-```
 
 ### Bot Customization
 
@@ -247,41 +229,41 @@ bats tests/dev-lead/unit/test_advisory_review_gate.bats
 ```
 
 Test scenarios:
-- All 4 bots present → success
-- 3 bots present (no Codex) → success
-- Slow Codex (Tier 2 wait) → success
-- No bots submitted → hard timeout warning
+- All 4 bots present → return 0 (success)
+- 3 bots present (no Codex) → return 0 (success)
+- No bots submitted → return 1 (waiting)
 - CHANGES_REQUESTED state → noted but doesn't block
+- Non-blocking design assertions (no TIER*_WAIT, no POLL_INTERVAL, no sleep)
 
 ## Troubleshooting
 
-### "Hard timeout reached at 3600 seconds"
+### "Advisory bots still reviewing" (gate returns 1 repeatedly)
 
-This happens when advisory bots don't submit within 60 minutes. Common causes:
+This is expected behavior for slow bots. The gate will re-check each time a bot submits.
+If bots never submit, common causes:
 
-1. **CodeRabbit rate-limited** (most common)
-   - Check CodeRabbit quota at https://coderabbit.ai/settings/subscription
-   - Upgrade plan if exhausted
-   - Solution: Upgrade or throttle PR creation
+1. **PR isn't triggering bot webhooks**
+   - Check workflow configuration and bot integrations in GitHub
+   - Restart workflows if needed
 
-2. **PR had unusual complexity**
-   - Very large PRs sometimes trigger slow reviews
-   - Check PR file count, line changes
-   - Solution: Normal, monitor for pattern
+2. **Bots are experiencing downtime**
+   - Check official status pages for Gemini, Copilot, SonarCloud, Codex
+   - Wait for service recovery or contact vendor
 
-3. **Bot service issues**
-   - Gemini, Copilot, SonarCloud, Codex may be experiencing downtime
-   - Check official status pages
-   - Solution: Wait for service recovery or contact vendor
+3. **PR has unusual properties**
+   - Deleted files, binary content, or unsupported file types may prevent bot review
+   - Gemini returns UNSUPPORTED for `.yml`/`.yaml`/`.toml` files — this is handled gracefully
 
-### "No advisory bots have submitted by Tier 2 timeout"
+### "No advisory bot reviews detected yet"
 
-This is unusual and suggests:
-1. PR isn't triggering bot webhooks (check workflow configuration)
-2. Bots are completely down (check status pages)
-3. PR has unusual properties (deleted files, binary content, etc.)
+This is normal at the start of a PR review cycle. The gate will return 1 and the workflow
+will re-check when the first bot submits its review.
 
-**Solution**: Check bot integrations in GitHub, restart workflows if needed.
+### Forcing a review before all bots submit
+
+Set `FORCE_REVIEW=true` in the workflow environment to bypass the gate. This is intended
+for mention-triggered and dispatch-triggered runs where the author explicitly requests
+a review regardless of bot status.
 
 ## Future Improvements
 
@@ -289,7 +271,7 @@ This is unusual and suggests:
 2. **Fallback reviewers**: If bots don't submit, require human review instead
 3. **Bot absence detection**: Fail loudly if expected bots never trigger
 4. **Metrics dashboard**: Track wait times, timeout rates per bot
-5. **Codex graduation**: Once Codex is on 95%+ of PRs, may reduce Tier 2 timeout
+5. **Codex graduation**: Once Codex is on 95%+ of PRs, may reduce its mandatory participation window
 
 ## Related Issues & PRs
 
