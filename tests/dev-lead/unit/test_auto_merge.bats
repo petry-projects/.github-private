@@ -37,7 +37,7 @@ teardown() { rm -rf "$STUB_BIN_DIR" "$GH_CALLS"; }
 
 @test "hold_auto_merge: disables auto-merge when it is currently on" {
   source "$LIB"
-  AM_STATE="enabled"
+  AM_STATE="squash"
   run hold_auto_merge
   [ "$status" -eq 0 ]
   [[ "$output" == *"holding auto-merge OFF"* ]]
@@ -82,13 +82,36 @@ teardown() { rm -rf "$STUB_BIN_DIR" "$GH_CALLS"; }
   grep -q -- "pr merge 77 --repo owner/repo --auto --squash" "$GH_CALLS"
 }
 
+@test "restore_auto_merge: re-enables with the original merge strategy, not always squash" {
+  source "$LIB"
+  _AM_NEEDS_RESTORE=1
+  _AM_MERGE_METHOD="merge"
+  PR_STATE="open"
+  AM_STATE=""   # currently off (we disabled it)
+  run restore_auto_merge
+  [ "$status" -eq 0 ]
+  grep -q -- "pr merge 77 --repo owner/repo --auto --merge" "$GH_CALLS"
+  ! grep -q -- "--squash" "$GH_CALLS"
+}
+
+@test "restore_auto_merge: re-enables with rebase strategy when originally set to rebase" {
+  source "$LIB"
+  _AM_NEEDS_RESTORE=1
+  _AM_MERGE_METHOD="rebase"
+  PR_STATE="open"
+  AM_STATE=""   # currently off (we disabled it)
+  run restore_auto_merge
+  [ "$status" -eq 0 ]
+  grep -q -- "pr merge 77 --repo owner/repo --auto --rebase" "$GH_CALLS"
+}
+
 @test "restore_auto_merge: does NOT re-enable on a merged/closed PR" {
   source "$LIB"
   _AM_NEEDS_RESTORE=1
   PR_STATE="closed"
   run restore_auto_merge
   [ "$status" -eq 0 ]
-  ! grep -q -- "--auto --squash" "$GH_CALLS"
+  ! grep -q -- "--auto" "$GH_CALLS"
 }
 
 @test "restore_auto_merge: skips when auto-merge is already back on (success path)" {
@@ -98,7 +121,7 @@ teardown() { rm -rf "$STUB_BIN_DIR" "$GH_CALLS"; }
   AM_STATE="enabled"   # success path already re-enabled it
   run restore_auto_merge
   [ "$status" -eq 0 ]
-  ! grep -q -- "--auto --squash" "$GH_CALLS"
+  ! grep -q -- "--auto" "$GH_CALLS"
 }
 
 # ── push_with_merge_guard ─────────────────────────────────────────────────────

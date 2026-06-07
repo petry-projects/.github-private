@@ -31,6 +31,9 @@ set -euo pipefail
 # restore_auto_merge re-enables exactly what we disabled and nothing else (it
 # must never newly enable auto-merge on a PR that never had it).
 _AM_NEEDS_RESTORE=0
+# Merge method captured by hold_auto_merge; used by restore_auto_merge to replay
+# the original strategy (merge/squash/rebase) rather than always choosing squash.
+_AM_MERGE_METHOD="squash"
 
 # hold_auto_merge — disable auto-merge for the duration of the run, if it is on.
 hold_auto_merge() {
@@ -40,8 +43,9 @@ hold_auto_merge() {
     return 0
   fi
   local state
-  state=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}" --jq '.auto_merge // empty' 2>/dev/null || true)
+  state=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}" --jq '.auto_merge.merge_method // empty' 2>/dev/null || true)
   [ -n "$state" ] || return 0   # already off — leave it alone
+  _AM_MERGE_METHOD="$state"
   echo "::notice::PR #${PR_NUMBER} — holding auto-merge OFF while dev-lead works"
   if gh pr merge "$PR_NUMBER" --repo "$REPO" --disable-auto 2>/dev/null; then
     _AM_NEEDS_RESTORE=1
@@ -66,8 +70,14 @@ restore_auto_merge() {
   local am
   am=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}" --jq '.auto_merge // empty' 2>/dev/null || true)
   if [ -n "$am" ]; then return 0; fi     # success path already restored it
-  echo "::notice::PR #${PR_NUMBER} — restoring auto-merge (squash)"
-  gh pr merge "$PR_NUMBER" --repo "$REPO" --auto --squash 2>/dev/null \
+  local merge_flag
+  case "${_AM_MERGE_METHOD:-squash}" in
+    merge)  merge_flag="--merge" ;;
+    rebase) merge_flag="--rebase" ;;
+    *)      merge_flag="--squash" ;;
+  esac
+  echo "::notice::PR #${PR_NUMBER} — restoring auto-merge (${_AM_MERGE_METHOD:-squash})"
+  gh pr merge "$PR_NUMBER" --repo "$REPO" --auto "$merge_flag" 2>/dev/null \
     || echo "::warning::could not restore auto-merge on PR #${PR_NUMBER}"
 }
 
