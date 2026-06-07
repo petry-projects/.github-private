@@ -37,6 +37,22 @@ check_present() {
   fi
 }
 
+check_order() {
+  local file="$1" first="$2" second="$3" label="$4"
+  local line_first line_second
+  line_first=$(grep -nF "$first"  "$file" | head -1 | cut -d: -f1)
+  line_second=$(grep -nF "$second" "$file" | head -1 | cut -d: -f1)
+  if [ -z "$line_first" ] || [ -z "$line_second" ]; then
+    echo "FAIL [$label]: could not find both patterns in $file"
+    FAIL=$((FAIL + 1))
+  elif [ "$line_first" -lt "$line_second" ]; then
+    echo "PASS [$label]: correct ordering in $file"
+  else
+    echo "FAIL [$label]: '$first' must appear before '$second' in $file (first-match-wins routing)"
+    FAIL=$((FAIL + 1))
+  fi
+}
+
 # Both the inline workflow and the reusable (source of truth for all consumer
 # stubs) must carry the per-lane routing.
 for WORKFLOW in \
@@ -58,12 +74,35 @@ for WORKFLOW in \
   # ci-relay keeps its own ephemeral per-SHA slot so it fires immediately.
   check_present "$WORKFLOW" "format('dev-lead-ci-relay-" "ci-relay per-SHA lane"
 
+  # Assert the actual predicate-to-lane bindings, not just token presence.
+  # issue_comment on a PR has issue.pull_request set; that predicate must route
+  # to the PR lane so PR follow-up traffic shares the PR slot with other PR events.
+  check_present "$WORKFLOW" \
+    "github.event.issue.pull_request && format('dev-lead-pr-" \
+    "issue_comment-on-PR predicate routes to PR lane"
+  # repository_dispatch (ci-failure relay) carries client_payload.pr_number.
+  check_present "$WORKFLOW" \
+    "github.event.client_payload.pr_number && format('dev-lead-pr-" \
+    "repository_dispatch routes to PR lane via client_payload.pr_number"
+  # issue.pull_request must appear BEFORE issue.number in the || chain.
+  # If reordered, an issue_comment on a PR would fall through to the issue lane
+  # and share a slot with issue pickups, allowing cancellation.
+  check_order "$WORKFLOW" \
+    "github.event.issue.pull_request && format('dev-lead-pr-" \
+    "github.event.issue.number && format('dev-lead-issue-" \
+    "issue_comment-on-PR predicate before generic issue predicate"
+
   # Must NOT collapse back into a single repo-wide group (the #278 regression).
   # Guard all common bare-value spellings so a regression can't slip through
   # on quote-style changes.
   check_absent "$WORKFLOW" "group: dev-lead"    "no bare unquoted group: dev-lead"
   check_absent "$WORKFLOW" "group: 'dev-lead'"  "no bare single-quoted group: dev-lead"
   check_absent "$WORKFLOW" 'group: "dev-lead"'  "no bare double-quoted group: dev-lead"
+  # Also reject a repo-wide fallback hidden inside the ${{ ... }} expression.
+  # The group: >- form puts the value on the next lines starting with ||, so
+  # "group: dev-lead" patterns above would miss a regression like || 'dev-lead'.
+  check_absent "$WORKFLOW" "|| 'dev-lead'"      "no repo-wide || 'dev-lead' fallback in expression"
+  check_absent "$WORKFLOW" '|| "dev-lead"'      'no repo-wide || "dev-lead" fallback in expression'
 
   # cancel-in-progress must be false so a queued same-lane run waits for the active
   # run to finish instead of cancelling it (in-flight pickups always complete).
