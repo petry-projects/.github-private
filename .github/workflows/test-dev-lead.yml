@@ -80,3 +80,17 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
       - name: Validate concurrency config (per-issue/per-PR lanes)
         run: bash tests/dev-lead/integration/test_concurrency_config.sh
+
+  caller-permissions:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - name: Install PyYAML
+        run: python3 -m pip install --quiet pyyaml
+      - name: Validate caller<->reusable permission contract
+        # Reads the public petry-projects/.github caller template; github.token suffices.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 tests/dev-lead/integration/test_caller_permissions.py
