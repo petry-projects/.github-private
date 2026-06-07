@@ -43,7 +43,7 @@ echo "==> $PR_URL"
 #                NEUTRAL covers informational checks that don't gate merging.
 #      failing — anything else (FAILURE, ACTION_REQUIRED, TIMED_OUT, CANCELLED,
 #                STALE, STARTUP_FAILURE, or unknown conclusions)
-PR_SNAPSHOT=$(gh pr view "$PR_URL" --json headRefOid,statusCheckRollup,reviewDecision,reviews,labels)
+PR_SNAPSHOT=$(gh pr view "$PR_URL" --json headRefOid,statusCheckRollup,reviewDecision,reviews,labels,comments)
 PR_HEAD_SHA=$(echo "$PR_SNAPSHOT" | jq -r '.headRefOid')
 export PR_HEAD_SHA
 echo "    head SHA: $PR_HEAD_SHA"
@@ -145,10 +145,11 @@ fi
 # approval marker or latest escalation comment). An approval, or a human
 # re-engaging after escalation, grants a fresh budget of MAX_REVIEW_CYCLES.
 PR_ITEMS=$(
-  gh pr view "$PR_URL" --json reviews,comments \
-    --jq '((.reviews  // [] | map({when: .submittedAt, body: .body})) +
-           (.comments // [] | map({when: .createdAt,   body: .body})))
-          | map(select(.body != null))' 2>/dev/null || echo '[]'
+  printf '%s\n' "$PR_SNAPSHOT" | jq '
+    ((.reviews  // [] | map({when: .submittedAt, body: .body})) +
+     (.comments // [] | map({when: .createdAt,   body: .body})))
+    | map(select(.body != null))
+  ' 2>/dev/null || echo '[]'
 )
 REVIEW_CYCLE=$(compute_review_cycle "$PR_ITEMS")
 export REVIEW_CYCLE
@@ -169,7 +170,7 @@ echo "    review cycle: $REVIEW_CYCLE (max: $MAX_CYCLES)"
 # (see compute_review_cycle), so re-engagement starts with a fresh budget
 # instead of immediately re-escalating.
 if has_escalation_marker "$PR_ITEMS"; then
-  HAS_HUMAN_LABEL=$(echo "$PR_SNAPSHOT" | jq -r '[.labels // [] | .[].name] | if index("needs-human-review") then "true" else "false" end')
+  HAS_HUMAN_LABEL=$(echo "$PR_SNAPSHOT" | jq -r '[.labels // [] | .[].name] | any(. == "needs-human-review")')
   if [ "${FORCE_REVIEW:-false}" = "true" ]; then
     echo "    force-review: escalation marker present, but FORCE_REVIEW=true — re-engaging cascade"
     if [ "${DRY_RUN:-false}" != "true" ]; then
