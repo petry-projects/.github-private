@@ -19,6 +19,12 @@ approval() {  # approval <when> <sha>
   jq -n --arg when "$1" --arg sha "$2" \
     '{when: $when, body: ("<!-- pr-review-agent v1 sha=" + $sha + " decision=approved risk=LOW -->\n\n## Automated review — APPROVED ✓")}'
 }
+# cascade_approval uses decision=approve (no trailing 'd') — written by cascade-action.md
+# which sets DECISION from the verdict JSON field (.decision == "approve").
+cascade_approval() {  # cascade_approval <when> <sha>
+  jq -n --arg when "$1" --arg sha "$2" \
+    '{when: $when, body: ("<!-- pr-review-agent v1 sha=" + $sha + " decision=approve risk=LOW -->\n\n## Automated review — APPROVED ✓")}'
+}
 escalated_review() {  # escalated_review <when> <sha>
   jq -n --arg when "$1" --arg sha "$2" \
     '{when: $when, body: ("<!-- pr-review-agent v1 sha=" + $sha + " decision=escalated risk=MEDIUM -->\n\n## Automated review — NEEDS HUMAN REVIEW")}'
@@ -83,6 +89,28 @@ items() {  # items <item-json>...
 @test "approval marker itself never counts as a cycle" {
   run compute_review_cycle "$(items "$(approval 2026-06-07T01:00:00Z aaa111)")"
   [ "$output" = "0" ]
+}
+
+@test "cascade-action approve (decision=approve, no trailing d) resets cycle count" {
+  # cascade-action.md writes decision=approve (from the verdict JSON .decision field
+  # which is 'approve', not 'approved'). is_approval must match both spellings.
+  local j
+  j=$(items \
+    "$(fix_request      2026-06-07T01:00:00Z aaa111)" \
+    "$(fix_request      2026-06-07T02:00:00Z bbb222)" \
+    "$(cascade_approval 2026-06-07T03:00:00Z ccc333)")
+  run compute_review_cycle "$j"
+  [ "$output" = "0" ]
+}
+
+@test "cascade-action approve resets; subsequent fix-request counts from the approval" {
+  local j
+  j=$(items \
+    "$(fix_request      2026-06-07T01:00:00Z aaa111)" \
+    "$(cascade_approval 2026-06-07T02:00:00Z bbb222)" \
+    "$(fix_request      2026-06-07T03:00:00Z ccc333)")
+  run compute_review_cycle "$j"
+  [ "$output" = "1" ]
 }
 
 @test "PR #458 shape: fix, fix, approve counts 0 (was 3 — escalated wrongly)" {

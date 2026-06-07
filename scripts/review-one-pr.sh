@@ -99,6 +99,29 @@ if [ "$REVIEW_DECISION" = "CHANGES_REQUESTED" ] && [ "${FORCE_REVIEW:-false}" !=
   fi
 fi
 
+# Build PR_ITEMS early from the already-fetched PR_SNAPSHOT. We need it here,
+# before idempotency, so we can detect the label-removal re-engagement case
+# (issue #468: same-SHA idempotency exit blocked the re-engagement branch).
+PR_ITEMS=$(
+  printf '%s\n' "$PR_SNAPSHOT" | jq '
+    ((.reviews  // [] | map({when: .submittedAt, body: .body})) +
+     (.comments // [] | map({when: .createdAt,   body: .body})))
+    | map(select(.body != null))
+  ' 2>/dev/null || echo '[]'
+)
+
+# Early re-engagement detection: when a human removes needs-human-review without
+# pushing a new commit the head SHA doesn't change, so the idempotency check
+# below would exit 100 before the escalation block could see the label removal.
+# Pre-check here and set LABEL_REENGAGEMENT so idempotency can be bypassed.
+LABEL_REENGAGEMENT=false
+if has_escalation_marker "$PR_ITEMS" && [ "${FORCE_REVIEW:-false}" != "true" ]; then
+  HAS_HUMAN_LABEL=$(echo "$PR_SNAPSHOT" | jq -r '[.labels // [] | .[].name] | any(. == "needs-human-review")')
+  if [ "$HAS_HUMAN_LABEL" = "false" ]; then
+    LABEL_REENGAGEMENT=true
+  fi
+fi
+
 # 2. Idempotency: look for our marker at this SHA in existing reviews+comments.
 # We tag every review/comment with reviews' submittedAt / comments' createdAt,
 # concatenate, sort by timestamp ascending, and take the latest body that
@@ -125,6 +148,8 @@ EXISTING_MARKER_SHA=$(
 if [ -n "${EXISTING_MARKER_SHA:-}" ] && [ "$EXISTING_MARKER_SHA" = "$PR_HEAD_SHA" ]; then
   if [ "${FORCE_REVIEW:-false}" = "true" ]; then
     echo "    force-review: prior marker $PR_HEAD_SHA matches head, but FORCE_REVIEW=true — re-running cascade"
+  elif [ "$LABEL_REENGAGEMENT" = "true" ]; then
+    echo "    re-engage: prior marker $PR_HEAD_SHA matches head, but needs-human-review label removed — re-running cascade"
   else
     echo "    noop: already reviewed at $PR_HEAD_SHA"
     echo "{\"pr\":\"$PR_URL\",\"sha\":\"$PR_HEAD_SHA\",\"decision\":\"noop\",\"reason\":\"already-reviewed-at-head\"}"
@@ -144,13 +169,7 @@ fi
 # only non-approval markers newer than the most recent reset event (latest
 # approval marker or latest escalation comment). An approval, or a human
 # re-engaging after escalation, grants a fresh budget of MAX_REVIEW_CYCLES.
-PR_ITEMS=$(
-  printf '%s\n' "$PR_SNAPSHOT" | jq '
-    ((.reviews  // [] | map({when: .submittedAt, body: .body})) +
-     (.comments // [] | map({when: .createdAt,   body: .body})))
-    | map(select(.body != null))
-  ' 2>/dev/null || echo '[]'
-)
+# PR_ITEMS was already computed before the idempotency check (issue #468).
 REVIEW_CYCLE=$(compute_review_cycle "$PR_ITEMS")
 export REVIEW_CYCLE
 MAX_CYCLES="${MAX_REVIEW_CYCLES:-3}"
@@ -210,6 +229,16 @@ Please take a look manually, or close this PR if it's no longer needed. To re-en
 _Posted by the ${BOT_USER:-donpetry-bot} PR-review cascade._
 ESCALATION_END
     gh pr comment "$PR_URL" --body-file "$ESCALATION_BODY" || echo "    warn: gh pr comment failed — escalation marker not posted; will retry next cycle"
+    # Ensure the label exists in the target repo before applying it. Without this,
+    # gh pr edit --add-label silently fails (|| true) when the label has never been
+    # created, leaving the marker posted but no label set — the next run sees
+    # marker+no-label and re-engages immediately, defeating the circuit breaker.
+    _PR_REPO=$(echo "$PR_URL" | sed -E 's|https://github.com/([^/]+/[^/]+)/.*|\1|')
+    gh api "repos/$_PR_REPO/labels" --method POST \
+      -f name="needs-human-review" -f color="D93F0B" \
+      -f description="Awaiting human review before automated cascade resumes" \
+      2>/dev/null || true
+    unset _PR_REPO
     gh pr edit "$PR_URL" --add-label needs-human-review 2>/dev/null || true
     bash "$SCRIPT_DIR/request-codeowners-review.sh" "$PR_URL" || true
     rm -f "$ESCALATION_BODY"

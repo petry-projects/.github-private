@@ -24,7 +24,7 @@
 # Shared jq predicate definitions, prepended to every program below.
 _REVIEW_CYCLE_JQ_DEFS='
   def has_marker: (.body // "") | test("<!-- pr-review-agent v1 sha=[a-f0-9]+");
-  def is_approval: (.body // "") | test("<!-- pr-review-agent v1 sha=[a-f0-9]+\\s+decision=approved");
+  def is_approval: (.body // "") | test("<!-- pr-review-agent v1 sha=[a-f0-9]+\\s+decision=approved?");
   def is_escalation: (.body // "") | test("<!-- pr-review-agent escalation -->");
 '
 
