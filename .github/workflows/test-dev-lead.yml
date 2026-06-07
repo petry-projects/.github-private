@@ -17,6 +17,11 @@ on:
       - 'scripts/lib/**'
       - 'tests/dev-lead/**'
       - 'prompts/dev-lead/**'
+      # Guard the concurrency-config test on workflow changes too — otherwise a
+      # dev-lead.yml edit can land on main without ever running this suite
+      # (how the per-repo->per-lane mismatch stayed hidden after #450).
+      - '.github/workflows/dev-lead*.yml'
+      - '.github/workflows/test-dev-lead.yml'
   workflow_dispatch: {}
 
 permissions:
@@ -73,5 +78,5 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-      - name: Validate concurrency config (per-repo serialization)
+      - name: Validate concurrency config (per-issue/per-PR lanes)
         run: bash tests/dev-lead/integration/test_concurrency_config.sh
