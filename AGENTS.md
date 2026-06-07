@@ -30,6 +30,10 @@ This is the `.github-private` org infrastructure repo for `petry-projects`. It c
   agentic workflow compilation. It is not covered by the org template and must not be removed by template
   syncs. If the org template gains a `gh-aw-compile` equivalent, remove this exception and defer to the
   template instead.
+- **Exception:** `token-report.yml` (weekly Token Cost Observatory report) is a documented repo-specific
+  workflow with no corresponding org template in `standards/workflows/`. It must not be removed by template
+  syncs. If the org template gains a token-report equivalent, remove this exception and defer to the
+  template instead.
 
 ### Agent Profiles (`agents/*.md`)
 
