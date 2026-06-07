@@ -585,11 +585,8 @@ run_triage() {
             --output-format text \
             < "$prompt_file" | tee "$_tok_tmp" || rc=${PIPESTATUS[0]}
         else
-          timeout "$TRIAGE_TIMEOUT_SEC" gemini --prompt "" \
-            --model "$ENGINE_TRIAGE_MODEL" \
-            --approval-mode auto_edit \
-            --output-format text \
-            < "$prompt_file" || rc=$?
+          _gemini_invoke "$prompt_file" "$TRIAGE_TIMEOUT_SEC" "$ENGINE_TRIAGE_MODEL" \
+            --approval-mode auto_edit || rc=$?
         fi
         ;;
       copilot)
@@ -696,11 +693,8 @@ run_agentic() {
           --output-format text \
           < "$prompt_file" | tee "$_tok_tmp" || rc=${PIPESTATUS[0]}
       else
-        timeout "$DEEP_TIMEOUT_SEC" gemini --prompt "" \
-          --model "$model" \
-          --approval-mode auto_edit \
-          --output-format text \
-          < "$prompt_file" || rc=$?
+        _gemini_invoke "$prompt_file" "$DEEP_TIMEOUT_SEC" "$model" \
+          --approval-mode auto_edit || rc=$?
       fi
       ;;
     copilot)
@@ -1135,37 +1129,31 @@ run_duck() {
     claude)
       unset COPILOT_GITHUB_TOKEN 2>/dev/null || true
       unset GOOGLE_API_KEY 2>/dev/null || true
+      # Route through the chain helper so real token usage (incl. cache) is captured
+      # when logging is on; a single-model "chain" preserves prior behaviour.
       if [ -n "$_tok_tmp" ]; then
-        timeout "$DUCK_TIMEOUT_SEC" claude --print \
-          --model "$model" \
+        _claude_chain_invoke "$model" "$prompt_file" "$DUCK_TIMEOUT_SEC" \
           --permission-mode acceptEdits \
           --allowed-tools "Bash,Read,Grep,Glob" \
           --max-turns 25 \
-          < "$prompt_file" | tee "$_tok_tmp" || rc=${PIPESTATUS[0]}
+          | tee "$_tok_tmp" || rc=${PIPESTATUS[0]}
       else
-        timeout "$DUCK_TIMEOUT_SEC" claude --print \
-          --model "$model" \
+        _claude_chain_invoke "$model" "$prompt_file" "$DUCK_TIMEOUT_SEC" \
           --permission-mode acceptEdits \
           --allowed-tools "Bash,Read,Grep,Glob" \
           --max-turns 25 \
-          < "$prompt_file" || rc=$?
+          || rc=$?
       fi
       ;;
     gemini)
       unset CLAUDE_CODE_OAUTH_TOKEN 2>/dev/null || true
       unset COPILOT_GITHUB_TOKEN 2>/dev/null || true
       if [ -n "$_tok_tmp" ]; then
-        timeout "$DUCK_TIMEOUT_SEC" gemini --prompt "" \
-          --model "$model" \
-          --approval-mode auto_edit \
-          --output-format text \
-          < "$prompt_file" | tee "$_tok_tmp" || rc=${PIPESTATUS[0]}
+        _gemini_invoke "$prompt_file" "$DUCK_TIMEOUT_SEC" "$model" \
+          --approval-mode auto_edit | tee "$_tok_tmp" || rc=${PIPESTATUS[0]}
       else
-        timeout "$DUCK_TIMEOUT_SEC" gemini --prompt "" \
-          --model "$model" \
-          --approval-mode auto_edit \
-          --output-format text \
-          < "$prompt_file" || rc=$?
+        _gemini_invoke "$prompt_file" "$DUCK_TIMEOUT_SEC" "$model" \
+          --approval-mode auto_edit || rc=$?
       fi
       ;;
     copilot)
@@ -1314,17 +1302,11 @@ run_writer() {
       ;;
     gemini)
       if [ -n "$_tmp" ]; then
-        timeout "$ACTION_TIMEOUT_SEC" gemini --prompt "" \
-          --model "$model" \
-          --approval-mode auto_edit \
-          --output-format text \
-          < "$prompt_file" 2>&1 | tee "$_tmp" || rc=${PIPESTATUS[0]}
+        _gemini_invoke "$prompt_file" "$ACTION_TIMEOUT_SEC" "$model" \
+          --approval-mode auto_edit 2>&1 | tee "$_tmp" || rc=${PIPESTATUS[0]}
       else
-        timeout "$ACTION_TIMEOUT_SEC" gemini --prompt "" \
-          --model "$model" \
-          --approval-mode auto_edit \
-          --output-format text \
-          < "$prompt_file" || rc=$?
+        _gemini_invoke "$prompt_file" "$ACTION_TIMEOUT_SEC" "$model" \
+          --approval-mode auto_edit || rc=$?
       fi
       ;;
     copilot)
