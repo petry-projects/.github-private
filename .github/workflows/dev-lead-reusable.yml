@@ -23,6 +23,36 @@ on:
 
 permissions: {}
 
+# ── concurrency ───────────────────────────────────────────────────────────────
+# Centralised here (single source of truth) so caller stubs no longer carry —
+# and can no longer drift into — their own concurrency group. Separate per-issue
+# and per-PR lanes ensure issue pickups are NEVER cancelled by unrelated PR
+# follow-up traffic (reviews, comments, ci-relay) — the root cause of issue
+# pickups being cancelled before they could open a PR. See petry-projects/.github#402.
+#
+# Routing (first match wins):
+#   check_run                        -> dev-lead-ci-relay-<sha>  (per-SHA relay lane)
+#   pull_request / *_review[_comment]-> dev-lead-pr-<n>          (PR lane)
+#   issue_comment on a PR            -> dev-lead-pr-<n>           (issue.pull_request set;
+#                                                                 avoids issue#/PR# collision)
+#   issues / issue_comment on issue  -> dev-lead-issue-<n>       (issue lane)
+#   repository_dispatch (ci-failure) -> dev-lead-pr-<n>          (client_payload.pr_number)
+#   anything else                    -> dev-lead-run-<run_id>    (unique; never cancelled)
+#
+# cancel-in-progress is false: a newer same-lane event queues behind the active
+# run rather than killing it, so an in-flight pickup always finishes.
+concurrency:
+  group: >-
+    ${{
+      (github.event_name == 'check_run' && format('dev-lead-ci-relay-{0}', github.event.check_run.head_sha))
+      || (github.event.pull_request.number && format('dev-lead-pr-{0}', github.event.pull_request.number))
+      || (github.event.issue.pull_request && format('dev-lead-pr-{0}', github.event.issue.number))
+      || (github.event.issue.number && format('dev-lead-issue-{0}', github.event.issue.number))
+      || (github.event.client_payload.pr_number && format('dev-lead-pr-{0}', github.event.client_payload.pr_number))
+      || format('dev-lead-run-{0}', github.run_id)
+    }}
+  cancel-in-progress: false
+
 jobs:
   # ── dispatch ────────────────────────────────────────────────────────────────
   # Handles all events except check_run (which is routed by the caller).
@@ -41,9 +71,10 @@ jobs:
       issues: write
       actions: read
       checks: read
+      statuses: read
     env:
       BOT_USER: ${{ vars.BOT_USER || 'donpetry-bot' }}
-      TRUSTED_BOTS: ${{ vars.TRUSTED_BOTS || 'copilot-pull-request-reviewer[bot],gemini-code-assist[bot],sonarqubecloud[bot],coderabbitai[bot]' }}
+      TRUSTED_BOTS: ${{ vars.TRUSTED_BOTS || 'copilot-pull-request-reviewer[bot],gemini-code-assist[bot],sonarqubecloud[bot],coderabbitai[bot],chatgpt-codex-connector[bot]' }}
       TRIGGER_PHRASES: ${{ vars.TRIGGER_PHRASES || '@dev-lead' }}
       DEV_LEAD_ENGINE: ${{ vars.DEV_LEAD_ENGINE || 'claude' }}
       DEV_LEAD_DRY_RUN: ${{ vars.DEV_LEAD_DRY_RUN || 'false' }}

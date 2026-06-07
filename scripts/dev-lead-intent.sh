@@ -12,7 +12,7 @@ set -euo pipefail
 #   fix-bot-comment — Bot issue comment to address
 #   on-mention       — Human-directed @mention task
 #   review-changes   — Human review changes-requested
-#   issue           — Issue labeled dev-lead/claude
+#   issue           — Issue labeled dev-lead
 #   rebase          — Rebase conflict sentinel
 #   enable-auto-merge — Bot approval: enable auto-merge if PR is APPROVED
 #   ci-relay        — check_run relay (handled by ci-relay job, not this script)
@@ -103,7 +103,7 @@ is_fork_pr() {
 EVENT_NAME="${GITHUB_EVENT_NAME:-}"
 EVENT_PATH="${GITHUB_EVENT_PATH:-}"
 BOT_USER="${BOT_USER:-donpetry-bot}"
-TRUSTED_BOTS="${TRUSTED_BOTS:-copilot-pull-request-reviewer[bot],gemini-code-assist[bot],sonarqubecloud[bot],coderabbitai[bot]}"
+TRUSTED_BOTS="${TRUSTED_BOTS:-copilot-pull-request-reviewer[bot],gemini-code-assist[bot],sonarqubecloud[bot],coderabbitai[bot],chatgpt-codex-connector[bot]}"
 TRIGGER_PHRASES="${TRIGGER_PHRASES:-@dev-lead}"
 
 if [ -z "$EVENT_NAME" ]; then
@@ -322,7 +322,7 @@ case "$EVENT_NAME" in
     label_name=$(jq -r '.label.name // empty' "$EVENT_PATH" 2>/dev/null || true)
     issue_number=$(jq -r '.issue.number // empty' "$EVENT_PATH" 2>/dev/null || true)
     case "$label_name" in
-      dev-lead|claude)
+      dev-lead)
         context=$(printf '{"issue_number":%s}' "${issue_number:-0}")
         emit_intent "issue" "issue-labeled-${label_name}" "$context"
         ;;
