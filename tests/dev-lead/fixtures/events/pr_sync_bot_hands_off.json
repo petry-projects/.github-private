@@ -1,0 +1,26 @@
+{
+  "_test_expected_intent": "skip",
+  "action": "synchronize",
+  "number": 53,
+  "pull_request": {
+    "number": 53,
+    "title": "feat: update dev-lead workflow",
+    "body": "Automated fix by dev-lead agent.",
+    "state": "open",
+    "author_association": "OWNER",
+    "head": {
+      "sha": "ccc333ddd444",
+      "ref": "feat/dev-lead-update",
+      "repo": { "full_name": "petry-projects/.github-private" }
+    },
+    "base": {
+      "ref": "main",
+      "repo": { "full_name": "petry-projects/.github-private" }
+    },
+    "labels": [
+      { "name": "dev-lead:hands-off" }
+    ]
+  },
+  "repository": { "full_name": "petry-projects/.github-private" },
+  "sender": { "login": "donpetry-bot", "type": "Bot" }
+}
