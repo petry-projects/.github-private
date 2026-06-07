@@ -114,6 +114,17 @@ teardown() { rm -rf "$STUB_BIN_DIR" "$GH_CALLS"; }
   ! grep -q -- "--auto" "$GH_CALLS"
 }
 
+@test "restore_auto_merge: passes --match-head-commit when HEAD_SHA is set" {
+  source "$LIB"
+  _AM_NEEDS_RESTORE=1
+  PR_STATE="open"
+  AM_STATE=""
+  export HEAD_SHA="abc123"
+  run restore_auto_merge
+  [ "$status" -eq 0 ]
+  grep -q -- "--match-head-commit abc123" "$GH_CALLS"
+}
+
 @test "restore_auto_merge: skips when auto-merge is already back on (success path)" {
   source "$LIB"
   _AM_NEEDS_RESTORE=1

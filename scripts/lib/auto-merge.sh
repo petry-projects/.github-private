@@ -25,7 +25,7 @@ set -euo pipefail
 #  - push_with_merge_guard  treats "branch merged/closed mid-run" as a benign
 #                           success instead of a hard, red-X failure.
 #
-# All functions read PR_NUMBER / REPO / DEV_LEAD_DRY_RUN from the environment.
+# All functions read PR_NUMBER / REPO / DEV_LEAD_DRY_RUN / HEAD_SHA from the environment.
 
 # Set to 1 by hold_auto_merge only when it actually turned auto-merge off, so
 # restore_auto_merge re-enables exactly what we disabled and nothing else (it
@@ -76,8 +76,10 @@ restore_auto_merge() {
     rebase) merge_flag="--rebase" ;;
     *)      merge_flag="--squash" ;;
   esac
+  local restore_args=("--auto" "$merge_flag")
+  [[ -n "${HEAD_SHA:-}" ]] && restore_args+=("--match-head-commit" "${HEAD_SHA}")
   echo "::notice::PR #${PR_NUMBER} — restoring auto-merge (${_AM_MERGE_METHOD:-squash})"
-  gh pr merge "$PR_NUMBER" --repo "$REPO" --auto "$merge_flag" 2>/dev/null \
+  gh pr merge "$PR_NUMBER" --repo "$REPO" "${restore_args[@]}" 2>/dev/null \
     || echo "::warning::could not restore auto-merge on PR #${PR_NUMBER}"
 }
 
