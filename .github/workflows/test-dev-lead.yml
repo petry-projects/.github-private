@@ -17,6 +17,11 @@ on:
       - 'scripts/lib/**'
       - 'tests/dev-lead/**'
       - 'prompts/dev-lead/**'
+      # Guard the concurrency-config test on workflow changes too — otherwise a
+      # dev-lead.yml edit can land on main without ever running this suite
+      # (how the per-repo->per-lane mismatch stayed hidden after #450).
+      - '.github/workflows/dev-lead*.yml'
+      - '.github/workflows/test-dev-lead.yml'
   workflow_dispatch: {}
 
 permissions:
