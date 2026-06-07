@@ -193,17 +193,20 @@ main() {
     exit 1
   fi
 
+  # Hold auto-merge OFF while we work so a review approval landing mid-run can't
+  # merge (and delete) the branch out from under us. Install the trap and hold
+  # before check_idempotency so an approval landing during the API/JQ scan can't
+  # merge the branch before the trap is in place. restore_auto_merge is
+  # idempotent (_AM_NEEDS_RESTORE guards it), so the EXIT trap no-ops cleanly
+  # when check_idempotency causes an early exit with nothing to restore.
+  # checkout_pr_in_worktree chains its own cleanup onto this trap.
+  trap restore_auto_merge EXIT
+  hold_auto_merge
+
   if check_idempotency; then
     echo "::notice::Already handled CI failure at SHA $HEAD_SHA (or PR exhausted) — skipping"
     exit 0
   fi
-
-  # Hold auto-merge OFF while we work so a review approval landing mid-run can't
-  # merge (and delete) the branch out from under us. restore_auto_merge (EXIT
-  # trap) puts it back however we exit; checkout_pr_in_worktree chains its own
-  # cleanup onto this trap.
-  trap restore_auto_merge EXIT
-  hold_auto_merge
 
   local prompt_file
   prompt_file=$(build_prompt)
