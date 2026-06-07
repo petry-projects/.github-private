@@ -146,7 +146,7 @@ emit_token_record() {
 # subshell. The $$ form is only a fallback for any non-concurrent direct caller.
 _engine_usage_sidecar() {
   [ -n "${TOKEN_LOG_FILE:-}" ] || return 0
-  if [ -n "${_ENGINE_USAGE_OUT:-}" ]; then
+  if [[ -n "${_ENGINE_USAGE_OUT:-}" ]]; then
     printf '%s' "$_ENGINE_USAGE_OUT"
   else
     printf '%s' "${TOKEN_LOG_FILE}.last-usage.$$"
