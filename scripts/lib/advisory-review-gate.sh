@@ -163,6 +163,7 @@ check_advisory_reviews() {
     now=$(date -u +%s)
 
     head_age_sec=0
+    head_time_raw=""  # Initialize before conditional to prevent set -u abort
     # Use pushedDate (when the commit arrived on GitHub) not committedDate (author
     # timestamp) so that old cherry-picked commits don't bypass the gate immediately.
     # $url in the query string is a GraphQL variable, not a shell variable.
@@ -177,7 +178,7 @@ check_advisory_reviews() {
     fi
 
     time_since_last_sub=0
-    latest_sub_at=$(echo "$current_states" | jq -rs '[.[].time] | sort | last' 2>/dev/null) || latest_sub_at=""
+    latest_sub_at=$(echo "$current_states" | jq -r '[.[].time] | sort | last' 2>/dev/null) || latest_sub_at=""
     if [ -n "$latest_sub_at" ]; then
       latest_sub_raw=$(date -u -d "$latest_sub_at" +%s 2>/dev/null) || latest_sub_raw=""
       if [ -n "$latest_sub_raw" ]; then
