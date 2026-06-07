@@ -125,7 +125,8 @@ Read every changed line as if you are the reviewer seeing the response:
 2. Ask: does each change directly and completely address its thread?
 3. Ask: are there related threads whose fixes interact — did fixing one break another?
 4. Ask: would the reviewer be satisfied, or is there still an issue?
-5. Fix anything found, then re-run Phase 2
+5. Ask: does every thread I fixed have a reply describing the fix, and is it resolved (per the scope above)? Reply/resolve any I missed.
+6. Fix anything found, then re-run Phase 2
 
 ## Constraints
 
