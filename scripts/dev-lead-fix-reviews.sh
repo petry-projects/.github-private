@@ -3195,8 +3195,26 @@ has_reviews_rate_limited_marker() {
 # For retryable intents (fix-reviews, review-changes, rebase), the cron will re-dispatch.
 # For non-retryable intents (on-mention, fix-bot-comment), asks the user to re-trigger
 # since USER_INSTRUCTION/COMMENT_BODY cannot be reconstructed at retry time.
+#
+# $2 (reason) selects the user-facing wording:
+#   rate-limit (default) — all AI engines genuinely rate-limited (engine exit 2)
+#   blocked              — engine ran fine but the PR still has hard blockers
+#                          (failing/cancelled checks or CHANGES_REQUESTED reviews);
+#                          schedules a 30-minute backoff retry (issue #461)
+# Both reasons post the same machine-readable `status=rate-limited` marker token —
+# dev-lead-retry.sh keys its re-dispatch scan on that string — only the visible
+# text differs, so users are no longer told "rate-limited" when the real cause
+# is PR blockers.
 post_reviews_rate_limited() {
   local intent="$1"
+  local reason="${2:-rate-limit}"
+
+  # The blocked path owns its backoff: a fixed 30-minute reset so the retry cron
+  # backs off instead of re-dispatching immediately. The rate-limit path's reset
+  # is parsed from engine output (parse_reset_time) before this function is called.
+  if [ "$reason" = "blocked" ]; then
+    printf '%s' "$(date -u -d '+30 minutes' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)" > /tmp/dev-lead-rate-limit-reset
+  fi
 
   # Expire any stale terminal markers (applied/no-changes/failed) for this SHA+intent
   # so the retry cron is not masked by a prior terminal that predates the current blocker.
@@ -3238,32 +3256,45 @@ post_reviews_rate_limited() {
     sha_detail=" sha=${HEAD_SHA}"
   fi
 
-  local marker="${REVIEWS_MARKER_PREFIX}${PR_NUMBER}${sha_detail} intent=${intent} status=rate-limited${reset_detail} -->"
+  # `reason=` is informational (visible-text selection + marker forensics); the
+  # retry cron and marker dedup patterns match on `status=rate-limited` and are
+  # unaffected by the extra field.
+  local marker="${REVIEWS_MARKER_PREFIX}${PR_NUMBER}${sha_detail} intent=${intent} status=rate-limited reason=${reason}${reset_detail} -->"
 
-  # Retry message depends on whether the intent can be re-dispatched automatically
-  local retry_msg
-  case "$intent" in
-    fix-reviews|review-changes|rebase)
-      retry_msg="The retry cron will re-attempt automatically."
-      ;;
-    on-mention|fix-bot-comment)
-      retry_msg="Please re-trigger manually (re-mention \`@dev-lead\`) when the rate limit clears — the original request cannot be reconstructed automatically."
-      ;;
-    *)
-      retry_msg="Manual re-trigger may be required."
-      ;;
-  esac
-  if [ -n "$reset_time" ]; then
-    retry_msg="${retry_msg} Rate limit resets at: \`${reset_time}\`"
+  # Retry message depends on the reason and on whether the intent can be
+  # re-dispatched automatically.
+  local heading retry_msg
+  if [ "$reason" = "blocked" ]; then
+    heading="## Dev-Lead — waiting on PR blockers (intent: ${intent})"
+    retry_msg="No changes were committed, but the PR still has blocking checks or reviews (failing or cancelled checks, or changes-requested reviews). The retry cron will re-attempt automatically."
+    if [ -n "$reset_time" ]; then
+      retry_msg="${retry_msg} Next attempt after: \`${reset_time}\`"
+    fi
+  else
+    heading="## Dev-Lead — rate-limited (intent: ${intent})"
+    case "$intent" in
+      fix-reviews|review-changes|rebase)
+        retry_msg="The retry cron will re-attempt automatically."
+        ;;
+      on-mention|fix-bot-comment)
+        retry_msg="Please re-trigger manually (re-mention \`@dev-lead\`) when the rate limit clears — the original request cannot be reconstructed automatically."
+        ;;
+      *)
+        retry_msg="Manual re-trigger may be required."
+        ;;
+    esac
+    if [ -n "$reset_time" ]; then
+      retry_msg="${retry_msg} Rate limit resets at: \`${reset_time}\`"
+    fi
   fi
 
   local marker_body="${marker}
-## Dev-Lead — rate-limited (intent: ${intent})
+${heading}
 **PR:** #${PR_NUMBER}
 ${retry_msg}"
 
   if [ "$DEV_LEAD_DRY_RUN" = "true" ]; then
-    echo "[dry-run] would post rate-limited marker for intent=${intent}"
+    echo "[dry-run] would post rate-limited marker for intent=${intent} reason=${reason}"
     echo "$marker_body"
   else
     # Post the new marker FIRST, then remove old marker(s) only after the replacement
@@ -3287,11 +3318,18 @@ ${retry_msg}"
         local actor_mention=""
         [ -n "${ACTOR:-}" ] && actor_mention="@${ACTOR} "
         local reset_display="${reset_time:-unknown}"
-        local ack_body="> [!NOTE]
+        local ack_body
+        if [ "$reason" = "blocked" ]; then
+          ack_body="> [!NOTE]
+> ${actor_mention}I reviewed this PR and no code changes were needed, but it still has blocking checks or reviews (failing or cancelled checks, or changes-requested reviews), so I cannot mark it done yet. I'll re-check automatically.
+> Next attempt after: \`${reset_display}\`"
+        else
+          ack_body="> [!NOTE]
 > ${actor_mention}I received your request but all AI engines are currently rate-limited. I'll retry automatically once the rate limit clears.
 > Rate limit resets at: \`${reset_display}\`"
+        fi
         if [ "$DEV_LEAD_DRY_RUN" = "true" ]; then
-          echo "[dry-run] would post user-visible rate-limit acknowledgment"
+          echo "[dry-run] would post user-visible ${reason} acknowledgment"
           echo "$ack_body"
         else
           gh pr comment "$PR_NUMBER" --repo "$REPO" --body "$ack_body"
