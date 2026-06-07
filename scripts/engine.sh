@@ -496,6 +496,7 @@ run_triage() {
   # Capture output for token estimation when logging is enabled (tee is a no-op otherwise).
   local _tok_tmp=""
   if [ -n "${TOKEN_LOG_FILE:-}" ]; then
+    unset _ENGINE_USAGE_OUT
     _tok_tmp="$(mktemp 2>/dev/null || true)"
     # Per-call usage-sidecar key: a unique mktemp path, exported so the engine's
     # pipeline subshell and _record_engine_tokens agree on it. Unique per call →
@@ -571,6 +572,7 @@ run_agentic() {
   local tier="${3:-deep}"
   local _tok_tmp="" rc=0
   if [ -n "${TOKEN_LOG_FILE:-}" ]; then
+    unset _ENGINE_USAGE_OUT
     _tok_tmp="$(mktemp 2>/dev/null || true)"
     # Per-call usage-sidecar key: a unique mktemp path, exported so the engine's
     # pipeline subshell and _record_engine_tokens agree on it. Unique per call →
@@ -696,6 +698,7 @@ run_duck() {
   local model="$2"
   local _tok_tmp="" rc=0
   if [ -n "${TOKEN_LOG_FILE:-}" ]; then
+    unset _ENGINE_USAGE_OUT
     _tok_tmp="$(mktemp 2>/dev/null || true)"
     # Per-call usage-sidecar key: a unique mktemp path, exported so the engine's
     # pipeline subshell and _record_engine_tokens agree on it. Unique per call →
@@ -854,6 +857,7 @@ run_writer() {
   # to stdout, not stderr), so is_rate_limited never fired and fallback engines
   # were never tried.
   local _tmp rc=0
+  unset _ENGINE_USAGE_OUT
   _tmp="$(mktemp 2>/dev/null || true)"
   # Per-call usage-sidecar key (see run_triage); unique mktemp path shared with
   # the engine subshell via export.
