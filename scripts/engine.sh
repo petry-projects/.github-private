@@ -352,12 +352,14 @@ _claude_chain_invoke() {
       # Gemini equivalent); production always uses /tmp/claude-chain.
       local _ccfb_prefix="${_CLAUDE_CHAIN_FB_PREFIX:-/tmp/claude-chain}"
       local _ccfb_stdout _ccfb_stderr
-      _ccfb_stdout="$(mktemp "${_ccfb_prefix}-stdout-XXXXXX" 2>/dev/null)" || \
-        _ccfb_stdout="${_ccfb_prefix}-stdout-$$-${attempted}"
-      _ccfb_stderr="$(mktemp "${_ccfb_prefix}-stderr-XXXXXX" 2>/dev/null)" || \
-        _ccfb_stderr="${_ccfb_prefix}-stderr-$$-${attempted}"
-      if { [ -f "$_ccfb_stdout" ] || : > "$_ccfb_stdout" 2>/dev/null; } && \
-         { [ -f "$_ccfb_stderr" ] || : > "$_ccfb_stderr" 2>/dev/null; }; then
+      # Use mktemp with a template so fallback filenames are non-predictable.
+      # If that also fails, _ccfb_stdout/_ccfb_stderr are empty and the
+      # condition below is false, falling through to the in-memory last-resort.
+      # Dropping to a deterministic PID-based name would reintroduce a
+      # symlink-clobbering risk that mktemp -t XXXXXX is designed to prevent.
+      _ccfb_stdout="$(mktemp "${_ccfb_prefix}-stdout-XXXXXX" 2>/dev/null)" || _ccfb_stdout=""
+      _ccfb_stderr="$(mktemp "${_ccfb_prefix}-stderr-XXXXXX" 2>/dev/null)" || _ccfb_stderr=""
+      if [ -n "$_ccfb_stdout" ] && [ -n "$_ccfb_stderr" ]; then
         timeout "$timeout_sec" claude --print --model "$model" "${extra_args[@]}" \
           < "$prompt_file" > "$_ccfb_stdout" 2> "$_ccfb_stderr" || rc=$?
         stdout_tmp="$_ccfb_stdout"
