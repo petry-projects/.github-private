@@ -88,6 +88,20 @@ has_trigger_phrase() {
   return 1
 }
 
+# has_label <name>
+# Returns 0 (true) if the PR or issue in the event payload carries label <name>.
+# Reads labels straight from the payload (.pull_request.labels / .issue.labels),
+# so it stays a pure classifier with no API calls. repository_dispatch payloads
+# carry no labels; those are handled via a separate API call in the dispatch
+# branch of the routing section.
+has_label() {
+  local name="$1"
+  [ -n "$EVENT_PATH" ] && [ -f "$EVENT_PATH" ] || return 1
+  jq -e --arg n "$name" '
+    any(.pull_request.labels[]?, .issue.labels[]?; .name == $n)
+  ' "$EVENT_PATH" >/dev/null 2>&1
+}
+
 # is_fork_pr <event_path>
 # Returns 0 (true) if the PR head repo differs from GITHUB_REPOSITORY.
 is_fork_pr() {
@@ -117,6 +131,20 @@ echo "dev-lead-intent: processing event=$EVENT_NAME"
 
 if [ "$EVENT_NAME" = "check_run" ]; then
   emit_skip "check-run-handled-by-ci-relay"
+  exit 0
+fi
+
+# ── hands-off guard ───────────────────────────────────────────────────────────
+# A PR or issue labeled `dev-lead:hands-off` is intentionally excluded from the
+# agent — e.g. PRs that modify the dev-lead workflow itself, so the agent does
+# not pile commits onto its own infrastructure changes. Runs before the anti-loop
+# guard so a hands-off sync from BOT_USER emits `hands-off-label` rather than
+# `dev-lead-own-commit`, keeping the skip reason stable whenever the label is
+# present. Applies to every label-bearing event (PR opens/syncs, reviews, review
+# comments, issue comments on PRs, issue labeling). repository_dispatch payloads
+# carry no labels; those are checked via the API in the dispatch branch below.
+if has_label "dev-lead:hands-off"; then
+  emit_skip "hands-off-label"
   exit 0
 fi
 
@@ -345,6 +373,22 @@ case "$EVENT_NAME" in
       emit_skip "no-pr-number-in-payload"
       exit 0
     fi
+
+    # Honour hands-off for dispatch events: the event payload carries no labels,
+    # so fetch them via the API before routing. Fail closed: if the API call
+    # fails (auth error, transient failure, token without label read access),
+    # skip rather than route with unknown label state.
+    _dispatch_labels=""
+    if ! _dispatch_labels=$(gh api "repos/${GITHUB_REPOSITORY}/issues/${pr_number}/labels" \
+        --paginate --jq '.[].name' 2>/dev/null); then
+      emit_skip "label-lookup-error"
+      exit 0
+    fi
+    if echo "$_dispatch_labels" | grep -qxF "dev-lead:hands-off"; then
+      emit_skip "hands-off-label"
+      exit 0
+    fi
+    unset _dispatch_labels
 
     case "$dispatch_type" in
       dev-lead-ci-failure)

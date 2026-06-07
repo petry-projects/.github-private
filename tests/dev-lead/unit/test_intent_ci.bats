@@ -12,10 +12,20 @@ setup() {
   export TRUSTED_BOTS="copilot-pull-request-reviewer[bot],gemini-code-assist[bot],sonarqubecloud[bot],coderabbitai[bot]"
   export TRIGGER_PHRASES="@dev-lead"
   export GITHUB_REPOSITORY="petry-projects/.github-private"
+  MOCK_BIN="$(mktemp -d)"
+  export PATH="$MOCK_BIN:$PATH"
+  # Stub gh so dispatch tests don't require an authenticated GitHub CLI.
+  # Default: no labels (unlabeled PR), exit 0.
+  cat > "$MOCK_BIN/gh" << 'GHEOF'
+#!/usr/bin/env bash
+exit 0
+GHEOF
+  chmod +x "$MOCK_BIN/gh"
 }
 
 teardown() {
   rm -f "$GITHUB_ENV" "$GITHUB_OUTPUT"
+  rm -rf "$MOCK_BIN"
 }
 
 _get_env() {
