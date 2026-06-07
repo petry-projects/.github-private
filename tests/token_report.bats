@@ -24,9 +24,14 @@ setup() {
   [ "$output" = "0" ]
 }
 
-@test "_fmt_usd: renders dollars to 4 decimals" {
+@test "_fmt_usd: renders dollars rounded to 2 decimals (cents)" {
   run _fmt_usd 1.0548
-  [ "$output" = "\$1.0548" ]
+  [ "$output" = "\$1.05" ]
+}
+
+@test "_fmt_usd: sub-cent amounts render as \$0.00" {
+  run _fmt_usd 0.0042
+  [ "$output" = "\$0.00" ]
 }
 
 # ---------------------------------------------------------------------------
@@ -76,11 +81,11 @@ setup() {
 # render_token_report
 # ---------------------------------------------------------------------------
 
-@test "render_token_report: total cost sums priced calls" {
-  # 0.010250 + 0.010500 + 0.004500 + 0.000850 = 0.026100
+@test "render_token_report: total cost sums priced calls (rounded to cents)" {
+  # 0.010250 + 0.010500 + 0.004500 + 0.000850 = 0.026100 → $0.03 at 2 decimals
   run render_token_report "$FIXTURES" 7 2 2 2026-06-07
   [ "$status" -eq 0 ]
-  [[ "$output" == *"Total cost:** \$0.0261"* ]]
+  [[ "$output" == *"Total cost:** \$0.03"* ]]
 }
 
 @test "render_token_report: has cost columns and a cost-per-PR section" {
@@ -127,6 +132,62 @@ setup() {
   [ "$pr_lines" -eq 10 ]
   # Highest-cost PR (#25, most input tokens) must be first in the list.
   [[ "$output" == *"/pull/25 |"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# cost-per-day stacked chart
+# ---------------------------------------------------------------------------
+
+@test "render_token_report: includes a cost-per-day stacked-by-repo chart" {
+  run render_token_report "$FIXTURES" 7 2 2 2026-06-07
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Cost per day (stacked by repo)"* ]]
+  [[ "$output" == *"Legend:"* ]]
+  # One dated bar row per day present in the fixtures (2026-06-01 and 2026-06-02).
+  [[ "$output" == *"2026-06-01"* ]]
+  [[ "$output" == *"2026-06-02"* ]]
+}
+
+@test "render_cost_per_day: bar length scales with the daily total" {
+  # Day with the higher total gets the longer (50-char max) bar; the lighter day shorter.
+  run render_cost_per_day <(annotate_records "$FIXTURES")
+  [ "$status" -eq 0 ]
+  d1="$(printf '%s\n' "$output" | awk '/^2026-06-01/ { n=gsub(/[A-H.]/,""); print n }')"
+  d2="$(printf '%s\n' "$output" | awk '/^2026-06-02/ { n=gsub(/[A-H.]/,""); print n }')"
+  [ "$d1" -gt "$d2" ]
+}
+
+# ---------------------------------------------------------------------------
+# cost-per-PR — PR title column (PR_TITLE_FILE)
+# ---------------------------------------------------------------------------
+
+@test "render_token_report: shows first 35 chars of PR title from PR_TITLE_FILE" {
+  local tf; tf="$(mktemp)"
+  printf 'https://github.com/petry-projects/markets/pull/1\tFix the widget alignment bug in the dashboard header\n' > "$tf"
+  export PR_TITLE_FILE="$tf"
+  run render_token_report "$FIXTURES" 7 2 2 2026-06-07
+  unset PR_TITLE_FILE; rm -f "$tf"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"| Title |"* ]]
+  # First 35 chars + ellipsis.
+  [[ "$output" == *"Fix the widget alignment bug in the…"* ]]
+}
+
+@test "render_token_report: PR title pipes are sanitized so the table doesn't break" {
+  local tf; tf="$(mktemp)"
+  printf 'https://github.com/petry-projects/markets/pull/1\tfix a|b parser\n' > "$tf"
+  export PR_TITLE_FILE="$tf"
+  run render_token_report "$FIXTURES" 7 2 2 2026-06-07
+  unset PR_TITLE_FILE; rm -f "$tf"
+  [[ "$output" == *"fix a/b parser"* ]]
+}
+
+@test "render_token_report: Title column is blank when no PR_TITLE_FILE" {
+  unset PR_TITLE_FILE
+  run render_token_report "$FIXTURES" 7 2 2 2026-06-07
+  [[ "$output" == *"| Title |"* ]]
+  # No stray title text leaks in — the PR rows still render (URL + empty title cell).
+  [[ "$output" == *"/pull/1 |"* ]]
 }
 
 # ---------------------------------------------------------------------------

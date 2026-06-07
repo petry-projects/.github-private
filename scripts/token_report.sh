@@ -57,9 +57,11 @@ _fmt_int() {
 }
 
 # _fmt_usd <dollars>
-# Renders a USD amount to 4 decimals (small per-window costs stay legible), e.g. $1.0548.
+# Renders a USD amount rounded to 2 decimals (cents), e.g. $1.05. Org standard for
+# all surfaced dollar amounts — see AGENTS.md "Cost reporting". Sub-cent values
+# round to $0.00; ET (see _fmt_int) remains the fine-grained comparator.
 _fmt_usd() {
-  awk -v v="${1:-0}" 'BEGIN { printf "$%.4f", v }'
+  awk -v v="${1:-0}" 'BEGIN { printf "$%.2f", v }'
 }
 
 # annotate_records <jsonl_dir>
@@ -67,6 +69,7 @@ _fmt_usd() {
 # call), pricing each call at the rate in effect on its OWN timestamp. Columns:
 #   1 repo  2 workflow  3 tier  4 model  5 input  6 cache  7 output
 #   8 cost_usd (-1 when the model price is unknown)  9 et  10 known(1/0)  11 context
+#   12 cache_write  13 date (YYYY-MM-DD)
 # ET is recomputed here from the table (m = input(model)/input(haiku)), so it can never
 # drift from the dollar figure.
 annotate_records() {
@@ -117,14 +120,83 @@ annotate_records() {
           m = (bpin > 0) ? tin[mi] / bpin : 1.0
         } else { known = 0; cost = -1; m = 1.0 }
         et = m * (1.0 * inp + 0.1 * ca + 4.0 * out)
-        # Enriched cols 1-11 unchanged for downstream; cache_write appended as col 12.
-        printf "%s\t%s\t%s\t%s\t%d\t%d\t%d\t%.6f\t%.4f\t%d\t%s\t%d\n",
-          repo, wf, tier, model, inp, ca, out, cost, et, known, ctx, cw
+        # Enriched cols 1-11 unchanged for downstream; cache_write=12, date=13 appended.
+        printf "%s\t%s\t%s\t%s\t%d\t%d\t%d\t%.6f\t%.4f\t%d\t%s\t%d\t%s\n",
+          repo, wf, tier, model, inp, ca, out, cost, et, known, ctx, cw, d
       }'
+}
+
+# top_pr_urls <jsonl_dir> [n]
+# Prints the top-N PR URLs by total cost (one per line). Pure: reuses annotate_records.
+# Used by main() to resolve PR titles for the cost-per-PR table.
+top_pr_urls() {
+  local dir="$1" n="${2:-10}"
+  annotate_records "$dir" \
+    | awk -F'\t' '$11 ~ /\/pull\// { c[$11] += ($10 == 1 ? $8 : 0) }
+        END { for (k in c) printf "%.6f\t%s\n", c[k], k }' \
+    | sort -t$'\t' -k1,1rn | awk -v n="$n" 'NR <= n { print $2 }'
+}
+
+# render_cost_per_day <enriched_file>
+# Emits an ASCII stacked-bar chart of daily cost composed by repository: one bar
+# per day, length scaled to the priciest day, each segment a top-cost repo (others
+# bucketed as "."). Pure: reads only the enriched TSV (date=col13, repo=col1,
+# cost=col8, known=col10). No-op when there are no priced, dated rows.
+render_cost_per_day() {
+  local enriched="$1"
+  awk -F'\t' '
+    function fmt_usd(v) { return sprintf("$%.2f", v) }
+    $10 == 1 && $13 ~ /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/ {
+      d = $13; repo = $1
+      daycost[d] += $8; cell[d SUBSEP repo] += $8; repotot[repo] += $8
+      days[d] = 1; repos[repo] = 1
+    }
+    END {
+      nd = 0; for (d in days) dl[nd++] = d
+      for (i = 0; i < nd; i++) for (j = i+1; j < nd; j++) if (dl[j] < dl[i]) { t = dl[i]; dl[i] = dl[j]; dl[j] = t }
+      if (nd == 0) exit 0
+      nr = 0; for (r in repos) rl[nr++] = r
+      for (i = 0; i < nr; i++) for (j = i+1; j < nr; j++) if (repotot[rl[j]] > repotot[rl[i]]) { t = rl[i]; rl[i] = rl[j]; rl[j] = t }
+      K = 6; nk = (nr < K ? nr : K)
+      for (x = 1; x <= 8; x++) L[x] = substr("ABCDEFGH", x, 1)
+      maxday = 0; for (i = 0; i < nd; i++) if (daycost[dl[i]] > maxday) maxday = daycost[dl[i]]
+      MAXW = 50
+
+      printf "## Cost per day (stacked by repo)\n\n"
+      # Legend: letter → repo (org prefix stripped) with its window total.
+      printf "Legend: "
+      for (k = 0; k < nk; k++) {
+        r = rl[k]; short = r; sub(/^[^/]+\//, "", short)
+        printf "`%s` %s (%s)  ", L[k+1], short, fmt_usd(repotot[r])
+      }
+      if (nr > nk) {
+        oc = 0; for (k = nk; k < nr; k++) oc += repotot[rl[k]]
+        printf "`.` other (%s)", fmt_usd(oc)
+      }
+      printf "\n\n```\n"
+      for (i = 0; i < nd; i++) {
+        d = dl[i]; tot = daycost[d]
+        barlen = (maxday > 0) ? int(tot / maxday * MAXW + 0.5) : 0
+        line = ""; used = 0
+        for (k = 0; k < nk; k++) {
+          c = cell[d SUBSEP rl[k]] + 0
+          seg = (tot > 0) ? int(c / tot * barlen + 0.5) : 0
+          if (used + seg > barlen) seg = barlen - used
+          used += seg
+          for (s = 0; s < seg; s++) line = line L[k+1]
+        }
+        oc = 0; for (k = nk; k < nr; k++) oc += cell[d SUBSEP rl[k]] + 0
+        if (oc > 0) { seg = barlen - used; for (s = 0; s < seg; s++) line = line "." }
+        printf "%s  %8s  %s\n", d, fmt_usd(tot), line
+      }
+      printf "```\n\n"
+    }
+  ' "$enriched"
 }
 
 # render_token_report <jsonl_dir> <lookback_days> <repo_count> <artifact_count> [generated_at]
 # Writes the full Markdown report (with USD cost) to stdout. Pure: no network.
+# Optional: PR_TITLE_FILE (TSV "url<TAB>title") adds PR titles to the cost-per-PR table.
 render_token_report() {
   local dir="$1" lookback="$2" repo_count="$3" artifact_count="$4" generated_at="${5:-}"
 
@@ -209,10 +281,14 @@ render_token_report() {
     done
   printf '\n'
 
+  render_cost_per_day "$enriched"
+
   # Cost-per-PR — each record carries its PR URL in context; surface the priciest PRs.
   # Limit with `awk 'NR<=10'` rather than `head -10`: awk consumes the whole stream, so
   # `sort` never receives SIGPIPE and the command substitution can't fail under pipefail
   # (which would otherwise abort the report — see PR #456 review).
+  # When PR_TITLE_FILE (TSV "url<TAB>title") is provided by main(), the first 35 chars
+  # of the title are shown; otherwise the Title cell is blank (keeps render network-free).
   local pr_rows
   pr_rows="$(awk -F'\t' '$11 ~ /\/pull\// { k = $11
       calls[k]++; if ($10 == 1) cost[k] += $8 }
@@ -220,10 +296,19 @@ render_token_report() {
     | sort -t$'\t' -k1,1rn | awk 'NR <= 10')"
   if [ -n "$pr_rows" ]; then
     printf '## Most expensive PRs (top 10)\n\n'
-    printf '| PR | Calls | Cost |\n|---|---:|---:|\n'
+    printf '| PR | Title | Calls | Cost |\n|---|---|---:|---:|\n'
     while IFS=$'\t' read -r cost calls pr; do
       [ -n "$pr" ] || continue
-      printf '| %s | %s | %s |\n' "$pr" "$(_fmt_int "$calls")" "$(_fmt_usd "$cost")"
+      local title=""
+      if [ -n "${PR_TITLE_FILE:-}" ] && [ -f "$PR_TITLE_FILE" ]; then
+        # Look up title by URL, strip pipes/newlines, truncate to 35 chars (+…).
+        title="$(awk -F'\t' -v u="$pr" '$1 == u {
+          t = $2; gsub(/\r/, "", t); gsub(/\|/, "/", t)
+          if (length(t) > 35) t = substr(t, 1, 35) "…"
+          print t; exit
+        }' "$PR_TITLE_FILE")"
+      fi
+      printf '| %s | %s | %s | %s |\n' "$pr" "$title" "$(_fmt_int "$calls")" "$(_fmt_usd "$cost")"
     done <<< "$pr_rows"
     printf '\n'
   fi
@@ -336,6 +421,19 @@ main() {
   repo_count="${counts%% *}"
   artifact_count="${counts##* }"
   generated_at="$(date -u +%Y-%m-%d 2>/dev/null || echo '')"
+
+  # Resolve PR titles for the priciest PRs so render can show them (network step;
+  # render itself stays pure and just reads PR_TITLE_FILE).
+  local titles_file purl ptitle
+  titles_file="$jsonl_dir/pr_titles.tsv"
+  if command -v gh >/dev/null 2>&1; then
+    while IFS= read -r purl; do
+      [ -n "$purl" ] || continue
+      ptitle="$(gh pr view "$purl" --json title -q '.title' 2>/dev/null || true)"
+      [ -n "$ptitle" ] && printf '%s\t%s\n' "$purl" "$ptitle" >> "$titles_file"
+    done < <(top_pr_urls "$jsonl_dir" 10)
+  fi
+  export PR_TITLE_FILE="$titles_file"
 
   report="$(render_token_report "$jsonl_dir" "$LOOKBACK_DAYS" \
             "$repo_count" "$artifact_count" "$generated_at")"
