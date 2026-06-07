@@ -290,7 +290,7 @@ fetch_pr_context() {
       2>/dev/null \
       | jq -s '[.[].check_runs[]?]
                | group_by(.name)
-               | map(sort_by(.started_at // "", .id // 0) | last
+               | map(sort_by([.started_at // "", .id // 0]) | last
                      | {name:.name, status:.status, conclusion:.conclusion, details_url:.details_url})' \
       2>/dev/null); then
       echo "::error::fetch_pr_context: failed to fetch CI check-runs for ${HEAD_SHA} — cannot assess PR state" >&2
