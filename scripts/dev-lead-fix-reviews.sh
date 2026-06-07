@@ -1616,7 +1616,11 @@ ${retry_msg}"
           echo "[dry-run] would post user-visible ${reason} acknowledgment"
           echo "$ack_body"
         else
-          gh pr comment "$PR_NUMBER" --repo "$REPO" --body "$ack_body"
+          # Ack is informational only — a transient failure here must not
+          # override the already-recorded marker, so the caller can still
+          # exit 2 (rate-limited) rather than 1 (hard failure).
+          gh pr comment "$PR_NUMBER" --repo "$REPO" --body "$ack_body" || \
+            echo "::warning::post_reviews_rate_limited: ack comment failed for intent=${intent} (marker already posted)" >&2
         fi
         ;;
       on-mention)
@@ -1629,7 +1633,8 @@ ${retry_msg}"
           echo "[dry-run] would post user-visible rate-limit acknowledgment"
           echo "$ack_body"
         else
-          gh pr comment "$PR_NUMBER" --repo "$REPO" --body "$ack_body"
+          gh pr comment "$PR_NUMBER" --repo "$REPO" --body "$ack_body" || \
+            echo "::warning::post_reviews_rate_limited: ack comment failed for intent=${intent} (marker already posted)" >&2
         fi
         ;;
     esac

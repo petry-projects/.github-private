@@ -693,3 +693,56 @@ STUB
   grep -F "after-key" /tmp/dev-lead-session-output.txt
   rm -f /tmp/dev-lead-session-output.txt
 }
+
+# ── run_duck token attribution tests ─────────────────────────────────────────
+
+@test "token: claude duck records real usage counts not byte estimates" {
+  # Guard for PRRT_kwDOR9SdIs6Hofbl: run_duck previously used claude --print without
+  # --output-format json, so _record_engine_tokens had no parsed usage sidecar and
+  # fell back to byte estimates with cache tokens forced to 0. When REVIEW_ENGINE=gemini
+  # DUCK_ENGINE=claude, the duck call must use --output-format json and parse real usage.
+  _source_engine "gemini"
+  # DUCK_ENGINE=claude is set by set_engine_config when REVIEW_ENGINE=gemini
+  local log; log=$(mktemp)
+  export TOKEN_LOG_FILE="$log"
+  export TEST_OWNED_TOKEN_LOG="$log"
+  # Set distinct usage values: byte estimate for "test prompt content\n" is ~6 tokens;
+  # real usage (200 input) is clearly distinguishable.
+  export STUB_CLAUDE_USAGE="200 50 30 80"
+
+  run_duck "$TEST_PROMPT" "$DUCK_MODEL"
+  local drc=$?
+
+  [ "$drc" -eq 0 ]
+  [ -s "$log" ]
+  local input_tokens; input_tokens=$(jq -r '.input_tokens' < "$log")
+  # Real usage: 200 (not the ~6-token byte estimate)
+  [ "$input_tokens" = "200" ]
+  local cache_read; cache_read=$(jq -r '.cache_read_tokens' < "$log")
+  [ "$cache_read" = "50" ]
+}
+
+@test "token: gemini duck records real usage counts not byte estimates" {
+  # Guard for PRRT_kwDOR9SdIs6Hofbl: run_duck previously used gemini --output-format text,
+  # so _record_engine_tokens fell back to byte estimates. When REVIEW_ENGINE=copilot
+  # DUCK_ENGINE=gemini, the duck call must use --output-format json and parse real usage.
+  _source_engine "copilot"
+  # DUCK_ENGINE=gemini is set by set_engine_config when REVIEW_ENGINE=copilot
+  local log; log=$(mktemp)
+  export TOKEN_LOG_FILE="$log"
+  export TEST_OWNED_TOKEN_LOG="$log"
+  # prompt=300 cached=50 candidates=120 → non-cached input = 300-50 = 250.
+  # Byte estimate for "test prompt content\n" is ~6 tokens; 250 is clearly distinguishable.
+  export STUB_GEMINI_USAGE="300 50 120"
+
+  run_duck "$TEST_PROMPT" "$DUCK_MODEL"
+  local drc=$?
+
+  [ "$drc" -eq 0 ]
+  [ -s "$log" ]
+  local input_tokens; input_tokens=$(jq -r '.input_tokens' < "$log")
+  # Real usage: non-cached input = prompt - cached = 300 - 50 = 250
+  [ "$input_tokens" = "250" ]
+  local cache_read; cache_read=$(jq -r '.cache_read_tokens' < "$log")
+  [ "$cache_read" = "50" ]
+}

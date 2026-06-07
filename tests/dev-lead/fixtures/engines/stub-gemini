@@ -9,11 +9,16 @@
 #                                    same lookup as EXIT_BY_MODEL.
 #   STUB_ENGINE_RECORD_MODELS  — if set to a writable path, every --model value
 #                                seen is appended as a new line for inspection.
+#   STUB_GEMINI_USAGE  — "prompt cached candidates" emitted in the .stats block
+#                        when --output-format json is requested. Default "100 0 40".
 model=""
+output_format="text"
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --prompt|--approval-mode|--output-format)
+    --prompt|--approval-mode)
       shift; shift ;;
+    --output-format)
+      output_format="$2"; shift; shift ;;
     --model)
       model="$2"; shift; shift ;;
     *) shift ;;
@@ -35,7 +40,23 @@ if [ -n "${STUB_ENGINE_RESPONSE_BY_MODEL:-}" ] && [ -n "$model" ]; then
     esac
   done
 fi
-printf '%s\n' "$response"
+
+if [ "$output_format" = "json" ]; then
+  # Mirror `gemini --output-format json`: a result envelope with stats.
+  read -r _prompt _cached _candidates <<< "${STUB_GEMINI_USAGE:-100 0 40}"
+  _mdl="${model:-stub}"
+  if command -v jq >/dev/null 2>&1; then
+    jq -cn --arg result "$response" --arg m "$_mdl" \
+      --argjson prompt "${_prompt:-0}" --argjson cached "${_cached:-0}" \
+      --argjson candidates "${_candidates:-0}" \
+      '{response:$result, stats:{models:{($m):{tokens:{prompt:$prompt,cached:$cached,candidates:$candidates}}}}}'
+  else
+    printf '{"response":"%s","stats":{"models":{"%s":{"tokens":{"prompt":%s,"cached":%s,"candidates":%s}}}}}\n' \
+      "$response" "$_mdl" "${_prompt:-0}" "${_cached:-0}" "${_candidates:-0}"
+  fi
+else
+  printf '%s\n' "$response"
+fi
 
 exit_code="${STUB_ENGINE_EXIT:-0}"
 if [ -n "${STUB_ENGINE_EXIT_BY_MODEL:-}" ] && [ -n "$model" ]; then

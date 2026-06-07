@@ -1050,6 +1050,15 @@ run_duck() {
   local prompt_file="$1"
   local model="$2"
   local _tok_tmp="" rc=0
+  # When TOKEN_LOG_FILE is active and parse_engine_usage is loaded, capture
+  # engine output as JSON so _record_engine_tokens gets real usage counts
+  # (input, cache_read, cache_write, output) rather than byte estimates.
+  # Mirrors the _usage_json flag in _claude_chain_invoke/_gemini_chain_invoke.
+  local _duck_usage_json=0
+  if [ -n "${TOKEN_LOG_FILE:-}" ] && [ "${ENGINE_USAGE_JSON:-1}" != "0" ] \
+     && declare -f parse_engine_usage >/dev/null 2>&1; then
+    _duck_usage_json=1
+  fi
   if [ -n "${TOKEN_LOG_FILE:-}" ]; then
     unset _ENGINE_USAGE_OUT
     _tok_tmp="$(mktemp 2>/dev/null || true)"
@@ -1761,7 +1770,27 @@ run_duck() {
     claude)
       unset COPILOT_GITHUB_TOKEN 2>/dev/null || true
       unset GOOGLE_API_KEY 2>/dev/null || true
-      if [ -n "$_tok_tmp" ]; then
+      if [ -n "$_tok_tmp" ] && [ "$_duck_usage_json" -eq 1 ]; then
+        # Redirect stdout (JSON) to file so parse_engine_usage can populate the
+        # sidecar for _record_engine_tokens. stderr flows to the caller — do not
+        # merge (2>&1) or it corrupts the JSON usage block in the file.
+        declare -f reset_engine_usage >/dev/null 2>&1 && reset_engine_usage
+        timeout "$DUCK_TIMEOUT_SEC" claude --print \
+          --model "$model" \
+          --output-format json \
+          --permission-mode acceptEdits \
+          --allowed-tools "Bash,Read,Grep,Glob" \
+          --max-turns 25 \
+          < "$prompt_file" > "$_tok_tmp" || rc=$?
+        if [ "$rc" -eq 0 ]; then
+          parse_engine_usage claude "$_tok_tmp" || true
+          local _txt
+          _txt="$(extract_engine_text claude "$_tok_tmp")"
+          if [ -n "$_txt" ]; then printf '%s\n' "$_txt"; else cat "$_tok_tmp"; fi
+        else
+          cat "$_tok_tmp"
+        fi
+      elif [ -n "$_tok_tmp" ]; then
         timeout "$DUCK_TIMEOUT_SEC" claude --print \
           --model "$model" \
           --permission-mode acceptEdits \
@@ -1780,7 +1809,22 @@ run_duck() {
     gemini)
       unset CLAUDE_CODE_OAUTH_TOKEN 2>/dev/null || true
       unset COPILOT_GITHUB_TOKEN 2>/dev/null || true
-      if [ -n "$_tok_tmp" ]; then
+      if [ -n "$_tok_tmp" ] && [ "$_duck_usage_json" -eq 1 ]; then
+        declare -f reset_engine_usage >/dev/null 2>&1 && reset_engine_usage
+        timeout "$DUCK_TIMEOUT_SEC" gemini --prompt "" \
+          --model "$model" \
+          --approval-mode auto_edit \
+          --output-format json \
+          < "$prompt_file" > "$_tok_tmp" || rc=$?
+        if [ "$rc" -eq 0 ]; then
+          parse_engine_usage gemini "$_tok_tmp" || true
+          local _txt
+          _txt="$(extract_engine_text gemini "$_tok_tmp")"
+          if [ -n "$_txt" ]; then printf '%s\n' "$_txt"; else cat "$_tok_tmp"; fi
+        else
+          cat "$_tok_tmp"
+        fi
+      elif [ -n "$_tok_tmp" ]; then
         timeout "$DUCK_TIMEOUT_SEC" gemini --prompt "" \
           --model "$model" \
           --approval-mode auto_edit \
