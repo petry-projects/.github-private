@@ -77,8 +77,8 @@ gh api graphql -f query='mutation { resolveReviewThread(input: {threadId: "THREA
 
 Resolve a thread when **you actually fixed it** (or it is `isOutdated: true`), per this scope:
 
-- **Bot threads** (`author.__typename` is `"Bot"` — the GitHub GraphQL API sets this for all bot accounts; note that GraphQL omits the `[bot]` suffix from `author.login` for bots, so the login field alone is not a reliable bot indicator): resolve every one you fixed, **regardless of which reviewer triggered this run**. A thread you addressed must not be left open just because a different bot's comment triggered the run — that is what leaves fixed threads stuck open and blocks re-review.
-- **Human threads** (`author.__typename` is `"User"`): resolve only when `author.login` matches `${TRIGGERING_REVIEWER}`. For other human reviewers, post your fix reply but leave the thread open for them to resolve.
+- **Bot threads** (`comments.nodes[0].author.__typename` is `"Bot"` — the GitHub GraphQL API sets this for all bot accounts; note that GraphQL omits the `[bot]` suffix from `comments.nodes[0].author.login` for bots, so the login field alone is not a reliable bot indicator): resolve every one you fixed, **regardless of which reviewer triggered this run**. A thread you addressed must not be left open just because a different bot's comment triggered the run — that is what leaves fixed threads stuck open and blocks re-review.
+- **Human threads** (`comments.nodes[0].author.__typename` is `"User"`): resolve only when `comments.nodes[0].author.login` matches `${TRIGGERING_REVIEWER}`. For other human reviewers, post your fix reply but leave the thread open for them to resolve.
 
 Never resolve a thread you did not fix (except `isOutdated: true` ones). Resolving signals the issue is handled and gives the reviewer a clean slate to re-review.
 
