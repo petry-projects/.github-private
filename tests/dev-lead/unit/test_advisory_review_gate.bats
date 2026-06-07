@@ -164,7 +164,7 @@ teardown() {
 @test "Advisory gate: script is minimal (non-blocking means fewer lines)" {
   local lines
   lines=$(wc -l < "$SCRIPT_DIR/lib/advisory-review-gate.sh")
-  [ "$lines" -lt 220 ]
+  [ "$lines" -lt 235 ]
 }
 
 # ────────────────────────────────────────────────────────────────────
@@ -291,9 +291,12 @@ MOCK_EOF
   [ "$status" -eq 0 ]
 }
 
-@test "Gate runtime: returns 0 when no new bot submissions for >10 minutes (no strand)" {
-  # PR is recent (head_age_sec < 1200) but last submission was long ago.
-  # The quiescence fallback should fire and allow the gate to proceed.
+@test "Gate runtime: stale submission from previous HEAD does not trigger quiescence for fresh commit" {
+  # Head was just pushed (recent). The only submission is from a previous HEAD
+  # (year 2000), so it predates the current head push.
+  # The quiescence baseline is anchored to max(head_push_time, latest_sub_time),
+  # which equals the current head push time — so time_since_last_sub ≈ 0,
+  # the fallback does not fire, and the gate correctly returns 1 (wait).
   local old_submission_json
   old_submission_json='{"reviews":[{"author":{"login":"gemini-code-assist"},"state":"COMMENTED","submittedAt":"2000-01-01T00:00:00Z"}],"comments":[]}'
   local tmpdir
@@ -304,7 +307,7 @@ MOCK_EOF
     check_advisory_reviews 'https://github.com/owner/repo/pull/123'
   "
   rm -rf "$tmpdir"
-  [ "$status" -eq 0 ]
+  [ "$status" -eq 1 ]
 }
 
 @test "Gate runtime: returns 1 for recently-pushed old cherry-picked commit" {

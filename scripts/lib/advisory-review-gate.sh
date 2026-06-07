@@ -180,7 +180,18 @@ check_advisory_reviews() {
     latest_sub_at=$(echo "$current_states" | jq -rs '[.[].time] | sort | last' 2>/dev/null) || latest_sub_at=""
     if [ -n "$latest_sub_at" ]; then
       latest_sub_raw=$(date -u -d "$latest_sub_at" +%s 2>/dev/null) || latest_sub_raw=""
-      [ -n "$latest_sub_raw" ] && time_since_last_sub=$((now - latest_sub_raw))
+      if [ -n "$latest_sub_raw" ]; then
+        # Anchor quiescence to the later of head-push and latest submission so that
+        # stale submissions from a previous HEAD don't satisfy the fallback for a
+        # fresh commit (a new push resets the quiescence timer to the head-push time).
+        local quiescence_anchor
+        if [ -n "$head_time_raw" ] && [ "$head_time_raw" -gt "$latest_sub_raw" ]; then
+          quiescence_anchor=$head_time_raw
+        else
+          quiescence_anchor=$latest_sub_raw
+        fi
+        time_since_last_sub=$((now - quiescence_anchor))
+      fi
     fi
 
     if [ "$head_age_sec" -gt 1200 ]; then
