@@ -38,9 +38,10 @@ _AM_MERGE_METHOD="squash"
 # user's selected merge message is not lost when auto-merge is re-enabled.
 _AM_COMMIT_TITLE=""
 _AM_COMMIT_MESSAGE=""
-# PR head SHA captured at hold time; used by restore_auto_merge so a stale
-# HEAD_SHA from the event payload doesn't cause GitHub to reject the restore
-# when the PR has advanced since the event was queued.
+# PR head SHA captured at hold time; used by restore_auto_merge only as a
+# fallback when re-fetching the PR's current head fails. Restore prefers the
+# freshly-fetched head so --match-head-commit matches commits pushed during the
+# run (own commits, or the rebase engine's direct force-push).
 _AM_HEAD_SHA=""
 
 # hold_auto_merge — disable auto-merge for the duration of the run, if it is on.
@@ -99,7 +100,16 @@ restore_auto_merge() {
   local restore_args=("--auto" "$merge_flag")
   [[ -n "${_AM_COMMIT_TITLE:-}" ]] && restore_args+=("--subject" "${_AM_COMMIT_TITLE}")
   [[ -n "${_AM_COMMIT_MESSAGE:-}" ]] && restore_args+=("--body" "${_AM_COMMIT_MESSAGE}")
-  [[ -n "${_AM_HEAD_SHA:-}" ]] && restore_args+=("--match-head-commit" "${_AM_HEAD_SHA}")
+  # Match against the PR's CURRENT head, re-fetched now — not a SHA captured at
+  # hold time. The head can advance during the run via our own commits, the
+  # rebase engine's direct `git push --force-with-lease` (prompts/dev-lead/rebase.md,
+  # which bypasses push_with_merge_guard), or otherwise; a stale
+  # --match-head-commit makes GitHub reject the restore and leaves auto-merge
+  # off. Fall back to the hold-time SHA only when the re-fetch fails.
+  local match_sha
+  match_sha=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}" --jq '.head.sha' 2>/dev/null || true)
+  match_sha="${match_sha:-${_AM_HEAD_SHA:-}}"
+  [[ -n "$match_sha" ]] && restore_args+=("--match-head-commit" "$match_sha")
   echo "::notice::PR #${PR_NUMBER} — restoring auto-merge (${_AM_MERGE_METHOD:-squash})"
   gh pr merge "$PR_NUMBER" --repo "$REPO" "${restore_args[@]}" 2>/dev/null \
     || echo "::warning::could not restore auto-merge on PR #${PR_NUMBER}"

@@ -207,6 +207,34 @@ EOF
 
 # ── restore_auto_merge — HEAD_SHA refresh and commit text replay ──────────────
 
+@test "restore_auto_merge: matches the freshly-fetched current head over the hold-time SHA" {
+  # The head can advance during the run (own commits, or the rebase engine's
+  # direct force-push that bypasses push_with_merge_guard). Restore must match
+  # the CURRENT head, not the SHA captured at hold time, or GitHub rejects it.
+  source "$LIB"
+  _AM_NEEDS_RESTORE=1
+  PR_STATE="open"
+  AM_STATE=""
+  _AM_HEAD_SHA="hold_time_sha"
+  export HEAD_SHA_API="current_head_sha"   # PR head advanced since hold
+  run restore_auto_merge
+  [ "$status" -eq 0 ]
+  grep -q -- "--match-head-commit current_head_sha" "$GH_CALLS"
+  ! grep -q -- "--match-head-commit hold_time_sha" "$GH_CALLS"
+}
+
+@test "restore_auto_merge: falls back to the hold-time SHA when the current-head re-fetch fails" {
+  source "$LIB"
+  _AM_NEEDS_RESTORE=1
+  PR_STATE="open"
+  AM_STATE=""
+  _AM_HEAD_SHA="hold_time_sha"
+  export HEAD_SHA_API=""    # re-fetch returns empty
+  run restore_auto_merge
+  [ "$status" -eq 0 ]
+  grep -q -- "--match-head-commit hold_time_sha" "$GH_CALLS"
+}
+
 @test "restore_auto_merge: uses held-head SHA, not stale event-payload HEAD_SHA" {
   source "$LIB"
   _AM_NEEDS_RESTORE=1
