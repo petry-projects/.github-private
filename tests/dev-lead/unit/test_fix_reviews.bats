@@ -2181,6 +2181,104 @@ GHEOF
   [[ "$output" != *"status=no-changes"* ]]
 }
 
+@test "review-changes: same app different workflow suites are not collapsed — failure survives" {
+  local tmpdir
+  tmpdir="$(mktemp -d)"
+
+  # Stub: two check runs with the same name and same app (GitHub Actions, id=15368)
+  # but from different check suites (different workflows). The newer run (id=502,
+  # suite 501) succeeds while the older run (id=501, suite 500) fails. With the old
+  # group_by([name, app]) key the failure was hidden; the new check_suite discriminator
+  # keeps them separate so the failure still registers as a Tier-1 blocker.
+  cat > "$STUB_BIN_DIR/gh" <<'GHEOF'
+#!/usr/bin/env bash
+ARGS="$*"
+case "$ARGS" in
+  *"check-runs"*)
+    echo '{"check_runs":[{"id":501,"name":"Build","status":"completed","conclusion":"failure","started_at":"2026-06-07T14:00:00Z","details_url":"https://example.com/1","app":{"id":15368},"check_suite":{"id":500}},{"id":502,"name":"Build","status":"completed","conclusion":"success","started_at":"2026-06-07T14:00:01Z","details_url":"https://example.com/2","app":{"id":15368},"check_suite":{"id":501}}]}' ;;
+  *"statuses"*)
+    echo '[]' ;;
+  *"pulls/"*"reviews"*)
+    echo '[]' ;;
+  *"graphql"*)
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+  *"pr checkout"*) exit 0 ;;
+  *"pr comment"*) exit 0 ;;
+  *"pr merge"*) exit 0 ;;
+  *"pulls/"*) echo '{"head":{"sha":"abc123"},"auto_merge":null}' ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+
+  run bash -c "
+    cd '$tmpdir'
+    export INTENT_TYPE=review-changes DEV_LEAD_DRY_RUN=true
+    export PR_NUMBER=422 HEAD_SHA=abc123 REPO='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export PATH=\"$STUB_BIN_DIR:\$PATH\"
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+  rm -rf "$tmpdir"
+
+  [ "$status" -eq 0 ]
+  # The failure from workflow-suite 500 must not be hidden by the success from
+  # workflow-suite 501 — different suites mean different required checks.
+  [[ "$output" == *"Tier-1 blockers still present"* ]]
+  [[ "$output" == *"rate-limited marker"* ]]
+  [[ "$output" == *"reason=blocked"* ]]
+  [[ "$output" != *"status=no-changes"* ]]
+}
+
+@test "review-changes: queued check run without started_at wins over older cancelled run by id" {
+  local tmpdir
+  tmpdir="$(mktemp -d)"
+
+  # Stub: two same-named runs in the same (name, app, suite=null) group. The older
+  # run (id=99) is cancelled and has a started_at; the newer run (id=100) is queued
+  # and has no started_at. With the old sort_by([.started_at // "", .id // 0]) the
+  # empty string sorts before any timestamp, so the cancelled run (started_at set)
+  # ended up as `last` and wrongly blocked. sort_by([.id // 0]) always picks the
+  # higher-id (newer) run regardless of started_at presence.
+  cat > "$STUB_BIN_DIR/gh" <<'GHEOF'
+#!/usr/bin/env bash
+ARGS="$*"
+case "$ARGS" in
+  *"check-runs"*)
+    echo '{"check_runs":[{"id":99,"name":"review","status":"completed","conclusion":"cancelled","started_at":"2026-06-07T13:00:00Z","details_url":"https://example.com/1"},{"id":100,"name":"review","status":"queued","conclusion":null,"details_url":"https://example.com/2"}]}' ;;
+  *"statuses"*)
+    echo '[]' ;;
+  *"pulls/"*"reviews"*)
+    echo '[]' ;;
+  *"graphql"*)
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+  *"pr checkout"*) exit 0 ;;
+  *"pr comment"*) exit 0 ;;
+  *"pr merge"*) exit 0 ;;
+  *"pulls/"*) echo '{"head":{"sha":"abc123"},"auto_merge":null}' ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+
+  run bash -c "
+    cd '$tmpdir'
+    export INTENT_TYPE=review-changes DEV_LEAD_DRY_RUN=true
+    export PR_NUMBER=422 HEAD_SHA=abc123 REPO='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export PATH=\"$STUB_BIN_DIR:\$PATH\"
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+  rm -rf "$tmpdir"
+
+  [ "$status" -eq 0 ]
+  # The queued run (id=100) must win: the cancelled run (id=99) is superseded within
+  # its group and must not register as a Tier-1 blocker.
+  [[ "$output" != *"Tier-1 blockers still present"* ]]
+  [[ "$output" != *"rate-limited marker"* ]]
+  [[ "$output" == *"status=no-changes"* ]]
+}
+
 @test "fix-reviews: bot-thread-only blocker suppresses no-changes terminal (fix-reviews intent)" {
   local tmpdir
   tmpdir="$(mktemp -d)"

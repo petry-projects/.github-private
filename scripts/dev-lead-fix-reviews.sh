@@ -278,21 +278,36 @@ fetch_pr_context() {
   # (e.g., review-changes in dry-run where the PR API call is skipped).
   CI_STATUS_JSON="[]"
   if [ -n "${HEAD_SHA:-}" ]; then
-    # Dedupe check runs by (name, app.id), keeping the newest run (started_at, then id).
-    # Each triggering event creates a new check suite, so the API's default
-    # filter=latest does NOT collapse runs across suites: a concurrency-cancelled
-    # run sits forever next to its successful same-named replacement and would
-    # otherwise register as a permanent Tier-1 blocker (issue #461). Using app.id
-    # as a discriminator ensures that two independent checks with the same name
-    # from different GitHub Apps are not collapsed: each (name, app) pair is its
-    # own logical check. A run that is genuinely the latest of its (name, app)
-    # pair (e.g. a lone cancelled run) still counts as a blocker.
+    # Two-stage check-run dedup:
+    # Stage 1: group by (name, app.id, check_suite.id) and keep the highest-id
+    #   run per suite. check_suite discriminates distinct workflow runs, so two
+    #   workflows that happen to share a job name are kept as separate entries.
+    #   id is always present and monotonically increasing, so it reliably picks
+    #   the newest run even when started_at is absent (e.g. queued runs).
+    # Stage 2: drop cancelled/timed_out runs when a newer run (higher id, same
+    #   name+app) has a terminal non-cancelled conclusion. This collapses a
+    #   concurrency-cancelled run from an earlier suite once its replacement
+    #   succeeds, without hiding a genuinely failing check from a distinct
+    #   workflow. A lone cancelled/timed_out run (no newer replacement) still
+    #   counts as a Tier-1 blocker (issue #461).
     if ! CI_STATUS_JSON=$(gh api --paginate "repos/${REPO}/commits/${HEAD_SHA}/check-runs?per_page=100" \
       2>/dev/null \
       | jq -s '[.[].check_runs[]?]
-               | group_by([.name, (.app.id // null)])
-               | map(sort_by([.started_at // "", .id // 0]) | last
-                     | {name:.name, status:.status, conclusion:.conclusion, details_url:.details_url})' \
+               | group_by([.name, (.app.id // null), (.check_suite.id // null)])
+               | map(sort_by([.id // 0]) | last)
+               | . as $runs
+               | map(select(
+                   (.conclusion != "cancelled" and .conclusion != "timed_out")
+                   or (. as $r | ($runs | any(
+                         .name == $r.name
+                         and (.app.id // null) == ($r.app.id // null)
+                         and (.id // 0) > ($r.id // 0)
+                         and .conclusion != null
+                         and .conclusion != "cancelled"
+                         and .conclusion != "timed_out"
+                       )) | not)
+                 ))
+               | map({name:.name, status:.status, conclusion:.conclusion, details_url:.details_url})' \
       2>/dev/null); then
       echo "::error::fetch_pr_context: failed to fetch CI check-runs for ${HEAD_SHA} — cannot assess PR state" >&2
       return 1
