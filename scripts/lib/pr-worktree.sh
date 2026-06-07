@@ -64,7 +64,7 @@ checkout_pr_in_worktree() {
   # EXIT trap the caller already registered (e.g. restore_auto_merge) instead of
   # clobbering it — the trap commands dev-lead registers are bare function names.
   local _prev_exit
-  _prev_exit="$(trap -p EXIT | sed -E "s/^trap -- '(.*)' EXIT\$/\1/")"
+  _prev_exit="$(trap -p EXIT | sed -n -E "s/^trap -- '(.*)' (EXIT|0)\$/\1/p")"
   # Deliberately expand $_prev_exit now to bake the captured prior trap into the
   # new handler; it is gone by the time the trap fires.
   # shellcheck disable=SC2064

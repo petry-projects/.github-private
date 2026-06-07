@@ -61,7 +61,7 @@ restore_auto_merge() {
   fi
   local pr_state
   pr_state=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}" --jq '.state' 2>/dev/null || true)
-  [ "$pr_state" = "open" ] || return 0   # merged/closed — nothing to restore
+  [ "$pr_state" != "closed" ] || return 0   # merged/closed — nothing to restore
   local am
   am=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}" --jq '.auto_merge // empty' 2>/dev/null || true)
   if [ -n "$am" ]; then return 0; fi     # success path already restored it
