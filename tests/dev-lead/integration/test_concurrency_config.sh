@@ -15,12 +15,21 @@ set -euo pipefail
 
 FAIL=0
 
-check_present() {
+# check_concurrency_field: grep within the concurrency: YAML block only.
+# Extracts lines from '^concurrency:' to the next top-level key, then strips
+# comment-only lines so the assertion cannot be satisfied by comment text
+# (dev-lead-reusable.yml has the routing strings in comments at lines 33-39;
+# without this isolation, deleting the actual concurrency.group entries would
+# leave the test green).
+check_concurrency_field() {
   local file="$1" pattern="$2" label="$3"
-  if grep -qF "$pattern" "$file"; then
-    echo "PASS [$label]: '$pattern' present in $(basename "$file")"
+  local block
+  block=$(awk '/^concurrency:/{found=1} found && /^[a-z]/ && !/^concurrency:/{found=0} found{print}' "$file" \
+    | grep -v '^\s*#')
+  if printf '%s\n' "$block" | grep -qF "$pattern"; then
+    echo "PASS [$label]: '$pattern' present in concurrency YAML of $(basename "$file")"
   else
-    echo "FAIL [$label]: '$pattern' not found in $file"
+    echo "FAIL [$label]: '$pattern' not found in concurrency YAML of $file"
     FAIL=$((FAIL + 1))
   fi
 }
@@ -35,15 +44,15 @@ WORKFLOWS=(
 for wf in "${WORKFLOWS[@]}"; do
   # Per-PR lane → serializes all runs touching one PR (PR, review, review
   # comment, issue_comment-on-PR, and repository_dispatch all map here).
-  check_present "$wf" "dev-lead-pr-" "per-PR serialization lane"
+  check_concurrency_field "$wf" "dev-lead-pr-" "per-PR serialization lane"
   # Per-issue lane → serializes runs working a single issue.
-  check_present "$wf" "dev-lead-issue-" "per-issue serialization lane"
+  check_concurrency_field "$wf" "dev-lead-issue-" "per-issue serialization lane"
   # ci-relay keeps its own ephemeral per-SHA slot so it fires without blocking
   # or being blocked by the dispatch queue.
-  check_present "$wf" "dev-lead-ci-relay-" "ci-relay per-SHA group"
+  check_concurrency_field "$wf" "dev-lead-ci-relay-" "ci-relay per-SHA group"
   # cancel-in-progress:false is what makes same-lane runs QUEUE (serialize)
   # rather than cancel — dropping queued runs would lose pickups.
-  check_present "$wf" "cancel-in-progress: false" "cancel-in-progress is false"
+  check_concurrency_field "$wf" "cancel-in-progress: false" "cancel-in-progress is false"
 done
 
 echo ""
