@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+set -euo pipefail
 # auto-merge.sh — hold GitHub auto-merge while dev-lead works a PR, and push
 # defensively so a PR that merges mid-run doesn't fail the job.
 #
