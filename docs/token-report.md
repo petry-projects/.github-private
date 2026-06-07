@@ -18,8 +18,20 @@ scans all non-archived repos.
 ## Cost (USD)
 
 The report shows **estimated USD cost** alongside tokens, everywhere tokens are
-surfaced (totals, by workflow/tier/model, by repository, and a most-expensive-PRs
-rollup). Cost is the headline metric; ET is kept as a normalised comparator.
+surfaced: totals, by workflow/tier/model, by repository, a **cost-per-day stacked-by-repo
+chart**, and a most-expensive-PRs rollup (with the first 35 chars of each PR title). Cost
+is the headline metric; ET is kept as a normalised comparator.
+
+**Formatting (org standard):** all surfaced dollar amounts are rounded to **2 decimals
+(cents)** via a single formatter (`_fmt_usd`, `printf "$%.2f"`) — see
+[AGENTS.md → Cost reporting](../AGENTS.md). Sub-cent values render as `$0.00`; use ET for
+finer granularity.
+
+The **cost-per-day chart** is an ASCII stacked bar (one bar per day, length scaled to the
+priciest day, segments lettered per top repo with the rest bucketed as `.`) — GitHub
+Markdown / Mermaid has no native stacked-bar type, so an ASCII bar inside a fenced block
+renders reliably everywhere. PR titles are fetched once (top-10 PRs) by `main()` and passed
+to the pure renderer via `PR_TITLE_FILE`.
 
 ### Single source of truth: `scripts/lib/model-pricing.tsv`
 
