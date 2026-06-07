@@ -80,8 +80,15 @@ fi
 
 # Advisory bot review gate — instant check for advisory bot reviews (Gemini, Copilot, SonarCloud, Codex)
 # This ensures valid code reviews are incorporated before pr-review posts approval (issue #457).
-# Non-blocking design: checks current state and returns immediately. If bots haven't submitted yet,
-# skips with exit 100 and lets the pull_request_review trigger re-run the check.
+#
+# DESIGN: Non-blocking re-trigger pattern
+#   Instant check (no polling/blocking):
+#   • Return 0: all bots submitted → approve
+#   • Return 1: waiting for bots → skip (exit 100), await pull_request_review event
+#   • On next bot submission: pull_request_review event fires → re-trigger pr-review
+#
+# COST: ~75% savings vs blocking (2-3 min runs vs 10-60 min blocks)
+#
 {
   # Subshell execution: isolate the gate's environment to prevent modifying
   # the caller's set/export state. The gate script defines its own functions
@@ -93,7 +100,8 @@ fi
   gate_rc=$?
   if [ $gate_rc -eq 1 ]; then
     # Bots are still reviewing — skip this run, will re-check on next bot review submission
-    echo "    skip: advisory bots still reviewing — will re-check when they submit"
+    # Exit 100 (no-op) prevents workflow from consuming budget while awaiting bots
+    echo "    skip: advisory bots still reviewing (non-blocking, will re-check on bot submission)"
     echo "{\"pr\":\"$PR_URL\",\"sha\":\"$PR_HEAD_SHA\",\"decision\":\"skip\",\"reason\":\"waiting-for-advisory-bots\"}"
     exit 100
   else

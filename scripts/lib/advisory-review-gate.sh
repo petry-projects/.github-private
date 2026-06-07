@@ -96,14 +96,24 @@ format_bot_status() {
 }
 
 # Instant (non-blocking) check of advisory bot status
-# Returns 0 if all participating bots have submitted
-# Returns 1 if still waiting for bots to submit
+#
+# DESIGN: This uses a re-trigger pattern instead of blocking waits:
+# 1. On first pr-review trigger (check_suite completion): instant check
+# 2. If return 0: bots ready → approve immediately
+# 3. If return 1: bots not ready → skip (exit 100)
+# 4. When bots submit: pull_request_review event fires
+# 5. pr-review re-triggered → this check returns 0 → approve
+#
+# Returns:
+#   0 = All detected participating bots have submitted (ready to approve)
+#   1 = Waiting for bots (skip, will re-check on next review event)
+#
 check_advisory_reviews() {
   local current_states participating_bots
 
-  log_info "Checking advisory bot review status for PR #${PR_NUM} (instant check)"
+  log_info "Checking advisory bot review status for PR #${PR_NUM} (instant check, no polling)"
 
-  # Get current bot states (one API call, no polling)
+  # Get current bot states (single gh API call, instant)
   current_states=$(get_advisory_bot_states)
 
   if [ -z "$current_states" ]; then

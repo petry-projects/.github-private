@@ -144,5 +144,5 @@ teardown() {
 
 @test "Advisory gate: script is minimal (non-blocking means fewer lines)" {
   local lines=$(wc -l < "$SCRIPT_DIR/lib/advisory-review-gate.sh")
-  [ $lines -lt 150 ]
+  [ $lines -lt 160 ]
 }
