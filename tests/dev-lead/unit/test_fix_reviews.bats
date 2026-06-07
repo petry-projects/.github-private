@@ -2230,6 +2230,56 @@ GHEOF
   [[ "$output" != *"status=no-changes"* ]]
 }
 
+@test "review-changes: same app different suites — superseded cancelled run is dropped" {
+  local tmpdir
+  tmpdir="$(mktemp -d)"
+
+  # Stub: same name and app (GitHub Actions, id=15368) across DIFFERENT check
+  # suites — the exact PR #453 incident with explicit suite ids: a concurrency-
+  # cancelled run (id=501, suite 500) superseded by a newer success (id=502,
+  # suite 501). Stage 1 keeps both (distinct suites); Stage 2's deliberate
+  # cross-suite (name, app) match must drop the cancelled one. Requiring suite
+  # equality in Stage 2 would make this test fail and reintroduce issue #461's
+  # endless retry loop — the superseding run always lives in a different suite.
+  cat > "$STUB_BIN_DIR/gh" <<'GHEOF'
+#!/usr/bin/env bash
+ARGS="$*"
+case "$ARGS" in
+  *"check-runs"*)
+    echo '{"check_runs":[{"id":501,"name":"review","status":"completed","conclusion":"cancelled","started_at":"2026-06-07T14:00:00Z","details_url":"https://example.com/1","app":{"id":15368},"check_suite":{"id":500}},{"id":502,"name":"review","status":"completed","conclusion":"success","started_at":"2026-06-07T14:00:01Z","details_url":"https://example.com/2","app":{"id":15368},"check_suite":{"id":501}}]}' ;;
+  *"statuses"*)
+    echo '[]' ;;
+  *"pulls/"*"reviews"*)
+    echo '[]' ;;
+  *"graphql"*)
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+  *"pr checkout"*) exit 0 ;;
+  *"pr comment"*) exit 0 ;;
+  *"pr merge"*) exit 0 ;;
+  *"pulls/"*) echo '{"head":{"sha":"abc123"},"auto_merge":null}' ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+
+  run bash -c "
+    cd '$tmpdir'
+    export INTENT_TYPE=review-changes DEV_LEAD_DRY_RUN=true
+    export PR_NUMBER=422 HEAD_SHA=abc123 REPO='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export PATH=\"$STUB_BIN_DIR:\$PATH\"
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+  rm -rf "$tmpdir"
+
+  [ "$status" -eq 0 ]
+  # The superseded cancelled run must be dropped even though its suite differs
+  # from the success's — matches GitHub's latest-same-named-run merge gate.
+  [[ "$output" != *"Tier-1 blockers still present"* ]]
+  [[ "$output" != *"rate-limited marker"* ]]
+  [[ "$output" == *"status=no-changes"* ]]
+}
+
 @test "review-changes: queued check run without started_at wins over older cancelled run by id" {
   local tmpdir
   tmpdir="$(mktemp -d)"

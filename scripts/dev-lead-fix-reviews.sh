@@ -298,6 +298,20 @@ fetch_pr_context() {
     #   succeeds, without hiding a genuinely failing check from a distinct
     #   workflow. A lone cancelled/timed_out run (no newer replacement) still
     #   counts as a Tier-1 blocker (issue #461).
+    #
+    # Stage 2 deliberately matches on (name, app) ACROSS suites — wider than
+    # Stage 1's key. The asymmetry is load-bearing: a concurrency-cancelled
+    # run is superseded by a run from a *different* event, which always lives
+    # in a *different* check suite (the PR #453 incident shape), so requiring
+    # suite equality here would never drop anything and would reintroduce the
+    # endless 30-minute retry loop. The check-runs API exposes no workflow
+    # identity, so a cancelled check from a sibling workflow sharing a
+    # name+app with a newer success is also dropped — accepted trade-off:
+    # GitHub's own required-check gate keys on the latest same-named run
+    # (PR #453 merged with stale cancelled `review` runs still on its head
+    # SHA), so such a PR is not actually merge-blocked. Failures are exempt
+    # from Stage 2 (conservative: a real failure from a sibling workflow
+    # stays visible to the agent even when GitHub would let the merge pass).
     if ! CI_STATUS_JSON=$(gh api --paginate "repos/${REPO}/commits/${HEAD_SHA}/check-runs?per_page=100" \
       2>/dev/null \
       | jq -s '[.[].check_runs[]?]
