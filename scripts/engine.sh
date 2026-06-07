@@ -473,10 +473,13 @@ _claude_chain_invoke() {
   return "$final_rc"
 }
 
-# _gemini_chain_invoke <chain_csv> <prompt_file> <timeout_sec> [extra_args...]
+# _gemini_chain_invoke <chain_csv> <prompt_file> <timeout_sec> [approval_mode] [extra_args...]
 # Walks a comma-separated list of Gemini models, invoking
-# `gemini --prompt "" --model X --approval-mode auto_edit --output-format text`
-# with the given extra arguments. Same control flow as _claude_chain_invoke:
+# `gemini --prompt "" --model X --approval-mode <approval_mode> --output-format text`
+# with the given extra arguments. approval_mode defaults to "auto_edit" for
+# write/agentic tiers; triage callers pass "plan" to deny workspace edits and
+# prevent prompt-injected triage responses from auto-approving file changes.
+# Same control flow as _claude_chain_invoke:
 # the first model whose run does NOT trigger is_rate_limited() wins; its
 # captured stdout is written to fd1, stderr to fd2, and its exit code is
 # returned. Rate-limited attempts are discarded and the next model is tried.
@@ -490,9 +493,11 @@ _claude_chain_invoke() {
 # Sets _GEMINI_CHAIN_MODEL_USED to the model that produced the final output
 # (success or last attempt) so callers can log which model actually ran.
 _gemini_chain_invoke() {
-  local chain_csv="$1" prompt_file="$2" timeout_sec="$3"
-  shift 3
-  local extra_args=("$@")
+  local chain_csv="$1" prompt_file="$2" timeout_sec="$3" approval_mode="${4:-auto_edit}"
+  local extra_args=()
+  if [ $# -gt 4 ]; then
+    extra_args=("${@:5}")
+  fi
 
   # Trim whitespace so a whitespace-only chain is caught here with a clear
   # error rather than slipping through to the per-entry filter below.
@@ -541,7 +546,7 @@ _gemini_chain_invoke() {
     if [ -n "$stdout_tmp" ] && [ -n "$stderr_tmp" ]; then
       timeout "$timeout_sec" gemini --prompt "" \
         --model "$model" \
-        --approval-mode auto_edit \
+        --approval-mode "$approval_mode" \
         "${fmt_args[@]}" \
         "${extra_args[@]}" \
         < "$prompt_file" > "$stdout_tmp" 2> "$stderr_tmp" || rc=$?
@@ -567,20 +572,20 @@ _gemini_chain_invoke() {
       # fallback paths at an unwritable directory and exercise the
       # last-resort branch below; production always uses /tmp/gemini-chain.
       local _fb_prefix="${_GEMINI_CHAIN_FB_PREFIX:-/tmp/gemini-chain}"
-      # Use mktemp with a template for non-predictable fallback filenames;
-      # fall back to PID+counter only when that also fails. A purely
-      # deterministic name based on PID alone is guessable by concurrent
-      # processes and would reintroduce a symlink-clobbering attack.
+      # Use mktemp with a template so fallback filenames are non-predictable.
+      # If that also fails, leave the variable empty and fall through to the
+      # in-memory last-resort below. Dropping to a deterministic PID-based
+      # name would reintroduce a symlink-clobbering risk that mktemp -t XXXXXX
+      # is designed to prevent — mirrors the same rule in _claude_chain_invoke.
       local _fb_stdout _fb_stderr
-      _fb_stdout="$(mktemp "${_fb_prefix}-stdout-XXXXXX" 2>/dev/null)" || \
-        _fb_stdout="${_fb_prefix}-stdout-$$-${attempted}"
-      _fb_stderr="$(mktemp "${_fb_prefix}-stderr-XXXXXX" 2>/dev/null)" || \
-        _fb_stderr="${_fb_prefix}-stderr-$$-${attempted}"
-      if { [ -f "$_fb_stdout" ] || : > "$_fb_stdout" 2>/dev/null; } && \
+      _fb_stdout="$(mktemp "${_fb_prefix}-stdout-XXXXXX" 2>/dev/null)" || _fb_stdout=""
+      _fb_stderr="$(mktemp "${_fb_prefix}-stderr-XXXXXX" 2>/dev/null)" || _fb_stderr=""
+      if [ -n "$_fb_stdout" ] && [ -n "$_fb_stderr" ] && \
+         { [ -f "$_fb_stdout" ] || : > "$_fb_stdout" 2>/dev/null; } && \
          { [ -f "$_fb_stderr" ] || : > "$_fb_stderr" 2>/dev/null; }; then
         timeout "$timeout_sec" gemini --prompt "" \
           --model "$model" \
-          --approval-mode auto_edit \
+          --approval-mode "$approval_mode" \
           --output-format text \
           "${extra_args[@]}" \
           < "$prompt_file" > "$_fb_stdout" 2> "$_fb_stderr" || rc=$?
@@ -599,7 +604,7 @@ _gemini_chain_invoke() {
         local _last_resort_output=""
         _last_resort_output="$(timeout "$timeout_sec" gemini --prompt "" \
           --model "$model" \
-          --approval-mode auto_edit \
+          --approval-mode "$approval_mode" \
           --output-format text \
           "${extra_args[@]}" \
           < "$prompt_file" 2>&1)" || rc=$?
@@ -672,7 +677,7 @@ _gemini_chain_invoke() {
     # Writing it here preserves an earlier attempt's reset time even when the
     # final attempt's output carries no reset timestamp, preventing the retry
     # cron from treating the quota as cleared and re-dispatching too early.
-    printf '%s' "$_best_reset" > /tmp/dev-lead-rate-limit-reset
+    printf '%s' "$_best_reset" > /tmp/dev-lead-rate-limit-reset || true
     final_rc=2
   fi
 

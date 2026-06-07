@@ -135,14 +135,15 @@ emit_token_record() {
 # unset). Engine invocations often run inside a `cmd | tee` pipeline — i.e. a
 # SUBSHELL — so the LAST_* globals they set never reach the parent. Writing usage
 # to this file (the filesystem is shared) lets _record_engine_tokens read it back.
-# $$ (shell PID) is constant across pipeline subshells: both the writing left-hand
-# side and the reading parent see the same value. Separate background processes
-# (e.g. `run_agentic &` forking a new process vs `(run_duck) &` running as a
-# subshell) each have a distinct $$, so concurrent tier-2 calls never share a
-# sidecar file.
+# BASHPID (not $$) reflects the actual PID of the current subshell or forked
+# process. $$ is constant across subshells created with (...), so a duck reviewer
+# and a deep reviewer running as concurrent subshells would share the same $$ and
+# collide on the sidecar. BASHPID is distinct for every subshell, preventing that.
+# parse_engine_usage and _record_engine_tokens always run in the same process
+# (file-redirect pattern, not tee-pipeline), so they agree on BASHPID.
 _engine_usage_sidecar() {
   [ -n "${TOKEN_LOG_FILE:-}" ] || return 0
-  printf '%s' "${TOKEN_LOG_FILE}.last-usage.$$"
+  printf '%s' "${TOKEN_LOG_FILE}.last-usage.${BASHPID}"
 }
 
 # reset_engine_usage

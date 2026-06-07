@@ -246,14 +246,22 @@ teardown() {
   [ "$LAST_OUTPUT_TOKENS" = "85" ]   # 60 candidates + 25 thoughts
 }
 
-@test "_engine_usage_sidecar: path includes shell PID to isolate parallel invocations" {
-  # $$ is constant across pipeline subshells (left-hand side inherits parent PID)
-  # so both the writing subshell and the reading parent agree on the same path,
-  # while separate background processes each get their own distinct $$.
-  local sidecar
-  sidecar="$(_engine_usage_sidecar)"
+@test "_engine_usage_sidecar: uses BASHPID so each subshell gets a distinct sidecar path" {
+  # Capture via redirect (not command substitution) so the function's BASHPID
+  # matches the test's BASHPID and the equality check is meaningful.
+  local tmp; tmp="$(mktemp)"
+  _engine_usage_sidecar > "$tmp"
+  local sidecar; sidecar="$(< "$tmp")"  # read file; subshell BASHPID irrelevant here
+  rm -f "$tmp"
   [ -n "$sidecar" ]
-  [[ "$sidecar" == "${TOKEN_LOG_FILE}.last-usage.$$" ]]
+  [[ "$sidecar" == "${TOKEN_LOG_FILE}.last-usage.${BASHPID}" ]]
+  # Subshell must produce a DIFFERENT path — this is the key property:
+  # BASHPID is unique per subshell; $$ is constant (parent PID) and would
+  # yield the same path for all (...) & subshells, causing sidecar collisions
+  # between concurrent duck and deep reviewers.
+  local sub_sidecar
+  sub_sidecar="$(_engine_usage_sidecar)"
+  [[ "$sub_sidecar" != "$sidecar" ]]
 }
 
 @test "parse_engine_usage: missing usage block returns non-zero (→ estimate)" {
