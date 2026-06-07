@@ -78,21 +78,27 @@ if [ "$CI_STATUS" = "pending" ]; then
   exit 100
 fi
 
-# Advisory bot review gate — wait for Gemini, Copilot, SonarCloud, Codex
-# to complete before approving. This ensures valid code reviews are
-# incorporated before pr-review posts approval (issue #457).
+# Advisory bot review gate — instant check for advisory bot reviews (Gemini, Copilot, SonarCloud, Codex)
+# This ensures valid code reviews are incorporated before pr-review posts approval (issue #457).
+# Non-blocking design: checks current state and returns immediately. If bots haven't submitted yet,
+# skips with exit 100 and lets the pull_request_review trigger re-run the check.
 {
   # Subshell execution: isolate the gate's environment to prevent modifying
   # the caller's set/export state. The gate script defines its own functions
   # and checks BASH_SOURCE, so it's safe to source and immediately call.
   # shellcheck source=lib/advisory-review-gate.sh
   source "$SCRIPT_DIR/lib/advisory-review-gate.sh"
-  wait_for_advisory_reviews "$PR_URL"
+  check_advisory_reviews "$PR_URL"
 } || {
   gate_rc=$?
-  if [ $gate_rc -eq 2 ]; then
-    # Advisory gate hit hard timeout but we still proceed (it logs the warning)
-    echo "    warn: advisory bot review gate timed out at 60min, proceeding anyway"
+  if [ $gate_rc -eq 1 ]; then
+    # Bots are still reviewing — skip this run, will re-check on next bot review submission
+    echo "    skip: advisory bots still reviewing — will re-check when they submit"
+    echo "{\"pr\":\"$PR_URL\",\"sha\":\"$PR_HEAD_SHA\",\"decision\":\"skip\",\"reason\":\"waiting-for-advisory-bots\"}"
+    exit 100
+  else
+    # Unexpected error (gate_rc should only be 0 or 1)
+    exit $gate_rc
   fi
 }
 
