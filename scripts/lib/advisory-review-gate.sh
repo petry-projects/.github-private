@@ -152,24 +152,36 @@ check_advisory_reviews() {
   done <<< "$current_states"
 
   # Require all known advisory bots to submit before approving.
-  # Timeout fallback: after 20 minutes (covers Codex P50 ~17.7 min), approve
-  # with however many bots have submitted — absent bots likely won't trigger.
+  # Two timeout fallbacks handle absent bots (e.g. Codex only reviews a subset of PRs):
+  #   1. Head-push age > 20 min: use latest commit time, not PR creation time, so a new
+  #      commit on an old PR doesn't immediately bypass the gate (thread PRRT_..ofWG).
+  #   2. Quiescence > 10 min: if no new submissions have arrived in 10 min, assume the
+  #      remaining bots won't participate — prevents indefinite stranding when there is
+  #      no scheduled retry event to re-enter this branch (thread PRRT_..ofWI).
   if [ "$num_submitted" -lt "$total_advisory_bots" ]; then
-    local pr_created_at pr_age_raw pr_age_sec now
-    pr_age_sec=0
-    pr_created_at=$(gh pr view "$PR_URL" --json createdAt --jq '.createdAt' 2>/dev/null) || pr_created_at=""
-    if [ -n "$pr_created_at" ]; then
-      pr_age_raw=$(date -u -d "$pr_created_at" +%s 2>/dev/null) || pr_age_raw=""
-      if [ -n "$pr_age_raw" ]; then
-        now=$(date -u +%s)
-        pr_age_sec=$((now - pr_age_raw))
-      fi
+    local now head_time head_time_raw head_age_sec latest_sub_at latest_sub_raw time_since_last_sub
+    now=$(date -u +%s)
+
+    head_age_sec=0
+    head_time=$(gh pr view "$PR_URL" --json commits --jq '[.commits[].committedDate] | sort | last' 2>/dev/null) || head_time=""
+    if [ -n "$head_time" ]; then
+      head_time_raw=$(date -u -d "$head_time" +%s 2>/dev/null) || head_time_raw=""
+      [ -n "$head_time_raw" ] && head_age_sec=$((now - head_time_raw))
     fi
 
-    if [ "$pr_age_sec" -gt 1200 ]; then
-      log_info "Only ${num_submitted}/${total_advisory_bots} bots submitted; PR is ${pr_age_sec}s old — timeout fallback, proceeding"
+    time_since_last_sub=0
+    latest_sub_at=$(echo "$current_states" | jq -rs '[.[].time] | sort | last' 2>/dev/null) || latest_sub_at=""
+    if [ -n "$latest_sub_at" ]; then
+      latest_sub_raw=$(date -u -d "$latest_sub_at" +%s 2>/dev/null) || latest_sub_raw=""
+      [ -n "$latest_sub_raw" ] && time_since_last_sub=$((now - latest_sub_raw))
+    fi
+
+    if [ "$head_age_sec" -gt 1200 ]; then
+      log_info "Only ${num_submitted}/${total_advisory_bots} bots submitted; head is ${head_age_sec}s old — timeout fallback, proceeding"
+    elif [ "$time_since_last_sub" -gt 600 ]; then
+      log_info "Only ${num_submitted}/${total_advisory_bots} bots submitted; no new submissions in ${time_since_last_sub}s — assuming absent bots won't participate, proceeding"
     else
-      log_warn "Only ${num_submitted}/${total_advisory_bots} advisory bots submitted so far (PR age: ${pr_age_sec}s)"
+      log_warn "Only ${num_submitted}/${total_advisory_bots} advisory bots submitted so far (head age: ${head_age_sec}s, last submission: ${time_since_last_sub}s ago)"
       log_warn "Will re-check when remaining bots submit their reviews"
       return 1
     fi

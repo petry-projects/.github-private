@@ -180,7 +180,7 @@ _make_mock_gh_dir() {
 args="\$*"
 if [[ "\$args" == *"reviews,comments"* ]]; then
   printf '%s\n' '$json_reviews_comments'
-elif [[ "\$args" == *"createdAt"* ]]; then
+elif [[ "\$args" == *"commits"* ]]; then
   # Return a timestamp 30 minutes ago (well past the 20-minute timeout)
   date -u -d '30 minutes ago' '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null \
     || date -u -v-30M '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null \
@@ -200,7 +200,7 @@ _make_mock_gh_dir_recent() {
 args="\$*"
 if [[ "\$args" == *"reviews,comments"* ]]; then
   printf '%s\n' '$json_reviews_comments'
-elif [[ "\$args" == *"createdAt"* ]]; then
+elif [[ "\$args" == *"commits"* ]]; then
   # Return current time (PR is brand new, well within the 20-minute window)
   date -u '+%Y-%m-%dT%H:%M:%SZ'
 fi
@@ -237,7 +237,9 @@ MOCK_EOF
 
 @test "Gate runtime: returns 1 when only 1 bot submitted and PR is recent" {
   local one_bot_json
-  one_bot_json='{"reviews":[{"author":{"login":"gemini-code-assist"},"state":"COMMENTED","submittedAt":"2026-06-07T10:00:00Z"}],"comments":[]}'
+  # Use a far-future submittedAt so time_since_last_sub is always negative,
+  # ensuring the quiescence fallback never fires and the test stays stable.
+  one_bot_json='{"reviews":[{"author":{"login":"gemini-code-assist"},"state":"COMMENTED","submittedAt":"2099-01-01T00:00:00Z"}],"comments":[]}'
   local tmpdir
   tmpdir=$(_make_mock_gh_dir_recent "$one_bot_json")
   local gate_script="$SCRIPT_DIR/lib/advisory-review-gate.sh"
@@ -254,6 +256,22 @@ MOCK_EOF
   one_bot_json='{"reviews":[{"author":{"login":"gemini-code-assist"},"state":"COMMENTED","submittedAt":"2026-06-07T10:00:00Z"}],"comments":[]}'
   local tmpdir
   tmpdir=$(_make_mock_gh_dir "$one_bot_json")
+  local gate_script="$SCRIPT_DIR/lib/advisory-review-gate.sh"
+  run env PATH="$tmpdir:$PATH" bash -c "
+    source '$gate_script'
+    check_advisory_reviews 'https://github.com/owner/repo/pull/123'
+  "
+  rm -rf "$tmpdir"
+  [ "$status" -eq 0 ]
+}
+
+@test "Gate runtime: returns 0 when no new bot submissions for >10 minutes (no strand)" {
+  # PR is recent (head_age_sec < 1200) but last submission was long ago.
+  # The quiescence fallback should fire and allow the gate to proceed.
+  local old_submission_json
+  old_submission_json='{"reviews":[{"author":{"login":"gemini-code-assist"},"state":"COMMENTED","submittedAt":"2000-01-01T00:00:00Z"}],"comments":[]}'
+  local tmpdir
+  tmpdir=$(_make_mock_gh_dir_recent "$old_submission_json")
   local gate_script="$SCRIPT_DIR/lib/advisory-review-gate.sh"
   run env PATH="$tmpdir:$PATH" bash -c "
     source '$gate_script'
