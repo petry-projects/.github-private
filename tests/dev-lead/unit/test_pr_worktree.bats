@@ -106,3 +106,21 @@ teardown() {
   run cleanup_pr_worktree
   [ "$status" -eq 0 ]
 }
+
+@test "checkout_pr_in_worktree: chains onto a pre-existing EXIT trap (does not clobber it)" {
+  # The scripts register restore_auto_merge as an EXIT trap BEFORE checking out
+  # the worktree; checkout must preserve it so auto-merge is still restored.
+  source "$LIB"
+  cd "$AGENT_REPO"
+  trap 'echo PRIOR' EXIT
+
+  checkout_pr_in_worktree 42 owner/repo
+
+  local current
+  current="$(trap -p EXIT)"
+  [[ "$current" == *cleanup_pr_worktree* ]]
+  [[ "$current" == *"echo PRIOR"* ]]
+
+  cleanup_pr_worktree
+  trap - EXIT
+}
