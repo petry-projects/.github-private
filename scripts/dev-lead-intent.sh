@@ -98,8 +98,7 @@ has_label() {
   local name="$1"
   [ -n "$EVENT_PATH" ] && [ -f "$EVENT_PATH" ] || return 1
   jq -e --arg n "$name" '
-    [ (.pull_request.labels // []), (.issue.labels // []) ]
-    | flatten | any(.name == $n)
+    any(.pull_request.labels[]?, .issue.labels[]?; .name == $n)
   ' "$EVENT_PATH" >/dev/null 2>&1
 }
 
@@ -376,12 +375,20 @@ case "$EVENT_NAME" in
     fi
 
     # Honour hands-off for dispatch events: the event payload carries no labels,
-    # so fetch them via the API before routing.
-    if gh api "repos/${GITHUB_REPOSITORY}/issues/${pr_number}/labels" \
-        --jq '.[].name' 2>/dev/null | grep -qxF "dev-lead:hands-off"; then
+    # so fetch them via the API before routing. Fail closed: if the API call
+    # fails (auth error, transient failure, token without label read access),
+    # skip rather than route with unknown label state.
+    _dispatch_labels=""
+    if ! _dispatch_labels=$(gh api "repos/${GITHUB_REPOSITORY}/issues/${pr_number}/labels" \
+        --jq '.[].name' 2>/dev/null); then
+      emit_skip "label-lookup-error"
+      exit 0
+    fi
+    if echo "$_dispatch_labels" | grep -qxF "dev-lead:hands-off"; then
       emit_skip "hands-off-label"
       exit 0
     fi
+    unset _dispatch_labels
 
     case "$dispatch_type" in
       dev-lead-ci-failure)

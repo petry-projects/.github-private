@@ -106,3 +106,22 @@ GHEOF
   [ "$status" -eq 0 ]
   [ "$(_get_env INTENT_TYPE)" = "fix-ci" ]
 }
+
+@test "hands-off: repository_dispatch ci-failure with API error → skip (fail closed)" {
+  # Mock gh to simulate a failure (e.g. token lacks issue read access)
+  cat > "$MOCK_BIN/gh" << 'GHEOF'
+#!/usr/bin/env bash
+echo "gh: request failed: HTTP 403" >&2
+exit 1
+GHEOF
+  chmod +x "$MOCK_BIN/gh"
+
+  export GITHUB_EVENT_NAME="repository_dispatch"
+  export GITHUB_EVENT_PATH="$FIXTURES_DIR/repository_dispatch_ci_failure.json"
+
+  run bash "$INTENT_SCRIPT"
+
+  [ "$status" -eq 0 ]
+  [ "$(_get_env INTENT_TYPE)" = "skip" ]
+  [ "$(_get_env INTENT_REASON)" = "label-lookup-error" ]
+}
