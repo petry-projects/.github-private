@@ -45,11 +45,15 @@ YELLOW='\033[1;33m'
 GREEN='\033[0;32m'
 NC='\033[0m' # No Color
 
-PR_URL="${1:?Usage: wait_for_advisory_reviews <pr_url>}"
+PR_URL="${1:-}"
+if [ -z "$PR_URL" ]; then
+  echo "[advisory-gate] Usage: wait_for_advisory_reviews <pr_url>" >&2
+  exit 1
+fi
 export PR_URL
 
 # Extract PR number from URL for logging
-PR_NUM=$(echo "$PR_URL" | grep -o '#[0-9]\+' | tr -d '#' || echo "unknown")
+PR_NUM=$(echo "$PR_URL" | grep -oE '[0-9]+$' || echo "unknown")
 
 log_info() {
   echo "[advisory-gate] $*" >&2
@@ -77,7 +81,7 @@ get_advisory_bot_states() {
     ) |
     # Group by bot (keep latest submission per bot)
     group_by(.bot) |
-    map({bot: .[0].bot, state: .[0].state, time: .[0].time, count: length}) |
+    map({bot: .[0].bot, state: .[-1].state, time: .[-1].time, count: length}) |
     sort_by(.bot) |
     .[]
   '
@@ -201,14 +205,16 @@ wait_for_advisory_reviews() {
   done
 }
 
-# Run the wait gate
-wait_for_advisory_reviews
-exit_code=$?
+# Run the wait gate (only if not being sourced)
+if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
+  wait_for_advisory_reviews
+  exit_code=$?
 
-if [ $exit_code -eq 0 ]; then
-  log_success "Advisory bot review gate passed ✓"
-elif [ $exit_code -eq 2 ]; then
-  log_warn "Advisory bot review gate timed out, but proceeding with approval"
+  if [ $exit_code -eq 0 ]; then
+    log_success "Advisory bot review gate passed ✓"
+  elif [ $exit_code -eq 2 ]; then
+    log_warn "Advisory bot review gate timed out, but proceeding with approval"
+  fi
+
+  exit $exit_code
 fi
-
-exit $exit_code

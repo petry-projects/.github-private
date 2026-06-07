@@ -83,11 +83,13 @@ fi
 # incorporated before pr-review posts approval (issue #457).
 # shellcheck source=lib/advisory-review-gate.sh
 source "$SCRIPT_DIR/lib/advisory-review-gate.sh"
-GATE_RESULT=$(wait_for_advisory_reviews "$PR_URL" 2>&1 || echo "gate_failed")
-if [ "$GATE_RESULT" = "gate_failed" ]; then
-  # Advisory gate hit hard timeout but we still proceed (it logs the warning)
-  echo "    warn: advisory bot review gate timed out at 60min, proceeding anyway"
-fi
+wait_for_advisory_reviews "$PR_URL" || {
+  gate_rc=$?
+  if [ $gate_rc -eq 2 ]; then
+    # Advisory gate hit hard timeout but we still proceed (it logs the warning)
+    echo "    warn: advisory bot review gate timed out at 60min, proceeding anyway"
+  fi
+}
 
 # Skip when a human has requested changes, with two guards:
 #   1. FORCE_REVIEW bypasses the skip — mention-triggered runs always proceed so
