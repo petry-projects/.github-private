@@ -195,6 +195,9 @@ GHEOF
   [ "$status" -eq 2 ]
   [[ "$output" == *"rate-limited"* ]]
   [[ "$output" == *"intent=fix-reviews"* ]]
+  # Genuine rate limit keeps the rate-limited wording and tags the marker reason
+  [[ "$output" == *"reason=rate-limit"* ]]
+  [[ "$output" == *"Dev-Lead — rate-limited"* ]]
 }
 
 @test "fix-reviews: rate-limited: on-mention intent posts re-trigger ack (not auto-retry)" {
@@ -1979,6 +1982,12 @@ GHEOF
   [[ "$output" != *"status=no-changes"* ]]
   # Must include a future reset time so the retry cron backs off instead of re-dispatching immediately
   [[ "$output" == *"reset="* ]]
+  # Honest wording (issue #461): blocked-path marker keeps the machine-readable
+  # status token but must not claim the engines are rate-limited
+  [[ "$output" == *"status=rate-limited"* ]]
+  [[ "$output" == *"reason=blocked"* ]]
+  [[ "$output" == *"waiting on PR blockers"* ]]
+  [[ "$output" != *"all AI engines are currently rate-limited"* ]]
 }
 
 @test "review-changes: hard blockers path posts rate-limited marker for retry" {
@@ -2023,6 +2032,106 @@ GHEOF
   [[ "$output" != *"status=no-changes"* ]]
   # Must include a future reset time so the retry cron backs off instead of re-dispatching immediately
   [[ "$output" == *"reset="* ]]
+  # Honest wording (issue #461): blocked-path marker keeps the machine-readable
+  # status token but must not claim the engines are rate-limited
+  [[ "$output" == *"status=rate-limited"* ]]
+  [[ "$output" == *"reason=blocked"* ]]
+  [[ "$output" == *"waiting on PR blockers"* ]]
+  [[ "$output" != *"all AI engines are currently rate-limited"* ]]
+  # The visible review-changes ack explains the real cause honestly
+  [[ "$output" == *"no code changes were needed"* ]]
+}
+
+# ── check-run dedup: superseded runs must not register as blockers (issue #461) ─
+
+@test "review-changes: superseded cancelled check run is not a hard blocker" {
+  local tmpdir
+  tmpdir="$(mktemp -d)"
+
+  # Stub: three same-named check runs from different check suites — two
+  # concurrency-cancelled runs superseded by a newer successful one (the exact
+  # shape of the PR #453 incident). Only the newest run per name may count.
+  cat > "$STUB_BIN_DIR/gh" <<'GHEOF'
+#!/usr/bin/env bash
+ARGS="$*"
+case "$ARGS" in
+  *"check-runs"*)
+    echo '{"check_runs":[{"id":101,"name":"review","status":"completed","conclusion":"cancelled","started_at":"2026-06-07T13:08:53Z","details_url":"https://example.com/1"},{"id":102,"name":"review","status":"completed","conclusion":"cancelled","started_at":"2026-06-07T13:08:54Z","details_url":"https://example.com/2"},{"id":103,"name":"review","status":"completed","conclusion":"success","started_at":"2026-06-07T13:08:56Z","details_url":"https://example.com/3"}]}' ;;
+  *"statuses"*)
+    echo '[]' ;;
+  *"pulls/"*"reviews"*)
+    echo '[]' ;;
+  *"graphql"*)
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+  *"pr checkout"*) exit 0 ;;
+  *"pr comment"*) exit 0 ;;
+  *"pr merge"*) exit 0 ;;
+  *"pulls/"*) echo '{"head":{"sha":"abc123"},"auto_merge":null}' ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+
+  run bash -c "
+    cd '$tmpdir'
+    export INTENT_TYPE=review-changes DEV_LEAD_DRY_RUN=true
+    export PR_NUMBER=422 HEAD_SHA=abc123 REPO='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export PATH=\"$STUB_BIN_DIR:\$PATH\"
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+  rm -rf "$tmpdir"
+
+  [ "$status" -eq 0 ]
+  # The superseded cancelled runs must not block: no retry marker, terminal no-changes posted
+  [[ "$output" != *"Tier-1 blockers still present"* ]]
+  [[ "$output" != *"rate-limited marker"* ]]
+  [[ "$output" == *"status=no-changes"* ]]
+}
+
+@test "review-changes: lone cancelled check run still counts as a hard blocker" {
+  local tmpdir
+  tmpdir="$(mktemp -d)"
+
+  # Stub: a single cancelled check run with no newer same-named replacement —
+  # genuinely the latest of its name, so it must still block (regression guard
+  # against over-eager dedup).
+  cat > "$STUB_BIN_DIR/gh" <<'GHEOF'
+#!/usr/bin/env bash
+ARGS="$*"
+case "$ARGS" in
+  *"check-runs"*)
+    echo '{"check_runs":[{"id":201,"name":"review","status":"completed","conclusion":"cancelled","started_at":"2026-06-07T13:08:53Z","details_url":"https://example.com/1"}]}' ;;
+  *"statuses"*)
+    echo '[]' ;;
+  *"pulls/"*"reviews"*)
+    echo '[]' ;;
+  *"graphql"*)
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+  *"pr checkout"*) exit 0 ;;
+  *"pr comment"*) exit 0 ;;
+  *"pr merge"*) exit 0 ;;
+  *"pulls/"*) echo '{"head":{"sha":"abc123"},"auto_merge":null}' ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+
+  run bash -c "
+    cd '$tmpdir'
+    export INTENT_TYPE=review-changes DEV_LEAD_DRY_RUN=true
+    export PR_NUMBER=422 HEAD_SHA=abc123 REPO='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export PATH=\"$STUB_BIN_DIR:\$PATH\"
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+  rm -rf "$tmpdir"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Tier-1 blockers still present"* ]]
+  [[ "$output" == *"rate-limited marker"* ]]
+  [[ "$output" == *"reason=blocked"* ]]
+  [[ "$output" != *"status=no-changes"* ]]
 }
 
 @test "fix-reviews: bot-thread-only blocker suppresses no-changes terminal (fix-reviews intent)" {
