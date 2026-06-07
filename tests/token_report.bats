@@ -89,3 +89,43 @@ setup() {
   [ "$status" -eq 0 ]
   [[ "$output" == *"No token-usage records found"* ]]
 }
+
+# ---------------------------------------------------------------------------
+# collect_org_jsonl — error-handling (gh is stubbed; no network)
+# ---------------------------------------------------------------------------
+
+@test "collect_org_jsonl: emits ERROR and returns non-zero when org repo listing fails" {
+  local tmpdir
+  tmpdir="$(mktemp -d)"
+  run bash -c "
+    gh() { return 1; }
+    export -f gh
+    source '${BATS_TEST_DIRNAME}/../scripts/token_report.sh'
+    export ORG=petry-projects LOOKBACK_DAYS=7
+    collect_org_jsonl '${tmpdir}' 2>&1
+  "
+  rm -rf "$tmpdir"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"ERROR"* ]]
+}
+
+@test "collect_org_jsonl: emits WARN and continues when per-repo artifact listing fails" {
+  local tmpdir
+  tmpdir="$(mktemp -d)"
+  run bash -c "
+    gh() {
+      case \"\$2\" in
+        orgs/*/repos*) echo 'petry-projects/test-repo'; return 0;;
+        repos/*/actions/artifacts*) return 1;;
+        *) return 1;;
+      esac
+    }
+    export -f gh
+    source '${BATS_TEST_DIRNAME}/../scripts/token_report.sh'
+    export ORG=petry-projects LOOKBACK_DAYS=7
+    collect_org_jsonl '${tmpdir}' 2>&1
+  "
+  rm -rf "$tmpdir"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"WARN"* ]]
+}

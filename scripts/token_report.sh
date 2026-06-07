@@ -195,8 +195,11 @@ collect_org_jsonl() {
   mkdir -p "$jsonl_dir"
 
   local repos_raw
-  repos_raw="$(gh api "orgs/${ORG}/repos?per_page=100&type=all" --paginate \
-    --jq '.[] | select(.archived == false) | .full_name')"
+  if ! repos_raw="$(gh api "orgs/${ORG}/repos?per_page=100&type=all" --paginate \
+    --jq '.[] | select(.archived == false) | .full_name')"; then
+    echo "ERROR: org repo discovery for '${ORG}' failed — verify GH_TOKEN has org read access." >&2
+    return 1
+  fi
   [ -n "$repos_raw" ] || { echo "0 0"; return 0; }
 
   local cutoff repo_count=0 artifact_count=0
@@ -215,8 +218,10 @@ collect_org_jsonl() {
     local arts
     arts="$(gh api "repos/${repo}/actions/artifacts" --paginate 2>/dev/null \
       | jq -r --arg cutoff "$cutoff" \
-      '.artifacts[] | select(.name | startswith("token-usage-")) | select(.expired == false) | select(.created_at >= $cutoff) | .id | tostring' \
-      || true)"
+      '.artifacts[] | select(.name | startswith("token-usage-")) | select(.expired == false) | select(.created_at >= $cutoff) | .id | tostring')" || {
+      echo "WARN: could not fetch artifacts for ${repo} — skipping (check actions:read permission)" >&2
+      continue
+    }
     [ -n "$arts" ] || continue
 
     local id
