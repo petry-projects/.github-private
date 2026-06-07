@@ -155,6 +155,31 @@ setup() {
   [[ "$output" == *"WARN"* ]]
 }
 
+@test "collect_org_jsonl: removes malformed dest JSONL when jq conversion fails" {
+  local tmpdir jsonl_dir
+  tmpdir="$(mktemp -d)"
+  jsonl_dir="$(mktemp -d)"
+  run bash -c "
+    set -euo pipefail
+    source '${BATS_TEST_DIRNAME}/../scripts/token_report.sh'
+    # Simulate the inner conversion loop for a binary-corrupted source file.
+    f='$tmpdir/bad.jsonl'
+    printf '\x00\x01\x02\x03' > \"\$f\"
+    dest='$jsonl_dir/999-bad.jsonl'
+    if jq -c --arg repo 'r' 'select(type==\"object\") | . + {repo: \$repo}' \
+        \"\$f\" > \"\$dest\" 2>/dev/null; then
+      true
+    else
+      rm -f \"\$dest\" 2>/dev/null || true
+    fi
+    # No lingering dest file should remain.
+    [ -z \"\$(ls '$jsonl_dir')\" ] && echo 'clean' || echo 'dirty'
+  "
+  rm -rf "$tmpdir" "$jsonl_dir"
+  [ "$status" -eq 0 ]
+  [ "$output" = "clean" ]
+}
+
 @test "collect_org_jsonl: emits WARN and continues when artifact zip download fails" {
   local tmpdir
   tmpdir="$(mktemp -d)"

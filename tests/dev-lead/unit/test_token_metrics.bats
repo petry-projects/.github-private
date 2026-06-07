@@ -235,6 +235,27 @@ teardown() {
   [ "$LAST_OUTPUT_TOKENS" = "60" ]
 }
 
+@test "parse_engine_usage: gemini adds thinking tokens to output count" {
+  local f; f=$(mktemp)
+  printf '%s\n' '{"response":"hi","stats":{"models":{"g":{"tokens":{"prompt":500,"cached":100,"candidates":60,"thoughts":25}}}}}' > "$f"
+  parse_engine_usage gemini "$f"
+  rm -f "$f"
+  [ "$LAST_USAGE_OK" = "1" ]
+  [ "$LAST_INPUT_TOKENS" = "400" ]
+  [ "$LAST_CACHE_READ_TOKENS" = "100" ]
+  [ "$LAST_OUTPUT_TOKENS" = "85" ]   # 60 candidates + 25 thoughts
+}
+
+@test "_engine_usage_sidecar: path includes shell PID to isolate parallel invocations" {
+  # $$ is constant across pipeline subshells (left-hand side inherits parent PID)
+  # so both the writing subshell and the reading parent agree on the same path,
+  # while separate background processes each get their own distinct $$.
+  local sidecar
+  sidecar="$(_engine_usage_sidecar)"
+  [ -n "$sidecar" ]
+  [[ "$sidecar" == "${TOKEN_LOG_FILE}.last-usage.$$" ]]
+}
+
 @test "parse_engine_usage: missing usage block returns non-zero (→ estimate)" {
   local f; f=$(mktemp)
   printf '%s\n' '{"result":"no usage here"}' > "$f"

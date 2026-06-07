@@ -301,12 +301,17 @@ collect_org_jsonl() {
         continue
       fi
 
-      local found=false f
+      local found=false f dest
       while IFS= read -r f; do
         # Tag each record with its source repo for the by-repo rollup.
+        dest="$jsonl_dir/${id}-$(basename "$f")"
         if jq -c --arg repo "$repo" 'select(type=="object") | . + {repo: $repo}' \
-            "$f" > "$jsonl_dir/${id}-$(basename "$f")" 2>/dev/null; then
+            "$f" > "$dest" 2>/dev/null; then
           found=true
+        else
+          # jq creates the destination before it can fail on malformed input;
+          # remove it so annotate_records never sees a corrupt *.jsonl file.
+          rm -f "$dest" 2>/dev/null || true
         fi
       done < <(find "$ex" -type f -name '*.jsonl' -print)
       [ "$found" = true ] && artifact_count=$((artifact_count + 1))

@@ -131,13 +131,18 @@ emit_token_record() {
 # ─────────────────────────────────────────────────────────────────────────────
 
 # _engine_usage_sidecar
-# Prints the path of the cross-process usage sidecar (empty when TOKEN_LOG_FILE is
+# Prints the path of the per-process usage sidecar (empty when TOKEN_LOG_FILE is
 # unset). Engine invocations often run inside a `cmd | tee` pipeline — i.e. a
 # SUBSHELL — so the LAST_* globals they set never reach the parent. Writing usage
 # to this file (the filesystem is shared) lets _record_engine_tokens read it back.
+# $$ (shell PID) is constant across pipeline subshells: both the writing left-hand
+# side and the reading parent see the same value. Separate background processes
+# (e.g. `run_agentic &` forking a new process vs `(run_duck) &` running as a
+# subshell) each have a distinct $$, so concurrent tier-2 calls never share a
+# sidecar file.
 _engine_usage_sidecar() {
   [ -n "${TOKEN_LOG_FILE:-}" ] || return 0
-  printf '%s' "${TOKEN_LOG_FILE}.last-usage"
+  printf '%s' "${TOKEN_LOG_FILE}.last-usage.$$"
 }
 
 # reset_engine_usage
@@ -194,7 +199,7 @@ parse_engine_usage() {
       local prompt cached
       IFS=$'\t' read -r prompt cached o < <(jq -r '
         ([.. | objects | select(has("tokens")) | .tokens] | first // {}) as $t |
-        [ ($t.prompt // 0), ($t.cached // 0), ($t.candidates // $t.output // 0) ] | @tsv
+        [ ($t.prompt // 0), ($t.cached // 0), (($t.candidates // $t.output // 0) + ($t.thoughts // 0)) ] | @tsv
       ' "$file" 2>/dev/null) || return 1
       _usage_all_numeric "$prompt" "$cached" "$o" || return 1
       cr="$cached"; cw=0
