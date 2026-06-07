@@ -243,3 +243,44 @@ EOF
   ! grep -q -- "--subject" "$GH_CALLS"
   ! grep -q -- "--body" "$GH_CALLS"
 }
+
+# ── hold_auto_merge — disable-auto failure race handling ──────────────────────
+
+@test "hold_auto_merge: exits 0 cleanly when disable-auto fails because PR was already merged" {
+  source "$LIB"
+  AM_STATE="squash"
+  GH_MERGE_RC=1    # --disable-auto fails
+  PR_STATE="closed" # PR was merged in the race window
+  run hold_auto_merge
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"merged/closed before hold could be set"* ]]
+}
+
+@test "hold_auto_merge: warns but continues when disable-auto fails and PR is still open" {
+  source "$LIB"
+  AM_STATE="squash"
+  GH_MERGE_RC=1    # --disable-auto fails
+  PR_STATE="open"  # PR is still open — transient API error
+  run hold_auto_merge
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"could not disable auto-merge"* ]]
+  [[ "$output" != *"exiting cleanly"* ]]
+}
+
+# ── push_with_merge_guard — HEAD SHA refresh after push ───────────────────────
+
+@test "push_with_merge_guard: updates _AM_HEAD_SHA to new HEAD after successful push" {
+  source "$LIB"
+  cat > "$STUB_BIN_DIR/git" <<'EOF'
+#!/usr/bin/env bash
+case "$1" in
+  push)       exit 0 ;;
+  rev-parse)  echo "newsha456" ;;
+  *)          exec /usr/bin/git "$@" ;;
+esac
+EOF
+  chmod +x "$STUB_BIN_DIR/git"
+  _AM_HEAD_SHA="oldsha123"
+  push_with_merge_guard
+  [ "${_AM_HEAD_SHA}" = "newsha456" ]
+}

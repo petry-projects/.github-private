@@ -61,6 +61,15 @@ hold_auto_merge() {
   if gh pr merge "$PR_NUMBER" --repo "$REPO" --disable-auto 2>/dev/null; then
     _AM_NEEDS_RESTORE=1
   else
+    # An approval may have landed in the window between the auto_merge probe above
+    # and this call, causing GitHub to merge and close the PR. If so, exit cleanly
+    # instead of continuing into checkout_pr_in_worktree on a deleted branch.
+    local merged_state
+    merged_state=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}" --jq '.state' 2>/dev/null || true)
+    if [ -n "$merged_state" ] && [ "$merged_state" != "open" ]; then
+      echo "::notice::PR #${PR_NUMBER} is ${merged_state} — merged/closed before hold could be set; exiting cleanly."
+      exit 0
+    fi
     echo "::warning::could not disable auto-merge on PR #${PR_NUMBER}"
   fi
 }
@@ -104,6 +113,9 @@ push_with_merge_guard() {
   errf="$(mktemp)"
   if git push "$@" 2>"$errf"; then
     rm -f "$errf"
+    # Refresh the held SHA after our own push so the EXIT-trap restore uses
+    # --match-head-commit against the new head rather than the pre-push SHA.
+    _AM_HEAD_SHA=$(git rev-parse HEAD 2>/dev/null || true)
     return 0
   fi
   cat "$errf" >&2

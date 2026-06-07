@@ -831,7 +831,7 @@ case "$INTENT_TYPE" in
         repository(owner:$owner, name:$repo) {
           pullRequest(number:$pr) {
             reviewThreads(first:50) {
-              nodes { id isResolved isOutdated line path comments(first:5) { nodes { body author { login } } } }
+              nodes { id isResolved isOutdated line path comments(first:5) { nodes { body author { login __typename } } } }
             }
           }
         }
