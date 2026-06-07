@@ -3122,10 +3122,9 @@ commit_and_push() {
       # false "Changes committed and pushed" comment.
       git commit -m "$commit_msg" || { echo "::error::git commit failed — check git identity configuration on the runner" >&2; exit 1; }
     fi
-    git push || {
-      echo "::error::git push failed — check remote access and branch permissions" >&2
-      exit 1
-    }
+    # push_with_merge_guard exits 0 cleanly if the PR was merged/closed mid-run
+    # (its branch deleted); a genuine push failure still aborts with exit 1.
+    push_with_merge_guard || exit 1
   fi
   return 0
 }
