@@ -30,10 +30,10 @@ teardown() {
   [ "$output" = "3.0" ]
 }
 
-@test "model_multiplier_for: opus 4.7 returns 15.0" {
+@test "model_multiplier_for: opus 4.7 returns 5.0 (table-derived: \$5 input / \$1 haiku)" {
   run model_multiplier_for "claude-opus-4-7"
   [ "$status" -eq 0 ]
-  [ "$output" = "15.0" ]
+  [ "$output" = "5.0" ]
 }
 
 @test "model_multiplier_for: o4-mini returns 2.0" {
@@ -180,11 +180,96 @@ teardown() {
 }
 
 @test "emit_token_record: et value matches formula for opus" {
-  # m=15.0, I=1000, C=500, O=100 → ET = 15.0*(1000+50+400) = 21750.00
+  # m=5.0 (Opus 4.5+ = \$5 input), I=1000, C=500, O=100 → ET = 5.0*(1000+50+400) = 7250.00
   emit_token_record "pr-review" "audit" "claude" "claude-opus-4-7" 1000 500 100 ""
   local et
   et=$(jq -r '.et' < "$TOKEN_LOG_FILE")
-  [ "$et" = "21750.00" ]
+  [ "$et" = "7250.00" ]
+}
+
+@test "emit_token_record: records cache_creation_tokens from the 9th arg" {
+  emit_token_record "pr-review" "deep" "claude" "claude-sonnet-4-6" 1000 200 100 "" 350
+  local cw
+  cw=$(jq -r '.cache_creation_tokens' < "$TOKEN_LOG_FILE")
+  [ "$cw" = "350" ]
+}
+
+@test "emit_token_record: cache_creation_tokens defaults to 0 when omitted" {
+  emit_token_record "pr-review" "triage" "claude" "claude-haiku-4-5-20251001" 1000 200 100 ""
+  local cw
+  cw=$(jq -r '.cache_creation_tokens' < "$TOKEN_LOG_FILE")
+  [ "$cw" = "0" ]
+}
+
+# ── parse_engine_usage / extract_engine_text ──────────────────────────────────
+
+@test "parse_engine_usage: claude JSON sets input/cache-read/cache-write/output" {
+  local f; f=$(mktemp)
+  printf '%s\n' '{"result":"hi","usage":{"input_tokens":1234,"cache_read_input_tokens":500,"cache_creation_input_tokens":300,"output_tokens":90}}' > "$f"
+  run parse_engine_usage claude "$f"
+  rm -f "$f"
+  [ "$status" -eq 0 ]
+}
+
+@test "parse_engine_usage: claude globals carry the parsed values" {
+  local f; f=$(mktemp)
+  printf '%s\n' '{"result":"hi","usage":{"input_tokens":1234,"cache_read_input_tokens":500,"cache_creation_input_tokens":300,"output_tokens":90}}' > "$f"
+  parse_engine_usage claude "$f"
+  rm -f "$f"
+  [ "$LAST_USAGE_OK" = "1" ]
+  [ "$LAST_INPUT_TOKENS" = "1234" ]
+  [ "$LAST_CACHE_READ_TOKENS" = "500" ]
+  [ "$LAST_CACHE_WRITE_TOKENS" = "300" ]
+  [ "$LAST_OUTPUT_TOKENS" = "90" ]
+}
+
+@test "parse_engine_usage: gemini computes non-cached input = prompt - cached" {
+  local f; f=$(mktemp)
+  printf '%s\n' '{"response":"hi","stats":{"models":{"g":{"tokens":{"prompt":500,"cached":100,"candidates":60}}}}}' > "$f"
+  parse_engine_usage gemini "$f"
+  rm -f "$f"
+  [ "$LAST_USAGE_OK" = "1" ]
+  [ "$LAST_INPUT_TOKENS" = "400" ]
+  [ "$LAST_CACHE_READ_TOKENS" = "100" ]
+  [ "$LAST_CACHE_WRITE_TOKENS" = "0" ]
+  [ "$LAST_OUTPUT_TOKENS" = "60" ]
+}
+
+@test "parse_engine_usage: gemini adds thinking tokens to output count" {
+  local f; f=$(mktemp)
+  printf '%s\n' '{"response":"hi","stats":{"models":{"g":{"tokens":{"prompt":500,"cached":100,"candidates":60,"thoughts":25}}}}}' > "$f"
+  parse_engine_usage gemini "$f"
+  rm -f "$f"
+  [ "$LAST_USAGE_OK" = "1" ]
+  [ "$LAST_INPUT_TOKENS" = "400" ]
+  [ "$LAST_CACHE_READ_TOKENS" = "100" ]
+  [ "$LAST_OUTPUT_TOKENS" = "85" ]   # 60 candidates + 25 thoughts
+}
+
+@test "_engine_usage_sidecar: path includes shell PID to isolate parallel invocations" {
+  # $$ is constant across pipeline subshells (left-hand side inherits parent PID)
+  # so both the writing subshell and the reading parent agree on the same path,
+  # while separate background processes each get their own distinct $$.
+  local sidecar
+  sidecar="$(_engine_usage_sidecar)"
+  [ -n "$sidecar" ]
+  [[ "$sidecar" == "${TOKEN_LOG_FILE}.last-usage.$$" ]]
+}
+
+@test "parse_engine_usage: missing usage block returns non-zero (→ estimate)" {
+  local f; f=$(mktemp)
+  printf '%s\n' '{"result":"no usage here"}' > "$f"
+  run parse_engine_usage claude "$f"
+  rm -f "$f"
+  [ "$status" -ne 0 ]
+}
+
+@test "extract_engine_text: claude returns the .result text" {
+  local f; f=$(mktemp)
+  printf '%s\n' '{"result":"hello world","usage":{}}' > "$f"
+  run extract_engine_text claude "$f"
+  rm -f "$f"
+  [ "$output" = "hello world" ]
 }
 
 @test "emit_token_record: is a no-op when TOKEN_LOG_FILE is unset" {
