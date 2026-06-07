@@ -4867,6 +4867,9 @@ run_writer() {
   # were never tried.
   local _tmp rc=0
   _tmp="$(mktemp 2>/dev/null || true)"
+  # Per-call usage-sidecar key (see run_triage); unique mktemp path shared with
+  # the engine subshell via export.
+  [[ -n "$_tmp" ]] && local -x _ENGINE_USAGE_OUT="${_tmp}.usage"
 
   case "$REVIEW_ENGINE" in
     claude)
