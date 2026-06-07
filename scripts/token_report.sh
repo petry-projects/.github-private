@@ -155,7 +155,7 @@ render_cost_per_day() {
       nr = 0; for (r in repos) rl[nr++] = r
       for (i = 0; i < nr; i++) for (j = i+1; j < nr; j++) if (repotot[rl[j]] > repotot[rl[i]]) { t = rl[i]; rl[i] = rl[j]; rl[j] = t }
       K = 6; nk = (nr < K ? nr : K)
-      split("ABCDEFGH", L, "")
+      for (x = 1; x <= 8; x++) L[x] = substr("ABCDEFGH", x, 1)
       maxday = 0; for (i = 0; i < nd; i++) if (daycost[dl[i]] > maxday) maxday = daycost[dl[i]]
       MAXW = 50
 
@@ -174,15 +174,16 @@ render_cost_per_day() {
       for (i = 0; i < nd; i++) {
         d = dl[i]; tot = daycost[d]
         barlen = (maxday > 0) ? int(tot / maxday * MAXW + 0.5) : 0
-        line = ""
+        line = ""; used = 0
         for (k = 0; k < nk; k++) {
           c = cell[d SUBSEP rl[k]] + 0
           seg = (tot > 0) ? int(c / tot * barlen + 0.5) : 0
+          if (used + seg > barlen) seg = barlen - used
+          used += seg
           for (s = 0; s < seg; s++) line = line L[k+1]
         }
         oc = 0; for (k = nk; k < nr; k++) oc += cell[d SUBSEP rl[k]] + 0
-        seg = (tot > 0) ? int(oc / tot * barlen + 0.5) : 0
-        for (s = 0; s < seg; s++) line = line "."
+        if (oc > 0) { seg = barlen - used; for (s = 0; s < seg; s++) line = line "." }
         printf "%s  $%7.2f  %s\n", d, tot, line
       }
       printf "```\n\n"
@@ -298,9 +299,11 @@ render_token_report() {
       local title=""
       if [ -n "${PR_TITLE_FILE:-}" ] && [ -f "$PR_TITLE_FILE" ]; then
         # Look up title by URL, strip pipes/newlines, truncate to 35 chars (+…).
-        title="$(awk -F'\t' -v u="$pr" '$1 == u { print $2; exit }' "$PR_TITLE_FILE" \
-          | tr -d '\r\n' | tr '|' '/' \
-          | awk '{ if (length($0) > 35) printf "%s…", substr($0, 1, 35); else printf "%s", $0 }')"
+        title="$(awk -F'\t' -v u="$pr" '$1 == u {
+          t = $2; gsub(/\r/, "", t); gsub(/\|/, "/", t)
+          if (length(t) > 35) t = substr(t, 1, 35) "…"
+          print t; exit
+        }' "$PR_TITLE_FILE")"
       fi
       printf '| %s | %s | %s | %s |\n' "$pr" "$title" "$(_fmt_int "$calls")" "$(_fmt_usd "$cost")"
     done <<< "$pr_rows"
@@ -419,7 +422,7 @@ main() {
   # Resolve PR titles for the priciest PRs so render can show them (network step;
   # render itself stays pure and just reads PR_TITLE_FILE).
   local titles_file purl ptitle
-  titles_file="$(mktemp)"
+  titles_file="$jsonl_dir/pr_titles.tsv"
   if command -v gh >/dev/null 2>&1; then
     while IFS= read -r purl; do
       [ -n "$purl" ] || continue
@@ -431,7 +434,6 @@ main() {
 
   report="$(render_token_report "$jsonl_dir" "$LOOKBACK_DAYS" \
             "$repo_count" "$artifact_count" "$generated_at")"
-  rm -f "$titles_file"
 
   printf '%s\n' "$report"
   if [ -n "${TOKEN_REPORT_OUT:-}" ]; then
