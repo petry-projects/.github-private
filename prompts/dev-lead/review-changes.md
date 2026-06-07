@@ -72,7 +72,7 @@ gh api graphql \
 
 #### Resolving a thread
 
-After replying, resolve the thread using the `id` from the JSON above. Only resolve threads from human reviewers — do not resolve threads posted by bots.
+After replying, resolve the thread using the `id` from the JSON above. Only resolve threads from human reviewers (`author.__typename` is `"User"`) — do not resolve threads posted by bots (`author.__typename` is `"Bot"`). Identify bots by `__typename`, **not** by a `[bot]` login suffix: GraphQL omits the `[bot]` suffix from bot logins, so a suffix check would misclassify `coderabbitai`, `chatgpt-codex-connector`, etc. as human.
 
 ```bash
 # Replace THREAD_NODE_ID with the id value from the thread JSON
