@@ -105,7 +105,7 @@ has_submitted() {
 
 # Main wait logic
 wait_for_advisory_reviews() {
-  local start_time elapsed tier current_states
+  local start_time elapsed current_states
 
   start_time=$(date +%s)
 
@@ -139,8 +139,6 @@ wait_for_advisory_reviews() {
 
     current_states=$(get_advisory_bot_states)
 
-    # Check if all participating bots have now submitted
-    local all_ready=true
     for bot in "${!ADVISORY_BOTS[@]}"; do
       if echo "$current_states" | grep -q "\"bot\":\"$bot\""; then
         # This bot participated, confirmed it has submitted
