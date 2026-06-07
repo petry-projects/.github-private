@@ -15,10 +15,13 @@ setup() {
   export TRUSTED_BOTS="copilot-pull-request-reviewer[bot],gemini-code-assist[bot],sonarqubecloud[bot],coderabbitai[bot],chatgpt-codex-connector[bot]"
   export TRIGGER_PHRASES="@dev-lead"
   export GITHUB_REPOSITORY="petry-projects/.github-private"
+  MOCK_BIN="$(mktemp -d)"
+  export PATH="$MOCK_BIN:$PATH"
 }
 
 teardown() {
   rm -f "$GITHUB_ENV" "$GITHUB_OUTPUT"
+  rm -rf "$MOCK_BIN"
 }
 
 _get_env() {
@@ -56,4 +59,50 @@ _get_env() {
   [ "$status" -eq 0 ]
   [ "$(_get_env INTENT_TYPE)" = "skip" ]
   [ "$(_get_env INTENT_REASON)" = "hands-off-label" ]
+}
+
+@test "hands-off: bot sync on labeled PR → skip with hands-off-label (not dev-lead-own-commit)" {
+  export GITHUB_EVENT_NAME="pull_request"
+  export GITHUB_EVENT_PATH="$FIXTURES_DIR/pr_sync_bot_hands_off.json"
+
+  run bash "$INTENT_SCRIPT"
+
+  [ "$status" -eq 0 ]
+  [ "$(_get_env INTENT_TYPE)" = "skip" ]
+  [ "$(_get_env INTENT_REASON)" = "hands-off-label" ]
+}
+
+@test "hands-off: repository_dispatch ci-failure for labeled PR → skip" {
+  # Mock gh to return the hands-off label for the dispatch PR
+  cat > "$MOCK_BIN/gh" << 'GHEOF'
+#!/usr/bin/env bash
+echo "dev-lead:hands-off"
+GHEOF
+  chmod +x "$MOCK_BIN/gh"
+
+  export GITHUB_EVENT_NAME="repository_dispatch"
+  export GITHUB_EVENT_PATH="$FIXTURES_DIR/repository_dispatch_ci_failure.json"
+
+  run bash "$INTENT_SCRIPT"
+
+  [ "$status" -eq 0 ]
+  [ "$(_get_env INTENT_TYPE)" = "skip" ]
+  [ "$(_get_env INTENT_REASON)" = "hands-off-label" ]
+}
+
+@test "hands-off: repository_dispatch ci-failure for unlabeled PR → fix-ci (control)" {
+  # Mock gh to return no labels
+  cat > "$MOCK_BIN/gh" << 'GHEOF'
+#!/usr/bin/env bash
+exit 0
+GHEOF
+  chmod +x "$MOCK_BIN/gh"
+
+  export GITHUB_EVENT_NAME="repository_dispatch"
+  export GITHUB_EVENT_PATH="$FIXTURES_DIR/repository_dispatch_ci_failure.json"
+
+  run bash "$INTENT_SCRIPT"
+
+  [ "$status" -eq 0 ]
+  [ "$(_get_env INTENT_TYPE)" = "fix-ci" ]
 }

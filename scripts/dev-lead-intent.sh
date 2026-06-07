@@ -92,8 +92,8 @@ has_trigger_phrase() {
 # Returns 0 (true) if the PR or issue in the event payload carries label <name>.
 # Reads labels straight from the payload (.pull_request.labels / .issue.labels),
 # so it stays a pure classifier with no API calls. repository_dispatch payloads
-# carry no labels and are not covered here (the ci-relay producer would be the
-# place to honour hands-off for those).
+# carry no labels; those are handled via a separate API call in the dispatch
+# branch of the routing section.
 has_label() {
   local name="$1"
   [ -n "$EVENT_PATH" ] && [ -f "$EVENT_PATH" ] || return 1
@@ -135,6 +135,20 @@ if [ "$EVENT_NAME" = "check_run" ]; then
   exit 0
 fi
 
+# ── hands-off guard ───────────────────────────────────────────────────────────
+# A PR or issue labeled `dev-lead:hands-off` is intentionally excluded from the
+# agent — e.g. PRs that modify the dev-lead workflow itself, so the agent does
+# not pile commits onto its own infrastructure changes. Runs before the anti-loop
+# guard so a hands-off sync from BOT_USER emits `hands-off-label` rather than
+# `dev-lead-own-commit`, keeping the skip reason stable whenever the label is
+# present. Applies to every label-bearing event (PR opens/syncs, reviews, review
+# comments, issue comments on PRs, issue labeling). repository_dispatch payloads
+# carry no labels; those are checked via the API in the dispatch branch below.
+if has_label "dev-lead:hands-off"; then
+  emit_skip "hands-off-label"
+  exit 0
+fi
+
 # ── anti-loop guard: pull_request synchronize ────────────────────────────────
 # If the synchronize event was triggered by BOT_USER's own commit, skip to
 # prevent an infinite fix → push → trigger → fix loop.
@@ -148,17 +162,6 @@ if [ "$EVENT_NAME" = "pull_request" ] && [ -n "$EVENT_PATH" ] && [ -f "$EVENT_PA
       exit 0
     fi
   fi
-fi
-
-# ── hands-off guard ───────────────────────────────────────────────────────────
-# A PR or issue labeled `dev-lead:hands-off` is intentionally excluded from the
-# agent — e.g. PRs that modify the dev-lead workflow itself, so the agent does
-# not pile commits onto its own infrastructure changes. Checked before routing so
-# it applies to every label-bearing event (PR opens/syncs, reviews, review
-# comments, issue comments on PRs, issue labeling).
-if has_label "dev-lead:hands-off"; then
-  emit_skip "hands-off-label"
-  exit 0
 fi
 
 # ── routing ───────────────────────────────────────────────────────────────────
@@ -369,6 +372,14 @@ case "$EVENT_NAME" in
     head_sha=$(jq -r '.client_payload.head_sha // empty' "$EVENT_PATH" 2>/dev/null || true)
     if [ -z "$pr_number" ]; then
       emit_skip "no-pr-number-in-payload"
+      exit 0
+    fi
+
+    # Honour hands-off for dispatch events: the event payload carries no labels,
+    # so fetch them via the API before routing.
+    if gh api "repos/${GITHUB_REPOSITORY}/issues/${pr_number}/labels" \
+        --jq '.[].name' 2>/dev/null | grep -qxF "dev-lead:hands-off"; then
+      emit_skip "hands-off-label"
       exit 0
     fi
 
