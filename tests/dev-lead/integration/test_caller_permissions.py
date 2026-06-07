@@ -40,7 +40,10 @@ REUSABLE_PATH = ".github/workflows/dev-lead-reusable.yml"
 
 
 def lvl(value) -> int:
-    return LEVELS.get(str(value).strip().lower(), 0)
+    v = str(value).strip().lower()
+    if v not in LEVELS:
+        raise ValueError(f"Unknown permission level: {value!r}")
+    return LEVELS[v]
 
 
 def load_local(path: str) -> dict:
@@ -64,24 +67,49 @@ def fetch_template() -> dict:
 def reusable_required(reusable: dict) -> dict[str, int]:
     """Max level each permission scope is requested across all reusable jobs."""
     required: dict[str, int] = {}
+    if not isinstance(reusable, dict):
+        return required
+    # Jobs without a per-job permissions block inherit the workflow-level permissions.
+    workflow_perms = reusable.get("permissions") or {}
     for job in (reusable.get("jobs") or {}).values():
         perms = job.get("permissions") if isinstance(job, dict) else None
         if not isinstance(perms, dict):
-            continue  # no per-job block => inherits top-level `permissions: {}` (none)
+            perms = workflow_perms if isinstance(workflow_perms, dict) else None
+        if not isinstance(perms, dict):
+            continue
         for scope, level in perms.items():
             required[scope] = max(required.get(scope, 0), lvl(level))
     return required
 
 
-def caller_granted(template: dict) -> dict[str, int] | None:
-    """Permissions the template grants on the job that calls the reusable."""
-    for job in (template.get("jobs") or {}).values():
+def caller_grants(template: dict) -> list[tuple[str, dict[str, int]]]:
+    """(job_key, grants) pairs for every job in the template that calls the reusable.
+
+    Handles string shorthand permissions (write-all / read-all) by mapping them to
+    a wildcard key ``"*"`` so the caller check in main() can fall back to it for
+    any scope not explicitly listed. When a calling job omits its own permissions
+    block, the workflow-level permissions are used as the default.
+    """
+    if not isinstance(template, dict):
+        return []
+    workflow_perms = template.get("permissions") or {}
+    results = []
+    for job_key, job in (template.get("jobs") or {}).items():
         if not isinstance(job, dict):
             continue
         if "dev-lead-reusable" in str(job.get("uses", "")):
-            perms = job.get("permissions") or {}
-            return {scope: lvl(level) for scope, level in perms.items()}
-    return None
+            perms = job.get("permissions")
+            if perms is None:
+                # Fall back to workflow-level permissions when the job omits its own block.
+                perms = workflow_perms
+            if isinstance(perms, str):
+                val = lvl("write" if perms == "write-all" else "read" if perms == "read-all" else "none")
+                results.append((job_key, {"*": val}))
+            elif isinstance(perms, dict):
+                results.append((job_key, {scope: lvl(level) for scope, level in perms.items()}))
+            else:
+                results.append((job_key, {}))
+    return results
 
 
 def main() -> int:
@@ -89,28 +117,31 @@ def main() -> int:
     template = fetch_template()
 
     required = reusable_required(reusable)
-    granted = caller_granted(template)
+    all_grants = caller_grants(template)
 
-    if granted is None:
+    if not all_grants:
         print(f"FAIL: no job in {TEMPLATE_REPO}:{TEMPLATE_PATH} calls dev-lead-reusable")
         return 1
 
     failures = []
-    for scope, need in sorted(required.items()):
-        if need == 0:
-            continue
-        have = granted.get(scope, 0)
-        status = "OK" if have >= need else "MISSING"
-        print(f"  [{status}] {scope}: reusable needs {INV[need]}, template grants {INV.get(have, 'none')}")
-        if have < need:
-            failures.append((scope, need, have))
+    for job_key, granted in all_grants:
+        if len(all_grants) > 1:
+            print(f"Caller job '{job_key}':")
+        for scope, need in sorted(required.items()):
+            if need == 0:
+                continue
+            have = granted.get(scope, granted.get("*", 0))
+            status = "OK" if have >= need else "MISSING"
+            print(f"  [{status}] {scope}: reusable needs {INV[need]}, template grants {INV.get(have, 'none')}")
+            if have < need:
+                failures.append((scope, need, have, job_key))
 
     print()
     if failures:
         print("FAIL: caller template under-grants permissions the reusable requests.")
-        for scope, need, have in failures:
+        for scope, need, have, job_key in failures:
             print(f"  - add `{scope}: {INV[need]}` to {TEMPLATE_REPO}:{TEMPLATE_PATH} "
-                  f"jobs.dev-lead.permissions (currently {INV.get(have, 'none')})")
+                  f"jobs.{job_key}.permissions (currently {INV.get(have, 'none')})")
         print("\nWithout it, every @main consumer fails at startup (startup_failure).")
         return 1
 
