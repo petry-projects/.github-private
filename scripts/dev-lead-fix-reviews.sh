@@ -5,6 +5,7 @@ set -euo pipefail
 
 source "$(dirname "$0")/engine.sh"
 source "$(dirname "$0")/lib/git-identity.sh"
+source "$(dirname "$0")/lib/pr-worktree.sh"
 
 INTENT_TYPE="${INTENT_TYPE:-fix-reviews}"
 PR_NUMBER="${PR_NUMBER:-}"
@@ -12,6 +13,11 @@ REPO="${REPO:-${GITHUB_REPOSITORY:-}}"
 HEAD_SHA="${HEAD_SHA:-}"
 DEV_LEAD_DRY_RUN="${DEV_LEAD_DRY_RUN:-false}"
 export PROMPTS_DIR="${PROMPTS_DIR:-prompts/dev-lead}"
+# Pin PROMPTS_DIR to an absolute path now, while CWD still points at the agent
+# checkout — checkout_pr_in_worktree cds into the PR worktree, after which a
+# relative PROMPTS_DIR would resolve against the PR branch (issue #448).
+PROMPTS_DIR="$(resolve_abs "$PROMPTS_DIR")"
+export PROMPTS_DIR
 
 REVIEWS_MARKER_PREFIX="<!-- dev-lead-fix-reviews pr="
 
@@ -27,9 +33,11 @@ if [ -z "${HEAD_SHA:-}" ] && [ -n "${PR_NUMBER:-}" ] && [ "${DEV_LEAD_DRY_RUN:-f
   HEAD_SHA=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}" --jq '.head.sha' 2>/dev/null || true)
 fi
 
-# Checkout the PR branch for modification (Requirement 1)
+# Checkout the PR branch for modification (Requirement 1).
+# Use an isolated worktree so switching to the PR branch never overwrites the
+# agent's own prompts/scripts in the working tree (issue #448).
 if [ "${DEV_LEAD_DRY_RUN:-false}" = "false" ] && [ -n "${PR_NUMBER:-}" ]; then
-  gh pr checkout "$PR_NUMBER" --repo "$REPO"
+  checkout_pr_in_worktree "$PR_NUMBER" "$REPO"
   setup_git_identity
 fi
 
