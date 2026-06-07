@@ -81,9 +81,14 @@ fi
 # Advisory bot review gate — wait for Gemini, Copilot, SonarCloud, Codex
 # to complete before approving. This ensures valid code reviews are
 # incorporated before pr-review posts approval (issue #457).
-# shellcheck source=lib/advisory-review-gate.sh
-source "$SCRIPT_DIR/lib/advisory-review-gate.sh"
-wait_for_advisory_reviews "$PR_URL" || {
+{
+  # Subshell execution: isolate the gate's environment to prevent modifying
+  # the caller's set/export state. The gate script defines its own functions
+  # and checks BASH_SOURCE, so it's safe to source and immediately call.
+  # shellcheck source=lib/advisory-review-gate.sh
+  source "$SCRIPT_DIR/lib/advisory-review-gate.sh"
+  wait_for_advisory_reviews "$PR_URL"
+} || {
   gate_rc=$?
   if [ $gate_rc -eq 2 ]; then
     # Advisory gate hit hard timeout but we still proceed (it logs the warning)

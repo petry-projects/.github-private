@@ -101,28 +101,50 @@ format_bot_status() {
   esac
 }
 
-# Check if a bot has submitted (advisory state is acceptable: any review/comment)
-has_submitted() {
-  local bot="$1" states="$2"
-  echo "$states" | grep -q "\"bot\":\"$bot\"" && echo "yes" || echo "no"
+# Check if all participating bots have submitted (early-exit condition)
+all_bots_submitted() {
+  local states="$1"
+
+  # If no states, return false
+  [ -z "$states" ] && return 1
+
+  # Extract participating bots
+  local submitted_bots
+  submitted_bots=$(echo "$states" | jq -r '.bot' | sort)
+
+  # If any bot is in the latest states, we have at least one participating bot
+  [ -n "$submitted_bots" ] && return 0 || return 1
 }
 
-# Main wait logic
+# Main wait logic with proper early-exit conditions
 wait_for_advisory_reviews() {
-  local start_time elapsed current_states
+  local start_time elapsed current_states participating_bots
+  local tier1_reached=false tier2_reached=false
 
   start_time=$(date +%s)
 
   log_info "Starting advisory bot review gate for PR #${PR_NUM}"
 
-  # Phase 1: Detect which bots are participating
-  log_info "Detecting participating bots..."
-  sleep 2  # Brief delay to ensure PR is indexed
-  current_states=$(get_advisory_bot_states)
+  # Phase 1: Detect which bots are participating (with early detection)
+  log_info "Detecting participating bots (polling for up to 30 seconds)..."
+  local detection_deadline=$((start_time + 30))
+
+  while true; do
+    current_states=$(get_advisory_bot_states)
+    [ -n "$current_states" ] && break  # Got at least one submission
+
+    elapsed=$(($(date +%s) - start_time))
+    [ $(($(date +%s))) -ge $detection_deadline ] && break  # 30s detection timeout
+
+    sleep 2
+  done
 
   if [ -z "$current_states" ]; then
     log_warn "No advisory bot reviews detected yet (may be slow PR)"
+    participating_bots=""
   else
+    participating_bots=$(echo "$current_states" | jq -r '.bot' | sort -u | tr '\n' ' ')
+    log_info "Participating bots detected: $participating_bots"
     while IFS= read -r line; do
       local bot state
       bot=$(echo "$line" | jq -r '.bot')
@@ -131,61 +153,100 @@ wait_for_advisory_reviews() {
     done <<< "$current_states"
   fi
 
-  # Phase 2: Tier 1 wait (15 minutes)
-  log_info "Tier 1 wait: 900s (15 min) - waiting for advisory bots..."
+  # Tier 1: Wait up to 15 minutes with early exit
+  log_info "Tier 1 wait: up to 900s (15 min) - waiting for advisory bots..."
   while true; do
     elapsed=$(($(date +%s) - start_time))
 
     if [ $elapsed -ge $TIER1_WAIT ]; then
       log_info "Tier 1 timeout reached ($TIER1_WAIT seconds)"
+      tier1_reached=true
       break
     fi
 
     current_states=$(get_advisory_bot_states)
 
-    for bot in "${!ADVISORY_BOTS[@]}"; do
-      if echo "$current_states" | grep -q "\"bot\":\"$bot\""; then
-        # This bot participated, confirmed it has submitted
-        :
-      fi
-    done
+    # Check if all participating bots have submitted
+    if [ -n "$current_states" ] && [ -n "$participating_bots" ]; then
+      local all_present=true
+      for bot in $participating_bots; do
+        if ! echo "$current_states" | jq -r '.bot' | grep -q "^${bot}$"; then
+          all_present=false
+          break
+        fi
+      done
 
-    sleep $POLL_INTERVAL
+      if [ "$all_present" = true ]; then
+        log_success "All participating bots have submitted - early exit from Tier 1 ✓"
+        log_info "Final advisory bot status:"
+        while IFS= read -r line; do
+          local bot state
+          bot=$(echo "$line" | jq -r '.bot')
+          state=$(echo "$line" | jq -r '.state')
+          log_info "  $(format_bot_status "$bot" "$state")"
+        done <<< "$current_states"
+        return 0
+      fi
+    fi
+
+    sleep "${POLL_INTERVAL:-10}"
   done
 
-  # Phase 3: Tier 2 wait (20 minutes total)
-  log_info "Tier 2 wait: 1200s (20 min total) - extended wait for Codex/late bots..."
+  # Tier 2: Wait up to 20 minutes total with early exit
+  log_info "Tier 2 wait: up to 1200s (20 min total) - extended wait for slow bots..."
   while true; do
     elapsed=$(($(date +%s) - start_time))
 
     if [ $elapsed -ge $TIER2_WAIT ]; then
       log_info "Tier 2 timeout reached ($TIER2_WAIT seconds)"
+      tier2_reached=true
       break
     fi
 
     current_states=$(get_advisory_bot_states)
 
-    sleep $POLL_INTERVAL
+    # Check if all participating bots have submitted
+    if [ -n "$current_states" ] && [ -n "$participating_bots" ]; then
+      local all_present=true
+      for bot in $participating_bots; do
+        if ! echo "$current_states" | jq -r '.bot' | grep -q "^${bot}$"; then
+          all_present=false
+          break
+        fi
+      done
+
+      if [ "$all_present" = true ]; then
+        log_success "All participating bots have submitted - early exit from Tier 2 ✓"
+        log_info "Final advisory bot status:"
+        while IFS= read -r line; do
+          local bot state
+          bot=$(echo "$line" | jq -r '.bot')
+          state=$(echo "$line" | jq -r '.state')
+          log_info "  $(format_bot_status "$bot" "$state")"
+        done <<< "$current_states"
+        return 0
+      fi
+    fi
+
+    sleep "${POLL_INTERVAL:-10}"
   done
 
-  # Phase 4: Final check + Tier 3 fallback
+  # Tier 3: Hard timeout (60 minutes)
+  log_info "Tier 3 wait: Hard timeout at 3600s (60 min)..."
   log_info "Final advisory bot status:"
   current_states=$(get_advisory_bot_states)
 
-  if [ -z "$current_states" ]; then
-    log_warn "No advisory bots have submitted by Tier 2 timeout"
-    log_warn "This is unusual - proceeding with Tier 3 wait before escalation"
-  else
+  if [ -n "$current_states" ]; then
     while IFS= read -r line; do
       local bot state
       bot=$(echo "$line" | jq -r '.bot')
       state=$(echo "$line" | jq -r '.state')
       log_info "  $(format_bot_status "$bot" "$state")"
     done <<< "$current_states"
+  else
+    log_warn "No advisory bots have submitted by Tier 2 timeout"
   fi
 
-  # Tier 3: Hard timeout (60 minutes)
-  log_info "Tier 3 wait: Hard timeout at 3600s (60 min)..."
   while true; do
     elapsed=$(($(date +%s) - start_time))
 
@@ -199,9 +260,7 @@ wait_for_advisory_reviews() {
       return 2  # Hard timeout with warning
     fi
 
-    current_states=$(get_advisory_bot_states)
-
-    sleep 30  # Poll less frequently in final tier
+    sleep "${TIER3_POLL_INTERVAL:-30}"
   done
 }
 
