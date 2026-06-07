@@ -143,8 +143,9 @@ GHEOF
 
   run run_writer_with_fallback "$TEST_PROMPT"
 
-  # claude rate-limited (2), gemini not installed (127), copilot rate-limited (2) → all exhausted
-  [ "$status" -eq 2 ]
+  # claude rate-limited (2), gemini not installed (127), copilot rate-limited (2) → all exhausted.
+  # any_missing=1 (gemini returned 127) → hard failure exit 1 so infra problems surface loudly.
+  [ "$status" -eq 1 ]
 }
 
 @test "fallback: engine not installed (127) → next engine succeeds" {
@@ -171,8 +172,9 @@ GHEOF
   run run_writer_with_fallback "$TEST_PROMPT"
 
   # gemini (primary) rate-limited, claude not installed (127 → treated as unavailable),
-  # copilot rate-limited (2) → all engines exhausted
-  [ "$status" -eq 2 ]
+  # copilot rate-limited (2) → all engines exhausted.
+  # any_missing=1 (claude returned 127) → hard failure exit 1 so infra problems surface loudly.
+  [ "$status" -eq 1 ]
   # claude was tried (even though it exited 127, it was reached)
   [ -s "$record_file" ]
   rm -f "$record_file"
