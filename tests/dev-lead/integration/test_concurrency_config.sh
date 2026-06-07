@@ -43,17 +43,27 @@ for WORKFLOW in \
   ".github/workflows/dev-lead.yml" \
   ".github/workflows/dev-lead-reusable.yml"; do
   echo "── $WORKFLOW ──"
+  if [ ! -f "$WORKFLOW" ]; then
+    echo "FAIL: $WORKFLOW does not exist. Please run this script from the repository root."
+    FAIL=$((FAIL + 1))
+    continue
+  fi
 
   # Per-issue and per-PR lanes must be present so a labeled-issue pickup is never
   # cancelled by unrelated PR follow-up traffic.
-  check_present "$WORKFLOW" "dev-lead-pr-"    "per-PR lane"
-  check_present "$WORKFLOW" "dev-lead-issue-" "per-issue lane"
+  # Match format('dev-lead-…') to target the concurrency expression, not comments.
+  check_present "$WORKFLOW" "format('dev-lead-pr-"    "per-PR lane"
+  check_present "$WORKFLOW" "format('dev-lead-issue-" "per-issue lane"
 
   # ci-relay keeps its own ephemeral per-SHA slot so it fires immediately.
-  check_present "$WORKFLOW" "dev-lead-ci-relay-" "ci-relay per-SHA lane"
+  check_present "$WORKFLOW" "format('dev-lead-ci-relay-" "ci-relay per-SHA lane"
 
   # Must NOT collapse back into a single repo-wide group (the #278 regression).
-  check_absent "$WORKFLOW" "'dev-lead'" "no repo-wide 'dev-lead' group"
+  # Guard all common bare-value spellings so a regression can't slip through
+  # on quote-style changes.
+  check_absent "$WORKFLOW" "group: dev-lead"    "no bare unquoted group: dev-lead"
+  check_absent "$WORKFLOW" "group: 'dev-lead'"  "no bare single-quoted group: dev-lead"
+  check_absent "$WORKFLOW" 'group: "dev-lead"'  "no bare double-quoted group: dev-lead"
 
   # cancel-in-progress must be false so a queued same-lane run waits for the active
   # run to finish instead of cancelling it (in-flight pickups always complete).
