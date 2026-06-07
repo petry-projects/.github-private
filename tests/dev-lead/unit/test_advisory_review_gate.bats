@@ -180,8 +180,8 @@ _make_mock_gh_dir() {
 args="\$*"
 if [[ "\$args" == *"reviews,comments"* ]]; then
   printf '%s\n' '$json_reviews_comments'
-elif [[ "\$args" == *"commits"* ]]; then
-  # Return a timestamp 30 minutes ago (well past the 20-minute timeout)
+elif [[ "\$args" == *"graphql"* ]]; then
+  # Return a timestamp 30 minutes ago (well past the 20-minute push-age timeout)
   date -u -d '30 minutes ago' '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null \
     || date -u -v-30M '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null \
     || printf '2000-01-01T00:00:00Z\n'
@@ -200,9 +200,35 @@ _make_mock_gh_dir_recent() {
 args="\$*"
 if [[ "\$args" == *"reviews,comments"* ]]; then
   printf '%s\n' '$json_reviews_comments'
-elif [[ "\$args" == *"commits"* ]]; then
-  # Return current time (PR is brand new, well within the 20-minute window)
+elif [[ "\$args" == *"graphql"* ]]; then
+  # Return current time (commit was pushed just now, within the 20-minute window)
   date -u '+%Y-%m-%dT%H:%M:%SZ'
+fi
+MOCK_EOF
+  chmod +x "$tmpdir/gh"
+  echo "$tmpdir"
+}
+
+# Mock for the cherry-picked commit scenario:
+# push time (graphql) = now (recent), but committedDate (commits) = 2+ hours ago.
+# Used to verify the gate uses pushedDate, not committedDate, for head_age_sec.
+_make_mock_gh_dir_old_commit_recent_push() {
+  local json_reviews_comments="$1"
+  local tmpdir
+  tmpdir=$(mktemp -d)
+  cat > "$tmpdir/gh" << MOCK_EOF
+#!/usr/bin/env bash
+args="\$*"
+if [[ "\$args" == *"reviews,comments"* ]]; then
+  printf '%s\n' '$json_reviews_comments'
+elif [[ "\$args" == *"graphql"* ]]; then
+  # Push time is NOW (the commit was pushed recently)
+  date -u '+%Y-%m-%dT%H:%M:%SZ'
+elif [[ "\$args" == *"commits"* ]]; then
+  # committedDate is 2 hours ago (old cherry-picked commit)
+  date -u -d '2 hours ago' '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null \
+    || date -u -v-2H '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null \
+    || printf '2000-01-01T00:00:00Z\n'
 fi
 MOCK_EOF
   chmod +x "$tmpdir/gh"
@@ -279,6 +305,24 @@ MOCK_EOF
   "
   rm -rf "$tmpdir"
   [ "$status" -eq 0 ]
+}
+
+@test "Gate runtime: returns 1 for recently-pushed old cherry-picked commit" {
+  # Regression test: head_age_sec must use push time (pushedDate via graphql),
+  # not the commit's own committedDate.  An old cherry-picked commit has a
+  # far-past committedDate but was pushed moments ago; using committedDate
+  # would make head_age_sec exceed 20 min immediately and bypass the gate.
+  local one_bot_json
+  one_bot_json='{"reviews":[{"author":{"login":"gemini-code-assist"},"state":"COMMENTED","submittedAt":"2099-01-01T00:00:00Z"}],"comments":[]}'
+  local tmpdir
+  tmpdir=$(_make_mock_gh_dir_old_commit_recent_push "$one_bot_json")
+  local gate_script="$SCRIPT_DIR/lib/advisory-review-gate.sh"
+  run env PATH="$tmpdir:$PATH" bash -c "
+    source '$gate_script'
+    check_advisory_reviews 'https://github.com/owner/repo/pull/123'
+  "
+  rm -rf "$tmpdir"
+  [ "$status" -eq 1 ]
 }
 
 @test "Gate runtime: returns 1 when gh command fails" {

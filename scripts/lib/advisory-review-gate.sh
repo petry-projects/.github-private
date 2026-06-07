@@ -163,7 +163,14 @@ check_advisory_reviews() {
     now=$(date -u +%s)
 
     head_age_sec=0
-    head_time=$(gh pr view "$PR_URL" --json commits --jq '[.commits[].committedDate] | sort | last' 2>/dev/null) || head_time=""
+    # Use pushedDate (when the commit arrived on GitHub) not committedDate (author
+    # timestamp) so that old cherry-picked commits don't bypass the gate immediately.
+    # $url in the query string is a GraphQL variable, not a shell variable.
+    # shellcheck disable=SC2016
+    local _gql='query($url:URI!){resource(url:$url){...on PullRequest{commits(last:1){nodes{commit{pushedDate committedDate}}}}}}'
+    head_time=$(gh api graphql -f query="$_gql" -f url="$PR_URL" \
+      --jq '.data.resource.commits.nodes[0].commit | .pushedDate // .committedDate' \
+      2>/dev/null) || head_time=""
     if [ -n "$head_time" ]; then
       head_time_raw=$(date -u -d "$head_time" +%s 2>/dev/null) || head_time_raw=""
       [ -n "$head_time_raw" ] && head_age_sec=$((now - head_time_raw))
