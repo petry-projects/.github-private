@@ -86,8 +86,11 @@ PR #450 created
   └─ Codex never triggered (not on this PR)
 
 Gate: 3/4 bots submitted; head age 800s < 1200s, quiescence 0s < 600s → return 1 (wait)
-...10 minutes after SonarCloud submission (no new bots arrive)...
-Gate: 3/4 bots; quiescence 600s ≥ 600s — absent bot assumed non-participant → return 0 → APPROVE
+[gate does NOT re-run automatically; it only re-evaluates when a new event fires,
+ e.g. a late bot submission (pull_request_review), workflow_dispatch, or FORCE_REVIEW=true]
+...Next event fires 10+ min after SonarCloud submission (no new bots have arrived)...
+Gate: 3/4 bots; quiescence ≥ 600s — absent bot assumed non-participant → return 0 → APPROVE
+(See Scenario C for cases where bots are extremely delayed and no intermediate events fire)
 ```
 
 **Scenario B: All 4 bots triggered**

@@ -29,7 +29,7 @@ set -euo pipefail
 # Define advisory bots we monitor
 # Ordered by typical response time (fastest first)
 # shellcheck disable=SC2034
-declare -A ADVISORY_BOTS=(
+declare -Ar ADVISORY_BOTS=(
   [gemini-code-assist]="Gemini Code Assist (advisory)"
   [copilot-pull-request-reviewer]="Copilot PR Reviewer (advisory)"
   [sonarqubecloud]="SonarCloud (advisory)"
@@ -38,10 +38,10 @@ declare -A ADVISORY_BOTS=(
 
 # Color codes for output
 # shellcheck disable=SC2034
-RED='\033[0;31m'
-YELLOW='\033[1;33m'
-GREEN='\033[0;32m'
-NC='\033[0m' # No Color
+readonly RED='\033[0;31m'
+readonly YELLOW='\033[1;33m'
+readonly GREEN='\033[0;32m'
+readonly NC='\033[0m' # No Color
 
 log_info() {
   echo "[advisory-gate] $*" >&2
@@ -113,7 +113,7 @@ format_bot_status() {
 #
 check_advisory_reviews() {
   local pr_url="${1:-}"
-  if [ -z "$pr_url" ]; then
+  if [[ -z "$pr_url" ]]; then
     echo "[advisory-gate] Usage: check_advisory_reviews <pr_url>" >&2
     return 1
   fi
@@ -131,7 +131,7 @@ check_advisory_reviews() {
     return 1
   }
 
-  if [ -z "$current_states" ]; then
+  if [[ -z "$current_states" ]]; then
     log_warn "No advisory bot reviews detected yet"
     log_warn "Will re-check when bots submit their reviews (pull_request_review event)"
     return 1  # Still waiting for bots
@@ -158,7 +158,7 @@ check_advisory_reviews() {
   #   2. Quiescence > 10 min: if no new submissions have arrived in 10 min, assume the
   #      remaining bots won't participate — prevents indefinite stranding when there is
   #      no scheduled retry event to re-enter this branch (thread PRRT_..ofWI).
-  if [ "$num_submitted" -lt "$total_advisory_bots" ]; then
+  if [[ "$num_submitted" -lt "$total_advisory_bots" ]]; then
     local now head_time head_time_raw head_age_sec latest_sub_at latest_sub_raw time_since_last_sub
     now=$(date -u +%s)
 
@@ -172,21 +172,21 @@ check_advisory_reviews() {
     head_time=$(gh api graphql -f query="$_gql" -f url="$PR_URL" \
       --jq '.data.resource.commits.nodes[0].commit | .pushedDate // .committedDate' \
       2>/dev/null) || head_time=""
-    if [ -n "$head_time" ]; then
+    if [[ -n "$head_time" ]]; then
       head_time_raw=$(date -u -d "$head_time" +%s 2>/dev/null) || head_time_raw=""
-      [ -n "$head_time_raw" ] && head_age_sec=$((now - head_time_raw))
+      [[ -n "$head_time_raw" ]] && head_age_sec=$((now - head_time_raw))
     fi
 
     time_since_last_sub=0
     latest_sub_at=$(echo "$current_states" | jq -r '[.[].time] | sort | last' 2>/dev/null) || latest_sub_at=""
-    if [ -n "$latest_sub_at" ]; then
+    if [[ -n "$latest_sub_at" ]]; then
       latest_sub_raw=$(date -u -d "$latest_sub_at" +%s 2>/dev/null) || latest_sub_raw=""
-      if [ -n "$latest_sub_raw" ]; then
+      if [[ -n "$latest_sub_raw" ]]; then
         # Anchor quiescence to the later of head-push and latest submission so that
         # stale submissions from a previous HEAD don't satisfy the fallback for a
         # fresh commit (a new push resets the quiescence timer to the head-push time).
         local quiescence_anchor
-        if [ -n "$head_time_raw" ] && [ "$head_time_raw" -gt "$latest_sub_raw" ]; then
+        if [[ -n "$head_time_raw" && "$head_time_raw" -gt "$latest_sub_raw" ]]; then
           quiescence_anchor=$head_time_raw
         else
           quiescence_anchor=$latest_sub_raw
@@ -195,9 +195,9 @@ check_advisory_reviews() {
       fi
     fi
 
-    if [ "$head_age_sec" -gt 1200 ]; then
+    if [[ "$head_age_sec" -gt 1200 ]]; then
       log_info "Only ${num_submitted}/${total_advisory_bots} bots submitted; head is ${head_age_sec}s old — timeout fallback, proceeding"
-    elif [ "$time_since_last_sub" -gt 600 ]; then
+    elif [[ "$time_since_last_sub" -gt 600 ]]; then
       log_info "Only ${num_submitted}/${total_advisory_bots} bots submitted; no new submissions in ${time_since_last_sub}s — assuming absent bots won't participate, proceeding"
     else
       log_warn "Only ${num_submitted}/${total_advisory_bots} advisory bots submitted so far (head age: ${head_age_sec}s, last submission: ${time_since_last_sub}s ago)"
@@ -211,16 +211,16 @@ check_advisory_reviews() {
 }
 
 # Run the check (only if not being sourced)
-if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
+if [[ "${BASH_SOURCE[0]}" = "${0}" ]]; then
   if check_advisory_reviews "${1:-}"; then
     exit_code=0
   else
     exit_code=$?
   fi
 
-  if [ $exit_code -eq 0 ]; then
+  if [[ $exit_code -eq 0 ]]; then
     log_success "Advisory bot review gate check PASSED ✓"
-  elif [ $exit_code -eq 1 ]; then
+  elif [[ $exit_code -eq 1 ]]; then
     log_warn "Advisory bots still reviewing - will check again on next review submission"
   fi
 

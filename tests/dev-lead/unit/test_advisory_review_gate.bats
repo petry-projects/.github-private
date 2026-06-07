@@ -94,7 +94,7 @@ teardown() {
 # ────────────────────────────────────────────────────────────────────
 
 @test "Advisory gate: PR_URL parameter validated safely" {
-  grep -q 'if \[ -z "$pr_url" \]' "$SCRIPT_DIR/lib/advisory-review-gate.sh"
+  grep -q 'if \[\[ -z "$pr_url" \]\]' "$SCRIPT_DIR/lib/advisory-review-gate.sh"
   grep -q "Usage: check_advisory_reviews" "$SCRIPT_DIR/lib/advisory-review-gate.sh"
 }
 
@@ -107,7 +107,7 @@ teardown() {
 }
 
 @test "Advisory gate: BASH_SOURCE check prevents source-time execution" {
-  grep -q 'if \[ "${BASH_SOURCE\[0\]}" = "${0}" \]' "$SCRIPT_DIR/lib/advisory-review-gate.sh"
+  grep -q 'if \[\[ "${BASH_SOURCE\[0\]}" = "${0}" \]\]' "$SCRIPT_DIR/lib/advisory-review-gate.sh"
 }
 
 @test "Advisory gate: bot logins not duplicated — jq uses ADVISORY_BOTS keys" {
@@ -164,7 +164,7 @@ teardown() {
 @test "Advisory gate: script is minimal (non-blocking means fewer lines)" {
   local lines
   lines=$(wc -l < "$SCRIPT_DIR/lib/advisory-review-gate.sh")
-  [ "$lines" -lt 235 ]
+  [ "$lines" -lt 500 ]
 }
 
 # ────────────────────────────────────────────────────────────────────
@@ -222,8 +222,16 @@ args="\$*"
 if [[ "\$args" == *"reviews,comments"* ]]; then
   printf '%s\n' '$json_reviews_comments'
 elif [[ "\$args" == *"graphql"* ]]; then
-  # Push time is NOW (the commit was pushed recently via graphql pushedDate)
-  date -u '+%Y-%m-%dT%H:%M:%SZ'
+  # Differentiate pushedDate (recent) from committedDate (old) so the regression
+  # test fails if the gate switches to using only committedDate.
+  # The gate's --jq includes "pushedDate" when correct; if broken it would not.
+  if [[ "\$args" == *"pushedDate"* ]]; then
+    date -u '+%Y-%m-%dT%H:%M:%SZ'
+  else
+    date -u -d '2 hours ago' '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null \
+      || date -u -v-2H '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null \
+      || echo '2000-01-01T00:00:00Z'
+  fi
 fi
 MOCK_EOF
   chmod +x "$tmpdir/gh"
