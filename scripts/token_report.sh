@@ -230,8 +230,14 @@ collect_org_jsonl() {
 
       local zip="$workdir/a-$id.zip" ex="$workdir/x-$id"
       mkdir -p "$ex"
-      gh api "repos/${repo}/actions/artifacts/${id}/zip" > "$zip" 2>/dev/null || continue
-      _extract_zip "$zip" "$ex" 2>/dev/null || continue
+      if ! gh api "repos/${repo}/actions/artifacts/${id}/zip" > "$zip" 2>/dev/null; then
+        echo "WARN: artifact ${id} from ${repo} — download failed; skipping (report may be incomplete)" >&2
+        continue
+      fi
+      if ! _extract_zip "$zip" "$ex" 2>/dev/null; then
+        echo "WARN: artifact ${id} from ${repo} — extraction failed; skipping (report may be incomplete)" >&2
+        continue
+      fi
 
       local found=false f
       while IFS= read -r f; do

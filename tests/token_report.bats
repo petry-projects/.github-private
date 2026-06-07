@@ -129,3 +129,28 @@ setup() {
   [ "$status" -eq 0 ]
   [[ "$output" == *"WARN"* ]]
 }
+
+@test "collect_org_jsonl: emits WARN and continues when artifact zip download fails" {
+  local tmpdir
+  tmpdir="$(mktemp -d)"
+  run bash -c "
+    gh() {
+      case \"\$2\" in
+        orgs/*/repos*) echo 'petry-projects/test-repo'; return 0;;
+        repos/*/actions/artifacts/*/zip) return 1;;
+        repos/*/actions/artifacts*)
+          printf '{\"artifacts\":[{\"name\":\"token-usage-x\",\"id\":999,\"expired\":false,\"created_at\":\"2099-01-01T00:00:00Z\"}]}'
+          return 0;;
+        *) return 0;;
+      esac
+    }
+    export -f gh
+    source '${BATS_TEST_DIRNAME}/../scripts/token_report.sh'
+    export ORG=petry-projects LOOKBACK_DAYS=7
+    collect_org_jsonl '${tmpdir}' 2>&1
+  "
+  rm -rf "$tmpdir"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"WARN"* ]]
+  [[ "$output" == *"download failed"* ]]
+}
