@@ -539,6 +539,8 @@ try_enable_auto_merge() {
   esac
   echo "::notice::PR #${PR_NUMBER} — enabling auto-merge (${method}); GitHub will merge once branch protection is satisfied"
   local merge_args=("--auto" "$merge_flag")
+  [[ -n "${_AM_COMMIT_TITLE:-}" ]] && merge_args+=("--subject" "${_AM_COMMIT_TITLE}")
+  [[ -n "${_AM_COMMIT_MESSAGE:-}" ]] && merge_args+=("--body" "${_AM_COMMIT_MESSAGE}")
   [[ -n "${HEAD_SHA:-}" ]] && merge_args+=("--match-head-commit" "$HEAD_SHA")
   if [[ "$strict" == "true" ]]; then
     gh pr merge "$PR_NUMBER" --repo "$REPO" "${merge_args[@]}"

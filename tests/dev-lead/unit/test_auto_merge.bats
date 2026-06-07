@@ -15,14 +15,20 @@ setup() {
   export PR_NUMBER=77 REPO="owner/repo" DEV_LEAD_DRY_RUN=false
   # Exported so the gh stub subprocess sees them; tests reassign (export sticks).
   export AM_STATE="" PR_STATE="open" GH_MERGE_RC=0
+  export AM_COMMIT_TITLE="" AM_COMMIT_MESSAGE="" HEAD_SHA_API=""
 
   # gh stub: AM_STATE / PR_STATE / GH_MERGE_RC are read at call time so each
   # test can set the PR's auto-merge state, open/closed state, and merge rc.
+  # commit_title / commit_message / head.sha cases must come before the generic
+  # *auto_merge* catch-all since those jq filters also contain "auto_merge".
   cat > "$STUB_BIN_DIR/gh" <<'EOF'
 #!/usr/bin/env bash
 echo "gh $*" >> "${GH_CALLS:-/dev/null}"
 case "$*" in
   *"pr merge"*)            exit "${GH_MERGE_RC:-0}" ;;
+  *"commit_title"*)        printf '%s' "${AM_COMMIT_TITLE:-}" ;;
+  *"commit_message"*)      printf '%s' "${AM_COMMIT_MESSAGE:-}" ;;
+  *"head.sha"*)            printf '%s' "${HEAD_SHA_API:-}" ;;
   *auto_merge*)            printf '%s' "${AM_STATE:-}" ;;
   *".state"*)              printf '%s' "${PR_STATE:-open}" ;;
   *)                       echo "{}" ;;
@@ -177,4 +183,55 @@ EOF
   run push_with_merge_guard
   [ "$status" -eq 1 ]
   [[ "$output" == *"git push failed"* ]]
+}
+
+# ── hold_auto_merge — commit text capture ─────────────────────────────────────
+
+@test "hold_auto_merge: captures commit title and message when auto-merge is on" {
+  source "$LIB"
+  AM_STATE="squash"
+  export AM_COMMIT_TITLE="My PR title"
+  export AM_COMMIT_MESSAGE="My PR body"
+  hold_auto_merge
+  [ "${_AM_COMMIT_TITLE}" = "My PR title" ]
+  [ "${_AM_COMMIT_MESSAGE}" = "My PR body" ]
+}
+
+# ── restore_auto_merge — HEAD_SHA refresh and commit text replay ──────────────
+
+@test "restore_auto_merge: refreshes HEAD_SHA from current PR head before restoring" {
+  source "$LIB"
+  _AM_NEEDS_RESTORE=1
+  PR_STATE="open"
+  AM_STATE=""
+  export HEAD_SHA="stale_sha"
+  export HEAD_SHA_API="fresh_sha"
+  run restore_auto_merge
+  [ "$status" -eq 0 ]
+  grep -q -- "--match-head-commit fresh_sha" "$GH_CALLS"
+  ! grep -q -- "--match-head-commit stale_sha" "$GH_CALLS"
+}
+
+@test "restore_auto_merge: passes --subject and --body when commit text was captured" {
+  source "$LIB"
+  _AM_NEEDS_RESTORE=1
+  PR_STATE="open"
+  AM_STATE=""
+  _AM_COMMIT_TITLE="Custom title"
+  _AM_COMMIT_MESSAGE="Custom body"
+  run restore_auto_merge
+  [ "$status" -eq 0 ]
+  grep -q -- "pr merge.*--subject" "$GH_CALLS"
+  grep -q -- "pr merge.*--body" "$GH_CALLS"
+}
+
+@test "restore_auto_merge: omits --subject and --body when no custom commit text" {
+  source "$LIB"
+  _AM_NEEDS_RESTORE=1
+  PR_STATE="open"
+  AM_STATE=""
+  run restore_auto_merge
+  [ "$status" -eq 0 ]
+  ! grep -q -- "--subject" "$GH_CALLS"
+  ! grep -q -- "--body" "$GH_CALLS"
 }

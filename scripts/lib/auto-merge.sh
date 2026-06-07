@@ -34,6 +34,10 @@ _AM_NEEDS_RESTORE=0
 # Merge method captured by hold_auto_merge; used by restore_auto_merge to replay
 # the original strategy (merge/squash/rebase) rather than always choosing squash.
 _AM_MERGE_METHOD="squash"
+# Custom commit title/message captured from auto_merge; replayed on restore so the
+# user's selected merge message is not lost when auto-merge is re-enabled.
+_AM_COMMIT_TITLE=""
+_AM_COMMIT_MESSAGE=""
 
 # hold_auto_merge — disable auto-merge for the duration of the run, if it is on.
 hold_auto_merge() {
@@ -46,6 +50,8 @@ hold_auto_merge() {
   state=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}" --jq '.auto_merge.merge_method // empty' 2>/dev/null || true)
   [ -n "$state" ] || return 0   # already off — leave it alone
   _AM_MERGE_METHOD="$state"
+  _AM_COMMIT_TITLE=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}" --jq '.auto_merge.commit_title // empty' 2>/dev/null || true)
+  _AM_COMMIT_MESSAGE=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}" --jq '.auto_merge.commit_message // empty' 2>/dev/null || true)
   echo "::notice::PR #${PR_NUMBER} — holding auto-merge OFF while dev-lead works"
   if gh pr merge "$PR_NUMBER" --repo "$REPO" --disable-auto 2>/dev/null; then
     _AM_NEEDS_RESTORE=1
@@ -67,6 +73,9 @@ restore_auto_merge() {
   local pr_state
   pr_state=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}" --jq '.state' 2>/dev/null || true)
   [ "$pr_state" != "closed" ] || return 0   # merged/closed — nothing to restore
+  local current_head
+  current_head=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}" --jq '.head.sha' 2>/dev/null || true)
+  [[ -n "${current_head}" ]] && HEAD_SHA="$current_head"
   local am
   am=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}" --jq '.auto_merge // empty' 2>/dev/null || true)
   if [ -n "$am" ]; then return 0; fi     # success path already restored it
@@ -77,6 +86,8 @@ restore_auto_merge() {
     *)      merge_flag="--squash" ;;
   esac
   local restore_args=("--auto" "$merge_flag")
+  [[ -n "${_AM_COMMIT_TITLE:-}" ]] && restore_args+=("--subject" "${_AM_COMMIT_TITLE}")
+  [[ -n "${_AM_COMMIT_MESSAGE:-}" ]] && restore_args+=("--body" "${_AM_COMMIT_MESSAGE}")
   [[ -n "${HEAD_SHA:-}" ]] && restore_args+=("--match-head-commit" "${HEAD_SHA}")
   echo "::notice::PR #${PR_NUMBER} — restoring auto-merge (${_AM_MERGE_METHOD:-squash})"
   gh pr merge "$PR_NUMBER" --repo "$REPO" "${restore_args[@]}" 2>/dev/null \

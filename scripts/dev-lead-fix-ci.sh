@@ -198,6 +198,13 @@ main() {
     exit 0
   fi
 
+  # Hold auto-merge OFF while we work so a review approval landing mid-run can't
+  # merge (and delete) the branch out from under us. restore_auto_merge (EXIT
+  # trap) puts it back however we exit; checkout_pr_in_worktree chains its own
+  # cleanup onto this trap.
+  trap restore_auto_merge EXIT
+  hold_auto_merge
+
   local prompt_file
   prompt_file=$(build_prompt)
 
@@ -206,13 +213,6 @@ main() {
     post_summary "dry-run" "Would apply fix for: $(echo "$CHECKS_JSON" | jq -r '[.[].name] | join(", ")')"
     exit 0
   fi
-
-  # Hold auto-merge OFF while we work so a review approval landing mid-run can't
-  # merge (and delete) the branch out from under us. restore_auto_merge (EXIT
-  # trap) puts it back however we exit; checkout_pr_in_worktree chains its own
-  # cleanup onto this trap.
-  trap restore_auto_merge EXIT
-  hold_auto_merge
 
   # Checkout the PR branch for modification, in an isolated worktree so the
   # branch switch never overwrites the agent's own prompts/scripts (issue #448).
