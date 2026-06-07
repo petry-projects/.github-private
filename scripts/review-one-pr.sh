@@ -77,6 +77,18 @@ if [ "$CI_STATUS" = "pending" ]; then
   echo "{\"pr\":\"$PR_URL\",\"sha\":\"$PR_HEAD_SHA\",\"decision\":\"skip\",\"reason\":\"ci-pending\"}"
   exit 100
 fi
+
+# Advisory bot review gate — wait for Gemini, Copilot, SonarCloud, Codex
+# to complete before approving. This ensures valid code reviews are
+# incorporated before pr-review posts approval (issue #457).
+# shellcheck source=lib/advisory-review-gate.sh
+source "$SCRIPT_DIR/lib/advisory-review-gate.sh"
+GATE_RESULT=$(wait_for_advisory_reviews "$PR_URL" 2>&1 || echo "gate_failed")
+if [ "$GATE_RESULT" = "gate_failed" ]; then
+  # Advisory gate hit hard timeout but we still proceed (it logs the warning)
+  echo "    warn: advisory bot review gate timed out at 60min, proceeding anyway"
+fi
+
 # Skip when a human has requested changes, with two guards:
 #   1. FORCE_REVIEW bypasses the skip — mention-triggered runs always proceed so
 #      authors can request a re-review after addressing feedback.
