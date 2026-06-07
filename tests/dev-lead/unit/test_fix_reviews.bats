@@ -691,18 +691,21 @@ GHEOF
   # Use absolute path so envsubst can find the prompt even when running from git_repo dir
   export PROMPTS_DIR="$SCRIPT_DIR/prompts/dev-lead"
 
-  # Real temp git repo with one uncommitted change to trigger commit_and_push
+  # Real temp git repo; the engine (claude stub) makes the uncommitted change
+  # inside the PR worktree, which is what triggers commit_and_push.
   local git_repo
   git_repo="$(mktemp -d)"
   git -C "$git_repo" init -q
   echo "initial" > "$git_repo/file.txt"
   git -C "$git_repo" add .
   git -C "$git_repo" -c user.email="init@test" -c user.name="Init" commit -q -m "initial"
-  echo "change" >> "$git_repo/file.txt"
 
+  # The worktree checkout is clean; the engine appends to file.txt in its CWD
+  # (the worktree) so the script sees an uncommitted change to commit.
   cat > "$STUB_BIN_DIR/claude" << 'STUB'
 #!/usr/bin/env bash
 echo "Changes applied."
+echo "change" >> file.txt
 STUB
   chmod +x "$STUB_BIN_DIR/claude"
 
@@ -754,14 +757,16 @@ GITEOF
   echo "initial" > "$git_repo/file.txt"
   git -C "$git_repo" add .
   git -C "$git_repo" -c user.email="init@test" -c user.name="Init" commit -q -m "initial"
-  echo "change" >> "$git_repo/file.txt"
 
   local comment_file
   comment_file="$(mktemp)"
 
+  # The engine makes its change inside the PR worktree (its CWD), triggering
+  # commit_and_push (whose commit then fails via the git stub below).
   cat > "$STUB_BIN_DIR/claude" << 'STUB'
 #!/usr/bin/env bash
 echo "Changes applied."
+echo "change" >> file.txt
 STUB
   chmod +x "$STUB_BIN_DIR/claude"
 
