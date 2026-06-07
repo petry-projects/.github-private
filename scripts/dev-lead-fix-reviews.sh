@@ -132,9 +132,11 @@ if [ "${DEV_LEAD_DRY_RUN:-false}" = "false" ] && [ -n "${PR_NUMBER:-}" ]; then
   setup_git_identity
 fi
 
-# Checkout the PR branch for modification (Requirement 1)
+# Checkout the PR branch for modification (Requirement 1).
+# Use an isolated worktree so switching to the PR branch never overwrites the
+# agent's own prompts/scripts in the working tree (issue #448).
 if [ "${DEV_LEAD_DRY_RUN:-false}" = "false" ] && [ -n "${PR_NUMBER:-}" ]; then
-  gh pr checkout "$PR_NUMBER" --repo "$REPO"
+  checkout_pr_in_worktree "$PR_NUMBER" "$REPO"
   setup_git_identity
 fi
 
