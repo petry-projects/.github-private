@@ -201,11 +201,14 @@ render_token_report() {
   printf '\n'
 
   # Cost-per-PR — each record carries its PR URL in context; surface the priciest PRs.
+  # Limit with `awk 'NR<=10'` rather than `head -10`: awk consumes the whole stream, so
+  # `sort` never receives SIGPIPE and the command substitution can't fail under pipefail
+  # (which would otherwise abort the report — see PR #456 review).
   local pr_rows
   pr_rows="$(awk -F'\t' '$11 ~ /\/pull\// { k = $11
       calls[k]++; if ($10 == 1) cost[k] += $8 }
     END { for (k in calls) printf "%.6f\t%d\t%s\n", cost[k], calls[k], k }' "$enriched" \
-    | sort -t$'\t' -k1,1rn | head -10)"
+    | sort -t$'\t' -k1,1rn | awk 'NR <= 10')"
   if [ -n "$pr_rows" ]; then
     printf '## Most expensive PRs (top 10)\n\n'
     printf '| PR | Calls | Cost |\n|---|---:|---:|\n'

@@ -97,6 +97,24 @@ setup() {
   [[ "$output" == *"No token-usage records found"* ]]
 }
 
+@test "render_token_report: caps PR list at 10 without aborting on many PRs (SIGPIPE guard)" {
+  # >10 distinct PR contexts — the top-10 limit must not abort under pipefail.
+  tmp="$(mktemp -d)"
+  for i in $(seq 1 25); do
+    printf '{"ts":"2026-06-01T00:00:00Z","workflow":"pr-review","tier":"single","model":"claude-haiku-4-5-20251001","input_tokens":%d,"cache_read_tokens":0,"output_tokens":10,"repo":"petry-projects/r","context":"https://github.com/petry-projects/r/pull/%d"}\n' "$((i * 100))" "$i" >> "$tmp/many.jsonl"
+  done
+  run render_token_report "$tmp" 7 1 1 2026-06-07
+  rm -rf "$tmp"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Most expensive PRs"* ]]
+  # Exactly 10 PR rows rendered (lines containing a /pull/ link in the table).
+  local pr_lines
+  pr_lines="$(printf '%s\n' "$output" | grep -c '/pull/')"
+  [ "$pr_lines" -eq 10 ]
+  # Highest-cost PR (#25, most input tokens) must be first in the list.
+  [[ "$output" == *"/pull/25 |"* ]]
+}
+
 # ---------------------------------------------------------------------------
 # collect_org_jsonl — error-handling (gh is stubbed; no network)
 # ---------------------------------------------------------------------------
