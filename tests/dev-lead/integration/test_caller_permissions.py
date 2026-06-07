@@ -65,7 +65,12 @@ def fetch_template() -> dict:
 
 
 def reusable_required(reusable: dict) -> dict[str, int]:
-    """Max level each permission scope is requested across all reusable jobs."""
+    """Max level each permission scope is requested across all reusable jobs.
+
+    Records ``"*"`` as a wildcard key when a job (or inherited workflow-level
+    block) uses the scalar shorthands ``write-all`` / ``read-all``, mirroring
+    how ``caller_grants`` represents those shorthands on the caller side.
+    """
     required: dict[str, int] = {}
     if not isinstance(reusable, dict):
         return required
@@ -73,7 +78,18 @@ def reusable_required(reusable: dict) -> dict[str, int]:
     workflow_perms = reusable.get("permissions") or {}
     for job in (reusable.get("jobs") or {}).values():
         perms = job.get("permissions") if isinstance(job, dict) else None
+        if isinstance(perms, str):
+            # Per-job scalar shorthand (write-all / read-all): record as wildcard.
+            val = lvl("write" if perms == "write-all" else "read" if perms == "read-all" else "none")
+            required["*"] = max(required.get("*", 0), val)
+            continue
         if not isinstance(perms, dict):
+            # No per-job block; inherit workflow-level permissions.
+            if isinstance(workflow_perms, str):
+                # Workflow-level scalar shorthand: record as wildcard.
+                val = lvl("write" if workflow_perms == "write-all" else "read" if workflow_perms == "read-all" else "none")
+                required["*"] = max(required.get("*", 0), val)
+                continue
             perms = workflow_perms if isinstance(workflow_perms, dict) else None
         if not isinstance(perms, dict):
             continue
