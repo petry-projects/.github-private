@@ -1,0 +1,119 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# SOURCE OF TRUTH: petry-projects/.github-private/.github/workflows/token-report.yml
+#
+# AGENTS — READ BEFORE EDITING:
+#   • Weekly Token Cost Observatory report. The org-wide collection + aggregation
+#     logic lives in scripts/token_report.sh (unit-tested in tests/token_report.bats).
+#   • The script reads token-usage artifacts from EVERY non-archived repo in the org,
+#     so it needs GH_PAT_WORKFLOWS (cross-org actions:read) — github.token cannot read
+#     other repos' artifacts.
+#   • The report is posted as a comment on a single pinned tracking issue
+#     (label: token-report) in .github-private, so github.token suffices for the
+#     comment step.
+#   • Do NOT change checkout ref from 'main'.
+# ─────────────────────────────────────────────────────────────────────────────
+name: Token Cost Report
+
+on:
+  schedule:
+    # Mondays at 08:00 UTC — weekly cost rollup before the work week
+    - cron: '0 8 * * 1'
+  workflow_dispatch:
+    inputs:
+      org:
+        description: "GitHub org to scan"
+        required: false
+        default: "petry-projects"
+        type: string
+      lookback_days:
+        description: "Days of token-usage history to include"
+        required: false
+        default: "7"
+        type: string
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: token-report-${{ inputs.org || 'petry-projects' }}
+  cancel-in-progress: true
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      ORG: ${{ inputs.org || 'petry-projects' }}
+      LOOKBACK_DAYS: ${{ inputs.lookback_days || '7' }}
+
+    steps:
+      - name: Checkout agent repo
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          repository: petry-projects/.github-private
+          ref: main
+          token: ${{ secrets.GH_PAT_WORKFLOWS }}
+
+      - name: Generate org-wide token report
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
+          TOKEN_REPORT_OUT: token_report.md
+        run: |
+          bash scripts/token_report.sh >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Post report to tracking issue
+        if: hashFiles('token_report.md') != ''
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const fs = require('fs');
+            const MAX = 65000;
+            let report = fs.readFileSync('token_report.md', 'utf8');
+            if (!report.trim()) { core.setFailed('Report file is empty'); return; }
+
+            const runUrl = `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`;
+            if (report.length > MAX) {
+              report = report.slice(0, MAX) +
+                `\n\n---\n_Report truncated — full output in the [workflow run summary](${runUrl})._`;
+            }
+
+            const LABEL = 'token-report';
+            const TITLE = '📊 Token Cost Observatory — Weekly Report';
+
+            // Ensure the tracking label exists.
+            try {
+              await github.rest.issues.getLabel({ owner: context.repo.owner, repo: context.repo.repo, name: LABEL });
+            } catch (e) {
+              await github.rest.issues.createLabel({
+                owner: context.repo.owner, repo: context.repo.repo,
+                name: LABEL, color: '5319e7',
+                description: 'Weekly Token Cost Observatory report',
+              });
+            }
+
+            // Find-or-create the single pinned tracking issue.
+            const existing = await github.paginate(github.rest.issues.listForRepo, {
+              owner: context.repo.owner, repo: context.repo.repo,
+              labels: LABEL, state: 'open', per_page: 100,
+            });
+
+            let issue = existing.find(i => i.title === TITLE);
+            if (!issue) {
+              const created = await github.rest.issues.create({
+                owner: context.repo.owner, repo: context.repo.repo,
+                title: TITLE, labels: [LABEL],
+                body: 'Tracking issue for the weekly Token Cost Observatory report. ' +
+                      'Each run posts a new comment below with org-wide Effective Tokens (ET) usage.\n\n' +
+                      'Source: `scripts/token_report.sh` · `.github/workflows/token-report.yml`',
+              });
+              issue = created.data;
+              core.notice(`Created tracking issue #${issue.number}: ${issue.html_url}`);
+            }
+
+            const comment = await github.rest.issues.createComment({
+              owner: context.repo.owner, repo: context.repo.repo,
+              issue_number: issue.number, body: report,
+            });
+            core.notice(`Posted weekly token report: ${comment.data.html_url}`);
