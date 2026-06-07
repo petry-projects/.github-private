@@ -391,6 +391,28 @@ EOF
   [ -s /tmp/dev-lead-rate-limit-reset ]
 }
 
+@test "gemini chain: multi-model all throttled, earlier reset time preserved when final attempt has none" {
+  # Guard for PRRT_kwDOR9SdIs6HokhZ: when the first throttled model includes a
+  # reset timestamp ("resets 11:20pm (UTC)") but the final throttled model does
+  # not, the function must retain the first model's reset time in
+  # /tmp/dev-lead-rate-limit-reset rather than overwriting it with an empty value.
+  # An empty reset file causes dev-lead-retry.sh:is_reset_in_future to treat the
+  # limit as already cleared and re-dispatch before the quota has actually reset.
+  _source_engine "gemini"
+  export STUB_ENGINE_EXIT_BY_MODEL="gemini-3.5-flash=1|gemini-2.5-pro=1"
+  export STUB_ENGINE_RESPONSE_BY_MODEL="gemini-3.5-flash=quota exceeded resets 11:20pm (UTC)|gemini-2.5-pro=quota exceeded"
+
+  rm -f /tmp/dev-lead-rate-limit-reset
+
+  run _gemini_chain_invoke "gemini-3.5-flash,gemini-2.5-pro" "$TEST_PROMPT" 30
+
+  [ "$status" -eq 2 ]
+  # The first model's reset time must survive the second model's parse attempt
+  # (which would write empty because its output has no reset timestamp).
+  [ -f /tmp/dev-lead-rate-limit-reset ]
+  [ -s /tmp/dev-lead-rate-limit-reset ]
+}
+
 @test "gemini chain: rc=0 with rate-limit body in normal mktemp path → accepted as success" {
   # Guard for comment 3320377426: a valid review response may legitimately contain
   # "429", "quota exceeded", or other rate-limit terms in its findings (e.g. a review

@@ -524,6 +524,7 @@ _gemini_chain_invoke() {
   local rc=0 attempted=0 all_rl=1
   local _last_resort_rl_output=""
   local model
+  local _best_reset="" _cur_reset=""  # preserve last non-empty reset time across throttled attempts
 
   for model in "${models[@]}"; do
     model="${model#"${model%%[![:space:]]*}"}"
@@ -610,6 +611,8 @@ _gemini_chain_invoke() {
           # a provider returning rc=0 with rate-limit text is still caught and
           # triggers the cross-provider fallback via exit code 2.
           parse_reset_time "$_last_resort_output" || true
+          _cur_reset="$(cat /tmp/dev-lead-rate-limit-reset 2>/dev/null || true)"
+          [ -n "$_cur_reset" ] && _best_reset="$_cur_reset"
           _last_resort_rl_output="$_last_resort_output"
           echo "::warning::[gemini] model $model throttled (rc=$rc) — trying next in chain" >&2
           continue
@@ -641,6 +644,13 @@ _gemini_chain_invoke() {
       all_rl=0
       break
     fi
+    # Capture the reset time for this throttled attempt; keep the last non-empty
+    # value seen so a later attempt with no reset timestamp does not overwrite
+    # an earlier one (which would cause the retry cron to treat the limit as
+    # already cleared and re-dispatch before the quota actually resets).
+    parse_reset_time_files "$stdout_tmp" "$stderr_tmp"
+    _cur_reset="$(cat /tmp/dev-lead-rate-limit-reset 2>/dev/null || true)"
+    [ -n "$_cur_reset" ] && _best_reset="$_cur_reset"
     # Phrasing avoids "rate-limit"/"429"/"quota" so downstream callers that
     # scan our stderr (e.g. review-one-pr.sh triage) don't misclassify a
     # successful chain fallback as a provider rate-limit. Mirrors the same
@@ -654,14 +664,13 @@ _gemini_chain_invoke() {
   fi
 
   if [ "$all_rl" -eq 1 ]; then
-    # Only call parse_reset_time_files when actual files are available. When all
-    # models used the last-resort (in-memory) branch, final_stdout/final_stderr
-    # are empty strings; passing them to parse_reset_time_files would cause it to
-    # write an empty reset file, clobbering the timestamp parse_reset_time already
-    # wrote inside the loop for each throttled response.
-    if [ -n "$final_stdout" ] || [ -n "$final_stderr" ]; then
-      parse_reset_time_files "$final_stdout" "$final_stderr"
-    fi
+    # Write back the best reset time from any throttled attempt. Each iteration
+    # already called parse_reset_time_files (file-based) or parse_reset_time
+    # (last-resort) and updated _best_reset with the last non-empty result.
+    # Writing it here preserves an earlier attempt's reset time even when the
+    # final attempt's output carries no reset timestamp, preventing the retry
+    # cron from treating the quota as cleared and re-dispatching too early.
+    printf '%s' "$_best_reset" > /tmp/dev-lead-rate-limit-reset
     final_rc=2
   fi
 
