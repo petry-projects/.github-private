@@ -60,8 +60,15 @@ checkout_pr_in_worktree() {
   PR_WORKTREE_DIR="${parent}/pr-${pr}"
 
   # Tear the worktree down on exit (success or failure) so /tmp and the repo's
-  # worktree registry don't accumulate stale entries across runs.
-  trap cleanup_pr_worktree EXIT
+  # worktree registry don't accumulate stale entries across runs. Chain onto any
+  # EXIT trap the caller already registered (e.g. restore_auto_merge) instead of
+  # clobbering it — the trap commands dev-lead registers are bare function names.
+  local _prev_exit
+  _prev_exit="$(trap -p EXIT | sed -n -E "s/^trap -- '(.*)' (EXIT|0)\$/\1/p")"
+  # Deliberately expand $_prev_exit now to bake the captured prior trap into the
+  # new handler; it is gone by the time the trap fires.
+  # shellcheck disable=SC2064
+  trap "cleanup_pr_worktree${_prev_exit:+; $_prev_exit}" EXIT
 
   # Start detached at the agent checkout's HEAD so `gh pr checkout` can create or
   # switch to the PR branch inside the worktree without colliding with whatever

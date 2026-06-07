@@ -6,6 +6,7 @@ set -euo pipefail
 source "$(dirname "$0")/engine.sh"
 source "$(dirname "$0")/lib/git-identity.sh"
 source "$(dirname "$0")/lib/pr-worktree.sh"
+source "$(dirname "$0")/lib/auto-merge.sh"
 
 INTENT_TYPE="${INTENT_TYPE:-fix-reviews}"
 PR_NUMBER="${PR_NUMBER:-}"
@@ -26,17 +27,24 @@ if [ -z "$PR_NUMBER" ] && [ "$INTENT_TYPE" != "rebase" ]; then
   exit 1
 fi
 
-# Resolve HEAD_SHA from the PR API when not provided by the triggering event.
-# issue_comment intents (on-mention, fix-bot-comment) only carry pr_number, not head_sha.
-# A resolved SHA ensures rate-limited markers are scannable by the retry cron.
-if [ -z "${HEAD_SHA:-}" ] && [ -n "${PR_NUMBER:-}" ] && [ "${DEV_LEAD_DRY_RUN:-false}" = "false" ]; then
-  HEAD_SHA=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}" --jq '.head.sha' 2>/dev/null || true)
-fi
-
 # Checkout the PR branch for modification (Requirement 1).
 # Use an isolated worktree so switching to the PR branch never overwrites the
 # agent's own prompts/scripts in the working tree (issue #448).
 if [ "${DEV_LEAD_DRY_RUN:-false}" = "false" ] && [ -n "${PR_NUMBER:-}" ]; then
+  # Hold auto-merge OFF while we work so a review approval landing mid-run can't
+  # merge (and delete) the branch out from under us. restore_auto_merge (EXIT
+  # trap) puts it back however we exit; checkout_pr_in_worktree chains its own
+  # cleanup onto this trap.
+  trap restore_auto_merge EXIT
+  hold_auto_merge
+  # Resolve HEAD_SHA after holding auto-merge: for issue_comment intents
+  # (on-mention, fix-bot-comment) only pr_number is provided, not head_sha.
+  # Resolving here rather than before the hold closes the window where an
+  # approval could satisfy branch protection during the API call and let
+  # GitHub auto-merge the branch before the hold is installed.
+  if [ -z "${HEAD_SHA:-}" ]; then
+    HEAD_SHA=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}" --jq '.head.sha' 2>/dev/null || true)
+  fi
   checkout_pr_in_worktree "$PR_NUMBER" "$REPO"
   setup_git_identity
 fi
@@ -501,7 +509,7 @@ has_tier1_blockers() {
 try_enable_auto_merge() {
   local strict="${1:-false}"
   if [[ "${DEV_LEAD_DRY_RUN:-false}" == "true" ]]; then
-    echo "[dry-run] would enable auto-merge (squash) on PR #${PR_NUMBER}"
+    echo "[dry-run] would enable auto-merge (${_AM_MERGE_METHOD:-squash}) on PR #${PR_NUMBER}"
     return 0
   fi
   # Refresh HEAD_SHA to the commit that is now the PR head. commit_and_push may
@@ -523,8 +531,17 @@ try_enable_auto_merge() {
     return 0
   fi
 
-  echo "::notice::PR #${PR_NUMBER} — enabling auto-merge (squash); GitHub will merge once branch protection is satisfied"
-  local merge_args=("--auto" "--squash")
+  local method="${_AM_MERGE_METHOD:-squash}"
+  local merge_flag
+  case "$method" in
+    merge)  merge_flag="--merge" ;;
+    rebase) merge_flag="--rebase" ;;
+    *)      merge_flag="--squash" ;;
+  esac
+  echo "::notice::PR #${PR_NUMBER} — enabling auto-merge (${method}); GitHub will merge once branch protection is satisfied"
+  local merge_args=("--auto" "$merge_flag")
+  [[ -n "${_AM_COMMIT_TITLE:-}" ]] && merge_args+=("--subject" "${_AM_COMMIT_TITLE}")
+  [[ -n "${_AM_COMMIT_MESSAGE:-}" ]] && merge_args+=("--body" "${_AM_COMMIT_MESSAGE}")
   [[ -n "${HEAD_SHA:-}" ]] && merge_args+=("--match-head-commit" "$HEAD_SHA")
   if [[ "$strict" == "true" ]]; then
     gh pr merge "$PR_NUMBER" --repo "$REPO" "${merge_args[@]}"
@@ -592,10 +609,9 @@ commit_and_push() {
       # false "Changes committed and pushed" comment.
       git commit -m "$commit_msg" || { echo "::error::git commit failed — check git identity configuration on the runner" >&2; exit 1; }
     fi
-    git push || {
-      echo "::error::git push failed — check remote access and branch permissions" >&2
-      exit 1
-    }
+    # push_with_merge_guard exits 0 cleanly if the PR was merged/closed mid-run
+    # (its branch deleted); a genuine push failure still aborts with exit 1.
+    push_with_merge_guard || exit 1
   fi
   return 0
 }
@@ -815,7 +831,7 @@ case "$INTENT_TYPE" in
         repository(owner:$owner, name:$repo) {
           pullRequest(number:$pr) {
             reviewThreads(first:50) {
-              nodes { id isResolved isOutdated line path comments(first:5) { nodes { body author { login } } } }
+              nodes { id isResolved isOutdated line path comments(first:5) { nodes { body author { login __typename } } } }
             }
           }
         }
@@ -912,7 +928,7 @@ case "$INTENT_TYPE" in
         repository(owner:$owner, name:$repo) {
           pullRequest(number:$pr) {
             reviewThreads(first:50) {
-              nodes { id isResolved isOutdated line path comments(first:5) { nodes { body author { login } } } }
+              nodes { id isResolved isOutdated line path comments(first:5) { nodes { body author { login __typename } } } }
             }
           }
         }
