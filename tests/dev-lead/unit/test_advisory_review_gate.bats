@@ -222,13 +222,8 @@ args="\$*"
 if [[ "\$args" == *"reviews,comments"* ]]; then
   printf '%s\n' '$json_reviews_comments'
 elif [[ "\$args" == *"graphql"* ]]; then
-  # Push time is NOW (the commit was pushed recently)
+  # Push time is NOW (the commit was pushed recently via graphql pushedDate)
   date -u '+%Y-%m-%dT%H:%M:%SZ'
-elif [[ "\$args" == *"commits"* ]]; then
-  # committedDate is 2 hours ago (old cherry-picked commit)
-  date -u -d '2 hours ago' '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null \
-    || date -u -v-2H '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null \
-    || printf '2000-01-01T00:00:00Z\n'
 fi
 MOCK_EOF
   chmod +x "$tmpdir/gh"

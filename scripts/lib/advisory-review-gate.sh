@@ -211,8 +211,11 @@ check_advisory_reviews() {
 
 # Run the check (only if not being sourced)
 if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
-  check_advisory_reviews "${1:-}"
-  exit_code=$?
+  if check_advisory_reviews "${1:-}"; then
+    exit_code=0
+  else
+    exit_code=$?
+  fi
 
   if [ $exit_code -eq 0 ]; then
     log_success "Advisory bot review gate check PASSED ✓"
