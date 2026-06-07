@@ -68,6 +68,20 @@ fi
 # Use an isolated worktree so switching to the PR branch never overwrites the
 # agent's own prompts/scripts in the working tree (issue #448).
 if [ "${DEV_LEAD_DRY_RUN:-false}" = "false" ] && [ -n "${PR_NUMBER:-}" ]; then
+  # Hold auto-merge OFF while we work so a review approval landing mid-run can't
+  # merge (and delete) the branch out from under us. restore_auto_merge (EXIT
+  # trap) puts it back however we exit; checkout_pr_in_worktree chains its own
+  # cleanup onto this trap.
+  trap restore_auto_merge EXIT
+  hold_auto_merge
+  # Resolve HEAD_SHA after holding auto-merge: for issue_comment intents
+  # (on-mention, fix-bot-comment) only pr_number is provided, not head_sha.
+  # Resolving here rather than before the hold closes the window where an
+  # approval could satisfy branch protection during the API call and let
+  # GitHub auto-merge the branch before the hold is installed.
+  if [ -z "${HEAD_SHA:-}" ]; then
+    HEAD_SHA=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}" --jq '.head.sha' 2>/dev/null || true)
+  fi
   checkout_pr_in_worktree "$PR_NUMBER" "$REPO"
   setup_git_identity
 fi
@@ -1138,10 +1152,9 @@ commit_and_push() {
       # false "Changes committed and pushed" comment.
       git commit -m "$commit_msg" || { echo "::error::git commit failed — check git identity configuration on the runner" >&2; exit 1; }
     fi
-    git push || {
-      echo "::error::git push failed — check remote access and branch permissions" >&2
-      exit 1
-    }
+    # push_with_merge_guard exits 0 cleanly if the PR was merged/closed mid-run
+    # (its branch deleted); a genuine push failure still aborts with exit 1.
+    push_with_merge_guard || exit 1
   fi
   return 0
 }
