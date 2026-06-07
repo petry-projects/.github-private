@@ -81,13 +81,20 @@ and **Copilot**.
    - **If escalated + no delegation (or max cycles reached):** labels
      `needs-human-review` and re-requests don-petry as reviewer.
    - **Cycle guard:** before running the cascade, `scripts/review-one-pr.sh`
-     counts existing review markers on the PR. If the count is
+     counts *non-converging* review cycles on the PR: non-approval review
+     markers posted since the most recent reset event (the latest approval
+     marker or the latest escalation comment). If the count is
      `>= MAX_REVIEW_CYCLES` (default 3), the cascade is skipped entirely;
      the script posts a single human-escalation comment marked
      `<!-- pr-review-agent escalation -->`, adds `needs-human-review`, and
-     re-requests don-petry. Subsequent runs detect the escalation marker and
-     no-op without spamming. This prevents infinite review loops on PRs
-     that aren't converging.
+     re-requests don-petry. Subsequent runs no-op while the escalation marker
+     AND the `needs-human-review` label are both present. This prevents
+     infinite review loops on PRs that aren't converging, without punishing
+     PRs that converge (approve) and then legitimately evolve (issue #467).
+     Re-engagement paths: remove the `needs-human-review` label (cascade
+     resumes on the next run with a fresh cycle budget), or mention the bot —
+     mention-triggered runs (`FORCE_REVIEW=true`) bypass the escalation pause
+     and the cap, and drop the label so the cascade stays engaged.
 
 5. **Idempotency + iterative review cycles** — every posted review starts with
    an HTML marker on line 1:
