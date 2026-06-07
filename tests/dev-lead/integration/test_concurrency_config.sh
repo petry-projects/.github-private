@@ -84,6 +84,13 @@ for WORKFLOW in \
   check_present "$WORKFLOW" \
     "github.event.client_payload.pr_number && format('dev-lead-pr-" \
     "repository_dispatch routes to PR lane via client_payload.pr_number"
+  # client_payload.pr_number predicate must appear BEFORE the final run-id fallback.
+  # If reordered, the fallback is always truthy and every repository_dispatch
+  # (ci-failure relay) gets a unique run lane instead of sharing the PR lane.
+  check_order "$WORKFLOW" \
+    "github.event.client_payload.pr_number && format('dev-lead-pr-" \
+    "format('dev-lead-run-{0}', github.run_id)" \
+    "repository_dispatch predicate before run-id fallback"
   # issue.pull_request must appear BEFORE issue.number in the || chain.
   # If reordered, an issue_comment on a PR would fall through to the issue lane
   # and share a slot with issue pickups, allowing cancellation.
