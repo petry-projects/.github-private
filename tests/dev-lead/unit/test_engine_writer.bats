@@ -486,6 +486,37 @@ STUB
   [ "$(jq -r '.output_tokens'     < "$log")" = "60" ]
 }
 
+@test "usage: failed mktemp + stale _ENGINE_USAGE_OUT does NOT reuse the stale sidecar" {
+  # Regression for the per-call-key fix: run_* clears _ENGINE_USAGE_OUT before
+  # mktemp, so a failed mktemp falls back to estimation instead of reading a prior
+  # call's sidecar. Without it, the planted 999/9/9/9 below would be logged.
+  _source_engine "claude"
+  export STUB_ENGINE_EXIT=0
+  export STUB_ENGINE_RESPONSE="verdict"
+  local log; log=$(mktemp)
+  export TOKEN_LOG_FILE="$log"
+  export TEST_OWNED_TOKEN_LOG="$log"
+
+  # A leftover per-call key + sidecar content from a "previous" call.
+  local stale; stale="$(mktemp)"
+  printf '999\t9\t9\t9\n' > "$stale"
+  export _ENGINE_USAGE_OUT="$stale"
+
+  # Force mktemp to fail inside the engine via a PATH shim.
+  local shim; shim="$(mktemp -d)"
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$shim/mktemp"
+  chmod +x "$shim/mktemp"
+
+  PATH="$shim:$PATH" run run_triage "$TEST_PROMPT"
+
+  rm -rf "$shim"; rm -f "$stale"; unset _ENGINE_USAGE_OUT
+  [ "$status" -eq 0 ]
+  # The stale cache figures must NOT appear in the record.
+  [ "$(jq -r '.cache_read_tokens'     < "$log")" != "9" ]
+  [ "$(jq -r '.cache_creation_tokens' < "$log")" != "9" ]
+  [ "$(jq -r '.input_tokens'          < "$log")" != "999" ]
+}
+
 @test "token: run_writer_with_fallback logs the fallback engine (not rate-limited primary)" {
   _source_engine "claude"
   export DEV_LEAD_DRY_RUN=false

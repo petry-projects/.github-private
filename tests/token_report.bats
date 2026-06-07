@@ -176,9 +176,11 @@ setup() {
   run bash -c "
     set -euo pipefail
     source '${BATS_TEST_DIRNAME}/../scripts/token_report.sh'
-    # Simulate the inner conversion loop for a binary-corrupted source file.
+    # Simulate the inner conversion loop for a corrupted source file. Use truncated
+    # JSON, which jq rejects deterministically across versions (jq 1.7 exits 0 on
+    # NUL bytes, so binary input made this test flaky).
     f='$tmpdir/bad.jsonl'
-    printf '\x00\x01\x02\x03' > \"\$f\"
+    printf '{\"a\":' > \"\$f\"
     dest='$jsonl_dir/999-bad.jsonl'
     if jq -c --arg repo 'r' 'select(type==\"object\") | . + {repo: \$repo}' \
         \"\$f\" > \"\$dest\" 2>/dev/null; then
