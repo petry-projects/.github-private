@@ -143,6 +143,7 @@ top_pr_urls() {
 render_cost_per_day() {
   local enriched="$1"
   awk -F'\t' '
+    function fmt_usd(v) { return sprintf("$%.2f", v) }
     $10 == 1 && $13 ~ /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/ {
       d = $13; repo = $1
       daycost[d] += $8; cell[d SUBSEP repo] += $8; repotot[repo] += $8
@@ -164,11 +165,11 @@ render_cost_per_day() {
       printf "Legend: "
       for (k = 0; k < nk; k++) {
         r = rl[k]; short = r; sub(/^[^/]+\//, "", short)
-        printf "`%s` %s ($%.2f)  ", L[k+1], short, repotot[r]
+        printf "`%s` %s (%s)  ", L[k+1], short, fmt_usd(repotot[r])
       }
       if (nr > nk) {
         oc = 0; for (k = nk; k < nr; k++) oc += repotot[rl[k]]
-        printf "`.` other ($%.2f)", oc
+        printf "`.` other (%s)", fmt_usd(oc)
       }
       printf "\n\n```\n"
       for (i = 0; i < nd; i++) {
@@ -184,7 +185,7 @@ render_cost_per_day() {
         }
         oc = 0; for (k = nk; k < nr; k++) oc += cell[d SUBSEP rl[k]] + 0
         if (oc > 0) { seg = barlen - used; for (s = 0; s < seg; s++) line = line "." }
-        printf "%s  $%7.2f  %s\n", d, tot, line
+        printf "%s  %8s  %s\n", d, fmt_usd(tot), line
       }
       printf "```\n\n"
     }
