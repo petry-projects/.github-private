@@ -43,16 +43,6 @@ YELLOW='\033[1;33m'
 GREEN='\033[0;32m'
 NC='\033[0m' # No Color
 
-PR_URL="${1:-}"
-if [ -z "$PR_URL" ]; then
-  echo "[advisory-gate] Usage: check_advisory_reviews <pr_url>" >&2
-  exit 1
-fi
-export PR_URL
-
-# Extract PR number from URL for logging
-PR_NUM=$(echo "$PR_URL" | grep -oE '[0-9]+$' || echo "unknown")
-
 log_info() {
   echo "[advisory-gate] $*" >&2
 }
@@ -67,18 +57,31 @@ log_success() {
 
 # Query which advisory bots have reviewed/commented on this PR
 get_advisory_bot_states() {
-  gh pr view "$PR_URL" --json reviews,comments | jq -r '
+  # Build JSON array of bot names from ADVISORY_BOTS keys — single source of truth
+  local bot_array
+  bot_array=$(printf '%s\n' "${!ADVISORY_BOTS[@]}" | jq -R . | jq -s .)
+
+  local gh_output
+  gh_output=$(gh pr view "$PR_URL" --json reviews,comments 2>&1) || {
+    log_warn "gh pr view failed: $gh_output"
+    return 1
+  }
+
+  echo "$gh_output" | jq -c --argjson bots "$bot_array" '
     # Collect all bot submissions with their state
     (
-      [(.reviews // [])[] | select(.author.login | IN("gemini-code-assist", "copilot-pull-request-reviewer", "sonarqubecloud", "chatgpt-codex-connector")) | {bot: .author.login, state: .state, time: .submittedAt}] +
-      [(.comments // [])[] | select(.author.login | IN("gemini-code-assist", "copilot-pull-request-reviewer", "sonarqubecloud", "chatgpt-codex-connector")) | {bot: .author.login, state: "COMMENTED", time: .createdAt}]
+      [(.reviews // [])[] | select([.author.login] | inside($bots)) | {bot: .author.login, state: .state, time: .submittedAt}] +
+      [(.comments // [])[] | select([.author.login] | inside($bots)) | {bot: .author.login, state: "COMMENTED", time: .createdAt}]
     ) |
     # Group by bot, sort by time within each group, keep latest submission per bot
     group_by(.bot) |
     map(sort_by(.time) | last | {bot: .bot, state: .state, time: .time}) |
     sort_by(.bot) |
     .[]
-  '
+  ' || {
+    log_warn "jq processing failed"
+    return 1
+  }
 }
 
 # Format bot states for display
@@ -109,12 +112,24 @@ format_bot_status() {
 #   1 = Waiting for bots (skip, will re-check on next review event)
 #
 check_advisory_reviews() {
-  local current_states participating_bots
+  local pr_url="${1:-}"
+  if [ -z "$pr_url" ]; then
+    echo "[advisory-gate] Usage: check_advisory_reviews <pr_url>" >&2
+    return 1
+  fi
+  export PR_URL="$pr_url"
 
-  log_info "Checking advisory bot review status for PR #${PR_NUM} (instant check, no polling)"
+  local pr_num
+  pr_num=$(echo "$pr_url" | grep -oE '[0-9]+$' || echo "unknown")
+
+  log_info "Checking advisory bot review status for PR #${pr_num} (instant check, no polling)"
 
   # Get current bot states (single gh API call, instant)
-  current_states=$(get_advisory_bot_states)
+  local current_states
+  current_states=$(get_advisory_bot_states) || {
+    log_warn "Failed to query advisory bot states"
+    return 1
+  }
 
   if [ -z "$current_states" ]; then
     log_warn "No advisory bot reviews detected yet"
@@ -123,7 +138,10 @@ check_advisory_reviews() {
   fi
 
   # Extract participating bots (those who have submitted)
-  participating_bots=$(echo "$current_states" | jq -r '.bot' | sort -u | tr '\n' ' ')
+  local participating_bots num_submitted total_advisory_bots
+  participating_bots=$(echo "$current_states" | jq -rs '[.[].bot] | unique | join(" ")')
+  num_submitted=$(echo "$current_states" | jq -rs '[.[].bot] | unique | length')
+  total_advisory_bots=${#ADVISORY_BOTS[@]}
 
   log_info "Advisory bots detected: $participating_bots"
   while IFS= read -r line; do
@@ -133,13 +151,37 @@ check_advisory_reviews() {
     log_info "  $(format_bot_status "$bot" "$state")"
   done <<< "$current_states"
 
+  # Require all known advisory bots to submit before approving.
+  # Timeout fallback: after 20 minutes (covers Codex P50 ~17.7 min), approve
+  # with however many bots have submitted — absent bots likely won't trigger.
+  if [ "$num_submitted" -lt "$total_advisory_bots" ]; then
+    local pr_created_at pr_age_raw pr_age_sec now
+    pr_age_sec=0
+    pr_created_at=$(gh pr view "$PR_URL" --json createdAt --jq '.createdAt' 2>/dev/null) || pr_created_at=""
+    if [ -n "$pr_created_at" ]; then
+      pr_age_raw=$(date -u -d "$pr_created_at" +%s 2>/dev/null) || pr_age_raw=""
+      if [ -n "$pr_age_raw" ]; then
+        now=$(date -u +%s)
+        pr_age_sec=$((now - pr_age_raw))
+      fi
+    fi
+
+    if [ "$pr_age_sec" -gt 1200 ]; then
+      log_info "Only ${num_submitted}/${total_advisory_bots} bots submitted; PR is ${pr_age_sec}s old — timeout fallback, proceeding"
+    else
+      log_warn "Only ${num_submitted}/${total_advisory_bots} advisory bots submitted so far (PR age: ${pr_age_sec}s)"
+      log_warn "Will re-check when remaining bots submit their reviews"
+      return 1
+    fi
+  fi
+
   log_success "All detected advisory bots have submitted ✓"
   return 0  # Ready to approve
 }
 
 # Run the check (only if not being sourced)
 if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
-  check_advisory_reviews
+  check_advisory_reviews "${1:-}"
   exit_code=$?
 
   if [ $exit_code -eq 0 ]; then

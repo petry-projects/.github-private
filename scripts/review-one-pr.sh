@@ -89,14 +89,14 @@ fi
 #
 # COST: ~75% savings vs blocking (2-3 min runs vs 10-60 min blocks)
 #
-{
-  # Subshell execution: isolate the gate's environment to prevent modifying
-  # the caller's set/export state. The gate script defines its own functions
-  # and checks BASH_SOURCE, so it's safe to source and immediately call.
+(
+  # Subshell: true environment isolation so functions and variables defined
+  # by the gate (ADVISORY_BOTS, color codes, log helpers) do not persist in
+  # the caller's environment after this block exits.
   # shellcheck source=lib/advisory-review-gate.sh
   source "$SCRIPT_DIR/lib/advisory-review-gate.sh"
   check_advisory_reviews "$PR_URL"
-} || {
+) || {
   gate_rc=$?
   if [ $gate_rc -eq 1 ]; then
     if [ "${FORCE_REVIEW:-false}" = "true" ]; then
