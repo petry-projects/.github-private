@@ -15,15 +15,61 @@ the *caller's* repo — not in `.github-private`. The original inline summary on
 scanned `.github-private`, so it saw a few percent of real org spend. This report
 scans all non-archived repos.
 
+## Cost (USD)
+
+The report shows **estimated USD cost** alongside tokens, everywhere tokens are
+surfaced (totals, by workflow/tier/model, by repository, and a most-expensive-PRs
+rollup). Cost is the headline metric; ET is kept as a normalised comparator.
+
+### Single source of truth: `scripts/lib/model-pricing.tsv`
+
+All prices live in one git-versioned table — prices are **data, not code**, so every
+change is a reviewed PR with full history. `scripts/lib/model-pricing.sh` is the only
+place token counts become dollars (`cost_usd`) or ET multipliers (`et_multiplier_for`),
+so cost and ET can never drift apart.
+
+```
+cost = (input × P_in + cache_read × P_cache + output × P_out) / 1,000,000
+```
+
+### Effective-dated pricing
+
+Each table row carries an `effective_from` date. A record is priced at **the rate in
+effect on its own timestamp** — not today's rate. For model `M` at time `T`, the lookup
+picks the row whose glob matches `M` and whose `effective_from ≤ T`, choosing the most
+specific glob (ties → latest date). Selection is deterministic, so a given record always
+resolves to the same price.
+
+**To change a price:** never edit an existing row — **append** a new row for the same
+glob with a later `effective_from`. Records before that date keep their historical rate;
+later records pick up the new rate automatically. Example (Sonnet drops on 2026-09-01):
+
+```
+claude-sonnet-4-*    2025-01-01    3.00    0.30    15.00
+claude-sonnet-4-*    2026-09-01    2.50    0.25    12.50   # ← append, don't edit
+```
+
+### Reliability guarantees
+
+- **Unknown model → never silent $0.** Calls with no matching price row are excluded
+  from cost totals and flagged (`*` + a ⚠️ note), so missing prices are visible.
+- **Scope:** cost covers metered per-token engines (Claude, Gemini, o4-mini). It does
+  **not** cover Copilot code review, which bills GitHub Actions minutes / AI credits
+  from 2026-06-01 — a different unit. Cache-write, batch (−50%), fast-mode and
+  server-tool surcharges are not modelled (records only carry input/cache-read/output).
+- Claude rates are verified against [Anthropic's pricing](https://platform.claude.com/docs/en/docs/about-claude/pricing);
+  non-Claude rows are best-effort and marked `VERIFY` in the table.
+
 ## Effective Tokens (ET)
 
-GitHub's cost-normalisation metric:
+A normalised cost comparator, kept alongside USD:
 
 ```
 ET = m × (1.0 × input + 0.1 × cache_read + 4.0 × output)
 ```
 
-`m` is a model cost multiplier relative to haiku 4.5 (`scripts/lib/token-metrics.sh`):
+`m` is **derived from the price table** (`m = input_price(model) ÷ input_price(haiku)`),
+so it stays in sync with real prices:
 
 | Model | Multiplier |
 |---|---|
@@ -31,9 +77,11 @@ ET = m × (1.0 × input + 0.1 × cache_read + 4.0 × output)
 | sonnet | 3× |
 | o4-mini, gemini-pro | 2× |
 | gemini-flash | 0.5× |
-| opus | 15× |
+| opus (4.5+) | 5× |
 
 Output is weighted 4× and cache-read 0.1×, so ET tracks *cost*, not raw token count.
+(ET and USD can rank workflows differently when output ratios differ — trust USD for
+budgeting; ET is a quick comparator.)
 
 ## Delivery
 
@@ -64,8 +112,10 @@ ORG=petry-projects LOOKBACK_DAYS=7 GH_TOKEN="$(gh auth token)" \
 
 | File | Role |
 |---|---|
-| `scripts/token_report.sh` | Org-wide collection (`main`/`collect_org_jsonl`) + pure Markdown rendering (`render_token_report`, `aggregate_by_*`). |
-| `tests/token_report.bats` | Unit tests for the pure aggregation/rendering functions. |
+| `scripts/lib/model-pricing.tsv` | Single source of truth for prices — effective-dated rows. |
+| `scripts/lib/model-pricing.sh` | `price_for` / `cost_usd` / `et_multiplier_for` (glob + date lookup). |
+| `scripts/token_report.sh` | Org-wide collection (`main`/`collect_org_jsonl`) + pure rendering (`annotate_records`, `render_token_report`). |
+| `tests/token_report.bats`, `tests/model_pricing.bats` | Unit tests for rendering and dated pricing. |
 | `.github/workflows/token-report.yml` | Weekly cron → tracking-issue comment. |
 | `.github/workflows/actions-fleet-monitor.yml` | Daily Step-Summary rollup (reuses the same script). |
 
