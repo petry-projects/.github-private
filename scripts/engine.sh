@@ -936,6 +936,50 @@ copilot_chat() {
     -s "$@" < /dev/null
 }
 
+# _gemini_invoke <prompt_file> <timeout_sec> <model> [extra_args...]
+# Runs the gemini CLI and emits the model's text to stdout (stderr passes through
+# so callers that merge it for rate-limit detection still work). When token
+# logging is on (and ENGINE_USAGE_JSON != 0) it runs with --output-format json,
+# captures real usage into the LAST_* globals, and emits the extracted text;
+# otherwise it uses --output-format text (estimate path). Robust fallback: if the
+# JSON result text is empty or the call fails, the raw payload is emitted.
+_gemini_invoke() {
+  local prompt_file="$1" timeout_sec="$2" model="$3"
+  shift 3
+  local extra_args=("$@")
+
+  declare -f reset_engine_usage >/dev/null 2>&1 && reset_engine_usage
+
+  local _usage_json=0
+  if [ -n "${TOKEN_LOG_FILE:-}" ] && [ "${ENGINE_USAGE_JSON:-1}" != "0" ] \
+     && declare -f parse_engine_usage >/dev/null 2>&1; then
+    _usage_json=1
+  fi
+
+  if [ "$_usage_json" -eq 1 ]; then
+    local _json_tmp; _json_tmp="$(mktemp 2>/dev/null || true)"
+    if [ -n "$_json_tmp" ]; then
+      local rc=0
+      # stderr intentionally NOT redirected — flows to caller for rate-limit checks.
+      timeout "$timeout_sec" gemini --prompt "" --model "$model" "${extra_args[@]}" \
+        --output-format json < "$prompt_file" > "$_json_tmp" || rc=$?
+      if [ "$rc" -eq 0 ]; then
+        parse_engine_usage gemini "$_json_tmp" || true
+        local _txt; _txt="$(extract_engine_text gemini "$_json_tmp")"
+        if [ -n "$_txt" ]; then printf '%s\n' "$_txt"; else cat "$_json_tmp"; fi
+      else
+        cat "$_json_tmp"   # emit raw payload so downstream/rate-limit logic sees it
+      fi
+      rm -f "$_json_tmp"
+      return "$rc"
+    fi
+  fi
+
+  # Estimate path (logging off, or mktemp failed): plain text output.
+  timeout "$timeout_sec" gemini --prompt "" --model "$model" "${extra_args[@]}" \
+    --output-format text < "$prompt_file"
+}
+
 # _claude_chain_invoke <chain_csv> <prompt_file> <timeout_sec> [extra_args...]
 # Walks a comma-separated list of Claude models, invoking `claude --print --model X`
 # with the given extra arguments. The first model whose run does NOT trigger
@@ -959,6 +1003,18 @@ _claude_chain_invoke() {
     return 1
   fi
 
+  # When token logging is on, capture real usage by running claude with
+  # --output-format json and emitting the extracted .result text to the caller.
+  # Gated by ENGINE_USAGE_JSON (default on) so it can be disabled without a code
+  # change. Falls back to raw output if extraction yields nothing.
+  declare -f reset_engine_usage >/dev/null 2>&1 && reset_engine_usage
+  local _usage_json=0 fmt_args=()
+  if [ -n "${TOKEN_LOG_FILE:-}" ] && [ "${ENGINE_USAGE_JSON:-1}" != "0" ] \
+     && declare -f parse_engine_usage >/dev/null 2>&1; then
+    _usage_json=1
+    fmt_args=(--output-format json)
+  fi
+
   local saved_ifs="$IFS"
   IFS=',' read -ra models <<< "$chain_csv"
   IFS="$saved_ifs"
@@ -980,7 +1036,7 @@ _claude_chain_invoke() {
     rc=0
 
     if [ -n "$stdout_tmp" ] && [ -n "$stderr_tmp" ]; then
-      timeout "$timeout_sec" claude --print --model "$model" "${extra_args[@]}" \
+      timeout "$timeout_sec" claude --print --model "$model" "${fmt_args[@]}" "${extra_args[@]}" \
         < "$prompt_file" > "$stdout_tmp" 2> "$stderr_tmp" || rc=$?
     else
       # mktemp failure (one or both) — clean up the partial tmp before degrading
@@ -1037,9 +1093,23 @@ _claude_chain_invoke() {
     final_rc=2
   fi
 
-  # Emit the final attempt's captured output to the caller.
+  # Emit the final attempt's captured output to the caller. In JSON-usage mode,
+  # parse the usage block and emit the extracted .result text (so consumers still
+  # receive plain text); fall back to the raw payload if extraction is empty or
+  # the call failed (preserves error/rate-limit text for downstream detection).
   if [ -n "$final_stdout" ]; then
-    cat "$final_stdout"
+    if [ "$_usage_json" -eq 1 ] && [ "$final_rc" -eq 0 ]; then
+      parse_engine_usage claude "$final_stdout" || true
+      local _txt
+      _txt="$(extract_engine_text claude "$final_stdout")"
+      if [ -n "$_txt" ]; then
+        printf '%s\n' "$_txt"
+      else
+        cat "$final_stdout"
+      fi
+    else
+      cat "$final_stdout"
+    fi
     rm -f "$final_stdout"
   fi
   if [ -n "$final_stderr" ]; then
@@ -1061,13 +1131,41 @@ _record_engine_tokens() {
   declare -f emit_token_record >/dev/null 2>&1 || return 0
 
   local tier="$1" engine="$2" model="$3" prompt_file="$4" output_file="${5:-}"
-  local workflow="${TOKEN_WORKFLOW:-unknown}"
-  local input_tokens output_tokens context
-  input_tokens=$(estimate_tokens_from_file "$prompt_file")
-  output_tokens=$(estimate_tokens_from_file "$output_file")
-  context="${PR_URL:-}"
+  local workflow="${TOKEN_WORKFLOW:-unknown}" context="${PR_URL:-}"
+  local input_tokens cache_read_tokens cache_write_tokens output_tokens
+  local _have_usage=0
+
+  # Prefer real usage captured by the engine. It is read from the sidecar file
+  # (written even when the engine ran inside a `cmd | tee` subshell); the LAST_*
+  # globals are a secondary source for non-piped callers.
+  local _uf=""
+  declare -f _engine_usage_sidecar >/dev/null 2>&1 && _uf="$(_engine_usage_sidecar)"
+  if [ -n "$_uf" ] && [ -s "$_uf" ]; then
+    IFS=$'\t' read -r input_tokens cache_read_tokens cache_write_tokens output_tokens < "$_uf"
+    rm -f "$_uf" 2>/dev/null || true
+    case "${input_tokens}${cache_read_tokens}${cache_write_tokens}${output_tokens}" in
+      ''|*[!0-9]*) _have_usage=0 ;;
+      *)           _have_usage=1 ;;
+    esac
+  elif [ "${LAST_USAGE_OK:-0}" = "1" ]; then
+    input_tokens="${LAST_INPUT_TOKENS:-0}"
+    cache_read_tokens="${LAST_CACHE_READ_TOKENS:-0}"
+    cache_write_tokens="${LAST_CACHE_WRITE_TOKENS:-0}"
+    output_tokens="${LAST_OUTPUT_TOKENS:-0}"
+    _have_usage=1
+  fi
+
+  if [ "$_have_usage" -ne 1 ]; then
+    # Fallback: estimate from byte counts (engine reported no usage, e.g. copilot
+    # or text-mode). Cache figures are unknown → 0.
+    input_tokens=$(estimate_tokens_from_file "$prompt_file")
+    output_tokens=$(estimate_tokens_from_file "$output_file")
+    cache_read_tokens=0
+    cache_write_tokens=0
+  fi
+
   emit_token_record "$workflow" "$tier" "$engine" "$model" \
-    "$input_tokens" 0 "$output_tokens" "$context" || true
+    "$input_tokens" "$cache_read_tokens" "$output_tokens" "$context" "$cache_write_tokens" || true
 }
 
 # run_triage <prompt_file>
@@ -1122,17 +1220,11 @@ run_triage() {
         ;;
       gemini)
         if [ -n "$_tok_tmp" ]; then
-          timeout "$TRIAGE_TIMEOUT_SEC" gemini --prompt "" \
-            --model "$ENGINE_TRIAGE_MODEL" \
-            --approval-mode auto_edit \
-            --output-format text \
-            < "$prompt_file" | tee "$_tok_tmp" || rc=${PIPESTATUS[0]}
+          _gemini_invoke "$prompt_file" "$TRIAGE_TIMEOUT_SEC" "$ENGINE_TRIAGE_MODEL" \
+            --approval-mode auto_edit | tee "$_tok_tmp" || rc=${PIPESTATUS[0]}
         else
-          timeout "$TRIAGE_TIMEOUT_SEC" gemini --prompt "" \
-            --model "$ENGINE_TRIAGE_MODEL" \
-            --approval-mode auto_edit \
-            --output-format text \
-            < "$prompt_file" || rc=$?
+          _gemini_invoke "$prompt_file" "$TRIAGE_TIMEOUT_SEC" "$ENGINE_TRIAGE_MODEL" \
+            --approval-mode auto_edit || rc=$?
         fi
         ;;
       copilot)
@@ -1262,17 +1354,11 @@ run_agentic() {
       ;;
     gemini)
       if [ -n "$_tok_tmp" ]; then
-        timeout "$DEEP_TIMEOUT_SEC" gemini --prompt "" \
-          --model "$model" \
-          --approval-mode auto_edit \
-          --output-format text \
-          < "$prompt_file" | tee "$_tok_tmp" || rc=${PIPESTATUS[0]}
+        _gemini_invoke "$prompt_file" "$DEEP_TIMEOUT_SEC" "$model" \
+          --approval-mode auto_edit | tee "$_tok_tmp" || rc=${PIPESTATUS[0]}
       else
-        timeout "$DEEP_TIMEOUT_SEC" gemini --prompt "" \
-          --model "$model" \
-          --approval-mode auto_edit \
-          --output-format text \
-          < "$prompt_file" || rc=$?
+        _gemini_invoke "$prompt_file" "$DEEP_TIMEOUT_SEC" "$model" \
+          --approval-mode auto_edit || rc=$?
       fi
       ;;
     copilot)
@@ -1844,37 +1930,31 @@ run_duck() {
     claude)
       unset COPILOT_GITHUB_TOKEN 2>/dev/null || true
       unset GOOGLE_API_KEY 2>/dev/null || true
+      # Route through the chain helper so real token usage (incl. cache) is captured
+      # when logging is on; a single-model "chain" preserves prior behaviour.
       if [ -n "$_tok_tmp" ]; then
-        timeout "$DUCK_TIMEOUT_SEC" claude --print \
-          --model "$model" \
+        _claude_chain_invoke "$model" "$prompt_file" "$DUCK_TIMEOUT_SEC" \
           --permission-mode acceptEdits \
           --allowed-tools "Bash,Read,Grep,Glob" \
           --max-turns 25 \
-          < "$prompt_file" | tee "$_tok_tmp" || rc=${PIPESTATUS[0]}
+          | tee "$_tok_tmp" || rc=${PIPESTATUS[0]}
       else
-        timeout "$DUCK_TIMEOUT_SEC" claude --print \
-          --model "$model" \
+        _claude_chain_invoke "$model" "$prompt_file" "$DUCK_TIMEOUT_SEC" \
           --permission-mode acceptEdits \
           --allowed-tools "Bash,Read,Grep,Glob" \
           --max-turns 25 \
-          < "$prompt_file" || rc=$?
+          || rc=$?
       fi
       ;;
     gemini)
       unset CLAUDE_CODE_OAUTH_TOKEN 2>/dev/null || true
       unset COPILOT_GITHUB_TOKEN 2>/dev/null || true
       if [ -n "$_tok_tmp" ]; then
-        timeout "$DUCK_TIMEOUT_SEC" gemini --prompt "" \
-          --model "$model" \
-          --approval-mode auto_edit \
-          --output-format text \
-          < "$prompt_file" | tee "$_tok_tmp" || rc=${PIPESTATUS[0]}
+        _gemini_invoke "$prompt_file" "$DUCK_TIMEOUT_SEC" "$model" \
+          --approval-mode auto_edit | tee "$_tok_tmp" || rc=${PIPESTATUS[0]}
       else
-        timeout "$DUCK_TIMEOUT_SEC" gemini --prompt "" \
-          --model "$model" \
-          --approval-mode auto_edit \
-          --output-format text \
-          < "$prompt_file" || rc=$?
+        _gemini_invoke "$prompt_file" "$DUCK_TIMEOUT_SEC" "$model" \
+          --approval-mode auto_edit || rc=$?
       fi
       ;;
     copilot)
@@ -2023,17 +2103,11 @@ run_writer() {
       ;;
     gemini)
       if [ -n "$_tmp" ]; then
-        timeout "$ACTION_TIMEOUT_SEC" gemini --prompt "" \
-          --model "$model" \
-          --approval-mode auto_edit \
-          --output-format text \
-          < "$prompt_file" 2>&1 | tee "$_tmp" || rc=${PIPESTATUS[0]}
+        _gemini_invoke "$prompt_file" "$ACTION_TIMEOUT_SEC" "$model" \
+          --approval-mode auto_edit 2>&1 | tee "$_tmp" || rc=${PIPESTATUS[0]}
       else
-        timeout "$ACTION_TIMEOUT_SEC" gemini --prompt "" \
-          --model "$model" \
-          --approval-mode auto_edit \
-          --output-format text \
-          < "$prompt_file" || rc=$?
+        _gemini_invoke "$prompt_file" "$ACTION_TIMEOUT_SEC" "$model" \
+          --approval-mode auto_edit || rc=$?
       fi
       ;;
     copilot)
