@@ -1575,10 +1575,11 @@ STUB
   [[ "$output" == *"Tier-1 blockers still present"* ]]
 }
 
-@test "fix-reviews: fix-bot-comment with hard blockers posts terminal no-changes (not silently skipped)" {
-  # fix-bot-comment is excluded from RETRYABLE_REVIEW_INTENTS, so when hard blockers
-  # exist (failing CI or CHANGES_REQUESTED) and no code changes were made, we must
-  # post a terminal no-changes marker rather than leaving the SHA without any marker.
+@test "fix-reviews: fix-bot-comment with hard blockers posts rate-limited marker (not no-changes)" {
+  # When hard blockers exist (failing CI or CHANGES_REQUESTED) and no code changes were
+  # made, fix-bot-comment must post a rate-limited retry marker rather than a no-changes
+  # terminal — posting no-changes while hard blockers exist would incorrectly tell the
+  # retry cron that the PR is done when it actually still needs attention.
   local calls_file tmpdir
   calls_file="$(mktemp)"
   tmpdir="$(mktemp -d)"
@@ -1596,11 +1597,11 @@ STUB
   rm -rf "$tmpdir" "$calls_file"
 
   [ "$status" -eq 0 ]
-  # Hard blockers present + no code changes → must post terminal marker (not silently skip)
-  [[ "$output" == *"status=no-changes"* ]]
+  # Hard blockers present + no code changes → must post rate-limited marker (not no-changes)
+  [[ "$output" == *"[dry-run] would post rate-limited marker"* ]]
   [[ "$output" == *"Tier-1 blockers still present"* ]]
-  # Must not post a rate-limited marker (fix-bot-comment is not retried automatically)
-  [[ "$output" != *"[dry-run] would post rate-limited marker"* ]]
+  # Must not post a no-changes terminal while hard blockers exist
+  [[ "$output" != *"status=no-changes"* ]]
 }
 
 @test "fix-reviews: does not post no-changes when Tier-1 blockers exist (review-changes)" {
@@ -1964,7 +1965,7 @@ GHEOF
   [[ "$output" != *"rate-limited marker"* ]]
 }
 
-@test "fix-reviews: bot-thread query failure is treated conservatively (as blocked)" {
+@test "fix-reviews: bot-thread query failure exits non-zero (hard error, not swallowed)" {
   local tmpdir
   tmpdir="$(mktemp -d)"
 
@@ -2004,11 +2005,11 @@ GHEOF
   " 2>&1
   rm -rf "$tmpdir"
 
-  [ "$status" -eq 0 ]
-  # Query failure → has_tier1_blockers returns 0 (conservatively blocked) → warning emitted
-  # → no-changes terminal is still posted (fix-bot-comment elif branch), not silently skipped
+  [ "$status" -ne 0 ]
+  # Query failure → has_tier1_blockers exits 1 so the run is retried rather than
+  # treating the transient error as a blocker or silently posting a no-changes terminal
   [[ "$output" == *"bot-thread query failed"* ]]
-  [[ "$output" == *"status=no-changes"* ]]
+  [[ "$output" != *"status=no-changes"* ]]
   [[ "$output" != *"rate-limited marker"* ]]
 }
 
@@ -2525,7 +2526,7 @@ GHEOF
   [[ "$output" != *"reset="* ]]
 }
 
-@test "fix-bot-comment: unresolved bot threads posts no-changes terminal marker" {
+@test "fix-bot-comment: unresolved bot threads posts notice (no no-changes terminal)" {
   local tmpdir
   tmpdir="$(mktemp -d)"
 
@@ -2579,9 +2580,11 @@ GHEOF
   rm -rf "$tmpdir"
 
   [ "$status" -eq 0 ]
-  # fix-bot-comment is not retryable, so bot-thread blocker posts terminal no-changes (not rate-limited)
-  [[ "$output" == *"fix-bot-comment is not automatically retried"* ]]
-  [[ "$output" == *"status=no-changes"* ]]
+  # fix-bot-comment: bot-thread-only blocker should emit a notice and not post a
+  # no-changes terminal — mirrors the fix-reviews pattern where bot threads do not
+  # trigger a terminal so the run can be retried when the bot thread is resolved
+  [[ "$output" == *"Unresolved bot review threads remain"* ]]
+  [[ "$output" != *"status=no-changes"* ]]
   [[ "$output" != *"[dry-run] would post rate-limited marker"* ]]
 }
 

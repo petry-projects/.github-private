@@ -1282,8 +1282,8 @@ has_tier1_blockers() {
       page_response=$(gh api graphql -f query="$bot_thread_query" \
         -F owner="${REPO%%/*}" -F repo="${REPO##*/}" -F pr="$PR_NUMBER" \
         "${cursor_args[@]}" 2>/dev/null) || {
-        echo "::warning::has_tier1_blockers: bot-thread query failed — treating as blocked"
-        return 0
+        echo "::error::has_tier1_blockers: bot-thread query failed — cannot assess bot thread state" >&2
+        exit 1
       }
       page_count=$(printf '%s' "$page_response" | jq \
         '[.data?.repository?.pullRequest?.reviewThreads?.nodes // []
@@ -1685,6 +1685,7 @@ case "$INTENT_TYPE" in
     build_and_run "fix-reviews" || rc=$?
     [ "$rc" -eq 2 ] && handle_rate_limit "fix-reviews"
     if [ "$rc" -eq 0 ]; then
+      fetch_pr_context
       if commit_and_push "fix-reviews"; then
         notify_coderabbit_resolve
         post_reviews_terminal "fix-reviews" "applied" "Changes committed and pushed."
@@ -1717,17 +1718,19 @@ case "$INTENT_TYPE" in
     build_and_run "fix-bot-comment" || rc=$?
     [ "$rc" -eq 2 ] && handle_rate_limit "fix-bot-comment"
     if [ "$rc" -eq 0 ]; then
+      fetch_pr_context
       if commit_and_push "fix-bot-comment"; then
         notify_coderabbit_resolve
         post_reviews_terminal "fix-bot-comment" "applied" "Changes committed and pushed."
       else
         notify_coderabbit_resolve
         if has_hard_blockers; then
-          echo "::warning::Tier-1 blockers still present (failing CI or CHANGES_REQUESTED reviews) — fix-bot-comment is not retried automatically; posting terminal marker"
-          post_no_changes "fix-bot-comment"
+          echo "::warning::Tier-1 blockers still present (failing CI or CHANGES_REQUESTED reviews) — posting retry marker with backoff"
+          printf '%s' "$(date -u -d '+30 minutes' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)" > /tmp/dev-lead-rate-limit-reset
+          post_reviews_rate_limited "fix-bot-comment" || \
+            { echo "::error::fix-bot-comment: rate-limited marker post failed — blocked PR may not be retried" >&2; exit 1; }
         elif has_tier1_blockers; then
-          echo "::warning::Unresolved bot review threads remain — fix-bot-comment is not automatically retried; posting no-changes terminal marker"
-          post_no_changes "fix-bot-comment"
+          echo "::notice::Unresolved bot review threads remain — will retry when bot feedback is resolved"
         else
           post_no_changes "fix-bot-comment"
         fi
@@ -1784,6 +1787,7 @@ case "$INTENT_TYPE" in
     build_and_run "review-changes" || rc=$?
     [ "$rc" -eq 2 ] && handle_rate_limit "review-changes"
     if [ "$rc" -eq 0 ]; then
+      fetch_pr_context
       if commit_and_push "review-changes"; then
         notify_coderabbit_resolve
         post_reviews_terminal "review-changes" "applied" "Changes committed and pushed."
