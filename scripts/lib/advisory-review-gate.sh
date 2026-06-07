@@ -178,7 +178,11 @@ check_advisory_reviews() {
     fi
 
     time_since_last_sub=0
-    latest_sub_at=$(echo "$current_states" | jq -r '[.[].time] | sort | last' 2>/dev/null) || latest_sub_at=""
+    # -s (slurp) is required: current_states is a newline-delimited object
+    # stream. Without slurping, `.[].time` iterates each object's scalar
+    # values and jq errors — leaving latest_sub_at empty, time_since_last_sub
+    # at 0, and the quiescence fallback permanently disarmed.
+    latest_sub_at=$(echo "$current_states" | jq -rs '[.[].time] | sort | last // empty' 2>/dev/null) || latest_sub_at=""
     if [[ -n "$latest_sub_at" ]]; then
       latest_sub_raw=$(date -u -d "$latest_sub_at" +%s 2>/dev/null) || latest_sub_raw=""
       if [[ -n "$latest_sub_raw" ]]; then

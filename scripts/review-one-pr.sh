@@ -374,6 +374,30 @@ fi
 rm -f "$_gh_meta_err" "$_gh_diff_err" "$_gh_diff_tmp"
 unset _gh_meta_err _gh_diff_err _gh_diff_tmp _gh_meta_err_content _gh_diff_err_content
 
+# Advisory bot feedback. The gate above waits for advisory bots to submit,
+# but the triage tier has NO tools — unless their findings are inlined here,
+# the cascade can approve without ever seeing the feedback it waited for
+# (Codex P1 on PR #458). Collect each advisory bot's latest review body plus
+# its most recent inline review comments, truncated to keep the prompt small.
+# Best-effort: a fetch failure degrades to "(none)" rather than failing the run.
+_owner_repo=$(echo "$PR_URL" | sed -E 's|https://github.com/([^/]+/[^/]+)/pull/.*|\1|')
+_pr_num=${PR_URL##*/}
+_adv_bots='["gemini-code-assist","copilot-pull-request-reviewer","sonarqubecloud","chatgpt-codex-connector"]'
+ADVISORY_REVIEW_BODIES=$(gh pr view "$PR_URL" --json reviews --jq "
+  [.reviews[] | select([.author.login] | inside($_adv_bots)) | select(.body != null and .body != \"\")]
+  | group_by(.author.login) | map(sort_by(.submittedAt) | last)
+  | .[] | \"--- \(.author.login) (\(.state), \(.submittedAt)) ---\n\(.body[0:800])\"
+" 2>/dev/null || true)
+ADVISORY_INLINE_COMMENTS=$(gh api "repos/$_owner_repo/pulls/$_pr_num/comments" --paginate --jq "
+  [.[] | select([.user.login] | inside($_adv_bots))]
+  | sort_by(.created_at) | reverse | .[0:15] | .[]
+  | \"--- \(.user.login) @ \(.path):\(.line // .original_line) (\(.created_at)) ---\n\(.body[0:600])\"
+" 2>/dev/null || true)
+ADVISORY_BOT_FEEDBACK=$(printf '%s\n%s' "$ADVISORY_REVIEW_BODIES" "$ADVISORY_INLINE_COMMENTS")
+# Cap total size so huge bot histories can't blow up the prompt.
+ADVISORY_BOT_FEEDBACK="${ADVISORY_BOT_FEEDBACK:0:8000}"
+unset _owner_repo _pr_num _adv_bots ADVISORY_REVIEW_BODIES ADVISORY_INLINE_COMMENTS
+
 # Build the triage prompt: static template + inlined PR context.
 TRIAGE_PROMPT_FILE="/tmp/cascade/triage-prompt.md"
 {
@@ -388,6 +412,11 @@ TRIAGE_PROMPT_FILE="/tmp/cascade/triage-prompt.md"
   else
     printf 'PRIOR_REVIEW_BODY: (empty — first review)\n'
   fi
+  if [ -n "${ADVISORY_BOT_FEEDBACK//[[:space:]]/}" ]; then
+    printf '\nADVISORY_BOT_FEEDBACK (latest advisory bot reviews and inline comments — weigh these findings):\n%s\n' "$ADVISORY_BOT_FEEDBACK"
+  else
+    printf '\nADVISORY_BOT_FEEDBACK: (none)\n'
+  fi
   printf '\nPR_METADATA (JSON from `gh pr view`):\n%s\n' "$PR_METADATA"
   printf '\nPR_DIFF (truncated to 3000 lines if larger):\n%s\n' "$PR_DIFF"
 } > "$TRIAGE_PROMPT_FILE"
@@ -400,7 +429,7 @@ TRIAGE_RESULT=$(
 
 # Drop the bulky locals now that the prompt file is on disk. Keeps later
 # subprocess forks (jq, claude) from hitting E2BIG on hundreds-of-KB diffs.
-unset PR_DIFF PR_METADATA
+unset PR_DIFF PR_METADATA ADVISORY_BOT_FEEDBACK
 
 # Detect error category before JSON validation.
 # Claude Code writes its usage-cap error to stdout (captured in TRIAGE_RESULT);
