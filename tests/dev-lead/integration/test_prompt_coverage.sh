@@ -76,6 +76,52 @@ for prompt in "${EXPECTED_PROMPTS[@]}"; do
   fi
 done
 
+# ── 4. review prompts must reply-with-specifics, then resolve ────────────────
+# Regression for issue #452: dev-lead resolved (or silently left) review threads
+# without replying what it fixed, and bot threads fixed during another
+# reviewer's run stayed unresolved. Each review prompt must instruct the engine
+# to post a thread reply (addPullRequestReviewThreadReply) describing the
+# specific change, then resolve the thread (resolveReviewThread).
+
+echo ""
+echo "Checking review prompts reply-with-specifics then resolve..."
+REVIEW_PROMPTS=("fix-reviews.md" "review-changes.md" "fix-bot-comment.md")
+for prompt in "${REVIEW_PROMPTS[@]}"; do
+  path="$PROMPTS_DIR/$prompt"
+  [ -f "$path" ] || { echo "  FAIL: $prompt — missing"; FAILED=1; continue; }
+  missing=""
+  grep -q "addPullRequestReviewThreadReply" "$path" || missing="$missing reply-mutation"
+  grep -q "resolveReviewThread"             "$path" || missing="$missing resolve-mutation"
+  grep -qiE "specific(ally)?" "$path"               || missing="$missing specific-details"
+  if [ -n "$missing" ]; then
+    echo "  FAIL: $prompt — missing:$missing"
+    FAILED=1
+  else
+    echo "  ok: $prompt (replies with specifics, then resolves)"
+  fi
+done
+
+# ── 5. every OPEN_THREADS_JSON build must expose author.__typename ────────────
+# Regression for issue #452: GraphQL omits the "[bot]" suffix from bot logins,
+# so the prompts identify bots by author.__typename == "Bot". Every reviewThreads
+# query that feeds OPEN_THREADS_JSON must therefore select __typename — both the
+# fix-reviews build AND the review-changes build (the latter was missed).
+
+echo ""
+echo "Checking OPEN_THREADS_JSON queries expose author.__typename..."
+DRIVER="$(dirname "$0")/../../../scripts/dev-lead-fix-reviews.sh"
+author_sel_total=$(grep -c 'comments(first:5) { nodes { body author {' "$DRIVER" 2>/dev/null || echo 0)
+author_sel_typename=$(grep -c 'comments(first:5) { nodes { body author { login __typename } }' "$DRIVER" 2>/dev/null || echo 0)
+if [ "$author_sel_total" -eq 0 ]; then
+  echo "  FAIL: no OPEN_THREADS_JSON author selection found in $(basename "$DRIVER")"
+  FAILED=1
+elif [ "$author_sel_total" -ne "$author_sel_typename" ]; then
+  echo "  FAIL: $((author_sel_total - author_sel_typename)) of $author_sel_total OPEN_THREADS_JSON build(s) omit author.__typename"
+  FAILED=1
+else
+  echo "  ok: all $author_sel_total OPEN_THREADS_JSON build(s) select author.__typename"
+fi
+
 # ── result ────────────────────────────────────────────────────────────────────
 
 echo ""

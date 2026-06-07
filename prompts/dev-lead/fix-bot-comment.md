@@ -40,7 +40,7 @@ Analyze the bot's findings and address each actionable issue:
 1. Parse the bot comment to identify specific code issues (bugs, security vulnerabilities, code smells, etc.)
 2. Locate the referenced files and line numbers using Read/Grep/Glob tools
 3. Apply targeted fixes using Edit/Write tools
-4. **Resolve open review threads** from this bot that are now fixed or outdated (see below)
+4. **Reply to each fixed thread with the specific change**, then **resolve** open review threads from this bot that are now fixed or outdated (see below)
 
 ### Resolving threads from this bot
 
@@ -73,6 +73,16 @@ gh api graphql -f query='
               ))))'
 ```
 
+For each thread you fixed, first **reply with the specific change** — name the file(s)/function(s) you touched and how the change addresses the finding (one or two concrete sentences; never just "done"). Pass the body as a GraphQL variable so quotes and newlines are safe:
+
+```bash
+# Replace THREAD_NODE_ID with the id value from the query above.
+gh api graphql \
+  -f query='mutation($tid: ID!, $body: String!) { addPullRequestReviewThreadReply(input: {pullRequestReviewThreadId: $tid, body: $body}) { comment { id } } }' \
+  -f tid="THREAD_NODE_ID" \
+  -f body="Fixed in scripts/foo.sh: replaced the unpinned curl|bash install with a SHA-verified binary download."
+```
+
 Then resolve each thread you addressed (and any from this bot marked `isOutdated: true`):
 
 ```bash
@@ -99,6 +109,7 @@ If `${ACTOR}` is `sonarqubecloud[bot]` and the comment reports security hotspots
 - Do not fix issues marked as "informational" or "suggestion" unless they indicate a real bug
 - Do not suppress bot rules without a documented reason
 - Do not modify the bot's configuration files
+- For every thread you fix, post a reply naming the specific change before resolving — never resolve silently
 - Only resolve threads from `${ACTOR}` — do not resolve threads from other reviewers
 - Stay within the scope of the pull request's changed files where possible
 - Do not commit or push — the CI workflow handles git operations after you finish
@@ -109,7 +120,7 @@ After applying fixes, output a summary:
 ```
 Bot: ${ACTOR}
 Issues addressed: N
-- <issue description>: <fix applied> [thread resolved]
+- <issue description>: <fix applied> [replied + thread resolved]
 - <issue description>: outdated thread resolved
 Files changed: <list of files>
 Skipped (informational): <count>
