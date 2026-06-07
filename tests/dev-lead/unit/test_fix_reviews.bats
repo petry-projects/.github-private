@@ -1604,6 +1604,35 @@ STUB
   [[ "$output" != *"status=no-changes"* ]]
 }
 
+@test "fix-reviews: fix-bot-comment with hard blockers posts marker with fix-reviews intent" {
+  # When fix-bot-comment produces no changes but hard blockers remain, the rate-limited
+  # marker must use intent=fix-reviews so the retry cron can redispatch it automatically.
+  # fix-bot-comment is excluded from RETRYABLE_REVIEW_INTENTS (original comment body
+  # cannot be reconstructed), so posting intent=fix-bot-comment would leave the PR
+  # permanently stuck with no automatic retry.
+  local calls_file tmpdir
+  calls_file="$(mktemp)"
+  tmpdir="$(mktemp -d)"
+  _make_assessment_gh_stub "$calls_file"
+
+  run bash -c "
+    cd '$tmpdir'
+    export INTENT_TYPE=fix-bot-comment DEV_LEAD_DRY_RUN=true
+    export PR_NUMBER=54 HEAD_SHA=ddd444eee555 REPO='petry-projects/.github-private'
+    export COMMENT_BODY='SonarQube found issues'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export PATH=\"$STUB_BIN_DIR:\$PATH\"
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+  rm -rf "$tmpdir" "$calls_file"
+
+  [ "$status" -eq 0 ]
+  # Rate-limited marker must use fix-reviews intent so the retry cron will redispatch
+  [[ "$output" == *"would post rate-limited marker for intent=fix-reviews"* ]]
+  # The marker body must NOT embed fix-bot-comment as the status=rate-limited intent
+  [[ "$output" != *"intent=fix-bot-comment status=rate-limited"* ]]
+}
+
 @test "fix-reviews: does not post no-changes when Tier-1 blockers exist (review-changes)" {
   local calls_file tmpdir
   calls_file="$(mktemp)"

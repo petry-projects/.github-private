@@ -1685,12 +1685,15 @@ case "$INTENT_TYPE" in
     build_and_run "fix-reviews" || rc=$?
     [ "$rc" -eq 2 ] && handle_rate_limit "fix-reviews"
     if [ "$rc" -eq 0 ]; then
-      fetch_pr_context
       if commit_and_push "fix-reviews"; then
         notify_coderabbit_resolve
         post_reviews_terminal "fix-reviews" "applied" "Changes committed and pushed."
       else
         notify_coderabbit_resolve
+        # Refresh CI and review state only when needed for blocker checks. Doing
+        # this before commit_and_push would risk aborting the run on a transient
+        # API failure and discarding valid engine output before the commit fires.
+        fetch_pr_context
         if has_hard_blockers; then
           echo "::warning::Tier-1 blockers still present (failing CI or CHANGES_REQUESTED reviews) — posting retry marker with backoff"
           post_reviews_rate_limited "fix-reviews" "blocked"
@@ -1718,16 +1721,19 @@ case "$INTENT_TYPE" in
     build_and_run "fix-bot-comment" || rc=$?
     [ "$rc" -eq 2 ] && handle_rate_limit "fix-bot-comment"
     if [ "$rc" -eq 0 ]; then
-      fetch_pr_context
       if commit_and_push "fix-bot-comment"; then
         notify_coderabbit_resolve
         post_reviews_terminal "fix-bot-comment" "applied" "Changes committed and pushed."
       else
         notify_coderabbit_resolve
+        fetch_pr_context
         if has_hard_blockers; then
           echo "::warning::Tier-1 blockers still present (failing CI or CHANGES_REQUESTED reviews) — posting retry marker with backoff"
           printf '%s' "$(date -u -d '+30 minutes' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)" > /tmp/dev-lead-rate-limit-reset
-          post_reviews_rate_limited "fix-bot-comment" || \
+          # Use fix-reviews intent so the retry cron can redispatch automatically.
+          # fix-bot-comment is excluded from RETRYABLE_REVIEW_INTENTS (the original comment
+          # body cannot be reconstructed), so a fix-bot-comment marker would never be retried.
+          post_reviews_rate_limited "fix-reviews" || \
             { echo "::error::fix-bot-comment: rate-limited marker post failed — blocked PR may not be retried" >&2; exit 1; }
         elif has_tier1_blockers; then
           echo "::notice::Unresolved bot review threads remain — will retry when bot feedback is resolved"
@@ -1787,12 +1793,12 @@ case "$INTENT_TYPE" in
     build_and_run "review-changes" || rc=$?
     [ "$rc" -eq 2 ] && handle_rate_limit "review-changes"
     if [ "$rc" -eq 0 ]; then
-      fetch_pr_context
       if commit_and_push "review-changes"; then
         notify_coderabbit_resolve
         post_reviews_terminal "review-changes" "applied" "Changes committed and pushed."
       else
         notify_coderabbit_resolve
+        fetch_pr_context
         if has_hard_blockers; then
           echo "::warning::Tier-1 blockers still present (failing CI or CHANGES_REQUESTED reviews) — posting retry marker with backoff"
           post_reviews_rate_limited "review-changes" "blocked"
