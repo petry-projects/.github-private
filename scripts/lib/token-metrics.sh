@@ -131,18 +131,26 @@ emit_token_record() {
 # ─────────────────────────────────────────────────────────────────────────────
 
 # _engine_usage_sidecar
-# Prints the path of the per-process usage sidecar (empty when TOKEN_LOG_FILE is
-# unset). Engine invocations often run inside a `cmd | tee` pipeline — i.e. a
-# SUBSHELL — so the LAST_* globals they set never reach the parent. Writing usage
-# to this file (the filesystem is shared) lets _record_engine_tokens read it back.
-# $$ (shell PID) is constant across pipeline subshells: both the writing left-hand
-# side and the reading parent see the same value. Separate background processes
-# (e.g. `run_agentic &` forking a new process vs `(run_duck) &` running as a
-# subshell) each have a distinct $$, so concurrent tier-2 calls never share a
-# sidecar file.
+# Prints the path of the per-CALL usage sidecar (empty when TOKEN_LOG_FILE is
+# unset). Engine invocations run inside a `cmd | tee` pipeline — i.e. a SUBSHELL —
+# so the LAST_* globals they set never reach the parent; writing usage to this file
+# (the filesystem is shared) lets _record_engine_tokens read it back.
+#
+# The key must be unique per concurrent engine call AND identical between the
+# writer (the pipeline subshell) and the reader (the calling shell). $$ fails the
+# first requirement: review-one-pr.sh backgrounds `run_agentic &` and `(run_duck) &`
+# at the same time, and $$ stays the parent PID inside both, so they would collide
+# on one sidecar. BASHPID fails the second: it differs between the pipe subshell
+# and the caller. So each run_* exports _ENGINE_USAGE_OUT, derived from its own
+# per-call mktemp file (unique by construction) and inherited by the pipeline
+# subshell. The $$ form is only a fallback for any non-concurrent direct caller.
 _engine_usage_sidecar() {
   [ -n "${TOKEN_LOG_FILE:-}" ] || return 0
-  printf '%s' "${TOKEN_LOG_FILE}.last-usage.$$"
+  if [ -n "${_ENGINE_USAGE_OUT:-}" ]; then
+    printf '%s' "$_ENGINE_USAGE_OUT"
+  else
+    printf '%s' "${TOKEN_LOG_FILE}.last-usage.$$"
+  fi
 }
 
 # reset_engine_usage

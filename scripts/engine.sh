@@ -497,6 +497,10 @@ run_triage() {
   local _tok_tmp=""
   if [ -n "${TOKEN_LOG_FILE:-}" ]; then
     _tok_tmp="$(mktemp 2>/dev/null || true)"
+    # Per-call usage-sidecar key: a unique mktemp path, exported so the engine's
+    # pipeline subshell and _record_engine_tokens agree on it. Unique per call →
+    # concurrent run_agentic/run_duck (review-one-pr.sh) never collide.
+    [ -n "$_tok_tmp" ] && export _ENGINE_USAGE_OUT="${_tok_tmp}.usage"
   fi
   while [ "$attempt" -le "$RETRY_MAX_ATTEMPTS" ]; do
     rc=0
@@ -568,6 +572,10 @@ run_agentic() {
   local _tok_tmp="" rc=0
   if [ -n "${TOKEN_LOG_FILE:-}" ]; then
     _tok_tmp="$(mktemp 2>/dev/null || true)"
+    # Per-call usage-sidecar key: a unique mktemp path, exported so the engine's
+    # pipeline subshell and _record_engine_tokens agree on it. Unique per call →
+    # concurrent run_agentic/run_duck (review-one-pr.sh) never collide.
+    [ -n "$_tok_tmp" ] && export _ENGINE_USAGE_OUT="${_tok_tmp}.usage"
   fi
   case "$REVIEW_ENGINE" in
     claude)
@@ -689,6 +697,10 @@ run_duck() {
   local _tok_tmp="" rc=0
   if [ -n "${TOKEN_LOG_FILE:-}" ]; then
     _tok_tmp="$(mktemp 2>/dev/null || true)"
+    # Per-call usage-sidecar key: a unique mktemp path, exported so the engine's
+    # pipeline subshell and _record_engine_tokens agree on it. Unique per call →
+    # concurrent run_agentic/run_duck (review-one-pr.sh) never collide.
+    [ -n "$_tok_tmp" ] && export _ENGINE_USAGE_OUT="${_tok_tmp}.usage"
   fi
   case "$DUCK_ENGINE" in
     claude)
@@ -843,6 +855,9 @@ run_writer() {
   # were never tried.
   local _tmp rc=0
   _tmp="$(mktemp 2>/dev/null || true)"
+  # Per-call usage-sidecar key (see run_triage); unique mktemp path shared with
+  # the engine subshell via export.
+  [ -n "$_tmp" ] && export _ENGINE_USAGE_OUT="${_tmp}.usage"
 
   case "$REVIEW_ENGINE" in
     claude)
