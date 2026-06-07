@@ -1,0 +1,12 @@
+# False-positive suppressions for gitleaks generic-api-key rule.
+# These are test/sample files containing intentionally fake credentials.
+#
+# frameworks/bmad-method/test/adversarial-review-tests/sample-content.md:24
+# Contains a truncated example JWT ("eyJhbGciOiJIUzI1NiIs...") in API
+# response documentation — not a real token.
+6a7fdafedd396b91bb17f83c338c8082d4883d96:frameworks/bmad-method/test/adversarial-review-tests/sample-content.md:generic-api-key:24
+
+# frameworks/gsd/sdk/src/query/config-query.test.ts:228
+# Contains a fake API key ("BSA-1234567890abcdef") used to test that the
+# config query function properly masks secret values in its output.
+6a7fdafedd396b91bb17f83c338c8082d4883d96:frameworks/gsd/sdk/src/query/config-query.test.ts:generic-api-key:228

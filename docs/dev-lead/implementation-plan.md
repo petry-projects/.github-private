@@ -809,29 +809,6 @@ Scanned on every `fix-reviews` trigger before acting.
 
 ### 4.2 Unit tests: `test_fix_reviews_human.bats` (5 cases)
 
-      uses: actions/checkout@def456 # v4.0.0
-EOF
-  run bash -c '
-    source scripts/dev-lead-fix-reviews.sh
-    resolve_yaml_sha_conflict /tmp/conflict.yml
-  '
-  [ "$status" -eq 0 ]
-  # Should have picked abc123 (newer semver v5.0.0 > v4.0.0)
-  grep -q "abc123" /tmp/conflict.yml
-}
-
-@test "rebase: non-YAML conflict → abort immediately" {
-  cat > /tmp/conflict.ts << 'EOF'
-  const foo = "baz";
-EOF
-  run bash -c '
-    source scripts/dev-lead-fix-reviews.sh
-    resolve_conflict /tmp/conflict.ts
-  '
-  [ "$status" -ne 0 ]
-}
-```
-=======
 - Human instruction executed via `run_writer()` ✓
 - User instruction included in prompt ✓
 - Dry-run: no commit ✓
