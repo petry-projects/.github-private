@@ -51,3 +51,16 @@ This is the `.github-private` org infrastructure repo for `petry-projects`. It c
 
 - Scripts must be POSIX-compatible shell (`#!/usr/bin/env bash` with `set -euo pipefail`).
 - No hardcoded tokens or secrets — use `$GITHUB_TOKEN` from the environment.
+
+### Cost reporting
+
+- **All surfaced USD amounts are rounded to 2 decimals (cents).** Render every
+  dollar figure through a single formatter (`_fmt_usd` in `scripts/token_report.sh`,
+  `printf "$%.2f"`) so reports, issue comments, and step summaries stay consistent.
+  Sub-cent values round to `$0.00`; use Effective Tokens (ET, `_fmt_int`) as the
+  fine-grained comparator when cent precision is too coarse.
+- Prices are data, not code: keep per-model rates in `scripts/lib/model-pricing.tsv`
+  (effective-dated) — never hardcode dollar rates in scripts.
+- **Promotion:** this is currently a repo-local standard. To make it org-wide,
+  lift it into [`petry-projects/.github`](https://github.com/petry-projects/.github/blob/main/AGENTS.md)
+  (the org AGENTS.md / `standards/`) and have repos defer to it.
