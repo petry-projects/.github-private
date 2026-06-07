@@ -415,6 +415,77 @@ STUB
   [ "$status" -eq 0 ]
 }
 
+# ── real-usage capture (cache) tests ──────────────────────────────────────────
+
+@test "usage: claude run captures real cache-read and cache-write from JSON" {
+  _source_engine "claude"
+  export STUB_ENGINE_EXIT=0
+  export STUB_ENGINE_RESPONSE="verdict text"
+  export STUB_CLAUDE_USAGE="2000 800 600 150"   # input cache_read cache_write output
+  local log; log=$(mktemp)
+  export TOKEN_LOG_FILE="$log"
+  export TEST_OWNED_TOKEN_LOG="$log"
+
+  run run_triage "$TEST_PROMPT"
+
+  [ "$status" -eq 0 ]
+  [ "$(jq -r '.input_tokens'          < "$log")" = "2000" ]
+  [ "$(jq -r '.cache_read_tokens'     < "$log")" = "800" ]
+  [ "$(jq -r '.cache_creation_tokens' < "$log")" = "600" ]
+  [ "$(jq -r '.output_tokens'         < "$log")" = "150" ]
+}
+
+@test "usage: claude JSON mode still returns plain text to the caller (not JSON)" {
+  _source_engine "claude"
+  export STUB_ENGINE_EXIT=0
+  export STUB_ENGINE_RESPONSE="just the verdict"
+  export STUB_CLAUDE_USAGE="10 0 0 5"
+  local log; log=$(mktemp)
+  export TOKEN_LOG_FILE="$log"
+  export TEST_OWNED_TOKEN_LOG="$log"
+
+  run run_triage "$TEST_PROMPT"
+
+  [ "$status" -eq 0 ]
+  [ "$output" = "just the verdict" ]   # extracted .result, not the JSON envelope
+}
+
+@test "usage: ENGINE_USAGE_JSON=0 disables JSON capture (falls back to estimate)" {
+  _source_engine "claude"
+  export STUB_ENGINE_EXIT=0
+  export STUB_ENGINE_RESPONSE="verdict"
+  export STUB_CLAUDE_USAGE="2000 800 600 150"
+  export ENGINE_USAGE_JSON=0
+  local log; log=$(mktemp)
+  export TOKEN_LOG_FILE="$log"
+  export TEST_OWNED_TOKEN_LOG="$log"
+
+  run run_triage "$TEST_PROMPT"
+
+  [ "$status" -eq 0 ]
+  # Estimate path → cache figures unknown → 0 (not the stub's 800/600).
+  [ "$(jq -r '.cache_read_tokens'     < "$log")" = "0" ]
+  [ "$(jq -r '.cache_creation_tokens' < "$log")" = "0" ]
+}
+
+@test "usage: gemini run captures usage (input = prompt - cached)" {
+  _source_engine "gemini"
+  export STUB_ENGINE_EXIT=0
+  export STUB_ENGINE_RESPONSE="gem verdict"
+  export STUB_GEMINI_USAGE="500 100 60"   # prompt cached candidates
+  local log; log=$(mktemp)
+  export TOKEN_LOG_FILE="$log"
+  export TEST_OWNED_TOKEN_LOG="$log"
+
+  run run_triage "$TEST_PROMPT"
+
+  [ "$status" -eq 0 ]
+  [ "$(jq -r '.engine'            < "$log")" = "gemini" ]
+  [ "$(jq -r '.input_tokens'      < "$log")" = "400" ]
+  [ "$(jq -r '.cache_read_tokens' < "$log")" = "100" ]
+  [ "$(jq -r '.output_tokens'     < "$log")" = "60" ]
+}
+
 @test "token: run_writer_with_fallback logs the fallback engine (not rate-limited primary)" {
   _source_engine "claude"
   export DEV_LEAD_DRY_RUN=false
