@@ -24,12 +24,18 @@ permissions:
   statuses: read
 
 concurrency:
-  # One active run per repo; ci-relay (check_run) keeps an ephemeral per-SHA slot
-  # so it can fire immediately without blocking or being blocked by the dispatch queue.
+  # Per-issue and per-PR lanes so issue pickups are never cancelled by unrelated
+  # PR follow-up traffic. This repo's dev-lead.yml is inline (not a reusable
+  # caller), so it carries the same routing as dev-lead-reusable.yml. See
+  # petry-projects/.github#402.
   group: >-
     ${{
-      github.event_name == 'check_run' && format('dev-lead-ci-relay-{0}', github.event.check_run.head_sha) ||
-      'dev-lead'
+      (github.event_name == 'check_run' && format('dev-lead-ci-relay-{0}', github.event.check_run.head_sha))
+      || (github.event.pull_request.number && format('dev-lead-pr-{0}', github.event.pull_request.number))
+      || (github.event.issue.pull_request && format('dev-lead-pr-{0}', github.event.issue.number))
+      || (github.event.issue.number && format('dev-lead-issue-{0}', github.event.issue.number))
+      || (github.event.client_payload.pr_number && format('dev-lead-pr-{0}', github.event.client_payload.pr_number))
+      || format('dev-lead-run-{0}', github.run_id)
     }}
   cancel-in-progress: false
 
