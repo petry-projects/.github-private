@@ -1,22 +1,28 @@
 # False-positive suppressions for gitleaks generic-api-key rule.
 # These are test/sample files containing intentionally fake credentials.
+# The frameworks directory was removed in commit 56e1478 (#101); these entries
+# suppress historical findings from the two commits that introduced those files.
 #
 # frameworks/bmad-method/test/adversarial-review-tests/sample-content.md:24
 # Contains a truncated example JWT ("eyJhbGciOiJIUzI1NiIs...") in API
 # response documentation — not a real token.
-6a7fdafedd396b91bb17f83c338c8082d4883d96:frameworks/bmad-method/test/adversarial-review-tests/sample-content.md:generic-api-key:24
+e7a07016429b4fe55566c19b50ec47b949021401:frameworks/bmad-method/test/adversarial-review-tests/sample-content.md:generic-api-key:24
+b9730c67dba58a1b9f48e196265c48e10ff09cca:frameworks/bmad-method/test/adversarial-review-tests/sample-content.md:generic-api-key:24
 
 # frameworks/gsd/sdk/src/query/config-query.test.ts:228
 # Contains a fake API key ("BSA-1234567890abcdef") used to test that the
 # config query function properly masks secret values in its output.
-6a7fdafedd396b91bb17f83c338c8082d4883d96:frameworks/gsd/sdk/src/query/config-query.test.ts:generic-api-key:228
+e7a07016429b4fe55566c19b50ec47b949021401:frameworks/gsd/sdk/src/query/config-query.test.ts:generic-api-key:228
+b9730c67dba58a1b9f48e196265c48e10ff09cca:frameworks/gsd/sdk/src/query/config-query.test.ts:generic-api-key:228
 
 # frameworks/gsd/sdk/src/query/config-mutation.test.ts:501
 # Contains a fake API key ("BSA-1234567890abcdef") used to test that the
 # configSet function properly masks secret values in its output.
-6a7fdafedd396b91bb17f83c338c8082d4883d96:frameworks/gsd/sdk/src/query/config-mutation.test.ts:generic-api-key:501
+e7a07016429b4fe55566c19b50ec47b949021401:frameworks/gsd/sdk/src/query/config-mutation.test.ts:generic-api-key:501
+b9730c67dba58a1b9f48e196265c48e10ff09cca:frameworks/gsd/sdk/src/query/config-mutation.test.ts:generic-api-key:501
 
 # frameworks/gsd/tests/commands.test.cjs:759
 # Contains a directory path segment ('03-api') incorrectly flagged as an API
 # key; it is a filesystem path component in a test assertion, not a credential.
-6a7fdafedd396b91bb17f83c338c8082d4883d96:frameworks/gsd/tests/commands.test.cjs:generic-api-key:759
+e7a07016429b4fe55566c19b50ec47b949021401:frameworks/gsd/tests/commands.test.cjs:generic-api-key:759
+b9730c67dba58a1b9f48e196265c48e10ff09cca:frameworks/gsd/tests/commands.test.cjs:generic-api-key:759

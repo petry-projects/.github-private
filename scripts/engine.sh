@@ -861,18 +861,6 @@ run_triage() {
             --approval-mode auto_edit || rc=$?
         fi
         ;;
-      gemini)
-        if [ -n "$_tok_tmp" ]; then
-          timeout "$TRIAGE_TIMEOUT_SEC" gemini --prompt "" \
-            --model "$ENGINE_TRIAGE_MODEL" \
-            --approval-mode auto_edit \
-            --output-format text \
-            < "$prompt_file" | tee "$_tok_tmp" || rc=${PIPESTATUS[0]}
-        else
-          _gemini_invoke "$prompt_file" "$TRIAGE_TIMEOUT_SEC" "$ENGINE_TRIAGE_MODEL" \
-            --approval-mode auto_edit || rc=$?
-        fi
-        ;;
       copilot)
         # In triage mode, we deny all tools to keep it fast and restricted.
         if [ -n "$_tok_tmp" ]; then
@@ -1852,17 +1840,6 @@ run_duck() {
           --approval-mode auto_edit \
           --output-format text \
           < "$prompt_file" || rc=$?
-      fi
-      ;;
-    gemini)
-      unset CLAUDE_CODE_OAUTH_TOKEN 2>/dev/null || true
-      unset COPILOT_GITHUB_TOKEN 2>/dev/null || true
-      if [ -n "$_tok_tmp" ]; then
-        _gemini_invoke "$prompt_file" "$DUCK_TIMEOUT_SEC" "$model" \
-          --approval-mode auto_edit | tee "$_tok_tmp" || rc=${PIPESTATUS[0]}
-      else
-        _gemini_invoke "$prompt_file" "$DUCK_TIMEOUT_SEC" "$model" \
-          --approval-mode auto_edit || rc=$?
       fi
       ;;
     copilot)
