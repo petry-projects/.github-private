@@ -70,24 +70,45 @@ set_engine_config() {
       CLAUDE_AUDIT_MODEL_CHAIN="${CLAUDE_AUDIT_MODEL_CHAIN:-claude-opus-4-7,claude-sonnet-4-6}"
       CLAUDE_ACTION_MODEL_CHAIN="${CLAUDE_ACTION_MODEL_CHAIN:-claude-sonnet-4-6,claude-opus-4-7}"
       CLAUDE_SINGLE_MODEL_CHAIN="${CLAUDE_SINGLE_MODEL_CHAIN:-claude-opus-4-7,claude-sonnet-4-6}"
+      # GEMINI_*_MODEL_CHAIN is intentionally NOT cleared: it is only read by
+      # _gemini_chain_invoke (i.e. when REVIEW_ENGINE=gemini), so cross-engine
+      # bleed is impossible. Clearing it here would destroy user-configured
+      # Gemini chains during run_writer_with_fallback's transient switch to
+      # claude — when the engine flips back to gemini, the chain would be lost
+      # and the staged rollout / in-engine fallback would silently degrade to
+      # single-model behaviour for the rest of the session.
       ;;
     gemini)
-      ENGINE_TRIAGE_MODEL="gemini-2.0-flash"
-      ENGINE_DEEP_MODEL="gemini-2.5-pro"
-      ENGINE_AUDIT_MODEL="gemini-2.5-pro"
-      ENGINE_ACTION_MODEL="gemini-2.5-pro"
-      ENGINE_SINGLE_MODEL="gemini-2.5-pro"
-      ENGINE_LABEL="triage: gemini-2.0-flash → deep: gemini-2.5-pro + duck: sonnet 4.6 → audit: gemini-2.5-pro"
-      ENGINE_SINGLE_LABEL="single-reviewer mode: gemini-2.5-pro"
+      # Per-tier model defaults. Each can be overridden via the matching
+      # GEMINI_*_MODEL env var (e.g. GEMINI_DEEP_MODEL=gemini-3.5-flash) so
+      # dev-lead and pr-review workflows can pin different model IDs without
+      # editing this script. See docs/engine-model-rollout.md.
+      ENGINE_TRIAGE_MODEL="${GEMINI_TRIAGE_MODEL:-gemini-2.0-flash}"
+      ENGINE_DEEP_MODEL="${GEMINI_DEEP_MODEL:-gemini-2.5-pro}"
+      ENGINE_AUDIT_MODEL="${GEMINI_AUDIT_MODEL:-gemini-2.5-pro}"
+      ENGINE_ACTION_MODEL="${GEMINI_ACTION_MODEL:-gemini-2.5-pro}"
+      ENGINE_SINGLE_MODEL="${GEMINI_SINGLE_MODEL:-gemini-2.5-pro}"
+      ENGINE_LABEL="triage: $ENGINE_TRIAGE_MODEL → deep: $ENGINE_DEEP_MODEL + duck: sonnet 4.6 → audit: $ENGINE_AUDIT_MODEL"
+      ENGINE_SINGLE_LABEL="single-reviewer mode: $ENGINE_SINGLE_MODEL"
       # Cross-engine rubber duck: use Claude for diversity
       DUCK_ENGINE="claude"
       DUCK_MODEL="claude-sonnet-4-6"
-      # No in-engine chain for Gemini — only one production model in use today.
-      CLAUDE_TRIAGE_MODEL_CHAIN=""
-      CLAUDE_DEEP_MODEL_CHAIN=""
-      CLAUDE_AUDIT_MODEL_CHAIN=""
-      CLAUDE_ACTION_MODEL_CHAIN=""
-      CLAUDE_SINGLE_MODEL_CHAIN=""
+      # CLAUDE_*_MODEL_CHAIN is intentionally NOT cleared: it is only read by
+      # _claude_chain_invoke (i.e. when REVIEW_ENGINE=claude), so cross-engine
+      # bleed is impossible. Clearing it here would destroy user-configured
+      # Claude chains during run_writer_with_fallback's transient switch to
+      # gemini, dropping the staged rollout / in-engine fallback for the rest
+      # of the session once the engine flips back to claude.
+      # Per-tier Gemini in-engine chains (comma-separated). Empty by default so
+      # the engine behaves as a single-model invocation; set e.g.
+      # GEMINI_DEEP_MODEL_CHAIN=gemini-3.5-flash,gemini-2.5-pro to enable a
+      # staged rollout that walks left-to-right on rate-limit. Pattern mirrors
+      # CLAUDE_*_MODEL_CHAIN.
+      GEMINI_TRIAGE_MODEL_CHAIN="${GEMINI_TRIAGE_MODEL_CHAIN:-}"
+      GEMINI_DEEP_MODEL_CHAIN="${GEMINI_DEEP_MODEL_CHAIN:-}"
+      GEMINI_AUDIT_MODEL_CHAIN="${GEMINI_AUDIT_MODEL_CHAIN:-}"
+      GEMINI_ACTION_MODEL_CHAIN="${GEMINI_ACTION_MODEL_CHAIN:-}"
+      GEMINI_SINGLE_MODEL_CHAIN="${GEMINI_SINGLE_MODEL_CHAIN:-}"
       ;;
     copilot)
       ENGINE_TRIAGE_MODEL="o4-mini"
@@ -108,11 +129,12 @@ set_engine_config() {
       DUCK_ENGINE="gemini"
       DUCK_MODEL="gemini-2.0-flash"
       # No in-engine chain for Copilot — single GitHub Models endpoint.
-      CLAUDE_TRIAGE_MODEL_CHAIN=""
-      CLAUDE_DEEP_MODEL_CHAIN=""
-      CLAUDE_AUDIT_MODEL_CHAIN=""
-      CLAUDE_ACTION_MODEL_CHAIN=""
-      CLAUDE_SINGLE_MODEL_CHAIN=""
+      # CLAUDE_*_MODEL_CHAIN / GEMINI_*_MODEL_CHAIN are intentionally NOT
+      # cleared here: each is read only by its own engine's chain-invoke
+      # helper, so cross-engine bleed is impossible. Clearing them would
+      # destroy user-configured chains during run_writer_with_fallback's
+      # transient switch to copilot, silently disabling staged rollout once
+      # the engine flips back to claude or gemini.
       ;;
     *)
       echo "::error::Unknown REVIEW_ENGINE='$REVIEW_ENGINE' (expected: claude, gemini, or copilot)"
@@ -127,6 +149,9 @@ set_engine_config() {
   export CLAUDE_TRIAGE_MODEL_CHAIN CLAUDE_DEEP_MODEL_CHAIN
   export CLAUDE_AUDIT_MODEL_CHAIN CLAUDE_ACTION_MODEL_CHAIN
   export CLAUDE_SINGLE_MODEL_CHAIN
+  export GEMINI_TRIAGE_MODEL_CHAIN GEMINI_DEEP_MODEL_CHAIN
+  export GEMINI_AUDIT_MODEL_CHAIN GEMINI_ACTION_MODEL_CHAIN
+  export GEMINI_SINGLE_MODEL_CHAIN
 }
 
 # Initial config
@@ -251,50 +276,6 @@ copilot_chat() {
     -s "$@" < /dev/null
 }
 
-# _gemini_invoke <prompt_file> <timeout_sec> <model> [extra_args...]
-# Runs the gemini CLI and emits the model's text to stdout (stderr passes through
-# so callers that merge it for rate-limit detection still work). When token
-# logging is on (and ENGINE_USAGE_JSON != 0) it runs with --output-format json,
-# captures real usage into the LAST_* globals, and emits the extracted text;
-# otherwise it uses --output-format text (estimate path). Robust fallback: if the
-# JSON result text is empty or the call fails, the raw payload is emitted.
-_gemini_invoke() {
-  local prompt_file="$1" timeout_sec="$2" model="$3"
-  shift 3
-  local extra_args=("$@")
-
-  declare -f reset_engine_usage >/dev/null 2>&1 && reset_engine_usage
-
-  local _usage_json=0
-  if [ -n "${TOKEN_LOG_FILE:-}" ] && [ "${ENGINE_USAGE_JSON:-1}" != "0" ] \
-     && declare -f parse_engine_usage >/dev/null 2>&1; then
-    _usage_json=1
-  fi
-
-  if [ "$_usage_json" -eq 1 ]; then
-    local _json_tmp; _json_tmp="$(mktemp 2>/dev/null || true)"
-    if [ -n "$_json_tmp" ]; then
-      local rc=0
-      # stderr intentionally NOT redirected — flows to caller for rate-limit checks.
-      timeout "$timeout_sec" gemini --prompt "" --model "$model" "${extra_args[@]}" \
-        --output-format json < "$prompt_file" > "$_json_tmp" || rc=$?
-      if [ "$rc" -eq 0 ]; then
-        parse_engine_usage gemini "$_json_tmp" || true
-        local _txt; _txt="$(extract_engine_text gemini "$_json_tmp")"
-        if [ -n "$_txt" ]; then printf '%s\n' "$_txt"; else cat "$_json_tmp"; fi
-      else
-        cat "$_json_tmp"   # emit raw payload so downstream/rate-limit logic sees it
-      fi
-      rm -f "$_json_tmp"
-      return "$rc"
-    fi
-  fi
-
-  # Estimate path (logging off, or mktemp failed): plain text output.
-  timeout "$timeout_sec" gemini --prompt "" --model "$model" "${extra_args[@]}" \
-    --output-format text < "$prompt_file"
-}
-
 # _claude_chain_invoke <chain_csv> <prompt_file> <timeout_sec> [extra_args...]
 # Walks a comma-separated list of Claude models, invoking `claude --print --model X`
 # with the given extra arguments. The first model whose run does NOT trigger
@@ -318,18 +299,6 @@ _claude_chain_invoke() {
     return 1
   fi
 
-  # When token logging is on, capture real usage by running claude with
-  # --output-format json and emitting the extracted .result text to the caller.
-  # Gated by ENGINE_USAGE_JSON (default on) so it can be disabled without a code
-  # change. Falls back to raw output if extraction yields nothing.
-  declare -f reset_engine_usage >/dev/null 2>&1 && reset_engine_usage
-  local _usage_json=0 fmt_args=()
-  if [ -n "${TOKEN_LOG_FILE:-}" ] && [ "${ENGINE_USAGE_JSON:-1}" != "0" ] \
-     && declare -f parse_engine_usage >/dev/null 2>&1; then
-    _usage_json=1
-    fmt_args=(--output-format json)
-  fi
-
   local saved_ifs="$IFS"
   IFS=',' read -ra models <<< "$chain_csv"
   IFS="$saved_ifs"
@@ -337,6 +306,7 @@ _claude_chain_invoke() {
   local stdout_tmp="" stderr_tmp=""
   local final_stdout="" final_stderr="" final_model="" final_rc=0
   local rc=0 attempted=0 all_rl=1
+  local _cc_last_resort_rl_output=""
   local model
 
   for model in "${models[@]}"; do
@@ -351,20 +321,55 @@ _claude_chain_invoke() {
     rc=0
 
     if [ -n "$stdout_tmp" ] && [ -n "$stderr_tmp" ]; then
-      timeout "$timeout_sec" claude --print --model "$model" "${fmt_args[@]}" "${extra_args[@]}" \
+      timeout "$timeout_sec" claude --print --model "$model" "${extra_args[@]}" \
         < "$prompt_file" > "$stdout_tmp" 2> "$stderr_tmp" || rc=$?
     else
-      # mktemp failure (one or both) — clean up the partial tmp before degrading
-      # to direct stdout/stderr passthrough so we don't leak a half-allocated fd.
+      # mktemp failure (one or both) — clean up partial temps and try fixed
+      # /tmp fallback paths so we can still capture output for rate-limit
+      # detection and continue walking the chain. Without this, a 429 in
+      # the degraded branch exits immediately and skips remaining chain models.
       [ -n "$stdout_tmp" ] && rm -f "$stdout_tmp"
       [ -n "$stderr_tmp" ] && rm -f "$stderr_tmp"
       [ -n "$final_stdout" ] && rm -f "$final_stdout"
       [ -n "$final_stderr" ] && rm -f "$final_stderr"
-      timeout "$timeout_sec" claude --print --model "$model" "${extra_args[@]}" \
-        < "$prompt_file" || rc=$?
-      _CLAUDE_CHAIN_MODEL_USED="$model"
-      export _CLAUDE_CHAIN_MODEL_USED
-      return "$rc"
+      stdout_tmp=""
+      stderr_tmp=""
+      final_stdout=""
+      final_stderr=""
+      # _CLAUDE_CHAIN_FB_PREFIX is a private hook for tests (mirrors the
+      # Gemini equivalent); production always uses /tmp/claude-chain.
+      local _ccfb_prefix="${_CLAUDE_CHAIN_FB_PREFIX:-/tmp/claude-chain}"
+      local _ccfb_stdout _ccfb_stderr
+      _ccfb_stdout="$(mktemp "${_ccfb_prefix}-stdout-XXXXXX" 2>/dev/null)" || \
+        _ccfb_stdout="${_ccfb_prefix}-stdout-$$-${attempted}"
+      _ccfb_stderr="$(mktemp "${_ccfb_prefix}-stderr-XXXXXX" 2>/dev/null)" || \
+        _ccfb_stderr="${_ccfb_prefix}-stderr-$$-${attempted}"
+      if { [ -f "$_ccfb_stdout" ] || : > "$_ccfb_stdout" 2>/dev/null; } && \
+         { [ -f "$_ccfb_stderr" ] || : > "$_ccfb_stderr" 2>/dev/null; }; then
+        timeout "$timeout_sec" claude --print --model "$model" "${extra_args[@]}" \
+          < "$prompt_file" > "$_ccfb_stdout" 2> "$_ccfb_stderr" || rc=$?
+        stdout_tmp="$_ccfb_stdout"
+        stderr_tmp="$_ccfb_stderr"
+        # Fall through to common chain-tracking logic below
+      else
+        # Even /tmp is unavailable — capture combined output in a bash variable
+        # for last-resort rate-limit detection so the chain can continue rather
+        # than returning early and skipping remaining models.
+        rm -f "$_ccfb_stdout" "$_ccfb_stderr" 2>/dev/null || true
+        local _cc_last_resort=""
+        _cc_last_resort="$(timeout "$timeout_sec" claude --print --model "$model" "${extra_args[@]}" \
+          < "$prompt_file" 2>&1)" || rc=$?
+        _CLAUDE_CHAIN_MODEL_USED="$model"
+        export _CLAUDE_CHAIN_MODEL_USED
+        if is_rate_limited "$_cc_last_resort"; then
+          parse_reset_time "$_cc_last_resort" || true
+          _cc_last_resort_rl_output="$_cc_last_resort"
+          echo "::warning::[claude] model $model throttled (rc=$rc) — trying next in chain" >&2
+          continue
+        fi
+        printf '%s\n' "$_cc_last_resort"
+        return "$rc"
+      fi
     fi
 
     # Drop any previous final-attempt buffers (we keep only the latest)
@@ -404,27 +409,19 @@ _claude_chain_invoke() {
 
   # If every attempt was rate-limited, parse the last reset time and return 2.
   if [ "$all_rl" -eq 1 ]; then
-    parse_reset_time_files "$final_stdout" "$final_stderr"
+    # Guard against calling parse_reset_time_files with empty strings: when all
+    # models used the last-resort (in-memory) branch, final_stdout/final_stderr
+    # are empty; passing them would clobber the timestamp parse_reset_time
+    # already wrote inside the loop for each throttled response.
+    if [ -n "$final_stdout" ] || [ -n "$final_stderr" ]; then
+      parse_reset_time_files "$final_stdout" "$final_stderr"
+    fi
     final_rc=2
   fi
 
-  # Emit the final attempt's captured output to the caller. In JSON-usage mode,
-  # parse the usage block and emit the extracted .result text (so consumers still
-  # receive plain text); fall back to the raw payload if extraction is empty or
-  # the call failed (preserves error/rate-limit text for downstream detection).
+  # Emit the final attempt's captured output to the caller.
   if [ -n "$final_stdout" ]; then
-    if [ "$_usage_json" -eq 1 ] && [ "$final_rc" -eq 0 ]; then
-      parse_engine_usage claude "$final_stdout" || true
-      local _txt
-      _txt="$(extract_engine_text claude "$final_stdout")"
-      if [ -n "$_txt" ]; then
-        printf '%s\n' "$_txt"
-      else
-        cat "$final_stdout"
-      fi
-    else
-      cat "$final_stdout"
-    fi
+    cat "$final_stdout"
     rm -f "$final_stdout"
   fi
   if [ -n "$final_stderr" ]; then
@@ -432,8 +429,222 @@ _claude_chain_invoke() {
     rm -f "$final_stderr"
   fi
 
+  # When all models were throttled via the last-resort (in-memory) branch, no
+  # output reached final_stdout/final_stderr. Emit the final throttled response
+  # so callers scanning stdout for rate-limit text can detect this case and
+  # trigger the cross-provider engine fallback rather than reporting a hard
+  # cascade failure.
+  if [ "$final_rc" -eq 2 ] && [ -z "$final_stdout" ] && [ -z "$final_stderr" ] && \
+     [ -n "$_cc_last_resort_rl_output" ]; then
+    printf '%s\n' "$_cc_last_resort_rl_output"
+  fi
+
   _CLAUDE_CHAIN_MODEL_USED="$final_model"
   export _CLAUDE_CHAIN_MODEL_USED
+  return "$final_rc"
+}
+
+# _gemini_chain_invoke <chain_csv> <prompt_file> <timeout_sec> [extra_args...]
+# Walks a comma-separated list of Gemini models, invoking
+# `gemini --prompt "" --model X --approval-mode auto_edit --output-format text`
+# with the given extra arguments. Same control flow as _claude_chain_invoke:
+# the first model whose run does NOT trigger is_rate_limited() wins; its
+# captured stdout is written to fd1, stderr to fd2, and its exit code is
+# returned. Rate-limited attempts are discarded and the next model is tried.
+# If every model in the chain rate-limits, returns 2 and writes the parsed
+# reset time to /tmp/dev-lead-rate-limit-reset.
+#
+# Empty/whitespace-only chain → config error rc=1, NOT rate-limit rc=2.
+# Returning 2 for a misconfiguration would otherwise trigger an unnecessary
+# cross-provider fallback as though quotas were exhausted.
+#
+# Sets _GEMINI_CHAIN_MODEL_USED to the model that produced the final output
+# (success or last attempt) so callers can log which model actually ran.
+_gemini_chain_invoke() {
+  local chain_csv="$1" prompt_file="$2" timeout_sec="$3"
+  shift 3
+  local extra_args=("$@")
+
+  # Trim whitespace so a whitespace-only chain is caught here with a clear
+  # error rather than slipping through to the per-entry filter below.
+  chain_csv="$(echo "$chain_csv" | xargs)"
+
+  if [ -z "$chain_csv" ]; then
+    echo "::error::_gemini_chain_invoke called with empty chain" >&2
+    return 1
+  fi
+
+  local saved_ifs="$IFS"
+  IFS=',' read -ra models <<< "$chain_csv"
+  IFS="$saved_ifs"
+
+  local stdout_tmp="" stderr_tmp=""
+  local final_stdout="" final_stderr="" final_model="" final_rc=0
+  local rc=0 attempted=0 all_rl=1
+  local _last_resort_rl_output=""
+  local model
+
+  for model in "${models[@]}"; do
+    model="${model#"${model%%[![:space:]]*}"}"
+    model="${model%"${model##*[![:space:]]}"}"
+    [ -z "$model" ] && continue
+
+    attempted=$((attempted + 1))
+    stdout_tmp="$(mktemp 2>/dev/null)" || stdout_tmp=""
+    stderr_tmp="$(mktemp 2>/dev/null)" || stderr_tmp=""
+    rc=0
+
+    if [ -n "$stdout_tmp" ] && [ -n "$stderr_tmp" ]; then
+      timeout "$timeout_sec" gemini --prompt "" \
+        --model "$model" \
+        --approval-mode auto_edit \
+        --output-format text \
+        "${extra_args[@]}" \
+        < "$prompt_file" > "$stdout_tmp" 2> "$stderr_tmp" || rc=$?
+    else
+      # mktemp failure (one or both) — clean up partial tmps and fall back to
+      # fixed /tmp paths so we can still capture output for rate-limit
+      # detection. Without this scan, a 429 in the degraded branch would
+      # surface as a generic non-zero exit and the cross-provider fallback
+      # (claude → gemini → copilot) would never trigger.
+      [ -n "$stdout_tmp" ] && rm -f "$stdout_tmp"
+      [ -n "$stderr_tmp" ] && rm -f "$stderr_tmp"
+      stdout_tmp=""
+      stderr_tmp=""
+      # Also clean up any final_stdout/final_stderr from prior iterations so
+      # the last-resort early-return path (success or non-RL error) doesn't
+      # leak those files; the common chain-tracking code below handles the
+      # fixed-path fallback case.
+      [ -n "$final_stdout" ] && rm -f "$final_stdout"
+      [ -n "$final_stderr" ] && rm -f "$final_stderr"
+      final_stdout=""
+      final_stderr=""
+      # _GEMINI_CHAIN_FB_PREFIX is a private hook for tests to point the
+      # fallback paths at an unwritable directory and exercise the
+      # last-resort branch below; production always uses /tmp/gemini-chain.
+      local _fb_prefix="${_GEMINI_CHAIN_FB_PREFIX:-/tmp/gemini-chain}"
+      # Use mktemp with a template for non-predictable fallback filenames;
+      # fall back to PID+counter only when that also fails. A purely
+      # deterministic name based on PID alone is guessable by concurrent
+      # processes and would reintroduce a symlink-clobbering attack.
+      local _fb_stdout _fb_stderr
+      _fb_stdout="$(mktemp "${_fb_prefix}-stdout-XXXXXX" 2>/dev/null)" || \
+        _fb_stdout="${_fb_prefix}-stdout-$$-${attempted}"
+      _fb_stderr="$(mktemp "${_fb_prefix}-stderr-XXXXXX" 2>/dev/null)" || \
+        _fb_stderr="${_fb_prefix}-stderr-$$-${attempted}"
+      if { [ -f "$_fb_stdout" ] || : > "$_fb_stdout" 2>/dev/null; } && \
+         { [ -f "$_fb_stderr" ] || : > "$_fb_stderr" 2>/dev/null; }; then
+        timeout "$timeout_sec" gemini --prompt "" \
+          --model "$model" \
+          --approval-mode auto_edit \
+          --output-format text \
+          "${extra_args[@]}" \
+          < "$prompt_file" > "$_fb_stdout" 2> "$_fb_stderr" || rc=$?
+        # Route through the common chain-tracking path so the loop continues
+        # to the next model on rate-limit rather than returning early, honoring
+        # the chain contract (return 2 only when all models are exhausted).
+        stdout_tmp="$_fb_stdout"
+        stderr_tmp="$_fb_stderr"
+      else
+        # Even /tmp is unavailable — capture combined stdout+stderr in a bash
+        # variable so rate-limit detection still fires and the cross-provider
+        # fallback can trigger. We lose stdout/stderr separation here, but for
+        # this last-resort path that tradeoff is acceptable; without the scan a
+        # 429 would surface as a generic non-zero exit and engine fallback
+        # would never trigger.
+        local _last_resort_output=""
+        _last_resort_output="$(timeout "$timeout_sec" gemini --prompt "" \
+          --model "$model" \
+          --approval-mode auto_edit \
+          --output-format text \
+          "${extra_args[@]}" \
+          < "$prompt_file" 2>&1)" || rc=$?
+        _GEMINI_CHAIN_MODEL_USED="$model"
+        export _GEMINI_CHAIN_MODEL_USED
+        if is_rate_limited "$_last_resort_output"; then
+          # parse_reset_time writes to /tmp; in this degraded branch the write
+          # may fail. Continue to the next model rather than returning early,
+          # honoring the chain contract (return 2 only when all models exhausted).
+          # Rate-limit detection is output-based (not gated on rc != 0) so that
+          # a provider returning rc=0 with rate-limit text is still caught and
+          # triggers the cross-provider fallback via exit code 2.
+          parse_reset_time "$_last_resort_output" || true
+          _last_resort_rl_output="$_last_resort_output"
+          echo "::warning::[gemini] model $model throttled (rc=$rc) — trying next in chain" >&2
+          continue
+        fi
+        printf '%s\n' "$_last_resort_output"
+        return "$rc"
+      fi
+    fi
+
+    [ -n "$final_stdout" ] && rm -f "$final_stdout"
+    [ -n "$final_stderr" ] && rm -f "$final_stderr"
+    final_stdout="$stdout_tmp"
+    final_stderr="$stderr_tmp"
+    final_model="$model"
+
+    # When rc=0 accept the output unconditionally — a valid review response
+    # can legitimately contain "429", "quota exceeded", or other rate-limit
+    # terms in its findings (e.g. a review of HTTP error-handling code).
+    # Scanning rc=0 output would discard valid reviews as false throttles.
+    # Rate-limit detection is reserved for non-zero exits where the output
+    # is likely an error body, not review content.
+    if [ "$rc" -eq 0 ]; then
+      final_rc=0
+      all_rl=0
+      break
+    fi
+    if ! is_rate_limited_files "$stdout_tmp" "$stderr_tmp"; then
+      final_rc="$rc"
+      all_rl=0
+      break
+    fi
+    # Phrasing avoids "rate-limit"/"429"/"quota" so downstream callers that
+    # scan our stderr (e.g. review-one-pr.sh triage) don't misclassify a
+    # successful chain fallback as a provider rate-limit. Mirrors the same
+    # rule applied in _claude_chain_invoke.
+    echo "::warning::[gemini] model $model throttled (rc=$rc) — trying next in chain" >&2
+  done
+
+  if [ "$attempted" -eq 0 ]; then
+    echo "::error::_gemini_chain_invoke: chain '$chain_csv' had no valid model entries" >&2
+    return 1
+  fi
+
+  if [ "$all_rl" -eq 1 ]; then
+    # Only call parse_reset_time_files when actual files are available. When all
+    # models used the last-resort (in-memory) branch, final_stdout/final_stderr
+    # are empty strings; passing them to parse_reset_time_files would cause it to
+    # write an empty reset file, clobbering the timestamp parse_reset_time already
+    # wrote inside the loop for each throttled response.
+    if [ -n "$final_stdout" ] || [ -n "$final_stderr" ]; then
+      parse_reset_time_files "$final_stdout" "$final_stderr"
+    fi
+    final_rc=2
+  fi
+
+  if [ -n "$final_stdout" ]; then
+    cat "$final_stdout"
+    rm -f "$final_stdout"
+  fi
+  if [ -n "$final_stderr" ]; then
+    cat "$final_stderr" >&2
+    rm -f "$final_stderr"
+  fi
+
+  # When all models were throttled via the last-resort (in-memory) branch, no
+  # output reached final_stdout/final_stderr. Emit the final throttled response
+  # so callers scanning stdout for rate-limit text can detect this case and
+  # trigger the cross-provider engine fallback rather than reporting a hard
+  # cascade failure.
+  if [ "$final_rc" -eq 2 ] && [ -z "$final_stdout" ] && [ -z "$final_stderr" ] && \
+     [ -n "$_last_resort_rl_output" ]; then
+    printf '%s\n' "$_last_resort_rl_output"
+  fi
+
+  _GEMINI_CHAIN_MODEL_USED="$final_model"
+  export _GEMINI_CHAIN_MODEL_USED
   return "$final_rc"
 }
 
@@ -446,41 +657,13 @@ _record_engine_tokens() {
   declare -f emit_token_record >/dev/null 2>&1 || return 0
 
   local tier="$1" engine="$2" model="$3" prompt_file="$4" output_file="${5:-}"
-  local workflow="${TOKEN_WORKFLOW:-unknown}" context="${PR_URL:-}"
-  local input_tokens cache_read_tokens cache_write_tokens output_tokens
-  local _have_usage=0
-
-  # Prefer real usage captured by the engine. It is read from the sidecar file
-  # (written even when the engine ran inside a `cmd | tee` subshell); the LAST_*
-  # globals are a secondary source for non-piped callers.
-  local _uf=""
-  declare -f _engine_usage_sidecar >/dev/null 2>&1 && _uf="$(_engine_usage_sidecar)"
-  if [ -n "$_uf" ] && [ -s "$_uf" ]; then
-    IFS=$'\t' read -r input_tokens cache_read_tokens cache_write_tokens output_tokens < "$_uf"
-    rm -f "$_uf" 2>/dev/null || true
-    case "${input_tokens}${cache_read_tokens}${cache_write_tokens}${output_tokens}" in
-      ''|*[!0-9]*) _have_usage=0 ;;
-      *)           _have_usage=1 ;;
-    esac
-  elif [ "${LAST_USAGE_OK:-0}" = "1" ]; then
-    input_tokens="${LAST_INPUT_TOKENS:-0}"
-    cache_read_tokens="${LAST_CACHE_READ_TOKENS:-0}"
-    cache_write_tokens="${LAST_CACHE_WRITE_TOKENS:-0}"
-    output_tokens="${LAST_OUTPUT_TOKENS:-0}"
-    _have_usage=1
-  fi
-
-  if [ "$_have_usage" -ne 1 ]; then
-    # Fallback: estimate from byte counts (engine reported no usage, e.g. copilot
-    # or text-mode). Cache figures are unknown → 0.
-    input_tokens=$(estimate_tokens_from_file "$prompt_file")
-    output_tokens=$(estimate_tokens_from_file "$output_file")
-    cache_read_tokens=0
-    cache_write_tokens=0
-  fi
-
+  local workflow="${TOKEN_WORKFLOW:-unknown}"
+  local input_tokens output_tokens context
+  input_tokens=$(estimate_tokens_from_file "$prompt_file")
+  output_tokens=$(estimate_tokens_from_file "$output_file")
+  context="${PR_URL:-}"
   emit_token_record "$workflow" "$tier" "$engine" "$model" \
-    "$input_tokens" "$cache_read_tokens" "$output_tokens" "$context" "$cache_write_tokens" || true
+    "$input_tokens" 0 "$output_tokens" "$context" || true
 }
 
 # is_transient_failure <exit_code>
@@ -660,10 +843,15 @@ run_agentic() {
         _agentic_chain="$model"
       fi
       if [ -n "$_tok_tmp" ]; then
+        # Redirect stdout to file rather than using a tee pipeline so that
+        # _CLAUDE_CHAIN_MODEL_USED exported inside _claude_chain_invoke is
+        # visible in the current process (not lost in a pipeline subshell),
+        # allowing _record_engine_tokens to log the model that actually ran.
         _claude_chain_invoke "$_agentic_chain" "$prompt_file" "$DEEP_TIMEOUT_SEC" \
           --permission-mode acceptEdits \
           --allowed-tools "Bash,Read,Grep,Glob" \
-          | tee "$_tok_tmp" || rc=${PIPESTATUS[0]}
+          > "$_tok_tmp" || rc=$?
+        cat "$_tok_tmp"
       else
         _claude_chain_invoke "$_agentic_chain" "$prompt_file" "$DEEP_TIMEOUT_SEC" \
           --permission-mode acceptEdits \
@@ -672,12 +860,39 @@ run_agentic() {
       fi
       ;;
     gemini)
+      # Mirror the claude pin-vs-chain semantics: when the caller passed the
+      # tier default model, expand the configured GEMINI_*_MODEL_CHAIN (if any)
+      # for staged rollout; otherwise honor the caller's explicit pin as a
+      # one-element chain.
+      local _gemini_agentic_chain _gemini_tier_default=""
+      case "$tier" in
+        deep)   _gemini_tier_default="${ENGINE_DEEP_MODEL:-}"
+                _gemini_agentic_chain="${GEMINI_DEEP_MODEL_CHAIN:-$model}"   ;;
+        audit)  _gemini_tier_default="${ENGINE_AUDIT_MODEL:-}"
+                _gemini_agentic_chain="${GEMINI_AUDIT_MODEL_CHAIN:-$model}"  ;;
+        action) _gemini_tier_default="${ENGINE_ACTION_MODEL:-}"
+                _gemini_agentic_chain="${GEMINI_ACTION_MODEL_CHAIN:-$model}" ;;
+        single) _gemini_tier_default="${ENGINE_SINGLE_MODEL:-}"
+                _gemini_agentic_chain="${GEMINI_SINGLE_MODEL_CHAIN:-$model}" ;;
+        *)      _gemini_agentic_chain="$model" ;;
+      esac
+      if [ -n "$_gemini_tier_default" ] && [ "$model" != "$_gemini_tier_default" ]; then
+        _gemini_agentic_chain="$model"
+      fi
       if [ -n "$_tok_tmp" ]; then
-        _gemini_invoke "$prompt_file" "$DEEP_TIMEOUT_SEC" "$model" \
-          --approval-mode auto_edit | tee "$_tok_tmp" || rc=${PIPESTATUS[0]}
+        # Redirect stdout to file rather than using a tee pipeline so that
+        # _GEMINI_CHAIN_MODEL_USED exported inside _gemini_chain_invoke is
+        # visible in the current process (not lost in a pipeline subshell),
+        # allowing _record_engine_tokens to log the model that actually ran.
+        # Stderr is NOT redirected here — ::warning:: throttle messages from
+        # chain fallbacks must stay on stderr and must not be mixed into the
+        # stdout that callers capture for agentic output parsing.
+        _gemini_chain_invoke "$_gemini_agentic_chain" "$prompt_file" "$DEEP_TIMEOUT_SEC" \
+          > "$_tok_tmp" || rc=$?
+        cat "$_tok_tmp"
       else
-        _gemini_invoke "$prompt_file" "$DEEP_TIMEOUT_SEC" "$model" \
-          --approval-mode auto_edit || rc=$?
+        _gemini_chain_invoke "$_gemini_agentic_chain" "$prompt_file" "$DEEP_TIMEOUT_SEC" \
+          || rc=$?
       fi
       ;;
     copilot)
@@ -697,6 +912,8 @@ run_agentic() {
     local _agentic_used="$model"
     if [ "$REVIEW_ENGINE" = "claude" ] && [ -n "${_CLAUDE_CHAIN_MODEL_USED:-}" ]; then
       _agentic_used="$_CLAUDE_CHAIN_MODEL_USED"
+    elif [ "$REVIEW_ENGINE" = "gemini" ] && [ -n "${_GEMINI_CHAIN_MODEL_USED:-}" ]; then
+      _agentic_used="$_GEMINI_CHAIN_MODEL_USED"
     fi
     _record_engine_tokens "$tier" "$REVIEW_ENGINE" "$_agentic_used" "$prompt_file" "$_tok_tmp"
   fi
@@ -1459,31 +1676,37 @@ run_duck() {
     claude)
       unset COPILOT_GITHUB_TOKEN 2>/dev/null || true
       unset GOOGLE_API_KEY 2>/dev/null || true
-      # Route through the chain helper so real token usage (incl. cache) is captured
-      # when logging is on; a single-model "chain" preserves prior behaviour.
       if [ -n "$_tok_tmp" ]; then
-        _claude_chain_invoke "$model" "$prompt_file" "$DUCK_TIMEOUT_SEC" \
+        timeout "$DUCK_TIMEOUT_SEC" claude --print \
+          --model "$model" \
           --permission-mode acceptEdits \
           --allowed-tools "Bash,Read,Grep,Glob" \
           --max-turns 25 \
-          | tee "$_tok_tmp" || rc=${PIPESTATUS[0]}
+          < "$prompt_file" | tee "$_tok_tmp" || rc=${PIPESTATUS[0]}
       else
-        _claude_chain_invoke "$model" "$prompt_file" "$DUCK_TIMEOUT_SEC" \
+        timeout "$DUCK_TIMEOUT_SEC" claude --print \
+          --model "$model" \
           --permission-mode acceptEdits \
           --allowed-tools "Bash,Read,Grep,Glob" \
           --max-turns 25 \
-          || rc=$?
+          < "$prompt_file" || rc=$?
       fi
       ;;
     gemini)
       unset CLAUDE_CODE_OAUTH_TOKEN 2>/dev/null || true
       unset COPILOT_GITHUB_TOKEN 2>/dev/null || true
       if [ -n "$_tok_tmp" ]; then
-        _gemini_invoke "$prompt_file" "$DUCK_TIMEOUT_SEC" "$model" \
-          --approval-mode auto_edit | tee "$_tok_tmp" || rc=${PIPESTATUS[0]}
+        timeout "$DUCK_TIMEOUT_SEC" gemini --prompt "" \
+          --model "$model" \
+          --approval-mode auto_edit \
+          --output-format text \
+          < "$prompt_file" | tee "$_tok_tmp" || rc=${PIPESTATUS[0]}
       else
-        _gemini_invoke "$prompt_file" "$DUCK_TIMEOUT_SEC" "$model" \
-          --approval-mode auto_edit || rc=$?
+        timeout "$DUCK_TIMEOUT_SEC" gemini --prompt "" \
+          --model "$model" \
+          --approval-mode auto_edit \
+          --output-format text \
+          < "$prompt_file" || rc=$?
       fi
       ;;
     gemini)
@@ -1840,10 +2063,16 @@ run_writer() {
         _writer_chain="$model"
       fi
       if [ -n "$_tmp" ]; then
+        # Redirect to file (2>&1 combined) rather than tee pipeline so that
+        # _CLAUDE_CHAIN_MODEL_USED exported inside _claude_chain_invoke is
+        # visible to _record_engine_tokens in the parent process. stderr is
+        # merged with stdout (2>&1) so is_rate_limited_files can scan both
+        # streams for rate-limit text from either stdout or stderr.
         _claude_chain_invoke "$_writer_chain" "$prompt_file" "$ACTION_TIMEOUT_SEC" \
           --permission-mode acceptEdits \
           --allowed-tools "Bash,Read,Write,Edit,Grep,Glob,WebFetch" \
-          2>&1 | tee "$_tmp" || rc=${PIPESTATUS[0]}
+          > "$_tmp" 2>&1 || rc=$?
+        cat "$_tmp"
       else
         _claude_chain_invoke "$_writer_chain" "$prompt_file" "$ACTION_TIMEOUT_SEC" \
           --permission-mode acceptEdits \
@@ -1852,12 +2081,24 @@ run_writer() {
       fi
       ;;
     gemini)
+      # Honor explicit model pin when caller passed something other than the
+      # action default (same contract as the claude branch above); otherwise
+      # expand GEMINI_ACTION_MODEL_CHAIN for staged rollout on rate-limit.
+      local _gemini_writer_chain="${GEMINI_ACTION_MODEL_CHAIN:-$model}"
+      if [ -n "${ENGINE_ACTION_MODEL:-}" ] && [ "$model" != "$ENGINE_ACTION_MODEL" ]; then
+        _gemini_writer_chain="$model"
+      fi
       if [ -n "$_tmp" ]; then
-        _gemini_invoke "$prompt_file" "$ACTION_TIMEOUT_SEC" "$model" \
-          --approval-mode auto_edit 2>&1 | tee "$_tmp" || rc=${PIPESTATUS[0]}
+        # Redirect to file rather than using a tee pipeline so that
+        # _GEMINI_CHAIN_MODEL_USED exported inside _gemini_chain_invoke is
+        # visible in the current process (not lost in a pipeline subshell),
+        # allowing _record_engine_tokens to log the model that actually ran.
+        _gemini_chain_invoke "$_gemini_writer_chain" "$prompt_file" "$ACTION_TIMEOUT_SEC" \
+          > "$_tmp" 2>&1 || rc=$?
+        cat "$_tmp"
       else
-        _gemini_invoke "$prompt_file" "$ACTION_TIMEOUT_SEC" "$model" \
-          --approval-mode auto_edit || rc=$?
+        _gemini_chain_invoke "$_gemini_writer_chain" "$prompt_file" "$ACTION_TIMEOUT_SEC" \
+          || rc=$?
       fi
       ;;
     copilot)
@@ -1881,6 +2122,8 @@ run_writer() {
     local _writer_used="$model"
     if [ "$REVIEW_ENGINE" = "claude" ] && [ -n "${_CLAUDE_CHAIN_MODEL_USED:-}" ]; then
       _writer_used="$_CLAUDE_CHAIN_MODEL_USED"
+    elif [ "$REVIEW_ENGINE" = "gemini" ] && [ -n "${_GEMINI_CHAIN_MODEL_USED:-}" ]; then
+      _writer_used="$_GEMINI_CHAIN_MODEL_USED"
     fi
     _record_engine_tokens "writer" "$REVIEW_ENGINE" "$_writer_used" "$prompt_file" "$_tmp"
   fi

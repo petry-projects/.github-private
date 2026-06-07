@@ -1,46 +1,49 @@
 #!/usr/bin/env bash
 # Configurable via:
 #   STUB_ENGINE_RESPONSE, STUB_ENGINE_EXIT, STUB_ENGINE_DELAY
-#   STUB_GEMINI_USAGE    — "prompt cached candidates" emitted under
-#                          .stats.models.<model>.tokens when --output-format json
-#                          is requested. Default "120 20 40".
-#   STUB_GEMINI_THOUGHTS — thinking token count added to .tokens.thoughts.
-#                          Default 0 (omitted when 0).
-model="stub-gemini-model"
-output_format="text"
+#   STUB_ENGINE_EXIT_BY_MODEL  — pipe-delimited "model=exit_code" pairs.
+#                                If set and a pair matches --model, that exit
+#                                code overrides STUB_ENGINE_EXIT. Models not in
+#                                the map fall back to STUB_ENGINE_EXIT.
+#   STUB_ENGINE_RESPONSE_BY_MODEL  — pipe-delimited "model=response" pairs,
+#                                    same lookup as EXIT_BY_MODEL.
+#   STUB_ENGINE_RECORD_MODELS  — if set to a writable path, every --model value
+#                                seen is appended as a new line for inspection.
+model=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --prompt|--approval-mode|--output-format)
+      shift; shift ;;
     --model)
       model="$2"; shift; shift ;;
-    --output-format)
-      output_format="$2"; shift; shift ;;
-    --prompt|--approval-mode)
-      shift; shift ;;
     *) shift ;;
   esac
 done
+
+if [ -n "${STUB_ENGINE_RECORD_MODELS:-}" ]; then
+  printf '%s\n' "$model" >> "$STUB_ENGINE_RECORD_MODELS" 2>/dev/null || true
+fi
+
 sleep "${STUB_ENGINE_DELAY:-0}"
 
 response="${STUB_ENGINE_RESPONSE:-stub engine response}"
-
-if [ "$output_format" = "json" ]; then
-  read -r _p _c _cand <<< "${STUB_GEMINI_USAGE:-120 20 40}"
-  _th="${STUB_GEMINI_THOUGHTS:-0}"
-  if command -v jq >/dev/null 2>&1; then
-    jq -cn --arg response "$response" --arg model "$model" \
-      --argjson p "${_p:-0}" --argjson c "${_c:-0}" --argjson cand "${_cand:-0}" \
-      --argjson th "${_th:-0}" \
-      '{response:$response,
-        stats:{models:{($model):{tokens:(
-          {prompt:$p, cached:$c, candidates:$cand, total:($p + $cand)}
-          | if $th > 0 then . + {thoughts:$th} else . end
-        )}}}}'
-  else
-    printf '{"response":"%s","stats":{"models":{"%s":{"tokens":{"prompt":%s,"cached":%s,"candidates":%s}}}}}\n' \
-      "$response" "$model" "${_p:-0}" "${_c:-0}" "${_cand:-0}"
-  fi
-else
-  printf '%s\n' "$response"
+if [ -n "${STUB_ENGINE_RESPONSE_BY_MODEL:-}" ] && [ -n "$model" ]; then
+  IFS='|' read -ra _pairs <<< "$STUB_ENGINE_RESPONSE_BY_MODEL"
+  for _p in "${_pairs[@]}"; do
+    case "$_p" in
+      "$model="*) response="${_p#"$model="}"; break ;;
+    esac
+  done
 fi
+printf '%s\n' "$response"
 
-exit "${STUB_ENGINE_EXIT:-0}"
+exit_code="${STUB_ENGINE_EXIT:-0}"
+if [ -n "${STUB_ENGINE_EXIT_BY_MODEL:-}" ] && [ -n "$model" ]; then
+  IFS='|' read -ra _epairs <<< "$STUB_ENGINE_EXIT_BY_MODEL"
+  for _ep in "${_epairs[@]}"; do
+    case "$_ep" in
+      "$model="*) exit_code="${_ep#"$model="}"; break ;;
+    esac
+  done
+fi
+exit "$exit_code"

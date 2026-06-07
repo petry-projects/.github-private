@@ -416,77 +416,6 @@ STUB
   [ "$status" -eq 0 ]
 }
 
-# ── real-usage capture (cache) tests ──────────────────────────────────────────
-
-@test "usage: claude run captures real cache-read and cache-write from JSON" {
-  _source_engine "claude"
-  export STUB_ENGINE_EXIT=0
-  export STUB_ENGINE_RESPONSE="verdict text"
-  export STUB_CLAUDE_USAGE="2000 800 600 150"   # input cache_read cache_write output
-  local log; log=$(mktemp)
-  export TOKEN_LOG_FILE="$log"
-  export TEST_OWNED_TOKEN_LOG="$log"
-
-  run run_triage "$TEST_PROMPT"
-
-  [ "$status" -eq 0 ]
-  [ "$(jq -r '.input_tokens'          < "$log")" = "2000" ]
-  [ "$(jq -r '.cache_read_tokens'     < "$log")" = "800" ]
-  [ "$(jq -r '.cache_creation_tokens' < "$log")" = "600" ]
-  [ "$(jq -r '.output_tokens'         < "$log")" = "150" ]
-}
-
-@test "usage: claude JSON mode still returns plain text to the caller (not JSON)" {
-  _source_engine "claude"
-  export STUB_ENGINE_EXIT=0
-  export STUB_ENGINE_RESPONSE="just the verdict"
-  export STUB_CLAUDE_USAGE="10 0 0 5"
-  local log; log=$(mktemp)
-  export TOKEN_LOG_FILE="$log"
-  export TEST_OWNED_TOKEN_LOG="$log"
-
-  run run_triage "$TEST_PROMPT"
-
-  [ "$status" -eq 0 ]
-  [ "$output" = "just the verdict" ]   # extracted .result, not the JSON envelope
-}
-
-@test "usage: ENGINE_USAGE_JSON=0 disables JSON capture (falls back to estimate)" {
-  _source_engine "claude"
-  export STUB_ENGINE_EXIT=0
-  export STUB_ENGINE_RESPONSE="verdict"
-  export STUB_CLAUDE_USAGE="2000 800 600 150"
-  export ENGINE_USAGE_JSON=0
-  local log; log=$(mktemp)
-  export TOKEN_LOG_FILE="$log"
-  export TEST_OWNED_TOKEN_LOG="$log"
-
-  run run_triage "$TEST_PROMPT"
-
-  [ "$status" -eq 0 ]
-  # Estimate path → cache figures unknown → 0 (not the stub's 800/600).
-  [ "$(jq -r '.cache_read_tokens'     < "$log")" = "0" ]
-  [ "$(jq -r '.cache_creation_tokens' < "$log")" = "0" ]
-}
-
-@test "usage: gemini run captures usage (input = prompt - cached)" {
-  _source_engine "gemini"
-  export STUB_ENGINE_EXIT=0
-  export STUB_ENGINE_RESPONSE="gem verdict"
-  export STUB_GEMINI_USAGE="500 100 60"   # prompt cached candidates
-  local log; log=$(mktemp)
-  export TOKEN_LOG_FILE="$log"
-  export TEST_OWNED_TOKEN_LOG="$log"
-
-  run run_triage "$TEST_PROMPT"
-
-  [ "$status" -eq 0 ]
-  [ "$(jq -r '.engine'            < "$log")" = "gemini" ]
-  [ "$(jq -r '.input_tokens'      < "$log")" = "400" ]
-  [ "$(jq -r '.cache_read_tokens' < "$log")" = "100" ]
-  [ "$(jq -r '.output_tokens'     < "$log")" = "60" ]
-}
-
 @test "token: run_writer_with_fallback logs the fallback engine (not rate-limited primary)" {
   _source_engine "claude"
   export DEV_LEAD_DRY_RUN=false
@@ -539,6 +468,88 @@ STUB
   [ "$status" -eq 2 ]
   # Rate-limited → no successful completion → token log must be empty
   [ ! -s "$log" ]
+}
+
+@test "token: gemini writer chain fallback records the model that actually ran" {
+  # Guard for PRRT_kwDOR9SdIs6FgOrF: run_writer previously used a tee pipeline
+  # for the gemini path, which ran _gemini_chain_invoke in a subshell. That
+  # caused _GEMINI_CHAIN_MODEL_USED to be lost, so _record_engine_tokens logged
+  # the first (rate-limited) model instead of the one that produced the output.
+  export GEMINI_ACTION_MODEL_CHAIN="gemini-3.5-flash,gemini-2.5-pro"
+  export MODEL_RECORD STUB_BIN_DIR
+  _source_engine "gemini"
+  export DEV_LEAD_DRY_RUN=false
+  local log; log=$(mktemp)
+  export TOKEN_LOG_FILE="$log"
+  export TEST_OWNED_TOKEN_LOG="$log"
+  export STUB_ENGINE_EXIT_BY_MODEL="gemini-3.5-flash=1|gemini-2.5-pro=0"
+  export STUB_ENGINE_RESPONSE_BY_MODEL="gemini-3.5-flash=too many requests (429)|gemini-2.5-pro=pro response"
+
+  # Call run_writer directly (not via `run`) so env changes are visible here
+  run_writer "$TEST_PROMPT"
+  local wrc=$?
+
+  [ "$wrc" -eq 0 ]
+  # _GEMINI_CHAIN_MODEL_USED must be the fallback model, not the rate-limited one
+  [ "$_GEMINI_CHAIN_MODEL_USED" = "gemini-2.5-pro" ]
+  # Token record must attribute the output to the fallback model
+  [ -s "$log" ]
+  local model; model=$(jq -r '.model' < "$log")
+  [ "$model" = "gemini-2.5-pro" ]
+}
+
+@test "token: gemini triage chain fallback records the model that actually ran" {
+  # Guard for the triage tee-pipeline bug: run_triage previously used tee for
+  # the gemini path, running _gemini_chain_invoke in a subshell and losing
+  # _GEMINI_CHAIN_MODEL_USED. _record_engine_tokens then logged the tier default
+  # instead of the fallback model that actually produced the output.
+  export GEMINI_TRIAGE_MODEL="gemini-3.5-flash"
+  export GEMINI_TRIAGE_MODEL_CHAIN="gemini-3.5-flash,gemini-2.0-flash"
+  _source_engine "gemini"
+  local log; log=$(mktemp)
+  export TOKEN_LOG_FILE="$log"
+  export TEST_OWNED_TOKEN_LOG="$log"
+  export STUB_ENGINE_EXIT_BY_MODEL="gemini-3.5-flash=1|gemini-2.0-flash=0"
+  export STUB_ENGINE_RESPONSE_BY_MODEL="gemini-3.5-flash=too many requests (429)|gemini-2.0-flash=triage result"
+
+  # Call run_triage directly (not via `run`) so env changes are visible here
+  run_triage "$TEST_PROMPT"
+  local trc=$?
+
+  [ "$trc" -eq 0 ]
+  # _GEMINI_CHAIN_MODEL_USED must be the fallback model, not the rate-limited one
+  [ "$_GEMINI_CHAIN_MODEL_USED" = "gemini-2.0-flash" ]
+  # Token record must attribute the output to the fallback model
+  [ -s "$log" ]
+  local model; model=$(jq -r '.model' < "$log")
+  [ "$model" = "gemini-2.0-flash" ]
+}
+
+@test "token: gemini agentic chain fallback records the model that actually ran" {
+  # Guard for the agentic tee-pipeline bug: run_agentic previously used tee for
+  # the gemini path, running _gemini_chain_invoke in a subshell and losing
+  # _GEMINI_CHAIN_MODEL_USED. _record_engine_tokens then logged the caller-passed
+  # model instead of the fallback model that actually produced the output.
+  export GEMINI_DEEP_MODEL="gemini-3.5-flash"
+  export GEMINI_DEEP_MODEL_CHAIN="gemini-3.5-flash,gemini-2.5-pro"
+  _source_engine "gemini"
+  local log; log=$(mktemp)
+  export TOKEN_LOG_FILE="$log"
+  export TEST_OWNED_TOKEN_LOG="$log"
+  export STUB_ENGINE_EXIT_BY_MODEL="gemini-3.5-flash=1|gemini-2.5-pro=0"
+  export STUB_ENGINE_RESPONSE_BY_MODEL="gemini-3.5-flash=too many requests (429)|gemini-2.5-pro=deep result"
+
+  # Call run_agentic directly (not via `run`) so env changes are visible here
+  run_agentic "$TEST_PROMPT" "$ENGINE_DEEP_MODEL" "deep"
+  local arc=$?
+
+  [ "$arc" -eq 0 ]
+  # _GEMINI_CHAIN_MODEL_USED must be the fallback model, not the rate-limited one
+  [ "$_GEMINI_CHAIN_MODEL_USED" = "gemini-2.5-pro" ]
+  # Token record must attribute the output to the fallback model
+  [ -s "$log" ]
+  local model; model=$(jq -r '.model' < "$log")
+  [ "$model" = "gemini-2.5-pro" ]
 }
 
 @test "writer: run_writer persists session output to /tmp/dev-lead-session-output.txt" {

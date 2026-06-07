@@ -1090,10 +1090,22 @@ fetch_pr_context() {
   # non-COMMENTED reviews determine the effective blocking state per user.
   if ! ALL_REVIEWS_JSON=$(gh api --paginate "repos/${REPO}/pulls/${PR_NUMBER}/reviews?per_page=100" \
     2>/dev/null \
-    | jq -s '[ [.[].[] | select(.user != null)] | group_by(.user.login)[] | . as $g | (($g | map(select(.state != "COMMENTED")) | sort_by(.id) | last) // ($g | sort_by(.id) | last)) | {id:.id, user:.user.login, state:.state, submitted_at:.submitted_at, body:.body, all_change_request_bodies:($g | map(select(.state == "CHANGES_REQUESTED")) | sort_by(.id) | map(.body))} ]' \
+    | jq -s '[ [.[].[] | select(.user != null)] | group_by(.user.login)[] | . as $g | (($g | map(select(.state != "COMMENTED")) | sort_by(.id) | last) // ($g | sort_by(.id) | last)) | {id:.id, user:.user.login, state:.state, submitted_at:.submitted_at, commit_id:.commit_id, body:.body, all_change_request_bodies:($g | map(select(.state == "CHANGES_REQUESTED")) | sort_by(.id) | map(.body))} ]' \
     2>/dev/null); then
     echo "::error::fetch_pr_context: failed to fetch PR reviews for #${PR_NUMBER} — cannot assess PR state" >&2
     return 1
+  fi
+  # Downgrade stale CHANGES_REQUESTED (on a prior commit) to DISMISSED so the
+  # exported JSON matches the commit_id filtering in has_hard_blockers and
+  # has_tier1_blockers, preventing the agent from treating stale review requests
+  # as live blockers. Entries without a commit_id are treated as current.
+  if [ -n "${HEAD_SHA:-}" ]; then
+    ALL_REVIEWS_JSON=$(printf '%s' "$ALL_REVIEWS_JSON" | \
+      jq --arg sha "$HEAD_SHA" \
+        'map(if .state == "CHANGES_REQUESTED" and .commit_id != null and .commit_id != $sha
+             then . + {"state": "DISMISSED"}
+             else . end)' \
+      2>/dev/null || echo "$ALL_REVIEWS_JSON")
   fi
   export ALL_REVIEWS_JSON
 }
@@ -1185,16 +1197,34 @@ resolve_bot_outdated_threads() {
 has_hard_blockers() {
   local failing_checks changes_requested
 
+  # Count checks that are either failing (non-success conclusion) OR still
+  # in progress (conclusion is null and status is queued/in_progress/requested/
+  # waiting/pending). Without the in-progress check, a no-changes terminal can
+  # be posted while CI is still running, and if that check later fails the retry
+  # cron is blocked by the stale terminal marker on the same SHA.
   failing_checks=$(printf '%s' "${CI_STATUS_JSON:-[]}" | \
-    jq '[.[] | select(.conclusion != null and (
-          .conclusion == "failure" or .conclusion == "timed_out" or
-          .conclusion == "cancelled" or .conclusion == "action_required" or
-          .conclusion == "stale" or .conclusion == "startup_failure" or
-          .conclusion == "pending"
-        ))] | length' 2>/dev/null || echo "0")
+    jq '[.[] | select(
+          (.conclusion != null and (
+            .conclusion == "failure" or .conclusion == "timed_out" or
+            .conclusion == "cancelled" or .conclusion == "action_required" or
+            .conclusion == "stale" or .conclusion == "startup_failure" or
+            .conclusion == "pending"
+          ))
+          or
+          (.conclusion == null and (
+            .status == "in_progress" or .status == "queued" or
+            .status == "requested" or .status == "waiting" or .status == "pending"
+          ))
+        )] | length' 2>/dev/null || echo "0")
 
+  # Only count CHANGES_REQUESTED reviews that are on the current HEAD SHA.
+  # A stale CHANGES_REQUESTED on a previous commit is not a live blocker for
+  # the current commit; counting it would incorrectly block the no-changes
+  # terminal and cause the retry cron to loop indefinitely.
   changes_requested=$(printf '%s' "${ALL_REVIEWS_JSON:-[]}" | \
-    jq '[.[] | select(.state == "CHANGES_REQUESTED")] | length' \
+    jq --arg sha "${HEAD_SHA:-}" \
+      '[.[] | select(.state == "CHANGES_REQUESTED"
+                     and ($sha == "" or .commit_id == null or .commit_id == $sha))] | length' \
     2>/dev/null || echo "0")
 
   [ "${failing_checks:-0}" -gt 0 ] || [ "${changes_requested:-0}" -gt 0 ]
@@ -1211,15 +1241,24 @@ has_tier1_blockers() {
   local failing_checks changes_requested unresolved_bot_threads
 
   failing_checks=$(printf '%s' "${CI_STATUS_JSON:-[]}" | \
-    jq '[.[] | select(.conclusion != null and (
-          .conclusion == "failure" or .conclusion == "timed_out" or
-          .conclusion == "cancelled" or .conclusion == "action_required" or
-          .conclusion == "stale" or .conclusion == "startup_failure" or
-          .conclusion == "pending"
-        ))] | length' 2>/dev/null || echo "0")
+    jq '[.[] | select(
+          (.conclusion != null and (
+            .conclusion == "failure" or .conclusion == "timed_out" or
+            .conclusion == "cancelled" or .conclusion == "action_required" or
+            .conclusion == "stale" or .conclusion == "startup_failure" or
+            .conclusion == "pending"
+          ))
+          or
+          (.conclusion == null and (
+            .status == "in_progress" or .status == "queued" or
+            .status == "requested" or .status == "waiting" or .status == "pending"
+          ))
+        )] | length' 2>/dev/null || echo "0")
 
   changes_requested=$(printf '%s' "${ALL_REVIEWS_JSON:-[]}" | \
-    jq '[.[] | select(.state == "CHANGES_REQUESTED")] | length' \
+    jq --arg sha "${HEAD_SHA:-}" \
+      '[.[] | select(.state == "CHANGES_REQUESTED"
+                     and ($sha == "" or .commit_id == null or .commit_id == $sha))] | length' \
     2>/dev/null || echo "0")
 
   # Count unresolved bot reviewer threads with cursor pagination to cover PRs with >100 threads.
@@ -1545,6 +1584,12 @@ ${retry_msg}"
         gh api -X DELETE "repos/${REPO}/issues/comments/${_stale_id}" 2>/dev/null || \
           echo "::warning::post_reviews_rate_limited: failed to delete old rate-limited marker ${_stale_id}" >&2
       done
+    else
+      # Marker post failed — return non-zero so callers know the rate-limited
+      # state was not recorded. Without a marker the retry cron has no way to
+      # rediscover this SHA+intent, so the rate-limited PR would be silently lost.
+      echo "::warning::post_reviews_rate_limited: failed to post rate-limited marker for intent=${intent}" >&2
+      return 1
     fi
   fi
 
@@ -1594,8 +1639,9 @@ ${retry_msg}"
 handle_rate_limit() {
   local intent="$1"
   echo "::warning::All engines rate-limited for intent=${intent} — posting rate-limited marker"
-  post_reviews_rate_limited "$intent"
-  [[ -n "${PR_NUMBER:-}" ]] && try_enable_auto_merge
+  post_reviews_rate_limited "$intent" || \
+    { echo "::error::handle_rate_limit: marker post failed for intent=${intent} — rate-limited PR may not be retried automatically" >&2; exit 1; }
+  try_enable_auto_merge
   exit 2
 }
 
@@ -1643,7 +1689,10 @@ case "$INTENT_TYPE" in
           echo "::warning::Tier-1 blockers still present (failing CI or CHANGES_REQUESTED reviews) — posting retry marker with backoff"
           post_reviews_rate_limited "fix-reviews" "blocked"
         elif has_tier1_blockers; then
-          echo "::notice::Unresolved bot review threads remain — not posting no-changes terminal to allow future retries"
+          # Bot-thread-only blockers: do not post a rate-limited retry marker.
+          # Resolving a bot thread naturally triggers a new fix-reviews event,
+          # so a marker would cause redundant retry-cron cycles with no benefit.
+          echo "::notice::Unresolved bot review threads remain — will retry when bot feedback is resolved"
         else
           post_no_changes "fix-reviews"
         fi
@@ -1739,7 +1788,10 @@ case "$INTENT_TYPE" in
           echo "::warning::Tier-1 blockers still present (failing CI or CHANGES_REQUESTED reviews) — posting retry marker with backoff"
           post_reviews_rate_limited "review-changes" "blocked"
         elif has_tier1_blockers; then
-          echo "::notice::Unresolved bot review threads remain — not posting no-changes terminal to allow future retries"
+          # Bot-thread-only blockers: do not post a rate-limited retry marker.
+          # Resolving a bot thread naturally triggers a new review-changes event,
+          # so a marker would cause redundant retry-cron cycles with no benefit.
+          echo "::notice::Unresolved bot review threads remain — will retry when bot feedback is resolved"
         else
           post_reviews_terminal "review-changes" "no-changes" "No changes were needed for this PR."
         fi

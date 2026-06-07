@@ -189,8 +189,10 @@ _source_engine() {
   run run_writer "$TEST_PROMPT"
 
   [ "$status" -eq 0 ]
-  # No claude model recorded (we ran gemini)
-  [ ! -s "$MODEL_RECORD" ]
+  # No claude model recorded (we ran gemini). stub-gemini also records to
+  # MODEL_RECORD now (added with the gemini chain — see test_engine_gemini_chain.bats),
+  # so the assertion explicitly excludes claude entries rather than checking emptiness.
+  ! grep -q "^claude-" "$MODEL_RECORD"
 }
 
 # ── File-based rate-limit + reset-time helpers ─────────────────────────────
@@ -279,6 +281,77 @@ _source_engine() {
   run _claude_chain_invoke "  ,  ,  " "$TEST_PROMPT" 30 --allowed-tools Read
   [ "$status" -eq 1 ]
   [[ "$output" == *"no valid model entries"* ]] || [[ "$stderr" == *"no valid model entries"* ]]
+}
+
+# ── Claude last-resort path (mktemp+/tmp both unavailable) ────────────────────
+
+@test "chain: mktemp+/tmp both unavailable with rate-limited response → returns exit 2" {
+  # Hard-degraded regression: mktemp fails AND the /tmp fallback prefix is
+  # unwritable, so the function lands in the last-resort (in-memory) branch.
+  # The branch must scan the combined output for rate-limit indicators and
+  # exit 2 — otherwise a 429 would surface as a generic non-zero exit and
+  # the cross-provider fallback would never trigger.
+  _source_engine "claude"
+  cat > "$STUB_BIN_DIR/mktemp" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+  chmod +x "$STUB_BIN_DIR/mktemp"
+  export _CLAUDE_CHAIN_FB_PREFIX="/nonexistent/dir/claude-chain"
+  export STUB_ENGINE_EXIT_BY_MODEL="claude-sonnet-4-6=1"
+  export STUB_ENGINE_RESPONSE_BY_MODEL="claude-sonnet-4-6=You've hit your limit · resets 5pm (UTC)"
+
+  run _claude_chain_invoke "claude-sonnet-4-6" "$TEST_PROMPT" 30
+
+  [ "$status" -eq 2 ]
+}
+
+@test "chain: mktemp+/tmp unavailable, all throttled → output contains rate-limit text for caller detection" {
+  # Guard for PRRT_kwDOR9SdIs6HnbAa: when all models are throttled in the
+  # last-resort (in-memory) branch, the function must emit the final throttled
+  # response to stdout so callers scanning for rate-limit text can detect the
+  # condition and trigger engine fallback rather than treating it as a hard
+  # cascade failure.
+  _source_engine "claude"
+  cat > "$STUB_BIN_DIR/mktemp" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+  chmod +x "$STUB_BIN_DIR/mktemp"
+  export _CLAUDE_CHAIN_FB_PREFIX="/nonexistent/dir/claude-chain"
+  export STUB_ENGINE_EXIT_BY_MODEL="claude-sonnet-4-6=1|claude-opus-4-7=1"
+  export STUB_ENGINE_RESPONSE_BY_MODEL="claude-sonnet-4-6=hit your limit|claude-opus-4-7=429 too many requests"
+
+  run _claude_chain_invoke "claude-sonnet-4-6,claude-opus-4-7" "$TEST_PROMPT" 30
+
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"429 too many requests"* ]] || [[ "$output" == *"hit your limit"* ]]
+}
+
+@test "chain: mktemp+/tmp unavailable, all throttled → reset file not clobbered" {
+  # parse_reset_time is called inside the loop for each last-resort
+  # rate-limited response; the post-loop all_rl block must NOT call
+  # parse_reset_time_files with empty strings, which would clobber the
+  # timestamp already written inside the loop.
+  _source_engine "claude"
+  cat > "$STUB_BIN_DIR/mktemp" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+  chmod +x "$STUB_BIN_DIR/mktemp"
+  export _CLAUDE_CHAIN_FB_PREFIX="/nonexistent/dir/claude-chain"
+  export STUB_ENGINE_EXIT_BY_MODEL="claude-sonnet-4-6=1"
+  export STUB_ENGINE_RESPONSE_BY_MODEL="claude-sonnet-4-6=You've hit your limit · resets 11:20pm (UTC)"
+
+  rm -f /tmp/dev-lead-rate-limit-reset
+
+  run _claude_chain_invoke "claude-sonnet-4-6" "$TEST_PROMPT" 30
+
+  [ "$status" -eq 2 ]
+  # parse_reset_time was called in the loop and wrote the reset file; it must
+  # not be cleared by a post-loop parse_reset_time_files call with no files.
+  [ -f /tmp/dev-lead-rate-limit-reset ]
+  [ -s /tmp/dev-lead-rate-limit-reset ]
 }
 
 @test "agentic: explicit model arg differing from tier default is honored (no chain expansion)" {

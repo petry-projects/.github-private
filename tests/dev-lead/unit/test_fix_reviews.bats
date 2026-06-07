@@ -335,7 +335,10 @@ GHEOF
   [[ "$output" == *"rate-limited"* ]]
 }
 
-@test "fix-reviews: rate-limited: existing marker for same SHA+intent is replaced with fresh reset" {
+@test "fix-reviews: rate-limited dedup: existing marker for same SHA+intent still posts updated marker" {
+  # When a prior rate-limited marker already exists for this SHA+intent, the function
+  # always posts the new marker (to keep reset_time fresh) but suppresses the
+  # per-cycle user-visible ack comment. The script still exits 2 (rate-limited).
   export INTENT_TYPE="fix-reviews"
   export DEV_LEAD_DRY_RUN="false"
   export HEAD_SHA="ddd444eee555"
@@ -375,8 +378,7 @@ STUB
   run bash "$FIX_REVIEWS_SCRIPT"
 
   [ "$status" -eq 2 ]
-  # Stale rate-limited marker must be replaced with a fresh one (not skipped as duplicate)
-  [[ "$output" != *"skipping duplicate"* ]]
+  # Marker is always posted (to update reset_time); user-visible ack is suppressed on repeat cycles.
   [[ "$output" == *"COMMENT_POSTED"* ]]
 }
 
@@ -1501,6 +1503,54 @@ GHEOF
 # Regression tests for issue #425: the agent must not declare "no-changes" while
 # CI is failing or a reviewer has CHANGES_REQUESTED.
 
+@test "fix-reviews: stale CHANGES_REQUESTED on prior commit is excluded from ALL_REVIEWS_JSON" {
+  # fetch_pr_context must downgrade CHANGES_REQUESTED reviews whose commit_id
+  # differs from HEAD_SHA to DISMISSED before exporting ALL_REVIEWS_JSON. This
+  # prevents the agent prompt from treating stale review requests as live blockers
+  # and driving unnecessary edits. The engine env receives the filtered JSON.
+  export INTENT_TYPE="fix-reviews"
+  export DEV_LEAD_DRY_RUN="false"
+  export HEAD_SHA="ddd444eee555"
+  export COPILOT_GITHUB_TOKEN="stub-token"
+
+  cat > "$STUB_BIN_DIR/gh" << 'GHEOF'
+#!/usr/bin/env bash
+ARGS="$*"
+case "$ARGS" in
+  *"commits/"*"check-runs"*)
+    echo '{"check_runs":[]}' ;;
+  *"commits/"*"statuses"*)
+    echo '[]' ;;
+  *"pulls/"*"/reviews"*)
+    # CHANGES_REQUESTED on a prior commit (commit_id differs from HEAD_SHA ddd444eee555)
+    echo '[{"id":1,"user":{"login":"reviewer1"},"state":"CHANGES_REQUESTED","submitted_at":"2024-01-01T00:00:00Z","commit_id":"aaa000bbb111"}]' ;;
+  *"graphql"*)
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}' ;;
+  *"issues/"*"comments"*)
+    echo "[]" ;;
+  *"pr checkout"*) exit 0 ;;
+  *"pr comment"*) exit 0 ;;
+  *"pr merge"*) exit 0 ;;
+  *"pulls/"*) echo '{"head":{"sha":"ddd444eee555"},"auto_merge":null}' ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+
+  # A claude stub that reports the state of ALL_REVIEWS_JSON[0] as seen by the engine
+  cat > "$STUB_BIN_DIR/claude" << 'STUB'
+#!/usr/bin/env bash
+echo "REVIEW_STATE_IN_ENV:$(printf '%s' "${ALL_REVIEWS_JSON:-[]}" | jq -r '.[0].state // "null"')"
+exit 0
+STUB
+  chmod +x "$STUB_BIN_DIR/claude"
+
+  run bash "$FIX_REVIEWS_SCRIPT"
+
+  # The stale CHANGES_REQUESTED must appear as DISMISSED in the agent environment
+  [[ "$output" == *"REVIEW_STATE_IN_ENV:DISMISSED"* ]]
+}
+
 @test "fix-reviews: does not post no-changes when Tier-1 blockers exist (fix-reviews)" {
   local calls_file tmpdir
   calls_file="$(mktemp)"
@@ -2595,6 +2645,102 @@ GHEOF
   local jenkins_conclusion
   jenkins_conclusion=$(echo "$output" | jq -r '.[] | select(.name == "jenkins/build") | .conclusion')
   [ "$jenkins_conclusion" = "pending" ]
+}
+
+@test "fix-reviews: check-run with status 'requested' and null conclusion is treated as Tier-1 blocker" {
+  # Guard for PRRT_kwDOR9SdIs6HnbAc: GitHub's Checks API can return
+  # status=requested/waiting/pending with conclusion=null for queued checks.
+  # Without these statuses in the filter, a no-changes terminal could be posted
+  # while required CI has not yet started, causing the retry cron to skip it as
+  # already terminal if that check later fails.
+  local tmpdir
+  tmpdir="$(mktemp -d)"
+
+  cat > "$STUB_BIN_DIR/gh" <<'GHEOF'
+#!/usr/bin/env bash
+ARGS="$*"
+case "$ARGS" in
+  *"check-runs"*)
+    echo '{"check_runs":[
+      {"name":"build","status":"requested","conclusion":null,"details_url":"https://example.com"},
+      {"name":"lint","status":"completed","conclusion":"success","details_url":"https://example.com"}
+    ]}' ;;
+  *"statuses"*)
+    echo '[]' ;;
+  *"pulls/"*"reviews"*)
+    echo '[]' ;;
+  *"graphql"*)
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+  *"issues/"*"comments"*)
+    echo "[]" ;;
+  *"pr checkout"*) exit 0 ;;
+  *"pr comment"*) exit 0 ;;
+  *"pr merge"*) exit 0 ;;
+  *"pulls/"*) echo '{"head":{"sha":"ddd444eee555"},"auto_merge":null}' ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+
+  run bash -c "
+    cd '$tmpdir'
+    export INTENT_TYPE=fix-reviews DEV_LEAD_DRY_RUN=true
+    export PR_NUMBER=54 HEAD_SHA=ddd444eee555 REPO='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export PATH=\"$STUB_BIN_DIR:\$PATH\"
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+  rm -rf "$tmpdir"
+
+  [ "$status" -eq 0 ]
+  # A check with status=requested and null conclusion must block no-changes
+  [[ "$output" != *"status=no-changes"* ]]
+  [[ "$output" == *"Tier-1 blockers still present"* ]]
+}
+
+@test "fix-reviews: check-run with status 'waiting' and null conclusion is treated as Tier-1 blocker" {
+  # Companion to the 'requested' test: covers the 'waiting' status value.
+  local tmpdir
+  tmpdir="$(mktemp -d)"
+
+  cat > "$STUB_BIN_DIR/gh" <<'GHEOF'
+#!/usr/bin/env bash
+ARGS="$*"
+case "$ARGS" in
+  *"check-runs"*)
+    echo '{"check_runs":[
+      {"name":"deploy","status":"waiting","conclusion":null,"details_url":"https://example.com"}
+    ]}' ;;
+  *"statuses"*)
+    echo '[]' ;;
+  *"pulls/"*"reviews"*)
+    echo '[]' ;;
+  *"graphql"*)
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+  *"issues/"*"comments"*)
+    echo "[]" ;;
+  *"pr checkout"*) exit 0 ;;
+  *"pr comment"*) exit 0 ;;
+  *"pr merge"*) exit 0 ;;
+  *"pulls/"*) echo '{"head":{"sha":"ddd444eee555"},"auto_merge":null}' ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+
+  run bash -c "
+    cd '$tmpdir'
+    export INTENT_TYPE=fix-reviews DEV_LEAD_DRY_RUN=true
+    export PR_NUMBER=54 HEAD_SHA=ddd444eee555 REPO='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export PATH=\"$STUB_BIN_DIR:\$PATH\"
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+  rm -rf "$tmpdir"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"status=no-changes"* ]]
+  [[ "$output" == *"Tier-1 blockers still present"* ]]
 }
 
 # ── Thread 2: statuses fetch failure fails closed ────────────────────────────
