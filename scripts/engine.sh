@@ -977,7 +977,7 @@ run_writer_with_fallback() {
       continue
     fi
     if [ "$engine" = "gemini" ] && [ -z "${GEMINI_API_KEY:-}${GOOGLE_API_KEY:-}" ]; then
-      echo "::warning::Skipping gemini fallback: GEMINI_API_KEY not configured" >&2
+      echo "::warning::Skipping gemini fallback: GEMINI_API_KEY or GOOGLE_API_KEY not configured" >&2
       continue
     fi
 
