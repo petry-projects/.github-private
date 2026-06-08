@@ -36,7 +36,7 @@ def main() -> int:
     if "permissions" not in doc:
         print(
             f"FAIL: {WORKFLOW} is missing a top-level 'permissions:' declaration.\n"
-            "  Add `permissions: {{}}` before `jobs:` to satisfy the least-privilege policy.\n"
+            "  Add `permissions: {}` before `jobs:` to satisfy the least-privilege policy.\n"
             "  Each job already has its own scoped permissions block — the top-level block\n"
             "  only needs to reset the GitHub default (write-all) to none."
         )
