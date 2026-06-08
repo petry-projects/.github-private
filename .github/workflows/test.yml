@@ -21,5 +21,8 @@ jobs:
       - name: Run list-prs sort tests
         run: bash tests/test_list_prs_sort.sh
 
+      - name: Install test dependencies
+        run: pip install pyyaml
+
       - name: Run copilot-setup-steps workflow tests
         run: bash tests/test_copilot_setup_steps.sh
