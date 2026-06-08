@@ -22,6 +22,7 @@ setup() {
   export TEST_PROMPT
 
   export DEV_LEAD_DRY_RUN="false"
+  export GEMINI_API_KEY="dummy-test-key"
 }
 
 teardown() {
@@ -195,4 +196,44 @@ GHEOF
   # claude should have been called (recorded in record_file)
   [ -s "$record_file" ]
   rm -f "$record_file"
+}
+
+@test "fallback: gemini skipped when no auth env vars set → falls through to copilot" {
+  # claude exits 2 (rate-limited), no GEMINI_API_KEY/GOOGLE_API_KEY set.
+  # gemini should be skipped entirely (not called); copilot should succeed.
+  _make_stub "claude" 2
+  local gemini_record
+  gemini_record="$(mktemp)"
+  _make_recording_stub "gemini" 1 "$gemini_record"
+  unset GEMINI_API_KEY GOOGLE_API_KEY 2>/dev/null || true
+  export COPILOT_GITHUB_TOKEN="stub-token"
+  cat > "$STUB_BIN_DIR/gh" <<'GHEOF'
+#!/usr/bin/env bash
+case "$*" in
+  *"copilot"*) echo "success output"; exit 0 ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+  _source_engine "claude"
+
+  run run_writer_with_fallback "$TEST_PROMPT"
+
+  [ "$status" -eq 0 ]
+  # gemini must NOT have been called (file should be empty)
+  [ ! -s "$gemini_record" ]
+  rm -f "$gemini_record"
+}
+
+@test "fallback: gemini used normally when GEMINI_API_KEY is set" {
+  # claude exits 2 (rate-limited), GEMINI_API_KEY is set → gemini should be tried and succeed
+  _make_stub "claude" 2
+  _make_stub "gemini" 0
+  export GEMINI_API_KEY="test-api-key"
+  _source_engine "claude"
+
+  run run_writer_with_fallback "$TEST_PROMPT"
+
+  [ "$status" -eq 0 ]
+  unset GEMINI_API_KEY
 }
