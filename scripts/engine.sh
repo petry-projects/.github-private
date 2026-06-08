@@ -739,8 +739,11 @@ _record_engine_tokens() {
   # Prefer real usage captured by the engine. Read from the sidecar file first
   # (written by parse_engine_usage even when the engine ran inside a subshell);
   # fall back to LAST_* globals for non-piped callers.
+  # Inline the sidecar path rather than calling _engine_usage_sidecar() via $()
+  # so BASHPID here matches the BASHPID used by parse_engine_usage, which also
+  # runs in the same shell (file-redirect pattern, not tee-pipeline).
   local _uf=""
-  declare -f _engine_usage_sidecar >/dev/null 2>&1 && _uf="$(_engine_usage_sidecar)"
+  [ -n "${TOKEN_LOG_FILE:-}" ] && _uf="${TOKEN_LOG_FILE}.last-usage.${BASHPID}"
   if [ -n "$_uf" ] && [ -s "$_uf" ]; then
     IFS=$'\t' read -r input_tokens cache_read_tokens cache_write_tokens output_tokens < "$_uf"
     rm -f "$_uf" 2>/dev/null || true
@@ -853,11 +856,12 @@ run_triage() {
         fi
         ;;
       gemini)
+        local _triage_chain="${GEMINI_TRIAGE_MODEL_CHAIN:-$ENGINE_TRIAGE_MODEL}"
         if [ -n "$_tok_tmp" ]; then
-          _gemini_invoke "$prompt_file" "$TRIAGE_TIMEOUT_SEC" "$ENGINE_TRIAGE_MODEL" \
+          _gemini_chain_invoke "$_triage_chain" "$prompt_file" "$TRIAGE_TIMEOUT_SEC" \
             --approval-mode auto_edit | tee "$_tok_tmp" || rc=${PIPESTATUS[0]}
         else
-          _gemini_invoke "$prompt_file" "$TRIAGE_TIMEOUT_SEC" "$ENGINE_TRIAGE_MODEL" \
+          _gemini_chain_invoke "$_triage_chain" "$prompt_file" "$TRIAGE_TIMEOUT_SEC" \
             --approval-mode auto_edit || rc=$?
         fi
         ;;
@@ -871,7 +875,7 @@ run_triage() {
         ;;
     esac
     if [ "$rc" -eq 0 ]; then
-      local _triage_used="${_CLAUDE_CHAIN_MODEL_USED:-$ENGINE_TRIAGE_MODEL}"
+      local _triage_used="${_CLAUDE_CHAIN_MODEL_USED:-${_GEMINI_CHAIN_MODEL_USED:-$ENGINE_TRIAGE_MODEL}}"
       _record_engine_tokens "triage" "$REVIEW_ENGINE" "$_triage_used" "$prompt_file" "$_tok_tmp"
       [ -n "$_tok_tmp" ] && rm -f "$_tok_tmp"
       return 0

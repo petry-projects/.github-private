@@ -29,6 +29,18 @@ on:
     # Requires only Contents: write on this repo (not Actions: write).
     # Payload: { pr_url: "https://github.com/...", force_review: "true" }
     types: [pr-review-mention]
+  workflow_call:
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: false
+      GOOGLE_API_KEY:
+        required: false
+      COPILOT_GITHUB_TOKEN:
+        required: false
+      DON_PETRY_BOT_GH_PAT:
+        required: false
+      GH_PAT:
+        required: false
 
 permissions:
   contents: read
@@ -56,6 +68,7 @@ concurrency:
            || github.event.client_payload.pr_url
            || github.event.pull_request.html_url
            || github.event.check_suite.pull_requests[0].url)
+      || (github.event_name == 'schedule' && format('pr-review-batch-{0}', github.run_id))
       || 'pr-review-batch'
     }}
   cancel-in-progress: true
@@ -149,93 +162,6 @@ jobs:
 
       - name: Verify auth scopes
         run: bash scripts/verify-auth-scopes.sh
-
-      - name: Install review engine CLIs
-        run: |
-          set -euo pipefail
-
-          # Use a per-user prefix so actions/cache (above) can persist the
-          # install across runs without needing root. Add the bin dir to PATH
-          # for both this step and every subsequent step in the job.
-          mkdir -p "$HOME/.npm-global"
-          npm config set prefix "$HOME/.npm-global"
-          echo "$HOME/.npm-global/bin" >> "$GITHUB_PATH"
-          export PATH="$HOME/.npm-global/bin:$PATH"
-
-          npm_install_retry() {
-            # npm_install_retry <package> [attempts=3] [delay_seconds=15]
-            local package="$1"
-            local attempts="${2:-3}"
-            local delay="${3:-15}"
-            local attempt=1
-            while [ "$attempt" -le "$attempts" ]; do
-              if npm install -g "$package"; then
-                return 0
-              fi
-              if [ "$attempt" -lt "$attempts" ]; then
-                echo "::warning::npm install failed for $package (attempt $attempt/$attempts); retrying in ${delay}s"
-                sleep "$delay"
-              fi
-              attempt=$((attempt + 1))
-            done
-            return 1
-          }
-
-          install_claude() {
-            if command -v claude >/dev/null 2>&1; then
-              echo "claude-code cache hit: $(claude --version)"
-              return 0
-            fi
-            npm_install_retry "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
-          }
-
-          case "$REVIEW_ENGINE" in
-            claude)
-              install_claude
-              # Best-effort install of fallbacks for duck/fallback support
-              npm_install_retry "@google/gemini-cli" || true
-              if ! command -v gemini >/dev/null 2>&1; then
-                echo "::warning::gemini CLI unavailable — Gemini rate-limit fallback will be unavailable"
-              fi
-              if ! env GH_TOKEN="$COPILOT_GITHUB_TOKEN" gh copilot --version > /dev/null 2>&1; then
-                echo "::warning::gh copilot built-in unavailable with user token — rate-limit fallback will be unavailable."
-              fi
-              ;;
-            gemini)
-              npm_install_retry "@google/gemini-cli"
-              install_claude || true
-              ;;
-            copilot)
-              # Best-effort install of copilot if built-in is missing
-              if ! gh copilot --version > /dev/null 2>&1; then
-                gh extension install github/gh-copilot || true
-              fi
-              install_claude || true
-              npm_install_retry "@google/gemini-cli" || true
-              if ! command -v gemini >/dev/null 2>&1; then
-                echo "::warning::gemini CLI unavailable — Gemini duck review will be skipped"
-              fi
-              ;;
-            *)
-              echo "::error::Unknown REVIEW_ENGINE=$REVIEW_ENGINE"
-              exit 1
-              ;;
-          esac
-
-      - name: Verify auth scopes
-        run: bash scripts/verify-auth-scopes.sh
-
-      - name: Cache claude-code CLI
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
-        with:
-          path: ~/.npm-global
-          key: claude-code-${{ env.CLAUDE_CODE_VERSION }}-${{ runner.os }}
-
-      - name: Cache claude-code CLI
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
-        with:
-          path: ~/.npm-global
-          key: claude-code-${{ env.CLAUDE_CODE_VERSION }}-${{ runner.os }}
 
       - name: Install review engine CLIs
         run: |

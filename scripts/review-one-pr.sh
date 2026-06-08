@@ -473,6 +473,9 @@ for lens in security correctness maintainability; do
     FAILED=1
   fi
 done
+if [ "$FAILED" -ne 0 ]; then
+  echo "::warning::council: one or more members produced incomplete output — proceeding with available results"
+fi
 
 # Advisory bot feedback. The gate above waits for advisory bots to submit,
 # but the triage tier has NO tools — unless their findings are inlined here,
