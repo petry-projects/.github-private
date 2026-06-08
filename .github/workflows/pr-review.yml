@@ -205,12 +205,14 @@ jobs:
           fi
           printf '%s\n' "$auth_status"
 
-          # Fine-grained PATs do not expose OAuth-style scope strings — skip
-          # classic-PAT scope validation and emit a notice for operators.
+          # Fine-grained PATs are NOT supported — they fail at addPullRequestReview.
+          # Reject early to avoid wasting CI time on a run that will fail at submission.
           if grep -qi 'Token:.*github_pat_' <<< "$auth_status"; then
-            echo "::notice::Fine-grained PAT detected — skipping classic-PAT scope validation."
-            echo "::notice::Ensure this token has the equivalent fine-grained permissions: contents:read and pull_requests:write."
-            exit 0
+            echo "::error::Fine-grained PAT detected — fine-grained PATs are not supported by this workflow."
+            echo "::error::Fine-grained PATs fail at addPullRequestReview (GraphQL: Resource not accessible by personal access token)."
+            echo "::error::Replace DON_PETRY_BOT_GH_PAT with a classic PAT that has repo, workflow, and read:org scopes."
+            echo "::error::See docs/pr-review-agent/setup.md → Troubleshooting for details."
+            exit 1
           fi
 
           scopes_line="$(grep 'Token scopes:' <<< "$auth_status" || true)"

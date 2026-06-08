@@ -17,13 +17,16 @@ fi
 printf '%s\n' "$auth_status"
 
 # ── Fine-grained PAT detection (prefix-based, most explicit check) ────────
-# Fine-grained PATs begin with 'github_pat_' and do not expose OAuth-style
-# scope strings in 'gh auth status'.  Skip classic-PAT scope validation and
-# emit a notice so operators can verify the equivalent fine-grained permissions.
+# Fine-grained PATs begin with 'github_pat_' and are NOT supported by this
+# workflow — they fail at addPullRequestReview with "Resource not accessible
+# by personal access token".  Reject early to avoid wasting CI time on a run
+# that will fail at the submission step.
 if grep -qi 'Token:.*github_pat_' <<< "$auth_status"; then
-  echo "::notice::Fine-grained PAT detected — skipping classic-PAT scope validation."
-  echo "::notice::Ensure this token has the equivalent fine-grained permissions: contents:read and pull_requests:write."
-  exit 0
+  echo "::error::Fine-grained PAT detected — fine-grained PATs are not supported by this workflow."
+  echo "::error::Fine-grained PATs fail at addPullRequestReview (GraphQL: Resource not accessible by personal access token)."
+  echo "::error::Replace DON_PETRY_BOT_GH_PAT with a classic PAT that has repo, workflow, and read:org scopes."
+  echo "::error::See docs/pr-review-agent/setup.md → Troubleshooting for details."
+  exit 1
 fi
 
 # ── Fallback: empty / indeterminate scope list ─────────────────────────────
