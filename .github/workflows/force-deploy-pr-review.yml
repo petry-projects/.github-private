@@ -32,13 +32,14 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # Copy pr-review.yml
-          mkdir -p .github/workflows
+          # Copy pr-review.yml and verify-auth-scopes.sh
+          mkdir -p .github/workflows scripts
           cp ../.github/workflows/pr-review.yml .github/workflows/
+          cp ../scripts/verify-auth-scopes.sh scripts/
 
           # Commit and push
-          git add .github/workflows/pr-review.yml
-          if git commit -m "deploy: add pr-review.yml workflow [skip ci]"; then
+          git add .github/workflows/pr-review.yml scripts/verify-auth-scopes.sh
+          if git commit -m "deploy: add pr-review.yml workflow and verify-auth-scopes.sh [skip ci]"; then
             git push origin HEAD:main && echo "✅ Pushed to main" || echo "⚠️ Push failed"
           else
             echo "ℹ️ Nothing to commit"
