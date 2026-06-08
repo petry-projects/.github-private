@@ -6,7 +6,7 @@ setup() {
   export PATH="$TEST_DIR/bin:$PATH"
 
   cp "$BATS_TEST_DIRNAME/../scripts/validate-engines.sh" "$TEST_DIR/"
-  
+
   cat > "$TEST_DIR/bin/claude" <<'EOF'
 #!/bin/bash
 echo "claude"
@@ -24,6 +24,21 @@ EOF
 echo "gh copilot"
 EOF
   chmod +x "$TEST_DIR/bin/gh"
+
+  # curl mock: returns 200 OK (Gemini billing healthy) by default.
+  # Tests that need billing-depleted behaviour set MOCK_GEMINI_BILLING=depleted.
+  cat > "$TEST_DIR/bin/curl" <<'EOF'
+#!/bin/bash
+if [ "${MOCK_GEMINI_BILLING:-ok}" = "depleted" ]; then
+  printf '{"error":{"code":429,"message":"Your prepayment credits are depleted.","status":"RESOURCE_EXHAUSTED"}}\n'
+  printf '429\n'
+else
+  printf '{"candidates":[{"content":{"parts":[{"text":"Hi"}]}}]}\n'
+  printf '200\n'
+fi
+exit 0
+EOF
+  chmod +x "$TEST_DIR/bin/curl"
 }
 
 teardown() {
@@ -54,4 +69,19 @@ teardown() {
 
   [ "$GEMINI_AVAILABLE" = "false" ]
   [[ "$output" == *"::warning::Gemini fallback unavailable — GEMINI_CLI_TRUST_WORKSPACE is not true (fix: set in env or pass --skip-trust)"* ]]
+}
+
+@test "validate_engines: Gemini unavailable when billing probe detects RESOURCE_EXHAUSTED" {
+  source "$TEST_DIR/validate-engines.sh"
+  export GOOGLE_API_KEY="fake"
+  export GEMINI_CLI_TRUST_WORKSPACE="true"
+  export CLAUDE_CODE_OAUTH_TOKEN="fake"
+  export COPILOT_GITHUB_TOKEN="fake"
+  export MOCK_GEMINI_BILLING="depleted"
+
+  validate_engines > "$TEST_DIR/out.log" 2>&1
+  output=$(cat "$TEST_DIR/out.log")
+
+  [ "$GEMINI_AVAILABLE" = "false" ]
+  [[ "$output" == *"prepayment credits depleted"* ]]
 }
