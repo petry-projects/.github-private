@@ -5,15 +5,6 @@ on:
 engine: claude-sonnet-4-6
 permissions:
   issues: read
-allowed-labels:
-  - bug
-  - enhancement
-  - documentation
-  - question
-  - needs-triage
-  - good-first-issue
-  - security
-max-labels: 3
 safe-outputs:
   add-labels:
     allowed:
