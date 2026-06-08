@@ -22,6 +22,7 @@ setup() {
   export TEST_PROMPT
 
   export DEV_LEAD_DRY_RUN="false"
+  export GEMINI_API_KEY="dummy-test-key"
 }
 
 teardown() {

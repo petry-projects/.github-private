@@ -19,6 +19,7 @@ setup() {
   echo "test prompt content" > "$TEST_PROMPT"
   export TEST_PROMPT
   export STUB_BIN_DIR
+  export GEMINI_API_KEY="dummy-test-key"
 }
 
 teardown() {
