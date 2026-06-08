@@ -3,12 +3,14 @@ title = "gitleaks config for petry-projects/.github-private"
 [extend]
 useDefault = true
 
-# Combined path + regex (AND'd in gitleaks v8) avoids suppressing the entire file;
-# only the specific fabricated-key findings in historical commits are ignored.
+# condition="AND" requires BOTH path AND regex to match before suppressing a finding;
+# without it gitleaks defaults to OR, which would suppress real secrets in other files
+# that happen to match the regexes, or any finding in the test file regardless of type.
 # - Commit cd4b367: literal PEM block in the PEM-redaction test fixture.
 # - Current HEAD: GEMINI_API_KEY="dummy-test-key" engine-setup stub.
 [[allowlists]]
 description = "Suppress test-fixture false positives in test_engine_writer.bats"
+condition = "AND"
 paths = ['''^tests/dev-lead/unit/test_engine_writer\.bats$''']
 regexes = [
   '''MIIEowIBAAKCAQEAuVERYSENSITIVEKEYBODY''',
