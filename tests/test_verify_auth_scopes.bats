@@ -20,16 +20,28 @@ make_gh_stub() {
   local exit_code_file="$STUB_DIR/gh_exit_code"
   printf '%s\n' "$1" > "$output_file"
   printf '%s\n' "${2:-0}" > "$exit_code_file"
+  rm -f "$STUB_DIR/gh_token_value"
   cat > "$STUB_DIR/gh" << 'STUBEOF'
 #!/usr/bin/env bash
 STUB_DIR="$(dirname "$0")"
 if [[ "$*" == *"auth status"* ]]; then
   cat "$STUB_DIR/gh_output"
   exit "$(cat "$STUB_DIR/gh_exit_code")"
+elif [[ "$*" == *"auth token"* ]]; then
+  if [ -f "$STUB_DIR/gh_token_value" ]; then
+    cat "$STUB_DIR/gh_token_value"
+    exit 0
+  fi
+  exit 1
 fi
 exit 0
 STUBEOF
   chmod +x "$STUB_DIR/gh"
+}
+
+# Configures the stub to return a specific raw token for 'gh auth token'.
+set_gh_token_stub() {
+  printf '%s\n' "$1" > "$STUB_DIR/gh_token_value"
 }
 
 # ---------------------------------------------------------------------------
@@ -56,6 +68,20 @@ STUBEOF
   run bash "$SCRIPT"
   [ "$status" -eq 1 ]
   [[ "$output" == *"classic PAT"* ]]
+}
+
+@test "fine-grained PAT detected via gh auth token when status masks prefix exits 1" {
+  # Simulate a gh version that fully masks the token in auth status output
+  # (no github_pat_ prefix visible) — detection falls back to gh auth token.
+  make_gh_stub "✓ Logged in to github.com account donpetry-bot (GH_TOKEN)
+- Active account: true
+- Token: ***"
+  set_gh_token_stub "github_pat_maskedInStatus_someValue"
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"Fine-grained PAT detected"* ]]
+  [[ "$output" == *"::error::"* ]]
 }
 
 # ---------------------------------------------------------------------------

@@ -21,13 +21,28 @@ printf '%s\n' "$auth_status"
 # workflow — they fail at addPullRequestReview with "Resource not accessible
 # by personal access token".  Reject early to avoid wasting CI time on a run
 # that will fail at the submission step.
+# Two detection methods: (1) grep the prefix from auth status output; (2) check
+# via gh auth token for gh versions that mask the prefix in status output.  The
+# token value from method 2 is never logged.
+_fgpat=0
 if grep -qi 'Token:.*github_pat_' <<< "$auth_status"; then
+  _fgpat=1
+else
+  _tok="$(gh auth token 2>/dev/null || true)"
+  if [[ "${_tok:-}" == github_pat_* ]]; then
+    _fgpat=1
+  fi
+  unset _tok
+fi
+if [[ "$_fgpat" -eq 1 ]]; then
+  unset _fgpat
   echo "::error::Fine-grained PAT detected — fine-grained PATs are not supported by this workflow."
   echo "::error::Fine-grained PATs fail at addPullRequestReview (GraphQL: Resource not accessible by personal access token)."
   echo "::error::Replace DON_PETRY_BOT_GH_PAT with a classic PAT that has repo, workflow, and read:org scopes."
   echo "::error::See docs/pr-review-agent/setup.md → Troubleshooting for details."
   exit 1
 fi
+unset _fgpat
 
 # ── Fallback: empty / indeterminate scope list ─────────────────────────────
 # If 'gh auth status' did not emit a 'Token scopes:' line at all (e.g. an
