@@ -22,12 +22,12 @@ and merges changes) and the **pr-review** agent (reviews and approves them) — 
 they are the tools that build, review, and ship changes *to themselves*. Today there is **no version
 boundary** between “the agent doing the work” and “the agent being changed”:
 
-- Every consumer caller references the reusable workflows at **`@main`** (verified in
-  `pr-review-reusable.yml`). There are **0 git tags and 0 releases** in the repo.
+- **`.github/workflows/pr-review-reusable.yml`** calls `pr-review.yml@main`, meaning all callers
+  of the reusable inherit a floating ref. There are **0 git tags and 0 releases** in the repo.
 - A merge to `main` is therefore **instantly live** across the agents' own self-review duty *and*
   every consumer repo, with **no canary, no health gate, and no rollback**.
 - Deployment to consumers is a blunt `PUT /contents` **overwrite of `main`** across all four
-  consumer repos at once (`deploy-pr-review.yml`).
+  consumer repos at once (`.github/workflows/deploy-pr-review.yml`).
 
 The result is a **circular dependency that fails closed**: when a change breaks `pr-review.yml`, the
 very agent that must approve the fix PR is the broken one, so clean fix-PRs stall at `REVIEW_REQUIRED`
@@ -83,7 +83,7 @@ There is no point in this flow where a known-good version is preserved and servi
 
 ### 2.3 Delivery mechanism is fragile
 
-`deploy-pr-review.yml` / `force-deploy-pr-review.yml`:
+`.github/workflows/deploy-pr-review.yml` / `.github/workflows/force-deploy-pr-review.yml`:
 
 - `base64` + `PUT /repos/<repo>/contents/<path>` — a **direct overwrite of the file on `main`** of
   each consumer.
@@ -101,12 +101,12 @@ All figures pulled from the live repo / GitHub API on 2026-06-08.
 | Metric | Value | Source |
 |---|---|---|
 | Immutable release artifacts (tags/releases) | **0 tags, 0 releases** | `git tag`, `gh release list` |
-| Consumer reference model | **`@main`** (floating) for every caller | `pr-review-reusable.yml` |
+| Consumer reference model | **`@main`** (floating) — `.github/workflows/pr-review-reusable.yml` calls `pr-review.yml@main`, coupling all callers of the reusable to the floating ref | `.github/workflows/pr-review-reusable.yml` |
 | Automated “failure detected” issues filed | **48** since 2026-05-06 (~daily) | `gh issue list --label automated-report` |
 | …currently still OPEN (unresolved backlog) | **20**, oldest 2026-05-28 → **11 consecutive unresolved days** | same |
 | PR Review Agent — last 20 runs | **0 successes** (all `cancelled`) | `gh run list --workflow=pr-review.yml` |
 | Recent run cancellation rate | **34%** (68 of last 200 runs `cancelled`) | `gh run list --limit 200` |
-| Deploy blast radius | **4 consumer repos overwritten on `main` simultaneously** | `deploy-pr-review.yml` |
+| Deploy blast radius | **4 consumer repos overwritten on `main` simultaneously** | `.github/workflows/deploy-pr-review.yml` |
 | Self-repair churn (peak) | **123 commits / week (W19)**, 25 PRs merged on 2026-05-20 alone | `git log` |
 | Open issue mix | 82 health-check · 70 dev-lead · 14 bug | `gh issue list` label counts |
 
@@ -243,7 +243,9 @@ Scale: ✅ strong · 🟡 partial · ❌ none. (Effort/overhead: lower = better.
 | SC3 Staged blast radius | ❌ | 🟡 | ✅ | ✅ |
 | SC4 One-action rollback (<5 min) | ❌ | ✅ | ✅ | ✅ |
 | SC5 Validate before production | ❌ | 🟡 | ✅ | ✅ |
+| SC6 Operational toil falls | ❌ | 🟡 | ✅ | 🟡 |
 | SC7 Innovation velocity | 🟡 | 🟡 | ✅ | 🟡 |
+| SC8 Every consumer's version is known | ❌ | 🟡 | ✅ | ✅ |
 | Implementation effort | — | Low | **Medium** | High |
 | Ongoing overhead | High (toil) | Low | **Low–Med** | High |
 | Fits GitHub-native + solo maintainer | ✅ | ✅ | ✅ | ❌ |
@@ -271,10 +273,16 @@ After Phase 1: a broken `main` no longer auto-ships; rollback = re-pin to the pr
    - **Ring 2** — remaining consumers.
    - **Production self-review/dev duty stays pinned to `stable`** even in ring 0 — this is what breaks
      the circular dependency: the agent validating fixes is never the broken candidate.
-7. Replace the `PUT /contents` clobber deploy with a **versioned, ring-staged, PR-based promotion**
-   workflow: promote the pinned ref ring-by-ring; ring N+1 advances only when an automated **health
-   gate** confirms ring N is healthy (run-success rate, cancellation rate, no new failure-report
-   issues over a soak window).
+7. Replace the `PUT /contents` clobber deploy with a **versioned, ring-staged promotion** workflow.
+   Promotion mechanism per ring:
+   - **Ring 0** tracks the `next` moving tag directly — when `next` is advanced (moved to a new
+     SHA/tag), ring 0 picks it up automatically via the moving pointer.
+   - **Ring 1 and Ring 2** use **explicit pinned SHAs/tags** updated via automated bump PRs — the
+     health-gate job opens a PR against each ring's caller with the new pinned ref; the PR merges
+     only after the gate is green. This gives an explicit audit trail in each consumer's git history
+     without requiring write access to consumer repos beyond the single file update.
+   Ring N+1 advances only when an automated **health gate** confirms ring N is healthy
+   (run-success rate, cancellation rate, no new failure-report issues over a soak window).
 8. Implement **one-action rollback**: move `stable` back to the prior tag (revert pointer / revert PR).
 9. Add **per-version observability**: a report showing each ring's/consumer's pinned version and the
    health metrics gating promotion (SC8).
@@ -296,6 +304,7 @@ After Phase 1: a broken `main` no longer auto-ships; rollback = re-pin to the pr
 | Health gate gives false-green and promotes a bad version | Define a soak window + multiple signals (success rate, cancellation rate, failure-report issue creation); keep one-action rollback as the backstop. |
 | “Two systems” increases maintenance | Phase 1 is intentionally minimal; Phase 2 automation pays for itself by eliminating daily toil (SC6). |
 | Tag/release proliferation | Per-agent semver + a documented retention/runbook; floating `stable`/`next` pointers hide the churn from consumers. |
+| Reusable workflows cannot natively determine their own running ref (unlike composite actions which expose `github.action_ref`), so local scripts (e.g., `scripts/dev-lead-fix-reviews.sh`) may be checked out at the caller's ref rather than the workflow's intended version | Pass the target ref as a required input to the reusable workflow so it can explicitly check out that version of `.github-private`; evaluate migrating core steps to composite actions (which expose `github.action_ref`) as a Phase 2 follow-on. |
 
 ---
 
