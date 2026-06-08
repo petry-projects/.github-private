@@ -12,6 +12,7 @@ is small or this is a re-review after a prior cascade review.
 
 - `$PR_URL` — the PR to review.
 - `$PR_HEAD_SHA` — the head commit SHA.
+- `$OUTPUT_FILE` — path where you **must** write the final verdict JSON.
 - `$DRY_RUN` — `true` or `false`.
 - `$AI_DELEGATION_ENABLED` — `true` or `false` (repo org has AI delegation configured).
 - `$REVIEW_CYCLE` — integer, number of prior review cycles.
@@ -35,8 +36,8 @@ You review **exactly one pull request**: `$PR_URL`. Nothing else.
 ## Context-gathering
 
 1. `gh pr view "$PR_URL" --json number,title,body,author,isDraft,baseRefName,headRefName,headRefOid,url,headRepository,headRepositoryOwner,labels,reviewDecision,mergeable,mergeStateStatus,statusCheckRollup,reviewRequests,reviews,comments,commits,closingIssuesReferences,additions,deletions,changedFiles,files`
-   - If `isDraft` → skip. Print `{"pr":"...","decision":"skip","reason":"draft"}` and exit.
-   - Verify `headRefOid == $PR_HEAD_SHA`. If not → skip with `"reason":"head-sha-changed"`.
+   - If `isDraft` → skip. Write `{"pr":"$PR_URL","decision":"skip","reason":"draft"}` to `$OUTPUT_FILE` and exit.
+   - Verify `headRefOid == $PR_HEAD_SHA`. If not → write `{"pr":"$PR_URL","decision":"skip","reason":"head-sha-changed"}` to `$OUTPUT_FILE` and exit.
 2. `gh pr diff "$PR_URL"` — read the diff.
    - **Incremental mode**: also get the diff since the prior review. Derive
      `<owner>` and `<repo>` from the `headRepository` field in the PR metadata
@@ -98,25 +99,64 @@ If all prior findings are resolved AND no new issues → approve.
 
 ## Output
 
-Compose a complete review verdict with the review body, then output as JSON:
+Compose the review body as a markdown string, then write the verdict JSON to
+`$OUTPUT_FILE` using `jq` so all strings (especially the body) are properly
+escaped. Use the pattern below exactly:
 
-```json
-{
-  "pr": "<PR_URL>",
-  "sha": "<PR_HEAD_SHA>",
-  "risk": "LOW|MEDIUM|HIGH",
-  "decision": "approve|escalate",
-  "mode": "small|incremental|triage-approved",
-  "summary": "2-4 sentence summary of review",
-  "body": "<!-- pr-review-agent v1 sha=<PR_HEAD_SHA> decision=<approved|escalated> risk=<LOW|MEDIUM|HIGH> -->\n\n## Automated review — <APPROVED ✓|NEEDS HUMAN REVIEW>\n\n**Risk:** <risk>\n**Reviewed commit:** `<SHA>`\n**Review mode:** <mode> (single reviewer)\n\n### Summary\n<summary>\n\n### Linked issue analysis\n<analysis>\n\n### Findings\n<findings>\n\n### CI status\n<status>\n\n---\n_Reviewed automatically by the PR-review agent ($ENGINE_SINGLE_LABEL). Reply if you need a human review._",
-  "escalate_to_ai": false
-}
+1. Build the review body in a temp file:
+
+```bash
+HEADING=$([ "$DECISION" = "approve" ] && echo "APPROVED ✓" || echo "NEEDS HUMAN REVIEW")
+cat > /tmp/single-review-body.txt << BODYEOF
+<!-- pr-review-agent v1 sha=${PR_HEAD_SHA} decision=${DECISION} risk=${RISK} -->
+
+## Automated review — ${HEADING}
+
+**Risk:** ${RISK}
+**Reviewed commit:** \`${PR_HEAD_SHA}\`
+**Review mode:** ${MODE} (single reviewer)
+
+### Summary
+${SUMMARY}
+
+### Linked issue analysis
+${ISSUE_ANALYSIS}
+
+### Findings
+${FINDINGS}
+
+### CI status
+${CI_STATUS}
+
+---
+_Reviewed automatically by the PR-review agent (${ENGINE_SINGLE_LABEL}). Reply if you need a human review._
+BODYEOF
 ```
 
-The `body` field must be the complete markdown text that will be posted to GitHub.
+2. Write the verdict JSON to `$OUTPUT_FILE` using jq so all strings are
+   properly escaped:
 
-**Important:** The bash script will parse this JSON and post the review, so ensure:
-1. `decision` is either `approve` or `escalate`
-2. `body` is properly escaped JSON string with embedded newlines (\n)
-3. The review body includes the HTML marker comment on line 1
-4. Output ONLY valid JSON to stdout (no other text)
+```bash
+BODY=$(cat /tmp/single-review-body.txt)
+jq -n \
+  --arg pr        "$PR_URL" \
+  --arg sha       "$PR_HEAD_SHA" \
+  --arg risk      "$RISK" \
+  --arg decision  "$DECISION" \
+  --arg mode      "$MODE" \
+  --arg summary   "$SUMMARY" \
+  --arg body      "$BODY" \
+  --argjson escalate_to_ai false \
+  '{pr: $pr, sha: $sha, risk: $risk, decision: $decision, mode: $mode, summary: $summary, body: $body, escalate_to_ai: $escalate_to_ai}' \
+  > "$OUTPUT_FILE"
+```
+
+3. Verify the output is valid:
+
+```bash
+jq -r '.decision' "$OUTPUT_FILE"
+echo "Verdict written to $OUTPUT_FILE"
+```
+
+**IMPORTANT:** Do NOT print the JSON to stdout. Write it to `$OUTPUT_FILE`
+only. The bash script reads it from there.
