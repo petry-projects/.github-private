@@ -53,7 +53,6 @@ def main() -> int:
     secrets_val = job.get("secrets")
     if secrets_val != "inherit":
         print(f"FAIL: job '{JOB_KEY}' must use 'secrets: inherit'")
-        print(f"  actual: {secrets_val!r}")
         print()
         print("  Explicit secret mappings cause 'action_required' outcomes when the")
         print("  calling context cannot expand the listed secrets. Fix: replace the")
