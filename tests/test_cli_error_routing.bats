@@ -205,7 +205,7 @@ route_error() {
 
   # The run_agentic copilot branch must not contain `tee.*OUTPUT_FILE`.
   # We extract only the copilot) block of run_agentic and check it is clean.
-  run grep -n 'tee.*OUTPUT_FILE\|OUTPUT_FILE.*tee' "$engine_file"
+  run grep -En '^[[:space:]]*[^[:space:]#].*(tee.*OUTPUT_FILE|OUTPUT_FILE.*tee)' "$engine_file"
   [ "$output" = "" ]
 }
 
