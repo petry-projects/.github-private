@@ -46,7 +46,7 @@ rollback a single pointer flip.
 **Version selection uses moving channel tags, not per-caller edits.** GitHub does **not** allow an
 expression in a `uses:` ref (`uses: …@${{ vars.X }}` is rejected — refs resolve at workflow-parse
 time, before any context exists). So instead of re-pinning every caller on each release, **each caller
-pins _once_ to a floating channel tag** (`@stable`, `@next`, `@ring1`); promotion is a single _central_
+pins *once* to a floating channel tag** (`@stable`, `@next`, `@ring1`); promotion is a single *central*
 tag move in `.github-private`, and callers are never edited again — exactly how `actions/checkout@v4`
 works. Immutable `vX.Y.Z` tags are still cut as audit/rollback targets, and **tag-protection rules**
 restrict who can move a channel tag (only the gated promotion workflow). See §5.1.
@@ -316,35 +316,43 @@ Scale: ✅ strong · 🟡 partial · ❌ none. (Effort/overhead: lower = better.
 3. Repoint **all** callers — consumer repos *and* `.github-private`'s own production self-review/dev
    duty — from `@main` to **`@stable`** (a *one-time* edit; callers are never re-pinned again).
    Development continues on `main`/feature branches.
-4. Add **tag-protection rules** so only the promotion workflow can move `stable` (the scoped exception
+4. Close the **script/prompt checkout boundary** in `dev-lead-reusable.yml`: change the explicit
+   `ref: main` on the `.github-private` checkout step (currently lines 94–103) to a required
+   workflow input that callers pass alongside their `@stable` pin. Without this step, a
+   `dev-lead-reusable.yml@stable` caller still runs scripts from whatever `main` is — the version
+   boundary only covers the workflow file, not the scripts it executes.
+5. Add **tag-protection rules** so only the promotion workflow can move `stable` (the scoped exception
    to the SHA-pin standard — see §5.1), and document the release-cut + promote + rollback runbook.
 
-After Phase 1: a broken `main` no longer auto-ships; promotion/rollback = move the `stable` tag
-centrally (no caller edits).
+After Phase 1: a broken `main` no longer auto-ships; both the workflow file *and* its scripts are
+versioned together; promotion/rollback = move the `stable` tag centrally (no caller edits).
 
 ### Phase 2 — Concentric rings + health-gated promotion *(completes SC2, SC3, SC5, SC8)*
-5. Add the **`next`** channel tag (green, candidate) alongside `stable`, plus per-ring channel tags
+6. Add the **`next`** channel tag (green, candidate) alongside `stable`, plus per-ring channel tags
    (`@ring1`, …) so each ring advances independently by a central tag move.
-6. Define the rings:
+7. Define the rings:
    - **Ring 0** — `.github-private` self-host tracks `next` (dogfood/canary).
    - **Ring 1** — one low-traffic consumer.
    - **Ring 2** — remaining consumers.
    - **Production self-review/dev duty stays pinned to `stable`** even in ring 0 — this is what breaks
      the circular dependency: the agent validating fixes is never the broken candidate.
-7. Replace the `PUT /contents` clobber deploy with a **versioned, ring-staged promotion** workflow.
+8. Replace the `PUT /contents` clobber deploy with a **versioned, ring-staged promotion** workflow.
    Promotion mechanism per ring:
    - **Ring 0** tracks the `next` moving tag directly — when `next` is advanced (moved to a new
      SHA/tag), ring 0 picks it up automatically via the moving pointer.
-   - **Ring 1 and Ring 2** use **explicit pinned SHAs/tags** updated via automated bump PRs — the
-     health-gate job opens a PR against each ring's caller with the new pinned ref; the PR merges
-     only after the gate is green. This gives an explicit audit trail in each consumer's git history
-     without requiring write access to consumer repos beyond the single file update.
+   - **Ring 1 and Ring 2** also use **moving ring channel tags** (`@ring1`, `@ring2`) — the same
+     model as `@stable`/`@next`. Each ring's callers pin *once* to their ring tag; the health-gate
+     workflow advances a ring by moving its channel tag forward. This is required to honour SC4:
+     if rings instead used explicit SHA/tag pins updated by individual bump PRs, rolling back after
+     a promotion PR merged would require a separate revert PR per consumer — not one action.
    Ring N+1 advances only when an automated **health gate** confirms ring N is healthy
    (run-success rate, cancellation rate, no new failure-report issues over a soak window).
-8. Implement **one-action rollback**: move `stable` back to the prior tag (revert pointer / revert PR).
-9. Add **per-version observability**: a report showing each ring's/consumer's pinned version and the
-   health metrics gating promotion (SC8).
-10. **Game-day / regression test for SC2:** deliberately ship a broken `next`, prove the fix PR still
+9. Implement **one-action rollback**: move the relevant channel tag (`stable`, `ring1`, `ring2`)
+   back to the prior tag — the same central pointer-flip for every ring, completing in < 5 min
+   with no per-consumer edits required.
+10. Add **per-version observability**: a report showing each ring's/consumer's pinned version and the
+    health metrics gating promotion (SC8).
+11. **Game-day / regression test for SC2:** deliberately ship a broken `next`, prove the fix PR still
     merges (because production duty is on `stable`).
 
 ### What we explicitly defer
@@ -363,7 +371,7 @@ centrally (no caller edits).
 | Health gate gives false-green and promotes a bad version | Define a soak window + multiple signals (success rate, cancellation rate, failure-report issue creation); keep one-action rollback as the backstop. |
 | “Two systems” increases maintenance | Phase 1 is intentionally minimal; Phase 2 automation pays for itself by eliminating daily toil (SC6). |
 | Tag/release proliferation | Per-agent semver + a documented retention/runbook; floating `stable`/`next`/ring tags hide the churn from consumers. |
-| Reusable workflows cannot natively determine their own running ref (unlike composite actions which expose `github.action_ref`), so local scripts (e.g., `scripts/dev-lead-fix-reviews.sh`) may be checked out at the caller's ref rather than the workflow's intended version | Pass the target ref as a required input to the reusable workflow so it can explicitly check out that version of `.github-private`; evaluate migrating core steps to composite actions (which expose `github.action_ref`) as a Phase 2 follow-on. |
+| Reusable scripts (`dev-lead-*.sh`) are checked out at `ref: main`; a pinned workflow file still runs whatever scripts `main` holds | Pass the release ref as a required workflow input so the script checkout uses the versioned ref, not `main`; evaluate migrating to composite actions (which expose `github.action_ref`) as a Phase 2 follow-on. |
 
 ---
 
