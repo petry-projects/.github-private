@@ -1,0 +1,15 @@
+title = "gitleaks config for petry-projects/.github-private"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+# Test fixtures and sample content intentionally contain synthetic credential-shaped
+# values (mock API keys, PEM stubs, adversarial review samples) — not live secrets.
+description = "Test fixtures and adversarial sample content"
+paths = [
+  '''\.bats$''',
+  '''adversarial-review-tests/''',
+  '''\.test\.(ts|js|cjs)$''',
+  '''frameworks/.*/tests?/''',
+]
