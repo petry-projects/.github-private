@@ -70,6 +70,53 @@ checkout_pr_in_worktree() {
   # shellcheck disable=SC2064
   trap "cleanup_pr_worktree${_prev_exit:+; $_prev_exit}" EXIT
 
+  # Clear stale worktree state left by crashed prior runs on this same runner
+  # before we check the PR branch out. Without this, `gh pr checkout` below
+  # fails hard with
+  #   fatal: '<branch>' is already used by worktree at '<stale path>'
+  # because a previous run left the PR's head branch checked out in a worktree
+  # that is now defunct (issue #470, run 27107230249 on PR #383).
+  #
+  #   1. `git worktree prune` drops registry entries whose directories are gone.
+  #   2. For entries whose directory still exists, look up the PR's head branch
+  #      and release whatever worktree currently holds it: detach the main agent
+  #      checkout in place (it cannot be removed), force-remove any other.
+  git worktree prune 2>/dev/null || true
+  local _pr_branch=""
+  _pr_branch="$(gh pr view "$pr" --repo "$repo" --json headRefName --jq '.headRefName' 2>/dev/null || true)"
+  if [ -n "$_pr_branch" ]; then
+    # Resolve the agent worktree's ROOT for comparison. `git worktree list`
+    # emits each worktree's top-level, fully-resolved path, but
+    # PR_WORKTREE_AGENT_DIR comes from `pwd` — which may be a SUBDIRECTORY of
+    # the repo and/or contain unresolved symlinks (macOS, some CI runners).
+    # Comparing the resolved repo top-level against git's output on both axes
+    # ensures the agent's own checkout is detached (not mistakenly force-removed,
+    # which git refuses — leaving the branch unreleased and the collision unfixed).
+    local _agent_real
+    _agent_real="$(git -C "$PR_WORKTREE_AGENT_DIR" rev-parse --show-toplevel 2>/dev/null || printf '%s' "$PR_WORKTREE_AGENT_DIR")"
+    _agent_real="$(cd "$_agent_real" 2>/dev/null && pwd -P || printf '%s' "$_agent_real")"
+    local _wt_line _wt_path="" _held _wt_real
+    while IFS= read -r _wt_line; do
+      case "$_wt_line" in
+        "worktree "*) _wt_path="${_wt_line#worktree }" ;;
+        "branch refs/heads/"*)
+          _held="${_wt_line#branch refs/heads/}"
+          if [ "$_held" = "$_pr_branch" ] && [ -n "$_wt_path" ]; then
+            _wt_real="$(cd "$_wt_path" 2>/dev/null && pwd -P || printf '%s' "$_wt_path")"
+            if [ "$_wt_real" = "$_agent_real" ]; then
+              # The agent's own checkout holds the branch — never remove it;
+              # detaching releases the branch so the new worktree can claim it.
+              git -C "$_wt_path" checkout --detach --quiet 2>/dev/null || true
+            else
+              git worktree remove --force "$_wt_path" 2>/dev/null || true
+            fi
+          fi
+          ;;
+      esac
+    done < <(git worktree list --porcelain 2>/dev/null)
+    git worktree prune 2>/dev/null || true
+  fi
+
   # Start detached at the agent checkout's HEAD so `gh pr checkout` can create or
   # switch to the PR branch inside the worktree without colliding with whatever
   # branch the agent checkout already has out.
