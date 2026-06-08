@@ -41,8 +41,13 @@ fi
 # validate_engines (e.g., Gemini billing depleted), switch to the fallback engine
 # immediately so no PR invocation pays the per-call retry delay for a known-bad engine.
 if [ "${REVIEW_ENGINE:-claude}" = "gemini" ] && [ "${GEMINI_AVAILABLE:-false}" != "true" ]; then
-  echo "::warning::Primary Gemini engine unavailable per pre-flight probe — switching to Copilot for this batch"
-  export REVIEW_ENGINE=copilot
+  if [ "${COPILOT_AVAILABLE:-false}" = "true" ]; then
+    echo "::warning::Primary Gemini engine unavailable per pre-flight probe — switching to Copilot for this batch"
+    export REVIEW_ENGINE=copilot
+  else
+    echo "::error::Primary Gemini engine unavailable and Copilot fallback also unavailable (gh copilot not installed or COPILOT_GITHUB_TOKEN not set) — aborting batch"
+    exit 1
+  fi
 fi
 
 # ---------------------------------------------------------------------------

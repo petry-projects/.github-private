@@ -39,7 +39,8 @@ _gemini_billing_probe() {
     timeout 15 curl -sS --max-time 10 \
       -X POST \
       -H "Content-Type: application/json" \
-      "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GOOGLE_API_KEY}" \
+      -H "X-Goog-Api-Key: ${GOOGLE_API_KEY}" \
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent" \
       -d '{"contents":[{"parts":[{"text":"Hi"}]}],"generationConfig":{"maxOutputTokens":1}}' \
       -w '\n%{http_code}' 2>/dev/null
   ) || true

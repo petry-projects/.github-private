@@ -131,3 +131,23 @@ EOF
   grep -q "^copilot$" engine_calls.txt
   [[ "$output" == *"unavailable"* ]]
 }
+
+@test "batch: primary Gemini with GEMINI_AVAILABLE=false and COPILOT_AVAILABLE=false aborts with error" {
+  # When both Gemini and Copilot are unavailable, the batch should abort rather
+  # than switch to an unusable engine and fail on the first PR.
+  cat > "scripts/validate-engines.sh" <<'EOF'
+validate_engines() {
+  export CLAUDE_AVAILABLE="false"
+  export GEMINI_AVAILABLE="false"
+  export COPILOT_AVAILABLE="false"
+}
+EOF
+
+  export REVIEW_ENGINE="gemini"
+  run bash scripts/review-batch.sh
+
+  echo "$output" >&2
+
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"Copilot fallback also unavailable"* ]]
+}
