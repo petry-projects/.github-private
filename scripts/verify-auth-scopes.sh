@@ -20,8 +20,7 @@ printf '%s\n' "$auth_status"
 # Fine-grained PATs begin with 'github_pat_' and do not expose OAuth-style
 # scope strings in 'gh auth status'.  Detect the prefix first — it is the
 # most reliable signal and avoids false-positives from a missing scope line.
-token_line="$(printf '%s\n' "$auth_status" | grep -i 'Token:' || true)"
-if printf '%s\n' "$token_line" | grep -q 'github_pat_'; then
+if grep -qi 'Token:.*github_pat_' <<< "$auth_status"; then
   echo "::notice::Fine-grained PAT detected — skipping classic OAuth scope check."
   echo "::notice::Ensure the token grants: contents (read) and pull-requests (write) fine-grained permissions."
   exit 0
@@ -32,10 +31,11 @@ fi
 # older gh version or a token type that does not surface scopes), or if it
 # explicitly reports it cannot determine them, treat the token as acceptable
 # and emit a warning so operators know validation was skipped.
-scopes_line="$(printf '%s\n' "$auth_status" | grep 'Token scopes:' || true)"
-normalized_scopes="$(printf '%s' "$scopes_line" | sed "s/[',]/ /g")"
+scopes_line="$(grep 'Token scopes:' <<< "$auth_status" || true)"
+normalized_scopes="${scopes_line//,/ }"
+normalized_scopes="${normalized_scopes//$'\''/ }"
 
-if [ -z "$normalized_scopes" ] || printf '%s' "$auth_status" | grep -qiE '(cannot determine|fine.grained)'; then
+if [ -z "$normalized_scopes" ] || grep -qiE '(cannot determine|fine.grained)' <<< "$auth_status"; then
   echo "::warning::Token scopes could not be determined. Skipping scope validation."
   echo "::warning::Ensure the token has: contents:read and pull_requests:write (fine-grained), or repo + read:org (classic PAT)."
   exit 0
@@ -56,7 +56,7 @@ else
   # Classic PAT without the broad 'repo' scope: verify the minimum granular
   # scopes needed for the review workflow to function.
   for required_scope in contents pull_requests; do
-    if ! grep -qE "(^|[[:space:]])${required_scope}([[:space:]]|$)" <<< "$normalized_scopes"; then
+    if ! grep -qE "(^|[[:space:]])${required_scope}(:[^[:space:]]+)?([[:space:]]|$)" <<< "$normalized_scopes"; then
       echo "::error::GH_TOKEN is missing required scope: ${required_scope}"
       echo "::error::Token must have either 'repo' + 'read:org' (classic) or 'contents' + 'pull_requests' (fine-grained)"
       exit 1

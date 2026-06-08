@@ -141,6 +141,17 @@ STUBEOF
   [[ "$output" != *"::error::"* ]]
 }
 
+@test "token with granular scopes containing permission suffixes (e.g. GITHUB_TOKEN) exits 0" {
+  make_gh_stub "✓ Logged in to github.com account donpetry-bot (GH_TOKEN)
+- Active account: true
+- Token: ghs_someActionToken_***
+- Token scopes: 'contents:read', 'pull_requests:write'"
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"::error::"* ]]
+}
+
 # ---------------------------------------------------------------------------
 # Classic PAT — missing required minimal scopes (fails)
 # ---------------------------------------------------------------------------
