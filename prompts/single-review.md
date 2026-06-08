@@ -113,6 +113,8 @@ SUMMARY="..."
 ISSUE_ANALYSIS="..."
 FINDINGS="..."
 CI_STATUS="..."
+# Marker vocabulary: "approved"/"escalated" (review-cycle.sh expects these exact strings)
+DECISION_MARKER=$([ "$DECISION" = "approve" ] && echo "approved" || echo "escalated")
 ```
 
 1. Build the review body in a temp file:
@@ -120,7 +122,7 @@ CI_STATUS="..."
 ```bash
 HEADING=$([ "$DECISION" = "approve" ] && echo "APPROVED ✓" || echo "NEEDS HUMAN REVIEW")
 cat > /tmp/single-review-body.txt << BODYEOF
-<!-- pr-review-agent v1 sha=${PR_HEAD_SHA} decision=${DECISION} risk=${RISK} -->
+<!-- pr-review-agent v1 sha=${PR_HEAD_SHA} decision=${DECISION_MARKER} risk=${RISK} -->
 
 ## Automated review — ${HEADING}
 
@@ -164,11 +166,11 @@ jq -n \
   > "$OUTPUT_FILE"
 ```
 
-3. Verify the output is valid:
+3. Verify the output is valid (send to stderr so Copilot's tee does not corrupt `$OUTPUT_FILE`):
 
 ```bash
-jq -r '.decision' "$OUTPUT_FILE"
-echo "Verdict written to $OUTPUT_FILE"
+jq -r '.decision' "$OUTPUT_FILE" >&2
+echo "Verdict written to $OUTPUT_FILE" >&2
 ```
 
 **IMPORTANT:** Do NOT print the JSON to stdout. Write it to `$OUTPUT_FILE`
