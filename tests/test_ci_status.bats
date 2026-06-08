@@ -289,10 +289,9 @@ rollup() {
   [ "$output" = "failing" ]
 }
 
-@test "status context named 'review' with PENDING state still causes pending (context != name)" {
-  # StatusContext uses .context field; own-check filter checks .name // .context.
-  # A status check coincidentally named 'review' SHOULD be filtered (could be ambiguous),
-  # but an external status check named something else should not be affected.
+@test "external status context (not named 'review') with PENDING state still causes pending" {
+  # Own-check filter checks .name // .context — a StatusContext whose .context
+  # does not match any own-check pattern must still block as pending.
   local r
   r=$(rollup "$(status_ctx "external-ci" "PENDING")")
   run compute_ci_status "$r"

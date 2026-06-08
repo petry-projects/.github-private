@@ -27,7 +27,7 @@
 #   covers both GitHub Actions checks and legacy commit statuses.
 compute_ci_status() {
   local rollup_json="${1:-[]}"
-  echo "$rollup_json" | jq -r '
+  jq -r '
     def is_pending:
       .status == "IN_PROGRESS" or .status == "QUEUED" or .status == "WAITING" or
       .state  == "PENDING"     or .state  == "EXPECTED" or
@@ -51,5 +51,5 @@ compute_ci_status() {
       else "failing"
       end
     end
-  ' 2>/dev/null || echo "passing"
+  ' <<< "$rollup_json" 2>/dev/null || echo "passing"
 }

@@ -51,7 +51,7 @@ PR_HEAD_SHA=$(echo "$PR_SNAPSHOT" | jq -r '.headRefOid')
 export PR_HEAD_SHA
 echo "    head SHA: $PR_HEAD_SHA"
 
-CI_STATUS=$(compute_ci_status "$(echo "$PR_SNAPSHOT" | jq '.statusCheckRollup')")
+CI_STATUS=$(compute_ci_status "$(jq '.statusCheckRollup' <<< "$PR_SNAPSHOT")")
 echo "    CI status: $CI_STATUS"
 
 REVIEW_DECISION=$(echo "$PR_SNAPSHOT" | jq -r '.reviewDecision // ""')
@@ -74,18 +74,40 @@ if [ "$CI_STATUS" = "pending" ]; then
   if [ "${FORCE_REVIEW:-false}" = "true" ]; then
     _FORCE_POLL_MAX="${FORCE_REVIEW_POLL_ATTEMPTS:-10}"
     _FORCE_POLL_SEC="${FORCE_REVIEW_POLL_INTERVAL_SEC:-30}"
+    # Validate that the env-var overrides are positive integers; fall back to
+    # the defaults if they are not so that sleep and the numeric test don't fail.
+    case "$_FORCE_POLL_MAX" in
+      ''|*[!0-9]*) _FORCE_POLL_MAX=10 ;;
+    esac
+    case "$_FORCE_POLL_SEC" in
+      ''|*[!0-9]*) _FORCE_POLL_SEC=30 ;;
+    esac
+    [ "$_FORCE_POLL_MAX" -gt 0 ] || _FORCE_POLL_MAX=10
+    [ "$_FORCE_POLL_SEC" -gt 0 ] || _FORCE_POLL_SEC=30
     _poll=1
     while [ "$_poll" -le "$_FORCE_POLL_MAX" ] && [ "$CI_STATUS" = "pending" ]; do
       echo "    force-review: CI pending, waiting ${_FORCE_POLL_SEC}s for checks to settle (attempt ${_poll}/${_FORCE_POLL_MAX})"
       sleep "$_FORCE_POLL_SEC"
-      PR_SNAPSHOT=$(gh pr view "$PR_URL" --json headRefOid,statusCheckRollup,reviewDecision,reviews,labels,comments)
-      PR_HEAD_SHA=$(echo "$PR_SNAPSHOT" | jq -r '.headRefOid')
+      _gh_poll_err=$(mktemp 2>/dev/null || echo "/tmp/cascade/gh-poll-$$.err")
+      if ! PR_SNAPSHOT=$(gh pr view "$PR_URL" --json headRefOid,statusCheckRollup,reviewDecision,reviews,labels,comments 2>"$_gh_poll_err"); then
+        _gh_poll_err_content=$(cat "$_gh_poll_err" 2>/dev/null || true)
+        rm -f "$_gh_poll_err"
+        if is_rate_limited "$_gh_poll_err_content"; then
+          echo "    gh API rate limited during polling — skipping PR"
+          echo "{\"pr\":\"$PR_URL\",\"sha\":\"$PR_HEAD_SHA\",\"decision\":\"skip\",\"reason\":\"gh-rate-limited\"}"
+          exit 100
+        fi
+        echo "::error::gh pr view failed during polling for $PR_URL"
+        exit 1
+      fi
+      rm -f "$_gh_poll_err"
+      PR_HEAD_SHA=$(jq -r '.headRefOid' <<< "$PR_SNAPSHOT")
       export PR_HEAD_SHA
-      CI_STATUS=$(compute_ci_status "$(echo "$PR_SNAPSHOT" | jq '.statusCheckRollup')")
+      CI_STATUS=$(compute_ci_status "$(jq '.statusCheckRollup' <<< "$PR_SNAPSHOT")")
       echo "    CI status (poll ${_poll}): $CI_STATUS"
       _poll=$((_poll + 1))
     done
-    unset _poll _FORCE_POLL_MAX _FORCE_POLL_SEC
+    unset _poll _FORCE_POLL_MAX _FORCE_POLL_SEC _gh_poll_err _gh_poll_err_content
 
     if [ "$CI_STATUS" = "failing" ]; then
       echo "    skip: CI checks are failing (detected after polling) — will re-evaluate after fixes are pushed"
@@ -96,19 +118,17 @@ if [ "$CI_STATUS" = "pending" ]; then
     if [ "$CI_STATUS" = "pending" ]; then
       echo "    force-review: CI still pending after polling — posting visible comment"
       if [ "${DRY_RUN:-false}" != "true" ]; then
-        _ci_ack_body="/tmp/cascade/ci-pending-ack.txt"
-        mkdir -p /tmp/cascade
-        printf '<!-- pr-review-agent ci-pending-ack -->\n\nCI checks on this PR are still running. Once they complete, re-mention `@%s` to trigger a fresh review.\n\n_Posted by the %s PR-review cascade._\n' \
-          "${BOT_USER:-donpetry-bot}" "${BOT_USER:-donpetry-bot}" > "$_ci_ack_body"
-        gh pr comment "$PR_URL" --body-file "$_ci_ack_body" || echo "    warn: could not post ci-pending-ack comment"
-        rm -f "$_ci_ack_body"
+        _msg=$(printf '<!-- pr-review-agent ci-pending-ack -->\n\nCI checks on this PR are still running. Once they complete, re-mention `@%s` to trigger a fresh review.\n\n_Posted by the %s PR-review cascade._' \
+          "${BOT_USER:-donpetry-bot}" "${BOT_USER:-donpetry-bot}")
+        gh pr comment "$PR_URL" --body "$_msg" || echo "    warn: could not post ci-pending-ack comment"
+        unset _msg
       fi
       echo "{\"pr\":\"$PR_URL\",\"sha\":\"$PR_HEAD_SHA\",\"decision\":\"skip\",\"reason\":\"ci-pending-after-poll\"}"
       exit 100
     fi
 
     # CI settled — update REVIEW_DECISION from the refreshed snapshot
-    REVIEW_DECISION=$(echo "$PR_SNAPSHOT" | jq -r '.reviewDecision // ""')
+    REVIEW_DECISION=$(jq -r '.reviewDecision // ""' <<< "$PR_SNAPSHOT")
     echo "    review decision (after CI poll): $REVIEW_DECISION"
   else
     echo "    skip: CI checks still in progress — will re-evaluate when checks complete"
