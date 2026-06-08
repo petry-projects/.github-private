@@ -70,6 +70,42 @@ checkout_pr_in_worktree() {
   # shellcheck disable=SC2064
   trap "cleanup_pr_worktree${_prev_exit:+; $_prev_exit}" EXIT
 
+  # Clear stale worktree state left by crashed prior runs on this same runner
+  # before we check the PR branch out. Without this, `gh pr checkout` below
+  # fails hard with
+  #   fatal: '<branch>' is already used by worktree at '<stale path>'
+  # because a previous run left the PR's head branch checked out in a worktree
+  # that is now defunct (issue #470, run 27107230249 on PR #383).
+  #
+  #   1. `git worktree prune` drops registry entries whose directories are gone.
+  #   2. For entries whose directory still exists, look up the PR's head branch
+  #      and release whatever worktree currently holds it: detach the main agent
+  #      checkout in place (it cannot be removed), force-remove any other.
+  git worktree prune 2>/dev/null || true
+  local _pr_branch=""
+  _pr_branch="$(gh pr view "$pr" --repo "$repo" --json headRefName --jq '.headRefName' 2>/dev/null || true)"
+  if [ -n "$_pr_branch" ]; then
+    local _wt_line _wt_path="" _held
+    while IFS= read -r _wt_line; do
+      case "$_wt_line" in
+        "worktree "*) _wt_path="${_wt_line#worktree }" ;;
+        "branch refs/heads/"*)
+          _held="${_wt_line#branch refs/heads/}"
+          if [ "$_held" = "$_pr_branch" ] && [ -n "$_wt_path" ]; then
+            if [ "$_wt_path" = "$PR_WORKTREE_AGENT_DIR" ]; then
+              # The agent's own checkout holds the branch — never remove it;
+              # detaching releases the branch so the new worktree can claim it.
+              git -C "$_wt_path" checkout --detach --quiet 2>/dev/null || true
+            else
+              git worktree remove --force "$_wt_path" 2>/dev/null || true
+            fi
+          fi
+          ;;
+      esac
+    done < <(git worktree list --porcelain 2>/dev/null)
+    git worktree prune 2>/dev/null || true
+  fi
+
   # Start detached at the agent checkout's HEAD so `gh pr checkout` can create or
   # switch to the PR branch inside the worktree without colliding with whatever
   # branch the agent checkout already has out.

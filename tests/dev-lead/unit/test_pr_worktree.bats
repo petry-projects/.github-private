@@ -13,10 +13,14 @@ setup() {
   STUB_BIN_DIR="$(mktemp -d)"
   # gh stub: `gh pr checkout <n>` switches the worktree to the PR branch,
   # mirroring the real command (which is what made the old prompt files vanish).
+  # `gh pr view --json headRefName --jq .headRefName` returns the PR's head
+  # branch (`old` in this fixture) so the collision-prevention logic in
+  # checkout_pr_in_worktree can identify and release a stale holder (issue #470).
   cat > "$STUB_BIN_DIR/gh" <<'GHEOF'
 #!/usr/bin/env bash
 case "$1 $2" in
   "pr checkout") git checkout -q old ;;
+  "pr view") echo "old" ;;
   *) echo "{}" ;;
 esac
 GHEOF
@@ -123,4 +127,73 @@ teardown() {
 
   cleanup_pr_worktree
   trap - EXIT
+}
+
+# --- issue #470: PR-branch worktree-collision recovery -----------------------
+# `gh pr checkout` fails with "'<branch>' is already used by worktree at ..."
+# when a crashed prior run on the same runner left the PR's head branch claimed.
+# checkout_pr_in_worktree must release the branch before checking it out.
+
+@test "checkout_pr_in_worktree: recovers when PR branch is held by a stale sibling worktree" {
+  source "$LIB"
+  cd "$AGENT_REPO"
+
+  # Simulate a crashed prior run: the PR branch (`old`) is checked out in a
+  # leftover sibling worktree that is still registered AND still on disk.
+  local stale; stale="$(mktemp -d)/stale-wt"
+  git -C "$AGENT_REPO" worktree add --quiet "$stale" old
+  run git -C "$AGENT_REPO" worktree list
+  [[ "$output" == *"$stale"* ]]
+
+  # Without the fix this aborts with "already used by worktree".
+  checkout_pr_in_worktree 383 owner/repo
+
+  [ "$PWD" = "$PR_WORKTREE_DIR" ]
+  # We are on the PR branch in the fresh worktree (prompts/x.md absent on `old`).
+  [ ! -e "$PWD/prompts/x.md" ]
+  # The stale worktree was released.
+  run git -C "$AGENT_REPO" worktree list
+  [[ "$output" != *"$stale"* ]]
+
+  cleanup_pr_worktree
+}
+
+@test "checkout_pr_in_worktree: recovers from a stale registry entry whose dir is gone" {
+  source "$LIB"
+  cd "$AGENT_REPO"
+
+  # Crashed run left a registry entry for `old`, but the directory was deleted
+  # out from under git (no `git worktree remove`). prune must clear it.
+  local stale; stale="$(mktemp -d)/gone-wt"
+  git -C "$AGENT_REPO" worktree add --quiet "$stale" old
+  rm -rf "$stale"
+
+  checkout_pr_in_worktree 383 owner/repo
+
+  [ "$PWD" = "$PR_WORKTREE_DIR" ]
+  [ ! -e "$PWD/prompts/x.md" ]
+
+  cleanup_pr_worktree
+}
+
+@test "checkout_pr_in_worktree: recovers when the agent checkout itself holds the PR branch" {
+  source "$LIB"
+  cd "$AGENT_REPO"
+  # The agent's own checkout is on the PR branch (`old`). It must be detached in
+  # place (never removed) so the new worktree can claim the branch.
+  git -C "$AGENT_REPO" checkout -q old
+
+  checkout_pr_in_worktree 383 owner/repo
+
+  [ "$PWD" = "$PR_WORKTREE_DIR" ]
+  [ ! -e "$PWD/prompts/x.md" ]
+
+  cleanup_pr_worktree
+
+  # The agent checkout still exists and is usable (was detached in place, not
+  # removed) — and it no longer holds the `old` branch, so a future checkout of
+  # the same PR won't collide on it.
+  [ -d "$AGENT_REPO/.git" ]
+  run git -C "$AGENT_REPO" symbolic-ref -q HEAD
+  [ "$status" -ne 0 ]   # detached HEAD has no symbolic ref
 }
