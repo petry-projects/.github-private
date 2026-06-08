@@ -6,6 +6,8 @@ on:
 
 # Two-job pattern: triage runs with read-only issue access and produces a
 # staged JSON artifact; apply runs with write access and calls safe-output.
+permissions: {}  # Reset to none; each job declares its own scoped block below.
+
 jobs:
   triage:
     runs-on: ubuntu-latest
