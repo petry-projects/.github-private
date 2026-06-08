@@ -34,6 +34,9 @@ This is the `.github-private` org infrastructure repo for `petry-projects`. It c
   workflow with no corresponding org template in `standards/workflows/`. It must not be removed by template
   syncs. If the org template gains a token-report equivalent, remove this exception and defer to the
   template instead.
+- **Exception:** The `bats` test list in `lint.yml` is extended with repo-specific test files (e.g.
+  `tests/test_push_protection.bats`) beyond the org template baseline. When adding new test files to this
+  repo, add them to this list. Template syncs must not reset it to the base template list.
 
 ### Agent Profiles (`agents/*.md`)
 
