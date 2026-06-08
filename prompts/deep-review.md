@@ -18,6 +18,9 @@ to approve or escalate further to the security auditor (Tier 3).
   `signals` array explaining why it escalated.
 - `$PRIOR_REVIEW_BODY` — prior review body if this is a re-review (empty if first).
 - `$PRIOR_REVIEW_SHA` — prior SHA if re-review.
+- `$ADVISORY_BOT_FEEDBACK_FILE` — path to a file containing advisory bot review
+  bodies and inline comments (Gemini, Copilot, SonarCloud, Codex) at the current
+  head. Read and incorporate these findings — the gate waited for this feedback.
 
 ## Scope
 
@@ -30,10 +33,12 @@ enumeration. No actions on other PRs.
 
 1. Read `$TRIAGE_RESULT` to understand why triage escalated — focus your
    review on those signals.
-2. `gh pr view "$PR_URL" --json number,title,body,author,isDraft,baseRefName,headRefName,headRefOid,url,headRepository,headRepositoryOwner,labels,reviewDecision,mergeable,mergeStateStatus,statusCheckRollup,reviewRequests,reviews,comments,commits,closingIssuesReferences,additions,deletions,changedFiles,files`
-3. `gh pr diff "$PR_URL"` — read the diff.
-4. Fetch linked issues if any.
-5. Check `statusCheckRollup` for CI status.
+2. If `$ADVISORY_BOT_FEEDBACK_FILE` is set and the file exists, read it now —
+   these are the advisory bot findings the gate waited for. Weigh them in your review.
+3. `gh pr view "$PR_URL" --json number,title,body,author,isDraft,baseRefName,headRefName,headRefOid,url,headRepository,headRepositoryOwner,labels,reviewDecision,mergeable,mergeStateStatus,statusCheckRollup,reviewRequests,reviews,comments,commits,closingIssuesReferences,additions,deletions,changedFiles,files`
+4. `gh pr diff "$PR_URL"` — read the diff.
+5. Fetch linked issues if any.
+6. Check `statusCheckRollup` for CI status.
 
 ## Risk classification
 
