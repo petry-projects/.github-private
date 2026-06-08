@@ -3300,6 +3300,8 @@ run_writer_with_fallback() {
     [ "$e" != "$REVIEW_ENGINE" ] && engines+=("$e")
   done
 
+  local any_rate_limited=0
+  local any_missing=0
   for engine in "${engines[@]}"; do
     if [ "$engine" = "copilot" ] && [[ "${COPILOT_GITHUB_TOKEN:-}" == ghp_* ]]; then
       echo "::warning::Skipping copilot fallback: classic PAT in COPILOT_GITHUB_TOKEN is unsupported" >&2
@@ -3317,13 +3319,26 @@ run_writer_with_fallback() {
     # Restore original config for subsequent PRs in the same session
     set_engine_config
     [ "$rc" -eq 0 ] && return 0
-    if [ "$rc" -eq 2 ]; then
-      echo "::warning::$engine rate-limited, trying next engine" >&2
+    if [ "$rc" -eq 2 ] || [ "$rc" -eq 127 ]; then
+      # exit 2: rate-limited or text-only engine unavailable for writes
+      # exit 127: engine binary not installed in this environment (also returned by
+      #           GNU timeout when the command is not found — treated as a missing
+      #           binary rather than a retryable quota error so that infra failures
+      #           surface loudly instead of being masked as rate-limit retries).
+      echo "::warning::$engine unavailable (exit $rc), trying next engine" >&2
+      [ "$rc" -eq 2 ] && any_rate_limited=1
+      [ "$rc" -eq 127 ] && any_missing=1
       continue
     fi
     return "$rc"
   done
 
   echo "::error::All engines rate-limited or unavailable" >&2
-  return 2
+  # If any engine binary was missing (exit 127), return 1 (hard infra failure) so
+  # downstream handlers do not post rate-limit retry markers for what is really a
+  # configuration/environment problem.  Only return 2 when every failure was a
+  # genuine quota/rate-limit so callers know a later retry may succeed.
+  [ "$any_missing" -eq 1 ] && return 1
+  [ "$any_rate_limited" -eq 1 ] && return 2
+  return 1
 }
