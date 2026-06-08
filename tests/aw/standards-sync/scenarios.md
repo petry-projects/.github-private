@@ -145,3 +145,37 @@ required additions.
 - Script continues processing remaining repos after the failed PATCH
 - Warning message includes the setting name and a note about Advanced Security
 - `settings_applied` counter does NOT increment for the failed repo
+
+---
+
+## Scenario 10: All PP_REQUIRED_SA_SETTINGS are enforced by the sync
+
+**Given** a repo is missing any of the settings in `PP_REQUIRED_SA_SETTINGS`:
+  `secret_scanning`, `secret_scanning_push_protection`, `secret_scanning_ai_detection`,
+  `secret_scanning_non_provider_patterns`, `dependabot_security_updates`
+**When** the monthly schedule fires
+**Then**
+- the workflow detects each missing setting via `REQUIRED_SECURITY_SETTINGS` (derived from `PP_REQUIRED_SA_SETTINGS` in `scripts/lib/push-protection.sh`)
+- each setting is patched individually so that a failure on one does not block the others
+- the summary issue notes which settings were enabled and which errored
+
+**Assertions:**
+- All five settings in `PP_REQUIRED_SA_SETTINGS` appear in `REQUIRED_SECURITY_SETTINGS`
+- Adding a new key to `PP_REQUIRED_SA_SETTINGS` in the lib automatically extends the sync
+
+---
+
+## Scenario 11: One required security setting unavailable, others still applied
+
+**Given** a repo has `secret_scanning_ai_detection` unavailable (no Advanced Security licence)
+  but the other four settings are patchable
+**When** the monthly schedule fires
+**Then**
+- the PATCH for `secret_scanning_ai_detection` returns a 422 error
+- the remaining four settings are still patched successfully in their own independent PATCH calls
+- the summary issue row for the repo shows which settings were enabled and which errored
+
+**Assertions:**
+- `settings_applied` increments by 4 (the four that succeeded)
+- The repo row in the summary notes `secret_scanning_ai_detection:error` alongside the four `:enabled` entries
+- Script exits 0 for the run (individual setting failures are non-fatal)

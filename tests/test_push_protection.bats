@@ -83,3 +83,38 @@ teardown() {
   run pp_apply_security_and_analysis
   [ "$status" -ne 0 ]
 }
+
+@test "live mode makes one PATCH call per required setting" {
+  export DEV_LEAD_DRY_RUN=false
+  export REPO="owner/repo"
+  gh() {
+    local stdin_body=""
+    [ ! -t 0 ] && stdin_body=$(cat)
+    printf '%s BODY=%s\n' "$*" "$stdin_body" >> "$GH_LOG"
+  }
+  export -f gh
+  run pp_apply_security_and_analysis
+  [ "$status" -eq 0 ]
+  local patch_count
+  patch_count=$(grep -c "PATCH" "$GH_LOG")
+  [ "$patch_count" -eq "${#PP_REQUIRED_SA_SETTINGS[@]}" ]
+}
+
+@test "live mode continues applying remaining settings after one PATCH failure" {
+  export DEV_LEAD_DRY_RUN=false
+  export REPO="owner/repo"
+  export FAIL_KEY="${PP_REQUIRED_SA_SETTINGS[0]}"
+  gh() {
+    local stdin_body=""
+    [ ! -t 0 ] && stdin_body=$(cat)
+    printf '%s BODY=%s\n' "$*" "$stdin_body" >> "$GH_LOG"
+    echo "$stdin_body" | grep -q "\"${FAIL_KEY}\"" && return 1
+    return 0
+  }
+  export -f gh
+  run pp_apply_security_and_analysis
+  # All settings should be attempted even though the first one fails
+  local patch_count
+  patch_count=$(grep -c "PATCH" "$GH_LOG")
+  [ "$patch_count" -eq "${#PP_REQUIRED_SA_SETTINGS[@]}" ]
+}

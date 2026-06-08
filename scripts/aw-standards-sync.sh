@@ -13,6 +13,9 @@
 
 set -euo pipefail
 
+# shellcheck source=scripts/lib/push-protection.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/push-protection.sh"
+
 ORG="${ORG:-petry-projects}"
 STANDARDS_REPO="${STANDARDS_REPO:-${ORG}/.github}"
 REPORT_REPO="${REPORT_REPO:-${ORG}/.github-private}"
@@ -26,10 +29,15 @@ REQUIRED_FILES=(
   ".github/CODEOWNERS|standards/CODEOWNERS"
 )
 
-# Required repository security settings: "setting_label|jq_path|api_payload"
-REQUIRED_SECURITY_SETTINGS=(
-  "secret_scanning_ai_detection|.security_and_analysis.secret_scanning_ai_detection.status|{\"security_and_analysis\":{\"secret_scanning_ai_detection\":{\"status\":\"enabled\"}}}"
-)
+# Required repository security settings derived from PP_REQUIRED_SA_SETTINGS in push-protection.sh.
+# Format: "setting_label|jq_path|api_payload"
+REQUIRED_SECURITY_SETTINGS=()
+for _key in "${PP_REQUIRED_SA_SETTINGS[@]}"; do
+  REQUIRED_SECURITY_SETTINGS+=(
+    "${_key}|.security_and_analysis.${_key}.status|{\"security_and_analysis\":{\"${_key}\":{\"status\":\"enabled\"}}}"
+  )
+done
+unset _key
 
 echo "=== Standards Sync ==="
 echo "  Org:            ${ORG}"

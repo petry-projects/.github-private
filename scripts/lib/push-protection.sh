@@ -31,15 +31,14 @@ pp_apply_security_and_analysis() {
     return 0
   fi
 
-  # Build the JSON payload: {"security_and_analysis": {"<key>": {"status": "enabled"}, ...}}
-  local payload
-  payload=$(
-    printf '%s\n' "${PP_REQUIRED_SA_SETTINGS[@]}" \
-    | jq -Rn '
-        reduce inputs as $k ({}; . + {($k): {"status": "enabled"}})
-        | {"security_and_analysis": .}
-      '
-  )
-
-  gh api -X PATCH "repos/${REPO}" --input - <<<"$payload"
+  local failures=0
+  for key in "${PP_REQUIRED_SA_SETTINGS[@]}"; do
+    local payload
+    payload=$(jq -n --arg k "$key" '{"security_and_analysis": {($k): {"status": "enabled"}}}')
+    if ! gh api -X PATCH "repos/${REPO}" --input - <<<"$payload"; then
+      echo "[warn] ${REPO} — could not enable ${key} (may require Advanced Security)" >&2
+      failures=$((failures + 1))
+    fi
+  done
+  [ "$failures" -eq 0 ]
 }
