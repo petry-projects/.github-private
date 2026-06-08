@@ -1,12 +1,17 @@
-updates:
-- directory: /
-  ignore:
-  - dependency-name: "github/gh-aw-actions/*" # Managed by gh aw compile. Version-locked to the gh-aw compiler; do not bump.
-  labels:
-  - security
-  - dependencies
-  open-pull-requests-limit: 10
-  package-ecosystem: github-actions
-  schedule:
-    interval: weekly
 version: 2
+updates:
+  # GitHub Actions — version updates (keep actions current)
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    labels:
+      - "security"
+      - "dependencies"
+    ignore:
+      - dependency-name: "github/gh-aw-actions/*" # Managed by gh aw compile. Version-locked to the gh-aw compiler; do not bump.
+    groups:
+      actions:
+        patterns:
+          - "*"
