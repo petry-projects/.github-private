@@ -169,8 +169,15 @@ fi
       echo "{\"pr\":\"$PR_URL\",\"sha\":\"$PR_HEAD_SHA\",\"decision\":\"skip\",\"reason\":\"waiting-for-advisory-bots\"}"
       exit 100
     fi
+  elif [ $gate_rc -eq 2 ]; then
+    # API/parse error in the gate — fail this PR rather than approving without advisory check.
+    # No bot event will re-trigger this run, so exit 1 (per-PR failure) allows the
+    # scheduler to retry on a subsequent scheduled run instead of silently skipping.
+    echo "    error: advisory gate API/parse error — failing PR to avoid uninformed approval"
+    echo "{\"pr\":\"$PR_URL\",\"sha\":\"$PR_HEAD_SHA\",\"decision\":\"error\",\"reason\":\"advisory-gate-api-error\"}"
+    exit 1
   else
-    # Unexpected error (gate_rc should only be 0 or 1)
+    # Unexpected error
     exit $gate_rc
   fi
 }
@@ -447,7 +454,16 @@ unset _gh_meta_err _gh_diff_err _gh_diff_tmp _gh_meta_err_content _gh_diff_err_c
 # Best-effort: a fetch failure degrades to "(none)" rather than failing the run.
 _owner_repo=$(echo "$PR_URL" | sed -E 's|https://github.com/([^/]+/[^/]+)/pull/.*|\1|')
 _pr_num=${PR_URL##*/}
-_adv_bots='["gemini-code-assist","copilot-pull-request-reviewer","sonarqubecloud","chatgpt-codex-connector"]'
+# Derive advisory bot list from the gate script — single source of truth so
+# adding a new bot to ADVISORY_BOTS is automatically reflected here.
+_adv_bots=$(
+  # shellcheck source=lib/advisory-review-gate.sh
+  source "$SCRIPT_DIR/lib/advisory-review-gate.sh" 2>/dev/null
+  [[ ${#ADVISORY_BOTS[@]} -gt 0 ]] && printf '%s\n' "${!ADVISORY_BOTS[@]}" | sort | jq -R . | jq -s .
+) || _adv_bots=''
+if [[ -z "$_adv_bots" ]]; then
+  _adv_bots='["chatgpt-codex-connector","copilot-pull-request-reviewer","gemini-code-assist","sonarqubecloud"]'
+fi
 ADVISORY_REVIEW_BODIES=$(echo "$PR_SNAPSHOT" | jq -r --argjson bots "$_adv_bots" --arg head "$PR_HEAD_SHA" '
   [(.reviews // [])[] | select([.author.login] | inside($bots)) | select(.commit.oid == $head)]
   | group_by(.author.login) | map(sort_by(.submittedAt) | last)
@@ -509,6 +525,12 @@ TRIAGE_RESULT=$(
 
 # Drop the bulky locals now that the prompt file is on disk. Keeps later
 # subprocess forks (jq, claude) from hitting E2BIG on hundreds-of-KB diffs.
+# Advisory feedback is capped at 8 KB; write to disk for Tier 2/3 to read.
+ADVISORY_BOT_FEEDBACK_FILE="/tmp/cascade/advisory-bot-feedback.txt"
+if [[ -n "${ADVISORY_BOT_FEEDBACK//[[:space:]]/}" ]]; then
+  printf '%s' "$ADVISORY_BOT_FEEDBACK" > "$ADVISORY_BOT_FEEDBACK_FILE"
+fi
+export ADVISORY_BOT_FEEDBACK_FILE
 unset PR_DIFF PR_METADATA ADVISORY_BOT_FEEDBACK
 
 # Detect error category before JSON validation.

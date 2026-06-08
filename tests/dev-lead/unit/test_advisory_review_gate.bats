@@ -142,6 +142,11 @@ teardown() {
   grep -q "waiting-for-advisory-bots" "$SCRIPT_DIR/review-one-pr.sh"
 }
 
+@test "Advisory gate: review-one-pr.sh fails on return code 2 (API error)" {
+  grep -q 'elif \[ $gate_rc -eq 2 \]' "$SCRIPT_DIR/review-one-pr.sh"
+  grep -q "advisory-gate-api-error" "$SCRIPT_DIR/review-one-pr.sh"
+}
+
 @test "Advisory gate: uses subshell isolation in review-one-pr.sh" {
   # The gate runs in a true subshell ( ) — not a brace group { } — for isolation
   grep -q "source.*advisory-review-gate.sh" "$SCRIPT_DIR/review-one-pr.sh"
@@ -331,7 +336,7 @@ MOCK_EOF
   [ "$status" -eq 1 ]
 }
 
-@test "Gate runtime: returns 1 when gh command fails" {
+@test "Gate runtime: returns 2 when gh command fails (API error, not normal wait)" {
   local tmpdir
   tmpdir=$(mktemp -d)
   cat > "$tmpdir/gh" << 'MOCK_EOF'
@@ -346,7 +351,9 @@ MOCK_EOF
     check_advisory_reviews 'https://github.com/owner/repo/pull/123'
   "
   rm -rf "$tmpdir"
-  [ "$status" -eq 1 ]
+  # API errors return 2 (distinct from "bots not submitted yet" = 1)
+  # so the caller can fail-fast rather than treating the error as a normal wait.
+  [ "$status" -eq 2 ]
 }
 
 @test "Gate runtime: format_bot_status renders known states" {

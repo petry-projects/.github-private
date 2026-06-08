@@ -64,7 +64,7 @@ get_advisory_bot_states() {
   local gh_output
   gh_output=$(gh pr view "$PR_URL" --json reviews,comments 2>&1) || {
     log_warn "gh pr view failed: $gh_output"
-    return 1
+    return 2  # API error — distinct from "no bots yet" (1) so caller can fail-fast
   }
 
   echo "$gh_output" | jq -c --argjson bots "$bot_array" '
@@ -80,7 +80,7 @@ get_advisory_bot_states() {
     .[]
   ' || {
     log_warn "jq processing failed"
-    return 1
+    return 2  # Parse error — also distinct from "no bots yet" (1)
   }
 }
 
@@ -127,6 +127,11 @@ check_advisory_reviews() {
   # Get current bot states (single gh API call, instant)
   local current_states
   current_states=$(get_advisory_bot_states) || {
+    local gs_rc=$?
+    if [[ $gs_rc -eq 2 ]]; then
+      log_warn "Failed to query advisory bot states (API/parse error)"
+      return 2  # Propagate API error — caller should fail, not treat as "waiting"
+    fi
     log_warn "Failed to query advisory bot states"
     return 1
   }
@@ -166,11 +171,15 @@ check_advisory_reviews() {
     head_time_raw=""  # Initialize before conditional to prevent set -u abort
     # Use pushedDate (when the commit arrived on GitHub) not committedDate (author
     # timestamp) so that old cherry-picked commits don't bypass the gate immediately.
+    # pushedDate is deprecated in GitHub's GraphQL schema but still populated;
+    # do NOT fall back to committedDate — an old commit's authored time can be
+    # hours before its push, which would bypass the gate for cherry-picks.
+    # If pushedDate is unavailable, head_age stays 0 and the fallback is disabled.
     # $url in the query string is a GraphQL variable, not a shell variable.
     # shellcheck disable=SC2016
-    local _gql='query($url:URI!){resource(url:$url){...on PullRequest{commits(last:1){nodes{commit{pushedDate committedDate}}}}}}'
+    local _gql='query($url:URI!){resource(url:$url){...on PullRequest{commits(last:1){nodes{commit{pushedDate}}}}}}'
     head_time=$(gh api graphql -f query="$_gql" -f url="$PR_URL" \
-      --jq '.data.resource.commits.nodes[0].commit | .pushedDate // .committedDate' \
+      --jq '.data.resource.commits.nodes[0].commit.pushedDate // empty' \
       2>/dev/null) || head_time=""
     if [[ -n "$head_time" ]]; then
       head_time_raw=$(date -u -d "$head_time" +%s 2>/dev/null) || head_time_raw=""
@@ -178,19 +187,24 @@ check_advisory_reviews() {
     fi
 
     time_since_last_sub=0
+    # Quiescence is only reliable when we know the current head push time.
+    # If head_time_raw is empty (GraphQL failed), stale submissions from a
+    # previous HEAD could already be >10 min old, which would fire the fallback
+    # and approve before the advisory bots have reviewed the new head.
+    # Guard: only compute time_since_last_sub when head_time_raw is available.
     # -s (slurp) is required: current_states is a newline-delimited object
     # stream. Without slurping, `.[].time` iterates each object's scalar
     # values and jq errors — leaving latest_sub_at empty, time_since_last_sub
     # at 0, and the quiescence fallback permanently disarmed.
     latest_sub_at=$(echo "$current_states" | jq -rs '[.[].time] | sort | last // empty' 2>/dev/null) || latest_sub_at=""
-    if [[ -n "$latest_sub_at" ]]; then
+    if [[ -n "$latest_sub_at" && -n "$head_time_raw" ]]; then
       latest_sub_raw=$(date -u -d "$latest_sub_at" +%s 2>/dev/null) || latest_sub_raw=""
       if [[ -n "$latest_sub_raw" ]]; then
         # Anchor quiescence to the later of head-push and latest submission so that
         # stale submissions from a previous HEAD don't satisfy the fallback for a
         # fresh commit (a new push resets the quiescence timer to the head-push time).
         local quiescence_anchor
-        if [[ -n "$head_time_raw" && "$head_time_raw" -gt "$latest_sub_raw" ]]; then
+        if [[ "$head_time_raw" -gt "$latest_sub_raw" ]]; then
           quiescence_anchor=$head_time_raw
         else
           quiescence_anchor=$latest_sub_raw
