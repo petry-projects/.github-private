@@ -85,14 +85,16 @@ checkout_pr_in_worktree() {
   local _pr_branch=""
   _pr_branch="$(gh pr view "$pr" --repo "$repo" --json headRefName --jq '.headRefName' 2>/dev/null || true)"
   if [ -n "$_pr_branch" ]; then
-    # Canonicalize the agent dir once for comparison: `git worktree list`
-    # emits fully-resolved paths, but PR_WORKTREE_AGENT_DIR comes from `pwd`
-    # and may contain unresolved symlinks (macOS, some CI runners). Without
-    # this, the agent's own checkout could fail the equality test and be sent
-    # down the force-remove path (a no-op git refuses, leaving the branch
-    # unreleased and the original collision unfixed).
+    # Resolve the agent worktree's ROOT for comparison. `git worktree list`
+    # emits each worktree's top-level, fully-resolved path, but
+    # PR_WORKTREE_AGENT_DIR comes from `pwd` — which may be a SUBDIRECTORY of
+    # the repo and/or contain unresolved symlinks (macOS, some CI runners).
+    # Comparing the resolved repo top-level against git's output on both axes
+    # ensures the agent's own checkout is detached (not mistakenly force-removed,
+    # which git refuses — leaving the branch unreleased and the collision unfixed).
     local _agent_real
-    _agent_real="$(cd "$PR_WORKTREE_AGENT_DIR" 2>/dev/null && pwd -P || printf '%s' "$PR_WORKTREE_AGENT_DIR")"
+    _agent_real="$(git -C "$PR_WORKTREE_AGENT_DIR" rev-parse --show-toplevel 2>/dev/null || printf '%s' "$PR_WORKTREE_AGENT_DIR")"
+    _agent_real="$(cd "$_agent_real" 2>/dev/null && pwd -P || printf '%s' "$_agent_real")"
     local _wt_line _wt_path="" _held _wt_real
     while IFS= read -r _wt_line; do
       case "$_wt_line" in

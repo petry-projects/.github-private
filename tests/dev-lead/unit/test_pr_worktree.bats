@@ -140,7 +140,8 @@ teardown() {
 
   # Simulate a crashed prior run: the PR branch (`old`) is checked out in a
   # leftover sibling worktree that is still registered AND still on disk.
-  local stale; stale="$(mktemp -d)/stale-wt"
+  local stale_parent stale
+  stale_parent="$(mktemp -d)"; stale="$stale_parent/stale-wt"
   git -C "$AGENT_REPO" worktree add --quiet "$stale" old
   run git -C "$AGENT_REPO" worktree list
   [[ "$output" == *"$stale"* ]]
@@ -156,6 +157,7 @@ teardown() {
   [[ "$output" != *"$stale"* ]]
 
   cleanup_pr_worktree
+  rm -rf "$stale_parent"
 }
 
 @test "checkout_pr_in_worktree: recovers from a stale registry entry whose dir is gone" {
@@ -164,7 +166,8 @@ teardown() {
 
   # Crashed run left a registry entry for `old`, but the directory was deleted
   # out from under git (no `git worktree remove`). prune must clear it.
-  local stale; stale="$(mktemp -d)/gone-wt"
+  local stale_parent stale
+  stale_parent="$(mktemp -d)"; stale="$stale_parent/gone-wt"
   git -C "$AGENT_REPO" worktree add --quiet "$stale" old
   rm -rf "$stale"
 
@@ -174,6 +177,7 @@ teardown() {
   [ ! -e "$PWD/prompts/x.md" ]
 
   cleanup_pr_worktree
+  rm -rf "$stale_parent"
 }
 
 @test "checkout_pr_in_worktree: recovers when the agent checkout itself holds the PR branch" {
@@ -196,4 +200,27 @@ teardown() {
   [ -d "$AGENT_REPO/.git" ]
   run git -C "$AGENT_REPO" symbolic-ref -q HEAD
   [ "$status" -ne 0 ]   # detached HEAD has no symbolic ref
+}
+
+@test "checkout_pr_in_worktree: detaches agent checkout even when invoked from a subdirectory" {
+  # `git worktree list` reports the worktree ROOT, but PR_WORKTREE_AGENT_DIR is
+  # captured from pwd — here a SUBDIRECTORY of the repo. The comparison must
+  # resolve to the repo top-level so the agent checkout is still recognized and
+  # detached (regression guard for the PR #494 review finding).
+  source "$LIB"
+  git -C "$AGENT_REPO" checkout -q old
+  mkdir -p "$AGENT_REPO/prompts"   # a real subdir to run from
+  cd "$AGENT_REPO/prompts"
+
+  checkout_pr_in_worktree 383 owner/repo
+
+  [ "$PWD" = "$PR_WORKTREE_DIR" ]
+  [ ! -e "$PWD/prompts/x.md" ]
+
+  cleanup_pr_worktree
+
+  # Agent checkout preserved (detached, not removed despite the subdir cwd).
+  [ -d "$AGENT_REPO/.git" ]
+  run git -C "$AGENT_REPO" symbolic-ref -q HEAD
+  [ "$status" -ne 0 ]
 }
