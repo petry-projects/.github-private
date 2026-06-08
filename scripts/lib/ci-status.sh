@@ -13,19 +13,10 @@
 # Outputs (stdout): one of "passing", "pending", "failing"
 #
 # Classification rules (after filtering own checks):
-#   passing — empty rollup, or every item is SUCCESS/SKIPPED/NEUTRAL/CANCELLED
-#             conclusion or SUCCESS state
+#   passing — empty rollup, or every item is SUCCESS/SKIPPED/NEUTRAL/SUCCESS state
 #   pending — any item is IN_PROGRESS/QUEUED/WAITING/PENDING/EXPECTED or
 #             COMPLETED with null/empty conclusion
 #   failing — anything else (FAILURE, ACTION_REQUIRED, TIMED_OUT, etc.)
-#
-# CANCELLED is treated as non-blocking, not failing (issue #608). dev-lead's
-# orchestration jobs (dev-lead / dispatch, dev-lead / ci-relay) are routinely
-# cancelled by dev-lead's own concurrency when a run is superseded, leaving
-# terminal CANCELLED check-runs on the PR. A cancelled check is not a failed
-# check, so it must not block the review gate. It is non-blocking rather than
-# pending because a superseded check never completes — classifying it pending
-# would leave the PR perpetually un-reviewable.
 #
 # Own-check filter — excludes entries belonging to the PR Review cascade.
 #   `gh pr view --json statusCheckRollup` exposes the check/job *name* but not
@@ -39,11 +30,6 @@
 #   to race an in-progress branch-mutating run.
 #   Matched:
 #   • Bare job name: "review"
-#   • Nested job form "review / review" — produced once the cascade is invoked
-#     via the trigger stub (pr-review-trigger.yml → reusable pr-review.yml@
-#     pr-review/stable), where the rollup name becomes "callerJob / reusableJob"
-#     rather than the bare job name (#497 self-host). Matched exactly (not by a
-#     "/ review" suffix) so a genuine external "Build / review" is NOT filtered.
 #   • "PR Review Agent / *"
 #   • "PR Review Reusable / *"
 #   • "PR Review — Mention Trigger / *"
@@ -57,23 +43,9 @@ compute_ci_status() {
     def is_success:
       .conclusion == "SUCCESS" or .conclusion == "SKIPPED" or .conclusion == "NEUTRAL" or
       .state == "SUCCESS";
-    # CANCELLED checks are non-blocking, not failing (issue #608): superseded
-    # dev-lead orchestration jobs leave terminal CANCELLED check-runs that are
-    # not a real merge-readiness signal.
-    def is_cancelled:
-      .conclusion == "CANCELLED";
     def is_own_check:
       (.name // .context // "") as $n |
-      (.workflowName // "") as $wf |
-      # Primary, robust signal: any check produced by a PR Review cascade
-      # workflow (PR Review Agent, the Trigger stub, PR Review Reusable, the
-      # Mention Trigger), regardless of the job-name format the rollup reports
-      # (#536: a consumer old check "pr-review / review" had workflowName
-      # "PR Review Agent"). Falls back to name patterns when the rollup does
-      # not expose workflowName.
-      ($wf | test("^PR Review")) or
       ($n == "review") or
-      ($n == "review / review") or
       ($n | test("^PR Review (Agent|Reusable) /")) or
       ($n | test("^PR Review — Mention Trigger /"));
     if (. == null or (type != "array")) then "passing"
@@ -81,7 +53,7 @@ compute_ci_status() {
       (map(select(is_own_check | not))) as $ext |
       if ($ext | length) == 0 then "passing"
       elif ([$ext[] | select(is_pending)] | length) > 0 then "pending"
-      elif all($ext[]; is_success or is_cancelled) then "passing"
+      elif ([$ext[] | select(is_success)] | length) == ($ext | length) then "passing"
       else "failing"
       end
     end

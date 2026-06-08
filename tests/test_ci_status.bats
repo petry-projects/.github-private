@@ -25,19 +25,6 @@ check_run() {
   fi
 }
 
-# check_run_wf <name> <workflowName> <status> [conclusion]
-# Models a CheckRun that also carries a workflowName (as the real rollup does).
-check_run_wf() {
-  local name="$1" wf="$2" status="$3" conclusion="${4:-null}"
-  if [ "$conclusion" = "null" ]; then
-    jq -n --arg name "$name" --arg wf "$wf" --arg status "$status" \
-      '{name: $name, workflowName: $wf, status: $status, conclusion: null}'
-  else
-    jq -n --arg name "$name" --arg wf "$wf" --arg status "$status" --arg conclusion "$conclusion" \
-      '{name: $name, workflowName: $wf, status: $status, conclusion: $conclusion}'
-  fi
-}
-
 # status_ctx <context> <state>
 # Models a commit StatusContext in the statusCheckRollup array.
 status_ctx() {
@@ -177,47 +164,6 @@ rollup() {
   [ "$output" = "passing" ]
 }
 
-# #497 self-host: invoked via the trigger stub, the cascade's own check appears
-# as the nested "review / review" — must still be filtered so a stale/failed own
-# check never blocks the agent from re-reviewing.
-@test "nested 'review / review' (FAILURE) is filtered out → passing" {
-  local r
-  r=$(rollup "$(check_run "review / review" "COMPLETED" "FAILURE")")
-  run compute_ci_status "$r"
-  [ "$output" = "passing" ]
-}
-
-@test "nested 'review / review' FAILURE alongside an external pass → passing" {
-  local r
-  r=$(rollup "$(check_run "review / review" "COMPLETED" "FAILURE")" "$(check_run "SonarCloud" "COMPLETED" "SUCCESS")")
-  run compute_ci_status "$r"
-  [ "$output" = "passing" ]
-}
-
-@test "a genuinely external failing check still → failing (regression guard)" {
-  local r
-  r=$(rollup "$(check_run "review / review" "COMPLETED" "FAILURE")" "$(check_run "SonarCloud" "COMPLETED" "FAILURE")")
-  run compute_ci_status "$r"
-  [ "$output" = "failing" ]
-}
-
-# #536 consumer fan-out: a consumer's OLD pr-review check appears as
-# "pr-review / review" with workflowName "PR Review Agent" — filtered by
-# workflowName so a stale failed own-check doesn't block re-review.
-@test "consumer 'pr-review / review' (workflowName PR Review Agent, FAILURE) is filtered → passing" {
-  local r
-  r=$(rollup "$(check_run_wf "pr-review / review" "PR Review Agent" "COMPLETED" "FAILURE")")
-  run compute_ci_status "$r"
-  [ "$output" = "passing" ]
-}
-
-@test "workflowName filter does NOT swallow an external failing check" {
-  local r
-  r=$(rollup "$(check_run_wf "pr-review / review" "PR Review Agent" "COMPLETED" "FAILURE")" "$(check_run_wf "Backend CI" "Backend CI" "COMPLETED" "FAILURE")")
-  run compute_ci_status "$r"
-  [ "$output" = "failing" ]
-}
-
 # ---------------------------------------------------------------------------
 # Dev-lead and generic workflow/job-suffix checks are NOT filtered
 # Dev-lead can commit back to the PR branch, so it must remain a real CI gate.
@@ -351,81 +297,6 @@ rollup() {
     "$(check_run "ci-relay" "IN_PROGRESS")")
   run compute_ci_status "$r"
   [ "$output" = "pending" ]
-}
-
-# ---------------------------------------------------------------------------
-# CANCELLED checks are non-blocking (issue #608)
-# dev-lead's orchestration jobs (dispatch, ci-relay) are routinely CANCELLED by
-# dev-lead's own concurrency when a run is superseded. A cancelled check is not a
-# failed check, so it must not classify the PR as failing. It is treated as
-# non-blocking (success-equivalent), not pending — a superseded check never
-# completes, so pending would leave the PR perpetually un-reviewable.
-# ---------------------------------------------------------------------------
-
-@test "single external CANCELLED check returns passing" {
-  local r
-  r=$(rollup "$(check_run "Build" "COMPLETED" "CANCELLED")")
-  run compute_ci_status "$r"
-  [ "$output" = "passing" ]
-}
-
-@test "CANCELLED dev-lead 'dispatch' check returns passing" {
-  local r
-  r=$(rollup "$(check_run "dispatch" "COMPLETED" "CANCELLED")")
-  run compute_ci_status "$r"
-  [ "$output" = "passing" ]
-}
-
-@test "CANCELLED 'dev-lead / dispatch' check returns passing" {
-  local r
-  r=$(rollup "$(check_run "dev-lead / dispatch" "COMPLETED" "CANCELLED")")
-  run compute_ci_status "$r"
-  [ "$output" = "passing" ]
-}
-
-@test "CANCELLED check alongside external passing → passing" {
-  local r
-  r=$(rollup \
-    "$(check_run "dev-lead / dispatch" "COMPLETED" "CANCELLED")" \
-    "$(check_run "CI / build" "COMPLETED" "SUCCESS")")
-  run compute_ci_status "$r"
-  [ "$output" = "passing" ]
-}
-
-@test "CANCELLED check alongside external FAILURE → failing (regression guard)" {
-  local r
-  r=$(rollup \
-    "$(check_run "dev-lead / dispatch" "COMPLETED" "CANCELLED")" \
-    "$(check_run "CI / build" "COMPLETED" "FAILURE")")
-  run compute_ci_status "$r"
-  [ "$output" = "failing" ]
-}
-
-@test "CANCELLED check alongside external IN_PROGRESS → pending (regression guard)" {
-  local r
-  r=$(rollup \
-    "$(check_run "dev-lead / dispatch" "COMPLETED" "CANCELLED")" \
-    "$(check_run "CI / build" "IN_PROGRESS")")
-  run compute_ci_status "$r"
-  [ "$output" = "pending" ]
-}
-
-@test "rollup of only CANCELLED dev-lead orchestration checks → passing (issue #608 repro)" {
-  local r
-  r=$(rollup \
-    "$(check_run "dev-lead / dispatch" "COMPLETED" "CANCELLED")" \
-    "$(check_run "dev-lead / ci-relay" "COMPLETED" "CANCELLED")")
-  run compute_ci_status "$r"
-  [ "$output" = "passing" ]
-}
-
-@test "status context CANCELLED-equivalent: real TIMED_OUT conclusion still → failing" {
-  # Guards that only CANCELLED is whitelisted — other non-success terminal
-  # conclusions (e.g. TIMED_OUT) must still block.
-  local r
-  r=$(rollup "$(check_run "Build" "COMPLETED" "TIMED_OUT")")
-  run compute_ci_status "$r"
-  [ "$output" = "failing" ]
 }
 
 # ---------------------------------------------------------------------------
