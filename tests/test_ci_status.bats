@@ -95,12 +95,13 @@ rollup() {
 }
 
 # ---------------------------------------------------------------------------
-# PR Review Agent bare job names ARE filtered (actual rollup shape)
+# PR Review Agent bare job name IS filtered (actual rollup shape)
 # `gh pr view --json statusCheckRollup` exposes the job name only (not the
-# workflow name, per gh/cli#9091), so the agent's own checks appear as bare
-# names: "review", "dispatch", "ci-relay". These are filtered to prevent
-# the cascade from blocking on its own pending check runs.
-# Other bare names that are not PR Review Agent job names remain external.
+# workflow name, per gh/cli#9091), so the PR Review Agent's own job appears as
+# a bare name: "review". This is filtered to prevent the cascade from blocking
+# on its own pending check run.
+# Dev-Lead bare job names ("dispatch", "ci-relay") are NOT filtered because
+# Dev-Lead can commit back to the PR branch.
 # ---------------------------------------------------------------------------
 
 @test "bare PR Review Agent check 'review' (IN_PROGRESS) is filtered → passing" {
@@ -110,18 +111,18 @@ rollup() {
   [ "$output" = "passing" ]
 }
 
-@test "bare PR Review Agent check 'dispatch' (IN_PROGRESS) is filtered → passing" {
+@test "bare Dev-Lead check 'dispatch' (IN_PROGRESS) is NOT filtered → pending" {
   local r
   r=$(rollup "$(check_run "dispatch" "IN_PROGRESS")")
   run compute_ci_status "$r"
-  [ "$output" = "passing" ]
+  [ "$output" = "pending" ]
 }
 
-@test "bare PR Review Agent check 'ci-relay' (IN_PROGRESS) is filtered → passing" {
+@test "bare Dev-Lead check 'ci-relay' (IN_PROGRESS) is NOT filtered → pending" {
   local r
   r=$(rollup "$(check_run "ci-relay" "IN_PROGRESS")")
   run compute_ci_status "$r"
-  [ "$output" = "passing" ]
+  [ "$output" = "pending" ]
 }
 
 @test "bare check named 'pr-review-mention' (IN_PROGRESS) is NOT filtered → pending" {
@@ -235,13 +236,13 @@ rollup() {
   [ "$output" = "passing" ]
 }
 
-@test "mix: bare 'dispatch' filtered + external passing → passing" {
+@test "mix: bare 'dispatch' NOT filtered + external passing → pending" {
   local r
   r=$(rollup \
     "$(check_run "dispatch" "IN_PROGRESS")" \
     "$(check_run "Build" "COMPLETED" "SUCCESS")")
   run compute_ci_status "$r"
-  [ "$output" = "passing" ]
+  [ "$output" = "pending" ]
 }
 
 # ---------------------------------------------------------------------------
@@ -288,14 +289,14 @@ rollup() {
 # Rollup with only PR Review Agent bare job names → passing (all filtered)
 # ---------------------------------------------------------------------------
 
-@test "rollup with only PR Review Agent bare job names returns passing (all filtered)" {
+@test "rollup: 'review' filtered, Dev-Lead 'dispatch' + 'ci-relay' NOT filtered → pending" {
   local r
   r=$(rollup \
     "$(check_run "review" "IN_PROGRESS")" \
     "$(check_run "dispatch" "IN_PROGRESS")" \
     "$(check_run "ci-relay" "IN_PROGRESS")")
   run compute_ci_status "$r"
-  [ "$output" = "passing" ]
+  [ "$output" = "pending" ]
 }
 
 # ---------------------------------------------------------------------------

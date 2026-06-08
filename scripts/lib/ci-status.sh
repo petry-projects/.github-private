@@ -20,16 +20,16 @@
 #
 # Own-check filter — excludes entries belonging to the PR Review cascade.
 #   `gh pr view --json statusCheckRollup` exposes the check/job *name* but not
-#   the workflow name (gh/cli#9091), so the PR Review Agent's Actions jobs appear
-#   with their bare job names in the rollup: "review", "dispatch", "ci-relay".
-#   These are matched explicitly to prevent the cascade from blocking on its own
-#   pending check runs. Compound "workflow / job" forms are also matched for
+#   the workflow name (gh/cli#9091), so the PR Review Agent's single job appears
+#   with its bare job name in the rollup: "review".
+#   This is matched explicitly to prevent the cascade from blocking on its own
+#   pending check run. Compound "workflow / job" forms are also matched for
 #   reusable-workflow callers where that format does appear.
-#   Dev-lead checks (dev-lead / dispatch, dev-lead / ci-relay) are NOT filtered
-#   because dev-lead can commit back to the PR branch; filtering it could cause
-#   a review to race an in-progress branch-mutating run.
+#   Dev-Lead bare checks ("dispatch", "ci-relay") are NOT filtered because
+#   Dev-Lead can commit back to the PR branch; filtering them could cause a review
+#   to race an in-progress branch-mutating run.
 #   Matched:
-#   • Bare job names: "review", "dispatch", "ci-relay"
+#   • Bare job name: "review"
 #   • "PR Review Agent / *"
 #   • "PR Review Reusable / *"
 #   • "PR Review — Mention Trigger / *"
@@ -45,7 +45,7 @@ compute_ci_status() {
       .state == "SUCCESS";
     def is_own_check:
       (.name // .context // "") as $n |
-      ($n == "review" or $n == "dispatch" or $n == "ci-relay") or
+      ($n == "review") or
       ($n | test("^PR Review (Agent|Reusable) /")) or
       ($n | test("^PR Review — Mention Trigger /"));
     if (. == null or (type != "array")) then "passing"
