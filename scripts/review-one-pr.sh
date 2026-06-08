@@ -915,6 +915,63 @@ if [ "${SAFETY_CHECKS_ENABLED:-true}" = "true" ]; then
   assemble_safety_checks "$PR_METADATA" "$PR_DIFF" "/tmp/cascade/safety-checks.txt" || true
 fi
 
+# Advisory bot feedback. The gate above waits for advisory bots to submit,
+# but the triage tier has NO tools — unless their findings are inlined here,
+# the cascade can approve without ever seeing the feedback it waited for
+# (Codex P1 on PR #458). Collect, per advisory bot: the latest review body at
+# the current head, the latest PR-level (issue) comment, and the most recent
+# inline review comments at the current head — truncated to keep the prompt
+# small. Three correctness rules (Codex follow-ups):
+#   - group/sort FIRST, then drop empty bodies: a later empty approval must
+#     suppress an older findings body, not resurrect it as "current";
+#   - bound reviews/inline comments to PR_HEAD_SHA so findings from previous
+#     heads (already fixed by newer pushes) don't trigger false escalation;
+#   - PR-level issue comments (e.g. SonarCloud's quality-gate report) count
+#     as advisory submissions in the gate, so include them here too. They
+#     carry no commit binding — take the newest per bot.
+# Best-effort: a fetch failure degrades to "(none)" rather than failing the run.
+_owner_repo=$(echo "$PR_URL" | sed -E 's|https://github.com/([^/]+/[^/]+)/pull/.*|\1|')
+_pr_num=${PR_URL##*/}
+# Derive advisory bot list from the gate script — single source of truth so
+# adding a new bot to ADVISORY_BOTS is automatically reflected here.
+_adv_bots=$(
+  # shellcheck source=lib/advisory-review-gate.sh
+  source "$SCRIPT_DIR/lib/advisory-review-gate.sh" 2>/dev/null
+  [[ ${#ADVISORY_BOTS[@]} -gt 0 ]] && printf '%s\n' "${!ADVISORY_BOTS[@]}" | sort | jq -R . | jq -s .
+) || _adv_bots=''
+if [[ -z "$_adv_bots" ]]; then
+  _adv_bots='["chatgpt-codex-connector","copilot-pull-request-reviewer","gemini-code-assist","sonarqubecloud"]'
+fi
+ADVISORY_REVIEW_BODIES=$(echo "$PR_SNAPSHOT" | jq -r --argjson bots "$_adv_bots" --arg head "$PR_HEAD_SHA" '
+  [(.reviews // [])[] | select([.author.login] | inside($bots)) | select(.commit.oid == $head)]
+  | group_by(.author.login) | map(sort_by(.submittedAt) | last)
+  | map(select(.body != null and .body != ""))
+  | .[] | "--- \(.author.login) review (\(.state), \(.submittedAt)) ---\n\(.body[0:800])"
+' 2>/dev/null || true)
+ADVISORY_PR_COMMENTS=$(echo "$PR_SNAPSHOT" | jq -r --argjson bots "$_adv_bots" '
+  [(.comments // [])[] | select([.author.login] | inside($bots))]
+  | group_by(.author.login) | map(sort_by(.createdAt) | last)
+  | map(select(.body != null and .body != ""))
+  | .[] | "--- \(.author.login) PR comment (\(.createdAt)) ---\n\(.body[0:600])"
+' 2>/dev/null || true)
+# REST user.login carries a "[bot]" suffix (e.g. "gemini-code-assist[bot]"),
+# unlike the GraphQL-backed `gh pr view` — strip it before matching. --slurp
+# is required with --paginate: pages arrive as separate JSON arrays, and
+# without slurping the sort/limit would apply per page, not across all pages.
+# gh rejects --slurp together with --jq, so pipe to external jq instead.
+ADVISORY_INLINE_COMMENTS=$(gh api "repos/$_owner_repo/pulls/$_pr_num/comments" --paginate --slurp 2>/dev/null \
+  | jq -r --argjson bots "$_adv_bots" --arg head "$PR_HEAD_SHA" '
+      add
+      | map(select([.user.login | sub("\\[bot\\]$"; "")] | inside($bots)))
+      | map(select(.commit_id == $head))
+      | sort_by(.created_at) | reverse | .[0:15] | .[]
+      | "--- \(.user.login) @ \(.path):\(.line // .original_line) (\(.created_at)) ---\n\(.body[0:600])"
+    ' 2>/dev/null || true)
+ADVISORY_BOT_FEEDBACK=$(printf '%s\n%s\n%s' "$ADVISORY_REVIEW_BODIES" "$ADVISORY_PR_COMMENTS" "$ADVISORY_INLINE_COMMENTS")
+# Cap total size so huge bot histories can't blow up the prompt.
+ADVISORY_BOT_FEEDBACK="${ADVISORY_BOT_FEEDBACK:0:8000}"
+unset _owner_repo _pr_num _adv_bots ADVISORY_REVIEW_BODIES ADVISORY_PR_COMMENTS ADVISORY_INLINE_COMMENTS
+
 # Build the triage prompt: static template + inlined PR context.
 TRIAGE_PROMPT_FILE="/tmp/cascade/triage-prompt.md"
 {
