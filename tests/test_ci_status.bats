@@ -95,30 +95,33 @@ rollup() {
 }
 
 # ---------------------------------------------------------------------------
-# Bare job-name checks — treated as external (NOT filtered by is_own_check)
-# A target repo may have CI jobs with these names; filtering them would hide
-# real CI failures. Only workflow-prefixed PR Review checks are filtered.
+# PR Review Agent bare job names ARE filtered (actual rollup shape)
+# `gh pr view --json statusCheckRollup` exposes the job name only (not the
+# workflow name, per gh/cli#9091), so the agent's own checks appear as bare
+# names: "review", "dispatch", "ci-relay". These are filtered to prevent
+# the cascade from blocking on its own pending check runs.
+# Other bare names that are not PR Review Agent job names remain external.
 # ---------------------------------------------------------------------------
 
-@test "bare check named 'review' (IN_PROGRESS) is NOT filtered → pending" {
+@test "bare PR Review Agent check 'review' (IN_PROGRESS) is filtered → passing" {
   local r
   r=$(rollup "$(check_run "review" "IN_PROGRESS")")
   run compute_ci_status "$r"
-  [ "$output" = "pending" ]
+  [ "$output" = "passing" ]
 }
 
-@test "bare check named 'dispatch' (IN_PROGRESS) is NOT filtered → pending" {
+@test "bare PR Review Agent check 'dispatch' (IN_PROGRESS) is filtered → passing" {
   local r
   r=$(rollup "$(check_run "dispatch" "IN_PROGRESS")")
   run compute_ci_status "$r"
-  [ "$output" = "pending" ]
+  [ "$output" = "passing" ]
 }
 
-@test "bare check named 'ci-relay' (IN_PROGRESS) is NOT filtered → pending" {
+@test "bare PR Review Agent check 'ci-relay' (IN_PROGRESS) is filtered → passing" {
   local r
   r=$(rollup "$(check_run "ci-relay" "IN_PROGRESS")")
   run compute_ci_status "$r"
-  [ "$output" = "pending" ]
+  [ "$output" = "passing" ]
 }
 
 @test "bare check named 'pr-review-mention' (IN_PROGRESS) is NOT filtered → pending" {
@@ -189,14 +192,14 @@ rollup() {
 }
 
 # ---------------------------------------------------------------------------
-# Failure classification: PR Review workflow checks filtered; bare names not
+# Failure classification: PR Review checks (bare and compound) are filtered
 # ---------------------------------------------------------------------------
 
-@test "bare check named 'review' (COMPLETED/FAILURE) is NOT filtered → failing" {
+@test "bare PR Review Agent check 'review' (COMPLETED/FAILURE) is filtered → passing" {
   local r
   r=$(rollup "$(check_run "review" "COMPLETED" "FAILURE")")
   run compute_ci_status "$r"
-  [ "$output" = "failing" ]
+  [ "$output" = "passing" ]
 }
 
 @test "'PR Review Agent / review' (COMPLETED/FAILURE) is filtered out → passing" {
@@ -220,32 +223,32 @@ rollup() {
 }
 
 # ---------------------------------------------------------------------------
-# Mix: bare-name pending + external passing → pending (bare names not filtered)
+# Mix: bare PR Review Agent checks filtered; external result determines status
 # ---------------------------------------------------------------------------
 
-@test "mix: bare 'review' pending + external passing → pending" {
+@test "mix: bare 'review' filtered + external passing → passing" {
   local r
   r=$(rollup \
     "$(check_run "review" "IN_PROGRESS")" \
     "$(check_run "Lint" "COMPLETED" "SUCCESS")")
   run compute_ci_status "$r"
-  [ "$output" = "pending" ]
+  [ "$output" = "passing" ]
 }
 
-@test "mix: bare 'dispatch' pending + external passing → pending" {
+@test "mix: bare 'dispatch' filtered + external passing → passing" {
   local r
   r=$(rollup \
     "$(check_run "dispatch" "IN_PROGRESS")" \
     "$(check_run "Build" "COMPLETED" "SUCCESS")")
   run compute_ci_status "$r"
-  [ "$output" = "pending" ]
+  [ "$output" = "passing" ]
 }
 
 # ---------------------------------------------------------------------------
-# Mix: own pending + external pending → pending (external still blocks)
+# Mix: bare PR Review Agent check filtered + external pending → pending
 # ---------------------------------------------------------------------------
 
-@test "mix: bare 'review' pending + external pending → pending" {
+@test "mix: bare 'review' filtered + external pending → pending" {
   local r
   r=$(rollup \
     "$(check_run "review" "IN_PROGRESS")" \
@@ -255,19 +258,17 @@ rollup() {
 }
 
 # ---------------------------------------------------------------------------
-# Mix: own pending + external failing → failing (external still fails)
+# Mix: bare PR Review Agent check filtered + external failing → failing
 # ---------------------------------------------------------------------------
 
-@test "mix: bare 'review' pending + external failing → pending (pending fires first)" {
-  # Both 'review' and 'Test' are in $ext. The pending branch fires first
-  # (before the failure check), so the result is "pending" — once all checks
-  # finish, a subsequent call will return "failing".
+@test "mix: bare 'review' filtered + external failing → failing" {
+  # 'review' is filtered out; only 'Test' (COMPLETED/FAILURE) remains in $ext.
   local r
   r=$(rollup \
     "$(check_run "review" "IN_PROGRESS")" \
     "$(check_run "Test" "COMPLETED" "FAILURE")")
   run compute_ci_status "$r"
-  [ "$output" = "pending" ]
+  [ "$output" = "failing" ]
 }
 
 # ---------------------------------------------------------------------------
@@ -284,17 +285,17 @@ rollup() {
 }
 
 # ---------------------------------------------------------------------------
-# Rollup with only bare own-check names → pending (not filtered)
+# Rollup with only PR Review Agent bare job names → passing (all filtered)
 # ---------------------------------------------------------------------------
 
-@test "rollup with only bare own-check names returns pending (not filtered)" {
+@test "rollup with only PR Review Agent bare job names returns passing (all filtered)" {
   local r
   r=$(rollup \
     "$(check_run "review" "IN_PROGRESS")" \
     "$(check_run "dispatch" "IN_PROGRESS")" \
     "$(check_run "ci-relay" "IN_PROGRESS")")
   run compute_ci_status "$r"
-  [ "$output" = "pending" ]
+  [ "$output" = "passing" ]
 }
 
 # ---------------------------------------------------------------------------

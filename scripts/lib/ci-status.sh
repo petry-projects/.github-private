@@ -18,16 +18,18 @@
 #             COMPLETED with null/empty conclusion
 #   failing — anything else (FAILURE, ACTION_REQUIRED, TIMED_OUT, etc.)
 #
-# Own-check filter — excludes entries whose name matches a known PR Review
-#   workflow prefix only. Bare job names (review, dispatch, ci-relay, etc.)
-#   are intentionally NOT matched: a target repo may have CI jobs with those
-#   same names, and filtering them would let a failing or pending real CI gate
-#   be silently ignored. Dev-lead checks (dev-lead / dispatch, dev-lead /
-#   ci-relay) are also excluded from filtering because dev-lead can commit
-#   back to the PR branch; filtering it could cause a review to race an
-#   in-progress branch-mutating run.
-#   Matched prefixes (applied to .name for CheckRuns and .context for
-#   StatusContexts):
+# Own-check filter — excludes entries belonging to the PR Review cascade.
+#   `gh pr view --json statusCheckRollup` exposes the check/job *name* but not
+#   the workflow name (gh/cli#9091), so the PR Review Agent's Actions jobs appear
+#   with their bare job names in the rollup: "review", "dispatch", "ci-relay".
+#   These are matched explicitly to prevent the cascade from blocking on its own
+#   pending check runs. Compound "workflow / job" forms are also matched for
+#   reusable-workflow callers where that format does appear.
+#   Dev-lead checks (dev-lead / dispatch, dev-lead / ci-relay) are NOT filtered
+#   because dev-lead can commit back to the PR branch; filtering it could cause
+#   a review to race an in-progress branch-mutating run.
+#   Matched:
+#   • Bare job names: "review", "dispatch", "ci-relay"
 #   • "PR Review Agent / *"
 #   • "PR Review Reusable / *"
 #   • "PR Review — Mention Trigger / *"
@@ -43,6 +45,7 @@ compute_ci_status() {
       .state == "SUCCESS";
     def is_own_check:
       (.name // .context // "") as $n |
+      ($n == "review" or $n == "dispatch" or $n == "ci-relay") or
       ($n | test("^PR Review (Agent|Reusable) /")) or
       ($n | test("^PR Review — Mention Trigger /"));
     if (. == null or (type != "array")) then "passing"
