@@ -60,10 +60,11 @@ check_concurrency_order() {
   fi
 }
 
-# Both the inline caller workflow and the reusable workflow must carry the same
-# routing, so external callers get identical per-PR serialization.
+# dev-lead.yml is now a thin caller stub; per-PR/per-issue routing is
+# centralised in the reusable. Only validate the reusable here.
+# The stub's own structure (calls reusable, no inline steps) is validated by
+# tests/dev-lead/integration/test_dev_lead_stub.sh.
 WORKFLOWS=(
-  ".github/workflows/dev-lead.yml"
   ".github/workflows/dev-lead-reusable.yml"
 )
 
