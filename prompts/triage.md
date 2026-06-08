@@ -31,6 +31,11 @@ Output `"escalate": false` (approve) if ALL of these are true:
 5. The PR is well-structured (clear title, reasonable scope).
 6. If a prior review body is included: the new commits appear to resolve
    the findings from the prior review.
+7. If `ADVISORY_BOT_FEEDBACK` is present: it contains no substantive
+   unaddressed findings (bugs, security issues, broken logic). Informational
+   notes, style nits, and findings the diff has already addressed do not
+   require escalation — use your judgment, and check the feedback timestamps
+   against the diff.
 
 Output `"escalate": true` if ANY of those checks fail. When in doubt, escalate.
 False positives are fine (the next tier will sort it out). False negatives are not.
