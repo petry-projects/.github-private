@@ -6,7 +6,7 @@
 # referencing an external action (anthropics/claude-code-action/setup@SHA) that
 # became unreachable, causing every run to fail at "Set up job" within 5 s.
 #
-# Run: bash tests/aw/issue-triage/test_runner_yml.sh
+# Run: bash tests/aw/issue-triage/test_runner_yml.sh  (requires python3 + PyYAML)
 set -euo pipefail
 
 PASS=0
@@ -14,15 +14,28 @@ FAIL=0
 ERRORS=""
 
 ok()   { PASS=$((PASS + 1)); printf 'PASS  %s\n' "$1"; }
-fail() { FAIL=$((FAIL + 1)); ERRORS="${ERRORS}FAIL  $1: $2\n"; printf 'FAIL  %s: %s\n' "$1" "$2"; }
+fail() { FAIL=$((FAIL + 1)); ERRORS="${ERRORS}FAIL  $1: $2"$'\n'; printf 'FAIL  %s: %s\n' "$1" "$2"; }
 
 REPO_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
+readonly REPO_ROOT
 RUNNER="${REPO_ROOT}/.github/workflows/issue-triage-runner.yml"
+readonly RUNNER
+
+# Ensure python3 and PyYAML are installed
+if ! command -v python3 &>/dev/null; then
+  echo "Error: python3 is required to run these tests." >&2
+  exit 1
+fi
+
+if ! python3 -c "import yaml" &>/dev/null; then
+  echo "Error: PyYAML (python3-yaml) is required to run these tests." >&2
+  exit 1
+fi
 
 # ---------------------------------------------------------------------------
 # Test 1: runner YAML file exists
 # ---------------------------------------------------------------------------
-if [ -f "$RUNNER" ]; then
+if [[ -f "$RUNNER" ]]; then
   ok "runner: file exists"
 else
   fail "runner: file exists" "issue-triage-runner.yml not found"
@@ -34,13 +47,13 @@ fi
 # Missing this block leaves the workflow with write-all defaults, which can
 # cause job-setup failures when org policies enforce least-privilege tokens.
 # ---------------------------------------------------------------------------
-if python3 - "$RUNNER" <<'PYEOF' 2>/dev/null; then
+if python3 - "$RUNNER" <<'PYEOF'; then
 import sys, yaml
 with open(sys.argv[1]) as f:
     wf = yaml.safe_load(f)
 if 'permissions' not in wf:
     sys.exit(1)
-if wf['permissions'] not in ({}, None):
+if wf['permissions'] != {}:
     sys.exit(1)
 PYEOF
   ok "runner: top-level permissions: {} restricts default token"
@@ -52,7 +65,7 @@ fi
 # ---------------------------------------------------------------------------
 # Test 3: triage job has issues:read (not write) — Claude runs in read-only job
 # ---------------------------------------------------------------------------
-if python3 - "$RUNNER" <<'PYEOF' 2>/dev/null; then
+if python3 - "$RUNNER" <<'PYEOF'; then
 import sys, yaml
 with open(sys.argv[1]) as f:
     wf = yaml.safe_load(f)
@@ -70,7 +83,7 @@ fi
 # ---------------------------------------------------------------------------
 # Test 4: apply job has issues:write (to post labels and comments)
 # ---------------------------------------------------------------------------
-if python3 - "$RUNNER" <<'PYEOF' 2>/dev/null; then
+if python3 - "$RUNNER" <<'PYEOF'; then
 import sys, yaml
 with open(sys.argv[1]) as f:
     wf = yaml.safe_load(f)
@@ -92,7 +105,7 @@ fi
 # which failed at "Set up job" when the action SHA became unreachable.
 # A run: step is self-contained and not subject to external action availability.
 # ---------------------------------------------------------------------------
-if python3 - "$RUNNER" <<'PYEOF' 2>/dev/null; then
+if python3 - "$RUNNER" <<'PYEOF'; then
 import sys, yaml
 with open(sys.argv[1]) as f:
     wf = yaml.safe_load(f)
@@ -122,7 +135,7 @@ fi
 # ---------------------------------------------------------------------------
 # Test 6: CLAUDE_CODE_OAUTH_TOKEN is passed to the Claude invocation step
 # ---------------------------------------------------------------------------
-if python3 - "$RUNNER" <<'PYEOF' 2>/dev/null; then
+if python3 - "$RUNNER" <<'PYEOF'; then
 import sys, yaml
 with open(sys.argv[1]) as f:
     wf = yaml.safe_load(f)
@@ -142,7 +155,7 @@ fi
 # ---------------------------------------------------------------------------
 # Test 7: apply job uses two-job pattern (needs triage, conditional on skip)
 # ---------------------------------------------------------------------------
-if python3 - "$RUNNER" <<'PYEOF' 2>/dev/null; then
+if python3 - "$RUNNER" <<'PYEOF'; then
 import sys, yaml
 with open(sys.argv[1]) as f:
     wf = yaml.safe_load(f)
@@ -170,6 +183,6 @@ fi
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 if [[ "$FAIL" -gt 0 ]]; then
-  printf '%b' "$ERRORS"
+  printf '%s' "$ERRORS"
   exit 1
 fi
