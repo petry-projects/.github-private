@@ -190,7 +190,54 @@ jobs:
           key: claude-code-${{ env.CLAUDE_CODE_VERSION }}-${{ runner.os }}
 
       - name: Verify auth scopes
-        run: bash scripts/verify-auth-scopes.sh
+        run: |
+          set -euo pipefail
+
+          if auth_status="$(gh auth status 2>&1)"; then
+            :
+          else
+            auth_rc=$?
+            printf '%s\n' "$auth_status"
+            echo "::error::gh auth status failed"
+            exit "$auth_rc"
+          fi
+          printf '%s\n' "$auth_status"
+
+          if grep -qi 'Token:.*github_pat_' <<< "$auth_status"; then
+            echo "::notice::Fine-grained PAT detected — skipping classic OAuth scope check."
+            echo "::notice::Ensure the token grants: contents (read) and pull-requests (write) fine-grained permissions."
+            exit 0
+          fi
+
+          scopes_line="$(grep 'Token scopes:' <<< "$auth_status" || true)"
+          normalized_scopes="${scopes_line//,/ }"
+          normalized_scopes="${normalized_scopes//$'\''/ }"
+
+          if [ -z "$normalized_scopes" ] || grep -qiE '(cannot determine|fine.grained)' <<< "$auth_status"; then
+            echo "::warning::Token scopes could not be determined. Skipping scope validation."
+            echo "::warning::Ensure the token has: contents:read and pull_requests:write (fine-grained), or repo + read:org (classic PAT)."
+            exit 0
+          fi
+
+          if grep -qE "(^|[[:space:]])repo([[:space:]]|$)" <<< "$normalized_scopes"; then
+            if ! grep -qE "(^|[[:space:]])read:org([[:space:]]|$)" <<< "$normalized_scopes"; then
+              echo "::error::GH_TOKEN has 'repo' scope but is missing 'read:org'."
+              echo "::error::PRs with team-based reviewers will fail at 'gh pr view --json reviewRequests'."
+              echo "::error::Edit the classic PAT and check the 'read:org' box (no regeneration needed)."
+              exit 1
+            fi
+          else
+            if ! grep -qE "(^|[[:space:]])contents(:[^[:space:]]+)?([[:space:]]|$)" <<< "$normalized_scopes"; then
+              echo "::error::GH_TOKEN is missing required scope: contents"
+              echo "::error::Token must have either 'repo' + 'read:org' (classic) or 'contents' + 'pull_requests' (fine-grained)"
+              exit 1
+            fi
+            if ! grep -qE "(^|[[:space:]])pull_requests(:write)?([[:space:]]|$)" <<< "$normalized_scopes"; then
+              echo "::error::GH_TOKEN is missing required scope: pull_requests with write access"
+              echo "::error::Token must have either 'repo' + 'read:org' (classic) or 'contents' + 'pull_requests:write' (fine-grained)"
+              exit 1
+            fi
+          fi
 
       - name: Install review engine CLIs
         run: |

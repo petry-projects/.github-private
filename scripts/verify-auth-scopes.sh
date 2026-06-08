@@ -55,11 +55,17 @@ if grep -qE "(^|[[:space:]])repo([[:space:]]|$)" <<< "$normalized_scopes"; then
 else
   # Classic PAT without the broad 'repo' scope: verify the minimum granular
   # scopes needed for the review workflow to function.
-  for required_scope in contents pull_requests; do
-    if ! grep -qE "(^|[[:space:]])${required_scope}(:[^[:space:]]+)?([[:space:]]|$)" <<< "$normalized_scopes"; then
-      echo "::error::GH_TOKEN is missing required scope: ${required_scope}"
-      echo "::error::Token must have either 'repo' + 'read:org' (classic) or 'contents' + 'pull_requests' (fine-grained)"
-      exit 1
-    fi
-  done
+  if ! grep -qE "(^|[[:space:]])contents(:[^[:space:]]+)?([[:space:]]|$)" <<< "$normalized_scopes"; then
+    echo "::error::GH_TOKEN is missing required scope: contents"
+    echo "::error::Token must have either 'repo' + 'read:org' (classic) or 'contents' + 'pull_requests' (fine-grained)"
+    exit 1
+  fi
+  # pull_requests:read is insufficient — the workflow submits reviews and
+  # comments, which requires write access.  Accept the bare scope (classic PAT)
+  # or the explicit :write suffix (GITHUB_TOKEN / fine-grained); reject :read.
+  if ! grep -qE "(^|[[:space:]])pull_requests(:write)?([[:space:]]|$)" <<< "$normalized_scopes"; then
+    echo "::error::GH_TOKEN is missing required scope: pull_requests with write access"
+    echo "::error::Token must have either 'repo' + 'read:org' (classic) or 'contents' + 'pull_requests:write' (fine-grained)"
+    exit 1
+  fi
 fi

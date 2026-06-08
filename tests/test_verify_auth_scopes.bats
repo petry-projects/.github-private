@@ -152,6 +152,17 @@ STUBEOF
   [[ "$output" != *"::error::"* ]]
 }
 
+@test "token with pull_requests:read (insufficient write access) exits 1" {
+  make_gh_stub "✓ Logged in to github.com account donpetry-bot (GH_TOKEN)
+- Active account: true
+- Token: ghs_someActionToken_***
+- Token scopes: 'contents:read', 'pull_requests:read'"
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"::error::"* ]]
+}
+
 # ---------------------------------------------------------------------------
 # Classic PAT — missing required minimal scopes (fails)
 # ---------------------------------------------------------------------------
