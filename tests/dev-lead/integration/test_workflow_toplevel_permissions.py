@@ -42,7 +42,14 @@ def main() -> int:
         )
         return 1
 
-    print(f"PASS: {WORKFLOW} has a top-level 'permissions:' declaration.")
+    if doc.get("permissions") != {}:
+        print(
+            f"FAIL: {WORKFLOW} must set top-level permissions to an empty mapping.\n"
+            "  Expected: `permissions: {}` to reset default token scopes to none."
+        )
+        return 1
+
+    print(f"PASS: {WORKFLOW} has a top-level 'permissions: {{}}' declaration.")
     return 0
 
 
