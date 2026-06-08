@@ -22,7 +22,7 @@ jobs:
         with:
           fetch-depth: 0
       - name: Set up JDK 21
-        id: setup-java
+        id: setup_java
         uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654 # v5.2.0
         with:
           distribution: temurin
@@ -32,4 +32,4 @@ jobs:
         uses: SonarSource/sonarqube-scan-action@7006c4492b2e0ee0f816d36501671557c97f5995 # v8.1.0
         with:
           args: >
-            -Dsonar.scanner.javaExePath=${{ steps.setup-java.outputs.path }}/bin/java
+            -Dsonar.scanner.javaExePath=${{ steps.setup_java.outputs.path }}/bin/java
