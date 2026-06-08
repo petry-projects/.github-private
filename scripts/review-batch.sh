@@ -29,6 +29,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/validate-engines.sh"
 validate_engines
 
+# Short-circuit before any engine switching or smoke tests when there is
+# nothing to review — avoids spurious failures if COPILOT_GITHUB_TOKEN is
+# absent or invalid on a scheduled run with zero candidate PRs.
+if [ ! -s "$PRS_FILE" ]; then
+  echo "::notice::No candidate PRs to review."
+  exit 0
+fi
+
 # Honor the billing probe: if the primary engine was flagged unavailable by
 # validate_engines (e.g., Gemini billing depleted), switch to the fallback engine
 # immediately so no PR invocation pays the per-call retry delay for a known-bad engine.
@@ -107,11 +115,6 @@ print(d.get('choices', [{}])[0].get('message', {}).get('content', '(empty)'))
 " 2>/dev/null || echo "(parse failed)")
   echo "::notice::Copilot pre-flight passed — model=${_smoke_model} response='${_smoke_text}'"
   unset _smoke_model _smoke_payload_file _smoke_rc _smoke_raw _smoke_http _smoke_body _smoke_text
-fi
-
-if [ ! -s "$PRS_FILE" ]; then
-  echo "::notice::No candidate PRs to review."
-  exit 0
 fi
 
 actual=0

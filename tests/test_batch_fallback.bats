@@ -76,6 +76,31 @@ teardown() {
   [[ "$output" == *"falling through to Copilot"* ]] || [[ "$output" == *"switching to Copilot engine"* ]]
 }
 
+@test "batch: empty PRS_FILE with Gemini unavailable exits 0 without Copilot smoke test" {
+  # Regression guard: when the billing probe marks Gemini unavailable the
+  # pre-flight switch to Copilot must not run the smoke test (which would fail
+  # on a missing/invalid COPILOT_GITHUB_TOKEN) when there are no PRs to review.
+  cat > "scripts/validate-engines.sh" <<'EOF'
+validate_engines() {
+  export CLAUDE_AVAILABLE="false"
+  export GEMINI_AVAILABLE="false"
+  export COPILOT_AVAILABLE="true"
+}
+EOF
+
+  # Empty PRS_FILE — nothing to review.
+  : > "$PRS_FILE"
+  unset COPILOT_GITHUB_TOKEN
+
+  export REVIEW_ENGINE="gemini"
+  run bash scripts/review-batch.sh
+
+  echo "$output" >&2
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"No candidate PRs to review"* ]]
+}
+
 @test "batch: primary Gemini with GEMINI_AVAILABLE=false skips to Copilot without invoking Gemini" {
   # Simulate the billing probe marking Gemini unavailable at startup.
   cat > "scripts/validate-engines.sh" <<'EOF'
