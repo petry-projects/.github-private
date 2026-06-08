@@ -35,6 +35,13 @@ def main() -> int:
     except FileNotFoundError:
         print(f"FAIL: {WORKFLOW_PATH} not found — run from repo root", file=sys.stderr)
         return 1
+    except yaml.YAMLError as err:
+        print(f"FAIL: {WORKFLOW_PATH} is not valid YAML: {err}", file=sys.stderr)
+        return 1
+
+    if not isinstance(wf, dict):
+        print(f"FAIL: {WORKFLOW_PATH} is not a valid YAML dictionary", file=sys.stderr)
+        return 1
 
     jobs = wf.get("jobs") or {}
     job = jobs.get(JOB_KEY)
