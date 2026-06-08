@@ -118,3 +118,21 @@ teardown() {
   patch_count=$(grep -c "PATCH" "$GH_LOG")
   [ "$patch_count" -eq "${#PP_REQUIRED_SA_SETTINGS[@]}" ]
 }
+
+@test "live mode returns 0 when some PATCH calls fail (partial failure is non-fatal)" {
+  export DEV_LEAD_DRY_RUN=false
+  export REPO="owner/repo"
+  export FAIL_KEY="${PP_REQUIRED_SA_SETTINGS[0]}"
+  gh() {
+    local stdin_body=""
+    [ ! -t 0 ] && stdin_body=$(cat)
+    printf '%s BODY=%s\n' "$*" "$stdin_body" >> "$GH_LOG"
+    echo "$stdin_body" | grep -q "\"${FAIL_KEY}\"" && return 1
+    return 0
+  }
+  export -f gh
+  run pp_apply_security_and_analysis
+  # A 422 for one unavailable setting (e.g. secret_scanning_ai_detection without GHAS)
+  # must not abort callers running under set -euo pipefail; exit code must be 0.
+  [ "$status" -eq 0 ]
+}
