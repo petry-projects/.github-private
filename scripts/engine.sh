@@ -1965,18 +1965,12 @@ run_duck() {
     copilot)
       unset CLAUDE_CODE_OAUTH_TOKEN 2>/dev/null || true
       unset GOOGLE_API_KEY 2>/dev/null || true
-      if [ -n "${OUTPUT_FILE:-}" ]; then
-        if [ -n "$_tok_tmp" ]; then
-          copilot_chat "$prompt_file" "$DUCK_TIMEOUT_SEC" --yolo | tee "$OUTPUT_FILE" "$_tok_tmp" || rc=${PIPESTATUS[0]}
-        else
-          copilot_chat "$prompt_file" "$DUCK_TIMEOUT_SEC" --yolo | tee "$OUTPUT_FILE" || rc=${PIPESTATUS[0]}
-        fi
+      # Do NOT tee stdout to OUTPUT_FILE — same rationale as run_agentic copilot
+      # branch: the prompt writes verdict JSON directly via the Bash tool.
+      if [ -n "$_tok_tmp" ]; then
+        copilot_chat "$prompt_file" "$DUCK_TIMEOUT_SEC" --yolo | tee "$_tok_tmp" || rc=${PIPESTATUS[0]}
       else
-        if [ -n "$_tok_tmp" ]; then
-          copilot_chat "$prompt_file" "$DUCK_TIMEOUT_SEC" --yolo | tee "$_tok_tmp" || rc=${PIPESTATUS[0]}
-        else
-          copilot_chat "$prompt_file" "$DUCK_TIMEOUT_SEC" --yolo || rc=$?
-        fi
+        copilot_chat "$prompt_file" "$DUCK_TIMEOUT_SEC" --yolo || rc=$?
       fi
       ;;
     *)
