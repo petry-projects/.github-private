@@ -90,6 +90,20 @@ fi
 rm -f "$tmp"
 
 # ---------------------------------------------------------------------------
+# Test 6: safe-output accepts valid labels + comment → validation passed
+# ---------------------------------------------------------------------------
+tmp=$(mktemp)
+printf '{"labels":["bug","needs-triage"],"comment":"Thank you for the report!"}' > "$tmp"
+output=$(ISSUE_NUMBER=1 GITHUB_REPOSITORY=example/repo \
+  bash "$REPO_ROOT/scripts/aw.sh" safe-output apply issue-triage "$tmp" 2>&1 || true)
+if echo "$output" | grep -q "validation passed"; then
+  ok "safe-output: valid allowed labels → validation passed"
+else
+  fail "safe-output: valid allowed labels → validation passed" "got: $output"
+fi
+rm -f "$tmp"
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 echo ""
