@@ -85,14 +85,23 @@ checkout_pr_in_worktree() {
   local _pr_branch=""
   _pr_branch="$(gh pr view "$pr" --repo "$repo" --json headRefName --jq '.headRefName' 2>/dev/null || true)"
   if [ -n "$_pr_branch" ]; then
-    local _wt_line _wt_path="" _held
+    # Canonicalize the agent dir once for comparison: `git worktree list`
+    # emits fully-resolved paths, but PR_WORKTREE_AGENT_DIR comes from `pwd`
+    # and may contain unresolved symlinks (macOS, some CI runners). Without
+    # this, the agent's own checkout could fail the equality test and be sent
+    # down the force-remove path (a no-op git refuses, leaving the branch
+    # unreleased and the original collision unfixed).
+    local _agent_real
+    _agent_real="$(cd "$PR_WORKTREE_AGENT_DIR" 2>/dev/null && pwd -P || printf '%s' "$PR_WORKTREE_AGENT_DIR")"
+    local _wt_line _wt_path="" _held _wt_real
     while IFS= read -r _wt_line; do
       case "$_wt_line" in
         "worktree "*) _wt_path="${_wt_line#worktree }" ;;
         "branch refs/heads/"*)
           _held="${_wt_line#branch refs/heads/}"
           if [ "$_held" = "$_pr_branch" ] && [ -n "$_wt_path" ]; then
-            if [ "$_wt_path" = "$PR_WORKTREE_AGENT_DIR" ]; then
+            _wt_real="$(cd "$_wt_path" 2>/dev/null && pwd -P || printf '%s' "$_wt_path")"
+            if [ "$_wt_real" = "$_agent_real" ]; then
               # The agent's own checkout holds the branch — never remove it;
               # detaching releases the branch so the new worktree can claim it.
               git -C "$_wt_path" checkout --detach --quiet 2>/dev/null || true
