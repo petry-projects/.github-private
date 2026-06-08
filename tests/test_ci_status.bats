@@ -95,46 +95,48 @@ rollup() {
 }
 
 # ---------------------------------------------------------------------------
-# Own check runs filtered — exact job-name form
+# Bare job-name checks — treated as external (NOT filtered by is_own_check)
+# A target repo may have CI jobs with these names; filtering them would hide
+# real CI failures. Only workflow-prefixed PR Review checks are filtered.
 # ---------------------------------------------------------------------------
 
-@test "own check named 'review' (IN_PROGRESS) is filtered out → passing" {
+@test "bare check named 'review' (IN_PROGRESS) is NOT filtered → pending" {
   local r
   r=$(rollup "$(check_run "review" "IN_PROGRESS")")
   run compute_ci_status "$r"
-  [ "$output" = "passing" ]
+  [ "$output" = "pending" ]
 }
 
-@test "own check named 'dispatch' (IN_PROGRESS) is filtered out → passing" {
+@test "bare check named 'dispatch' (IN_PROGRESS) is NOT filtered → pending" {
   local r
   r=$(rollup "$(check_run "dispatch" "IN_PROGRESS")")
   run compute_ci_status "$r"
-  [ "$output" = "passing" ]
+  [ "$output" = "pending" ]
 }
 
-@test "own check named 'ci-relay' (IN_PROGRESS) is filtered out → passing" {
+@test "bare check named 'ci-relay' (IN_PROGRESS) is NOT filtered → pending" {
   local r
   r=$(rollup "$(check_run "ci-relay" "IN_PROGRESS")")
   run compute_ci_status "$r"
-  [ "$output" = "passing" ]
+  [ "$output" = "pending" ]
 }
 
-@test "own check named 'pr-review-mention' (IN_PROGRESS) is filtered out → passing" {
+@test "bare check named 'pr-review-mention' (IN_PROGRESS) is NOT filtered → pending" {
   local r
   r=$(rollup "$(check_run "pr-review-mention" "IN_PROGRESS")")
   run compute_ci_status "$r"
-  [ "$output" = "passing" ]
+  [ "$output" = "pending" ]
 }
 
-@test "own check named 'mention-ack' (IN_PROGRESS) is filtered out → passing" {
+@test "bare check named 'mention-ack' (IN_PROGRESS) is NOT filtered → pending" {
   local r
   r=$(rollup "$(check_run "mention-ack" "IN_PROGRESS")")
   run compute_ci_status "$r"
-  [ "$output" = "passing" ]
+  [ "$output" = "pending" ]
 }
 
 # ---------------------------------------------------------------------------
-# Own check runs filtered — workflow / job-name form
+# Known PR Review workflow checks ARE filtered — workflow / job-name form
 # ---------------------------------------------------------------------------
 
 @test "'PR Review Agent / review' (IN_PROGRESS) is filtered out → passing" {
@@ -158,29 +160,43 @@ rollup() {
   [ "$output" = "passing" ]
 }
 
-@test "'dev-lead / dispatch' (IN_PROGRESS) is filtered out → passing" {
+# ---------------------------------------------------------------------------
+# Dev-lead and generic workflow/job-suffix checks are NOT filtered
+# Dev-lead can commit back to the PR branch, so it must remain a real CI gate.
+# A generic 'workflow / review' suffix (e.g., 'Build / review') must also block
+# so external required checks are never silently bypassed.
+# ---------------------------------------------------------------------------
+
+@test "'dev-lead / dispatch' (IN_PROGRESS) is NOT filtered → pending" {
   local r
   r=$(rollup "$(check_run "dev-lead / dispatch" "IN_PROGRESS")")
   run compute_ci_status "$r"
-  [ "$output" = "passing" ]
+  [ "$output" = "pending" ]
 }
 
-@test "'dev-lead / ci-relay' (IN_PROGRESS) is filtered out → passing" {
+@test "'dev-lead / ci-relay' (IN_PROGRESS) is NOT filtered → pending" {
   local r
   r=$(rollup "$(check_run "dev-lead / ci-relay" "IN_PROGRESS")")
   run compute_ci_status "$r"
-  [ "$output" = "passing" ]
+  [ "$output" = "pending" ]
+}
+
+@test "'Build / review' (IN_PROGRESS) is NOT filtered → pending" {
+  local r
+  r=$(rollup "$(check_run "Build / review" "IN_PROGRESS")")
+  run compute_ci_status "$r"
+  [ "$output" = "pending" ]
 }
 
 # ---------------------------------------------------------------------------
-# Own check failing form is also filtered
+# Failure classification: PR Review workflow checks filtered; bare names not
 # ---------------------------------------------------------------------------
 
-@test "own check named 'review' (COMPLETED/FAILURE) is filtered out → passing" {
+@test "bare check named 'review' (COMPLETED/FAILURE) is NOT filtered → failing" {
   local r
   r=$(rollup "$(check_run "review" "COMPLETED" "FAILURE")")
   run compute_ci_status "$r"
-  [ "$output" = "passing" ]
+  [ "$output" = "failing" ]
 }
 
 @test "'PR Review Agent / review' (COMPLETED/FAILURE) is filtered out → passing" {
@@ -191,28 +207,10 @@ rollup() {
 }
 
 # ---------------------------------------------------------------------------
-# Mix: own pending + external passing → passing (own check filtered)
+# Mix: PR Review workflow pending + external passing → passing (filtered)
 # ---------------------------------------------------------------------------
 
-@test "mix: own 'review' pending + external passing → passing" {
-  local r
-  r=$(rollup \
-    "$(check_run "review" "IN_PROGRESS")" \
-    "$(check_run "Lint" "COMPLETED" "SUCCESS")")
-  run compute_ci_status "$r"
-  [ "$output" = "passing" ]
-}
-
-@test "mix: own 'dispatch' pending + external passing → passing" {
-  local r
-  r=$(rollup \
-    "$(check_run "dispatch" "IN_PROGRESS")" \
-    "$(check_run "Build" "COMPLETED" "SUCCESS")")
-  run compute_ci_status "$r"
-  [ "$output" = "passing" ]
-}
-
-@test "mix: own 'PR Review Agent / review' pending + external passing → passing" {
+@test "mix: 'PR Review Agent / review' pending + external passing → passing" {
   local r
   r=$(rollup \
     "$(check_run "PR Review Agent / review" "IN_PROGRESS")" \
@@ -222,10 +220,32 @@ rollup() {
 }
 
 # ---------------------------------------------------------------------------
+# Mix: bare-name pending + external passing → pending (bare names not filtered)
+# ---------------------------------------------------------------------------
+
+@test "mix: bare 'review' pending + external passing → pending" {
+  local r
+  r=$(rollup \
+    "$(check_run "review" "IN_PROGRESS")" \
+    "$(check_run "Lint" "COMPLETED" "SUCCESS")")
+  run compute_ci_status "$r"
+  [ "$output" = "pending" ]
+}
+
+@test "mix: bare 'dispatch' pending + external passing → pending" {
+  local r
+  r=$(rollup \
+    "$(check_run "dispatch" "IN_PROGRESS")" \
+    "$(check_run "Build" "COMPLETED" "SUCCESS")")
+  run compute_ci_status "$r"
+  [ "$output" = "pending" ]
+}
+
+# ---------------------------------------------------------------------------
 # Mix: own pending + external pending → pending (external still blocks)
 # ---------------------------------------------------------------------------
 
-@test "mix: own 'review' pending + external pending → pending" {
+@test "mix: bare 'review' pending + external pending → pending" {
   local r
   r=$(rollup \
     "$(check_run "review" "IN_PROGRESS")" \
@@ -238,37 +258,43 @@ rollup() {
 # Mix: own pending + external failing → failing (external still fails)
 # ---------------------------------------------------------------------------
 
-@test "mix: own 'review' pending + external failing → failing" {
+@test "mix: bare 'review' pending + external failing → pending (pending fires first)" {
+  # Both 'review' and 'Test' are in $ext. The pending branch fires first
+  # (before the failure check), so the result is "pending" — once all checks
+  # finish, a subsequent call will return "failing".
   local r
   r=$(rollup \
     "$(check_run "review" "IN_PROGRESS")" \
     "$(check_run "Test" "COMPLETED" "FAILURE")")
   run compute_ci_status "$r"
-  [ "$output" = "failing" ]
+  [ "$output" = "pending" ]
 }
 
 # ---------------------------------------------------------------------------
-# All own checks only → passing (rollup effectively empty after filter)
+# Rollup with only PR Review workflow checks → passing (all filtered)
 # ---------------------------------------------------------------------------
 
-@test "rollup with only own checks returns passing" {
+@test "rollup with only PR Review workflow/job form checks returns passing" {
+  local r
+  r=$(rollup \
+    "$(check_run "PR Review Agent / review" "IN_PROGRESS")" \
+    "$(check_run "PR Review — Mention Trigger / pr-review-mention" "IN_PROGRESS")")
+  run compute_ci_status "$r"
+  [ "$output" = "passing" ]
+}
+
+# ---------------------------------------------------------------------------
+# Rollup with only bare own-check names → pending (not filtered)
+# ---------------------------------------------------------------------------
+
+@test "rollup with only bare own-check names returns pending (not filtered)" {
   local r
   r=$(rollup \
     "$(check_run "review" "IN_PROGRESS")" \
     "$(check_run "dispatch" "IN_PROGRESS")" \
     "$(check_run "ci-relay" "IN_PROGRESS")")
   run compute_ci_status "$r"
-  [ "$output" = "passing" ]
-}
-
-@test "rollup with only own workflow/job form checks returns passing" {
-  local r
-  r=$(rollup \
-    "$(check_run "PR Review Agent / review" "IN_PROGRESS")" \
-    "$(check_run "dev-lead / dispatch" "IN_PROGRESS")" \
-    "$(check_run "PR Review — Mention Trigger / pr-review-mention" "IN_PROGRESS")")
-  run compute_ci_status "$r"
-  [ "$output" = "passing" ]
+  [ "$output" = "pending" ]
 }
 
 # ---------------------------------------------------------------------------
@@ -289,9 +315,9 @@ rollup() {
   [ "$output" = "failing" ]
 }
 
-@test "external status context (not named 'review') with PENDING state still causes pending" {
-  # Own-check filter checks .name // .context — a StatusContext whose .context
-  # does not match any own-check pattern must still block as pending.
+@test "status context named 'external-ci' (non-own-check) with PENDING state still causes pending" {
+  # StatusContext entries that do not match any own-check prefix must still block
+  # as pending — verifies the filter doesn't accidentally swallow external statuses.
   local r
   r=$(rollup "$(status_ctx "external-ci" "PENDING")")
   run compute_ci_status "$r"

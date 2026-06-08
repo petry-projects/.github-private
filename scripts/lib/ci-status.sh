@@ -18,13 +18,19 @@
 #             COMPLETED with null/empty conclusion
 #   failing — anything else (FAILURE, ACTION_REQUIRED, TIMED_OUT, etc.)
 #
-# Own-check filter — excludes entries whose name matches any of:
-#   • exact job-name forms: review, dispatch, ci-relay, pr-review-mention, mention-ack
-#   • workflow/job forms:   "* / review", "* / dispatch", "* / ci-relay", etc.
-#   • known workflow prefixes: "PR Review Agent / *", "PR Review Reusable / *",
-#                               "PR Review — Mention Trigger / *"
-#   The filter uses both .name (CheckRun) and .context (StatusContext) so it
-#   covers both GitHub Actions checks and legacy commit statuses.
+# Own-check filter — excludes entries whose name matches a known PR Review
+#   workflow prefix only. Bare job names (review, dispatch, ci-relay, etc.)
+#   are intentionally NOT matched: a target repo may have CI jobs with those
+#   same names, and filtering them would let a failing or pending real CI gate
+#   be silently ignored. Dev-lead checks (dev-lead / dispatch, dev-lead /
+#   ci-relay) are also excluded from filtering because dev-lead can commit
+#   back to the PR branch; filtering it could cause a review to race an
+#   in-progress branch-mutating run.
+#   Matched prefixes (applied to .name for CheckRuns and .context for
+#   StatusContexts):
+#   • "PR Review Agent / *"
+#   • "PR Review Reusable / *"
+#   • "PR Review — Mention Trigger / *"
 compute_ci_status() {
   local rollup_json="${1:-[]}"
   jq -r '
@@ -37,11 +43,8 @@ compute_ci_status() {
       .state == "SUCCESS";
     def is_own_check:
       (.name // .context // "") as $n |
-      ($n | test("^(review|dispatch|ci-relay|pr-review-mention|mention-ack)$")) or
-      ($n | test("/ (review|dispatch|ci-relay|pr-review-mention|mention-ack)$")) or
       ($n | test("^PR Review (Agent|Reusable) /")) or
-      ($n | test("^PR Review — Mention Trigger /")) or
-      ($n | test("^dev-lead / (dispatch|ci-relay)$"));
+      ($n | test("^PR Review — Mention Trigger /"));
     if (. == null or (type != "array")) then "passing"
     else
       (map(select(is_own_check | not))) as $ext |
