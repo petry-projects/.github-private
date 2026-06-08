@@ -76,6 +76,12 @@ checkout_pr_in_worktree() {
   git worktree add --detach "$PR_WORKTREE_DIR" HEAD >/dev/null
 
   cd "$PR_WORKTREE_DIR" || return 1
+  # Guarantee a clean working tree before branch checkout. A freshly-created
+  # worktree should already be clean, but defensive reset handles any edge case
+  # (e.g. a git hook or shared index state) that could leave .gitignore or
+  # another tracked file modified, which would cause gh pr checkout to abort
+  # with "local changes would be overwritten" when the PR also touches that file.
+  git reset --hard HEAD 2>/dev/null || true
   gh pr checkout "$pr" --repo "$repo"
 }
 

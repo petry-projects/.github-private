@@ -105,10 +105,13 @@ jobs:
             prompts/dev-lead
 
       - name: Protect dev-lead scripts from accidental git staging
-        run: echo ".dev-lead/" >> .gitignore
-
-      - name: Revert .gitignore changes before git operations
-        run: git checkout .gitignore || true
+        run: |
+          # Use .git/info/exclude instead of .gitignore: this file is never
+          # committed or tracked, so it needs no revert and cannot conflict with
+          # a PR branch that also modifies .gitignore (which previously caused
+          # "local changes would be overwritten" failures in gh pr checkout).
+          mkdir -p .git/info
+          grep -qxF '.dev-lead/' .git/info/exclude 2>/dev/null || echo ".dev-lead/" >> .git/info/exclude
 
       - name: Classify event intent
         id: intent
