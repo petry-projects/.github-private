@@ -3,12 +3,26 @@ title = "gitleaks config for petry-projects/.github-private"
 [extend]
 useDefault = true
 
-[allowlist]
-description = "Suppress false positives in test fixtures"
-# tests/dev-lead/unit/test_engine_writer.bats contains a heredoc stub that matches
-# the private-key rule in a historical commit; the content is fabricated test data.
-# If frameworks/ is re-added via `git subtree`, add the specific fixture paths that
-# produce false positives here — do not add a broad ^frameworks/ directory allowlist.
+# Combined path + regex (AND'd in gitleaks v8) avoids suppressing the entire file;
+# only the specific fabricated-key findings in historical commits are ignored.
+# - Commit cd4b367: literal PEM block in the PEM-redaction test fixture.
+# - Current HEAD: GEMINI_API_KEY="dummy-test-key" engine-setup stub.
+[[allowlists]]
+description = "Suppress test-fixture false positives in test_engine_writer.bats"
+paths = ['''^tests/dev-lead/unit/test_engine_writer\.bats$''']
+regexes = [
+  '''MIIEowIBAAKCAQEAuVERYSENSITIVEKEYBODY''',
+  '''dummy-test-key''',
+]
+
+# Four files introduced via `git subtree` in historical commits (before d42bfe7 removed
+# frameworks/) contain placeholder credentials that match gitleaks rules but are not real
+# secrets. Specific paths prevent a broad ^frameworks/ glob from masking future additions.
+[[allowlists]]
+description = "Suppress false positives in historical git-subtree framework fixture files"
 paths = [
-  '''^tests/dev-lead/unit/test_engine_writer\.bats$''',
+  '''^frameworks/bmad-method/test/adversarial-review-tests/sample-content\.md$''',
+  '''^frameworks/gsd/sdk/src/query/config-query\.test\.ts$''',
+  '''^frameworks/gsd/sdk/src/query/config-mutation\.test\.ts$''',
+  '''^frameworks/gsd/tests/commands\.test\.cjs$''',
 ]
