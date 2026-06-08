@@ -193,6 +193,22 @@ route_error() {
   rm -f "$raw" "$dest"
 }
 
+# ---------------------------------------------------------------------------
+# Regression: engine.sh must NOT tee Copilot stdout into OUTPUT_FILE.
+# The model writes verdict JSON directly via the Bash tool; teeing stdout
+# (which includes assistant text and tool transcripts) would corrupt it.
+# ---------------------------------------------------------------------------
+
+@test "engine.sh: run_agentic copilot branch does not tee stdout to OUTPUT_FILE" {
+  local engine_file
+  engine_file="$(dirname "$BATS_TEST_FILENAME")/../scripts/engine.sh"
+
+  # The run_agentic copilot branch must not contain `tee.*OUTPUT_FILE`.
+  # We extract only the copilot) block of run_agentic and check it is clean.
+  run grep -n 'tee.*OUTPUT_FILE\|OUTPUT_FILE.*tee' "$engine_file"
+  [ "$output" = "" ]
+}
+
 @test "extract_verdict_json: raw=claude-API-wrapper, dest missing → decision empty (bug scenario)" {
   source "$(dirname "$BATS_TEST_FILENAME")/../scripts/engine.sh" >/dev/null 2>&1 || true
 
