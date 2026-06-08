@@ -134,22 +134,28 @@ fi
 
 # ---------------------------------------------------------------------------
 # Test 6: CLAUDE_CODE_OAUTH_TOKEN is passed to the Claude invocation step
+# Guard: token must be on the step with id: run (the actual aw.sh invocation),
+# not on a setup step like "Install claude CLI" — a misplaced token would be
+# silently ignored while the real invocation step fails at runtime.
 # ---------------------------------------------------------------------------
 if python3 - "$RUNNER" <<'PYEOF'; then
 import sys, yaml
 with open(sys.argv[1]) as f:
     wf = yaml.safe_load(f)
 triage_steps = wf.get('jobs', {}).get('triage', {}).get('steps', [])
-for step in triage_steps:
-    env = step.get('env') or {}
-    if 'CLAUDE_CODE_OAUTH_TOKEN' in env:
-        sys.exit(0)
-sys.exit(1)
+invocation = next((s for s in triage_steps if s.get('id') == 'run'), None)
+if invocation is None:
+    print("no step with id: run found in triage job", file=sys.stderr)
+    sys.exit(1)
+env = invocation.get('env') or {}
+if 'CLAUDE_CODE_OAUTH_TOKEN' not in env:
+    print("CLAUDE_CODE_OAUTH_TOKEN not found in env of step id: run", file=sys.stderr)
+    sys.exit(1)
 PYEOF
   ok "runner: CLAUDE_CODE_OAUTH_TOKEN is forwarded to the invocation step"
 else
   fail "runner: CLAUDE_CODE_OAUTH_TOKEN is forwarded to the invocation step" \
-    "triage job must pass CLAUDE_CODE_OAUTH_TOKEN via 'env:' on the run step"
+    "triage job must pass CLAUDE_CODE_OAUTH_TOKEN via 'env:' on the step with id: run (the aw.sh invocation)"
 fi
 
 # ---------------------------------------------------------------------------
@@ -167,8 +173,12 @@ if 'triage' not in needs:
     print("apply job does not declare 'needs: triage'", file=sys.stderr)
     sys.exit(1)
 if_cond = str(apply.get('if', ''))
-if 'skip' not in if_cond:
-    print(f"apply 'if' condition does not reference 'skip': {if_cond!r}", file=sys.stderr)
+if 'needs.triage.outputs.skip' not in if_cond:
+    print(f"apply 'if' condition does not reference 'needs.triage.outputs.skip': {if_cond!r}", file=sys.stderr)
+    sys.exit(1)
+# Require != 'true' (or != "true") so an inverted == 'true' condition is caught
+if "!= 'true'" not in if_cond and '!= "true"' not in if_cond:
+    print(f"apply 'if' condition does not use '!= true' comparison: {if_cond!r}", file=sys.stderr)
     sys.exit(1)
 PYEOF
   ok "runner: apply job depends on triage and gates on skip output"
