@@ -19,8 +19,7 @@
 #
 # PR Review Mention — thin caller for the org-level reusable.
 # To adopt: copy this file to .github/workflows/pr-review-mention.yml in your repo.
-# Requires: GH_PAT_WORKFLOWS     org secret — API calls and dispatching the review agent
-#           DON_PETRY_BOT_GH_PAT org secret — posting acknowledgement comments as the bot
+# Requires: GH_PAT_WORKFLOWS org secret (already present in petry-projects org).
 name: PR Review — Mention Trigger
 
 on:
