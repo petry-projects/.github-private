@@ -45,9 +45,9 @@ _gemini_billing_probe() {
   ) || true
 
   # Strip the trailing HTTP status code line appended by -w; check only the body.
-  _body=$(printf '%s' "$_raw" | head -n -1)
+  _body=$(printf '%s' "$_raw" | sed '$d')
 
-  if printf '%s' "$_body" | grep -qiE "(RESOURCE_EXHAUSTED|prepayment.*credits.*depleted|credits.*depleted)"; then
+  if printf '%s' "$_body" | grep -qiE "credits.*depleted"; then
     return 1
   fi
 

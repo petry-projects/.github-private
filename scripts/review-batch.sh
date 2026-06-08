@@ -29,6 +29,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/validate-engines.sh"
 validate_engines
 
+# Honor the billing probe: if the primary engine was flagged unavailable by
+# validate_engines (e.g., Gemini billing depleted), switch to the fallback engine
+# immediately so no PR invocation pays the per-call retry delay for a known-bad engine.
+if [ "${REVIEW_ENGINE:-claude}" = "gemini" ] && [ "${GEMINI_AVAILABLE:-false}" != "true" ]; then
+  echo "::warning::Primary Gemini engine unavailable per pre-flight probe — switching to Copilot for this batch"
+  export REVIEW_ENGINE=copilot
+fi
+
 # ---------------------------------------------------------------------------
 # Copilot REST API smoke test (only when Copilot is the primary engine).
 #

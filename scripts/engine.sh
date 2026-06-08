@@ -160,7 +160,7 @@ _rate_limit_pattern() {
   _pat="$_pat|([^0-9]|^)402([^0-9]|$)"                               # HTTP 402 (payment)
   _pat="$_pat|tokens_limit_reached|body too large|([^0-9]|^)413([^0-9]|$)" # Context / Request size
   _pat="$_pat|RESOURCE_EXHAUSTED"                                      # Google billing-exhausted status
-  _pat="$_pat|prepayment.*credits.*depleted|credits.*depleted"         # Gemini billing depletion
+  _pat="$_pat|credits.*depleted"         # Gemini billing depletion
   printf '%s' "($_pat)"
 }
 
