@@ -36,8 +36,8 @@ You review **exactly one pull request**: `$PR_URL`. Nothing else.
 ## Context-gathering
 
 1. `gh pr view "$PR_URL" --json number,title,body,author,isDraft,baseRefName,headRefName,headRefOid,url,headRepository,headRepositoryOwner,labels,reviewDecision,mergeable,mergeStateStatus,statusCheckRollup,reviewRequests,reviews,comments,commits,closingIssuesReferences,additions,deletions,changedFiles,files`
-   - If `isDraft` → skip. Write `{"pr":"$PR_URL","decision":"skip","reason":"draft"}` to `$OUTPUT_FILE` and exit.
-   - Verify `headRefOid == $PR_HEAD_SHA`. If not → write `{"pr":"$PR_URL","decision":"skip","reason":"head-sha-changed"}` to `$OUTPUT_FILE` and exit.
+   - If `isDraft` → skip. Write the skip verdict to `$OUTPUT_FILE` using `jq` (e.g., `jq -n --arg pr "$PR_URL" '{pr: $pr, decision: "skip", reason: "draft"}' > "$OUTPUT_FILE"`) and exit.
+   - Verify `headRefOid == $PR_HEAD_SHA`. If not → write the skip verdict to `$OUTPUT_FILE` using `jq` (e.g., `jq -n --arg pr "$PR_URL" '{pr: $pr, decision: "skip", reason: "head-sha-changed"}' > "$OUTPUT_FILE"`) and exit.
 2. `gh pr diff "$PR_URL"` — read the diff.
    - **Incremental mode**: also get the diff since the prior review. Derive
      `<owner>` and `<repo>` from the `headRepository` field in the PR metadata
@@ -103,6 +103,18 @@ Compose the review body as a markdown string, then write the verdict JSON to
 `$OUTPUT_FILE` using `jq` so all strings (especially the body) are properly
 escaped. Use the pattern below exactly:
 
+0. Initialize verdict variables from your analysis:
+
+```bash
+DECISION="approve"     # or "escalate"
+RISK="LOW"             # "LOW", "MEDIUM", or "HIGH"
+MODE="$REVIEW_MODE"
+SUMMARY="..."
+ISSUE_ANALYSIS="..."
+FINDINGS="..."
+CI_STATUS="..."
+```
+
 1. Build the review body in a temp file:
 
 ```bash
@@ -138,6 +150,7 @@ BODYEOF
 
 ```bash
 BODY=$(cat /tmp/single-review-body.txt)
+ESCALATE_TO_AI=$([ "$AI_DELEGATION_ENABLED" = "true" ] && [ "$DECISION" = "escalate" ] && [ "$RISK" != "HIGH" ] && echo "true" || echo "false")
 jq -n \
   --arg pr        "$PR_URL" \
   --arg sha       "$PR_HEAD_SHA" \
@@ -146,7 +159,7 @@ jq -n \
   --arg mode      "$MODE" \
   --arg summary   "$SUMMARY" \
   --arg body      "$BODY" \
-  --argjson escalate_to_ai false \
+  --argjson escalate_to_ai "$ESCALATE_TO_AI" \
   '{pr: $pr, sha: $sha, risk: $risk, decision: $decision, mode: $mode, summary: $summary, body: $body, escalate_to_ai: $escalate_to_ai}' \
   > "$OUTPUT_FILE"
 ```
