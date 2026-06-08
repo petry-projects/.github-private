@@ -628,19 +628,14 @@ run_agentic() {
       ;;
     copilot)
       # Full tool support via GitHub Copilot CLI agentic mode (--yolo).
-      # Stream directly to stdout; tee to OUTPUT_FILE when set.
-      if [ -n "${OUTPUT_FILE:-}" ]; then
-        if [ -n "$_tok_tmp" ]; then
-          copilot_chat "$prompt_file" "$DEEP_TIMEOUT_SEC" --yolo | tee "$OUTPUT_FILE" "$_tok_tmp" || rc=${PIPESTATUS[0]}
-        else
-          copilot_chat "$prompt_file" "$DEEP_TIMEOUT_SEC" --yolo | tee "$OUTPUT_FILE" || rc=${PIPESTATUS[0]}
-        fi
+      # Do NOT tee stdout to OUTPUT_FILE: the prompt instructs the model to
+      # write the verdict JSON directly to $OUTPUT_FILE via the Bash tool.
+      # Teeing stdout (which includes assistant text and tool transcripts)
+      # would overwrite that file and corrupt the JSON.
+      if [ -n "$_tok_tmp" ]; then
+        copilot_chat "$prompt_file" "$DEEP_TIMEOUT_SEC" --yolo | tee "$_tok_tmp" || rc=${PIPESTATUS[0]}
       else
-        if [ -n "$_tok_tmp" ]; then
-          copilot_chat "$prompt_file" "$DEEP_TIMEOUT_SEC" --yolo | tee "$_tok_tmp" || rc=${PIPESTATUS[0]}
-        else
-          copilot_chat "$prompt_file" "$DEEP_TIMEOUT_SEC" --yolo || rc=$?
-        fi
+        copilot_chat "$prompt_file" "$DEEP_TIMEOUT_SEC" --yolo || rc=$?
       fi
       ;;
   esac
@@ -741,18 +736,12 @@ run_duck() {
     copilot)
       unset CLAUDE_CODE_OAUTH_TOKEN 2>/dev/null || true
       unset GOOGLE_API_KEY 2>/dev/null || true
-      if [ -n "${OUTPUT_FILE:-}" ]; then
-        if [ -n "$_tok_tmp" ]; then
-          copilot_chat "$prompt_file" "$DUCK_TIMEOUT_SEC" --yolo | tee "$OUTPUT_FILE" "$_tok_tmp" || rc=${PIPESTATUS[0]}
-        else
-          copilot_chat "$prompt_file" "$DUCK_TIMEOUT_SEC" --yolo | tee "$OUTPUT_FILE" || rc=${PIPESTATUS[0]}
-        fi
+      # Do NOT tee stdout to OUTPUT_FILE — same rationale as run_agentic copilot
+      # branch: the prompt writes verdict JSON directly via the Bash tool.
+      if [ -n "$_tok_tmp" ]; then
+        copilot_chat "$prompt_file" "$DUCK_TIMEOUT_SEC" --yolo | tee "$_tok_tmp" || rc=${PIPESTATUS[0]}
       else
-        if [ -n "$_tok_tmp" ]; then
-          copilot_chat "$prompt_file" "$DUCK_TIMEOUT_SEC" --yolo | tee "$_tok_tmp" || rc=${PIPESTATUS[0]}
-        else
-          copilot_chat "$prompt_file" "$DUCK_TIMEOUT_SEC" --yolo || rc=$?
-        fi
+        copilot_chat "$prompt_file" "$DUCK_TIMEOUT_SEC" --yolo || rc=$?
       fi
       ;;
     *)
