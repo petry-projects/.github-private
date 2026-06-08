@@ -24,9 +24,16 @@ jobs:
           persist-credentials: false
 
       - name: Install claude CLI
-        uses: anthropics/claude-code-action/setup@787c5a0ce96a9a6cfb050ea0c8f4c05f2447c251  # main
-        with:
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        env:
+          CLAUDE_CODE_VERSION: ${{ vars.CLAUDE_CODE_VERSION || 'latest' }}
+        run: |
+          mkdir -p "$HOME/.npm-global"
+          npm config set prefix "$HOME/.npm-global"
+          echo "$HOME/.npm-global/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.npm-global/bin:$PATH"
+          if ! command -v claude >/dev/null 2>&1; then
+            npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
+          fi
 
       - name: Install Python dependencies
         run: |
@@ -35,6 +42,7 @@ jobs:
       - name: Run issue-triage (staged)
         id: run
         env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
           ISSUE_TITLE: ${{ github.event.issue.title }}
           ISSUE_BODY: ${{ github.event.issue.body }}
