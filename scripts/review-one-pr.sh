@@ -527,6 +527,7 @@ TRIAGE_RESULT=$(
 # subprocess forks (jq, claude) from hitting E2BIG on hundreds-of-KB diffs.
 # Advisory feedback is capped at 8 KB; write to disk for Tier 2/3 to read.
 ADVISORY_BOT_FEEDBACK_FILE="/tmp/cascade/advisory-bot-feedback.txt"
+rm -f "$ADVISORY_BOT_FEEDBACK_FILE"
 if [[ -n "${ADVISORY_BOT_FEEDBACK//[[:space:]]/}" ]]; then
   printf '%s' "$ADVISORY_BOT_FEEDBACK" > "$ADVISORY_BOT_FEEDBACK_FILE"
 fi
