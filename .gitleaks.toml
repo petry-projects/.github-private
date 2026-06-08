@@ -1,5 +1,8 @@
 title = "gitleaks config for petry-projects/.github-private"
 
+[extend]
+useDefault = true
+
 [allowlist]
 description = "Suppress false positives in git-subtree framework imports and test fixtures"
 # frameworks/ is managed via `git subtree` from upstream repos; test fixtures in
@@ -7,6 +10,6 @@ description = "Suppress false positives in git-subtree framework imports and tes
 # tests/dev-lead/unit/test_engine_writer.bats contains a heredoc stub that matches
 # the private-key rule in a historical commit; the content is fabricated test data.
 paths = [
-  '''frameworks/''',
-  '''tests/dev-lead/unit/test_engine_writer\.bats''',
+  '''^frameworks/''',
+  '''^tests/dev-lead/unit/test_engine_writer\.bats$''',
 ]
