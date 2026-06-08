@@ -18,12 +18,14 @@ printf '%s\n' "$auth_status"
 
 # ── Fine-grained PAT detection (prefix-based, most explicit check) ────────
 # Fine-grained PATs begin with 'github_pat_' and do not expose OAuth-style
-# scope strings in 'gh auth status'.  Skip classic-PAT scope validation and
-# emit a notice so operators can verify the equivalent fine-grained permissions.
+# scope strings in 'gh auth status'.  They also fail at addPullRequestReview
+# ('gh pr review --approve') so they are not a supported token type for this
+# workflow.  Fail fast before the expensive review steps run.
 if grep -qi 'Token:.*github_pat_' <<< "$auth_status"; then
-  echo "::notice::Fine-grained PAT detected — skipping classic-PAT scope validation."
-  echo "::notice::Ensure this token has the equivalent fine-grained permissions: contents:read and pull_requests:write."
-  exit 0
+  echo "::error::Fine-grained PAT detected — this workflow requires a classic PAT."
+  echo "::error::Fine-grained PATs fail at 'gh pr review --approve' (addPullRequestReview)."
+  echo "::error::Replace DON_PETRY_BOT_GH_PAT with a classic PAT that has 'repo' + 'read:org' scopes."
+  exit 1
 fi
 
 # ── Fallback: empty / indeterminate scope list ─────────────────────────────

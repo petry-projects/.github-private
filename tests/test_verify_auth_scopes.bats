@@ -36,26 +36,26 @@ STUBEOF
 # Fine-grained PAT detection via github_pat_ prefix
 # ---------------------------------------------------------------------------
 
-@test "fine-grained PAT (github_pat_11 prefix) exits 0 with notice" {
+@test "fine-grained PAT (github_pat_11 prefix) exits 1 with error" {
   make_gh_stub "✓ Logged in to github.com account donpetry-bot (GH_TOKEN)
 - Active account: true
 - Git operations protocol: https
 - Token: github_pat_11CDFSYKQ0_***"
 
   run bash "$SCRIPT"
-  [ "$status" -eq 0 ]
+  [ "$status" -eq 1 ]
   [[ "$output" == *"Fine-grained PAT detected"* ]]
-  [[ "$output" == *"::notice::"* ]]
+  [[ "$output" == *"::error::"* ]]
 }
 
-@test "fine-grained PAT notice includes equivalent fine-grained permissions guidance" {
+@test "fine-grained PAT error mentions addPullRequestReview failure" {
   make_gh_stub "✓ Logged in to github.com account donpetry-bot (GH_TOKEN)
 - Active account: true
 - Token: github_pat_11ABCXYZ_***"
 
   run bash "$SCRIPT"
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"pull_requests:write"* ]]
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"addPullRequestReview"* ]]
 }
 
 # ---------------------------------------------------------------------------
