@@ -66,7 +66,7 @@ teardown() {
 
 @test "batch: Gemini trust error (55) falls back to Copilot" {
   run bash scripts/review-batch.sh
-  
+
   echo "$output" >&2
 
   [ "$status" -eq 0 ]
@@ -74,4 +74,80 @@ teardown() {
   [[ "$output" == *"Claude rate limit hit"* ]]
   [[ "$output" == *"Engine gemini unavailable at runtime (exit 55)"* ]] || [[ "$output" == *"Gemini engine unavailable at runtime (exit 55)"* ]]
   [[ "$output" == *"falling through to Copilot"* ]] || [[ "$output" == *"switching to Copilot engine"* ]]
+}
+
+@test "batch: empty PRS_FILE with Gemini unavailable exits 0 without Copilot smoke test" {
+  # Regression guard: when the billing probe marks Gemini unavailable the
+  # pre-flight switch to Copilot must not run the smoke test (which would fail
+  # on a missing/invalid COPILOT_GITHUB_TOKEN) when there are no PRs to review.
+  cat > "scripts/validate-engines.sh" <<'EOF'
+validate_engines() {
+  export CLAUDE_AVAILABLE="false"
+  export GEMINI_AVAILABLE="false"
+  export COPILOT_AVAILABLE="true"
+}
+EOF
+
+  # Empty PRS_FILE — nothing to review.
+  : > "$PRS_FILE"
+  unset COPILOT_GITHUB_TOKEN
+
+  export REVIEW_ENGINE="gemini"
+  run bash scripts/review-batch.sh
+
+  echo "$output" >&2
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"No candidate PRs to review"* ]]
+}
+
+@test "batch: primary Gemini with GEMINI_AVAILABLE=false skips to Copilot without invoking Gemini" {
+  # Simulate the billing probe marking Gemini unavailable at startup.
+  cat > "scripts/validate-engines.sh" <<'EOF'
+validate_engines() {
+  export CLAUDE_AVAILABLE="false"
+  export GEMINI_AVAILABLE="false"
+  export COPILOT_AVAILABLE="true"
+}
+EOF
+
+  # Track every engine that review-one-pr.sh is called with.
+  cat > "scripts/review-one-pr.sh" <<'EOF'
+#!/bin/bash
+printf '%s\n' "$REVIEW_ENGINE" >> engine_calls.txt
+exit 0
+EOF
+  chmod +x "scripts/review-one-pr.sh"
+
+  export REVIEW_ENGINE="gemini"
+  run bash scripts/review-batch.sh
+
+  echo "$output" >&2
+
+  [ "$status" -eq 0 ]
+  # review-one-pr.sh must have been called, and never as gemini.
+  [ -f engine_calls.txt ]
+  ! grep -q "^gemini$" engine_calls.txt
+  grep -q "^copilot$" engine_calls.txt
+  [[ "$output" == *"unavailable"* ]]
+}
+
+@test "batch: primary Gemini with GEMINI_AVAILABLE=false and COPILOT_AVAILABLE=false aborts with error" {
+  # When both Gemini and Copilot are unavailable, the batch should abort rather
+  # than switch to an unusable engine and fail on the first PR.
+  cat > "scripts/validate-engines.sh" <<'EOF'
+validate_engines() {
+  export CLAUDE_AVAILABLE="false"
+  export GEMINI_AVAILABLE="false"
+  export COPILOT_AVAILABLE="false"
+}
+EOF
+
+  export REVIEW_ENGINE="gemini"
+  run bash scripts/review-batch.sh
+
+  echo "$output" >&2
+
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"Copilot fallback also unavailable"* ]]
 }
