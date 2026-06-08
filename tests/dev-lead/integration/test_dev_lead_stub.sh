@@ -40,7 +40,7 @@ fi
 
 # 4. Must have `permissions: {}` at workflow level (zero standing permissions;
 #    the reusable job declares its own per-job permissions).
-if grep -qE '^permissions:\s*\{\}' "$WORKFLOW"; then
+if grep -qE '^permissions:\s*\{\s*\}' "$WORKFLOW"; then
   pass "dev-lead.yml has workflow-level permissions: {}"
 else
   fail "dev-lead.yml must have 'permissions: {}' at workflow level (reusable job owns its permissions)"

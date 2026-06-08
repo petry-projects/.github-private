@@ -322,20 +322,42 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
-      contents: read
+      contents: write
 
     steps:
       - name: Check for associated non-fork PR
         id: check-pr
         env:
+          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS || github.token }}
           CHECK_RUN_PRS: ${{ toJson(github.event.check_run.pull_requests) }}
+          CHECK_RUN_HEAD_SHA: ${{ github.event.check_run.head_sha }}
           REPO_FULL_NAME: ${{ github.repository }}
         run: |
           set -euo pipefail
           pr_count=$(echo "$CHECK_RUN_PRS" | jq 'length')
           if [ "$pr_count" -eq 0 ]; then
-            echo "::notice::check_run has no associated PRs — skipping relay"
-            echo "should_relay=false" >> "$GITHUB_OUTPUT"
+            # GitHub App check_runs (SonarCloud, external CodeQL gates, etc.) do not
+            # populate check_run.pull_requests. Fall back to the commits-to-pulls API.
+            echo "::notice::check_run.pull_requests is empty — trying commits-to-pulls API fallback for SHA ${CHECK_RUN_HEAD_SHA}"
+            pulls_json=$(gh api \
+              -H "Accept: application/vnd.github+json" \
+              "repos/${REPO_FULL_NAME}/commits/${CHECK_RUN_HEAD_SHA}/pulls" 2>/dev/null || echo "[]")
+            open_pulls=$(echo "$pulls_json" | jq '[.[] | select(.state=="open")]')
+            pr_count=$(echo "$open_pulls" | jq 'length')
+            if [ "$pr_count" -eq 0 ]; then
+              echo "::notice::No open PRs found for commit ${CHECK_RUN_HEAD_SHA} — skipping relay"
+              echo "should_relay=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            head_repo_full=$(echo "$open_pulls" | jq -r '.[0].head.repo.full_name // empty')
+            if [ -n "$head_repo_full" ] && [ "$head_repo_full" != "$REPO_FULL_NAME" ]; then
+              echo "::notice::Commit ${CHECK_RUN_HEAD_SHA} belongs to fork (${head_repo_full}) — skipping relay"
+              echo "should_relay=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            pr_number=$(echo "$open_pulls" | jq -r '.[0].number')
+            echo "should_relay=true" >> "$GITHUB_OUTPUT"
+            echo "pr_number=$pr_number" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           head_repo_url=$(echo "$CHECK_RUN_PRS" | jq -r '.[0].head.repo.url // empty')
@@ -356,6 +378,7 @@ jobs:
           RELAY_PR_NUMBER: ${{ steps.check-pr.outputs.pr_number }}
           RELAY_HEAD_SHA: ${{ github.event.check_run.head_sha }}
           RELAY_REPO: ${{ github.repository }}
+          RELAY_CHECK_ID: ${{ github.event.check_run.id }}
           RELAY_CHECK_NAME: ${{ github.event.check_run.name }}
           RELAY_CONCLUSION: ${{ github.event.check_run.conclusion }}
           RELAY_DETAILS_URL: ${{ github.event.check_run.details_url }}
@@ -366,11 +389,12 @@ jobs:
             --argjson pr_number "$RELAY_PR_NUMBER" \
             --arg head_sha "$RELAY_HEAD_SHA" \
             --arg repo "$RELAY_REPO" \
+            --argjson check_id "$RELAY_CHECK_ID" \
             --arg name "$RELAY_CHECK_NAME" \
             --arg conclusion "$RELAY_CONCLUSION" \
             --arg details_url "$RELAY_DETAILS_URL" \
             --arg app_slug "$RELAY_APP_SLUG" \
-            '{event_type:"dev-lead-ci-failure",client_payload:{pr_number:$pr_number,head_sha:$head_sha,repo:$repo,checks:[{name:$name,conclusion:$conclusion,details_url:$details_url,app_slug:$app_slug}]}}')
+            '{event_type:"dev-lead-ci-failure",client_payload:{pr_number:$pr_number,head_sha:$head_sha,repo:$repo,checks:[{id:$check_id,name:$name,conclusion:$conclusion,details_url:$details_url,app_slug:$app_slug}]}}')
           echo "$payload" | gh api \
             --method POST "repos/$RELAY_REPO/dispatches" --input -
           echo "::notice::Relayed CI failure for PR $RELAY_PR_NUMBER"

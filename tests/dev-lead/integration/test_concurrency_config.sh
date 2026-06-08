@@ -60,11 +60,13 @@ check_concurrency_order() {
   fi
 }
 
-# dev-lead.yml is now a thin caller stub; per-PR/per-issue routing is
-# centralised in the reusable. Only validate the reusable here.
-# The stub's own structure (calls reusable, no inline steps) is validated by
-# tests/dev-lead/integration/test_dev_lead_stub.sh.
+# Both dev-lead.yml (caller stub) and dev-lead-reusable.yml must have per-PR/
+# per-issue concurrency groups. The stub's outer-gate concurrency must match
+# the reusable's inner routing — if the stub uses a single 'dev-lead' group,
+# unrelated-PR pending runs can cancel each other before the reusable applies
+# its own per-PR lanes (see thread PRRT_kwDOR9SdIs6Hs_bn).
 WORKFLOWS=(
+  ".github/workflows/dev-lead.yml"
   ".github/workflows/dev-lead-reusable.yml"
 )
 
