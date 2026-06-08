@@ -34,7 +34,7 @@ jobs:
         run: sudo apt-get install -y bats
 
       - name: Run tests
-        run: bats tests/fleet_report.bats tests/token_report.bats tests/model_pricing.bats tests/test_review_cycle.bats tests/test_ci_status.bats
+        run: bats tests/fleet_report.bats tests/token_report.bats tests/model_pricing.bats tests/test_review_cycle.bats tests/test_ci_status.bats tests/test_push_protection.bats
 
   validate-agent-profiles:
     runs-on: ubuntu-latest
