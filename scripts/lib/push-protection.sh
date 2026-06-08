@@ -12,7 +12,9 @@
 #   source scripts/lib/push-protection.sh
 #   REPO=owner/repo pp_apply_security_and_analysis
 
-PP_REQUIRED_SA_SETTINGS=(
+set -euo pipefail
+
+readonly -a PP_REQUIRED_SA_SETTINGS=(
   secret_scanning
   secret_scanning_push_protection
   secret_scanning_ai_detection
@@ -30,6 +32,10 @@ pp_apply_security_and_analysis() {
     echo "[dry-run] would patch security_and_analysis on ${REPO}: ${PP_REQUIRED_SA_SETTINGS[*]}"
     return 0
   fi
+
+  # Enable Dependabot alerts — prerequisite for dependabot_security_updates.
+  gh api -X PUT "repos/${REPO}/vulnerability-alerts" --silent 2>/dev/null || \
+    echo "[warn] ${REPO} — could not enable vulnerability alerts (prerequisite for dependabot_security_updates)" >&2
 
   local failures=0
   for key in "${PP_REQUIRED_SA_SETTINGS[@]}"; do

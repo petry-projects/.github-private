@@ -33,11 +33,12 @@ REQUIRED_FILES=(
 # Format: "setting_label|jq_path|api_payload"
 REQUIRED_SECURITY_SETTINGS=()
 for _key in "${PP_REQUIRED_SA_SETTINGS[@]}"; do
+  _payload=$(jq -n --arg k "$_key" '{"security_and_analysis": {($k): {"status": "enabled"}}}')
   REQUIRED_SECURITY_SETTINGS+=(
-    "${_key}|.security_and_analysis.${_key}.status|{\"security_and_analysis\":{\"${_key}\":{\"status\":\"enabled\"}}}"
+    "${_key}|.security_and_analysis.${_key}.status|${_payload}"
   )
 done
-unset _key
+unset _key _payload
 
 echo "=== Standards Sync ==="
 echo "  Org:            ${ORG}"
@@ -153,6 +154,11 @@ while IFS= read -r repo; do
       echo "  [warn] ${repo} — could not read ${setting_label}"
       security_notes="${security_notes} \`${setting_label}\`:error"
     else
+      # dependabot_security_updates requires Dependabot alerts to be enabled first.
+      if [ "$setting_label" = "dependabot_security_updates" ]; then
+        gh api -X PUT "repos/${repo}/vulnerability-alerts" --silent 2>/dev/null || \
+          echo "  [warn] ${repo} — could not enable vulnerability alerts (prerequisite for dependabot_security_updates)"
+      fi
       if printf '%s' "$api_payload" | \
            gh api "repos/${repo}" --method PATCH --input - --silent 2>/dev/null; then
         settings_applied=$((settings_applied + 1))

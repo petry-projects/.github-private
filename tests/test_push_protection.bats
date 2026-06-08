@@ -77,6 +77,14 @@ teardown() {
   grep -q "owner/repo" "$GH_LOG"
 }
 
+@test "live mode PUTs vulnerability-alerts as prerequisite before PATCH loop" {
+  export DEV_LEAD_DRY_RUN=false
+  export REPO="owner/repo"
+  run pp_apply_security_and_analysis
+  [ "$status" -eq 0 ]
+  grep -q "vulnerability-alerts" "$GH_LOG"
+}
+
 @test "live mode errors when REPO is unset" {
   export DEV_LEAD_DRY_RUN=false
   unset REPO
