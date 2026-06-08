@@ -19,6 +19,44 @@
 #
 # Always exits 0.  Degraded state is recorded but never aborts the run.
 
+# _gemini_billing_probe
+# Makes a minimal REST call to the Gemini API to detect depleted prepayment
+# credits before the first PR review.  The Gemini CLI retries billing-exhaustion
+# errors 10× with backoff (~4 min total); detecting it here lets validate_engines
+# mark GEMINI_AVAILABLE=false immediately, skipping the wasted wait entirely.
+#
+# Returns 0 — billing OK or status undetermined (fail-open: Gemini proceeds).
+# Returns 1 — billing explicitly depleted (RESOURCE_EXHAUSTED detected).
+#
+# Requires: GOOGLE_API_KEY, curl (skips probe if curl is absent).
+_gemini_billing_probe() {
+  if ! command -v curl >/dev/null 2>&1; then
+    return 0
+  fi
+
+  local _raw _body
+  _raw=$(
+    timeout 15 curl -sS --max-time 10 \
+      -X POST \
+      -H "Content-Type: application/json" \
+      -H "X-Goog-Api-Key: ${GOOGLE_API_KEY}" \
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent" \
+      -d '{"contents":[{"parts":[{"text":"Hi"}]}],"generationConfig":{"maxOutputTokens":1}}' \
+      -w '\n%{http_code}' 2>/dev/null
+  ) || true
+
+  # Strip the trailing HTTP status code line appended by -w; check only the body.
+  _body=$(printf '%s' "$_raw" | sed '$d')
+
+  if printf '%s' "$_body" | grep -qiE "credits.*depleted"; then
+    return 1
+  fi
+
+  # Any non-billing error (invalid key, network error, etc.) is treated as
+  # undetermined — let Gemini proceed and fail loudly at call time if needed.
+  return 0
+}
+
 validate_engines() {
   local claude_ok=false gemini_ok=false copilot_ok=false
 
@@ -30,7 +68,7 @@ validate_engines() {
   # ── Gemini ──────────────────────────────────────────────────────────────────
   # Collect every reason the engine is unavailable so the warning is precise.
   local gemini_reasons=""
-  
+
   append_gemini_reason() {
     if [ -n "$gemini_reasons" ]; then
       gemini_reasons="$gemini_reasons; $1"
@@ -50,8 +88,18 @@ validate_engines() {
   fi
 
   if [ -z "$gemini_reasons" ]; then
-    gemini_ok=true
-  else
+    # All basic checks pass — probe the REST API for billing depletion.
+    # Depleted prepayment credits cause the Gemini CLI to retry 10× (~4 min)
+    # before surfacing the error; detecting it here lets us skip Gemini entirely
+    # and fall through to the next engine immediately.
+    if _gemini_billing_probe; then
+      gemini_ok=true
+    else
+      append_gemini_reason "prepayment credits depleted — replenish via Google AI Studio (https://aistudio.google.com/billing)"
+    fi
+  fi
+
+  if [ -n "$gemini_reasons" ]; then
     echo "::warning::Gemini fallback unavailable — ${gemini_reasons}. When Claude is rate-limited, runs will fall through directly to Copilot."
   fi
 
