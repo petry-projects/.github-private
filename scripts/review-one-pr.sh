@@ -579,12 +579,17 @@ run_agentic prompts/deep-review.md "$ENGINE_DEEP_MODEL" "deep" \
 DEEP_PID=$!
 
 DUCK_OUTPUT="/tmp/cascade/rubber-duck.json"
-(
-  export OUTPUT_FILE="$DUCK_OUTPUT"
-  run_duck prompts/rubber-duck.md "$DUCK_MODEL" \
-    > /tmp/cascade/duck.log 2>&1
-) &
-DUCK_PID=$!
+DUCK_PID=""
+if [ "${DUCK_ENGINE:-}" = "gemini" ] && [ "${GEMINI_AVAILABLE:-false}" != "true" ]; then
+  echo "::notice::Skipping Gemini duck reviewer — GEMINI_AVAILABLE=false per pre-flight probe"
+else
+  (
+    export OUTPUT_FILE="$DUCK_OUTPUT"
+    run_duck prompts/rubber-duck.md "$DUCK_MODEL" \
+      > /tmp/cascade/duck.log 2>&1
+  ) &
+  DUCK_PID=$!
+fi
 
 # Wait for deep review first — if it fails, kill the duck and exit early.
 # Capture the exit code explicitly; `|| true` would swallow it and prevent
@@ -598,8 +603,8 @@ if [ ! -s "$OUTPUT_FILE" ] || ! jq empty "$OUTPUT_FILE" 2>/dev/null; then
   # Check both stdout and stderr for a rate-limit or CLI-error message.
   DEEP_STDOUT_CONTENT=$(cat /tmp/cascade/deep-stdout.txt 2>/dev/null || true)
   DEEP_STDERR_CONTENT=$(cat /tmp/cascade/deep.log 2>/dev/null || true)
-  kill $DUCK_PID 2>/dev/null || true
-  wait $DUCK_PID 2>/dev/null || true
+  [ -n "$DUCK_PID" ] && kill $DUCK_PID 2>/dev/null || true
+  [ -n "$DUCK_PID" ] && wait $DUCK_PID 2>/dev/null || true
   # CLI invocation errors are per-PR failures (exit 1), not engine fallbacks (exit 2).
   if is_cli_error "$DEEP_STDOUT_CONTENT" || is_cli_error "$DEEP_STDERR_CONTENT"; then
     echo "    [error] CLI format error — treating as per-PR failure (not a rate limit)"
@@ -623,7 +628,7 @@ fi
 [ "$DEEP_RC" -ne 0 ] && echo "::warning::deep review process exited $DEEP_RC but produced valid JSON — proceeding"
 
 # Wait for duck to finish (deep succeeded)
-wait $DUCK_PID || true
+[ -n "$DUCK_PID" ] && wait $DUCK_PID || true
 
 DEEP_DECISION=$(jq -r '.decision' "$OUTPUT_FILE")
 DEEP_RISK=$(jq -r '.risk' "$OUTPUT_FILE")
