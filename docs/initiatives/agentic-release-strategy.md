@@ -37,14 +37,23 @@ to roll back *to*.
 
 This initiative proposes a **GitHub-native versioned-release model with concentric rings and
 health-gated promotion**. The core move: production duty (the agents' own self-review and all consumer
-repos) runs a **pinned, immutable “stable” version**, while new versions are exercised on a **`next`
+repos) runs a **pinned `stable` version**, while new versions are exercised on a **`next`
 channel in ring 0 (`.github-private` self-host)** and promoted ring-by-ring only after they prove
 healthy. This breaks the circular dependency (a broken in-development version can no longer gate its
 own fix), shrinks blast radius from “whole fleet, instantly” to “one ring at a time,” and makes
 rollback a single pointer flip.
 
+**Version selection uses moving channel tags, not per-caller edits.** GitHub does **not** allow an
+expression in a `uses:` ref (`uses: …@${{ vars.X }}` is rejected — refs resolve at workflow-parse
+time, before any context exists). So instead of re-pinning every caller on each release, **each caller
+pins _once_ to a floating channel tag** (`@stable`, `@next`, `@ring1`); promotion is a single _central_
+tag move in `.github-private`, and callers are never edited again — exactly how `actions/checkout@v4`
+works. Immutable `vX.Y.Z` tags are still cut as audit/rollback targets, and **tag-protection rules**
+restrict who can move a channel tag (only the gated promotion workflow). See §5.1.
+
 **Recommendation:** Option C — *Versioned releases + concentric rings with health-gated promotion*,
-delivered in two phases (Phase 1 = versioning + pinning; Phase 2 = rings + automated promotion/rollback).
+delivered in two phases (Phase 1 = versioning + pin-once to `@stable`; Phase 2 = rings + automated
+promotion/rollback).
 
 ---
 
@@ -157,8 +166,8 @@ staging, branch protection).
 
 | Pattern | What it gives us | GitHub-native realization | Fit here |
 |---|---|---|---|
-| **Versioning** (semver / immutable refs) | A thing to pin, promote, roll back to | Release tags (`pr-review/vX.Y.Z`) or SHA pins; consumers use `uses: …@<tag-or-sha>` | **Foundational — required by all others** |
-| **Blue/Green** | Two complete environments; flip traffic; instant rollback | Two channel pointers — `stable` (blue) and `next` (green) — as moving tags; “flip” = repoint consumers / update the production pointer | **Strong** — pointer flip = the rollback story |
+| **Versioning** (semver / immutable refs) | A thing to pin, promote, roll back to | Immutable release tags (`pr-review/vX.Y.Z`) as audit/rollback targets, **plus moving channel tags** (`stable`/`next`) that callers pin to | **Foundational — required by all others** |
+| **Blue/Green** | Two complete environments; flip traffic; instant rollback | Two **moving channel tags** — `stable` (blue) and `next` (green); “flip” = move the `stable` tag centrally (callers stay pinned to `@stable`, never edited) | **Strong** — tag move = the rollback story, zero caller churn |
 | **Canary** | Small % exposure before full rollout | Ring 0 = `.github-private` self-host runs `next`; if healthy, promote | **Strong** — self-host is a natural canary |
 | **Concentric rings** | Progressive exposure by blast radius | Ring 0 self-host → Ring 1 low-traffic consumer → Ring 2 remaining consumers; each ring pins its own ref, promoted in order | **Strong — the core of the recommendation** |
 | **Progressive delivery / health-gated promotion** | Automated “advance only if healthy” | A health-gate job reads ring-N run success/cancellation metrics; promotes the pinned ref for ring N+1 via PR/pointer move only on green | **Strong** |
@@ -168,6 +177,45 @@ staging, branch protection).
 **Key insight:** in a self-hosting setup, *versioning + rings + a stable pointer* together produce the
 blue/green rollback story **and** break the circular dependency — because production review/dev duty
 runs the pinned `stable` version, fully independent of whatever broken thing is sitting on `main`/`next`.
+
+### 5.1 How version selection works without per-caller churn (moving channel tags)
+
+A natural instinct is to point each caller at an org/repo **Variable** (`uses: …@${{ vars.PR_REVIEW_VERSION }}`)
+so a single setting controls everyone. **GitHub does not support this:** `uses:` refs must be static
+literals — they resolve when the workflow graph is parsed, before `vars`/`env`/`inputs` contexts
+exist. (Confirmed: there are zero expression-based `uses:` refs in the repo, because it is not
+permitted.)
+
+The GitHub-native way to get the same "one knob, no caller edits" outcome is a **moving channel tag**:
+
+- Every caller pins **once** to a floating tag and is then never touched again:
+  ```yaml
+  uses: petry-projects/.github-private/.github/workflows/pr-review.yml@stable
+  ```
+- Promotion / rollback is a single **central** operation in `.github-private`, performed only by the
+  gated promotion workflow:
+  ```bash
+  git tag -f stable pr-review/v1.4.0 && git push -f origin stable   # promote
+  git tag -f stable pr-review/v1.3.0 && git push -f origin stable   # roll back (<5 min)
+  ```
+- Rings are just different channel tags (`@stable`, `@ring1`, `@next`); a ring advances when the
+  promotion workflow moves *its* tag — callers are unaffected.
+
+**This is the same model as `actions/checkout@v4`** (a major tag GitHub moves across patch releases).
+
+**Trade-off — mutable refs vs. the SHA-pin standard.** A moving `@stable` tag is intentionally
+*mutable*, which is in tension with `AGENTS.md`'s "SHA-pin actions" rule. That rule targets
+**third-party** actions (supply-chain risk you don't control); these are **first-party** workflows in
+a repo you own. We accept the mutability as a **scoped, documented exception**, mitigated by:
+(a) cutting immutable `vX.Y.Z` tags as the real audit/rollback targets a channel tag points *at*;
+(b) **tag-protection rules** so only the promotion workflow (not humans, not the agents) can move a
+channel tag; and (c) every move being a reviewed, logged promotion run.
+
+> **Optional extension — a true Variable knob.** Where a consumer must *self-select* a ring without a
+> central tag move, a caller can instead be a thin dispatcher that `actions/checkout`s the engine at
+> `ref: ${{ vars.PR_REVIEW_REF || 'stable' }}` and runs the scripts directly (repo Variable overrides
+> org Variable). This trades away the native `workflow_call` model and is **not** part of the
+> recommended baseline — listed only as a fallback for per-repo self-service overrides.
 
 ---
 
@@ -184,23 +232,28 @@ Keep `@main` everywhere; continue fixing individual stuck-state bugs (#463, #466
   measure.
 - **Verdict:** Rejected — it's the current failing baseline.
 
-### Option B — Versioned releases + pinned refs (minimal)
-Introduce immutable release tags for the reusable workflows; pin every consumer caller **and**
-`.github-private`'s own production callers to a tag. Development happens on `main`; releases are cut
-deliberately.
+### Option B — Versioned releases + pin-once to a `stable` channel tag (minimal)
+Introduce immutable release tags (`vX.Y.Z`) for the reusable workflows **and** a moving `stable`
+channel tag pointing at the current known-good release. Pin every consumer caller **and**
+`.github-private`'s own production callers **once** to `@stable` (off `@main`). Development happens on
+`main`; releases are cut deliberately and promoted by moving the `stable` tag — **callers are never
+re-edited** (see §5.1).
 
 - **Pros:** Establishes the missing version boundary (Root cause B). A bad `main` no longer auto-ships.
-  Rollback = re-pin to the prior tag. Low effort, pure GitHub-native.
+  Rollback = move `stable` back to the prior tag (one central op, <5 min). **No per-caller churn.**
+  Low effort, pure GitHub-native.
 - **Cons:** Manual promotion (no rings/automation yet). Doesn't *by itself* guarantee ring-0 validation
   before production, but it makes SC1/SC4 achievable. Partial fix for the circular dependency
-  (production can run a pinned tag while `main` is broken — *if* we pin self-review duty too).
+  (production runs `@stable` while `main`/`next` is broken — *as long as* self-review duty is pinned to
+  `@stable` too).
 - **Verdict:** **Necessary foundation.** Adopt as **Phase 1**.
 
 ### Option C — Versioned releases + concentric rings + health-gated promotion *(RECOMMENDED)*
-Build on B. Define a `stable` channel pointer (blue) and a `next` channel (green). Ring 0 =
-`.github-private` self-host tracks `next`; Ring 1 = one low-traffic consumer; Ring 2 = remaining
-consumers — each pinned to a ref that is promoted in order, gated by an automated health check that
-reads the prior ring's run-success metrics. Rollback = move the pointer back (one action).
+Build on B. Add a `next` channel tag (green) alongside `stable` (blue), plus per-ring channel tags.
+Ring 0 = `.github-private` self-host tracks `next`; Ring 1 = one low-traffic consumer; Ring 2 =
+remaining consumers — each caller pinned **once** to its ring's channel tag, which the promotion
+workflow moves forward in order, gated by an automated health check that reads the prior ring's
+run-success metrics. Rollback = move the channel tag back (one central action, no caller edits).
 
 - **Pros:** Addresses **both** root causes. Production duty always on pinned `stable` ⇒ circular
   dependency broken (SC2). Blast radius staged ring-by-ring (SC3). One-action rollback via pointer
@@ -258,15 +311,20 @@ Scale: ✅ strong · 🟡 partial · ❌ none. (Effort/overhead: lower = better.
 ### Phase 1 — Establish the version boundary *(unblocks SC1, SC4; partial SC2)*
 1. Define a versioning scheme for the reusable workflows (per-agent semver tags, e.g.
    `pr-review/vMAJOR.MINOR.PATCH`, `dev-lead/vX.Y.Z`, plus the scripts they depend on).
-2. Cut the first immutable release tag from current known-good `main`.
+2. Cut the first immutable release tag from current known-good `main`, and create the moving
+   **`stable`** channel tag pointing at it.
 3. Repoint **all** callers — consumer repos *and* `.github-private`'s own production self-review/dev
-   duty — from `@main` to the pinned tag. Development continues on `main`/feature branches.
-4. Document the release-cut runbook.
+   duty — from `@main` to **`@stable`** (a *one-time* edit; callers are never re-pinned again).
+   Development continues on `main`/feature branches.
+4. Add **tag-protection rules** so only the promotion workflow can move `stable` (the scoped exception
+   to the SHA-pin standard — see §5.1), and document the release-cut + promote + rollback runbook.
 
-After Phase 1: a broken `main` no longer auto-ships; rollback = re-pin to the prior tag.
+After Phase 1: a broken `main` no longer auto-ships; promotion/rollback = move the `stable` tag
+centrally (no caller edits).
 
 ### Phase 2 — Concentric rings + health-gated promotion *(completes SC2, SC3, SC5, SC8)*
-5. Introduce two channel pointers: **`stable`** (blue, production) and **`next`** (green, candidate).
+5. Add the **`next`** channel tag (green, candidate) alongside `stable`, plus per-ring channel tags
+   (`@ring1`, …) so each ring advances independently by a central tag move.
 6. Define the rings:
    - **Ring 0** — `.github-private` self-host tracks `next` (dogfood/canary).
    - **Ring 1** — one low-traffic consumer.
@@ -300,10 +358,11 @@ After Phase 1: a broken `main` no longer auto-ships; rollback = re-pin to the pr
 | Risk | Mitigation |
 |---|---|
 | Ring-0 = self-host means the source repo sees new versions first | Production self-review/dev duty stays pinned to `stable`; only the `next` lane runs the candidate. Confirmed dogfood-first trade-off. |
-| Pinning to tags adds friction / staleness (consumers lag) | Automated promotion PRs bump the pinned ref; `next`-channel keeps innovation continuous. |
+| Pinning to versions adds friction / staleness (consumers lag) | Callers pin **once** to `@stable`; promotion is a central tag move, so consumers never lag behind a manual re-pin and `next` keeps innovation continuous (§5.1). |
+| Moving channel tags are mutable (vs. the SHA-pin standard) | Scoped, documented exception for **first-party** workflows: immutable `vX.Y.Z` are the real targets; **tag-protection** limits movement to the promotion workflow; every move is reviewed + logged (§5.1). |
 | Health gate gives false-green and promotes a bad version | Define a soak window + multiple signals (success rate, cancellation rate, failure-report issue creation); keep one-action rollback as the backstop. |
 | “Two systems” increases maintenance | Phase 1 is intentionally minimal; Phase 2 automation pays for itself by eliminating daily toil (SC6). |
-| Tag/release proliferation | Per-agent semver + a documented retention/runbook; floating `stable`/`next` pointers hide the churn from consumers. |
+| Tag/release proliferation | Per-agent semver + a documented retention/runbook; floating `stable`/`next`/ring tags hide the churn from consumers. |
 | Reusable workflows cannot natively determine their own running ref (unlike composite actions which expose `github.action_ref`), so local scripts (e.g., `scripts/dev-lead-fix-reviews.sh`) may be checked out at the caller's ref rather than the workflow's intended version | Pass the target ref as a required input to the reusable workflow so it can explicitly check out that version of `.github-private`; evaluate migrating core steps to composite actions (which expose `github.action_ref`) as a Phase 2 follow-on. |
 
 ---
@@ -326,3 +385,7 @@ After Phase 1: a broken `main` no longer auto-ships; rollback = re-pin to the pr
 - Scope: core agentic + delivery.
 - Infra: GitHub-native only (no new repos, no external infra).
 - Canary / Ring 0: `.github-private` self-host.
+- Version selection: **moving channel tags** (`@stable`/`@next`/`@ring1`) — callers pin once,
+  promotion is a central tag move. (A `vars.`-driven dispatcher is an optional fallback only, not the
+  baseline — see §5.1.) Mutable channel tags are an accepted, tag-protected exception to the SHA-pin
+  standard for these first-party workflows.
