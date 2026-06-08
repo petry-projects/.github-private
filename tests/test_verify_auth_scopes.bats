@@ -36,26 +36,26 @@ STUBEOF
 # Fine-grained PAT detection via github_pat_ prefix
 # ---------------------------------------------------------------------------
 
-@test "fine-grained PAT (github_pat_11 prefix) exits 0 with notice" {
+@test "fine-grained PAT (github_pat_11 prefix) exits 1 with error" {
   make_gh_stub "✓ Logged in to github.com account donpetry-bot (GH_TOKEN)
 - Active account: true
 - Git operations protocol: https
 - Token: github_pat_11CDFSYKQ0_***"
 
   run bash "$SCRIPT"
-  [ "$status" -eq 0 ]
+  [ "$status" -eq 1 ]
   [[ "$output" == *"Fine-grained PAT detected"* ]]
-  [[ "$output" == *"::notice::"* ]]
+  [[ "$output" == *"::error::"* ]]
 }
 
-@test "fine-grained PAT notice does not contain ::error::" {
+@test "fine-grained PAT error includes classic PAT replacement guidance" {
   make_gh_stub "✓ Logged in to github.com account donpetry-bot (GH_TOKEN)
 - Active account: true
 - Token: github_pat_11ABCXYZ_***"
 
   run bash "$SCRIPT"
-  [ "$status" -eq 0 ]
-  [[ "$output" != *"::error::"* ]]
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"classic PAT"* ]]
 }
 
 # ---------------------------------------------------------------------------

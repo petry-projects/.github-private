@@ -21,9 +21,11 @@ printf '%s\n' "$auth_status"
 # scope strings in 'gh auth status'.  Detect the prefix first — it is the
 # most reliable signal and avoids false-positives from a missing scope line.
 if grep -qi 'Token:.*github_pat_' <<< "$auth_status"; then
-  echo "::notice::Fine-grained PAT detected — skipping classic OAuth scope check."
-  echo "::notice::Ensure the token grants: contents (read) and pull-requests (write) fine-grained permissions."
-  exit 0
+  echo "::error::Fine-grained PAT detected — this workflow requires a classic PAT."
+  echo "::error::Fine-grained PATs cannot submit pull request reviews (addPullRequestReview is inaccessible)."
+  echo "::error::Replace DON_PETRY_BOT_GH_PAT with a classic PAT that has repo + read:org scopes."
+  echo "::error::See docs/pr-review-agent/setup.md for troubleshooting guidance."
+  exit 1
 fi
 
 # ── Fallback: empty / indeterminate scope list ─────────────────────────────
