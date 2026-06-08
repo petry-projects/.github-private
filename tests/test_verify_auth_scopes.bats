@@ -36,6 +36,17 @@ EOF
   [[ "$output" != *"::error::"* ]]
 }
 
+@test "undetermined scopes without github_pat_ prefix exits 1 with error" {
+  export AUTH_STATUS="$(cat <<'EOF'
+✓ Logged in to github.com account bot (GH_TOKEN)
+- Token: ghp_***
+EOF
+  )"
+  run bash "$SCRIPT"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"::error::"* ]]
+}
+
 # ---------------------------------------------------------------------------
 # Classic PAT — full repo + read:org. Must exit 0.
 # ---------------------------------------------------------------------------
@@ -92,11 +103,10 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
-# Classic PAT — scopes line present but repo is absent; contents and
-# pull_requests present → should pass the fallback path and exit 0.
+# No repo scope, but contents + pull_requests present (fine-grained-style permissions)
 # ---------------------------------------------------------------------------
 
-@test "classic PAT with contents+pull_requests (no repo) exits 0" {
+@test "no-repo token with contents+pull_requests exits 0" {
   export AUTH_STATUS="$(cat <<'EOF'
 ✓ Logged in to github.com account bot (GH_TOKEN)
 - Token: ghp_***
@@ -107,12 +117,22 @@ EOF
   [ "$status" -eq 0 ]
 }
 
+@test "GITHUB_TOKEN with contents:read and pull_requests:write exits 0" {
+  export AUTH_STATUS="$(cat <<'EOF'
+✓ Logged in to github.com account bot (GH_TOKEN)
+- Token: ***
+- Token scopes: 'contents:read', 'pull_requests:write'
+EOF
+  )"
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+}
+
 # ---------------------------------------------------------------------------
-# Classic PAT — scopes line present, neither repo nor required minimal
-# scopes present. Must exit 1 and identify the missing scope.
+# Token scopes line present, but neither repo nor the required minimal permissions are present
 # ---------------------------------------------------------------------------
 
-@test "classic PAT missing required scopes exits 1" {
+@test "token missing required scopes exits 1" {
   export AUTH_STATUS="$(cat <<'EOF'
 ✓ Logged in to github.com account bot (GH_TOKEN)
 - Token: ghp_***
@@ -123,7 +143,7 @@ EOF
   [ "$status" -eq 1 ]
 }
 
-@test "classic PAT missing scopes error message names the missing scope" {
+@test "token missing scopes error message names the missing scope" {
   export AUTH_STATUS="$(cat <<'EOF'
 ✓ Logged in to github.com account bot (GH_TOKEN)
 - Token: ghp_***
