@@ -41,66 +41,24 @@ on:
         required: false
       DON_PETRY_BOT_GH_PAT:
         required: false
+      # Classic PAT for the bot. Required for `gh pr review --approve`
+      # (addPullRequestReview), which fails for fine-grained PATs. Preferred
+      # over DON_PETRY_BOT_GH_PAT when set; see docs/pr-review-agent/machine-user-setup.md.
+      DON_PETRY_BOT_GH_PAT_CLASSIC:
+        required: false
       GH_PAT:
         required: false
 
-  # ── Event-driven triggers ────────────────────────────────────────────────
-  # These replace the former time-based schedule. The review engine's own
-  # idempotency check (head-SHA marker) prevents duplicate reviews, so
-  # firing multiple times on the same PR is always safe.
-  #
-  # Coverage note: these events are scoped to this repo (.github-private).
-  # For org-wide event-driven triggering (broodly, markets, etc.), deploy
-  # a thin pr-review-auto-trigger.yml caller stub to each repo (Phase 2).
-
-  check_suite:
-    # Fires when a CI check suite completes on any branch in this repo.
-    # We only act when the suite succeeded (failing/pending PRs are already
-    # skipped by review-one-pr.sh's CI gate, but filtering here avoids
-    # spinning up a runner at all). Empty pull_requests arrays (e.g. pushes
-    # to main) are dropped in the job condition below.
-    types: [completed]
-
-  pull_request_review:
-    # Fires when a reviewer submits a review or dismisses one.
-    #   submitted  — covers APPROVED (green light) and CHANGES_REQUESTED
-    #                (agent will skip via its own gate, but APPROVED is the
-    #                common case that unlocks a previously-blocked PR).
-    #   dismissed  — a CHANGES_REQUESTED review was dismissed, clearing the
-    #                block so the agent can re-engage with the updated code.
-    types: [submitted, dismissed]
-
-  pull_request:
-    # ready_for_review — draft PR promoted to open (ready for first review).
-    # reopened          — closed PR is reopened (e.g. after revision).
-    # synchronize       — new commits pushed (author addressed review comments);
-    #                     CI will be pending immediately, so review-one-pr.sh
-    #                     skips cheaply — the check_suite trigger fires once CI
-    #                     settles and is the real wake signal post-push.
-    types: [ready_for_review, reopened, synchronize]
-
-  # ── Manual / programmatic triggers ──────────────────────────────────────
-  workflow_dispatch:
-    inputs:
-      pr_url:
-        description: "Optional: review a single PR URL instead of enumerating"
-        required: false
-        type: string
-      dry_run:
-        description: "If true, never submit reviews or comments"
-        required: false
-        default: "false"
-        type: string
-      force_review:
-        description: "If true, bypass idempotency check and re-review even if already reviewed at head SHA (use for @mention-triggered reviews)"
-        required: false
-        default: "false"
-        type: string
-  repository_dispatch:
-    # Triggered by the petry-projects/.github mention-listener workflow.
-    # Requires only Contents: write on this repo (not Actions: write).
-    # Payload: { pr_url: "https://github.com/...", force_review: "true" }
-    types: [pr-review-mention]
+  # ── Reusable-only (#497 self-host pinning) ───────────────────────────────
+  # Event-driven triggering now lives in the thin caller `pr-review-trigger.yml`,
+  # which invokes this workflow pinned to `pr-review.yml@pr-review/stable` and
+  # passes `agent_ref: pr-review/stable` so the agent's own scripts run at the
+  # pinned version too. Keeping this file reusable-only is what lets
+  # .github-private's OWN PR reviews run the known-good `stable` release — not
+  # whatever is on the branch under review — which is what breaks the
+  # self-hosting circular dependency. The job below still reads `github.event.*`
+  # (inherited from the caller's triggering event) and `inputs.*` (forwarded by
+  # the stub), so its behaviour is unchanged.
 
 permissions:
   contents: read
@@ -153,7 +111,10 @@ jobs:
        github.event.review.state == 'dismissed')
     env:
       # Auth for every gh / script call in this job. The PAT must belong to BOT_USER.
-      GH_TOKEN: ${{ secrets.DON_PETRY_BOT_GH_PAT }}
+      # Prefer the CLASSIC PAT (required for `gh pr review --approve` —
+      # fine-grained PATs fail addPullRequestReview), falling back to the
+      # fine-grained DON_PETRY_BOT_GH_PAT when the classic secret is unset.
+      GH_TOKEN: ${{ secrets.DON_PETRY_BOT_GH_PAT_CLASSIC || secrets.DON_PETRY_BOT_GH_PAT }}
       # Single bot identity. DON_PETRY_BOT_GH_PAT authenticates as BOT_USER; that
       # account owns/has-access-to the personal repos scanned by list-prs.sh,
       # signs the cascade's escalation comments, and is filtered out of the
