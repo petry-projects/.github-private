@@ -6,8 +6,8 @@
 # AGENTS — READ BEFORE EDITING:
 #   • This file is a THIN CALLER STUB. All branch-update logic lives in the
 #     reusable workflow above.
-#   • You MAY change: the SHA in the `uses:` line when upgrading the reusable
-#     workflow version (bump SHA to latest main of petry-projects/.github).
+#   • You MAY change: the tag in the `uses:` line when upgrading the reusable
+#     workflow version (e.g. `@v1` → `@v2`).
 #   • You MUST NOT change: trigger event, the concurrency group name,
 #     or the job-level `permissions:` block — reusable workflows can be
 #     granted no more permissions than the calling job has, so removing
