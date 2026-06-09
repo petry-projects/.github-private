@@ -78,6 +78,8 @@ jobs:
       TRIGGER_PHRASES: ${{ vars.TRIGGER_PHRASES || '@dev-lead' }}
       DEV_LEAD_ENGINE: ${{ vars.DEV_LEAD_ENGINE || 'claude' }}
       DEV_LEAD_DRY_RUN: ${{ vars.DEV_LEAD_DRY_RUN || 'false' }}
+      DEEP_TIMEOUT_SEC: ${{ vars.DEEP_TIMEOUT_SEC || '' }}
+      ACTION_TIMEOUT_SEC: ${{ vars.ACTION_TIMEOUT_SEC || '' }}
       GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS || github.token }}
       GEMINI_CLI_TRUST_WORKSPACE: "true"
       DEV_LEAD_SCRIPTS: .dev-lead/scripts
@@ -105,8 +107,11 @@ jobs:
             prompts/dev-lead
 
       - name: Protect dev-lead scripts from accidental git staging
+        run: echo ".dev-lead/" >> .gitignore
+
+      - name: Revert .gitignore changes before git operations
         run: |
-          mkdir -p .git/info
+          git checkout .gitignore || true
           echo ".dev-lead/" >> .git/info/exclude
 
       - name: Classify event intent
@@ -131,6 +136,7 @@ jobs:
           echo "INTENT_CHECKS=$(echo "$ctx"       | jq -c '.checks // []')"       >> "$GITHUB_ENV"
           echo "INTENT_ISSUE_NUMBER=$(echo "$ctx" | jq -r '.issue_number // ""')" >> "$GITHUB_ENV"
           echo "INTENT_ACTOR=$(echo "$ctx"        | jq -r '.actor // ""')"        >> "$GITHUB_ENV"
+          echo "INTENT_BODY=$(echo "$ctx"         | jq -r '.body // ""')"         >> "$GITHUB_ENV"
 
       - name: Skip — log reason
         if: env.INTENT_TYPE == 'skip'
@@ -177,7 +183,10 @@ jobs:
                 gh extension install github/gh-copilot || true
               fi ;;
             gemini)
-              npm install -g @google/gemini-cli || true ;;
+              npm install -g @google/gemini-cli || true
+              if ! gh copilot --version >/dev/null 2>&1; then
+                gh extension install github/gh-copilot || true
+              fi ;;
             copilot)
               npm install -g @google/gemini-cli || true
               if ! gh copilot --version >/dev/null 2>&1; then
@@ -199,7 +208,10 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           COPILOT_GITHUB_TOKEN: ${{ secrets.GH_PAT }}
           PROMPTS_DIR: .dev-lead/prompts/dev-lead
-        run: bash .dev-lead/scripts/dev-lead-fix-ci.sh
+        run: |
+          bash .dev-lead/scripts/dev-lead-fix-ci.sh || rc=$?
+          [ "${rc:-0}" -eq 2 ] && exit 0
+          exit "${rc:-0}"
 
       # ── fix-reviews ───────────────────────────────────────────────────────
       - name: Run fix-reviews
@@ -215,7 +227,10 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           COPILOT_GITHUB_TOKEN: ${{ secrets.GH_PAT }}
           PROMPTS_DIR: .dev-lead/prompts/dev-lead
-        run: bash .dev-lead/scripts/dev-lead-fix-reviews.sh
+        run: |
+          bash .dev-lead/scripts/dev-lead-fix-reviews.sh || rc=$?
+          [ "${rc:-0}" -eq 2 ] && exit 0
+          exit "${rc:-0}"
 
       # ── fix-bot-comment ───────────────────────────────────────────────────
       - name: Run fix-bot-comment
@@ -225,12 +240,16 @@ jobs:
           HEAD_SHA: ${{ env.INTENT_HEAD_SHA }}
           REPO: ${{ github.repository }}
           REVIEW_ENGINE: ${{ env.DEV_LEAD_ENGINE }}
+          COMMENT_BODY: ${{ env.INTENT_BODY }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           COPILOT_GITHUB_TOKEN: ${{ secrets.GH_PAT }}
           PROMPTS_DIR: .dev-lead/prompts/dev-lead
-        run: bash .dev-lead/scripts/dev-lead-fix-reviews.sh
+        run: |
+          bash .dev-lead/scripts/dev-lead-fix-reviews.sh || rc=$?
+          [ "${rc:-0}" -eq 2 ] && exit 0
+          exit "${rc:-0}"
 
       # ── on-mention ─────────────────────────────────────────────────────────────
       - name: Run on-mention
@@ -240,12 +259,16 @@ jobs:
           HEAD_SHA: ${{ env.INTENT_HEAD_SHA }}
           REPO: ${{ github.repository }}
           REVIEW_ENGINE: ${{ env.DEV_LEAD_ENGINE }}
+          USER_INSTRUCTION: ${{ env.INTENT_BODY }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           COPILOT_GITHUB_TOKEN: ${{ secrets.GH_PAT }}
           PROMPTS_DIR: .dev-lead/prompts/dev-lead
-        run: bash .dev-lead/scripts/dev-lead-fix-reviews.sh
+        run: |
+          bash .dev-lead/scripts/dev-lead-fix-reviews.sh || rc=$?
+          [ "${rc:-0}" -eq 2 ] && exit 0
+          exit "${rc:-0}"
 
       # ── review-changes ──────────────────────────────────────────────────────────
       - name: Run review-changes
@@ -255,12 +278,16 @@ jobs:
           HEAD_SHA: ${{ env.INTENT_HEAD_SHA }}
           REPO: ${{ github.repository }}
           REVIEW_ENGINE: ${{ env.DEV_LEAD_ENGINE }}
+          ACTOR: ${{ env.INTENT_ACTOR }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           COPILOT_GITHUB_TOKEN: ${{ secrets.GH_PAT }}
           PROMPTS_DIR: .dev-lead/prompts/dev-lead
-        run: bash .dev-lead/scripts/dev-lead-fix-reviews.sh
+        run: |
+          bash .dev-lead/scripts/dev-lead-fix-reviews.sh || rc=$?
+          [ "${rc:-0}" -eq 2 ] && exit 0
+          exit "${rc:-0}"
 
       # ── issue ─────────────────────────────────────────────────────────────
       - name: Run issue
@@ -274,7 +301,10 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           COPILOT_GITHUB_TOKEN: ${{ secrets.GH_PAT }}
           PROMPTS_DIR: .dev-lead/prompts/dev-lead
-        run: bash .dev-lead/scripts/dev-lead-fix-issue.sh
+        run: |
+          bash .dev-lead/scripts/dev-lead-fix-issue.sh || rc=$?
+          [ "${rc:-0}" -eq 2 ] && exit 0
+          exit "${rc:-0}"
 
       # ── rebase ────────────────────────────────────────────────────────────
       - name: Run rebase
@@ -288,7 +318,10 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           COPILOT_GITHUB_TOKEN: ${{ secrets.GH_PAT }}
           PROMPTS_DIR: .dev-lead/prompts/dev-lead
-        run: bash .dev-lead/scripts/dev-lead-fix-reviews.sh
+        run: |
+          bash .dev-lead/scripts/dev-lead-fix-reviews.sh || rc=$?
+          [ "${rc:-0}" -eq 2 ] && exit 0
+          exit "${rc:-0}"
 
       # ── enable-auto-merge ─────────────────────────────────────────────────
       # Triggered when a trusted bot approves a PR. Skips engine install and
@@ -323,6 +356,7 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: write
+      pull-requests: read
 
     steps:
       - name: Check for associated non-fork PR

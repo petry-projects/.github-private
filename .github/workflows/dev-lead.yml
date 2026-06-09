@@ -20,7 +20,6 @@ name: Dev-Lead Agent
 
 on:
   pull_request:
-    branches: [main]
     types: [opened, reopened, synchronize]
   pull_request_review:
     types: [submitted]
@@ -37,23 +36,13 @@ on:
 
 permissions: {}
 
-concurrency:
-  # Per-PR/per-issue lanes mirror the routing in dev-lead-reusable.yml so that
-  # unrelated PRs/issues are never blocked or cancelled by each other at the
-  # workflow level (the outer gate) before the reusable's inner concurrency applies.
-  group: >-
-    ${{
-      (github.event_name == 'check_run' && format('dev-lead-ci-relay-{0}', github.event.check_run.head_sha))
-      || (github.event.pull_request.number && format('dev-lead-pr-{0}', github.event.pull_request.number))
-      || (github.event.issue.pull_request && format('dev-lead-pr-{0}', github.event.issue.number))
-      || (github.event.issue.number && format('dev-lead-issue-{0}', github.event.issue.number))
-      || (github.event.client_payload.pr_number && format('dev-lead-pr-{0}', github.event.client_payload.pr_number))
-      || format('dev-lead-run-{0}', github.run_id)
-    }}
-  cancel-in-progress: false
-
 jobs:
   dev-lead:
+    # Skip fork PRs: secrets are not available and dev-lead-intent.sh cannot
+    # run to classify the skip, which would cause the required check to fail.
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
     uses: petry-projects/.github-private/.github/workflows/dev-lead-reusable.yml@main
     secrets: inherit
     permissions:
