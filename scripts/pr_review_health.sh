@@ -223,9 +223,9 @@ Output ONLY the markdown report — no preamble or commentary outside the report
 PROMPT
 then
   # Distinguish transient rate-limit/quota errors from real failures.
-  # Pattern mirrors _rate_limit_pattern() in scripts/engine.sh (the codebase's
-  # single source of truth), focused on the tokens that match Claude CLI caps.
-  if grep -qiE "hit your limit|rate.?limit|resets [0-9]+(am|pm)|usage limit|quota" "$REPORT_FILE"; then
+  # Pattern is a subset of _rate_limit_pattern() in scripts/engine.sh, focused
+  # on errors observed from the Claude CLI.
+  if grep -qiE "hit your limit|rate.?limit|resets [0-9]+(am|pm)|usage limit|quota|overloaded_error|claude.*usage" "$REPORT_FILE"; then
     echo "::warning::Claude rate limit reached — health analysis deferred. Re-run manually when the limit resets."
     printf '# PR Review Agent Health Check — %s\n\n**Analysis deferred:** Claude daily usage limit reached during log analysis. Re-run this workflow manually when the limit resets.\n\nFailed run count (unanalyzed): %d of %d total.\n' \
       "$TODAY" "$failed_runs" "$total_runs" > "$REPORT_FILE"

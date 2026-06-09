@@ -38,7 +38,7 @@ make_gh_stub_one_failure() {
 #!/usr/bin/env bash
 args="$*"
 # Token access check (per_page=1) — succeed silently
-if printf '%s' "$args" | grep -q 'per_page=1[^0]'; then
+if printf '%s' "$args" | grep -qE 'per_page=1([^0-9]|$)'; then
   exit 0
 fi
 # Run listing (per_page=100) — return one failed run
@@ -61,12 +61,24 @@ STUBEOF
   chmod +x "$STUB_DIR/gh"
 }
 
+# make_claude_stub: writes a claude stub that prints a message and exits.
+make_claude_stub() {
+  local message="$1"
+  local exit_code="${2:-1}"
+  cat > "$STUB_DIR/claude" << STUBEOF
+#!/usr/bin/env bash
+printf '%s\n' "$message"
+exit "$exit_code"
+STUBEOF
+  chmod +x "$STUB_DIR/claude"
+}
+
 # make_gh_stub_no_failures: returns only successful runs so Claude is skipped.
 make_gh_stub_no_failures() {
   cat > "$STUB_DIR/gh" << 'STUBEOF'
 #!/usr/bin/env bash
 args="$*"
-if printf '%s' "$args" | grep -q 'per_page=1[^0]'; then
+if printf '%s' "$args" | grep -qE 'per_page=1([^0-9]|$)'; then
   exit 0
 fi
 if printf '%s' "$args" | grep -q 'per_page=100'; then
@@ -85,13 +97,8 @@ STUBEOF
 @test "Claude rate limit exits 0 and emits ::warning:: annotation" {
   make_gh_stub_one_failure
 
-  cat > "$STUB_DIR/claude" << 'STUBEOF'
-#!/usr/bin/env bash
-# Simulate the exact rate-limit message seen in the failing run (2026-06-09)
-printf "You've hit your limit · resets 4pm (UTC)\n"
-exit 1
-STUBEOF
-  chmod +x "$STUB_DIR/claude"
+  # Simulate the exact rate-limit message seen in the failing run (2026-06-09)
+  make_claude_stub "You've hit your limit · resets 4pm (UTC)"
 
   run bash "$SCRIPT"
 
@@ -101,13 +108,7 @@ STUBEOF
 
 @test "Claude rate limit: HAS_FAILURES is overridden to false in GITHUB_ENV" {
   make_gh_stub_one_failure
-
-  cat > "$STUB_DIR/claude" << 'STUBEOF'
-#!/usr/bin/env bash
-printf "You've hit your limit · resets 4pm (UTC)\n"
-exit 1
-STUBEOF
-  chmod +x "$STUB_DIR/claude"
+  make_claude_stub "You've hit your limit · resets 4pm (UTC)"
 
   run bash "$SCRIPT"
 
@@ -118,13 +119,7 @@ STUBEOF
 
 @test "Claude 'usage limit' message also triggers rate-limit handling (exit 0)" {
   make_gh_stub_one_failure
-
-  cat > "$STUB_DIR/claude" << 'STUBEOF'
-#!/usr/bin/env bash
-printf "usage limit reached for your account\n"
-exit 1
-STUBEOF
-  chmod +x "$STUB_DIR/claude"
+  make_claude_stub "usage limit reached for your account"
 
   run bash "$SCRIPT"
 
@@ -138,13 +133,7 @@ STUBEOF
 
 @test "non-rate-limit Claude failure exits 1 and emits ::error:: annotation" {
   make_gh_stub_one_failure
-
-  cat > "$STUB_DIR/claude" << 'STUBEOF'
-#!/usr/bin/env bash
-printf "fatal: segmentation fault in model inference\n"
-exit 1
-STUBEOF
-  chmod +x "$STUB_DIR/claude"
+  make_claude_stub "fatal: segmentation fault in model inference"
 
   run bash "$SCRIPT"
 
@@ -160,12 +149,7 @@ STUBEOF
   make_gh_stub_no_failures
 
   # Claude stub that fails loudly if invoked — verifies Claude is not called
-  cat > "$STUB_DIR/claude" << 'STUBEOF'
-#!/usr/bin/env bash
-printf "UNEXPECTED: claude was invoked when no failures present\n"
-exit 1
-STUBEOF
-  chmod +x "$STUB_DIR/claude"
+  make_claude_stub "UNEXPECTED: claude was invoked when no failures present"
 
   run bash "$SCRIPT"
 
