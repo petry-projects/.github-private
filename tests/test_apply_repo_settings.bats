@@ -314,7 +314,9 @@ repo-b"
   export DEV_LEAD_DRY_RUN=false
   gh() {
     local stdin_body=""
-    [ ! -t 0 ] && stdin_body=$(cat)
+    if [[ "$*" == *"--input -"* ]]; then
+      stdin_body=$(cat)
+    fi
     printf '%s BODY=%s\n' "$*" "$stdin_body" >> "$GH_LOG"
   }
   export -f gh
@@ -322,7 +324,10 @@ repo-b"
   [ "$status" -eq 0 ]
   local patch_count
   patch_count=$(grep -c "PATCH" "$GH_LOG")
-  # shellcheck disable=SC2030
-  source "$(dirname "$BATS_TEST_FILENAME")/../scripts/lib/push-protection.sh" 2>/dev/null
-  [ "$patch_count" -eq "${#PP_REQUIRED_SA_SETTINGS[@]}" ]
+  local expected_settings_count
+  expected_settings_count=$(
+    source "$(dirname "$BATS_TEST_FILENAME")/../scripts/lib/push-protection.sh" 2>/dev/null
+    echo "${#PP_REQUIRED_SA_SETTINGS[@]}"
+  )
+  [ "$patch_count" -eq "$expected_settings_count" ]
 }
