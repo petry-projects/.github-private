@@ -14,6 +14,24 @@ on:
         type: string
         required: false
         default: ""
+      # Mirror the workflow_dispatch inputs as workflow_call inputs so a trigger
+      # stub can forward them. The job's env block already reads `inputs.*`;
+      # these resolve from whichever trigger fired (dispatch or call).
+      pr_url:
+        description: "Optional: review a single PR URL instead of enumerating"
+        type: string
+        required: false
+        default: ""
+      dry_run:
+        description: "If true, never submit reviews or comments"
+        type: string
+        required: false
+        default: ""
+      force_review:
+        description: "If true, bypass idempotency and re-review at the same head SHA"
+        type: string
+        required: false
+        default: ""
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         required: false
