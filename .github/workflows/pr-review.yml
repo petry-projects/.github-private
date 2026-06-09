@@ -50,6 +50,11 @@ on:
       # migrates to `secrets: inherit`, after which they can be dropped (issue #1327).
       COPILOT_GITHUB_TOKEN:
         required: false
+      # Classic PAT for the bot. Required for `gh pr review --approve`
+      # (addPullRequestReview), which fails for fine-grained PATs. Preferred
+      # over DON_PETRY_BOT_GH_PAT when set; see docs/pr-review-agent/machine-user-setup.md.
+      DON_PETRY_BOT_GH_PAT_CLASSIC:
+        required: false
       GH_PAT:
         required: false
       DON_PETRY_BOT_GH_PAT:
