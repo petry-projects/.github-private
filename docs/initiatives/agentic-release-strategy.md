@@ -37,8 +37,9 @@ to roll back *to*.
 
 This initiative proposes a **GitHub-native versioned-release model with concentric rings and
 health-gated promotion**. The core move: production duty (the agents' own self-review and all consumer
-repos) runs a **pinned `stable` version**, while new versions are exercised on a **`next`
-channel in ring 0 (`.github-private` self-host)** and promoted ring-by-ring only after they prove
+repos) runs a **pinned per-agent `stable` channel** (e.g., `@pr-review/stable`,
+`@dev-lead/stable`), while new versions are exercised on a **`next` channel in ring 0
+(`.github-private` self-host)** and promoted ring-by-ring only after they prove
 healthy. This breaks the circular dependency (a broken in-development version can no longer gate its
 own fix), shrinks blast radius from “whole fleet, instantly” to “one ring at a time,” and makes
 rollback a single pointer flip.
@@ -46,10 +47,13 @@ rollback a single pointer flip.
 **Version selection uses moving channel tags, not per-caller edits.** GitHub does **not** allow an
 expression in a `uses:` ref (`uses: …@${{ vars.X }}` is rejected — refs resolve at workflow-parse
 time, before any context exists). So instead of re-pinning every caller on each release, **each caller
-pins *once* to a floating channel tag** (`@stable`, `@next`, `@ring1`); promotion is a single *central*
-tag move in `.github-private`, and callers are never edited again — exactly how `actions/checkout@v4`
-works. Immutable `vX.Y.Z` tags are still cut as audit/rollback targets, and **tag-protection rules**
-restrict who can move a channel tag (only the gated promotion workflow). See §5.1.
+pins *once* to a per-agent floating channel tag** (`@pr-review/stable`, `@dev-lead/stable`,
+`@pr-review/next`, etc.); promotion is a single *central* tag move in `.github-private`, and callers
+are never edited again — exactly how `actions/checkout@v4` works. Per-agent channel names ensure that
+promoting a `pr-review` release does not inadvertently advance `dev-lead/stable` to the same SHA.
+Immutable per-agent release tags (`pr-review/vX.Y.Z`, `dev-lead/vX.Y.Z`) are still cut as
+audit/rollback targets, and **tag-protection rules with a dedicated actor/token + protected
+Environment** restrict who can move a channel tag (see §5.1).
 
 **Recommendation:** Option C — *Versioned releases + concentric rings with health-gated promotion*,
 delivered in two phases (Phase 1 = versioning + pin-once to `@stable`; Phase 2 = rings + automated
@@ -188,18 +192,25 @@ permitted.)
 
 The GitHub-native way to get the same "one knob, no caller edits" outcome is a **moving channel tag**:
 
-- Every caller pins **once** to a floating tag and is then never touched again:
+- Every caller pins **once** to a per-agent floating channel tag and is then never touched again:
   ```yaml
-  uses: petry-projects/.github-private/.github/workflows/pr-review.yml@stable
+  # pr-review caller — pins to pr-review's own channel tag
+  uses: petry-projects/.github-private/.github/workflows/pr-review-reusable.yml@pr-review/stable
+  # dev-lead caller — pins to dev-lead's own channel tag
+  uses: petry-projects/.github-private/.github/workflows/dev-lead-reusable.yml@dev-lead/stable
   ```
 - Promotion / rollback is a single **central** operation in `.github-private`, performed only by the
-  gated promotion workflow:
+  gated promotion workflow. Using per-agent channel names means each agent advances independently:
   ```bash
-  git tag -f stable pr-review/v1.4.0 && git push -f origin stable   # promote
-  git tag -f stable pr-review/v1.3.0 && git push -f origin stable   # roll back (<5 min)
+  # pr-review: promote / roll back (does NOT move dev-lead/stable)
+  git tag -f pr-review/stable pr-review/v1.4.0 && git push -f origin pr-review/stable   # promote
+  git tag -f pr-review/stable pr-review/v1.3.0 && git push -f origin pr-review/stable   # roll back (<5 min)
+  # dev-lead: promote / roll back (independent of pr-review)
+  git tag -f dev-lead/stable dev-lead/v1.4.0 && git push -f origin dev-lead/stable      # promote
   ```
-- Rings are just different channel tags (`@stable`, `@ring1`, `@next`); a ring advances when the
-  promotion workflow moves *its* tag — callers are unaffected.
+- Rings use per-agent channel tags (`@pr-review/stable`, `@pr-review/next`, `@pr-review/ring1`;
+  `@dev-lead/stable`, `@dev-lead/next`, etc.); a ring advances when the promotion workflow moves
+  *its* tag — callers are unaffected.
 
 **This is the same model as `actions/checkout@v4`** (a major tag GitHub moves across patch releases).
 
@@ -207,9 +218,17 @@ The GitHub-native way to get the same "one knob, no caller edits" outcome is a *
 *mutable*, which is in tension with `AGENTS.md`'s "SHA-pin actions" rule. That rule targets
 **third-party** actions (supply-chain risk you don't control); these are **first-party** workflows in
 a repo you own. We accept the mutability as a **scoped, documented exception**, mitigated by:
-(a) cutting immutable `vX.Y.Z` tags as the real audit/rollback targets a channel tag points *at*;
-(b) **tag-protection rules** so only the promotion workflow (not humans, not the agents) can move a
-channel tag; and (c) every move being a reviewed, logged promotion run.
+(a) cutting immutable per-agent release tags (`pr-review/vX.Y.Z`, `dev-lead/vX.Y.Z`) as the real
+audit/rollback targets a channel tag points *at* — these must be **separately protected against
+deletion and force-push** (e.g., via a ruleset pattern `*/v*`) so that SC1/SC4 hold even if channel
+moves are permitted: if `pr-review/v1.3.0` can be force-pushed, `pr-review/stable` pointing at it
+no longer guarantees a known-good SHA;
+(b) **tag-protection rules with a dedicated service actor and required-reviewer Environment** —
+GitHub rulesets grant bypass to *actors* (roles, teams, users, deploy keys, or GitHub Apps), not to
+a specific workflow file; without a narrowly permitted, dedicated identity (e.g., a GitHub App
+installation token used exclusively by the promotion workflow) combined with a required-reviewer
+Environment, any other `contents: write` workflow in this repo could also move a channel tag; and
+(c) every move being a reviewed, logged promotion run.
 
 > **Optional extension — a true Variable knob.** Where a consumer must *self-select* a ring without a
 > central tag move, a caller can instead be a thin dispatcher that `actions/checkout`s the engine at
@@ -311,25 +330,69 @@ Scale: ✅ strong · 🟡 partial · ❌ none. (Effort/overhead: lower = better.
 ### Phase 1 — Establish the version boundary *(unblocks SC1, SC4; partial SC2)*
 1. Define a versioning scheme for the reusable workflows (per-agent semver tags, e.g.
    `pr-review/vMAJOR.MINOR.PATCH`, `dev-lead/vX.Y.Z`, plus the scripts they depend on).
-2. Cut the first immutable release tag from current known-good `main`, and create the moving
-   **`stable`** channel tag pointing at it.
-3. Repoint **all** callers — consumer repos *and* `.github-private`'s own production self-review/dev
-   duty — from `@main` to **`@stable`** (a *one-time* edit; callers are never re-pinned again).
-   Development continues on `main`/feature branches.
-4. Close the **script/prompt checkout boundary** in `dev-lead-reusable.yml`: change the explicit
-   `ref: main` on the `.github-private` checkout step (currently lines 94–103) to a required
-   workflow input that callers pass alongside their `@stable` pin. Without this step, a
-   `dev-lead-reusable.yml@stable` caller still runs scripts from whatever `main` is — the version
-   boundary only covers the workflow file, not the scripts it executes.
-5. Add **tag-protection rules** so only the promotion workflow can move `stable` (the scoped exception
-   to the SHA-pin standard — see §5.1), and document the release-cut + promote + rollback runbook.
+2. **Identify known-green SHAs before cutting any channel tag.** §3 records 0 successes in the last
+   20 `pr-review.yml` runs; tagging the current broken tip as `stable` would preserve the broken
+   production agent rather than create a rollback boundary. For each agent run:
+   ```bash
+   gh run list --workflow=pr-review.yml --status=success --limit=1 --json headSha
+   gh run list --workflow=dev-lead.yml   --status=success --limit=1 --json headSha
+   ```
+   If the most recent green SHA is on an older commit, cut the first **per-agent** immutable release
+   tags (`pr-review/v1.0.0`, `dev-lead/v1.0.0`) from *those* commits (not from `main`), then create
+   per-agent moving channel tags (`pr-review/stable`, `dev-lead/stable`) pointing at them. Per-agent
+   channel names are required so that promoting a `pr-review` release does not inadvertently advance
+   `dev-lead/stable`, and each agent retains its own independent health gate and promotion history.
+3. **Create default-branch thin-caller dispatcher files** and repoint all callers to per-agent
+   channel tags. GitHub evaluates event-triggered workflows (`pull_request`, `check_suite`, etc.)
+   **only from the default branch**; a `@pr-review/stable` tag on the reusable has no effect on
+   which code runs when events fire unless the default-branch file itself delegates to the reusable.
+   Currently `.github/workflows/pr-review.yml` and `.github/workflows/dev-lead.yml` own their event
+   triggers inline — they must be replaced with thin callers on `main`:
+   ```yaml
+   # .github/workflows/pr-review.yml (thin caller, checked in on default branch)
+   on: [pull_request, ...]
+   jobs:
+     pr-review:
+       uses: petry-projects/.github-private/.github/workflows/pr-review-reusable.yml@pr-review/stable
+   ```
+   Without this step, a merge to `main` still changes the self-review/dev-duty workflow logic
+   immediately, and SC2 is not achieved. Consumer repos that already use the reusable need only
+   their `@main` ref updated to `@pr-review/stable`. After this step, callers are never re-pinned
+   again — promotion is a central tag move.
+4. Close the **script/prompt checkout boundary** for **both** reusable workflows:
+   - **`dev-lead-reusable.yml`**: change the explicit `ref: main` on the `.github-private` checkout
+     step (currently lines 94–103) to a required workflow input that callers pass alongside their
+     `@dev-lead/stable` pin.
+   - **`pr-review-reusable.yml`**: add an equivalent versioned `actions/checkout` step that checks
+     out `.github-private` at the caller-supplied `ref` input, so `verify-auth-scopes.sh`,
+     `list-prs.sh`, and `review-batch.sh` are sourced from the tagged release. For reusable
+     workflows the `github` context is the *caller's* context; without this fix, an
+     `@pr-review/stable` called workflow still executes scripts from the caller/default-branch
+     checkout rather than from the tagged `.github-private` release.
+   Without both fixes, the version boundary covers the workflow files but not the scripts they
+   execute.
+5. Add **tag-protection with a dedicated actor, protected Environment, and release-tag
+   immutability**:
+   - Create a dedicated GitHub App (or narrowly-scoped PAT) used exclusively by the promotion
+     workflow; grant ruleset bypass to *this identity only* — not to the GitHub Actions app or any
+     shared PAT that other `contents: write` workflows already use.
+   - Add a required-reviewer **Environment** (e.g., `promote-stable`) that the promotion workflow
+     runs in, so the approval gate is enforced before any tag move executes.
+   - Add a **separate ruleset pattern** covering the immutable release tags (e.g., `*/v*`,
+     `pr-review/v*`, `dev-lead/v*`) to prevent deletion or force-push — required for SC1/SC4
+     guarantees (see §5.1).
+   - Document the release-cut + promote + rollback runbook, including the per-agent channel naming
+     convention.
 
 After Phase 1: a broken `main` no longer auto-ships; both the workflow file *and* its scripts are
-versioned together; promotion/rollback = move the `stable` tag centrally (no caller edits).
+versioned together; promotion/rollback = move the per-agent channel tag centrally (no caller edits);
+each agent has an independent promotion path and health gate.
 
 ### Phase 2 — Concentric rings + health-gated promotion *(completes SC2, SC3, SC5, SC8)*
-6. Add the **`next`** channel tag (green, candidate) alongside `stable`, plus per-ring channel tags
-   (`@ring1`, …) so each ring advances independently by a central tag move.
+6. Add per-agent **`next`** channel tags (green, candidate) alongside `stable` (e.g.,
+   `pr-review/next`, `dev-lead/next`), plus per-agent per-ring channel tags
+   (`@pr-review/ring1`, `@dev-lead/ring1`, …) so each agent/ring combination advances
+   independently by a central tag move.
 7. Define the rings:
    - **Ring 0** — `.github-private` self-host tracks `next` (dogfood/canary).
    - **Ring 1** — one low-traffic consumer.
@@ -340,20 +403,21 @@ versioned together; promotion/rollback = move the `stable` tag centrally (no cal
    Promotion mechanism per ring:
    - **Ring 0** tracks the `next` moving tag directly — when `next` is advanced (moved to a new
      SHA/tag), ring 0 picks it up automatically via the moving pointer.
-   - **Ring 1 and Ring 2** also use **moving ring channel tags** (`@ring1`, `@ring2`) — the same
-     model as `@stable`/`@next`. Each ring's callers pin *once* to their ring tag; the health-gate
-     workflow advances a ring by moving its channel tag forward. This is required to honour SC4:
-     if rings instead used explicit SHA/tag pins updated by individual bump PRs, rolling back after
-     a promotion PR merged would require a separate revert PR per consumer — not one action.
+   - **Ring 1 and Ring 2** also use **per-agent moving ring channel tags**
+     (`@pr-review/ring1`, `@pr-review/ring2`, `@dev-lead/ring1`, etc.) — the same model as the
+     per-agent `stable`/`next` tags. Each ring's callers pin *once* to their agent's ring tag; the
+     health-gate workflow advances a ring by moving its channel tag forward. This is required to
+     honour SC4: if rings instead used explicit SHA/tag pins updated by individual bump PRs, rolling
+     back after a promotion PR merged would require a separate revert PR per consumer — not one action.
    Ring N+1 advances only when an automated **health gate** confirms ring N is healthy
    (run-success rate, cancellation rate, no new failure-report issues over a soak window).
-9. Implement **one-action rollback**: move the relevant channel tag (`stable`, `ring1`, `ring2`)
-   back to the prior tag — the same central pointer-flip for every ring, completing in < 5 min
-   with no per-consumer edits required.
+9. Implement **one-action rollback**: move the relevant per-agent channel tag
+   (`pr-review/stable`, `pr-review/ring1`, etc.) back to the prior release tag — the same central
+   pointer-flip for every ring, completing in < 5 min with no per-consumer edits required.
 10. Add **per-version observability**: a report showing each ring's/consumer's pinned version and the
     health metrics gating promotion (SC8).
-11. **Game-day / regression test for SC2:** deliberately ship a broken `next`, prove the fix PR still
-    merges (because production duty is on `stable`).
+11. **Game-day / regression test for SC2:** deliberately ship a broken `pr-review/next`, prove the
+    fix PR still merges (because production duty is on `pr-review/stable`, independently).
 
 ### What we explicitly defer
 - A/B quality routing (Option D) — until review-quality regressions are a measured problem.
@@ -367,18 +431,18 @@ versioned together; promotion/rollback = move the `stable` tag centrally (no cal
 |---|---|
 | Ring-0 = self-host means the source repo sees new versions first | Production self-review/dev duty stays pinned to `stable`; only the `next` lane runs the candidate. Confirmed dogfood-first trade-off. |
 | Pinning to versions adds friction / staleness (consumers lag) | Callers pin **once** to `@stable`; promotion is a central tag move, so consumers never lag behind a manual re-pin and `next` keeps innovation continuous (§5.1). |
-| Moving channel tags are mutable (vs. the SHA-pin standard) | Scoped, documented exception for **first-party** workflows: immutable `vX.Y.Z` are the real targets; **tag-protection** limits movement to the promotion workflow; every move is reviewed + logged (§5.1). |
+| Moving channel tags are mutable (vs. the SHA-pin standard) | Scoped, documented exception for **first-party** workflows: immutable per-agent release tags (`pr-review/vX.Y.Z`, `dev-lead/vX.Y.Z`) are the real targets, protected separately against deletion/force-push; **tag-protection with a dedicated actor/token + required-reviewer Environment** limits channel-tag moves (tag-name rules alone are insufficient — bypass is granted to actors, not workflow files); every move is reviewed + logged (§5.1). |
 | Health gate gives false-green and promotes a bad version | Define a soak window + multiple signals (success rate, cancellation rate, failure-report issue creation); keep one-action rollback as the backstop. |
 | “Two systems” increases maintenance | Phase 1 is intentionally minimal; Phase 2 automation pays for itself by eliminating daily toil (SC6). |
-| Tag/release proliferation | Per-agent semver + a documented retention/runbook; floating `stable`/`next`/ring tags hide the churn from consumers. |
-| Reusable scripts (`dev-lead-*.sh`) are checked out at `ref: main`; a pinned workflow file still runs whatever scripts `main` holds | Pass the release ref as a required workflow input so the script checkout uses the versioned ref, not `main`; evaluate migrating to composite actions (which expose `github.action_ref`) as a Phase 2 follow-on. |
+| Tag/release proliferation | Per-agent semver + a documented retention/runbook; floating per-agent channel tags (`pr-review/stable`, `dev-lead/stable`, `pr-review/next`, etc.) hide the churn from consumers. |
+| Reusable scripts (`dev-lead-*.sh`, `verify-auth-scopes.sh`, `list-prs.sh`, `review-batch.sh`) are executed from the caller/default-branch checkout; a pinned workflow file still runs whatever scripts `main` holds | Pass the release ref as a required workflow input for **both** `dev-lead-reusable.yml` and `pr-review-reusable.yml` so script checkouts use the versioned ref (Phase 1, step 4); evaluate migrating to composite actions (which expose `github.action_ref`) as a Phase 2 follow-on. |
 
 ---
 
 ## 9. Appendix
 
 ### 9.1 Glossary
-- **Channel pointer (`stable`/`next`)** — a moving tag that consumers/rings reference; promotion = moving it.
+- **Channel pointer (`pr-review/stable`, `dev-lead/stable`, `pr-review/next`, etc.)** — a per-agent moving tag that consumers/rings reference; promotion = moving it. Per-agent naming ensures each agent advances independently.
 - **Ring** — a cohort of consumers grouped by blast radius; updated in sequence.
 - **Health gate** — an automated check that must pass before a ring advances.
 - **Soak window** — the observation period a version must run healthy in a ring before promotion.
@@ -393,7 +457,9 @@ versioned together; promotion/rollback = move the `stable` tag centrally (no cal
 - Scope: core agentic + delivery.
 - Infra: GitHub-native only (no new repos, no external infra).
 - Canary / Ring 0: `.github-private` self-host.
-- Version selection: **moving channel tags** (`@stable`/`@next`/`@ring1`) — callers pin once,
-  promotion is a central tag move. (A `vars.`-driven dispatcher is an optional fallback only, not the
-  baseline — see §5.1.) Mutable channel tags are an accepted, tag-protected exception to the SHA-pin
-  standard for these first-party workflows.
+- Version selection: **per-agent moving channel tags** (`@pr-review/stable`, `@dev-lead/stable`,
+  `@pr-review/next`, etc.) — each agent has independent promotion paths so advancing `pr-review`
+  does not move `dev-lead/stable`. Callers pin once; promotion is a central tag move. (A
+  `vars.`-driven dispatcher is an optional fallback only, not the baseline — see §5.1.) Mutable
+  channel tags are an accepted exception (dedicated actor + protected Environment + separate
+  `*/v*` ruleset for release tags) to the SHA-pin standard for these first-party workflows.
