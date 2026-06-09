@@ -52,9 +52,11 @@ jobs:
             tests/test_cut_release.bats \
             tests/test_gitleaks_config.bats \
             tests/test_initiative_planner.bats \
+            tests/test_initiative_planner_redispatch.bats \
             tests/test_idea_triage.bats \
             tests/test_idea_enhancer.bats \
             tests/test_oversized_pr.bats \
+            tests/test_dependabot.bats \
             tests/test_apply_repo_settings.bats \
             tests/test_sweep_stuck_reviews.bats
 
