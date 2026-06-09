@@ -281,3 +281,27 @@ setup() {
   run generate_mermaid_bar "$METRICS"
   [[ "$output" =~ "bar [" ]]
 }
+
+# ---------------------------------------------------------------------------
+# is_dynamic_path
+# ---------------------------------------------------------------------------
+
+@test "is_dynamic_path: returns 0 for dynamic/ Copilot code-review path" {
+  run is_dynamic_path "dynamic/copilot-pull-request-reviewer/copilot-pull-request-reviewer"
+  [ "$status" -eq 0 ]
+}
+
+@test "is_dynamic_path: returns 0 for dynamic/agents/ path" {
+  run is_dynamic_path "dynamic/agents/copilot-pull-request-reviewer"
+  [ "$status" -eq 0 ]
+}
+
+@test "is_dynamic_path: returns 1 for .github/workflows/ path" {
+  run is_dynamic_path ".github/workflows/ci.yml"
+  [ "$status" -eq 1 ]
+}
+
+@test "is_dynamic_path: returns 1 when dynamic appears in non-prefix position" {
+  run is_dynamic_path ".github/workflows/deploy-dynamic.yml"
+  [ "$status" -eq 1 ]
+}

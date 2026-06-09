@@ -6,6 +6,14 @@
 #   1:sort_key  2:repo  3:wf_file  4:total  5:success  6:failed
 #   7:cancelled  8:rate_display  9:p50(s)  10:p95(s)  11:label  12:rate_int
 
+# is_dynamic_path <path>
+# Returns 0 if the workflow path is GitHub-managed (dynamic/ prefix), 1 otherwise.
+# GitHub-managed workflows (Copilot code review, SWE agent, etc.) are excluded
+# from fleet monitoring because their failures are outside our control.
+is_dynamic_path() {
+  [[ "${1:-}" == dynamic/* ]]
+}
+
 # label_to_icon <label>
 # Returns the health icon matching the scorecard legend.
 label_to_icon() {
