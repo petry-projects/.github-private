@@ -114,7 +114,11 @@ STUBEOF
 
   [ "$status" -eq 0 ]
   # HAS_FAILURES=false must appear after HAS_FAILURES=true so the last value wins
-  grep -q 'HAS_FAILURES=false' "$GITHUB_ENV"
+  true_line="$(grep -n '^HAS_FAILURES=true$' "$GITHUB_ENV" | tail -1 | cut -d: -f1)"
+  false_line="$(grep -n '^HAS_FAILURES=false$' "$GITHUB_ENV" | tail -1 | cut -d: -f1)"
+  [[ -n "$true_line" ]]
+  [[ -n "$false_line" ]]
+  (( false_line > true_line ))
 }
 
 @test "Claude 'usage limit' message also triggers rate-limit handling (exit 0)" {

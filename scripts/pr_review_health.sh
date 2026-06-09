@@ -231,7 +231,7 @@ then
       "$TODAY" "$failed_runs" "$total_runs" > "$REPORT_FILE"
     # Override HAS_FAILURES so the issue-creation step does not file a spurious
     # ticket for what is a transient infrastructure constraint, not a PR review failure.
-    [ -n "${GITHUB_ENV:-}" ] && echo "HAS_FAILURES=false" >> "$GITHUB_ENV"
+    [[ -n "${GITHUB_ENV:-}" ]] && echo "HAS_FAILURES=false" >> "$GITHUB_ENV"
     rm -f "$logs_file"
     exit 0
   fi
