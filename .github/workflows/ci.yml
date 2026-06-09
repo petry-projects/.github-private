@@ -47,11 +47,17 @@ jobs:
           ) .github/workflows/!(*.lock).yml
 
       - name: Lint GitHub Actions
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Install actionlint via verified download (pinned version + checksum)
-          ACTIONLINT_VERSION="1.7.7"
-          ACTIONLINT_SHA="023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757"
-          curl --fail --location --retry 3 --retry-delay 5 -so actionlint.tar.gz "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          # Install actionlint via GitHub API download (pinned version + checksum).
+          # Uses gh release download rather than direct CDN curl to avoid transient
+          # 504s from GitHub's release asset CDN.
+          ACTIONLINT_VERSION="1.7.12"
+          ACTIONLINT_SHA="8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
+          gh release download "v${ACTIONLINT_VERSION}" -R rhysd/actionlint \
+            -p "actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" \
+            --output actionlint.tar.gz
           echo "${ACTIONLINT_SHA}  actionlint.tar.gz" | sha256sum -c -
           tar xzf actionlint.tar.gz actionlint
           chmod +x actionlint
