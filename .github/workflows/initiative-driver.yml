@@ -34,18 +34,13 @@ on:
         default: "2"
 
 permissions:
-  contents: read
-  issues: write
+  contents: read  # actions/checkout; all issue mutations use the PAT (GH_TOKEN)
 
 concurrency:
   group: initiative-driver-${{ github.event.inputs.epic || '495' }}
   cancel-in-progress: false
 
 env:
-  # PAT required: a label applied with the default GITHUB_TOKEN does NOT trigger
-  # dev-lead.yml (GitHub loop-prevention). GH_PAT_WORKFLOWS makes the resulting
-  # issues:[labeled] event fire the agent.
-  GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
   REPO: ${{ github.repository }}
   EPIC: ${{ github.event.inputs.epic || '495' }}
   CLOSED_ISSUE: ${{ github.event.issue.number }}
@@ -63,6 +58,9 @@ jobs:
           persist-credentials: false
 
       - name: Guard — PAT present
+        # PAT required: a label applied with GITHUB_TOKEN does NOT trigger dev-lead.yml.
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
         run: |
           if [ -z "${GH_TOKEN}" ]; then
             echo "::error::GH_PAT_WORKFLOWS is required — a label applied with GITHUB_TOKEN will not trigger dev-lead."
@@ -70,4 +68,6 @@ jobs:
           fi
 
       - name: Drive initiative
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
         run: bash scripts/initiative-driver.sh

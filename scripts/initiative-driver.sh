@@ -49,18 +49,25 @@ HOLD_LABEL="${HOLD_LABEL:-initiative:hold}"
 MAX_IN_FLIGHT="${MAX_IN_FLIGHT:-2}"
 DRY_RUN="${DRY_RUN:-false}"
 
-# Validate numeric inputs before they reach arithmetic or API paths.
+# Validate and normalize inputs before they reach arithmetic or API paths.
 [[ "$EPIC" =~ ^[0-9]+$ ]] || { echo "::error::EPIC must be a positive integer, got: '$EPIC'"; exit 1; }
 [[ "$MAX_IN_FLIGHT" =~ ^[0-9]+$ ]] || { echo "::error::MAX_IN_FLIGHT must be a non-negative integer, got: '$MAX_IN_FLIGHT'"; exit 1; }
-if [ -n "$CLOSED_ISSUE" ] && ! [[ "$CLOSED_ISSUE" =~ ^[0-9]+$ ]]; then
+if [[ -n "$CLOSED_ISSUE" ]] && ! [[ "$CLOSED_ISSUE" =~ ^[0-9]+$ ]]; then
   echo "::warning::CLOSED_ISSUE is not a valid issue number ('$CLOSED_ISSUE') — treating as unset."
   CLOSED_ISSUE=""
 fi
+DRY_RUN="${DRY_RUN,,}"
+case "$DRY_RUN" in
+  true|1|yes)  DRY_RUN=true  ;;
+  false|0|no)  DRY_RUN=false ;;
+  *) echo "::error::DRY_RUN must be true or false, got: '$DRY_RUN'"; exit 1 ;;
+esac
+readonly REPO EPIC CLOSED_ISSUE DEV_LEAD_LABEL GATE_LABEL HANDS_OFF_LABEL HOLD_LABEL MAX_IN_FLIGHT DRY_RUN
 
 log() { printf '%s\n' "$*"; }
 
-# has_label <newline-separated-labels> <name> — exact fixed-string match on a label name.
-has_label() { printf '%s\n' "$1" | grep -qxF "$2"; }
+# has_label <newline-separated-labels> <name> — pure-bash exact-line match; no subprocesses.
+has_label() { [[ $'\n'"${1}"$'\n' == *$'\n'"${2}"$'\n'* ]]; }
 
 # labels_of <issue-number> — newline-separated label names.
 labels_of() {
@@ -75,21 +82,24 @@ if ! has_label "$epic_labels" "$GATE_LABEL"; then
 fi
 
 # ── enumerate sub-issues (all states) ─────────────────────────────────────────
-mapfile -t all_children < <(
-  gh api --paginate "repos/$REPO/issues/$EPIC/sub_issues" --jq '.[].number'
-)
-if [ "${#all_children[@]}" -eq 0 ]; then
+all_children_raw="$(gh api --paginate "repos/$REPO/issues/$EPIC/sub_issues" --jq '.[].number')"
+if [[ -z "$all_children_raw" ]]; then
+  all_children=()
+else
+  mapfile -t all_children <<< "$all_children_raw"
+fi
+if [[ "${#all_children[@]}" -eq 0 ]]; then
   log "Epic #$EPIC has no sub-issues — nothing to drive."
   exit 0
 fi
 
 # ── on a close event, only act if the closed issue belongs to this epic ───────
-if [ -n "$CLOSED_ISSUE" ]; then
+if [[ -n "$CLOSED_ISSUE" ]]; then
   in_epic=false
   for n in "${all_children[@]}"; do
-    [ "$n" = "$CLOSED_ISSUE" ] && in_epic=true && break
+    [[ "$n" = "$CLOSED_ISSUE" ]] && in_epic=true && break
   done
-  if [ "$in_epic" != true ]; then
+  if [[ "$in_epic" != true ]]; then
     log "Closed issue #$CLOSED_ISSUE is not a sub-issue of epic #$EPIC — no-op."
     exit 0
   fi
@@ -98,12 +108,16 @@ fi
 # ── count in-flight (released but not yet closed) ─────────────────────────────
 declare -A released
 in_flight=0
-mapfile -t open_children < <(
-  gh api --paginate "repos/$REPO/issues/$EPIC/sub_issues" \
-    --jq '.[] | select(.state=="open") | .number'
-)
+open_children_raw="$(gh api --paginate "repos/$REPO/issues/$EPIC/sub_issues" \
+    --jq '.[] | select(.state=="open") | .number')"
+if [[ -z "$open_children_raw" ]]; then
+  open_children=()
+else
+  mapfile -t open_children <<< "$open_children_raw"
+fi
 for n in "${open_children[@]}"; do
-  if has_label "$(labels_of "$n")" "$DEV_LEAD_LABEL"; then
+  n_labels="$(labels_of "$n")"
+  if has_label "$n_labels" "$DEV_LEAD_LABEL"; then
     released[$n]=1
     in_flight=$((in_flight + 1))
   fi
@@ -112,12 +126,12 @@ log "Epic #$EPIC: ${#open_children[@]} open sub-issue(s); in-flight=$in_flight; 
 
 # ── release ready sub-issues up to the cap ────────────────────────────────────
 slots=$((MAX_IN_FLIGHT - in_flight))
-[ "$slots" -lt 0 ] && slots=0
+[[ "$slots" -lt 0 ]] && slots=0
 released_now=0
 
 for n in "${open_children[@]}"; do
-  [ "$slots" -le 0 ] && break
-  [ -n "${released[$n]:-}" ] && continue
+  [[ "$slots" -le 0 ]] && break
+  [[ -n "${released[$n]:-}" ]] && continue
 
   labels="$(labels_of "$n")"
   if has_label "$labels" "$HANDS_OFF_LABEL"; then
@@ -133,12 +147,12 @@ for n in "${open_children[@]}"; do
     gh api "repos/$REPO/issues/$n/dependencies/blocked_by" \
       --jq '[.[] | select(.state=="open") | .number] | join(",")'
   )"
-  if [ -n "$open_blockers" ]; then
+  if [[ -n "$open_blockers" ]]; then
     log "  #$n — blocked by open: [$open_blockers]."
     continue
   fi
 
-  if [ "$DRY_RUN" = "true" ]; then
+  if [[ "$DRY_RUN" = "true" ]]; then
     log "  #$n — READY (dry-run, not labeling)."
   else
     gh issue edit "$n" --repo "$REPO" --add-label "$DEV_LEAD_LABEL" >/dev/null
