@@ -22,5 +22,7 @@ jobs:
 
       - name: Repair PR approvals
         env:
-          GH_TOKEN: ${{ secrets.DON_PETRY_BOT_GH_PAT }}
+          # Prefer the classic PAT (approvals need addPullRequestReview, which
+          # fails for fine-grained PATs); fall back to fine-grained if unset.
+          GH_TOKEN: ${{ secrets.DON_PETRY_BOT_GH_PAT_CLASSIC || secrets.DON_PETRY_BOT_GH_PAT }}
         run: bash scripts/repair-pr-approvals.sh "${{ inputs.dry_run }}"

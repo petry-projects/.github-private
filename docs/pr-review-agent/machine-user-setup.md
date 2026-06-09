@@ -22,6 +22,15 @@ the bot is in the team listed in `CODEOWNERS`.
 > `repo` scope work; fine-grained ones do not. If you ever see the error above
 > in a workflow log, the secret is holding a fine-grained token — generate a
 > classic one and replace it.
+>
+> **Dual-secret setup (current):** the approval-path workflows read
+> `${{ secrets.DON_PETRY_BOT_GH_PAT_CLASSIC || secrets.DON_PETRY_BOT_GH_PAT }}` —
+> i.e. they **prefer the classic PAT** in `DON_PETRY_BOT_GH_PAT_CLASSIC` (scopes
+> `repo`, `workflow`, `read:org`) and fall back to the fine-grained
+> `DON_PETRY_BOT_GH_PAT` only if it is unset. This lets the bot keep a
+> least-privilege fine-grained token for read/scan workflows while using the
+> classic token solely where `addPullRequestReview` requires it. To enable
+> approvals, set `DON_PETRY_BOT_GH_PAT_CLASSIC`.
 
 ## Why a machine user
 
