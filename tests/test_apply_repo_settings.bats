@@ -2,9 +2,12 @@
 # Unit tests for scripts/apply-repo-settings.sh
 #
 # Run with: bats tests/test_apply_repo_settings.bats
+# Install bats: https://github.com/bats-core/bats-core
+
+SCRIPT="$(dirname "$BATS_TEST_FILENAME")/../scripts/apply-repo-settings.sh"
 
 setup() {
-  source "$(dirname "$BATS_TEST_FILENAME")/../scripts/apply-repo-settings.sh"
+  source "$SCRIPT"
   GH_LOG="$(mktemp)"
 
   # Preference JSON fixtures
@@ -38,6 +41,7 @@ setup() {
   export PREFS_EMPTY_ARRAY PREFS_EMPTY_OBJ MOCK_PREFS
 
   ORG="test-org"
+  unset REPO
   unset DEV_LEAD_DRY_RUN
 }
 
@@ -239,4 +243,86 @@ repo-b"
   run rs_auto_trigger_status "" 1236702
   [ "$status" -eq 0 ]
   [ "$output" = "missing" ]
+}
+
+# ---------------------------------------------------------------------------
+# Argument / env-var handling
+# ---------------------------------------------------------------------------
+
+@test "exits non-zero when REPO is not set and no positional arg given" {
+  run bash "$SCRIPT"
+  [ "$status" -ne 0 ]
+}
+
+@test "accepts REPO via environment variable" {
+  export REPO="owner/repo"
+  export DEV_LEAD_DRY_RUN=true
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+}
+
+@test "accepts REPO as positional argument" {
+  export DEV_LEAD_DRY_RUN=true
+  run bash "$SCRIPT" "owner/repo"
+  [ "$status" -eq 0 ]
+}
+
+@test "positional argument takes precedence over REPO env var" {
+  export REPO="env/repo"
+  export DEV_LEAD_DRY_RUN=true
+  run bash "$SCRIPT" "arg/repo"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"arg/repo"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# Dry-run mode
+# ---------------------------------------------------------------------------
+
+@test "dry-run mode prints intent without calling gh api" {
+  export REPO="owner/repo"
+  export DEV_LEAD_DRY_RUN=true
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"dry-run"* ]]
+  [ ! -s "$GH_LOG" ]
+}
+
+# ---------------------------------------------------------------------------
+# Live mode delegates to pp_apply_security_and_analysis
+# ---------------------------------------------------------------------------
+
+@test "live mode calls gh api PATCH for the repo" {
+  export REPO="owner/repo"
+  export DEV_LEAD_DRY_RUN=false
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ -s "$GH_LOG" ]
+  grep -q "PATCH" "$GH_LOG"
+  grep -q "owner/repo" "$GH_LOG"
+}
+
+@test "live mode enables vulnerability-alerts prerequisite for dependabot" {
+  export REPO="owner/repo"
+  export DEV_LEAD_DRY_RUN=false
+  run bash "$SCRIPT"
+  grep -q "vulnerability-alerts" "$GH_LOG"
+}
+
+@test "live mode makes one PATCH call per required setting" {
+  export REPO="owner/repo"
+  export DEV_LEAD_DRY_RUN=false
+  gh() {
+    local stdin_body=""
+    [ ! -t 0 ] && stdin_body=$(cat)
+    printf '%s BODY=%s\n' "$*" "$stdin_body" >> "$GH_LOG"
+  }
+  export -f gh
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  local patch_count
+  patch_count=$(grep -c "PATCH" "$GH_LOG")
+  # shellcheck disable=SC2030
+  source "$(dirname "$BATS_TEST_FILENAME")/../scripts/lib/push-protection.sh" 2>/dev/null
+  [ "$patch_count" -eq "${#PP_REQUIRED_SA_SETTINGS[@]}" ]
 }
