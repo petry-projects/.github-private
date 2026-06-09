@@ -17,14 +17,30 @@ regexes = [
   '''dummy-test-key''',
 ]
 
-# Four files introduced via `git subtree` in historical commits (before d42bfe7 removed
-# frameworks/) contain placeholder credentials that match gitleaks rules but are not real
-# secrets. Specific paths prevent a broad ^frameworks/ glob from masking future additions.
+# Historical git-subtree framework files (removed in d42bfe7) contain specific placeholder
+# credentials. Each entry uses condition="AND" to bind the known dummy pattern to its file
+# path so only those exact values are suppressed; a real secret at these paths in a future
+# commit would not match and would be reported by gitleaks.
 [[allowlists]]
-description = "Suppress false positives in historical git-subtree framework fixture files"
+description = "Suppress BSA dummy key in historical gsd SDK test files"
+condition = "AND"
 paths = [
-  '''^frameworks/bmad-method/test/adversarial-review-tests/sample-content\.md$''',
   '''^frameworks/gsd/sdk/src/query/config-query\.test\.ts$''',
   '''^frameworks/gsd/sdk/src/query/config-mutation\.test\.ts$''',
-  '''^frameworks/gsd/tests/commands\.test\.cjs$''',
 ]
+regexes = ['''BSA-1234567890abcdef''']
+
+[[allowlists]]
+description = "Suppress example credentials in historical bmad-method adversarial test fixture"
+condition = "AND"
+paths = ['''^frameworks/bmad-method/test/adversarial-review-tests/sample-content\.md$''']
+regexes = [
+  '''password123''',
+  '''eyJhbGciOiJIUzI1NiIs''',
+]
+
+[[allowlists]]
+description = "Suppress test API key value in historical gsd commands test"
+condition = "AND"
+paths = ['''^frameworks/gsd/tests/commands\.test\.cjs$''']
+regexes = ['''test-key''']
