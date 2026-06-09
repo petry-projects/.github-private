@@ -60,15 +60,23 @@ check_concurrency_order() {
   fi
 }
 
-# Both dev-lead.yml (caller stub) and dev-lead-reusable.yml must have per-PR/
-# per-issue concurrency groups. The stub's outer-gate concurrency must match
-# the reusable's inner routing — if the stub uses a single 'dev-lead' group,
-# unrelated-PR pending runs can cancel each other before the reusable applies
-# its own per-PR lanes (see thread PRRT_kwDOR9SdIs6Hs_bn).
+# dev-lead-reusable.yml is the single source of truth for concurrency (#450).
+# Caller stubs (dev-lead.yml) must NOT carry their own concurrency block — if
+# they did, the stub's outer group would take precedence and break per-PR/issue
+# routing before the reusable's concurrency could apply. All concurrency checks
+# therefore target only dev-lead-reusable.yml.
 WORKFLOWS=(
-  ".github/workflows/dev-lead.yml"
   ".github/workflows/dev-lead-reusable.yml"
 )
+
+# Guard: dev-lead.yml must NOT declare a top-level concurrency block.
+STUB=".github/workflows/dev-lead.yml"
+if grep -q '^concurrency:' "$STUB"; then
+  echo "FAIL [no-stub-concurrency]: $STUB must not have a top-level concurrency block (reusable is the source of truth)"
+  FAIL=$((FAIL + 1))
+else
+  echo "PASS [no-stub-concurrency]: $STUB correctly has no top-level concurrency block"
+fi
 
 for wf in "${WORKFLOWS[@]}"; do
   # Per-PR lane → serializes all runs touching one PR (PR, review, review
