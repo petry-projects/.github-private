@@ -1,0 +1,65 @@
+name: PR Review Agent — Trigger
+
+# Thin trigger stub for .github-private's OWN pr-review duty (ring 0 / self-host).
+#
+# It fires on the review events and invokes the reusable pinned to
+# `pr-review.yml@pr-review/stable`, passing `agent_ref: pr-review/stable` so the
+# agent's scripts (engine.sh, review-one-pr.sh, …) also run at the pinned
+# version. The result: this repo's PRs are always reviewed by the known-good
+# `stable` release, independent of whatever pr-review.yml is on the branch under
+# review — which is what breaks the self-hosting circular dependency (#497).
+#
+# pr-review.yml itself is reusable-only; this stub owns the triggering. The
+# @mention flow (pr-review-mention.yml -> org reusable -> repository_dispatch)
+# still lands on the repository_dispatch trigger below.
+#
+# To promote a new pr-review version, move the pr-review/stable channel tag
+# (scripts/cut-release.sh … --channel stable). This file never changes.
+
+on:
+  check_suite:
+    types: [completed]
+  pull_request_review:
+    types: [submitted, dismissed]
+  pull_request:
+    types: [ready_for_review, reopened, synchronize]
+  workflow_dispatch:
+    inputs:
+      pr_url:
+        description: "Optional: review a single PR URL instead of enumerating"
+        required: false
+        type: string
+      dry_run:
+        description: "If true, never submit reviews or comments"
+        required: false
+        default: "false"
+        type: string
+      force_review:
+        description: "If true, bypass idempotency and re-review at the same head SHA"
+        required: false
+        default: "false"
+        type: string
+  repository_dispatch:
+    # Triggered by the petry-projects/.github mention-listener (via
+    # pr-review-mention.yml). Payload: { pr_url, force_review }.
+    types: [pr-review-mention]
+
+# Granted to the called reusable's job (a reusable can be granted no more than
+# the calling job has). Mirrors pr-review.yml's own permissions block.
+permissions:
+  contents: read
+  pull-requests: write
+  checks: read
+
+jobs:
+  review:
+    uses: petry-projects/.github-private/.github/workflows/pr-review.yml@pr-review/stable
+    with:
+      # Pin the agent's own script checkout to the same channel (#506).
+      agent_ref: pr-review/stable
+      # Forward manual/dispatch inputs; empty for event triggers (the reusable
+      # then derives everything from the inherited github.event context).
+      pr_url: ${{ inputs.pr_url || '' }}
+      dry_run: ${{ inputs.dry_run || '' }}
+      force_review: ${{ inputs.force_review || '' }}
+    secrets: inherit
