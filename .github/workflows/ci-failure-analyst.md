@@ -3,7 +3,6 @@ on:
   workflow_run:
     workflows: [CI, Lint, Tests]
     types: [completed]
-    branches: ["**"]
 
 permissions:
   actions: read
