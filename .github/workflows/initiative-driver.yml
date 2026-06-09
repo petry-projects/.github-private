@@ -6,7 +6,7 @@ name: Initiative Driver
 # delivery of a whole initiative.
 #
 # Mechanics, gates, and the PAT requirement are documented in
-# scripts/initiative-driver.sh and docs/initiatives/agentic-release-strategy.md.
+# scripts/initiative-driver.sh and docs/initiatives/agentic-release-strategy-orchestration.md.
 #
 # SAFETY: the driver no-ops unless the epic carries the `initiative:auto` label,
 # so Phase 1 stays human-driven. Flip it on for Phase 2 by adding that label to
@@ -34,6 +34,7 @@ on:
         default: "2"
 
 permissions:
+  contents: read
   issues: write
 
 concurrency:

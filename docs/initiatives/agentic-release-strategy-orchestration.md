@@ -1,6 +1,6 @@
 # Delivering the Release-Strategy initiative agentically
 
-Companion to [`agentic-release-strategy.md`](./agentic-release-strategy.md). This doc explains how the
+Companion to `agentic-release-strategy.md` (not yet published). This doc explains how the
 10 child issues of epic #495 are delivered by the existing **per-item dev-lead agent** in dependency
 order — without changing the agent itself.
 

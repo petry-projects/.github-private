@@ -59,12 +59,12 @@ fi
 
 log() { printf '%s\n' "$*"; }
 
-# has_label <comma-separated-labels> <name> — exact match on a label name.
-has_label() { printf '%s' "$1" | tr ',' '\n' | grep -qx "$2"; }
+# has_label <newline-separated-labels> <name> — exact fixed-string match on a label name.
+has_label() { printf '%s\n' "$1" | grep -qxF "$2"; }
 
-# labels_of <issue-number> — comma-joined label names.
+# labels_of <issue-number> — newline-separated label names.
 labels_of() {
-  gh api "repos/$REPO/issues/$1" --jq '[.labels[].name] | join(",")'
+  gh api "repos/$REPO/issues/$1" --jq '.labels[].name'
 }
 
 # ── gate: the epic must opt in ────────────────────────────────────────────────
