@@ -59,7 +59,7 @@ checkout_pr_in_worktree() {
   # prematurely (observable as bats reporting "Executed 2 instead of 1 tests").
   local _pr_state=""
   _pr_state="$(gh pr view "$pr" --repo "$repo" --json state --jq '.state' 2>/dev/null || true)"
-  if [ -n "$_pr_state" ] && [ "$_pr_state" != "OPEN" ]; then
+  if [ "$_pr_state" = "MERGED" ] || [ "$_pr_state" = "CLOSED" ]; then
     echo "::notice::PR #${pr} is ${_pr_state} — skipping checkout (nothing to modify on a merged/closed PR)"
     exit 0
   fi
