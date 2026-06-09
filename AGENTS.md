@@ -67,3 +67,30 @@ This is the `.github-private` org infrastructure repo for `petry-projects`. It c
 - **Promotion:** this is currently a repo-local standard. To make it org-wide,
   lift it into [`petry-projects/.github`](https://github.com/petry-projects/.github/blob/main/AGENTS.md)
   (the org AGENTS.md / `standards/`) and have repos defer to it.
+
+### Release channel tags & the mutable-ref exception
+
+The agents (`pr-review`, `dev-lead`) are versioned via tags — see
+[`docs/release/versioning.md`](./docs/release/versioning.md). Two kinds of tag exist per agent:
+
+- **Immutable releases** `<agent>/vX.Y.Z` — never moved or deleted; the audit trail and rollback targets.
+- **Moving channel tags** `<agent>/stable` (later `/next`, `/ring*`) — what callers pin to; advanced on
+  promotion by **moving** the tag.
+
+**Scoped exception to the SHA-pin standard.** The org standard requires SHA-pinning actions to avoid
+mutable-ref supply-chain risk. That rule targets **third-party** actions. The channel tags above are
+intentionally **mutable** and are an accepted, documented exception because they reference
+**first-party** reusable workflows in this repo that we own. The exception is bounded by:
+
+- The `release-channel-tags` repository **ruleset** (target: tags `pr-review/**`, `dev-lead/**`)
+  restricts `update` and `deletion`, with bypass limited to **OrganizationAdmin** and the automation
+  **Integration** app. Net effect: the dev-lead/pr-review agents (running as `GITHUB_TOKEN`) **cannot**
+  move or delete release tags; only an admin or the promotion automation can.
+- Immutable `vX.Y.Z` tags are the real rollback targets; `scripts/cut-release.sh` refuses to overwrite
+  an existing release tag.
+- Channel-tag moves happen only via the (forthcoming) health-gated promotion workflow (#501); the
+  ruleset bypass will be tightened to that workflow's identity when it lands.
+
+Compliance audits must therefore **not** flag `@pr-review/stable` / `@dev-lead/stable` (or other channel
+tags) on first-party callers as "unpinned actions" — they are the sanctioned version-selection mechanism
+(see the initiative analysis §5.1: `docs/initiatives/agentic-release-strategy.md`).
