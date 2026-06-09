@@ -1,8 +1,8 @@
 #!/usr/bin/env bats
 # Regression tests for .github/dependabot.yml compliance.
 #
-# Mirrors the checks in scripts/compliance-audit.sh (check_dependabot_config)
-# to prevent the weekly compliance audit from re-filing missing-*-label findings.
+# Guards the invariants checked by the weekly org compliance audit
+# to prevent re-filing of missing-*-label findings.
 #
 # Run with: bats tests/test_dependabot.bats
 
@@ -22,12 +22,10 @@ setup() {
 }
 
 @test "dependabot.yml has security label (compliance-audit check)" {
-  # Mirrors: grep -qE '("security"|'"'"'security'"'"')' in compliance-audit.sh
   grep -qE '("security"|'"'"'security'"'"'|security)' "$DEPENDABOT_YML"
 }
 
 @test "dependabot.yml has dependencies label (compliance-audit check)" {
-  # Mirrors: grep -qE '("dependencies"|'"'"'dependencies'"'"')' in compliance-audit.sh
   grep -qE '("dependencies"|'"'"'dependencies'"'"'|dependencies)' "$DEPENDABOT_YML"
 }
 
