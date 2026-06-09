@@ -41,6 +41,11 @@ on:
         required: false
       DON_PETRY_BOT_GH_PAT:
         required: false
+      # Classic PAT for the bot. Required for `gh pr review --approve`
+      # (addPullRequestReview), which fails for fine-grained PATs. Preferred
+      # over DON_PETRY_BOT_GH_PAT when set; see docs/pr-review-agent/machine-user-setup.md.
+      DON_PETRY_BOT_GH_PAT_CLASSIC:
+        required: false
       GH_PAT:
         required: false
 
@@ -106,7 +111,10 @@ jobs:
        github.event.review.state == 'dismissed')
     env:
       # Auth for every gh / script call in this job. The PAT must belong to BOT_USER.
-      GH_TOKEN: ${{ secrets.DON_PETRY_BOT_GH_PAT }}
+      # Prefer the CLASSIC PAT (required for `gh pr review --approve` —
+      # fine-grained PATs fail addPullRequestReview), falling back to the
+      # fine-grained DON_PETRY_BOT_GH_PAT when the classic secret is unset.
+      GH_TOKEN: ${{ secrets.DON_PETRY_BOT_GH_PAT_CLASSIC || secrets.DON_PETRY_BOT_GH_PAT }}
       # Single bot identity. DON_PETRY_BOT_GH_PAT authenticates as BOT_USER; that
       # account owns/has-access-to the personal repos scanned by list-prs.sh,
       # signs the cascade's escalation comments, and is filtered out of the
