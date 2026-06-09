@@ -85,7 +85,10 @@ main() {
 
   local rel chan sha
   rel="$(release_ref "$agent" "$version")"
-  sha="$(git rev-parse --verify "$ref^{commit}")"
+  if ! sha="$(git rev-parse --verify "$ref^{commit}")"; then
+    echo "::error::ref '$ref' could not be resolved — verify the ref exists and the remote has been fetched" >&2
+    return 1
+  fi
 
   echo "agent=$agent version=$version ref=$ref ($sha)"
   echo "release tag: $rel"
@@ -111,8 +114,12 @@ main() {
   fi
 
   if [ "$do_push" = true ]; then
+    # Push the immutable release tag without --force to prevent accidental remote overwrites
     git push origin "$rel"
-    [ -n "$channel" ] && git push --force origin "$chan"
+    if [ -n "$channel" ]; then
+      # --force is required to move the mutable channel tag
+      git push --force origin "$chan"
+    fi
     echo "pushed: ${pushrefs[*]}"
   else
     echo "local only — re-run with --push to publish: ${pushrefs[*]}"
