@@ -49,6 +49,14 @@ HOLD_LABEL="${HOLD_LABEL:-initiative:hold}"
 MAX_IN_FLIGHT="${MAX_IN_FLIGHT:-2}"
 DRY_RUN="${DRY_RUN:-false}"
 
+# Validate numeric inputs before they reach arithmetic or API paths.
+[[ "$EPIC" =~ ^[0-9]+$ ]] || { echo "::error::EPIC must be a positive integer, got: '$EPIC'"; exit 1; }
+[[ "$MAX_IN_FLIGHT" =~ ^[0-9]+$ ]] || { echo "::error::MAX_IN_FLIGHT must be a non-negative integer, got: '$MAX_IN_FLIGHT'"; exit 1; }
+if [ -n "$CLOSED_ISSUE" ] && ! [[ "$CLOSED_ISSUE" =~ ^[0-9]+$ ]]; then
+  echo "::warning::CLOSED_ISSUE is not a valid issue number ('$CLOSED_ISSUE') — treating as unset."
+  CLOSED_ISSUE=""
+fi
+
 log() { printf '%s\n' "$*"; }
 
 # has_label <comma-separated-labels> <name> — exact match on a label name.
