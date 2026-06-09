@@ -11,25 +11,21 @@ LIB="$SCRIPT_DIR/scripts/lib/pr-worktree.sh"
 
 setup() {
   STUB_BIN_DIR="$(mktemp -d)"
-  # PR_STATE_API controls the value returned for `gh pr view --json state` queries.
-  # Defaults to "OPEN" so existing tests are unaffected; set to "MERGED" or
-  # "CLOSED" in individual tests to exercise the merged/closed-PR early-exit path.
-  export PR_STATE_API="${PR_STATE_API:-OPEN}"
+  # PR_STATE_API controls the state returned by the gh stub's `pr view` JSON response.
+  # Set unconditionally so the runner environment cannot leak in and break unrelated tests.
+  export PR_STATE_API="OPEN"
 
   # gh stub: `gh pr checkout <n>` switches the worktree to the PR branch,
   # mirroring the real command (which is what made the old prompt files vanish).
-  # `gh pr view --json headRefName --jq .headRefName` returns the PR's head
-  # branch (`old` in this fixture) so the collision-prevention logic in
-  # checkout_pr_in_worktree can identify and release a stale holder (issue #470).
-  # `gh pr view --json state --jq .state` returns ${PR_STATE_API:-OPEN} so
-  # individual tests can exercise the merged/closed-PR guard (issue #405).
+  # `gh pr view` returns a JSON object with state and headRefName so the combined
+  # call in checkout_pr_in_worktree handles both the closed-PR guard (issue #405)
+  # and the stale-worktree release (issue #470) in a single round-trip.
   cat > "$STUB_BIN_DIR/gh" <<'GHEOF'
 #!/usr/bin/env bash
 case "$*" in
-  *"--json state"*) echo "${PR_STATE_API:-OPEN}" ;;
-  "pr checkout"*)   git checkout -q old ;;
-  "pr view"*)       echo "old" ;;
-  *)                echo "{}" ;;
+  "pr checkout"*) git checkout -q old ;;
+  "pr view"*)     echo "{\"state\": \"${PR_STATE_API:-OPEN}\", \"headRefName\": \"old\"}" ;;
+  *)              echo "{}" ;;
 esac
 GHEOF
   chmod +x "$STUB_BIN_DIR/gh"
