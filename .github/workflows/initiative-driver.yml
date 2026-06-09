@@ -1,0 +1,72 @@
+name: Initiative Driver
+
+# Dependency-aware label dispatcher. Releases an initiative epic's sub-issues to
+# the dev-lead agent (by applying the `dev-lead` label) as their "blocked by"
+# dependencies close — turning the per-item agent into a coordinated, ordered
+# delivery of a whole initiative.
+#
+# Mechanics, gates, and the PAT requirement are documented in
+# scripts/initiative-driver.sh and docs/initiatives/agentic-release-strategy.md.
+#
+# SAFETY: the driver no-ops unless the epic carries the `initiative:auto` label,
+# so Phase 1 stays human-driven. Flip it on for Phase 2 by adding that label to
+# the epic (#495). Per-issue `dev-lead:hands-off` / `initiative:hold` are never
+# released.
+
+on:
+  issues:
+    types: [closed] # a close may unblock successors — re-evaluate the DAG
+  schedule:
+    - cron: "23 */6 * * *" # safety net for missed close events
+  workflow_dispatch:
+    inputs:
+      epic:
+        description: "Epic issue number to drive"
+        required: false
+        default: "495"
+      dry_run:
+        description: "Log decisions but do not apply labels"
+        required: false
+        default: "false"
+      max_in_flight:
+        description: "Max sub-issues released at once"
+        required: false
+        default: "2"
+
+permissions:
+  issues: write
+
+concurrency:
+  group: initiative-driver-${{ github.event.inputs.epic || '495' }}
+  cancel-in-progress: false
+
+env:
+  # PAT required: a label applied with the default GITHUB_TOKEN does NOT trigger
+  # dev-lead.yml (GitHub loop-prevention). GH_PAT_WORKFLOWS makes the resulting
+  # issues:[labeled] event fire the agent.
+  GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
+  REPO: ${{ github.repository }}
+  EPIC: ${{ github.event.inputs.epic || '495' }}
+  CLOSED_ISSUE: ${{ github.event.issue.number }}
+  DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
+  MAX_IN_FLIGHT: ${{ github.event.inputs.max_in_flight || '2' }}
+
+jobs:
+  drive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout agent repo
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Guard — PAT present
+        run: |
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "::error::GH_PAT_WORKFLOWS is required — a label applied with GITHUB_TOKEN will not trigger dev-lead."
+            exit 1
+          fi
+
+      - name: Drive initiative
+        run: bash scripts/initiative-driver.sh
