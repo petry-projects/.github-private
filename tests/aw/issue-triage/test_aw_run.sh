@@ -118,11 +118,11 @@ path = sys.argv[1]
 with open(path, encoding='utf-8') as f:
     text = f.read()
 m = re.match(r'^---\n(.*?)\n---\n', text, re.DOTALL)
-fm = yaml.safe_load(m.group(1)) if m else {}
+fm = yaml.safe_load(m.group(1)) or {} if m else {}
 print(json.dumps(fm.get("safe-outputs", {}).get("add-labels", {}).get("allowed", [])))
 PYEOF
 )
-if ! echo "$WF_ALLOWED" | python3 -c "import json,sys; assert 'needs-triage' not in json.load(sys.stdin), 'found needs-triage'" 2>/dev/null; then
+if ! printf '%s\n' "$WF_ALLOWED" | python3 -c "import json,sys; sys.exit(0 if 'needs-triage' not in json.load(sys.stdin) else 1)"; then
   fail "issue-triage.md: allowed list must not contain 'needs-triage'" \
     "label 'needs-triage' does not exist in the repo — use 'needs-human-review'"
 else
@@ -134,7 +134,7 @@ fi
 # The repo has 'needs-human-review' (not 'needs-triage'). The triage prompt
 # must use the label that actually exists.
 # ---------------------------------------------------------------------------
-if echo "$WF_ALLOWED" | python3 -c "import json,sys; assert 'needs-human-review' in json.load(sys.stdin), 'not found'" 2>/dev/null; then
+if printf '%s\n' "$WF_ALLOWED" | python3 -c "import json,sys; sys.exit(0 if 'needs-human-review' in json.load(sys.stdin) else 1)"; then
   ok "issue-triage.md: allowed list contains 'needs-human-review'"
 else
   fail "issue-triage.md: allowed list must contain 'needs-human-review'" \
@@ -146,7 +146,7 @@ fi
 # Repo label is 'good first issue' (with space). Using the hyphenated form
 # causes the same 'label not found' runtime failure as needs-triage (issue #316).
 # ---------------------------------------------------------------------------
-if ! echo "$WF_ALLOWED" | python3 -c "import json,sys; assert 'good-first-issue' not in json.load(sys.stdin), 'found good-first-issue'" 2>/dev/null; then
+if ! printf '%s\n' "$WF_ALLOWED" | python3 -c "import json,sys; sys.exit(0 if 'good-first-issue' not in json.load(sys.stdin) else 1)"; then
   fail "issue-triage.md: allowed list must not contain 'good-first-issue'" \
     "repo label is 'good first issue' (with space) — use that form instead"
 else
