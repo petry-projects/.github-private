@@ -16,8 +16,7 @@ import sys
 try:
     import yaml
 except ImportError:
-    print("FAIL: PyYAML is required (pip install pyyaml)", file=sys.stderr)
-    sys.exit(2)
+    yaml = None
 
 WORKFLOW = ".github/workflows/auto-rebase.yml"
 REUSABLE = "petry-projects/.github/.github/workflows/auto-rebase-reusable.yml"
@@ -26,6 +25,10 @@ SHA_PATTERN = re.compile(r"@[0-9a-f]{40}\b")
 
 
 def main() -> int:
+    if yaml is None:
+        print("FAIL: PyYAML is required (pip install pyyaml)", file=sys.stderr)
+        return 2
+
     try:
         with open(WORKFLOW, encoding="utf-8") as fh:
             doc = yaml.safe_load(fh)
@@ -38,10 +41,14 @@ def main() -> int:
         return 1
 
     jobs = doc.get("jobs") or {}
+    if not isinstance(jobs, dict):
+        print(f"FAIL: {WORKFLOW} 'jobs' key is not a mapping")
+        return 1
+
     uses_values = [
         job["uses"]
         for job in jobs.values()
-        if isinstance(job, dict) and "uses" in job
+        if isinstance(job, dict) and isinstance(job.get("uses"), str)
     ]
 
     reusable_refs = [u for u in uses_values if REUSABLE in u]
