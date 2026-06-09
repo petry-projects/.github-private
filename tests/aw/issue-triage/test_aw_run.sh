@@ -154,6 +154,18 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Test 9b: issue-triage.md allowed list DOES contain 'good first issue'
+# Pair with Test 9: absence of hyphenated form alone doesn't prove the spaced
+# form is present. Dropping the label entirely would pass Test 9 but fail here.
+# ---------------------------------------------------------------------------
+if printf '%s\n' "$WF_ALLOWED" | python3 -c "import json,sys; sys.exit(0 if 'good first issue' in json.load(sys.stdin) else 1)"; then
+  ok "issue-triage.md: allowed list contains 'good first issue'"
+else
+  fail "issue-triage.md: allowed list must contain 'good first issue'" \
+    "got: $WF_ALLOWED"
+fi
+
+# ---------------------------------------------------------------------------
 # Test 10: issue-triage.md prompt body does NOT instruct the model to return
 # {"skip": true} — aw.sh's pre-Claude label-count guard already handles skip;
 # a skip instruction in the prompt causes Claude to return {"skip":true} which
@@ -168,7 +180,7 @@ m = re.match(r'^---\n.*?\n---\n', text, re.DOTALL)
 print(text[m.end():] if m else text)
 PYEOF
 )
-if echo "$WF_BODY" | grep -qF '"skip": true'; then
+if echo "$WF_BODY" | grep -qE '"skip"\s*:\s*true'; then
   fail 'issue-triage.md: prompt must not instruct Claude to return {"skip":true}' \
     'aw.sh rejects any skip flag from the model as prompt injection (issue #316); remove the skip instruction — the pre-Claude label guard in aw.sh already handles this'
 else
