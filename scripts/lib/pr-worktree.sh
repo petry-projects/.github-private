@@ -51,6 +51,19 @@ PR_WORKTREE_AGENT_DIR=""
 checkout_pr_in_worktree() {
   local pr="$1" repo="$2"
 
+  # Exit cleanly when the PR is already merged or closed (issue #405).
+  # `gh pr checkout` fails with "fatal: couldn't find remote ref" when the
+  # branch was deleted after merging. Detect this early and skip gracefully.
+  # MUST run before the EXIT trap is registered — if exit 0 fires after the
+  # trap is set, the trap captures and replays the caller's EXIT handler
+  # prematurely (observable as bats reporting "Executed 2 instead of 1 tests").
+  local _pr_state=""
+  _pr_state="$(gh pr view "$pr" --repo "$repo" --json state --jq '.state' 2>/dev/null || true)"
+  if [ -n "$_pr_state" ] && [ "$_pr_state" != "OPEN" ]; then
+    echo "::notice::PR #${pr} is ${_pr_state} — skipping checkout (nothing to modify on a merged/closed PR)"
+    exit 0
+  fi
+
   PR_WORKTREE_AGENT_DIR="$(pwd)"
 
   # mktemp -d gives us a private parent dir; the worktree leaf must NOT pre-exist
@@ -82,6 +95,7 @@ checkout_pr_in_worktree() {
   #      and release whatever worktree currently holds it: detach the main agent
   #      checkout in place (it cannot be removed), force-remove any other.
   git worktree prune 2>/dev/null || true
+
   local _pr_branch=""
   _pr_branch="$(gh pr view "$pr" --repo "$repo" --json headRefName --jq '.headRefName' 2>/dev/null || true)"
   if [ -n "$_pr_branch" ]; then
