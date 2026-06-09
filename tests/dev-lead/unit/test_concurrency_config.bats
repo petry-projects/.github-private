@@ -19,8 +19,10 @@ setup() {
 }
 
 teardown() {
-  popd > /dev/null
-  rm -rf "$WORK_DIR"
+  popd > /dev/null 2>&1 || true
+  if [ -n "${WORK_DIR:-}" ]; then
+    rm -rf "$WORK_DIR"
+  fi
 }
 
 _write_proper_reusable() {
