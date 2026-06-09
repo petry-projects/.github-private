@@ -62,8 +62,12 @@ main() {
   shift 2
   while [ "$#" -gt 0 ]; do
     case "$1" in
-      --ref) ref="$2"; shift 2 ;;
-      --channel) channel="$2"; shift 2 ;;
+      --ref)
+        [ "$#" -lt 2 ] && { echo "::error::--ref requires an argument" >&2; return 2; }
+        ref="$2"; shift 2 ;;
+      --channel)
+        [ "$#" -lt 2 ] && { echo "::error::--channel requires an argument" >&2; return 2; }
+        channel="$2"; shift 2 ;;
       --push) do_push=true; shift ;;
       --dry-run) dry=true; shift ;;
       *) echo "::error::unknown argument: $1" >&2; return 2 ;;
@@ -107,8 +111,8 @@ main() {
   fi
 
   if [ "$do_push" = true ]; then
-    # --force needed for the (movable) channel tag; release tag is new so it is a no-op there.
-    git push --force origin "${pushrefs[@]}"
+    git push origin "$rel"
+    [ -n "$channel" ] && git push --force origin "$chan"
     echo "pushed: ${pushrefs[*]}"
   else
     echo "local only — re-run with --push to publish: ${pushrefs[*]}"
