@@ -190,6 +190,6 @@ scripts/cut-release.sh pr-review 1.1.0 --channel stable --dry-run
 scripts/cut-release.sh feature-ideation 1.4.0 --channel ring0 --dry-run
 ```
 
-The promote/rollback **runbook** (when to move `stable`, how to roll back, verify, gotchas) lives in
-[`runbook.md`](./runbook.md). The automated, health-gated promotion workflow is issue #501; tag-protection
-so only the promotion workflow may move a channel tag is issue #505.
+The promote/rollback **runbook** (when to move `stable`, how to roll back) is issue #498; the automated,
+health-gated promotion workflow is issue #501. Tag-protection so only the promotion workflow may move a
+channel tag is issue #505.
