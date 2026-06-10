@@ -89,6 +89,8 @@ jobs:
       TRIGGER_PHRASES: ${{ vars.TRIGGER_PHRASES || '@dev-lead' }}
       DEV_LEAD_ENGINE: ${{ vars.DEV_LEAD_ENGINE || 'claude' }}
       DEV_LEAD_DRY_RUN: ${{ vars.DEV_LEAD_DRY_RUN || 'false' }}
+      DEEP_TIMEOUT_SEC: ${{ vars.DEEP_TIMEOUT_SEC || '' }}
+      ACTION_TIMEOUT_SEC: ${{ vars.ACTION_TIMEOUT_SEC || '' }}
       GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS || github.token }}
       GEMINI_CLI_TRUST_WORKSPACE: "true"
       DEV_LEAD_SCRIPTS: .dev-lead/scripts
@@ -118,8 +120,11 @@ jobs:
             prompts/dev-lead
 
       - name: Protect dev-lead scripts from accidental git staging
+        run: echo ".dev-lead/" >> .gitignore
+
+      - name: Revert .gitignore changes before git operations
         run: |
-          mkdir -p .git/info
+          git checkout .gitignore || true
           echo ".dev-lead/" >> .git/info/exclude
 
       - name: Classify event intent
@@ -144,6 +149,7 @@ jobs:
           echo "INTENT_CHECKS=$(echo "$ctx"       | jq -c '.checks // []')"       >> "$GITHUB_ENV"
           echo "INTENT_ISSUE_NUMBER=$(echo "$ctx" | jq -r '.issue_number // ""')" >> "$GITHUB_ENV"
           echo "INTENT_ACTOR=$(echo "$ctx"        | jq -r '.actor // ""')"        >> "$GITHUB_ENV"
+          echo "INTENT_BODY=$(echo "$ctx"         | jq -r '.body // ""')"         >> "$GITHUB_ENV"
 
       - name: Skip — log reason
         if: env.INTENT_TYPE == 'skip'
@@ -190,7 +196,10 @@ jobs:
                 gh extension install github/gh-copilot || true
               fi ;;
             gemini)
-              npm install -g @google/gemini-cli || true ;;
+              npm install -g @google/gemini-cli || true
+              if ! gh copilot --version >/dev/null 2>&1; then
+                gh extension install github/gh-copilot || true
+              fi ;;
             copilot)
               npm install -g @google/gemini-cli || true
               if ! gh copilot --version >/dev/null 2>&1; then
@@ -212,7 +221,10 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           COPILOT_GITHUB_TOKEN: ${{ secrets.GH_PAT }}
           PROMPTS_DIR: .dev-lead/prompts/dev-lead
-        run: bash .dev-lead/scripts/dev-lead-fix-ci.sh
+        run: |
+          bash .dev-lead/scripts/dev-lead-fix-ci.sh || rc=$?
+          [ "${rc:-0}" -eq 2 ] && exit 0
+          exit "${rc:-0}"
 
       # ── fix-reviews ───────────────────────────────────────────────────────
       - name: Run fix-reviews
@@ -228,7 +240,10 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           COPILOT_GITHUB_TOKEN: ${{ secrets.GH_PAT }}
           PROMPTS_DIR: .dev-lead/prompts/dev-lead
-        run: bash .dev-lead/scripts/dev-lead-fix-reviews.sh
+        run: |
+          bash .dev-lead/scripts/dev-lead-fix-reviews.sh || rc=$?
+          [ "${rc:-0}" -eq 2 ] && exit 0
+          exit "${rc:-0}"
 
       # ── fix-bot-comment ───────────────────────────────────────────────────
       - name: Run fix-bot-comment
@@ -238,12 +253,16 @@ jobs:
           HEAD_SHA: ${{ env.INTENT_HEAD_SHA }}
           REPO: ${{ github.repository }}
           REVIEW_ENGINE: ${{ env.DEV_LEAD_ENGINE }}
+          COMMENT_BODY: ${{ env.INTENT_BODY }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           COPILOT_GITHUB_TOKEN: ${{ secrets.GH_PAT }}
           PROMPTS_DIR: .dev-lead/prompts/dev-lead
-        run: bash .dev-lead/scripts/dev-lead-fix-reviews.sh
+        run: |
+          bash .dev-lead/scripts/dev-lead-fix-reviews.sh || rc=$?
+          [ "${rc:-0}" -eq 2 ] && exit 0
+          exit "${rc:-0}"
 
       # ── on-mention ─────────────────────────────────────────────────────────────
       - name: Run on-mention
@@ -253,12 +272,16 @@ jobs:
           HEAD_SHA: ${{ env.INTENT_HEAD_SHA }}
           REPO: ${{ github.repository }}
           REVIEW_ENGINE: ${{ env.DEV_LEAD_ENGINE }}
+          USER_INSTRUCTION: ${{ env.INTENT_BODY }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           COPILOT_GITHUB_TOKEN: ${{ secrets.GH_PAT }}
           PROMPTS_DIR: .dev-lead/prompts/dev-lead
-        run: bash .dev-lead/scripts/dev-lead-fix-reviews.sh
+        run: |
+          bash .dev-lead/scripts/dev-lead-fix-reviews.sh || rc=$?
+          [ "${rc:-0}" -eq 2 ] && exit 0
+          exit "${rc:-0}"
 
       # ── review-changes ──────────────────────────────────────────────────────────
       - name: Run review-changes
@@ -268,12 +291,16 @@ jobs:
           HEAD_SHA: ${{ env.INTENT_HEAD_SHA }}
           REPO: ${{ github.repository }}
           REVIEW_ENGINE: ${{ env.DEV_LEAD_ENGINE }}
+          ACTOR: ${{ env.INTENT_ACTOR }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           COPILOT_GITHUB_TOKEN: ${{ secrets.GH_PAT }}
           PROMPTS_DIR: .dev-lead/prompts/dev-lead
-        run: bash .dev-lead/scripts/dev-lead-fix-reviews.sh
+        run: |
+          bash .dev-lead/scripts/dev-lead-fix-reviews.sh || rc=$?
+          [ "${rc:-0}" -eq 2 ] && exit 0
+          exit "${rc:-0}"
 
       # ── issue ─────────────────────────────────────────────────────────────
       - name: Run issue
@@ -287,7 +314,10 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           COPILOT_GITHUB_TOKEN: ${{ secrets.GH_PAT }}
           PROMPTS_DIR: .dev-lead/prompts/dev-lead
-        run: bash .dev-lead/scripts/dev-lead-fix-issue.sh
+        run: |
+          bash .dev-lead/scripts/dev-lead-fix-issue.sh || rc=$?
+          [ "${rc:-0}" -eq 2 ] && exit 0
+          exit "${rc:-0}"
 
       # ── rebase ────────────────────────────────────────────────────────────
       - name: Run rebase
@@ -301,7 +331,10 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           COPILOT_GITHUB_TOKEN: ${{ secrets.GH_PAT }}
           PROMPTS_DIR: .dev-lead/prompts/dev-lead
-        run: bash .dev-lead/scripts/dev-lead-fix-reviews.sh
+        run: |
+          bash .dev-lead/scripts/dev-lead-fix-reviews.sh || rc=$?
+          [ "${rc:-0}" -eq 2 ] && exit 0
+          exit "${rc:-0}"
 
       # ── enable-auto-merge ─────────────────────────────────────────────────
       # Triggered when a trusted bot approves a PR. Skips engine install and
@@ -335,20 +368,43 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
-      contents: read
+      contents: write
+      pull-requests: read
 
     steps:
       - name: Check for associated non-fork PR
         id: check-pr
         env:
+          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS || github.token }}
           CHECK_RUN_PRS: ${{ toJson(github.event.check_run.pull_requests) }}
+          CHECK_RUN_HEAD_SHA: ${{ github.event.check_run.head_sha }}
           REPO_FULL_NAME: ${{ github.repository }}
         run: |
           set -euo pipefail
           pr_count=$(echo "$CHECK_RUN_PRS" | jq 'length')
           if [ "$pr_count" -eq 0 ]; then
-            echo "::notice::check_run has no associated PRs — skipping relay"
-            echo "should_relay=false" >> "$GITHUB_OUTPUT"
+            # GitHub App check_runs (SonarCloud, external CodeQL gates, etc.) do not
+            # populate check_run.pull_requests. Fall back to the commits-to-pulls API.
+            echo "::notice::check_run.pull_requests is empty — trying commits-to-pulls API fallback for SHA ${CHECK_RUN_HEAD_SHA}"
+            pulls_json=$(gh api \
+              -H "Accept: application/vnd.github+json" \
+              "repos/${REPO_FULL_NAME}/commits/${CHECK_RUN_HEAD_SHA}/pulls" 2>/dev/null || echo "[]")
+            open_pulls=$(echo "$pulls_json" | jq '[.[] | select(.state=="open")]')
+            pr_count=$(echo "$open_pulls" | jq 'length')
+            if [ "$pr_count" -eq 0 ]; then
+              echo "::notice::No open PRs found for commit ${CHECK_RUN_HEAD_SHA} — skipping relay"
+              echo "should_relay=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            head_repo_full=$(echo "$open_pulls" | jq -r '.[0].head.repo.full_name // empty')
+            if [ -n "$head_repo_full" ] && [ "$head_repo_full" != "$REPO_FULL_NAME" ]; then
+              echo "::notice::Commit ${CHECK_RUN_HEAD_SHA} belongs to fork (${head_repo_full}) — skipping relay"
+              echo "should_relay=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            pr_number=$(echo "$open_pulls" | jq -r '.[0].number')
+            echo "should_relay=true" >> "$GITHUB_OUTPUT"
+            echo "pr_number=$pr_number" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           head_repo_url=$(echo "$CHECK_RUN_PRS" | jq -r '.[0].head.repo.url // empty')
@@ -369,6 +425,7 @@ jobs:
           RELAY_PR_NUMBER: ${{ steps.check-pr.outputs.pr_number }}
           RELAY_HEAD_SHA: ${{ github.event.check_run.head_sha }}
           RELAY_REPO: ${{ github.repository }}
+          RELAY_CHECK_ID: ${{ github.event.check_run.id }}
           RELAY_CHECK_NAME: ${{ github.event.check_run.name }}
           RELAY_CONCLUSION: ${{ github.event.check_run.conclusion }}
           RELAY_DETAILS_URL: ${{ github.event.check_run.details_url }}
@@ -379,11 +436,12 @@ jobs:
             --argjson pr_number "$RELAY_PR_NUMBER" \
             --arg head_sha "$RELAY_HEAD_SHA" \
             --arg repo "$RELAY_REPO" \
+            --argjson check_id "$RELAY_CHECK_ID" \
             --arg name "$RELAY_CHECK_NAME" \
             --arg conclusion "$RELAY_CONCLUSION" \
             --arg details_url "$RELAY_DETAILS_URL" \
             --arg app_slug "$RELAY_APP_SLUG" \
-            '{event_type:"dev-lead-ci-failure",client_payload:{pr_number:$pr_number,head_sha:$head_sha,repo:$repo,checks:[{name:$name,conclusion:$conclusion,details_url:$details_url,app_slug:$app_slug}]}}')
+            '{event_type:"dev-lead-ci-failure",client_payload:{pr_number:$pr_number,head_sha:$head_sha,repo:$repo,checks:[{id:$check_id,name:$name,conclusion:$conclusion,details_url:$details_url,app_slug:$app_slug}]}}')
           echo "$payload" | gh api \
             --method POST "repos/$RELAY_REPO/dispatches" --input -
           echo "::notice::Relayed CI failure for PR $RELAY_PR_NUMBER"

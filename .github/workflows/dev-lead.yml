@@ -1,8 +1,26 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Dev-Lead Agent — thin caller stub
+# Standard:  petry-projects/.github/standards/ci-standards.md#5-dev-lead-agent
+# Reusable:  petry-projects/.github-private/.github/workflows/dev-lead-reusable.yml
+#
+# ADOPTING THIS WORKFLOW:
+#   1. Copy this file verbatim to .github/workflows/dev-lead.yml in your repo.
+#   2. Ensure CLAUDE_CODE_OAUTH_TOKEN is set as an org or repo secret.
+#   3. Optionally set GH_PAT_WORKFLOWS (required if Claude pushes workflow files).
+#   4. Optionally set vars.DEV_LEAD_ENGINE = "claude" | "gemini" | "copilot".
+#
+# UNLIKE claude.yml, this file has NO OIDC byte-for-byte constraint and may be
+# freely modified on PR branches to adjust triggers for repo-specific needs.
+#
+# REQUIRED secrets: CLAUDE_CODE_OAUTH_TOKEN
+# OPTIONAL secrets: GH_PAT_WORKFLOWS, GOOGLE_API_KEY, GH_PAT
+# ─────────────────────────────────────────────────────────────────────────────
+
 name: Dev-Lead Agent
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, labeled]
+    types: [opened, reopened, synchronize]
   pull_request_review:
     types: [submitted]
   pull_request_review_comment:
@@ -16,280 +34,12 @@ on:
   repository_dispatch:
     types: [dev-lead-ci-failure, dev-lead-reviews-retry, dev-lead-issue-retry]
 
-permissions:
-  contents: write
-  pull-requests: write
-  issues: write
-  checks: read
-  statuses: read
-
-concurrency:
-  # Per-issue and per-PR lanes so issue pickups are never cancelled by unrelated
-  # PR follow-up traffic. This repo's dev-lead.yml is inline (not a reusable
-  # caller), so it carries the same routing as dev-lead-reusable.yml. See
-  # petry-projects/.github#402.
-  group: >-
-    ${{
-      (github.event_name == 'check_run' && format('dev-lead-ci-relay-{0}', github.event.check_run.head_sha))
-      || (github.event.pull_request.number && format('dev-lead-pr-{0}', github.event.pull_request.number))
-      || (github.event.issue.pull_request && format('dev-lead-pr-{0}', github.event.issue.number))
-      || (github.event.issue.number && format('dev-lead-issue-{0}', github.event.issue.number))
-      || (github.event.client_payload.pr_number && format('dev-lead-pr-{0}', github.event.client_payload.pr_number))
-      || format('dev-lead-run-{0}', github.run_id)
-    }}
-  cancel-in-progress: false
-
-env:
-  BOT_USER: ${{ vars.BOT_USER || 'donpetry-bot' }}
-  TRUSTED_BOTS: ${{ vars.TRUSTED_BOTS || 'copilot-pull-request-reviewer[bot],gemini-code-assist[bot],sonarqubecloud[bot],coderabbitai[bot],chatgpt-codex-connector[bot]' }}
-  TRIGGER_PHRASES: ${{ vars.TRIGGER_PHRASES || '@dev-lead' }}
-  DEV_LEAD_ENGINE: ${{ vars.DEV_LEAD_ENGINE || 'claude' }}
-  DEV_LEAD_DRY_RUN: ${{ vars.DEV_LEAD_DRY_RUN || 'false' }}
-  DEEP_TIMEOUT_SEC: ${{ vars.DEEP_TIMEOUT_SEC || '600' }}
-  ACTION_TIMEOUT_SEC: ${{ vars.ACTION_TIMEOUT_SEC || '600' }}
-  GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS || secrets.GITHUB_TOKEN }}
+permissions: {}
 
 jobs:
-  # ── dispatch ────────────────────────────────────────────────────────────────
-  # Handles all events except check_run (which goes to ci-relay).
-  # 1. Runs dev-lead-intent.sh to classify the event into an intent.
-  # 2. Routes to the appropriate action based on intent.
-  dispatch:
-    if: github.event_name != 'check_run'
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    env:
-      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-      GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-      GEMINI_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-      GEMINI_CLI_TRUST_WORKSPACE: "true"
-      COPILOT_GITHUB_TOKEN: ${{ secrets.GH_PAT }}
-
-    steps:
-      - name: Checkout agent repo
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-        with:
-          token: ${{ secrets.GH_PAT_WORKFLOWS || secrets.GITHUB_TOKEN }}
-
-      - name: Classify event intent
-        id: intent
-        env:
-          GITHUB_EVENT_NAME: ${{ github.event_name }}
-          # GITHUB_EVENT_PATH is set automatically by GitHub Actions — no override needed
-        run: bash scripts/dev-lead-intent.sh
-
-      - name: Log intent
-        run: |
-          echo "::notice::intent=$INTENT_TYPE reason=$INTENT_REASON"
-
-      - name: Parse intent context fields
-        run: |
-          # Expand INTENT_CONTEXT JSON into individual GITHUB_ENV vars so subsequent
-          # step env: blocks can reference ${{ env.INTENT_PR_NUMBER }} without fromJson()
-          ctx="${INTENT_CONTEXT:-{\}}"
-          EOF_DELIMITER="EOF_$(dd if=/dev/urandom bs=15 count=1 2>/dev/null | base64 | tr -dc 'a-zA-Z0-9')"
-
-          # Helper to set GITHUB_ENV safely with heredoc
-          set_env() {
-            echo "$1<<$EOF_DELIMITER" >> "$GITHUB_ENV"
-            echo "$2" >> "$GITHUB_ENV"
-            echo "$EOF_DELIMITER" >> "$GITHUB_ENV"
-          }
-
-          set_env "INTENT_PR_NUMBER" "$(echo "$ctx" | jq -r '.pr_number // ""')"
-          set_env "INTENT_HEAD_SHA" "$(echo "$ctx"  | jq -r '.head_sha // ""')"
-          set_env "INTENT_CHECKS" "$(echo "$ctx"    | jq -c '.checks // []')"
-          set_env "INTENT_ISSUE_NUMBER" "$(echo "$ctx" | jq -r '.issue_number // ""')"
-          set_env "INTENT_ACTOR" "$(echo "$ctx" | jq -r '.actor // ""')"
-          set_env "INTENT_COMMENT_BODY" "$(echo "$ctx" | jq -r '.body // ""')"
-
-      - name: Skip — log reason
-        if: env.INTENT_TYPE == 'skip'
-        run: |
-          echo "::notice::Skipping event: $INTENT_REASON"
-
-      - name: Pre-flight checks
-        if: env.INTENT_TYPE != 'skip' && env.INTENT_TYPE != 'enable-auto-merge'
-        run: bash scripts/dev-lead-preflight.sh
-
-      - name: Configure git identity
-        if: env.INTENT_TYPE != 'skip' && env.INTENT_TYPE != 'enable-auto-merge'
-        run: |
-          git config --global user.email "donpetry-bot@users.noreply.github.com"
-          git config --global user.name "donpetry-bot"
-
-      # ── Install engine CLIs ───────────────────────────────────────────────
-      - name: Cache claude-code CLI
-        if: env.INTENT_TYPE != 'skip' && env.INTENT_TYPE != 'enable-auto-merge'
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
-        with:
-          path: ~/.npm-global
-          key: claude-code-${{ vars.CLAUDE_CODE_VERSION || 'latest' }}-${{ runner.os }}
-
-      - name: Install engine CLIs
-        if: env.INTENT_TYPE != 'skip' && env.INTENT_TYPE != 'enable-auto-merge'
-        env:
-          CLAUDE_CODE_VERSION: ${{ vars.CLAUDE_CODE_VERSION || 'latest' }}
-          # Pass keys during install if needed for extension setup
-          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          mkdir -p "$HOME/.npm-global"
-          npm config set prefix "$HOME/.npm-global"
-          echo "$HOME/.npm-global/bin" >> "$GITHUB_PATH"
-          export PATH="$HOME/.npm-global/bin:$PATH"
-
-          # 1. Claude Code
-          if ! command -v claude >/dev/null 2>&1; then
-            npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
-          fi
-
-          # 2. Gemini CLI (always install as fallback)
-          if ! command -v gemini >/dev/null 2>&1; then
-            npm install -g @google/gemini-cli || true
-          fi
-
-          # 3. GitHub Copilot Extension (always install as fallback)
-          if ! gh copilot --version >/dev/null 2>&1; then
-            gh extension install github/gh-copilot || true
-          fi
-
-      - name: Verify primary engine CLI
-        if: env.INTENT_TYPE != 'skip' && env.INTENT_TYPE != 'enable-auto-merge'
-        run: |
-          # Fail fast if the primary engine binary is missing — a silent exit 127
-          # later would waste tokens and incorrectly count toward PR exhaustion.
-          case "${DEV_LEAD_ENGINE:-claude}" in
-            claude)  claude --version ;;
-            gemini)  gemini --version ;;
-            copilot) gh copilot --version ;;
-            *) echo "::error::Unknown DEV_LEAD_ENGINE value: '${DEV_LEAD_ENGINE}'. Must be one of: claude, gemini, copilot"; exit 1 ;;
-          esac
-
-      # ── fix-ci ────────────────────────────────────────────────────────────
-      - name: Run fix-ci
-        if: env.INTENT_TYPE == 'fix-ci'
-        env:
-          PR_NUMBER: ${{ env.INTENT_PR_NUMBER }}
-          HEAD_SHA: ${{ env.INTENT_HEAD_SHA }}
-          CHECKS_JSON: ${{ env.INTENT_CHECKS }}
-          REPO: ${{ github.repository }}
-          REVIEW_ENGINE: ${{ env.DEV_LEAD_ENGINE }}
-        run: |
-          rc=0
-          bash scripts/dev-lead-fix-ci.sh || rc=$?
-          # exit 2 = rate-limited; script already posted a marker — not a workflow failure
-          [ "$rc" -eq 2 ] && exit 0 || exit "$rc"
-
-      # ── fix-reviews ───────────────────────────────────────────────────────
-      - name: Run fix-reviews
-        if: env.INTENT_TYPE == 'fix-reviews'
-        env:
-          PR_NUMBER: ${{ env.INTENT_PR_NUMBER }}
-          HEAD_SHA: ${{ env.INTENT_HEAD_SHA }}
-          REPO: ${{ github.repository }}
-          REVIEW_ENGINE: ${{ env.DEV_LEAD_ENGINE }}
-          TRIGGERING_REVIEWER: ${{ env.INTENT_ACTOR }}
-        run: |
-          rc=0
-          bash scripts/dev-lead-fix-reviews.sh || rc=$?
-          [ "$rc" -eq 2 ] && exit 0 || exit "$rc"
-
-      # ── fix-bot-comment ───────────────────────────────────────────────────
-      - name: Run fix-bot-comment
-        if: env.INTENT_TYPE == 'fix-bot-comment'
-        env:
-          PR_NUMBER: ${{ env.INTENT_PR_NUMBER }}
-          HEAD_SHA: ${{ env.INTENT_HEAD_SHA }}
-          ACTOR: ${{ env.INTENT_ACTOR }}
-          COMMENT_BODY: ${{ env.INTENT_COMMENT_BODY }}
-          REPO: ${{ github.repository }}
-          REVIEW_ENGINE: ${{ env.DEV_LEAD_ENGINE }}
-        run: |
-          rc=0
-          bash scripts/dev-lead-fix-reviews.sh || rc=$?
-          [ "$rc" -eq 2 ] && exit 0 || exit "$rc"
-
-      # ── on-mention ────────────────────────────────────────────────────────
-      - name: Run on-mention
-        if: env.INTENT_TYPE == 'on-mention'
-        env:
-          PR_NUMBER: ${{ env.INTENT_PR_NUMBER }}
-          HEAD_SHA: ${{ env.INTENT_HEAD_SHA }}
-          ACTOR: ${{ env.INTENT_ACTOR }}
-          USER_INSTRUCTION: ${{ env.INTENT_COMMENT_BODY }}
-          REPO: ${{ github.repository }}
-          REVIEW_ENGINE: ${{ env.DEV_LEAD_ENGINE }}
-        run: |
-          rc=0
-          bash scripts/dev-lead-fix-reviews.sh || rc=$?
-          [ "$rc" -eq 2 ] && exit 0 || exit "$rc"
-
-      # ── review-changes ────────────────────────────────────────────────────
-      - name: Run review-changes
-        if: env.INTENT_TYPE == 'review-changes'
-        env:
-          PR_NUMBER: ${{ env.INTENT_PR_NUMBER }}
-          HEAD_SHA: ${{ env.INTENT_HEAD_SHA }}
-          ACTOR: ${{ env.INTENT_ACTOR }}
-          REPO: ${{ github.repository }}
-          REVIEW_ENGINE: ${{ env.DEV_LEAD_ENGINE }}
-        run: |
-          rc=0
-          bash scripts/dev-lead-fix-reviews.sh || rc=$?
-          [ "$rc" -eq 2 ] && exit 0 || exit "$rc"
-
-      # ── issue ─────────────────────────────────────────────────────────────
-      - name: Run issue
-        if: env.INTENT_TYPE == 'issue'
-        env:
-          ISSUE_NUMBER: ${{ env.INTENT_ISSUE_NUMBER }}
-          REPO: ${{ github.repository }}
-          REVIEW_ENGINE: ${{ env.DEV_LEAD_ENGINE }}
-        run: |
-          rc=0
-          bash scripts/dev-lead-fix-issue.sh || rc=$?
-          [ "$rc" -eq 2 ] && exit 0 || exit "$rc"
-
-      # ── rebase ────────────────────────────────────────────────────────────
-      - name: Run rebase
-        if: env.INTENT_TYPE == 'rebase'
-        env:
-          PR_NUMBER: ${{ env.INTENT_PR_NUMBER }}
-          REPO: ${{ github.repository }}
-          REVIEW_ENGINE: ${{ env.DEV_LEAD_ENGINE }}
-        run: |
-          rc=0
-          bash scripts/dev-lead-fix-reviews.sh || rc=$?
-          [ "$rc" -eq 2 ] && exit 0 || exit "$rc"
-
-      # ── enable-auto-merge ─────────────────────────────────────────────────
-      # Triggered when a trusted bot approves a PR. Skips engine install and
-      # pre-flight — just checks reviewDecision and enables auto-merge if APPROVED.
-      #
-      # Gate on the step output of `intent` (not env.INTENT_TYPE): a step's own
-      # env block is in scope when evaluating its `if:`, so the literal
-      # `INTENT_TYPE: enable-auto-merge` we set below would make env.INTENT_TYPE
-      # always equal 'enable-auto-merge' at gate-evaluation time, defeating the
-      # check. Step outputs are not shadowed. Also require a non-empty PR number
-      # to mirror the guard already present in dev-lead-reusable.yml.
-      - name: Enable auto-merge on bot approval
-        if: >-
-          steps.intent.outputs.intent_type == 'enable-auto-merge'
-          && env.INTENT_PR_NUMBER != ''
-        env:
-          INTENT_TYPE: enable-auto-merge
-          PR_NUMBER: ${{ env.INTENT_PR_NUMBER }}
-          HEAD_SHA: ${{ env.INTENT_HEAD_SHA }}
-          REPO: ${{ github.repository }}
-        run: bash scripts/dev-lead-fix-reviews.sh
-
-  # ── ci-relay ────────────────────────────────────────────────────────────────
-  # Handles check_run completed events only.
-  # No LLM involved — resolves the PR number from the check and fires
-  # a repository_dispatch so the dispatch job can handle it asynchronously.
-  ci-relay:
+  dev-lead:
+    # Skip fork PRs: secrets are not available and dev-lead-intent.sh cannot
+    # run to classify the skip, which would cause the required check to fail.
     if: >-
       github.event_name != 'pull_request' ||
       github.event.pull_request.head.repo.full_name == github.repository
