@@ -252,3 +252,28 @@ CO
   run bash "$LINT_SCRIPT"
   [ "$status" -eq 0 ]
 }
+
+@test "lint: handles CRLF line endings in CODEOWNERS" {
+  mkdir -p "$WORK_DIR/.github"
+  printf '* @petry-projects/org-leads\r\ndocs/ @petry-projects/org-leads @petry-projects/docs\r\n' \
+    > "$WORK_DIR/.github/CODEOWNERS"
+  run bash "$LINT_SCRIPT"
+  [ "$status" -eq 0 ]
+}
+
+@test "lint: handles escaped spaces in CODEOWNERS paths" {
+  mkdir -p "$WORK_DIR/.github"
+  printf 'path\\ with\\ spaces/ @petry-projects/org-leads @petry-projects/backend\n' \
+    > "$WORK_DIR/.github/CODEOWNERS"
+  run bash "$LINT_SCRIPT"
+  [ "$status" -eq 0 ]
+}
+
+@test "lint: fails with CRLF when org-leads is not first" {
+  mkdir -p "$WORK_DIR/.github"
+  printf '* @petry-projects/backend @petry-projects/org-leads\r\n' \
+    > "$WORK_DIR/.github/CODEOWNERS"
+  run bash "$LINT_SCRIPT"
+  [ "$status" -ne 0 ]
+  [[ "$output" =~ "org-leads" ]]
+}

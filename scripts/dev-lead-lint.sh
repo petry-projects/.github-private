@@ -106,9 +106,12 @@ if [ -n "$codeowners_file" ]; then
   echo "  [lint] validating $codeowners_file..."
   codeowners_fail=0
   while IFS= read -r line; do
+    line="${line%$'\r'}"
     [[ "$line" =~ ^[[:space:]]*$ ]] && continue
     [[ "$line" =~ ^[[:space:]]*# ]] && continue
-    first_owner=$(printf '%s\n' "$line" | awk '{print $2}')
+    clean_line="${line//\\ /}"
+    read -r -a parts <<< "$clean_line"
+    first_owner="${parts[1]:-}"
     if [ "$first_owner" != "@petry-projects/org-leads" ]; then
       echo "FAIL: $codeowners_file — @petry-projects/org-leads must be the first owner on line: $line"
       codeowners_fail=1
