@@ -1,12 +1,12 @@
 # Release runbook — cut, promote, roll back
 
 Operational procedures for the per-agent channel-tag release model (initiative
-#495, targets SC4). For the *what* and *why* of the scheme, see
+\#495, targets SC4). For the *what* and *why* of the scheme, see
 [`versioning.md`](./versioning.md) and the
 [initiative analysis](../initiatives/agentic-release-strategy.md) §5.1, §7.
 
 **Agents covered:** `pr-review`, `dev-lead`. Both live in this repo; callers
-(consumers + this repo's own self-host duty) pin the moving channel tag
+(consumers + this repo's own self-host caller) pin the moving channel tag
 `@<agent>/stable` and thread `agent_ref: <agent>/stable`.
 
 **Two tag kinds per agent:**
@@ -44,10 +44,10 @@ Cut an immutable `<agent>/vX.Y.Z` at a reviewed, merged commit (default ref
 
 ```bash
 # Preview (touches nothing):
-bash scripts/cut-release.sh pr-review 1.6.0 --ref origin/main --dry-run
+scripts/cut-release.sh pr-review 1.6.0 --ref origin/main --dry-run
 
 # Cut the immutable tag only (no promotion):
-bash scripts/cut-release.sh pr-review 1.6.0 --ref origin/main --push
+scripts/cut-release.sh pr-review 1.6.0 --ref origin/main --push
 ```
 
 - Pick the version per semver (see `versioning.md#semantic-versioning`): bugfix →
@@ -70,7 +70,7 @@ When the `vX.Y.Z` tag does **not** yet exist, `cut-release.sh` can create it and
 move the channel together:
 
 ```bash
-bash scripts/cut-release.sh dev-lead 1.2.0 --ref origin/main --channel stable --push
+scripts/cut-release.sh dev-lead 1.2.0 --ref origin/main --channel stable --push
 ```
 
 ### 2b. Already-cut release — move the channel only
