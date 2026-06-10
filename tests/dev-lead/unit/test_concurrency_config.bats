@@ -59,36 +59,7 @@ YAML
 }
 
 _write_proper_inline() {
-  cat > "$WORK_DIR/.github/workflows/dev-lead.yml" << 'YAML'
-name: Dev-Lead Agent
-on:
-  issues:
-    types: [labeled]
-permissions:
-  contents: write
-concurrency:
-  group: >-
-    ${{
-      (github.event_name == 'check_run' && format('dev-lead-ci-relay-{0}', github.event.check_run.head_sha))
-      || (github.event.pull_request.number && format('dev-lead-pr-{0}', github.event.pull_request.number))
-      || (github.event.issue.pull_request && format('dev-lead-pr-{0}', github.event.issue.number))
-      || (github.event.issue.number && format('dev-lead-issue-{0}', github.event.issue.number))
-      || (github.event.client_payload.pr_number && format('dev-lead-pr-{0}', github.event.client_payload.pr_number))
-      || format('dev-lead-run-{0}', github.run_id)
-    }}
-  cancel-in-progress: false
-jobs:
-  dispatch:
-    runs-on: ubuntu-latest
-    steps:
-      - run: echo ok
-YAML
-}
-
-# ── silent-exit regression tests ─────────────────────────────────────────────
-
-@test "concurrency-config: exit 1 with FAIL output when dev-lead.yml has no concurrency block" {
-  # Stub caller — intentionally no concurrency block at all
+  # Proper thin-caller stub: no top-level concurrency block (reusable owns it).
   cat > "$WORK_DIR/.github/workflows/dev-lead.yml" << 'YAML'
 name: Dev-Lead Agent
 on:
@@ -99,6 +70,29 @@ jobs:
   dev-lead:
     uses: petry-projects/.github-private/.github/workflows/dev-lead-reusable.yml@main
     secrets: inherit
+YAML
+}
+
+# ── silent-exit regression tests ─────────────────────────────────────────────
+
+@test "concurrency-config: exit 1 with FAIL output when dev-lead.yml has a top-level concurrency block" {
+  # Inline caller — carries its own concurrency block, violating the stub-only rule;
+  # the reusable is the single source of truth for concurrency config.
+  cat > "$WORK_DIR/.github/workflows/dev-lead.yml" << 'YAML'
+name: Dev-Lead Agent
+on:
+  issues:
+    types: [labeled]
+permissions:
+  contents: write
+concurrency:
+  group: dev-lead-pr-123
+  cancel-in-progress: false
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo ok
 YAML
   _write_proper_reusable
 
