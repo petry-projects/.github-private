@@ -152,9 +152,13 @@ teardown() {
 # ---------------------------------------------------------------------------
 
 @test "ci.yml secret-scan job uses gitleaks/gitleaks-action" {
-  grep -q "uses: gitleaks/gitleaks-action" .github/workflows/ci.yml
+  local ci_yaml
+  ci_yaml="$(dirname "$BATS_TEST_FILENAME")/../.github/workflows/ci.yml"
+  grep -qE "uses:[[:space:]]*['\"]?gitleaks/gitleaks-action" "$ci_yaml"
 }
 
 @test "ci.yml secret-scan job has security-events write permission" {
-  grep -q "security-events: write" .github/workflows/ci.yml
+  local ci_yaml
+  ci_yaml="$(dirname "$BATS_TEST_FILENAME")/../.github/workflows/ci.yml"
+  grep -qE "security-events:[[:space:]]*['\"]?write['\"]?" "$ci_yaml"
 }
