@@ -3,7 +3,7 @@
 > **Purpose:** A starter list of reputable web pages, RSS feeds, podcasts,
 > and YouTube channels that the BMAD Analyst (Mary) consults during
 > **Phase 2: Market Research** of the
-> [Feature Ideation workflow](../.github/workflows/feature-ideation-reusable.yml).
+> [Feature Ideation workflow](workflows/feature-ideation.yml).
 >
 > **How it is used:** This file is a **template**. Each adopting repo copies
 > it to `.github/feature-ideation-sources.md` (or the path configured via
