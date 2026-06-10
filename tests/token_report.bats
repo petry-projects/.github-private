@@ -194,6 +194,18 @@ setup() {
 # collect_org_jsonl — error-handling (gh is stubbed; no network)
 # ---------------------------------------------------------------------------
 
+@test "annotate_records: empty directory returns 0 with no output (glob-expansion guard)" {
+  # Regression test for bug where annotate_records passed an unexpanded glob
+  # (e.g. /tmp/.../jsonl/*.jsonl) to jq when no JSONL files existed, causing
+  # jq to exit 2 and fail the fleet-monitor job (observed 2026-05-19 to 2026-05-21).
+  # Fixed by: [ -e "${files[0]}" ] || return 0
+  local d; d="$(mktemp -d)"
+  run annotate_records "$d"
+  rmdir "$d"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
 @test "collect_org_jsonl: emits ERROR and returns non-zero when org repo listing fails" {
   local tmpdir
   tmpdir="$(mktemp -d)"
