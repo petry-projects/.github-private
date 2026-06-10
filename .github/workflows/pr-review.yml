@@ -179,9 +179,10 @@ jobs:
           # the default checkout would clone the consumer at `agent_ref`, which
           # has no such ref → failure. .github-private is public, so the default
           # token can read it. `agent_ref` (e.g. pr-review/stable) pins the
-          # scripts to the known-good channel; empty defaults to main (#506/#536).
+          # scripts to the known-good channel; empty string lets actions/checkout
+          # use the repo's default branch (#506/#536).
           repository: petry-projects/.github-private
-          ref: ${{ inputs.agent_ref || 'main' }}
+          ref: ${{ inputs.agent_ref }}
 
       - name: Cache claude-code CLI
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
