@@ -83,7 +83,7 @@ for repo in "${repos[@]}"; do
   printf '  %s\n' "$repo"
 
   if ! workflows_raw=$(gh api "repos/${repo}/actions/workflows?per_page=100" --paginate \
-    --jq '[.workflows[] | select(.state == "active") | {id: (.id | tostring), file: (.path | split("/") | last)}]' \
+    --jq '[.workflows[] | select(.state == "active") | {id: (.id | tostring), file: .path}]' \
     2>/dev/null); then
     echo "::warning::Cannot read workflows for ${repo} — check token has actions:read"
     continue
