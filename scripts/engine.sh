@@ -166,17 +166,17 @@ check_provider_headroom() {
       # Probe the Anthropic API for rate-limit headers. Uses a minimal
       # 1-token request so the probe itself barely consumes quota.
       local _resp remaining_tokens limit_tokens
-      _resp=$(curl -sI -X POST https://api.anthropic.com/v1/messages \
+      _resp=$(curl -s -D - -o /dev/null -X POST https://api.anthropic.com/v1/messages \
         -H "x-api-key: ${ANTHROPIC_API_KEY:-}" \
         -H "anthropic-version: 2023-06-01" \
         -H "content-type: application/json" \
         --data-raw '{"model":"claude-haiku-4-5-20251001","max_tokens":1,"messages":[{"role":"user","content":"."}]}' \
         2>/dev/null || true)
       remaining_tokens=$(printf '%s' "$_resp" | grep -i 'x-ratelimit-remaining-tokens:' \
-        | awk '{print $2}' | tr -d '\r' || true)
+        | cut -d: -f2 | tr -d '[:space:]' || true)
       limit_tokens=$(printf '%s' "$_resp" | grep -i 'x-ratelimit-limit-tokens:' \
-        | awk '{print $2}' | tr -d '\r' || true)
-      if [ -n "$remaining_tokens" ] && [ -n "$limit_tokens" ] && [ "$limit_tokens" -gt 0 ] 2>/dev/null; then
+        | cut -d: -f2 | tr -d '[:space:]' || true)
+      if [[ "$remaining_tokens" =~ ^[0-9]+$ ]] && [[ "$limit_tokens" =~ ^[0-9]+$ ]] && [ "$limit_tokens" -gt 0 ]; then
         used_pct=$(( 100 - (remaining_tokens * 100 / limit_tokens) ))
       fi
       ;;
@@ -192,10 +192,10 @@ check_provider_headroom() {
         -H "Authorization: Bearer ${COPILOT_GITHUB_TOKEN:-}" \
         -H "X-GitHub-Api-Version: 2022-11-28" 2>/dev/null || true)
       _remaining=$(printf '%s' "$_resp" | grep -i 'x-ratelimit-remaining-requests:' \
-        | awk '{print $2}' | tr -d '\r' || true)
+        | cut -d: -f2 | tr -d '[:space:]' || true)
       _limit=$(printf '%s' "$_resp" | grep -i 'x-ratelimit-limit-requests:' \
-        | awk '{print $2}' | tr -d '\r' || true)
-      if [ -n "$_remaining" ] && [ -n "$_limit" ] && [ "$_limit" -gt 0 ] 2>/dev/null; then
+        | cut -d: -f2 | tr -d '[:space:]' || true)
+      if [[ "$_remaining" =~ ^[0-9]+$ ]] && [[ "$_limit" =~ ^[0-9]+$ ]] && [ "$_limit" -gt 0 ]; then
         used_pct=$(( 100 - (_remaining * 100 / _limit) ))
       fi
       ;;
