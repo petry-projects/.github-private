@@ -196,3 +196,22 @@ repo-b"
   pref_calls=$(grep -c "check-suites/preferences" "$GH_LOG")
   [ "$pref_calls" -eq 2 ]
 }
+
+@test "rs_apply_all: returns 1 and prints error when gh repo list fails" {
+  gh() {
+    if [[ "${1:-}" == "repo" ]] && [[ "${2:-}" == "list" ]]; then
+      echo "[error] network failure" >&2
+      return 1
+    fi
+  }
+  export -f gh
+  run rs_apply_all
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"failed to list"* ]]
+}
+
+@test "rs_auto_trigger_status: returns missing for empty json string" {
+  run rs_auto_trigger_status "" 1236702
+  [ "$status" -eq 0 ]
+  [ "$output" = "missing" ]
+}

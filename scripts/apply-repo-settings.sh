@@ -32,7 +32,7 @@ readonly -a RS_DISABLE_APP_IDS=(1236702 347564)  # Claude, CodeRabbit
 # Echoes the current auto_trigger setting for app_id: "true", "false", or
 # "missing" (app not present in preferences — treated as compliant).
 rs_auto_trigger_status() {
-  local json="$1" app_id="$2"
+  local json="${1:-{\}}" app_id="$2"
   printf '%s' "$json" | jq -r --argjson id "$app_id" \
     '.preferences.auto_trigger_checks // []
      | map(select(.app_id == $id))
@@ -82,10 +82,16 @@ rs_apply_repo() {
 
 # rs_apply_all — apply settings to every repo in ORG.
 rs_apply_all() {
+  local repos
+  if ! repos=$(gh repo list "${ORG}" --json name --jq '.[].name' --limit 1000); then
+    echo "[error] failed to list repositories for org ${ORG}" >&2
+    return 1
+  fi
+
   local repo_name
   while IFS= read -r repo_name; do
-    rs_apply_repo "${ORG}/${repo_name}"
-  done < <(gh repo list "${ORG}" --json name --jq '.[].name' --limit 1000)
+    [ -n "$repo_name" ] && rs_apply_repo "${ORG}/${repo_name}"
+  done <<< "$repos"
 }
 
 # Run main only when executed directly, so tests can source the helpers.
