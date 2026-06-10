@@ -8,6 +8,15 @@ on:
         type: string
         required: false
         default: ""
+      agent_ref:
+        # Ref of petry-projects/.github-private to check out for the dev-lead
+        # scripts. A trigger-stub caller passes its pinned channel (dev-lead/stable)
+        # so the agent runs at the pinned version, not main — the self-host pin
+        # (#535/#506). Defaults to "main" → unchanged behaviour.
+        description: "Ref of petry-projects/.github-private to check out for dev-lead scripts"
+        type: string
+        required: false
+        default: "main"
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         required: true
@@ -97,7 +106,9 @@ jobs:
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           repository: petry-projects/.github-private
-          ref: main
+          # Pinned channel (e.g. dev-lead/stable) when a trigger stub passes it;
+          # defaults to "main" → unchanged behaviour (#535/#506).
+          ref: ${{ inputs.agent_ref }}
           path: .dev-lead
           # Cross-repo callers: github.token cannot read a private org repo — ensure
           # GH_PAT_WORKFLOWS is set as an org or repo secret in the calling repo.
