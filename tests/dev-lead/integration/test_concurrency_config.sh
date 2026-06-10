@@ -25,7 +25,7 @@ check_concurrency_field() {
   local file="$1" pattern="$2" label="$3"
   local block
   block=$(awk '/^concurrency:/{found=1} found && /^[a-z]/ && !/^concurrency:/{found=0} found{print}' "$file" \
-    | grep -v '^\s*#' || true)
+    | grep -Ev '^[[:space:]]*#' || true)
   if printf '%s\n' "$block" | grep -qF "$pattern"; then
     echo "PASS [$label]: '$pattern' present in concurrency YAML of $(basename "$file")"
   else
@@ -43,7 +43,7 @@ check_concurrency_order() {
   local file="$1" before="$2" after="$3" label="$4"
   local block
   block=$(awk '/^concurrency:/{found=1} found && /^[a-z]/ && !/^concurrency:/{found=0} found{print}' "$file" \
-    | grep -v '^\s*#' || true)
+    | grep -Ev '^[[:space:]]*#' || true)
   local line_before line_after
   line_before=$(printf '%s\n' "$block" | grep -nF "$before" | head -1 | cut -d: -f1 || true)
   line_after=$(printf '%s\n' "$block" | grep -nF "$after" | head -1 | cut -d: -f1 || true)
