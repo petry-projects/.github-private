@@ -1,0 +1,172 @@
+# Release runbook — cut, promote, roll back
+
+Operational procedures for the per-agent channel-tag release model (initiative
+#495, targets SC4). For the *what* and *why* of the scheme, see
+[`versioning.md`](./versioning.md) and the
+[initiative analysis](../initiatives/agentic-release-strategy.md) §5.1, §7.
+
+**Agents covered:** `pr-review`, `dev-lead`. Both live in this repo; callers
+(consumers + this repo's own self-host duty) pin the moving channel tag
+`@<agent>/stable` and thread `agent_ref: <agent>/stable`.
+
+**Two tag kinds per agent:**
+
+| Tag | Mutable? | Role |
+|---|---|---|
+| `<agent>/vX.Y.Z` | No — never moved or deleted | Immutable audit trail + rollback target |
+| `<agent>/stable` | Yes — advanced on promotion | What every caller pins to |
+
+The goal: cut, promote, and **roll back in < 5 minutes with no per-caller edits
+and no manual file surgery** — every rollout/rollback is a single central tag
+move.
+
+---
+
+## Roles & gating
+
+- **Cutting an immutable `vX.Y.Z` tag** is harmless (it rolls out nothing until
+  `stable` moves) and may be done as part of normal release prep.
+- **Promotion (moving `<agent>/stable`)** is a production rollout to every
+  caller. It is **Phase-1 human-driven**: it requires explicit human
+  authorization each time. Do not move a channel tag autonomously.
+- **Who *can* move a channel tag:** the `release-channel-tags` ruleset (targets
+  tags `pr-review/**`, `dev-lead/**`) restricts `update`/`deletion` with bypass
+  limited to **OrganizationAdmin** and the automation **Integration** app. The
+  agents themselves (running as `GITHUB_TOKEN`) cannot. See
+  [`AGENTS.md`](../../AGENTS.md) "Release channel tags & the mutable-ref exception".
+
+---
+
+## 1. Cut a release
+
+Cut an immutable `<agent>/vX.Y.Z` at a reviewed, merged commit (default ref
+`origin/main`).
+
+```bash
+# Preview (touches nothing):
+bash scripts/cut-release.sh pr-review 1.6.0 --ref origin/main --dry-run
+
+# Cut the immutable tag only (no promotion):
+bash scripts/cut-release.sh pr-review 1.6.0 --ref origin/main --push
+```
+
+- Pick the version per semver (see `versioning.md#semantic-versioning`): bugfix →
+  PATCH, backward-compatible behavior → MINOR, breaking input/contract → MAJOR.
+- `cut-release.sh` **refuses to overwrite an existing immutable tag** — release
+  tags are forever.
+- Cut at a commit that is actually on `main` and has passed CI. Do **not** cut at
+  a SHA you only believe merged — confirm with `git log origin/main`.
+
+---
+
+## 2. Promote (roll forward)
+
+Promotion advances `<agent>/stable` to a cut release. **Requires human
+authorization** (see Roles & gating).
+
+### 2a. New release — cut + promote in one step
+
+When the `vX.Y.Z` tag does **not** yet exist, `cut-release.sh` can create it and
+move the channel together:
+
+```bash
+bash scripts/cut-release.sh dev-lead 1.2.0 --ref origin/main --channel stable --push
+```
+
+### 2b. Already-cut release — move the channel only
+
+`cut-release.sh --channel` re-creates the immutable tag first, so it **errors if
+`vX.Y.Z` already exists** (`immutable tags are never overwritten`). To promote an
+already-cut release, move the channel tag directly:
+
+```bash
+# Advance pr-review/stable to the already-cut pr-review/v1.5.3:
+git fetch origin --tags
+TARGET=$(git rev-parse 'pr-review/v1.5.3^{commit}')
+git tag -f pr-review/stable "$TARGET"
+git push origin pr-review/stable --force
+```
+
+> **Known gap:** `cut-release.sh` has no channel-only-move mode. Until a
+> `--channel-only` flag exists (follow-up), use the direct `git tag -f` above.
+> Channel tags are lightweight (point straight at the commit); the immutable
+> `vX.Y.Z` tags are annotated.
+
+Then **verify** (§4).
+
+---
+
+## 3. Roll back (< 5 minutes)
+
+Rollback is promotion in reverse: move `<agent>/stable` **back** to the previous
+known-good immutable tag. No caller edits, no file surgery.
+
+```bash
+git fetch origin --tags
+# Roll pr-review/stable back from v1.5.3 to the prior good release v1.5.2:
+PREV=$(git rev-parse 'pr-review/v1.5.2^{commit}')
+git tag -f pr-review/stable "$PREV"
+git push origin pr-review/stable --force
+```
+
+- The immutable `vX.Y.Z` tags are the rollback targets — pick the last release
+  known healthy (`git tag -l 'pr-review/*' | sort -V`).
+- Every caller picks up the rolled-back version on its **next** run with no
+  change on their side. In-flight runs already started on the bad version finish;
+  new runs use the restored one.
+- Then **verify** (§4) and, if the bad version was already cut, leave its
+  immutable tag in place (audit trail) — never delete it.
+
+---
+
+## 4. Verify a caller picked up the change
+
+A promotion/rollback is confirmed when a fresh run resolves the channel to the
+expected commit. Trigger or wait for an agent run on any caller, then check the
+reusable-resolution line in its log:
+
+```bash
+# In the run log, the reusable line shows the resolved tag + SHA:
+#   Uses: …/dev-lead-reusable.yml@refs/tags/dev-lead/stable (d827464…)
+gh run view <run-id> --repo <caller-repo> --log | grep -m1 'reusable.yml@refs/tags/'
+```
+
+Confirm the trailing SHA matches the commit you promoted/rolled back to. For
+`pr-review`, also confirm a fresh `donpetry-bot` review carries the expected
+behavior. To force a run without waiting for an event:
+
+```bash
+gh workflow run pr-review-trigger.yml --repo <caller-repo> \
+  -f pr_url="<pr-url>" -f dry_run=true -f force_review=true
+```
+
+---
+
+## Gotchas (learned in the #495 rollout)
+
+- **Promotion is gated, cutting is not.** Autonomous tooling can cut `vX.Y.Z`
+  but must stop and get authorization before moving `stable`.
+- **`cut-release.sh --channel` ≠ channel-only.** It recreates the immutable tag;
+  for an already-cut release use the direct `git tag -f` move (§2b).
+- **Don't pin a caller to a stale channel.** Before pinning a new caller to
+  `@<agent>/stable`, confirm `stable` is at or ahead of `main` for that agent —
+  a stale channel silently regresses the caller. (dev-lead/stable was advanced
+  v1.1.0 → v1.2.0 before pinning consumers, to avoid reverting #488's fixes.)
+- **CodeQL on freshly-enabled default setup.** If a repo's required `CodeQL`
+  check has no producer, enabling default setup
+  (`PATCH /repos/{repo}/code-scanning/default-setup`) won't retroactively run on
+  an open PR — fire a `synchronize` (e.g. an empty commit) so it analyzes the PR
+  head.
+- **Channel tags are an accepted exception to the SHA-pin policy** — first-party
+  reusables we own, bounded by the `release-channel-tags` ruleset. Compliance
+  audits must not flag `@pr-review/stable` / `@dev-lead/stable` as unpinned.
+
+---
+
+## Validation of this runbook
+
+The cut → promote → verify path was exercised live during the #495 rollout:
+`pr-review/v1.5.3` cut + `pr-review/stable` promoted (the #534 fix), and
+`dev-lead/v1.2.0` cut + `dev-lead/stable` promoted, each verified by a caller run
+resolving `@refs/tags/<agent>/stable (<sha>)`. Rollback is the same single
+tag-move in reverse against the immutable `vX.Y.Z` targets.
