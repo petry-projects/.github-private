@@ -22,7 +22,8 @@ jobs:
       - name: shellcheck
         # --severity=warning: SC2016 (info) fires on printf '`%s`' where backticks
         # are literal markdown, not shell expressions — suppress info-level noise.
-        run: shellcheck --severity=warning scripts/fleet_monitor.sh scripts/fleet_report.sh scripts/token_report.sh scripts/lib/model-pricing.sh scripts/cut-release.sh scripts/pr_review_health.sh
+        # -x: follow source directives (scripts use # shellcheck source= annotations).
+        run: find scripts -name "*.sh" -exec shellcheck --severity=warning -x {} +
 
   bats:
     runs-on: ubuntu-latest
