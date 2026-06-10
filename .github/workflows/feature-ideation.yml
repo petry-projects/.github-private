@@ -1,6 +1,6 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # SOURCE OF TRUTH: petry-projects/.github/standards/workflows/feature-ideation.yml
-# Standard:        petry-projects/.github/standards/ci-standards.md#8-feature-ideation-feature-ideationyml--bmad-method-repos
+# Standard:        petry-projects/.github/standards/ci-standards.md#9-feature-ideation-feature-ideationyml--bmad-method-repos
 # Reusable:        petry-projects/.github/.github/workflows/feature-ideation-reusable.yml
 #
 # AGENTS — READ BEFORE EDITING:

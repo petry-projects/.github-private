@@ -5,12 +5,10 @@
 > **Phase 2: Market Research** of the
 > [Feature Ideation workflow](workflows/feature-ideation.yml).
 >
-> **How it is used:** This file is a **template**. Each adopting repo copies
-> it to `.github/feature-ideation-sources.md` (or the path configured via
-> the `sources_file` workflow input) and customises it for their project.
-> The reusable workflow reads the repo-local copy — it does **not** read
-> this file directly. Mary treats the local list as her starting set for
-> web research, supplementing it with targeted searches as needed.
+> **How it is used:** The reusable workflow reads this file directly during
+> **Phase 2: Market Research** — this is the repo-local copy it consumes.
+> Mary treats the list below as her starting set for web research,
+> supplementing it with targeted searches as needed.
 >
 > **Curation rules:**
 >
@@ -27,9 +25,9 @@
 > - Every entry has a one-line note explaining **why it is on this list** —
 >   if you cannot justify it in one line, it should not be here.
 >
-> **Maintenance:** Each repo owns its own copy — add or remove entries via
-> PR in that repo. To update the shared starter template, open a PR here;
-> existing repos with their own copy will not be affected automatically.
+> **Maintenance:** Add or remove entries via PR against this file in this
+> repo. Changes take effect on the next scheduled or manually triggered
+> Feature Ideation run.
 
 ---
 
