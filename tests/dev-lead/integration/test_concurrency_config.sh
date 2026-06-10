@@ -24,8 +24,7 @@ FAIL=0
 check_concurrency_field() {
   local file="$1" pattern="$2" label="$3"
   local block
-  block=$(awk '/^concurrency:/{found=1} found && /^[a-z]/ && !/^concurrency:/{found=0} found{print}' "$file" \
-    | grep -v '^\s*#')
+  block=$(awk '/^concurrency:/{found=1} found && /^[a-z]/ && !/^concurrency:/{found=0} found && !/^[[:space:]]*#/{print}' "$file")
   if printf '%s\n' "$block" | grep -qF "$pattern"; then
     echo "PASS [$label]: '$pattern' present in concurrency YAML of $(basename "$file")"
   else
@@ -42,11 +41,10 @@ check_concurrency_field() {
 check_concurrency_order() {
   local file="$1" before="$2" after="$3" label="$4"
   local block
-  block=$(awk '/^concurrency:/{found=1} found && /^[a-z]/ && !/^concurrency:/{found=0} found{print}' "$file" \
-    | grep -v '^\s*#')
+  block=$(awk '/^concurrency:/{found=1} found && /^[a-z]/ && !/^concurrency:/{found=0} found && !/^[[:space:]]*#/{print}' "$file")
   local line_before line_after
-  line_before=$(printf '%s\n' "$block" | grep -nF "$before" | head -1 | cut -d: -f1)
-  line_after=$(printf '%s\n' "$block" | grep -nF "$after" | head -1 | cut -d: -f1)
+  line_before=$(printf '%s\n' "$block" | awk -v pat="$before" 'index($0, pat){print NR; exit}')
+  line_after=$(printf '%s\n' "$block" | awk -v pat="$after" 'index($0, pat){print NR; exit}')
   if [[ -z "$line_before" || -z "$line_after" ]]; then
     echo "FAIL [$label]: '$before' or '$after' not found in concurrency YAML of $file"
     FAIL=$((FAIL + 1))
