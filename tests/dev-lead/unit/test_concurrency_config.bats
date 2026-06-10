@@ -9,13 +9,21 @@
 # look like infra noise rather than real test failures.
 
 SCRIPT_DIR="$(cd "$(dirname "$BATS_TEST_FILENAME")/../../.." && pwd)"
+readonly SCRIPT_DIR
 CONCURRENCY_TEST="$SCRIPT_DIR/tests/dev-lead/integration/test_concurrency_config.sh"
+readonly CONCURRENCY_TEST
 
 setup() {
-  WORK_DIR="$(mktemp -d)"
+  WORK_DIR="$(mktemp -d)" || {
+    echo "ERROR: Failed to create temporary directory" >&2
+    exit 1
+  }
   mkdir -p "$WORK_DIR/.github/workflows"
   # Run the script from WORK_DIR so its relative .github/workflows/ paths resolve
-  pushd "$WORK_DIR" > /dev/null
+  pushd "$WORK_DIR" > /dev/null || {
+    echo "ERROR: Failed to change to test directory" >&2
+    exit 1
+  }
 }
 
 teardown() {
