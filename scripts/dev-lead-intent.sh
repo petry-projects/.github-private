@@ -307,7 +307,7 @@ case "$EVENT_NAME" in
     # This is a fast-path guard; checkout_pr_in_worktree provides a deeper safety
     # net, but failing early here avoids spending tokens on a no-op run (issue #405).
     pr_state=$(jq -r '.issue.state // empty' "$EVENT_PATH" 2>/dev/null || true)
-    if [ "${pr_state:-}" = "closed" ]; then
+    if [[ "${pr_state:-}" == "closed" ]]; then
       emit_skip "pr-already-closed"
       exit 0
     fi

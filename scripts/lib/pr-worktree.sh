@@ -61,11 +61,11 @@ checkout_pr_in_worktree() {
   local _pr_state=""
   local _pr_branch=""
   _pr_json="$(gh pr view "$pr" --repo "$repo" --json state,headRefName 2>/dev/null || true)"
-  if [ -n "$_pr_json" ]; then
+  if [[ -n "$_pr_json" ]]; then
     _pr_state="$(echo "$_pr_json" | jq -r '.state // empty' 2>/dev/null || true)"
     _pr_branch="$(echo "$_pr_json" | jq -r '.headRefName // empty' 2>/dev/null || true)"
   fi
-  if [ -n "$_pr_state" ] && [ "$_pr_state" != "OPEN" ]; then
+  if [[ -n "$_pr_state" && "$_pr_state" != "OPEN" ]]; then
     echo "::notice::PR #${pr} is ${_pr_state} — skipping checkout (nothing to modify on a merged/closed PR)"
     exit 0
   fi
