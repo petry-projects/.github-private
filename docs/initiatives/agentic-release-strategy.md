@@ -449,7 +449,7 @@ each agent has an independent promotion path and health gate.
 
 ### 9.2 Key source references
 - `.github/workflows/pr-review-reusable.yml` — `uses: …/pr-review.yml@main` (the `@main` coupling). **Retired (#536)** — consumers now call `pr-review.yml@pr-review/stable` directly, no wrapper.
-- `.github/workflows/deploy-pr-review.yml`, `force-deploy-pr-review.yml` — `PUT /contents` clobber deploy. **Retired (#536)** once all consumers became `@pr-review/stable` reusable callers; channel-tag promotion replaces the clobber.
+- `.github/workflows/deploy-pr-review.yml`, `.github/workflows/force-deploy-pr-review.yml` — `PUT /contents` clobber deploy. **Retired (#536)** once all consumers migrated to the `@pr-review/stable` reusable workflow; channel-tag promotion replaces the clobber.
 - Issues #463, #466, #305 — the circular dependency in production.
 - `gh run list --workflow=pr-review.yml` — 0/20 success streak.
 
