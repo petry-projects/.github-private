@@ -25,6 +25,19 @@ check_run() {
   fi
 }
 
+# check_run_wf <name> <workflowName> <status> [conclusion]
+# Models a CheckRun that also carries a workflowName (as the real rollup does).
+check_run_wf() {
+  local name="$1" wf="$2" status="$3" conclusion="${4:-null}"
+  if [ "$conclusion" = "null" ]; then
+    jq -n --arg name "$name" --arg wf "$wf" --arg status "$status" \
+      '{name: $name, workflowName: $wf, status: $status, conclusion: null}'
+  else
+    jq -n --arg name "$name" --arg wf "$wf" --arg status "$status" --arg conclusion "$conclusion" \
+      '{name: $name, workflowName: $wf, status: $status, conclusion: $conclusion}'
+  fi
+}
+
 # status_ctx <context> <state>
 # Models a commit StatusContext in the statusCheckRollup array.
 status_ctx() {
@@ -184,6 +197,23 @@ rollup() {
 @test "a genuinely external failing check still → failing (regression guard)" {
   local r
   r=$(rollup "$(check_run "review / review" "COMPLETED" "FAILURE")" "$(check_run "SonarCloud" "COMPLETED" "FAILURE")")
+  run compute_ci_status "$r"
+  [ "$output" = "failing" ]
+}
+
+# #536 consumer fan-out: a consumer's OLD pr-review check appears as
+# "pr-review / review" with workflowName "PR Review Agent" — filtered by
+# workflowName so a stale failed own-check doesn't block re-review.
+@test "consumer 'pr-review / review' (workflowName PR Review Agent, FAILURE) is filtered → passing" {
+  local r
+  r=$(rollup "$(check_run_wf "pr-review / review" "PR Review Agent" "COMPLETED" "FAILURE")")
+  run compute_ci_status "$r"
+  [ "$output" = "passing" ]
+}
+
+@test "workflowName filter does NOT swallow an external failing check" {
+  local r
+  r=$(rollup "$(check_run_wf "pr-review / review" "PR Review Agent" "COMPLETED" "FAILURE")" "$(check_run_wf "Backend CI" "Backend CI" "COMPLETED" "FAILURE")")
   run compute_ci_status "$r"
   [ "$output" = "failing" ]
 }

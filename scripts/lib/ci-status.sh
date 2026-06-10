@@ -50,6 +50,14 @@ compute_ci_status() {
       .state == "SUCCESS";
     def is_own_check:
       (.name // .context // "") as $n |
+      (.workflowName // "") as $wf |
+      # Primary, robust signal: any check produced by a PR Review cascade
+      # workflow (PR Review Agent, the Trigger stub, PR Review Reusable, the
+      # Mention Trigger), regardless of the job-name format the rollup reports
+      # (#536: a consumer old check "pr-review / review" had workflowName
+      # "PR Review Agent"). Falls back to name patterns when the rollup does
+      # not expose workflowName.
+      ($wf | test("^PR Review")) or
       ($n == "review") or
       ($n == "review / review") or
       ($n | test("^PR Review (Agent|Reusable) /")) or
