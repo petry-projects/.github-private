@@ -26,9 +26,11 @@ print('valid TOML')
 import tomllib, sys
 with open(sys.argv[1], 'rb') as f:
     cfg = tomllib.load(f)
-paths = cfg.get('allowlist', {}).get('paths', [])
-if not any('frameworks' in p for p in paths):
-    print('ERROR: no frameworks/ path found in [allowlist].paths', file=sys.stderr)
+all_paths = []
+for entry in cfg.get('allowlists', []):
+    all_paths.extend(entry.get('paths', []))
+if not any('frameworks' in p for p in all_paths):
+    print('ERROR: no frameworks/ path found in [[allowlists]] paths', file=sys.stderr)
     sys.exit(1)
 print('OK')
 " "$GITLEAKS_CONFIG"
