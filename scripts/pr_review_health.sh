@@ -255,6 +255,19 @@ Single line: \`Health: X/10 — <one-sentence verdict>\`
 Output ONLY the markdown report — no preamble or commentary outside the report sections.
 PROMPT
 then
+  # Distinguish transient rate-limit/quota errors from real failures.
+  # Pattern is a subset of _rate_limit_pattern() in scripts/engine.sh, focused
+  # on errors observed from the Claude CLI.
+  if grep -qiE "hit your limit|rate.?limit|resets [0-9]+(am|pm)|usage limit|quota|overloaded_error|claude.*usage" "$REPORT_FILE"; then
+    echo "::warning::Claude rate limit reached — health analysis deferred. Re-run manually when the limit resets."
+    printf '# PR Review Agent Health Check — %s\n\n**Analysis deferred:** Claude daily usage limit reached during log analysis. Re-run this workflow manually when the limit resets.\n\nFailed run count (unanalyzed): %d of %d total.\n' \
+      "$TODAY" "$failed_runs" "$total_runs" > "$REPORT_FILE"
+    # Override HAS_FAILURES so the issue-creation step does not file a spurious
+    # ticket for what is a transient infrastructure constraint, not a PR review failure.
+    [[ -n "${GITHUB_ENV:-}" ]] && echo "HAS_FAILURES=false" >> "$GITHUB_ENV"
+    rm -f "$logs_file"
+    exit 0
+  fi
   echo "::error::Claude invocation failed. CLI output follows:"
   cat "$REPORT_FILE" >&2
   rm -f "$logs_file"
