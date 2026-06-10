@@ -107,10 +107,9 @@ jobs:
             prompts/dev-lead
 
       - name: Protect dev-lead scripts from accidental git staging
-        run: echo ".dev-lead/" >> .gitignore
-
-      - name: Revert .gitignore changes before git operations
-        run: git checkout .gitignore || true
+        run: |
+          mkdir -p .git/info
+          echo ".dev-lead/" >> .git/info/exclude
 
       - name: Classify event intent
         id: intent
