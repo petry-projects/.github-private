@@ -186,10 +186,18 @@ check_provider_headroom() {
       return 0
       ;;
     copilot)
+      # Skip probe when no real GitHub token is present — avoids unnecessary
+      # external calls in unit tests and CI environments where the token is
+      # unset or set to a placeholder value.
+      local _tok="${COPILOT_GITHUB_TOKEN:-}"
+      if [[ -z "$_tok" ]] || [[ ! "$_tok" =~ ^(github_pat_|ghp_|ghs_) ]]; then
+        echo "  [headroom] copilot — no valid token, proceeding" >&2
+        return 0
+      fi
       # Probe GitHub Models API rate-limit headers via a lightweight HEAD.
       local _resp _remaining _limit
-      _resp=$(curl -sI https://models.github.ai/inference/chat/completions \
-        -H "Authorization: Bearer ${COPILOT_GITHUB_TOKEN:-}" \
+      _resp=$(curl -sI --max-time 5 https://models.github.ai/inference/chat/completions \
+        -H "Authorization: Bearer ${_tok}" \
         -H "X-GitHub-Api-Version: 2022-11-28" 2>/dev/null || true)
       _remaining=$(printf '%s' "$_resp" | grep -i 'x-ratelimit-remaining-requests:' \
         | cut -d: -f2 | tr -d '[:space:]' || true)

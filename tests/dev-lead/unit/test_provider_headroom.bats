@@ -131,7 +131,7 @@ STUB
 printf 'HTTP/2 200\r\nx-ratelimit-remaining-requests: 100\r\nx-ratelimit-limit-requests: 200\r\n\r\n'
 STUB
   chmod +x "$STUB_BIN_DIR/curl"
-  export COPILOT_GITHUB_TOKEN="dummy"
+  export COPILOT_GITHUB_TOKEN="github_pat_testdummyvalue123"
 
   run check_provider_headroom "copilot"
   [ "$status" -eq 0 ]
@@ -145,10 +145,40 @@ STUB
 printf 'HTTP/2 200\r\nx-ratelimit-remaining-requests: 10\r\nx-ratelimit-limit-requests: 200\r\n\r\n'
 STUB
   chmod +x "$STUB_BIN_DIR/curl"
-  export COPILOT_GITHUB_TOKEN="dummy"
+  export COPILOT_GITHUB_TOKEN="github_pat_testdummyvalue123"
 
   run check_provider_headroom "copilot"
   [ "$status" -eq 1 ]
+}
+
+@test "headroom: copilot returns 0 (proceed) when COPILOT_GITHUB_TOKEN is unset" {
+  _source_engine "copilot"
+  unset COPILOT_GITHUB_TOKEN
+  # curl stub fails so an accidental call would be caught
+  cat > "$STUB_BIN_DIR/curl" <<'STUB'
+#!/usr/bin/env bash
+exit 1
+STUB
+  chmod +x "$STUB_BIN_DIR/curl"
+
+  run check_provider_headroom "copilot"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"no valid token"* ]]
+}
+
+@test "headroom: copilot returns 0 (proceed) when COPILOT_GITHUB_TOKEN is a placeholder" {
+  _source_engine "copilot"
+  export COPILOT_GITHUB_TOKEN="dummy"
+  # curl stub fails so an accidental call would be caught
+  cat > "$STUB_BIN_DIR/curl" <<'STUB'
+#!/usr/bin/env bash
+exit 1
+STUB
+  chmod +x "$STUB_BIN_DIR/curl"
+
+  run check_provider_headroom "copilot"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"no valid token"* ]]
 }
 
 # ── configurable threshold ────────────────────────────────────────────────────
