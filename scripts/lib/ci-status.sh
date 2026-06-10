@@ -30,6 +30,11 @@
 #   to race an in-progress branch-mutating run.
 #   Matched:
 #   • Bare job name: "review"
+#   • Nested job form "review / review" — produced once the cascade is invoked
+#     via the trigger stub (pr-review-trigger.yml → reusable pr-review.yml@
+#     pr-review/stable), where the rollup name becomes "callerJob / reusableJob"
+#     rather than the bare job name (#497 self-host). Matched exactly (not by a
+#     "/ review" suffix) so a genuine external "Build / review" is NOT filtered.
 #   • "PR Review Agent / *"
 #   • "PR Review Reusable / *"
 #   • "PR Review — Mention Trigger / *"
@@ -46,6 +51,7 @@ compute_ci_status() {
     def is_own_check:
       (.name // .context // "") as $n |
       ($n == "review") or
+      ($n == "review / review") or
       ($n | test("^PR Review (Agent|Reusable) /")) or
       ($n | test("^PR Review — Mention Trigger /"));
     if (. == null or (type != "array")) then "passing"
