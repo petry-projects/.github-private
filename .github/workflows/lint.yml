@@ -22,7 +22,7 @@ jobs:
       - name: shellcheck
         # --severity=warning: SC2016 (info) fires on printf '`%s`' where backticks
         # are literal markdown, not shell expressions — suppress info-level noise.
-        run: shellcheck --severity=warning scripts/fleet_monitor.sh scripts/fleet_report.sh scripts/token_report.sh scripts/lib/model-pricing.sh scripts/cut-release.sh
+        run: shellcheck --severity=warning scripts/fleet_monitor.sh scripts/fleet_report.sh scripts/token_report.sh scripts/lib/model-pricing.sh scripts/cut-release.sh scripts/pr_review_health.sh
 
   bats:
     runs-on: ubuntu-latest
@@ -44,7 +44,8 @@ jobs:
             tests/test_push_protection.bats \
             tests/test_verify_auth_scopes.bats \
             tests/test_initiative_driver.bats \
-            tests/test_cut_release.bats
+            tests/test_cut_release.bats \
+            tests/test_pr_review_health.bats
 
   validate-agent-profiles:
     runs-on: ubuntu-latest
