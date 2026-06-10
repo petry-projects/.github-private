@@ -28,21 +28,24 @@ def main() -> int:
     except FileNotFoundError:
         print(f"FAIL: {WORKFLOW} not found")
         return 1
+    except yaml.YAMLError as err:
+        print(f"FAIL: {WORKFLOW} is not valid YAML: {err}")
+        return 1
 
     if not isinstance(doc, dict):
         print(f"FAIL: {WORKFLOW} did not parse as a YAML mapping")
         return 1
 
-    jobs = doc.get("jobs") or {}
-    if not jobs:
-        print(f"FAIL: {WORKFLOW} has no jobs")
+    jobs = doc.get("jobs")
+    if not isinstance(jobs, dict) or not jobs:
+        print(f"FAIL: {WORKFLOW} 'jobs' key is missing, empty, or not a mapping")
         return 1
 
     for job_key, job in jobs.items():
         if not isinstance(job, dict):
             continue
-        uses = job.get("uses", "")
-        if "dependency-audit-reusable.yml" in uses:
+        uses = job.get("uses")
+        if isinstance(uses, str) and "dependency-audit-reusable.yml" in uses:
             if uses == EXPECTED_USES:
                 print(f"PASS: {WORKFLOW} job '{job_key}' delegates to {EXPECTED_USES}")
                 return 0
