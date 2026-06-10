@@ -22,11 +22,11 @@ setup() {
 }
 
 @test "dependabot.yml has security label (compliance-audit check)" {
-  grep -qE '("security"|'"'"'security'"'"'|security)' "$DEPENDABOT_YML"
+  [[ "$(yq '.updates[] | select(.["package-ecosystem"] == "github-actions") | .labels[] | select(. == "security")' "$DEPENDABOT_YML")" == "security" ]]
 }
 
 @test "dependabot.yml has dependencies label (compliance-audit check)" {
-  grep -qE '("dependencies"|'"'"'dependencies'"'"'|dependencies)' "$DEPENDABOT_YML"
+  [[ "$(yq '.updates[] | select(.["package-ecosystem"] == "github-actions") | .labels[] | select(. == "dependencies")' "$DEPENDABOT_YML")" == "dependencies" ]]
 }
 
 @test "dependabot.yml github-actions entry has open-pull-requests-limit: 10" {
