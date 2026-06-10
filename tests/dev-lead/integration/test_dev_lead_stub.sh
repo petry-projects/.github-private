@@ -22,12 +22,14 @@ if [ ! -f "$WORKFLOW" ]; then
   exit 1
 fi
 
-# 2. Must contain a `uses:` line that calls dev-lead-reusable.yml@main.
-#    This is the structural signature of a thin caller stub.
-if grep -qF 'dev-lead-reusable.yml@main' "$WORKFLOW"; then
-  pass "dev-lead.yml delegates to dev-lead-reusable.yml@main"
+# 2. Must contain a `uses:` line that calls dev-lead-reusable.yml at some ref.
+#    Accepted: @main or a first-party channel tag (@dev-lead/stable, etc.).
+#    See AGENTS.md §"Release channel tags & the mutable-ref exception".
+if grep -qE 'dev-lead-reusable\.yml@\S+' "$WORKFLOW"; then
+  ref=$(grep -oE 'dev-lead-reusable\.yml@\S+' "$WORKFLOW" | head -1)
+  pass "dev-lead.yml delegates to ${ref} (thin caller stub)"
 else
-  fail "dev-lead.yml does not call dev-lead-reusable.yml@main — it must be a thin caller stub"
+  fail "dev-lead.yml does not call dev-lead-reusable.yml — it must be a thin caller stub delegating to @main or a channel tag"
 fi
 
 # 3. Must NOT contain inline job steps (run: blocks with bash scripts).
