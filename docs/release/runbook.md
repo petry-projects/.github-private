@@ -110,7 +110,7 @@ git push origin pr-review/stable --force
 ```
 
 - The immutable `vX.Y.Z` tags are the rollback targets — pick the last release
-  known healthy (`git tag -l 'pr-review/*' | sort -V`).
+  known healthy (`git tag -l 'pr-review/v*' | sort -V`).
 - Every caller picks up the rolled-back version on its **next** run with no
   change on their side. In-flight runs already started on the bad version finish;
   new runs use the restored one.
@@ -128,7 +128,7 @@ reusable-resolution line in its log:
 ```bash
 # In the run log, the reusable line shows the resolved tag + SHA:
 #   Uses: …/dev-lead-reusable.yml@refs/tags/dev-lead/stable (d827464…)
-gh run view <run-id> --repo <caller-repo> --log | grep -m1 'reusable.yml@refs/tags/'
+gh run view <run-id> --repo <caller-repo> --log | grep -m1 '@refs/tags/'
 ```
 
 Confirm the trailing SHA matches the commit you promoted/rolled back to. For
@@ -150,8 +150,8 @@ gh workflow run pr-review-trigger.yml --repo <caller-repo> \
   for an already-cut release use the direct `git tag -f` move (§2b).
 - **Don't pin a caller to a stale channel.** Before pinning a new caller to
   `@<agent>/stable`, confirm `stable` is at or ahead of `main` for that agent —
-  a stale channel silently regresses the caller. (dev-lead/stable was advanced
-  v1.1.0 → v1.2.0 before pinning consumers, to avoid reverting #488's fixes.)
+  a stale channel silently regresses the caller. (e.g., `dev-lead/stable` was advanced
+  from `v1.1.0` to `v1.2.0` before pinning consumers, to avoid reverting #488's fixes.)
 - **CodeQL on freshly-enabled default setup.** If a repo's required `CodeQL`
   check has no producer, enabling default setup
   (`PATCH /repos/{repo}/code-scanning/default-setup`) won't retroactively run on
