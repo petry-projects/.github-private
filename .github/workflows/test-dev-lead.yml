@@ -8,6 +8,7 @@ on:
       - '.github/workflows/dev-lead*.yml'
       - '.github/workflows/test-dev-lead.yml'
       - '.github/workflows/issue-triage-runner.yml'
+      - '.github/workflows/dependency-audit.yml'
       - 'tests/dev-lead/**'
       - 'prompts/dev-lead/**'
   push:
@@ -24,6 +25,7 @@ on:
       - '.github/workflows/dev-lead*.yml'
       - '.github/workflows/test-dev-lead.yml'
       - '.github/workflows/issue-triage-runner.yml'
+      - '.github/workflows/dependency-audit.yml'
   workflow_dispatch: {}
 
 permissions:
@@ -118,3 +120,14 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
       - name: Validate dev-lead.yml is a thin caller stub
         run: bash tests/dev-lead/integration/test_dev_lead_stub.sh
+
+  dependency-audit-stub:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - name: Install PyYAML
+        run: python3 -m pip install --quiet pyyaml
+      - name: Validate dependency-audit.yml is pinned to the canonical @v1 ref
+        run: python3 tests/dev-lead/integration/test_dependency_audit_stub.py
