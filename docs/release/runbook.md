@@ -75,7 +75,7 @@ scripts/cut-release.sh dev-lead 1.2.0 --ref origin/main --channel stable --push
 
 ### 2b. Already-cut release — move the channel only
 
-`cut-release.sh --channel` re-creates the immutable tag first, so it **errors if
+`cut-release.sh --channel` creates the immutable tag first, so it **errors if
 `vX.Y.Z` already exists** (`immutable tags are never overwritten`). To promote an
 already-cut release, move the channel tag directly:
 
@@ -146,7 +146,7 @@ gh workflow run pr-review-trigger.yml --repo <caller-repo> \
 
 - **Promotion is gated, cutting is not.** Autonomous tooling can cut `vX.Y.Z`
   but must stop and get authorization before moving `stable`.
-- **`cut-release.sh --channel` ≠ channel-only.** It recreates the immutable tag;
+- **`cut-release.sh --channel` ≠ channel-only.** It creates the immutable tag;
   for an already-cut release use the direct `git tag -f` move (§2b).
 - **Don't pin a caller to a stale channel.** Before pinning a new caller to
   `@<agent>/stable`, confirm `stable` is at or ahead of `main` for that agent —
