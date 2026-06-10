@@ -164,6 +164,30 @@ rollup() {
   [ "$output" = "passing" ]
 }
 
+# #497 self-host: invoked via the trigger stub, the cascade's own check appears
+# as the nested "review / review" — must still be filtered so a stale/failed own
+# check never blocks the agent from re-reviewing.
+@test "nested 'review / review' (FAILURE) is filtered out → passing" {
+  local r
+  r=$(rollup "$(check_run "review / review" "COMPLETED" "FAILURE")")
+  run compute_ci_status "$r"
+  [ "$output" = "passing" ]
+}
+
+@test "nested 'review / review' FAILURE alongside an external pass → passing" {
+  local r
+  r=$(rollup "$(check_run "review / review" "COMPLETED" "FAILURE")" "$(check_run "SonarCloud" "COMPLETED" "SUCCESS")")
+  run compute_ci_status "$r"
+  [ "$output" = "passing" ]
+}
+
+@test "a genuinely external failing check still → failing (regression guard)" {
+  local r
+  r=$(rollup "$(check_run "review / review" "COMPLETED" "FAILURE")" "$(check_run "SonarCloud" "COMPLETED" "FAILURE")")
+  run compute_ci_status "$r"
+  [ "$output" = "failing" ]
+}
+
 # ---------------------------------------------------------------------------
 # Dev-lead and generic workflow/job-suffix checks are NOT filtered
 # Dev-lead can commit back to the PR branch, so it must remain a real CI gate.
