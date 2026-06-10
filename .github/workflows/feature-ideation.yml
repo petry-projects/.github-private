@@ -1,0 +1,99 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# SOURCE OF TRUTH: petry-projects/.github/standards/workflows/feature-ideation.yml
+# Standard:        petry-projects/.github/standards/ci-standards.md#9-feature-ideation-feature-ideationyml--bmad-method-repos
+# Reusable:        petry-projects/.github/.github/workflows/feature-ideation-reusable.yml
+#
+# AGENTS — READ BEFORE EDITING:
+#   • This file is a THIN CALLER STUB. The 5-phase ideation pipeline, the
+#     Opus 4.6 model selection, the github_token override, and the
+#     ANTHROPIC_MODEL env var all live in the reusable workflow above.
+#   • You MAY change: the `project_context` value (the only required edit
+#     per repo), and optionally the cron schedule.
+#   • You MUST NOT change: trigger event shape, the `uses:` line, the
+#     job-level `permissions:` block, or the `secrets:` block — these are
+#     required for the reusable to work.
+#   • If you need different behaviour, open a PR against the reusable in
+#     the central repo. The change will propagate everywhere on next run.
+# ─────────────────────────────────────────────────────────────────────────────
+name: Feature Research & Ideation (BMAD Analyst)
+
+on:
+  schedule:
+    - cron: '0 7 * * 5' # Friday 07:00 UTC (3 AM EDT / 2 AM EST)
+  workflow_dispatch:
+    inputs:
+      focus_area:
+        description: 'Optional focus area (e.g., "agent cost routing", "CI security")'
+        required: false
+        type: string
+      research_depth:
+        description: 'Research depth'
+        required: false
+        default: 'standard'
+        type: choice
+        options:
+          - quick
+          - standard
+          - deep
+      dry_run:
+        description: 'Skip Discussion mutations and log them to a JSONL artifact instead. Use this to smoke-test before going live.'
+        required: false
+        default: false
+        type: boolean
+
+permissions: {}
+
+concurrency:
+  group: feature-ideation
+  cancel-in-progress: false
+
+jobs:
+  ideate:
+    # Permissions cascade from the calling job to the reusable workflow.
+    # The reusable workflow's two jobs (gather-signals + analyze) need:
+    #   - contents:      read   (checkout, file reads)
+    #   - issues:        read   (signal collection)
+    #   - pull-requests: read   (signal collection)
+    #   - discussions:   write  (CRITICAL — create/update Discussion threads)
+    #   - id-token:      write  (claude-code-action OIDC for GitHub App token)
+    #   - actions:       read   (feed checkpoint — last successful run query)
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+      discussions: write
+      id-token: write
+      actions: read
+    uses: petry-projects/.github/.github/workflows/feature-ideation-reusable.yml@d3d768dabb7f28cc63283cdfe48630da53700e50 # v1
+    with:
+      # === CUSTOMISE THIS PER REPO — the only required edit ===
+      project_context: |
+        petry-projects/.github-private is the org-level private automation
+        repository for the petry-projects GitHub organisation. It owns the org's
+        agentic CI/CD operations: the dev-lead autonomous engineering agent, the
+        multi-stage PR-review pipeline, scheduled health and actions-fleet
+        monitors, dependency-audit and release-notes automation, Copilot custom
+        agent profiles (agents/), prompt libraries (prompts/), and the shell
+        orchestration (scripts/) executed by GitHub Actions. It complements the
+        public petry-projects/.github standards repo by hosting the private
+        execution logic and the self-hosting agent harness — engine.sh tier
+        routing and channel-tag release rings. Downstream consumers are internal
+        product repos (Broodly, TalkTerm, markets) plus the org's own agent
+        fleet. Key trends Mary should research: agentic software-engineering
+        automation (autonomous PR fix/review bots, multi-agent orchestration),
+        LLM model and cost routing for agent harnesses (capability-vs-price tier
+        selection, adaptive thinking, new Claude/Gemini tiers), GitHub Actions
+        platform advances (reusable-workflow versioning, OIDC, larger runners,
+        merge queues), prompt-injection and least-privilege hardening for
+        agent workflows (agent-shield threat models, supply-chain pinning), and
+        safe self-hosting release strategies (canary and ring rollouts for
+        agents that modify their own infrastructure). No public users — this is
+        internal DevX and agent-operations infrastructure.
+      # === OPTIONAL: repo-local reputable source list ===
+      # This repo ships .github/feature-ideation-sources.md, which is the
+      # reusable workflow's default path — so no sources_file override is needed.
+      focus_area: ${{ inputs.focus_area || '' }}
+      research_depth: ${{ inputs.research_depth || 'standard' }}
+      dry_run: ${{ inputs.dry_run || false }}
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
