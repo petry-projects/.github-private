@@ -21,9 +21,10 @@ This is the `.github-private` org infrastructure repo for `petry-projects`. It c
 
 - Do **not** modify `.github/workflows/agent-shield.yml` — this is exempted from agent modification per
   [`standards/agent-standards.md`](https://github.com/petry-projects/.github/blob/main/standards/agent-standards.md).
-- `.github/workflows/dev-lead.yml` is this repo's primary AI automation workflow (replaced `claude.yml` 2026-05).
-  It runs inline steps directly. To change behavior for this repo only, edit `dev-lead.yml`.
-  To change behavior across all org repos (via the cross-repo reusable), edit `dev-lead-reusable.yml`.
+- `.github/workflows/dev-lead.yml` is a thin caller stub that delegates to
+  `dev-lead-reusable.yml` (the canonical org standard). To change behavior for
+  all org repos, edit `dev-lead-reusable.yml`. Repo-specific trigger adjustments
+  may be made to `dev-lead.yml` per the stub's header comment.
 - All other workflow changes must use templates from
   [`standards/workflows/`](https://github.com/petry-projects/.github/tree/main/standards/workflows) verbatim.
 - **Exception:** The `gh-aw-compile` job in `lint.yml` is a documented repo-specific addition that gates
