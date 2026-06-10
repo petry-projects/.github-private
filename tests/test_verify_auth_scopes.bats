@@ -48,29 +48,30 @@ set_gh_token_stub() {
 # Fine-grained PAT detection via github_pat_ prefix
 # ---------------------------------------------------------------------------
 
-@test "fine-grained PAT (github_pat_11 prefix) exits 1 with error" {
+@test "fine-grained PAT (github_pat_11 prefix) exits 0 with warning" {
   make_gh_stub "✓ Logged in to github.com account donpetry-bot (GH_TOKEN)
 - Active account: true
 - Git operations protocol: https
 - Token: github_pat_11CDFSYKQ0_***"
 
   run bash "$SCRIPT"
-  [ "$status" -eq 1 ]
+  [ "$status" -eq 0 ]
   [[ "$output" == *"Fine-grained PAT detected"* ]]
-  [[ "$output" == *"::error::"* ]]
+  [[ "$output" == *"::warning::"* ]]
 }
 
-@test "fine-grained PAT error includes classic PAT replacement guidance" {
+@test "fine-grained PAT warning includes classic PAT setup guidance" {
   make_gh_stub "✓ Logged in to github.com account donpetry-bot (GH_TOKEN)
 - Active account: true
 - Token: github_pat_11ABCXYZ_***"
 
   run bash "$SCRIPT"
-  [ "$status" -eq 1 ]
+  [ "$status" -eq 0 ]
   [[ "$output" == *"classic PAT"* ]]
+  [[ "$output" == *"::warning::"* ]]
 }
 
-@test "fine-grained PAT detected via gh auth token when status masks prefix exits 1" {
+@test "fine-grained PAT detected via gh auth token when status masks prefix exits 0 with warning" {
   # Simulate a gh version that fully masks the token in auth status output
   # (no github_pat_ prefix visible) — detection falls back to gh auth token.
   make_gh_stub "✓ Logged in to github.com account donpetry-bot (GH_TOKEN)
@@ -79,9 +80,9 @@ set_gh_token_stub() {
   set_gh_token_stub "github_pat_maskedInStatus_someValue"
 
   run bash "$SCRIPT"
-  [ "$status" -eq 1 ]
+  [ "$status" -eq 0 ]
   [[ "$output" == *"Fine-grained PAT detected"* ]]
-  [[ "$output" == *"::error::"* ]]
+  [[ "$output" == *"::warning::"* ]]
 }
 
 # ---------------------------------------------------------------------------

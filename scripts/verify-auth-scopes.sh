@@ -36,11 +36,11 @@ else
 fi
 if [[ "$_fgpat" -eq 1 ]]; then
   unset _fgpat
-  echo "::error::Fine-grained PAT detected — fine-grained PATs are not supported by this workflow."
-  echo "::error::Fine-grained PATs fail at addPullRequestReview (GraphQL: Resource not accessible by personal access token)."
-  echo "::error::Replace DON_PETRY_BOT_GH_PAT with a classic PAT that has repo, workflow, and read:org scopes."
-  echo "::error::See docs/pr-review-agent/setup.md → Troubleshooting for details."
-  exit 1
+  echo "::warning::Fine-grained PAT detected — gh pr review --approve (addPullRequestReview) will fail."
+  echo "::warning::Set DON_PETRY_BOT_GH_PAT_CLASSIC (classic PAT with repo + read:org) to enable approvals."
+  echo "::warning::See docs/pr-review-agent/machine-user-setup.md for the dual-secret setup."
+  echo "::warning::Proceeding with reduced functionality (read/comment; no approval submissions)."
+  exit 0
 fi
 unset _fgpat
 
