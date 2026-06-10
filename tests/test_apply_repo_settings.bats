@@ -98,6 +98,15 @@ teardown() {
 }
 
 # ---------------------------------------------------------------------------
+# rs_apply_repo — parameter guard
+# ---------------------------------------------------------------------------
+
+@test "rs_apply_repo: returns non-zero when called with empty repo argument" {
+  run rs_apply_repo ""
+  [ "$status" -ne 0 ]
+}
+
+# ---------------------------------------------------------------------------
 # rs_apply_repo — dry-run mode
 # ---------------------------------------------------------------------------
 
@@ -145,6 +154,22 @@ teardown() {
   export MOCK_PREFS="$PREFS_BOTH_ENABLED"
   run rs_apply_repo "test-org/myrepo"
   grep "PATCH" "$GH_LOG" | grep -q "1236702"
+}
+
+# ---------------------------------------------------------------------------
+# rs_apply_repo — live mode, API failure
+# ---------------------------------------------------------------------------
+
+@test "rs_apply_repo live: returns 1 when GET check-suite preferences fails" {
+  gh() {
+    if [[ "$*" == *"check-suites/preferences"* ]]; then
+      echo "[error] API failure" >&2
+      return 1
+    fi
+  }
+  export -f gh
+  run rs_apply_repo "test-org/myrepo"
+  [ "$status" -eq 1 ]
 }
 
 # ---------------------------------------------------------------------------

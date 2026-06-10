@@ -43,7 +43,7 @@ rs_auto_trigger_status() {
 # Disables auto-trigger on <owner/repo> for all RS_DISABLE_APP_IDS.
 # Apps absent from preferences are compliant by definition — no action taken.
 rs_apply_repo() {
-  local repo="$1"
+  local repo="${1:?rs_apply_repo: repo argument must not be empty}"
 
   if [ "${DEV_LEAD_DRY_RUN:-false}" = "true" ]; then
     echo "[dry-run] would disable auto-trigger for apps ${RS_DISABLE_APP_IDS[*]} on ${repo}"
@@ -52,11 +52,12 @@ rs_apply_repo() {
 
   local prefs
   if ! prefs=$(gh api "repos/${repo}/check-suites/preferences"); then
-    echo "[warn] ${repo}: failed to get check-suite preferences — skipping" >&2
-    return 0
+    echo "[warn] ${repo}: failed to get check-suite preferences" >&2
+    return 1
   fi
 
-  local items="" app_id status
+  local -a to_disable=()
+  local app_id status
   for app_id in "${RS_DISABLE_APP_IDS[@]}"; do
     status=$(rs_auto_trigger_status "$prefs" "$app_id")
     case "$status" in
@@ -66,16 +67,18 @@ rs_apply_repo() {
         echo "[info] ${repo}: app ${app_id} already disabled — skipping" ;;
       true)
         echo "[apply] ${repo}: app ${app_id} auto-trigger enabled — disabling"
-        items="${items:+${items},}{\"app_id\":${app_id},\"setting\":false}" ;;
+        to_disable+=("$app_id") ;;
     esac
   done
 
-  if [ -z "$items" ]; then
+  if [ "${#to_disable[@]}" -eq 0 ]; then
     echo "[info] ${repo}: already compliant — nothing to do"
     return 0
   fi
 
-  local payload="{\"auto_trigger_checks\":[${items}]}"
+  local payload
+  payload=$(printf '%s\n' "${to_disable[@]}" | \
+    jq -Rcn '[inputs | tonumber] | map({app_id: ., setting: false}) | {auto_trigger_checks: .}')
   gh api -X PATCH "repos/${repo}/check-suites/preferences" \
     --input - <<<"$payload"
 }
