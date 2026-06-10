@@ -1,0 +1,53 @@
+title = "gitleaks config for petry-projects/.github-private"
+
+[extend]
+useDefault = true
+
+# condition="AND" requires BOTH path AND regex to match before suppressing a finding;
+# without it gitleaks defaults to OR, which would suppress real secrets in other files
+# that happen to match the regexes, or any finding in the test file regardless of type.
+# - Commit cd4b367: literal PEM block in the PEM-redaction test fixture.
+# - Current HEAD: GEMINI_API_KEY="dummy-test-key" engine-setup stub.
+[[allowlists]]
+description = "Suppress test-fixture false positives in test_engine_writer.bats"
+condition = "AND"
+paths = ['''^tests/dev-lead/unit/test_engine_writer\.bats$''']
+regexes = [
+  '''MIIEowIBAAKCAQEAuVERYSENSITIVEKEYBODY''',
+  '''dummy-test-key''',
+]
+
+# Historical git-subtree framework files (removed in d42bfe7) contain specific placeholder
+# credentials. Each entry uses condition="AND" to bind the known dummy pattern to its file
+# path so only those exact values are suppressed; a real secret at these paths in a future
+# commit would not match and would be reported by gitleaks.
+[[allowlists]]
+description = "Suppress BSA dummy key in historical gsd SDK test files"
+condition = "AND"
+paths = [
+  '''^frameworks/gsd/sdk/src/query/config-query\.test\.ts$''',
+  '''^frameworks/gsd/sdk/src/query/config-mutation\.test\.ts$''',
+]
+regexes = ['''BSA-1234567890abcdef''']
+
+[[allowlists]]
+description = "Suppress example credentials in historical bmad-method adversarial test fixture"
+condition = "AND"
+paths = ['''^frameworks/bmad-method/test/adversarial-review-tests/sample-content\.md$''']
+regexes = [
+  '''password123''',
+  '''eyJhbGciOiJIUzI1NiIs''',
+]
+
+[[allowlists]]
+# test-key: BRAVE_API_KEY = 'test-key' stub at lines 1335-1405
+# 03-VERIFICATION.md: path.join(..., '03-api', '03-VERIFICATION.md') at line 759 triggers
+#   generic-api-key because '03-api' contains the keyword 'api' followed by the 19-char
+#   filename which has sufficient entropy — all three historical commits where this appeared.
+description = "Suppress test API key value in historical gsd commands test"
+condition = "AND"
+paths = ['''^frameworks/gsd/tests/commands\.test\.cjs$''']
+regexes = [
+  '''test-key''',
+  '''03-VERIFICATION\.md''',
+]
