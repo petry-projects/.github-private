@@ -136,7 +136,6 @@ jobs:
         # Refresh: gh api repos/gitleaks/gitleaks-action/git/refs/tags/v2 --jq '.object.sha'
         # then dereference if it points at an annotated tag.
         uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
-        with:
-          args: detect --source . --redact --verbose --exit-code 1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
