@@ -133,6 +133,83 @@ set_engine_config() {
 set_engine_config
 echo "    engine: $REVIEW_ENGINE ($ENGINE_LABEL)"
 
+# model_for_intent <intent_type>
+# Returns the engine model appropriate for the given dev-lead intent type.
+# Called after set_engine_config so the returned value reflects the active engine.
+# Tier mapping (engine-neutral — each engine maps its own model variables):
+#   human-pr, fix-bot-comment  → ENGINE_TRIAGE_MODEL (lightweight read/classify)
+#   fix-reviews, fix-ci, rebase → ENGINE_ACTION_MODEL (write operations)
+#   fix-issue, human            → ENGINE_DEEP_MODEL   (full agentic work)
+#   * (unknown/empty)           → ENGINE_ACTION_MODEL (safe default)
+model_for_intent() {
+  case "${1:-}" in
+    human-pr|fix-bot-comment)   echo "$ENGINE_TRIAGE_MODEL" ;;
+    fix-reviews|fix-ci|rebase)  echo "$ENGINE_ACTION_MODEL" ;;
+    fix-issue|human)            echo "$ENGINE_DEEP_MODEL"   ;;
+    *)                          echo "$ENGINE_ACTION_MODEL" ;;
+  esac
+}
+
+# check_provider_headroom <engine>
+# Returns 0 (ok to proceed) or 1 (at/above threshold — skip to next engine).
+# Falls back to 0 (proceed) on any query failure so a missing API or network
+# error never blocks work (fail-open by design).
+# Threshold is DEV_LEAD_USAGE_THRESHOLD (default: 75%).
+# Logs a one-line headroom status to stderr for the step summary.
+check_provider_headroom() {
+  local engine="$1"
+  local used_pct=0
+  local threshold="${DEV_LEAD_USAGE_THRESHOLD:-75}"
+
+  case "$engine" in
+    claude)
+      # Probe the Anthropic API for rate-limit headers. Uses a minimal
+      # 1-token request so the probe itself barely consumes quota.
+      local _resp remaining_tokens limit_tokens
+      _resp=$(curl -sI -X POST https://api.anthropic.com/v1/messages \
+        -H "x-api-key: ${ANTHROPIC_API_KEY:-}" \
+        -H "anthropic-version: 2023-06-01" \
+        -H "content-type: application/json" \
+        --data-raw '{"model":"claude-haiku-4-5-20251001","max_tokens":1,"messages":[{"role":"user","content":"."}]}' \
+        2>/dev/null || true)
+      remaining_tokens=$(printf '%s' "$_resp" | grep -i 'x-ratelimit-remaining-tokens:' \
+        | awk '{print $2}' | tr -d '\r' || true)
+      limit_tokens=$(printf '%s' "$_resp" | grep -i 'x-ratelimit-limit-tokens:' \
+        | awk '{print $2}' | tr -d '\r' || true)
+      if [ -n "$remaining_tokens" ] && [ -n "$limit_tokens" ] && [ "$limit_tokens" -gt 0 ] 2>/dev/null; then
+        used_pct=$(( 100 - (remaining_tokens * 100 / limit_tokens) ))
+      fi
+      ;;
+    gemini)
+      # Gemini does not expose a usage header on free-tier probe endpoints.
+      echo "  [headroom] gemini — no usage API, proceeding" >&2
+      return 0
+      ;;
+    copilot)
+      # Probe GitHub Models API rate-limit headers via a lightweight HEAD.
+      local _resp _remaining _limit
+      _resp=$(curl -sI https://models.github.ai/inference/chat/completions \
+        -H "Authorization: Bearer ${COPILOT_GITHUB_TOKEN:-}" \
+        -H "X-GitHub-Api-Version: 2022-11-28" 2>/dev/null || true)
+      _remaining=$(printf '%s' "$_resp" | grep -i 'x-ratelimit-remaining-requests:' \
+        | awk '{print $2}' | tr -d '\r' || true)
+      _limit=$(printf '%s' "$_resp" | grep -i 'x-ratelimit-limit-requests:' \
+        | awk '{print $2}' | tr -d '\r' || true)
+      if [ -n "$_remaining" ] && [ -n "$_limit" ] && [ "$_limit" -gt 0 ] 2>/dev/null; then
+        used_pct=$(( 100 - (_remaining * 100 / _limit) ))
+      fi
+      ;;
+  esac
+
+  if [ "$used_pct" -ge "$threshold" ] 2>/dev/null; then
+    echo "  [headroom] $engine usage ${used_pct}% >= threshold ${threshold}% — skipping" >&2
+    return 1
+  fi
+
+  echo "  [headroom] $engine usage ${used_pct}% — ok" >&2
+  return 0
+}
+
 # Load token metrics library unconditionally (non-fatal).
 # emit_token_record and friends are no-ops when TOKEN_LOG_FILE is unset.
 _TOKEN_LIB="$(dirname "${BASH_SOURCE[0]}")/lib/token-metrics.sh"
@@ -484,6 +561,7 @@ _record_engine_tokens() {
 }
 
 # run_triage <prompt_file>
+# Used by: review-one-pr.sh only (not the dev-lead writer pipeline).
 # No-tool mode. The prompt file already has all PR context inlined by the
 # caller (review-one-pr.sh builds it). Every tool is denied so the model
 # can't wander into the working directory and discover prs.txt or other
@@ -560,6 +638,7 @@ run_triage() {
 }
 
 # run_agentic <prompt_file> <model> [tier]
+# Used by: review-one-pr.sh only (not the dev-lead writer pipeline).
 # Full tool access (Bash, Read, Grep, Glob). Output to stdout.
 #
 # No retry here: callers redirect stdout to a file, so a retry inside this
@@ -685,6 +764,7 @@ sys.exit(1)
 }
 
 # run_duck <prompt_file> <model>
+# Used by: review-one-pr.sh only (not the dev-lead writer pipeline).
 # Cross-engine adversarial "rubber duck" review.
 # DUCK_ENGINE is set by engine.sh init: claude→copilot, gemini→claude, copilot→gemini.
 # All three engine branches (claude, gemini, copilot) are reachable — the gemini
@@ -949,11 +1029,15 @@ run_writer() {
   return "$rc"
 }
 
-# run_writer_with_fallback <prompt_file>
+# run_writer_with_fallback <prompt_file> [intent_type]
 # Tries primary engine, falls back through claude → gemini → copilot on rate-limit.
-# Only rate-limit (exit 2) triggers fallback; other failures propagate immediately.
+# intent_type is passed to model_for_intent() so each engine uses the appropriate
+# tier model for the given task complexity (e.g. haiku for triage, sonnet for writes).
+# Only rate-limit (exit 2) and missing-binary (exit 127) trigger fallback;
+# other failures propagate immediately.
 run_writer_with_fallback() {
   local prompt_file="$1"
+  local intent="${2:-}"
   local engines=("$REVIEW_ENGINE")
 
   for e in claude gemini copilot; do
@@ -972,13 +1056,21 @@ run_writer_with_fallback() {
       continue
     fi
 
+    if ! check_provider_headroom "$engine"; then
+      echo "::warning::$engine at/above usage threshold — trying next engine" >&2
+      any_rate_limited=1
+      continue
+    fi
+
     local saved="$REVIEW_ENGINE"
     export REVIEW_ENGINE="$engine"
-    # Re-evaluate model names for the new engine
+    # Re-evaluate model names for the new engine so model_for_intent returns
+    # the correct engine-specific model for the requested tier.
     set_engine_config
+    local model
+    model="$(model_for_intent "$intent")"
     local rc=0
-    # Don't pass 'model' argument; run_writer will use the updated $ENGINE_ACTION_MODEL
-    run_writer "$prompt_file" || rc=$?
+    run_writer "$prompt_file" "$model" || rc=$?
     export REVIEW_ENGINE="$saved"
     # Restore original config for subsequent PRs in the same session
     set_engine_config
