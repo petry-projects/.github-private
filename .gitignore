@@ -397,3 +397,6 @@ __pycache__/
 
 # Vendor-specific Claude Code skill projections — BMAD lives in frameworks/ (agent-agnostic).
 .claude/skills/
+
+# gitleaks scanner binary — downloaded fresh in CI, never committed
+/gitleaks
