@@ -188,7 +188,7 @@ while IFS= read -r pr_url; do
       _gemini_miss=""
       command -v gemini >/dev/null 2>&1 || _gemini_miss="Gemini CLI not installed (fix: npm install -g @google/gemini-cli)"
       [ -n "${GOOGLE_API_KEY:-}" ] || _gemini_miss="${_gemini_miss:+$_gemini_miss; }GOOGLE_API_KEY secret not set"
-      echo "::warning::Copilot fallback unavailable (${_gemini_miss}) — skipping $pr_url and continuing batch"
+      echo "::warning::Gemini fallback unavailable (${_gemini_miss}) — skipping $pr_url and continuing batch"
       failed=$((failed + 1))
       echo "::endgroup::"
       continue
