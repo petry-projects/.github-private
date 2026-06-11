@@ -62,3 +62,10 @@ regexes = [
   '''test-key''',
   '''03-VERIFICATION\.md''',
 ]
+
+[[allowlists]]
+# commit bda766be added bmad skill knowledge files and config manifests containing
+# example API key patterns used in tutorial/documentation content — not real credentials.
+# All generic-api-key findings in this commit are false positives.
+description = "Suppress generic-api-key false positives in historical bmad skill/config additions"
+commits = ["bda766be1f1156327d54bc7497da74225ee853bf"]
