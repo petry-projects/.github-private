@@ -1,0 +1,131 @@
+#!/usr/bin/env bats
+# Tests for the initiative-planner tooling (scripts/initiative-planner/).
+# The DRY_RUN path touches no network, so the full apply-plan flow runs offline.
+
+setup() {
+  ROOT="$(cd "$BATS_TEST_DIRNAME/.." && pwd)"
+  PLANNER_DIR="$ROOT/scripts/initiative-planner"
+  TMP="$(mktemp -d)"
+  PLAN="$TMP/plan.json"
+  LOG="$TMP/dry.jsonl"
+  cat >"$PLAN" <<'JSON'
+{
+  "source_discussion": 413,
+  "epic": { "title": "Initiative: wire new model tiers", "body": "Epic body long enough to pass schema minimums." },
+  "stories": [
+    { "id": 1, "title": "[Phase 1] Fix inert tier routing",
+      "user_story": { "role": "dev-lead operator", "action": "the engine to route by task complexity", "benefit": "higher tiers run only when warranted" },
+      "acceptance_criteria": ["engine.sh routes by complexity", "rate-limit failover detected"],
+      "tasks": [ { "task": "Route writer calls by complexity", "ac_refs": [1], "subtasks": ["map intent to tier"] }, { "task": "Restore failover detection", "ac_refs": [2] } ],
+      "dev_notes": ["Routing is inert today; all intents hit ENGINE_ACTION_MODEL", "Testing: extend tests/model_pricing.bats"],
+      "target_surface": ["scripts/engine.sh"], "size": "M", "blocked_by": [], "blocked_by_existing_issues": [195] },
+    { "id": 2, "title": "[Phase 2] Wire Opus 4.8 behind fallback",
+      "user_story": { "role": "dev-lead operator", "action": "Opus 4.8 wired behind a per-tier fallback", "benefit": "the audit tier uses the strongest model with a safe fallback" },
+      "acceptance_criteria": ["AUDIT tier offers opus-4-8"],
+      "tasks": [ { "task": "Add opus-4-8 to the AUDIT chain", "ac_refs": [1] } ],
+      "dev_notes": ["Add to CLAUDE_AUDIT_MODEL_CHAIN with fallback to 4.7"],
+      "size": "S", "blocked_by": [1] },
+    { "id": 3, "title": "[Phase 2] Human ring-0 soak sign-off",
+      "user_story": { "role": "release manager", "action": "to sign off after a ring-0 soak", "benefit": "promotion is gated on proven health" },
+      "acceptance_criteria": ["soak window documented"],
+      "tasks": [ { "task": "Document and run the soak window" } ],
+      "dev_notes": ["Manual gate; no auto-release"],
+      "size": "S", "blocked_by": [2], "hands_off": true }
+  ],
+  "open_questions": ["Confirm Fable 5 pricing before wiring the apex tier."]
+}
+JSON
+}
+
+teardown() { rm -rf "$TMP"; }
+
+@test "validate-plan accepts a well-formed acyclic plan" {
+  run python3 "$PLANNER_DIR/validate-plan.py" "$PLAN"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"plan OK"* ]]
+}
+
+@test "validate-plan rejects a self-blocking story" {
+  jq '.stories[0].blocked_by = [1]' "$PLAN" >"$TMP/bad.json"
+  run python3 "$PLANNER_DIR/validate-plan.py" "$TMP/bad.json"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"blocks itself"* ]]
+}
+
+@test "validate-plan rejects a dependency cycle (with an entry point present)" {
+  jq '.stories[1].blocked_by = [3] | .stories[2].blocked_by = [2]' "$PLAN" >"$TMP/cycle.json"
+  run python3 "$PLANNER_DIR/validate-plan.py" "$TMP/cycle.json"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"cycle"* ]]
+}
+
+@test "validate-plan rejects a dangling blocked_by reference" {
+  jq '.stories[1].blocked_by = [99]' "$PLAN" >"$TMP/dangle.json"
+  run python3 "$PLANNER_DIR/validate-plan.py" "$TMP/dangle.json"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"not a story id"* ]]
+}
+
+@test "validate-plan rejects a plan with no entry point" {
+  jq '.stories[0].blocked_by = [2]' "$PLAN" | jq '.stories[1].blocked_by = [1]' >"$TMP/noentry.json"
+  run python3 "$PLANNER_DIR/validate-plan.py" "$TMP/noentry.json"
+  [ "$status" -ne 0 ]
+}
+
+@test "apply-plan (DRY_RUN) creates epic + stories + edges and posts comment" {
+  DRY_RUN=1 DRY_RUN_LOG="$LOG" REPO="petry-projects/.github-private" \
+    DISCUSSION_NUMBER=413 DISCUSSION_NODE_ID="D_test" PLAN_PATH="$PLAN" \
+    run bash "$PLANNER_DIR/apply-plan.sh"
+  [ "$status" -eq 0 ]
+  [ "$(grep -c '"op":"create_issue"' "$LOG")" -eq 4 ]
+  [ "$(grep -c '"op":"add_sub_issue"' "$LOG")" -eq 3 ]
+  [ "$(grep -c '"op":"add_blocked_by"' "$LOG")" -eq 3 ]
+  grep -q '"op":"comment_on_discussion"' "$LOG"
+}
+
+@test "apply-plan threads distinct issue numbers in dry-run" {
+  DRY_RUN=1 DRY_RUN_LOG="$LOG" REPO="petry-projects/.github-private" \
+    DISCUSSION_NUMBER=413 DISCUSSION_NODE_ID="D_test" PLAN_PATH="$PLAN" \
+    bash "$PLANNER_DIR/apply-plan.sh"
+  # 4 distinct synthetic issue numbers (epic + 3 stories), not all the same
+  distinct="$(grep '"op":"create_issue"' "$LOG" | jq -r '.number' | sort -u | wc -l)"
+  [ "$distinct" -eq 4 ]
+}
+
+@test "apply-plan NEVER applies initiative:auto to any created issue" {
+  DRY_RUN=1 DRY_RUN_LOG="$LOG" REPO="petry-projects/.github-private" \
+    DISCUSSION_NUMBER=413 DISCUSSION_NODE_ID="D_test" PLAN_PATH="$PLAN" \
+    bash "$PLANNER_DIR/apply-plan.sh"
+  created_labels="$(grep '"op":"create_issue"' "$LOG" | jq -r '.labels[]')"
+  ! grep -qx 'initiative:auto' <<<"$created_labels"
+}
+
+@test "apply-plan marks hands_off story with hold + hands-off labels" {
+  DRY_RUN=1 DRY_RUN_LOG="$LOG" REPO="petry-projects/.github-private" \
+    DISCUSSION_NUMBER=413 DISCUSSION_NODE_ID="D_test" PLAN_PATH="$PLAN" \
+    bash "$PLANNER_DIR/apply-plan.sh"
+  grep '"op":"create_issue"' "$LOG" | grep -q 'dev-lead:hands-off'
+  grep '"op":"create_issue"' "$LOG" | grep -q 'initiative:hold'
+}
+
+@test "existing-issue prerequisite edge references the real issue number" {
+  DRY_RUN=1 DRY_RUN_LOG="$LOG" REPO="petry-projects/.github-private" \
+    DISCUSSION_NUMBER=413 DISCUSSION_NODE_ID="D_test" PLAN_PATH="$PLAN" \
+    bash "$PLANNER_DIR/apply-plan.sh"
+  grep '"op":"add_blocked_by"' "$LOG" | grep -q '"blocked_by":195'
+}
+
+@test "story bodies are rendered in the BMAD create-story template" {
+  DRY_RUN=1 DRY_RUN_LOG="$LOG" REPO="petry-projects/.github-private" \
+    DISCUSSION_NUMBER=413 DISCUSSION_NODE_ID="D_test" PLAN_PATH="$PLAN" \
+    bash "$PLANNER_DIR/apply-plan.sh"
+  # the rendered Phase-1 story body carries the canonical BMAD sections
+  body="$(grep '"op":"create_issue"' "$LOG" | jq -r 'select(.title|startswith("[Phase 1]")) | .body')"
+  [[ "$body" == *"## Story"* ]]
+  [[ "$body" == *"As a dev-lead operator,"* ]]
+  [[ "$body" == *"## Acceptance Criteria"* ]]
+  [[ "$body" == *"## Tasks / Subtasks"* ]]
+  [[ "$body" == *"(AC: #1)"* ]]
+  [[ "$body" == *"## Dev Notes"* ]]
+  [[ "$body" == *"Status: ready-for-dev"* ]]
+}
