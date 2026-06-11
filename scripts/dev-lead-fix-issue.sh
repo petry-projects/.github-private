@@ -73,7 +73,7 @@ main() {
   pre_engine_sha=$(git rev-parse HEAD)
 
   local engine_rc=0
-  run_writer_with_fallback "$prompt_file" || engine_rc=$?
+  run_writer_with_fallback "$prompt_file" "fix-issue" || engine_rc=$?
   if [ "$engine_rc" -eq 2 ]; then
     echo "::warning::All engines rate-limited — cannot implement issue #${ISSUE_NUMBER}; re-apply the label to retry"
     local reset_msg=""

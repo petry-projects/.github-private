@@ -226,7 +226,7 @@ main() {
     echo "  [fix-ci] cycle $cycle/$MAX_CI_CYCLES"
 
     local engine_rc=0
-    run_writer_with_fallback "$prompt_file" || engine_rc=$?
+    run_writer_with_fallback "$prompt_file" "fix-ci" || engine_rc=$?
 
     if [ "$engine_rc" -ne 0 ]; then
       if [ "$engine_rc" -eq 2 ]; then
