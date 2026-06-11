@@ -3019,6 +3019,7 @@ sys.exit(1)
 }
 
 # run_duck <prompt_file> <model>
+# Used by: review-one-pr.sh only (not the dev-lead writer pipeline).
 # Cross-engine adversarial "rubber duck" review.
 # DUCK_ENGINE is set by engine.sh init: claude→copilot, gemini→claude, copilot→gemini.
 # All three engine branches (claude, gemini, copilot) are reachable — the gemini
@@ -3283,11 +3284,15 @@ run_writer() {
   return "$rc"
 }
 
-# run_writer_with_fallback <prompt_file>
+# run_writer_with_fallback <prompt_file> [intent_type]
 # Tries primary engine, falls back through claude → gemini → copilot on rate-limit.
-# Only rate-limit (exit 2) triggers fallback; other failures propagate immediately.
+# intent_type is passed to model_for_intent() so each engine uses the appropriate
+# tier model for the given task complexity (e.g. haiku for triage, sonnet for writes).
+# Only rate-limit (exit 2) and missing-binary (exit 127) trigger fallback;
+# other failures propagate immediately.
 run_writer_with_fallback() {
   local prompt_file="$1"
+  local intent="${2:-}"
   local engines=("$REVIEW_ENGINE")
 
   for e in claude gemini copilot; do
@@ -3306,13 +3311,21 @@ run_writer_with_fallback() {
       continue
     fi
 
+    if ! check_provider_headroom "$engine"; then
+      echo "::warning::$engine at/above usage threshold — trying next engine" >&2
+      any_rate_limited=1
+      continue
+    fi
+
     local saved="$REVIEW_ENGINE"
     export REVIEW_ENGINE="$engine"
-    # Re-evaluate model names for the new engine
+    # Re-evaluate model names for the new engine so model_for_intent returns
+    # the correct engine-specific model for the requested tier.
     set_engine_config
+    local model
+    model="$(model_for_intent "$intent")"
     local rc=0
-    # Don't pass 'model' argument; run_writer will use the updated $ENGINE_ACTION_MODEL
-    run_writer "$prompt_file" || rc=$?
+    run_writer "$prompt_file" "$model" || rc=$?
     export REVIEW_ENGINE="$saved"
     # Restore original config for subsequent PRs in the same session
     set_engine_config
