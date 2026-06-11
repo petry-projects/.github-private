@@ -420,6 +420,7 @@ _gemini_chain_invoke() {
     return 1
   fi
 
+  local -a models
   local saved_ifs="$IFS"
   IFS=',' read -ra models <<< "$chain_csv"
   IFS="$saved_ifs"
@@ -752,9 +753,9 @@ run_triage() {
     esac
     if [ "$rc" -eq 0 ]; then
       local _triage_used
-      if [ -n "${_CLAUDE_CHAIN_MODEL_USED:-}" ]; then
+      if [ "$REVIEW_ENGINE" = "claude" ] && [ -n "${_CLAUDE_CHAIN_MODEL_USED:-}" ]; then
         _triage_used="$_CLAUDE_CHAIN_MODEL_USED"
-      elif [ -n "${_GEMINI_CHAIN_MODEL_USED:-}" ]; then
+      elif [ "$REVIEW_ENGINE" = "gemini" ] && [ -n "${_GEMINI_CHAIN_MODEL_USED:-}" ]; then
         _triage_used="$_GEMINI_CHAIN_MODEL_USED"
       else
         _triage_used="$ENGINE_TRIAGE_MODEL"
@@ -841,10 +842,14 @@ run_agentic() {
       # for quality tiers. Honor explicit model pin when it differs from the tier default.
       local _agentic_gemini_chain _gemini_tier_default=""
       case "$tier" in
-        deep|audit|single) _agentic_gemini_chain="${GEMINI_PRO_MODEL_CHAIN:-$model}"
-                           _gemini_tier_default="${ENGINE_DEEP_MODEL:-}" ;;
-        *)                 _agentic_gemini_chain="${GEMINI_FLASH_MODEL_CHAIN:-$model}"
-                           _gemini_tier_default="${ENGINE_ACTION_MODEL:-}" ;;
+        deep)   _agentic_gemini_chain="${GEMINI_PRO_MODEL_CHAIN:-$model}"
+                _gemini_tier_default="${ENGINE_DEEP_MODEL:-}" ;;
+        audit)  _agentic_gemini_chain="${GEMINI_PRO_MODEL_CHAIN:-$model}"
+                _gemini_tier_default="${ENGINE_AUDIT_MODEL:-}" ;;
+        single) _agentic_gemini_chain="${GEMINI_PRO_MODEL_CHAIN:-$model}"
+                _gemini_tier_default="${ENGINE_SINGLE_MODEL:-}" ;;
+        *)      _agentic_gemini_chain="${GEMINI_FLASH_MODEL_CHAIN:-$model}"
+                _gemini_tier_default="${ENGINE_ACTION_MODEL:-}" ;;
       esac
       if [ -n "$_gemini_tier_default" ] && [ "$model" != "$_gemini_tier_default" ]; then
         _agentic_gemini_chain="$model"
