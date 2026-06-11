@@ -99,6 +99,20 @@ get_advisory_bot_states() {
   }
 }
 
+# Get the committer date of the PR's head commit via a single GraphQL query.
+# Uses committer.date (not author.date) so that cherry-picked commits reflect
+# when the cherry-pick was applied (≈push time) rather than the original author
+# date — preserving the cherry-pick guard without relying on pushedDate, which
+# is deprecated in GitHub's GraphQL API and now returns null.
+# Returns empty string on any API failure.
+_get_head_committer_date() {
+  local pr_url="$1"
+  # shellcheck disable=SC2016  # $url is a GraphQL variable placeholder, not a shell variable
+  local _gql='query($url:URI!){resource(url:$url){...on PullRequest{commits(last:1){nodes{commit{committer{date}}}}}}}'
+  gh api graphql -f query="$_gql" -f url="$pr_url" \
+    --jq '.data.resource.commits.nodes[0].commit.committer.date // empty' 2>/dev/null || true
+}
+
 # Format bot states for display
 format_bot_status() {
   local bot="$1" state="$2"
@@ -298,42 +312,34 @@ check_advisory_reviews() {
 
     head_age_sec=0
     head_time_raw=""  # Initialize before conditional to prevent set -u abort
-    # Use pushedDate (when the commit arrived on GitHub) not committedDate (author
-    # timestamp) so that old cherry-picked commits don't bypass the gate immediately.
-    # pushedDate is deprecated in GitHub's GraphQL schema but still populated;
-    # do NOT fall back to committedDate — an old commit's authored time can be
-    # hours before its push, which would bypass the gate for cherry-picks.
-    # If pushedDate is unavailable, head_age stays 0 and the fallback is disabled.
-    # $url in the query string is a GraphQL variable, not a shell variable.
-    # shellcheck disable=SC2016
-    local _gql='query($url:URI!){resource(url:$url){...on PullRequest{commits(last:1){nodes{commit{pushedDate}}}}}}'
-    head_time=$(gh api graphql -f query="$_gql" -f url="$PR_URL" \
-      --jq '.data.resource.commits.nodes[0].commit.pushedDate // empty' \
-      2>/dev/null) || head_time=""
+    # Use the head commit's committer date (via GraphQL) to determine push age.
+    # committer.date reflects when a cherry-pick or rebase was applied, not the
+    # original author date, so recently cherry-picked commits do not bypass the
+    # gate. pushedDate was previously used for this purpose but now returns null
+    # in GitHub's GraphQL API (deprecated and no longer populated).
+    head_time=$(_get_head_committer_date "$PR_URL") || head_time=""
     if [[ -n "$head_time" ]]; then
       head_time_raw=$(date -u -d "$head_time" +%s 2>/dev/null) || head_time_raw=""
       [[ -n "$head_time_raw" ]] && head_age_sec=$((now - head_time_raw))
     fi
 
     time_since_last_sub=0
-    # Quiescence is only reliable when we know the current head push time.
-    # If head_time_raw is empty (GraphQL failed), stale submissions from a
-    # previous HEAD could already be >10 min old, which would fire the fallback
-    # and approve before the advisory bots have reviewed the new head.
-    # Guard: only compute time_since_last_sub when head_time_raw is available.
     # -s (slurp) is required: current_states is a newline-delimited object
     # stream. Without slurping, `.[].time` iterates each object's scalar
     # values and jq errors — leaving latest_sub_at empty, time_since_last_sub
     # at 0, and the quiescence fallback permanently disarmed.
     latest_sub_at=$(echo "$current_states" | jq -rs '[.[].time] | sort | last // empty' 2>/dev/null) || latest_sub_at=""
-    if [[ -n "$latest_sub_at" && -n "$head_time_raw" ]]; then
+    if [[ -n "$latest_sub_at" ]]; then
       latest_sub_raw=$(date -u -d "$latest_sub_at" +%s 2>/dev/null) || latest_sub_raw=""
       if [[ -n "$latest_sub_raw" ]]; then
         # Anchor quiescence to the later of head-push and latest submission so that
         # stale submissions from a previous HEAD don't satisfy the fallback for a
         # fresh commit (a new push resets the quiescence timer to the head-push time).
+        # When head_time_raw is unavailable, anchor to latest_sub_at alone — this
+        # loses the cherry-pick protection for quiescence but avoids indefinite
+        # stranding when the commit API is unreachable.
         local quiescence_anchor
-        if [[ "$head_time_raw" -gt "$latest_sub_raw" ]]; then
+        if [[ -n "$head_time_raw" && "$head_time_raw" -gt "$latest_sub_raw" ]]; then
           quiescence_anchor=$head_time_raw
         else
           quiescence_anchor=$latest_sub_raw
