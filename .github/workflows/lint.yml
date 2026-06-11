@@ -34,6 +34,9 @@ jobs:
       - name: Install bats
         run: sudo apt-get install -y bats
 
+      - name: Install Python jsonschema (initiative-planner validator tests)
+        run: pip3 install --quiet 'jsonschema>=4'
+
       - name: Run tests
         run: |
           bats \
@@ -46,7 +49,9 @@ jobs:
             tests/test_verify_auth_scopes.bats \
             tests/test_initiative_driver.bats \
             tests/test_cut_release.bats \
-            tests/test_pr_review_health.bats
+            tests/test_pr_review_health.bats \
+            tests/test_initiative_planner.bats \
+            tests/test_idea_triage.bats
 
   validate-agent-profiles:
     runs-on: ubuntu-latest

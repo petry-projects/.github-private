@@ -1,0 +1,148 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Idea Triage — weekly ripeness shortlist for the Ideas backlog
+#
+# Scans every open Ideas Discussion (human- and ideation-bot-authored), scores
+# how ripe each is for promotion (evidence strength, prerequisites met,
+# alignment with active initiatives, not already covered by an open epic), and
+# rewrites a single "Idea Promotion Queue" tracking issue with the ranked
+# shortlist + a pre-drafted promotion note for the top candidates.
+#
+# It NEVER approves anything. A maintainer reads the queue and blesses an idea
+# by adding `idea:approved` to its Discussion, which fires initiative-planner.yml.
+#
+# Pipeline position:
+#   feature-ideation (Discussions) -> THIS (shortlist) -> ★ human adds idea:approved
+#   -> initiative-planner (epic + DAG) -> ★ human adds initiative:auto
+#   -> initiative-driver -> dev-lead
+# ─────────────────────────────────────────────────────────────────────────────
+name: Idea Triage (Promotion Queue)
+
+on:
+  schedule:
+    - cron: '0 13 * * 1' # Monday 13:00 UTC (after the Fri ideation run lands)
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Log the intended queue update to an artifact instead of writing the tracking issue'
+        required: false
+        default: false
+        type: boolean
+      model:
+        description: 'Anthropic model id for triage'
+        required: false
+        default: 'claude-sonnet-4-6'
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: idea-triage
+  cancel-in-progress: false
+
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read       # checkout
+      issues: write        # create/update the Idea Promotion Queue issue
+      discussions: read    # read the Ideas backlog
+      id-token: write       # claude-code-action OIDC
+    env:
+      REPO: ${{ github.repository }}
+      DRY_RUN: ${{ inputs.dry_run && '1' || '0' }}
+    steps:
+      - name: Checkout agent repo
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Set temp paths
+        run: |
+          echo "DRY_RUN_LOG=${{ runner.temp }}/dry-run.jsonl" >> "$GITHUB_ENV"
+          echo "CONTEXT_PATH=${{ runner.temp }}/ideas-context.json" >> "$GITHUB_ENV"
+          echo "QUEUE_BODY_PATH=${{ runner.temp }}/queue-body.md" >> "$GITHUB_ENV"
+
+      - name: Gather Ideas backlog
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash scripts/idea-triage/gather-ideas.sh
+
+      - name: Rank ripeness and refresh the queue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: anthropics/claude-code-action@787c5a0ce96a9a6cfb050ea0c8f4c05f2447c251 # v1.0.133
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          claude_args: |
+            --model ${{ inputs.model || 'claude-sonnet-4-6' }}
+            --allowedTools Bash,Read,Glob,Grep
+          prompt: |
+            You are an **idea-triage analyst** for the ${{ github.repository }} repo.
+            Your job: decide which open Ideas are RIPE to promote into a tracked
+            initiative, and refresh the promotion-queue tracking issue. You do NOT
+            approve anything — a human reads your queue and adds `idea:approved`.
+
+            ## Input
+
+            The Ideas backlog + signals is at `$CONTEXT_PATH` (JSON): every open
+            Ideas Discussion (number, title, excerpt, labels, comment count,
+            timestamps) plus the open `initiative` epics. Read it:
+
+            ```bash
+            cat "$CONTEXT_PATH" | jq .
+            ```
+
+            Use Read/Grep/Glob on the checkout (`AGENTS.md`, `docs/initiatives/`,
+            `scripts/`, `.github/workflows/`) to judge feasibility and whether an
+            idea is already covered.
+
+            ## Scoring
+
+            Rank each idea into one of: **Ripe** / **Soon** / **Not yet**, judged on:
+            - **Evidence** — is the idea concrete and grounded, or still vague?
+            - **Prerequisites** — are blocking issues it depends on resolved?
+            - **Alignment** — does it advance an active initiative / org priority?
+            - **Coverage** — is it already covered by an open epic (then: not ripe,
+              note the epic)?
+            - **Freshness** — recent human engagement is a positive signal.
+
+            Already carries `idea:approved` → it's past triage; list it under a
+            short "Already approved" section, don't re-rank it.
+
+            ## Output
+
+            Write the full tracking-issue body (GitHub Markdown) to
+            `$QUEUE_BODY_PATH`. Structure:
+            - A one-line generated-on note and a legend.
+            - **🟢 Ripe to promote** — a table: idea (linked #), why now, and a
+              1–2 sentence pre-drafted promotion note (what the initiative would
+              deliver). These are the human's pick-list for `idea:approved`.
+            - **🟡 Soon** — table: idea, what's missing before it's ripe.
+            - **⚪ Not yet / covered** — terse list with the reason (or covering epic).
+            - A footer explaining: add `idea:approved` to a Discussion to fire the
+              BMAD Scrum Master initiative-planner.
+
+            Keep it scannable. Be decisive — at most ~5 ideas in "Ripe".
+
+            ## Publish
+
+            Upsert the single tracking issue (idempotent; honors `$DRY_RUN`):
+
+            ```bash
+            REPO="${{ github.repository }}" QUEUE_BODY_PATH="$QUEUE_BODY_PATH" \
+            bash scripts/idea-triage/upsert-queue.sh
+            ```
+
+            Finish with a 2–3 line summary of how many ideas you marked Ripe/Soon.
+
+      - name: Upload dry-run queue log
+        if: ${{ env.DRY_RUN == '1' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: idea-triage-dry-run
+          path: |
+            ${{ runner.temp }}/dry-run.jsonl
+            ${{ runner.temp }}/queue-body.md
+          if-no-files-found: warn
