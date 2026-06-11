@@ -84,7 +84,7 @@ get_advisory_bot_states() {
   }
 }
 
-# Get the committer date of the PR's head commit via REST API.
+# Get the committer date of the PR's head commit via a single GraphQL query.
 # Uses committer.date (not author.date) so that cherry-picked commits reflect
 # when the cherry-pick was applied (≈push time) rather than the original author
 # date — preserving the cherry-pick guard without relying on pushedDate, which
@@ -92,13 +92,10 @@ get_advisory_bot_states() {
 # Returns empty string on any API failure.
 _get_head_committer_date() {
   local pr_url="$1"
-  local head_sha repo_path
-  head_sha=$(gh pr view "$pr_url" --json headRefOid --jq '.headRefOid' 2>/dev/null) || head_sha=""
-  [[ -z "$head_sha" ]] && return 0
-  repo_path=$(echo "$pr_url" | sed 's|https://github\.com/||;s|/pull/.*||')
-  [[ -z "$repo_path" ]] && return 0
-  gh api "/repos/${repo_path}/commits/${head_sha}" \
-    --jq '.commit.committer.date // empty' 2>/dev/null || true
+  # shellcheck disable=SC2016  # $url is a GraphQL variable placeholder, not a shell variable
+  local _gql='query($url:URI!){resource(url:$url){...on PullRequest{commits(last:1){nodes{commit{committer{date}}}}}}}'
+  gh api graphql -f query="$_gql" -f url="$pr_url" \
+    --jq '.data.resource.commits.nodes[0].commit.committer.date // empty' 2>/dev/null || true
 }
 
 # Format bot states for display
@@ -186,7 +183,7 @@ check_advisory_reviews() {
 
     head_age_sec=0
     head_time_raw=""  # Initialize before conditional to prevent set -u abort
-    # Use the head commit's committer date (via REST) to determine push age.
+    # Use the head commit's committer date (via GraphQL) to determine push age.
     # committer.date reflects when a cherry-pick or rebase was applied, not the
     # original author date, so recently cherry-picked commits do not bypass the
     # gate. pushedDate was previously used for this purpose but now returns null
