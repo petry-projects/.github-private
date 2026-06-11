@@ -1,0 +1,186 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Initiative Planner — BMAD Scrum Master (Bob)
+#
+# Turns ONE curated & approved idea (an Ideas Discussion) into a well-defined
+# initiative: a GitHub epic + a sub-issue DAG (native sub-issues + blocked_by),
+# each story prepared to dev-lead's "ready" bar. The epic is created INERT
+# (labelled `initiative`, NOT `initiative:auto`). A maintainer reviews the real
+# epic/DAG and adds `initiative:auto` to hand it to initiative-driver.yml for
+# auto-implementation.
+#
+# Pipeline position:
+#   feature-ideation (Discussions) -> idea-triage (shortlist) -> ★ human approves
+#   -> THIS (epic + story DAG, inert) -> ★ human adds initiative:auto
+#   -> initiative-driver -> dev-lead
+#
+# This is org-private automation (like initiative-driver.yml), not a thin caller.
+# All tooling + the vendored Bob persona live in this repo and are unit-tested
+# (scripts/initiative-planner/, prompts/bmad/scrum-master.md).
+# ─────────────────────────────────────────────────────────────────────────────
+name: Initiative Planner (BMAD Scrum Master)
+
+on:
+  workflow_dispatch:
+    inputs:
+      discussion:
+        description: 'Ideas Discussion number to plan into an initiative'
+        required: true
+        type: string
+      dry_run:
+        description: 'Plan only — log intended issue/DAG mutations to an artifact instead of creating them'
+        required: false
+        default: true
+        type: boolean
+      model:
+        description: 'Anthropic model id for the planner'
+        required: false
+        default: 'claude-opus-4-8'
+        type: string
+  # Approve an idea by labelling its Discussion `idea:approved`; that fires here.
+  discussion:
+    types: [labeled]
+
+permissions: {}
+
+concurrency:
+  # One plan per discussion at a time; never cancel an in-flight planning run.
+  group: initiative-planner-${{ github.event.inputs.discussion || github.event.discussion.number }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    # Skip discussion-label events unless the label added is exactly idea:approved.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'discussion' && github.event.label.name == 'idea:approved')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read       # checkout, read AGENTS.md/scripts/docs
+      issues: write        # create epic + story sub-issues, link DAG, set blocked_by
+      discussions: write   # post the plan summary back to the idea
+      id-token: write       # claude-code-action OIDC
+    env:
+      REPO: ${{ github.repository }}
+      DISCUSSION_NUMBER: ${{ github.event.inputs.discussion || github.event.discussion.number }}
+      DRY_RUN: ${{ (github.event_name == 'workflow_dispatch' && inputs.dry_run == true) && '1' || '0' }}
+      TOOLING_DIR: ${{ github.workspace }}/scripts/initiative-planner
+    steps:
+      - name: Checkout agent repo
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Set temp paths
+        run: |
+          echo "DRY_RUN_LOG=${{ runner.temp }}/dry-run.jsonl" >> "$GITHUB_ENV"
+          echo "CONTEXT_PATH=${{ runner.temp }}/planning-context.json" >> "$GITHUB_ENV"
+          echo "PLAN_PATH=${{ runner.temp }}/plan.json" >> "$GITHUB_ENV"
+
+      - name: Install Python jsonschema
+        run: pip install --quiet 'jsonschema>=4'
+
+      - name: Gather planning context
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash scripts/initiative-planner/gather-context.sh
+
+      - name: Plan the initiative (BMAD Scrum Master)
+        id: bob
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: anthropics/claude-code-action@787c5a0ce96a9a6cfb050ea0c8f4c05f2447c251 # v1.0.133
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # CRITICAL (same gotcha as feature-ideation): pass the workflow's
+          # GITHUB_TOKEN explicitly so the job-level issues/discussions write
+          # grants apply. The action's own app token lacks them and mutations
+          # would fail silently.
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          claude_args: |
+            --model ${{ github.event.inputs.model || 'claude-opus-4-8' }}
+            --allowedTools Bash,Read,Glob,Grep
+          prompt: |
+            You are **Bob**, the BMAD Scrum Master, running as an automated,
+            non-interactive initiative planner for the ${{ github.repository }} repo.
+
+            ## Method — follow the vendored BMAD skills (by path)
+
+            This repo vendors the real BMAD Method skills agent-agnostically under
+            `frameworks/` (v6.8.0 + Test Architect v1.19.0). Read the orchestration
+            wrapper and follow every step — it points you at the exact skill files
+            (`frameworks/bmad-method/src/bmm-skills/4-implementation/` for
+            sprint-planning + create-story, and `frameworks/bmad-test-architecture/`
+            for the Test Architect) and how to adapt them to this repo's
+            non-interactive, GitHub-issues output:
+
+            ```bash
+            cat prompts/bmad/scrum-master.md
+            ```
+
+            Use the BMAD skills for their real method, templates, and checklists —
+            do not paraphrase them. The create-story template is the required story
+            shape; its checklist is the readiness bar each story clears.
+
+            ## Your input
+
+            The approved idea + repo context is at `$CONTEXT_PATH` (JSON): the
+            Discussion title/body/comments, the open `initiative` epics, and the
+            issues the idea references (likely prerequisites). Read it, then ground
+            stories in the checked-out repo with Read/Grep/Glob (`AGENTS.md`,
+            `CLAUDE.md`, `scripts/`, `.github/workflows/`, `docs/initiatives/`):
+
+            ```bash
+            cat "$CONTEXT_PATH" | jq .
+            ```
+
+            ## Your output
+
+            Emit a single **initiative plan** JSON to `$PLAN_PATH` conforming to
+            `scripts/initiative-planner/plan.schema.json` (it mirrors the BMAD
+            create-story template field-for-field: `user_story`,
+            `acceptance_criteria`, `tasks` with `ac_refs`, `dev_notes`,
+            `project_structure_notes`, `references`, plus `id`/`title`/`size`/
+            `blocked_by`/`blocked_by_existing_issues`/`hands_off`). Typically 3–8
+            stories. `[Phase N]` title prefixes when ordered.
+
+            ## Validate, then materialize
+
+            ```bash
+            python3 scripts/initiative-planner/validate-plan.py "$PLAN_PATH"
+            ```
+
+            Fix and re-validate until it passes (unique ids, acyclic DAG, an entry
+            point, no dangling edges). THEN materialize the epic + sub-issue DAG —
+            this honors `$DRY_RUN` (when `DRY_RUN=1` it logs intended mutations to
+            `$DRY_RUN_LOG` instead of writing to GitHub):
+
+            ```bash
+            REPO="${{ github.repository }}" \
+            PLAN_PATH="$PLAN_PATH" \
+            DISCUSSION_NUMBER="$DISCUSSION_NUMBER" \
+            DISCUSSION_NODE_ID="$DISCUSSION_NODE_ID" \
+            bash scripts/initiative-planner/apply-plan.sh
+            ```
+
+            ## Hard constraints
+
+            - NEVER apply the `initiative:auto` label. The epic must be created
+              inert; activation is a human decision. apply-plan.sh enforces this —
+              do not work around it with direct `gh` calls.
+            - Go through apply-plan.sh for all issue/DAG mutations; do not call
+              `gh issue create` or the sub_issues/dependencies APIs directly.
+            - Keep the plan grounded. No invented acceptance criteria.
+
+            Finish with a 3–5 line summary: the epic, the story count, the
+            dependency shape, and any open questions.
+
+      - name: Upload dry-run plan log
+        if: ${{ env.DRY_RUN == '1' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: initiative-plan-dry-run
+          path: |
+            ${{ runner.temp }}/dry-run.jsonl
+            ${{ runner.temp }}/plan.json
+          if-no-files-found: warn
