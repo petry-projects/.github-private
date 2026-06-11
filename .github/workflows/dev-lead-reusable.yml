@@ -149,7 +149,18 @@ jobs:
           echo "INTENT_CHECKS=$(echo "$ctx"       | jq -c '.checks // []')"       >> "$GITHUB_ENV"
           echo "INTENT_ISSUE_NUMBER=$(echo "$ctx" | jq -r '.issue_number // ""')" >> "$GITHUB_ENV"
           echo "INTENT_ACTOR=$(echo "$ctx"        | jq -r '.actor // ""')"        >> "$GITHUB_ENV"
-          echo "INTENT_BODY=$(echo "$ctx"         | jq -r '.body // ""')"         >> "$GITHUB_ENV"
+          # INTENT_BODY is free text (review/comment bodies) and is frequently
+          # multiline — e.g. CodeRabbit reviews. A plain `KEY=value` write spills
+          # the 2nd+ lines into $GITHUB_ENV as invalid entries and fails the step
+          # ("Unable to process file command 'env'"). Use the heredoc form with a
+          # RANDOM delimiter so newlines are preserved and a crafted body cannot
+          # inject extra env vars by embedding the delimiter (it is unguessable).
+          body_delim="INTENT_BODY_EOF_$(openssl rand -hex 16)"
+          {
+            printf 'INTENT_BODY<<%s\n' "$body_delim"
+            echo "$ctx" | jq -r '.body // ""'
+            printf '%s\n' "$body_delim"
+          } >> "$GITHUB_ENV"
 
       - name: Skip — log reason
         if: env.INTENT_TYPE == 'skip'
