@@ -63,6 +63,10 @@ regexes = [
   '''03-VERIFICATION\.md''',
 ]
 
+# Skills knowledge files (added in commit bda766be) include api-testing-patterns.md which
+# contains an example expired JWT at line 681:
+#   const expiredToken = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...'; // Expired token
+# The variable name and comment confirm this is documentation, not a real credential.
 [[allowlists]]
 # commit bda766be added bmad skill knowledge files and config manifests containing
 # example API key patterns used in tutorial/documentation content — not real credentials.
@@ -84,11 +88,23 @@ paths = [
   '''^\.claude/skills/''',
 ]
 
+[[allowlists]]
+description = "Suppress truncated example JWT in bmad skill api-testing-patterns.md knowledge files"
+condition = "AND"
+paths = ['''^\.claude/skills/[^/]+/resources/knowledge/api-testing-patterns\.md$''']
+regexes = ['''expiredToken''']
+
 # Historical commit bda766be introduced a BMAD files-manifest under _bmad/_config/.
 # The CSV lists file paths (including *api-request.md) followed by SHA-256 checksums;
 # the "api" keyword + high-entropy checksum trips the generic-api-key rule.
+# Rows whose slug contains keywords like "api", "auth", or "key" trigger generic-api-key
+# because the 64-char hex digest that follows has high entropy. These are content-integrity
+# checksums, not credentials; every entry in the last column is a SHA256 of file content.
 [[allowlists]]
 description = "BMAD files-manifest CSV — file paths + checksums, not credentials"
 condition = "AND"
 paths = ['''^_bmad/_config/files-manifest\.csv$''']
-regexes = ['''api-request''']
+regexes = [
+  '''api-request''',
+  '''[0-9a-f]{64}''',
+]
