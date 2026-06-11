@@ -160,7 +160,7 @@ while IFS= read -r pr_url; do
   # Fallback chain: claude -> copilot -> gemini (Gemini is the last resort).
   if [ "$rc" -eq 2 ] && [ "${REVIEW_ENGINE:-claude}" = "claude" ]; then
     # Prefer Copilot as the first cross-provider fallback.
-    if [ "${COPILOT_AVAILABLE:-false}" = "true" ]; then
+    if [ "${COPILOT_AVAILABLE:-false}" = "true" ] && [[ "${COPILOT_GITHUB_TOKEN:-}" != ghp_* ]]; then
       echo "::warning::Claude rate limit hit — switching to Copilot engine for remaining PRs"
       export REVIEW_ENGINE=copilot
       engine_fallbacks=$((engine_fallbacks + 1))
