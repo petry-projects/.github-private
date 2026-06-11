@@ -69,3 +69,14 @@ regexes = [
 # All generic-api-key findings in this commit are false positives.
 description = "Suppress generic-api-key false positives in historical bmad skill/config additions"
 commits = ["bda766be1f1156327d54bc7497da74225ee853bf"]
+
+# Vendored BMAD Method skill trees under frameworks/ (src/ from upstream tags;
+# see frameworks/*/VENDOR.md, linguist-vendored). The Test Architect knowledge
+# base ships ILLUSTRATIVE auth/test patterns (example JWTs, "password=" snippets)
+# that trip gitleaks' default rules — documentation examples, not real creds.
+[[allowlists]]
+description = "Vendored BMAD skills — example creds in framework docs"
+paths = [
+  '''^frameworks/bmad-method/''',
+  '''^frameworks/bmad-test-architecture/''',
+]
