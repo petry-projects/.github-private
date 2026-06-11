@@ -72,7 +72,13 @@ regexes = [
 # example API key patterns used in tutorial/documentation content — not real credentials.
 # All generic-api-key findings in this commit are false positives.
 description = "Suppress generic-api-key false positives in historical bmad skill/config additions"
+targetRules = ["generic-api-key"]
+condition = "AND"
 commits = ["bda766be1f1156327d54bc7497da74225ee853bf"]
+regexes = [
+  '''eyJhbGciOiJIUzI1NiIs''',
+  '''[0-9a-f]{64}''',
+]
 
 # Vendored BMAD Method skill trees under frameworks/ (src/ from upstream tags;
 # see frameworks/*/VENDOR.md, linguist-vendored). The Test Architect knowledge
@@ -82,10 +88,16 @@ commits = ["bda766be1f1156327d54bc7497da74225ee853bf"]
 # it was reorganised into frameworks/bmad-test-architecture/.
 [[allowlists]]
 description = "Vendored BMAD skills — example creds in framework docs"
+targetRules = ["generic-api-key"]
+condition = "AND"
 paths = [
   '''^frameworks/bmad-method/''',
   '''^frameworks/bmad-test-architecture/''',
   '''^\.claude/skills/''',
+]
+regexes = [
+  '''eyJhbGciOiJIUzI1NiIs''',
+  '''(?i)(password123|dummy|example|placeholder|test-key)''',
 ]
 
 [[allowlists]]
