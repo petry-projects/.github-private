@@ -187,15 +187,17 @@ _source_engine() {
 
 # ── Gemini/Copilot unchanged: no chain applied ────────────────────────────────
 
-@test "gemini: no in-engine chain; single-model behavior unchanged" {
+@test "gemini: in-engine chain uses gemini model (not claude)" {
   _source_engine "gemini"
   export STUB_ENGINE_EXIT=0
 
   run run_writer "$TEST_PROMPT"
 
   [ "$status" -eq 0 ]
-  # No claude model recorded (we ran gemini)
-  [ ! -s "$MODEL_RECORD" ]
+  # A gemini model was invoked (stub-gemini now records to MODEL_RECORD)
+  grep -q "gemini" "$MODEL_RECORD"
+  # No claude model was invoked
+  ! grep -q "claude" "$MODEL_RECORD"
 }
 
 # ── File-based rate-limit + reset-time helpers ─────────────────────────────

@@ -40,7 +40,7 @@ _gemini_billing_probe() {
       -X POST \
       -H "Content-Type: application/json" \
       -H "X-Goog-Api-Key: ${GOOGLE_API_KEY}" \
-      "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent" \
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent" \
       -d '{"contents":[{"parts":[{"text":"Hi"}]}],"generationConfig":{"maxOutputTokens":1}}' \
       -w '\n%{http_code}' 2>/dev/null
   ) || true
