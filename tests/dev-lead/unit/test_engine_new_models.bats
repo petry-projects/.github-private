@@ -51,7 +51,7 @@ teardown() {
 _source_engine() {
   local engine="${1:-claude}"
   export REVIEW_ENGINE="$engine"
-  source "$ENGINE_SCRIPT"
+  source "$ENGINE_SCRIPT" 2>/dev/null || true
 }
 
 # ── Tier default model assignments ───────────────────────────────────────────
