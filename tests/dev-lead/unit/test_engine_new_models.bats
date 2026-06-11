@@ -86,14 +86,17 @@ _source_engine() {
 @test "new-models: CLAUDE_AUDIT_MODEL_CHAIN starts with claude-fable-5" {
   _source_engine "claude"
   local first
-  first="$(printf '%s' "$CLAUDE_AUDIT_MODEL_CHAIN" | cut -d',' -f1 | tr -d ' ')"
+  first="${CLAUDE_AUDIT_MODEL_CHAIN%%,*}"
+  first="${first// /}"
   [ "$first" = "claude-fable-5" ]
 }
 
 @test "new-models: CLAUDE_AUDIT_MODEL_CHAIN includes claude-opus-4-8 as second element" {
   _source_engine "claude"
   local second
-  second="$(printf '%s' "$CLAUDE_AUDIT_MODEL_CHAIN" | cut -d',' -f2 | tr -d ' ')"
+  second="${CLAUDE_AUDIT_MODEL_CHAIN#*,}"
+  second="${second%%,*}"
+  second="${second// /}"
   [ "$second" = "claude-opus-4-8" ]
 }
 
@@ -105,28 +108,34 @@ _source_engine() {
 @test "new-models: CLAUDE_SINGLE_MODEL_CHAIN starts with claude-fable-5" {
   _source_engine "claude"
   local first
-  first="$(printf '%s' "$CLAUDE_SINGLE_MODEL_CHAIN" | cut -d',' -f1 | tr -d ' ')"
+  first="${CLAUDE_SINGLE_MODEL_CHAIN%%,*}"
+  first="${first// /}"
   [ "$first" = "claude-fable-5" ]
 }
 
 @test "new-models: CLAUDE_SINGLE_MODEL_CHAIN includes claude-opus-4-8 as second element" {
   _source_engine "claude"
   local second
-  second="$(printf '%s' "$CLAUDE_SINGLE_MODEL_CHAIN" | cut -d',' -f2 | tr -d ' ')"
+  second="${CLAUDE_SINGLE_MODEL_CHAIN#*,}"
+  second="${second%%,*}"
+  second="${second// /}"
   [ "$second" = "claude-opus-4-8" ]
 }
 
 @test "new-models: CLAUDE_DEEP_MODEL_CHAIN starts with claude-opus-4-8" {
   _source_engine "claude"
   local first
-  first="$(printf '%s' "$CLAUDE_DEEP_MODEL_CHAIN" | cut -d',' -f1 | tr -d ' ')"
+  first="${CLAUDE_DEEP_MODEL_CHAIN%%,*}"
+  first="${first// /}"
   [ "$first" = "claude-opus-4-8" ]
 }
 
 @test "new-models: CLAUDE_ACTION_MODEL_CHAIN second element is claude-opus-4-8 (not opus-4-7)" {
   _source_engine "claude"
   local second
-  second="$(printf '%s' "$CLAUDE_ACTION_MODEL_CHAIN" | cut -d',' -f2 | tr -d ' ')"
+  second="${CLAUDE_ACTION_MODEL_CHAIN#*,}"
+  second="${second%%,*}"
+  second="${second// /}"
   [ "$second" = "claude-opus-4-8" ]
   [[ "$second" != *"opus-4-7"* ]]
 }
