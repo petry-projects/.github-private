@@ -99,10 +99,8 @@ total_workflows=0
 for repo in "${repos[@]}"; do
   printf '  %s\n' "$repo"
 
-  # Exclude dynamic/ paths — these are GitHub-managed workflows (Copilot code review,
-  # SWE agent, etc.) whose failures are outside our control and produce false-positive alerts.
   if ! workflows_raw=$(gh api "repos/${repo}/actions/workflows?per_page=100" --paginate \
-    --jq '[.workflows[] | select(.state == "active" and (.path | startswith("dynamic/") | not)) | {id: (.id | tostring), file: (.path | split("/") | last)}]' \
+    --jq '[.workflows[] | select(.state == "active") | {id: (.id | tostring), file: .path}]' \
     2>/dev/null); then
     echo "::warning::Cannot read workflows for ${repo} — check token has actions:read"
     continue
