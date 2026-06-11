@@ -173,12 +173,12 @@ tests/dev-lead/e2e/
 ## Running in CI
 
 The E2E suite is designed to be runnable by the dev-lead agent itself via a
-`workflow_dispatch` or as a scheduled job. Fixture-based scenarios (01, 05, 06, 07)
+`workflow_dispatch` or as a scheduled job. Local (fixture/stub-based) scenarios (01, 05, 06, 07)
 are safe to run in any environment without credentials. Live scenarios (02–04)
 require a `GH_TOKEN` secret with `repo` scope.
 
 ```yaml
-- name: Run E2E fixture scenarios
+- name: Run E2E local scenarios
   run: |
     bash tests/dev-lead/e2e/run-all.sh --scenario 01-skip-bot-pr
     bash tests/dev-lead/e2e/run-all.sh --scenario 05-skip-anti-loop
