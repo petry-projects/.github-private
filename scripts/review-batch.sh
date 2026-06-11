@@ -160,7 +160,7 @@ while IFS= read -r pr_url; do
   # Fallback chain: claude -> copilot -> gemini (Gemini is the last resort).
   if [ "$rc" -eq 2 ] && [ "${REVIEW_ENGINE:-claude}" = "claude" ]; then
     # Prefer Copilot as the first cross-provider fallback.
-    if gh extension list 2>/dev/null | grep -q copilot || gh copilot --version > /dev/null 2>&1; then
+    if [ "${COPILOT_AVAILABLE:-false}" = "true" ]; then
       echo "::warning::Claude rate limit hit — switching to Copilot engine for remaining PRs"
       export REVIEW_ENGINE=copilot
       engine_fallbacks=$((engine_fallbacks + 1))
@@ -181,9 +181,9 @@ while IFS= read -r pr_url; do
     fi
   fi
 
-  if [ "$rc" -eq 2 ] && [ "${REVIEW_ENGINE}" = "copilot" ]; then
+  if [[ "$rc" -eq 2 && "${REVIEW_ENGINE}" = "copilot" ]]; then
     # Use the availability flag set by validate_engines() at startup.
-    if [ "${GEMINI_AVAILABLE:-false}" != "true" ]; then
+    if [[ "${GEMINI_AVAILABLE:-false}" != "true" ]]; then
       # Derive the specific reason so the warning is actionable without docs.
       _gemini_miss=""
       command -v gemini >/dev/null 2>&1 || _gemini_miss="Gemini CLI not installed (fix: npm install -g @google/gemini-cli)"

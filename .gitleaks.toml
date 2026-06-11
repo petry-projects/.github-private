@@ -92,6 +92,7 @@ paths = [
 description = "Suppress truncated example JWT in bmad skill api-testing-patterns.md knowledge files"
 condition = "AND"
 paths = ['''^\.claude/skills/[^/]+/resources/knowledge/api-testing-patterns\.md$''']
+regexTarget = "line"
 regexes = ['''expiredToken''']
 
 # Historical commit bda766be introduced a BMAD files-manifest under _bmad/_config/.
