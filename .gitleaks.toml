@@ -40,6 +40,17 @@ regexes = [
 ]
 
 [[allowlists]]
+# Historical bmad-test-architecture subtree (removed in same cleanup as other frameworks) ships
+# api-testing-patterns.md across 9 agent/workflow subdirectories; each copy has the same dummy
+# JWT stub 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...' at line 681 as an example expired-token
+# fixture.  condition="AND" binds the pattern to its file paths so a real secret here would
+# still be caught.
+description = "Suppress dummy JWT stub in historical bmad-test-architecture api-testing-patterns.md copies"
+condition = "AND"
+paths = ['''^frameworks/bmad-test-architecture/.*/api-testing-patterns\.md$''']
+regexes = ['''eyJhbGciOiJIUzI1NiIs''']
+
+[[allowlists]]
 # test-key: BRAVE_API_KEY = 'test-key' stub at lines 1335-1405
 # 03-VERIFICATION.md: path.join(..., '03-api', '03-VERIFICATION.md') at line 759 triggers
 #   generic-api-key because '03-api' contains the keyword 'api' followed by the 19-char

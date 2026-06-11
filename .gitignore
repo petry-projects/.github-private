@@ -390,3 +390,13 @@ private.yml
 # ============================================================================
 # End of petry-projects secrets baseline
 # ============================================================================
+
+# Python bytecode
+__pycache__/
+*.pyc
+
+# Vendor-specific Claude Code skill projections — BMAD lives in frameworks/ (agent-agnostic).
+.claude/skills/
+
+# gitleaks scanner binary — downloaded fresh in CI, never committed
+/gitleaks
