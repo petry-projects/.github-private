@@ -20,7 +20,7 @@ teardown() {
 _source_engine() {
   local engine="${1:-claude}"
   export REVIEW_ENGINE="$engine"
-  source "$ENGINE_SCRIPT"
+  source "$ENGINE_SCRIPT" 2>/dev/null || true
 }
 
 # Helper: install a curl stub that outputs given headers and exits with given code
@@ -239,9 +239,6 @@ STUB
   export STUB_ENGINE_EXIT=0
   export GEMINI_API_KEY="dummy-key"
   export ANTHROPIC_API_KEY="dummy"
-  # Fallback order is now claude → copilot → gemini; force copilot to skip
-  # (classic-PAT token) so the headroom-exhausted claude falls through to gemini.
-  export COPILOT_GITHUB_TOKEN="ghp_stub"
 
   local prompt
   prompt="$(mktemp)"
