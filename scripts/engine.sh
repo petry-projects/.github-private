@@ -50,12 +50,12 @@ set_engine_config() {
   case "$REVIEW_ENGINE" in
     claude)
       ENGINE_TRIAGE_MODEL="claude-haiku-4-5-20251001"
-      ENGINE_DEEP_MODEL="claude-sonnet-4-6"
-      ENGINE_AUDIT_MODEL="claude-opus-4-7"
+      ENGINE_DEEP_MODEL="claude-opus-4-8"
+      ENGINE_AUDIT_MODEL="claude-fable-5"
       ENGINE_ACTION_MODEL="claude-sonnet-4-6"
-      ENGINE_SINGLE_MODEL="claude-opus-4-7"
-      ENGINE_LABEL="triage: haiku 4.5 → deep: sonnet 4.6 + duck: o4-mini → audit: opus 4.7"
-      ENGINE_SINGLE_LABEL="single-reviewer mode: opus 4.7"
+      ENGINE_SINGLE_MODEL="claude-fable-5"
+      ENGINE_LABEL="triage: haiku 4.5 → deep: opus 4.8 + duck: o4-mini → audit: fable 5"
+      ENGINE_SINGLE_LABEL="single-reviewer mode: fable 5"
       # Cross-engine rubber duck: use Copilot when Claude is primary
       DUCK_ENGINE="copilot"
       DUCK_MODEL="o4-mini"
@@ -65,11 +65,15 @@ set_engine_config() {
       # are independent, so swapping models within Claude often recovers without
       # leaving the provider. (Daily subscription cap is shared — see issue #206.)
       # Override per workflow via env to tune cost/capability trade-offs.
+      # Fable 5 notes (honored by the claude CLI automatically):
+      #   - adaptive thinking only; budget_tokens/temperature/top_p/top_k removed
+      #   - omit thinking param entirely (disabled returns 400 on fable-5)
+      #   - min cacheable prefix: fable-5 = 2048 tok, opus-4-8 = 4096 tok
       CLAUDE_TRIAGE_MODEL_CHAIN="${CLAUDE_TRIAGE_MODEL_CHAIN:-claude-haiku-4-5-20251001,claude-sonnet-4-6}"
-      CLAUDE_DEEP_MODEL_CHAIN="${CLAUDE_DEEP_MODEL_CHAIN:-claude-sonnet-4-6,claude-opus-4-7}"
-      CLAUDE_AUDIT_MODEL_CHAIN="${CLAUDE_AUDIT_MODEL_CHAIN:-claude-opus-4-7,claude-sonnet-4-6}"
-      CLAUDE_ACTION_MODEL_CHAIN="${CLAUDE_ACTION_MODEL_CHAIN:-claude-sonnet-4-6,claude-opus-4-7}"
-      CLAUDE_SINGLE_MODEL_CHAIN="${CLAUDE_SINGLE_MODEL_CHAIN:-claude-opus-4-7,claude-sonnet-4-6}"
+      CLAUDE_DEEP_MODEL_CHAIN="${CLAUDE_DEEP_MODEL_CHAIN:-claude-opus-4-8,claude-sonnet-4-6}"
+      CLAUDE_AUDIT_MODEL_CHAIN="${CLAUDE_AUDIT_MODEL_CHAIN:-claude-fable-5,claude-opus-4-8,claude-opus-4-7}"
+      CLAUDE_ACTION_MODEL_CHAIN="${CLAUDE_ACTION_MODEL_CHAIN:-claude-sonnet-4-6,claude-opus-4-8}"
+      CLAUDE_SINGLE_MODEL_CHAIN="${CLAUDE_SINGLE_MODEL_CHAIN:-claude-fable-5,claude-opus-4-8,claude-opus-4-7}"
       ;;
     gemini)
       ENGINE_TRIAGE_MODEL="gemini-2.0-flash"
