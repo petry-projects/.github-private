@@ -74,7 +74,7 @@ build_and_run() {
   fi
 
   local rc=0
-  run_writer_with_fallback "$prompt_file" || rc=$?
+  run_writer_with_fallback "$prompt_file" "${INTENT_TYPE:-}" || rc=$?
   rm -f "$prompt_file"
   return "$rc"
 }
