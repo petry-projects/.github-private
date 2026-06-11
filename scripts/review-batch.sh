@@ -7,7 +7,7 @@
 #   MAX_PRS           — stop after this many actual reviews (no-ops don't count)
 #   CANDIDATE_LIMIT   — hard cap on candidates inspected (timeout backstop)
 #   REVIEW_ENGINE     — primary engine (claude|gemini|copilot); may follow
-#                       fallback chain claude -> gemini -> copilot
+#                       fallback chain claude -> copilot -> gemini
 #   GH_TOKEN          — workflow auth (set at job level)
 #
 # Exit:
@@ -157,44 +157,46 @@ while IFS= read -r pr_url; do
   fi
 
   # Exit code 2 = engine rate-limited.
-  # Fallback chain: claude -> gemini -> copilot
+  # Fallback chain: claude -> copilot -> gemini (Gemini is the last resort).
   if [ "$rc" -eq 2 ] && [ "${REVIEW_ENGINE:-claude}" = "claude" ]; then
-    # Use the availability flag set by validate_engines() at startup.
-    if [ "${GEMINI_AVAILABLE:-false}" = "true" ]; then
-      echo "::warning::Claude rate limit hit — switching to Gemini engine for remaining PRs"
-      export REVIEW_ENGINE=gemini
+    # Prefer Copilot as the first cross-provider fallback.
+    if gh extension list 2>/dev/null | grep -q copilot || gh copilot --version > /dev/null 2>&1; then
+      echo "::warning::Claude rate limit hit — switching to Copilot engine for remaining PRs"
+      export REVIEW_ENGINE=copilot
       engine_fallbacks=$((engine_fallbacks + 1))
-      fallback_engines="${fallback_engines:+$fallback_engines, }gemini"
+      fallback_engines="${fallback_engines:+$fallback_engines, }copilot"
       rc=0
       bash scripts/review-one-pr.sh "$pr_url" || rc=$?
-      
-      # Handle Gemini engine-unavailable setup/runtime errors post-fallback
+
+      # Handle Copilot engine-unavailable setup/runtime errors post-fallback
       if [ "$rc" -eq 55 ] || [ "$rc" -eq 127 ]; then
-        echo "::warning::Gemini engine unavailable at runtime (exit $rc) — falling through to Copilot"
+        echo "::warning::Copilot engine unavailable at runtime (exit $rc) — falling through to Gemini"
         rc=2
+        export REVIEW_ENGINE=copilot # ensure the next block catches it
       fi
     else
+      echo "::warning::Claude rate limit hit but Copilot fallback unavailable — falling through to Gemini"
+      rc=2
+      export REVIEW_ENGINE=copilot # Set to copilot so the next block catches it
+    fi
+  fi
+
+  if [ "$rc" -eq 2 ] && [ "${REVIEW_ENGINE}" = "copilot" ]; then
+    # Use the availability flag set by validate_engines() at startup.
+    if [ "${GEMINI_AVAILABLE:-false}" != "true" ]; then
       # Derive the specific reason so the warning is actionable without docs.
       _gemini_miss=""
       command -v gemini >/dev/null 2>&1 || _gemini_miss="Gemini CLI not installed (fix: npm install -g @google/gemini-cli)"
       [ -n "${GOOGLE_API_KEY:-}" ] || _gemini_miss="${_gemini_miss:+$_gemini_miss; }GOOGLE_API_KEY secret not set"
-      echo "::warning::Claude rate limit hit but Gemini fallback unavailable (${_gemini_miss}) — falling through to Copilot"
-      rc=2
-      export REVIEW_ENGINE=gemini # Set to gemini so the next block catches it
-    fi
-  fi
-
-  if [ "$rc" -eq 2 ] && [ "${REVIEW_ENGINE}" = "gemini" ]; then
-    if ! gh extension list 2>/dev/null | grep -q copilot && ! gh copilot --version > /dev/null 2>&1; then
-      echo "::warning::Copilot fallback engine unavailable — skipping $pr_url and continuing batch"
+      echo "::warning::Copilot fallback unavailable (${_gemini_miss}) — skipping $pr_url and continuing batch"
       failed=$((failed + 1))
       echo "::endgroup::"
       continue
     fi
-    echo "::warning::Gemini rate limit hit — switching to Copilot engine for remaining PRs"
-    export REVIEW_ENGINE=copilot
+    echo "::warning::Copilot rate limit hit — switching to Gemini engine for remaining PRs"
+    export REVIEW_ENGINE=gemini
     engine_fallbacks=$((engine_fallbacks + 1))
-    fallback_engines="${fallback_engines:+$fallback_engines, }copilot"
+    fallback_engines="${fallback_engines:+$fallback_engines, }gemini"
     rc=0
     bash scripts/review-one-pr.sh "$pr_url" || rc=$?
   fi
