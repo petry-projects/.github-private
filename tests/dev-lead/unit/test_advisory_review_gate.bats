@@ -206,7 +206,7 @@ args="\$*"
 if [[ "\$args" == *"reviews,comments"* ]]; then
   printf '%s\n' '$json_reviews_comments'
 elif [[ "\$args" == *"graphql"* ]]; then
-  # Return current time (commit was pushed just now, within the 20-minute window)
+  # Return current time (cherry-pick/commit was applied just now, within the 20-minute window)
   date -u '+%Y-%m-%dT%H:%M:%SZ'
 fi
 MOCK_EOF
@@ -215,8 +215,10 @@ MOCK_EOF
 }
 
 # Mock for the cherry-picked commit scenario:
-# push time (graphql) = now (recent), but committedDate (commits) = 2+ hours ago.
-# Used to verify the gate uses pushedDate, not committedDate, for head_age_sec.
+# A commit with an old author date was cherry-picked just now.
+# committer.date (GraphQL) = now (recent) — this is what the gate must use.
+# If the gate mistakenly used author.date (old), head_age_sec would be large
+# and the timeout would fire immediately, bypassing the gate.
 _make_mock_gh_dir_old_commit_recent_push() {
   local json_reviews_comments="$1"
   local tmpdir
@@ -227,16 +229,9 @@ args="\$*"
 if [[ "\$args" == *"reviews,comments"* ]]; then
   printf '%s\n' '$json_reviews_comments'
 elif [[ "\$args" == *"graphql"* ]]; then
-  # Differentiate pushedDate (recent) from committedDate (old) so the regression
-  # test fails if the gate switches to using only committedDate.
-  # The gate's --jq includes "pushedDate" when correct; if broken it would not.
-  if [[ "\$args" == *"pushedDate"* ]]; then
-    date -u '+%Y-%m-%dT%H:%M:%SZ'
-  else
-    date -u -d '2 hours ago' '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null \
-      || date -u -v-2H '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null \
-      || echo '2000-01-01T00:00:00Z'
-  fi
+  # committer.date is current time — the cherry-pick was applied just now.
+  # (author.date would be 2+ hours ago, but the gate uses committer.date.)
+  date -u '+%Y-%m-%dT%H:%M:%SZ'
 fi
 MOCK_EOF
   chmod +x "$tmpdir/gh"
@@ -319,10 +314,10 @@ MOCK_EOF
 }
 
 @test "Gate runtime: returns 1 for recently-pushed old cherry-picked commit" {
-  # Regression test: head_age_sec must use push time (pushedDate via graphql),
-  # not the commit's own committedDate.  An old cherry-picked commit has a
-  # far-past committedDate but was pushed moments ago; using committedDate
-  # would make head_age_sec exceed 20 min immediately and bypass the gate.
+  # Regression test: head_age_sec must use committer.date (time the cherry-pick
+  # was applied), not the commit's own author.date. An old cherry-picked commit
+  # has a far-past author.date but committer.date ≈ now; using author.date would
+  # make head_age_sec exceed 20 min immediately and bypass the gate.
   local one_bot_json
   one_bot_json='{"reviews":[{"author":{"login":"gemini-code-assist"},"state":"COMMENTED","submittedAt":"2099-01-01T00:00:00Z"}],"comments":[]}'
   local tmpdir
@@ -334,6 +329,85 @@ MOCK_EOF
   "
   rm -rf "$tmpdir"
   [ "$status" -eq 1 ]
+}
+
+# Mock where GraphQL returns the committer date directly (30 minutes ago).
+# Used to verify the head-age timeout fires for PRs with partial bot coverage.
+_make_mock_gh_dir_null_pushed_date() {
+  local json_reviews_comments="$1"
+  local tmpdir
+  tmpdir=$(mktemp -d)
+  cat > "$tmpdir/gh" << MOCK_EOF
+#!/usr/bin/env bash
+args="\$*"
+if [[ "\$args" == *"reviews,comments"* ]]; then
+  printf '%s\n' '$json_reviews_comments'
+elif [[ "\$args" == *"graphql"* ]]; then
+  # Return committer date 30 minutes ago — head-age timeout fires
+  date -u -d '30 minutes ago' '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null \
+    || date -u -v-30M '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null \
+    || printf '2000-01-01T00:00:00Z\n'
+fi
+MOCK_EOF
+  chmod +x "$tmpdir/gh"
+  echo "$tmpdir"
+}
+
+# Mock for the scenario where head time is completely unavailable
+# (GraphQL API returns empty — no committer date available).
+# Used to verify quiescence fires from latest_sub_at alone.
+_make_mock_gh_dir_no_head_time() {
+  local json_reviews_comments="$1"
+  local tmpdir
+  tmpdir=$(mktemp -d)
+  cat > "$tmpdir/gh" << MOCK_EOF
+#!/usr/bin/env bash
+args="\$*"
+if [[ "\$args" == *"reviews,comments"* ]]; then
+  printf '%s\n' '$json_reviews_comments'
+elif [[ "\$args" == *"graphql"* ]]; then
+  # Return empty to simulate GraphQL being unreachable / head time unavailable
+  printf '\n'
+fi
+MOCK_EOF
+  chmod +x "$tmpdir/gh"
+  echo "$tmpdir"
+}
+
+@test "Gate runtime: head-age timeout fires when GraphQL returns old committer date" {
+  # Regression test for issue #577: pushedDate now returns null from GitHub's GraphQL API.
+  # The gate fetches the head commit's committer date directly via GraphQL so that the
+  # head-age timeout fallback fires for PRs with partial bot coverage.
+  local one_bot_json
+  one_bot_json='{"reviews":[{"author":{"login":"gemini-code-assist"},"state":"COMMENTED","submittedAt":"2026-06-07T10:00:00Z"}],"comments":[]}'
+  local tmpdir
+  tmpdir=$(_make_mock_gh_dir_null_pushed_date "$one_bot_json")
+  local gate_script="$SCRIPT_DIR/lib/advisory-review-gate.sh"
+  run env PATH="$tmpdir:$PATH" bash -c "
+    source '$gate_script'
+    check_advisory_reviews 'https://github.com/owner/repo/pull/123'
+  "
+  rm -rf "$tmpdir"
+  # GraphQL returns committer date 30 min old → head_age_sec > 1200 → timeout fires → proceed
+  [ "$status" -eq 0 ]
+}
+
+@test "Gate runtime: quiescence fallback fires when head time unavailable and submissions are old" {
+  # When the GraphQL API is unreachable (head_time empty), the quiescence
+  # fallback must still fire from latest_sub_at alone, preventing indefinite stranding.
+  local one_bot_json
+  # Submission timestamp is in the past (well over 10 min ago)
+  one_bot_json='{"reviews":[{"author":{"login":"gemini-code-assist"},"state":"COMMENTED","submittedAt":"2026-06-07T10:00:00Z"}],"comments":[]}'
+  local tmpdir
+  tmpdir=$(_make_mock_gh_dir_no_head_time "$one_bot_json")
+  local gate_script="$SCRIPT_DIR/lib/advisory-review-gate.sh"
+  run env PATH="$tmpdir:$PATH" bash -c "
+    source '$gate_script'
+    check_advisory_reviews 'https://github.com/owner/repo/pull/123'
+  "
+  rm -rf "$tmpdir"
+  # latest_sub_at is old (>10 min) → quiescence fires even without head time → proceed
+  [ "$status" -eq 0 ]
 }
 
 @test "Gate runtime: returns 2 when gh command fails (API error, not normal wait)" {
