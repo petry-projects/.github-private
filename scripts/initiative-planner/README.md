@@ -13,14 +13,13 @@ create-story template, which `plan.schema.json` mirrors field-for-field.
 
 | File | Role |
 |------|------|
-| `redispatch.sh` | Bridge the `discussion [labeled]` trigger to `workflow_dispatch` (claude-code-action rejects `discussion` event contexts). Fired with a PAT so the dispatch actually starts a run. |
 | `gather-context.sh` | Fetch the approved Discussion + repo context → `$CONTEXT_PATH`; export `DISCUSSION_NODE_ID`. |
 | `plan.schema.json` | The plan contract Bob must emit (epic + stories + `blocked_by`). |
 | `validate-plan.py` | Schema + semantic checks: unique ids, acyclic DAG, an entry point, no dangling edges. |
 | `lib/mutations.sh` | DRY_RUN-aware GitHub helpers (create issue, link sub-issue, add `blocked_by`, comment on Discussion). |
 | `apply-plan.sh` | Materialize a validated plan. Creates issues labelled `initiative` only — **never** `initiative:auto`. |
 
-Tests: `tests/test_initiative_planner.bats`, `tests/test_initiative_planner_redispatch.bats` (run via `lint.yml`).
+Tests: `tests/test_initiative_planner.bats` (run via `lint.yml`).
 
 ## Local dry run
 

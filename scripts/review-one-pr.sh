@@ -429,10 +429,36 @@ else
     echo "{\"pr\":\"$PR_URL\",\"sha\":\"$PR_HEAD_SHA\",\"decision\":\"skip\",\"reason\":\"gh-rate-limited\"}"
     exit 100
   fi
-  echo "::error::gh pr diff failed during prefetch for $PR_URL"
-  [ -n "$_gh_diff_err_content" ] && echo "    $_gh_diff_err_content"
-  rm -f "$_gh_meta_err" "$_gh_diff_err" "$_gh_diff_tmp"
-  exit 1
+  if is_diff_too_large "$_gh_diff_err_content"; then
+    # GitHub's unified-diff endpoint is hard-capped at 300 changed files (HTTP 406).
+    # Fall back to the per-file REST API which works above the cap: each entry carries
+    # its own patch, so we assemble a truncated diff and continue the review normally.
+    _changed_files=$(echo "$PR_METADATA" | jq -r '.changedFiles // "unknown"' 2>/dev/null || echo "unknown")
+    echo "    diff too large (${_changed_files} files exceeds GitHub 300-file unified-diff cap) — assembling diff from per-file REST API"
+    _owner_repo_fallback=$(echo "$PR_URL" | sed -E 's|https://github.com/([^/]+/[^/]+)/pull/.*|\1|')
+    _pr_num_fallback=${PR_URL##*/}
+    _fallback_tmp=$(mktemp 2>/dev/null || echo "/tmp/cascade/fallback-diff-$$.txt")
+    _fallback_err=$(mktemp 2>/dev/null || echo "/tmp/cascade/fallback-err-$$.txt")
+    {
+      printf '# NOTE: diff assembled from per-file REST API (%s changed files exceeded\n' "$_changed_files"
+      printf "# GitHub's 300-file unified-diff cap; patches may be partial or absent for large files).\n"
+      gh api "repos/$_owner_repo_fallback/pulls/$_pr_num_fallback/files" \
+        --paginate --slurp \
+        | jq -r 'add | .[]? | if .patch then "diff --git a/\(.filename) b/\(.filename)\n--- a/\(.filename)\n+++ b/\(.filename)\n\(.patch)" else "# \(.status): \(.filename) (no patch — binary or large file)" end' \
+        2>"$_fallback_err" || {
+          echo "::warning::REST API fallback also failed — review will have partial diff" >&2
+          cat "$_fallback_err" >&2 || true
+        }
+    } > "$_fallback_tmp"
+    PR_DIFF=$(head -"$_diff_limit" "$_fallback_tmp")
+    rm -f "$_fallback_tmp" "$_fallback_err"
+    unset _changed_files _owner_repo_fallback _pr_num_fallback _fallback_tmp _fallback_err
+  else
+    echo "::error::gh pr diff failed during prefetch for $PR_URL"
+    [ -n "$_gh_diff_err_content" ] && echo "    $_gh_diff_err_content"
+    rm -f "$_gh_meta_err" "$_gh_diff_err" "$_gh_diff_tmp"
+    exit 1
+  fi
 fi
 rm -f "$_gh_meta_err" "$_gh_diff_err" "$_gh_diff_tmp"
 unset _gh_meta_err _gh_diff_err _gh_diff_tmp _gh_meta_err_content _gh_diff_err_content

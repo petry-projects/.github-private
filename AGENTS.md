@@ -56,6 +56,20 @@ This is the `.github-private` org infrastructure repo for `petry-projects`. It c
 - Scripts must be POSIX-compatible shell (`#!/usr/bin/env bash` with `set -euo pipefail`).
 - No hardcoded tokens or secrets — use `$GITHUB_TOKEN` from the environment.
 
+### Oversized PRs (> 300 changed files)
+
+GitHub's unified-diff endpoint (`gh pr diff`) is hard-capped at 300 changed files and returns
+HTTP 406 above that limit.
+
+- **PR-size guideline:** PRs should stay under 300 changed files to receive a full automated review.
+  PRs exceeding 300 files are reviewed with a truncated diff and should be split where practical.
+  This guideline is advisory — no CI gate enforces it.
+- **Agent behavior on 406:** When `gh pr diff` returns the 406 "diff exceeded the maximum number of
+  files" error, the cascade falls back to the per-file REST API (`/pulls/{n}/files`), assembles a
+  truncated diff up to the configured line limit, and continues the review with a note that the diff
+  is partial. The agent **never** exits with a fatal error (code 1) on the 406 — it always produces
+  an actionable review or comment.
+
 ### Cost reporting
 
 - **All surfaced USD amounts are rounded to 2 decimals (cents).** Render every
