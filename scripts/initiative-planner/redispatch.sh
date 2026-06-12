@@ -42,14 +42,13 @@ DISCUSSION_NUMBER="${DISCUSSION_NUMBER:?DISCUSSION_NUMBER required}"
 WORKFLOW_FILE="${WORKFLOW_FILE:-initiative-planner.yml}"
 
 # Validate before the value reaches the gh command line.
-[[ "$DISCUSSION_NUMBER" =~ ^[1-9][0-9]*$ ]] || {
+[[ "$DISCUSSION_NUMBER" =~ ^[0-9]+$ ]] || {
   echo "::error::DISCUSSION_NUMBER must be a positive integer, got: '$DISCUSSION_NUMBER'" >&2
   exit 1
 }
 
 # Map DRY_RUN to a boolean string for the workflow input
-_dry_run="${DRY_RUN:-}"
-if [[ "$_dry_run" == "1" || "${_dry_run,,}" == "true" ]]; then
+if [[ "${DRY_RUN:-}" == "1" || "${DRY_RUN:-}" == "true" ]]; then
   DISPATCH_DRY_RUN="true"
 else
   DISPATCH_DRY_RUN="false"
@@ -67,7 +66,7 @@ fi
 
 # Use GITHUB_REF if it is a branch or tag to support testing on feature branches
 REF_FLAGS=()
-if [[ -n "${GITHUB_REF:-}" && ( "$GITHUB_REF" == refs/heads/* || "$GITHUB_REF" == refs/tags/* ) ]]; then
+if [[ -n "${GITHUB_REF:-}" && ( "$GITHUB_REF" =~ ^refs/heads/ || "$GITHUB_REF" =~ ^refs/tags/ ) ]]; then
   REF_FLAGS=(--ref "$GITHUB_REF")
 fi
 
