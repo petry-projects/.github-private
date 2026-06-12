@@ -60,8 +60,14 @@ ref_json='[]'
 if [[ -n $refs ]]; then
   ref_json="$(while IFS= read -r n; do
       [[ -n $n ]] || continue
+      # A referenced #N may be an issue, a PR, a Discussion, or the idea's own
+      # number. Note that the GitHub issues API also returns PRs, so both issues
+      # and PRs are fetched successfully. Skip anything the issues endpoint
+      # can't return (404 for discussions / self-refs) instead of failing the
+      # whole run; a genuine API/auth fault still surfaces via the epics query
+      # above (which fails fast).
       gh api "repos/${REPO}/issues/${n}" --jq '{number, title, state}' 2>/dev/null \
-        || { echo "::error::failed to fetch issue ${n} from ${REPO}" >&2; exit 1; }
+        || echo "::notice::skipping referenced #${n} (not a fetchable issue/PR — discussion/self-ref)" >&2
     done <<<"$refs" | jq -sc '.')"
 fi
 
