@@ -73,6 +73,28 @@ issue_id() {
   gh api "repos/${repo}/issues/${number}" --jq '.id'
 }
 
+# find_existing_epic <repo> <back_reference>
+# Idempotency guard: searches open `initiative` issues for an epic whose body
+# already embeds <back_reference> (the "Planned from idea discussion #N" marker
+# apply-plan.sh writes into every epic). Prints the matching epic number on
+# stdout, or nothing when no epic exists.
+#
+# DRY_RUN: returns the DRY_RUN_EXISTING_EPIC stub env (empty if unset) so the
+# offline bats suite can simulate both the "already planned" and "first run"
+# paths without touching the network.
+find_existing_epic() {
+  local repo="$1" backref="$2"
+  if _is_dry_run; then
+    printf '%s' "${DRY_RUN_EXISTING_EPIC:-}"
+    return 0
+  fi
+  # --search is GitHub's tokenized full-text search; re-filter with an exact
+  # substring match so a tokenized hit on a different discussion can't match.
+  gh issue list --repo "$repo" --label initiative --state open \
+    --search "$backref" --json number,body \
+    | jq -r --arg ref "$backref" 'first(.[] | select(.body | contains($ref)) | .number) // empty'
+}
+
 # link_sub_issue <repo> <epic_number> <child_id>
 link_sub_issue() {
   local repo="$1" epic="$2" child_id="$3"
