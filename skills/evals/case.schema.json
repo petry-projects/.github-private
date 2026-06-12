@@ -46,6 +46,16 @@
           "enum": ["LOW", "MEDIUM", "HIGH"],
           "description": "Expected risk classification. Any HIGH signal must pair with escalate=true."
         }
+      },
+      "if": {
+        "properties": {
+          "risk": { "const": "HIGH" }
+        }
+      },
+      "then": {
+        "properties": {
+          "escalate": { "const": true }
+        }
       }
     }
   }

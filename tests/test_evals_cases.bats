@@ -79,3 +79,9 @@ teardown() { rm -rf "$TMP"; }
   bad="$(jq -s '[.[] | select(.expected.risk == "HIGH" and .expected.escalate == false)] | length' "$CASES")"
   [ "$bad" -eq 0 ]
 }
+
+@test "validate-cases rejects a case with HIGH risk but escalate false" {
+  jq -c '.expected.risk = "HIGH" | .expected.escalate = false' <(head -1 "$CASES") >"$TMP/bad.jsonl"
+  run python3 "$VALIDATOR" "$TMP/bad.jsonl"
+  [ "$status" -ne 0 ]
+}

@@ -40,12 +40,12 @@ def main() -> None:
         fail("jsonschema not installed (pip install 'jsonschema>=4')")
 
     try:
-        schema = json.loads(schema_path.read_text())
+        schema = json.loads(schema_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         fail(f"could not read/parse schema {schema_path}: {exc}")
 
     try:
-        raw = cases_path.read_text()
+        raw = cases_path.read_text(encoding="utf-8")
     except OSError as exc:
         fail(f"could not read {cases_path}: {exc}")
 
