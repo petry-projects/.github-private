@@ -13,10 +13,19 @@
 # Outputs (stdout): one of "passing", "pending", "failing"
 #
 # Classification rules (after filtering own checks):
-#   passing — empty rollup, or every item is SUCCESS/SKIPPED/NEUTRAL/SUCCESS state
+#   passing — empty rollup, or every item is SUCCESS/SKIPPED/NEUTRAL/CANCELLED
+#             conclusion or SUCCESS state
 #   pending — any item is IN_PROGRESS/QUEUED/WAITING/PENDING/EXPECTED or
 #             COMPLETED with null/empty conclusion
 #   failing — anything else (FAILURE, ACTION_REQUIRED, TIMED_OUT, etc.)
+#
+# CANCELLED is treated as non-blocking, not failing (issue #608). dev-lead's
+# orchestration jobs (dev-lead / dispatch, dev-lead / ci-relay) are routinely
+# cancelled by dev-lead's own concurrency when a run is superseded, leaving
+# terminal CANCELLED check-runs on the PR. A cancelled check is not a failed
+# check, so it must not block the review gate. It is non-blocking rather than
+# pending because a superseded check never completes — classifying it pending
+# would leave the PR perpetually un-reviewable.
 #
 # Own-check filter — excludes entries belonging to the PR Review cascade.
 #   `gh pr view --json statusCheckRollup` exposes the check/job *name* but not
@@ -48,6 +57,11 @@ compute_ci_status() {
     def is_success:
       .conclusion == "SUCCESS" or .conclusion == "SKIPPED" or .conclusion == "NEUTRAL" or
       .state == "SUCCESS";
+    # CANCELLED checks are non-blocking, not failing (issue #608): superseded
+    # dev-lead orchestration jobs leave terminal CANCELLED check-runs that are
+    # not a real merge-readiness signal.
+    def is_cancelled:
+      .conclusion == "CANCELLED";
     def is_own_check:
       (.name // .context // "") as $n |
       (.workflowName // "") as $wf |
@@ -67,7 +81,7 @@ compute_ci_status() {
       (map(select(is_own_check | not))) as $ext |
       if ($ext | length) == 0 then "passing"
       elif ([$ext[] | select(is_pending)] | length) > 0 then "pending"
-      elif ([$ext[] | select(is_success)] | length) == ($ext | length) then "passing"
+      elif all($ext[]; is_success or is_cancelled) then "passing"
       else "failing"
       end
     end
