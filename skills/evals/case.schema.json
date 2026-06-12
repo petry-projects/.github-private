@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Triage Eval Case",
+  "description": "One held-out eval case: a single triage input paired with its expected decision. Each line of skills/evals/<skill>/cases.jsonl is one object of this shape. This is the trust anchor for skill-quality measurement and is CODEOWNER-gated separately from any scorer/proposer.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "input", "expected"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+      "minLength": 3,
+      "description": "Stable, unique kebab-case identifier for the case (e.g. 'triage-auth-token')."
+    },
+    "description": {
+      "type": "string",
+      "minLength": 5,
+      "description": "Human-readable note on what this case exercises and which triage.md criterion grounds the expected decision."
+    },
+    "tags": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 2
+      },
+      "uniqueItems": true,
+      "description": "Optional labels for coverage tracking, e.g. the high-risk trigger a case exercises ('auth-secrets', 'db-migration', 'security-anti-pattern')."
+    },
+    "input": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The pre-fetched PR context exactly as triage.md consumes it under '## Pre-fetched PR context'. A self-contained string; triage has no tools and reads nothing else."
+    },
+    "expected": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["escalate", "risk"],
+      "description": "The fixed, reward-hack-resistant expected decision fields triage.md must emit.",
+      "properties": {
+        "escalate": {
+          "type": "boolean",
+          "description": "Whether triage must escalate (true) or may approve (false)."
+        },
+        "risk": {
+          "type": "string",
+          "enum": ["LOW", "MEDIUM", "HIGH"],
+          "description": "Expected risk classification. Any HIGH signal must pair with escalate=true."
+        }
+      }
+    }
+  }
+}
