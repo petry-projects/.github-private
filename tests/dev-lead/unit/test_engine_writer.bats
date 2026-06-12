@@ -261,7 +261,8 @@ GHEOF
 @test "writer: run_writer_with_fallback succeeds on second engine if first rate-limited" {
   _source_engine "claude"
   export DEV_LEAD_DRY_RUN=false
-  # claude is rate-limited; gemini succeeds
+  # claude is rate-limited; gemini succeeds. Copilot (now the 1st fallback)
+  # is forced to skip via a classic-PAT token so gemini remains the tested fallback.
   cat > "$STUB_BIN_DIR/claude" << 'STUB'
 #!/usr/bin/env bash
 echo "hit your limit"
@@ -270,6 +271,7 @@ STUB
   chmod +x "$STUB_BIN_DIR/claude"
   export STUB_ENGINE_EXIT=0
   export STUB_ENGINE_RESPONSE="gemini response ok"
+  export COPILOT_GITHUB_TOKEN="ghp_stub"  # ghp_* → copilot fallback is skipped
 
   run run_writer_with_fallback "$TEST_PROMPT"
 
@@ -533,9 +535,11 @@ exit 1
 STUB
   chmod +x "$STUB_BIN_DIR/claude"
 
-  # Gemini stub succeeds
+  # Gemini stub succeeds. Copilot (now the 1st fallback) is forced to skip
+  # via a classic-PAT token so gemini remains the tested fallback.
   export STUB_ENGINE_EXIT=0
   export STUB_ENGINE_RESPONSE="gemini fixed it"
+  export COPILOT_GITHUB_TOKEN="ghp_stub"  # ghp_* → copilot fallback is skipped
 
   run run_writer_with_fallback "$TEST_PROMPT"
 

@@ -83,9 +83,11 @@ STUBEOF
 }
 
 @test "fallback: primary exits 2 → tries next engine" {
-  # claude exits 2 (rate-limited), gemini exits 0
+  # claude exits 2 (rate-limited), gemini exits 0. Copilot (now the 1st fallback)
+  # is forced to skip via a classic-PAT token so gemini remains the tested fallback.
   _make_stub "claude" 2
   _make_stub "gemini" 0
+  export COPILOT_GITHUB_TOKEN="ghp_stub"  # ghp_* → copilot fallback is skipped
   _source_engine "claude"
 
   run run_writer_with_fallback "$TEST_PROMPT"
@@ -152,7 +154,7 @@ GHEOF
 
 @test "fallback: engine not installed (127) → remaining engines still tried" {
   # claude rate-limited, gemini not installed, but the next engine after gemini succeeds
-  # In the actual fallback order: claude → gemini → copilot. Since copilot returns 2
+  # In the actual fallback order: claude → copilot → gemini. Since copilot returns 2
   # (text-only) in run_writer, we verify with a scenario where gemini is "not found"
   # and a recording stub shows that claude was tried after gemini failed.
   _make_stub "gemini" 2
@@ -183,7 +185,7 @@ GHEOF
 }
 
 
-@test "fallback: fallback engine order is claude → gemini → copilot" {
+@test "fallback: fallback engine order is claude → copilot → gemini" {
   # Primary = gemini (exits 2), then fallback order should try claude first
   _make_stub "gemini" 2
   local record_file

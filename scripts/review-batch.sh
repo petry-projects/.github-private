@@ -7,7 +7,7 @@
 #   MAX_PRS           — stop after this many actual reviews (no-ops don't count)
 #   CANDIDATE_LIMIT   — hard cap on candidates inspected (timeout backstop)
 #   REVIEW_ENGINE     — primary engine (claude|gemini|copilot); may follow
-#                       fallback chain claude -> gemini -> copilot
+#                       fallback chain claude -> copilot -> gemini
 #   GH_TOKEN          — workflow auth (set at job level)
 #
 # Exit:
@@ -151,7 +151,7 @@ while IFS= read -r pr_url; do
   fi
 
   # Exit code 2 = engine rate-limited.
-  # Fallback chain: claude -> gemini -> copilot
+  # Fallback chain: claude -> copilot -> gemini (Gemini is the last resort).
   if [ "$rc" -eq 2 ] && [ "${REVIEW_ENGINE:-claude}" = "claude" ]; then
     # Prefer Copilot as the first cross-provider fallback.
     if [ "${COPILOT_AVAILABLE:-false}" = "true" ] && [[ "${COPILOT_GITHUB_TOKEN:-}" != ghp_* ]]; then
@@ -188,10 +188,10 @@ while IFS= read -r pr_url; do
       echo "::endgroup::"
       continue
     fi
-    echo "::warning::Gemini rate limit hit — switching to Copilot engine for remaining PRs"
-    export REVIEW_ENGINE=copilot
+    echo "::warning::Copilot rate limit hit — switching to Gemini engine for remaining PRs"
+    export REVIEW_ENGINE=gemini
     engine_fallbacks=$((engine_fallbacks + 1))
-    fallback_engines="${fallback_engines:+$fallback_engines, }copilot"
+    fallback_engines="${fallback_engines:+$fallback_engines, }gemini"
     rc=0
     run_review_capture "$pr_url" || rc=$?
   fi

@@ -239,6 +239,9 @@ STUB
   export STUB_ENGINE_EXIT=0
   export GEMINI_API_KEY="dummy-key"
   export ANTHROPIC_API_KEY="dummy"
+  # Fallback order is now claude → copilot → gemini; force copilot to skip
+  # (classic-PAT token) so the headroom-exhausted claude falls through to gemini.
+  export COPILOT_GITHUB_TOKEN="ghp_stub"
 
   local prompt
   prompt="$(mktemp)"
