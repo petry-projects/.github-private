@@ -1,0 +1,155 @@
+#!/usr/bin/env bash
+# sweep-stuck-reviews.sh — re-trigger reviews for PRs that went green after a skip.
+#
+# The pr-review cascade legitimately SKIPS a PR whose CI is pending or failing
+# (decision: skip, reason: ci-pending | ci-failing) and relies on a later
+# `check_suite:completed` event to re-evaluate it. But when CI settles green
+# AFTER the last review trigger fired — common while dev-lead is actively
+# pushing fixes / re-running CI — no event re-fires, and the PR sits at
+# REVIEW_REQUIRED with green CI, never re-reviewed (issue #573).
+#
+# This sweep closes that gap. It enumerates open PRs and re-dispatches a review
+# for each one that is:
+#   • reviewDecision == REVIEW_REQUIRED   (GitHub still wants a review), AND
+#   • CI status == passing                (own pr-review checks filtered out via
+#                                          lib/ci-status.sh, same as the cascade), AND
+#   • NOT already reviewed at the current head
+#                                         (no `<!-- pr-review-agent v1 sha=<head> -->`
+#                                          marker), so genuine no-ops aren't re-fired.
+# Each selected PR is re-dispatched through the normal trigger
+# (pr-review-trigger.yml -f pr_url=<url>); review-one-pr.sh remains the
+# authoritative gate, so the sweep only decides WHAT to re-trigger.
+#
+# IMPORTANT — the re-dispatch requires a PAT, not GITHUB_TOKEN:
+#   GitHub does not start new workflow runs from a workflow_dispatch fired with
+#   the default GITHUB_TOKEN (loop prevention). The caller MUST provide a PAT
+#   with workflow scope as GH_TOKEN. Same constraint as
+#   scripts/initiative-planner/redispatch.sh.
+#
+# Env:
+#   AGENT_REPO        owner/repo hosting the trigger workflow (default: petry-projects/.github-private)
+#   TRIGGER_WORKFLOW  workflow file to dispatch (default: pr-review-trigger.yml)
+#   SWEEP_PRS_FILE    optional file of candidate PR URLs (one per line); when
+#                     unset, candidates are enumerated via list-prs.sh
+#   MAX_DISPATCH      cap on review dispatches per sweep (default: 20)
+#   DRY_RUN           "true"/"1" → log selections but never dispatch
+#   GITHUB_REF        passed through as --ref when it is a branch/tag (feature testing)
+#   GH_TOKEN          a PAT with workflow scope (required at the call site)
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# CI gate: compute_ci_status filters the cascade's own check runs before
+# classifying, exactly as review-one-pr.sh does (issue #469).
+# shellcheck source=lib/ci-status.sh
+source "$SCRIPT_DIR/lib/ci-status.sh"
+
+AGENT_REPO="${AGENT_REPO:-petry-projects/.github-private}"
+TRIGGER_WORKFLOW="${TRIGGER_WORKFLOW:-pr-review-trigger.yml}"
+MAX_DISPATCH="${MAX_DISPATCH:-20}"
+
+# Validate MAX_DISPATCH is a positive integer; fall back to the default otherwise.
+case "$MAX_DISPATCH" in
+  ''|*[!0-9]*) MAX_DISPATCH=20 ;;
+esac
+[ "$MAX_DISPATCH" -gt 0 ] || MAX_DISPATCH=20
+
+if [[ "${DRY_RUN:-}" == "1" || "${DRY_RUN:-}" == "true" ]]; then
+  DRY_RUN_BOOL=true
+else
+  DRY_RUN_BOOL=false
+fi
+
+# Use GITHUB_REF as --ref only when it is a branch or tag (supports testing on
+# feature branches); a pull-request merge ref is not dispatchable.
+REF_FLAGS=()
+if [[ -n "${GITHUB_REF:-}" && ( "$GITHUB_REF" =~ ^refs/heads/ || "$GITHUB_REF" =~ ^refs/tags/ ) ]]; then
+  REF_FLAGS=(--ref "$GITHUB_REF")
+fi
+
+# ---------------------------------------------------------------------------
+# 1. Gather candidate PR URLs
+# ---------------------------------------------------------------------------
+candidates_file="$(mktemp)"
+trap 'rm -f "$candidates_file"' EXIT
+
+if [[ -n "${SWEEP_PRS_FILE:-}" && -r "${SWEEP_PRS_FILE}" ]]; then
+  grep -v '^[[:space:]]*$' "$SWEEP_PRS_FILE" > "$candidates_file" || true
+else
+  bash "$SCRIPT_DIR/list-prs.sh" > "$candidates_file" || true
+fi
+
+candidate_count=$(grep -c . "$candidates_file" || true)
+echo "=== PR Review Sweep — re-trigger stuck-green reviews ==="
+echo "  Trigger:    $TRIGGER_WORKFLOW @ $AGENT_REPO"
+echo "  Candidates: $candidate_count"
+echo "  Dry run:    $DRY_RUN_BOOL"
+echo ""
+
+# ---------------------------------------------------------------------------
+# 2. Select stuck-green PRs and re-dispatch
+# ---------------------------------------------------------------------------
+inspected=0
+stuck=0
+dispatched=0
+
+while IFS= read -r pr_url; do
+  [ -z "$pr_url" ] && continue
+  inspected=$((inspected + 1))
+
+  if ! snapshot=$(gh pr view "$pr_url" \
+        --json headRefOid,statusCheckRollup,reviewDecision,reviews,comments 2>/dev/null); then
+    echo "  skip $pr_url — could not fetch PR (deleted, no access, or rate-limited)"
+    continue
+  fi
+
+  review_decision=$(jq -r '.reviewDecision // ""' <<< "$snapshot")
+  if [ "$review_decision" != "REVIEW_REQUIRED" ]; then
+    echo "  skip $pr_url — reviewDecision='$review_decision' (not REVIEW_REQUIRED)"
+    continue
+  fi
+
+  ci_status=$(compute_ci_status "$(jq '.statusCheckRollup' <<< "$snapshot")")
+  if [ "$ci_status" != "passing" ]; then
+    echo "  skip $pr_url — CI '$ci_status' (not green yet)"
+    continue
+  fi
+
+  head_sha=$(jq -r '.headRefOid // ""' <<< "$snapshot")
+  # Already reviewed at this exact head? The cascade stamps each review with
+  # `<!-- pr-review-agent v1 sha=<HEAD> -->`; a marker at the current head means
+  # there is nothing to re-trigger. Match the sha followed by a space so one
+  # sha is never treated as a prefix of another.
+  reviewed_at_head=$(jq -r --arg sha "$head_sha" '
+    [ ((.reviews // []) + (.comments // []))[]
+      | (.body // "")
+      | select(test("<!-- pr-review-agent v1 sha=" + $sha + " ")) ]
+    | length' <<< "$snapshot" 2>/dev/null || echo 0)
+  if [ "${reviewed_at_head:-0}" -gt 0 ]; then
+    echo "  skip $pr_url — already reviewed at head ${head_sha:0:8}"
+    continue
+  fi
+
+  stuck=$((stuck + 1))
+  echo "  stuck-green: $pr_url (head ${head_sha:0:8}) — needs re-review"
+
+  if [ "$dispatched" -ge "$MAX_DISPATCH" ]; then
+    echo "::notice::sweep: reached MAX_DISPATCH=$MAX_DISPATCH — deferring remaining PRs to the next sweep"
+    break
+  fi
+
+  if [ "$DRY_RUN_BOOL" = "true" ]; then
+    echo "    dry-run: would dispatch $TRIGGER_WORKFLOW for $pr_url"
+    continue
+  fi
+
+  if gh workflow run "$TRIGGER_WORKFLOW" --repo "$AGENT_REPO" "${REF_FLAGS[@]}" \
+       -f pr_url="$pr_url"; then
+    dispatched=$((dispatched + 1))
+    echo "    dispatched review for $pr_url"
+  else
+    echo "::warning::sweep: failed to dispatch review for $pr_url"
+  fi
+done < "$candidates_file"
+
+echo ""
+echo "Sweep summary: inspected $inspected candidate(s), $stuck stuck-green, $dispatched review(s) dispatched."
