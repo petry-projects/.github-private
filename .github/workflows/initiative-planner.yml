@@ -48,11 +48,44 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # ── discussion [labeled] bridge ───────────────────────────────────────────────
+  # claude-code-action aborts on `discussion` event contexts ("Unsupported event
+  # type: discussion"), so we never plan inline on a discussion event. When a
+  # maintainer adds `idea:approved`, this job resolves the discussion number and
+  # re-invokes THIS workflow via workflow_dispatch — under which the action runs.
+  # The label stays the human gate; the re-dispatch is an invisible bridge.
+  redispatch:
+    if: github.event_name == 'discussion' && github.event.label.name == 'idea:approved'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read  # actions/checkout; the workflow_dispatch is fired with the PAT
+    steps:
+      - name: Checkout agent repo
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Guard — PAT present
+        # PAT required: a workflow_dispatch fired with GITHUB_TOKEN is accepted but
+        # NEVER starts a run (loop prevention) — the planner would silently no-op.
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
+        run: |
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "::error::GH_PAT_WORKFLOWS is required — a workflow_dispatch fired with GITHUB_TOKEN will not start a run."
+            exit 1
+          fi
+
+      - name: Re-dispatch under workflow_dispatch
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
+          REPO: ${{ github.repository }}
+          DISCUSSION_NUMBER: ${{ github.event.discussion.number }}
+        run: bash scripts/initiative-planner/redispatch.sh
+
   plan:
-    # Skip discussion-label events unless the label added is exactly idea:approved.
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'discussion' && github.event.label.name == 'idea:approved')
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -61,9 +94,11 @@ jobs:
       discussions: write   # post the plan summary back to the idea
       id-token: write       # claude-code-action OIDC
     env:
+      # This job only runs on workflow_dispatch (the discussion path re-dispatches
+      # here via the `redispatch` job), so inputs are always present.
       REPO: ${{ github.repository }}
-      DISCUSSION_NUMBER: ${{ github.event.inputs.discussion || github.event.discussion.number }}
-      DRY_RUN: ${{ (github.event_name == 'workflow_dispatch' && inputs.dry_run == true) && '1' || '0' }}
+      DISCUSSION_NUMBER: ${{ github.event.inputs.discussion }}
+      DRY_RUN: ${{ inputs.dry_run == true && '1' || '0' }}
       TOOLING_DIR: ${{ github.workspace }}/scripts/initiative-planner
     steps:
       - name: Checkout agent repo
