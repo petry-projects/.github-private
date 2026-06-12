@@ -91,7 +91,7 @@ find_existing_epic() {
   # --search is GitHub's tokenized full-text search; re-filter with an exact
   # substring match so a tokenized hit on a different discussion can't match.
   gh issue list --repo "$repo" --label initiative --state open \
-    --search "$backref" --json number,body \
+    --search "\"$backref\"" --json number,body \
     | jq -r --arg ref "$backref" 'first(.[] | select(.body | contains($ref)) | .number) // empty'
 }
 
