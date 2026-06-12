@@ -96,3 +96,25 @@ setup() {
   [ "$status" -eq 0 ]
   [ -f "$REPO_ROOT/$output" ]
 }
+
+# ---------------------------------------------------------------------------
+# Defensive: missing manifest — all three functions fail cleanly
+# ---------------------------------------------------------------------------
+
+@test "review_registry_version fails with clear message when manifest is missing" {
+  REVIEW_REGISTRY_MANIFEST="/nonexistent/review-registry.tsv" run review_registry_version
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"manifest file not found"* ]]
+}
+
+@test "review_registry_types fails with clear message when manifest is missing" {
+  REVIEW_REGISTRY_MANIFEST="/nonexistent/review-registry.tsv" run review_registry_types
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"manifest file not found"* ]]
+}
+
+@test "review_registry_lookup fails with clear message when manifest is missing" {
+  REVIEW_REGISTRY_MANIFEST="/nonexistent/review-registry.tsv" run review_registry_lookup pr_diff rubric
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"manifest file not found"* ]]
+}

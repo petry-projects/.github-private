@@ -32,6 +32,7 @@ fi
 #   comment). Returns non-zero if absent so callers can detect a malformed
 #   manifest rather than silently using an unversioned one.
 review_registry_version() {
+  [ -f "$REVIEW_REGISTRY_MANIFEST" ] || { echo "review_registry_version: manifest file not found at $REVIEW_REGISTRY_MANIFEST" >&2; return 1; }
   local v
   v=$(awk '/^#[[:space:]]*schema_version:/ {
             gsub(/[^0-9]/, "", $0); print; exit
@@ -44,6 +45,7 @@ review_registry_version() {
 #   Prints every registered artifact_type (first column of each data row),
 #   one per line. Comment and blank lines are ignored.
 review_registry_types() {
+  [ -f "$REVIEW_REGISTRY_MANIFEST" ] || { echo "review_registry_types: manifest file not found at $REVIEW_REGISTRY_MANIFEST" >&2; return 1; }
   awk -F'\t' '!/^[[:space:]]*#/ && $1 != "" { print $1 }' "$REVIEW_REGISTRY_MANIFEST"
 }
 
@@ -61,6 +63,7 @@ review_registry_lookup() {
     '')             echo "review_registry_lookup: field required (rubric|output_channel)" >&2; return 2 ;;
     *)              echo "review_registry_lookup: unknown field '$field' (allowed: rubric, output_channel)" >&2; return 2 ;;
   esac
+  [ -f "$REVIEW_REGISTRY_MANIFEST" ] || { echo "review_registry_lookup: manifest file not found at $REVIEW_REGISTRY_MANIFEST" >&2; return 2; }
   local value
   value=$(awk -F'\t' -v t="$artifact_type" -v c="$col" '
             !/^[[:space:]]*#/ && $1 == t { print $c; found = 1; exit }
@@ -69,5 +72,6 @@ review_registry_lookup() {
     echo "review_registry_lookup: unknown artifact_type '$artifact_type'" >&2
     return 1
   }
+  [ -n "$value" ] || { echo "review_registry_lookup: field '$field' is empty for '$artifact_type'" >&2; return 2; }
   printf '%s\n' "$value"
 }
