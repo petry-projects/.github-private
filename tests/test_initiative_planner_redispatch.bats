@@ -78,3 +78,29 @@ teardown() {
   [ "$status" -eq 0 ]
   grep -qF "workflow run other-planner.yml" "$GH_LOG"
 }
+
+@test "honors DRY_RUN=1 or DRY_RUN=true" {
+  export DRY_RUN="1"
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  grep -qF -- "-f dry_run=true" "$GH_LOG"
+
+  export DRY_RUN="true"
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  grep -qF -- "-f dry_run=true" "$GH_LOG"
+}
+
+@test "passes GITHUB_REF if it is a branch or tag" {
+  export GITHUB_REF="refs/heads/feature-branch"
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  grep -qF -- "--ref refs/heads/feature-branch" "$GH_LOG"
+}
+
+@test "ignores GITHUB_REF if it is a pull request ref" {
+  export GITHUB_REF="refs/pull/123/merge"
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  ! grep -qF -- "--ref" "$GH_LOG"
+}

@@ -38,8 +38,21 @@ WORKFLOW_FILE="${WORKFLOW_FILE:-initiative-planner.yml}"
   exit 1
 }
 
+# Map DRY_RUN to a boolean string for the workflow input
+if [[ "${DRY_RUN:-}" == "1" || "${DRY_RUN:-}" == "true" ]]; then
+  DISPATCH_DRY_RUN="true"
+else
+  DISPATCH_DRY_RUN="false"
+fi
+
+# Use GITHUB_REF if it is a branch or tag to support testing on feature branches
+REF_FLAGS=()
+if [[ -n "${GITHUB_REF:-}" && ( "$GITHUB_REF" =~ ^refs/heads/ || "$GITHUB_REF" =~ ^refs/tags/ ) ]]; then
+  REF_FLAGS=(--ref "$GITHUB_REF")
+fi
+
 echo "Discussion event → re-dispatching ${WORKFLOW_FILE} for discussion #${DISCUSSION_NUMBER} via workflow_dispatch."
-gh workflow run "$WORKFLOW_FILE" --repo "$REPO" \
+gh workflow run "$WORKFLOW_FILE" --repo "$REPO" "${REF_FLAGS[@]}" \
   -f discussion="$DISCUSSION_NUMBER" \
-  -f dry_run=false
-echo "Dispatched ${WORKFLOW_FILE} (discussion=${DISCUSSION_NUMBER}, dry_run=false)."
+  -f dry_run="$DISPATCH_DRY_RUN"
+echo "Dispatched ${WORKFLOW_FILE} (discussion=${DISCUSSION_NUMBER}, dry_run=${DISPATCH_DRY_RUN})."
