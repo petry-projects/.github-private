@@ -18,7 +18,7 @@ set -euo pipefail
 #      the daily subscription cap is exhausted (cap is shared across all Claude
 #      models — see issue #206 for the proactive headroom guard).
 #   2. Cross-provider fallback — run_writer_with_fallback / review-batch.sh
-#      walk claude → gemini → copilot only after the in-engine chain is fully
+#      walk claude → copilot → gemini only after the in-engine chain is fully
 #      rate-limited (exit code 2 from the engine-layer call).
 #
 # Token logging (opt-in):
@@ -61,7 +61,7 @@ set_engine_config() {
       DUCK_MODEL="o4-mini"
       # Per-tier in-Claude model fallback chains (comma-separated).
       # On rate-limit, the chain is walked left-to-right before the cross-provider
-      # fallback (claude → gemini → copilot) kicks in. Per-model TPM/RPM buckets
+      # fallback (claude → copilot → gemini) kicks in. Per-model TPM/RPM buckets
       # are independent, so swapping models within Claude often recovers without
       # leaving the provider. (Daily subscription cap is shared — see issue #206.)
       # Override per workflow via env to tune cost/capability trade-offs.
@@ -1196,7 +1196,7 @@ run_writer() {
 }
 
 # run_writer_with_fallback <prompt_file> [intent_type]
-# Tries primary engine, falls back through claude → gemini → copilot on rate-limit.
+# Tries primary engine, falls back through claude → copilot → gemini on rate-limit.
 # intent_type is passed to model_for_intent() so each engine uses the appropriate
 # tier model for the given task complexity (e.g. haiku for triage, sonnet for writes).
 # Only rate-limit (exit 2) and missing-binary (exit 127) trigger fallback;
@@ -1206,7 +1206,7 @@ run_writer_with_fallback() {
   local intent="${2:-}"
   local engines=("$REVIEW_ENGINE")
 
-  for e in claude gemini copilot; do
+  for e in claude copilot gemini; do
     [ "$e" != "$REVIEW_ENGINE" ] && engines+=("$e")
   done
 
