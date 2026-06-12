@@ -81,7 +81,7 @@ compute_ci_status() {
       (map(select(is_own_check | not))) as $ext |
       if ($ext | length) == 0 then "passing"
       elif ([$ext[] | select(is_pending)] | length) > 0 then "pending"
-      elif ([$ext[] | select(is_success or is_cancelled)] | length) == ($ext | length) then "passing"
+      elif all($ext[]; is_success or is_cancelled) then "passing"
       else "failing"
       end
     end
