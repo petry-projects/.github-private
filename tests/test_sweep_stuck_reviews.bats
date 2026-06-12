@@ -55,7 +55,7 @@ teardown() {
 
 # write_pr <num> <reviewDecision> <rollup-json> [head] [reviews-json] [comments-json]
 write_pr() {
-  local num="$1" decision="$2" rollup="$3" head="${4:-deadbeef}" reviews="${5:-[]}" comments="${6:-[]}"
+  local num="$1" decision="$2" rollup="$3" head="${4-deadbeef}" reviews="${5:-[]}" comments="${6:-[]}"
   jq -n --arg d "$decision" --argjson r "$rollup" --arg h "$head" \
         --argjson rv "$reviews" --argjson cm "$comments" \
     '{headRefOid:$h, reviewDecision:$d, statusCheckRollup:$r, reviews:$rv, comments:$cm}' \

@@ -94,6 +94,10 @@ dispatched=0
 
 while IFS= read -r pr_url; do
   [ -z "$pr_url" ] && continue
+  if [ "$dispatched" -ge "$MAX_DISPATCH" ]; then
+    echo "::notice::sweep: reached MAX_DISPATCH=$MAX_DISPATCH — deferring remaining PRs to the next sweep"
+    break
+  fi
   inspected=$((inspected + 1))
 
   if ! snapshot=$(gh pr view "$pr_url" \
@@ -115,6 +119,10 @@ while IFS= read -r pr_url; do
   fi
 
   head_sha=$(jq -r '.headRefOid // ""' <<< "$snapshot")
+  if [ -z "$head_sha" ]; then
+    echo "  skip $pr_url — head SHA is empty"
+    continue
+  fi
   # Already reviewed at this exact head? The cascade stamps each review with
   # `<!-- pr-review-agent v1 sha=<HEAD> -->`; a marker at the current head means
   # there is nothing to re-trigger. Match the sha followed by a space so one
@@ -131,11 +139,6 @@ while IFS= read -r pr_url; do
 
   stuck=$((stuck + 1))
   echo "  stuck-green: $pr_url (head ${head_sha:0:8}) — needs re-review"
-
-  if [ "$dispatched" -ge "$MAX_DISPATCH" ]; then
-    echo "::notice::sweep: reached MAX_DISPATCH=$MAX_DISPATCH — deferring remaining PRs to the next sweep"
-    break
-  fi
 
   if [ "$DRY_RUN_BOOL" = "true" ]; then
     echo "    dry-run: would dispatch $TRIGGER_WORKFLOW for $pr_url"
