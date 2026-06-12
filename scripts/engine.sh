@@ -306,6 +306,16 @@ is_cli_error() {
     "(invalid command format|invalid (flag|argument|option|command)|unknown (flag|command|option|argument)|command not found|no such command|did you mean:|unrecognized (command|flag|argument|option)|bad (flag|argument|option))"
 }
 
+# is_diff_too_large <text>
+# Returns 0 (true) if the text indicates that the PR diff exceeded GitHub's
+# hard 300-file unified-diff cap (HTTP 406). Distinct from rate-limit (429/529)
+# and CLI invocation errors — callers should fall back to the per-file REST API
+# rather than exiting 1 (per-PR failure) or 2 (engine rate-limit).
+is_diff_too_large() {
+  local text="$1"
+  printf '%s\n' "$text" | grep -qiE "(HTTP 406|exceeded the maximum number of files|diff exceeded the maximum)"
+}
+
 # is_transient_failure <exit_code>
 # Returns 0 (true) for exit codes suggesting a flaky network/process state:
 # 124 (GNU timeout) and 137/143 (signal kills). JSON parse failures and
