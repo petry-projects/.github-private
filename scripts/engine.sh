@@ -4253,7 +4253,7 @@ run_writer() {
 }
 
 # run_writer_with_fallback <prompt_file> [intent_type]
-# Tries primary engine, falls back through claude → gemini → copilot on rate-limit.
+# Tries primary engine, falls back through claude → copilot → gemini on rate-limit.
 # intent_type is passed to model_for_intent() so each engine uses the appropriate
 # tier model for the given task complexity (e.g. haiku for triage, sonnet for writes).
 # Only rate-limit (exit 2) and missing-binary (exit 127) trigger fallback;
@@ -4263,7 +4263,7 @@ run_writer_with_fallback() {
   local intent="${2:-}"
   local engines=("$REVIEW_ENGINE")
 
-  for e in claude gemini copilot; do
+  for e in claude copilot gemini; do
     [ "$e" != "$REVIEW_ENGINE" ] && engines+=("$e")
   done
 
