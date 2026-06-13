@@ -1,0 +1,210 @@
+#!/usr/bin/env bats
+# Unit tests for scripts/sweep-stuck-reviews.sh (issue #573).
+#
+# The sweep closes the event-driven re-trigger gap: PRs that the cascade
+# legitimately skipped as ci-pending/ci-failing, but whose CI later settled
+# green, never get a fresh review because no event re-fires. The sweep
+# enumerates open PRs, selects the ones that are REVIEW_REQUIRED + CI passing +
+# not already reviewed at head, and re-dispatches pr-review-trigger.yml for each.
+#
+# gh is fully mocked: `gh pr view <url>` returns a per-PR fixture and
+# `gh workflow run ...` is logged so we can assert on the dispatched command.
+#
+# Run with: bats tests/test_sweep_stuck_reviews.bats
+
+SCRIPT="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)/scripts/sweep-stuck-reviews.sh"
+
+setup() {
+  MOCK_BIN="$(mktemp -d)"
+  FIXTURE_DIR="$(mktemp -d)"
+  GH_LOG="$(mktemp)"
+  PRS_FILE="$(mktemp)"
+  export MOCK_BIN FIXTURE_DIR GH_LOG
+  export PATH="$MOCK_BIN:$PATH"
+  export SWEEP_PRS_FILE="$PRS_FILE"
+  export AGENT_REPO="petry-projects/.github-private"
+
+  cat > "$MOCK_BIN/gh" <<'EOF'
+#!/usr/bin/env bash
+case "$1" in
+  pr)
+    # gh pr view <url> --json ...
+    if [ "$2" = "view" ]; then
+      url="$3"
+      num="${url##*/}"
+      f="$FIXTURE_DIR/pr_${num}.json"
+      if [ -f "$f" ]; then cat "$f"; exit 0; fi
+      echo "no fixture for $url" >&2
+      exit 1
+    fi
+    ;;
+  workflow)
+    printf '%s\n' "$*" >> "$GH_LOG"
+    exit 0
+    ;;
+esac
+exit 0
+EOF
+  chmod +x "$MOCK_BIN/gh"
+}
+
+teardown() {
+  rm -rf "${MOCK_BIN:-}" "${FIXTURE_DIR:-}"
+  rm -f "${GH_LOG:-}" "${PRS_FILE:-}"
+}
+
+# write_pr <num> <reviewDecision> <rollup-json> [head] [reviews-json] [comments-json]
+write_pr() {
+  local num="$1" decision="$2" rollup="$3" head="${4-deadbeef}" reviews="${5:-[]}" comments="${6:-[]}"
+  jq -n --arg d "$decision" --argjson r "$rollup" --arg h "$head" \
+        --argjson rv "$reviews" --argjson cm "$comments" \
+    '{headRefOid:$h, reviewDecision:$d, statusCheckRollup:$r, reviews:$rv, comments:$cm}' \
+    > "$FIXTURE_DIR/pr_${num}.json"
+}
+
+# Common rollups
+ROLLUP_PASS='[{"name":"CI","status":"COMPLETED","conclusion":"SUCCESS"}]'
+ROLLUP_PENDING='[{"name":"CI","status":"IN_PROGRESS","conclusion":null}]'
+ROLLUP_FAIL='[{"name":"CI","status":"COMPLETED","conclusion":"FAILURE"}]'
+# Own pr-review check still pending alongside a green external check.
+ROLLUP_OWN_PENDING='[{"name":"review","status":"IN_PROGRESS","conclusion":null},{"name":"CI","status":"COMPLETED","conclusion":"SUCCESS"}]'
+
+url_for() { echo "https://github.com/petry-projects/demo/pull/$1"; }
+
+@test "stuck-green PR (REVIEW_REQUIRED + passing + no marker) is dispatched" {
+  write_pr 569 "REVIEW_REQUIRED" "$ROLLUP_PASS"
+  url_for 569 > "$SWEEP_PRS_FILE"
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  grep -qF "workflow run pr-review-trigger.yml" "$GH_LOG"
+  grep -qF -- "--repo petry-projects/.github-private" "$GH_LOG"
+  grep -qF -- "-f pr_url=$(url_for 569)" "$GH_LOG"
+}
+
+@test "PR with CI still pending is NOT dispatched" {
+  write_pr 570 "REVIEW_REQUIRED" "$ROLLUP_PENDING"
+  url_for 570 > "$SWEEP_PRS_FILE"
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ ! -s "$GH_LOG" ]
+}
+
+@test "PR with CI failing is NOT dispatched" {
+  write_pr 571 "REVIEW_REQUIRED" "$ROLLUP_FAIL"
+  url_for 571 > "$SWEEP_PRS_FILE"
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ ! -s "$GH_LOG" ]
+}
+
+@test "PR that is not REVIEW_REQUIRED is NOT dispatched" {
+  write_pr 572 "APPROVED" "$ROLLUP_PASS"
+  url_for 572 > "$SWEEP_PRS_FILE"
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ ! -s "$GH_LOG" ]
+}
+
+@test "PR already reviewed at head (marker present) is NOT dispatched" {
+  local comments='[{"body":"<!-- pr-review-agent v1 sha=deadbeef --> <!-- decision=fix-requested risk=low -->"}]'
+  write_pr 573 "REVIEW_REQUIRED" "$ROLLUP_PASS" "deadbeef" "[]" "$comments"
+  url_for 573 > "$SWEEP_PRS_FILE"
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ ! -s "$GH_LOG" ]
+}
+
+@test "marker for a DIFFERENT (stale) head does not block re-dispatch" {
+  local comments='[{"body":"<!-- pr-review-agent v1 sha=0ldsha00 -->"}]'
+  write_pr 574 "REVIEW_REQUIRED" "$ROLLUP_PASS" "deadbeef" "[]" "$comments"
+  url_for 574 > "$SWEEP_PRS_FILE"
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  grep -qF -- "-f pr_url=$(url_for 574)" "$GH_LOG"
+}
+
+@test "own pr-review pending check is filtered — green external still dispatches" {
+  write_pr 575 "REVIEW_REQUIRED" "$ROLLUP_OWN_PENDING"
+  url_for 575 > "$SWEEP_PRS_FILE"
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  grep -qF -- "-f pr_url=$(url_for 575)" "$GH_LOG"
+}
+
+@test "DRY_RUN=true selects but does not dispatch" {
+  write_pr 576 "REVIEW_REQUIRED" "$ROLLUP_PASS"
+  url_for 576 > "$SWEEP_PRS_FILE"
+  export DRY_RUN=true
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ ! -s "$GH_LOG" ]
+  [[ "$output" == *"$(url_for 576)"* ]]
+}
+
+@test "MAX_DISPATCH caps the number of dispatches" {
+  write_pr 580 "REVIEW_REQUIRED" "$ROLLUP_PASS" "sha580"
+  write_pr 581 "REVIEW_REQUIRED" "$ROLLUP_PASS" "sha581"
+  { url_for 580; url_for 581; } > "$SWEEP_PRS_FILE"
+  export MAX_DISPATCH=1
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(grep -c 'workflow run' "$GH_LOG")" -eq 1 ]
+}
+
+@test "mixed batch: only the stuck-green PR is dispatched" {
+  write_pr 590 "REVIEW_REQUIRED" "$ROLLUP_PASS"   "sha590"   # stuck-green
+  write_pr 591 "REVIEW_REQUIRED" "$ROLLUP_PENDING" "sha591"  # pending
+  write_pr 592 "APPROVED"        "$ROLLUP_PASS"    "sha592"  # already approved
+  { url_for 590; url_for 591; url_for 592; } > "$SWEEP_PRS_FILE"
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(grep -c 'workflow run' "$GH_LOG")" -eq 1 ]
+  grep -qF -- "-f pr_url=$(url_for 590)" "$GH_LOG"
+}
+
+@test "a PR that cannot be fetched is skipped without aborting the sweep" {
+  # 595 has no fixture (gh pr view fails); 596 is stuck-green and must still run.
+  write_pr 596 "REVIEW_REQUIRED" "$ROLLUP_PASS" "sha596"
+  { url_for 595; url_for 596; } > "$SWEEP_PRS_FILE"
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  grep -qF -- "-f pr_url=$(url_for 596)" "$GH_LOG"
+}
+
+@test "empty candidate list is a clean no-op" {
+  : > "$SWEEP_PRS_FILE"
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ ! -s "$GH_LOG" ]
+}
+
+@test "passes GITHUB_REF when it is a branch (feature-branch testing)" {
+  write_pr 600 "REVIEW_REQUIRED" "$ROLLUP_PASS" "sha600"
+  url_for 600 > "$SWEEP_PRS_FILE"
+  export GITHUB_REF="refs/heads/feature-x"
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  grep -qF -- "--ref refs/heads/feature-x" "$GH_LOG"
+}
+
+@test "ignores GITHUB_REF when it is a pull-request ref" {
+  write_pr 601 "REVIEW_REQUIRED" "$ROLLUP_PASS" "sha601"
+  url_for 601 > "$SWEEP_PRS_FILE"
+  export GITHUB_REF="refs/pull/12/merge"
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  ! grep -qF -- "--ref" "$GH_LOG"
+}
