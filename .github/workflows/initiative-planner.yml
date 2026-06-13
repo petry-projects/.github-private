@@ -111,10 +111,7 @@ jobs:
         run: bash scripts/initiative-planner/redispatch.sh
 
   plan:
-    # Skip discussion-label events unless the label added is exactly idea:approved.
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'discussion' && github.event.label.name == 'idea:approved')
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
