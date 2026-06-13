@@ -1,0 +1,61 @@
+name: PR Review Agent — Stuck-Review Sweep
+
+# Repo-specific scheduled remediator for the event-driven re-trigger gap (#573).
+#
+# The pr-review cascade SKIPS PRs whose CI is pending/failing and waits for a
+# later `check_suite:completed` to re-evaluate them. When CI settles green AFTER
+# the last trigger fired (common while dev-lead is pushing fixes), no event
+# re-fires and the PR sits at REVIEW_REQUIRED with green CI, never re-reviewed.
+#
+# This sweep periodically enumerates open PRs and re-dispatches a review for any
+# that are REVIEW_REQUIRED + CI green + not already reviewed at head. The heavy
+# lifting (CI gating, idempotency) still lives in review-one-pr.sh; the sweep
+# only decides WHAT to re-trigger via pr-review-trigger.yml.
+#
+# NOTE: the re-dispatch runs as the bot PAT (DON_PETRY_BOT_GH_PAT), not the
+# default GITHUB_TOKEN — GitHub will not start a new run from a workflow_dispatch
+# fired with GITHUB_TOKEN (loop prevention). See scripts/sweep-stuck-reviews.sh.
+#
+# This workflow has no corresponding org template in standards/workflows/ and is
+# documented as a repo-specific exception in AGENTS.md; template syncs must not
+# remove it.
+
+on:
+  schedule:
+    # Hourly, offset from the top of the hour to avoid contending with other crons.
+    - cron: '17 * * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "If true, log selections but do not dispatch reviews"
+        required: false
+        default: "false"
+        type: string
+      max_dispatch:
+        description: "Cap on review dispatches this sweep"
+        required: false
+        default: "20"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-review-sweep
+  cancel-in-progress: true
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout agent repo
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+
+      - name: Run stuck-review sweep
+        env:
+          # PAT required: GITHUB_TOKEN cannot start dispatched workflow runs.
+          GH_TOKEN: ${{ secrets.DON_PETRY_BOT_GH_PAT }}
+          DRY_RUN: ${{ inputs.dry_run || 'false' }}
+          MAX_DISPATCH: ${{ inputs.max_dispatch || '20' }}
+        run: bash scripts/sweep-stuck-reviews.sh
