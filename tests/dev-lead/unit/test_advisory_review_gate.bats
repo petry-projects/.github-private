@@ -430,6 +430,68 @@ MOCK_EOF
   [ "$status" -eq 2 ]
 }
 
+# ────────────────────────────────────────────────────────────────────
+# RATE-LIMIT HANDLING TESTS (issue #657)
+# ────────────────────────────────────────────────────────────────────
+
+@test "Advisory gate: defines rate-limit markers and detects RATE_LIMITED state" {
+  # get_advisory_bot_states must classify a bot's usage-limit comment as RATE_LIMITED
+  grep -q 'RATE_LIMITED' "$SCRIPT_DIR/lib/advisory-review-gate.sh"
+  grep -qi 'reached your Codex usage limit\|Review limit reached\|used up its prepaid credits' \
+    "$SCRIPT_DIR/lib/advisory-review-gate.sh"
+}
+
+@test "Advisory gate: drops rate-limited/unsupported bots from required total (effective_total)" {
+  grep -q 'effective_total' "$SCRIPT_DIR/lib/advisory-review-gate.sh"
+}
+
+@test "Gate runtime: rate-limited bot is classified RATE_LIMITED in gate output" {
+  local json
+  json='{"reviews":[{"author":{"login":"gemini-code-assist"},"state":"COMMENTED","submittedAt":"2099-01-01T00:00:00Z"},{"author":{"login":"sonarqubecloud"},"state":"COMMENTED","submittedAt":"2099-01-01T00:00:00Z"}],"comments":[{"author":{"login":"chatgpt-codex-connector"},"body":"You have reached your Codex usage limits for code reviews.","createdAt":"2099-01-01T00:00:00Z"}]}'
+  local tmpdir
+  tmpdir=$(_make_mock_gh_dir_recent "$json")
+  local gate_script="$SCRIPT_DIR/lib/advisory-review-gate.sh"
+  run env PATH="$tmpdir:$PATH" bash -c "
+    source '$gate_script'
+    check_advisory_reviews 'https://github.com/owner/repo/pull/123'
+  "
+  rm -rf "$tmpdir"
+  [[ "$output" == *"RATE_LIMITED"* ]]
+}
+
+@test "Gate runtime: out-of-quota bot does not hold the gate (returns 0 with copilot absent)" {
+  # Two real advisory reviews + Codex signalling it is out of quota, copilot absent,
+  # head + submissions recent (timeout fallbacks disarmed). The rate-limited Codex must
+  # be treated as non-participating so the gate approves instead of waiting forever.
+  local json
+  json='{"reviews":[{"author":{"login":"gemini-code-assist"},"state":"COMMENTED","submittedAt":"2099-01-01T00:00:00Z"},{"author":{"login":"sonarqubecloud"},"state":"COMMENTED","submittedAt":"2099-01-01T00:00:00Z"}],"comments":[{"author":{"login":"chatgpt-codex-connector"},"body":"You have reached your Codex usage limits for code reviews.","createdAt":"2099-01-01T00:00:00Z"}]}'
+  local tmpdir
+  tmpdir=$(_make_mock_gh_dir_recent "$json")
+  local gate_script="$SCRIPT_DIR/lib/advisory-review-gate.sh"
+  run env PATH="$tmpdir:$PATH" bash -c "
+    source '$gate_script'
+    check_advisory_reviews 'https://github.com/owner/repo/pull/123'
+  "
+  rm -rf "$tmpdir"
+  [ "$status" -eq 0 ]
+}
+
+@test "Gate runtime: plain comment (no rate-limit marker) is not excluded — gate still waits" {
+  # Codex posts an ordinary comment without any usage-limit marker. It must NOT be
+  # treated as rate-limited, so with copilot still absent the gate keeps waiting.
+  local json
+  json='{"reviews":[{"author":{"login":"gemini-code-assist"},"state":"COMMENTED","submittedAt":"2099-01-01T00:00:00Z"},{"author":{"login":"sonarqubecloud"},"state":"COMMENTED","submittedAt":"2099-01-01T00:00:00Z"}],"comments":[{"author":{"login":"chatgpt-codex-connector"},"body":"Looks good to me, nice work.","createdAt":"2099-01-01T00:00:00Z"}]}'
+  local tmpdir
+  tmpdir=$(_make_mock_gh_dir_recent "$json")
+  local gate_script="$SCRIPT_DIR/lib/advisory-review-gate.sh"
+  run env PATH="$tmpdir:$PATH" bash -c "
+    source '$gate_script'
+    check_advisory_reviews 'https://github.com/owner/repo/pull/123'
+  "
+  rm -rf "$tmpdir"
+  [ "$status" -eq 1 ]
+}
+
 @test "Gate runtime: format_bot_status renders known states" {
   local gate_script="$SCRIPT_DIR/lib/advisory-review-gate.sh"
   run bash -c "

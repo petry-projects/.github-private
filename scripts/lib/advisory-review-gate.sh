@@ -36,6 +36,15 @@ declare -Ar ADVISORY_BOTS=(
   [chatgpt-codex-connector]="Codex (advisory, newer bot)"
 )
 
+# Known rate-limit / usage-limit markers an advisory bot posts when it is out of
+# quota and cannot submit a real review (issue #657). A comment from an advisory
+# bot whose body matches any of these is classified RATE_LIMITED and treated as
+# non-participating so a permanently out-of-quota bot can't hold the gate open.
+#   - CodeRabbit: "Review limit reached" / "used up its prepaid credits"
+#   - Codex:      "reached your Codex usage limits"
+# shellcheck disable=SC2034
+readonly RATE_LIMIT_MARKERS='Review limit reached|used up its prepaid credits|reached your Codex usage limit'
+
 # Color codes for output
 # shellcheck disable=SC2034
 readonly RED='\033[0;31m'
@@ -67,11 +76,17 @@ get_advisory_bot_states() {
     return 2  # API error — distinct from "no bots yet" (1) so caller can fail-fast
   }
 
-  echo "$gh_output" | jq -c --argjson bots "$bot_array" '
-    # Collect all bot submissions with their state
+  echo "$gh_output" | jq -c --argjson bots "$bot_array" --arg markers "$RATE_LIMIT_MARKERS" '
+    # Collect all bot submissions with their state. A comment whose body matches a
+    # known rate-limit/usage-limit marker is classified RATE_LIMITED (the bot is out
+    # of quota and cannot submit a real review); all other comments are COMMENTED.
     (
       [(.reviews // [])[] | select([.author.login] | inside($bots)) | {bot: .author.login, state: .state, time: .submittedAt}] +
-      [(.comments // [])[] | select([.author.login] | inside($bots)) | {bot: .author.login, state: "COMMENTED", time: .createdAt}]
+      [(.comments // [])[] | select([.author.login] | inside($bots)) | {
+        bot: .author.login,
+        state: (if ((.body // "") | test($markers; "i")) then "RATE_LIMITED" else "COMMENTED" end),
+        time: .createdAt
+      }]
     ) |
     # Group by bot, sort by time within each group, keep latest submission per bot
     group_by(.bot) |
@@ -170,14 +185,28 @@ check_advisory_reviews() {
     log_info "  $(format_bot_status "$bot" "$state")"
   done <<< "$current_states"
 
-  # Require all known advisory bots to submit before approving.
-  # Two timeout fallbacks handle absent bots (e.g. Codex only reviews a subset of PRs):
+  # Rate-limited / unsupported bots can't (or needn't) submit a real review, so they
+  # must not hold the gate (issue #657). Count them as responded and drop them from the
+  # required total: effective_total = total − (rate-limited|unsupported), clamped to ≥1
+  # so the gate never approves with zero advisory input even if every bot is out.
+  local num_unavailable effective_total
+  num_unavailable=$(echo "$current_states" | jq -rs \
+    '[.[] | select(.state == "RATE_LIMITED" or .state == "UNSUPPORTED") | .bot] | unique | length')
+  effective_total=$((total_advisory_bots - num_unavailable))
+  [[ "$effective_total" -lt 1 ]] && effective_total=1
+  if [[ "$num_unavailable" -gt 0 ]]; then
+    log_info "${num_unavailable} advisory bot(s) rate-limited/unsupported — required set reduced to ${effective_total}/${total_advisory_bots}"
+  fi
+
+  # Require the effective advisory set to submit before approving.
+  # Two timeout fallbacks handle absent (but not rate-limited) bots (e.g. Copilot only
+  # reviews a subset of PRs):
   #   1. Head-push age > 20 min: use latest commit time, not PR creation time, so a new
   #      commit on an old PR doesn't immediately bypass the gate (thread PRRT_..ofWG).
   #   2. Quiescence > 10 min: if no new submissions have arrived in 10 min, assume the
   #      remaining bots won't participate — prevents indefinite stranding when there is
   #      no scheduled retry event to re-enter this branch (thread PRRT_..ofWI).
-  if [[ "$num_submitted" -lt "$total_advisory_bots" ]]; then
+  if [[ "$num_submitted" -lt "$effective_total" ]]; then
     local now head_time head_time_raw head_age_sec latest_sub_at latest_sub_raw time_since_last_sub
     now=$(date -u +%s)
 
@@ -220,11 +249,11 @@ check_advisory_reviews() {
     fi
 
     if [[ "$head_age_sec" -gt 1200 ]]; then
-      log_info "Only ${num_submitted}/${total_advisory_bots} bots submitted; head is ${head_age_sec}s old — timeout fallback, proceeding"
+      log_info "Only ${num_submitted}/${effective_total} required bots submitted; head is ${head_age_sec}s old — timeout fallback, proceeding"
     elif [[ "$time_since_last_sub" -gt 600 ]]; then
-      log_info "Only ${num_submitted}/${total_advisory_bots} bots submitted; no new submissions in ${time_since_last_sub}s — assuming absent bots won't participate, proceeding"
+      log_info "Only ${num_submitted}/${effective_total} required bots submitted; no new submissions in ${time_since_last_sub}s — assuming absent bots won't participate, proceeding"
     else
-      log_warn "Only ${num_submitted}/${total_advisory_bots} advisory bots submitted so far (head age: ${head_age_sec}s, last submission: ${time_since_last_sub}s ago)"
+      log_warn "Only ${num_submitted}/${effective_total} required advisory bots submitted so far (head age: ${head_age_sec}s, last submission: ${time_since_last_sub}s ago)"
       log_warn "Will re-check when remaining bots submit their reviews"
       return 1
     fi
