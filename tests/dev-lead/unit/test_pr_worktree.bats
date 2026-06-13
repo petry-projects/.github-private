@@ -11,17 +11,21 @@ LIB="$SCRIPT_DIR/scripts/lib/pr-worktree.sh"
 
 setup() {
   STUB_BIN_DIR="$(mktemp -d)"
+  # PR_STATE_API controls the state returned by the gh stub's `pr view` JSON response.
+  # Set unconditionally so the runner environment cannot leak in and break unrelated tests.
+  export PR_STATE_API="OPEN"
+
   # gh stub: `gh pr checkout <n>` switches the worktree to the PR branch,
   # mirroring the real command (which is what made the old prompt files vanish).
-  # `gh pr view --json headRefName --jq .headRefName` returns the PR's head
-  # branch (`old` in this fixture) so the collision-prevention logic in
-  # checkout_pr_in_worktree can identify and release a stale holder (issue #470).
+  # `gh pr view` returns a JSON object with state and headRefName so the combined
+  # call in checkout_pr_in_worktree handles both the closed-PR guard (issue #405)
+  # and the stale-worktree release (issue #470) in a single round-trip.
   cat > "$STUB_BIN_DIR/gh" <<'GHEOF'
 #!/usr/bin/env bash
-case "$1 $2" in
-  "pr checkout") git checkout -q old ;;
-  "pr view") echo "old" ;;
-  *) echo "{}" ;;
+case "$*" in
+  "pr checkout"*) git checkout -q old ;;
+  "pr view"*)     echo "{\"state\": \"${PR_STATE_API:-OPEN}\", \"headRefName\": \"old\"}" ;;
+  *)              echo "{}" ;;
 esac
 GHEOF
   chmod +x "$STUB_BIN_DIR/gh"
@@ -223,4 +227,36 @@ teardown() {
   [ -d "$AGENT_REPO/.git" ]
   run git -C "$AGENT_REPO" symbolic-ref -q HEAD
   [ "$status" -ne 0 ]
+}
+
+# --- issue #405: merged/closed PR early-exit guard ---------------------------
+# When a trusted-bot comment arrives on an already-merged PR (branch deleted),
+# checkout_pr_in_worktree must exit 0 cleanly rather than crashing with
+# "fatal: couldn't find remote ref" from `gh pr checkout`.
+
+@test "checkout_pr_in_worktree: exits cleanly when PR is already merged (MERGED state)" {
+  source "$LIB"
+  cd "$AGENT_REPO"
+  export PR_STATE_API="MERGED"
+
+  run checkout_pr_in_worktree 519 owner/repo
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"PR #519 is MERGED"* ]]
+  [[ "$output" == *"skipping checkout"* ]]
+  # The agent repo must NOT have been switched to another branch by gh pr checkout.
+  [ "$(git -C "$AGENT_REPO" rev-parse --abbrev-ref HEAD)" = "main" ]
+}
+
+@test "checkout_pr_in_worktree: exits cleanly when PR is closed without merge (CLOSED state)" {
+  source "$LIB"
+  cd "$AGENT_REPO"
+  export PR_STATE_API="CLOSED"
+
+  run checkout_pr_in_worktree 99 owner/repo
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"PR #99 is CLOSED"* ]]
+  [[ "$output" == *"skipping checkout"* ]]
+  [ "$(git -C "$AGENT_REPO" rev-parse --abbrev-ref HEAD)" = "main" ]
 }
