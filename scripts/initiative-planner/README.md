@@ -21,7 +21,7 @@ create-story template, which `plan.schema.json` mirrors field-for-field.
 | `apply-plan.sh` | Materialize a validated plan. Creates issues labelled `initiative` only — **never** `initiative:auto`. Idempotent: no-ops if the discussion is already planned, or supersedes the old epic when `FORCE_REPLAN=1`. |
 | `apply-reviewed-plan.sh` | The plan/apply-split handoff (#604): apply a maintainer-**reviewed** plan.json WITHOUT re-planning — re-validates the reviewed artifact, then runs `apply-plan.sh`. The BMAD Scrum Master never runs on this path. |
 
-Tests: `tests/test_initiative_planner.bats` (run via `lint.yml`).
+Tests: `tests/test_initiative_planner.bats`, `tests/test_initiative_planner_redispatch.bats` (run via `lint.yml`).
 
 ## Plan → review → apply split (#604)
 
