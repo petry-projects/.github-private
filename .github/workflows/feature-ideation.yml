@@ -64,7 +64,7 @@ jobs:
       discussions: write
       id-token: write
       actions: read
-    uses: petry-projects/.github/.github/workflows/feature-ideation-reusable.yml@d3d768dabb7f28cc63283cdfe48630da53700e50 # v1
+    uses: petry-projects/.github/.github/workflows/feature-ideation-reusable.yml@376a4fcb1117444595e3e702fa450873d0e54310 # v2
     with:
       # === CUSTOMISE THIS PER REPO — the only required edit ===
       project_context: |
