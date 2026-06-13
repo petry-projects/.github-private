@@ -49,16 +49,16 @@ on:
       GH_PAT:
         required: false
 
-  # ── Reusable-only (#497 self-host pinning) ───────────────────────────────
-  # Event-driven triggering now lives in the thin caller `pr-review-trigger.yml`,
-  # which invokes this workflow pinned to `pr-review.yml@pr-review/stable` and
-  # passes `agent_ref: pr-review/stable` so the agent's own scripts run at the
-  # pinned version too. Keeping this file reusable-only is what lets
-  # .github-private's OWN PR reviews run the known-good `stable` release — not
-  # whatever is on the branch under review — which is what breaks the
-  # self-hosting circular dependency. The job below still reads `github.event.*`
-  # (inherited from the caller's triggering event) and `inputs.*` (forwarded by
-  # the stub), so its behaviour is unchanged.
+# ── Reusable-only (#497 self-host pinning) ───────────────────────────────
+# Event-driven triggering now lives in the thin caller `pr-review-trigger.yml`,
+# which invokes this workflow pinned to `pr-review.yml@pr-review/stable` and
+# passes `agent_ref: pr-review/stable` so the agent's own scripts run at the
+# pinned version too. Keeping this file reusable-only is what lets
+# .github-private's OWN PR reviews run the known-good `stable` release — not
+# whatever is on the branch under review — which is what breaks the
+# self-hosting circular dependency. The job below still reads `github.event.*`
+# (inherited from the caller's triggering event) and `inputs.*` (forwarded by
+# the stub), so its behaviour is unchanged.
 
 permissions:
   contents: read
