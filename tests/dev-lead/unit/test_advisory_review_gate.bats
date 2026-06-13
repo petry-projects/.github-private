@@ -459,12 +459,28 @@ MOCK_EOF
   [[ "$output" == *"RATE_LIMITED"* ]]
 }
 
-@test "Gate runtime: out-of-quota bot does not hold the gate (returns 0 with copilot absent)" {
+@test "Gate runtime: out-of-quota bot does not hold the gate but gate still waits for other absent bots" {
   # Two real advisory reviews + Codex signalling it is out of quota, copilot absent,
   # head + submissions recent (timeout fallbacks disarmed). The rate-limited Codex must
-  # be treated as non-participating so the gate approves instead of waiting forever.
+  # be treated as non-participating, but we must still wait for the absent Copilot.
   local json
   json='{"reviews":[{"author":{"login":"gemini-code-assist"},"state":"COMMENTED","submittedAt":"2099-01-01T00:00:00Z"},{"author":{"login":"sonarqubecloud"},"state":"COMMENTED","submittedAt":"2099-01-01T00:00:00Z"}],"comments":[{"author":{"login":"chatgpt-codex-connector"},"body":"You have reached your Codex usage limits for code reviews.","createdAt":"2099-01-01T00:00:00Z"}]}'
+  local tmpdir
+  tmpdir=$(_make_mock_gh_dir_recent "$json")
+  local gate_script="$SCRIPT_DIR/lib/advisory-review-gate.sh"
+  run env PATH="$tmpdir:$PATH" bash -c "
+    source '$gate_script'
+    check_advisory_reviews 'https://github.com/owner/repo/pull/123'
+  "
+  rm -rf "$tmpdir"
+  [ "$status" -eq 1 ]
+}
+
+@test "Gate runtime: out-of-quota bot does not hold the gate (returns 0 when all other available bots submitted)" {
+  # Three real advisory reviews + Codex signalling it is out of quota, head + submissions
+  # recent (timeout fallbacks disarmed). All available bots have submitted, so the gate approves.
+  local json
+  json='{"reviews":[{"author":{"login":"gemini-code-assist"},"state":"COMMENTED","submittedAt":"2099-01-01T00:00:00Z"},{"author":{"login":"sonarqubecloud"},"state":"COMMENTED","submittedAt":"2099-01-01T00:00:00Z"},{"author":{"login":"copilot-pull-request-reviewer"},"state":"COMMENTED","submittedAt":"2099-01-01T00:00:00Z"}],"comments":[{"author":{"login":"chatgpt-codex-connector"},"body":"You have reached your Codex usage limits for code reviews.","createdAt":"2099-01-01T00:00:00Z"}]}'
   local tmpdir
   tmpdir=$(_make_mock_gh_dir_recent "$json")
   local gate_script="$SCRIPT_DIR/lib/advisory-review-gate.sh"

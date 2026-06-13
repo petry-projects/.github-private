@@ -194,6 +194,7 @@ check_advisory_reviews() {
     '[.[] | select(.state == "RATE_LIMITED" or .state == "UNSUPPORTED") | .bot] | unique | length')
   effective_total=$((total_advisory_bots - num_unavailable))
   [[ "$effective_total" -lt 1 ]] && effective_total=1
+  num_submitted=$((num_submitted - num_unavailable))
   if [[ "$num_unavailable" -gt 0 ]]; then
     log_info "${num_unavailable} advisory bot(s) rate-limited/unsupported — required set reduced to ${effective_total}/${total_advisory_bots}"
   fi
