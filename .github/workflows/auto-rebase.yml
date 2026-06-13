@@ -6,8 +6,8 @@
 # AGENTS — READ BEFORE EDITING:
 #   • This file is a THIN CALLER STUB. All branch-update logic lives in the
 #     reusable workflow above.
-#   • You MAY change: the SHA in the `uses:` line when upgrading the reusable
-#     workflow version (bump SHA to latest main of petry-projects/.github).
+#   • You MAY change: the tag in the `uses:` line when upgrading the reusable
+#     workflow version (e.g. `@v1` → `@v2`).
 #   • You MUST NOT change: trigger event, the concurrency group name,
 #     or the job-level `permissions:` block — reusable workflows can be
 #     granted no more permissions than the calling job has, so removing
@@ -38,5 +38,5 @@ jobs:
     permissions:
       contents: write      # update-branch via GITHUB_TOKEN (may touch .github/workflows/)
       pull-requests: write # post comments on PRs
-    uses: petry-projects/.github/.github/workflows/auto-rebase-reusable.yml@761dd4a1a484a239429ed15d44d068de04fe2ee1 # v1
+    uses: petry-projects/.github/.github/workflows/auto-rebase-reusable.yml@v1
     secrets: inherit
