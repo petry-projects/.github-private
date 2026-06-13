@@ -118,7 +118,7 @@ set_engine_config() {
       # not a typo for o1-mini or gpt-4o-mini.
       COPILOT_API_MODEL="${COPILOT_API_MODEL:-openai/o4-mini}"
       export COPILOT_API_MODEL
-      ENGINE_LABEL="triage: o4-mini → deep: o4-mini + duck: gemini-2.0-flash → audit: o4-mini (GitHub Models API)"
+      ENGINE_LABEL="triage: o4-mini → deep: o4-mini + duck: gemini-3.5-flash → audit: o4-mini (GitHub Models API)"
       ENGINE_SINGLE_LABEL="single-reviewer mode: o4-mini (GitHub Models API)"
       # Cross-engine rubber duck: use Gemini when Copilot is primary
       DUCK_ENGINE="gemini"
@@ -745,8 +745,9 @@ run_triage() {
       gemini)
         local _triage_gemini_chain="${GEMINI_FLASH_MODEL_CHAIN:-$ENGINE_TRIAGE_MODEL}"
         if [ -n "$_tok_tmp" ]; then
+          _GEMINI_CHAIN_MODEL_USED=""
           _gemini_chain_invoke "$_triage_gemini_chain" "$prompt_file" "$TRIAGE_TIMEOUT_SEC" \
-            --approval-mode auto_edit | tee "$_tok_tmp" || rc=${PIPESTATUS[0]}
+            --approval-mode auto_edit > >(tee "$_tok_tmp") || rc=$?
         else
           _gemini_chain_invoke "$_triage_gemini_chain" "$prompt_file" "$TRIAGE_TIMEOUT_SEC" \
             --approval-mode auto_edit || rc=$?
@@ -865,8 +866,9 @@ run_agentic() {
         _agentic_gemini_chain="$model"
       fi
       if [ -n "$_tok_tmp" ]; then
+        _GEMINI_CHAIN_MODEL_USED=""
         _gemini_chain_invoke "$_agentic_gemini_chain" "$prompt_file" "$DEEP_TIMEOUT_SEC" \
-          --approval-mode auto_edit | tee "$_tok_tmp" || rc=${PIPESTATUS[0]}
+          --approval-mode auto_edit > >(tee "$_tok_tmp") || rc=$?
       else
         _gemini_chain_invoke "$_agentic_gemini_chain" "$prompt_file" "$DEEP_TIMEOUT_SEC" \
           --approval-mode auto_edit || rc=$?
@@ -1131,8 +1133,9 @@ run_writer() {
         _writer_gemini_chain="$model"
       fi
       if [ -n "$_tmp" ]; then
+        _GEMINI_CHAIN_MODEL_USED=""
         _gemini_chain_invoke "$_writer_gemini_chain" "$prompt_file" "$ACTION_TIMEOUT_SEC" \
-          --approval-mode auto_edit 2>&1 | tee "$_tmp" || rc=${PIPESTATUS[0]}
+          --approval-mode auto_edit > >(tee "$_tmp") 2>&1 || rc=$?
       else
         _gemini_chain_invoke "$_writer_gemini_chain" "$prompt_file" "$ACTION_TIMEOUT_SEC" \
           --approval-mode auto_edit || rc=$?
