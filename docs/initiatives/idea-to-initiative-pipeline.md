@@ -53,6 +53,22 @@ Both are **org-private automation** (like `initiative-driver.yml`), not thin
 caller stubs. Tooling and the vendored BMAD personas live in this repo and are
 unit-tested.
 
+### `idea-enhancer.yml` — enrich human-authored ideas
+- Trigger: a Discussion is **created** (enhance that one immediately), a weekly
+  **schedule** (safety-net sweep of the backlog), or manual `workflow_dispatch`
+  (`dry_run` logs intended comments to an artifact).
+- Closes the gap where `feature-ideation` only ever generates *new* idea
+  Discussions and never enriches the ones a human adds. For each open,
+  human-authored, not-yet-enhanced **Ideas** Discussion it posts **one** comment
+  (sharpened problem/goal, repo + market context, impact/effort, suggested
+  acceptance criteria). Bot-authored ideas are skipped — they are already
+  AI-generated.
+- Idempotent: each enhancement comment carries a hidden marker
+  (`<!-- idea-enhancer:enhanced -->`); a discussion that already has one is never
+  re-enhanced. It never approves, labels, or promotes — that stays with triage
+  and the human gates.
+- Tooling: `scripts/idea-enhancer/{gather-candidates,post-enhancement}.sh`.
+
 ### `idea-triage.yml` — weekly ripeness shortlist
 - Scans every open **Ideas** Discussion, scores each **Ripe / Soon / Not yet**
   on evidence, prerequisites, alignment, coverage, and freshness.
