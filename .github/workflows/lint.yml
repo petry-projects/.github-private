@@ -53,7 +53,8 @@ jobs:
             tests/test_gitleaks_config.bats \
             tests/test_initiative_planner.bats \
             tests/test_idea_triage.bats \
-            tests/test_oversized_pr.bats
+            tests/test_oversized_pr.bats \
+            tests/test_apply_repo_settings.bats
 
   validate-agent-profiles:
     runs-on: ubuntu-latest
