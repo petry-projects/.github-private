@@ -273,3 +273,17 @@ EOF
   [ "$status" -eq 0 ]
   [ "$(_get_env INTENT_TYPE)" = "rebase" ]
 }
+
+@test "reviews: issue_comment trusted-bot on already-closed PR → skip pr-already-closed" {
+  # Regression guard for issue #405: a SonarQube comment on a merged PR used to
+  # trigger fix-bot-comment, which then crashed at checkout_pr_in_worktree because
+  # the branch was deleted. The classifier must emit skip before that point.
+  export GITHUB_EVENT_NAME="issue_comment"
+  export GITHUB_EVENT_PATH="$FIXTURES_DIR/issue_comment_sonarqube_closed_pr.json"
+
+  run bash "$INTENT_SCRIPT"
+
+  [ "$status" -eq 0 ]
+  [ "$(_get_env INTENT_TYPE)" = "skip" ]
+  [ "$(_get_env INTENT_REASON)" = "pr-already-closed" ]
+}
