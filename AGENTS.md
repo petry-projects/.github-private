@@ -38,6 +38,12 @@ This is the `.github-private` org infrastructure repo for `petry-projects`. It c
 - **Exception:** The `bats` test list in `lint.yml` is extended with repo-specific test files (e.g.
   `tests/test_push_protection.bats`) beyond the org template baseline. When adding new test files to this
   repo, add them to this list. Template syncs must not reset it to the base template list.
+- **Exception:** `auto-rebase-retry.yml` is a documented repo-specific workflow with no corresponding org
+  template in `standards/workflows/`. It is a `workflow_run` handler that self-heals a *failed* Auto-rebase
+  run by re-running its failed jobs (bounded by `run_attempt`) — the gap left by the conflict-only sentinel
+  path, which the thin-caller `auto-rebase.yml` and central reusable cannot cover. It must not be removed by
+  template syncs. If the org template gains a retry equivalent, remove this exception and defer to the
+  template instead.
 
 ### Agent Profiles (`agents/*.md`)
 
