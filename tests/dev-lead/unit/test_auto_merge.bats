@@ -311,3 +311,91 @@ EOF
   push_with_merge_guard
   [ "${_AM_HEAD_SHA}" = "newsha456" ]
 }
+
+# ── push_with_merge_guard — force-with-lease retry on rewritten history ────────
+#
+# A rebase requested via a free-form @dev-lead mention runs under the on-mention
+# intent, whose push path is push_with_merge_guard with no force flag. The engine
+# rewrites branch history, so the local branch is both ahead of AND behind its
+# upstream and a plain push is a guaranteed non-fast-forward rejection (issue #647,
+# run 27471503333). The guard must retry once with --force-with-lease in that case
+# while keeping a plain push for ordinary fast-forward updates.
+
+# git stub: logs to GIT_CALLS; plain push fails non-fast-forward, --force-with-lease
+# push succeeds; rev-list reports the diverged/non-diverged counts from DIVERGE_COUNTS
+# ("behind<TAB>ahead"), and @{u} resolves to an upstream unless UPSTREAM_OK=0.
+_install_diverge_git_stub() {
+  export GIT_CALLS="$(mktemp)"
+  cat > "$STUB_BIN_DIR/git" <<'EOF'
+#!/usr/bin/env bash
+echo "git $*" >> "${GIT_CALLS:-/dev/null}"
+case "$1" in
+  push)
+    for a in "$@"; do [ "$a" = "--force-with-lease" ] && exit 0; done
+    echo " ! [rejected] branch -> branch (non-fast-forward)" >&2
+    exit 1
+    ;;
+  rev-parse)
+    case "$*" in
+      *"@{u}"*) [ "${UPSTREAM_OK:-1}" = "1" ] && echo "origin/branch" || exit 128 ;;
+      *)        echo "forcedsha789" ;;
+    esac
+    ;;
+  rev-list)  printf '%s\n' "${DIVERGE_COUNTS:-0	0}" ;;
+  *)         exec /usr/bin/git "$@" ;;
+esac
+EOF
+  chmod +x "$STUB_BIN_DIR/git"
+}
+
+@test "push_with_merge_guard: retries with --force-with-lease when branch diverged (rewritten history)" {
+  source "$LIB"
+  _install_diverge_git_stub
+  export DIVERGE_COUNTS=$'2\t3'   # behind=2 AND ahead=3 → diverged
+  PR_STATE="open"
+  run push_with_merge_guard
+  [ "$status" -eq 0 ]
+  grep -q -- "git push --force-with-lease" "$GIT_CALLS"
+}
+
+@test "push_with_merge_guard: does NOT force-push when branch only fast-forwards (ahead, not behind)" {
+  source "$LIB"
+  _install_diverge_git_stub
+  export DIVERGE_COUNTS=$'0\t3'   # behind=0, ahead=3 → not diverged
+  PR_STATE="open"
+  run push_with_merge_guard
+  [ "$status" -eq 1 ]
+  ! grep -q -- "--force-with-lease" "$GIT_CALLS"
+  [[ "$output" == *"git push failed"* ]]
+}
+
+@test "push_with_merge_guard: does NOT force-push when there is no upstream" {
+  source "$LIB"
+  _install_diverge_git_stub
+  export UPSTREAM_OK=0   # @{u} does not resolve
+  PR_STATE="open"
+  run push_with_merge_guard
+  [ "$status" -eq 1 ]
+  ! grep -q -- "--force-with-lease" "$GIT_CALLS"
+}
+
+@test "push_with_merge_guard: merged/closed race short-circuits before any force-push" {
+  source "$LIB"
+  _install_diverge_git_stub
+  export DIVERGE_COUNTS=$'2\t3'   # diverged, but PR is closed
+  PR_STATE="closed"
+  run push_with_merge_guard
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"nothing to push"* ]]
+  ! grep -q -- "--force-with-lease" "$GIT_CALLS"
+}
+
+@test "push_with_merge_guard: refreshes _AM_HEAD_SHA after a successful force-with-lease retry" {
+  source "$LIB"
+  _install_diverge_git_stub
+  export DIVERGE_COUNTS=$'2\t3'
+  PR_STATE="open"
+  _AM_HEAD_SHA="oldsha123"
+  push_with_merge_guard
+  [ "${_AM_HEAD_SHA}" = "forcedsha789" ]
+}

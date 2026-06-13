@@ -116,9 +116,28 @@ restore_auto_merge() {
     || echo "::warning::could not restore auto-merge on PR #${PR_NUMBER}"
 }
 
+# _branch_diverged_from_upstream — true only when the local branch is BOTH ahead
+# of AND behind its configured upstream, i.e. history was rewritten (e.g. the
+# engine rebased the branch). In that state a plain `git push` is a guaranteed
+# non-fast-forward rejection. Returns non-zero when there is no upstream or the
+# branch merely fast-forwards (ahead-only), so the normal push path is preserved.
+_branch_diverged_from_upstream() {
+  local upstream
+  upstream=$(git rev-parse --abbrev-ref --symbolic-full-name "@{u}" 2>/dev/null) || return 1
+  local counts behind ahead
+  counts=$(git rev-list --left-right --count "${upstream}...HEAD" 2>/dev/null) || return 1
+  behind=$(printf '%s' "$counts" | awk '{print $1}')
+  ahead=$(printf '%s' "$counts" | awk '{print $2}')
+  [ "${ahead:-0}" -gt 0 ] && [ "${behind:-0}" -gt 0 ]
+}
+
 # push_with_merge_guard [git push args...] — push the current branch, but exit 0
 # cleanly when the push fails because the PR was merged/closed (its branch
-# deleted) mid-run. Returns 0 on a real push; returns 1 on a genuine failure.
+# deleted) mid-run. When the push is rejected because the engine rewrote history
+# (a rebase requested via a free-form @mention runs under on-mention, whose push
+# path is this guard with no force flag — issue #647), retry once with
+# --force-with-lease, which still refuses to clobber commits we have not seen.
+# Returns 0 on a real push; returns 1 on a genuine failure.
 push_with_merge_guard() {
   local errf
   errf="$(mktemp)"
@@ -139,6 +158,22 @@ push_with_merge_guard() {
   if [ -n "$state" ] && [ "$state" != "open" ]; then
     echo "::notice::PR #${PR_NUMBER} is ${state} — its branch was merged/closed mid-run; nothing to push. Exiting cleanly."
     exit 0
+  fi
+
+  # History rewritten (e.g. the engine rebased): the plain push above is correctly
+  # rejected as non-fast-forward. Retry once with --force-with-lease so the rebase
+  # result is published; the lease still aborts if origin advanced unexpectedly.
+  if _branch_diverged_from_upstream; then
+    echo "::notice::PR #${PR_NUMBER} — local branch diverged from upstream (history rewritten); retrying push with --force-with-lease"
+    local ff_errf
+    ff_errf="$(mktemp)"
+    if git push --force-with-lease "$@" 2>"$ff_errf"; then
+      rm -f "$ff_errf"
+      _AM_HEAD_SHA=$(git rev-parse HEAD 2>/dev/null || true)
+      return 0
+    fi
+    cat "$ff_errf" >&2
+    rm -f "$ff_errf"
   fi
 
   echo "::error::git push failed — check remote access and branch permissions" >&2
