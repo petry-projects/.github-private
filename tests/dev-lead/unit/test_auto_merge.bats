@@ -185,6 +185,61 @@ EOF
   [[ "$output" == *"git push failed"* ]]
 }
 
+# ── push_with_merge_guard — force-with-lease retry on rewritten history ────────
+
+# git stub for the rebase/force-push path. $1 = "diverged" | "not-diverged"
+# controls whether merge-base --is-ancestor reports the upstream as reachable
+# from HEAD (i.e. whether history was rewritten). The plain push always reports a
+# non-fast-forward rejection; the force-with-lease push succeeds.
+_install_git_stub_force() {
+  cat > "$STUB_BIN_DIR/git" <<EOF
+#!/usr/bin/env bash
+case "\$1" in
+  push)
+    shift
+    for a in "\$@"; do
+      [ "\$a" = "--force-with-lease" ] && exit 0
+    done
+    echo "  ! [rejected]        feature -> feature (non-fast-forward)" >&2
+    exit 1
+    ;;
+  rev-parse)
+    case "\$*" in
+      *"@{u}"*) echo "origin/feature" ;;
+      *)        echo "deadbeefcafe" ;;
+    esac
+    exit 0
+    ;;
+  merge-base)
+    # --is-ancestor <upstream> HEAD: 0 = upstream reachable (not diverged),
+    # 1 = diverged (history rewritten by a rebase).
+    [ "${1:-}" = "diverged" ] && exit 1 || exit 0
+    ;;
+  *) exit 0 ;;
+esac
+EOF
+  chmod +x "$STUB_BIN_DIR/git"
+}
+
+@test "push_with_merge_guard: force-with-lease retry succeeds when history was rewritten (rebase)" {
+  source "$LIB"
+  _install_git_stub_force diverged
+  PR_STATE="open"
+  run push_with_merge_guard
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"--force-with-lease"* ]]
+}
+
+@test "push_with_merge_guard: does NOT force-push when branch is not diverged (remote advanced legitimately)" {
+  source "$LIB"
+  _install_git_stub_force not-diverged
+  PR_STATE="open"
+  run push_with_merge_guard
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"git push failed"* ]]
+  [[ "$output" != *"retrying with --force-with-lease"* ]]
+}
+
 # ── hold_auto_merge — commit text capture ─────────────────────────────────────
 
 @test "hold_auto_merge: captures commit title and message when auto-merge is on" {
