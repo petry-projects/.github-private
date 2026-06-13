@@ -1,0 +1,57 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Auto-rebase retry — self-heals a FAILED Auto-rebase workflow run.
+#
+# REPO-SPECIFIC WORKFLOW (no central template). See AGENTS.md
+# §"Workflow Files" exception note. Documented gap: the Auto-rebase reusable
+# handles merge *conflicts* gracefully (sentinel comment → dev-lead `rebase`
+# intent), but a failed *run* (transient API error, rate-limit, infra hiccup)
+# posts no sentinel and nothing retries it. This handler re-runs the failed
+# jobs, bounded by the run's attempt counter (MAX_ATTEMPTS), and surfaces a
+# warning once retries are exhausted.
+#
+# workflow_run handlers run from the default branch only, so changes here take
+# effect after merge to main.
+# ─────────────────────────────────────────────────────────────────────────────
+name: Auto-rebase retry
+
+on:
+  workflow_run:
+    workflows: ["Auto-rebase non-Dependabot PRs"]
+    types: [completed]
+
+permissions: {}
+
+concurrency:
+  group: auto-rebase-retry-${{ github.event.workflow_run.id }}
+  cancel-in-progress: false
+
+jobs:
+  retry:
+    # Only act on failed runs; the script re-checks but gating here avoids
+    # spinning up a runner for every successful/cancelled Auto-rebase run.
+    if: github.event.workflow_run.conclusion == 'failure'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write   # gh run rerun --failed
+    steps:
+      - name: Checkout agent repo
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Retry failed Auto-rebase run
+        env:
+          # Prefer a PAT: a re-run requested via GITHUB_TOKEN does not re-fire
+          # workflow_run events (GitHub's recursion guard), so only GH_PAT_WORKFLOWS
+          # lets attempts past the first chain back into this handler toward
+          # MAX_ATTEMPTS. With github.token alone, a single retry still fires.
+          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS || github.token }}
+          REPO: ${{ github.repository }}
+          CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          RUN_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          WORKFLOW_NAME: ${{ github.event.workflow_run.name }}
+          HTML_URL: ${{ github.event.workflow_run.html_url }}
+          MAX_ATTEMPTS: "3"
+        run: bash scripts/auto-rebase-retry.sh
