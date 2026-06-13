@@ -126,8 +126,7 @@ _branch_diverged_from_upstream() {
   upstream=$(git rev-parse --abbrev-ref --symbolic-full-name "@{u}" 2>/dev/null) || return 1
   local counts behind ahead
   counts=$(git rev-list --left-right --count "${upstream}...HEAD" 2>/dev/null) || return 1
-  behind=$(printf '%s' "$counts" | awk '{print $1}')
-  ahead=$(printf '%s' "$counts" | awk '{print $2}')
+  read -r behind ahead <<< "$counts"
   [ "${ahead:-0}" -gt 0 ] && [ "${behind:-0}" -gt 0 ]
 }
 
