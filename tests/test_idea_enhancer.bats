@@ -19,12 +19,48 @@ setup() {
 
 teardown() { rm -rf "$TMP"; }
 
-# A `gh` mock that returns a single page of Ideas discussions covering every
-# filter branch the gather script must apply. Args are ignored (one page only).
+# A `gh` mock that handles both the single-discussion query (when DISCUSSION_NUMBER
+# is set) and the paginated discussions query (bulk scan path).
 _install_gh_mock() {
   cat > "$MOCK_BIN/gh" <<'EOF'
 #!/usr/bin/env bash
-cat <<'JSON'
+if [[ "$*" == *"discussion(number:"* ]]; then
+  num="106"
+  if [[ "$*" == *"number=101"* || "$*" == *"-F number=101"* ]]; then
+    num="101"
+  fi
+
+  if [ "$num" = "106" ]; then
+    cat <<'JSON'
+{
+  "data": { "repository": { "discussion": {
+    "number": 106, "title": "Human idea B", "url": "u/106",
+    "createdAt": "2026-06-02T00:00:00Z", "updatedAt": "2026-06-02T00:00:00Z",
+    "closed": false, "category": { "name": "Ideas" },
+    "author": { "login": "erin", "__typename": "User" },
+    "labels": { "nodes": [] },
+    "comments": { "totalCount": 0, "nodes": [] },
+    "bodyText": "Another plain human idea."
+  } } }
+}
+JSON
+  else
+    cat <<'JSON'
+{
+  "data": { "repository": { "discussion": {
+    "number": 101, "title": "Human idea A", "url": "u/101",
+    "createdAt": "2026-06-01T00:00:00Z", "updatedAt": "2026-06-01T00:00:00Z",
+    "closed": false, "category": { "name": "Ideas" },
+    "author": { "login": "alice", "__typename": "User" },
+    "labels": { "nodes": [] },
+    "comments": { "totalCount": 0, "nodes": [] },
+    "bodyText": "A plain human idea."
+  } } }
+}
+JSON
+  fi
+else
+  cat <<'JSON'
 {
   "data": { "repository": { "discussions": {
     "pageInfo": { "hasNextPage": false, "endCursor": "" },
@@ -77,6 +113,7 @@ cat <<'JSON'
   } } }
 }
 JSON
+fi
 EOF
   chmod +x "$MOCK_BIN/gh"
 }
@@ -118,6 +155,13 @@ EOF
   [ "$status" -ne 0 ]
 }
 
+@test "gather-candidates fails when REPO lacks a slash" {
+  _install_gh_mock
+  REPO="noslash" CONTEXT_PATH="$CONTEXT" run bash "$ENH_DIR/gather-candidates.sh"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"owner/repo"* ]]
+}
+
 # ── post-enhancement: DRY_RUN path ───────────────────────────────────────────
 
 @test "post-enhancement (DRY_RUN) logs the comment with the marker appended" {
@@ -139,4 +183,13 @@ EOF
     BODY_PATH="$TMP/nope.md" run bash "$ENH_DIR/post-enhancement.sh"
   [ "$status" -ne 0 ]
   [[ "$output" == *"missing or empty"* ]]
+}
+
+@test "post-enhancement fails when REPO lacks a slash" {
+  BODY="$TMP/body.md"
+  printf 'A concrete enhancement.' > "$BODY"
+  DRY_RUN=1 DRY_RUN_LOG="$LOG" REPO="noslash" DISCUSSION_NUMBER="101" \
+    BODY_PATH="$BODY" run bash "$ENH_DIR/post-enhancement.sh"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"owner/repo"* ]]
 }

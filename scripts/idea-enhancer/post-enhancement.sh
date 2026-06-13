@@ -13,6 +13,10 @@
 set -euo pipefail
 
 REPO="${REPO:?REPO required}"
+if [[ "$REPO" != */* ]]; then
+  echo "::error::REPO must be in 'owner/repo' format" >&2
+  exit 1
+fi
 DISCUSSION_NUMBER="${DISCUSSION_NUMBER:?DISCUSSION_NUMBER required}"
 BODY_PATH="${BODY_PATH:?BODY_PATH required}"
 MARKER="${ENHANCER_MARKER:-<!-- idea-enhancer:enhanced -->}"
