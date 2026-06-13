@@ -1,0 +1,149 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Idea Enhancer — enriches human-authored Ideas Discussions
+#
+# When a human opens an Ideas Discussion (or periodically on a schedule), an
+# analyst pass reads the idea, researches it, and posts ONE enhancement comment:
+# clarifying framing, market/competitive context, a sharper problem statement,
+# impact/effort, and concrete acceptance criteria. A hidden marker is appended so
+# the same idea is never enhanced twice (idempotent across runs).
+#
+# This complements feature-ideation.yml (which generates NEW idea Discussions):
+# that pipeline never enriches human-added items, which is what this closes.
+#
+# Pipeline position:
+#   ★ human opens an Ideas Discussion  ──>  THIS (enhance comment)  ──┐
+#   feature-ideation (new Ideas)       ─────────────────────────────┤
+#   -> idea-triage (shortlist) -> ★ human adds idea:approved          │
+#   -> initiative-planner -> ★ human adds initiative:auto             │
+#   -> initiative-driver -> dev-lead  <───────────────────────────────┘
+#
+# Org-private automation (like idea-triage.yml / initiative-planner.yml) — NOT a
+# thin caller stub. The tooling lives in scripts/idea-enhancer/ and is unit-tested
+# (tests/test_idea_enhancer.bats).
+# ─────────────────────────────────────────────────────────────────────────────
+name: Idea Enhancer
+
+on:
+  discussion:
+    types: [created]
+  schedule:
+    - cron: '0 7 * * 3' # Wednesday 07:00 UTC — safety net between ideation (Fri) and triage (Mon)
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Log intended enhancement comments to an artifact instead of posting them'
+        required: false
+        default: false
+        type: boolean
+      model:
+        description: 'Anthropic model id for the enhancement pass'
+        required: false
+        default: 'claude-sonnet-4-6'
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: idea-enhancer
+  cancel-in-progress: false
+
+jobs:
+  enhance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read       # checkout
+      discussions: write   # read the Ideas backlog + post enhancement comments
+      id-token: write      # claude-code-action OIDC
+    env:
+      REPO: ${{ github.repository }}
+      DRY_RUN: ${{ inputs.dry_run && '1' || '0' }}
+      # Empty for schedule/dispatch (scan all); the created discussion's number
+      # for the `discussion` trigger (enhance just that one, immediately).
+      DISCUSSION_NUMBER: ${{ github.event.discussion.number }}
+    steps:
+      - name: Checkout agent repo
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Set temp paths
+        run: |
+          echo "DRY_RUN_LOG=${{ runner.temp }}/dry-run.jsonl" >> "$GITHUB_ENV"
+          echo "CONTEXT_PATH=${{ runner.temp }}/candidates.json" >> "$GITHUB_ENV"
+
+      - name: Gather enhancement candidates
+        id: gather
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          bash scripts/idea-enhancer/gather-candidates.sh
+          echo "count=$(jq '.candidates | length' "$CONTEXT_PATH")" >> "$GITHUB_OUTPUT"
+
+      - name: Enhance each candidate idea
+        if: ${{ steps.gather.outputs.count != '0' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: anthropics/claude-code-action@787c5a0ce96a9a6cfb050ea0c8f4c05f2447c251 # v1.0.133
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          claude_args: |
+            --model ${{ inputs.model || 'claude-sonnet-4-6' }}
+            --allowedTools Bash,Read,Glob,Grep
+          prompt: |
+            You are the **idea-enhancer analyst** for the ${{ github.repository }} repo.
+            Your job: for each candidate Idea Discussion, post exactly ONE comment that
+            makes the idea more actionable. You do NOT approve, label, or promote
+            anything — that stays with a human and the triage/planner pipeline.
+
+            ## Input
+
+            The candidate set is at `$CONTEXT_PATH` (JSON): `repo`, the idempotency
+            `marker`, and `candidates[]` (each with number, title, url, author,
+            timestamps, comment count, labels, and an excerpt of the idea body). Read it:
+
+            ```bash
+            cat "$CONTEXT_PATH" | jq .
+            ```
+
+            Every candidate is an open, human-authored Ideas Discussion that has not
+            yet been enhanced. If `candidates` is empty, do nothing and stop.
+
+            Use Read/Grep/Glob on the checkout (`AGENTS.md`, `docs/`, `scripts/`,
+            `.github/workflows/`) and the feature-ideator profile
+            (`agents/feature-ideator.md`) to ground each enhancement in what this repo
+            actually does. Favor ideas that leverage existing infrastructure.
+
+            ## For each candidate
+
+            Draft a concise enhancement comment (GitHub Markdown) to a temp file, then
+            post it. Structure the comment as:
+            - **Sharpened problem & goal** — restate the idea crisply; note any
+              ambiguity worth the author clarifying.
+            - **Context** — relevant prior art in this repo, related initiatives, or
+              market/competitive signal (cite sources if you researched the web).
+            - **Impact / Effort** — HIGH/MEDIUM/LOW and S/M/L/XL, with one line of why.
+            - **Suggested acceptance criteria** — 2–5 specific, testable bullets.
+            - Keep it constructive and brief; you are augmenting a human's idea, not
+              replacing it.
+
+            Then post it (the script appends the idempotency marker for you; honors
+            `$DRY_RUN`):
+
+            ```bash
+            REPO="${{ github.repository }}" DISCUSSION_NUMBER="<number>" \
+            BODY_PATH="<your-draft-file>" \
+            bash scripts/idea-enhancer/post-enhancement.sh
+            ```
+
+            Process every candidate. Finish with a 2–3 line summary of how many ideas
+            you enhanced.
+
+      - name: Upload dry-run enhancement log
+        if: ${{ env.DRY_RUN == '1' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: idea-enhancer-dry-run
+          path: ${{ runner.temp }}/dry-run.jsonl
+          if-no-files-found: warn
