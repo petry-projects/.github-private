@@ -124,3 +124,12 @@ _reran() { [ -f "$RERUN_MARKER" ]; }
   _reran
   [[ "$output" == *"::warning::"* ]]
 }
+
+@test "auto-rebase-retry: empty REPO → reruns without --repo flag" {
+  export REPO=""
+  unset GITHUB_REPOSITORY
+  run bash "$RETRY_SCRIPT"
+  [ "$status" -eq 0 ]
+  _reran
+  ! grep -q -- "--repo" "$RERUN_MARKER"
+}

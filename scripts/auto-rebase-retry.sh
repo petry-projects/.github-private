@@ -41,7 +41,7 @@ MAX_ATTEMPTS="${MAX_ATTEMPTS:-3}"
 DRY_RUN="${DRY_RUN:-false}"
 GITHUB_STEP_SUMMARY="${GITHUB_STEP_SUMMARY:-/dev/null}"
 
-summary() { echo "$1" >> "$GITHUB_STEP_SUMMARY"; }
+summary() { echo "$1" >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true; }
 
 # Default any non-integer attempt to 1 so a malformed payload still retries once
 # rather than silently skipping or crashing under `set -e`.
@@ -54,7 +54,7 @@ if ! [[ "$MAX_ATTEMPTS" =~ ^[0-9]+$ ]] || [ "$MAX_ATTEMPTS" -lt 1 ]; then
 fi
 
 # ── guard: only act on failed runs ────────────────────────────────────────────
-if [ "$CONCLUSION" != "failure" ]; then
+if [[ "$CONCLUSION" != "failure" ]]; then
   echo "::notice::${WORKFLOW_NAME} run concluded '${CONCLUSION:-unknown}' (not failure) — nothing to retry"
   exit 0
 fi
@@ -84,7 +84,7 @@ if [ "$DRY_RUN" = "true" ]; then
   exit 0
 fi
 
-if gh run rerun "$RUN_ID" --failed --repo "$REPO"; then
+if gh run rerun "$RUN_ID" --failed ${REPO:+--repo "$REPO"}; then
   echo "::notice::Re-run of run ${RUN_ID} requested (attempt ${next_attempt}/${MAX_ATTEMPTS})"
   summary "### Auto-rebase retry dispatched"
   summary "Re-ran failed jobs of run [\`${RUN_ID}\`](${HTML_URL}) — attempt ${next_attempt}/${MAX_ATTEMPTS}."
