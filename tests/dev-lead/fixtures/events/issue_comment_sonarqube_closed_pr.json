@@ -1,0 +1,23 @@
+{
+  "_test_expected_intent": "skip",
+  "action": "created",
+  "issue": {
+    "number": 519,
+    "title": "feat(pr-review): mirror dispatch inputs as workflow_call inputs",
+    "state": "closed",
+    "pull_request": {
+      "url": "https://api.github.com/repos/petry-projects/.github-private/pulls/519",
+      "merged_at": "2026-06-09T21:00:00Z"
+    }
+  },
+  "comment": {
+    "id": 4001,
+    "body": "## Quality Gate passed\n\nNo new issues.",
+    "user": {
+      "login": "sonarqubecloud[bot]",
+      "type": "Bot"
+    }
+  },
+  "repository": { "full_name": "petry-projects/.github-private" },
+  "sender": { "login": "sonarqubecloud[bot]", "type": "Bot" }
+}
