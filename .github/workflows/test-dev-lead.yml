@@ -3,6 +3,7 @@ on:
   pull_request:
     paths:
       - 'scripts/dev-lead*'
+      - 'scripts/auto-rebase-retry.sh'
       - 'scripts/engine.sh'
       - 'scripts/lib/**'
       - '.github/workflows/dev-lead*.yml'
@@ -10,12 +11,14 @@ on:
       - '.github/workflows/issue-triage-runner.yml'
       - '.github/workflows/dependency-audit.yml'
       - '.github/workflows/auto-rebase.yml'
+      - '.github/workflows/auto-rebase-retry.yml'
       - 'tests/dev-lead/**'
       - 'prompts/dev-lead/**'
   push:
     branches: [main]
     paths:
       - 'scripts/dev-lead*'
+      - 'scripts/auto-rebase-retry.sh'
       - 'scripts/engine.sh'
       - 'scripts/lib/**'
       - 'tests/dev-lead/**'
@@ -28,6 +31,7 @@ on:
       - '.github/workflows/issue-triage-runner.yml'
       - '.github/workflows/dependency-audit.yml'
       - '.github/workflows/auto-rebase.yml'
+      - '.github/workflows/auto-rebase-retry.yml'
   workflow_dispatch: {}
 
 permissions:
