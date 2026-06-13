@@ -55,7 +55,8 @@ jobs:
             tests/test_idea_triage.bats \
             tests/test_idea_enhancer.bats \
             tests/test_oversized_pr.bats \
-            tests/test_apply_repo_settings.bats
+            tests/test_apply_repo_settings.bats \
+            tests/test_sweep_stuck_reviews.bats
 
   validate-agent-profiles:
     runs-on: ubuntu-latest
