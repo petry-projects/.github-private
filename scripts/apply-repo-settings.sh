@@ -20,8 +20,6 @@
 #   https://github.com/petry-projects/.github/blob/main/standards/push-protection.md
 #   https://github.com/petry-projects/.github/blob/main/standards/github-settings.md#check-suite-auto-trigger-preferences
 
-set -euo pipefail
-
 ORG="${ORG:-petry-projects}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -109,6 +107,7 @@ rs_apply_all() {
 
 # Run main only when executed directly, so tests can source the helpers.
 if [ "${BASH_SOURCE[0]:-$0}" = "$0" ]; then
+  set -euo pipefail
   if [ "${1:-}" = "--all" ]; then
     rs_apply_all
   else
