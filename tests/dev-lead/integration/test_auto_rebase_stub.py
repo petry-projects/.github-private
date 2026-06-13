@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Validate that auto-rebase.yml uses the @v1 version tag, not a SHA.
+"""Validate that auto-rebase.yml uses the @v2 version tag, not a SHA.
 
 AGENTS.md §"Release channel tags & the mutable-ref exception" exempts first-party
 reusable workflows from the SHA-pin standard. The correct reference for the
-auto-rebase reusable is the versioned tag `@v1`, matching the canonical stub at
+auto-rebase reusable is the versioned tag `@v2`, matching the canonical stub at
 standards/workflows/auto-rebase.yml in petry-projects/.github.
 
 Regression guard: a SHA-pinned reference is a compliance violation (issue #139).
@@ -20,7 +20,7 @@ except ImportError:
 
 WORKFLOW = ".github/workflows/auto-rebase.yml"
 REUSABLE = "petry-projects/.github/.github/workflows/auto-rebase-reusable.yml"
-EXPECTED_REF = "@v1"
+EXPECTED_REF = "@v2"
 SHA_PATTERN = re.compile(r"@[0-9a-f]{40}\b")
 
 
@@ -63,7 +63,7 @@ def main() -> int:
             failures.append(
                 f"  SHA-pinned: {ref!r}\n"
                 f"  Expected:   '{REUSABLE}{EXPECTED_REF}'\n"
-                "  Reason: first-party reusable workflows must use the @v1 version\n"
+                "  Reason: first-party reusable workflows must use the @v2 version\n"
                 "  tag, not a SHA (AGENTS.md §Release channel tags)."
             )
         elif not ref.endswith(EXPECTED_REF):
