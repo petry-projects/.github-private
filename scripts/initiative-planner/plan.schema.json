@@ -115,8 +115,25 @@
     },
     "open_questions": {
       "type": "array",
-      "items": { "type": "string" },
-      "description": "Things the planner could not resolve from context; surfaced for the human reviewer."
+      "description": "Things the planner could not resolve from context; surfaced for the human reviewer. A plain string is advisory (non-blocking). An object flagged `blocking:true` is plan-blocking: apply-plan.sh creates NO issues and posts the questions back to the source discussion instead (see #682).",
+      "items": {
+        "oneOf": [
+          { "type": "string" },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["question"],
+            "properties": {
+              "question": { "type": "string", "minLength": 5 },
+              "blocking": {
+                "type": "boolean",
+                "default": false,
+                "description": "True => this question must be answered before the idea is plannable; halts materialization."
+              }
+            }
+          }
+        ]
+      }
     }
   }
 }
