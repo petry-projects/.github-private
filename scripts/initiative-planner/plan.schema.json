@@ -17,7 +17,13 @@
       "required": ["title", "body"],
       "properties": {
         "title": { "type": "string", "minLength": 8 },
-        "body": { "type": "string", "minLength": 30 }
+        "body": { "type": "string", "minLength": 30 },
+        "untracked_prerequisites": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Prerequisites that are NOT GitHub issues (a discussion, an external dependency). Rendered as an 'Untracked prerequisites' checklist on the epic body. For prereqs that ARE issues, use a story's blocked_by_existing_issues instead.",
+          "default": []
+        }
       }
     },
     "stories": {
