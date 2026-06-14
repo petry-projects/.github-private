@@ -64,7 +64,7 @@ RETRY_BASE_DELAY_SEC="${RETRY_BASE_DELAY_SEC:-5}"
 # When neither is present, REVIEW_MCP_CONFIG stays empty and MCP is off, so
 # repos that don't opt in see no behavior change.
 REVIEW_MCP_CONFIG_DEFAULT_PATH="${REVIEW_MCP_CONFIG_DEFAULT_PATH:-.github/review-mcp.json}"
-if [ -z "${REVIEW_MCP_CONFIG:-}" ] && [ -f "$REVIEW_MCP_CONFIG_DEFAULT_PATH" ]; then
+if [ -z "${REVIEW_MCP_CONFIG+x}" ] && [ -f "$REVIEW_MCP_CONFIG_DEFAULT_PATH" ]; then
   REVIEW_MCP_CONFIG="$REVIEW_MCP_CONFIG_DEFAULT_PATH"
 fi
 REVIEW_MCP_CONFIG="${REVIEW_MCP_CONFIG:-}"

@@ -190,6 +190,19 @@ _source_engine() {
   ! grep -q -- "--mcp-config $conv_file" "$ARGS_RECORD"
 }
 
+@test "default path: explicit empty REVIEW_MCP_CONFIG disables conventional path fallback" {
+  local conv_file
+  conv_file="$(mktemp)"
+  echo '{"mcpServers":{"conv":{}}}' > "$conv_file"
+  export REVIEW_MCP_CONFIG_DEFAULT_PATH="$conv_file"
+  export REVIEW_MCP_CONFIG=""
+  _source_engine "claude"
+  run run_agentic "$TEST_PROMPT" "claude-opus-4-8" "deep"
+  rm -f "$conv_file"
+  [ "$status" -eq 0 ]
+  ! grep -q -- "--mcp-config" "$ARGS_RECORD"
+}
+
 # ── Committed sample is inert documentation-only (issue #679, AC #4) ──────────
 
 @test "sample: committed Context7 sample is valid JSON" {
