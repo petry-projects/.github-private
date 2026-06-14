@@ -84,6 +84,9 @@ mirrors the BMAD create-story template field-for-field:
 
 `apply-plan.sh` renders the issue body from these in exact template order.
 
+Before you write `$PLAN_PATH`, run the **Quality rubric** (below) as a final
+self-check pass over the whole plan.
+
 ## Hard rules
 
 - Output only the plan JSON — no prose outside it. The schema is the contract.
@@ -98,3 +101,37 @@ mirrors the BMAD create-story template field-for-field:
   planning.
 - Don't duplicate an open epic from `open_epics`; if already covered, say so in a
   single story + `open_questions` referencing that epic.
+
+## Quality rubric — final self-check before emitting the plan
+
+This is the **fixed quality rubric** (distilled from the hand review of #581, per
+discussion #593). It is the single source of truth for these checks — quote it
+verbatim; do not fork a second copy elsewhere.
+
+**Run it in a thinking block as an internal self-check** (do not output prose about
+your answers). This is the **FINAL pass** over the assembled plan, immediately before
+you write `$PLAN_PATH`. Each item is a checkpoint with these acceptable answers:
+- **yes** — criterion applies and is met
+- **yes — N/A** — criterion is met but does not apply to this plan (e.g., no optimization stories = "yes — N/A" for criterion 6)
+- Anything else (a "no", a "maybe", a "unclear") is an unresolved item: route it to
+`open_questions` rather than guessing — consistent with the no-invented-AC hard
+rule above. Do not weaken or invent ACs to force a "yes".
+
+1. **No contested question baked into an AC** — Is every acceptance criterion free
+   of a still-contested open question? (A genuinely unresolved point belongs in
+   `open_questions`, never silently decided inside an AC.)
+2. **Initiative success metric present** — Does the epic state at least one
+   measurable, initiative-level success metric (how we'll know the initiative
+   actually worked)?
+3. **Cost cap present** — Does the plan name an explicit cost cap / budget bound
+   for the initiative (e.g. a token or dollar ceiling, or a run-count limit)?
+4. **Untracked prerequisites surfaced** — Is every prerequisite either captured as
+   a `blocked_by` / `blocked_by_existing_issues` edge or, if not yet tracked,
+   surfaced in `open_questions` — with none left implicit?
+5. **Stories independently reviewable** — Is each story a single PR-sized unit a
+   reviewer can assess on its own, with self-contained Dev Notes and References?
+6. **Eval/optimization safeguards** — For every story that tunes, optimizes, or
+   evaluates against a metric or eval set: does it address both overfitting /
+   reward-hacking AND artifact-immutability (e.g. a held-out or frozen eval set
+   and immutable baseline artifacts)? (Answer "yes — N/A" if no plan contains such
+   a story.)
