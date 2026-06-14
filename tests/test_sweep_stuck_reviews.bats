@@ -208,3 +208,96 @@ url_for() { echo "https://github.com/petry-projects/demo/pull/$1"; }
   [ "$status" -eq 0 ]
   ! grep -qF -- "--ref" "$GH_LOG"
 }
+
+# ───────────────────────────────────────────────────────────────────────────
+# Rate-limited withhold retry (issue #711)
+#
+# A pr-review run that withholds approval because advisory bots were
+# rate-limited leaves a distinct marker:
+#   <!-- pr-review-agent rate-limited v1 sha=<HEAD> status=rate-limited reset=<ISO> -->
+# Once the embedded reset has passed (and the PR has NOT since been reviewed at
+# head), the sweep re-dispatches it — even when the CI rollup is not "passing"
+# (unrelated cancelled/failed sibling checks must not suppress the retry).
+# ───────────────────────────────────────────────────────────────────────────
+
+# rl_comment <head> <reset-iso>: a rate-limited withhold marker comment body.
+rl_comment() {
+  printf '[{"body":"<!-- pr-review-agent rate-limited v1 sha=%s status=rate-limited reset=%s -->\\n\\nAdvisory bots were rate-limited."}]' "$1" "$2"
+}
+PAST_RESET='2000-01-01T00:00:00Z'
+FUTURE_RESET='2999-01-01T00:00:00Z'
+
+@test "rate-limited marker with elapsed reset is re-dispatched (CI passing)" {
+  write_pr 711 "REVIEW_REQUIRED" "$ROLLUP_PASS" "rl711" "[]" "$(rl_comment rl711 "$PAST_RESET")"
+  url_for 711 > "$SWEEP_PRS_FILE"
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  grep -qF -- "-f pr_url=$(url_for 711)" "$GH_LOG"
+  # Retry uses the normal trigger path — never force_review (the advisory gate
+  # must stay armed so we never approve while bots are still rate-limited).
+  ! grep -qF -- "force_review" "$GH_LOG"
+}
+
+@test "rate-limited retry fires even when a sibling check is FAILING (issue #711 AC3)" {
+  write_pr 712 "REVIEW_REQUIRED" "$ROLLUP_FAIL" "rl712" "[]" "$(rl_comment rl712 "$PAST_RESET")"
+  url_for 712 > "$SWEEP_PRS_FILE"
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  grep -qF -- "-f pr_url=$(url_for 712)" "$GH_LOG"
+}
+
+@test "rate-limited retry fires even when a sibling check is CANCELLED" {
+  local rollup_cancelled='[{"name":"CI","status":"COMPLETED","conclusion":"SUCCESS"},{"name":"dev-lead / dispatch","status":"COMPLETED","conclusion":"CANCELLED"}]'
+  write_pr 713 "REVIEW_REQUIRED" "$rollup_cancelled" "rl713" "[]" "$(rl_comment rl713 "$PAST_RESET")"
+  url_for 713 > "$SWEEP_PRS_FILE"
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  grep -qF -- "-f pr_url=$(url_for 713)" "$GH_LOG"
+}
+
+@test "rate-limited marker whose reset is still in the future is NOT re-dispatched" {
+  write_pr 714 "REVIEW_REQUIRED" "$ROLLUP_PASS" "rl714" "[]" "$(rl_comment rl714 "$FUTURE_RESET")"
+  url_for 714 > "$SWEEP_PRS_FILE"
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ ! -s "$GH_LOG" ]
+}
+
+@test "rate-limited marker is ignored once the PR has been reviewed at head" {
+  # An idempotency marker at the same head means a real review already landed —
+  # the rate-limited state is resolved, so the retry must NOT fire.
+  local comments
+  comments='[{"body":"<!-- pr-review-agent rate-limited v1 sha=rl715 status=rate-limited reset=2000-01-01T00:00:00Z -->"},{"body":"<!-- pr-review-agent v1 sha=rl715 --> reviewed"}]'
+  write_pr 715 "REVIEW_REQUIRED" "$ROLLUP_PASS" "rl715" "[]" "$comments"
+  url_for 715 > "$SWEEP_PRS_FILE"
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ ! -s "$GH_LOG" ]
+}
+
+@test "rate-limited marker for a DIFFERENT (stale) head does not trigger a retry" {
+  # Marker is for an old head; current head has no marker and CI is failing, so
+  # neither the rate-limited branch nor the normal stuck-green branch fires.
+  write_pr 716 "REVIEW_REQUIRED" "$ROLLUP_FAIL" "rl716NEW" "[]" "$(rl_comment rl716OLD "$PAST_RESET")"
+  url_for 716 > "$SWEEP_PRS_FILE"
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ ! -s "$GH_LOG" ]
+}
+
+@test "rate-limited retry honours DRY_RUN" {
+  write_pr 717 "REVIEW_REQUIRED" "$ROLLUP_FAIL" "rl717" "[]" "$(rl_comment rl717 "$PAST_RESET")"
+  url_for 717 > "$SWEEP_PRS_FILE"
+  export DRY_RUN=true
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ ! -s "$GH_LOG" ]
+  [[ "$output" == *"$(url_for 717)"* ]]
+}
