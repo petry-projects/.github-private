@@ -443,3 +443,132 @@ MOCK_EOF
   "
   [[ "$output" == *"CHANGES_REQUESTED"* ]]
 }
+
+# ────────────────────────────────────────────────────────────────────
+# RATE-LIMIT DETECTION TESTS (issue #711)
+#
+# detect_advisory_rate_limit <reviews-comments-json>
+#   returns 0 when a known advisory/review bot's LATEST submission body matches
+#   a rate-limit phrase; 1 otherwise. The marker it arms lets pr-review-sweep
+#   auto-retry once the limit resets (no manual force_review).
+# ────────────────────────────────────────────────────────────────────
+
+@test "detect_advisory_rate_limit: function exists" {
+  grep -q "detect_advisory_rate_limit()" "$SCRIPT_DIR/lib/advisory-review-gate.sh"
+}
+
+@test "detect_advisory_rate_limit: true when codex posts a usage-limit notice" {
+  local json
+  json='{"reviews":[],"comments":[{"author":{"login":"chatgpt-codex-connector"},"createdAt":"2026-06-07T10:00:00Z","body":"You have reached your usage limit. Please try again later."}]}'
+  local gate_script="$SCRIPT_DIR/lib/advisory-review-gate.sh"
+  run bash -c "source '$gate_script'; detect_advisory_rate_limit '$json'"
+  [ "$status" -eq 0 ]
+}
+
+@test "detect_advisory_rate_limit: true when coderabbit posts a rate-limit notice" {
+  local json
+  json='{"reviews":[{"author":{"login":"coderabbitai"},"state":"COMMENTED","submittedAt":"2026-06-07T10:00:00Z","body":"Review skipped: rate limit exceeded. Reviews will resume after the limit resets."}],"comments":[]}'
+  local gate_script="$SCRIPT_DIR/lib/advisory-review-gate.sh"
+  run bash -c "source '$gate_script'; detect_advisory_rate_limit '$json'"
+  [ "$status" -eq 0 ]
+}
+
+@test "detect_advisory_rate_limit: false when bot's latest submission is a real review" {
+  local json
+  json='{"reviews":[{"author":{"login":"chatgpt-codex-connector"},"state":"COMMENTED","submittedAt":"2026-06-07T10:00:00Z","body":"I found a potential null pointer dereference on line 42."}],"comments":[]}'
+  local gate_script="$SCRIPT_DIR/lib/advisory-review-gate.sh"
+  run bash -c "source '$gate_script'; detect_advisory_rate_limit '$json'"
+  [ "$status" -eq 1 ]
+}
+
+@test "detect_advisory_rate_limit: false when a newer real review supersedes the rate-limit notice" {
+  # Older comment is a rate-limit notice; newer review is a real review.
+  # The latest submission per bot wins → not rate-limited.
+  local json
+  json='{"reviews":[{"author":{"login":"chatgpt-codex-connector"},"state":"COMMENTED","submittedAt":"2026-06-07T11:00:00Z","body":"LGTM, no issues found."}],"comments":[{"author":{"login":"chatgpt-codex-connector"},"createdAt":"2026-06-07T10:00:00Z","body":"You have reached your usage limit."}]}'
+  local gate_script="$SCRIPT_DIR/lib/advisory-review-gate.sh"
+  run bash -c "source '$gate_script'; detect_advisory_rate_limit '$json'"
+  [ "$status" -eq 1 ]
+}
+
+@test "detect_advisory_rate_limit: true when a newer rate-limit notice supersedes an older real review" {
+  # Older review was real; newer comment is a rate-limit notice → rate-limited now.
+  local json
+  json='{"reviews":[{"author":{"login":"chatgpt-codex-connector"},"state":"COMMENTED","submittedAt":"2026-06-07T10:00:00Z","body":"Looks good overall."}],"comments":[{"author":{"login":"chatgpt-codex-connector"},"createdAt":"2026-06-07T11:00:00Z","body":"You have reached your usage limit. Try again later."}]}'
+  local gate_script="$SCRIPT_DIR/lib/advisory-review-gate.sh"
+  run bash -c "source '$gate_script'; detect_advisory_rate_limit '$json'"
+  [ "$status" -eq 0 ]
+}
+
+@test "detect_advisory_rate_limit: false when the rate-limit phrase comes from a non-advisory (human) author" {
+  local json
+  json='{"reviews":[],"comments":[{"author":{"login":"some-human"},"createdAt":"2026-06-07T10:00:00Z","body":"We should add a rate limit to this endpoint, quota exceeded errors are common."}]}'
+  local gate_script="$SCRIPT_DIR/lib/advisory-review-gate.sh"
+  run bash -c "source '$gate_script'; detect_advisory_rate_limit '$json'"
+  [ "$status" -eq 1 ]
+}
+
+@test "detect_advisory_rate_limit: false on empty input" {
+  local gate_script="$SCRIPT_DIR/lib/advisory-review-gate.sh"
+  run bash -c "source '$gate_script'; detect_advisory_rate_limit '{\"reviews\":[],\"comments\":[]}'"
+  [ "$status" -eq 1 ]
+}
+
+# ────────────────────────────────────────────────────────────────────
+# RATE-LIMITED MARKER POSTING TESTS (issue #711)
+#
+# maybe_post_rate_limited_marker <pr_url> <head_sha> <reset_iso> <comments_json>
+#   posts a deduplicated marker comment so the sweep can detect the
+#   withheld-due-to-rate-limit state and auto-retry after <reset_iso>.
+# ────────────────────────────────────────────────────────────────────
+
+@test "maybe_post_rate_limited_marker: function exists" {
+  grep -q "maybe_post_rate_limited_marker()" "$SCRIPT_DIR/lib/advisory-review-gate.sh"
+}
+
+@test "maybe_post_rate_limited_marker: posts a marker comment when none exists at head" {
+  local tmpdir
+  tmpdir=$(mktemp -d)
+  cat > "$tmpdir/gh" << MOCK_EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$tmpdir/calls"
+exit 0
+MOCK_EOF
+  chmod +x "$tmpdir/gh"
+  local gate_script="$SCRIPT_DIR/lib/advisory-review-gate.sh"
+  run env PATH="$tmpdir:$PATH" bash -c "
+    source '$gate_script'
+    maybe_post_rate_limited_marker 'https://github.com/owner/repo/pull/123' 'abc123' '2999-01-01T00:00:00Z' '{\"comments\":[]}'
+  "
+  local calls; calls=$(cat "$tmpdir/calls" 2>/dev/null || true)
+  rm -rf "$tmpdir"
+  [ "$status" -eq 0 ]
+  # gh pr comment was invoked with the rate-limited marker for this head
+  [[ "$calls" == *"pr comment"* ]]
+  [[ "$calls" == *"rate-limited v1 sha=abc123"* ]]
+  [[ "$calls" == *"status=rate-limited"* ]]
+  [[ "$calls" == *"reset=2999-01-01T00:00:00Z"* ]]
+}
+
+@test "maybe_post_rate_limited_marker: does not re-post when a marker already exists at head" {
+  local tmpdir
+  tmpdir=$(mktemp -d)
+  cat > "$tmpdir/gh" << MOCK_EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$tmpdir/calls"
+exit 0
+MOCK_EOF
+  chmod +x "$tmpdir/gh"
+  local existing
+  existing='{"comments":[{"body":"<!-- pr-review-agent rate-limited v1 sha=abc123 status=rate-limited reset=2999-01-01T00:00:00Z -->\n\nAdvisory bots were rate-limited."}]}'
+  local gate_script="$SCRIPT_DIR/lib/advisory-review-gate.sh"
+  run env PATH="$tmpdir:$PATH" bash -c "
+    source '$gate_script'
+    maybe_post_rate_limited_marker 'https://github.com/owner/repo/pull/123' 'abc123' '2999-01-01T00:00:00Z' '$existing'
+  "
+  local calls; calls=$(cat "$tmpdir/calls" 2>/dev/null || true)
+  rm -rf "$tmpdir"
+  [ "$status" -eq 0 ]
+  # No new comment should be posted when a marker for this head already exists
+  [[ "$calls" != *"pr comment"* ]]
+}
