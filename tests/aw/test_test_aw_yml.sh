@@ -20,7 +20,7 @@ ERRORS=""
 ok()   { PASS=$((PASS + 1)); printf 'PASS  %s\n' "$1"; }
 fail() { FAIL=$((FAIL + 1)); ERRORS="${ERRORS}FAIL  $1: $2"$'\n'; printf 'FAIL  %s: %s\n' "$1" "$2"; }
 
-REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 readonly REPO_ROOT
 WF="${REPO_ROOT}/.github/workflows/test-aw.yml"
 readonly WF
@@ -52,9 +52,11 @@ fi
 # so it cannot resolve an arbitrary version or build from source over the network.
 # ---------------------------------------------------------------------------
 if python3 - "$WF" <<'PYEOF'; then
-import sys, re, yaml
-with open(sys.argv[1]) as f:
-    wf = yaml.safe_load(f)
+import re
+import sys
+import yaml
+with open(sys.argv[1], encoding='utf-8') as f:
+    wf = yaml.safe_load(f) or {}
 
 install_steps = []
 for job in (wf.get('jobs', {}) or {}).values():
@@ -70,7 +72,7 @@ if not install_steps:
 
 bad = []
 for name, run in install_steps:
-    pinned = 'pyyaml==' in run.lower()
+    pinned = bool(re.search(r'pyyaml\s*==', run, re.IGNORECASE))
     binary_only = '--only-binary' in run
     if not (pinned and binary_only):
         bad.append(f"{name!r}: pinned={pinned} only-binary={binary_only} :: {run.strip()!r}")
