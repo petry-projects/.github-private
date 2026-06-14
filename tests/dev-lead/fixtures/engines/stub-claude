@@ -12,6 +12,11 @@
 #   STUB_CLAUDE_USAGE  — "input cache_read cache_write output" emitted as the
 #                        .usage block when --output-format json is requested.
 #                        Default "100 20 30 40".
+#   STUB_ENGINE_RECORD_ARGS  — if set to a writable path, the full argv of every
+#                              invocation is appended as one line for inspection.
+if [ -n "${STUB_ENGINE_RECORD_ARGS:-}" ]; then
+  printf '%s\n' "$*" >> "$STUB_ENGINE_RECORD_ARGS" 2>/dev/null || true
+fi
 model=""
 output_format="text"
 while [[ $# -gt 0 ]]; do
