@@ -45,6 +45,13 @@ teardown() { rm -rf "$TMP"; }
   [[ "$output" == *"plan OK"* ]]
 }
 
+@test "validate-plan accepts open_questions carrying a blocking flag" {
+  jq '.open_questions = [{"question":"Confirm scope X before planning","blocking":true}]' "$PLAN" >"$TMP/oqobj.json"
+  run python3 "$PLANNER_DIR/validate-plan.py" "$TMP/oqobj.json"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"plan OK"* ]]
+}
+
 @test "validate-plan rejects a self-blocking story" {
   jq '.stories[0].blocked_by = [1]' "$PLAN" >"$TMP/bad.json"
   run python3 "$PLANNER_DIR/validate-plan.py" "$TMP/bad.json"
@@ -113,6 +120,37 @@ teardown() { rm -rf "$TMP"; }
     DISCUSSION_NUMBER=413 DISCUSSION_NODE_ID="D_test" PLAN_PATH="$PLAN" \
     bash "$PLANNER_DIR/apply-plan.sh"
   grep '"op":"add_blocked_by"' "$LOG" | grep -q '"blocked_by":195'
+}
+
+@test "apply-plan gates on a blocking open question: creates zero issues and exits 0" {
+  jq '.open_questions = [{"question":"Confirm scope X before planning","blocking":true}]' "$PLAN" >"$TMP/blocking.json"
+  DRY_RUN=1 DRY_RUN_LOG="$LOG" REPO="petry-projects/.github-private" \
+    DISCUSSION_NUMBER=413 DISCUSSION_NODE_ID="D_test" PLAN_PATH="$TMP/blocking.json" \
+    run bash "$PLANNER_DIR/apply-plan.sh"
+  [ "$status" -eq 0 ]
+  [ "$(grep -c '"op":"create_issue"' "$LOG")" -eq 0 ]
+  [ "$(grep -c '"op":"add_sub_issue"' "$LOG")" -eq 0 ]
+  [ "$(grep -c '"op":"add_blocked_by"' "$LOG")" -eq 0 ]
+}
+
+@test "apply-plan blocking gate posts the open questions back to the discussion" {
+  jq '.open_questions = [{"question":"Confirm scope X before planning","blocking":true}]' "$PLAN" >"$TMP/blocking.json"
+  DRY_RUN=1 DRY_RUN_LOG="$LOG" REPO="petry-projects/.github-private" \
+    DISCUSSION_NUMBER=413 DISCUSSION_NODE_ID="D_test" PLAN_PATH="$TMP/blocking.json" \
+    bash "$PLANNER_DIR/apply-plan.sh"
+  grep -q '"op":"comment_on_discussion"' "$LOG"
+  body="$(grep '"op":"comment_on_discussion"' "$LOG" | jq -r '.body')"
+  [[ "$body" == *"Confirm scope X before planning"* ]]
+  [[ "$body" == *"Not yet planned"* ]]
+  [[ "$body" == *"No epic or stories were created"* ]]
+}
+
+@test "apply-plan does NOT gate on a non-blocking open question" {
+  jq '.open_questions = [{"question":"Nice to confirm pricing later","blocking":false}]' "$PLAN" >"$TMP/nonblock.json"
+  DRY_RUN=1 DRY_RUN_LOG="$LOG" REPO="petry-projects/.github-private" \
+    DISCUSSION_NUMBER=413 DISCUSSION_NODE_ID="D_test" PLAN_PATH="$TMP/nonblock.json" \
+    bash "$PLANNER_DIR/apply-plan.sh"
+  [ "$(grep -c '"op":"create_issue"' "$LOG")" -eq 4 ]
 }
 
 @test "story bodies are rendered in the BMAD create-story template" {
