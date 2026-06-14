@@ -15,6 +15,7 @@ Usage: validate-plan.py <plan.json> [schema.json]
 Exit 0 on success; non-zero with a message on failure.
 """
 import json
+import subprocess
 import sys
 from pathlib import Path
 from typing import NoReturn
@@ -25,6 +26,74 @@ def fail(msg: str) -> NoReturn:
     # by tests; the ::error:: prefix still renders as a GitHub annotation.
     print(f"::error::initiative plan invalid: {msg}")
     sys.exit(1)
+
+
+# Extensions that mark a bare (slash-less) citation as a file path rather than
+# prose, e.g. "AGENTS.md#standards". Kept conservative on purpose.
+_PATH_EXTENSIONS = (
+    ".py", ".sh", ".md", ".yml", ".yaml", ".json", ".tsv", ".txt", ".toml", ".cfg",
+)
+
+
+def repo_root() -> Path:
+    """Resolve the repo root explicitly, never from the current working directory.
+
+    Prefer `git rev-parse --show-toplevel` (run from the script's own directory so
+    it is independent of cwd); fall back to the script location when git is
+    unavailable (validate-plan.py lives at scripts/initiative-planner/, so the
+    root is two parents up).
+    """
+    here = Path(__file__).resolve()
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=here.parent,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return Path(out.stdout.strip())
+    except (OSError, subprocess.CalledProcessError):
+        return here.parents[2]
+
+
+def looks_like_path(entry: str) -> bool:
+    """Decide whether a references/target_surface string is a repo path vs prose.
+
+    references/target_surface are free-form strings, so they mix real paths
+    ('scripts/engine.sh#tier-routing') with prose ('discussion #593', URLs,
+    descriptive notes). We only enforce existence for entries that clearly name a
+    file, and skip everything else to avoid false failures:
+
+      - skip URLs (start with 'http')
+      - skip bare cross-references ('discussion #593', anchor-only '#foo')
+      - treat as a path only if it contains a '/' or ends in a known extension.
+    """
+    s = entry.strip()
+    if not s or s.startswith(("http", "#", "discussion")):
+        return False
+    candidate = s.split("#", 1)[0].strip()
+    if not candidate:
+        return False
+    if "/" in candidate:
+        return True
+    return candidate.lower().endswith(_PATH_EXTENSIONS)
+
+
+def check_grounding(stories: list, root: Path) -> None:
+    """Fail if any path-like references/target_surface entry does not resolve.
+
+    Strips the first '#anchor' before the existence test (the anchor points at a
+    section within the file, not a separate path).
+    """
+    for s in stories:
+        for field in ("references", "target_surface"):
+            for entry in s.get(field, []) or []:
+                if not looks_like_path(entry):
+                    continue
+                rel = entry.split("#", 1)[0].strip()
+                if not (root / rel).exists():
+                    fail(f"story {s['id']} cites unresolved path in {field}: {rel}")
 
 
 def main() -> None:
@@ -92,6 +161,8 @@ def main() -> None:
     for i in graph:
         if color[i] == WHITE:
             visit(i, [])
+
+    check_grounding(stories, repo_root())
 
     print(f"plan OK: {len(stories)} stories, "
           f"{sum(1 for i in graph if not graph[i])} entry-point(s), acyclic.")

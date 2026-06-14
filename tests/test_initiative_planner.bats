@@ -52,6 +52,28 @@ teardown() { rm -rf "$TMP"; }
   [[ "$output" == *"plan OK"* ]]
 }
 
+@test "validate-plan grounding: accepts real cited paths (with #anchor stripped)" {
+  jq '.stories[0].references = ["scripts/engine.sh#tier-routing", "AGENTS.md#standards"]' "$PLAN" >"$TMP/grounded.json"
+  run python3 "$PLANNER_DIR/validate-plan.py" "$TMP/grounded.json"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"plan OK"* ]]
+}
+
+@test "validate-plan grounding: rejects a story citing a nonexistent path" {
+  jq '.stories[0].target_surface = ["scripts/phantom-does-not-exist.sh"]' "$PLAN" >"$TMP/phantom.json"
+  run python3 "$PLANNER_DIR/validate-plan.py" "$TMP/phantom.json"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"story 1"* ]]
+  [[ "$output" == *"scripts/phantom-does-not-exist.sh"* ]]
+}
+
+@test "validate-plan grounding: prose citations (URL, bare discussion ref) are not treated as paths" {
+  jq '.stories[0].references = ["https://example.com/spec", "discussion #593", "see the design doc"]' "$PLAN" >"$TMP/prose.json"
+  run python3 "$PLANNER_DIR/validate-plan.py" "$TMP/prose.json"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"plan OK"* ]]
+}
+
 @test "validate-plan rejects a self-blocking story" {
   jq '.stories[0].blocked_by = [1]' "$PLAN" >"$TMP/bad.json"
   run python3 "$PLANNER_DIR/validate-plan.py" "$TMP/bad.json"
