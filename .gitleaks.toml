@@ -121,3 +121,14 @@ regexes = [
   '''api-request''',
   '''[0-9a-f]{64}''',
 ]
+
+# Issue #697 / PR #705 added a regression-guard test that embeds the example expired
+# JWT (the same dummy token used in .claude/skills/**/api-testing-patterns.md) directly
+# in this self-test as `EXPIRED_JWT='eyJ...'`. The full-history secret scan flags that
+# literal like any other occurrence. condition="AND" binds the dummy value to this one
+# path, so a real secret committed here in future would still be reported.
+[[allowlists]]
+description = "Suppress the example expired-JWT fixture in the gitleaks-config self-test (issue #697 / PR #705)"
+condition = "AND"
+paths = ['''^tests/test_gitleaks_config\.bats$''']
+regexes = ['''eyJhbGciOiJIUzI1NiIs''']
