@@ -317,7 +317,7 @@ repo-b"
   export DEV_LEAD_DRY_RUN=false
   gh() {
     local stdin_body=""
-    if [[ "$*" == *"--input -"* ]]; then
+    if [[ "$*" == *"--input -"* ]] && [[ ! -t 0 ]]; then
       stdin_body=$(cat)
     fi
     printf '%s BODY=%s\n' "$*" "$stdin_body" >> "$GH_LOG"
