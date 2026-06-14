@@ -31,6 +31,11 @@ on:
         required: false
         default: true
         type: boolean
+      force_replan:
+        description: 'Supersede an existing epic for this discussion: build the fresh DAG, then close (not delete) the old epic + stories. Off => idempotent no-op if already planned.'
+        required: false
+        default: false
+        type: boolean
       model:
         description: 'Anthropic model id for the planner'
         required: false
@@ -99,6 +104,7 @@ jobs:
       REPO: ${{ github.repository }}
       DISCUSSION_NUMBER: ${{ github.event.inputs.discussion }}
       DRY_RUN: ${{ inputs.dry_run == true && '1' || '0' }}
+      FORCE_REPLAN: ${{ inputs.force_replan == true && '1' || '0' }}
       TOOLING_DIR: ${{ github.workspace }}/scripts/initiative-planner
     steps:
       - name: Checkout agent repo
@@ -204,6 +210,7 @@ jobs:
             PLAN_PATH="$PLAN_PATH" \
             DISCUSSION_NUMBER="$DISCUSSION_NUMBER" \
             DISCUSSION_NODE_ID="$DISCUSSION_NODE_ID" \
+            FORCE_REPLAN="$FORCE_REPLAN" \
             bash scripts/initiative-planner/apply-plan.sh
             ```
 
@@ -214,6 +221,13 @@ jobs:
               do not work around it with direct `gh` calls.
             - Go through apply-plan.sh for all issue/DAG mutations; do not call
               `gh issue create` or the sub_issues/dependencies APIs directly.
+            - ALWAYS produce a valid plan and ALWAYS run apply-plan.sh. Do NOT
+              decide for yourself that the idea is "already planned" and skip
+              materialization — apply-plan.sh owns idempotency: it no-ops (and
+              points back at the existing epic) when one already exists, and
+              supersedes it when `force_replan` is set. Your job is to plan and
+              invoke the script; the script decides whether to create, skip, or
+              supersede.
             - Keep the plan grounded. No invented acceptance criteria.
 
             Finish with a 3–5 line summary: the epic, the story count, the

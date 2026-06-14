@@ -13,6 +13,11 @@
 # What it deliberately does NOT do:
 #   - apply `initiative:auto`. The epic is created INERT. A human reviews the
 #     real epic/DAG and adds `initiative:auto` to hand it to initiative-driver.
+#   - create a duplicate. If an OPEN `initiative` epic already back-references
+#     this discussion, it is idempotent: by default it creates NOTHING and
+#     points back at the existing epic. Set FORCE_REPLAN=1 to instead supersede
+#     it — create the fresh epic/DAG, then CLOSE (never delete) the old epic and
+#     its sub-issues with a "superseded by #NEW" note.
 #
 # Env:
 #   REPO                 owner/repo (required)
@@ -20,6 +25,7 @@
 #   DISCUSSION_NUMBER    source discussion number (for the summary text)
 #   DISCUSSION_NODE_ID   source discussion GraphQL node id (optional; if set,
 #                        the plan summary is posted back as a comment)
+#   FORCE_REPLAN         "1" => supersede an existing epic instead of no-op
 #   DRY_RUN / DRY_RUN_LOG  see lib/mutations.sh
 set -euo pipefail
 
@@ -68,6 +74,47 @@ if [ "$blocking_count" -gt 0 ]; then
   exit 0
 fi
 
+# Resolve the source discussion once (plan wins, else env) — used by the
+# idempotency/supersede gate below and by the epic back-reference.
+src="$(jq -r '.source_discussion // empty' "$PLAN_PATH")"
+[ -n "$src" ] || src="$DISCUSSION_NUMBER"
+
+# ── idempotency / supersede gate ──────────────────────────────────────────────
+# A re-plan (re-approve, re-dispatch, label re-toggle) must not silently mint a
+# duplicate epic + DAG. apply-plan.sh stamps every epic with a deterministic
+# back-reference ("Planned from idea discussion #<src>"), so we can detect our
+# own prior output. Default: if an OPEN `initiative` epic already exists for this
+# discussion, create NOTHING and point back at it (DRY_RUN honored). With
+# FORCE_REPLAN=1 we instead supersede: build the fresh plan now, then CLOSE the
+# old epic + its sub-issues at the end (see below). This replaces the planner's
+# previous reliance on the agent choosing not to re-create — a fragile guard the
+# agent itself mis-described as built-in when it was not.
+existing_epic="$(find_existing_initiative_epic "$REPO" "$src")"
+SUPERSEDE_OLD_EPIC=""
+if [ -n "$existing_epic" ]; then
+  if [ "${FORCE_REPLAN:-0}" = "1" ]; then
+    SUPERSEDE_OLD_EPIC="$existing_epic"
+    echo "force_replan: existing epic #${existing_epic} will be superseded after the new plan is created."
+  else
+    if [ -n "$DISCUSSION_NODE_ID" ]; then
+      printf -v guard_comment '<!-- initiative-planner -->\n**ℹ️ Already planned — no new epic created.**\n\nThis idea is already materialized as epic #%s. Nothing was created on this run.\n\nTo re-plan from scratch (close the existing epic and its stories and build a fresh DAG), re-dispatch the planner with `force_replan=true`.' "$existing_epic"
+      comment_on_discussion "$DISCUSSION_NODE_ID" "$guard_comment"
+      echo "posted 'already planned' notice back to discussion #${DISCUSSION_NUMBER:-?}"
+    fi
+    echo "::notice::initiative-planner: idea #${src:-?} already planned as epic #${existing_epic} — no new epic created (set force_replan to supersede)."
+    if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+      {
+        echo "## Initiative already planned — no-op$(if [ "${DRY_RUN:-0}" = "1" ]; then echo " (DRY_RUN)"; fi)"
+        echo "- Source discussion: #${src:-?}"
+        echo "- Existing epic: #${existing_epic}"
+        echo "- **No epic or stories were created.** Re-dispatch with \`force_replan=true\` to supersede."
+      } >>"$GITHUB_STEP_SUMMARY"
+    fi
+    echo "idempotent no-op: existing epic #${existing_epic}; created nothing. dry_run=${DRY_RUN:-0}"
+    exit 0
+  fi
+fi
+
 # ── epic ──────────────────────────────────────────────────────────────────────
 epic_title="$(jq -r '.epic.title' "$PLAN_PATH")"
 epic_body="$(jq -r '.epic.body' "$PLAN_PATH")"
@@ -81,9 +128,6 @@ untracked_prereqs="$(jq -r '(.epic.untracked_prerequisites // []) | map("- [ ] "
 if [ -n "$untracked_prereqs" ]; then
   epic_body="${epic_body}"$'\n\n'"## Untracked prerequisites"$'\n'"${untracked_prereqs}"
 fi
-
-src="$(jq -r '.source_discussion // empty' "$PLAN_PATH")"
-[ -n "$src" ] || src="$DISCUSSION_NUMBER"
 if [ -n "$src" ]; then
   # idem_key is the idempotency back-reference embedded in every epic body and
   # reused verbatim as the search key by find_existing_epic.
@@ -190,6 +234,21 @@ if [ -n "$DISCUSSION_NODE_ID" ]; then
   echo "posted plan summary to discussion #${DISCUSSION_NUMBER:-?}"
 fi
 
+# ── supersede the prior epic (force_replan only) ──────────────────────────────
+# The fresh epic + DAG now exist and have been announced; close (never delete)
+# the superseded epic and its sub-issues so history and inbound references stay
+# resolvable, each pointing forward to the replacement.
+if [ -n "${SUPERSEDE_OLD_EPIC:-}" ]; then
+  echo "force_replan: closing superseded epic #${SUPERSEDE_OLD_EPIC} and its sub-issues (replaced by #${epic_number})."
+  while IFS= read -r old_sub; do
+    [ -n "$old_sub" ] || continue
+    close_issue "$REPO" "$old_sub" "Superseded by the re-planned initiative epic #${epic_number} (re-planned from idea discussion #${src})."
+    echo "  closed superseded story #${old_sub}"
+  done < <(list_sub_issue_numbers "$REPO" "$SUPERSEDE_OLD_EPIC")
+  close_issue "$REPO" "$SUPERSEDE_OLD_EPIC" "Superseded by #${epic_number} — re-planned from idea discussion #${src}. This epic and its stories were closed by the initiative-planner \`force_replan\` path."
+  echo "  closed superseded epic #${SUPERSEDE_OLD_EPIC}"
+fi
+
 # ── step summary ──────────────────────────────────────────────────────────────
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
   {
@@ -197,7 +256,10 @@ if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
     echo "- Epic: #${epic_number} — ${epic_title}"
     echo "- Stories: ${story_count}"
     echo "- Epic is **inert** (no \`initiative:auto\`); add it manually to activate."
+    if [ -n "${SUPERSEDE_OLD_EPIC:-}" ]; then
+      echo "- Superseded prior epic #${SUPERSEDE_OLD_EPIC} (closed, not deleted)."
+    fi
   } >>"$GITHUB_STEP_SUMMARY"
 fi
 
-echo "done. epic=#${epic_number} stories=${story_count} dry_run=${DRY_RUN:-0}"
+echo "done. epic=#${epic_number} stories=${story_count} dry_run=${DRY_RUN:-0}${SUPERSEDE_OLD_EPIC:+ superseded=#${SUPERSEDE_OLD_EPIC}}"
