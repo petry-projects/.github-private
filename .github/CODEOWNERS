@@ -5,3 +5,8 @@
 # Explicit rule so the holdout stays owner-locked even if broader rules loosen;
 # the dev/ split may remain proposer-visible.
 /evals/**/holdout/ @petry-projects/org-leads
+
+# LLM-judge scoring prompt(s) (#585, epic #581) — a skill-quality input on a par
+# with the held-out cases: the rubric the candidate is graded against. Owner-lock
+# it explicitly so the proposer can never weaken the judge it must satisfy.
+/evals/judge.md @petry-projects/org-leads

@@ -1,0 +1,5 @@
+{
+  "mode": "llm-judge",
+  "judge_prompt": "judge.md",
+  "pass_threshold": 0.7
+}

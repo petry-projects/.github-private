@@ -1,28 +1,48 @@
 #!/usr/bin/env bash
 set -euo pipefail
-# run-eval.sh — deterministic eval scorer for prompt-skills.
+# run-eval.sh — held-out eval scorer for prompt-skills.
 #
 # Usage:
 #   run-eval.sh <skill>
 #
 # Loads the skill's held-out cases (evals/<skill>/holdout/cases.jsonl), invokes the
 # skill prompt once per case through the existing engine abstraction
-# (scripts/engine.sh run_triage), parses the model's JSON decision, and compares
-# it to the case's expected fields. Emits a single machine-readable JSON object
-# to stdout containing a per-case `cases[]` array plus the aggregate score.
+# (scripts/engine.sh run_triage), then scores the output. Emits a single
+# machine-readable JSON object to stdout containing a per-case `cases[]` array
+# plus the aggregate score.
 #
-# Scoring is deterministic for triage: the model emits a JSON object; we parse it
-# and compare `escalate` (and `risk`) to expected. A mismatch — or output that is
-# not parseable as the expected JSON shape — counts as a case failure.
+# Scorer mode is selected PER SKILL from an optional `evals/<skill>/scorer.json`
+# config — never by branching on the skill name in the comparator core. Two modes:
 #
-# Engine abstraction (AC #3): the per-case invocation goes through the engine
-# layer, NOT a re-implemented model call. By default the engine command is
-# `run_triage` (sourced from scripts/engine.sh, Haiku-tier, no tools, stdout
-# capture). It is injectable via EVAL_ENGINE_CMD exactly as engine.sh lets
-# REVIEW_ENGINE be overridden, so offline tests can drive a stub with no network.
+#   deterministic (default; triage)
+#     The model emits a JSON object; we parse it and compare `escalate` (and
+#     `risk`) to the case's expected fields. A mismatch — or output that is not
+#     parseable as the expected JSON shape — counts as a case failure.
+#
+#   llm-judge (deep-review)
+#     deep-review emits a findings array plus a decision/risk (not a single
+#     boolean), so equality cannot score it. The skill output is graded against
+#     the case's expected reference by a versioned, CODEOWNER-gated judge prompt
+#     (evals/<judge_prompt>) running on the Haiku-tier triage model. The judge
+#     emits a numeric per-case score in [0,1]; the case passes when that score
+#     meets `pass_threshold` (default 0.7).
+#
+# scorer.json schema (all fields optional unless noted):
+#   { "mode": "deterministic" | "llm-judge",
+#     "judge_prompt": "<path relative to EVALS_DIR>",   # required for llm-judge
+#     "pass_threshold": <number in [0,1]> }             # llm-judge only (default 0.7)
+# Absent file => deterministic mode (keeps existing skills unchanged).
+#
+# Engine abstraction (AC #3): every model invocation goes through the engine
+# layer, NOT a re-implemented model call. By default the skill command is
+# `run_triage` and the judge command is also `run_triage` (sourced from
+# scripts/engine.sh, Haiku-tier, no tools, stdout capture). Both are injectable
+# (EVAL_ENGINE_CMD / EVAL_JUDGE_CMD) exactly as engine.sh lets REVIEW_ENGINE be
+# overridden, so offline tests can drive stubs with no network.
 #
 # Env overrides:
-#   EVAL_ENGINE_CMD   engine command invoked as `<cmd> <prompt_file>` (default: run_triage)
+#   EVAL_ENGINE_CMD   skill-under-test command, invoked as `<cmd> <prompt_file>` (default: run_triage)
+#   EVAL_JUDGE_CMD    llm-judge command, invoked as `<cmd> <prompt_file>` (default: run_triage)
 #   EVALS_DIR         held-out cases root (default: <repo>/evals); read-only
 #   TOKEN_LOG_FILE    optional per-call token capture (honored by engine.sh; unset = zero overhead)
 #
@@ -38,6 +58,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 EVALS_DIR="${EVALS_DIR:-$REPO_ROOT/evals}"
 EVAL_ENGINE_CMD="${EVAL_ENGINE_CMD:-run_triage}"
+EVAL_JUDGE_CMD="${EVAL_JUDGE_CMD:-run_triage}"
 
 die() {
   # stdout (not stderr) so the reason is visible in workflow logs and capturable
@@ -56,6 +77,29 @@ prompt_file_base="$REPO_ROOT/prompts/$skill.md"
 [ -f "$cases_file" ] || die "no cases for skill '$skill' (expected $cases_file)"
 [ -f "$prompt_file_base" ] || die "no skill prompt for '$skill' (expected $prompt_file_base)"
 
+# Resolve the per-skill scorer mode from an optional config. This is the only
+# place the mode is decided: the comparator core below dispatches on $SCORER_MODE,
+# never on the skill name, so a third skill needs only a scorer.json — no edits
+# here. Absent config => deterministic (back-compat for triage and friends).
+scorer_config="$EVALS_DIR/$skill/scorer.json"
+SCORER_MODE="deterministic"
+JUDGE_PROMPT_FILE=""
+PASS_THRESHOLD="0.7"
+if [ -f "$scorer_config" ]; then
+  SCORER_MODE="$(jq -r '.mode // "deterministic"' "$scorer_config")"
+fi
+case "$SCORER_MODE" in
+  deterministic) ;;
+  llm-judge)
+    judge_rel="$(jq -r '.judge_prompt // ""' "$scorer_config")"
+    [ -n "$judge_rel" ] || die "scorer.json for '$skill' selects llm-judge but sets no judge_prompt"
+    JUDGE_PROMPT_FILE="$EVALS_DIR/$judge_rel"
+    [ -f "$JUDGE_PROMPT_FILE" ] || die "judge prompt not found for '$skill' (expected $JUDGE_PROMPT_FILE)"
+    PASS_THRESHOLD="$(jq -r '.pass_threshold // 0.7' "$scorer_config")"
+    ;;
+  *) die "unknown scorer mode '$SCORER_MODE' for skill '$skill' (expected: deterministic, llm-judge)" ;;
+esac
+
 # Source the engine abstraction so the default EVAL_ENGINE_CMD (run_triage) is
 # defined. engine.sh prints an init line on load — send it to stderr so stdout
 # stays a clean JSON document. When EVAL_ENGINE_CMD is overridden with a stub,
@@ -65,14 +109,18 @@ source "$REPO_ROOT/scripts/engine.sh" >&2
 
 results="$(mktemp)"
 work_prompt="$(mktemp)"
-trap 'rm -f "$results" "$work_prompt"' EXIT
+work_judge="$(mktemp)"
+trap 'rm -f "$results" "$work_prompt" "$work_judge"' EXIT
 
-# score_case <expected_escalate> <expected_risk> <raw_output> <case_id>
-# Emits one compact result JSON object to stdout. Parses the model output; a
-# non-JSON-object output yields a null actual decision (an automatic failure).
-score_case() {
-  local exp_esc="$1" exp_risk="$2" raw="$3" cid="$4"
-  local actual pass
+# score_deterministic <expected_json> <raw_output> <case_id>
+# Equality scorer (triage). Parses the model output; a non-JSON-object output
+# yields a null actual decision (an automatic failure). Every result carries a
+# numeric `score` (1 pass / 0 fail) so the report shape matches the judge mode.
+score_deterministic() {
+  local expected="$1" raw="$2" cid="$3"
+  local exp_esc exp_risk actual pass score
+  exp_esc="$(jq -r '.escalate' <<<"$expected")"
+  exp_risk="$(jq -r '.risk' <<<"$expected")"
 
   # Parse only if the raw output is a single JSON object exposing the decision
   # fields. Anything else (prose, fences, partial JSON) -> null actual -> fail.
@@ -88,11 +136,52 @@ score_case() {
   else
     pass=false
   fi
+  [ "$pass" = true ] && score=1 || score=0
 
-  jq -cn --arg id "$cid" --argjson pass "$pass" \
+  jq -cn --arg id "$cid" --argjson pass "$pass" --argjson score "$score" \
         --argjson exp_esc "$exp_esc" --arg exp_risk "$exp_risk" \
         --argjson actual "$actual" \
-        '{id:$id, pass:$pass, expected:{escalate:$exp_esc, risk:$exp_risk}, actual:$actual}'
+        '{id:$id, score:$score, pass:$pass, expected:{escalate:$exp_esc, risk:$exp_risk}, actual:$actual}'
+}
+
+# score_llm_judge <expected_json> <raw_output> <case_id>
+# Grades non-deterministic output (deep-review) with the versioned judge prompt
+# on the Haiku-tier model. Assembles a judge prompt carrying the judge rubric,
+# the case's expected reference, and the candidate skill output, invokes the
+# judge engine (default run_triage), and parses its numeric `score`. Judge output
+# that is not a JSON object with a numeric `score` scores 0 (an automatic failure).
+score_llm_judge() {
+  local expected="$1" candidate="$2" cid="$3"
+  local judge_raw judge_obj score pass
+
+  {
+    cat "$JUDGE_PROMPT_FILE"
+    printf '\n\n## Expected reference\n\n```json\n%s\n```\n' "$expected"
+    printf '\n## Candidate output (to score)\n\n```\n%s\n```\n' "$candidate"
+  } >"$work_judge"
+
+  judge_raw=""
+  judge_raw="$("$EVAL_JUDGE_CMD" "$work_judge")" || judge_raw=""
+
+  # Accept only a single JSON object with a numeric `score`. A number outside
+  # [0,1] is clamped; anything unparseable -> null judge -> score 0 -> fail.
+  judge_obj="$(jq -ce 'if type=="object" and (.score|type=="number")
+                       then {score: ([[.score,0]|max,1]|min), reason: (.reason // null)}
+                       else empty end' <<<"$judge_raw" 2>/dev/null || true)"
+
+  if [ -z "$judge_obj" ]; then
+    judge_obj=null
+    score=0
+    pass=false
+  else
+    score="$(jq -r '.score' <<<"$judge_obj")"
+    pass="$(jq -n --argjson s "$score" --argjson t "$PASS_THRESHOLD" '$s >= $t')"
+  fi
+
+  jq -cn --arg id "$cid" --argjson score "$score" --argjson pass "$pass" \
+        --argjson expected "$expected" --argjson judge "$judge_obj" \
+        --arg candidate "$candidate" \
+        '{id:$id, score:$score, pass:$pass, expected:$expected, judge:$judge, candidate:$candidate}'
 }
 
 while IFS= read -r line; do
@@ -100,11 +189,10 @@ while IFS= read -r line; do
 
   cid="$(jq -r '.id' <<<"$line")"
   input="$(jq -r '.input' <<<"$line")"
-  exp_esc="$(jq -r '.expected.escalate' <<<"$line")"
-  exp_risk="$(jq -r '.expected.risk' <<<"$line")"
+  expected="$(jq -c '.expected' <<<"$line")"
 
   # Build the per-case prompt: the skill markdown with the case input inlined
-  # under the section triage.md reads ("## Pre-fetched PR context").
+  # under the section the skill reads ("## Pre-fetched PR context").
   {
     cat "$prompt_file_base"
     printf '\n\n## Pre-fetched PR context\n\n%s\n' "$input"
@@ -116,7 +204,11 @@ while IFS= read -r line; do
   raw=""
   raw="$("$EVAL_ENGINE_CMD" "$work_prompt")" || raw=""
 
-  score_case "$exp_esc" "$exp_risk" "$raw" "$cid" >>"$results"
+  # Dispatch on the per-skill scorer mode — never on the skill name.
+  case "$SCORER_MODE" in
+    deterministic) score_deterministic "$expected" "$raw" "$cid" >>"$results" ;;
+    llm-judge)     score_llm_judge     "$expected" "$raw" "$cid" >>"$results" ;;
+  esac
 done <"$cases_file"
 
 # Assemble the aggregate report. score = passed/total (0 when there are no cases).
