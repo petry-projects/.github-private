@@ -30,7 +30,7 @@ q() {
 import sys, yaml
 with open(sys.argv[1], encoding="utf-8") as fh:
     doc = yaml.safe_load(fh)
-on_block = doc.get("on", doc.get(True))
+on_block = (doc.get("on", doc.get(True)) if isinstance(doc, dict) else None) or {}
 print(eval(sys.argv[2]))
 PY
 }
@@ -64,7 +64,7 @@ PY
 }
 
 @test "AC#1: exposes an optional skill dispatch input" {
-  run q "'skill' in (on_block['workflow_dispatch'].get('inputs') or {})"
+  run q "'skill' in (on_block.get('workflow_dispatch', {}).get('inputs') or {})"
   [ "$status" -eq 0 ]
   [ "$output" = "True" ]
 }
@@ -83,7 +83,8 @@ import sys, yaml
 with open(sys.argv[1], encoding="utf-8") as fh:
     doc = yaml.safe_load(fh)
 ok = False
-for job in (doc.get("jobs") or {}).values():
+jobs = doc.get("jobs") if isinstance(doc, dict) else None
+for job in (jobs or {}).values():
     for step in (job.get("steps") or []):
         run = str(step.get("run", ""))
         if "run-eval.sh" in run and step.get("continue-on-error") is True:
@@ -105,7 +106,7 @@ PY
 import sys, yaml
 with open(sys.argv[1], encoding="utf-8") as fh:
     doc = yaml.safe_load(fh)
-perms = doc.get("permissions")
+perms = doc.get("permissions") if isinstance(doc, dict) else None
 # Acceptable: empty mapping (reset to none) or a read-only mapping. Never a
 # write-all scalar or any 'write' grant at the top level.
 if isinstance(perms, str):
@@ -126,10 +127,17 @@ import re, sys
 bad = []
 with open(sys.argv[1], encoding="utf-8") as fh:
     for ln in fh:
+        ln_stripped = ln.strip()
+        if not ln_stripped or ln_stripped.startswith("#"):
+            continue
+        if ln_stripped.startswith("-"):
+            ln_stripped = ln_stripped[1:].strip()
+        if not ln_stripped.startswith("uses:"):
+            continue
         m = re.search(r'uses:\s*([^\s#]+)', ln)
         if not m:
             continue
-        ref = m.group(1)
+        ref = m.group(1).strip("'\"")
         if ref.startswith("./") or ref.startswith("docker://"):
             continue
         after = ref.split("@", 1)
