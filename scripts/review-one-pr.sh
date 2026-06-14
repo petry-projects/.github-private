@@ -163,6 +163,21 @@ fi
       # even when advisory bots haven't submitted yet, so the force-review path works.
       echo "    force-review: advisory bots not all submitted, but FORCE_REVIEW=true — proceeding"
     else
+      # If the withhold is because an advisory/review bot is itself rate-limited
+      # (out of quota), stamp a machine-detectable marker so pr-review-sweep can
+      # auto-retry once the limit resets (issue #711). Without this, no bot event
+      # re-fires and the PR strands at REVIEW_REQUIRED with green CI. The marker
+      # is posted in an isolated subshell so the gate's helpers/vars do not leak.
+      (
+        # shellcheck source=lib/advisory-review-gate.sh
+        source "$SCRIPT_DIR/lib/advisory-review-gate.sh"
+        if detect_advisory_rate_limit "$PR_SNAPSHOT"; then
+          reset_iso=$(date -u -d "+${RATE_LIMIT_RETRY_BACKOFF:-3600} seconds" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+            || date -u -v+"${RATE_LIMIT_RETRY_BACKOFF:-3600}"S +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+            || true)
+          maybe_post_rate_limited_marker "$PR_URL" "$PR_HEAD_SHA" "$reset_iso" "$PR_SNAPSHOT" || true
+        fi
+      ) || true
       # Bots are still reviewing — skip this run, will re-check on next bot review submission
       # Exit 100 (no-op) prevents workflow from consuming budget while awaiting bots
       echo "    skip: advisory bots still reviewing (non-blocking, will re-check on bot submission)"
