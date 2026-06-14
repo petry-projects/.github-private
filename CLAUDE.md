@@ -23,6 +23,17 @@ This is the **private org-level `.github-private` repository** for `petry-projec
 - Some workflows are thin caller stubs (e.g., `claude.yml`, `agent-shield.yml`, `auto-rebase.yml`, `dependabot-automerge.yml`) — do not modify these beyond the allowed inputs noted in their headers and AGENTS.md; others contain org-private automation logic and are not thin callers
 - SHAs for action pinning must be looked up via the GitHub API — never guessed
 
+## Working with the dev-lead / pr-review automation
+
+- **`dev-lead` auto-acts on every non-draft PR** — it rebases the branch, addresses review
+  feedback, and re-runs CI on a retry cron. Pushing to an open non-draft PR therefore triggers
+  repeated auto-rebases, CI re-runs, and wasted CodeRabbit review attempts (thrash). **Apply the
+  `dev-lead:hands-off` label _before_ modifying an open non-draft PR**, or convert it to a draft.
+- **CODEOWNER approval is supplied by the `pr-review` agent, not a human.** A green dev-lead PR is
+  unblocked by the pr-review agent's approving review — do **not** treat "the author can't approve
+  their own PR" as a deadlock, and do **not** admin-merge to bypass branch protection. Let
+  pr-review approve.
+
 ## Commands
 
 - Lint shell scripts: `shellcheck scripts/*.sh`
