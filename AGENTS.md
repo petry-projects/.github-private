@@ -42,6 +42,14 @@ This is the `.github-private` org infrastructure repo for `petry-projects`. It c
 - **Exception:** The `bats` test list in `lint.yml` is extended with repo-specific test files (e.g.
   `tests/test_push_protection.bats`) beyond the org template baseline. When adding new test files to this
   repo, add them to this list. Template syncs must not reset it to the base template list.
+- **Exception:** `holdout-guard.yml` (#692, epic #581) is a documented repo-specific workflow with no
+  corresponding org template in `standards/workflows/`. It is the hard CI enforcement behind the advisory
+  `.github/CODEOWNERS` rule over `evals/`: it fails any PR authored by the automated skill-proposer identity
+  that changes a held-out path, keyed on PR author + changed paths. It runs on every PR (no `paths:` filter)
+  so it stays a stable required status check. The author/path decision lives in
+  `scripts/lib/holdout-guard.sh` (tests: `tests/test_holdout_guard.bats`). It must not be removed by template
+  syncs. If the org template gains a held-out immutability equivalent, remove this exception and defer to the
+  template instead.
 - **Exception:** `auto-rebase-retry.yml` is a documented repo-specific workflow with no corresponding org
   template in `standards/workflows/`. It is a `workflow_run` handler that self-heals a *failed* Auto-rebase
   run by re-running its failed jobs (bounded by `run_attempt`) — the gap left by the conflict-only sentinel
