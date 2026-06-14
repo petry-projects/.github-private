@@ -63,7 +63,7 @@ DRY_RUN="${DRY_RUN:-false}"
 
 # Validate and normalize inputs before they reach arithmetic or API paths.
 # EPIC may be empty (sweep mode) or a positive integer (single-epic mode).
-if [[ -n "$EPIC" ]] && ! [[ "$EPIC" =~ ^[0-9]+$ ]]; then
+if [[ -n "$EPIC" ]] && ! [[ "$EPIC" =~ ^[1-9][0-9]*$ ]]; then
   echo "::error::EPIC must be a positive integer or empty, got: '$EPIC'"; exit 1
 fi
 [[ "$MAX_IN_FLIGHT" =~ ^[0-9]+$ ]] || { echo "::error::MAX_IN_FLIGHT must be a non-negative integer, got: '$MAX_IN_FLIGHT'"; exit 1; }

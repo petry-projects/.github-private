@@ -191,6 +191,8 @@ EOF
   [[ "$output" == *"Found 2 gated epic(s): 10 11"* ]]
   [[ "$output" == *"Driving epic #10"* ]]
   [[ "$output" == *"Driving epic #11"* ]]
+  # Neither epic has sub-issues, so nothing should be labeled.
+  ! grep -qF "issue edit" "$GH_LOG"
 }
 
 @test "sweep: a gh failure on one epic surfaces as an error (not masked) and the sweep continues" {
