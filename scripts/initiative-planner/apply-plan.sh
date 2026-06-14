@@ -34,6 +34,40 @@ DISCUSSION_NODE_ID="${DISCUSSION_NODE_ID:-}"
 
 [ -s "$PLAN_PATH" ] || { echo "::error::plan file '$PLAN_PATH' missing or empty" >&2; exit 1; }
 
+# ── blocking open-questions gate ──────────────────────────────────────────────
+# Bob routes anything he can't resolve to `open_questions`. A question shaped as
+# an object with `blocking:true` means the idea is not yet plannable — building
+# an epic + story DAG now would just create throwaway issues a human must close
+# and re-plan (see #682; incidents #650→#659, #666→#667). So if ANY blocking
+# question is present we create NOTHING: post the questions back to the source
+# discussion with "not yet planned" framing and exit cleanly (DRY_RUN honored
+# via comment_on_discussion). Re-running once the questions are answered then
+# materializes the real plan. Plain-string questions stay advisory only.
+blocking_count="$(jq '[(.open_questions // [])[] | select(type=="object" and .blocking==true)] | length' "$PLAN_PATH")"
+if [ "$blocking_count" -gt 0 ]; then
+  src_g="$(jq -r '.source_discussion // empty' "$PLAN_PATH")"
+  [ -n "$src_g" ] || src_g="$DISCUSSION_NUMBER"
+  if [ -n "$DISCUSSION_NODE_ID" ]; then
+    blocking_list="$(jq -r '[(.open_questions // [])[] | select(type=="object" and .blocking==true) | .question] | map("- " + .) | join("\n")' "$PLAN_PATH")"
+    other_list="$(jq -r '(.open_questions // []) | map(select((type=="string") or (type=="object" and (.blocking // false) != true))) | map(if type=="string" then . else .question end) | if length>0 then "\n\n_Also worth confirming (non-blocking):_\n" + (map("- " + .) | join("\n")) else "" end' "$PLAN_PATH")"
+    gate_comment="$(printf '<!-- initiative-planner -->\n**⏸️ Not yet planned — the BMAD Scrum Master (Bob) has blocking open questions.**\n\nThis idea cannot be turned into an epic until these are answered:\n\n%s%s\n\n---\n**No epic or stories were created.** Answer the questions above, then re-approve / re-dispatch the planner and Bob will materialize the full epic + sub-issue DAG.' \
+      "$blocking_list" "$other_list")"
+    comment_on_discussion "$DISCUSSION_NODE_ID" "$gate_comment"
+    echo "posted 'not yet planned' open-questions back to discussion #${DISCUSSION_NUMBER:-?}"
+  fi
+  echo "::warning::initiative-planner: idea #${src_g:-?} has ${blocking_count} blocking open question(s) — no epic created. Answer them and re-dispatch."
+  if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+    {
+      echo "## Initiative not yet planned — needs answers$(if [ "${DRY_RUN:-0}" = "1" ]; then echo " (DRY_RUN)"; fi)"
+      echo "- Source discussion: #${src_g:-?}"
+      echo "- Blocking open questions: ${blocking_count}"
+      echo "- **No epic or stories were created.** Answer the questions and re-dispatch the planner."
+    } >>"$GITHUB_STEP_SUMMARY"
+  fi
+  echo "gated: ${blocking_count} blocking open question(s); created nothing. dry_run=${DRY_RUN:-0}"
+  exit 0
+fi
+
 # ── epic ──────────────────────────────────────────────────────────────────────
 epic_title="$(jq -r '.epic.title' "$PLAN_PATH")"
 epic_body="$(jq -r '.epic.body' "$PLAN_PATH")"
@@ -119,7 +153,7 @@ if [ -n "$DISCUSSION_NODE_ID" ]; then
     sz="$(jq -r --argjson i "$lid" '.stories[] | select(.id==$i) | .size' "$PLAN_PATH")"
     rows="${rows}- #${NUM_BY_LOCAL[$lid]} (${sz}) — ${t}"$'\n'
   done
-  oq="$(jq -r '(.open_questions // []) | if length>0 then "\n**Open questions for review:**\n" + ([.[] | "- " + .] | join("\n")) else "" end' "$PLAN_PATH")"
+  oq="$(jq -r '(.open_questions // []) | map(if type=="string" then . else .question end) | if length>0 then "\n**Open questions for review:**\n" + (map("- " + .) | join("\n")) else "" end' "$PLAN_PATH")"
   comment="$(printf '<!-- initiative-planner -->\n**📋 Initiative planned by the BMAD Scrum Master (Bob).**\n\nEpic **#%s** — %s\n\n%s stories created (inert — labelled `initiative`, NOT `initiative:auto`):\n\n%s\n%s\n---\nReview the epic and its sub-issue DAG, adjust as needed, then add **`initiative:auto`** to epic #%s to hand it to `initiative-driver` for auto-implementation.' \
     "$epic_number" "$epic_title" "$story_count" "$rows" "$oq" "$epic_number")"
   comment_on_discussion "$DISCUSSION_NODE_ID" "$comment"
