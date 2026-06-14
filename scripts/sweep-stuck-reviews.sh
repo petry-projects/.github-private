@@ -92,6 +92,26 @@ inspected=0
 stuck=0
 dispatched=0
 
+# dispatch_review <pr_url> <label>
+# Re-dispatch a review through the normal trigger (never force_review — the
+# advisory gate must stay armed). Honours DRY_RUN and updates the counters.
+dispatch_review() {
+  local _url="$1" _label="$2"
+  stuck=$((stuck + 1))
+  echo "  $_label: $_url — needs re-review"
+  if [ "$DRY_RUN_BOOL" = "true" ]; then
+    echo "    dry-run: would dispatch $TRIGGER_WORKFLOW for $_url"
+    return 0
+  fi
+  if gh workflow run "$TRIGGER_WORKFLOW" --repo "$AGENT_REPO" "${REF_FLAGS[@]}" \
+       -f pr_url="$_url"; then
+    dispatched=$((dispatched + 1))
+    echo "    dispatched review for $_url"
+  else
+    echo "::warning::sweep: failed to dispatch review for $_url"
+  fi
+}
+
 while IFS= read -r pr_url; do
   [ -z "$pr_url" ] && continue
   if [ "$dispatched" -ge "$MAX_DISPATCH" ]; then
@@ -112,12 +132,6 @@ while IFS= read -r pr_url; do
     continue
   fi
 
-  ci_status=$(compute_ci_status "$(jq '.statusCheckRollup' <<< "$snapshot")")
-  if [ "$ci_status" != "passing" ]; then
-    echo "  skip $pr_url — CI '$ci_status' (not green yet)"
-    continue
-  fi
-
   head_sha=$(jq -r '.headRefOid // ""' <<< "$snapshot")
   if [ -z "$head_sha" ]; then
     echo "  skip $pr_url — head SHA is empty"
@@ -132,26 +146,49 @@ while IFS= read -r pr_url; do
       | (.body // "")
       | select(test("<!-- pr-review-agent v1 sha=" + $sha + " ")) ]
     | length' <<< "$snapshot" 2>/dev/null || echo 0)
+
+  # Rate-limited withhold retry (issue #711). A pr-review run that withheld
+  # approval because advisory bots were rate-limited stamps a distinct marker:
+  #   <!-- pr-review-agent rate-limited v1 sha=<HEAD> status=rate-limited reset=<ISO> -->
+  # Handle it BEFORE the CI gate so unrelated cancelled/failed sibling checks
+  # cannot suppress the retry (AC3). Extract the reset for a marker at the
+  # current head (sha followed by a space, never a prefix match).
+  rl_reset=$(jq -r --arg sha "$head_sha" '
+    [ ((.reviews // []) + (.comments // []))[]
+      | (.body // "")
+      | select(test("<!-- pr-review-agent rate-limited v1 sha=" + $sha + " "))
+      | capture("reset=(?<r>[^ ]+)") | .r ]
+    | last // ""' <<< "$snapshot" 2>/dev/null || echo "")
+  if [ -n "$rl_reset" ]; then
+    if [ "${reviewed_at_head:-0}" -gt 0 ]; then
+      # A real review already landed at this head — rate-limit state is resolved.
+      echo "  skip $pr_url — rate-limited marker present but already reviewed at head ${head_sha:0:8}"
+      continue
+    fi
+    reset_epoch=$(date -u -d "$rl_reset" +%s 2>/dev/null || echo "")
+    now_epoch=$(date -u +%s)
+    # Dispatch once the reset has elapsed; an unparseable reset fails open to a
+    # retry so a malformed marker can never strand the PR indefinitely.
+    if [ -z "$reset_epoch" ] || [ "$now_epoch" -ge "$reset_epoch" ]; then
+      dispatch_review "$pr_url" "rate-limited (reset $rl_reset elapsed, head ${head_sha:0:8})"
+    else
+      echo "  defer $pr_url — rate-limited until $rl_reset (head ${head_sha:0:8})"
+    fi
+    continue
+  fi
+
+  ci_status=$(compute_ci_status "$(jq '.statusCheckRollup' <<< "$snapshot")")
+  if [ "$ci_status" != "passing" ]; then
+    echo "  skip $pr_url — CI '$ci_status' (not green yet)"
+    continue
+  fi
+
   if [ "${reviewed_at_head:-0}" -gt 0 ]; then
     echo "  skip $pr_url — already reviewed at head ${head_sha:0:8}"
     continue
   fi
 
-  stuck=$((stuck + 1))
-  echo "  stuck-green: $pr_url (head ${head_sha:0:8}) — needs re-review"
-
-  if [ "$DRY_RUN_BOOL" = "true" ]; then
-    echo "    dry-run: would dispatch $TRIGGER_WORKFLOW for $pr_url"
-    continue
-  fi
-
-  if gh workflow run "$TRIGGER_WORKFLOW" --repo "$AGENT_REPO" "${REF_FLAGS[@]}" \
-       -f pr_url="$pr_url"; then
-    dispatched=$((dispatched + 1))
-    echo "    dispatched review for $pr_url"
-  else
-    echo "::warning::sweep: failed to dispatch review for $pr_url"
-  fi
+  dispatch_review "$pr_url" "stuck-green (head ${head_sha:0:8})"
 done < "$candidates_file"
 
 echo ""

@@ -112,6 +112,105 @@ format_bot_status() {
   esac
 }
 
+# ────────────────────────────────────────────────────────────────────
+# Rate-limit detection + marker (issue #711)
+#
+# When an advisory/review bot withholds a real review because it is out of
+# quota, the gate keeps deferring approval but no event ever re-fires once CI
+# settles green — the PR strands at REVIEW_REQUIRED. detect_advisory_rate_limit
+# recognises that state and maybe_post_rate_limited_marker stamps a
+# machine-detectable marker so pr-review-sweep can auto-retry after the limit
+# resets (no manual force_review, which would bypass the gate entirely).
+# ────────────────────────────────────────────────────────────────────
+
+# Bots whose out-of-quota notice should arm the sweep retry. Superset of the
+# gate's ADVISORY_BOTS — adds coderabbitai, which posts an explicit rate-limit
+# comment but is not one of the bots the gate blocks on.
+# shellcheck disable=SC2034
+declare -ar RATE_LIMIT_NOTICE_BOTS=(
+  gemini-code-assist
+  copilot-pull-request-reviewer
+  sonarqubecloud
+  chatgpt-codex-connector
+  coderabbitai
+)
+
+# Case-insensitive phrases that indicate a bot is itself rate-limited / out of
+# quota (not merely discussing rate limiting). Kept reasonably specific so a
+# genuine review that mentions "rate limit" in passing does not arm a retry.
+_advisory_rate_limit_pattern() {
+  printf '%s' 'usage limit|rate.?limit|too many requests|quota (exceeded|reached|exhausted)|out of (quota|credits|tokens|requests)|limit (reached|exceeded|exhausted)|(reached|exceeded|hit) (the |your )?(usage |rate |daily |monthly )?limit'
+}
+
+# detect_advisory_rate_limit <reviews-comments-json>
+#   Returns 0 when a known advisory/review bot's LATEST submission body matches
+#   the rate-limit pattern; 1 otherwise. Only the latest submission per bot is
+#   considered, so a newer real review supersedes an older rate-limit notice
+#   (and vice versa). Non-bot authors are ignored.
+detect_advisory_rate_limit() {
+  local json="${1:-}"
+  [[ -z "$json" ]] && return 1
+
+  local bot_array pattern matched
+  bot_array=$(printf '%s\n' "${RATE_LIMIT_NOTICE_BOTS[@]}" | jq -R . | jq -s .)
+  pattern=$(_advisory_rate_limit_pattern)
+
+  matched=$(jq -r --argjson bots "$bot_array" --arg pat "$pattern" '
+    (
+      [(.reviews // [])[]  | {bot: .author.login, time: .submittedAt, body: (.body // "")}] +
+      [(.comments // [])[] | {bot: .author.login, time: .createdAt,   body: (.body // "")}]
+    )
+    | map(select([.bot] | inside($bots)))
+    | group_by(.bot)
+    | map(sort_by(.time) | last)
+    | map(select(.body | test($pat; "i")))
+    | length
+  ' <<< "$json" 2>/dev/null) || return 1
+
+  [[ "${matched:-0}" -gt 0 ]]
+}
+
+# maybe_post_rate_limited_marker <pr_url> <head_sha> <reset_iso> <comments_json>
+#   Posts a deduplicated rate-limited marker comment so the sweep can detect the
+#   withheld-due-to-rate-limit state and re-trigger a review after <reset_iso>.
+#   <comments_json> is the already-fetched PR snapshot (.comments[]) used for the
+#   dedup check, so no extra API call is needed to decide whether to post.
+#   The marker prefix ("rate-limited" before v1) deliberately never matches the
+#   idempotency marker regex (<!-- pr-review-agent v1 sha=...).
+maybe_post_rate_limited_marker() {
+  local pr_url="${1:-}" head_sha="${2:-}" reset_iso="${3:-}" comments_json="${4:-}"
+  if [[ -z "$pr_url" || -z "$head_sha" ]]; then
+    log_warn "maybe_post_rate_limited_marker: pr_url and head_sha are required"
+    return 1
+  fi
+
+  local marker="<!-- pr-review-agent rate-limited v1 sha=${head_sha} status=rate-limited reset=${reset_iso} -->"
+
+  # Dedup: skip if a rate-limited marker already exists at this exact head.
+  local cj="$comments_json"
+  [[ -z "$cj" ]] && cj='{}'
+  local already
+  already=$(jq -r --arg sha "$head_sha" '
+    [ (.comments // [])[]
+      | (.body // "")
+      | select(test("<!-- pr-review-agent rate-limited v1 sha=" + $sha + " ")) ]
+    | length' <<< "$cj" 2>/dev/null || echo 0)
+  if [[ "${already:-0}" -gt 0 ]]; then
+    log_info "Rate-limited marker already present at head ${head_sha:0:8} — not re-posting"
+    return 0
+  fi
+
+  local body="${marker}
+Advisory bots were rate-limited; auto-approval is withheld until they recover. pr-review-sweep will re-review this PR after ${reset_iso:-the limit resets}."
+
+  if gh pr comment "$pr_url" --body "$body" >/dev/null 2>&1; then
+    log_info "Posted rate-limited marker on $pr_url (head ${head_sha:0:8}, reset ${reset_iso:-n/a})"
+  else
+    log_warn "Failed to post rate-limited marker on $pr_url"
+    return 1
+  fi
+}
+
 # Instant (non-blocking) check of advisory bot status
 #
 # DESIGN: This uses a re-trigger pattern instead of blocking waits:
