@@ -17,7 +17,7 @@ setup() {
 
   unset CLAUDE_TRIAGE_MODEL_CHAIN CLAUDE_DEEP_MODEL_CHAIN CLAUDE_AUDIT_MODEL_CHAIN
   unset CLAUDE_ACTION_MODEL_CHAIN CLAUDE_SINGLE_MODEL_CHAIN
-  unset REVIEW_MCP_CONFIG REVIEW_MCP_ALLOWED_TOOLS
+  unset REVIEW_MCP_CONFIG REVIEW_MCP_ALLOWED_TOOLS REVIEW_MCP_CONFIG_DEFAULT_PATH
 
   STUB_BIN_DIR="$(mktemp -d)"
   cp "$STUB_ENGINES_DIR/stub-claude" "$STUB_BIN_DIR/claude"
@@ -46,7 +46,7 @@ teardown() {
   rm -f "$GITHUB_ENV" "$GITHUB_OUTPUT" "$TEST_PROMPT" "$ARGS_RECORD" "$MCP_CONFIG_FILE"
   rm -rf "$STUB_BIN_DIR"
   unset STUB_ENGINE_RECORD_ARGS STUB_ENGINE_EXIT
-  unset REVIEW_MCP_CONFIG REVIEW_MCP_ALLOWED_TOOLS
+  unset REVIEW_MCP_CONFIG REVIEW_MCP_ALLOWED_TOOLS REVIEW_MCP_CONFIG_DEFAULT_PATH
 }
 
 _source_engine() {
@@ -150,6 +150,68 @@ _source_engine() {
   [ "$status" -eq 0 ]
   ! grep -q -- "--mcp-config" "$ARGS_RECORD"
   grep -q -- "--allowed-tools Bash,Read,Grep,Glob" "$ARGS_RECORD"
+}
+
+# ── Conventional committed path fallback (issue #679) ────────────────────────
+
+@test "default path: no env + conventional file present → MCP flags use conventional path" {
+  local conv_file
+  conv_file="$(mktemp)"
+  echo '{"mcpServers":{}}' > "$conv_file"
+  export REVIEW_MCP_CONFIG_DEFAULT_PATH="$conv_file"
+  _source_engine "claude"
+  run run_agentic "$TEST_PROMPT" "claude-opus-4-8" "deep"
+  rm -f "$conv_file"
+  [ "$status" -eq 0 ]
+  grep -q -- "--mcp-config $conv_file" "$ARGS_RECORD"
+  grep -q -- "--strict-mcp-config" "$ARGS_RECORD"
+}
+
+@test "default path: no env + conventional file absent → no MCP flags (default unchanged)" {
+  export REVIEW_MCP_CONFIG_DEFAULT_PATH="$(mktemp -u)"  # path that does not exist
+  _source_engine "claude"
+  run run_agentic "$TEST_PROMPT" "claude-opus-4-8" "deep"
+  [ "$status" -eq 0 ]
+  ! grep -q -- "--mcp-config" "$ARGS_RECORD"
+  grep -q -- "--allowed-tools Bash,Read,Grep,Glob" "$ARGS_RECORD"
+}
+
+@test "default path: explicit REVIEW_MCP_CONFIG takes precedence over conventional path" {
+  local conv_file
+  conv_file="$(mktemp)"
+  echo '{"mcpServers":{"conv":{}}}' > "$conv_file"
+  export REVIEW_MCP_CONFIG_DEFAULT_PATH="$conv_file"
+  export REVIEW_MCP_CONFIG="$MCP_CONFIG_FILE"
+  _source_engine "claude"
+  run run_agentic "$TEST_PROMPT" "claude-opus-4-8" "deep"
+  rm -f "$conv_file"
+  [ "$status" -eq 0 ]
+  grep -q -- "--mcp-config $MCP_CONFIG_FILE" "$ARGS_RECORD"
+  ! grep -q -- "--mcp-config $conv_file" "$ARGS_RECORD"
+}
+
+@test "default path: explicit empty REVIEW_MCP_CONFIG disables conventional path fallback" {
+  local conv_file
+  conv_file="$(mktemp)"
+  echo '{"mcpServers":{"conv":{}}}' > "$conv_file"
+  export REVIEW_MCP_CONFIG_DEFAULT_PATH="$conv_file"
+  export REVIEW_MCP_CONFIG=""
+  _source_engine "claude"
+  run run_agentic "$TEST_PROMPT" "claude-opus-4-8" "deep"
+  rm -f "$conv_file"
+  [ "$status" -eq 0 ]
+  ! grep -q -- "--mcp-config" "$ARGS_RECORD"
+}
+
+# ── Committed sample is inert documentation-only (issue #679, AC #4) ──────────
+
+@test "sample: committed Context7 sample is valid JSON" {
+  run jq empty "$SCRIPT_DIR/.github/review-mcp.json.sample"
+  [ "$status" -eq 0 ]
+}
+
+@test "sample: conventional discovery path is absent in-repo (MCP off by default)" {
+  [ ! -e "$SCRIPT_DIR/.github/review-mcp.json" ]
 }
 
 # ── Triage tier: never gets MCP flags ────────────────────────────────────────
