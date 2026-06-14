@@ -43,3 +43,12 @@ cat /tmp/plan.jsonl | jq .
 - `hands_off` stories also get `dev-lead:hands-off` + `initiative:hold`.
 - A dependency cycle, a missing entry point, or a dangling `blocked_by` fails
   validation before any issue is created.
+- **Blocking open-questions gate (#682).** If the plan's `open_questions`
+  contains any item flagged `blocking:true`, `apply-plan.sh` creates **zero**
+  issues. Instead it posts the questions back to the source discussion with
+  "not yet planned — answer these to proceed" framing and exits cleanly
+  (DRY_RUN honored). This stops Bob from shipping an inert epic + sub-issue DAG
+  that a human would have to close and re-plan once scope is settled (incidents
+  #650→#659, #666→#667). Re-running after the questions are answered then
+  materializes the real plan. Plain-string `open_questions` stay advisory and do
+  **not** gate — only objects shaped `{"question": "...", "blocking": true}` do.
