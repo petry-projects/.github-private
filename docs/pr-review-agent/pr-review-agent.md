@@ -276,6 +276,27 @@ gh workflow run pr-review.yml --repo petry-projects/.github-private -f dry_run=f
 - **Max PRs per run** — defaults to 10 per cron tick to stay within the 60-min
   job timeout. Override:
   `gh variable set MAX_PRS --body 15 --repo petry-projects/.github-private`
+- **MCP review (opt-in, off by default)** — the deep and rubber-duck tiers can
+  load [MCP](https://modelcontextprotocol.io) servers via `REVIEW_MCP_CONFIG`
+  (path to an MCP-servers JSON config) and `REVIEW_MCP_ALLOWED_TOOLS`
+  (comma-separated MCP tool names merged into `--allowed-tools`). The triage
+  tier never receives MCP.
+
+  Enablement is **committed-file-only** — no edit to the org-template-synced
+  `pr-review.yml` is needed. `engine.sh` resolves `REVIEW_MCP_CONFIG` as:
+  1. an explicit `REVIEW_MCP_CONFIG` env value (honored as-is, takes precedence), else
+  2. the conventional committed path `.github/review-mcp.json` — but only if that
+     file exists. If neither is present, MCP stays off and behavior is unchanged.
+
+  To turn it on, copy the no-auth Context7 sample into place and allow its tools:
+  ```bash
+  cp .github/review-mcp.json.sample .github/review-mcp.json
+  gh variable set REVIEW_MCP_ALLOWED_TOOLS --body 'mcp__context7__*' --repo petry-projects/.github-private
+  ```
+  `.github/review-mcp.json.sample` is documentation-only and inert — the scripts
+  only auto-discover the suffix-less `.github/review-mcp.json`. Context7 needs no
+  auth; an MCP server that requires a secret would need that secret wired into the
+  workflow's `env:` block as a documented per-repo exception (see AGENTS.md).
 
 ## Mention-triggered reviews
 
