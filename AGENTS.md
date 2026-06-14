@@ -66,6 +66,17 @@ This is the `.github-private` org infrastructure repo for `petry-projects`. It c
 - Scripts must be POSIX-compatible shell (`#!/usr/bin/env bash` with `set -euo pipefail`).
 - No hardcoded tokens or secrets — use `$GITHUB_TOKEN` from the environment.
 
+### Initiative Planner — blocking open-questions gate
+
+`scripts/initiative-planner/apply-plan.sh` will **not** materialize an epic + sub-issue
+DAG while the plan still has plan-blocking open questions (#682). If `open_questions`
+contains any item shaped `{"question": "...", "blocking": true}`, the script creates
+**zero** issues, posts the questions back to the source discussion with "not yet planned"
+framing, and exits cleanly (DRY_RUN unchanged). Plain-string `open_questions` remain
+advisory and do not gate. This is a hard, script-level gate (like the `initiative:auto`
+invariant) and must not be worked around with direct `gh` calls. See
+`scripts/initiative-planner/README.md`.
+
 ### Oversized PRs (> 300 changed files)
 
 GitHub's unified-diff endpoint (`gh pr diff`) is hard-capped at 300 changed files and returns
