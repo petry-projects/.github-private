@@ -227,3 +227,67 @@ _source_engine() {
   ! grep -q -- "--allowed-tools" "$ARGS_RECORD"
   grep -q -- "--disallowed-tools" "$ARGS_RECORD"
 }
+
+# ── Graceful degradation: warn (never fake) on MCP server failure (issue #678) ─
+# The claude CLI surfaces an MCP connection/init failure in its captured output
+# but still exits 0 and produces a verdict. engine.sh must warn (naming the
+# server) and let the review complete — no fatal exit, no fabricated "all clear".
+
+@test "agentic: MCP failure marker + knob set → ::warning:: names server, verdict still emitted" {
+  _source_engine "claude"
+  export REVIEW_MCP_CONFIG="$MCP_CONFIG_FILE"
+  export STUB_ENGINE_RESPONSE=$'MCP server "context7" failed to connect after 3 attempts\n{"decision":"approve","summary":"looks good"}'
+  run run_agentic "$TEST_PROMPT" "claude-opus-4-8" "deep"
+  # AC #2: never a fatal exit on MCP failure.
+  [ "$status" -eq 0 ]
+  # AC #1: a warning is emitted naming the affected server.
+  [[ "$output" == *"::warning::"* ]]
+  [[ "$output" == *"mcp"* ]]
+  [[ "$output" == *"context7"* ]]
+  # AC #1/#2: the review still returns its normal, non-empty verdict.
+  [[ "$output" == *'"decision":"approve"'* ]]
+}
+
+@test "agentic: MCP failure marker but knob UNSET → no MCP warning (AC #3)" {
+  _source_engine "claude"
+  unset REVIEW_MCP_CONFIG
+  export STUB_ENGINE_RESPONSE=$'MCP server "context7" failed to connect after 3 attempts\n{"decision":"approve","summary":"looks good"}'
+  run run_agentic "$TEST_PROMPT" "claude-opus-4-8" "deep"
+  [ "$status" -eq 0 ]
+  # No MCP-related warning when MCP was never configured.
+  ! [[ "$output" == *"::warning::[mcp]"* ]]
+  # Verdict still flows through untouched.
+  [[ "$output" == *'"decision":"approve"'* ]]
+}
+
+@test "agentic: knob set but no MCP failure in output → no false-positive warning" {
+  _source_engine "claude"
+  export REVIEW_MCP_CONFIG="$MCP_CONFIG_FILE"
+  export STUB_ENGINE_RESPONSE='{"decision":"approve","summary":"clean run, MCP healthy"}'
+  run run_agentic "$TEST_PROMPT" "claude-opus-4-8" "deep"
+  [ "$status" -eq 0 ]
+  ! [[ "$output" == *"::warning::[mcp]"* ]]
+  [[ "$output" == *'"decision":"approve"'* ]]
+}
+
+@test "agentic: MCP failure without quoted server name + knob set → generic warning, review continues" {
+  _source_engine "claude"
+  export REVIEW_MCP_CONFIG="$MCP_CONFIG_FILE"
+  export STUB_ENGINE_RESPONSE=$'Failed to connect to MCP server\n{"decision":"comment","summary":"degraded"}'
+  run run_agentic "$TEST_PROMPT" "claude-opus-4-8" "deep"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"::warning::[mcp]"* ]]
+  [[ "$output" == *'"decision":"comment"'* ]]
+}
+
+@test "duck: MCP failure marker + knob set → ::warning:: emitted, duck verdict continues" {
+  _source_engine "claude"
+  export DUCK_ENGINE="claude"
+  export REVIEW_MCP_CONFIG="$MCP_CONFIG_FILE"
+  export STUB_ENGINE_RESPONSE=$'MCP server "context7" failed to connect\n{"decision":"approve","summary":"duck ok"}'
+  run run_duck "$TEST_PROMPT" "claude-sonnet-4-6"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"::warning::[mcp]"* ]]
+  [[ "$output" == *"context7"* ]]
+  [[ "$output" == *'"decision":"approve"'* ]]
+}
