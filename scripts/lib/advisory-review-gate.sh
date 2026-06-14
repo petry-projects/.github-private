@@ -174,7 +174,8 @@ check_advisory_reviews() {
   # Extract participating bots (those who have submitted)
   local participating_bots num_submitted total_advisory_bots
   participating_bots=$(echo "$current_states" | jq -rs '[.[].bot] | unique | join(" ")')
-  num_submitted=$(echo "$current_states" | jq -rs '[.[].bot] | unique | length')
+  # Count only bots with real reviews, not rate-limited/unsupported ones
+  num_submitted=$(echo "$current_states" | jq -rs '[.[] | select(.state != "RATE_LIMITED" and .state != "UNSUPPORTED") | .bot] | unique | length')
   total_advisory_bots=${#ADVISORY_BOTS[@]}
 
   log_info "Advisory bots detected: $participating_bots"
@@ -186,15 +187,14 @@ check_advisory_reviews() {
   done <<< "$current_states"
 
   # Rate-limited / unsupported bots can't (or needn't) submit a real review, so they
-  # must not hold the gate (issue #657). Count them as responded and drop them from the
-  # required total: effective_total = total − (rate-limited|unsupported), clamped to ≥1
-  # so the gate never approves with zero advisory input even if every bot is out.
+  # must not hold the gate (issue #657). Drop them from the required total:
+  # effective_total = total − (rate-limited|unsupported), clamped to ≥1 so the gate
+  # never approves with zero advisory input. num_submitted counts only real reviews.
   local num_unavailable effective_total
   num_unavailable=$(echo "$current_states" | jq -rs \
     '[.[] | select(.state == "RATE_LIMITED" or .state == "UNSUPPORTED") | .bot] | unique | length')
   effective_total=$((total_advisory_bots - num_unavailable))
   [[ "$effective_total" -lt 1 ]] && effective_total=1
-  num_submitted=$((num_submitted - num_unavailable))
   if [[ "$num_unavailable" -gt 0 ]]; then
     log_info "${num_unavailable} advisory bot(s) rate-limited/unsupported — required set reduced to ${effective_total}/${total_advisory_bots}"
   fi
