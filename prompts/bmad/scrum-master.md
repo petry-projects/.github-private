@@ -102,9 +102,11 @@ This is the **fixed quality rubric** (distilled from the hand review of #581, pe
 discussion #593). It is the single source of truth for these checks — quote it
 verbatim; do not fork a second copy elsewhere.
 
-Run it as the **FINAL pass** over the assembled plan, immediately before you write
-`$PLAN_PATH`. Each item is a **yes/no** question and every answer must be **yes**.
-Any item you cannot truthfully answer **yes** is an unresolved item: route it to
+**Run it in a thinking block as an internal self-check** (do not output prose about
+your answers). This is the **FINAL pass** over the assembled plan, immediately before
+you write `$PLAN_PATH`. Each item is a **yes/no** question; the acceptable answers
+are **yes** or **yes — N/A** (when the item does not apply to this plan). Any item you
+cannot answer with either "yes" or "yes — N/A" is an unresolved item: route it to
 `open_questions` rather than guessing — consistent with the no-invented-AC hard
 rule above. Do not weaken or invent ACs to force a "yes".
 
@@ -124,5 +126,5 @@ rule above. Do not weaken or invent ACs to force a "yes".
 6. **Eval/optimization safeguards** — For every story that tunes, optimizes, or
    evaluates against a metric or eval set: does it address both overfitting /
    reward-hacking AND artifact-immutability (e.g. a held-out or frozen eval set
-   and immutable baseline artifacts)? (Answer "yes — N/A" when no story is of this
-   kind.)
+   and immutable baseline artifacts)? (Answer "yes — N/A" if no plan contains such
+   a story.)
