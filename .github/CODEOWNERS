@@ -1,7 +1,7 @@
 # Default owner for all files
 * @petry-projects/org-leads
 
-# Held-out eval cases are the trust anchor for skill-quality measurement.
-# They MUST stay separately owned: a future automated skill proposer may only
-# edit the skill markdown, never this held-out set (reward-hacking guard, #582).
-/evals/ @petry-projects/org-leads
+# Held-out eval cases (#691, epic #581) — the proposer must never edit these.
+# Explicit rule so the holdout stays owner-locked even if broader rules loosen;
+# the dev/ split may remain proposer-visible.
+/evals/**/holdout/ @petry-projects/org-leads

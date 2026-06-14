@@ -59,7 +59,7 @@ jobs:
             tests/test_dependabot.bats \
             tests/test_apply_repo_settings.bats \
             tests/test_sweep_stuck_reviews.bats \
-            tests/test_evals_cases.bats
+            tests/test_validate_cases.bats
 
   validate-agent-profiles:
     runs-on: ubuntu-latest
