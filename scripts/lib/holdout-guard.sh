@@ -33,14 +33,20 @@
 # hg_proposer_identities — emit the configured proposer logins, one per line.
 # Accepts comma- and/or whitespace-separated values in the env var.
 hg_proposer_identities() {
-  local raw="${HOLDOUT_PROPOSER_IDENTITIES:-github-actions[bot]}"
-  printf '%s' "$raw" | tr ',' ' ' | tr -s '[:space:]' '\n' | sed '/^$/d'
+  local raw="${HOLDOUT_PROPOSER_IDENTITIES:-github-actions[bot]}" item
+  # Replace commas with spaces (word splitting handles multiple whitespace)
+  for item in ${raw//,/ }; do
+    [ -n "$item" ] && printf '%s\n' "$item"
+  done
 }
 
 # hg_guarded_prefixes — emit the configured guarded path prefixes, one per line.
 hg_guarded_prefixes() {
-  local raw="${HOLDOUT_GUARDED_PREFIXES:-evals/}"
-  printf '%s' "$raw" | tr ',' ' ' | tr -s '[:space:]' '\n' | sed '/^$/d'
+  local raw="${HOLDOUT_GUARDED_PREFIXES:-evals/}" item
+  # Replace commas with spaces (word splitting handles multiple whitespace)
+  for item in ${raw//,/ }; do
+    [ -n "$item" ] && printf '%s\n' "$item"
+  done
 }
 
 # hg_is_proposer <login> — return 0 if the login is a configured proposer.
