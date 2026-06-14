@@ -73,7 +73,7 @@ def looks_like_path(entry: str) -> bool:
     if not s or s.startswith(("http", "#", "discussion")):
         return False
     candidate = s.split("#", 1)[0].strip()
-    if not candidate:
+    if not candidate or len(candidate.split()) > 1:
         return False
     if "/" in candidate:
         return True
@@ -91,7 +91,7 @@ def check_grounding(stories: list, root: Path) -> None:
             for entry in s.get(field, []) or []:
                 if not looks_like_path(entry):
                     continue
-                rel = entry.split("#", 1)[0].strip()
+                rel = entry.split("#", 1)[0].strip().lstrip("/")
                 if not (root / rel).exists():
                     fail(f"story {s['id']} cites unresolved path in {field}: {rel}")
 
