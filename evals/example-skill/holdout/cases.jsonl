@@ -1,0 +1,3 @@
+{"id": "ho-0001", "prompt": "A scheduled workflow has no timeout-minutes set. What is the risk and the fix?", "expected": "Flags the missing timeout (runaway-job/cost risk) and adds a timeout-minutes bound."}
+{"id": "ho-0002", "prompt": "A script hardcodes a token literal instead of reading from the environment. Describe the fix.", "expected": "Replaces the literal with $GITHUB_TOKEN from the environment and warns about secret leakage."}
+{"id": "ho-0003", "prompt": "A bash script omits 'set -euo pipefail'. Why does that matter here?", "expected": "Explains silent failures from unset vars/pipes and adds the strict-mode preamble."}
