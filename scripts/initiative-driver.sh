@@ -44,9 +44,10 @@
 #                   epic is skipped early if it is not one of its sub-issues)
 #   DEV_LEAD_LABEL  label that triggers dev-lead (default: dev-lead)
 #   GATE_LABEL      opt-in label on the epic (default: initiative:auto)
-#   HANDS_OFF_LABEL never-release label (default: dev-lead:hands-off)
-#   HOLD_LABEL      never-release label (default: initiative:hold)
-#   MAX_IN_FLIGHT   cap on concurrently-released sub-issues (default: 2)
+#   HANDS_OFF_LABEL    never-release label (default: dev-lead:hands-off)
+#   HOLD_LABEL         never-release label (default: initiative:hold)
+#   NEEDS_INPUT_LABEL  skip-until-resolved label (default: planning:needs-input)
+#   MAX_IN_FLIGHT      cap on concurrently-released sub-issues (default: 2)
 #   DRY_RUN         "true" to log decisions without labeling (default: false)
 #
 set -euo pipefail
@@ -58,6 +59,7 @@ DEV_LEAD_LABEL="${DEV_LEAD_LABEL:-dev-lead}"
 GATE_LABEL="${GATE_LABEL:-initiative:auto}"
 HANDS_OFF_LABEL="${HANDS_OFF_LABEL:-dev-lead:hands-off}"
 HOLD_LABEL="${HOLD_LABEL:-initiative:hold}"
+NEEDS_INPUT_LABEL="${NEEDS_INPUT_LABEL:-planning:needs-input}"
 MAX_IN_FLIGHT="${MAX_IN_FLIGHT:-2}"
 DRY_RUN="${DRY_RUN:-false}"
 
@@ -77,7 +79,7 @@ case "$DRY_RUN" in
   false|0|no)  DRY_RUN=false ;;
   *) echo "::error::DRY_RUN must be true or false, got: '$DRY_RUN'"; exit 1 ;;
 esac
-readonly REPO EPIC CLOSED_ISSUE DEV_LEAD_LABEL GATE_LABEL HANDS_OFF_LABEL HOLD_LABEL MAX_IN_FLIGHT DRY_RUN
+readonly REPO EPIC CLOSED_ISSUE DEV_LEAD_LABEL GATE_LABEL HANDS_OFF_LABEL HOLD_LABEL NEEDS_INPUT_LABEL MAX_IN_FLIGHT DRY_RUN
 
 log() { printf '%s\n' "$*"; }
 
@@ -163,6 +165,10 @@ drive_epic() {
     fi
     if has_label "$labels" "$HOLD_LABEL"; then
       log "  #$n — skip: $HOLD_LABEL (held)."
+      continue
+    fi
+    if has_label "$labels" "$NEEDS_INPUT_LABEL"; then
+      log "  #$n — skip: $NEEDS_INPUT_LABEL (open question contesting story; awaiting maintainer resolution)."
       continue
     fi
 

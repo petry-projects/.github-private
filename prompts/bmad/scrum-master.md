@@ -96,9 +96,16 @@ self-check pass over the whole plan.
 - If an unresolved item must be answered before the idea is even plannable, emit
   it as a **blocking** open question — an object `{"question": "...", "blocking":
   true}` — not a guessed plan. `apply-plan.sh` will then create **nothing** and
-  post the questions back to the discussion (a hard gate, #682). Use plain-string
-  `open_questions` only for advisory "nice to confirm" items that should not halt
-  planning.
+  post the questions back to the discussion (a hard gate, #682).
+- If an unresolved item contests the acceptance criteria of one or more specific
+  stories (without blocking the whole plan), emit it as an object with
+  `affected_story_ids`: `{"question": "...", "affected_story_ids": [2, 3]}`.
+  `apply-plan.sh` will materialize the plan but withhold `ready-for-dev` from
+  those stories (labelling them `planning:needs-input`), and `initiative-driver`
+  will skip them until a maintainer resolves the question (see #600). Do **not**
+  use a plain string for a question that contests a specific story's scope or AC.
+- Use plain-string `open_questions` **only** for advisory "nice to confirm" items
+  that do not contest any specific story's AC and would not block its release.
 - Don't duplicate an open epic from `open_epics`; if already covered, say so in a
   single story + `open_questions` referencing that epic.
 

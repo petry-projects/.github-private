@@ -112,6 +112,31 @@ EOF
   ! grep -qF "issue edit" "$GH_LOG"
 }
 
+# ── planning:needs-input skip ─────────────────────────────────────────────────
+
+@test "needs-input: does not label a story carrying planning:needs-input" {
+  cat > "$MOCK_BIN/gh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$GH_LOG"
+args="$*"
+# Epic labels: initiative:auto
+if [[ "$args" == *"issues/1 --jq"* ]] && [[ "$args" != *"sub_issues"* ]]; then
+  printf 'initiative:auto'; exit 0
+fi
+# Sub-issues: only issue 2
+if [[ "$args" == *"sub_issues"* ]]; then printf '2'; exit 0; fi
+# Issue 2 carries planning:needs-input (contested by an open question)
+if [[ "$args" == *"issues/2 --jq"* ]]; then printf 'planning:needs-input'; exit 0; fi
+printf '[]'
+EOF
+  chmod +x "$MOCK_BIN/gh"
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"planning:needs-input"* ]]
+  ! grep -qF "issue edit" "$GH_LOG"
+}
+
 # ── blocked_by evaluation ─────────────────────────────────────────────────────
 
 @test "blocked_by: does not label an issue that has an open blocker" {
