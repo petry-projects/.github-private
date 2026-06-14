@@ -43,17 +43,14 @@ hg_guarded_prefixes() {
   printf '%s' "$raw" | tr ',' ' ' | tr -s '[:space:]' '\n' | sed '/^$/d'
 }
 
-# hg_lower — lowercase a string (GitHub logins are case-insensitive).
-hg_lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
-
 # hg_is_proposer <login> — return 0 if the login is a configured proposer.
 hg_is_proposer() {
-  local login want identity
-  login="$(hg_lower "${1:-}")"
+  local login="${1:-}" want identity
+  login="${login,,}"
   [ -n "$login" ] || return 1
   while IFS= read -r identity || [ -n "$identity" ]; do
     [ -n "$identity" ] || continue
-    want="$(hg_lower "$identity")"
+    want="${identity,,}"
     [ "$login" = "$want" ] && return 0
   done < <(hg_proposer_identities)
   return 1

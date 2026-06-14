@@ -147,5 +147,5 @@ setup() {
 
 @test "hg_evaluate errors when no author is given" {
   run hg_evaluate "" <<< "evals/triage/cases.jsonl"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 2 ]
 }
