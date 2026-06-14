@@ -96,6 +96,15 @@ if [ -n "$src" ]; then
   fi
 fi
 
+# Untracked prerequisites: real prereqs that are NOT issues (a discussion, an
+# external dependency) — rendered as a maintainer-tickable checklist on the epic,
+# distinct from the blocked_by_existing_issues edges (which cover prereqs that ARE
+# issues). Guarded so an empty/absent array leaves epic_body byte-for-byte as-is.
+untracked_prereqs="$(jq -r '(.epic.untracked_prerequisites // []) | map("- [ ] " + .) | join("\n")' "$PLAN_PATH")"
+if [ -n "$untracked_prereqs" ]; then
+  epic_body="${epic_body}"$'\n\n'"## Untracked prerequisites"$'\n'"${untracked_prereqs}"
+fi
+
 epic_out="$(create_issue "$REPO" "$epic_title" "$epic_body" "initiative")"
 read -r epic_number epic_id <<< "$epic_out"
 echo "epic: #${epic_number} (id ${epic_id}) — ${epic_title}"
