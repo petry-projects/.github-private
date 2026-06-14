@@ -259,8 +259,8 @@ teardown() { rm -rf "$TMP"; }
   [[ "$body" == *"Status: ready-for-dev"* ]]
 }
 
-@test "idempotency guard: no-op when an epic already exists for the discussion" {
-  EXISTING_EPIC_OVERRIDE=727 \
+@test "idempotency skip posts an 'already planned' discussion comment with a force_replan hint" {
+  DRY_RUN_EXISTING_EPIC=727 \
   DRY_RUN=1 DRY_RUN_LOG="$LOG" REPO="petry-projects/.github-private" \
     DISCUSSION_NUMBER=413 DISCUSSION_NODE_ID="D_test" PLAN_PATH="$PLAN" \
     run bash "$PLANNER_DIR/apply-plan.sh"
@@ -275,7 +275,7 @@ teardown() { rm -rf "$TMP"; }
 }
 
 @test "force_replan supersedes: creates the new plan AND closes the old epic + sub-issues" {
-  EXISTING_EPIC_OVERRIDE=727 EXISTING_SUBISSUES_OVERRIDE="728 729 730" FORCE_REPLAN=1 \
+  DRY_RUN_EXISTING_EPIC=727 DRY_RUN_EXISTING_SUBISSUES="728 729 730" FORCE_REPLAN=1 \
   DRY_RUN=1 DRY_RUN_LOG="$LOG" REPO="petry-projects/.github-private" \
     DISCUSSION_NUMBER=413 DISCUSSION_NODE_ID="D_test" PLAN_PATH="$PLAN" \
     run bash "$PLANNER_DIR/apply-plan.sh"

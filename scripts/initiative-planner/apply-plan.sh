@@ -75,45 +75,13 @@ if [ "$blocking_count" -gt 0 ]; then
 fi
 
 # Resolve the source discussion once (plan wins, else env) — used by the
-# idempotency/supersede gate below and by the epic back-reference.
+# idempotency/supersede guard (in the epic section) and the epic back-reference.
 src="$(jq -r '.source_discussion // empty' "$PLAN_PATH")"
 [ -n "$src" ] || src="$DISCUSSION_NUMBER"
 
-# ── idempotency / supersede gate ──────────────────────────────────────────────
-# A re-plan (re-approve, re-dispatch, label re-toggle) must not silently mint a
-# duplicate epic + DAG. apply-plan.sh stamps every epic with a deterministic
-# back-reference ("Planned from idea discussion #<src>"), so we can detect our
-# own prior output. Default: if an OPEN `initiative` epic already exists for this
-# discussion, create NOTHING and point back at it (DRY_RUN honored). With
-# FORCE_REPLAN=1 we instead supersede: build the fresh plan now, then CLOSE the
-# old epic + its sub-issues at the end (see below). This replaces the planner's
-# previous reliance on the agent choosing not to re-create — a fragile guard the
-# agent itself mis-described as built-in when it was not.
-existing_epic="$(find_existing_initiative_epic "$REPO" "$src")"
+# Set by the idempotency/supersede guard (below) when force_replan supersedes an
+# existing epic; consumed by the supersede step after the new DAG is created.
 SUPERSEDE_OLD_EPIC=""
-if [ -n "$existing_epic" ]; then
-  if [ "${FORCE_REPLAN:-0}" = "1" ]; then
-    SUPERSEDE_OLD_EPIC="$existing_epic"
-    echo "force_replan: existing epic #${existing_epic} will be superseded after the new plan is created."
-  else
-    if [ -n "$DISCUSSION_NODE_ID" ]; then
-      printf -v guard_comment '<!-- initiative-planner -->\n**ℹ️ Already planned — no new epic created.**\n\nThis idea is already materialized as epic #%s. Nothing was created on this run.\n\nTo re-plan from scratch (close the existing epic and its stories and build a fresh DAG), re-dispatch the planner with `force_replan=true`.' "$existing_epic"
-      comment_on_discussion "$DISCUSSION_NODE_ID" "$guard_comment"
-      echo "posted 'already planned' notice back to discussion #${DISCUSSION_NUMBER:-?}"
-    fi
-    echo "::notice::initiative-planner: idea #${src:-?} already planned as epic #${existing_epic} — no new epic created (set force_replan to supersede)."
-    if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
-      {
-        echo "## Initiative already planned — no-op$(if [ "${DRY_RUN:-0}" = "1" ]; then echo " (DRY_RUN)"; fi)"
-        echo "- Source discussion: #${src:-?}"
-        echo "- Existing epic: #${existing_epic}"
-        echo "- **No epic or stories were created.** Re-dispatch with \`force_replan=true\` to supersede."
-      } >>"$GITHUB_STEP_SUMMARY"
-    fi
-    echo "idempotent no-op: existing epic #${existing_epic}; created nothing. dry_run=${DRY_RUN:-0}"
-    exit 0
-  fi
-fi
 
 # ── epic ──────────────────────────────────────────────────────────────────────
 epic_title="$(jq -r '.epic.title' "$PLAN_PATH")"
@@ -134,20 +102,32 @@ if [ -n "$src" ]; then
   idem_key="Planned from idea discussion #${src}"
   epic_body="${epic_body}"$'\n\n'"---"$'\n'"${idem_key} by the BMAD Scrum Master initiative-planner. **Inert until a maintainer adds \`initiative:auto\`.**"
 
-  # Idempotency guard: a second dispatch/auto-trigger for the same idea must not
-  # create a duplicate epic + DAG. If an open initiative epic already carries the
-  # back-reference, this is a benign re-run — skip creation and exit 0.
+  # Idempotency / supersede guard: a second dispatch/auto-trigger for the same
+  # idea must not create a duplicate epic + DAG. If an open initiative epic
+  # already carries the back-reference, default to a benign skip (exit 0). With
+  # FORCE_REPLAN=1, record it for supersede instead and continue to build the
+  # fresh DAG; the old epic + its sub-issues are CLOSED at the end (see below).
   existing_epic="$(find_existing_epic "$REPO" "$idem_key")"
   if [ -n "$existing_epic" ]; then
-    echo "already planned (epic #${existing_epic}) for idea discussion #${src} — skipping creation"
-    if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
-      {
-        echo "## Initiative plan skipped$(if [ "${DRY_RUN:-0}" = "1" ]; then echo " (DRY_RUN)"; fi)"
-        echo "- Already planned: epic #${existing_epic} for idea discussion #${src}"
-        echo "- No issues created (idempotency guard)."
-      } >>"$GITHUB_STEP_SUMMARY"
+    if [ "${FORCE_REPLAN:-0}" = "1" ]; then
+      SUPERSEDE_OLD_EPIC="$existing_epic"
+      echo "force_replan: existing epic #${existing_epic} will be superseded after the new plan is created."
+    else
+      echo "already planned (epic #${existing_epic}) for idea discussion #${src} — skipping creation"
+      if [ -n "$DISCUSSION_NODE_ID" ]; then
+        printf -v guard_comment '<!-- initiative-planner -->\n**ℹ️ Already planned — no new epic created.**\n\nThis idea is already materialized as epic #%s. Nothing was created on this run.\n\nTo re-plan from scratch (close the existing epic and its stories and build a fresh DAG), re-dispatch the planner with `force_replan=true`.' "$existing_epic"
+        comment_on_discussion "$DISCUSSION_NODE_ID" "$guard_comment"
+        echo "posted 'already planned' notice back to discussion #${DISCUSSION_NUMBER:-?}"
+      fi
+      if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+        {
+          echo "## Initiative plan skipped$(if [ "${DRY_RUN:-0}" = "1" ]; then echo " (DRY_RUN)"; fi)"
+          echo "- Already planned: epic #${existing_epic} for idea discussion #${src}"
+          echo "- No issues created (idempotency guard). Re-dispatch with \`force_replan=true\` to supersede."
+        } >>"$GITHUB_STEP_SUMMARY"
+      fi
+      exit 0
     fi
-    exit 0
   fi
 fi
 

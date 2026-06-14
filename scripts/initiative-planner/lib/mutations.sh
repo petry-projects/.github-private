@@ -137,42 +137,20 @@ comment_on_discussion() {
   ' -f id="$node_id" -f b="$body" --jq '.data.addDiscussionComment.comment.url'
 }
 
-# find_existing_initiative_epic <repo> <src_discussion> — print the number of an
-# OPEN `initiative` epic already planned from this discussion, or empty.
+# list_sub_issue_numbers <repo> <epic> — print the epic's native sub-issue
+# numbers, one per line (used by the force_replan supersede path).
 #
-# This is the deterministic idempotency check that backs apply-plan's guard: it
-# matches the back-reference apply-plan.sh stamps on every epic body
-# ("Planned from idea discussion #<src>"), so a re-run can detect its own prior
-# output without relying on the agent's judgement.
-#
-# Read-path overrides (no network) so the offline test suite — and CI dry-runs —
-# stay network-free, mirroring the DRY_RUN discipline of the mutating helpers:
-#   - EXISTING_EPIC_OVERRIDE  if set, returned verbatim (tests simulate a prior epic)
-#   - DRY_RUN                 a dry run with no override reports "no prior epic"
-#                             (the live lookup runs only when actually applying)
-find_existing_initiative_epic() {
-  local repo="$1" src="$2"
-  if [[ -n "${EXISTING_EPIC_OVERRIDE:-}" ]]; then
-    printf '%s' "$EXISTING_EPIC_OVERRIDE"
-    return 0
-  fi
-  _is_dry_run && return 0
-  [[ -n "$src" ]] || return 0
-  # --limit 1000: gh issue list defaults to 30, which would miss an existing
-  # epic once the repo has >30 open `initiative` issues and defeat the guard.
-  gh issue list --repo "$repo" --label initiative --state open --limit 1000 --json number,body \
-    --jq "[.[] | select(.body | test(\"Planned from idea discussion #${src}([^0-9]|$)\")) | .number] | first // empty"
-}
-
-# list_sub_issue_numbers <repo> <epic> — print the epic's native sub-issue numbers,
-# one per line. Honors the same read-path overrides as find_existing_initiative_epic.
+# DRY_RUN: returns the DRY_RUN_EXISTING_SUBISSUES stub (comma/space-separated,
+# empty if unset) so the offline bats suite can drive the supersede path without
+# touching the network — mirroring find_existing_epic's DRY_RUN_EXISTING_EPIC.
 list_sub_issue_numbers() {
   local repo="$1" epic="$2"
-  if [[ -n "${EXISTING_SUBISSUES_OVERRIDE:-}" ]]; then
-    printf '%s\n' ${EXISTING_SUBISSUES_OVERRIDE//,/ }
+  if _is_dry_run; then
+    local subs="${DRY_RUN_EXISTING_SUBISSUES:-}"
+    # shellcheck disable=SC2086 # intentional word-splitting on space/comma
+    [ -n "$subs" ] && printf '%s\n' ${subs//,/ }
     return 0
   fi
-  _is_dry_run && return 0
   gh api "repos/${repo}/issues/${epic}/sub_issues" --jq '.[].number'
 }
 
