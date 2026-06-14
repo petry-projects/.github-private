@@ -176,6 +176,38 @@ teardown() { rm -rf "$TMP"; }
   [ "$(grep -c '"op":"create_issue"' "$LOG")" -eq 4 ]
 }
 
+@test "epic body carries the Untracked prerequisites checklist when the array is present" {
+  jq '.epic.untracked_prerequisites = ["Resolve the data-retention discussion", "Provision the staging cluster"]' "$PLAN" >"$TMP/prereqs.json"
+  DRY_RUN=1 DRY_RUN_LOG="$LOG" REPO="petry-projects/.github-private" \
+    DISCUSSION_NUMBER=413 DISCUSSION_NODE_ID="D_test" PLAN_PATH="$TMP/prereqs.json" \
+    bash "$PLANNER_DIR/apply-plan.sh"
+  epic_body="$(grep '"op":"create_issue"' "$LOG" | jq -r 'select(.title|startswith("Initiative:")) | .body')"
+  [[ "$epic_body" == *"## Untracked prerequisites"* ]]
+  [[ "$epic_body" == *"- [ ] Resolve the data-retention discussion"* ]]
+  [[ "$epic_body" == *"- [ ] Provision the staging cluster"* ]]
+}
+
+@test "Untracked prerequisites section appears before the idempotency footer in the epic body" {
+  jq '.epic.untracked_prerequisites = ["Resolve the data-retention discussion"]' "$PLAN" >"$TMP/prereqs_order.json"
+  DRY_RUN=1 DRY_RUN_LOG="$LOG" REPO="petry-projects/.github-private" \
+    DISCUSSION_NUMBER=413 DISCUSSION_NODE_ID="D_test" PLAN_PATH="$TMP/prereqs_order.json" \
+    bash "$PLANNER_DIR/apply-plan.sh"
+  epic_body="$(grep '"op":"create_issue"' "$LOG" | jq -r 'select(.title|startswith("Initiative:")) | .body')"
+  prereqs_pos="${epic_body%%'## Untracked prerequisites'*}"
+  footer_pos="${epic_body%%'Planned from idea discussion'*}"
+  # The text before "Untracked prerequisites" must be shorter than the text before the footer,
+  # meaning prerequisites come first.
+  [[ "${#prereqs_pos}" -lt "${#footer_pos}" ]]
+}
+
+@test "epic body omits the Untracked prerequisites section when the array is absent" {
+  DRY_RUN=1 DRY_RUN_LOG="$LOG" REPO="petry-projects/.github-private" \
+    DISCUSSION_NUMBER=413 DISCUSSION_NODE_ID="D_test" PLAN_PATH="$PLAN" \
+    bash "$PLANNER_DIR/apply-plan.sh"
+  epic_body="$(grep '"op":"create_issue"' "$LOG" | jq -r 'select(.title|startswith("Initiative:")) | .body')"
+  [[ "$epic_body" != *"Untracked prerequisites"* ]]
+}
+
 @test "story bodies are rendered in the BMAD create-story template" {
   DRY_RUN=1 DRY_RUN_LOG="$LOG" REPO="petry-projects/.github-private" \
     DISCUSSION_NUMBER=413 DISCUSSION_NODE_ID="D_test" PLAN_PATH="$PLAN" \
