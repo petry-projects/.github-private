@@ -21,6 +21,9 @@ jobs:
       - name: Run list-prs sort tests
         run: bash tests/test_list_prs_sort.sh
 
+      - name: Run sonarcloud workflow tests
+        run: bash tests/test_sonarcloud_workflow.sh
+
       - name: Install test dependencies
         run: pip install pyyaml
 
