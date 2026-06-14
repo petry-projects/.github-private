@@ -110,9 +110,10 @@ verbatim; do not fork a second copy elsewhere.
 
 **Run it in a thinking block as an internal self-check** (do not output prose about
 your answers). This is the **FINAL pass** over the assembled plan, immediately before
-you write `$PLAN_PATH`. Each item is a **yes/no** question; the acceptable answers
-are **yes** or **yes — N/A** (when the item does not apply to this plan). Any item you
-cannot answer with either "yes" or "yes — N/A" is an unresolved item: route it to
+you write `$PLAN_PATH`. Each item is a checkpoint with these acceptable answers:
+- **yes** — criterion applies and is met
+- **yes — N/A** — criterion is met but does not apply to this plan (e.g., no optimization stories = "yes — N/A" for criterion 6)
+- Anything else (a "no", a "maybe", a "unclear") is an unresolved item: route it to
 `open_questions` rather than guessing — consistent with the no-invented-AC hard
 rule above. Do not weaken or invent ACs to force a "yes".
 
