@@ -9,7 +9,8 @@ set -euo pipefail
 # scan args pin the scanner JRE to the setup-java JDK so that flaky download
 # never happens.
 
-WORKFLOW=".github/workflows/sonarcloud.yml"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+WORKFLOW="${SCRIPT_DIR}/../.github/workflows/sonarcloud.yml"
 fail=0
 
 if ! command -v yq >/dev/null 2>&1; then
