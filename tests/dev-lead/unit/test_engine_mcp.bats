@@ -52,7 +52,7 @@ teardown() {
 _source_engine() {
   local engine="${1:-claude}"
   export REVIEW_ENGINE="$engine"
-  source "$ENGINE_SCRIPT" 2>/dev/null || true
+  source "$ENGINE_SCRIPT"
 }
 
 # ── Default (knob unset): behavior unchanged ──────────────────────────────────
@@ -76,8 +76,13 @@ _source_engine() {
 
 @test "agentic: REVIEW_MCP_CONFIG pointing to unreadable file → no MCP flags" {
   _source_engine "claude"
-  export REVIEW_MCP_CONFIG="/nonexistent/path/mcp-does-not-exist.json"
+  local unreadable_file
+  unreadable_file="$(mktemp)"
+  chmod 000 "$unreadable_file"
+  export REVIEW_MCP_CONFIG="$unreadable_file"
   run run_agentic "$TEST_PROMPT" "claude-opus-4-8" "deep"
+  chmod 600 "$unreadable_file"
+  rm -f "$unreadable_file"
   [ "$status" -eq 0 ]
   ! grep -q -- "--mcp-config" "$ARGS_RECORD"
   grep -q -- "--allowed-tools Bash,Read,Grep,Glob" "$ARGS_RECORD"
