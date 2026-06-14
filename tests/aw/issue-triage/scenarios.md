@@ -13,7 +13,7 @@ scenarios must be validated before the workflow is promoted to live.
 - Existing labels: _(none)_
 
 **Expected output:**
-- Labels applied: `bug`, `needs-triage`
+- Labels applied: `bug`, `needs-human-review`
 - Comment posted: yes — asks for steps to reproduce and expected vs actual
   behaviour (e.g. "Could you share the steps to reproduce this? What did you
   expect to happen, and what actually happened instead?")
@@ -67,7 +67,7 @@ scenarios must be validated before the workflow is promoted to live.
 ## Validation notes
 
 - The allowed label set is: `bug`, `enhancement`, `documentation`, `question`,
-  `needs-triage`, `good-first-issue`, `security`.
+  `needs-human-review`, `good first issue`, `security`.
 - At most **3 labels** may be applied in a single run.
 - The comment must be a **single** welcoming message; it must not ask multiple
   unrelated questions.
