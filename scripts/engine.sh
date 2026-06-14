@@ -1093,6 +1093,13 @@ _claude_chain_invoke() {
     final_rc=2
   fi
 
+  # Graceful degradation (issue #678): if MCP was configured and the CLI reported
+  # an MCP server connection/init failure, surface a ::warning:: but do NOT touch
+  # final_rc — the review proceeds to its normal verdict on the model's base
+  # capabilities rather than fatal-exiting or faking an "all clear". Inert when
+  # the MCP knob is unset. Scans the captured files while they still exist.
+  _emit_mcp_failure_warning "$final_stdout" "$final_stderr"
+
   # Emit the final attempt's captured output to the caller. In JSON-usage mode,
   # parse the usage block and emit the extracted .result text (so consumers still
   # receive plain text); fall back to the raw payload if extraction is empty or
