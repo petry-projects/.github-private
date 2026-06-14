@@ -612,7 +612,7 @@ _mcp_review_flags() {
   local base="$1"
   _MCP_FLAGS=()
   _MCP_ALLOWED_TOOLS="$base"
-  if [ -n "${REVIEW_MCP_CONFIG:-}" ] && [ -r "${REVIEW_MCP_CONFIG}" ]; then
+  if [ -n "${REVIEW_MCP_CONFIG:-}" ] && [ -f "${REVIEW_MCP_CONFIG}" ] && [ -r "${REVIEW_MCP_CONFIG}" ]; then
     _MCP_FLAGS=(--mcp-config "$REVIEW_MCP_CONFIG" --strict-mcp-config)
     if [ -n "${REVIEW_MCP_ALLOWED_TOOLS:-}" ]; then
       _MCP_ALLOWED_TOOLS="${base},${REVIEW_MCP_ALLOWED_TOOLS}"
@@ -752,13 +752,13 @@ run_agentic() {
         _claude_chain_invoke "$_agentic_chain" "$prompt_file" "$DEEP_TIMEOUT_SEC" \
           --permission-mode acceptEdits \
           --allowed-tools "$_MCP_ALLOWED_TOOLS" \
-          "${_MCP_FLAGS[@]}" \
+          ${_MCP_FLAGS[@]+"${_MCP_FLAGS[@]}"} \
           | tee "$_tok_tmp" || rc=${PIPESTATUS[0]}
       else
         _claude_chain_invoke "$_agentic_chain" "$prompt_file" "$DEEP_TIMEOUT_SEC" \
           --permission-mode acceptEdits \
           --allowed-tools "$_MCP_ALLOWED_TOOLS" \
-          "${_MCP_FLAGS[@]}" \
+          ${_MCP_FLAGS[@]+"${_MCP_FLAGS[@]}"} \
           || rc=$?
       fi
       ;;
@@ -861,14 +861,14 @@ run_duck() {
           --permission-mode acceptEdits \
           --allowed-tools "$_MCP_ALLOWED_TOOLS" \
           --max-turns 25 \
-          "${_MCP_FLAGS[@]}" \
+          ${_MCP_FLAGS[@]+"${_MCP_FLAGS[@]}"} \
           | tee "$_tok_tmp" || rc=${PIPESTATUS[0]}
       else
         _claude_chain_invoke "$model" "$prompt_file" "$DUCK_TIMEOUT_SEC" \
           --permission-mode acceptEdits \
           --allowed-tools "$_MCP_ALLOWED_TOOLS" \
           --max-turns 25 \
-          "${_MCP_FLAGS[@]}" \
+          ${_MCP_FLAGS[@]+"${_MCP_FLAGS[@]}"} \
           || rc=$?
       fi
       ;;

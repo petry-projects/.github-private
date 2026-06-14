@@ -83,6 +83,16 @@ _source_engine() {
   grep -q -- "--allowed-tools Bash,Read,Grep,Glob" "$ARGS_RECORD"
 }
 
+@test "agentic: REVIEW_MCP_CONFIG pointing to a directory → no MCP flags" {
+  _source_engine "claude"
+  export REVIEW_MCP_CONFIG="$(mktemp -d)"
+  run run_agentic "$TEST_PROMPT" "claude-opus-4-8" "deep"
+  rmdir "$REVIEW_MCP_CONFIG"
+  [ "$status" -eq 0 ]
+  ! grep -q -- "--mcp-config" "$ARGS_RECORD"
+  grep -q -- "--allowed-tools Bash,Read,Grep,Glob" "$ARGS_RECORD"
+}
+
 # ── Knob set: MCP flags threaded into agentic ────────────────────────────────
 
 @test "agentic: REVIEW_MCP_CONFIG set → MCP flags appended to claude call" {
