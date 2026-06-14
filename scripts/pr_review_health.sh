@@ -159,6 +159,10 @@ while IFS=$'\t' read -r run_id run_meta; do
 done < <(echo "$runs_json" | jq -r \
   '.[] | select(.conclusion == "failure") | [(.id | tostring), "run #\(.run_number) (\(.conclusion)) at \(.created_at)"] | @tsv')
 
+workflow_source=$(gh api "repos/${WORKFLOW_REPO}/contents/.github/workflows/${WORKFLOW_FILE}" \
+  --jq '.content' 2>/dev/null | tr -d '\n' | base64 -d 2>/dev/null \
+  || echo "(workflow source unavailable)")
+
 echo "Invoking Claude for log analysis..."
 claude --print --model claude-sonnet-4-6 > "$REPORT_FILE" <<PROMPT
 You are analyzing GitHub Actions workflow run logs for the PR Review Agent.
