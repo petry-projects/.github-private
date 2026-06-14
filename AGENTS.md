@@ -91,6 +91,17 @@ HTTP 406 above that limit.
   is partial. The agent **never** exits with a fatal error (code 1) on the 406 — it always produces
   an actionable review or comment.
 
+### Review artifact contract & rubric registry
+
+- The review automation binds "what is being reviewed" to "how it is reviewed" via an
+  artifact contract `{artifact_type, content_ref, rubric, output_channel}` and a versioned
+  rubric-registry manifest. See [`scripts/lib/README.md`](./scripts/lib/README.md) for the
+  contract, the manifest format (`scripts/lib/review-registry.tsv`), and the sourced lookup
+  helper (`scripts/lib/review-registry.sh`).
+- The registry is an input-adapter layer **above** `engine.sh` — it selects the rubric and
+  output channel for an `artifact_type` and must not change engine/model routing. Register a
+  new artifact_type by adding a manifest row; do not fork the reviewer.
+
 ### Cost reporting
 
 - **All surfaced USD amounts are rounded to 2 decimals (cents).** Render every
