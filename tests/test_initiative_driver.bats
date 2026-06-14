@@ -165,3 +165,47 @@ EOF
   [[ "$output" == *"RELEASED"* ]]
   grep -qF "issue edit" "$GH_LOG"
 }
+
+# ── sweep mode: EPIC empty discovers all gated epics ─────────────────────────
+
+@test "sweep: drives every open epic carrying initiative:auto when EPIC is empty" {
+  export EPIC=""
+  cat > "$MOCK_BIN/gh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$GH_LOG"
+args="$*"
+# Discovery query (state=open & labels=initiative:auto): two gated epics 10, 11
+if [[ "$args" == *"-f state=open"* ]]; then printf '10\n11'; exit 0; fi
+# Each epic carries the gate label
+if [[ "$args" == *"issues/10 --jq"* ]] || [[ "$args" == *"issues/11 --jq"* ]]; then
+  printf 'initiative:auto'; exit 0
+fi
+# Neither epic has sub-issues — both no-op cleanly
+if [[ "$args" == *"sub_issues"* ]]; then printf ''; exit 0; fi
+printf '[]'
+EOF
+  chmod +x "$MOCK_BIN/gh"
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Found 2 gated epic(s): 10 11"* ]]
+  [[ "$output" == *"Driving epic #10"* ]]
+  [[ "$output" == *"Driving epic #11"* ]]
+}
+
+@test "sweep: no-op when no open epic carries initiative:auto" {
+  export EPIC=""
+  cat > "$MOCK_BIN/gh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$GH_LOG"
+args="$*"
+if [[ "$args" == *"-f state=open"* ]]; then printf ''; exit 0; fi
+printf '[]'
+EOF
+  chmod +x "$MOCK_BIN/gh"
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"No open epics carry"* ]]
+  ! grep -qF "issue edit" "$GH_LOG"
+}
