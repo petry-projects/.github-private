@@ -45,7 +45,7 @@ def load_split_ids(cases_path: Path) -> list[str]:
     ids, or duplicate ids within this single file.
     """
     try:
-        raw = cases_path.read_text()
+        raw = cases_path.read_text(encoding="utf-8")
     except OSError as exc:
         fail(f"could not read {cases_path}: {exc}")
 
