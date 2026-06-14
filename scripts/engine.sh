@@ -46,6 +46,18 @@ DUCK_TIMEOUT_SEC="${DUCK_TIMEOUT_SEC:-300}"
 RETRY_MAX_ATTEMPTS="${RETRY_MAX_ATTEMPTS:-2}"   # total attempts including first
 RETRY_BASE_DELAY_SEC="${RETRY_BASE_DELAY_SEC:-5}"
 
+# Opt-in MCP (Model Context Protocol) config for the agentic review tiers.
+# REVIEW_MCP_CONFIG — path to an MCP-servers JSON config file. When unset/empty
+#   or not readable, the claude invocations gain NO new flags and behavior is
+#   byte-for-byte unchanged for every existing adopter.
+# REVIEW_MCP_ALLOWED_TOOLS — comma-separated MCP tool names (e.g.
+#   "mcp__context7__*") merged into the per-tier --allowed-tools list so the
+#   configured MCP tools are actually permitted. Default empty.
+# Only the deep (run_agentic) and rubber-duck (run_duck) claude tiers receive
+# this — the triage tier stays fast/restricted (--disallowed-tools only).
+REVIEW_MCP_CONFIG="${REVIEW_MCP_CONFIG:-}"
+REVIEW_MCP_ALLOWED_TOOLS="${REVIEW_MCP_ALLOWED_TOOLS:-}"
+
 set_engine_config() {
   case "$REVIEW_ENGINE" in
     claude)
@@ -582,6 +594,34 @@ _record_engine_tokens() {
     "$input_tokens" "$cache_read_tokens" "$output_tokens" "$context" "$cache_write_tokens" || true
 }
 
+# _mcp_review_flags <base_allowed_tools>
+# Threads the opt-in MCP config into the claude agentic/duck tiers. Populates two
+# globals for the caller to splice into the claude --print invocation:
+#   _MCP_ALLOWED_TOOLS — base_allowed_tools with REVIEW_MCP_ALLOWED_TOOLS merged
+#                        in (comma-separated). Equals base when no MCP tools set.
+#   _MCP_FLAGS         — array: (--mcp-config <file> --strict-mcp-config) when
+#                        REVIEW_MCP_CONFIG points to a readable file; empty array
+#                        otherwise.
+# Verified against @anthropic-ai/claude-code 2.1.138 (claude --help):
+#   --mcp-config <configs...>  Load MCP servers from JSON files or strings
+#   --strict-mcp-config        Only use MCP servers from --mcp-config, ignoring
+#                              all other MCP configurations
+# When REVIEW_MCP_CONFIG is unset/empty/unreadable, _MCP_FLAGS stays empty and
+# _MCP_ALLOWED_TOOLS == base_allowed_tools → no new flags, behavior unchanged.
+_mcp_review_flags() {
+  local base="$1"
+  _MCP_FLAGS=()
+  _MCP_ALLOWED_TOOLS="$base"
+  if [ -n "${REVIEW_MCP_CONFIG:-}" ] && [ -f "${REVIEW_MCP_CONFIG}" ] && [ -r "${REVIEW_MCP_CONFIG}" ]; then
+    _MCP_FLAGS=(--mcp-config "$REVIEW_MCP_CONFIG" --strict-mcp-config)
+    if [ -n "${REVIEW_MCP_ALLOWED_TOOLS:-}" ]; then
+      _MCP_ALLOWED_TOOLS="${base},${REVIEW_MCP_ALLOWED_TOOLS}"
+    fi
+  elif [ -n "${REVIEW_MCP_CONFIG:-}" ]; then
+    echo "  [mcp] REVIEW_MCP_CONFIG='$REVIEW_MCP_CONFIG' is not a readable file — skipping MCP flags" >&2
+  fi
+}
+
 # run_triage <prompt_file>
 # Used by: review-one-pr.sh only (not the dev-lead writer pipeline).
 # No-tool mode. The prompt file already has all PR context inlined by the
@@ -706,15 +746,19 @@ run_agentic() {
       if [ -n "$_tier_default" ] && [ "$model" != "$_tier_default" ]; then
         _agentic_chain="$model"
       fi
+      # Thread the opt-in MCP config (no-op when REVIEW_MCP_CONFIG is unset).
+      _mcp_review_flags "Bash,Read,Grep,Glob"
       if [ -n "$_tok_tmp" ]; then
         _claude_chain_invoke "$_agentic_chain" "$prompt_file" "$DEEP_TIMEOUT_SEC" \
           --permission-mode acceptEdits \
-          --allowed-tools "Bash,Read,Grep,Glob" \
+          --allowed-tools "$_MCP_ALLOWED_TOOLS" \
+          ${_MCP_FLAGS[@]+"${_MCP_FLAGS[@]}"} \
           | tee "$_tok_tmp" || rc=${PIPESTATUS[0]}
       else
         _claude_chain_invoke "$_agentic_chain" "$prompt_file" "$DEEP_TIMEOUT_SEC" \
           --permission-mode acceptEdits \
-          --allowed-tools "Bash,Read,Grep,Glob" \
+          --allowed-tools "$_MCP_ALLOWED_TOOLS" \
+          ${_MCP_FLAGS[@]+"${_MCP_FLAGS[@]}"} \
           || rc=$?
       fi
       ;;
@@ -808,19 +852,23 @@ run_duck() {
     claude)
       unset COPILOT_GITHUB_TOKEN 2>/dev/null || true
       unset GOOGLE_API_KEY 2>/dev/null || true
+      # Thread the opt-in MCP config (no-op when REVIEW_MCP_CONFIG is unset).
+      _mcp_review_flags "Bash,Read,Grep,Glob"
       # Route through the chain helper so real token usage (incl. cache) is captured
       # when logging is on; a single-model "chain" preserves prior behaviour.
       if [ -n "$_tok_tmp" ]; then
         _claude_chain_invoke "$model" "$prompt_file" "$DUCK_TIMEOUT_SEC" \
           --permission-mode acceptEdits \
-          --allowed-tools "Bash,Read,Grep,Glob" \
+          --allowed-tools "$_MCP_ALLOWED_TOOLS" \
           --max-turns 25 \
+          ${_MCP_FLAGS[@]+"${_MCP_FLAGS[@]}"} \
           | tee "$_tok_tmp" || rc=${PIPESTATUS[0]}
       else
         _claude_chain_invoke "$model" "$prompt_file" "$DUCK_TIMEOUT_SEC" \
           --permission-mode acceptEdits \
-          --allowed-tools "Bash,Read,Grep,Glob" \
+          --allowed-tools "$_MCP_ALLOWED_TOOLS" \
           --max-turns 25 \
+          ${_MCP_FLAGS[@]+"${_MCP_FLAGS[@]}"} \
           || rc=$?
       fi
       ;;
