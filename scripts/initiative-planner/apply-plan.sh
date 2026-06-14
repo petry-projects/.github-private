@@ -71,6 +71,17 @@ fi
 # ── epic ──────────────────────────────────────────────────────────────────────
 epic_title="$(jq -r '.epic.title' "$PLAN_PATH")"
 epic_body="$(jq -r '.epic.body' "$PLAN_PATH")"
+
+# Untracked prerequisites: real prereqs that are NOT issues (a discussion, an
+# external dependency) — rendered as a maintainer-tickable checklist on the epic,
+# distinct from the blocked_by_existing_issues edges (which cover prereqs that ARE
+# issues). Appended before the idempotency footer so the footer stays at the bottom.
+# Guarded so an empty/absent array leaves epic_body byte-for-byte as-is.
+untracked_prereqs="$(jq -r '(.epic.untracked_prerequisites // []) | map("- [ ] " + .) | join("\n")' "$PLAN_PATH")"
+if [ -n "$untracked_prereqs" ]; then
+  epic_body="${epic_body}"$'\n\n'"## Untracked prerequisites"$'\n'"${untracked_prereqs}"
+fi
+
 src="$(jq -r '.source_discussion // empty' "$PLAN_PATH")"
 [ -n "$src" ] || src="$DISCUSSION_NUMBER"
 if [ -n "$src" ]; then
@@ -94,15 +105,6 @@ if [ -n "$src" ]; then
     fi
     exit 0
   fi
-fi
-
-# Untracked prerequisites: real prereqs that are NOT issues (a discussion, an
-# external dependency) — rendered as a maintainer-tickable checklist on the epic,
-# distinct from the blocked_by_existing_issues edges (which cover prereqs that ARE
-# issues). Guarded so an empty/absent array leaves epic_body byte-for-byte as-is.
-untracked_prereqs="$(jq -r '(.epic.untracked_prerequisites // []) | map("- [ ] " + .) | join("\n")' "$PLAN_PATH")"
-if [ -n "$untracked_prereqs" ]; then
-  epic_body="${epic_body}"$'\n\n'"## Untracked prerequisites"$'\n'"${untracked_prereqs}"
 fi
 
 epic_out="$(create_issue "$REPO" "$epic_title" "$epic_body" "initiative")"
