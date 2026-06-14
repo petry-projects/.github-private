@@ -328,6 +328,52 @@ is_diff_too_large() {
   printf '%s\n' "$text" | grep -qiE "(HTTP 406|exceeded the maximum number of files|diff exceeded the maximum)"
 }
 
+# _mcp_failure_pattern
+# Single source of truth for the MCP connection/init-failure regex. The claude
+# CLI surfaces an unreachable/failed MCP server in its stdout/stderr but still
+# exits 0 and produces a verdict, so this is a *warn-and-continue* signal, not a
+# fatal one. Tokens are intentionally kept clear of _rate_limit_pattern's
+# vocabulary (no "limit"/"quota"/"429"/"overload"/"exhaust") so a degraded MCP
+# server is never misclassified as a provider rate-limit and routed into the
+# cross-engine fallback — mirrors the caution at the chain-throttle warning.
+_mcp_failure_pattern() {
+  local _pat
+  _pat='mcp server [^[:space:]]*[[:space:]]*("[^"]*"[[:space:]]*)?(failed|error)'   # `MCP server "x" failed`
+  _pat="$_pat"'|failed to (connect|initialize|reconnect|start)[^.]*mcp'             # `failed to connect ... MCP`
+  _pat="$_pat"'|mcp[^.]*(connection|initializ)[^.]*(fail|error)'                    # `MCP connection failed`
+  _pat="$_pat"'|could not (connect to|start) mcp server'
+  printf '%s' "($_pat)"
+}
+
+# _emit_mcp_failure_warning <file>...
+# Graceful degradation (Fail Loud, Never Fake): when MCP is configured and any
+# captured CLI output file shows an MCP server connection/init failure, emit a
+# single ::warning:: naming the affected server(s) so the failure degrades
+# visibly in the Actions log / step summary. NEVER alters control flow — the
+# caller's exit code and the model's verdict are left untouched, so the review
+# completes on the model's base capabilities instead of aborting or faking an
+# "all clear". Inert (no scan, no output) when REVIEW_MCP_CONFIG is unset, so no
+# MCP warnings appear for runs that never configured MCP.
+_emit_mcp_failure_warning() {
+  # Guard: only meaningful when MCP was actually configured for this run.
+  [ -n "${REVIEW_MCP_CONFIG:-}" ] || return 0
+  local files=() f
+  for f in "$@"; do
+    [ -n "$f" ] && [ -f "$f" ] && files+=("$f")
+  done
+  [ "${#files[@]}" -eq 0 ] && return 0
+  grep -qiE "$(_mcp_failure_pattern)" "${files[@]}" || return 0
+  # Best-effort: name the server(s) from a quoted token near "MCP server".
+  local servers
+  servers="$(grep -hoiE 'mcp server "[^"]+"' "${files[@]}" 2>/dev/null \
+    | sed -E 's/.*"([^"]+)".*/\1/' | sort -u | paste -sd, - || true)"
+  if [ -n "$servers" ]; then
+    echo "::warning::[mcp] server(s) unavailable: ${servers} — review continues on the model's base capabilities (no MCP tool context)" >&2
+  else
+    echo "::warning::[mcp] an MCP server was unavailable — review continues on the model's base capabilities (no MCP tool context)" >&2
+  fi
+}
+
 # is_transient_failure <exit_code>
 # Returns 0 (true) for exit codes suggesting a flaky network/process state:
 # 124 (GNU timeout) and 137/143 (signal kills). JSON parse failures and
@@ -639,6 +685,13 @@ _claude_chain_invoke() {
     parse_reset_time_files "$final_stdout" "$final_stderr"
     final_rc=2
   fi
+
+  # Graceful degradation (issue #678): if MCP was configured and the CLI reported
+  # an MCP server connection/init failure, surface a ::warning:: but do NOT touch
+  # final_rc — the review proceeds to its normal verdict on the model's base
+  # capabilities rather than fatal-exiting or faking an "all clear". Inert when
+  # the MCP knob is unset. Scans the captured files while they still exist.
+  _emit_mcp_failure_warning "$final_stdout" "$final_stderr"
 
   # Emit the final attempt's captured output to the caller. In JSON-usage mode,
   # parse the usage block and emit the extracted .result text (so consumers still
