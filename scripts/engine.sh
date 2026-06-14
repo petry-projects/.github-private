@@ -55,8 +55,24 @@ RETRY_BASE_DELAY_SEC="${RETRY_BASE_DELAY_SEC:-5}"
 #   configured MCP tools are actually permitted. Default empty.
 # Only the deep (run_agentic) and rubber-duck (run_duck) claude tiers receive
 # this — the triage tier stays fast/restricted (--disallowed-tools only).
+#
+# Convention (issue #679): a repo enables MCP review by committing a config at
+# the conventional path REVIEW_MCP_CONFIG_DEFAULT_PATH (default
+# `.github/review-mcp.json`) — no edit to the org-template-synced workflow.
+# An explicit REVIEW_MCP_CONFIG env value is honored as-is and takes precedence;
+# otherwise we fall back to the conventional path ONLY when that file exists.
+# When neither is present, REVIEW_MCP_CONFIG stays empty and MCP is off, so
+# repos that don't opt in see no behavior change.
+REVIEW_MCP_CONFIG_DEFAULT_PATH="${REVIEW_MCP_CONFIG_DEFAULT_PATH:-.github/review-mcp.json}"
+if [ -z "${REVIEW_MCP_CONFIG:-}" ] && [ -f "$REVIEW_MCP_CONFIG_DEFAULT_PATH" ]; then
+  REVIEW_MCP_CONFIG="$REVIEW_MCP_CONFIG_DEFAULT_PATH"
+fi
 REVIEW_MCP_CONFIG="${REVIEW_MCP_CONFIG:-}"
 REVIEW_MCP_ALLOWED_TOOLS="${REVIEW_MCP_ALLOWED_TOOLS:-}"
+# Export so the resolved knob survives into any review subprocess. review-one-pr.sh
+# and review-batch.sh source this file, so run_agentic/run_duck see it in-process;
+# the export also covers any future invocation via a separate child shell.
+export REVIEW_MCP_CONFIG REVIEW_MCP_ALLOWED_TOOLS
 
 set_engine_config() {
   case "$REVIEW_ENGINE" in
