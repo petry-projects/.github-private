@@ -121,3 +121,15 @@ regexes = [
   '''api-request''',
   '''[0-9a-f]{64}''',
 ]
+
+# Historical commit 58934f64 added an EXPIRED_JWT test fixture to test_gitleaks_config.bats
+# at line 60 — an expired JWT used as a test vector to validate gitleaks suppression behaviour.
+# The variable name EXPIRED_JWT and its context in the test file confirm it is not a real
+# credential. The token was removed in a subsequent commit; the finding is a history artifact.
+[[allowlists]]
+description = "Suppress EXPIRED_JWT test fixture in historical test_gitleaks_config.bats"
+targetRules = ["jwt"]
+condition = "AND"
+commits = ["58934f6496c015e1a58ee9814ba120fc22db0d61"]
+paths = ['''^tests/test_gitleaks_config\.bats$''']
+regexes = ['''EXPIRED_JWT''']
