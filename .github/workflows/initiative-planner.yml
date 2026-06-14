@@ -179,6 +179,12 @@ jobs:
             `blocked_by`/`blocked_by_existing_issues`/`hands_off`). Typically 3–8
             stories. `[Phase N]` title prefixes when ordered.
 
+            Before emitting the plan, run the **Quality rubric** self-check from
+            `prompts/bmad/scrum-master.md` in a thinking block as an internal
+            self-check (do not output prose about your answers). Route any item you
+            cannot answer with "yes" or "yes — N/A" to `open_questions` rather
+            than guessing.
+
             ## Validate, then materialize
 
             ```bash
