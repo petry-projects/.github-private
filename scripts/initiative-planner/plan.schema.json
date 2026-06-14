@@ -115,7 +115,7 @@
     },
     "open_questions": {
       "type": "array",
-      "description": "Things the planner could not resolve from context; surfaced for the human reviewer. A plain string is advisory (non-blocking). An object flagged `blocking:true` is plan-blocking: apply-plan.sh creates NO issues and posts the questions back to the source discussion instead (see #682).",
+      "description": "Things the planner could not resolve from context; surfaced for the human reviewer. A plain string is advisory (non-blocking). An object flagged `blocking:true` is plan-blocking: apply-plan.sh creates NO issues and posts the questions back to the source discussion instead (see #682). An object carrying `affected_story_ids` contests specific stories: apply-plan.sh materializes the plan but withholds `ready-for-dev` from those stories (labelling them `planning:needs-input`) and flags the epic `initiative:needs-input` until a maintainer resolves it (see #600).",
       "items": {
         "oneOf": [
           { "type": "string" },
@@ -129,6 +129,12 @@
                 "type": "boolean",
                 "default": false,
                 "description": "True => this question must be answered before the idea is plannable; halts materialization."
+              },
+              "affected_story_ids": {
+                "type": "array",
+                "items": { "type": "integer", "minimum": 1 },
+                "description": "Local story ids this question contests. apply-plan.sh withholds `ready-for-dev` from each and gates the epic until a maintainer resolves it.",
+                "default": []
               }
             }
           }

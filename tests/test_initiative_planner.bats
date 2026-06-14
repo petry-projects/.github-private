@@ -32,7 +32,7 @@ setup() {
       "dev_notes": ["Manual gate; no auto-release"],
       "size": "S", "blocked_by": [2], "hands_off": true }
   ],
-  "open_questions": ["Confirm Fable 5 pricing before wiring the apex tier."]
+  "open_questions": [{"question": "Confirm Fable 5 pricing before wiring the apex tier."}]
 }
 JSON
 }
@@ -69,6 +69,20 @@ teardown() { rm -rf "$TMP"; }
 @test "validate-plan rejects a dangling blocked_by reference" {
   jq '.stories[1].blocked_by = [99]' "$PLAN" >"$TMP/dangle.json"
   run python3 "$PLANNER_DIR/validate-plan.py" "$TMP/dangle.json"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"not a story id"* ]]
+}
+
+@test "validate-plan accepts an open_question affecting an existing story id" {
+  jq '.open_questions = [{"question":"Which tier for apex pricing?","affected_story_ids":[2]}]' "$PLAN" >"$TMP/oqaff.json"
+  run python3 "$PLANNER_DIR/validate-plan.py" "$TMP/oqaff.json"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"plan OK"* ]]
+}
+
+@test "validate-plan rejects an open_question affecting a nonexistent story id" {
+  jq '.open_questions = [{"question":"Which tier for apex pricing?","affected_story_ids":[99]}]' "$PLAN" >"$TMP/oqbad.json"
+  run python3 "$PLANNER_DIR/validate-plan.py" "$TMP/oqbad.json"
   [ "$status" -ne 0 ]
   [[ "$output" == *"not a story id"* ]]
 }
@@ -189,4 +203,55 @@ teardown() { rm -rf "$TMP"; }
   [[ "$body" == *"(AC: #1)"* ]]
   [[ "$body" == *"## Dev Notes"* ]]
   [[ "$body" == *"Status: ready-for-dev"* ]]
+}
+
+@test "apply-plan flags an affected story with planning:needs-input and withholds ready-for-dev" {
+  jq '.open_questions = [{"question":"Confirm apex pricing","affected_story_ids":[2]}]' "$PLAN" >"$TMP/aff.json"
+  DRY_RUN=1 DRY_RUN_LOG="$LOG" REPO="petry-projects/.github-private" \
+    DISCUSSION_NUMBER=413 DISCUSSION_NODE_ID="D_test" PLAN_PATH="$TMP/aff.json" \
+    bash "$PLANNER_DIR/apply-plan.sh"
+  # story id 2 is "[Phase 2] Wire Opus 4.8 behind fallback"
+  story="$(grep '"op":"create_issue"' "$LOG" | jq -c 'select(.title|startswith("[Phase 2] Wire"))')"
+  grep -qx 'planning:needs-input' <<<"$(jq -r '.labels[]' <<<"$story")"
+  storybody="$(jq -r '.body' <<<"$story")"
+  [[ "$storybody" != *"ready-for-dev"* ]]
+  [[ "$storybody" == *"needs-input"* ]]
+}
+
+@test "apply-plan leaves a story unaffected by any open question unchanged" {
+  jq '.open_questions = [{"question":"Confirm apex pricing","affected_story_ids":[2]}]' "$PLAN" >"$TMP/aff.json"
+  DRY_RUN=1 DRY_RUN_LOG="$LOG" REPO="petry-projects/.github-private" \
+    DISCUSSION_NUMBER=413 DISCUSSION_NODE_ID="D_test" PLAN_PATH="$TMP/aff.json" \
+    bash "$PLANNER_DIR/apply-plan.sh"
+  # story id 1 is "[Phase 1] Fix inert tier routing" — not referenced by any question
+  story="$(grep '"op":"create_issue"' "$LOG" | jq -c 'select(.title|startswith("[Phase 1]"))')"
+  ! grep -qx 'planning:needs-input' <<<"$(jq -r '.labels[]' <<<"$story")"
+  [[ "$(jq -r '.body' <<<"$story")" == *"Status: ready-for-dev"* ]]
+}
+
+@test "apply-plan labels the epic initiative:needs-input when an open question affects a story" {
+  jq '.open_questions = [{"question":"Confirm apex pricing","affected_story_ids":[2]}]' "$PLAN" >"$TMP/aff.json"
+  DRY_RUN=1 DRY_RUN_LOG="$LOG" REPO="petry-projects/.github-private" \
+    DISCUSSION_NUMBER=413 DISCUSSION_NODE_ID="D_test" PLAN_PATH="$TMP/aff.json" \
+    bash "$PLANNER_DIR/apply-plan.sh"
+  epic_labels="$(grep '"op":"create_issue"' "$LOG" | jq -r 'select(.title|startswith("Initiative:")) | .labels[]')"
+  grep -qx 'initiative:needs-input' <<<"$epic_labels"
+}
+
+@test "apply-plan does NOT label the epic initiative:needs-input when no story is affected" {
+  DRY_RUN=1 DRY_RUN_LOG="$LOG" REPO="petry-projects/.github-private" \
+    DISCUSSION_NUMBER=413 DISCUSSION_NODE_ID="D_test" PLAN_PATH="$PLAN" \
+    bash "$PLANNER_DIR/apply-plan.sh"
+  epic_labels="$(grep '"op":"create_issue"' "$LOG" | jq -r 'select(.title|startswith("Initiative:")) | .labels[]')"
+  ! grep -qx 'initiative:needs-input' <<<"$epic_labels"
+}
+
+@test "apply-plan summary lists each open question with its affected story numbers" {
+  jq '.open_questions = [{"question":"Confirm apex pricing","affected_story_ids":[2]}]' "$PLAN" >"$TMP/aff.json"
+  DRY_RUN=1 DRY_RUN_LOG="$LOG" REPO="petry-projects/.github-private" \
+    DISCUSSION_NUMBER=413 DISCUSSION_NODE_ID="D_test" PLAN_PATH="$TMP/aff.json" \
+    bash "$PLANNER_DIR/apply-plan.sh"
+  comment="$(grep '"op":"comment_on_discussion"' "$LOG" | jq -r '.body')"
+  [[ "$comment" == *"Confirm apex pricing"* ]]
+  [[ "$comment" == *"affects #"* ]]
 }

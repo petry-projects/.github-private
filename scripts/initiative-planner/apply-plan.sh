@@ -68,6 +68,20 @@ if [ "$blocking_count" -gt 0 ]; then
   exit 0
 fi
 
+# ── needs-input gate (non-blocking open questions that contest specific stories)─
+# A non-blocking open question may still carry `affected_story_ids`: stories whose
+# acceptance criteria a maintainer must resolve before release to dev-lead. We
+# DO materialize the plan, but withhold `ready-for-dev` from each affected story
+# (labelling it `planning:needs-input`) and flag the epic `initiative:needs-input`
+# so a maintainer resolves the questions before adding `initiative:auto`. This is
+# the analogue of the hands_off / `initiative:hold` gate, kept distinct from the
+# blocking gate above (which creates nothing) — see #600.
+declare -A NEEDS_INPUT=()
+while IFS= read -r aid; do
+  [ -n "$aid" ] || continue
+  NEEDS_INPUT[$aid]=1
+done < <(jq -r '[(.open_questions // [])[] | select(type=="object") | (.affected_story_ids // [])[]] | unique | .[]' "$PLAN_PATH")
+
 # ── epic ──────────────────────────────────────────────────────────────────────
 epic_title="$(jq -r '.epic.title' "$PLAN_PATH")"
 epic_body="$(jq -r '.epic.body' "$PLAN_PATH")"
@@ -96,7 +110,11 @@ if [ -n "$src" ]; then
   fi
 fi
 
-epic_out="$(create_issue "$REPO" "$epic_title" "$epic_body" "initiative")"
+epic_labels="initiative"
+if [ "${#NEEDS_INPUT[@]}" -gt 0 ]; then
+  epic_labels="initiative,initiative:needs-input"
+fi
+epic_out="$(create_issue "$REPO" "$epic_title" "$epic_body" "$epic_labels")"
 read -r epic_number epic_id <<< "$epic_out"
 echo "epic: #${epic_number} (id ${epic_id}) — ${epic_title}"
 
@@ -130,11 +148,22 @@ for lid in "${local_ids[@]}"; do
       + (if (.references // []) | length > 0 then "\n\n### References\n" + ([.references[] | "- " + .] | join("\n")) else "" end)
       + (if (.target_surface // []) | length > 0 then "\n\n### Likely target surface\n" + ([.target_surface[] | "- `" + . + "`"] | join("\n")) else "" end)
   ' "$PLAN_PATH")"
-  body="${body}"$'\n\n'"_Story prepared by the BMAD Scrum Master (Bob) for epic #${epic_number}. Status: ready-for-dev._"
+  # A story contested by an open question is NOT released to dev-lead: it carries
+  # `planning:needs-input` and its status line omits `ready-for-dev` until a
+  # maintainer resolves the question. Unreferenced stories are unchanged.
+  if [ -n "${NEEDS_INPUT[$lid]:-}" ]; then
+    story_status="needs-input — blocked on an unresolved open question"
+  else
+    story_status="ready-for-dev"
+  fi
+  body="${body}"$'\n\n'"_Story prepared by the BMAD Scrum Master (Bob) for epic #${epic_number}. Status: ${story_status}._"
 
   labels="initiative"
   if [ "$hands_off" = "true" ]; then
     labels="initiative,dev-lead:hands-off,initiative:hold"
+  fi
+  if [ -n "${NEEDS_INPUT[$lid]:-}" ]; then
+    labels="${labels},planning:needs-input"
   fi
 
   story_out="$(create_issue "$REPO" "$title" "$body" "$labels")"
@@ -172,7 +201,23 @@ if [ -n "$DISCUSSION_NODE_ID" ]; then
     sz="$(jq -r --argjson i "$lid" '.stories[] | select(.id==$i) | .size' "$PLAN_PATH")"
     rows="${rows}- #${NUM_BY_LOCAL[$lid]} (${sz}) — ${t}"$'\n'
   done
-  oq="$(jq -r '(.open_questions // []) | map(if type=="string" then . else .question end) | if length>0 then "\n**Open questions for review:**\n" + (map("- " + .) | join("\n")) else "" end' "$PLAN_PATH")"
+  # Map local story id -> created issue number so each open question can cite the
+  # real issue numbers it affects.
+  num_map_json="$(for lid in "${local_ids[@]}"; do printf '%s %s\n' "$lid" "${NUM_BY_LOCAL[$lid]}"; done \
+    | jq -Rn '[inputs | split(" ") | {(.[0]): (.[1]|tonumber)}] | add // {}')"
+  oq="$(jq -r --argjson nums "$num_map_json" '
+    (.open_questions // [])
+    | map(if type=="string" then {question: ., affected: []}
+          else {question: .question, affected: (.affected_story_ids // [])} end)
+    | if length>0 then
+        "\n**Open questions for review:**\n"
+        + (map(
+            "- " + .question
+            + (if (.affected | length) > 0
+               then " (affects " + ([.affected[] | "#" + ($nums[tostring]|tostring)] | join(", ")) + ")"
+               else "" end)
+          ) | join("\n"))
+      else "" end' "$PLAN_PATH")"
   comment="$(printf '<!-- initiative-planner -->\n**📋 Initiative planned by the BMAD Scrum Master (Bob).**\n\nEpic **#%s** — %s\n\n%s stories created (inert — labelled `initiative`, NOT `initiative:auto`):\n\n%s\n%s\n---\nReview the epic and its sub-issue DAG, adjust as needed, then add **`initiative:auto`** to epic #%s to hand it to `initiative-driver` for auto-implementation.' \
     "$epic_number" "$epic_title" "$story_count" "$rows" "$oq" "$epic_number")"
   comment_on_discussion "$DISCUSSION_NODE_ID" "$comment"

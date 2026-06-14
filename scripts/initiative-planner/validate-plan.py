@@ -6,6 +6,7 @@ downstream sub-issue/blocked_by DAG depends on:
 
   - story ids are unique
   - every blocked_by edge references a story id that exists in the plan
+  - every open_question affected_story_ids entry references a story id that exists
   - no story blocks itself
   - the blocked_by graph is acyclic (a cycle = a deadlock the driver can
     never release)
@@ -68,6 +69,13 @@ def main() -> None:
             if d not in id_set:
                 fail(f"story {s['id']} blocked_by {d}, which is not a story id in this plan")
         graph[s["id"]] = list(deps)
+
+    for q in plan.get("open_questions", []) or []:
+        if not isinstance(q, dict):
+            continue
+        for sid in q.get("affected_story_ids", []) or []:
+            if sid not in id_set:
+                fail(f"open_question affects story {sid}, which is not a story id in this plan")
 
     has_startable_entry = any(not graph[i] for i in graph)
     if not has_startable_entry:
