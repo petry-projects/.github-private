@@ -353,7 +353,7 @@ _emit_mcp_failure_warning() {
   # Best-effort: name the server(s) from a quoted token near "MCP server".
   local servers
   servers="$(grep -hoiE 'mcp server "[^"]+"' "${files[@]}" 2>/dev/null \
-    | sed -E 's/.*"([^"]+)".*/\1/' | sort -u | paste -sd, - )"
+    | sed -E 's/.*"([^"]+)".*/\1/' | sort -u | paste -sd, - || true)"
   if [ -n "$servers" ]; then
     echo "::warning::[mcp] server(s) unavailable: ${servers} — review continues on the model's base capabilities (no MCP tool context)" >&2
   else
