@@ -30,14 +30,14 @@ if [ -z "$args" ] || [ "$args" = "null" ]; then
   exit 1
 fi
 
-if ! grep -q "sonar.scanner.skipJreProvisioning=true" <<<"$args"; then
+if ! grep -Fq "sonar.scanner.skipJreProvisioning=true" <<<"$args"; then
   echo "FAIL: $WORKFLOW SonarCloud Scan args must set -Dsonar.scanner.skipJreProvisioning=true"
   echo "  Without it the scanner downloads its own JRE from scanner.sonarcloud.io,"
   echo "  which intermittently returns HTTP 403 and fails the run (issue #699)."
   fail=1
 fi
 
-if ! grep -q "sonar.scanner.javaExePath=" <<<"$args"; then
+if ! grep -Fq 'steps.setup_java.outputs.path' <<<"$args" || ! grep -Fq '/bin/java' <<<"$args"; then
   echo "FAIL: $WORKFLOW SonarCloud Scan args must set -Dsonar.scanner.javaExePath to the setup-java JDK"
   fail=1
 fi
