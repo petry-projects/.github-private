@@ -93,7 +93,7 @@ labels_of() {
 # Returns 0 on success (including no-ops); never aborts the caller's sweep.
 drive_epic() {
   local epic="$1"
-  local epic_labels all_children_raw open_children_raw n_labels labels open_blockers
+  local epic_labels all_children_raw open_children_raw n n_labels labels open_blockers
   local -a all_children open_children
   local -A released
   local in_flight slots released_now in_epic
@@ -130,7 +130,6 @@ drive_epic() {
   fi
 
   # ── count in-flight (released but not yet closed) ───────────────────────────
-  released=()
   in_flight=0
   open_children_raw="$(gh api --paginate "repos/$REPO/issues/$epic/sub_issues" \
       --jq '.[] | select(.state=="open") | .number')"
@@ -209,6 +208,18 @@ log "Found ${#epics[@]} gated epic(s): ${epics[*]}"
 rc=0
 for e in "${epics[@]}"; do
   log "──────── Driving epic #$e ────────"
-  drive_epic "$e" || { rc=1; echo "::error::driver failed for epic #$e"; }
+  # Run each epic in a standalone subshell with errexit ON so a gh failure
+  # aborts that epic instead of being silently masked, while the parent (errexit
+  # OFF for the call) keeps sweeping the rest. NOTE: `drive_epic "$e" || …` would
+  # NOT work — Bash disables `set -e` inside a function invoked in an OR/if/&&
+  # context, letting an API failure fall through as a false "no sub-issues".
+  set +e
+  ( set -e; drive_epic "$e" )
+  ec=$?
+  set -e
+  if [[ "$ec" -ne 0 ]]; then
+    rc=1
+    echo "::error::driver failed for epic #$e"
+  fi
 done
 exit "$rc"
