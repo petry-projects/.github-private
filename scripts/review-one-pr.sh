@@ -172,7 +172,9 @@ fi
         # shellcheck source=lib/advisory-review-gate.sh
         source "$SCRIPT_DIR/lib/advisory-review-gate.sh"
         if detect_advisory_rate_limit "$PR_SNAPSHOT"; then
-          reset_iso=$(date -u -d "+${RATE_LIMIT_RETRY_BACKOFF:-3600} seconds" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)
+          reset_iso=$(date -u -d "+${RATE_LIMIT_RETRY_BACKOFF:-3600} seconds" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+            || date -u -v+"${RATE_LIMIT_RETRY_BACKOFF:-3600}"S +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+            || true)
           maybe_post_rate_limited_marker "$PR_URL" "$PR_HEAD_SHA" "$reset_iso" "$PR_SNAPSHOT" || true
         fi
       ) || true

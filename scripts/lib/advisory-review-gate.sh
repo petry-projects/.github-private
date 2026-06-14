@@ -160,7 +160,7 @@ detect_advisory_rate_limit() {
       [(.reviews // [])[]  | {bot: .author.login, time: .submittedAt, body: (.body // "")}] +
       [(.comments // [])[] | {bot: .author.login, time: .createdAt,   body: (.body // "")}]
     )
-    | map(select([.bot] | inside($bots)))
+    | map(select(.bot as $b | $bots | any(. == $b)))
     | group_by(.bot)
     | map(sort_by(.time) | last)
     | map(select(.body | test($pat; "i")))

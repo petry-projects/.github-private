@@ -156,7 +156,7 @@ while IFS= read -r pr_url; do
   rl_reset=$(jq -r --arg sha "$head_sha" '
     [ ((.reviews // []) + (.comments // []))[]
       | (.body // "")
-      | select(test("<!-- pr-review-agent rate-limited v1 sha=" + $sha + " "))
+      | select(test("<!-- pr-review-agent rate-limited v1 sha=" + $sha + " ") and test("reset=[^ ]+"))
       | capture("reset=(?<r>[^ ]+)") | .r ]
     | last // ""' <<< "$snapshot" 2>/dev/null || echo "")
   if [ -n "$rl_reset" ]; then
@@ -165,7 +165,9 @@ while IFS= read -r pr_url; do
       echo "  skip $pr_url — rate-limited marker present but already reviewed at head ${head_sha:0:8}"
       continue
     fi
-    reset_epoch=$(date -u -d "$rl_reset" +%s 2>/dev/null || echo "")
+    reset_epoch=$(date -u -d "$rl_reset" +%s 2>/dev/null \
+      || date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$rl_reset" +%s 2>/dev/null \
+      || echo "")
     now_epoch=$(date -u +%s)
     # Dispatch once the reset has elapsed; an unparseable reset fails open to a
     # retry so a malformed marker can never strand the PR indefinitely.
