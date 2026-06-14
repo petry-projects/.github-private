@@ -62,16 +62,48 @@ reconstructions of a behavior, not raw captured transcripts. Because the `dev/`
 split is proposer-visible (and the whole repo is readable by other automation),
 treat every committed case as world-readable within the org.
 
+## The hard CI immutability gate (#692)
+
+CODEOWNERS only **requests** review — it blocks a merge only when branch
+protection's "require review from code owners" is enabled, an unstated
+dependency. The actual immutability guarantee is a **CI gate** that fails any
+proposer-authored PR touching a held-out path, independent of CODEOWNER review.
+
+- **Workflow:** [`.github/workflows/holdout-guard.yml`](../.github/workflows/holdout-guard.yml)
+  runs on every PR (no `paths:` filter, so it is a stable required check).
+- **Decision logic:** [`scripts/lib/holdout-guard.sh`](../scripts/lib/holdout-guard.sh),
+  keyed on **PR author + changed paths**:
+  - author is **not** the proposer identity → **pass** (humans/CODEOWNERS, and
+    the dev-lead bot authoring eval *stories*, edit `evals/` freely);
+  - author **is** the proposer but changes only non-`evals/` paths (e.g.
+    `prompts/triage.md`) → **pass**;
+  - author **is** the proposer **and** changes any `evals/` path → **fail**.
+- **Proposer identity:** the proposer runs as `GITHUB_TOKEN`, whose PR author
+  login is `github-actions[bot]` (the resolved default). It is intentionally
+  distinct from the dev-lead bot (`donpetry-bot`), which authors the eval
+  stories themselves. Override the identity list (and guarded prefixes) via the
+  `HOLDOUT_PROPOSER_IDENTITIES` / `HOLDOUT_GUARDED_PREFIXES` env vars when the
+  Phase-3 proposer (#587) lands with its own bot account.
+- **Coverage:** [`tests/test_holdout_guard.bats`](../tests/test_holdout_guard.bats),
+  wired into the `bats` job in `.github/workflows/lint.yml`.
+
+This **complements, does not replace, CODEOWNERS**: CODEOWNERS routes review;
+this gate is the immutability guarantee. Land it before the Phase-3 proposer
+(#587) activates so the proposer can never self-edit its own test set even if
+branch protection is misconfigured.
+
 ## Why CODEOWNER-gating the holdout is sufficient (AC1/AC4)
 
 The held-out guarantee rests on two independent controls:
 
-1. **Tamper protection (enforced here).** `holdout/` is CODEOWNER-gated in
-   [`.github/CODEOWNERS`](../.github/CODEOWNERS) with an explicit rule, on top of
-   the repo-wide default. The proposer runs as `GITHUB_TOKEN` and therefore
-   **cannot merge** any edit to a holdout file — it can neither rewrite the
-   holdout to match a weak skill nor move cases between splits. The reward-hacking
-   guard from #582 (CODEOWNERS over `evals/`) is what this rule specialises.
+1. **Tamper protection (enforced here, plus a CI check enforces it).** `holdout/`
+   is CODEOWNER-gated in [`.github/CODEOWNERS`](../.github/CODEOWNERS) with an
+   explicit rule, on top of the repo-wide default, **and** the CI gate above
+   (#692) hard-fails any proposer-authored change to `evals/`. The proposer runs
+   as `GITHUB_TOKEN` and therefore **cannot merge** any edit to a holdout file —
+   it can neither rewrite the holdout to match a weak skill nor move cases
+   between splits. The reward-hacking guard from #582 (CODEOWNERS over `evals/`)
+   is what this rule specialises.
 
 2. **Context isolation (enforced by the consumer).** The proposer prompt is built
    from `dev/` only; the gate reads `holdout/` only. This is a contract the
