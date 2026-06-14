@@ -1,0 +1,3 @@
+{"id": "dev-0001", "prompt": "Summarize a CI failure log where a shellcheck warning (SC2086) blocks the build.", "expected": "Identifies the unquoted variable, names SC2086, and proposes quoting the expansion."}
+{"id": "dev-0002", "prompt": "A workflow uses a mutable action ref (uses: actions/checkout@v4). What should change?", "expected": "Recommends SHA-pinning the third-party action and notes the first-party channel-tag exception."}
+{"id": "dev-0003", "prompt": "An agent profile markdown file is missing its tools frontmatter field. Describe the fix.", "expected": "Notes the required name/description/tools frontmatter and adds a tools field."}
