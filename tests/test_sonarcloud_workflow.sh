@@ -37,8 +37,9 @@ if ! grep -Fq "sonar.scanner.skipJreProvisioning=true" <<<"$args"; then
   fail=1
 fi
 
-if ! grep -Fq 'steps.setup_java.outputs.path' <<<"$args" || ! grep -Fq '/bin/java' <<<"$args"; then
-  echo "FAIL: $WORKFLOW SonarCloud Scan args must set -Dsonar.scanner.javaExePath to the setup-java JDK"
+# shellcheck disable=SC2016  # single quotes are intentional: search for literal ${{ }} expression
+if ! grep -Fq 'sonar.scanner.javaExePath=${{ steps.setup_java.outputs.path }}/bin/java' <<<"$args"; then
+  echo "FAIL: $WORKFLOW SonarCloud Scan args must set -Dsonar.scanner.javaExePath to the setup-java JDK path (\${{ steps.setup_java.outputs.path }}/bin/java)"
   fail=1
 fi
 
