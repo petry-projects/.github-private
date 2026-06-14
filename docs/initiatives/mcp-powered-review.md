@@ -38,9 +38,9 @@ security/quality signal on top.
 
 | Server | What it adds | Auth / cost | Maturity (per #650, 2026-06-13) | Best fit |
 |---|---|---|---|---|
-| **Context7** | Real-time library/framework documentation; catches deprecated APIs and breaking changes static training data misses | Free, stateless, **no auth** | Available; lowest failure surface | **All stacks** — React (component/library docs), Python (package docs), Go (module docs) |
+| **Context7** | Real-time library/framework documentation; catches deprecated APIs and breaking changes that static training data misses | Free, stateless, **no auth** | Available; lowest failure surface | **All stacks** — React (component/library docs), Python (package docs), Go (module docs) |
 | **GitHub MCP — secret scanning** | Scans for exposed secrets during agent code generation, honoring repo/org push-protection settings | `GITHUB_TOKEN` (no PAT); integrates with existing repo security settings | **GA (May 2026)** | Any stack; security-sensitive repos |
-| **GitHub MCP — dependency scanning** | Flags vulnerable dependencies before commit (repos with Dependabot alerts enabled) | `GITHUB_TOKEN`; Dependabot alerts enabled | **Public preview** (not GA) | Any stack with a dependency manifest |
+| **GitHub MCP — dependency scanning** | Flags vulnerable dependencies before merge (repos with Dependabot alerts enabled) | `GITHUB_TOKEN`; Dependabot alerts enabled | **Public preview** (not GA) | Any stack with a dependency manifest |
 | **SonarQube MCP** | Enriches review with existing code-quality data (smells, coverage, hotspots) | SonarQube instance + token | Available where a SonarQube project exists | Repos already running SonarQube |
 
 > **Availability caveat.** GitHub MCP **secret scanning is GA**; **dependency scanning is public
@@ -49,7 +49,7 @@ security/quality signal on top.
 Suggested per-stack starters:
 
 - **React / TypeScript** — Context7 (library docs) + GitHub MCP secret scanning.
-- **Python** — Context7 (package docs) + GitHub MCP secret + dependency scanning (preview).
+- **Python** — Context7 (package docs) + GitHub MCP secret scanning + dependency scanning (preview).
 - **Go** — Context7 (module docs) + GitHub MCP secret scanning; add SonarQube MCP where a SonarQube
   project already exists.
 
@@ -157,7 +157,7 @@ enrichment via Context7.
 ## 6. References
 
 - Discussion [#650](https://github.com/petry-projects/.github-private/discussions/650) — proposal body
-  + 2026-06-13 weekly update (server availability + revised starter).
+  - 2026-06-13 weekly update (server availability + revised starter).
 - Epic [#676](https://github.com/petry-projects/.github-private/issues/676) — MCP-powered review
   enrichment; stories #677 (engine knob), #678 (graceful degradation), #679 (workflow surface),
   #680 (this doc), #681 (downstream pilot).
