@@ -35,7 +35,7 @@ teardown() {
 _source_engine() {
   local engine="${1:-claude}"
   export REVIEW_ENGINE="$engine"
-  source "$ENGINE_SCRIPT" 2>/dev/null || true
+  source "$ENGINE_SCRIPT"
 }
 
 # ── run_writer tests ──────────────────────────────────────────────────────────
