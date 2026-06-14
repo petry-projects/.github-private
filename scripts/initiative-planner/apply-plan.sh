@@ -74,7 +74,26 @@ epic_body="$(jq -r '.epic.body' "$PLAN_PATH")"
 src="$(jq -r '.source_discussion // empty' "$PLAN_PATH")"
 [ -n "$src" ] || src="$DISCUSSION_NUMBER"
 if [ -n "$src" ]; then
-  epic_body="${epic_body}"$'\n\n'"---"$'\n'"Planned from idea discussion #${src} by the BMAD Scrum Master initiative-planner. **Inert until a maintainer adds \`initiative:auto\`.**"
+  # idem_key is the idempotency back-reference embedded in every epic body and
+  # reused verbatim as the search key by find_existing_epic.
+  idem_key="Planned from idea discussion #${src}"
+  epic_body="${epic_body}"$'\n\n'"---"$'\n'"${idem_key} by the BMAD Scrum Master initiative-planner. **Inert until a maintainer adds \`initiative:auto\`.**"
+
+  # Idempotency guard: a second dispatch/auto-trigger for the same idea must not
+  # create a duplicate epic + DAG. If an open initiative epic already carries the
+  # back-reference, this is a benign re-run — skip creation and exit 0.
+  existing_epic="$(find_existing_epic "$REPO" "$idem_key")"
+  if [ -n "$existing_epic" ]; then
+    echo "already planned (epic #${existing_epic}) for idea discussion #${src} — skipping creation"
+    if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+      {
+        echo "## Initiative plan skipped$(if [ "${DRY_RUN:-0}" = "1" ]; then echo " (DRY_RUN)"; fi)"
+        echo "- Already planned: epic #${existing_epic} for idea discussion #${src}"
+        echo "- No issues created (idempotency guard)."
+      } >>"$GITHUB_STEP_SUMMARY"
+    fi
+    exit 0
+  fi
 fi
 
 epic_out="$(create_issue "$REPO" "$epic_title" "$epic_body" "initiative")"
