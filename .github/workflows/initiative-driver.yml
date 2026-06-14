@@ -8,14 +8,22 @@ name: Initiative Driver
 # Mechanics, gates, and the PAT requirement are documented in
 # scripts/initiative-driver.sh and docs/initiatives/agentic-release-strategy-orchestration.md.
 #
-# SAFETY: the driver no-ops unless the epic carries the `initiative:auto` label,
-# so Phase 1 stays human-driven. Flip it on for Phase 2 by adding that label to
-# the epic (#495). Per-issue `dev-lead:hands-off` / `initiative:hold` are never
-# released.
+# SAFETY: the driver no-ops unless an epic carries the `initiative:auto` label,
+# so initiatives stay human-driven until a maintainer opts in. Per-issue
+# `dev-lead:hands-off` / `initiative:hold` are never released.
+#
+# EPIC selection: the automatic triggers (schedule / issues:closed /
+# issues:labeled) run in SWEEP mode (no epic input) — the driver script
+# discovers EVERY open epic carrying `initiative:auto` and drives each, so it is
+# no longer pinned to one hard-coded epic. `workflow_dispatch` accepts an
+# optional `epic` to target a single one (leave blank to sweep).
 
 on:
   issues:
-    types: [closed] # a close may unblock successors — re-evaluate the DAG
+    # closed: a close may unblock successors — re-evaluate the DAG.
+    # labeled: arming an epic with `initiative:auto` starts it immediately
+    #          (the job below filters to that label).
+    types: [closed, labeled]
   schedule:
     - cron: "23 */6 * * *" # safety net for missed close events
   workflow_dispatch:
@@ -25,15 +33,15 @@ on:
         required: false
         default: ""
       epic:
-        description: "Epic issue number to drive"
+        description: "Epic issue number to drive (blank = sweep all initiative:auto epics)"
         required: false
-        default: "495"
+        default: ""
       dry_run:
         description: "Log decisions but do not apply labels"
         required: false
         default: "false"
       max_in_flight:
-        description: "Max sub-issues released at once"
+        description: "Max sub-issues released at once (per epic)"
         required: false
         default: "2"
 
@@ -62,6 +70,12 @@ env:
 
 jobs:
   drive:
+    # On a `labeled` event, only proceed when the label added is the gate label —
+    # otherwise every label change in the repo would trigger a full sweep.
+    if: >-
+      github.event_name != 'issues' ||
+      github.event.action != 'labeled' ||
+      github.event.label.name == 'initiative:auto'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:

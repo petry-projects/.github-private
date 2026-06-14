@@ -21,7 +21,10 @@ automate.
 dev-lead merges a PR ──► "Closes #N" closes issue #N
         │
         ▼
-initiative-driver  (on: issues:[closed]  +  safety-net cron  +  workflow_dispatch)
+initiative-driver  (on: issues:[closed] / issues:[labeled initiative:auto]
+                       +  safety-net cron  +  workflow_dispatch)
+        │   sweep: for each OPEN epic carrying `initiative:auto`
+        │   (workflow_dispatch may target a single epic instead)
         │   gate: epic carries `initiative:auto`?  ── no ─► no-op (human-driven)
         │   for each OPEN sub-issue of the epic:
         │     • all `blocked_by` deps CLOSED?
@@ -35,6 +38,11 @@ initiative-driver  (on: issues:[closed]  +  safety-net cron  +  workflow_dispatc
   the issue UI and queried via `…/issues/{n}/dependencies/blocked_by`.
 - **Event-driven, self-propelling.** A merge closes an issue, which fires the driver, which releases
   the now-unblocked successors. The cron (`23 */6 * * *`) is only a backstop for missed events.
+- **Arming starts it.** Adding `initiative:auto` to an epic fires the driver via `issues:[labeled]`,
+  so the first ready wave is released immediately — no waiting for the next cron tick.
+- **Epic-agnostic.** The automatic triggers run in *sweep* mode: the driver discovers **every** open
+  epic carrying `initiative:auto` and drives each, so it is not pinned to one hard-coded epic. A
+  `workflow_dispatch` with an `epic` input targets a single epic (blank = sweep).
 - **Bounded.** `MAX_IN_FLIGHT` (default 2) caps how many sub-issues run at once — controlling parallel
   token cost and blast radius. Per-issue concurrency lanes in dev-lead keep concurrent items isolated.
 - **Repo-parameterized (`target_repo`).** The same driver sweeps + releases stories *for another repo*:
@@ -95,7 +103,8 @@ bootstrap**, not just a technical dependency:
 
 - **Dry-run / preview** what would be released:
   `gh workflow run initiative-driver.yml -f dry_run=true` (or run the script with `DRY_RUN=true`).
-- **Arm Phase 2:** `gh issue edit 495 --add-label initiative:auto`.
+- **Arm an initiative:** `gh issue edit <epic> --add-label initiative:auto` — this fires the driver
+  immediately (labeled event) and the epic is picked up by every later sweep.
 - **Pause one issue:** add `initiative:hold`; **hand back to a human:** add `dev-lead:hands-off`.
 - **Throttle:** `gh workflow run initiative-driver.yml -f max_in_flight=1`.
 - **Disarm:** remove `initiative:auto` from the epic — in-flight items finish; nothing new is released.
@@ -160,5 +169,6 @@ Cross-repo enablement adds **no new gate and no new LLM cost** — it only chang
 
 ## Follow-ups (not in this scaffold)
 
-- A bats test that mocks `gh` to assert the gate / blocker / cap logic.
-- Generalize `EPIC` beyond the hard-coded `495` default if a second initiative adopts the driver.
+- ~~A bats test that mocks `gh` to assert the gate / blocker / cap logic.~~ Done — `tests/test_initiative_driver.bats`.
+- ~~Generalize `EPIC` beyond the hard-coded `495` default if a second initiative adopts the driver.~~
+  Done — automatic triggers now sweep every `initiative:auto` epic; `workflow_dispatch` can still target one.
