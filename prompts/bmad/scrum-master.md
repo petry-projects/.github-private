@@ -126,8 +126,10 @@ rule above. Do not weaken or invent ACs to force a "yes".
 3. **Cost cap present** — Does the plan name an explicit cost cap / budget bound
    for the initiative (e.g. a token or dollar ceiling, or a run-count limit)?
 4. **Untracked prerequisites surfaced** — Is every prerequisite either captured as
-   a `blocked_by` / `blocked_by_existing_issues` edge or, if not yet tracked,
-   surfaced in `open_questions` — with none left implicit?
+   a `blocked_by` / `blocked_by_existing_issues` edge or, if not yet a GitHub
+   issue, listed in `epic.untracked_prerequisites` — with none left implicit?
+   (Reserve `open_questions` for genuinely unresolved decisions, not known
+   external dependencies.)
 5. **Stories independently reviewable** — Is each story a single PR-sized unit a
    reviewer can assess on its own, with self-contained Dev Notes and References?
 6. **Eval/optimization safeguards** — For every story that tunes, optimizes, or
