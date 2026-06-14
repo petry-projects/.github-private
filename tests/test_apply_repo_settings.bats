@@ -25,9 +25,12 @@ setup() {
   # Only consume stdin for PATCH calls (--input -); GET calls must not read
   # stdin because they may be called inside a while loop whose stdin is a
   # process-substitution pipe — consuming it would swallow subsequent lines.
+  # Conditionally read stdin only when available (not a TTY) to prevent hangs.
   gh() {
     local stdin_body=""
-    if [[ "$*" == *"--input -"* ]]; then stdin_body=$(cat); fi
+    if [[ "$*" == *"--input -"* ]] && [[ ! -t 0 ]]; then
+      stdin_body=$(cat)
+    fi
     printf '%s STDIN=%s\n' "$*" "$stdin_body" >> "$GH_LOG"
     # $2 == "-X" means a method flag follows (e.g. -X PATCH) — skip returning body
     if [[ "${2:-}" != "-X" ]] && [[ "$*" == *"check-suites/preferences"* ]]; then
