@@ -85,6 +85,18 @@ set_gh_token_stub() {
   [[ "$output" == *"::warning::"* ]]
 }
 
+@test "fine-grained PAT detection writes HAS_CLASSIC_PAT=false to GITHUB_ENV when set" {
+  make_gh_stub "✓ Logged in to github.com account donpetry-bot (GH_TOKEN)
+- Active account: true
+- Token: github_pat_11CDFSYKQ0_***"
+
+  FAKE_GITHUB_ENV="$(mktemp)"
+  GITHUB_ENV="$FAKE_GITHUB_ENV" run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  grep -qx 'HAS_CLASSIC_PAT=false' "$FAKE_GITHUB_ENV"
+  rm -f "$FAKE_GITHUB_ENV"
+}
+
 # ---------------------------------------------------------------------------
 # Fine-grained PAT detection via absent Token scopes line
 # ---------------------------------------------------------------------------

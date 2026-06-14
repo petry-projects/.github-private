@@ -181,6 +181,12 @@ if [ "$DECISION" = "approve" ]; then
   BODY_FILE="/tmp/pr-review-body-$$.txt"
   echo "$BODY" > "$BODY_FILE"
 
+  if [ "${HAS_CLASSIC_PAT:-true}" = "false" ]; then
+    rm -f "$BODY_FILE"
+    echo "::warning::Skipping approval — fine-grained PAT in use (HAS_CLASSIC_PAT=false); set DON_PETRY_BOT_GH_PAT_CLASSIC to enable approvals."
+    exit 100
+  fi
+
   echo "Posting APPROVED review..."
   REVIEW_ERR_FILE="/tmp/pr-review-err-$$.txt"
   gh pr review "$PR_URL" --approve --body "$(cat "$BODY_FILE")" 2>"$REVIEW_ERR_FILE" || {

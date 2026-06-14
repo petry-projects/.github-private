@@ -40,6 +40,7 @@ if [[ "$_fgpat" -eq 1 ]]; then
   echo "::warning::Set DON_PETRY_BOT_GH_PAT_CLASSIC (classic PAT with repo + read:org) to enable approvals."
   echo "::warning::See docs/pr-review-agent/machine-user-setup.md for the dual-secret setup."
   echo "::warning::Proceeding with reduced functionality (read/comment; no approval submissions)."
+  [ -n "${GITHUB_ENV:-}" ] && echo 'HAS_CLASSIC_PAT=false' >> "$GITHUB_ENV"
   exit 0
 fi
 unset _fgpat
