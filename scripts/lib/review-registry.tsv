@@ -1,0 +1,19 @@
+# rubric-registry manifest — the versioned source of truth that maps each
+# review artifact_type to its rubric (the prompt cascade that scores it) and
+# its output_channel (the script that delivers the verdict).
+#
+# Read by scripts/lib/review-registry.sh; see scripts/lib/README.md for the
+# artifact contract and field meanings. Data, not code — add a row to register
+# a new artifact_type; do not fork the reviewer (issue #611).
+#
+# schema_version: 1
+#
+# Columns (tab-separated): artifact_type	rubric	output_channel
+#   rubric         — ordered, comma-separated cascade of prompt files
+#                    (repo-root-relative), applied in sequence.
+#   output_channel — repo-root-relative script that posts the verdict.
+#
+# Phase 1 registers only pr_diff, resolving to today's PR-review behavior with
+# no change: the triage -> deep-review -> synthesize cascade, delivered as
+# GitHub inline review comments by post-pr-review.sh.
+pr_diff	prompts/triage.md,prompts/deep-review.md,prompts/synthesize.md	scripts/post-pr-review.sh
