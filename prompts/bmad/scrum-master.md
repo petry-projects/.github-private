@@ -93,6 +93,12 @@ self-check pass over the whole plan.
 - Never apply `initiative:auto`; the epic is created inert (apply-plan enforces).
 - Don't invent acceptance criteria or Dev Notes you can't tie to the idea or the
   repo. Unresolved items go in `open_questions`, not guesses.
+- If an unresolved item must be answered before the idea is even plannable, emit
+  it as a **blocking** open question — an object `{"question": "...", "blocking":
+  true}` — not a guessed plan. `apply-plan.sh` will then create **nothing** and
+  post the questions back to the discussion (a hard gate, #682). Use plain-string
+  `open_questions` only for advisory "nice to confirm" items that should not halt
+  planning.
 - Don't duplicate an open epic from `open_epics`; if already covered, say so in a
   single story + `open_questions` referencing that epic.
 
