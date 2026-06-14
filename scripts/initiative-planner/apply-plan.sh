@@ -49,9 +49,9 @@ if [ "$blocking_count" -gt 0 ]; then
   [ -n "$src_g" ] || src_g="$DISCUSSION_NUMBER"
   if [ -n "$DISCUSSION_NODE_ID" ]; then
     blocking_list="$(jq -r '[(.open_questions // [])[] | select(type=="object" and .blocking==true) | .question] | map("- " + .) | join("\n")' "$PLAN_PATH")"
-    other_list="$(jq -r '(.open_questions // []) | map(select((type=="string") or (type=="object" and (.blocking // false) != true))) | map(if type=="string" then . else .question end) | if length>0 then "\n\n_Also worth confirming (non-blocking):_\n" + (map("- " + .) | join("\n")) else "" end' "$PLAN_PATH")"
-    gate_comment="$(printf '<!-- initiative-planner -->\n**⏸️ Not yet planned — the BMAD Scrum Master (Bob) has blocking open questions.**\n\nThis idea cannot be turned into an epic until these are answered:\n\n%s%s\n\n---\n**No epic or stories were created.** Answer the questions above, then re-approve / re-dispatch the planner and Bob will materialize the full epic + sub-issue DAG.' \
-      "$blocking_list" "$other_list")"
+    other_list="$(jq -r '(.open_questions // []) | map(select((type=="string") or (type=="object" and .blocking != true))) | map(if type=="string" then . else .question end) | if length>0 then "\n\n_Also worth confirming (non-blocking):_\n" + (map("- " + .) | join("\n")) else "" end' "$PLAN_PATH")"
+    printf -v gate_comment '<!-- initiative-planner -->\n**⏸️ Not yet planned — the BMAD Scrum Master (Bob) has blocking open questions.**\n\nThis idea cannot be turned into an epic until these are answered:\n\n%s%s\n\n---\n**No epic or stories were created.** Answer the questions above, then re-approve / re-dispatch the planner and Bob will materialize the full epic + sub-issue DAG.' \
+      "$blocking_list" "$other_list"
     comment_on_discussion "$DISCUSSION_NODE_ID" "$gate_comment"
     echo "posted 'not yet planned' open-questions back to discussion #${DISCUSSION_NUMBER:-?}"
   fi
