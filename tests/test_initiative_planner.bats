@@ -52,6 +52,42 @@ teardown() { rm -rf "$TMP"; }
   [[ "$output" == *"plan OK"* ]]
 }
 
+@test "validate-plan grounding: accepts real cited paths (with #anchor stripped)" {
+  jq '.stories[0].references = ["scripts/engine.sh#tier-routing", "AGENTS.md#standards"]' "$PLAN" >"$TMP/grounded.json"
+  run python3 "$PLANNER_DIR/validate-plan.py" "$TMP/grounded.json"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"plan OK"* ]]
+}
+
+@test "validate-plan grounding: rejects a story citing a nonexistent path" {
+  jq '.stories[0].target_surface = ["scripts/phantom-does-not-exist.sh"]' "$PLAN" >"$TMP/phantom.json"
+  run python3 "$PLANNER_DIR/validate-plan.py" "$TMP/phantom.json"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"story 1"* ]]
+  [[ "$output" == *"scripts/phantom-does-not-exist.sh"* ]]
+}
+
+@test "validate-plan grounding: prose citations (URL, bare discussion ref) are not treated as paths" {
+  jq '.stories[0].references = ["https://example.com/spec", "discussion #593", "see the design doc"]' "$PLAN" >"$TMP/prose.json"
+  run python3 "$PLANNER_DIR/validate-plan.py" "$TMP/prose.json"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"plan OK"* ]]
+}
+
+@test "validate-plan grounding: prose with embedded slash is not treated as a path" {
+  jq '.stories[0].references = ["see section/paragraph 2", "refer to chapter/verse 3 here"]' "$PLAN" >"$TMP/prose_slash.json"
+  run python3 "$PLANNER_DIR/validate-plan.py" "$TMP/prose_slash.json"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"plan OK"* ]]
+}
+
+@test "validate-plan grounding: leading-slash path is resolved relative to repo root" {
+  jq '.stories[0].references = ["/scripts/engine.sh", "/AGENTS.md"]' "$PLAN" >"$TMP/leadslash.json"
+  run python3 "$PLANNER_DIR/validate-plan.py" "$TMP/leadslash.json"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"plan OK"* ]]
+}
+
 @test "validate-plan rejects a self-blocking story" {
   jq '.stories[0].blocked_by = [1]' "$PLAN" >"$TMP/bad.json"
   run python3 "$PLANNER_DIR/validate-plan.py" "$TMP/bad.json"
@@ -174,6 +210,38 @@ teardown() { rm -rf "$TMP"; }
     run bash "$PLANNER_DIR/apply-plan.sh"
   [ "$status" -eq 0 ]
   [ "$(grep -c '"op":"create_issue"' "$LOG")" -eq 4 ]
+}
+
+@test "epic body carries the Untracked prerequisites checklist when the array is present" {
+  jq '.epic.untracked_prerequisites = ["Resolve the data-retention discussion", "Provision the staging cluster"]' "$PLAN" >"$TMP/prereqs.json"
+  DRY_RUN=1 DRY_RUN_LOG="$LOG" REPO="petry-projects/.github-private" \
+    DISCUSSION_NUMBER=413 DISCUSSION_NODE_ID="D_test" PLAN_PATH="$TMP/prereqs.json" \
+    bash "$PLANNER_DIR/apply-plan.sh"
+  epic_body="$(grep '"op":"create_issue"' "$LOG" | jq -r 'select(.title|startswith("Initiative:")) | .body')"
+  [[ "$epic_body" == *"## Untracked prerequisites"* ]]
+  [[ "$epic_body" == *"- [ ] Resolve the data-retention discussion"* ]]
+  [[ "$epic_body" == *"- [ ] Provision the staging cluster"* ]]
+}
+
+@test "Untracked prerequisites section appears before the idempotency footer in the epic body" {
+  jq '.epic.untracked_prerequisites = ["Resolve the data-retention discussion"]' "$PLAN" >"$TMP/prereqs_order.json"
+  DRY_RUN=1 DRY_RUN_LOG="$LOG" REPO="petry-projects/.github-private" \
+    DISCUSSION_NUMBER=413 DISCUSSION_NODE_ID="D_test" PLAN_PATH="$TMP/prereqs_order.json" \
+    bash "$PLANNER_DIR/apply-plan.sh"
+  epic_body="$(grep '"op":"create_issue"' "$LOG" | jq -r 'select(.title|startswith("Initiative:")) | .body')"
+  prereqs_pos="${epic_body%%'## Untracked prerequisites'*}"
+  footer_pos="${epic_body%%'Planned from idea discussion'*}"
+  # The text before "Untracked prerequisites" must be shorter than the text before the footer,
+  # meaning prerequisites come first.
+  [[ "${#prereqs_pos}" -lt "${#footer_pos}" ]]
+}
+
+@test "epic body omits the Untracked prerequisites section when the array is absent" {
+  DRY_RUN=1 DRY_RUN_LOG="$LOG" REPO="petry-projects/.github-private" \
+    DISCUSSION_NUMBER=413 DISCUSSION_NODE_ID="D_test" PLAN_PATH="$PLAN" \
+    bash "$PLANNER_DIR/apply-plan.sh"
+  epic_body="$(grep '"op":"create_issue"' "$LOG" | jq -r 'select(.title|startswith("Initiative:")) | .body')"
+  [[ "$epic_body" != *"Untracked prerequisites"* ]]
 }
 
 @test "story bodies are rendered in the BMAD create-story template" {
