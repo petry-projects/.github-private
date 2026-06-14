@@ -153,6 +153,29 @@ teardown() { rm -rf "$TMP"; }
   [ "$(grep -c '"op":"create_issue"' "$LOG")" -eq 4 ]
 }
 
+@test "apply-plan skips creation when an epic already exists for the discussion" {
+  # DRY_RUN_EXISTING_EPIC simulates find_existing_epic finding a prior epic
+  # offline (the idempotency guard); no issues must be created.
+  DRY_RUN=1 DRY_RUN_LOG="$LOG" DRY_RUN_EXISTING_EPIC=777 \
+    REPO="petry-projects/.github-private" \
+    DISCUSSION_NUMBER=413 DISCUSSION_NODE_ID="D_test" PLAN_PATH="$PLAN" \
+    run bash "$PLANNER_DIR/apply-plan.sh"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"already planned (epic #777)"* ]]
+  # zero mutations of any kind
+  [ ! -s "$LOG" ] || [ "$(grep -c '"op":"create_issue"' "$LOG")" -eq 0 ]
+  [ ! -s "$LOG" ] || [ "$(grep -c '"op":"add_sub_issue"' "$LOG")" -eq 0 ]
+}
+
+@test "apply-plan still creates the full DAG when no existing epic is found" {
+  # No DRY_RUN_EXISTING_EPIC => find_existing_epic returns empty => normal path.
+  DRY_RUN=1 DRY_RUN_LOG="$LOG" REPO="petry-projects/.github-private" \
+    DISCUSSION_NUMBER=413 DISCUSSION_NODE_ID="D_test" PLAN_PATH="$PLAN" \
+    run bash "$PLANNER_DIR/apply-plan.sh"
+  [ "$status" -eq 0 ]
+  [ "$(grep -c '"op":"create_issue"' "$LOG")" -eq 4 ]
+}
+
 @test "story bodies are rendered in the BMAD create-story template" {
   DRY_RUN=1 DRY_RUN_LOG="$LOG" REPO="petry-projects/.github-private" \
     DISCUSSION_NUMBER=413 DISCUSSION_NODE_ID="D_test" PLAN_PATH="$PLAN" \
