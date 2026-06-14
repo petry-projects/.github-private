@@ -1,0 +1,53 @@
+name: Holdout Guard
+
+# Hard CI enforcement for the held-out eval immutability guarantee (#692, epic
+# #581). Fails any PR authored by the automated skill-proposer identity that
+# changes a held-out path (evals/), keyed on PR author + changed paths.
+#
+# This COMPLEMENTS, does not replace, .github/CODEOWNERS:
+#   - CODEOWNERS routes review (and only blocks merges when branch protection's
+#     "require review from code owners" is enabled — an unstated dependency).
+#   - this guard is the immutability guarantee — it fails the proposer's PR
+#     independent of whether CODEOWNER review is enforced.
+#
+# No `paths:` filter on purpose: this must run (and report) on EVERY PR so it is
+# a stable required status check. The author/path decision (and the early pass
+# for non-proposer authors) lives in scripts/lib/holdout-guard.sh and is covered
+# by tests/test_holdout_guard.bats.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: holdout-guard-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  holdout-guard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+
+      - name: Enforce held-out eval immutability
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: |
+          set -euo pipefail
+          # shellcheck source=scripts/lib/holdout-guard.sh
+          source scripts/lib/holdout-guard.sh
+
+          echo "PR #${PR_NUMBER} authored by '${PR_AUTHOR}'"
+
+          changed="$(gh pr diff "$PR_NUMBER" --name-only)"
+          echo "Changed paths:"
+          printf '%s\n' "$changed" | sed 's/^/  /'
+
+          printf '%s\n' "$changed" | hg_evaluate "$PR_AUTHOR"
