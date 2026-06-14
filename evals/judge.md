@@ -47,10 +47,8 @@ candidate for additional *correct* detail beyond the reference.
 
 ## Output (MANDATORY)
 
-Emit **exactly one** JSON object to stdout and nothing else:
+Emit **exactly one** JSON object to stdout and nothing else. Output raw JSON — do not wrap it in prose, code fences, or any markdown formatting:
 
-```json
 {"score": 0.0, "reason": "<one sentence on what matched and what was missing>"}
-```
 
-`score` MUST be a number in `[0, 1]`. Do not wrap it in prose or code fences.
+`score` MUST be a number in `[0, 1]`.

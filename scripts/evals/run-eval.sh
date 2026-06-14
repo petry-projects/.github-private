@@ -163,11 +163,14 @@ score_llm_judge() {
   judge_raw=""
   judge_raw="$("$EVAL_JUDGE_CMD" "$work_judge")" || judge_raw=""
 
-  # Accept only a single JSON object with a numeric `score`. A number outside
+  # Strip markdown code blocks if the model wrapped its JSON response in them,
+  # then accept only a single JSON object with a numeric score. A number outside
   # [0,1] is clamped; anything unparseable -> null judge -> score 0 -> fail.
+  local cleaned_raw
+  cleaned_raw="$(grep -v $'^[[:space:]]*\x60\x60\x60' <<<"$judge_raw")"
   judge_obj="$(jq -ce 'if type=="object" and (.score|type=="number")
                        then {score: ([[.score,0]|max,1]|min), reason: (.reason // null)}
-                       else empty end' <<<"$judge_raw" 2>/dev/null || true)"
+                       else empty end' <<<"$cleaned_raw" 2>/dev/null || true)"
 
   if [ -z "$judge_obj" ]; then
     judge_obj=null
