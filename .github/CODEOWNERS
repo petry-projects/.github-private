@@ -3,5 +3,5 @@
 
 # Held-out eval cases are the trust anchor for skill-quality measurement.
 # They MUST stay separately owned: a future automated skill proposer may only
-# edit the skill markdown, never this test set (reward-hacking guard, #582).
-/skills/evals/ @petry-projects/org-leads
+# edit the skill markdown, never this held-out set (reward-hacking guard, #582).
+/evals/ @petry-projects/org-leads

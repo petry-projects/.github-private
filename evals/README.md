@@ -9,7 +9,7 @@ invocation** in this directory.
 ## Layout
 
 ```
-skills/evals/
+evals/
 ├── case.schema.json        # JSON-Schema (draft 2020-12) for one eval case
 ├── validate-cases.py       # validate a .jsonl set against the schema
 └── <skill>/cases.jsonl     # one case per line for that skill (e.g. triage/)
@@ -44,7 +44,7 @@ Validation uses the same `python jsonschema` pattern that
 
 ```sh
 pip install 'jsonschema>=4'
-python3 skills/evals/validate-cases.py skills/evals/triage/cases.jsonl
+python3 evals/validate-cases.py evals/triage/cases.jsonl
 ```
 
 The validator checks every line against `case.schema.json` and enforces the one
@@ -60,5 +60,5 @@ proposer could edit the cases, it could optimize the skill against a moving
 target — reward hacking. Keeping the cases CODEOWNER-gated, apart from any
 scorer or proposer, is what makes a measurement against them trustworthy.
 
-Any change to `skills/evals/**` therefore requires review from the designated
+Any change to `evals/**` therefore requires review from the designated
 code owners.

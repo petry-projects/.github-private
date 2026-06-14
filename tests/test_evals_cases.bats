@@ -1,11 +1,11 @@
 #!/usr/bin/env bats
-# Tests for the held-out triage eval-case set (skills/evals/).
+# Tests for the held-out triage eval-case set (evals/).
 # validate-cases.py performs JSON-Schema validation only (no scorer, no model
 # invocation) so the whole suite runs offline.
 
 setup() {
   ROOT="$(cd "$BATS_TEST_DIRNAME/.." && pwd)"
-  EVALS_DIR="$ROOT/skills/evals"
+  EVALS_DIR="$ROOT/evals"
   VALIDATOR="$EVALS_DIR/validate-cases.py"
   SCHEMA="$EVALS_DIR/case.schema.json"
   CASES="$EVALS_DIR/triage/cases.jsonl"

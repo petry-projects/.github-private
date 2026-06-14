@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Triage Eval Case",
-  "description": "One held-out eval case: a single triage input paired with its expected decision. Each line of skills/evals/<skill>/cases.jsonl is one object of this shape. This is the trust anchor for skill-quality measurement and is CODEOWNER-gated separately from any scorer/proposer.",
+  "description": "One held-out eval case: a single triage input paired with its expected decision. Each line of evals/<skill>/cases.jsonl is one object of this shape. This is the trust anchor for skill-quality measurement and is CODEOWNER-gated separately from any scorer/proposer.",
   "type": "object",
   "additionalProperties": false,
   "required": ["id", "input", "expected"],
