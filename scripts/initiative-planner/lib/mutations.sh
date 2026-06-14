@@ -158,7 +158,9 @@ find_existing_initiative_epic() {
   fi
   _is_dry_run && return 0
   [[ -n "$src" ]] || return 0
-  gh issue list --repo "$repo" --label initiative --state open --json number,body \
+  # --limit 1000: gh issue list defaults to 30, which would miss an existing
+  # epic once the repo has >30 open `initiative` issues and defeat the guard.
+  gh issue list --repo "$repo" --label initiative --state open --limit 1000 --json number,body \
     --jq "[.[] | select(.body | test(\"Planned from idea discussion #${src}([^0-9]|$)\")) | .number] | first // empty"
 }
 

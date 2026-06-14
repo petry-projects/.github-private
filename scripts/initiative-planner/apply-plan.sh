@@ -240,11 +240,14 @@ fi
 # resolvable, each pointing forward to the replacement.
 if [ -n "${SUPERSEDE_OLD_EPIC:-}" ]; then
   echo "force_replan: closing superseded epic #${SUPERSEDE_OLD_EPIC} and its sub-issues (replaced by #${epic_number})."
+  # Capture into a variable (not process substitution) so a failed lookup trips
+  # set -e and aborts, rather than silently skipping the sub-issue closes.
+  old_subs="$(list_sub_issue_numbers "$REPO" "$SUPERSEDE_OLD_EPIC")"
   while IFS= read -r old_sub; do
     [ -n "$old_sub" ] || continue
     close_issue "$REPO" "$old_sub" "Superseded by the re-planned initiative epic #${epic_number} (re-planned from idea discussion #${src})."
     echo "  closed superseded story #${old_sub}"
-  done < <(list_sub_issue_numbers "$REPO" "$SUPERSEDE_OLD_EPIC")
+  done <<< "$old_subs"
   close_issue "$REPO" "$SUPERSEDE_OLD_EPIC" "Superseded by #${epic_number} — re-planned from idea discussion #${src}. This epic and its stories were closed by the initiative-planner \`force_replan\` path."
   echo "  closed superseded epic #${SUPERSEDE_OLD_EPIC}"
 fi
