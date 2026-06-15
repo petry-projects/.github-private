@@ -52,11 +52,11 @@ echo "==> $PR_URL"
 ARTIFACT_TYPE="pr_diff"
 CONTENT_REF="$PR_URL"
 
-REVIEW_RUBRIC=$(review_registry_lookup "$ARTIFACT_TYPE" rubric) || {
+REVIEW_RUBRIC=$(review_registry_lookup "$ARTIFACT_TYPE" rubric | tr -d '\r') || {
   echo "::error::no rubric registered for artifact_type=$ARTIFACT_TYPE"
   exit 1
 }
-REVIEW_OUTPUT_CHANNEL=$(review_registry_lookup "$ARTIFACT_TYPE" output_channel) || {
+REVIEW_OUTPUT_CHANNEL=$(review_registry_lookup "$ARTIFACT_TYPE" output_channel | tr -d '\r') || {
   echo "::error::no output_channel registered for artifact_type=$ARTIFACT_TYPE"
   exit 1
 }
