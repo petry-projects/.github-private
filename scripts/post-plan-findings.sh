@@ -67,8 +67,13 @@ SUMMARY="$(jq -r '.summary // ""' "$FINDINGS_JSON")"
 # is a local artifact write (never an external mutation), so DRY_RUN does not
 # gate it — a planner reviewing in dry-run still needs the findings to decide.
 if [ -n "${PLAN_FINDINGS_OUTPUT:-}" ]; then
-  jq '.' "$FINDINGS_JSON" > "$PLAN_FINDINGS_OUTPUT"
-  echo "plan findings written to $PLAN_FINDINGS_OUTPUT"
+  mkdir -p "$(dirname "$PLAN_FINDINGS_OUTPUT")"
+  if [ "$FINDINGS_JSON" -ef "$PLAN_FINDINGS_OUTPUT" ]; then
+    echo "plan findings already at $PLAN_FINDINGS_OUTPUT"
+  else
+    jq '.' "$FINDINGS_JSON" > "$PLAN_FINDINGS_OUTPUT"
+    echo "plan findings written to $PLAN_FINDINGS_OUTPUT"
+  fi
 fi
 
 echo "=== plan review findings${DRY_RUN:+ (dry_run=$DRY_RUN)} ==="

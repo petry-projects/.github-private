@@ -207,3 +207,20 @@ write_findings() {
   run bash -c "grep -vE '^[[:space:]]*#' '$OUTPUT_CHANNEL' | grep -qE 'post-pr-review\\.sh|gh pr review|/pulls/.*/reviews'"
   [ "$status" -ne 0 ]
 }
+
+@test "output channel creates parent directories when PLAN_FINDINGS_OUTPUT has a missing parent" {
+  write_findings pass
+  DEST="$BATS_TEST_TMPDIR/nested/deep/out.json"
+  run env PLAN_FINDINGS_OUTPUT="$DEST" bash "$OUTPUT_CHANNEL" "/tmp/plan.json" "$FINDINGS_FILE" false
+  [ "$status" -eq 0 ]
+  [ -s "$DEST" ]
+}
+
+@test "output channel does not truncate when PLAN_FINDINGS_OUTPUT is the same file as FINDINGS_JSON" {
+  write_findings revise
+  run env PLAN_FINDINGS_OUTPUT="$FINDINGS_FILE" bash "$OUTPUT_CHANNEL" "/tmp/plan.json" "$FINDINGS_FILE" false
+  [ "$status" -eq 0 ]
+  # The file must still be valid JSON with the expected verdict
+  run jq -r '.verdict' "$FINDINGS_FILE"
+  [ "$output" = "revise" ]
+}

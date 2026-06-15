@@ -77,7 +77,9 @@ export OUTPUT_FILE
 : > "$OUTPUT_FILE"
 
 run_agentic "$REPO_ROOT/$RUBRIC_PROMPT" "$ENGINE_DEEP_MODEL" "deep" > "$WORK_DIR/raw.out" 2>"$WORK_DIR/raw.err" || {
-  echo "::warning::plan rubric run exited non-zero; see logs" >&2
+  echo "::error::plan rubric run exited non-zero. Error log:" >&2
+  cat "$WORK_DIR/raw.err" >&2
+  exit 1
 }
 
 # Resolve the findings JSON: prefer the file the prompt wrote; fall back to
@@ -86,7 +88,10 @@ if ! jq empty "$OUTPUT_FILE" 2>/dev/null; then
   if jq empty "$WORK_DIR/raw.out" 2>/dev/null; then
     cp "$WORK_DIR/raw.out" "$OUTPUT_FILE"
   else
-    echo "::error::plan rubric did not produce valid findings JSON" >&2
+    echo "::error::plan rubric did not produce valid findings JSON. Output log:" >&2
+    cat "$WORK_DIR/raw.out" >&2
+    echo "Error log:" >&2
+    cat "$WORK_DIR/raw.err" >&2
     exit 1
   fi
 fi
