@@ -13,6 +13,17 @@
 setup() {
   REPO_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)"
   source "$REPO_ROOT/scripts/lib/review-registry.sh"
+  POST_SCRIPT="$REPO_ROOT/scripts/post-pr-review.sh"
+  VERDICT_FILE="$BATS_TEST_TMPDIR/verdict.json"
+}
+
+# write_verdict <decision> <risk> [body]
+#   Materializes a verdict JSON in the pr_diff output_channel's documented shape
+#   (see scripts/post-pr-review.sh header) for the marker/verdict guard below.
+write_verdict() {
+  local decision="$1" risk="$2" body="${3:-test review body}"
+  jq -n --arg d "$decision" --arg r "$risk" --arg b "$body" \
+    '{decision: $d, risk: $r, summary: "s", findings: [], body: $b}' > "$VERDICT_FILE"
 }
 
 # ---------------------------------------------------------------------------
@@ -117,4 +128,81 @@ setup() {
   REVIEW_REGISTRY_MANIFEST="/nonexistent/review-registry.tsv" run review_registry_lookup pr_diff rubric
   [ "$status" -ne 0 ]
   [[ "$output" == *"manifest file not found"* ]]
+}
+
+# ===========================================================================
+# Regression guard: the pr_diff verdict/marker contract (issue #613, AC #2).
+#
+# The registry decides WHERE the verdict goes (output_channel ->
+# scripts/post-pr-review.sh, asserted above). These tests pin WHAT that channel
+# accepts and emits so registering a new artifact_type can never silently
+# regress production PR review:
+#   - the decision vocabulary is exactly approve | escalate (with skip as an
+#     explicit no-op),
+#   - risk LOW|MEDIUM|HIGH round-trips and HIGH is treated specially,
+#   - the idempotency marker format is unchanged.
+# DRY_RUN=true exits before any gh/network call, so these run hermetically.
+# ===========================================================================
+
+# --- decision vocabulary: approve | escalate (AC #2) -----------------------
+
+@test "verdict contract: decision=approve is accepted and surfaced (DRY_RUN)" {
+  write_verdict approve LOW
+  PR_HEAD_SHA=abc123 run bash "$POST_SCRIPT" "https://github.com/o/r/pull/1" "$VERDICT_FILE" true
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -qE '^Decision: approve$'
+}
+
+@test "verdict contract: decision=escalate is accepted and surfaced (DRY_RUN)" {
+  write_verdict escalate HIGH
+  PR_HEAD_SHA=abc123 run bash "$POST_SCRIPT" "https://github.com/o/r/pull/1" "$VERDICT_FILE" true
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -qE '^Decision: escalate$'
+}
+
+@test "verdict contract: an unknown decision is rejected non-zero" {
+  write_verdict frobnicate LOW
+  PR_HEAD_SHA=abc123 run bash "$POST_SCRIPT" "https://github.com/o/r/pull/1" "$VERDICT_FILE" false
+  [ "$status" -ne 0 ]
+  echo "$output" | grep -q "invalid decision"
+}
+
+@test "verdict contract: decision=skip is an explicit no-op (exit 100), not a verdict" {
+  write_verdict skip LOW
+  PR_HEAD_SHA=abc123 run bash "$POST_SCRIPT" "https://github.com/o/r/pull/1" "$VERDICT_FILE" false
+  [ "$status" -eq 100 ]
+}
+
+# --- risk vocabulary: LOW | MEDIUM | HIGH (AC #2) --------------------------
+
+@test "verdict contract: risk LOW|MEDIUM|HIGH are surfaced unchanged (DRY_RUN)" {
+  local risk
+  for risk in LOW MEDIUM HIGH; do
+    write_verdict approve "$risk"
+    PR_HEAD_SHA=abc123 run bash "$POST_SCRIPT" "https://github.com/o/r/pull/1" "$VERDICT_FILE" true
+    [ "$status" -eq 0 ]
+    echo "$output" | grep -qE "^Risk: ${risk}$"
+  done
+}
+
+@test "risk contract: HIGH risk bypasses AI delegation (forces human escalation)" {
+  run grep -qF '"$RISK" != "HIGH"' "$POST_SCRIPT"
+  [ "$status" -eq 0 ]
+}
+
+# --- idempotency marker format (AC #2) ------------------------------------
+
+@test "marker contract: post-pr-review.sh emits the canonical v1 sha marker" {
+  run grep -qF '<!-- pr-review-agent v1 sha=$PR_HEAD_SHA -->' "$POST_SCRIPT"
+  [ "$status" -eq 0 ]
+}
+
+@test "marker contract: prior-agent items are detected by the v1 sha=[a-f0-9]+ regex" {
+  run grep -qF 'pr-review-agent v1 sha=[a-f0-9]+' "$POST_SCRIPT"
+  [ "$status" -eq 0 ]
+}
+
+@test "marker contract: superseded items carry the superseded sentinel" {
+  run grep -qF '<!-- pr-review-agent superseded -->' "$POST_SCRIPT"
+  [ "$status" -eq 0 ]
 }
