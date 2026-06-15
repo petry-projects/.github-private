@@ -148,28 +148,28 @@ write_verdict() {
 
 @test "verdict contract: decision=approve is accepted and surfaced (DRY_RUN)" {
   write_verdict approve LOW
-  PR_HEAD_SHA=abc123 run bash "$POST_SCRIPT" "https://github.com/o/r/pull/1" "$VERDICT_FILE" true
+  run env PR_HEAD_SHA=abc123 bash "$POST_SCRIPT" "https://github.com/o/r/pull/1" "$VERDICT_FILE" true
   [ "$status" -eq 0 ]
   echo "$output" | grep -qE '^Decision: approve$'
 }
 
 @test "verdict contract: decision=escalate is accepted and surfaced (DRY_RUN)" {
   write_verdict escalate HIGH
-  PR_HEAD_SHA=abc123 run bash "$POST_SCRIPT" "https://github.com/o/r/pull/1" "$VERDICT_FILE" true
+  run env PR_HEAD_SHA=abc123 bash "$POST_SCRIPT" "https://github.com/o/r/pull/1" "$VERDICT_FILE" true
   [ "$status" -eq 0 ]
   echo "$output" | grep -qE '^Decision: escalate$'
 }
 
 @test "verdict contract: an unknown decision is rejected non-zero" {
   write_verdict frobnicate LOW
-  PR_HEAD_SHA=abc123 run bash "$POST_SCRIPT" "https://github.com/o/r/pull/1" "$VERDICT_FILE" false
+  run env PR_HEAD_SHA=abc123 bash "$POST_SCRIPT" "https://github.com/o/r/pull/1" "$VERDICT_FILE" false
   [ "$status" -ne 0 ]
   echo "$output" | grep -q "invalid decision"
 }
 
 @test "verdict contract: decision=skip is an explicit no-op (exit 100), not a verdict" {
   write_verdict skip LOW
-  PR_HEAD_SHA=abc123 run bash "$POST_SCRIPT" "https://github.com/o/r/pull/1" "$VERDICT_FILE" false
+  run env PR_HEAD_SHA=abc123 bash "$POST_SCRIPT" "https://github.com/o/r/pull/1" "$VERDICT_FILE" false
   [ "$status" -eq 100 ]
 }
 
@@ -179,14 +179,14 @@ write_verdict() {
   local risk
   for risk in LOW MEDIUM HIGH; do
     write_verdict approve "$risk"
-    PR_HEAD_SHA=abc123 run bash "$POST_SCRIPT" "https://github.com/o/r/pull/1" "$VERDICT_FILE" true
+    run env PR_HEAD_SHA=abc123 bash "$POST_SCRIPT" "https://github.com/o/r/pull/1" "$VERDICT_FILE" true
     [ "$status" -eq 0 ]
     echo "$output" | grep -qE "^Risk: ${risk}$"
   done
 }
 
 @test "risk contract: HIGH risk bypasses AI delegation (forces human escalation)" {
-  run grep -qF '"$RISK" != "HIGH"' "$POST_SCRIPT"
+  run grep -qE 'RISK.*!=.*HIGH' "$POST_SCRIPT"
   [ "$status" -eq 0 ]
 }
 
