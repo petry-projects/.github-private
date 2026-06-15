@@ -1,0 +1,148 @@
+name: Skill Eval Report
+
+# Phase 1 of the self-improving-skills pipeline (epic #581, story #584).
+#
+# Runs the deterministic eval scorer (scripts/evals/run-eval.sh) against a
+# skill's HELD-OUT set on a cron schedule (and on demand) and publishes a
+# NON-BLOCKING score report. This makes skill quality continuously visible
+# WITHOUT gating any merge — a regression never fails this workflow and never
+# blocks a PR.
+#
+# Why model-backed eval lives here and NOT on pull_request: each case is a real
+# model invocation (run_triage, Haiku-tier) that costs tokens, so the live eval
+# is reserved for the scheduled/dispatch path. PR-time coverage is the offline
+# bats tests (tests/test_skill_evals.bats), which drive the scorer against a
+# stub engine with no network — see story #583.
+#
+# Class: org-private-automation (like initiative-driver.yml), not a thin caller
+# stub. Modeled on daily-pr-review-health.yml (the closest scheduled health
+# report). Third-party actions are SHA-pinned per AGENTS.md.
+
+on:
+  schedule:
+    # Daily at 7:00 UTC — offset from daily-pr-review-health (6:00) so the two
+    # scheduled health reports do not contend for the same runner window.
+    - cron: '0 7 * * *'
+  workflow_dispatch:
+    inputs:
+      skill:
+        description: "Skill whose held-out eval set to score (evals/<skill>/holdout)"
+        required: false
+        default: "triage"
+        type: string
+
+# Least-privilege: reset the default write-all grant to nothing at the top
+# level; the single job re-grants only the read scope it needs.
+permissions: {}
+
+concurrency:
+  group: skill-eval-report
+  cancel-in-progress: true
+
+jobs:
+  eval-report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read  # actions/checkout only — the report is an artifact, no issue/PR writes
+    env:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      SKILL: ${{ inputs.skill || 'triage' }}
+      # Pin via vars.CLAUDE_CODE_VERSION for reproducible caching; default
+      # 'latest' caches an install indefinitely — flush via the Actions cache
+      # UI or bump the variable to pick up new releases. Mirrors pr-review.yml.
+      CLAUDE_CODE_VERSION: ${{ vars.CLAUDE_CODE_VERSION || 'latest' }}
+
+    steps:
+      - name: Checkout agent repo
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+        with:
+          node-version: '20'
+
+      - name: Cache claude-code CLI
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        with:
+          path: ~/.npm-global
+          key: claude-code-${{ env.CLAUDE_CODE_VERSION }}-${{ runner.os }}
+
+      - name: Install Claude Code CLI
+        run: |
+          mkdir -p "$HOME/.npm-global"
+          npm config set prefix "$HOME/.npm-global"
+          echo "$HOME/.npm-global/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.npm-global/bin:$PATH"
+          if command -v claude >/dev/null 2>&1; then
+            echo "claude-code cache hit: $(claude --version)"
+          else
+            npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" # NOSONAR — install scripts required for native binary setup; version intentionally uses CLAUDE_CODE_VERSION var (same pattern as pr-review.yml)
+          fi
+
+      - name: Run eval scorer (report-only, non-blocking)
+        id: eval
+        # NON-BLOCKING is the entire point of Phase 1: the scorer exits 1 when a
+        # held-out case regresses. continue-on-error keeps that regression from
+        # failing the workflow or gating any merge — it is a report, not a gate.
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          status=0
+          bash scripts/evals/run-eval.sh "$SKILL" > eval-report.json || status=$?
+          {
+            echo "status=$status"
+            if [ "$status" -eq 0 ]; then
+              echo "outcome=pass"
+            elif [ "$status" -eq 1 ]; then
+              echo "outcome=regression"   # at least one held-out case failed — reported, NOT fatal
+            else
+              echo "outcome=error"        # hard error (bad usage / missing tooling)
+            fi
+          } >> "$GITHUB_OUTPUT"
+          exit "$status"
+
+      - name: Render report to step summary
+        if: always() && hashFiles('eval-report.json') != ''
+        run: |
+          {
+            echo "## Skill Eval Report — \`${SKILL}\` (holdout)"
+            echo ""
+            echo "_Report-only (Phase 1): a regression does not fail CI or block any merge._"
+            echo ""
+            if jq -e . eval-report.json >/dev/null 2>&1; then
+              score=$(jq -r '.score'  eval-report.json)
+              passed=$(jq -r '.passed' eval-report.json)
+              total=$(jq -r '.total'  eval-report.json)
+              failed=$(jq -r '.failed' eval-report.json)
+              echo "| skill | score | passed | failed | total |"
+              echo "|-------|-------|--------|--------|-------|"
+              echo "| \`${SKILL}\` | ${score} | ${passed} | ${failed} | ${total} |"
+              if [ "${failed}" != "0" ]; then
+                echo ""
+                echo "### Regressed cases"
+                jq -r '.cases[] | select(.pass | not) | "- `\(.id)` — expected \(.expected|tojson), got \(.actual|tojson)"' eval-report.json
+              fi
+            else
+              echo "Scorer produced no parseable JSON report (outcome: ${{ steps.eval.outputs.outcome }})."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload eval report artifact
+        if: always() && hashFiles('eval-report.json') != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: skill-eval-report-${{ env.SKILL }}
+          path: eval-report.json
+          if-no-files-found: warn
+
+      - name: Annotate outcome
+        if: always()
+        run: |
+          case "${{ steps.eval.outputs.outcome }}" in
+            pass)       echo "::notice::Skill eval '${SKILL}': all held-out cases passed." ;;
+            regression) echo "::warning::Skill eval '${SKILL}': held-out regression detected (report-only — not blocking)." ;;
+            *)          echo "::warning::Skill eval '${SKILL}': scorer hard-errored (report-only — not blocking)." ;;
+          esac
