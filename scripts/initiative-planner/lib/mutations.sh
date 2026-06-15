@@ -136,3 +136,36 @@ comment_on_discussion() {
     mutation($id:ID!,$b:String!){ addDiscussionComment(input:{discussionId:$id, body:$b}){ comment{ url } } }
   ' -f id="$node_id" -f b="$body" --jq '.data.addDiscussionComment.comment.url'
 }
+
+# list_sub_issue_numbers <repo> <epic> — print the epic's native sub-issue
+# numbers, one per line (used by the force_replan supersede path).
+#
+# DRY_RUN: returns the DRY_RUN_EXISTING_SUBISSUES stub (comma/space-separated,
+# empty if unset) so the offline bats suite can drive the supersede path without
+# touching the network — mirroring find_existing_epic's DRY_RUN_EXISTING_EPIC.
+list_sub_issue_numbers() {
+  local repo="$1" epic="$2"
+  if _is_dry_run; then
+    local subs="${DRY_RUN_EXISTING_SUBISSUES:-}"
+    # shellcheck disable=SC2086 # intentional word-splitting on space/comma
+    [ -n "$subs" ] && printf '%s\n' ${subs//,/ }
+    return 0
+  fi
+  gh api "repos/${repo}/issues/${epic}/sub_issues" --jq '.[].number'
+}
+
+# close_issue <repo> <number> [comment] — close an issue, optionally leaving a
+# comment first. DRY_RUN-aware (logs a structured action instead of mutating).
+close_issue() {
+  local repo="$1" number="$2" comment="${3:-}"
+  if _is_dry_run; then
+    _dry_log "$(jq -nc --arg op close_issue \
+      --argjson number "$number" --arg comment "$comment" \
+      '{op:$op, number:$number, comment:$comment}')"
+    return 0
+  fi
+  if [[ -n "$comment" ]]; then
+    gh issue comment "$number" --repo "$repo" --body "$comment" >/dev/null
+  fi
+  gh issue close "$number" --repo "$repo" >/dev/null
+}
