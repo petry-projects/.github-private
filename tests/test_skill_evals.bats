@@ -155,3 +155,164 @@ JSONL
   [ "$(jq '.total' <<<"$output")" -eq 2 ]
   [ -z "$(jq -r '.cases[] | select(.id=="dev-decoy")' <<<"$output")" ]
 }
+
+# --- LLM-judge scorer mode (deep-review, #585) ---------------------------------
+#
+# The comparator core selects its scorer mode from a per-skill scorer.json
+# (deterministic vs llm-judge) — never by branching on the skill name. In
+# llm-judge mode the skill output is scored by a Haiku-tier judge prompt that
+# emits a numeric per-case score; a stubbed judge keeps these tests offline.
+
+# Builds a deep-review skill fixture under $TMP/evals in llm-judge mode plus the
+# skill-under-test stub. Each test supplies its own judge stub. The judge prompt
+# lives at evals/judge.md (versioned, CODEOWNER-gated like the cases).
+_setup_judge_skill() {
+  mkdir -p "$TMP/evals/deep-review/holdout"
+  cat >"$TMP/evals/deep-review/scorer.json" <<'JSON'
+{"mode": "llm-judge", "judge_prompt": "judge.md", "pass_threshold": 0.7}
+JSON
+  cat >"$TMP/evals/judge.md" <<'MD'
+# Eval judge
+Score the candidate deep-review output against the expected reference.
+Emit a single JSON object: {"score": <0..1>, "reason": "..."}.
+MD
+  cat >"$TMP/evals/deep-review/holdout/cases.jsonl" <<'JSONL'
+{"id": "deep-approve", "input": "MARKER_APPROVE\nTitle: Fix docs typo\n\nDocs-only change.", "expected": {"decision": "approve", "risk": "LOW", "key_findings": []}}
+{"id": "deep-escalate", "input": "MARKER_ESCALATE\nTitle: Add user search\n\nSQL built by string concatenation of input.", "expected": {"decision": "escalate", "risk": "HIGH", "key_findings": ["sql injection via string concatenation"]}}
+JSONL
+
+  # Skill-under-test stub: emits a deep-review-shaped JSON decision per case,
+  # tagged with CANDIDATE_TOKEN (shared) plus a per-decision token (DECISION_*).
+  # The decision tokens live ONLY in the candidate output, so a judge stub keying
+  # off them proves the scorer fed the candidate into the judge prompt (and the
+  # tokens never collide with prose inside judge.md).
+  SKILL_STUB="$TMP/skill_stub.sh"
+  cat >"$SKILL_STUB" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+prompt="$1"
+if grep -q MARKER_ESCALATE "$prompt"; then
+  echo '{"tier":"deep","decision":"escalate","risk":"HIGH","findings":[{"category":"sql-injection","message":"CANDIDATE_TOKEN DECISION_ESCALATE string concat"}]}'
+elif grep -q MARKER_APPROVE "$prompt"; then
+  echo '{"tier":"deep","decision":"approve","risk":"LOW","findings":[],"summary":"CANDIDATE_TOKEN DECISION_APPROVE docs only"}'
+else
+  echo 'no marker found'
+fi
+SH
+  chmod +x "$SKILL_STUB"
+}
+
+@test "llm-judge mode: all-pass scores 1 (exit 0) with per-case numeric score" {
+  _setup_judge_skill
+  # Judge stub: always returns a passing score.
+  JUDGE_STUB="$TMP/judge_pass.sh"
+  cat >"$JUDGE_STUB" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+echo '{"score": 1, "reason": "matches"}'
+SH
+  chmod +x "$JUDGE_STUB"
+
+  EVALS_DIR="$TMP/evals" EVAL_ENGINE_CMD="$SKILL_STUB" EVAL_JUDGE_CMD="$JUDGE_STUB" \
+    run --separate-stderr bash "$SCORER" deep-review
+  [ "$status" -eq 0 ]
+  [ "$(jq '.total'  <<<"$output")" -eq 2 ]
+  [ "$(jq '.passed' <<<"$output")" -eq 2 ]
+  [ "$(jq '.failed' <<<"$output")" -eq 0 ]
+  [ "$(jq '.score'  <<<"$output")" = "1" ]
+  # Each case carries a numeric score (AC #3).
+  [ "$(jq '.cases[0].score' <<<"$output")" = "1" ]
+  [ "$(jq '.cases[].score | numbers' <<<"$output" | wc -l)" -eq 2 ]
+}
+
+@test "llm-judge mode: a sub-threshold score fails the case (exit 1)" {
+  _setup_judge_skill
+  # Judge stub: approve case scores high, escalate case scores below threshold.
+  JUDGE_STUB="$TMP/judge_mixed.sh"
+  cat >"$JUDGE_STUB" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+prompt="$1"
+if grep -q DECISION_ESCALATE "$prompt"; then
+  echo '{"score": 0.3, "reason": "missed the injection finding"}'
+else
+  echo '{"score": 0.95, "reason": "good"}'
+fi
+SH
+  chmod +x "$JUDGE_STUB"
+
+  EVALS_DIR="$TMP/evals" EVAL_ENGINE_CMD="$SKILL_STUB" EVAL_JUDGE_CMD="$JUDGE_STUB" \
+    run --separate-stderr bash "$SCORER" deep-review
+  [ "$status" -eq 1 ]
+  [ "$(jq '.passed' <<<"$output")" -eq 1 ]
+  [ "$(jq '.failed' <<<"$output")" -eq 1 ]
+  esc="$(jq -c '.cases[] | select(.id=="deep-escalate")' <<<"$output")"
+  [ "$(jq -r '.pass'  <<<"$esc")" = "false" ]
+  [ "$(jq -r '.score' <<<"$esc")" = "0.3" ]
+}
+
+@test "llm-judge mode: unparseable judge output counts as a failure (score 0)" {
+  _setup_judge_skill
+  JUDGE_STUB="$TMP/judge_prose.sh"
+  cat >"$JUDGE_STUB" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+echo 'Looks great, I would give it full marks.'
+SH
+  chmod +x "$JUDGE_STUB"
+
+  EVALS_DIR="$TMP/evals" EVAL_ENGINE_CMD="$SKILL_STUB" EVAL_JUDGE_CMD="$JUDGE_STUB" \
+    run --separate-stderr bash "$SCORER" deep-review
+  [ "$status" -eq 1 ]
+  [ "$(jq '.failed' <<<"$output")" -eq 2 ]
+  [ "$(jq '.cases[0].score' <<<"$output")" = "0" ]
+}
+
+@test "llm-judge mode: the judge prompt carries both the expected ref and the candidate" {
+  _setup_judge_skill
+  # Capturing judge stub: copies its assembled prompt out so we can assert the
+  # scorer fed it BOTH the case's expected reference and the skill's candidate.
+  JUDGE_STUB="$TMP/judge_capture.sh"
+  cat >"$JUDGE_STUB" <<SH
+#!/usr/bin/env bash
+set -euo pipefail
+cp "\$1" "$TMP/captured_judge_prompt.txt"
+echo '{"score": 1}'
+SH
+  chmod +x "$JUDGE_STUB"
+
+  EVALS_DIR="$TMP/evals" EVAL_ENGINE_CMD="$SKILL_STUB" EVAL_JUDGE_CMD="$JUDGE_STUB" \
+    run --separate-stderr bash "$SCORER" deep-review
+  [ "$status" -eq 0 ]
+  # The judge prompt must include the judge rubric, the candidate (CANDIDATE_TOKEN
+  # from the skill stub), and the expected reference (key_findings text).
+  grep -q "Eval judge" "$TMP/captured_judge_prompt.txt"
+  grep -q "CANDIDATE_TOKEN" "$TMP/captured_judge_prompt.txt"
+  grep -q "sql injection via string concatenation" "$TMP/captured_judge_prompt.txt"
+}
+
+@test "llm-judge mode: scorer never writes the held-out cases file" {
+  _setup_judge_skill
+  JUDGE_STUB="$TMP/judge_pass.sh"
+  cat >"$JUDGE_STUB" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+echo '{"score": 1}'
+SH
+  chmod +x "$JUDGE_STUB"
+
+  before="$(md5sum "$TMP/evals/deep-review/holdout/cases.jsonl")"
+  EVALS_DIR="$TMP/evals" EVAL_ENGINE_CMD="$SKILL_STUB" EVAL_JUDGE_CMD="$JUDGE_STUB" \
+    run --separate-stderr bash "$SCORER" deep-review
+  [ "$status" -eq 0 ]
+  after="$(md5sum "$TMP/evals/deep-review/holdout/cases.jsonl")"
+  [ "$before" = "$after" ]
+}
+
+@test "absent scorer.json defaults to deterministic mode (triage unchanged)" {
+  # Triage has no scorer.json in the fixture; it must still score deterministically.
+  EVALS_DIR="$TMP/evals" EVAL_ENGINE_CMD="$STUB_OK" \
+    run --separate-stderr bash "$SCORER" triage
+  [ "$status" -eq 0 ]
+  [ "$(jq '.passed' <<<"$output")" -eq 2 ]
+}
