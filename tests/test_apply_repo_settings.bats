@@ -327,9 +327,10 @@ repo-b"
   [ "$status" -eq 0 ]
   local patch_count
   patch_count=$(grep -c "PATCH" "$GH_LOG")
-  # PP_REQUIRED_SA_SETTINGS is already in scope from setup() sourcing the script;
-  # re-sourcing in a $() subshell would fail because the forked shell inherits
-  # the readonly declaration and bash rejects re-declaring it.
+  # setup() sources apply-repo-settings.sh which lazy-loads push-protection.sh;
+  # call the loader here so PP_REQUIRED_SA_SETTINGS is available for comparison.
+  # _ensure_push_protection_sourced guards against re-declaring the readonly array.
+  _ensure_push_protection_sourced
   local expected_settings_count=${#PP_REQUIRED_SA_SETTINGS[@]}
   [ "$patch_count" -eq "$expected_settings_count" ]
 }
