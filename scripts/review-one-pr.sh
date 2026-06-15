@@ -31,11 +31,47 @@ source "$SCRIPT_DIR/lib/review-cycle.sh"
 # CI gate: compute_ci_status filters own check runs before classifying (issue #469).
 # shellcheck source=lib/ci-status.sh
 source "$SCRIPT_DIR/lib/ci-status.sh"
+# Rubric registry: review_registry_lookup resolves {rubric, output_channel} for
+# an artifact_type — the input-adapter layer above engine.sh (issues #611/#612).
+# shellcheck source=lib/review-registry.sh
+source "$SCRIPT_DIR/lib/review-registry.sh"
 
 PR_URL="${1:?usage: review-one-pr.sh <pr-url>}"
 export PR_URL
 
 echo "==> $PR_URL"
+
+# ==========================================================================
+# Artifact-contract dispatch (issues #611/#612). The production PR-review path
+# is the `pr_diff` handler of the rubric registry: instead of hard-coding the
+# cascade, resolve {rubric, output_channel} for artifact_type=pr_diff from the
+# versioned manifest, then run the existing tier sequence under it. content_ref
+# is the PR URL — the metadata + diff prefetch below is its adapter. Phase 1
+# registers only pr_diff, resolving to today's behavior with no change.
+# ==========================================================================
+ARTIFACT_TYPE="pr_diff"
+CONTENT_REF="$PR_URL"
+
+REVIEW_RUBRIC=$(review_registry_lookup "$ARTIFACT_TYPE" rubric | tr -d '\r') || {
+  echo "::error::no rubric registered for artifact_type=$ARTIFACT_TYPE"
+  exit 1
+}
+REVIEW_OUTPUT_CHANNEL=$(review_registry_lookup "$ARTIFACT_TYPE" output_channel | tr -d '\r') || {
+  echo "::error::no output_channel registered for artifact_type=$ARTIFACT_TYPE"
+  exit 1
+}
+
+# The rubric is an ordered, comma-separated cascade of prompt files. Bind the
+# tier prompts this dispatch drives directly from it: entry 1 -> triage (tier 1),
+# entry 2 -> deep review (tier 2). Both resolve to the existing prompt files, so
+# the cascade behaves identically.
+IFS=',' read -ra REVIEW_RUBRIC_CASCADE <<< "$REVIEW_RUBRIC"
+RUBRIC_TRIAGE_PROMPT="${REVIEW_RUBRIC_CASCADE[0]:-prompts/triage.md}"
+RUBRIC_DEEP_PROMPT="${REVIEW_RUBRIC_CASCADE[1]:-prompts/deep-review.md}"
+
+echo "    artifact_type=$ARTIFACT_TYPE content_ref=$CONTENT_REF"
+echo "    rubric=$REVIEW_RUBRIC"
+echo "    output_channel=$REVIEW_OUTPUT_CHANNEL"
 
 # 1. Current head SHA + CI gate — single API call for both fields.
 #    Strict CI classification:
@@ -538,7 +574,7 @@ unset _owner_repo _pr_num _adv_bots ADVISORY_REVIEW_BODIES ADVISORY_PR_COMMENTS 
 # Build the triage prompt: static template + inlined PR context.
 TRIAGE_PROMPT_FILE="/tmp/cascade/triage-prompt.md"
 {
-  cat prompts/triage.md
+  cat "$RUBRIC_TRIAGE_PROMPT"
   printf '\n\n## Pre-fetched PR context\n\n'
   printf 'PR_URL: %s\n' "$PR_URL"
   printf 'PR_HEAD_SHA: %s\n' "$PR_HEAD_SHA"
@@ -716,7 +752,7 @@ if [ "$TRIAGE_ESCALATE" = "false" ]; then
   rm -f "$VERDICT_JSON.raw"
 
   # Post the review using the verdict
-  bash scripts/post-pr-review.sh "$PR_URL" "$VERDICT_JSON" "$DRY_RUN"
+  bash "$REVIEW_OUTPUT_CHANNEL" "$PR_URL" "$VERDICT_JSON" "$DRY_RUN"
   echo "    [done]  $PR_URL"
   exit 0
 fi
@@ -730,7 +766,7 @@ echo "    [tier2] deep review ($ENGINE_DEEP_MODEL) + rubber duck ($DUCK_MODEL vi
 # or tool-execution noise that could cause false positives.
 OUTPUT_FILE="/tmp/cascade/deep.json"
 export OUTPUT_FILE
-run_agentic prompts/deep-review.md "$ENGINE_DEEP_MODEL" "deep" \
+run_agentic "$RUBRIC_DEEP_PROMPT" "$ENGINE_DEEP_MODEL" "deep" \
   > /tmp/cascade/deep-stdout.txt 2>/tmp/cascade/deep.log &
 DEEP_PID=$!
 
@@ -875,7 +911,7 @@ if [ "$COMBINED_ESCALATE" != "true" ]; then
   rm -f "$VERDICT_JSON.raw"
 
   # Post the review using the verdict
-  bash scripts/post-pr-review.sh "$PR_URL" "$VERDICT_JSON" "$DRY_RUN"
+  bash "$REVIEW_OUTPUT_CHANNEL" "$PR_URL" "$VERDICT_JSON" "$DRY_RUN"
   echo "    [done]  $PR_URL"
   exit 0
 fi
@@ -948,6 +984,6 @@ fi
 rm -f "$VERDICT_JSON.raw"
 
 # Post the review using the verdict
-bash scripts/post-pr-review.sh "$PR_URL" "$VERDICT_JSON" "$DRY_RUN"
+bash "$REVIEW_OUTPUT_CHANNEL" "$PR_URL" "$VERDICT_JSON" "$DRY_RUN"
 
 echo "    [done]  $PR_URL"
