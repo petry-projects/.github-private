@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 # Configurable via:
 #   STUB_ENGINE_RESPONSE, STUB_ENGINE_EXIT, STUB_ENGINE_DELAY
+#   STUB_ENGINE_EXIT_BY_MODEL  — pipe-delimited list of "model=exit_code" pairs.
+#                                If set and a pair matches --model, that exit
+#                                code overrides STUB_ENGINE_EXIT.
+#   STUB_ENGINE_RESPONSE_BY_MODEL  — pipe-delimited "model=response" pairs,
+#                                    same lookup as EXIT_BY_MODEL.
+#   STUB_ENGINE_RECORD_MODELS  — if set to a writable path, every --model value
+#                                seen is appended as a new line for inspection.
 #   STUB_GEMINI_USAGE    — "prompt cached candidates" emitted under
 #                          .stats.models.<model>.tokens when --output-format json
 #                          is requested. Default "120 20 40".
@@ -19,9 +26,23 @@ while [[ $# -gt 0 ]]; do
     *) shift ;;
   esac
 done
+
+if [ -n "${STUB_ENGINE_RECORD_MODELS:-}" ]; then
+  printf '%s\n' "$model" >> "$STUB_ENGINE_RECORD_MODELS" 2>/dev/null || true
+fi
+
 sleep "${STUB_ENGINE_DELAY:-0}"
 
+# Resolve response: per-model override → default.
 response="${STUB_ENGINE_RESPONSE:-stub engine response}"
+if [ -n "${STUB_ENGINE_RESPONSE_BY_MODEL:-}" ] && [ -n "$model" ]; then
+  IFS='|' read -ra _pairs <<< "$STUB_ENGINE_RESPONSE_BY_MODEL"
+  for _p in "${_pairs[@]}"; do
+    case "$_p" in
+      "$model="*) response="${_p#"$model="}"; break ;;
+    esac
+  done
+fi
 
 if [ "$output_format" = "json" ]; then
   read -r _p _c _cand <<< "${STUB_GEMINI_USAGE:-120 20 40}"
@@ -43,4 +64,14 @@ else
   printf '%s\n' "$response"
 fi
 
-exit "${STUB_ENGINE_EXIT:-0}"
+# Resolve exit code: per-model override → default.
+exit_code="${STUB_ENGINE_EXIT:-0}"
+if [ -n "${STUB_ENGINE_EXIT_BY_MODEL:-}" ] && [ -n "$model" ]; then
+  IFS='|' read -ra _epairs <<< "$STUB_ENGINE_EXIT_BY_MODEL"
+  for _ep in "${_epairs[@]}"; do
+    case "$_ep" in
+      "$model="*) exit_code="${_ep#"$model="}"; break ;;
+    esac
+  done
+fi
+exit "$exit_code"
