@@ -62,6 +62,7 @@ jobs:
             tests/test_sweep_stuck_reviews.bats \
             tests/test_validate_cases.bats \
             tests/test_review_registry.bats \
+            tests/test_pr_diff_dispatch.bats \
             tests/test_skill_evals.bats \
             tests/test_holdout_guard.bats \
             tests/test_skill_eval_report.bats \
