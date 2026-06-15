@@ -44,7 +44,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
-      contents: read  # actions/checkout only — the report is an artifact, no issue/PR writes
+      contents: read  # actions/checkout
+      issues: write   # notify step opens/updates/closes the single eval-health tracking issue (#747)
     env:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       SKILL: ${{ inputs.skill || 'triage' }}
@@ -146,3 +147,17 @@ jobs:
             regression) echo "::warning::Skill eval '${SKILL}': held-out regression detected (report-only — not blocking)." ;;
             *)          echo "::warning::Skill eval '${SKILL}': scorer hard-errored (report-only — not blocking)." ;;
           esac
+
+      - name: Notify eval health (open/update/close tracking issue)
+        # Visibility, not gating (#747): on regression/error open-or-update a
+        # single de-duplicated eval-health tracking issue; on a pass that follows
+        # a prior open issue, comment + close it; a healthy run with no open
+        # issue makes zero noise. Runs always() so a recovery still closes the
+        # issue even though the eval step exits 0.
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OUTCOME: ${{ steps.eval.outputs.outcome }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: bash scripts/evals/notify-eval-health.sh
