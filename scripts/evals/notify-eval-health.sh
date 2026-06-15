@@ -91,7 +91,7 @@ render_body() {
     if [ "${failed}" != "0" ]; then
       echo ""
       echo "### Regressed cases"
-      jq -r '(.cases | select(type == "array") // []) | .[] | select(.pass | not) | "- `\(.id // \"unknown\")` — expected \(.expected|tojson), got \(.actual|tojson)"' "$REPORT_PATH"
+      jq -r --arg def "unknown" '(.cases | select(type == "array") // []) | .[] | select(.pass | not) | "- `\(.id // $def)` — expected \(.expected|tojson), got \(.actual|tojson)"' "$REPORT_PATH"
     fi
   else
     echo "Scorer produced no parseable JSON report (outcome: \`${OUTCOME}\`)."
