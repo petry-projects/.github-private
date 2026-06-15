@@ -121,6 +121,62 @@ PY
   [ "$output" = "True" ]
 }
 
+@test "#747: a job grants issues:write for the notify step (least-privilege add)" {
+  run python3 - "$WF" <<'PY'
+import sys, yaml
+with open(sys.argv[1], encoding="utf-8") as fh:
+    doc = yaml.safe_load(fh)
+ok = False
+for job in (doc.get("jobs") or {}).values():
+    perms = job.get("permissions") or {}
+    if isinstance(perms, dict) and str(perms.get("issues")) == "write":
+        ok = True
+print(ok)
+PY
+  [ "$status" -eq 0 ]
+  [ "$output" = "True" ]
+}
+
+@test "#747: job permissions stay scoped (no contents:write, no write-all)" {
+  run python3 - "$WF" <<'PY'
+import sys, yaml
+with open(sys.argv[1], encoding="utf-8") as fh:
+    doc = yaml.safe_load(fh)
+ok = True
+for job in (doc.get("jobs") or {}).values():
+    perms = job.get("permissions")
+    if isinstance(perms, str):          # write-all / read-all scalar => too broad
+        ok = False
+    elif isinstance(perms, dict):
+        if str(perms.get("contents")) == "write":
+            ok = False
+print(ok)
+PY
+  [ "$status" -eq 0 ]
+  [ "$output" = "True" ]
+}
+
+@test "#747: wires the eval-health notifier step" {
+  grep -q 'scripts/evals/notify-eval-health.sh' "$WF"
+}
+
+@test "#747: the notify step runs always() so recovery can close the issue" {
+  run python3 - "$WF" <<'PY'
+import sys, yaml
+with open(sys.argv[1], encoding="utf-8") as fh:
+    doc = yaml.safe_load(fh)
+ok = False
+for job in (doc.get("jobs") or {}).values():
+    for step in (job.get("steps") or []):
+        if "notify-eval-health.sh" in str(step.get("run", "")):
+            if str(step.get("if", "")).strip() == "always()":
+                ok = True
+print(ok)
+PY
+  [ "$status" -eq 0 ]
+  [ "$output" = "True" ]
+}
+
 @test "AC#4: every third-party action is SHA-pinned (40-hex)" {
   run python3 - "$WF" <<'PY'
 import re, sys
