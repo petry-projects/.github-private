@@ -124,6 +124,26 @@ with code 1 (simulating an engine failure).
 
 ---
 
+### 07 — rate-limit-retry (script-based, stub network)
+
+**What it tests:** Rate-limit handling and retry infrastructure across fix-ci, fix-reviews, and the retry scanner.
+
+**Parts:**
+- **A:** `dev-lead-fix-ci.sh` exits 2 (not 1) and posts `status=rate-limited` when all engines are rate-limited.
+- **B:** Rate-limited markers do **not** count toward the exhaustion threshold (`MAX_FAIL_ATTEMPTS`).
+- **C:** A pre-existing `status=rate-limited` marker is retriable — idempotency check does not block a second attempt.
+- **D:** `dev-lead-fix-reviews.sh` exits 2 and posts a rate-limited marker for the `fix-reviews` intent.
+- **E:** `fix-reviews` on-mention intent exits 2 and emits user-visible rate-limit/re-trigger acknowledgment.
+- **F:** `dev-lead-retry.sh` dry-run scan identifies PRs with rate-limited markers and reports would-dispatch.
+- **G:** Retry skips a PR whose `human-pr` rate-limited marker has a corresponding `review-changes` terminal marker.
+- **H:** Retry normalizes `human-pr` → `review-changes` intent when dispatching a retry.
+
+**How it works:** Runs fix-ci, fix-reviews, and retry scripts directly using stub `claude`/`gemini`/`copilot` and `gh` binaries — no real GitHub API calls.
+
+**Requires:** Nothing (fully local).
+
+---
+
 ## Results
 
 Each run writes results to `tests/dev-lead/e2e/results/`:
@@ -144,7 +164,8 @@ tests/dev-lead/e2e/
 │   ├── 03-ci-failure-relay.sh
 │   ├── 04-issue-labeled.sh
 │   ├── 05-skip-anti-loop.sh
-│   └── 06-exhaustion-guard.sh
+│   ├── 06-exhaustion-guard.sh
+│   └── 07-rate-limit-retry.sh
 ├── results/                Created at runtime — gitignored
 └── README.md
 ```
@@ -152,14 +173,15 @@ tests/dev-lead/e2e/
 ## Running in CI
 
 The E2E suite is designed to be runnable by the dev-lead agent itself via a
-`workflow_dispatch` or as a scheduled job. Fixture-based scenarios (01, 05, 06)
+`workflow_dispatch` or as a scheduled job. Local (fixture/stub-based) scenarios (01, 05, 06, 07)
 are safe to run in any environment without credentials. Live scenarios (02–04)
 require a `GH_TOKEN` secret with `repo` scope.
 
 ```yaml
-- name: Run E2E fixture scenarios
+- name: Run E2E local scenarios
   run: |
     bash tests/dev-lead/e2e/run-all.sh --scenario 01-skip-bot-pr
     bash tests/dev-lead/e2e/run-all.sh --scenario 05-skip-anti-loop
     bash tests/dev-lead/e2e/run-all.sh --scenario 06-exhaustion-guard
+    bash tests/dev-lead/e2e/run-all.sh --scenario 07-rate-limit-retry
 ```
