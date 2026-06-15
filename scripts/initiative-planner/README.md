@@ -17,8 +17,8 @@ create-story template, which `plan.schema.json` mirrors field-for-field.
 | `gather-context.sh` | Fetch the approved Discussion + repo context → `$CONTEXT_PATH`; export `DISCUSSION_NODE_ID`. |
 | `plan.schema.json` | The plan contract Bob must emit (epic + stories + `blocked_by`). |
 | `validate-plan.py` | Schema + semantic checks: unique ids, acyclic DAG, an entry point, no dangling edges. |
-| `lib/mutations.sh` | DRY_RUN-aware GitHub helpers (create issue, link sub-issue, add `blocked_by`, comment on Discussion). |
-| `apply-plan.sh` | Materialize a validated plan. Creates issues labelled `initiative` only — **never** `initiative:auto`. |
+| `lib/mutations.sh` | DRY_RUN-aware GitHub helpers (create issue, link sub-issue, add `blocked_by`, comment on Discussion, find/close issues for the idempotency guard). |
+| `apply-plan.sh` | Materialize a validated plan. Creates issues labelled `initiative` only — **never** `initiative:auto`. Idempotent: no-ops if the discussion is already planned, or supersedes the old epic when `FORCE_REPLAN=1`. |
 
 Tests: `tests/test_initiative_planner.bats`, `tests/test_initiative_planner_redispatch.bats` (run via `lint.yml`).
 
@@ -52,3 +52,16 @@ cat /tmp/plan.jsonl | jq .
   #650→#659, #666→#667). Re-running after the questions are answered then
   materializes the real plan. Plain-string `open_questions` stay advisory and do
   **not** gate — only objects shaped `{"question": "...", "blocking": true}` do.
+- **Idempotency + supersede (default-safe re-planning).** Every epic carries a
+  deterministic back-reference (`Planned from idea discussion #<src>`).
+  `apply-plan.sh` uses it to detect its own prior output, so re-approving /
+  re-dispatching / re-toggling the label never silently mints a duplicate epic +
+  DAG. **Default:** if an open `initiative` epic already exists for the
+  discussion, it creates **nothing** and points the discussion back at the
+  existing epic. **`FORCE_REPLAN=1`** (the `force_replan` workflow input) instead
+  *supersedes*: it builds the fresh epic/DAG, then **closes (never deletes)** the
+  old epic and its sub-issues with a "superseded by #NEW" note, keeping history
+  and inbound references resolvable. The agent must always run `apply-plan.sh`
+  and let the script make this decision — it must not pre-judge "already planned"
+  and skip (the failure mode that left discussion #653's re-runs as silent
+  no-ops).
