@@ -1,0 +1,114 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# SOURCE OF TRUTH: petry-projects/.github-private/.github/workflows/auto-rebase-health.yml
+#
+# AGENTS — READ BEFORE EDITING:
+#   • Daily Auto-rebase Health report (#737, epic #736). Counts conflict-sentinel
+#     fires vs. dev-lead `rebase` responses (the agentic-conflict-resolution rate)
+#     and estimates auto-rebase fan-out CI volume. All logic lives in
+#     scripts/auto_rebase_health.sh (unit-tested in tests/auto_rebase_health.bats).
+#   • No LLM calls — pure gh-API + jq aggregation. Keep it that way; the cost cap
+#     for this report is a single scheduled run/day with no per-PR work.
+#   • Single-repo scan: github.token (with the permissions below) suffices —
+#     actions:read for run telemetry, issues/pull-requests:read for the comment
+#     and PR scans. No cross-org PAT is required (unlike token-report.yml).
+#   • This is a repo-specific workflow with no org template — see AGENTS.md
+#     (Workflow Files exception). Do not let template syncs remove it.
+# ─────────────────────────────────────────────────────────────────────────────
+name: Auto-rebase Health Report
+
+on:
+  schedule:
+    # Daily at 07:00 UTC — between the PR-review health check (06:00) and the
+    # weekly token report (Mon 08:00).
+    - cron: '0 7 * * *'
+  workflow_dispatch:
+    inputs:
+      lookback_days:
+        description: "Days of history to scan for sentinels and run telemetry"
+        required: false
+        default: "7"
+        type: string
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+  actions: read
+
+concurrency:
+  group: auto-rebase-health
+  cancel-in-progress: true
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      LOOKBACK_DAYS: ${{ inputs.lookback_days || '7' }}
+
+    steps:
+      - name: Checkout agent repo
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+
+      - name: Generate auto-rebase health report
+        env:
+          GH_TOKEN: ${{ github.token }}
+          AUTO_REBASE_HEALTH_OUT: auto_rebase_health.md
+        run: bash scripts/auto_rebase_health.sh
+
+      - name: Post report to tracking issue
+        if: hashFiles('auto_rebase_health.md') != ''
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const fs = require('fs');
+            const MAX = 65000;
+            let report = fs.readFileSync('auto_rebase_health.md', 'utf8');
+            if (!report.trim()) { core.setFailed('Report file is empty'); return; }
+
+            const runUrl = `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`;
+            if (report.length > MAX) {
+              report = report.slice(0, MAX) +
+                `\n\n---\n_Report truncated — full output in the [workflow run summary](${runUrl})._`;
+            }
+
+            const LABEL = 'auto-rebase-health';
+            const TITLE = '🔁 Auto-rebase Health — Daily Report';
+
+            // Ensure the tracking label exists.
+            try {
+              await github.rest.issues.getLabel({ owner: context.repo.owner, repo: context.repo.repo, name: LABEL });
+            } catch (e) {
+              await github.rest.issues.createLabel({
+                owner: context.repo.owner, repo: context.repo.repo,
+                name: LABEL, color: '1d76db',
+                description: 'Daily auto-rebase instrumentation report',
+              });
+            }
+
+            // Find-or-create the single pinned tracking issue.
+            const existing = await github.paginate(github.rest.issues.listForRepo, {
+              owner: context.repo.owner, repo: context.repo.repo,
+              labels: LABEL, state: 'open', per_page: 100,
+            });
+
+            let issue = existing.find(i => i.title === TITLE);
+            if (!issue) {
+              const created = await github.rest.issues.create({
+                owner: context.repo.owner, repo: context.repo.repo,
+                title: TITLE, labels: [LABEL],
+                body: 'Tracking issue for the daily Auto-rebase Health report. ' +
+                      'Each run posts a new comment below with the agentic-conflict-resolution ' +
+                      'rate and the auto-rebase fan-out CI-volume estimate.\n\n' +
+                      'Source: `scripts/auto_rebase_health.sh` · `.github/workflows/auto-rebase-health.yml`',
+              });
+              issue = created.data;
+              core.notice(`Created tracking issue #${issue.number}: ${issue.html_url}`);
+            }
+
+            const comment = await github.rest.issues.createComment({
+              owner: context.repo.owner, repo: context.repo.repo,
+              issue_number: issue.number, body: report,
+            });
+            core.notice(`Posted auto-rebase health report: ${comment.data.html_url}`);

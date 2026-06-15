@@ -56,6 +56,14 @@ This is the `.github-private` org infrastructure repo for `petry-projects`. It c
   path, which the thin-caller `auto-rebase.yml` and central reusable cannot cover. It must not be removed by
   template syncs. If the org template gains a retry equivalent, remove this exception and defer to the
   template instead.
+- **Exception:** `auto-rebase-health.yml` (#737, epic #736) is a documented repo-specific workflow with no
+  corresponding org template in `standards/workflows/`. It is a daily (≤1/day) + `workflow_dispatch` report
+  that quantifies the agentic-conflict-resolution rate (conflict-sentinel fires vs. dev-lead `rebase`
+  responses, both HTML-comment markers GitHub search cannot index) and estimates auto-rebase fan-out CI
+  volume from `auto-rebase.yml` run telemetry. It is a no-LLM gh-API + jq report (logic in
+  `scripts/auto_rebase_health.sh`, tests in `tests/auto_rebase_health.bats`) and runs on `github.token`
+  only — no cross-org PAT. It must not be removed by template syncs. If the org template gains an
+  auto-rebase instrumentation equivalent, remove this exception and defer to the template instead.
 
 ### Agent Profiles (`agents/*.md`)
 
