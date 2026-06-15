@@ -104,17 +104,29 @@ set_engine_config() {
       CLAUDE_SINGLE_MODEL_CHAIN="${CLAUDE_SINGLE_MODEL_CHAIN:-claude-fable-5,claude-opus-4-8,claude-opus-4-7}"
       ;;
     gemini)
-      ENGINE_TRIAGE_MODEL="gemini-2.0-flash"
-      ENGINE_DEEP_MODEL="gemini-2.5-pro"
-      ENGINE_AUDIT_MODEL="gemini-2.5-pro"
-      ENGINE_ACTION_MODEL="gemini-2.5-pro"
-      ENGINE_SINGLE_MODEL="gemini-2.5-pro"
-      ENGINE_LABEL="triage: gemini-2.0-flash → deep: gemini-2.5-pro + duck: sonnet 4.6 → audit: gemini-2.5-pro"
-      ENGINE_SINGLE_LABEL="single-reviewer mode: gemini-2.5-pro"
+      # Per-engine model overrides via env (env → default).
+      # GEMINI_FLASH_MODEL controls the speed/cost tier (triage + action).
+      # GEMINI_PRO_MODEL controls the quality tier (deep + audit + single).
+      local _gflash="${GEMINI_FLASH_MODEL:-gemini-3.5-flash}"
+      local _gpro="${GEMINI_PRO_MODEL:-gemini-2.5-pro}"
+      ENGINE_TRIAGE_MODEL="$_gflash"
+      ENGINE_DEEP_MODEL="$_gpro"
+      ENGINE_AUDIT_MODEL="$_gpro"
+      ENGINE_ACTION_MODEL="$_gflash"
+      ENGINE_SINGLE_MODEL="$_gpro"
+      ENGINE_LABEL="triage: $_gflash → deep: $_gpro + duck: sonnet 4.6 → audit: $_gpro"
+      ENGINE_SINGLE_LABEL="single-reviewer mode: $_gpro"
       # Cross-engine rubber duck: use Claude for diversity
       DUCK_ENGINE="claude"
       DUCK_MODEL="claude-sonnet-4-6"
-      # No in-engine chain for Gemini — only one production model in use today.
+      # In-Gemini model fallback chains (comma-separated, walked left-to-right on rate-limit).
+      # Flash chain: 3.5-flash (speed/cost) → 2.5-pro (quality fallback on exhaustion).
+      # Pro chain: 2.5-pro (quality) → 2.0-flash (graceful degradation on exhaustion).
+      # Override per workflow via env to tune cost/capability trade-offs.
+      GEMINI_FLASH_MODEL_CHAIN="${GEMINI_FLASH_MODEL_CHAIN:-${_gflash},gemini-2.5-pro}"
+      GEMINI_PRO_MODEL_CHAIN="${GEMINI_PRO_MODEL_CHAIN:-${_gpro},gemini-2.0-flash}"
+      # Clear the Claude-only chain vars so callers that check them unconditionally
+      # do not accidentally apply a stale Claude chain to the Gemini engine.
       CLAUDE_TRIAGE_MODEL_CHAIN=""
       CLAUDE_DEEP_MODEL_CHAIN=""
       CLAUDE_AUDIT_MODEL_CHAIN=""
@@ -134,11 +146,11 @@ set_engine_config() {
       # not a typo for o1-mini or gpt-4o-mini.
       COPILOT_API_MODEL="${COPILOT_API_MODEL:-openai/o4-mini}"
       export COPILOT_API_MODEL
-      ENGINE_LABEL="triage: o4-mini → deep: o4-mini + duck: gemini-2.0-flash → audit: o4-mini (GitHub Models API)"
+      ENGINE_LABEL="triage: o4-mini → deep: o4-mini + duck: gemini-3.5-flash → audit: o4-mini (GitHub Models API)"
       ENGINE_SINGLE_LABEL="single-reviewer mode: o4-mini (GitHub Models API)"
       # Cross-engine rubber duck: use Gemini when Copilot is primary
       DUCK_ENGINE="gemini"
-      DUCK_MODEL="gemini-2.0-flash"
+      DUCK_MODEL="gemini-3.5-flash"
       # No in-engine chain for Copilot — single GitHub Models endpoint.
       CLAUDE_TRIAGE_MODEL_CHAIN=""
       CLAUDE_DEEP_MODEL_CHAIN=""
@@ -159,6 +171,7 @@ set_engine_config() {
   export CLAUDE_TRIAGE_MODEL_CHAIN CLAUDE_DEEP_MODEL_CHAIN
   export CLAUDE_AUDIT_MODEL_CHAIN CLAUDE_ACTION_MODEL_CHAIN
   export CLAUDE_SINGLE_MODEL_CHAIN
+  export GEMINI_FLASH_MODEL_CHAIN GEMINI_PRO_MODEL_CHAIN
 }
 
 # Initial config
@@ -468,6 +481,114 @@ _gemini_invoke() {
     --output-format text < "$prompt_file"
 }
 
+# _gemini_chain_invoke <chain_csv> <prompt_file> <timeout_sec> [extra_args...]
+# Walks a comma-separated list of Gemini models, invoking _gemini_invoke with
+# each model in sequence. Semantics mirror _claude_chain_invoke:
+#   - First model that succeeds (exit 0) wins; its stdout is emitted, exit 0 returned.
+#   - Rate-limited models (is_rate_limited_files) are logged and skipped; next tried.
+#   - Non-rate-limit failures stop the chain immediately; exit code propagated.
+#   - If every model rate-limits, returns 2 and writes the parsed reset time.
+#   - Empty/whitespace-only chain → config error exit 1.
+#
+# Sets _GEMINI_CHAIN_MODEL_USED to the model that produced the final output.
+# Note: when called inside a pipeline (e.g. `... | tee ...`), the variable is
+# set in a subshell and will not propagate to the parent — same limitation as
+# _CLAUDE_CHAIN_MODEL_USED in _claude_chain_invoke.
+_gemini_chain_invoke() {
+  local chain_csv="$1" prompt_file="$2" timeout_sec="$3"
+  shift 3
+  local extra_args=("$@")
+
+  if [ -z "$chain_csv" ]; then
+    echo "::error::_gemini_chain_invoke called with empty chain" >&2
+    return 1
+  fi
+
+  local -a models
+  local saved_ifs="$IFS"
+  IFS=',' read -ra models <<< "$chain_csv"
+  IFS="$saved_ifs"
+
+  local stdout_tmp="" stderr_tmp=""
+  local final_stdout="" final_stderr="" final_model="" final_rc=0
+  local rc=0 attempted=0 all_rl=1
+  local model
+
+  for model in "${models[@]}"; do
+    # Trim whitespace
+    model="${model#"${model%%[![:space:]]*}"}"
+    model="${model%"${model##*[![:space:]]}"}"
+    [ -z "$model" ] && continue
+
+    attempted=$((attempted + 1))
+    stdout_tmp="$(mktemp 2>/dev/null)" || stdout_tmp=""
+    stderr_tmp="$(mktemp 2>/dev/null)" || stderr_tmp=""
+    rc=0
+
+    if [ -n "$stdout_tmp" ] && [ -n "$stderr_tmp" ]; then
+      # stderr intentionally passed through from _gemini_invoke (rate-limit msgs live there).
+      _gemini_invoke "$prompt_file" "$timeout_sec" "$model" "${extra_args[@]}" \
+        > "$stdout_tmp" 2> "$stderr_tmp" || rc=$?
+    else
+      # mktemp failure — clean up partial allocations and fall through without capture.
+      [ -n "$stdout_tmp" ] && rm -f "$stdout_tmp"
+      [ -n "$stderr_tmp" ] && rm -f "$stderr_tmp"
+      [ -n "$final_stdout" ] && rm -f "$final_stdout"
+      [ -n "$final_stderr" ] && rm -f "$final_stderr"
+      _gemini_invoke "$prompt_file" "$timeout_sec" "$model" "${extra_args[@]}" || rc=$?
+      _GEMINI_CHAIN_MODEL_USED="$model"
+      export _GEMINI_CHAIN_MODEL_USED
+      return "$rc"
+    fi
+
+    # Keep only the latest attempt's buffers
+    [ -n "$final_stdout" ] && rm -f "$final_stdout"
+    [ -n "$final_stderr" ] && rm -f "$final_stderr"
+    final_stdout="$stdout_tmp"
+    final_stderr="$stderr_tmp"
+    final_model="$model"
+
+    if [ "$rc" -eq 0 ]; then
+      final_rc=0
+      all_rl=0
+      break
+    fi
+    if ! is_rate_limited_files "$stdout_tmp" "$stderr_tmp"; then
+      # Non-rate-limit failure — propagate immediately without trying next model.
+      final_rc="$rc"
+      all_rl=0
+      break
+    fi
+    # Rate-limited; log and try next model.
+    # Phrasing avoids tokens that match _rate_limit_pattern so downstream callers
+    # that scan stderr do not misclassify a successful chain fallback as a rate-limit.
+    echo "::warning::[gemini] model $model throttled (rc=$rc) — trying next in chain" >&2
+  done
+
+  if [ "$attempted" -eq 0 ]; then
+    echo "::error::_gemini_chain_invoke: chain '$chain_csv' had no valid model entries" >&2
+    return 1
+  fi
+
+  if [ "$all_rl" -eq 1 ]; then
+    parse_reset_time_files "$final_stdout" "$final_stderr"
+    final_rc=2
+  fi
+
+  if [ -n "$final_stdout" ]; then
+    cat "$final_stdout"
+    rm -f "$final_stdout"
+  fi
+  if [ -n "$final_stderr" ]; then
+    cat "$final_stderr" >&2
+    rm -f "$final_stderr"
+  fi
+
+  _GEMINI_CHAIN_MODEL_USED="$final_model"
+  export _GEMINI_CHAIN_MODEL_USED
+  return "$final_rc"
+}
+
 # _claude_chain_invoke <chain_csv> <prompt_file> <timeout_sec> [extra_args...]
 # Walks a comma-separated list of Claude models, invoking `claude --print --model X`
 # with the given extra arguments. The first model whose run does NOT trigger
@@ -731,11 +852,13 @@ run_triage() {
         fi
         ;;
       gemini)
+        local _triage_gemini_chain="${GEMINI_FLASH_MODEL_CHAIN:-$ENGINE_TRIAGE_MODEL}"
         if [ -n "$_tok_tmp" ]; then
-          _gemini_invoke "$prompt_file" "$TRIAGE_TIMEOUT_SEC" "$ENGINE_TRIAGE_MODEL" \
-            --approval-mode auto_edit | tee "$_tok_tmp" || rc=${PIPESTATUS[0]}
+          _GEMINI_CHAIN_MODEL_USED=""
+          _gemini_chain_invoke "$_triage_gemini_chain" "$prompt_file" "$TRIAGE_TIMEOUT_SEC" \
+            --approval-mode auto_edit > >(tee "$_tok_tmp") || rc=$?
         else
-          _gemini_invoke "$prompt_file" "$TRIAGE_TIMEOUT_SEC" "$ENGINE_TRIAGE_MODEL" \
+          _gemini_chain_invoke "$_triage_gemini_chain" "$prompt_file" "$TRIAGE_TIMEOUT_SEC" \
             --approval-mode auto_edit || rc=$?
         fi
         ;;
@@ -749,7 +872,14 @@ run_triage() {
         ;;
     esac
     if [ "$rc" -eq 0 ]; then
-      local _triage_used="${_CLAUDE_CHAIN_MODEL_USED:-$ENGINE_TRIAGE_MODEL}"
+      local _triage_used
+      if [ "$REVIEW_ENGINE" = "claude" ] && [ -n "${_CLAUDE_CHAIN_MODEL_USED:-}" ]; then
+        _triage_used="$_CLAUDE_CHAIN_MODEL_USED"
+      elif [ "$REVIEW_ENGINE" = "gemini" ] && [ -n "${_GEMINI_CHAIN_MODEL_USED:-}" ]; then
+        _triage_used="$_GEMINI_CHAIN_MODEL_USED"
+      else
+        _triage_used="$ENGINE_TRIAGE_MODEL"
+      fi
       _record_engine_tokens "triage" "$REVIEW_ENGINE" "$_triage_used" "$prompt_file" "$_tok_tmp"
       [ -n "$_tok_tmp" ] && rm -f "$_tok_tmp"
       return 0
@@ -832,11 +962,28 @@ run_agentic() {
       fi
       ;;
     gemini)
+      # Capability-aware chain selection: flash chain for speed tiers, pro chain
+      # for quality tiers. Honor explicit model pin when it differs from the tier default.
+      local _agentic_gemini_chain _gemini_tier_default=""
+      case "$tier" in
+        deep)   _agentic_gemini_chain="${GEMINI_PRO_MODEL_CHAIN:-$model}"
+                _gemini_tier_default="${ENGINE_DEEP_MODEL:-}" ;;
+        audit)  _agentic_gemini_chain="${GEMINI_PRO_MODEL_CHAIN:-$model}"
+                _gemini_tier_default="${ENGINE_AUDIT_MODEL:-}" ;;
+        single) _agentic_gemini_chain="${GEMINI_PRO_MODEL_CHAIN:-$model}"
+                _gemini_tier_default="${ENGINE_SINGLE_MODEL:-}" ;;
+        *)      _agentic_gemini_chain="${GEMINI_FLASH_MODEL_CHAIN:-$model}"
+                _gemini_tier_default="${ENGINE_ACTION_MODEL:-}" ;;
+      esac
+      if [ -n "$_gemini_tier_default" ] && [ "$model" != "$_gemini_tier_default" ]; then
+        _agentic_gemini_chain="$model"
+      fi
       if [ -n "$_tok_tmp" ]; then
-        _gemini_invoke "$prompt_file" "$DEEP_TIMEOUT_SEC" "$model" \
-          --approval-mode auto_edit | tee "$_tok_tmp" || rc=${PIPESTATUS[0]}
+        _GEMINI_CHAIN_MODEL_USED=""
+        _gemini_chain_invoke "$_agentic_gemini_chain" "$prompt_file" "$DEEP_TIMEOUT_SEC" \
+          --approval-mode auto_edit > >(tee "$_tok_tmp") || rc=$?
       else
-        _gemini_invoke "$prompt_file" "$DEEP_TIMEOUT_SEC" "$model" \
+        _gemini_chain_invoke "$_agentic_gemini_chain" "$prompt_file" "$DEEP_TIMEOUT_SEC" \
           --approval-mode auto_edit || rc=$?
       fi
       ;;
@@ -857,6 +1004,8 @@ run_agentic() {
     local _agentic_used="$model"
     if [ "$REVIEW_ENGINE" = "claude" ] && [ -n "${_CLAUDE_CHAIN_MODEL_USED:-}" ]; then
       _agentic_used="$_CLAUDE_CHAIN_MODEL_USED"
+    elif [ "$REVIEW_ENGINE" = "gemini" ] && [ -n "${_GEMINI_CHAIN_MODEL_USED:-}" ]; then
+      _agentic_used="$_GEMINI_CHAIN_MODEL_USED"
     fi
     _record_engine_tokens "$tier" "$REVIEW_ENGINE" "$_agentic_used" "$prompt_file" "$_tok_tmp"
   fi
@@ -1129,11 +1278,17 @@ run_writer() {
       fi
       ;;
     gemini)
+      # Flash chain for writer (action) tier; honor explicit model pin.
+      local _writer_gemini_chain="${GEMINI_FLASH_MODEL_CHAIN:-$model}"
+      if [ -n "${ENGINE_ACTION_MODEL:-}" ] && [ "$model" != "$ENGINE_ACTION_MODEL" ]; then
+        _writer_gemini_chain="$model"
+      fi
       if [ -n "$_tmp" ]; then
-        _gemini_invoke "$prompt_file" "$ACTION_TIMEOUT_SEC" "$model" \
-          --approval-mode auto_edit 2>&1 | tee "$_tmp" || rc=${PIPESTATUS[0]}
+        _GEMINI_CHAIN_MODEL_USED=""
+        _gemini_chain_invoke "$_writer_gemini_chain" "$prompt_file" "$ACTION_TIMEOUT_SEC" \
+          --approval-mode auto_edit > >(tee "$_tmp") 2>&1 || rc=$?
       else
-        _gemini_invoke "$prompt_file" "$ACTION_TIMEOUT_SEC" "$model" \
+        _gemini_chain_invoke "$_writer_gemini_chain" "$prompt_file" "$ACTION_TIMEOUT_SEC" \
           --approval-mode auto_edit || rc=$?
       fi
       ;;
@@ -1158,6 +1313,8 @@ run_writer() {
     local _writer_used="$model"
     if [ "$REVIEW_ENGINE" = "claude" ] && [ -n "${_CLAUDE_CHAIN_MODEL_USED:-}" ]; then
       _writer_used="$_CLAUDE_CHAIN_MODEL_USED"
+    elif [ "$REVIEW_ENGINE" = "gemini" ] && [ -n "${_GEMINI_CHAIN_MODEL_USED:-}" ]; then
+      _writer_used="$_GEMINI_CHAIN_MODEL_USED"
     fi
     _record_engine_tokens "writer" "$REVIEW_ENGINE" "$_writer_used" "$prompt_file" "$_tmp"
   fi
