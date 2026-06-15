@@ -23,8 +23,15 @@
 ORG="${ORG:-petry-projects}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=scripts/lib/push-protection.sh
-source "${SCRIPT_DIR}/lib/push-protection.sh"
+
+# Lazy-load push-protection.sh to avoid polluting test environments with its strict shell options
+_ensure_push_protection_sourced() {
+  if [ -z "${_push_protection_sourced:-}" ]; then
+    # shellcheck source=scripts/lib/push-protection.sh
+    source "${SCRIPT_DIR}/lib/push-protection.sh"
+    _push_protection_sourced=1
+  fi
+}
 
 # Apps whose check-suite auto-trigger must be disabled.
 # GitHub creates a queued suite on every push when auto-trigger is on; those
@@ -90,6 +97,7 @@ rs_apply_repo() {
 
 # rs_apply_all — apply all settings to every repo in ORG.
 rs_apply_all() {
+  _ensure_push_protection_sourced
   local repos
   if ! repos=$(gh repo list "${ORG}" --json name --jq '.[].name' --limit 1000); then
     echo "[error] failed to list repositories for org ${ORG}" >&2
@@ -108,6 +116,7 @@ rs_apply_all() {
 # Run main only when executed directly, so tests can source the helpers.
 if [ "${BASH_SOURCE[0]:-$0}" = "$0" ]; then
   set -euo pipefail
+  _ensure_push_protection_sourced
   if [ "${1:-}" = "--all" ]; then
     rs_apply_all
   else
