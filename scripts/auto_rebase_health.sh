@@ -107,7 +107,7 @@ fmt_rate() {
     echo "n/a"
     return 0
   fi
-  awk -v n="$num" -v d="$denom" 'BEGIN { printf "%d%%", (n * 100 / d) }'
+  echo "$(( num * 100 / denom ))%"
 }
 
 # render_report <comments_json> <runs_json> <lookback_days> <behind_prs> [today]
@@ -200,7 +200,7 @@ main() {
   #    fan-out updates). Best-effort; defaults to 0 so the report still renders.
   local behind
   behind="$(gh pr list --repo "$WORKFLOW_REPO" --state open --limit 200 --json author \
-    --jq '[.[] | select((.author.login // "") | test("dependabot"; "i") | not)] | length' \
+    --jq '[.[] | select((.author?.login // "") | test("dependabot"; "i") | not)] | length' \
     2>/dev/null || echo 0)"
 
   local report
