@@ -37,19 +37,15 @@ write_verdict() {
 }
 
 # ---------------------------------------------------------------------------
-# Registered types — pr_diff is the SOLE type (AC #2)
+# Registered types — pr_diff stays registered (AC #2). Phase 2 (#614) added
+# plan_json additively; this guard pins that pr_diff is never removed or
+# renamed, not that it is the sole type.
 # ---------------------------------------------------------------------------
 
 @test "pr_diff is registered" {
   run review_registry_types
   [ "$status" -eq 0 ]
   echo "$output" | grep -qx "pr_diff"
-}
-
-@test "pr_diff is the only registered type" {
-  run review_registry_types
-  [ "$status" -eq 0 ]
-  [ "$(echo "$output" | grep -c .)" -eq 1 ]
 }
 
 # ---------------------------------------------------------------------------
