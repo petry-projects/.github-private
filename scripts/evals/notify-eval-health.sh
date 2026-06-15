@@ -81,17 +81,17 @@ render_body() {
 
   if jq -e . "$REPORT_PATH" >/dev/null 2>&1; then
     local score passed total failed
-    score=$(jq -r '.score'  "$REPORT_PATH")
-    passed=$(jq -r '.passed' "$REPORT_PATH")
-    total=$(jq -r '.total'  "$REPORT_PATH")
-    failed=$(jq -r '.failed' "$REPORT_PATH")
+    score=$(jq -r '.score // "N/A"' "$REPORT_PATH")
+    passed=$(jq -r '.passed // "0"' "$REPORT_PATH")
+    total=$(jq -r '.total // "0"' "$REPORT_PATH")
+    failed=$(jq -r '.failed // "0"' "$REPORT_PATH")
     echo "| skill | score | passed | failed | total |"
     echo "|-------|-------|--------|--------|-------|"
     echo "| \`${SKILL}\` | ${score} | ${passed} | ${failed} | ${total} |"
     if [ "${failed}" != "0" ]; then
       echo ""
       echo "### Regressed cases"
-      jq -r '.cases[] | select(.pass | not) | "- `\(.id)` — expected \(.expected|tojson), got \(.actual|tojson)"' "$REPORT_PATH"
+      jq -r '(.cases | select(type == "array") // []) | .[] | select(.pass | not) | "- `\(.id // \"unknown\")` — expected \(.expected|tojson), got \(.actual|tojson)"' "$REPORT_PATH"
     fi
   else
     echo "Scorer produced no parseable JSON report (outcome: \`${OUTCOME}\`)."
