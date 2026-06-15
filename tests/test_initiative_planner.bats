@@ -258,3 +258,44 @@ teardown() { rm -rf "$TMP"; }
   [[ "$body" == *"## Dev Notes"* ]]
   [[ "$body" == *"Status: ready-for-dev"* ]]
 }
+
+@test "idempotency skip posts an 'already planned' discussion comment with a force_replan hint" {
+  DRY_RUN_EXISTING_EPIC=727 \
+  DRY_RUN=1 DRY_RUN_LOG="$LOG" REPO="petry-projects/.github-private" \
+    DISCUSSION_NUMBER=413 DISCUSSION_NODE_ID="D_test" PLAN_PATH="$PLAN" \
+    run bash "$PLANNER_DIR/apply-plan.sh"
+  [ "$status" -eq 0 ]
+  [ "$(grep -c '"op":"create_issue"' "$LOG")" -eq 0 ]
+  [ "$(grep -c '"op":"add_sub_issue"' "$LOG")" -eq 0 ]
+  [ "$(grep -c '"op":"close_issue"' "$LOG")" -eq 0 ]
+  body="$(grep '"op":"comment_on_discussion"' "$LOG" | jq -r '.body')"
+  [[ "$body" == *"Already planned"* ]]
+  [[ "$body" == *"#727"* ]]
+  [[ "$body" == *"force_replan"* ]]
+}
+
+@test "force_replan supersedes: creates the new plan AND closes the old epic + sub-issues" {
+  DRY_RUN_EXISTING_EPIC=727 DRY_RUN_EXISTING_SUBISSUES="728 729 730" FORCE_REPLAN=1 \
+  DRY_RUN=1 DRY_RUN_LOG="$LOG" REPO="petry-projects/.github-private" \
+    DISCUSSION_NUMBER=413 DISCUSSION_NODE_ID="D_test" PLAN_PATH="$PLAN" \
+    run bash "$PLANNER_DIR/apply-plan.sh"
+  [ "$status" -eq 0 ]
+  # the fresh epic + 3 stories are still created
+  [ "$(grep -c '"op":"create_issue"' "$LOG")" -eq 4 ]
+  # old epic (727) + its 3 sub-issues are closed
+  [ "$(grep -c '"op":"close_issue"' "$LOG")" -eq 4 ]
+  closed="$(grep '"op":"close_issue"' "$LOG" | jq -r '.number' | sort -n | tr '\n' ' ')"
+  [[ "$closed" == "727 728 729 730 "* ]]
+  epic_close="$(grep '"op":"close_issue"' "$LOG" | jq -r 'select(.number==727) | .comment')"
+  [[ "$epic_close" == *"Superseded by"* ]]
+}
+
+@test "force_replan with no existing epic just plans normally (nothing to supersede)" {
+  FORCE_REPLAN=1 \
+  DRY_RUN=1 DRY_RUN_LOG="$LOG" REPO="petry-projects/.github-private" \
+    DISCUSSION_NUMBER=413 DISCUSSION_NODE_ID="D_test" PLAN_PATH="$PLAN" \
+    run bash "$PLANNER_DIR/apply-plan.sh"
+  [ "$status" -eq 0 ]
+  [ "$(grep -c '"op":"create_issue"' "$LOG")" -eq 4 ]
+  [ "$(grep -c '"op":"close_issue"' "$LOG")" -eq 0 ]
+}
