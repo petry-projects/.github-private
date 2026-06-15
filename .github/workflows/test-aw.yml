@@ -37,10 +37,13 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
 
       - name: Install PyYAML
-        run: pip install --quiet pyyaml
+        run: pip install "pyyaml==6.0.3" --only-binary=":all:" --quiet
 
       - name: Run spec validator
         run: bash tests/aw/validate-specs.sh
+
+      - name: Structural tests (test-aw.yml install resilience guard)
+        run: bash tests/aw/test_test_aw_yml.sh
 
   shellcheck-aw-scripts:
     name: shellcheck aw-*.sh scripts
@@ -65,7 +68,7 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
 
       - name: Install PyYAML
-        run: pip install --quiet pyyaml
+        run: pip install "pyyaml==6.0.3" --only-binary=":all:" --quiet
 
       - name: Unit tests (skip guard + safe-output validation)
         run: bash tests/aw/issue-triage/test_aw_run.sh
