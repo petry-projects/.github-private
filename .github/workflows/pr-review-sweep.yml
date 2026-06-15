@@ -12,9 +12,13 @@ name: PR Review Agent — Stuck-Review Sweep
 # lifting (CI gating, idempotency) still lives in review-one-pr.sh; the sweep
 # only decides WHAT to re-trigger via pr-review-trigger.yml.
 #
-# NOTE: the re-dispatch runs as the bot PAT (DON_PETRY_BOT_GH_PAT), not the
-# default GITHUB_TOKEN — GitHub will not start a new run from a workflow_dispatch
-# fired with GITHUB_TOKEN (loop prevention). See scripts/sweep-stuck-reviews.sh.
+# NOTE: the re-dispatch runs as GH_PAT_WORKFLOWS (a PAT with workflow /
+# actions:write scope), NOT the default GITHUB_TOKEN — GitHub will not start a
+# new run from a workflow_dispatch fired with GITHUB_TOKEN (loop prevention).
+# It also must NOT use DON_PETRY_BOT_GH_PAT (the bot's comment-posting PAT lacks
+# actions:write and returns HTTP 403 on the dispatch). This matches every other
+# dispatching workflow in the repo (initiative-planner.yml, auto-rebase-retry.yml,
+# scripts/initiative-planner/redispatch.sh). See scripts/sweep-stuck-reviews.sh.
 #
 # This workflow has no corresponding org template in standards/workflows/ and is
 # documented as a repo-specific exception in AGENTS.md; template syncs must not
@@ -52,10 +56,24 @@ jobs:
       - name: Checkout agent repo
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
 
+      - name: Guard — workflow-dispatch PAT present
+        # Without a workflow/actions:write PAT every dispatch returns HTTP 403 and
+        # the sweep "succeeds" while re-triggering nothing (the original #573 gap
+        # regression). Fail loudly instead of silently no-op'ing.
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
+        run: |
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "::error::GH_PAT_WORKFLOWS is required — GITHUB_TOKEN cannot start a dispatched run and the bot comment PAT lacks actions:write."
+            exit 1
+          fi
+
       - name: Run stuck-review sweep
         env:
-          # PAT required: GITHUB_TOKEN cannot start dispatched workflow runs.
-          GH_TOKEN: ${{ secrets.DON_PETRY_BOT_GH_PAT }}
+          # PAT with workflow/actions:write scope required: GITHUB_TOKEN cannot
+          # start dispatched workflow runs, and the bot comment PAT lacks the
+          # actions:write scope (HTTP 403 on the dispatch).
+          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
           DRY_RUN: ${{ inputs.dry_run || 'false' }}
           MAX_DISPATCH: ${{ inputs.max_dispatch || '20' }}
         run: bash scripts/sweep-stuck-reviews.sh
