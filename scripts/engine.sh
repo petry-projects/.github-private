@@ -4894,10 +4894,11 @@ run_writer() {
       ;;
     gemini)
       if [ -n "$_tmp" ]; then
-        _gemini_invoke "$prompt_file" "$ACTION_TIMEOUT_SEC" "$model" \
-          --approval-mode auto_edit 2>&1 | tee "$_tmp" || rc=${PIPESTATUS[0]}
+        _GEMINI_CHAIN_MODEL_USED=""
+        _gemini_chain_invoke "$_writer_gemini_chain" "$prompt_file" "$ACTION_TIMEOUT_SEC" \
+          --approval-mode auto_edit > >(tee "$_tmp") 2>&1 || rc=$?
       else
-        _gemini_invoke "$prompt_file" "$ACTION_TIMEOUT_SEC" "$model" \
+        _gemini_chain_invoke "$_writer_gemini_chain" "$prompt_file" "$ACTION_TIMEOUT_SEC" \
           --approval-mode auto_edit || rc=$?
       fi
       ;;
@@ -4922,6 +4923,8 @@ run_writer() {
     local _writer_used="$model"
     if [ "$REVIEW_ENGINE" = "claude" ] && [ -n "${_CLAUDE_CHAIN_MODEL_USED:-}" ]; then
       _writer_used="$_CLAUDE_CHAIN_MODEL_USED"
+    elif [ "$REVIEW_ENGINE" = "gemini" ] && [ -n "${_GEMINI_CHAIN_MODEL_USED:-}" ]; then
+      _writer_used="$_GEMINI_CHAIN_MODEL_USED"
     fi
     _record_engine_tokens "writer" "$REVIEW_ENGINE" "$_writer_used" "$prompt_file" "$_tmp"
   fi
