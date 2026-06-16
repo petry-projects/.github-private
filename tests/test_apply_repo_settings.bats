@@ -2,9 +2,12 @@
 # Unit tests for scripts/apply-repo-settings.sh
 #
 # Run with: bats tests/test_apply_repo_settings.bats
+# Install bats: https://github.com/bats-core/bats-core
+
+SCRIPT="$(dirname "$BATS_TEST_FILENAME")/../scripts/apply-repo-settings.sh"
 
 setup() {
-  source "$(dirname "$BATS_TEST_FILENAME")/../scripts/apply-repo-settings.sh"
+  source "$SCRIPT"
   GH_LOG="$(mktemp)"
 
   # Preference JSON fixtures
@@ -22,9 +25,12 @@ setup() {
   # Only consume stdin for PATCH calls (--input -); GET calls must not read
   # stdin because they may be called inside a while loop whose stdin is a
   # process-substitution pipe — consuming it would swallow subsequent lines.
+  # Conditionally read stdin only when available (not a TTY) to prevent hangs.
   gh() {
     local stdin_body=""
-    if [[ "$*" == *"--input -"* ]]; then stdin_body=$(cat); fi
+    if [[ "$*" == *"--input -"* ]] && [[ ! -t 0 ]]; then
+      stdin_body=$(cat)
+    fi
     printf '%s STDIN=%s\n' "$*" "$stdin_body" >> "$GH_LOG"
     # $2 == "-X" means a method flag follows (e.g. -X PATCH) — skip returning body
     if [[ "${2:-}" != "-X" ]] && [[ "$*" == *"check-suites/preferences"* ]]; then
@@ -38,6 +44,7 @@ setup() {
   export PREFS_EMPTY_ARRAY PREFS_EMPTY_OBJ MOCK_PREFS
 
   ORG="test-org"
+  unset REPO
   unset DEV_LEAD_DRY_RUN
 }
 
@@ -239,4 +246,91 @@ repo-b"
   run rs_auto_trigger_status "" 1236702
   [ "$status" -eq 0 ]
   [ "$output" = "missing" ]
+}
+
+# ---------------------------------------------------------------------------
+# Argument / env-var handling
+# ---------------------------------------------------------------------------
+
+@test "exits non-zero when REPO is not set and no positional arg given" {
+  run bash "$SCRIPT"
+  [ "$status" -ne 0 ]
+}
+
+@test "accepts REPO via environment variable" {
+  export REPO="owner/repo"
+  export DEV_LEAD_DRY_RUN=true
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+}
+
+@test "accepts REPO as positional argument" {
+  export DEV_LEAD_DRY_RUN=true
+  run bash "$SCRIPT" "owner/repo"
+  [ "$status" -eq 0 ]
+}
+
+@test "positional argument takes precedence over REPO env var" {
+  export REPO="env/repo"
+  export DEV_LEAD_DRY_RUN=true
+  run bash "$SCRIPT" "arg/repo"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"arg/repo"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# Dry-run mode
+# ---------------------------------------------------------------------------
+
+@test "dry-run mode prints intent without calling gh api" {
+  export REPO="owner/repo"
+  export DEV_LEAD_DRY_RUN=true
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"dry-run"* ]]
+  [ ! -s "$GH_LOG" ]
+}
+
+# ---------------------------------------------------------------------------
+# Live mode delegates to pp_apply_security_and_analysis
+# ---------------------------------------------------------------------------
+
+@test "live mode calls gh api PATCH for the repo" {
+  export REPO="owner/repo"
+  export DEV_LEAD_DRY_RUN=false
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ -s "$GH_LOG" ]
+  grep -q "PATCH" "$GH_LOG"
+  grep -q "owner/repo" "$GH_LOG"
+}
+
+@test "live mode enables vulnerability-alerts prerequisite for dependabot" {
+  export REPO="owner/repo"
+  export DEV_LEAD_DRY_RUN=false
+  run bash "$SCRIPT"
+  grep -q "vulnerability-alerts" "$GH_LOG"
+}
+
+@test "live mode makes one PATCH call per required setting" {
+  export REPO="owner/repo"
+  export DEV_LEAD_DRY_RUN=false
+  gh() {
+    local stdin_body=""
+    if [[ "$*" == *"--input -"* ]] && [[ ! -t 0 ]]; then
+      stdin_body=$(cat)
+    fi
+    printf '%s BODY=%s\n' "$*" "$stdin_body" >> "$GH_LOG"
+  }
+  export -f gh
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  local patch_count
+  patch_count=$(grep -c "PATCH" "$GH_LOG")
+  # setup() sources apply-repo-settings.sh which lazy-loads push-protection.sh;
+  # call the loader here so PP_REQUIRED_SA_SETTINGS is available for comparison.
+  # _ensure_push_protection_sourced guards against re-declaring the readonly array.
+  _ensure_push_protection_sourced
+  local expected_settings_count=${#PP_REQUIRED_SA_SETTINGS[@]}
+  [ "$patch_count" -eq "$expected_settings_count" ]
 }
