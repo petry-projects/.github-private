@@ -124,6 +124,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      security-events: write
     steps:
       - name: Checkout (full history)
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
@@ -131,18 +132,10 @@ jobs:
           fetch-depth: 0
 
       - name: Run gitleaks
-        # Intentionally uses the gitleaks CLI rather than gitleaks/gitleaks-action (replaced
-        # to fix issue #408 — action behavior changes caused spurious workflow failures).
-        # If the org push-protection standard's secret_scan_ci_job_present compliance check
-        # requires gitleaks/gitleaks-action specifically, update that standard in
-        # petry-projects/.github/standards/push-protection.md to also accept the CLI approach.
-        run: |
-          GITLEAKS_VERSION="8.30.1"
-          GITLEAKS_SHA="551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
-          curl --fail --location --retry 3 --retry-delay 5 -so gitleaks.tar.gz \
-            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
-          echo "${GITLEAKS_SHA}  gitleaks.tar.gz" | sha256sum -c -
-          tar xzf gitleaks.tar.gz gitleaks
-          chmod +x gitleaks
-          rm gitleaks.tar.gz
-          ./gitleaks detect --source . --redact --verbose --exit-code 1
+        # SHA pinned per Action Pinning Policy (ci-standards.md#action-pinning-policy).
+        # Refresh: gh api repos/gitleaks/gitleaks-action/git/refs/tags/v2 --jq '.object.sha'
+        # then dereference if it points at an annotated tag.
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
