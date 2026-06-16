@@ -94,7 +94,6 @@ def validate_file(cases_path: Path, schema_path: Path) -> None:
 
 
 def validate_skill(skill_dir: Path) -> int:
-    """Validate one skill's dev/holdout split. Returns the total case count."""
     split_ids: dict[str, list[str]] = {}
     for split in SPLITS:
         cases_path = skill_dir / split / CASES_FILENAME
@@ -113,7 +112,6 @@ def validate_skill(skill_dir: Path) -> int:
 
 
 def discover_skills(eval_root: Path) -> list[Path]:
-    """A skill is any direct subdirectory that has a dev/ or holdout/ split."""
     skills = []
     for child in sorted(eval_root.iterdir()):
         if not child.is_dir():
@@ -123,11 +121,7 @@ def discover_skills(eval_root: Path) -> list[Path]:
     return skills
 
 
-def main() -> None:
-    eval_root = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(__file__).parent
-    if not eval_root.is_dir():
-        fail(f"eval root is not a directory: {eval_root}")
-
+def validate_directory(eval_root: Path) -> None:
     skills = discover_skills(eval_root)
     if not skills:
         fail(f"no skills found under {eval_root} "
