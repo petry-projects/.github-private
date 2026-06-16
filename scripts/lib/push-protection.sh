@@ -12,8 +12,6 @@
 #   source scripts/lib/push-protection.sh
 #   REPO=owner/repo pp_apply_security_and_analysis
 
-set -euo pipefail
-
 readonly -a PP_REQUIRED_SA_SETTINGS=(
   secret_scanning
   secret_scanning_push_protection

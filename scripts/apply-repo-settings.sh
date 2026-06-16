@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # apply-repo-settings.sh — apply standard GitHub repository settings.
 #
-# Disables check-suite auto-trigger for apps that queue suites on every push
-# without completing them, which permanently blocks auto-merge.
+# Applies security_and_analysis settings and disables check-suite auto-trigger
+# for apps that queue suites on every push without completing them, which
+# permanently blocks auto-merge.
 #
 # Usage:
-#   bash scripts/apply-repo-settings.sh <repo-name>
+#   bash scripts/apply-repo-settings.sh owner/repo
+#   REPO=owner/repo bash scripts/apply-repo-settings.sh
 #   bash scripts/apply-repo-settings.sh --all
 #
 # Environment:
@@ -14,12 +16,22 @@
 #   ORG               — GitHub org (default: petry-projects)
 #   DEV_LEAD_DRY_RUN  — if "true", print intent but make no API calls
 #
-# Standard:
+# Standards:
+#   https://github.com/petry-projects/.github/blob/main/standards/push-protection.md
 #   https://github.com/petry-projects/.github/blob/main/standards/github-settings.md#check-suite-auto-trigger-preferences
 
-set -euo pipefail
-
 ORG="${ORG:-petry-projects}"
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Lazy-load push-protection.sh to avoid polluting test environments with its strict shell options
+_ensure_push_protection_sourced() {
+  if [ -z "${_push_protection_sourced:-}" ]; then
+    # shellcheck source=scripts/lib/push-protection.sh
+    source "${SCRIPT_DIR}/lib/push-protection.sh"
+    _push_protection_sourced=1
+  fi
+}
 
 # Apps whose check-suite auto-trigger must be disabled.
 # GitHub creates a queued suite on every push when auto-trigger is on; those
@@ -83,8 +95,9 @@ rs_apply_repo() {
     --input - <<<"$payload"
 }
 
-# rs_apply_all — apply settings to every repo in ORG.
+# rs_apply_all — apply all settings to every repo in ORG.
 rs_apply_all() {
+  _ensure_push_protection_sourced
   local repos
   if ! repos=$(gh repo list "${ORG}" --json name --jq '.[].name' --limit 1000); then
     echo "[error] failed to list repositories for org ${ORG}" >&2
@@ -93,21 +106,24 @@ rs_apply_all() {
 
   local repo_name
   while IFS= read -r repo_name; do
-    [ -n "$repo_name" ] && rs_apply_repo "${ORG}/${repo_name}"
+    if [ -n "$repo_name" ]; then
+      REPO="${ORG}/${repo_name}" pp_apply_security_and_analysis
+      rs_apply_repo "${ORG}/${repo_name}"
+    fi
   done <<< "$repos"
 }
 
 # Run main only when executed directly, so tests can source the helpers.
 if [ "${BASH_SOURCE[0]:-$0}" = "$0" ]; then
-  if [ $# -eq 0 ]; then
-    echo "Usage: $0 <repo-name> | --all" >&2
-    echo "       $0 .github-private" >&2
-    echo "       $0 --all" >&2
-    exit 1
-  fi
-  if [ "$1" = "--all" ]; then
+  set -euo pipefail
+  _ensure_push_protection_sourced
+  if [ "${1:-}" = "--all" ]; then
     rs_apply_all
   else
-    rs_apply_repo "${ORG}/$1"
+    REPO="${1:-${REPO:-}}"
+    : "${REPO:?Usage: $0 owner/repo | --all  OR  REPO=owner/repo $0}"
+    export REPO
+    pp_apply_security_and_analysis
+    rs_apply_repo "$REPO"
   fi
 fi
