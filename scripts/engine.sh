@@ -5038,3 +5038,40 @@ run_writer_with_fallback() {
   [ "$any_rate_limited" -eq 1 ] && return 2
   return 1
 }
+
+# parse_reset_time <text>
+# Extracts the rate-limit reset time from engine output and writes an ISO-8601
+# UTC timestamp to /tmp/dev-lead-rate-limit-reset for callers to embed in
+# status=rate-limited markers. Pattern: "resets H:MMam/pm (UTC)" or
+# "resets H:MM(am|pm) UTC".
+# Writes empty string if no reset time is found (caller treats as unknown).
+parse_reset_time() {
+  local text="$1"
+  # Match "resets 11:20pm (UTC)" or "resets 11:20pm UTC"
+  local time_str
+  time_str=$(printf '%s\n' "$text" | grep -oiE 'resets [0-9]{1,2}:[0-9]{2}(am|pm)' | head -1 || true)
+  if [ -z "$time_str" ]; then
+    printf '' > /tmp/dev-lead-rate-limit-reset
+    return 0
+  fi
+  # Extract H:MM(am|pm) part
+  local hhmm
+  hhmm=$(printf '%s' "$time_str" | grep -oiE '[0-9]{1,2}:[0-9]{2}(am|pm)$' || true)
+  if [ -z "$hhmm" ]; then
+    printf '' > /tmp/dev-lead-rate-limit-reset
+    return 0
+  fi
+  # Convert to ISO-8601 UTC using today's date (rate limits reset within 24h)
+  local today
+  today=$(date -u +%Y-%m-%d)
+  local iso
+  iso=$(date -u -d "${today} ${hhmm} UTC" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)
+  # If reset time is in the past (already reset today), it means tomorrow
+  if [ -n "$iso" ] && [ "$(date -u +%s)" -gt "$(date -u -d "$iso" +%s 2>/dev/null || echo 0)" ]; then
+    local tomorrow
+    tomorrow=$(date -u -d "tomorrow" +%Y-%m-%d)
+    iso=$(date -u -d "${tomorrow} ${hhmm} UTC" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)
+  fi
+  printf '%s' "${iso:-}" > /tmp/dev-lead-rate-limit-reset
+}
+
