@@ -54,9 +54,51 @@ def validate_file(cases_path: Path, schema_path: Path) -> None:
     except (OSError, json.JSONDecodeError) as exc:
         fail(f"could not read/parse schema {schema_path}: {exc}")
 
-    Fails (exits non-zero) on malformed JSON, non-object lines, missing/empty
-    ids, or duplicate ids within this single file.
-    """
+def validate_file(cases_path: Path, schema_path: Path) -> None:
+    try:
+        import jsonschema
+    except ImportError:
+        fail("jsonschema not installed (pip install 'jsonschema>=4')")
+
+    try:
+        schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        fail(f"could not read/parse schema {schema_path}: {exc}")
+
+    try:
+        raw = cases_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        fail(f"could not read {cases_path}: {exc}")
+
+    validator = jsonschema.Draft202012Validator(schema)
+    ids: dict[str, int] = {}
+    count = 0
+    for lineno, line in enumerate(raw.splitlines(), start=1):
+        if not line.strip():
+            continue
+        try:
+            case = json.loads(line)
+        except json.JSONDecodeError as exc:
+            fail(f"line {lineno}: not valid JSON: {exc}")
+        error = next(validator.iter_errors(case), None)
+        if error is not None:
+            loc = "/".join(str(p) for p in error.absolute_path) or "<root>"
+            fail(f"line {lineno}: schema violation at {loc}: {error.message}")
+        case_id = case["id"]
+        if case_id in ids:
+            fail(f"line {lineno}: duplicate case id '{case_id}' (first seen on line {ids[case_id]})")
+        ids[case_id] = lineno
+        count += 1
+
+    if count == 0:
+        fail(f"{cases_path} contains no cases")
+
+    print(f"cases OK: {count} case(s), unique ids, schema-valid.")
+
+
+# ── Directory mode: dev/holdout split hygiene ─────────────────────────────────
+
+def load_split_ids(cases_path: Path) -> list[str]:
     try:
         raw = cases_path.read_text(encoding="utf-8")
     except OSError as exc:
@@ -86,7 +128,6 @@ def validate_file(cases_path: Path, schema_path: Path) -> None:
 
 
 def validate_skill(skill_dir: Path) -> int:
-    """Validate one skill's dev/holdout split. Returns the total case count."""
     split_ids: dict[str, list[str]] = {}
     for split in SPLITS:
         cases_path = skill_dir / split / CASES_FILENAME
@@ -105,7 +146,6 @@ def validate_skill(skill_dir: Path) -> int:
 
 
 def discover_skills(eval_root: Path) -> list[Path]:
-    """A skill is any direct subdirectory that has a dev/ or holdout/ split."""
     skills = []
     for child in sorted(eval_root.iterdir()):
         if not child.is_dir():
@@ -115,11 +155,7 @@ def discover_skills(eval_root: Path) -> list[Path]:
     return skills
 
 
-def main() -> None:
-    eval_root = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(__file__).parent
-    if not eval_root.is_dir():
-        fail(f"eval root is not a directory: {eval_root}")
-
+def validate_directory(eval_root: Path) -> None:
     skills = discover_skills(eval_root)
     if not skills:
         fail(f"no skills found under {eval_root} "
