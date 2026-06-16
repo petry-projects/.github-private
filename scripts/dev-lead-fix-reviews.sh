@@ -994,7 +994,7 @@ case "$INTENT_TYPE" in
     fi
     exit "$rc"
     ;;
-  review-changes)
+  human-pr|review-changes)
     export PR_NUMBER="${PR_NUMBER:-}"
     export PR_URL="https://github.com/${REPO}/pull/${PR_NUMBER}"
     # ACTOR is exported so resolve_actor_outdated_threads can scrub outdated
