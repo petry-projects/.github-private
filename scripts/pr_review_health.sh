@@ -124,20 +124,26 @@ echo ""
 # ---------------------------------------------------------------------------
 # 4. Fetch workflow source for token/permission context
 # ---------------------------------------------------------------------------
-echo "Fetching ${WORKFLOW_FILE} source..."
-workflow_source=$(gh api \
-  "repos/${WORKFLOW_REPO}/contents/.github/workflows/${WORKFLOW_FILE}" \
-  --jq '.content' 2>/dev/null | base64 -d 2>/dev/null || echo "(workflow source unavailable)")
+[ -n "${GITHUB_STEP_SUMMARY:-}" ] && cat "$REPORT_FILE" >> "$GITHUB_STEP_SUMMARY"
+[ -n "${GITHUB_ENV:-}" ] && {
+  if [ "$failed_runs" -gt 0 ]; then
+    echo "HAS_FAILURES=true" >> "$GITHUB_ENV"
+  else
+    echo "HAS_FAILURES=false" >> "$GITHUB_ENV"
+  fi
+}
 
-# ---------------------------------------------------------------------------
-# 5. Build analysis prompt and invoke Claude
-# ---------------------------------------------------------------------------
-RUNS_SUMMARY=$(echo "$runs_json" | jq -r \
-  '.[] | "[\(.conclusion // "unknown")] run #\(.run_number) (\(.created_at)) — \(.html_url)"')
+RUNS_SUMMARY=$(echo "$runs_json" | jq -r '
+  sort_by(.run_number) | reverse
+  | map("#\(.run_number) \(.conclusion // .status) @ \(.created_at)")
+  | join("\n")
+')
+LOG_DIR="${LOG_DIR:-}"
 
 logs_file=$(mktemp)
 # One jq pass over failed runs; append each log file in the same order
 while IFS=$'\t' read -r run_id run_meta; do
+  [ -n "$LOG_DIR" ] || continue
   log_file="${LOG_DIR}/run_${run_id}.txt"
   [ -f "$log_file" ] || continue
   {
