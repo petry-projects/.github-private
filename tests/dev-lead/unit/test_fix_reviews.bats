@@ -497,6 +497,18 @@ GHEOF
   [[ "$output" == *"auto-merge"* ]]
 }
 
+@test "fix-reviews: try_enable_auto_merge dry-run output present for human-pr" {
+  export INTENT_TYPE="human-pr"
+  export DEV_LEAD_DRY_RUN="true"
+  export PR_TITLE="Test PR"
+  export PR_DESCRIPTION="A test pull request"
+
+  run bash "$FIX_REVIEWS_SCRIPT"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"would enable auto-merge"* ]]
+}
+
 @test "fix-reviews: terminal marker written after successful fix-reviews run" {
   export INTENT_TYPE="fix-reviews"
   export DEV_LEAD_DRY_RUN="true"

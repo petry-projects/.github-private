@@ -1,26 +1,20 @@
 #!/usr/bin/env python3
-"""Validate held-out eval cases under evals/<skill>/{dev,holdout}/cases.jsonl.
+"""Validate held-out eval cases.
 
-This enforces the held-out-hygiene contract (#691, epic #581): the proposer only
-ever sees the *dev* split, and the gate scores against the *holdout* split. For
-that to mean anything, a case must never live in both splits — otherwise the
-proposer could see (and overfit to) a case the gate later scores against.
+Two modes, selected by the type of the argument:
 
-Per skill directory under the eval root, this checks:
+  File mode:  validate-cases.py <cases.jsonl> [schema.json]
+    Validates a single JSONL file against case.schema.json (JSON-Schema
+    2020-12). Checks per-case schema compliance and uniqueness of case ids
+    within the file. Outputs "cases OK: N case(s)...".
 
-  - both a dev/ and a holdout/ split exist (each with a cases.jsonl)
-  - every non-blank line is a JSON object
-  - every case has a non-empty string `id`
-  - ids are unique within each split
-  - ids are disjoint across the two splits (no case appears in both)
+  Directory mode:  validate-cases.py <eval_root>
+    Validates the dev/holdout split hygiene for every skill directory under
+    eval_root. Per skill: both dev/ and holdout/ splits must exist, every
+    case must have a non-empty unique id, and ids must be disjoint across
+    splits. Outputs "OK: N skill(s)...".
 
-This is data/structure/validation only — it never invokes a scorer or a model
-(consistent with #582). The case payload schema beyond `id` is owned by the
-scorer story (#583); this validator is deliberately agnostic to it.
-
-Usage: validate-cases.py [eval_root]
-  eval_root defaults to the directory containing this script (the evals/ tree).
-Exit 0 on success; non-zero with a message on failure.
+Exit 0 on success; non-zero with a diagnostic on failure.
 """
 import json
 import sys
@@ -32,18 +26,57 @@ CASES_FILENAME = "cases.jsonl"
 
 
 def fail(msg: str) -> NoReturn:
-    # Write to stderr so the reason is visible in workflow logs and capturable
-    # by tests; the ::error:: prefix still renders as a GitHub annotation.
     print(f"::error::eval cases invalid: {msg}", file=sys.stderr)
     sys.exit(1)
 
 
-def load_split_ids(cases_path: Path) -> list[str]:
-    """Parse a cases.jsonl file and return its ordered list of case ids.
+# ── File mode: schema + id-uniqueness validation ──────────────────────────────
 
-    Fails (exits non-zero) on malformed JSON, non-object lines, missing/empty
-    ids, or duplicate ids within this single file.
-    """
+def validate_file(cases_path: Path, schema_path: Path) -> None:
+    try:
+        import jsonschema
+    except ImportError:
+        fail("jsonschema not installed (pip install 'jsonschema>=4')")
+
+    try:
+        schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        fail(f"could not read/parse schema {schema_path}: {exc}")
+
+    try:
+        raw = cases_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        fail(f"could not read {cases_path}: {exc}")
+
+    validator = jsonschema.Draft202012Validator(schema)
+    ids: dict[str, int] = {}
+    count = 0
+    for lineno, line in enumerate(raw.splitlines(), start=1):
+        if not line.strip():
+            continue
+        try:
+            case = json.loads(line)
+        except json.JSONDecodeError as exc:
+            fail(f"line {lineno}: not valid JSON: {exc}")
+        error = next(validator.iter_errors(case), None)
+        if error is not None:
+            loc = "/".join(str(p) for p in error.absolute_path) or "<root>"
+            fail(f"line {lineno}: schema violation at {loc}: {error.message}")
+        case_id = case["id"]
+        if case_id in ids:
+            fail(f"line {lineno}: duplicate case id '{case_id}' (first seen on line {ids[case_id]})")
+        ids[case_id] = lineno
+        count += 1
+
+    if count == 0:
+        fail(f"{cases_path} contains no cases")
+
+    print(f"cases OK: {count} case(s), unique ids, schema-valid.")
+
+
+# ── Directory mode: dev/holdout split hygiene ─────────────────────────────────
+
+def load_split_ids(cases_path: Path) -> list[str]:
     try:
         raw = cases_path.read_text(encoding="utf-8")
     except OSError as exc:
@@ -53,7 +86,7 @@ def load_split_ids(cases_path: Path) -> list[str]:
     seen: set[str] = set()
     for lineno, line in enumerate(raw.splitlines(), start=1):
         if not line.strip():
-            continue  # blank lines are allowed as separators
+            continue
         try:
             case = json.loads(line)
         except json.JSONDecodeError as exc:
@@ -73,7 +106,6 @@ def load_split_ids(cases_path: Path) -> list[str]:
 
 
 def validate_skill(skill_dir: Path) -> int:
-    """Validate one skill's dev/holdout split. Returns the total case count."""
     split_ids: dict[str, list[str]] = {}
     for split in SPLITS:
         cases_path = skill_dir / split / CASES_FILENAME
@@ -92,7 +124,6 @@ def validate_skill(skill_dir: Path) -> int:
 
 
 def discover_skills(eval_root: Path) -> list[Path]:
-    """A skill is any direct subdirectory that has a dev/ or holdout/ split."""
     skills = []
     for child in sorted(eval_root.iterdir()):
         if not child.is_dir():
@@ -102,11 +133,7 @@ def discover_skills(eval_root: Path) -> list[Path]:
     return skills
 
 
-def main() -> None:
-    eval_root = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(__file__).parent
-    if not eval_root.is_dir():
-        fail(f"eval root is not a directory: {eval_root}")
-
+def validate_directory(eval_root: Path) -> None:
     skills = discover_skills(eval_root)
     if not skills:
         fail(f"no skills found under {eval_root} "
@@ -118,6 +145,24 @@ def main() -> None:
 
     print(f"OK: {len(skills)} skill(s), {total} case(s) across dev+holdout, "
           f"no cross-split id overlap.")
+
+
+# ── Entry point ───────────────────────────────────────────────────────────────
+
+def main() -> None:
+    if len(sys.argv) < 2:
+        validate_directory(Path(__file__).parent)
+        return
+
+    arg = Path(sys.argv[1])
+    if arg.is_file():
+        schema_path = (Path(sys.argv[2]) if len(sys.argv) > 2
+                       else Path(__file__).with_name("case.schema.json"))
+        validate_file(arg, schema_path)
+    elif arg.is_dir():
+        validate_directory(arg)
+    else:
+        fail(f"argument is not a file or directory: {arg}")
 
 
 if __name__ == "__main__":
