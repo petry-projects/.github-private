@@ -144,3 +144,21 @@ teardown() {
   # must not abort callers running under set -euo pipefail; exit code must be 0.
   [ "$status" -eq 0 ]
 }
+
+# ---------------------------------------------------------------------------
+# secret_scan_ci_job_present — ci.yml must use gitleaks/gitleaks-action
+# (mirrors the org compliance check in petry-projects/.github/standards/
+# push-protection.md#compliance-audit-checks)
+# ---------------------------------------------------------------------------
+
+@test "ci.yml secret-scan job uses gitleaks/gitleaks-action" {
+  local ci_yaml
+  ci_yaml="$(dirname "$BATS_TEST_FILENAME")/../.github/workflows/ci.yml"
+  grep -qE "uses:[[:space:]]*['\"]?gitleaks/gitleaks-action" "$ci_yaml"
+}
+
+@test "ci.yml secret-scan job has security-events write permission" {
+  local ci_yaml
+  ci_yaml="$(dirname "$BATS_TEST_FILENAME")/../.github/workflows/ci.yml"
+  grep -qE "security-events:[[:space:]]*['\"]?write['\"]?" "$ci_yaml"
+}
