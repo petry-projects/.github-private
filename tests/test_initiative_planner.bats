@@ -371,12 +371,13 @@ teardown() { rm -rf "$TMP"; }
   [ "$(grep -c '"op":"create_issue"' "$LOG")" -eq 4 ]
 }
 
-@test "apply-reviewed-plan rejects when plan has no source_discussion field" {
+@test "apply-reviewed-plan passes when plan has no source_discussion field" {
+  # source_discussion is optional — absent means apply-plan.sh falls back to
+  # DISCUSSION_NUMBER; the apply must proceed, not be rejected.
   jq 'del(.source_discussion)' "$PLAN" >"$TMP/no_src.json"
   DRY_RUN=1 DRY_RUN_LOG="$LOG" REPO="petry-projects/.github-private" \
     DISCUSSION_NUMBER=999 DISCUSSION_NODE_ID="D_test" PLAN_PATH="$TMP/no_src.json" \
     run bash "$PLANNER_DIR/apply-reviewed-plan.sh"
-  [ "$status" -ne 0 ]
-  [[ "$output" == *"source_discussion is required"* ]]
-  [ ! -s "$LOG" ] || [ "$(grep -c '"op":"create_issue"' "$LOG")" -eq 0 ]
+  [ "$status" -eq 0 ]
+  [ "$(grep -c '"op":"create_issue"' "$LOG")" -eq 4 ]
 }

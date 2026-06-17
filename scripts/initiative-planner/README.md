@@ -19,7 +19,7 @@ create-story template, which `plan.schema.json` mirrors field-for-field.
 | `validate-plan.py` | Schema + semantic checks: unique ids, acyclic DAG, an entry point, no dangling edges. |
 | `lib/mutations.sh` | DRY_RUN-aware GitHub helpers (create issue, link sub-issue, add `blocked_by`, comment on Discussion, find/close issues for the idempotency guard). |
 | `apply-plan.sh` | Materialize a validated plan. Creates issues labelled `initiative` only — **never** `initiative:auto`. Idempotent: no-ops if the discussion is already planned, or supersedes the old epic when `FORCE_REPLAN=1`. |
-| `apply-reviewed-plan.sh` | The plan/apply-split handoff (#604): apply a maintainer-**reviewed** plan.json WITHOUT re-planning — re-validates the (possibly hand-edited) artifact, then runs `apply-plan.sh`. The BMAD Scrum Master never runs on this path. |
+| `apply-reviewed-plan.sh` | The plan/apply-split handoff (#604): apply a maintainer-**reviewed** plan.json WITHOUT re-planning — re-validates the reviewed artifact, then runs `apply-plan.sh`. The BMAD Scrum Master never runs on this path. |
 
 Tests: `tests/test_initiative_planner.bats`, `tests/test_initiative_planner_redispatch.bats` (run via `lint.yml`).
 
@@ -33,10 +33,9 @@ workflow also supports a two-step split:
 1. **Plan (dry-run).** Dispatch with `dry_run: true` (the default). Bob plans and
    the run uploads the authoritative `plan.json` as the `initiative-plan-dry-run`
    artifact. **No issues are created.**
-2. **Review.** A maintainer downloads `plan.json` from that run, reviews it, and
-   (optionally) hand-edits it. *This is the human review gate for the plan
-   contents* — distinct from the later `initiative:auto` gate that activates
-   auto-implementation.
+2. **Review.** A maintainer downloads `plan.json` from that run and reviews it.
+   *This is the human review gate for the plan contents* — distinct from the later
+   `initiative:auto` gate that activates auto-implementation.
 3. **Apply (no re-plan).** Re-dispatch with `plan_artifact_run_id` set to the
    dry-run's run ID. The workflow downloads that run's reviewed `plan.json`,
    **skips the LLM planning step entirely**, then re-validates and applies it via
