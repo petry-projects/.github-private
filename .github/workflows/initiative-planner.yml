@@ -194,16 +194,67 @@ jobs:
             cannot answer with "yes" or "yes — N/A" to `open_questions` rather
             than guessing.
 
-            ## Validate, then materialize
+            ## Validate the draft
 
             ```bash
             python3 scripts/initiative-planner/validate-plan.py "$PLAN_PATH"
             ```
 
             Fix and re-validate until it passes (unique ids, acyclic DAG, an entry
-            point, no dangling edges). THEN materialize the epic + sub-issue DAG —
-            this honors `$DRY_RUN` (when `DRY_RUN=1` it logs intended mutations to
-            `$DRY_RUN_LOG` instead of writing to GitHub):
+            point, no dangling edges).
+
+            ## Bounded plan-critic pass — single review + ONE revise (NO loop)
+
+            Once the draft passes validate-plan.py, run ONE adversarial critic
+            pass over it, then revise EXACTLY ONCE. This is a single bounded turn
+            in this same step — there is NO self-reflection loop (per discussion
+            #593) and it adds at most one extra reasoning pass. Wiring choice
+            (documented per the story): a second turn in Bob's prompt, NOT a
+            second claude-code-action step — it keeps the critic to one extra pass
+            in this existing single LLM invocation and needs no extra engine wiring.
+
+            1. **Critique.** Read the critic instructions and output shape in
+               `prompts/plan-review.md`; they tell you to score `$PLAN_PATH`
+               against the FIXED rubric defined ONCE in
+               `prompts/bmad/scrum-master.md` (consume the rubric verbatim — do
+               NOT fork a second copy). Write your structured findings
+               `{check, story_id?, severity, finding}` as JSON to a findings file:
+
+               ```bash
+               cat prompts/plan-review.md   # critic instructions + output shape
+               FINDINGS="${{ runner.temp }}/plan-findings.json"
+               # ... write your findings JSON to "$FINDINGS" ...
+               ```
+
+            2. **Revise once.** Fold every finding you CAN resolve directly back
+               into `$PLAN_PATH` (tighten the AC, add the missing success metric /
+               cost cap, split the oversized story, add the untracked prerequisite,
+               add the eval safeguard). Write just the findings you CANNOT resolve
+               from context to a second file and route them into `open_questions`
+               (carrying `affected_story_ids`) so they gate per #682 — do NOT
+               guess:
+
+               ```bash
+               UNRESOLVED="${{ runner.temp }}/unresolved-findings.json"
+               # ... write the unresolved subset (same {check,story_id,severity,finding}
+               #     shape, wrapped as {"findings":[...]}) to "$UNRESOLVED" ...
+               bash scripts/initiative-planner/route-findings.sh \
+                 "$PLAN_PATH" "$UNRESOLVED" > "$PLAN_PATH.routed" \
+                 && mv "$PLAN_PATH.routed" "$PLAN_PATH"
+               ```
+
+            3. **Re-validate** the revised plan. This is the end of the critic
+               pass — do not critique again.
+
+               ```bash
+               python3 scripts/initiative-planner/validate-plan.py "$PLAN_PATH"
+               ```
+
+            ## Materialize
+
+            THEN materialize the epic + sub-issue DAG — this honors `$DRY_RUN`
+            (when `DRY_RUN=1` it logs intended mutations to `$DRY_RUN_LOG` instead
+            of writing to GitHub):
 
             ```bash
             REPO="${{ github.repository }}" \
