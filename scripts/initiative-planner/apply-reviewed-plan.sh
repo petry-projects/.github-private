@@ -24,15 +24,17 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 PLAN_PATH="${PLAN_PATH:?PLAN_PATH required (path to the reviewed plan.json)}"
 [ -f "$PLAN_PATH" ] && [ -s "$PLAN_PATH" ] || { echo "::error::reviewed plan '$PLAN_PATH' missing, empty, or not a regular file" >&2; exit 1; }
 
-# Guard: reject artifacts that target a different discussion than the one the
-# maintainer declared. apply-plan.sh keys the epic's idempotency footer from
-# source_discussion in the artifact; if the run ID belongs to discussion A but
-# the current dispatch says discussion B, the epic is keyed to A while the
-# summary is posted to B. Catch this before anything is created.
-# source_discussion is optional in plan.schema.json — if absent, apply-plan.sh
-# falls back to DISCUSSION_NUMBER, so we only guard on an explicit mismatch.
-plan_src="$(jq -r '.source_discussion // empty' "$PLAN_PATH")"
-if [ -n "$plan_src" ] && [ -n "${DISCUSSION_NUMBER:-}" ]; then
+# Guard: reviewed plans must have an explicit source_discussion. A reviewed
+# artifact is applied out-of-band, potentially in a different session context;
+# it must definitively reference which discussion it came from, not rely on the
+# current dispatch context. Also reject artifacts that target a different
+# discussion than the one the maintainer declared.
+plan_src="$(jq -r '.source_discussion' "$PLAN_PATH")"
+if [ -z "$plan_src" ]; then
+  echo "::error::plan.json must have a source_discussion field for reviewed-plan applies — the artifact must be self-contained about its origin." >&2
+  exit 1
+fi
+if [ -n "${DISCUSSION_NUMBER:-}" ]; then
   if [ "$plan_src" != "$DISCUSSION_NUMBER" ]; then
     echo "::error::plan.json source_discussion (${plan_src}) does not match this run's DISCUSSION_NUMBER (${DISCUSSION_NUMBER}) — supply the correct dry-run run ID for discussion #${DISCUSSION_NUMBER}." >&2
     exit 1

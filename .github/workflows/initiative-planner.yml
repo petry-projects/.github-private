@@ -324,14 +324,19 @@ jobs:
       # The mirror of Bob's in-prompt materialization for the supplied-plan path:
       # validate the reviewed plan.json, then run apply-plan.sh on it. No LLM
       # ran. FORCE_REPLAN and the blocking-open-questions / idempotency gates are
-      # honored by apply-plan.sh. DRY_RUN is forced off here — this step exists
-      # solely to materialize a plan a maintainer already approved; running it in
-      # dry-run mode would create no epic or stories despite the intent.
+      # honored by apply-plan.sh. Require explicit dry_run=false to prevent
+      # unexpected mutations — dry-run mode would create no epic or stories despite
+      # the intent to apply.
+      - name: Guard — reviewed-plan apply requires dry_run=false
+        if: ${{ env.PLAN_ARTIFACT_RUN_ID != '' && env.DRY_RUN == '1' }}
+        run: |
+          echo "::error::plan_artifact_run_id is set, but dry_run=true. Re-dispatch with dry_run=false to materialize the reviewed plan."
+          exit 1
+
       - name: Apply the reviewed plan (no re-plan)
         if: ${{ env.PLAN_ARTIFACT_RUN_ID != '' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          DRY_RUN: '0'
         run: bash scripts/initiative-planner/apply-reviewed-plan.sh
 
       - name: Upload dry-run plan log
