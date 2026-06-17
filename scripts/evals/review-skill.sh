@@ -90,6 +90,23 @@ run_agentic "$REPO_ROOT/$RUBRIC_PROMPT" "$ENGINE_DEEP_MODEL" "deep" > "$WORK_DIR
 if ! jq empty "$OUTPUT_FILE" 2>/dev/null; then
   if jq empty "$WORK_DIR/raw.out" 2>/dev/null; then
     cp "$WORK_DIR/raw.out" "$OUTPUT_FILE"
+  elif python3 -c "
+import sys, json
+text = open(sys.argv[1]).read()
+decoder = json.JSONDecoder()
+pos = text.find('{')
+while pos >= 0:
+    try:
+        obj, _ = decoder.raw_decode(text, pos)
+        if isinstance(obj, dict) and obj.get('artifact_type') == 'skill_candidate':
+            print(json.dumps(obj))
+            sys.exit(0)
+    except Exception:
+        pass
+    pos = text.find('{', pos + 1)
+sys.exit(1)
+" "$WORK_DIR/raw.out" > "$OUTPUT_FILE" 2>/dev/null; then
+    echo "skill score extracted from raw output"
   else
     echo "::error::skill rubric did not produce valid score JSON. Output log:" >&2
     cat "$WORK_DIR/raw.out" >&2
@@ -104,7 +121,7 @@ fi
 # the caller didn't pin one — WORK_DIR is removed by the EXIT trap, so any path
 # within it would be deleted before the gate can consume the score.
 if [ -z "${SKILL_SCORE_OUTPUT:-}" ]; then
-  SKILL_SCORE_OUTPUT="$(mktemp "${TMPDIR:-/tmp}/skill-score.XXXXXX.json")"
+  SKILL_SCORE_OUTPUT="$(mktemp "${TMPDIR:-/tmp}/skill-score.json.XXXXXX")"
 fi
 export SKILL_SCORE_OUTPUT
 bash "$REPO_ROOT/$REVIEW_OUTPUT_CHANNEL" "$CONTENT_REF" "$OUTPUT_FILE" "$DRY_RUN"
