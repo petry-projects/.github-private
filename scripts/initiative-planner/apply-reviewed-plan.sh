@@ -30,9 +30,15 @@ PLAN_PATH="${PLAN_PATH:?PLAN_PATH required (path to the reviewed plan.json)}"
 # the current dispatch says discussion B, the epic is keyed to A while the
 # summary is posted to B. Catch this before anything is created.
 plan_src="$(jq -r '.source_discussion // empty' "$PLAN_PATH")"
-if [ -n "$plan_src" ] && [ -n "${DISCUSSION_NUMBER:-}" ] && [ "$plan_src" != "$DISCUSSION_NUMBER" ]; then
-  echo "::error::plan.json source_discussion (${plan_src}) does not match this run's DISCUSSION_NUMBER (${DISCUSSION_NUMBER}) — supply the correct dry-run run ID for discussion #${DISCUSSION_NUMBER}." >&2
-  exit 1
+if [ -n "${DISCUSSION_NUMBER:-}" ]; then
+  if [ -z "$plan_src" ]; then
+    echo "::error::plan.json source_discussion is required for reviewed-plan apply and must match DISCUSSION_NUMBER (${DISCUSSION_NUMBER})." >&2
+    exit 1
+  fi
+  if [ "$plan_src" != "$DISCUSSION_NUMBER" ]; then
+    echo "::error::plan.json source_discussion (${plan_src}) does not match this run's DISCUSSION_NUMBER (${DISCUSSION_NUMBER}) — supply the correct dry-run run ID for discussion #${DISCUSSION_NUMBER}." >&2
+    exit 1
+  fi
 fi
 
 echo "==> applying reviewed plan (no re-plan): $PLAN_PATH"
