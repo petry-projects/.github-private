@@ -162,6 +162,15 @@ def main() -> None:
         if color[i] == WHITE:
             visit(i, [])
 
+    # open_questions object form may carry affected_story_ids (critic findings
+    # routed here by route-findings.sh); each must reference a real story id.
+    for q in plan.get("open_questions", []) or []:
+        if isinstance(q, dict):
+            for sid in q.get("affected_story_ids", []) or []:
+                if sid not in id_set:
+                    fail(f"open question affected_story_ids references {sid}, "
+                         "which is not a story id in this plan")
+
     check_grounding(stories, repo_root())
 
     print(f"plan OK: {len(stories)} stories, "

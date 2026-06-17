@@ -1,0 +1,43 @@
+{
+  "artifact_type": "plan_json",
+  "verdict": "revise",
+  "summary": "The #581 plan reproduces the six hand-review findings from discussion #593: a contested decision baked into an AC, no initiative-level success metric, no cost cap, an eval-tuning story without overfitting/immutability safeguards, an untracked prerequisite, and an unreviewably large story.",
+  "findings": [
+    {
+      "check": "contested_ac",
+      "story_id": 1,
+      "severity": "major",
+      "finding": "Story 1 AC #2 bakes a still-contested decision (block on a tie vs. only on a strict regression) into the acceptance criterion instead of routing it to open_questions; it explicitly defers the call to 'however the implementer sees fit'."
+    },
+    {
+      "check": "success_metric",
+      "story_id": null,
+      "severity": "major",
+      "finding": "The epic body states no measurable, initiative-level success metric — there is no stated way to know whether the self-improvement loop actually worked."
+    },
+    {
+      "check": "cost_cap",
+      "story_id": null,
+      "severity": "major",
+      "finding": "The plan names no explicit cost cap or budget bound (no token/dollar ceiling or run-count limit) for the recurring eval + proposer passes."
+    },
+    {
+      "check": "eval_safeguards",
+      "story_id": 2,
+      "severity": "critical",
+      "finding": "Story 2 tunes the judge prompt and rubric against the same eval set it scores candidates on, with no held-out/frozen eval set and no immutable baseline artifact — a reward-hacking/overfitting hazard."
+    },
+    {
+      "check": "untracked_prereq",
+      "story_id": 3,
+      "severity": "major",
+      "finding": "Story 3 depends on shadow-mode dual-run and health-gated promotion (#501), but neither is captured as a blocked_by/blocked_by_existing_issues edge nor listed in epic.untracked_prerequisites — the prerequisite is left implicit."
+    },
+    {
+      "check": "reviewability",
+      "story_id": 3,
+      "severity": "major",
+      "finding": "Story 3 bundles the scheduler, shadow-mode dual-run, health-gated promotion, dashboards, and rollback into one story — far too large for a reviewer to assess as a single PR-sized unit; it should be split."
+    }
+  ]
+}
