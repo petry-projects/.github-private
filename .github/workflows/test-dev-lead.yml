@@ -14,6 +14,7 @@ on:
       - '.github/workflows/auto-rebase-retry.yml'
       - 'tests/dev-lead/**'
       - 'prompts/dev-lead/**'
+      - '.github/review-mcp.json'
   push:
     branches: [main]
     paths:
@@ -23,6 +24,7 @@ on:
       - 'scripts/lib/**'
       - 'tests/dev-lead/**'
       - 'prompts/dev-lead/**'
+      - '.github/review-mcp.json'
       # Guard the concurrency-config test on workflow changes too — otherwise a
       # dev-lead.yml edit can land on main without ever running this suite
       # (how the per-repo->per-lane mismatch stayed hidden after #450).
