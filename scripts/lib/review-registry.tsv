@@ -6,7 +6,7 @@
 # artifact contract and field meanings. Data, not code — add a row to register
 # a new artifact_type; do not fork the reviewer (issue #611).
 #
-# schema_version: 2
+# schema_version: 3
 #
 # Columns (tab-separated): artifact_type	rubric	output_channel
 #   rubric         — ordered, comma-separated cascade of prompt files
@@ -23,3 +23,10 @@ pr_diff	prompts/triage.md,prompts/deep-review.md,prompts/synthesize.md	scripts/p
 # materializes the epic/DAG — NOT a GitHub review (post-plan-findings.sh never
 # calls post-pr-review.sh).
 plan_json	prompts/plan-review.md	scripts/post-plan-findings.sh
+# Phase 2 (#615) registers skill_candidate additively: a candidate skill edit
+# (a prompt-skill diff or file) is scored by the same review brain against the
+# skill rubric (Epic #581's strict-improvement eval criteria), and the verdict is
+# delivered as a machine-readable pass/fail + numeric score the strict-improvement
+# gate consumes — NOT a GitHub review (post-skill-score.sh never calls
+# post-pr-review.sh).
+skill_candidate	prompts/skill-review.md	scripts/post-skill-score.sh
