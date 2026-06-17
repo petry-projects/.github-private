@@ -97,7 +97,11 @@ if ! jq empty "$OUTPUT_FILE" 2>/dev/null; then
 fi
 
 # ── deliver via the resolved structured-findings channel ──────────────────────
-# Default the planner-consumption path to a stable temp file when the caller
-# didn't pin one, so the findings always land somewhere readable.
-export PLAN_FINDINGS_OUTPUT="${PLAN_FINDINGS_OUTPUT:-$WORK_DIR/plan-findings.json}"
+# Default the planner-consumption path to a stable temp file OUTSIDE WORK_DIR
+# when the caller didn't pin one — WORK_DIR is removed by the EXIT trap, so any
+# path within it would be deleted before the caller can consume the findings.
+if [ -z "${PLAN_FINDINGS_OUTPUT:-}" ]; then
+  PLAN_FINDINGS_OUTPUT="$(mktemp "${TMPDIR:-/tmp}/plan-findings.XXXXXX.json")"
+fi
+export PLAN_FINDINGS_OUTPUT
 bash "$REPO_ROOT/$REVIEW_OUTPUT_CHANNEL" "$CONTENT_REF" "$OUTPUT_FILE" "$DRY_RUN"

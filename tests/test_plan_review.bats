@@ -152,6 +152,15 @@ write_findings() {
   [ "$status" -ne 0 ]
 }
 
+@test "driver PLAN_FINDINGS_OUTPUT default does not point inside WORK_DIR (survives EXIT trap)" {
+  # The EXIT trap removes WORK_DIR on script exit. If the default path for
+  # PLAN_FINDINGS_OUTPUT were inside WORK_DIR, the findings file would be deleted
+  # before callers can consume it. The driver must use mktemp (outside WORK_DIR)
+  # as the default, not a path like $WORK_DIR/plan-findings.json.
+  run bash -c "grep -qE 'PLAN_FINDINGS_OUTPUT[^#]*:?=.*WORK_DIR' '$DRIVER'"
+  [ "$status" -ne 0 ]
+}
+
 # ---------------------------------------------------------------------------
 # Structured-findings output channel — a sample plan produces findings (AC #3, #5)
 # ---------------------------------------------------------------------------
