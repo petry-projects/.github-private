@@ -24,9 +24,20 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 PLAN_PATH="${PLAN_PATH:?PLAN_PATH required (path to the reviewed plan.json)}"
 [ -f "$PLAN_PATH" ] && [ -s "$PLAN_PATH" ] || { echo "::error::reviewed plan '$PLAN_PATH' missing, empty, or not a regular file" >&2; exit 1; }
 
+# Guard: reject artifacts that target a different discussion than the one the
+# maintainer declared. apply-plan.sh keys the epic's idempotency footer from
+# source_discussion in the artifact; if the run ID belongs to discussion A but
+# the current dispatch says discussion B, the epic is keyed to A while the
+# summary is posted to B. Catch this before anything is created.
+plan_src="$(jq -r '.source_discussion // empty' "$PLAN_PATH")"
+if [ -n "$plan_src" ] && [ -n "${DISCUSSION_NUMBER:-}" ] && [ "$plan_src" != "$DISCUSSION_NUMBER" ]; then
+  echo "::error::plan.json source_discussion (${plan_src}) does not match this run's DISCUSSION_NUMBER (${DISCUSSION_NUMBER}) — supply the correct dry-run run ID for discussion #${DISCUSSION_NUMBER}." >&2
+  exit 1
+fi
+
 echo "==> applying reviewed plan (no re-plan): $PLAN_PATH"
 
-# Re-validate before applying — a reviewed artifact may have been hand-edited.
+# Re-validate before applying.
 python3 "$SCRIPT_DIR/validate-plan.py" "$PLAN_PATH"
 
 # Materialize. apply-plan.sh inherits PLAN_PATH and the rest from the environment.

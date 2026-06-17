@@ -18,7 +18,7 @@ initiative-planner.yml      (on approval / dispatch, automated)
         │                   DRY-RUN: emits an authoritative plan.json artifact
         │                   (the `initiative-plan-dry-run` upload) — creates NOTHING
         │
-   ★ HUMAN (optional plan-review gate) — download plan.json, review / hand-edit it
+   ★ HUMAN (optional plan-review gate) — download plan.json and review it
         │
         ▼
 initiative-planner.yml      (apply: re-dispatch with `plan_artifact_run_id`)
@@ -102,13 +102,13 @@ unit-tested.
   `dev-lead:hands-off` + `initiative:hold` so the driver never auto-releases them.
 - **Plan → review → apply split (#604).** A dry-run uploads the authoritative
   `plan.json` (the `initiative-plan-dry-run` artifact) and creates nothing. A
-  maintainer can download, review, and optionally hand-edit it, then re-dispatch
-  with `plan_artifact_run_id` set to the dry-run's run ID: the workflow loads that
-  reviewed `plan.json`, **skips Bob entirely (no re-plan)**, and validates + applies
+  maintainer can download and review it, then re-dispatch with
+  `plan_artifact_run_id` set to the dry-run's run ID: the workflow re-downloads
+  that artifact, **skips Bob entirely (no re-plan)**, and validates + applies
   it via `apply-reviewed-plan.sh` — so *what a maintainer reviewed is what
   materializes*. With `plan_artifact_run_id` empty, the default plan-then-apply
-  flow is unchanged. The handoff is artifact-download-by-run-ID, not a committed
-  file. This plan-review gate is **distinct** from the `initiative:auto` gate: the
+  flow is unchanged. The handoff is artifact-download-by-run-ID; the artifact
+  is re-fetched from GitHub Actions and not taken from a local file. This plan-review gate is **distinct** from the `initiative:auto` gate: the
   former binds the plan *contents*, the latter activates auto-*implementation*.
 - Tooling: `scripts/initiative-planner/` (persona: `prompts/bmad/scrum-master.md`).
 

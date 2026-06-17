@@ -350,3 +350,32 @@ teardown() { rm -rf "$TMP"; }
   [ "$status" -eq 0 ]
   [ "$(grep -c '"op":"create_issue"' "$LOG")" -eq 0 ]
 }
+
+@test "apply-reviewed-plan rejects a plan whose source_discussion mismatches DISCUSSION_NUMBER" {
+  # plan.json carries source_discussion:413; dispatcher says 999 — must abort before creating anything.
+  DRY_RUN=1 DRY_RUN_LOG="$LOG" REPO="petry-projects/.github-private" \
+    DISCUSSION_NUMBER=999 DISCUSSION_NODE_ID="D_test" PLAN_PATH="$PLAN" \
+    run bash "$PLANNER_DIR/apply-reviewed-plan.sh"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"source_discussion"* ]]
+  [[ "$output" == *"413"* ]]
+  [[ "$output" == *"999"* ]]
+  [ ! -s "$LOG" ] || [ "$(grep -c '"op":"create_issue"' "$LOG")" -eq 0 ]
+}
+
+@test "apply-reviewed-plan passes when source_discussion matches DISCUSSION_NUMBER" {
+  DRY_RUN=1 DRY_RUN_LOG="$LOG" REPO="petry-projects/.github-private" \
+    DISCUSSION_NUMBER=413 DISCUSSION_NODE_ID="D_test" PLAN_PATH="$PLAN" \
+    run bash "$PLANNER_DIR/apply-reviewed-plan.sh"
+  [ "$status" -eq 0 ]
+  [ "$(grep -c '"op":"create_issue"' "$LOG")" -eq 4 ]
+}
+
+@test "apply-reviewed-plan passes when plan has no source_discussion field" {
+  jq 'del(.source_discussion)' "$PLAN" >"$TMP/no_src.json"
+  DRY_RUN=1 DRY_RUN_LOG="$LOG" REPO="petry-projects/.github-private" \
+    DISCUSSION_NUMBER=999 DISCUSSION_NODE_ID="D_test" PLAN_PATH="$TMP/no_src.json" \
+    run bash "$PLANNER_DIR/apply-reviewed-plan.sh"
+  [ "$status" -eq 0 ]
+  [ "$(grep -c '"op":"create_issue"' "$LOG")" -eq 4 ]
+}
