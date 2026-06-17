@@ -299,3 +299,45 @@ teardown() { rm -rf "$TMP"; }
   [ "$(grep -c '"op":"create_issue"' "$LOG")" -eq 4 ]
   [ "$(grep -c '"op":"close_issue"' "$LOG")" -eq 0 ]
 }
+
+# ── reviewed-plan apply path (#604) ───────────────────────────────────────────
+# apply-reviewed-plan.sh is the no-re-plan handoff: a maintainer-reviewed plan.json
+# is validated then handed straight to apply-plan.sh — no LLM planning step runs.
+
+@test "apply-reviewed-plan validates then applies the supplied plan (DRY_RUN)" {
+  DRY_RUN=1 DRY_RUN_LOG="$LOG" REPO="petry-projects/.github-private" \
+    DISCUSSION_NUMBER=413 DISCUSSION_NODE_ID="D_test" PLAN_PATH="$PLAN" \
+    run bash "$PLANNER_DIR/apply-reviewed-plan.sh"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"plan OK"* ]]
+  [ "$(grep -c '"op":"create_issue"' "$LOG")" -eq 4 ]
+  [ "$(grep -c '"op":"add_sub_issue"' "$LOG")" -eq 3 ]
+  [ "$(grep -c '"op":"add_blocked_by"' "$LOG")" -eq 3 ]
+}
+
+@test "apply-reviewed-plan rejects an invalid supplied plan before applying anything" {
+  jq '.stories[1].blocked_by = [3] | .stories[2].blocked_by = [2]' "$PLAN" >"$TMP/cycle.json"
+  DRY_RUN=1 DRY_RUN_LOG="$LOG" REPO="petry-projects/.github-private" \
+    DISCUSSION_NUMBER=413 DISCUSSION_NODE_ID="D_test" PLAN_PATH="$TMP/cycle.json" \
+    run bash "$PLANNER_DIR/apply-reviewed-plan.sh"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"cycle"* ]]
+  [ ! -s "$LOG" ] || [ "$(grep -c '"op":"create_issue"' "$LOG")" -eq 0 ]
+}
+
+@test "apply-reviewed-plan errors on a missing supplied plan file" {
+  DRY_RUN=1 DRY_RUN_LOG="$LOG" REPO="petry-projects/.github-private" \
+    DISCUSSION_NUMBER=413 DISCUSSION_NODE_ID="D_test" PLAN_PATH="$TMP/does-not-exist.json" \
+    run bash "$PLANNER_DIR/apply-reviewed-plan.sh"
+  [ "$status" -ne 0 ]
+  [ ! -s "$LOG" ] || [ "$(grep -c '"op":"create_issue"' "$LOG")" -eq 0 ]
+}
+
+@test "apply-reviewed-plan honors the blocking open-questions gate from apply-plan" {
+  jq '.open_questions = [{"question":"Confirm scope X before planning","blocking":true}]' "$PLAN" >"$TMP/blocking.json"
+  DRY_RUN=1 DRY_RUN_LOG="$LOG" REPO="petry-projects/.github-private" \
+    DISCUSSION_NUMBER=413 DISCUSSION_NODE_ID="D_test" PLAN_PATH="$TMP/blocking.json" \
+    run bash "$PLANNER_DIR/apply-reviewed-plan.sh"
+  [ "$status" -eq 0 ]
+  [ "$(grep -c '"op":"create_issue"' "$LOG")" -eq 0 ]
+}

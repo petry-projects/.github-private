@@ -36,6 +36,11 @@ on:
         required: false
         default: false
         type: boolean
+      plan_artifact_run_id:
+        description: 'Apply a REVIEWED plan from a prior dry-run: the run ID whose initiative-plan-dry-run artifact (plan.json) to download and apply WITHOUT re-planning. Empty => the default plan-then-apply flow (Bob plans).'
+        required: false
+        default: ''
+        type: string
       model:
         description: 'Anthropic model id for the planner'
         required: false
@@ -95,6 +100,7 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read       # checkout, read AGENTS.md/scripts/docs
+      actions: read        # gh run download — fetch a prior run's reviewed plan.json artifact
       issues: write        # create epic + story sub-issues, link DAG, set blocked_by
       discussions: write   # post the plan summary back to the idea
       id-token: write       # claude-code-action OIDC
@@ -105,6 +111,9 @@ jobs:
       DISCUSSION_NUMBER: ${{ github.event.inputs.discussion }}
       DRY_RUN: ${{ inputs.dry_run == true && '1' || '0' }}
       FORCE_REPLAN: ${{ inputs.force_replan == true && '1' || '0' }}
+      # When set, the apply run loads this prior run's reviewed plan.json instead
+      # of re-planning (the plan/apply split, #604). Empty => Bob plans as before.
+      PLAN_ARTIFACT_RUN_ID: ${{ github.event.inputs.plan_artifact_run_id }}
       TOOLING_DIR: ${{ github.workspace }}/scripts/initiative-planner
     steps:
       - name: Checkout agent repo
@@ -121,6 +130,30 @@ jobs:
       - name: Install Python jsonschema
         run: pip install --quiet 'jsonschema>=4'
 
+      # ── reviewed-plan handoff (#604) ────────────────────────────────────────
+      # When a maintainer supplies a prior dry-run's run ID, load THAT run's
+      # authoritative plan.json (the one they reviewed) into $PLAN_PATH. The
+      # dry-run uploads it as the `initiative-plan-dry-run` artifact below. This
+      # is what lets the apply run skip the LLM re-plan (the Bob step is gated
+      # off when PLAN_ARTIFACT_RUN_ID is set).
+      - name: Download reviewed plan artifact
+        if: ${{ env.PLAN_ARTIFACT_RUN_ID != '' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          dest="${{ runner.temp }}/reviewed-plan"
+          mkdir -p "$dest"
+          gh run download "$PLAN_ARTIFACT_RUN_ID" \
+            --repo "$REPO" \
+            --name initiative-plan-dry-run \
+            --dir "$dest"
+          if [ ! -s "$dest/plan.json" ]; then
+            echo "::error::run $PLAN_ARTIFACT_RUN_ID has no plan.json in its initiative-plan-dry-run artifact" >&2
+            exit 1
+          fi
+          cp "$dest/plan.json" "$PLAN_PATH"
+          echo "loaded reviewed plan from run $PLAN_ARTIFACT_RUN_ID -> $PLAN_PATH"
+
       - name: Gather planning context
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -128,6 +161,9 @@ jobs:
 
       - name: Plan the initiative (BMAD Scrum Master)
         id: bob
+        # Skipped on the reviewed-plan handoff (#604): when a prior plan.json is
+        # supplied, we apply it verbatim and never re-plan.
+        if: ${{ env.PLAN_ARTIFACT_RUN_ID == '' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         uses: anthropics/claude-code-action@d5726de019ec4498aa667642bc3a80fca83aa102 # v1.0.148
@@ -283,6 +319,17 @@ jobs:
 
             Finish with a 3–5 line summary: the epic, the story count, the
             dependency shape, and any open questions.
+
+      # ── reviewed-plan handoff (#604) ────────────────────────────────────────
+      # The mirror of Bob's in-prompt materialization for the supplied-plan path:
+      # validate the reviewed (possibly hand-edited) plan.json, then run
+      # apply-plan.sh on it. No LLM ran. DRY_RUN, FORCE_REPLAN, and the
+      # blocking-open-questions / idempotency gates are honored by apply-plan.sh.
+      - name: Apply the reviewed plan (no re-plan)
+        if: ${{ env.PLAN_ARTIFACT_RUN_ID != '' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash scripts/initiative-planner/apply-reviewed-plan.sh
 
       - name: Upload dry-run plan log
         if: ${{ env.DRY_RUN == '1' }}

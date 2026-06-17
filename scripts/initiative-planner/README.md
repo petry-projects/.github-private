@@ -19,8 +19,36 @@ create-story template, which `plan.schema.json` mirrors field-for-field.
 | `validate-plan.py` | Schema + semantic checks: unique ids, acyclic DAG, an entry point, no dangling edges. |
 | `lib/mutations.sh` | DRY_RUN-aware GitHub helpers (create issue, link sub-issue, add `blocked_by`, comment on Discussion, find/close issues for the idempotency guard). |
 | `apply-plan.sh` | Materialize a validated plan. Creates issues labelled `initiative` only — **never** `initiative:auto`. Idempotent: no-ops if the discussion is already planned, or supersedes the old epic when `FORCE_REPLAN=1`. |
+| `apply-reviewed-plan.sh` | The plan/apply-split handoff (#604): apply a maintainer-**reviewed** plan.json WITHOUT re-planning — re-validates the (possibly hand-edited) artifact, then runs `apply-plan.sh`. The BMAD Scrum Master never runs on this path. |
 
 Tests: `tests/test_initiative_planner.bats`, `tests/test_initiative_planner_redispatch.bats` (run via `lint.yml`).
+
+## Plan → review → apply split (#604)
+
+By default `initiative-planner.yml` plans **and** applies in a single run (Bob
+emits `plan.json`, then `apply-plan.sh` materializes it). But because the preview
+should bind the result — *what a maintainer reviewed is what materializes* — the
+workflow also supports a two-step split:
+
+1. **Plan (dry-run).** Dispatch with `dry_run: true` (the default). Bob plans and
+   the run uploads the authoritative `plan.json` as the `initiative-plan-dry-run`
+   artifact. **No issues are created.**
+2. **Review.** A maintainer downloads `plan.json` from that run, reviews it, and
+   (optionally) hand-edits it. *This is the human review gate for the plan
+   contents* — distinct from the later `initiative:auto` gate that activates
+   auto-implementation.
+3. **Apply (no re-plan).** Re-dispatch with `plan_artifact_run_id` set to the
+   dry-run's run ID. The workflow downloads that run's reviewed `plan.json`,
+   **skips the LLM planning step entirely**, then re-validates and applies it via
+   `apply-reviewed-plan.sh`. The reviewed artifact is what materializes.
+
+The handoff is **artifact download by run ID** (`gh run download`), not a
+committed plan file — it keeps reviewed plans out of git and ties each apply to a
+specific, auditable dry-run. Artifact retention is the default 90 days, so apply
+within that window. With `plan_artifact_run_id` empty, behavior is unchanged
+(plan-then-apply in one run). Even a human-reviewed plan still materializes
+**inert** (no `initiative:auto`); `apply-plan.sh` enforces that regardless of
+path.
 
 ## Local dry run
 
