@@ -109,19 +109,6 @@ If `${ACTOR}` is `sonarqubecloud[bot]` and the comment reports security hotspots
 3. Fix each identified hotspot — for `curl | bash` patterns, replace with a safer alternative such as a pinned binary download with SHA verification, `gh extension install <owner>/<repo>`, or a package manager install
 4. If no hotspot is found in changed files, read any newly introduced shell scripts or workflow YAML steps for the patterns above
 
-## SonarQube / SonarCloud comments
-
-If `${ACTOR}` is `sonarqubecloud[bot]` and the comment reports security hotspots or ratings **without referencing specific files or line numbers**, the SonarCloud dashboard link is not browsable — you must infer the hotspot from the PR's changed files:
-
-1. Run `gh pr diff ${PR_NUMBER} --repo ${REPO}` to list all changed files and their diffs
-2. Scan changed files for these known SonarQube hotspot patterns (in descending severity):
-   - **Script injection (S4830 / RSPEC-4830):** `curl … | bash`, `curl … | sh`, `wget … | bash` — replace with a pinned, checksum-verified install or `gh extension install`
-   - **Hardcoded credentials:** tokens, passwords, or API keys in source files
-   - **Dynamic code execution:** `eval`, `exec` with user-controlled input
-   - **Insecure download:** HTTP (non-HTTPS) URLs used to fetch scripts or packages
-3. Fix each identified hotspot — for `curl | bash` patterns, replace with a safer alternative such as a pinned binary download with SHA verification, `gh extension install <owner>/<repo>`, or a package manager install
-4. If no hotspot is found in changed files, read any newly introduced shell scripts or workflow YAML steps for the patterns above
-
 ## Constraints
 
 - Only fix issues that are clearly actionable from the bot's output
