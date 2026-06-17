@@ -135,6 +135,12 @@
                 "type": "boolean",
                 "default": false,
                 "description": "True => this question must be answered before the idea is plannable; halts materialization."
+              },
+              "affected_story_ids": {
+                "type": "array",
+                "items": { "type": "integer", "minimum": 1 },
+                "description": "Local story ids this open question concerns. Set when a critic finding (see prompts/plan-review.md) could not be folded back into the plan and was routed here by route-findings.sh, so the question names which stories it gates. Empty/absent for epic- or plan-level questions.",
+                "default": []
               }
             }
           }

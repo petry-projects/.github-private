@@ -29,8 +29,10 @@
 #     "artifact_type": "plan_json",
 #     "verdict": "pass|revise",
 #     "summary": "...",
-#     "findings": [ { "severity","category","message","story_id","location" } ]
+#     "findings": [ { "check","story_id","severity","finding" } ]
 #   }
+# This channel only reads .verdict/.summary/.findings|length, so it is agnostic
+# to the per-finding field names.
 #
 # Exit codes: 0 on a well-formed verdict (pass or revise); non-zero when the
 # findings file is missing, unparseable, or carries an unknown verdict.

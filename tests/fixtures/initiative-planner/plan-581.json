@@ -1,0 +1,89 @@
+{
+  "source_discussion": 572,
+  "epic": {
+    "title": "Initiative: Eval-gated, human-reviewed self-improving skills (SkillOpt-style)",
+    "body": "Stand up an eval-gated, human-reviewed self-improvement loop for agent skills/prompts, modeled on Microsoft SkillOpt and Anthropic skill-creator (discussion #572). An agent proposes a bounded edit to a skill markdown file, an offline eval gate decides on a held-out set, and the winner rides the existing idea->initiative->pr-review pipeline as a normal CODEOWNER-reviewed PR. Nothing self-promotes; no release-tag ruleset changes. Phase 1 lands the keystone with no loop; Phase 2 generalizes the harness; Phase 3 automates the scheduled proposer behind safe-rollout prerequisites."
+  },
+  "stories": [
+    {
+      "id": 1,
+      "title": "[Phase 1] Held-out eval set + deterministic scorer for prompts/triage.md",
+      "user_story": {
+        "role": "skill maintainer",
+        "action": "a versioned held-out eval set and a deterministic scorer for the triage prompt",
+        "benefit": "a proposed prompt edit can be scored offline before it ships"
+      },
+      "acceptance_criteria": [
+        "A held-out eval set for prompts/triage.md is committed under evals/ with a deterministic scorer",
+        "The scorer runs in CI as a NON-BLOCKING report (we have not yet settled whether the gate should block on a tie or only on a strict regression — that decision is deferred to this AC and resolved however the implementer sees fit)"
+      ],
+      "tasks": [
+        { "task": "Author the held-out cases and commit them under evals/", "ac_refs": [1] },
+        { "task": "Write the deterministic scorer and wire a non-blocking CI report", "ac_refs": [2] }
+      ],
+      "dev_notes": [
+        "Eval cases and judge prompts are owned separately via CODEOWNERS and never writable by the proposer.",
+        "Testing: extend tests/test_validate_cases.bats for the dev/holdout split hygiene."
+      ],
+      "references": ["prompts/triage.md", "evals/README.md", "evals/validate-cases.py"],
+      "target_surface": ["evals/", "scripts/evals"],
+      "size": "M",
+      "blocked_by": []
+    },
+    {
+      "id": 2,
+      "title": "[Phase 2] Generalize the harness to prompts/deep-review.md with an LLM judge and a strict-improvement gate",
+      "user_story": {
+        "role": "skill maintainer",
+        "action": "the eval harness extended to the deep-review prompt with an LLM-judge scorer and a strict-improvement gate that rejects regressions",
+        "benefit": "prompt edits to the heavier reviewer are gated on proven, non-regressing quality"
+      },
+      "acceptance_criteria": [
+        "The harness scores prompts/deep-review.md via an LLM judge and promotes only strict winners",
+        "The judge prompt and rubric are tuned until the harness reports improved scores on the eval set"
+      ],
+      "tasks": [
+        { "task": "Add the LLM-judge scorer for deep-review", "ac_refs": [1] },
+        { "task": "Tune the judge prompt and rubric against the eval set until scores improve", "ac_refs": [2] }
+      ],
+      "dev_notes": [
+        "The judge prompt is iterated against the same eval set used to score candidates.",
+        "Testing: add a harness smoke test."
+      ],
+      "references": ["prompts/deep-review.md", "evals/README.md"],
+      "target_surface": ["evals/", "scripts/evals"],
+      "size": "M",
+      "blocked_by": [1]
+    },
+    {
+      "id": 3,
+      "title": "[Phase 3] Automate the scheduled proposer end-to-end: shadow-mode dual-run, health-gated promotion, proposer scheduler, dashboards, and rollback",
+      "user_story": {
+        "role": "platform operator",
+        "action": "a scheduled proposer that drafts skill edits, runs them through shadow-mode dual-run, promotes via the health-gated workflow, and exposes dashboards plus a rollback path",
+        "benefit": "the self-improvement loop runs unattended behind safe-rollout guards"
+      },
+      "acceptance_criteria": [
+        "A scheduled workflow drafts bounded skill edits and opens PRs",
+        "Shadow-mode dual-run compares candidate vs. incumbent on live traffic",
+        "Promotion is gated on the health-gated promotion workflow",
+        "Operator dashboards and a one-command rollback are documented and wired"
+      ],
+      "tasks": [
+        { "task": "Build the scheduled proposer workflow", "ac_refs": [1] },
+        { "task": "Implement shadow-mode dual-run", "ac_refs": [2] },
+        { "task": "Wire promotion behind the health-gated promotion workflow", "ac_refs": [3] },
+        { "task": "Author dashboards and the rollback runbook", "ac_refs": [4] }
+      ],
+      "dev_notes": [
+        "Hands-off: activation is a human decision; the proposer never self-promotes.",
+        "Depends on health-gated promotion (#501) and shadow-mode dual-run being in place."
+      ],
+      "references": ["docs/initiatives/idea-to-initiative-pipeline.md"],
+      "target_surface": [".github/workflows/"],
+      "size": "L",
+      "blocked_by": [2],
+      "hands_off": true
+    }
+  ]
+}
