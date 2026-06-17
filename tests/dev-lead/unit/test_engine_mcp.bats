@@ -210,8 +210,9 @@ _source_engine() {
   [ "$status" -eq 0 ]
 }
 
-@test "sample: conventional discovery path is absent in-repo (MCP off by default)" {
-  [ ! -e "$SCRIPT_DIR/.github/review-mcp.json" ]
+@test "sample: committed review-mcp.json is valid JSON (MCP active in this repo)" {
+  run jq empty "$SCRIPT_DIR/.github/review-mcp.json"
+  [ "$status" -eq 0 ]
 }
 
 # ── Triage tier: never gets MCP flags ────────────────────────────────────────
