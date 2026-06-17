@@ -333,6 +333,15 @@ teardown() { rm -rf "$TMP"; }
   [ ! -s "$LOG" ] || [ "$(grep -c '"op":"create_issue"' "$LOG")" -eq 0 ]
 }
 
+@test "apply-reviewed-plan errors when PLAN_PATH is a directory, not a regular file" {
+  DRY_RUN=1 DRY_RUN_LOG="$LOG" REPO="petry-projects/.github-private" \
+    DISCUSSION_NUMBER=413 DISCUSSION_NODE_ID="D_test" PLAN_PATH="$TMP" \
+    run bash "$PLANNER_DIR/apply-reviewed-plan.sh"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"not a regular file"* ]]
+  [ ! -s "$LOG" ] || [ "$(grep -c '"op":"create_issue"' "$LOG")" -eq 0 ]
+}
+
 @test "apply-reviewed-plan honors the blocking open-questions gate from apply-plan" {
   jq '.open_questions = [{"question":"Confirm scope X before planning","blocking":true}]' "$PLAN" >"$TMP/blocking.json"
   DRY_RUN=1 DRY_RUN_LOG="$LOG" REPO="petry-projects/.github-private" \

@@ -322,13 +322,16 @@ jobs:
 
       # ── reviewed-plan handoff (#604) ────────────────────────────────────────
       # The mirror of Bob's in-prompt materialization for the supplied-plan path:
-      # validate the reviewed (possibly hand-edited) plan.json, then run
-      # apply-plan.sh on it. No LLM ran. DRY_RUN, FORCE_REPLAN, and the
-      # blocking-open-questions / idempotency gates are honored by apply-plan.sh.
+      # validate the reviewed plan.json, then run apply-plan.sh on it. No LLM
+      # ran. FORCE_REPLAN and the blocking-open-questions / idempotency gates are
+      # honored by apply-plan.sh. DRY_RUN is forced off here — this step exists
+      # solely to materialize a plan a maintainer already approved; running it in
+      # dry-run mode would create no epic or stories despite the intent.
       - name: Apply the reviewed plan (no re-plan)
         if: ${{ env.PLAN_ARTIFACT_RUN_ID != '' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DRY_RUN: '0'
         run: bash scripts/initiative-planner/apply-reviewed-plan.sh
 
       - name: Upload dry-run plan log
