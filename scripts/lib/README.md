@@ -11,8 +11,11 @@ contract names the small, stable interface between "what is being reviewed" and
 
 The registry is an input-adapter layer **above** `engine.sh`. It does **not**
 change engine/model routing — it only decides which rubric and output channel
-apply to a given artifact. Phase 1 registers a single type, `pr_diff`, which
-resolves to today's PR-review behavior with no change.
+apply to a given artifact. Phase 1 registers `pr_diff`, which resolves to today's
+PR-review behavior with no change. Phase 2 (#614) adds `plan_json` additively: an
+initiative `plan.json` scored against a fixed adversarial/semantic plan rubric,
+with the verdict delivered as **machine-readable findings** the planner consumes
+before `apply-plan.sh` materializes the epic/DAG — not a GitHub PR review.
 
 ## The artifact contract
 
@@ -20,10 +23,10 @@ Every reviewable thing is described by four fields:
 
 | Field | Meaning | Allowed values |
 | --- | --- | --- |
-| `artifact_type` | What kind of thing is being reviewed. The registry key. | A type registered in the manifest. Phase 1: `pr_diff` only. |
-| `content_ref` | A pointer to the concrete content to review (not the content itself). | Opaque to the registry; interpreted by the output channel / caller. For `pr_diff` it is a PR URL (as passed to `review-one-pr.sh`). |
-| `rubric` | The standard the content is scored against — an ordered cascade of prompt files, applied in sequence. | Resolved from the manifest. For `pr_diff`: `prompts/triage.md` → `prompts/deep-review.md` → `prompts/synthesize.md`. |
-| `output_channel` | How the verdict is delivered. | Resolved from the manifest. For `pr_diff`: `scripts/post-pr-review.sh` (GitHub inline review comments + an approve/escalate review). |
+| `artifact_type` | What kind of thing is being reviewed. The registry key. | A type registered in the manifest: `pr_diff`, `plan_json`. |
+| `content_ref` | A pointer to the concrete content to review (not the content itself). | Opaque to the registry; interpreted by the output channel / caller. For `pr_diff` it is a PR URL (as passed to `review-one-pr.sh`); for `plan_json` it is a `plan.json` path (as passed to `initiative-planner/review-plan.sh`). |
+| `rubric` | The standard the content is scored against — an ordered cascade of prompt files, applied in sequence. | Resolved from the manifest. For `pr_diff`: `prompts/triage.md` → `prompts/deep-review.md` → `prompts/synthesize.md`. For `plan_json`: `prompts/plan-review.md` (the fixed plan critic). |
+| `output_channel` | How the verdict is delivered. | Resolved from the manifest. For `pr_diff`: `scripts/post-pr-review.sh` (GitHub inline review comments + an approve/escalate review). For `plan_json`: `scripts/post-plan-findings.sh` (machine-readable findings JSON for the planner — never a GitHub review). |
 
 `artifact_type` and `content_ref` are supplied by the caller (the input). The
 registry resolves `rubric` and `output_channel` from the `artifact_type`.
@@ -48,10 +51,12 @@ reviewer.
 ```bash
 source scripts/lib/review-registry.sh
 
-review_registry_version                         # -> 1
-review_registry_types                           # -> pr_diff
-review_registry_lookup pr_diff rubric           # -> prompts/triage.md,prompts/deep-review.md,prompts/synthesize.md
-review_registry_lookup pr_diff output_channel   # -> scripts/post-pr-review.sh
+review_registry_version                          # -> 2
+review_registry_types                            # -> pr_diff\nplan_json
+review_registry_lookup pr_diff rubric            # -> prompts/triage.md,prompts/deep-review.md,prompts/synthesize.md
+review_registry_lookup pr_diff output_channel    # -> scripts/post-pr-review.sh
+review_registry_lookup plan_json rubric          # -> prompts/plan-review.md
+review_registry_lookup plan_json output_channel  # -> scripts/post-plan-findings.sh
 ```
 
 `review_registry_lookup` returns `1` for an unknown `artifact_type` and `2` for
