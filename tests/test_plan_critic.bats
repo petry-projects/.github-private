@@ -170,7 +170,7 @@ teardown() { rm -rf "$TMP"; }
 
 @test "route-findings is a pure transform: it does not drop or rewrite existing stories" {
   bash "$ROUTE" "$PLAN_581" "$FINDINGS_581" > "$TMP/routed.json"
-  run jq -e '.stories == input.stories' "$TMP/routed.json" "$PLAN_581"
+  run jq -e '.[0].stories == .[1].stories' -s "$TMP/routed.json" "$PLAN_581"
   [ "$status" -eq 0 ]
 }
 

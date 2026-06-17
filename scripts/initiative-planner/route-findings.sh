@@ -48,7 +48,7 @@ jq \
   | ($f | map({
       question: ("[" + (.check // "finding") + "] " + (.finding // "")),
       affected_story_ids: (if (.story_id == null) then [] else [.story_id] end),
-      blocking: ((.severity // "") | IN("major", "critical"))
+      blocking: ((.severity // "") | (. == "major" or . == "critical"))
     })) as $routed
   | .open_questions = ($existing + $routed)
   ' "$PLAN_PATH"
