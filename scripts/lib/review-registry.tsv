@@ -6,14 +6,20 @@
 # artifact contract and field meanings. Data, not code — add a row to register
 # a new artifact_type; do not fork the reviewer (issue #611).
 #
-# schema_version: 1
+# schema_version: 2
 #
 # Columns (tab-separated): artifact_type	rubric	output_channel
 #   rubric         — ordered, comma-separated cascade of prompt files
 #                    (repo-root-relative), applied in sequence.
-#   output_channel — repo-root-relative script that posts the verdict.
+#   output_channel — repo-root-relative script that delivers the verdict.
 #
-# Phase 1 registers only pr_diff, resolving to today's PR-review behavior with
-# no change: the triage -> deep-review -> synthesize cascade, delivered as
-# GitHub inline review comments by post-pr-review.sh.
+# Phase 1 registers pr_diff, resolving to today's PR-review behavior with no
+# change: the triage -> deep-review -> synthesize cascade, delivered as GitHub
+# inline review comments by post-pr-review.sh.
 pr_diff	prompts/triage.md,prompts/deep-review.md,prompts/synthesize.md	scripts/post-pr-review.sh
+# Phase 2 (#614) registers plan_json additively: an initiative plan.json is
+# scored against the fixed adversarial/semantic plan rubric, and the verdict is
+# delivered as machine-readable findings the planner consumes before apply-plan.sh
+# materializes the epic/DAG — NOT a GitHub review (post-plan-findings.sh never
+# calls post-pr-review.sh).
+plan_json	prompts/plan-review.md	scripts/post-plan-findings.sh
