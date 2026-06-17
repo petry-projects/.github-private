@@ -29,7 +29,7 @@ PLAN_PATH="${PLAN_PATH:?PLAN_PATH required (path to the reviewed plan.json)}"
 # it must definitively reference which discussion it came from, not rely on the
 # current dispatch context. Also reject artifacts that target a different
 # discussion than the one the maintainer declared.
-plan_src="$(jq -r '.source_discussion' "$PLAN_PATH")"
+plan_src="$(jq -r '.source_discussion // empty' "$PLAN_PATH")"
 if [ -z "$plan_src" ]; then
   echo "::error::plan.json must have a source_discussion field for reviewed-plan applies — the artifact must be self-contained about its origin." >&2
   exit 1
