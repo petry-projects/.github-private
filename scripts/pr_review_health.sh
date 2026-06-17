@@ -124,7 +124,6 @@ echo ""
 # ---------------------------------------------------------------------------
 # 4. Fetch workflow source for token/permission context
 # ---------------------------------------------------------------------------
-[ -n "${GITHUB_STEP_SUMMARY:-}" ] && cat "$REPORT_FILE" >> "$GITHUB_STEP_SUMMARY"
 [ -n "${GITHUB_ENV:-}" ] && {
   if [ "$failed_runs" -gt 0 ]; then
     echo "HAS_FAILURES=true" >> "$GITHUB_ENV"
@@ -238,6 +237,8 @@ then
   exit 1
 fi
 rm -f "$logs_file"
+
+[ -n "${GITHUB_STEP_SUMMARY:-}" ] && [ -f "$REPORT_FILE" ] && cat "$REPORT_FILE" >> "$GITHUB_STEP_SUMMARY"
 
 echo ""
 echo "Report written to $REPORT_FILE ($(wc -c < "$REPORT_FILE") bytes)"

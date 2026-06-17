@@ -1269,6 +1269,7 @@ run_duck() {
     claude)
       unset COPILOT_GITHUB_TOKEN 2>/dev/null || true
       unset GOOGLE_API_KEY 2>/dev/null || true
+      unset GEMINI_API_KEY 2>/dev/null || true
       # Thread the opt-in MCP config (no-op when REVIEW_MCP_CONFIG is unset).
       _mcp_review_flags "Bash,Read,Grep,Glob"
       # Route through the chain helper so real token usage (incl. cache) is captured
@@ -1291,6 +1292,7 @@ run_duck() {
       ;;
     gemini)
       unset CLAUDE_CODE_OAUTH_TOKEN 2>/dev/null || true
+      unset ANTHROPIC_API_KEY 2>/dev/null || true
       unset COPILOT_GITHUB_TOKEN 2>/dev/null || true
       if [ -n "$_tok_tmp" ]; then
         _gemini_invoke "$prompt_file" "$DUCK_TIMEOUT_SEC" "$model" \
@@ -1302,7 +1304,9 @@ run_duck() {
       ;;
     copilot)
       unset CLAUDE_CODE_OAUTH_TOKEN 2>/dev/null || true
+      unset ANTHROPIC_API_KEY 2>/dev/null || true
       unset GOOGLE_API_KEY 2>/dev/null || true
+      unset GEMINI_API_KEY 2>/dev/null || true
       # Do NOT tee stdout to OUTPUT_FILE — same rationale as run_agentic copilot
       # branch: the prompt writes verdict JSON directly via the Bash tool.
       if [ -n "$_tok_tmp" ]; then

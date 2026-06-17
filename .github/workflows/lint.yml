@@ -41,7 +41,7 @@ jobs:
 
       - name: Run tests
         run: |
-          bats \
+          scripts/run-bats.sh \
             tests/fleet_report.bats \
             tests/token_report.bats \
             tests/auto_rebase_health.bats \
