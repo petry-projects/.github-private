@@ -1,0 +1,47 @@
+{
+  "consumers": [
+    {
+      "repo": "petry-projects/alpha",
+      "refs": [
+        ".github-private/.github/workflows/dev-lead-reusable.yml",
+        ".github-private/.github/workflows/pr-review.yml",
+        ".github/.github/workflows/agent-shield-reusable.yml"
+      ]
+    },
+    {
+      "repo": "petry-projects/bravo",
+      "refs": [
+        ".github-private/.github/workflows/pr-review.yml"
+      ]
+    },
+    {
+      "repo": "petry-projects/charlie",
+      "refs": [
+        ".github-private/.github/workflows/dev-lead-reusable.yml",
+        ".github/.github/workflows/agent-shield-reusable.yml"
+      ]
+    },
+    {
+      "repo": "petry-projects/delta",
+      "refs": [
+        ".github/.github/workflows/auto-rebase-reusable.yml"
+      ]
+    }
+  ],
+  "providers": [
+    ".github",
+    ".github-private"
+  ],
+  "surface_sources": {
+    ".github/workflows/dev-lead-reusable.yml": [
+      "prompts/dev-lead/fix-ci.md",
+      "scripts/lib/auto-merge.sh",
+      "scripts/lib/review-cycle.sh"
+    ],
+    ".github/workflows/pr-review.yml": [
+      "prompts/single-review.md",
+      "scripts/lib/ci-status.sh",
+      "scripts/lib/review-cycle.sh"
+    ]
+  }
+}
