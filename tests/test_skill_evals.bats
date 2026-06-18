@@ -316,3 +316,143 @@ SH
   [ "$status" -eq 0 ]
   [ "$(jq '.passed' <<<"$output")" -eq 2 ]
 }
+
+@test "scorer honors SKILL_PROMPT_FILE to score an arbitrary skill file" {
+  # The gate (#586) scores incumbent/candidate files against the SAME held-out
+  # set. The scorer must accept a SKILL_PROMPT_FILE override pointing at any file
+  # (not just prompts/<skill>.md) and inline it as the per-case prompt. The stub
+  # below greps the prompt for QUALITY_PERFECT to confirm the override file content
+  # reached the engine.
+  skill_file="$TMP/candidate.md"
+  printf '# Triage\nQUALITY_PERFECT\n' >"$skill_file"
+  probe="$TMP/probe.sh"
+  cat >"$probe" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+prompt="$1"
+grep -q QUALITY_PERFECT "$prompt" || { echo 'override not applied'; exit 0; }
+if grep -q MARKER_ESCALATE "$prompt"; then
+  echo '{"escalate": true, "risk": "HIGH"}'
+else
+  echo '{"escalate": false, "risk": "LOW"}'
+fi
+SH
+  chmod +x "$probe"
+  EVALS_DIR="$TMP/evals" EVAL_ENGINE_CMD="$probe" SKILL_PROMPT_FILE="$skill_file" \
+    run --separate-stderr bash "$SCORER" triage
+  [ "$status" -eq 0 ]
+  [ "$(jq '.passed' <<<"$output")" -eq 2 ]
+}
+
+# --- strict-improvement gate (scripts/evals/gate.sh, #586) ---------------------
+#
+# The gate scores an incumbent skill file and a candidate skill file against the
+# SAME held-out set (via run-eval.sh) and accepts (exit 0) ONLY when the candidate
+# STRICTLY beats the incumbent. Ties and regressions are rejected (exit 1). These
+# tests drive it offline with a stub engine whose correctness is keyed off a
+# quality marker in the skill file, giving three deterministic score tiers:
+#   QUALITY_PERFECT -> both cases correct  -> score 1.0
+#   QUALITY_HALF    -> approve only        -> score 0.5
+#   (anything else) -> non-JSON garbage    -> score 0.0
+_gate_setup() {
+  GATE="$ROOT/scripts/evals/gate.sh"
+
+  GATE_STUB="$TMP/gate_stub.sh"
+  cat >"$GATE_STUB" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+prompt="$1"
+if grep -q QUALITY_PERFECT "$prompt"; then
+  if grep -q MARKER_ESCALATE "$prompt"; then
+    echo '{"escalate": true, "risk": "HIGH"}'
+  else
+    echo '{"escalate": false, "risk": "LOW"}'
+  fi
+elif grep -q QUALITY_HALF "$prompt"; then
+  echo '{"escalate": false, "risk": "LOW"}'
+else
+  echo 'not json'
+fi
+SH
+  chmod +x "$GATE_STUB"
+
+  PERFECT="$TMP/skill_perfect.md"; printf '# Triage\nQUALITY_PERFECT\n' >"$PERFECT"
+  HALF="$TMP/skill_half.md";       printf '# Triage\nQUALITY_HALF\n'    >"$HALF"
+  ZERO="$TMP/skill_zero.md";       printf '# Triage\nQUALITY_ZERO\n'    >"$ZERO"
+}
+
+@test "gate: strictly-better candidate is ACCEPTED (exit 0)" {
+  _gate_setup
+  EVALS_DIR="$TMP/evals" EVAL_ENGINE_CMD="$GATE_STUB" \
+    run --separate-stderr bash "$GATE" triage "$HALF" "$PERFECT"
+  [ "$status" -eq 0 ]
+  [ "$(jq -r '.verdict' <<<"$output")" = "accept" ]
+  [ "$(jq -r '.accepted' <<<"$output")" = "true" ]
+  [ "$(jq '.incumbent_score' <<<"$output")" = "0.5" ]
+  [ "$(jq '.candidate_score' <<<"$output")" = "1" ]
+}
+
+@test "gate: regressed candidate is REJECTED (exit 1)" {
+  _gate_setup
+  EVALS_DIR="$TMP/evals" EVAL_ENGINE_CMD="$GATE_STUB" \
+    run --separate-stderr bash "$GATE" triage "$PERFECT" "$HALF"
+  [ "$status" -eq 1 ]
+  [ "$(jq -r '.verdict' <<<"$output")" = "reject" ]
+  [ "$(jq -r '.accepted' <<<"$output")" = "false" ]
+  [ "$(jq '.incumbent_score' <<<"$output")" = "1" ]
+  [ "$(jq '.candidate_score' <<<"$output")" = "0.5" ]
+}
+
+@test "gate: a TIE is REJECTED — the gate is strict '>' not '>='" {
+  _gate_setup
+  EVALS_DIR="$TMP/evals" EVAL_ENGINE_CMD="$GATE_STUB" \
+    run --separate-stderr bash "$GATE" triage "$HALF" "$HALF"
+  [ "$status" -eq 1 ]
+  [ "$(jq -r '.accepted' <<<"$output")" = "false" ]
+  [ "$(jq '.incumbent_score' <<<"$output")" = "$(jq '.candidate_score' <<<"$output")" ]
+}
+
+@test "gate: a worse-than-zero candidate (score 0) is REJECTED against a 0.5 incumbent" {
+  _gate_setup
+  EVALS_DIR="$TMP/evals" EVAL_ENGINE_CMD="$GATE_STUB" \
+    run --separate-stderr bash "$GATE" triage "$HALF" "$ZERO"
+  [ "$status" -eq 1 ]
+  [ "$(jq '.candidate_score' <<<"$output")" = "0" ]
+}
+
+@test "gate: verdict JSON carries skill, both scores, and the accepted flag" {
+  _gate_setup
+  EVALS_DIR="$TMP/evals" EVAL_ENGINE_CMD="$GATE_STUB" \
+    run --separate-stderr bash "$GATE" triage "$HALF" "$PERFECT"
+  [ "$status" -eq 0 ]
+  [ "$(jq -r '.skill' <<<"$output")" = "triage" ]
+  [ "$(jq 'has("incumbent_score") and has("candidate_score") and has("accepted")' <<<"$output")" = "true" ]
+}
+
+@test "gate: missing arguments is a hard error (::error::, non-zero)" {
+  _gate_setup
+  EVALS_DIR="$TMP/evals" EVAL_ENGINE_CMD="$GATE_STUB" \
+    run bash "$GATE" triage "$HALF"
+  [ "$status" -ne 0 ]
+  [ "$status" -ne 1 ]
+  [[ "$output" == *"::error::"* ]]
+}
+
+@test "gate: a missing candidate file is a hard error (::error::, non-zero)" {
+  _gate_setup
+  EVALS_DIR="$TMP/evals" EVAL_ENGINE_CMD="$GATE_STUB" \
+    run bash "$GATE" triage "$HALF" "$TMP/does-not-exist.md"
+  [ "$status" -ne 0 ]
+  [ "$status" -ne 1 ]
+  [[ "$output" == *"::error::"* ]]
+}
+
+@test "gate: never writes the held-out cases file" {
+  _gate_setup
+  before="$(md5sum "$TMP/evals/triage/holdout/cases.jsonl")"
+  EVALS_DIR="$TMP/evals" EVAL_ENGINE_CMD="$GATE_STUB" \
+    run --separate-stderr bash "$GATE" triage "$HALF" "$PERFECT"
+  [ "$status" -eq 0 ]
+  after="$(md5sum "$TMP/evals/triage/holdout/cases.jsonl")"
+  [ "$before" = "$after" ]
+}
