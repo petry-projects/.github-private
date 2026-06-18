@@ -55,11 +55,11 @@ _DOWNSTREAM_IMPACT_JQ='
   ( [ $consumers[].refs[]? | strip_provider(.) | select(. != null) ] | unique ) as $pinned_surfaces
 
   # (a) Direct: a changed workflow path that is itself a pinned surface.
-  | ( [ $changed[] | select(. as $c | $pinned_surfaces | index($c)) ] ) as $direct_surfaces
+  | ( [ $changed[] | select(. as $c | $pinned_surfaces | index($c) != null) ] ) as $direct_surfaces
 
   # (b) Indirect: surface_sources keys whose value list contains a changed path.
   | ( [ $sources | to_entries[]
-        | select(.value as $v | any($changed[]; . as $c | $v | index($c)))
+        | select(.value as $v | any($changed[]; . as $c | $v | index($c) != null))
         | .key ] ) as $indirect_surfaces
 
   | (($direct_surfaces + $indirect_surfaces) | unique) as $impacted_surfaces
@@ -67,15 +67,15 @@ _DOWNSTREAM_IMPACT_JQ='
   # Changed paths that matched neither kind.
   | ( [ $changed[]
         | . as $c
-        | select(($pinned_surfaces | index($c)) | not)
-        | select(($sources | to_entries | any(.value as $v | $v | index($c))) | not) ]
+        | select(($pinned_surfaces | index($c) != null) | not)
+        | select(($sources | to_entries | any(.value as $v | $v | index($c) != null)) | not) ]
       | unique ) as $unmatched
 
   # Consumers carrying at least one impacted surface, with the surfaces (via).
   | ( [ $consumers[]
         | .repo as $repo
         | ( [ .refs[]? | strip_provider(.) | select(. != null) ] ) as $repo_surfaces
-        | ( [ $impacted_surfaces[] | select(. as $s | $repo_surfaces | index($s)) ] ) as $via
+        | ( [ $impacted_surfaces[] | select(. as $s | $repo_surfaces | index($s) != null) ] ) as $via
         | select($via | length > 0)
         | { repo: $repo, via: $via } ]
       | sort_by(.repo) ) as $impacted_consumers

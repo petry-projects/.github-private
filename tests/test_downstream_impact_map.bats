@@ -25,17 +25,17 @@ setup() {
 @test "direct reusable-workflow change maps to the consumers that pin it" {
   run compute_downstream_impact ".github/workflows/pr-review.yml" "$MANIFEST"
   [ "$status" -eq 0 ]
-  echo "$output" | jq -e '.impacted_surfaces == [".github/workflows/pr-review.yml"]'
-  echo "$output" | jq -e '[.impacted_consumers[].repo] == ["petry-projects/alpha", "petry-projects/bravo"]'
-  echo "$output" | jq -e '.impacted_consumers[] | select(.repo == "petry-projects/alpha") | .via == [".github/workflows/pr-review.yml"]'
-  echo "$output" | jq -e '.unmatched == []'
+  printf '%s\n' "$output" | jq -e '.impacted_surfaces == [".github/workflows/pr-review.yml"]'
+  printf '%s\n' "$output" | jq -e '[.impacted_consumers[].repo] == ["petry-projects/alpha", "petry-projects/bravo"]'
+  printf '%s\n' "$output" | jq -e '.impacted_consumers[] | select(.repo == "petry-projects/alpha") | .via == [".github/workflows/pr-review.yml"]'
+  printf '%s\n' "$output" | jq -e '.unmatched == []'
 }
 
 @test "direct change to the other reusable maps to a different consumer set" {
   run compute_downstream_impact ".github/workflows/dev-lead-reusable.yml" "$MANIFEST"
   [ "$status" -eq 0 ]
-  echo "$output" | jq -e '.impacted_surfaces == [".github/workflows/dev-lead-reusable.yml"]'
-  echo "$output" | jq -e '[.impacted_consumers[].repo] == ["petry-projects/alpha", "petry-projects/charlie"]'
+  printf '%s\n' "$output" | jq -e '.impacted_surfaces == [".github/workflows/dev-lead-reusable.yml"]'
+  printf '%s\n' "$output" | jq -e '[.impacted_consumers[].repo] == ["petry-projects/alpha", "petry-projects/charlie"]'
 }
 
 # ---------------------------------------------------------------------------
@@ -45,9 +45,9 @@ setup() {
 @test "scripts/lib change maps via surface_sources to its reusable and consumers" {
   run compute_downstream_impact "scripts/lib/ci-status.sh" "$MANIFEST"
   [ "$status" -eq 0 ]
-  echo "$output" | jq -e '.impacted_surfaces == [".github/workflows/pr-review.yml"]'
-  echo "$output" | jq -e '[.impacted_consumers[].repo] == ["petry-projects/alpha", "petry-projects/bravo"]'
-  echo "$output" | jq -e '.unmatched == []'
+  printf '%s\n' "$output" | jq -e '.impacted_surfaces == [".github/workflows/pr-review.yml"]'
+  printf '%s\n' "$output" | jq -e '[.impacted_consumers[].repo] == ["petry-projects/alpha", "petry-projects/bravo"]'
+  printf '%s\n' "$output" | jq -e '.unmatched == []'
 }
 
 # ---------------------------------------------------------------------------
@@ -57,8 +57,8 @@ setup() {
 @test "prompts change maps via surface_sources to its reusable and consumers" {
   run compute_downstream_impact "prompts/dev-lead/fix-ci.md" "$MANIFEST"
   [ "$status" -eq 0 ]
-  echo "$output" | jq -e '.impacted_surfaces == [".github/workflows/dev-lead-reusable.yml"]'
-  echo "$output" | jq -e '[.impacted_consumers[].repo] == ["petry-projects/alpha", "petry-projects/charlie"]'
+  printf '%s\n' "$output" | jq -e '.impacted_surfaces == [".github/workflows/dev-lead-reusable.yml"]'
+  printf '%s\n' "$output" | jq -e '[.impacted_consumers[].repo] == ["petry-projects/alpha", "petry-projects/charlie"]'
 }
 
 # ---------------------------------------------------------------------------
@@ -69,17 +69,17 @@ setup() {
   run compute_downstream_impact "README.md
 docs/architecture.md" "$MANIFEST"
   [ "$status" -eq 0 ]
-  echo "$output" | jq -e '.impacted_surfaces == []'
-  echo "$output" | jq -e '.impacted_consumers == []'
-  echo "$output" | jq -e '.unmatched == ["README.md", "docs/architecture.md"] or .unmatched == ["docs/architecture.md", "README.md"]'
+  printf '%s\n' "$output" | jq -e '.impacted_surfaces == []'
+  printf '%s\n' "$output" | jq -e '.impacted_consumers == []'
+  printf '%s\n' "$output" | jq -e '.unmatched == ["README.md", "docs/architecture.md"] or .unmatched == ["docs/architecture.md", "README.md"]'
 }
 
 @test "a scripts/lib file not listed in any surface_sources is no-impact" {
   run compute_downstream_impact "scripts/lib/git-identity.sh" "$MANIFEST"
   [ "$status" -eq 0 ]
-  echo "$output" | jq -e '.impacted_surfaces == []'
-  echo "$output" | jq -e '.impacted_consumers == []'
-  echo "$output" | jq -e '.unmatched == ["scripts/lib/git-identity.sh"]'
+  printf '%s\n' "$output" | jq -e '.impacted_surfaces == []'
+  printf '%s\n' "$output" | jq -e '.impacted_consumers == []'
+  printf '%s\n' "$output" | jq -e '.unmatched == ["scripts/lib/git-identity.sh"]'
 }
 
 # ---------------------------------------------------------------------------
@@ -90,29 +90,29 @@ docs/architecture.md" "$MANIFEST"
   # scripts/lib/review-cycle.sh is listed under BOTH reusables in surface_sources.
   run compute_downstream_impact "scripts/lib/review-cycle.sh" "$MANIFEST"
   [ "$status" -eq 0 ]
-  echo "$output" | jq -e '.impacted_surfaces == [".github/workflows/dev-lead-reusable.yml", ".github/workflows/pr-review.yml"]'
-  echo "$output" | jq -e '[.impacted_consumers[].repo] == ["petry-projects/alpha", "petry-projects/bravo", "petry-projects/charlie"]'
+  printf '%s\n' "$output" | jq -e '.impacted_surfaces == [".github/workflows/dev-lead-reusable.yml", ".github/workflows/pr-review.yml"]'
+  printf '%s\n' "$output" | jq -e '[.impacted_consumers[].repo] == ["petry-projects/alpha", "petry-projects/bravo", "petry-projects/charlie"]'
   # alpha pins both reusables -> via lists both surfaces.
-  echo "$output" | jq -e '.impacted_consumers[] | select(.repo == "petry-projects/alpha") | .via == [".github/workflows/dev-lead-reusable.yml", ".github/workflows/pr-review.yml"]'
+  printf '%s\n' "$output" | jq -e '.impacted_consumers[] | select(.repo == "petry-projects/alpha") | .via == [".github/workflows/dev-lead-reusable.yml", ".github/workflows/pr-review.yml"]'
   # bravo only pins pr-review.yml.
-  echo "$output" | jq -e '.impacted_consumers[] | select(.repo == "petry-projects/bravo") | .via == [".github/workflows/pr-review.yml"]'
+  printf '%s\n' "$output" | jq -e '.impacted_consumers[] | select(.repo == "petry-projects/bravo") | .via == [".github/workflows/pr-review.yml"]'
   # charlie only pins dev-lead-reusable.yml.
-  echo "$output" | jq -e '.impacted_consumers[] | select(.repo == "petry-projects/charlie") | .via == [".github/workflows/dev-lead-reusable.yml"]'
+  printf '%s\n' "$output" | jq -e '.impacted_consumers[] | select(.repo == "petry-projects/charlie") | .via == [".github/workflows/dev-lead-reusable.yml"]'
 }
 
 @test "changed list mixing an impacting and a non-impacting path reports both correctly" {
   run compute_downstream_impact ".github/workflows/pr-review.yml
 docs/notes.md" "$MANIFEST"
   [ "$status" -eq 0 ]
-  echo "$output" | jq -e '.impacted_surfaces == [".github/workflows/pr-review.yml"]'
-  echo "$output" | jq -e '.unmatched == ["docs/notes.md"]'
+  printf '%s\n' "$output" | jq -e '.impacted_surfaces == [".github/workflows/pr-review.yml"]'
+  printf '%s\n' "$output" | jq -e '.unmatched == ["docs/notes.md"]'
 }
 
 @test "duplicate changed paths are de-duplicated" {
   run compute_downstream_impact "scripts/lib/ci-status.sh
 scripts/lib/ci-status.sh" "$MANIFEST"
   [ "$status" -eq 0 ]
-  echo "$output" | jq -e '.impacted_surfaces == [".github/workflows/pr-review.yml"]'
+  printf '%s\n' "$output" | jq -e '.impacted_surfaces == [".github/workflows/pr-review.yml"]'
 }
 
 # ---------------------------------------------------------------------------
@@ -122,19 +122,19 @@ scripts/lib/ci-status.sh" "$MANIFEST"
 @test "empty changed-file list yields an empty, well-formed object" {
   run compute_downstream_impact "" "$MANIFEST"
   [ "$status" -eq 0 ]
-  echo "$output" | jq -e '.impacted_surfaces == [] and .impacted_consumers == [] and .unmatched == []'
+  printf '%s\n' "$output" | jq -e '.impacted_surfaces == [] and .impacted_consumers == [] and .unmatched == []'
 }
 
 @test "missing argument yields an empty, well-formed object" {
   run compute_downstream_impact
   [ "$status" -eq 0 ]
-  echo "$output" | jq -e '.impacted_surfaces == [] and .impacted_consumers == [] and .unmatched == []'
+  printf '%s\n' "$output" | jq -e '.impacted_surfaces == [] and .impacted_consumers == [] and .unmatched == []'
 }
 
 @test "a non-existent manifest path degrades to an empty object" {
   run compute_downstream_impact ".github/workflows/pr-review.yml" "/no/such/manifest.json"
   [ "$status" -eq 0 ]
-  echo "$output" | jq -e '.impacted_surfaces == [] and .impacted_consumers == []'
+  printf '%s\n' "$output" | jq -e '.impacted_surfaces == [] and .impacted_consumers == []'
 }
 
 @test "a malformed manifest degrades to an empty object, not an error" {
@@ -142,7 +142,7 @@ scripts/lib/ci-status.sh" "$MANIFEST"
   printf '{ "providers": [".github",,] ' > "$bad"
   run compute_downstream_impact ".github/workflows/pr-review.yml" "$bad"
   [ "$status" -eq 0 ]
-  echo "$output" | jq -e '.impacted_surfaces == [] and .impacted_consumers == []'
+  printf '%s\n' "$output" | jq -e '.impacted_surfaces == [] and .impacted_consumers == []'
 }
 
 @test "a manifest missing keys still yields a well-formed object" {
@@ -150,11 +150,11 @@ scripts/lib/ci-status.sh" "$MANIFEST"
   printf '{}' > "$empty"
   run compute_downstream_impact ".github/workflows/pr-review.yml" "$empty"
   [ "$status" -eq 0 ]
-  echo "$output" | jq -e '.impacted_surfaces == [] and .impacted_consumers == [] and .unmatched == [".github/workflows/pr-review.yml"]'
+  printf '%s\n' "$output" | jq -e '.impacted_surfaces == [] and .impacted_consumers == [] and .unmatched == [".github/workflows/pr-review.yml"]'
 }
 
 @test "output is always single well-formed JSON object on every path" {
   run compute_downstream_impact "scripts/lib/review-cycle.sh" "$MANIFEST"
   [ "$status" -eq 0 ]
-  echo "$output" | jq -e 'type == "object" and has("impacted_surfaces") and has("impacted_consumers") and has("unmatched")'
+  printf '%s\n' "$output" | jq -e 'type == "object" and has("impacted_surfaces") and has("impacted_consumers") and has("unmatched")'
 }
