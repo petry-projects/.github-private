@@ -37,14 +37,27 @@ enumeration. No actions on other PRs.
    these are the advisory bot findings the gate waited for. Weigh them in your review.
 3. `gh pr view "$PR_URL" --json number,title,body,author,isDraft,baseRefName,headRefName,headRefOid,url,headRepository,headRepositoryOwner,labels,reviewDecision,mergeable,mergeStateStatus,statusCheckRollup,reviewRequests,reviews,comments,commits,closingIssuesReferences,additions,deletions,changedFiles,files`
 4. `gh pr diff "$PR_URL"` — read the diff.
-5. Fetch linked issues if any.
-6. Check `statusCheckRollup` for CI status.
+5. **Secret scan (MCP, when available).** If the `run_secret_scanning` MCP tool
+   is available (it is exposed only when GitHub Secret Protection is enabled for
+   this repo), call `mcp__github__run_secret_scanning` with this PR's `owner` and
+   `repo` and `files` set to the **added/modified content** from the diff — one
+   array entry per changed file. This runs GitHub's validated secret detectors
+   (500+ providers, with on/off-by validity signals) and complements — does not
+   replace — the gitleaks CI check.
+   - Treat any returned finding as **HIGH / `critical`** and **blocking**: record
+     the secret type, file, and line in `findings`, set `risk: HIGH`, and escalate.
+   - If the tool is not available, or it errors (e.g. auth/entitlement), state
+     that in one line and continue the normal review. **Never** fail or block a
+     review because MCP was unavailable, and never fabricate a scan result.
+6. Fetch linked issues if any.
+7. Check `statusCheckRollup` for CI status.
 
 ## Risk classification
 
 Same taxonomy as shared.md:
 
 ### HIGH → escalate to security audit (Tier 3)
+- A verified secret reported by `run_secret_scanning` (MCP) — always blocking
 - Auth/secrets/credentials/crypto/tokens/`.env*`
 - DB migrations/schema changes
 - Security anti-patterns (injection, eval, shell=True, hardcoded secrets, etc.)
