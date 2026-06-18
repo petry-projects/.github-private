@@ -43,6 +43,9 @@ set -euo pipefail
 # Env overrides:
 #   EVAL_ENGINE_CMD   skill-under-test command, invoked as `<cmd> <prompt_file>` (default: run_triage)
 #   EVAL_JUDGE_CMD    llm-judge command, invoked as `<cmd> <prompt_file>` (default: run_triage)
+#   SKILL_PROMPT_FILE skill markdown to score (default: prompts/<skill>.md). The
+#                     strict-improvement gate (#586) sets this to an incumbent or
+#                     candidate file to score either against the same held-out set.
 #   EVALS_DIR         held-out cases root (default: <repo>/evals); read-only
 #   TOKEN_LOG_FILE    optional per-call token capture (honored by engine.sh; unset = zero overhead)
 #
@@ -73,7 +76,11 @@ skill="${1:-}"
 [ -n "$skill" ] || die "usage: run-eval.sh <skill>"
 
 cases_file="$EVALS_DIR/$skill/holdout/cases.jsonl"
-prompt_file_base="$REPO_ROOT/prompts/$skill.md"
+# The skill markdown defaults to prompts/<skill>.md, but the strict-improvement
+# gate (#586) scores an arbitrary incumbent/candidate file against the SAME
+# held-out set — so SKILL_PROMPT_FILE overrides which file is scored while the
+# cases stay fixed. Held-out cases remain read-only regardless of the override.
+prompt_file_base="${SKILL_PROMPT_FILE:-$REPO_ROOT/prompts/$skill.md}"
 [ -f "$cases_file" ] || die "no cases for skill '$skill' (expected $cases_file)"
 [ -f "$prompt_file_base" ] || die "no skill prompt for '$skill' (expected $prompt_file_base)"
 
