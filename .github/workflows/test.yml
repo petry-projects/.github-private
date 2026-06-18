@@ -22,7 +22,12 @@ jobs:
         run: bash tests/test_list_prs_sort.sh
 
       - name: Install test dependencies
-        run: pip install pyyaml
+        run: |
+          pip install pyyaml
+          sudo apt-get update && sudo apt-get install -y yq
+
+      - name: Run sonarcloud workflow tests
+        run: bash tests/test_sonarcloud_workflow.sh
 
       - name: Run copilot-setup-steps workflow tests
         run: bash tests/test_copilot_setup_steps.sh
