@@ -130,25 +130,15 @@ fi
 # ---------------------------------------------------------------------------
 # 4. Build report
 # ---------------------------------------------------------------------------
-[ -n "${GITHUB_ENV:-}" ] && {
-  if [ "$failed_runs" -gt 0 ]; then
-    echo "HAS_FAILURES=true" >> "$GITHUB_ENV"
-  else
-    echo "HAS_FAILURES=false" >> "$GITHUB_ENV"
-  fi
-}
-
 RUNS_SUMMARY=$(echo "$runs_json" | jq -r '
   sort_by(.run_number) | reverse
   | map("#\(.run_number) \(.conclusion // .status) @ \(.created_at)")
   | join("\n")
 ')
-LOG_DIR="${LOG_DIR:-}"
 
 logs_file=$(mktemp)
 # One jq pass over failed runs; append each log file in the same order
 while IFS=$'\t' read -r run_id run_meta; do
-  [ -n "$LOG_DIR" ] || continue
   log_file="${LOG_DIR}/run_${run_id}.txt"
   [ -f "$log_file" ] || continue
   {
