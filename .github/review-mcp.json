@@ -2,9 +2,11 @@
   "mcpServers": {
     "github": {
       "type": "http",
-      "url": "https://api.githubcopilot.com/mcp/x/secret_protection/readonly",
+      "url": "https://api.githubcopilot.com/mcp/",
       "headers": {
-        "Authorization": "Bearer ${GH_TOKEN}"
+        "Authorization": "Bearer ${GH_TOKEN}",
+        "X-MCP-Toolsets": "secret_protection",
+        "X-MCP-Tools": "run_secret_scanning"
       }
     }
   }
