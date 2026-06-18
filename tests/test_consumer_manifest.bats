@@ -126,3 +126,33 @@ JSON
   run_validator "$FIXTURE"
   [ "$status" -eq 0 ]
 }
+
+# ---------------------------------------------------------------------------
+# Consumer refs must reference a declared provider
+# ---------------------------------------------------------------------------
+
+@test "consumer ref not matching a declared provider fails validation" {
+  jq '.consumers = [{"repo": "petry-projects/foo", "refs": ["not-a-provider/.github/workflows/foo.yml"]}]' \
+    "$MANIFEST" > "$FIXTURE"
+  run_validator "$FIXTURE"
+  [ "$status" -ne 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# Path traversal in surface_sources is rejected
+# ---------------------------------------------------------------------------
+
+@test "surface_sources key with path traversal is rejected" {
+  jq '.surface_sources = {".github/workflows/../../scripts/lib/auto-merge.sh": []}' \
+    "$MANIFEST" > "$FIXTURE"
+  run_validator "$FIXTURE"
+  [ "$status" -ne 0 ]
+}
+
+@test "surface_sources value with path traversal is rejected" {
+  # scripts/lib/*.sh glob matches this path, but realpath resolves it outside scripts/lib/
+  jq '.surface_sources = {".github/workflows/pr-review.yml": ["scripts/lib/../../scripts/engine.sh"]}' \
+    "$MANIFEST" > "$FIXTURE"
+  run_validator "$FIXTURE"
+  [ "$status" -ne 0 ]
+}

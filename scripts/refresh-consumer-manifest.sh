@@ -31,8 +31,22 @@ DRY_RUN=0
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --manifest) MANIFEST="${2:?--manifest needs a value}"; shift 2 ;;
-    --org)      ORG="${2:?--org needs a value}"; shift 2 ;;
+    --manifest)
+      if [ "$#" -lt 2 ]; then
+        echo "refresh-consumer-manifest: --manifest requires a value" >&2
+        exit 2
+      fi
+      MANIFEST="$2"
+      shift 2
+      ;;
+    --org)
+      if [ "$#" -lt 2 ]; then
+        echo "refresh-consumer-manifest: --org requires a value" >&2
+        exit 2
+      fi
+      ORG="$2"
+      shift 2
+      ;;
     --dry-run)  DRY_RUN=1; shift ;;
     -h|--help)
       grep '^#' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
@@ -45,6 +59,12 @@ done
 
 command -v gh >/dev/null 2>&1 || { echo "refresh-consumer-manifest: gh CLI not found" >&2; exit 1; }
 command -v jq >/dev/null 2>&1 || { echo "refresh-consumer-manifest: jq not found" >&2; exit 1; }
+
+# Verify GH CLI authentication and access to the organization
+if ! gh api "orgs/$ORG" >/dev/null 2>&1; then
+  echo "refresh-consumer-manifest: error: cannot access organization '$ORG'. Please check your GH_TOKEN / authentication." >&2
+  exit 1
+fi
 
 # Preserve providers + surface_sources from the existing manifest; default to the
 # fixed provider list (#653) when no manifest exists yet.
@@ -64,29 +84,39 @@ providers_alt=$(printf '%s' "$providers_json" \
   | paste -sd'|' -)
 
 pairs_file="$(mktemp)"
-trap 'rm -f "$pairs_file"' EXIT
+repos_file="$(mktemp)"
+trap 'rm -f "$pairs_file" "$repos_file"' EXIT
 
-# Enumerate every repo in the org and scan its workflow files for `uses:`
-# references to a provider reusable workflow. Each detection is recorded as a
-# "<repo>\t<provider>/.github/workflows/<name>.yml" line.
+# Enumerate all repos in the org using pagination (no 500-item cap).
+if ! gh api "orgs/$ORG/repos" --paginate --jq '.[].full_name' > "$repos_file"; then
+  echo "refresh-consumer-manifest: error: failed to list repositories for org '$ORG'" >&2
+  exit 1
+fi
+
+# Scan each repo's workflow files for `uses:` references to a provider reusable
+# workflow. Each detection is recorded as a "<repo>\t<provider>/.github/workflows/<name>.yml" line.
 while IFS= read -r repo; do
   [ -n "$repo" ] || continue
   while IFS= read -r wf_path; do
     [ -n "$wf_path" ] || continue
     case "$wf_path" in *.yml|*.yaml) : ;; *) continue ;; esac
-    content=$(gh api "repos/$repo/contents/$wf_path" --jq '.content' 2>/dev/null \
-      | base64 -d 2>/dev/null || true)
+    content_b64=$(gh api "repos/$repo/contents/$wf_path" --jq '.content' 2>/dev/null || true)
+    if [ -n "$content_b64" ] && [ "$content_b64" != "null" ]; then
+      content=$(printf '%s' "$content_b64" | tr -d '\r\n' | jq -Rr '@base64d' 2>/dev/null || true)
+    else
+      content=""
+    fi
     [ -n "$content" ] || continue
     matches=$(printf '%s\n' "$content" \
-      | grep -oE "petry-projects/(${providers_alt})/\.github/workflows/[A-Za-z0-9_.-]+\.yml" \
-      | sed 's#^petry-projects/##' || true)
+      | grep -oE "${ORG}/(${providers_alt})/\.github/workflows/[A-Za-z0-9_.-]+\.yml" \
+      | sed "s#^${ORG}/##" || true)
     [ -n "$matches" ] || continue
     while IFS= read -r ref; do
       [ -n "$ref" ] || continue
       printf '%s\t%s\n' "$repo" "$ref" >> "$pairs_file"
     done <<< "$matches"
   done < <(gh api "repos/$repo/contents/.github/workflows" --jq '.[].path' 2>/dev/null || true)
-done < <(gh repo list "$ORG" --limit 500 --json nameWithOwner --jq '.[].nameWithOwner' 2>/dev/null || true)
+done < "$repos_file"
 
 # Group detections into the consumers array: one entry per repo with sorted,
 # de-duplicated refs. group_by sorts by repo, giving a stable order.

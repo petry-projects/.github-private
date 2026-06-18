@@ -32,8 +32,22 @@ REPO_ROOT="${MANIFEST_REPO_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --manifest)  MANIFEST="${2:?--manifest needs a value}"; shift 2 ;;
-    --repo-root) REPO_ROOT="${2:?--repo-root needs a value}"; shift 2 ;;
+    --manifest)
+      if [ "$#" -lt 2 ]; then
+        echo "validate-consumer-manifest: --manifest requires a value" >&2
+        exit 2
+      fi
+      MANIFEST="$2"
+      shift 2
+      ;;
+    --repo-root)
+      if [ "$#" -lt 2 ]; then
+        echo "validate-consumer-manifest: --repo-root requires a value" >&2
+        exit 2
+      fi
+      REPO_ROOT="$2"
+      shift 2
+      ;;
     -h|--help)
       grep '^#' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
       exit 0 ;;
@@ -60,13 +74,15 @@ fi
 #    consumers = array of {repo: string, refs: [string]}
 #    surface_sources = object whose values are arrays of strings
 schema_ok=$(jq -r '
+  . as $manifest |
   def is_str_array: type == "array" and (all(.[]; type == "string"));
-  ( (.providers | type == "array" and length > 0 and is_str_array)
-    and (.consumers | type == "array"
+  def valid_ref: . as $ref | $manifest.providers | any(. as $p | ($ref | startswith($p + "/")));
+  ( ($manifest.providers | type == "array" and length > 0 and is_str_array)
+    and ($manifest.consumers | type == "array"
          and all(.[]; type == "object"
                  and (.repo | type == "string")
-                 and (.refs | is_str_array)))
-    and (.surface_sources | type == "object"
+                 and (.refs | is_str_array and all(.[]; valid_ref))))
+    and ($manifest.surface_sources | type == "object"
          and all(.[]; is_str_array))
   )
 ' "$MANIFEST" 2>/dev/null || echo "false")
@@ -78,17 +94,28 @@ fi
 
 # 3. surface_sources keys must be existing reusable-workflow paths in this repo;
 #    their values must be existing scripts/lib/*.sh or prompts/* paths in this repo.
+#    Paths are resolved via realpath to prevent traversal sequences from escaping
+#    their intended root directories.
+wf_root=$(realpath -m "$REPO_ROOT/.github/workflows")
+lib_root=$(realpath -m "$REPO_ROOT/scripts/lib")
+prompts_root=$(realpath -m "$REPO_ROOT/prompts")
+
 while IFS= read -r key; do
   [ -n "$key" ] || continue
   case "$key" in
     .github/workflows/*) : ;;
     *) err "surface_sources key is not under .github/workflows/: $key"; continue ;;
   esac
-  if [ ! -f "$REPO_ROOT/$key" ]; then
+  resolved=$(realpath -m "$REPO_ROOT/$key")
+  if [ "${resolved#"${wf_root}/"}" = "$resolved" ]; then
+    err "surface_sources key contains path traversal: $key"
+    continue
+  fi
+  if [ ! -f "$resolved" ]; then
     err "surface_sources key is not an existing reusable-workflow path: $key"
     continue
   fi
-  if ! grep -q 'workflow_call' "$REPO_ROOT/$key"; then
+  if ! grep -q 'workflow_call' "$resolved"; then
     err "surface_sources key is not a reusable workflow (no workflow_call): $key"
   fi
 done < <(jq -r '.surface_sources | keys[]' "$MANIFEST")
@@ -101,7 +128,12 @@ while IFS= read -r value; do
       err "surface_sources value is not a scripts/lib/*.sh or prompts/* path: $value"
       continue ;;
   esac
-  if [ ! -f "$REPO_ROOT/$value" ]; then
+  resolved=$(realpath -m "$REPO_ROOT/$value")
+  if [ "${resolved#"${lib_root}/"}" = "$resolved" ] && [ "${resolved#"${prompts_root}/"}" = "$resolved" ]; then
+    err "surface_sources value contains path traversal: $value"
+    continue
+  fi
+  if [ ! -f "$resolved" ]; then
     err "surface_sources value points at a non-existent local surface: $value"
   fi
 done < <(jq -r '.surface_sources | to_entries[] | .value[]' "$MANIFEST")
