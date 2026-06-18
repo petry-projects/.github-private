@@ -21,6 +21,11 @@ to approve or escalate further to the security auditor (Tier 3).
 - `$ADVISORY_BOT_FEEDBACK_FILE` — path to a file containing advisory bot review
   bodies and inline comments (Gemini, Copilot, SonarCloud, Codex) at the current
   head. Read and incorporate these findings — the gate waited for this feedback.
+- `$DOWNSTREAM_IMPACT_FILE` — (optional; set only when the downstream-impact pass
+  is enabled) path to a file containing the `DOWNSTREAM_IMPACT` block: the
+  downstream consumer repos that pin a reusable workflow / shell lib / prompt this
+  PR changes. May be the literal `(none)`. This is an **informational signal** —
+  annotate the impacted consumers; it is NOT an auto-escalation trigger.
 
 ## Scope
 
@@ -35,6 +40,13 @@ enumeration. No actions on other PRs.
    review on those signals.
 2. If `$ADVISORY_BOT_FEEDBACK_FILE` is set and the file exists, read it now —
    these are the advisory bot findings the gate waited for. Weigh them in your review.
+   Likewise, if `$DOWNSTREAM_IMPACT_FILE` is set and the file exists and its
+   contents are not `(none)`, read it: it lists the downstream consumer repos
+   that pin a shared surface this PR changes. Weigh it as an informational
+   signal — note the impacted consumers in your `summary` (so the verdict can
+   surface them), and escalate ONLY if the change is independently risky per the
+   taxonomy below (e.g. an interface-breaking edit to a consumed surface).
+   Downstream impact alone — even with many consumers — is not a reason to escalate.
 3. `gh pr view "$PR_URL" --json number,title,body,author,isDraft,baseRefName,headRefName,headRefOid,url,headRepository,headRepositoryOwner,labels,reviewDecision,mergeable,mergeStateStatus,statusCheckRollup,reviewRequests,reviews,comments,commits,closingIssuesReferences,additions,deletions,changedFiles,files`
 4. `gh pr diff "$PR_URL"` — read the diff.
 5. **Secret scan (MCP, when available).** If the `run_secret_scanning` MCP tool
