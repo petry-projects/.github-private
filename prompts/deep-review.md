@@ -40,12 +40,15 @@ enumeration. No actions on other PRs.
 5. **Secret scan (MCP, when available).** If the `run_secret_scanning` MCP tool
    is available (it is exposed only when GitHub Secret Protection is enabled for
    this repo), call `mcp__github__run_secret_scanning` with this PR's `owner` and
-   `repo` and `files` set to the **added/modified content** from the diff — one
-   array entry per changed file. This runs GitHub's validated secret detectors
-   (500+ providers, with on/off-by validity signals) and complements — does not
-   replace — the gitleaks CI check.
-   - Treat any returned finding as **HIGH / `critical`** and **blocking**: record
-     the secret type, file, and line in `findings`, set `risk: HIGH`, and escalate.
+   `repo` and `files` set to the **raw added/modified content** from the diff.
+   Per the tool's schema, `files` is a single string or an **array of strings**
+   (raw file contents or diff hunks — *not* file paths, and *not* objects); pass
+   one array entry per changed file. This runs GitHub's validated secret
+   detectors (500+ providers, with on/off validity signals) and complements —
+   does not replace — the gitleaks CI check.
+   - Treat any returned finding as **HIGH** and **blocking**: append it to
+     `findings` with `severity: "critical"` and `category: "secret"` (note the
+     secret type, file, and line in `message`), set `risk: HIGH`, and escalate.
    - If the tool is not available, or it errors (e.g. auth/entitlement), state
      that in one line and continue the normal review. **Never** fail or block a
      review because MCP was unavailable, and never fabricate a scan result.
