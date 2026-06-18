@@ -30,6 +30,16 @@ set -euo pipefail
 REVIEW_ENGINE="${REVIEW_ENGINE:-claude}"
 export REVIEW_ENGINE
 
+# Cross-engine rubber-duck model (issue #773). The duck deliberately routes to
+# Copilot/o4-mini even when the primary engine is NOT copilot (e.g. the default
+# claude engine sets DUCK_ENGINE=copilot for adversarial diversity), so
+# copilot_chat() may dereference COPILOT_API_MODEL regardless of REVIEW_ENGINE.
+# Default it here — engine-agnostic — so the duck always has a model under
+# `set -u`. The `copilot)` arm in set_engine_config re-applies the same default
+# (idempotent) for the primary-engine path.
+COPILOT_API_MODEL="${COPILOT_API_MODEL:-openai/o4-mini}"
+export COPILOT_API_MODEL
+
 # Per-tier timeouts (seconds). The job-level 60min cap is a backstop — without
 # per-tier timeouts a single hung model invocation burns the whole hour and
 # blocks every subsequent PR in the session.
