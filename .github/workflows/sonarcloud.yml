@@ -32,4 +32,5 @@ jobs:
         uses: SonarSource/sonarqube-scan-action@713881670b6b3676cda39549040e2d88c70d582e # v8.2.0
         with:
           args: >
+            -Dsonar.scanner.skipJreProvisioning=true
             -Dsonar.scanner.javaExePath=${{ steps.setup_java.outputs.path }}/bin/java
