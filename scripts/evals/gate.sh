@@ -68,11 +68,13 @@ fi
 # and failure for the latter, so the caller can `|| die` at top level (keeping the
 # ::error:: annotation on real stdout rather than swallowed in a substitution).
 run_scorer() {
-  local skill_file="$1" out rc
-  set +e
-  out="$(SKILL_PROMPT_FILE="$skill_file" bash "$SCORER" "$skill")"
-  rc=$?
-  set -e
+  local skill_file="$1" rc
+  local out
+  if out="$(SKILL_PROMPT_FILE="$skill_file" bash "$SCORER" "$skill")"; then
+    rc=0
+  else
+    rc=$?
+  fi
   printf '%s' "$out"
   [ "$rc" -le 1 ]
 }
