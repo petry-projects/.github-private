@@ -157,7 +157,7 @@ _downstream_referencing_files() {
     [ -n "$content" ] || continue
     while IFS= read -r surface; do
       [ -n "$surface" ] || continue
-      if printf '%s\n' "$content" | grep -qF -- "$surface"; then
+      if [[ "$content" == *"$surface"* ]]; then
         printf '%s\n' "$wf"
         break
       fi
@@ -228,13 +228,12 @@ assemble_downstream_impact() {
   consumers=$(printf '%s' "$impact" \
     | jq -c --argjson n "$max_repos" '.impacted_consumers[0:$n][]?' 2>/dev/null) || consumers=''
 
-  local entry repo via_surfaces files rc
+  local entry repo via_surfaces files rc via_inline
   while IFS= read -r entry; do
     [ -n "$entry" ] || continue
     repo=$(printf '%s' "$entry" | jq -r '.repo' 2>/dev/null) || continue
     via_surfaces=$(printf '%s' "$entry" | jq -r '.via[]?' 2>/dev/null)
-    local via_inline
-    via_inline=$(printf '%s' "$via_surfaces" | paste -sd',' - 2>/dev/null)
+    via_inline="${via_surfaces//$'\n'/,}"
     block+="  - $repo (pins $via_inline)"$'\n'
 
     rc=0
