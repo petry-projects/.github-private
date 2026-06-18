@@ -37,7 +37,8 @@ export REVIEW_ENGINE
 # Default it here — engine-agnostic — so the duck always has a model under
 # `set -u`. The `copilot)` arm in set_engine_config re-applies the same default
 # (idempotent) for the primary-engine path.
-COPILOT_API_MODEL="${COPILOT_API_MODEL:-openai/o4-mini}"
+DEFAULT_COPILOT_API_MODEL="openai/o4-mini"
+COPILOT_API_MODEL="${COPILOT_API_MODEL:-$DEFAULT_COPILOT_API_MODEL}"
 export COPILOT_API_MODEL
 
 # Per-tier timeouts (seconds). The job-level 60min cap is a backstop — without

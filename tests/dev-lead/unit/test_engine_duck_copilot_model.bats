@@ -50,8 +50,8 @@ STUB
 }
 
 teardown() {
-  rm -f "$GITHUB_ENV" "$GITHUB_OUTPUT" "$TEST_PROMPT" "$GH_MODEL_RECORD"
-  rm -rf "$STUB_BIN_DIR"
+  rm -f "${GITHUB_ENV:-}" "${GITHUB_OUTPUT:-}" "${TEST_PROMPT:-}" "${GH_MODEL_RECORD:-}"
+  rm -rf "${STUB_BIN_DIR:-}"
   unset COPILOT_API_MODEL
 }
 
