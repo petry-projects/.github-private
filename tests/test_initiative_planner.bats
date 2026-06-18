@@ -379,5 +379,5 @@ teardown() { rm -rf "$TMP"; }
     DISCUSSION_NUMBER=999 DISCUSSION_NODE_ID="D_test" PLAN_PATH="$TMP/no_src.json" \
     run bash "$PLANNER_DIR/apply-reviewed-plan.sh"
   [ "$status" -ne 0 ]
-  [ "$(grep -c '"op":"create_issue"' "$LOG")" -eq 0 ]
+  [ ! -s "$LOG" ] || [ "$(grep -c '"op":"create_issue"' "$LOG")" -eq 0 ]
 }
