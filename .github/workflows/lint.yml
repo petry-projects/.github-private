@@ -69,7 +69,8 @@ jobs:
             tests/test_skill_evals.bats \
             tests/test_holdout_guard.bats \
             tests/test_skill_eval_report.bats \
-            tests/test_eval_health_notify.bats
+            tests/test_eval_health_notify.bats \
+            tests/test_consumer_manifest.bats
 
   validate-agent-profiles:
     runs-on: ubuntu-latest

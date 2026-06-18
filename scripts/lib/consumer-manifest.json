@@ -1,0 +1,169 @@
+{
+  "consumers": [
+    {
+      "refs": [
+        ".github-private/.github/workflows/dev-lead-reusable.yml",
+        ".github/.github/workflows/add-to-project-reusable.yml",
+        ".github/.github/workflows/agent-shield-reusable.yml",
+        ".github/.github/workflows/auto-rebase-reusable.yml",
+        ".github/.github/workflows/dependabot-automerge-reusable.yml",
+        ".github/.github/workflows/dependabot-rebase-reusable.yml",
+        ".github/.github/workflows/feature-ideation-reusable.yml",
+        ".github/.github/workflows/pr-auto-review-reusable.yml",
+        ".github/.github/workflows/pr-review-mention-reusable.yml"
+      ],
+      "repo": "petry-projects/.github"
+    },
+    {
+      "refs": [
+        ".github-private/.github/workflows/actions-fleet-monitor.yml",
+        ".github-private/.github/workflows/auto-rebase-health.yml",
+        ".github-private/.github/workflows/ci-failure-analyst-reusable.yml",
+        ".github-private/.github/workflows/dev-lead-reusable.yml",
+        ".github-private/.github/workflows/pr-review.yml",
+        ".github-private/.github/workflows/token-report.yml",
+        ".github/.github/workflows/add-to-project-reusable.yml",
+        ".github/.github/workflows/agent-shield-reusable.yml",
+        ".github/.github/workflows/auto-rebase-reusable.yml",
+        ".github/.github/workflows/dependabot-automerge-reusable.yml",
+        ".github/.github/workflows/dependency-audit-reusable.yml",
+        ".github/.github/workflows/feature-ideation-reusable.yml",
+        ".github/.github/workflows/pr-review-mention-reusable.yml"
+      ],
+      "repo": "petry-projects/.github-private"
+    },
+    {
+      "refs": [
+        ".github-private/.github/workflows/ci-failure-analyst-reusable.yml",
+        ".github-private/.github/workflows/dev-lead-reusable.yml",
+        ".github-private/.github/workflows/pr-review.yml",
+        ".github/.github/workflows/add-to-project-reusable.yml",
+        ".github/.github/workflows/agent-shield-reusable.yml",
+        ".github/.github/workflows/auto-rebase-reusable.yml",
+        ".github/.github/workflows/dependabot-automerge-reusable.yml",
+        ".github/.github/workflows/dependabot-rebase-reusable.yml",
+        ".github/.github/workflows/dependency-audit-reusable.yml",
+        ".github/.github/workflows/pr-auto-review-reusable.yml",
+        ".github/.github/workflows/pr-review-mention-reusable.yml"
+      ],
+      "repo": "petry-projects/ContentTwin"
+    },
+    {
+      "refs": [
+        ".github-private/.github/workflows/ci-failure-analyst-reusable.yml",
+        ".github-private/.github/workflows/dev-lead-reusable.yml",
+        ".github-private/.github/workflows/pr-review-reusable.yml",
+        ".github/.github/workflows/add-to-project-reusable.yml",
+        ".github/.github/workflows/agent-shield-reusable.yml",
+        ".github/.github/workflows/auto-rebase-reusable.yml",
+        ".github/.github/workflows/dependabot-automerge-reusable.yml",
+        ".github/.github/workflows/dependabot-rebase-reusable.yml",
+        ".github/.github/workflows/dependency-audit-reusable.yml",
+        ".github/.github/workflows/feature-ideation-reusable.yml",
+        ".github/.github/workflows/pr-auto-review-reusable.yml",
+        ".github/.github/workflows/pr-review-mention-reusable.yml"
+      ],
+      "repo": "petry-projects/TalkTerm"
+    },
+    {
+      "refs": [
+        ".github-private/.github/workflows/ci-failure-analyst-reusable.yml",
+        ".github-private/.github/workflows/dev-lead-reusable.yml",
+        ".github-private/.github/workflows/pr-review.yml",
+        ".github/.github/workflows/add-to-project-reusable.yml",
+        ".github/.github/workflows/agent-shield-reusable.yml",
+        ".github/.github/workflows/auto-rebase-reusable.yml",
+        ".github/.github/workflows/claude-code-reusable.yml",
+        ".github/.github/workflows/dependabot-automerge-reusable.yml",
+        ".github/.github/workflows/dependabot-rebase-reusable.yml",
+        ".github/.github/workflows/dependency-audit-reusable.yml",
+        ".github/.github/workflows/pr-auto-review-reusable.yml",
+        ".github/.github/workflows/pr-review-mention-reusable.yml"
+      ],
+      "repo": "petry-projects/bmad-bgreat-suite"
+    },
+    {
+      "refs": [
+        ".github-private/.github/workflows/ci-failure-analyst-reusable.yml",
+        ".github-private/.github/workflows/dev-lead-reusable.yml",
+        ".github-private/.github/workflows/pr-review-reusable.yml",
+        ".github/.github/workflows/add-to-project-reusable.yml",
+        ".github/.github/workflows/agent-shield-reusable.yml",
+        ".github/.github/workflows/auto-rebase-reusable.yml",
+        ".github/.github/workflows/dependabot-automerge-reusable.yml",
+        ".github/.github/workflows/dependabot-rebase-reusable.yml",
+        ".github/.github/workflows/dependency-audit-reusable.yml",
+        ".github/.github/workflows/feature-ideation-reusable.yml",
+        ".github/.github/workflows/pr-auto-review-reusable.yml",
+        ".github/.github/workflows/pr-review-mention-reusable.yml"
+      ],
+      "repo": "petry-projects/broodly"
+    },
+    {
+      "refs": [
+        ".github-private/.github/workflows/ci-failure-analyst-reusable.yml",
+        ".github-private/.github/workflows/dev-lead-reusable.yml",
+        ".github-private/.github/workflows/pr-review.yml",
+        ".github/.github/workflows/add-to-project-reusable.yml",
+        ".github/.github/workflows/agent-shield-reusable.yml",
+        ".github/.github/workflows/auto-rebase-reusable.yml",
+        ".github/.github/workflows/dependabot-automerge-reusable.yml",
+        ".github/.github/workflows/dependabot-rebase-reusable.yml",
+        ".github/.github/workflows/dependency-audit-reusable.yml",
+        ".github/.github/workflows/feature-ideation-reusable.yml",
+        ".github/.github/workflows/pr-auto-review-reusable.yml",
+        ".github/.github/workflows/pr-review-mention-reusable.yml"
+      ],
+      "repo": "petry-projects/google-app-scripts"
+    },
+    {
+      "refs": [
+        ".github-private/.github/workflows/ci-failure-analyst-reusable.yml",
+        ".github-private/.github/workflows/dev-lead-reusable.yml",
+        ".github-private/.github/workflows/pr-review.yml",
+        ".github/.github/workflows/add-to-project-reusable.yml",
+        ".github/.github/workflows/agent-shield-reusable.yml",
+        ".github/.github/workflows/auto-rebase-reusable.yml",
+        ".github/.github/workflows/dependabot-automerge-reusable.yml",
+        ".github/.github/workflows/dependabot-rebase-reusable.yml",
+        ".github/.github/workflows/dependency-audit-reusable.yml",
+        ".github/.github/workflows/feature-ideation-reusable.yml",
+        ".github/.github/workflows/pr-auto-review-reusable.yml",
+        ".github/.github/workflows/pr-review-mention-reusable.yml"
+      ],
+      "repo": "petry-projects/markets"
+    }
+  ],
+  "providers": [
+    ".github",
+    ".github-private"
+  ],
+  "surface_sources": {
+    ".github/workflows/dev-lead-reusable.yml": [
+      "prompts/dev-lead/fix-bot-comment.md",
+      "prompts/dev-lead/fix-ci.md",
+      "prompts/dev-lead/fix-issue.md",
+      "prompts/dev-lead/fix-reviews.md",
+      "prompts/dev-lead/on-mention.md",
+      "prompts/dev-lead/rebase.md",
+      "prompts/dev-lead/review-changes.md",
+      "scripts/lib/auto-merge.sh",
+      "scripts/lib/git-identity.sh",
+      "scripts/lib/pr-worktree.sh"
+    ],
+    ".github/workflows/pr-review.yml": [
+      "prompts/cascade-action.md",
+      "prompts/deep-review.md",
+      "prompts/rubber-duck.md",
+      "prompts/security-audit.md",
+      "prompts/single-review.md",
+      "prompts/synthesize-duck.md",
+      "prompts/triage.md",
+      "scripts/lib/advisory-review-gate.sh",
+      "scripts/lib/ci-status.sh",
+      "scripts/lib/review-cycle.sh",
+      "scripts/lib/review-registry.sh",
+      "scripts/lib/token-metrics.sh"
+    ]
+  }
+}
