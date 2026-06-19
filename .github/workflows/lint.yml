@@ -74,7 +74,8 @@ jobs:
             tests/test_consumer_manifest.bats \
             tests/test_downstream_impact_map.bats \
             tests/test_downstream_impact_assemble.bats \
-            tests/test_downstream_impact_triage_inline.bats
+            tests/test_downstream_impact_triage_inline.bats \
+            tests/test_downstream_impact_regression.bats
 
   validate-agent-profiles:
     runs-on: ubuntu-latest
