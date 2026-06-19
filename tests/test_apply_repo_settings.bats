@@ -189,8 +189,7 @@ teardown() {
   export -f gh
   run rs_apply_repo "test-org/myrepo"
   [ "$status" -eq 1 ]
-  [[ "$output" == *"repo"* ]]
-  [[ "$output" == *"scope"* ]]
+  [[ "$output" == *"'repo' scope"* ]]
   [[ "$output" == *"accessible"* ]]
 }
 
