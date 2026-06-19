@@ -64,7 +64,7 @@ rs_apply_repo() {
 
   local prefs
   if ! prefs=$(gh api "repos/${repo}/check-suites/preferences"); then
-    echo "[warn] ${repo}: failed to get check-suite preferences" >&2
+    echo "[warn] ${repo}: could not read check-suite preferences — verify GH_TOKEN has 'repo' scope (classic PAT) and the repo is accessible" >&2
     return 1
   fi
 
