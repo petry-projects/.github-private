@@ -133,11 +133,20 @@ condition = "AND"
 paths = ['''^tests/test_gitleaks_config\.bats$''']
 regexes = ['''eyJhbGciOiJIUzI1NiIs''']
 
-# Engine fallback and fix-issue unit tests use a stub classic-PAT token
-# (ghp_stub) to trigger the engine.sh copilot-skip path (ghp_* prefix →
-# copilot fallback skipped). Each file gets its own allowlist entry (single
-# path per entry) to avoid gitleaks v8 condition="AND" multi-path ambiguity.
-# targetRules pins each entry to the github-pat rule that fires on ghp_* values.
+# Engine fallback and fix-issue unit tests originally used a 40-char classic-PAT-length
+# placeholder "ghp_classicPATplaceholder0000000000000000" in commit eb7fd4c to trigger
+# the copilot-skip path in engine.sh (ghp_* prefix → copilot fallback skipped). Commit
+# 7cbe053 replaced it with the shorter "ghp_stub" (below entropy threshold). This entry
+# suppresses the three historical github-pat findings in eb7fd4c.
+[[allowlists]]
+description = "Suppress classic-PAT-length placeholder in Phase 1 engine-failure tests (commit eb7fd4c)"
+targetRules = ["github-pat"]
+condition = "AND"
+commits = ["eb7fd4c955378d274794e38ee9b942912ce79c6f"]
+regexes = ['''ghp_classicPATplaceholder0000000000000000''']
+
+# The path-based entries below guard against future re-introduction of a ghp_*
+# stub that crosses the entropy threshold; ghp_stub itself is too short to fire.
 [[allowlists]]
 description = "Suppress classic-PAT stub (ghp_stub) in test_engine_fallback.bats"
 targetRules = ["github-pat"]
