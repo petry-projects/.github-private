@@ -273,7 +273,7 @@ GHEOF
   # claude not installed (127); gemini skipped (no key); copilot skipped (classic PAT).
   _make_stub "claude" 127
   unset GEMINI_API_KEY GOOGLE_API_KEY 2>/dev/null || true
-  export COPILOT_GITHUB_TOKEN="ghp_classicPATplaceholder0000000000000000"
+  export COPILOT_GITHUB_TOKEN="ghp_stub"  # ghp_* → copilot fallback is skipped
   _source_engine "claude"
 
   run run_writer_with_fallback "$TEST_PROMPT"
@@ -320,7 +320,7 @@ exit 1
 STUB
   chmod +x "$STUB_BIN_DIR/claude"
   unset GEMINI_API_KEY GOOGLE_API_KEY 2>/dev/null || true
-  export COPILOT_GITHUB_TOKEN="ghp_classicPATplaceholder0000000000000000"
+  export COPILOT_GITHUB_TOKEN="ghp_stub"  # ghp_* → copilot fallback is skipped
   export GITHUB_STEP_SUMMARY="$(mktemp)"
   _source_engine "claude"
 

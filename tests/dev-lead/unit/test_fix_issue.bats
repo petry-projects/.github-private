@@ -482,7 +482,7 @@ GHEOF
   # Skip gemini (no key) and copilot (classic PAT) so the only failure is the
   # missing claude binary → run_writer_with_fallback returns missing-binary.
   unset GEMINI_API_KEY GOOGLE_API_KEY
-  export COPILOT_GITHUB_TOKEN="ghp_classicPATplaceholder0000000000000000"
+  export COPILOT_GITHUB_TOKEN="ghp_stub"  # ghp_* → copilot fallback is skipped
 
   run bash "$FIX_ISSUE_SCRIPT"
 
