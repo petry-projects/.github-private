@@ -38,5 +38,6 @@ setup() {
 }
 
 @test "feature-ideation.yml is not pinned to the superseded v2 SHA" {
+  [ -f "$FEATURE_IDEATION_YML" ]
   ! grep -qF "$V2_SHA" "$FEATURE_IDEATION_YML"
 }
