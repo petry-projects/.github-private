@@ -263,3 +263,35 @@ assemble_downstream_impact() {
   export DOWNSTREAM_IMPACT_FILE="$out_file"
   return 0
 }
+
+# downstream_impact_triage_section [impact_file]
+#   Emits the DOWNSTREAM_IMPACT section that review-one-pr.sh inlines into the
+#   triage prompt (issue #752). Triage has NO tools, so — like ADVISORY_BOT_FEEDBACK
+#   — the block must be inlined as text rather than read from a file path.
+#
+#   <impact_file> : the assembled block written by assemble_downstream_impact
+#                   (default: $DOWNSTREAM_IMPACT_FILE).
+#
+#   Gating (Story 5 cost cap): prints NOTHING unless DOWNSTREAM_IMPACT_ENABLED is
+#   "true", so with the flag off the triage prompt is byte-identical to
+#   pre-feature behavior. With the flag on:
+#     - a non-empty block (not the literal "(none)") is inlined under a header
+#       that frames downstream impact as an informational signal to annotate —
+#       explicitly NOT an auto-escalation trigger (mirrors how ADVISORY findings
+#       are weighed, not auto-escalated);
+#     - a missing/empty/"(none)" block emits a "DOWNSTREAM_IMPACT: (none)" marker
+#       with no consumer list, so triage sees "no downstream impact" and the
+#       verdict carries no downstream note.
+downstream_impact_triage_section() {
+  [ "${DOWNSTREAM_IMPACT_ENABLED:-false}" = "true" ] || return 0
+  local impact_file="${1:-${DOWNSTREAM_IMPACT_FILE:-}}"
+  local block=''
+  if [ -n "$impact_file" ] && [ -f "$impact_file" ]; then
+    block=$(cat "$impact_file")
+  fi
+  if [ -n "${block//[[:space:]]/}" ] && [ "$block" != "(none)" ]; then
+    printf '\nDOWNSTREAM_IMPACT (this change touches a reusable workflow / lib / prompt that downstream repos pin — annotate the impacted consumers below; this is informational, NOT an auto-escalation trigger):\n%s\n' "$block"
+  else
+    printf '\nDOWNSTREAM_IMPACT: (none)\n'
+  fi
+}
