@@ -119,24 +119,39 @@ work_prompt="$(mktemp)"
 work_judge="$(mktemp)"
 trap 'rm -f "$results" "$work_prompt" "$work_judge"' EXIT
 
+# extract_json <raw> — strip markdown code-fence lines so a fenced (```json … ```)
+# or lightly wrapped JSON payload parses as bare JSON. Live Haiku-tier models
+# routinely fence their output despite a "no fences" instruction, which the strict
+# jq parse below would otherwise reject — a null actual for EVERY case (the triage
+# 0/5 production failure, #762). Shared by both scorer modes so they tolerate
+# output identically. `|| true` keeps an all-fence/empty input (grep selects no
+# lines, exit 1) from tripping `set -e`.
+extract_json() { grep -v $'^[[:space:]]*\x60\x60\x60' <<<"$1" || true; }
+
 # score_deterministic <expected_json> <raw_output> <case_id>
 # Equality scorer (triage). Parses the model output; a non-JSON-object output
 # yields a null actual decision (an automatic failure). Every result carries a
 # numeric `score` (1 pass / 0 fail) so the report shape matches the judge mode.
 score_deterministic() {
   local expected="$1" raw="$2" cid="$3"
-  local exp_esc exp_risk actual pass score
+  local exp_esc exp_risk actual pass score cleaned raw_excerpt=""
   exp_esc="$(jq -r '.escalate' <<<"$expected")"
   exp_risk="$(jq -r '.risk' <<<"$expected")"
 
-  # Parse only if the raw output is a single JSON object exposing the decision
-  # fields. Anything else (prose, fences, partial JSON) -> null actual -> fail.
+  # Tolerate markdown-fenced output (strip fences), then parse only if the result
+  # is a single JSON object exposing the decision fields. Anything else (prose,
+  # no JSON object, partial JSON) -> null actual -> fail.
+  cleaned="$(extract_json "$raw")"
   actual="$(jq -ce 'if type=="object" and has("escalate") and has("risk")
-                    then {escalate, risk} else empty end' <<<"$raw" 2>/dev/null || true)"
+                    then {escalate, risk} else empty end' <<<"$cleaned" 2>/dev/null || true)"
 
   if [ -z "$actual" ]; then
     pass=false
     actual=null
+    # Capture a short single-line excerpt of the unparseable output so a blind
+    # null-everywhere failure (engine/format drift) is diagnosable from the
+    # eval-health report instead of needing the (undownloadable) artifact.
+    raw_excerpt="$(printf '%s' "$raw" | tr '\n' ' ' | cut -c1-160)"
   elif [ "$(jq -r '.escalate' <<<"$actual")" = "$exp_esc" ] \
        && [ "$(jq -r '.risk' <<<"$actual")" = "$exp_risk" ]; then
     pass=true
@@ -145,10 +160,13 @@ score_deterministic() {
   fi
   [ "$pass" = true ] && score=1 || score=0
 
+  # raw_excerpt is attached ONLY when the output failed to parse (actual=null), so
+  # passing/mismatch cases keep the lean shape the report and tests expect.
   jq -cn --arg id "$cid" --argjson pass "$pass" --argjson score "$score" \
         --argjson exp_esc "$exp_esc" --arg exp_risk "$exp_risk" \
-        --argjson actual "$actual" \
-        '{id:$id, score:$score, pass:$pass, expected:{escalate:$exp_esc, risk:$exp_risk}, actual:$actual}'
+        --argjson actual "$actual" --arg raw_excerpt "$raw_excerpt" \
+        '{id:$id, score:$score, pass:$pass, expected:{escalate:$exp_esc, risk:$exp_risk}, actual:$actual}
+         + (if $raw_excerpt == "" then {} else {raw_excerpt: $raw_excerpt} end)'
 }
 
 # score_llm_judge <expected_json> <raw_output> <case_id>
@@ -174,7 +192,7 @@ score_llm_judge() {
   # then accept only a single JSON object with a numeric score. A number outside
   # [0,1] is clamped; anything unparseable -> null judge -> score 0 -> fail.
   local cleaned_raw
-  cleaned_raw="$(grep -v $'^[[:space:]]*\x60\x60\x60' <<<"$judge_raw")"
+  cleaned_raw="$(extract_json "$judge_raw")"
   judge_obj="$(jq -ce 'if type=="object" and (.score|type=="number")
                        then {score: ([[.score,0]|max,1]|min), reason: (.reason // null)}
                        else empty end' <<<"$cleaned_raw" 2>/dev/null || true)"
