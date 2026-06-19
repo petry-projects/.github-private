@@ -629,10 +629,10 @@ failure rather than collapsing everything into a generic exit code.
 A first issue implementation that fails at the engine step has no PR to attach a retry marker to,
 so before #781 it stalled silently. Now `dev-lead-fix-issue.sh` posts a cause-bearing
 `<!-- dev-lead-issue <N> status=<failed|rate-limited> attempt=<K> ... -->` marker (see §7.5), and
-the `dev-lead-retry` cron's `scan_repo_issues` enumerates open `dev-lead`-labelled issues, finds
+the `dev-lead-retry` cron's `scan_repo_issues` enumerates open `dev-lead`-labeled issues, finds
 the newest such marker, and re-dispatches a `dev-lead-issue-retry` (honouring the rate-limit
 `reset=` window and the `attempt < MAX_ATTEMPTS` ceiling, skipping issues that already have an open
-PR or the `dev-lead:needs-human` label). After `MAX_ATTEMPTS` (3) the issue is labelled
+PR or the `dev-lead:needs-human` label). After `MAX_ATTEMPTS` (3) the issue is labeled
 `dev-lead:needs-human` and left for a human — the same terminal escalation used for deterministic
 `missing-binary` infra failures.
 

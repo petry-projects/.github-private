@@ -2,7 +2,7 @@
 # Each line: {commit}:{file}:{rule}:{line}
 #
 # commit eb7fd4c (Phase 1 engine-failure): introduced COPILOT_GITHUB_TOKEN set to
-# "ghp_classicPATplaceholder0000000000000000" (a 40-char test placeholder used to
+# a 40-char test placeholder matching the ghp_* classic-PAT pattern (used to
 # trigger the copilot-skip path in engine.sh). These three findings are test fixtures,
 # not real credentials. The commit-scoped [[allowlists]] entry in .gitleaks.toml
 # targets the same commit+regex but is not suppressed by gitleaks v8.24.3 when

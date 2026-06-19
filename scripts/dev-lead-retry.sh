@@ -207,7 +207,7 @@ scan_pr_for_rate_limits() {
   # Fetch all comment bodies, paginating to ensure we don't miss markers on busy PRs
   local comments_json
   comments_json=$(gh api --paginate "repos/${repo}/issues/${pr_number}/comments?per_page=100" \
-    --jq '[.[].body]' 2>/dev/null || echo "[]")
+    --jq '[.[].body]' 2>/dev/null | jq -s 'add // []' || echo "[]")
 
   local dispatched=0
 
@@ -292,7 +292,7 @@ scan_repo() {
     --jq '[.[] | {number: .number, head_sha: .head.sha}]' 2>/dev/null || echo "[]")
 
   local pr_count
-  pr_count=$(echo "$prs_json" | jq 'length')
+  pr_count=$(echo "$prs_json" | jq -s 'add // [] | length')
   if [ "$pr_count" -eq 0 ]; then
     echo "  no open PRs in ${repo}"
   else
@@ -304,7 +304,7 @@ scan_repo() {
       local dispatched
       dispatched=$(scan_pr_for_rate_limits "$repo" "$pr_number")
       total_dispatched=$(( total_dispatched + dispatched ))
-    done < <(echo "$prs_json" | jq -c '.[]')
+    done < <(echo "$prs_json" | jq -sc 'add // [] | .[]')
     echo "  dispatched ${total_dispatched} PR retries from ${repo}"
   fi
 
@@ -319,9 +319,9 @@ scan_repo() {
 # the issue must NOT be re-dispatched (the PR path takes over).
 open_issue_pr_exists() {
   local repo="$1" issue_number="$2" count
-  count=$(gh api "repos/${repo}/pulls?state=open&per_page=100" \
-    --jq "[.[] | select(.head.ref | startswith(\"dev-lead/issue-${issue_number}-\"))] | length" \
-    2>/dev/null || echo "0")
+  count=$(gh api --paginate "repos/${repo}/pulls?state=open&per_page=100" \
+    --jq "[.[] | select(.head.ref | startswith(\"dev-lead/issue-${issue_number}-\"))]" \
+    2>/dev/null | jq -s 'add | length' || echo "0")
   [ "${count:-0}" -gt 0 ]
 }
 
