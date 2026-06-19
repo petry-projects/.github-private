@@ -132,3 +132,16 @@ description = "Suppress the example expired-JWT fixture in the gitleaks-config s
 condition = "AND"
 paths = ['''^tests/test_gitleaks_config\.bats$''']
 regexes = ['''eyJhbGciOiJIUzI1NiIs''']
+
+# Engine fallback and fix-issue unit tests use a stub classic-PAT token
+# (ghp_ prefix) to trigger the engine.sh copilot-skip path without a real
+# credential. condition="AND" binds the dummy value to these two files so
+# a real ghp_ token committed anywhere else would still be reported.
+[[allowlists]]
+description = "Suppress classic-PAT stub in engine-fallback and fix-issue unit tests"
+condition = "AND"
+paths = [
+  '''^tests/dev-lead/unit/test_engine_fallback\.bats$''',
+  '''^tests/dev-lead/unit/test_fix_issue\.bats$''',
+]
+regexes = ['''ghp_classicPATplaceholder''']
