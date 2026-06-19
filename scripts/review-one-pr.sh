@@ -821,6 +821,22 @@ ADVISORY_BOT_FEEDBACK=$(printf '%s\n%s\n%s' "$ADVISORY_REVIEW_BODIES" "$ADVISORY
 ADVISORY_BOT_FEEDBACK="${ADVISORY_BOT_FEEDBACK:0:8000}"
 unset _owner_repo _pr_num _adv_bots ADVISORY_REVIEW_BODIES ADVISORY_PR_COMMENTS ADVISORY_INLINE_COMMENTS
 
+# Downstream-impact pass (epic #748). Gated default-off behind the Story 5
+# feature flag so that, when disabled, the triage prompt is byte-identical to
+# pre-feature behavior and zero `gh` consumer-reference fetches are performed.
+# When enabled: map the PR's changed files (from PR_METADATA) to the org repos
+# that pin the changed reusable-workflow / lib / prompt surface, fetch each
+# impacted consumer's referencing workflow, and write the human-readable block
+# to a file whose path is exported as DOWNSTREAM_IMPACT_FILE for the deep/audit
+# tiers (mirroring ADVISORY_BOT_FEEDBACK_FILE). The block is inlined into the
+# triage prompt below (triage has NO tools). Best-effort: assemble_downstream_impact
+# always exits 0, so a fetch failure degrades to "(none)" rather than failing the run.
+if [ "${DOWNSTREAM_IMPACT_ENABLED:-false}" = "true" ]; then
+  _di_changed=$(printf '%s' "$PR_METADATA" | jq -r '.files[]?.path // empty' 2>/dev/null || true)
+  assemble_downstream_impact "$_di_changed" "$SCRIPT_DIR/lib/consumer-manifest.json" "/tmp/cascade/downstream-impact.txt" || true
+  unset _di_changed
+fi
+
 # Build the triage prompt: static template + inlined PR context.
 TRIAGE_PROMPT_FILE="/tmp/cascade/triage-prompt.md"
 {
