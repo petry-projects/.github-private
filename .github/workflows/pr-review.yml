@@ -171,6 +171,13 @@ jobs:
       MAX_REVIEW_CYCLES: ${{ vars.MAX_REVIEW_CYCLES || '3' }}
       MAX_PRS: ${{ vars.MAX_PRS || '10' }}
       CANDIDATE_LIMIT: ${{ vars.CANDIDATE_LIMIT || '250' }}
+      # Opt-in GitHub MCP review (issue #679 / pilot #681). REVIEW_MCP_CONFIG
+      # auto-defaults in engine.sh to the committed .github/review-mcp.json when
+      # present (do NOT set it here — an empty value would disable that default).
+      # The configured MCP tools must be allow-listed or the CLI connects the
+      # server yet blocks the tool calls ("not permitted"); set the repo variable
+      # REVIEW_MCP_ALLOWED_TOOLS (e.g. `mcp__github__*`) to permit them.
+      REVIEW_MCP_ALLOWED_TOOLS: ${{ vars.REVIEW_MCP_ALLOWED_TOOLS || '' }}
       # Pin via vars.CLAUDE_CODE_VERSION for fully reproducible caching; default
       # 'latest' caches an install indefinitely under that key — flush via the
       # Actions cache UI or bump the variable to pick up new releases.
