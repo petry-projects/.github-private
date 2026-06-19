@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Validate that dependency-audit.yml is the canonical org stub pinned to @v2.
+"""Validate that dependency-audit.yml is the canonical org stub pinned to @v1.
 
 The org standard requires dependency-audit.yml to be a thin caller stub that
-delegates to the reusable at @v2 (not a SHA or any other ref).
+delegates to the reusable at @v1 (not a SHA or any other ref).
 
 Standard: petry-projects/.github/standards/ci-standards.md#centralization-tiers
 Source of truth: petry-projects/.github/standards/workflows/dependency-audit.yml
@@ -18,7 +18,7 @@ except ImportError:
     sys.exit(2)
 
 WORKFLOW = ".github/workflows/dependency-audit.yml"
-EXPECTED_USES = "petry-projects/.github/.github/workflows/dependency-audit-reusable.yml@v2"
+EXPECTED_USES = "petry-projects/.github/.github/workflows/dependency-audit-reusable.yml@v1"
 
 
 def main() -> int:
@@ -53,7 +53,7 @@ def main() -> int:
                 print(
                     f"FAIL: {WORKFLOW} job '{job_key}' uses '{uses}'\n"
                     f"  Expected: '{EXPECTED_USES}'\n"
-                    f"  Fix: replace the `uses:` value with the canonical @v2 ref."
+                    f"  Fix: replace the `uses:` value with the canonical @v1 ref."
                 )
                 return 1
 
