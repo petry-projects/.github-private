@@ -41,7 +41,13 @@ This is the `.github-private` org infrastructure repo for `petry-projects`. It c
   template gains an equivalent re-trigger sweep, remove this exception and defer to the template instead.
 - **Exception:** The `bats` test list in `lint.yml` is extended with repo-specific test files (e.g.
   `tests/test_push_protection.bats`) beyond the org template baseline. When adding new test files to this
-  repo, add them to this list. Template syncs must not reset it to the base template list.
+  repo, add them to this list. Template syncs must not reset it to the base template list. This includes
+  `tests/test_downstream_impact_regression.bats` (#753, epic #748) — the golden-fixture regression guard
+  that pins the pure downstream-impact mapper (`scripts/lib/downstream-impact.sh`) against a frozen manifest
+  and expected outputs under `tests/fixtures/downstream-impact/golden/`. The golden manifest is intentionally
+  independent of the live `scripts/lib/consumer-manifest.json` so a legitimate manifest refresh does not break
+  the guard — only a change to the mapper's output does, which then requires an explicit fixture update visible
+  in the diff. It runs in the always-run `bats` job (no `paths:` filter) so it stays a stable check.
 - **Exception:** `holdout-guard.yml` (#692, epic #581) is a documented repo-specific workflow with no
   corresponding org template in `standards/workflows/`. It is the hard CI enforcement behind the advisory
   `.github/CODEOWNERS` rule over `evals/`: it fails any PR authored by the automated skill-proposer identity

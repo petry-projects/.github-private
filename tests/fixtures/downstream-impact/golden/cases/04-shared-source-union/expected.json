@@ -1,0 +1,28 @@
+{
+  "impacted_consumers": [
+    {
+      "repo": "petry-projects/alpha",
+      "via": [
+        ".github/workflows/dev-lead-reusable.yml",
+        ".github/workflows/pr-review.yml"
+      ]
+    },
+    {
+      "repo": "petry-projects/bravo",
+      "via": [
+        ".github/workflows/pr-review.yml"
+      ]
+    },
+    {
+      "repo": "petry-projects/charlie",
+      "via": [
+        ".github/workflows/dev-lead-reusable.yml"
+      ]
+    }
+  ],
+  "impacted_surfaces": [
+    ".github/workflows/dev-lead-reusable.yml",
+    ".github/workflows/pr-review.yml"
+  ],
+  "unmatched": []
+}
