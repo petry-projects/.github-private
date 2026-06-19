@@ -151,7 +151,8 @@ score_deterministic() {
     # Capture a short single-line excerpt of the unparseable output so a blind
     # null-everywhere failure (engine/format drift) is diagnosable from the
     # eval-health report instead of needing the (undownloadable) artifact.
-    raw_excerpt="$(printf '%s' "$raw" | tr '\n' ' ' | cut -c1-160)"
+    raw_excerpt="${raw//[$'\r\n']/ }"
+    raw_excerpt="${raw_excerpt:0:160}"
   elif [ "$(jq -r '.escalate' <<<"$actual")" = "$exp_esc" ] \
        && [ "$(jq -r '.risk' <<<"$actual")" = "$exp_risk" ]; then
     pass=true
