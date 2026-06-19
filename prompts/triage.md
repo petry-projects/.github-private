@@ -40,6 +40,21 @@ Output `"escalate": false` (approve) if ALL of these are true:
 Output `"escalate": true` if ANY of those checks fail. When in doubt, escalate.
 False positives are fine (the next tier will sort it out). False negatives are not.
 
+## Downstream impact (informational signal)
+
+If a `DOWNSTREAM_IMPACT` block is present and is not `(none)`, this PR changes a
+reusable workflow / shell lib / prompt that one or more downstream consumer repos
+pin. Treat this as an **informational signal to annotate**, exactly like
+`ADVISORY_BOT_FEEDBACK` — weigh it, but it is **NOT** an auto-escalation trigger:
+
+- Note the impacted consumers in `signals` (and/or `summary`) so the reviewer
+  sees the blast radius, e.g. `"changes pr-review.yml, pinned by 3 consumers"`.
+- Escalate ONLY if one of the risk-based criteria above is independently met
+  (e.g. the change is an interface-breaking edit to a consumed surface, or it
+  touches the high-risk areas in criterion 1). A benign change to a consumed
+  file — even one with many consumers — does not by itself require escalation.
+- When the block is `(none)`, there is no downstream impact; do not mention it.
+
 ## Output format
 
 Output EXACTLY one JSON object, nothing else. No markdown fences, no
