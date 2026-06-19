@@ -200,7 +200,7 @@ score_llm_judge() {
   local cleaned_raw
   cleaned_raw="$(extract_json "$judge_raw")"
   judge_obj="$(jq -cse '
-      if length==1 and (.[0]|type=="object" and (.[0].score|type=="number"))
+      if length==1 and (.[0]|type=="object" and (.score|type=="number"))
       then (.[0] | {score: ([[.score,0]|max,1]|min), reason: (.reason // null)})
       else empty
       end
