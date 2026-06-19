@@ -102,6 +102,26 @@ if [ -n "${DOWNSTREAM_IMPACT_FILE:-}" ] && [ -f "$DOWNSTREAM_IMPACT_FILE" ]; the
 fi
 ```
 
+If `$DOWNSTREAM_IMPACT_FILE` is set, the file exists, and its contents are not the
+literal `(none)`, insert a **Downstream impact** section before Findings so the
+reviewer sees the blast radius right in the verdict (issue #752). When the block
+is absent or `(none)`, add nothing — the body must carry no downstream note:
+```bash
+if [ -n "${DOWNSTREAM_IMPACT_FILE:-}" ] && [ -f "$DOWNSTREAM_IMPACT_FILE" ]; then
+  DI_BLOCK=$(cat "$DOWNSTREAM_IMPACT_FILE")
+  if [ -n "${DI_BLOCK//[[:space:]]/}" ] && [ "$DI_BLOCK" != "(none)" ]; then
+    # Count impacted consumer repos (lines naming a "<owner>/<repo> (pins ...)").
+    DI_COUNT=$(printf '%s\n' "$DI_BLOCK" | grep -cE '^[[:space:]]*- .+ \(pins ' || true)
+    DI_NOTE="This change is consumed by ${DI_COUNT} downstream repo(s) that pin the affected reusable workflow / lib / prompt. Impacted consumers:"$'\n'"\`\`\`"$'\n'"${DI_BLOCK}"$'\n'"\`\`\`"
+    # Write the note to a temp file and splice it in (avoids sed metachar issues
+    # with the multi-line block).
+    printf '### Downstream impact\n%s\n\n### Findings\n' "$DI_NOTE" > /tmp/cascade/di-section.txt
+    awk 'BEGIN{while((getline l < "/tmp/cascade/di-section.txt")>0) s=s l "\n"} /^### Findings$/{if(s != "") printf "%s", s; else print; next} {print}' \
+      /tmp/cascade/review-body.txt > /tmp/cascade/review-body.tmp && mv /tmp/cascade/review-body.tmp /tmp/cascade/review-body.txt
+  fi
+fi
+```
+
 3. Write the final verdict JSON to `$OUTPUT_FILE` using jq so all strings are properly escaped:
 ```bash
 BODY=$(cat /tmp/cascade/review-body.txt)
