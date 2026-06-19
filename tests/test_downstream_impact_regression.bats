@@ -12,7 +12,7 @@
 # requires an explicit, reviewable fixture update visible in the diff.
 #
 # Each case directory under fixtures/.../golden/cases/ holds:
-#   - changed.txt  : the newline-delimited changed-file input
+#   - changed.txt  : the newline-delimited changed-file input (optional; omit for empty input)
 #   - expected.json: the golden mapper output (canonicalised with `jq -S`)
 #
 # This is fixture-based regression testing, not metric/eval tuning, so no
@@ -32,7 +32,11 @@ setup() {
 _assert_golden_case() {
   local case_dir="$1"
   local changed expected actual
-  changed="$(cat "$case_dir/changed.txt")"
+  if [ -f "$case_dir/changed.txt" ]; then
+    changed="$(cat "$case_dir/changed.txt")"
+  else
+    changed=""
+  fi
   expected="$(jq -S . "$case_dir/expected.json")"
   actual="$(compute_downstream_impact "$changed" "$MANIFEST" | jq -S .)"
   if [ "$actual" != "$expected" ]; then
@@ -56,9 +60,11 @@ _assert_golden_case() {
 }
 
 @test "at least one golden case is present" {
-  run bash -c "ls -d '$GOLDEN_DIR'/cases/*/ 2>/dev/null | wc -l"
-  [ "$status" -eq 0 ]
-  [ "$output" -ge 1 ]
+  local count=0
+  for d in "$GOLDEN_DIR"/cases/*/; do
+    [ -d "$d" ] && count=$((count + 1))
+  done
+  [ "$count" -ge 1 ]
 }
 
 # ---------------------------------------------------------------------------
@@ -100,7 +106,6 @@ _assert_golden_case() {
   local d
   for d in "$GOLDEN_DIR"/cases/*/; do
     [ -d "$d" ] || continue
-    [ -f "$d/changed.txt" ] || { echo "missing changed.txt in $d" >&2; return 1; }
     [ -f "$d/expected.json" ] || { echo "missing expected.json in $d" >&2; return 1; }
     _assert_golden_case "${d%/}"
   done
