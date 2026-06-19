@@ -7,6 +7,7 @@
 # Run with: bats tests/test_dependabot.bats
 
 DEPENDABOT_YML=".github/dependabot.yml"
+AUTOMERGE_YML=".github/workflows/dependabot-automerge.yml"
 
 setup() {
   # Run tests from repo root so relative paths resolve correctly.
@@ -35,4 +36,20 @@ setup() {
 
 @test "dependabot.yml schedule is weekly" {
   grep -qE 'interval:[[:space:]]*("weekly"|'"'"'weekly'"'"'|weekly)' "$DEPENDABOT_YML"
+}
+
+@test "dependabot-automerge.yml stub exists" {
+  [ -f "$AUTOMERGE_YML" ]
+}
+
+@test "dependabot-automerge.yml pins the reusable at @v1 (compliance-audit check)" {
+  grep -qE '^\s*uses:[[:space:]]*petry-projects/\.github/\.github/workflows/dependabot-automerge-reusable\.yml@v1[[:space:]]*$' "$AUTOMERGE_YML"
+}
+
+@test "dependabot-automerge.yml does not reference a non-v1 pin" {
+  ! grep -qE 'dependabot-automerge-reusable\.yml@v[02-9]' "$AUTOMERGE_YML"
+}
+
+@test "dependabot-automerge.yml triggers on pull_request_target" {
+  grep -qE '^\s*pull_request_target:' "$AUTOMERGE_YML"
 }
