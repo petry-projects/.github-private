@@ -47,8 +47,9 @@ You review **exactly one pull request**: `$PR_URL`. Nothing else.
      what's new.
 3. **Secret scan (MCP, when available).** If the `run_secret_scanning` MCP tool
    is available (exposed only when GitHub Secret Protection is enabled for this
-   repo), call `mcp__github__run_secret_scanning` with this PR's `owner` and
-   `repo` and `files` set to the **raw added/modified content** from the diff.
+   repo), call `mcp__github__run_secret_scanning` with this PR's `owner`
+   (`headRepository.owner.login`) and `repo` (`headRepository.name`) from the
+   step-1 PR metadata, and `files` set to the **raw added/modified content** from the diff.
    Per the tool's schema, `files` is a single string or an **array of strings**
    (raw file contents or diff hunks — *not* file paths, and *not* objects); pass
    one entry per changed file. This runs GitHub's validated detectors (500+
