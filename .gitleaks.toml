@@ -134,12 +134,14 @@ paths = ['''^tests/test_gitleaks_config\.bats$''']
 regexes = ['''eyJhbGciOiJIUzI1NiIs''']
 
 # Engine fallback and fix-issue unit tests use a stub classic-PAT token
-# (ghp_stub) introduced in commit eb7fd4c to trigger the engine.sh copilot-skip
-# path (ghp_* prefix → copilot fallback skipped). condition="AND" binds the
-# dummy value to the exact commit so any real ghp_ token committed elsewhere
-# would still be reported.
+# (ghp_stub) to trigger the engine.sh copilot-skip path (ghp_* prefix →
+# copilot fallback skipped). condition="AND" binds the dummy value to those
+# specific test file paths so a real ghp_ token elsewhere would still be caught.
 [[allowlists]]
-description = "Suppress classic-PAT stub committed in Phase 1 test fixtures (eb7fd4c)"
+description = "Suppress classic-PAT stub (ghp_stub) in Phase 1/2 test fixtures"
 condition = "AND"
-commits = ["eb7fd4c955378d274794e38ee9b942912ce79c6f"]
+paths = [
+  '''^tests/dev-lead/unit/test_engine_fallback\.bats$''',
+  '''^tests/dev-lead/unit/test_fix_issue\.bats$''',
+]
 regexes = ['''ghp_stub''']
