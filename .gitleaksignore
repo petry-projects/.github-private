@@ -1,0 +1,13 @@
+# Fingerprints of known false-positive gitleaks findings.
+# Each line: {commit}:{file}:{rule}:{line}
+#
+# commit eb7fd4c (Phase 1 engine-failure): introduced COPILOT_GITHUB_TOKEN set to
+# "ghp_classicPATplaceholder0000000000000000" (a 40-char test placeholder used to
+# trigger the copilot-skip path in engine.sh). These three findings are test fixtures,
+# not real credentials. The commit-scoped [[allowlists]] entry in .gitleaks.toml
+# targets the same commit+regex but is not suppressed by gitleaks v8.24.3 when
+# condition="AND" is combined with both commits and regexes; fingerprint ignores
+# are used here as the reliable fallback.
+eb7fd4c955378d274794e38ee9b942912ce79c6f:tests/dev-lead/unit/test_fix_issue.bats:github-pat:485
+eb7fd4c955378d274794e38ee9b942912ce79c6f:tests/dev-lead/unit/test_engine_fallback.bats:github-pat:276
+eb7fd4c955378d274794e38ee9b942912ce79c6f:tests/dev-lead/unit/test_engine_fallback.bats:github-pat:323

@@ -137,7 +137,9 @@ regexes = ['''eyJhbGciOiJIUzI1NiIs''']
 # placeholder "ghp_classicPATplaceholder0000000000000000" in commit eb7fd4c to trigger
 # the copilot-skip path in engine.sh (ghp_* prefix → copilot fallback skipped). Commit
 # 7cbe053 replaced it with the shorter "ghp_stub" (below entropy threshold). This entry
-# suppresses the three historical github-pat findings in eb7fd4c.
+# is kept for documentation but the three historical github-pat findings in eb7fd4c are
+# suppressed via .gitleaksignore fingerprints because gitleaks v8.24.3 does not honour
+# condition="AND" when both commits and regexes are specified together.
 [[allowlists]]
 description = "Suppress classic-PAT-length placeholder in Phase 1 engine-failure tests (commit eb7fd4c)"
 targetRules = ["github-pat"]
@@ -150,8 +152,8 @@ regexes = ['''ghp_classicPATplaceholder0000000000000000''']
 # that gitleaks' condition="AND" logic (which ANDs across condition types AND
 # within the regexes array) can satisfy the regex condition with one match.
 # The historical 40-char placeholder (ghp_classicPATplaceholder0000000000000000)
-# in commit eb7fd4c is covered by the commit-scoped allowlist above and does not
-# need to be repeated here.
+# in commit eb7fd4c is covered by .gitleaksignore fingerprints (see above comment)
+# and does not need to be repeated here.
 [[allowlists]]
 description = "Suppress ghp_stub placeholder in test_engine_fallback.bats"
 targetRules = ["github-pat"]
