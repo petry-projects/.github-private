@@ -24,6 +24,13 @@ This repository contains several documentation files describing the PR Review Ag
   - Rate limiting and fallback logic
   - Stuck PR cleanup explained
 
+- **[downstream-impact.md](downstream-impact.md)** — Downstream-impact pass (operator guide)
+  - What the pass does and the informational signal it adds
+  - How to enable it (`DOWNSTREAM_IMPACT_ENABLED`, default-off)
+  - The `GH_PAT` cross-repo read scope it needs
+  - Per-PR fetch + size caps
+  - How/when to refresh the consumer manifest
+
 ## Setting Up Authentication
 - **[machine-user-setup.md](machine-user-setup.md)** — Machine user and PAT setup
   - Create machine user account and org team
@@ -72,6 +79,9 @@ docs/pr-review-agent/
 
 ### I want to understand the architecture
 → Read [implementation.md](implementation.md)
+
+### I want to enable or tune the downstream-impact pass
+→ Read [downstream-impact.md](downstream-impact.md)
 
 ### I need to update configuration
 → See [setup.md#repository-variables](setup.md#repository-variables)
