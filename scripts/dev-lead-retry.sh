@@ -340,8 +340,8 @@ scan_issue_for_retry() {
   # the last matching one is the most recent attempt — earlier ones superseded).
   local prefix="${ISSUE_MARKER_PREFIX}${issue_number} "
   local marker
-  marker=$(echo "$comments_json" | jq -r --arg p "$prefix" \
-    '[ .[] | select(. != null and (. | contains($p))) ] | last // ""' 2>/dev/null || echo "")
+  marker=$(echo "$comments_json" | jq -s -r --arg p "$prefix" \
+    '[ .[] | .[]? | select(. != null and (. | contains($p))) ] | last // ""' 2>/dev/null || echo "")
 
   if [ -z "$marker" ]; then
     # No failure marker → nothing failed (or it succeeded). Nothing to retry.
@@ -407,7 +407,7 @@ scan_repo_issues() {
     2>/dev/null || echo "[]")
 
   local issue_count
-  issue_count=$(echo "$issues_json" | jq 'length')
+  issue_count=$(echo "$issues_json" | jq -s 'add // [] | length')
   if [ "${issue_count:-0}" -eq 0 ]; then
     echo "  no open dev-lead issues in ${repo}"
     return 0

@@ -36,8 +36,8 @@ check_existing_pr() {
 count_prior_attempts() {
   local prefix="${ISSUE_MARKER_PREFIX}${ISSUE_NUMBER} "
   gh api --paginate "repos/${REPO}/issues/${ISSUE_NUMBER}/comments?per_page=100" 2>/dev/null \
-    | jq -r --arg p "$prefix" '
-        [ .[] | .body // ""
+    | jq -s -r --arg p "$prefix" '
+        [ .[] | .[]? | .body // ""
           | select(contains($p))
           | capture("attempt=(?<a>[0-9]+)").a
           | tonumber
