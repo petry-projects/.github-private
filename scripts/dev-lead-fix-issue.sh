@@ -11,11 +11,161 @@ REPO="${REPO:-${GITHUB_REPOSITORY:-}}"
 DEV_LEAD_DRY_RUN="${DEV_LEAD_DRY_RUN:-false}"
 export PROMPTS_DIR="${PROMPTS_DIR:-prompts/dev-lead}"
 
+# Machine-readable marker the retry cron (dev-lead-retry.sh) scans for to requeue
+# a failed initial issue implementation. Mirrors the PR-side conventions in
+# dev-lead-fix-ci.sh / dev-lead-fix-reviews.sh:
+#   <!-- dev-lead-issue <N> status=<failed|rate-limited> attempt=<K> reason=<r> run=<id> [reset=ISO] -->
+ISSUE_MARKER_PREFIX="<!-- dev-lead-issue "
+# Total attempts (initial + retries) before escalating to a human. Matches the
+# MAX_ATTEMPTS=3 convention used by auto-rebase-retry.sh.
+MAX_ATTEMPTS="${MAX_ATTEMPTS:-3}"
+# Label applied when an issue can no longer be auto-retried; the retry cron
+# skips issues carrying it.
+NEEDS_HUMAN_LABEL="${NEEDS_HUMAN_LABEL:-dev-lead:needs-human}"
+
 check_existing_pr() {
   local existing
   existing=$(gh api "repos/${REPO}/pulls?state=open" \
     --jq "[.[] | select(.head.ref | startswith(\"dev-lead/issue-${ISSUE_NUMBER}\"))] | length" 2>/dev/null || echo "0")
   [ "$existing" -gt 0 ]
+}
+
+# count_prior_attempts: highest attempt= recorded in any prior dev-lead-issue
+# marker on this issue (0 if none). The next attempt is this value + 1.
+# --paginate keeps the count accurate on issues with >30 comments.
+count_prior_attempts() {
+  local prefix="${ISSUE_MARKER_PREFIX}${ISSUE_NUMBER} "
+  gh api --paginate "repos/${REPO}/issues/${ISSUE_NUMBER}/comments?per_page=100" 2>/dev/null \
+    | jq -r --arg p "$prefix" '
+        [ .[] | .body // ""
+          | select(contains($p))
+          | capture("attempt=(?<a>[0-9]+)").a
+          | tonumber
+        ] | max // 0' 2>/dev/null \
+    || echo 0
+}
+
+# html_escape: escape &, <, > so a redacted snippet cannot break the wrapping
+# <pre>/<details> block in the issue comment (mirrors engine.sh:run_writer).
+html_escape() {
+  sed 's|&|\&amp;|g; s|<|\&lt;|g; s|>|\&gt;|g'
+}
+
+# session_snippet: redacted ~40-line tail of the engine session output, wrapped
+# in a collapsible <details> block. The source file is already secret-scrubbed
+# by engine.sh:run_writer, so no further redaction is needed here.
+session_snippet() {
+  [ -s /tmp/dev-lead-session-output.txt ] || return 0
+  printf '<details><summary>Last 40 lines of engine output (redacted)</summary>\n\n<pre>\n'
+  tail -n 40 /tmp/dev-lead-session-output.txt | html_escape
+  printf '\n</pre>\n</details>'
+}
+
+# ensure_needs_human_label: idempotently create then apply the escalation label.
+# gh issue edit --add-label fails if the label does not exist, so create first.
+ensure_needs_human_label() {
+  gh label create "$NEEDS_HUMAN_LABEL" --repo "$REPO" \
+    --color B60205 --description "dev-lead could not complete this issue; needs human attention" \
+    2>/dev/null || true
+  gh issue edit "$ISSUE_NUMBER" --repo "$REPO" --add-label "$NEEDS_HUMAN_LABEL" 2>/dev/null || true
+}
+
+# handle_engine_failure <engine_rc>
+# Replaces the previous silent `exit 1` (and unifies the rate-limit branch).
+# Classifies the cause via the /tmp/dev-lead-failure-reason sidecar written by
+# engine.sh, surfaces it on the issue (marker + human-readable comment + run
+# link + redacted snippet), and decides retry vs. human escalation. Never
+# returns — exits 2 for rate-limit, 1 otherwise (exit semantics unchanged).
+handle_engine_failure() {
+  local engine_rc="$1"
+  rm -f "$prompt_file"
+
+  # Cause class from the engine layer; default to engine-error if the sidecar is
+  # absent (e.g. an older engine.sh). exit 2 always means rate-limited.
+  local reason="engine-error"
+  if [ -s /tmp/dev-lead-failure-reason ]; then
+    reason=$(tr -d '[:space:]' < /tmp/dev-lead-failure-reason)
+  fi
+  [ -n "$reason" ] || reason="engine-error"
+  [ "$engine_rc" -eq 2 ] && reason="rate-limited"
+
+  local reset=""
+  [ -f /tmp/dev-lead-rate-limit-reset ] && reset=$(cat /tmp/dev-lead-rate-limit-reset)
+
+  local attempt
+  attempt=$(( $(count_prior_attempts) + 1 ))
+  local run_url="${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-$REPO}/actions/runs/${GITHUB_RUN_ID:-}"
+  local snippet
+  snippet=$(session_snippet)
+
+  # Deterministic infra failure (missing engine binary): retrying cannot help —
+  # escalate to a human immediately, no retry marker.
+  if [ "$reason" = "missing-binary" ]; then
+    echo "::error::Engine binary missing while implementing issue #${ISSUE_NUMBER} — escalating to human"
+    ensure_needs_human_label
+    gh issue comment "$ISSUE_NUMBER" --repo "$REPO" --body "<!-- dev-lead-issue ${ISSUE_NUMBER} status=needs-human attempt=${attempt} reason=${reason} run=${GITHUB_RUN_ID:-} -->
+## Dev-Lead: cannot implement issue #${ISSUE_NUMBER} — needs human attention
+
+A required engine binary was missing in the runner environment while implementing this issue. This is an **infrastructure/configuration** problem, not a transient error, so automatic retry is disabled.
+
+- **Cause:** \`${reason}\`
+- **Run:** ${run_url}
+
+${snippet}
+
+Please check the runner/engine configuration, then re-apply the \`dev-lead\` label to retry." 2>/dev/null || true
+    exit 1
+  fi
+
+  # Retries exhausted: escalate to a human, no further retry marker.
+  if [ "$attempt" -ge "$MAX_ATTEMPTS" ]; then
+    echo "::error::Engine failed to implement issue #${ISSUE_NUMBER} (reason=${reason}); retries exhausted (attempt ${attempt}/${MAX_ATTEMPTS}) — escalating to human"
+    ensure_needs_human_label
+    gh issue comment "$ISSUE_NUMBER" --repo "$REPO" --body "<!-- dev-lead-issue ${ISSUE_NUMBER} status=needs-human attempt=${attempt} reason=${reason} run=${GITHUB_RUN_ID:-} -->
+## Dev-Lead: cannot implement issue #${ISSUE_NUMBER} — needs human attention
+
+Automatic retries are exhausted (**attempt ${attempt} of ${MAX_ATTEMPTS}**). The most recent failure was \`${reason}\`.
+
+- **Run:** ${run_url}
+
+${snippet}
+
+Please review the failures above. To retry anyway, remove the \`${NEEDS_HUMAN_LABEL}\` label and re-apply the \`dev-lead\` label." 2>/dev/null || true
+    [ "$engine_rc" -eq 2 ] && exit 2
+    exit 1
+  fi
+
+  # Retryable (rate-limited or engine-error, attempt < MAX): post the marker the
+  # retry cron scans for, plus a human-readable comment with the cause.
+  local status="failed"
+  [ "$reason" = "rate-limited" ] && status="rate-limited"
+  local reset_attr=""
+  [ -n "$reset" ] && reset_attr=" reset=${reset}"
+  local marker="${ISSUE_MARKER_PREFIX}${ISSUE_NUMBER} status=${status} attempt=${attempt} reason=${reason} run=${GITHUB_RUN_ID:-}${reset_attr} -->"
+
+  local cause_line reset_line=""
+  if [ "$reason" = "rate-limited" ]; then
+    echo "::warning::All engines rate-limited while implementing issue #${ISSUE_NUMBER} (attempt ${attempt}/${MAX_ATTEMPTS}) — will retry automatically"
+    cause_line="All engines were **rate-limited**."
+    [ -n "$reset" ] && reset_line="
+- **Limit resets:** ${reset}"
+  else
+    echo "::error::Engine failed to implement issue #${ISSUE_NUMBER} (reason=${reason}, attempt ${attempt}/${MAX_ATTEMPTS}) — will retry automatically"
+    cause_line="The engine failed (\`${reason}\` — e.g. a timeout or transient engine error)."
+  fi
+
+  gh issue comment "$ISSUE_NUMBER" --repo "$REPO" --body "${marker}
+## Dev-Lead: issue #${ISSUE_NUMBER} implementation failed — will retry
+
+${cause_line} This was **attempt ${attempt} of ${MAX_ATTEMPTS}**; dev-lead will retry automatically. You can also re-apply the \`dev-lead\` label to retry now.
+
+- **Cause:** \`${reason}\`
+- **Run:** ${run_url}${reset_line}
+
+${snippet}" 2>/dev/null || true
+
+  [ "$engine_rc" -eq 2 ] && exit 2
+  exit 1
 }
 
 main() {
@@ -74,21 +224,11 @@ main() {
 
   local engine_rc=0
   run_writer_with_fallback "$prompt_file" "fix-issue" || engine_rc=$?
-  if [ "$engine_rc" -eq 2 ]; then
-    echo "::warning::All engines rate-limited — cannot implement issue #${ISSUE_NUMBER}; re-apply the label to retry"
-    local reset_msg=""
-    if [ -f /tmp/dev-lead-rate-limit-reset ]; then
-      local reset_time
-      reset_time=$(cat /tmp/dev-lead-rate-limit-reset)
-      [ -n "$reset_time" ] && reset_msg=" The limit is expected to reset at ${reset_time}."
-    fi
-    gh issue comment "$ISSUE_NUMBER" --repo "$REPO" --body "<!-- dev-lead-rate-limited -->All engines are currently rate-limited.${reset_msg} Please re-apply the \`dev-lead\` label when the rate limit clears to retry." 2>/dev/null || true
-    rm -f "$prompt_file"
-    exit 2
-  elif [ "$engine_rc" -ne 0 ]; then
-    echo "::error::Engine failed to implement issue #${ISSUE_NUMBER}"
-    rm -f "$prompt_file"
-    exit 1
+  if [ "$engine_rc" -ne 0 ]; then
+    # Unified failure handler: classifies the cause, surfaces it on the issue
+    # (marker + comment + run link + redacted snippet), and decides retry vs.
+    # human escalation. Never returns — exits 2 (rate-limit) or 1 (otherwise).
+    handle_engine_failure "$engine_rc"
   fi
 
   # git status --porcelain catches untracked files that git diff misses.

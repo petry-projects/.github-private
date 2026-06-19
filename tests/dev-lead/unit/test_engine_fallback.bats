@@ -27,6 +27,7 @@ setup() {
 
 teardown() {
   rm -f "$GITHUB_ENV" "$GITHUB_OUTPUT" "$TEST_PROMPT"
+  rm -f /tmp/dev-lead-failure-reason /tmp/dev-lead-session-output.txt /tmp/dev-lead-rate-limit-reset
   rm -rf "$STUB_BIN_DIR"
 }
 
@@ -240,4 +241,97 @@ GHEOF
 
   [ "$status" -eq 0 ]
   unset GEMINI_API_KEY
+}
+
+# ── failure-reason sidecar tests (#781) ───────────────────────────────────────
+# run_writer_with_fallback writes a one-line cause class to
+# /tmp/dev-lead-failure-reason before each terminal failure return, so callers
+# can classify the failure. Because `run` executes in a subshell, the sidecar
+# file (not the function's environment) is the contract we assert on.
+
+@test "sidecar: all rate-limited → reason=rate-limited" {
+  _make_stub "claude" 2
+  _make_stub "gemini" 2
+  export COPILOT_GITHUB_TOKEN="stub-token"
+  cat > "$STUB_BIN_DIR/gh" <<'GHEOF'
+#!/usr/bin/env bash
+case "$*" in
+  *"copilot"*) echo "rate limit exceeded"; exit 1 ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+  _source_engine "claude"
+
+  run run_writer_with_fallback "$TEST_PROMPT"
+
+  [ "$status" -eq 2 ]
+  [ "$(cat /tmp/dev-lead-failure-reason)" = "rate-limited" ]
+}
+
+@test "sidecar: missing binary (127) → reason=missing-binary" {
+  # claude not installed (127); gemini skipped (no key); copilot skipped (classic PAT).
+  _make_stub "claude" 127
+  unset GEMINI_API_KEY GOOGLE_API_KEY 2>/dev/null || true
+  export COPILOT_GITHUB_TOKEN="ghp_classicPATplaceholder0000000000000000"
+  _source_engine "claude"
+
+  run run_writer_with_fallback "$TEST_PROMPT"
+
+  [ "$status" -eq 1 ]
+  [ "$(cat /tmp/dev-lead-failure-reason)" = "missing-binary" ]
+}
+
+@test "sidecar: generic engine error (exit 1) → reason=engine-error" {
+  _make_stub "claude" 1
+  _source_engine "claude"
+
+  run run_writer_with_fallback "$TEST_PROMPT"
+
+  [ "$status" -eq 1 ]
+  [ "$(cat /tmp/dev-lead-failure-reason)" = "engine-error" ]
+}
+
+@test "sidecar: stale reason cleared on success" {
+  printf 'engine-error\n' > /tmp/dev-lead-failure-reason
+  _make_stub "claude" 0
+  _source_engine "claude"
+
+  run run_writer_with_fallback "$TEST_PROMPT"
+
+  [ "$status" -eq 0 ]
+  # The sidecar is removed at the start of every call → no stale reason survives.
+  [ ! -f /tmp/dev-lead-failure-reason ]
+}
+
+# ── session-output persistence on the rate-limit path (#781, Phase 1A.2) ──────
+# Previously run_writer's rate-limit early-return happened BEFORE the
+# redact/persist/STEP_SUMMARY block, so a rate-limited run left no session
+# output on the run page. The block now runs first, covering all exit paths.
+
+@test "rate-limit path: session output is persisted + written to step summary" {
+  # claude detected as rate-limited by CONTENT (exit 1 + rate-limit phrase),
+  # which forces run_writer's is_rate_limited early-return path. gemini/copilot
+  # are skipped so claude is the only engine and its output is the persisted one.
+  cat > "$STUB_BIN_DIR/claude" <<'STUB'
+#!/usr/bin/env bash
+echo "RLPROBE: You've hit your limit · resets 11:20pm (UTC)"
+exit 1
+STUB
+  chmod +x "$STUB_BIN_DIR/claude"
+  unset GEMINI_API_KEY GOOGLE_API_KEY 2>/dev/null || true
+  export COPILOT_GITHUB_TOKEN="ghp_classicPATplaceholder0000000000000000"
+  export GITHUB_STEP_SUMMARY="$(mktemp)"
+  _source_engine "claude"
+
+  run run_writer_with_fallback "$TEST_PROMPT"
+
+  [ "$status" -eq 2 ]
+  # Persisted session output exists and contains the engine output
+  [ -s /tmp/dev-lead-session-output.txt ]
+  grep -q "RLPROBE" /tmp/dev-lead-session-output.txt
+  # Step summary received the session-output block even on the rate-limit path
+  grep -q "Dev-Lead session output" "$GITHUB_STEP_SUMMARY"
+
+  rm -f "$GITHUB_STEP_SUMMARY"
 }
