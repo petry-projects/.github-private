@@ -1,0 +1,22 @@
+{
+  "impacted_consumers": [
+    {
+      "repo": "petry-projects/alpha",
+      "via": [
+        ".github/workflows/pr-review.yml"
+      ]
+    },
+    {
+      "repo": "petry-projects/bravo",
+      "via": [
+        ".github/workflows/pr-review.yml"
+      ]
+    }
+  ],
+  "impacted_surfaces": [
+    ".github/workflows/pr-review.yml"
+  ],
+  "unmatched": [
+    "docs/notes.md"
+  ]
+}
