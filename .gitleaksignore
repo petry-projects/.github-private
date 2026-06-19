@@ -11,3 +11,7 @@
 eb7fd4c955378d274794e38ee9b942912ce79c6f:tests/dev-lead/unit/test_fix_issue.bats:github-pat:485
 eb7fd4c955378d274794e38ee9b942912ce79c6f:tests/dev-lead/unit/test_engine_fallback.bats:github-pat:276
 eb7fd4c955378d274794e38ee9b942912ce79c6f:tests/dev-lead/unit/test_engine_fallback.bats:github-pat:323
+# commit 334fac2 (initial .gitleaksignore): the comment at line 5 quoted the
+# 40-char classic-PAT-length test placeholder verbatim; commit a547c50 rewrote
+# it to avoid the literal. Fingerprint suppresses the historical commit's finding.
+334fac2ca4528d821b7511e1a0f8e5051a2aca65:.gitleaksignore:github-pat:5
