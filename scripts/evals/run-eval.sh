@@ -142,8 +142,13 @@ score_deterministic() {
   # is a single JSON object exposing the decision fields. Anything else (prose,
   # no JSON object, partial JSON) -> null actual -> fail.
   cleaned="$(extract_json "$raw")"
-  actual="$(jq -ce 'if type=="object" and has("escalate") and has("risk")
-                    then {escalate, risk} else empty end' <<<"$cleaned" 2>/dev/null || true)"
+  actual="$(jq -cse '
+      if length==1
+         and (.[0]|type=="object" and has("escalate") and has("risk"))
+      then .[0] | {escalate, risk}
+      else empty
+      end
+    ' <<<"$cleaned" 2>/dev/null || true)"
 
   if [ -z "$actual" ]; then
     pass=false
@@ -194,9 +199,12 @@ score_llm_judge() {
   # [0,1] is clamped; anything unparseable -> null judge -> score 0 -> fail.
   local cleaned_raw
   cleaned_raw="$(extract_json "$judge_raw")"
-  judge_obj="$(jq -ce 'if type=="object" and (.score|type=="number")
-                       then {score: ([[.score,0]|max,1]|min), reason: (.reason // null)}
-                       else empty end' <<<"$cleaned_raw" 2>/dev/null || true)"
+  judge_obj="$(jq -cse '
+      if length==1 and (.[0]|type=="object" and (.[0].score|type=="number"))
+      then (.[0] | {score: ([[.score,0]|max,1]|min), reason: (.reason // null)})
+      else empty
+      end
+    ' <<<"$cleaned_raw" 2>/dev/null || true)"
 
   if [ -z "$judge_obj" ]; then
     judge_obj=null
