@@ -136,10 +136,11 @@ regexes = ['''eyJhbGciOiJIUzI1NiIs''']
 # Engine fallback and fix-issue unit tests originally used a 40-char classic-PAT-length
 # placeholder "ghp_classicPATplaceholder0000000000000000" in commit eb7fd4c to trigger
 # the copilot-skip path in engine.sh (ghp_* prefix → copilot fallback skipped). Commit
-# 7cbe053 replaced it with the shorter "ghp_stub" (below entropy threshold). This entry
-# is kept for documentation but the three historical github-pat findings in eb7fd4c are
-# suppressed via .gitleaksignore fingerprints because gitleaks v8.24.3 does not honour
-# condition="AND" when both commits and regexes are specified together.
+# 7cbe053 replaced it with the shorter "ghp_stub" (below entropy threshold).
+# gitleaks v8.24.3 does not honour condition="AND" when both `commits` and `regexes`
+# are specified together, so the commit-scoped entry below is inert. The path-based
+# entries that follow cover both the historical placeholder (eb7fd4c) and the current
+# stub; .gitleaksignore fingerprints are retained as a belt-and-suspenders fallback.
 [[allowlists]]
 description = "Suppress classic-PAT-length placeholder in Phase 1 engine-failure tests (commit eb7fd4c)"
 targetRules = ["github-pat"]
@@ -147,23 +148,35 @@ condition = "AND"
 commits = ["eb7fd4c955378d274794e38ee9b942912ce79c6f"]
 regexes = ['''ghp_classicPATplaceholder0000000000000000''']
 
-# The path-based entries below suppress the ghp_stub placeholder used in current
-# and future commits of these test files.  Each allowlist uses a single regex so
-# that gitleaks' condition="AND" logic (which ANDs across condition types AND
-# within the regexes array) can satisfy the regex condition with one match.
-# The historical 40-char placeholder (ghp_classicPATplaceholder0000000000000000)
-# in commit eb7fd4c is covered by .gitleaksignore fingerprints (see above comment)
-# and does not need to be repeated here.
+# Path-based entries suppress both the historical 40-char placeholder (commit eb7fd4c)
+# and the current shorter stub (ghp_stub, below entropy threshold) in these test files.
+# Each allowlist uses a single regex so that gitleaks' condition="AND" logic (which ANDs
+# across condition types AND within the regexes array) can satisfy the regex condition
+# with one match.
 [[allowlists]]
-description = "Suppress ghp_stub placeholder in test_engine_fallback.bats"
+description = "Suppress ghp_stub placeholder in test_engine_fallback.bats (current commits)"
 targetRules = ["github-pat"]
 condition = "AND"
 paths = ['''^tests/dev-lead/unit/test_engine_fallback\.bats$''']
 regexes = ['''ghp_stub''']
 
 [[allowlists]]
-description = "Suppress ghp_stub placeholder in test_fix_issue.bats"
+description = "Suppress historical classic-PAT placeholder in test_engine_fallback.bats (commit eb7fd4c)"
+targetRules = ["github-pat"]
+condition = "AND"
+paths = ['''^tests/dev-lead/unit/test_engine_fallback\.bats$''']
+regexes = ['''ghp_classicPATplaceholder0000000000000000''']
+
+[[allowlists]]
+description = "Suppress ghp_stub placeholder in test_fix_issue.bats (current commits)"
 targetRules = ["github-pat"]
 condition = "AND"
 paths = ['''^tests/dev-lead/unit/test_fix_issue\.bats$''']
 regexes = ['''ghp_stub''']
+
+[[allowlists]]
+description = "Suppress historical classic-PAT placeholder in test_fix_issue.bats (commit eb7fd4c)"
+targetRules = ["github-pat"]
+condition = "AND"
+paths = ['''^tests/dev-lead/unit/test_fix_issue\.bats$''']
+regexes = ['''ghp_classicPATplaceholder0000000000000000''']
