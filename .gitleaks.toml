@@ -145,18 +145,26 @@ condition = "AND"
 commits = ["eb7fd4c955378d274794e38ee9b942912ce79c6f"]
 regexes = ['''ghp_classicPATplaceholder0000000000000000''']
 
-# The path-based entries below guard against future re-introduction of a ghp_*
-# stub that crosses the entropy threshold; ghp_stub itself is too short to fire.
+# The path-based entries below suppress both the historical 40-char placeholder
+# from commit eb7fd4c and the current shorter stub (ghp_stub, below entropy
+# threshold), guarding against future re-introduction of any ghp_* stub that
+# crosses the entropy threshold.
 [[allowlists]]
-description = "Suppress classic-PAT stub (ghp_stub) in test_engine_fallback.bats"
+description = "Suppress PAT stubs in test_engine_fallback.bats (historical + current)"
 targetRules = ["github-pat"]
 condition = "AND"
 paths = ['''^tests/dev-lead/unit/test_engine_fallback\.bats$''']
-regexes = ['''ghp_stub''']
+regexes = [
+  '''ghp_stub''',
+  '''ghp_classicPATplaceholder0000000000000000''',
+]
 
 [[allowlists]]
-description = "Suppress classic-PAT stub (ghp_stub) in test_fix_issue.bats"
+description = "Suppress PAT stubs in test_fix_issue.bats (historical + current)"
 targetRules = ["github-pat"]
 condition = "AND"
 paths = ['''^tests/dev-lead/unit/test_fix_issue\.bats$''']
-regexes = ['''ghp_stub''']
+regexes = [
+  '''ghp_stub''',
+  '''ghp_classicPATplaceholder0000000000000000''',
+]
