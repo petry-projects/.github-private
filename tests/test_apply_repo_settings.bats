@@ -179,6 +179,20 @@ teardown() {
   [ "$status" -eq 1 ]
 }
 
+@test "rs_apply_repo live: unreadable preferences warning names repo scope and accessibility" {
+  gh() {
+    if [[ "$*" == *"check-suites/preferences"* ]]; then
+      echo "[error] HTTP 404" >&2
+      return 1
+    fi
+  }
+  export -f gh
+  run rs_apply_repo "test-org/myrepo"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"'repo' scope"* ]]
+  [[ "$output" == *"accessible"* ]]
+}
+
 # ---------------------------------------------------------------------------
 # rs_apply_repo — live mode, already compliant
 # ---------------------------------------------------------------------------
