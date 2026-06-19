@@ -27,6 +27,15 @@ This is the `.github-private` org infrastructure repo for `petry-projects`. It c
   may be made to `dev-lead.yml` per the stub's header comment.
 - All other workflow changes must use templates from
   [`standards/workflows/`](https://github.com/petry-projects/.github/tree/main/standards/workflows) verbatim.
+- **Exception:** `.github/workflows/auto-rebase.yml` deliberately pins the reusable at `@v2`, ahead of the org
+  canonical stub in `standards/workflows/auto-rebase.yml` (which still pins `@v1`). The `@v2` reusable posts a
+  base-SHA-keyed conflict sentinel that triggers dev-lead's agentic rebase (the `rebase` intent in
+  `dev-lead.yml`) and accepts the optional `GH_PAT_WORKFLOWS` secret; `@v1` only posts a static "resolve
+  manually" comment. The repo-specific `auto-rebase-retry.yml` and `auto-rebase-health.yml` workflows are built
+  on this `@v2` sentinel-trigger behavior, and the `@v2` pin is locked by
+  `tests/dev-lead/integration/test_auto_rebase_stub.py` (#139). Downgrading to the canonical `@v1` — e.g. via a
+  template sync or a compliance-audit remediation — is a behavioral regression and must not be applied. When the
+  org canonical stub is bumped to `@v2`, remove this exception and defer to the template.
 - **Exception:** The `gh-aw-compile` job in `lint.yml` is a documented repo-specific addition that gates
   agentic workflow compilation. It is not covered by the org template and must not be removed by template
   syncs. If the org template gains a `gh-aw-compile` equivalent, remove this exception and defer to the
