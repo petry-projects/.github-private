@@ -72,7 +72,7 @@ jobs:
       contents: read  # actions/checkout; the workflow_dispatch is fired with the PAT
     steps:
       - name: Checkout agent repo
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
 
@@ -117,7 +117,7 @@ jobs:
       TOOLING_DIR: ${{ github.workspace }}/scripts/initiative-planner
     steps:
       - name: Checkout agent repo
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
 
@@ -166,7 +166,7 @@ jobs:
         if: ${{ env.PLAN_ARTIFACT_RUN_ID == '' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        uses: anthropics/claude-code-action@d5726de019ec4498aa667642bc3a80fca83aa102 # v1.0.148
+        uses: anthropics/claude-code-action@51705da45eecce209d4700538bf8377d5b5fc695 # v1.0.152
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # CRITICAL (same gotcha as feature-ideation): pass the workflow's
