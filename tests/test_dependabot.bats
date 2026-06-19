@@ -38,7 +38,7 @@ setup() {
   grep -qE 'interval:[[:space:]]*("weekly"|'"'"'weekly'"'"'|weekly)' "$DEPENDABOT_YML"
 }
 
-@test "dependabot-automerge.yml stub exists" {
+@test "dependabot-automerge.yml exists" {
   [ -f "$AUTOMERGE_YML" ]
 }
 
@@ -47,7 +47,7 @@ setup() {
 }
 
 @test "dependabot-automerge.yml does not reference a non-v1 pin" {
-  ! grep -qE 'dependabot-automerge-reusable\.yml@v[02-9]' "$AUTOMERGE_YML"
+  ! grep -qE 'dependabot-automerge-reusable\.yml@(v1[a-zA-Z0-9._/-]+|[^v]|v[^1])' "$AUTOMERGE_YML"
 }
 
 @test "dependabot-automerge.yml triggers on pull_request_target" {
