@@ -29,6 +29,10 @@
 #                      The dogfood/self path leaves this unset so target == self.
 #   DISCUSSION_NUMBER  Ideas Discussion number to plan (required)
 #   WORKFLOW_FILE      workflow to dispatch (default: initiative-planner.yml)
+#   DRY_RUN            "1"/"true" => dispatch dry_run=true (default: false)
+#   FORCE_REPLAN       "1"/"true" => dispatch force_replan=true (default: false);
+#                      set by the `initiative:replan` label path to supersede an
+#                      already-planned discussion's epic instead of no-opping
 #   GH_TOKEN           a PAT with workflow scope (required at the call site)
 set -euo pipefail
 
@@ -51,6 +55,16 @@ else
   DISPATCH_DRY_RUN="false"
 fi
 
+# Map FORCE_REPLAN to a boolean string for the workflow input. The
+# `initiative:replan` label path sets this so the re-dispatch supersedes the
+# discussion's existing epic instead of no-opping on apply-plan's idempotency guard.
+_force_replan="${FORCE_REPLAN:-}"
+if [[ "$_force_replan" == "1" || "${_force_replan,,}" == "true" ]]; then
+  DISPATCH_FORCE_REPLAN="true"
+else
+  DISPATCH_FORCE_REPLAN="false"
+fi
+
 # Use GITHUB_REF if it is a branch or tag to support testing on feature branches
 REF_FLAGS=()
 if [[ -n "${GITHUB_REF:-}" && ( "$GITHUB_REF" == refs/heads/* || "$GITHUB_REF" == refs/tags/* ) ]]; then
@@ -61,5 +75,6 @@ echo "Discussion event → re-dispatching ${WORKFLOW_FILE} for discussion #${DIS
 gh workflow run "$WORKFLOW_FILE" --repo "$REPO" "${REF_FLAGS[@]}" \
   -f discussion="$DISCUSSION_NUMBER" \
   -f target_repo="$TARGET_REPO" \
-  -f dry_run="$DISPATCH_DRY_RUN"
-echo "Dispatched ${WORKFLOW_FILE} (discussion=${DISCUSSION_NUMBER}, target_repo=${TARGET_REPO}, dry_run=${DISPATCH_DRY_RUN})."
+  -f dry_run="$DISPATCH_DRY_RUN" \
+  -f force_replan="$DISPATCH_FORCE_REPLAN"
+echo "Dispatched ${WORKFLOW_FILE} (discussion=${DISCUSSION_NUMBER}, target_repo=${TARGET_REPO}, dry_run=${DISPATCH_DRY_RUN}, force_replan=${DISPATCH_FORCE_REPLAN})."
