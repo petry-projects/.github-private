@@ -178,6 +178,12 @@ jobs:
       # server yet blocks the tool calls ("not permitted"); set the repo variable
       # REVIEW_MCP_ALLOWED_TOOLS (e.g. `mcp__github__*`) to permit them.
       REVIEW_MCP_ALLOWED_TOOLS: ${{ vars.REVIEW_MCP_ALLOWED_TOOLS || '' }}
+      # Downstream-impact pass (epic #748 / discussion #653): annotate a review
+      # with the consumer repos that pin a shared surface the PR changes. Enabled
+      # by default here; set the repo variable DOWNSTREAM_IMPACT_ENABLED=false to
+      # kill-switch it without a code change. Operator guide:
+      # docs/pr-review-agent/downstream-impact.md.
+      DOWNSTREAM_IMPACT_ENABLED: ${{ vars.DOWNSTREAM_IMPACT_ENABLED || 'true' }}
       # Pin via vars.CLAUDE_CODE_VERSION for fully reproducible caching; default
       # 'latest' caches an install indefinitely under that key — flush via the
       # Actions cache UI or bump the variable to pick up new releases.
