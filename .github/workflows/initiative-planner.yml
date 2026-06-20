@@ -67,12 +67,15 @@ concurrency:
 jobs:
   # ── discussion [labeled] bridge ───────────────────────────────────────────────
   # claude-code-action aborts on `discussion` event contexts ("Unsupported event
-  # type: discussion"), so we never plan inline on a discussion event. When a
-  # maintainer adds `idea:approved`, this job resolves the discussion number and
-  # re-invokes THIS workflow via workflow_dispatch — under which the action runs.
+  # type: discussion"), so we never plan inline on a discussion event. Two labels
+  # fire this bridge job, which resolves the discussion number and re-invokes THIS
+  # workflow via workflow_dispatch — under which the action runs:
+  #   - `idea:approved`     → plan the idea (default; idempotent no-op if already planned)
+  #   - `initiative:replan` → re-plan: force_replan=true so apply-plan SUPERSEDES
+  #                           the discussion's existing epic (close old, build fresh)
   # The label stays the human gate; the re-dispatch is an invisible bridge.
   redispatch:
-    if: github.event_name == 'discussion' && github.event.label.name == 'idea:approved'
+    if: github.event_name == 'discussion' && (github.event.label.name == 'idea:approved' || github.event.label.name == 'initiative:replan')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -102,6 +105,9 @@ jobs:
           # self. Fleet callers (#820) live in their own repos and set their host.
           TARGET_REPO: ${{ github.repository }}
           DISCUSSION_NUMBER: ${{ github.event.discussion.number }}
+          # The `initiative:replan` label supersedes an existing epic; `idea:approved`
+          # uses the default idempotent plan path.
+          FORCE_REPLAN: ${{ github.event.label.name == 'initiative:replan' && '1' || '0' }}
         run: bash scripts/initiative-planner/redispatch.sh
 
   plan:
