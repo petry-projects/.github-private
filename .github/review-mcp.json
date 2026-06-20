@@ -1,7 +1,7 @@
 {
   "mcpServers": {
     "context7": {
-      "type": "sse",
+      "type": "http",
       "url": "https://mcp.context7.com/mcp"
     }
   }
