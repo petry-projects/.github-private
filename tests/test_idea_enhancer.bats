@@ -193,3 +193,74 @@ EOF
   [ "$status" -ne 0 ]
   [[ "$output" == *"owner/repo"* ]]
 }
+
+# ── cross-repo target_repo parameterization (#821) ────────────────────────────
+# The central enhancer workflow can run for a NON-self target repo: candidates
+# are gathered FROM, and the enhancement comment is posted IN, that target repo.
+# The scripts already take REPO; these assert REPO threads through to every
+# gh/GraphQL call for a target repo that is NOT .github-private. gh is stubbed so
+# no network is touched.
+
+# A logging `gh` mock that records every invocation and serves the bulk-scan
+# discussions query (one fresh human-authored Ideas candidate).
+_install_logging_gh_mock() {
+  cat > "$MOCK_BIN/gh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$GH_LOG"
+if [[ "$*" == *"addDiscussionComment"* ]]; then
+  echo 'https://github.com/acme/widgets/discussions/101#comment'
+elif [[ "$*" == *"discussion(number:"* ]]; then
+  echo '{"data":{"repository":{"discussion":{"id":"D_target"}}}}'
+else
+  cat <<'JSON'
+{
+  "data": { "repository": { "discussions": {
+    "pageInfo": { "hasNextPage": false, "endCursor": "" },
+    "nodes": [
+      { "number": 101, "title": "Human idea A", "url": "u/101",
+        "createdAt": "2026-06-01T00:00:00Z", "updatedAt": "2026-06-01T00:00:00Z",
+        "closed": false, "category": { "name": "Ideas" },
+        "author": { "login": "alice", "__typename": "User" },
+        "labels": { "nodes": [] },
+        "comments": { "totalCount": 0, "nodes": [] },
+        "bodyText": "A plain human idea." }
+    ]
+  } } }
+}
+JSON
+fi
+EOF
+  chmod +x "$MOCK_BIN/gh"
+}
+
+@test "gather-candidates gathers candidates FROM the target repo (non-self)" {
+  GH_LOG="$TMP/gh.log"
+  export GH_LOG
+  _install_logging_gh_mock
+  REPO="acme/widgets" CONTEXT_PATH="$CONTEXT" run bash "$ENH_DIR/gather-candidates.sh"
+  [ "$status" -eq 0 ]
+  # GraphQL discussions query targets the target repo's owner/name.
+  grep -qF -- "owner=acme" "$GH_LOG"
+  grep -qF -- "name=widgets" "$GH_LOG"
+  ! grep -qF -- ".github-private" "$GH_LOG"
+  # The assembled context records the target repo and keeps the one candidate.
+  [ "$(jq -r '.repo' "$CONTEXT")" = "acme/widgets" ]
+  [ "$(jq '.candidates | length' "$CONTEXT")" -eq 1 ]
+}
+
+@test "post-enhancement comments on the discussion IN the target repo (non-self, live)" {
+  GH_LOG="$TMP/gh.log"
+  export GH_LOG
+  _install_logging_gh_mock
+  BODY="$TMP/body.md"
+  printf 'A concrete enhancement to your idea.' > "$BODY"
+  # Live path (no DRY_RUN): resolve the discussion id then post the comment, both
+  # against the TARGET repo's owner/name.
+  REPO="acme/widgets" DISCUSSION_NUMBER="101" BODY_PATH="$BODY" \
+    run bash "$ENH_DIR/post-enhancement.sh"
+  [ "$status" -eq 0 ]
+  grep -qF -- "owner=acme" "$GH_LOG"
+  grep -qF -- "name=widgets" "$GH_LOG"
+  grep -qF -- "addDiscussionComment" "$GH_LOG"
+  ! grep -qF -- ".github-private" "$GH_LOG"
+}
