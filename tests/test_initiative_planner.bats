@@ -307,7 +307,8 @@ teardown() { rm -rf "$TMP"; }
 # repo that is NOT .github-private. gh is stubbed so no network is touched.
 
 @test "gather-context gathers context FROM the target repo (non-self)" {
-  MOCK_BIN="$(mktemp -d)"
+  MOCK_BIN="$TMP/mock_bin_gather"
+  mkdir -p "$MOCK_BIN"
   GH_LOG="$TMP/gh.log"
   export GH_LOG
   export PATH="$MOCK_BIN:$PATH"
@@ -335,12 +336,11 @@ EOF
   ! grep -qF -- ".github-private" "$GH_LOG"
   # The assembled context records the target repo.
   [ "$(jq -r '.repo' "$CTX")" = "acme/widgets" ]
-
-  rm -rf "$MOCK_BIN"
 }
 
 @test "apply-plan creates the epic IN the target repo (non-self, live)" {
-  MOCK_BIN="$(mktemp -d)"
+  MOCK_BIN="$TMP/mock_bin_apply"
+  mkdir -p "$MOCK_BIN"
   GH_LOG="$TMP/gh.log"
   export GH_LOG
   export PATH="$MOCK_BIN:$PATH"
@@ -362,8 +362,6 @@ EOF
   [ "$status" -eq 0 ]
   grep -qF -- "api repos/acme/widgets/issues" "$GH_LOG"
   ! grep -qF -- "repos/petry-projects/.github-private/issues" "$GH_LOG"
-
-  rm -rf "$MOCK_BIN"
 }
 
 # ── reviewed-plan apply path (#604) ───────────────────────────────────────────

@@ -92,6 +92,7 @@ teardown() {
 }
 
 @test "passes target_repo defaulting to the dispatch repo (dogfood self path)" {
+  unset TARGET_REPO
   run bash "$SCRIPT"
   [ "$status" -eq 0 ]
   grep -qF -- "-f target_repo=petry-projects/.github-private" "$GH_LOG"
