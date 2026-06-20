@@ -22,6 +22,11 @@ on:
     - cron: '0 13 * * 1' # Monday 13:00 UTC (after the Fri ideation run lands)
   workflow_dispatch:
     inputs:
+      target_repo:
+        description: 'Target repo (owner/repo) to triage FOR — read its Ideas backlog and refresh its Idea Promotion Queue issue. Empty => this repo (the dogfood/self path).'
+        required: false
+        default: ''
+        type: string
       dry_run:
         description: 'Log the intended queue update to an artifact instead of writing the tracking issue'
         required: false
@@ -36,7 +41,10 @@ on:
 permissions: {}
 
 concurrency:
-  group: idea-triage
+  # One triage pass per target repo at a time; never cancel an in-flight run.
+  # Keying on the target repo stops two fleet repos from colliding on a single
+  # global lock (same convention as initiative-planner.yml).
+  group: idea-triage-${{ github.event.inputs.target_repo || github.repository }}
   cancel-in-progress: false
 
 jobs:
@@ -49,7 +57,14 @@ jobs:
       discussions: read    # read the Ideas backlog
       id-token: write       # claude-code-action OIDC
     env:
-      REPO: ${{ github.repository }}
+      # REPO is the TARGET repo to triage for; empty target_repo => this repo (self).
+      REPO: ${{ github.event.inputs.target_repo || github.repository }}
+      # Token for every WRITE to the TARGET repo (gather reads + the queue-issue
+      # upsert). GITHUB_TOKEN is scoped only to .github-private, so it is valid for
+      # the self path only; cross-repo runs use GH_PAT_WORKFLOWS (same pattern as
+      # initiative-planner.yml). S1 (#818) will replace this with a minted GitHub
+      # App token for tighter scoping.
+      TARGET_GH_TOKEN: ${{ (github.event.inputs.target_repo == '' || github.event.inputs.target_repo == github.repository) && secrets.GITHUB_TOKEN || secrets.GH_PAT_WORKFLOWS }}
       DRY_RUN: ${{ inputs.dry_run && '1' || '0' }}
     steps:
       - name: Checkout agent repo
@@ -65,21 +80,26 @@ jobs:
 
       - name: Gather Ideas backlog
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Reads the TARGET repo's Ideas backlog + open epics.
+          GH_TOKEN: ${{ env.TARGET_GH_TOKEN }}
         run: bash scripts/idea-triage/gather-ideas.sh
 
       - name: Rank ripeness and refresh the queue
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ env.TARGET_GH_TOKEN }}
         uses: anthropics/claude-code-action@d5726de019ec4498aa667642bc3a80fca83aa102 # v1.0.148
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+          # CRITICAL (same gotcha as initiative-planner): pass the target-repo
+          # write token explicitly so the queue-issue upsert applies on the TARGET
+          # repo. The action's own app token lacks them and the write would fail
+          # silently.
+          github_token: ${{ env.TARGET_GH_TOKEN }}
           claude_args: |
             --model ${{ inputs.model || 'claude-sonnet-4-6' }}
             --allowedTools Bash,Read,Glob,Grep
           prompt: |
-            You are an **idea-triage analyst** for the ${{ github.repository }} repo.
+            You are an **idea-triage analyst** for the ${{ env.REPO }} repo.
             Your job: decide which open Ideas are RIPE to promote into a tracked
             initiative, and refresh the promotion-queue tracking issue. You do NOT
             approve anything — a human reads your queue and adds `idea:approved`.
@@ -131,7 +151,7 @@ jobs:
             Upsert the single tracking issue (idempotent; honors `$DRY_RUN`):
 
             ```bash
-            REPO="${{ github.repository }}" QUEUE_BODY_PATH="$QUEUE_BODY_PATH" \
+            REPO="$REPO" QUEUE_BODY_PATH="$QUEUE_BODY_PATH" \
             bash scripts/idea-triage/upsert-queue.sh
             ```
 
