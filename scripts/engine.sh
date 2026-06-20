@@ -5013,6 +5013,17 @@ run_writer() {
     fi
     rm -f "$_tmp"
   fi
+
+  # Map rate-limit to exit code 2 for caller to detect; parse reset time for
+  # marker embedding. Use the file-based helpers to avoid OOM on large captures.
+  # Runs AFTER the persist/summary block above so a rate-limited session is also
+  # captured to the run summary; reads the raw capture ($_tmp) left intact above.
+  if [ "$rc" -ne 0 ] && [ -n "$_tmp" ] && is_rate_limited_files "$_tmp"; then
+    parse_reset_time_files "$_tmp"
+    rm -f "$_tmp"
+    return 2
+  fi
+  [ -n "$_tmp" ] && rm -f "$_tmp"
   return "$rc"
 }
 
