@@ -223,9 +223,10 @@ repo's own PR profile (mostly Bash/YAML) rarely hits those, so the local quality
 floor, not a ceiling.
 
 **Latency (AC #4).** Measured directly from the eval (stream-json `duration_ms`): library reviews
-+~30 s with Context7 on; non-library reviews unchanged. The daily health workflow
-(`scripts/pr_review_health.sh`) will track the same delta on live runs once Context7 reaches the
-`stable` CI path.
++~30 s with Context7 on; non-library reviews unchanged. Live run durations can be monitored directly
+via GitHub Actions run history once Context7 reaches the `stable` CI path — note that
+`scripts/pr_review_health.sh` focuses on failure analysis (it exits early on all-green runs and only
+downloads/analyzes failed-run logs), so it does **not** compile latency deltas for successful runs.
 
 **Rollout recommendation.** Keep Context7 wired on `.github-private` — it is **zero-cost when
 irrelevant** (the agent skips it) and adds **auditable grounding** when a PR touches a dependency. The
