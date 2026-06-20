@@ -215,6 +215,36 @@ _source_engine() {
   [ "$status" -eq 0 ]
 }
 
+# ── Active config is the zero-auth Context7 server (issue #816) ───────────────
+# The pilot starter is Context7 over its zero-auth HTTP endpoint — NOT the
+# plan-blocked GitHub secret-scanning server (advanced_security unavailable on
+# this repo's plan). Pin the committed review-mcp.json to that shape.
+
+@test "active config: review-mcp.json configures the zero-auth context7 server" {
+  local cfg="$SCRIPT_DIR/.github/review-mcp.json"
+  run jq -e '.mcpServers.context7.type == "http"' "$cfg"
+  [ "$status" -eq 0 ]
+  run jq -r '.mcpServers.context7.url' "$cfg"
+  [ "$status" -eq 0 ]
+  [ "$output" = "https://mcp.context7.com/mcp" ]
+}
+
+@test "active config: context7 server carries no auth (zero-auth, no headers/secret)" {
+  local cfg="$SCRIPT_DIR/.github/review-mcp.json"
+  # context7 must exist AND carry no headers object → no Authorization/API-key
+  # smuggled in. Guarding on existence keeps this from passing when context7 is
+  # missing entirely (which test "configures the zero-auth context7 server"
+  # already catches, but this assertion should stand on its own).
+  run jq -e '.mcpServers.context7 != null and (.mcpServers.context7 | has("headers") | not)' "$cfg"
+  [ "$status" -eq 0 ]
+}
+
+@test "active config: plan-blocked github secret-scanning server is gone" {
+  local cfg="$SCRIPT_DIR/.github/review-mcp.json"
+  run jq -e '.mcpServers | has("github")' "$cfg"
+  [ "$status" -ne 0 ]
+}
+
 # ── Triage tier: never gets MCP flags ────────────────────────────────────────
 
 @test "triage: MCP knob set → triage still uses --disallowed-tools only, no MCP" {
