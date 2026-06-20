@@ -1,0 +1,11 @@
+{
+  "_test_expected_intent": "issue",
+  "action": "dev-lead-issue-retry",
+  "client_payload": {
+    "issue_number": 478,
+    "repo": "petry-projects/.github-private",
+    "attempt": 1
+  },
+  "repository": { "full_name": "petry-projects/.github-private" },
+  "sender": { "login": "github-actions[bot]", "type": "Bot" }
+}

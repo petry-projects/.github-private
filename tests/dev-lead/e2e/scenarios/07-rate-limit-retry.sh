@@ -504,16 +504,73 @@ GHEOF
     all_pass=false
   fi
 
+  # ── Part I: dev-lead-retry.sh dry-run requeues a failed initial issue (#781) ─
+  log ""
+  log "Part I: dev-lead-retry.sh dry-run identifies a failed dev-lead issue and would re-dispatch"
+
+  cat > "${STUB_ENGINE_DIR}/gh" << 'GHEOF'
+#!/usr/bin/env bash
+case "$*" in
+  *"repo list"*)
+    echo '[{"nameWithOwner":"petry-projects/test-repo","isFork":false}]' ;;
+  *startswith*)
+    # open_issue_pr_exists probe → no existing PR for the issue
+    echo "0" ;;
+  *"issues/478/comments"*)
+    # post-jq shape (gh applies --jq '[.[].body]'): array of comment-body strings
+    echo '["<!-- dev-lead-issue 478 status=failed attempt=1 reason=engine-error run=99 -->"]' ;;
+  *"issues?state=open"*)
+    # scan_repo_issues enumeration (post-jq shape: array of {number})
+    echo '[{"number":478}]' ;;
+  *"pulls?state=open"*)
+    # no open PRs (keeps the PR scan a no-op so we isolate the issue path)
+    echo '[]' ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "${STUB_ENGINE_DIR}/gh"
+
+  local output_i exit_i
+  set +e
+  output_i=$(
+    PATH="${STUB_ENGINE_DIR}:${PATH}" \
+    GITHUB_ENV="${GITHUB_ENV_FILE}" \
+    GITHUB_OUTPUT="/dev/null" \
+    TARGET_ORG="petry-projects" \
+    DRY_RUN="true" \
+    DISPATCH_DELAY_SEC="0" \
+    NOW_ISO="2026-05-16T20:00:00Z" \
+    bash "${RETRY_SCRIPT}" 2>&1
+  )
+  exit_i=$?
+  set -e
+
+  log "Part I exit code: ${exit_i}"
+  echo "${output_i}" | sed 's/^/  /'
+
+  if assert_eq "$exit_i" "0" "${SCENARIO_NAME}(I): retry script exits 0"; then
+    true
+  else
+    all_pass=false
+  fi
+
+  if echo "${output_i}" | grep -q "would dispatch dev-lead-issue-retry"; then
+    echo "[PASS] ${SCENARIO_NAME}(I): retry script identified failed issue #478 and would re-dispatch"
+  else
+    echo "[FAIL] ${SCENARIO_NAME}(I): retry script did not requeue failed issue #478"
+    all_pass=false
+  fi
+
   # ── Result ─────────────────────────────────────────────────────────────────
   if [ "${all_pass}" = "true" ]; then
     log "[PASS] ${SCENARIO_NAME}: rate-limit retry infrastructure works correctly"
     record_result "${SCENARIO_NAME}" "PASS" \
-      "rate-limited-exit2 no-exhaustion-count retriable-idempotency fix-reviews-marker on-mention-ack retry-scan human-pr-normalize"
+      "rate-limited-exit2 no-exhaustion-count retriable-idempotency fix-reviews-marker on-mention-ack retry-scan human-pr-normalize issue-retry-scan"
     exit 0
   else
     err "[FAIL] ${SCENARIO_NAME}: one or more assertions failed"
     record_result "${SCENARIO_NAME}" "FAIL" \
-      "exitA=${exit_a} exitB=${exit_b} exitC=${exit_c} exitD=${exit_d} exitE=${exit_e} exitF=${exit_f} exitG=${exit_g} exitH=${exit_h}"
+      "exitA=${exit_a} exitB=${exit_b} exitC=${exit_c} exitD=${exit_d} exitE=${exit_e} exitF=${exit_f} exitG=${exit_g} exitH=${exit_h} exitI=${exit_i}"
     exit 1
   fi
 }
