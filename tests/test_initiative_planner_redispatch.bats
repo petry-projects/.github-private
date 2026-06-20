@@ -111,12 +111,14 @@ teardown() {
   grep -qF -- "-f force_replan=false" "$GH_LOG"
 }
 
-@test "honors FORCE_REPLAN=1 or FORCE_REPLAN=true (initiative:replan path)" {
+@test "honors FORCE_REPLAN=1 (initiative:replan path)" {
   export FORCE_REPLAN="1"
   run bash "$SCRIPT"
   [ "$status" -eq 0 ]
   grep -qF -- "-f force_replan=true" "$GH_LOG"
+}
 
+@test "honors FORCE_REPLAN=true (initiative:replan path)" {
   export FORCE_REPLAN="true"
   run bash "$SCRIPT"
   [ "$status" -eq 0 ]
