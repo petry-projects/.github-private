@@ -45,6 +45,14 @@ security/quality signal on top.
 
 > **Availability caveat.** GitHub MCP **secret scanning is GA**; **dependency scanning is public
 > preview**, not GA. Do not represent the preview surface as production-ready.
+>
+> **Plan caveat for this repo (#816).** GitHub MCP secret scanning's `run_secret_scanning` tool is a
+> content-scan API gated on the repository's **`advanced_security`** flag (full GitHub Advanced
+> Security) — a *different* flag than Secret Protection / push protection — and that flag is **not
+> available on this private repo's plan** (confirmed identically from two independent tokens). So on
+> `.github-private` the GitHub-MCP secret-scanning starter only ever emits an "unavailable" degradation
+> warning; the **actual pilot starter here is Context7** (zero-auth). Interim secret coverage stays
+> intact via the existing `Secret scan (gitleaks)` CI check. See §5.
 
 Suggested per-stack starters:
 
@@ -140,17 +148,63 @@ implemented in `scripts/engine.sh` (`_emit_mcp_failure_warning`) and regression-
 input sanitization). A downstream MCP pilot ([#681](https://github.com/petry-projects/.github-private/issues/681))
 happens **only after** that in-flight security work lands — not before.
 
-**Revised starter recommendation.** The original #650 proposal (2026-05-29) suggested starting with
-either Context7 or GitHub MCP secret scanning. The **2026-06-13 weekly update revised this**: because
-GitHub MCP secret scanning is now **GA** (and dependency scanning is in public preview), both require
-no authentication beyond `GITHUB_TOKEN`, and both integrate with existing repo security settings, the
-lowest-risk first step is now **GitHub MCP Server (secret + dependency scanning)** rather than
-Context7. This aligns with the security-first priorities and delivers immediate, measurable value
-(catching secrets/vulnerabilities during agent code generation) before adding library-documentation
-enrichment via Context7.
+**Revised starter recommendation (2026-06-13 weekly update).** The original #650 proposal (2026-05-29)
+suggested starting with either Context7 or GitHub MCP secret scanning. The 2026-06-13 weekly update
+revised this toward **GitHub MCP Server (secret + dependency scanning)** as the lowest-risk first step,
+on the reasoning that secret scanning was GA, required no auth beyond `GITHUB_TOKEN`, and integrated
+with existing repo security settings.
 
-> **Net guidance:** for the *pilot*, start with **GitHub MCP secret scanning**. For *broad per-stack
-> enrichment* afterward, Context7 remains the lowest-friction add for every stack.
+**Outcome of the Phase-2 pilot (#681 → #816): the GitHub-MCP starter is plan-gated here; Context7 is
+the actual pilot starter.** The MCP plumbing was proven end-to-end — #809's env-mapping fix landed, so
+`REVIEW_MCP_ALLOWED_TOOLS` reaches the live job env, the GitHub MCP server connects, and its tools are
+reachable. But the recommended `run_secret_scanning` tool is a content-scan API gated on the repo's
+**`advanced_security`** flag (full GitHub Advanced Security) — a *different* flag than Secret Protection
+/ push protection — and **that flag is not available on this private repo's plan** (confirmed
+identically from two independent tokens). Keeping the GitHub entry configured therefore only emits an
+"unavailable" degradation warning on every review. #681 closed **not-planned** on that starter, and
+both the pilot doc and #681's AC #1 already named **Context7 as the zero-auth fallback**. #816 executes
+that path:
+
+- `.github/review-mcp.json` now configures the **zero-auth Context7 HTTP endpoint**
+  (`https://mcp.context7.com/mcp`, `"type": "http"`) instead of the plan-blocked github/secret-scanning
+  server. No `npx` install and no secret are needed — the remote endpoint is zero-install and zero-auth.
+  (Restore the github entry later if/when `advanced_security` is licensed.)
+- The repo variable `REVIEW_MCP_ALLOWED_TOOLS` is set to `mcp__context7__*`, permitting Context7's
+  tools (`mcp__context7__resolve-library-id`, `mcp__context7__get-library-docs`). Context7 accepts an
+  optional `CONTEXT7_API_KEY` header for higher rate limits, but zero-auth is the point of this pilot —
+  no secret is added.
+- Interim secret coverage stays intact via the existing `Secret scan (gitleaks)` CI check.
+- Graceful degradation is unchanged: if Context7 is unreachable the review still completes and emits a
+  single `::warning::[mcp]` annotation naming the server (see §4; regression-tested in
+  `tests/dev-lead/unit/test_engine_mcp.bats`).
+
+> **Net guidance:** on this repo the *pilot* starter is **Context7** (zero-auth library/framework docs),
+> because the GitHub-MCP secret-scanning starter is plan-gated (`advanced_security` unavailable). For
+> *broad per-stack enrichment* afterward, Context7 remains the lowest-friction add for every stack; add
+> GitHub MCP secret scanning once `advanced_security` is licensed.
+
+### 5.1 Pilot enablement & rollout recommendation (#816)
+
+**What this change establishes.** The config + allowlist are now in place: `.github/review-mcp.json`
+points at the zero-auth Context7 endpoint and `REVIEW_MCP_ALLOWED_TOOLS=mcp__context7__*` permits its
+tools (`mcp__context7__resolve-library-id`, `mcp__context7__get-library-docs`). Because #809's
+env-mapping fix already proved the allowlist reaches the live job env and a `"type": "http"` MCP server
+connects, the expected behavior is that Context7 connects and its tools are **permitted** (no "not
+permitted" errors) on the next review run — the AC #2 dry-run check verifies this on a live job.
+
+**What Context7 adds.** Enrichment over base review is **version-aware library/framework
+documentation** — surfacing deprecated-API usage and breaking changes that static training data misses,
+which the agent could not flag before. Per AC #3, qualitative findings from a small sample of
+Context7-on reviews should be captured here as they accrue.
+
+**Latency.** Latency delta vs. server-off is measured with the existing review-health tooling
+(`scripts/pr_review_health.sh` / the daily health workflow) — no new harness (AC #4). Record the
+observed delta here once the daily workflow has run with Context7 on.
+
+**Rollout recommendation.** Keep Context7 enabled on `.github-private` as the live pilot and let the
+daily health workflow accumulate latency/quality signal. **Broader rollout to downstream repos stays a
+separate, explicit human decision** — do not auto-enable it elsewhere from this issue. Revisit the
+GitHub-MCP secret-scanning starter only if/when the repo's plan gains `advanced_security`.
 
 ---
 
