@@ -53,10 +53,15 @@ permissions:
 
 jobs:
   review:
-    uses: petry-projects/.github-private/.github/workflows/pr-review.yml@pr-review/stable
+    # Ring 0 (canary): .github-private dogfoods the `next` channel before a
+    # release is promoted to `pr-review/stable` (the fleet). Per the ring strategy
+    # (docs/initiatives/agentic-release-strategy.md §5), self-host runs `next` so
+    # regressions surface here first. Promotion to `stable` is a central tag move
+    # after this ring proves healthy.
+    uses: petry-projects/.github-private/.github/workflows/pr-review.yml@pr-review/next
     with:
       # Pin the agent's own script checkout to the same channel (#506).
-      agent_ref: pr-review/stable
+      agent_ref: pr-review/next
       # Forward manual/dispatch inputs; empty for event triggers (the reusable
       # then derives everything from the inherited github.event context).
       pr_url: ${{ inputs.pr_url || '' }}
