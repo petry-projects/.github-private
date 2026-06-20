@@ -43,6 +43,8 @@ jobs:
         run: |
           scripts/run-bats.sh \
             tests/fleet_report.bats \
+            tests/fleet_stub_drift.bats \
+            tests/test_initiative_canary.bats \
             tests/token_report.bats \
             tests/auto_rebase_health.bats \
             tests/model_pricing.bats \
