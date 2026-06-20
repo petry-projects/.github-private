@@ -1,0 +1,132 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# SOURCE OF TRUTH: petry-projects/.github-private/.github/workflows/initiative-planner-canary.yml
+#
+# AGENTS — READ BEFORE EDITING:
+#   • Post-merge canary for the idea:approved → initiative-planner dispatch path
+#     (#822, closes #655 prevention item 3 "smoke-monitor the live trigger").
+#     Fires a DRY-RUN dispatch of initiative-planner.yml against a fixture Ideas
+#     Discussion and alerts if the run fails or surfaces the regression
+#     fingerprint "Unsupported event type: discussion". All logic lives in
+#     scripts/initiative_canary.sh (unit-tested in tests/test_initiative_canary.bats).
+#   • DRY-RUN only — the planner's apply-plan logs intended mutations to an
+#     artifact instead of creating an epic/issues, so the canary creates nothing.
+#   • The dispatch needs GH_PAT_WORKFLOWS, not github.token: a workflow_dispatch
+#     fired with GITHUB_TOKEN is accepted but never starts a run (loop prevention)
+#     — same constraint as scripts/initiative-planner/redispatch.sh.
+#   • The fixture Discussion number is configured via the repo variable
+#     INITIATIVE_CANARY_DISCUSSION (override per-run with the `discussion` input).
+#   • This is a repo-specific workflow with no org template — see AGENTS.md
+#     (Workflow Files exception). Do not let template syncs remove it.
+# ─────────────────────────────────────────────────────────────────────────────
+name: Initiative Planner Canary
+
+on:
+  schedule:
+    # Daily at 06:30 UTC — just after the Actions Fleet Monitor (06:00) so the
+    # stub-drift signal and the live-trigger signal land in the same window.
+    - cron: '30 6 * * *'
+  workflow_dispatch:
+    inputs:
+      discussion:
+        description: "Fixture Ideas Discussion number to dry-run plan (overrides INITIATIVE_CANARY_DISCUSSION)"
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: initiative-planner-canary
+  cancel-in-progress: true
+
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CANARY_DISCUSSION: ${{ inputs.discussion || vars.INITIATIVE_CANARY_DISCUSSION }}
+    steps:
+      - name: Checkout agent repo
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Guard — fixture Discussion configured
+        id: guard
+        run: |
+          if [ -z "${CANARY_DISCUSSION}" ]; then
+            echo "::warning::No fixture Discussion configured — set repo variable INITIATIVE_CANARY_DISCUSSION or dispatch with 'discussion'. Skipping canary."
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run initiative-planner canary (dry-run)
+        if: steps.guard.outputs.configured == 'true'
+        env:
+          # PAT required — a workflow_dispatch fired with GITHUB_TOKEN never starts a run.
+          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
+          REPO: ${{ github.repository }}
+          CANARY_OUT: initiative_canary.md
+        run: bash scripts/initiative_canary.sh
+
+      - name: Alert on canary failure
+        if: always() && env.CANARY_FAILED == 'true' && hashFiles('initiative_canary.md') != ''
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const fs = require('fs');
+            const MAX = 65000;
+            let report = fs.readFileSync('initiative_canary.md', 'utf8');
+            if (!report.trim()) { core.setFailed('Canary report is empty'); return; }
+
+            const runUrl = `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`;
+            if (report.length > MAX) {
+              report = report.slice(0, MAX) +
+                `\n\n---\n_Report truncated — full output in the [workflow run summary](${runUrl})._`;
+            }
+
+            const LABEL = 'initiative-canary';
+            const TITLE = '🔴 Initiative-planner canary failing';
+
+            // Ensure the tracking labels exist.
+            for (const [name, color, description] of [
+              [LABEL,         'b60205', 'idea:approved → planner canary failure'],
+              ['dev-lead',     'd93f0b', 'Requires dev-lead attention'],
+              ['health-check', '0e8a16', 'Automated health check result'],
+            ]) {
+              try {
+                await github.rest.issues.createLabel({ owner: context.repo.owner, repo: context.repo.repo, name, color, description });
+              } catch (e) {
+                if (e.status !== 422) throw e;  // 422 = already exists
+              }
+            }
+
+            // Find-or-create the single tracking issue; each failure posts a comment.
+            const existing = await github.paginate(github.rest.issues.listForRepo, {
+              owner: context.repo.owner, repo: context.repo.repo,
+              labels: LABEL, state: 'open', per_page: 100,
+            });
+            let issue = existing.find(i => i.title === TITLE);
+            if (!issue) {
+              const created = await github.rest.issues.create({
+                owner: context.repo.owner, repo: context.repo.repo,
+                title: TITLE, body: report,
+                labels: [LABEL, 'dev-lead', 'health-check'],
+              });
+              issue = created.data;
+              core.notice(`Created canary issue #${issue.number}: ${issue.html_url}`);
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: issue.number, body: report,
+              });
+              core.notice(`Updated canary issue #${issue.number}: ${issue.html_url}`);
+            }
+
+      - name: Annotate clean canary
+        if: steps.guard.outputs.configured == 'true' && env.CANARY_FAILED != 'true'
+        run: echo "::notice::Initiative-planner canary passed — the idea:approved dispatch path is healthy."

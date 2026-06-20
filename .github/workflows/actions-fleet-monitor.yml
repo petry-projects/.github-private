@@ -283,6 +283,79 @@ jobs:
           {"event_type":"dev-lead-ci-failure","client_payload":{"source":"fleet-monitor","count":"${{ env.HIGH_FAILURE_COUNT }}"}}
           EOF
 
+      - name: Track initiative-planner stub drift
+        # #822 AC#3 — a per-repo planner stub that no longer matches the canonical
+        # template SHA is exactly the silent-revert class of failure (#655).
+        if: env.HAS_STUB_DRIFT == 'true' && hashFiles('fleet_stub_drift.json') != ''
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const fs = require('fs');
+            const items = JSON.parse(fs.readFileSync('fleet_stub_drift.json', 'utf8').trim() || '[]');
+            if (!items.length) { core.info('No drifted stubs to track.'); return; }
+
+            const today = new Date().toISOString().split('T')[0];
+            const runUrl = `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`;
+            const rows = items.map(i =>
+              `| \`${i.repo}\` | \`${(i.repo_sha || '').slice(0,7)}\` | \`${(i.canonical_sha || '').slice(0,7)}\` |`).join('\n');
+            const body = [
+              `## 🔴 Initiative-planner stub drift — ${items.length} repo(s)`,
+              '',
+              'These enrolled repos have an `initiative-planner.yml` stub whose blob SHA no longer',
+              'matches the canonical org template. Re-sync them from the template:',
+              '',
+              '| Repo | Stub SHA | Canonical SHA |',
+              '|---|---|---|',
+              rows,
+              '',
+              `> _Detected by [Fleet Monitor run](${runUrl}) on ${today}._`,
+            ].join('\n');
+
+            const LABEL = 'fleet-stub-drift';
+            const TITLE = '[Fleet Monitor] Initiative-planner stub drift';
+            for (const [name, color, description] of [
+              [LABEL,         'b60205', 'Per-repo workflow stub drifted from the canonical template'],
+              ['dev-lead',     'd93f0b', 'Requires dev-lead attention'],
+              ['health-check', '0e8a16', 'Automated health check result'],
+            ]) {
+              try {
+                await github.rest.issues.createLabel({ owner: context.repo.owner, repo: context.repo.repo, name, color, description });
+              } catch (e) { if (e.status !== 422) throw e; }
+            }
+
+            const existing = await github.paginate(github.rest.issues.listForRepo, {
+              owner: context.repo.owner, repo: context.repo.repo,
+              labels: LABEL, state: 'open', per_page: 100,
+            });
+            const issue = existing.find(i => i.title === TITLE);
+            if (issue) {
+              await github.rest.issues.update({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: issue.number, body,
+              });
+              core.notice(`Updated stub-drift issue #${issue.number}: ${issue.html_url}`);
+            } else {
+              const created = await github.rest.issues.create({
+                owner: context.repo.owner, repo: context.repo.repo,
+                title: TITLE, body, labels: [LABEL, 'dev-lead', 'health-check'],
+              });
+              core.notice(`Created stub-drift issue #${created.data.number}: ${created.data.html_url}`);
+            }
+
+      - name: Dispatch dev-lead for stub drift
+        if: env.HAS_STUB_DRIFT == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
+        run: |
+          # github.token events do not trigger issues:labeled workflows; use the
+          # PAT to fire repository_dispatch so Dev-Lead Agent is explicitly woken.
+          gh api "repos/${{ github.repository }}/dispatches" \
+            -X POST \
+            --input - <<EOF
+          {"event_type":"dev-lead-ci-failure","client_payload":{"source":"fleet-monitor-stub-drift","count":"${{ env.STUB_DRIFT_COUNT }}"}}
+          EOF
+
       - name: Summarize token usage (org-wide)
         # Runs after all alerting steps so a token-report failure or timeout does
         # not prevent monitoring findings from being created or dispatched.
@@ -295,6 +368,6 @@ jobs:
         run: bash scripts/token_report.sh >> "$GITHUB_STEP_SUMMARY"
 
       - name: Annotate clean run
-        if: env.HAS_FAILURES != 'true'
+        if: env.HAS_FAILURES != 'true' && env.HAS_STUB_DRIFT != 'true'
         run: |
-          echo "::notice::Fleet monitor passed — all workflows in ${ORG} are healthy over the last ${LOOKBACK_DAYS} day(s)."
+          echo "::notice::Fleet monitor passed — all workflows in ${ORG} are healthy and every initiative-planner stub matches the canonical template over the last ${LOOKBACK_DAYS} day(s)."
