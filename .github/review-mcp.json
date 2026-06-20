@@ -1,13 +1,8 @@
 {
   "mcpServers": {
-    "github": {
+    "context7": {
       "type": "http",
-      "url": "https://api.githubcopilot.com/mcp/",
-      "headers": {
-        "Authorization": "Bearer ${GH_TOKEN}",
-        "X-MCP-Toolsets": "secret_protection",
-        "X-MCP-Tools": "run_secret_scanning"
-      }
+      "url": "https://mcp.context7.com/mcp"
     }
   }
 }
