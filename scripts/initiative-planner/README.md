@@ -13,7 +13,7 @@ create-story template, which `plan.schema.json` mirrors field-for-field.
 
 | File | Role |
 |------|------|
-| `redispatch.sh` | Bridge the `discussion [labeled]` trigger to `workflow_dispatch` (claude-code-action rejects `discussion` event contexts). Fired with a PAT so the dispatch actually starts a run. |
+| `redispatch.sh` | Bridge the `discussion [labeled]` trigger to `workflow_dispatch` (claude-code-action rejects `discussion` event contexts). Fired with a PAT so the dispatch actually starts a run. Forwards `force_replan=true` when the firing label is `initiative:replan` (vs the default `idea:approved` plan path). |
 | `gather-context.sh` | Fetch the approved Discussion + repo context → `$CONTEXT_PATH`; export `DISCUSSION_NODE_ID`. |
 | `plan.schema.json` | The plan contract Bob must emit (epic + stories + `blocked_by`). |
 | `validate-plan.py` | Schema + semantic checks: unique ids, acyclic DAG, an entry point, no dangling edges. |
@@ -85,10 +85,17 @@ cat /tmp/plan.jsonl | jq .
   re-dispatching / re-toggling the label never silently mints a duplicate epic +
   DAG. **Default:** if an open `initiative` epic already exists for the
   discussion, it creates **nothing** and points the discussion back at the
-  existing epic. **`FORCE_REPLAN=1`** (the `force_replan` workflow input) instead
+  existing epic. **`FORCE_REPLAN=1`** (the `force_replan` workflow input, or the
+  **`initiative:replan`** discussion label) instead
   *supersedes*: it builds the fresh epic/DAG, then **closes (never deletes)** the
   old epic and its sub-issues with a "superseded by #NEW" note, keeping history
   and inbound references resolvable. The agent must always run `apply-plan.sh`
   and let the script make this decision — it must not pre-judge "already planned"
   and skip (the failure mode that left discussion #653's re-runs as silent
   no-ops).
+- **Re-plan from the discussion (`initiative:replan`).** Adding the
+  `initiative:replan` label to an Ideas Discussion fires the same redispatch
+  bridge as `idea:approved`, but threads `force_replan=true` through to
+  `apply-plan.sh` — so a maintainer can supersede an already-planned epic straight
+  from the discussion, with no manual `workflow_dispatch`. The label must exist in
+  the repo's label set (one-time config, like `idea:approved`).
