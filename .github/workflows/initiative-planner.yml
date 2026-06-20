@@ -26,6 +26,11 @@ on:
         description: 'Ideas Discussion number to plan into an initiative'
         required: true
         type: string
+      target_repo:
+        description: 'Target repo (owner/repo) to plan FOR — read the Discussion, create the epic + DAG, post the reply there. Empty => this repo (the dogfood/self path).'
+        required: false
+        default: ''
+        type: string
       dry_run:
         description: 'Plan only — log intended issue/DAG mutations to an artifact instead of creating them'
         required: false
@@ -53,8 +58,10 @@ on:
 permissions: {}
 
 concurrency:
-  # One plan per discussion at a time; never cancel an in-flight planning run.
-  group: initiative-planner-${{ github.event.inputs.discussion || github.event.discussion.number }}
+  # One plan per (target repo, discussion) at a time; never cancel an in-flight
+  # planning run. Keying on the target repo as well as the discussion number stops
+  # two fleet repos that happen to share a discussion number from colliding.
+  group: initiative-planner-${{ github.event.inputs.target_repo || github.repository }}-${{ github.event.inputs.discussion || github.event.discussion.number }}
   cancel-in-progress: false
 
 jobs:
@@ -91,6 +98,9 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
           REPO: ${{ github.repository }}
+          # Dogfood path: this repo plans its own discussions, so the target is
+          # self. Fleet callers (#820) live in their own repos and set their host.
+          TARGET_REPO: ${{ github.repository }}
           DISCUSSION_NUMBER: ${{ github.event.discussion.number }}
         run: bash scripts/initiative-planner/redispatch.sh
 
@@ -107,7 +117,15 @@ jobs:
     env:
       # This job only runs on workflow_dispatch (the discussion path re-dispatches
       # here via the `redispatch` job), so inputs are always present.
-      REPO: ${{ github.repository }}
+      # REPO is the TARGET repo to plan for; empty target_repo => this repo (self).
+      REPO: ${{ github.event.inputs.target_repo || github.repository }}
+      # Token for every WRITE to the TARGET repo (gather-context, the Bob
+      # materialization, apply-reviewed-plan, and the plan reply). GITHUB_TOKEN is
+      # scoped only to .github-private, so it is valid for the self path only;
+      # S1 (#818) mints a cross-repo App token here and points this at it. The
+      # workflow_dispatch re-invoke keeps GH_PAT_WORKFLOWS (redispatch job) — that
+      # role is loop-prevention, not content writes, and is unaffected.
+      TARGET_GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       DISCUSSION_NUMBER: ${{ github.event.inputs.discussion }}
       DRY_RUN: ${{ inputs.dry_run == true && '1' || '0' }}
       FORCE_REPLAN: ${{ inputs.force_replan == true && '1' || '0' }}
@@ -143,8 +161,11 @@ jobs:
         run: |
           dest="${{ runner.temp }}/reviewed-plan"
           mkdir -p "$dest"
+          # The dry-run artifact is produced by a planner run, which always runs
+          # in THIS (central) repo — not the target repo. Download from self with
+          # GITHUB_TOKEN's actions:read, regardless of the plan's target_repo.
           gh run download "$PLAN_ARTIFACT_RUN_ID" \
-            --repo "$REPO" \
+            --repo "${{ github.repository }}" \
             --name initiative-plan-dry-run \
             --dir "$dest"
           if [ ! -s "$dest/plan.json" ]; then
@@ -156,7 +177,8 @@ jobs:
 
       - name: Gather planning context
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Reads the TARGET repo's Discussion + open epics.
+          GH_TOKEN: ${{ env.TARGET_GH_TOKEN }}
         run: bash scripts/initiative-planner/gather-context.sh
 
       - name: Plan the initiative (BMAD Scrum Master)
@@ -165,21 +187,22 @@ jobs:
         # supplied, we apply it verbatim and never re-plan.
         if: ${{ env.PLAN_ARTIFACT_RUN_ID == '' }}
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Bob materializes the epic + DAG in the TARGET repo via apply-plan.sh.
+          GH_TOKEN: ${{ env.TARGET_GH_TOKEN }}
         uses: anthropics/claude-code-action@d5726de019ec4498aa667642bc3a80fca83aa102 # v1.0.148
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          # CRITICAL (same gotcha as feature-ideation): pass the workflow's
-          # GITHUB_TOKEN explicitly so the job-level issues/discussions write
-          # grants apply. The action's own app token lacks them and mutations
-          # would fail silently.
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+          # CRITICAL (same gotcha as feature-ideation): pass the target-repo write
+          # token explicitly so the issues/discussions writes apply on the TARGET
+          # repo. The action's own app token lacks them and mutations would fail
+          # silently.
+          github_token: ${{ env.TARGET_GH_TOKEN }}
           claude_args: |
             --model ${{ github.event.inputs.model || 'claude-opus-4-8' }}
             --allowedTools Bash,Read,Glob,Grep
           prompt: |
             You are **Bob**, the BMAD Scrum Master, running as an automated,
-            non-interactive initiative planner for the ${{ github.repository }} repo.
+            non-interactive initiative planner for the ${{ env.REPO }} repo.
 
             ## Method — follow the vendored BMAD skills (by path)
 
@@ -293,7 +316,7 @@ jobs:
             of writing to GitHub):
 
             ```bash
-            REPO="${{ github.repository }}" \
+            REPO="$REPO" \
             PLAN_PATH="$PLAN_PATH" \
             DISCUSSION_NUMBER="$DISCUSSION_NUMBER" \
             DISCUSSION_NODE_ID="$DISCUSSION_NODE_ID" \
@@ -336,7 +359,8 @@ jobs:
       - name: Apply the reviewed plan (no re-plan)
         if: ${{ env.PLAN_ARTIFACT_RUN_ID != '' }}
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Materializes the reviewed plan in the TARGET repo.
+          GH_TOKEN: ${{ env.TARGET_GH_TOKEN }}
         run: bash scripts/initiative-planner/apply-reviewed-plan.sh
 
       - name: Upload dry-run plan log

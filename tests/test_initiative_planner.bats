@@ -300,6 +300,72 @@ teardown() { rm -rf "$TMP"; }
   [ "$(grep -c '"op":"close_issue"' "$LOG")" -eq 0 ]
 }
 
+# ── cross-repo target_repo parameterization (#819) ────────────────────────────
+# The central planner can plan for a NON-self target repo: context is gathered
+# from, and the epic is created in, that target repo. The scripts already take
+# REPO; these assert REPO threads through to the gh/GraphQL calls for a target
+# repo that is NOT .github-private. gh is stubbed so no network is touched.
+
+@test "gather-context gathers context FROM the target repo (non-self)" {
+  MOCK_BIN="$(mktemp -d)"
+  GH_LOG="$TMP/gh.log"
+  export GH_LOG
+  export PATH="$MOCK_BIN:$PATH"
+  cat >"$MOCK_BIN/gh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$GH_LOG"
+case "$*" in
+  *graphql*) echo '{"data":{"repository":{"discussion":{"id":"D_target","title":"Idea","body":"no refs here","url":"http://x","category":{"name":"Ideas"},"comments":{"nodes":[]}}}}}' ;;
+  *"issue list"*) echo '[]' ;;
+  *) echo '{}' ;;
+esac
+EOF
+  chmod +x "$MOCK_BIN/gh"
+
+  CTX="$TMP/context.json"
+  GITHUB_ENV="$TMP/gh.env" REPO="acme/widgets" DISCUSSION_NUMBER=413 \
+    CONTEXT_PATH="$CTX" GH_TOKEN=x \
+    run bash "$PLANNER_DIR/gather-context.sh"
+  [ "$status" -eq 0 ]
+  # GraphQL discussion query targets the target repo's owner/name.
+  grep -qF -- "owner=acme" "$GH_LOG"
+  grep -qF -- "name=widgets" "$GH_LOG"
+  # Open-epics lookup runs against the target repo, not .github-private.
+  grep -qF -- "--repo acme/widgets" "$GH_LOG"
+  ! grep -qF -- ".github-private" "$GH_LOG"
+  # The assembled context records the target repo.
+  [ "$(jq -r '.repo' "$CTX")" = "acme/widgets" ]
+
+  rm -rf "$MOCK_BIN"
+}
+
+@test "apply-plan creates the epic IN the target repo (non-self, live)" {
+  MOCK_BIN="$(mktemp -d)"
+  GH_LOG="$TMP/gh.log"
+  export GH_LOG
+  export PATH="$MOCK_BIN:$PATH"
+  cat >"$MOCK_BIN/gh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$GH_LOG"
+case "$*" in
+  *"issue list"*) echo '[]' ;;
+  *graphql*) echo '{}' ;;
+  *) echo '{"number":1,"id":1}' ;;
+esac
+EOF
+  chmod +x "$MOCK_BIN/gh"
+
+  # Live path (no DRY_RUN): create_issue POSTs to repos/<target>/issues.
+  REPO="acme/widgets" DISCUSSION_NUMBER=413 DISCUSSION_NODE_ID="D_test" \
+    PLAN_PATH="$PLAN" GH_TOKEN=x \
+    run bash "$PLANNER_DIR/apply-plan.sh"
+  [ "$status" -eq 0 ]
+  grep -qF -- "api repos/acme/widgets/issues" "$GH_LOG"
+  ! grep -qF -- "repos/petry-projects/.github-private/issues" "$GH_LOG"
+
+  rm -rf "$MOCK_BIN"
+}
+
 # ── reviewed-plan apply path (#604) ───────────────────────────────────────────
 # apply-reviewed-plan.sh is the no-re-plan handoff: a maintainer-reviewed plan.json
 # is validated then handed straight to apply-plan.sh — no LLM planning step runs.
