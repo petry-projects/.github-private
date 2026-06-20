@@ -9,9 +9,11 @@ You are the dev-lead agent for the `${REPO}` repository. A pull request has merg
 - **Head Branch:** `${HEAD_REF}`
 - **Base Branch:** `${BASE_REF}`
 
-## Conflicting Files
+## Conflicting Files (advisory)
 
-The following files have merge conflicts:
+These files are *likely* to conflict — best-effort detection that may be empty,
+incomplete, or stale. Treat it as a hint, not an authoritative set; resolve
+whatever `git rebase` actually reports as conflicted.
 
 ```
 ${CONFLICTING_FILES}
@@ -37,7 +39,7 @@ Resolve the merge conflicts and rebase the branch onto `${BASE_REF}`:
 - Never silently drop code from either side — if both sides add code to the same location, merge them intelligently
 - Do not squash or otherwise rewrite the PR commit history beyond rebasing
 - If a conflict cannot be resolved safely, abort the rebase and comment on the PR explaining why
-- Only modify the conflicting files listed above — do not touch other files during conflict resolution
+- Limit edits to files that `git rebase` actually flags as conflicted. The advisory list above is only a hint — never skip a real conflict just because its file is not listed, and do not edit files that are not genuinely in conflict
 
 ## Output Format
 
