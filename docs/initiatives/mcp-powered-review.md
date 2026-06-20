@@ -170,9 +170,12 @@ that path:
   server. No `npx` install and no secret are needed — the remote endpoint is zero-install and zero-auth.
   (Restore the github entry later if/when `advanced_security` is licensed.)
 - The repo variable `REVIEW_MCP_ALLOWED_TOOLS` is set to `mcp__context7__*`, permitting Context7's
-  tools (`mcp__context7__resolve-library-id`, `mcp__context7__get-library-docs`). Context7 accepts an
-  optional `CONTEXT7_API_KEY` header for higher rate limits, but zero-auth is the point of this pilot —
-  no secret is added.
+  tools. The live server exposes exactly two tools — `mcp__context7__resolve-library-id` and
+  `mcp__context7__query-docs` (verified via a direct `tools/list` JSON-RPC call, 2026-06-20). The
+  wildcard covers both; do **not** pin individual tool names (an earlier draft referenced a
+  `get-library-docs` tool that the server does not expose). Context7 accepts an optional
+  `CONTEXT7_API_KEY` header for higher rate limits, but zero-auth is the point of this pilot — no
+  secret is added.
 - Interim secret coverage stays intact via the existing `Secret scan (gitleaks)` CI check.
 - Graceful degradation is unchanged: if Context7 is unreachable the review still completes and emits a
   single `::warning::[mcp]` annotation naming the server (see §4; regression-tested in
@@ -187,24 +190,51 @@ that path:
 
 **What this change establishes.** The config + allowlist are now in place: `.github/review-mcp.json`
 points at the zero-auth Context7 endpoint and `REVIEW_MCP_ALLOWED_TOOLS=mcp__context7__*` permits its
-tools (`mcp__context7__resolve-library-id`, `mcp__context7__get-library-docs`). Because #809's
-env-mapping fix already proved the allowlist reaches the live job env and a `"type": "http"` MCP server
-connects, the expected behavior is that Context7 connects and its tools are **permitted** (no "not
-permitted" errors) on the next review run — the AC #2 dry-run check verifies this on a live job.
+tools. Because #809's env-mapping fix already proved the allowlist reaches the live job env and a
+`"type": "http"` MCP server connects, Context7 connects and its tools are **permitted** (no "not
+permitted" errors).
 
-**What Context7 adds.** Enrichment over base review is **version-aware library/framework
-documentation** — surfacing deprecated-API usage and breaking changes that static training data misses,
-which the agent could not flag before. Per AC #3, qualitative findings from a small sample of
-Context7-on reviews should be captured here as they accrue.
+#### Evaluation (2026-06-20)
 
-**Latency.** Latency delta vs. server-off is measured with the existing review-health tooling
-(`scripts/pr_review_health.sh` / the daily health workflow) — no new harness (AC #4). Record the
-observed delta here once the daily workflow has run with Context7 on.
+A controlled A/B was run **locally** (not via the `pr-review/stable` CI path, which is still pinned to
+the pre-Context7 config — promoting `stable` is the production rollout and stays a human decision). The
+eval replicated `engine.sh`'s deep-tier invocation exactly (`--mcp-config .github/review-mcp.json
+--strict-mcp-config --allowed-tools "…,mcp__context7__*"`, model `claude-opus-4-8`), isolating Context7
+as the single variable: three inlined PR diffs reviewed **off** (no tools) vs **on** (Context7 only).
+Samples: (A) a TanStack Query v4→v5 upgrade with v4-only `useQuery` options; (B) a Pydantic v1→v2 bump
+written against the v1 API; (C) a control with a pure-logic bug and no third-party dependency.
 
-**Rollout recommendation.** Keep Context7 enabled on `.github-private` as the live pilot and let the
-daily health workflow accumulate latency/quality signal. **Broader rollout to downstream repos stays a
-separate, explicit human decision** — do not auto-enable it elsewhere from this issue. Revisit the
-GitHub-MCP secret-scanning starter only if/when the repo's plan gains `advanced_security`.
+| Check | Result |
+| --- | --- |
+| **Connectivity / tools permitted** (AC #2 analog) | ✅ `resolve-library-id` + `query-docs` both connect; `tool_result.is_error=false` on every call; correct grounded answer ("`cacheTime` → `gcTime`") with doc citation. |
+| **Graceful degradation** | ✅ Unreachable endpoint → review still completes on base capability (rc=0), ~no latency. |
+| **Spontaneous adoption** | ✅ Both library PRs invoked Context7 under a **neutral** prompt (no nudge). The control PR used **zero** tools — the agent correctly skips docs when no library is involved. |
+| **Correctness delta (off vs on)** | **None.** Both arms caught the same issues: A — 3 BLOCKERs (`cacheTime`→`gcTime`, `keepPreviousData` removed, `useQuery` `onSuccess`/`onError` removed); B — the HIGH `allow_mutation`→`frozen` silent-immutability regression + the v1-deprecation cluster; C — the same 3 logic bugs. On B the **off** arm was marginally *more* precise (it gave the `validate_default=True` nuance the non-nudged on-arm dropped). |
+| **What Context7 added** | Auditable **grounding** (on-arms cite the actual migration guide) and slightly broader migration-sweep advice — but no net-new finding and no changed verdict. |
+| **Cost when used** | +~30 s latency and ~2–4× token cost per library review (2–3 doc round-trips). On the control: **parity** (29 s on vs 32 s off, cost flat) — zero overhead when irrelevant. |
+| **Nudging ("consult docs")** | More citations and one recovered detail, but more tool churn/latency (up to ~120 s, one arm wandered into `Bash`) and a minor new imprecision. Not worth a prompt change — spontaneous adoption already captures the value. |
+
+**Interpretation.** The plumbing works end-to-end and the agent uses Context7 with good judgment, but the
+measured *review-quality* lift on **mainstream** libraries is ≈0, because the base model's knowledge
+(cutoff Jan 2026) already covers these versions. Context7's real marginal value concentrates where the
+base model is weak: (a) library releases **after** the training cutoff, (b) **long-tail / private**
+libraries, and (c) exact-signature precision + auditable citations / hallucination reduction. This
+repo's own PR profile (mostly Bash/YAML) rarely hits those, so the local quality signal here is a
+floor, not a ceiling.
+
+**Latency (AC #4).** Measured directly from the eval (stream-json `duration_ms`): library reviews
++~30 s with Context7 on; non-library reviews unchanged. The daily health workflow
+(`scripts/pr_review_health.sh`) will track the same delta on live runs once Context7 reaches the
+`stable` CI path.
+
+**Rollout recommendation.** Keep Context7 wired on `.github-private` — it is **zero-cost when
+irrelevant** (the agent skips it) and adds **auditable grounding** when a PR touches a dependency. The
+cost/benefit is favorable enough to **promote it to `pr-review/stable`** so live reviews exercise it;
+but set expectations honestly — on this repo's Bash/YAML-heavy PRs the quality lift will be near-zero,
+and the strong case is repos with heavy third-party-library churn (especially post-cutoff or long-tail
+deps). **Promoting `stable` and any broader rollout to downstream repos stays a separate, explicit
+human decision.** Revisit the GitHub-MCP secret-scanning starter only if/when the repo's plan gains
+`advanced_security`.
 
 ---
 
