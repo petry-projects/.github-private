@@ -1159,6 +1159,21 @@ commit_and_push() {
   return 0
 }
 
+# detect_conflicting_paths <base_ref> — list paths that conflict when merging
+# origin/<base_ref> into the current HEAD, one per line. Uses a trial merge
+# (immediately aborted) because it is robust across git versions: the former
+# `git merge-tree <base> HEAD <base>` 3-arg form prints a "changed in both"
+# section header whose last field is the literal word "both" (the filename is on
+# the indented our/their lines), so `awk '{print $NF}'` produced a bogus "both"
+# path that was fed to the rebase prompt. Leaves the worktree clean.
+detect_conflicting_paths() {
+  local base="$1"
+  [[ -z "$base" ]] && return 0
+  git merge --no-commit --no-ff "origin/${base}" >/dev/null 2>&1 || true
+  git diff --name-only --diff-filter=U || true
+  git merge --abort >/dev/null 2>&1 || true
+}
+
 # expire_stale_terminal_markers: deletes any existing terminal comments (applied,
 # no-changes, or failed) for this SHA+intent before a hard-blocker retry marker is
 # posted. Without this, the retry cron sees a stale terminal and skips re-dispatch
