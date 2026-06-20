@@ -46,6 +46,7 @@ permissions: {}
 #                                                                 avoids issue#/PR# collision)
 #   issues / issue_comment on issue  -> dev-lead-issue-<n>       (issue lane)
 #   repository_dispatch (ci-failure) -> dev-lead-pr-<n>          (client_payload.pr_number)
+#   repository_dispatch (issue-retry)-> dev-lead-issue-<n>       (client_payload.issue_number)
 #   anything else                    -> dev-lead-run-<run_id>    (unique; never cancelled)
 #
 # cancel-in-progress is false: a newer same-lane event queues behind the active
@@ -58,6 +59,7 @@ concurrency:
       || (github.event.issue.pull_request && format('dev-lead-pr-{0}', github.event.issue.number))
       || (github.event.issue.number && format('dev-lead-issue-{0}', github.event.issue.number))
       || (github.event.client_payload.pr_number && format('dev-lead-pr-{0}', github.event.client_payload.pr_number))
+      || (github.event.client_payload.issue_number && format('dev-lead-issue-{0}', github.event.client_payload.issue_number))
       || format('dev-lead-run-{0}', github.run_id)
     }}
   cancel-in-progress: false

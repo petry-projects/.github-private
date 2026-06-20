@@ -370,6 +370,152 @@ GHEOF
   rm -f "$comment_sentinel" "$commit_sentinel" 2>/dev/null || true
 }
 
+# ── engine-failure visibility + retry-marker tests (#781) ─────────────────────
+
+# Shared stub: claude exits with the given code + message; git is stubbed for
+# branch creation; curl returns empty so the claude headroom probe is a no-op;
+# gh records every posted comment body to $COMMENT_FILE and label edits to
+# $LABEL_FILE, and serves prior issue comments from $PRIOR_COMMENTS_JSON.
+_setup_failure_stubs() {
+  local engine_rc="$1" engine_msg="$2"
+  cat > "$STUB_BIN_DIR/claude" <<STUB
+#!/usr/bin/env bash
+echo "${engine_msg}"
+exit ${engine_rc}
+STUB
+  chmod +x "$STUB_BIN_DIR/claude"
+
+  cat > "$STUB_BIN_DIR/curl" <<'CURLEOF'
+#!/usr/bin/env bash
+exit 0
+CURLEOF
+  chmod +x "$STUB_BIN_DIR/curl"
+
+  cat > "$STUB_BIN_DIR/git" <<'GITEOF'
+#!/usr/bin/env bash
+case "$*" in
+  "config"*)         exit 0 ;;
+  "checkout -b"*)    exit 0 ;;
+  "rev-parse HEAD")  echo "abc123deadbeef" ;;
+  *)                 exit 0 ;;
+esac
+GITEOF
+  chmod +x "$STUB_BIN_DIR/git"
+
+  COMMENT_FILE="$(mktemp)"; export COMMENT_FILE
+  LABEL_FILE="$(mktemp)"; export LABEL_FILE
+  : "${PRIOR_COMMENTS_JSON:=[]}"; export PRIOR_COMMENTS_JSON
+
+  cat > "$STUB_BIN_DIR/gh" <<GHEOF
+#!/usr/bin/env bash
+cmd="\$1"; shift || true
+case "\$cmd" in
+  copilot) echo "rate limit exceeded"; exit 1 ;;
+  label)   exit 0 ;;
+  api)
+    case "\$*" in
+      *"pulls?state=open"*) echo "0" ;;
+      *comments*)           printf '%s' '${PRIOR_COMMENTS_JSON}' ;;
+      *"users/"*)           echo '{"id":12345}' ;;
+      *"issues/"*)          echo '{"title":"Test Issue","body":"body"}' ;;
+      *)                    echo "{}" ;;
+    esac ;;
+  issue)
+    sub="\$1"; shift || true
+    case "\$sub" in
+      comment)
+        body=""
+        while [ \$# -gt 0 ]; do
+          if [ "\$1" = "--body" ]; then body="\$2"; shift 2; continue; fi
+          shift
+        done
+        printf '%s\n----8<----\n' "\$body" >> "${COMMENT_FILE}"
+        exit 0 ;;
+      edit)
+        printf '%s\n' "\$*" >> "${LABEL_FILE}"
+        exit 0 ;;
+      *) echo "{}" ;;
+    esac ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+
+  export DEV_LEAD_DRY_RUN="false"
+}
+
+@test "fix-issue: engine-error (attempt 1) → exits 1, posts retry marker + cause, no silent exit" {
+  _setup_failure_stubs 1 "boom: transient engine error"
+
+  run bash "$FIX_ISSUE_SCRIPT"
+
+  [ "$status" -eq 1 ]
+  local posted; posted=$(cat "$COMMENT_FILE")
+  # Machine-readable retry marker the cron scans for
+  [[ "$posted" == *"<!-- dev-lead-issue 100 status=failed attempt=1 reason=engine-error run="* ]]
+  # Human-readable cause + run deep-link
+  [[ "$posted" == *"engine-error"* ]]
+  [[ "$posted" == *"actions/runs/"* ]]
+  [[ "$posted" == *"will retry"* ]]
+  # Must NOT escalate to a human on the first attempt
+  [ ! -s "$LABEL_FILE" ] || [[ "$(cat "$LABEL_FILE")" != *"needs-human"* ]]
+
+  rm -f "$COMMENT_FILE" "$LABEL_FILE"
+}
+
+@test "fix-issue: engine-error embeds redacted session-output snippet in the comment" {
+  _setup_failure_stubs 1 "TRACE: writer step exploded at line 42"
+
+  run bash "$FIX_ISSUE_SCRIPT"
+
+  [ "$status" -eq 1 ]
+  local posted; posted=$(cat "$COMMENT_FILE")
+  # The engine layer persists/redacts session output to /tmp; a tail must appear
+  [[ "$posted" == *"Last 40 lines of engine output"* ]]
+  [[ "$posted" == *"TRACE: writer step exploded"* ]]
+
+  rm -f "$COMMENT_FILE" "$LABEL_FILE"
+}
+
+@test "fix-issue: missing-binary → escalates to needs-human, no retry marker" {
+  _setup_failure_stubs 127 "claude: command not found"
+  # Skip gemini (no key) and copilot (classic PAT) so the only failure is the
+  # missing claude binary → run_writer_with_fallback returns missing-binary.
+  unset GEMINI_API_KEY GOOGLE_API_KEY
+  export COPILOT_GITHUB_TOKEN="ghp_stub"  # ghp_* → copilot fallback is skipped
+
+  run bash "$FIX_ISSUE_SCRIPT"
+
+  [ "$status" -eq 1 ]
+  local posted; posted=$(cat "$COMMENT_FILE")
+  [[ "$posted" == *"needs human attention"* ]]
+  [[ "$posted" == *"reason=missing-binary"* ]]
+  # Deterministic infra failure → must NOT post a retryable status=failed marker
+  [[ "$posted" != *"status=failed"* ]]
+  # needs-human label applied
+  [[ "$(cat "$LABEL_FILE")" == *"dev-lead:needs-human"* ]]
+
+  rm -f "$COMMENT_FILE" "$LABEL_FILE"
+}
+
+@test "fix-issue: attempt ceiling (prior attempt=2) → escalates to needs-human" {
+  export PRIOR_COMMENTS_JSON='[{"body":"<!-- dev-lead-issue 100 status=failed attempt=2 reason=engine-error run=1 -->"}]'
+  _setup_failure_stubs 1 "boom again"
+
+  run bash "$FIX_ISSUE_SCRIPT"
+
+  [ "$status" -eq 1 ]
+  local posted; posted=$(cat "$COMMENT_FILE")
+  # attempt becomes 3 (>= MAX_ATTEMPTS) → human escalation, not another retry marker
+  [[ "$posted" == *"needs human attention"* ]]
+  [[ "$posted" == *"attempt=3"* ]]
+  [[ "$posted" != *"status=failed attempt=3"* ]]
+  [[ "$(cat "$LABEL_FILE")" == *"dev-lead:needs-human"* ]]
+
+  rm -f "$COMMENT_FILE" "$LABEL_FILE"
+  unset PRIOR_COMMENTS_JSON
+}
+
 @test "fix-issue: lint fails → posts lint-failure comment on the issue" {
   cat > "$STUB_BIN_DIR/dev-lead-lint.sh" <<'LINTEOF'
 #!/usr/bin/env bash

@@ -1,11 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
-# dev-lead-retry.sh — scan open PRs for rate-limited markers and re-dispatch
+# dev-lead-retry.sh — scan open PRs + issues for failure markers and re-dispatch
 #
 # Called by the dev-lead-retry.yml scheduled cron workflow.
 # Scans all open PRs across TARGET_ORG (plus DELEGATION_ORGS if set) for
 # status=rate-limited markers on the current HEAD SHA, then re-dispatches the
 # appropriate dev-lead event so the run is retried once the rate limit clears.
+#
+# It ALSO scans open issues labeled `dev-lead` for failed initial implementations
+# (#781): an issue whose `Run issue` engine step failed carries a
+# `<!-- dev-lead-issue <N> status=<failed|rate-limited> attempt=<K> ... -->`
+# marker (written by dev-lead-fix-issue.sh). Those are re-dispatched as
+# dev-lead-issue-retry up to MAX_ATTEMPTS, after which fix-issue.sh escalates to
+# a human (dev-lead:needs-human) and the scan skips them.
 #
 # Env (required):
 #   GH_TOKEN            — PAT with repo + contents:write scopes
@@ -34,6 +41,14 @@ DRY_RUN="${DRY_RUN:-false}"
 
 CI_MARKER_PREFIX="<!-- dev-lead-fix-ci sha="
 REVIEWS_MARKER_PREFIX="<!-- dev-lead-fix-reviews pr="
+ISSUE_MARKER_PREFIX="<!-- dev-lead-issue "
+
+# Issue-retry config (#781). MAX_ATTEMPTS matches dev-lead-fix-issue.sh and the
+# auto-rebase-retry.sh convention: total attempts (initial + retries) before the
+# issue is escalated to a human and skipped here.
+MAX_ATTEMPTS="${MAX_ATTEMPTS:-3}"
+DEV_LEAD_LABEL="${DEV_LEAD_LABEL:-dev-lead}"
+NEEDS_HUMAN_LABEL="${NEEDS_HUMAN_LABEL:-dev-lead:needs-human}"
 
 # Intents whose context can be fully reconstructed at retry time.
 # human-pr is included as a legacy alias for review-changes so that PRs already
@@ -143,6 +158,36 @@ dispatch_reviews_retry() {
   fi
 }
 
+# dispatch_issue_retry <repo> <issue_number> <attempt>
+# Re-dispatches a failed initial issue implementation (#781). The reusable
+# workflow's intent classifier (dev-lead-intent.sh) recognises the
+# dev-lead-issue-retry type and routes it back to the `issue` intent.
+# All logging goes to stderr (same reason as dispatch_ci_retry above).
+dispatch_issue_retry() {
+  local repo="$1" issue_number="$2" attempt="$3"
+  echo "  -> dispatch issue-retry: repo=${repo} issue=${issue_number} attempt=${attempt}" >&2
+  if [ "$DRY_RUN" = "true" ]; then
+    echo "  [dry-run] would dispatch dev-lead-issue-retry for issue ${issue_number} in ${repo} attempt=${attempt}" >&2
+    return 0
+  fi
+  local payload
+  payload=$(jq -n \
+    --argjson issue_number "$issue_number" \
+    --arg repo "$repo" \
+    --argjson attempt "$attempt" \
+    '{
+      event_type: "dev-lead-issue-retry",
+      client_payload: {
+        issue_number: $issue_number,
+        repo: $repo,
+        attempt: $attempt
+      }
+    }')
+  if ! echo "$payload" | gh api --method POST "repos/${repo}/dispatches" --input - >/dev/null 2>&1; then
+    echo "  [warn] dispatch failed for issue ${issue_number} in ${repo}" >&2
+  fi
+}
+
 # scan_pr_for_rate_limits <repo> <pr_number>
 # Checks the PR's comments for rate-limited markers and dispatches retries.
 # Prints only a single integer (retries dispatched) to stdout; all other
@@ -162,7 +207,7 @@ scan_pr_for_rate_limits() {
   # Fetch all comment bodies, paginating to ensure we don't miss markers on busy PRs
   local comments_json
   comments_json=$(gh api --paginate "repos/${repo}/issues/${pr_number}/comments?per_page=100" \
-    --jq '[.[].body]' 2>/dev/null || echo "[]")
+    --jq '[.[].body]' 2>/dev/null | jq -s 'add // []' || echo "[]")
 
   local dispatched=0
 
@@ -247,24 +292,137 @@ scan_repo() {
     --jq '[.[] | {number: .number, head_sha: .head.sha}]' 2>/dev/null || echo "[]")
 
   local pr_count
-  pr_count=$(echo "$prs_json" | jq 'length')
+  pr_count=$(echo "$prs_json" | jq -s 'add // [] | length')
   if [ "$pr_count" -eq 0 ]; then
     echo "  no open PRs in ${repo}"
+  else
+    echo "  found ${pr_count} open PR(s)"
+    local total_dispatched=0
+    while IFS= read -r pr_entry; do
+      local pr_number
+      pr_number=$(echo "$pr_entry" | jq -r '.number')
+      local dispatched
+      dispatched=$(scan_pr_for_rate_limits "$repo" "$pr_number")
+      total_dispatched=$(( total_dispatched + dispatched ))
+    done < <(echo "$prs_json" | jq -sc 'add // [] | .[]')
+    echo "  dispatched ${total_dispatched} PR retries from ${repo}"
+  fi
+
+  # Always scan open issues for failed initial implementations (#781) — even when
+  # the repo has no open PRs, which is the common case for a stalled issue.
+  scan_repo_issues "$repo"
+}
+
+# open_issue_pr_exists <repo> <issue_number>
+# Returns 0 if an open PR for this issue already exists (branch dev-lead/issue-<N>*),
+# meaning a prior attempt already produced — or is producing — a PR. In that case
+# the issue must NOT be re-dispatched (the PR path takes over).
+open_issue_pr_exists() {
+  local repo="$1" issue_number="$2" count
+  count=$(gh api --paginate "repos/${repo}/pulls?state=open&per_page=100" \
+    --jq "[.[] | select(.head.ref | startswith(\"dev-lead/issue-${issue_number}-\"))]" \
+    2>/dev/null | jq -s 'add | length' || echo "0")
+  [ "${count:-0}" -gt 0 ]
+}
+
+# scan_issue_for_retry <repo> <issue_number>
+# Inspects the issue's newest dev-lead-issue marker and re-dispatches a bounded
+# retry when warranted. Prints only a single integer (retries dispatched) to
+# stdout; all other output goes to stderr so callers can capture the count.
+scan_issue_for_retry() {
+  local repo="$1" issue_number="$2"
+
+  local comments_json
+  comments_json=$(gh api --paginate "repos/${repo}/issues/${issue_number}/comments?per_page=100" \
+    --jq '[.[].body]' 2>/dev/null || echo "[]")
+
+  # Newest dev-lead-issue marker for this issue (comments are chronological, so
+  # the last matching one is the most recent attempt — earlier ones superseded).
+  local prefix="${ISSUE_MARKER_PREFIX}${issue_number} "
+  local marker
+  marker=$(echo "$comments_json" | jq -s -r --arg p "$prefix" \
+    '[ .[] | .[]? | select(. != null and (. | contains($p))) ] | last // ""' 2>/dev/null || echo "")
+
+  if [ -z "$marker" ]; then
+    # No failure marker → nothing failed (or it succeeded). Nothing to retry.
+    echo "0"
     return 0
   fi
 
-  echo "  found ${pr_count} open PR(s)"
+  local status attempt reason reset
+  status=$(printf '%s' "$marker"  | grep -oE 'status=[^ ]+'  | head -1 | cut -d= -f2)
+  attempt=$(printf '%s' "$marker" | grep -oE 'attempt=[0-9]+' | head -1 | cut -d= -f2)
+  reason=$(printf '%s' "$marker"  | grep -oE 'reason=[^ ]+'  | head -1 | cut -d= -f2)
+  reset=$(printf '%s' "$marker"   | grep -oE 'reset=[0-9TZ:-]+' | head -1 | cut -d= -f2)
+
+  # Only failed / rate-limited markers are retryable. A status=needs-human marker
+  # (or any other) is terminal — skip (such issues also carry the needs-human
+  # label and are filtered before reaching here, but double-guard).
+  case "$status" in
+    failed|rate-limited) : ;;
+    *)
+      echo "  [skip] issue #${issue_number}: newest marker status=${status:-?} not retryable" >&2
+      echo "0"; return 0 ;;
+  esac
+
+  # Honour the rate-limit reset window for rate-limited markers.
+  if [ "$status" = "rate-limited" ] && is_reset_in_future "$reset"; then
+    echo "  [skip] issue #${issue_number} rate-limit not yet cleared (resets ${reset})" >&2
+    echo "0"; return 0
+  fi
+
+  # Enforce the attempt ceiling. attempt>=MAX means fix-issue.sh already escalated
+  # to a human on its last failure; do not re-dispatch.
+  if [ -z "$attempt" ] || [ "$attempt" -ge "$MAX_ATTEMPTS" ]; then
+    echo "  [skip] issue #${issue_number}: attempts exhausted (attempt=${attempt:-?}/${MAX_ATTEMPTS})" >&2
+    echo "0"; return 0
+  fi
+
+  # Skip if a PR already exists for this issue (prior attempt succeeded, or a
+  # retry run is currently producing one).
+  if open_issue_pr_exists "$repo" "$issue_number"; then
+    echo "  [skip] issue #${issue_number}: an open dev-lead PR already exists" >&2
+    echo "0"; return 0
+  fi
+
+  echo "  [retry] issue #${issue_number}: status=${status} reason=${reason:-?} attempt=${attempt} < ${MAX_ATTEMPTS} → re-dispatching" >&2
+  dispatch_issue_retry "$repo" "$issue_number" "$attempt"
+  echo "1"
+}
+
+# scan_repo_issues <repo>: scan open issues labeled dev-lead for failed initial
+# implementations and re-dispatch bounded retries.
+scan_repo_issues() {
+  local repo="$1"
+
+  # Enumerate open issues carrying the dev-lead label but NOT the needs-human
+  # escalation label. The issues endpoint also returns PRs, so filter
+  # .pull_request==null to keep true issues only.
+  local issues_json
+  issues_json=$(gh api --paginate \
+    "repos/${repo}/issues?state=open&labels=${DEV_LEAD_LABEL}&per_page=100" \
+    --jq "[.[] | select(.pull_request == null)
+           | select([.labels[].name] | index(\"${NEEDS_HUMAN_LABEL}\") | not)
+           | {number: .number}]" \
+    2>/dev/null || echo "[]")
+
+  local issue_count
+  issue_count=$(echo "$issues_json" | jq -s 'add // [] | length')
+  if [ "${issue_count:-0}" -eq 0 ]; then
+    echo "  no open dev-lead issues in ${repo}"
+    return 0
+  fi
+
+  echo "  found ${issue_count} open dev-lead issue(s)"
   local total_dispatched=0
-
-  while IFS= read -r pr_entry; do
-    local pr_number
-    pr_number=$(echo "$pr_entry" | jq -r '.number')
-    local dispatched
-    dispatched=$(scan_pr_for_rate_limits "$repo" "$pr_number")
+  while IFS= read -r issue_entry; do
+    local issue_number dispatched
+    issue_number=$(echo "$issue_entry" | jq -r '.number')
+    dispatched=$(scan_issue_for_retry "$repo" "$issue_number")
     total_dispatched=$(( total_dispatched + dispatched ))
-  done < <(echo "$prs_json" | jq -c '.[]')
+  done < <(echo "$issues_json" | jq -c '.[]')
 
-  echo "  dispatched ${total_dispatched} retries from ${repo}"
+  echo "  dispatched ${total_dispatched} issue retries from ${repo}"
 }
 
 # list_repos_for_org <org>: list all non-fork repos in the org.
@@ -323,4 +481,8 @@ main() {
   echo "[retry] done at $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 }
 
-main "$@"
+# Run main only when executed directly (bash dev-lead-retry.sh), not when sourced
+# by unit tests that exercise individual functions (scan_issue_for_retry, etc.).
+if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
+  main "$@"
+fi

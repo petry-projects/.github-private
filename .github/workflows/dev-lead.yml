@@ -32,7 +32,7 @@ on:
   check_run:
     types: [completed]
   repository_dispatch:
-    types: [dev-lead-ci-failure, dev-lead-reviews-retry]
+    types: [dev-lead-ci-failure, dev-lead-reviews-retry, dev-lead-issue-retry]
 
 permissions: {}
 
