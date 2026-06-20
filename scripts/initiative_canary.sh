@@ -105,7 +105,11 @@ canary_report() {
 # ---------------------------------------------------------------------------
 
 main() {
-  local disc="${CANARY_DISCUSSION:?CANARY_DISCUSSION required (fixture Ideas Discussion number)}"
+  local disc="${CANARY_DISCUSSION:-${INITIATIVE_CANARY_DISCUSSION:-}}"
+  if [ -z "$disc" ]; then
+    echo "::error::CANARY_DISCUSSION (or INITIATIVE_CANARY_DISCUSSION) required (fixture Ideas Discussion number)" >&2
+    exit 1
+  fi
   # Validate before the value reaches the gh command line.
   if [[ ! "$disc" =~ ^[1-9][0-9]*$ ]]; then
     echo "::error::CANARY_DISCUSSION must be a positive integer, got: '$disc'" >&2
@@ -118,9 +122,11 @@ main() {
 
   local timeout="${CANARY_POLL_TIMEOUT:-600}"
   local interval="${CANARY_POLL_INTERVAL:-15}"
-  local today dispatch_ts
+  local today dispatch_ts dispatch_epoch
   today="$(date -u +%Y-%m-%d)"
-  dispatch_ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  # Subtract a 60-second buffer to account for potential clock drift between the runner and GitHub's servers.
+  dispatch_epoch=$(( $(date +%s) - 60 ))
+  dispatch_ts="$(date -u -d "@${dispatch_epoch}" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -r "${dispatch_epoch}" +%Y-%m-%dT%H:%M:%SZ)"
 
   echo "=== Initiative-planner canary ===" >&2
   echo "  Repo:       $REPO" >&2

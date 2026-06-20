@@ -167,6 +167,40 @@ teardown() {
   [ ! -s "$GH_LOG" ]
 }
 
+@test "main: INITIATIVE_CANARY_DISCUSSION is used when CANARY_DISCUSSION is unset" {
+  _install_gh_mock
+  export REPO="petry-projects/.github-private"
+  unset CANARY_DISCUSSION
+  export INITIATIVE_CANARY_DISCUSSION="99"
+  export GH_TOKEN="pat"
+  export CANARY_POLL_TIMEOUT="5"
+  export CANARY_POLL_INTERVAL="1"
+  CANARY_OUT="$(mktemp)"
+  export CANARY_OUT
+  GITHUB_ENV="$(mktemp)"
+  export GITHUB_ENV
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  grep -qF -- "-f discussion=99" "$GH_LOG"
+
+  rm -f "$CANARY_OUT" "$GITHUB_ENV"
+  unset INITIATIVE_CANARY_DISCUSSION
+}
+
+@test "main: exits with error when neither CANARY_DISCUSSION nor INITIATIVE_CANARY_DISCUSSION is set" {
+  _install_gh_mock
+  export REPO="petry-projects/.github-private"
+  unset CANARY_DISCUSSION
+  unset INITIATIVE_CANARY_DISCUSSION
+  export GH_TOKEN="pat"
+
+  run bash "$SCRIPT"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"INITIATIVE_CANARY_DISCUSSION"* ]]
+  [ ! -s "$GH_LOG" ]
+}
+
 @test "main: a failing planner run sets CANARY_FAILED and exits non-zero" {
   MOCK_BIN="$(mktemp -d)"
   GH_LOG="$(mktemp)"
