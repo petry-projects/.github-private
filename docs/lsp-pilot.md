@@ -149,10 +149,10 @@ that pins (SHAs / release tags) are looked up from the source of truth, never gu
 
 | Dependency | Source of truth | Pinned version | Locked in |
 |---|---|---|---|
-| agent-lsp | GitHub releases — `blackwell-systems/agent-lsp` | _to be locked_ | #842 |
-| Serena | PyPI / `oraios/serena` releases | _to be locked_ | #842 |
-| lsp-mcp | GitHub releases | _to be locked_ | #842 |
-| bash-language-server | npm `bash-language-server` | _to be locked_ | #842 |
+| agent-lsp | GitHub releases — `blackwell-systems/agent-lsp` | *to be locked* | #842 |
+| Serena | PyPI / `oraios/serena` releases | *to be locked* | #842 |
+| lsp-mcp | GitHub releases | *to be locked* | #842 |
+| bash-language-server | npm `bash-language-server` | *to be locked* | #842 |
 
 Only the candidate that wins the comparison is carried past Phase 2; the run-count cost cap
 in §4 bounds the comparison to **<=2 candidate servers**.
