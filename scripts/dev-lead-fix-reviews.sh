@@ -666,6 +666,7 @@ commit_and_push() {
 # path that was fed to the rebase prompt. Leaves the worktree clean.
 detect_conflicting_paths() {
   local base="$1"
+  [[ -z "$base" ]] && return 0
   git merge --no-commit --no-ff "origin/${base}" >/dev/null 2>&1 || true
   git diff --name-only --diff-filter=U || true
   git merge --abort >/dev/null 2>&1 || true
