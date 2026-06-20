@@ -56,6 +56,24 @@ set -euo pipefail
 echo 'This PR looks fine to me, I would approve it.'
 SH
   chmod +x "$STUB_PROSE"
+
+  # Stub engine that wraps its (correct) JSON decision in a ```json markdown
+  # fence — the live Haiku-tier output the strict parser used to reject, which
+  # produced the production triage 0/5 (every case `got null`, #762).
+  STUB_FENCED="$TMP/stub_fenced.sh"
+  cat >"$STUB_FENCED" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+prompt="$1"
+if grep -q MARKER_APPROVE "$prompt"; then
+  printf '```json\n{"escalate": false, "risk": "LOW", "signals": [], "summary": "docs only"}\n```\n'
+elif grep -q MARKER_ESCALATE "$prompt"; then
+  printf '```json\n{"escalate": true, "risk": "HIGH", "signals": ["auth"], "summary": "auth/secrets touched"}\n```\n'
+else
+  echo 'no marker found'
+fi
+SH
+  chmod +x "$STUB_FENCED"
 }
 
 teardown() { rm -rf "$TMP"; }
@@ -68,6 +86,8 @@ teardown() { rm -rf "$TMP"; }
   [ "$(jq '.passed' <<<"$output")" -eq 2 ]
   [ "$(jq '.failed' <<<"$output")" -eq 0 ]
   [ "$(jq '.score'  <<<"$output")" = "1" ]
+  # Passing cases stay lean — no raw_excerpt field.
+  [ "$(jq '.cases[0] | has("raw_excerpt")' <<<"$output")" = "false" ]
 }
 
 @test "per-case results carry id, pass, expected and actual decisions" {
@@ -100,6 +120,22 @@ teardown() { rm -rf "$TMP"; }
   [ "$(jq '.failed' <<<"$output")" -eq 2 ]
   # Unparseable output yields a null actual decision.
   [ "$(jq -r '.cases[0].actual' <<<"$output")" = "null" ]
+  # …and captures a short excerpt of the raw output for diagnosis.
+  [[ "$(jq -r '.cases[0].raw_excerpt' <<<"$output")" == *"would approve it"* ]]
+}
+
+@test "fenced JSON output is tolerated and scored — regression for the live triage 0/5 (#762)" {
+  EVALS_DIR="$TMP/evals" EVAL_ENGINE_CMD="$STUB_FENCED" \
+    run --separate-stderr bash "$SCORER" triage
+  [ "$status" -eq 0 ]
+  [ "$(jq '.passed' <<<"$output")" -eq 2 ]
+  [ "$(jq '.failed' <<<"$output")" -eq 0 ]
+  approve="$(jq -c '.cases[] | select(.id=="case-approve")'  <<<"$output")"
+  [ "$(jq -r '.actual.escalate' <<<"$approve")" = "false" ]
+  [ "$(jq -r '.actual.risk'     <<<"$approve")" = "LOW" ]
+  esc="$(jq -c '.cases[] | select(.id=="case-escalate")' <<<"$output")"
+  [ "$(jq -r '.actual.escalate' <<<"$esc")" = "true" ]
+  [ "$(jq -r '.actual.risk'     <<<"$esc")" = "HIGH" ]
 }
 
 @test "aggregate score is passed/total across a mixed set" {
