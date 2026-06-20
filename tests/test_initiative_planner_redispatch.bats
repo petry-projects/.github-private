@@ -91,6 +91,20 @@ teardown() {
   grep -qF -- "-f dry_run=true" "$GH_LOG"
 }
 
+@test "passes target_repo defaulting to the dispatch repo (dogfood self path)" {
+  unset TARGET_REPO
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  grep -qF -- "-f target_repo=petry-projects/.github-private" "$GH_LOG"
+}
+
+@test "honors a TARGET_REPO override (fleet host repo)" {
+  export TARGET_REPO="acme/widgets"
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  grep -qF -- "-f target_repo=acme/widgets" "$GH_LOG"
+}
+
 @test "passes GITHUB_REF if it is a branch or tag" {
   export GITHUB_REF="refs/heads/feature-branch"
   run bash "$SCRIPT"
