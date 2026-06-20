@@ -79,6 +79,15 @@ This is the `.github-private` org infrastructure repo for `petry-projects`. It c
   `scripts/auto_rebase_health.sh`, tests in `tests/auto_rebase_health.bats`) and runs on `github.token`
   only — no cross-org PAT. It must not be removed by template syncs. If the org template gains an
   auto-rebase instrumentation equivalent, remove this exception and defer to the template instead.
+- **Exception:** `initiative-planner-canary.yml` (#822, closes #655 item 3) is a documented repo-specific
+  workflow with no corresponding org template in `standards/workflows/`. It is a daily (≤1/day) +
+  `workflow_dispatch` post-merge canary that fires a **dry-run** dispatch of `initiative-planner.yml`
+  against a fixture Ideas Discussion and alerts if the run fails or surfaces the `Unsupported event type:
+  discussion` regression fingerprint — the silent-revert class of failure from #655 on the live
+  `idea:approved` trigger. Logic lives in `scripts/initiative_canary.sh` (tests:
+  `tests/test_initiative_canary.bats`); the fixture Discussion is configured via the repo variable
+  `INITIATIVE_CANARY_DISCUSSION`. It must not be removed by template syncs. If the org template gains a
+  live-trigger canary equivalent, remove this exception and defer to the template instead.
 
 ### Agent Profiles (`agents/*.md`)
 

@@ -22,11 +22,19 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/fleet_report.sh
 source "${SCRIPT_DIR}/fleet_report.sh"
+# shellcheck source=scripts/fleet_stub_drift.sh
+source "${SCRIPT_DIR}/fleet_stub_drift.sh"
 
 ORG="${ORG:-petry-projects}"
 LOOKBACK_DAYS="${LOOKBACK_DAYS:-1}"
 REPORT_FILE="fleet_monitor_report.md"
 TODAY=$(date -u +%Y-%m-%d)
+
+# Initiative-planner stub coverage & drift (#822). The per-repo thin-caller stub
+# is deployed verbatim from the canonical org template; we compare blob SHAs.
+STUB_PATH="${STUB_PATH:-.github/workflows/initiative-planner.yml}"
+CANONICAL_STUB_REPO="${CANONICAL_STUB_REPO:-petry-projects/.github}"
+CANONICAL_STUB_PATH="${CANONICAL_STUB_PATH:-standards/workflows/initiative-planner.yml}"
 
 echo "=== Actions Fleet Monitor ==="
 echo "  Org:      $ORG"
@@ -176,6 +184,30 @@ for repo in "${repos[@]}"; do
 done
 
 # ---------------------------------------------------------------------------
+# 2a. Initiative-planner stub coverage & drift (#822, AC#2 + AC#3)
+# For each discovered repo, compare its per-repo planner stub blob SHA against
+# the canonical org-template SHA. Reuses the repo list already discovered above
+# (extends the Fleet Monitor rather than building a parallel monitor, per #627).
+# The contents API `.sha` is the git blob object ID, so equal SHAs => identical.
+# ---------------------------------------------------------------------------
+stub_drift_file=$(mktemp)
+canonical_stub_sha=$(gh api \
+  "repos/${CANONICAL_STUB_REPO}/contents/${CANONICAL_STUB_PATH}" \
+  --jq '.sha' 2>/dev/null || true)
+
+if [ -z "$canonical_stub_sha" ]; then
+  echo "::warning::Could not read canonical stub SHA (${CANONICAL_STUB_REPO}/${CANONICAL_STUB_PATH}) — skipping stub drift detection."
+else
+  echo "Canonical stub SHA: ${canonical_stub_sha} (${CANONICAL_STUB_REPO}/${CANONICAL_STUB_PATH})"
+  for repo in "${repos[@]}"; do
+    # 404 (no stub) => empty SHA => MISSING (not enrolled); non-fatal.
+    repo_stub_sha=$(gh api "repos/${repo}/contents/${STUB_PATH}" \
+      --jq '.sha' 2>/dev/null || true)
+    stub_drift_row "$repo" "$canonical_stub_sha" "$repo_stub_sha" >> "$stub_drift_file"
+  done
+fi
+
+# ---------------------------------------------------------------------------
 # 2b. Build issue lookup for open fleet-tracker issues (linked inline in report)
 # Issues now live in their target repo, so search org-wide.
 # Note: the Search API caps at 1,000 results total; if the org has >1,000 open
@@ -204,16 +236,24 @@ report_header() {
     "$ORG" "$LOOKBACK_DAYS" "$repo_count" "$total_workflows"
 }
 
+# stub_drift_section — appends the #822 coverage/drift block when we have data.
+stub_drift_section() {
+  if [ -s "$stub_drift_file" ]; then
+    printf '\n'
+    generate_stub_drift_report "$stub_drift_file" "$canonical_stub_sha"
+  fi
+}
+
 # Step Summary — Tier 1 visualizations only (Mermaid not rendered there)
 # GitHub Step Summary has a 1 MB hard limit per job. At ~200 bytes per row
 # this supports ~5 000 workflows before truncation.
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
-  { report_header; generate_report "$metrics_file" "$failed_file" "false" "$issues_lookup_file"; } \
+  { report_header; generate_report "$metrics_file" "$failed_file" "false" "$issues_lookup_file"; stub_drift_section; } \
     >> "$GITHUB_STEP_SUMMARY"
 fi
 
 # Report file — full report with Mermaid charts (used as Issue body)
-{ report_header; generate_report "$metrics_file" "$failed_file" "true" "$issues_lookup_file"; } \
+{ report_header; generate_report "$metrics_file" "$failed_file" "true" "$issues_lookup_file"; stub_drift_section; } \
   > "$REPORT_FILE"
 
 # ---------------------------------------------------------------------------
@@ -265,7 +305,21 @@ else
   echo "[]" > "$HIGH_FAILURE_FILE"
 fi
 
-rm -f "$metrics_file" "$failed_file" "$issues_lookup_file"
+# ---------------------------------------------------------------------------
+# 3c. Export drifted stubs as JSON for alerting (#822, AC#3)
+# Produces fleet_stub_drift.json — the DRIFTED enrolled repos. The workflow's
+# "Alert on stub drift" step reads this and HAS_STUB_DRIFT to wake dev-lead.
+# ---------------------------------------------------------------------------
+STUB_DRIFT_JSON="fleet_stub_drift.json"
+stub_drift_alert_json "$stub_drift_file" > "$STUB_DRIFT_JSON"
+stub_drift_count=$(jq 'length' "$STUB_DRIFT_JSON")
+echo "Drifted initiative-planner stubs: ${stub_drift_count}"
+if [ -n "${GITHUB_ENV:-}" ]; then
+  echo "STUB_DRIFT_COUNT=${stub_drift_count}" >> "$GITHUB_ENV"
+  [ "$stub_drift_count" -gt 0 ] && echo "HAS_STUB_DRIFT=true" >> "$GITHUB_ENV"
+fi
+
+rm -f "$metrics_file" "$failed_file" "$issues_lookup_file" "$stub_drift_file"
 
 # ---------------------------------------------------------------------------
 # 4. Export env flags
