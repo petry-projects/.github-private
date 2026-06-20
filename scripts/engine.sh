@@ -4405,6 +4405,13 @@ run_writer() {
     # use that redacted file as the source for the step summary so credentials
     # cannot leak via /tmp persistence or the public run summary. Patterns
     # kept in sync with scripts/dev-lead-fix-reviews.sh:redact_secrets.
+    #
+    # This runs for ALL terminal paths — success, generic failure, AND the
+    # rate-limit early return below — so the session output (where the real
+    # failure cause appears) reaches the run summary and the persisted sidecar
+    # regardless of exit code. The rate-limit check further down reads the raw
+    # capture ($_tmp), which redaction leaves intact (separate file), so
+    # persisting first is safe.
     rm -f /tmp/dev-lead-session-output.txt
     if ! sed -E \
       -e 's/(gh[opsu]|ghr)_[A-Za-z0-9_]{20,}/***REDACTED-GH-TOKEN***/g' \
@@ -4436,8 +4443,18 @@ run_writer() {
       } >> "$GITHUB_STEP_SUMMARY" || \
         echo "::warning::Failed to append session output to GITHUB_STEP_SUMMARY" >&2
     fi
-    rm -f "$_tmp"
   fi
+
+  # Map rate-limit to exit code 2 for caller to detect; parse reset time for
+  # marker embedding. Use the file-based helpers to avoid OOM on large captures.
+  # Runs AFTER the persist/summary block above so a rate-limited session is also
+  # captured to the run summary; reads the raw capture ($_tmp) left intact above.
+  if [ "$rc" -ne 0 ] && [ -n "$_tmp" ] && is_rate_limited_files "$_tmp"; then
+    parse_reset_time_files "$_tmp"
+    rm -f "$_tmp"
+    return 2
+  fi
+  [ -n "$_tmp" ] && rm -f "$_tmp"
   return "$rc"
 }
 
@@ -4451,6 +4468,14 @@ run_writer_with_fallback() {
   local prompt_file="$1"
   local intent="${2:-}"
   local engines=("$REVIEW_ENGINE")
+
+  # Clear any stale failure-reason sidecar from a prior invocation in the same
+  # process. Before each terminal failure return below we write a one-line
+  # cause class (rate-limited | missing-binary | engine-error) to this path,
+  # mirroring the existing /tmp/dev-lead-rate-limit-reset sidecar. Downstream
+  # handlers (dev-lead-fix-issue.sh) read it to classify the failure and pick
+  # the right retry behavior. This is purely additive — no control-flow change.
+  rm -f /tmp/dev-lead-failure-reason
 
   for e in claude copilot gemini; do
     [ "$e" != "$REVIEW_ENGINE" ] && engines+=("$e")
@@ -4498,6 +4523,9 @@ run_writer_with_fallback() {
       [ "$rc" -eq 127 ] && any_missing=1
       continue
     fi
+    # A non-fallback engine error (e.g. 124=timeout kill, 137/143=signal,
+    # generic non-zero) — propagate immediately, classifying it as engine-error.
+    printf 'engine-error\n' > /tmp/dev-lead-failure-reason
     return "$rc"
   done
 
@@ -4506,8 +4534,15 @@ run_writer_with_fallback() {
   # downstream handlers do not post rate-limit retry markers for what is really a
   # configuration/environment problem.  Only return 2 when every failure was a
   # genuine quota/rate-limit so callers know a later retry may succeed.
-  [ "$any_missing" -eq 1 ] && return 1
-  [ "$any_rate_limited" -eq 1 ] && return 2
+  if [ "$any_missing" -eq 1 ]; then
+    printf 'missing-binary\n' > /tmp/dev-lead-failure-reason
+    return 1
+  fi
+  if [ "$any_rate_limited" -eq 1 ]; then
+    printf 'rate-limited\n' > /tmp/dev-lead-failure-reason
+    return 2
+  fi
+  printf 'engine-error\n' > /tmp/dev-lead-failure-reason
   return 1
 }
 
