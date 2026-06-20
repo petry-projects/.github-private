@@ -657,6 +657,21 @@ commit_and_push() {
   return 0
 }
 
+# detect_conflicting_paths <base_ref> — list paths that conflict when merging
+# origin/<base_ref> into the current HEAD, one per line. Uses a trial merge
+# (immediately aborted) because it is robust across git versions: the former
+# `git merge-tree <base> HEAD <base>` 3-arg form prints a "changed in both"
+# section header whose last field is the literal word "both" (the filename is on
+# the indented our/their lines), so `awk '{print $NF}'` produced a bogus "both"
+# path that was fed to the rebase prompt. Leaves the worktree clean.
+detect_conflicting_paths() {
+  local base="$1"
+  [[ -z "$base" ]] && return 0
+  git merge --no-commit --no-ff "origin/${base}" >/dev/null 2>&1 || true
+  git diff --name-only --diff-filter=U || true
+  git merge --abort >/dev/null 2>&1 || true
+}
+
 # expire_stale_terminal_markers: deletes any existing terminal comments (applied,
 # no-changes, or failed) for this SHA+intent before a hard-blocker retry marker is
 # posted. Without this, the retry cron sees a stale terminal and skips re-dispatch
@@ -1053,16 +1068,28 @@ case "$INTENT_TYPE" in
       exit 1
     fi
     git fetch origin "$BASE_REF"
-    CONFLICTING_FILES=$(git merge-tree "$(git merge-base HEAD "origin/${BASE_REF}")" HEAD "origin/${BASE_REF}" 2>/dev/null | grep "^changed in both" | awk '{print $NF}' || true)
+    CONFLICTING_FILES=$(detect_conflicting_paths "$BASE_REF")
     export CONFLICTING_FILES
     rc=0
     build_and_run "rebase" || rc=$?
     [ "$rc" -eq 2 ] && handle_rate_limit "rebase"
     if [ "$rc" -eq 0 ]; then
       if commit_and_push "rebase"; then
+        # Engine left commits/changes for the script to push — resolution applied.
         post_reviews_terminal "rebase" "applied" "Rebase completed and pushed."
       else
-        post_no_changes "rebase"
+        # The rebase prompt has the engine force-push the rebased branch itself
+        # (rebase.md step 6), so commit_and_push finds nothing to push on success.
+        # Relying on it alone recorded EVERY successful rebase as "no-changes"
+        # (0% applied — discussion #735 telemetry). Distinguish a real resolution
+        # (no conflicts remain against the base) from an abort/no-op (conflicts
+        # persist) by re-checking the base conflict state after the run.
+        git fetch origin "$BASE_REF" >/dev/null 2>&1 || true
+        if [ -z "$(detect_conflicting_paths "$BASE_REF")" ]; then
+          post_reviews_terminal "rebase" "applied" "Rebase completed and pushed."
+        else
+          post_no_changes "rebase"
+        fi
       fi
     fi
     exit "$rc"
