@@ -377,9 +377,16 @@ case "$EVENT_NAME" in
     fi
     dispatch_type=$(jq -r '.action // empty' "$EVENT_PATH" 2>/dev/null || true)
     pr_number=$(jq -r '.client_payload.pr_number // empty' "$EVENT_PATH" 2>/dev/null || true)
+    issue_number=$(jq -r '.client_payload.issue_number // empty' "$EVENT_PATH" 2>/dev/null || true)
     head_sha=$(jq -r '.client_payload.head_sha // empty' "$EVENT_PATH" 2>/dev/null || true)
-    if [ -z "$pr_number" ]; then
-      emit_skip "no-pr-number-in-payload"
+
+    # The subject whose labels gate hands-off. PR-based dispatch types carry
+    # pr_number; the issue-retry type (#781) carries issue_number instead. Both
+    # resolve under repos/<repo>/issues/<n>/labels (PRs are issues for labels),
+    # so an issue-only payload is no longer dropped before routing.
+    subject_number="${pr_number:-$issue_number}"
+    if [ -z "$subject_number" ]; then
+      emit_skip "no-subject-number-in-payload"
       exit 0
     fi
 
@@ -388,7 +395,7 @@ case "$EVENT_NAME" in
     # fails (auth error, transient failure, token without label read access),
     # skip rather than route with unknown label state.
     _dispatch_labels=""
-    if ! _dispatch_labels=$(gh api "repos/${GITHUB_REPOSITORY}/issues/${pr_number}/labels" \
+    if ! _dispatch_labels=$(gh api "repos/${GITHUB_REPOSITORY}/issues/${subject_number}/labels" \
         --paginate --jq '.[].name' 2>/dev/null); then
       emit_skip "label-lookup-error"
       exit 0
@@ -401,6 +408,10 @@ case "$EVENT_NAME" in
 
     case "$dispatch_type" in
       dev-lead-ci-failure)
+        if [ -z "$pr_number" ]; then
+          emit_skip "no-pr-number-in-payload"
+          exit 0
+        fi
         checks=$(jq -c '.client_payload.checks // []' "$EVENT_PATH" 2>/dev/null || echo "[]")
         context=$(jq -nc \
           --argjson pr_number "$pr_number" \
@@ -410,6 +421,10 @@ case "$EVENT_NAME" in
         emit_intent "fix-ci" "ci-failure-dispatch" "$context"
         ;;
       dev-lead-reviews-retry)
+        if [ -z "$pr_number" ]; then
+          emit_skip "no-pr-number-in-payload"
+          exit 0
+        fi
         intent_type=$(jq -r '.client_payload.intent_type // empty' "$EVENT_PATH" 2>/dev/null || true)
         case "$intent_type" in
           fix-reviews|fix-bot-comment|on-mention|review-changes|rebase)
@@ -431,6 +446,19 @@ case "$EVENT_NAME" in
             emit_skip "unknown-reviews-retry-intent-type"
             ;;
         esac
+        ;;
+      dev-lead-issue-retry)
+        # Bounded auto-retry of a failed initial issue implementation (#781). The
+        # payload is issue-only (no PR exists yet); route to the existing `issue`
+        # intent so the same handler re-runs the implementation. The issue
+        # handler re-derives all context fresh from the issue, so a re-dispatch
+        # has full fidelity (like the PR-side retryable intents).
+        if [ -z "$issue_number" ]; then
+          emit_skip "no-issue-number-in-payload"
+          exit 0
+        fi
+        context=$(printf '{"issue_number":%s}' "$issue_number")
+        emit_intent "issue" "issue-retry-dispatch" "$context"
         ;;
       *)
         emit_skip "unknown-dispatch-type"

@@ -202,3 +202,57 @@ EOF
   [ "$(_get_context_field pr_number)" = "42" ]
   [ "$(_get_context_field head_sha)" = "abc123def456" ]
 }
+
+# ── repository_dispatch dev-lead-issue-retry (#781) ───────────────────────────
+
+@test "ci: repository_dispatch dev-lead-issue-retry → issue (issue-only payload not dropped)" {
+  export GITHUB_EVENT_NAME="repository_dispatch"
+  export GITHUB_EVENT_PATH="$FIXTURES_DIR/repository_dispatch_issue_retry.json"
+
+  run bash "$INTENT_SCRIPT"
+
+  [ "$status" -eq 0 ]
+  [ "$(_get_env INTENT_TYPE)" = "issue" ]
+  [ "$(_get_env INTENT_REASON)" = "issue-retry-dispatch" ]
+  [ "$(_get_context_field issue_number)" = "478" ]
+}
+
+@test "ci: dev-lead-issue-retry with no issue_number → skip" {
+  local tmp_event
+  tmp_event=$(mktemp --suffix=.json)
+  cat > "$tmp_event" <<'EOF'
+{
+  "action": "dev-lead-issue-retry",
+  "client_payload": { "repo": "petry-projects/.github-private" }
+}
+EOF
+  export GITHUB_EVENT_NAME="repository_dispatch"
+  export GITHUB_EVENT_PATH="$tmp_event"
+
+  run bash "$INTENT_SCRIPT"
+
+  [ "$status" -eq 0 ]
+  [ "$(_get_env INTENT_TYPE)" = "skip" ]
+  rm -f "$tmp_event"
+}
+
+@test "ci: dev-lead-issue-retry respects hands-off label on the issue" {
+  # gh stub returns the hands-off label → must skip even for a valid payload.
+  cat > "$MOCK_BIN/gh" <<'GHEOF'
+#!/usr/bin/env bash
+# hands-off label lookup: repos/.../issues/<n>/labels
+case "$*" in
+  *labels*) echo "dev-lead:hands-off" ;;
+  *) exit 0 ;;
+esac
+GHEOF
+  chmod +x "$MOCK_BIN/gh"
+  export GITHUB_EVENT_NAME="repository_dispatch"
+  export GITHUB_EVENT_PATH="$FIXTURES_DIR/repository_dispatch_issue_retry.json"
+
+  run bash "$INTENT_SCRIPT"
+
+  [ "$status" -eq 0 ]
+  [ "$(_get_env INTENT_TYPE)" = "skip" ]
+  [ "$(_get_env INTENT_REASON)" = "hands-off-label" ]
+}

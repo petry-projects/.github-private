@@ -109,6 +109,8 @@ Every GitHub webhook event that reaches `dev-lead.yml` is classified into exactl
 | `issues` labeled `dev-lead` | Any | `issue` | `dev-lead-fix-issue.sh` |
 | `check_run` completed, failure | Not a `dev-lead /` check | _relay only_ | `ci-relay` job |
 | `repository_dispatch` `dev-lead-ci-failure` | Dispatched by `ci-relay` | `fix-ci` | `dev-lead-fix-ci.sh` |
+| `repository_dispatch` `dev-lead-reviews-retry` | Dispatched by `dev-lead-retry` cron | _(payload `intent_type`)_ | `dev-lead-fix-reviews.sh` |
+| `repository_dispatch` `dev-lead-issue-retry` | Dispatched by `dev-lead-retry` cron (#781) | `issue` | `dev-lead-fix-issue.sh` |
 | All others | — | `skip` | (no-op) |
 
 ### 4.2 Intent definitions
@@ -436,6 +438,22 @@ Reads the specific comment body as the user's instruction. Executes it as an age
 6. **Wait for CI** — fix any failures (calls `dev-lead-fix-ci.sh` logic inline)
 7. **Tag CODEOWNERS** — post comment tagging relevant owners when CI is green
 
+**Engine-failure handling (`handle_engine_failure`, #781).** When `run_writer_with_fallback`
+fails (before a PR exists), the handler never exits silently. It classifies the cause from the
+`/tmp/dev-lead-failure-reason` sidecar written by `engine.sh` (`rate-limited` | `missing-binary`
+| `engine-error`), computes the attempt number from prior `<!-- dev-lead-issue <N> ... -->`
+markers, and posts a comment with the cause, a run deep-link, and a redacted ~40-line tail of the
+session output. Decision matrix (`MAX_ATTEMPTS=3`):
+
+| Cause | `attempt < MAX` | `attempt ≥ MAX` |
+|---|---|---|
+| `missing-binary` | `dev-lead:needs-human` label + comment (deterministic infra — no retry) | _(same)_ |
+| `rate-limited` / `engine-error` | retryable marker `<!-- dev-lead-issue <N> status=<failed\|rate-limited> attempt=<K> reason=<r> run=<id> [reset=ISO] -->` + comment | `dev-lead:needs-human` label + "retries exhausted" comment |
+
+Exit codes are unchanged (`2` rate-limit, `1` otherwise). The retryable marker is what the
+`dev-lead-retry` cron scans for to re-dispatch a `dev-lead-issue-retry`; an issue carrying the
+`dev-lead:needs-human` label is skipped by the cron.
+
 **Standards injection (always prepended to prompt):**
 
 The prompt includes instructions to:
@@ -599,6 +617,24 @@ claude → gemini → copilot → abort (post "rate limited" comment on PR)
 ```
 
 This mirrors the `review-batch.sh` `session_engine_fallback()` pattern.
+
+When **all** engines are exhausted, `run_writer_with_fallback` records the cause class to
+`/tmp/dev-lead-failure-reason` (`rate-limited` | `missing-binary` | `engine-error`), and
+`run_writer` persists the redacted session output to the run step summary on every exit path
+(including the rate-limit early return). Downstream handlers read the sidecar to classify the
+failure rather than collapsing everything into a generic exit code.
+
+### 10.1a Failed initial issue implementations (#781)
+
+A first issue implementation that fails at the engine step has no PR to attach a retry marker to,
+so before #781 it stalled silently. Now `dev-lead-fix-issue.sh` posts a cause-bearing
+`<!-- dev-lead-issue <N> status=<failed|rate-limited> attempt=<K> ... -->` marker (see §7.5), and
+the `dev-lead-retry` cron's `scan_repo_issues` enumerates open `dev-lead`-labeled issues, finds
+the newest such marker, and re-dispatches a `dev-lead-issue-retry` (honouring the rate-limit
+`reset=` window and the `attempt < MAX_ATTEMPTS` ceiling, skipping issues that already have an open
+PR or the `dev-lead:needs-human` label). After `MAX_ATTEMPTS` (3) the issue is labeled
+`dev-lead:needs-human` and left for a human — the same terminal escalation used for deterministic
+`missing-binary` infra failures.
 
 ### 10.2 CI still failing after MAX_CI_CYCLES
 
