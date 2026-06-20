@@ -166,7 +166,7 @@ both the pilot doc and #681's AC #1 already named **Context7 as the zero-auth fa
 that path:
 
 - `.github/review-mcp.json` now configures the **zero-auth Context7 HTTP endpoint**
-  (`https://mcp.context7.com/mcp`, `"type": "http"`) instead of the plan-blocked github/secret-scanning
+  (`https://mcp.context7.com/mcp`, `"type": "sse"`) instead of the plan-blocked github/secret-scanning
   server. No `npx` install and no secret are needed — the remote endpoint is zero-install and zero-auth.
   (Restore the github entry later if/when `advanced_security` is licensed.)
 - The repo variable `REVIEW_MCP_ALLOWED_TOOLS` is set to `mcp__context7__*`, permitting Context7's
@@ -188,7 +188,7 @@ that path:
 **What this change establishes.** The config + allowlist are now in place: `.github/review-mcp.json`
 points at the zero-auth Context7 endpoint and `REVIEW_MCP_ALLOWED_TOOLS=mcp__context7__*` permits its
 tools (`mcp__context7__resolve-library-id`, `mcp__context7__get-library-docs`). Because #809's
-env-mapping fix already proved the allowlist reaches the live job env and a `"type": "http"` MCP server
+env-mapping fix already proved the allowlist reaches the live job env and a `"type": "sse"` MCP server
 connects, the expected behavior is that Context7 connects and its tools are **permitted** (no "not
 permitted" errors) on the next review run — the AC #2 dry-run check verifies this on a live job.
 

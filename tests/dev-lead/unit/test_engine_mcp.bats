@@ -222,7 +222,7 @@ _source_engine() {
 
 @test "active config: review-mcp.json configures the zero-auth context7 server" {
   local cfg="$SCRIPT_DIR/.github/review-mcp.json"
-  run jq -e '.mcpServers.context7.type == "http"' "$cfg"
+  run jq -e '.mcpServers.context7.type == "sse"' "$cfg"
   [ "$status" -eq 0 ]
   run jq -r '.mcpServers.context7.url' "$cfg"
   [ "$status" -eq 0 ]
