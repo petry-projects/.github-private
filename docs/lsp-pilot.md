@@ -132,7 +132,7 @@ narrative.
 |---|---|---|
 | **agent-lsp** ([blackwell-systems/agent-lsp](https://github.com/blackwell-systems/agent-lsp)) | Single Go binary (pin a GitHub release tag) | Persistent daemon (~10s first index), `--non-interactive` + `--http` CI modes, GCF token compression, 30-language CI matrix. CI-first design. |
 | **Serena** ([oraios/serena](https://github.com/oraios/serena)) | Python wheel via `uv` (pin an exact PyPI version) | Has the production benchmark (Project AEGIS); use its results as the bar to beat. |
-| **lsp-mcp** | Go binary (pin a GitHub release tag) | ~24 tools, CI-verified across several languages. |
+| **lsp-mcp** ([owner/lsp-mcp](https://github.com/owner/lsp-mcp)) | Go binary (pin a GitHub release tag) | ~24 tools, CI-verified across several languages. |
 
 All three drive the same underlying Shell language server, **`bash-language-server`** (npm),
 which is **also pinned** to an exact version for the pilot.
@@ -151,7 +151,7 @@ that pins (SHAs / release tags) are looked up from the source of truth, never gu
 |---|---|---|---|
 | agent-lsp | GitHub releases — `blackwell-systems/agent-lsp` | *to be locked* | #842 |
 | Serena | PyPI / `oraios/serena` releases | *to be locked* | #842 |
-| lsp-mcp | GitHub releases | *to be locked* | #842 |
+| lsp-mcp | GitHub releases — `owner/lsp-mcp` | *to be locked* | #842 |
 | bash-language-server | npm `bash-language-server` | *to be locked* | #842 |
 
 Only the candidate that wins the comparison is carried past Phase 2; the run-count cost cap
