@@ -22,13 +22,18 @@
 #   scripts/initiative-driver.sh for the dev-lead label trigger.
 #
 # Env:
-#   REPO               owner/repo (required)
+#   REPO               owner/repo to DISPATCH the planner in (required). For the
+#                      dogfood path this is .github-private itself; for fleet
+#                      callers (per-repo stub, #820) it is the central planner repo.
+#   TARGET_REPO        owner/repo the planner should PLAN FOR (default: REPO).
+#                      The dogfood/self path leaves this unset so target == self.
 #   DISCUSSION_NUMBER  Ideas Discussion number to plan (required)
 #   WORKFLOW_FILE      workflow to dispatch (default: initiative-planner.yml)
 #   GH_TOKEN           a PAT with workflow scope (required at the call site)
 set -euo pipefail
 
 REPO="${REPO:?REPO required}"
+TARGET_REPO="${TARGET_REPO:-$REPO}"
 DISCUSSION_NUMBER="${DISCUSSION_NUMBER:?DISCUSSION_NUMBER required}"
 WORKFLOW_FILE="${WORKFLOW_FILE:-initiative-planner.yml}"
 
@@ -52,8 +57,9 @@ if [[ -n "${GITHUB_REF:-}" && ( "$GITHUB_REF" == refs/heads/* || "$GITHUB_REF" =
   REF_FLAGS=(--ref "$GITHUB_REF")
 fi
 
-echo "Discussion event → re-dispatching ${WORKFLOW_FILE} for discussion #${DISCUSSION_NUMBER} via workflow_dispatch."
+echo "Discussion event → re-dispatching ${WORKFLOW_FILE} for discussion #${DISCUSSION_NUMBER} (target ${TARGET_REPO}) via workflow_dispatch."
 gh workflow run "$WORKFLOW_FILE" --repo "$REPO" "${REF_FLAGS[@]}" \
   -f discussion="$DISCUSSION_NUMBER" \
+  -f target_repo="$TARGET_REPO" \
   -f dry_run="$DISPATCH_DRY_RUN"
-echo "Dispatched ${WORKFLOW_FILE} (discussion=${DISCUSSION_NUMBER}, dry_run=${DISPATCH_DRY_RUN})."
+echo "Dispatched ${WORKFLOW_FILE} (discussion=${DISCUSSION_NUMBER}, target_repo=${TARGET_REPO}, dry_run=${DISPATCH_DRY_RUN})."
