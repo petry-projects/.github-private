@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "lsp": {
+      "type": "stdio",
+      "command": "agent-lsp",
+      "args": [
+        "bash:bash-language-server,start"
+      ]
+    }
+  }
+}
