@@ -137,8 +137,7 @@ unit-tested.
 
 The pipeline runs for any BMAD-enabled org repo, not just this one. The BMAD
 frameworks, the planner, and the triage/enhancer tooling stay vendored **once**
-here; each fleet repo ships only thin **caller stubs**
-(`petry-projects/.github/standards/workflows/{initiative-planner,idea-triage,idea-enhancer}.yml`).
+here; each fleet repo ships only thin **caller stubs** (copied from petry-projects/.github/standards/workflows/{initiative-planner,idea-triage,idea-enhancer}.yml into their local .github/workflows/ directory).
 
 ```
 fleet repo: ★ human adds idea:approved to an Ideas Discussion
