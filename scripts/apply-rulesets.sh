@@ -35,9 +35,8 @@ DRY_RUN="${DRY_RUN:-false}"
 # ruleset_id_by_name <repo> <name> — echo the id of an existing ruleset, or empty.
 ruleset_id_by_name() {
   local repo="$1" name="$2"
-  gh api --paginate "repos/${repo}/rulesets" 2>/dev/null \
-    | jq -r --arg n "$name" 'if type=="array" then .[] else . end | select(.name==$n) | .id' 2>/dev/null \
-    | head -1
+  gh api --paginate "repos/${repo}/rulesets" \
+    | jq -r --arg n "$name" 'if type=="array" then .[] else . end | select(.name==$n) | .id'
 }
 
 # apply_one <repo> <json_file> — create or update the ruleset described by json_file.
@@ -64,7 +63,14 @@ main() {
   local names=()
   while [ $# -gt 0 ]; do
     case "$1" in
-      --repo) repo="$2"; shift 2 ;;
+      --repo)
+        if [ "$#" -lt 2 ]; then
+          echo "::error::--repo requires a value" >&2
+          return 2
+        fi
+        repo="$2"
+        shift 2
+        ;;
       --dry-run) DRY_RUN=true; shift ;;
       --*) echo "::error::unknown flag: $1" >&2; return 2 ;;
       *) names+=("$1"); shift ;;

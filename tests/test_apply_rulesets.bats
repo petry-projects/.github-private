@@ -88,3 +88,10 @@ EOF
   run bash -c "source '$APPLY' && ruleset_id_by_name petry-projects/.github-private code-quality"
   [ "$status" -eq 0 ]; [ "$output" = "7" ]
 }
+
+@test "apply: --repo without a value errors with a message" {
+  _stub_gh
+  run bash "$APPLY" --repo
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"--repo requires a value"* ]]
+}
