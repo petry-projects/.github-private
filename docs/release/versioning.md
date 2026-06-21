@@ -37,10 +37,43 @@ Two kinds of tag, per agent:
 Channels (Phase 1 defines `stable`; Phase 2 adds `next` and per-ring channels):
 
 - `<agent>/stable` — the production channel (blue). Callers in production pin here.
-- `<agent>/next` — the candidate channel (green). *(Phase 2, #499.)*
-- `<agent>/ring1`, … — per-ring channels for staged promotion. *(Phase 2, #499/#500.)*
+- `<agent>/next` — the candidate channel (green). **Live for `dev-lead`** (#499).
+- `<agent>/ring0`, `<agent>/ring1`, … — per-ring channels for staged promotion. **Live for `dev-lead`** (#499/#500).
 
-Examples: `pr-review/v1.0.0`, `pr-review/stable`, `dev-lead/v1.0.0`, `dev-lead/stable`.
+Examples: `pr-review/v1.0.0`, `pr-review/stable`, `dev-lead/v1.0.0`, `dev-lead/stable`,
+`dev-lead/next`, `dev-lead/ring0`, `dev-lead/ring1`.
+
+### Ring channels (live for `dev-lead`)
+
+The candidate (`next`) and ring channels are real moving tags, created alongside `stable`. A caller
+pins **once** to its ring channel and is never edited again; a release flows outward ring-by-ring as
+each ring's tag is advanced.
+
+Ring membership (canonical model — see [#500](https://github.com/petry-projects/.github-private/issues/500)).
+`next` is **host-relative**: it always resolves to the repo that *hosts* the reusable, and `ring0`
+covers the other org-infra repo, so `next` + `ring0` always span `.github` + `.github-private`,
+partitioned by which one is the host:
+
+| Ring | Channel | Members (general) | Role |
+|---|---|---|---|
+| **next** | `<agent>/next` | the repo that **hosts** the reusable | canary / dogfood at the source |
+| **ring0** | `<agent>/ring0` | `.github` **and** `.github-private` (host already in `next`) | org-infra self-host |
+| **ring1** | `<agent>/ring1` | `TalkTerm`, `bmad-bgreat-suite` | named low-traffic consumers |
+| **stable** | `<agent>/stable` | everything else | full-fleet production |
+
+Concretely for **`dev-lead`** (hosted in `.github-private`): `next` = `.github-private`,
+`ring0` = `.github`, `ring1` = `{TalkTerm, bmad-bgreat-suite}`, `stable` = the rest.
+**Production self-review/dev duty stays pinned to `stable` even within ring 0** — the agent validating
+fixes is never the unvalidated candidate (the circular-dependency fix #500 targets). The intended
+machine-readable source of truth is `standards/canary-rings.json`, consumed by the promotion
+automation (#501).
+
+A staged rollout advances the channels in order — `next` → `ring0` → `ring1` → `stable` — validating
+at each step (see [`runbook.md` §2c](./runbook.md#2c-staged-canary--ring-rollout)). All four channels
+may sit at the same commit between releases; they diverge while a candidate is being staged. The
+`check_dev_lead_stub` compliance audit accepts any `dev-lead/{stable,next,ring<N>}` channel pin (it
+rejects `@main` and frozen `@vX.Y.Z`/`@<sha>` — callers must pin a *moving* channel). pr-review still
+uses `stable` only; its ring channels are pending under #499.
 
 `feature-ideation` uses the full per-ring channel set — `{next, ring0, ring1, stable}` — so it can be
 promoted through the same canary → ring → stable model. Its tags follow the identical name scheme
