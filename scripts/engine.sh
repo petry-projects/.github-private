@@ -163,7 +163,7 @@ set_engine_config() {
   # openai/o4-mini is the April-2025 o4-generation reasoning model; it is not a
   # typo for o1-mini or gpt-4o-mini.
   #
-  # Defaulted UNCONDITIONALLY (not just in the copilot) branch) because the
+  # Defaulted UNCONDITIONALLY (not just in the copilot branch) because the
   # cross-engine rubber-duck uses copilot even when it is not primary — e.g. the
   # claude) branch sets DUCK_ENGINE=copilot — and copilot_chat references a bare
   # $COPILOT_API_MODEL under `set -u`. Leaving it unset on a non-copilot primary
