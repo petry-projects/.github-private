@@ -21,6 +21,50 @@ PRS_FILE="${PRS_FILE:-prs.txt}"
 MAX_PRS="${MAX_PRS:-10}"
 CANDIDATE_LIMIT="${CANDIDATE_LIMIT:-100}"
 
+# ── Engine-unavailable notice (issue #855) ──────────────────────────────────
+# When every review engine (Claude → Copilot → Gemini) is rate-limited or
+# unavailable for a PR, post AT MOST ONE notice comment — never a storm. The
+# notice carries an HTML marker; before posting we scan the PR's existing
+# comments for that marker, so a mention-dispatch retry loop that re-enters this
+# batch finds the prior notice and no-ops instead of re-posting (dedupe holds
+# across runs, not just within one). DRY_RUN suppresses the post. Best-effort: a
+# failed/blocked post never aborts the batch — the caller's terminal handling
+# (abort/continue) still runs.
+ENGINE_UNAVAILABLE_MARKER='<!-- pr-review-agent engine-unavailable v1 -->'
+
+post_engine_unavailable_notice() {
+  local pr_url="$1" engine="${2:-unknown}"
+  [ -z "$pr_url" ] && return 0
+
+  if [ "${DRY_RUN:-false}" = "true" ]; then
+    echo "    DRY_RUN: would post engine-unavailable notice on $pr_url"
+    return 0
+  fi
+
+  # Dedupe: no-op if our notice marker is already present on this PR.
+  local snapshot existing
+  snapshot=$(gh pr view "$pr_url" --json comments 2>/dev/null || echo '{}')
+  existing=$(jq -r --arg m "$ENGINE_UNAVAILABLE_MARKER" \
+        '[(.comments // [])[] | select(.body != null) | select(.body | contains($m))] | length' \
+        <<< "$snapshot" 2>/dev/null) || existing=0
+  if [ "${existing:-0}" -gt 0 ] 2>/dev/null; then
+    echo "::notice::Engine-unavailable notice already present on $pr_url — not re-posting"
+    return 0
+  fi
+
+  local body="${ENGINE_UNAVAILABLE_MARKER}
+**Automated review paused — review engines are unavailable.**
+
+Every configured review engine (Claude → Copilot → Gemini) reported a usage/rate limit or was otherwise unavailable, so no review could be generated for this run. This is a single, deduplicated notice: the agent will re-review automatically on its next scheduled run once capacity recovers, and will not post repeat notices in the meantime."
+
+  if gh pr comment "$pr_url" --body "$body" >/dev/null 2>&1; then
+    echo "::notice::Posted single engine-unavailable notice on $pr_url (engine=$engine)"
+  else
+    echo "::warning::Failed to post engine-unavailable notice on $pr_url"
+  fi
+  return 0
+}
+
 # Pre-flight: validate engine availability before touching any PR.
 # Sets CLAUDE_AVAILABLE, GEMINI_AVAILABLE, COPILOT_AVAILABLE and emits
 # ::warning:: annotations + job-summary table for any unavailable engine.
@@ -189,6 +233,7 @@ while IFS= read -r pr_url; do
       command -v gemini >/dev/null 2>&1 || _gemini_miss="Gemini CLI not installed (fix: npm install -g @google/gemini-cli)"
       [ -n "${GOOGLE_API_KEY:-}" ] || _gemini_miss="${_gemini_miss:+$_gemini_miss; }GOOGLE_API_KEY secret not set"
       echo "::warning::Gemini fallback unavailable (${_gemini_miss}) — skipping $pr_url and continuing batch"
+      post_engine_unavailable_notice "$pr_url" "$REVIEW_ENGINE"
       failed=$((failed + 1))
       echo "::endgroup::"
       continue
@@ -213,6 +258,7 @@ while IFS= read -r pr_url; do
     2)
       failed=$((failed + 1))
       echo "::error::Rate limit hit on $REVIEW_ENGINE engine, no fallback available for $pr_url"
+      post_engine_unavailable_notice "$pr_url" "$REVIEW_ENGINE"
       session_aborted=1
       abort_pr="$pr_url"
       abort_reason="rate-limit on fallback engine"
