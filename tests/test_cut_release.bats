@@ -24,6 +24,11 @@ setup() {
   [ "$status" -eq 0 ]
 }
 
+@test "valid_agent: feature-ideation is accepted" {
+  run valid_agent "feature-ideation"
+  [ "$status" -eq 0 ]
+}
+
 @test "valid_agent: unknown agent is rejected" {
   run valid_agent "ci-failure-analyst"
   [ "$status" -ne 0 ]
@@ -82,6 +87,11 @@ setup() {
   [ "$output" = "dev-lead/v2.3.1" ]
 }
 
+@test "release_ref: feature-ideation variant" {
+  run release_ref "feature-ideation" "1.4.0"
+  [ "$output" = "feature-ideation/v1.4.0" ]
+}
+
 @test "channel_ref: agent-scoped channel name" {
   run channel_ref "pr-review" "stable"
   [ "$output" = "pr-review/stable" ]
@@ -90,4 +100,9 @@ setup() {
 @test "channel_ref: next channel" {
   run channel_ref "dev-lead" "next"
   [ "$output" = "dev-lead/next" ]
+}
+
+@test "channel_ref: feature-ideation ring0 channel" {
+  run channel_ref "feature-ideation" "ring0"
+  [ "$output" = "feature-ideation/ring0" ]
 }
