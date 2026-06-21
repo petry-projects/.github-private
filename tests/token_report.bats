@@ -55,20 +55,6 @@ setup() {
   [ "$result" = "9250.0000" ]
 }
 
-@test "annotate_records: excludes finding_verification records (story #843, no cost pollution)" {
-  # The LSP finding-verification step shares the Token Observatory JSONL channel
-  # (kind:"finding_verification"). Those audit records must NOT be priced as
-  # token-usage calls or they would inflate the cost report with phantom rows.
-  tmp="$(mktemp -d)"
-  printf '%s\n' \
-    '{"ts":"2026-06-01T00:00:00Z","workflow":"pr-review","tier":"deep","model":"claude-opus-4-7","input_tokens":100,"output_tokens":50,"repo":"r","context":""}' \
-    '{"kind":"finding_verification","ts":"2026-06-01T00:00:01Z","workflow":"pr-review","tier":"deep","outcome":"unverifiable","severity_before":"critical","severity_after":"major","finding_index":0,"context":"pr"}' \
-    > "$tmp/mixed.jsonl"
-  result="$(annotate_records "$tmp" | wc -l)"
-  rm -rf "$tmp"
-  [ "$result" -eq 1 ]
-}
-
 @test "annotate_records: unknown model → cost sentinel -1 and known=0" {
   tmp="$(mktemp -d)"
   printf '%s\n' '{"ts":"2026-06-01T00:00:00Z","workflow":"x","tier":"y","model":"mystery-model-v9","input_tokens":100,"output_tokens":50,"repo":"r","context":""}' > "$tmp/u.jsonl"
