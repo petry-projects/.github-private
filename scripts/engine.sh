@@ -1303,6 +1303,12 @@ _mcp_review_flags() {
   _MCP_ALLOWED_TOOLS="$base"
   if [ -n "${REVIEW_MCP_CONFIG:-}" ] && [ -f "${REVIEW_MCP_CONFIG}" ] && [ -r "${REVIEW_MCP_CONFIG}" ]; then
     _MCP_FLAGS=(--mcp-config "$REVIEW_MCP_CONFIG" --strict-mcp-config)
+    if [ -n "${REVIEW_MCP_DEBUG:-}" ]; then
+      # Surface the MCP server handshake in the CLI's stderr (captured + scanned
+      # by _emit_mcp_failure_warning). `--debug mcp` scopes debug to the MCP
+      # subsystem only, so the log stays readable. Diagnostics-only opt-in.
+      _MCP_FLAGS+=(--debug mcp)
+    fi
     if [ -n "${REVIEW_MCP_ALLOWED_TOOLS:-}" ]; then
       _MCP_ALLOWED_TOOLS="${base},${REVIEW_MCP_ALLOWED_TOOLS}"
     fi
