@@ -53,6 +53,10 @@ RETRY_BASE_DELAY_SEC="${RETRY_BASE_DELAY_SEC:-5}"
 # REVIEW_MCP_ALLOWED_TOOLS — comma-separated MCP tool names (e.g.
 #   "mcp__context7__*") merged into the per-tier --allowed-tools list so the
 #   configured MCP tools are actually permitted. Default empty.
+# REVIEW_MCP_DEBUG — when set to a non-empty value, the MCP-enabled claude tiers
+#   add `--debug mcp` so the server handshake is logged to stderr, and a healthy
+#   connection is surfaced as a ::notice:: (the failure path already emits a
+#   ::warning::). Off by default — diagnostics only; never changes the verdict.
 # Only the deep (run_agentic) and rubber-duck (run_duck) claude tiers receive
 # this — the triage tier stays fast/restricted (--disallowed-tools only).
 #
@@ -69,10 +73,11 @@ if [ -z "${REVIEW_MCP_CONFIG+x}" ] && [ -f "$REVIEW_MCP_CONFIG_DEFAULT_PATH" ]; 
 fi
 REVIEW_MCP_CONFIG="${REVIEW_MCP_CONFIG:-}"
 REVIEW_MCP_ALLOWED_TOOLS="${REVIEW_MCP_ALLOWED_TOOLS:-}"
+REVIEW_MCP_DEBUG="${REVIEW_MCP_DEBUG:-}"
 # Export so the resolved knob survives into any review subprocess. review-one-pr.sh
 # and review-batch.sh source this file, so run_agentic/run_duck see it in-process;
 # the export also covers any future invocation via a separate child shell.
-export REVIEW_MCP_CONFIG REVIEW_MCP_ALLOWED_TOOLS
+export REVIEW_MCP_CONFIG REVIEW_MCP_ALLOWED_TOOLS REVIEW_MCP_DEBUG
 
 set_engine_config() {
   case "$REVIEW_ENGINE" in
@@ -378,6 +383,19 @@ _emit_mcp_failure_warning() {
     [ -n "$f" ] && [ -f "$f" ] && files+=("$f")
   done
   [ "${#files[@]}" -eq 0 ] && return 0
+  # Opt-in affirmative diagnostics (REVIEW_MCP_DEBUG): surface the successful
+  # handshake so a healthy MCP run is provable, not merely inferred from the
+  # absence of the failure ::warning:: below. `--debug mcp` (added in
+  # _mcp_review_flags) writes these "Successfully connected" lines to the
+  # captured stderr. Never alters control flow.
+  if [ -n "${REVIEW_MCP_DEBUG:-}" ]; then
+    grep -hoiE 'mcp server "[^"]+": successfully connected.*' "${files[@]}" 2>/dev/null \
+      | sort -u | while IFS= read -r _ln; do
+        # printf (not echo): _ln is an arbitrary captured log line, so avoid
+        # echo's inconsistent handling of leading hyphens / backslashes.
+        printf '::notice::[mcp] %s\n' "${_ln}" >&2
+      done
+  fi
   grep -qiE "$(_mcp_failure_pattern)" "${files[@]}" || return 0
   # Best-effort: name the server(s) from a quoted token near "MCP server".
   local servers
@@ -805,6 +823,12 @@ _mcp_review_flags() {
   _MCP_ALLOWED_TOOLS="$base"
   if [ -n "${REVIEW_MCP_CONFIG:-}" ] && [ -f "${REVIEW_MCP_CONFIG}" ] && [ -r "${REVIEW_MCP_CONFIG}" ]; then
     _MCP_FLAGS=(--mcp-config "$REVIEW_MCP_CONFIG" --strict-mcp-config)
+    if [ -n "${REVIEW_MCP_DEBUG:-}" ]; then
+      # Surface the MCP server handshake in the CLI's stderr (captured + scanned
+      # by _emit_mcp_failure_warning). `--debug mcp` scopes debug to the MCP
+      # subsystem only, so the log stays readable. Diagnostics-only opt-in.
+      _MCP_FLAGS+=(--debug mcp)
+    fi
     if [ -n "${REVIEW_MCP_ALLOWED_TOOLS:-}" ]; then
       _MCP_ALLOWED_TOOLS="${base},${REVIEW_MCP_ALLOWED_TOOLS}"
     fi
