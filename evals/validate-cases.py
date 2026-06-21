@@ -43,17 +43,6 @@ def validate_file(cases_path: Path, schema_path: Path) -> None:
     except (OSError, json.JSONDecodeError) as exc:
         fail(f"could not read/parse schema {schema_path}: {exc}")
 
-def validate_file(cases_path: Path, schema_path: Path) -> None:
-    try:
-        import jsonschema
-    except ImportError:
-        fail("jsonschema not installed (pip install 'jsonschema>=4')")
-
-    try:
-        schema = json.loads(schema_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        fail(f"could not read/parse schema {schema_path}: {exc}")
-
     try:
         raw = cases_path.read_text(encoding="utf-8")
     except OSError as exc:

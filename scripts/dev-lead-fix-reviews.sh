@@ -959,8 +959,18 @@ commit_and_push() {
   local intent="$1"
   local has_uncommitted=false has_unpushed=false
 
-  git diff --quiet && git diff --cached --quiet || has_uncommitted=true
-  git log "@{u}..HEAD" --oneline 2>/dev/null | grep -q . && has_unpushed=true
+  # git status --porcelain covers untracked files that git diff misses
+  [ -n "$(git status --porcelain 2>/dev/null)" ] && has_uncommitted=true
+
+  # Detect engine-committed but not pushed: prefer @{u} if upstream is configured,
+  # fall back to HEAD_SHA (resolved from PR API at script startup) for fork checkouts.
+  local upstream
+  upstream=$(git rev-parse --abbrev-ref --symbolic-full-name "@{u}" 2>/dev/null || true)
+  if [ -n "$upstream" ]; then
+    git log "${upstream}..HEAD" --oneline 2>/dev/null | grep -q . && has_unpushed=true
+  elif [ -n "${HEAD_SHA:-}" ]; then
+    git log "${HEAD_SHA}..HEAD" --oneline 2>/dev/null | grep -q . && has_unpushed=true
+  fi
 
   if ! $has_uncommitted && ! $has_unpushed; then
     echo "::notice::No changes to commit for intent=${intent}"
