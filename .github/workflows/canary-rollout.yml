@@ -87,7 +87,7 @@ jobs:
               [ "$DRY_RUN" != "false" ] && args+=(--dry-run)   # default-safe: dry unless explicitly false
               ;;
             rollback)
-              [ -n "$RING" ] && [ -n "$TO" ] || { echo "::error::rollback needs ring + to"; exit 2; }
+              if [ -z "$RING" ] || [ -z "$TO" ]; then echo "::error::rollback needs ring + to"; exit 2; fi
               args=(rollback "$AGENT" "$RING" --to "$TO")
               [ "$DRY_RUN" != "false" ] && args+=(--dry-run)
               ;;
