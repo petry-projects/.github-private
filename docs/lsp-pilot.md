@@ -149,13 +149,60 @@ that pins (SHAs / release tags) are looked up from the source of truth, never gu
 
 | Dependency | Source of truth | Pinned version | Locked in |
 |---|---|---|---|
-| agent-lsp | GitHub releases — `blackwell-systems/agent-lsp` | *to be locked* | #842 |
-| Serena | PyPI / `oraios/serena` releases | *to be locked* | #842 |
-| lsp-mcp | GitHub releases — `owner/lsp-mcp` | *to be locked* | #842 |
-| bash-language-server | npm `bash-language-server` | *to be locked* | #842 |
+| agent-lsp | GitHub releases — `blackwell-systems/agent-lsp` | **`v0.15.0`** | #842 |
+| Serena | PyPI `serena-agent` / `oraios/serena` releases | **`1.5.3`** | #842 |
+| lsp-mcp | GitHub releases — `owner/lsp-mcp` | *unresolved — repo not locatable; not wired* | #842 |
+| bash-language-server | npm `bash-language-server` | **`5.6.0`** | #842 |
 
-Only the candidate that wins the comparison is carried past Phase 2; the run-count cost cap
-in §4 bounds the comparison to **<=2 candidate servers**.
+Pins were looked up from each source of truth when the server was wired (#842), not invented
+here. `owner/lsp-mcp` could not be resolved to a real repository, so it is **not wired**; the
+run-count cost cap in §4 bounds the comparison to **<=2 candidate servers**, so the two
+resolvable candidates (**agent-lsp**, **Serena**) cover the pilot. **agent-lsp** is the wired
+default candidate (`scripts/setup-lsp-pilot.sh`): it is a single CI-first Go binary, which keeps
+cold-start off the critical path on ephemeral runners (§3). Only the candidate that wins the
+comparison (#844) is carried past Phase 2.
+
+### Wiring (story #842) — config, knobs, install
+
+The pilot rides the existing MCP knob (§6); #842 adds three committed pieces, all **inert until
+explicitly enabled**:
+
+- **Config** — [`.github/mcp/lsp.json`](../.github/mcp/lsp.json) declares the candidate's LSP-MCP
+  server as a stdio binary (server name `lsp`) driving `bash-language-server`. To switch
+  candidates, point `REVIEW_MCP_CONFIG` at a different committed config (and set `LSP_CANDIDATE`
+  so the installer fetches the matching binary). This file is **not** the engine's conventional
+  auto-default path (`.github/review-mcp.json`), so merely committing it activates nothing
+  (byte-for-byte unchanged — the success criterion in §4 / story AC #4).
+
+- **Knobs** (set by the installer when the pilot is on):
+
+  | Env var | Pilot value |
+  |---|---|
+  | `REVIEW_MCP_CONFIG` | `.github/mcp/lsp.json` |
+  | `REVIEW_MCP_ALLOWED_TOOLS` | the navigation allowlist below |
+
+  With both set, `engine.sh` appends `--mcp-config .github/mcp/lsp.json --strict-mcp-config` and
+  merges the navigation tools into the deep/audit + rubber-duck `--allowed-tools` base
+  (`Bash,Read,Grep,Glob`). **Triage is never touched.**
+
+- **Navigation allowlist (AC #3).** Only a small read-only navigation set is exposed (target
+  8–12 tools) to bound MCP tool-definition token overhead (~200 tokens/tool/turn). This is the
+  finding-verification surface from §2 (references + diagnostics) plus close navigation kin
+  (definition/hover/symbols) — **no** editing/refactoring tools (rename, apply_edit, insert,
+  delete, format, execute_command). The canonical list is the single source of truth in
+  `scripts/setup-lsp-pilot.sh` (`scripts/setup-lsp-pilot.sh print-allowed-tools`):
+  `mcp__lsp__find_references`, `mcp__lsp__go_to_definition`, `mcp__lsp__go_to_type_definition`,
+  `mcp__lsp__go_to_implementation`, `mcp__lsp__go_to_declaration`, `mcp__lsp__get_diagnostics`,
+  `mcp__lsp__inspect_symbol`, `mcp__lsp__list_symbols`, `mcp__lsp__find_symbol`,
+  `mcp__lsp__explore_symbol` (10 tools).
+
+- **Install (AC #2).** [`scripts/setup-lsp-pilot.sh`](../scripts/setup-lsp-pilot.sh) installs the
+  pinned candidate binary (verifying the release tarball's sha256 against `checksums.txt`) and the
+  pinned `bash-language-server`, then threads the knobs above into `$GITHUB_ENV`. It is gated in
+  `.github/workflows/pr-review.yml` behind the repo variable `LSP_PILOT_ENABLED == 'true'`. If a
+  pinned tool cannot be installed it emits a single `::warning::` and skips wiring the knobs — the
+  review continues on base capabilities and **the workflow never fails** (the same "Fail Loud,
+  Never Fake" contract as §3).
 
 ---
 
