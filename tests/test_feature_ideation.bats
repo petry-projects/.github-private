@@ -30,6 +30,7 @@ setup() {
   grep -qF "uses: ${REUSABLE}@" "$FEATURE_IDEATION_YML"
 }
 
-@test "feature-ideation.yml pins the reusable to the feature-ideation/next channel tag" {
+@test "feature-ideation.yml pins the reusable to the configured channel tag" {
+  grep -F "uses: ${REUSABLE}@" "$FEATURE_IDEATION_YML"
   grep -qF "uses: ${REUSABLE}@${CHANNEL}" "$FEATURE_IDEATION_YML"
 }
