@@ -65,6 +65,30 @@ Every configured review engine (Claude → Copilot → Gemini) reported a usage/
   return 0
 }
 
+# ── Accurate exit-100 skip reporting (issue #898) ───────────────────────────
+# review-one-pr.sh returns 100 for every no-op/skip and prints a JSON verdict
+# carrying the *reason* (ci-pending, already-reviewed-at-head, …). To report the
+# real reason instead of a blanket "already reviewed" line — which mislabelled a
+# CI-pending deferral as a completed review and made the #892 stuck-green case
+# look like an idempotency deadlock — capture the reviewer's stdout per PR and
+# parse the trailing reason out of it.
+run_review_capture() {
+  local url="$1" rc=0
+  set +e
+  bash scripts/review-one-pr.sh "$url" | tee "$REVIEW_OUT"
+  rc=${PIPESTATUS[0]}
+  set -e
+  return "$rc"
+}
+
+# Extract the last "reason":"…" value from a captured review log (the verdict
+# JSON is the final line review-one-pr.sh emits on a skip). Empty if none.
+skip_reason_from() {
+  grep -oE '"reason"[[:space:]]*:[[:space:]]*"[^"]*"' "$1" 2>/dev/null \
+    | tail -n1 \
+    | sed -E 's/.*"reason"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/'
+}
+
 # Pre-flight: validate engine availability before touching any PR.
 # Sets CLAUDE_AVAILABLE, GEMINI_AVAILABLE, COPILOT_AVAILABLE and emits
 # ::warning:: annotations + job-summary table for any unavailable engine.
@@ -168,6 +192,7 @@ fi
 
 actual=0
 skipped_noops=0
+deferred=0
 failed=0
 engine_fallbacks=0
 fallback_engines=""
@@ -176,6 +201,10 @@ session_aborted=0
 abort_pr=""
 abort_reason=""
 total_candidates=$(grep -c . "$PRS_FILE" || true)
+
+# Per-PR capture buffer for run_review_capture / skip_reason_from (issue #898).
+REVIEW_OUT=$(mktemp)
+trap 'rm -f "$REVIEW_OUT"' EXIT
 
 while IFS= read -r pr_url; do
   [ -z "$pr_url" ] && continue
@@ -192,7 +221,7 @@ while IFS= read -r pr_url; do
 
   echo "::group::Reviewing $pr_url"
   rc=0
-  bash scripts/review-one-pr.sh "$pr_url" || rc=$?
+  run_review_capture "$pr_url" || rc=$?
 
   # Treat known engine-unavailable setup/runtime errors as fallback-eligible
   if [ "$rc" -eq 55 ] || [ "$rc" -eq 127 ]; then
@@ -210,7 +239,7 @@ while IFS= read -r pr_url; do
       engine_fallbacks=$((engine_fallbacks + 1))
       fallback_engines="${fallback_engines:+$fallback_engines, }copilot"
       rc=0
-      bash scripts/review-one-pr.sh "$pr_url" || rc=$?
+      run_review_capture "$pr_url" || rc=$?
 
       # Handle Copilot engine-unavailable setup/runtime errors post-fallback
       if [ "$rc" -eq 55 ] || [ "$rc" -eq 127 ]; then
@@ -243,7 +272,7 @@ while IFS= read -r pr_url; do
     engine_fallbacks=$((engine_fallbacks + 1))
     fallback_engines="${fallback_engines:+$fallback_engines, }gemini"
     rc=0
-    bash scripts/review-one-pr.sh "$pr_url" || rc=$?
+    run_review_capture "$pr_url" || rc=$?
   fi
 
   case "$rc" in
@@ -253,7 +282,34 @@ while IFS= read -r pr_url; do
       ;;
     100)
       skipped_noops=$((skipped_noops + 1))
-      echo "::notice::No-op (already reviewed)"
+      # Report the real skip reason instead of a blanket "already reviewed".
+      # Reasons that mean "a review is still owed once checks settle" bump the
+      # deferred counter so the run summary flags them (issue #898).
+      reason=$(skip_reason_from "$REVIEW_OUT")
+      case "$reason" in
+        already-reviewed-at-head)
+          echo "::notice::No-op — already reviewed at current head" ;;
+        ci-pending|ci-pending-after-poll)
+          deferred=$((deferred + 1))
+          echo "::notice::Deferred — CI still pending; a review is owed once checks go green" ;;
+        ci-failing)
+          deferred=$((deferred + 1))
+          echo "::notice::Deferred — CI failing; will re-review after fixes land" ;;
+        waiting-for-advisory-bots)
+          deferred=$((deferred + 1))
+          echo "::notice::Deferred — awaiting advisory bot reviews" ;;
+        advisory-gate-api-error)
+          deferred=$((deferred + 1))
+          echo "::notice::Deferred — advisory-bot gate API error; will re-evaluate next run" ;;
+        changes-requested)
+          echo "::notice::Skipped — human changes requested; awaiting author" ;;
+        human-escalated|max-cycles-reached)
+          echo "::notice::Skipped — escalated to a human reviewer" ;;
+        gh-rate-limited)
+          echo "::notice::Skipped — gh API rate limited; will retry next run" ;;
+        *)
+          echo "::notice::No-op${reason:+ — $reason}" ;;
+      esac
       ;;
     2)
       failed=$((failed + 1))
@@ -278,6 +334,7 @@ done < "$PRS_FILE"
 remaining=$((total_candidates - processed))
 summary="Summary: $actual reviews posted, $skipped_noops no-ops skipped, $failed failures"
 [ "$engine_fallbacks" -gt 0 ] && summary="$summary, $engine_fallbacks engine fallback(s) to $fallback_engines"
+[ "$deferred" -gt 0 ] && summary="$summary ($deferred deferred pending CI/checks — owed a review once green)"
 summary="$summary (processed $processed/$total_candidates candidates)"
 
 if [ "$session_aborted" -eq 1 ]; then
