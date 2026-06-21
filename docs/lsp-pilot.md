@@ -228,7 +228,11 @@ rebuild the gating, the graceful-degradation path, or the Token Cost Observatory
   See [`docs/initiatives/mcp-powered-review.md`](./initiatives/mcp-powered-review.md) §4.
 - **What is genuinely new in this initiative:** (a) the cold-start SLA + index-caching +
   auto-skip on the LSP server's launch budget (#846), and (b) the finding-verification step
-  that calls find-references / diagnostics before posting a cross-file finding (#843).
+  that calls find-references / diagnostics before posting a cross-file finding (#843 —
+  shipped: the deep/audit prompts ask the model to annotate each grounded finding with
+  `lsp_verification`, and [`scripts/lib/lsp-verification.sh`](../scripts/lib/lsp-verification.sh)
+  enforces it — downgrading + annotating `unverifiable` findings and emitting each outcome to
+  the Token Cost Observatory JSONL. It is inert when LSP is unwired or degraded).
 
 ---
 
