@@ -65,6 +65,7 @@ jobs:
             tests/test_dependabot.bats \
             tests/test_feature_ideation.bats \
             tests/test_apply_repo_settings.bats \
+            tests/test_apply_rulesets.bats \
             tests/test_sweep_stuck_reviews.bats \
             tests/test_validate_cases.bats \
             tests/test_review_registry.bats \
