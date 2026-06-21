@@ -45,6 +45,7 @@ jobs:
             tests/fleet_report.bats \
             tests/fleet_stub_drift.bats \
             tests/test_initiative_canary.bats \
+            tests/test_initiative_driver_canary.bats \
             tests/token_report.bats \
             tests/lsp_pilot_compare.bats \
             tests/auto_rebase_health.bats \
