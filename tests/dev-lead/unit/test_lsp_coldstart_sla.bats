@@ -23,11 +23,11 @@ setup() {
 }
 
 teardown() {
-  [ -n "${TOKEN_LOG_FILE:-}" ] && rm -f "$TOKEN_LOG_FILE"
-  [ -n "${GITHUB_ENV:-}" ] && rm -f "$GITHUB_ENV"
-  [ -n "${SANDBOX_BIN:-}" ] && rm -rf "$SANDBOX_BIN"
+  [ -n "${TOKEN_LOG_FILE:-}" ] && rm -f "$TOKEN_LOG_FILE" 2>/dev/null || true
+  [ -n "${GITHUB_ENV:-}" ] && rm -f "$GITHUB_ENV" 2>/dev/null || true
+  [ -n "${SANDBOX_BIN:-}" ] && rm -rf "$SANDBOX_BIN" 2>/dev/null || true
   if [ -n "${INSTALL_BIN:-}" ]; then
-    rm -rf "$(dirname "$INSTALL_BIN")"
+    rm -rf "$(dirname "$INSTALL_BIN")" 2>/dev/null || true
   fi
   unset TOKEN_LOG_FILE LSP_INDEX_CACHE_HIT LSP_COLD_START_SLA_MS GITHUB_ENV SANDBOX_BIN INSTALL_BIN
 }
