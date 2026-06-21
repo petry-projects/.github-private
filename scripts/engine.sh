@@ -144,13 +144,6 @@ set_engine_config() {
       ENGINE_AUDIT_MODEL="o4-mini"
       ENGINE_ACTION_MODEL="o4-mini"
       ENGINE_SINGLE_MODEL="o4-mini"
-      # GitHub Models API model identifier — must match a model available at
-      # https://models.github.ai (see GitHub Models marketplace).
-      # Override via COPILOT_API_MODEL env var if the default is unavailable.
-      # openai/o4-mini is the April-2025 o4-generation reasoning model; it is
-      # not a typo for o1-mini or gpt-4o-mini.
-      COPILOT_API_MODEL="${COPILOT_API_MODEL:-openai/o4-mini}"
-      export COPILOT_API_MODEL
       ENGINE_LABEL="triage: o4-mini → deep: o4-mini + duck: gemini-3.5-flash → audit: o4-mini (GitHub Models API)"
       ENGINE_SINGLE_LABEL="single-reviewer mode: o4-mini (GitHub Models API)"
       # Cross-engine rubber duck: use Gemini when Copilot is primary
@@ -168,6 +161,19 @@ set_engine_config() {
       exit 1
       ;;
   esac
+
+  # GitHub Models API model identifier for the copilot engine — must match a
+  # model available at https://models.github.ai (see GitHub Models marketplace).
+  # Override via COPILOT_API_MODEL env var if the default is unavailable.
+  # openai/o4-mini is the April-2025 o4-generation reasoning model; it is not a
+  # typo for o1-mini or gpt-4o-mini.
+  #
+  # Defaulted UNCONDITIONALLY (not just in the copilot branch) because the
+  # cross-engine rubber-duck uses copilot even when it is not primary — e.g. the
+  # claude) branch sets DUCK_ENGINE=copilot — and copilot_chat references a bare
+  # $COPILOT_API_MODEL under `set -u`. Leaving it unset on a non-copilot primary
+  # silently aborts the duck subprocess and skips tier-2 (#881).
+  COPILOT_API_MODEL="${COPILOT_API_MODEL:-openai/o4-mini}"
 
   export ENGINE_TRIAGE_MODEL ENGINE_DEEP_MODEL ENGINE_AUDIT_MODEL
   export ENGINE_ACTION_MODEL ENGINE_SINGLE_MODEL
