@@ -178,6 +178,10 @@ jobs:
       # server yet blocks the tool calls ("not permitted"); set the repo variable
       # REVIEW_MCP_ALLOWED_TOOLS (e.g. `mcp__github__*`) to permit them.
       REVIEW_MCP_ALLOWED_TOOLS: ${{ vars.REVIEW_MCP_ALLOWED_TOOLS || '' }}
+      # Diagnostics opt-in: set repo variable REVIEW_MCP_DEBUG=1 to log the MCP
+      # server handshake (`--debug mcp`) and surface a ::notice:: for a healthy
+      # connection. Off by default; never changes the review verdict.
+      REVIEW_MCP_DEBUG: ${{ vars.REVIEW_MCP_DEBUG || '' }}
       # Downstream-impact pass (epic #748 / discussion #653): annotate a review
       # with the consumer repos that pin a shared surface the PR changes. Enabled
       # by default here; set the repo variable DOWNSTREAM_IMPACT_ENABLED=false to
