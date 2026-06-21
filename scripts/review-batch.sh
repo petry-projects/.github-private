@@ -203,7 +203,7 @@ abort_reason=""
 total_candidates=$(grep -c . "$PRS_FILE" || true)
 
 # Per-PR capture buffer for run_review_capture / skip_reason_from (issue #898).
-REVIEW_OUT=$(mktemp)
+REVIEW_OUT=$(mktemp) || { echo "::error::Failed to create temporary file for review capture" >&2; exit 1; }
 trap 'rm -f "$REVIEW_OUT"' EXIT
 
 while IFS= read -r pr_url; do
