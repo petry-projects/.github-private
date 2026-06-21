@@ -5,9 +5,6 @@
 # (issue #1427).
 #
 # Usage: source this file, then call compute_ci_status with the rollup array.
-#
-# (Ring-0 dogfood: comment-only touch to exercise the downstream-impact pass on
-# the `next` channel — see PR description. Safe to revert.)
 
 # Directory this library lives in — used to resolve the interaction contracts
 # (../../interaction-contracts) relative to the script, independent of CWD.
