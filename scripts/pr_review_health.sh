@@ -83,7 +83,9 @@ else
   failure_rate="0.0"
 fi
 
-# Duration percentiles across all completed runs
+# Duration percentiles across all completed runs (computed but not surfaced in the
+# LLM prompt — reserved for future structured-report use).
+# shellcheck disable=SC2034
 read -r dur_min dur_p50 dur_p95 dur_max < <(echo "$runs_json" | jq -r '
   [.[] | select(.conclusion != null and .duration_s > 0) | .duration_s] | sort |
   if length == 0 then "0 0 0 0"
@@ -113,6 +115,8 @@ conclusion_icon() {
   esac
 }
 
+# overall is the pre-computed status fed as a hint to the LLM prompt below.
+# shellcheck disable=SC2034
 if [ "$failed_runs" -eq 0 ]; then
   overall="HEALTHY"
 elif [ "$(echo "$failure_rate > 50" | bc)" -eq 1 ]; then
