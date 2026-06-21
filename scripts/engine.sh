@@ -391,7 +391,9 @@ _emit_mcp_failure_warning() {
   if [ -n "${REVIEW_MCP_DEBUG:-}" ]; then
     grep -hoiE 'mcp server "[^"]+": successfully connected.*' "${files[@]}" 2>/dev/null \
       | sort -u | while IFS= read -r _ln; do
-        echo "::notice::[mcp] ${_ln}" >&2
+        # printf (not echo): _ln is an arbitrary captured log line, so avoid
+        # echo's inconsistent handling of leading hyphens / backslashes.
+        printf '::notice::[mcp] %s\n' "${_ln}" >&2
       done
   fi
   grep -qiE "$(_mcp_failure_pattern)" "${files[@]}" || return 0
