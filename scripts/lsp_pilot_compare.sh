@@ -82,32 +82,31 @@ _lp_aggregate() {
   local jsonl="$1"
   [ -f "$jsonl" ] || return 0
 
-  local enriched; enriched="$(mktemp)"
   local pr model inp ca out nav tool find fp cold wall
   while IFS=$'\t' read -r pr model inp ca out nav tool find fp cold wall; do
     [ -n "$pr" ] || continue
-    local mult et usd known=1
+    local mult usd known=1
     mult="$(et_multiplier_for "$model")"
-    et="$(awk -v m="$mult" -v i="$inp" -v c="$ca" -v o="$out" \
-      'BEGIN { printf "%.4f", m * (1.0 * i + 0.1 * c + 4.0 * o) }')"
+    [ -z "$mult" ] && mult=1.0
     usd="$(cost_usd "$model" "$inp" "$ca" "$out")"
     if [ -z "$usd" ]; then usd=0; known=0; fi
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-      "$pr" "$nav" "$tool" "$find" "$fp" "$cold" "$wall" "$et" "$usd" "$known"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$pr" "$nav" "$tool" "$find" "$fp" "$cold" "$wall" "$mult" "$inp" "$ca" "$out" "$usd" "$known"
   done < <(jq -r 'select(type=="object") | [
       (.pr // "unknown"), (.model // "-"),
       (.input_tokens // 0), (.cache_read_tokens // 0), (.output_tokens // 0),
       (.nav_tokens // 0), (.tool_calls // 0), (.findings // 0), (.false_positives // 0),
       (if (.cold_start_s == null) then "null" else (.cold_start_s|tostring) end),
       (.wall_time_s // 0)
-    ] | @tsv' "$jsonl" 2>/dev/null) > "$enriched"
-
-  awk -F'\t' '
+    ] | @tsv' "$jsonl" 2>/dev/null) | awk -F'\t' '
     {
       pr = $1; n[pr]++
       nav[pr]  += $2; tool[pr] += $3; find[pr] += $4; fp[pr] += $5
-      wall[pr] += $7; et[pr]   += $8; usd[pr]  += $9
-      if ($10 == 0) unk[pr] = 1
+      wall[pr] += $7
+      mult = $8; inp = $9; ca = $10; out = $11; usd_val = $12; known_val = $13
+      et_val = mult * (1.0 * inp + 0.1 * ca + 4.0 * out)
+      et[pr]   += et_val; usd[pr]  += usd_val
+      if (known_val == 0) unk[pr] = 1
       if ($6 != "null" && $6 != "" && $6 != "NA") { cold[pr] += $6; coldn[pr]++ }
     }
     END {
@@ -118,8 +117,7 @@ _lp_aggregate() {
           pr, nav[pr]/c, tool[pr]/c, find[pr]/c, fp[pr]/c, coldval,
           wall[pr]/c, et[pr]/c, usd[pr]/c, (unk[pr] ? 1 : 0)
       }
-    }' "$enriched" | sort
-  rm -f "$enriched"
+    }' | sort
 }
 
 # _lp_ratio <baseline> <candidate> — baseline/candidate as "N.Nx" (— if candidate is 0).
@@ -157,93 +155,112 @@ render_lsp_comparison() {
   bagg="$(_lp_aggregate "$baseline")"
   cagg="$(_lp_aggregate "$candidate")"
 
-  # Index the baseline aggregate by pr.
-  declare -A B_NAV B_TOOL B_FIND B_FP B_WALL B_ET B_USD
-  local pr nav tool find fp cold wall et usd unk
-  while IFS=$'\t' read -r pr nav tool find fp cold wall et usd unk; do
-    [ -n "$pr" ] || continue
-    B_NAV["$pr"]="$nav"; B_TOOL["$pr"]="$tool"; B_FIND["$pr"]="$find"
-    B_FP["$pr"]="$fp";   B_WALL["$pr"]="$wall"; B_ET["$pr"]="$et"; B_USD["$pr"]="$usd"
-  done <<< "$bagg"
-
   printf '# 🔬 LSP pilot comparison — `%s` vs frozen LSP-off baseline\n\n' "$name"
   printf '_Speed (cold-start, wall-time) · cost (nav tokens, tool calls, ET, USD) · '
   printf 'quality (findings, false positives), LSP-on vs the immutable LSP-off control._\n\n'
   printf '**Quality proxy:** a PR regresses when its **false-positive** count exceeds the '
-  printf 'frozen baseline'"'"'s (precision dropped). A navigation-token win that costs '
+  printf "frozen baseline's (precision dropped). A navigation-token win that costs "
   printf 'precision is a no-go.\n\n'
 
-  printf '## Per PR (off → on)\n\n'
-  printf '| PR | Nav tokens | Nav reduction | Tool calls | Cold start | Wall time | ET | USD | Findings | False positives | Quality |\n'
-  printf '|---|---|---:|---|---:|---|---:|---:|---|---:|:--|\n'
+  awk -F'\t' '
+    function fmt_int(n,   neg, s, r) {
+      n = int(n + 0.5); s = ""; if (n < 0) { neg = 1; n = -n }
+      if (n == 0) s = "0"
+      while (n > 0) {
+        r = n % 1000; n = int(n / 1000);
+        s = (n > 0) ? sprintf("%03d", r) (s == "" ? "" : "," s) : r (s == "" ? "" : "," s)
+      }
+      return (neg ? "-" : "") s
+    }
 
-  local tot_bnav=0 tot_cnav=0 tot_bet=0 tot_cet=0 tot_busd=0 tot_cusd=0
-  local tot_bfind=0 tot_cfind=0 tot_bfp=0 tot_cfp=0 cold_sum=0 cold_n=0
-  local any_regression=0
+    function fmt_usd(v) {
+      return sprintf("$%.2f", v)
+    }
 
-  while IFS=$'\t' read -r pr nav tool find fp cold wall et usd unk; do
-    [ -n "$pr" ] || continue
-    local bnav="${B_NAV[$pr]}" btool="${B_TOOL[$pr]}" bfind="${B_FIND[$pr]}"
-    local bfp="${B_FP[$pr]}" bwall="${B_WALL[$pr]}" bet="${B_ET[$pr]}" busd="${B_USD[$pr]}"
+    # First file: baseline aggregate
+    NR == FNR {
+      pr = $1
+      b_nav[pr] = $2; b_tool[pr] = $3; b_find[pr] = $4; b_fp[pr] = $5
+      b_cold[pr] = $6; b_wall[pr] = $7; b_et[pr] = $8; b_usd[pr] = $9
+      next
+    }
 
-    local ratio; ratio="$(_lp_ratio "$bnav" "$nav")"
-    local regressed quality
-    regressed="$(awk -v c="$fp" -v b="$bfp" 'BEGIN { print (c > b) ? 1 : 0 }')"
-    if [ "$regressed" -eq 1 ]; then quality="⚠️ REGRESSION"; any_regression=1; else quality="ok"; fi
+    # Print header on transition to candidate aggregate
+    NR > FNR && !candidate_header_printed {
+      print "## Per PR (off → on)\n"
+      print "| PR | Nav tokens | Nav reduction | Tool calls | Cold start | Wall time | ET | USD | Findings | False positives | Quality |"
+      print "|---|---|---:|---|---:|---|---:|---:|---|---:|:--|"
+      candidate_header_printed = 1
+    }
 
-    local coldcell="N/A → ${cold}s"
-    [ "$cold" = "NA" ] && coldcell="N/A → N/A"
+    # Second file: candidate aggregate
+    {
+      pr = $1
+      nav = $2; tool = $3; find = $4; fp = $5; cold = $6; wall = $7; et = $8; usd = $9
 
-    printf '| `%s` | %s → %s | %s | %s → %s | %s | %ss → %ss | %s → %s | %s → %s | %s → %s | %s → %s | %s |\n' \
-      "$pr" \
-      "$(_fmt_int "$bnav")" "$(_fmt_int "$nav")" "$ratio" \
-      "$(_fmt_int "$btool")" "$(_fmt_int "$tool")" \
-      "$coldcell" \
-      "$bwall" "$wall" \
-      "$(_fmt_int "$bet")" "$(_fmt_int "$et")" \
-      "$(_fmt_usd "$busd")" "$(_fmt_usd "$usd")" \
-      "$(_fmt_int "$bfind")" "$(_fmt_int "$find")" \
-      "$(_fmt_int "$bfp")" "$(_fmt_int "$fp")" \
-      "$quality"
+      bnav = b_nav[pr]
+      btool = b_tool[pr]
+      bfind = b_find[pr]
+      bfp = b_fp[pr]
+      bwall = b_wall[pr]
+      bet = b_et[pr]
+      busd = b_usd[pr]
 
-    tot_bnav="$(awk -v a="$tot_bnav" -v b="$bnav" 'BEGIN{print a+b}')"
-    tot_cnav="$(awk -v a="$tot_cnav" -v b="$nav"  'BEGIN{print a+b}')"
-    tot_bet="$(awk  -v a="$tot_bet"  -v b="$bet"  'BEGIN{print a+b}')"
-    tot_cet="$(awk  -v a="$tot_cet"  -v b="$et"   'BEGIN{print a+b}')"
-    tot_busd="$(awk -v a="$tot_busd" -v b="$busd" 'BEGIN{print a+b}')"
-    tot_cusd="$(awk -v a="$tot_cusd" -v b="$usd"  'BEGIN{print a+b}')"
-    tot_bfind="$(awk -v a="$tot_bfind" -v b="$bfind" 'BEGIN{print a+b}')"
-    tot_cfind="$(awk -v a="$tot_cfind" -v b="$find"  'BEGIN{print a+b}')"
-    tot_bfp="$(awk -v a="$tot_bfp" -v b="$bfp" 'BEGIN{print a+b}')"
-    tot_cfp="$(awk -v a="$tot_cfp" -v b="$fp"  'BEGIN{print a+b}')"
-    if [ "$cold" != "NA" ]; then
-      cold_sum="$(awk -v a="$cold_sum" -v b="$cold" 'BEGIN{print a+b}')"
-      cold_n=$((cold_n + 1))
-    fi
-  done <<< "$cagg"
+      if (nav > 0) ratio = sprintf("%.1fx", bnav / nav); else ratio = "—"
 
-  local overall_ratio mean_cold
-  overall_ratio="$(_lp_ratio "$tot_bnav" "$tot_cnav")"
-  if [ "$cold_n" -gt 0 ]; then
-    mean_cold="$(awk -v s="$cold_sum" -v n="$cold_n" 'BEGIN{printf "%.1fs", s/n}')"
-  else
-    mean_cold="N/A"
-  fi
+      if (fp > bfp) {
+        quality = "⚠️ REGRESSION"
+        any_regression = 1
+      } else {
+        quality = "ok"
+      }
 
-  printf '\n## Aggregate\n\n'
-  printf -- '- **Navigation tool-call tokens:** %s (off) → %s (on) — **%s** reduction\n' \
-    "$(_fmt_int "$tot_bnav")" "$(_fmt_int "$tot_cnav")" "$overall_ratio"
-  printf -- '- **ET:** %s (off) → %s (on)\n' "$(_fmt_int "$tot_bet")" "$(_fmt_int "$tot_cet")"
-  printf -- '- **USD:** %s (off) → %s (on)\n' "$(_fmt_usd "$tot_busd")" "$(_fmt_usd "$tot_cusd")"
-  printf -- '- **Mean LSP-on cold start:** %s (baseline N/A — no server)\n' "$mean_cold"
-  printf -- '- **Findings:** %s (off) → %s (on)\n' "$(_fmt_int "$tot_bfind")" "$(_fmt_int "$tot_cfind")"
-  printf -- '- **False positives:** %s (off) → %s (on)\n' "$(_fmt_int "$tot_bfp")" "$(_fmt_int "$tot_cfp")"
+      if (cold == "NA") {
+        coldcell = "N/A → N/A"
+      } else {
+        coldcell = "N/A → " cold "s"
+        cold_sum += cold
+        cold_n++
+      }
 
-  if [ "$any_regression" -eq 1 ]; then
-    printf -- '- **Quality verdict:** ⚠️ **REGRESSION** — at least one PR has more false positives than the frozen baseline.\n'
-  else
-    printf -- '- **Quality verdict:** ✅ **PASS** — no PR exceeds the frozen baseline false-positive count.\n'
-  fi
+      printf "| \`%s\` | %s → %s | %s | %s → %s | %s | %ss → %ss | %s → %s | %s → %s | %s → %s | %s → %s | %s |\n",
+        pr,
+        fmt_int(bnav), fmt_int(nav), ratio,
+        fmt_int(btool), fmt_int(tool),
+        coldcell,
+        bwall, wall,
+        fmt_int(bet), fmt_int(et),
+        fmt_usd(busd), fmt_usd(usd),
+        fmt_int(bfind), fmt_int(find),
+        fmt_int(bfp), fmt_int(fp),
+        quality
+
+      tot_bnav += bnav; tot_cnav += nav
+      tot_bet += bet; tot_cet += et
+      tot_busd += busd; tot_cusd += usd
+      tot_bfind += bfind; tot_cfind += find
+      tot_bfp += bfp; tot_cfp += fp
+    }
+
+    END {
+      if (tot_cnav > 0) overall_ratio = sprintf("%.1fx", tot_bnav / tot_cnav); else overall_ratio = "—"
+      if (cold_n > 0) mean_cold = sprintf("%.1fs", cold_sum / cold_n); else mean_cold = "N/A"
+
+      print "\n## Aggregate\n"
+      printf "- **Navigation tool-call tokens:** %s (off) → %s (on) — **%s** reduction\n", fmt_int(tot_bnav), fmt_int(tot_cnav), overall_ratio
+      printf "- **ET:** %s (off) → %s (on)\n", fmt_int(tot_bet), fmt_int(tot_cet)
+      printf "- **USD:** %s (off) → %s (on)\n", fmt_usd(tot_busd), fmt_usd(tot_cusd)
+      printf "- **Mean LSP-on cold start:** %s (baseline N/A — no server)\n", mean_cold
+      printf "- **Findings:** %s (off) → %s (on)\n", fmt_int(tot_bfind), fmt_int(tot_cfind)
+      printf "- **False positives:** %s (off) → %s (on)\n", fmt_int(tot_bfp), fmt_int(tot_cfp)
+
+      if (any_regression == 1) {
+        print "- **Quality verdict:** ⚠️ **REGRESSION** — at least one PR has more false positives than the frozen baseline."
+      } else {
+        print "- **Quality verdict:** ✅ **PASS** — no PR exceeds the frozen baseline false-positive count."
+      }
+    }
+  ' <(echo "$bagg") <(echo "$cagg")
 
   return 0
 }
