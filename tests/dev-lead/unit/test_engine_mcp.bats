@@ -17,7 +17,7 @@ setup() {
 
   unset CLAUDE_TRIAGE_MODEL_CHAIN CLAUDE_DEEP_MODEL_CHAIN CLAUDE_AUDIT_MODEL_CHAIN
   unset CLAUDE_ACTION_MODEL_CHAIN CLAUDE_SINGLE_MODEL_CHAIN
-  unset REVIEW_MCP_CONFIG REVIEW_MCP_ALLOWED_TOOLS REVIEW_MCP_CONFIG_DEFAULT_PATH
+  unset REVIEW_MCP_CONFIG REVIEW_MCP_ALLOWED_TOOLS REVIEW_MCP_CONFIG_DEFAULT_PATH REVIEW_MCP_DEBUG
 
   STUB_BIN_DIR="$(mktemp -d)"
   cp "$STUB_ENGINES_DIR/stub-claude" "$STUB_BIN_DIR/claude"
@@ -46,7 +46,7 @@ teardown() {
   rm -f "$GITHUB_ENV" "$GITHUB_OUTPUT" "$TEST_PROMPT" "$ARGS_RECORD" "$MCP_CONFIG_FILE"
   rm -rf "$STUB_BIN_DIR"
   unset STUB_ENGINE_RECORD_ARGS STUB_ENGINE_EXIT
-  unset REVIEW_MCP_CONFIG REVIEW_MCP_ALLOWED_TOOLS REVIEW_MCP_CONFIG_DEFAULT_PATH
+  unset REVIEW_MCP_CONFIG REVIEW_MCP_ALLOWED_TOOLS REVIEW_MCP_CONFIG_DEFAULT_PATH REVIEW_MCP_DEBUG
 }
 
 _source_engine() {
@@ -320,5 +320,63 @@ _source_engine() {
   [ "$status" -eq 0 ]
   [[ "$output" == *"::warning::[mcp]"* ]]
   [[ "$output" == *"context7"* ]]
+  [[ "$output" == *'"decision":"approve"'* ]]
+}
+
+# ── Affirmative debug diagnostics (REVIEW_MCP_DEBUG) ──────────────────────────
+# The failure path is "fail loud, never fake" — but a HEALTHY MCP run only logs
+# nothing, so connectivity could only be inferred from the absence of a warning.
+# REVIEW_MCP_DEBUG opt-in: thread `--debug mcp` into the MCP claude tiers and
+# surface the handshake as a ::notice::. Off by default; never alters the verdict.
+
+@test "debug: REVIEW_MCP_DEBUG set + MCP config → --debug mcp threaded into claude call" {
+  _source_engine "claude"
+  export REVIEW_MCP_CONFIG="$MCP_CONFIG_FILE"
+  export REVIEW_MCP_DEBUG=1
+  run run_agentic "$TEST_PROMPT" "claude-opus-4-8" "deep"
+  [ "$status" -eq 0 ]
+  grep -q -- "--debug mcp" "$ARGS_RECORD"
+  grep -q -- "--mcp-config $MCP_CONFIG_FILE" "$ARGS_RECORD"
+}
+
+@test "debug: REVIEW_MCP_DEBUG set but MCP off → no --debug flag (debug rides MCP flags only)" {
+  export REVIEW_MCP_CONFIG_DEFAULT_PATH="$(mktemp -u)"  # no conventional file
+  _source_engine "claude"
+  export REVIEW_MCP_DEBUG=1
+  run run_agentic "$TEST_PROMPT" "claude-opus-4-8" "deep"
+  [ "$status" -eq 0 ]
+  ! grep -q -- "--debug mcp" "$ARGS_RECORD"
+  ! grep -q -- "--mcp-config" "$ARGS_RECORD"
+}
+
+@test "debug: MCP knob set but REVIEW_MCP_DEBUG unset → no --debug flag (default unchanged)" {
+  _source_engine "claude"
+  export REVIEW_MCP_CONFIG="$MCP_CONFIG_FILE"
+  run run_agentic "$TEST_PROMPT" "claude-opus-4-8" "deep"
+  [ "$status" -eq 0 ]
+  ! grep -q -- "--debug mcp" "$ARGS_RECORD"
+}
+
+@test "debug: REVIEW_MCP_DEBUG set + healthy handshake in output → ::notice:: surfaced, no warning" {
+  _source_engine "claude"
+  export REVIEW_MCP_CONFIG="$MCP_CONFIG_FILE"
+  export REVIEW_MCP_DEBUG=1
+  export STUB_ENGINE_RESPONSE=$'MCP server "context7": Successfully connected (transport: http) in 333ms\n{"decision":"approve","summary":"mcp healthy"}'
+  run run_agentic "$TEST_PROMPT" "claude-opus-4-8" "deep"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"::notice::[mcp]"* ]]
+  [[ "$output" == *"context7"* ]]
+  [[ "$output" == *"Successfully connected"* ]]
+  ! [[ "$output" == *"::warning::[mcp]"* ]]
+  [[ "$output" == *'"decision":"approve"'* ]]
+}
+
+@test "debug: healthy handshake but REVIEW_MCP_DEBUG unset → no ::notice:: (opt-in only)" {
+  _source_engine "claude"
+  export REVIEW_MCP_CONFIG="$MCP_CONFIG_FILE"
+  export STUB_ENGINE_RESPONSE=$'MCP server "context7": Successfully connected (transport: http) in 333ms\n{"decision":"approve","summary":"mcp healthy"}'
+  run run_agentic "$TEST_PROMPT" "claude-opus-4-8" "deep"
+  [ "$status" -eq 0 ]
+  ! [[ "$output" == *"::notice::[mcp]"* ]]
   [[ "$output" == *'"decision":"approve"'* ]]
 }
