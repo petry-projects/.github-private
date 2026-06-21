@@ -43,18 +43,19 @@ see §2).
 
 ## 2. In-scope vs out-of-scope agent actions
 
-**In scope — finding-verification in the deep/audit tiers.** LSP is used as a
-*grounding/verification* step: before the reviewer posts a cross-file claim, it confirms the
-claim against real semantic context via:
+**In scope — LSP cold-start instrumentation and auto-skip in the deep/audit tiers.** This
+pilot phases in LSP by first establishing the cold-start infrastructure (timing, caching,
+and graceful degradation) so the agent can measure feasibility:
 
-- **find-references** (`textDocument/references`) — confirm "this breaks N callers" /
-  "this symbol is unused" against the actual reference set, not a textual `grep` match.
-- **diagnostics** (`textDocument/publishDiagnostics`) — confirm "this is undefined / this is
-  a type or syntax error" against the language server's own diagnostics.
+- **Cold-start SLA** — baseline cold-start time for the server's bring-up (target ≤30s P95).
+- **Index caching** — cache the language index across runs so only the first CI run (or after
+  source changes) incurs cold-start.
+- **Auto-skip on SLA miss** — if cold-start exceeds the SLA, gracefully skip LSP (warn, never
+  fail) and proceed with the review on base capabilities.
 
-This directly attacks the false-positive problem (textual `grep` matches a name in a string
-or comment; LSP resolves the *semantic* reference), which is what erodes trust in an
-auto-approving reviewer.
+Finding-verification (references, diagnostics) is considered as a *future* enhancement
+(epic Phase 2, [#843](https://github.com/petry-projects/.github-private/issues/843))
+once cold-start is established as viable.
 
 **Explicitly OUT of scope for this pilot:**
 
