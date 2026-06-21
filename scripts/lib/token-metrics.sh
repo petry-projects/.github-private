@@ -117,52 +117,6 @@ emit_token_record() {
   printf '%s\n' "$record" >> "$TOKEN_LOG_FILE" 2>/dev/null || true
 }
 
-# emit_verification_record <workflow> <tier> <context> <finding_index>
-#                          <category> <severity_before> <severity_after> <outcome>
-# Appends one finding-verification record to TOKEN_LOG_FILE on the SAME JSONL
-# channel as token records (story #843, epic #839). The record is discriminated
-# by kind:"finding_verification" so the comparison harness (story 2) can compute
-# the false-positive-rate delta and the cost report can skip it (it is not a
-# priced token-usage call — see scripts/token_report.sh `annotate_records`).
-# No-op when TOKEN_LOG_FILE is unset; swallows I/O errors so it never aborts a run.
-emit_verification_record() {
-  [ -n "${TOKEN_LOG_FILE:-}" ] || return 0
-
-  local workflow="$1" tier="$2" context="$3" finding_index="$4"
-  local category="$5" severity_before="$6" severity_after="$7" outcome="$8"
-
-  local ts run_id record
-  ts=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "")
-  run_id="${GITHUB_RUN_ID:-}"
-
-  record=$(jq -cn \
-    --arg ts "$ts" \
-    --arg workflow "$workflow" \
-    --arg tier "$tier" \
-    --arg context "$context" \
-    --arg finding_index "$finding_index" \
-    --arg category "$category" \
-    --arg severity_before "$severity_before" \
-    --arg severity_after "$severity_after" \
-    --arg outcome "$outcome" \
-    --arg run_id "$run_id" \
-    '{
-      kind: "finding_verification",
-      ts: $ts,
-      workflow: $workflow,
-      tier: $tier,
-      context: $context,
-      finding_index: ($finding_index | tonumber? // $finding_index),
-      category: $category,
-      severity_before: $severity_before,
-      severity_after: $severity_after,
-      outcome: $outcome,
-      run_id: $run_id
-    }' 2>/dev/null) || return 0
-
-  printf '%s\n' "$record" >> "$TOKEN_LOG_FILE" 2>/dev/null || true
-}
-
 # emit_lsp_coldstart_record <cold_start_ms> <cache_status> <skipped> <sla_ms>
 #                           [context]
 # Appends one JSONL record describing an LSP cold-start measurement to

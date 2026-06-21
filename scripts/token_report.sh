@@ -76,10 +76,7 @@ annotate_records() {
   local dir="$1"
   local files=("$dir"/*.jsonl)
   [ -e "${files[0]}" ] || return 0   # no JSONL files → no rows
-  jq -r 'select(type == "object")
-    | select((.kind // "token_usage") == "token_usage")
-    | select(.metric == null)
-    | [
+  jq -r 'select(type == "object") | select(.metric == null) | [
       (.repo // "unknown"), (.workflow // "unknown"), (.tier // "-"), (.model // "-"),
       (.input_tokens // 0), (.cache_read_tokens // 0), (.output_tokens // 0),
       (.ts // "-"), (.context // ""), (.cache_creation_tokens // 0)
