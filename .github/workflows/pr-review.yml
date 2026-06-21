@@ -417,6 +417,23 @@ jobs:
               ;;
           esac
 
+      # ── LSP-MCP review pilot (epic #839, story #842) ─────────────────────
+      # Opt-in ONLY: runs when the repo variable LSP_PILOT_ENABLED == 'true'.
+      # When off (the default) this step is skipped entirely, REVIEW_MCP_CONFIG
+      # stays unset, and the review behaves byte-for-byte as today (the engine's
+      # existing .github/review-mcp.json default is untouched). When on, the
+      # script installs the pinned LSP-MCP candidate + bash-language-server and
+      # threads the deep/audit-only MCP knobs into $GITHUB_ENV. A missing tool
+      # degrades gracefully (::warning:: + skip) — it never fails the workflow.
+      # Pins/candidate are overridable via repo variables; see docs/lsp-pilot.md.
+      - name: Set up LSP pilot servers (opt-in)
+        if: ${{ vars.LSP_PILOT_ENABLED == 'true' }}
+        env:
+          LSP_CANDIDATE: ${{ vars.LSP_CANDIDATE || 'agent-lsp' }}
+          AGENT_LSP_VERSION: ${{ vars.AGENT_LSP_VERSION || 'v0.15.0' }}
+          BASH_LANGUAGE_SERVER_VERSION: ${{ vars.BASH_LANGUAGE_SERVER_VERSION || '5.6.0' }}
+        run: bash scripts/setup-lsp-pilot.sh
+
       - name: Enumerate candidate PRs
         run: |
           set -euo pipefail
