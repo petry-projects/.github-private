@@ -35,7 +35,7 @@ teardown() {
 # Hermetic setup sandbox mirroring test_lsp_pilot.bats: isolated PATH bin dir,
 # fresh GITHUB_ENV, INSTALL_BIN pointed at a temp dir so no real install lands.
 _make_setup_env() {
-  SANDBOX_BIN="$(mktemp -d)"
+  export SANDBOX_BIN="$(mktemp -d)"
   export GITHUB_ENV="$(mktemp)"
   export INSTALL_BIN="$(mktemp -d)/bin"
   # Hermetic PATH: the sandbox + base system dirs only, deliberately excluding
