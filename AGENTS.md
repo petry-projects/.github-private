@@ -94,6 +94,18 @@ This is the `.github-private` org infrastructure repo for `petry-projects`. It c
   `tests/test_initiative_canary.bats`); the fixture Discussion is configured via the repo variable
   `INITIATIVE_CANARY_DISCUSSION`. It must not be removed by template syncs. If the org template gains a
   live-trigger canary equivalent, remove this exception and defer to the template instead.
+- **Exception:** `initiative-driver-canary.yml` (#885, epic #882) is a documented repo-specific workflow
+  with no corresponding org template in `standards/workflows/`. It is a daily (≤1/day) +
+  `workflow_dispatch` post-merge canary that fires a **dry-run** dispatch of `initiative-driver.yml`
+  against a fixture target repo + epic and alerts if the run fails OR — for a configured fixture — if the
+  run surfaces no `READY (dry-run, not labeling)` decision (a HOLLOW GREEN: the cross-repo
+  gate/`blocked_by` resolved to nothing, so the release path is silently broken even though CI is green).
+  Logic lives in `scripts/initiative_driver_canary.sh` (tests:
+  `tests/test_initiative_driver_canary.bats`); the fixture is configured via the repo variables
+  `INITIATIVE_DRIVER_CANARY_TARGET` / `INITIATIVE_DRIVER_CANARY_EPIC` (the fixture epic must carry
+  `initiative:auto` with ≥1 ready open sub-issue). It must not be removed by template syncs. If the org
+  template gains a cross-repo release-path canary equivalent, remove this exception and defer to the
+  template instead.
 
 ### Agent Profiles (`agents/*.md`)
 
