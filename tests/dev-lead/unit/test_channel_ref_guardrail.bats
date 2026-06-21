@@ -5,7 +5,7 @@
 # the agent applies a bot "pin this action to a SHA" finding and freezes the caller,
 # breaking the ring/canary model (see TalkTerm #306 commit a27accce).
 
-PROMPTS_DIR="$(cd "$(dirname "$BATS_TEST_FILENAME")/../../.." && pwd)/prompts/dev-lead"
+PROMPTS_DIR="$(cd "$BATS_TEST_DIRNAME"/../../.. && pwd)/prompts/dev-lead"
 
 # Every prompt that edits files in response to reviewer/bot/human feedback.
 FEEDBACK_PROMPTS=(fix-reviews.md review-changes.md fix-bot-comment.md on-mention.md)
