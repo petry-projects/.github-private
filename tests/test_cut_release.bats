@@ -367,3 +367,8 @@ setup() {
   run strip_origin "origin/release/origin/x"
   [ "$output" = "release/origin/x" ]
 }
+
+@test "channel_ref: feature-ideation ring0 channel" {
+  run channel_ref "feature-ideation" "ring0"
+  [ "$output" = "feature-ideation/ring0" ]
+}
