@@ -1312,6 +1312,13 @@ apply_finding_verification "$OUTPUT_FILE" "${TOKEN_WORKFLOW:-pr-review}" "deep" 
 # Wait for duck to finish (deep succeeded)
 [ -n "$DUCK_PID" ] && wait $DUCK_PID || true
 
+# LSP finding-verification (story #843): ground the deep tier's cross-file
+# findings before they are synthesized/posted. Inert (no change) unless the LSP
+# MCP server is wired and connected; the deep CLI output is scanned so a degraded
+# server skips verification. Operates in place on deep.json.
+apply_lsp_verification "$OUTPUT_FILE" "deep" \
+  /tmp/cascade/deep-stdout.txt /tmp/cascade/deep.log || true
+
 DEEP_DECISION=$(jq -r '.decision' "$OUTPUT_FILE")
 DEEP_RISK=$(jq -r '.risk' "$OUTPUT_FILE")
 echo "    [tier2] deep: decision=$DEEP_DECISION risk=$DEEP_RISK"
@@ -1440,6 +1447,12 @@ if [ ! -s "$OUTPUT_FILE" ] || ! jq empty "$OUTPUT_FILE" 2>/dev/null; then
   echo "::error::cascade failed at tier 3 for $PR_URL"
   exit 1
 fi
+
+# LSP finding-verification (story #843): ground the audit tier's cross-file
+# findings before the final verdict is posted. Inert unless the LSP MCP server is
+# wired and connected (audit CLI output scanned for a degraded server).
+apply_lsp_verification "$OUTPUT_FILE" "audit" \
+  /tmp/cascade/audit-stdout.txt /tmp/cascade/audit.log || true
 
 AUDIT_DECISION=$(jq -r '.decision' "$OUTPUT_FILE")
 AUDIT_RISK=$(jq -r '.risk' "$OUTPUT_FILE")
