@@ -44,10 +44,9 @@ post_engine_unavailable_notice() {
   # Dedupe: no-op if our notice marker is already present on this PR.
   local snapshot existing
   snapshot=$(gh pr view "$pr_url" --json comments 2>/dev/null || echo '{}')
-  existing=$(printf '%s' "$snapshot" \
-    | jq -r --arg m "$ENGINE_UNAVAILABLE_MARKER" \
+  existing=$(jq -r --arg m "$ENGINE_UNAVAILABLE_MARKER" \
         '[(.comments // [])[] | select(.body != null) | select(.body | contains($m))] | length' \
-        2>/dev/null) || existing=0
+        <<< "$snapshot" 2>/dev/null) || existing=0
   if [ "${existing:-0}" -gt 0 ] 2>/dev/null; then
     echo "::notice::Engine-unavailable notice already present on $pr_url — not re-posting"
     return 0
