@@ -43,11 +43,12 @@ jobs:
     if: >-
       github.event_name != 'pull_request' ||
       github.event.pull_request.head.repo.full_name == github.repository
-    # Self-host pin (#535/#506): run the known-good dev-lead/stable channel, not
-    # @main, so a broken change to dev-lead on main can no longer gate its own
-    # fix (the circular dependency). Promotion = moving the dev-lead/stable tag
-    # centrally; this caller is never edited on release. agent_ref pins the
-    # dev-lead scripts/prompts checkout to the same channel.
+    # Ring-0 self-host pin (#535/#506, agentic-release-strategy): this repo runs
+    # the dev-lead/next channel — the canary ring — so each release soaks here
+    # before it is centrally promoted to dev-lead/stable for consumer repos.
+    # Pinning a channel tag (not @main) keeps a broken change on main from gating
+    # its own fix (the circular dependency). agent_ref pins the dev-lead
+    # scripts/prompts checkout to the same channel.
     uses: petry-projects/.github-private/.github/workflows/dev-lead-reusable.yml@dev-lead/next
     with:
       agent_ref: dev-lead/next
