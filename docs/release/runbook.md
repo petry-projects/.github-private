@@ -103,7 +103,7 @@ git push origin pr-review/stable --force
 > `--channel-only` flag exists (follow-up), use the direct `git tag -f` above.
 > Channel tags are lightweight (point straight at the commit); the immutable
 > `vX.Y.Z` tags are annotated.
-
+>
 > **feature-ideation is cross-repo.** Its `feature-ideation/<channel>` tags live
 > on `petry-projects/.github`, so a promotion is a tag move on **that** repo
 > (`git push <petry-projects/.github remote> feature-ideation/<channel> --force`),
