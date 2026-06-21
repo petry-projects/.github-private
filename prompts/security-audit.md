@@ -66,6 +66,21 @@ using `gh`, `gh api`, and the MCP/LSP tools for those.
 4. Fetch linked issues if any.
 5. Read any CONTRIBUTING.md, AGENTS.md, CODEOWNERS in the repo to check
    standards compliance (fetch via `gh api`).
+6. **LSP finding-verification (only when the `mcp__lsp__*` navigation tools are
+   available).** These tools are exposed only when the LSP pilot is enabled; if
+   they are not present, skip this step entirely and audit as usual. When they
+   are present, before you report any finding that makes a **cross-file or
+   semantic claim** — e.g. "X is undefined", "this breaks N callers", "this
+   symbol is unused", "this is a type/syntax error" — ground it against real
+   semantic context with `mcp__lsp__find_references` (reference set) or
+   `mcp__lsp__get_diagnostics` (language-server diagnostics) rather than a textual
+   `grep` match. Annotate that finding with an `"lsp_verification"` field:
+   `"verified"` if LSP confirmed it, or `"unverifiable"` if LSP could not ground
+   it — and for `unverifiable` lower its `severity` one level rather than dropping
+   it (the verification step also tags it `[lsp: unverifiable]` so the outcome is
+   auditable). Findings with no cross-file/semantic claim need no field. Never
+   fail the audit because an LSP tool was unavailable, and never fabricate a
+   verification result.
 
 ## Your focus
 
@@ -103,12 +118,16 @@ Write a JSON object to `$OUTPUT_FILE`:
       "category": "...",
       "message": "...",
       "file": "path or null",
-      "line": "number or null"
+      "line": "number or null",
+      "lsp_verification": "verified|unverifiable (OMIT unless step 6 applied)"
     }
   ],
   "sonnet_findings_confirmed": ["<indices of deep review findings you agree with>"],
   "sonnet_findings_dismissed": ["<indices you disagree with, with reason>"]
 }
 ```
+
+Include `lsp_verification` **only** on a finding you grounded via the LSP tools
+in step 6 (`verified` or `unverifiable`); omit it otherwise.
 
 Write with `cat > "$OUTPUT_FILE" <<'JSON' ... JSON`. Ensure it parses with `jq`.
