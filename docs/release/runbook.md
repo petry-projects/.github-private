@@ -96,6 +96,45 @@ Then **verify** (§4).
 
 ---
 
+## 2c. Staged canary / ring rollout
+
+For a higher-risk release, stage it through the ring channels instead of promoting
+`stable` in one move. Each ring's callers pin **once** to their channel (see
+[`versioning.md` → Ring channels](./versioning.md#ring-channels-live-for-dev-lead));
+a rollout is a sequence of single tag moves, validating at each step. `dev-lead`
+has live `next`/`ring0`/`ring1` channels; `pr-review` is `stable`-only for now (#499).
+
+```bash
+git fetch origin --tags
+# Cut the immutable release once (ungated):
+scripts/cut-release.sh dev-lead 1.5.0 --ref origin/main --push
+TARGET=$(git rev-parse 'dev-lead/v1.5.0^{commit}')
+
+# Stage it outward, one ring at a time. After EACH move, verify (§4) and let the
+# ring soak — confirm its callers' runs are healthy before advancing the next.
+for ch in next ring0 ring1 stable; do
+  git tag -f "dev-lead/$ch" "$TARGET"
+  git push --force origin "dev-lead/$ch"
+  # → verify (§4) + soak on this ring before continuing
+done
+```
+
+- **Promotion is gated at every ring** — advancing each channel (including `next`)
+  is a channel-tag move, so it is human-authorized (Roles & gating). Don't script
+  the whole loop unattended; advance a ring only after the previous ring is healthy.
+- **Validate the candidate, don't trust it.** Treat a ring's failures as the
+  release until proven otherwise — classify them (regression vs. pre-existing
+  class) before advancing. A clean canary across rings is the gate for `stable`.
+- **Rollback at any stage** is the same single move in reverse against the prior
+  immutable `vX.Y.Z` (§3) — for that ring's channel, or for `stable` if already
+  promoted.
+- The fully automated, health-gated version of this loop is issue #501; today it
+  is a human-driven sequence of the moves above.
+
+Then **verify** (§4).
+
+---
+
 ## 3. Roll back (< 5 minutes)
 
 Rollback is promotion in reverse: move `<agent>/stable` **back** to the previous

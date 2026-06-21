@@ -31,10 +31,31 @@ Two kinds of tag, per agent:
 Channels (Phase 1 defines `stable`; Phase 2 adds `next` and per-ring channels):
 
 - `<agent>/stable` — the production channel (blue). Callers in production pin here.
-- `<agent>/next` — the candidate channel (green). *(Phase 2, #499.)*
-- `<agent>/ring1`, … — per-ring channels for staged promotion. *(Phase 2, #499/#500.)*
+- `<agent>/next` — the candidate channel (green). **Live for `dev-lead`** (#499).
+- `<agent>/ring0`, `<agent>/ring1`, … — per-ring channels for staged promotion. **Live for `dev-lead`** (#499/#500).
 
-Examples: `pr-review/v1.0.0`, `pr-review/stable`, `dev-lead/v1.0.0`, `dev-lead/stable`.
+Examples: `pr-review/v1.0.0`, `pr-review/stable`, `dev-lead/v1.0.0`, `dev-lead/stable`,
+`dev-lead/next`, `dev-lead/ring0`, `dev-lead/ring1`.
+
+### Ring channels (live for `dev-lead`)
+
+The candidate (`next`) and ring channels are real moving tags, created alongside `stable`. A caller
+pins **once** to its ring channel and is never edited again; a release flows outward ring-by-ring as
+each ring's tag is advanced. Current ring assignment for `dev-lead`:
+
+| Channel | Role | Pinned by |
+|---|---|---|
+| `dev-lead/next` | candidate / canary (self-host) | `petry-projects/.github-private` |
+| `dev-lead/ring0` | ring 0 | `petry-projects/.github` |
+| `dev-lead/ring1` | ring 1 (low-traffic consumer) | `petry-projects/TalkTerm` |
+| `dev-lead/stable` | production (ring 2 / everyone else) | all remaining consumers |
+
+A staged rollout advances the channels in order — `next` → `ring0` → `ring1` → `stable` — validating
+at each step (see [`runbook.md` §2c](./runbook.md#2c-staged-canary--ring-rollout)). All four channels
+may sit at the same commit between releases; they diverge while a candidate is being staged. The
+`check_dev_lead_stub` compliance audit accepts any `dev-lead/{stable,next,ring<N>}` channel pin (it
+rejects `@main` and frozen `@vX.Y.Z`/`@<sha>` — callers must pin a *moving* channel). pr-review still
+uses `stable` only; its ring channels are pending under #499.
 
 ### Semantic versioning
 
