@@ -112,11 +112,26 @@ TARGET=$(git rev-parse 'dev-lead/v1.5.0^{commit}')
 
 # Stage it outward, one ring at a time. After EACH move, verify (§4) and let the
 # ring soak — confirm its callers' runs are healthy before advancing the next.
-for ch in next ring0 ring1 stable; do
-  git tag -f "dev-lead/$ch" "$TARGET"
-  git push --force origin "dev-lead/$ch"
-  # → verify (§4) + soak on this ring before continuing
-done
+
+# Promote to 'next' (canary/self-host)
+git tag -f dev-lead/next "$TARGET"
+git push --force origin dev-lead/next
+# → verify (§4) + soak on 'next' before continuing
+
+# Promote to 'ring0'
+git tag -f dev-lead/ring0 "$TARGET"
+git push --force origin dev-lead/ring0
+# → verify (§4) + soak on 'ring0' before continuing
+
+# Promote to 'ring1'
+git tag -f dev-lead/ring1 "$TARGET"
+git push --force origin dev-lead/ring1
+# → verify (§4) + soak on 'ring1' before continuing
+
+# Promote to 'stable' (production)
+git tag -f dev-lead/stable "$TARGET"
+git push --force origin dev-lead/stable
+# → verify (§4) + soak on 'stable'
 ```
 
 - **Promotion is gated at every ring** — advancing each channel (including `next`)
