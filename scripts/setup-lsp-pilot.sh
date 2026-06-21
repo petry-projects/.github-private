@@ -79,7 +79,7 @@ install_bash_language_server() {
     warn "npm unavailable — cannot install bash-language-server"
     return 1
   fi
-  if npm install -g "bash-language-server@${BASH_LANGUAGE_SERVER_VERSION}" >/dev/null 2>&1; then
+  if npm install -g --prefix "$(dirname "$INSTALL_BIN")" "bash-language-server@${BASH_LANGUAGE_SERVER_VERSION}" >/dev/null 2>&1; then
     command -v bash-language-server >/dev/null 2>&1 && return 0
   fi
   warn "bash-language-server@${BASH_LANGUAGE_SERVER_VERSION} install failed"
@@ -120,7 +120,7 @@ install_agent_lsp() {
 
   # Checksum verification (pins the artifact, not just the tag).
   if [ -f "$workdir/checksums.txt" ] && command -v sha256sum >/dev/null 2>&1; then
-    if ! ( cd "$workdir" && grep " ${asset}\$" checksums.txt | sha256sum -c - >/dev/null 2>&1 ); then
+    if ! ( cd "$workdir" && grep -E "[ *]${asset}\$" checksums.txt | sha256sum -c - >/dev/null 2>&1 ); then
       warn "checksum verification failed for ${asset} — refusing to install"
       rm -rf "$workdir"
       return 1
