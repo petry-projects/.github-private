@@ -1,0 +1,146 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# SOURCE OF TRUTH: petry-projects/.github-private/.github/workflows/initiative-driver-canary.yml
+#
+# AGENTS — READ BEFORE EDITING:
+#   • Post-merge canary for the cross-repo release path (#885, epic #882).
+#     Fires a DRY-RUN dispatch of initiative-driver.yml against a fixture target
+#     repo + epic and alerts if the run fails OR — for a configured fixture — if
+#     the run produces no "READY (dry-run, not labeling)" decision (a HOLLOW
+#     GREEN: the cross-repo gate/blocked_by resolved to nothing). All logic lives
+#     in scripts/initiative_driver_canary.sh (unit-tested in
+#     tests/test_initiative_driver_canary.bats).
+#   • DRY-RUN only — with dry_run=true the driver logs the READY decision and
+#     applies no `dev-lead` label, so no dev-lead/LLM run is triggered and the
+#     canary creates/labels nothing.
+#   • The dispatch needs GH_PAT_WORKFLOWS, not github.token: a workflow_dispatch
+#     fired with GITHUB_TOKEN is accepted but never starts a run (loop prevention)
+#     — same constraint as the initiative-driver itself.
+#   • The fixture is a CONFIGURED target repo + epic via the repo variables
+#     INITIATIVE_DRIVER_CANARY_TARGET / INITIATIVE_DRIVER_CANARY_EPIC (override
+#     per-run with the `target_repo` / `epic` inputs). The fixture epic must be
+#     armed with `initiative:auto` and have ≥1 OPEN sub-issue whose blockers are
+#     all closed, so a dry-run produces a READY decision — otherwise the canary
+#     cannot distinguish 'path healthy' from 'path broken'.
+#   • This is a repo-specific workflow with no org template — see AGENTS.md
+#     (Workflow Files exception). Do not let template syncs remove it.
+# ─────────────────────────────────────────────────────────────────────────────
+name: Initiative Driver Canary
+
+on:
+  schedule:
+    # Daily at 06:40 UTC — just after the Actions Fleet Monitor (06:00) and the
+    # initiative-planner canary (06:30), off the top of the hour per the off-peak
+    # scheduling standard (#722/#724), so the planner-path and driver-path
+    # signals land in the same window without colliding.
+    - cron: '40 6 * * *'
+  workflow_dispatch:
+    inputs:
+      target_repo:
+        description: "Fixture target repo (owner/repo) to dry-run drive (overrides INITIATIVE_DRIVER_CANARY_TARGET)"
+        required: false
+        default: ""
+        type: string
+      epic:
+        description: "Fixture epic number to dry-run drive (overrides INITIATIVE_DRIVER_CANARY_EPIC)"
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: initiative-driver-canary
+  cancel-in-progress: true
+
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CANARY_TARGET: ${{ inputs.target_repo || vars.INITIATIVE_DRIVER_CANARY_TARGET }}
+      CANARY_EPIC: ${{ inputs.epic || vars.INITIATIVE_DRIVER_CANARY_EPIC }}
+    steps:
+      - name: Checkout agent repo
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Guard — fixture target + epic configured
+        id: guard
+        run: |
+          if [ -z "${CANARY_TARGET}" ] || [ -z "${CANARY_EPIC}" ]; then
+            echo "::warning::No fixture configured — set repo variables INITIATIVE_DRIVER_CANARY_TARGET and INITIATIVE_DRIVER_CANARY_EPIC (or dispatch with 'target_repo'/'epic'). Skipping canary."
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run initiative-driver canary (dry-run)
+        if: steps.guard.outputs.configured == 'true'
+        env:
+          # PAT required — a workflow_dispatch fired with GITHUB_TOKEN never starts a run.
+          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
+          REPO: ${{ github.repository }}
+          CANARY_OUT: initiative_driver_canary.md
+        run: bash scripts/initiative_driver_canary.sh
+
+      - name: Alert on canary failure
+        if: always() && env.CANARY_FAILED == 'true' && hashFiles('initiative_driver_canary.md') != ''
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const fs = require('fs');
+            const MAX = 65000;
+            let report = fs.readFileSync('initiative_driver_canary.md', 'utf8');
+            if (!report.trim()) { core.setFailed('Canary report is empty'); return; }
+
+            const runUrl = `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`;
+            if (report.length > MAX) {
+              report = report.slice(0, MAX) +
+                `\n\n---\n_Report truncated — full output in the [workflow run summary](${runUrl})._`;
+            }
+
+            const LABEL = 'initiative-canary';
+            const TITLE = '🔴 Initiative-driver canary failing';
+
+            // Ensure the tracking labels exist.
+            for (const [name, color, description] of [
+              [LABEL,         'b60205', 'initiative driver/planner canary failure'],
+              ['dev-lead',     'd93f0b', 'Requires dev-lead attention'],
+              ['health-check', '0e8a16', 'Automated health check result'],
+            ]) {
+              try {
+                await github.rest.issues.createLabel({ owner: context.repo.owner, repo: context.repo.repo, name, color, description });
+              } catch (e) {
+                if (e.status !== 422) throw e;  // 422 = already exists
+              }
+            }
+
+            // Find-or-create the single tracking issue; each failure posts a comment.
+            const existing = await github.paginate(github.rest.issues.listForRepo, {
+              owner: context.repo.owner, repo: context.repo.repo,
+              labels: LABEL, state: 'open', per_page: 100,
+            });
+            let issue = existing.find(i => i.title === TITLE);
+            if (!issue) {
+              const created = await github.rest.issues.create({
+                owner: context.repo.owner, repo: context.repo.repo,
+                title: TITLE, body: report,
+                labels: [LABEL, 'dev-lead', 'health-check'],
+              });
+              issue = created.data;
+              core.notice(`Created canary issue #${issue.number}: ${issue.html_url}`);
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: issue.number, body: report,
+              });
+              core.notice(`Updated canary issue #${issue.number}: ${issue.html_url}`);
+            }
+
+      - name: Annotate clean canary
+        if: steps.guard.outputs.configured == 'true' && env.CANARY_FAILED != 'true'
+        run: echo "::notice::Initiative-driver canary passed — the cross-repo release path is healthy."
