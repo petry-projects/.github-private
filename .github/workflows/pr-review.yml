@@ -463,8 +463,6 @@ jobs:
             ~/.local
             ~/.cache/agent-lsp
           key: lsp-index-${{ runner.os }}-${{ vars.LSP_CANDIDATE || 'agent-lsp' }}-${{ vars.AGENT_LSP_VERSION || 'v0.15.0' }}-bls${{ vars.BASH_LANGUAGE_SERVER_VERSION || '5.6.0' }}-${{ hashFiles('**/package-lock.json', 'scripts/**/*.sh') }}
-          restore-keys: |
-            lsp-index-${{ runner.os }}-${{ vars.LSP_CANDIDATE || 'agent-lsp' }}-${{ vars.AGENT_LSP_VERSION || 'v0.15.0' }}-bls${{ vars.BASH_LANGUAGE_SERVER_VERSION || '5.6.0' }}-
 
       - name: Set up LSP pilot servers (opt-in)
         if: ${{ vars.LSP_PILOT_ENABLED == 'true' }}

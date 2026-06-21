@@ -226,9 +226,8 @@ rebuild the gating, the graceful-degradation path, or the Token Cost Observatory
   into a single `::warning::[mcp]` annotation while the review completes on base
   capabilities. The §3 SLA auto-skip is layered on top of this, not a parallel mechanism.
   See [`docs/initiatives/mcp-powered-review.md`](./initiatives/mcp-powered-review.md) §4.
-- **What is genuinely new in this initiative:** (a) the cold-start SLA + index-caching +
-  auto-skip on the LSP server's launch budget (#846), and (b) the finding-verification step
-  that calls find-references / diagnostics before posting a cross-file finding (#843).
+- **What is genuinely new in this initiative:** the cold-start SLA + index-caching +
+  auto-skip on the LSP server's launch budget (#846).
 
 ---
 

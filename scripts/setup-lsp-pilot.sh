@@ -66,6 +66,12 @@ INSTALL_BIN="${INSTALL_BIN:-$HOME/.local/bin}"
 # bring-up that blows this budget auto-skips LSP for the run (warn, don't fail).
 # Env-overridable for a future SLA retune without editing this script.
 LSP_COLD_START_SLA_MS="${LSP_COLD_START_SLA_MS:-30000}"
+case "$LSP_COLD_START_SLA_MS" in
+  ''|*[!0-9]*)
+    echo "::warning::[lsp-pilot] invalid LSP_COLD_START_SLA_MS='${LSP_COLD_START_SLA_MS}', defaulting to 30000" >&2
+    LSP_COLD_START_SLA_MS=30000
+    ;;
+esac
 
 # Token Cost Observatory instrumentation (best-effort). Provides
 # emit_lsp_coldstart_record; absent → _emit_coldstart is a no-op so the pilot
@@ -131,6 +137,10 @@ print_allowed_tools() { printf '%s\n' "$LSP_PILOT_ALLOWED_TOOLS"; }
 # $(( LSP_COLD_START_SLA_MS + 1 )) on timeout or launch failure so the SLA gate
 # fires on an unresponsive server. Requires `timeout`; falls back to the same
 # sentinel when it is absent so the gate still fires rather than silently passing.
+#
+# Uses named pipes + Content-Length framing instead of grep so the probe works
+# even when the server sends a valid JSON-RPC response without a trailing newline
+# (LSP frames by byte count, not line endings; grep -m1 blocks until \n arrives).
 _lsp_probe_server_ms() {
   command -v timeout >/dev/null 2>&1 || { echo $(( LSP_COLD_START_SLA_MS + 1 )); return 0; }
   local timeout_s=$(( (LSP_COLD_START_SLA_MS + 999) / 1000 + 1 ))
@@ -140,10 +150,54 @@ _lsp_probe_server_ms() {
   local req_len=${#req}
 
   local t0; t0="$(_lsp_now_ms)"
-  # grep -m1 exits on first match, closing the pipe and terminating the server.
-  if printf 'Content-Length: %d\r\n\r\n%s' "$req_len" "$req" \
-       | timeout "$timeout_s" agent-lsp "bash:bash-language-server,start" 2>/dev/null \
-       | grep -m1 '"jsonrpc"' >/dev/null 2>&1; then
+
+  # Named pipes let us read the response byte-by-byte (Content-Length framing)
+  # and kill the server as soon as the response is detected, without waiting for
+  # the server to exit on its own or for timeout to fire.
+  local tmpdir; tmpdir="$(mktemp -d)"
+  local in_fifo="$tmpdir/in" out_fifo="$tmpdir/out"
+  if ! mkfifo "$in_fifo" "$out_fifo" 2>/dev/null; then
+    rm -rf "$tmpdir"
+    echo $(( LSP_COLD_START_SLA_MS + 1 ))
+    return 0
+  fi
+
+  # Writer feeds the JSON-RPC request; background so FIFO open() doesn't
+  # deadlock before the server opens the read end.
+  printf 'Content-Length: %d\r\n\r\n%s' "$req_len" "$req" > "$in_fifo" &
+  local writer_pid=$!
+
+  # Server reads from in_fifo, writes response to out_fifo.
+  timeout "$timeout_s" agent-lsp "bash:bash-language-server,start" 2>/dev/null \
+    < "$in_fifo" > "$out_fifo" &
+  local server_pid=$!
+
+  # Parse Content-Length header, then read exactly that many bytes (no newline
+  # dependency). read -N reads a fixed character count regardless of line endings.
+  local found=0 line content_length body
+  content_length=0
+  {
+    while IFS= read -r line; do
+      line="${line%$'\r'}"
+      [ -z "$line" ] && break
+      case "$line" in
+        Content-Length:*|content-length:*)
+          content_length="${line#*: }"
+          content_length="${content_length//[[:space:]]/}"
+          ;;
+      esac
+    done
+    if [ "$content_length" -gt 0 ] 2>/dev/null; then
+      read -r -N "$content_length" body 2>/dev/null || true
+      case "$body" in *'"jsonrpc"'*) found=1 ;; esac
+    fi
+  } < "$out_fifo"
+
+  kill "$server_pid" "$writer_pid" 2>/dev/null || true
+  wait "$server_pid" "$writer_pid" 2>/dev/null || true
+  rm -rf "$tmpdir"
+
+  if [ "$found" -eq 1 ]; then
     echo $(( $(_lsp_now_ms) - t0 ))
   else
     echo $(( LSP_COLD_START_SLA_MS + 1 ))

@@ -207,9 +207,14 @@ STUB
 
 @test "workflow: an actions/cache step caches the LSP index (SHA-pinned)" {
   grep -q "Cache LSP index" "$WORKFLOW"
-  # SHA-pinned per the org standard (no bare @v tag).
-  run grep -E "uses: actions/cache@[0-9a-f]{40}" "$WORKFLOW"
+  # SHA-pinned per the org standard (no bare @v tag), scoped to the LSP cache step.
+  run awk '
+    /- name: Cache LSP index/ { in_step=1 }
+    in_step { print }
+    in_step && /^[[:space:]]*- name:/ && !/- name: Cache LSP index/ { exit }
+  ' "$WORKFLOW"
   [ "$status" -eq 0 ]
+  [[ "$output" =~ uses:\ actions/cache@[0-9a-f]{40} ]]
 }
 
 @test "workflow: LSP index cache key is keyed on OS + server version + source hash" {
