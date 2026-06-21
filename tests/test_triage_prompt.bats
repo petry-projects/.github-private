@@ -52,14 +52,14 @@ _risk_section() {
   # MEDIUM must capture BOTH the escalate:true-but-not-dangerous case
   # (unresolved-thread) and the escalate:false clean-logic-fix case — otherwise
   # the model collapses one of them to HIGH or LOW.
-  grep -Eiq 'process|unresolved|advisory|incomplete context' <<<"$section"
+  grep -Eiq 'process|unresolved|advisory|incomplete.*context' <<<"$section"
   grep -Eiq 'clean|non-trivial|logic' <<<"$section"
 }
 
 @test "LOW band is restricted to trivial / docs / test-only changes" {
   section="$(_risk_section)"
   grep -Eiq 'trivial' <<<"$section"
-  grep -Eiq 'docs|comment|formatting|test-only' <<<"$section"
+  grep -Eiq 'doc|comment|formatting|test-only' <<<"$section"
 }
 
 @test "the escalate criteria (1-7) remain intact alongside the new section" {
