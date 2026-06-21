@@ -24,7 +24,12 @@ setup() {
 
 teardown() {
   [ -n "${TOKEN_LOG_FILE:-}" ] && rm -f "$TOKEN_LOG_FILE"
-  unset TOKEN_LOG_FILE LSP_INDEX_CACHE_HIT LSP_COLD_START_SLA_MS
+  [ -n "${GITHUB_ENV:-}" ] && rm -f "$GITHUB_ENV"
+  [ -n "${SANDBOX_BIN:-}" ] && rm -rf "$SANDBOX_BIN"
+  if [ -n "${INSTALL_BIN:-}" ]; then
+    rm -rf "$(dirname "$INSTALL_BIN")"
+  fi
+  unset TOKEN_LOG_FILE LSP_INDEX_CACHE_HIT LSP_COLD_START_SLA_MS GITHUB_ENV SANDBOX_BIN INSTALL_BIN
 }
 
 # Hermetic setup sandbox mirroring test_lsp_pilot.bats: isolated PATH bin dir,
@@ -143,7 +148,6 @@ _present_tools() {
   # Cold-start record present, not skipped, cache hit.
   run jq -e 'select(.metric=="lsp_cold_start") | .skipped == false and .cache == "hit"' "$TOKEN_LOG_FILE"
   [ "$status" -eq 0 ]
-  rm -rf "$SANDBOX_BIN"
 }
 
 @test "setup: cold-start over SLA → auto-skip (warn, no knobs, exit 0, skipped:true)" {
@@ -165,7 +169,6 @@ _present_tools() {
   # Cold-start record marks the run skipped.
   run jq -e 'select(.metric=="lsp_cold_start") | .skipped == true' "$TOKEN_LOG_FILE"
   [ "$status" -eq 0 ]
-  rm -rf "$SANDBOX_BIN"
 }
 
 @test "setup: toolchain uninstallable → records skipped:true and exits 0" {
@@ -180,7 +183,6 @@ _present_tools() {
   ! grep -q "^REVIEW_MCP_CONFIG=" "$GITHUB_ENV"
   run jq -e 'select(.metric=="lsp_cold_start") | .skipped == true and .cache == "miss"' "$TOKEN_LOG_FILE"
   [ "$status" -eq 0 ]
-  rm -rf "$SANDBOX_BIN"
 }
 
 # ── AC #1: actions/cache for the LSP index is wired into pr-review.yml ────────
