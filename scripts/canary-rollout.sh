@@ -72,7 +72,9 @@ ring_health() {
   local agent="$1"; shift
   local wf since healthy=0 fail=0 repo json
   wf="$(_agent_field "$agent" run_workflow)"
-  since="$(date -u -d "-${SOAK_WINDOW_DAYS:-7} days" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "")"
+  if ! since="$(date -u -d "-${SOAK_WINDOW_DAYS:-7} days" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)"; then
+    since="$(date -u -v"-${SOAK_WINDOW_DAYS:-7}d" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "")"
+  fi
   for repo in "$@"; do
     [ "$repo" = '*' ] && continue
     json="$(gh run list --repo "$repo" --workflow "$wf" ${since:+--created ">=$since"} \
@@ -93,9 +95,10 @@ _frontier_state() {
   chans="$(ordered_channels "$agent")"
 
   # Collect the rings already on the candidate (starting at next) and find the frontier.
-  local IFS=,
+  local chan_array=()
+  IFS=, read -r -a chan_array <<< "$chans"
   local ch
-  for ch in $chans; do
+  for ch in "${chan_array[@]}"; do
     local c; c="$(channel_commit "$agent" "$ch")"
     if [ "$ch" = "next" ] || [ "$c" = "$cand" ]; then
       prev_on+=("$ch")
@@ -103,7 +106,6 @@ _frontier_state() {
       frontier="$ch"; break
     fi
   done
-  unset IFS
 
   if [ -z "$frontier" ]; then
     echo "$cand  -  COMPLETE 0 0 0 0"; return 0
@@ -134,14 +136,14 @@ cmd_evaluate() {
   echo "== canary-rollout evaluate: $agent (soak window ${SOAK_WINDOW_DAYS:-7}d) =="
   local cand; cand="$(channel_commit "$agent" next)"
   echo "candidate (next) = ${cand:0:12}"
-  local IFS=,
+  local chan_array=()
+  IFS=, read -r -a chan_array <<< "$(ordered_channels "$agent")"
   local ch
-  for ch in $(ordered_channels "$agent"); do
+  for ch in "${chan_array[@]}"; do
     local c; c="$(channel_commit "$agent" "$ch")"
     local mark="  "; [ -n "$cand" ] && [ "$c" = "$cand" ] && mark="* "
     printf '  %s%-7s -> %s\n' "$mark" "$ch" "${c:0:12}"
   done
-  unset IFS
   read -r _cand frontier state healthy min_h cand_r base_r < <(_frontier_state "$agent")
   echo "----"
   if [ "$frontier" = "-" ]; then
@@ -186,7 +188,10 @@ cmd_rollback() {
   local to="" dry=false
   while [ $# -gt 0 ]; do
     case "$1" in
-      --to) to="$2"; shift ;;
+      --to)
+        if [ $# -lt 2 ]; then echo "::error::--to requires a value" >&2; return 2; fi
+        to="$2"; shift
+        ;;
       --dry-run) dry=true ;;
       *) echo "::error::unknown rollback flag: $1" >&2; return 2 ;;
     esac; shift
@@ -205,6 +210,17 @@ cmd_rollback() {
 }
 
 main() {
+  local cmd
+  for cmd in jq gh git; do
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+      echo "::error::Required command '$cmd' is not installed." >&2
+      return 1
+    fi
+  done
+  if ! [[ "${SOAK_WINDOW_DAYS:-7}" =~ ^[1-9][0-9]*$ ]]; then
+    echo "::error::SOAK_WINDOW_DAYS must be a positive integer" >&2
+    return 2
+  fi
   local sub="${1:-}"; shift || true
   case "$sub" in
     evaluate) [ $# -ge 1 ] || { echo "usage: evaluate <agent>" >&2; return 2; }; cmd_evaluate "$@" ;;
