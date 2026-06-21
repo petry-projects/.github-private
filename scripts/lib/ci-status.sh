@@ -4,6 +4,9 @@
 # blocks on itself (issue #469).
 #
 # Usage: source this file, then call compute_ci_status with the rollup array.
+#
+# (Ring-0 dogfood: comment-only touch to exercise the downstream-impact pass on
+# the `next` channel — see PR description. Safe to revert.)
 
 # compute_ci_status <rollup_json>
 #
