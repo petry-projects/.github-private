@@ -442,12 +442,40 @@ jobs:
       # threads the deep/audit-only MCP knobs into $GITHUB_ENV. A missing tool
       # degrades gracefully (::warning:: + skip) — it never fails the workflow.
       # Pins/candidate are overridable via repo variables; see docs/lsp-pilot.md.
+      #
+      # ── LSP index cache (epic #839, story #846, AC #1) ───────────────────
+      # Restore/save the LSP toolchain + index across ephemeral runs so a warm
+      # run skips re-indexing and stays inside the 30s P95 cold-start SLA. Keyed
+      # on runner OS + the pinned candidate/server versions + a hash of the
+      # indexed shell sources (the "relevant lockfile" for a Shell-only index):
+      # a source or version bump misses the exact key and rebuilds, while the
+      # restore-keys fallback still restores the binaries on a source-only
+      # change. Mirrors the Claude CLI binary cache pattern above and is
+      # SHA-pinned per the org standard (same actions/cache SHA as that step).
+      # Opt-in only (LSP_PILOT_ENABLED) — no cache work for off-pilot runs. The
+      # cache-hit outcome feeds setup-lsp-pilot.sh's cold-start instrumentation.
+      - name: Cache LSP index
+        id: lsp-index-cache
+        if: ${{ vars.LSP_PILOT_ENABLED == 'true' }}
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: |
+            ~/.local
+            ~/.cache/agent-lsp
+          key: lsp-index-${{ runner.os }}-${{ vars.LSP_CANDIDATE || 'agent-lsp' }}-${{ vars.AGENT_LSP_VERSION || 'v0.15.0' }}-bls${{ vars.BASH_LANGUAGE_SERVER_VERSION || '5.6.0' }}-${{ hashFiles('**/package-lock.json', 'scripts/**/*.sh') }}
+          restore-keys: |
+            lsp-index-${{ runner.os }}-${{ vars.LSP_CANDIDATE || 'agent-lsp' }}-${{ vars.AGENT_LSP_VERSION || 'v0.15.0' }}-bls${{ vars.BASH_LANGUAGE_SERVER_VERSION || '5.6.0' }}-
+
       - name: Set up LSP pilot servers (opt-in)
         if: ${{ vars.LSP_PILOT_ENABLED == 'true' }}
         env:
           LSP_CANDIDATE: ${{ vars.LSP_CANDIDATE || 'agent-lsp' }}
           AGENT_LSP_VERSION: ${{ vars.AGENT_LSP_VERSION || 'v0.15.0' }}
           BASH_LANGUAGE_SERVER_VERSION: ${{ vars.BASH_LANGUAGE_SERVER_VERSION || '5.6.0' }}
+          # 'true' on an exact index-cache hit, 'false' otherwise (a miss or a
+          # restore-keys partial). setup-lsp-pilot.sh's cold-start record turns
+          # this into hit/miss so story #5 can report the cache hit-rate.
+          LSP_INDEX_CACHE_HIT: ${{ steps.lsp-index-cache.outputs.cache-hit == 'true' && 'true' || 'false' }}
         run: bash scripts/setup-lsp-pilot.sh
 
       - name: Enumerate candidate PRs

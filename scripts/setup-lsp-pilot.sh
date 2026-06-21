@@ -62,8 +62,67 @@ AGENT_LSP_REPO="${AGENT_LSP_REPO:-blackwell-systems/agent-lsp}"
 # steps via $GITHUB_PATH.
 INSTALL_BIN="${INSTALL_BIN:-$HOME/.local/bin}"
 
+# Cold-start SLA budget in milliseconds (docs/lsp-pilot.md §3: <=30s P95). A
+# bring-up that blows this budget auto-skips LSP for the run (warn, don't fail).
+# Env-overridable for a future SLA retune without editing this script.
+LSP_COLD_START_SLA_MS="${LSP_COLD_START_SLA_MS:-30000}"
+
+# Token Cost Observatory instrumentation (best-effort). Provides
+# emit_lsp_coldstart_record; absent → _emit_coldstart is a no-op so the pilot
+# stays self-contained when deployed without scripts/lib.
+_LSP_TOKEN_LIB="$(dirname "${BASH_SOURCE[0]}")/lib/token-metrics.sh"
+if [ -f "$_LSP_TOKEN_LIB" ]; then
+  # shellcheck source=lib/token-metrics.sh
+  source "$_LSP_TOKEN_LIB"
+fi
+
 warn() { echo "::warning::[lsp-pilot] $*" >&2; }
 note() { echo "[lsp-pilot] $*"; }
+
+# _lsp_now_ms — wall-clock milliseconds. Uses GNU `date +%s%N` (nanoseconds)
+# where available; falls back to whole-second resolution (×1000) on platforms
+# (e.g. BSD/macOS) where %N is a literal.
+_lsp_now_ms() {
+  local ns
+  ns="$(date +%s%N 2>/dev/null || echo "")"
+  case "$ns" in
+    ''|*[!0-9]*) printf '%s' "$(( $(date +%s 2>/dev/null || echo 0) * 1000 ))" ;;
+    *)           printf '%s' "$(( ns / 1000000 ))" ;;
+  esac
+}
+
+# _lsp_sla_exceeded <elapsed_ms> <sla_ms>
+# Returns 0 (true) when the measured cold-start blew the SLA budget. Pure integer
+# comparison so the AC #3 auto-skip decision is unit-testable in isolation.
+# Non-numeric input returns 1 (not exceeded) — a measurement glitch must not
+# trip the auto-skip on its own.
+_lsp_sla_exceeded() {
+  local elapsed="${1:-}" sla="${2:-}"
+  case "$elapsed" in ''|*[!0-9]*) return 1 ;; esac
+  case "$sla" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$elapsed" -gt "$sla" ]
+}
+
+# _lsp_cache_status — normalize the actions/cache outcome the workflow threads in
+# via LSP_INDEX_CACHE_HIT ('true'|'false'|unset) into hit|miss|unknown for the
+# cold-start record (AC #2).
+_lsp_cache_status() {
+  case "${LSP_INDEX_CACHE_HIT:-}" in
+    true|True|TRUE)    printf 'hit' ;;
+    false|False|FALSE) printf 'miss' ;;
+    *)                 printf 'unknown' ;;
+  esac
+}
+
+# _emit_coldstart <cold_start_ms> <cache_status> <skipped>
+# Best-effort emit of the cold-start record to the Token Cost Observatory JSONL.
+# No-op when the token lib / TOKEN_LOG_FILE is unavailable — instrumentation must
+# never fail the workflow.
+_emit_coldstart() {
+  declare -f emit_lsp_coldstart_record >/dev/null 2>&1 || return 0
+  emit_lsp_coldstart_record "$1" "$2" "$3" "$LSP_COLD_START_SLA_MS" \
+    "lsp-pilot:${LSP_CANDIDATE}" || true
+}
 
 print_allowed_tools() { printf '%s\n' "$LSP_PILOT_ALLOWED_TOOLS"; }
 
@@ -178,14 +237,39 @@ main() {
   fi
   export PATH="$INSTALL_BIN:$PATH"
 
+  # ── Cold-start budget (AC #2/#3) ───────────────────────────────────────────
+  # Time the toolchain bring-up (install or actions/cache restore → ready). A
+  # warm index-cache hit short-circuits the installers (command -v), keeping this
+  # small; a cold miss pays the download/index cost. We record the elapsed
+  # cold-start + the cache outcome to the Token Cost Observatory and auto-skip
+  # LSP if it blew the 30s P95 SLA — the same "warn, don't fail" degradation
+  # contract as a missing tool, so an over-budget cold-start never fails the run.
+  local start_ms end_ms cold_start_ms cache_status
+  start_ms="$(_lsp_now_ms)"
+
   local server_ok=1 bls_ok=1
   install_candidate || server_ok=0
   install_bash_language_server || bls_ok=0
 
+  end_ms="$(_lsp_now_ms)"
+  cold_start_ms=$(( end_ms - start_ms ))
+  [ "$cold_start_ms" -lt 0 ] && cold_start_ms=0
+  cache_status="$(_lsp_cache_status)"
+
   if [ "$server_ok" -ne 1 ] || [ "$bls_ok" -ne 1 ]; then
+    _emit_coldstart "$cold_start_ms" "$cache_status" "true"
     warn "LSP toolchain unavailable (candidate=${LSP_CANDIDATE}) — review continues on base capabilities, LSP enrichment skipped"
     return 0
   fi
+
+  # ── SLA gate (AC #3) ───────────────────────────────────────────────────────
+  if _lsp_sla_exceeded "$cold_start_ms" "$LSP_COLD_START_SLA_MS"; then
+    _emit_coldstart "$cold_start_ms" "$cache_status" "true"
+    warn "LSP cold-start ${cold_start_ms}ms exceeded the ${LSP_COLD_START_SLA_MS}ms P95 SLA — auto-skipping LSP for this run; review continues on base capabilities"
+    return 0
+  fi
+
+  _emit_coldstart "$cold_start_ms" "$cache_status" "false"
 
   # Thread the opt-in knobs into the job env for the subsequent review step.
   # engine.sh reads these; with them set it appends --mcp-config/--strict-mcp-config
@@ -196,14 +280,18 @@ main() {
       echo "REVIEW_MCP_CONFIG=${LSP_PILOT_CONFIG}"
       echo "REVIEW_MCP_ALLOWED_TOOLS=${LSP_PILOT_ALLOWED_TOOLS}"
     } >> "$GITHUB_ENV"
-    note "LSP pilot enabled: REVIEW_MCP_CONFIG=${LSP_PILOT_CONFIG}"
+    note "LSP pilot enabled: REVIEW_MCP_CONFIG=${LSP_PILOT_CONFIG} (cold-start ${cold_start_ms}ms, cache ${cache_status})"
   else
     note "GITHUB_ENV unset — install complete; export REVIEW_MCP_CONFIG=${LSP_PILOT_CONFIG} to enable"
   fi
 }
 
-case "${1:-}" in
-  print-allowed-tools) print_allowed_tools ;;
-  ""|setup) main ;;
-  *) echo "usage: $(basename "$0") [print-allowed-tools|setup]" >&2; exit 2 ;;
-esac
+# Only dispatch when executed (not when sourced for unit tests). Sourcing exposes
+# the helpers above without running the installer.
+if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
+  case "${1:-}" in
+    print-allowed-tools) print_allowed_tools ;;
+    ""|setup) main ;;
+    *) echo "usage: $(basename "$0") [print-allowed-tools|setup]" >&2; exit 2 ;;
+  esac
+fi

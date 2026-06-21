@@ -163,6 +163,54 @@ emit_verification_record() {
   printf '%s\n' "$record" >> "$TOKEN_LOG_FILE" 2>/dev/null || true
 }
 
+# emit_lsp_coldstart_record <cold_start_ms> <cache_status> <skipped> <sla_ms>
+#                           [context]
+# Appends one JSONL record describing an LSP cold-start measurement to
+# TOKEN_LOG_FILE so the Token Cost Observatory (story #5's harness) can report
+# P50/P95 cold-start against the SLA and the cache hit-rate. No-op when
+# TOKEN_LOG_FILE is unset; swallows I/O errors so instrumentation never aborts a
+# run. Records carry metric:"lsp_cold_start" so they are trivially separable from
+# the per-call token records (which have no "metric" field).
+#   cold_start_ms — wall-clock ms for the LSP toolchain bring-up (install/restore).
+#   cache_status  — "hit" | "miss" | "unknown" (the actions/cache outcome).
+#   skipped       — "true" when the SLA gate (or a degraded toolchain) auto-skipped
+#                   LSP for this run, else "false".
+#   sla_ms        — the cold-start SLA budget in ms (for at-a-glance comparison).
+emit_lsp_coldstart_record() {
+  [ -n "${TOKEN_LOG_FILE:-}" ] || return 0
+
+  local cold_start_ms="${1:-0}" cache_status="${2:-unknown}"
+  local skipped="${3:-false}" sla_ms="${4:-0}" context="${5:-}"
+
+  local ts run_id workflow record
+  ts=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "")
+  run_id="${GITHUB_RUN_ID:-}"
+  workflow="${TOKEN_WORKFLOW:-pr-review}"
+
+  record=$(jq -cn \
+    --arg ts "$ts" \
+    --arg workflow "$workflow" \
+    --arg cold_start_ms "$cold_start_ms" \
+    --arg cache "$cache_status" \
+    --arg skipped "$skipped" \
+    --arg sla_ms "$sla_ms" \
+    --arg run_id "$run_id" \
+    --arg context "$context" \
+    '{
+      ts: $ts,
+      workflow: $workflow,
+      metric: "lsp_cold_start",
+      cold_start_ms: ($cold_start_ms | tonumber? // 0),
+      cache: $cache,
+      skipped: ($skipped == "true"),
+      sla_ms: ($sla_ms | tonumber? // 0),
+      run_id: $run_id,
+      context: $context
+    }' 2>/dev/null) || return 0
+
+  printf '%s\n' "$record" >> "$TOKEN_LOG_FILE" 2>/dev/null || true
+}
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Real-usage capture (replaces the char/4 estimate when an engine reports usage)
 #
