@@ -30,6 +30,18 @@ setup() {
     {"conclusion":"success","created_at":"2026-06-11T00:00:00Z"},
     {"conclusion":"success","created_at":"2026-06-11T06:00:00Z"}
   ]'
+
+  # PR eligibility metadata: 4 open non-Dependabot PRs, 2 eligible.
+  #   approved non-draft        → eligible
+  #   ready-labelled non-draft  → eligible
+  #   plain non-draft           → not eligible
+  #   approved but draft        → not eligible (draft)
+  PRS_META_JSON='[
+    {"draft":false,"approved":true,"labels":[]},
+    {"draft":false,"approved":false,"labels":[{"name":"auto-rebase:ready"}]},
+    {"draft":false,"approved":false,"labels":[{"name":"bug"}]},
+    {"draft":true,"approved":true,"labels":[]}
+  ]'
 }
 
 # ---------------------------------------------------------------------------
@@ -137,4 +149,100 @@ setup() {
   run render_report "[]" "[]" 7 0 2026-06-15
   [ "$status" -eq 0 ]
   [[ "$output" == *"n/a"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# fmt_reduction — behind→eligible multiplier reduction
+# ---------------------------------------------------------------------------
+
+@test "fmt_reduction: renders an integer percentage decrease" {
+  run fmt_reduction 8 2
+  [ "$output" = "75%" ]
+}
+
+@test "fmt_reduction: no reduction renders 0%" {
+  run fmt_reduction 5 5
+  [ "$output" = "0%" ]
+}
+
+@test "fmt_reduction: zero base renders n/a (no divide-by-zero)" {
+  run fmt_reduction 0 0
+  [ "$output" = "n/a" ]
+}
+
+# ---------------------------------------------------------------------------
+# pr_has_current_approval — current review state wins
+# ---------------------------------------------------------------------------
+
+@test "pr_has_current_approval: a lone APPROVED review counts as approved" {
+  run pr_has_current_approval '[{"user":{"login":"a"},"state":"APPROVED"}]'
+  [ "$status" -eq 0 ]
+}
+
+@test "pr_has_current_approval: a later CHANGES_REQUESTED cancels an earlier APPROVED (same user)" {
+  run pr_has_current_approval '[{"user":{"login":"a"},"state":"APPROVED"},{"user":{"login":"a"},"state":"CHANGES_REQUESTED"}]'
+  [ "$status" -ne 0 ]
+}
+
+@test "pr_has_current_approval: one user's APPROVED survives another's CHANGES_REQUESTED" {
+  run pr_has_current_approval '[{"user":{"login":"a"},"state":"APPROVED"},{"user":{"login":"b"},"state":"CHANGES_REQUESTED"}]'
+  [ "$status" -eq 0 ]
+}
+
+@test "pr_has_current_approval: COMMENTED-only reviews are not an approval" {
+  run pr_has_current_approval '[{"user":{"login":"a"},"state":"COMMENTED"}]'
+  [ "$status" -ne 0 ]
+}
+
+@test "pr_has_current_approval: empty/absent reviews are not an approval" {
+  run pr_has_current_approval ""
+  [ "$status" -ne 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# count_eligible — non-draft AND (approved OR ready label)
+# ---------------------------------------------------------------------------
+
+@test "count_eligible: counts non-draft approved-or-labelled PRs" {
+  run count_eligible "$PRS_META_JSON" "auto-rebase:ready"
+  [ "$status" -eq 0 ]
+  [ "$output" -eq 2 ]
+}
+
+@test "count_eligible: a different ready label drops the label-only PR" {
+  run count_eligible "$PRS_META_JSON" "some-other-label"
+  [ "$output" -eq 1 ]
+}
+
+@test "count_eligible: empty/absent JSON returns 0 (does not error)" {
+  run count_eligible "" "auto-rebase:ready"
+  [ "$status" -eq 0 ]
+  [ "$output" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# render_report — post-restriction section (eligibility supplied)
+# ---------------------------------------------------------------------------
+
+@test "render_report: post-restriction section appears only when eligible is supplied" {
+  run render_report "$COMMENTS_JSON" "$RUNS_JSON" 7 8 2026-06-15
+  [[ "$output" != *"Post-restriction"* ]]
+
+  run render_report "$COMMENTS_JSON" "$RUNS_JSON" 7 8 2026-06-15 2 auto-rebase:ready
+  [[ "$output" == *"Post-restriction fan-out"* ]]
+}
+
+@test "render_report: post-restriction reports reduction and meets the ≥50% metric" {
+  # 8 behind → 2 eligible = 75% reduction (≥50% → met); 5 runs × 2 = 10 restricted re-runs
+  run render_report "$COMMENTS_JSON" "$RUNS_JSON" 7 8 2026-06-15 2 auto-rebase:ready
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"75%"* ]]
+  [[ "$output" == *"met"* ]]
+  [[ "$output" == *"~10"* ]]
+}
+
+@test "render_report: sub-50% reduction is reported as not met" {
+  # 4 behind → 3 eligible = 25% reduction (< 50% → not met)
+  run render_report "$COMMENTS_JSON" "$RUNS_JSON" 7 4 2026-06-15 3 auto-rebase:ready
+  [[ "$output" == *"not met"* ]]
 }
