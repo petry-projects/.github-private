@@ -44,6 +44,12 @@ This is the `.github-private` org infrastructure repo for `petry-projects`. It c
   workflow with no corresponding org template in `standards/workflows/`. It must not be removed by template
   syncs. If the org template gains a token-report equivalent, remove this exception and defer to the
   template instead.
+- **Exception:** `test-deletion-guard.yml` (#823) is a documented repo-specific workflow with no org template.
+  It is one half of the #655 **stale-base / semantic-revert** guard: it fails a PR that deletes any file under
+  `tests/` unless a maintainer adds the `ack-test-deletion` label, so a silent test removal becomes a deliberate,
+  reviewable decision. The other half is the **"require branches up to date before merging"** ruleset on `main`
+  (already enabled). Together they close the gap behind #655, where a PR merged from a stale base reverted a
+  shipped fix and deleted its regression test in the same green-CI diff. Do not remove either guard.
 - **Exception:** `pr-review-sweep.yml` (scheduled stuck-review sweep, #573) is a documented repo-specific
   workflow with no corresponding org template in `standards/workflows/`. It re-dispatches reviews for PRs
   that went green after a ci-pending/ci-failing skip. It must not be removed by template syncs. If the org
