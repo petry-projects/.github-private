@@ -27,7 +27,12 @@ teardown() {
   [ -n "${GITHUB_ENV:-}" ] && rm -f "$GITHUB_ENV" 2>/dev/null || true
   [ -n "${SANDBOX_BIN:-}" ] && rm -rf "$SANDBOX_BIN" 2>/dev/null || true
   if [ -n "${INSTALL_BIN:-}" ]; then
-    rm -rf "$(dirname "$INSTALL_BIN")" 2>/dev/null || true
+    local _parent
+    _parent="$(dirname "$INSTALL_BIN")"
+    # Sourcing setup-lsp-pilot.sh sets INSTALL_BIN=$HOME/.local/bin as a side
+    # effect; only remove the parent when it is a mktemp'd tmp dir, never a
+    # system path like $HOME/.local (which would destroy the bats installation).
+    case "$_parent" in /tmp/*) rm -rf "$_parent" 2>/dev/null || true ;; esac
   fi
   unset TOKEN_LOG_FILE LSP_INDEX_CACHE_HIT LSP_COLD_START_SLA_MS GITHUB_ENV SANDBOX_BIN INSTALL_BIN
 }
