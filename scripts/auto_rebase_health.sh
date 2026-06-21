@@ -147,7 +147,7 @@ pr_has_current_approval() {
   local json="${1:-}" result
   [ -n "$json" ] || json='[]'
   result=$(printf '%s' "$json" | jq -r '
-    reduce (.[] | select(.state == "APPROVED" or .state == "CHANGES_REQUESTED" or .state == "DISMISSED")) as $r ({}; .[$r.user.login] = $r.state)
+    reduce (.[] | select((.state == "APPROVED" or .state == "CHANGES_REQUESTED" or .state == "DISMISSED") and .user?.login != null)) as $r ({}; .[$r.user.login] = $r.state)
     | any(. == "APPROVED")')
   [ "$result" = "true" ]
 }
@@ -163,7 +163,7 @@ count_eligible() {
   printf '%s' "$json" | jq --arg L "$label" '
     [ .[]
       | select(((.draft // false) | not)
-        and ((.approved // false) or ([.labels[]?.name] | any(. == $L)))) ]
+        and ((.approved // false) or any(.labels[]?; .name == $L))) ]
     | length'
 }
 
@@ -280,39 +280,33 @@ main() {
     --paginate --jq '.workflow_runs | map({conclusion, created_at})' 2>/dev/null \
     | jq -s 'add // []' 2>/dev/null || echo '[]')"
 
-  # 3. Behind-PR multiplier — open non-Dependabot PR numbers (proxy for branches
-  #    the fan-out updates). Best-effort; empty list → behind=0 so it still renders.
-  local pr_numbers behind
-  pr_numbers="$(gh pr list --repo "$WORKFLOW_REPO" --state open --limit 200 --json number,author \
-    --jq '.[] | select((.author?.login // "") | test("dependabot"; "i") | not) | .number' \
-    2>/dev/null || true)"
-  if [ -n "$pr_numbers" ]; then
-    behind="$(printf '%s\n' "$pr_numbers" | grep -c .)"
-  else
-    behind=0
-  fi
+  # 3. Behind-PR multiplier — fetch isDraft and labels in the same list call so
+  #    we need only one reviews call per PR (not two). Best-effort; empty list →
+  #    behind=0 so it still renders.
+  local open_prs behind
+  open_prs="$(gh pr list --repo "$WORKFLOW_REPO" --state open --limit 200 \
+    --json number,author,isDraft,labels \
+    --jq '[.[] | select((.author?.login // "") | test("dependabot"; "i") | not)]' \
+    2>/dev/null || echo '[]')"
+  behind="$(printf '%s' "$open_prs" | jq 'length')"
 
   # 4. Eligible-PR multiplier — the review-ready subset the gate now updates. For
-  #    each open non-Dependabot PR, read draft/labels (one pulls call) and the
-  #    current approval state (reviews call), then apply the same predicate as the
-  #    reusable. No CI re-runs and no LLM cost — a handful of read calls per daily
-  #    run. Best-effort: any failure leaves eligible empty so the post-restriction
+  #    each open non-Dependabot PR, read the current approval state (reviews call),
+  #    then apply the same predicate as the reusable. No CI re-runs and no LLM cost.
+  #    Best-effort: any failure leaves eligible empty so the post-restriction
   #    section is simply omitted rather than reported wrongly.
   local eligible="" prs_meta
-  if [ -n "$pr_numbers" ]; then
-    local recs="[]" n pr_json draft labels reviews_json approved rec
-    while IFS= read -r n; do
+  if [ "$behind" -gt 0 ]; then
+    local recs="[]" n draft labels reviews_json approved rec
+    while IFS=$'\t' read -r n draft labels; do
       [ -n "$n" ] || continue
-      pr_json="$(gh api "repos/${WORKFLOW_REPO}/pulls/${n}" 2>/dev/null || echo '{}')"
-      draft="$(printf '%s' "$pr_json" | jq -r 'if .draft == true then "true" else "false" end')"
-      labels="$(printf '%s' "$pr_json" | jq -c '.labels // []')"
       reviews_json="$(gh api --paginate "repos/${WORKFLOW_REPO}/pulls/${n}/reviews" 2>/dev/null \
         | jq -s 'add // []' 2>/dev/null || echo '[]')"
       if pr_has_current_approval "$reviews_json"; then approved=true; else approved=false; fi
       rec="$(jq -nc --argjson d "$draft" --argjson a "$approved" --argjson l "$labels" \
         '{draft:$d, approved:$a, labels:$l}')"
       recs="$(printf '%s' "$recs" | jq -c --argjson r "$rec" '. + [$r]')"
-    done <<< "$pr_numbers"
+    done < <(printf '%s' "$open_prs" | jq -r '.[] | "\(.number)\t\(.isDraft)\t\(.labels | tostring)"')
     prs_meta="$recs"
     eligible="$(count_eligible "$prs_meta" "$READY_LABEL" 2>/dev/null || echo "")"
   fi

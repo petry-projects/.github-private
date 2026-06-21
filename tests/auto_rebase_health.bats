@@ -199,6 +199,16 @@ setup() {
   [ "$status" -ne 0 ]
 }
 
+@test "pr_has_current_approval: null-user review is skipped without error" {
+  run pr_has_current_approval '[{"user":null,"state":"APPROVED"}]'
+  [ "$status" -ne 0 ]
+}
+
+@test "pr_has_current_approval: null-user review does not block a valid approval" {
+  run pr_has_current_approval '[{"user":null,"state":"CHANGES_REQUESTED"},{"user":{"login":"a"},"state":"APPROVED"}]'
+  [ "$status" -eq 0 ]
+}
+
 # ---------------------------------------------------------------------------
 # count_eligible — non-draft AND (approved OR ready label)
 # ---------------------------------------------------------------------------
