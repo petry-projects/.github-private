@@ -202,3 +202,22 @@ JSON
   run jq -e '.kind == "finding_verification" and .finding_index == 0' "$TOKEN_LOG_FILE"
   [ "$status" -eq 0 ]
 }
+
+# ── apply_lsp_verification: positional-parameter edge cases ──────────────────
+
+@test "shift-guard: called with 1 arg (no tier) and findings contain MCP-failure text → still processes, not inert" {
+  # Regression for: shift 2 failing when $# < 2 leaves $@ unchanged, causing
+  # lsp_verification_active to scan the findings file for failure patterns.
+  _activate_lsp
+  # The findings file itself contains text matching the MCP-failure pattern.
+  _write_findings <<'JSON'
+{"tier":"deep","findings":[{"severity":"critical","category":"correctness","message":"mcp server lsp failed to connect","lsp_verification":"unverifiable"}]}
+JSON
+  # Called with only the findings file (no tier arg) — the risky case.
+  run apply_lsp_verification "$FINDINGS"
+  [ "$status" -eq 0 ]
+  # Verification must be active: the unverifiable finding must be downgraded.
+  [ "$(jq -r '.findings[0].severity' "$FINDINGS")" = "major" ]
+  run jq -r '.findings[0].message' "$FINDINGS"
+  [[ "$output" == *"[lsp: unverifiable]"* ]]
+}

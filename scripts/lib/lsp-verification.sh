@@ -87,7 +87,7 @@ lsp_verification_active() {
 # LSP unwired/degraded, jq missing, or the file is not a {findings:[...]} object.
 apply_lsp_verification() {
   local file="${1:-}" tier="${2:-deep}"
-  [ -n "$file" ] && shift 2 2>/dev/null || true   # remaining args: CLI output files
+  if [ "$#" -ge 2 ]; then shift 2; else shift "$#"; fi   # remaining args: CLI output files
   [ -f "$file" ] || return 0
   command -v jq >/dev/null 2>&1 || return 0
   jq -e 'type == "object" and (.findings | type == "array")' "$file" >/dev/null 2>&1 || return 0
