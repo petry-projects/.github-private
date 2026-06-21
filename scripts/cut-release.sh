@@ -9,7 +9,7 @@
 #   cut-release.sh <agent> <version> [--ref <ref>] [--channel <name>]
 #                                    [--push] [--dry-run]
 #
-#   <agent>      pr-review | dev-lead
+#   <agent>      pr-review | dev-lead | feature-ideation
 #   <version>    semantic version without the leading v, e.g. 1.2.0
 #   --ref        commit/ref to tag (default: origin/main)
 #   --channel    also move <agent>/<name> (e.g. stable) to the new release
@@ -32,7 +32,7 @@ set -euo pipefail
 # valid_agent <agent> — return 0 iff agent is a known agent name.
 valid_agent() {
   case "$1" in
-    pr-review | dev-lead) return 0 ;;
+    pr-review | dev-lead | feature-ideation) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -75,7 +75,7 @@ main() {
   done
 
   if ! valid_agent "$agent"; then
-    echo "::error::unknown agent '$agent' (expected: pr-review | dev-lead)" >&2
+    echo "::error::unknown agent '$agent' (expected: pr-review | dev-lead | feature-ideation)" >&2
     return 2
   fi
   if ! validate_version "$version"; then
@@ -95,8 +95,22 @@ main() {
   [ -n "$channel" ] && { chan="$(channel_ref "$agent" "$channel")"; echo "channel tag: $chan -> $rel"; }
 
   if [ "$dry" = true ]; then
+    if [ "$agent" = "feature-ideation" ]; then
+      echo "::warning::cross-repo placeholder: the SHA above ($sha) was resolved from petry-projects/.github-private. feature-ideation's canonical commits and tags live in petry-projects/.github — this SHA is a local placeholder only."
+    fi
     echo "(dry-run) no tags created or pushed."
     return 0
+  fi
+
+  # TODO(#872): feature-ideation's reusable lives in petry-projects/.github, so its
+  # release/channel tags must be cut against THAT repo — but main() pushes to this
+  # repo's `origin`. The cross-repo push target (a --repo/remote arg vs. dispatching
+  # against the public repo) is an open question reserved for a human decision. Until
+  # it is wired, only --dry-run is supported for feature-ideation; refuse live cuts so
+  # tags are never written to the wrong remote.
+  if [ "$agent" = "feature-ideation" ]; then
+    echo "::error::live cut/push for 'feature-ideation' is not wired yet — its tags belong on petry-projects/.github (cross-repo target is an open question; see TODO). Use --dry-run for now." >&2
+    return 1
   fi
 
   if git rev-parse -q --verify "refs/tags/$rel" >/dev/null; then

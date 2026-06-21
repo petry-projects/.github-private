@@ -187,3 +187,12 @@ intentionally **mutable** and are an accepted, documented exception because they
 Compliance audits must therefore **not** flag `@pr-review/stable` / `@dev-lead/stable` (or other channel
 tags) on first-party callers as "unpinned actions" — they are the sanctioned version-selection mechanism
 (see the initiative analysis §5.1: `docs/initiatives/agentic-release-strategy.md`).
+
+**feature-ideation (cross-repo).** The `feature-ideation` agent is released through the same model with
+the channel set `{next, ring0, ring1, stable}`, so its `feature-ideation/<channel>` pins are the **same
+sanctioned mutable-ref exception** and must not be flagged as unpinned. Unlike `pr-review`/`dev-lead`
+whose reusables live in this repo, `feature-ideation`'s reusable lives in **`petry-projects/.github`**
+(this repo holds only the thin caller stub), so its release/channel tags are cut against that public
+repo — and the protective ruleset bounding `feature-ideation/**` channel tags is therefore created
+**there**, not on this repo (an untracked prerequisite in the public repo). See
+[`docs/release/versioning.md`](./docs/release/versioning.md) "Cross-repo: feature-ideation".
