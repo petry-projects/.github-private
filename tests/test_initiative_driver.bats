@@ -237,3 +237,46 @@ EOF
   [[ "$output" == *"No open epics carry"* ]]
   ! grep -qF "issue edit" "$GH_LOG"
 }
+
+# ── cross-repo: a non-self target_repo sweep targets that repo on every call ───
+# Mirrors the workflow's REPO = target_repo || github.repository plumbing: when
+# the central driver is dispatched with REPO=<other/repo>, every gh call — the
+# epic discovery, gate read, sub_issues/blocked_by reads, and the release
+# `gh issue edit --repo <other/repo>` — must be repo-qualified to that repo so
+# cross-repo dev-lead labeling lands in the target, not in .github-private.
+
+@test "cross-repo: a non-self target_repo sweep targets that repo on every API and label call" {
+  export EPIC=""
+  export REPO="other/repo"
+  cat > "$MOCK_BIN/gh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$GH_LOG"
+args="$*"
+# Discovery query against the TARGET repo: one gated epic 10
+if [[ "$args" == *"repos/other/repo/issues -f state=open"* ]]; then printf '10'; exit 0; fi
+# Epic 10 (in the target repo) carries the gate label
+if [[ "$args" == *"repos/other/repo/issues/10 --jq"* ]]; then printf 'initiative:auto'; exit 0; fi
+# Sub-issues of epic 10 in the target repo: one open child, issue 2
+if [[ "$args" == *"repos/other/repo/issues/10/sub_issues"* ]]; then printf '2'; exit 0; fi
+# Issue 2 has no dev-lead yet
+if [[ "$args" == *"repos/other/repo/issues/2 --jq"* ]]; then printf ''; exit 0; fi
+# Issue 2 has no open blockers
+if [[ "$args" == *"repos/other/repo/issues/2/dependencies/blocked_by"* ]]; then printf ''; exit 0; fi
+# Label application succeeds
+if [[ "$args" == "issue edit"* ]]; then exit 0; fi
+printf '[]'
+EOF
+  chmod +x "$MOCK_BIN/gh"
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Found 1 gated epic(s): 10"* ]]
+  [[ "$output" == *"RELEASED"* ]]
+  # Every repo-qualified read flowed through the target repo…
+  grep -qF "repos/other/repo/issues -f state=open" "$GH_LOG"
+  grep -qF "repos/other/repo/issues/10/sub_issues" "$GH_LOG"
+  grep -qF "repos/other/repo/issues/2/dependencies/blocked_by" "$GH_LOG"
+  # …and the release labeled the sub-issue in the target repo, not self.
+  grep -qF "issue edit 2 --repo other/repo --add-label dev-lead" "$GH_LOG"
+  ! grep -qF "petry-projects/.github-private" "$GH_LOG"
+}

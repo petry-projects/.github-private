@@ -28,6 +28,10 @@ on:
     - cron: "23 */6 * * *" # safety net for missed close events
   workflow_dispatch:
     inputs:
+      target_repo:
+        description: "Target repo (owner/repo) to sweep + release stories FOR. Empty => this repo (the dogfood/self path)."
+        required: false
+        default: ""
       epic:
         description: "Epic issue number to drive (blank = sweep all initiative:auto epics)"
         required: false
@@ -45,13 +49,17 @@ permissions:
   contents: read  # actions/checkout; all issue mutations use the PAT (GH_TOKEN)
 
 concurrency:
-  # One global lane: sweeps and close events serialize so concurrent runs cannot
-  # race on label application. cancel-in-progress=false so queued work is not dropped.
-  group: initiative-driver
+  # One lane PER TARGET REPO: sweeps and close events for the same repo serialize
+  # so concurrent runs cannot race on label application, while sweeps of different
+  # enrolled repos no longer queue behind a single global lane. Keying mirrors
+  # initiative-planner.yml's per-target keying. cancel-in-progress=false so queued
+  # work is not dropped.
+  group: initiative-driver-${{ github.event.inputs.target_repo || github.repository }}
   cancel-in-progress: false
 
 env:
-  REPO: ${{ github.repository }}
+  # REPO is the TARGET repo to sweep; empty target_repo => this repo (self/dogfood).
+  REPO: ${{ github.event.inputs.target_repo || github.repository }}
   # Single-epic only when explicitly dispatched with a number; otherwise blank ⇒ sweep.
   EPIC: ${{ github.event.inputs.epic || '' }}
   # CLOSED_ISSUE is only meaningful on a close event — never pass the labeled
