@@ -84,8 +84,8 @@ force-pushed).
 
 | Window | Sentinels fired | Dev-lead `rebase` responses (resolution rate) | `status=applied` (applied rate) |
 |---|---|---|---|
-| **Before** — #737 14-day smoke (~2026-06-01 → 06-15) | 161 (**~80 / week**) | 74 — **45%** (**~37 / week**) | 0 — **0%** |
-| **After** — #738 6-day post-change (~2026-06-15 → 06-21) | ~13 (**~15 / week**) | 7 — **53%** | 2 — **15%** |
+| **Before** — #737 14-day smoke (~2026-06-01 → 06-15) | 161 (**~80 / week**) | 74 — **46%** (**~37 / week**) | 0 — **0%** |
+| **After** — #738 6-day post-change (~2026-06-15 → 06-21) | ~13 (**~15 / week**) | 7 — **54%** | 2 — **15%** |
 
 **Reading the rate.** The agentic resolver *responds* to roughly half of conflict sentinels, but the
 **applied** rate is low (0% then 15%): in the 14-day window every resolved rebase terminated
@@ -108,7 +108,7 @@ that trade?"), and is **not asserted resolved here**.
 
 | # | Condition | Checkable signal | Current reading |
 |---|---|---|---|
-| G1 | **Plan eligibility** — Merge Queue is available on this repo's plan | Repo plan / settings expose Merge Queue | **Satisfied** — per the epic #736 owner resolution (open question #1), Merge Queue **is** available (public repo); the discussion #735 "private repo → Team/Enterprise required" blocker does **not** apply here. Eligibility uncertainty is removed; the *adoption* decision stays open. |
+| G1 | **Plan eligibility** — Merge Queue is available on this repo's plan | Repo plan / settings expose Merge Queue | **Satisfied** — per the epic #736 owner resolution (open question #1), Merge Queue **is** available on this plan (private repo); the discussion #735 "private repo → Team/Enterprise required" concern does **not** apply here. Eligibility uncertainty is removed; the *adoption* decision stays open. |
 | G2 | **Throughput sustained above the "consider Merge Queue" threshold** (≥10 merges/day) | #735 / #737 throughput | **Satisfied** — ~12.3 merges/day, peaks 16–21. |
 | G3 | **Agentic-conflict-resolution value below an agreed threshold** — because Merge Queue **drops** the sentinel → dev-lead rebase path and proactive background branch updates | #737 report `status=applied` rate over a ≥4-week window vs. an agreed ceiling (e.g. applied-rebases/week the team is willing to convert to manual resolution) | **Threshold not yet agreed.** Current signal is *favourable* to a switch (applied rate 0%→15%, most rebases `no-changes`), but it is small-sample; needs a longer window and a human-set ceiling before it counts as met. |
 | G4 | **The documented trade-offs are accepted by a human** | Sign-off referencing the #735 comparison table | **Open** — losing agentic conflict resolution (→ manual), losing proactive background branch updates, and adding a `merge_group` CI trigger are accepted trade-offs only by explicit human decision. |
