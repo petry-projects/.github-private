@@ -126,6 +126,39 @@ _emit_coldstart() {
 
 print_allowed_tools() { printf '%s\n' "$LSP_PILOT_ALLOWED_TOOLS"; }
 
+# _lsp_probe_server_ms — start the MCP server, send a JSON-RPC 2.0 initialize
+# request, and return the wall-clock milliseconds to first response. Returns
+# $(( LSP_COLD_START_SLA_MS + 1 )) on timeout or launch failure so the SLA gate
+# fires on an unresponsive server. Requires `timeout`; falls back to the same
+# sentinel when it is absent so the gate still fires rather than silently passing.
+_lsp_probe_server_ms() {
+  command -v timeout >/dev/null 2>&1 || { echo $(( LSP_COLD_START_SLA_MS + 1 )); return 0; }
+  local timeout_s=$(( (LSP_COLD_START_SLA_MS + 999) / 1000 + 1 ))
+  [ "$timeout_s" -lt 1 ] && timeout_s=1
+
+  local req='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"sla-probe","version":"0"}}}'
+  local req_len=${#req}
+
+  local t0; t0="$(_lsp_now_ms)"
+  # grep -m1 exits on first match, closing the pipe and terminating the server.
+  if printf 'Content-Length: %d\r\n\r\n%s' "$req_len" "$req" \
+       | timeout "$timeout_s" agent-lsp "bash:bash-language-server,start" 2>/dev/null \
+       | grep -m1 '"jsonrpc"' >/dev/null 2>&1; then
+    echo $(( $(_lsp_now_ms) - t0 ))
+  else
+    echo $(( LSP_COLD_START_SLA_MS + 1 ))
+  fi
+}
+
+# probe_candidate — dispatch to the selected candidate's startup probe and
+# return wall-clock ms to first JSON-RPC response.
+probe_candidate() {
+  case "$LSP_CANDIDATE" in
+    agent-lsp) _lsp_probe_server_ms ;;
+    *) echo $(( LSP_COLD_START_SLA_MS + 1 )) ;;
+  esac
+}
+
 # install_bash_language_server — npm-global install of the pinned server.
 # Returns 0 when the pinned binary is available (cache hit or fresh install).
 install_bash_language_server() {
@@ -238,29 +271,36 @@ main() {
   export PATH="$INSTALL_BIN:$PATH"
 
   # ── Cold-start budget (AC #2/#3) ───────────────────────────────────────────
-  # Time the toolchain bring-up (install or actions/cache restore → ready). A
-  # warm index-cache hit short-circuits the installers (command -v), keeping this
-  # small; a cold miss pays the download/index cost. We record the elapsed
-  # cold-start + the cache outcome to the Token Cost Observatory and auto-skip
-  # LSP if it blew the 30s P95 SLA — the same "warn, don't fail" degradation
-  # contract as a missing tool, so an over-budget cold-start never fails the run.
-  local start_ms end_ms cold_start_ms cache_status
-  start_ms="$(_lsp_now_ms)"
+  # Two-phase bring-up measurement:
+  #   1. Install phase — binary availability (fast on cache hit, slow on miss).
+  #   2. Probe phase  — actual MCP server startup including index load; this is
+  #      what can be slow even when binaries are cached (cold or stale index).
+  # Summing both phases gives total bring-up time; the SLA gate fires if either
+  # phase is expensive. "warn, don't fail" degradation contract is preserved.
+  local install_start_ms install_end_ms install_ms probe_ms cold_start_ms cache_status
+  install_start_ms="$(_lsp_now_ms)"
 
   local server_ok=1 bls_ok=1
   install_candidate || server_ok=0
   install_bash_language_server || bls_ok=0
 
-  end_ms="$(_lsp_now_ms)"
-  cold_start_ms=$(( end_ms - start_ms ))
-  [ "$cold_start_ms" -lt 0 ] && cold_start_ms=0
+  install_end_ms="$(_lsp_now_ms)"
+  install_ms=$(( install_end_ms - install_start_ms ))
+  [ "$install_ms" -lt 0 ] && install_ms=0
   cache_status="$(_lsp_cache_status)"
 
   if [ "$server_ok" -ne 1 ] || [ "$bls_ok" -ne 1 ]; then
-    _emit_coldstart "$cold_start_ms" "$cache_status" "true"
+    _emit_coldstart "$install_ms" "$cache_status" "true"
     warn "LSP toolchain unavailable (candidate=${LSP_CANDIDATE}) — review continues on base capabilities, LSP enrichment skipped"
     return 0
   fi
+
+  # Probe actual server startup (index load). Binary presence (above) is fast
+  # for a cache hit; the expensive first index build happens here. Total is
+  # install + probe so the SLA gate captures full bring-up time.
+  probe_ms="$(probe_candidate)"
+  cold_start_ms=$(( install_ms + probe_ms ))
+  [ "$cold_start_ms" -lt 0 ] && cold_start_ms=0
 
   # ── SLA gate (AC #3) ───────────────────────────────────────────────────────
   if _lsp_sla_exceeded "$cold_start_ms" "$LSP_COLD_START_SLA_MS"; then

@@ -46,10 +46,23 @@ _make_setup_env() {
 }
 
 _present_tools() {
-  # Stub the pinned tools as already installed (cache hit) so no network is hit.
-  printf '#!/usr/bin/env bash\necho agent-lsp 0.15.0\n' > "$SANDBOX_BIN/agent-lsp"
+  # Stub agent-lsp: handle --version for install checks and emit an instant
+  # JSON-RPC initialize response for _lsp_probe_server_ms so warm-run tests
+  # are not gated by a real server startup or network.
+  cat > "$SANDBOX_BIN/agent-lsp" <<'STUB'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "--version" ]]; then
+  echo "agent-lsp 0.15.0"
+  exit 0
+fi
+# MCP startup probe: emit a minimal initialize response then drain stdin.
+resp='{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05","capabilities":{}}}'
+printf 'Content-Length: %d\r\n\r\n%s' "${#resp}" "$resp"
+cat >/dev/null
+STUB
+  chmod +x "$SANDBOX_BIN/agent-lsp"
   printf '#!/usr/bin/env bash\necho 5.6.0\n' > "$SANDBOX_BIN/bash-language-server"
-  chmod +x "$SANDBOX_BIN/agent-lsp" "$SANDBOX_BIN/bash-language-server"
+  chmod +x "$SANDBOX_BIN/bash-language-server"
 }
 
 # ── AC #2: emit_lsp_coldstart_record JSONL contract ──────────────────────────
