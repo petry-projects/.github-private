@@ -76,6 +76,18 @@ setup() {
   [ "$status" -ne 0 ]
 }
 
+@test "hg_path_is_guarded covers the lsp-pilot holdout corpus (AC2, #841)" {
+  # The frozen LSP-pilot corpus lives under evals/lsp-pilot/holdout/, so the
+  # default evals/ prefix must already guard it — no new mechanism is invented.
+  run hg_path_is_guarded "evals/lsp-pilot/holdout/cases.jsonl"
+  [ "$status" -eq 0 ]
+}
+
+@test "hg_path_is_guarded covers the frozen lsp-off baseline artifact (AC2/AC3, #841)" {
+  run hg_path_is_guarded "evals/lsp-pilot/holdout/baseline-lsp-off.jsonl"
+  [ "$status" -eq 0 ]
+}
+
 @test "hg_path_is_guarded honours a configurable prefix list" {
   export HOLDOUT_GUARDED_PREFIXES="evals/ secret-set/"
   run hg_path_is_guarded "secret-set/holdout.jsonl"
@@ -107,6 +119,18 @@ setup() {
 @test "PASS: human/CODEOWNER changing an evals/ path" {
   run hg_evaluate "donpetry-bot" <<< "evals/triage/cases.jsonl"
   [ "$status" -eq 0 ]
+}
+
+@test "FAIL: proposer mutating the frozen lsp-pilot scored corpus (AC2, #841)" {
+  run hg_evaluate "github-actions[bot]" <<< "evals/lsp-pilot/holdout/cases.jsonl"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"evals/lsp-pilot/holdout/cases.jsonl"* ]]
+}
+
+@test "FAIL: proposer mutating the frozen lsp-off baseline artifact (AC2/AC3, #841)" {
+  run hg_evaluate "github-actions[bot]" <<< "evals/lsp-pilot/holdout/baseline-lsp-off.jsonl"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"evals/lsp-pilot/holdout/baseline-lsp-off.jsonl"* ]]
 }
 
 @test "FAIL: proposer with a mix of evals and non-evals paths" {
