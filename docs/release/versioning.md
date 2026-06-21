@@ -41,14 +41,26 @@ Examples: `pr-review/v1.0.0`, `pr-review/stable`, `dev-lead/v1.0.0`, `dev-lead/s
 
 The candidate (`next`) and ring channels are real moving tags, created alongside `stable`. A caller
 pins **once** to its ring channel and is never edited again; a release flows outward ring-by-ring as
-each ring's tag is advanced. Current ring assignment for `dev-lead`:
+each ring's tag is advanced.
 
-| Channel | Role | Pinned by |
-|---|---|---|
-| `dev-lead/next` | candidate / canary (self-host) | `petry-projects/.github-private` |
-| `dev-lead/ring0` | ring 0 | `petry-projects/.github` |
-| `dev-lead/ring1` | ring 1 (low-traffic consumer) | `petry-projects/TalkTerm` |
-| `dev-lead/stable` | production (ring 2 / everyone else) | all remaining consumers |
+Ring membership (canonical model — see [#500](https://github.com/petry-projects/.github-private/issues/500)).
+`next` is **host-relative**: it always resolves to the repo that *hosts* the reusable, and `ring0`
+covers the other org-infra repo, so `next` + `ring0` always span `.github` + `.github-private`,
+partitioned by which one is the host:
+
+| Ring | Channel | Members (general) | Role |
+|---|---|---|---|
+| **next** | `<agent>/next` | the repo that **hosts** the reusable | canary / dogfood at the source |
+| **ring0** | `<agent>/ring0` | `.github` **and** `.github-private` (host already in `next`) | org-infra self-host |
+| **ring1** | `<agent>/ring1` | `TalkTerm`, `bmad-bgreat-suite` | named low-traffic consumers |
+| **stable** | `<agent>/stable` | everything else | full-fleet production |
+
+Concretely for **`dev-lead`** (hosted in `.github-private`): `next` = `.github-private`,
+`ring0` = `.github`, `ring1` = `{TalkTerm, bmad-bgreat-suite}`, `stable` = the rest.
+**Production self-review/dev duty stays pinned to `stable` even within ring 0** — the agent validating
+fixes is never the unvalidated candidate (the circular-dependency fix #500 targets). The intended
+machine-readable source of truth is `standards/canary-rings.json`, consumed by the promotion
+automation (#501).
 
 A staged rollout advances the channels in order — `next` → `ring0` → `ring1` → `stable` — validating
 at each step (see [`runbook.md` §2c](./runbook.md#2c-staged-canary--ring-rollout)). All four channels
