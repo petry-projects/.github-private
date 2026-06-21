@@ -132,3 +132,38 @@ unit-tested.
   (enforced by `tests/test_initiative_planner.bats`).
 - **DAG is validated** (acyclic, has an entry point, no dangling edges) before
   any issue is created.
+
+## Fleet enablement (any org repo)
+
+The pipeline runs for any BMAD-enabled org repo, not just this one. The BMAD
+frameworks, the planner, and the triage/enhancer tooling stay vendored **once**
+here; each fleet repo ships only thin **caller stubs** (copied from petry-projects/.github/standards/workflows/{initiative-planner,idea-triage,idea-enhancer}.yml into their local .github/workflows/ directory).
+
+```
+fleet repo: ★ human adds idea:approved to an Ideas Discussion
+   │
+   ▼
+initiative-planner.yml (stub) ──> initiative-planner-reusable.yml (@initiative-planner/stable)
+   │   (claude-code-action can't run on `discussion` events, so the reusable
+   │    re-DISPATCHES the central planner instead of planning inline)
+   ▼
+petry-projects/.github-private  initiative-planner.yml  -f target_repo=<fleet repo> -f dry_run=false
+   │   reads the fleet repo's Discussion, writes the epic + DAG THERE
+   │   (cross-repo writes use GH_PAT_WORKFLOWS; self path uses GITHUB_TOKEN)
+   ▼
+inert epic + story DAG in the fleet repo  ──> ★ human adds initiative:auto ──> driver ──> dev-lead
+```
+
+- **`target_repo`** parameterizes the central planner/triage/enhancer; empty ⇒ the
+  dogfood/self path (`.github-private` plans its own Discussions), non-empty ⇒ the
+  named fleet repo.
+- **Project-board funnel (hybrid):** epics in **consumer (fleet) repos** land on
+  that repo's own project; epics in **`petry-projects/.github` and
+  `petry-projects/.github-private`** land on the org-level "Initiatives" project
+  (`orgs/petry-projects/projects/1`).
+- **Regression detection:** `initiative-planner-canary.yml` smoke-tests the live
+  `idea:approved` → dispatch path, and Fleet Monitor watches each adopted stub for
+  drift — so a silent revert of the trigger (the [#655](https://github.com/petry-projects/.github-private/issues/655)
+  class) surfaces immediately rather than on a maintainer noticing nothing planned.
+- **Adoption + the full enrollment runbook:** see
+  `petry-projects/.github` → `standards/ci-standards.md` §10 (Idea → Initiative pipeline).
