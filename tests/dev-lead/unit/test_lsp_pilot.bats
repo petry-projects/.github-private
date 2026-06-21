@@ -172,8 +172,18 @@ _make_setup_env() {
 
 @test "setup: tools present → threads REVIEW_MCP_CONFIG + navigation knob into GITHUB_ENV" {
   _make_setup_env
-  # Simulate the pinned tools already being installed (cache hit) so no network.
-  printf '#!/usr/bin/env bash\necho agent-lsp 0.15.0\n' > "$SANDBOX_BIN/agent-lsp"
+  # Stub agent-lsp: --version for the install check; JSON-RPC response for
+  # _lsp_probe_server_ms so the cold-start probe succeeds without a real server.
+  cat > "$SANDBOX_BIN/agent-lsp" <<'STUB'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "--version" ]]; then
+  echo "agent-lsp 0.15.0"
+  exit 0
+fi
+resp='{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05","capabilities":{}}}'
+printf 'Content-Length: %d\r\n\r\n%s' "${#resp}" "$resp"
+cat >/dev/null
+STUB
   printf '#!/usr/bin/env bash\necho 5.6.0\n' > "$SANDBOX_BIN/bash-language-server"
   chmod +x "$SANDBOX_BIN/agent-lsp" "$SANDBOX_BIN/bash-language-server"
   run bash "$SETUP_SCRIPT"
