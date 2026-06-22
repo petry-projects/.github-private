@@ -30,11 +30,20 @@ LOOKBACK_DAYS="${LOOKBACK_DAYS:-1}"
 REPORT_FILE="fleet_monitor_report.md"
 TODAY=$(date -u +%Y-%m-%d)
 
-# Initiative-planner stub coverage & drift (#822). The per-repo thin-caller stub
-# is deployed verbatim from the canonical org template; we compare blob SHAs.
-STUB_PATH="${STUB_PATH:-.github/workflows/initiative-planner.yml}"
+# Per-repo thin-caller stub coverage & drift (#822 planner, #886 driver). Each
+# stub is deployed verbatim from a canonical org template; we compare blob SHAs.
+# The registry generalizes the original single-stub path (#822) so the same pure
+# helpers run per stub kind. Each entry is TAB-separated:
+#   name <TAB> label <TAB> stub_path <TAB> canonical_path
+#     name            — slug used in log lines
+#     label           — section heading / alert grouping ("Initiative-planner")
+#     stub_path       — per-repo thin-caller path under each enrolled repo
+#     canonical_path  — org-template path under $CANONICAL_STUB_REPO
 CANONICAL_STUB_REPO="${CANONICAL_STUB_REPO:-petry-projects/.github}"
-CANONICAL_STUB_PATH="${CANONICAL_STUB_PATH:-standards/workflows/initiative-planner.yml}"
+STUB_REGISTRY=(
+  "initiative-planner	Initiative-planner	.github/workflows/initiative-planner.yml	standards/workflows/initiative-planner.yml"
+  "initiative-driver	Initiative-driver	.github/workflows/initiative-driver.yml	standards/workflows/initiative-driver.yml"
+)
 
 echo "=== Actions Fleet Monitor ==="
 echo "  Org:      $ORG"
@@ -184,28 +193,49 @@ for repo in "${repos[@]}"; do
 done
 
 # ---------------------------------------------------------------------------
-# 2a. Initiative-planner stub coverage & drift (#822, AC#2 + AC#3)
-# For each discovered repo, compare its per-repo planner stub blob SHA against
-# the canonical org-template SHA. Reuses the repo list already discovered above
-# (extends the Fleet Monitor rather than building a parallel monitor, per #627).
-# The contents API `.sha` is the git blob object ID, so equal SHAs => identical.
+# 2a. Per-repo stub coverage & drift (#822 planner, #886 driver — AC#2 + AC#3)
+# For each registered stub, and each discovered repo, compare the repo's per-repo
+# stub blob SHA against the canonical org-template SHA. Reuses the repo list
+# already discovered above (extends the Fleet Monitor rather than building a
+# parallel monitor, per #627). The contents API `.sha` is the git blob object
+# ID, so equal SHAs => identical files.
+#
+# Parallel arrays accumulate per-processed-stub state for the report (3.) and
+# alert export (3c.): a stub whose canonical SHA cannot be read is skipped with
+# a per-stub `::warning::` (non-fatal) so a not-yet-merged template degrades
+# gracefully (#886 AC#5) rather than failing the whole run.
 # ---------------------------------------------------------------------------
-stub_drift_file=$(mktemp)
-canonical_stub_sha=$(gh api \
-  "repos/${CANONICAL_STUB_REPO}/contents/${CANONICAL_STUB_PATH}" \
-  --jq '.sha' 2>/dev/null || true)
+stub_drift_files=()
+stub_drift_labels=()
+stub_drift_paths=()
+stub_drift_canon=()
 
-if [ -z "$canonical_stub_sha" ]; then
-  echo "::warning::Could not read canonical stub SHA (${CANONICAL_STUB_REPO}/${CANONICAL_STUB_PATH}) — skipping stub drift detection."
-else
-  echo "Canonical stub SHA: ${canonical_stub_sha} (${CANONICAL_STUB_REPO}/${CANONICAL_STUB_PATH})"
+for entry in "${STUB_REGISTRY[@]}"; do
+  IFS=$'\t' read -r stub_name stub_label stub_path canonical_path <<< "$entry"
+
+  canonical_stub_sha=$(gh api \
+    "repos/${CANONICAL_STUB_REPO}/contents/${canonical_path}" \
+    --jq '.sha' 2>/dev/null || true)
+
+  if [ -z "$canonical_stub_sha" ]; then
+    echo "::warning::Could not read canonical stub SHA (${CANONICAL_STUB_REPO}/${canonical_path}) — skipping ${stub_name} stub drift detection."
+    continue
+  fi
+
+  echo "Canonical ${stub_name} stub SHA: ${canonical_stub_sha} (${CANONICAL_STUB_REPO}/${canonical_path})"
+  stub_drift_file=$(mktemp)
   for repo in "${repos[@]}"; do
     # 404 (no stub) => empty SHA => MISSING (not enrolled); non-fatal.
-    repo_stub_sha=$(gh api "repos/${repo}/contents/${STUB_PATH}" \
+    repo_stub_sha=$(gh api "repos/${repo}/contents/${stub_path}" \
       --jq '.sha' 2>/dev/null || true)
     stub_drift_row "$repo" "$canonical_stub_sha" "$repo_stub_sha" >> "$stub_drift_file"
   done
-fi
+
+  stub_drift_files+=("$stub_drift_file")
+  stub_drift_labels+=("$stub_label")
+  stub_drift_paths+=("$stub_path")
+  stub_drift_canon+=("$canonical_stub_sha")
+done
 
 # ---------------------------------------------------------------------------
 # 2b. Build issue lookup for open fleet-tracker issues (linked inline in report)
@@ -236,12 +266,15 @@ report_header() {
     "$ORG" "$LOOKBACK_DAYS" "$repo_count" "$total_workflows"
 }
 
-# stub_drift_section — appends the #822 coverage/drift block when we have data.
+# stub_drift_section — appends a coverage/drift block per processed stub (#822
+# planner, #886 driver). One section per stub kind, headlined by its label.
 stub_drift_section() {
-  if [ -s "$stub_drift_file" ]; then
+  local i
+  for i in "${!stub_drift_files[@]}"; do
+    [ -s "${stub_drift_files[$i]}" ] || continue
     printf '\n'
-    generate_stub_drift_report "$stub_drift_file" "$canonical_stub_sha"
-  fi
+    generate_stub_drift_report "${stub_drift_files[$i]}" "${stub_drift_canon[$i]}" "${stub_drift_labels[$i]}"
+  done
 }
 
 # Step Summary — Tier 1 visualizations only (Mermaid not rendered there)
@@ -306,20 +339,29 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 3c. Export drifted stubs as JSON for alerting (#822, AC#3)
-# Produces fleet_stub_drift.json — the DRIFTED enrolled repos. The workflow's
-# "Alert on stub drift" step reads this and HAS_STUB_DRIFT to wake dev-lead.
+# 3c. Export drifted stubs as JSON for alerting (#822 planner, #886 driver — AC#3)
+# Produces fleet_stub_drift.json — the DRIFTED enrolled repos across every
+# processed stub, each row tagged with its `stub`/`stub_file` so the workflow's
+# "Track stub drift" step can group/route per stub kind. HAS_STUB_DRIFT wakes
+# dev-lead. A combined empty array is emitted when no stub drifted.
 # ---------------------------------------------------------------------------
 STUB_DRIFT_JSON="fleet_stub_drift.json"
-stub_drift_alert_json "$stub_drift_file" > "$STUB_DRIFT_JSON"
+stub_alert_tmp=$(mktemp)
+for i in "${!stub_drift_files[@]}"; do
+  stub_drift_alert_json "${stub_drift_files[$i]}" "${stub_drift_labels[$i]}" "${stub_drift_paths[$i]}" \
+    >> "$stub_alert_tmp"
+done
+# Merge the per-stub JSON arrays into one (empty → []).
+jq -s 'add // []' "$stub_alert_tmp" > "$STUB_DRIFT_JSON"
+rm -f "$stub_alert_tmp"
 stub_drift_count=$(jq 'length' "$STUB_DRIFT_JSON")
-echo "Drifted initiative-planner stubs: ${stub_drift_count}"
+echo "Drifted stubs (all kinds): ${stub_drift_count}"
 if [ -n "${GITHUB_ENV:-}" ]; then
   echo "STUB_DRIFT_COUNT=${stub_drift_count}" >> "$GITHUB_ENV"
   [ "$stub_drift_count" -gt 0 ] && echo "HAS_STUB_DRIFT=true" >> "$GITHUB_ENV"
 fi
 
-rm -f "$metrics_file" "$failed_file" "$issues_lookup_file" "$stub_drift_file"
+rm -f "$metrics_file" "$failed_file" "$issues_lookup_file" "${stub_drift_files[@]}"
 
 # ---------------------------------------------------------------------------
 # 4. Export env flags
