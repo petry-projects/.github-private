@@ -41,8 +41,8 @@ TODAY=$(date -u +%Y-%m-%d)
 #     canonical_path  — org-template path under $CANONICAL_STUB_REPO
 CANONICAL_STUB_REPO="${CANONICAL_STUB_REPO:-petry-projects/.github}"
 STUB_REGISTRY=(
-  "initiative-planner	Initiative-planner	.github/workflows/initiative-planner.yml	standards/workflows/initiative-planner.yml"
-  "initiative-driver	Initiative-driver	.github/workflows/initiative-driver.yml	standards/workflows/initiative-driver.yml"
+  $'initiative-planner\tInitiative-planner\t.github/workflows/initiative-planner.yml\tstandards/workflows/initiative-planner.yml'
+  $'initiative-driver\tInitiative-driver\t.github/workflows/initiative-driver.yml\tstandards/workflows/initiative-driver.yml'
 )
 
 echo "=== Actions Fleet Monitor ==="
@@ -269,6 +269,7 @@ report_header() {
 # stub_drift_section — appends a coverage/drift block per processed stub (#822
 # planner, #886 driver). One section per stub kind, headlined by its label.
 stub_drift_section() {
+  [ ${#stub_drift_files[@]} -eq 0 ] && return 0
   local i
   for i in "${!stub_drift_files[@]}"; do
     [ -s "${stub_drift_files[$i]}" ] || continue
@@ -346,14 +347,18 @@ fi
 # dev-lead. A combined empty array is emitted when no stub drifted.
 # ---------------------------------------------------------------------------
 STUB_DRIFT_JSON="fleet_stub_drift.json"
-stub_alert_tmp=$(mktemp)
-for i in "${!stub_drift_files[@]}"; do
-  stub_drift_alert_json "${stub_drift_files[$i]}" "${stub_drift_labels[$i]}" "${stub_drift_paths[$i]}" \
-    >> "$stub_alert_tmp"
-done
-# Merge the per-stub JSON arrays into one (empty → []).
-jq -s 'add // []' "$stub_alert_tmp" > "$STUB_DRIFT_JSON"
-rm -f "$stub_alert_tmp"
+if [ ${#stub_drift_files[@]} -gt 0 ]; then
+  stub_alert_tmp=$(mktemp)
+  for i in "${!stub_drift_files[@]}"; do
+    stub_drift_alert_json "${stub_drift_files[$i]}" "${stub_drift_labels[$i]}" "${stub_drift_paths[$i]}" \
+      >> "$stub_alert_tmp"
+  done
+  # Merge the per-stub JSON arrays into one (empty → []).
+  jq -s 'add // []' "$stub_alert_tmp" > "$STUB_DRIFT_JSON"
+  rm -f "$stub_alert_tmp"
+else
+  echo "[]" > "$STUB_DRIFT_JSON"
+fi
 stub_drift_count=$(jq 'length' "$STUB_DRIFT_JSON")
 echo "Drifted stubs (all kinds): ${stub_drift_count}"
 if [ -n "${GITHUB_ENV:-}" ]; then
@@ -361,7 +366,8 @@ if [ -n "${GITHUB_ENV:-}" ]; then
   [ "$stub_drift_count" -gt 0 ] && echo "HAS_STUB_DRIFT=true" >> "$GITHUB_ENV"
 fi
 
-rm -f "$metrics_file" "$failed_file" "$issues_lookup_file" "${stub_drift_files[@]}"
+rm -f "$metrics_file" "$failed_file" "$issues_lookup_file"
+[ ${#stub_drift_files[@]} -gt 0 ] && rm -f "${stub_drift_files[@]}"
 
 # ---------------------------------------------------------------------------
 # 4. Export env flags
