@@ -117,6 +117,18 @@ teardown() {
   rm -f "$empty"
 }
 
+@test "stub_drift_alert_json: a stub label/file tags each DRIFTED row (multi-stub)" {
+  run stub_drift_alert_json "$DRIFT_TSV" "Initiative-driver" ".github/workflows/initiative-driver.yml"
+  [ "$status" -eq 0 ]
+  len=$(printf '%s' "$output" | jq 'length')
+  [ "$len" -eq 2 ]
+  # Each entry is tagged so the workflow can group/route per stub kind.
+  printf '%s' "$output" | jq -e 'all(.[]; .stub == "Initiative-driver")' >/dev/null
+  printf '%s' "$output" | jq -e 'all(.[]; .stub_file == ".github/workflows/initiative-driver.yml")' >/dev/null
+  # The repo + SHA fields are still present.
+  printf '%s' "$output" | jq -e '.[0] | has("repo") and has("repo_sha") and has("canonical_sha")' >/dev/null
+}
+
 # ---------------------------------------------------------------------------
 # generate_stub_drift_report <tsv_file> <canonical_sha>
 # ---------------------------------------------------------------------------
@@ -130,6 +142,21 @@ teardown() {
   [[ "$output" == *"petry-projects/delta"* ]]
   # The canonical SHA (short form) is shown.
   [[ "$output" == *"aaaaaaa"* ]]
+}
+
+@test "generate_stub_drift_report: a passed stub label headlines the section (multi-stub)" {
+  run generate_stub_drift_report "$DRIFT_TSV" "$CANON" "Initiative-driver"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Initiative-driver stub"* ]]
+  # It must not silently fall back to the planner heading.
+  [[ "$output" != *"Initiative-planner stub"* ]]
+  [[ "$output" == *"petry-projects/bravo"* ]]
+}
+
+@test "generate_stub_drift_report: the default label is still Initiative-planner (regression)" {
+  run generate_stub_drift_report "$DRIFT_TSV" "$CANON"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Initiative-planner stub"* ]]
 }
 
 @test "generate_stub_drift_report: a clean fleet reports no drift" {
