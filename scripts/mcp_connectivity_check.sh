@@ -135,6 +135,11 @@ main() {
     return 1
   fi
 
+  if ! command -v jq >/dev/null 2>&1; then
+    echo "::error::[mcp] jq CLI not found — cannot assert MCP connectivity" >&2
+    return 1
+  fi
+
   local allowed
   allowed="${REVIEW_MCP_ALLOWED_TOOLS:-$(derive_allowed_tools "$cfg")}"
   if [ -z "$allowed" ]; then
@@ -189,7 +194,7 @@ main() {
   printf '%s' "$out" | grep -hoiE 'mcp server "[^"]+": successfully connected.*' \
     | sort -u | while IFS= read -r _ln; do
         printf '::notice::[mcp] %s\n' "${_ln}"
-      done
+      done || true
   echo "::notice::[mcp] connectivity assertion passed — ${servers} reachable"
 }
 

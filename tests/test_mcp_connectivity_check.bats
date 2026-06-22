@@ -123,7 +123,7 @@ setup() {
 @test "mcp_check_report: FAILED renders an alert report" {
   run mcp_check_report "FAILED" ".github/review-mcp.json" "context7" "2026-06-22"
   [[ "$output" == *"FAILED"* ]]
-  [[ "$output" == *"unreachable"* ]] || [[ "$output" == *"unreachable"* ]]
+  [[ "$output" == *"unreachable"* ]]
 }
 
 # ---------------------------------------------------------------------------
@@ -212,6 +212,26 @@ teardown() {
   [[ "$output" == *"skip"* ]] || [[ "$output" == *"no MCP config"* ]]
   # The probe must NOT have been invoked when MCP is not configured.
   [ ! -s "$CLAUDE_LOG" ]
+  rm -f "$GITHUB_ENV"
+}
+
+@test "main: jq missing → exit 1, ::error:: (no silent skip of the assertion)" {
+  _install_claude_mock 'MCP server "context7": Successfully connected'
+  _make_config
+  GITHUB_ENV="$(mktemp)"; export GITHUB_ENV
+
+  # Restrict PATH so jq is unresolvable while keeping bash + the claude mock,
+  # which is all main() needs before the jq guard runs.
+  local restricted; restricted="$(mktemp -d)"
+  ln -s "$(command -v bash)" "$restricted/bash"
+  ln -s "$MOCK_BIN/claude" "$restricted/claude"
+
+  PATH="$restricted" run bash "$SCRIPT"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"::error::"* ]]
+  [[ "$output" == *"jq"* ]]
+
+  rm -rf "$restricted"
   rm -f "$GITHUB_ENV"
 }
 
