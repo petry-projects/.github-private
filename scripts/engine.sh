@@ -893,6 +893,17 @@ run_triage() {
             || rc=$?
         fi
         ;;
+      gemini)
+        local _triage_gemini_chain="${GEMINI_FLASH_MODEL_CHAIN:-$ENGINE_TRIAGE_MODEL}"
+        if [ -n "$_tok_tmp" ]; then
+          _GEMINI_CHAIN_MODEL_USED=""
+          _gemini_chain_invoke "$_triage_gemini_chain" "$prompt_file" "$TRIAGE_TIMEOUT_SEC" \
+            --approval-mode auto_edit > >(tee "$_tok_tmp") || rc=$?
+        else
+          _gemini_chain_invoke "$_triage_gemini_chain" "$prompt_file" "$TRIAGE_TIMEOUT_SEC" \
+            --approval-mode auto_edit || rc=$?
+        fi
+        ;;
       copilot)
         # In triage mode, we deny all tools to keep it fast and restricted.
         if [ -n "$_tok_tmp" ]; then
@@ -990,6 +1001,32 @@ run_agentic() {
           --allowed-tools "$_MCP_ALLOWED_TOOLS" \
           ${_MCP_FLAGS[@]+"${_MCP_FLAGS[@]}"} \
           || rc=$?
+      fi
+      ;;
+    gemini)
+      # Capability-aware chain selection: flash chain for speed tiers, pro chain
+      # for quality tiers. Honor explicit model pin when it differs from the tier default.
+      local _agentic_gemini_chain _gemini_tier_default=""
+      case "$tier" in
+        deep)   _agentic_gemini_chain="${GEMINI_PRO_MODEL_CHAIN:-$model}"
+                _gemini_tier_default="${ENGINE_DEEP_MODEL:-}" ;;
+        audit)  _agentic_gemini_chain="${GEMINI_PRO_MODEL_CHAIN:-$model}"
+                _gemini_tier_default="${ENGINE_AUDIT_MODEL:-}" ;;
+        single) _agentic_gemini_chain="${GEMINI_PRO_MODEL_CHAIN:-$model}"
+                _gemini_tier_default="${ENGINE_SINGLE_MODEL:-}" ;;
+        *)      _agentic_gemini_chain="${GEMINI_FLASH_MODEL_CHAIN:-$model}"
+                _gemini_tier_default="${ENGINE_ACTION_MODEL:-}" ;;
+      esac
+      if [ -n "$_gemini_tier_default" ] && [ "$model" != "$_gemini_tier_default" ]; then
+        _agentic_gemini_chain="$model"
+      fi
+      if [ -n "$_tok_tmp" ]; then
+        _GEMINI_CHAIN_MODEL_USED=""
+        _gemini_chain_invoke "$_agentic_gemini_chain" "$prompt_file" "$DEEP_TIMEOUT_SEC" \
+          --approval-mode auto_edit > >(tee "$_tok_tmp") || rc=$?
+      else
+        _gemini_chain_invoke "$_agentic_gemini_chain" "$prompt_file" "$DEEP_TIMEOUT_SEC" \
+          --approval-mode auto_edit || rc=$?
       fi
       ;;
     copilot)
@@ -1090,13 +1127,6 @@ run_writer() {
       ;;
   esac
 
-  # Map rate-limit to exit code 2 for caller to detect; parse reset time for
-  # marker embedding. Use the file-based helpers to avoid OOM on large captures.
-  if [ "$rc" -ne 0 ] && [ -n "$_tmp" ] && is_rate_limited_files "$_tmp"; then
-    parse_reset_time_files "$_tmp"
-    [ -n "$_tmp" ] && rm -f "$_tmp"
-    return 2
-  fi
   if [ "$rc" -eq 0 ]; then
     local _writer_used="$model"
     if [ "$REVIEW_ENGINE" = "claude" ] && [ -n "${_CLAUDE_CHAIN_MODEL_USED:-}" ]; then
