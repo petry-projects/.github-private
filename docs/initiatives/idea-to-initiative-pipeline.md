@@ -157,7 +157,7 @@ inert epic + story DAG in the fleet repo
 fleet repo: ★ human adds initiative:auto to the epic   (+ a sub-issue closes later)
    │
    ▼
-initiative-driver.yml (stub) ──> initiative-driver-reusable.yml (@initiative-driver/stable)
+initiative-driver.yml (stub) ──> initiative-driver-reusable.yml (@stable)
    │   (the driver's gate/DAG tooling lives ONCE here, so the stub forwards the
    │    fleet repo's issues:[labeled initiative:auto] / issues:[closed] event to
    │    the central driver instead of running the release logic inline)

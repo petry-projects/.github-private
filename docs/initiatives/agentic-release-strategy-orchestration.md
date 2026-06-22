@@ -121,7 +121,7 @@ diagram in [`idea-to-initiative-pipeline.md` → Fleet enablement](./idea-to-ini
 fleet repo: ★ human adds initiative:auto to the epic   (or a sub-issue closes)
    │
    ▼
-initiative-driver.yml (stub) ──> initiative-driver-reusable.yml (@initiative-driver/stable)
+initiative-driver.yml (stub) ──> initiative-driver-reusable.yml (@stable)
    │   the stub forwards the fleet repo's issues:[labeled initiative:auto] /
    │   issues:[closed] event to the central driver instead of running the
    │   gate/DAG logic inline (that logic lives only here)
