@@ -51,29 +51,34 @@ count_stub_drift() {
   awk -F'\t' -v w="$want" '$2 == w { n++ } END { print n + 0 }' "$f"
 }
 
-# stub_drift_alert_json <tsv_file>
+# stub_drift_alert_json <tsv_file> [stub_label] [stub_file]
 # Emits a JSON array of the DRIFTED rows (the alertable set — enrolled repos
 # whose stub no longer matches canon). Empty/absent file → "[]".
+# When <stub_label>/<stub_file> are given, each row is tagged with `stub` and
+# `stub_file` so a multi-stub alert step can group/route per stub kind.
 stub_drift_alert_json() {
-  local f="${1:-}"
+  local f="${1:-}" stub_label="${2:-}" stub_file="${3:-}"
   if [ -z "$f" ] || [ ! -s "$f" ]; then
     echo "[]"
     return 0
   fi
-  jq -Rn '
+  jq -Rn --arg stub "$stub_label" --arg stub_file "$stub_file" '
     [ inputs
       | select(length > 0)
       | split("\t")
       | select(length >= 4 and .[1] == "DRIFTED")
       | { repo: .[0], status: .[1], repo_sha: .[2], canonical_sha: .[3] }
+      | if $stub != "" then . + { stub: $stub } else . end
+      | if $stub_file != "" then . + { stub_file: $stub_file } else . end
     ]' < "$f"
 }
 
-# generate_stub_drift_report <tsv_file> <canonical_sha>
+# generate_stub_drift_report <tsv_file> <canonical_sha> [stub_label]
 # Prints a Markdown section: coverage counts plus a table of every non-ALIGNED
-# repo. Pure: reads the TSV, writes stdout.
+# repo. Pure: reads the TSV, writes stdout. <stub_label> headlines the section
+# (default "Initiative-planner" preserves the #822 single-stub heading).
 generate_stub_drift_report() {
-  local f="${1:-}" canonical="${2:-}"
+  local f="${1:-}" canonical="${2:-}" stub_label="${3:-Initiative-planner}"
   local short_canon="${canonical:0:7}"
   local aligned drifted missing total
   aligned="$(count_stub_drift "$f" "ALIGNED")"
@@ -81,7 +86,7 @@ generate_stub_drift_report() {
   missing="$(count_stub_drift "$f" "MISSING")"
   total=$(( aligned + drifted ))  # enrolled = repos that have the stub
 
-  printf '## Initiative-planner stub coverage & drift\n\n'
+  printf '## %s stub coverage & drift\n\n' "$stub_label"
   printf 'Canonical template SHA: `%s` · enrolled repos (stub present): **%s**\n\n' \
     "$short_canon" "$total"
   printf '✅ ALIGNED: %s  🔴 DRIFTED: %s  ⬜ MISSING (not enrolled): %s\n\n' \
