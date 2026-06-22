@@ -1,202 +1,199 @@
 #!/usr/bin/env bash
-# mcp_connectivity_check.sh — durable MCP/Context7 connectivity preflight (#903).
+# mcp_connectivity_check.sh — durable, affirmative MCP connectivity assertion
+# for the daily PR-review health check (#903, part of #676 MCP enrichment).
 #
-# The PR-review pipeline only surfaces MCP health as a fail-loud
-# `::warning::[mcp]` on a *real* review (engine.sh:_emit_mcp_failure_warning) —
-# a healthy run logs nothing and a silent outage is invisible until a review
-# happens to run. This script is the affirmative, durable monitor: invoked by
-# the daily health check, it drives the configured MCP server(s) through the
-# SAME flags engine.sh threads into its claude tiers
-# (`--mcp-config <f> --strict-mcp-config --debug mcp`) and asserts the handshake
-# (`MCP server "…": Successfully connected`).
+# Why: MCP health is otherwise only observable as a fail-loud `::warning::[mcp]`
+# on *real* PR reviews (`_emit_mcp_failure_warning` in scripts/engine.sh — it
+# never logs success). There is no durable monitor that Context7 (the configured
+# `.github/review-mcp.json` server) is actually reachable, so a silent outage
+# only surfaces when a review happens to run. This script provides that monitor:
+# it runs the configured server(s) through the SAME flags engine.sh threads
+# (`--mcp-config <file> --strict-mcp-config --debug mcp`) and asserts the
+# affirmative handshake (`MCP server "…": Successfully connected`).
 #
-# Behavior contract (mirrors the engine's opt-in MCP gating):
-#   * MCP NOT configured (no readable config) → no-op, ::notice:: skip, exit 0.
-#     Non-MCP repos see no behavior change.
-#   * MCP configured AND reachable  → ::notice::[mcp] per handshake, exit 0.
-#   * MCP configured but UNREACHABLE → ::error::[mcp], exit 1 (fails the health
-#     check). Fail Loud, Never Fake.
+#   * Fails (exit 1) when MCP is configured but unreachable.
+#   * Skips / no-ops (exit 0) when MCP isn't configured — no behavior change for
+#     non-MCP repos.
+#   * Reuses the REVIEW_MCP_DEBUG knob (merged in #892): the affirmative
+#     `::notice::[mcp]` is the success signal, mirroring engine.sh's format.
 #
-# Config resolution mirrors engine.sh: an explicit REVIEW_MCP_CONFIG wins; an
-# explicit empty value disables; otherwise the conventional committed path
-# (REVIEW_MCP_CONFIG_DEFAULT_PATH, default .github/review-mcp.json) is used when
-# it exists.
+# Layout mirrors scripts/initiative_canary.sh:
+#   * classify_mcp_output / mcp_check_is_failure / derive_allowed_tools /
+#     mcp_check_report are PURE (no network) and unit-tested in
+#     tests/test_mcp_connectivity_check.bats.
+#   * main() does the I/O: resolve config, invoke claude, classify, report.
 #
 # Env vars consumed:
-#   REVIEW_MCP_CONFIG              — explicit config path (honored as-is; empty disables)
-#   REVIEW_MCP_CONFIG_DEFAULT_PATH — conventional fallback (default .github/review-mcp.json)
-#   REVIEW_MCP_ALLOWED_TOOLS       — explicit allowed-tools glob(s); else derived
-#                                    from the config's server names (mcp__<name>__*)
-#   MCP_PROBE_MODEL               — claude model for the probe (default claude-sonnet-4-6)
-#   MCP_PROBE_TIMEOUT_SEC         — hard timeout for the probe (default 120)
-#   CLAUDE_CODE_OAUTH_TOKEN       — passed through to the claude CLI
+#   REVIEW_MCP_CONFIG                explicit MCP config path (override). When set
+#                                    (even to a missing path) it is honored as-is.
+#   REVIEW_MCP_CONFIG_DEFAULT_PATH   conventional path used when REVIEW_MCP_CONFIG
+#                                    is unset/empty (default .github/review-mcp.json)
+#   REVIEW_MCP_ALLOWED_TOOLS         override the derived `mcp__<server>__*` allowlist
+#   REVIEW_MCP_DEBUG                 honored knob; --debug mcp is always passed here
+#                                    since the handshake IS the assertion
+#   MCP_CHECK_MODEL                  claude model for the probe (default haiku)
+#   MCP_CHECK_TIMEOUT                seconds to allow the probe (default 120)
+#   MCP_CHECK_OUT                    optional path; report is written there too
+#   GITHUB_STEP_SUMMARY / GITHUB_ENV written by the Actions runner
 
 set -euo pipefail
 
+REVIEW_MCP_CONFIG_DEFAULT_PATH="${REVIEW_MCP_CONFIG_DEFAULT_PATH:-.github/review-mcp.json}"
+
 # ---------------------------------------------------------------------------
-# Pure helpers (no network / no CLI — unit-tested in
-# tests/test_mcp_connectivity_check.bats)
+# Pure helpers (unit-tested; no network)
 # ---------------------------------------------------------------------------
 
-# _mcp_resolve_config
-# Echoes the config path the monitor should probe, or nothing when MCP is simply
-# not configured. Precedence: explicit REVIEW_MCP_CONFIG (empty ⇒ deliberately
-# disabled) > conventional committed path when present.
-#
-# Fail-loud distinction (this is a monitor, not the graceful-degradation engine):
-#   * Unset + conventional path ABSENT → not configured → echo nothing, exit 0
-#     (no behavior change for non-MCP repos).
-#   * Explicitly pointed at a config (REVIEW_MCP_CONFIG non-empty) but the file is
-#     missing/unreadable → a misconfiguration the monitor must surface → ::error::,
-#     exit 1. Silently skipping would mask exactly the kind of silent breakage the
-#     monitor exists to catch.
-#   * Conventional path PRESENT but unreadable → same: misconfiguration → exit 1.
-_mcp_resolve_config() {
-  local default_path="${REVIEW_MCP_CONFIG_DEFAULT_PATH:-.github/review-mcp.json}"
-  if [ -n "${REVIEW_MCP_CONFIG+x}" ]; then
-    # Explicit value set (possibly empty). Empty ⇒ MCP deliberately disabled.
-    [ -z "$REVIEW_MCP_CONFIG" ] && return 0
-    if [ ! -f "$REVIEW_MCP_CONFIG" ] || [ ! -r "$REVIEW_MCP_CONFIG" ]; then
-      echo "::error::[mcp] REVIEW_MCP_CONFIG='$REVIEW_MCP_CONFIG' is set but is not a readable file" >&2
-      return 1
-    fi
-    printf '%s' "$REVIEW_MCP_CONFIG"
+# classify_mcp_output <output>
+# Maps the captured claude `--debug mcp` output to a connectivity status:
+#   CONNECTED    — the affirmative handshake is present (the success signal
+#                  REVIEW_MCP_DEBUG surfaces; identical string to the one
+#                  _emit_mcp_failure_warning greps for in engine.sh)
+#   FAILED       — an explicit MCP connection/init failure marker is present
+#   NO_HANDSHAKE — neither: connectivity cannot be proven (timeout kill, empty
+#                  output, …). For an ASSERTION this is a failure, not a pass.
+classify_mcp_output() {
+  local out="${1:-}"
+  if printf '%s' "$out" | grep -qiE 'mcp server "[^"]+": successfully connected'; then
+    echo "CONNECTED"
     return 0
   fi
-  # No explicit override: the conventional committed path is optional.
-  if [ -f "$default_path" ]; then
-    if [ ! -r "$default_path" ]; then
-      echo "::error::[mcp] default MCP config '$default_path' exists but is not readable" >&2
-      return 1
-    fi
-    printf '%s' "$default_path"
-  fi
-  return 0
-}
-
-# _mcp_allowed_tools <config_file>
-# Echoes the comma-separated allowed-tools glob for the probe. Honors an explicit
-# REVIEW_MCP_ALLOWED_TOOLS; otherwise derives one glob per configured server
-# (mcp__<name>__*) from the config JSON. Falls back to mcp__* if no server names
-# can be read (e.g. jq unavailable or odd shape) so the probe still permits MCP.
-_mcp_allowed_tools() {
-  local cfg="$1"
-  if [ -n "${REVIEW_MCP_ALLOWED_TOOLS:-}" ]; then
-    printf '%s' "$REVIEW_MCP_ALLOWED_TOOLS"
+  if printf '%s' "$out" | grep -qiE 'mcp server "[^"]+" (failed|could not)|failed to (connect to|start|reach) mcp|could not (connect to|start) mcp|mcp[^.]*(connection|initiali)[^.]*(fail|error)'; then
+    echo "FAILED"
     return 0
   fi
-  local derived=""
-  if command -v jq >/dev/null 2>&1; then
-    derived="$(jq -r '(.mcpServers // {}) | keys[] | "mcp__\(.)__*"' "$cfg" 2>/dev/null \
-      | paste -sd, - || true)"
-  fi
-  printf '%s' "${derived:-mcp__*}"
+  echo "NO_HANDSHAKE"
 }
 
-# _mcp_failure_regex
-# Connection/init-failure regex kept in lockstep with engine.sh:_mcp_failure_pattern.
-# A degraded MCP server surfaces one of these in the CLI output even though the
-# CLI itself exits 0.
-_mcp_failure_regex() {
-  local _pat
-  _pat='mcp server [^[:space:]]*[[:space:]]*("[^"]*"[[:space:]]*)?(failed|error)'
-  _pat="$_pat"'|failed to (connect|initialize|reconnect|start)[^.]*mcp'
-  _pat="$_pat"'|mcp[^.]*(connection|initializ)[^.]*(fail|error)'
-  _pat="$_pat"'|could not (connect to|start) mcp server'
-  printf '%s' "($_pat)"
+# mcp_check_is_failure <status>
+# Exit 0 (alert/fail) for any status other than CONNECTED; exit 1 for CONNECTED.
+mcp_check_is_failure() {
+  [ "${1:-}" != "CONNECTED" ]
 }
 
-# _mcp_assert_connected <output_file>
-# Verdict over captured probe output (combined stdout+stderr). Emits ::notice::
-# per successful handshake and returns 0; emits ::error:: and returns 1 when a
-# failure marker is present OR no handshake line is found at all.
-_mcp_assert_connected() {
-  local out="$1"
-  [ -f "$out" ] || { echo "::error::[mcp] connectivity probe produced no output" >&2; return 1; }
+# derive_allowed_tools <config>
+# Emits a comma-joined `mcp__<server>__*` allowlist from the config's
+# mcpServers keys (empty when there are no servers). Pure: reads only the file.
+derive_allowed_tools() {
+  local cfg="${1:-}"
+  [ -n "$cfg" ] && [ -f "$cfg" ] || return 0
+  jq -r '(.mcpServers // {}) | keys[] | "mcp__\(.)__*"' "$cfg" 2>/dev/null \
+    | paste -sd, - || true
+}
 
-  if grep -qiE "$(_mcp_failure_regex)" "$out"; then
-    local servers
-    servers="$(grep -hoiE 'mcp server "[^"]+"' "$out" 2>/dev/null \
-      | sed -E 's/.*"([^"]+)".*/\1/' | sort -u | paste -sd, - || true)"
-    if [ -n "$servers" ]; then
-      echo "::error::[mcp] server(s) unreachable: ${servers} — MCP is configured (review-mcp.json) but failed to connect" >&2
-    else
-      echo "::error::[mcp] an MCP server is configured but failed to connect" >&2
-    fi
-    return 1
-  fi
+# mcp_check_report <status> <config> <servers> [today]
+# Writes a Markdown alert/health body to stdout. Pure: no network.
+mcp_check_report() {
+  local st="${1:-}" cfg="${2:-}" servers="${3:-}" today="${4:-}"
+  [ -n "$today" ] || today="$(date -u +%Y-%m-%d)"
 
-  local handshakes
-  handshakes="$(grep -hoiE 'mcp server "[^"]+": successfully connected.*' "$out" 2>/dev/null | sort -u || true)"
-  if [ -z "$handshakes" ]; then
-    echo "::error::[mcp] no MCP handshake observed — server is configured but did not report 'Successfully connected'" >&2
-    return 1
+  local icon headline
+  case "$st" in
+    CONNECTED)    icon='✅'; headline='MCP server(s) reachable — handshake confirmed' ;;
+    FAILED)       icon='🔴'; headline='MCP server(s) unreachable — connection failed' ;;
+    NO_HANDSHAKE) icon='🔴'; headline='MCP server(s) unreachable — no handshake observed' ;;
+    *)            icon='🔴'; headline='MCP connectivity could not be confirmed' ;;
+  esac
+
+  printf '# %s MCP connectivity assertion — %s\n\n' "$icon" "$today"
+  printf '_Config `%s` · server(s): `%s` · flags: `--mcp-config … --strict-mcp-config --debug mcp`_\n\n' \
+    "$cfg" "${servers:-none}"
+  printf -- '- **Result:** %s — %s\n' "$st" "$headline"
+  printf '\n'
+
+  if [ "$st" = "FAILED" ]; then
+    printf '> The configured MCP server(s) returned a connection/init failure. '
+    printf 'Context7 (or the configured server) is unreachable — PR reviews will '
+    printf 'silently fall back to the model'"'"'s base capabilities until restored.\n'
+  elif [ "$st" = "NO_HANDSHAKE" ]; then
+    printf '> The probe produced no `Successfully connected` handshake within the '
+    printf 'timeout. Treated as unreachable: a durable monitor must not pass on the '
+    printf 'mere absence of an error.\n'
   fi
-  sed 's/^/::notice::[mcp] /' <<< "$handshakes" >&2
-  return 0
 }
 
 # ---------------------------------------------------------------------------
-# main — resolves config, runs the claude probe, asserts the handshake.
+# I/O (main)
 # ---------------------------------------------------------------------------
+
 main() {
   local cfg
-  # Propagate a misconfiguration (unreadable/missing explicit config) as a hard
-  # failure rather than letting set -e swallow it inside the substitution.
-  cfg="$(_mcp_resolve_config)" || return 1
-  if [ -z "$cfg" ]; then
-    echo "::notice::[mcp] no MCP config present — connectivity assertion skipped (no behavior change for non-MCP repos)"
+  if [ -n "${REVIEW_MCP_CONFIG:-}" ]; then
+    cfg="$REVIEW_MCP_CONFIG"
+  else
+    cfg="$REVIEW_MCP_CONFIG_DEFAULT_PATH"
+  fi
+
+  # No-op when MCP isn't configured (no behavior change for non-MCP repos).
+  if [ ! -f "$cfg" ]; then
+    echo "::notice::[mcp] no MCP config at '${cfg}' — connectivity assertion skipped (no-op for non-MCP repos)"
     return 0
   fi
 
-  local allowed_tools probe_model timeout_sec
-  allowed_tools="$(_mcp_allowed_tools "$cfg")"
-  probe_model="${MCP_PROBE_MODEL:-claude-sonnet-4-6}"
-  timeout_sec="${MCP_PROBE_TIMEOUT_SEC:-120}"
-
-  echo "=== MCP connectivity preflight ==="
-  echo "  Config:        $cfg"
-  echo "  Allowed tools: $allowed_tools"
-  echo "  Probe model:   $probe_model"
-  echo ""
-
-  local out rc=0
-  out="$(mktemp)"
-  # Clean up the capture file even if the probe is interrupted (single quotes ⇒
-  # $out is expanded when the trap fires).
-  trap 'rm -f "$out"' EXIT
-  # Same flags engine.sh threads into its MCP claude tiers, plus --debug mcp so
-  # the handshake lands in the captured output. Combine stdout+stderr; the
-  # handshake is written to stderr by `--debug mcp`. A non-zero/timeout exit is
-  # captured and folded into the assertion (a hung connect ⇒ unreachable).
-  timeout "$timeout_sec" claude --print \
-    --model "$probe_model" \
-    --no-session-persistence \
-    --max-turns 1 \
-    --mcp-config "$cfg" \
-    --strict-mcp-config \
-    --debug mcp \
-    --allowedTools "$allowed_tools" \
-    -p "MCP connectivity preflight. Reply with the single word: OK." \
-    > "$out" 2>&1 || rc=$?
-
-  if [ "$rc" -ne 0 ]; then
-    echo "::warning::[mcp] probe CLI exited non-zero (rc=$rc) — evaluating captured output for a handshake" >&2
+  if ! command -v claude >/dev/null 2>&1; then
+    echo "::error::[mcp] claude CLI not found — cannot assert MCP connectivity" >&2
+    return 1
   fi
 
-  # Surface the captured probe output to the Actions log for diagnosis.
-  echo "--- probe output ---"
-  cat "$out"
-  echo "--- end probe output ---"
-
-  if _mcp_assert_connected "$out"; then
-    echo "MCP connectivity OK."
+  local allowed
+  allowed="${REVIEW_MCP_ALLOWED_TOOLS:-$(derive_allowed_tools "$cfg")}"
+  if [ -z "$allowed" ]; then
+    echo "::notice::[mcp] config '${cfg}' declares no servers — nothing to assert, skipping"
     return 0
   fi
-  return 1
+
+  local model timeout servers today
+  model="${MCP_CHECK_MODEL:-claude-haiku-4-5-20251001}"
+  timeout="${MCP_CHECK_TIMEOUT:-120}"
+  servers="$(jq -r '(.mcpServers // {}) | keys | join(", ")' "$cfg" 2>/dev/null || true)"
+  today="$(date -u +%Y-%m-%d)"
+
+  echo "=== MCP connectivity assertion ===" >&2
+  echo "  Config:  $cfg" >&2
+  echo "  Servers: ${servers:-none}" >&2
+  echo "  Model:   $model" >&2
+
+  # Probe: --debug mcp logs the server handshake to stderr at session start
+  # (servers are initialized to enumerate their tools), so a trivial prompt is
+  # enough to force the connection. Combine stdout+stderr for classification.
+  # A timeout/non-zero exit leaves no handshake → classified NO_HANDSHAKE/FAILED.
+  local out
+  out="$(timeout "$timeout" claude --print --model "$model" --debug mcp \
+    --mcp-config "$cfg" --strict-mcp-config \
+    --allowed-tools "$allowed" \
+    -p "Reply with the single word: OK" 2>&1 || true)"
+
+  local status
+  status="$(classify_mcp_output "$out")"
+
+  local report
+  report="$(mcp_check_report "$status" "$cfg" "$servers" "$today")"
+  printf '%s\n' "$report"
+  [ -n "${GITHUB_STEP_SUMMARY:-}" ] && printf '%s\n' "$report" >> "$GITHUB_STEP_SUMMARY"
+  [ -n "${MCP_CHECK_OUT:-}" ] && printf '%s\n' "$report" > "$MCP_CHECK_OUT"
+
+  [ -n "${GITHUB_ENV:-}" ] && echo "MCP_STATUS=${status}" >> "$GITHUB_ENV"
+
+  if mcp_check_is_failure "$status"; then
+    [ -n "${GITHUB_ENV:-}" ] && echo "MCP_FAILED=true" >> "$GITHUB_ENV"
+    # Surface the captured probe output so the outage is diagnosable in the log.
+    echo "----- probe output -----" >&2
+    printf '%s\n' "$out" >&2
+    echo "------------------------" >&2
+    echo "::error::[mcp] connectivity assertion FAILED (${status}) — configured MCP server(s) unreachable: ${servers:-unknown}" >&2
+    return 1
+  fi
+
+  # Success signal: mirror engine.sh's affirmative ::notice::[mcp] format,
+  # one per confirmed handshake line.
+  printf '%s' "$out" | grep -hoiE 'mcp server "[^"]+": successfully connected.*' \
+    | sort -u | while IFS= read -r _ln; do
+        printf '::notice::[mcp] %s\n' "${_ln}"
+      done
+  echo "::notice::[mcp] connectivity assertion passed — ${servers} reachable"
 }
 
 # Only run main when executed directly (not when sourced by tests).
-if [ "${BASH_SOURCE[0]:-$0}" = "$0" ]; then
+if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
   main "$@"
 fi

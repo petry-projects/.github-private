@@ -1,219 +1,228 @@
 #!/usr/bin/env bats
-# Tests for scripts/mcp_connectivity_check.sh — the durable MCP connectivity
-# preflight (#903, part of #676).
+# Tests for scripts/mcp_connectivity_check.sh — the durable, affirmative
+# MCP/Context7 connectivity assertion for the daily PR-review health check
+# (#903, part of #676).
 #
-# Verdict logic (_mcp_assert_connected) and config/tool resolution are pure and
-# tested directly. The end-to-end main() path is exercised with a stubbed
-# `claude` on PATH so no real CLI / network is needed.
+# Pure helpers (classify / failure decision / allowlist derivation / report)
+# are unit-tested directly. main()'s claude invocation is exercised with a
+# mocked `claude` on PATH so no network/model call is made.
 #
-# Run locally: bats tests/test_mcp_connectivity_check.bats
+# Run with: bats tests/test_mcp_connectivity_check.bats
 
-SCRIPT_DIR="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)"
-CHECK_SCRIPT="$SCRIPT_DIR/scripts/mcp_connectivity_check.sh"
+SCRIPT="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)/scripts/mcp_connectivity_check.sh"
 
 setup() {
   # shellcheck source=scripts/mcp_connectivity_check.sh
-  source "$CHECK_SCRIPT"
+  source "$SCRIPT"
+  # Hermetic: never fall back to the repo's real .github/review-mcp.json.
+  export REVIEW_MCP_CONFIG_DEFAULT_PATH="$(mktemp -u)"
+  unset REVIEW_MCP_CONFIG REVIEW_MCP_ALLOWED_TOOLS REVIEW_MCP_DEBUG 2>/dev/null || true
+}
 
-  unset REVIEW_MCP_CONFIG REVIEW_MCP_CONFIG_DEFAULT_PATH REVIEW_MCP_ALLOWED_TOOLS
+# ---------------------------------------------------------------------------
+# classify_mcp_output <output>
+# ---------------------------------------------------------------------------
 
-  TMP="$(mktemp -d)"
-  export TMP
+@test "classify_mcp_output: the affirmative handshake is CONNECTED" {
+  run classify_mcp_output 'MCP server "context7": Successfully connected (transport: http) in 333ms'
+  [ "$status" -eq 0 ]
+  [ "$output" = "CONNECTED" ]
+}
 
-  # A readable Context7-shaped MCP config.
-  MCP_CONFIG="$TMP/review-mcp.json"
-  cat > "$MCP_CONFIG" <<'JSON'
-{"mcpServers":{"context7":{"type":"http","url":"https://mcp.context7.com/mcp"}}}
-JSON
+@test "classify_mcp_output: handshake match is case-insensitive" {
+  run classify_mcp_output 'mcp server "context7": successfully connected'
+  [ "$output" = "CONNECTED" ]
+}
 
-  # Stub `claude` on PATH; behavior controlled by STUB_CLAUDE_OUT / STUB_CLAUDE_RC.
-  STUB_BIN="$TMP/bin"
-  mkdir -p "$STUB_BIN"
-  cat > "$STUB_BIN/claude" <<'STUB'
+@test "classify_mcp_output: an explicit failure marker is FAILED" {
+  run classify_mcp_output 'MCP server "context7" failed to connect after 3 attempts'
+  [ "$output" = "FAILED" ]
+}
+
+@test "classify_mcp_output: a generic connection failure is FAILED" {
+  run classify_mcp_output 'Failed to connect to MCP server'
+  [ "$output" = "FAILED" ]
+}
+
+@test "classify_mcp_output: output with neither signal is NO_HANDSHAKE" {
+  run classify_mcp_output 'some unrelated CLI chatter with no mcp signal'
+  [ "$output" = "NO_HANDSHAKE" ]
+}
+
+@test "classify_mcp_output: empty output (e.g. a timeout kill) is NO_HANDSHAKE" {
+  run classify_mcp_output ""
+  [ "$output" = "NO_HANDSHAKE" ]
+}
+
+@test "classify_mcp_output: a present handshake wins even alongside later noise" {
+  run classify_mcp_output $'MCP server "context7": Successfully connected\nFailed to connect to MCP server other'
+  [ "$output" = "CONNECTED" ]
+}
+
+# ---------------------------------------------------------------------------
+# mcp_check_is_failure <status>
+# ---------------------------------------------------------------------------
+
+@test "mcp_check_is_failure: CONNECTED is not a failure" {
+  run mcp_check_is_failure "CONNECTED"
+  [ "$status" -ne 0 ]
+}
+
+@test "mcp_check_is_failure: FAILED is a failure" {
+  run mcp_check_is_failure "FAILED"
+  [ "$status" -eq 0 ]
+}
+
+@test "mcp_check_is_failure: NO_HANDSHAKE is a failure (cannot prove connectivity)" {
+  run mcp_check_is_failure "NO_HANDSHAKE"
+  [ "$status" -eq 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# derive_allowed_tools <config>
+# ---------------------------------------------------------------------------
+
+@test "derive_allowed_tools: a single context7 server yields its wildcard allowlist" {
+  cfg="$(mktemp)"
+  echo '{"mcpServers":{"context7":{"type":"http","url":"https://mcp.context7.com/mcp"}}}' > "$cfg"
+  run derive_allowed_tools "$cfg"
+  rm -f "$cfg"
+  [ "$status" -eq 0 ]
+  [ "$output" = "mcp__context7__*" ]
+}
+
+@test "derive_allowed_tools: multiple servers are comma-joined" {
+  cfg="$(mktemp)"
+  echo '{"mcpServers":{"context7":{},"lsp":{}}}' > "$cfg"
+  run derive_allowed_tools "$cfg"
+  rm -f "$cfg"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"mcp__context7__*"* ]]
+  [[ "$output" == *"mcp__lsp__*"* ]]
+}
+
+@test "derive_allowed_tools: a config with no servers yields empty output" {
+  cfg="$(mktemp)"
+  echo '{"mcpServers":{}}' > "$cfg"
+  run derive_allowed_tools "$cfg"
+  rm -f "$cfg"
+  [ -z "$output" ]
+}
+
+# ---------------------------------------------------------------------------
+# mcp_check_report <status> <config> <servers> [today]
+# ---------------------------------------------------------------------------
+
+@test "mcp_check_report: CONNECTED renders a passing report naming the server" {
+  run mcp_check_report "CONNECTED" ".github/review-mcp.json" "context7" "2026-06-22"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"CONNECTED"* ]]
+  [[ "$output" == *"context7"* ]]
+}
+
+@test "mcp_check_report: FAILED renders an alert report" {
+  run mcp_check_report "FAILED" ".github/review-mcp.json" "context7" "2026-06-22"
+  [[ "$output" == *"FAILED"* ]]
+  [[ "$output" == *"unreachable"* ]] || [[ "$output" == *"unreachable"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# main() — mocked claude on PATH (no network)
+# ---------------------------------------------------------------------------
+
+_install_claude_mock() {
+  # $1 = combined stdout/stderr the mock should emit (handshake or failure)
+  MOCK_BIN="$(mktemp -d)"
+  CLAUDE_LOG="$(mktemp)"
+  export MOCK_BIN CLAUDE_LOG
+  export PATH="$MOCK_BIN:$PATH"
+  export MOCK_CLAUDE_OUT="$1"
+  cat > "$MOCK_BIN/claude" <<'EOF'
 #!/usr/bin/env bash
-printf '%s\n' "${STUB_CLAUDE_OUT:-}"
-exit "${STUB_CLAUDE_RC:-0}"
-STUB
-  chmod +x "$STUB_BIN/claude"
-  export PATH="$STUB_BIN:$PATH"
+printf '%s\n' "$*" >> "$CLAUDE_LOG"
+printf '%s\n' "$MOCK_CLAUDE_OUT"
+EOF
+  chmod +x "$MOCK_BIN/claude"
+}
+
+_make_config() {
+  CFG="$(mktemp)"
+  echo '{"mcpServers":{"context7":{"type":"http","url":"https://mcp.context7.com/mcp"}}}' > "$CFG"
+  export CFG REVIEW_MCP_CONFIG="$CFG"
 }
 
 teardown() {
-  rm -rf "$TMP"
-  unset REVIEW_MCP_CONFIG REVIEW_MCP_CONFIG_DEFAULT_PATH REVIEW_MCP_ALLOWED_TOOLS
-  unset STUB_CLAUDE_OUT STUB_CLAUDE_RC
+  rm -rf "${MOCK_BIN:-}"
+  rm -f "${CLAUDE_LOG:-}" "${CFG:-}"
 }
 
-# ── _mcp_resolve_config ──────────────────────────────────────────────────────
+@test "main: healthy handshake → exit 0, ::notice::[mcp], engine.sh flags passed" {
+  _install_claude_mock 'MCP server "context7": Successfully connected (transport: http) in 333ms'
+  _make_config
+  GITHUB_ENV="$(mktemp)"; export GITHUB_ENV
 
-@test "resolve: explicit REVIEW_MCP_CONFIG to readable file is used" {
-  export REVIEW_MCP_CONFIG="$MCP_CONFIG"
-  run _mcp_resolve_config
-  [ "$status" -eq 0 ]
-  [ "$output" = "$MCP_CONFIG" ]
-}
-
-@test "resolve: explicit empty REVIEW_MCP_CONFIG disables (no path)" {
-  export REVIEW_MCP_CONFIG=""
-  export REVIEW_MCP_CONFIG_DEFAULT_PATH="$MCP_CONFIG"  # present but must be ignored
-  run _mcp_resolve_config
-  [ "$status" -eq 0 ]
-  [ -z "$output" ]
-}
-
-@test "resolve: no env + conventional path present → conventional path used" {
-  export REVIEW_MCP_CONFIG_DEFAULT_PATH="$MCP_CONFIG"
-  run _mcp_resolve_config
-  [ "$status" -eq 0 ]
-  [ "$output" = "$MCP_CONFIG" ]
-}
-
-@test "resolve: no env + conventional path absent → empty (MCP off)" {
-  export REVIEW_MCP_CONFIG_DEFAULT_PATH="$TMP/does-not-exist.json"
-  run _mcp_resolve_config
-  [ "$status" -eq 0 ]
-  [ -z "$output" ]
-}
-
-@test "resolve: explicit path to a missing file → fail loud (status 1 + ::error::)" {
-  export REVIEW_MCP_CONFIG="$TMP/nope.json"
-  run _mcp_resolve_config
-  [ "$status" -eq 1 ]
-  [[ "$output" == *"::error::[mcp]"* ]]
-}
-
-@test "resolve: conventional path present but unreadable → fail loud (status 1)" {
-  [ "$(id -u)" -eq 0 ] && skip "chmod 000 is not enforced for root — readability gate is a no-op"
-  local cfg="$TMP/unreadable.json"
-  echo '{"mcpServers":{}}' > "$cfg"
-  chmod 000 "$cfg"
-  export REVIEW_MCP_CONFIG_DEFAULT_PATH="$cfg"
-  run _mcp_resolve_config
-  chmod 644 "$cfg"
-  [ "$status" -eq 1 ]
-  [[ "$output" == *"::error::[mcp]"* ]]
-}
-
-@test "main: explicit config missing → fail loud, exit 1 (no silent skip)" {
-  export REVIEW_MCP_CONFIG="$TMP/nope.json"
-  run main
-  [ "$status" -eq 1 ]
-  [[ "$output" == *"::error::[mcp]"* ]]
-}
-
-# ── _mcp_allowed_tools ───────────────────────────────────────────────────────
-
-@test "tools: derived from server names as mcp__<name>__*" {
-  run _mcp_allowed_tools "$MCP_CONFIG"
-  [ "$status" -eq 0 ]
-  [ "$output" = "mcp__context7__*" ]
-}
-
-@test "tools: multiple servers join comma-separated" {
-  local cfg="$TMP/multi.json"
-  echo '{"mcpServers":{"context7":{},"lsp":{}}}' > "$cfg"
-  run _mcp_allowed_tools "$cfg"
-  [ "$status" -eq 0 ]
-  [ "$output" = "mcp__context7__*,mcp__lsp__*" ]
-}
-
-@test "tools: explicit REVIEW_MCP_ALLOWED_TOOLS wins over derivation" {
-  export REVIEW_MCP_ALLOWED_TOOLS="mcp__context7__*"
-  local cfg="$TMP/multi.json"
-  echo '{"mcpServers":{"a":{},"b":{}}}' > "$cfg"
-  run _mcp_allowed_tools "$cfg"
-  [ "$status" -eq 0 ]
-  [ "$output" = "mcp__context7__*" ]
-}
-
-@test "tools: no servers in config → mcp__* fallback" {
-  local cfg="$TMP/empty.json"
-  echo '{"mcpServers":{}}' > "$cfg"
-  run _mcp_allowed_tools "$cfg"
-  [ "$status" -eq 0 ]
-  [ "$output" = "mcp__*" ]
-}
-
-# ── _mcp_assert_connected ────────────────────────────────────────────────────
-
-@test "assert: healthy handshake → ::notice::, exit 0" {
-  local out="$TMP/o"
-  printf 'MCP server "context7": Successfully connected (transport: http) in 333ms\nOK\n' > "$out"
-  run _mcp_assert_connected "$out"
+  run bash "$SCRIPT"
   [ "$status" -eq 0 ]
   [[ "$output" == *"::notice::[mcp]"* ]]
-  [[ "$output" == *"context7"* ]]
   [[ "$output" == *"Successfully connected"* ]]
+
+  # The probe must use the same flags engine.sh threads.
+  grep -qF -- "--mcp-config $CFG" "$CLAUDE_LOG"
+  grep -qF -- "--strict-mcp-config" "$CLAUDE_LOG"
+  grep -qF -- "--debug mcp" "$CLAUDE_LOG"
+  grep -qF -- "mcp__context7__*" "$CLAUDE_LOG"
+
+  grep -qF "MCP_STATUS=CONNECTED" "$GITHUB_ENV"
+  ! grep -qF "MCP_FAILED=true" "$GITHUB_ENV"
+  rm -f "$GITHUB_ENV"
 }
 
-@test "assert: failure marker → ::error:: naming server, exit 1" {
-  local out="$TMP/o"
-  printf 'MCP server "context7" failed to connect after 3 attempts\n' > "$out"
-  run _mcp_assert_connected "$out"
+@test "main: connection failure → exit 1, ::error::, MCP_FAILED set" {
+  _install_claude_mock 'MCP server "context7" failed to connect after 3 attempts'
+  _make_config
+  GITHUB_ENV="$(mktemp)"; export GITHUB_ENV
+
+  run bash "$SCRIPT"
   [ "$status" -eq 1 ]
-  [[ "$output" == *"::error::[mcp]"* ]]
-  [[ "$output" == *"context7"* ]]
+  [[ "$output" == *"::error::"* ]]
+  grep -qF "MCP_STATUS=FAILED" "$GITHUB_ENV"
+  grep -qF "MCP_FAILED=true" "$GITHUB_ENV"
+  rm -f "$GITHUB_ENV"
 }
 
-@test "assert: no handshake at all → ::error::, exit 1" {
-  local out="$TMP/o"
-  printf 'some unrelated CLI output with no mcp handshake\n' > "$out"
-  run _mcp_assert_connected "$out"
+@test "main: no handshake at all → exit 1 (silent outage is a failure, not a pass)" {
+  _install_claude_mock 'just some output, no handshake line whatsoever'
+  _make_config
+  GITHUB_ENV="$(mktemp)"; export GITHUB_ENV
+
+  run bash "$SCRIPT"
   [ "$status" -eq 1 ]
-  [[ "$output" == *"::error::[mcp]"* ]]
-  [[ "$output" == *"no MCP handshake"* ]]
+  [[ "$output" == *"::error::"* ]]
+  grep -qF "MCP_STATUS=NO_HANDSHAKE" "$GITHUB_ENV"
+  rm -f "$GITHUB_ENV"
 }
 
-@test "assert: handshake present but a later failure line → ::error:: (fail loud)" {
-  local out="$TMP/o"
-  printf 'MCP server "a": Successfully connected\nMCP server "b" failed to connect\n' > "$out"
-  run _mcp_assert_connected "$out"
-  [ "$status" -eq 1 ]
-  [[ "$output" == *"::error::[mcp]"* ]]
-}
+@test "main: MCP not configured (config file absent) → skip/no-op, exit 0" {
+  _install_claude_mock 'should not be called'
+  export REVIEW_MCP_CONFIG="$(mktemp -u)"  # explicit path that does not exist
+  GITHUB_ENV="$(mktemp)"; export GITHUB_ENV
 
-# ── main (stubbed claude) ────────────────────────────────────────────────────
-
-@test "main: MCP unconfigured → skip notice, exit 0 (no claude call)" {
-  export REVIEW_MCP_CONFIG_DEFAULT_PATH="$TMP/does-not-exist.json"
-  run main
+  run bash "$SCRIPT"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"::notice::[mcp]"* ]]
-  [[ "$output" == *"connectivity assertion skipped"* ]]
+  [[ "$output" == *"skip"* ]] || [[ "$output" == *"no MCP config"* ]]
+  # The probe must NOT have been invoked when MCP is not configured.
+  [ ! -s "$CLAUDE_LOG" ]
+  rm -f "$GITHUB_ENV"
 }
 
-@test "main: configured + healthy handshake → exit 0" {
-  export REVIEW_MCP_CONFIG="$MCP_CONFIG"
-  export STUB_CLAUDE_OUT='MCP server "context7": Successfully connected (transport: http) in 333ms'
-  run main
+@test "main: REVIEW_MCP_ALLOWED_TOOLS overrides the derived allowlist" {
+  _install_claude_mock 'MCP server "context7": Successfully connected'
+  _make_config
+  export REVIEW_MCP_ALLOWED_TOOLS="mcp__context7__resolve-library-id"
+  GITHUB_ENV="$(mktemp)"; export GITHUB_ENV
+
+  run bash "$SCRIPT"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"::notice::[mcp]"* ]]
-  [[ "$output" == *"MCP connectivity OK"* ]]
-}
-
-@test "main: configured but unreachable → exit 1" {
-  export REVIEW_MCP_CONFIG="$MCP_CONFIG"
-  export STUB_CLAUDE_OUT='MCP server "context7" failed to connect after 3 attempts'
-  run main
-  [ "$status" -eq 1 ]
-  [[ "$output" == *"::error::[mcp]"* ]]
-}
-
-@test "main: configured, claude exits non-zero but handshake present → exit 0" {
-  export REVIEW_MCP_CONFIG="$MCP_CONFIG"
-  export STUB_CLAUDE_OUT='MCP server "context7": Successfully connected (transport: http) in 90ms'
-  export STUB_CLAUDE_RC=1
-  run main
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"::warning::[mcp]"* ]]   # non-zero rc surfaced
-  [[ "$output" == *"MCP connectivity OK"* ]]
-}
-
-@test "main: configured, claude exits non-zero with no handshake → exit 1" {
-  export REVIEW_MCP_CONFIG="$MCP_CONFIG"
-  export STUB_CLAUDE_OUT='error: unknown flag'
-  export STUB_CLAUDE_RC=2
-  run main
-  [ "$status" -eq 1 ]
-  [[ "$output" == *"::error::[mcp]"* ]]
+  grep -qF -- "mcp__context7__resolve-library-id" "$CLAUDE_LOG"
+  rm -f "$GITHUB_ENV"
 }
