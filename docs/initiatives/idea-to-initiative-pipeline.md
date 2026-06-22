@@ -151,19 +151,42 @@ petry-projects/.github-private  initiative-planner.yml  -f target_repo=<fleet re
    │   reads the fleet repo's Discussion, writes the epic + DAG THERE
    │   (cross-repo writes use GH_PAT_WORKFLOWS; self path uses GITHUB_TOKEN)
    ▼
-inert epic + story DAG in the fleet repo  ──> ★ human adds initiative:auto ──> driver ──> dev-lead
+inert epic + story DAG in the fleet repo
+   │
+   ▼
+fleet repo: ★ human adds initiative:auto to the epic   (+ a sub-issue closes later)
+   │
+   ▼
+initiative-driver.yml (stub) ──> initiative-driver-reusable.yml (@initiative-driver/stable)
+   │   (the driver's gate/DAG tooling lives ONCE here, so the stub forwards the
+   │    fleet repo's issues:[labeled initiative:auto] / issues:[closed] event to
+   │    the central driver instead of running the release logic inline)
+   ▼
+petry-projects/.github-private  initiative-driver.yml  -f target_repo=<fleet repo>
+   │   sweeps the fleet repo's initiative:auto epics, resolves each ready story's
+   │   blocked_by DAG, and applies the `dev-lead` label THERE
+   │   (cross-repo writes use GH_PAT_WORKFLOWS; self path uses GITHUB_TOKEN)
+   ▼
+dev-lead.yml (fleet repo) ──> PR ──> pr-review ──> merge ──> closing a story re-fires the stub
 ```
 
-- **`target_repo`** parameterizes the central planner/triage/enhancer; empty ⇒ the
-  dogfood/self path (`.github-private` plans its own Discussions), non-empty ⇒ the
-  named fleet repo.
+The two legs are symmetric: the **planner** leg turns an approved idea into an
+inert epic + DAG in the fleet repo; the **driver** leg releases that epic's
+ready stories to `dev-lead` cross-repo once a human arms it. Both ship only a
+thin per-repo stub and dispatch the central workflow with `target_repo`.
+
+- **`target_repo`** parameterizes the central planner/triage/enhancer **and the
+  driver**; empty ⇒ the dogfood/self path (`.github-private` plans + drives its
+  own issues), non-empty ⇒ the named fleet repo.
 - **Project-board funnel (hybrid):** epics in **consumer (fleet) repos** land on
   that repo's own project; epics in **`petry-projects/.github` and
   `petry-projects/.github-private`** land on the org-level "Initiatives" project
   (`orgs/petry-projects/projects/1`).
 - **Regression detection:** `initiative-planner-canary.yml` smoke-tests the live
-  `idea:approved` → dispatch path, and Fleet Monitor watches each adopted stub for
-  drift — so a silent revert of the trigger (the [#655](https://github.com/petry-projects/.github-private/issues/655)
-  class) surfaces immediately rather than on a maintainer noticing nothing planned.
+  `idea:approved` → dispatch path and `initiative-driver-canary.yml` smoke-tests the
+  symmetric cross-repo release path (a dry-run `target_repo` dispatch of the driver),
+  while Fleet Monitor watches each adopted stub for drift — so a silent revert of
+  either trigger (the [#655](https://github.com/petry-projects/.github-private/issues/655)
+  class) surfaces immediately rather than on a maintainer noticing nothing planned or released.
 - **Adoption + the full enrollment runbook:** see
   `petry-projects/.github` → `standards/ci-standards.md` §10 (Idea → Initiative pipeline).

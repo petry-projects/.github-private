@@ -45,6 +45,10 @@ initiative-driver  (on: issues:[closed] / issues:[labeled initiative:auto]
   `workflow_dispatch` with an `epic` input targets a single epic (blank = sweep).
 - **Bounded.** `MAX_IN_FLIGHT` (default 2) caps how many sub-issues run at once — controlling parallel
   token cost and blast radius. Per-issue concurrency lanes in dev-lead keep concurrent items isolated.
+- **Repo-parameterized (`target_repo`).** The same driver sweeps + releases stories *for another repo*:
+  `REPO` resolves to the `workflow_dispatch` `target_repo` input (empty ⇒ this repo, the dogfood/self
+  path). The gate / `blocked_by` / cap logic above is identical regardless of which repo it targets —
+  only the label-write destination changes. See **Fleet enablement** below.
 
 ### The PAT requirement (important)
 
@@ -104,6 +108,64 @@ bootstrap**, not just a technical dependency:
 - **Pause one issue:** add `initiative:hold`; **hand back to a human:** add `dev-lead:hands-off`.
 - **Throttle:** `gh workflow run initiative-driver.yml -f max_in_flight=1`.
 - **Disarm:** remove `initiative:auto` from the epic — in-flight items finish; nothing new is released.
+
+## Fleet enablement: cross-repo enrollment (`target_repo`)
+
+The driver is not pinned to this repo. The gate/DAG tooling
+(`scripts/initiative-driver.sh`) lives **once** here; any BMAD-enabled org repo
+enrolls by shipping a thin **caller stub** and lets the central driver release
+its stories cross-repo. This mirrors the planner half — see the symmetric
+diagram in [`idea-to-initiative-pipeline.md` → Fleet enablement](./idea-to-initiative-pipeline.md#fleet-enablement-any-org-repo).
+
+```
+fleet repo: ★ human adds initiative:auto to the epic   (or a sub-issue closes)
+   │
+   ▼
+initiative-driver.yml (stub) ──> initiative-driver-reusable.yml (@initiative-driver/stable)
+   │   the stub forwards the fleet repo's issues:[labeled initiative:auto] /
+   │   issues:[closed] event to the central driver instead of running the
+   │   gate/DAG logic inline (that logic lives only here)
+   ▼
+petry-projects/.github-private  initiative-driver.yml  -f target_repo=<fleet repo>
+   │   sweeps the fleet repo's initiative:auto epics, resolves each ready story's
+   │   blocked_by DAG, applies the `dev-lead` label THERE
+   │   (cross-repo writes use GH_PAT_WORKFLOWS; self path uses GITHUB_TOKEN)
+   ▼
+dev-lead.yml (fleet repo) ──> PR ──> pr-review ──> merge ──> closing a story re-fires the stub
+```
+
+- **`target_repo`** is the only knob that differs from the self path: empty ⇒ this
+  repo drives its own epics (dogfood), non-empty ⇒ the central driver sweeps and
+  labels the named fleet repo. The concurrency lane is keyed per target repo, so
+  one repo's sweep never queues behind another's.
+- **Enroll a fleet repo:** copy the `initiative-driver.yml` caller stub into the
+  repo's `.github/workflows/` and provision the cross-repo PAT — the same
+  enrollment step that adopts the planner/triage/enhancer stubs. The authoritative,
+  step-by-step enrollment runbook is **`petry-projects/.github` →
+  `standards/ci-standards.md` §10 (Idea → Initiative pipeline)**; it is not
+  duplicated here.
+- **Arm an epic cross-repo:** identical to the self path — a human adds
+  `initiative:auto` to the epic *in the fleet repo*. That `labeled` event fires the
+  local stub, which dispatches the central driver with `target_repo=<fleet repo>`,
+  releasing the first ready wave immediately.
+
+### Safety & cost are unchanged by fleet enablement
+
+Cross-repo enablement adds **no new gate and no new LLM cost** — it only changes
+*which* repo the unchanged driver labels:
+
+- **`initiative:auto` on the epic** is still the master switch; absent ⇒ the driver
+  no-ops for that repo (a fleet repo's epics stay human-driven until armed).
+- **`dev-lead:hands-off` / `initiative:hold`** on a story still block release.
+- **`MAX_IN_FLIGHT`** still caps concurrent releases per epic, per target repo.
+- **The PAT requirement still holds**, and is in fact load-bearing for the
+  cross-repo write: the `dev-lead` label is applied with `GH_PAT_WORKFLOWS`, both so
+  the resulting `issues:[labeled]` event triggers dev-lead *and* so the central
+  driver can write to another repo at all.
+- **No new LLM spend.** The driver is a pure `gh`-API + jq label dispatcher; it runs
+  no model. The only LLM cost downstream is the dev-lead/pr-review run that a release
+  was always going to trigger — the same cost on the self path. Fleet enablement
+  fans the *destination* out across repos, still bounded by `MAX_IN_FLIGHT` per epic.
 
 ## Follow-ups (not in this scaffold)
 
