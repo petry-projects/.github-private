@@ -283,9 +283,11 @@ jobs:
           {"event_type":"dev-lead-ci-failure","client_payload":{"source":"fleet-monitor","count":"${{ env.HIGH_FAILURE_COUNT }}"}}
           EOF
 
-      - name: Track initiative-planner stub drift
-        # #822 AC#3 — a per-repo planner stub that no longer matches the canonical
-        # template SHA is exactly the silent-revert class of failure (#655).
+      - name: Track stub drift
+        # #822 AC#3 (planner) + #886 AC#3 (driver) — a per-repo stub that no longer
+        # matches its canonical template SHA is exactly the silent-revert class of
+        # failure (#655). Each stub kind is tracked in its own issue so adding the
+        # driver stub does not drop or merge the load-bearing planner issue.
         if: env.HAS_STUB_DRIFT == 'true' && hashFiles('fleet_stub_drift.json') != ''
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
         with:
@@ -297,23 +299,8 @@ jobs:
 
             const today = new Date().toISOString().split('T')[0];
             const runUrl = `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`;
-            const rows = items.map(i =>
-              `| \`${i.repo}\` | \`${(i.repo_sha || '').slice(0,7)}\` | \`${(i.canonical_sha || '').slice(0,7)}\` |`).join('\n');
-            const body = [
-              `## 🔴 Initiative-planner stub drift — ${items.length} repo(s)`,
-              '',
-              'These enrolled repos have an `initiative-planner.yml` stub whose blob SHA no longer',
-              'matches the canonical org template. Re-sync them from the template:',
-              '',
-              '| Repo | Stub SHA | Canonical SHA |',
-              '|---|---|---|',
-              rows,
-              '',
-              `> _Detected by [Fleet Monitor run](${runUrl}) on ${today}._`,
-            ].join('\n');
 
             const LABEL = 'fleet-stub-drift';
-            const TITLE = '[Fleet Monitor] Initiative-planner stub drift';
             for (const [name, color, description] of [
               [LABEL,         'b60205', 'Per-repo workflow stub drifted from the canonical template'],
               ['dev-lead',     'd93f0b', 'Requires dev-lead attention'],
@@ -328,19 +315,47 @@ jobs:
               owner: context.repo.owner, repo: context.repo.repo,
               labels: LABEL, state: 'open', per_page: 100,
             });
-            const issue = existing.find(i => i.title === TITLE);
-            if (issue) {
-              await github.rest.issues.update({
-                owner: context.repo.owner, repo: context.repo.repo,
-                issue_number: issue.number, body,
-              });
-              core.notice(`Updated stub-drift issue #${issue.number}: ${issue.html_url}`);
-            } else {
-              const created = await github.rest.issues.create({
-                owner: context.repo.owner, repo: context.repo.repo,
-                title: TITLE, body, labels: [LABEL, 'dev-lead', 'health-check'],
-              });
-              core.notice(`Created stub-drift issue #${created.data.number}: ${created.data.html_url}`);
+
+            // Group drifted repos by stub kind so each renders its own issue.
+            const byStub = new Map();
+            for (const i of items) {
+              const stub = i.stub || 'Initiative-planner';
+              if (!byStub.has(stub)) byStub.set(stub, []);
+              byStub.get(stub).push(i);
+            }
+
+            for (const [stub, group] of byStub) {
+              const stubFile = (group.find(i => i.stub_file) || {}).stub_file || `${stub.toLowerCase()}.yml`;
+              const rows = group.map(i =>
+                `| \`${i.repo}\` | \`${(i.repo_sha || '').slice(0,7)}\` | \`${(i.canonical_sha || '').slice(0,7)}\` |`).join('\n');
+              const body = [
+                `## 🔴 ${stub} stub drift — ${group.length} repo(s)`,
+                '',
+                `These enrolled repos have a \`${stubFile}\` stub whose blob SHA no longer`,
+                'matches the canonical org template. Re-sync them from the template:',
+                '',
+                '| Repo | Stub SHA | Canonical SHA |',
+                '|---|---|---|',
+                rows,
+                '',
+                `> _Detected by [Fleet Monitor run](${runUrl}) on ${today}._`,
+              ].join('\n');
+
+              const TITLE = `[Fleet Monitor] ${stub} stub drift`;
+              const issue = existing.find(i => i.title === TITLE);
+              if (issue) {
+                await github.rest.issues.update({
+                  owner: context.repo.owner, repo: context.repo.repo,
+                  issue_number: issue.number, body,
+                });
+                core.notice(`Updated stub-drift issue #${issue.number}: ${issue.html_url}`);
+              } else {
+                const created = await github.rest.issues.create({
+                  owner: context.repo.owner, repo: context.repo.repo,
+                  title: TITLE, body, labels: [LABEL, 'dev-lead', 'health-check'],
+                });
+                core.notice(`Created stub-drift issue #${created.data.number}: ${created.data.html_url}`);
+              }
             }
 
       - name: Dispatch dev-lead for stub drift
@@ -370,4 +385,4 @@ jobs:
       - name: Annotate clean run
         if: env.HAS_FAILURES != 'true' && env.HAS_STUB_DRIFT != 'true'
         run: |
-          echo "::notice::Fleet monitor passed — all workflows in ${ORG} are healthy and every initiative-planner stub matches the canonical template over the last ${LOOKBACK_DAYS} day(s)."
+          echo "::notice::Fleet monitor passed — all workflows in ${ORG} are healthy and every tracked workflow stub (initiative-planner, initiative-driver) matches the canonical template over the last ${LOOKBACK_DAYS} day(s)."
