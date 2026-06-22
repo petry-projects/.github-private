@@ -100,7 +100,7 @@ jobs:
       discussions: write
       id-token: write
       actions: read
-    uses: petry-projects/.github/.github/workflows/feature-ideation-reusable.yml@897e4dede3518cdd7273b9dc63e607d0d05cbdda # v1
+    uses: petry-projects/.github/.github/workflows/feature-ideation-reusable.yml@cc05a74683f8e3564592878e417bb20f8013f16f # v1
     with:
       # On the `discussion: created` trigger this carries the new Discussion's
       # number → the reusable runs single-idea enhancement mode. Empty on
