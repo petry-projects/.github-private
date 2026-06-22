@@ -100,3 +100,18 @@ jobs:
         if: env.HAS_FAILURES != 'true'
         run: |
           echo "::notice::Health check passed — all runs in the last ${LOOKBACK_DAYS} day(s) are healthy."
+
+      # Durable MCP/Context7 connectivity monitor (#903, part of #676). Asserts the
+      # handshake through the same flags engine.sh threads into its claude tiers
+      # (--mcp-config <f> --strict-mcp-config --debug mcp). No-op when MCP is
+      # unconfigured (no behavior change for non-MCP repos); fails the health check
+      # when MCP is configured but unreachable. `if: always()` keeps this monitor
+      # independent of the PR-review-failure analysis above so an MCP outage never
+      # masks (nor is masked by) that report.
+      - name: Assert MCP connectivity
+        if: always()
+        env:
+          # Reuse the #892 affirmative-diagnostics knob: a healthy handshake is
+          # surfaced as a ::notice::[mcp] success signal.
+          REVIEW_MCP_DEBUG: '1'
+        run: bash scripts/mcp_connectivity_check.sh
