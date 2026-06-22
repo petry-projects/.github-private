@@ -75,11 +75,30 @@ teardown() {
   [ -z "$output" ]
 }
 
-@test "resolve: explicit path to a missing file → empty (unreadable ⇒ off)" {
+@test "resolve: explicit path to a missing file → fail loud (status 1 + ::error::)" {
   export REVIEW_MCP_CONFIG="$TMP/nope.json"
   run _mcp_resolve_config
-  [ "$status" -eq 0 ]
-  [ -z "$output" ]
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"::error::[mcp]"* ]]
+}
+
+@test "resolve: conventional path present but unreadable → fail loud (status 1)" {
+  [ "$(id -u)" -eq 0 ] && skip "chmod 000 is not enforced for root — readability gate is a no-op"
+  local cfg="$TMP/unreadable.json"
+  echo '{"mcpServers":{}}' > "$cfg"
+  chmod 000 "$cfg"
+  export REVIEW_MCP_CONFIG_DEFAULT_PATH="$cfg"
+  run _mcp_resolve_config
+  chmod 644 "$cfg"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"::error::[mcp]"* ]]
+}
+
+@test "main: explicit config missing → fail loud, exit 1 (no silent skip)" {
+  export REVIEW_MCP_CONFIG="$TMP/nope.json"
+  run main
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"::error::[mcp]"* ]]
 }
 
 # ── _mcp_allowed_tools ───────────────────────────────────────────────────────

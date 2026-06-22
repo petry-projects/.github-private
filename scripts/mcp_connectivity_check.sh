@@ -39,22 +39,39 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 
 # _mcp_resolve_config
-# Echoes the config path engine.sh would use, or nothing when MCP is off.
-# Precedence: explicit REVIEW_MCP_CONFIG (empty string ⇒ disabled) > conventional
-# committed path when present. Only echoes a path that is a readable file.
+# Echoes the config path the monitor should probe, or nothing when MCP is simply
+# not configured. Precedence: explicit REVIEW_MCP_CONFIG (empty ⇒ deliberately
+# disabled) > conventional committed path when present.
+#
+# Fail-loud distinction (this is a monitor, not the graceful-degradation engine):
+#   * Unset + conventional path ABSENT → not configured → echo nothing, exit 0
+#     (no behavior change for non-MCP repos).
+#   * Explicitly pointed at a config (REVIEW_MCP_CONFIG non-empty) but the file is
+#     missing/unreadable → a misconfiguration the monitor must surface → ::error::,
+#     exit 1. Silently skipping would mask exactly the kind of silent breakage the
+#     monitor exists to catch.
+#   * Conventional path PRESENT but unreadable → same: misconfiguration → exit 1.
 _mcp_resolve_config() {
   local default_path="${REVIEW_MCP_CONFIG_DEFAULT_PATH:-.github/review-mcp.json}"
-  local cfg
   if [ -n "${REVIEW_MCP_CONFIG+x}" ]; then
-    # Explicit value set (possibly empty). Empty ⇒ MCP disabled.
-    cfg="${REVIEW_MCP_CONFIG}"
-  elif [ -f "$default_path" ]; then
-    cfg="$default_path"
-  else
-    cfg=""
+    # Explicit value set (possibly empty). Empty ⇒ MCP deliberately disabled.
+    [ -z "$REVIEW_MCP_CONFIG" ] && return 0
+    if [ ! -f "$REVIEW_MCP_CONFIG" ] || [ ! -r "$REVIEW_MCP_CONFIG" ]; then
+      echo "::error::[mcp] REVIEW_MCP_CONFIG='$REVIEW_MCP_CONFIG' is set but is not a readable file" >&2
+      return 1
+    fi
+    printf '%s' "$REVIEW_MCP_CONFIG"
+    return 0
   fi
-  [ -n "$cfg" ] && [ -f "$cfg" ] && [ -r "$cfg" ] || return 0
-  printf '%s' "$cfg"
+  # No explicit override: the conventional committed path is optional.
+  if [ -f "$default_path" ]; then
+    if [ ! -r "$default_path" ]; then
+      echo "::error::[mcp] default MCP config '$default_path' exists but is not readable" >&2
+      return 1
+    fi
+    printf '%s' "$default_path"
+  fi
+  return 0
 }
 
 # _mcp_allowed_tools <config_file>
@@ -115,9 +132,7 @@ _mcp_assert_connected() {
     echo "::error::[mcp] no MCP handshake observed — server is configured but did not report 'Successfully connected'" >&2
     return 1
   fi
-  while IFS= read -r _ln; do
-    [ -n "$_ln" ] && printf '::notice::[mcp] %s\n' "$_ln" >&2
-  done <<< "$handshakes"
+  sed 's/^/::notice::[mcp] /' <<< "$handshakes" >&2
   return 0
 }
 
@@ -126,7 +141,9 @@ _mcp_assert_connected() {
 # ---------------------------------------------------------------------------
 main() {
   local cfg
-  cfg="$(_mcp_resolve_config)"
+  # Propagate a misconfiguration (unreadable/missing explicit config) as a hard
+  # failure rather than letting set -e swallow it inside the substitution.
+  cfg="$(_mcp_resolve_config)" || return 1
   if [ -z "$cfg" ]; then
     echo "::notice::[mcp] no MCP config present — connectivity assertion skipped (no behavior change for non-MCP repos)"
     return 0
@@ -145,6 +162,9 @@ main() {
 
   local out rc=0
   out="$(mktemp)"
+  # Clean up the capture file even if the probe is interrupted (single quotes ⇒
+  # $out is expanded when the trap fires).
+  trap 'rm -f "$out"' EXIT
   # Same flags engine.sh threads into its MCP claude tiers, plus --debug mcp so
   # the handshake lands in the captured output. Combine stdout+stderr; the
   # handshake is written to stderr by `--debug mcp`. A non-zero/timeout exit is
@@ -171,10 +191,8 @@ main() {
 
   if _mcp_assert_connected "$out"; then
     echo "MCP connectivity OK."
-    rm -f "$out"
     return 0
   fi
-  rm -f "$out"
   return 1
 }
 
