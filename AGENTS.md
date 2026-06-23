@@ -207,4 +207,4 @@ whose reusables live in this repo, `feature-ideation`'s reusable lives in **`pet
 (this repo holds only the thin caller stub), so its release/channel tags are cut against that public
 repo — and the protective ruleset bounding `feature-ideation/**` channel tags is therefore created
 **there**, not on this repo (an untracked prerequisite in the public repo). See
-[`docs/release/versioning.md`](./docs/release/versioning.md) "Cross-repo: feature-ideation".
+[`docs/release/versioning.md`](./docs/release/versioning.md) "Cross-repo reusables".
