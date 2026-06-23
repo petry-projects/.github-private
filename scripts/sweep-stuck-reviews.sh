@@ -72,8 +72,40 @@ fi
 candidates_file="$(mktemp)"
 trap 'rm -f "$candidates_file"' EXIT
 
+# prs_from_workflow_run_event <event_json_path>
+# Event-driven fast path: when the sweep is kicked by a `workflow_run: completed`
+# event (a CI workflow just finished), scope the candidate set to the PR(s)
+# attached to that run instead of enumerating the whole fleet. Emits one PR
+# html_url per line from `.workflow_run.pull_requests[]`. Pure (reads a JSON file,
+# no network), so it is unit-testable.
+#
+# GitHub populates `pull_requests` only for SAME-repo head branches; fork-PR runs
+# and plain pushes to a branch carry an empty array and yield nothing — those are
+# covered by the scheduled (cron) sweep, and this repo never self-reviews forks.
+prs_from_workflow_run_event() {
+  local event_path="${1:-}"
+  [ -n "$event_path" ] && [ -r "$event_path" ] || return 0
+  local repo
+  repo="$(jq -r '.repository.full_name // empty' "$event_path" 2>/dev/null || true)"
+  [ -n "$repo" ] || return 0
+  jq -r --arg repo "$repo" '
+    (.workflow_run.pull_requests // [])
+    | map(select(.number != null) | .number)
+    | unique
+    | .[]
+    | "https://github.com/\($repo)/pull/\(.)"
+  ' "$event_path" 2>/dev/null || true
+}
+
 if [[ -n "${SWEEP_PRS_FILE:-}" && -r "${SWEEP_PRS_FILE}" ]]; then
   grep -v '^[[:space:]]*$' "$SWEEP_PRS_FILE" > "$candidates_file" || true
+elif [[ "${GITHUB_EVENT_NAME:-}" == "workflow_run" && -n "${GITHUB_EVENT_PATH:-}" ]]; then
+  # CI-completion kick (#898): inspect only the completing run's PR(s). The
+  # REVIEW_REQUIRED + CI-green + not-reviewed-at-head gate below still decides, so
+  # a too-early fire (some checks still pending) simply skips and the next
+  # completing workflow re-fires. The scheduled sweep remains the guaranteed
+  # backstop, so this fast path can never strand a PR if it matches nothing.
+  prs_from_workflow_run_event "$GITHUB_EVENT_PATH" > "$candidates_file" || true
 else
   bash "$SCRIPT_DIR/list-prs.sh" > "$candidates_file" || true
 fi

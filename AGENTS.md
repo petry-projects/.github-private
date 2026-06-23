@@ -50,9 +50,11 @@ This is the `.github-private` org infrastructure repo for `petry-projects`. It c
   reviewable decision. The other half is the **"require branches up to date before merging"** ruleset on `main`
   (already enabled). Together they close the gap behind #655, where a PR merged from a stale base reverted a
   shipped fix and deleted its regression test in the same green-CI diff. Do not remove either guard.
-- **Exception:** `pr-review-sweep.yml` (scheduled stuck-review sweep, #573) is a documented repo-specific
+- **Exception:** `pr-review-sweep.yml` (stuck-review sweep, #573/#898) is a documented repo-specific
   workflow with no corresponding org template in `standards/workflows/`. It re-dispatches reviews for PRs
-  that went green after a ci-pending/ci-failing skip. It must not be removed by template syncs. If the org
+  that went green after a ci-pending/ci-failing skip, via two triggers: a scheduled cron (the guaranteed
+  ≤15-min backstop) and a `workflow_run: completed` fast path (#898) that scopes the sweep to the
+  completing CI run's PR(s) for near-instant re-review. It must not be removed by template syncs. If the org
   template gains an equivalent re-trigger sweep, remove this exception and defer to the template instead.
 - **Exception:** The `bats` test list in `lint.yml` is extended with repo-specific test files (e.g.
   `tests/test_push_protection.bats`) beyond the org template baseline. When adding new test files to this
