@@ -301,3 +301,91 @@ FUTURE_RESET='2999-01-01T00:00:00Z'
   [ ! -s "$GH_LOG" ]
   [[ "$output" == *"$(url_for 717)"* ]]
 }
+
+# ---------------------------------------------------------------------------
+# Event-driven fast path (#898): a `workflow_run: completed` kick scopes the
+# sweep to the completing run's PR(s) via the event payload, so a PR that just
+# went green is re-reviewed in seconds instead of waiting for the cron backstop.
+# The same REVIEW_REQUIRED + CI-green + not-reviewed-at-head gate still decides.
+# ---------------------------------------------------------------------------
+
+# write_event <file> <repo_full_name> <pr-numbers-json-array>
+write_event() {
+  local file="$1" repo="$2" prs="$3"
+  jq -n --arg repo "$repo" --argjson prs "$prs" \
+    '{repository:{full_name:$repo}, workflow_run:{pull_requests: ($prs | map({number: .}))}}' \
+    > "$file"
+}
+
+# In the event path the script derives the PR url as
+# https://github.com/<repo>/pull/<N>; the gh mock keys the fixture off the
+# trailing <N>, so pr_<N>.json must exist.
+ghp_event_url() { echo "https://github.com/petry-projects/.github-private/pull/$1"; }
+
+@test "workflow_run kick: ci-pending→green PR (REVIEW_REQUIRED + green + no marker) is dispatched, scoped to the event" {
+  unset SWEEP_PRS_FILE
+  local ev="$FIXTURE_DIR/event.json"
+  write_event "$ev" "petry-projects/.github-private" '[898]'
+  export GITHUB_EVENT_NAME=workflow_run
+  export GITHUB_EVENT_PATH="$ev"
+  write_pr 898 "REVIEW_REQUIRED" "$ROLLUP_PASS" "greensha"
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  grep -qF "workflow run pr-review-trigger.yml" "$GH_LOG"
+  grep -qF -- "-f pr_url=$(ghp_event_url 898)" "$GH_LOG"
+}
+
+@test "workflow_run kick: empty pull_requests (fork PR / branch push) is a clean no-op" {
+  unset SWEEP_PRS_FILE
+  local ev="$FIXTURE_DIR/event.json"
+  write_event "$ev" "petry-projects/.github-private" '[]'
+  export GITHUB_EVENT_NAME=workflow_run
+  export GITHUB_EVENT_PATH="$ev"
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ ! -s "$GH_LOG" ]
+}
+
+@test "workflow_run kick: event PR with CI still pending is NOT dispatched (too-early fire backstopped by cron)" {
+  unset SWEEP_PRS_FILE
+  local ev="$FIXTURE_DIR/event.json"
+  write_event "$ev" "petry-projects/.github-private" '[899]'
+  export GITHUB_EVENT_NAME=workflow_run
+  export GITHUB_EVENT_PATH="$ev"
+  write_pr 899 "REVIEW_REQUIRED" "$ROLLUP_PENDING" "pendsha"
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ ! -s "$GH_LOG" ]
+}
+
+@test "workflow_run kick: already-reviewed-at-head event PR is NOT re-dispatched" {
+  unset SWEEP_PRS_FILE
+  local ev="$FIXTURE_DIR/event.json"
+  write_event "$ev" "petry-projects/.github-private" '[900]'
+  export GITHUB_EVENT_NAME=workflow_run
+  export GITHUB_EVENT_PATH="$ev"
+  local comments='[{"body":"<!-- pr-review-agent v1 sha=donesha --> reviewed"}]'
+  write_pr 900 "REVIEW_REQUIRED" "$ROLLUP_PASS" "donesha" "[]" "$comments"
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ ! -s "$GH_LOG" ]
+}
+
+@test "workflow_run kick: multiple PRs on the run are each evaluated" {
+  unset SWEEP_PRS_FILE
+  local ev="$FIXTURE_DIR/event.json"
+  write_event "$ev" "petry-projects/.github-private" '[901,902]'
+  export GITHUB_EVENT_NAME=workflow_run
+  export GITHUB_EVENT_PATH="$ev"
+  write_pr 901 "REVIEW_REQUIRED" "$ROLLUP_PASS" "g901"          # green → dispatch
+  write_pr 902 "REVIEW_REQUIRED" "$ROLLUP_FAIL" "f902"          # failing → skip
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  grep -qF -- "-f pr_url=$(ghp_event_url 901)" "$GH_LOG"
+  ! grep -qF -- "-f pr_url=$(ghp_event_url 902)" "$GH_LOG"
+}
