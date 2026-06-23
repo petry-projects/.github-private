@@ -12,6 +12,14 @@ name: PR Review Agent — Stuck-Review Sweep
 # lifting (CI gating, idempotency) still lives in review-one-pr.sh; the sweep
 # only decides WHAT to re-trigger via pr-review-trigger.yml.
 #
+# Latency (#898): the scheduled sweep is the GUARANTEED backstop (≤15 min). On
+# top of it, a `workflow_run: completed` trigger gives a near-instant fast path —
+# when a core CI workflow finishes, the sweep runs SCOPED to just that run's PR(s)
+# (scripts/sweep-stuck-reviews.sh derives them from the event payload), so a PR
+# that just went green is re-reviewed in seconds instead of waiting for the next
+# cron tick. The fast path can never strand a PR: if it matches nothing (fork PR,
+# push to a branch, or CI still pending) the scheduled sweep still catches it.
+#
 # NOTE: the re-dispatch runs as GH_PAT_WORKFLOWS (a PAT with workflow /
 # actions:write scope), NOT the default GITHUB_TOKEN — GitHub will not start a
 # new run from a workflow_dispatch fired with GITHUB_TOKEN (loop prevention).
@@ -26,8 +34,20 @@ name: PR Review Agent — Stuck-Review Sweep
 
 on:
   schedule:
-    # Hourly, offset from the top of the hour to avoid contending with other crons.
-    - cron: '17 * * * *'
+    # Every 15 min (offset to avoid contending with other crons) — the guaranteed
+    # backstop bounding worst-case re-review latency when the fast path misses.
+    - cron: '2,17,32,47 * * * *'
+  workflow_run:
+    # Event-driven fast path (#898): a core CI workflow finishing is the signal
+    # that a PR may have just gone green. The sweep run is scoped to that PR by the
+    # script, so firing on several workflows is cheap and idempotent — and the
+    # per-branch `cancel-in-progress` concurrency below collapses the burst so the
+    # sweep effectively runs ONCE, after the last-finishing keyed workflow (the one
+    # most likely to observe green). Keyed on broadly-run, stable workflow names
+    # (must match each workflow's `name:`); the scheduled sweep backstops any
+    # rename/miss, so this list is best-effort, not load-bearing.
+    workflows: ["CI", "Tests", "Holdout Guard", "SonarCloud Analysis", "Lint"]
+    types: [completed]
   workflow_dispatch:
     inputs:
       dry_run:
@@ -45,7 +65,10 @@ permissions:
   contents: read
 
 concurrency:
-  group: pr-review-sweep
+  # Per-trigger/branch grouping so an event-driven sweep for one branch never
+  # cancels the scheduled full sweep (or another branch's sweep); cancel-in-progress
+  # still collapses a burst of CI completions on the SAME branch into one run.
+  group: pr-review-sweep-${{ github.event.workflow_run.head_branch || github.event_name }}
   cancel-in-progress: true
 
 jobs:
