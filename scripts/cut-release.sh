@@ -319,8 +319,8 @@ main() {
   [ -n "$channel" ] && echo "channel tag: $chan -> $rel"
 
   if [ "$dry" = true ]; then
-    if [ "$agent" = "feature-ideation" ]; then
-      echo "::warning::cross-repo placeholder: the SHA above ($sha) was resolved from petry-projects/.github-private. feature-ideation's canonical commits and tags live in petry-projects/.github — this SHA is a local placeholder only."
+    if cross_repo_agent "$agent"; then
+      echo "::warning::cross-repo placeholder: the SHA above ($sha) was resolved from petry-projects/.github-private. ${agent}'s canonical commits and tags live in petry-projects/.github — this SHA is a local placeholder only."
     fi
     echo "(dry-run) no tags created or pushed."
     return 0
