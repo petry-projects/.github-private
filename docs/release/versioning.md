@@ -16,14 +16,16 @@ together, so a version is a single repo commit that contains a known-good combin
 | `pr-review` | `.github/workflows/pr-review.yml` | `scripts/review-one-pr.sh`, `scripts/review-batch.sh`, `scripts/post-pr-review.sh`, `scripts/engine.sh`, `scripts/lib/*` |
 | `dev-lead` | `.github/workflows/dev-lead-reusable.yml` | `scripts/dev-lead-*.sh`, `scripts/engine.sh`, `scripts/lib/*` |
 | `feature-ideation` | `petry-projects/.github` → `.github/workflows/feature-ideation-reusable.yml` (**cross-repo**) | reusable-owned (lives in the public repo; this repo holds only the thin caller `.github/workflows/feature-ideation.yml`) |
+| `agent-shield`, `auto-rebase`, `dependency-audit`, `dependabot-automerge`, `dependabot-rebase`, `pr-review-mention` (the six #482 reusables) | `petry-projects/.github` → `.github/workflows/<name>-reusable.yml` (**cross-repo**) | reusable-owned (live in the public repo; this repo holds only the thin caller stubs) |
 
 `pr-review` and `dev-lead` both live in this repo, so a release tag points at a whole-repo commit; the
 tag *name* scopes it to one agent so the two can be released and promoted independently.
 
-`feature-ideation` is the exception: its reusable lives in **`petry-projects/.github`** (this repo holds
-only the thin caller stub), so a `feature-ideation` "release" is a commit on that public repo, and its
-release/channel tags must be cut **against `petry-projects/.github`, not this repo's `origin`**. See
-[Cross-repo: feature-ideation](#cross-repo-feature-ideation) below.
+The rest are the exception: their reusables live in **`petry-projects/.github`** (this repo holds only
+the thin caller stubs), so a "release" is a commit on that public repo, and their release/channel tags
+must be cut **against `petry-projects/.github`, not this repo's `origin`**. This is `feature-ideation`
+plus the six reusables #482 migrated to channel tags — see [Cross-repo reusables](#cross-repo-reusables)
+below.
 
 ## Tag scheme
 
@@ -79,7 +81,22 @@ uses `stable` only; its ring channels are pending under #499.
 promoted through the same canary → ring → stable model. Its tags follow the identical name scheme
 (`feature-ideation/vX.Y.Z`, `feature-ideation/next`, `feature-ideation/ring0`,
 `feature-ideation/ring1`, `feature-ideation/stable`) but are cut against `petry-projects/.github`
-(see [Cross-repo: feature-ideation](#cross-repo-feature-ideation)).
+(see [Cross-repo reusables](#cross-repo-reusables)).
+
+The six **#482 reusables** — `agent-shield`, `auto-rebase`, `dependency-audit`, `dependabot-automerge`,
+`dependabot-rebase`, `pr-review-mention` — use the same `{next, ring0, ring1, stable}` set (#870),
+replacing the single-hop `<name>/stable`-only migration #482 cut by hand. They are `.github`-hosted, so
+like `feature-ideation` their tags are cut against `petry-projects/.github`. Their ring membership is an
+**explicit org-owner assignment** (#870, matching #866), and it does **not** follow the host-relative
+`$host`/`$org_infra` default above — `next` is `.github-private` (the dogfood lab) even though the
+reusables are hosted in `.github`, which sits in `ring0`:
+
+| Channel | Member repo(s) |
+|---|---|
+| `next` | `.github-private` |
+| `ring0` | `.github` (the host) |
+| `ring1` | `TalkTerm`, `bmad-bgreat-suite` |
+| `stable` | `markets`, `broodly`, `ContentTwin`, `google-app-scripts` (full-fleet production) |
 
 ### Semantic versioning
 
@@ -114,27 +131,45 @@ The first release was cut from the production `main` at the time of issue #496:
 version. The health-gated promotion added in Phase 2 (#501) is what makes *future* promotions to
 `stable` genuinely validated before they become production.
 
-## Cross-repo: feature-ideation
+## Cross-repo reusables
 
 Everything above assumes the agent's reusable workflow lives **in this repo**, so a release tag is a
 whole-repo commit here and tags are cut against this repo's `origin`. That holds for `pr-review` and
-`dev-lead`. It does **not** hold for `feature-ideation`:
+`dev-lead`. It does **not** hold for the cross-repo reusables — `feature-ideation` and the six #482
+reusables (`agent-shield`, `auto-rebase`, `dependency-audit`, `dependabot-automerge`,
+`dependabot-rebase`, `pr-review-mention`):
 
-- `feature-ideation`'s reusable lives in **`petry-projects/.github`**
-  (`.github/workflows/feature-ideation-reusable.yml`); this repo carries only the thin caller stub
-  `.github/workflows/feature-ideation.yml`.
-- Therefore a `feature-ideation` release is a commit on **`petry-projects/.github`**, and its
-  `feature-ideation/vX.Y.Z` immutable + `feature-ideation/<channel>` tags must be cut **against that
-  repo**, not this repo's `origin`.
-- `scripts/cut-release.sh` already recognizes `feature-ideation` and formats its tag names, and its
-  `--dry-run` prints the intended immutable + channel tags. **Live cross-repo pushes are not wired
-  yet** — the push target mechanism (a `--repo`/remote argument vs. dispatching against the public
+- Their reusables live in **`petry-projects/.github`** (`.github/workflows/<name>-reusable.yml`); this
+  repo carries only the thin caller stubs `.github/workflows/<name>.yml`.
+- Therefore a release is a commit on **`petry-projects/.github`**, and the `<name>/vX.Y.Z` immutable +
+  `<name>/<channel>` tags must be cut **against that repo**, not this repo's `origin`.
+- `scripts/cut-release.sh` recognizes each of these agents (`valid_agent`) and formats its tag names,
+  and its `--dry-run` prints the intended immutable + channel tags. **Live cross-repo pushes are not
+  wired yet** — the push target mechanism (a `--repo`/remote argument vs. dispatching against the public
   repo) is an open question reserved for a human decision, so the script refuses a non-dry-run cut for
-  `feature-ideation` (see the `TODO(#872)` in `cut-release.sh`). Use `--dry-run` to preview tag names
-  until the target is decided.
-- Because `feature-ideation`'s channel tags live on `petry-projects/.github`, the protective ruleset
-  that bounds them (the mutable-ref exception) is created **there**, not on this repo — see
+  any cross-repo agent (the `cross_repo_agent` guard / `TODO(#872)` in `cut-release.sh`). Use
+  `--dry-run` to preview tag names until the target is decided.
+- Because these channel tags live on `petry-projects/.github`, the protective ruleset that bounds them
+  (the mutable-ref exception) is created **there**, not on this repo — see
   [`AGENTS.md`](../../AGENTS.md) "Release channel tags & the mutable-ref exception".
+
+> **Why not `standards/canary-rings.json` yet?** The machine-readable ring source of truth consumed by
+> the promotion automation (`scripts/canary-rollout.sh`, #501) carries only the in-repo agents whose
+> channel tags it can actually move. Cross-repo agents (`feature-ideation` and the six above) are
+> documented here and supported by `cut-release.sh` (dry-run), but are deliberately **absent** from
+> `canary-rings.json` until the cross-repo tag-move path is wired (`TODO #872`) — adding them sooner
+> would advertise a promotion the automation cannot perform.
+
+### The six #482 reusables (ring assignment)
+
+#482 migrated these six to moving channel tags **single-hop** — it cut only `<name>/stable` (+ a manual
+off-convention `<name>/v2.0.0`) and put all consumers on `stable`, with no `next`/`ring*`. #870 brings
+them under the full `{next, ring0, ring1, stable}` model with the explicit, org-owner ring assignment in
+[Ring channels](#ring-channels-live-for-dev-lead) above. Note this assignment is **explicit, not
+host-relative**: `next` is `.github-private` even though the reusables are hosted in `.github` (which
+sits in `ring0`). Re-cutting their releases on a sane incremental-semver basis (reconciling the manual
+`<name>/v2.0.0` tags) and cutting the `next`/`ring0`/`ring1` channels is an operational step done via
+`cut-release.sh` once the cross-repo push target (`TODO #872`) is wired.
 
 ## Cutting / moving tags
 
