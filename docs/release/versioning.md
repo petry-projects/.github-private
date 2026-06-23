@@ -162,7 +162,7 @@ reusables (`agent-shield`, `auto-rebase`, `dependency-audit`, `dependabot-autome
 
 ### The six #482 reusables (ring assignment)
 
-#482 migrated these six to moving channel tags **single-hop** — it cut only `<name>/stable` (+ a manual
+PR #482 migrated these six to moving channel tags **single-hop** — it cut only `<name>/stable` (+ a manual
 off-convention `<name>/v2.0.0`) and put all consumers on `stable`, with no `next`/`ring*`. #870 brings
 them under the full `{next, ring0, ring1, stable}` model with the explicit, org-owner ring assignment in
 [Ring channels](#ring-channels-live-for-dev-lead) above. Note this assignment is **explicit, not
