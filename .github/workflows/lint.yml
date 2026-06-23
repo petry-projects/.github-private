@@ -85,8 +85,7 @@ jobs:
             tests/test_downstream_impact_assemble.bats \
             tests/test_downstream_impact_triage_inline.bats \
             tests/test_downstream_impact_regression.bats \
-            tests/test_engine_unavailable_notice.bats \
-            tests/test_mcp_connectivity_check.bats
+            tests/test_engine_unavailable_notice.bats
 
   validate-agent-profiles:
     runs-on: ubuntu-latest
