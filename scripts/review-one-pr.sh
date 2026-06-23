@@ -438,6 +438,24 @@ if [ "$REVIEW_DECISION" = "CHANGES_REQUESTED" ] && [ "${FORCE_REVIEW:-false}" !=
     exit 100
   fi
 fi
+# Skip when a human has requested changes, with two guards:
+#   1. FORCE_REVIEW bypasses the skip — mention-triggered runs always proceed so
+#      authors can request a re-review after addressing feedback.
+#   2. Only skip when a CHANGES_REQUESTED review targets the current head SHA.
+#      On repos that don't dismiss stale reviews, reviewDecision can stay
+#      CHANGES_REQUESTED after the author pushes new commits; in that case the
+#      review is stale and the cascade should re-engage with the updated code.
+if [ "$REVIEW_DECISION" = "CHANGES_REQUESTED" ] && [ "${FORCE_REVIEW:-false}" != "true" ]; then
+  CHANGES_REQUESTED_AT_HEAD=$(echo "$PR_SNAPSHOT" | jq -r --arg sha "$PR_HEAD_SHA" '
+    [.reviews[] | select(.state == "CHANGES_REQUESTED" and .commit.oid == $sha)]
+    | if length > 0 then "true" else "false" end
+  ')
+  if [ "$CHANGES_REQUESTED_AT_HEAD" = "true" ]; then
+    echo "    skip: changes requested at current head — awaiting author response before reviewing"
+    echo "{\"pr\":\"$PR_URL\",\"sha\":\"$PR_HEAD_SHA\",\"decision\":\"skip\",\"reason\":\"changes-requested\"}"
+    exit 100
+  fi
+fi
 
 # 2. Idempotency: look for our marker at this SHA in existing reviews+comments.
 # We tag every review/comment with reviews' submittedAt / comments' createdAt,
