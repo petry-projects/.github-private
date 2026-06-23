@@ -139,7 +139,7 @@ RUNS_SUMMARY=$(echo "$runs_json" | jq -r '
 logs_file=$(mktemp)
 # One jq pass over failed runs; append each log file in the same order
 while IFS=$'\t' read -r run_id run_meta; do
-  log_file="${LOG_DIR}/run_${run_id}.txt"
+  log_file="${LOG_DIR:-}/run_${run_id}.txt"
   [ -f "$log_file" ] || continue
   {
     printf '=== LOG: %s ===\n' "$run_meta"
