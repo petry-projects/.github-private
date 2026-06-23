@@ -77,22 +77,6 @@ echo "  Success:    $success_runs"
 echo "  Failed:     $failed_runs"
 echo "  Cancelled:  $cancelled_runs"
 
-if [ "$total_runs" -gt 0 ]; then
-  failure_rate=$(echo "scale=1; $failed_runs * 100 / $total_runs" | bc)
-else
-  failure_rate="0.0"
-fi
-
-# Duration percentiles across all completed runs (computed but not surfaced in the
-# LLM prompt — reserved for future structured-report use).
-# shellcheck disable=SC2034
-read -r dur_min dur_p50 dur_p95 dur_max < <(echo "$runs_json" | jq -r '
-  [.[] | select(.conclusion != null and .duration_s > 0) | .duration_s] | sort |
-  if length == 0 then "0 0 0 0"
-  else . as $d | ($d | length) as $n |
-    "\($d | min) \($d[$n * 50 / 100 | floor]) \($d[$n * 95 / 100 | floor]) \($d | max)"
-  end')
-
 # ---------------------------------------------------------------------------
 # 3. Helpers
 # ---------------------------------------------------------------------------
@@ -114,18 +98,6 @@ conclusion_icon() {
     *)         echo "⏳" ;;
   esac
 }
-
-# overall is the pre-computed status fed as a hint to the LLM prompt below.
-# shellcheck disable=SC2034
-if [ "$failed_runs" -eq 0 ]; then
-  overall="HEALTHY"
-elif [ "$(echo "$failure_rate > 50" | bc)" -eq 1 ]; then
-  overall="CRITICAL"
-elif [ "$(echo "$failure_rate > 20" | bc)" -eq 1 ]; then
-  overall="DEGRADED"
-else
-  overall="WARNING"
-fi
 
 # ---------------------------------------------------------------------------
 # 4. Build report
