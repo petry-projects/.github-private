@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "description": "Ring membership for agent canary rollout (initiative #495, issues #500/#501). The promotion automation (scripts/canary-rollout.sh) reads this as the single source of truth. `next` is host-relative: it resolves to the repo that HOSTS the reusable; `ring0` covers the other org-infra repo (the host already sits in `next`).",
+  "org_infra_repos": ["petry-projects/.github", "petry-projects/.github-private"],
+  "member_tokens": {
+    "$host": "the agent's host repo (the repo that owns the reusable)",
+    "$org_infra": "org_infra_repos minus the host (the host is already in `next`)",
+    "*": "every other consumer not named in an earlier ring"
+  },
+  "agents": {
+    "dev-lead": {
+      "host": "petry-projects/.github-private",
+      "reusable": ".github/workflows/dev-lead-reusable.yml",
+      "run_workflow": "Dev-Lead Agent",
+      "rings": [
+        { "channel": "next",   "order": 0, "members": ["$host"] },
+        { "channel": "ring0",  "order": 1, "members": ["$org_infra"] },
+        { "channel": "ring1",  "order": 2, "members": ["petry-projects/TalkTerm", "petry-projects/bmad-bgreat-suite"] },
+        { "channel": "stable", "order": 3, "members": ["*"] }
+      ]
+    }
+  }
+}
