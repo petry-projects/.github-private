@@ -24,6 +24,24 @@
 #   2. All other repos (priority 1)
 #   Within each priority tier, PRs are sorted oldest-first by createdAt.
 #
+# Filters:
+#   --draft=false       — skip work-in-progress PRs
+#
+# CI filtering is intentionally omitted here — review-one-pr.sh enforces it
+# per-PR as a second layer. Filtering by --checks success would exclude repos
+# with no CI configured (GitHub treats "no checks" as not matching --checks
+# success), causing their PRs to never enter the candidate pool.
+#
+# Self-authored PRs (PRs whose author is $BOT_USER) are excluded here, because
+# GitHub's GraphQL API rejects self-approval unconditionally — including such a
+# PR in the queue previously triggered a fatal session abort that starved every
+# subsequent candidate (see issue #96).
+#
+# Output ordering (stable, deterministic):
+#   1. .github and .github-private PRs first (priority 0)
+#   2. All other repos (priority 1)
+#   Within each priority tier, PRs are sorted oldest-first by createdAt.
+#
 # Output: one PR URL per line on stdout.
 
 set -euo pipefail
