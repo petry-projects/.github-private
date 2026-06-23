@@ -205,6 +205,62 @@ setup() {
 }
 
 # ---------------------------------------------------------------------------
+# cross_repo_agent — agents whose reusable lives in petry-projects/.github
+# (this repo holds only the thin caller stub), so live cuts are refused until
+# the cross-repo push target is wired (TODO #872).
+# ---------------------------------------------------------------------------
+
+@test "cross_repo_agent: feature-ideation is cross-repo" {
+  run cross_repo_agent "feature-ideation"
+  [ "$status" -eq 0 ]
+}
+
+@test "cross_repo_agent: agent-shield is cross-repo" {
+  run cross_repo_agent "agent-shield"
+  [ "$status" -eq 0 ]
+}
+
+@test "cross_repo_agent: auto-rebase is cross-repo" {
+  run cross_repo_agent "auto-rebase"
+  [ "$status" -eq 0 ]
+}
+
+@test "cross_repo_agent: dependency-audit is cross-repo" {
+  run cross_repo_agent "dependency-audit"
+  [ "$status" -eq 0 ]
+}
+
+@test "cross_repo_agent: dependabot-automerge is cross-repo" {
+  run cross_repo_agent "dependabot-automerge"
+  [ "$status" -eq 0 ]
+}
+
+@test "cross_repo_agent: dependabot-rebase is cross-repo" {
+  run cross_repo_agent "dependabot-rebase"
+  [ "$status" -eq 0 ]
+}
+
+@test "cross_repo_agent: pr-review-mention is cross-repo" {
+  run cross_repo_agent "pr-review-mention"
+  [ "$status" -eq 0 ]
+}
+
+@test "cross_repo_agent: pr-review is NOT cross-repo (hosted here)" {
+  run cross_repo_agent "pr-review"
+  [ "$status" -ne 0 ]
+}
+
+@test "cross_repo_agent: dev-lead is NOT cross-repo (hosted here)" {
+  run cross_repo_agent "dev-lead"
+  [ "$status" -ne 0 ]
+}
+
+@test "cross_repo_agent: unknown agent is NOT cross-repo" {
+  run cross_repo_agent "ci-failure-analyst"
+  [ "$status" -ne 0 ]
+}
+
+# ---------------------------------------------------------------------------
 # validate_version — strict MAJOR.MINOR.PATCH
 # ---------------------------------------------------------------------------
 
@@ -371,4 +427,14 @@ setup() {
 @test "channel_ref: feature-ideation ring0 channel" {
   run channel_ref "feature-ideation" "ring0"
   [ "$output" = "feature-ideation/ring0" ]
+}
+
+@test "channel_ref: pr-review-mention next channel" {
+  run channel_ref "pr-review-mention" "next"
+  [ "$output" = "pr-review-mention/next" ]
+}
+
+@test "channel_ref: auto-rebase stable channel" {
+  run channel_ref "auto-rebase" "stable"
+  [ "$output" = "auto-rebase/stable" ]
 }
