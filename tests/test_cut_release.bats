@@ -495,3 +495,13 @@ setup() {
   run strip_origin "origin/release/origin/x"
   [ "$output" = "release/origin/x" ]
 }
+
+@test "channel_ref: pr-review-mention next channel" {
+  run channel_ref "pr-review-mention" "next"
+  [ "$output" = "pr-review-mention/next" ]
+}
+
+@test "channel_ref: auto-rebase stable channel" {
+  run channel_ref "auto-rebase" "stable"
+  [ "$output" = "auto-rebase/stable" ]
+}
