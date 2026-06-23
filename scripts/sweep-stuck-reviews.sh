@@ -85,11 +85,12 @@ trap 'rm -f "$candidates_file"' EXIT
 prs_from_workflow_run_event() {
   local event_path="${1:-}"
   [ -n "$event_path" ] && [ -r "$event_path" ] || return 0
-  local repo
-  repo="$(jq -r '.repository.full_name // empty' "$event_path" 2>/dev/null || true)"
-  [ -n "$repo" ] || return 0
-  jq -r --arg repo "$repo" '
-    (.workflow_run.pull_requests // [])
+  # Single jq pass: bind the repo, drop out (empty stream) when it is absent, and
+  # format the PR urls in one go — one process, one read of the payload.
+  jq -r '
+    (.repository.full_name // "") as $repo
+    | select($repo != "")
+    | (.workflow_run.pull_requests // [])
     | map(select(.number != null) | .number)
     | unique
     | .[]
