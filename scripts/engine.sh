@@ -1268,6 +1268,9 @@ _mcp_review_flags() {
   _MCP_ALLOWED_TOOLS="$base"
   if [ -n "${REVIEW_MCP_CONFIG:-}" ] && [ -f "${REVIEW_MCP_CONFIG}" ] && [ -r "${REVIEW_MCP_CONFIG}" ]; then
     _MCP_FLAGS=(--mcp-config "$REVIEW_MCP_CONFIG" --strict-mcp-config)
+    if [ -n "${REVIEW_MCP_DEBUG:-}" ]; then
+      _MCP_FLAGS+=(--debug mcp)
+    fi
     if [ -n "${REVIEW_MCP_ALLOWED_TOOLS:-}" ]; then
       _MCP_ALLOWED_TOOLS="${base},${REVIEW_MCP_ALLOWED_TOOLS}"
     fi
@@ -2190,13 +2193,6 @@ run_writer() {
       ;;
   esac
 
-  # Map rate-limit to exit code 2 for caller to detect; parse reset time for
-  # marker embedding. Use the file-based helpers to avoid OOM on large captures.
-  if [ "$rc" -ne 0 ] && [ -n "$_tmp" ] && is_rate_limited_files "$_tmp"; then
-    parse_reset_time_files "$_tmp"
-    [ -n "$_tmp" ] && rm -f "$_tmp"
-    return 2
-  fi
   if [ "$rc" -eq 0 ]; then
     local _writer_used="$model"
     if [ "$REVIEW_ENGINE" = "claude" ] && [ -n "${_CLAUDE_CHAIN_MODEL_USED:-}" ]; then
