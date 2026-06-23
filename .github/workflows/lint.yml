@@ -47,6 +47,7 @@ jobs:
             tests/canary_rollout.bats \
             tests/test_initiative_canary.bats \
             tests/test_initiative_driver_canary.bats \
+            tests/test_mcp_connectivity_check.bats \
             tests/token_report.bats \
             tests/lsp_pilot_compare.bats \
             tests/auto_rebase_health.bats \
@@ -84,8 +85,7 @@ jobs:
             tests/test_downstream_impact_assemble.bats \
             tests/test_downstream_impact_triage_inline.bats \
             tests/test_downstream_impact_regression.bats \
-            tests/test_engine_unavailable_notice.bats \
-            tests/test_mcp_connectivity_check.bats
+            tests/test_engine_unavailable_notice.bats
 
   validate-agent-profiles:
     runs-on: ubuntu-latest
