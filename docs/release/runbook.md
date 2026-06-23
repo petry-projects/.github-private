@@ -5,15 +5,17 @@ Operational procedures for the per-agent channel-tag release model (initiative
 [`versioning.md`](./versioning.md) and the
 [initiative analysis](../initiatives/agentic-release-strategy.md) §5.1, §7.
 
-**Agents covered:** `pr-review`, `dev-lead`, `feature-ideation`. `pr-review` and
+**Agents covered:** `pr-review`, `dev-lead`, `feature-ideation`, and the six #482
+reusables (`agent-shield`, `auto-rebase`, `dependency-audit`,
+`dependabot-automerge`, `dependabot-rebase`, `pr-review-mention`). `pr-review` and
 `dev-lead` live in this repo; callers (consumers + this repo's own self-host
 caller) pin the moving channel tag `@<agent>/stable` and thread
-`agent_ref: <agent>/stable`. `feature-ideation`'s reusable lives in
-`petry-projects/.github`, so its release/channel tags are cut against **that**
-repo, not this repo's `origin` (see "Cross-repo: feature-ideation" in
-[`versioning.md`](./versioning.md)). `cut-release.sh` recognizes it and previews
-its tags via `--dry-run`, but **live cross-repo pushes are not wired yet** — the
-push target is an open question, so non-dry-run cuts for `feature-ideation` are
+`agent_ref: <agent>/stable`. The cross-repo reusables (`feature-ideation` + the
+six above) live in `petry-projects/.github`, so their release/channel tags are cut
+against **that** repo, not this repo's `origin` (see "Cross-repo reusables" in
+[`versioning.md`](./versioning.md)). `cut-release.sh` recognizes them and previews
+their tags via `--dry-run`, but **live cross-repo pushes are not wired yet** — the
+push target is an open question, so non-dry-run cuts for any cross-repo agent are
 refused for now.
 
 **Two tag kinds per agent:**
@@ -56,10 +58,12 @@ scripts/cut-release.sh pr-review 1.6.0 --ref origin/main --dry-run
 # Cut the immutable tag only (no promotion):
 scripts/cut-release.sh pr-review 1.6.0 --ref origin/main --push
 
-# feature-ideation is cross-repo (reusable in petry-projects/.github): dry-run
-# previews the tag names, but live --push is refused until the cross-repo target
-# is decided (see "Cross-repo: feature-ideation" in versioning.md):
+# Cross-repo agents (feature-ideation + the six #482 reusables, reusables in
+# petry-projects/.github): dry-run previews the tag names, but live --push is
+# refused until the cross-repo target is decided (see "Cross-repo reusables" in
+# versioning.md):
 scripts/cut-release.sh feature-ideation 1.4.0 --channel ring0 --dry-run
+scripts/cut-release.sh agent-shield 2.1.0 --channel next --dry-run
 ```
 
 - Pick the version per semver (see `versioning.md#semantic-versioning`): bugfix →
@@ -104,11 +108,13 @@ git push origin pr-review/stable --force
 > Channel tags are lightweight (point straight at the commit); the immutable
 > `vX.Y.Z` tags are annotated.
 >
-> **feature-ideation is cross-repo.** Its `feature-ideation/<channel>` tags live
+> **Cross-repo agents.** `feature-ideation` and the six #482 reusables
+> (`agent-shield`, `auto-rebase`, `dependency-audit`, `dependabot-automerge`,
+> `dependabot-rebase`, `pr-review-mention`) have `<agent>/<channel>` tags that live
 > on `petry-projects/.github`, so a promotion is a tag move on **that** repo
-> (`git push <petry-projects/.github remote> feature-ideation/<channel> --force`),
-> not this repo's `origin`. The exact remote/target for the automated path is an
-> open question — `cut-release.sh` refuses a live `feature-ideation` cut until it
+> (`git push <petry-projects/.github remote> <agent>/<channel> --force`), not this
+> repo's `origin`. The exact remote/target for the automated path is an open
+> question — `cut-release.sh` refuses a live cut for any cross-repo agent until it
 > is resolved; preview with `--dry-run`.
 
 Then **verify** (§4).
@@ -184,9 +190,9 @@ git push origin pr-review/stable --force
 
 - The immutable `vX.Y.Z` tags are the rollback targets — pick the last release
   known healthy (`git tag -l 'pr-review/v*' | sort -V`).
-- For `feature-ideation`, the same reverse-tag-move applies but against
-  `petry-projects/.github` (where its `feature-ideation/v*` and channel tags
-  live), not this repo — see the cross-repo note in §2b.
+- For the cross-repo agents (`feature-ideation` + the six #482 reusables), the
+  same reverse-tag-move applies but against `petry-projects/.github` (where their
+  `<agent>/v*` and channel tags live), not this repo — see the cross-repo note in §2b.
 - Every caller picks up the rolled-back version on its **next** run with no
   change on their side. In-flight runs already started on the bad version finish;
   new runs use the restored one.
