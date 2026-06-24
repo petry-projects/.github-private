@@ -150,5 +150,5 @@ jobs:
           persist-credentials: false
       - name: Install PyYAML
         run: python3 -m pip install --quiet pyyaml
-      - name: Validate auto-rebase.yml uses @v1 (not a SHA)
+      - name: Validate auto-rebase.yml uses @auto-rebase/stable (not a SHA or frozen tag)
         run: python3 tests/dev-lead/integration/test_auto_rebase_stub.py
