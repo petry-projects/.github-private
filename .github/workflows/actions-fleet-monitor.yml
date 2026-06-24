@@ -74,6 +74,90 @@ jobs:
           GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
         run: bash scripts/fleet_monitor.sh
 
+      - name: Summarize token usage by workflow
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
+          REPO: petry-projects/.github-private
+          LOOKBACK_DAYS: ${{ env.LOOKBACK_DAYS }}
+        run: |
+          set -euo pipefail
+
+          workdir="$(mktemp -d)"
+          trap 'rm -rf "$workdir"' EXIT
+          jsonl_dir="$workdir/jsonl"
+          artifacts_file="$workdir/token-artifacts.base64"
+          mkdir -p "$jsonl_dir"
+
+          cutoff_epoch="$(date -u -d "-${LOOKBACK_DAYS} days" +%s)"
+          artifact_count=0
+
+          gh api "repos/$REPO/actions/artifacts" --paginate \
+            --jq '.artifacts[] | select(.name | startswith("token-usage-")) | @base64' \
+            > "$artifacts_file"
+
+          while IFS= read -r encoded; do
+            [ -n "$encoded" ] || continue
+            item="$(printf '%s' "$encoded" | base64 -d)"
+            id="$(printf '%s' "$item" | jq -r '.id')"
+            created_at="$(printf '%s' "$item" | jq -r '.created_at')"
+            expired="$(printf '%s' "$item" | jq -r '.expired')"
+            created_epoch="$(date -u -d "$created_at" +%s)"
+
+            if [ "$expired" = "true" ] || [ "$created_epoch" -lt "$cutoff_epoch" ]; then
+              continue
+            fi
+
+            zip_file="$workdir/artifact-$id.zip"
+            unzip_dir="$workdir/unzip-$id"
+            mkdir -p "$unzip_dir"
+            gh api "repos/$REPO/actions/artifacts/$id/zip" > "$zip_file"
+            unzip -q -o "$zip_file" -d "$unzip_dir"
+
+            found_any=false
+            while IFS= read -r f; do
+              found_any=true
+              cp "$f" "$jsonl_dir/${id}-$(basename "$f")"
+            done < <(find "$unzip_dir" -type f -name '*.jsonl' -print)
+
+            if [ "$found_any" = true ]; then
+              artifact_count=$((artifact_count + 1))
+            fi
+          done < "$artifacts_file"
+
+          if ! find "$jsonl_dir" -type f -name '*.jsonl' | grep -q .; then
+            {
+              echo "## Token usage (${LOOKBACK_DAYS} day lookback)"
+              echo
+              echo "No token-usage artifacts found in the lookback window."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          aggregate="$workdir/token-usage-summary.json"
+          jq -s '
+            sort_by(.workflow) |
+            group_by(.workflow) |
+            map({
+              workflow: (.[0].workflow // "unknown"),
+              calls: length,
+              input_tokens: (map(.input_tokens // 0) | add),
+              cache_read_tokens: (map(.cache_read_tokens // 0) | add),
+              output_tokens: (map(.output_tokens // 0) | add),
+              et: (map(.et // 0) | add)
+            }) |
+            sort_by(.et) | reverse
+          ' "$jsonl_dir"/*.jsonl > "$aggregate"
+
+          {
+            echo "## Token usage (${LOOKBACK_DAYS} day lookback)"
+            echo
+            echo "Processed ${artifact_count} token-usage artifact(s)."
+            echo
+            echo "| Workflow | Calls | Input Tokens | Cache Read Tokens | Output Tokens | Total ET |"
+            echo "|---|---:|---:|---:|---:|---:|"
+            jq -r '.[] | "| \(.workflow) | \(.calls) | \(.input_tokens) | \(.cache_read_tokens) | \(.output_tokens) | \(.et | tostring) |"' "$aggregate"
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Create issue with findings
         if: env.HAS_FAILURES == 'true' && hashFiles('fleet_monitor_report.md') != ''
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
