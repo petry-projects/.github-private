@@ -48,5 +48,5 @@ setup() {
 }
 
 @test "feature-ideation.yml forwards enhance_backlog to the reusable workflow" {
-  grep -qF 'enhance_backlog: ${{ inputs.enhance_backlog || false }}' "$FEATURE_IDEATION_YML"
+  grep -qE 'enhance_backlog:[[:space:]]*"?\$\{\{[[:space:]]*inputs\.enhance_backlog[[:space:]]*\|\|[[:space:]]*false[[:space:]]*\}\}"?' "$FEATURE_IDEATION_YML"
 }
