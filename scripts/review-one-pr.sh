@@ -28,6 +28,9 @@ source "$SCRIPT_DIR/engine.sh"
 # Cycle-cap helpers: compute_review_cycle, has_escalation_marker (issue #467).
 # shellcheck source=lib/review-cycle.sh
 source "$SCRIPT_DIR/lib/review-cycle.sh"
+# Per-PR automation budget: enforce_pr_budget (issue #926).
+# shellcheck source=lib/pr-automation-budget.sh
+source "$SCRIPT_DIR/lib/pr-automation-budget.sh"
 # CI gate: compute_ci_status filters own check runs before classifying (issue #469).
 # shellcheck source=lib/ci-status.sh
 source "$SCRIPT_DIR/lib/ci-status.sh"
@@ -329,11 +332,13 @@ fi
 # re-engaging after escalation, grants a fresh budget of MAX_REVIEW_CYCLES.
 # Reuse the snapshot fetched at the top of the script instead of a second
 # `gh pr view` round-trip (review feedback: saves an API call per PR).
+# author/state are carried so compute_review_cycle can human-gate the reset
+# (#926): only a human approval (review state=APPROVED by a non-bot) resets.
 PR_ITEMS=$(
   echo "$PR_SNAPSHOT" | jq '
-    ((.reviews  // [] | map({when: .submittedAt, body: .body})) +
-     (.comments // [] | map({when: .createdAt,   body: .body})))
-    | map(select(.body != null))' 2>/dev/null || echo '[]'
+    ((.reviews  // [] | map({when: .submittedAt, body: .body, author: (.author?.login // ""), state: .state})) +
+     (.comments // [] | map({when: .createdAt,   body: .body, author: (.author?.login // ""), state: null})))
+    | map(select(.body != null or .state != null))' 2>/dev/null || echo '[]'
 )
 REVIEW_CYCLE=$(compute_review_cycle "$PR_ITEMS")
 export REVIEW_CYCLE
@@ -389,7 +394,7 @@ if [ "${FORCE_REVIEW:-false}" != "true" ] && [ "$REVIEW_CYCLE" -ge "$MAX_CYCLES"
 
 This PR has been through $REVIEW_CYCLE automated review cycles since the last approval or escalation (cap: $MAX_CYCLES) without converging. Further automated review has been paused to avoid infinite loops.
 
-Please take a look manually, or close this PR if it's no longer needed. To re-engage the automated cascade with a fresh cycle budget, either remove the \`needs-human-review\` label, or mention the bot (e.g. \`@${BOT_USER:-donpetry-bot} review\`) for an immediate re-review.
+Please take a look manually, or close this PR if it's no longer needed. To re-engage the automated cascade with a fresh cycle budget, a human should remove the \`needs-human-review\` label after reviewing. Re-engagement is intentionally human-gated (#926): mentioning the bot will not reset the cap.
 
 _Posted by the ${BOT_USER:-donpetry-bot} PR-review cascade._
 ESCALATION_END
@@ -400,6 +405,22 @@ ESCALATION_END
   fi
   echo "{\"pr\":\"$PR_URL\",\"sha\":\"$PR_HEAD_SHA\",\"decision\":\"escalate\",\"reason\":\"max-cycles-reached\"}"
   exit 100
+fi
+
+# Per-PR automation budget (#926): bound TOTAL automated activity on this PR over
+# its lifetime — agent commits + review cycles + acks since the last human
+# interaction. Unlike the cycle cap, FORCE_REVIEW does NOT bypass this: the self-
+# mention ack that defeated every other guard must not be able to re-arm it. Only
+# a human interaction resets the budget. On exhaustion enforce_pr_budget escalates
+# once (deduped comment + needs-human-review + auto-merge off) and we stop.
+if [ "${DRY_RUN:-false}" != "true" ]; then
+  PR_BUDGET_NUMBER=$(echo "$PR_URL" | sed -E 's|.*/pull/([0-9]+).*|\1|')
+  PR_BUDGET_REPO=$(echo "$PR_URL" | sed -E 's|https://github.com/([^/]+/[^/]+)/pull/.*|\1|')
+  if enforce_pr_budget "$PR_BUDGET_NUMBER" "$PR_BUDGET_REPO"; then
+    echo "    cap: per-PR automation budget exhausted — halting automated review (escalated to human)"
+    echo "{\"pr\":\"$PR_URL\",\"sha\":\"$PR_HEAD_SHA\",\"decision\":\"escalate\",\"reason\":\"automation-budget-exhausted\"}"
+    exit 100
+  fi
 fi
 
 # Detect if the PR's repo org supports AI delegation for automated fix requests.
