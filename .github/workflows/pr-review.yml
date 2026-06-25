@@ -426,12 +426,29 @@ jobs:
       # threads the deep/audit-only MCP knobs into $GITHUB_ENV. A missing tool
       # degrades gracefully (::warning:: + skip) — it never fails the workflow.
       # Pins/candidate are overridable via repo variables; see docs/lsp-pilot.md.
+      # Cache the LSP toolchain/index across ephemeral runs (story #846) so a warm
+      # run restores under the 30s cold-start SLA instead of re-installing. Keyed on
+      # OS + candidate + pinned tool versions + a hash of the indexed Shell sources
+      # (the "relevant lockfile" for a Shell-only index). SHA-pinned to the same
+      # actions/cache the Claude CLI cache above uses. Opt-in behind LSP_PILOT_ENABLED;
+      # its cache-hit output is threaded into the setup step for the cold-start metric.
+      - name: Cache LSP index
+        id: lsp-cache
+        if: ${{ vars.LSP_PILOT_ENABLED == 'true' }}
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ~/.local
+          key: lsp-pilot-${{ runner.os }}-${{ vars.LSP_CANDIDATE || 'agent-lsp' }}-${{ vars.AGENT_LSP_VERSION || 'v0.15.0' }}-bls${{ vars.BASH_LANGUAGE_SERVER_VERSION || '5.6.0' }}-${{ hashFiles('scripts/**/*.sh', '**/package-lock.json') }}
+          restore-keys: |
+            lsp-pilot-${{ runner.os }}-${{ vars.LSP_CANDIDATE || 'agent-lsp' }}-${{ vars.AGENT_LSP_VERSION || 'v0.15.0' }}-bls${{ vars.BASH_LANGUAGE_SERVER_VERSION || '5.6.0' }}-
+
       - name: Set up LSP pilot servers (opt-in)
         if: ${{ vars.LSP_PILOT_ENABLED == 'true' }}
         env:
           LSP_CANDIDATE: ${{ vars.LSP_CANDIDATE || 'agent-lsp' }}
           AGENT_LSP_VERSION: ${{ vars.AGENT_LSP_VERSION || 'v0.15.0' }}
           BASH_LANGUAGE_SERVER_VERSION: ${{ vars.BASH_LANGUAGE_SERVER_VERSION || '5.6.0' }}
+          LSP_INDEX_CACHE_HIT: ${{ steps.lsp-cache.outputs.cache-hit }}
         run: bash scripts/setup-lsp-pilot.sh
 
       - name: Enumerate candidate PRs
