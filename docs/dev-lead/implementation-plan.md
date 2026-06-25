@@ -809,6 +809,10 @@ Scanned on every `fix-reviews` trigger before acting.
 
 ### 4.2 Unit tests: `test_fix_reviews_human.bats` (5 cases)
 
+Test cases cover: `@dev-lead` mention parsing, intent dispatch, rename/edit/delete operations, dry-run guard, and comment-reply confirmation.
+
+### 4.3 Unit tests: `test_fix_rebase.bats` (6 cases)
+
 ```bash
 @test "rebase: YAML SHA conflict resolved by preferring newer SHA" {
   # Set up a fake conflict in a .yml file
@@ -848,7 +852,6 @@ EOF
 - [ ] All unit tests pass (11 cases)
 - [ ] Human `@dev-lead rename foo to bar` on test PR → rename applied and pushed
 - [ ] Rebase sentinel on test PR with YAML conflict → conflict resolved correctly
-- [ ] All unit tests pass
 
 ---
 

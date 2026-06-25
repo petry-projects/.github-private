@@ -50,9 +50,6 @@ cat > /tmp/cascade/review-body.txt << 'BODYEOF'
 ### Summary
 PLACEHOLDER_SUMMARY
 
-### Cross-engine agreement (if deep+duck)
-<If tier is deep+duck and agreement field exists, include this section>
-
 ### Findings
 PLACEHOLDER_FINDINGS_LIST
 
@@ -82,23 +79,12 @@ FINDINGS_TEXT=$(echo "$FINDINGS" | jq -r '.[] | "- **\(.severity // "INFO")**: \
 sed -i "s|PLACEHOLDER_FINDINGS_LIST|$FINDINGS_TEXT|g" /tmp/cascade/review-body.txt
 ```
 
-If `$DOWNSTREAM_IMPACT_FILE` is set, the file exists, and its contents are not the
-literal `(none)`, insert a **Downstream impact** section before Findings so the
-reviewer sees the blast radius right in the verdict (issue #752). When the block
-is absent or `(none)`, add nothing — the body must carry no downstream note:
+If `$AGREEMENT` is non-empty and `$FINAL_TIER` is `deep+duck`, insert a **Cross-engine agreement** section before Findings:
 ```bash
-if [ -n "${DOWNSTREAM_IMPACT_FILE:-}" ] && [ -f "$DOWNSTREAM_IMPACT_FILE" ]; then
-  DI_BLOCK=$(cat "$DOWNSTREAM_IMPACT_FILE")
-  if [ -n "${DI_BLOCK//[[:space:]]/}" ] && [ "$DI_BLOCK" != "(none)" ]; then
-    # Count impacted consumer repos (lines naming a "<owner>/<repo> (pins ...)").
-    DI_COUNT=$(printf '%s\n' "$DI_BLOCK" | grep -cE '^[[:space:]]*- .+ \(pins ' || true)
-    DI_NOTE="This change is consumed by ${DI_COUNT} downstream repo(s) that pin the affected reusable workflow / lib / prompt. Impacted consumers:"$'\n'"\`\`\`"$'\n'"${DI_BLOCK}"$'\n'"\`\`\`"
-    # Write the note to a temp file and splice it in (avoids sed metachar issues
-    # with the multi-line block).
-    printf '### Downstream impact\n%s\n\n### Findings\n' "$DI_NOTE" > /tmp/cascade/di-section.txt
-    awk 'BEGIN{while((getline l < "/tmp/cascade/di-section.txt")>0) s=s l "\n"} /^### Findings$/{if(s != "") printf "%s", s; else print; next} {print}' \
-      /tmp/cascade/review-body.txt > /tmp/cascade/review-body.tmp && mv /tmp/cascade/review-body.tmp /tmp/cascade/review-body.txt
-  fi
+if [ -n "$AGREEMENT" ] && [ "$FINAL_TIER" = "deep+duck" ]; then
+  printf '### Cross-engine agreement\n%s\n\n' "$AGREEMENT" > /tmp/cascade/agreement.txt
+  awk 'BEGIN{while((getline l < "/tmp/cascade/agreement.txt")>0) s=s l "\n"} /^### Findings$/{if(s != "") printf "%s", s; else print; next} {print}' \
+    /tmp/cascade/review-body.txt > /tmp/cascade/review-body.tmp && mv /tmp/cascade/review-body.tmp /tmp/cascade/review-body.txt
 fi
 ```
 
@@ -153,15 +139,18 @@ if [ "$MERGE_STATE" = "BEHIND" ]; then
   # If still BEHIND, skip auto-merge (will retry next cycle)
   if [ "$MERGE_STATE" = "BEHIND" ]; then
     echo "PR still BEHIND after rebase wait, skipping auto-merge"
+    echo "{\"pr\":\"$PR_URL\",\"sha\":\"$PR_HEAD_SHA\",\"risk\":\"$RISK\",\"decision\":\"$DECISION\",\"tier\":\"$FINAL_TIER\",\"delegated_to\":\"\",\"posted\":false,\"retryable\":true}"
     exit 0
   fi
 fi
 
-# Step 3: Enable auto-merge (CRITICAL: this triggers the merge once all checks pass)
-gh pr merge "$PR_URL" --auto --squash 2>/dev/null || true
+if [ "$DECISION" = "approve" ]; then
+  # Step 3: Enable auto-merge (CRITICAL: this triggers the merge once all checks pass)
+  gh pr merge "$PR_URL" --auto --squash 2>/dev/null || true
 
-# Step 4: Clean up label
-gh pr edit "$PR_URL" --remove-label needs-human-review 2>/dev/null || true
+  # Step 4: Clean up label
+  gh pr edit "$PR_URL" --remove-label needs-human-review 2>/dev/null || true
+fi
 ```
 
 If `decision` is `"escalate"`:
@@ -198,7 +187,16 @@ fi
 ```
 6. Print status JSON (always, even in dry-run):
 ```bash
-echo "{\"pr\":\"$PR_URL\",\"sha\":\"$PR_HEAD_SHA\",\"risk\":\"$RISK\",\"decision\":\"$DECISION\",\"tier\":\"$FINAL_TIER\",\"delegated_to\":\"$([ \"$AI_DELEGATION_ENABLED\" = \"true\" ] && echo 'ai' || echo 'human')\",\"posted\":true}"
+if [ "$DECISION" = "escalate" ]; then
+  if [ "$AI_DELEGATION_ENABLED" = "true" ] && [ "$REVIEW_CYCLE" -lt "$MAX_REVIEW_CYCLES" ] && [ "$RISK" != "HIGH" ]; then
+    DELEGATED_TO="ai"
+  else
+    DELEGATED_TO="human"
+  fi
+else
+  DELEGATED_TO=""
+fi
+echo "{\"pr\":\"$PR_URL\",\"sha\":\"$PR_HEAD_SHA\",\"risk\":\"$RISK\",\"decision\":\"$DECISION\",\"tier\":\"$FINAL_TIER\",\"delegated_to\":\"$DELEGATED_TO\",\"posted\":true}"
 ```
 
 Then exit with code 0.
