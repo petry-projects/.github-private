@@ -24,6 +24,11 @@ on:
         required: false
         default: "false"
         type: string
+      agent_ref:
+        description: "Git ref (branch/tag/SHA) of petry-projects/.github-private to check out for scripts. Empty defaults to main."
+        required: false
+        default: ""
+        type: string
   repository_dispatch:
     # Triggered by the petry-projects/.github mention-listener workflow.
     # Requires only Contents: write on this repo (not Actions: write).
