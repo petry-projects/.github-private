@@ -39,6 +39,10 @@ JSON
   # The script's de-dup looks up the single open tracking issue by stable title.
   # Keep this title in lock-step with notify-eval-health.sh (per-skill TITLE).
   TITLE='Skill eval health — `triage` (holdout)'
+  # The infra-error tracker is a SEPARATE issue (distinct title + label) so a
+  # throttle/outage (outcome=error, #920) never opens or updates the held-out
+  # regression tracker above.
+  TITLE_INFRA='Skill eval infra error — `triage` (holdout)'
   # JSON the stub returns for `issue list`: empty by default; tests opt into an
   # "existing open issue" by setting GH_LIST_JSON to a matching-title array.
   EXISTING_JSON="$(jq -nc --arg t "$TITLE" '[{"number":42,"title":$t}]')"
@@ -81,6 +85,8 @@ run_notify() {
 
 # A `gh issue list` JSON payload with one matching-title open issue numbered $1.
 mklist() { jq -nc --arg t "$TITLE" --argjson n "$1" '[{number:$n,title:$t}]'; }
+# Same, but titled as the infra-error tracker (#920).
+mklist_infra() { jq -nc --arg t "$TITLE_INFRA" --argjson n "$1" '[{number:$n,title:$t}]'; }
 
 # --- regression: open / update / de-dupe ------------------------------------
 
@@ -118,21 +124,42 @@ mklist() { jq -nc --arg t "$TITLE" --argjson n "$1" '[{number:$n,title:$t}]'; }
   grep -q "actions/runs/999" "$GH_LOG"
 }
 
-# --- error: still visible (never silent) ------------------------------------
+# --- error: separate infra tracker, never the regression tracker (#920) ------
 
-@test "error outcome opens the tracking issue even with an unparseable report" {
+@test "error opens a SEPARATE infra tracker (eval-infra label), not the regression tracker (#920)" {
   echo 'not json' >"$REPORT"
   run_notify OUTCOME="error"
   [ "$status" -eq 0 ]
   grep -q "ARGS: issue create" "$GH_LOG"
+  # Opened under the infra label; the regression label is never used on an error.
+  grep -q -- "--label eval-infra" "$GH_LOG"
+  ! grep -q -- "--label eval-health" "$GH_LOG"
 }
 
-@test "error outcome with an existing issue updates it (de-dupe, not silent)" {
+@test "error with an existing infra issue updates it in place (de-dupe, not silent)" {
   echo 'not json' >"$REPORT"
-  run_notify OUTCOME="error" "GH_LIST_JSON=$(mklist 7)"
+  run_notify OUTCOME="error" "GH_LIST_JSON=$(mklist_infra 7)"
   [ "$status" -eq 0 ]
   grep -q "ARGS: issue edit 7" "$GH_LOG"
   ! grep -q "ARGS: issue create" "$GH_LOG"
+}
+
+@test "error never edits or closes an open held-out REGRESSION tracker (#920)" {
+  echo 'not json' >"$REPORT"
+  # A regression tracker (#99) is open; an infra error must leave it untouched
+  # and instead open its own infra tracker.
+  run_notify OUTCOME="error" "GH_LIST_JSON=$(mklist 99)"
+  [ "$status" -eq 0 ]
+  ! grep -q "ARGS: issue edit 99" "$GH_LOG"
+  ! grep -q "ARGS: issue close 99" "$GH_LOG"
+  grep -q "ARGS: issue create" "$GH_LOG"
+}
+
+@test "error body labels the outcome as infra, not a regression (#920)" {
+  echo 'not json' >"$REPORT"
+  run_notify OUTCOME="error"
+  [ "$status" -eq 0 ]
+  grep -qi "infra" "$GH_LOG"
 }
 
 # --- pass: recovery closes; healthy makes no noise --------------------------
@@ -150,6 +177,13 @@ mklist() { jq -nc --arg t "$TITLE" --argjson n "$1" '[{number:$n,title:$t}]'; }
   ! grep -q "ARGS: issue create" "$GH_LOG"
   ! grep -q "ARGS: issue comment" "$GH_LOG"
   ! grep -q "ARGS: issue close" "$GH_LOG"
+}
+
+@test "pass closes an open infra tracker too (outage recovery, #920)" {
+  run_notify OUTCOME="pass" "GH_LIST_JSON=$(mklist_infra 88)"
+  [ "$status" -eq 0 ]
+  grep -q "ARGS: issue comment 88" "$GH_LOG"
+  grep -q "ARGS: issue close 88" "$GH_LOG"
 }
 
 # --- guards ------------------------------------------------------------------
