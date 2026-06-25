@@ -84,6 +84,10 @@ else
   failure_rate="0.0"
 fi
 
+if [ "$failed_runs" -gt 0 ] && [ -n "${GITHUB_ENV:-}" ]; then
+  echo "HAS_FAILURES=true" >> "$GITHUB_ENV"
+fi
+
 # Duration percentiles across all completed runs (computed but not surfaced in the
 # LLM prompt — reserved for future structured-report use).
 # shellcheck disable=SC2034
