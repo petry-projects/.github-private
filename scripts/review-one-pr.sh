@@ -336,8 +336,8 @@ fi
 # (#926): only a human approval (review state=APPROVED by a non-bot) resets.
 PR_ITEMS=$(
   echo "$PR_SNAPSHOT" | jq '
-    ((.reviews  // [] | map({when: .submittedAt, body: .body, author: (.author.login // ""), state: .state})) +
-     (.comments // [] | map({when: .createdAt,   body: .body, author: (.author.login // ""), state: null})))
+    ((.reviews  // [] | map({when: .submittedAt, body: .body, author: (.author?.login // ""), state: .state})) +
+     (.comments // [] | map({when: .createdAt,   body: .body, author: (.author?.login // ""), state: null})))
     | map(select(.body != null or .state != null))' 2>/dev/null || echo '[]'
 )
 REVIEW_CYCLE=$(compute_review_cycle "$PR_ITEMS")
@@ -414,7 +414,7 @@ fi
 # a human interaction resets the budget. On exhaustion enforce_pr_budget escalates
 # once (deduped comment + needs-human-review + auto-merge off) and we stop.
 if [ "${DRY_RUN:-false}" != "true" ]; then
-  PR_BUDGET_NUMBER="${PR_URL##*/}"
+  PR_BUDGET_NUMBER=$(echo "$PR_URL" | sed -E 's|.*/pull/([0-9]+).*|\1|')
   PR_BUDGET_REPO=$(echo "$PR_URL" | sed -E 's|https://github.com/([^/]+/[^/]+)/pull/.*|\1|')
   if enforce_pr_budget "$PR_BUDGET_NUMBER" "$PR_BUDGET_REPO"; then
     echo "    cap: per-PR automation budget exhausted — halting automated review (escalated to human)"

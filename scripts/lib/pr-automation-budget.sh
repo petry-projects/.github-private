@@ -78,11 +78,11 @@ gather_pr_automation_events() {
   local pr="$1" repo="$2"
   local comments commits reviews
   comments=$(gh api --paginate "repos/${repo}/issues/${pr}/comments?per_page=100" 2>/dev/null \
-    | jq '[.[] | {when: .created_at, login: (.user.login // "")}]' 2>/dev/null) || comments='[]'
+    | jq -s '[.[][] | {when: .created_at, login: (.user?.login // "")}]' 2>/dev/null) || comments='[]'
   commits=$(gh api --paginate "repos/${repo}/pulls/${pr}/commits?per_page=100" 2>/dev/null \
-    | jq '[.[] | {when: (.commit.author.date // .commit.committer.date), login: (.author.login // .commit.author.name // "")}]' 2>/dev/null) || commits='[]'
+    | jq -s '[.[][] | {when: (.commit?.author?.date // .commit?.committer?.date), login: (.author?.login // .commit?.author?.name // "")}]' 2>/dev/null) || commits='[]'
   reviews=$(gh api --paginate "repos/${repo}/pulls/${pr}/reviews?per_page=100" 2>/dev/null \
-    | jq '[.[] | {when: .submitted_at, login: (.user.login // "")}]' 2>/dev/null) || reviews='[]'
+    | jq -s '[.[][] | {when: .submitted_at, login: (.user?.login // "")}]' 2>/dev/null) || reviews='[]'
   jq -n --argjson a "${comments:-[]}" --argjson b "${commits:-[]}" --argjson c "${reviews:-[]}" \
     '$a + $b + $c' 2>/dev/null || echo '[]'
 }
@@ -102,7 +102,7 @@ pr_automation_already_escalated() {
 #   the PR resets the budget (see compute_pr_automation_cycles).
 pr_automation_escalate() {
   local pr="$1" repo="$2"
-  if [ "${DEV_LEAD_DRY_RUN:-false}" = "true" ]; then
+  if [ "${DEV_LEAD_DRY_RUN:-false}" = "true" ] || [ "${DRY_RUN:-false}" = "true" ]; then
     echo "[dry-run] would escalate PR #${pr}: post budget-exhaustion comment, add needs-human-review, disable auto-merge"
     return 0
   fi
