@@ -57,6 +57,35 @@ echo 'This PR looks fine to me, I would approve it.'
 SH
   chmod +x "$STUB_PROSE"
 
+  # Stub engine that always THROTTLES: exits non-zero after emitting no parseable
+  # output — mimics every model in engine.sh's fallback chain being throttled
+  # (#920). The non-zero EXIT is the infra signal the scorer must read so a
+  # transient outage scores as an infra error (exit 2), not a regression.
+  STUB_THROTTLE="$TMP/stub_throttle.sh"
+  cat >"$STUB_THROTTLE" <<'SH'
+#!/usr/bin/env bash
+echo '::warning::[claude] all models throttled (rc=1)' >&2
+exit 1
+SH
+  chmod +x "$STUB_THROTTLE"
+
+  # Stub engine for a MIXED run: answers the approve case correctly (rc 0) but
+  # throttles the escalate case (rc!=0, no output). Used to pin the deterministic
+  # rule for a partially-throttled run.
+  STUB_MIXED="$TMP/stub_mixed.sh"
+  cat >"$STUB_MIXED" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+prompt="$1"
+if grep -q MARKER_APPROVE "$prompt"; then
+  echo '{"escalate": false, "risk": "LOW", "signals": [], "summary": "docs only"}'
+  exit 0
+fi
+echo '::warning::[claude] all models throttled (rc=1)' >&2
+exit 1
+SH
+  chmod +x "$STUB_MIXED"
+
   # Stub engine that wraps its (correct) JSON decision in a ```json markdown
   # fence — the live Haiku-tier output the strict parser used to reject, which
   # produced the production triage 0/5 (every case `got null`, #762).
@@ -136,6 +165,60 @@ teardown() { rm -rf "$TMP"; }
   esc="$(jq -c '.cases[] | select(.id=="case-escalate")' <<<"$output")"
   [ "$(jq -r '.actual.escalate' <<<"$esc")" = "true" ]
   [ "$(jq -r '.actual.risk'     <<<"$esc")" = "HIGH" ]
+}
+
+# --- infra failure vs. quality regression (throttle classification, #920) ------
+#
+# A throttle (every model in the engine fallback chain exits non-zero) means the
+# skill was never actually scored — it must NOT read as a held-out regression.
+# The scorer captures the engine's per-case exit status (engine_rc) and, when
+# every failing case is an infra failure, exits 2 (-> outcome=error) instead of 1
+# (-> regression). A genuine quality miss (engine exits 0, output wrong) is
+# unchanged: exit 1.
+
+@test "all-throttled run (every engine call exits non-zero) is an infra error -> exit 2 (#920)" {
+  EVALS_DIR="$TMP/evals" EVAL_ENGINE_CMD="$STUB_THROTTLE" \
+    run --separate-stderr bash "$SCORER" triage
+  [ "$status" -eq 2 ]
+  # Both cases failed and every failing case carries a non-zero engine_rc.
+  [ "$(jq '.failed' <<<"$output")" -eq 2 ]
+  [ "$(jq '[.cases[] | select(.engine_rc != 0)] | length' <<<"$output")" -eq 2 ]
+}
+
+@test "mixed run (one answered, one throttled) classifies as infra error -> exit 2 (#920)" {
+  EVALS_DIR="$TMP/evals" EVAL_ENGINE_CMD="$STUB_MIXED" \
+    run --separate-stderr bash "$SCORER" triage
+  [ "$status" -eq 2 ]
+  ap="$(jq -c '.cases[] | select(.id=="case-approve")' <<<"$output")"
+  [ "$(jq -r '.pass'      <<<"$ap")" = "true" ]
+  [ "$(jq -r '.engine_rc' <<<"$ap")" = "0" ]
+  esc="$(jq -c '.cases[] | select(.id=="case-escalate")' <<<"$output")"
+  [ "$(jq -r '.pass' <<<"$esc")" = "false" ]
+  [ "$(jq -r '.engine_rc' <<<"$esc")" != "0" ]
+}
+
+@test "a genuine quality miss (engine exits 0, wrong answer) stays a regression -> exit 1 (#920)" {
+  EVALS_DIR="$TMP/evals" EVAL_ENGINE_CMD="$STUB_WRONG" \
+    run --separate-stderr bash "$SCORER" triage
+  [ "$status" -eq 1 ]
+  # The failing case ran the engine successfully (rc 0) — a quality miss, not infra.
+  esc="$(jq -c '.cases[] | select(.id=="case-escalate")' <<<"$output")"
+  [ "$(jq -r '.engine_rc' <<<"$esc")" = "0" ]
+}
+
+@test "unparseable output with a clean engine exit is a regression, not infra -> exit 1 (#920)" {
+  EVALS_DIR="$TMP/evals" EVAL_ENGINE_CMD="$STUB_PROSE" \
+    run --separate-stderr bash "$SCORER" triage
+  [ "$status" -eq 1 ]
+  # Engine exited 0 for every case (the output was just wrong/unparseable).
+  [ "$(jq '[.cases[] | select(.engine_rc == 0)] | length' <<<"$output")" -eq 2 ]
+}
+
+@test "passing cases carry engine_rc 0 (clean response wiring, #920)" {
+  EVALS_DIR="$TMP/evals" EVAL_ENGINE_CMD="$STUB_OK" \
+    run --separate-stderr bash "$SCORER" triage
+  [ "$status" -eq 0 ]
+  [ "$(jq '[.cases[] | select(.engine_rc == 0)] | length' <<<"$output")" -eq 2 ]
 }
 
 @test "aggregate score is passed/total across a mixed set" {
@@ -259,6 +342,9 @@ SH
   # Each case carries a numeric score (AC #3).
   [ "$(jq '.cases[0].score' <<<"$output")" = "1" ]
   [ "$(jq '.cases[].score | numbers' <<<"$output" | wc -l)" -eq 2 ]
+  # …and the engine exit status, so the throttle classification (#920) works in
+  # llm-judge mode too. The skill stub answered cleanly here -> engine_rc 0.
+  [ "$(jq '[.cases[] | select(.engine_rc == 0)] | length' <<<"$output")" -eq 2 ]
 }
 
 @test "llm-judge mode: a sub-threshold score fails the case (exit 1)" {
