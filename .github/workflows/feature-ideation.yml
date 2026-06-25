@@ -65,7 +65,11 @@ on:
         default: false
         type: boolean
       enhance_backlog:
-        description: 'Backfill: sweep this repo''s open, human-authored, not-yet-enhanced Ideas and post exactly one structured enhancement comment each (idempotent via the enhancement marker). Operator-triggered; pair with dry_run=true to preview without posting.'
+        description: >-
+          Backfill: sweep this repo's open, human-authored, not-yet-enhanced Ideas and
+          post exactly one structured enhancement comment each (idempotent via the
+          enhancement marker). Operator-triggered; pair with dry_run=true to preview
+          without posting.
         required: false
         default: false
         type: boolean
