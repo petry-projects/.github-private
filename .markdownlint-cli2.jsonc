@@ -10,6 +10,13 @@
   "config": {
     "default": true,
 
+    // Duplicate headings — allow the same heading text under different parent
+    // sections (e.g. repeated "Per PR / Aggregate / Cold start" sub-sections
+    // in a multi-candidate pilot report).
+    "MD024": {
+      "siblings_only": true
+    },
+
     // Line length — relaxed to cover docs with long tables/URLs.
     // Matches the spirit of the org yamllint config (line-length: 200),
     // but raised higher for investigation reports with long prose lines.
