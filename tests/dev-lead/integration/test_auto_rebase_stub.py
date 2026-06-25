@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Validate that auto-rebase.yml uses the @auto-rebase/stable channel tag, not a SHA or frozen @vX.
+"""Validate that auto-rebase.yml uses the @auto-rebase/next channel tag, not a SHA or frozen @vX.
 
 AGENTS.md §"Release channel tags & the mutable-ref exception" exempts first-party
-reusable workflows from the SHA-pin standard. The correct reference for the
-auto-rebase reusable is the moving channel tag `@auto-rebase/stable`, matching the
+reusable workflows from the SHA-pin standard. This repo (.github-private) is the
+`next` ring tier (epic #495), so the correct reference for the auto-rebase
+reusable is the moving channel tag `@auto-rebase/next` (#870), matching the
 canonical stub at standards/workflows/auto-rebase.yml in petry-projects/.github.
 
 Regression guard: a SHA-pinned or frozen-tag reference is a compliance violation (issue #139).
@@ -20,7 +21,7 @@ except ImportError:
 
 WORKFLOW = ".github/workflows/auto-rebase.yml"
 REUSABLE = "petry-projects/.github/.github/workflows/auto-rebase-reusable.yml"
-EXPECTED_REF = "@auto-rebase/stable"
+EXPECTED_REF = "@auto-rebase/next"
 SHA_PATTERN = re.compile(r"@[0-9a-f]{40}\b")
 
 
