@@ -51,8 +51,23 @@ set -euo pipefail
 #
 # Exit codes:
 #   0  run completed, every case passed
-#   1  run completed, at least one case failed
-#   2  hard error (bad usage / missing prompt or cases file / missing tooling)
+#   1  run completed, at least one case failed on QUALITY (a genuine regression)
+#   2  hard error — bad usage / missing prompt or cases file / missing tooling,
+#      OR an all-infra run where the skill was never actually scored (see below)
+#
+# Infra failure vs. quality regression (#920): each case records the engine's
+# exit status (engine_rc). A failing case whose engine call exited NON-ZERO is an
+# INFRA failure (e.g. every model in engine.sh's fallback chain throttled) — the
+# model never answered, so there is no answer to call right or wrong. A failing
+# case whose engine call exited ZERO is a QUALITY miss (the model answered, but
+# the output was wrong or unparseable). The aggregate exit code, when >=1 case
+# fails, is:
+#   - every failing case is an infra failure (no quality miss anywhere) -> 2
+#     (outcome=error). The held-out set is currently UN-scored; a transient
+#     throttle must NOT open a false held-out regression tracker.
+#   - otherwise (>=1 quality miss) -> 1 (regression), unchanged.
+# A MIXED run with some cases answered (pass) and the rest throttled therefore
+# exits 2: there is no parseable-but-wrong answer to call a regression.
 #
 # Cases are read-only here — the scorer never writes evals/<skill>/holdout/cases.jsonl.
 
@@ -128,12 +143,14 @@ trap 'rm -f "$results" "$work_prompt" "$work_judge"' EXIT
 # lines, exit 1) from tripping `set -e`.
 extract_json() { grep -v $'^[[:space:]]*\x60\x60\x60' <<<"$1" || true; }
 
-# score_deterministic <expected_json> <raw_output> <case_id>
+# score_deterministic <expected_json> <raw_output> <case_id> <engine_rc>
 # Equality scorer (triage). Parses the model output; a non-JSON-object output
 # yields a null actual decision (an automatic failure). Every result carries a
-# numeric `score` (1 pass / 0 fail) so the report shape matches the judge mode.
+# numeric `score` (1 pass / 0 fail) plus the engine exit status `engine_rc` (so
+# an all-infra run can be told apart from a quality regression, #920) so the
+# report shape matches the judge mode.
 score_deterministic() {
-  local expected="$1" raw="$2" cid="$3"
+  local expected="$1" raw="$2" cid="$3" eng_rc="${4:-0}"
   local exp_esc exp_risk actual pass score cleaned raw_excerpt=""
   exp_esc="$(jq -r '.escalate' <<<"$expected")"
   exp_risk="$(jq -r '.risk' <<<"$expected")"
@@ -169,9 +186,10 @@ score_deterministic() {
   # raw_excerpt is attached ONLY when the output failed to parse (actual=null), so
   # passing/mismatch cases keep the lean shape the report and tests expect.
   jq -cn --arg id "$cid" --argjson pass "$pass" --argjson score "$score" \
+        --argjson engine_rc "$eng_rc" \
         --argjson exp_esc "$exp_esc" --arg exp_risk "$exp_risk" \
         --argjson actual "$actual" --arg raw_excerpt "$raw_excerpt" \
-        '{id:$id, score:$score, pass:$pass, expected:{escalate:$exp_esc, risk:$exp_risk}, actual:$actual}
+        '{id:$id, score:$score, pass:$pass, engine_rc:$engine_rc, expected:{escalate:$exp_esc, risk:$exp_risk}, actual:$actual}
          + (if $raw_excerpt == "" then {} else {raw_excerpt: $raw_excerpt} end)'
 }
 
@@ -182,7 +200,7 @@ score_deterministic() {
 # judge engine (default run_triage), and parses its numeric `score`. Judge output
 # that is not a JSON object with a numeric `score` scores 0 (an automatic failure).
 score_llm_judge() {
-  local expected="$1" candidate="$2" cid="$3"
+  local expected="$1" candidate="$2" cid="$3" eng_rc="${4:-0}"
   local judge_raw judge_obj score pass
 
   {
@@ -216,9 +234,10 @@ score_llm_judge() {
   fi
 
   jq -cn --arg id "$cid" --argjson score "$score" --argjson pass "$pass" \
+        --argjson engine_rc "$eng_rc" \
         --argjson expected "$expected" --argjson judge "$judge_obj" \
         --arg candidate "$candidate" \
-        '{id:$id, score:$score, pass:$pass, expected:$expected, judge:$judge, candidate:$candidate}'
+        '{id:$id, score:$score, pass:$pass, engine_rc:$engine_rc, expected:$expected, judge:$judge, candidate:$candidate}'
 }
 
 while IFS= read -r line; do
@@ -236,15 +255,18 @@ while IFS= read -r line; do
   } >"$work_prompt"
 
   # Invoke the skill through the engine command (default run_triage). Capture
-  # stdout (the model decision); engine diagnostics flow to our stderr. A
-  # non-zero engine exit leaves $raw empty -> scored as a failure.
-  raw=""
-  raw="$("$EVAL_ENGINE_CMD" "$work_prompt")" || raw=""
+  # stdout (the model decision); engine diagnostics flow to our stderr. Preserve
+  # the engine's exit status (eng_rc): a NON-ZERO exit means the call failed for
+  # infra reasons (e.g. every model in the fallback chain throttled) — the only
+  # signal that distinguishes a throttle from a model that answered wrong (#920).
+  raw=""; eng_rc=0
+  raw="$("$EVAL_ENGINE_CMD" "$work_prompt")" || eng_rc=$?
 
-  # Dispatch on the per-skill scorer mode — never on the skill name.
+  # Dispatch on the per-skill scorer mode — never on the skill name. eng_rc is
+  # threaded through so each case result records whether the engine actually ran.
   case "$SCORER_MODE" in
-    deterministic) score_deterministic "$expected" "$raw" "$cid" >>"$results" ;;
-    llm-judge)     score_llm_judge     "$expected" "$raw" "$cid" >>"$results" ;;
+    deterministic) score_deterministic "$expected" "$raw" "$cid" "$eng_rc" >>"$results" ;;
+    llm-judge)     score_llm_judge     "$expected" "$raw" "$cid" "$eng_rc" >>"$results" ;;
   esac
 done <"$cases_file"
 
@@ -259,5 +281,17 @@ jq -s --arg skill "$skill" '
     cases:  .
   }' "$results"
 
+# Decide the exit code. Classify failing cases as infra (engine exited non-zero —
+# throttle/outage, the model never answered) vs. quality (engine exited zero but
+# the answer was wrong/unparseable). If EVERY failing case is infra, the skill
+# was never actually scored: exit 2 -> outcome=error, so a transient throttle
+# cannot open a false held-out regression (#920). Any quality miss keeps exit 1.
 failed="$(jq -s 'map(select(.pass | not)) | length' "$results")"
-[ "$failed" -eq 0 ]
+if [ "$failed" -eq 0 ]; then
+  exit 0
+fi
+quality_failed="$(jq -s 'map(select((.pass | not) and ((.engine_rc // 0) == 0))) | length' "$results")"
+if [ "$quality_failed" -eq 0 ]; then
+  exit 2
+fi
+exit 1
