@@ -50,6 +50,9 @@ RUN_URL="${RUN_URL:-}"
 EVAL_HEALTH_LABEL="${EVAL_HEALTH_LABEL:-eval-health}"
 EVAL_INFRA_LABEL="${EVAL_INFRA_LABEL:-eval-infra}"
 
+command -v jq >/dev/null 2>&1 || { echo "::error::notify-eval-health: jq is required but not installed" >&2; exit 1; }
+command -v gh >/dev/null 2>&1 || { echo "::error::notify-eval-health: gh is required but not installed" >&2; exit 1; }
+
 case "$OUTCOME" in
   pass|regression|error) ;;
   *) echo "::error::notify-eval-health: unknown OUTCOME '$OUTCOME' (expected pass|regression|error)" >&2; exit 1 ;;
@@ -69,6 +72,10 @@ _is_dry_run() { [[ "${DRY_RUN:-0}" == "1" || "${DRY_RUN:-0}" == "true" ]]; }
 # does the title de-dup so the expression is unambiguous (no reliance on gh's
 # embedded jq arg passing).
 find_existing() {
+  if [ "$#" -lt 2 ]; then
+    echo "::error::find_existing requires title and label" >&2
+    exit 1
+  fi
   local title="$1" label="$2"
   if _is_dry_run; then
     printf '%s' "${DRY_RUN_EXISTING:-}"
@@ -125,8 +132,12 @@ render_body() {
 
 # _recover <issue_number> — comment a recovery note on the issue and close it.
 _recover() {
+  if [ "$#" -lt 1 ]; then
+    echo "::error::_recover requires an issue number" >&2
+    exit 1
+  fi
   local num="$1" comment
-  comment="$(mktemp)"
+  comment="$(mktemp)" || { echo "::error::Failed to create temp file" >&2; exit 1; }
   {
     echo "✅ **Recovered** — the \`${SKILL}\` holdout eval passed; all held-out cases are green again."
     echo ""
@@ -146,9 +157,13 @@ _recover() {
 # _open_or_update <title> <label> <label_description> <label_color> — open the
 # tracker (de-duped by title+label) or rewrite it in place if already open.
 _open_or_update() {
+  if [ "$#" -lt 4 ]; then
+    echo "::error::_open_or_update requires title, label, description, and color" >&2
+    exit 1
+  fi
   local title="$1" label="$2" desc="$3" color="$4" existing body url
   existing="$(find_existing "$title" "$label")"
-  body="$(mktemp)"
+  body="$(mktemp)" || { echo "::error::Failed to create temp file" >&2; exit 1; }
   render_body >"$body"
   if _is_dry_run; then
     echo "[dry-run] would $( [ -n "$existing" ] && echo "update #${existing}" || echo "create" ) issue '${title}' (${label})"

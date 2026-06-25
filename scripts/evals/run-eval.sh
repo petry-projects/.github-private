@@ -150,6 +150,9 @@ extract_json() { grep -v $'^[[:space:]]*\x60\x60\x60' <<<"$1" || true; }
 # an all-infra run can be told apart from a quality regression, #920) so the
 # report shape matches the judge mode.
 score_deterministic() {
+  if [ "$#" -lt 3 ]; then
+    die "score_deterministic requires expected, raw, and cid arguments"
+  fi
   local expected="$1" raw="$2" cid="$3" eng_rc="${4:-0}"
   local exp_esc exp_risk actual pass score cleaned raw_excerpt=""
   exp_esc="$(jq -r '.escalate' <<<"$expected")"
@@ -200,6 +203,9 @@ score_deterministic() {
 # judge engine (default run_triage), and parses its numeric `score`. Judge output
 # that is not a JSON object with a numeric `score` scores 0 (an automatic failure).
 score_llm_judge() {
+  if [ "$#" -lt 3 ]; then
+    die "score_llm_judge requires expected, candidate, and cid arguments"
+  fi
   local expected="$1" candidate="$2" cid="$3" eng_rc="${4:-0}"
   local judge_raw judge_obj score pass
 
