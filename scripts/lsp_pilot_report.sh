@@ -252,12 +252,11 @@ render_pilot_report() {
   printf 're-derived._\n\n'
 
   printf '## Success metric (verbatim, epic #839)\n\n'
-  printf '> Go = on the frozen pilot PR corpus, LSP-on deep-tier review delivers a '
-  printf 'measurable navigation-token reduction (**target ≥2x fewer navigation '
-  printf 'tool-call tokens** vs the LSP-off control) AND **no regression in review '
-  printf 'quality** (false-positive / precision no worse than the frozen LSP-off '
-  printf 'baseline), achieved **within the cold-start SLA (≤30s P95)**. A win on '
-  printf 'tokens that costs precision is a *no-go*, not a win.\n\n'
+  printf '> Go = on the frozen pilot PR corpus, LSP-on deep-tier review delivers a measurable\n'
+  printf '> navigation-token reduction (**target ≥2x fewer navigation tool-call tokens** vs the\n'
+  printf '> LSP-off control) AND **no regression in review quality** (false-positive / precision\n'
+  printf '> no worse than the frozen LSP-off baseline), achieved **within the cold-start SLA\n'
+  printf '> (≤30s P95)**. A win on tokens that costs precision is a _no-go_, not a win.\n\n'
 
   # Accumulate per-candidate verdict facts for the cross-candidate summary.
   local names=() ratios=() verdicts=() p95s=() go_names=()

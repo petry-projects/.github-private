@@ -30,7 +30,11 @@ _Each candidate LSP-on run scored against the **immutable LSP-off baseline** (`e
 
 ## Success metric (verbatim, epic #839)
 
-> Go = on the frozen pilot PR corpus, LSP-on deep-tier review delivers a measurable navigation-token reduction (**target ≥2x fewer navigation tool-call tokens** vs the LSP-off control) AND **no regression in review quality** (false-positive / precision no worse than the frozen LSP-off baseline), achieved **within the cold-start SLA (≤30s P95)**. A win on tokens that costs precision is a *no-go*, not a win.
+> Go = on the frozen pilot PR corpus, LSP-on deep-tier review delivers a measurable
+> navigation-token reduction (**target ≥2x fewer navigation tool-call tokens** vs the
+> LSP-off control) AND **no regression in review quality** (false-positive / precision
+> no worse than the frozen LSP-off baseline), achieved **within the cold-start SLA
+> (≤30s P95)**. A win on tokens that costs precision is a _no-go_, not a win.
 
 ## Candidate: `agent-lsp`
 
