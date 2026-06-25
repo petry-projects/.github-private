@@ -62,8 +62,71 @@ AGENT_LSP_REPO="${AGENT_LSP_REPO:-blackwell-systems/agent-lsp}"
 # steps via $GITHUB_PATH.
 INSTALL_BIN="${INSTALL_BIN:-$HOME/.local/bin}"
 
+# Cold-start SLA (story #846): toolchain bring-up (install / actions/cache restore
+# → ready) must complete within this budget; over it the LSP wiring is auto-skipped
+# (graceful degradation — never a workflow failure, docs/lsp-pilot.md §3). The
+# index cache is what keeps a warm run under budget. Overridable for a tuning bump.
+LSP_COLD_START_SLA_MS="${LSP_COLD_START_SLA_MS:-30000}"
+
+# Best-effort: the cold-start metric channel (Token Cost Observatory). The review
+# job always has the repo checked out, so this resolves; if absent (odd invocation)
+# emit_lsp_coldstart_record falls back to a no-op below so the script stays
+# self-contained.
+if [ -f "$(dirname "${BASH_SOURCE[0]}")/lib/token-metrics.sh" ]; then
+  # shellcheck source=scripts/lib/token-metrics.sh
+  source "$(dirname "${BASH_SOURCE[0]}")/lib/token-metrics.sh"
+fi
+if ! declare -f emit_lsp_coldstart_record >/dev/null 2>&1; then
+  emit_lsp_coldstart_record() { :; }
+fi
+
 warn() { echo "::warning::[lsp-pilot] $*" >&2; }
 note() { echo "[lsp-pilot] $*"; }
+
+# _lsp_now_ms — current epoch in milliseconds. Falls back to second resolution on
+# platforms where `date +%N` is unsupported (the literal `N` is left intact there).
+_lsp_now_ms() {
+  local ns
+  ns="$(date +%s%N 2>/dev/null || echo '')"
+  case "$ns" in
+    # %.0f, not %d: epoch ms (~1.75e12) overflows awk's 32-bit %d conversion on
+    # common awks (mawk) and would yield a garbage cold-start measurement.
+    ''|*[!0-9]*) date +%s 2>/dev/null | awk '{ printf "%.0f", $1 * 1000 }' ;;
+    *)           awk "BEGIN { printf \"%.0f\", $ns / 1000000 }" ;;
+  esac
+}
+
+# _lsp_elapsed_ms <start_ms> <end_ms> — non-negative integer delta. Any non-numeric
+# input or a backwards clock yields 0 (a glitch must not look like a slow start).
+_lsp_elapsed_ms() {
+  local a="${1:-0}" b="${2:-0}" d
+  case "$a$b" in ''|*[!0-9]*) echo 0; return 0 ;; esac
+  d=$(( b - a ))
+  [ "$d" -lt 0 ] && d=0
+  echo "$d"
+}
+
+# _lsp_sla_exceeded <cold_start_ms> <sla_ms> — true (0) when cold-start is over the
+# SLA. Pure, for unit coverage. A non-numeric cold-start (clock glitch) is the safe
+# default: NOT exceeded, so a measurement error never spuriously skips LSP.
+_lsp_sla_exceeded() {
+  local cold="${1:-}" sla="${2:-}"
+  case "$cold" in ''|*[!0-9]*) return 1 ;; esac
+  # sla may be negative (tests use -1 to force the skip path); strip a leading
+  # minus, then require the remainder to be all digits.
+  case "${sla#-}" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$cold" -gt "$sla" ]
+}
+
+# _lsp_cache_status <flag> — normalize an actions/cache `cache-hit` output to
+# hit/miss/unknown (true→hit, false→miss, unset/other→unknown).
+_lsp_cache_status() {
+  case "${1:-}" in
+    true|hit)   echo "hit" ;;
+    false|miss) echo "miss" ;;
+    *)          echo "unknown" ;;
+  esac
+}
 
 print_allowed_tools() { printf '%s\n' "$LSP_PILOT_ALLOWED_TOOLS"; }
 
@@ -178,14 +241,40 @@ main() {
   fi
   export PATH="$INSTALL_BIN:$PATH"
 
+  # Time the toolchain bring-up (install / actions/cache restore → ready). This is
+  # the honest, shell-observable cold-start proxy: the language server's first-query
+  # indexing happens inside the claude subprocess and isn't visible here, but the
+  # bring-up window is exactly what the index cache (story #846) eliminates. The
+  # cache outcome is threaded in from the workflow's actions/cache step.
+  local cache_status t0 t1 cold_ms
+  cache_status="$(_lsp_cache_status "${LSP_INDEX_CACHE_HIT:-}")"
+  t0="$(_lsp_now_ms)"
   local server_ok=1 bls_ok=1
   install_candidate || server_ok=0
   install_bash_language_server || bls_ok=0
+  t1="$(_lsp_now_ms)"
+  cold_ms="$(_lsp_elapsed_ms "$t0" "$t1")"
 
   if [ "$server_ok" -ne 1 ] || [ "$bls_ok" -ne 1 ]; then
+    emit_lsp_coldstart_record "pr-review" "$LSP_CANDIDATE" "$cold_ms" "$cache_status" \
+      "true" "$LSP_COLD_START_SLA_MS" "toolchain-unavailable"
     warn "LSP toolchain unavailable (candidate=${LSP_CANDIDATE}) — review continues on base capabilities, LSP enrichment skipped"
     return 0
   fi
+
+  # Cold-start SLA auto-skip (AC #3): an over-budget bring-up degrades the
+  # enrichment, not the review — same "warn, don't fail" contract as a missing
+  # tool. The review proceeds on base capabilities; the workflow never fails.
+  if _lsp_sla_exceeded "$cold_ms" "$LSP_COLD_START_SLA_MS"; then
+    emit_lsp_coldstart_record "pr-review" "$LSP_CANDIDATE" "$cold_ms" "$cache_status" \
+      "true" "$LSP_COLD_START_SLA_MS" "sla-exceeded"
+    warn "LSP cold-start ${cold_ms}ms exceeded SLA ${LSP_COLD_START_SLA_MS}ms (cache=${cache_status}) — skipping LSP wiring; review continues on base capabilities"
+    return 0
+  fi
+
+  emit_lsp_coldstart_record "pr-review" "$LSP_CANDIDATE" "$cold_ms" "$cache_status" \
+    "false" "$LSP_COLD_START_SLA_MS" "ok"
+  note "LSP cold-start ${cold_ms}ms within SLA ${LSP_COLD_START_SLA_MS}ms (cache=${cache_status})"
 
   # Thread the opt-in knobs into the job env for the subsequent review step.
   # engine.sh reads these; with them set it appends --mcp-config/--strict-mcp-config
@@ -202,8 +291,12 @@ main() {
   fi
 }
 
-case "${1:-}" in
-  print-allowed-tools) print_allowed_tools ;;
-  ""|setup) main ;;
-  *) echo "usage: $(basename "$0") [print-allowed-tools|setup]" >&2; exit 2 ;;
-esac
+# Run the dispatcher only when executed directly — sourcing (e.g. the unit tests
+# for the pure cold-start/SLA helpers) must not trigger install + wiring.
+if [ "${BASH_SOURCE[0]:-$0}" = "$0" ]; then
+  case "${1:-}" in
+    print-allowed-tools) print_allowed_tools ;;
+    ""|setup) main ;;
+    *) echo "usage: $(basename "$0") [print-allowed-tools|setup]" >&2; exit 2 ;;
+  esac
+fi
