@@ -138,18 +138,18 @@ if [ "$MERGE_STATE" = "BEHIND" ]; then
   
   # If still BEHIND, skip auto-merge (will retry next cycle)
   if [ "$MERGE_STATE" = "BEHIND" ]; then
-    echo "PR still BEHIND after rebase wait, skipping auto-merge"
-    echo "{\"pr\":\"$PR_URL\",\"sha\":\"$PR_HEAD_SHA\",\"risk\":\"$RISK\",\"decision\":\"$DECISION\",\"tier\":\"$FINAL_TIER\",\"delegated_to\":\"\",\"posted\":false,\"retryable\":true}"
+    echo "PR still BEHIND after rebase wait, skipping auto-merge" >&2
+    echo "{\"pr\":\"$PR_URL\",\"sha\":\"$PR_HEAD_SHA\",\"risk\":\"$RISK\",\"decision\":\"$DECISION\",\"tier\":\"$FINAL_TIER\",\"delegated_to\":\"\",\"posted\":false,\"retryable\":true}" >&2
     exit 0
   fi
 fi
 
 if [ "$DECISION" = "approve" ]; then
   # Step 3: Enable auto-merge (CRITICAL: this triggers the merge once all checks pass)
-  gh pr merge "$PR_URL" --auto --squash 2>/dev/null || true
-
-  # Step 4: Clean up label
-  gh pr edit "$PR_URL" --remove-label needs-human-review 2>/dev/null || true
+  if gh pr merge "$PR_URL" --auto --squash 2>/dev/null; then
+    # Step 4: Clean up label only when auto-merge was successfully queued
+    gh pr edit "$PR_URL" --remove-label needs-human-review 2>/dev/null || true
+  fi
 fi
 ```
 
@@ -196,7 +196,7 @@ if [ "$DECISION" = "escalate" ]; then
 else
   DELEGATED_TO=""
 fi
-echo "{\"pr\":\"$PR_URL\",\"sha\":\"$PR_HEAD_SHA\",\"risk\":\"$RISK\",\"decision\":\"$DECISION\",\"tier\":\"$FINAL_TIER\",\"delegated_to\":\"$DELEGATED_TO\",\"posted\":true}"
+echo "{\"pr\":\"$PR_URL\",\"sha\":\"$PR_HEAD_SHA\",\"risk\":\"$RISK\",\"decision\":\"$DECISION\",\"tier\":\"$FINAL_TIER\",\"delegated_to\":\"$DELEGATED_TO\",\"posted\":true}" >&2
 ```
 
 Then exit with code 0.
