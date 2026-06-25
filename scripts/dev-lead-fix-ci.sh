@@ -11,6 +11,7 @@ source "$(dirname "$0")/engine.sh"
 source "$(dirname "$0")/lib/git-identity.sh"
 source "$(dirname "$0")/lib/pr-worktree.sh"
 source "$(dirname "$0")/lib/auto-merge.sh"
+source "$(dirname "$0")/lib/pr-automation-budget.sh"
 
 PR_NUMBER="${PR_NUMBER:-}"
 HEAD_SHA="${HEAD_SHA:-}"
@@ -208,6 +209,15 @@ main() {
   if [ -z "$PR_NUMBER" ] || [ -z "$HEAD_SHA" ]; then
     echo "::error::PR_NUMBER and HEAD_SHA are required"
     exit 1
+  fi
+
+  # Per-PR automation budget (#926): if this PR has exhausted its lifetime
+  # automation budget since the last human interaction, stop before any writes.
+  # Checked before holding auto-merge so the escalation's auto-merge disable is
+  # not undone by the restore_auto_merge EXIT trap.
+  if [ "${DEV_LEAD_DRY_RUN:-false}" != "true" ] && enforce_pr_budget "$PR_NUMBER" "$REPO"; then
+    echo "::warning::PR #${PR_NUMBER} automation budget exhausted — skipping fix-ci"
+    exit 0
   fi
 
   # Hold auto-merge OFF while we work so a review approval landing mid-run can't
