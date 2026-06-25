@@ -34,3 +34,19 @@ setup() {
   grep -F "uses: ${REUSABLE}@" "$FEATURE_IDEATION_YML"
   grep -qF "uses: ${REUSABLE}@${CHANNEL}" "$FEATURE_IDEATION_YML"
 }
+
+# ── #934: operator-triggered enhancement backfill ────────────────────────────
+# The folded feature-ideation reusable gains a backlog-sweep mode (porting the
+# idea-enhancer sweep). The stub exposes it as a boolean workflow_dispatch input
+# and forwards it, matching the canonical stub template so the sync is drift-free.
+
+@test "feature-ideation.yml exposes the enhance_backlog backfill-sweep input" {
+  # Declared as a workflow_dispatch input AND forwarded in with: → two occurrences.
+  run grep -c "enhance_backlog:" "$FEATURE_IDEATION_YML"
+  [ "$status" -eq 0 ]
+  [ "$output" -eq 2 ]
+}
+
+@test "feature-ideation.yml forwards enhance_backlog to the reusable workflow" {
+  grep -qF 'enhance_backlog: ${{ inputs.enhance_backlog || false }}' "$FEATURE_IDEATION_YML"
+}

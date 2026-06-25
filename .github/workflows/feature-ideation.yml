@@ -64,6 +64,11 @@ on:
         required: false
         default: false
         type: boolean
+      enhance_backlog:
+        description: 'Backfill: sweep this repo''s open, human-authored, not-yet-enhanced Ideas and post exactly one structured enhancement comment each (idempotent via the enhancement marker). Operator-triggered; pair with dry_run=true to preview without posting.'
+        required: false
+        default: false
+        type: boolean
   # Auto-enhance a freshly-created idea: when a new Discussion is opened in the
   # Ideas category, the analyst researches and refines it in single-idea mode.
   discussion:
@@ -146,5 +151,9 @@ jobs:
       focus_area: ${{ inputs.focus_area || '' }}
       research_depth: ${{ inputs.research_depth || 'standard' }}
       dry_run: ${{ inputs.dry_run || false }}
+      # Operator-triggered backlog sweep (#934). Empty on schedule/discussion
+      # triggers → false → normal scan/single-idea enhancement. Pair with
+      # dry_run=true to preview the intended comments without posting.
+      enhance_backlog: ${{ inputs.enhance_backlog || false }}
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
