@@ -1,0 +1,143 @@
+#!/usr/bin/env bash
+# pr-automation-budget.sh — per-PR automated-churn circuit breaker (issue #926).
+#
+# PR #860 ran away to 378 commits / 1,582 comments produced entirely by agents
+# looping, with no human in the thread. Every pre-existing guard was per-worker
+# or per-run; nothing bounded TOTAL automated activity on one PR over its
+# lifetime, and no guard's reset required a human.
+#
+# This library bounds the work item (the PR), not each worker script:
+#   compute_pr_automation_cycles <events_json>
+#     Counts agent-authored activity (commits + comments + reviews/acks) that
+#     happened AFTER the most recent HUMAN interaction. A human action resets
+#     the count to zero; a machine action (bot comment, bot commit, machine
+#     approval) never does — so the runaway can't re-arm its own budget.
+#   pr_budget_exhausted <events_json>
+#     Exit 0 when the count has reached MAX_PR_AUTOMATION_CYCLES (default 10).
+#   gather_pr_automation_events <pr> <repo>   -> normalized {when, login}[] JSON
+#   enforce_pr_budget <pr> <repo>
+#     The orchestration entrypoint scripts call before doing automated writes:
+#     on exhaustion it escalates ONCE (deduped marker + needs-human-review label
+#     + auto-merge disabled) and returns 0 so the caller stops. Returns 1 when
+#     there is still budget to proceed.
+#
+# Events are {when, login} objects. `when` is an ISO-8601 timestamp (strings
+# compare correctly); items with null/empty `when` are ignored. A login is a
+# bot when it ends in `[bot]` or is listed in AUTOMATION_BOT_LOGINS; an empty /
+# unattributed login is treated as a machine (conservative — it must not reset).
+
+# Space-separated bot logins beyond any `*[bot]` GitHub App identity. Includes
+# the agent identity (donpetry-bot) and repair-pr-approvals, whose machine
+# approvals must not reset the budget.
+: "${AUTOMATION_BOT_LOGINS:=donpetry-bot github-actions[bot] repair-pr-approvals}"
+: "${MAX_PR_AUTOMATION_CYCLES:=10}"
+
+PR_AUTOMATION_EXHAUSTION_MARKER="<!-- pr-automation-budget exhausted -->"
+
+_PR_BUDGET_JQ_DEFS='
+  def is_bot($bots):
+    . as $login
+    | ($login == null) or ($login == "")
+      or ($login | endswith("[bot]"))
+      or (($bots | index($login)) != null);
+'
+
+# compute_pr_automation_cycles <events_json>
+#   Prints the number of bot-authored events newer than the latest human event.
+compute_pr_automation_cycles() {
+  local events_json="${1:-[]}"
+  local bots_json count
+  bots_json=$(printf '%s' "${AUTOMATION_BOT_LOGINS}" \
+    | jq -R 'split(" ") | map(select(. != ""))' 2>/dev/null) || bots_json='[]'
+  count=$(jq -r --argjson bots "$bots_json" "$_PR_BUDGET_JQ_DEFS"'
+    map(select(.when != null and .when != ""))
+    | ([.[] | select((.login | is_bot($bots)) | not) | .when] | max // "") as $last_human
+    | [.[] | select((.login | is_bot($bots)) and (.when > $last_human))]
+    | length
+  ' <<<"$events_json" 2>/dev/null) || count=0
+  # Defensive: malformed input degrades to 0 so the integer comparison at the
+  # budget gate never breaks ("integer expression expected").
+  case "$count" in
+    ''|*[!0-9]*) echo 0 ;;
+    *) echo "$count" ;;
+  esac
+}
+
+# pr_budget_exhausted <events_json>
+#   Exit 0 when the per-PR automation budget is spent.
+pr_budget_exhausted() {
+  local events_json="${1:-[]}"
+  local n
+  n=$(compute_pr_automation_cycles "$events_json")
+  [ "${n:-0}" -ge "${MAX_PR_AUTOMATION_CYCLES:-10}" ]
+}
+
+# gather_pr_automation_events <pr> <repo>
+#   Assemble {when, login}[] from the PR's commits, issue comments, and reviews.
+gather_pr_automation_events() {
+  local pr="$1" repo="$2"
+  local comments commits reviews
+  comments=$(gh api --paginate "repos/${repo}/issues/${pr}/comments?per_page=100" 2>/dev/null \
+    | jq '[.[] | {when: .created_at, login: (.user.login // "")}]' 2>/dev/null) || comments='[]'
+  commits=$(gh api --paginate "repos/${repo}/pulls/${pr}/commits?per_page=100" 2>/dev/null \
+    | jq '[.[] | {when: (.commit.author.date // .commit.committer.date), login: (.author.login // .commit.author.name // "")}]' 2>/dev/null) || commits='[]'
+  reviews=$(gh api --paginate "repos/${repo}/pulls/${pr}/reviews?per_page=100" 2>/dev/null \
+    | jq '[.[] | {when: .submitted_at, login: (.user.login // "")}]' 2>/dev/null) || reviews='[]'
+  jq -n --argjson a "${comments:-[]}" --argjson b "${commits:-[]}" --argjson c "${reviews:-[]}" \
+    '$a + $b + $c' 2>/dev/null || echo '[]'
+}
+
+# pr_automation_already_escalated <pr> <repo>
+#   Exit 0 if the exhaustion escalation comment is already present (dedupe).
+pr_automation_already_escalated() {
+  local pr="$1" repo="$2"
+  gh api --paginate "repos/${repo}/issues/${pr}/comments?per_page=100" 2>/dev/null \
+    | jq -r '.[].body // ""' 2>/dev/null \
+    | grep -qF "$PR_AUTOMATION_EXHAUSTION_MARKER"
+}
+
+# pr_automation_escalate <pr> <repo>
+#   Post one deduped escalation, add needs-human-review, disable auto-merge.
+#   Re-engagement is human-gated: only a human removing the label / acting on
+#   the PR resets the budget (see compute_pr_automation_cycles).
+pr_automation_escalate() {
+  local pr="$1" repo="$2"
+  if [ "${DEV_LEAD_DRY_RUN:-false}" = "true" ]; then
+    echo "[dry-run] would escalate PR #${pr}: post budget-exhaustion comment, add needs-human-review, disable auto-merge"
+    return 0
+  fi
+  if pr_automation_already_escalated "$pr" "$repo"; then
+    echo "::notice::PR #${pr} already has a pr-automation-budget escalation — not re-posting"
+    return 0
+  fi
+  local body
+  body="${PR_AUTOMATION_EXHAUSTION_MARKER}
+## Automated activity budget exhausted — human attention needed
+
+This PR has reached **${MAX_PR_AUTOMATION_CYCLES}** automated actions (agent commits + review cycles + acks) since the last human interaction, without converging. To prevent a runaway loop (see #926 / the #860 post-mortem), all automated commits, reviews, and acknowledgements on this PR are now **paused**, auto-merge is disabled, and \`needs-human-review\` is applied.
+
+**Re-engaging is human-gated.** A human reviewing, commenting, or pushing to this PR resets the budget; a machine action will not. Removing \`needs-human-review\` after a human has looked is the clean way to resume."
+  gh pr comment "$pr" --repo "$repo" --body "$body" \
+    || echo "::warning::could not post budget-exhaustion comment on PR #${pr}"
+  gh pr edit "$pr" --repo "$repo" --add-label needs-human-review 2>/dev/null \
+    || echo "::warning::could not add needs-human-review on PR #${pr}"
+  gh pr merge "$pr" --repo "$repo" --disable-auto 2>/dev/null \
+    || echo "::notice::auto-merge was not enabled on PR #${pr} (nothing to disable)"
+  return 0
+}
+
+# enforce_pr_budget <pr> <repo>
+#   Returns 0 (exhausted — caller must STOP all automated writes) after
+#   escalating once, or 1 (budget remains — proceed).
+enforce_pr_budget() {
+  local pr="$1" repo="$2"
+  [ -n "$pr" ] && [ -n "$repo" ] || return 1
+  local events
+  events=$(gather_pr_automation_events "$pr" "$repo")
+  if pr_budget_exhausted "$events"; then
+    echo "::warning::PR #${pr} reached MAX_PR_AUTOMATION_CYCLES=${MAX_PR_AUTOMATION_CYCLES} automated actions since the last human interaction — halting automation"
+    pr_automation_escalate "$pr" "$repo"
+    return 0
+  fi
+  return 1
+}
