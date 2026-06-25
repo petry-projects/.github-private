@@ -15,6 +15,7 @@
 set -euo pipefail
 
 LOOKBACK_DAYS="${LOOKBACK_DAYS:-1}"
+LOG_DIR="${LOG_DIR:-}"
 WORKFLOW_REPO="${AGENT_REPO:-petry-projects/.github-private}"
 WORKFLOW_FILE="pr-review-trigger.yml"
 REPORT_FILE="pr_review_health_report.md"
