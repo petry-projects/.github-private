@@ -234,7 +234,7 @@ STUB
     in_step && /^[[:space:]]*- name:/ && !/- name: Cache LSP index/ { exit }
   ' "$WORKFLOW"
   [ "$status" -eq 0 ]
-  [[ "$output" =~ LSP_PILOT_ENABLED ]]
+  echo "$output" | grep -qE '^[[:space:]]*if:[[:space:]].*LSP_PILOT_ENABLED'
 
   # The Set up LSP pilot servers step must also be gated.
   run awk '
@@ -243,5 +243,5 @@ STUB
     in_step && /^[[:space:]]*- name:/ && !/- name: Set up LSP pilot servers/ { exit }
   ' "$WORKFLOW"
   [ "$status" -eq 0 ]
-  [[ "$output" =~ LSP_PILOT_ENABLED ]]
+  echo "$output" | grep -qE '^[[:space:]]*if:[[:space:]].*LSP_PILOT_ENABLED'
 }
