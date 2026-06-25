@@ -20,10 +20,10 @@ setup() {
   # shellcheck source=scripts/lsp_pilot_report.sh
   source "${BATS_TEST_DIRNAME}/../scripts/lsp_pilot_report.sh"
 
-  BASELINE="$(mktemp)"
-  CORPUS="$(mktemp)"
-  CAND_GOOD="$(mktemp)"
-  CAND_BAD="$(mktemp)"
+  BASELINE="$(mktemp)" || { echo "Failed to create temp file"; exit 1; }
+  CORPUS="$(mktemp)" || { echo "Failed to create temp file"; exit 1; }
+  CAND_GOOD="$(mktemp)" || { echo "Failed to create temp file"; exit 1; }
+  CAND_BAD="$(mktemp)" || { echo "Failed to create temp file"; exit 1; }
 
   # Frozen LSP-off baseline: three corpus PRs pinned by repo#number@sha.
   cat > "$BASELINE" <<'JSONL'
@@ -221,7 +221,7 @@ teardown() {
 
 @test "render_pilot_report: picks the data-favored candidate only when two are competitive" {
   # A second GO candidate with a smaller token win than agent-lsp.
-  local cand2; cand2="$(mktemp)"
+  local cand2; cand2="$(mktemp)" || { echo "Failed to create temp file"; exit 1; }
   cat > "$cand2" <<'JSONL'
 {"pr":"petry-projects/.github-private#801@aaa","variant":"lsp-on","candidate":"serena","model":"claude-opus-4-7","input_tokens":20000,"cache_read_tokens":0,"output_tokens":3000,"nav_tokens":9000,"tool_calls":14,"findings":5,"false_positives":1,"cold_start_s":10.0,"wall_time_s":95.0}
 {"pr":"petry-projects/.github-private#802@bbb","variant":"lsp-on","candidate":"serena","model":"claude-opus-4-7","input_tokens":10000,"cache_read_tokens":0,"output_tokens":1500,"nav_tokens":4500,"tool_calls":9,"findings":3,"false_positives":0,"cold_start_s":11.0,"wall_time_s":65.0}

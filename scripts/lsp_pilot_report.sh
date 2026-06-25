@@ -63,6 +63,10 @@ LSP_TOKEN_TARGET="${LSP_TOKEN_TARGET:-2.0}"
 # no cold-start data (e.g. the LSP-off baseline) it emits "NA<TAB>NA<TAB>NA<TAB>0".
 # Pure: reads only the JSONL.
 lpr_coldstart_stats() {
+  if [ "$#" -lt 1 ]; then
+    echo "[lsp-pilot] ERROR: lpr_coldstart_stats requires a candidate JSONL file path" >&2
+    return 2
+  fi
   local jsonl="$1"
   if [ ! -f "$jsonl" ]; then
     printf 'NA\tNA\tNA\t0\n'
@@ -89,6 +93,10 @@ lpr_coldstart_stats() {
 # Returns 0 when the cold-start P95 is within the SLA, 1 when it breaches the SLA,
 # and 2 when there is no cold-start data to judge (a coverage gap, not a pass).
 lpr_within_sla() {
+  if [ "$#" -lt 1 ]; then
+    echo "[lsp-pilot] ERROR: lpr_within_sla requires a candidate JSONL file path" >&2
+    return 2
+  fi
   local jsonl="$1" sla="${2:-$LSP_SLA_SECONDS}" stats p95 n
   stats="$(lpr_coldstart_stats "$jsonl")"
   p95="$(printf '%s' "$stats" | cut -f2)"
@@ -102,6 +110,10 @@ lpr_within_sla() {
 # (SLA breach) or ran with a degraded MCP server, so a coverage gap is never
 # silently dropped (AC4). type is "sla-skip" or "mcp-degraded". Pure.
 lpr_skip_annotations() {
+  if [ "$#" -lt 1 ]; then
+    echo "[lsp-pilot] ERROR: lpr_skip_annotations requires a candidate JSONL file path" >&2
+    return 2
+  fi
   local jsonl="$1"
   [ -f "$jsonl" ] || return 0
   jq -r 'select(type=="object") | select((.kind // "token_usage") == "token_usage")
@@ -118,6 +130,10 @@ lpr_skip_annotations() {
 # without LSP enrichment), or MISSING (no run captured at all). Returns 1 if any
 # corpus PR is MISSING, so a partial corpus is loud rather than silent.
 lpr_coverage() {
+  if [ "$#" -lt 2 ]; then
+    echo "[lsp-pilot] ERROR: lpr_coverage requires corpus and candidate arguments" >&2
+    return 2
+  fi
   local corpus="$1" candidate="$2"
   [ -f "$corpus" ] || { echo "[lsp-pilot] ERROR: corpus cases file not found: $corpus" >&2; return 2; }
 
@@ -151,6 +167,10 @@ lpr_coverage() {
 # Prints "baseline_nav<TAB>candidate_nav" summed over the PRs the candidate covers
 # (reusing the harness aggregate so the numbers match render_lsp_comparison). Pure.
 _lpr_total_nav() {
+  if [ "$#" -lt 2 ]; then
+    echo "[lsp-pilot] ERROR: _lpr_total_nav requires baseline and candidate arguments" >&2
+    return 2
+  fi
   local baseline="$1" candidate="$2" bagg cagg
   bagg="$(_lp_aggregate "$baseline")"
   cagg="$(_lp_aggregate "$candidate")"
@@ -165,6 +185,10 @@ _lpr_total_nav() {
 # Prints the aggregate navigation-token reduction ratio baseline/candidate to two
 # decimals (0.00 when the candidate's nav total is 0). Pure.
 lpr_token_ratio() {
+  if [ "$#" -lt 2 ]; then
+    echo "[lsp-pilot] ERROR: lpr_token_ratio requires baseline and candidate arguments" >&2
+    return 2
+  fi
   local nav; nav="$(_lpr_total_nav "$1" "$2")"
   awk -F'\t' '{ if ($2 > 0) printf "%.2f\n", $1 / $2; else printf "0.00\n" }' <<< "$nav"
 }
@@ -174,6 +198,10 @@ lpr_token_ratio() {
 # mean false-positive count exceeds the frozen baseline's — precision dropped),
 # else 0. This is the same precision proxy the story-2 harness enforces. Pure.
 lpr_quality_regressed() {
+  if [ "$#" -lt 2 ]; then
+    echo "[lsp-pilot] ERROR: lpr_quality_regressed requires baseline and candidate arguments" >&2
+    return 2
+  fi
   local baseline="$1" candidate="$2" bagg cagg
   bagg="$(_lp_aggregate "$baseline")"
   cagg="$(_lp_aggregate "$candidate")"
@@ -191,6 +219,10 @@ lpr_quality_regressed() {
 # ALL of: nav-token reduction >= the target, no quality regression, cold-start P95
 # within the SLA. Pure.
 lpr_candidate_verdict() {
+  if [ "$#" -lt 2 ]; then
+    echo "[lsp-pilot] ERROR: lpr_candidate_verdict requires baseline and candidate arguments" >&2
+    return 2
+  fi
   local baseline="$1" candidate="$2" name="${3:-candidate}" sla="${4:-$LSP_SLA_SECONDS}"
   local ratio target="$LSP_TOKEN_TARGET" reasons=() go=1
 
@@ -239,11 +271,11 @@ lpr_candidate_verdict() {
 # render_pilot_report <baseline_jsonl> <corpus_cases_jsonl> <name=run.jsonl> [...]
 # Writes the full Markdown report to stdout. Pure (no network). Returns 0.
 render_pilot_report() {
-  local baseline="$1" corpus="$2"; shift 2
-  if [ "$#" -lt 1 ]; then
-    echo "[lsp-pilot] ERROR: at least one <name=run.jsonl> candidate is required" >&2
+  if [ "$#" -lt 3 ]; then
+    echo "[lsp-pilot] ERROR: render_pilot_report requires baseline, corpus, and at least one candidate" >&2
     return 2
   fi
+  local baseline="$1" corpus="$2"; shift 2
 
   printf '# 🔬 LSP pilot — comparative speed / quality / cost report\n\n'
   printf '_Each candidate LSP-on run scored against the **immutable LSP-off baseline** '
@@ -384,6 +416,13 @@ render_pilot_report() {
 # ---------------------------------------------------------------------------
 
 main() {
+  for cmd in jq awk; do
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+      echo "[lsp-pilot] ERROR: Required dependency '$cmd' is not installed." >&2
+      exit 1
+    fi
+  done
+
   if [ "$#" -lt 3 ]; then
     echo "usage: $0 <baseline.jsonl> <corpus-cases.jsonl> <name=run.jsonl> [<name=run.jsonl> ...]" >&2
     exit 2
