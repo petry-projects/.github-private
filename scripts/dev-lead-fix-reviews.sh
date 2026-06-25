@@ -1330,7 +1330,7 @@ commit_and_push() {
   local intent="$1"
   local has_uncommitted=false has_unpushed=false
 
-  git diff --quiet && git diff --cached --quiet || has_uncommitted=true
+  [ -n "$(git status --porcelain 2>/dev/null)" ] && has_uncommitted=true
   git log "@{u}..HEAD" --oneline 2>/dev/null | grep -q . && has_unpushed=true
 
   if ! $has_uncommitted && ! $has_unpushed; then
