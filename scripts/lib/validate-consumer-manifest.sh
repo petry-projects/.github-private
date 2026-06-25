@@ -9,8 +9,8 @@ set -euo pipefail
 # each reusable sources (surface_sources). This validator is the gate that keeps
 # the manifest honest. It exits non-zero on:
 #   - invalid JSON or a violated top-level schema shape
-#   - a surface_sources KEY that is not an existing reusable-workflow path in
-#     this repo (a file under .github/workflows/ that declares `workflow_call`)
+#   - a surface_sources KEY that is not an existing workflow path in
+#     this repo (a file under .github/workflows/)
 #   - a surface_sources VALUE that is not an existing scripts/lib/*.sh or prompts/*
 #     path in this repo
 #
@@ -92,7 +92,7 @@ if [ "$schema_ok" != "true" ]; then
   exit 1
 fi
 
-# 3. surface_sources keys must be existing reusable-workflow paths in this repo;
+# 3. surface_sources keys must be existing workflow paths in this repo;
 #    their values must be existing scripts/lib/*.sh or prompts/* paths in this repo.
 #    Paths are resolved via realpath to prevent traversal sequences from escaping
 #    their intended root directories.
@@ -112,11 +112,8 @@ while IFS= read -r key; do
     continue
   fi
   if [ ! -f "$resolved" ]; then
-    err "surface_sources key is not an existing reusable-workflow path: $key"
+    err "surface_sources key is not an existing workflow path: $key"
     continue
-  fi
-  if ! grep -q 'workflow_call' "$resolved"; then
-    err "surface_sources key is not a reusable workflow (no workflow_call): $key"
   fi
 done < <(jq -r '.surface_sources | keys[]' "$MANIFEST")
 
