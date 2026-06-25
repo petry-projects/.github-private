@@ -188,6 +188,10 @@ while IFS= read -r pr_url; do
     fallback_engines="${fallback_engines:+$fallback_engines, }gemini"
     rc=0
     run_review_capture "$pr_url" || rc=$?
+    if [ "$rc" -eq 55 ] || [ "$rc" -eq 127 ]; then
+      echo "::warning::Gemini engine unavailable at runtime (exit $rc) — treating as unavailable"
+      rc=2
+    fi
   fi
 
   case "$rc" in
