@@ -218,7 +218,7 @@ STUB
 }
 
 @test "workflow: LSP index cache key is keyed on OS + server version + source hash" {
-  run grep -E "key: lsp-index-.*runner\.os.*AGENT_LSP_VERSION.*hashFiles" "$WORKFLOW"
+  run grep -E "key: lsp-index-.*runner\.os.*AGENT_LSP_VERSION.*BASH_LANGUAGE_SERVER_VERSION.*hashFiles" "$WORKFLOW"
   [ "$status" -eq 0 ]
 }
 
@@ -227,8 +227,21 @@ STUB
 }
 
 @test "workflow: LSP index cache is opt-in behind LSP_PILOT_ENABLED" {
-  # The cache step must be gated like the setup step (no cache work off-pilot).
-  run grep -c "LSP_PILOT_ENABLED == 'true'" "$WORKFLOW"
+  # The Cache LSP index step must be gated.
+  run awk '
+    /- name: Cache LSP index/ { in_step=1 }
+    in_step { print }
+    in_step && /^[[:space:]]*- name:/ && !/- name: Cache LSP index/ { exit }
+  ' "$WORKFLOW"
   [ "$status" -eq 0 ]
-  [ "$output" -ge 2 ]
+  [[ "$output" =~ LSP_PILOT_ENABLED ]]
+
+  # The Set up LSP pilot servers step must also be gated.
+  run awk '
+    /- name: Set up LSP pilot servers/ { in_step=1 }
+    in_step { print }
+    in_step && /^[[:space:]]*- name:/ && !/- name: Set up LSP pilot servers/ { exit }
+  ' "$WORKFLOW"
+  [ "$status" -eq 0 ]
+  [[ "$output" =~ LSP_PILOT_ENABLED ]]
 }

@@ -216,7 +216,8 @@ rebuild the gating, the graceful-degradation path, or the Token Cost Observatory
   `--mcp-config <file> --strict-mcp-config` and the merged `--allowed-tools` into the
   agentic tiers (`run_agentic` — deep/audit) and the rubber-duck tier (`run_duck`) via
   `REVIEW_MCP_CONFIG` / `REVIEW_MCP_ALLOWED_TOOLS`; the fast triage tier is intentionally
-  excluded. This pilot scopes LSP *use* to the deep/audit finding-verification surface (§2).
+  excluded. This pilot scopes LSP *use* to cold-start instrumentation in the deep/audit
+  tiers (§2); finding-verification is deferred to Phase 2 (epic #843).
   The LSP server is added as another entry in the same MCP config and its tools as another
   `REVIEW_MCP_ALLOWED_TOOLS` glob. See
   [`docs/initiatives/mcp-powered-review.md`](./initiatives/mcp-powered-review.md) §3 for the
