@@ -20,7 +20,21 @@ evals/lsp-pilot/
   dev/cases.jsonl                 # proposer-visible smoke PRs
   holdout/cases.jsonl             # frozen scored corpus (the comparison target)
   holdout/baseline-lsp-off.jsonl  # immutable LSP-off control, captured ONCE
+  runs/<candidate>.jsonl          # captured LSP-on candidate runs (story #844 inputs)
 ```
+
+`runs/` is not a held-out split — it is not validated by `evals/validate-cases.py`
+(which only walks `dev/`/`holdout/`) and holds **candidate run captures**, one JSONL
+per candidate LSP server, in the comparison-harness record shape (see
+[`../../scripts/lsp_pilot_compare.sh`](../../scripts/lsp_pilot_compare.sh)). They are
+the LSP-on inputs the comparative report
+([`../../scripts/lsp_pilot_report.sh`](../../scripts/lsp_pilot_report.sh) →
+[`../../docs/lsp-pilot-report.md`](../../docs/lsp-pilot-report.md)) scores against the
+frozen baseline. A run may carry two optional honesty fields — `lsp_skipped` (the SLA
+auto-skip fired) and `mcp_degraded` (the MCP server ran degraded), each with a
+`skip_reason` — so a skipped/degraded run is reported, never silently dropped. Like the
+corpus and baseline, the committed runs are **synthetic, de-identified seeds** until the
+real pilot PR set is wired.
 
 ## The frozen corpus (`cases.jsonl`)
 
