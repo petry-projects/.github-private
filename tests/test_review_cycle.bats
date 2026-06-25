@@ -27,6 +27,17 @@ escalation_comment() {  # escalation_comment <when>
   jq -n --arg when "$1" \
     '{when: $when, body: "<!-- pr-review-agent escalation -->\n\n## Automated review — human attention needed"}'
 }
+# A human clicking "Approve" in the GitHub UI: a review with state=APPROVED and a
+# non-bot author, carrying NO agent marker. Only this resets the cap (#926).
+human_approval() {  # human_approval <when>
+  jq -n --arg when "$1" '{when: $when, body: "LGTM", author: "don-the-human", state: "APPROVED"}'
+}
+# A machine approval: a bot-authored APPROVED review (e.g. repair-pr-approvals or
+# a bot approval). Must NOT reset the cap (#926).
+bot_approval() {  # bot_approval <when> [login]
+  jq -n --arg when "$1" --arg login "${2:-donpetry-bot}" \
+    '{when: $when, body: "", author: $login, state: "APPROVED"}'
+}
 items() {  # items <item-json>...
   printf '%s\n' "$@" | jq -s '.'
 }
@@ -77,7 +88,10 @@ items() {  # items <item-json>...
 }
 
 # ---------------------------------------------------------------------------
-# compute_review_cycle: approvals reset the count (defect 1 in #467)
+# compute_review_cycle: only HUMAN approvals reset the count (#926).
+# The cap's reset must be unreachable by the runaway agent: machine approvals
+# (the cascade's own approval marker, repair-pr-approvals, bot approvals) must
+# NOT reset, otherwise the loop re-arms its own cap (the #860 failure mode).
 # ---------------------------------------------------------------------------
 
 @test "approval marker itself never counts as a cycle" {
@@ -85,17 +99,30 @@ items() {  # items <item-json>...
   [ "$output" = "0" ]
 }
 
-@test "PR #458 shape: fix, fix, approve counts 0 (was 3 — escalated wrongly)" {
+@test "a HUMAN approval resets the count (fix, fix, human-approve = 0)" {
   local j
   j=$(items \
-    "$(fix_request 2026-06-07T04:11:06Z 05ae5d9)" \
-    "$(fix_request 2026-06-07T04:20:56Z 0655052)" \
-    "$(approval    2026-06-07T05:01:52Z 022cecf)")
+    "$(fix_request    2026-06-07T04:11:06Z 05ae5d9)" \
+    "$(fix_request    2026-06-07T04:20:56Z 0655052)" \
+    "$(human_approval 2026-06-07T05:01:52Z)")
   run compute_review_cycle "$j"
   [ "$output" = "0" ]
 }
 
-@test "fix-requests after an approval count from the approval, not from zero history" {
+@test "fix-requests after a HUMAN approval count from that approval" {
+  local j
+  j=$(items \
+    "$(fix_request    2026-06-07T01:00:00Z aaa111)" \
+    "$(fix_request    2026-06-07T02:00:00Z bbb222)" \
+    "$(human_approval 2026-06-07T03:00:00Z)" \
+    "$(fix_request    2026-06-07T04:00:00Z ddd444)")
+  run compute_review_cycle "$j"
+  [ "$output" = "1" ]
+}
+
+@test "the cascade's own approval MARKER does NOT reset the count (#926)" {
+  # fix, fix, machine-approval-marker, fix -> all 3 fix-requests still count,
+  # because a machine approval can no longer re-arm the cap.
   local j
   j=$(items \
     "$(fix_request 2026-06-07T01:00:00Z aaa111)" \
@@ -103,20 +130,18 @@ items() {  # items <item-json>...
     "$(approval    2026-06-07T03:00:00Z ccc333)" \
     "$(fix_request 2026-06-07T04:00:00Z ddd444)")
   run compute_review_cycle "$j"
-  [ "$output" = "1" ]
+  [ "$output" = "3" ]
 }
 
-@test "approval preserved inside a superseded <details> wrapper still resets" {
-  # mark_prior_agent_items_obsolete edits comments in place, preserving
-  # createdAt and the original marker inside a <details> block.
-  local wrapped j
-  wrapped=$(jq -n '{when: "2026-06-07T03:00:00Z", body: "<!-- pr-review-agent superseded -->\n<details><summary>prior</summary>\n<!-- pr-review-agent v1 sha=ccc333 decision=approved risk=LOW -->\n</details>"}')
+@test "a bot GitHub approval (repair-pr-approvals) does NOT reset the count (#926)" {
+  local j
   j=$(items \
-    "$(fix_request 2026-06-07T01:00:00Z aaa111)" \
-    "$wrapped" \
-    "$(fix_request 2026-06-07T04:00:00Z ddd444)")
+    "$(fix_request  2026-06-07T01:00:00Z aaa111)" \
+    "$(fix_request  2026-06-07T02:00:00Z bbb222)" \
+    "$(bot_approval 2026-06-07T03:00:00Z repair-pr-approvals)" \
+    "$(fix_request  2026-06-07T04:00:00Z ddd444)")
   run compute_review_cycle "$j"
-  [ "$output" = "1" ]
+  [ "$output" = "3" ]
 }
 
 # ---------------------------------------------------------------------------
@@ -147,13 +172,13 @@ items() {  # items <item-json>...
   [ "$output" = "2" ]
 }
 
-@test "newest reset event wins: approval after escalation resets again" {
+@test "newest reset event wins: HUMAN approval after escalation resets again" {
   local j
   j=$(items \
     "$(escalation_comment 2026-06-07T01:00:00Z)" \
-    "$(fix_request 2026-06-07T02:00:00Z aaa111)" \
-    "$(approval    2026-06-07T03:00:00Z bbb222)" \
-    "$(fix_request 2026-06-07T04:00:00Z ccc333)")
+    "$(fix_request    2026-06-07T02:00:00Z aaa111)" \
+    "$(human_approval 2026-06-07T03:00:00Z)" \
+    "$(fix_request    2026-06-07T04:00:00Z ccc333)")
   run compute_review_cycle "$j"
   [ "$output" = "1" ]
 }

@@ -7,6 +7,7 @@ source "$(dirname "$0")/engine.sh"
 source "$(dirname "$0")/lib/git-identity.sh"
 source "$(dirname "$0")/lib/pr-worktree.sh"
 source "$(dirname "$0")/lib/auto-merge.sh"
+source "$(dirname "$0")/lib/pr-automation-budget.sh"
 
 INTENT_TYPE="${INTENT_TYPE:-fix-reviews}"
 PR_NUMBER="${PR_NUMBER:-}"
@@ -25,6 +26,16 @@ REVIEWS_MARKER_PREFIX="<!-- dev-lead-fix-reviews pr="
 if [ -z "$PR_NUMBER" ] && [ "$INTENT_TYPE" != "rebase" ]; then
   echo "::error::PR_NUMBER is required"
   exit 1
+fi
+
+# Per-PR automation budget (#926): if this PR has exhausted its lifetime
+# automation budget since the last human interaction, stop before any writes.
+# Checked before holding auto-merge so the escalation's auto-merge disable is not
+# undone by the restore_auto_merge EXIT trap. Only a human interaction resets it.
+if [ -n "${PR_NUMBER:-}" ] && [ "${DEV_LEAD_DRY_RUN:-false}" != "true" ] \
+   && enforce_pr_budget "$PR_NUMBER" "$REPO"; then
+  echo "::warning::PR #${PR_NUMBER} automation budget exhausted — skipping ${INTENT_TYPE}"
+  exit 0
 fi
 
 # Checkout the PR branch for modification (Requirement 1).
