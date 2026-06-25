@@ -241,6 +241,10 @@ rebuild the gating, the graceful-degradation path, or the Token Cost Observatory
 - Epic [#839](https://github.com/petry-projects/.github-private/issues/839) — LSP pilot;
   stories #840 (this doc), #841 (corpus + baseline), #842 (wire server), #843
   (finding-verification step), #844 (run comparison), #845 (go/no-go), #846 (cache + SLA).
+- [`docs/lsp-pilot-report.md`](./lsp-pilot-report.md) — the rendered comparative
+  speed/quality/cost report (#844), produced by
+  [`scripts/lsp_pilot_report.sh`](../scripts/lsp_pilot_report.sh) from the frozen
+  baseline + the candidate runs under `evals/lsp-pilot/runs/`.
 - Discussion [#578](https://github.com/petry-projects/.github-private/discussions/578) —
   idea body, the LSP-MCP server-selection weekly update, and the enhancement comment whose
   suggested `docs/lsp-pilot.md` this mirrors.
