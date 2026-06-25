@@ -100,7 +100,18 @@ jobs:
       discussions: write
       id-token: write
       actions: read
-    uses: petry-projects/.github/.github/workflows/feature-ideation-reusable.yml@897e4dede3518cdd7273b9dc63e607d0d05cbdda # v1
+    # SANCTIONED RING-RELEASE PIN — documented exception to the stub header's
+    # "You MUST NOT change … the uses: line" rule. This repo is feature-ideation's
+    # `next` ring (host-relative canary / dogfood-first), so it pins ONCE to the
+    # moving `feature-ideation/next` channel tag and rides each promotion in place
+    # — exercising the candidate (folded-enhancement) reusable ahead of every other
+    # ring. The channel tag is a first-party mutable ref bounded by the
+    # feature-ideation/** ruleset on petry-projects/.github, NOT an unpinned action;
+    # a compliance pass must not "fix" it back to a frozen @vX.Y.Z / @<sha>.
+    # See AGENTS.md "Release channel tags & the mutable-ref exception" and
+    # docs/release/versioning.md (ring channels; Cross-repo: feature-ideation).
+    # Precedent: auto-rebase.yml intentionally pins its reusable @v2 ahead of canon.
+    uses: petry-projects/.github/.github/workflows/feature-ideation-reusable.yml@feature-ideation/next
     with:
       # On the `discussion: created` trigger this carries the new Discussion's
       # number → the reusable runs single-idea enhancement mode. Empty on

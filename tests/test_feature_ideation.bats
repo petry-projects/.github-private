@@ -2,19 +2,20 @@
 # Regression tests for .github/workflows/feature-ideation.yml compliance.
 #
 # Guards the invariants checked by the weekly org compliance audit
-# (check: non-stub-feature-ideation.yml) to prevent re-filing of the
-# "reusable not pinned to @v1" finding (#629).
+# (check: non-stub-feature-ideation.yml). The stub now pins the reusable to
+# the feature-ideation/next channel tag (the sanctioned ring-release
+# mechanism — see the mutable-ref exception in AGENTS.md and
+# docs/release/versioning.md) rather than the former @v1 SHA (#629).
 #
 # Run with: bats tests/test_feature_ideation.bats
 
 FEATURE_IDEATION_YML=".github/workflows/feature-ideation.yml"
 
-# Canonical reusable + v1 pin from
+# Canonical reusable + channel pin from
 # petry-projects/.github/standards/workflows/feature-ideation.yml
 REUSABLE="petry-projects/.github/.github/workflows/feature-ideation-reusable.yml"
-V1_SHA="897e4dede3518cdd7273b9dc63e607d0d05cbdda"
-# The superseded pin the audit flagged (#629).
-V2_SHA="376a4fcb1117444595e3e702fa450873d0e54310"
+# The candidate (folded-enhancement) ring channel this repo (next/dogfood) pins to.
+CHANNEL="feature-ideation/next"
 
 setup() {
   # Run tests from repo root so relative paths resolve correctly.
@@ -29,14 +30,7 @@ setup() {
   grep -qF "uses: ${REUSABLE}@" "$FEATURE_IDEATION_YML"
 }
 
-@test "feature-ideation.yml pins the reusable to the v1 SHA (compliance-audit check)" {
-  grep -qF "uses: ${REUSABLE}@${V1_SHA}" "$FEATURE_IDEATION_YML"
-}
-
-@test "feature-ideation.yml uses: line is annotated # v1" {
-  grep -qE "uses: ${REUSABLE}@${V1_SHA}[[:space:]]+# v1" "$FEATURE_IDEATION_YML"
-}
-
-@test "feature-ideation.yml is not pinned to the superseded v2 SHA" {
-  [ -f "$FEATURE_IDEATION_YML" ] && ! grep -qF "$V2_SHA" "$FEATURE_IDEATION_YML"
+@test "feature-ideation.yml pins the reusable to the configured channel tag" {
+  grep -F "uses: ${REUSABLE}@" "$FEATURE_IDEATION_YML"
+  grep -qF "uses: ${REUSABLE}@${CHANNEL}" "$FEATURE_IDEATION_YML"
 }
