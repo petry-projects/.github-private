@@ -144,7 +144,8 @@ RUNS_SUMMARY=$(echo "$runs_json" | jq -r '
 logs_file=$(mktemp)
 # One jq pass over failed runs; append each log file in the same order
 while IFS=$'\t' read -r run_id run_meta; do
-  log_file="${LOG_DIR:-}/run_${run_id}.txt"
+  [ -n "$LOG_DIR" ] || continue
+  log_file="${LOG_DIR}/run_${run_id}.txt"
   [ -f "$log_file" ] || continue
   {
     printf '=== LOG: %s ===\n' "$run_meta"
@@ -159,7 +160,10 @@ workflow_source=$(gh api "repos/${WORKFLOW_REPO}/contents/.github/workflows/${WO
   || echo "(workflow source unavailable)")
 
 echo "Invoking Claude for log analysis..."
-claude --print --model claude-sonnet-4-6 > "$REPORT_FILE" <<PROMPT
+# Claude writes errors to stdout (not stderr), so they'd silently land in
+# $REPORT_FILE with the stdout redirect below.  Wrap in `if !` so a non-zero
+# exit surfaces the file contents to the Actions log before aborting.
+if ! claude --print --model claude-sonnet-4-6 --no-session-persistence > "$REPORT_FILE" <<PROMPT
 You are analyzing GitHub Actions workflow run logs for the PR Review Agent.
 
 ## Context
@@ -228,6 +232,12 @@ Single line: \`Health: X/10 — <one-sentence verdict>\`
 
 Output ONLY the markdown report — no preamble or commentary outside the report sections.
 PROMPT
+then
+  echo "::error::Claude invocation failed. CLI output follows:"
+  cat "$REPORT_FILE" >&2
+  rm -f "$logs_file"
+  exit 1
+fi
 rm -f "$logs_file"
 
 [ -n "${GITHUB_STEP_SUMMARY:-}" ] && [ -f "$REPORT_FILE" ] && cat "$REPORT_FILE" >> "$GITHUB_STEP_SUMMARY"
