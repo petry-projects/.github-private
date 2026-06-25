@@ -40,6 +40,16 @@ _call() { run bash -c 'source "$1"; shift; "$@"' bash "$SETUP_SCRIPT" "$@"; }
   [ "$status" -eq 1 ]
 }
 
+@test "_lsp_sla_exceeded: negative SLA (test seam) is exceeded by any cold-start (0)" {
+  _call _lsp_sla_exceeded 0 -1
+  [ "$status" -eq 0 ]
+}
+
+@test "_lsp_sla_exceeded: non-numeric SLA → safe default, not exceeded (1)" {
+  _call _lsp_sla_exceeded 5 abc
+  [ "$status" -eq 1 ]
+}
+
 # ── AC #2: cache-status normalization + elapsed ───────────────────────────────
 
 @test "_lsp_cache_status: true→hit, false→miss, unset→unknown" {

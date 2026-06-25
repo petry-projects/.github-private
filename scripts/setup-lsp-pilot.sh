@@ -89,8 +89,10 @@ _lsp_now_ms() {
   local ns
   ns="$(date +%s%N 2>/dev/null || echo '')"
   case "$ns" in
-    ''|*[!0-9]*) date +%s 2>/dev/null | awk '{ printf "%d", $1 * 1000 }' ;;
-    *)           awk "BEGIN { printf \"%d\", $ns / 1000000 }" ;;
+    # %.0f, not %d: epoch ms (~1.75e12) overflows awk's 32-bit %d conversion on
+    # common awks (mawk) and would yield a garbage cold-start measurement.
+    ''|*[!0-9]*) date +%s 2>/dev/null | awk '{ printf "%.0f", $1 * 1000 }' ;;
+    *)           awk "BEGIN { printf \"%.0f\", $ns / 1000000 }" ;;
   esac
 }
 
@@ -110,7 +112,9 @@ _lsp_elapsed_ms() {
 _lsp_sla_exceeded() {
   local cold="${1:-}" sla="${2:-}"
   case "$cold" in ''|*[!0-9]*) return 1 ;; esac
-  [ "$sla" -eq "$sla" ] 2>/dev/null || return 1
+  # sla may be negative (tests use -1 to force the skip path); strip a leading
+  # minus, then require the remainder to be all digits.
+  case "${sla#-}" in ''|*[!0-9]*) return 1 ;; esac
   [ "$cold" -gt "$sla" ]
 }
 

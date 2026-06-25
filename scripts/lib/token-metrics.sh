@@ -176,8 +176,10 @@ emit_verification_record() {
 emit_lsp_coldstart_record() {
   [ -n "${TOKEN_LOG_FILE:-}" ] || return 0
 
-  local workflow="$1" candidate="$2" cold_start_ms="$3" cache="$4"
-  local skipped="$5" sla_ms="$6" reason="${7:-}"
+  # set -u-safe defaults (this lib runs under set -euo pipefail): a short call
+  # degrades to a defaulted record rather than crashing on an unbound positional.
+  local workflow="${1:-}" candidate="${2:-}" cold_start_ms="${3:-0}" cache="${4:-unknown}"
+  local skipped="${5:-false}" sla_ms="${6:-0}" reason="${7:-}"
 
   local ts run_id record
   ts=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "")
