@@ -1,6 +1,6 @@
 # Initiative: Auto-rebase Fan-out Reduction — Decision Record & Merge Queue Go/No-Go Gate
 
-**Status:** Decision record — free mitigation validated (≥50% metric met); Merge Queue go/no-go **deferred to a human** (epic [#736](https://github.com/petry-projects/.github-private/issues/736) open question)
+**Status:** Decision record — free mitigation validated (≥50% metric met) **and deployed org-wide & verified live 2026-06-26** (see §2 update); Merge Queue go/no-go **deferred to a human** (epic [#736](https://github.com/petry-projects/.github-private/issues/736) open question)
 **Author:** dev-lead / Claude Code
 **Date:** 2026-06-21
 **Scope (confirmed):** Records the measured before/after impact of the **review-ready auto-rebase
@@ -71,6 +71,19 @@ Epic #736's success metric: **auto-rebase-triggered branch-update CI runs drop b
 **✅ MET.** The review-ready restriction cut the behind-PR multiplier by **~57%** (7 eligible → 3),
 clearing the ≥50% bar, with **no plan upgrade** and **without losing** the agentic conflict-resolution
 fallback (the sentinel path is preserved — see §3).
+
+> **Update (2026-06-26) — the gate is now actually deployed in production.** The ~57% figure above was
+> computed from the eligible-PR *multiplier* (a predicate snapshot), and at the time this record was
+> written the restriction was **not yet filtering anything in production**: the central reusable
+> defaulted `tooling_ref` to `v1`, a tag that predates `lib/eligibility.sh` (added in #468), so every
+> auto-rebase run failed to source the predicate — petry-projects/.github's own runs errored outright
+> while consumer repos still ran the **original unrestricted fan-out**. That latent regression was fixed
+> in [petry-projects/.github#528](https://github.com/petry-projects/.github/pull/528) (2026-06-24), which
+> sources the predicate from the reusable's own commit (`github.job_workflow_sha`); the
+> `auto-rebase/stable` channel was then promoted org-wide. The gate is now **verified live** — e.g.
+> `.github-private` PR #744 (no approval, no `auto-rebase:ready` label) went from auto-updated-every-push
+> to **skipped**. Net effect on this record: the free mitigation behind the "defer Merge Queue" decision
+> is now genuinely in effect, so the §4 deferral holds on **stronger** footing, not weaker.
 
 ---
 
