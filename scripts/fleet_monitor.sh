@@ -297,41 +297,11 @@ fi
 # objects for every workflow whose failure rate exceeds 10%. The downstream
 # "Track high-failure workflows" step reads this file to find/update or create
 # a tracked GitHub Issue for each item and apply the dev-lead label.
+# Gate workflows (FLEET_GATE_WORKFLOWS in fleet_report.sh) are excluded here —
+# their failures are intentional policy enforcement, not breakage (#941).
 HIGH_FAILURE_FILE="fleet_high_failure.json"
 if [ -s "$metrics_file" ]; then
-  jq -Rn '
-    [inputs | select(length > 0) | split("\t") | select(length >= 12) |
-     {
-       sort_key:  .[0],
-       repo:      .[1],
-       workflow:  .[2],
-       total:    (.[3]  | tonumber? // 0),
-       success:  (.[4]  | tonumber? // 0),
-       failed:   (.[5]  | tonumber? // 0),
-       cancelled:(.[6]  | tonumber? // 0),
-       rate:      .[7],
-       p50:      (.[8]  | tonumber? // 0),
-       p95:      (.[9]  | tonumber? // 0),
-       label:     .[10],
-       rate_int: (.[11] | tonumber? // 0)
-     }] |
-    # Apply confidence filter: CRITICAL rows with < 5 total runs become LOW-CONF
-    map(if .label == "CRITICAL" and .total < 5 then .label = "LOW-CONF" else . end) |
-    # Keep trackable items:
-    #   ERROR rows (monitor could not read runs — always noteworthy regardless of rate)
-    #   WARNING/DEGRADED/CRITICAL with exact failure rate > 10%
-    #   (uses .failed/.total directly to avoid integer-truncation false negatives)
-    map(select(
-      .label == "ERROR" or
-      (
-        .label != "LOW-CONF" and
-        (.label | IN("WARNING","DEGRADED","CRITICAL")) and
-        .total > 0 and
-        (.failed * 100.0 / .total > 10)
-      )
-    )) |
-    sort_by(.failed * 100.0 / (if .total > 0 then .total else 1 end)) | reverse
-  ' < "$metrics_file" > "$HIGH_FAILURE_FILE"
+  filter_high_failure "$metrics_file" > "$HIGH_FAILURE_FILE"
   hf_count=$(jq 'length' "$HIGH_FAILURE_FILE")
   echo "High-failure items (>10%): ${hf_count}"
   [ -n "${GITHUB_ENV:-}" ] && echo "HIGH_FAILURE_COUNT=${hf_count}" >> "$GITHUB_ENV"

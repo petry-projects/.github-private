@@ -281,3 +281,75 @@ setup() {
   run generate_mermaid_bar "$METRICS"
   [[ "$output" =~ "bar [" ]]
 }
+
+# ---------------------------------------------------------------------------
+# filter_high_failure — high-failure JSON export + gate-workflow exclusion (#941)
+# ---------------------------------------------------------------------------
+
+# Writes a metrics TSV to a temp file and echoes its path.
+_mk_metrics() {
+  local f
+  f="$(mktemp)"
+  printf '%s\n' "$@" > "$f"
+  echo "$f"
+}
+
+@test "filter_high_failure: gate workflow over 10% is excluded from tracking" {
+  local m
+  m="$(_mk_metrics \
+    $'2\tpetry-projects/.github-private\t.github/workflows/test-deletion-guard.yml\t18\t16\t2\t0\t11.1%\t11\t82\tWARNING\t11')"
+  run filter_high_failure "$m"
+  [ "$status" -eq 0 ]
+  [ "$(echo "$output" | jq 'length')" -eq 0 ]
+  rm -f "$m"
+}
+
+@test "filter_high_failure: gate matched by bare basename is excluded" {
+  local m
+  m="$(_mk_metrics \
+    $'2\tpetry-projects/.github-private\ttest-deletion-guard.yml\t18\t16\t2\t0\t11.1%\t11\t82\tWARNING\t11')"
+  run filter_high_failure "$m"
+  [ "$(echo "$output" | jq 'length')" -eq 0 ]
+  rm -f "$m"
+}
+
+@test "filter_high_failure: non-gate workflow over 10% is still tracked" {
+  local m
+  m="$(_mk_metrics \
+    $'0\tpetry-projects/.github-private\tci.yml\t23\t3\t20\t0\t87.0%\t67\t206\tCRITICAL\t87')"
+  run filter_high_failure "$m"
+  [ "$(echo "$output" | jq 'length')" -eq 1 ]
+  [ "$(echo "$output" | jq -r '.[0].workflow')" = "ci.yml" ]
+  rm -f "$m"
+}
+
+@test "filter_high_failure: ERROR row for a gate workflow is still surfaced" {
+  local m
+  m="$(_mk_metrics \
+    $'6\tpetry-projects/.github-private\t.github/workflows/test-deletion-guard.yml\t?\t\t\t\terror\t0\t0\tERROR\t0')"
+  run filter_high_failure "$m"
+  [ "$(echo "$output" | jq 'length')" -eq 1 ]
+  [ "$(echo "$output" | jq -r '.[0].label')" = "ERROR" ]
+  rm -f "$m"
+}
+
+@test "filter_high_failure: CRITICAL with under 5 runs is dropped as LOW-CONF" {
+  local m
+  m="$(_mk_metrics \
+    $'0\tpetry-projects/.github-private\tflaky.yml\t3\t0\t3\t0\t100%\t5\t5\tCRITICAL\t100')"
+  run filter_high_failure "$m"
+  [ "$(echo "$output" | jq 'length')" -eq 0 ]
+  rm -f "$m"
+}
+
+@test "filter_high_failure: mixed rows keep only the tracked non-gate workflow" {
+  local m
+  m="$(_mk_metrics \
+    $'0\tpetry-projects/.github-private\tci.yml\t23\t3\t20\t0\t87.0%\t67\t206\tCRITICAL\t87' \
+    $'2\tpetry-projects/.github-private\t.github/workflows/test-deletion-guard.yml\t18\t16\t2\t0\t11.1%\t11\t82\tWARNING\t11' \
+    $'3\tpetry-projects/.github-private\thealthy.yml\t50\t50\t0\t0\t0%\t10\t20\tHEALTHY\t0')"
+  run filter_high_failure "$m"
+  [ "$(echo "$output" | jq 'length')" -eq 1 ]
+  [ "$(echo "$output" | jq -r '.[0].workflow')" = "ci.yml" ]
+  rm -f "$m"
+}
