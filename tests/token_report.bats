@@ -293,3 +293,83 @@ setup() {
   [[ "$output" == *"WARN"* ]]
   [[ "$output" == *"download failed"* ]]
 }
+
+# ---------------------------------------------------------------------------
+# _gh_timeout — per-call timeout wrapper (#954: one hung gh call must not
+# consume the whole job)
+# ---------------------------------------------------------------------------
+
+@test "_gh_timeout: bounds a hung gh call (returns 124, well under the sleep)" {
+  run bash -c "
+    gh() { sleep 20; }
+    export -f gh
+    source '${BATS_TEST_DIRNAME}/../scripts/token_report.sh'
+    export ARTIFACT_OP_TIMEOUT=1
+    start=\$(date +%s)
+    if _gh_timeout api anything; then rc=0; else rc=\$?; fi
+    end=\$(date +%s)
+    echo \"rc=\$rc elapsed=\$((end - start))\"
+  "
+  [[ "$output" == *"rc=124"* ]]
+  elapsed="$(printf '%s\n' "$output" | sed -n 's/.*elapsed=\([0-9]*\).*/\1/p')"
+  [ "$elapsed" -lt 10 ]
+}
+
+@test "_gh_timeout: ARTIFACT_OP_TIMEOUT=0 runs gh directly (no timeout wrapper)" {
+  run bash -c "
+    gh() { echo \"called:\$1:\$2\"; return 0; }
+    export -f gh
+    source '${BATS_TEST_DIRNAME}/../scripts/token_report.sh'
+    export ARTIFACT_OP_TIMEOUT=0
+    _gh_timeout api repos/x/y
+  "
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"called:api:repos/x/y"* ]]
+}
+
+@test "collect_org_jsonl: a hung artifact download times out without stalling; healthy artifact still collected" {
+  local jsonl_dir fixdir fixzip
+  jsonl_dir="$(mktemp -d)"
+  fixdir="$(mktemp -d)"
+  fixzip="$fixdir/good.zip"
+  python3 - "$fixzip" <<'PY'
+import sys, zipfile
+rec = '{"ts":"2099-01-01T00:00:00Z","workflow":"pr-review","tier":"deep","model":"claude-opus-4-7","input_tokens":10,"output_tokens":5,"context":""}\n'
+with zipfile.ZipFile(sys.argv[1], "w") as z:
+    z.writestr("token-usage.jsonl", rec)
+PY
+  run bash -c "
+    export FIXZIP='$fixzip'
+    gh() {
+      case \"\$2\" in
+        orgs/*/repos*) echo 'petry-projects/test-repo'; return 0;;
+        repos/*/actions/artifacts/111/zip) cat \"\$FIXZIP\"; return 0;;
+        repos/*/actions/artifacts/999/zip) sleep 20; return 0;;
+        repos/*/actions/artifacts*)
+          printf '{\"artifacts\":[{\"name\":\"token-usage-a\",\"id\":111,\"expired\":false,\"created_at\":\"2099-01-01T00:00:00Z\"},{\"name\":\"token-usage-b\",\"id\":999,\"expired\":false,\"created_at\":\"2099-01-01T00:00:00Z\"}]}'
+          return 0;;
+        *) return 0;;
+      esac
+    }
+    export -f gh
+    source '${BATS_TEST_DIRNAME}/../scripts/token_report.sh'
+    export ORG=petry-projects LOOKBACK_DAYS=3650 COLLECT_CONCURRENCY=4
+    # Deliberately NOT exported: collect_org_jsonl must propagate it to the workers
+    # itself, or the per-download timeout silently disables in the parallel fan-out.
+    ARTIFACT_OP_TIMEOUT=1
+    start=\$(date +%s)
+    collect_org_jsonl '$jsonl_dir'; rc=\$?
+    end=\$(date +%s)
+    echo \"rc=\$rc elapsed=\$((end - start))\"
+  " 2>&1
+  local recs; recs="$(cat "$jsonl_dir"/111-*.jsonl 2>/dev/null | wc -l | tr -d ' ')"
+  rm -rf "$jsonl_dir" "$fixdir"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"rc=0"* ]]
+  # The healthy artifact (111) was downloaded, extracted and repo-tagged.
+  [ "$recs" -ge 1 ]
+  # The hung download (999) was bounded, not waited out for its full 20s.
+  [[ "$output" == *"WARN"* ]]
+  elapsed="$(printf '%s\n' "$output" | sed -n 's/.*elapsed=\([0-9]*\).*/\1/p')"
+  [ "$elapsed" -lt 15 ]
+}

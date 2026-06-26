@@ -23,6 +23,12 @@
 #   GH_TOKEN       — PAT with actions:read across the org (artifacts are per-repo)
 #   TOKEN_REPORT_OUT — optional path; when set, the report is written there in addition
 #                      to stdout.
+#   ARTIFACT_OP_TIMEOUT — per-gh-call timeout in seconds (default 60) so one hung/slow
+#                      artifact download or listing cannot consume the whole job. 0
+#                      disables the wrapper.
+#   COLLECT_CONCURRENCY — max concurrent artifact listings/downloads (default 8). The
+#                      bulk of collection wall-clock is serial network I/O, so bounded
+#                      parallelism is what keeps the run inside the job timeout.
 #
 # ET formula (GitHub's framework): ET = m × (1.0×I + 0.1×C + 4.0×O)
 # The `et` field is precomputed per call by token-metrics.sh; this script only sums it.
@@ -320,6 +326,24 @@ render_token_report() {
 # Network I/O (main)
 # ---------------------------------------------------------------------------
 
+# Per-gh-call timeout (seconds) and collection concurrency. See the header.
+ARTIFACT_OP_TIMEOUT="${ARTIFACT_OP_TIMEOUT:-60}"
+COLLECT_CONCURRENCY="${COLLECT_CONCURRENCY:-8}"
+
+# _gh_timeout <gh-args...>
+# Runs `gh "$@"` under a per-call timeout so a single hung/slow request cannot
+# stall the whole run (#954). Returns 124 when the call is killed by timeout.
+# When ARTIFACT_OP_TIMEOUT is 0 or the `timeout` binary is unavailable, gh runs
+# unwrapped. gh is invoked via `bash -c` so an exported shell-function stub (used
+# by the unit tests) is still resolved under `timeout`, which only execs binaries.
+_gh_timeout() {
+  if [ "${ARTIFACT_OP_TIMEOUT:-0}" -gt 0 ] && command -v timeout >/dev/null 2>&1; then
+    timeout "${ARTIFACT_OP_TIMEOUT}" bash -c 'gh "$@"' _ "$@"
+  else
+    gh "$@"
+  fi
+}
+
 # _extract_zip <zip_file> <dest_dir>
 # Extracts a zip using unzip when available, else a python3 fallback (CI runners
 # have unzip; the fallback keeps the script runnable in minimal environments).
@@ -336,76 +360,123 @@ PY
   fi
 }
 
+# _list_repo_artifacts <repo>
+# Lists token-usage artifact IDs in one repo that fall inside the lookback window
+# and appends "<repo> <id>" lines to a unique file in COLLECT_LIST_DIR. Each
+# worker writes its own file (no shared-fd contention) so the listings can run in
+# parallel. Reads CUTOFF / COLLECT_LIST_DIR from the environment. Always exits 0:
+# a failed listing degrades to a WARN + a skipped repo, never an aborted run.
+_list_repo_artifacts() {
+  local repo="$1" arts out
+  arts="$(_gh_timeout api "repos/${repo}/actions/artifacts" --paginate 2>/dev/null \
+    | jq -r --arg cutoff "$CUTOFF" \
+    '.artifacts[] | select(.name | startswith("token-usage-")) | select(.expired == false) | select(.created_at >= $cutoff) | .id | tostring')" || {
+    echo "WARN: could not fetch artifacts for ${repo} — skipping (check actions:read permission or timed out)" >&2
+    return 0
+  }
+  [ -n "$arts" ] || return 0
+  out="$(mktemp "${COLLECT_LIST_DIR}/list.XXXXXX")"
+  local id
+  while IFS= read -r id; do
+    [ -n "$id" ] || continue
+    printf '%s %s\n' "$repo" "$id" >> "$out"
+  done <<< "$arts"
+}
+
+# _collect_one_artifact <repo> <id>
+# Downloads + extracts one artifact and writes its repo-tagged JSONL records into
+# COLLECT_JSONL_DIR, touching a marker in COLLECT_MARKER_DIR when ≥1 record is
+# written (the caller counts markers for artifact_count). Bounded by _gh_timeout
+# so a single hung download is skipped, not waited out. Each worker writes only
+# id-scoped paths (artifact IDs are globally unique on GitHub) so parallel workers
+# never collide. Reads COLLECT_* from the environment. Always exits 0.
+_collect_one_artifact() {
+  local repo="$1" id="$2"
+  local zip="$COLLECT_WORKDIR/a-$id.zip" ex="$COLLECT_WORKDIR/x-$id"
+  mkdir -p "$ex"
+  if ! _gh_timeout api "repos/${repo}/actions/artifacts/${id}/zip" > "$zip" 2>/dev/null; then
+    echo "WARN: artifact ${id} from ${repo} — download failed or timed out; skipping (report may be incomplete)" >&2
+    rm -rf "$zip" "$ex"
+    return 0
+  fi
+  if ! _extract_zip "$zip" "$ex" 2>/dev/null; then
+    echo "WARN: artifact ${id} from ${repo} — extraction failed; skipping (report may be incomplete)" >&2
+    rm -rf "$zip" "$ex"
+    return 0
+  fi
+
+  local found=false f dest
+  while IFS= read -r f; do
+    # Tag each record with its source repo for the by-repo rollup.
+    dest="$COLLECT_JSONL_DIR/${id}-$(basename "$f")"
+    if jq -c --arg repo "$repo" 'select(type=="object") | . + {repo: $repo}' \
+        "$f" > "$dest" 2>/dev/null; then
+      found=true
+    else
+      # jq creates the destination before it can fail on malformed input;
+      # remove it so annotate_records never sees a corrupt *.jsonl file.
+      rm -f "$dest" 2>/dev/null || true
+    fi
+  done < <(find "$ex" -type f -name '*.jsonl' -print)
+  [ "$found" = true ] && : > "$COLLECT_MARKER_DIR/$id"
+
+  rm -rf "$zip" "$ex"
+  return 0
+}
+
 # collect_org_jsonl <jsonl_dir>  (stdout: "<repo_count> <artifact_count>")
-# Discovers non-archived repos, downloads each token-usage artifact inside the
-# lookback window, extracts its JSONL, and tags every record with its source repo.
+# Discovers non-archived repos, then — in two bounded-parallel passes — lists each
+# repo's in-window token-usage artifacts and downloads/extracts them, tagging every
+# record with its source repo. Per-call timeouts (_gh_timeout) bound any single
+# hung request; COLLECT_CONCURRENCY bounds the fan-out (#954).
 collect_org_jsonl() {
   local jsonl_dir="$1"
   mkdir -p "$jsonl_dir"
 
   local repos_raw
-  if ! repos_raw="$(gh api "orgs/${ORG}/repos?per_page=100&type=all" --paginate \
+  if ! repos_raw="$(_gh_timeout api "orgs/${ORG}/repos?per_page=100&type=all" --paginate \
     --jq '.[] | select(.archived == false) | .full_name')"; then
     echo "ERROR: org repo discovery for '${ORG}' failed — verify GH_TOKEN has org read access." >&2
     return 1
   fi
   [ -n "$repos_raw" ] || { echo "0 0"; return 0; }
 
-  local cutoff repo_count=0 artifact_count=0
-  cutoff="$(date -u -d "${LOOKBACK_DAYS} days ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
-    || date -u -v-"${LOOKBACK_DAYS}"d +%Y-%m-%dT%H:%M:%SZ)"
+  local repo_count
+  repo_count="$(printf '%s\n' "$repos_raw" | awk 'NF{c++} END{print c+0}')"
 
+  # Shared state for the parallel workers, all under one workdir for cleanup.
   local workdir; workdir="$(mktemp -d)"
   # shellcheck disable=SC2064
   trap "rm -rf '$workdir'" RETURN
+  CUTOFF="$(date -u -d "${LOOKBACK_DAYS} days ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+    || date -u -v-"${LOOKBACK_DAYS}"d +%Y-%m-%dT%H:%M:%SZ)"
+  # ARTIFACT_OP_TIMEOUT is read by _gh_timeout *inside* the xargs workers, so it
+  # must be exported or the per-download timeout silently disables in the fan-out.
+  export ARTIFACT_OP_TIMEOUT
+  export CUTOFF COLLECT_JSONL_DIR="$jsonl_dir" COLLECT_WORKDIR="$workdir"
+  export COLLECT_LIST_DIR="$workdir/list" COLLECT_MARKER_DIR="$workdir/markers"
+  mkdir -p "$COLLECT_LIST_DIR" "$COLLECT_MARKER_DIR"
+  export -f _list_repo_artifacts _collect_one_artifact _gh_timeout _extract_zip
 
-  local repo
-  while IFS= read -r repo; do
-    [ -n "$repo" ] || continue
-    repo_count=$((repo_count + 1))
+  # Pass 1 — list artifacts across all repos in parallel (one worker per repo).
+  # pipefail in the worker so a failed `gh | jq` listing surfaces as the WARN path
+  # rather than being masked by jq's success on empty input.
+  printf '%s\n' "$repos_raw" \
+    | xargs -P "$COLLECT_CONCURRENCY" -I {} \
+        bash -c 'set -o pipefail; _list_repo_artifacts "$1"' _ {} \
+    || true
 
-    local arts
-    arts="$(gh api "repos/${repo}/actions/artifacts" --paginate 2>/dev/null \
-      | jq -r --arg cutoff "$cutoff" \
-      '.artifacts[] | select(.name | startswith("token-usage-")) | select(.expired == false) | select(.created_at >= $cutoff) | .id | tostring')" || {
-      echo "WARN: could not fetch artifacts for ${repo} — skipping (check actions:read permission)" >&2
-      continue
-    }
-    [ -n "$arts" ] || continue
+  # Pass 2 — download + extract each "<repo> <id>" pair in parallel.
+  local worklist="$workdir/worklist"
+  cat "$COLLECT_LIST_DIR"/* > "$worklist" 2>/dev/null || true
+  if [ -s "$worklist" ]; then
+    xargs -P "$COLLECT_CONCURRENCY" -n 2 \
+      bash -c '_collect_one_artifact "$1" "$2"' _ < "$worklist" \
+      || true
+  fi
 
-    local id
-    while IFS= read -r id; do
-      [ -n "$id" ] || continue
-
-      local zip="$workdir/a-$id.zip" ex="$workdir/x-$id"
-      mkdir -p "$ex"
-      if ! gh api "repos/${repo}/actions/artifacts/${id}/zip" > "$zip" 2>/dev/null; then
-        echo "WARN: artifact ${id} from ${repo} — download failed; skipping (report may be incomplete)" >&2
-        continue
-      fi
-      if ! _extract_zip "$zip" "$ex" 2>/dev/null; then
-        echo "WARN: artifact ${id} from ${repo} — extraction failed; skipping (report may be incomplete)" >&2
-        continue
-      fi
-
-      local found=false f dest
-      while IFS= read -r f; do
-        # Tag each record with its source repo for the by-repo rollup.
-        dest="$jsonl_dir/${id}-$(basename "$f")"
-        if jq -c --arg repo "$repo" 'select(type=="object") | . + {repo: $repo}' \
-            "$f" > "$dest" 2>/dev/null; then
-          found=true
-        else
-          # jq creates the destination before it can fail on malformed input;
-          # remove it so annotate_records never sees a corrupt *.jsonl file.
-          rm -f "$dest" 2>/dev/null || true
-        fi
-      done < <(find "$ex" -type f -name '*.jsonl' -print)
-      [ "$found" = true ] && artifact_count=$((artifact_count + 1))
-
-      rm -rf "$zip" "$ex"
-    done <<< "$arts"
-  done <<< "$repos_raw"
+  local artifact_count
+  artifact_count="$(find "$COLLECT_MARKER_DIR" -type f | wc -l | tr -d ' ')"
 
   echo "${repo_count} ${artifact_count}"
 }
