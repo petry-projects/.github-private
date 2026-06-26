@@ -289,7 +289,7 @@ setup() {
 # Writes a metrics TSV to a temp file and echoes its path.
 _mk_metrics() {
   local f
-  f="$(mktemp)"
+  f="$(mktemp)" || { echo "Failed to create temp file" >&2; exit 1; }
   printf '%s\n' "$@" > "$f"
   echo "$f"
 }
@@ -309,6 +309,7 @@ _mk_metrics() {
   m="$(_mk_metrics \
     $'2\tpetry-projects/.github-private\ttest-deletion-guard.yml\t18\t16\t2\t0\t11.1%\t11\t82\tWARNING\t11')"
   run filter_high_failure "$m"
+  [ "$status" -eq 0 ]
   [ "$(echo "$output" | jq 'length')" -eq 0 ]
   rm -f "$m"
 }
@@ -318,6 +319,7 @@ _mk_metrics() {
   m="$(_mk_metrics \
     $'0\tpetry-projects/.github-private\tci.yml\t23\t3\t20\t0\t87.0%\t67\t206\tCRITICAL\t87')"
   run filter_high_failure "$m"
+  [ "$status" -eq 0 ]
   [ "$(echo "$output" | jq 'length')" -eq 1 ]
   [ "$(echo "$output" | jq -r '.[0].workflow')" = "ci.yml" ]
   rm -f "$m"
@@ -328,6 +330,7 @@ _mk_metrics() {
   m="$(_mk_metrics \
     $'6\tpetry-projects/.github-private\t.github/workflows/test-deletion-guard.yml\t?\t\t\t\terror\t0\t0\tERROR\t0')"
   run filter_high_failure "$m"
+  [ "$status" -eq 0 ]
   [ "$(echo "$output" | jq 'length')" -eq 1 ]
   [ "$(echo "$output" | jq -r '.[0].label')" = "ERROR" ]
   rm -f "$m"
@@ -338,6 +341,7 @@ _mk_metrics() {
   m="$(_mk_metrics \
     $'0\tpetry-projects/.github-private\tflaky.yml\t3\t0\t3\t0\t100%\t5\t5\tCRITICAL\t100')"
   run filter_high_failure "$m"
+  [ "$status" -eq 0 ]
   [ "$(echo "$output" | jq 'length')" -eq 0 ]
   rm -f "$m"
 }
@@ -349,6 +353,7 @@ _mk_metrics() {
     $'2\tpetry-projects/.github-private\t.github/workflows/test-deletion-guard.yml\t18\t16\t2\t0\t11.1%\t11\t82\tWARNING\t11' \
     $'3\tpetry-projects/.github-private\thealthy.yml\t50\t50\t0\t0\t0%\t10\t20\tHEALTHY\t0')"
   run filter_high_failure "$m"
+  [ "$status" -eq 0 ]
   [ "$(echo "$output" | jq 'length')" -eq 1 ]
   [ "$(echo "$output" | jq -r '.[0].workflow')" = "ci.yml" ]
   rm -f "$m"

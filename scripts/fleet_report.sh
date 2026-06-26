@@ -11,7 +11,8 @@
 # "failure rate" for these is the guard doing its job, so they are excluded from
 # high-failure issue tracking to avoid false-positive Fleet Monitor trackers
 # (#941). Matched by workflow file basename. See AGENTS.md "Exception:
-# test-deletion-guard.yml". Override via env for testing or to add gates.
+# test-deletion-guard.yml". Override via env with the full space-separated
+# gate list for testing; add permanent gates to the default below.
 FLEET_GATE_WORKFLOWS="${FLEET_GATE_WORKFLOWS:-test-deletion-guard.yml holdout-guard.yml}"
 
 # label_to_icon <label>
@@ -72,7 +73,11 @@ apply_confidence_filter() {
 # the rate-based path — their failures are intentional policy enforcement (#941) —
 # but a gate's ERROR row still surfaces (a read failure is not the gate's doing).
 filter_high_failure() {
-  local f="$1"
+  local f="${1:-}"
+  if [ -z "$f" ] || [ ! -f "$f" ]; then
+    echo "Error: metrics file '${f}' does not exist or is not specified" >&2
+    return 1
+  fi
   jq -Rn --arg gates "$FLEET_GATE_WORKFLOWS" '
     ($gates | split(" ") | map(select(length > 0))) as $gate |
     [inputs | select(length > 0) | split("\t") | select(length >= 12) |
