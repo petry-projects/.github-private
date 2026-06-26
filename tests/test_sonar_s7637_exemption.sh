@@ -101,7 +101,7 @@ done
 
 # 4) Every S7637 resourceKey must point at a present canonical stub (no stale/wrong entries).
 for rk in "${s7637_resourcekeys[@]}"; do
-  base="${rk#**/}"
+  base="${rk##*/}"
   is_canonical=0
   for stub in "${CANONICAL_STUBS[@]}"; do
     [ "$base" = "$stub" ] && is_canonical=1 && break
