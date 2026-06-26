@@ -29,5 +29,8 @@ jobs:
       - name: Run sonarcloud workflow tests
         run: bash tests/test_sonarcloud_workflow.sh
 
+      - name: Run sonar S7637 exemption tests
+        run: bash tests/test_sonar_s7637_exemption.sh
+
       - name: Run copilot-setup-steps workflow tests
         run: bash tests/test_copilot_setup_steps.sh
