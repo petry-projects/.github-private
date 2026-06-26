@@ -300,6 +300,7 @@ setup() {
 # ---------------------------------------------------------------------------
 
 @test "_gh_timeout: bounds a hung gh call (returns 124, well under the sleep)" {
+  command -v timeout >/dev/null 2>&1 || skip "timeout command not available"
   run bash -c "
     gh() { sleep 20; }
     export -f gh
@@ -328,6 +329,7 @@ setup() {
 }
 
 @test "collect_org_jsonl: a hung artifact download times out without stalling; healthy artifact still collected" {
+  command -v timeout >/dev/null 2>&1 || skip "timeout command not available"
   local jsonl_dir fixdir fixzip
   jsonl_dir="$(mktemp -d)"
   fixdir="$(mktemp -d)"

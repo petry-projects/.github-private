@@ -375,7 +375,10 @@ _list_repo_artifacts() {
     return 0
   }
   [ -n "$arts" ] || return 0
-  out="$(mktemp "${COLLECT_LIST_DIR}/list.XXXXXX")"
+  out="$(mktemp "${COLLECT_LIST_DIR}/list.XXXXXX")" || {
+    echo "WARN: failed to create temporary file in ${COLLECT_LIST_DIR} — skipping ${repo}" >&2
+    return 0
+  }
   local id
   while IFS= read -r id; do
     [ -n "$id" ] || continue
@@ -445,7 +448,10 @@ collect_org_jsonl() {
   repo_count="$(printf '%s\n' "$repos_raw" | awk 'NF{c++} END{print c+0}')"
 
   # Shared state for the parallel workers, all under one workdir for cleanup.
-  local workdir; workdir="$(mktemp -d)"
+  local workdir; workdir="$(mktemp -d)" || {
+    echo "ERROR: failed to create temporary directory" >&2
+    return 1
+  }
   # shellcheck disable=SC2064
   trap "rm -rf '$workdir'" RETURN
   CUTOFF="$(date -u -d "${LOOKBACK_DAYS} days ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
@@ -468,7 +474,7 @@ collect_org_jsonl() {
 
   # Pass 2 — download + extract each "<repo> <id>" pair in parallel.
   local worklist="$workdir/worklist"
-  cat "$COLLECT_LIST_DIR"/* > "$worklist" 2>/dev/null || true
+  find "$COLLECT_LIST_DIR" -type f -exec cat {} + > "$worklist" 2>/dev/null || true
   if [ -s "$worklist" ]; then
     xargs -P "$COLLECT_CONCURRENCY" -n 2 \
       bash -c '_collect_one_artifact "$1" "$2"' _ < "$worklist" \
