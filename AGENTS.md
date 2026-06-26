@@ -47,6 +47,10 @@ This is the `.github-private` org infrastructure repo for `petry-projects`. It c
   reviewable decision. The other half is the **"require branches up to date before merging"** ruleset on `main`
   (already enabled). Together they close the gap behind #655, where a PR merged from a stale base reverted a
   shipped fix and deleted its regression test in the same green-CI diff. Do not remove either guard.
+  Because this is a **gate** workflow whose `failure` conclusion is intentional enforcement (it blocks a
+  bad PR), it is exempt from the Fleet Monitor's high-failure issue tracking via `FLEET_GATE_WORKFLOWS`
+  in `scripts/fleet_report.sh` (#941) — otherwise a guard doing its job produces false-positive trackers.
+  `holdout-guard.yml` is exempt for the same reason. Add new gate workflows of this class to that list.
 - **Exception:** `pr-review-sweep.yml` (stuck-review sweep, #573/#898) is a documented repo-specific
   workflow with no corresponding org template in `standards/workflows/`. It re-dispatches reviews for PRs
   that went green after a ci-pending/ci-failing skip, via two triggers: a scheduled cron (the guaranteed

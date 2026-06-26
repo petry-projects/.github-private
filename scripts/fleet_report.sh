@@ -6,6 +6,15 @@
 #   1:sort_key  2:repo  3:wf_file  4:total  5:success  6:failed
 #   7:cancelled  8:rate_display  9:p50(s)  10:p95(s)  11:label  12:rate_int
 
+# Gate workflows: their `failure` conclusion is intentional policy enforcement
+# (e.g. blocking a PR that violates a rule), not flakiness or breakage. A high
+# "failure rate" for these is the guard doing its job, so they are excluded from
+# high-failure issue tracking to avoid false-positive Fleet Monitor trackers
+# (#941). Matched by workflow file basename. See AGENTS.md "Exception:
+# test-deletion-guard.yml". Override via env with the full space-separated
+# gate list for testing; add permanent gates to the default below.
+FLEET_GATE_WORKFLOWS="${FLEET_GATE_WORKFLOWS:-test-deletion-guard.yml holdout-guard.yml}"
+
 # label_to_icon <label>
 # Returns the health icon matching the scorecard legend.
 label_to_icon() {
@@ -52,6 +61,58 @@ apply_confidence_filter() {
     if ($11 == "CRITICAL" && $4 + 0 < 5) { $1 = 5; $11 = "LOW-CONF" }
     print
   }'
+}
+
+# filter_high_failure <metrics_file>
+# Reads a metrics TSV and prints fleet_high_failure JSON — the array of workflows
+# worth tracking as a per-workflow issue:
+#   * ERROR rows (the monitor could not read runs — always noteworthy)
+#   * WARNING/DEGRADED/CRITICAL with exact failure rate > 10%
+# CRITICAL rows with < 5 total runs are downgraded to LOW-CONF and dropped.
+# Gate workflows (FLEET_GATE_WORKFLOWS, matched by basename) are excluded from
+# the rate-based path — their failures are intentional policy enforcement (#941) —
+# but a gate's ERROR row still surfaces (a read failure is not the gate's doing).
+filter_high_failure() {
+  local f="${1:-}"
+  if [ -z "$f" ] || [ ! -f "$f" ]; then
+    echo "Error: metrics file '${f}' does not exist or is not specified" >&2
+    return 1
+  fi
+  jq -Rn --arg gates "$FLEET_GATE_WORKFLOWS" '
+    ($gates | split(" ") | map(select(length > 0))) as $gate |
+    [inputs | select(length > 0) | split("\t") | select(length >= 12) |
+     {
+       sort_key:  .[0],
+       repo:      .[1],
+       workflow:  .[2],
+       total:    (.[3]  | tonumber? // 0),
+       success:  (.[4]  | tonumber? // 0),
+       failed:   (.[5]  | tonumber? // 0),
+       cancelled:(.[6]  | tonumber? // 0),
+       rate:      .[7],
+       p50:      (.[8]  | tonumber? // 0),
+       p95:      (.[9]  | tonumber? // 0),
+       label:     .[10],
+       rate_int: (.[11] | tonumber? // 0)
+     }] |
+    # Apply confidence filter: CRITICAL rows with < 5 total runs become LOW-CONF
+    map(if .label == "CRITICAL" and .total < 5 then .label = "LOW-CONF" else . end) |
+    # Keep trackable items:
+    #   ERROR rows (monitor could not read runs — always noteworthy regardless of rate)
+    #   non-gate WARNING/DEGRADED/CRITICAL with exact failure rate > 10%
+    #   (uses .failed/.total directly to avoid integer-truncation false negatives)
+    map(select(
+      .label == "ERROR" or
+      (
+        ((.workflow | split("/") | last | IN($gate[])) | not) and
+        .label != "LOW-CONF" and
+        (.label | IN("WARNING","DEGRADED","CRITICAL")) and
+        .total > 0 and
+        (.failed * 100.0 / .total > 10)
+      )
+    )) |
+    sort_by(.failed * 100.0 / (if .total > 0 then .total else 1 end)) | reverse
+  ' < "$f"
 }
 
 # detect_systemic_failures <metrics_file>
