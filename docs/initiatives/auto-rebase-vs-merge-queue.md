@@ -76,7 +76,7 @@ fallback (the sentinel path is preserved — see §3).
 > computed from the eligible-PR *multiplier* (a predicate snapshot), and at the time this record was
 > written the restriction was **not yet filtering anything in production**: the central reusable
 > defaulted `tooling_ref` to `v1`, a tag that predates `lib/eligibility.sh` (added in #468), so every
-> auto-rebase run failed to source the predicate — petry-projects/.github's own runs errored outright
+> auto-rebase run failed to source the predicate — `petry-projects/.github`'s own runs errored outright
 > while consumer repos still ran the **original unrestricted fan-out**. That latent regression was fixed
 > in [petry-projects/.github#528](https://github.com/petry-projects/.github/pull/528) (2026-06-24), which
 > sources the predicate from the reusable's own commit (`github.job_workflow_sha`); the
