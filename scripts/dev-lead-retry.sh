@@ -205,7 +205,7 @@ scan_pr_for_rate_limits() {
   pr_obj=$(gh api "repos/${repo}/pulls/${pr_number}" 2>/dev/null || echo '{}')
 
   local head_sha
-  head_sha=$(printf '%s' "$pr_obj" | jq -r '.head.sha // empty' 2>/dev/null || true)
+  head_sha=$(jq -r '.head?.sha // empty' <<< "$pr_obj" 2>/dev/null || true)
   if [ -z "$head_sha" ]; then
     echo "  [warn] could not resolve HEAD SHA for PR ${pr_number} in ${repo} — skipping" >&2
     echo "0"
@@ -218,7 +218,7 @@ scan_pr_for_rate_limits() {
   # breaker stops (the #860 "amplifier" failure mode). Gate on the label — the
   # human-controlled resume signal — so a human removing it re-enables retries.
   local labels_json
-  labels_json=$(printf '%s' "$pr_obj" | jq -c '[.labels[]?.name]' 2>/dev/null || echo '[]')
+  labels_json=$(jq -c '[.labels[]?.name]' <<< "$pr_obj" 2>/dev/null || echo '[]')
   if pr_has_escalation_label "$labels_json"; then
     echo "  [skip] PR ${pr_number} in ${repo} carries ${NEEDS_HUMAN_REVIEW_LABEL} — escalated to a human; not re-dispatching (#946)" >&2
     echo "0"
