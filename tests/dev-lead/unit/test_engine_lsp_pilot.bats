@@ -75,9 +75,11 @@ _source_engine() {
   export TOKEN_LOG_FILE="$TOKEN_LOG"
   export LSP_PILOT_ENABLED=true
   export LSP_PILOT_STREAM_DIR="$STREAM_DIR"
+  export STUB_ENGINE_RESPONSE="pilot deep response"
   export STUB_CLAUDE_USAGE="1500 400 0 90"
   run run_agentic "$TEST_PROMPT" "claude-opus-4-8" "deep"
   [ "$status" -eq 0 ]
+  [ "$output" = "pilot deep response" ]
   grep -q -- "--output-format stream-json --verbose" "$ARGS_RECORD"
   ! grep -q -- "--output-format json" "$ARGS_RECORD"
   # A per-call transcript file was written under the stream dir.
@@ -107,6 +109,17 @@ _source_engine() {
   export LSP_PILOT_ENABLED=true
   export LSP_PILOT_STREAM_DIR="$STREAM_DIR"
   run run_agentic "$TEST_PROMPT" "claude-fable-5" "audit"
+  [ "$status" -eq 0 ]
+  grep -q -- "--output-format stream-json --verbose" "$ARGS_RECORD"
+  [ -n "$(ls -A "$STREAM_DIR")" ]
+}
+
+@test "pilot single: capturing tier switches to stream-json" {
+  _source_engine
+  export TOKEN_LOG_FILE="$TOKEN_LOG"
+  export LSP_PILOT_ENABLED=true
+  export LSP_PILOT_STREAM_DIR="$STREAM_DIR"
+  run run_agentic "$TEST_PROMPT" "claude-sonnet-4-6" "single"
   [ "$status" -eq 0 ]
   grep -q -- "--output-format stream-json --verbose" "$ARGS_RECORD"
   [ -n "$(ls -A "$STREAM_DIR")" ]

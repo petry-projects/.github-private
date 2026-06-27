@@ -90,9 +90,11 @@ lpe_emit_record() {
   command -v jq >/dev/null 2>&1 || return 0
   [ -n "$stream_dir" ] && [ -d "$stream_dir" ] || return 0
 
-  # Fold every per-call transcript (deep/audit/duck) into one stream. measure
-  # sums navigation across the whole review and reads usage from the terminal
-  # result event — the same rule for both A and B legs (apples-to-apples).
+  # Fold every per-call transcript (deep/audit/duck) into one stream.
+  # Nav tool counts are summed across all transcripts; usage is synthesized into
+  # exactly ONE terminal result event (sum of all per-call result usages) so
+  # lsp_pilot_measure.sh's lpm_usage_from_stream always reads a single, stable
+  # result event instead of whichever stream.XXXXXX filename sorts last.
   local combined found=0 f
   combined="$(mktemp 2>/dev/null || true)"
   [ -n "$combined" ] || return 0
@@ -103,6 +105,29 @@ lpe_emit_record() {
   if [ "$found" -ne 1 ] || [ ! -s "$combined" ]; then
     rm -f "$combined"
     return 0
+  fi
+
+  # Re-write combined: keep all non-result events for nav counting; replace the
+  # multiple per-call result events with one synthesized event that sums all
+  # usage fields and takes the model from the last result event in the stream.
+  local _synth
+  _synth="$(mktemp 2>/dev/null || true)"
+  if [ -n "$_synth" ] && jq -cs '
+    [.[] | select(type=="object")] as $all |
+    ($all[] | select(.type != "result")),
+    ([$all[] | select(.type=="result")] as $rs |
+      if ($rs | length) == 0 then empty else
+        $rs[-1] | .usage = {
+          input_tokens:                ([$rs[].usage.input_tokens                // 0] | add),
+          cache_read_input_tokens:     ([$rs[].usage.cache_read_input_tokens      // 0] | add),
+          cache_creation_input_tokens: ([$rs[].usage.cache_creation_input_tokens  // 0] | add),
+          output_tokens:               ([$rs[].usage.output_tokens                // 0] | add)
+        }
+      end)
+  ' "$combined" > "$_synth" 2>/dev/null; then
+    mv "$_synth" "$combined"
+  else
+    rm -f "$_synth"
   fi
 
   local variant candidate pr_key record

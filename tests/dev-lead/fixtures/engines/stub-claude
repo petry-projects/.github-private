@@ -80,10 +80,17 @@ elif [ "$output_format" = "stream-json" ]; then
         usage:{input_tokens:$i, cache_read_input_tokens:$cr,
                cache_creation_input_tokens:$cw, output_tokens:$o}}'
   else
+    _resp_json="${response//\\/\\\\}"
+    _resp_json="${_resp_json//\"/\\\"}"
+    _resp_json="${_resp_json//$'\n'/\\n}"
+    _model_json="${model:-claude-stub}"
+    _model_json="${_model_json//\\/\\\\}"
+    _model_json="${_model_json//\"/\\\"}"
+    _model_json="${_model_json//$'\n'/\\n}"
     printf '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Grep","input":{"pattern":"foo"}}]}}\n'
     printf '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"scripts/x.sh:1:foo"}]}}\n'
     printf '{"type":"result","subtype":"success","is_error":false,"result":"%s","model":"%s","usage":{"input_tokens":%s,"cache_read_input_tokens":%s,"cache_creation_input_tokens":%s,"output_tokens":%s}}\n' \
-      "$response" "${model:-claude-stub}" "${_in:-0}" "${_cr:-0}" "${_cw:-0}" "${_out:-0}"
+      "$_resp_json" "$_model_json" "${_in:-0}" "${_cr:-0}" "${_cw:-0}" "${_out:-0}"
   fi
 else
   printf '%s\n' "$response"
