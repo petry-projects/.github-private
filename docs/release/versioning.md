@@ -143,22 +143,23 @@ reusables (`agent-shield`, `auto-rebase`, `dependency-audit`, `dependabot-autome
   repo carries only the thin caller stubs `.github/workflows/<name>.yml`.
 - Therefore a release is a commit on **`petry-projects/.github`**, and the `<name>/vX.Y.Z` immutable +
   `<name>/<channel>` tags must be cut **against that repo**, not this repo's `origin`.
-- `scripts/cut-release.sh` recognizes each of these agents (`valid_agent`) and formats its tag names,
-  and its `--dry-run` prints the intended immutable + channel tags. **Live cross-repo pushes are not
-  wired yet** — the push target mechanism (a `--repo`/remote argument vs. dispatching against the public
-  repo) is an open question reserved for a human decision, so the script refuses a non-dry-run cut for
-  any cross-repo agent (the `cross_repo_agent` guard / `TODO(#872)` in `cut-release.sh`). Use
-  `--dry-run` to preview tag names until the target is decided.
+- `scripts/cut-release.sh` recognizes each of these agents (`valid_agent`) and, for a cross-repo agent,
+  **resolves the ref and creates/moves the tags against `petry-projects/.github` via `gh api`** (#872,
+  wired). `--dry-run` previews the immutable + channel tag names; a live `--push` creates the annotated
+  `<name>/vX.Y.Z` release object and force-moves the `<name>/<channel>` tag on `.github`, and needs
+  `GH_TOKEN` with `contents:write` on that repo. (`origin/main` in `--ref` means `.github`'s `main` — the
+  `origin/` prefix is stripped for the cross-repo API lookup.)
 - Because these channel tags live on `petry-projects/.github`, the protective ruleset that bounds them
   (the mutable-ref exception) is created **there**, not on this repo — see
   [`AGENTS.md`](../../AGENTS.md) "Release channel tags & the mutable-ref exception".
 
 > **Why not `standards/canary-rings.json` yet?** The machine-readable ring source of truth consumed by
-> the promotion automation (`scripts/canary-rollout.sh`, #501) carries only the in-repo agents whose
-> channel tags it can actually move. Cross-repo agents (`feature-ideation` and the six above) are
-> documented here and supported by `cut-release.sh` (dry-run), but are deliberately **absent** from
-> `canary-rings.json` until the cross-repo tag-move path is wired (`TODO #872`) — adding them sooner
-> would advertise a promotion the automation cannot perform.
+> the promotion automation (`scripts/canary-rollout.sh`, #501) carries only the agents whose channel
+> tags that automation can move. `cut-release.sh` now publishes cross-repo tags via `gh api` (#872), but
+> `canary-rollout.sh` does not yet use that cross-repo path, so `feature-ideation` and the six above stay
+> **absent** from `canary-rings.json` until the rollout automation is taught the same `gh api` move —
+> adding them sooner would advertise a promotion the automation cannot perform. (Manual/scripted cuts via
+> `cut-release.sh` work today.)
 
 ### The six #482 reusables (ring assignment)
 
@@ -169,7 +170,7 @@ them under the full `{next, ring0, ring1, stable}` model with the explicit, org-
 host-relative**: `next` is `.github-private` even though the reusables are hosted in `.github` (which
 sits in `ring0`). Re-cutting their releases on a sane incremental-semver basis (reconciling the manual
 `<name>/v2.0.0` tags) and cutting the `next`/`ring0`/`ring1` channels is an operational step done via
-`cut-release.sh` once the cross-repo push target (`TODO #872`) is wired.
+`cut-release.sh`, whose cross-repo publish path is now wired (#872).
 
 ## Cutting / moving tags
 
@@ -185,9 +186,10 @@ scripts/cut-release.sh pr-review 1.1.0 --channel stable --push
 # Preview without touching anything:
 scripts/cut-release.sh pr-review 1.1.0 --channel stable --dry-run
 
-# feature-ideation: dry-run only for now (cross-repo target unresolved — see above).
-# Prints feature-ideation/v1.4.0 and feature-ideation/ring0 without mutating anything:
+# Cross-repo agent (reusable in petry-projects/.github): cut against that repo via
+# gh api (#872). --dry-run previews; --push publishes (needs contents:write on .github):
 scripts/cut-release.sh feature-ideation 1.4.0 --channel ring0 --dry-run
+scripts/cut-release.sh feature-ideation 1.4.0 --channel ring0 --push
 ```
 
 The promote/rollback **runbook** (when to move `stable`, how to roll back, verify, gotchas) lives in
