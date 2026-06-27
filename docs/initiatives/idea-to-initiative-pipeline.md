@@ -107,18 +107,23 @@ inputs.
    marker) — the idempotency guarantee that let the standalone `idea-enhancer`
    be retired (#876).
 
-### Enhancement is folding into `feature-ideation` (#872) — backfill + dry-run
+There is exactly **one** Discussion-triggered enhancer. The standalone
+`idea-enhancer.yml` (with its `scripts/idea-enhancer/` tooling) has been
+**removed** (#876) now that its capability is fully folded into the
+`feature-ideation` reusable workflow (epic #872) — so a human-authored idea is
+enhanced **once**, never twice.
 
-The standalone `idea-enhancer` capability is being **consolidated** into the
-`feature-ideation` reusable workflow (epic #872) and the standalone enhancer is
-slated for deprecation (#876) **once** the folded path is validated. The two
-enhancement modes `idea-enhancer` provided — the existing-backlog **sweep** and
-the enhancement **dry-run** — are restored on the folded path (#934, planned
-from discussion #933). The enhancement logic lives in the **central** reusable
-`petry-projects/.github` (`feature-ideation-reusable.yml`); `.github-private`
-ships only the thin `feature-ideation.yml` caller stub (pinned to the
-`@feature-ideation/next` dogfood ring), which exposes these modes as
-`workflow_dispatch` inputs.
+For each open, human-authored, not-yet-enhanced **Ideas** Discussion the folded
+enhancer posts **one** comment (sharpened problem/goal, repo + market context,
+impact/effort, suggested acceptance criteria). Bot-authored ideas are skipped —
+they are already AI-generated. It never approves, labels, or promotes — that
+stays with triage and the human gates.
+
+The enhancement logic lives in the **central** reusable `petry-projects/.github`
+(`feature-ideation-reusable.yml`); `.github-private` ships only the thin
+`feature-ideation.yml` caller stub (pinned to the `@feature-ideation/next`
+dogfood ring), which exposes the enhancement modes as `workflow_dispatch`
+inputs.
 
 - **Backfill sweep** — dispatch `feature-ideation` with `enhance_backlog: true`.
   It sweeps the target repo's open, human-authored, not-yet-enhanced **Ideas**
@@ -151,7 +156,8 @@ ships only the thin `feature-ideation.yml` caller stub (pinned to the
    **0**.
 3. **Verify idempotency.** A second live backfill run posts **0** new comments
    (no idea is double-enhanced, including ideas already carrying the legacy
-   marker). Only then is `idea-enhancer` safe to deprecate (#876).
+   marker) — the idempotency guarantee that let the standalone `idea-enhancer`
+   be retired (#876).
 
 ### `idea-triage.yml` — weekly ripeness shortlist
 - Scans every open **Ideas** Discussion, scores each **Ripe / Soon / Not yet**
