@@ -165,3 +165,72 @@ EOF
   run bash "$BOOTSTRAP"
   [ "$status" -ne 0 ]
 }
+
+# ── release-ring confirmation + registration (#968) ───────────────────────────
+# A throwaway copy of the real ring SoT so non-stable tests can assert intent
+# without mutating the tracked file.
+_ring_sot_copy() {
+  RING_SOT="$STUB_DIR/canary-rings.json"
+  cp "$SCRIPT_DIR/standards/canary-rings.json" "$RING_SOT"
+  export CANARY_RINGS="$RING_SOT"
+}
+
+@test "ring: defaults to stable and records an auditable decision (record-only)" {
+  _stub_gh
+  _stub_substeps 0 0
+  _ring_sot_copy
+  run env GITHUB_ACTOR=octocat bash "$BOOTSTRAP" owner/new-repo
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"[ring-audit]"* ]]
+  [[ "$output" == *"ring=stable"* ]]
+  [[ "$output" == *"operator=octocat"* ]]
+  [[ "$output" == *"decision=recorded"* ]]
+  # stable is record-only: no central-file edit intent, SoT untouched
+  [[ "$output" != *"would add owner/new-repo"* ]]
+  run diff "$SCRIPT_DIR/standards/canary-rings.json" "$RING_SOT"
+  [ "$status" -eq 0 ]
+}
+
+@test "ring: rejects an unknown ring value" {
+  _stub_gh
+  _stub_substeps 0 0
+  _ring_sot_copy
+  run bash "$BOOTSTRAP" --ring nope owner/new-repo
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"unknown ring"* ]]
+}
+
+@test "ring: non-stable (DRY_RUN) records the decision and prints both-file + stub intent" {
+  # Real sub-scripts under dry-run make no writes, so $CALLS stays a pure
+  # gh-write ledger (a stubbed sub-script would log to it and break the check).
+  _stub_gh
+  _ring_sot_copy
+  run env DRY_RUN=true GITHUB_ACTOR=octocat bash "$BOOTSTRAP" --ring ring1 owner/new-repo
+  [ "$status" -eq 0 ]
+  # auditable record, even in dry-run
+  [[ "$output" == *"[ring-audit]"* ]]
+  [[ "$output" == *"ring=ring1"* ]]
+  [[ "$output" == *"decision=registered"* ]]
+  # central file 1: this repo's canary-rings.json
+  [[ "$output" == *"would add owner/new-repo"* ]]
+  [[ "$output" == *"ring1"* ]]
+  # central file 2: cross-repo ring-pins.sh in petry-projects/.github
+  [[ "$output" == *"ring-pins.sh"* ]]
+  [[ "$output" == *"petry-projects/.github"* ]]
+  # stub repin to the matching channel tag
+  [[ "$output" == *"@dev-lead/ring1"* ]]
+  # dry-run makes no write API calls and does not mutate the SoT
+  [ ! -f "$CALLS" ]
+  run diff "$SCRIPT_DIR/standards/canary-rings.json" "$RING_SOT"
+  [ "$status" -eq 0 ]
+}
+
+@test "ring: non-stable consistency holds — repo lands in the named ring and no other" {
+  _stub_gh
+  _stub_substeps 0 0
+  _ring_sot_copy
+  # Proposed post-state must place owner/new-repo in ring1 and nowhere else.
+  run env DRY_RUN=true bash "$BOOTSTRAP" --ring ring1 owner/new-repo
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"ring consistency OK"* ]]
+}
