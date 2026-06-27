@@ -14,21 +14,37 @@
 #                  agent-shield | auto-rebase | dependency-audit |
 #                  dependabot-automerge | dependabot-rebase | pr-review-mention
 #   <version>    semantic version without the leading v, e.g. 1.2.0
-#   --ref        commit/ref to tag (default: origin/main)
+#   --ref        commit/ref to tag (default: main). For this-repo agents it is
+#                resolved against local git (e.g. origin/main); for cross-repo
+#                agents it is resolved against petry-projects/.github via the API
+#                (an `origin/` prefix is stripped — `origin/main` means its `main`).
 #   --channel    also move <agent>/<name> (e.g. stable) to the new release
-#   --push       push the created/moved tags to origin (default: local only)
+#   --push       publish the created/moved tags (default: print only). For
+#                this-repo agents this pushes to origin; for cross-repo agents it
+#                creates/moves the tags on petry-projects/.github via the API.
 #   --dry-run    print what would happen; touch nothing
 #
 # Examples:
 #   cut-release.sh pr-review 1.1.0 --push
 #   cut-release.sh pr-review 1.1.0 --channel stable --push
 #   cut-release.sh dev-lead  2.0.0 --channel stable --dry-run
+#   cut-release.sh agent-shield 2.1.0 --channel next --push   # cross-repo → .github
+#
+# Cross-repo agents (#872): feature-ideation + the six #482 reusables are hosted in
+# petry-projects/.github (this repo holds only the thin caller stubs), so their
+# tags are cut against THAT repo. Resolution + publish go through `gh api`
+# (requires GH_TOKEN with contents:write on petry-projects/.github). See
+# docs/release/versioning.md "Cross-repo reusables".
 #
 # The pure helpers (valid_agent, cross_repo_agent, validate_version, release_ref,
-# channel_ref) are defined at the top level so tests can `source` this file without
-# executing it (see the source-guard at the bottom and tests/test_cut_release.bats).
+# channel_ref, strip_origin) are defined at the top level so tests can `source`
+# this file without executing it (see the source-guard at the bottom and
+# tests/test_cut_release.bats).
 #
 set -euo pipefail
+
+# The repo whose git refs hold cross-repo agents' release/channel tags.
+CROSS_REPO_TARGET="petry-projects/.github"
 
 # ── pure helpers (sourced by tests; no side effects) ─────────────────────────
 
@@ -45,10 +61,9 @@ valid_agent() {
 
 # cross_repo_agent <agent> — return 0 iff the agent's reusable workflow lives in
 # petry-projects/.github (this repo holds only the thin caller stub). For these,
-# a "release" is a commit on that public repo, so its release/channel tags must be
-# cut against THAT repo — not this repo's `origin`. The cross-repo push target is
-# an open question (TODO #872), so live cuts are refused and only --dry-run is
-# supported. See docs/release/versioning.md "Cross-repo reusables".
+# a "release" is a commit on that public repo, so its release/channel tags are
+# resolved and cut against THAT repo (CROSS_REPO_TARGET) via `gh api`, not this
+# repo's `origin` (#872, wired). See docs/release/versioning.md "Cross-repo reusables".
 cross_repo_agent() {
   case "$1" in
     feature-ideation) return 0 ;;
@@ -68,6 +83,41 @@ release_ref() { printf '%s/v%s\n' "$1" "$2"; }
 
 # channel_ref <agent> <channel> — echo the channel tag name.
 channel_ref() { printf '%s/%s\n' "$1" "$2"; }
+
+# strip_origin <ref> — normalize a local-style ref to a remote-repo ref name for
+# the cross-repo API path: `origin/main` → `main`, a bare ref/SHA passes through.
+# (`git rev-parse` understands `origin/main`; the GitHub API does not.)
+strip_origin() { printf '%s\n' "${1#origin/}"; }
+
+# ── cross-repo tag operations (gh api; require GH_TOKEN with contents:write) ───
+# Thin wrappers kept separate from the pure helpers so the network surface is
+# explicit. Each targets an arbitrary <repo> so tests can mock `gh`.
+
+# gh_resolve_sha <repo> <ref> — echo the commit SHA <ref> resolves to on <repo>.
+gh_resolve_sha() { gh api "repos/$1/commits/$2" --jq '.sha'; }
+
+# gh_tag_exists <repo> <tag> — return 0 iff refs/tags/<tag> exists on <repo>.
+gh_tag_exists() { gh api "repos/$1/git/ref/tags/$2" >/dev/null 2>&1; }
+
+# gh_create_annotated_tag <repo> <tag> <sha> <message> — create an annotated tag
+# object and the ref pointing at it (mirrors `git tag -a`). Fails if the ref
+# exists (the API refuses to create a duplicate ref — immutability is enforced).
+gh_create_annotated_tag() {
+  local obj
+  obj=$(gh api -X POST "repos/$1/git/tags" \
+        -f "tag=$2" -f "message=$4" -f "object=$3" -f "type=commit" --jq '.sha')
+  gh api -X POST "repos/$1/git/refs" -f "ref=refs/tags/$2" -f "sha=$obj" >/dev/null
+}
+
+# gh_move_tag <repo> <tag> <sha> — point refs/tags/<tag> at <sha> (force-move if
+# it exists, create if not). Lightweight ref, matching `git tag -f` for channels.
+gh_move_tag() {
+  if gh_tag_exists "$1" "$2"; then
+    gh api -X PATCH "repos/$1/git/refs/tags/$2" -f "sha=$3" -F "force=true" >/dev/null
+  else
+    gh api -X POST "repos/$1/git/refs" -f "ref=refs/tags/$2" -f "sha=$3" >/dev/null
+  fi
+}
 
 # ── main ─────────────────────────────────────────────────────────────────────
 
@@ -104,48 +154,67 @@ main() {
     return 2
   fi
 
-  local rel chan sha
+  local rel chan sha pushrefs
   rel="$(release_ref "$agent" "$version")"
-  if ! sha="$(git rev-parse --verify "$ref^{commit}")"; then
-    echo "::error::ref '$ref' could not be resolved — verify the ref exists and the remote has been fetched" >&2
-    return 1
+  pushrefs=("$rel")
+  if [ -n "$channel" ]; then chan="$(channel_ref "$agent" "$channel")"; pushrefs+=("$chan"); fi
+
+  # Resolve the target SHA. This-repo agents resolve against local git; cross-repo
+  # agents (#872) resolve against petry-projects/.github via the API.
+  if cross_repo_agent "$agent"; then
+    local rref; rref="$(strip_origin "$ref")"
+    if ! sha="$(gh_resolve_sha "$CROSS_REPO_TARGET" "$rref")" || [ -z "$sha" ]; then
+      echo "::error::ref '$rref' could not be resolved on $CROSS_REPO_TARGET (check the ref exists and GH_TOKEN has access)" >&2
+      return 1
+    fi
+  else
+    if ! sha="$(git rev-parse --verify "$ref^{commit}")"; then
+      echo "::error::ref '$ref' could not be resolved — verify the ref exists and the remote has been fetched" >&2
+      return 1
+    fi
   fi
 
-  echo "agent=$agent version=$version ref=$ref ($sha)"
+  local target="origin (this repo)"
+  cross_repo_agent "$agent" && target="$CROSS_REPO_TARGET (cross-repo)"
+  echo "agent=$agent version=$version ref=$ref ($sha) target=$target"
   echo "release tag: $rel"
-  [ -n "$channel" ] && { chan="$(channel_ref "$agent" "$channel")"; echo "channel tag: $chan -> $rel"; }
+  [ -n "$channel" ] && echo "channel tag: $chan -> $rel"
 
   if [ "$dry" = true ]; then
-    if cross_repo_agent "$agent"; then
-      echo "::warning::cross-repo placeholder: the SHA above ($sha) was resolved from petry-projects/.github-private. ${agent}'s canonical commits and tags live in petry-projects/.github — this SHA is a local placeholder only."
-    fi
     echo "(dry-run) no tags created or pushed."
     return 0
   fi
 
-  # TODO(#872): the cross-repo agents' reusables live in petry-projects/.github, so
-  # their release/channel tags must be cut against THAT repo — but main() pushes to
-  # this repo's `origin`. The cross-repo push target (a --repo/remote arg vs.
-  # dispatching against the public repo) is an open question reserved for a human
-  # decision. Until it is wired, only --dry-run is supported for these agents; refuse
-  # live cuts so tags are never written to the wrong remote.
+  # ── cross-repo agents: create/move tags on petry-projects/.github via the API ──
   if cross_repo_agent "$agent"; then
-    echo "::error::live cut/push for '$agent' is not wired yet — its tags belong on petry-projects/.github (cross-repo target is an open question; see TODO). Use --dry-run for now." >&2
-    return 1
+    if gh_tag_exists "$CROSS_REPO_TARGET" "$rel"; then
+      echo "::error::release tag '$rel' already exists on $CROSS_REPO_TARGET — immutable tags are never overwritten." >&2
+      return 1
+    fi
+    if [ "$do_push" != true ]; then
+      echo "print only — re-run with --push to publish to $CROSS_REPO_TARGET: ${pushrefs[*]}"
+      return 0
+    fi
+    gh_create_annotated_tag "$CROSS_REPO_TARGET" "$rel" "$sha" "$agent release v$version"
+    echo "created $rel on $CROSS_REPO_TARGET"
+    if [ -n "$channel" ]; then
+      gh_move_tag "$CROSS_REPO_TARGET" "$chan" "$sha"
+      echo "moved $chan -> $sha on $CROSS_REPO_TARGET"
+    fi
+    echo "published to $CROSS_REPO_TARGET: ${pushrefs[*]}"
+    return 0
   fi
 
+  # ── this-repo agents: local annotated tag + force-moved channel, pushed to origin ──
   if git rev-parse -q --verify "refs/tags/$rel" >/dev/null; then
     echo "::error::release tag '$rel' already exists — immutable tags are never overwritten." >&2
     return 1
   fi
   git tag -a "$rel" "$sha" -m "$agent release v$version"
   echo "created $rel"
-
-  local pushrefs=("$rel")
   if [ -n "$channel" ]; then
     git tag -f "$chan" "$sha"
     echo "moved $chan -> $sha"
-    pushrefs+=("$chan")
   fi
 
   if [ "$do_push" = true ]; then
