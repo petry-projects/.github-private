@@ -174,3 +174,41 @@ mk_bot_events() {  # mk_bot_events <count>
   run pr_budget_exhausted "$j"
   [ "$status" -ne 0 ]
 }
+
+# ---------------------------------------------------------------------------
+# pr_has_escalation_label: the human-controlled re-engagement gate (#946)
+#
+# The retry/sweep crons skip a PR while it carries the needs-human-review label
+# (added by this breaker on exhaustion). Gating on the LABEL — not the immutable
+# exhaustion marker comment — is what lets a human re-engage by removing it.
+# ---------------------------------------------------------------------------
+
+@test "pr_has_escalation_label: needs-human-review present → exit 0" {
+  run pr_has_escalation_label '["bug","needs-human-review","p1"]'
+  [ "$status" -eq 0 ]
+}
+
+@test "pr_has_escalation_label: label absent → exit 1" {
+  run pr_has_escalation_label '["bug","enhancement"]'
+  [ "$status" -ne 0 ]
+}
+
+@test "pr_has_escalation_label: empty array → exit 1 (not escalated)" {
+  run pr_has_escalation_label '[]'
+  [ "$status" -ne 0 ]
+}
+
+@test "pr_has_escalation_label: missing argument → exit 1 (not escalated)" {
+  run pr_has_escalation_label
+  [ "$status" -ne 0 ]
+}
+
+@test "pr_has_escalation_label: malformed JSON degrades to not-escalated (exit 1)" {
+  run pr_has_escalation_label 'not json'
+  [ "$status" -ne 0 ]
+}
+
+@test "pr_has_escalation_label: NEEDS_HUMAN_REVIEW_LABEL override is honoured" {
+  NEEDS_HUMAN_REVIEW_LABEL="paused" run pr_has_escalation_label '["paused"]'
+  [ "$status" -eq 0 ]
+}
