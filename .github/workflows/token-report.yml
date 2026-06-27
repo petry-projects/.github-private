@@ -42,7 +42,9 @@ concurrency:
 jobs:
   report:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # 60m (was 30m, #954) is a safety margin; the real fix is the bounded-parallel,
+    # per-download-timeout collection in scripts/token_report.sh.
+    timeout-minutes: 60
     env:
       ORG: ${{ inputs.org || 'petry-projects' }}
       LOOKBACK_DAYS: ${{ inputs.lookback_days || '7' }}
@@ -63,7 +65,8 @@ jobs:
           bash scripts/token_report.sh >> "$GITHUB_STEP_SUMMARY"
 
       - name: Post report to tracking issue
-        if: hashFiles('token_report.md') != ''
+        # Only on a successful generation that actually wrote the report file.
+        if: ${{ success() && hashFiles('token_report.md') != '' }}
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
         with:
           github-token: ${{ github.token }}
@@ -117,3 +120,43 @@ jobs:
               issue_number: issue.number, body: report,
             });
             core.notice(`Posted weekly token report: ${comment.data.html_url}`);
+
+      - name: Alert tracking issue on failed/timed-out generation
+        # Fail loudly (#954): a timed-out (job-cancelled) or failed report run used to
+        # silently skip the post step, leaving a quiet gap in the tracking issue.
+        # Post a visible alert instead so a regression is noticed.
+        if: ${{ failure() || cancelled() }}
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const runUrl = `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`;
+            const LABEL = 'token-report';
+            const TITLE = '📊 Token Cost Observatory — Weekly Report';
+
+            // Locate the existing tracking issue — don't create one just to alert.
+            const existing = await github.paginate(github.rest.issues.listForRepo, {
+              owner: context.repo.owner, repo: context.repo.repo,
+              labels: LABEL, state: 'open', per_page: 100,
+            });
+            const issue = existing.find(i => i.title === TITLE);
+            if (!issue) {
+              core.warning(`Token report generation failed and no tracking issue was found to alert. Run: ${runUrl}`);
+              return;
+            }
+
+            const body = [
+              '⚠️ **Token Cost Observatory — report generation failed.**',
+              '',
+              'This weekly run did not produce a report (collection timed out or the job failed), ' +
+              'so no fresh report was posted. ' +
+              `See the [workflow run](${runUrl}) for details.`,
+              '',
+              '_Posted automatically so a failed run is visible rather than a silent gap (#954)._',
+            ].join('\n');
+
+            const comment = await github.rest.issues.createComment({
+              owner: context.repo.owner, repo: context.repo.repo,
+              issue_number: issue.number, body,
+            });
+            core.notice(`Posted token report failure alert: ${comment.data.html_url}`);
