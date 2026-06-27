@@ -236,6 +236,41 @@ gh_move_tag() {
   fi
 }
 
+# strip_origin <ref> — normalize a local-style ref to a remote-repo ref name for
+# the cross-repo API path: `origin/main` → `main`, a bare ref/SHA passes through.
+# (`git rev-parse` understands `origin/main`; the GitHub API does not.)
+strip_origin() { printf '%s\n' "${1#origin/}"; }
+
+# ── cross-repo tag operations (gh api; require GH_TOKEN with contents:write) ───
+# Thin wrappers kept separate from the pure helpers so the network surface is
+# explicit. Each targets an arbitrary <repo> so tests can mock `gh`.
+
+# gh_resolve_sha <repo> <ref> — echo the commit SHA <ref> resolves to on <repo>.
+gh_resolve_sha() { gh api "repos/$1/commits/$2" --jq '.sha'; }
+
+# gh_tag_exists <repo> <tag> — return 0 iff refs/tags/<tag> exists on <repo>.
+gh_tag_exists() { gh api "repos/$1/git/ref/tags/$2" >/dev/null 2>&1; }
+
+# gh_create_annotated_tag <repo> <tag> <sha> <message> — create an annotated tag
+# object and the ref pointing at it (mirrors `git tag -a`). Fails if the ref
+# exists (the API refuses to create a duplicate ref — immutability is enforced).
+gh_create_annotated_tag() {
+  local obj
+  obj=$(gh api -X POST "repos/$1/git/tags" \
+        -f "tag=$2" -f "message=$4" -f "object=$3" -f "type=commit" --jq '.sha')
+  gh api -X POST "repos/$1/git/refs" -f "ref=refs/tags/$2" -f "sha=$obj" >/dev/null
+}
+
+# gh_move_tag <repo> <tag> <sha> — point refs/tags/<tag> at <sha> (force-move if
+# it exists, create if not). Lightweight ref, matching `git tag -f` for channels.
+gh_move_tag() {
+  if gh_tag_exists "$1" "$2"; then
+    gh api -X PATCH "repos/$1/git/refs/tags/$2" -f "sha=$3" -F "force=true" >/dev/null
+  else
+    gh api -X POST "repos/$1/git/refs" -f "ref=refs/tags/$2" -f "sha=$3" >/dev/null
+  fi
+}
+
 # ── main ─────────────────────────────────────────────────────────────────────
 
 main() {
@@ -319,9 +354,6 @@ main() {
   [ -n "$channel" ] && echo "channel tag: $chan -> $rel"
 
   if [ "$dry" = true ]; then
-    if cross_repo_agent "$agent"; then
-      echo "::warning::cross-repo placeholder: the SHA above ($sha) was resolved from petry-projects/.github-private. ${agent}'s canonical commits and tags live in petry-projects/.github — this SHA is a local placeholder only."
-    fi
     echo "(dry-run) no tags created or pushed."
     return 0
   fi
