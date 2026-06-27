@@ -46,6 +46,15 @@ on:
     - cron: '0 7 * * 5' # Friday 07:00 UTC (3 AM EDT / 2 AM EST)
   workflow_dispatch:
     inputs:
+      target_discussion:
+        description: >-
+          Ideas Discussion number to enhance in single-idea mode. Set by the
+          `redispatch` job when bridging a `discussion: created` event to this
+          workflow_dispatch (claude-code-action aborts on `discussion` contexts).
+          Empty on schedule/manual dispatch → normal scan.
+        required: false
+        default: ''
+        type: string
       focus_area:
         description: 'Optional focus area (e.g., "accessibility", "performance")'
         required: false
@@ -85,15 +94,59 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  ideate:
-    # On the `discussion` trigger, only run for new ideas in the Ideas category
-    # and skip the bot's own creations (avoids re-enhancing scheduled output;
-    # enhancement posts a comment, which does not re-fire `discussion: created`).
-    # Schedule/dispatch runs are unaffected by this guard.
+  # ── discussion [created] bridge ───────────────────────────────────────────────
+  # claude-code-action aborts on `discussion` event contexts ("Unsupported event
+  # type: discussion"), so we never enhance inline on a discussion event. When a
+  # new idea is opened we resolve its number and re-invoke THIS workflow via
+  # workflow_dispatch — under which the action runs cleanly — passing the number
+  # as target_discussion so the reusable runs single-idea enhancement mode. This
+  # mirrors initiative-planner.yml's `redispatch` job (#618).
+  #
+  # The guard keeps this to new ideas in the Ideas category and skips the bot's
+  # own creations (enhancement posts a comment, which does not re-fire
+  # `discussion: created`); only a real human Idea triggers the bridge.
+  #
+  # The logic is kept INLINE in this stub (not a repo-local script) so it stays
+  # drift-free with the org template at
+  # petry-projects/.github/standards/workflows/feature-ideation.yml — a copied
+  # stub carries no scripts/ tree.
+  redispatch:
     if: >-
-      github.event_name != 'discussion' ||
-      (github.event.discussion.category.slug == 'ideas' &&
-       github.event.discussion.user.type != 'Bot')
+      github.event_name == 'discussion' &&
+      github.event.discussion.category.slug == 'ideas' &&
+      github.event.discussion.user.type != 'Bot'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Guard — PAT present
+        # PAT required: a workflow_dispatch fired with GITHUB_TOKEN is accepted but
+        # NEVER starts a run (loop prevention) — the enhancement would silently
+        # no-op. Same constraint as scripts/initiative-planner/redispatch.sh.
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
+        run: |
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "::error::GH_PAT_WORKFLOWS is required — a workflow_dispatch fired with GITHUB_TOKEN will not start a run."
+            exit 1
+          fi
+
+      - name: Re-dispatch under workflow_dispatch
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
+          REPO: ${{ github.repository }}
+          # Discussion numbers are always positive integers, so this is safe to
+          # forward directly to the dispatch input.
+          DISCUSSION_NUMBER: ${{ github.event.discussion.number }}
+        run: |
+          echo "Discussion #${DISCUSSION_NUMBER} created → re-dispatching feature-ideation.yml for single-idea enhancement."
+          gh workflow run feature-ideation.yml --repo "${REPO}" \
+            -f target_discussion="${DISCUSSION_NUMBER}"
+
+  ideate:
+    # Runs on workflow_dispatch (incl. the redispatch bridge above) and schedule
+    # only — never inline on a discussion event, where claude-code-action aborts.
+    if: github.event_name != 'discussion'
     # Permissions cascade from the calling job to the reusable workflow.
     # The reusable workflow's two jobs (gather-signals + analyze) need:
     #   - contents:      read   (checkout, file reads)
@@ -122,10 +175,11 @@ jobs:
     # Precedent: auto-rebase.yml intentionally pins its reusable @v2 ahead of canon.
     uses: petry-projects/.github/.github/workflows/feature-ideation-reusable.yml@feature-ideation/next
     with:
-      # On the `discussion: created` trigger this carries the new Discussion's
-      # number → the reusable runs single-idea enhancement mode. Empty on
-      # schedule/dispatch → normal scan. Do not edit this line.
-      target_discussion: ${{ github.event.discussion.number }}
+      # Carries the Idea's Discussion number → the reusable runs single-idea
+      # enhancement mode. Populated by the `redispatch` bridge (which forwards
+      # the new discussion's number into this dispatch input); empty on
+      # schedule/manual dispatch → normal scan. Do not edit this line.
+      target_discussion: ${{ inputs.target_discussion || '' }}
       # === CUSTOMISE THIS PER REPO — the only required edit ===
       project_context: |
         petry-projects/.github-private is the org-level private automation
