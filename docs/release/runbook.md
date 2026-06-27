@@ -13,10 +13,9 @@ caller) pin the moving channel tag `@<agent>/stable` and thread
 `agent_ref: <agent>/stable`. The cross-repo reusables (`feature-ideation` + the
 six above) live in `petry-projects/.github`, so their release/channel tags are cut
 against **that** repo, not this repo's `origin` (see "Cross-repo reusables" in
-[`versioning.md`](./versioning.md)). `cut-release.sh` recognizes them and previews
-their tags via `--dry-run`, but **live cross-repo pushes are not wired yet** — the
-push target is an open question, so non-dry-run cuts for any cross-repo agent are
-refused for now.
+[`versioning.md`](./versioning.md)). `cut-release.sh` resolves and publishes their
+tags against **`petry-projects/.github`** via `gh api` (#872, wired); a live
+`--push` for a cross-repo agent needs `GH_TOKEN` with `contents:write` on that repo.
 
 **Two tag kinds per agent:**
 
@@ -59,11 +58,10 @@ scripts/cut-release.sh pr-review 1.6.0 --ref origin/main --dry-run
 scripts/cut-release.sh pr-review 1.6.0 --ref origin/main --push
 
 # Cross-repo agents (feature-ideation + the six #482 reusables, reusables in
-# petry-projects/.github): dry-run previews the tag names, but live --push is
-# refused until the cross-repo target is decided (see "Cross-repo reusables" in
-# versioning.md):
-scripts/cut-release.sh feature-ideation 1.4.0 --channel ring0 --dry-run
+# petry-projects/.github): tags are cut against that repo via gh api (#872).
+# Preview with --dry-run; publish with --push (needs contents:write on .github):
 scripts/cut-release.sh agent-shield 2.1.0 --channel next --dry-run
+scripts/cut-release.sh agent-shield 2.1.0 --channel next --push
 ```
 
 - Pick the version per semver (see `versioning.md#semantic-versioning`): bugfix →
