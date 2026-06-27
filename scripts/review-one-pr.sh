@@ -102,6 +102,27 @@ PR_HEAD_SHA=$(echo "$PR_SNAPSHOT" | jq -r '.headRefOid')
 export PR_HEAD_SHA
 echo "    head SHA: $PR_HEAD_SHA"
 
+# LSP pilot (issue #960, story #844): when the recording flag is on, capture this
+# real production review as ONE pilot record. engine.sh tees the deep/audit/duck
+# stream-json transcripts into a per-PR stream dir; on exit (any path), the EXIT
+# trap folds them into one kind:"lsp_pilot_run" record on TOKEN_LOG_FILE via
+# lpe_emit_record. Strict no-op off-pilot — the consumer repos never set the flag.
+if [ "${LSP_PILOT_ENABLED:-}" = "true" ]; then
+  # shellcheck source=lsp_pilot_emit.sh
+  source "$SCRIPT_DIR/lsp_pilot_emit.sh"
+  LSP_PILOT_STREAM_DIR="$(mktemp -d 2>/dev/null || true)"
+  export LSP_PILOT_STREAM_DIR
+  _LSP_PILOT_T0="$(date +%s%N 2>/dev/null || echo 0)"
+  _lsp_pilot_on_exit() {
+    local _t1 _wall
+    _t1="$(date +%s%N 2>/dev/null || echo 0)"
+    _wall="$(lpe_wall_seconds "${_LSP_PILOT_T0:-0}" "$_t1")"
+    lpe_emit_record "${LSP_PILOT_STREAM_DIR:-}" "$PR_URL" "${PR_HEAD_SHA:-}" "$_wall" || true
+    [ -n "${LSP_PILOT_STREAM_DIR:-}" ] && rm -rf "$LSP_PILOT_STREAM_DIR" 2>/dev/null || true
+  }
+  trap _lsp_pilot_on_exit EXIT
+fi
+
 CI_STATUS=$(compute_ci_status "$(jq '.statusCheckRollup' <<< "$PR_SNAPSHOT")")
 echo "    CI status: $CI_STATUS"
 
