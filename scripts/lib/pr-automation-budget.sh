@@ -32,6 +32,11 @@
 : "${AUTOMATION_BOT_LOGINS:=donpetry-bot github-actions[bot] repair-pr-approvals}"
 : "${MAX_PR_AUTOMATION_CYCLES:=10}"
 
+# The label this breaker adds on exhaustion (and the cycle cap adds on escalation).
+# It is the human-controlled re-engagement gate: a human removing it resumes
+# automation. The retry/sweep crons skip a PR while it carries this label (#946).
+: "${NEEDS_HUMAN_REVIEW_LABEL:=needs-human-review}"
+
 PR_AUTOMATION_EXHAUSTION_MARKER="<!-- pr-automation-budget exhausted -->"
 
 _PR_BUDGET_JQ_DEFS='
@@ -61,6 +66,26 @@ compute_pr_automation_cycles() {
     ''|*[!0-9]*) echo 0 ;;
     *) echo "$count" ;;
   esac
+}
+
+# pr_has_escalation_label <labels_json>
+#   Exit 0 if the JSON array of label NAMES contains NEEDS_HUMAN_REVIEW_LABEL —
+#   i.e. the PR is currently escalated to a human.
+#
+#   This is the gate the retry/sweep crons consult before re-dispatching (#946),
+#   so a PR that exhausted its automation budget is not re-ignited (the #860
+#   "amplifier" failure mode). We gate on the LABEL, not the exhaustion MARKER
+#   comment: the marker is an immutable audit record that the resume flow can
+#   never clear, so gating on it would make re-engagement impossible. The label
+#   is human-controlled — removing it re-enables the crons — mirroring
+#   review-one-pr.sh, which pauses only while the label is present.
+#
+#   Malformed/empty/missing input degrades to "not escalated" (exit 1).
+pr_has_escalation_label() {
+  local labels_json="${1:-[]}"
+  jq -e --arg l "${NEEDS_HUMAN_REVIEW_LABEL}" \
+    'if type == "array" then any(.[]; . == $l) else false end' \
+    <<<"$labels_json" >/dev/null 2>&1
 }
 
 # pr_budget_exhausted <events_json>
@@ -119,8 +144,8 @@ This PR has reached **${MAX_PR_AUTOMATION_CYCLES}** automated actions (agent com
 **Re-engaging is human-gated.** A human reviewing, commenting, or pushing to this PR resets the budget; a machine action will not. Removing \`needs-human-review\` after a human has looked is the clean way to resume."
   gh pr comment "$pr" --repo "$repo" --body "$body" \
     || echo "::warning::could not post budget-exhaustion comment on PR #${pr}"
-  gh pr edit "$pr" --repo "$repo" --add-label needs-human-review 2>/dev/null \
-    || echo "::warning::could not add needs-human-review on PR #${pr}"
+  gh pr edit "$pr" --repo "$repo" --add-label "$NEEDS_HUMAN_REVIEW_LABEL" 2>/dev/null \
+    || echo "::warning::could not add ${NEEDS_HUMAN_REVIEW_LABEL} on PR #${pr}"
   gh pr merge "$pr" --repo "$repo" --disable-auto 2>/dev/null \
     || echo "::notice::auto-merge was not enabled on PR #${pr} (nothing to disable)"
   return 0
