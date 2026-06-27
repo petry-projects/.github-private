@@ -8,9 +8,10 @@ BOOTSTRAP="$SCRIPT_DIR/scripts/bootstrap-new-repo.sh"
 RULESETS_DIR="$SCRIPT_DIR/.github/rulesets"
 
 setup() {
-  STUB_BIN="$(mktemp -d)"; export PATH="$STUB_BIN:$PATH"
+  STUB_BIN="$(mktemp -d)" || { echo "Failed to create STUB_BIN" >&2; exit 1; }
+  export PATH="$STUB_BIN:$PATH"
   CALLS="$STUB_BIN/calls.log"; export CALLS
-  STUB_DIR="$(mktemp -d)"
+  STUB_DIR="$(mktemp -d)" || { echo "Failed to create STUB_DIR" >&2; exit 1; }
 }
 teardown() {
   [ -n "${STUB_BIN:-}" ] && rm -rf "$STUB_BIN"

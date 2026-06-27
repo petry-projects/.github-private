@@ -53,23 +53,27 @@ _is_dry() { [ "$DRY_RUN" = "true" ]; }
 
 # pass_summary <repo>
 pass_summary() {
+  local repo="${1:-}"
+  local mode="${2:-}"
   echo ""
   echo "[bootstrap] ====================================================="
-  echo "[bootstrap] PASS — ${1} bootstrapped to org compliance${2:+ (${2})}"
+  echo "[bootstrap] PASS — ${repo} bootstrapped to org compliance${mode:+ (${mode})}"
   echo "[bootstrap] ====================================================="
 }
 
 # fail_summary <repo> <stage>
 fail_summary() {
+  local repo="${1:-}"
+  local stage="${2:-}"
   echo ""
   echo "[bootstrap] ====================================================="
-  echo "[bootstrap] FAIL — ${1}: '${2}' step failed; remaining steps skipped"
+  echo "[bootstrap] FAIL — ${repo}: '${stage}' step failed; remaining steps skipped"
   echo "[bootstrap] ====================================================="
 }
 
 # step_repo_settings <repo> — repo settings + security/GHAS + push protection.
 step_repo_settings() {
-  local repo="$1" dev_lead_dry=false
+  local repo="${1:-}" dev_lead_dry=false
   _is_dry && dev_lead_dry=true
   echo "[bootstrap] (1/4) repo settings + security/GHAS + push protection"
   DEV_LEAD_DRY_RUN="$dev_lead_dry" bash "$APPLY_REPO_SETTINGS" "$repo"
@@ -77,7 +81,7 @@ step_repo_settings() {
 
 # step_rulesets <repo> — apply every codified ruleset (pr-quality, code-quality, …).
 step_rulesets() {
-  local repo="$1" rulesets_dry=false
+  local repo="${1:-}" rulesets_dry=false
   _is_dry && rulesets_dry=true
   echo "[bootstrap] (2/4) sanctioned rulesets (pr-quality + code-quality + …)"
   DRY_RUN="$rulesets_dry" bash "$APPLY_RULESETS" --repo "$repo"
@@ -85,7 +89,7 @@ step_rulesets() {
 
 # step_labels <repo> — apply the standard label set (best-effort, idempotent).
 step_labels() {
-  local repo="$1" spec name color desc
+  local repo="${1:-}" spec name color desc
   echo "[bootstrap] (3/4) standard label set"
   for spec in "${BOOTSTRAP_LABELS[@]}"; do
     IFS='|' read -r name color desc <<<"$spec"
@@ -103,7 +107,7 @@ step_labels() {
 
 # step_codeowners <repo> — verify CODEOWNERS lists $CODEOWNERS_TEAM first. Best-effort.
 step_codeowners() {
-  local repo="$1" encoded decoded first_owner
+  local repo="${1:-}" encoded decoded first_owner
   echo "[bootstrap] (4/4) verify CODEOWNERS team (${CODEOWNERS_TEAM} first owner)"
   if _is_dry; then
     echo "  [dry-run] would verify ${CODEOWNERS_TEAM} is the first CODEOWNERS owner on ${repo}"
@@ -137,6 +141,21 @@ main() {
   if [ -z "$repo" ]; then
     echo "::error::usage: $0 owner/new-repo   (DRY_RUN=true for a no-write preview)" >&2
     return 2
+  fi
+
+  if ! command -v gh > /dev/null 2>&1; then
+    echo "::error::gh CLI is required but not installed." >&2
+    return 1
+  fi
+
+  if [ ! -f "$APPLY_REPO_SETTINGS" ]; then
+    echo "::error::apply-repo-settings.sh not found at $APPLY_REPO_SETTINGS" >&2
+    return 1
+  fi
+
+  if [ ! -f "$APPLY_RULESETS" ]; then
+    echo "::error::apply-rulesets.sh not found at $APPLY_RULESETS" >&2
+    return 1
   fi
 
   echo "[bootstrap] repo=${repo} dry_run=${DRY_RUN}"
