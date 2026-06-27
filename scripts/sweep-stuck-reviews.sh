@@ -42,6 +42,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # classifying, exactly as review-one-pr.sh does (issue #469).
 # shellcheck source=lib/ci-status.sh
 source "$SCRIPT_DIR/lib/ci-status.sh"
+# Escalation gate (#946): pr_has_escalation_label / NEEDS_HUMAN_REVIEW_LABEL.
+# shellcheck source=lib/pr-automation-budget.sh
+source "$SCRIPT_DIR/lib/pr-automation-budget.sh"
 
 AGENT_REPO="${AGENT_REPO:-petry-projects/.github-private}"
 TRIGGER_WORKFLOW="${TRIGGER_WORKFLOW:-pr-review-trigger.yml}"
@@ -154,8 +157,19 @@ while IFS= read -r pr_url; do
   inspected=$((inspected + 1))
 
   if ! snapshot=$(gh pr view "$pr_url" \
-        --json headRefOid,statusCheckRollup,reviewDecision,reviews,comments 2>/dev/null); then
+        --json headRefOid,statusCheckRollup,reviewDecision,reviews,comments,labels 2>/dev/null); then
     echo "  skip $pr_url — could not fetch PR (deleted, no access, or rate-limited)"
+    continue
+  fi
+
+  # Skip PRs already escalated to a human (#946). When the per-PR automation
+  # budget (#928) or the cycle cap escalates a PR, it adds needs-human-review and
+  # the cascade pauses; re-reviewing it here would re-ignite the runaway the
+  # breaker stops (the #860 "amplifier" failure mode). Gate on the label — the
+  # human-controlled resume signal — so removing it re-enables the sweep.
+  labels_json=$(jq -c '[.labels[]?.name]' <<< "$snapshot" 2>/dev/null || echo '[]')
+  if pr_has_escalation_label "$labels_json"; then
+    echo "  skip $pr_url — escalated to a human ($NEEDS_HUMAN_REVIEW_LABEL present); not re-reviewing (#946)"
     continue
   fi
 
