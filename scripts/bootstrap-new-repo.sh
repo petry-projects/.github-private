@@ -181,9 +181,19 @@ _cross_repo_file_pr() {
     --field "message=${msg}" --field "content=${encoded}" --field "branch=${branch}" \
     "${sha_arg[@]}" --silent 2>/dev/null \
     || { echo "  [warn] ${repo}: cannot write ${path}" >&2; return 1; }
-  gh pr create --repo "$repo" --head "$branch" --base "$default_branch" \
-    --title "$title" --body "$body" 2>/dev/null \
-    || { echo "  [warn] ${repo}: cannot open PR for ${path}" >&2; return 1; }
+  local existing_pr
+  if ! command -v gh > /dev/null 2>&1; then
+    echo "  [warn] gh CLI is not installed" >&2
+    return 1
+  fi
+  existing_pr="$(gh pr list --repo "$repo" --head "$branch" --state open --json number --jq '.[0].number' 2>/dev/null || true)"
+  if [ -n "$existing_pr" ]; then
+    echo "  [ring] PR #$existing_pr already open for branch $branch on $repo"
+  else
+    gh pr create --repo "$repo" --head "$branch" --base "$default_branch" \
+      --title "$title" --body "$body" 2>/dev/null \
+      || { echo "  [warn] ${repo}: cannot open PR for ${path}" >&2; return 1; }
+  fi
 }
 
 # _cross_repo_ring_pins_pr <repo> <agent> <ring> — fetch ring-pins.sh from
@@ -201,7 +211,7 @@ _cross_repo_ring_pins_pr() {
   fi
   new="$(printf '%s' "$content" | awk -v repo="$repo" -v ring="$ring" '
     { line=$0
-      if (!done && index(line, ring "=(") > 0 && match(line, /\)[[:space:]]*$/)) {
+      if (!done && line !~ /^[[:space:]]*#/ && index(line, ring "=(") > 0 && match(line, /\)[[:space:]]*$/)) {
         pre=substr(line, 1, RSTART-1); post=substr(line, RSTART)
         sub(/[[:space:]]*$/, "", pre)
         line = pre " \"" repo "\"" post; done=1
@@ -224,7 +234,7 @@ _cross_repo_repin_stub_pr() {
   content="$(gh api "repos/${repo}/contents/${path}" --jq '.content' 2>/dev/null | base64 -d 2>/dev/null || true)"
   [ -n "$content" ] || { echo "  [warn] ${repo}: no ${path} stub to repin" >&2; return 0; }
   new="$(printf '%s' "$content" \
-    | sed -E "s#@${agent}/[A-Za-z0-9_-]+#@${agent}/${ring}#g; s#(agent_ref:[[:space:]]*)${agent}/[A-Za-z0-9_-]+#\\1${agent}/${ring}#g")"
+    | sed -E "s#@${agent}/[A-Za-z0-9_-]+#@${agent}/${ring}#g; s#(agent_ref:[[:space:]]*[\"']?)${agent}/[A-Za-z0-9_-]+#\\1${agent}/${ring}#g")"
   if [ "$new" = "$content" ]; then
     echo "  [ring] ${repo} stub already pins @${agent}/${ring}"
     return 0
@@ -259,7 +269,7 @@ step_ring() {
   # the proposed post-state before writing.
   proposed="$(_canary_add_member_json "$repo" "$RING_AGENT" "$RING")" \
     || { echo "::error::failed to compute canary-rings update for ${repo}" >&2; return 1; }
-  if ! printf '%s' "$proposed" | _assert_ring_consistency "$repo" "$RING_AGENT" "$RING"; then
+  if ! _assert_ring_consistency "$repo" "$RING_AGENT" "$RING" <<< "$proposed"; then
     echo "::error::ring drift: ${repo} would not sit solely in '${RING}' — refusing to register" >&2
     return 1
   fi
@@ -270,8 +280,8 @@ step_ring() {
     echo "  registered ${repo} in ${RING_AGENT} '${RING}' (canary-rings.json)"
   fi
 
-  _register_ring_pins "$repo" "$RING_AGENT" "$RING"
-  _repin_stub "$repo" "$RING_AGENT" "$RING"
+  _register_ring_pins "$repo" "$RING_AGENT" "$RING" || return 1
+  _repin_stub "$repo" "$RING_AGENT" "$RING" || return 1
   echo "  ring consistency OK — ${repo} sits in '${RING}' across both central files and its stub pins @${RING_AGENT}/${RING}"
 }
 
