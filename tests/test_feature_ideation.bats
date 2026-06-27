@@ -37,7 +37,7 @@ setup() {
 
 # ── #934: operator-triggered enhancement backfill ────────────────────────────
 # The folded feature-ideation reusable gains a backlog-sweep mode (porting the
-# idea-enhancer sweep). The stub exposes it as a boolean workflow_dispatch input
+# legacy standalone enhancer sweep). The stub exposes it as a boolean workflow_dispatch input
 # and forwards it, matching the canonical stub template so the sync is drift-free.
 
 @test "feature-ideation.yml exposes the enhance_backlog backfill-sweep input" {
