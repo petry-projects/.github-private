@@ -71,7 +71,7 @@ lpe_pr_key() {
 lpe_wall_seconds() {
   local a="${1:-0}" b="${2:-0}"
   awk -v a="$a" -v b="$b" 'BEGIN {
-    if (a !~ /^[0-9]+$/ || b !~ /^[0-9]+$/) { print "0.0"; exit }
+    if (a !~ /^[0-9]+$/ || b !~ /^[0-9]+$/ || a == 0 || b == 0) { print "0.0"; exit }
     d = (b - a) / 1000000000.0; if (d < 0) d = 0; printf "%.1f", d
   }'
 }
@@ -86,7 +86,7 @@ lpe_emit_record() {
   local token_log="${5:-${TOKEN_LOG_FILE:-}}"
 
   lpe_pilot_active || return 0
-  [ -n "${TOKEN_LOG_FILE:-}" ] || return 0
+  [ -n "$token_log" ] || return 0
   command -v jq >/dev/null 2>&1 || return 0
   [ -n "$stream_dir" ] && [ -d "$stream_dir" ] || return 0
 
@@ -124,7 +124,7 @@ lpe_emit_record() {
 
   # Tag with kind so token_report.sh keeps excluding it from cost aggregation.
   # This is added to the EMITTED line only — the extractor's schema is untouched.
-  printf '%s\n' "$record" | jq -c '. + {kind: "lsp_pilot_run"}' >> "$TOKEN_LOG_FILE" 2>/dev/null || true
+  jq -c '. + {kind: "lsp_pilot_run"}' <<< "$record" >> "$token_log" 2>/dev/null || true
   return 0
 }
 

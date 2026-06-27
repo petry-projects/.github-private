@@ -113,9 +113,11 @@ if [ "${LSP_PILOT_ENABLED:-}" = "true" ]; then
   LSP_PILOT_STREAM_DIR="$(mktemp -d 2>/dev/null || true)"
   export LSP_PILOT_STREAM_DIR
   _LSP_PILOT_T0="$(date +%s%N 2>/dev/null || echo 0)"
+  [[ "$_LSP_PILOT_T0" == *N ]] && _LSP_PILOT_T0="${_LSP_PILOT_T0%N}000000000"
   _lsp_pilot_on_exit() {
     local _t1 _wall
     _t1="$(date +%s%N 2>/dev/null || echo 0)"
+    [[ "$_t1" == *N ]] && _t1="${_t1%N}000000000"
     _wall="$(lpe_wall_seconds "${_LSP_PILOT_T0:-0}" "$_t1")"
     lpe_emit_record "${LSP_PILOT_STREAM_DIR:-}" "$PR_URL" "${PR_HEAD_SHA:-}" "$_wall" || true
     [ -n "${LSP_PILOT_STREAM_DIR:-}" ] && rm -rf "$LSP_PILOT_STREAM_DIR" 2>/dev/null || true
