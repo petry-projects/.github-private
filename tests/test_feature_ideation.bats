@@ -70,12 +70,12 @@ setup() {
 @test "feature-ideation.yml has a redispatch job that runs only on the discussion event" {
   grep -qE '^[[:space:]]+redispatch:' "$FEATURE_IDEATION_YML"
   # The redispatch job is gated to the discussion event.
-  grep -qE "github\.event_name == 'discussion'" "$FEATURE_IDEATION_YML"
+  grep -qE "github\.event_name[[:space:]]*==[[:space:]]*['\"]discussion['\"]" "$FEATURE_IDEATION_YML"
 }
 
 @test "feature-ideation.yml redispatch job keeps the ideas-category / non-bot guard" {
-  grep -qF "github.event.discussion.category.slug == 'ideas'" "$FEATURE_IDEATION_YML"
-  grep -qF "github.event.discussion.user.type != 'Bot'" "$FEATURE_IDEATION_YML"
+  grep -qE "github\.event\.discussion\.category\.slug[[:space:]]*==[[:space:]]*['\"]ideas['\"]" "$FEATURE_IDEATION_YML"
+  grep -qE "github\.event\.discussion\.user\.type[[:space:]]*!=[[:space:]]*['\"]Bot['\"]" "$FEATURE_IDEATION_YML"
 }
 
 @test "feature-ideation.yml redispatch requires GH_PAT_WORKFLOWS (GITHUB_TOKEN won't start a run)" {
@@ -86,13 +86,13 @@ setup() {
 
 @test "feature-ideation.yml redispatch forwards target_discussion via workflow_dispatch" {
   grep -qF "gh workflow run feature-ideation.yml" "$FEATURE_IDEATION_YML"
-  grep -qE -- '-f target_discussion=' "$FEATURE_IDEATION_YML"
+  grep -qE -- '(-f|--field)[[:space:]]+"?target_discussion=' "$FEATURE_IDEATION_YML"
 }
 
 @test "feature-ideation.yml ideate job no longer runs on the discussion event" {
   # The reusable call (single-idea/scan) must run under workflow_dispatch/schedule
   # only; the discussion event is handled by the redispatch bridge.
-  grep -qE "github\.event_name != 'discussion'" "$FEATURE_IDEATION_YML"
+  grep -qE "github\.event_name[[:space:]]*!=[[:space:]]*['\"]discussion['\"]" "$FEATURE_IDEATION_YML"
 }
 
 @test "feature-ideation.yml sources target_discussion from inputs.target_discussion" {
