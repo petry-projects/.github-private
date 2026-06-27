@@ -53,12 +53,13 @@ teardown() {
   rm -f "${GH_LOG:-}" "${PRS_FILE:-}"
 }
 
-# write_pr <num> <reviewDecision> <rollup-json> [head] [reviews-json] [comments-json]
+# write_pr <num> <reviewDecision> <rollup-json> [head] [reviews-json] [comments-json] [labels-json]
+# labels-json is a JSON array of label-name strings (default: none).
 write_pr() {
-  local num="$1" decision="$2" rollup="$3" head="${4-deadbeef}" reviews="${5:-[]}" comments="${6:-[]}"
+  local num="$1" decision="$2" rollup="$3" head="${4-deadbeef}" reviews="${5:-[]}" comments="${6:-[]}" labels="${7:-[]}"
   jq -n --arg d "$decision" --argjson r "$rollup" --arg h "$head" \
-        --argjson rv "$reviews" --argjson cm "$comments" \
-    '{headRefOid:$h, reviewDecision:$d, statusCheckRollup:$r, reviews:$rv, comments:$cm}' \
+        --argjson rv "$reviews" --argjson cm "$comments" --argjson lb "$labels" \
+    '{headRefOid:$h, reviewDecision:$d, statusCheckRollup:$r, reviews:$rv, comments:$cm, labels:($lb | map({name:.}))}' \
     > "$FIXTURE_DIR/pr_${num}.json"
 }
 
@@ -187,6 +188,39 @@ url_for() { echo "https://github.com/petry-projects/demo/pull/$1"; }
   run bash "$SCRIPT"
   [ "$status" -eq 0 ]
   [ ! -s "$GH_LOG" ]
+}
+
+# ───────────────────────────────────────────────────────────────────────────
+# Escalated-PR skip (issue #946)
+#
+# A PR that hit the per-PR automation budget (#928) carries the
+# needs-human-review label (and the cascade has paused). The sweep must NOT
+# re-review it — re-dispatching would re-ignite the runaway the breaker stops
+# (the #860 "amplifier" failure mode). Re-engagement is human-gated: a human
+# removing the label re-enables the sweep, even though the immutable
+# `<!-- pr-automation-budget exhausted -->` marker comment remains.
+# ───────────────────────────────────────────────────────────────────────────
+
+@test "escalated PR (needs-human-review label) is NOT re-reviewed even when stuck-green (#946)" {
+  write_pr 946 "REVIEW_REQUIRED" "$ROLLUP_PASS" "sha946" "[]" "[]" '["needs-human-review"]'
+  url_for 946 > "$SWEEP_PRS_FILE"
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ ! -s "$GH_LOG" ]
+  [[ "$output" == *"needs-human-review"* ]]
+}
+
+@test "removing needs-human-review re-enables the sweep despite a lingering budget marker (#946 AC3)" {
+  # No label (human removed it) but the exhaustion marker comment still exists.
+  # Gating on the label — not the marker — means this stuck-green PR re-dispatches.
+  local comments='[{"body":"<!-- pr-automation-budget exhausted -->\n\nbudget note"}]'
+  write_pr 947 "REVIEW_REQUIRED" "$ROLLUP_PASS" "sha947" "[]" "$comments" '[]'
+  url_for 947 > "$SWEEP_PRS_FILE"
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  grep -qF -- "-f pr_url=$(url_for 947)" "$GH_LOG"
 }
 
 @test "passes GITHUB_REF when it is a branch (feature-branch testing)" {
