@@ -562,3 +562,27 @@ setup() {
   run strip_origin "origin/release/origin/x"
   [ "$output" = "release/origin/x" ]
 }
+
+# ---------------------------------------------------------------------------
+# strip_origin — normalize a local-style ref to a remote-repo ref name (#872)
+# ---------------------------------------------------------------------------
+
+@test "strip_origin: origin/main becomes main" {
+  run strip_origin "origin/main"
+  [ "$output" = "main" ]
+}
+
+@test "strip_origin: a bare ref passes through" {
+  run strip_origin "main"
+  [ "$output" = "main" ]
+}
+
+@test "strip_origin: a SHA passes through" {
+  run strip_origin "376a4fcb1117444595e3e702fa450873d0e54310"
+  [ "$output" = "376a4fcb1117444595e3e702fa450873d0e54310" ]
+}
+
+@test "strip_origin: only the leading origin/ is stripped" {
+  run strip_origin "origin/release/origin/x"
+  [ "$output" = "release/origin/x" ]
+}
