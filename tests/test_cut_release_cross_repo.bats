@@ -7,7 +7,7 @@
 # Run with: bats tests/test_cut_release_cross_repo.bats
 
 setup() {
-  TT_TMP="$(mktemp -d)"
+  TT_TMP="$(mktemp -d)" || { echo "Failed to create temp directory" >&2; exit 1; }
   SCRIPT="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)/scripts/cut-release.sh"
   GH_CALLS="${TT_TMP}/gh-calls.log"; export GH_CALLS
   : > "$GH_CALLS"

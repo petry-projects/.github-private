@@ -162,6 +162,10 @@ main() {
   # Resolve the target SHA. This-repo agents resolve against local git; cross-repo
   # agents (#872) resolve against petry-projects/.github via the API.
   if cross_repo_agent "$agent"; then
+    if ! command -v gh >/dev/null 2>&1; then
+      echo "::error::'gh' CLI is required for cross-repo agents but was not found in PATH" >&2
+      return 1
+    fi
     local rref; rref="$(strip_origin "$ref")"
     if ! sha="$(gh_resolve_sha "$CROSS_REPO_TARGET" "$rref")" || [ -z "$sha" ]; then
       echo "::error::ref '$rref' could not be resolved on $CROSS_REPO_TARGET (check the ref exists and GH_TOKEN has access)" >&2
