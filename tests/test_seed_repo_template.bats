@@ -38,14 +38,16 @@ teardown() {
 
 # gh stub: logs every write (POST/PUT/PATCH/pr create) to $CALLS; returns empty
 # JSON for reads so the cross-repo orchestration never fails on a read.
+# pr list returns nothing (no existing PR) so seeding creates a fresh PR.
 _stub_gh() {
   cat > "$STUB_BIN/gh" <<EOF
 #!/usr/bin/env bash
 args="\$*"
 case "\$args" in
-  *"--method POST"*|*"--method PUT"*|*"PATCH"*|*"pr create"*) echo "\$args" >> "$CALLS" ;;
+  *"--method POST"*|*"--method PUT"*|*"PATCH"*|*"pr create"*) echo "\$args" >> "$CALLS"; echo '{}' ;;
+  *"pr list"*) ;;
+  *) echo '{}' ;;
 esac
-echo '{}'
 EOF
   chmod +x "$STUB_BIN/gh"
 }
@@ -161,7 +163,7 @@ _fixture_workflow() { # <name> <heredoc-content-on-stdin>
   [ "$status" -eq 0 ]
   [[ "$output" == *"AGENTS.md"* ]]
   # one-line pointer: at most a couple of non-blank lines
-  nonblank="$(printf '%s\n' "$output" | grep -c .)"
+  nonblank="$(printf '%s\n' "$output" | grep -c . || true)"
   [ "$nonblank" -le 3 ]
 }
 
@@ -211,6 +213,32 @@ _fixture_workflow() { # <name> <heredoc-content-on-stdin>
   grep -q "contents/.github/workflows/auto-rebase.yml" "$CALLS"
   grep -q "contents/.github/CODEOWNERS" "$CALLS"
   grep -q "pr create" "$CALLS"
+}
+
+@test "seeding: skips pr create when a PR already exists for the branch" {
+  cat > "$STUB_BIN/gh" <<EOF
+#!/usr/bin/env bash
+args="\$*"
+case "\$args" in
+  *"--method POST"*|*"--method PUT"*|*"PATCH"*) echo "\$args" >> "$CALLS"; echo '{}' ;;
+  *"pr list"*) echo '42' ;;
+  *) echo '{}' ;;
+esac
+EOF
+  chmod +x "$STUB_BIN/gh"
+  for n in "${EXPECTED_STUBS[@]}"; do
+    if printf '%s\n' "${INLINE_STUBS[@]}" | grep -qx "$n"; then
+      printf 'name: %s\n' "$n" | _fixture_workflow "$n.yml"
+    else
+      printf '  uses: ./.github/workflows/%s-reusable.yml@%s/next\n' "$n" "$n" \
+        | _fixture_workflow "$n.yml"
+    fi
+  done
+  printf 'version: 2\n' > "$STANDARDS_DIR/standards/dependabot/node/dependabot.yml"
+  run env DEPENDABOT_STACK=node bash "$SEED" --repo petry-projects/repo-template
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"PR #42 already open"* ]]
+  [ ! -f "$CALLS" ] || ! grep -q "pr create" "$CALLS"
 }
 
 # ── argument handling ─────────────────────────────────────────────────────────
