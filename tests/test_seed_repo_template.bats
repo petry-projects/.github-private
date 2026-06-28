@@ -181,7 +181,7 @@ _fixture_workflow() { # <name> <heredoc-content-on-stdin>
   # Q1: framework subtrees (frameworks/) are opt-in, NOT seeded by the template.
   [[ "$output" == *"frameworks/"* ]]
   [[ "$output" == *"opt-in"* ]]
-  [[ "$output" == *"not"*"seed"* || "$output" == *"not seeded"* || "$output" == *"are not"* ]]
+  [[ "$output" == *"not"*"seed"* || "$output" == *"not seeded"* ]]
   # Q2: app installs (Claude/CodeRabbit) are a manual org-admin step, not done by bootstrap.
   [[ "$output" == *"Claude"* ]]
   [[ "$output" == *"CodeRabbit"* ]]

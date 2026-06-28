@@ -278,10 +278,10 @@ _ring_sot_copy() {
   # Each sanctioned ruleset carries its bypass actors + required checks in the JSON
   # (not wired by bootstrap). These `run jq` calls overwrite $output, so they run
   # last, after every transcript assertion above.
-  run jq -e '[.bypass_actors[].actor_type] | (index("OrganizationAdmin") and index("Integration"))' "$RULESETS_DIR/code-quality.json"
+  run jq -e '[.bypass_actors?[]?.actor_type] | (index("OrganizationAdmin") and index("Integration"))' "$RULESETS_DIR/code-quality.json"
   [ "$status" -eq 0 ]
-  run jq -e '[.bypass_actors[].actor_type] | (index("OrganizationAdmin") and index("Integration"))' "$RULESETS_DIR/pr-quality.json"
+  run jq -e '[.bypass_actors?[]?.actor_type] | (index("OrganizationAdmin") and index("Integration"))' "$RULESETS_DIR/pr-quality.json"
   [ "$status" -eq 0 ]
-  run jq -e '[.rules[] | select(.type=="required_status_checks") | .parameters.required_status_checks[].context] | length > 0' "$RULESETS_DIR/code-quality.json"
+  run jq -e '[.rules[]? | select(.type=="required_status_checks") | .parameters?.required_status_checks?[]?.context] | length > 0' "$RULESETS_DIR/code-quality.json"
   [ "$status" -eq 0 ]
 }
