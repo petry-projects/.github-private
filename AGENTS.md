@@ -110,6 +110,25 @@ This is the `.github-private` org infrastructure repo for `petry-projects`. It c
   template gains a cross-repo release-path canary equivalent, remove this exception and defer to the
   template instead.
 
+### Template drift guard (`repo-template`)
+
+`petry-projects/repo-template` is a **distribution artifact** of the canonical `standards/` in the public
+`petry-projects/.github` repo: `scripts/seed-repo-template.sh` fetches each canonical workflow stub /
+baseline file and ships it (caller stubs repinned to the published `@<name>/stable` channel, inline stubs +
+baseline files verbatim). The `template-drift` job in `lint.yml` (#969, epic #964) guards that the files
+**committed** in the template have not diverged from that standards-derived baseline — it re-derives the
+expected content via `seed-repo-template.sh --emit-*`, compares its git blob SHA against the template repo's
+committed blob SHA, and fails on any **DRIFTED** file, reusing the ALIGNED/DRIFTED/MISSING byte-identity
+model from `scripts/fleet_stub_drift.sh` (pure logic + bats: `tests/template_stub_drift.bats`). It is a
+PR-triggered check on the existing Lint workflow — **no new cron/scheduled workload**.
+
+- **Allowlist exception — `ci.yml`:** `.github/workflows/ci.yml` is the **one** shipped stub that
+  intentionally carries real per-stack build/test steps and is customized per consumer (see the template's
+  `BOOTSTRAP.md` "Customize `ci.yml` for your stack" step). A byte-identity guard would false-positive on the
+  template's richer `ci.yml` default, so it is **excluded** from the drift check via the documented allowlist
+  in `scripts/template_stub_drift.sh` (`TEMPLATE_DRIFT_ALLOWLIST`). Add a path to that allowlist **only** with
+  a recorded rationale, the same way the exceptions above are documented.
+
 ### Agent Profiles (`agents/*.md`)
 
 - Every agent profile must have YAML frontmatter with `name`, `description`, and `tools`.

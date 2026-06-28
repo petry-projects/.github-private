@@ -44,6 +44,7 @@ jobs:
           scripts/run-bats.sh \
             tests/fleet_report.bats \
             tests/fleet_stub_drift.bats \
+            tests/template_stub_drift.bats \
             tests/canary_rollout.bats \
             tests/test_initiative_canary.bats \
             tests/test_initiative_driver_canary.bats \
@@ -92,6 +93,22 @@ jobs:
             tests/test_engine_unavailable_notice.bats \
             tests/test_batch_skip_reporting.bats \
             tests/test_review_one_pr_ci_pending.bats
+
+  template-drift:
+    # Drift guard (#969): fail when a file committed in petry-projects/repo-template
+    # has diverged from its standards-derived baseline, so the template stays a thin
+    # distribution layer of standards/ and never becomes a competing fork. Reuses the
+    # byte-identity (blob-SHA) model from scripts/fleet_stub_drift.sh. PR-triggered via
+    # this existing Lint workflow — no new scheduled/cron workload is added.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+
+      - name: Check repo-template stubs have not drifted from standards/
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/template_stub_drift.sh
 
   validate-agent-profiles:
     runs-on: ubuntu-latest
