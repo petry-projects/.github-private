@@ -234,3 +234,54 @@ _ring_sot_copy() {
   [ "$status" -eq 0 ]
   [[ "$output" == *"ring consistency OK"* ]]
 }
+
+# ── end-to-end DRY_RUN validation: the full policy surface in one run (#970) ────
+# A single DRY_RUN walkthrough with the REAL sub-scripts (only `gh` stubbed) must
+# describe the entire intended state — recorded ring, repo settings + GHAS + push
+# protection, both sanctioned rulesets, the standard labels, CODEOWNERS team — and
+# emit zero write API calls (no drift). This is the executable form of the
+# end-to-end validation recorded in docs/bootstrap/new-repo-validation.md.
+@test "e2e DRY_RUN: covers the whole intended-state surface with no write calls (#970 AC #2/#3)" {
+  _stub_gh
+  _ring_sot_copy
+  run env DRY_RUN=true GITHUB_ACTOR=octocat CANARY_RINGS="$RING_SOT" \
+    bash "$BOOTSTRAP" petry-projects/acme-service
+  [ "$status" -eq 0 ]
+
+  # (1/5) ring — auditable record, default stable, record-only.
+  [[ "$output" == *"[ring-audit]"* ]]
+  [[ "$output" == *"ring=stable"* ]]
+  [[ "$output" == *"decision=recorded"* ]]
+
+  # (2/5) repo settings — security_and_analysis + secret-scanning push protection,
+  # and the Claude/CodeRabbit check-suite auto-trigger disable.
+  [[ "$output" == *"security_and_analysis"* ]]
+  [[ "$output" == *"secret_scanning_push_protection"* ]]
+  [[ "$output" == *"would disable auto-trigger"* ]]
+
+  # (3/5) both sanctioned rulesets are applied.
+  [[ "$output" == *"pr-quality"* ]]
+  [[ "$output" == *"code-quality"* ]]
+
+  # (4/5) the standard label set.
+  [[ "$output" == *"needs-human-review"* ]]
+  [[ "$output" == *"ack-test-deletion"* ]]
+
+  # (5/5) CODEOWNERS team verification.
+  [[ "$output" == *"CODEOWNERS"* ]]
+  [[ "$output" == *"org-leads"* ]]
+
+  # PASS summary + the no-drift invariant: a pure DRY_RUN makes no write API calls.
+  [[ "$output" == *"PASS"* ]]
+  [ ! -f "$CALLS" ]
+
+  # Each sanctioned ruleset carries its bypass actors + required checks in the JSON
+  # (not wired by bootstrap). These `run jq` calls overwrite $output, so they run
+  # last, after every transcript assertion above.
+  run jq -e '[.bypass_actors[].actor_type] | (index("OrganizationAdmin") and index("Integration"))' "$RULESETS_DIR/code-quality.json"
+  [ "$status" -eq 0 ]
+  run jq -e '[.bypass_actors[].actor_type] | (index("OrganizationAdmin") and index("Integration"))' "$RULESETS_DIR/pr-quality.json"
+  [ "$status" -eq 0 ]
+  run jq -e '[.rules[] | select(.type=="required_status_checks") | .parameters.required_status_checks[].context] | length > 0' "$RULESETS_DIR/code-quality.json"
+  [ "$status" -eq 0 ]
+}

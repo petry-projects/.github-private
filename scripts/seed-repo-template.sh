@@ -269,6 +269,25 @@ If you enable the `sonarcloud` workflow, set `sonar.projectKey` /
 
 ---
 
+## What this template does NOT do
+
+Two onboarding questions are resolved here so they are not left implicit:
+
+- **Framework subtrees (`frameworks/`) are opt-in — they are not seeded by this
+  template.** The agentic frameworks (`bmad-method`, `spec-kit`, `gsd`) are
+  `git subtree` development tooling maintained in `petry-projects/.github-private`;
+  a product repo does not need them on day 0. If your project uses one, add it on
+  demand with `git subtree add` against its upstream — see that repo's `AGENTS.md`.
+
+- **App installs (Claude, CodeRabbit) are a manual org-admin step — the bootstrap
+  does not install them.** `bootstrap-new-repo.sh` runs as `GITHUB_TOKEN` and
+  cannot install org GitHub Apps; installation is a one-time org-level action by an
+  org admin. The bootstrap only *disables those apps' check-suite auto-trigger* on
+  the new repo (so queued-but-never-completed suites never block auto-merge),
+  assuming the apps are already installed org-wide.
+
+---
+
 The rest — CODEOWNERS, AGENTS.md/CLAUDE.md pointers, LICENSE, SECURITY.md,
 .gitignore — is ready as shipped. Repo settings, rulesets, labels, and security
 configuration are applied separately by the org `bootstrap-new-repo.sh` flow.
