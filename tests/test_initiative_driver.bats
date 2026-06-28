@@ -123,8 +123,10 @@ args="$*"
 if [[ "$args" == *"issues/1 --jq"* ]] && [[ "$args" != *"sub_issues"* ]]; then
   printf 'initiative:auto'; exit 0
 fi
-# Sub-issues: only issue 2
-if [[ "$args" == *"sub_issues"* ]]; then printf '2'; exit 0; fi
+# Epic #1 sub-issues: only issue 2
+if [[ "$args" == *"issues/1/sub_issues"* ]]; then printf '2'; exit 0; fi
+# Issue 2 has no sub-issues of its own (a story, not an epic)
+if [[ "$args" == *"issues/2/sub_issues"* ]]; then printf ''; exit 0; fi
 # Issue 2 has no dev-lead yet
 if [[ "$args" == *"issues/2 --jq"* ]]; then printf ''; exit 0; fi
 # Issue 2 has an open blocker (issue 99)
@@ -148,8 +150,10 @@ args="$*"
 if [[ "$args" == *"issues/1 --jq"* ]] && [[ "$args" != *"sub_issues"* ]]; then
   printf 'initiative:auto'; exit 0
 fi
-# Sub-issues: only issue 2
-if [[ "$args" == *"sub_issues"* ]]; then printf '2'; exit 0; fi
+# Epic #1 sub-issues: only issue 2
+if [[ "$args" == *"issues/1/sub_issues"* ]]; then printf '2'; exit 0; fi
+# Issue 2 has no sub-issues of its own (a story, not an epic)
+if [[ "$args" == *"issues/2/sub_issues"* ]]; then printf ''; exit 0; fi
 # Issue 2 has no dev-lead yet
 if [[ "$args" == *"issues/2 --jq"* ]]; then printf ''; exit 0; fi
 # No open blockers
@@ -163,6 +167,98 @@ EOF
   run bash "$SCRIPT"
   [ "$status" -eq 0 ]
   [[ "$output" == *"RELEASED"* ]]
+  grep -qF "issue edit" "$GH_LOG"
+}
+
+# ── nested-epic skip: never release a sub-issue that is itself an epic ────────
+# Incident #934/#938 (refs #882): an `initiative:auto` epic nested as a native
+# sub-issue of an armed parent epic was released as a "story" and closed by
+# dev-lead, orphaning its own real stories. A nested epic is driven on its own
+# via the sweep, so the parent must skip it.
+
+@test "nested-epic: skips a sub-issue carrying the gate label (drive it independently)" {
+  cat > "$MOCK_BIN/gh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$GH_LOG"
+args="$*"
+# Epic #1 carries the gate label
+if [[ "$args" == *"issues/1 --jq"* ]] && [[ "$args" != *"sub_issues"* ]]; then
+  printf 'initiative:auto'; exit 0
+fi
+# Epic #1 sub-issues: only issue 2 (which is itself a nested epic)
+if [[ "$args" == *"issues/1/sub_issues"* ]]; then printf '2'; exit 0; fi
+# Issue 2 carries the gate label too — it is itself an armed epic
+if [[ "$args" == *"issues/2 --jq"* ]] && [[ "$args" != *"sub_issues"* ]]; then
+  printf 'initiative:auto'; exit 0
+fi
+# Issue 2 has no materialized children yet — the gate label alone must skip it
+if [[ "$args" == *"issues/2/sub_issues"* ]]; then printf ''; exit 0; fi
+printf '[]'
+EOF
+  chmod +x "$MOCK_BIN/gh"
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"#2 — skip: is itself an epic"* ]]
+  ! grep -qF "issue edit" "$GH_LOG"
+}
+
+@test "nested-epic: skips a sub-issue that has its own native sub-issues" {
+  cat > "$MOCK_BIN/gh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$GH_LOG"
+args="$*"
+# Epic #1 carries the gate label
+if [[ "$args" == *"issues/1 --jq"* ]] && [[ "$args" != *"sub_issues"* ]]; then
+  printf 'initiative:auto'; exit 0
+fi
+# Epic #1 sub-issues: only issue 2
+if [[ "$args" == *"issues/1/sub_issues"* ]]; then printf '2'; exit 0; fi
+# Issue 2 has only the plain initiative label (no gate) but has its own children
+if [[ "$args" == *"issues/2 --jq"* ]] && [[ "$args" != *"sub_issues"* ]]; then
+  printf 'initiative'; exit 0
+fi
+# Issue 2 has a native sub-issue of its own (issue 5) — so it is itself an epic
+if [[ "$args" == *"issues/2/sub_issues"* ]]; then printf '5'; exit 0; fi
+printf '[]'
+EOF
+  chmod +x "$MOCK_BIN/gh"
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"#2 — skip: is itself an epic"* ]]
+  ! grep -qF "issue edit" "$GH_LOG"
+}
+
+@test "nested-epic: a plain story (initiative label, no children, no gate) is still released" {
+  cat > "$MOCK_BIN/gh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$GH_LOG"
+args="$*"
+# Epic #1 carries the gate label
+if [[ "$args" == *"issues/1 --jq"* ]] && [[ "$args" != *"sub_issues"* ]]; then
+  printf 'initiative:auto'; exit 0
+fi
+# Epic #1 sub-issues: only issue 2
+if [[ "$args" == *"issues/1/sub_issues"* ]]; then printf '2'; exit 0; fi
+# Issue 2 is an ordinary story: plain initiative label, no gate label
+if [[ "$args" == *"issues/2 --jq"* ]] && [[ "$args" != *"sub_issues"* ]]; then
+  printf 'initiative'; exit 0
+fi
+# Issue 2 has no native sub-issues of its own — it is NOT an epic
+if [[ "$args" == *"issues/2/sub_issues"* ]]; then printf ''; exit 0; fi
+# Issue 2 has no open blockers
+if [[ "$args" == *"issues/2/dependencies/blocked_by"* ]]; then printf ''; exit 0; fi
+# Label application succeeds
+if [[ "$args" == "issue edit"* ]]; then exit 0; fi
+printf '[]'
+EOF
+  chmod +x "$MOCK_BIN/gh"
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"RELEASED"* ]]
+  [[ "$output" != *"is itself an epic"* ]]
   grep -qF "issue edit" "$GH_LOG"
 }
 
@@ -258,6 +354,8 @@ if [[ "$args" == *"repos/other/repo/issues -f state=open"* ]]; then printf '10';
 if [[ "$args" == *"repos/other/repo/issues/10 --jq"* ]]; then printf 'initiative:auto'; exit 0; fi
 # Sub-issues of epic 10 in the target repo: one open child, issue 2
 if [[ "$args" == *"repos/other/repo/issues/10/sub_issues"* ]]; then printf '2'; exit 0; fi
+# Issue 2 has no sub-issues of its own (a story, not an epic)
+if [[ "$args" == *"repos/other/repo/issues/2/sub_issues"* ]]; then printf ''; exit 0; fi
 # Issue 2 has no dev-lead yet
 if [[ "$args" == *"repos/other/repo/issues/2 --jq"* ]]; then printf ''; exit 0; fi
 # Issue 2 has no open blockers
