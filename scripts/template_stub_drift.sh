@@ -132,8 +132,14 @@ _template_drift_expected_sha() {
 
 # _template_drift_committed_sha <path> — contents-API blob SHA of the file as
 # committed in the template repo. Empty on 404 (file absent ⇒ MISSING).
+# Note: gh api with --jq does not apply the jq filter on error responses in some
+# gh versions — it writes the raw 404 JSON to stdout instead. Separating the gh
+# call from jq processing ensures the 404 body is filtered via .sha // empty,
+# returning "" so classify_stub_drift produces MISSING rather than DRIFTED.
 _template_drift_committed_sha() {
-  gh api "repos/${TEMPLATE_REPO}/contents/${1}" --jq '.sha' 2>/dev/null || true
+  local out
+  out="$(gh api "repos/${TEMPLATE_REPO}/contents/${1}" 2>/dev/null)" || true
+  printf '%s' "$out" | jq -r '.sha // empty' 2>/dev/null || true
 }
 
 main() {

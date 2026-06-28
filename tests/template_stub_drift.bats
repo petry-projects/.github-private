@@ -128,3 +128,29 @@ setup() {
   [ "$status" -eq 0 ]
   [ "$output" = "$(printf '.github/CODEOWNERS\tDRIFTED\tcccccccccccccccccccccccccccccccccccccccc\t%s' "$EXPECTED")" ]
 }
+
+# ---------------------------------------------------------------------------
+# _template_drift_committed_sha — 404 handling (regression guard: gh api on
+# some versions writes the raw 404 JSON to stdout when --jq is not applied
+# on error responses; the function must return "" so classify_stub_drift
+# yields MISSING rather than DRIFTED).
+# ---------------------------------------------------------------------------
+
+@test "_template_drift_committed_sha: 404 response yields empty string, not raw JSON" {
+  local stub_bin orig_path
+  stub_bin="$(mktemp -d)"
+  cat > "$stub_bin/gh" <<'GHEOF'
+#!/usr/bin/env bash
+# Simulate gh api writing the 404 JSON body to stdout (as observed in CI)
+printf '{"message":"Not Found","documentation_url":"https://docs.github.com/rest/repos/contents#get-repository-content","status":"404"}'
+exit 1
+GHEOF
+  chmod +x "$stub_bin/gh"
+  orig_path="$PATH"
+  export PATH="$stub_bin:$PATH"
+  run _template_drift_committed_sha ".github/workflows/agent-shield.yml"
+  export PATH="$orig_path"
+  rm -rf "$stub_bin"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]  # empty ⇒ classify_stub_drift returns MISSING, not DRIFTED
+}
