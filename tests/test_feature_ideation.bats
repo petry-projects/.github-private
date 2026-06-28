@@ -112,10 +112,12 @@ setup() {
 @test "feature-ideation.yml: every reusable-calling job is gated off the discussion event" {
   # At least one job must call the reusable (guard against a vacuous pass)…
   local total ungated
-  total="$(yq '[.jobs[] | select(.uses | test("feature-ideation-reusable.yml"))] | length' "$FEATURE_IDEATION_YML")"
+  total="$(yq '[.jobs[] | select((.uses // "") | test("feature-ideation-reusable.yml"))] | length' "$FEATURE_IDEATION_YML")"
   [ "$total" -ge 1 ]
   # …and none of them may run on a discussion event (claude-code-action aborts there).
-  ungated="$(yq '[.jobs[] | select(.uses | test("feature-ideation-reusable.yml")) | select((.if // "") | test("event_name *!= *.discussion.") | not)] | length' "$FEATURE_IDEATION_YML")"
+  # A job is "ungated" if its if: lacks the event_name != 'discussion' guard, OR if it
+  # contains || (which could let a second OR-branch re-enable execution on discussions).
+  ungated="$(yq '[.jobs[] | select((.uses // "") | test("feature-ideation-reusable.yml")) | select(((.if // "") | test("event_name *!= *.discussion.") | not) or ((.if // "") | test("[|][|]")))] | length' "$FEATURE_IDEATION_YML")"
   [ "$ungated" -eq 0 ]
 }
 
