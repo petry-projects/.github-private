@@ -91,6 +91,10 @@ labels_of() {
 
 # sub_issue_numbers <issue-number> — newline-separated native sub-issue numbers.
 sub_issue_numbers() {
+  if [[ $# -lt 1 ]]; then
+    echo "::error::sub_issue_numbers requires an issue number" >&2
+    return 1
+  fi
   gh api --paginate "repos/$REPO/issues/$1/sub_issues" --jq '.[].number'
 }
 
@@ -176,11 +180,17 @@ drive_epic() {
     # Signals: it carries GATE_LABEL, or it has ≥1 native sub-issue of its own.
     # The plain `initiative` label is deliberately NOT used — initiative-planner
     # labels BOTH epics and their story sub-issues `initiative`, so it cannot
-    # distinguish the two; keying on it would skip every story. The children
-    # fetch is a direct assignment (not an `if` condition) so a transient API
-    # failure trips errexit instead of being masked into a false "not an epic".
+    # distinguish the two; keying on it would skip every story. GATE_LABEL is
+    # checked first (no API call needed) so a transient sub-issues lookup cannot
+    # block a gate-labeled nested epic from being skipped. The children fetch is
+    # a direct assignment (not an `if` condition) so a transient API failure
+    # trips errexit instead of being masked into a false "not an epic".
+    if has_label "$labels" "$GATE_LABEL"; then
+      log "  #$n — skip: is itself an epic (drive it independently)."
+      continue
+    fi
     n_children="$(sub_issue_numbers "$n")"
-    if has_label "$labels" "$GATE_LABEL" || [[ -n "$n_children" ]]; then
+    if [[ -n "$n_children" ]]; then
       log "  #$n — skip: is itself an epic (drive it independently)."
       continue
     fi
