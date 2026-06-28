@@ -71,6 +71,7 @@ jobs:
             tests/test_apply_repo_settings.bats \
             tests/test_apply_rulesets.bats \
             tests/test_bootstrap_new_repo.bats \
+            tests/test_seed_repo_template.bats \
             tests/test_sweep_stuck_reviews.bats \
             tests/test_validate_cases.bats \
             tests/test_review_registry.bats \
