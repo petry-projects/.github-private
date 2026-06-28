@@ -89,6 +89,11 @@ labels_of() {
   gh api "repos/$REPO/issues/$1" --jq '.labels[].name'
 }
 
+# sub_issue_numbers <issue-number> — newline-separated native sub-issue numbers.
+sub_issue_numbers() {
+  gh api --paginate "repos/$REPO/issues/$1/sub_issues" --jq '.[].number'
+}
+
 # drive_epic <epic-number> — release the ready sub-issues of one epic.
 # Returns 0 on success (including no-ops); never aborts the caller's sweep.
 drive_epic() {
@@ -163,6 +168,20 @@ drive_epic() {
     fi
     if has_label "$labels" "$HOLD_LABEL"; then
       log "  #$n — skip: $HOLD_LABEL (held)."
+      continue
+    fi
+    # Never release a sub-issue that is itself an epic (#882; the #934/#938
+    # incident): an armed nested epic appears in the sweep and is driven on its
+    # own, so the parent must skip it rather than implement it as a story.
+    # Signals: it carries GATE_LABEL, or it has ≥1 native sub-issue of its own.
+    # The plain `initiative` label is deliberately NOT used — initiative-planner
+    # labels BOTH epics and their story sub-issues `initiative`, so it cannot
+    # distinguish the two; keying on it would skip every story. The children
+    # fetch is a direct assignment (not an `if` condition) so a transient API
+    # failure trips errexit instead of being masked into a false "not an epic".
+    n_children="$(sub_issue_numbers "$n")"
+    if has_label "$labels" "$GATE_LABEL" || [[ -n "$n_children" ]]; then
+      log "  #$n — skip: is itself an epic (drive it independently)."
       continue
     fi
 
