@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+set -euo pipefail
 # template_stub_drift.sh — drift guard for the repo-template scaffold (#969, epic
 # #964). Fails CI when a file committed in petry-projects/repo-template has
 # drifted from its canonical standards-derived baseline, so the template stays a
@@ -144,7 +145,7 @@ _template_drift_committed_sha() {
 
 main() {
   local cmd
-  for cmd in gh git base64; do
+  for cmd in gh git; do
     command -v "$cmd" > /dev/null 2>&1 || { echo "::error::${cmd} is required but not installed." >&2; return 1; }
   done
 
@@ -163,8 +164,8 @@ main() {
   done
 
   cat "$tsv"
-  template_drift_annotate "$tsv"
-  local rc=$?
+  local rc=0
+  template_drift_annotate "$tsv" || rc=$?
   rm -f "$tsv"
   return "$rc"
 }
