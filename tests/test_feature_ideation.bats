@@ -191,3 +191,32 @@ setup() {
 @test "feature-ideation.yml sources target_discussion from inputs.target_discussion" {
   grep -qE 'target_discussion:[[:space:]]*"?\$\{\{[[:space:]]*inputs\.target_discussion' "$FEATURE_IDEATION_YML"
 }
+
+# ── #985: structural guard binding the off-discussion gate to the reusable call ──
+# The grep-anywhere check above passes as long as the "!= 'discussion'" string
+# exists *somewhere* in the file — it does NOT verify the gate sits on the job
+# that actually invokes the reusable. A regression that moved the `uses:` call
+# onto an unguarded (or discussion-handling) job would slip through it while
+# resurrecting the exact "Unsupported event type: discussion" failure that
+# degraded this workflow (#985). These yq-based tests pin the invariant
+# structurally: every job that calls the reusable must be gated off the
+# discussion event, and the discussion handler must not call it inline.
+
+@test "feature-ideation.yml: every reusable-calling job is gated off the discussion event" {
+  # At least one job must call the reusable (guard against a vacuous pass)…
+  local total ungated
+  total="$(yq '[.jobs[] | select((.uses // "") | test("feature-ideation-reusable.yml"))] | length' "$FEATURE_IDEATION_YML")"
+  [ "$total" -ge 1 ]
+  # …and none of them may run on a discussion event (claude-code-action aborts there).
+  # A job is "ungated" if its if: lacks the event_name != 'discussion' guard, OR if it
+  # contains || (which could let a second OR-branch re-enable execution on discussions).
+  ungated="$(yq '[.jobs[] | select((.uses // "") | test("feature-ideation-reusable.yml")) | select(((.if // "") | test("event_name *!= *.discussion.") | not) or ((.if // "") | test("[|][|]")))] | length' "$FEATURE_IDEATION_YML")"
+  [ "$ungated" -eq 0 ]
+}
+
+@test "feature-ideation.yml: the discussion handler reaches the reusable only via the dispatch bridge" {
+  # The redispatch job handles the discussion event; it must NOT call the
+  # reusable inline (which would re-introduce the abort) — it re-dispatches
+  # under workflow_dispatch instead.
+  [ "$(yq '.jobs.redispatch.uses' "$FEATURE_IDEATION_YML")" = "null" ]
+}
