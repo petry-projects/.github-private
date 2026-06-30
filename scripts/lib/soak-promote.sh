@@ -17,8 +17,9 @@
 # ordered channel list, or nothing + nonzero rc if not present.
 ring_index() {
   local target="$1" csv="$2" i=0 ch
-  local IFS=,
-  for ch in $csv; do
+  local -a rings
+  IFS=, read -r -a rings <<< "$csv"
+  for ch in "${rings[@]}"; do
     if [ "$ch" = "$target" ]; then echo "$i"; return 0; fi
     i=$((i + 1))
   done
@@ -32,6 +33,8 @@ version_gt() {
   local a1 a2 a3 b1 b2 b3
   IFS=. read -r a1 a2 a3 <<< "$a"
   IFS=. read -r b1 b2 b3 <<< "$b"
+  a1="${a1%%[!0-9]*}"; a2="${a2%%[!0-9]*}"; a3="${a3%%[!0-9]*}"
+  b1="${b1%%[!0-9]*}"; b2="${b2%%[!0-9]*}"; b3="${b3%%[!0-9]*}"
   a1=$((10#${a1:-0})); a2=$((10#${a2:-0})); a3=$((10#${a3:-0}))
   b1=$((10#${b1:-0})); b2=$((10#${b2:-0})); b3=$((10#${b3:-0}))
   if [ "$a1" -ne "$b1" ]; then [ "$a1" -gt "$b1" ]; return; fi

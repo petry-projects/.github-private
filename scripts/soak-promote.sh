@@ -47,7 +47,7 @@ reusable_names() { _reg '.reusables | keys | .[]'; }
 reusable_field() { _reg ".reusables.\"$1\".$2 // \"\""; }
 
 ordered_channels() {
-  _reg ".reusables.\"$1\".rings | sort_by(.order) | map(.channel) | join(\",\")"
+  _reg "(.reusables.\"$1\".rings // []) | sort_by(.order) | map(.channel) | join(\",\")"
 }
 
 # repos for one ring, with the host-relative tokens expanded ($host / $org_infra / *).
@@ -64,7 +64,7 @@ ring_repos() {
       '*') printf '%s\n' '*' ;;
       *) printf '%s\n' "$t" ;;
     esac
-  done < <(_reg ".reusables.\"$r\".rings[] | select(.channel==\"$channel\") | .repos[]")
+  done < <(_reg "(.reusables.\"$r\".rings // [])[] | select(.channel==\"$channel\") | (.repos // [])[]")
   return 0
 }
 
@@ -95,14 +95,16 @@ ring_health() {
   local wf="$1" window="$2"; shift 2
   local since healthy=0 fail=0 repo json
   if ! since="$(date -u -d "-${window} days" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)"; then
-    since=""
+    if ! since="$(date -u -v"-${window}d" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)"; then
+      since=""
+    fi
   fi
   for repo in "$@"; do
     [ "$repo" = '*' ] && continue
     json="$(gh run list --repo "$repo" --workflow "$wf" ${since:+--created ">=$since"} \
               -L 300 --json conclusion 2>/dev/null || echo '[]')"
-    healthy=$(( healthy + $(printf '%s' "$json" | jq '[.[]|select(.conclusion=="success")]|length' 2>/dev/null || echo 0) ))
-    fail=$(( fail + $(printf '%s' "$json" | jq '[.[]|select(.conclusion=="failure")]|length' 2>/dev/null || echo 0) ))
+    healthy=$(( healthy + $(jq '[.[]?|select(.conclusion=="success")]|length' 2>/dev/null <<< "$json" || echo 0) ))
+    fail=$(( fail + $(jq '[.[]?|select(.conclusion=="failure")]|length' 2>/dev/null <<< "$json" || echo 0) ))
   done
   echo "$healthy $fail $(( healthy + fail ))"
 }
@@ -186,7 +188,7 @@ record_deployment() {  # <reusable> <host> <ring> <version> <evidence_note>
 # ── main loop ─────────────────────────────────────────────────────────────────
 run() {
   local mode="$1"   # report | auto
-  local paused; paused="$(_ctl '.pause')"; [ "$paused" = "null" ] && paused="false"
+  local paused; paused="$(_ctl '.pause // false')"
 
   local rows=()
   local r
@@ -246,8 +248,9 @@ _rollback_reusable() {
   [ -z "$target" ] && { echo "::error::$r: rollback target $r/v$version not found"; return 0; }
   local cand; cand="$(channel_commit "$r" "$host" "$(ordered_channels "$r" | cut -d, -f1)")"
   csv="$(ordered_channels "$r")"
-  local IFS=,
-  for ch in $csv; do
+  local -a channels
+  IFS=, read -r -a channels <<< "$csv"
+  for ch in "${channels[@]}"; do
     c="$(channel_commit "$r" "$host" "$ch")"
     if [ -n "$cand" ] && [ "$c" = "$cand" ]; then
       echo "::notice::$r: rollback $r/$ch -> v$version (${target:0:12})"
@@ -291,9 +294,15 @@ main() {
   local mode="${1:-report}"; shift || true
   while [ "$#" -gt 0 ]; do
     case "$1" in
-      --registry) SOAK_REGISTRY="$2"; shift 2 ;;
-      --control)  SOAK_CONTROL="$2"; shift 2 ;;
-      --status-out) SOAK_STATUS_OUT="$2"; shift 2 ;;
+      --registry)
+        if [ "$#" -lt 2 ]; then echo "::error::--registry requires an argument" >&2; return 2; fi
+        SOAK_REGISTRY="$2"; shift 2 ;;
+      --control)
+        if [ "$#" -lt 2 ]; then echo "::error::--control requires an argument" >&2; return 2; fi
+        SOAK_CONTROL="$2"; shift 2 ;;
+      --status-out)
+        if [ "$#" -lt 2 ]; then echo "::error::--status-out requires an argument" >&2; return 2; fi
+        SOAK_STATUS_OUT="$2"; shift 2 ;;
       *) echo "::error::unknown argument: $1" >&2; return 2 ;;
     esac
   done
