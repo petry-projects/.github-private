@@ -261,6 +261,20 @@ gh_create_annotated_tag() {
   gh api -X POST "repos/$1/git/refs" -f "ref=refs/tags/$2" -f "sha=$obj" >/dev/null
 }
 
+# gh_release_commit <repo> <tag> — echo the COMMIT sha a release tag points to,
+# dereferencing an annotated tag object. Empty + non-zero if the tag is absent.
+gh_release_commit() {
+  local ref_info obj type
+  ref_info=$(gh api "repos/$1/git/ref/tags/$2" --jq '.object?.sha + " " + .object?.type' 2>/dev/null) || return 1
+  [ -z "$ref_info" ] && return 1
+  read -r obj type <<< "$ref_info"
+  if [ "$type" = "tag" ]; then
+    gh api "repos/$1/git/tags/$obj" --jq '.object?.sha' 2>/dev/null
+  else
+    printf '%s\n' "$obj"
+  fi
+}
+
 # gh_move_tag <repo> <tag> <sha> — point refs/tags/<tag> at <sha> (force-move if
 # it exists, create if not). Lightweight ref, matching `git tag -f` for channels.
 gh_move_tag() {
