@@ -51,7 +51,7 @@ jobs:
   add-to-project:
     permissions:
       contents: read
-    uses: petry-projects/.github/.github/workflows/add-to-project-reusable.yml@add-to-project/stable
+    uses: petry-projects/.github/.github/workflows/add-to-project-reusable.yml@add-to-project/stable  # NOSONAR(githubactions:S7637) first-party channel ref
     with:
       project_id: PVT_kwDOD2inqs4BZq3-
       project_url: https://github.com/orgs/petry-projects/projects/1
