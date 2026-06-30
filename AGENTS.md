@@ -110,6 +110,20 @@ This is the `.github-private` org infrastructure repo for `petry-projects`. It c
   template gains a cross-repo release-path canary equivalent, remove this exception and defer to the
   template instead.
 
+- **Exception:** `soak-promote.yml` (#993, epic #495) is a documented repo-specific workflow with no
+  corresponding org template in `standards/workflows/`. It is the autonomous fleet-wide successor to
+  `canary-rollout.yml` (#501): an hourly + `workflow_dispatch` loop that re-derives each first-party
+  reusable's frontier from its channel tags + run history, decides an action through the override-only
+  `release/control.yml`, and rewrites `release/STATUS.md`. It ships in **report-only** mode ("canary the
+  canary" — it evaluates and writes STATUS but advances nothing on the timer); auto-advance is enabled
+  later, ring-by-ring, via `mode=auto` dispatch. The fleet of reusables it covers is declared in
+  `release/registry.yml` (#684 coverage); the decision core is `scripts/lib/soak-promote.sh` (pure,
+  unit-tested in `tests/test_soak_promote.bats`) over the orchestrator `scripts/soak-promote.sh`. The
+  intended production mover identity is a least-privilege GitHub App scoped `contents:write` on the two
+  org-infra repos; until that App is provisioned it falls back to `GH_PAT_WORKFLOWS` (the same identity the
+  `release-channel-tags` ruleset bypass trusts). It must not be removed by template syncs. If the org
+  template gains a fleet-promotion equivalent, remove this exception and defer to the template instead.
+
 ### Template drift guard (`repo-template`)
 
 `petry-projects/repo-template` is a **distribution artifact** of the canonical `standards/` in the public

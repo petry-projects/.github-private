@@ -1,0 +1,88 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Soak-and-Promote — autonomous fleet-wide, health-gated promotion of every
+# first-party reusable through the canary rings. Successor to the single-agent
+# Canary Rollout (#501). Initiative #495 · issue #993.
+#
+# "Canary the canary": this workflow ships in REPORT-ONLY mode — on the hourly
+# schedule it evaluates the whole fleet, rewrites release/STATUS.md + the job
+# summary, and advances NOTHING. Auto-advance is enabled later, ring-by-ring, by
+# dispatching with mode=auto once the report-only output has been validated.
+#
+# The loop reads release/registry.yml (the fleet) + release/control.yml (the
+# override-only human control surface) every run and re-derives truth from channel
+# tags + run history, so a missed or duplicated run is harmless.
+#
+# Auth: the mover identity SHOULD be a least-privilege GitHub App scoped
+# contents:write on petry-projects/.github + .github-private only (auditable,
+# rotatable). Until that App is provisioned (infra prerequisite), the workflow
+# falls back to GH_PAT_WORKFLOWS — the existing cross-org PAT whose identity the
+# release-channel-tags ruleset bypass already trusts (#868). Report-only mode only
+# needs contents:write to commit STATUS.md, covered by github.token.
+# ─────────────────────────────────────────────────────────────────────────────
+name: Soak-and-Promote
+
+on:
+  schedule:
+    - cron: "17 * * * *"   # hourly — report-only (never advances on the timer)
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "report (read-only, default) | auto (execute gated advances)"
+        type: choice
+        options: [report, auto]
+        default: report
+
+permissions:
+  contents: write   # commit the regenerated release/STATUS.md back to main
+
+concurrency:
+  group: soak-promote
+  cancel-in-progress: false
+
+jobs:
+  soak-promote:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout (with tags)
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+          # Mover identity: GH_PAT_WORKFLOWS so pushing protected channel tags in
+          # auto mode is authorized under the release-channel-tags ruleset bypass.
+          token: ${{ secrets.GH_PAT_WORKFLOWS || github.token }}
+
+      - name: Install yq
+        run: |
+          if ! command -v yq >/dev/null 2>&1; then
+            sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+            sudo chmod +x /usr/local/bin/yq
+          fi
+
+      - name: Run soak-promote loop
+        env:
+          # On the hourly timer, force report-only — never advance on a schedule.
+          MODE: ${{ github.event_name == 'schedule' && 'report' || github.event.inputs.mode }}
+          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS || github.token }}
+        run: |
+          set -euo pipefail
+          echo "::notice::soak-promote mode=${MODE}"
+          bash scripts/soak-promote.sh "${MODE}"
+
+      - name: Commit refreshed STATUS.md
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # shellcheck source=scripts/lib/git-identity.sh
+          source scripts/lib/git-identity.sh
+          setup_git_identity
+          if ! git diff --quiet -- release/STATUS.md; then
+            git add release/STATUS.md
+            git commit -m "chore(release): refresh soak-promote STATUS [skip ci]"
+            git push origin HEAD:"${GITHUB_REF_NAME}"
+            echo "::notice::STATUS.md updated"
+          else
+            echo "::notice::STATUS.md unchanged"
+          fi

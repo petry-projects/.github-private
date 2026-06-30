@@ -1,0 +1,135 @@
+# release/registry.yml — fleet registry of first-party reusables for the autonomous
+# soak-and-promote loop (#993; #684 org-wide coverage). The orchestrator
+# (scripts/soak-promote.sh) reads this as the single source of truth for WHICH
+# reusables to soak and the ring → repos map for each.
+#
+# Schema
+#   version            — schema version.
+#   member_tokens      — host-relative expansion tokens used in ring `repos`.
+#   org_infra_repos    — the two org-infra repos (used to expand $org_infra).
+#   reusables.<name>:
+#     host             — repo that OWNS the reusable. Tags are cut here. A host of
+#                        petry-projects/.github is a cross-repo reusable (this repo
+#                        holds only the thin caller stub); cut-release.sh resolves
+#                        and moves its tags on that repo via the API.
+#     run_workflow     — workflow name whose run history feeds the health gate.
+#     soak_start_ring  — (optional) ring the candidate enters first, for reusables
+#                        whose host has no `next` caller (default: the first ring).
+#     gate             — per-reusable gate knobs (soak_window_days, ...).
+#     rings            — ordered list of { channel, order, repos }. `repos` may use
+#                        the host-relative tokens below.
+#
+# member_tokens:
+#   $host       the reusable's host repo (the repo that owns it)
+#   $org_infra  org_infra_repos minus the host (the host already sits in `next`)
+#   *           every other consumer not named in an earlier ring
+#
+# Rings are written out per reusable (no YAML anchors) so the file reads cleanly
+# under `yq` evaluation, which does not expand alias nodes for `length`/`has`.
+version: 1
+
+org_infra_repos:
+  - petry-projects/.github
+  - petry-projects/.github-private
+
+member_tokens:
+  $host: the reusable's host repo (the repo that owns it)
+  $org_infra: org_infra_repos minus the host (the host is already in `next`)
+  "*": every other consumer not named in an earlier ring
+
+reusables:
+  # ── hosted in this repo (.github-private) ──────────────────────────────────
+  dev-lead:
+    host: petry-projects/.github-private
+    run_workflow: "Dev-Lead Agent"
+    gate: { soak_window_days: 7 }
+    rings:
+      - { channel: next,   order: 0, repos: ["$host"] }
+      - { channel: ring0,  order: 1, repos: ["$org_infra"] }
+      - { channel: ring1,  order: 2, repos: ["petry-projects/TalkTerm", "petry-projects/bmad-bgreat-suite"] }
+      - { channel: stable, order: 3, repos: ["*"] }
+
+  pr-review:
+    host: petry-projects/.github-private
+    run_workflow: "PR Review"
+    gate: { soak_window_days: 7 }
+    rings:
+      - { channel: next,   order: 0, repos: ["$host"] }
+      - { channel: ring0,  order: 1, repos: ["$org_infra"] }
+      - { channel: ring1,  order: 2, repos: ["petry-projects/TalkTerm", "petry-projects/bmad-bgreat-suite"] }
+      - { channel: stable, order: 3, repos: ["*"] }
+
+  # ── hosted in petry-projects/.github (cross-repo; this repo has the stub) ───
+  feature-ideation:
+    host: petry-projects/.github
+    run_workflow: "Feature Ideation"
+    gate: { soak_window_days: 7 }
+    rings:
+      - { channel: next,   order: 0, repos: ["$host"] }
+      - { channel: ring0,  order: 1, repos: ["$org_infra"] }
+      - { channel: ring1,  order: 2, repos: [] }
+      - { channel: stable, order: 3, repos: ["*"] }
+
+  pr-review-mention:
+    host: petry-projects/.github
+    run_workflow: "PR Review Mention"
+    gate: { soak_window_days: 7 }
+    rings:
+      - { channel: next,   order: 0, repos: ["$host"] }
+      - { channel: ring0,  order: 1, repos: ["$org_infra"] }
+      - { channel: ring1,  order: 2, repos: [] }
+      - { channel: stable, order: 3, repos: ["*"] }
+
+  agent-shield:
+    host: petry-projects/.github
+    run_workflow: "Agent Shield"
+    gate: { soak_window_days: 7 }
+    rings:
+      - { channel: next,   order: 0, repos: ["$host"] }
+      - { channel: ring0,  order: 1, repos: ["$org_infra"] }
+      - { channel: ring1,  order: 2, repos: [] }
+      - { channel: stable, order: 3, repos: ["*"] }
+
+  auto-rebase:
+    host: petry-projects/.github
+    run_workflow: "Auto-rebase"
+    gate: { soak_window_days: 7 }
+    rings:
+      - { channel: next,   order: 0, repos: ["$host"] }
+      - { channel: ring0,  order: 1, repos: ["$org_infra"] }
+      - { channel: ring1,  order: 2, repos: [] }
+      - { channel: stable, order: 3, repos: ["*"] }
+
+  dependency-audit:
+    host: petry-projects/.github
+    run_workflow: "Dependency Audit"
+    gate: { soak_window_days: 7 }
+    rings:
+      - { channel: next,   order: 0, repos: ["$host"] }
+      - { channel: ring0,  order: 1, repos: ["$org_infra"] }
+      - { channel: ring1,  order: 2, repos: [] }
+      - { channel: stable, order: 3, repos: ["*"] }
+
+  # Dependabot reusables have no host `next` caller of their own — the host repo
+  # does not run them on itself — so the candidate enters the soak at ring0.
+  dependabot-automerge:
+    host: petry-projects/.github
+    run_workflow: "Dependabot Automerge"
+    soak_start_ring: ring0
+    gate: { soak_window_days: 7 }
+    rings:
+      - { channel: next,   order: 0, repos: ["$host"] }
+      - { channel: ring0,  order: 1, repos: ["$org_infra"] }
+      - { channel: ring1,  order: 2, repos: [] }
+      - { channel: stable, order: 3, repos: ["*"] }
+
+  dependabot-rebase:
+    host: petry-projects/.github
+    run_workflow: "Dependabot Rebase"
+    soak_start_ring: ring0
+    gate: { soak_window_days: 7 }
+    rings:
+      - { channel: next,   order: 0, repos: ["$host"] }
+      - { channel: ring0,  order: 1, repos: ["$org_infra"] }
+      - { channel: ring1,  order: 2, repos: [] }
+      - { channel: stable, order: 3, repos: ["*"] }

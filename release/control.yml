@@ -1,0 +1,23 @@
+# release/control.yml — declarative human override for the autonomous
+# soak-and-promote loop (#993). This file is OVERRIDE-ONLY: it is never a required
+# gate. The loop is fully autonomous through `stable` by default; editing this file
+# (itself version-controlled = the traceable override) is how a human steps in.
+#
+# The orchestrator (scripts/soak-promote.sh) reads this every run.
+#
+# Keys
+#   pause: <bool>                  global kill switch — when true the loop evaluates
+#                                  and reports but mutates nothing.
+#   reusables.<name>:
+#     hold_at: <ring>              auto up to this ring, then wait for a human.
+#     pin: <version>              never auto-advance a candidate past this version.
+#     force: { ring: <ring> }     ONE-SHOT: advance <ring> now, bypassing the gate.
+#                                  Clear this entry after the loop applies it.
+#     rollback: <version>         ONE-SHOT: move the channel back to this immutable
+#                                  release. Clear after the loop applies it.
+#
+# A detected regression makes the loop auto-write a `hold_at` here and open an alert
+# (fail-safe) — so an unattended regression stops the fleet rather than promoting.
+pause: false
+
+reusables: {}
