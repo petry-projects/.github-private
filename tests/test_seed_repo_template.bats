@@ -175,6 +175,20 @@ _fixture_workflow() { # <name> <heredoc-content-on-stdin>
   [[ "$output" == *"stack"* ]]
 }
 
+@test "baseline: BOOTSTRAP.md resolves the two open onboarding questions — frameworks opt-in, app installs manual (#970 AC #4)" {
+  run bash "$SEED" --emit-baseline BOOTSTRAP.md
+  [ "$status" -eq 0 ]
+  # Q1: framework subtrees (frameworks/) are opt-in, NOT seeded by the template.
+  [[ "$output" == *"frameworks/"* ]]
+  [[ "$output" == *"opt-in"* ]]
+  [[ "$output" == *"not"*"seed"* || "$output" == *"not seeded"* ]]
+  # Q2: app installs (Claude/CodeRabbit) are a manual org-admin step, not done by bootstrap.
+  [[ "$output" == *"Claude"* ]]
+  [[ "$output" == *"CodeRabbit"* ]]
+  [[ "$output" == *"manual"* ]]
+  [[ "$output" == *"auto-trigger"* ]]
+}
+
 # ── dependabot baseline is sourced from the chosen standards/ stack template ───
 @test "baseline: dependabot.yml comes from the chosen standards/dependabot stack" {
   printf 'version: 2\nupdates:\n  - package-ecosystem: npm\n' \
