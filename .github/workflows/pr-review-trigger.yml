@@ -59,7 +59,7 @@ permissions:
 jobs:
   review:
     # Ring-0 channel — see the header block for the dogfooding rationale.
-    uses: petry-projects/.github-private/.github/workflows/pr-review.yml@pr-review/next
+    uses: petry-projects/.github-private/.github/workflows/pr-review.yml@pr-review/next  # NOSONAR(githubactions:S7637) first-party channel ref
     with:
       # Pin the agent's own script checkout to the same channel (#506).
       agent_ref: pr-review/next
