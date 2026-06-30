@@ -27,7 +27,7 @@ setup() {
   export PATH="$STUB_BIN:$PATH"
   CALLS="$STUB_BIN/calls.log"; export CALLS
   STANDARDS_DIR="$(mktemp -d)" || { echo "Failed to create STANDARDS_DIR" >&2; exit 1; }
-  mkdir -p "$STANDARDS_DIR/standards/workflows" "$STANDARDS_DIR/standards/dependabot/node"
+  mkdir -p "$STANDARDS_DIR/standards/workflows" "$STANDARDS_DIR/standards/dependabot"
   export STANDARDS_DIR
 }
 teardown() {
@@ -55,6 +55,15 @@ EOF
 # Drop a fake standards/workflows/<name> fixture used by --emit-workflow / seeding.
 _fixture_workflow() { # <name> <heredoc-content-on-stdin>
   cat > "$STANDARDS_DIR/standards/workflows/$1"
+}
+
+# gh stub that returns NOTHING for every call. Used by the fail-loud tests so a
+# fixture absent from STANDARDS_DIR cannot fall through to a real network fetch
+# (which would succeed for files that exist in the live standards repo and make
+# the test pass/fail on network state instead of the seeder's behavior).
+_stub_gh_empty() {
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$STUB_BIN/gh"
+  chmod +x "$STUB_BIN/gh"
 }
 
 # ── manifest: workflow set (AC #1, #5) ────────────────────────────────────────
@@ -144,6 +153,39 @@ _fixture_workflow() { # <name> <heredoc-content-on-stdin>
   [[ "$output" != *"./.github/workflows/dependency-audit-reusable.yml"* ]]
 }
 
+@test "emit-workflow: sonarcloud inline stub ships byte-identically (no repin)" {
+  # sonarcloud is kind=inline: it carries no reusable ref and must pass through
+  # verbatim, exactly like ci.yml. Covers the second inline workflow (#966 follow-up).
+  printf 'name: SonarCloud Analysis\non: [push]\njobs:\n  sonarcloud:\n    name: SonarCloud\n    runs-on: ubuntu-latest\n' \
+    | _fixture_workflow sonarcloud.yml
+  run bash "$SEED" --emit-workflow sonarcloud.yml
+  [ "$status" -eq 0 ]
+  [ "$output" = "$(cat "$STANDARDS_DIR/standards/workflows/sonarcloud.yml")" ]
+}
+
+@test "emit-workflow: FAILS LOUD when an inline workflow's standard file is absent" {
+  # Regression guard for the original #966 defect: ci/sonarcloud are declared
+  # kind=inline but were MISSING from standards/workflows/. The emit path must
+  # exit non-zero with a clear error, never silently ship an empty workflow.
+  # No fixture for sonarcloud.yml is written → the fetch must fail.
+  _stub_gh_empty
+  run bash "$SEED" --emit-workflow sonarcloud.yml
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"could not fetch standards/workflows/sonarcloud.yml"* ]]
+}
+
+@test "emit-workflow: every inline manifest stub fails loud when its standard is absent" {
+  # Guards the whole inline set, so a future manifest addition can't silently
+  # 404 at seed time the way ci.yml did.
+  _stub_gh_empty
+  for name in "${INLINE_STUBS[@]}"; do
+    run bash "$SEED" --emit-workflow "${name}.yml"
+    [ "$status" -ne 0 ] || { echo "$name did not fail loud on a missing standard" >&2; false; }
+    [[ "$output" == *"could not fetch standards/workflows/${name}.yml"* ]] \
+      || { echo "$name missing the fail-loud error message" >&2; false; }
+  done
+}
+
 # ── baseline content (AC #3, #4) ──────────────────────────────────────────────
 @test "baseline: CODEOWNERS is the org default rule" {
   run bash "$SEED" --emit-baseline .github/CODEOWNERS
@@ -192,10 +234,36 @@ _fixture_workflow() { # <name> <heredoc-content-on-stdin>
 # ── dependabot baseline is sourced from the chosen standards/ stack template ───
 @test "baseline: dependabot.yml comes from the chosen standards/dependabot stack" {
   printf 'version: 2\nupdates:\n  - package-ecosystem: npm\n' \
-    > "$STANDARDS_DIR/standards/dependabot/node/dependabot.yml"
-  run env DEPENDABOT_STACK=node bash "$SEED" --emit-baseline .github/dependabot.yml
+    > "$STANDARDS_DIR/standards/dependabot/frontend.yml"
+  run env DEPENDABOT_STACK=frontend bash "$SEED" --emit-baseline .github/dependabot.yml
   [ "$status" -eq 0 ]
   [[ "$output" == *"package-ecosystem: npm"* ]]
+}
+
+@test "baseline: dependabot.yml stack is a flat standards/dependabot/<stack>.yml file (not a subdir)" {
+  # Regression guard (#966 follow-up): the canonical layout is flat files
+  # (standards/dependabot/frontend.yml), NOT standards/dependabot/<stack>/dependabot.yml.
+  printf 'version: 2\nupdates:\n  - package-ecosystem: gomod\n' \
+    > "$STANDARDS_DIR/standards/dependabot/backend-go.yml"
+  run env DEPENDABOT_STACK=backend-go bash "$SEED" --emit-baseline .github/dependabot.yml
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"package-ecosystem: gomod"* ]]
+}
+
+@test "baseline: default DEPENDABOT_STACK is a real flat stack file (frontend)" {
+  printf 'version: 2\nupdates:\n  - package-ecosystem: npm\n' \
+    > "$STANDARDS_DIR/standards/dependabot/frontend.yml"
+  run bash "$SEED" --emit-baseline .github/dependabot.yml
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"package-ecosystem: npm"* ]]
+}
+
+@test "baseline: FAILS LOUD when the chosen dependabot stack file is absent" {
+  # No fixture written → the fetch must fail non-zero, never ship an empty file.
+  _stub_gh_empty
+  run env DEPENDABOT_STACK=frontend bash "$SEED" --emit-baseline .github/dependabot.yml
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"could not fetch standards/dependabot/frontend.yml"* ]]
 }
 
 # ── seeding orchestration: DRY_RUN ────────────────────────────────────────────
@@ -220,8 +288,8 @@ _fixture_workflow() { # <name> <heredoc-content-on-stdin>
         | _fixture_workflow "$n.yml"
     fi
   done
-  printf 'version: 2\n' > "$STANDARDS_DIR/standards/dependabot/node/dependabot.yml"
-  run env DEPENDABOT_STACK=node bash "$SEED" --repo petry-projects/repo-template
+  printf 'version: 2\n' > "$STANDARDS_DIR/standards/dependabot/frontend.yml"
+  run env DEPENDABOT_STACK=frontend bash "$SEED" --repo petry-projects/repo-template
   [ "$status" -eq 0 ]
   [ -f "$CALLS" ]
   grep -q "contents/.github/workflows/auto-rebase.yml" "$CALLS"
@@ -248,8 +316,8 @@ EOF
         | _fixture_workflow "$n.yml"
     fi
   done
-  printf 'version: 2\n' > "$STANDARDS_DIR/standards/dependabot/node/dependabot.yml"
-  run env DEPENDABOT_STACK=node bash "$SEED" --repo petry-projects/repo-template
+  printf 'version: 2\n' > "$STANDARDS_DIR/standards/dependabot/frontend.yml"
+  run env DEPENDABOT_STACK=frontend bash "$SEED" --repo petry-projects/repo-template
   [ "$status" -eq 0 ]
   [[ "$output" == *"PR #42 already open"* ]]
   [ ! -f "$CALLS" ] || ! grep -q "pr create" "$CALLS"
