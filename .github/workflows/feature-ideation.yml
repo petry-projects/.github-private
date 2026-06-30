@@ -173,7 +173,7 @@ jobs:
     # See AGENTS.md "Release channel tags & the mutable-ref exception" and
     # docs/release/versioning.md (ring channels; Cross-repo: feature-ideation).
     # Precedent: auto-rebase.yml intentionally pins its reusable @v2 ahead of canon.
-    uses: petry-projects/.github/.github/workflows/feature-ideation-reusable.yml@feature-ideation/next
+    uses: petry-projects/.github/.github/workflows/feature-ideation-reusable.yml@feature-ideation/next  # NOSONAR(githubactions:S7637) first-party channel ref
     with:
       # Carries the Idea's Discussion number → the reusable runs single-idea
       # enhancement mode. Populated by the `redispatch` bridge (which forwards
