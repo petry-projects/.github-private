@@ -19,6 +19,10 @@
 #                agents it is resolved against petry-projects/.github via the API
 #                (an `origin/` prefix is stripped — `origin/main` means its `main`).
 #   --channel    also move <agent>/<name> (e.g. stable) to the new release
+#   --promote    move <agent>/<channel> to the EXISTING <agent>/vX.Y.Z release
+#                instead of cutting a new one (ring-to-ring promotion). Requires
+#                --channel; errors if the release tag does not already exist;
+#                --ref is ignored (the release's own commit is authoritative).
 #   --push       publish the created/moved tags (default: print only). For
 #                this-repo agents this pushes to origin; for cross-repo agents it
 #                creates/moves the tags on petry-projects/.github via the API.
@@ -109,6 +113,20 @@ gh_create_annotated_tag() {
   gh api -X POST "repos/$1/git/refs" -f "ref=refs/tags/$2" -f "sha=$obj" >/dev/null
 }
 
+# gh_release_commit <repo> <tag> — echo the COMMIT sha a release tag points to,
+# dereferencing an annotated tag object. Empty + non-zero if the tag is absent.
+gh_release_commit() {
+  local obj type
+  obj=$(gh api "repos/$1/git/ref/tags/$2" --jq '.object.sha' 2>/dev/null) || return 1
+  [ -z "$obj" ] && return 1
+  type=$(gh api "repos/$1/git/ref/tags/$2" --jq '.object.type' 2>/dev/null)
+  if [ "$type" = "tag" ]; then
+    gh api "repos/$1/git/tags/$obj" --jq '.object.sha' 2>/dev/null
+  else
+    printf '%s\n' "$obj"
+  fi
+}
+
 # gh_move_tag <repo> <tag> <sha> — point refs/tags/<tag> at <sha> (force-move if
 # it exists, create if not). Lightweight ref, matching `git tag -f` for channels.
 gh_move_tag() {
@@ -122,7 +140,7 @@ gh_move_tag() {
 # ── main ─────────────────────────────────────────────────────────────────────
 
 main() {
-  local agent="" version="" ref="origin/main" channel="" do_push=false dry=false
+  local agent="" version="" ref="origin/main" channel="" do_push=false dry=false promote=false
 
   if [ "$#" -lt 2 ]; then
     echo "::error::usage: cut-release.sh <agent> <version> [--ref <ref>] [--channel <name>] [--push] [--dry-run]" >&2
@@ -140,6 +158,7 @@ main() {
         [ "$#" -lt 2 ] && { echo "::error::--channel requires an argument" >&2; return 2; }
         channel="$2"; shift 2 ;;
       --push) do_push=true; shift ;;
+      --promote) promote=true; shift ;;
       --dry-run) dry=true; shift ;;
       *) echo "::error::unknown argument: $1" >&2; return 2 ;;
     esac
@@ -158,6 +177,33 @@ main() {
   rel="$(release_ref "$agent" "$version")"
   pushrefs=("$rel")
   if [ -n "$channel" ]; then chan="$(channel_ref "$agent" "$channel")"; pushrefs+=("$chan"); fi
+
+  # ── --promote: move an existing release's channel; never cut a new tag ──
+  # A ring-to-ring promotion (e.g. ring0 → ring1 of an already-cut vX.Y.Z). The
+  # release commit is read from the existing tag, so --ref is irrelevant and the
+  # immutable release tag is left untouched (and MUST exist).
+  if [ "$promote" = true ]; then
+    [ -z "$channel" ] && { echo "::error::--promote requires --channel <name> (the ring to advance to the existing release)" >&2; return 2; }
+    local pcommit
+    if cross_repo_agent "$agent"; then
+      command -v gh >/dev/null 2>&1 || { echo "::error::'gh' CLI is required for cross-repo agents but was not found in PATH" >&2; return 1; }
+      gh_tag_exists "$CROSS_REPO_TARGET" "$rel" || { echo "::error::cannot promote: release tag '$rel' does not exist on $CROSS_REPO_TARGET — cut it first." >&2; return 1; }
+      pcommit="$(gh_release_commit "$CROSS_REPO_TARGET" "$rel")"
+      echo "promote $chan -> $rel ($pcommit) on $CROSS_REPO_TARGET"
+      [ "$dry" = true ] && { echo "(dry-run) channel not moved."; return 0; }
+      [ "$do_push" != true ] && { echo "print only — re-run with --push to move $chan on $CROSS_REPO_TARGET"; return 0; }
+      gh_move_tag "$CROSS_REPO_TARGET" "$chan" "$pcommit"
+      echo "moved $chan -> $pcommit on $CROSS_REPO_TARGET"
+      return 0
+    fi
+    git rev-parse -q --verify "refs/tags/$rel" >/dev/null || { echo "::error::cannot promote: release tag '$rel' does not exist — cut it first." >&2; return 1; }
+    pcommit="$(git rev-parse --verify "$rel^{commit}")"
+    echo "promote $chan -> $rel ($pcommit)"
+    [ "$dry" = true ] && { echo "(dry-run) channel not moved."; return 0; }
+    git tag -f "$chan" "$pcommit"; echo "moved $chan -> $pcommit"
+    if [ "$do_push" = true ]; then git push --force origin "$chan"; echo "pushed $chan"; else echo "local only — re-run with --push to publish $chan"; fi
+    return 0
+  fi
 
   # Resolve the target SHA. This-repo agents resolve against local git; cross-repo
   # agents (#872) resolve against petry-projects/.github via the API.
