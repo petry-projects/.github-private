@@ -116,12 +116,12 @@ gh_create_annotated_tag() {
 # gh_release_commit <repo> <tag> — echo the COMMIT sha a release tag points to,
 # dereferencing an annotated tag object. Empty + non-zero if the tag is absent.
 gh_release_commit() {
-  local obj type
-  obj=$(gh api "repos/$1/git/ref/tags/$2" --jq '.object.sha' 2>/dev/null) || return 1
-  [ -z "$obj" ] && return 1
-  type=$(gh api "repos/$1/git/ref/tags/$2" --jq '.object.type' 2>/dev/null)
+  local ref_info obj type
+  ref_info=$(gh api "repos/$1/git/ref/tags/$2" --jq '.object?.sha + " " + .object?.type' 2>/dev/null) || return 1
+  [ -z "$ref_info" ] && return 1
+  read -r obj type <<< "$ref_info"
   if [ "$type" = "tag" ]; then
-    gh api "repos/$1/git/tags/$obj" --jq '.object.sha' 2>/dev/null
+    gh api "repos/$1/git/tags/$obj" --jq '.object?.sha' 2>/dev/null
   else
     printf '%s\n' "$obj"
   fi
@@ -188,7 +188,10 @@ main() {
     if cross_repo_agent "$agent"; then
       command -v gh >/dev/null 2>&1 || { echo "::error::'gh' CLI is required for cross-repo agents but was not found in PATH" >&2; return 1; }
       gh_tag_exists "$CROSS_REPO_TARGET" "$rel" || { echo "::error::cannot promote: release tag '$rel' does not exist on $CROSS_REPO_TARGET — cut it first." >&2; return 1; }
-      pcommit="$(gh_release_commit "$CROSS_REPO_TARGET" "$rel")"
+      if ! pcommit="$(gh_release_commit "$CROSS_REPO_TARGET" "$rel")" || [ -z "$pcommit" ]; then
+        echo "::error::failed to resolve commit for release tag '$rel' on $CROSS_REPO_TARGET" >&2
+        return 1
+      fi
       echo "promote $chan -> $rel ($pcommit) on $CROSS_REPO_TARGET"
       [ "$dry" = true ] && { echo "(dry-run) channel not moved."; return 0; }
       [ "$do_push" != true ] && { echo "print only — re-run with --push to move $chan on $CROSS_REPO_TARGET"; return 0; }
