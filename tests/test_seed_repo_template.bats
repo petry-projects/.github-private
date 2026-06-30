@@ -156,8 +156,14 @@ _stub_gh_empty() {
 @test "emit-workflow: sonarcloud inline stub ships byte-identically (no repin)" {
   # sonarcloud is kind=inline: it carries no reusable ref and must pass through
   # verbatim, exactly like ci.yml. Covers the second inline workflow (#966 follow-up).
-  printf 'name: SonarCloud Analysis\non: [push]\njobs:\n  sonarcloud:\n    name: SonarCloud\n    runs-on: ubuntu-latest\n' \
-    | _fixture_workflow sonarcloud.yml
+  _fixture_workflow sonarcloud.yml <<'EOF'
+name: SonarCloud Analysis
+on: [push]
+jobs:
+  sonarcloud:
+    name: SonarCloud
+    runs-on: ubuntu-latest
+EOF
   run bash "$SEED" --emit-workflow sonarcloud.yml
   [ "$status" -eq 0 ]
   [ "$output" = "$(cat "$STANDARDS_DIR/standards/workflows/sonarcloud.yml")" ]
