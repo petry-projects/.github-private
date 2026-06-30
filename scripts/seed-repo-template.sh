@@ -45,14 +45,15 @@ set -euo pipefail
 #   STANDARDS_REPO   repo holding the canonical standards/ (default petry-projects/.github).
 #   STANDARDS_DIR    optional local checkout of STANDARDS_REPO; when set, files are
 #                    read from disk instead of the GitHub API (regeneration seam).
-#   DEPENDABOT_STACK standards/dependabot/<stack> to ship as .github/dependabot.yml
-#                    (default node).
+#   DEPENDABOT_STACK standards/dependabot/<stack>.yml to ship as .github/dependabot.yml
+#                    (default frontend; one of: frontend, backend-go, backend-python,
+#                    backend-rust, fullstack, infra-terraform).
 #   GH_TOKEN         PAT with repo scope (create a branch + PR on TEMPLATE_REPO).
 
 DRY_RUN="${DRY_RUN:-false}"
 TEMPLATE_REPO="${TEMPLATE_REPO:-petry-projects/repo-template}"
 STANDARDS_REPO="${STANDARDS_REPO:-petry-projects/.github}"
-DEPENDABOT_STACK="${DEPENDABOT_STACK:-node}"
+DEPENDABOT_STACK="${DEPENDABOT_STACK:-frontend}"
 
 _is_dry() { [ "$DRY_RUN" = "true" ]; }
 
@@ -249,10 +250,11 @@ after you create your repo from the template:
 
 ## 1. Pick your Dependabot stack
 
-`.github/dependabot.yml` ships with a default stack. Replace it with the stack
-that matches your project (the canonical stacks live in
-`petry-projects/.github` under `standards/dependabot/<stack>/`). For example, a
-Node project uses the `node` stack; a Go project uses the `go` stack.
+`.github/dependabot.yml` ships with the `frontend` (npm) stack by default.
+Replace it with the stack that matches your project — the canonical stacks live
+in `petry-projects/.github` under `standards/dependabot/<stack>.yml`. Available
+stacks: `frontend` (npm), `backend-go`, `backend-python`, `backend-rust`,
+`fullstack` (npm + Go + Terraform), and `infra-terraform`.
 
 ## 2. Customize `ci.yml` for your stack
 
@@ -311,9 +313,9 @@ _emit_baseline() {
     _gen_baseline "$path"
   else
     local content
-    content="$(_fetch_standard "standards/dependabot/${DEPENDABOT_STACK}/dependabot.yml")" || true
+    content="$(_fetch_standard "standards/dependabot/${DEPENDABOT_STACK}.yml")" || true
     if [ -z "$content" ]; then
-      echo "::error::could not fetch standards/dependabot/${DEPENDABOT_STACK}/dependabot.yml" >&2
+      echo "::error::could not fetch standards/dependabot/${DEPENDABOT_STACK}.yml from ${STANDARDS_REPO}" >&2
       return 1
     fi
     printf '%s\n' "$content"
