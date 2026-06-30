@@ -35,5 +35,5 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
-    uses: petry-projects/.github/.github/workflows/dependabot-automerge-reusable.yml@dependabot-automerge/next
+    uses: petry-projects/.github/.github/workflows/dependabot-automerge-reusable.yml@dependabot-automerge/next  # NOSONAR(githubactions:S7637) first-party channel ref
     secrets: inherit
