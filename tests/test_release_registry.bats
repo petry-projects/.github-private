@@ -35,7 +35,7 @@ setup() {
 }
 
 @test "registry.yml: dev-lead declares a run_workflow for the health gate" {
-  run bash -c "yq -e '.reusables.\"dev-lead\".run_workflow' '$REGISTRY' | grep -q ."
+  run yq -e '.reusables."dev-lead".run_workflow' "$REGISTRY"
   [ "$status" -eq 0 ]
 }
 
