@@ -10,8 +10,8 @@
 REGISTRY="$(dirname "$BATS_TEST_FILENAME")/../release/registry.yml"
 
 setup() {
-  command -v yq >/dev/null 2>&1 || skip "yq not installed"
-  command -v jq >/dev/null 2>&1 || skip "jq not installed"
+  command -v yq >/dev/null 2>&1 || { echo "ERROR: yq is required but not installed" >&2; return 1; }
+  command -v jq >/dev/null 2>&1 || { echo "ERROR: jq is required but not installed" >&2; return 1; }
 }
 
 @test "registry.yml: is valid YAML with a schema version" {

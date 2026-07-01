@@ -20,6 +20,12 @@ version: 1
 reusables:
   # First onboarding intake (#1005): dev-lead, validated live 2026-07-01.
   # next=ring0=v1.5.0 (candidate, mid-roll); ring1=stable=v1.4.0 (rollback target).
+  #
+  # COORDINATION NOTE: ring1 health signal is not yet active. The two ring1 consumer
+  # repos (TalkTerm, bmad-bgreat-suite) currently pin @dev-lead/stable, not
+  # @dev-lead/ring1. The Release_Manager gate cannot soak ring1→stable until
+  # staged repin PRs land in those repos to move them onto the ring1 channel.
+  # This registry entry records the intended ring1 shape; the blocker is external.
   dev-lead:
     host: petry-projects/.github-private
     run_workflow: dev-lead.yml
