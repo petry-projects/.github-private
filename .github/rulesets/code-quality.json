@@ -27,7 +27,9 @@
           {"context": "SonarCloud"},
           {"context": "CodeQL"},
           {"context": "agent-shield / AgentShield"},
-          {"context": "dependency-audit / Detect ecosystems"}
+          {"context": "dependency-audit / Detect ecosystems"},
+          {"context": "Secret scan (gitleaks)"},
+          {"context": "coverage"}
         ],
         "strict_required_status_checks_policy": true,
         "do_not_enforce_on_create": false
