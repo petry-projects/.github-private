@@ -23,6 +23,14 @@ MAX_ATTEMPTS="${MAX_ATTEMPTS:-3}"
 # skips issues carrying it.
 NEEDS_HUMAN_LABEL="${NEEDS_HUMAN_LABEL:-dev-lead:needs-human}"
 
+# PR-limit admission gate (epic petry-projects/.github#505 Phase 3) config.
+# The shared guard + limits config live in the PUBLIC standards repo so every
+# automation caller enforces the same org-wide cap. PLG_STANDARDS_DIR lets tests
+# and offline runs source a local checkout instead of hitting the API.
+PLG_SOURCE_REPO="${PLG_SOURCE_REPO:-petry-projects/.github}"
+PLG_SOURCE_REF="${PLG_SOURCE_REF:-main}"
+PLG_DEFER_MARKER="<!-- dev-lead-issue-deferred -->"
+
 check_existing_pr() {
   local existing
   existing=$(gh api "repos/${REPO}/pulls?state=open" \
@@ -168,6 +176,99 @@ ${snippet}" 2>/dev/null || true
   exit 1
 }
 
+# _plg_fetch <repo-relative-path> <dest>: populate <dest> with the file at
+# <repo-relative-path>. Prefer a local checkout (PLG_STANDARDS_DIR, used by
+# tests/offline runs); otherwise fetch from the PUBLIC PLG_SOURCE_REPO via the
+# contents API. Returns non-zero on any failure or empty result so callers can
+# fail-open.
+_plg_fetch() {
+  local path="$1" dest="$2"
+  if [ -n "${PLG_STANDARDS_DIR:-}" ]; then
+    local src="${PLG_STANDARDS_DIR}/${path}"
+    [ -f "$src" ] || return 1
+    cp "$src" "$dest" 2>/dev/null || return 1
+  else
+    gh api "repos/${PLG_SOURCE_REPO}/contents/${path}?ref=${PLG_SOURCE_REF}" \
+      --jq '.content' 2>/dev/null | base64 -d > "$dest" 2>/dev/null || return 1
+  fi
+  [ -s "$dest" ]
+}
+
+# admission_gate_allows: returns 0 (allow) / 1 (defer). Fetches the shared guard
+# + limits config from the public standards repo and asks plg_admission_gate
+# whether a new "dev-lead" automation PR may be opened. FAIL-OPEN: any fetch,
+# sourcing, or unexpected-rc problem allows PR creation so a guard defect never
+# blocks the pipeline. rc==1 from the guard is the only real "defer".
+admission_gate_allows() {
+  local tmp guard config
+  tmp="$(mktemp -d)"
+  guard="${tmp}/pr-limit-gate.sh"
+  config="${tmp}/pr-limits.json"
+
+  if ! _plg_fetch "scripts/lib/pr-limit-gate.sh" "$guard"; then
+    echo "::warning::PR-limit gate: could not fetch guard (scripts/lib/pr-limit-gate.sh) from ${PLG_SOURCE_REPO}@${PLG_SOURCE_REF} — failing open (allowing PR)"
+    rm -rf "$tmp"
+    return 0
+  fi
+  if ! _plg_fetch "standards/pr-limits.json" "$config"; then
+    echo "::warning::PR-limit gate: could not fetch config (standards/pr-limits.json) from ${PLG_SOURCE_REPO}@${PLG_SOURCE_REF} — failing open (allowing PR)"
+    rm -rf "$tmp"
+    return 0
+  fi
+
+  # Source the guard defensively: an `if ! source` guard keeps a non-zero return
+  # from the sourced file from tripping set -e, and declare -F confirms the entry
+  # point actually exists before we call it.
+  # shellcheck source=/dev/null
+  if ! source "$guard" || ! declare -F plg_admission_gate >/dev/null; then
+    echo "::warning::PR-limit gate: guard did not source or define plg_admission_gate — failing open (allowing PR)"
+    rm -rf "$tmp"
+    return 0
+  fi
+
+  local rc=0
+  PR_LIMITS_CONFIG="$config" plg_admission_gate "dev-lead" >/dev/null || rc=$?
+  rm -rf "$tmp"
+
+  case "$rc" in
+    0) return 0 ;;  # under cap — allow PR creation
+    1) return 1 ;;  # at/over cap — real defer
+    *) echo "::warning::PR-limit gate: unexpected exit code ${rc} from plg_admission_gate — failing open (allowing PR)"
+       return 0 ;;
+  esac
+}
+
+# deferral_comment_exists: 0 when a deferral comment (body starting with
+# PLG_DEFER_MARKER) already exists on the issue. Robust to gh failure or a
+# non-numeric result — both treated as "not exists" so a transient API error
+# never suppresses a needed comment.
+deferral_comment_exists() {
+  local count
+  count=$(gh api "repos/${REPO}/issues/${ISSUE_NUMBER}/comments" \
+    --jq "[.[] | select(.body | startswith(\"${PLG_DEFER_MARKER}\"))] | length" 2>/dev/null || echo 0)
+  [[ "$count" =~ ^[0-9]+$ ]] || count=0
+  [ "$count" -gt 0 ]
+}
+
+# post_deferral_comment: idempotently post a single deferral comment. No-op if a
+# deferral comment already exists, so repeated runs never spam the issue. The
+# body starts with PLG_DEFER_MARKER on its own line. gh errors are swallowed —
+# a failed comment must not turn a benign defer into a hard failure.
+post_deferral_comment() {
+  if deferral_comment_exists; then
+    return 0
+  fi
+  gh issue comment "$ISSUE_NUMBER" --repo "$REPO" --body "${PLG_DEFER_MARKER}
+## Dev-Lead: implementation deferred — automation PR queue is full
+
+**No pull request was opened** for issue #${ISSUE_NUMBER}. The org-wide
+open-automation-PR queue is currently at its signed-off cap (see
+\`standards/pr-limits.json\` in \`${PLG_SOURCE_REPO}\`).
+
+This issue stays labeled \`dev-lead\` and will be re-attempted automatically once
+the queue drains — no action is required." 2>/dev/null || true
+}
+
 main() {
   if [ -z "$ISSUE_NUMBER" ]; then
     echo "::error::ISSUE_NUMBER is required"
@@ -207,6 +308,18 @@ main() {
 
   if [ "$DEV_LEAD_DRY_RUN" = "true" ]; then
     echo "[dry-run] fix-issue: would implement issue #${ISSUE_NUMBER} using prompt: $prompt_file"
+    rm -f "$prompt_file"
+    exit 0
+  fi
+
+  # PR-limit admission gate — epic petry-projects/.github#505 Phase 3.
+  # Before opening a new automation PR, defer if the org-wide open-automation-PR
+  # queue is at the signed-off cap (standards/pr-limits.json in petry-projects/.github).
+  # Placed AFTER the dry-run early-exit so a dry-run never defers; FAIL-OPEN so a
+  # guard problem never blocks PR creation.
+  if ! admission_gate_allows; then
+    echo "::notice::PR-limit gate: deferring issue #${ISSUE_NUMBER} — org-wide automation PR cap reached; left labeled dev-lead for retry"
+    post_deferral_comment
     rm -f "$prompt_file"
     exit 0
   fi
