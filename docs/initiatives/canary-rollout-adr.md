@@ -82,7 +82,9 @@ The public-repo audit's `check_centralized_workflow_stubs` expected-pin map must
 ## 6. Consequences
 
 - Blast radius shrinks from "whole fleet, instantly" to "one ring at a time," and rollback is a single pointer flip.
-- The public `petry-projects/.github` → `standards/ci-standards.md` can now describe the **implemented** model and drop its "Rollout status / next phase" caveat, linking here for the decision rationale. **That edit lands in the public repo** and is out of scope for a `.github-private` dev-lead run — this ADR is its in-repo counterpart and prerequisite. **A separate pull request against `petry-projects/.github` is still required to complete that public-repo update; issue #869 should be closed by that PR, not by this one.**
+- The public `petry-projects/.github` → `standards/ci-standards.md` can now describe the **implemented** model and drop its "Rollout status / next phase" caveat, linking here for the decision rationale.
+  **That edit lands in the public repo** and is out of scope for a `.github-private` dev-lead run — this ADR is its in-repo counterpart and prerequisite.
+  **A separate pull request against `petry-projects/.github` is still required to complete that public-repo update; issue #869 should be closed by that PR, not by this one.**
 - The ring map, gate thresholds, and cadence are data/code ([`standards/canary-rings.json`](../../standards/canary-rings.json), [`scripts/lib/canary-rollout.sh`](../../scripts/lib/canary-rollout.sh), [`.github/workflows/canary-rollout.yml`](../../.github/workflows/canary-rollout.yml)) — changing them is a reviewed diff, not a doc edit.
 
 ## 7. References
