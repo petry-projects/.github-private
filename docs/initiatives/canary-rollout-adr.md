@@ -18,7 +18,7 @@ Once #499–#502 and #868 landed, the concentric rings, the soak gate, and the p
 
 ## 2. Decision 1 — the ring map is host-relative and data-driven
 
-`standards/canary-rings.json` is the single source of truth read by `scripts/canary-rollout.sh`. Ring membership is **host-relative**, resolved from three member tokens rather than hard-coded repo lists:
+[`standards/canary-rings.json`](../../standards/canary-rings.json) is the single source of truth read by [`scripts/canary-rollout.sh`](../../scripts/canary-rollout.sh). Ring membership is **host-relative**, resolved from three member tokens rather than hard-coded repo lists:
 
 | Channel | Order | Members (token) | Resolves to (for `dev-lead`, host = `.github-private`) |
 |---|---|---|---|
@@ -32,7 +32,7 @@ Rationale for host-relative tokens: an agent's reusable can live in either org-i
 
 ## 3. Decision 2 — soak / health gate rules
 
-The promotion gate is a pure, unit-tested decision core (`scripts/lib/canary-rollout.sh`; tests `tests/canary_rollout.bats`). A candidate `vX.Y.Z` advances to the next ring only once the rings **already on** the candidate have, over a trailing **7-day** window (`SOAK_WINDOW_DAYS = 7`):
+The promotion gate is a pure, unit-tested decision core ([`scripts/lib/canary-rollout.sh`](../../scripts/lib/canary-rollout.sh); tests [`tests/canary_rollout.bats`](../../tests/canary_rollout.bats)). A candidate `vX.Y.Z` advances to the next ring only once the rings **already on** the candidate have, over a trailing **7-day** window (`SOAK_WINDOW_DAYS = 7`):
 
 - **Volume:** `healthy_runs >= min_healthy_runs`, where `min_healthy_runs = ceil(baseline_runs / 7)` — roughly one trailing day's worth of the prior version's run volume.
 - **Quality:** candidate failure-rate `<=` baseline failure-rate (compared in integer per-mille to stay in pure-bash arithmetic).
@@ -53,7 +53,7 @@ Two rules make the gate safe under low traffic:
 
 ### Cadence
 
-`.github/workflows/canary-rollout.yml` runs the gate on a **4-hourly** schedule (`cron: "0 */4 * * *"`) in **read-only `evaluate` mode only** — it emits the per-version gate + health report (#502 observability) and **never** promotes on the timer. Promotion and rollback are `workflow_dispatch`-only and human-gated.
+[`.github/workflows/canary-rollout.yml`](../../.github/workflows/canary-rollout.yml) runs the gate on a **4-hourly** schedule (`cron: "0 */4 * * *"`) in **read-only `evaluate` mode only** — it emits the per-version gate + health report (#502 observability) and **never** promotes on the timer. Promotion and rollback are `workflow_dispatch`-only and human-gated.
 
 ## 4. Decision 3 — promotion is a single gated channel-tag move; rollback moves the tag back
 
@@ -62,7 +62,7 @@ The **channel tags are the rollout state.** There is no separate state store:
 - **Promotion** = advancing one ring by **moving one channel tag** to the candidate `vX.Y.Z`, innermost-out along the ordered list `next → ring0 → ring1 → stable` (`next_channel_in_order`). The **only** mutation the orchestrator performs is `git tag -f` + push; it never writes consumer files.
 - **Rollback** = moving a channel tag **back** to a prior immutable release (`rollback <agent> <ring> --to vX.Y.Z`). Because immutable `vX.Y.Z` tags never move, they are the audit trail and the rollback targets.
 
-The mover credential is **`GH_PAT_WORKFLOWS`**, not `GITHUB_TOKEN`, so the protected `release-channel-tags` ruleset can scope its bypass to this workflow's identity (#868) — the agents running as `GITHUB_TOKEN` cannot move or delete release tags.
+The mover credential is **`GH_PAT_WORKFLOWS`** (the workflow falls back to `GITHUB_TOKEN` when the PAT is unset, but only the PAT satisfies the `release-channel-tags` ruleset bypass scoped to this workflow's identity (#868)) — promotion and rollback effectively require the PAT; agents running only as `GITHUB_TOKEN` cannot push protected release tags.
 This is the sanctioned, documented exception to the SHA-pin standard for **first-party** channel tags (see [AGENTS.md → "Release channel tags & the mutable-ref exception"](../../AGENTS.md)); compliance audits must not flag `@<agent>/<channel>` pins on first-party callers as unpinned.
 
 ## 5. Decision 4 — inner-ring repos pin to their ring channel, not `stable`
@@ -77,13 +77,13 @@ For soak to observe a candidate, a ring's repos must actually *run* it. So stub-
 | Everything else (`stable`) | `<agent>/stable` |
 
 An inner-ring repo pinned to `<agent>/stable` would only ever see a version *after* it reached the outermost ring, contributing **zero** soak signal to the gate that is supposed to protect the fleet — defeating the ring model.
-The public-repo audit's `check_centralized_workflow_stubs` expected-pin map must therefore expect `<agent>/ring0|ring1` for inner-ring repos, matching the ring map in `standards/canary-rings.json`.
+The public-repo audit's `check_centralized_workflow_stubs` expected-pin map must therefore expect `<agent>/ring0|ring1` for inner-ring repos, matching the ring map in [`standards/canary-rings.json`](../../standards/canary-rings.json).
 
 ## 6. Consequences
 
 - Blast radius shrinks from "whole fleet, instantly" to "one ring at a time," and rollback is a single pointer flip.
-- The public `petry-projects/.github` → `standards/ci-standards.md` can now describe the **implemented** model and drop its "Rollout status / next phase" caveat, linking here for the decision rationale. **That edit lands in the public repo** and is out of scope for a `.github-private` dev-lead run — this ADR is its in-repo counterpart and prerequisite.
-- The ring map, gate thresholds, and cadence are data/code (`standards/canary-rings.json`, `scripts/lib/canary-rollout.sh`, `canary-rollout.yml`) — changing them is a reviewed diff, not a doc edit.
+- The public `petry-projects/.github` → `standards/ci-standards.md` can now describe the **implemented** model and drop its "Rollout status / next phase" caveat, linking here for the decision rationale. **That edit lands in the public repo** and is out of scope for a `.github-private` dev-lead run — this ADR is its in-repo counterpart and prerequisite. **A separate pull request against `petry-projects/.github` is still required to complete that public-repo update; issue #869 should be closed by that PR, not by this one.**
+- The ring map, gate thresholds, and cadence are data/code ([`standards/canary-rings.json`](../../standards/canary-rings.json), [`scripts/lib/canary-rollout.sh`](../../scripts/lib/canary-rollout.sh), [`.github/workflows/canary-rollout.yml`](../../.github/workflows/canary-rollout.yml)) — changing them is a reviewed diff, not a doc edit.
 
 ## 7. References
 
@@ -91,6 +91,6 @@ The public-repo audit's `check_centralized_workflow_stubs` expected-pin map must
 - [`docs/initiatives/agentic-release-strategy.md`](./agentic-release-strategy.md) — the initiative analysis (rings, channels, health-gated promotion); §5.1 mutable-ref exception.
 - [`docs/initiatives/agentic-release-strategy-orchestration.md`](./agentic-release-strategy-orchestration.md) — how the child issues (#496–#503) were delivered; the dependency DAG.
 - [`docs/release/versioning.md`](../release/versioning.md) — immutable-release vs. moving-channel-tag mechanics; cross-repo reusables.
-- `standards/canary-rings.json` — machine-readable ring map (source of truth).
-- `scripts/lib/canary-rollout.sh` / `scripts/canary-rollout.sh` / `.github/workflows/canary-rollout.yml` — gate core, orchestrator, and scheduler.
+- [`standards/canary-rings.json`](../../standards/canary-rings.json) — machine-readable ring map (source of truth).
+- [`scripts/lib/canary-rollout.sh`](../../scripts/lib/canary-rollout.sh) / [`scripts/canary-rollout.sh`](../../scripts/canary-rollout.sh) / [`.github/workflows/canary-rollout.yml`](../../.github/workflows/canary-rollout.yml) — gate core, orchestrator, and scheduler.
 - Decisions context: [petry-projects/.github#516](https://github.com/petry-projects/.github/issues/516).
