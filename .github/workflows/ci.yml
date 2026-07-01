@@ -139,3 +139,23 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+
+  coverage:
+    name: coverage
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Install dependencies
+        run: pip install --quiet pyyaml
+
+      - name: Run Python integration tests
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python tests/dev-lead/integration/test_workflow_toplevel_permissions.py
+          python tests/dev-lead/integration/test_auto_rebase_stub.py
+          python tests/dev-lead/integration/test_dependency_audit_stub.py
+          python tests/dev-lead/integration/test_caller_permissions.py
