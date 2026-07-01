@@ -17,10 +17,18 @@ set -euo pipefail
 #   canary-rollout.sh rollback <agent> <ring> --to <vX.Y.Z> [--dry-run]
 #   canary-rollout.sh resolve  <agent> <channel>       # debug: print resolved member repos
 #
+# Gate standard: .github#548 — graduated per-transition dwell/sample floors over a
+# per-candidate cumulative window (since the candidate's OWN vX.Y.Z cut), a robust
+# spike-capped baseline for the sample target, the ring0->ring1 sample waiver, and
+# candidate-regression-vs-environmental failure triage. Knobs live in the ring SoT
+# under .agents[<agent>].gate (see scripts/lib/canary-rollout.sh for the pure core).
+#
 # Env:
 #   CANARY_RINGS        path to ring SoT (default: standards/canary-rings.json next to this repo)
-#   SOAK_WINDOW_DAYS    trailing window for the health gate (default 7)
-#   GH_TOKEN / GH_PAT_WORKFLOWS   credential; the workflow passes GH_PAT_WORKFLOWS as the mover
+#   SOAK_WINDOW_DAYS    optional override of the baseline-window length in days
+#                       (default: .gate.baseline_window_days, else 14)
+#   CANARY_FAILURE_CATEGORY  optional triage hint (comment-cap|rate-limit|infra|data)
+#   GH_TOKEN            credential; the workflow mints a GitHub App token and passes it here
 
 _HERE="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 # shellcheck source=lib/canary-rollout.sh
@@ -64,78 +72,201 @@ channel_commit() {
     || git rev-parse -q --verify "$1/$2^{commit}" 2>/dev/null || true
 }
 
-# ring_health <agent> <repo...> — aggregate run health over the trailing soak window
-# across the given member repos. Prints "<healthy> <failures> <total>" where healthy =
-# success, failures = failure, total = healthy+failures (skipped/cancelled are noise,
-# excluded — consistent with the canary classification in #781).
-ring_health() {
-  local agent="$1"; shift
-  local wf since healthy=0 fail=0 repo json
-  wf="$(_agent_field "$agent" run_workflow)"
-  if ! since="$(date -u -d "-${SOAK_WINDOW_DAYS:-7} days" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)"; then
-    since="$(date -u -v"-${SOAK_WINDOW_DAYS:-7}d" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "")"
-  fi
-  for repo in "$@"; do
-    [ "$repo" = '*' ] && continue
-    json="$(gh run list --repo "$repo" --workflow "$wf" ${since:+--created ">=$since"} \
-              -L 300 --json conclusion 2>/dev/null || echo '[]')"
-    healthy=$(( healthy + $(printf '%s' "$json" | jq '[.[]|select(.conclusion=="success")]|length' 2>/dev/null || echo 0) ))
-    fail=$(( fail + $(printf '%s' "$json" | jq '[.[]|select(.conclusion=="failure")]|length' 2>/dev/null || echo 0) ))
-  done
-  echo "$healthy $fail $(( healthy + fail ))"
+# _gate_field <agent> <field> — read .agents[a].gate.<field> (empty if absent).
+_gate_field() { _jq -r --arg a "$1" --arg f "$2" '.agents[$a].gate[$f] // empty'; }
+# _gate_knob <agent> <transition_key> <field> — read a per-transition knob (empty if absent).
+_gate_knob() { _jq -r --arg a "$1" --arg t "$2" --arg f "$3" '.agents[$a].gate.transitions[$t][$f] // empty'; }
+
+# _iso_now_minus_days <ndays> — ISO-8601 Zulu timestamp n days ago (GNU or BSD date).
+_iso_now_minus_days() {
+  date -u -d "-${1} days" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+    || date -u -v"-${1}d" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo ""
+}
+_to_z() {   # normalise any parseable timestamp to ISO-8601 Zulu (empty passes through)
+  [ -z "${1:-}" ] && { echo ""; return 0; }
+  date -u -d "$1" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$1"
+}
+_epoch() { date -u -d "$1" +%s 2>/dev/null || echo 0; }
+
+# candidate_cut_date <agent> <candidate_commit> — ISO-8601 Zulu tagger date of the
+# immutable release tag <agent>/vX.Y.Z that points at the candidate commit. This is the
+# per-candidate cumulative-window start (#548): health is measured since the candidate's
+# OWN cut, NOT a rolling window — so a pre-cut failure of a prior version is excluded.
+candidate_cut_date() {
+  local agent="$1" commit="$2" obj deref cdate c
+  while IFS='|' read -r obj deref cdate; do
+    c="$deref"; [ -z "$c" ] && c="$obj"
+    if [ "$c" = "$commit" ]; then _to_z "$cdate"; return 0; fi
+  done < <(git for-each-ref \
+             --format='%(objectname)|%(*objectname)|%(creatordate:iso-strict)' \
+             "refs/tags/${agent}/v*" 2>/dev/null)
+  echo ""
 }
 
-# _frontier_state <agent> — compute the rollout frontier and gate, echoing:
-#   "<candidate_commit> <frontier_channel> <state> <healthy> <min_healthy> <cand‰> <base‰>"
-# frontier = first ring (after next) not yet on the candidate commit.
+# _run_json <repo> <workflow> <since_z> — gh run-list JSON (conclusion+createdAt) for a
+# repo since the given Zulu timestamp. Empty repo/wildcard → []. Never fails the caller.
+_run_json() {
+  local repo="$1" wf="$2" since="$3"
+  [ -z "$repo" ] || [ "$repo" = '*' ] && { echo '[]'; return 0; }
+  gh run list --repo "$repo" --workflow "$wf" ${since:+--created ">=$since"} \
+    -L 300 --json conclusion,createdAt 2>/dev/null || echo '[]'
+}
+
+# _tier_sample <agent> <since_z> <repo...> — EXECUTED runs (success+failure) on the
+# source tier since the candidate cut. Prints "<executed> <earliest_createdAt|->".
+_tier_sample() {
+  local agent="$1" since="$2"; shift 2
+  local wf repo json executed=0 earliest="" e
+  wf="$(_agent_field "$agent" run_workflow)"
+  for repo in "$@"; do
+    json="$(_run_json "$repo" "$wf" "$since")"
+    executed=$(( executed + $(printf '%s' "$json" | jq '[.[]|select(.conclusion=="success" or .conclusion=="failure")]|length' 2>/dev/null || echo 0) ))
+    e="$(printf '%s' "$json" | jq -r '[.[]|select(.conclusion=="success" or .conclusion=="failure")|.createdAt]|min // empty' 2>/dev/null || echo "")"
+    if [ -n "$e" ] && { [ -z "$earliest" ] || [[ "$e" < "$earliest" ]]; }; then earliest="$e"; fi
+  done
+  echo "$executed ${earliest:--}"
+}
+
+# _cumulative_health <agent> <since_z> <repo...> — failures + startup_failures across
+# EVERY given tier repo since the candidate cut. Prints "<failures> <startup_failures>".
+_cumulative_health() {
+  local agent="$1" since="$2"; shift 2
+  local wf repo json fail=0 startup=0
+  wf="$(_agent_field "$agent" run_workflow)"
+  for repo in "$@"; do
+    json="$(_run_json "$repo" "$wf" "$since")"
+    fail=$(( fail + $(printf '%s' "$json" | jq '[.[]|select(.conclusion=="failure")]|length' 2>/dev/null || echo 0) ))
+    startup=$(( startup + $(printf '%s' "$json" | jq '[.[]|select(.conclusion=="startup_failure")]|length' 2>/dev/null || echo 0) ))
+  done
+  echo "$fail $startup"
+}
+
+# _baseline_daily <agent> <window_days> <repo...> — per-day EXECUTED counts on the
+# source tier over the trailing window_days (exactly window_days integers, zero-filled),
+# feeding the robust spike-capped baseline for the sample target (#548).
+_baseline_daily() {
+  local agent="$1" window="$2"; shift 2
+  local wf since repo json dates="" day i count out=""
+  wf="$(_agent_field "$agent" run_workflow)"
+  since="$(_iso_now_minus_days "$window")"
+  for repo in "$@"; do
+    json="$(_run_json "$repo" "$wf" "$since")"
+    dates+="$(printf '%s' "$json" | jq -r '.[]|select(.conclusion=="success" or .conclusion=="failure")|.createdAt[0:10]' 2>/dev/null || true)"$'\n'
+  done
+  for (( i=0; i<window; i++ )); do
+    day="$(date -u -d "-${i} days" +%Y-%m-%d 2>/dev/null || date -u -v"-${i}d" +%Y-%m-%d 2>/dev/null || echo "")"
+    count=$(printf '%s' "$dates" | grep -c "^${day}$" 2>/dev/null || true)
+    out+="${count} "
+  done
+  echo "${out% }"
+}
+
+# _reusable_differs <agent> <candidate_commit> <prior_commit> — 1 if the agent's reusable
+# workflow blob differs between the candidate SHA and the prior channel SHA, else 0. Used
+# by triage to confirm a CANDIDATE REGRESSION (#548): a failure whose reusable is identical
+# to the prior version is pre-existing, not introduced by the candidate.
+_reusable_differs() {
+  local agent="$1" cand="$2" prior="$3" reusable a b
+  reusable="$(_agent_field "$agent" reusable)"
+  [ -z "$reusable" ] || [ -z "$cand" ] || [ -z "$prior" ] && { echo 0; return 0; }
+  a="$(git rev-parse -q --verify "${cand}:${reusable}" 2>/dev/null || echo "")"
+  b="$(git rev-parse -q --verify "${prior}:${reusable}" 2>/dev/null || echo "")"
+  [ -n "$a" ] && [ "$a" != "$b" ] && { echo 1; return 0; }
+  echo 0
+}
+
+# _frontier_state <agent> — compute the rollout frontier and graduated gate, echoing:
+#   "<cand> <frontier> <transition> <state> <dwell_h> <dwell_floor> <sample> <target> <cum_fail> <cum_startup> <triage>"
+# frontier = first ring (after next) not yet on the candidate commit; triage is "-"
+# unless state is BLOCKED (then REGRESSION | PRE_EXISTING).
 _frontier_state() {
   local agent="$1"
-  local cand chans frontier="" prev_on=()
+  local cand chans frontier=""
   cand="$(channel_commit "$agent" next)"
   chans="$(ordered_channels "$agent")"
 
-  # Collect the rings already on the candidate (starting at next) and find the frontier.
   local chan_array=()
   IFS=, read -r -a chan_array <<< "$chans"
   local ch
   for ch in "${chan_array[@]}"; do
     local c; c="$(channel_commit "$agent" "$ch")"
-    if [ "$ch" = "next" ] || [ "$c" = "$cand" ]; then
-      prev_on+=("$ch")
-    else
-      frontier="$ch"; break
-    fi
+    if [ "$ch" = "next" ] || [ "$c" = "$cand" ]; then :; else frontier="$ch"; break; fi
   done
-
   if [ -z "$frontier" ]; then
-    echo "$cand  -  COMPLETE 0 0 0 0"; return 0
+    echo "$cand - - COMPLETE 0 0 0 0 0 0 -"; return 0
   fi
 
-  # Health of the rings already on the candidate (the evidence), vs the frontier ring's
-  # current (prior-version) volume/quality as the baseline.
-  local repos=() ch2
-  for ch2 in "${prev_on[@]}"; do
-    while IFS= read -r r; do repos+=("$r"); done < <(resolve_members "$agent" "$ch2")
+  local transition source cut_z now_epoch cut_epoch
+  transition="$(transition_key "$frontier" "$chans")"
+  source="${transition%%->*}"
+  cut_z="$(candidate_cut_date "$agent" "$cand")"
+  now_epoch="$(date -u +%s)"
+
+  # Source-tier repos (the tier currently running the candidate).
+  local src_repos=() r
+  while IFS= read -r r; do [ -n "$r" ] && src_repos+=("$r"); done < <(resolve_members "$agent" "$source")
+
+  # Sample + dwell on the source tier over the per-candidate window.
+  local sample earliest
+  read -r sample earliest < <(_tier_sample "$agent" "$cut_z" "${src_repos[@]}")
+  local dwell_h=0
+  if [ "$earliest" != "-" ] && [ -n "$earliest" ]; then
+    dwell_h=$(( (now_epoch - $(_epoch "$earliest")) / 3600 ))
+  elif [ -n "$cut_z" ]; then
+    cut_epoch="$(_epoch "$cut_z")"; dwell_h=$(( (now_epoch - cut_epoch) / 3600 ))
+  fi
+  [ "$dwell_h" -lt 0 ] && dwell_h=0
+
+  # Cumulative health across EVERY concrete tier repo since the candidate's own cut.
+  local all_repos=() ch3
+  for ch3 in "${chan_array[@]}"; do
+    while IFS= read -r r; do [ -n "$r" ] && [ "$r" != '*' ] && all_repos+=("$r"); done \
+      < <(resolve_members "$agent" "$ch3")
   done
-  read -r ch_healthy ch_fail ch_total < <(ring_health "$agent" "${repos[@]}")
+  local cum_fail cum_startup
+  read -r cum_fail cum_startup < <(_cumulative_health "$agent" "$cut_z" "${all_repos[@]}")
 
-  local base_repos=()
-  while IFS= read -r r; do base_repos+=("$r"); done < <(resolve_members "$agent" "$frontier")
-  read -r _base_healthy base_fail base_total < <(ring_health "$agent" "${base_repos[@]}")
+  # Per-transition knobs (registry-configurable; #548 defaults live in the ring SoT).
+  local dwell_floor waived="false" target=0
+  dwell_floor="$(_gate_knob "$agent" "$transition" dwell_hours)"; dwell_floor="${dwell_floor:-0}"
+  if [ "$(_gate_knob "$agent" "$transition" waive_sample)" = "true" ]; then
+    waived="true"
+  elif [ -n "$(_gate_knob "$agent" "$transition" sample_min)" ]; then
+    target="$(_gate_knob "$agent" "$transition" sample_min)"
+  else
+    local win frac cmin cmax daily baseline_total
+    win="${SOAK_WINDOW_DAYS:-$(_gate_field "$agent" baseline_window_days)}"; win="${win:-14}"
+    frac="$(_gate_knob "$agent" "$transition" sample_fraction_permille)"; frac="${frac:-250}"
+    cmin="$(_gate_knob "$agent" "$transition" sample_clamp_min)"; cmin="${cmin:-3}"
+    cmax="$(_gate_knob "$agent" "$transition" sample_clamp_max)"; cmax="${cmax:-15}"
+    daily="$(_baseline_daily "$agent" "$win" "${src_repos[@]}")"
+    baseline_total=0; for c in $daily; do baseline_total=$(( baseline_total + c )); done
+    if [ "$baseline_total" -eq 0 ] && [ "$(_gate_knob "$agent" "$transition" waive_sample_if_no_caller)" = "true" ]; then
+      waived="true"   # dwell-only: the source tier has no caller (#548)
+    else
+      # shellcheck disable=SC2086
+      target="$(robust_sample_target "$frac" "$cmin" "$cmax" $daily)"
+    fi
+  fi
 
-  local min_healthy cand_rate base_rate state
-  min_healthy="$(min_healthy_runs "$base_total")"
-  cand_rate="$(failure_rate_permille "$ch_fail" "$ch_total")"
-  base_rate="$(failure_rate_permille "$base_fail" "$base_total")"
-  state="$(decide_gate "$ch_healthy" "$min_healthy" "$cand_rate" "$base_rate")"
-  echo "$cand $frontier $state $ch_healthy $min_healthy $cand_rate $base_rate"
+  local state; state="$(decide_graduated "$dwell_h" "$dwell_floor" "$sample" "$target" "$waived" "$cum_fail" "$cum_startup")"
+
+  local triage="-"
+  if [ "$state" = "BLOCKED" ]; then
+    local prior differs
+    prior="$(channel_commit "$agent" stable)"
+    differs="$(_reusable_differs "$agent" "$cand" "$prior")"
+    triage="$(classify_failure "$differs" "${CANARY_FAILURE_CATEGORY:-unknown}")"
+  fi
+
+  echo "$cand $frontier $transition $state $dwell_h $dwell_floor $sample $target $cum_fail $cum_startup $triage"
 }
 
 cmd_evaluate() {
   local agent="$1"
-  echo "== canary-rollout evaluate: $agent (soak window ${SOAK_WINDOW_DAYS:-7}d) =="
+  echo "== canary-rollout evaluate: $agent (gate standard: .github#548) =="
   local cand; cand="$(channel_commit "$agent" next)"
-  echo "candidate (next) = ${cand:0:12}"
+  echo "candidate (next) = ${cand:0:12}  cut=$(candidate_cut_date "$agent" "$cand")"
   local chan_array=()
   IFS=, read -r -a chan_array <<< "$(ordered_channels "$agent")"
   local ch
@@ -144,13 +275,20 @@ cmd_evaluate() {
     local mark="  "; [ -n "$cand" ] && [ "$c" = "$cand" ] && mark="* "
     printf '  %s%-7s -> %s\n' "$mark" "$ch" "${c:0:12}"
   done
-  read -r _cand frontier state healthy min_h cand_r base_r < <(_frontier_state "$agent")
+  read -r _cand frontier transition state dwell floor sample target cum_fail cum_startup triage < <(_frontier_state "$agent")
   echo "----"
   if [ "$frontier" = "-" ]; then
     echo "frontier: none — fully rolled out (all rings on candidate)."
   else
-    gate_summary_line "$frontier" "$state" "$healthy" "$min_h" "$cand_r" "$base_r"
-    echo "decision for next ring '$frontier': $state"
+    gate_summary_line "$transition" "$state" "$dwell" "$floor" "$sample" "$target" "$cum_fail" "$cum_startup"
+    echo "decision for next ring '$frontier' [$transition]: $state"
+    if [ "$state" = "BLOCKED" ]; then
+      if [ "$triage" = "REGRESSION" ]; then
+        echo "::error::triage=REGRESSION — candidate changed the reusable and a run failed since cut. HALT + hold; recommend rollback."
+      else
+        echo "::warning::triage=PRE_EXISTING — failure is pre-existing/environmental. Report only; do NOT rollback, do NOT advance."
+      fi
+    fi
   fi
 }
 
@@ -164,12 +302,16 @@ cmd_promote() {
       *) echo "::error::unknown promote flag: $1" >&2; return 2 ;;
     esac; shift
   done
-  read -r cand frontier state _healthy _min _cr _br < <(_frontier_state "$agent")
+  read -r cand frontier transition state _dwell _floor _sample _target cum_fail _cum_startup triage < <(_frontier_state "$agent")
   if [ "$frontier" = "-" ]; then
     echo "nothing to promote — $agent is fully rolled out."; return 0
   fi
+  if [ "$state" = "BLOCKED" ] && [ "$triage" = "REGRESSION" ] && [ "$override" != true ]; then
+    echo "::error::gate=BLOCKED (triage=REGRESSION) for '$frontier' [$transition] — candidate regression suspected; not promoting. Investigate + rollback, do not --override blindly."
+    return 0
+  fi
   if [ "$state" != "PROMOTE" ] && [ "$override" != true ]; then
-    echo "gate=$state for ring '$frontier' — not promoting. (use --override to force; investigate first if INVESTIGATE)"
+    echo "gate=$state for ring '$frontier' [$transition] (cum_fail=$cum_fail, triage=$triage) — not promoting. (use --override to force after investigating)"
     return 0
   fi
   [ "$override" = true ] && [ "$state" != "PROMOTE" ] && echo "::warning::overriding gate state '$state' for $agent/$frontier"
@@ -181,6 +323,10 @@ cmd_promote() {
   git tag -f "$agent/$frontier" "$cand"
   git push --force origin "$agent/$frontier"
   echo "promoted $agent/$frontier -> ${cand:0:12}"
+  # Expose the move so the workflow can record a GitHub Deployment (traceability, #502).
+  if [ -n "${GITHUB_OUTPUT:-}" ]; then
+    { echo "promoted_agent=$agent"; echo "promoted_ring=$frontier"; echo "promoted_sha=$cand"; } >> "$GITHUB_OUTPUT"
+  fi
 }
 
 cmd_rollback() {
@@ -217,8 +363,8 @@ main() {
       return 1
     fi
   done
-  if ! [[ "${SOAK_WINDOW_DAYS:-7}" =~ ^[1-9][0-9]*$ ]]; then
-    echo "::error::SOAK_WINDOW_DAYS must be a positive integer" >&2
+  if [ -n "${SOAK_WINDOW_DAYS:-}" ] && ! [[ "${SOAK_WINDOW_DAYS}" =~ ^[1-9][0-9]*$ ]]; then
+    echo "::error::SOAK_WINDOW_DAYS, when set, must be a positive integer" >&2
     return 2
   fi
   local sub="${1:-}"; shift || true

@@ -7,60 +7,131 @@
 # The orchestrator scripts/canary-rollout.sh sources this and feeds it real numbers
 # gathered from `gh`.
 #
-# Gate model (from #501 design):
-#   A ring's channel advances to a candidate vX.Y.Z only once the rings ALREADY on
-#   the candidate have produced, over a trailing 7-day window:
-#     - Volume:  healthy_runs >= min_healthy_runs = ceil(baseline_runs / 7)
-#     - Quality: candidate failure-rate <= baseline failure-rate
-#   No synthetic floor: a ring with no healthy candidate volume simply never advances
-#   (the candidate parks at the frontier). States: PROMOTE / SOAKING / INVESTIGATE.
-#   RESET (roll all rings back to last known-good) is a human/override outcome of a
-#   confirmed regression, not an automatic gate state.
+# Gate standard: .github#548 (definitive spec). Per transition, evaluate on the
+# SOURCE tier (the tier currently running the candidate), counting EXECUTED runs
+# (success+failure; skipped/cancelled excluded) since the candidate's OWN cut:
+#   - next->ring0:   dwell >= 4h  + sample >= clamp(round(0.25·avg), 3, 15)
+#                    (dwell-only when the source tier has no caller)
+#   - ring0->ring1:  dwell >= 8h  + CUMULATIVE-HEALTH-ONLY (fresh sample WAIVED)
+#   - ring1->stable: dwell >= 12h + >= 1 ring1 run
+#   - ALWAYS:        cumulative health = ZERO failures / ZERO startup_failures
+#                    across EVERY tier since the candidate's own first cut.
+# The dwell floors and sample fractions are registry-configurable per transition
+# (see standards/canary-rings.json .gate); the numbers above are the defaults.
 
-# ceil_div <numerator> <denominator> — integer ceiling of numerator/denominator.
+# clamp <value> <lo> <hi> — echo value bounded to [lo, hi].
+clamp() {
+  local v="$1" lo="$2" hi="$3"
+  if [ "$v" -lt "$lo" ]; then echo "$lo"; return 0; fi
+  if [ "$v" -gt "$hi" ]; then echo "$hi"; return 0; fi
+  echo "$v"
+}
+
+# round_div <numerator> <denominator> — integer half-up rounding of n/d.
 # Denominator must be > 0. Pure arithmetic, no bc.
-ceil_div() {
+round_div() {
   local n="$1" d="$2"
   if [ "${d:-0}" -le 0 ]; then echo 0; return 1; fi
-  echo $(( (n + d - 1) / d ))
+  echo $(( (2 * n + d) / (2 * d) ))
 }
 
-# min_healthy_runs <baseline_runs> — minimum healthy candidate runs a soaking ring
-# must accumulate before it can gate forward: ceil(baseline_runs / 7), i.e. roughly
-# one trailing day's worth of the prior version's volume. baseline_runs == 0 -> 0
-# (an unused reusable has no floor; it just never advances on volume == 0 below).
-SOAK_WINDOW_DAYS="${SOAK_WINDOW_DAYS:-7}"
-min_healthy_runs() {
-  local baseline_runs="${1:-0}"
-  ceil_div "$baseline_runs" "$SOAK_WINDOW_DAYS"
-}
-
-# failure_rate_permille <failures> <total> — integer failure rate in per-mille
-# (parts per 1000) to keep comparisons in pure bash arithmetic. total == 0 -> 0.
-failure_rate_permille() {
-  local failures="${1:-0}" total="${2:-0}"
-  if [ "$total" -le 0 ]; then echo 0; return 0; fi
-  echo $(( failures * 1000 / total ))
-}
-
-# decide_gate <healthy_runs> <min_healthy> <cand_fail_permille> <base_fail_permille>
-# Pure gate decision for one frontier ring. Echoes exactly one of:
-#   INVESTIGATE — candidate failure-rate exceeds baseline (possible regression; a
-#                 human classifies it: pre-existing -> log + continue, or regression
-#                 -> fix + new vX.Y.Z which RESETs the rollout).
-#   PROMOTE     — quality holds AND volume threshold met -> advance the next ring.
-#   SOAKING     — quality holds but not enough healthy candidate runs yet -> wait.
-# Quality is checked first: a quality breach is never masked by low volume.
-decide_gate() {
-  local healthy_runs="${1:-0}" min_healthy="${2:-0}"
-  local cand_fail="${3:-0}" base_fail="${4:-0}"
-  if [ "$cand_fail" -gt "$base_fail" ]; then
-    echo "INVESTIGATE"; return 0
+# median_x2 <nums...> — echo 2×median as an exact integer (so an even-length set's
+# half-integer median stays exact). Empty set → 0.
+median_x2() {
+  local n=$#
+  [ "$n" -eq 0 ] && { echo 0; return 0; }
+  local sorted
+  sorted=$(printf '%s\n' "$@" | sort -n)
+  local arr=()
+  local x
+  while IFS= read -r x; do arr+=("$x"); done <<< "$sorted"
+  local mid=$(( n / 2 ))
+  if [ $(( n % 2 )) -eq 1 ]; then
+    echo $(( 2 * arr[mid] ))
+  else
+    echo $(( arr[mid - 1] + arr[mid] ))
   fi
-  if [ "$healthy_runs" -ge "$min_healthy" ] && [ "$healthy_runs" -gt 0 ]; then
+}
+
+# robust_sample_target <fraction_permille> <clamp_lo> <clamp_hi> <daily_counts...>
+# Robust baseline: cap each per-day executed count at 3× the median day (neutralising
+# spikes like a runaway loop day), take the mean of the capped days, then the sample
+# target = clamp(round(fraction · avg), lo, hi). fraction is in per-mille (250 == 0.25).
+#
+# All arithmetic stays exact in integers by working in "×2" units for the median:
+#   capped_x2(c) = min(2c, 3·median_x2)     [3·median compared without rounding]
+#   avg          = (Σ capped_x2) / (2·N)
+#   target_raw   = round(fraction/1000 · avg) = round(fraction·Σcapped_x2 / (2000·N))
+robust_sample_target() {
+  local frac="$1" lo="$2" hi="$3"; shift 3
+  local n=$#
+  [ "$n" -eq 0 ] && { clamp 0 "$lo" "$hi"; return 0; }
+  local m2 cap3 c c2 sum2=0
+  m2=$(median_x2 "$@")
+  cap3=$(( 3 * m2 ))
+  for c in "$@"; do
+    c2=$(( 2 * c ))
+    [ "$c2" -gt "$cap3" ] && c2=$cap3
+    sum2=$(( sum2 + c2 ))
+  done
+  # target_raw = round( frac · sum2 / (2000·n) )
+  local denom=$(( 2000 * n )) target_raw
+  target_raw=$(round_div $(( frac * sum2 )) "$denom")
+  clamp "$target_raw" "$lo" "$hi"
+}
+
+# dwell_met <dwell_hours> <floor_hours> — echo 1 if the candidate has dwelled at
+# least floor_hours on the source tier, else 0.
+dwell_met() {
+  local dwell="${1:-0}" floor="${2:-0}"
+  if [ "$dwell" -ge "$floor" ]; then echo 1; else echo 0; fi
+}
+
+# iso_after <a> <b> — echo "yes" if ISO-8601 UTC timestamp a is at or after b, else
+# "no". Zulu ISO-8601 strings sort lexically, so a per-candidate window is a string
+# comparison against the candidate's cut date (excludes pre-cut runs of prior versions).
+iso_after() {
+  local a="$1" b="$2"
+  if [[ "$a" > "$b" || "$a" == "$b" ]]; then echo "yes"; else echo "no"; fi
+}
+
+# decide_graduated <dwell_h> <dwell_floor> <sample> <sample_target> <sample_waived> \
+#                  <cum_failures> <cum_startup_failures>
+# Pure graduated gate for one transition. Echoes exactly one of:
+#   BLOCKED — cumulative health breached (>=1 failure or startup_failure across any
+#             tier since the candidate's cut). Never advances; a human/triage
+#             classifies it as REGRESSION (rollback) or PRE_EXISTING (report only).
+#   PROMOTE — clean AND dwell floor met AND (sample target met OR sample waived).
+#   SOAKING — clean but dwell floor or sample target not yet met → wait.
+# Health is checked first: a cumulative breach is never masked by dwell/sample.
+decide_graduated() {
+  local dwell="${1:-0}" floor="${2:-0}" sample="${3:-0}" target="${4:-0}"
+  local waived="${5:-false}" cum_fail="${6:-0}" cum_startup="${7:-0}"
+  if [ "$cum_fail" -gt 0 ] || [ "$cum_startup" -gt 0 ]; then
+    echo "BLOCKED"; return 0
+  fi
+  local dwell_ok sample_ok
+  dwell_ok=$(dwell_met "$dwell" "$floor")
+  if [ "$waived" = "true" ] || [ "$sample" -ge "$target" ]; then sample_ok=1; else sample_ok=0; fi
+  if [ "$dwell_ok" -eq 1 ] && [ "$sample_ok" -eq 1 ]; then
     echo "PROMOTE"; return 0
   fi
   echo "SOAKING"
+}
+
+# classify_failure <reusable_differs 0|1> <category> — triage an in-window failure
+# (called only when decide_graduated returns BLOCKED). Echoes:
+#   REGRESSION   — the candidate changed the reusable (differs=1) AND the failure is
+#                  not a known environmental class → HALT, auto-hold, recommend rollback.
+#   PRE_EXISTING — the reusable is byte-identical to the prior channel (differs=0), OR
+#                  the failure is environmental (comment-cap / rate-limit / infra / data)
+#                  → report, do NOT rollback, do NOT advance.
+classify_failure() {
+  local differs="${1:-0}" category="${2:-unknown}"
+  case "$category" in
+    comment-cap|rate-limit|infra|data) echo "PRE_EXISTING"; return 0 ;;
+  esac
+  if [ "$differs" = "1" ]; then echo "REGRESSION"; else echo "PRE_EXISTING"; fi
 }
 
 # next_channel_in_order <current_channel> <ordered_channels_csv>
@@ -77,9 +148,24 @@ next_channel_in_order() {
   echo "$found"
 }
 
-# gate_summary_line <ring> <state> <healthy> <min_healthy> <cand_fail_permille> <base_fail_permille>
+# transition_key <frontier_channel> <ordered_channels_csv>
+# Echo the per-transition registry key "<source>-><frontier>", where source is the
+# ring immediately below the frontier in ring order (the tier running the candidate).
+# Empty if the frontier is the first channel (no source below it).
+transition_key() {
+  local frontier="$1" csv="$2"
+  local prev="" ch
+  local IFS=,
+  for ch in $csv; do
+    if [ "$ch" = "$frontier" ] && [ -n "$prev" ]; then echo "${prev}->${frontier}"; return 0; fi
+    prev="$ch"
+  done
+  echo ""
+}
+
+# gate_summary_line <transition> <state> <dwell_h> <dwell_floor> <sample> <sample_target> <cum_fail> <cum_startup>
 # One-line human/observability row (used by `evaluate`, doubling as the #502 report).
 gate_summary_line() {
-  printf '%-8s %-12s healthy=%s/%s  fail=%s‰ vs base %s‰\n' \
-    "$1" "$2" "$3" "$4" "$5" "$6"
+  printf '%-14s %-9s dwell=%sh/%sh  sample=%s/%s  cum_fail=%s startup=%s\n' \
+    "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8"
 }

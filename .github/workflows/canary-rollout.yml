@@ -1,11 +1,19 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # Canary Rollout — ring-staged, health-gated promotion of agent releases by moving
 # channel tags only. Initiative #495 · issues #501 (promotion) / #502 (rollback).
+# Gate standard: .github#548 (graduated dwell/sample, robust baseline, per-candidate
+# window, ring0 sample waiver, failure triage) — see scripts/canary-rollout.sh.
 #
-# The ONLY mutation this performs is moving a channel tag (`git tag -f` + push).
-# It never writes consumer files. The mover credential is GH_PAT_WORKFLOWS (the
-# existing cross-org write PAT), NOT GITHUB_TOKEN — so the protected channel-tag
-# ruleset can scope its bypass to this workflow's identity (see #868).
+# The ONLY mutation this performs is moving a channel tag (`git tag -f` + push) and
+# recording a GitHub Deployment for traceability. It never writes consumer files.
+#
+# Auth: the mover credential is a GitHub App installation token minted at runtime via
+# actions/create-github-app-token from SOAK_APP_ID + SOAK_APP_PRIVATE_KEY (scoped,
+# rotatable, auditable) — NOT a raw PAT and NOT github.token. The App carries
+# Contents:write (tag moves on the host repos), Deployments:write, Actions:read (the
+# gate reads workflow-run history across every tier repo) and Metadata:read. Minting
+# is a HARD requirement: if the token cannot be minted the job fails — it must not
+# silently degrade to github.token, which cannot move protected `.github` tags (#868).
 #
 #   - schedule (every 4h): read-only `evaluate` ONLY — emits the per-version gate
 #     + health report (#502 observability). Never promotes on the timer.
@@ -57,16 +65,39 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
+      # Mint a scoped GitHub App installation token (Contents/Deployments:write,
+      # Actions/Metadata:read). owner-wide so the gate can read run history across all
+      # tier repos and move tags on the host repos. This step FAILS the job if the App
+      # id/key secrets are missing or the token cannot be minted — no silent fallback.
+      - name: Mint GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3.2.0
+        with:
+          app-id: ${{ secrets.SOAK_APP_ID }}
+          private-key: ${{ secrets.SOAK_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+
+      - name: Verify App token was minted (hard requirement)
+        env:
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          if [ -z "${APP_TOKEN}" ]; then
+            echo "::error::Canary rollout requires a GitHub App token (SOAK_APP_ID + SOAK_APP_PRIVATE_KEY). Refusing to fall back to github.token, which cannot move protected .github channel tags (#868)."
+            exit 1
+          fi
+
       - name: Checkout (with tags)
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
         with:
           fetch-depth: 0
           fetch-tags: true
-          # Mover identity: GH_PAT_WORKFLOWS so pushing protected channel tags is
+          # Mover identity: the App token so pushing protected channel tags is
           # authorized under the release-channel-tags ruleset bypass (#868).
-          token: ${{ secrets.GH_PAT_WORKFLOWS || github.token }}
+          token: ${{ steps.app-token.outputs.token }}
 
       - name: Run canary-rollout
+        id: run
         env:
           # On the 4h timer, force read-only evaluate — never promote on a schedule.
           CMD: ${{ github.event_name == 'schedule' && 'evaluate' || github.event.inputs.command }}
@@ -75,7 +106,9 @@ jobs:
           DRY_RUN: ${{ github.event.inputs.dry_run }}
           RING: ${{ github.event.inputs.ring }}
           TO: ${{ github.event.inputs.to }}
-          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS || github.token }}
+          # cut-release.sh (cross-repo tag moves on petry-projects/.github) and the
+          # gate's cross-repo run-history reads both authenticate with the App token.
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           set -euo pipefail
           args=()
@@ -95,3 +128,26 @@ jobs:
           esac
           echo "::notice::canary-rollout ${args[*]}"
           bash scripts/canary-rollout.sh "${args[@]}"
+
+      # Record a GitHub Deployment for a real (non-dry-run) promotion — traceability
+      # for the tag move (#502). Uses the same App token (Deployments:write).
+      - name: Record deployment for promotion
+        if: steps.run.outputs.promoted_ring != ''
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PROMOTED_AGENT: ${{ steps.run.outputs.promoted_agent }}
+          PROMOTED_RING: ${{ steps.run.outputs.promoted_ring }}
+          PROMOTED_SHA: ${{ steps.run.outputs.promoted_sha }}
+        run: |
+          set -euo pipefail
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/deployments" --input - <<JSON
+          {
+            "ref": "${PROMOTED_SHA}",
+            "environment": "canary-${PROMOTED_AGENT}-${PROMOTED_RING}",
+            "auto_merge": false,
+            "required_contexts": [],
+            "transient_environment": false,
+            "production_environment": false,
+            "description": "canary-rollout promoted ${PROMOTED_AGENT}/${PROMOTED_RING} -> ${PROMOTED_SHA}"
+          }
+          JSON
