@@ -182,6 +182,7 @@ ${snippet}" 2>/dev/null || true
 # contents API. Returns non-zero on any failure or empty result so callers can
 # fail-open.
 _plg_fetch() {
+  [ "$#" -lt 2 ] && return 1
   local path="$1" dest="$2"
   if [ -n "${PLG_STANDARDS_DIR:-}" ]; then
     local src="${PLG_STANDARDS_DIR}/${path}"
@@ -201,7 +202,7 @@ _plg_fetch() {
 # blocks the pipeline. rc==1 from the guard is the only real "defer".
 admission_gate_allows() {
   local tmp guard config
-  tmp="$(mktemp -d)"
+  tmp="$(mktemp -d)" || { echo "::warning::PR-limit gate: mktemp failed — failing open (allowing PR)"; return 0; }
   guard="${tmp}/pr-limit-gate.sh"
   config="${tmp}/pr-limits.json"
 
@@ -239,13 +240,17 @@ admission_gate_allows() {
 }
 
 # deferral_comment_exists: 0 when a deferral comment (body starting with
-# PLG_DEFER_MARKER) already exists on the issue. Robust to gh failure or a
-# non-numeric result — both treated as "not exists" so a transient API error
-# never suppresses a needed comment.
+# PLG_DEFER_MARKER) already exists on the issue. Paginates so a marker on a later
+# comment page is not missed (which would cause a duplicate defer comment), and
+# null-safe on bodyless comments. Robust to gh failure or a non-numeric result —
+# both treated as "not exists" so a transient API error never suppresses a
+# needed comment. gh --paginate applies --jq per page (one number per page);
+# jq -s 'add // 0' sums the per-page counts.
 deferral_comment_exists() {
   local count
-  count=$(gh api "repos/${REPO}/issues/${ISSUE_NUMBER}/comments" \
-    --jq "[.[] | select(.body | startswith(\"${PLG_DEFER_MARKER}\"))] | length" 2>/dev/null || echo 0)
+  count=$(gh api --paginate "repos/${REPO}/issues/${ISSUE_NUMBER}/comments" \
+    --jq "[.[] | select((.body // \"\") | startswith(\"${PLG_DEFER_MARKER}\"))] | length" 2>/dev/null \
+    | jq -s 'add // 0' 2>/dev/null || echo 0)
   [[ "$count" =~ ^[0-9]+$ ]] || count=0
   [ "$count" -gt 0 ]
 }

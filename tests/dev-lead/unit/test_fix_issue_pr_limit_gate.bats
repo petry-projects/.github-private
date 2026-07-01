@@ -24,9 +24,10 @@ setup() {
   # Flag files the gh stub touches so tests can assert what happened.
   PR_CREATED_FLAG="$(mktemp -u)"; export PR_CREATED_FLAG
   COMMENT_FILE="$(mktemp)"; export COMMENT_FILE
-  # Prior issue comments the gh stub serves for the comments-list query. Default
-  # empty so no deferral comment pre-exists.
-  : "${PRIOR_COMMENTS_JSON:=[]}"; export PRIOR_COMMENTS_JSON
+  # Prior issue comments the gh stub serves for the comments-list query.
+  # Unconditionally reset to empty so no deferral comment pre-exists; individual
+  # tests (e.g. the idempotency test) override it after setup.
+  PRIOR_COMMENTS_JSON="[]"; export PRIOR_COMMENTS_JSON
 
   # gh stub: no existing PRs; serves issue title/body; records `pr create` via a
   # flag file; records every posted comment body; serves prior comments for the
@@ -49,8 +50,10 @@ case "$cmd" in
     case "$*" in
       *"pulls?state=open"*) echo "[]" ;;
       *comments*)
+        # Emit a single page so the script's `jq -s 'add // 0'` sums correctly.
+        # Tolerates a leading --paginate flag (extracted via the --jq loop above).
         if [ -n "$jqexpr" ]; then
-          printf '%s' "${PRIOR_COMMENTS_JSON:-[]}" | jq -r "$jqexpr"
+          jq -r "$jqexpr" <<< "${PRIOR_COMMENTS_JSON:-[]}"
         else
           printf '%s' "${PRIOR_COMMENTS_JSON:-[]}"
         fi ;;
@@ -113,8 +116,17 @@ LINTEOF
   mkdir -p "$PLG_STANDARDS_DIR/scripts/lib" "$PLG_STANDARDS_DIR/standards"
   cat > "$PLG_STANDARDS_DIR/scripts/lib/pr-limit-gate.sh" <<'GUARDEOF'
 #!/usr/bin/env bash
-# FAKE guard for tests: defer only when FAKE_GATE=defer.
-plg_admission_gate() { [ "${FAKE_GATE:-allow}" = "defer" ] && return 1 || return 0; }
+# FAKE guard for tests. Asserts the production contract so a regression cannot
+# pass silently via the script's fail-open: the source arg must be "dev-lead"
+# and PR_LIMITS_CONFIG must point at a readable config. A contract violation
+# returns 2 (an unexpected code the script treats as fail-open) AND logs to
+# stderr, which breaks the allow/defer assertions in tests 1 and 2. Otherwise
+# defer only when FAKE_GATE=defer.
+plg_admission_gate() {
+  [ "$1" = "dev-lead" ] || { echo "FAKE-GUARD: expected source 'dev-lead', got '$1'" >&2; return 2; }
+  [ -r "${PR_LIMITS_CONFIG:-}" ] || { echo "FAKE-GUARD: PR_LIMITS_CONFIG not readable: '${PR_LIMITS_CONFIG:-}'" >&2; return 2; }
+  [ "${FAKE_GATE:-allow}" = "defer" ] && return 1 || return 0
+}
 GUARDEOF
   cat > "$PLG_STANDARDS_DIR/standards/pr-limits.json" <<'CFGEOF'
 {"org_wide":{"automation_open_pr_cap":50},"per_source_caps":{},"exempt_actors":[],"exempt_labels":[]}
@@ -166,7 +178,7 @@ teardown() {
   [[ "$posted" == *"<!-- dev-lead-issue-deferred -->"* ]]
   # Exactly one deferral comment posted.
   local marker_count
-  marker_count=$(grep -c -- "<!-- dev-lead-issue-deferred -->" "$COMMENT_FILE")
+  marker_count=$(grep -c -- "<!-- dev-lead-issue-deferred -->" "$COMMENT_FILE" || true)
   [ "$marker_count" -eq 1 ]
 }
 
