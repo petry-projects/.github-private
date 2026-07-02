@@ -1,10 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
-# apply-rulesets.sh — codified, idempotent application of repository rulesets from
-# .github/rulesets/*.json (initiative #495, issue #868). Makes the previously
-# live-only rulesets — notably `release-channel-tags`, which protects the moving
-# channel tags `pr-review/**` + `dev-lead/**` (and therefore the ring channels
-# next/ring0/ring1 via the `**` glob) — reproducible and version-controlled.
+# apply-rulesets.sh — codified, idempotent application of repository rulesets
+# (initiative #495, issue #868).
+#
+# The org-wide compliance rulesets — `code-quality` and `pr-quality` — are OWNED by
+# petry-projects/.github and sourced from its standards/rulesets/*.json (relocated
+# there under petry-projects/.github#575; the repo boundary is codified in #576).
+# The one ruleset that stays LOCAL to this repo is `release-channel-tags`, which
+# protects .github-private's own moving channel tags `pr-review/**` + `dev-lead/**`
+# (and therefore the ring channels next/ring0/ring1 via the `**` glob).
+#
+# By default this materializes the fleet rulesets (code-quality, pr-quality) from
+# petry-projects/.github and applies them to the target repo. To apply the
+# repo-local `release-channel-tags`, point RULESETS_DIR at this repo's own dir:
+#   RULESETS_DIR=.github/rulesets RULESETS_REPO=petry-projects/.github-private \
+#     bash scripts/apply-rulesets.sh release-channel-tags
 #
 # For each ruleset JSON, this finds the existing ruleset by name on the target repo
 # and PUTs an update, or POSTs a create if absent. Re-running is a no-op-shaped
@@ -15,11 +25,16 @@ set -euo pipefail
 #   RULESETS_REPO=owner/repo bash scripts/apply-rulesets.sh
 #
 # Env:
-#   RULESETS_REPO   target repo (default: petry-projects/.github-private — where the
-#                   pr-review/dev-lead release tags live)
-#   RULESETS_DIR    directory of ruleset JSONs (default: .github/rulesets)
-#   GH_TOKEN        token with admin:org / repo admin to read+write rulesets
-#   DRY_RUN         "true" → print intent, make no write calls
+#   RULESETS_REPO       target repo to apply rulesets TO (default: petry-projects/.github-private)
+#   RULESETS_DIR        explicit directory of ruleset JSONs. When set, it is used
+#                       as-is — this is how the repo-local `release-channel-tags` is
+#                       applied from this repo's own .github/rulesets. When UNSET,
+#                       the fleet rulesets are materialized from STANDARDS_REPO.
+#   FLEET_RULESETS_DIR  local checkout of .github/standards/rulesets to source the
+#                       fleet rulesets from, skipping the network fetch (offline/CI/pin).
+#   STANDARDS_REPO      repo owning the fleet rulesets (default: petry-projects/.github).
+#   GH_TOKEN            token with admin:org / repo admin to read+write rulesets
+#   DRY_RUN             "true" → print intent, make no write calls
 #
 # Bypass model (release-channel-tags): OrganizationAdmin + the automation Integration
 # app may move/delete channel tags; agents running as GITHUB_TOKEN cannot. The
@@ -27,10 +42,41 @@ set -euo pipefail
 # an org admin); the long-term hardening is a dedicated GitHub App whose id is added
 # to bypass_actors here so the bypass scopes to the workflow identity.
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 RULESETS_REPO="${RULESETS_REPO:-petry-projects/.github-private}"
-RULESETS_DIR="${RULESETS_DIR:-$(cd "${SCRIPT_DIR}/.." && pwd)/.github/rulesets}"
+RULESETS_DIR="${RULESETS_DIR:-}"
+FLEET_RULESETS_DIR="${FLEET_RULESETS_DIR:-}"
+STANDARDS_REPO="${STANDARDS_REPO:-petry-projects/.github}"
 DRY_RUN="${DRY_RUN:-false}"
+
+# The org-wide fleet rulesets, owned by petry-projects/.github (standards/rulesets/).
+FLEET_RULESETS=(code-quality pr-quality)
+
+# _cleanup_fleet_tmpdir / _materialize_fleet_dir — when RULESETS_DIR is unset, place
+# the fleet ruleset JSONs into a directory and assign it to the global RULESETS_DIR.
+# Uses FLEET_RULESETS_DIR verbatim when provided (offline/CI/local checkout), else
+# fetches each fleet ruleset from ${STANDARDS_REPO} via the contents API into a temp
+# dir (registered for cleanup on exit). Mirrors seed-repo-template.sh's fetch model.
+_FLEET_TMPDIR=""
+_cleanup_fleet_tmpdir() { [ -n "$_FLEET_TMPDIR" ] && rm -rf "$_FLEET_TMPDIR"; return 0; }
+
+_materialize_fleet_dir() {
+  if [ -n "$FLEET_RULESETS_DIR" ]; then
+    [ -d "$FLEET_RULESETS_DIR" ] \
+      || { echo "::error::FLEET_RULESETS_DIR not found: $FLEET_RULESETS_DIR" >&2; return 1; }
+    RULESETS_DIR="$FLEET_RULESETS_DIR"
+    return 0
+  fi
+  _FLEET_TMPDIR="$(mktemp -d)"
+  trap _cleanup_fleet_tmpdir EXIT
+  local name
+  for name in "${FLEET_RULESETS[@]}"; do
+    gh api "repos/${STANDARDS_REPO}/contents/standards/rulesets/${name}.json" --jq '.content' 2>/dev/null \
+      | base64 -d 2>/dev/null > "${_FLEET_TMPDIR}/${name}.json" || true
+    [ -s "${_FLEET_TMPDIR}/${name}.json" ] \
+      || { echo "::error::could not fetch standards/rulesets/${name}.json from ${STANDARDS_REPO}" >&2; return 1; }
+  done
+  RULESETS_DIR="$_FLEET_TMPDIR"
+}
 
 # ruleset_id_by_name <repo> <name> — echo the id of an existing ruleset, or empty.
 ruleset_id_by_name() {
@@ -76,6 +122,13 @@ main() {
       *) names+=("$1"); shift ;;
     esac
   done
+
+  # Resolve the source directory: an explicit RULESETS_DIR (e.g. this repo's own
+  # .github/rulesets for release-channel-tags) wins; otherwise materialize the fleet
+  # rulesets owned by petry-projects/.github.
+  if [ -z "$RULESETS_DIR" ]; then
+    _materialize_fleet_dir || return 1
+  fi
 
   [ -d "$RULESETS_DIR" ] || { echo "::error::rulesets dir not found: $RULESETS_DIR" >&2; return 1; }
   echo "[apply-rulesets] repo=${repo} dir=${RULESETS_DIR} dry_run=${DRY_RUN}"

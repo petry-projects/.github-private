@@ -6,12 +6,15 @@ set -euo pipefail
 #
 #   • repo settings + security/GHAS + secret-scanning push protection come from
 #     scripts/apply-repo-settings.sh (which sources scripts/lib/push-protection.sh)
-#   • the two sanctioned rulesets — pr-quality + code-quality, each carrying the
-#     mandatory bypass actors dependabot-automerge-petry (Integration app) +
+#   • the two sanctioned fleet rulesets — pr-quality + code-quality, each carrying
+#     the mandatory bypass actors dependabot-automerge-petry (Integration app) +
 #     OrganizationAdmin, both bypass_mode "always" — come from
-#     scripts/apply-rulesets.sh reading .github/rulesets/*.json. Required status
-#     checks are carried in those ruleset JSONs, not wired here. No legacy/ad-hoc
-#     `main` ruleset is created.
+#     scripts/apply-rulesets.sh, which sources them from petry-projects/.github
+#     (standards/rulesets/*.json, relocated there under #575). Required status
+#     checks are carried in those ruleset JSONs, not wired here. The repo-local
+#     `release-channel-tags` ruleset is NOT applied to bootstrapped repos — it
+#     protects .github-private's own pr-review/** + dev-lead/** release tags only.
+#     No legacy/ad-hoc `main` ruleset is created.
 #   • the standard label set + CODEOWNERS-team verification are bootstrap data,
 #     applied/verified here.
 #
@@ -313,11 +316,14 @@ step_repo_settings() {
   DEV_LEAD_DRY_RUN="$dev_lead_dry" bash "$APPLY_REPO_SETTINGS" "$repo"
 }
 
-# step_rulesets <repo> — apply every codified ruleset (pr-quality, code-quality, …).
+# step_rulesets <repo> — apply the sanctioned fleet rulesets (pr-quality +
+# code-quality), which apply-rulesets.sh sources from petry-projects/.github. With
+# no explicit RULESETS_DIR the applier is in fleet mode, so exactly those two are
+# applied; release-channel-tags is repo-local to .github-private and not applied here.
 step_rulesets() {
   local repo="${1:-}" rulesets_dry=false
   _is_dry && rulesets_dry=true
-  echo "[bootstrap] (3/5) sanctioned rulesets (pr-quality + code-quality + …)"
+  echo "[bootstrap] (3/5) sanctioned fleet rulesets (pr-quality + code-quality)"
   DRY_RUN="$rulesets_dry" bash "$APPLY_RULESETS" --repo "$repo"
 }
 
