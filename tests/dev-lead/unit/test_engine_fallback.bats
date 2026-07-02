@@ -387,3 +387,114 @@ STUB
 
   rm -f "$GITHUB_STEP_SUMMARY"
 }
+
+# ── run-scoped engine exhaustion (#947) ───────────────────────────────────────
+# Once an engine is found rate-limited/unavailable during a run, it must NOT be
+# re-invoked on later run_writer_with_fallback calls in the same run (the #860
+# fix-ci-cycle re-burn), and it must emit AT MOST ONE exhaustion notice per
+# engine per run. These tests call the function twice+ in the SAME shell (no
+# bats `run`, which forks a subshell) so the process-scoped registry persists.
+
+@test "exhaustion: rate-limited engine is not re-invoked on a later call in the same run" {
+  local claude_record gemini_record
+  claude_record="$(mktemp "$STUB_BIN_DIR/claude_record.XXXXXX")"
+  gemini_record="$(mktemp "$STUB_BIN_DIR/gemini_record.XXXXXX")"
+  _make_recording_stub "claude" 2 "$claude_record"   # rate-limited (exit 2)
+  _make_recording_stub "gemini" 0 "$gemini_record"   # succeeds
+  export GEMINI_API_KEY="test-key"
+  export COPILOT_GITHUB_TOKEN="ghp_stub"              # ghp_* → copilot skipped
+  _source_engine "claude"
+
+  local rc1=0 rc2=0
+  run_writer_with_fallback "$TEST_PROMPT" || rc1=$?
+  run_writer_with_fallback "$TEST_PROMPT" || rc2=$?
+
+  [ "$rc1" -eq 0 ]
+  [ "$rc2" -eq 0 ]
+  # claude invoked once (call 1), then skipped as exhausted on call 2
+  [ "$(wc -l < "$claude_record")" -eq 1 ]
+  # gemini served both calls
+  [ "$(wc -l < "$gemini_record")" -eq 2 ]
+}
+
+@test "exhaustion: at most one exhaustion notice per engine across calls in a run" {
+  _make_stub "claude" 2
+  _make_stub "gemini" 0
+  export GEMINI_API_KEY="test-key"
+  export COPILOT_GITHUB_TOKEN="ghp_stub"
+  _source_engine "claude"
+
+  local errlog
+  errlog="$(mktemp "$STUB_BIN_DIR/errlog.XXXXXX")"
+  run_writer_with_fallback "$TEST_PROMPT" 2>>"$errlog" || true
+  run_writer_with_fallback "$TEST_PROMPT" 2>>"$errlog" || true
+  run_writer_with_fallback "$TEST_PROMPT" 2>>"$errlog" || true
+
+  # Exactly one "marked exhausted" notice for claude across all three calls.
+  local n
+  n=$(grep -c 'claude marked exhausted' "$errlog" || true)
+  [ "$n" -eq 1 ]
+}
+
+@test "exhaustion: all-engines-exhausted second call still returns 2 (rate-limited)" {
+  _make_stub "claude" 2
+  _make_stub "gemini" 2
+  export GEMINI_API_KEY="test-key"
+  export COPILOT_GITHUB_TOKEN="stub-token"
+  cat > "$STUB_BIN_DIR/gh" <<'GHEOF'
+#!/usr/bin/env bash
+case "$*" in
+  *"copilot"*) echo "rate limit exceeded"; exit 1 ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+  _source_engine "claude"
+
+  local rc1=0 rc2=0
+  run_writer_with_fallback "$TEST_PROMPT" || rc1=$?
+  run_writer_with_fallback "$TEST_PROMPT" || rc2=$?
+
+  [ "$rc1" -eq 2 ]
+  [ "$rc2" -eq 2 ]
+  [ "$(cat /tmp/dev-lead-failure-reason)" = "rate-limited" ]
+}
+
+@test "exhaustion: reset_engine_exhaustion clears the registry" {
+  local claude_record
+  claude_record="$(mktemp "$STUB_BIN_DIR/claude_record.XXXXXX")"
+  _make_recording_stub "claude" 2 "$claude_record"
+  _make_stub "gemini" 0
+  export GEMINI_API_KEY="test-key"
+  export COPILOT_GITHUB_TOKEN="ghp_stub"
+  _source_engine "claude"
+
+  run_writer_with_fallback "$TEST_PROMPT" || true    # claude recorded (1), exhausted
+  reset_engine_exhaustion
+  run_writer_with_fallback "$TEST_PROMPT" || true    # claude re-invoked after reset
+
+  [ "$(wc -l < "$claude_record")" -eq 2 ]
+}
+
+@test "exhaustion: headroom-threshold breach exhausts engine permanently" {
+  _make_stub "gemini" 0
+  export GEMINI_API_KEY="test-key"
+  export COPILOT_GITHUB_TOKEN="ghp_stub"
+  _source_engine "claude"
+  # Override headroom check: claude is always at/above threshold; others have headroom
+  check_provider_headroom() { [ "$1" = "claude" ] && return 1; return 0; }
+
+  local errlog
+  errlog="$(mktemp "$STUB_BIN_DIR/errlog.XXXXXX")"
+  local rc1=0 rc2=0
+  run_writer_with_fallback "$TEST_PROMPT" 2>>"$errlog" || rc1=$?
+  run_writer_with_fallback "$TEST_PROMPT" 2>>"$errlog" || rc2=$?
+
+  # gemini serves both calls despite claude's headroom failure
+  [ "$rc1" -eq 0 ]
+  [ "$rc2" -eq 0 ]
+  # Exactly one exhaustion notice for claude across both calls
+  local n
+  n=$(grep -c 'claude marked exhausted' "$errlog" || true)
+  [ "$n" -eq 1 ]
+}
