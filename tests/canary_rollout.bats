@@ -321,3 +321,137 @@ _graduated_stub() {
   [[ "$output" == *"BLOCKED"* ]]
   [[ "$output" == *"PRE_EXISTING"* ]]
 }
+
+# ── benign_match (per-reusable known-benign failure-class matcher, #1025 P2) ────
+# args: <workflow_name> <failure_signature> <workflow_regex> <step_regex>
+@test "benign_match: workflow + step signature both match → yes" {
+  [ "$(benign_match 'Dev-Lead Agent' 'Push fix-review branch' 'Dev-Lead' '[Pp]ush')" = "yes" ]
+}
+@test "benign_match: workflow regex mismatch → no" {
+  [ "$(benign_match 'Other Workflow' 'Push branch' 'Dev-Lead' '[Pp]ush')" = "no" ]
+}
+@test "benign_match: signature does not match step regex → no" {
+  [ "$(benign_match 'Dev-Lead Agent' 'Compile sources' 'Dev-Lead' '[Pp]ush')" = "no" ]
+}
+@test "benign_match: empty step regex never matches (guards against a match-all entry)" {
+  [ "$(benign_match 'Dev-Lead Agent' 'anything at all' 'Dev-Lead' '')" = "no" ]
+}
+@test "benign_match: empty workflow regex matches any workflow" {
+  [ "$(benign_match 'Whatever' 'Resolve Dependabot dispatch context' '' '[Dd]ependabot')" = "yes" ]
+}
+
+# ── canary-rings.json: benign allowlist + control block shape (#1025 P2) ────────
+@test "canary-rings.json: dev-lead gate carries a benign_failure_classes allowlist + control block" {
+  run jq -e '.agents["dev-lead"].gate.benign_failure_classes | type == "array" and length >= 1' "$RINGS"
+  [ "$status" -eq 0 ]
+  run jq -e '.agents["dev-lead"].gate.benign_failure_classes | all(has("id") and has("reason") and has("step"))' "$RINGS"
+  [ "$status" -eq 0 ]
+  run jq -e '.agents["dev-lead"].gate.control | has("allow_pre_existing")' "$RINGS"
+  [ "$status" -eq 0 ]
+}
+
+# ── orchestrator: evaluate-all iterates the whole registry (#1025 P1) ──────────
+@test "orchestrator: evaluate-all iterates every agent in the registry (fleet-wide)" {
+  _make_stub_bin
+  cat > "$STUB_BIN/gh" <<'GHEOF'
+#!/usr/bin/env bash
+case "$*" in
+  *"run list"*) echo "[]" ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN/gh"
+  # A registry with a second (cloned) agent proves fleet iteration over the registry
+  # keys rather than a dev-lead hardcode.
+  local multi="$BATS_TEST_TMPDIR/rings.json"
+  jq '.agents["fleet-canary-test"] = .agents["dev-lead"]' "$RINGS" > "$multi"
+  run env CANARY_RINGS="$multi" bash "$ORCH" evaluate-all
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"dev-lead"* ]]
+  [[ "$output" == *"fleet-canary-test"* ]]
+}
+
+# ── orchestrator: benign-failure allowlist excludes known-benign from cum_fail ──
+# Lay out next = candidate (cccc); ring0/ring1/stable = prior (bbbb). Every tier repo
+# returns `failure` runs whose only failed step is <step>; `gh run view` yields that
+# step so the orchestrator can build a signature and test it against the allowlist.
+_benign_stub() {
+  local cut_days="$1" run_days_ago="$2" step="$3" reusable_diff="$4"
+  STUB_BIN="$(mktemp -d)"; export PATH="$STUB_BIN:$PATH"
+  local cut_iso run_iso
+  cut_iso="$(date -u -d "-${cut_days} days" +%Y-%m-%dT%H:%M:%SZ)"
+  run_iso="$(date -u -d "-${run_days_ago} days" +%Y-%m-%dT%H:%M:%SZ)"
+  {
+    echo '#!/usr/bin/env bash'
+    echo 'case "$*" in'
+    printf '  *"run list"*) jq -nc --arg d "%s" '"'"'[range(3)|{conclusion:"failure",createdAt:$d,databaseId:(1000+.),workflowName:"Dev-Lead Agent"}]'"'"' ;;\n' "$run_iso"
+    printf '  *"run view"*) jq -nc --arg s "%s" '"'"'{jobs:[{steps:[{name:$s,conclusion:"failure"}]}]}'"'"' ;;\n' "$step"
+    echo '  *) echo "{}" ;;'
+    echo 'esac'
+  } > "$STUB_BIN/gh"
+  chmod +x "$STUB_BIN/gh"
+  local cand_blob="reuseAAAA" prior_blob="reuseAAAA"
+  [ "$reusable_diff" = "1" ] && prior_blob="reuseBBBB"
+  {
+    echo '#!/usr/bin/env bash'
+    echo 'case "$*" in'
+    printf '  *"for-each-ref"*) echo "cccccccccccccccccccccccccccccccccccccccc||%s" ;;\n' "$cut_iso"
+    printf '  *"rev-parse"*"cccccccccccccccccccccccccccccccccccccccc:"*) echo "%s" ;;\n' "$cand_blob"
+    printf '  *"rev-parse"*"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:"*) echo "%s" ;;\n' "$prior_blob"
+    echo '  *"rev-parse"*"dev-lead/next"*)   echo "cccccccccccccccccccccccccccccccccccccccc" ;;'
+    echo '  *"rev-parse"*"dev-lead/ring0"*)  echo "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" ;;'
+    echo '  *"rev-parse"*"dev-lead/ring1"*)  echo "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" ;;'
+    echo '  *"rev-parse"*"dev-lead/stable"*) echo "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" ;;'
+    echo '  *"rev-parse"*) echo "cccccccccccccccccccccccccccccccccccccccc" ;;'
+    echo '  *) : ;;'
+    echo 'esac'
+  } > "$STUB_BIN/git"
+  chmod +x "$STUB_BIN/git"
+}
+
+@test "orchestrator: allowlisted benign failure (reusable unchanged) is excluded from cum_fail → not BLOCKED" {
+  # A git-push-permission failure since cut, but the reusable is byte-identical to the
+  # prior channel → matches the [Pp]ush benign class → excluded → gate is not BLOCKED.
+  _benign_stub 3 2 "Push fix-review branch" 0
+  run env CANARY_RINGS="$RINGS" bash "$ORCH" evaluate dev-lead
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"BLOCKED"* ]]
+  [[ "$output" == *"benign"* ]]
+}
+
+@test "orchestrator: benign allowlist is DISABLED when the candidate changed the reusable → BLOCKED+REGRESSION" {
+  # Same push failure + matching class, but the candidate changed the reusable → the
+  # allowlist must NOT mask a possible candidate regression.
+  _benign_stub 3 2 "Push fix-review branch" 1
+  run env CANARY_RINGS="$RINGS" bash "$ORCH" evaluate dev-lead
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"BLOCKED"* ]]
+  [[ "$output" == *"REGRESSION"* ]]
+}
+
+@test "orchestrator: a non-allowlisted failure (reusable unchanged) still BLOCKS as PRE_EXISTING" {
+  # Failed step matches no benign class → counted → BLOCKED, triaged PRE_EXISTING.
+  _benign_stub 3 2 "Compile TypeScript" 0
+  run env CANARY_RINGS="$RINGS" bash "$ORCH" evaluate dev-lead
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"BLOCKED"* ]]
+  [[ "$output" == *"PRE_EXISTING"* ]]
+}
+
+# ── orchestrator: promote --allow-pre-existing (control override, #1025 P2) ─────
+@test "orchestrator: promote --allow-pre-existing advances a BLOCKED+PRE_EXISTING frontier (dry-run)" {
+  _graduated_stub 3 2 failure 0
+  run env CANARY_RINGS="$RINGS" bash "$ORCH" promote dev-lead --allow-pre-existing --dry-run
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"DRY-RUN"* ]]
+  [[ "$output" == *"PRE_EXISTING"* ]]
+  [[ "$output" != *"not promoting"* ]]
+}
+
+@test "orchestrator: promote --allow-pre-existing REFUSES a BLOCKED+REGRESSION frontier" {
+  _graduated_stub 3 2 failure 1
+  run env CANARY_RINGS="$RINGS" bash "$ORCH" promote dev-lead --allow-pre-existing --dry-run
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"DRY-RUN"* ]]
+  [[ "$output" == *"REGRESSION"* ]]
+}
