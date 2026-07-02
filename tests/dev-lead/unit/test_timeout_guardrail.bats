@@ -26,14 +26,17 @@ _tier_default() {
   [ "$status" -eq 0 ] || { echo "$output"; return 1; }
 }
 
+# Parse the dispatch job's timeout-minutes directly (no bash -c wrapper).
+_dispatch_timeout_min() {
+  awk '
+    /^  dispatch:[[:space:]]*$/ {inblk=1; next}
+    inblk==1 && /^  [A-Za-z]/ {inblk=0}
+    inblk==1 && /^    timeout-minutes:/ {print $2; exit}
+  ' "$WORKFLOW"
+}
+
 @test "guardrail: dispatch job timeout-minutes raised to 120" {
-  run bash -c "
-    awk '
-      /^  dispatch:[[:space:]]*\$/ {inblk=1; next}
-      inblk==1 && /^  [A-Za-z]/ {inblk=0}
-      inblk==1 && /^    timeout-minutes:/ {print \$2; exit}
-    ' '$WORKFLOW'
-  "
+  run _dispatch_timeout_min
   [ "$status" -eq 0 ]
   [ "$output" = "120" ]
 }
@@ -53,12 +56,23 @@ _tier_default() {
 }
 
 @test "guardrail: Sigma(tier budgets) + overhead margin <= job cap" {
-  # Recompute the invariant independently of the script so the assertion is
-  # not self-referential: sum the parsed tier defaults, add the overhead
-  # margin the script prints, and compare against job timeout-minutes * 60.
+  # Independently recompute the invariant from the parsed config (not by
+  # grepping the script's own PASS line), then confirm the script agrees.
+  local triage deep audit action duck job_min sigma required cap
+  triage="$(_tier_default TRIAGE_TIMEOUT_SEC)"
+  deep="$(_tier_default DEEP_TIMEOUT_SEC)"
+  audit="$(_tier_default AUDIT_TIMEOUT_SEC)"
+  action="$(_tier_default ACTION_TIMEOUT_SEC)"
+  duck="$(_tier_default DUCK_TIMEOUT_SEC)"
+  job_min="$(_dispatch_timeout_min)"
+  sigma=$(( triage + deep + audit + action + duck ))
+  # 900 = the guardrail script's default OVERHEAD_MARGIN_SEC.
+  required=$(( sigma + 900 ))
+  cap=$(( job_min * 60 ))
+  [ "$required" -le "$cap" ]
+  # …and the script itself reaches the same verdict.
   run bash "$GUARDRAIL"
   [ "$status" -eq 0 ]
-  echo "$output" | grep -qiE "PASS"
 }
 
 @test "guardrail: FAILS when a per-tier budget is inflated past the job cap" {

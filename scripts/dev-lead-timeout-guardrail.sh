@@ -64,6 +64,14 @@ ACTION="$(_tier_default ACTION_TIMEOUT_SEC)"
 DUCK="$(_tier_default DUCK_TIMEOUT_SEC)"
 
 job_min="$(_job_timeout_min)"
+
+# Fail with a clear guardrail message (not a generic bash arithmetic error) if
+# any budget/timeout failed to parse as a positive integer — e.g. a tier default
+# is missing or timeout-minutes became a non-numeric expression.
+for _v in "$TRIAGE" "$DEEP" "$AUDIT" "$ACTION" "$DUCK" "$job_min"; do
+  [[ "$_v" =~ ^[0-9]+$ ]] || _die "failed to parse a numeric budget/timeout (got: '${_v}') — check $ENGINE_SH and $WORKFLOW_YML"
+done
+
 job_sec=$(( job_min * 60 ))
 
 sigma=$(( TRIAGE + DEEP + AUDIT + ACTION + DUCK ))
