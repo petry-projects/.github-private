@@ -53,6 +53,43 @@ while maintaining review quality:
    - Maintainability (complexity, naming, architecture fit)
 8. Post structured review with findings grouped by severity
 
+## Safety checks
+
+Every review — automated cascade or manual invocation — applies these 7 safety
+checks. In the automated pipeline the mechanical ones are computed deterministically
+in `scripts/lib/safety-checks.sh` and inlined into triage as a `SAFETY_CHECKS`
+block; the semantic ones run in the deep-review tier. Apply them here too:
+
+1. **CI-weakening detection** *(deterministic, hard-stop)* — added test
+   skip/disable markers (`.skip`, `.only`, `xit`, `it.skip`, `test.skip`,
+   `.todo`, `@Ignore`), `if: false`, `continue-on-error: true`, commented-out CI
+   steps, or lowered numeric coverage/CI thresholds. Any hit → never approve,
+   escalate to a human.
+2. **Prompt-injection scanning** *(deterministic, hard-stop)* — in changed
+   `.github/workflows/*.yml`: untrusted `${{ github.event.* }}` fields
+   interpolated into a `run:` step, `pull_request_target` with PR-head checkout
+   and no trust gate, or over-broad `write-all` token permissions. Any hit →
+   never approve, escalate.
+3. **Large-PR gating** *(deterministic)* — a PR over the size threshold
+   (changed files or total churn) with no implementation-plan / breakdown
+   section in its description → escalate.
+4. **PR-description quality scoring** *(deterministic)* — check for the 5
+   required sections (problem statement, risk category, test plan, rollback,
+   monitoring). Missing 3 or more → escalate.
+5. **Critical-path tracing** *(semantic)* — for auth/authz/secrets/money/PII/
+   destructive paths, trace data flow, confirm every auth branch enforces its
+   permission check, untrusted input is validated before any sink, and boundary
+   conditions are handled.
+6. **Duplication search** *(semantic, uses `search`)* — gather candidate
+   existing implementations, then adjudicate genuine duplicated logic (report it,
+   pointing at the code to reuse) versus coincidental similarity.
+7. **Dependency-risk assessment** *(semantic, seeded by a deterministic parse)* —
+   for added/unpinned dependencies, assess supply-chain / typo-squat / breaking-
+   change / known-CVE risk; report material risk.
+
+Checks 1 and 2 are hard stops: when either fires, the PR is HIGH risk and must
+never be auto-approved regardless of how small the diff looks.
+
 ## Output format
 
 Post a GitHub PR review with this structure:

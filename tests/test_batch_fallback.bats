@@ -64,16 +64,32 @@ teardown() {
   rm -rf "$TEST_DIR"
 }
 
-@test "batch: Gemini trust error (55) falls back to Copilot" {
+@test "batch: Claude runtime error (exit 55) falls back to Copilot" {
+  # Gemini is now last in the fallback chain (claude→copilot→gemini, #571), so
+  # a Gemini trust error no longer falls back to Copilot.  The equivalent test
+  # of the trust-error→fallback path is: Claude exits 55 (treated as
+  # fallback-eligible by the exit-55 normaliser), then Copilot picks up.
+  cat > "scripts/review-one-pr.sh" <<'EOF'
+#!/bin/bash
+if [ "$REVIEW_ENGINE" = "claude" ]; then
+  exit 55
+elif [ "$REVIEW_ENGINE" = "gemini" ]; then
+  exit 55
+elif [ "$REVIEW_ENGINE" = "copilot" ]; then
+  touch copilot_called.txt
+  exit 0
+fi
+EOF
+  chmod +x "scripts/review-one-pr.sh"
+
   run bash scripts/review-batch.sh
 
   echo "$output" >&2
 
   [ "$status" -eq 0 ]
   [ -f copilot_called.txt ]
-  [[ "$output" == *"Claude rate limit hit"* ]]
-  [[ "$output" == *"Engine gemini unavailable at runtime (exit 55)"* ]] || [[ "$output" == *"Gemini engine unavailable at runtime (exit 55)"* ]]
-  [[ "$output" == *"falling through to Copilot"* ]] || [[ "$output" == *"switching to Copilot engine"* ]]
+  [[ "$output" == *"Engine claude unavailable at runtime (exit 55)"* ]]
+  [[ "$output" == *"switching to Copilot engine"* ]]
 }
 
 @test "batch: empty PRS_FILE with Gemini unavailable exits 0 without Copilot smoke test" {
