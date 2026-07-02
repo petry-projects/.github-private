@@ -41,13 +41,28 @@ DEFAULT_COPILOT_API_MODEL="openai/o4-mini"
 COPILOT_API_MODEL="${COPILOT_API_MODEL:-$DEFAULT_COPILOT_API_MODEL}"
 export COPILOT_API_MODEL
 
-# Per-tier timeouts (seconds). The job-level 60min cap is a backstop — without
-# per-tier timeouts a single hung model invocation burns the whole hour and
-# blocks every subsequent PR in the session.
+# Per-tier timeouts (seconds). The job-level cap (120min in dev-lead-reusable.yml)
+# is a hang/stuck-run backstop — without per-tier timeouts a single hung model
+# invocation burns the whole job and blocks every subsequent PR in the session.
+# These are sized to MAXIMIZE legitimate runtime per stage (#1017, epic #901),
+# NOT to bound token/runner cost. DEEP (deep agentic analysis) and ACTION (the
+# writer tier) get the largest viable share; TRIAGE/DUCK stay small (lightweight
+# read/classify + cross-engine review); AUDIT stays modest.
+#
+# Guardrail invariant (scripts/dev-lead-timeout-guardrail.sh + its bats test):
+#   Σ(these defaults) + overhead_margin(900s) ≤ job timeout-minutes × 60
+#   300 + 2400 + 1200 + 2100 + 300 = 6300s; 6300 + 900 = 7200s = 120min ✓
+# so the tiers can never silently exceed the job backstop. Raising a tier here
+# requires lowering another or raising the job cap, or the guardrail fails CI.
+#
+# Fleet note: petry-projects/.github leaves `vars.DEEP_TIMEOUT_SEC` (and
+# ACTION_TIMEOUT_SEC) UNSET, so the workflow passes an empty value through and
+# these engine defaults take effect. The raised DEEP default (was 600, now 2400)
+# therefore applies fleet-wide unless a repo overrides it via its own `vars`.
 TRIAGE_TIMEOUT_SEC="${TRIAGE_TIMEOUT_SEC:-300}"
-DEEP_TIMEOUT_SEC="${DEEP_TIMEOUT_SEC:-600}"
-AUDIT_TIMEOUT_SEC="${AUDIT_TIMEOUT_SEC:-600}"
-ACTION_TIMEOUT_SEC="${ACTION_TIMEOUT_SEC:-600}"
+DEEP_TIMEOUT_SEC="${DEEP_TIMEOUT_SEC:-2400}"
+AUDIT_TIMEOUT_SEC="${AUDIT_TIMEOUT_SEC:-1200}"
+ACTION_TIMEOUT_SEC="${ACTION_TIMEOUT_SEC:-2100}"
 DUCK_TIMEOUT_SEC="${DUCK_TIMEOUT_SEC:-300}"
 
 # Retry config for transient errors. We treat exit codes that look like
