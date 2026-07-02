@@ -315,20 +315,33 @@ GHEOF
 }
 
 @test "sidecar: timeout (124) does NOT fall through to another engine (no same-budget retry)" {
-  # claude times out (124); gemini would succeed (exit 0) if it were wrongly tried.
+  # claude times out (124); NEITHER copilot nor gemini (the remaining engines in
+  # the claude→copilot→gemini order) may be tried — each would succeed here if
+  # wrongly invoked, so record both and assert neither ran.
   _make_stub "claude" 124
-  local gemini_record
-  gemini_record="$(mktemp)"
+  local gemini_record copilot_record
+  gemini_record="$(mktemp)"; copilot_record="$(mktemp)"
   _make_recording_stub "gemini" 0 "$gemini_record"
+  # Enable copilot (non-ghp token) and record any `gh copilot` invocation.
+  export COPILOT_GITHUB_TOKEN="stub-token"
+  cat > "$STUB_BIN_DIR/gh" <<GHEOF
+#!/usr/bin/env bash
+case "\$*" in
+  *"copilot"*) echo "\$*" >> "$copilot_record"; echo "success output"; exit 0 ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
   _source_engine "claude"
 
   run run_writer_with_fallback "$TEST_PROMPT"
 
   [ "$status" -eq 124 ]
   [ "$(cat /tmp/dev-lead-failure-reason)" = "timeout" ]
-  # Same-budget retry on another engine must NOT happen.
+  # Same-budget retry on ANY fallback engine must NOT happen.
+  [ ! -s "$copilot_record" ]
   [ ! -s "$gemini_record" ]
-  rm -f "$gemini_record"
+  rm -f "$gemini_record" "$copilot_record"
 }
 
 @test "sidecar: stale reason cleared on success" {
