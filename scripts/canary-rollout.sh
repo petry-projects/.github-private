@@ -110,13 +110,13 @@ candidate_cut_date() {
   git log -1 --format=%cI "$commit" 2>/dev/null || echo ""
 }
 
-# _run_json <repo> <workflow> <since_z> — gh run-list JSON (conclusion+createdAt) for a
+# _run_json <repo> <workflow> <since_z> — gh run-list JSON (conclusion,createdAt,databaseId,workflowName) for a
 # repo since the given Zulu timestamp. Empty repo/wildcard → []. Never fails the caller.
 _run_json() {
   local repo="$1" wf="$2" since="$3"
   [ -z "$repo" ] || [ "$repo" = '*' ] && { echo '[]'; return 0; }
   gh run list --repo "$repo" --workflow "$wf" ${since:+--created ">=$since"} \
-    -L 1000 --json conclusion,createdAt 2>/dev/null || echo '[]'
+    -L 1000 --json conclusion,createdAt,databaseId,workflowName 2>/dev/null || echo '[]'
 }
 
 # _tier_sample <agent> <since_z> <repo...> — EXECUTED runs (success+failure) on the
@@ -138,7 +138,7 @@ _tier_sample() {
 # (#1025 P2) as TSV "<workflow_regex>\t<step_regex>", one entry per line. Empty if none.
 _benign_patterns() {
   _jq -r --arg a "$1" \
-    '.agents[$a].gate.benign_failure_classes // [] | .[] | [(.workflow // ""), (.step // "")] | @tsv'
+    '.agents[$a].gate?.benign_failure_classes // [] | .[] | [(.workflow // ""), (.step // "")] | @tsv'
 }
 
 # _run_signature <repo> <run_id> — the failed step names of a run, joined by newlines
@@ -185,7 +185,7 @@ _cumulative_health() {
       else
         fail=$(( fail + 1 ))
       fi
-    done < <(jq -r '.[]?|select(.conclusion=="failure")|[(.databaseId|tostring),(.workflowName // "")]|@tsv' 2>/dev/null <<< "$json")
+    done < <(jq -r '.[]?|select(.conclusion=="failure")|[(.databaseId // "" | tostring),(.workflowName // "")]|@tsv' 2>/dev/null <<< "$json")
   done
   echo "$fail $startup $benign"
 }
@@ -277,7 +277,7 @@ _frontier_state() {
   local prior differs apply_benign=1
   prior="$(channel_commit "$agent" "$frontier")"
   differs="$(_reusable_differs "$agent" "$cand" "$prior")"
-  [ "$differs" = "1" ] && apply_benign=0
+  if [ "$differs" = "1" ]; then apply_benign=0; fi
 
   # Cumulative health across EVERY concrete tier repo since the candidate's own cut.
   local all_repos=() ch3
@@ -389,7 +389,7 @@ cmd_promote() {
   # allow_pre: advance a BLOCKED frontier ONLY when triage=PRE_EXISTING (never REGRESSION).
   # Sourced from the per-reusable control block or the --allow-pre-existing flag (#1025 P2).
   local allow_pre
-  allow_pre="$(_jq -r --arg a "$agent" '.agents[$a].gate.control.allow_pre_existing // false')"
+  allow_pre="$(_jq -r --arg a "$agent" '.agents[$a].gate?.control?.allow_pre_existing // false')"
   [ "$allow_pre_flag" = true ] && allow_pre=true
   if [ "$state" = "BLOCKED" ] && [ "$triage" = "REGRESSION" ] && [ "$override" != true ]; then
     echo "::error::gate=BLOCKED (triage=REGRESSION) for '$frontier' [$transition] — candidate regression suspected; not promoting. Investigate + rollback, do not --override blindly."

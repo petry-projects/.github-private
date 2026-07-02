@@ -377,7 +377,7 @@ GHEOF
 # step so the orchestrator can build a signature and test it against the allowlist.
 _benign_stub() {
   local cut_days="$1" run_days_ago="$2" step="$3" reusable_diff="$4"
-  STUB_BIN="$(mktemp -d)"; export PATH="$STUB_BIN:$PATH"
+  STUB_BIN="$(mktemp -d "$BATS_TEST_TMPDIR/stub.XXXXXX")"; export PATH="$STUB_BIN:$PATH"
   local cut_iso run_iso
   cut_iso="$(date -u -d "-${cut_days} days" +%Y-%m-%dT%H:%M:%SZ)"
   run_iso="$(date -u -d "-${run_days_ago} days" +%Y-%m-%dT%H:%M:%SZ)"
