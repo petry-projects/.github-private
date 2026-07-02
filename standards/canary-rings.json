@@ -1,11 +1,17 @@
 {
   "version": 1,
-  "description": "Ring membership for agent canary rollout (initiative #495, issues #500/#501). The promotion automation (scripts/canary-rollout.sh) reads this as the single source of truth. `next` is host-relative: it resolves to the repo that HOSTS the reusable; `ring0` covers the other org-infra repo (the host already sits in `next`).",
+  "description": "Ring membership for agent canary rollout (initiative #495, issues #500/#501; pipeline onboarding #1008). The promotion automation (scripts/canary-rollout.sh) reads this as the single source of truth. `next` is host-relative: it resolves to the repo that HOSTS the reusable; `ring0` covers the other org-infra repo (the host already sits in `next`). An agent may set `soak_start_ring` to name the innermost ring that actually has a channel caller — used when the host dogfoods the reusable via a local `./` ref (so there is no `@next`/`ring0` channel caller) and no org-infra repo consumes it as a channel member; soak then begins at that ring. `unmanaged` records reusable-less / non-channel-promotable workflows (e.g. direct `gh workflow run` dispatch) so the automation does not try to gate them.",
   "org_infra_repos": ["petry-projects/.github", "petry-projects/.github-private"],
   "member_tokens": {
     "$host": "the agent's host repo (the repo that owns the reusable)",
     "$org_infra": "org_infra_repos minus the host (the host is already in `next`)",
     "*": "every other consumer not named in an earlier ring"
+  },
+  "unmanaged": {
+    "initiative-driver": {
+      "reason": "Direct `gh workflow run` dispatch to petry-projects/.github-private; no reusable workflow, so it is not channel-promotable. Recorded here (out of model, #1008) so the canary automation does not attempt to gate it.",
+      "health_source": ".github/workflows/initiative-driver-canary.yml"
+    }
   },
   "agents": {
     "dev-lead": {
@@ -40,6 +46,27 @@
           }
         }
       }
+    },
+    "initiative-planner": {
+      "host": "petry-projects/.github",
+      "reusable": ".github/workflows/initiative-planner-reusable.yml",
+      "run_workflow": "Initiative Planner (BMAD Scrum Master)",
+      "soak_start_ring": "ring1",
+      "next_tier_health_signal": ".github/workflows/initiative-planner-canary.yml",
+      "rings": [
+        { "channel": "ring1",  "order": 2, "members": ["petry-projects/TalkTerm", "petry-projects/bmad-bgreat-suite"] },
+        { "channel": "stable", "order": 3, "members": ["*"] }
+      ]
+    },
+    "idea-triage": {
+      "host": "petry-projects/.github",
+      "reusable": ".github/workflows/idea-triage-reusable.yml",
+      "run_workflow": "Idea Triage (Promotion Queue)",
+      "soak_start_ring": "ring1",
+      "rings": [
+        { "channel": "ring1",  "order": 2, "members": ["petry-projects/TalkTerm", "petry-projects/bmad-bgreat-suite"] },
+        { "channel": "stable", "order": 3, "members": ["*"] }
+      ]
     }
   }
 }

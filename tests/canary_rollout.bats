@@ -168,6 +168,66 @@ setup() {
   [ "$status" -eq 0 ]
 }
 
+# ── canary-rings.json: idea→initiative pipeline onboarding (#1008) ─────────────
+# initiative-planner + idea-triage are onboarded as managed agents whose reusable
+# lives cross-repo in petry-projects/.github. Their host dogfoods via a local `./`
+# ref (no @next caller) and .github-private runs a full central copy (not a channel
+# consumer), so there is no next/ring0 channel caller — soak begins at ring1.
+_pipeline_agent_shape() {
+  # $1 = agent key. Asserts the shared onboarding shape for planner/triage.
+  local agent="$1"
+  # hosted in the public repo (reusable lives there, not in .github-private)
+  run jq -e --arg a "$agent" '.agents[$a].host == "petry-projects/.github"' "$RINGS"
+  [ "$status" -eq 0 ]
+  # soak starts at ring1 (owner-confirmed: no channel caller below ring1)
+  run jq -e --arg a "$agent" '.agents[$a].soak_start_ring == "ring1"' "$RINGS"
+  [ "$status" -eq 0 ]
+  # only ring1 + stable channels are modelled, ordered ring1 -> stable
+  run bash -c "jq -r --arg a '$agent' '.agents[\$a].rings | sort_by(.order) | map(.channel) | join(\",\")' '$RINGS'"
+  [ "$output" = "ring1,stable" ]
+  # ring1 = the two low-traffic consumers
+  run jq -e --arg a "$agent" '.agents[$a].rings[] | select(.channel=="ring1") | (.members | index("petry-projects/TalkTerm")) and (.members | index("petry-projects/bmad-bgreat-suite"))' "$RINGS"
+  [ "$status" -eq 0 ]
+  # stable = ["*"] (un-enrolled today; populated by the promotion automation)
+  run jq -e --arg a "$agent" '.agents[$a].rings[] | select(.channel=="stable") | .members == ["*"]' "$RINGS"
+  [ "$status" -eq 0 ]
+  # .github-private runs a full central copy — never a channel member of these agents
+  run jq -e --arg a "$agent" '[.agents[$a].rings[].members[]] | index("petry-projects/.github-private") | not' "$RINGS"
+  [ "$status" -eq 0 ]
+}
+
+@test "canary-rings.json: initiative-planner onboarded (soak_start_ring=ring1, cross-repo host)" {
+  _pipeline_agent_shape "initiative-planner"
+  # its pre-ring1 health signal is the in-repo canary workflow
+  run jq -e '.agents["initiative-planner"].next_tier_health_signal == ".github/workflows/initiative-planner-canary.yml"' "$RINGS"
+  [ "$status" -eq 0 ]
+}
+
+@test "canary-rings.json: idea-triage onboarded (soak_start_ring=ring1, cross-repo host)" {
+  _pipeline_agent_shape "idea-triage"
+}
+
+@test "canary-rings.json: initiative-driver is recorded as unmanaged, not a channel agent" {
+  # no reusable -> not channel-promotable -> excluded from .agents so the
+  # automation never tries to gate it.
+  run jq -e '.agents["initiative-driver"] == null' "$RINGS"
+  [ "$status" -eq 0 ]
+  # but explicitly recorded under .unmanaged with a rationale + health source.
+  run jq -e '.unmanaged["initiative-driver"].reason | type == "string" and (. | length > 0)' "$RINGS"
+  [ "$status" -eq 0 ]
+  run jq -e '.unmanaged["initiative-driver"].health_source == ".github/workflows/initiative-driver-canary.yml"' "$RINGS"
+  [ "$status" -eq 0 ]
+}
+
+@test "canary-rings.json: blocked/hold reusables are NOT onboarded" {
+  # idea-enhancer (zero tags/callers) and feature-ideation (open bug #571 + missing
+  # channel tags) must stay out of the SoT entirely — neither agent nor unmanaged.
+  run jq -e '.agents["idea-enhancer"] == null and .agents["feature-ideation"] == null' "$RINGS"
+  [ "$status" -eq 0 ]
+  run jq -e '(.unmanaged["idea-enhancer"] // null) == null and (.unmanaged["feature-ideation"] // null) == null' "$RINGS"
+  [ "$status" -eq 0 ]
+}
+
 # ── orchestrator: resolve_members (host-relative tokens) ──────────────────────
 @test "orchestrator: resolve_members expands \$host / \$org_infra / * " {
   run bash -c "source '$ORCH' && CANARY_RINGS='$RINGS' resolve_members dev-lead next"
