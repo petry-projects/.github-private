@@ -8,7 +8,7 @@
 # recording a GitHub Deployment for traceability. It never writes consumer files.
 #
 # Auth: the mover credential is a GitHub App installation token minted at runtime via
-# actions/create-github-app-token from SOAK_APP_ID + SOAK_APP_PRIVATE_KEY (scoped,
+# actions/create-github-app-token from RELEASE_MANAGER_APP_ID (variable) + RELEASE_MANAGER_APP_KEY (secret) (scoped,
 # rotatable, auditable) — NOT a raw PAT and NOT github.token. The App carries
 # Contents:write (tag moves on the host repos), Deployments:write, Actions:read (the
 # gate reads workflow-run history across every tier repo) and Metadata:read. Minting
@@ -73,8 +73,8 @@ jobs:
         id: app-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3.2.0
         with:
-          app-id: ${{ secrets.SOAK_APP_ID }}
-          private-key: ${{ secrets.SOAK_APP_PRIVATE_KEY }}
+          app-id: ${{ vars.RELEASE_MANAGER_APP_ID }}
+          private-key: ${{ secrets.RELEASE_MANAGER_APP_KEY }}
           owner: ${{ github.repository_owner }}
 
       - name: Verify App token was minted (hard requirement)
@@ -83,7 +83,7 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "${APP_TOKEN}" ]; then
-            echo "::error::Canary rollout requires a GitHub App token (SOAK_APP_ID + SOAK_APP_PRIVATE_KEY). Refusing to fall back to github.token, which cannot move protected .github channel tags (#868)."
+            echo "::error::Canary rollout requires a GitHub App token (RELEASE_MANAGER_APP_ID (variable) + RELEASE_MANAGER_APP_KEY (secret)). Refusing to fall back to github.token, which cannot move protected .github channel tags (#868)."
             exit 1
           fi
 
