@@ -201,6 +201,44 @@ teardown() {
   [ "$cw" = "0" ]
 }
 
+# ── emit_token_record: empty model-less all-zero suppression (#1009) ───────────
+
+@test "emit_token_record: suppresses an empty model-less all-zero record" {
+  # dev-lead error/fallback path emits (workflow, tier, engine, model="") with 0 usage.
+  # Such a record carries no signal — it only inflates the report's "no price" count
+  # and adds a junk `- / -` cost-driver row, so it must not be written at all.
+  emit_token_record "dev-lead" "" "claude" "" 0 0 0 ""
+  [ ! -s "$TOKEN_LOG_FILE" ]
+}
+
+@test "emit_token_record: suppresses a '-' model all-zero record (incl. cache_write)" {
+  emit_token_record "dev-lead" "" "claude" "-" 0 0 0 "" 0
+  [ ! -s "$TOKEN_LOG_FILE" ]
+}
+
+@test "emit_token_record: still emits a real model with an all-zero usage block" {
+  # A genuine empty call (real model, zero tokens) is legitimate and must survive.
+  emit_token_record "dev-lead" "writer" "claude" "claude-sonnet-4-6" 0 0 0 ""
+  [ -s "$TOKEN_LOG_FILE" ]
+  local model
+  model=$(jq -r '.model' < "$TOKEN_LOG_FILE")
+  [ "$model" = "claude-sonnet-4-6" ]
+}
+
+@test "emit_token_record: still emits a model-less record that carries real usage" {
+  # Only the *all-zero AND model-less* case is junk; non-zero usage is real signal.
+  emit_token_record "dev-lead" "writer" "claude" "" 100 0 50 ""
+  [ -s "$TOKEN_LOG_FILE" ]
+}
+
+@test "emit_token_record: suppresses model-less record whose only tokens are cache_write" {
+  # Guard must consider cache_write (9th arg), not just the first three counts.
+  emit_token_record "dev-lead" "" "claude" "" 0 0 0 "" 0
+  [ ! -s "$TOKEN_LOG_FILE" ]
+  emit_token_record "dev-lead" "" "claude" "" 0 0 0 "" 25
+  [ -s "$TOKEN_LOG_FILE" ]
+}
+
 # ── parse_engine_usage / extract_engine_text ──────────────────────────────────
 
 @test "parse_engine_usage: claude JSON sets input/cache-read/cache-write/output" {
