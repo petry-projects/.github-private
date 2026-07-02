@@ -1272,7 +1272,13 @@ run_writer_with_fallback() {
   # mirroring the existing /tmp/dev-lead-rate-limit-reset sidecar. Downstream
   # handlers (dev-lead-fix-issue.sh) read it to classify the failure and pick
   # the right retry behavior. This is purely additive — no control-flow change.
-  rm -f /tmp/dev-lead-failure-reason
+  # The timeout-* sidecars (tier/budget/elapsed) are written only on a per-tier
+  # timeout (#1018); clear any stale copies here so a later non-timeout failure
+  # never surfaces a previous run's timeout context.
+  rm -f /tmp/dev-lead-failure-reason \
+        /tmp/dev-lead-timeout-tier \
+        /tmp/dev-lead-timeout-budget \
+        /tmp/dev-lead-timeout-elapsed
 
   for e in claude copilot gemini; do
     [ "$e" != "$REVIEW_ENGINE" ] && engines+=("$e")
@@ -1303,8 +1309,10 @@ run_writer_with_fallback() {
     set_engine_config
     local model
     model="$(model_for_intent "$intent")"
-    local rc=0
+    local rc=0 _t_start _t_end
+    _t_start=$(date +%s)
     run_writer "$prompt_file" "$model" || rc=$?
+    _t_end=$(date +%s)
     export REVIEW_ENGINE="$saved"
     # Restore original config for subsequent PRs in the same session
     set_engine_config
@@ -1320,9 +1328,24 @@ run_writer_with_fallback() {
       [ "$rc" -eq 127 ] && any_missing=1
       continue
     fi
-    # A non-fallback engine error (e.g. 124=timeout kill, 137/143=signal,
-    # generic non-zero) — propagate immediately, classifying it as engine-error.
-    printf 'engine-error\n' > /tmp/dev-lead-failure-reason
+    # A non-fallback engine error (137/143=signal, generic non-zero) — propagate
+    # immediately, classifying it as engine-error.
+    #
+    # A per-tier stage timeout (exit 124 from GNU `timeout`) is treated
+    # separately (#1018): it is a first-class, NON-retryable condition, so a
+    # same-budget retry — on this engine or a fallback engine — is deliberately
+    # avoided (we already `return` here rather than `continue`). Classify it as a
+    # distinct `timeout` reason and record the tier/budget/elapsed sidecars the
+    # escalation comment surfaces, so the caller escalates to a human on the
+    # FIRST occurrence instead of burning a same-budget model call.
+    if [ "$rc" -eq 124 ]; then
+      printf 'timeout\n' > /tmp/dev-lead-failure-reason
+      printf 'action\n' > /tmp/dev-lead-timeout-tier
+      printf '%s\n' "${ACTION_TIMEOUT_SEC}" > /tmp/dev-lead-timeout-budget
+      printf '%s\n' "$(( _t_end - _t_start ))" > /tmp/dev-lead-timeout-elapsed
+    else
+      printf 'engine-error\n' > /tmp/dev-lead-failure-reason
+    fi
     return "$rc"
   done
 
