@@ -324,7 +324,7 @@ step_rulesets() {
   local repo="${1:-}" rulesets_dry=false
   _is_dry && rulesets_dry=true
   echo "[bootstrap] (3/5) sanctioned fleet rulesets (pr-quality + code-quality)"
-  DRY_RUN="$rulesets_dry" bash "$APPLY_RULESETS" --repo "$repo"
+  DRY_RUN="$rulesets_dry" RULESETS_DIR="" bash "$APPLY_RULESETS" --repo "$repo"
 }
 
 # step_labels <repo> — apply the standard label set (best-effort, idempotent).

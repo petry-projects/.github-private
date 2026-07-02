@@ -126,7 +126,7 @@ EOF
   [[ "$output" != *"release-channel-tags"* ]]
   [[ "$output" == *"done (2 ruleset(s))"* ]]
   # exactly two creates (POST), one per fleet ruleset
-  [ "$(grep -c 'method POST' "$CALLS")" -eq 2 ]
+  [ "$(grep -c 'method POST' "$CALLS" || true)" -eq 2 ]
 }
 
 @test "fleet mode: --dry-run previews both fleet rulesets and makes no writes" {

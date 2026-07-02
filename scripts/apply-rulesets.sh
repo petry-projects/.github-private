@@ -30,8 +30,9 @@ set -euo pipefail
 #                       as-is — this is how the repo-local `release-channel-tags` is
 #                       applied from this repo's own .github/rulesets. When UNSET,
 #                       the fleet rulesets are materialized from STANDARDS_REPO.
-#   FLEET_RULESETS_DIR  local checkout of .github/standards/rulesets to source the
-#                       fleet rulesets from, skipping the network fetch (offline/CI/pin).
+#   FLEET_RULESETS_DIR  local checkout of standards/rulesets/ (at the petry-projects/.github
+#                       repo root) to source the fleet rulesets from, skipping the network
+#                       fetch (offline/CI/pin).
 #   STANDARDS_REPO      repo owning the fleet rulesets (default: petry-projects/.github).
 #   GH_TOKEN            token with admin:org / repo admin to read+write rulesets
 #   DRY_RUN             "true" → print intent, make no write calls
@@ -57,6 +58,7 @@ FLEET_RULESETS=(code-quality pr-quality)
 # fetches each fleet ruleset from ${STANDARDS_REPO} via the contents API into a temp
 # dir (registered for cleanup on exit). Mirrors seed-repo-template.sh's fetch model.
 _FLEET_TMPDIR=""
+_FLEET_MODE=false
 _cleanup_fleet_tmpdir() { [ -n "$_FLEET_TMPDIR" ] && rm -rf "$_FLEET_TMPDIR"; return 0; }
 
 _materialize_fleet_dir() {
@@ -64,9 +66,11 @@ _materialize_fleet_dir() {
     [ -d "$FLEET_RULESETS_DIR" ] \
       || { echo "::error::FLEET_RULESETS_DIR not found: $FLEET_RULESETS_DIR" >&2; return 1; }
     RULESETS_DIR="$FLEET_RULESETS_DIR"
+    _FLEET_MODE=true
     return 0
   fi
-  _FLEET_TMPDIR="$(mktemp -d)"
+  _FLEET_TMPDIR="$(mktemp -d)" || return 1
+  _FLEET_MODE=true
   trap _cleanup_fleet_tmpdir EXIT
   local name
   for name in "${FLEET_RULESETS[@]}"; do
@@ -139,6 +143,12 @@ main() {
     for n in "${names[@]}"; do
       [ -f "${RULESETS_DIR}/${n}.json" ] && files+=("${RULESETS_DIR}/${n}.json") \
         || { echo "::error::no ruleset file ${n}.json" >&2; return 1; }
+    done
+  elif [ "$_FLEET_MODE" = "true" ]; then
+    local n
+    for n in "${FLEET_RULESETS[@]}"; do
+      [ -f "${RULESETS_DIR}/${n}.json" ] && files+=("${RULESETS_DIR}/${n}.json") \
+        || { echo "::error::no ruleset file ${n}.json in fleet dir" >&2; return 1; }
     done
   else
     local f
