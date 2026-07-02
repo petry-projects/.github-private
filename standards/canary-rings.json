@@ -17,7 +17,29 @@
         { "channel": "ring0",  "order": 1, "members": ["$org_infra"] },
         { "channel": "ring1",  "order": 2, "members": ["petry-projects/TalkTerm", "petry-projects/bmad-bgreat-suite"] },
         { "channel": "stable", "order": 3, "members": ["*"] }
-      ]
+      ],
+      "gate": {
+        "_standard": "petry-projects/.github#548 — graduated dwell/sample gate over a per-candidate cumulative window. These are registry-configurable per-transition knobs; the values below are the #548 defaults.",
+        "baseline_window_days": 14,
+        "baseline_spike_cap_multiple": 3,
+        "transitions": {
+          "next->ring0": {
+            "dwell_hours": 4,
+            "sample_fraction_permille": 250,
+            "sample_clamp_min": 3,
+            "sample_clamp_max": 15,
+            "waive_sample_if_no_caller": true
+          },
+          "ring0->ring1": {
+            "dwell_hours": 8,
+            "waive_sample": true
+          },
+          "ring1->stable": {
+            "dwell_hours": 12,
+            "sample_min": 1
+          }
+        }
+      }
     }
   }
 }
