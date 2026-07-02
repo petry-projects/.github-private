@@ -41,21 +41,21 @@ setup() {
 @test "robust_sample_target: steady volume → round(0.25·avg)" {
   # 14 days all = 40 → avg 40 → 0.25·40 = 10 → clamp 10
   set -- 40 40 40 40 40 40 40 40 40 40 40 40 40 40
-  [ "$(robust_sample_target 250 3 15 "$@")" -eq 10 ]
+  [ "$(robust_sample_target 250 3 15 3 "$@")" -eq 10 ]
 }
 @test "robust_sample_target: below floor clamps up to 3" {
   set -- 4 4 4 4 4 4 4 4 4 4 4 4 4 4   # avg 4 → 0.25·4 = 1 → clamp 3
-  [ "$(robust_sample_target 250 3 15 "$@")" -eq 3 ]
+  [ "$(robust_sample_target 250 3 15 3 "$@")" -eq 3 ]
 }
 @test "robust_sample_target: above ceiling clamps down to 15" {
   set -- 100 100 100 100 100 100 100 100 100 100 100 100 100 100  # 25 → clamp 15
-  [ "$(robust_sample_target 250 3 15 "$@")" -eq 15 ]
+  [ "$(robust_sample_target 250 3 15 3 "$@")" -eq 15 ]
 }
 @test "robust_sample_target: a 2500-run loop day is capped at 3× median (not inflated to 15)" {
   # 13 low days of 2 + one 2500-run loop day. Robust baseline caps the spike at
   # 3× median (=6), so the target stays a reachable 3 — NOT the 15 a raw mean gives.
   set -- 2 2 2 2 2 2 2 2 2 2 2 2 2 2500
-  [ "$(robust_sample_target 250 3 15 "$@")" -eq 3 ]
+  [ "$(robust_sample_target 250 3 15 3 "$@")" -eq 3 ]
   # sanity: the naive (uncapped) mean would blow past the ceiling
   local sum=0 n=0 c; for c in "$@"; do sum=$((sum+c)); n=$((n+1)); done
   [ "$(clamp "$(round_div $((250*sum)) $((1000*n)))" 3 15)" -eq 15 ]

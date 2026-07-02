@@ -63,12 +63,12 @@ median_x2() {
 #   avg          = (Σ capped_x2) / (2·N)
 #   target_raw   = round(fraction/1000 · avg) = round(fraction·Σcapped_x2 / (2000·N))
 robust_sample_target() {
-  local frac="$1" lo="$2" hi="$3"; shift 3
+  local frac="$1" lo="$2" hi="$3" cap_multiple="${4:-3}"; shift 4
   local n=$#
   [ "$n" -eq 0 ] && { clamp 0 "$lo" "$hi"; return 0; }
   local m2 cap3 c c2 sum2=0
   m2=$(median_x2 "$@")
-  cap3=$(( 3 * m2 ))
+  cap3=$(( cap_multiple * m2 ))
   for c in "$@"; do
     c2=$(( 2 * c ))
     [ "$c2" -gt "$cap3" ] && c2=$cap3
@@ -140,8 +140,9 @@ classify_failure() {
 next_channel_in_order() {
   local current="$1" csv="$2"
   local prev="" ch found=""
-  local IFS=,
-  for ch in $csv; do
+  local chan_array=()
+  IFS=, read -r -a chan_array <<< "$csv"
+  for ch in "${chan_array[@]}"; do
     if [ "$prev" = "$current" ]; then found="$ch"; break; fi
     prev="$ch"
   done
@@ -155,8 +156,9 @@ next_channel_in_order() {
 transition_key() {
   local frontier="$1" csv="$2"
   local prev="" ch
-  local IFS=,
-  for ch in $csv; do
+  local chan_array=()
+  IFS=, read -r -a chan_array <<< "$csv"
+  for ch in "${chan_array[@]}"; do
     if [ "$ch" = "$frontier" ] && [ -n "$prev" ]; then echo "${prev}->${frontier}"; return 0; fi
     prev="$ch"
   done

@@ -84,9 +84,15 @@ _iso_now_minus_days() {
 }
 _to_z() {   # normalise any parseable timestamp to ISO-8601 Zulu (empty passes through)
   [ -z "${1:-}" ] && { echo ""; return 0; }
-  date -u -d "$1" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$1"
+  date -u -d "$1" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+    || date -u -v "$1" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+    || echo "$1"
 }
-_epoch() { date -u -d "$1" +%s 2>/dev/null || echo 0; }
+_epoch() {
+  date -u -d "$1" +%s 2>/dev/null \
+    || date -u -v "$1" +%s 2>/dev/null \
+    || echo 0
+}
 
 # candidate_cut_date <agent> <candidate_commit> — ISO-8601 Zulu tagger date of the
 # immutable release tag <agent>/vX.Y.Z that points at the candidate commit. This is the
@@ -100,7 +106,7 @@ candidate_cut_date() {
   done < <(git for-each-ref \
              --format='%(objectname)|%(*objectname)|%(creatordate:iso-strict)' \
              "refs/tags/${agent}/v*" 2>/dev/null)
-  echo ""
+  git log -1 --format=%cI "$commit" 2>/dev/null || echo ""
 }
 
 # _run_json <repo> <workflow> <since_z> — gh run-list JSON (conclusion+createdAt) for a
@@ -109,7 +115,7 @@ _run_json() {
   local repo="$1" wf="$2" since="$3"
   [ -z "$repo" ] || [ "$repo" = '*' ] && { echo '[]'; return 0; }
   gh run list --repo "$repo" --workflow "$wf" ${since:+--created ">=$since"} \
-    -L 300 --json conclusion,createdAt 2>/dev/null || echo '[]'
+    -L 1000 --json conclusion,createdAt 2>/dev/null || echo '[]'
 }
 
 # _tier_sample <agent> <since_z> <repo...> — EXECUTED runs (success+failure) on the
@@ -120,8 +126,8 @@ _tier_sample() {
   wf="$(_agent_field "$agent" run_workflow)"
   for repo in "$@"; do
     json="$(_run_json "$repo" "$wf" "$since")"
-    executed=$(( executed + $(printf '%s' "$json" | jq '[.[]|select(.conclusion=="success" or .conclusion=="failure")]|length' 2>/dev/null || echo 0) ))
-    e="$(printf '%s' "$json" | jq -r '[.[]|select(.conclusion=="success" or .conclusion=="failure")|.createdAt]|min // empty' 2>/dev/null || echo "")"
+    executed=$(( executed + $(jq '[.[]?|select(.conclusion=="success" or .conclusion=="failure")]|length' 2>/dev/null <<< "$json" || echo 0) ))
+    e="$(jq -r '[.[]?|select(.conclusion=="success" or .conclusion=="failure")|.createdAt?]|min // empty' 2>/dev/null <<< "$json" || echo "")"
     if [ -n "$e" ] && { [ -z "$earliest" ] || [[ "$e" < "$earliest" ]]; }; then earliest="$e"; fi
   done
   echo "$executed ${earliest:--}"
@@ -135,8 +141,8 @@ _cumulative_health() {
   wf="$(_agent_field "$agent" run_workflow)"
   for repo in "$@"; do
     json="$(_run_json "$repo" "$wf" "$since")"
-    fail=$(( fail + $(printf '%s' "$json" | jq '[.[]|select(.conclusion=="failure")]|length' 2>/dev/null || echo 0) ))
-    startup=$(( startup + $(printf '%s' "$json" | jq '[.[]|select(.conclusion=="startup_failure")]|length' 2>/dev/null || echo 0) ))
+    fail=$(( fail + $(jq '[.[]?|select(.conclusion=="failure")]|length' 2>/dev/null <<< "$json" || echo 0) ))
+    startup=$(( startup + $(jq '[.[]?|select(.conclusion=="startup_failure")]|length' 2>/dev/null <<< "$json" || echo 0) ))
   done
   echo "$fail $startup"
 }
@@ -151,11 +157,11 @@ _baseline_daily() {
   since="$(_iso_now_minus_days "$window")"
   for repo in "$@"; do
     json="$(_run_json "$repo" "$wf" "$since")"
-    dates+="$(printf '%s' "$json" | jq -r '.[]|select(.conclusion=="success" or .conclusion=="failure")|.createdAt[0:10]' 2>/dev/null || true)"$'\n'
+    dates+="$(jq -r '.[]?|select(.conclusion=="success" or .conclusion=="failure")|.createdAt[0:10]?' 2>/dev/null <<< "$json" || true)"$'\n'
   done
   for (( i=0; i<window; i++ )); do
     day="$(date -u -d "-${i} days" +%Y-%m-%d 2>/dev/null || date -u -v"-${i}d" +%Y-%m-%d 2>/dev/null || echo "")"
-    count=$(printf '%s' "$dates" | grep -c "^${day}$" 2>/dev/null || true)
+    count=$(grep -c "^${day}$" 2>/dev/null <<< "$dates" || true)
     out+="${count} "
   done
   echo "${out% }"
@@ -196,24 +202,29 @@ _frontier_state() {
     echo "$cand - - COMPLETE 0 0 0 0 0 0 -"; return 0
   fi
 
-  local transition source cut_z now_epoch cut_epoch
+  local transition source cut_z now_epoch
   transition="$(transition_key "$frontier" "$chans")"
   source="${transition%%->*}"
   cut_z="$(candidate_cut_date "$agent" "$cand")"
+  if [ -z "$cut_z" ]; then
+    # Cannot determine the per-candidate window start — fail closed to prevent unbounded history queries.
+    echo "$cand $frontier $transition BLOCKED 0 0 0 0 0 0 -"; return 0
+  fi
   now_epoch="$(date -u +%s)"
 
   # Source-tier repos (the tier currently running the candidate).
   local src_repos=() r
   while IFS= read -r r; do [ -n "$r" ] && src_repos+=("$r"); done < <(resolve_members "$agent" "$source")
 
-  # Sample + dwell on the source tier over the per-candidate window.
+  # Sample on the source tier over the per-candidate window.
   local sample earliest
   read -r sample earliest < <(_tier_sample "$agent" "$cut_z" "${src_repos[@]}")
+
+  # Dwell is always measured from the candidate's own cut (tagger date), per #548 spec.
   local dwell_h=0
-  if [ "$earliest" != "-" ] && [ -n "$earliest" ]; then
-    dwell_h=$(( (now_epoch - $(_epoch "$earliest")) / 3600 ))
-  elif [ -n "$cut_z" ]; then
-    cut_epoch="$(_epoch "$cut_z")"; dwell_h=$(( (now_epoch - cut_epoch) / 3600 ))
+  local cut_epoch; cut_epoch="$(_epoch "$cut_z")"
+  if [ "$cut_epoch" -gt 0 ]; then
+    dwell_h=$(( (now_epoch - cut_epoch) / 3600 ))
   fi
   [ "$dwell_h" -lt 0 ] && dwell_h=0
 
@@ -234,18 +245,19 @@ _frontier_state() {
   elif [ -n "$(_gate_knob "$agent" "$transition" sample_min)" ]; then
     target="$(_gate_knob "$agent" "$transition" sample_min)"
   else
-    local win frac cmin cmax daily baseline_total
+    local win frac cmin cmax spike_cap daily baseline_total
     win="${SOAK_WINDOW_DAYS:-$(_gate_field "$agent" baseline_window_days)}"; win="${win:-14}"
     frac="$(_gate_knob "$agent" "$transition" sample_fraction_permille)"; frac="${frac:-250}"
     cmin="$(_gate_knob "$agent" "$transition" sample_clamp_min)"; cmin="${cmin:-3}"
     cmax="$(_gate_knob "$agent" "$transition" sample_clamp_max)"; cmax="${cmax:-15}"
+    spike_cap="$(_gate_field "$agent" baseline_spike_cap_multiple)"; spike_cap="${spike_cap:-3}"
     daily="$(_baseline_daily "$agent" "$win" "${src_repos[@]}")"
     baseline_total=0; for c in $daily; do baseline_total=$(( baseline_total + c )); done
     if [ "$baseline_total" -eq 0 ] && [ "$(_gate_knob "$agent" "$transition" waive_sample_if_no_caller)" = "true" ]; then
       waived="true"   # dwell-only: the source tier has no caller (#548)
     else
       # shellcheck disable=SC2086
-      target="$(robust_sample_target "$frac" "$cmin" "$cmax" $daily)"
+      target="$(robust_sample_target "$frac" "$cmin" "$cmax" "$spike_cap" $daily)"
     fi
   fi
 
@@ -254,7 +266,7 @@ _frontier_state() {
   local triage="-"
   if [ "$state" = "BLOCKED" ]; then
     local prior differs
-    prior="$(channel_commit "$agent" stable)"
+    prior="$(channel_commit "$agent" "$frontier")"
     differs="$(_reusable_differs "$agent" "$cand" "$prior")"
     triage="$(classify_failure "$differs" "${CANARY_FAILURE_CATEGORY:-unknown}")"
   fi
