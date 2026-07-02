@@ -183,7 +183,7 @@ _pipeline_agent_shape() {
   run jq -e --arg a "$agent" '.agents[$a].soak_start_ring == "ring1"' "$RINGS"
   [ "$status" -eq 0 ]
   # only ring1 + stable channels are modelled, ordered ring1 -> stable
-  run bash -c "jq -r --arg a '$agent' '.agents[\$a].rings | sort_by(.order) | map(.channel) | join(\",\")' '$RINGS'"
+  run jq -r --arg a "$agent" '.agents[$a].rings | sort_by(.order) | map(.channel) | join(",")' "$RINGS"
   [ "$output" = "ring1,stable" ]
   # ring1 = the two low-traffic consumers
   run jq -e --arg a "$agent" '.agents[$a].rings[] | select(.channel=="ring1") | (.members | index("petry-projects/TalkTerm")) and (.members | index("petry-projects/bmad-bgreat-suite"))' "$RINGS"
@@ -205,6 +205,9 @@ _pipeline_agent_shape() {
 
 @test "canary-rings.json: idea-triage onboarded (soak_start_ring=ring1, cross-repo host)" {
   _pipeline_agent_shape "idea-triage"
+  # same pattern as initiative-planner: needs next_tier_health_signal for pre-ring1 gate
+  run jq -e '.agents["idea-triage"].next_tier_health_signal == ".github/workflows/idea-triage-canary.yml"' "$RINGS"
+  [ "$status" -eq 0 ]
 }
 
 @test "canary-rings.json: initiative-driver is recorded as unmanaged, not a channel agent" {
@@ -224,7 +227,7 @@ _pipeline_agent_shape() {
   # channel tags) must stay out of the SoT entirely — neither agent nor unmanaged.
   run jq -e '.agents["idea-enhancer"] == null and .agents["feature-ideation"] == null' "$RINGS"
   [ "$status" -eq 0 ]
-  run jq -e '(.unmanaged["idea-enhancer"] // null) == null and (.unmanaged["feature-ideation"] // null) == null' "$RINGS"
+  run jq -e '.unmanaged["idea-enhancer"] == null and .unmanaged["feature-ideation"] == null' "$RINGS"
   [ "$status" -eq 0 ]
 }
 
@@ -278,6 +281,40 @@ GHEOF
   [[ "$output" == *"dev-lead"* ]]
   [[ "$output" == *"next"* ]]
   [[ "$output" == *"stable"* ]]
+}
+
+@test "orchestrator: evaluate uses next_tier_health_signal when prev_on is empty (soak_start_ring agent)" {
+  _make_stub_bin
+  # initiative-planner/next is the candidate; ring1 is not yet on it → prev_on=[]
+  cat > "$STUB_BIN/git" <<'GITEOF'
+#!/usr/bin/env bash
+case "$*" in
+  *"rev-parse"*"initiative-planner/next"*)   echo "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" ;;
+  *"rev-parse"*"initiative-planner/ring1"*)  echo "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" ;;
+  *"rev-parse"*"initiative-planner/stable"*) echo "cccccccccccccccccccccccccccccccccccccccc" ;;
+  *) : ;;
+esac
+GITEOF
+  chmod +x "$STUB_BIN/git"
+  # Healthy runs from the host canary; ring member queries return empty (low traffic)
+  cat > "$STUB_BIN/gh" <<'GHEOF'
+#!/usr/bin/env bash
+case "$*" in
+  *"run list"*"initiative-planner-canary"*)
+    printf '['; for i in $(seq 1 15); do [ "$i" -gt 1 ] && printf ','; printf '{"conclusion":"success"}'; done; printf ']'
+    ;;
+  *"run list"*) echo "[]" ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN/gh"
+
+  run env CANARY_RINGS="$RINGS" bash "$ORCH" evaluate initiative-planner
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"initiative-planner"* ]]
+  [[ "$output" == *"ring1"* ]]
+  # 15 healthy runs from canary, baseline=0 → ceil(0/7)=0 min needed → PROMOTE
+  [[ "$output" == *"PROMOTE"* ]]
 }
 
 @test "orchestrator: promote --override --dry-run shows the move but never pushes" {

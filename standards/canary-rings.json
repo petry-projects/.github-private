@@ -63,6 +63,7 @@
       "reusable": ".github/workflows/idea-triage-reusable.yml",
       "run_workflow": "Idea Triage (Promotion Queue)",
       "soak_start_ring": "ring1",
+      "next_tier_health_signal": ".github/workflows/idea-triage-canary.yml",
       "rings": [
         { "channel": "ring1",  "order": 2, "members": ["petry-projects/TalkTerm", "petry-projects/bmad-bgreat-suite"] },
         { "channel": "stable", "order": 3, "members": ["*"] }
