@@ -51,7 +51,7 @@ sc_ci_weakening() {
         report("step disabled (if: false): " c)
       if (c ~ /continue-on-error:[[:space:]]*true/)
         report("failure suppressed (continue-on-error: true): " c)
-      if (iswf && c ~ /^[[:space:]]*#[[:space:]]*-[[:space:]]+(run|uses):/)
+      if (iswf && c ~ /^[[:space:]]*#[[:space:]]*-[[:space:]]*(run|uses):/)
         report("commented-out CI step: " c)
       k=thkey(c)
       if (k != "" && (k in rem)) { v=num(c); if (v >= 0 && v < rem[k]) report("lowered numeric threshold (" rem[k] " -> " v "): " c) }
