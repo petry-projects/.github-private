@@ -149,13 +149,15 @@ setup() {
   local diff='diff --git a/foo.test.js b/foo.test.js
 --- a/foo.test.js
 +++ b/foo.test.js
-@@ -1,2 +1,3 @@
+@@ -1,2 +1,4 @@
  test("keep", ()=>{})
 +xit("skipme", ()=>{})
++xdescribe("group", ()=>{})
  more'
   run sc_ci_weakening "$diff"
   [ "$status" -eq 0 ]
-  echo "$output" | grep -qi "skip/disable marker"
+  grep -qi "skip/disable marker" <<< "$output"
+  grep -q "foo.test.js" <<< "$output"
 }
 
 # Regression (issue #305 review): the awk `rem[]` threshold map must be reset per
@@ -179,7 +181,7 @@ diff --git a/b/unrelated.txt b/b/unrelated.txt
   [ "$status" -eq 0 ]
   # Exactly the real threshold drop in file A is reported; file B must NOT
   # produce a "lowered threshold" finding from a leaked rem[] value.
-  [ "$(echo "$output" | grep -ci "lowered numeric threshold")" -eq 1 ]
+  [ "$(grep -ci "lowered numeric threshold" <<< "$output" || true)" -eq 1 ]
 }
 
 # ---------------------------------------------------------------------------
