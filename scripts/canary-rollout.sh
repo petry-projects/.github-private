@@ -188,9 +188,11 @@ _reusable_differs() {
 _frontier_state() {
   local agent="$1"
   local cand chans frontier="" prev_on=()
-  local soak_start use_soak_as_candidate=false
+  local soak_start use_soak_as_candidate=false next_health_signal
   soak_start="$(_agent_field "$agent" soak_start_ring)"
   [ "$soak_start" = "null" ] && soak_start=""
+  next_health_signal="$(_agent_field "$agent" next_tier_health_signal)"
+  [ "$next_health_signal" = "null" ] && next_health_signal=""
 
   cand="$(channel_commit "$agent" next)"
   # soak_start_ring agents have no @next channel caller — the innermost soaked ring is
@@ -222,18 +224,36 @@ _frontier_state() {
   source="${transition%%->*}"
   cut_z="$(candidate_cut_date "$agent" "$cand")"
   if [ -z "$cut_z" ]; then
-    # Cannot determine the per-candidate window start — fail closed to prevent unbounded history queries.
-    echo "$cand $frontier $transition BLOCKED 0 0 0 0 0 0 -"; return 0
+    if [ -z "$soak_start" ]; then
+      # Cannot determine the per-candidate window start — fail closed to prevent unbounded history queries.
+      echo "$cand $frontier $transition BLOCKED 0 0 0 0 0 0 -"; return 0
+    fi
+    # soak_start_ring agents may lack a vX.Y.Z release tag; proceed with an unbounded window.
   fi
   now_epoch="$(date -u +%s)"
 
   # Source-tier repos (the tier currently running the candidate).
-  local src_repos=() r
-  while IFS= read -r r; do [ -n "$r" ] && src_repos+=("$r"); done < <(resolve_members "$agent" "$source")
+  # When the frontier IS the soak_start_ring (transition is empty — no source ring below it),
+  # use the host repo with next_tier_health_signal as the pre-soak health source.
+  local src_repos=() r use_health_signal=false
+  if [ -z "$transition" ] && [ -n "$next_health_signal" ]; then
+    use_health_signal=true
+    src_repos=("$(_agent_field "$agent" host)")
+  else
+    while IFS= read -r r; do [ -n "$r" ] && src_repos+=("$r"); done < <(resolve_members "$agent" "$source")
+  fi
 
   # Sample on the source tier over the per-candidate window.
   local sample earliest
-  read -r sample earliest < <(_tier_sample "$agent" "$cut_z" "${src_repos[@]}")
+  if [ "$use_health_signal" = "true" ]; then
+    local hs_json
+    hs_json="$(_run_json "${src_repos[0]}" "$next_health_signal" "$cut_z")"
+    sample=$(jq '[.[]?|select(.conclusion=="success" or .conclusion=="failure")]|length' 2>/dev/null <<< "$hs_json" || echo 0)
+    earliest="$(jq -r '[.[]?|select(.conclusion=="success" or .conclusion=="failure")|.createdAt?]|min // empty' 2>/dev/null <<< "$hs_json")"
+    [ -z "$earliest" ] && earliest="-"
+  else
+    read -r sample earliest < <(_tier_sample "$agent" "$cut_z" "${src_repos[@]}")
+  fi
 
   # Dwell is always measured from the candidate's own cut (tagger date), per #548 spec.
   local dwell_h=0
