@@ -559,17 +559,6 @@ GHEOF
   # Simulate the #1003 mode: the engine advanced HEAD (a commit) before the
   # timeout, so pre_engine_sha != current HEAD. git status is clean but the SHA
   # moved → completed-but-unpushed work must be surfaced.
-  cat > "$STUB_BIN_DIR/git" <<'GITEOF'
-#!/usr/bin/env bash
-case "$*" in
-  "config"*)            exit 0 ;;
-  "checkout -b"*)       exit 0 ;;
-  "rev-parse HEAD")     echo "$DEVLEAD_TEST_HEAD" ;;
-  "status --porcelain") exit 0 ;;
-  *)                    exit 0 ;;
-esac
-GITEOF
-  chmod +x "$STUB_BIN_DIR/git"
   # First rev-parse (pre_engine_sha) reads one value; make the failure-handler's
   # rev-parse report a different SHA by flipping the env after branch creation is
   # not possible across processes, so use a wrapper that advances on 2nd call.

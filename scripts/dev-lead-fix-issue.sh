@@ -141,17 +141,18 @@ Please check the runner/engine configuration, then re-apply the \`dev-lead\` lab
       deep)          raise_var="DEEP_TIMEOUT_SEC" ;;
     esac
 
-    # Don't discard completed work (#1003): if the engine already produced
-    # commits or staged/uncommitted changes before a later phase timed out,
-    # surface that fact so the partial work is not *silently* lost. The branch is
-    # local to this (ephemeral) runner and was not pushed, so point the human at
-    # the redacted session snippet below, which captured the changes.
+    # Surface completed-but-unpushed work (#1003): if the engine produced commits
+    # or staged/uncommitted changes before a later phase timed out, say so — so
+    # the timeout isn't a silent black hole. Be honest about the limitation: the
+    # branch is local to this ephemeral runner and was NOT pushed, so it is not
+    # recoverable from this run; the session snippet is context only, not
+    # restorable output.
     local work_note=""
     if [ -n "$(git status --porcelain 2>/dev/null)" ] || \
        { [ -n "${pre_engine_sha:-}" ] && [ "$(git rev-parse HEAD 2>/dev/null)" != "$pre_engine_sha" ]; }; then
       work_note="
 
-> **Work completed but not pushed.** The engine produced changes on branch \`${branch:-unknown}\` before the timeout, but the branch was **not pushed** (the run timed out first). The partial work is not silently lost — see the session snippet below. Re-apply \`dev-lead\` after splitting/raising the budget to regenerate it."
+> **Note: the engine had produced changes before the timeout.** They were on branch \`${branch:-unknown}\` on the runner and were **not pushed**, so they are **not recoverable** from this run (the runner is ephemeral). The redacted session snippet below shows what it attempted — treat it as context, not restorable output. Re-apply \`dev-lead\` after splitting the issue or raising the budget to regenerate the work."
     fi
 
     echo "::error::Stage timeout (exit 124) while implementing issue #${ISSUE_NUMBER} at the ${tier} tier (elapsed=${elapsed}s, budget=${budget}s) — escalating to human (no same-budget retry)"
