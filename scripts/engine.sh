@@ -5066,9 +5066,23 @@ run_writer_with_fallback() {
       continue
     fi
 
+    # Run-scoped exhaustion (#947): an engine already found rate-limited/
+    # unavailable earlier in this run is not re-invoked. Reflect its recorded
+    # reason into the aggregate so the final return code is unchanged, and emit
+    # no repeat notice (the one-time notice fired when it was first marked).
+    if _engine_is_exhausted "$engine"; then
+      case "${_ENGINE_EXHAUSTED_REASON["$engine"]}" in
+        missing-binary) any_missing=1 ;;
+        *)              any_rate_limited=1 ;;
+      esac
+      echo "  [engine] $engine already exhausted this run — skipping (not re-invoked)" >&2
+      continue
+    fi
+
     if ! check_provider_headroom "$engine"; then
       echo "::warning::$engine at/above usage threshold — trying next engine" >&2
       any_rate_limited=1
+      _mark_engine_exhausted "$engine" "rate-limited"
       continue
     fi
 
@@ -5094,8 +5108,13 @@ run_writer_with_fallback() {
       #           binary rather than a retryable quota error so that infra failures
       #           surface loudly instead of being masked as rate-limit retries).
       echo "::warning::$engine unavailable (exit $rc), trying next engine" >&2
-      [ "$rc" -eq 2 ] && any_rate_limited=1
-      [ "$rc" -eq 127 ] && any_missing=1
+      if [ "$rc" -eq 2 ]; then
+        any_rate_limited=1
+        _mark_engine_exhausted "$engine" "rate-limited"
+      else
+        any_missing=1
+        _mark_engine_exhausted "$engine" "missing-binary"
+      fi
       continue
     fi
     # A non-fallback engine error (137/143=signal, generic non-zero) — propagate
