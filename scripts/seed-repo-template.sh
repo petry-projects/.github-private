@@ -77,12 +77,14 @@ readonly -a WORKFLOW_MANIFEST=(
 
 # Baseline files (AC #3). One row per file: "path|source".
 #   source=gen → generated inline by _gen_baseline.
-#   source=fetch:<standards-path> → fetched verbatim from STANDARDS_REPO.
+#   source=fetch:<standards-path> → fetched verbatim from STANDARDS_REPO at that path.
+#   source=fetch (bare) → the Dependabot stack special case (path is DEPENDABOT_STACK-derived).
 readonly -a BASELINE_MANIFEST=(
   "AGENTS.md|gen"
   "CLAUDE.md|gen"
   ".github/CODEOWNERS|gen"
   ".github/dependabot.yml|fetch"
+  ".gitleaks.toml|fetch:standards/gitleaks.toml"
   "sonar-project.properties|gen"
   ".gitignore|gen"
   "LICENSE|gen"
@@ -309,16 +311,30 @@ _emit_baseline() {
     echo "::error::unknown baseline file: $path" >&2
     return 2
   fi
+  local content std_path
   if [ "$source" = "gen" ]; then
     _gen_baseline "$path"
-  else
-    local content
-    content="$(_fetch_standard "standards/dependabot/${DEPENDABOT_STACK}.yml")" || true
+  elif [ "$source" = "fetch" ]; then
+    # Dependabot special case: the standards path is DEPENDABOT_STACK-derived.
+    std_path="standards/dependabot/${DEPENDABOT_STACK}.yml"
+    content="$(_fetch_standard "$std_path")" || true
     if [ -z "$content" ]; then
-      echo "::error::could not fetch standards/dependabot/${DEPENDABOT_STACK}.yml from ${STANDARDS_REPO}" >&2
+      echo "::error::could not fetch ${std_path} from ${STANDARDS_REPO}" >&2
       return 1
     fi
     printf '%s\n' "$content"
+  elif [ "${source#fetch:}" != "$source" ]; then
+    # General verbatim fetch: source=fetch:<standards-path> (e.g. .gitleaks.toml).
+    std_path="${source#fetch:}"
+    content="$(_fetch_standard "$std_path")" || true
+    if [ -z "$content" ]; then
+      echo "::error::could not fetch ${std_path} from ${STANDARDS_REPO}" >&2
+      return 1
+    fi
+    printf '%s\n' "$content"
+  else
+    echo "::error::unknown baseline source '${source}' for ${path}" >&2
+    return 2
   fi
 }
 
