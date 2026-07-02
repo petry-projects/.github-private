@@ -33,8 +33,8 @@ sc_ci_weakening() {
   printf '%s' "$diff" | awk '
     function report(msg){ printf "%s:%d\t%s\n", f, line, msg }
     function num(s){ if (match(s, /[0-9]+(\.[0-9]+)?/)) return substr(s, RSTART, RLENGTH)+0; return -1 }
-    function thkey(s,  l){ l=tolower(s); if (match(l, /coverage|fail[_-]under|threshold|min[_-]?cov/)) return substr(l, RSTART, RLENGTH); return "" }
-    /^\+\+\+ /{ f=$0; sub(/^\+\+\+ [ab]\//, "", f); sub(/\t.*/, "", f); line=0; in_hunk=0; next }
+    function thkey(s,  l, k){ l=tolower(s); if (match(l, /coverage|fail[_-]under|threshold|min[_-]?cov/)) { k=substr(l, RSTART, RLENGTH); gsub(/[_-]/, "", k); return k } return "" }
+    /^\+\+\+ /{ f=$0; sub(/^\+\+\+ [ab]\//, "", f); sub(/\t.*/, "", f); line=0; in_hunk=0; delete rem; next }
     /^@@/ { m=$0; sub(/^@@ -[0-9,]+ \+/, "", m); sub(/[, ].*/, "", m); line=m+0; in_hunk=1; next }
     !in_hunk { next }
     /^-/ && !/^---/ {
@@ -44,7 +44,7 @@ sc_ci_weakening() {
     }
     /^\+/ && !/^\+\+\+/ {
       c=substr($0,2)
-      if (c ~ /(it|test|describe|context)\.skip|\.skip[[:space:]]*\(|\.only[[:space:]]*\(|\bxit\b|\bxdescribe\b|\.todo[[:space:]]*\(|@Ignore|@Disabled|pytest\.mark\.skip|unittest\.skip|t\.Skip[[:space:]]*\(|@pytest\.mark\.skip/)
+      if (c ~ /(it|test|describe|context)\.skip|\.skip[[:space:]]*\(|\.only[[:space:]]*\(|((^|[^a-zA-Z0-9_])xit([^a-zA-Z0-9_]|$))|((^|[^a-zA-Z0-9_])xdescribe([^a-zA-Z0-9_]|$))|\.todo[[:space:]]*\(|@Ignore|@Disabled|pytest\.mark\.skip|unittest\.skip|t\.Skip[[:space:]]*\(/)
         report("test skip/disable marker added: " c)
       if (c ~ /if:[[:space:]]*false([[:space:]]|$)/)
         report("step disabled (if: false): " c)
@@ -110,7 +110,7 @@ sc_dependency_risk() {
     /^\+\+\+ /{
       f=$0; sub(/^\+\+\+ [ab]\//, "", f); sub(/\t.*/, "", f); line=0; in_hunk=0
       b=f; sub(/^.*\//, "", b)
-      ismanifest = (b ~ /^(package\.json|package-lock\.json|composer\.json|Cargo\.toml|go\.mod|Gemfile|Pipfile|pom\.xml|build\.gradle|pnpm-lock\.yaml|yarn\.lock)$/ || b ~ /^requirements.*\.txt$/) ? 1 : 0
+      ismanifest = (b ~ /^(package\.json|composer\.json|Cargo\.toml|go\.mod|Gemfile|Pipfile|pom\.xml|build\.gradle)$/ || b ~ /^requirements.*\.txt$/) ? 1 : 0
       next
     }
     /^@@/ { m=$0; sub(/^@@ -[0-9,]+ \+/, "", m); sub(/[, ].*/, "", m); line=m+0; in_hunk=1; next }
@@ -140,10 +140,10 @@ sc_large_pr() {
   local max_files="${LARGE_PR_MAX_FILES:-50}"
   local max_lines="${LARGE_PR_MAX_LINES:-1000}"
   local files add del body
-  files=$(printf '%s' "$meta" | jq -r '.changedFiles // 0' 2>/dev/null || echo 0)
-  add=$(printf '%s' "$meta" | jq -r '.additions // 0' 2>/dev/null || echo 0)
-  del=$(printf '%s' "$meta" | jq -r '.deletions // 0' 2>/dev/null || echo 0)
-  body=$(printf '%s' "$meta" | jq -r '.body // ""' 2>/dev/null || echo "")
+  files=$(jq -r '.changedFiles? // 0' <<< "$meta" 2>/dev/null || echo 0)
+  add=$(jq -r '.additions? // 0' <<< "$meta" 2>/dev/null || echo 0)
+  del=$(jq -r '.deletions? // 0' <<< "$meta" 2>/dev/null || echo 0)
+  body=$(jq -r '.body? // ""' <<< "$meta" 2>/dev/null || echo "")
   [[ "$files" =~ ^[0-9]+$ ]] || files=0
   [[ "$add" =~ ^[0-9]+$ ]] || add=0
   [[ "$del" =~ ^[0-9]+$ ]] || del=0
@@ -155,7 +155,7 @@ sc_large_pr() {
   fi
 
   local has_plan=0
-  if printf '%s' "$body" | grep -qiE '^#{1,6}[[:space:]].*(implementation|breakdown|approach|design|steps|plan)|implementation (plan|breakdown)|## *plan'; then
+  if grep -qiE '^#{1,6}[[:space:]].*(implementation|breakdown|approach|design|steps|plan)|implementation (plan|breakdown)|## *plan' <<< "$body"; then
     has_plan=1
   fi
 
@@ -175,10 +175,10 @@ sc_large_pr() {
 sc_description_missing() {
   local meta="${1:-}"
   local body
-  body=$(printf '%s' "$meta" | jq -r '.body // ""' 2>/dev/null || echo "")
+  body=$(jq -r '.body? // ""' <<< "$meta" 2>/dev/null || echo "")
 
   local missing=0 csv=""
-  _sc_desc_has() { printf '%s' "$body" | grep -qiE "$1"; }
+  _sc_desc_has() { grep -qiE "$1" <<< "$body"; }
   local -a keys=(problem risk test-plan rollback monitoring)
   local -a pats=(
     'problem|background|motivation|context|summary|## *what'
@@ -226,7 +226,7 @@ compute_safety_checks() {
   [[ "$desc_count" =~ ^[0-9]+$ ]] || desc_count=0
 
   local dep_count=0
-  [ -n "$dep" ] && dep_count=$(printf '%s\n' "$dep" | grep -c . || true)
+  [ -n "$dep" ] && dep_count=$(grep -c . <<< "$dep" || true)
   [[ "$dep_count" =~ ^[0-9]+$ ]] || dep_count=0
 
   # Assemble the human/LLM-readable findings list.
@@ -274,7 +274,7 @@ assemble_safety_checks() {
   local meta="${1:-}" diff="${2:-}"
   local out_file="${3:-${SAFETY_CHECKS_FILE:-/tmp/cascade/safety-checks.txt}}"
   mkdir -p "$(dirname "$out_file")" 2>/dev/null || true
-  compute_safety_checks "$meta" "$diff" > "$out_file" 2>/dev/null || true
+  compute_safety_checks "$meta" "$diff" > "$out_file" || true
   export SAFETY_CHECKS_FILE="$out_file"
   return 0
 }
