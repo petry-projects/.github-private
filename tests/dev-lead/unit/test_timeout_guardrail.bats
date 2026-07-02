@@ -11,9 +11,10 @@ GUARDRAIL="$REPO_ROOT/scripts/dev-lead-timeout-guardrail.sh"
 ENGINE="$REPO_ROOT/scripts/engine.sh"
 WORKFLOW="$REPO_ROOT/.github/workflows/dev-lead-reusable.yml"
 
-# Extract a `VAR="${VAR:-N}"` default from engine.sh.
+# Extract a `VAR="${VAR:-N}"` default from engine.sh. Skips comment lines and
+# tolerates leading whitespace (mirrors the guardrail script's parser).
 _tier_default() {
-  sed -n "s/^$1=\"\${$1:-\([0-9][0-9]*\)}\".*/\1/p" "$ENGINE"
+  sed -n "/^[[:space:]]*#/d; s/^[[:space:]]*$1=\"\${$1:-\([0-9][0-9]*\)}\".*/\1/p" "$ENGINE"
 }
 
 @test "guardrail: script exists and is executable" {
@@ -29,9 +30,10 @@ _tier_default() {
 # Parse the dispatch job's timeout-minutes directly (no bash -c wrapper).
 _dispatch_timeout_min() {
   awk '
+    /^[[:space:]]*#/ {next}
     /^  dispatch:[[:space:]]*$/ {inblk=1; next}
     inblk==1 && /^  [A-Za-z]/ {inblk=0}
-    inblk==1 && /^    timeout-minutes:/ {print $2; exit}
+    inblk==1 && /^[[:space:]]*timeout-minutes:/ {print $2; exit}
   ' "$WORKFLOW"
 }
 
