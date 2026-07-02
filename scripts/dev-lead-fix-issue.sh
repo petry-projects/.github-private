@@ -125,6 +125,55 @@ Please check the runner/engine configuration, then re-apply the \`dev-lead\` lab
     exit 1
   fi
 
+  # Stage timeout (exit 124): a first-class, NON-retryable condition. A
+  # same-budget retry would just time out again, so — like missing-binary —
+  # escalate to a human on the FIRST occurrence with NO retry marker (the retry
+  # cron skips dev-lead:needs-human). The comment states the tier, elapsed
+  # seconds, and budget, plus split/raise guidance. This branch precedes the
+  # attempt-ceiling / retry logic below on purpose. (#1018)
+  if [ "$reason" = "timeout" ]; then
+    local tier="deep/action" budget="unknown" elapsed="unknown" raise_var="DEEP_TIMEOUT_SEC"
+    [ -s /tmp/dev-lead-timeout-tier ]    && tier=$(tr -d '[:space:]' < /tmp/dev-lead-timeout-tier)
+    [ -s /tmp/dev-lead-timeout-budget ]  && budget=$(tr -d '[:space:]' < /tmp/dev-lead-timeout-budget)
+    [ -s /tmp/dev-lead-timeout-elapsed ] && elapsed=$(tr -d '[:space:]' < /tmp/dev-lead-timeout-elapsed)
+    case "$tier" in
+      action|writer) raise_var="ACTION_TIMEOUT_SEC" ;;
+      deep)          raise_var="DEEP_TIMEOUT_SEC" ;;
+    esac
+
+    # Surface completed-but-unpushed work (#1003): if the engine produced commits
+    # or staged/uncommitted changes before a later phase timed out, say so — so
+    # the timeout isn't a silent black hole. Be honest about the limitation: the
+    # branch is local to this ephemeral runner and was NOT pushed, so it is not
+    # recoverable from this run; the session snippet is context only, not
+    # restorable output.
+    local work_note=""
+    if [ -n "$(git status --porcelain 2>/dev/null)" ] || \
+       { [ -n "${pre_engine_sha:-}" ] && [ "$(git rev-parse HEAD 2>/dev/null)" != "$pre_engine_sha" ]; }; then
+      work_note="
+
+> **Note: the engine had produced changes before the timeout.** They were on branch \`${branch:-unknown}\` on the runner and were **not pushed**, so they are **not recoverable** from this run (the runner is ephemeral). The redacted session snippet below shows what it attempted — treat it as context, not restorable output. Re-apply \`dev-lead\` after splitting the issue or raising the budget to regenerate the work."
+    fi
+
+    echo "::error::Stage timeout (exit 124) while implementing issue #${ISSUE_NUMBER} at the ${tier} tier (elapsed=${elapsed}s, budget=${budget}s) — escalating to human (no same-budget retry)"
+    ensure_needs_human_label
+    gh issue comment "$ISSUE_NUMBER" --repo "$REPO" --body "<!-- dev-lead-issue ${ISSUE_NUMBER} status=needs-human attempt=${attempt} reason=${reason} run=${GITHUB_RUN_ID:-} -->
+## Dev-Lead: cannot implement issue #${ISSUE_NUMBER} — needs human attention
+
+A stage **timed out** (exit 124) while implementing this issue. A timeout is treated as a first-class, **non-retryable** condition — retrying with the same budget would just time out again — so this escalates for human review on the **first** occurrence instead of wasting a same-budget retry.
+
+- **Cause:** \`${reason}\`
+- **Tier:** ${tier}
+- **Elapsed:** ${elapsed}s
+- **Budget:** ${budget}s
+- **Run:** ${run_url}
+
+This hit the max ${tier} budget. **Split this issue** into smaller, independently-implementable pieces, or **raise \`vars.${raise_var}\`**, then re-apply the \`dev-lead\` label.${work_note}
+
+${snippet}" 2>/dev/null || true
+    exit 1
+  fi
+
   # Retries exhausted: escalate to a human, no further retry marker.
   if [ "$attempt" -ge "$MAX_ATTEMPTS" ]; then
     echo "::error::Engine failed to implement issue #${ISSUE_NUMBER} (reason=${reason}); retries exhausted (attempt ${attempt}/${MAX_ATTEMPTS}) — escalating to human"

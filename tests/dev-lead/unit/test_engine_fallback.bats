@@ -28,6 +28,7 @@ setup() {
 teardown() {
   rm -f "$GITHUB_ENV" "$GITHUB_OUTPUT" "$TEST_PROMPT"
   rm -f /tmp/dev-lead-failure-reason /tmp/dev-lead-session-output.txt /tmp/dev-lead-rate-limit-reset
+  rm -f /tmp/dev-lead-timeout-tier /tmp/dev-lead-timeout-budget /tmp/dev-lead-timeout-elapsed
   rm -rf "$STUB_BIN_DIR"
 }
 
@@ -290,6 +291,57 @@ GHEOF
 
   [ "$status" -eq 1 ]
   [ "$(cat /tmp/dev-lead-failure-reason)" = "engine-error" ]
+}
+
+# ── timeout classification (#1018) ───────────────────────────────────────────
+# A per-tier stage timeout (exit 124 from GNU `timeout`) must be classified as a
+# distinct, NON-retryable reason=timeout — not engine-error — and must NOT drive
+# a same-budget retry on another engine. The tier/budget/elapsed sidecars carry
+# the context the needs-human escalation comment surfaces.
+
+@test "sidecar: stage timeout (exit 124) → reason=timeout + tier/budget/elapsed sidecars" {
+  _make_stub "claude" 124
+  export ACTION_TIMEOUT_SEC=2100
+  _source_engine "claude"
+
+  run run_writer_with_fallback "$TEST_PROMPT"
+
+  # 124 propagates immediately (distinct from engine-error)
+  [ "$status" -eq 124 ]
+  [ "$(cat /tmp/dev-lead-failure-reason)" = "timeout" ]
+  [ "$(cat /tmp/dev-lead-timeout-tier)" = "action" ]
+  [ "$(cat /tmp/dev-lead-timeout-budget)" = "2100" ]
+  [ -f /tmp/dev-lead-timeout-elapsed ]
+}
+
+@test "sidecar: timeout (124) does NOT fall through to another engine (no same-budget retry)" {
+  # claude times out (124); NEITHER copilot nor gemini (the remaining engines in
+  # the claude→copilot→gemini order) may be tried — each would succeed here if
+  # wrongly invoked, so record both and assert neither ran.
+  _make_stub "claude" 124
+  local gemini_record copilot_record
+  gemini_record="$(mktemp)"; copilot_record="$(mktemp)"
+  _make_recording_stub "gemini" 0 "$gemini_record"
+  # Enable copilot (non-ghp token) and record any `gh copilot` invocation.
+  export COPILOT_GITHUB_TOKEN="stub-token"
+  cat > "$STUB_BIN_DIR/gh" <<GHEOF
+#!/usr/bin/env bash
+case "\$*" in
+  *"copilot"*) echo "\$*" >> "$copilot_record"; echo "success output"; exit 0 ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+  _source_engine "claude"
+
+  run run_writer_with_fallback "$TEST_PROMPT"
+
+  [ "$status" -eq 124 ]
+  [ "$(cat /tmp/dev-lead-failure-reason)" = "timeout" ]
+  # Same-budget retry on ANY fallback engine must NOT happen.
+  [ ! -s "$copilot_record" ]
+  [ ! -s "$gemini_record" ]
+  rm -f "$gemini_record" "$copilot_record"
 }
 
 @test "sidecar: stale reason cleared on success" {
