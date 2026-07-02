@@ -317,6 +317,40 @@ GHEOF
   [[ "$output" == *"PROMOTE"* ]]
 }
 
+@test "orchestrator: evaluate uses ring1 health when soak_start_ring is the candidate source (no next tag)" {
+  _make_stub_bin
+  # initiative-planner has soak_start_ring=ring1 and no @next channel caller.
+  # ring1 tag exists (aaaa = candidate); stable tag is on a different commit (bbbb).
+  # _frontier_state must treat ring1 as the candidate source and identify stable as
+  # the frontier (not get stuck or falsely report COMPLETE).
+  cat > "$STUB_BIN/git" <<'GITEOF'
+#!/usr/bin/env bash
+case "$*" in
+  *"rev-parse"*"initiative-planner/ring1"*)  echo "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" ;;
+  *"rev-parse"*"initiative-planner/stable"*) echo "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" ;;
+  *) : ;;
+esac
+GITEOF
+  chmod +x "$STUB_BIN/git"
+  # ring1 members return healthy runs; stable frontier members are wildcards (skipped)
+  cat > "$STUB_BIN/gh" <<'GHEOF'
+#!/usr/bin/env bash
+case "$*" in
+  *"run list"*) echo '[{"conclusion":"success"},{"conclusion":"success"},{"conclusion":"success"},{"conclusion":"success"},{"conclusion":"success"},{"conclusion":"success"},{"conclusion":"success"},{"conclusion":"success"},{"conclusion":"success"},{"conclusion":"success"}]' ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN/gh"
+
+  run env CANARY_RINGS="$RINGS" bash "$ORCH" evaluate initiative-planner
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"initiative-planner"* ]]
+  # stable is the frontier (ring1 = soak_start_ring = already on candidate)
+  [[ "$output" == *"stable"* ]]
+  # 10+ healthy ring1 runs, baseline (stable/*) = 0 → min_healthy=0, healthy>0 → PROMOTE
+  [[ "$output" == *"PROMOTE"* ]]
+}
+
 @test "orchestrator: promote --override --dry-run shows the move but never pushes" {
   _make_stub_bin
   cat > "$STUB_BIN/gh" <<'GHEOF'

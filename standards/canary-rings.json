@@ -50,7 +50,7 @@
     "initiative-planner": {
       "host": "petry-projects/.github",
       "reusable": ".github/workflows/initiative-planner-reusable.yml",
-      "run_workflow": "Initiative Planner (BMAD Scrum Master)",
+      "run_workflow": "Initiative Planner — Approval Trigger",
       "soak_start_ring": "ring1",
       "next_tier_health_signal": ".github/workflows/initiative-planner-canary.yml",
       "rings": [
@@ -61,7 +61,7 @@
     "idea-triage": {
       "host": "petry-projects/.github",
       "reusable": ".github/workflows/idea-triage-reusable.yml",
-      "run_workflow": "Idea Triage (Promotion Queue)",
+      "run_workflow": "Idea Triage — Weekly Shortlist",
       "soak_start_ring": "ring1",
       "next_tier_health_signal": ".github/workflows/idea-triage-canary.yml",
       "rings": [

@@ -187,16 +187,31 @@ _reusable_differs() {
 # unless state is BLOCKED (then REGRESSION | PRE_EXISTING).
 _frontier_state() {
   local agent="$1"
-  local cand chans frontier=""
+  local cand chans frontier="" prev_on=()
+  local soak_start use_soak_as_candidate=false
+  soak_start="$(_agent_field "$agent" soak_start_ring)"
+  [ "$soak_start" = "null" ] && soak_start=""
+
   cand="$(channel_commit "$agent" next)"
+  # soak_start_ring agents have no @next channel caller — the innermost soaked ring is
+  # the candidate source.  Fall back only when next genuinely has no tag.
+  if [ -z "$cand" ] && [ -n "$soak_start" ]; then
+    cand="$(channel_commit "$agent" "$soak_start")"
+    use_soak_as_candidate=true
+  fi
   chans="$(ordered_channels "$agent")"
 
+  # Collect the rings already on the candidate (starting at next / soak_start) and find the frontier.
   local chan_array=()
   IFS=, read -r -a chan_array <<< "$chans"
   local ch
   for ch in "${chan_array[@]}"; do
     local c; c="$(channel_commit "$agent" "$ch")"
-    if [ "$ch" = "next" ] || [ "$c" = "$cand" ]; then :; else frontier="$ch"; break; fi
+    if [ "$ch" = "next" ] || { [ "$use_soak_as_candidate" = "true" ] && [ "$ch" = "$soak_start" ]; } || [ "$c" = "$cand" ]; then
+      prev_on+=("$ch")
+    else
+      frontier="$ch"; break
+    fi
   done
   if [ -z "$frontier" ]; then
     echo "$cand - - COMPLETE 0 0 0 0 0 0 -"; return 0
