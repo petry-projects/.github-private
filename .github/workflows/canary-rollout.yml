@@ -80,7 +80,7 @@ jobs:
           # a distinct value from the numeric app id — set vars.RELEASE_MANAGER_APP_CLIENT_ID.
           client-id: ${{ vars.RELEASE_MANAGER_APP_CLIENT_ID }}
           private-key: ${{ secrets.RELEASE_MANAGER_APP_KEY }}
-          # owner:-wide (NOT a fixed repositories: list). The fleet gate reads run history
+          # owner-wide (NOT a fixed repositories: list). The fleet gate reads run history
           # across every tier repo, including the stable-tier '*' member (all consumers),
           # which cannot be enumerated — so scoping to a repo list would break the gate (#1025 P3).
           owner: ${{ github.repository_owner }}

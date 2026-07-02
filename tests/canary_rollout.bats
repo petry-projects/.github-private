@@ -384,7 +384,9 @@ _benign_stub() {
   {
     echo '#!/usr/bin/env bash'
     echo 'case "$*" in'
-    printf '  *"run list"*) jq -nc --arg d "%s" '"'"'[range(3)|{conclusion:"failure",createdAt:$d,databaseId:(1000+.),workflowName:"Dev-Lead Agent"}]'"'"' ;;\n' "$run_iso"
+    echo '  *"run list"*)'
+    printf '    if [[ "$*" == *"databaseId"* ]]; then jq -nc --arg d "%s" '"'"'[range(3)|{conclusion:"failure",createdAt:$d,databaseId:(1000+.),workflowName:"Dev-Lead Agent"}]'"'"'; else jq -nc --arg d "%s" '"'"'[range(3)|{conclusion:"failure",createdAt:$d}]'"'"'; fi\n' "$run_iso" "$run_iso"
+    echo '    ;;'
     printf '  *"run view"*) jq -nc --arg s "%s" '"'"'{jobs:[{steps:[{name:$s,conclusion:"failure"}]}]}'"'"' ;;\n' "$step"
     echo '  *) echo "{}" ;;'
     echo 'esac'
