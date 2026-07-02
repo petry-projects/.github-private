@@ -34,7 +34,8 @@ sc_ci_weakening() {
     function report(msg){ printf "%s:%d\t%s\n", f, line, msg }
     function num(s){ if (match(s, /[0-9]+(\.[0-9]+)?/)) return substr(s, RSTART, RLENGTH)+0; return -1 }
     function thkey(s,  l, k){ l=tolower(s); if (match(l, /coverage|fail[_-]under|threshold|min[_-]?cov/)) { k=substr(l, RSTART, RLENGTH); gsub(/[_-]/, "", k); return k } return "" }
-    /^\+\+\+ /{ f=$0; sub(/^\+\+\+ [ab]\//, "", f); sub(/\t.*/, "", f); line=0; in_hunk=0; delete rem; next }
+    /^\+\+\+ /{ f=$0; sub(/^\+\+\+ [ab]\//, "", f); sub(/\t.*/, "", f); line=0; in_hunk=0; delete rem
+      iswf=(f~/^\.github\/workflows\/.*\.(yml|yaml)$/) ? 1 : 0; next }
     /^@@/ { m=$0; sub(/^@@ -[0-9,]+ \+/, "", m); sub(/[, ].*/, "", m); line=m+0; in_hunk=1; next }
     !in_hunk { next }
     /^-/ && !/^---/ {
@@ -50,6 +51,8 @@ sc_ci_weakening() {
         report("step disabled (if: false): " c)
       if (c ~ /continue-on-error:[[:space:]]*true/)
         report("failure suppressed (continue-on-error: true): " c)
+      if (iswf && c ~ /^[[:space:]]*#[[:space:]]*-[[:space:]]+(run|uses):/)
+        report("commented-out CI step: " c)
       k=thkey(c)
       if (k != "" && (k in rem)) { v=num(c); if (v >= 0 && v < rem[k]) report("lowered numeric threshold (" rem[k] " -> " v "): " c) }
       line++
@@ -70,9 +73,24 @@ sc_prompt_injection() {
   local diff="${1:-}"
   printf '%s' "$diff" | awk '
     function report(msg){ printf "%s:%d\t%s\n", f, line, msg }
+    function get_indent(s,   i){ i=0; while(substr(s,i+1,1)==" ") i++; return i }
+    function update_run_state(raw,   ind, stripped, val) {
+      ind=get_indent(raw)
+      stripped=raw; gsub(/^[[:space:]]+/,"",stripped)
+      if (in_run) {
+        if (run_inline) { in_run=0; run_ind=-1; run_inline=0 }
+        else if (stripped != "" && ind <= run_ind) { in_run=0; run_ind=-1 }
+      }
+      if (stripped ~ /^(-[[:space:]]+)?run:[[:space:]]/) {
+        in_run=1; run_ind=ind
+        val=stripped; sub(/^(-[[:space:]]+)?run:[[:space:]]*/,"",val)
+        run_inline=(val != "" && val != "|" && val != ">") ? 1 : 0
+      }
+    }
     /^\+\+\+ /{
       f=$0; sub(/^\+\+\+ [ab]\//, "", f); sub(/\t.*/, "", f); line=0; in_hunk=0
-      iswf = (f ~ /^\.github\/workflows\/.*\.(yml|yaml)$/) ? 1 : 0
+      iswf=(f~/^\.github\/workflows\/.*\.(yml|yaml)$/) ? 1 : 0
+      in_run=0; run_ind=-1; run_inline=0
       next
     }
     /^@@/ { m=$0; sub(/^@@ -[0-9,]+ \+/, "", m); sub(/[, ].*/, "", m); line=m+0; in_hunk=1; next }
@@ -81,8 +99,9 @@ sc_prompt_injection() {
     /^\+/ && !/^\+\+\+/ {
       c=substr($0,2)
       if (iswf) {
-        if (c ~ /github\.event\.[a-zA-Z0-9_.]*(body|title|label|email|login|user\.name)|github\.event\.[a-zA-Z0-9_.]*head\.ref|github\.head_ref/)
-          report("untrusted github.event.* field interpolated into a workflow step: " c)
+        update_run_state(c)
+        if (in_run && (c ~ /github\.event\.[a-zA-Z0-9_.]*(body|title|label|email|login|user\.name)|github\.event\.[a-zA-Z0-9_.]*head\.ref|github\.head_ref/))
+          report("untrusted github.event.* field interpolated into a run step: " c)
         if (c ~ /pull_request_target/)
           report("pull_request_target trigger (PR-head code runs with write token): " c)
         if (c ~ /write-all/)
@@ -91,7 +110,11 @@ sc_prompt_injection() {
       line++
       next
     }
-    /^ / { line++; next }
+    /^ / {
+      if (iswf && in_hunk) update_run_state(substr($0,2))
+      line++
+      next
+    }
   '
 }
 
@@ -119,7 +142,7 @@ sc_dependency_risk() {
     /^\+/ && !/^\+\+\+/ {
       c=substr($0,2)
       if (ismanifest) {
-        if (c ~ /(\^|~>?|>=?)[[:space:]]*[0-9]/ || c ~ /"[[:space:]]*latest[[:space:]]*"/ || c ~ /[=:][[:space:]]*"\*"/ || c ~ /latest/)
+        if (c ~ /(\^|~>?|>=?)[[:space:]]*[0-9]/ || c ~ /"[[:space:]]*latest[[:space:]]*"/ || c ~ /[=:][[:space:]]*"\*"/ || c ~ /[=:][[:space:]]*latest([[:space:]]|$)/)
           report("unpinned dependency range added: " trim(c))
       }
       line++

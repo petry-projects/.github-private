@@ -97,6 +97,50 @@ setup() {
   [ -z "$output" ]
 }
 
+@test "ci-weakening: flags a commented-out run step added to a workflow file" {
+  local diff='diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -5,4 +5,5 @@ jobs:
+     steps:
+       - name: setup
+         uses: actions/checkout@v4
++      # - run: npm test
+       - run: npm build'
+  run sc_ci_weakening "$diff"
+  [ "$status" -eq 0 ]
+  [ -n "$output" ]
+  echo "$output" | grep -qi "commented-out"
+}
+
+@test "ci-weakening: flags a commented-out uses step added to a workflow file" {
+  local diff='diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -3,3 +3,4 @@ jobs:
+   build:
+     steps:
++      # - uses: actions/upload-artifact@v4
+       - uses: actions/checkout@v4'
+  run sc_ci_weakening "$diff"
+  [ "$status" -eq 0 ]
+  [ -n "$output" ]
+  echo "$output" | grep -qi "commented-out"
+}
+
+@test "ci-weakening: does NOT flag commented-out step pattern in non-workflow files" {
+  local diff='diff --git a/docs/example.md b/docs/example.md
+--- a/docs/example.md
++++ b/docs/example.md
+@@ -1,3 +1,4 @@
+ # Example
++# - run: npm test
+ example content'
+  run sc_ci_weakening "$diff"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
 # ---------------------------------------------------------------------------
 # Check 2 — Prompt injection in workflows (deterministic, hard-stop)
 # ---------------------------------------------------------------------------
@@ -161,6 +205,65 @@ setup() {
   run sc_prompt_injection "$diff"
   [ "$status" -eq 0 ]
   [ -z "$output" ]
+}
+
+@test "prompt-injection: does NOT flag github.event in env: context (outside run: block)" {
+  local diff='diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -5,3 +5,6 @@ jobs:
+     steps:
+       - name: build
++        env:
++          BODY: ${{ github.event.issue.body }}
+         run: echo "safe"'
+  run sc_prompt_injection "$diff"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "prompt-injection: does NOT flag github.event in with: context (outside run: block)" {
+  local diff='diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -5,3 +5,6 @@ jobs:
+     steps:
+       - name: label
+         uses: some/action@v1
++        with:
++          title: ${{ github.event.pull_request.title }}'
+  run sc_prompt_injection "$diff"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "prompt-injection: flags github.event added inside a multi-line run: block (via context lines)" {
+  local diff='diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -5,4 +5,5 @@ jobs:
+     steps:
+       - name: build
+         run: |
++          echo "${{ github.event.issue.body }}" | sanitize'
+  run sc_prompt_injection "$diff"
+  [ "$status" -eq 0 ]
+  [ -n "$output" ]
+  echo "$output" | grep -qi "github.event"
+}
+
+@test "prompt-injection: flags github.event on an inline run: added line" {
+  local diff='diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -5,3 +5,4 @@ jobs:
+     steps:
+       - name: build
++        run: echo "${{ github.event.comment.body }}"'
+  run sc_prompt_injection "$diff"
+  [ "$status" -eq 0 ]
+  [ -n "$output" ]
+  echo "$output" | grep -qi "github.event"
 }
 
 # ---------------------------------------------------------------------------
@@ -274,6 +377,45 @@ setup() {
   run sc_dependency_risk "$diff"
   [ "$status" -eq 0 ]
   [ -z "$output" ]
+}
+
+@test "dependency-risk: does NOT flag 'latest' substring in a URL field" {
+  local diff='diff --git a/package.json b/package.json
+--- a/package.json
++++ b/package.json
+@@ -1,3 +1,4 @@
+ {
++  "homepage": "https://example.com/releases/latest/download"
+ }'
+  run sc_dependency_risk "$diff"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "dependency-risk: does NOT flag 'latest' in a package name or description" {
+  local diff='diff --git a/package.json b/package.json
+--- a/package.json
++++ b/package.json
+@@ -1,3 +1,4 @@
+ {
++  "description": "Always fetch the latest build artifacts from CI"
+ }'
+  run sc_dependency_risk "$diff"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "dependency-risk: flags bare 'latest' as a version value (: latest)" {
+  local diff='diff --git a/Pipfile b/Pipfile
+--- a/Pipfile
++++ b/Pipfile
+@@ -3,3 +3,4 @@
+ [packages]
++requests = "latest"'
+  run sc_dependency_risk "$diff"
+  [ "$status" -eq 0 ]
+  [ -n "$output" ]
+  echo "$output" | grep -qi "latest"
 }
 
 # ---------------------------------------------------------------------------
