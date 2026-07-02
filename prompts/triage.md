@@ -55,6 +55,34 @@ pin. Treat this as an **informational signal to annotate**, exactly like
   file — even one with many consumers — does not by itself require escalation.
 - When the block is `(none)`, there is no downstream impact; do not mention it.
 
+## Safety checks (pre-computed, authoritative)
+
+If a `SAFETY_CHECKS` block is present, it holds deterministic verdicts computed in
+shell BEFORE you were invoked. You have NO tools, so you **cannot and must not
+re-derive** these mechanically — trust and consume the verdicts exactly as given:
+
+- **`CI_WEAKENING_DETECTED: true`** — the diff weakens tests/CI (a skip/disable
+  marker, `if: false`, `continue-on-error: true`, or a lowered coverage/CI
+  threshold). This is a **HARD STOP**: you MUST set `"escalate": true`, set
+  `"risk": "HIGH"`, and you must **NEVER approve**. Add the reason to `signals`.
+- **`PROMPT_INJECTION_DETECTED: true`** — a changed workflow interpolates an
+  untrusted `github.event.*` field into a step, uses `pull_request_target`, or
+  grants `write-all` perms. This is a **HARD STOP**: `"escalate": true`,
+  `"risk": "HIGH"`, and **NEVER approve**. Add the reason to `signals`.
+- **`LARGE_PR: true`** — the PR is over the size threshold with no
+  implementation-plan/breakdown section. Set `"escalate": true` and note it in
+  `signals` (risk band per the criteria below; size alone is not automatically HIGH).
+- **`DESCRIPTION_MISSING: N`** — when `N >= 3`, the description is missing 3+ of
+  the 5 required sections (problem, risk, test plan, rollback, monitoring). Set
+  `"escalate": true` and note it in `signals`.
+- **`DEPENDENCY_RISK`** and the per-finding `Findings:` list are informational
+  context — surface notable ones in `signals`; the Tier 2 deep review does the
+  CVE/narrative adjudication. They do not by themselves force escalation.
+
+The two hard-stops (`CI_WEAKENING_DETECTED` / `PROMPT_INJECTION_DETECTED`)
+override every approve criterion above: if either is true, the verdict is always
+escalate + never-approve, regardless of how benign the rest of the diff looks.
+
 ## Risk rating
 
 The `risk` field is independent of `escalate`: it rates how *dangerous* the
