@@ -289,7 +289,7 @@ setup() {
 # Writes a metrics TSV to a temp file and echoes its path.
 _mk_metrics() {
   local f
-  f="$(mktemp)" || { echo "Failed to create temp file" >&2; exit 1; }
+  f="$(mktemp "$BATS_TEST_TMPDIR/fr.XXXXXX")" || { echo "Failed to create temp file" >&2; exit 1; }
   printf '%s\n' "$@" > "$f"
   echo "$f"
 }
@@ -411,7 +411,7 @@ _mk_metrics() {
 
 @test "dev-lead timeout report: renders per-repo rows, fleet total, and timeout rate" {
   local f
-  f="$(mktemp)"
+  f="$(mktemp "$BATS_TEST_TMPDIR/fr.XXXXXX")"
   printf '%s\n' \
     $'petry-projects/a\t2\t1\t4' \
     $'petry-projects/b\t1\t1\t3' \
@@ -430,7 +430,7 @@ _mk_metrics() {
 
 @test "dev-lead timeout report: whole-number rate renders without a decimal" {
   local f
-  f="$(mktemp)"
+  f="$(mktemp "$BATS_TEST_TMPDIR/fr.XXXXXX")"
   printf '%s\n' $'petry-projects/a\t1\t1\t2' > "$f"
   run generate_dev_lead_timeout_report "$f"
   [[ "$output" =~ "50%" ]]
@@ -440,7 +440,7 @@ _mk_metrics() {
 
 @test "dev-lead timeout report: empty file produces no output" {
   local f
-  f="$(mktemp)"
+  f="$(mktemp "$BATS_TEST_TMPDIR/fr.XXXXXX")"
   : > "$f"
   run generate_dev_lead_timeout_report "$f"
   [ "$status" -eq 0 ]

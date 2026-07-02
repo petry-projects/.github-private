@@ -139,7 +139,7 @@ summarize_dev_lead_timeouts() {
   [ -n "$json" ] || json='[]'
   printf '%s' "$json" | jq -r --arg p "$DEV_LEAD_ISSUE_MARKER" '
     [ .[]? | (.body // "") | select(contains($p))
-      | (try (capture("reason=(?<r>[^ ]+)").r) catch "unknown") ] as $reasons
+      | (try (capture("reason=(?<r>[a-z]+(?:-[a-z]+)*)").r) catch "unknown") ] as $reasons
     | [ ([ $reasons[] | select(. == "timeout") ]      | length),
         ([ $reasons[] | select(. == "engine-error") ] | length),
         ($reasons | length) ]
@@ -168,9 +168,9 @@ generate_dev_lead_timeout_report() {
   while IFS=$'\t' read -r repo t e tot; do
     [ -n "$repo" ] || continue
     printf '| `%s` | %s | %s | %s |\n' "$repo" "$t" "$e" "$tot"
-    sum_t=$(( sum_t + t ))
-    sum_e=$(( sum_e + e ))
-    sum_tot=$(( sum_tot + tot ))
+    sum_t=$(( sum_t + ${t:-0} ))
+    sum_e=$(( sum_e + ${e:-0} ))
+    sum_tot=$(( sum_tot + ${tot:-0} ))
   done < "$f"
   printf '| **Fleet total** | **%s** | **%s** | **%s** |\n\n' "$sum_t" "$sum_e" "$sum_tot"
 
