@@ -358,3 +358,92 @@ _mk_metrics() {
   [ "$(echo "$output" | jq -r '.[0].workflow')" = "ci.yml" ]
   rm -f "$m"
 }
+
+# ---------------------------------------------------------------------------
+# summarize_dev_lead_timeouts — dev-lead timeout observability (#1019, story C)
+# Tallies dev-lead status markers by failure reason. Emits TSV:
+#   timeout <TAB> engine_error <TAB> total
+# ---------------------------------------------------------------------------
+
+@test "dev-lead timeouts: counts timeout, engine-error, and total across mixed markers" {
+  local json='[
+    {"body":"<!-- dev-lead-issue 5 status=needs-human attempt=1 reason=timeout run=1 -->\nx"},
+    {"body":"<!-- dev-lead-issue 6 status=failed attempt=1 reason=engine-error run=2 -->\ny"},
+    {"body":"<!-- dev-lead-issue 9 status=needs-human attempt=3 reason=timeout run=3 -->"}
+  ]'
+  run summarize_dev_lead_timeouts "$json"
+  [ "$status" -eq 0 ]
+  [ "$output" = $'2\t1\t3' ]
+}
+
+@test "dev-lead timeouts: ignores comments that merely mention reason= but lack the marker" {
+  local json='[
+    {"body":"<!-- dev-lead-issue 5 status=needs-human attempt=1 reason=timeout run=1 -->"},
+    {"body":"a normal comment mentioning reason=timeout but not a marker"}
+  ]'
+  run summarize_dev_lead_timeouts "$json"
+  [ "$output" = $'1\t0\t1' ]
+}
+
+@test "dev-lead timeouts: empty array yields zero counts" {
+  run summarize_dev_lead_timeouts '[]'
+  [ "$output" = $'0\t0\t0' ]
+}
+
+@test "dev-lead timeouts: absent argument yields zero counts" {
+  run summarize_dev_lead_timeouts
+  [ "$output" = $'0\t0\t0' ]
+}
+
+@test "dev-lead timeouts: rate-limited counts toward total but not timeout/engine-error" {
+  local json='[
+    {"body":"<!-- dev-lead-issue 7 status=rate-limited attempt=1 reason=rate-limited run=1 reset=2026-01-01T00:00:00Z -->"},
+    {"body":"<!-- dev-lead-issue 8 status=needs-human attempt=1 reason=timeout run=2 -->"}
+  ]'
+  run summarize_dev_lead_timeouts "$json"
+  [ "$output" = $'1\t0\t2' ]
+}
+
+# ---------------------------------------------------------------------------
+# generate_dev_lead_timeout_report — renders the per-repo section (#1019)
+# Input: TSV file rows `repo <TAB> timeout <TAB> engine_error <TAB> total`.
+# ---------------------------------------------------------------------------
+
+@test "dev-lead timeout report: renders per-repo rows, fleet total, and timeout rate" {
+  local f
+  f="$(mktemp)"
+  printf '%s\n' \
+    $'petry-projects/a\t2\t1\t4' \
+    $'petry-projects/b\t1\t1\t3' \
+    > "$f"
+  run generate_dev_lead_timeout_report "$f"
+  [ "$status" -eq 0 ]
+  [[ "$output" =~ "petry-projects/a" ]]
+  [[ "$output" =~ "petry-projects/b" ]]
+  # Fleet totals: timeout 3, engine-error 2, total 7
+  [[ "$output" =~ "Fleet total" ]]
+  [[ "$output" =~ "reason=timeout" ]]
+  # Rate = 3 / 7 = 42.9%
+  [[ "$output" =~ "42.9%" ]]
+  rm -f "$f"
+}
+
+@test "dev-lead timeout report: whole-number rate renders without a decimal" {
+  local f
+  f="$(mktemp)"
+  printf '%s\n' $'petry-projects/a\t1\t1\t2' > "$f"
+  run generate_dev_lead_timeout_report "$f"
+  [[ "$output" =~ "50%" ]]
+  [[ ! "$output" =~ "50.0%" ]]
+  rm -f "$f"
+}
+
+@test "dev-lead timeout report: empty file produces no output" {
+  local f
+  f="$(mktemp)"
+  : > "$f"
+  run generate_dev_lead_timeout_report "$f"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  rm -f "$f"
+}

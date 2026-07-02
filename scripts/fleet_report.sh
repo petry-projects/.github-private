@@ -15,6 +15,16 @@
 # gate list for testing; add permanent gates to the default below.
 FLEET_GATE_WORKFLOWS="${FLEET_GATE_WORKFLOWS:-test-deletion-guard.yml holdout-guard.yml}"
 
+# Dev-Lead status-marker prefix (#1019, story C of #901). Mirrors
+# ISSUE_MARKER_PREFIX in dev-lead-fix-issue.sh / dev-lead-retry.sh: every
+# dev-lead failure/retry/escalation posts an HTML-comment marker of the form
+#   <!-- dev-lead-issue <N> status=<s> attempt=<k> reason=<r> run=<id> [reset=...] -->
+# GitHub search cannot index HTML comments, so callers pass the repo's windowed
+# issue comments (issues/comments?since=) and summarize_dev_lead_timeouts tallies
+# the markers by their reason= field. Kept in one place so a rename in the
+# dev-lead scripts is a one-line fix here.
+DEV_LEAD_ISSUE_MARKER="${DEV_LEAD_ISSUE_MARKER:-<!-- dev-lead-issue }"
+
 # label_to_icon <label>
 # Returns the health icon matching the scorecard legend.
 label_to_icon() {
@@ -113,6 +123,65 @@ filter_high_failure() {
     )) |
     sort_by(.failed * 100.0 / (if .total > 0 then .total else 1 end)) | reverse
   ' < "$f"
+}
+
+# summarize_dev_lead_timeouts <comments_json>
+# Reads a JSON array of issue-comment objects ({body,...}) and tallies dev-lead
+# status markers by failure reason. A stage timeout ("wall") is reason=timeout
+# (Story B, #1018); generic engine failures are reason=engine-error. Emits TSV:
+#   timeout <TAB> engine_error <TAB> total
+# `total` is every dev-lead-issue marker in the window (all reasons; there is no
+# success marker, so total == dev-lead failure/retry/escalation markers).
+# Comments that merely mention `reason=` without the marker prefix are ignored.
+# Absent/empty JSON → "0\t0\t0".
+summarize_dev_lead_timeouts() {
+  local json="${1:-}"
+  [ -n "$json" ] || json='[]'
+  printf '%s' "$json" | jq -r --arg p "$DEV_LEAD_ISSUE_MARKER" '
+    [ .[]? | (.body // "") | select(contains($p))
+      | (try (capture("reason=(?<r>[^ ]+)").r) catch "unknown") ] as $reasons
+    | [ ([ $reasons[] | select(. == "timeout") ]      | length),
+        ([ $reasons[] | select(. == "engine-error") ] | length),
+        ($reasons | length) ]
+    | @tsv'
+}
+
+# generate_dev_lead_timeout_report <reason_tsv_file>
+# Renders the Dev-Lead timeout ("wall") observability section (#1019, story C of
+# #901). Input is a TSV file with one row per repo that had >=1 dev-lead marker
+# in the window: `repo <TAB> timeout <TAB> engine_error <TAB> total`. Prints a
+# per-repo table, fleet totals, and the timeout rate (timeouts / all dev-lead
+# failure markers) — the "wall rate" Story A/B aim to drive down. An empty or
+# missing file prints nothing, so the section is omitted when there was no
+# dev-lead activity in the window.
+generate_dev_lead_timeout_report() {
+  local f="${1:-}"
+  [ -n "$f" ] && [ -s "$f" ] || return 0
+
+  local repo t e tot
+  local sum_t=0 sum_e=0 sum_tot=0
+
+  printf '## Dev-Lead Timeouts (walls)\n\n'
+  printf 'Stage timeouts (`reason=timeout`) that escalate to a human, broken out from generic `engine-error`, over the window.\n\n'
+  printf '| Repo | Timeouts | Engine-errors | Total dev-lead failures |\n'
+  printf '|---|---|---|---|\n'
+  while IFS=$'\t' read -r repo t e tot; do
+    [ -n "$repo" ] || continue
+    printf '| `%s` | %s | %s | %s |\n' "$repo" "$t" "$e" "$tot"
+    sum_t=$(( sum_t + t ))
+    sum_e=$(( sum_e + e ))
+    sum_tot=$(( sum_tot + tot ))
+  done < "$f"
+  printf '| **Fleet total** | **%s** | **%s** | **%s** |\n\n' "$sum_t" "$sum_e" "$sum_tot"
+
+  local rate
+  rate=$(awk -v t="$sum_t" -v n="$sum_tot" 'BEGIN {
+    if (n <= 0) { print "n/a"; exit }
+    pct = t * 100 / n
+    printf (pct == int(pct)) ? "%d%%" : "%.1f%%", pct
+  }')
+  printf '**Timeout rate** (`reason=timeout` / all dev-lead failure markers): %s (%s / %s)\n' \
+    "$rate" "$sum_t" "$sum_tot"
 }
 
 # detect_systemic_failures <metrics_file>

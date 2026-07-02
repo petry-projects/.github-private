@@ -258,6 +258,34 @@ if ! gh api "search/issues?q=org:${ORG}+label:fleet-tracker+is:open+is:issue&per
 fi
 
 # ---------------------------------------------------------------------------
+# 2c. Dev-Lead timeout observability (#1019, story C of #901)
+# Count dev-lead status markers by failure reason over the window, per repo, so a
+# rising timeout ("wall") rate is visible distinctly from generic engine-error.
+# Markers are HTML comments (`<!-- dev-lead-issue ... reason=timeout ... -->`,
+# Story B / #1018) that GitHub search cannot index, so — like auto_rebase_health.sh
+# — we pull each repo's issue comments server-side filtered by `since=`. Only
+# repos with >=1 marker in the window get a row; the section is omitted entirely
+# when the fleet had no dev-lead activity. Best-effort: a comment-read failure on
+# one repo is a per-repo warning, not a fatal error for the monitor.
+# ---------------------------------------------------------------------------
+dev_lead_reason_file=$(mktemp)
+for repo in "${repos[@]}"; do
+  if ! comments_raw=$(gh api \
+    "repos/${repo}/issues/comments?since=${CUTOFF}&per_page=100" --paginate \
+    --jq '.[] | {body}' 2>/dev/null); then
+    echo "::warning::Cannot read issue comments for ${repo} — dev-lead timeout counts may undercount"
+    continue
+  fi
+  comments_json=$(printf '%s' "$comments_raw" | jq -s '.' 2>/dev/null || echo '[]')
+  IFS=$'\t' read -r dl_timeout dl_engine_error dl_total \
+    < <(summarize_dev_lead_timeouts "$comments_json")
+  if [ "${dl_total:-0}" -gt 0 ]; then
+    printf '%s\t%s\t%s\t%s\n' "$repo" "$dl_timeout" "$dl_engine_error" "$dl_total" \
+      >> "$dev_lead_reason_file"
+  fi
+done
+
+# ---------------------------------------------------------------------------
 # 3. Generate reports
 # ---------------------------------------------------------------------------
 report_header() {
@@ -278,16 +306,24 @@ stub_drift_section() {
   done
 }
 
+# dev_lead_timeout_section — appends the Dev-Lead timeout ("wall") observability
+# block (#1019) when any repo had dev-lead status markers in the window.
+dev_lead_timeout_section() {
+  [ -s "$dev_lead_reason_file" ] || return 0
+  printf '\n'
+  generate_dev_lead_timeout_report "$dev_lead_reason_file"
+}
+
 # Step Summary — Tier 1 visualizations only (Mermaid not rendered there)
 # GitHub Step Summary has a 1 MB hard limit per job. At ~200 bytes per row
 # this supports ~5 000 workflows before truncation.
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
-  { report_header; generate_report "$metrics_file" "$failed_file" "false" "$issues_lookup_file"; stub_drift_section; } \
+  { report_header; generate_report "$metrics_file" "$failed_file" "false" "$issues_lookup_file"; dev_lead_timeout_section; stub_drift_section; } \
     >> "$GITHUB_STEP_SUMMARY"
 fi
 
 # Report file — full report with Mermaid charts (used as Issue body)
-{ report_header; generate_report "$metrics_file" "$failed_file" "true" "$issues_lookup_file"; stub_drift_section; } \
+{ report_header; generate_report "$metrics_file" "$failed_file" "true" "$issues_lookup_file"; dev_lead_timeout_section; stub_drift_section; } \
   > "$REPORT_FILE"
 
 # ---------------------------------------------------------------------------
@@ -336,7 +372,7 @@ if [ -n "${GITHUB_ENV:-}" ]; then
   [ "$stub_drift_count" -gt 0 ] && echo "HAS_STUB_DRIFT=true" >> "$GITHUB_ENV"
 fi
 
-rm -f "$metrics_file" "$failed_file" "$issues_lookup_file"
+rm -f "$metrics_file" "$failed_file" "$issues_lookup_file" "$dev_lead_reason_file"
 [ ${#stub_drift_files[@]} -gt 0 ] && rm -f "${stub_drift_files[@]}"
 
 # ---------------------------------------------------------------------------
