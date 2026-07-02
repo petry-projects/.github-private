@@ -1275,7 +1275,7 @@ reset_engine_exhaustion() {
 
 # _engine_is_exhausted <engine> — 0 if already marked exhausted this run.
 _engine_is_exhausted() {
-  [ -n "${_ENGINE_EXHAUSTED_REASON[$1]:-}" ]
+  [ -n "${1:-}" ] && [ -n "${_ENGINE_EXHAUSTED_REASON["$1"]:-}" ]
 }
 
 # _mark_engine_exhausted <engine> <reason>
@@ -1283,9 +1283,10 @@ _engine_is_exhausted() {
 # notice (at most one notice per engine per run). No-op on repeat marks so a
 # multi-cycle caller cannot produce a notice storm.
 _mark_engine_exhausted() {
-  local engine="$1" reason="${2:-rate-limited}"
-  [ -n "${_ENGINE_EXHAUSTED_REASON[$engine]:-}" ] && return 0
-  _ENGINE_EXHAUSTED_REASON[$engine]="$reason"
+  local engine="${1:-}" reason="${2:-rate-limited}"
+  [ -z "$engine" ] && return 0
+  [ -n "${_ENGINE_EXHAUSTED_REASON["$engine"]:-}" ] && return 0
+  _ENGINE_EXHAUSTED_REASON["$engine"]="$reason"
   echo "::warning::[engine-exhaustion] ${engine} marked exhausted for this run (${reason}) — it will not be re-invoked" >&2
 }
 
@@ -1337,7 +1338,7 @@ run_writer_with_fallback() {
     # reason into the aggregate so the final return code is unchanged, and emit
     # no repeat notice (the one-time notice fired when it was first marked).
     if _engine_is_exhausted "$engine"; then
-      case "${_ENGINE_EXHAUSTED_REASON[$engine]}" in
+      case "${_ENGINE_EXHAUSTED_REASON["$engine"]}" in
         missing-binary) any_missing=1 ;;
         *)              any_rate_limited=1 ;;
       esac
