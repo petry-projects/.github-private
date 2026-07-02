@@ -878,6 +878,17 @@ if [ "${DOWNSTREAM_IMPACT_ENABLED:-false}" = "true" ]; then
   unset _di_changed
 fi
 
+# Deterministic safety-checks pass (issue #305). Safety-critical, so gated
+# DEFAULT-ON: compute the SAFETY_CHECKS block from the already-fetched
+# PR_METADATA + PR_DIFF (no `gh`/network) and write it to a file whose path is
+# exported as SAFETY_CHECKS_FILE for the deep/audit tiers. The block is inlined
+# into the triage prompt below (triage has NO tools). When SAFETY_CHECKS_ENABLED
+# is explicitly "false" nothing is computed and the triage prompt stays
+# byte-identical to pre-feature behavior (rollback + holdout-eval stability).
+if [ "${SAFETY_CHECKS_ENABLED:-true}" = "true" ]; then
+  assemble_safety_checks "$PR_METADATA" "$PR_DIFF" "/tmp/cascade/safety-checks.txt" || true
+fi
+
 # Build the triage prompt: static template + inlined PR context.
 TRIAGE_PROMPT_FILE="/tmp/cascade/triage-prompt.md"
 {
