@@ -314,27 +314,27 @@ _emit_baseline() {
   local content std_path
   if [ "$source" = "gen" ]; then
     _gen_baseline "$path"
-  elif [ "$source" = "fetch" ]; then
-    # Dependabot special case: the standards path is DEPENDABOT_STACK-derived.
-    std_path="standards/dependabot/${DEPENDABOT_STACK}.yml"
-    content="$(_fetch_standard "$std_path")" || true
-    if [ -z "$content" ]; then
-      echo "::error::could not fetch ${std_path} from ${STANDARDS_REPO}" >&2
-      return 1
-    fi
-    printf '%s\n' "$content"
-  elif [ "${source#fetch:}" != "$source" ]; then
-    # General verbatim fetch: source=fetch:<standards-path> (e.g. .gitleaks.toml).
-    std_path="${source#fetch:}"
-    content="$(_fetch_standard "$std_path")" || true
-    if [ -z "$content" ]; then
-      echo "::error::could not fetch ${std_path} from ${STANDARDS_REPO}" >&2
-      return 1
-    fi
-    printf '%s\n' "$content"
   else
-    echo "::error::unknown baseline source '${source}' for ${path}" >&2
-    return 2
+    if [ "$source" = "fetch" ]; then
+      # Dependabot special case: the standards path is DEPENDABOT_STACK-derived.
+      std_path="standards/dependabot/${DEPENDABOT_STACK}.yml"
+    elif [ "${source#fetch:}" != "$source" ]; then
+      # General verbatim fetch: source=fetch:<standards-path> (e.g. .gitleaks.toml).
+      std_path="${source#fetch:}"
+      if [ -z "$std_path" ]; then
+        echo "::error::empty standards path in source '${source}' for ${path}" >&2
+        return 2
+      fi
+    else
+      echo "::error::unknown baseline source '${source}' for ${path}" >&2
+      return 2
+    fi
+    content="$(_fetch_standard "$std_path")" || true
+    if [ -z "$content" ]; then
+      echo "::error::could not fetch ${std_path} from ${STANDARDS_REPO}" >&2
+      return 1
+    fi
+    printf '%s\n' "$content"
   fi
 }
 

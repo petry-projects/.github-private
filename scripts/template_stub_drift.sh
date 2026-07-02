@@ -52,6 +52,7 @@ readonly -a TEMPLATE_DRIFT_FILES=(
   ".github/dependabot.yml|--emit-baseline|.github/dependabot.yml"
   ".github/CODEOWNERS|--emit-baseline|.github/CODEOWNERS"
   "CLAUDE.md|--emit-baseline|CLAUDE.md"
+  ".gitleaks.toml|--emit-baseline|.gitleaks.toml"
 )
 
 # ── Documented allowlist (AC #2) ──────────────────────────────────────────────
