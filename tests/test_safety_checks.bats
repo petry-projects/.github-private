@@ -141,6 +141,49 @@ setup() {
   [ -z "$output" ]
 }
 
+# Regression (issue #305 review): the xit/xdescribe markers must be matched with
+# POSIX-portable boundaries, NOT GNU awk's `\b` — the CI `bats` job runs on
+# Ubuntu where `awk` is mawk, which does not support `\b`. Before the fix this
+# path silently never matched on the runner.
+@test "ci-weakening: detects xit/xdescribe skip markers (POSIX boundary, must pass on mawk)" {
+  local diff='diff --git a/foo.test.js b/foo.test.js
+--- a/foo.test.js
++++ b/foo.test.js
+@@ -1,2 +1,4 @@
+ test("keep", ()=>{})
++xit("skipme", ()=>{})
++xdescribe("group", ()=>{})
+ more'
+  run sc_ci_weakening "$diff"
+  [ "$status" -eq 0 ]
+  grep -qi "skip/disable marker" <<< "$output"
+  grep -q "foo.test.js" <<< "$output"
+}
+
+# Regression (issue #305 review): the awk `rem[]` threshold map must be reset per
+# file (`delete rem`). Without it, a removed threshold in file A leaks into the
+# comparison for file B, producing a false "lowered threshold" finding there.
+@test "ci-weakening: removed threshold in file A does not leak into file B (rem state reset)" {
+  local diff='diff --git a/a/codecov.yml b/a/codecov.yml
+--- a/a/codecov.yml
++++ b/a/codecov.yml
+@@ -1,2 +1,2 @@
+-coverage: 90
++coverage: 80
+ x: y
+diff --git a/b/unrelated.txt b/b/unrelated.txt
+--- a/b/unrelated.txt
++++ b/b/unrelated.txt
+@@ -1,1 +1,2 @@
+ hello
++coverage note: 5 lines added'
+  run sc_ci_weakening "$diff"
+  [ "$status" -eq 0 ]
+  # Exactly the real threshold drop in file A is reported; file B must NOT
+  # produce a "lowered threshold" finding from a leaked rem[] value.
+  [ "$(grep -ci "lowered numeric threshold" <<< "$output" || true)" -eq 1 ]
+}
+
 # ---------------------------------------------------------------------------
 # Check 2 — Prompt injection in workflows (deterministic, hard-stop)
 # ---------------------------------------------------------------------------
