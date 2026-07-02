@@ -141,15 +141,27 @@ _benign_patterns() {
     '.agents[$a].gate?.benign_failure_classes // [] | .[] | [(.workflow // ""), (.step // "")] | @tsv'
 }
 
+# Memoization cache for _run_signature: keyed by "repo:run_id".
+# Avoids duplicate gh run view calls for the same (repo, run_id) across agents
+# in evaluate-all (where multiple agents can share repos).
+declare -A _RUN_SIG_CACHE=()
+
 # _run_signature <repo> <run_id> — the failed step names of a run, joined by newlines
 # (the "step/error signature" the allowlist matches against). Empty repo/wildcard/id or
 # any gh error → "" (fail-closed: an unknown signature is never treated as benign).
 _run_signature() {
-  local repo="$1" id="$2" json
+  local repo="$1" id="$2" cache_key sig json
   { [ -z "$repo" ] || [ "$repo" = '*' ] || [ -z "$id" ]; } && { echo ""; return 0; }
+  cache_key="${repo}:${id}"
+  if [[ -v _RUN_SIG_CACHE["$cache_key"] ]]; then
+    echo "${_RUN_SIG_CACHE[$cache_key]}"
+    return 0
+  fi
   json="$(gh run view "$id" --repo "$repo" --json jobs 2>/dev/null || echo '{}')"
-  jq -r '[.jobs[]?|.steps[]?|select(.conclusion=="failure")|.name] | join("\n")' \
-    2>/dev/null <<< "$json" || echo ""
+  sig="$(jq -r '[.jobs[]?|.steps[]?|select(.conclusion=="failure")|.name] | join("\n")' \
+    2>/dev/null <<< "$json" || echo "")"
+  _RUN_SIG_CACHE["$cache_key"]="$sig"
+  echo "$sig"
 }
 
 # _failure_benign <repo> <run_id> <workflow_name> <patterns_tsv> — return 0 if this
@@ -178,14 +190,19 @@ _cumulative_health() {
   for repo in "$@"; do
     json="$(_run_json "$repo" "$wf" "$since")"
     startup=$(( startup + $(jq '[.[]?|select(.conclusion=="startup_failure")]|length' 2>/dev/null <<< "$json" || echo 0) ))
-    while IFS=$'\t' read -r rid rwf; do
-      [ -z "$rid" ] && continue
-      if [ -n "$patterns" ] && _failure_benign "$repo" "$rid" "$rwf" "$patterns"; then
-        benign=$(( benign + 1 ))
-      else
-        fail=$(( fail + 1 ))
-      fi
-    done < <(jq -r '.[]?|select(.conclusion=="failure")|[(.databaseId // "" | tostring),(.workflowName // "")]|@tsv' 2>/dev/null <<< "$json")
+    if [ -z "$patterns" ]; then
+      # No benign patterns to match — count all failures with one jq pass,
+      # avoiding a gh run view call per failure.
+      fail=$(( fail + $(jq '[.[]?|select(.conclusion=="failure")]|length' 2>/dev/null <<< "$json" || echo 0) ))
+    else
+      while IFS=$'\t' read -r rid rwf; do
+        if _failure_benign "$repo" "$rid" "$rwf" "$patterns"; then
+          benign=$(( benign + 1 ))
+        else
+          fail=$(( fail + 1 ))
+        fi
+      done < <(jq -r '.[]?|select(.conclusion=="failure")|[(.databaseId // "" | tostring),(.workflowName // "")]|@tsv' 2>/dev/null <<< "$json")
+    fi
   done
   echo "$fail $startup $benign"
 }
