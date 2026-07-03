@@ -126,6 +126,77 @@ teardown() {
 }
 
 # ---------------------------------------------------------------------------
+# pr_rebase_smell — merge-stacked (rebase/squash candidate) detector (#949)
+#   Fires when commits > REBASE_SMELL_MIN_COMMITS (50) AND
+#   0 < changed_files < REBASE_SMELL_MAX_FILES (20) — the #860 signature of a
+#   branch merge-stacked instead of rebased (378 commits for an 18-file diff).
+# ---------------------------------------------------------------------------
+
+@test "the #860 signature (378 commits / 18 files) fires the rebase smell" {
+  run pr_rebase_smell 378 18
+  [ "$status" -eq 0 ]
+  [[ "$output" == *merge-stacked* ]]
+  [[ "$output" == *rebase* ]]
+  [[ "$output" == *378* ]]
+  [[ "$output" == *18* ]]
+}
+
+@test "commits at the smell floor do NOT fire (strict >)" {
+  # 50 commits is not > 50
+  run pr_rebase_smell 50 5
+  [ -z "$output" ]
+}
+
+@test "changed_files at the smell ceiling do NOT fire (strict <)" {
+  # 20 files is not < 20
+  run pr_rebase_smell 100 20
+  [ -z "$output" ]
+}
+
+@test "a big-but-broad PR (many commits, many files) does NOT fire" {
+  # 60 commits across 60 files is proportionate work, not merge-stacking.
+  run pr_rebase_smell 60 60
+  [ -z "$output" ]
+}
+
+@test "a zero-file diff does NOT fire (data glitch, not merge-stacking)" {
+  run pr_rebase_smell 300 0
+  [ -z "$output" ]
+}
+
+@test "REBASE_SMELL_MIN_COMMITS override is respected" {
+  REBASE_SMELL_MIN_COMMITS=10 run pr_rebase_smell 11 3
+  [[ "$output" == *merge-stacked* ]]
+  REBASE_SMELL_MIN_COMMITS=10 run pr_rebase_smell 10 3
+  [ -z "$output" ]
+}
+
+@test "REBASE_SMELL_MAX_FILES override is respected" {
+  REBASE_SMELL_MAX_FILES=5 run pr_rebase_smell 100 4
+  [[ "$output" == *merge-stacked* ]]
+  REBASE_SMELL_MAX_FILES=5 run pr_rebase_smell 100 5
+  [ -z "$output" ]
+}
+
+@test "rebase smell degrades to no-fire on non-numeric/empty input" {
+  run pr_rebase_smell "" "abc"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  run pr_rebase_smell
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "generate_runaway_report documents the merge-stacked criterion" {
+  local f
+  f=$(mktemp "$STUB_BIN_DIR/tsv.XXXXXX")
+  : > "$f"
+  run generate_runaway_report "$f"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *merge-stacked* ]]
+}
+
+# ---------------------------------------------------------------------------
 # is_pr_runaway — boolean wrapper
 # ---------------------------------------------------------------------------
 
