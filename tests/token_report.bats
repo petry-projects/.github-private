@@ -80,8 +80,7 @@ setup() {
 @test "annotate_records: excludes empty model-less all-zero records (#1009)" {
   # The dev-lead path emitted model-less, zero-usage junk records that surfaced as a
   # `- / -` row and inflated the "no price" count. They are not priced calls at all,
-  # so annotate_records drops them entirely. A record with an empty model but real
-  # tokens, and a real-model row, are kept.
+  # so annotate_records drops them entirely, keeping only the genuine real-model row.
   tmp="$(mktemp -d)"
   printf '%s\n' \
     '{"ts":"2026-06-01T00:00:00Z","workflow":"dev-lead","tier":"","model":"","input_tokens":0,"cache_read_tokens":0,"cache_creation_tokens":0,"output_tokens":0,"repo":"r","context":""}' \

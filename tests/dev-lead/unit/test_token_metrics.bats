@@ -231,8 +231,9 @@ teardown() {
   [ -s "$TOKEN_LOG_FILE" ]
 }
 
-@test "emit_token_record: suppresses model-less record whose only tokens are cache_write" {
-  # Guard must consider cache_write (9th arg), not just the first three counts.
+@test "emit_token_record: keeps a model-less record whose only tokens are cache_write (guard considers 9th arg)" {
+  # The guard must consider cache_write (9th arg), not just the first three counts:
+  # an all-zero model-less record is suppressed, but one carrying cache_write is kept.
   emit_token_record "dev-lead" "" "claude" "" 0 0 0 "" 0
   [ ! -s "$TOKEN_LOG_FILE" ]
   emit_token_record "dev-lead" "" "claude" "" 0 0 0 "" 25
