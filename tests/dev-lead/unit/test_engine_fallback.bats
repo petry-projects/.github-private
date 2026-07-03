@@ -160,7 +160,7 @@ GHEOF
   # and a recording stub shows that claude was tried after gemini failed.
   _make_stub "gemini" 2
   local record_file
-  record_file="$(mktemp)"
+  record_file="$(mktemp "$BATS_TEST_TMPDIR/rec.XXXXXX")"
   _make_recording_stub "claude" 127 "$record_file"
   # Provide token + gh stub so copilot path is deterministic (returns rate-limit)
   export COPILOT_GITHUB_TOKEN="stub-token"
@@ -190,7 +190,7 @@ GHEOF
   # Primary = gemini (exits 2), then fallback order should try claude first
   _make_stub "gemini" 2
   local record_file
-  record_file="$(mktemp)"
+  record_file="$(mktemp "$BATS_TEST_TMPDIR/rec.XXXXXX")"
   _make_recording_stub "claude" 0 "$record_file"
   _source_engine "gemini"
 
@@ -342,6 +342,61 @@ GHEOF
   [ ! -s "$copilot_record" ]
   [ ! -s "$gemini_record" ]
   rm -f "$gemini_record" "$copilot_record"
+}
+
+# ── engine-level retry classification (#1028) ─────────────────────────────────
+# A per-tier stage timeout (exit 124 from GNU `timeout`) is deterministic — the
+# model used its whole budget, so re-running at the SAME budget just times out
+# again. is_transient_failure() must therefore NOT classify 124 as retryable,
+# while signal kills (137/143) keep their retry behavior. run_triage is the
+# in-run retry loop that consumes this classifier; run_writer/run_agentic do not
+# retry at all, so dropping 124 from the shared classifier makes every caller
+# consistent (no engine-level same-budget retry on a timeout anywhere).
+
+@test "retry: is_transient_failure does NOT classify 124 (timeout) as retryable" {
+  _source_engine "claude"
+
+  run is_transient_failure 124
+  [ "$status" -ne 0 ]
+}
+
+@test "retry: is_transient_failure still classifies 137/143 (signal kills) as retryable" {
+  _source_engine "claude"
+
+  run is_transient_failure 137
+  [ "$status" -eq 0 ]
+  run is_transient_failure 143
+  [ "$status" -eq 0 ]
+}
+
+@test "retry: stubbed 124 in the retry loop → engine invoked exactly once (no in-run retry)" {
+  local record_file
+  record_file="$(mktemp "$BATS_TEST_TMPDIR/rec.XXXXXX")"
+  _make_recording_stub "claude" 124 "$record_file"
+  export RETRY_BASE_DELAY_SEC=0   # no backoff sleep in tests
+  _source_engine "claude"
+
+  run run_triage "$TEST_PROMPT"
+
+  [ "$status" -eq 124 ]
+  # A deterministic per-tier timeout must not be re-run at the same budget.
+  [ "$(wc -l < "$record_file")" -eq 1 ]
+  rm -f "$record_file"
+}
+
+@test "retry: stubbed 137 in the retry loop → still retries (invoked twice), regression guard" {
+  local record_file
+  record_file="$(mktemp "$BATS_TEST_TMPDIR/rec.XXXXXX")"
+  _make_recording_stub "claude" 137 "$record_file"
+  export RETRY_BASE_DELAY_SEC=0   # no backoff sleep in tests
+  _source_engine "claude"
+
+  run run_triage "$TEST_PROMPT"
+
+  [ "$status" -eq 137 ]
+  # Signal kills stay transient: RETRY_MAX_ATTEMPTS=2 → one retry → two invocations.
+  [ "$(wc -l < "$record_file")" -eq 2 ]
+  rm -f "$record_file"
 }
 
 @test "sidecar: stale reason cleared on success" {
