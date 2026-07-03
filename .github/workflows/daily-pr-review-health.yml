@@ -101,6 +101,40 @@ jobs:
         run: |
           echo "::notice::Health check passed — all runs in the last ${LOOKBACK_DAYS} day(s) are healthy."
 
+      # Runaway-PR detection net (#948, #860 follow-up). Pure gh-API + jq scan of
+      # every open PR against soft, env-overridable thresholds — no LLM, no PR
+      # mutation. #860 ran for four days unnoticed; this makes the next novel
+      # runaway a push signal on day one. Sets HAS_RUNAWAY when any candidate is
+      # found, surfaced through the same health-check / automated-report issue
+      # channel below.
+      - name: Scan for runaway PRs
+        env:
+          GH_TOKEN: ${{ secrets.DON_PETRY_BOT_GH_PAT }}
+          REPO: ${{ github.repository }}
+        run: bash scripts/pr_runaway_scan.sh
+
+      - name: Create runaway-candidate issue
+        if: env.HAS_RUNAWAY == 'true' && hashFiles('pr_runaway_report.md') != ''
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const fs = require('fs');
+            const report = fs.readFileSync('pr_runaway_report.md', 'utf8');
+            if (!report.trim()) {
+              core.setFailed('Runaway report file is empty');
+              return;
+            }
+            const today = new Date().toISOString().split('T')[0];
+            const issue = await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `Runaway PR candidate(s) detected ${today}`,
+              body: report,
+              labels: ['health-check', 'automated-report'],
+            });
+            core.notice(`Runaway issue created: ${issue.data.html_url}`);
+
       # Durable, affirmative MCP-connectivity monitor (#903, part of #676).
       # Additive final step: when .github/review-mcp.json is present, assert that
       # the configured server(s) handshake through the same flags engine.sh uses
