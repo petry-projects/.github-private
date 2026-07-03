@@ -11,8 +11,9 @@
 # actions/create-github-app-token from RELEASE_MANAGER_APP_CLIENT_ID (variable) + RELEASE_MANAGER_APP_KEY (secret) (scoped,
 # rotatable, auditable) — NOT a raw PAT and NOT github.token. The App carries
 # Contents:write (tag moves on the host repos), Deployments:write, Issues:write (the
-# blocker-issue + dashboard auto-triage, sync-issues), Actions:read (the gate reads
-# workflow-run history across every tier repo) and Metadata:read. Minting
+# per-agent blocker issues in sync-issues; the fleet-status table goes to the job summary,
+# not an issue), Actions:read (the gate reads workflow-run history across every tier repo)
+# and Metadata:read. Minting
 # is a HARD requirement: if the token cannot be minted the job fails — it must not
 # silently degrade to github.token, which cannot move protected `.github` tags (#868).
 #
@@ -24,8 +25,8 @@
 #     canary-rings.json (fleet-wide, #1025 P1) and emits each one's per-version gate +
 #     health report (#502 observability). The arm variable is the single kill-switch.
 #     After promoting, the timer also runs `sync-issues`: it upserts one tracked issue per
-#     BLOCKED agent (failing-run evidence attached; REGRESSION → needs-human) and rewrites a
-#     single rolling dashboard issue — a cleared agent's issue auto-closes (auto-triage).
+#     BLOCKED agent (failing-run evidence attached; REGRESSION → needs-human; auto-closed on
+#     clear) and renders the whole-fleet status table into the run's job summary (auto-triage).
 #   - workflow_dispatch: `evaluate` | `evaluate-all` | `promote` | `promote-all` |
 #     `rollback` | `sync-issues`, human-gated (promote/promote-all/sync-issues default to --dry-run).
 # ─────────────────────────────────────────────────────────────────────────────
@@ -193,13 +194,14 @@ jobs:
           JSON
           done < "${CANARY_PROMOTIONS_LOG}"
 
-      # Auto-triage: turn the gate's BLOCKED verdicts into tracked work. On the timer, from
-      # the post-promotion fleet state, upsert ONE idempotent issue per BLOCKED agent (with
-      # the failing-run evidence pre-attached; REGRESSION → needs-human) and rewrite a single
-      # rolling dashboard issue; a cleared agent's issue auto-closes. Best-effort + always():
-      # a GitHub-side hiccup must never fail the promotion run. Requires the App to carry
-      # Issues:write — if absent the step logs a warning and continues.
-      - name: Sync blocker + dashboard issues
+      # Auto-triage: turn the gate's BLOCKED verdicts into tracked work + a fleet readout.
+      # From the post-promotion fleet state: (1) upsert ONE idempotent issue per BLOCKED agent
+      # (failing-run evidence pre-attached; REGRESSION → needs-human; auto-closed on clear), and
+      # (2) render the whole-fleet status table into THIS run's job summary (a read-only
+      # snapshot — no dashboard issue, no Issues:write needed for it). Best-effort + always():
+      # a GitHub-side hiccup must never fail the promotion run. The blocker ISSUES need the App
+      # to carry Issues:write — if absent that part warns and continues; the summary still renders.
+      - name: Sync blocker issues + fleet-status summary
         if: always() && github.event_name == 'schedule'
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
