@@ -66,9 +66,11 @@ ACTION_TIMEOUT_SEC="${ACTION_TIMEOUT_SEC:-2100}"
 DUCK_TIMEOUT_SEC="${DUCK_TIMEOUT_SEC:-300}"
 
 # Retry config for transient errors. We treat exit codes that look like
-# network/process flakiness (124=GNU timeout, 137/143=signal kills, plus a
-# couple of generic transient codes) as retryable. Rate-limit (engine-level)
-# is NOT retryable here — the workflow's engine-fallback handles that.
+# network/process flakiness (137/143=signal kills) as retryable. A per-tier
+# stage timeout (124=GNU timeout) is NOT retried (#1028): re-running at the same
+# budget just times out again, so it propagates and escalates instead. Rate-limit
+# (engine-level) is NOT retryable here either — the workflow's engine-fallback
+# handles that.
 RETRY_MAX_ATTEMPTS="${RETRY_MAX_ATTEMPTS:-2}"   # total attempts including first
 RETRY_BASE_DELAY_SEC="${RETRY_BASE_DELAY_SEC:-5}"
 
@@ -453,13 +455,17 @@ _emit_mcp_failure_warning() {
 
 # is_transient_failure <exit_code>
 # Returns 0 (true) for exit codes suggesting a flaky network/process state:
-# 124 (GNU timeout) and 137/143 (signal kills). JSON parse failures and
-# generic exit-1s are NOT retried — those are deterministic problems.
+# 137/143 (signal kills). JSON parse failures and generic exit-1s are NOT
+# retried — those are deterministic problems. Exit 124 (GNU `timeout`) is
+# likewise NOT retried (#1028): a per-tier stage timeout means the model used
+# its whole budget, so a same-budget in-run retry would just time out again —
+# wasted runner-minutes + tokens. A 124 propagates immediately; the writer path
+# then classifies it as reason=timeout and escalates (see run_writer_with_fallback).
 is_transient_failure() {
   local rc="$1"
   case "$rc" in
-    124|137|143) return 0 ;;
-    *)           return 1 ;;
+    137|143) return 0 ;;
+    *)       return 1 ;;
   esac
 }
 
