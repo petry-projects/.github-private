@@ -22,6 +22,24 @@
         "_standard": "petry-projects/.github#548 — graduated dwell/sample gate over a per-candidate cumulative window. These are registry-configurable per-transition knobs; the values below are the #548 defaults.",
         "baseline_window_days": 14,
         "baseline_spike_cap_multiple": 3,
+        "benign_failure_classes": [
+          {
+            "id": "dependabot-context-dispatch",
+            "workflow": "Dev-Lead Agent",
+            "step": "[Dd]ependabot",
+            "reason": "#864 — a Dev-Lead run dispatched in a Dependabot context cannot read repo secrets; version-independent benign failure, not a candidate regression."
+          },
+          {
+            "id": "fix-review-git-push-permission",
+            "workflow": "Dev-Lead Agent",
+            "step": "[Pp]ush",
+            "reason": "fix-review git push denied by branch protection / missing write scope; version-independent benign failure, not a candidate regression."
+          }
+        ],
+        "control": {
+          "allow_pre_existing": false
+        },
+        "_benign_note": "benign_failure_classes (#1025 P2): per-reusable allowlist matched against a failed run's workflow name (`workflow` ERE) + failed-step signature (`step` ERE, matched via `gh run view`). Matches are excluded from cum_fail — but ONLY when the candidate's reusable is byte-identical to the prior channel (differs=0), so the allowlist can never mask a candidate-introduced regression. `control.allow_pre_existing`, or `promote --allow-pre-existing`, advances a BLOCKED+PRE_EXISTING frontier (never REGRESSION).",
         "transitions": {
           "next->ring0": {
             "dwell_hours": 4,
