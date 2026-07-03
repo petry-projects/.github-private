@@ -58,6 +58,228 @@
           }
         }
       }
+    },
+    "agent-shield": {
+      "host": "petry-projects/.github",
+      "reusable": ".github/workflows/agent-shield-reusable.yml",
+      "run_workflow": "agent-shield.yml",
+      "rings": [
+        { "channel": "next",   "order": 0, "members": ["petry-projects/.github-private"] },
+        { "channel": "ring0",  "order": 1, "members": ["petry-projects/.github"] },
+        { "channel": "ring1",  "order": 2, "members": ["petry-projects/TalkTerm", "petry-projects/bmad-bgreat-suite"] },
+        { "channel": "stable", "order": 3, "members": ["*"] }
+      ],
+      "gate": {
+        "_standard": "petry-projects/.github#548 — graduated dwell/sample gate over a per-candidate cumulative window. Registry-configurable per-transition knobs; the values below are the #548 defaults.",
+        "_topology_note": "#482 cross-repo reusable: the reusable lives in the host petry-projects/.github, but the rollout is canaried in .github-private (order 0, the caller-stub/automation repo) BEFORE the host (ring0). waive_sample_if_no_caller lets an agent with no .github-private caller (e.g. dependabot-rebase) soak from ring0 without a fresh next-tier sample.",
+        "baseline_window_days": 14,
+        "baseline_spike_cap_multiple": 3,
+        "control": {
+          "allow_pre_existing": false
+        },
+        "transitions": {
+          "next->ring0": {
+            "dwell_hours": 4,
+            "sample_fraction_permille": 250,
+            "sample_clamp_min": 3,
+            "sample_clamp_max": 15,
+            "waive_sample_if_no_caller": true
+          },
+          "ring0->ring1": {
+            "dwell_hours": 8,
+            "waive_sample": true
+          },
+          "ring1->stable": {
+            "dwell_hours": 12,
+            "sample_min": 1
+          }
+        }
+      }
+    },
+    "dependency-audit": {
+      "host": "petry-projects/.github",
+      "reusable": ".github/workflows/dependency-audit-reusable.yml",
+      "run_workflow": "dependency-audit.yml",
+      "rings": [
+        { "channel": "next",   "order": 0, "members": ["petry-projects/.github-private"] },
+        { "channel": "ring0",  "order": 1, "members": ["petry-projects/.github"] },
+        { "channel": "ring1",  "order": 2, "members": ["petry-projects/TalkTerm", "petry-projects/bmad-bgreat-suite"] },
+        { "channel": "stable", "order": 3, "members": ["*"] }
+      ],
+      "gate": {
+        "_standard": "petry-projects/.github#548 — graduated dwell/sample gate over a per-candidate cumulative window. Registry-configurable per-transition knobs; the values below are the #548 defaults.",
+        "_topology_note": "#482 cross-repo reusable: the reusable lives in the host petry-projects/.github, but the rollout is canaried in .github-private (order 0, the caller-stub/automation repo) BEFORE the host (ring0). waive_sample_if_no_caller lets an agent with no .github-private caller (e.g. dependabot-rebase) soak from ring0 without a fresh next-tier sample.",
+        "baseline_window_days": 14,
+        "baseline_spike_cap_multiple": 3,
+        "control": {
+          "allow_pre_existing": false
+        },
+        "transitions": {
+          "next->ring0": {
+            "dwell_hours": 4,
+            "sample_fraction_permille": 250,
+            "sample_clamp_min": 3,
+            "sample_clamp_max": 15,
+            "waive_sample_if_no_caller": true
+          },
+          "ring0->ring1": {
+            "dwell_hours": 8,
+            "waive_sample": true
+          },
+          "ring1->stable": {
+            "dwell_hours": 12,
+            "sample_min": 1
+          }
+        }
+      }
+    },
+    "auto-rebase": {
+      "host": "petry-projects/.github",
+      "reusable": ".github/workflows/auto-rebase-reusable.yml",
+      "run_workflow": "auto-rebase.yml",
+      "rings": [
+        { "channel": "next",   "order": 0, "members": ["petry-projects/.github-private"] },
+        { "channel": "ring0",  "order": 1, "members": ["petry-projects/.github"] },
+        { "channel": "ring1",  "order": 2, "members": ["petry-projects/TalkTerm", "petry-projects/bmad-bgreat-suite"] },
+        { "channel": "stable", "order": 3, "members": ["*"] }
+      ],
+      "gate": {
+        "_standard": "petry-projects/.github#548 — graduated dwell/sample gate over a per-candidate cumulative window. Registry-configurable per-transition knobs; the values below are the #548 defaults.",
+        "_topology_note": "#482 cross-repo reusable: the reusable lives in the host petry-projects/.github, but the rollout is canaried in .github-private (order 0, the caller-stub/automation repo) BEFORE the host (ring0). waive_sample_if_no_caller lets an agent with no .github-private caller (e.g. dependabot-rebase) soak from ring0 without a fresh next-tier sample.",
+        "baseline_window_days": 14,
+        "baseline_spike_cap_multiple": 3,
+        "control": {
+          "allow_pre_existing": false
+        },
+        "transitions": {
+          "next->ring0": {
+            "dwell_hours": 4,
+            "sample_fraction_permille": 250,
+            "sample_clamp_min": 3,
+            "sample_clamp_max": 15,
+            "waive_sample_if_no_caller": true
+          },
+          "ring0->ring1": {
+            "dwell_hours": 8,
+            "waive_sample": true
+          },
+          "ring1->stable": {
+            "dwell_hours": 12,
+            "sample_min": 1
+          }
+        }
+      }
+    },
+    "dependabot-automerge": {
+      "host": "petry-projects/.github",
+      "reusable": ".github/workflows/dependabot-automerge-reusable.yml",
+      "run_workflow": "dependabot-automerge.yml",
+      "rings": [
+        { "channel": "next",   "order": 0, "members": ["petry-projects/.github-private"] },
+        { "channel": "ring0",  "order": 1, "members": ["petry-projects/.github"] },
+        { "channel": "ring1",  "order": 2, "members": ["petry-projects/TalkTerm", "petry-projects/bmad-bgreat-suite"] },
+        { "channel": "stable", "order": 3, "members": ["*"] }
+      ],
+      "gate": {
+        "_standard": "petry-projects/.github#548 — graduated dwell/sample gate over a per-candidate cumulative window. Registry-configurable per-transition knobs; the values below are the #548 defaults.",
+        "_topology_note": "#482 cross-repo reusable: the reusable lives in the host petry-projects/.github, but the rollout is canaried in .github-private (order 0, the caller-stub/automation repo) BEFORE the host (ring0). waive_sample_if_no_caller lets an agent with no .github-private caller (e.g. dependabot-rebase) soak from ring0 without a fresh next-tier sample.",
+        "baseline_window_days": 14,
+        "baseline_spike_cap_multiple": 3,
+        "control": {
+          "allow_pre_existing": false
+        },
+        "transitions": {
+          "next->ring0": {
+            "dwell_hours": 4,
+            "sample_fraction_permille": 250,
+            "sample_clamp_min": 3,
+            "sample_clamp_max": 15,
+            "waive_sample_if_no_caller": true
+          },
+          "ring0->ring1": {
+            "dwell_hours": 8,
+            "waive_sample": true
+          },
+          "ring1->stable": {
+            "dwell_hours": 12,
+            "sample_min": 1
+          }
+        }
+      }
+    },
+    "dependabot-rebase": {
+      "host": "petry-projects/.github",
+      "reusable": ".github/workflows/dependabot-rebase-reusable.yml",
+      "run_workflow": "dependabot-rebase.yml",
+      "rings": [
+        { "channel": "next",   "order": 0, "members": ["petry-projects/.github-private"] },
+        { "channel": "ring0",  "order": 1, "members": ["petry-projects/.github"] },
+        { "channel": "ring1",  "order": 2, "members": ["petry-projects/TalkTerm", "petry-projects/bmad-bgreat-suite"] },
+        { "channel": "stable", "order": 3, "members": ["*"] }
+      ],
+      "gate": {
+        "_standard": "petry-projects/.github#548 — graduated dwell/sample gate over a per-candidate cumulative window. Registry-configurable per-transition knobs; the values below are the #548 defaults.",
+        "_topology_note": "#482 cross-repo reusable: the reusable lives in the host petry-projects/.github, but the rollout is canaried in .github-private (order 0, the caller-stub/automation repo) BEFORE the host (ring0). dependabot-rebase has NO .github-private caller, so next has zero callers and waive_sample_if_no_caller waives the fresh next->ring0 sample (dwell-only) — the soak effectively starts at ring0.",
+        "baseline_window_days": 14,
+        "baseline_spike_cap_multiple": 3,
+        "control": {
+          "allow_pre_existing": false
+        },
+        "transitions": {
+          "next->ring0": {
+            "dwell_hours": 4,
+            "sample_fraction_permille": 250,
+            "sample_clamp_min": 3,
+            "sample_clamp_max": 15,
+            "waive_sample_if_no_caller": true
+          },
+          "ring0->ring1": {
+            "dwell_hours": 8,
+            "waive_sample": true
+          },
+          "ring1->stable": {
+            "dwell_hours": 12,
+            "sample_min": 1
+          }
+        }
+      }
+    },
+    "pr-review-mention": {
+      "host": "petry-projects/.github",
+      "reusable": ".github/workflows/pr-review-mention-reusable.yml",
+      "run_workflow": "pr-review-mention.yml",
+      "rings": [
+        { "channel": "next",   "order": 0, "members": ["petry-projects/.github-private"] },
+        { "channel": "ring0",  "order": 1, "members": ["petry-projects/.github"] },
+        { "channel": "ring1",  "order": 2, "members": ["petry-projects/TalkTerm", "petry-projects/bmad-bgreat-suite"] },
+        { "channel": "stable", "order": 3, "members": ["*"] }
+      ],
+      "gate": {
+        "_standard": "petry-projects/.github#548 — graduated dwell/sample gate over a per-candidate cumulative window. Registry-configurable per-transition knobs; the values below are the #548 defaults.",
+        "_topology_note": "#482 cross-repo reusable: the reusable lives in the host petry-projects/.github, but the rollout is canaried in .github-private (order 0, the caller-stub/automation repo) BEFORE the host (ring0). waive_sample_if_no_caller lets an agent with no .github-private caller (e.g. dependabot-rebase) soak from ring0 without a fresh next-tier sample.",
+        "baseline_window_days": 14,
+        "baseline_spike_cap_multiple": 3,
+        "control": {
+          "allow_pre_existing": false
+        },
+        "transitions": {
+          "next->ring0": {
+            "dwell_hours": 4,
+            "sample_fraction_permille": 250,
+            "sample_clamp_min": 3,
+            "sample_clamp_max": 15,
+            "waive_sample_if_no_caller": true
+          },
+          "ring0->ring1": {
+            "dwell_hours": 8,
+            "waive_sample": true
+          },
+          "ring1->stable": {
+            "dwell_hours": 12,
+            "sample_min": 1
+          }
+        }
+      }
     }
   }
 }

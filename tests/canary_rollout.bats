@@ -457,3 +457,90 @@ _benign_stub() {
   [[ "$output" != *"DRY-RUN"* ]]
   [[ "$output" == *"REGRESSION"* ]]
 }
+
+# ── canary-rings.json: the 6 #482 cross-repo reusables (#1036) ─────────────────
+# These were rolled out manually via the now-retired bridge and were never onboarded
+# into the registry, so `evaluate-all` could not see them. All 6 host in the public
+# petry-projects/.github repo (cross-repo) and share one ring topology: the rollout is
+# canaried in .github-private (the caller-stub/automation repo) FIRST, then the host.
+_REUSABLES_482="agent-shield dependency-audit auto-rebase dependabot-automerge dependabot-rebase pr-review-mention"
+
+@test "canary-rings.json: all 6 #482 reusables are registered (7 agents incl. dev-lead)" {
+  run jq -e '.agents | keys | length == 7' "$RINGS"
+  [ "$status" -eq 0 ]
+  for a in $_REUSABLES_482; do
+    jq -e --arg a "$a" '.agents | has($a)' "$RINGS" >/dev/null
+  done
+}
+
+@test "canary-rings.json: each #482 reusable has host .github + right reusable path + run_workflow" {
+  # host, reusable path, run_workflow per the #1036 table (col 2 / col 3).
+  _chk() {
+    jq -e --arg a "$1" '.agents[$a].host == "petry-projects/.github"' "$RINGS" >/dev/null
+    jq -e --arg a "$1" --arg r "$2" '.agents[$a].reusable == $r' "$RINGS" >/dev/null
+    jq -e --arg a "$1" --arg w "$3" '.agents[$a].run_workflow == $w' "$RINGS" >/dev/null
+  }
+  _chk agent-shield         ".github/workflows/agent-shield-reusable.yml"         "agent-shield.yml"
+  _chk dependency-audit     ".github/workflows/dependency-audit-reusable.yml"     "dependency-audit.yml"
+  _chk auto-rebase          ".github/workflows/auto-rebase-reusable.yml"          "auto-rebase.yml"
+  _chk dependabot-automerge ".github/workflows/dependabot-automerge-reusable.yml" "dependabot-automerge.yml"
+  _chk dependabot-rebase    ".github/workflows/dependabot-rebase-reusable.yml"    "dependabot-rebase.yml"
+  _chk pr-review-mention    ".github/workflows/pr-review-mention-reusable.yml"    "pr-review-mention.yml"
+}
+
+@test "canary-rings.json: #482 reusables share the ring topology (next=.github-private, ring0=.github, ring1 pair, stable=*)" {
+  for a in $_REUSABLES_482; do
+    run bash -c "jq -r '.agents[\"$a\"].rings | sort_by(.order) | map(.channel) | join(\",\")' '$RINGS'"
+    [ "$output" = "next,ring0,ring1,stable" ]
+    jq -e --arg a "$a" '.agents[$a].rings[] | select(.channel=="next")  | .members == ["petry-projects/.github-private"]' "$RINGS" >/dev/null
+    jq -e --arg a "$a" '.agents[$a].rings[] | select(.channel=="ring0") | .members == ["petry-projects/.github"]' "$RINGS" >/dev/null
+    jq -e --arg a "$a" '.agents[$a].rings[] | select(.channel=="ring1") | (.members | index("petry-projects/TalkTerm")) and (.members | index("petry-projects/bmad-bgreat-suite"))' "$RINGS" >/dev/null
+    jq -e --arg a "$a" '.agents[$a].rings[] | select(.channel=="stable") | .members == ["*"]' "$RINGS" >/dev/null
+  done
+}
+
+@test "orchestrator: resolve_members for a #482 cross-repo reusable (next=.github-private, ring0=.github, stable=*)" {
+  run bash -c "source '$ORCH' && CANARY_RINGS='$RINGS' resolve_members agent-shield next"
+  [ "$status" -eq 0 ]; [ "$output" = "petry-projects/.github-private" ]
+  run bash -c "source '$ORCH' && CANARY_RINGS='$RINGS' resolve_members agent-shield ring0"
+  [ "$status" -eq 0 ]; [ "$output" = "petry-projects/.github" ]
+  run bash -c "source '$ORCH' && CANARY_RINGS='$RINGS' resolve_members dependabot-rebase ring1"
+  [[ "$output" == *"petry-projects/TalkTerm"* ]]
+  [[ "$output" == *"petry-projects/bmad-bgreat-suite"* ]]
+  run bash -c "source '$ORCH' && CANARY_RINGS='$RINGS' resolve_members pr-review-mention stable"
+  [ "$status" -eq 0 ]; [ "$output" = "*" ]
+}
+
+@test "canary-rings.json: #482 reusables carry the #548 per-transition gate knobs" {
+  for a in $_REUSABLES_482; do
+    jq -e --arg a "$a" '.agents[$a].gate.baseline_window_days == 14' "$RINGS" >/dev/null
+    jq -e --arg a "$a" '.agents[$a].gate.baseline_spike_cap_multiple == 3' "$RINGS" >/dev/null
+    jq -e --arg a "$a" '.agents[$a].gate.transitions["next->ring0"].dwell_hours == 4' "$RINGS" >/dev/null
+    jq -e --arg a "$a" '.agents[$a].gate.transitions["next->ring0"].sample_fraction_permille == 250' "$RINGS" >/dev/null
+    # waive_sample_if_no_caller covers dependabot-rebase's missing .github-private caller
+    # (the "soak starts at ring0" note): a next tier with zero callers waives the fresh sample.
+    jq -e --arg a "$a" '.agents[$a].gate.transitions["next->ring0"].waive_sample_if_no_caller == true' "$RINGS" >/dev/null
+    jq -e --arg a "$a" '.agents[$a].gate.transitions["ring0->ring1"].dwell_hours == 8' "$RINGS" >/dev/null
+    jq -e --arg a "$a" '.agents[$a].gate.transitions["ring0->ring1"].waive_sample == true' "$RINGS" >/dev/null
+    jq -e --arg a "$a" '.agents[$a].gate.transitions["ring1->stable"].dwell_hours == 12' "$RINGS" >/dev/null
+    jq -e --arg a "$a" '.agents[$a].gate.transitions["ring1->stable"].sample_min == 1' "$RINGS" >/dev/null
+    jq -e --arg a "$a" '.agents[$a].gate.control.allow_pre_existing == false' "$RINGS" >/dev/null
+  done
+}
+
+@test "orchestrator: evaluate-all reports all 7 registered agents (dev-lead + the 6 #482)" {
+  _make_stub_bin
+  cat > "$STUB_BIN/gh" <<'GHEOF'
+#!/usr/bin/env bash
+case "$*" in
+  *"run list"*) echo "[]" ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN/gh"
+  run env CANARY_RINGS="$RINGS" bash "$ORCH" evaluate-all
+  [ "$status" -eq 0 ]
+  for a in dev-lead $_REUSABLES_482; do
+    [[ "$output" == *"agent: $a"* ]]
+  done
+}
