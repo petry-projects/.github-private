@@ -16,11 +16,22 @@ in real CI:
     LSP MCP (lsp-on/B leg), `off` captures without wiring (lsp-off/A control leg),
     and the two LSP-wiring steps are gated so `off` skips them.
 
-  * AC #5 — the ring-0 trigger stub pr-review-trigger.yml declares and forwards
-    the new dispatch input so the A/B can be driven on this repo's own PRs.
+  * AC #5 (CORRECTED after incident 2026-07-03 / PR #1048) — the ring-0 trigger
+    stub pr-review-trigger.yml pins the reusable at `@pr-review/next`. Forwarding
+    `lsp_pilot_variant` to that channel BEFORE it declares the input makes every
+    review `startup_fail` (an undeclared `with:` key is an invalid workflow). So
+    the stub must NOT declare/forward the input until `pr-review/next` is advanced
+    (via cut-release.sh) to a commit that declares it. This guard now enforces that
+    channel-safety invariant (stub must not forward ahead of the pinned channel);
+    the original "must forward" form (#1034) is what took production down.
 
 Off-pilot (neither var nor input set) must stay byte-for-byte unchanged (AC #4):
 the exported env resolves to empty and the wiring steps stay skipped.
+
+Re-enable procedure for the stub-driven A/B: (1) advance `pr-review/next` to a
+commit that declares the reusable `lsp_pilot_variant` input, (2) re-add the stub
+dispatch input + forwarding, and (3) flip check_trigger below back to requiring
+them (see git history at #1034 for the requiring form).
 """
 from __future__ import annotations
 
@@ -125,6 +136,12 @@ def check_reusable(fails: list[str]) -> None:
 
 
 def check_trigger(fails: list[str]) -> None:
+    # CHANNEL-SKEW SAFETY (incident 2026-07-03, PR #1048). The ring-0 stub pins the
+    # reusable at `@pr-review/next`. A `with:` key the pinned reusable doesn't
+    # declare is an invalid workflow → every review `startup_fail`s. The stub must
+    # therefore NOT declare or forward `lsp_pilot_variant` until that channel is
+    # advanced to a commit that declares it (then re-add both and flip this guard
+    # back — see the module docstring's re-enable procedure).
     doc = _load(TRIGGER)
     if not doc:
         fails.append(f"{TRIGGER}: failed to parse YAML (document is None/empty)")
@@ -132,17 +149,19 @@ def check_trigger(fails: list[str]) -> None:
     on = _on(doc)
 
     wd_inputs = ((on.get("workflow_dispatch") or {}).get("inputs")) or {}
-    if INPUT not in wd_inputs:
-        fails.append(f"{TRIGGER}: workflow_dispatch.inputs.{INPUT} is not declared (AC #5)")
+    if INPUT in wd_inputs:
+        fails.append(
+            f"{TRIGGER}: workflow_dispatch.inputs.{INPUT} must NOT be declared while the "
+            f"stub pins a channel that lacks it (channel-skew guard — see #1048)"
+        )
 
     job = _review_job(doc)
     with_block = job.get("with") or {}
-    forwarded = str(with_block.get(INPUT, ""))
-    if not forwarded:
-        fails.append(f"{TRIGGER}: review job does not forward {INPUT} to the reusable (AC #5)")
-    elif f"inputs.{INPUT}" not in forwarded:
+    if INPUT in with_block:
         fails.append(
-            f"{TRIGGER}: forwarded {INPUT} does not reference inputs.{INPUT} (got: {forwarded!r})"
+            f"{TRIGGER}: review job must NOT forward {INPUT} to the pinned reusable — "
+            f"forwarding an input @pr-review/next does not declare startup_fails every "
+            f"review (channel-skew guard — see #1048)"
         )
 
 
@@ -165,7 +184,7 @@ def main() -> int:
         return 1
 
     print("PASS: pr-review.yml exports the capture gate + variant and gates LSP wiring; "
-          "pr-review-trigger.yml declares and forwards lsp_pilot_variant")
+          "pr-review-trigger.yml does not forward lsp_pilot_variant ahead of the pinned channel")
     return 0
 
 
