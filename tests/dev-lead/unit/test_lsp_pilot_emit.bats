@@ -62,9 +62,8 @@ JSON
 }
 
 @test "lpe_variant: lsp-on when REVIEW_MCP_CONFIG points at a readable file" {
-  local cfg; cfg="$(mktemp)"; echo '{}' > "$cfg"
+  local cfg; cfg="$(mktemp "$STREAM_DIR/cfg.XXXXXX")"; echo '{}' > "$cfg"
   REVIEW_MCP_CONFIG="$cfg" _call lpe_variant
-  rm -f "$cfg"
   [ "$output" = "lsp-on" ]
 }
 
@@ -76,16 +75,14 @@ JSON
 @test "lpe_candidate: baseline for lsp-off, agent-lsp for lsp-on" {
   _call lpe_candidate
   [ "$output" = "baseline" ]
-  local cfg; cfg="$(mktemp)"; echo '{}' > "$cfg"
+  local cfg; cfg="$(mktemp "$STREAM_DIR/cfg.XXXXXX")"; echo '{}' > "$cfg"
   REVIEW_MCP_CONFIG="$cfg" _call lpe_candidate
-  rm -f "$cfg"
   [ "$output" = "agent-lsp" ]
 }
 
 @test "lpe_candidate: honors LSP_CANDIDATE override on the lsp-on leg" {
-  local cfg; cfg="$(mktemp)"; echo '{}' > "$cfg"
+  local cfg; cfg="$(mktemp "$STREAM_DIR/cfg.XXXXXX")"; echo '{}' > "$cfg"
   REVIEW_MCP_CONFIG="$cfg" LSP_CANDIDATE="agent-lsp-next" _call lpe_candidate
-  rm -f "$cfg"
   [ "$output" = "agent-lsp-next" ]
 }
 
@@ -170,11 +167,10 @@ JSON
 
 @test "lpe_emit_record: lsp-on variant uses REVIEW_MCP_CONFIG + agent-lsp candidate" {
   _write_stream "$STREAM_DIR/stream.aaa"
-  local cfg; cfg="$(mktemp)"; echo '{}' > "$cfg"
+  local cfg; cfg="$(mktemp "$STREAM_DIR/cfg.XXXXXX")"; echo '{}' > "$cfg"
   run bash -c 'source "$1"; shift; export LSP_PILOT_ENABLED=true TOKEN_LOG_FILE="$1" REVIEW_MCP_CONFIG="$2"; shift 2; lpe_emit_record "$@"' \
     bash "$EMIT" "$TOKEN_LOG" "$cfg" \
     "$STREAM_DIR" "https://github.com/o/r/pull/7" "sha7" "9.0"
-  rm -f "$cfg"
   [ "$status" -eq 0 ]
   run jq -r '.variant' "$TOKEN_LOG";   [ "$output" = "lsp-on" ]
   run jq -r '.candidate' "$TOKEN_LOG"; [ "$output" = "agent-lsp" ]

@@ -61,6 +61,9 @@ def _steps(job: dict) -> list:
 
 def check_reusable(fails: list[str]) -> None:
     doc = _load(REUSABLE)
+    if not doc:
+        fails.append(f"{REUSABLE}: failed to parse YAML (document is None/empty)")
+        return
     on = _on(doc)
 
     # workflow_call input declared so a trigger stub can forward it.
@@ -123,6 +126,9 @@ def check_reusable(fails: list[str]) -> None:
 
 def check_trigger(fails: list[str]) -> None:
     doc = _load(TRIGGER)
+    if not doc:
+        fails.append(f"{TRIGGER}: failed to parse YAML (document is None/empty)")
+        return
     on = _on(doc)
 
     wd_inputs = ((on.get("workflow_dispatch") or {}).get("inputs")) or {}
