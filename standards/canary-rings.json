@@ -1,7 +1,10 @@
 {
   "version": 1,
   "description": "Ring membership for agent canary rollout (initiative #495, issues #500/#501). The promotion automation (scripts/canary-rollout.sh) reads this as the single source of truth. `next` is host-relative: it resolves to the repo that HOSTS the reusable; `ring0` covers the other org-infra repo (the host already sits in `next`).",
-  "org_infra_repos": ["petry-projects/.github", "petry-projects/.github-private"],
+  "org_infra_repos": [
+    "petry-projects/.github",
+    "petry-projects/.github-private"
+  ],
   "member_tokens": {
     "$host": "the agent's host repo (the repo that owns the reusable)",
     "$org_infra": "org_infra_repos minus the host (the host is already in `next`)",
@@ -13,13 +16,38 @@
       "reusable": ".github/workflows/dev-lead-reusable.yml",
       "run_workflow": "Dev-Lead Agent",
       "rings": [
-        { "channel": "next",   "order": 0, "members": ["$host"] },
-        { "channel": "ring0",  "order": 1, "members": ["$org_infra"] },
-        { "channel": "ring1",  "order": 2, "members": ["petry-projects/TalkTerm", "petry-projects/bmad-bgreat-suite"] },
-        { "channel": "stable", "order": 3, "members": ["*"] }
+        {
+          "channel": "next",
+          "order": 0,
+          "members": [
+            "$host"
+          ]
+        },
+        {
+          "channel": "ring0",
+          "order": 1,
+          "members": [
+            "$org_infra"
+          ]
+        },
+        {
+          "channel": "ring1",
+          "order": 2,
+          "members": [
+            "petry-projects/TalkTerm",
+            "petry-projects/bmad-bgreat-suite"
+          ]
+        },
+        {
+          "channel": "stable",
+          "order": 3,
+          "members": [
+            "*"
+          ]
+        }
       ],
       "gate": {
-        "_standard": "petry-projects/.github#548 — graduated dwell/sample gate over a per-candidate cumulative window. These are registry-configurable per-transition knobs; the values below are the #548 defaults.",
+        "_standard": "petry-projects/.github#548 \u2014 graduated dwell/sample gate over a per-candidate cumulative window. These are registry-configurable per-transition knobs; the values below are the #548 defaults.",
         "baseline_window_days": 14,
         "baseline_spike_cap_multiple": 3,
         "benign_failure_classes": [
@@ -27,7 +55,7 @@
             "id": "dependabot-context-dispatch",
             "workflow": "Dev-Lead Agent",
             "step": "[Dd]ependabot",
-            "reason": "#864 — a Dev-Lead run dispatched in a Dependabot context cannot read repo secrets; version-independent benign failure, not a candidate regression."
+            "reason": "#864 \u2014 a Dev-Lead run dispatched in a Dependabot context cannot read repo secrets; version-independent benign failure, not a candidate regression."
           },
           {
             "id": "fix-review-git-push-permission",
@@ -39,7 +67,386 @@
         "control": {
           "allow_pre_existing": false
         },
-        "_benign_note": "benign_failure_classes (#1025 P2): per-reusable allowlist matched against a failed run's workflow name (`workflow` ERE) + failed-step signature (`step` ERE, matched via `gh run view`). Matches are excluded from cum_fail — but ONLY when the candidate's reusable is byte-identical to the prior channel (differs=0), so the allowlist can never mask a candidate-introduced regression. `control.allow_pre_existing`, or `promote --allow-pre-existing`, advances a BLOCKED+PRE_EXISTING frontier (never REGRESSION).",
+        "_benign_note": "benign_failure_classes (#1025 P2): per-reusable allowlist matched against a failed run's workflow name (`workflow` ERE) + failed-step signature (`step` ERE, matched via `gh run view`). Matches are excluded from cum_fail \u2014 but ONLY when the candidate's reusable is byte-identical to the prior channel (differs=0), so the allowlist can never mask a candidate-introduced regression. `control.allow_pre_existing`, or `promote --allow-pre-existing`, advances a BLOCKED+PRE_EXISTING frontier (never REGRESSION).",
+        "transitions": {
+          "next->ring0": {
+            "dwell_hours": 4,
+            "sample_fraction_permille": 250,
+            "sample_clamp_min": 3,
+            "sample_clamp_max": 15,
+            "waive_sample_if_no_caller": true
+          },
+          "ring0->ring1": {
+            "dwell_hours": 8,
+            "waive_sample": true
+          },
+          "ring1->stable": {
+            "dwell_hours": 12,
+            "sample_min": 1
+          }
+        }
+      }
+    },
+    "agent-shield": {
+      "host": "petry-projects/.github",
+      "reusable": ".github/workflows/agent-shield-reusable.yml",
+      "run_workflow": "AgentShield",
+      "rings": [
+        {
+          "channel": "next",
+          "order": 0,
+          "members": [
+            "petry-projects/.github-private"
+          ]
+        },
+        {
+          "channel": "ring0",
+          "order": 1,
+          "members": [
+            "petry-projects/.github"
+          ]
+        },
+        {
+          "channel": "ring1",
+          "order": 2,
+          "members": [
+            "petry-projects/TalkTerm",
+            "petry-projects/bmad-bgreat-suite"
+          ]
+        },
+        {
+          "channel": "stable",
+          "order": 3,
+          "members": [
+            "*"
+          ]
+        }
+      ],
+      "gate": {
+        "_standard": "petry-projects/.github#548 \u2014 graduated dwell/sample gate over a per-candidate cumulative window. These are registry-configurable per-transition knobs; the values below are the #548 defaults.",
+        "baseline_window_days": 14,
+        "baseline_spike_cap_multiple": 3,
+        "benign_failure_classes": [],
+        "control": {
+          "allow_pre_existing": false
+        },
+        "_benign_note": "benign_failure_classes (#1025 P2): per-reusable allowlist matched against a failed run's workflow name (`workflow` ERE) + failed-step signature (`step` ERE, matched via `gh run view`). Matches are excluded from cum_fail \u2014 but ONLY when the candidate's reusable is byte-identical to the prior channel (differs=0), so the allowlist can never mask a candidate-introduced regression. `control.allow_pre_existing`, or `promote --allow-pre-existing`, advances a BLOCKED+PRE_EXISTING frontier (never REGRESSION).",
+        "transitions": {
+          "next->ring0": {
+            "dwell_hours": 4,
+            "sample_fraction_permille": 250,
+            "sample_clamp_min": 3,
+            "sample_clamp_max": 15,
+            "waive_sample_if_no_caller": true
+          },
+          "ring0->ring1": {
+            "dwell_hours": 8,
+            "waive_sample": true
+          },
+          "ring1->stable": {
+            "dwell_hours": 12,
+            "sample_min": 1
+          }
+        }
+      }
+    },
+    "auto-rebase": {
+      "host": "petry-projects/.github",
+      "reusable": ".github/workflows/auto-rebase-reusable.yml",
+      "run_workflow": "Auto-rebase non-Dependabot PRs",
+      "rings": [
+        {
+          "channel": "next",
+          "order": 0,
+          "members": [
+            "petry-projects/.github-private"
+          ]
+        },
+        {
+          "channel": "ring0",
+          "order": 1,
+          "members": [
+            "petry-projects/.github"
+          ]
+        },
+        {
+          "channel": "ring1",
+          "order": 2,
+          "members": [
+            "petry-projects/TalkTerm",
+            "petry-projects/bmad-bgreat-suite"
+          ]
+        },
+        {
+          "channel": "stable",
+          "order": 3,
+          "members": [
+            "*"
+          ]
+        }
+      ],
+      "gate": {
+        "_standard": "petry-projects/.github#548 \u2014 graduated dwell/sample gate over a per-candidate cumulative window. These are registry-configurable per-transition knobs; the values below are the #548 defaults.",
+        "baseline_window_days": 14,
+        "baseline_spike_cap_multiple": 3,
+        "benign_failure_classes": [],
+        "control": {
+          "allow_pre_existing": false
+        },
+        "_benign_note": "benign_failure_classes (#1025 P2): per-reusable allowlist matched against a failed run's workflow name (`workflow` ERE) + failed-step signature (`step` ERE, matched via `gh run view`). Matches are excluded from cum_fail \u2014 but ONLY when the candidate's reusable is byte-identical to the prior channel (differs=0), so the allowlist can never mask a candidate-introduced regression. `control.allow_pre_existing`, or `promote --allow-pre-existing`, advances a BLOCKED+PRE_EXISTING frontier (never REGRESSION).",
+        "transitions": {
+          "next->ring0": {
+            "dwell_hours": 4,
+            "sample_fraction_permille": 250,
+            "sample_clamp_min": 3,
+            "sample_clamp_max": 15,
+            "waive_sample_if_no_caller": true
+          },
+          "ring0->ring1": {
+            "dwell_hours": 8,
+            "waive_sample": true
+          },
+          "ring1->stable": {
+            "dwell_hours": 12,
+            "sample_min": 1
+          }
+        }
+      }
+    },
+    "dependency-audit": {
+      "host": "petry-projects/.github",
+      "reusable": ".github/workflows/dependency-audit-reusable.yml",
+      "run_workflow": "Dependency audit",
+      "rings": [
+        {
+          "channel": "next",
+          "order": 0,
+          "members": [
+            "petry-projects/.github-private"
+          ]
+        },
+        {
+          "channel": "ring0",
+          "order": 1,
+          "members": [
+            "petry-projects/.github"
+          ]
+        },
+        {
+          "channel": "ring1",
+          "order": 2,
+          "members": [
+            "petry-projects/TalkTerm",
+            "petry-projects/bmad-bgreat-suite"
+          ]
+        },
+        {
+          "channel": "stable",
+          "order": 3,
+          "members": [
+            "*"
+          ]
+        }
+      ],
+      "gate": {
+        "_standard": "petry-projects/.github#548 \u2014 graduated dwell/sample gate over a per-candidate cumulative window. These are registry-configurable per-transition knobs; the values below are the #548 defaults.",
+        "baseline_window_days": 14,
+        "baseline_spike_cap_multiple": 3,
+        "benign_failure_classes": [],
+        "control": {
+          "allow_pre_existing": false
+        },
+        "_benign_note": "benign_failure_classes (#1025 P2): per-reusable allowlist matched against a failed run's workflow name (`workflow` ERE) + failed-step signature (`step` ERE, matched via `gh run view`). Matches are excluded from cum_fail \u2014 but ONLY when the candidate's reusable is byte-identical to the prior channel (differs=0), so the allowlist can never mask a candidate-introduced regression. `control.allow_pre_existing`, or `promote --allow-pre-existing`, advances a BLOCKED+PRE_EXISTING frontier (never REGRESSION).",
+        "transitions": {
+          "next->ring0": {
+            "dwell_hours": 4,
+            "sample_fraction_permille": 250,
+            "sample_clamp_min": 3,
+            "sample_clamp_max": 15,
+            "waive_sample_if_no_caller": true
+          },
+          "ring0->ring1": {
+            "dwell_hours": 8,
+            "waive_sample": true
+          },
+          "ring1->stable": {
+            "dwell_hours": 12,
+            "sample_min": 1
+          }
+        }
+      }
+    },
+    "dependabot-automerge": {
+      "host": "petry-projects/.github",
+      "reusable": ".github/workflows/dependabot-automerge-reusable.yml",
+      "run_workflow": "Dependabot auto-merge",
+      "rings": [
+        {
+          "channel": "next",
+          "order": 0,
+          "members": [
+            "petry-projects/.github-private"
+          ]
+        },
+        {
+          "channel": "ring0",
+          "order": 1,
+          "members": [
+            "petry-projects/.github"
+          ]
+        },
+        {
+          "channel": "ring1",
+          "order": 2,
+          "members": [
+            "petry-projects/TalkTerm",
+            "petry-projects/bmad-bgreat-suite"
+          ]
+        },
+        {
+          "channel": "stable",
+          "order": 3,
+          "members": [
+            "*"
+          ]
+        }
+      ],
+      "gate": {
+        "_standard": "petry-projects/.github#548 \u2014 graduated dwell/sample gate over a per-candidate cumulative window. These are registry-configurable per-transition knobs; the values below are the #548 defaults.",
+        "baseline_window_days": 14,
+        "baseline_spike_cap_multiple": 3,
+        "benign_failure_classes": [],
+        "control": {
+          "allow_pre_existing": false
+        },
+        "_benign_note": "benign_failure_classes (#1025 P2): per-reusable allowlist matched against a failed run's workflow name (`workflow` ERE) + failed-step signature (`step` ERE, matched via `gh run view`). Matches are excluded from cum_fail \u2014 but ONLY when the candidate's reusable is byte-identical to the prior channel (differs=0), so the allowlist can never mask a candidate-introduced regression. `control.allow_pre_existing`, or `promote --allow-pre-existing`, advances a BLOCKED+PRE_EXISTING frontier (never REGRESSION).",
+        "transitions": {
+          "next->ring0": {
+            "dwell_hours": 4,
+            "sample_fraction_permille": 250,
+            "sample_clamp_min": 3,
+            "sample_clamp_max": 15,
+            "waive_sample_if_no_caller": true
+          },
+          "ring0->ring1": {
+            "dwell_hours": 8,
+            "waive_sample": true
+          },
+          "ring1->stable": {
+            "dwell_hours": 12,
+            "sample_min": 1
+          }
+        }
+      }
+    },
+    "dependabot-rebase": {
+      "host": "petry-projects/.github",
+      "reusable": ".github/workflows/dependabot-rebase-reusable.yml",
+      "run_workflow": "Dependabot update and merge",
+      "rings": [
+        {
+          "channel": "next",
+          "order": 0,
+          "members": [
+            "petry-projects/.github-private"
+          ]
+        },
+        {
+          "channel": "ring0",
+          "order": 1,
+          "members": [
+            "petry-projects/.github"
+          ]
+        },
+        {
+          "channel": "ring1",
+          "order": 2,
+          "members": [
+            "petry-projects/TalkTerm",
+            "petry-projects/bmad-bgreat-suite"
+          ]
+        },
+        {
+          "channel": "stable",
+          "order": 3,
+          "members": [
+            "*"
+          ]
+        }
+      ],
+      "gate": {
+        "_standard": "petry-projects/.github#548 \u2014 graduated dwell/sample gate over a per-candidate cumulative window. These are registry-configurable per-transition knobs; the values below are the #548 defaults.",
+        "baseline_window_days": 14,
+        "baseline_spike_cap_multiple": 3,
+        "benign_failure_classes": [],
+        "control": {
+          "allow_pre_existing": false
+        },
+        "_benign_note": "benign_failure_classes (#1025 P2): per-reusable allowlist matched against a failed run's workflow name (`workflow` ERE) + failed-step signature (`step` ERE, matched via `gh run view`). Matches are excluded from cum_fail \u2014 but ONLY when the candidate's reusable is byte-identical to the prior channel (differs=0), so the allowlist can never mask a candidate-introduced regression. `control.allow_pre_existing`, or `promote --allow-pre-existing`, advances a BLOCKED+PRE_EXISTING frontier (never REGRESSION).",
+        "transitions": {
+          "next->ring0": {
+            "dwell_hours": 4,
+            "sample_fraction_permille": 250,
+            "sample_clamp_min": 3,
+            "sample_clamp_max": 15,
+            "waive_sample_if_no_caller": true
+          },
+          "ring0->ring1": {
+            "dwell_hours": 8,
+            "waive_sample": true
+          },
+          "ring1->stable": {
+            "dwell_hours": 12,
+            "sample_min": 1
+          }
+        }
+      },
+      "soak_start_ring": "ring0"
+    },
+    "pr-review-mention": {
+      "host": "petry-projects/.github",
+      "reusable": ".github/workflows/pr-review-mention-reusable.yml",
+      "run_workflow": "PR Review \u2014 Mention Trigger",
+      "rings": [
+        {
+          "channel": "next",
+          "order": 0,
+          "members": [
+            "petry-projects/.github-private"
+          ]
+        },
+        {
+          "channel": "ring0",
+          "order": 1,
+          "members": [
+            "petry-projects/.github"
+          ]
+        },
+        {
+          "channel": "ring1",
+          "order": 2,
+          "members": [
+            "petry-projects/TalkTerm",
+            "petry-projects/bmad-bgreat-suite"
+          ]
+        },
+        {
+          "channel": "stable",
+          "order": 3,
+          "members": [
+            "*"
+          ]
+        }
+      ],
+      "gate": {
+        "_standard": "petry-projects/.github#548 \u2014 graduated dwell/sample gate over a per-candidate cumulative window. These are registry-configurable per-transition knobs; the values below are the #548 defaults.",
+        "baseline_window_days": 14,
+        "baseline_spike_cap_multiple": 3,
+        "benign_failure_classes": [],
+        "control": {
+          "allow_pre_existing": false
+        },
+        "_benign_note": "benign_failure_classes (#1025 P2): per-reusable allowlist matched against a failed run's workflow name (`workflow` ERE) + failed-step signature (`step` ERE, matched via `gh run view`). Matches are excluded from cum_fail \u2014 but ONLY when the candidate's reusable is byte-identical to the prior channel (differs=0), so the allowlist can never mask a candidate-introduced regression. `control.allow_pre_existing`, or `promote --allow-pre-existing`, advances a BLOCKED+PRE_EXISTING frontier (never REGRESSION).",
         "transitions": {
           "next->ring0": {
             "dwell_hours": 4,
