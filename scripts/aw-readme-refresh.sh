@@ -208,7 +208,7 @@ process_repo() {
   # Auth is handled by gh's git credential helper (configured in main via `gh auth setup-git`),
   # which works for both PATs and App tokens. Guard the clone so a failure aborts this repo
   # loudly instead of silently generating into an empty directory.
-  if ! git clone --quiet "https://github.com/${full_repo}.git" "$dir" || [ ! -d "$dir/.git" ]; then
+  if ! GIT_TERMINAL_PROMPT=0 git clone --quiet "https://github.com/${full_repo}.git" "$dir" || [ ! -d "$dir/.git" ]; then
     warn "clone failed for $full_repo — skipping this repo"
     return 1
   fi
@@ -353,6 +353,12 @@ fi
 # Route git's github.com credentials through gh (uses GH_TOKEN). This authenticates the
 # cross-repo clone/push for any token type — unlike an embedded x-access-token: or
 # "Authorization: Bearer" header, which GitHub rejects for a classic/fine-grained PAT.
+# Isolate the config writes to a temp file so local runs don't mutate ~/.gitconfig; CI
+# sets GIT_CONFIG_GLOBAL already, so we only override when it is unset.
+if [ -z "${GIT_CONFIG_GLOBAL:-}" ]; then
+  _gc_tmp="$(mktemp)"
+  export GIT_CONFIG_GLOBAL="$_gc_tmp"
+fi
 if ! gh auth setup-git --hostname github.com >/dev/null 2>&1; then
   warn "gh auth setup-git failed — cross-repo git push may not authenticate"
 fi
