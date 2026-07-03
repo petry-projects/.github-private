@@ -714,3 +714,16 @@ GHEOF
   [[ "$output" == *"closed cleared blocker issue #501 for dev-lead"* ]]
   grep -q "CLOSE|.*501" "$ISSUE_LOG"
 }
+
+@test "orchestrator: sync-issues prepends a separator newline so the fleet-status header is never concatenated to prior summary content" {
+  # If prior summary content lacks a trailing newline, the fleet-status header must still
+  # start on its own line — not be appended directly to the prior content.
+  _sync_stub success '[]'
+  local summ="$BATS_TEST_TMPDIR/summary_sep.md"
+  printf 'prior step output (no trailing newline)' > "$summ"
+  run env CANARY_RINGS="$SYNC_RINGS" ISSUE_REPO="petry-projects/.github-private" GITHUB_STEP_SUMMARY="$summ" bash "$ORCH" sync-issues
+  [ "$status" -eq 0 ]
+  # The header must appear at the start of a line — not concatenated onto the prior content.
+  grep -q '^# Canary Rollout' "$summ"
+  ! grep -q 'prior.*# Canary Rollout' "$summ"
+}
