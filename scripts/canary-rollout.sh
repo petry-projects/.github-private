@@ -89,6 +89,27 @@ _gh_tag_commit() {
   fi
 }
 
+# _gh_move_tag <repo> <tag> <sha> — point refs/tags/<tag> at <sha> on <repo> via the
+# GitHub API (force-move if it exists, create if not). The host-aware promote-WRITE
+# analogue of channel_commit's host-aware READ (#1049): a cross-repo agent's channel tag
+# lives on ITS host and the candidate commit is not in this checkout's object DB, so a
+# local `git tag -f` cannot move it — it fails with "trying to write ref ... with
+# nonexistent object" and would target the wrong repo (#1054). Mirrors cut-release.sh's
+# gh_move_tag (the #959/#992 host-aware channel move). Requires GH_TOKEN with
+# contents:write on <repo>.
+_gh_move_tag() {
+  if [ $# -lt 3 ]; then
+    echo "::error::_gh_move_tag requires repo, tag, and sha" >&2
+    return 2
+  fi
+  local repo="$1" tag="$2" sha="$3"
+  if gh api "repos/$repo/git/ref/tags/$tag" >/dev/null 2>&1; then
+    gh api -X PATCH "repos/$repo/git/refs/tags/$tag" -f "sha=$sha" -F "force=true" >/dev/null
+  else
+    gh api -X POST "repos/$repo/git/refs" -f "ref=refs/tags/$tag" -f "sha=$sha" >/dev/null
+  fi
+}
+
 # channel_commit <agent> <channel> — commit the channel tag <agent>/<channel> resolves to
 # (empty if the tag does not exist). Agents hosted in THIS repo resolve against the local
 # checkout; a cross-repo agent's channel tags live on ITS host, so they are resolved there
@@ -481,13 +502,28 @@ cmd_promote() {
   fi
   [ "$state" != "PROMOTE" ] && echo "::warning::advancing $agent/$frontier despite gate state '$state' (triage=$triage)"
   echo "advancing $agent/$frontier -> ${cand:0:12}"
-  if [ "$dry" = true ]; then
-    echo "[DRY-RUN] would: git tag -f $agent/$frontier $cand && git push --force origin $agent/$frontier"
-    return 0
+  # Host-aware write, mirroring the #1049 read split: a cross-repo agent's channel tag
+  # lives on ITS host and the candidate commit is not in this checkout, so the tag must
+  # be moved on the host via the GitHub API — a local `git tag -f` would fail on the
+  # nonexistent object and write to the wrong repo (#1054). This-repo agents (dev-lead,
+  # pr-review) keep the local tag path.
+  local host; host="$(_agent_field "$agent" host)"
+  if [ -n "$host" ] && [ "$host" != "$THIS_REPO" ]; then
+    if [ "$dry" = true ]; then
+      echo "[DRY-RUN] would: move tag $agent/$frontier -> $cand on $host via gh api"
+      return 0
+    fi
+    _gh_move_tag "$host" "$agent/$frontier" "$cand"
+    echo "promoted $agent/$frontier -> ${cand:0:12} on $host"
+  else
+    if [ "$dry" = true ]; then
+      echo "[DRY-RUN] would: git tag -f $agent/$frontier $cand && git push --force origin $agent/$frontier"
+      return 0
+    fi
+    git tag -f "$agent/$frontier" "$cand"
+    git push --force origin "$agent/$frontier"
+    echo "promoted $agent/$frontier -> ${cand:0:12}"
   fi
-  git tag -f "$agent/$frontier" "$cand"
-  git push --force origin "$agent/$frontier"
-  echo "promoted $agent/$frontier -> ${cand:0:12}"
   # Expose the move so the workflow can record a GitHub Deployment (traceability, #502).
   if [ -n "${GITHUB_OUTPUT:-}" ]; then
     { echo "promoted_agent=$agent"; echo "promoted_ring=$frontier"; echo "promoted_sha=$cand"; } >> "$GITHUB_OUTPUT"
