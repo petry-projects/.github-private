@@ -15,10 +15,15 @@
 # is a HARD requirement: if the token cannot be minted the job fails — it must not
 # silently degrade to github.token, which cannot move protected `.github` tags (#868).
 #
-#   - schedule (every 4h): read-only `evaluate-all` ONLY — evaluates EVERY agent in
+#   - schedule (every 4h): the gated fleet auto-promote (#1045 part b). When the org
+#     variable CANARY_AUTO_PROMOTE == 'true' the timer runs `promote-all` — the gate
+#     advances each PROMOTE-ready agent one ring per run and leaves BLOCKED/REGRESSION
+#     agents untouched (human approval is OVERRIDE-ONLY, never a required gate). When the
+#     variable is unset/false it runs read-only `evaluate-all` — evaluates EVERY agent in
 #     canary-rings.json (fleet-wide, #1025 P1) and emits each one's per-version gate +
-#     health report (#502 observability). Never promotes on the timer.
-#   - workflow_dispatch: `evaluate` | `promote` | `rollback`, human-gated.
+#     health report (#502 observability). The arm variable is the single kill-switch.
+#   - workflow_dispatch: `evaluate` | `evaluate-all` | `promote` | `promote-all` |
+#     `rollback`, human-gated (promote/promote-all default to --dry-run).
 # ─────────────────────────────────────────────────────────────────────────────
 name: Canary Rollout
 
@@ -28,9 +33,9 @@ on:
   workflow_dispatch:
     inputs:
       command:
-        description: "evaluate (read-only) | promote (gated tag move) | rollback"
+        description: "evaluate | evaluate-all (read-only) | promote | promote-all (gated tag move) | rollback"
         type: choice
-        options: [evaluate, promote, rollback]
+        options: [evaluate, evaluate-all, promote, promote-all, rollback]
         default: evaluate
       agent:
         description: "agent to act on"
@@ -107,12 +112,16 @@ jobs:
       - name: Run canary-rollout
         id: run
         env:
-          # On the 4h timer, force read-only fleet-wide evaluate-all — never promote on a
-          # schedule, and evaluate EVERY agent in the registry, not just dev-lead (#1025 P1).
-          CMD: ${{ github.event_name == 'schedule' && 'evaluate-all' || github.event.inputs.command }}
+          # On the 4h timer the arm variable decides: CANARY_AUTO_PROMOTE=='true' runs the
+          # gated fleet auto-promote (promote-all, #1045 part b); anything else runs read-only
+          # fleet-wide evaluate-all (#1025 P1). Either way EVERY registry agent is covered, not
+          # just dev-lead. The gate — not the schedule — decides which agents actually advance.
+          CMD: ${{ github.event_name == 'schedule' && (vars.CANARY_AUTO_PROMOTE == 'true' && 'promote-all' || 'evaluate-all') || github.event.inputs.command }}
           AGENT: ${{ github.event.inputs.agent || 'dev-lead' }}
           OVERRIDE: ${{ github.event.inputs.override }}
-          DRY_RUN: ${{ github.event.inputs.dry_run }}
+          # Scheduled promote-all is a REAL move (DRY_RUN=false); dispatch honours the input
+          # (which defaults to true — dispatch promote/promote-all are dry unless set false).
+          DRY_RUN: ${{ github.event_name == 'schedule' && 'false' || github.event.inputs.dry_run }}
           RING: ${{ github.event.inputs.ring }}
           TO: ${{ github.event.inputs.to }}
           # cut-release.sh (cross-repo tag moves on petry-projects/.github) and the
@@ -126,6 +135,11 @@ jobs:
             evaluate-all) args=(evaluate-all) ;;   # fleet-wide read-only (the 4h timer, #1025 P1)
             promote)
               args=(promote "$AGENT")
+              [ "$OVERRIDE" = "true" ] && args+=(--override)
+              [ "$DRY_RUN" != "false" ] && args+=(--dry-run)   # default-safe: dry unless explicitly false
+              ;;
+            promote-all)                                       # gated fleet auto-promote (the SCHEDULED arm, #1045b)
+              args=(promote-all)
               [ "$OVERRIDE" = "true" ] && args+=(--override)
               [ "$DRY_RUN" != "false" ] && args+=(--dry-run)   # default-safe: dry unless explicitly false
               ;;
