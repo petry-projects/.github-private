@@ -18,7 +18,7 @@ set -euo pipefail
 #   canary-rollout.sh promote-all [--override] [--allow-pre-existing] [--dry-run]  # gated fleet auto-promote (the SCHEDULED arm, #1045b)
 #   canary-rollout.sh rollback <agent> <ring> --to <vX.Y.Z> [--dry-run]
 #   canary-rollout.sh resolve  <agent> <channel>       # debug: print resolved member repos
-#   canary-rollout.sh sync-issues [--dry-run]          # upsert a blocker issue per BLOCKED agent + a rolling dashboard (auto-triage)
+#   canary-rollout.sh sync-issues [--dry-run]          # blocker issue per BLOCKED agent + fleet-status table to the job summary (auto-triage)
 #
 # Gate standard: .github#548 — graduated per-transition dwell/sample floors over a
 # per-candidate cumulative window (since the candidate's OWN vX.Y.Z cut), a robust
@@ -607,12 +607,13 @@ cmd_rollback() {
   echo "rolled back $agent/$ring -> $to"
 }
 
-# ── blocker-issue + dashboard automation (auto-triage of held promotions) ───────
+# ── blocker-issue + fleet-status automation (auto-triage of held promotions) ────
 # The gate detects + classifies a BLOCKED promotion; sync-issues turns that signal into
 # a tracked work item: one idempotent issue per BLOCKED agent (with the failing-run
-# evidence pre-attached), auto-closed when the gate clears, plus a single rolling
-# dashboard issue of fleet state. Runs on the schedule after promote-all. All GitHub
-# writes are best-effort — a failure here never fails the promotion run.
+# evidence pre-attached), auto-closed when the gate clears, plus the whole-fleet status
+# table rendered into the run's job summary (a read-only snapshot — not an issue). Runs on
+# the schedule after promote-all. All GitHub writes are best-effort — a failure here never
+# fails the promotion run.
 ISSUE_REPO="${ISSUE_REPO:-$THIS_REPO}"
 
 # _issue_find <label> <marker> — "<number>\t<STATE>" of the newest issue carrying <marker>
