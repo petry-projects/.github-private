@@ -608,6 +608,69 @@ GITEOF
   unset PRIOR_COMMENTS_JSON
 }
 
+# ── shared-escalation dedup (#1029) ───────────────────────────────────────────
+
+# All three non-retryable branches (missing-binary / timeout / retries-exhausted)
+# must emit the SAME needs-human marker shape, differing only in reason= (and the
+# per-scenario attempt=/run= values). This pins the shared escalate_needs_human
+# helper so the marker the retry cron + fleet-monitor parse never drifts between
+# branches.
+@test "fix-issue: all three escalation branches emit the same needs-human marker shape (only reason differs)" {
+  # Extract the needs-human marker line, then normalize the scenario-specific
+  # attempt=/reason=/run= values so only the marker *shape* is compared.
+  _extract_marker() {
+    grep -oE '<!-- dev-lead-issue 100 status=needs-human attempt=[0-9]+ reason=[a-z]+(-[a-z]+)* run=[^ ]* -->' "$1" | head -1
+  }
+  _normalize_marker() {
+    sed -E 's/attempt=[0-9]+/attempt=A/; s/reason=[a-z]+(-[a-z]+)*/reason=R/; s/run=[^ ]*/run=X/'
+  }
+
+  # Scenario 1: missing-binary (attempt 1)
+  export PRIOR_COMMENTS_JSON='[]'
+  _setup_failure_stubs 127 "claude: command not found"
+  unset GEMINI_API_KEY GOOGLE_API_KEY
+  export COPILOT_GITHUB_TOKEN="ghp_stub"
+  run bash "$FIX_ISSUE_SCRIPT"
+  [ "$status" -eq 1 ]
+  local m1; m1=$(_extract_marker "$COMMENT_FILE")
+  [ -n "$m1" ]
+  [[ "$m1" == *"reason=missing-binary"* ]]
+  rm -f "$COMMENT_FILE" "$LABEL_FILE"
+
+  # Scenario 2: timeout (attempt 1)
+  export PRIOR_COMMENTS_JSON='[]'
+  _setup_failure_stubs 124 "operation timed out after 2100s"
+  unset GEMINI_API_KEY GOOGLE_API_KEY
+  export COPILOT_GITHUB_TOKEN="ghp_stub"
+  export ACTION_TIMEOUT_SEC=2100
+  run bash "$FIX_ISSUE_SCRIPT"
+  [ "$status" -eq 1 ]
+  local m2; m2=$(_extract_marker "$COMMENT_FILE")
+  [ -n "$m2" ]
+  [[ "$m2" == *"reason=timeout"* ]]
+  rm -f "$COMMENT_FILE" "$LABEL_FILE"
+
+  # Scenario 3: retries-exhausted (prior attempt=2 → this is attempt 3)
+  export PRIOR_COMMENTS_JSON='[{"body":"<!-- dev-lead-issue 100 status=failed attempt=2 reason=engine-error run=1 -->"}]'
+  _setup_failure_stubs 1 "boom again"
+  run bash "$FIX_ISSUE_SCRIPT"
+  [ "$status" -eq 1 ]
+  local m3; m3=$(_extract_marker "$COMMENT_FILE")
+  [ -n "$m3" ]
+  [[ "$m3" == *"reason=engine-error"* ]]
+  rm -f "$COMMENT_FILE" "$LABEL_FILE"
+  unset PRIOR_COMMENTS_JSON
+
+  # Normalized shapes must be byte-identical across all three branches.
+  local n1 n2 n3
+  n1=$(printf '%s' "$m1" | _normalize_marker)
+  n2=$(printf '%s' "$m2" | _normalize_marker)
+  n3=$(printf '%s' "$m3" | _normalize_marker)
+  [ "$n1" = "$n2" ]
+  [ "$n2" = "$n3" ]
+  [ "$n1" = '<!-- dev-lead-issue 100 status=needs-human attempt=A reason=R run=X -->' ]
+}
+
 @test "fix-issue: lint fails → posts lint-failure comment on the issue" {
   cat > "$STUB_BIN_DIR/dev-lead-lint.sh" <<'LINTEOF'
 #!/usr/bin/env bash
