@@ -303,6 +303,16 @@ for repo in "${repos[@]}"; do
   fi
 done
 
+# Fleet-wide total dev-lead runs in the window = the sum of every repo's
+# `dev-lead.yml` row `total` (field 4) in the per-workflow metrics, across ALL
+# repos — including all-success repos with no markers. This is the prevalence
+# denominator for the timeout rate (#1030); summing only marker repos would
+# inflate the rate. Non-numeric totals (the ERROR sentinel `?`) are skipped.
+fleet_dl_runs=$(awk -F'\t' '
+  { n = split($3, p, "/"); if (p[n] == "dev-lead.yml" && $4 ~ /^[0-9]+$/) s += $4 }
+  END { print s + 0 }
+' "$metrics_file")
+
 # ---------------------------------------------------------------------------
 # 3. Generate reports
 # ---------------------------------------------------------------------------
@@ -329,7 +339,7 @@ stub_drift_section() {
 dev_lead_timeout_section() {
   [ -s "$dev_lead_reason_file" ] || return 0
   printf '\n'
-  generate_dev_lead_timeout_report "$dev_lead_reason_file"
+  generate_dev_lead_timeout_report "$dev_lead_reason_file" "${fleet_dl_runs:-0}"
 }
 
 # Step Summary — Tier 1 visualizations only (Mermaid not rendered there)

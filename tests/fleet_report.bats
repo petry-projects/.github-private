@@ -420,7 +420,7 @@ _mk_metrics() {
     $'petry-projects/a\t2\t1\t4\t60' \
     $'petry-projects/b\t1\t1\t3\t40' \
     > "$f"
-  run generate_dev_lead_timeout_report "$f"
+  run generate_dev_lead_timeout_report "$f" 100
   [ "$status" -eq 0 ]
   [[ "$output" =~ "petry-projects/a" ]]
   [[ "$output" =~ "petry-projects/b" ]]
@@ -435,12 +435,27 @@ _mk_metrics() {
   rm -f "$f"
 }
 
+@test "dev-lead timeout report: denominator is ALL fleet runs, not just marker repos (#1030)" {
+  local f
+  f="$(mktemp "$BATS_TEST_TMPDIR/fr.XXXXXX")"
+  # Only repo a has markers (2 timeouts over its 10 runs). But the fleet ran 100
+  # dev-lead runs total — repo b had 90 all-success runs (no markers, absent from
+  # the file). Prevalence MUST be 2/100 = 2%, not 2/10 = 20% (the marker-repo-only
+  # denominator bug). The passed-in fleet total is the denominator.
+  printf '%s\n' $'petry-projects/a\t2\t0\t2\t10' > "$f"
+  run generate_dev_lead_timeout_report "$f" 100
+  [ "$status" -eq 0 ]
+  [[ "$output" =~ "2 / 100" ]]
+  [[ ! "$output" =~ "20%" ]]
+  rm -f "$f"
+}
+
 @test "dev-lead timeout report: prevalence rate K/N renders a decimal when needed" {
   local f
   f="$(mktemp "$BATS_TEST_TMPDIR/fr.XXXXXX")"
   # K=3 timeouts over N=8 total runs → 37.5%
-  printf '%s\n' $'petry-projects/a\t3\t0\t3\t8' > "$f"
-  run generate_dev_lead_timeout_report "$f"
+  printf '%s\n' $'petry-projects/a	3	0	3	8' > "$f"
+  run generate_dev_lead_timeout_report "$f" 8
   [ "$status" -eq 0 ]
   [[ "$output" =~ "37.5%" ]]
   [[ "$output" =~ "3 / 8" ]]
@@ -451,8 +466,8 @@ _mk_metrics() {
   local f
   f="$(mktemp "$BATS_TEST_TMPDIR/fr.XXXXXX")"
   # 1 timeout over 2 total runs → 50%
-  printf '%s\n' $'petry-projects/a\t1\t1\t2\t2' > "$f"
-  run generate_dev_lead_timeout_report "$f"
+  printf '%s\n' $'petry-projects/a	1	1	2	2' > "$f"
+  run generate_dev_lead_timeout_report "$f" 2
   [[ "$output" =~ "50%" ]]
   [[ ! "$output" =~ "50.0%" ]]
   rm -f "$f"
@@ -461,8 +476,8 @@ _mk_metrics() {
 @test "dev-lead timeout report: zero total runs yields n/a (no divide-by-zero)" {
   local f
   f="$(mktemp "$BATS_TEST_TMPDIR/fr.XXXXXX")"
-  printf '%s\n' $'petry-projects/a\t1\t0\t1\t0' > "$f"
-  run generate_dev_lead_timeout_report "$f"
+  printf '%s\n' $'petry-projects/a	1	0	1	0' > "$f"
+  run generate_dev_lead_timeout_report "$f" 0
   [ "$status" -eq 0 ]
   [[ "$output" =~ "n/a" ]]
   rm -f "$f"
@@ -472,8 +487,8 @@ _mk_metrics() {
   local f
   f="$(mktemp "$BATS_TEST_TMPDIR/fr.XXXXXX")"
   # 5th column is the ERROR sentinel '?' — must not crash or divide-by-zero
-  printf '%s\n' $'petry-projects/a\t1\t0\t1\t?' > "$f"
-  run generate_dev_lead_timeout_report "$f"
+  printf '%s\n' $'petry-projects/a	1	0	1	?' > "$f"
+  run generate_dev_lead_timeout_report "$f" '?'
   [ "$status" -eq 0 ]
   [[ "$output" =~ "n/a" ]]
   rm -f "$f"
@@ -483,7 +498,7 @@ _mk_metrics() {
   local f
   f="$(mktemp "$BATS_TEST_TMPDIR/fr.XXXXXX")"
   : > "$f"
-  run generate_dev_lead_timeout_report "$f"
+  run generate_dev_lead_timeout_report "$f" 0
   [ "$status" -eq 0 ]
   [ -z "$output" ]
   rm -f "$f"

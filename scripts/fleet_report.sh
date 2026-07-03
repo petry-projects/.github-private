@@ -163,11 +163,16 @@ summarize_dev_lead_timeouts() {
 # file prints nothing, so the section is omitted when there was no dev-lead
 # activity in the window.
 generate_dev_lead_timeout_report() {
-  local f="${1:-}"
+  local f="${1:-}" fleet_runs="${2:-}"
   [ -n "$f" ] && [ -s "$f" ] || return 0
+  # Prevalence denominator = ALL dev-lead runs fleet-wide (passed in by the
+  # caller from the per-workflow metrics), NOT just runs from repos that happened
+  # to have a marker. Summing only marker repos drops every all-success repo from
+  # the denominator and inflates the rate — the exact flaw #1030 set out to fix.
+  case "${fleet_runs:-}" in ''|*[!0-9]*) fleet_runs=0 ;; esac
 
   local repo t e tot runs runs_disp
-  local sum_t=0 sum_e=0 sum_tot=0 sum_runs=0
+  local sum_t=0 sum_e=0 sum_tot=0
 
   printf '## Dev-Lead Timeouts (walls)\n\n'
   printf 'Stage timeouts (`reason=timeout`) that escalate to a human, broken out from generic `engine-error`, over the window.\n\n'
@@ -185,20 +190,20 @@ generate_dev_lead_timeout_report() {
     sum_t=$(( sum_t + ${t:-0} ))
     sum_e=$(( sum_e + ${e:-0} ))
     sum_tot=$(( sum_tot + ${tot:-0} ))
-    sum_runs=$(( sum_runs + runs ))
   done < "$f"
   local runs_total_disp="n/a"
-  [ "$sum_runs" -gt 0 ] && runs_total_disp="$sum_runs"
+  [ "$fleet_runs" -gt 0 ] && runs_total_disp="$fleet_runs"
   printf '| **Fleet total** | **%s** | **%s** | **%s** | **%s** |\n\n' \
     "$sum_t" "$sum_e" "$sum_tot" "$runs_total_disp"
+  printf '_Per-repo rows list only repos with >=1 dev-lead marker in the window; the **Total runs** fleet total (and the rate denominator) include **all** dev-lead runs fleet-wide, incl. all-success repos with no markers._\n\n'
 
   local rate
-  rate=$(awk -v t="$sum_t" -v n="$sum_runs" 'BEGIN {
+  rate=$(awk -v t="$sum_t" -v n="$fleet_runs" 'BEGIN {
     if (n <= 0) { print "n/a"; exit }
     pct = t * 100 / n
     printf (pct == int(pct)) ? "%d%%" : "%.1f%%", pct
   }')
-  printf '**Timeout rate** (`reason=timeout` / total dev-lead runs — prevalence over all runs, not just failures): %s (%s / %s)\n' \
+  printf '**Timeout rate** (`reason=timeout` / total dev-lead runs fleet-wide — prevalence over all runs, not just failures): %s (%s / %s)\n' \
     "$rate" "$sum_t" "$runs_total_disp"
 }
 
