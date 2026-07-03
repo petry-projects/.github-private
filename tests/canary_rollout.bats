@@ -466,7 +466,7 @@ _benign_stub() {
 # cross-repo agent that is actually ring1 with stable on an old baseline (READY to promote).
 _crossrepo_stub() {
   # next=ring0=ring1 on the candidate (cccc); stable on the OLD baseline (bbbb):
-  # frontier = stable, transition = ring1->stable — the ring1->stable promotion is pending.
+  # frontier = ring1, transition = ring1->stable — the ring1->stable promotion is pending.
   local cut_days="$1" run_days_ago="$2" conclusion="$3"
   STUB_BIN="$(mktemp -d "$BATS_TEST_TMPDIR/stub.XXXXXX")"; export PATH="$STUB_BIN:$PATH"
   local cand="cccccccccccccccccccccccccccccccccccccccc"
@@ -475,7 +475,8 @@ _crossrepo_stub() {
   cut_iso="$(date -u -d "-${cut_days} days" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v"-${cut_days}d" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)"
   run_iso="$(date -u -d "-${run_days_ago} days" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v"-${run_days_ago}d" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)"
   # gh: channel tags + the release tag are resolved via the API on the HOST repo; run-list
-  # feeds the sample/health. --jq outputs are emitted pre-computed (the stub does not run jq).
+  # feeds the sample/health. Channel/release tag responses are pre-computed strings; the
+  # run-list branch invokes jq to generate timestamped records from the injected parameters.
   # The channel tags are lightweight (object.type=commit); the release tag is annotated
   # (object.type=tag), so its commit + tagger date come from a second git/tags/<obj> call.
   cat > "$STUB_BIN/gh" <<GHEOF
