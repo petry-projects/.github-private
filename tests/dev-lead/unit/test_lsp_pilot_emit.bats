@@ -92,7 +92,7 @@ JSON
 # ── Decoupling: explicit LSP_PILOT_VARIANT is authoritative (issue #1031) ─────
 # The A/B legs must be selectable independently of REVIEW_MCP_CONFIG, because
 # engine.sh auto-defaults REVIEW_MCP_CONFIG to the committed .github/review-mcp.json
-# (the GitHub review MCP) — so the lsp-off (A) control leg would otherwise be
+# (the Context7 MCP) — so the lsp-off (A) control leg would otherwise be
 # mislabelled lsp-on. LSP_PILOT_VARIANT=off|on overrides the detection.
 
 @test "lpe_variant: LSP_PILOT_VARIANT=off forces lsp-off even with a readable REVIEW_MCP_CONFIG" {

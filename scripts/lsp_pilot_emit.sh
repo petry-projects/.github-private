@@ -41,7 +41,7 @@ lpe_pilot_active() { [ "${LSP_PILOT_ENABLED:-}" = "true" ]; }
 # LSP_PILOT_VARIANT (on|off, issue #1031) that is AUTHORITATIVE — this is what
 # DECOUPLES capture from LSP wiring, so a production review can emit the lsp-off
 # (A) control leg even here, where engine.sh auto-defaults REVIEW_MCP_CONFIG to
-# the committed .github/review-mcp.json (the unrelated GitHub review MCP) and
+# the committed .github/review-mcp.json (the Context7 MCP) and
 # review-one-pr.sh sources engine.sh — which would otherwise mislabel A as lsp-on.
 # When unset/"none", fall back to detecting the wired MCP (REVIEW_MCP_CONFIG →
 # readable file, the exact activation condition engine.sh's _mcp_review_flags
