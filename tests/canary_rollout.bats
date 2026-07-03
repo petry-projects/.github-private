@@ -632,11 +632,11 @@ GITEOF
 
 # ── orchestrator: sync-issues — auto-triage held promotions into tracked issues ──
 # A held (BLOCKED) promotion files/updates ONE idempotent issue per agent with the failing-run
-# evidence; a cleared agent's issue auto-closes; a single rolling dashboard is rewritten each
-# run. dev-lead-only registry keeps the fleet loop to one agent; the gh stub logs issue ops.
+# evidence; a cleared agent's issue auto-closes; the fleet-status table is rendered to the job
+# summary. dev-lead-only registry keeps the fleet loop to one agent; the gh stub logs issue ops.
 _sync_stub() {
-  # $1 conclusion (failure→BLOCKED | success→cleared); $2 blocker-list JSON; $3 dashboard-list JSON
-  local concl="$1" blocker_list="${2:-[]}" dash_list="${3:-[]}"
+  # $1 conclusion (failure→BLOCKED | success→cleared); $2 blocker-list JSON returned by `gh issue list`
+  local concl="$1" blocker_list="${2:-[]}"
   STUB_BIN="$(mktemp -d "$BATS_TEST_TMPDIR/stub.XXXXXX")"; export PATH="$STUB_BIN:$PATH"
   export ISSUE_LOG="$STUB_BIN/issue.log"; : > "$ISSUE_LOG"
   local cut_iso run_iso
@@ -662,7 +662,7 @@ GITEOF
 case "\$*" in
   *"run list"*) jq -nc --arg d "$run_iso" --arg c "$concl" '[range(3)|{conclusion:\$c,createdAt:\$d,databaseId:12345,workflowName:"Dev-Lead Agent"}]' ;;
   *"run view"*) echo '{"jobs":[{"steps":[{"name":"Some step","conclusion":"failure"}]}]}' ;;
-  "issue list"*) if [[ "\$*" == *"canary-dashboard"* ]]; then echo '$dash_list'; else echo '$blocker_list'; fi ;;
+  "issue list"*) echo '$blocker_list' ;;
   "issue create"*) echo "CREATE|\$*" >> "$ISSUE_LOG"; echo "https://github.com/petry-projects/.github-private/issues/777" ;;
   "issue edit"*)   echo "EDIT|\$*"   >> "$ISSUE_LOG" ;;
   "issue close"*)  echo "CLOSE|\$*"  >> "$ISSUE_LOG" ;;
@@ -677,31 +677,36 @@ GHEOF
   jq '{org_infra_repos, agents: {"dev-lead": .agents["dev-lead"]}}' "$RINGS" > "$SYNC_RINGS"
 }
 
-@test "orchestrator: sync-issues --dry-run plans the blocker + dashboard without any GitHub writes" {
-  _sync_stub failure '[]' '[]'   # BLOCKED, nothing filed yet
+@test "orchestrator: sync-issues --dry-run plans the blocker + renders status, no GitHub writes" {
+  _sync_stub failure '[]'   # BLOCKED, nothing filed yet
   run env CANARY_RINGS="$SYNC_RINGS" ISSUE_REPO="petry-projects/.github-private" bash "$ORCH" sync-issues --dry-run
   [ "$status" -eq 0 ]
   [[ "$output" == *"would OPEN blocker issue for dev-lead"* ]]
-  [[ "$output" == *"would UPSERT dashboard"* ]]
-  [ ! -s "$ISSUE_LOG" ]   # dry-run mutates nothing
+  # The fleet-status table renders (to stdout here, since GITHUB_STEP_SUMMARY is unset).
+  [[ "$output" == *"Canary Rollout — fleet status"* ]]
+  [ ! -s "$ISSUE_LOG" ]   # dry-run mutates nothing on GitHub
 }
 
-@test "orchestrator: sync-issues opens a blocker issue (with evidence) + creates & pins the dashboard" {
-  _sync_stub failure '[]' '[]'
-  run env CANARY_RINGS="$SYNC_RINGS" ISSUE_REPO="petry-projects/.github-private" bash "$ORCH" sync-issues
+@test "orchestrator: sync-issues opens ONE blocker issue (with evidence) + writes the fleet summary — no dashboard issue" {
+  _sync_stub failure '[]'
+  local summ="$BATS_TEST_TMPDIR/summary.md"; : > "$summ"
+  run env CANARY_RINGS="$SYNC_RINGS" ISSUE_REPO="petry-projects/.github-private" GITHUB_STEP_SUMMARY="$summ" bash "$ORCH" sync-issues
   [ "$status" -eq 0 ]
   [[ "$output" == *"opened blocker issue #777 for dev-lead"* ]]
-  # Two creates (blocker + dashboard); the multiline issue body spills the label onto its own
-  # log line, so match the label anywhere rather than on the CREATE| header line.
-  [ "$(grep -c '^CREATE|' "$ISSUE_LOG")" -eq 2 ]
+  [[ "$output" == *"wrote fleet-status table to the job summary"* ]]
+  # Exactly ONE issue create (the blocker) — the dashboard is NOT an issue anymore.
+  [ "$(grep -c '^CREATE|' "$ISSUE_LOG")" -eq 1 ]
   grep -q -- "--label canary-blocker" "$ISSUE_LOG"
-  grep -q -- "--label canary-dashboard" "$ISSUE_LOG"
-  grep -q "^PIN|" "$ISSUE_LOG"
+  ! grep -q -- "--label canary-dashboard" "$ISSUE_LOG"
+  ! grep -q "^PIN|" "$ISSUE_LOG"
+  # The fleet-status table landed in the job summary file.
+  grep -q "Canary Rollout — fleet status" "$summ"
+  grep -q "dev-lead" "$summ"
 }
 
 @test "orchestrator: sync-issues auto-closes a cleared agent's open blocker issue" {
   # dev-lead now clean (success → not BLOCKED) but an OPEN blocker issue #501 exists → close it.
-  _sync_stub success '[{"number":501,"state":"OPEN","body":"<!-- canary-blocker:dev-lead -->"}]' '[]'
+  _sync_stub success '[{"number":501,"state":"OPEN","body":"<!-- canary-blocker:dev-lead -->"}]'
   run env CANARY_RINGS="$SYNC_RINGS" ISSUE_REPO="petry-projects/.github-private" bash "$ORCH" sync-issues
   [ "$status" -eq 0 ]
   [[ "$output" == *"closed cleared blocker issue #501 for dev-lead"* ]]
