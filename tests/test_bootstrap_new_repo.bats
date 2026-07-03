@@ -5,17 +5,26 @@
 
 SCRIPT_DIR="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)"
 BOOTSTRAP="$SCRIPT_DIR/scripts/bootstrap-new-repo.sh"
-RULESETS_DIR="$SCRIPT_DIR/.github/rulesets"
 
 setup() {
   STUB_BIN="$(mktemp -d)" || { echo "Failed to create STUB_BIN" >&2; exit 1; }
   export PATH="$STUB_BIN:$PATH"
   CALLS="$STUB_BIN/calls.log"; export CALLS
   STUB_DIR="$(mktemp -d)" || { echo "Failed to create STUB_DIR" >&2; exit 1; }
+  # Fleet rulesets (code-quality, pr-quality) now live in petry-projects/.github
+  # (relocated under #575), so the REAL apply-rulesets.sh runs in fleet mode. Point
+  # it at a local fixture so resolution needs no network; the authoritative content
+  # is validated in .github. release-channel-tags stays repo-local and is NOT
+  # applied by bootstrap.
+  FLEET_DIR="$(mktemp -d)" || { echo "Failed to create FLEET_DIR" >&2; exit 1; }
+  printf '{"name":"code-quality","target":"branch","enforcement":"active"}\n' > "$FLEET_DIR/code-quality.json"
+  printf '{"name":"pr-quality","target":"branch","enforcement":"active"}\n'   > "$FLEET_DIR/pr-quality.json"
+  export FLEET_RULESETS_DIR="$FLEET_DIR"
 }
 teardown() {
   [ -n "${STUB_BIN:-}" ] && rm -rf "$STUB_BIN"
   [ -n "${STUB_DIR:-}" ] && rm -rf "$STUB_DIR"
+  [ -n "${FLEET_DIR:-}" ] && rm -rf "$FLEET_DIR"
   return 0
 }
 
@@ -52,44 +61,12 @@ EOF
   export APPLY_RULESETS="$STUB_DIR/apply-rulesets.sh"
 }
 
-# ── codified pr-quality.json shape ────────────────────────────────────────────
-@test "pr-quality.json: valid, branch target, active enforcement" {
-  run jq -e '.name == "pr-quality" and .target == "branch" and .enforcement == "active"' "$RULESETS_DIR/pr-quality.json"
-  [ "$status" -eq 0 ]
-}
-
-@test "pr-quality.json: bypass = OrganizationAdmin + Integration, both bypass_mode always" {
-  run jq -e '[.bypass_actors[].actor_type] | (index("OrganizationAdmin") and index("Integration"))' "$RULESETS_DIR/pr-quality.json"
-  [ "$status" -eq 0 ]
-  run jq -e '[.bypass_actors[].bypass_mode] | all(. == "always")' "$RULESETS_DIR/pr-quality.json"
-  [ "$status" -eq 0 ]
-}
-
-@test "pr-quality.json: Integration bypass uses the dependabot-automerge app id (3167543)" {
-  run jq -e '[.bypass_actors[] | select(.actor_type=="Integration") | .actor_id] | index(3167543)' "$RULESETS_DIR/pr-quality.json"
-  [ "$status" -eq 0 ]
-}
-
-@test "pr-quality.json: pull_request rule — 1 approval, code-owner review, thread resolution, dismiss-stale, squash-only" {
-  run jq -e '
-    [.rules[] | select(.type=="pull_request") | .parameters] | .[0] as $p
-    | $p.required_approving_review_count == 1
-      and $p.require_code_owner_review == true
-      and $p.required_review_thread_resolution == true
-      and $p.dismiss_stale_reviews_on_push == true
-      and ($p.allowed_merge_methods | index("squash"))
-      and ($p.allowed_merge_methods | (index("merge") | not))
-      and ($p.allowed_merge_methods | (index("rebase") | not))
-  ' "$RULESETS_DIR/pr-quality.json"
-  [ "$status" -eq 0 ]
-}
-
-@test "pr-quality.json: targets the default branch — no legacy/ad-hoc 'main' literal" {
-  run jq -e '.conditions.ref_name.include | index("~DEFAULT_BRANCH")' "$RULESETS_DIR/pr-quality.json"
-  [ "$status" -eq 0 ]
-  run jq -e '.conditions.ref_name.include | (index("refs/heads/main") | not)' "$RULESETS_DIR/pr-quality.json"
-  [ "$status" -eq 0 ]
-}
+# NOTE: the codified pr-quality.json / code-quality.json shape assertions moved out
+# of this suite with the JSONs themselves — the fleet rulesets are now owned by
+# petry-projects/.github (standards/rulesets/, relocated under #575) and their
+# content is validated there. This suite covers bootstrap's ORCHESTRATION: that it
+# applies exactly the two fleet rulesets (via fleet-mode apply-rulesets.sh) and not
+# the repo-local release-channel-tags.
 
 # ── orchestration: DRY_RUN path ───────────────────────────────────────────────
 @test "DRY_RUN: exits 0 and makes no write API calls" {
@@ -259,9 +236,12 @@ _ring_sot_copy() {
   [[ "$output" == *"secret_scanning_push_protection"* ]]
   [[ "$output" == *"would disable auto-trigger"* ]]
 
-  # (3/5) both sanctioned rulesets are applied.
+  # (3/5) exactly the two sanctioned FLEET rulesets are applied — and NOT the
+  # repo-local release-channel-tags (which protects .github-private's own tags only).
   [[ "$output" == *"pr-quality"* ]]
   [[ "$output" == *"code-quality"* ]]
+  [[ "$output" != *"release-channel-tags"* ]]
+  [[ "$output" == *"done (2 ruleset(s))"* ]]
 
   # (4/5) the standard label set.
   [[ "$output" == *"needs-human-review"* ]]
@@ -274,14 +254,4 @@ _ring_sot_copy() {
   # PASS summary + the no-drift invariant: a pure DRY_RUN makes no write API calls.
   [[ "$output" == *"PASS"* ]]
   [ ! -f "$CALLS" ]
-
-  # Each sanctioned ruleset carries its bypass actors + required checks in the JSON
-  # (not wired by bootstrap). These `run jq` calls overwrite $output, so they run
-  # last, after every transcript assertion above.
-  run jq -e '[.bypass_actors?[]?.actor_type] | (index("OrganizationAdmin") and index("Integration"))' "$RULESETS_DIR/code-quality.json"
-  [ "$status" -eq 0 ]
-  run jq -e '[.bypass_actors?[]?.actor_type] | (index("OrganizationAdmin") and index("Integration"))' "$RULESETS_DIR/pr-quality.json"
-  [ "$status" -eq 0 ]
-  run jq -e '[.rules[]? | select(.type=="required_status_checks") | .parameters?.required_status_checks?[]?.context] | length > 0' "$RULESETS_DIR/code-quality.json"
-  [ "$status" -eq 0 ]
 }
