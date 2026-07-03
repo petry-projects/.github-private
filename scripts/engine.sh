@@ -1334,8 +1334,8 @@ _mcp_review_flags() {
 is_transient_failure() {
   local rc="$1"
   case "$rc" in
-    124|137|143) return 0 ;;
-    *)           return 1 ;;
+    137|143) return 0 ;;
+    *)       return 1 ;;
   esac
 }
 
