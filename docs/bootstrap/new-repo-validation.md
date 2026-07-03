@@ -51,15 +51,13 @@ $ DRY_RUN=true GITHUB_ACTOR=octocat bash scripts/bootstrap-new-repo.sh petry-pro
 [bootstrap] (2/5) repo settings + security/GHAS + push protection
 [dry-run] would patch security_and_analysis on petry-projects/acme-service: secret_scanning secret_scanning_push_protection secret_scanning_ai_detection secret_scanning_non_provider_patterns dependabot_security_updates
 [dry-run] would disable auto-trigger for apps 1236702 347564 on petry-projects/acme-service
-[bootstrap] (3/5) sanctioned rulesets (pr-quality + code-quality + …)
-[apply-rulesets] repo=petry-projects/acme-service dir=.../.github/rulesets dry_run=true
+[bootstrap] (3/5) sanctioned fleet rulesets (pr-quality + code-quality)
+[apply-rulesets] repo=petry-projects/acme-service dir=<materialized from petry-projects/.github> dry_run=true
   create ruleset 'code-quality' on petry-projects/acme-service
     [dry-run] POST repos/petry-projects/acme-service/rulesets
   create ruleset 'pr-quality' on petry-projects/acme-service
     [dry-run] POST repos/petry-projects/acme-service/rulesets
-  create ruleset 'release-channel-tags' on petry-projects/acme-service
-    [dry-run] POST repos/petry-projects/acme-service/rulesets
-[apply-rulesets] done (3 ruleset(s))
+[apply-rulesets] done (2 ruleset(s))
 [bootstrap] (4/5) standard label set
   [dry-run] would ensure label 'needs-human-review' on petry-projects/acme-service
   [dry-run] would ensure label 'ack-test-deletion' on petry-projects/acme-service
@@ -92,8 +90,8 @@ caller stub — and asserts no drift before writing:
 | Repo settings + security/GHAS | `apply-repo-settings.sh` | `security_and_analysis` patch intent |
 | Secret-scanning push protection | `lib/push-protection.sh` | `secret_scanning_push_protection` in the patch set |
 | Check-suite auto-trigger (Claude/CodeRabbit) | `apply-repo-settings.sh` | `would disable auto-trigger for apps 1236702 347564` |
-| `pr-quality` ruleset + bypass actors | `.github/rulesets/pr-quality.json` | created; bypass = OrganizationAdmin + Integration (`bypass_mode: always`) |
-| `code-quality` ruleset + required checks + bypass | `.github/rulesets/code-quality.json` | created; required checks SonarCloud, CodeQL, agent-shield, dependency-audit; same bypass actors |
+| `pr-quality` ruleset + bypass actors | `petry-projects/.github` → `standards/rulesets/pr-quality.json` | created; bypass = OrganizationAdmin + Integration (`bypass_mode: always`) |
+| `code-quality` ruleset + required checks + bypass | `petry-projects/.github` → `standards/rulesets/code-quality.json` | created; required checks SonarCloud, CodeQL, agent-shield, dependency-audit; same bypass actors |
 | Required status checks | carried in the ruleset JSONs | not wired by bootstrap — live in `code-quality.json` |
 | Standard labels | `bootstrap-new-repo.sh` `BOOTSTRAP_LABELS` | needs-human-review, ack-test-deletion, dependencies, automerge |
 | CODEOWNERS team | new repo's `.github/CODEOWNERS` | first owner verified = `@petry-projects/org-leads` |
