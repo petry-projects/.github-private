@@ -35,7 +35,7 @@ on:
       agent:
         description: "agent to act on"
         type: choice
-        options: [dev-lead]
+        options: [dev-lead, agent-shield, auto-rebase, dependency-audit, dependabot-automerge, dependabot-rebase, pr-review-mention]
         default: dev-lead
       override:
         description: "promote: advance even if the gate is not PROMOTE (records a warning)"
