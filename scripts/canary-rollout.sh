@@ -521,9 +521,20 @@ cmd_promote() {
       || { echo "::error::failed to move $agent/$frontier -> ${cand:0:12} locally" >&2; return 1; }
   fi
   echo "promoted $agent/$frontier -> ${cand:0:12}"
-  # Expose the move so the workflow can record a GitHub Deployment (traceability, #502).
+  # Expose the move for the workflow's GitHub Deployment (traceability, #502). The
+  # deployment must be created on the repo that OWNS the moved commit: a cross-repo agent's
+  # candidate SHA lives on its host, NOT on THIS_REPO — creating the deployment against
+  # GITHUB_REPOSITORY 422s with "No ref found" (#1059). So emit the owning repo too.
+  local deploy_repo="$THIS_REPO"; [ "$cross" = true ] && deploy_repo="$host"
+  # GITHUB_OUTPUT is single-valued (last write wins), fine for a single `promote`. For
+  # `promote-all` (many promotions per run) the workflow reads CANARY_PROMOTIONS_LOG — one
+  # TSV line per promotion — so it can record a deployment for EVERY move, not just the last.
   if [ -n "${GITHUB_OUTPUT:-}" ]; then
-    { echo "promoted_agent=$agent"; echo "promoted_ring=$frontier"; echo "promoted_sha=$cand"; } >> "$GITHUB_OUTPUT"
+    { echo "promoted_agent=$agent"; echo "promoted_ring=$frontier"
+      echo "promoted_sha=$cand";   echo "promoted_host=$deploy_repo"; } >> "$GITHUB_OUTPUT"
+  fi
+  if [ -n "${CANARY_PROMOTIONS_LOG:-}" ]; then
+    printf '%s\t%s\t%s\t%s\n' "$agent" "$frontier" "$cand" "$deploy_repo" >> "$CANARY_PROMOTIONS_LOG"
   fi
 }
 
