@@ -679,11 +679,13 @@ GHEOF
 
 @test "orchestrator: sync-issues --dry-run plans the blocker + renders status, no GitHub writes" {
   _sync_stub failure '[]'   # BLOCKED, nothing filed yet
-  run env CANARY_RINGS="$SYNC_RINGS" ISSUE_REPO="petry-projects/.github-private" bash "$ORCH" sync-issues --dry-run
+  # Pin GITHUB_STEP_SUMMARY to a temp file — under CI the runner sets it, so the table lands
+  # in the summary, not stdout; asserting the file keeps the test env-independent.
+  local summ="$BATS_TEST_TMPDIR/summary.md"; : > "$summ"
+  run env CANARY_RINGS="$SYNC_RINGS" ISSUE_REPO="petry-projects/.github-private" GITHUB_STEP_SUMMARY="$summ" bash "$ORCH" sync-issues --dry-run
   [ "$status" -eq 0 ]
   [[ "$output" == *"would OPEN blocker issue for dev-lead"* ]]
-  # The fleet-status table renders (to stdout here, since GITHUB_STEP_SUMMARY is unset).
-  [[ "$output" == *"Canary Rollout — fleet status"* ]]
+  grep -q "Canary Rollout — fleet status" "$summ"   # table still renders under --dry-run
   [ ! -s "$ISSUE_LOG" ]   # dry-run mutates nothing on GitHub
 }
 
