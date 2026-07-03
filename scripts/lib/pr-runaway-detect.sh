@@ -36,6 +36,15 @@ set -euo pipefail
 : "${RUNAWAY_MIN_AGE_HOURS:=48}"     # open longer than this, AND churning
 : "${RUNAWAY_CHURN_MIN_CYCLES:=1}"   # min cycles that count as "active churn"
 
+# Merge-stacked (rebase/squash-candidate) smell — issue #949, #860 follow-up.
+# #860's branch carried a stale April base and was repeatedly `merge main`-d
+# instead of rebased, inflating it to 378 commits for an 18-file net diff. That
+# disproportion — a commit count that vastly exceeds the changed-file count — is
+# the tell of a branch that should have been rebased/squashed. It fires only when
+# BOTH conditions hold (so a genuinely broad PR with many files does not flag).
+: "${REBASE_SMELL_MIN_COMMITS:=50}"  # > this many commits, AND
+: "${REBASE_SMELL_MAX_FILES:=20}"    # < this many changed files
+
 # _runaway_int <value>
 #   Echo the value as a non-negative integer, or 0 for empty/non-numeric input.
 #   Mirrors the defensive degradation in pr-automation-budget.sh so a bad metric
@@ -96,6 +105,27 @@ is_pr_runaway() {
   [ -n "$reasons" ]
 }
 
+# pr_rebase_smell <commits> <changed_files>
+#   Print a single "rebase/squash candidate" reason line when a PR's commit count
+#   vastly exceeds its changed-file count — the #860 merge-stacking signature (378
+#   commits for an 18-file net diff), see #949. Fires only when
+#   commits > REBASE_SMELL_MIN_COMMITS AND 0 < changed_files < REBASE_SMELL_MAX_FILES.
+#   The 0-file guard is deliberate: a zero-file diff is an API/data glitch, not a
+#   merge-stacked branch, and must not false-positive. Empty output otherwise.
+pr_rebase_smell() {
+  local commits files min_commits max_files
+  commits=$(_runaway_int "${1:-0}")
+  files=$(_runaway_int "${2:-0}")
+  min_commits=$(_runaway_threshold "${REBASE_SMELL_MIN_COMMITS}" 50)
+  max_files=$(_runaway_threshold "${REBASE_SMELL_MAX_FILES}" 20)
+
+  if [ "$commits" -gt "$min_commits" ] && [ "$files" -gt 0 ] && [ "$files" -lt "$max_files" ]; then
+    printf 'merge-stacked: %s commits / %s files — rebase/squash candidate (>%s commits, <%s files)\n' \
+      "$commits" "$files" "$min_commits" "$max_files"
+  fi
+  return 0
+}
+
 # pr_age_hours <created_at_iso8601> [now_epoch]
 #   Whole hours since created_at. now_epoch defaults to the current time; it is
 #   injectable so callers/tests are deterministic. Unparseable input -> 0.
@@ -121,17 +151,21 @@ pr_age_hours() {
 #   all-clear line and no table, so a clean fleet still gets an explicit signal.
 generate_runaway_report() {
   local f="${1:-}"
-  local max_commits max_comments max_cycles min_age
+  local max_commits max_comments max_cycles min_age smell_commits smell_files
   max_commits=$(_runaway_threshold "${RUNAWAY_MAX_COMMITS}" 50)
   max_comments=$(_runaway_threshold "${RUNAWAY_MAX_COMMENTS}" 200)
   max_cycles=$(_runaway_threshold "${RUNAWAY_MAX_CYCLES}" 10)
   min_age=$(_runaway_threshold "${RUNAWAY_MIN_AGE_HOURS}" 48)
+  smell_commits=$(_runaway_threshold "${REBASE_SMELL_MIN_COMMITS}" 50)
+  smell_files=$(_runaway_threshold "${REBASE_SMELL_MAX_FILES}" 20)
 
   printf '## Runaway PR Candidates\n\n'
   printf 'Open PRs exceeding a soft runaway threshold '
-  printf '(commits >%s, comments >%s, automated cycles >%s, or open >%sh with agent churn). ' \
+  printf '(commits >%s, comments >%s, automated cycles >%s, open >%sh with agent churn, ' \
     "$max_commits" "$max_comments" "$max_cycles" "$min_age"
-  printf 'Detection only — no PR is mutated. See #948 / the #860 post-mortem.\n\n'
+  printf 'or merge-stacked: >%s commits with <%s files — a rebase/squash candidate). ' \
+    "$smell_commits" "$smell_files"
+  printf 'Detection only — no PR is mutated. See #948 / #949 / the #860 post-mortem.\n\n'
 
   if [ -z "$f" ] || [ ! -s "$f" ]; then
     printf '✅ No open PR crossed a runaway threshold.\n'

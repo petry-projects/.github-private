@@ -33,7 +33,7 @@ TODAY=$(date -u +%Y-%m-%d)
 echo "=== Runaway-PR Detection — Daily Scan ==="
 echo "  Repo:   $REPO"
 echo "  Date:   $TODAY"
-echo "  Thresholds: commits>${RUNAWAY_MAX_COMMITS} comments>${RUNAWAY_MAX_COMMENTS} cycles>${RUNAWAY_MAX_CYCLES} age>${RUNAWAY_MIN_AGE_HOURS}h(+churn)"
+echo "  Thresholds: commits>${RUNAWAY_MAX_COMMITS} comments>${RUNAWAY_MAX_COMMENTS} cycles>${RUNAWAY_MAX_CYCLES} age>${RUNAWAY_MIN_AGE_HOURS}h(+churn) merge-stacked(>${REBASE_SMELL_MIN_COMMITS} commits,<${REBASE_SMELL_MAX_FILES} files)"
 echo ""
 
 # ---------------------------------------------------------------------------
@@ -81,10 +81,10 @@ while IFS= read -r pr; do
   [ -n "$pr" ] || continue
   scanned=$(( scanned + 1 ))
 
-  # Single detail call gives commit/comment counts + created_at + link + title.
+  # Single detail call gives commit/comment/file counts + created_at + link + title.
   detail=$(gh api "repos/${REPO}/pulls/${pr}" \
-    --jq '{commits, comments, created_at, html_url, title}' 2>/dev/null || echo '{}')
-  IFS=$'\t' read -r commits comments created_at html_url title <<< "$(jq -r '[.commits // 0, .comments // 0, .created_at // "", .html_url // "", (.title // "" | tostring)] | @tsv' <<< "$detail")"
+    --jq '{commits, comments, changed_files, created_at, html_url, title}' 2>/dev/null || echo '{}')
+  IFS=$'\t' read -r commits comments changed_files created_at html_url title <<< "$(jq -r '[.commits // 0, .comments // 0, .changed_files // 0, .created_at // "", .html_url // "", (.title // "" | tostring)] | @tsv' <<< "$detail")"
 
   # Automated cycles since the last human — reuse the #926 budget computation so
   # the two guards agree on what "an automated cycle" means.
@@ -93,7 +93,16 @@ while IFS= read -r pr; do
 
   age_hours=$(pr_age_hours "$created_at" "$now_epoch")
 
-  reasons=$(pr_runaway_reasons "$commits" "$comments" "$cycles" "$age_hours")
+  # Combine the runaway thresholds (#948) with the merge-stacked rebase/squash
+  # smell (#949) in pure bash — avoids a per-PR subshell + sed fork.
+  reasons_runaway=$(pr_runaway_reasons "$commits" "$comments" "$cycles" "$age_hours")
+  reasons_smell=$(pr_rebase_smell "$commits" "$changed_files")
+  if [ -n "$reasons_runaway" ] && [ -n "$reasons_smell" ]; then
+    reasons="${reasons_runaway}
+${reasons_smell}"
+  else
+    reasons="${reasons_runaway:-$reasons_smell}"
+  fi
   if [ -n "$reasons" ]; then
     # Sanitize the title for a single markdown table cell: strip newlines/tabs
     # (the TSV delimiter) and pipes (the markdown column delimiter).
