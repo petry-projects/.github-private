@@ -13,7 +13,8 @@
 #
 # Contract (mirrors lsp_pilot_run.sh's run_variant semantics so both sides join
 # and render via scripts/lsp_pilot_compare.sh UNCHANGED):
-#   variant     lsp-on  when the LSP MCP is wired (REVIEW_MCP_CONFIG → readable
+#   variant     the explicit LSP_PILOT_VARIANT (on|off, #1031) when set, else
+#               lsp-on when the LSP MCP is wired (REVIEW_MCP_CONFIG → readable
 #               file, as setup-lsp-pilot.sh sets it), else lsp-off.
 #   candidate   agent-lsp (override: LSP_CANDIDATE) on the lsp-on leg; baseline
 #               on the lsp-off leg.
@@ -36,10 +37,21 @@ _LPE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # gate: off → emit_record is a no-op and no consumer repo is affected.
 lpe_pilot_active() { [ "${LSP_PILOT_ENABLED:-}" = "true" ]; }
 
-# lpe_variant — "lsp-on" when the LSP MCP is wired (REVIEW_MCP_CONFIG points at a
+# lpe_variant — the A/B leg label. When the pipeline explicitly selects a leg via
+# LSP_PILOT_VARIANT (on|off, issue #1031) that is AUTHORITATIVE — this is what
+# DECOUPLES capture from LSP wiring, so a production review can emit the lsp-off
+# (A) control leg even here, where engine.sh auto-defaults REVIEW_MCP_CONFIG to
+# the committed .github/review-mcp.json (the Context7 MCP) and
+# review-one-pr.sh sources engine.sh — which would otherwise mislabel A as lsp-on.
+# When unset/"none", fall back to detecting the wired MCP (REVIEW_MCP_CONFIG →
 # readable file, the exact activation condition engine.sh's _mcp_review_flags
-# uses), else "lsp-off".
+# uses), preserving the legacy vars.LSP_PILOT_ENABLED path and lsp_pilot_run.sh's
+# run_variant() semantics.
 lpe_variant() {
+  case "${LSP_PILOT_VARIANT:-}" in
+    on)  printf 'lsp-on\n';  return 0 ;;
+    off) printf 'lsp-off\n'; return 0 ;;
+  esac
   if [ -n "${REVIEW_MCP_CONFIG:-}" ] && [ -f "${REVIEW_MCP_CONFIG}" ] && [ -r "${REVIEW_MCP_CONFIG}" ]; then
     printf 'lsp-on\n'
   else

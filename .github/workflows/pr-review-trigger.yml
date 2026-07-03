@@ -44,6 +44,21 @@ on:
         required: false
         default: "false"
         type: string
+      lsp_pilot_variant:
+        # LSP pilot A/B leg (epic #839, story #844, issue #1031). Drives the
+        # off-vs-on comparison on this repo's own PRs: dispatch the same PR with
+        # 'off' then 'on' to drop two joinable lsp_pilot_run records.
+        #   on   → wire the LSP MCP + capture  (lsp-on,  B leg)
+        #   off  → capture only, no LSP wiring (lsp-off, A control leg)
+        #   none → today's behaviour (defers to vars.LSP_PILOT_ENABLED)
+        description: "LSP pilot A/B leg: on | off | none"
+        required: false
+        default: "none"
+        type: choice
+        options:
+          - none
+          - "off"
+          - "on"
   repository_dispatch:
     # Triggered by the petry-projects/.github mention-listener (via
     # pr-review-mention.yml). Payload: { pr_url, force_review }.
@@ -68,4 +83,7 @@ jobs:
       pr_url: ${{ inputs.pr_url || '' }}
       dry_run: ${{ inputs.dry_run || '' }}
       force_review: ${{ inputs.force_review || '' }}
+      # Forward the LSP pilot A/B leg (empty for event triggers). 'none'/'' both
+      # mean today's behaviour on the reusable side.
+      lsp_pilot_variant: ${{ inputs.lsp_pilot_variant || '' }}
     secrets: inherit
