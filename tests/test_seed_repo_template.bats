@@ -97,8 +97,8 @@ _stub_gh_empty() {
   run bash "$SEED" --list-baseline
   [ "$status" -eq 0 ]
   for f in AGENTS.md CLAUDE.md .github/CODEOWNERS .github/dependabot.yml \
-           sonar-project.properties .gitignore LICENSE SECURITY.md \
-           README.md BOOTSTRAP.md; do
+           .gitleaks.toml sonar-project.properties .gitignore LICENSE \
+           SECURITY.md README.md BOOTSTRAP.md; do
     [[ "$output" == *"$f"* ]] || { echo "missing baseline: $f" >&2; false; }
   done
 }
@@ -237,6 +237,27 @@ EOF
   [[ "$output" == *"auto-trigger"* ]]
 }
 
+# ── .gitleaks.toml baseline is fetched verbatim from standards/gitleaks.toml ───
+# Seeds the secret-scan job's required config (push-protection.md); without it the
+# template ci.yml's `gitleaks detect --config .gitleaks.toml` fails file-not-found.
+@test "baseline: .gitleaks.toml is fetched verbatim from standards/gitleaks.toml (#575)" {
+  printf 'title = "gitleaks config"\n[allowlist]\npaths = [ %s ]\n' "'''_bmad/'''" \
+    > "$STANDARDS_DIR/standards/gitleaks.toml"
+  run bash "$SEED" --emit-baseline .gitleaks.toml
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'title = "gitleaks config"'* ]]
+  [[ "$output" == *"_bmad/"* ]]
+}
+
+@test "baseline: .gitleaks.toml FAILS LOUD when standards/gitleaks.toml is absent" {
+  # No fixture written; empty gh stub blocks the network fallback so the general
+  # fetch:<path> source must fail loud, not emit empty (it exists in the live repo).
+  _stub_gh_empty
+  run bash "$SEED" --emit-baseline .gitleaks.toml
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"standards/gitleaks.toml"* ]]
+}
+
 # ── dependabot baseline is sourced from the chosen standards/ stack template ───
 @test "baseline: dependabot.yml comes from the chosen standards/dependabot stack" {
   printf 'version: 2\nupdates:\n  - package-ecosystem: npm\n' \
@@ -295,11 +316,13 @@ EOF
     fi
   done
   printf 'version: 2\n' > "$STANDARDS_DIR/standards/dependabot/frontend.yml"
+  printf 'title = "gitleaks config"\n' > "$STANDARDS_DIR/standards/gitleaks.toml"
   run env DEPENDABOT_STACK=frontend bash "$SEED" --repo petry-projects/repo-template
   [ "$status" -eq 0 ]
   [ -f "$CALLS" ]
   grep -q "contents/.github/workflows/auto-rebase.yml" "$CALLS"
   grep -q "contents/.github/CODEOWNERS" "$CALLS"
+  grep -q "contents/.gitleaks.toml" "$CALLS"
   grep -q "pr create" "$CALLS"
 }
 
@@ -323,6 +346,7 @@ EOF
     fi
   done
   printf 'version: 2\n' > "$STANDARDS_DIR/standards/dependabot/frontend.yml"
+  printf 'title = "gitleaks config"\n' > "$STANDARDS_DIR/standards/gitleaks.toml"
   run env DEPENDABOT_STACK=frontend bash "$SEED" --repo petry-projects/repo-template
   [ "$status" -eq 0 ]
   [[ "$output" == *"PR #42 already open"* ]]
