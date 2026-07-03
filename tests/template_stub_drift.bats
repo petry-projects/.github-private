@@ -58,6 +58,7 @@ setup() {
   [[ "$output" == *".github/dependabot.yml"* ]]
   [[ "$output" == *".github/CODEOWNERS"* ]]
   [[ "$output" == *"CLAUDE.md"* ]]
+  [[ "$output" == *".gitleaks.toml"* ]]
 }
 
 @test "covered set: excludes the allowlisted ci.yml (per-stack customizable)" {
