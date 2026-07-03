@@ -210,7 +210,7 @@ process_repo() {
   # loudly instead of silently generating into an empty directory.
   if ! git clone --quiet "https://github.com/${full_repo}.git" "$dir" || [ ! -d "$dir/.git" ]; then
     warn "clone failed for $full_repo — skipping this repo"
-    return 0
+    return 1
   fi
   local default_branch
   default_branch="$(git -C "$dir" symbolic-ref --short HEAD)"
