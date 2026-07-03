@@ -775,9 +775,11 @@ cmd_sync_issues() {
   ts="$(date -u +%Y-%m-%dT%H:%MZ 2>/dev/null || echo unknown)"
   dmd="$(_dashboard_md "${rows%$'\n'}" "$ts")"
   if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
-    printf '%s\n' "$dmd" >> "$GITHUB_STEP_SUMMARY" \
-      && echo "  wrote fleet-status table to the job summary" \
-      || echo "::warning::could not write the fleet-status job summary"
+    if printf '%s\n' "$dmd" >> "$GITHUB_STEP_SUMMARY"; then
+      echo "  wrote fleet-status table to the job summary"
+    else
+      echo "::warning::could not write the fleet-status job summary"
+    fi
   else
     echo "──── fleet status ────"
     printf '%s\n' "$dmd"

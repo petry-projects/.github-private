@@ -695,7 +695,7 @@ GHEOF
   [[ "$output" == *"opened blocker issue #777 for dev-lead"* ]]
   [[ "$output" == *"wrote fleet-status table to the job summary"* ]]
   # Exactly ONE issue create (the blocker) — the dashboard is NOT an issue anymore.
-  [ "$(grep -c '^CREATE|' "$ISSUE_LOG")" -eq 1 ]
+  [ "$(grep -c '^CREATE|' "$ISSUE_LOG" || true)" -eq 1 ]
   grep -q -- "--label canary-blocker" "$ISSUE_LOG"
   ! grep -q -- "--label canary-dashboard" "$ISSUE_LOG"
   ! grep -q "^PIN|" "$ISSUE_LOG"
