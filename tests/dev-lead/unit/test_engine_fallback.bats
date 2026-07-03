@@ -160,7 +160,7 @@ GHEOF
   # and a recording stub shows that claude was tried after gemini failed.
   _make_stub "gemini" 2
   local record_file
-  record_file="$(mktemp)"
+  record_file="$(mktemp "$BATS_TEST_TMPDIR/rec.XXXXXX")"
   _make_recording_stub "claude" 127 "$record_file"
   # Provide token + gh stub so copilot path is deterministic (returns rate-limit)
   export COPILOT_GITHUB_TOKEN="stub-token"
@@ -190,7 +190,7 @@ GHEOF
   # Primary = gemini (exits 2), then fallback order should try claude first
   _make_stub "gemini" 2
   local record_file
-  record_file="$(mktemp)"
+  record_file="$(mktemp "$BATS_TEST_TMPDIR/rec.XXXXXX")"
   _make_recording_stub "claude" 0 "$record_file"
   _source_engine "gemini"
 
@@ -371,7 +371,7 @@ GHEOF
 
 @test "retry: stubbed 124 in the retry loop → engine invoked exactly once (no in-run retry)" {
   local record_file
-  record_file="$(mktemp)"
+  record_file="$(mktemp "$BATS_TEST_TMPDIR/rec.XXXXXX")"
   _make_recording_stub "claude" 124 "$record_file"
   export RETRY_BASE_DELAY_SEC=0   # no backoff sleep in tests
   _source_engine "claude"
@@ -386,7 +386,7 @@ GHEOF
 
 @test "retry: stubbed 137 in the retry loop → still retries (invoked twice), regression guard" {
   local record_file
-  record_file="$(mktemp)"
+  record_file="$(mktemp "$BATS_TEST_TMPDIR/rec.XXXXXX")"
   _make_recording_stub "claude" 137 "$record_file"
   export RETRY_BASE_DELAY_SEC=0   # no backoff sleep in tests
   _source_engine "claude"
