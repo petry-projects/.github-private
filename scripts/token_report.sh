@@ -84,6 +84,17 @@ annotate_records() {
   [ -e "${files[0]}" ] || return 0   # no JSONL files → no rows
   jq -r 'select(type == "object")
     | select((.kind // "token_usage") == "token_usage")
+    # Drop empty, model-less records (no model AND zero usage): they are not priced
+    # calls at all — counting them inflates the "no price" warning and adds a junk
+    # `- / -` cost-driver row (#1009). A real model missing a price still surfaces
+    # (known=0 → warns); a real model with an all-zero usage block is still counted.
+    | select(
+        (((.model // "") | (. == "" or . == "-"))
+         and ((.input_tokens // 0) == 0)
+         and ((.cache_read_tokens // 0) == 0)
+         and ((.cache_creation_tokens // 0) == 0)
+         and ((.output_tokens // 0) == 0)) | not
+      )
     | [
       (.repo // "unknown"), (.workflow // "unknown"), (.tier // "-"), (.model // "-"),
       (.input_tokens // 0), (.cache_read_tokens // 0), (.output_tokens // 0),

@@ -77,6 +77,51 @@ setup() {
   [ "$result" = "-1.000000 0" ]
 }
 
+@test "annotate_records: excludes empty model-less all-zero records (#1009)" {
+  # The dev-lead path emitted model-less, zero-usage junk records that surfaced as a
+  # `- / -` row and inflated the "no price" count. They are not priced calls at all,
+  # so annotate_records drops them entirely, keeping only the genuine real-model row.
+  tmp="$(mktemp -d)"
+  printf '%s\n' \
+    '{"ts":"2026-06-01T00:00:00Z","workflow":"dev-lead","tier":"","model":"","input_tokens":0,"cache_read_tokens":0,"cache_creation_tokens":0,"output_tokens":0,"repo":"r","context":""}' \
+    '{"ts":"2026-06-01T00:00:01Z","workflow":"dev-lead","tier":"","model":"-","input_tokens":0,"cache_read_tokens":0,"cache_creation_tokens":0,"output_tokens":0,"repo":"r","context":""}' \
+    '{"ts":"2026-06-01T00:00:02Z","workflow":"pr-review","tier":"deep","model":"claude-opus-4-7","input_tokens":100,"output_tokens":50,"repo":"r","context":""}' \
+    > "$tmp/mixed.jsonl"
+  result="$(annotate_records "$tmp" | wc -l)"
+  rm -rf "$tmp"
+  [ "$result" -eq 1 ]
+}
+
+@test "render_token_report: empty model-less junk does not add to the 'no price' count" {
+  # Only a genuine unknown-but-real model should warn. A model-less all-zero record
+  # must not appear as an unpriced call, and its `- / -` row must not render.
+  tmp="$(mktemp -d)"
+  printf '%s\n' \
+    '{"ts":"2026-06-01T00:00:00Z","workflow":"dev-lead","tier":"","model":"","input_tokens":0,"cache_read_tokens":0,"cache_creation_tokens":0,"output_tokens":0,"repo":"r","context":""}' \
+    '{"ts":"2026-06-01T00:00:02Z","workflow":"pr-review","tier":"deep","model":"claude-opus-4-7","input_tokens":100,"output_tokens":50,"repo":"r","context":""}' \
+    > "$tmp/mixed.jsonl"
+  run render_token_report "$tmp" 7 1 1 2026-06-07
+  rm -rf "$tmp"
+  [ "$status" -eq 0 ]
+  # No unpriced warning (the only non-priced record was junk, now excluded).
+  [[ "$output" != *"had no price"* ]]
+  # No junk `- / -` cost-driver row.
+  [[ "$output" != *"| \`dev-lead\` |  | \`-\` |"* ]]
+}
+
+@test "render_token_report: a real unknown-model call still warns (#1009 regression guard)" {
+  # Fix B must NOT silence genuine unpriced-but-real calls.
+  tmp="$(mktemp -d)"
+  printf '%s\n' \
+    '{"ts":"2026-06-01T00:00:00Z","workflow":"dev-lead","tier":"","model":"","input_tokens":0,"cache_read_tokens":0,"cache_creation_tokens":0,"output_tokens":0,"repo":"r","context":""}' \
+    '{"ts":"2026-06-01T00:00:02Z","workflow":"x","tier":"y","model":"mystery-model-v9","input_tokens":100,"output_tokens":50,"repo":"r","context":""}' \
+    > "$tmp/mixed.jsonl"
+  run render_token_report "$tmp" 7 1 1 2026-06-07
+  rm -rf "$tmp"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"had no price"* ]]
+}
+
 # ---------------------------------------------------------------------------
 # render_token_report
 # ---------------------------------------------------------------------------
