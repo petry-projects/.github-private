@@ -94,10 +94,15 @@ while IFS= read -r pr; do
   age_hours=$(pr_age_hours "$created_at" "$now_epoch")
 
   # Combine the runaway thresholds (#948) with the merge-stacked rebase/squash
-  # smell (#949); sed drops the blank line when either half is empty.
-  reasons=$(printf '%s\n%s\n' \
-    "$(pr_runaway_reasons "$commits" "$comments" "$cycles" "$age_hours")" \
-    "$(pr_rebase_smell "$commits" "$changed_files")" | sed '/^$/d')
+  # smell (#949) in pure bash — avoids a per-PR subshell + sed fork.
+  reasons_runaway=$(pr_runaway_reasons "$commits" "$comments" "$cycles" "$age_hours")
+  reasons_smell=$(pr_rebase_smell "$commits" "$changed_files")
+  if [ -n "$reasons_runaway" ] && [ -n "$reasons_smell" ]; then
+    reasons="${reasons_runaway}
+${reasons_smell}"
+  else
+    reasons="${reasons_runaway:-$reasons_smell}"
+  fi
   if [ -n "$reasons" ]; then
     # Sanitize the title for a single markdown table cell: strip newlines/tabs
     # (the TSV delimiter) and pipes (the markdown column delimiter).
