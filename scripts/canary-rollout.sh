@@ -15,6 +15,7 @@ set -euo pipefail
 #   canary-rollout.sh evaluate     <agent>             # read-only gate + health report (also the #502 report)
 #   canary-rollout.sh evaluate-all                     # read-only evaluate for EVERY registry agent (fleet-wide; the 4h timer)
 #   canary-rollout.sh promote  <agent> [--override] [--allow-pre-existing] [--dry-run]
+#   canary-rollout.sh promote-all [--override] [--allow-pre-existing] [--dry-run]  # gated fleet auto-promote (the SCHEDULED arm, #1045b)
 #   canary-rollout.sh rollback <agent> <ring> --to <vX.Y.Z> [--dry-run]
 #   canary-rollout.sh resolve  <agent> <channel>       # debug: print resolved member repos
 #
@@ -89,25 +90,19 @@ _gh_tag_commit() {
   fi
 }
 
-# _gh_move_tag <repo> <tag> <sha> — point refs/tags/<tag> at <sha> on <repo> via the
-# GitHub API (force-move if it exists, create if not). The host-aware promote-WRITE
-# analogue of channel_commit's host-aware READ (#1049): a cross-repo agent's channel tag
-# lives on ITS host and the candidate commit is not in this checkout's object DB, so a
-# local `git tag -f` cannot move it — it fails with "trying to write ref ... with
-# nonexistent object" and would target the wrong repo (#1054). Mirrors cut-release.sh's
-# gh_move_tag (the #959/#992 host-aware channel move). Requires GH_TOKEN with
-# contents:write on <repo>.
+# _gh_move_tag <repo> <tag> <sha> — force-move (or create) the lightweight ref
+# refs/tags/<tag> on <repo> to <sha> via the GitHub API. The cross-repo counterpart of
+# `git tag -f <tag> <sha> && git push --force`: a cross-repo agent's channel tags live on
+# ITS host, so the promote/rollback move must go through gh api, not local git — local
+# `git tag -f` fails with "nonexistent object" for a host commit absent from this checkout
+# (#1054). Tries PATCH (existing ref) then falls back to POST (create the ref).
 _gh_move_tag() {
-  if [ $# -lt 3 ]; then
-    echo "::error::_gh_move_tag requires repo, tag, and sha" >&2
-    return 2
-  fi
+  [ $# -lt 3 ] && return 1
   local repo="$1" tag="$2" sha="$3"
-  if gh api "repos/$repo/git/ref/tags/$tag" >/dev/null 2>&1; then
-    gh api -X PATCH "repos/$repo/git/refs/tags/$tag" -f "sha=$sha" -F "force=true" >/dev/null
-  else
-    gh api -X POST "repos/$repo/git/refs" -f "ref=refs/tags/$tag" -f "sha=$sha" >/dev/null
-  fi
+  gh api -X PATCH "repos/$repo/git/refs/tags/$tag" \
+      -f sha="$sha" -F force=true >/dev/null 2>&1 && return 0
+  gh api -X POST "repos/$repo/git/refs" \
+      -f ref="refs/tags/$tag" -f sha="$sha" >/dev/null 2>&1
 }
 
 # channel_commit <agent> <channel> — commit the channel tag <agent>/<channel> resolves to
@@ -501,33 +496,57 @@ cmd_promote() {
     return 0
   fi
   [ "$state" != "PROMOTE" ] && echo "::warning::advancing $agent/$frontier despite gate state '$state' (triage=$triage)"
-  echo "advancing $agent/$frontier -> ${cand:0:12}"
-  # Host-aware write, mirroring the #1049 read split: a cross-repo agent's channel tag
-  # lives on ITS host and the candidate commit is not in this checkout, so the tag must
-  # be moved on the host via the GitHub API — a local `git tag -f` would fail on the
-  # nonexistent object and write to the wrong repo (#1054). This-repo agents (dev-lead,
-  # pr-review) keep the local tag path.
-  local host; host="$(_agent_field "$agent" host)"
-  if [ -n "$host" ] && [ "$host" != "$THIS_REPO" ]; then
-    if [ "$dry" = true ]; then
-      echo "[DRY-RUN] would: move tag $agent/$frontier -> $cand on $host via gh api"
-      return 0
-    fi
-    _gh_move_tag "$host" "$agent/$frontier" "$cand"
-    echo "promoted $agent/$frontier -> ${cand:0:12} on $host"
-  else
-    if [ "$dry" = true ]; then
+  # Host-aware move: an agent hosted in THIS repo moves its channel tag via local git; a
+  # cross-repo agent (host != THIS_REPO, e.g. the #482 reusables on petry-projects/.github)
+  # keeps its tags on ITS host and must move them there via gh api — local `git tag -f`
+  # fails with "nonexistent object" for a host commit absent from this checkout (#1054).
+  local host cross=false
+  host="$(_jq -r --arg a "$agent" '.agents[$a].host // "" | tostring')"
+  [ -n "$host" ] && [ "$host" != "$THIS_REPO" ] && cross=true
+  echo "advancing $agent/$frontier -> ${cand:0:12}$( [ "$cross" = true ] && echo " on $host" )"
+  if [ "$dry" = true ]; then
+    if [ "$cross" = true ]; then
+      echo "[DRY-RUN] would: gh api PATCH repos/$host/git/refs/tags/$agent/$frontier sha=$cand (force)"
+    else
       echo "[DRY-RUN] would: git tag -f $agent/$frontier $cand && git push --force origin $agent/$frontier"
-      return 0
     fi
-    git tag -f "$agent/$frontier" "$cand"
-    git push --force origin "$agent/$frontier"
-    echo "promoted $agent/$frontier -> ${cand:0:12}"
+    return 0
   fi
+  if [ "$cross" = true ]; then
+    _gh_move_tag "$host" "$agent/$frontier" "$cand" \
+      || { echo "::error::failed to move $agent/$frontier -> ${cand:0:12} on $host" >&2; return 1; }
+  else
+    git tag -f "$agent/$frontier" "$cand" \
+      && git push --force origin "$agent/$frontier" \
+      || { echo "::error::failed to move $agent/$frontier -> ${cand:0:12} locally" >&2; return 1; }
+  fi
+  echo "promoted $agent/$frontier -> ${cand:0:12}"
   # Expose the move so the workflow can record a GitHub Deployment (traceability, #502).
   if [ -n "${GITHUB_OUTPUT:-}" ]; then
     { echo "promoted_agent=$agent"; echo "promoted_ring=$frontier"; echo "promoted_sha=$cand"; } >> "$GITHUB_OUTPUT"
   fi
+}
+
+# cmd_promote_all [--override] [--allow-pre-existing] [--dry-run] — the gated fleet
+# auto-promote and the SCHEDULED arm of the automation (#1045 part b). Iterates every
+# registry agent and calls cmd_promote for each, so each PROMOTE-ready agent advances
+# exactly one ring per run while BLOCKED/REGRESSION agents are left untouched by the gate
+# unless --override is passed (the scheduled workflow never passes it). A per-agent
+# failure is logged and skipped so one agent cannot halt the fleet sweep. Flags are
+# forwarded verbatim to every cmd_promote.
+cmd_promote_all() {
+  local agents rc=0 agent
+  agents="$(_jq -r '.agents? | keys[]?' 2>/dev/null || true)"
+  if [ -z "$agents" ]; then
+    echo "no agents registered in $CANARY_RINGS — nothing to promote."; return 0
+  fi
+  echo "== canary-rollout promote-all: fleet-wide (gate standard: .github#548) =="
+  while IFS= read -r agent; do
+    [ -z "$agent" ] && continue
+    echo "──────── agent: $agent ────────"
+    cmd_promote "$agent" "$@" || { rc=$?; echo "::warning::promote of $agent returned $rc (continuing fleet)"; }
+  done <<< "$agents"
+  return "$rc"
 }
 
 cmd_rollback() {
@@ -544,15 +563,35 @@ cmd_rollback() {
     esac; shift
   done
   [ -z "$to" ] && { echo "::error::rollback requires --to <vX.Y.Z>" >&2; return 2; }
-  local target; target="$(git rev-parse -q --verify "refs/tags/$agent/$to^{commit}" 2>/dev/null || true)"
+  # Host-aware, mirroring cmd_promote: a cross-repo agent's release + channel tags live on
+  # ITS host, so both the target lookup and the move go through gh api, not local git (#1054).
+  local host cross=false
+  host="$(_jq -r --arg a "$agent" '.agents[$a].host // "" | tostring')"
+  [ -n "$host" ] && [ "$host" != "$THIS_REPO" ] && cross=true
+  local target
+  if [ "$cross" = true ]; then
+    target="$(_gh_tag_commit "$host" "$agent/$to")"
+  else
+    target="$(git rev-parse -q --verify "refs/tags/$agent/$to^{commit}" 2>/dev/null || true)"
+  fi
   [ -z "$target" ] && { echo "::error::release tag $agent/$to not found" >&2; return 1; }
-  echo "rolling back $agent/$ring -> $to (${target:0:12})"
+  echo "rolling back $agent/$ring -> $to (${target:0:12})$( [ "$cross" = true ] && echo " on $host" )"
   if [ "$dry" = true ]; then
-    echo "[DRY-RUN] would: git tag -f $agent/$ring $target && git push --force origin $agent/$ring"
+    if [ "$cross" = true ]; then
+      echo "[DRY-RUN] would: gh api PATCH repos/$host/git/refs/tags/$agent/$ring sha=$target (force)"
+    else
+      echo "[DRY-RUN] would: git tag -f $agent/$ring $target && git push --force origin $agent/$ring"
+    fi
     return 0
   fi
-  git tag -f "$agent/$ring" "$target"
-  git push --force origin "$agent/$ring"
+  if [ "$cross" = true ]; then
+    _gh_move_tag "$host" "$agent/$ring" "$target" \
+      || { echo "::error::failed to move $agent/$ring -> $to on $host" >&2; return 1; }
+  else
+    git tag -f "$agent/$ring" "$target" \
+      && git push --force origin "$agent/$ring" \
+      || { echo "::error::failed to move $agent/$ring -> $to locally" >&2; return 1; }
+  fi
   echo "rolled back $agent/$ring -> $to"
 }
 
@@ -573,9 +612,10 @@ main() {
     evaluate)     [ $# -ge 1 ] || { echo "usage: evaluate <agent>" >&2; return 2; }; cmd_evaluate "$@" ;;
     evaluate-all) cmd_evaluate_all ;;
     promote)      [ $# -ge 1 ] || { echo "usage: promote <agent> [--override] [--allow-pre-existing] [--dry-run]" >&2; return 2; }; cmd_promote "$@" ;;
+    promote-all)  cmd_promote_all "$@" ;;
     rollback)     [ $# -ge 2 ] || { echo "usage: rollback <agent> <ring> --to <vX.Y.Z>" >&2; return 2; }; cmd_rollback "$@" ;;
     resolve)      [ $# -ge 2 ] || { echo "usage: resolve <agent> <channel>" >&2; return 2; }; resolve_members "$@" ;;
-    *) echo "::error::usage: canary-rollout.sh {evaluate|evaluate-all|promote|rollback|resolve} <agent> ..." >&2; return 2 ;;
+    *) echo "::error::usage: canary-rollout.sh {evaluate|evaluate-all|promote|promote-all|rollback|resolve} <agent> ..." >&2; return 2 ;;
   esac
 }
 
