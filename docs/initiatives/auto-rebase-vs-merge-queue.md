@@ -2,8 +2,9 @@
 
 **Status:** Decision record — free mitigation validated (≥50% metric met) **and deployed org-wide &
 verified live 2026-06-26** (see §2 update); Merge Queue go/no-go **deferred to a human** (epic
-[#736](https://github.com/petry-projects/.github-private/issues/736) open question). **2026-07-03
-update:** the developer-facing *delay* was measured directly (not just fan-out volume) — approval→merge
+[#736](https://github.com/petry-projects/.github-private/issues/736) open question).
+
+**2026-07-03 update:** the developer-facing *delay* was measured directly (not just fan-out volume) — approval→merge
 latency is **~7 min median**, per-cycle CI is **~50 s**, and serialization uses **<0.5%** of capacity, so
 the current state adds negligible delay and the gate reading now leans **strongly no-go**. See §5.
 **Author:** dev-lead / Claude Code
@@ -153,8 +154,8 @@ serialization) has no measurable value here, which pushes the human G4 call towa
 ## 5. Measured developer-facing delay (2026-07-03)
 
 §2 and §3 quantified **fan-out volume** and the **conflict-resolution rate** — how much *CI work* the
-system does. Neither measured what a developer actually feels: **does the current state add much
-delay when actively developing?** This section measures that directly from live data (pulled 2026-07-03
+system does. Neither answered the question of whether the current state adds much delay — the metric a developer
+actually feels when actively developing. This section measures that directly from live data (pulled 2026-07-03
 via the GitHub API), and the answer is **no**.
 
 Delay a developer can feel has three sources; each was measured:
