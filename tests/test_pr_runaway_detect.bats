@@ -16,7 +16,12 @@
 # Run with: bats tests/test_pr_runaway_detect.bats
 
 setup() {
+  STUB_BIN_DIR=$(mktemp -d)
   source "$(dirname "$BATS_TEST_FILENAME")/../scripts/lib/pr-runaway-detect.sh"
+}
+
+teardown() {
+  rm -rf "$STUB_BIN_DIR"
 }
 
 # ---------------------------------------------------------------------------
@@ -189,10 +194,10 @@ setup() {
 # ---------------------------------------------------------------------------
 
 @test "pr_age_hours computes whole hours against an injected now" {
-  # created 2026-06-24T00:00:00Z, now 2026-06-24T50:00:00 -> 50h.
+  # created 2026-06-24T00:00:00Z, now 2026-06-26T02:00:00Z -> 50h.
   local now created
   created="2026-06-24T00:00:00Z"
-  now=$(date -u -d "2026-06-26T02:00:00Z" +%s)   # 50h later
+  now=$(date -u -d "2026-06-26T02:00:00Z" +%s 2>/dev/null || date -u -v0d -f "%Y-%m-%dT%H:%M:%SZ" "2026-06-26T02:00:00Z" +%s 2>/dev/null)   # 50h later
   run pr_age_hours "$created" "$now"
   [ "$output" -eq 50 ]
 }
@@ -209,7 +214,7 @@ setup() {
 
 @test "generate_runaway_report renders each candidate with its link and reason" {
   local f
-  f=$(mktemp)
+  f=$(mktemp "$STUB_BIN_DIR/tsv.XXXXXX")
   printf '%s\t%s\t%s\t%s\n' \
     "860" "https://github.com/o/r/pull/860" "Runaway PR" "commits: 378 (>50); comments: 1582 (>200)" \
     > "$f"
@@ -218,15 +223,13 @@ setup() {
   [[ "$output" == *"#860"* ]]
   [[ "$output" == *"https://github.com/o/r/pull/860"* ]]
   [[ "$output" == *"commits: 378"* ]]
-  rm -f "$f"
 }
 
 @test "generate_runaway_report on an empty file prints an all-clear line, not a table" {
   local f
-  f=$(mktemp)
+  f=$(mktemp "$STUB_BIN_DIR/tsv.XXXXXX")
   : > "$f"
   run generate_runaway_report "$f"
   [ "$status" -eq 0 ]
   [[ "$output" != *"| PR |"* ]]
-  rm -f "$f"
 }

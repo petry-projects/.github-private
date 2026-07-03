@@ -46,6 +46,18 @@ _runaway_int() {
   esac
 }
 
+# _runaway_threshold <value> <default>
+#   Like _runaway_int but falls back to <default> instead of 0 for empty/non-numeric
+#   input. Used for threshold env vars so a bad override can never silently set a
+#   threshold to 0 and spam every open PR as a runaway candidate.
+_runaway_threshold() {
+  local val="${1:-}" default="${2:-0}"
+  case "$val" in
+    ''|*[!0-9]*) echo "$default" ;;
+    *) echo "$val" ;;
+  esac
+}
+
 # pr_runaway_reasons <commits> <comments> <cycles> <age_hours>
 #   Print one reason line per crossed soft threshold (empty when within bounds).
 pr_runaway_reasons() {
@@ -56,11 +68,11 @@ pr_runaway_reasons() {
   age=$(_runaway_int "${4:-0}")
 
   local max_commits max_comments max_cycles min_age churn_floor
-  max_commits=$(_runaway_int "${RUNAWAY_MAX_COMMITS}")
-  max_comments=$(_runaway_int "${RUNAWAY_MAX_COMMENTS}")
-  max_cycles=$(_runaway_int "${RUNAWAY_MAX_CYCLES}")
-  min_age=$(_runaway_int "${RUNAWAY_MIN_AGE_HOURS}")
-  churn_floor=$(_runaway_int "${RUNAWAY_CHURN_MIN_CYCLES}")
+  max_commits=$(_runaway_threshold "${RUNAWAY_MAX_COMMITS}" 50)
+  max_comments=$(_runaway_threshold "${RUNAWAY_MAX_COMMENTS}" 200)
+  max_cycles=$(_runaway_threshold "${RUNAWAY_MAX_CYCLES}" 10)
+  min_age=$(_runaway_threshold "${RUNAWAY_MIN_AGE_HOURS}" 48)
+  churn_floor=$(_runaway_threshold "${RUNAWAY_CHURN_MIN_CYCLES}" 1)
 
   [ "$commits" -gt "$max_commits" ] && \
     printf 'commits: %s (>%s)\n' "$commits" "$max_commits"
@@ -87,10 +99,11 @@ is_pr_runaway() {
 #   Whole hours since created_at. now_epoch defaults to the current time; it is
 #   injectable so callers/tests are deterministic. Unparseable input -> 0.
 pr_age_hours() {
-  local created="${1:-}" now="${2:-}"
-  [ -n "$now" ] || now=$(date -u +%s)
+  local created="${1:-}" now
+  now=$(_runaway_int "${2:-}")
+  [ "$now" -gt 0 ] || now=$(date -u +%s)
   local created_epoch
-  created_epoch=$(date -u -d "$created" +%s 2>/dev/null || true)
+  created_epoch=$(date -u -d "$created" +%s 2>/dev/null || date -u -v0d -f "%Y-%m-%dT%H:%M:%SZ" "$created" +%s 2>/dev/null || true)
   if [ -z "$created_epoch" ]; then
     echo 0
     return 0

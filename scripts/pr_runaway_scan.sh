@@ -57,7 +57,10 @@ fi
 # 1. Enumerate open PRs
 # ---------------------------------------------------------------------------
 open_prs=$(gh api --paginate "repos/${REPO}/pulls?state=open&per_page=100" \
-  --jq '.[].number' 2>/dev/null || true)
+  --jq '.[].number' 2>/dev/null) || {
+  echo "::error::Failed to fetch open PRs from GitHub API." >&2
+  exit 1
+}
 
 if [ -z "$open_prs" ]; then
   echo "No open PRs in ${REPO}."
@@ -66,7 +69,11 @@ fi
 # ---------------------------------------------------------------------------
 # 2. Per-PR metrics -> detection (detection only, no mutation)
 # ---------------------------------------------------------------------------
-candidates_file=$(mktemp)
+candidates_file=$(mktemp) || {
+  echo "Failed to create temp file" >&2
+  exit 1
+}
+trap 'rm -f "$candidates_file"' EXIT
 now_epoch=$(date -u +%s)
 scanned=0
 
@@ -77,11 +84,7 @@ while IFS= read -r pr; do
   # Single detail call gives commit/comment counts + created_at + link + title.
   detail=$(gh api "repos/${REPO}/pulls/${pr}" \
     --jq '{commits, comments, created_at, html_url, title}' 2>/dev/null || echo '{}')
-  commits=$(printf '%s' "$detail" | jq -r '.commits // 0')
-  comments=$(printf '%s' "$detail" | jq -r '.comments // 0')
-  created_at=$(printf '%s' "$detail" | jq -r '.created_at // empty')
-  html_url=$(printf '%s' "$detail" | jq -r '.html_url // empty')
-  title=$(printf '%s' "$detail" | jq -r '.title // empty')
+  IFS=$'\t' read -r commits comments created_at html_url title <<< "$(jq -r '[.commits // 0, .comments // 0, .created_at // "", .html_url // "", (.title // "" | tostring)] | @tsv' <<< "$detail")"
 
   # Automated cycles since the last human — reuse the #926 budget computation so
   # the two guards agree on what "an automated cycle" means.
@@ -128,8 +131,6 @@ if [ -n "${GITHUB_ENV:-}" ]; then
     echo "HAS_RUNAWAY=false" >> "$GITHUB_ENV"
   fi
 fi
-
-rm -f "$candidates_file"
 
 echo ""
 echo "Report written to ${REPORT_FILE} ($(wc -c < "$REPORT_FILE") bytes)"
