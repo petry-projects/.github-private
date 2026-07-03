@@ -453,7 +453,7 @@ _benign_stub() {
 @test "orchestrator: promote --allow-pre-existing REFUSES a BLOCKED+REGRESSION frontier" {
   _graduated_stub 3 2 failure 1
   run env CANARY_RINGS="$RINGS" bash "$ORCH" promote dev-lead --allow-pre-existing --dry-run
-  [ "$status" -eq 0 ]
+  [ "$status" -ne 0 ]
   [[ "$output" != *"DRY-RUN"* ]]
   [[ "$output" == *"REGRESSION"* ]]
 }
@@ -570,8 +570,9 @@ YML
 @test "orchestrator: promote-all does NOT advance a BLOCKED+REGRESSION agent" {
   _graduated_stub 3 2 failure 1
   run env CANARY_RINGS="$RINGS" bash "$ORCH" promote-all --dry-run
-  [ "$status" -eq 0 ]
+  [ "$status" -ne 0 ]
   [[ "$output" == *"REGRESSION"* ]]
+  [[ "$output" == *"hard-stop"* ]]
   [[ "$output" != *"DRY-RUN"* ]]
 }
 

@@ -434,7 +434,7 @@ cmd_promote() {
   [ "$allow_pre_flag" = true ] && allow_pre=true
   if [ "$state" = "BLOCKED" ] && [ "$triage" = "REGRESSION" ] && [ "$override" != true ]; then
     echo "::error::gate=BLOCKED (triage=REGRESSION) for '$frontier' [$transition] — candidate regression suspected; not promoting. Investigate + rollback, do not --override blindly."
-    return 0
+    return 1
   fi
   local advance=false
   [ "$state" = "PROMOTE" ] && advance=true
@@ -471,7 +471,7 @@ cmd_promote() {
 #                                           frontier (never REGRESSION)
 # A BLOCKED+REGRESSION agent hard-stops (cmd_promote refuses without --override).
 cmd_promote_all() {
-  local agents rc=0 agent hold
+  local agents agent hold
   agents="$(_jq -r '.agents? | keys[]' 2>/dev/null || true)"
   if [ -z "$agents" ]; then
     echo "no agents registered in $CANARY_RINGS — nothing to promote."; return 0
@@ -485,9 +485,12 @@ cmd_promote_all() {
       echo "gate.control.hold=true — skipping scheduled promotion for $agent (manual dispatch only)."
       continue
     fi
-    cmd_promote "$agent" "$@" || rc=$?
+    if ! cmd_promote "$agent" "$@"; then
+      echo "::error::promote-all: hard-stop — '$agent' returned an error; aborting fleet promotion."
+      return 1
+    fi
   done <<< "$agents"
-  return "$rc"
+  return 0
 }
 
 cmd_rollback() {
