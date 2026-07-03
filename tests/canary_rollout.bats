@@ -259,8 +259,8 @@ _graduated_stub() {
   local cut_days="$1" run_days_ago="$2" conclusion="$3" reusable_diff="$4"
   STUB_BIN="$(mktemp -d)"; export PATH="$STUB_BIN:$PATH"
   local cut_iso run_iso
-  cut_iso="$(date -u -d "-${cut_days} days" +%Y-%m-%dT%H:%M:%SZ)"
-  run_iso="$(date -u -d "-${run_days_ago} days" +%Y-%m-%dT%H:%M:%SZ)"
+  cut_iso="$(date -u -d "-${cut_days} days" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v"-${cut_days}d" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)"
+  run_iso="$(date -u -d "-${run_days_ago} days" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v"-${run_days_ago}d" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)"
   # gh: every run-list query returns 20 runs at run_iso with the given conclusion.
   {
     echo '#!/usr/bin/env bash'
@@ -379,8 +379,8 @@ _benign_stub() {
   local cut_days="$1" run_days_ago="$2" step="$3" reusable_diff="$4"
   STUB_BIN="$(mktemp -d "$BATS_TEST_TMPDIR/stub.XXXXXX")"; export PATH="$STUB_BIN:$PATH"
   local cut_iso run_iso
-  cut_iso="$(date -u -d "-${cut_days} days" +%Y-%m-%dT%H:%M:%SZ)"
-  run_iso="$(date -u -d "-${run_days_ago} days" +%Y-%m-%dT%H:%M:%SZ)"
+  cut_iso="$(date -u -d "-${cut_days} days" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v"-${cut_days}d" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)"
+  run_iso="$(date -u -d "-${run_days_ago} days" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v"-${run_days_ago}d" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)"
   {
     echo '#!/usr/bin/env bash'
     echo 'case "$*" in'
@@ -472,8 +472,8 @@ _crossrepo_stub() {
   local cand="cccccccccccccccccccccccccccccccccccccccc"
   local old="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
   local cut_iso run_iso
-  cut_iso="$(date -u -d "-${cut_days} days" +%Y-%m-%dT%H:%M:%SZ)"
-  run_iso="$(date -u -d "-${run_days_ago} days" +%Y-%m-%dT%H:%M:%SZ)"
+  cut_iso="$(date -u -d "-${cut_days} days" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v"-${cut_days}d" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)"
+  run_iso="$(date -u -d "-${run_days_ago} days" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v"-${run_days_ago}d" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)"
   # gh: channel tags + the release tag are resolved via the API on the HOST repo; run-list
   # feeds the sample/health. --jq outputs are emitted pre-computed (the stub does not run jq).
   # The channel tags are lightweight (object.type=commit); the release tag is annotated

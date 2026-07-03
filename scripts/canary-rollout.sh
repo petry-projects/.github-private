@@ -79,11 +79,11 @@ resolve_members() {
 # gh_release_commit). Empty on any error / absent tag (never fails the caller).
 _gh_tag_commit() {
   local repo="$1" tag="$2" ref_info obj type
-  ref_info="$(gh api "repos/$repo/git/ref/tags/$tag" --jq '.object.sha + " " + .object.type' 2>/dev/null)" || return 0
+  ref_info="$(gh api "repos/$repo/git/ref/tags/$tag" --jq '[(.object?.sha // "" | tostring), (.object?.type // "" | tostring)] | @tsv' 2>/dev/null)" || return 0
   [ -z "$ref_info" ] && return 0
   read -r obj type <<< "$ref_info"
   if [ "$type" = "tag" ]; then
-    gh api "repos/$repo/git/tags/$obj" --jq '.object.sha' 2>/dev/null || true
+    gh api "repos/$repo/git/tags/$obj" --jq '(.object?.sha // "" | tostring)' 2>/dev/null || true
   else
     printf '%s\n' "$obj"
   fi
@@ -137,13 +137,13 @@ _gh_candidate_cut_date() {
     [ -z "$obj" ] && continue
     if [ "$type" = "tag" ]; then
       IFS=$'\t' read -r csha cdate < <(gh api "repos/$repo/git/tags/$obj" \
-        --jq '[.object.sha, .tagger.date] | @tsv' 2>/dev/null) || true
+        --jq '[(.object?.sha // "" | tostring), (.tagger?.date // "" | tostring)] | @tsv' 2>/dev/null) || true
     else
       csha="$obj"; cdate=""
     fi
     if [ "$csha" = "$commit" ]; then _to_z "$cdate"; return 0; fi
   done < <(gh api "repos/$repo/git/matching-refs/tags/$agent/v" \
-             --jq '.[] | [.ref, .object.sha, .object.type] | @tsv' 2>/dev/null)
+             --jq '.[]? | [.ref, (.object?.sha // "" | tostring), (.object?.type // "" | tostring)] | @tsv' 2>/dev/null)
   echo ""
 }
 
