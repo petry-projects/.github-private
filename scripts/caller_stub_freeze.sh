@@ -127,7 +127,7 @@ main() {
 
   local tsv row stub baseline live expected
   tsv="$(mktemp)"
-  trap 'rm -f "$tsv"' RETURN
+  trap 'rm -f "$tsv"' EXIT
 
   echo "Caller-stub freeze check — forwarding block vs committed baseline:"
   for row in "${CALLER_STUB_FREEZE_FILES[@]}"; do

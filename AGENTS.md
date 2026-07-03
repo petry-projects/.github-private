@@ -269,3 +269,7 @@ is flagged as drift. A scheduled + post-merge dry-run canary (`.github/workflows
 `scripts/pr_review_canary.sh`) dispatches `pr-review-trigger.yml` with `dry_run=true` and alerts if the
 run ends in `startup_failure`. Note that `actionlint` **cannot** catch this class: it does not resolve the
 remote reusable at the pinned ref, so the pinned-ref/forwarded-input skew is invisible to it.
+
+**Org-wide codification.** This rule is also being codified in `petry-projects/.github/standards/ci-standards.md`
+(companion to this PR). Until that lands, this section of AGENTS.md is the canonical reference for
+`.github-private` contributors.

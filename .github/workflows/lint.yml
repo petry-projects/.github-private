@@ -135,7 +135,7 @@ jobs:
 
       - name: Validate forwarded inputs against inputs declared at the pinned ref
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS || github.token }}
         run: bash scripts/validate-caller-inputs.sh
 
       - name: Freeze ring-0 caller-stub forwarding blocks (#1052, Part B)

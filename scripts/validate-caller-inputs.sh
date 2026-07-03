@@ -120,6 +120,7 @@ extract_with_keys() {
 extract_reusable_uses() {
   awk '
     { line=$0; sub(/\r$/,"",line)
+      if (line ~ /^[[:space:]]*#/) next
       if (line ~ /uses:[[:space:]]*[^[:space:]]+\/\.github\/workflows\/[^[:space:]]+\.yml@/) {
         v=line; sub(/^.*uses:[[:space:]]*/,"",v); sub(/[[:space:]].*$/,"",v); print v
       }
@@ -178,15 +179,15 @@ resolve_reusable_at_ref() {
   if [ "$orr" = "$SELF_REPO" ]; then
     # Fetch the channel tag (channel tags carry slashes, e.g. pr-review/next),
     # then fall back to a branch/SHA ref, then read the reusable at it.
-    if git fetch --quiet --depth=1 origin "refs/tags/${ref}:refs/tags/${ref}" 2>/dev/null; then
+    if git fetch --quiet --force --depth=1 origin "refs/tags/${ref}:refs/tags/${ref}" 2>/dev/null; then
       content="$(git show "refs/tags/${ref}:.github/workflows/${wf}" 2>/dev/null || true)"
     fi
-    if [ -z "$content" ] && git fetch --quiet --depth=1 origin "${ref}" 2>/dev/null; then
+    if [ -z "$content" ] && git fetch --quiet --force --depth=1 origin "${ref}" 2>/dev/null; then
       content="$(git show "FETCH_HEAD:.github/workflows/${wf}" 2>/dev/null || true)"
     fi
   else
     content="$(gh api "repos/${orr}/contents/.github/workflows/${wf}?ref=${ref}" \
-      --jq '.content' 2>/dev/null | base64 -d 2>/dev/null || true)"
+      --jq '.content' 2>/dev/null | { base64 -d 2>/dev/null || base64 -D 2>/dev/null; } || true)"
   fi
   [ -n "$content" ] || return 1
   printf '%s\n' "$content"
@@ -195,14 +196,14 @@ resolve_reusable_at_ref() {
 # ── CLI driver (network) ─────────────────────────────────────────────────────
 main() {
   local cmd
-  for cmd in awk git; do
+  for cmd in awk git gh; do
     command -v "$cmd" >/dev/null 2>&1 || { echo "::error::${cmd} is required but not installed." >&2; return 1; }
   done
 
   local wf_glob="${1:-.github/workflows}"
   local fail=0 checked=0 file uses orr rwf ref reusable declared required forwarded missing missing_req tmp
   tmp="$(mktemp)"
-  trap 'rm -f "$tmp"' RETURN
+  trap 'rm -f "$tmp"' EXIT
 
   echo "Caller-input skew check — forwarded with: keys vs inputs declared at the pinned ref:"
   local f
@@ -249,7 +250,7 @@ main() {
       done <<< "$missing_req"
     fi
 
-    echo "  ✓ ${file} → ${rwf}@${ref}: $(printf '%s' "$forwarded" | grep -c .) forwarded key(s) checked against $(printf '%s' "$declared" | grep -c .) declared input(s)."
+    echo "  ✓ ${file} → ${rwf}@${ref}: $(printf '%s' "$forwarded" | grep -c . || true) forwarded key(s) checked against $(printf '%s' "$declared" | grep -c . || true) declared input(s)."
   done
 
   if [ "$checked" -eq 0 ]; then

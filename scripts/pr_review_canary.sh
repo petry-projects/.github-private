@@ -100,6 +100,8 @@ canary_report() {
 # ---------------------------------------------------------------------------
 
 main() {
+  command -v gh >/dev/null 2>&1 || { echo "::error::gh is required but not installed." >&2; exit 1; }
+
   if [ -z "${GH_TOKEN:-}" ]; then
     echo "::error::GH_TOKEN is required — a workflow_dispatch fired with GITHUB_TOKEN will not start a run." >&2
     exit 1
@@ -121,7 +123,9 @@ main() {
   # submitted; we only care whether the reusable call can START.
   local ref_flags=()
   if [[ -n "${GITHUB_REF:-}" && ( "$GITHUB_REF" == refs/heads/* || "$GITHUB_REF" == refs/tags/* ) ]]; then
-    ref_flags=(--ref "$GITHUB_REF")
+    local ref_name="${GITHUB_REF#refs/heads/}"
+    ref_name="${ref_name#refs/tags/}"
+    ref_flags=(--ref "$ref_name")
   fi
   gh workflow run "$WORKFLOW_FILE" --repo "$REPO" "${ref_flags[@]}" \
     -f dry_run=true

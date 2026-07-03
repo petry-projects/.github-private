@@ -72,32 +72,29 @@ setup() {
 # ---------------------------------------------------------------------------
 
 @test "annotate: a DRIFTED row emits ::error:: naming the stub and fails" {
-  tsv="$(mktemp)"
+  tsv="$(mktemp "$BATS_TEST_TMPDIR/tsv.XXXXXX")"
   printf '%s\t%s\t%s\t%s\n' ".github/workflows/pr-review-trigger.yml" "DRIFTED" "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" "$EXPECTED" >> "$tsv"
   run caller_stub_freeze_annotate "$tsv"
   [ "$status" -ne 0 ]
   [[ "$output" == *"::error"* ]]
   [[ "$output" == *"pr-review-trigger.yml"* ]]
   [[ "$output" == *"bbbbbbb"* ]]
-  rm -f "$tsv"
 }
 
 @test "annotate: an all-ALIGNED set passes with no error" {
-  tsv="$(mktemp)"
+  tsv="$(mktemp "$BATS_TEST_TMPDIR/tsv.XXXXXX")"
   printf '%s\t%s\t%s\t%s\n' ".github/workflows/dev-lead.yml" "ALIGNED" "$EXPECTED" "$EXPECTED" >> "$tsv"
   run caller_stub_freeze_annotate "$tsv"
   [ "$status" -eq 0 ]
   [[ "$output" != *"::error"* ]]
-  rm -f "$tsv"
 }
 
 @test "annotate: MISSING is a warning, not a failure" {
-  tsv="$(mktemp)"
+  tsv="$(mktemp "$BATS_TEST_TMPDIR/tsv.XXXXXX")"
   printf '%s\t%s\t%s\t%s\n' ".github/workflows/dev-lead.yml" "MISSING" "" "$EXPECTED" >> "$tsv"
   run caller_stub_freeze_annotate "$tsv"
   [ "$status" -eq 0 ]
   [[ "$output" == *"::warning"* ]]
-  rm -f "$tsv"
 }
 
 # ---------------------------------------------------------------------------
