@@ -186,3 +186,28 @@ gate_summary_line() {
   printf '%-14s %-9s dwell=%sh/%sh  sample=%s/%s  cum_fail=%s startup=%s benign=%s\n' \
     "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "${9:-0}"
 }
+
+# ── auto-triage issue sync (#1063) ─────────────────────────────────────────────
+# Pure string helpers for the marker-keyed blocker issues + rolling dashboard. The
+# markers are HTML comments (which GitHub search cannot index, so the orchestrator
+# lists issues and matches these bodies rather than searching for them).
+
+# blocker_marker <agent> — the idempotency key for one BLOCKED agent's issue.
+blocker_marker() { printf '<!-- canary-blocker:%s -->' "$1"; }
+
+# dashboard_marker — the idempotency key for the single rolling fleet-dashboard issue.
+dashboard_marker() { printf '<!-- canary-dashboard -->'; }
+
+# blocker_labels <triage> — the comma-separated label set for a blocker issue. Every
+# blocker carries `canary-blocker`; a REGRESSION triage additionally carries
+# `needs-human` (a candidate regression must not auto-advance and needs a human).
+blocker_labels() {
+  if [ "${1:-}" = "REGRESSION" ]; then printf 'canary-blocker,needs-human'; else printf 'canary-blocker'; fi
+}
+
+# dashboard_row <agent> <state> <transition> <cum_fail> <triage> <blocker_ref>
+# One markdown table row for the fleet dashboard (blocker_ref links to the agent's
+# blocker issue, or "—" when it has none).
+dashboard_row() {
+  printf '| %s | %s | %s | %s | %s | %s |' "$1" "$2" "$3" "$4" "$5" "$6"
+}

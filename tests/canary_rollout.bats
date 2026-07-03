@@ -629,3 +629,109 @@ GITEOF
   [[ "$output" == *"petry-projects/.github"* ]]
   [ ! -f "$MOVE_LOG" ]
 }
+
+# ── auto-triage: blocker + dashboard issue sync (#1063) ────────────────────────
+# Pure helpers: markers, labels, dashboard rows.
+@test "blocker_marker: per-agent HTML-comment key" {
+  [ "$(blocker_marker dev-lead)" = "<!-- canary-blocker:dev-lead -->" ]
+  [ "$(blocker_marker auto-rebase)" = "<!-- canary-blocker:auto-rebase -->" ]
+}
+@test "dashboard_marker: the single rolling-dashboard key" {
+  [ "$(dashboard_marker)" = "<!-- canary-dashboard -->" ]
+}
+@test "blocker_labels: REGRESSION adds needs-human, PRE_EXISTING does not" {
+  [ "$(blocker_labels REGRESSION)" = "canary-blocker,needs-human" ]
+  [ "$(blocker_labels PRE_EXISTING)" = "canary-blocker" ]
+  [ "$(blocker_labels -)" = "canary-blocker" ]
+}
+@test "dashboard_row: renders one markdown table row" {
+  [ "$(dashboard_row dev-lead BLOCKED 'next->ring0' 2 REGRESSION '#42')" \
+    = "| dev-lead | BLOCKED | next->ring0 | 2 | REGRESSION | #42 |" ]
+}
+
+# ── orchestrator: sync-issues (upsert blocker issues + rolling dashboard) ───────
+# _sync_stub: dev-lead is BLOCKED (next=cccc candidate, other rings=bbbb prior); the
+# reusable differs (=1) → REGRESSION. gh serves run history (with databaseId + a failed
+# step signature) AND the issue subcommands, logging every write so tests can assert them.
+# ISSUE_LIST_JSON is what `gh issue list` returns (default: no pre-existing issues).
+_sync_stub() {
+  local conclusion="$1" reusable_diff="$2"
+  STUB_BIN="$(mktemp -d "$BATS_TEST_TMPDIR/stub.XXXXXX")"; export PATH="$STUB_BIN:$PATH"
+  export CREATE_LOG="$STUB_BIN/create.log" EDIT_LOG="$STUB_BIN/edit.log" CLOSE_LOG="$STUB_BIN/close.log"
+  local cut_iso run_iso
+  cut_iso="$(date -u -d "-3 days" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v"-3d" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)"
+  run_iso="$(date -u -d "-2 days" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v"-2d" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)"
+  : "${ISSUE_LIST_JSON:=[]}"
+  {
+    echo '#!/usr/bin/env bash'
+    echo 'case "$*" in'
+    printf '  *"issue create"*) echo "$*" >> "%s"; echo "https://github.com/petry-projects/.github-private/issues/777" ;;\n' "$CREATE_LOG"
+    printf '  *"issue edit"*)   echo "$*" >> "%s"; echo "{}" ;;\n' "$EDIT_LOG"
+    printf '  *"issue close"*)  echo "$*" >> "%s"; echo "{}" ;;\n' "$CLOSE_LOG"
+    printf '  *"issue list"*)   printf %%s '"'"'%s'"'"' ;;\n' "$ISSUE_LIST_JSON"
+    echo '  *"issue view"*)  echo "IssueNodeID123" ;;'
+    echo '  *"label create"*) : ;;'
+    echo '  *"api graphql"*) echo "{}" ;;'
+    printf '  *"run view"*) jq -nc '"'"'{jobs:[{steps:[{name:"Compile TypeScript",conclusion:"failure"}]}]}'"'"' ;;\n'
+    printf '  *"run list"*)\n'
+    printf '    if [[ "$*" == *"databaseId"* ]]; then jq -nc --arg d "%s" --arg c "%s" '"'"'[range(3)|{conclusion:$c,createdAt:$d,databaseId:(9000+.),workflowName:"Dev-Lead Agent"}]'"'"'; else jq -nc --arg d "%s" --arg c "%s" '"'"'[range(3)|{conclusion:$c,createdAt:$d}]'"'"'; fi ;;\n' "$run_iso" "$conclusion" "$run_iso" "$conclusion"
+    echo '  *) echo "{}" ;;'
+    echo 'esac'
+  } > "$STUB_BIN/gh"
+  chmod +x "$STUB_BIN/gh"
+  local cand_blob="reuseAAAA" prior_blob="reuseAAAA"
+  [ "$reusable_diff" = "1" ] && prior_blob="reuseBBBB"
+  {
+    echo '#!/usr/bin/env bash'
+    echo 'case "$*" in'
+    printf '  *"for-each-ref"*) echo "cccccccccccccccccccccccccccccccccccccccc||%s" ;;\n' "$cut_iso"
+    printf '  *"rev-parse"*"cccccccccccccccccccccccccccccccccccccccc:"*) echo "%s" ;;\n' "$cand_blob"
+    printf '  *"rev-parse"*"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:"*) echo "%s" ;;\n' "$prior_blob"
+    echo '  *"rev-parse"*"dev-lead/next"*)   echo "cccccccccccccccccccccccccccccccccccccccc" ;;'
+    echo '  *"rev-parse"*"dev-lead/ring0"*)  echo "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" ;;'
+    echo '  *"rev-parse"*"dev-lead/ring1"*)  echo "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" ;;'
+    echo '  *"rev-parse"*"dev-lead/stable"*) echo "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" ;;'
+    echo '  *"rev-parse"*) echo "cccccccccccccccccccccccccccccccccccccccc" ;;'
+    echo '  *) : ;;'
+    echo 'esac'
+  } > "$STUB_BIN/git"
+  chmod +x "$STUB_BIN/git"
+}
+
+@test "orchestrator: sync-issues --dry-run on a BLOCKED agent prints intended writes but performs none" {
+  _sync_stub failure 1   # dev-lead BLOCKED + REGRESSION
+  run env CANARY_RINGS="$RINGS" bash "$ORCH" sync-issues --dry-run
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"DRY-RUN"* ]]
+  [[ "$output" == *"would create blocker issue for dev-lead"* ]]
+  [[ "$output" == *"needs-human"* ]]
+  [[ "$output" == *"would create dashboard issue"* ]]
+  [ ! -f "$CREATE_LOG" ]
+  [ ! -f "$EDIT_LOG" ]
+  [ ! -f "$CLOSE_LOG" ]
+}
+
+@test "orchestrator: sync-issues (real) creates a marker-keyed blocker issue + dashboard for a BLOCKED+REGRESSION agent" {
+  _sync_stub failure 1
+  run env CANARY_RINGS="$RINGS" bash "$ORCH" sync-issues
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"created blocker issue for dev-lead"* ]]
+  [[ "$output" == *"created dashboard issue"* ]]
+  # The blocker create carries the REGRESSION labels and a dev-lead title.
+  grep -q "issue create" "$CREATE_LOG"
+  grep -q "canary-blocker" "$CREATE_LOG"
+  grep -q "needs-human" "$CREATE_LOG"
+  grep -q "canary-dashboard" "$CREATE_LOG"
+  [ ! -f "$CLOSE_LOG" ]
+}
+
+@test "orchestrator: sync-issues auto-closes an open blocker when the gate has cleared" {
+  # dev-lead is clean (PROMOTE), but an open blocker issue exists → auto-close it.
+  ISSUE_LIST_JSON='[{"number":42,"body":"before <!-- canary-blocker:dev-lead --> after"}]'
+  export ISSUE_LIST_JSON
+  _sync_stub success 0
+  run env CANARY_RINGS="$RINGS" bash "$ORCH" sync-issues
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"closed blocker issue #42 for dev-lead"* ]]
+  grep -q "issue close 42" "$CLOSE_LOG"
+}
