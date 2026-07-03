@@ -10,8 +10,9 @@
 # Auth: the mover credential is a GitHub App installation token minted at runtime via
 # actions/create-github-app-token from RELEASE_MANAGER_APP_CLIENT_ID (variable) + RELEASE_MANAGER_APP_KEY (secret) (scoped,
 # rotatable, auditable) — NOT a raw PAT and NOT github.token. The App carries
-# Contents:write (tag moves on the host repos), Deployments:write, Actions:read (the
-# gate reads workflow-run history across every tier repo) and Metadata:read. Minting
+# Contents:write (tag moves on the host repos), Deployments:write, Issues:write (the
+# blocker-issue + dashboard auto-triage, sync-issues), Actions:read (the gate reads
+# workflow-run history across every tier repo) and Metadata:read. Minting
 # is a HARD requirement: if the token cannot be minted the job fails — it must not
 # silently degrade to github.token, which cannot move protected `.github` tags (#868).
 #
@@ -22,8 +23,11 @@
 #     variable is unset/false it runs read-only `evaluate-all` — evaluates EVERY agent in
 #     canary-rings.json (fleet-wide, #1025 P1) and emits each one's per-version gate +
 #     health report (#502 observability). The arm variable is the single kill-switch.
+#     After promoting, the timer also runs `sync-issues`: it upserts one tracked issue per
+#     BLOCKED agent (failing-run evidence attached; REGRESSION → needs-human) and rewrites a
+#     single rolling dashboard issue — a cleared agent's issue auto-closes (auto-triage).
 #   - workflow_dispatch: `evaluate` | `evaluate-all` | `promote` | `promote-all` |
-#     `rollback`, human-gated (promote/promote-all default to --dry-run).
+#     `rollback` | `sync-issues`, human-gated (promote/promote-all/sync-issues default to --dry-run).
 # ─────────────────────────────────────────────────────────────────────────────
 name: Canary Rollout
 
@@ -33,9 +37,9 @@ on:
   workflow_dispatch:
     inputs:
       command:
-        description: "evaluate | evaluate-all (read-only) | promote | promote-all (gated tag move) | rollback"
+        description: "evaluate | evaluate-all (read-only) | promote | promote-all (gated tag move) | rollback | sync-issues"
         type: choice
-        options: [evaluate, evaluate-all, promote, promote-all, rollback]
+        options: [evaluate, evaluate-all, promote, promote-all, rollback, sync-issues]
         default: evaluate
       agent:
         description: "agent to act on"
@@ -151,6 +155,10 @@ jobs:
               args=(rollback "$AGENT" "$RING" --to "$TO")
               [ "$DRY_RUN" != "false" ] && args+=(--dry-run)
               ;;
+            sync-issues)                                       # upsert blocker issues + dashboard (auto-triage)
+              args=(sync-issues)
+              [ "$DRY_RUN" != "false" ] && args+=(--dry-run)   # default-safe: dry unless explicitly false
+              ;;
             *) echo "::error::unknown command: $CMD"; exit 2 ;;
           esac
           echo "::notice::canary-rollout ${args[*]}"
@@ -184,3 +192,18 @@ jobs:
           }
           JSON
           done < "${CANARY_PROMOTIONS_LOG}"
+
+      # Auto-triage: turn the gate's BLOCKED verdicts into tracked work. On the timer, from
+      # the post-promotion fleet state, upsert ONE idempotent issue per BLOCKED agent (with
+      # the failing-run evidence pre-attached; REGRESSION → needs-human) and rewrite a single
+      # rolling dashboard issue; a cleared agent's issue auto-closes. Best-effort + always():
+      # a GitHub-side hiccup must never fail the promotion run. Requires the App to carry
+      # Issues:write — if absent the step logs a warning and continues.
+      - name: Sync blocker + dashboard issues
+        if: always() && github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          ISSUE_REPO: ${{ github.repository }}
+        run: |
+          set -uo pipefail
+          bash scripts/canary-rollout.sh sync-issues || echo "::warning::issue sync failed (non-fatal)"
