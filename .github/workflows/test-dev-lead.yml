@@ -12,6 +12,9 @@ on:
       - '.github/workflows/dependency-audit.yml'
       - '.github/workflows/auto-rebase.yml'
       - '.github/workflows/auto-rebase-retry.yml'
+      # LSP pilot capture/decoupling plumbing lives in the pr-review workflows (#1031).
+      - '.github/workflows/pr-review.yml'
+      - '.github/workflows/pr-review-trigger.yml'
       - 'tests/dev-lead/**'
       - 'prompts/dev-lead/**'
       - '.github/review-mcp.json'
@@ -34,6 +37,8 @@ on:
       - '.github/workflows/dependency-audit.yml'
       - '.github/workflows/auto-rebase.yml'
       - '.github/workflows/auto-rebase-retry.yml'
+      - '.github/workflows/pr-review.yml'
+      - '.github/workflows/pr-review-trigger.yml'
   workflow_dispatch: {}
 
 permissions:
@@ -152,3 +157,16 @@ jobs:
         run: python3 -m pip install --quiet pyyaml
       - name: Validate auto-rebase.yml uses @auto-rebase/next (not a SHA or frozen tag)
         run: python3 tests/dev-lead/integration/test_auto_rebase_stub.py
+
+  lsp-pilot-plumbing:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - name: Install PyYAML
+        run: python3 -m pip install --quiet pyyaml
+      - name: Validate pr-review LSP-pilot capture gate + variant decoupling plumbing
+        run: python3 tests/dev-lead/integration/test_pr_review_lsp_pilot_plumbing.py
