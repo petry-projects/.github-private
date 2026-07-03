@@ -97,6 +97,7 @@ _gh_tag_commit() {
 # `git tag -f` fails with "nonexistent object" for a host commit absent from this checkout
 # (#1054). Tries PATCH (existing ref) then falls back to POST (create the ref).
 _gh_move_tag() {
+  [ $# -lt 3 ] && return 1
   local repo="$1" tag="$2" sha="$3"
   gh api -X PATCH "repos/$repo/git/refs/tags/$tag" \
       -f sha="$sha" -F force=true >/dev/null 2>&1 && return 0
@@ -500,7 +501,7 @@ cmd_promote() {
   # keeps its tags on ITS host and must move them there via gh api — local `git tag -f`
   # fails with "nonexistent object" for a host commit absent from this checkout (#1054).
   local host cross=false
-  host="$(_agent_field "$agent" host)"
+  host="$(_jq -r --arg a "$agent" '.agents[$a].host // "" | tostring')"
   [ -n "$host" ] && [ "$host" != "$THIS_REPO" ] && cross=true
   echo "advancing $agent/$frontier -> ${cand:0:12}$( [ "$cross" = true ] && echo " on $host" )"
   if [ "$dry" = true ]; then
@@ -515,8 +516,9 @@ cmd_promote() {
     _gh_move_tag "$host" "$agent/$frontier" "$cand" \
       || { echo "::error::failed to move $agent/$frontier -> ${cand:0:12} on $host" >&2; return 1; }
   else
-    git tag -f "$agent/$frontier" "$cand"
-    git push --force origin "$agent/$frontier"
+    git tag -f "$agent/$frontier" "$cand" \
+      && git push --force origin "$agent/$frontier" \
+      || { echo "::error::failed to move $agent/$frontier -> ${cand:0:12} locally" >&2; return 1; }
   fi
   echo "promoted $agent/$frontier -> ${cand:0:12}"
   # Expose the move so the workflow can record a GitHub Deployment (traceability, #502).
@@ -529,11 +531,12 @@ cmd_promote() {
 # auto-promote and the SCHEDULED arm of the automation (#1045 part b). Iterates every
 # registry agent and calls cmd_promote for each, so each PROMOTE-ready agent advances
 # exactly one ring per run while BLOCKED/REGRESSION agents are left untouched by the gate
-# (no --override here). A per-agent failure is logged and skipped so one agent cannot halt
-# the fleet sweep. Flags are forwarded verbatim to every cmd_promote.
+# unless --override is passed (the scheduled workflow never passes it). A per-agent
+# failure is logged and skipped so one agent cannot halt the fleet sweep. Flags are
+# forwarded verbatim to every cmd_promote.
 cmd_promote_all() {
   local agents rc=0 agent
-  agents="$(_jq -r '.agents | keys[]' 2>/dev/null || true)"
+  agents="$(_jq -r '.agents? | keys[]?' 2>/dev/null || true)"
   if [ -z "$agents" ]; then
     echo "no agents registered in $CANARY_RINGS — nothing to promote."; return 0
   fi
@@ -563,7 +566,7 @@ cmd_rollback() {
   # Host-aware, mirroring cmd_promote: a cross-repo agent's release + channel tags live on
   # ITS host, so both the target lookup and the move go through gh api, not local git (#1054).
   local host cross=false
-  host="$(_agent_field "$agent" host)"
+  host="$(_jq -r --arg a "$agent" '.agents[$a].host // "" | tostring')"
   [ -n "$host" ] && [ "$host" != "$THIS_REPO" ] && cross=true
   local target
   if [ "$cross" = true ]; then
@@ -585,8 +588,9 @@ cmd_rollback() {
     _gh_move_tag "$host" "$agent/$ring" "$target" \
       || { echo "::error::failed to move $agent/$ring -> $to on $host" >&2; return 1; }
   else
-    git tag -f "$agent/$ring" "$target"
-    git push --force origin "$agent/$ring"
+    git tag -f "$agent/$ring" "$target" \
+      && git push --force origin "$agent/$ring" \
+      || { echo "::error::failed to move $agent/$ring -> $to locally" >&2; return 1; }
   fi
   echo "rolled back $agent/$ring -> $to"
 }
