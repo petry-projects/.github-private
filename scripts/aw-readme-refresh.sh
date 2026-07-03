@@ -69,7 +69,7 @@ gather_facts() {
 
   # Standards docs live in the sibling .github repo; fetch via API (not checked out here).
   standards_list=$(gh api "repos/$ORG/.github/contents/standards" \
-    --jq '[.[] | select(.name | endswith(".md")) | .name | sub("\\.md$";"")] | sort | .[]' \
+    --jq '[.[] | select((.name // "") | endswith(".md")) | .name | sub("\\.md$";"")] | sort | .[]' \
     2>/dev/null || echo "(unavailable)")
 
   {
@@ -85,7 +85,9 @@ gather_facts() {
     fi
     echo "### Standards docs in \`$ORG/.github/standards/\`"
     echo ""
-    echo "$standards_list" | sed 's/^/- /'
+    if [ -n "$standards_list" ]; then
+      echo "$standards_list" | sed 's/^/- /'
+    fi
     echo ""
     echo "### Custom agents in \`.github-private/agents/\`"
     echo ""
@@ -103,7 +105,7 @@ gather_facts() {
     for d in "$REPO_ROOT"/frameworks/*/; do
       [ -d "$d" ] || continue
       name="$(basename "$d")"
-      src="$(grep -iE '^(source|upstream|tag|version)' "$d/VENDOR.md" 2>/dev/null | head -2 | tr '\n' '; ' | sed 's/; *$//')"
+      src="$(grep -iE '^(source|upstream|tag|version)' "$d/VENDOR.md" 2>/dev/null | head -2 | tr '\n' '; ' | sed 's/; *$//' || true)"
       printf -- '- `%s` (%s)\n' "$name" "${src:-vendored}"
     done
   } > "$facts_file"
@@ -116,6 +118,7 @@ gather_facts() {
 # to avoid ARG_MAX limits (same technique as release-notes.sh).
 
 render_prompt() {
+  if [ $# -lt 5 ]; then return 1; fi
   local facts_file="$1" current_file="$2" target_label="$3" target_type="$4" maxlen="$5"
   TARGET_LABEL="$target_label" TARGET_TYPE="$target_type" LINT_MAXLEN="$maxlen" \
     envsubst '${TARGET_LABEL} ${TARGET_TYPE} ${LINT_MAXLEN}' < "$PROMPT_TEMPLATE" \
@@ -178,6 +181,7 @@ valid_content() {
 # Target matrix, grouped by repo. Fields: <rel_path>|<target_type>|<label>|<maxlen>
 
 targets_for_repo() {
+  if [ $# -lt 1 ]; then return 1; fi
   case "$1" in
     ".github")
       printf '%s\n' \
@@ -193,13 +197,16 @@ targets_for_repo() {
 }
 
 process_repo() {
+  if [ $# -lt 2 ]; then return 1; fi
   local repo="$1" facts_file="$2"
   local full_repo="$ORG/$repo"
   local dir="$WORK_DIR/$repo"
   local LINT_WARNINGS=""
 
   log "Cloning $full_repo"
-  git clone --quiet "https://x-access-token:${GH_TOKEN}@github.com/${full_repo}.git" "$dir"
+  git clone --quiet \
+    -c http.extraHeader="Authorization: Bearer ${GH_TOKEN}" \
+    "https://github.com/${full_repo}.git" "$dir"
   local default_branch
   default_branch="$(git -C "$dir" symbolic-ref --short HEAD)"
   # Rolling branch: always reset to default HEAD so the PR reflects "main + fresh READMEs".
@@ -219,8 +226,12 @@ process_repo() {
     local raw content violations="" attempt=1
     while :; do
       raw="$(generate_content "$prompt_file")"
-      if [ "$attempt" -eq 1 ] && printf '%s' "$raw" | grep -qx '[[:space:]]*SKIP[[:space:]]*'; then
-        content="__SKIP__"; break
+      if [ "$attempt" -eq 1 ] && [ "$(printf '%s' "$raw" | tr -d '[:space:]')" = "SKIP" ]; then
+        if [ -s "$current_file" ]; then
+          content="__SKIP__"; break
+        else
+          log "  → SKIP rejected: target is new/empty, retrying"
+        fi
       fi
       content="$(trim_blank_edges "$(extract_readme "$raw")")"
       if ! valid_content "$content" "$target_type"; then content="__INVALID__"; break; fi
@@ -296,7 +307,7 @@ process_repo() {
 
   local existing
   existing="$(gh pr list --repo "$full_repo" --head "$BRANCH" --state open \
-    --json url --jq '.[0].url' 2>/dev/null || echo "")"
+    --json url --jq '.[0]?.url' 2>/dev/null || echo "")"
 
   local empty_note=""
   [ -n "$EMPTY_DESC_REPOS" ] && empty_note=$'\n\n**Action needed:** these repos have empty GitHub descriptions — set them on the repo page so future refreshes can enrich the table: '"$EMPTY_DESC_REPOS"

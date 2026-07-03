@@ -13,8 +13,8 @@ on:
       dry_run:
         description: "Generate and diff only; do not create/update branches or PRs"
         required: false
-        default: "false"
-        type: string
+        default: false
+        type: boolean
 
 permissions:
   contents: read
