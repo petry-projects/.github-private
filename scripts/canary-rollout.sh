@@ -98,11 +98,11 @@ _gh_tag_commit() {
 # gh_move_tag (the #959/#992 host-aware channel move). Requires GH_TOKEN with
 # contents:write on <repo>.
 _gh_move_tag() {
-  local repo="$1" tag="$2" sha="$3"
-  if [ -z "$repo" ] || [ -z "$tag" ] || [ -z "$sha" ]; then
-    echo "::error::_gh_move_tag requires three arguments: <repo> <tag> <sha>" >&2
-    return 1
+  if [ $# -lt 3 ]; then
+    echo "::error::_gh_move_tag requires repo, tag, and sha" >&2
+    return 2
   fi
+  local repo="$1" tag="$2" sha="$3"
   if gh api "repos/$repo/git/ref/tags/$tag" >/dev/null 2>&1; then
     gh api -X PATCH "repos/$repo/git/refs/tags/$tag" -f "sha=$sha" -F "force=true" >/dev/null
   else
