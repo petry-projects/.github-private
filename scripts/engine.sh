@@ -41,19 +41,36 @@ DEFAULT_COPILOT_API_MODEL="openai/o4-mini"
 COPILOT_API_MODEL="${COPILOT_API_MODEL:-$DEFAULT_COPILOT_API_MODEL}"
 export COPILOT_API_MODEL
 
-# Per-tier timeouts (seconds). The job-level 60min cap is a backstop — without
-# per-tier timeouts a single hung model invocation burns the whole hour and
-# blocks every subsequent PR in the session.
+# Per-tier timeouts (seconds). The job-level cap (120min in dev-lead-reusable.yml)
+# is a hang/stuck-run backstop — without per-tier timeouts a single hung model
+# invocation burns the whole job and blocks every subsequent PR in the session.
+# These are sized to MAXIMIZE legitimate runtime per stage (#1017, epic #901),
+# NOT to bound token/runner cost. DEEP (deep agentic analysis) and ACTION (the
+# writer tier) get the largest viable share; TRIAGE/DUCK stay small (lightweight
+# read/classify + cross-engine review); AUDIT stays modest.
+#
+# Guardrail invariant (scripts/dev-lead-timeout-guardrail.sh + its bats test):
+#   Σ(these defaults) + overhead_margin(900s) ≤ job timeout-minutes × 60
+#   300 + 2400 + 1200 + 2100 + 300 = 6300s; 6300 + 900 = 7200s = 120min ✓
+# so the tiers can never silently exceed the job backstop. Raising a tier here
+# requires lowering another or raising the job cap, or the guardrail fails CI.
+#
+# Fleet note: petry-projects/.github leaves `vars.DEEP_TIMEOUT_SEC` (and
+# ACTION_TIMEOUT_SEC) UNSET, so the workflow passes an empty value through and
+# these engine defaults take effect. The raised DEEP default (was 600, now 2400)
+# therefore applies fleet-wide unless a repo overrides it via its own `vars`.
 TRIAGE_TIMEOUT_SEC="${TRIAGE_TIMEOUT_SEC:-300}"
-DEEP_TIMEOUT_SEC="${DEEP_TIMEOUT_SEC:-600}"
-AUDIT_TIMEOUT_SEC="${AUDIT_TIMEOUT_SEC:-600}"
-ACTION_TIMEOUT_SEC="${ACTION_TIMEOUT_SEC:-600}"
+DEEP_TIMEOUT_SEC="${DEEP_TIMEOUT_SEC:-2400}"
+AUDIT_TIMEOUT_SEC="${AUDIT_TIMEOUT_SEC:-1200}"
+ACTION_TIMEOUT_SEC="${ACTION_TIMEOUT_SEC:-2100}"
 DUCK_TIMEOUT_SEC="${DUCK_TIMEOUT_SEC:-300}"
 
 # Retry config for transient errors. We treat exit codes that look like
-# network/process flakiness (124=GNU timeout, 137/143=signal kills, plus a
-# couple of generic transient codes) as retryable. Rate-limit (engine-level)
-# is NOT retryable here — the workflow's engine-fallback handles that.
+# network/process flakiness (137/143=signal kills) as retryable. A per-tier
+# stage timeout (124=GNU timeout) is NOT retried (#1028): re-running at the same
+# budget just times out again, so it propagates and escalates instead. Rate-limit
+# (engine-level) is NOT retryable here either — the workflow's engine-fallback
+# handles that.
 RETRY_MAX_ATTEMPTS="${RETRY_MAX_ATTEMPTS:-2}"   # total attempts including first
 RETRY_BASE_DELAY_SEC="${RETRY_BASE_DELAY_SEC:-5}"
 
@@ -438,13 +455,17 @@ _emit_mcp_failure_warning() {
 
 # is_transient_failure <exit_code>
 # Returns 0 (true) for exit codes suggesting a flaky network/process state:
-# 124 (GNU timeout) and 137/143 (signal kills). JSON parse failures and
-# generic exit-1s are NOT retried — those are deterministic problems.
+# 137/143 (signal kills). JSON parse failures and generic exit-1s are NOT
+# retried — those are deterministic problems. Exit 124 (GNU `timeout`) is
+# likewise NOT retried (#1028): a per-tier stage timeout means the model used
+# its whole budget, so a same-budget in-run retry would just time out again —
+# wasted runner-minutes + tokens. A 124 propagates immediately; the writer path
+# then classifies it as reason=timeout and escalates (see run_writer_with_fallback).
 is_transient_failure() {
   local rc="$1"
   case "$rc" in
-    124|137|143) return 0 ;;
-    *)           return 1 ;;
+    137|143) return 0 ;;
+    *)       return 1 ;;
   esac
 }
 
@@ -1240,12 +1261,49 @@ run_writer() {
   return "$rc"
 }
 
+# ── Run-scoped engine-exhaustion registry (issue #947) ────────────────────────
+# Once an engine is found rate-limited / unavailable during this run (process),
+# it is recorded here so later run_writer_with_fallback calls in the SAME run do
+# NOT re-invoke it. The #860 runaway re-walked claude → copilot → gemini on every
+# dev-lead-fix-ci cycle, re-burning quota on an already-exhausted engine and
+# re-posting the same usage-limit notice. Keyed by engine name → reason
+# (rate-limited | missing-binary). Guarded so a re-source of engine.sh in the
+# same process (e.g. review-batch's copilot pre-flight) does not wipe live state.
+if ! declare -p _ENGINE_EXHAUSTED_REASON >/dev/null 2>&1; then
+  declare -gA _ENGINE_EXHAUSTED_REASON
+fi
+
+# reset_engine_exhaustion — clear the registry. Exhaustion is intentionally
+# run-scoped, so production code never calls this; it exists for test isolation.
+reset_engine_exhaustion() {
+  _ENGINE_EXHAUSTED_REASON=()
+}
+
+# _engine_is_exhausted <engine> — 0 if already marked exhausted this run.
+_engine_is_exhausted() {
+  [ -n "${1:-}" ] && [ -n "${_ENGINE_EXHAUSTED_REASON["$1"]:-}" ]
+}
+
+# _mark_engine_exhausted <engine> <reason>
+# Record the engine as exhausted for the rest of the run and emit EXACTLY ONE
+# notice (at most one notice per engine per run). No-op on repeat marks so a
+# multi-cycle caller cannot produce a notice storm.
+_mark_engine_exhausted() {
+  local engine="${1:-}" reason="${2:-rate-limited}"
+  [ -z "$engine" ] && return 0
+  [ -n "${_ENGINE_EXHAUSTED_REASON["$engine"]:-}" ] && return 0
+  _ENGINE_EXHAUSTED_REASON["$engine"]="$reason"
+  echo "::warning::[engine-exhaustion] ${engine} marked exhausted for this run (${reason}) — it will not be re-invoked" >&2
+}
+
 # run_writer_with_fallback <prompt_file> [intent_type]
 # Tries primary engine, falls back through claude → copilot → gemini on rate-limit.
 # intent_type is passed to model_for_intent() so each engine uses the appropriate
 # tier model for the given task complexity (e.g. haiku for triage, sonnet for writes).
 # Only rate-limit (exit 2) and missing-binary (exit 127) trigger fallback;
 # other failures propagate immediately.
+# An engine found rate-limited/unavailable in an earlier call this run is skipped
+# (not re-invoked) — see the exhaustion registry above (#947).
 run_writer_with_fallback() {
   local prompt_file="$1"
   local intent="${2:-}"
@@ -1257,7 +1315,13 @@ run_writer_with_fallback() {
   # mirroring the existing /tmp/dev-lead-rate-limit-reset sidecar. Downstream
   # handlers (dev-lead-fix-issue.sh) read it to classify the failure and pick
   # the right retry behavior. This is purely additive — no control-flow change.
-  rm -f /tmp/dev-lead-failure-reason
+  # The timeout-* sidecars (tier/budget/elapsed) are written only on a per-tier
+  # timeout (#1018); clear any stale copies here so a later non-timeout failure
+  # never surfaces a previous run's timeout context.
+  rm -f /tmp/dev-lead-failure-reason \
+        /tmp/dev-lead-timeout-tier \
+        /tmp/dev-lead-timeout-budget \
+        /tmp/dev-lead-timeout-elapsed
 
   for e in claude copilot gemini; do
     [ "$e" != "$REVIEW_ENGINE" ] && engines+=("$e")
@@ -1275,9 +1339,23 @@ run_writer_with_fallback() {
       continue
     fi
 
+    # Run-scoped exhaustion (#947): an engine already found rate-limited/
+    # unavailable earlier in this run is not re-invoked. Reflect its recorded
+    # reason into the aggregate so the final return code is unchanged, and emit
+    # no repeat notice (the one-time notice fired when it was first marked).
+    if _engine_is_exhausted "$engine"; then
+      case "${_ENGINE_EXHAUSTED_REASON["$engine"]}" in
+        missing-binary) any_missing=1 ;;
+        *)              any_rate_limited=1 ;;
+      esac
+      echo "  [engine] $engine already exhausted this run — skipping (not re-invoked)" >&2
+      continue
+    fi
+
     if ! check_provider_headroom "$engine"; then
       echo "::warning::$engine at/above usage threshold — trying next engine" >&2
       any_rate_limited=1
+      _mark_engine_exhausted "$engine" "rate-limited"
       continue
     fi
 
@@ -1288,8 +1366,10 @@ run_writer_with_fallback() {
     set_engine_config
     local model
     model="$(model_for_intent "$intent")"
-    local rc=0
+    local rc=0 _t_start _t_end
+    _t_start=$(date +%s)
     run_writer "$prompt_file" "$model" || rc=$?
+    _t_end=$(date +%s)
     export REVIEW_ENGINE="$saved"
     # Restore original config for subsequent PRs in the same session
     set_engine_config
@@ -1301,13 +1381,33 @@ run_writer_with_fallback() {
       #           binary rather than a retryable quota error so that infra failures
       #           surface loudly instead of being masked as rate-limit retries).
       echo "::warning::$engine unavailable (exit $rc), trying next engine" >&2
-      [ "$rc" -eq 2 ] && any_rate_limited=1
-      [ "$rc" -eq 127 ] && any_missing=1
+      if [ "$rc" -eq 2 ]; then
+        any_rate_limited=1
+        _mark_engine_exhausted "$engine" "rate-limited"
+      else
+        any_missing=1
+        _mark_engine_exhausted "$engine" "missing-binary"
+      fi
       continue
     fi
-    # A non-fallback engine error (e.g. 124=timeout kill, 137/143=signal,
-    # generic non-zero) — propagate immediately, classifying it as engine-error.
-    printf 'engine-error\n' > /tmp/dev-lead-failure-reason
+    # A non-fallback engine error (137/143=signal, generic non-zero) — propagate
+    # immediately, classifying it as engine-error.
+    #
+    # A per-tier stage timeout (exit 124 from GNU `timeout`) is treated
+    # separately (#1018): it is a first-class, NON-retryable condition, so a
+    # same-budget retry — on this engine or a fallback engine — is deliberately
+    # avoided (we already `return` here rather than `continue`). Classify it as a
+    # distinct `timeout` reason and record the tier/budget/elapsed sidecars the
+    # escalation comment surfaces, so the caller escalates to a human on the
+    # FIRST occurrence instead of burning a same-budget model call.
+    if [ "$rc" -eq 124 ]; then
+      printf 'timeout\n' > /tmp/dev-lead-failure-reason
+      printf 'action\n' > /tmp/dev-lead-timeout-tier
+      printf '%s\n' "${ACTION_TIMEOUT_SEC}" > /tmp/dev-lead-timeout-budget
+      printf '%s\n' "$(( _t_end - _t_start ))" > /tmp/dev-lead-timeout-elapsed
+    else
+      printf 'engine-error\n' > /tmp/dev-lead-failure-reason
+    fi
     return "$rc"
   done
 

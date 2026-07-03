@@ -498,6 +498,98 @@ GHEOF
   rm -f "$COMMENT_FILE" "$LABEL_FILE"
 }
 
+# ── stage-timeout escalation (#1018) ──────────────────────────────────────────
+
+@test "fix-issue: stage timeout (exit 124) → escalates to needs-human, reason=timeout, no retry marker" {
+  _setup_failure_stubs 124 "operation timed out after 2100s"
+  # Skip gemini (no key) + copilot (classic PAT) so claude's 124 is the sole,
+  # immediately-propagated failure (no cross-engine same-budget retry).
+  unset GEMINI_API_KEY GOOGLE_API_KEY
+  export COPILOT_GITHUB_TOKEN="ghp_stub"  # ghp_* → copilot fallback is skipped
+  export ACTION_TIMEOUT_SEC=2100
+
+  run bash "$FIX_ISSUE_SCRIPT"
+
+  [ "$status" -eq 1 ]
+  local posted; posted=$(cat "$COMMENT_FILE")
+  [[ "$posted" == *"needs human attention"* ]]
+  [[ "$posted" == *"reason=timeout"* ]]
+  # Non-retryable → must NOT post a retryable status=failed marker (the retry
+  # cron would otherwise requeue a same-budget attempt).
+  [[ "$posted" != *"status=failed"* ]]
+  # Comment surfaces tier + elapsed + budget + split/raise guidance.
+  [[ "$posted" == *"Tier:"* ]]
+  [[ "$posted" == *"Elapsed:"* ]]
+  [[ "$posted" == *"Budget:"* ]]
+  [[ "$posted" == *"2100"* ]]
+  [[ "$posted" == *"Split this issue"* ]]
+  [[ "$posted" == *"TIMEOUT_SEC"* ]]
+  # needs-human label applied
+  [[ "$(cat "$LABEL_FILE")" == *"dev-lead:needs-human"* ]]
+
+  rm -f "$COMMENT_FILE" "$LABEL_FILE"
+}
+
+@test "fix-issue: non-124 transient (rate-limit) still retries — no timeout regression" {
+  # A genuine transient (rate-limit, exit 1 + rate-limit phrase) must still take
+  # the retry path (exit 2), NOT the timeout escalation. Skip gemini (no key) so
+  # the failure is deterministic: claude + copilot both rate-limit.
+  _setup_failure_stubs 1 "You've hit your limit · resets 11:20pm (UTC)"
+  unset GEMINI_API_KEY GOOGLE_API_KEY
+  export COPILOT_GITHUB_TOKEN="stub-token"  # copilot also rate-limited via gh stub
+
+  run bash "$FIX_ISSUE_SCRIPT"
+
+  # rate-limited path → exit 2, retry marker, not needs-human
+  [ "$status" -eq 2 ]
+  local posted; posted=$(cat "$COMMENT_FILE")
+  [[ "$posted" == *"will retry"* ]]
+  [[ "$posted" != *"reason=timeout"* ]]
+  [[ "$posted" != *"needs human attention"* ]]
+
+  rm -f "$COMMENT_FILE" "$LABEL_FILE"
+}
+
+@test "fix-issue: late-phase timeout with completed work → surfaces branch, not silently discarded" {
+  _setup_failure_stubs 124 "timed out during a late phase"
+  unset GEMINI_API_KEY GOOGLE_API_KEY
+  export COPILOT_GITHUB_TOKEN="ghp_stub"
+  export ACTION_TIMEOUT_SEC=2100
+
+  # Simulate the #1003 mode: the engine advanced HEAD (a commit) before the
+  # timeout, so pre_engine_sha != current HEAD. git status is clean but the SHA
+  # moved → completed-but-unpushed work must be surfaced.
+  # First rev-parse (pre_engine_sha) reads one value; make the failure-handler's
+  # rev-parse report a different SHA by flipping the env after branch creation is
+  # not possible across processes, so use a wrapper that advances on 2nd call.
+  cat > "$STUB_BIN_DIR/git" <<'GITEOF'
+#!/usr/bin/env bash
+STATE="/tmp/devlead-test-revparse-count"
+case "$*" in
+  "config"*)            exit 0 ;;
+  "checkout -b"*)       exit 0 ;;
+  "rev-parse HEAD")
+    n=0; [ -f "$STATE" ] && n=$(cat "$STATE")
+    n=$((n+1)); echo "$n" > "$STATE"
+    if [ "$n" -le 1 ]; then echo "sha_before"; else echo "sha_after_commit"; fi ;;
+  "status --porcelain") exit 0 ;;
+  *)                    exit 0 ;;
+esac
+GITEOF
+  chmod +x "$STUB_BIN_DIR/git"
+  rm -f /tmp/devlead-test-revparse-count
+
+  run bash "$FIX_ISSUE_SCRIPT"
+
+  [ "$status" -eq 1 ]
+  local posted; posted=$(cat "$COMMENT_FILE")
+  [[ "$posted" == *"reason=timeout"* ]]
+  # Completed-but-unpushed work is surfaced (branch mentioned), not discarded.
+  [[ "$posted" == *"not pushed"* ]] || [[ "$posted" == *"not discarded"* ]]
+
+  rm -f "$COMMENT_FILE" "$LABEL_FILE" /tmp/devlead-test-revparse-count
+}
+
 @test "fix-issue: attempt ceiling (prior attempt=2) → escalates to needs-human" {
   export PRIOR_COMMENTS_JSON='[{"body":"<!-- dev-lead-issue 100 status=failed attempt=2 reason=engine-error run=1 -->"}]'
   _setup_failure_stubs 1 "boom again"
@@ -514,6 +606,69 @@ GHEOF
 
   rm -f "$COMMENT_FILE" "$LABEL_FILE"
   unset PRIOR_COMMENTS_JSON
+}
+
+# ── shared-escalation dedup (#1029) ───────────────────────────────────────────
+
+# All three non-retryable branches (missing-binary / timeout / retries-exhausted)
+# must emit the SAME needs-human marker shape, differing only in reason= (and the
+# per-scenario attempt=/run= values). This pins the shared escalate_needs_human
+# helper so the marker the retry cron + fleet-monitor parse never drifts between
+# branches.
+@test "fix-issue: all three escalation branches emit the same needs-human marker shape (only reason differs)" {
+  # Extract the needs-human marker line, then normalize the scenario-specific
+  # attempt=/reason=/run= values so only the marker *shape* is compared.
+  _extract_marker() {
+    grep -oE '<!-- dev-lead-issue 100 status=needs-human attempt=[0-9]+ reason=[a-z]+(-[a-z]+)* run=[^ ]* -->' "$1" | head -1
+  }
+  _normalize_marker() {
+    sed -E 's/attempt=[0-9]+/attempt=A/; s/reason=[a-z]+(-[a-z]+)*/reason=R/; s/run=[^ ]*/run=X/'
+  }
+
+  # Scenario 1: missing-binary (attempt 1)
+  export PRIOR_COMMENTS_JSON='[]'
+  _setup_failure_stubs 127 "claude: command not found"
+  unset GEMINI_API_KEY GOOGLE_API_KEY
+  export COPILOT_GITHUB_TOKEN="ghp_stub"
+  run bash "$FIX_ISSUE_SCRIPT"
+  [ "$status" -eq 1 ]
+  local m1; m1=$(_extract_marker "$COMMENT_FILE")
+  [ -n "$m1" ]
+  [[ "$m1" == *"reason=missing-binary"* ]]
+  rm -f "$COMMENT_FILE" "$LABEL_FILE"
+
+  # Scenario 2: timeout (attempt 1)
+  export PRIOR_COMMENTS_JSON='[]'
+  _setup_failure_stubs 124 "operation timed out after 2100s"
+  unset GEMINI_API_KEY GOOGLE_API_KEY
+  export COPILOT_GITHUB_TOKEN="ghp_stub"
+  export ACTION_TIMEOUT_SEC=2100
+  run bash "$FIX_ISSUE_SCRIPT"
+  [ "$status" -eq 1 ]
+  local m2; m2=$(_extract_marker "$COMMENT_FILE")
+  [ -n "$m2" ]
+  [[ "$m2" == *"reason=timeout"* ]]
+  rm -f "$COMMENT_FILE" "$LABEL_FILE"
+
+  # Scenario 3: retries-exhausted (prior attempt=2 → this is attempt 3)
+  export PRIOR_COMMENTS_JSON='[{"body":"<!-- dev-lead-issue 100 status=failed attempt=2 reason=engine-error run=1 -->"}]'
+  _setup_failure_stubs 1 "boom again"
+  run bash "$FIX_ISSUE_SCRIPT"
+  [ "$status" -eq 1 ]
+  local m3; m3=$(_extract_marker "$COMMENT_FILE")
+  [ -n "$m3" ]
+  [[ "$m3" == *"reason=engine-error"* ]]
+  rm -f "$COMMENT_FILE" "$LABEL_FILE"
+  unset PRIOR_COMMENTS_JSON
+
+  # Normalized shapes must be byte-identical across all three branches.
+  local n1 n2 n3
+  n1=$(printf '%s' "$m1" | _normalize_marker)
+  n2=$(printf '%s' "$m2" | _normalize_marker)
+  n3=$(printf '%s' "$m3" | _normalize_marker)
+  [ "$n1" = "$n2" ]
+  [ "$n2" = "$n3" ]
+  [ "$n1" = '<!-- dev-lead-issue 100 status=needs-human attempt=A reason=R run=X -->' ]
 }
 
 @test "fix-issue: lint fails → posts lint-failure comment on the issue" {

@@ -1,0 +1,37 @@
+# release/registry.yml — fleet registry of first-party reusables consumed by the
+# autonomous soak-and-promote loop (Release_Manager automation, #993/#994/#999).
+# The orchestrator reads this as the source of truth for WHICH reusables to soak
+# and the ring → repos rollout map that its health gate evaluates.
+#
+# Schema
+#   version                schema version.
+#   reusables.<name>:
+#     host          repo that OWNS the reusable — its release/channel tags are cut
+#                   here (a host of petry-projects/.github means the reusable is
+#                   cross-repo and this repo holds only the thin caller stub).
+#     run_workflow  the workflow (file or display name) whose run history feeds the
+#                   health gate for this reusable.
+#     gate          per-reusable gate knobs (soak_window_days, ...).
+#     rings         ordered rollout ladder — a list of { channel, order, repos }.
+#                   A candidate soaks in each ring in `order` and is promoted to the
+#                   next only once the gate confirms the current ring is healthy.
+version: 1
+
+reusables:
+  # First onboarding intake (#1005): dev-lead, validated live 2026-07-01.
+  # next=ring0=v1.5.0 (candidate, mid-roll); ring1=stable=v1.4.0 (rollback target).
+  #
+  # COORDINATION NOTE: ring1 health signal is not yet active. The two ring1 consumer
+  # repos (TalkTerm, bmad-bgreat-suite) currently pin @dev-lead/stable, not
+  # @dev-lead/ring1. The Release_Manager gate cannot soak ring1→stable until
+  # staged repin PRs land in those repos to move them onto the ring1 channel.
+  # This registry entry records the intended ring1 shape; the blocker is external.
+  dev-lead:
+    host: petry-projects/.github-private
+    run_workflow: dev-lead.yml
+    gate: { soak_window_days: 7 }
+    rings:
+      - { channel: next,   order: 0, repos: [petry-projects/.github-private] }
+      - { channel: ring0,  order: 1, repos: [petry-projects/.github] }
+      - { channel: ring1,  order: 2, repos: [petry-projects/TalkTerm, petry-projects/bmad-bgreat-suite] }
+      - { channel: stable, order: 3, repos: [petry-projects/ContentTwin, petry-projects/google-app-scripts, petry-projects/markets, petry-projects/broodly] }

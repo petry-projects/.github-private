@@ -75,7 +75,14 @@ jobs:
       (inputs.event_name == '' && github.event_name != 'check_run') ||
       (inputs.event_name != '' && inputs.event_name != 'check_run')
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # Job backstop for a hung/stuck run — NOT a cost control (#1017, epic #901).
+    # 120 min gives legitimately large issues room to finish across all engine
+    # tiers before the backstop fires (GitHub's hard cap is 360/job). The
+    # effective per-tier defaults live in engine.sh; scripts/dev-lead-timeout-
+    # guardrail.sh asserts Σ(per-tier budgets)+overhead ≤ this value so tiers can
+    # never silently blow past the backstop. DEEP_TIMEOUT_SEC / ACTION_TIMEOUT_SEC
+    # below still pass caller `vars` overrides through; the default is in engine.sh.
+    timeout-minutes: 120
     permissions:
       contents: write
       pull-requests: write

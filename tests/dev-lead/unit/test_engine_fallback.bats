@@ -28,6 +28,7 @@ setup() {
 teardown() {
   rm -f "$GITHUB_ENV" "$GITHUB_OUTPUT" "$TEST_PROMPT"
   rm -f /tmp/dev-lead-failure-reason /tmp/dev-lead-session-output.txt /tmp/dev-lead-rate-limit-reset
+  rm -f /tmp/dev-lead-timeout-tier /tmp/dev-lead-timeout-budget /tmp/dev-lead-timeout-elapsed
   rm -rf "$STUB_BIN_DIR"
 }
 
@@ -159,7 +160,7 @@ GHEOF
   # and a recording stub shows that claude was tried after gemini failed.
   _make_stub "gemini" 2
   local record_file
-  record_file="$(mktemp)"
+  record_file="$(mktemp "$BATS_TEST_TMPDIR/rec.XXXXXX")"
   _make_recording_stub "claude" 127 "$record_file"
   # Provide token + gh stub so copilot path is deterministic (returns rate-limit)
   export COPILOT_GITHUB_TOKEN="stub-token"
@@ -189,7 +190,7 @@ GHEOF
   # Primary = gemini (exits 2), then fallback order should try claude first
   _make_stub "gemini" 2
   local record_file
-  record_file="$(mktemp)"
+  record_file="$(mktemp "$BATS_TEST_TMPDIR/rec.XXXXXX")"
   _make_recording_stub "claude" 0 "$record_file"
   _source_engine "gemini"
 
@@ -292,6 +293,112 @@ GHEOF
   [ "$(cat /tmp/dev-lead-failure-reason)" = "engine-error" ]
 }
 
+# ── timeout classification (#1018) ───────────────────────────────────────────
+# A per-tier stage timeout (exit 124 from GNU `timeout`) must be classified as a
+# distinct, NON-retryable reason=timeout — not engine-error — and must NOT drive
+# a same-budget retry on another engine. The tier/budget/elapsed sidecars carry
+# the context the needs-human escalation comment surfaces.
+
+@test "sidecar: stage timeout (exit 124) → reason=timeout + tier/budget/elapsed sidecars" {
+  _make_stub "claude" 124
+  export ACTION_TIMEOUT_SEC=2100
+  _source_engine "claude"
+
+  run run_writer_with_fallback "$TEST_PROMPT"
+
+  # 124 propagates immediately (distinct from engine-error)
+  [ "$status" -eq 124 ]
+  [ "$(cat /tmp/dev-lead-failure-reason)" = "timeout" ]
+  [ "$(cat /tmp/dev-lead-timeout-tier)" = "action" ]
+  [ "$(cat /tmp/dev-lead-timeout-budget)" = "2100" ]
+  [ -f /tmp/dev-lead-timeout-elapsed ]
+}
+
+@test "sidecar: timeout (124) does NOT fall through to another engine (no same-budget retry)" {
+  # claude times out (124); NEITHER copilot nor gemini (the remaining engines in
+  # the claude→copilot→gemini order) may be tried — each would succeed here if
+  # wrongly invoked, so record both and assert neither ran.
+  _make_stub "claude" 124
+  local gemini_record copilot_record
+  gemini_record="$(mktemp)"; copilot_record="$(mktemp)"
+  _make_recording_stub "gemini" 0 "$gemini_record"
+  # Enable copilot (non-ghp token) and record any `gh copilot` invocation.
+  export COPILOT_GITHUB_TOKEN="stub-token"
+  cat > "$STUB_BIN_DIR/gh" <<GHEOF
+#!/usr/bin/env bash
+case "\$*" in
+  *"copilot"*) echo "\$*" >> "$copilot_record"; echo "success output"; exit 0 ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+  _source_engine "claude"
+
+  run run_writer_with_fallback "$TEST_PROMPT"
+
+  [ "$status" -eq 124 ]
+  [ "$(cat /tmp/dev-lead-failure-reason)" = "timeout" ]
+  # Same-budget retry on ANY fallback engine must NOT happen.
+  [ ! -s "$copilot_record" ]
+  [ ! -s "$gemini_record" ]
+  rm -f "$gemini_record" "$copilot_record"
+}
+
+# ── engine-level retry classification (#1028) ─────────────────────────────────
+# A per-tier stage timeout (exit 124 from GNU `timeout`) is deterministic — the
+# model used its whole budget, so re-running at the SAME budget just times out
+# again. is_transient_failure() must therefore NOT classify 124 as retryable,
+# while signal kills (137/143) keep their retry behavior. run_triage is the
+# in-run retry loop that consumes this classifier; run_writer/run_agentic do not
+# retry at all, so dropping 124 from the shared classifier makes every caller
+# consistent (no engine-level same-budget retry on a timeout anywhere).
+
+@test "retry: is_transient_failure does NOT classify 124 (timeout) as retryable" {
+  _source_engine "claude"
+
+  run is_transient_failure 124
+  [ "$status" -ne 0 ]
+}
+
+@test "retry: is_transient_failure still classifies 137/143 (signal kills) as retryable" {
+  _source_engine "claude"
+
+  run is_transient_failure 137
+  [ "$status" -eq 0 ]
+  run is_transient_failure 143
+  [ "$status" -eq 0 ]
+}
+
+@test "retry: stubbed 124 in the retry loop → engine invoked exactly once (no in-run retry)" {
+  local record_file
+  record_file="$(mktemp "$BATS_TEST_TMPDIR/rec.XXXXXX")"
+  _make_recording_stub "claude" 124 "$record_file"
+  export RETRY_BASE_DELAY_SEC=0   # no backoff sleep in tests
+  _source_engine "claude"
+
+  run run_triage "$TEST_PROMPT"
+
+  [ "$status" -eq 124 ]
+  # A deterministic per-tier timeout must not be re-run at the same budget.
+  [ "$(wc -l < "$record_file")" -eq 1 ]
+  rm -f "$record_file"
+}
+
+@test "retry: stubbed 137 in the retry loop → still retries (invoked twice), regression guard" {
+  local record_file
+  record_file="$(mktemp "$BATS_TEST_TMPDIR/rec.XXXXXX")"
+  _make_recording_stub "claude" 137 "$record_file"
+  export RETRY_BASE_DELAY_SEC=0   # no backoff sleep in tests
+  _source_engine "claude"
+
+  run run_triage "$TEST_PROMPT"
+
+  [ "$status" -eq 137 ]
+  # Signal kills stay transient: RETRY_MAX_ATTEMPTS=2 → one retry → two invocations.
+  [ "$(wc -l < "$record_file")" -eq 2 ]
+  rm -f "$record_file"
+}
+
 @test "sidecar: stale reason cleared on success" {
   printf 'engine-error\n' > /tmp/dev-lead-failure-reason
   _make_stub "claude" 0
@@ -334,4 +441,115 @@ STUB
   grep -q "Dev-Lead session output" "$GITHUB_STEP_SUMMARY"
 
   rm -f "$GITHUB_STEP_SUMMARY"
+}
+
+# ── run-scoped engine exhaustion (#947) ───────────────────────────────────────
+# Once an engine is found rate-limited/unavailable during a run, it must NOT be
+# re-invoked on later run_writer_with_fallback calls in the same run (the #860
+# fix-ci-cycle re-burn), and it must emit AT MOST ONE exhaustion notice per
+# engine per run. These tests call the function twice+ in the SAME shell (no
+# bats `run`, which forks a subshell) so the process-scoped registry persists.
+
+@test "exhaustion: rate-limited engine is not re-invoked on a later call in the same run" {
+  local claude_record gemini_record
+  claude_record="$(mktemp "$STUB_BIN_DIR/claude_record.XXXXXX")"
+  gemini_record="$(mktemp "$STUB_BIN_DIR/gemini_record.XXXXXX")"
+  _make_recording_stub "claude" 2 "$claude_record"   # rate-limited (exit 2)
+  _make_recording_stub "gemini" 0 "$gemini_record"   # succeeds
+  export GEMINI_API_KEY="test-key"
+  export COPILOT_GITHUB_TOKEN="ghp_stub"              # ghp_* → copilot skipped
+  _source_engine "claude"
+
+  local rc1=0 rc2=0
+  run_writer_with_fallback "$TEST_PROMPT" || rc1=$?
+  run_writer_with_fallback "$TEST_PROMPT" || rc2=$?
+
+  [ "$rc1" -eq 0 ]
+  [ "$rc2" -eq 0 ]
+  # claude invoked once (call 1), then skipped as exhausted on call 2
+  [ "$(wc -l < "$claude_record")" -eq 1 ]
+  # gemini served both calls
+  [ "$(wc -l < "$gemini_record")" -eq 2 ]
+}
+
+@test "exhaustion: at most one exhaustion notice per engine across calls in a run" {
+  _make_stub "claude" 2
+  _make_stub "gemini" 0
+  export GEMINI_API_KEY="test-key"
+  export COPILOT_GITHUB_TOKEN="ghp_stub"
+  _source_engine "claude"
+
+  local errlog
+  errlog="$(mktemp "$STUB_BIN_DIR/errlog.XXXXXX")"
+  run_writer_with_fallback "$TEST_PROMPT" 2>>"$errlog" || true
+  run_writer_with_fallback "$TEST_PROMPT" 2>>"$errlog" || true
+  run_writer_with_fallback "$TEST_PROMPT" 2>>"$errlog" || true
+
+  # Exactly one "marked exhausted" notice for claude across all three calls.
+  local n
+  n=$(grep -c 'claude marked exhausted' "$errlog" || true)
+  [ "$n" -eq 1 ]
+}
+
+@test "exhaustion: all-engines-exhausted second call still returns 2 (rate-limited)" {
+  _make_stub "claude" 2
+  _make_stub "gemini" 2
+  export GEMINI_API_KEY="test-key"
+  export COPILOT_GITHUB_TOKEN="stub-token"
+  cat > "$STUB_BIN_DIR/gh" <<'GHEOF'
+#!/usr/bin/env bash
+case "$*" in
+  *"copilot"*) echo "rate limit exceeded"; exit 1 ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+  _source_engine "claude"
+
+  local rc1=0 rc2=0
+  run_writer_with_fallback "$TEST_PROMPT" || rc1=$?
+  run_writer_with_fallback "$TEST_PROMPT" || rc2=$?
+
+  [ "$rc1" -eq 2 ]
+  [ "$rc2" -eq 2 ]
+  [ "$(cat /tmp/dev-lead-failure-reason)" = "rate-limited" ]
+}
+
+@test "exhaustion: reset_engine_exhaustion clears the registry" {
+  local claude_record
+  claude_record="$(mktemp "$STUB_BIN_DIR/claude_record.XXXXXX")"
+  _make_recording_stub "claude" 2 "$claude_record"
+  _make_stub "gemini" 0
+  export GEMINI_API_KEY="test-key"
+  export COPILOT_GITHUB_TOKEN="ghp_stub"
+  _source_engine "claude"
+
+  run_writer_with_fallback "$TEST_PROMPT" || true    # claude recorded (1), exhausted
+  reset_engine_exhaustion
+  run_writer_with_fallback "$TEST_PROMPT" || true    # claude re-invoked after reset
+
+  [ "$(wc -l < "$claude_record")" -eq 2 ]
+}
+
+@test "exhaustion: headroom-threshold breach exhausts engine permanently" {
+  _make_stub "gemini" 0
+  export GEMINI_API_KEY="test-key"
+  export COPILOT_GITHUB_TOKEN="ghp_stub"
+  _source_engine "claude"
+  # Override headroom check: claude is always at/above threshold; others have headroom
+  check_provider_headroom() { [ "$1" = "claude" ] && return 1; return 0; }
+
+  local errlog
+  errlog="$(mktemp "$STUB_BIN_DIR/errlog.XXXXXX")"
+  local rc1=0 rc2=0
+  run_writer_with_fallback "$TEST_PROMPT" 2>>"$errlog" || rc1=$?
+  run_writer_with_fallback "$TEST_PROMPT" 2>>"$errlog" || rc2=$?
+
+  # gemini serves both calls despite claude's headroom failure
+  [ "$rc1" -eq 0 ]
+  [ "$rc2" -eq 0 ]
+  # Exactly one exhaustion notice for claude across both calls
+  local n
+  n=$(grep -c 'claude marked exhausted' "$errlog" || true)
+  [ "$n" -eq 1 ]
 }

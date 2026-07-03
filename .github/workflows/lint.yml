@@ -8,6 +8,7 @@ on:
       - 'tests/**'
       - 'agents/**'
       - 'evals/**'
+      - 'release/**'
       - '.gitleaks.toml'
   workflow_dispatch:
 
@@ -57,6 +58,7 @@ jobs:
             tests/test_review_cycle.bats \
             tests/test_pr_automation_budget.bats \
             tests/test_pr_runaway_regression.bats \
+            tests/test_pr_runaway_detect.bats \
             tests/test_ci_status.bats \
             tests/test_push_protection.bats \
             tests/test_verify_auth_scopes.bats \
@@ -90,9 +92,12 @@ jobs:
             tests/test_downstream_impact_assemble.bats \
             tests/test_downstream_impact_triage_inline.bats \
             tests/test_downstream_impact_regression.bats \
+            tests/test_safety_checks.bats \
+            tests/test_safety_checks_triage_inline.bats \
             tests/test_engine_unavailable_notice.bats \
             tests/test_batch_skip_reporting.bats \
-            tests/test_review_one_pr_ci_pending.bats
+            tests/test_review_one_pr_ci_pending.bats \
+            tests/test_release_registry.bats
 
   template-drift:
     # Drift guard (#969): fail when a file committed in petry-projects/repo-template

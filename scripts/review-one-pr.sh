@@ -44,6 +44,13 @@ source "$SCRIPT_DIR/lib/review-registry.sh"
 # Gated default-off behind DOWNSTREAM_IMPACT_ENABLED (Story 5).
 # shellcheck source=lib/downstream-impact.sh
 source "$SCRIPT_DIR/lib/downstream-impact.sh"
+# Deterministic PR safety checks (issue #305): assemble_safety_checks computes a
+# SAFETY_CHECKS block (CI-weakening / prompt-injection hard-stops, large-PR gate,
+# description-quality, dependency-risk) from PR_METADATA + PR_DIFF with no `gh`/
+# network I/O; safety_checks_triage_section inlines it into the triage prompt.
+# Gated behind SAFETY_CHECKS_ENABLED (default ON; off => byte-identical prompt).
+# shellcheck source=lib/safety-checks.sh
+source "$SCRIPT_DIR/lib/safety-checks.sh"
 # LSP finding-verification (epic #839, story #843): apply_lsp_verification grounds
 # deep/audit cross-file findings against LSP nav tools, downgrading/annotating the
 # ones LSP cannot ground and emitting each outcome to the token JSONL. Inert when
@@ -661,6 +668,17 @@ if [ "${DOWNSTREAM_IMPACT_ENABLED:-false}" = "true" ]; then
   unset _di_changed
 fi
 
+# Deterministic safety-checks pass (issue #305). Safety-critical, so gated
+# DEFAULT-ON: compute the SAFETY_CHECKS block from the already-fetched
+# PR_METADATA + PR_DIFF (no `gh`/network) and write it to a file whose path is
+# exported as SAFETY_CHECKS_FILE for the deep/audit tiers. The block is inlined
+# into the triage prompt below (triage has NO tools). When SAFETY_CHECKS_ENABLED
+# is explicitly "false" nothing is computed and the triage prompt stays
+# byte-identical to pre-feature behavior (rollback + holdout-eval stability).
+if [ "${SAFETY_CHECKS_ENABLED:-true}" = "true" ]; then
+  assemble_safety_checks "$PR_METADATA" "$PR_DIFF" "/tmp/cascade/safety-checks.txt" || true
+fi
+
 # Build the triage prompt: static template + inlined PR context.
 TRIAGE_PROMPT_FILE="/tmp/cascade/triage-prompt.md"
 {
@@ -683,6 +701,9 @@ TRIAGE_PROMPT_FILE="/tmp/cascade/triage-prompt.md"
   # Inline the DOWNSTREAM_IMPACT block (no-op when the Story 5 flag is off, so
   # the triage prompt stays byte-identical to pre-feature behavior).
   downstream_impact_triage_section
+  # Inline the deterministic SAFETY_CHECKS verdicts (issue #305). No-op when
+  # SAFETY_CHECKS_ENABLED is explicitly "false", keeping the prompt byte-identical.
+  safety_checks_triage_section "/tmp/cascade/safety-checks.txt"
   printf '\nPR_METADATA (JSON from `gh pr view`):\n%s\n' "$PR_METADATA"
   printf '\nPR_DIFF (truncated to 3000 lines if larger):\n%s\n' "$PR_DIFF"
 } > "$TRIAGE_PROMPT_FILE"
