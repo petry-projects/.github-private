@@ -203,7 +203,8 @@ main() {
   local wf_glob="${1:-.github/workflows}"
   local fail=0 checked=0 file uses orr rwf ref reusable declared required forwarded missing missing_req tmp
   tmp="$(mktemp)"
-  trap 'rm -f "$tmp"' EXIT
+  # shellcheck disable=SC2064
+  trap "rm -f \"$tmp\"" EXIT
 
   echo "Caller-input skew check — forwarded with: keys vs inputs declared at the pinned ref:"
   local f
