@@ -18,6 +18,7 @@ set -euo pipefail
 #   canary-rollout.sh promote-all [--override] [--allow-pre-existing] [--dry-run]  # gated fleet auto-promote (the SCHEDULED arm, #1045b)
 #   canary-rollout.sh rollback <agent> <ring> --to <vX.Y.Z> [--dry-run]
 #   canary-rollout.sh resolve  <agent> <channel>       # debug: print resolved member repos
+#   canary-rollout.sh sync-issues [--dry-run]          # upsert a blocker issue per BLOCKED agent + a rolling dashboard (auto-triage)
 #
 # Gate standard: .github#548 — graduated per-transition dwell/sample floors over a
 # per-candidate cumulative window (since the candidate's OWN vX.Y.Z cut), a robust
@@ -521,9 +522,20 @@ cmd_promote() {
       || { echo "::error::failed to move $agent/$frontier -> ${cand:0:12} locally" >&2; return 1; }
   fi
   echo "promoted $agent/$frontier -> ${cand:0:12}"
-  # Expose the move so the workflow can record a GitHub Deployment (traceability, #502).
+  # Expose the move for the workflow's GitHub Deployment (traceability, #502). The
+  # deployment must be created on the repo that OWNS the moved commit: a cross-repo agent's
+  # candidate SHA lives on its host, NOT on THIS_REPO — creating the deployment against
+  # GITHUB_REPOSITORY 422s with "No ref found" (#1059). So emit the owning repo too.
+  local deploy_repo="$THIS_REPO"; [ "$cross" = true ] && deploy_repo="$host"
+  # GITHUB_OUTPUT is single-valued (last write wins), fine for a single `promote`. For
+  # `promote-all` (many promotions per run) the workflow reads CANARY_PROMOTIONS_LOG — one
+  # TSV line per promotion — so it can record a deployment for EVERY move, not just the last.
   if [ -n "${GITHUB_OUTPUT:-}" ]; then
-    { echo "promoted_agent=$agent"; echo "promoted_ring=$frontier"; echo "promoted_sha=$cand"; } >> "$GITHUB_OUTPUT"
+    { echo "promoted_agent=$agent"; echo "promoted_ring=$frontier"
+      echo "promoted_sha=$cand";   echo "promoted_host=$deploy_repo"; } >> "$GITHUB_OUTPUT"
+  fi
+  if [ -n "${CANARY_PROMOTIONS_LOG:-}" ]; then
+    printf '%s\t%s\t%s\t%s\n' "$agent" "$frontier" "$cand" "$deploy_repo" >> "$CANARY_PROMOTIONS_LOG"
   fi
 }
 
@@ -595,6 +607,188 @@ cmd_rollback() {
   echo "rolled back $agent/$ring -> $to"
 }
 
+# ── blocker-issue + dashboard automation (auto-triage of held promotions) ───────
+# The gate detects + classifies a BLOCKED promotion; sync-issues turns that signal into
+# a tracked work item: one idempotent issue per BLOCKED agent (with the failing-run
+# evidence pre-attached), auto-closed when the gate clears, plus a single rolling
+# dashboard issue of fleet state. Runs on the schedule after promote-all. All GitHub
+# writes are best-effort — a failure here never fails the promotion run.
+ISSUE_REPO="${ISSUE_REPO:-$THIS_REPO}"
+
+# _issue_find <label> <marker> — "<number>\t<STATE>" of the newest issue carrying <marker>
+# in its body (matched locally over the label's issues, not GitHub search — HTML-comment
+# markers are not reliably indexed). Empty if none.
+_issue_find() {
+  local label="$1" marker="$2"
+  gh issue list --repo "$ISSUE_REPO" --label "$label" --state all -L 100 \
+      --json number,state,body 2>/dev/null \
+    | jq -r --arg m "$marker" \
+        '[.[] | select((.body // "") | contains($m))] | sort_by(.number) | last
+         | if . == null then "" else "\(.number)\t\(.state | ascii_upcase)" end' 2>/dev/null \
+    || echo ""
+}
+
+# _gh_issue_create <title> <body> <labels_csv> — create an issue, echo its number.
+_gh_issue_create() {
+  gh issue create --repo "$ISSUE_REPO" --title "$1" --body "$2" --label "$3" 2>/dev/null \
+    | grep -oE '[0-9]+$' | tail -1
+}
+
+# _blocker_evidence <agent> <candidate_commit> — markdown bullets for the in-window failing
+# runs (repo + run link + failed-step signature), capped at 8. Uses the SAME per-candidate
+# window + tier repos the gate counts, so the evidence matches cum_fail.
+_blocker_evidence() {
+  local agent="$1" cand="$2" wf cut_z repo json r n=0 out=""
+  wf="$(_agent_field "$agent" run_workflow)"
+  cut_z="$(candidate_cut_date "$agent" "$cand")"
+  [ -z "$cut_z" ] && { printf '_(no candidate cut date resolved — cannot list failing runs)_\n'; return 0; }
+  local chan_array=() ch all=() seen=" " dedup=()
+  IFS=, read -r -a chan_array <<< "$(ordered_channels "$agent")"
+  for ch in "${chan_array[@]}"; do
+    while IFS= read -r r; do [ -n "$r" ] && [ "$r" != '*' ] && all+=("$r"); done < <(resolve_members "$agent" "$ch")
+  done
+  for r in "${all[@]}"; do case "$seen" in *" $r "*) ;; *) dedup+=("$r"); seen+="$r ";; esac; done
+  for repo in "${dedup[@]}"; do
+    json="$(_run_json "$repo" "$wf" "$cut_z")"
+    local rid sig
+    while IFS= read -r rid; do
+      [ -z "$rid" ] && continue
+      if [ "$n" -ge 8 ]; then out+="- _(…more failing runs; truncated at 8)_"$'\n'; printf '%s' "$out"; return 0; fi
+      sig="$(_run_signature "$repo" "$rid" | tr '\n' ';' | sed 's/;$//')"
+      out+="- \`$repo\` — run [$rid](https://github.com/$repo/actions/runs/$rid); failed steps: ${sig:-unknown}"$'\n'
+      n=$((n+1))
+    done < <(jq -r '.[]?|select(.conclusion=="failure" or .conclusion=="startup_failure")|(.databaseId|tostring)' 2>/dev/null <<< "$json")
+  done
+  [ -z "$out" ] && out="_(no failing runs in the per-candidate window — cum_fail may be startup_failures or a transient count)_"$'\n'
+  printf '%s' "$out"
+}
+
+# _blocker_body <agent> <transition> <cand> <cum_fail> <cum_startup> <triage> <host> <evidence>
+_blocker_body() {
+  local agent="$1" transition="$2" cand="$3" cum_fail="$4" cum_startup="$5" triage="$6" host="$7" evidence="$8" note
+  if [ "$triage" = "REGRESSION" ]; then
+    note="> ⛔ **REGRESSION** — the candidate changed the reusable and a run failed since its cut. HALT + hold; investigate and roll back rather than \`--override\`. (labelled \`needs-human\`)"
+  else
+    note="> ⚠️ **PRE_EXISTING** — the failure is pre-existing/environmental (reusable byte-identical to the prior channel). Report only; the gate will not roll back or advance. Fix-forward, and the armed timer auto-promotes once clean."
+  fi
+  cat <<EOF
+<!-- canary-blocker:$agent -->
+**Automated canary-rollout blocker.** The release gate is holding \`$agent\` and will not promote it until this clears. Filed + maintained by the Canary Rollout workflow (gate standard: .github#548); this issue is **regenerated each run and auto-closes** when the gate passes — do not edit the table below by hand.
+
+| field | value |
+|---|---|
+| agent | \`$agent\` |
+| transition | \`$transition\` |
+| candidate | \`${cand:0:12}\` |
+| host repo | \`$host\` |
+| cumulative failures | **$cum_fail** (startup_failures: $cum_startup) |
+| triage | **$triage** |
+
+$note
+
+### Failing runs in the per-candidate window
+$evidence
+---
+_See the pinned **Canary Rollout — fleet status** dashboard issue (label \`canary-dashboard\`) for the whole fleet._
+EOF
+}
+
+# _dashboard_body <rows_md> <timestamp>
+_dashboard_body() {
+  cat <<EOF
+<!-- canary-dashboard -->
+# Canary Rollout — fleet status (auto)
+
+Regenerated by the Canary Rollout workflow each run — **do not edit by hand.**
+Last updated: \`$2\` · auto-promote armed: \`${CANARY_AUTO_PROMOTE:-unset}\` · gate standard: .github#548.
+
+| agent | state | transition | cum_fail | triage | blocker |
+|---|---|---|---|---|---|
+$1
+
+\`PROMOTE\`/\`COMPLETE\`/\`SOAKING\` need no action. \`BLOCKED\` opens a per-agent issue (label \`canary-blocker\`) with the failing-run evidence; it auto-closes when the gate clears.
+EOF
+}
+
+# cmd_sync_issues [--dry-run] — upsert one blocker issue per BLOCKED agent + rewrite the
+# dashboard. Idempotent (marker-keyed); auto-closes a cleared agent's issue. Best-effort:
+# never fails the run. Reads ISSUE_REPO (default THIS_REPO).
+cmd_sync_issues() {
+  local dry=false; [ "${1:-}" = "--dry-run" ] && dry=true
+  local agents; agents="$(_jq -r '.agents? | keys[]?' 2>/dev/null || true)"
+  [ -z "$agents" ] && { echo "no agents registered in $CANARY_RINGS — nothing to sync."; return 0; }
+  echo "== canary-rollout sync-issues: repo=$ISSUE_REPO dry=$dry (gate standard: .github#548) =="
+  if [ "$dry" != true ]; then
+    local lbl
+    for lbl in canary-blocker canary-dashboard; do
+      gh label create "$lbl" --repo "$ISSUE_REPO" --color ededed --description "canary-rollout automation" >/dev/null 2>&1 || true
+    done
+  fi
+  local rows="" agent
+  while IFS= read -r agent; do
+    [ -z "$agent" ] && continue
+    local cand frontier transition state _d _f _s _t cum_fail cum_startup _cb triage host
+    read -r cand frontier transition state _d _f _s _t cum_fail cum_startup _cb triage < <(_frontier_state "$agent")
+    host="$(_agent_field "$agent" host)"
+    local blk="—" num_state num istate
+    num_state="$(_issue_find canary-blocker "<!-- canary-blocker:$agent -->")"
+    num="${num_state%%$'\t'*}"; istate="${num_state##*$'\t'}"
+    if [ "$state" = "BLOCKED" ]; then
+      local evidence body title
+      evidence="$(_blocker_evidence "$agent" "$cand")"
+      body="$(_blocker_body "$agent" "$transition" "$cand" "$cum_fail" "$cum_startup" "$triage" "$host" "$evidence")"
+      title="Canary blocker: $agent $transition (cum_fail=$cum_fail, $triage)"
+      if [ -z "$num" ]; then
+        if [ "$dry" = true ]; then echo "  [DRY] would OPEN blocker issue for $agent ($triage)"; blk="(new)"; else
+          num="$(_gh_issue_create "$title" "$body" "canary-blocker")"
+          if [ -n "$num" ]; then
+            [ "$triage" = "REGRESSION" ] && gh issue edit "$num" --repo "$ISSUE_REPO" --add-label needs-human >/dev/null 2>&1 || true
+            echo "  opened blocker issue #$num for $agent"; blk="#$num"
+          else echo "::warning::could not open blocker issue for $agent (Issues:write on the App?)"; fi
+        fi
+      else
+        if [ "$dry" = true ]; then echo "  [DRY] would UPDATE blocker issue #$num for $agent"; blk="#$num"; else
+          [ "$istate" = "OPEN" ] || gh issue reopen "$num" --repo "$ISSUE_REPO" >/dev/null 2>&1 || true
+          gh issue edit "$num" --repo "$ISSUE_REPO" --title "$title" --body "$body" >/dev/null 2>&1 \
+            || echo "::warning::could not update blocker issue #$num for $agent"
+          [ "$triage" = "REGRESSION" ] && gh issue edit "$num" --repo "$ISSUE_REPO" --add-label needs-human >/dev/null 2>&1 || true
+          echo "  updated blocker issue #$num for $agent"; blk="#$num"
+        fi
+      fi
+    else
+      # Not blocked — close a stale open blocker issue (the gate cleared).
+      if [ -n "$num" ] && [ "$istate" = "OPEN" ]; then
+        if [ "$dry" = true ]; then echo "  [DRY] would CLOSE cleared blocker issue #$num for $agent ($state)"; else
+          gh issue close "$num" --repo "$ISSUE_REPO" \
+            --comment "✅ Gate cleared — \`$agent\` is now \`$state\`. Closed automatically by canary-rollout." >/dev/null 2>&1 || true
+          echo "  closed cleared blocker issue #$num for $agent"
+        fi
+        blk="#$num (closed)"
+      fi
+    fi
+    rows+="| \`$agent\` | $state | \`$transition\` | $cum_fail | $triage | $blk |"$'\n'
+  done <<< "$agents"
+
+  # Rewrite the single rolling dashboard.
+  local ts dbody dnum_state dnum distate
+  ts="$(date -u +%Y-%m-%dT%H:%MZ 2>/dev/null || echo unknown)"
+  dbody="$(_dashboard_body "${rows%$'\n'}" "$ts")"
+  dnum_state="$(_issue_find canary-dashboard "<!-- canary-dashboard -->")"
+  dnum="${dnum_state%%$'\t'*}"; distate="${dnum_state##*$'\t'}"
+  if [ "$dry" = true ]; then echo "  [DRY] would UPSERT dashboard issue";
+  elif [ -z "$dnum" ]; then
+    dnum="$(_gh_issue_create "Canary Rollout — fleet status (auto)" "$dbody" "canary-dashboard")"
+    if [ -n "$dnum" ]; then echo "  created dashboard issue #$dnum"; gh issue pin "$dnum" --repo "$ISSUE_REPO" >/dev/null 2>&1 || true
+    else echo "::warning::could not create dashboard issue (Issues:write on the App?)"; fi
+  else
+    [ "$distate" = "OPEN" ] || gh issue reopen "$dnum" --repo "$ISSUE_REPO" >/dev/null 2>&1 || true
+    gh issue edit "$dnum" --repo "$ISSUE_REPO" --body "$dbody" >/dev/null 2>&1 \
+      || echo "::warning::could not update dashboard issue #$dnum"
+    echo "  updated dashboard issue #$dnum"
+  fi
+  return 0
+}
+
 main() {
   local cmd
   for cmd in jq gh git; do
@@ -615,7 +809,8 @@ main() {
     promote-all)  cmd_promote_all "$@" ;;
     rollback)     [ $# -ge 2 ] || { echo "usage: rollback <agent> <ring> --to <vX.Y.Z>" >&2; return 2; }; cmd_rollback "$@" ;;
     resolve)      [ $# -ge 2 ] || { echo "usage: resolve <agent> <channel>" >&2; return 2; }; resolve_members "$@" ;;
-    *) echo "::error::usage: canary-rollout.sh {evaluate|evaluate-all|promote|promote-all|rollback|resolve} <agent> ..." >&2; return 2 ;;
+    sync-issues)  cmd_sync_issues "$@" ;;   # upsert blocker issues + dashboard for held promotions
+    *) echo "::error::usage: canary-rollout.sh {evaluate|evaluate-all|promote|promote-all|rollback|resolve|sync-issues} <agent> ..." >&2; return 2 ;;
   esac
 }
 
