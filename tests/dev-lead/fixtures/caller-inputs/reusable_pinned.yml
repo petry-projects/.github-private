@@ -1,0 +1,39 @@
+name: PR Review Agent
+
+# Fixture: the reusable AS DECLARED AT THE PINNED CHANNEL REF (the lagging
+# @pr-review/next before #1034 added lsp_pilot_variant). It declares
+# agent_ref / pr_url / dry_run / force_review but NOT lsp_pilot_variant — this is
+# exactly the shape GitHub validates a caller's `with:` against at startup.
+on:
+  workflow_call:
+    inputs:
+      agent_ref:
+        # Ref of petry-projects/.github-private to check out for agent scripts.
+        description: "Ref of petry-projects/.github-private to check out for agent scripts"
+        type: string
+        required: false
+        default: ""
+      pr_url:
+        description: "Optional: review a single PR URL instead of enumerating"
+        type: string
+        required: false
+        default: ""
+      dry_run:
+        description: "If true, never submit reviews or comments"
+        type: string
+        required: false
+        default: ""
+      force_review:
+        description: "If true, bypass idempotency and re-review at the same head SHA"
+        type: string
+        required: false
+        default: ""
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: false
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo review

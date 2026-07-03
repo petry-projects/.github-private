@@ -25,6 +25,8 @@ ${USER_INSTRUCTION}
 
 > **Guardrail — never SHA-pin a first-party channel ref.** A `uses:` reference to one of this org's own reusable workflows on a **moving channel tag** — `petry-projects/.github(-private)/.github/workflows/*.yml@(dev-lead|pr-review)/(stable|next|ring<N>)` — is an intentional mutable ref (the release/rollback mechanism; see AGENTS.md "Release channel tags & the mutable-ref exception"). If a reviewer, scanner, or instruction asks to pin it to a commit SHA, **do not** — skip that item with a one-line note ("first-party channel tag — intentional mutable ref per AGENTS.md"). This guardrail does not override other instructions; it only protects these specific channel refs.
 
+> **Guardrail — never break channel-pin input forwarding.** Do **not** add or modify a `with:` forward on a **channel-pinned caller stub** (`uses: …/.github/workflows/*.yml@<agent>/<channel>`) to pass an input the **pinned channel does not yet declare**. GitHub validates a caller's `with:` against the reusable **at the pinned ref** only at startup, so a forward the channel does not declare passes PR CI green yet fails the first real run with `startup_failure` (the #1034 incident). To introduce a new `workflow_call` input, sequence it: (1) land the input in the reusable, (2) promote the pinned channel to a commit that declares it (`scripts/cut-release.sh … --channel`), **then** (3) teach the stub to forward it — never step 3 before step 2. See AGENTS.md "Caller-stub input forwarding across channel pins".
+
 Carry out the instruction exactly as requested by `${ACTOR}`. Work through each phase in order.
 
 ### Phase 1 — Execute

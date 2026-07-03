@@ -1,0 +1,118 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# SOURCE OF TRUTH: petry-projects/.github-private/.github/workflows/pr-review-canary.yml
+#
+# AGENTS — READ BEFORE EDITING:
+#   • Scheduled + post-merge canary for the pr-review-trigger stub (#1052, Part D).
+#     Fires a DRY-RUN dispatch of pr-review-trigger.yml (`dry_run=true`) and FAILS
+#     LOUD if the run ends in `startup_failure` — the exact silent breakage of
+#     #1034 (every pr-review dead until the #1048 hotfix). All logic lives in
+#     scripts/pr_review_canary.sh (unit-tested in tests/pr_review_canary.bats).
+#   • DRY-RUN only — `dry_run=true` guarantees the reviewer never submits a review
+#     or comment; the canary only checks whether the reusable call can START.
+#   • The dispatch needs GH_PAT_WORKFLOWS, not github.token: a workflow_dispatch
+#     fired with GITHUB_TOKEN is accepted but never starts a run (loop prevention).
+#   • Post-merge trigger is scoped to changes that can cause the skew (the trigger
+#     stub, the reusable, or the pinned-channel machinery) so a merge that touches
+#     forwarding is verified for real within minutes, not on the next scheduled tick.
+#   • This is a repo-specific workflow with no org template — see AGENTS.md
+#     (Workflow Files exception). Do not let template syncs remove it.
+# ─────────────────────────────────────────────────────────────────────────────
+name: PR Review Trigger Canary
+
+on:
+  schedule:
+    # Daily at 06:45 UTC — after the planner (06:30) / driver (06:40) canaries so
+    # all live-trigger signals land in the same morning window.
+    - cron: '45 6 * * *'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/pr-review-trigger.yml'
+      - '.github/workflows/pr-review.yml'
+      - 'scripts/pr_review_canary.sh'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: pr-review-canary
+  cancel-in-progress: true
+
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout agent repo
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Run pr-review-trigger canary (dry-run)
+        env:
+          # PAT required — a workflow_dispatch fired with GITHUB_TOKEN never starts a run.
+          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
+          REPO: ${{ github.repository }}
+          CANARY_OUT: pr_review_canary.md
+        run: bash scripts/pr_review_canary.sh
+
+      - name: Alert on canary failure
+        if: always() && env.CANARY_FAILED == 'true' && hashFiles('pr_review_canary.md') != ''
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const fs = require('fs');
+            const MAX = 65000;
+            let report = fs.readFileSync('pr_review_canary.md', 'utf8');
+            if (!report.trim()) { core.setFailed('Canary report is empty'); return; }
+
+            const runUrl = `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`;
+            if (report.length > MAX) {
+              report = report.slice(0, MAX) +
+                `\n\n---\n_Report truncated — full output in the [workflow run summary](${runUrl})._`;
+            }
+
+            const LABEL = 'pr-review-canary';
+            const TITLE = '🔴 PR-review-trigger canary failing';
+
+            // Ensure the tracking labels exist.
+            for (const [name, color, description] of [
+              [LABEL,         'b60205', 'pr-review-trigger dry-run canary failure (startup_failure / #1034 class)'],
+              ['dev-lead',     'd93f0b', 'Requires dev-lead attention'],
+              ['health-check', '0e8a16', 'Automated health check result'],
+            ]) {
+              try {
+                await github.rest.issues.createLabel({ owner: context.repo.owner, repo: context.repo.repo, name, color, description });
+              } catch (e) {
+                if (e.status !== 422) throw e;  // 422 = already exists
+              }
+            }
+
+            // Find-or-create the single tracking issue; each failure posts a comment.
+            const existing = await github.paginate(github.rest.issues.listForRepo, {
+              owner: context.repo.owner, repo: context.repo.repo,
+              labels: LABEL, state: 'open', per_page: 100,
+            });
+            let issue = existing.find(i => i.title === TITLE);
+            if (!issue) {
+              const created = await github.rest.issues.create({
+                owner: context.repo.owner, repo: context.repo.repo,
+                title: TITLE, body: report,
+                labels: [LABEL, 'dev-lead', 'health-check'],
+              });
+              issue = created.data;
+              core.notice(`Created canary issue #${issue.number}: ${issue.html_url}`);
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: issue.number, body: report,
+              });
+              core.notice(`Updated canary issue #${issue.number}: ${issue.html_url}`);
+            }
+
+      - name: Annotate clean canary
+        if: env.CANARY_FAILED != 'true'
+        run: echo "::notice::PR-review-trigger canary passed — the dry-run review started cleanly (no startup_failure)."

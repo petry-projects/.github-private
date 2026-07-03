@@ -97,7 +97,11 @@ jobs:
             tests/test_engine_unavailable_notice.bats \
             tests/test_batch_skip_reporting.bats \
             tests/test_review_one_pr_ci_pending.bats \
-            tests/test_release_registry.bats
+            tests/test_release_registry.bats \
+            tests/dev-lead/unit/test_validate_caller_inputs.bats \
+            tests/caller_stub_freeze.bats \
+            tests/dev-lead/unit/test_channel_stub_forward_guardrail.bats \
+            tests/pr_review_canary.bats
 
   template-drift:
     # Drift guard (#969): fail when a file committed in petry-projects/repo-template
@@ -114,6 +118,50 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: bash scripts/template_stub_drift.sh
+
+  validate-caller-inputs:
+    # Channel-skew guard (#1052, Part A): for every workflow that calls a reusable
+    # on a pinned ref WITH a `with:` block, resolve the reusable AT THAT REF and
+    # fail if a forwarded input is not declared there (or a required input is not
+    # forwarded). This is the prevention for #1034 — a `with:` forward on a
+    # channel-pinned stub is exercised by nothing in PR CI (GitHub validates the
+    # caller's inputs only at startup, against the PINNED ref), so it stays green
+    # until it runs for real on main. actionlint (below) only input-checks LOCAL
+    # `./` reusable refs and CANNOT catch this pinned-remote-ref skew.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+
+      - name: Validate forwarded inputs against inputs declared at the pinned ref
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/validate-caller-inputs.sh
+
+      - name: Freeze ring-0 caller-stub forwarding blocks (#1052, Part B)
+        # Byte-identity backstop for the self-host stubs: their uses:/with:
+        # forwarding must match a committed baseline, so a #1034-style change
+        # cannot merge unless the baseline is regenerated in the same diff.
+        run: bash scripts/caller_stub_freeze.sh
+
+  actionlint:
+    # Baseline workflow linting (#1052, Part D). SHA-pinned. NOTE: actionlint only
+    # input-checks LOCAL `./` reusable refs — it does NOT catch the pinned-remote-ref
+    # channel skew behind #1034. The validate-caller-inputs job above is the coverage
+    # for that; this job is general syntax/expression/shell hygiene, not a substitute.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+
+      - name: Run actionlint
+        # Align actionlint's embedded shellcheck with this repo's policy
+        # (the shellcheck job runs --severity=warning): SC2129 & other style-level
+        # info fire on the workflows' inline scripts and are intentionally not
+        # gated here. actionlint honours SHELLCHECK_OPTS.
+        env:
+          SHELLCHECK_OPTS: --severity=warning
+        uses: raven-actions/actionlint@3d39aea434753780c3b3d4a1a31c854b4dbf49d7  # v2.2.0
 
   validate-agent-profiles:
     runs-on: ubuntu-latest

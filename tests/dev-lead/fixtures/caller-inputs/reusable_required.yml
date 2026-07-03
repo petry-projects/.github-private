@@ -1,0 +1,22 @@
+name: Reusable with a required input
+
+# Fixture: a reusable that declares a REQUIRED input, to exercise the
+# "every required:true input must be forwarded" assertion (part b of Part A).
+on:
+  workflow_call:
+    inputs:
+      must_have:
+        description: "A required input the caller must forward"
+        type: string
+        required: true
+      opt:
+        description: "An optional input"
+        type: string
+        required: false
+        default: ""
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo run

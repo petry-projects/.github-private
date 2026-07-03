@@ -1,0 +1,3 @@
+    uses: petry-projects/.github-private/.github/workflows/dev-lead-reusable.yml@dev-lead/next
+    with:
+      agent_ref: dev-lead/next

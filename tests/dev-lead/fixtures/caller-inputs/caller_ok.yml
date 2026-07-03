@@ -1,0 +1,19 @@
+name: PR Review Agent — Trigger
+
+# Fixture: the SAFE shape (current main after the #1048 hotfix). Every forwarded
+# `with:` key is declared by the reusable at the pinned ref (reusable_pinned.yml),
+# so the guard passes.
+on:
+  pull_request:
+    types: [synchronize]
+  workflow_dispatch:
+
+jobs:
+  review:
+    uses: petry-projects/.github-private/.github/workflows/pr-review.yml@pr-review/next
+    with:
+      agent_ref: pr-review/next
+      pr_url: ${{ inputs.pr_url || '' }}
+      dry_run: ${{ inputs.dry_run || '' }}
+      force_review: ${{ inputs.force_review || '' }}
+    secrets: inherit

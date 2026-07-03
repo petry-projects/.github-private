@@ -24,7 +24,10 @@ This is the `.github-private` org infrastructure repo for `petry-projects`. It c
 - `.github/workflows/dev-lead.yml` is a thin caller stub that delegates to
   `dev-lead-reusable.yml` (the canonical org standard). To change behavior for
   all org repos, edit `dev-lead-reusable.yml`. Repo-specific trigger adjustments
-  may be made to `dev-lead.yml` per the stub's header comment.
+  may be made to `dev-lead.yml` per the stub's header comment. **Before touching any
+  `with:` forward on a channel-pinned caller stub, read "Caller-stub input forwarding
+  across channel pins" below** — a forward the pinned channel does not declare passes PR
+  CI but fails the first `main` run with `startup_failure` (#1034).
 - All other workflow changes must use templates from
   [`standards/workflows/`](https://github.com/petry-projects/.github/tree/main/standards/workflows) verbatim.
 - **Note:** `.github/workflows/auto-rebase.yml` pins the reusable workflow at the `@auto-rebase/stable`
@@ -230,3 +233,39 @@ whose reusables live in this repo, `feature-ideation`'s reusable lives in **`pet
 repo — and the protective ruleset bounding `feature-ideation/**` channel tags is therefore created
 **there**, not on this repo (an untracked prerequisite in the public repo). See
 [`docs/release/versioning.md`](./docs/release/versioning.md) "Cross-repo reusables".
+
+#### Caller-stub input forwarding across channel pins
+
+The mutable channel pin above interacts with reusable-workflow **input forwarding** in a way that has
+already broken production once (#1034: every `pr-review` run failed with `startup_failure` and no PR was
+reviewed until the #1048 hotfix). Understand this before editing any `with:` block on a channel-pinned
+caller stub.
+
+**Why the skew is invisible in PR CI.** GitHub validates a caller's `with:` inputs against the reusable's
+`workflow_call.inputs` **at the pinned ref**, and it does so **only at run startup** — never during
+`pull_request` CI (which runs the *base branch's* copy of the workflow, not your PR's edited stub). So a
+stub that forwards an input the **pinned channel does not yet declare** passes every PR check green, then
+fails the **first real run on `main`** with `startup_failure`. The reusable's `HEAD` on `main` is
+irrelevant; only the commit the channel tag currently points at is consulted.
+
+**The rule.** Never add or modify a `with:` forward on a channel-pinned caller stub
+(`uses: …/.github/workflows/*.yml@<agent>/<channel>`) to pass an input the pinned channel does not yet
+declare. To introduce a new `workflow_call` input, sequence the change so the reusable **at the pin**
+always declares every key the stub forwards:
+
+1. **Land the input in the reusable** (`workflow_call.inputs.<name>`) and merge it.
+2. **Promote the pinned channel** to a commit that declares it — `scripts/cut-release.sh … --channel`
+   moves the `<agent>/<channel>` tag forward.
+3. **Only then teach the stub to forward it** (add the `with:` key). Never do step 3 before step 2.
+
+Removing or renaming an input runs the sequence in reverse: drop the stub's forward first, then the
+reusable's declaration, so the pin never references a key the stub still sends.
+
+**Enforcement.** `scripts/validate-caller-inputs.sh` (wired into `lint.yml`) resolves every reusable
+**at its pinned ref** and fails loud when a forwarded key is undeclared there or a `required:true` input
+is missing — catching the #1034 pattern in CI instead of on the next `main` run. `scripts/caller_stub_freeze.sh`
+freezes the ring-0 stubs' forwarding blocks against a committed baseline so an unreviewed forwarding edit
+is flagged as drift. A scheduled + post-merge dry-run canary (`.github/workflows/pr-review-canary.yml`,
+`scripts/pr_review_canary.sh`) dispatches `pr-review-trigger.yml` with `dry_run=true` and alerts if the
+run ends in `startup_failure`. Note that `actionlint` **cannot** catch this class: it does not resolve the
+remote reusable at the pinned ref, so the pinned-ref/forwarded-input skew is invisible to it.

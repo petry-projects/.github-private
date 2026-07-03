@@ -1,0 +1,6 @@
+    uses: petry-projects/.github-private/.github/workflows/pr-review.yml@pr-review/next
+    with:
+      agent_ref: pr-review/next
+      pr_url: ${{ inputs.pr_url || '' }}
+      dry_run: ${{ inputs.dry_run || '' }}
+      force_review: ${{ inputs.force_review || '' }}

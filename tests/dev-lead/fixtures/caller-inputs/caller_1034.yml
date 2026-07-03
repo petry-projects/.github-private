@@ -1,0 +1,26 @@
+name: PR Review Agent — Trigger
+
+# Fixture reproducing the #1034 defect: the trigger stub forwards
+# `lsp_pilot_variant`, an input that is NOT declared by the reusable at the
+# pinned channel ref (reusable_pinned.yml). GitHub validates the caller's
+# `with:` against the reusable AT THE PIN at startup, so this shape green-passes
+# same-repo/HEAD checks yet ends the first real run in `startup_failure`.
+on:
+  pull_request:
+    types: [synchronize]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    uses: petry-projects/.github-private/.github/workflows/pr-review.yml@pr-review/next
+    with:
+      agent_ref: pr-review/next
+      pr_url: ${{ inputs.pr_url || '' }}
+      dry_run: ${{ inputs.dry_run || '' }}
+      force_review: ${{ inputs.force_review || '' }}
+      lsp_pilot_variant: ${{ inputs.lsp_pilot_variant || '' }}
+    secrets: inherit

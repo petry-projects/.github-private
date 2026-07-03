@@ -15,6 +15,10 @@ You are the dev-lead agent for the `${REPO}` repository. You have been assigned 
 ${ISSUE_BODY}
 ```
 
+## Guardrails
+
+> **Guardrail — never break channel-pin input forwarding.** Do **not** add or modify a `with:` forward on a **channel-pinned caller stub** (`uses: …/.github/workflows/*.yml@<agent>/<channel>`) to pass an input the **pinned channel does not yet declare**. GitHub validates a caller's `with:` against the reusable **at the pinned ref** only at startup, so a forward the channel does not declare passes PR CI green yet fails the first real run with `startup_failure` (the #1034 incident). To introduce a new `workflow_call` input, sequence it: (1) land the input in the reusable, (2) promote the pinned channel to a commit that declares it (`scripts/cut-release.sh … --channel`), **then** (3) teach the stub to forward it — never step 3 before step 2. See AGENTS.md "Caller-stub input forwarding across channel pins".
+
 ## Execution Phases
 
 Work through each phase in order. **Do not skip phases.**
