@@ -83,7 +83,10 @@ jobs:
       pr_url: ${{ inputs.pr_url || '' }}
       dry_run: ${{ inputs.dry_run || '' }}
       force_review: ${{ inputs.force_review || '' }}
-      # Forward the LSP pilot A/B leg (empty for event triggers). 'none'/'' both
-      # mean today's behaviour on the reusable side.
-      lsp_pilot_variant: ${{ inputs.lsp_pilot_variant || '' }}
+      # NOTE: lsp_pilot_variant forwarding removed — the pinned reusable
+      # pr-review.yml@pr-review/next does not (yet) declare that input, so passing
+      # it fails workflow validation → startup_failure on every review dispatch
+      # (fleet-wide review outage, #1031/#1034 caller-vs-channel skew). Re-add
+      # this line only after the input is promoted to the pr-review/next reusable.
+      # The workflow_dispatch input above is retained (harmless, unused for now).
     secrets: inherit
