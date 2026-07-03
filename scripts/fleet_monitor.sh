@@ -267,6 +267,12 @@ fi
 # repos with >=1 marker in the window get a row; the section is omitted entirely
 # when the fleet had no dev-lead activity. Best-effort: a comment-read failure on
 # one repo is a per-repo warning, not a fatal error for the monitor.
+#
+# The timeout rate is reported as prevalence (timeout / total dev-lead runs, #1030),
+# so each row also carries the repo's total `dev-lead.yml` runs in the window —
+# read from the per-workflow metrics already collected above (matched by repo +
+# workflow basename), not a new API scan. A missing row or non-numeric total (the
+# ERROR sentinel `?`) sanitizes to 0, which the report renders as `n/a`.
 # ---------------------------------------------------------------------------
 dev_lead_reason_file=$(mktemp)
 for repo in "${repos[@]}"; do
@@ -280,10 +286,32 @@ for repo in "${repos[@]}"; do
   IFS=$'\t' read -r dl_timeout dl_engine_error dl_total \
     < <(summarize_dev_lead_timeouts "$comments_json")
   if [ "${dl_total:-0}" -gt 0 ]; then
-    printf '%s\t%s\t%s\t%s\n' "$repo" "$dl_timeout" "$dl_engine_error" "$dl_total" \
+    # Total dev-lead runs = the `dev-lead.yml` row's `total` (field 4) for this
+    # repo in metrics_file, matched by workflow-file basename. Empty when the
+    # repo has no dev-lead.yml row; '?' when that row is an ERROR sentinel.
+    dl_runs=$(awk -F'\t' -v r="$repo" '
+      $2 == r {
+        n = split($3, parts, "/")
+        if (parts[n] == "dev-lead.yml") { print $4; exit }
+      }' "$metrics_file")
+    case "${dl_runs:-}" in
+      ''|*[!0-9]*) dl_runs=0 ;;
+    esac
+    printf '%s\t%s\t%s\t%s\t%s\n' \
+      "$repo" "$dl_timeout" "$dl_engine_error" "$dl_total" "$dl_runs" \
       >> "$dev_lead_reason_file"
   fi
 done
+
+# Fleet-wide total dev-lead runs in the window = the sum of every repo's
+# `dev-lead.yml` row `total` (field 4) in the per-workflow metrics, across ALL
+# repos — including all-success repos with no markers. This is the prevalence
+# denominator for the timeout rate (#1030); summing only marker repos would
+# inflate the rate. Non-numeric totals (the ERROR sentinel `?`) are skipped.
+fleet_dl_runs=$(awk -F'\t' '
+  { n = split($3, p, "/"); if (p[n] == "dev-lead.yml" && $4 ~ /^[0-9]+$/) s += $4 }
+  END { print s + 0 }
+' "$metrics_file")
 
 # ---------------------------------------------------------------------------
 # 3. Generate reports
@@ -311,7 +339,7 @@ stub_drift_section() {
 dev_lead_timeout_section() {
   [ -s "$dev_lead_reason_file" ] || return 0
   printf '\n'
-  generate_dev_lead_timeout_report "$dev_lead_reason_file"
+  generate_dev_lead_timeout_report "$dev_lead_reason_file" "${fleet_dl_runs:-0}"
 }
 
 # Step Summary — Tier 1 visualizations only (Mermaid not rendered there)
