@@ -622,3 +622,29 @@ GITEOF
   [[ "$output" == *"petry-projects/.github"* ]]
   [ ! -f "$MOVE_LOG" ]
 }
+
+# ── traceability: promote emits the OWNING host + a per-move promotions-log line (#1059) ──
+# The Deployment must be recorded on the repo that owns the moved commit (the host), NOT on
+# GITHUB_REPOSITORY — a cross-repo candidate SHA lives on the host, so recording it on
+# .github-private 422s ("No ref found"). And promote-all does N moves but GITHUB_OUTPUT is
+# last-wins, so the per-move promotions log is what lets the workflow record EVERY deployment.
+@test "orchestrator: cross-repo promote emits promoted_host = the owning host (#1059)" {
+  _crossrepo_promote_stub 2 1 success   # auto-rebase ring1->stable PROMOTE
+  local out="$BATS_TEST_TMPDIR/gh_output"; : > "$out"
+  run env CANARY_RINGS="$RINGS" GITHUB_OUTPUT="$out" bash "$ORCH" promote auto-rebase
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"promoted auto-rebase/stable"* ]]
+  # promoted_host is the host that owns the moved commit, not GITHUB_REPOSITORY.
+  grep -q "promoted_host=petry-projects/.github" "$out"
+}
+
+@test "orchestrator: cross-repo promote appends one TSV promotions-log line per move (#1059)" {
+  _crossrepo_promote_stub 2 1 success   # auto-rebase ring1->stable PROMOTE
+  local plog="$BATS_TEST_TMPDIR/promotions.tsv"; : > "$plog"
+  run env CANARY_RINGS="$RINGS" CANARY_PROMOTIONS_LOG="$plog" bash "$ORCH" promote auto-rebase
+  [ "$status" -eq 0 ]
+  # Exactly one line: agent<TAB>ring<TAB>sha<TAB>host.
+  [ "$(wc -l < "$plog")" -eq 1 ]
+  local expected; expected="$(printf 'auto-rebase\tstable\tcccccccccccccccccccccccccccccccccccccccc\tpetry-projects/.github')"
+  [ "$(cat "$plog")" = "$expected" ]
+}

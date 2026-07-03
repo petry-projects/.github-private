@@ -127,6 +127,10 @@ jobs:
           # cut-release.sh (cross-repo tag moves on petry-projects/.github) and the
           # gate's cross-repo run-history reads both authenticate with the App token.
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          # Per-move promotions log: cmd_promote appends one TSV line (agent ring sha host)
+          # per real move here, so the record step can create one Deployment per promotion on
+          # the correct host — GITHUB_OUTPUT alone is last-wins across a promote-all (#1059).
+          CANARY_PROMOTIONS_LOG: ${{ runner.temp }}/canary-promotions.tsv
         run: |
           set -euo pipefail
           args=()
@@ -153,25 +157,35 @@ jobs:
           echo "::notice::canary-rollout ${args[*]}"
           bash scripts/canary-rollout.sh "${args[@]}"
 
-      # Record a GitHub Deployment for a real (non-dry-run) promotion — traceability
-      # for the tag move (#502). Uses the same App token (Deployments:write).
-      - name: Record deployment for promotion
-        if: steps.run.outputs.promoted_ring != ''
+      # Record a GitHub Deployment per real promotion — traceability for the tag move (#502).
+      # Each promotion is a TSV line (agent<TAB>ring<TAB>sha<TAB>host) appended by cmd_promote;
+      # record ONE deployment per line ON THE OWNING HOST. A cross-repo candidate SHA lives on
+      # the host, not GITHUB_REPOSITORY, so recording it here would 422 "No ref found" (#1059).
+      # Guarded (|| ::warning) and `if: always()` so a traceability hiccup can never fail a run
+      # whose tag moves already succeeded. Uses the same App token (Deployments:write).
+      - name: Record deployments for promotions
+        if: always()
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          PROMOTED_AGENT: ${{ steps.run.outputs.promoted_agent }}
-          PROMOTED_RING: ${{ steps.run.outputs.promoted_ring }}
-          PROMOTED_SHA: ${{ steps.run.outputs.promoted_sha }}
+          CANARY_PROMOTIONS_LOG: ${{ runner.temp }}/canary-promotions.tsv
         run: |
           set -euo pipefail
-          gh api -X POST "repos/${GITHUB_REPOSITORY}/deployments" --input - <<JSON
-          {
-            "ref": "${PROMOTED_SHA}",
-            "environment": "canary-${PROMOTED_AGENT}-${PROMOTED_RING}",
-            "auto_merge": false,
-            "required_contexts": [],
-            "transient_environment": false,
-            "production_environment": false,
-            "description": "canary-rollout promoted ${PROMOTED_AGENT}/${PROMOTED_RING} -> ${PROMOTED_SHA}"
-          }
-          JSON
+          log="${CANARY_PROMOTIONS_LOG}"
+          if [ ! -s "$log" ]; then
+            echo "no promotions recorded — nothing to deploy."
+            exit 0
+          fi
+          while IFS=$'\t' read -r agent ring sha host; do
+            [ -z "$sha" ] && continue
+            [ -z "$host" ] && host="${GITHUB_REPOSITORY}"
+            if jq -nc \
+                 --arg ref "$sha" \
+                 --arg env "canary-${agent}-${ring}" \
+                 --arg desc "canary-rollout promoted ${agent}/${ring} -> ${sha}" \
+                 '{ref:$ref, environment:$env, auto_merge:false, required_contexts:[], transient_environment:false, production_environment:false, description:$desc}' \
+               | gh api -X POST "repos/${host}/deployments" --input - >/dev/null; then
+              echo "recorded deployment: ${agent}/${ring} -> ${sha} on ${host}"
+            else
+              echo "::warning::deployment record failed for ${agent}/${ring} -> ${sha} on ${host} (tag move already succeeded; not failing the run — #1059)"
+            fi
+          done < "$log"
