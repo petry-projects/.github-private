@@ -398,7 +398,7 @@ cmd_evaluate() {
 # workflow change. Never mutates (evaluate is read-only).
 cmd_evaluate_all() {
   local agents rc=0 agent
-  agents="$(_jq -r '.agents | keys[]' 2>/dev/null || true)"
+  agents="$(_jq -r '.agents? | keys[]' 2>/dev/null || true)"
   if [ -z "$agents" ]; then
     echo "no agents registered in $CANARY_RINGS — nothing to evaluate."; return 0
   fi
@@ -472,7 +472,7 @@ cmd_promote() {
 # A BLOCKED+REGRESSION agent hard-stops (cmd_promote refuses without --override).
 cmd_promote_all() {
   local agents rc=0 agent hold
-  agents="$(_jq -r '.agents | keys[]' 2>/dev/null || true)"
+  agents="$(_jq -r '.agents? | keys[]' 2>/dev/null || true)"
   if [ -z "$agents" ]; then
     echo "no agents registered in $CANARY_RINGS — nothing to promote."; return 0
   fi
