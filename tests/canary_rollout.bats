@@ -512,3 +512,79 @@ GITEOF
   [[ "$output" == *"ring1->stable"* ]]
   [[ "$output" == *"PROMOTE"* ]]
 }
+
+# ── orchestrator: PROMOTING a cross-repo agent moves the tag on `host`, not local git ─
+# (#1054, companion to #1049) #1049 made tag *reads* host-aware, but the promote *write*
+# path still moved tags with local `git tag -f` + `git push origin`. For a cross-repo
+# agent (host = petry-projects/.github) the candidate commit is NOT in this checkout's
+# object DB and the channel tag lives on the HOST — so `git tag -f <agent>/stable <cand>`
+# fails with "trying to write ref ... with nonexistent object" (exit 128) and, even if it
+# didn't, would write to the WRONG repo. The write must go through the host GitHub API.
+# The git stub below FAILS on `tag -f`/`push`, so if the code regressed to the local path
+# these tests would exit non-zero — exactly the #1054 bug.
+_crossrepo_promote_stub() {
+  # next=ring0=ring1 on the candidate (cccc); stable on the OLD baseline (bbbb):
+  # frontier = ring1, transition = ring1->stable — the ring1->stable promotion is pending.
+  local cut_days="$1" run_days_ago="$2" conclusion="$3"
+  STUB_BIN="$(mktemp -d "$BATS_TEST_TMPDIR/stub.XXXXXX")"; export PATH="$STUB_BIN:$PATH"
+  MOVELOG="$STUB_BIN/move.log"
+  local cand="cccccccccccccccccccccccccccccccccccccccc"
+  local old="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  local cut_iso run_iso
+  cut_iso="$(date -u -d "-${cut_days} days" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v"-${cut_days}d" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)"
+  run_iso="$(date -u -d "-${run_days_ago} days" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v"-${run_days_ago}d" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)"
+  # gh: channel/release tag reads feed the gate (as in _crossrepo_stub); the tag MOVE
+  # comes in as a PATCH (existing tag) or POST (new tag) to git/refs on the HOST repo and
+  # is appended to MOVELOG. NOTE: reads use singular `git/ref/tags/...`, the move uses
+  # plural `git/refs/tags/...` — the patterns below are deliberately disjoint.
+  cat > "$STUB_BIN/gh" <<GHEOF
+#!/usr/bin/env bash
+case "\$*" in
+  *"-X PATCH"*"git/refs/tags/auto-rebase/stable"*) echo "\$*" >> "$MOVELOG"; echo "{}" ;;
+  *"-X POST"*"git/refs"*) echo "\$*" >> "$MOVELOG"; echo "{}" ;;
+  *"git/ref/tags/auto-rebase/next"*)   echo "$cand commit" ;;
+  *"git/ref/tags/auto-rebase/ring0"*)  echo "$cand commit" ;;
+  *"git/ref/tags/auto-rebase/ring1"*)  echo "$cand commit" ;;
+  *"git/ref/tags/auto-rebase/stable"*) echo "$old commit" ;;
+  *"matching-refs/tags/auto-rebase/v"*) printf 'refs/tags/auto-rebase/v1.0.0\ttagobj\ttag\n' ;;
+  *"git/tags/tagobj"*) printf '%s\t%s\n' "$cand" "$cut_iso" ;;
+  *"run list"*) jq -nc --arg d "$run_iso" --arg c "$conclusion" '[range(20)|{conclusion:\$c,createdAt:\$d}]' ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN/gh"
+  # git: a cross-repo agent has NO local refs and the candidate commit is not in this
+  # object DB — so any attempt to move/push the tag locally is the #1054 bug. Fail loudly.
+  cat > "$STUB_BIN/git" <<'GITEOF'
+#!/usr/bin/env bash
+case "$*" in
+  *"tag -f"*) echo "fatal: cannot update ref (nonexistent object)" >&2; exit 128 ;;
+  *"push"*)   echo "fatal: push to wrong repo" >&2; exit 128 ;;
+  *) : ;;   # reads for a cross-repo agent go through gh, not local git
+esac
+GITEOF
+  chmod +x "$STUB_BIN/git"
+}
+
+@test "orchestrator: promoting a cross-repo agent moves the channel tag on host via gh api, not local git (#1054)" {
+  _crossrepo_promote_stub 2 1 success
+  run env CANARY_RINGS="$RINGS" bash "$ORCH" promote auto-rebase
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"promoted auto-rebase/stable"* ]]
+  [[ "$output" == *"petry-projects/.github"* ]]
+  # the move went through the HOST GitHub API, targeting the candidate commit
+  run cat "$MOVELOG"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"git/refs/tags/auto-rebase/stable"* ]]
+  [[ "$output" == *"cccccccccccccccccccccccccccccccccccccccc"* ]]
+}
+
+@test "orchestrator: cross-repo promote --dry-run shows the host move but touches neither git nor the API (#1054)" {
+  _crossrepo_promote_stub 2 1 success
+  run env CANARY_RINGS="$RINGS" bash "$ORCH" promote auto-rebase --dry-run
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"DRY-RUN"* ]]
+  [[ "$output" == *"auto-rebase/stable"* ]]
+  [[ "$output" == *"petry-projects/.github"* ]]
+  [ ! -f "$MOVELOG" ]
+}
