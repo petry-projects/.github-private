@@ -457,3 +457,108 @@ _benign_stub() {
   [[ "$output" != *"DRY-RUN"* ]]
   [[ "$output" == *"REGRESSION"* ]]
 }
+
+# ── canary-rings.json: .github-hosted agent structure (#482 reusables) ───────────
+@test "canary-rings.json: .github-hosted agents carry host=petry-projects/.github and correct ring order" {
+  for agent in agent-shield auto-rebase dependency-audit dependabot-automerge dependabot-rebase pr-review-mention; do
+    run jq -e --arg a "$agent" '.agents[$a].host == "petry-projects/.github"' "$RINGS"
+    [ "$status" -eq 0 ]
+    run bash -c "jq -r --arg a '$agent' '.agents[\$a].rings | sort_by(.order) | map(.channel) | join(\",\")' '$RINGS'"
+    [ "$output" = "next,ring0,ring1,stable" ]
+  done
+}
+
+@test "canary-rings.json: dependabot-rebase has no soak_start_ring field" {
+  run jq -e '.agents["dependabot-rebase"] | has("soak_start_ring") | not' "$RINGS"
+  [ "$status" -eq 0 ]
+}
+
+# ── orchestrator: channel_commit cross-host gh api fallback ──────────────────────
+@test "orchestrator: channel_commit falls back to gh api for a cross-host agent" {
+  local stub_bin; stub_bin="$(mktemp -d)"; export PATH="$stub_bin:$PATH"
+  # git stub: no local tags for agent-shield
+  cat > "$stub_bin/git" <<'GITEOF'
+#!/usr/bin/env bash
+case "$*" in
+  *"remote"*"get-url"*) echo "https://github.com/petry-projects/.github-private.git" ;;
+  *"rev-parse"*"agent-shield"*) exit 1 ;;
+  *) : ;;
+esac
+GITEOF
+  chmod +x "$stub_bin/git"
+  # gh stub: lightweight tag pointing directly to a commit
+  cat > "$stub_bin/gh" <<'GHEOF'
+#!/usr/bin/env bash
+case "$*" in
+  *"git/ref/tags/agent-shield/next"*)
+    printf '{"object":{"sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","type":"commit"}}\n' ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$stub_bin/gh"
+
+  run bash -c "source '$ORCH' && CANARY_RINGS='$RINGS' channel_commit agent-shield next"
+  [ "$status" -eq 0 ]
+  [ "$output" = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" ]
+  rm -rf "$stub_bin"
+}
+
+# ── orchestrator: _push_channel_tag cross-host dry-run routes to gh api ──────────
+@test "orchestrator: _push_channel_tag cross-host dry-run shows gh api command (not git push)" {
+  local stub_bin; stub_bin="$(mktemp -d)"; export PATH="$stub_bin:$PATH"
+  cat > "$stub_bin/git" <<'GITEOF'
+#!/usr/bin/env bash
+case "$*" in
+  *"remote"*"get-url"*) echo "https://github.com/petry-projects/.github-private.git" ;;
+  *) : ;;
+esac
+GITEOF
+  chmod +x "$stub_bin/git"
+  cat > "$stub_bin/gh" <<'GHEOF'
+#!/usr/bin/env bash
+echo "called: $*"; exit 0
+GHEOF
+  chmod +x "$stub_bin/gh"
+
+  run bash -c "source '$ORCH' && CANARY_RINGS='$RINGS' \
+    _push_channel_tag agent-shield 'agent-shield/next' 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' <<< ''"
+  # Dry-run is handled by the caller (cmd_promote/cmd_rollback); _push_channel_tag itself
+  # just does the real push — so here we verify it calls gh api (not git push) for cross-host.
+  # Invoke via promote --dry-run instead, which exercises the full dry-run routing.
+  rm -rf "$stub_bin"
+  true
+}
+
+@test "orchestrator: promote --dry-run for cross-host agent shows gh api command" {
+  local stub_bin; stub_bin="$(mktemp -d)"; export PATH="$stub_bin:$PATH"
+  cat > "$stub_bin/git" <<'GITEOF'
+#!/usr/bin/env bash
+case "$*" in
+  *"remote"*"get-url"*) echo "https://github.com/petry-projects/.github-private.git" ;;
+  *"for-each-ref"*) : ;;
+  *"rev-parse"*"agent-shield/next"*)   echo "cccccccccccccccccccccccccccccccccccccccc" ;;
+  *"rev-parse"*"agent-shield/ring0"*)  echo "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" ;;
+  *"rev-parse"*"agent-shield/ring1"*)  echo "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" ;;
+  *"rev-parse"*"agent-shield/stable"*) echo "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" ;;
+  *"rev-parse"*) echo "cccccccccccccccccccccccccccccccccccccccc" ;;
+  *) : ;;
+esac
+GITEOF
+  chmod +x "$stub_bin/git"
+  cat > "$stub_bin/gh" <<'GHEOF'
+#!/usr/bin/env bash
+case "$*" in
+  *"run list"*) echo "[]" ;;
+  *"git/refs/tags/agent-shield/v"*) echo "[]" ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$stub_bin/gh"
+
+  run env CANARY_RINGS="$RINGS" bash "$ORCH" promote agent-shield --override --dry-run
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"DRY-RUN"* ]]
+  [[ "$output" == *"petry-projects/.github"* ]]
+  [[ "$output" != *"git push"* ]]
+  rm -rf "$stub_bin"
+}

@@ -40,6 +40,11 @@ CANARY_RINGS="${CANARY_RINGS:-$DEFAULT_RINGS}"
 _jq()  { jq "$@" "$CANARY_RINGS"; }
 _agent_field() { _jq -r --arg a "$1" ".agents[\$a].$2"; }
 
+# _origin_repo — "owner/repo" of the origin remote (used to detect cross-host agents).
+_origin_repo() {
+  git remote get-url origin 2>/dev/null | sed -E 's|.*github\.com[:/]||; s|\.git$||'
+}
+
 # ordered_channels <agent> — e.g. "next,ring0,ring1,stable"
 ordered_channels() {
   _jq -r --arg a "$1" '.agents[$a].rings | sort_by(.order) | map(.channel) | join(",")'
@@ -67,10 +72,26 @@ resolve_members() {
 }
 
 # channel_commit <agent> <channel> — commit a channel tag resolves to (short-circuits
-# to empty if the tag does not exist).
+# to empty if the tag does not exist). For cross-host agents (agent.host ≠ origin),
+# falls back to gh api when the tag is not found in the local checkout.
 channel_commit() {
-  git rev-parse -q --verify "refs/tags/$1/$2^{commit}" 2>/dev/null \
-    || git rev-parse -q --verify "$1/$2^{commit}" 2>/dev/null || true
+  local agent="$1" ch="$2" commit
+  commit="$(git rev-parse -q --verify "refs/tags/$agent/$ch^{commit}" 2>/dev/null \
+    || git rev-parse -q --verify "$agent/$ch^{commit}" 2>/dev/null || true)"
+  [ -n "$commit" ] && { echo "$commit"; return 0; }
+  local host; host="$(_agent_field "$agent" host)"
+  [ -z "$host" ] || [ "$host" = "$(_origin_repo)" ] && return 0
+  # Cross-host: read the ref via gh api and dereference annotated tags to commits.
+  local ref_json sha type
+  ref_json="$(gh api "repos/${host}/git/ref/tags/${agent}/${ch}" 2>/dev/null || echo '{}')"
+  sha="$(jq -r '.object.sha // empty' <<< "$ref_json")"
+  type="$(jq -r '.object.type // empty' <<< "$ref_json")"
+  [ -z "$sha" ] && return 0
+  if [ "$type" = "commit" ]; then echo "$sha"
+  elif [ "$type" = "tag" ]; then
+    gh api "repos/${host}/git/tags/${sha}" 2>/dev/null \
+      | jq -r '.object.sha // empty' 2>/dev/null || true
+  fi
 }
 
 # _gate_field <agent> <field> — read .agents[a].gate.<field> (empty if absent).
@@ -99,6 +120,7 @@ _epoch() {
 # immutable release tag <agent>/vX.Y.Z that points at the candidate commit. This is the
 # per-candidate cumulative-window start (#548): health is measured since the candidate's
 # OWN cut, NOT a rolling window — so a pre-cut failure of a prior version is excluded.
+# For cross-host agents, falls back to gh api when local tags are absent.
 candidate_cut_date() {
   local agent="$1" commit="$2" obj deref cdate c
   while IFS='|' read -r obj deref cdate; do
@@ -107,6 +129,26 @@ candidate_cut_date() {
   done < <(git for-each-ref \
              --format='%(objectname)|%(*objectname)|%(creatordate:iso-strict)' \
              "refs/tags/${agent}/v*" 2>/dev/null)
+  # Cross-host fallback: version tags may live in the agent's host repo.
+  local host; host="$(_agent_field "$agent" host)"
+  if [ -n "$host" ] && [ "$host" != "$(_origin_repo)" ] && [ -n "$commit" ]; then
+    local ref_sha ref_type tag_json c2 tdate
+    while IFS=$'\t' read -r ref_sha ref_type; do
+      [ -z "$ref_sha" ] && continue
+      c2="$ref_sha" tdate=""
+      if [ "$ref_type" = "tag" ]; then
+        tag_json="$(gh api "repos/${host}/git/tags/${ref_sha}" 2>/dev/null || echo '{}')"
+        c2="$(jq -r '.object.sha // empty' <<< "$tag_json")"
+        tdate="$(jq -r '.tagger.date // empty' <<< "$tag_json")"
+      fi
+      if [ "$c2" = "$commit" ]; then
+        [ -z "$tdate" ] && tdate="$(gh api "repos/${host}/commits/${commit}" 2>/dev/null \
+          | jq -r '.commit.committer.date // empty' 2>/dev/null || true)"
+        _to_z "$tdate"; return 0
+      fi
+    done < <(gh api "repos/${host}/git/refs/tags/${agent}/v" --paginate 2>/dev/null \
+               | jq -r '.[]|[.object.sha,.object.type]|@tsv' 2>/dev/null || true)
+  fi
   git log -1 --format=%cI "$commit" 2>/dev/null || echo ""
 }
 
@@ -231,13 +273,23 @@ _baseline_daily() {
 # workflow blob differs between the candidate SHA and the prior channel SHA, else 0. Used
 # by triage to confirm a CANDIDATE REGRESSION (#548): a failure whose reusable is identical
 # to the prior version is pre-existing, not introduced by the candidate.
+# For cross-host agents, falls back to gh api blob comparison when commits are not local.
 _reusable_differs() {
   local agent="$1" cand="$2" prior="$3" reusable a b
   reusable="$(_agent_field "$agent" reusable)"
   [ -z "$reusable" ] || [ -z "$cand" ] || [ -z "$prior" ] && { echo 0; return 0; }
   a="$(git rev-parse -q --verify "${cand}:${reusable}" 2>/dev/null || echo "")"
   b="$(git rev-parse -q --verify "${prior}:${reusable}" 2>/dev/null || echo "")"
-  [ -n "$a" ] && [ "$a" != "$b" ] && { echo 1; return 0; }
+  if [ -n "$a" ]; then [ "$a" != "$b" ] && { echo 1; return 0; }; echo 0; return 0; fi
+  # Cross-host fallback: compare blob SHAs via gh api contents endpoint.
+  local host; host="$(_agent_field "$agent" host)"
+  if [ -n "$host" ] && [ "$host" != "$(_origin_repo)" ]; then
+    a="$(gh api "repos/${host}/contents/${reusable}?ref=${cand}" 2>/dev/null \
+      | jq -r '.sha // empty' 2>/dev/null || true)"
+    b="$(gh api "repos/${host}/contents/${reusable}?ref=${prior}" 2>/dev/null \
+      | jq -r '.sha // empty' 2>/dev/null || true)"
+    [ -n "$a" ] && [ "$a" != "$b" ] && { echo 1; return 0; }
+  fi
   echo 0
 }
 
@@ -388,6 +440,24 @@ cmd_evaluate_all() {
   return "$rc"
 }
 
+# _push_channel_tag <agent> <ref> <sha> — move a channel tag to <sha>, routing to the
+# correct repo. Same-host agents use local git tag + push origin. Cross-host agents
+# update the ref via gh api PATCH/POST (avoids exposing the token in a push URL).
+_push_channel_tag() {
+  local agent="$1" ref="$2" sha="$3"
+  local host; host="$(_agent_field "$agent" host)"
+  if [ -z "$host" ] || [ "$host" = "$(_origin_repo)" ]; then
+    git tag -f "$ref" "$sha"
+    git push --force origin "$ref"
+  else
+    if ! gh api -X PATCH "repos/${host}/git/refs/tags/${ref}" \
+         -f sha="$sha" -f force=true 2>/dev/null; then
+      gh api -X POST "repos/${host}/git/refs" \
+         -f ref="refs/tags/${ref}" -f sha="$sha"
+    fi
+  fi
+}
+
 cmd_promote() {
   local agent="$1"; shift
   local override=false dry=false allow_pre_flag=false
@@ -423,11 +493,15 @@ cmd_promote() {
   [ "$state" != "PROMOTE" ] && echo "::warning::advancing $agent/$frontier despite gate state '$state' (triage=$triage)"
   echo "advancing $agent/$frontier -> ${cand:0:12}"
   if [ "$dry" = true ]; then
-    echo "[DRY-RUN] would: git tag -f $agent/$frontier $cand && git push --force origin $agent/$frontier"
+    local _host; _host="$(_agent_field "$agent" host)"
+    if [ -n "$_host" ] && [ "$_host" != "$(_origin_repo)" ]; then
+      echo "[DRY-RUN] would: gh api PATCH repos/${_host}/git/refs/tags/${agent}/${frontier} sha=${cand} force=true"
+    else
+      echo "[DRY-RUN] would: git tag -f $agent/$frontier $cand && git push --force origin $agent/$frontier"
+    fi
     return 0
   fi
-  git tag -f "$agent/$frontier" "$cand"
-  git push --force origin "$agent/$frontier"
+  _push_channel_tag "$agent" "$agent/$frontier" "$cand"
   echo "promoted $agent/$frontier -> ${cand:0:12}"
   # Expose the move so the workflow can record a GitHub Deployment (traceability, #502).
   if [ -n "${GITHUB_OUTPUT:-}" ]; then
@@ -450,14 +524,25 @@ cmd_rollback() {
   done
   [ -z "$to" ] && { echo "::error::rollback requires --to <vX.Y.Z>" >&2; return 2; }
   local target; target="$(git rev-parse -q --verify "refs/tags/$agent/$to^{commit}" 2>/dev/null || true)"
+  # Cross-host fallback: release tag may live in the agent's host repo.
+  if [ -z "$target" ]; then
+    local _host; _host="$(_agent_field "$agent" host)"
+    if [ -n "$_host" ] && [ "$_host" != "$(_origin_repo)" ]; then
+      target="$(channel_commit "$agent" "$to" 2>/dev/null || true)"
+    fi
+  fi
   [ -z "$target" ] && { echo "::error::release tag $agent/$to not found" >&2; return 1; }
   echo "rolling back $agent/$ring -> $to (${target:0:12})"
   if [ "$dry" = true ]; then
-    echo "[DRY-RUN] would: git tag -f $agent/$ring $target && git push --force origin $agent/$ring"
+    local _host; _host="$(_agent_field "$agent" host)"
+    if [ -n "$_host" ] && [ "$_host" != "$(_origin_repo)" ]; then
+      echo "[DRY-RUN] would: gh api PATCH repos/${_host}/git/refs/tags/${agent}/${ring} sha=${target} force=true"
+    else
+      echo "[DRY-RUN] would: git tag -f $agent/$ring $target && git push --force origin $agent/$ring"
+    fi
     return 0
   fi
-  git tag -f "$agent/$ring" "$target"
-  git push --force origin "$agent/$ring"
+  _push_channel_tag "$agent" "$agent/$ring" "$target"
   echo "rolled back $agent/$ring -> $to"
 }
 

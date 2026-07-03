@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "description": "Ring membership for agent canary rollout (initiative #495, issues #500/#501). The promotion automation (scripts/canary-rollout.sh) reads this as the single source of truth. `next` is host-relative: it resolves to the repo that HOSTS the reusable; `ring0` covers the other org-infra repo (the host already sits in `next`).",
+  "description": "Ring membership for agent canary rollout (initiative #495, issues #500/#501). The promotion automation (scripts/canary-rollout.sh) reads this as the single source of truth. Ring membership is explicit per-agent: `members[]` may list repos by name or use the optional expansion tokens defined in `member_tokens` (`$host`, `$org_infra`, `*`); token usage is per-entry, not a global convention.",
   "org_infra_repos": [
     "petry-projects/.github",
     "petry-projects/.github-private"
@@ -400,8 +400,7 @@
             "sample_min": 1
           }
         }
-      },
-      "soak_start_ring": "ring0"
+      }
     },
     "pr-review-mention": {
       "host": "petry-projects/.github",
