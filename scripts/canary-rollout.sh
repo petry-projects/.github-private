@@ -37,6 +37,14 @@ source "${_HERE}/lib/canary-rollout.sh"
 DEFAULT_RINGS="$(cd "${_HERE}/.." && pwd)/standards/canary-rings.json"
 CANARY_RINGS="${CANARY_RINGS:-$DEFAULT_RINGS}"
 
+# THIS_REPO — the repo this checkout belongs to. Agents hosted HERE (dev-lead, pr-review)
+# keep their channel/release tags in this checkout and resolve them via local git. A
+# cross-repo agent (host != THIS_REPO, e.g. the #482 reusables hosted in petry-projects/
+# .github) keeps its <name>/<channel> and <name>/vX.Y.Z tags on ITS host, so those tags
+# must be resolved there via `gh api` — reading local refs resolves empty and the frontier
+# falsely reports "fully rolled out" (#1049). Mirrors cut-release.sh's CROSS_REPO_TARGET.
+THIS_REPO="petry-projects/.github-private"
+
 _jq()  { jq "$@" "$CANARY_RINGS"; }
 _agent_field() { _jq -r --arg a "$1" ".agents[\$a].$2"; }
 
@@ -66,11 +74,35 @@ resolve_members() {
   return 0
 }
 
-# channel_commit <agent> <channel> — commit a channel tag resolves to (short-circuits
-# to empty if the tag does not exist).
+# _gh_tag_commit <repo> <tag> — echo the COMMIT sha <tag> resolves to on <repo> via the
+# GitHub API, dereferencing an annotated tag object (mirrors cut-release.sh's
+# gh_release_commit). Empty on any error / absent tag (never fails the caller).
+_gh_tag_commit() {
+  local repo="$1" tag="$2" ref_info obj type
+  ref_info="$(gh api "repos/$repo/git/ref/tags/$tag" --jq '.object.sha + " " + .object.type' 2>/dev/null)" || return 0
+  [ -z "$ref_info" ] && return 0
+  read -r obj type <<< "$ref_info"
+  if [ "$type" = "tag" ]; then
+    gh api "repos/$repo/git/tags/$obj" --jq '.object.sha' 2>/dev/null || true
+  else
+    printf '%s\n' "$obj"
+  fi
+}
+
+# channel_commit <agent> <channel> — commit the channel tag <agent>/<channel> resolves to
+# (empty if the tag does not exist). Agents hosted in THIS repo resolve against the local
+# checkout; a cross-repo agent's channel tags live on ITS host, so they are resolved there
+# via the GitHub API — reading local refs resolves empty and the frontier falsely reports
+# "fully rolled out" (#1049).
 channel_commit() {
-  git rev-parse -q --verify "refs/tags/$1/$2^{commit}" 2>/dev/null \
-    || git rev-parse -q --verify "$1/$2^{commit}" 2>/dev/null || true
+  local agent="$1" channel="$2" host
+  host="$(_agent_field "$agent" host)"
+  if [ -n "$host" ] && [ "$host" != "$THIS_REPO" ]; then
+    _gh_tag_commit "$host" "$agent/$channel"
+    return 0
+  fi
+  git rev-parse -q --verify "refs/tags/$agent/$channel^{commit}" 2>/dev/null \
+    || git rev-parse -q --verify "$agent/$channel^{commit}" 2>/dev/null || true
 }
 
 # _gate_field <agent> <field> — read .agents[a].gate.<field> (empty if absent).
@@ -95,12 +127,39 @@ _epoch() {
     || echo 0
 }
 
+# _gh_candidate_cut_date <repo> <agent> <commit> — ISO-8601 Zulu tagger date of the
+# release tag <agent>/vX.Y.Z on <repo> whose (dereferenced) commit equals <commit>. The
+# cross-repo analogue of the local for-each-ref path: a cross-repo agent's release tags
+# live on its host, not this checkout (#1049). Empty if no matching release tag is found.
+_gh_candidate_cut_date() {
+  local repo="$1" agent="$2" commit="$3" obj type csha cdate
+  while IFS=$'\t' read -r _ obj type; do
+    [ -z "$obj" ] && continue
+    if [ "$type" = "tag" ]; then
+      IFS=$'\t' read -r csha cdate < <(gh api "repos/$repo/git/tags/$obj" \
+        --jq '[.object.sha, .tagger.date] | @tsv' 2>/dev/null) || true
+    else
+      csha="$obj"; cdate=""
+    fi
+    if [ "$csha" = "$commit" ]; then _to_z "$cdate"; return 0; fi
+  done < <(gh api "repos/$repo/git/matching-refs/tags/$agent/v" \
+             --jq '.[] | [.ref, .object.sha, .object.type] | @tsv' 2>/dev/null)
+  echo ""
+}
+
 # candidate_cut_date <agent> <candidate_commit> — ISO-8601 Zulu tagger date of the
 # immutable release tag <agent>/vX.Y.Z that points at the candidate commit. This is the
 # per-candidate cumulative-window start (#548): health is measured since the candidate's
 # OWN cut, NOT a rolling window — so a pre-cut failure of a prior version is excluded.
+# For a cross-repo agent (host != THIS_REPO) the release tags live on the host, so the
+# date is resolved there via the GitHub API instead of the local for-each-ref (#1049).
 candidate_cut_date() {
-  local agent="$1" commit="$2" obj deref cdate c
+  local agent="$1" commit="$2" host obj deref cdate c
+  host="$(_agent_field "$agent" host)"
+  if [ -n "$host" ] && [ "$host" != "$THIS_REPO" ]; then
+    _gh_candidate_cut_date "$host" "$agent" "$commit"
+    return 0
+  fi
   while IFS='|' read -r obj deref cdate; do
     c="$deref"; [ -z "$c" ] && c="$obj"
     if [ "$c" = "$commit" ]; then _to_z "$cdate"; return 0; fi

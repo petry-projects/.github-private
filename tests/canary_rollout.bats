@@ -457,3 +457,57 @@ _benign_stub() {
   [[ "$output" != *"DRY-RUN"* ]]
   [[ "$output" == *"REGRESSION"* ]]
 }
+
+# ── orchestrator: cross-repo agents resolve tags on `host`, not the local checkout ─
+# (#1049) A cross-repo agent (host = petry-projects/.github) keeps its <name>/<channel>
+# and <name>/vX.Y.Z tags on the HOST repo, not this checkout. `evaluate` must resolve them
+# there via `gh api` (dereferencing annotated tags) — reading the LOCAL refs makes every
+# ring resolve empty → "all rings equal → fully rolled out", which would falsely SKIP a
+# cross-repo agent that is actually ring1 with stable on an old baseline (READY to promote).
+_crossrepo_stub() {
+  # next=ring0=ring1 on the candidate (cccc); stable on the OLD baseline (bbbb):
+  # frontier = stable, transition = ring1->stable — the ring1->stable promotion is pending.
+  local cut_days="$1" run_days_ago="$2" conclusion="$3"
+  STUB_BIN="$(mktemp -d "$BATS_TEST_TMPDIR/stub.XXXXXX")"; export PATH="$STUB_BIN:$PATH"
+  local cand="cccccccccccccccccccccccccccccccccccccccc"
+  local old="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  local cut_iso run_iso
+  cut_iso="$(date -u -d "-${cut_days} days" +%Y-%m-%dT%H:%M:%SZ)"
+  run_iso="$(date -u -d "-${run_days_ago} days" +%Y-%m-%dT%H:%M:%SZ)"
+  # gh: channel tags + the release tag are resolved via the API on the HOST repo; run-list
+  # feeds the sample/health. --jq outputs are emitted pre-computed (the stub does not run jq).
+  # The channel tags are lightweight (object.type=commit); the release tag is annotated
+  # (object.type=tag), so its commit + tagger date come from a second git/tags/<obj> call.
+  cat > "$STUB_BIN/gh" <<GHEOF
+#!/usr/bin/env bash
+case "\$*" in
+  *"git/ref/tags/auto-rebase/next"*)   echo "$cand commit" ;;
+  *"git/ref/tags/auto-rebase/ring0"*)  echo "$cand commit" ;;
+  *"git/ref/tags/auto-rebase/ring1"*)  echo "$cand commit" ;;
+  *"git/ref/tags/auto-rebase/stable"*) echo "$old commit" ;;
+  *"matching-refs/tags/auto-rebase/v"*) printf 'refs/tags/auto-rebase/v1.0.0\ttagobj\ttag\n' ;;
+  *"git/tags/tagobj"*) printf '%s\t%s\n' "$cand" "$cut_iso" ;;
+  *"run list"*) jq -nc --arg d "$run_iso" --arg c "$conclusion" '[range(20)|{conclusion:\$c,createdAt:\$d}]' ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN/gh"
+  # git: a cross-repo agent has NO local refs — every git call resolves empty. If the code
+  # regressed to the local path, channel_commit would be empty for every ring → the frontier
+  # would collapse to "fully rolled out" and this test would fail (that is exactly #1049).
+  cat > "$STUB_BIN/git" <<'GITEOF'
+#!/usr/bin/env bash
+: # no local refs for a cross-repo agent
+GITEOF
+  chmod +x "$STUB_BIN/git"
+}
+
+@test "orchestrator: cross-repo agent resolves channel+release tags on host → ring1->stable pending, NOT 'fully rolled out' (#1049)" {
+  # cut 2 days ago (dwell ≫ 12h), ring1 runs 1 day ago all success → sample ≥ 1, clean.
+  _crossrepo_stub 2 1 success
+  run env CANARY_RINGS="$RINGS" bash "$ORCH" evaluate auto-rebase
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"fully rolled out"* ]]
+  [[ "$output" == *"ring1->stable"* ]]
+  [[ "$output" == *"PROMOTE"* ]]
+}
