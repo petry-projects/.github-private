@@ -78,6 +78,34 @@ ensure_needs_human_label() {
   gh issue edit "$ISSUE_NUMBER" --repo "$REPO" --add-label "$NEEDS_HUMAN_LABEL" 2>/dev/null || true
 }
 
+# escalate_needs_human <reason> <attempt> <snippet> <error_line> <cause_markdown> [exit_code]
+# Single source of truth for the non-retryable escalation path shared by the
+# missing-binary / timeout / retries-exhausted branches. Performs the five common
+# steps: emit ::error::, apply the needs-human label, post the
+# `status=needs-human` marker comment (byte-identical across branches — the retry
+# cron and the #1019 fleet-monitor parse it), append the run-agnostic redacted
+# session snippet, then exit. Callers pass only their reason-specific cause text
+# (which carries its own run link + any extra bullets/guidance). Never returns.
+escalate_needs_human() {
+  # Guard the required args before referencing them: under `set -u` a miscall
+  # with too few args would otherwise crash with an unbound-variable error —
+  # and on the escalation path a crash means the human is never notified.
+  if [ "$#" -lt 5 ]; then
+    echo "::error::escalate_needs_human requires 5 args (reason attempt snippet error_line cause_markdown); got $#" >&2
+    exit 1
+  fi
+  local reason="$1" attempt="$2" snippet="$3" error_line="$4" cause_markdown="$5" exit_code="${6:-1}"
+  echo "::error::${error_line}"
+  ensure_needs_human_label
+  gh issue comment "$ISSUE_NUMBER" --repo "$REPO" --body "<!-- dev-lead-issue ${ISSUE_NUMBER} status=needs-human attempt=${attempt} reason=${reason} run=${GITHUB_RUN_ID:-} -->
+## Dev-Lead: cannot implement issue #${ISSUE_NUMBER} — needs human attention
+
+${cause_markdown}
+
+${snippet}" 2>/dev/null || true
+  exit "$exit_code"
+}
+
 # handle_engine_failure <engine_rc>
 # Replaces the previous silent `exit 1` (and unifies the rate-limit branch).
 # Classifies the cause via the /tmp/dev-lead-failure-reason sidecar written by
@@ -109,20 +137,14 @@ handle_engine_failure() {
   # Deterministic infra failure (missing engine binary): retrying cannot help —
   # escalate to a human immediately, no retry marker.
   if [ "$reason" = "missing-binary" ]; then
-    echo "::error::Engine binary missing while implementing issue #${ISSUE_NUMBER} — escalating to human"
-    ensure_needs_human_label
-    gh issue comment "$ISSUE_NUMBER" --repo "$REPO" --body "<!-- dev-lead-issue ${ISSUE_NUMBER} status=needs-human attempt=${attempt} reason=${reason} run=${GITHUB_RUN_ID:-} -->
-## Dev-Lead: cannot implement issue #${ISSUE_NUMBER} — needs human attention
-
-A required engine binary was missing in the runner environment while implementing this issue. This is an **infrastructure/configuration** problem, not a transient error, so automatic retry is disabled.
+    escalate_needs_human "$reason" "$attempt" "$snippet" \
+      "Engine binary missing while implementing issue #${ISSUE_NUMBER} — escalating to human" \
+      "A required engine binary was missing in the runner environment while implementing this issue. This is an **infrastructure/configuration** problem, not a transient error, so automatic retry is disabled.
 
 - **Cause:** \`${reason}\`
 - **Run:** ${run_url}
 
-${snippet}
-
-Please check the runner/engine configuration, then re-apply the \`dev-lead\` label to retry." 2>/dev/null || true
-    exit 1
+Please check the runner/engine configuration, then re-apply the \`dev-lead\` label to retry."
   fi
 
   # Stage timeout (exit 124): a first-class, NON-retryable condition. A
@@ -155,12 +177,9 @@ Please check the runner/engine configuration, then re-apply the \`dev-lead\` lab
 > **Note: the engine had produced changes before the timeout.** They were on branch \`${branch:-unknown}\` on the runner and were **not pushed**, so they are **not recoverable** from this run (the runner is ephemeral). The redacted session snippet below shows what it attempted — treat it as context, not restorable output. Re-apply \`dev-lead\` after splitting the issue or raising the budget to regenerate the work."
     fi
 
-    echo "::error::Stage timeout (exit 124) while implementing issue #${ISSUE_NUMBER} at the ${tier} tier (elapsed=${elapsed}s, budget=${budget}s) — escalating to human (no same-budget retry)"
-    ensure_needs_human_label
-    gh issue comment "$ISSUE_NUMBER" --repo "$REPO" --body "<!-- dev-lead-issue ${ISSUE_NUMBER} status=needs-human attempt=${attempt} reason=${reason} run=${GITHUB_RUN_ID:-} -->
-## Dev-Lead: cannot implement issue #${ISSUE_NUMBER} — needs human attention
-
-A stage **timed out** (exit 124) while implementing this issue. A timeout is treated as a first-class, **non-retryable** condition — retrying with the same budget would just time out again — so this escalates for human review on the **first** occurrence instead of wasting a same-budget retry.
+    escalate_needs_human "$reason" "$attempt" "$snippet" \
+      "Stage timeout (exit 124) while implementing issue #${ISSUE_NUMBER} at the ${tier} tier (elapsed=${elapsed}s, budget=${budget}s) — escalating to human (no same-budget retry)" \
+      "A stage **timed out** (exit 124) while implementing this issue. A timeout is treated as a first-class, **non-retryable** condition — retrying with the same budget would just time out again — so this escalates for human review on the **first** occurrence instead of wasting a same-budget retry.
 
 - **Cause:** \`${reason}\`
 - **Tier:** ${tier}
@@ -168,28 +187,22 @@ A stage **timed out** (exit 124) while implementing this issue. A timeout is tre
 - **Budget:** ${budget}s
 - **Run:** ${run_url}
 
-This hit the max ${tier} budget. **Split this issue** into smaller, independently-implementable pieces, or **raise \`vars.${raise_var}\`**, then re-apply the \`dev-lead\` label.${work_note}
-
-${snippet}" 2>/dev/null || true
-    exit 1
+This hit the max ${tier} budget. **Split this issue** into smaller, independently-implementable pieces, or **raise \`vars.${raise_var}\`**, then re-apply the \`dev-lead\` label.${work_note}"
   fi
 
-  # Retries exhausted: escalate to a human, no further retry marker.
+  # Retries exhausted: escalate to a human, no further retry marker. Preserve the
+  # exit-2-on-rate-limit contract (engine_rc==2) via the helper's exit_code arg.
   if [ "$attempt" -ge "$MAX_ATTEMPTS" ]; then
-    echo "::error::Engine failed to implement issue #${ISSUE_NUMBER} (reason=${reason}); retries exhausted (attempt ${attempt}/${MAX_ATTEMPTS}) — escalating to human"
-    ensure_needs_human_label
-    gh issue comment "$ISSUE_NUMBER" --repo "$REPO" --body "<!-- dev-lead-issue ${ISSUE_NUMBER} status=needs-human attempt=${attempt} reason=${reason} run=${GITHUB_RUN_ID:-} -->
-## Dev-Lead: cannot implement issue #${ISSUE_NUMBER} — needs human attention
-
-Automatic retries are exhausted (**attempt ${attempt} of ${MAX_ATTEMPTS}**). The most recent failure was \`${reason}\`.
+    local exhausted_exit=1
+    [ "$engine_rc" -eq 2 ] && exhausted_exit=2
+    escalate_needs_human "$reason" "$attempt" "$snippet" \
+      "Engine failed to implement issue #${ISSUE_NUMBER} (reason=${reason}); retries exhausted (attempt ${attempt}/${MAX_ATTEMPTS}) — escalating to human" \
+      "Automatic retries are exhausted (**attempt ${attempt} of ${MAX_ATTEMPTS}**). The most recent failure was \`${reason}\`.
 
 - **Run:** ${run_url}
 
-${snippet}
-
-Please review the failures above. To retry anyway, remove the \`${NEEDS_HUMAN_LABEL}\` label and re-apply the \`dev-lead\` label." 2>/dev/null || true
-    [ "$engine_rc" -eq 2 ] && exit 2
-    exit 1
+Please review the failures above. To retry anyway, remove the \`${NEEDS_HUMAN_LABEL}\` label and re-apply the \`dev-lead\` label." \
+      "$exhausted_exit"
   fi
 
   # Retryable (rate-limited or engine-error, attempt < MAX): post the marker the
