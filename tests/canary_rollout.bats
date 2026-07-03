@@ -602,7 +602,8 @@ GITEOF
 @test "orchestrator: cross-repo promote (real) moves the host channel tag via gh api + records the output (#1054)" {
   _crossrepo_promote_stub 2 1 success   # auto-rebase ring1->stable PROMOTE
   local out="$BATS_TEST_TMPDIR/gh_output"; : > "$out"
-  run env CANARY_RINGS="$RINGS" GITHUB_OUTPUT="$out" bash "$ORCH" promote auto-rebase
+  local plog="$BATS_TEST_TMPDIR/promotions.tsv"; : > "$plog"
+  run env CANARY_RINGS="$RINGS" GITHUB_OUTPUT="$out" CANARY_PROMOTIONS_LOG="$plog" bash "$ORCH" promote auto-rebase
   [ "$status" -eq 0 ]
   [[ "$output" == *"promoted auto-rebase/stable"* ]]
   # The move went through gh api PATCH on the HOST, never local git tag/push.
@@ -611,6 +612,12 @@ GITEOF
   # The move is exposed for the workflow's GitHub Deployment step (#502).
   grep -q "promoted_agent=auto-rebase" "$out"
   grep -q "promoted_ring=stable" "$out"
+  # promoted_host is the OWNING repo (the cross-repo host), so the deployment is created
+  # where the moved commit exists — not GITHUB_REPOSITORY, which would 422 "No ref found" (#1059).
+  grep -q "promoted_host=petry-projects/.github" "$out"
+  # The promotions log gets one TSV line per move (agent, ring, sha, owning-repo) so a
+  # promote-all run can record a deployment for EVERY promotion, not just the last.
+  grep -qP "^auto-rebase\tstable\t[0-9a-f]+\tpetry-projects/\.github$" "$plog"
 }
 
 @test "orchestrator: cross-repo promote --dry-run shows the host move but touches neither git nor the API (#1054)" {
