@@ -15,10 +15,14 @@
 # is a HARD requirement: if the token cannot be minted the job fails — it must not
 # silently degrade to github.token, which cannot move protected `.github` tags (#868).
 #
-#   - schedule (every 4h): read-only `evaluate-all` ONLY — evaluates EVERY agent in
-#     canary-rings.json (fleet-wide, #1025 P1) and emits each one's per-version gate +
-#     health report (#502 observability). Never promotes on the timer.
-#   - workflow_dispatch: `evaluate` | `promote` | `rollback`, human-gated.
+#   - schedule (every 4h): gated fleet-wide `promote-all` (#1045) — for EVERY agent in
+#     canary-rings.json, advance one ring IFF its #548 gate is PROMOTE. It still emits each
+#     agent's per-version gate + health report (#502 observability), skips agents held by
+#     gate.control.hold, honours gate.control.allow_pre_existing, and hard-stops on a
+#     REGRESSION (never auto-`--override`). This is the "autonomous through stable,
+#     override-only" owner directive: the timer carries clean candidates to stable so a
+#     rollout is not a manual dispatch per agent per ring forever.
+#   - workflow_dispatch: `evaluate` | `promote` | `rollback`, human-gated (per-agent).
 # ─────────────────────────────────────────────────────────────────────────────
 name: Canary Rollout
 
@@ -35,7 +39,10 @@ on:
       agent:
         description: "agent to act on"
         type: choice
-        options: [dev-lead, agent-shield, auto-rebase, dependency-audit, dependabot-automerge, dependabot-rebase, pr-review-mention]
+        # Registry-derived (#1045): this list MUST equal the agent keys in
+        # standards/canary-rings.json. Regenerate with `scripts/canary_agent_options.sh list`;
+        # the `template-drift`/bats gate (canary_agent_options.sh check) fails on drift.
+        options: [agent-shield, auto-rebase, dependabot-automerge, dependabot-rebase, dependency-audit, dev-lead, pr-review-mention]
         default: dev-lead
       override:
         description: "promote: advance even if the gate is not PROMOTE (records a warning)"
@@ -107,14 +114,19 @@ jobs:
       - name: Run canary-rollout
         id: run
         env:
-          # On the 4h timer, force read-only fleet-wide evaluate-all — never promote on a
-          # schedule, and evaluate EVERY agent in the registry, not just dev-lead (#1025 P1).
-          CMD: ${{ github.event_name == 'schedule' && 'evaluate-all' || github.event.inputs.command }}
+          # On the 4h timer, run gated fleet-wide promote-all (#1045): evaluate EVERY agent
+          # in the registry and advance one ring per agent whose #548 gate is PROMOTE.
+          CMD: ${{ github.event_name == 'schedule' && 'promote-all' || github.event.inputs.command }}
           AGENT: ${{ github.event.inputs.agent || 'dev-lead' }}
           OVERRIDE: ${{ github.event.inputs.override }}
-          DRY_RUN: ${{ github.event.inputs.dry_run }}
+          # Scheduled promote-all is a REAL move (dry_run=false) so the timer actually carries
+          # clean candidates forward; manual dispatch stays default-safe (dry unless set false).
+          DRY_RUN: ${{ github.event_name == 'schedule' && 'false' || github.event.inputs.dry_run }}
           RING: ${{ github.event.inputs.ring }}
           TO: ${{ github.event.inputs.to }}
+          # Journal every real promotion so the deployment-recording step can emit one
+          # GitHub Deployment per agent even when promote-all advances several (#1045/#502).
+          CANARY_PROMOTIONS_LOG: ${{ runner.temp }}/canary-promotions.jsonl
           # cut-release.sh (cross-repo tag moves on petry-projects/.github) and the
           # gate's cross-repo run-history reads both authenticate with the App token.
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
@@ -123,10 +135,14 @@ jobs:
           args=()
           case "$CMD" in
             evaluate)     args=(evaluate "$AGENT") ;;
-            evaluate-all) args=(evaluate-all) ;;   # fleet-wide read-only (the 4h timer, #1025 P1)
+            evaluate-all) args=(evaluate-all) ;;   # fleet-wide read-only
             promote)
               args=(promote "$AGENT")
               [ "$OVERRIDE" = "true" ] && args+=(--override)
+              [ "$DRY_RUN" != "false" ] && args+=(--dry-run)   # default-safe: dry unless explicitly false
+              ;;
+            promote-all)                           # gated fleet-wide promote (the 4h timer, #1045)
+              args=(promote-all)
               [ "$DRY_RUN" != "false" ] && args+=(--dry-run)   # default-safe: dry unless explicitly false
               ;;
             rollback)
@@ -139,25 +155,36 @@ jobs:
           echo "::notice::canary-rollout ${args[*]}"
           bash scripts/canary-rollout.sh "${args[@]}"
 
-      # Record a GitHub Deployment for a real (non-dry-run) promotion — traceability
-      # for the tag move (#502). Uses the same App token (Deployments:write).
-      - name: Record deployment for promotion
-        if: steps.run.outputs.promoted_ring != ''
+      # Record a GitHub Deployment for every real (non-dry-run) promotion — traceability
+      # for the tag move (#502). Reads the promotions journal so a single manual promote
+      # AND a fleet-wide promote-all that advanced several agents each get a Deployment
+      # (#1045). Uses the same App token (Deployments:write).
+      - name: Record deployments for promotions
+        if: always()
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          PROMOTED_AGENT: ${{ steps.run.outputs.promoted_agent }}
-          PROMOTED_RING: ${{ steps.run.outputs.promoted_ring }}
-          PROMOTED_SHA: ${{ steps.run.outputs.promoted_sha }}
+          CANARY_PROMOTIONS_LOG: ${{ runner.temp }}/canary-promotions.jsonl
         run: |
           set -euo pipefail
-          gh api -X POST "repos/${GITHUB_REPOSITORY}/deployments" --input - <<JSON
+          if [ ! -s "${CANARY_PROMOTIONS_LOG}" ]; then
+            echo "no real promotions this run — nothing to record."
+            exit 0
+          fi
+          while IFS= read -r line; do
+            [ -z "$line" ] && continue
+            agent="$(jq -r '.agent' <<< "$line")"
+            ring="$(jq -r '.ring' <<< "$line")"
+            sha="$(jq -r '.sha' <<< "$line")"
+            echo "::notice::recording deployment for ${agent}/${ring} -> ${sha}"
+            gh api -X POST "repos/${GITHUB_REPOSITORY}/deployments" --input - <<JSON
           {
-            "ref": "${PROMOTED_SHA}",
-            "environment": "canary-${PROMOTED_AGENT}-${PROMOTED_RING}",
+            "ref": "${sha}",
+            "environment": "canary-${agent}-${ring}",
             "auto_merge": false,
             "required_contexts": [],
             "transient_environment": false,
             "production_environment": false,
-            "description": "canary-rollout promoted ${PROMOTED_AGENT}/${PROMOTED_RING} -> ${PROMOTED_SHA}"
+            "description": "canary-rollout promoted ${agent}/${ring} -> ${sha}"
           }
           JSON
+          done < "${CANARY_PROMOTIONS_LOG}"

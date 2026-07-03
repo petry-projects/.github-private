@@ -13,10 +13,21 @@ set -euo pipefail
 #
 # Usage:
 #   canary-rollout.sh evaluate     <agent>             # read-only gate + health report (also the #502 report)
-#   canary-rollout.sh evaluate-all                     # read-only evaluate for EVERY registry agent (fleet-wide; the 4h timer)
+#   canary-rollout.sh evaluate-all                     # read-only evaluate for EVERY registry agent (fleet-wide)
 #   canary-rollout.sh promote  <agent> [--override] [--allow-pre-existing] [--dry-run]
+#   canary-rollout.sh promote-all [--dry-run]          # gated fleet-wide promote (the 4h timer, #1045):
+#                                                      # advance EACH agent one ring iff its gate is PROMOTE,
+#                                                      # skipping gate.control.hold agents, honouring
+#                                                      # gate.control.allow_pre_existing, hard-stopping on
+#                                                      # REGRESSION. Never --override (autonomous-through-stable,
+#                                                      # override-only stays a human decision).
 #   canary-rollout.sh rollback <agent> <ring> --to <vX.Y.Z> [--dry-run]
 #   canary-rollout.sh resolve  <agent> <channel>       # debug: print resolved member repos
+#
+# Env (promotion journal, #1045):
+#   CANARY_PROMOTIONS_LOG  if set, each REAL (non-dry) promotion appends one JSON line
+#                          {agent,ring,sha} so the workflow can record a GitHub Deployment
+#                          per move even when promote-all advances several agents at once.
 #
 # Gate standard: .github#548 — graduated per-transition dwell/sample floors over a
 # per-candidate cumulative window (since the candidate's OWN vX.Y.Z cut), a robust
@@ -39,6 +50,17 @@ CANARY_RINGS="${CANARY_RINGS:-$DEFAULT_RINGS}"
 
 _jq()  { jq "$@" "$CANARY_RINGS"; }
 _agent_field() { _jq -r --arg a "$1" ".agents[\$a].$2"; }
+
+# _require_agent <agent> — fail with a clear error if <agent> is not a key in the ring
+# registry. Guards the dispatch surface: even a free-text agent (typo, or an input that
+# outran the choice list) is validated against canary-rings.json rather than silently
+# resolving to an empty frontier (#1045).
+_require_agent() {
+  if [ "$(_jq -r --arg a "$1" '.agents | has($a)')" != "true" ]; then
+    echo "::error::unknown agent '$1' — not in $CANARY_RINGS. Known: $(_jq -r '.agents | keys | join(", ")')" >&2
+    return 1
+  fi
+}
 
 # ordered_channels <agent> — e.g. "next,ring0,ring1,stable"
 ordered_channels() {
@@ -341,6 +363,7 @@ _frontier_state() {
 
 cmd_evaluate() {
   local agent="$1"
+  _require_agent "$agent" || return 1
   echo "== canary-rollout evaluate: $agent (gate standard: .github#548) =="
   local cand; cand="$(channel_commit "$agent" next)"
   echo "candidate (next) = ${cand:0:12}  cut=$(candidate_cut_date "$agent" "$cand")"
@@ -390,6 +413,7 @@ cmd_evaluate_all() {
 
 cmd_promote() {
   local agent="$1"; shift
+  _require_agent "$agent" || return 1
   local override=false dry=false allow_pre_flag=false
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -429,14 +453,46 @@ cmd_promote() {
   git tag -f "$agent/$frontier" "$cand"
   git push --force origin "$agent/$frontier"
   echo "promoted $agent/$frontier -> ${cand:0:12}"
-  # Expose the move so the workflow can record a GitHub Deployment (traceability, #502).
-  if [ -n "${GITHUB_OUTPUT:-}" ]; then
-    { echo "promoted_agent=$agent"; echo "promoted_ring=$frontier"; echo "promoted_sha=$cand"; } >> "$GITHUB_OUTPUT"
+  # Journal the move so the workflow records a GitHub Deployment per agent (traceability,
+  # #502) — a journal (not a single GITHUB_OUTPUT triple) so a fleet-wide promote-all that
+  # advances several agents in one tick records a Deployment for each, not just the last (#1045).
+  if [ -n "${CANARY_PROMOTIONS_LOG:-}" ]; then
+    jq -nc --arg a "$agent" --arg r "$frontier" --arg s "$cand" \
+      '{agent:$a, ring:$r, sha:$s}' >> "$CANARY_PROMOTIONS_LOG"
   fi
+}
+
+# cmd_promote_all [--dry-run] — gated fleet-wide promote (#1045). The 4h timer runs this so
+# the rollout completes autonomously: for EVERY agent in the registry, advance one ring iff
+# its #548 gate is PROMOTE. It NEVER passes --override (a forced advance past a suspected
+# regression stays a human decision) and honours the per-agent control block:
+#   - gate.control.hold == true          → skip scheduled promotion (manual dispatch only)
+#   - gate.control.allow_pre_existing     → cmd_promote already advances a BLOCKED+PRE_EXISTING
+#                                           frontier (never REGRESSION)
+# A BLOCKED+REGRESSION agent hard-stops (cmd_promote refuses without --override).
+cmd_promote_all() {
+  local agents rc=0 agent hold
+  agents="$(_jq -r '.agents | keys[]' 2>/dev/null || true)"
+  if [ -z "$agents" ]; then
+    echo "no agents registered in $CANARY_RINGS — nothing to promote."; return 0
+  fi
+  echo "== canary-rollout promote-all: fleet-wide gated promote (gate standard: .github#548) =="
+  while IFS= read -r agent; do
+    [ -z "$agent" ] && continue
+    echo "──────── agent: $agent ────────"
+    hold="$(_jq -r --arg a "$agent" '.agents[$a].gate?.control?.hold // false')"
+    if [ "$hold" = "true" ]; then
+      echo "gate.control.hold=true — skipping scheduled promotion for $agent (manual dispatch only)."
+      continue
+    fi
+    cmd_promote "$agent" "$@" || rc=$?
+  done <<< "$agents"
+  return "$rc"
 }
 
 cmd_rollback() {
   local agent="$1" ring="$2"; shift 2
+  _require_agent "$agent" || return 1
   local to="" dry=false
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -478,9 +534,10 @@ main() {
     evaluate)     [ $# -ge 1 ] || { echo "usage: evaluate <agent>" >&2; return 2; }; cmd_evaluate "$@" ;;
     evaluate-all) cmd_evaluate_all ;;
     promote)      [ $# -ge 1 ] || { echo "usage: promote <agent> [--override] [--allow-pre-existing] [--dry-run]" >&2; return 2; }; cmd_promote "$@" ;;
+    promote-all)  cmd_promote_all "$@" ;;
     rollback)     [ $# -ge 2 ] || { echo "usage: rollback <agent> <ring> --to <vX.Y.Z>" >&2; return 2; }; cmd_rollback "$@" ;;
     resolve)      [ $# -ge 2 ] || { echo "usage: resolve <agent> <channel>" >&2; return 2; }; resolve_members "$@" ;;
-    *) echo "::error::usage: canary-rollout.sh {evaluate|evaluate-all|promote|rollback|resolve} <agent> ..." >&2; return 2 ;;
+    *) echo "::error::usage: canary-rollout.sh {evaluate|evaluate-all|promote|promote-all|rollback|resolve} <agent> ..." >&2; return 2 ;;
   esac
 }
 

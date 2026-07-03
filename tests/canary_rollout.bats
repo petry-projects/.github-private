@@ -457,3 +457,132 @@ _benign_stub() {
   [[ "$output" != *"DRY-RUN"* ]]
   [[ "$output" == *"REGRESSION"* ]]
 }
+
+# ── orchestrator: unknown-agent registry validation (#1045) ────────────────────
+@test "orchestrator: evaluate rejects an agent not in the registry" {
+  _make_stub_bin
+  cat > "$STUB_BIN/gh" <<'GHEOF'
+#!/usr/bin/env bash
+case "$*" in
+  *"run list"*) echo "[]" ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN/gh"
+  run env CANARY_RINGS="$RINGS" bash "$ORCH" evaluate no-such-agent
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"unknown agent"* ]]
+}
+
+@test "orchestrator: promote rejects an agent not in the registry" {
+  _make_stub_bin
+  cat > "$STUB_BIN/gh" <<'GHEOF'
+#!/usr/bin/env bash
+echo "{}"
+GHEOF
+  chmod +x "$STUB_BIN/gh"
+  run env CANARY_RINGS="$RINGS" bash "$ORCH" promote no-such-agent --dry-run
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"unknown agent"* ]]
+}
+
+# ── canary_agent_options.sh: registry-driven dispatch options (#1045) ──────────
+OPTS="$SCRIPT_DIR/scripts/canary_agent_options.sh"
+WF="$SCRIPT_DIR/.github/workflows/canary-rollout.yml"
+
+@test "canary_agent_options: list emits every registry agent, sorted" {
+  run env CANARY_RINGS="$RINGS" bash "$OPTS" list
+  [ "$status" -eq 0 ]
+  local expected; expected="$(jq -r '.agents | keys[]' "$RINGS" | LC_ALL=C sort)"
+  [ "$output" = "$expected" ]
+  # sanity: the 6 #482 reusables + dev-lead are all present
+  [[ "$output" == *"dev-lead"* ]]
+  [[ "$output" == *"auto-rebase"* ]]
+  [[ "$output" == *"dependabot-automerge"* ]]
+  [[ "$output" == *"dependabot-rebase"* ]]
+  [[ "$output" == *"pr-review-mention"* ]]
+  [[ "$output" == *"agent-shield"* ]]
+  [[ "$output" == *"dependency-audit"* ]]
+}
+
+@test "canary_agent_options: default (no args) behaves like list" {
+  run env CANARY_RINGS="$RINGS" bash "$OPTS"
+  [ "$status" -eq 0 ]
+  local expected; expected="$(jq -r '.agents | keys[]' "$RINGS" | LC_ALL=C sort)"
+  [ "$output" = "$expected" ]
+}
+
+@test "canary_agent_options: check PASSES against the live canary-rollout.yml (no drift)" {
+  run env CANARY_RINGS="$RINGS" bash "$OPTS" check "$WF"
+  [ "$status" -eq 0 ]
+}
+
+@test "canary_agent_options: check FAILS when the workflow options drift from the registry" {
+  local drifted="$BATS_TEST_TMPDIR/drifted.yml"
+  # A workflow whose agent input lists only dev-lead (the pre-#1045 stale state).
+  cat > "$drifted" <<'YML'
+on:
+  workflow_dispatch:
+    inputs:
+      command:
+        type: choice
+        options: [evaluate, promote, rollback]
+      agent:
+        description: "agent to act on"
+        type: choice
+        options: [dev-lead]
+YML
+  run env CANARY_RINGS="$RINGS" bash "$OPTS" check "$drifted"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"drift"* || "$output" == *"DRIFT"* ]]
+}
+
+@test "canary-rollout.yml: agent dispatch options == registry keys (drift guard)" {
+  # The shipped workflow must already be in sync — this is the CI drift gate.
+  run env CANARY_RINGS="$RINGS" bash "$OPTS" check "$WF"
+  [ "$status" -eq 0 ]
+}
+
+# ── orchestrator: promote-all — gated fleet-wide scheduled promote (#1045) ──────
+@test "orchestrator: promote-all advances a PROMOTE-ready agent (dry-run), iterating the registry" {
+  # dev-lead: next=cand, clean per-candidate window, dwell+sample met → PROMOTE.
+  # Other registry agents resolve every channel to the candidate (COMPLETE) under
+  # the stub, so promote-all still iterates them but only dev-lead advances.
+  _graduated_stub 3 2 success 0
+  run env CANARY_RINGS="$RINGS" bash "$ORCH" promote-all --dry-run
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"promote-all"* ]]
+  [[ "$output" == *"agent: dev-lead"* ]]
+  [[ "$output" == *"DRY-RUN"* ]]
+}
+
+@test "orchestrator: promote-all skips an agent held by control.hold" {
+  _graduated_stub 3 2 success 0
+  # A registry with a single dev-lead agent paused via gate.control.hold.
+  local held="$BATS_TEST_TMPDIR/held.json"
+  jq '.agents |= {"dev-lead": .["dev-lead"]} | .agents["dev-lead"].gate.control.hold = true' "$RINGS" > "$held"
+  run env CANARY_RINGS="$held" bash "$ORCH" promote-all --dry-run
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"hold"* ]]
+  [[ "$output" != *"DRY-RUN"* ]]
+}
+
+@test "orchestrator: promote-all does NOT advance a BLOCKED+REGRESSION agent" {
+  _graduated_stub 3 2 failure 1
+  run env CANARY_RINGS="$RINGS" bash "$ORCH" promote-all --dry-run
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"REGRESSION"* ]]
+  [[ "$output" != *"DRY-RUN"* ]]
+}
+
+@test "orchestrator: promote-all records each real promotion to CANARY_PROMOTIONS_LOG" {
+  _graduated_stub 3 2 success 0
+  local log="$BATS_TEST_TMPDIR/promotions.jsonl"
+  # Non-dry (real) run: the git stub swallows tag -f / push, so no network move happens,
+  # but the promotion must be journaled for the workflow's deployment-recording loop.
+  run env CANARY_RINGS="$RINGS" CANARY_PROMOTIONS_LOG="$log" bash "$ORCH" promote-all
+  [ "$status" -eq 0 ]
+  [ -f "$log" ]
+  run jq -e '.agent == "dev-lead" and (.ring|length>0) and (.sha|length>0)' "$log"
+  [ "$status" -eq 0 ]
+}
