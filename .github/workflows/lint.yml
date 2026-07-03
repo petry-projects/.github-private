@@ -58,6 +58,7 @@ jobs:
             tests/test_review_cycle.bats \
             tests/test_pr_automation_budget.bats \
             tests/test_pr_runaway_regression.bats \
+            tests/test_pr_runaway_detect.bats \
             tests/test_ci_status.bats \
             tests/test_push_protection.bats \
             tests/test_verify_auth_scopes.bats \
