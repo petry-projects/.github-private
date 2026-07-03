@@ -431,6 +431,109 @@ _benign_stub() {
   [[ "$output" == *"REGRESSION"* ]]
 }
 
+# ── orchestrator: cross-repo agent support (gh api stubs) ──────────────────────
+# For agents whose host != petry-projects/.github-private (i.e. the six #482 reusables),
+# channel_commit, candidate_cut_date, _reusable_differs, promote, and rollback must
+# use gh api rather than local git. The stubs below simulate petry-projects/.github tags.
+_make_cross_repo_stub_bin() {
+  STUB_BIN="$(mktemp -d)"; export PATH="$STUB_BIN:$PATH"
+  # git: cross-repo channel tags live in petry-projects/.github, not locally.
+  cat > "$STUB_BIN/git" <<'GITEOF'
+#!/usr/bin/env bash
+case "$*" in
+  *"for-each-ref"*) : ;;
+  *"rev-parse"*) : ;;
+  *) : ;;
+esac
+GITEOF
+  chmod +x "$STUB_BIN/git"
+  # gh: stub api calls for petry-projects/.github tag/commit/blob lookups.
+  # agent-shield/next → annotated tag object tagobj1111 → commit cccc...
+  # agent-shield/{ring0,ring1,stable} → lightweight ref pointing to bbbb...
+  cat > "$STUB_BIN/gh" <<'GHEOF'
+#!/usr/bin/env bash
+args="$*"
+case "$args" in
+  api*"repos/petry-projects/.github/git/ref/tags/agent-shield/next"*)
+    echo '{"object":{"sha":"tagobj1111111111111111111111111111111111","type":"tag"}}' ;;
+  api*"repos/petry-projects/.github/git/tags/tagobj"*)
+    echo '{"object":{"sha":"cccccccccccccccccccccccccccccccccccccccc"}}' ;;
+  api*"repos/petry-projects/.github/git/ref/tags/agent-shield/"*)
+    echo '{"object":{"sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","type":"commit"}}' ;;
+  api*"repos/petry-projects/.github/commits/"*)
+    echo '{"commit":{"committer":{"date":"2026-07-01T10:00:00Z"}}}' ;;
+  api*"repos/petry-projects/.github/contents/"*)
+    echo '{"sha":"blobAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}' ;;
+  api*"repos/petry-projects/.github/git/ref/tags/"*)
+    echo '{"object":{"sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","type":"commit"}}' ;;
+  *"run list"*) echo "[]" ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN/gh"
+}
+
+@test "orchestrator: channel_commit uses gh api for cross-repo agents" {
+  # agent-shield's channel tags live in petry-projects/.github; local git has nothing.
+  _make_cross_repo_stub_bin
+  run bash -c "source '$ORCH' && CANARY_RINGS='$RINGS' channel_commit agent-shield next"
+  [ "$status" -eq 0 ]
+  [ "$output" = "cccccccccccccccccccccccccccccccccccccccc" ]
+}
+
+@test "orchestrator: _reusable_differs uses gh api contents endpoint for cross-repo agents" {
+  # Both blobs return the same sha → differs=0 (no regression introduced).
+  _make_cross_repo_stub_bin
+  run bash -c "
+    source '$ORCH'
+    CANARY_RINGS='$RINGS' _reusable_differs agent-shield \
+      cccccccccccccccccccccccccccccccccccccccc \
+      bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+  "
+  [ "$status" -eq 0 ]
+  [ "$output" = "0" ]
+}
+
+@test "orchestrator: _reusable_differs returns 1 when cross-repo blob changes" {
+  STUB_BIN="$(mktemp -d)"; export PATH="$STUB_BIN:$PATH"
+  cat > "$STUB_BIN/git" <<'GITEOF'
+#!/usr/bin/env bash
+: ; GITEOF
+  chmod +x "$STUB_BIN/git"
+  # Different blob sha for cand vs prior → differs=1 (candidate regression possible).
+  cat > "$STUB_BIN/gh" <<'GHEOF'
+#!/usr/bin/env bash
+case "$*" in
+  api*"?ref=cccc"*) echo '{"sha":"blobAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}' ;;
+  api*"?ref=bbbb"*) echo '{"sha":"blobBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"}' ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN/gh"
+  run bash -c "
+    source '$ORCH'
+    CANARY_RINGS='$RINGS' _reusable_differs agent-shield cccc bbbb
+  "
+  [ "$status" -eq 0 ]
+  [ "$output" = "1" ]
+}
+
+@test "orchestrator: evaluate for cross-repo agent-shield resolves channel tags via gh api" {
+  _make_cross_repo_stub_bin
+  run env CANARY_RINGS="$RINGS" bash "$ORCH" evaluate agent-shield
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"agent-shield"* ]]
+  [[ "$output" == *"next"* ]]
+}
+
+@test "orchestrator: promote --override --dry-run for cross-repo agent-shield uses gh api path" {
+  _make_cross_repo_stub_bin
+  run env CANARY_RINGS="$RINGS" bash "$ORCH" promote agent-shield --override --dry-run
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"DRY-RUN"* ]]
+  [[ "$output" == *"petry-projects/.github"* ]]
+}
+
 @test "orchestrator: a non-allowlisted failure (reusable unchanged) still BLOCKS as PRE_EXISTING" {
   # Failed step matches no benign class → counted → BLOCKED, triaged PRE_EXISTING.
   _benign_stub 3 2 "Compile TypeScript" 0

@@ -7,6 +7,25 @@
     "$org_infra": "org_infra_repos minus the host (the host is already in `next`)",
     "*": "every other consumer not named in an earlier ring"
   },
+  "_gate_profiles": {
+    "_note": "Canonical #548 gate defaults shared by the six #482 cross-repo reusables. JSON has no native anchors; introducing a gate_profiles indirection usable by the orchestrator is tracked for a future issue. Until then, these defaults are reproduced inline in each agent entry to keep the registry self-contained. This section is the single source of truth for those defaults and is not read by the orchestrator.",
+    "default_482": {
+      "baseline_window_days": 14,
+      "baseline_spike_cap_multiple": 3,
+      "control": { "allow_pre_existing": false },
+      "transitions": {
+        "next->ring0": {
+          "dwell_hours": 4,
+          "sample_fraction_permille": 250,
+          "sample_clamp_min": 3,
+          "sample_clamp_max": 15,
+          "waive_sample_if_no_caller": true
+        },
+        "ring0->ring1": { "dwell_hours": 8, "waive_sample": true },
+        "ring1->stable": { "dwell_hours": 12, "sample_min": 1 }
+      }
+    }
+  },
   "agents": {
     "dev-lead": {
       "host": "petry-projects/.github-private",
