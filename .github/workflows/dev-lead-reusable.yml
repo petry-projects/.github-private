@@ -107,12 +107,12 @@ jobs:
 
     steps:
       - name: Checkout caller repo
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           token: ${{ secrets.GH_PAT_WORKFLOWS || github.token }}
 
       - name: Checkout dev-lead scripts
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: petry-projects/.github-private
           # Pinned channel (e.g. dev-lead/stable) when a trigger stub passes it;
@@ -187,7 +187,7 @@ jobs:
       # ── Install engine CLIs ───────────────────────────────────────────────
       - name: Cache claude-code CLI
         if: env.INTENT_TYPE != 'skip' && env.INTENT_TYPE != 'enable-auto-merge'
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.npm-global
           key: claude-code-${{ vars.CLAUDE_CODE_VERSION || 'latest' }}-${{ runner.os }}
