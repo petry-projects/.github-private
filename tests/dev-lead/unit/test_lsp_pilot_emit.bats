@@ -13,7 +13,7 @@ EMIT="$SCRIPT_DIR/scripts/lsp_pilot_emit.sh"
 _call() { run bash -c 'source "$1"; shift; "$@"' bash "$EMIT" "$@"; }
 
 setup() {
-  unset LSP_PILOT_ENABLED REVIEW_MCP_CONFIG LSP_CANDIDATE TOKEN_LOG_FILE
+  unset LSP_PILOT_ENABLED LSP_PILOT_VARIANT REVIEW_MCP_CONFIG LSP_CANDIDATE TOKEN_LOG_FILE
   STREAM_DIR="$(mktemp -d)"
   TOKEN_LOG="$(mktemp)"
   : > "$TOKEN_LOG"
@@ -89,6 +89,42 @@ JSON
   [ "$output" = "agent-lsp-next" ]
 }
 
+# ── Decoupling: explicit LSP_PILOT_VARIANT is authoritative (issue #1031) ─────
+# The A/B legs must be selectable independently of REVIEW_MCP_CONFIG, because
+# engine.sh auto-defaults REVIEW_MCP_CONFIG to the committed .github/review-mcp.json
+# (the GitHub review MCP) — so the lsp-off (A) control leg would otherwise be
+# mislabelled lsp-on. LSP_PILOT_VARIANT=off|on overrides the detection.
+
+@test "lpe_variant: LSP_PILOT_VARIANT=off forces lsp-off even with a readable REVIEW_MCP_CONFIG" {
+  local cfg; cfg="$(mktemp)"; echo '{}' > "$cfg"
+  REVIEW_MCP_CONFIG="$cfg" LSP_PILOT_VARIANT=off _call lpe_variant
+  rm -f "$cfg"
+  [ "$output" = "lsp-off" ]
+}
+
+@test "lpe_variant: LSP_PILOT_VARIANT=on forces lsp-on even when REVIEW_MCP_CONFIG is unset" {
+  LSP_PILOT_VARIANT=on _call lpe_variant
+  [ "$output" = "lsp-on" ]
+}
+
+@test "lpe_variant: LSP_PILOT_VARIANT=none/empty falls back to REVIEW_MCP_CONFIG detection" {
+  LSP_PILOT_VARIANT=none _call lpe_variant
+  [ "$output" = "lsp-off" ]
+  local cfg; cfg="$(mktemp)"; echo '{}' > "$cfg"
+  REVIEW_MCP_CONFIG="$cfg" LSP_PILOT_VARIANT=none _call lpe_variant
+  rm -f "$cfg"
+  [ "$output" = "lsp-on" ]
+}
+
+@test "lpe_candidate: follows the explicit variant (off→baseline, on→agent-lsp)" {
+  local cfg; cfg="$(mktemp)"; echo '{}' > "$cfg"
+  REVIEW_MCP_CONFIG="$cfg" LSP_PILOT_VARIANT=off _call lpe_candidate
+  [ "$output" = "baseline" ]
+  LSP_PILOT_VARIANT=on _call lpe_candidate
+  rm -f "$cfg"
+  [ "$output" = "agent-lsp" ]
+}
+
 # ── pr join key ──────────────────────────────────────────────────────────────
 
 @test "lpe_pr_key: builds <owner/repo>#<num>@<sha> from a PR URL" {
@@ -143,6 +179,33 @@ JSON
     "$STREAM_DIR" "https://github.com/o/r/pull/7" "sha7" "9.0"
   rm -f "$cfg"
   [ "$status" -eq 0 ]
+  run jq -r '.variant' "$TOKEN_LOG";   [ "$output" = "lsp-on" ]
+  run jq -r '.candidate' "$TOKEN_LOG"; [ "$output" = "agent-lsp" ]
+}
+
+@test "lpe_emit_record: LSP_PILOT_VARIANT=off yields an lsp-off record even with REVIEW_MCP_CONFIG set (A-leg decoupling)" {
+  _write_stream "$STREAM_DIR/stream.aaa"
+  local cfg; cfg="$(mktemp)"; echo '{}' > "$cfg"
+  run bash -c 'source "$1"; shift; export LSP_PILOT_ENABLED=true LSP_PILOT_VARIANT=off TOKEN_LOG_FILE="$1" REVIEW_MCP_CONFIG="$2"; shift 2; lpe_emit_record "$@"' \
+    bash "$EMIT" "$TOKEN_LOG" "$cfg" \
+    "$STREAM_DIR" "https://github.com/petry-projects/.github-private/pull/1031" "shaA" "6.0"
+  rm -f "$cfg"
+  [ "$status" -eq 0 ]
+  [ "$(wc -l < "$TOKEN_LOG")" -eq 1 ]
+  run jq -r '.pr' "$TOKEN_LOG";        [ "$output" = "petry-projects/.github-private#1031@shaA" ]
+  run jq -r '.variant' "$TOKEN_LOG";   [ "$output" = "lsp-off" ]
+  run jq -r '.candidate' "$TOKEN_LOG"; [ "$output" = "baseline" ]
+}
+
+@test "lpe_emit_record: LSP_PILOT_VARIANT=on yields an lsp-on/agent-lsp record (B leg, same PR key)" {
+  _write_stream "$STREAM_DIR/stream.aaa"
+  local cfg; cfg="$(mktemp)"; echo '{}' > "$cfg"
+  run bash -c 'source "$1"; shift; export LSP_PILOT_ENABLED=true LSP_PILOT_VARIANT=on TOKEN_LOG_FILE="$1" REVIEW_MCP_CONFIG="$2"; shift 2; lpe_emit_record "$@"' \
+    bash "$EMIT" "$TOKEN_LOG" "$cfg" \
+    "$STREAM_DIR" "https://github.com/petry-projects/.github-private/pull/1031" "shaA" "6.0"
+  rm -f "$cfg"
+  [ "$status" -eq 0 ]
+  run jq -r '.pr' "$TOKEN_LOG";        [ "$output" = "petry-projects/.github-private#1031@shaA" ]
   run jq -r '.variant' "$TOKEN_LOG";   [ "$output" = "lsp-on" ]
   run jq -r '.candidate' "$TOKEN_LOG"; [ "$output" = "agent-lsp" ]
 }
