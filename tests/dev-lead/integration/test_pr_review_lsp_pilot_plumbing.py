@@ -41,13 +41,15 @@ def _load(path: str):
         return yaml.safe_load(fh)
 
 
-def _on(doc: dict):
+def _on(doc: dict | None):
+    if not doc:
+        return {}
     # PyYAML parses the bare `on:` key as the boolean True (YAML 1.1).
     return doc.get("on", doc.get(True)) or {}
 
 
-def _review_job(doc: dict) -> dict:
-    jobs = doc.get("jobs") or {}
+def _review_job(doc: dict | None) -> dict:
+    jobs = (doc or {}).get("jobs") or {}
     job = jobs.get("review")
     return job if isinstance(job, dict) else {}
 
