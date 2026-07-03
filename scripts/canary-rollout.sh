@@ -12,8 +12,9 @@ set -euo pipefail
 # channel tag resolves; there is no separate state store.
 #
 # Usage:
-#   canary-rollout.sh evaluate <agent>                 # read-only gate + health report (also the #502 report)
-#   canary-rollout.sh promote  <agent> [--override] [--dry-run]
+#   canary-rollout.sh evaluate     <agent>             # read-only gate + health report (also the #502 report)
+#   canary-rollout.sh evaluate-all                     # read-only evaluate for EVERY registry agent (fleet-wide; the 4h timer)
+#   canary-rollout.sh promote  <agent> [--override] [--allow-pre-existing] [--dry-run]
 #   canary-rollout.sh rollback <agent> <ring> --to <vX.Y.Z> [--dry-run]
 #   canary-rollout.sh resolve  <agent> <channel>       # debug: print resolved member repos
 #
@@ -109,13 +110,13 @@ candidate_cut_date() {
   git log -1 --format=%cI "$commit" 2>/dev/null || echo ""
 }
 
-# _run_json <repo> <workflow> <since_z> — gh run-list JSON (conclusion+createdAt) for a
+# _run_json <repo> <workflow> <since_z> — gh run-list JSON (conclusion,createdAt,databaseId,workflowName) for a
 # repo since the given Zulu timestamp. Empty repo/wildcard → []. Never fails the caller.
 _run_json() {
   local repo="$1" wf="$2" since="$3"
   [ -z "$repo" ] || [ "$repo" = '*' ] && { echo '[]'; return 0; }
   gh run list --repo "$repo" --workflow "$wf" ${since:+--created ">=$since"} \
-    -L 1000 --json conclusion,createdAt 2>/dev/null || echo '[]'
+    -L 1000 --json conclusion,createdAt,databaseId,workflowName 2>/dev/null || echo '[]'
 }
 
 # _tier_sample <agent> <since_z> <repo...> — EXECUTED runs (success+failure) on the
@@ -133,18 +134,77 @@ _tier_sample() {
   echo "$executed ${earliest:--}"
 }
 
-# _cumulative_health <agent> <since_z> <repo...> — failures + startup_failures across
-# EVERY given tier repo since the candidate cut. Prints "<failures> <startup_failures>".
+# _benign_patterns <agent> — emit the per-reusable known-benign failure-class allowlist
+# (#1025 P2) as TSV "<workflow_regex>\t<step_regex>", one entry per line. Empty if none.
+_benign_patterns() {
+  _jq -r --arg a "$1" \
+    '.agents[$a].gate?.benign_failure_classes // [] | .[] | [(.workflow // ""), (.step // "")] | @tsv'
+}
+
+# Memoization cache for _run_signature: keyed by "repo:run_id".
+# Avoids duplicate gh run view calls for the same (repo, run_id) across agents
+# in evaluate-all (where multiple agents can share repos).
+declare -A _RUN_SIG_CACHE=()
+
+# _run_signature <repo> <run_id> — the failed step names of a run, joined by newlines
+# (the "step/error signature" the allowlist matches against). Empty repo/wildcard/id or
+# any gh error → "" (fail-closed: an unknown signature is never treated as benign).
+_run_signature() {
+  local repo="$1" id="$2" cache_key sig json
+  { [ -z "$repo" ] || [ "$repo" = '*' ] || [ -z "$id" ]; } && { echo ""; return 0; }
+  cache_key="${repo}:${id}"
+  if [[ -v _RUN_SIG_CACHE["$cache_key"] ]]; then
+    echo "${_RUN_SIG_CACHE[$cache_key]}"
+    return 0
+  fi
+  json="$(gh run view "$id" --repo "$repo" --json jobs 2>/dev/null || echo '{}')"
+  sig="$(jq -r '[.jobs[]?|.steps[]?|select(.conclusion=="failure")|.name] | join("\n")' \
+    2>/dev/null <<< "$json" || echo "")"
+  _RUN_SIG_CACHE["$cache_key"]="$sig"
+  echo "$sig"
+}
+
+# _failure_benign <repo> <run_id> <workflow_name> <patterns_tsv> — return 0 if this
+# in-window failure matches any allowlist entry, else 1. Fail-closed on an empty signature.
+_failure_benign() {
+  local repo="$1" rid="$2" rwf="$3" patterns="$4" sig wf_re step_re
+  sig="$(_run_signature "$repo" "$rid")"
+  [ -z "$sig" ] && return 1
+  while IFS=$'\t' read -r wf_re step_re; do
+    [ -z "$step_re" ] && continue
+    if [ "$(benign_match "$rwf" "$sig" "$wf_re" "$step_re")" = "yes" ]; then return 0; fi
+  done <<< "$patterns"
+  return 1
+}
+
+# _cumulative_health <agent> <since_z> <apply_benign 0|1> <repo...> — failures +
+# startup_failures across EVERY given tier repo since the candidate cut. When
+# apply_benign=1, failures matching the per-reusable known-benign allowlist (#1025 P2)
+# are counted separately and excluded from the blocking total. Prints
+# "<failures> <startup_failures> <benign_excluded>".
 _cumulative_health() {
-  local agent="$1" since="$2"; shift 2
-  local wf repo json fail=0 startup=0
+  local agent="$1" since="$2" apply_benign="$3"; shift 3
+  local wf repo json fail=0 startup=0 benign=0 patterns="" rid rwf
   wf="$(_agent_field "$agent" run_workflow)"
+  [ "$apply_benign" = "1" ] && patterns="$(_benign_patterns "$agent")"
   for repo in "$@"; do
     json="$(_run_json "$repo" "$wf" "$since")"
-    fail=$(( fail + $(jq '[.[]?|select(.conclusion=="failure")]|length' 2>/dev/null <<< "$json" || echo 0) ))
     startup=$(( startup + $(jq '[.[]?|select(.conclusion=="startup_failure")]|length' 2>/dev/null <<< "$json" || echo 0) ))
+    if [ -z "$patterns" ]; then
+      # No benign patterns to match — count all failures with one jq pass,
+      # avoiding a gh run view call per failure.
+      fail=$(( fail + $(jq '[.[]?|select(.conclusion=="failure")]|length' 2>/dev/null <<< "$json" || echo 0) ))
+    else
+      while IFS=$'\t' read -r rid rwf; do
+        if _failure_benign "$repo" "$rid" "$rwf" "$patterns"; then
+          benign=$(( benign + 1 ))
+        else
+          fail=$(( fail + 1 ))
+        fi
+      done < <(jq -r '.[]?|select(.conclusion=="failure")|[(.databaseId // "" | tostring),(.workflowName // "")]|@tsv' 2>/dev/null <<< "$json")
+    fi
   done
-  echo "$fail $startup"
+  echo "$fail $startup $benign"
 }
 
 # _baseline_daily <agent> <window_days> <repo...> — per-day EXECUTED counts on the
@@ -199,7 +259,7 @@ _frontier_state() {
     if [ "$ch" = "next" ] || [ "$c" = "$cand" ]; then :; else frontier="$ch"; break; fi
   done
   if [ -z "$frontier" ]; then
-    echo "$cand - - COMPLETE 0 0 0 0 0 0 -"; return 0
+    echo "$cand - - COMPLETE 0 0 0 0 0 0 0 -"; return 0
   fi
 
   local transition source cut_z now_epoch
@@ -208,7 +268,7 @@ _frontier_state() {
   cut_z="$(candidate_cut_date "$agent" "$cand")"
   if [ -z "$cut_z" ]; then
     # Cannot determine the per-candidate window start — fail closed to prevent unbounded history queries.
-    echo "$cand $frontier $transition BLOCKED 0 0 0 0 0 0 -"; return 0
+    echo "$cand $frontier $transition BLOCKED 0 0 0 0 0 0 0 -"; return 0
   fi
   now_epoch="$(date -u +%s)"
 
@@ -228,14 +288,22 @@ _frontier_state() {
   fi
   [ "$dwell_h" -lt 0 ] && dwell_h=0
 
+  # Whether the candidate changed the agent's reusable vs the prior channel on the frontier.
+  # The known-benign allowlist is applied ONLY when the reusable is byte-identical (differs=0),
+  # so it can never mask a candidate-introduced regression (#1025 P2).
+  local prior differs apply_benign=1
+  prior="$(channel_commit "$agent" "$frontier")"
+  differs="$(_reusable_differs "$agent" "$cand" "$prior")"
+  if [ "$differs" = "1" ]; then apply_benign=0; fi
+
   # Cumulative health across EVERY concrete tier repo since the candidate's own cut.
   local all_repos=() ch3
   for ch3 in "${chan_array[@]}"; do
     while IFS= read -r r; do [ -n "$r" ] && [ "$r" != '*' ] && all_repos+=("$r"); done \
       < <(resolve_members "$agent" "$ch3")
   done
-  local cum_fail cum_startup
-  read -r cum_fail cum_startup < <(_cumulative_health "$agent" "$cut_z" "${all_repos[@]}")
+  local cum_fail cum_startup cum_benign
+  read -r cum_fail cum_startup cum_benign < <(_cumulative_health "$agent" "$cut_z" "$apply_benign" "${all_repos[@]}")
 
   # Per-transition knobs (registry-configurable; #548 defaults live in the ring SoT).
   local dwell_floor waived="false" target=0
@@ -265,13 +333,10 @@ _frontier_state() {
 
   local triage="-"
   if [ "$state" = "BLOCKED" ]; then
-    local prior differs
-    prior="$(channel_commit "$agent" "$frontier")"
-    differs="$(_reusable_differs "$agent" "$cand" "$prior")"
     triage="$(classify_failure "$differs" "${CANARY_FAILURE_CATEGORY:-unknown}")"
   fi
 
-  echo "$cand $frontier $transition $state $dwell_h $dwell_floor $sample $target $cum_fail $cum_startup $triage"
+  echo "$cand $frontier $transition $state $dwell_h $dwell_floor $sample $target $cum_fail $cum_startup $cum_benign $triage"
 }
 
 cmd_evaluate() {
@@ -287,12 +352,12 @@ cmd_evaluate() {
     local mark="  "; [ -n "$cand" ] && [ "$c" = "$cand" ] && mark="* "
     printf '  %s%-7s -> %s\n' "$mark" "$ch" "${c:0:12}"
   done
-  read -r _cand frontier transition state dwell floor sample target cum_fail cum_startup triage < <(_frontier_state "$agent")
+  read -r _cand frontier transition state dwell floor sample target cum_fail cum_startup cum_benign triage < <(_frontier_state "$agent")
   echo "----"
   if [ "$frontier" = "-" ]; then
     echo "frontier: none — fully rolled out (all rings on candidate)."
   else
-    gate_summary_line "$transition" "$state" "$dwell" "$floor" "$sample" "$target" "$cum_fail" "$cum_startup"
+    gate_summary_line "$transition" "$state" "$dwell" "$floor" "$sample" "$target" "$cum_fail" "$cum_startup" "$cum_benign"
     echo "decision for next ring '$frontier' [$transition]: $state"
     if [ "$state" = "BLOCKED" ]; then
       if [ "$triage" = "REGRESSION" ]; then
@@ -304,29 +369,58 @@ cmd_evaluate() {
   fi
 }
 
+# cmd_evaluate_all — read-only evaluate for EVERY agent in the ring registry (#1025 P1).
+# The 4h schedule runs this so the whole fleet is evaluated on the timer, not just one
+# agent. Iterates the registry keys, so newly-registered reusables are picked up with no
+# workflow change. Never mutates (evaluate is read-only).
+cmd_evaluate_all() {
+  local agents rc=0 agent
+  agents="$(_jq -r '.agents | keys[]' 2>/dev/null || true)"
+  if [ -z "$agents" ]; then
+    echo "no agents registered in $CANARY_RINGS — nothing to evaluate."; return 0
+  fi
+  echo "== canary-rollout evaluate-all: fleet-wide (gate standard: .github#548) =="
+  while IFS= read -r agent; do
+    [ -z "$agent" ] && continue
+    echo "──────── agent: $agent ────────"
+    cmd_evaluate "$agent" || rc=$?
+  done <<< "$agents"
+  return "$rc"
+}
+
 cmd_promote() {
   local agent="$1"; shift
-  local override=false dry=false
+  local override=false dry=false allow_pre_flag=false
   while [ $# -gt 0 ]; do
     case "$1" in
       --override) override=true ;;
       --dry-run)  dry=true ;;
+      --allow-pre-existing) allow_pre_flag=true ;;
       *) echo "::error::unknown promote flag: $1" >&2; return 2 ;;
     esac; shift
   done
-  read -r cand frontier transition state _dwell _floor _sample _target cum_fail _cum_startup triage < <(_frontier_state "$agent")
+  read -r cand frontier transition state _dwell _floor _sample _target cum_fail _cum_startup _cum_benign triage < <(_frontier_state "$agent")
   if [ "$frontier" = "-" ]; then
     echo "nothing to promote — $agent is fully rolled out."; return 0
   fi
+  # allow_pre: advance a BLOCKED frontier ONLY when triage=PRE_EXISTING (never REGRESSION).
+  # Sourced from the per-reusable control block or the --allow-pre-existing flag (#1025 P2).
+  local allow_pre
+  allow_pre="$(_jq -r --arg a "$agent" '.agents[$a].gate?.control?.allow_pre_existing // false')"
+  [ "$allow_pre_flag" = true ] && allow_pre=true
   if [ "$state" = "BLOCKED" ] && [ "$triage" = "REGRESSION" ] && [ "$override" != true ]; then
     echo "::error::gate=BLOCKED (triage=REGRESSION) for '$frontier' [$transition] — candidate regression suspected; not promoting. Investigate + rollback, do not --override blindly."
     return 0
   fi
-  if [ "$state" != "PROMOTE" ] && [ "$override" != true ]; then
-    echo "gate=$state for ring '$frontier' [$transition] (cum_fail=$cum_fail, triage=$triage) — not promoting. (use --override to force after investigating)"
+  local advance=false
+  [ "$state" = "PROMOTE" ] && advance=true
+  [ "$override" = true ] && advance=true
+  [ "$state" = "BLOCKED" ] && [ "$triage" = "PRE_EXISTING" ] && [ "$allow_pre" = true ] && advance=true
+  if [ "$advance" != true ]; then
+    echo "gate=$state for ring '$frontier' [$transition] (cum_fail=$cum_fail, triage=$triage) — not promoting. (use --override, or --allow-pre-existing for a PRE_EXISTING triage, after investigating)"
     return 0
   fi
-  [ "$override" = true ] && [ "$state" != "PROMOTE" ] && echo "::warning::overriding gate state '$state' for $agent/$frontier"
+  [ "$state" != "PROMOTE" ] && echo "::warning::advancing $agent/$frontier despite gate state '$state' (triage=$triage)"
   echo "advancing $agent/$frontier -> ${cand:0:12}"
   if [ "$dry" = true ]; then
     echo "[DRY-RUN] would: git tag -f $agent/$frontier $cand && git push --force origin $agent/$frontier"
@@ -381,11 +475,12 @@ main() {
   fi
   local sub="${1:-}"; shift || true
   case "$sub" in
-    evaluate) [ $# -ge 1 ] || { echo "usage: evaluate <agent>" >&2; return 2; }; cmd_evaluate "$@" ;;
-    promote)  [ $# -ge 1 ] || { echo "usage: promote <agent> [--override] [--dry-run]" >&2; return 2; }; cmd_promote "$@" ;;
-    rollback) [ $# -ge 2 ] || { echo "usage: rollback <agent> <ring> --to <vX.Y.Z>" >&2; return 2; }; cmd_rollback "$@" ;;
-    resolve)  [ $# -ge 2 ] || { echo "usage: resolve <agent> <channel>" >&2; return 2; }; resolve_members "$@" ;;
-    *) echo "::error::usage: canary-rollout.sh {evaluate|promote|rollback|resolve} <agent> ..." >&2; return 2 ;;
+    evaluate)     [ $# -ge 1 ] || { echo "usage: evaluate <agent>" >&2; return 2; }; cmd_evaluate "$@" ;;
+    evaluate-all) cmd_evaluate_all ;;
+    promote)      [ $# -ge 1 ] || { echo "usage: promote <agent> [--override] [--allow-pre-existing] [--dry-run]" >&2; return 2; }; cmd_promote "$@" ;;
+    rollback)     [ $# -ge 2 ] || { echo "usage: rollback <agent> <ring> --to <vX.Y.Z>" >&2; return 2; }; cmd_rollback "$@" ;;
+    resolve)      [ $# -ge 2 ] || { echo "usage: resolve <agent> <channel>" >&2; return 2; }; resolve_members "$@" ;;
+    *) echo "::error::usage: canary-rollout.sh {evaluate|evaluate-all|promote|rollback|resolve} <agent> ..." >&2; return 2 ;;
   esac
 }
 
