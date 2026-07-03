@@ -57,6 +57,13 @@ This is the `.github-private` org infrastructure repo for `petry-projects`. It c
   ≤15-min backstop) and a `workflow_run: completed` fast path (#898) that scopes the sweep to the
   completing CI run's PR(s) for near-instant re-review. It must not be removed by template syncs. If the org
   template gains an equivalent re-trigger sweep, remove this exception and defer to the template instead.
+- **Exception:** `readme-refresh.yml` (weekly org README refresh) is a documented repo-specific workflow
+  with no corresponding org template in `standards/workflows/`. It regenerates the four org "meta-repo"
+  READMEs (public + member-only org profiles, and the `.github` / `.github-private` repo landing pages)
+  from live org state via `scripts/aw-readme-refresh.sh` + `prompts/aw/readme-refresh.md`, then opens or
+  updates one rolling PR (`chore/readme-refresh`, label `readme-refresh`) per repo for human review. It
+  never direct-pushes. It must not be removed by template syncs. If the org template gains an equivalent,
+  remove this exception and defer to the template instead.
 - **Exception:** The `bats` test list in `lint.yml` is extended with repo-specific test files (e.g.
   `tests/test_push_protection.bats`) beyond the org template baseline. When adding new test files to this
   repo, add them to this list. Template syncs must not reset it to the base template list. This includes
