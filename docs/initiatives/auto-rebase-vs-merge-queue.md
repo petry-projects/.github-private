@@ -1,6 +1,12 @@
 # Initiative: Auto-rebase Fan-out Reduction — Decision Record & Merge Queue Go/No-Go Gate
 
-**Status:** Decision record — free mitigation validated (≥50% metric met) **and deployed org-wide & verified live 2026-06-26** (see §2 update); Merge Queue go/no-go **deferred to a human** (epic [#736](https://github.com/petry-projects/.github-private/issues/736) open question)
+**Status:** Decision record — free mitigation validated (≥50% metric met) **and deployed org-wide &
+verified live 2026-06-26** (see §2 update); Merge Queue go/no-go **deferred to a human** (epic
+[#736](https://github.com/petry-projects/.github-private/issues/736) open question).
+
+**2026-07-03 update:** the developer-facing *delay* was measured directly (not just fan-out volume) — approval→merge
+latency is **~7 min median**, per-cycle CI is **~50 s**, and serialization uses **<0.5%** of capacity, so
+the current state adds negligible delay and the gate reading now leans **strongly no-go**. See §5.
 **Author:** dev-lead / Claude Code
 **Date:** 2026-06-21
 **Scope (confirmed):** Records the measured before/after impact of the **review-ready auto-rebase
@@ -124,12 +130,14 @@ that trade?"), and is **not asserted resolved here**.
 | G1 | **Plan eligibility** — Merge Queue is available on this repo's plan | Repo plan / settings expose Merge Queue | **Satisfied** — per the epic #736 owner resolution (open question #1), Merge Queue **is** available on this plan (private repo); the discussion #735 "private repo → Team/Enterprise required" concern does **not** apply here. Eligibility uncertainty is removed; the *adoption* decision stays open. |
 | G2 | **Throughput sustained above the "consider Merge Queue" threshold** (≥10 merges/day) | #735 / #737 throughput | **Satisfied** — ~12.3 merges/day, peaks 16–21. |
 | G3 | **Agentic-conflict-resolution value below an agreed threshold** — because Merge Queue **drops** the sentinel → dev-lead rebase path and proactive background branch updates | #737 report `status=applied` rate over a ≥4-week window vs. an agreed ceiling (e.g. applied-rebases/week the team is willing to convert to manual resolution) | **Threshold not yet agreed.** Current signal is *favourable* to a switch (applied rate 0%→15%, most rebases `no-changes`), but it is small-sample; needs a longer window and a human-set ceiling before it counts as met. |
-| G4 | **The documented trade-offs are accepted by a human** | Sign-off referencing the #735 comparison table | **Open** — losing agentic conflict resolution (→ manual), losing proactive background branch updates, and adding a `merge_group` CI trigger are accepted trade-offs only by explicit human decision. |
+| G4 | **The documented trade-offs are accepted by a human** | Sign-off referencing the #735 comparison table | **Open — but the case for a switch has weakened.** The §5 delay measurement (2026-07-03) shows Merge Queue would relieve a serialization bottleneck that **does not exist** (approval→merge ~7 min median, serialization <0.5% of capacity), while still costing the agentic conflict path + background updates and leaving the real latency driver (review cadence) untouched. Accepting the trade-offs remains an explicit human decision, but the data now points **no-go**. |
 
 **Net.** G1 and G2 are satisfied; G3 is *trending* toward met but needs an agreed threshold over a
 longer window; G4 is an explicit human sign-off. **No go/no-go is recorded here.** When the team is
 ready, resolve the epic #736 open question against these conditions — the data to check G2 and G3 is now
-produced continuously by the #737 report.
+produced continuously by the #737 report. **The §5 delay measurement (2026-07-03) adds a fourth piece of
+evidence that the gate did not originally weigh: Merge Queue's core benefit (relieving merge-time
+serialization) has no measurable value here, which pushes the human G4 call toward no-go.**
 
 ### What a "go" would mean operationally (for reference, not a decision)
 
@@ -143,7 +151,60 @@ produced continuously by the #737 report.
 
 ---
 
-## 5. References
+## 5. Measured developer-facing delay (2026-07-03)
+
+§2 and §3 quantified **fan-out volume** and the **conflict-resolution rate** — how much *CI work* the
+system does. Neither answered the question of whether the current state adds much delay — the metric a developer
+actually feels when actively developing. This section measures that directly from live data (pulled 2026-07-03
+via the GitHub API), and the answer is **no**.
+
+Delay a developer can feel has three sources; each was measured:
+
+| Source of potential delay | Metric | Baseline (#735, pre-mitigation) | **Now (current regime, since 2026-06-24)** |
+|---|---|---|---|
+| Getting re-tested **while developing** | Fan-out reach per push to `main` | 13–18 PRs updated/push | **~1 PR** (1 review-ready of 9 open non-Dependabot) |
+| — | Est. branch-update CI runs/day | ~170–220 | **~6** (1 PR × ~6.4 pushes/day) |
+| Waiting to merge **once ready** | Approval → merge latency (median) | not measured | **~0.12 h (~7 min)** (mean 1.6 h, p90 4.8 h) |
+| — | CI cost per forced re-test (median) | not measured | **~50 s** (p90 ~1.5 min) |
+| The merge being **serialized** | Serial-merge capacity used | not measured | **<0.5%** of the ~1,700 merges/day ceiling |
+| Overall | Time-to-merge — median · mean · p90 · max | 5 h · 31 h · 71 h · 629 h | **2.0 h · 7.9 h · 29.8 h · 75 h** |
+
+**Reading the numbers.**
+
+- **Active development is no longer churned.** With the review-ready restriction live, an in-progress
+  (unapproved) PR is not auto-updated on every push — the fan-out touches ~1 PR/push, not 9. "Behind"
+  status does not block editing, only merging, so the rebase+retest is paid **once, at the end, after
+  approval.** A typical PR sees ~2–3 head changes total before landing (sample: median 2.5, range 1–8).
+- **Post-approval serialization is effectively free.** Once approved, a PR merges in **~7 min median**,
+  and each forced re-test is **~50 s** of CI (this is a shell-lint repo). That is the entire "require
+  branches up to date" tax.
+- **Serialization is not a bottleneck.** At ~50 s CI the theoretical serial ceiling is ~1,700
+  merges/day; observed throughput (6.4–7.4 merges/day) uses **under 0.5%** of it. There is vast headroom.
+- **The remaining tail is review cadence, not the merge machinery.** Time-to-merge still has a tail
+  (p90 ~30 h; a few PRs at 48–75 h), but since approval→merge is ~7 min, that tail is **time spent
+  waiting for the first review / for the author to pick the PR back up**, not serialization or rebase
+  churn. Merge Queue does nothing for review cadence.
+
+**Bearing on the §4 gate.** Merge Queue's headline benefit is relieving merge-time serialization
+pressure. The measurements show that pressure is **negligible** here, while the costs (dropping the
+agentic conflict path and proactive background updates — §3, §4) are unchanged. So the delay data
+strengthens the **no-go** lean on G4: the free mitigation already removed the churn that motivated the
+whole question (the "~170–220 redundant CI runs/day" is now ~6), and the residual latency is a
+human-review-cadence problem a merge queue cannot address.
+
+**Method & caveats.** Live API pull on 2026-07-03. Samples: time-to-merge over the 100 most-recent
+merged PRs (54 in the current regime, 46 before the 2026-06-24 cut); approval→merge latency over the 20
+most-recent non-Dependabot merges (18 had an explicit `APPROVED` review, 2 were bot/auto-merged); CI
+duration over 30 recent `ci.yml` runs; fan-out reach over all 10 currently-open PRs. All sampled merges
+were human (`don-petry`); **0 Dependabot** PRs appeared in the window. Because the restriction had a
+~10-day no-op window from the `tooling_ref: v1` tag bug (§2 update, fixed 2026-06-24), the honest
+"before" comparator is the **#735 baseline column**, and both time-to-merge cohorts are effectively
+"after." Fan-out and serialization figures carry the same estimate caveat as §2 (per-run behind-PR
+counts are not logged in this repo).
+
+---
+
+## 6. References
 
 - Epic [#736](https://github.com/petry-projects/.github-private/issues/736) — fan-out reduction +
   conflict-rate instrumentation; success metric (≥50% fan-out reduction) and the Merge Queue open
