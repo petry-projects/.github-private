@@ -80,6 +80,20 @@ emit_token_record() {
   local input="${5:-0}" cache="${6:-0}" output="${7:-0}" context="${8:-}"
   local cache_write="${9:-0}"
 
+  # Drop empty, model-less records: no model (empty or "-") AND zero usage across
+  # every token count. These carry no signal — a dev-lead error/fallback branch can
+  # emit one when usage failed to parse and no model was resolved — and they only
+  # inflate the cost report's "no price" count and add a junk `- / -` cost-driver
+  # row (#1009). A real model with an all-zero usage block is a legitimate empty
+  # call and is still emitted. Counts are trusted integers (0-defaulted above).
+  case "$model" in
+    "" | "-")
+      if [ "$(( input + cache + output + cache_write ))" -eq 0 ]; then
+        return 0
+      fi
+      ;;
+  esac
+
   local mult et ts run_id record
   mult=$(model_multiplier_for "$model")
   et=$(calculate_et "$input" "$cache" "$output" "$mult")
