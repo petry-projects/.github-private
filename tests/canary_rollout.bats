@@ -491,6 +491,7 @@ _REUSABLES_482="agent-shield dependency-audit auto-rebase dependabot-automerge d
 @test "canary-rings.json: #482 reusables share the ring topology (next=.github-private, ring0=.github, ring1 pair, stable=*)" {
   for a in $_REUSABLES_482; do
     run bash -c "jq -r '.agents[\"$a\"].rings | sort_by(.order) | map(.channel) | join(\",\")' '$RINGS'"
+    [ "$status" -eq 0 ]
     [ "$output" = "next,ring0,ring1,stable" ]
     jq -e --arg a "$a" '.agents[$a].rings[] | select(.channel=="next")  | .members == ["petry-projects/.github-private"]' "$RINGS" >/dev/null
     jq -e --arg a "$a" '.agents[$a].rings[] | select(.channel=="ring0") | .members == ["petry-projects/.github"]' "$RINGS" >/dev/null
@@ -505,6 +506,7 @@ _REUSABLES_482="agent-shield dependency-audit auto-rebase dependabot-automerge d
   run bash -c "source '$ORCH' && CANARY_RINGS='$RINGS' resolve_members agent-shield ring0"
   [ "$status" -eq 0 ]; [ "$output" = "petry-projects/.github" ]
   run bash -c "source '$ORCH' && CANARY_RINGS='$RINGS' resolve_members dependabot-rebase ring1"
+  [ "$status" -eq 0 ]
   [[ "$output" == *"petry-projects/TalkTerm"* ]]
   [[ "$output" == *"petry-projects/bmad-bgreat-suite"* ]]
   run bash -c "source '$ORCH' && CANARY_RINGS='$RINGS' resolve_members pr-review-mention stable"
@@ -517,6 +519,8 @@ _REUSABLES_482="agent-shield dependency-audit auto-rebase dependabot-automerge d
     jq -e --arg a "$a" '.agents[$a].gate.baseline_spike_cap_multiple == 3' "$RINGS" >/dev/null
     jq -e --arg a "$a" '.agents[$a].gate.transitions["next->ring0"].dwell_hours == 4' "$RINGS" >/dev/null
     jq -e --arg a "$a" '.agents[$a].gate.transitions["next->ring0"].sample_fraction_permille == 250' "$RINGS" >/dev/null
+    jq -e --arg a "$a" '.agents[$a].gate.transitions["next->ring0"].sample_clamp_min == 3' "$RINGS" >/dev/null
+    jq -e --arg a "$a" '.agents[$a].gate.transitions["next->ring0"].sample_clamp_max == 15' "$RINGS" >/dev/null
     # waive_sample_if_no_caller covers dependabot-rebase's missing .github-private caller
     # (the "soak starts at ring0" note): a next tier with zero callers waives the fresh sample.
     jq -e --arg a "$a" '.agents[$a].gate.transitions["next->ring0"].waive_sample_if_no_caller == true' "$RINGS" >/dev/null
