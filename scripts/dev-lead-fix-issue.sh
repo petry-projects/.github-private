@@ -87,6 +87,13 @@ ensure_needs_human_label() {
 # session snippet, then exit. Callers pass only their reason-specific cause text
 # (which carries its own run link + any extra bullets/guidance). Never returns.
 escalate_needs_human() {
+  # Guard the required args before referencing them: under `set -u` a miscall
+  # with too few args would otherwise crash with an unbound-variable error —
+  # and on the escalation path a crash means the human is never notified.
+  if [ "$#" -lt 5 ]; then
+    echo "::error::escalate_needs_human requires 5 args (reason attempt snippet error_line cause_markdown); got $#" >&2
+    exit 1
+  fi
   local reason="$1" attempt="$2" snippet="$3" error_line="$4" cause_markdown="$5" exit_code="${6:-1}"
   echo "::error::${error_line}"
   ensure_needs_human_label
