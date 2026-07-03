@@ -58,7 +58,7 @@ gather_facts() {
   local facts_file="$WORK_DIR/facts.md"
   local repo_json standards_list
 
-  repo_json=$(gh repo list "$ORG" --limit 100 \
+  repo_json=$(gh repo list "$ORG" --limit 1000 \
     --json name,description,primaryLanguage,isArchived,isPrivate \
     --jq 'sort_by(.name)' 2>/dev/null || echo "[]")
 
@@ -132,10 +132,11 @@ render_prompt() {
 
 generate_content() {
   local prompt_file="$1"
+  local err_file="$WORK_DIR/claude-stderr.$$"
   timeout "$ACTION_TIMEOUT_SEC" claude --print \
     --model "$CLAUDE_MODEL" \
     --disallowed-tools "Bash,Read,Write,Edit,Grep,Glob,WebFetch,WebSearch,Task,TodoWrite,NotebookEdit" \
-    < "$prompt_file" 2>/dev/null || echo ""
+    < "$prompt_file" 2>"$err_file" || { warn "claude invocation failed: $(tail -n5 "$err_file" 2>/dev/null)"; echo ""; }
 }
 
 # Extract the file body between the sentinel markers the prompt requires. This is robust
@@ -231,6 +232,8 @@ process_repo() {
           content="__SKIP__"; break
         else
           log "  → SKIP rejected: target is new/empty, retrying"
+          attempt=$((attempt + 1))
+          continue
         fi
       fi
       content="$(trim_blank_edges "$(extract_readme "$raw")")"
@@ -347,8 +350,11 @@ facts_file="$(gather_facts)"
 EMPTY_DESC_REPOS="$(cat "$WORK_DIR/empty_desc.txt" 2>/dev/null || echo "")"
 log "Facts bundle assembled ($(wc -l < "$facts_file") lines); empty-desc repos: ${EMPTY_DESC_REPOS:-none}"
 
-process_repo ".github" "$facts_file"
-process_repo ".github-private" "$facts_file"
+for _repo in ".github" ".github-private"; do
+  if ! process_repo "$_repo" "$facts_file"; then
+    warn "$ORG/$_repo: processing failed — continuing with remaining repos"
+  fi
+done
 
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ] && [ -f "$WORK_DIR/summary.md" ]; then
   {
