@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+set -euo pipefail
 # pr-runaway-detect.sh — the runaway-PR DETECTION net (issue #948, #860 follow-up).
 #
 # #860 ran away to 378 commits / 1,582 comments produced entirely by agents
@@ -120,11 +121,16 @@ pr_age_hours() {
 #   all-clear line and no table, so a clean fleet still gets an explicit signal.
 generate_runaway_report() {
   local f="${1:-}"
+  local max_commits max_comments max_cycles min_age
+  max_commits=$(_runaway_threshold "${RUNAWAY_MAX_COMMITS}" 50)
+  max_comments=$(_runaway_threshold "${RUNAWAY_MAX_COMMENTS}" 200)
+  max_cycles=$(_runaway_threshold "${RUNAWAY_MAX_CYCLES}" 10)
+  min_age=$(_runaway_threshold "${RUNAWAY_MIN_AGE_HOURS}" 48)
 
   printf '## Runaway PR Candidates\n\n'
   printf 'Open PRs exceeding a soft runaway threshold '
   printf '(commits >%s, comments >%s, automated cycles >%s, or open >%sh with agent churn). ' \
-    "$RUNAWAY_MAX_COMMITS" "$RUNAWAY_MAX_COMMENTS" "$RUNAWAY_MAX_CYCLES" "$RUNAWAY_MIN_AGE_HOURS"
+    "$max_commits" "$max_comments" "$max_cycles" "$min_age"
   printf 'Detection only — no PR is mutated. See #948 / the #860 post-mortem.\n\n'
 
   if [ -z "$f" ] || [ ! -s "$f" ]; then

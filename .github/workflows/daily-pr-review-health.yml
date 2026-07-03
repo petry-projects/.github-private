@@ -113,6 +113,16 @@ jobs:
           REPO: ${{ github.repository }}
         run: bash scripts/pr_runaway_scan.sh
 
+      - name: Truncate runaway report if needed
+        run: |
+          if [ -f pr_runaway_report.md ]; then
+            if [ "$(wc -c < pr_runaway_report.md)" -gt 60000 ]; then
+              head -c 60000 pr_runaway_report.md > pr_runaway_report.md.tmp
+              mv pr_runaway_report.md.tmp pr_runaway_report.md
+              printf '\n\n---\n_Report truncated at 60 000 bytes._\n' >> pr_runaway_report.md
+            fi
+          fi
+
       - name: Create runaway-candidate issue
         if: env.HAS_RUNAWAY == 'true' && hashFiles('pr_runaway_report.md') != ''
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
