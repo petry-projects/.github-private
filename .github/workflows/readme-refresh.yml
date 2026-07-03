@@ -1,0 +1,69 @@
+name: README Refresh
+
+# Weekly agent that refreshes the org "meta-repo" READMEs from live org state and
+# opens (or updates) one rolling PR per repo for human review. Documented repo-specific
+# workflow — no corresponding org template in standards/workflows/ (see AGENTS.md).
+
+on:
+  schedule:
+    # Weekly — Monday at 09:00 UTC
+    - cron: '0 9 * * 1'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Generate and diff only; do not create/update branches or PRs"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: readme-refresh
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      ORG: ${{ vars.ORG || 'petry-projects' }}
+      DRY_RUN: ${{ inputs.dry_run || 'false' }}
+      # Pin via vars.CLAUDE_CODE_VERSION for reproducible caching; mirrors docs-health-check.yml.
+      CLAUDE_CODE_VERSION: ${{ vars.CLAUDE_CODE_VERSION || '2.1.138' }}
+
+    steps:
+      - name: Checkout agent repo
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+        with:
+          node-version: '20'
+
+      - name: Cache claude-code CLI
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        with:
+          path: ~/.npm-global
+          key: claude-code-${{ env.CLAUDE_CODE_VERSION }}-${{ runner.os }}
+
+      - name: Install Claude Code CLI
+        run: |
+          mkdir -p "$HOME/.npm-global"
+          npm config set prefix "$HOME/.npm-global"
+          echo "$HOME/.npm-global/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.npm-global/bin:$PATH"
+          if command -v claude >/dev/null 2>&1; then
+            echo "claude-code cache hit: $(claude --version)"
+          else
+            npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" # NOSONAR
+          fi
+
+      - name: Run README refresh
+        env:
+          GH_TOKEN: ${{ secrets.DON_PETRY_BOT_GH_PAT }}
+        run: bash scripts/aw-readme-refresh.sh
