@@ -134,6 +134,20 @@ classify_failure() {
   if [ "$differs" = "1" ]; then echo "REGRESSION"; else echo "PRE_EXISTING"; fi
 }
 
+# benign_match <workflow_name> <failure_signature> <workflow_regex> <step_regex>
+# Decide whether ONE in-window failure matches ONE known-benign failure-class allowlist
+# entry (#1025 P2). A match requires a non-empty <step_regex> (guards against a match-all
+# entry) that matches the failure signature (the failed step/error names), AND — when
+# <workflow_regex> is non-empty — the run's workflow name. Echoes "yes" or "no".
+# Pure: bash ERE only, no I/O. (Author regexes with explicit char classes, e.g. [Pp]ush,
+# since ERE has no inline case-insensitivity flag.)
+benign_match() {
+  local wf="$1" sig="$2" wf_re="$3" step_re="$4"
+  [ -z "$step_re" ] && { echo "no"; return 0; }
+  if [ -n "$wf_re" ] && ! [[ "$wf" =~ $wf_re ]]; then echo "no"; return 0; fi
+  if [[ "$sig" =~ $step_re ]]; then echo "yes"; else echo "no"; fi
+}
+
 # next_channel_in_order <current_channel> <ordered_channels_csv>
 # Given the frontier channel and the ordered channel list (e.g. "next,ring0,ring1,stable"),
 # echo the channel that a PROMOTE advances next, or empty if already at the last ring.
@@ -165,9 +179,10 @@ transition_key() {
   echo ""
 }
 
-# gate_summary_line <transition> <state> <dwell_h> <dwell_floor> <sample> <sample_target> <cum_fail> <cum_startup>
+# gate_summary_line <transition> <state> <dwell_h> <dwell_floor> <sample> <sample_target> <cum_fail> <cum_startup> [cum_benign]
 # One-line human/observability row (used by `evaluate`, doubling as the #502 report).
+# cum_benign (allowlisted failures excluded from cum_fail) is shown when provided.
 gate_summary_line() {
-  printf '%-14s %-9s dwell=%sh/%sh  sample=%s/%s  cum_fail=%s startup=%s\n' \
-    "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8"
+  printf '%-14s %-9s dwell=%sh/%sh  sample=%s/%s  cum_fail=%s startup=%s benign=%s\n' \
+    "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "${9:-0}"
 }
