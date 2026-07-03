@@ -498,7 +498,8 @@ GHEOF
   STUB_BIN="$(mktemp -d)"; export PATH="$STUB_BIN:$PATH"
   cat > "$STUB_BIN/git" <<'GITEOF'
 #!/usr/bin/env bash
-: ; GITEOF
+:
+GITEOF
   chmod +x "$STUB_BIN/git"
   # Different blob sha for cand vs prior → differs=1 (candidate regression possible).
   cat > "$STUB_BIN/gh" <<'GHEOF'
