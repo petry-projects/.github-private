@@ -746,7 +746,7 @@ GHEOF
   # must NOT abort the whole step before the dashboard renders. Make `gh issue create` exit
   # non-zero and assert graceful degradation: warning logged, table still written, status 0.
   _sync_stub failure '[]'
-  sed -i 's#"issue create"\*).*#"issue create"*) echo "gh: HTTP 403 (Issues:write?)" >\&2; exit 1 ;;#' "$STUB_BIN/gh"
+  sed 's#"issue create"\*).*#"issue create"*) echo "gh: HTTP 403 (Issues:write?)" >\&2; exit 1 ;;#' "$STUB_BIN/gh" > "$STUB_BIN/gh.tmp" && mv "$STUB_BIN/gh.tmp" "$STUB_BIN/gh" && chmod +x "$STUB_BIN/gh"
   local summ="$BATS_TEST_TMPDIR/summary_fail.md"; : > "$summ"
   run env CANARY_RINGS="$SYNC_RINGS" ISSUE_REPO="petry-projects/.github-private" GITHUB_STEP_SUMMARY="$summ" bash "$ORCH" sync-issues
   [ "$status" -eq 0 ]
