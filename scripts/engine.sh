@@ -125,7 +125,7 @@ set_engine_config() {
       ENGINE_AUDIT_MODEL="claude-fable-5"
       ENGINE_ACTION_MODEL="claude-sonnet-4-6"
       ENGINE_SINGLE_MODEL="claude-fable-5"
-      ENGINE_LABEL="triage: haiku 4.5 → deep: opus 4.8 + duck: o4-mini → audit: fable 5"
+      ENGINE_LABEL="triage: haiku 4.5 [sonnet 4.6 → sonnet 5] → deep: opus 4.8 [sonnet 4.6 → sonnet 5] + duck: o4-mini → audit: fable 5"
       ENGINE_SINGLE_LABEL="single-reviewer mode: fable 5"
       # Cross-engine rubber duck: use Copilot when Claude is primary
       DUCK_ENGINE="copilot"
