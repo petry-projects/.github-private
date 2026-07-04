@@ -104,6 +104,18 @@ This is the `.github-private` org infrastructure repo for `petry-projects`. It c
   `tests/test_initiative_canary.bats`); the fixture Discussion is configured via the repo variable
   `INITIATIVE_CANARY_DISCUSSION`. It must not be removed by template syncs. If the org template gains a
   live-trigger canary equivalent, remove this exception and defer to the template instead.
+- **Exception:** `premature-closure-audit.yml` (#1077) is a documented repo-specific workflow with no
+  corresponding org template in `standards/workflows/`. It is a weekly (≤1/week) + `workflow_dispatch`
+  backstop for the dev-lead premature-closure defect: dev-lead closed tracking issues as `completed`
+  without the fix landing on `main` (no merged closing PR). It flags issues closed as `completed` within
+  `PC_MAX_OPEN_MINUTES` of opening with **no merged closing PR** and, in live mode, re-opens them +
+  applies `dev-lead:needs-human` so an attempted-but-unresolved issue stays visibly open. It is a no-LLM
+  gh-API + jq audit (pure logic in `scripts/lib/premature-closure-detect.sh`, tests in
+  `tests/test_premature_closure_detect.bats`; wrapper in `scripts/premature-closure-audit.sh`). It is
+  **staged**: read-only permissions with a `LIVE_MODE` repo-variable gate (mirrors `stale-manager.yml`) —
+  writes require setting `LIVE_MODE=true` and adding `issues: write`. It must not be removed by template
+  syncs. If the org template gains a closure-audit equivalent, remove this exception and defer to the
+  template instead.
 - **Exception:** `initiative-driver-canary.yml` (#885, epic #882) is a documented repo-specific workflow
   with no corresponding org template in `standards/workflows/`. It is a daily (≤1/day) +
   `workflow_dispatch` post-merge canary that fires a **dry-run** dispatch of `initiative-driver.yml`
