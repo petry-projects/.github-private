@@ -284,6 +284,17 @@ GITEOF
   [ ! -f "$pushlog" ]
   [[ "$output" == *"DRY-RUN"* ]]
   [[ "$output" == *"ring1"* ]]
+  # dev-lead is a this-repo agent, but the move now goes through gh api on its host — the
+  # dry-run must show the API PATCH, never a local `git tag -f`/`git push` (#1076).
+  [[ "$output" == *"gh api PATCH"* ]]
+  [[ "$output" != *"git tag -f"* ]]
+}
+
+@test "orchestrator: no local git tag/push in the promote/rollback move paths — gh api only (#1076)" {
+  # Structural guard: the channel-tag move for EVERY agent (this-repo and cross-repo) goes
+  # through gh api so the release-manager App's ruleset bypass is applied; a local force-push
+  # is not a bypass actor for a tag UPDATE and 013s on protected tags such as dev-lead/next.
+  ! grep -Ev '^[[:space:]]*#' "$ORCH" | grep -Eq '\bgit[[:space:]]+(tag|push)\b'
 }
 
 # ── orchestrator: full graduated verdicts (cut date + gh run data → gate state) ─
