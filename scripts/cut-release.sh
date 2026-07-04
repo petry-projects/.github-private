@@ -47,6 +47,15 @@
 #
 set -euo pipefail
 
+# Shared bot git identity — a THIS_REPO cut creates a LOCAL annotated tag (`git tag -a`),
+# which aborts with "fatal: empty ident name" on a GitHub-hosted runner that has no
+# user.name/user.email configured. Cross-repo cuts go through `gh api` (App identity) and
+# are unaffected; only the local path needs this. Sourced (no side effects) so tests can
+# still `source` this file; setup_git_identity is invoked lazily in the this-repo cut path.
+_CRHERE="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+# shellcheck source=lib/git-identity.sh
+source "${_CRHERE}/lib/git-identity.sh"
+
 # The repo whose git refs hold cross-repo agents' release/channel tags.
 CROSS_REPO_TARGET="petry-projects/.github"
 
@@ -263,6 +272,9 @@ main() {
     echo "::error::release tag '$rel' already exists — immutable tags are never overwritten." >&2
     return 1
   fi
+  # An annotated tag needs a tagger identity; a bare GitHub-hosted runner has none, so the
+  # local `git tag -a` aborts with "fatal: empty ident name" (autocut dev-lead cut, #1069).
+  setup_git_identity
   git tag -a "$rel" "$sha" -m "$agent release v$version"
   echo "created $rel"
   if [ -n "$channel" ]; then
