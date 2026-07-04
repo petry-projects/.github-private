@@ -44,9 +44,9 @@ on:
   workflow_dispatch:
     inputs:
       command:
-        description: "autocut (gated cut+seed) | evaluate | evaluate-all (read-only) | promote | promote-all (gated tag move) | rollback | sync-issues"
+        description: "autocut (gated cut+seed) | evaluate | evaluate-all (read-only) | promote | promote-all (gated tag move) | rollback | sync-issues | drift (read-only registry audit)"
         type: choice
-        options: [autocut, evaluate, evaluate-all, promote, promote-all, rollback, sync-issues]
+        options: [autocut, evaluate, evaluate-all, promote, promote-all, rollback, sync-issues, drift]
         default: evaluate
       agent:
         description: "agent to act on"
@@ -186,6 +186,7 @@ jobs:
               args=(sync-issues)
               [ "$DRY_RUN" != "false" ] && args+=(--dry-run)   # default-safe: dry unless explicitly false
               ;;
+            drift) args=(drift) ;;                             # read-only registry/host reusable audit (#1082)
             *) echo "::error::unknown command: $CMD"; exit 2 ;;
           esac
           echo "::notice::canary-rollout ${args[*]}"
@@ -235,3 +236,19 @@ jobs:
         run: |
           set -uo pipefail
           bash scripts/canary-rollout.sh sync-issues || echo "::warning::issue sync failed (non-fatal)"
+
+      # Reusable-registry drift audit (#1082): the registry (.agents{}) is the MANUAL source
+      # of truth for what this pipeline manages — a *-reusable.yml added/renamed on a host but
+      # never registered ships with ZERO staged rollout (no cut/soak/gate/dashboard) until a
+      # human registers it. This read-only step scans every host's .github/workflows for
+      # *-reusable.yml, diffs against the registry, and surfaces (a) unregistered reusables and
+      # (b) stale registry entries whose file is gone — as ::warning:: annotations + a job-summary
+      # table, within one scheduled cycle. Report-only (never registers anything). Best-effort +
+      # always(): a drift-scan hiccup must never fail the promotion run.
+      - name: Reusable-registry drift audit
+        if: always() && github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -uo pipefail
+          bash scripts/canary-rollout.sh drift || echo "::warning::drift audit failed (non-fatal)"
