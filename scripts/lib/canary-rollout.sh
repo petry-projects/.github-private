@@ -218,6 +218,22 @@ transition_key() {
   echo ""
 }
 
+# ── set-diff core (drift detection, #1082) ────────────────────────────────────
+# The registry (.agents{}) is the MANUAL source of truth for what the canary pipeline
+# manages; drift detection diffs it against the *-reusable.yml actually present on each
+# host. Both sides of that diff are a plain set difference over whole-line strings.
+
+# set_difference <set_a_newlines> <set_b_newlines> — echo each line of A that is NOT
+# present in B (whole-line match; order + duplicates of A preserved, blank lines dropped).
+# Pure: bash + grep only, no gh/git I/O — deterministically unit-testable.
+set_difference() {
+  local a="$1" b="$2" line
+  while IFS= read -r line; do
+    [ -z "$line" ] && continue
+    if ! grep -qxF -- "$line" <<< "$b"; then printf '%s\n' "$line"; fi
+  done <<< "$a"
+}
+
 # gate_summary_line <transition> <state> <dwell_h> <dwell_floor> <sample> <sample_target> <cum_fail> <cum_startup> [cum_benign]
 # One-line human/observability row (used by `evaluate`, doubling as the #502 report).
 # cum_benign (allowlisted failures excluded from cum_fail) is shown when provided.
