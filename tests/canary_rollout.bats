@@ -786,11 +786,14 @@ GHEOF
 # SHAs, the `next` commit (git for a this-repo agent, gh api for a cross-repo one), the existing
 # release-tag versions (matching-refs), and a cut-release.sh stand-in (CUT_RELEASE) that logs args.
 _autocut_stub() {
-  # args: agent host reusable main_blob next_blob mainsha nextsha versions_ws [bump] [release_at_main]
-  # release_at_main (optional): the version whose <agent>/vX.Y.Z tag points at MAINSHA (the target
-  # commit). Empty → no release tag points at main HEAD (the plain "cut a new bump" path). Non-empty →
-  # exercises the idempotent-reuse path (#1076): autocut must reuse that tag via --promote, not bump.
-  local agent="$1" host="$2" reusable="$3" MAIN_BLOB="$4" NEXT_BLOB="$5" MAINSHA="$6" NEXTSHA="$7" versions="$8" bump="${9:-}" RELEASE_AT_MAIN="${10:-}"
+  # args: agent host reusable main_blob next_blob mainsha nextsha versions_ws [bump] [release_at_main_ws] [annot_tag]
+  # release_at_main_ws (optional, space-separated): versions whose <agent>/vX.Y.Z tag points at MAINSHA.
+  # Empty → no release tag points at main HEAD (plain "cut a new bump" path).
+  # annot_tag (optional, non-empty): use annotated-tag type (type=tag) for release_at_main entries,
+  # exercising the git/tags/<obj> dereference path in _host_release_version_at_commit.
+  local agent="$1" host="$2" reusable="$3" MAIN_BLOB="$4" NEXT_BLOB="$5" MAINSHA="$6" NEXTSHA="$7" versions="$8" bump="${9:-}" RELEASE_AT_MAIN="${10:-}" ANNOT_TAG="${11:-}"
+  # Synthetic tag-object SHA for annotated-tag dereference tests (distinct from any commit SHA).
+  local TAGOBJ_SHA="4242424242424242424242424242424242424242"
   STUB_BIN="$(mktemp -d "$BATS_TEST_TMPDIR/stub.XXXXXX")"; export PATH="$STUB_BIN:$PATH"
   export CUT_LOG="$STUB_BIN/cut.log"; : > "$CUT_LOG"
   export CUT_RELEASE="$STUB_BIN/cut-release"
@@ -799,11 +802,19 @@ _autocut_stub() {
 echo "\$*" >> "$CUT_LOG"
 CUTEOF
   chmod +x "$CUT_RELEASE"
-  local refs="" tsv="" v sha
+  local refs="" tsv="" v sha is_at_main type_val ram
   for v in $versions; do
     refs+="refs/tags/$agent/v$v"$'\n'
-    if [ "$v" = "$RELEASE_AT_MAIN" ]; then sha="$MAINSHA"; else sha="deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"; fi
-    tsv+="refs/tags/$agent/v$v	$sha	commit"$'\n'
+    is_at_main=false
+    for ram in $RELEASE_AT_MAIN; do [ "$v" = "$ram" ] && is_at_main=true && break; done
+    if $is_at_main && [ -n "$ANNOT_TAG" ]; then
+      sha="$TAGOBJ_SHA"; type_val="tag"
+    elif $is_at_main; then
+      sha="$MAINSHA"; type_val="commit"
+    else
+      sha="deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"; type_val="commit"
+    fi
+    tsv+="refs/tags/$agent/v$v	$sha	$type_val"$'\n'
   done
   cat > "$STUB_BIN/gh" <<GHEOF
 #!/usr/bin/env bash
@@ -817,6 +828,7 @@ case "\$*" in
     # .ref query (highest-version bump) needs just the refs.
     if [[ "\$*" == *"@tsv"* ]]; then printf '%s' "$tsv"; else printf '%s' "$refs"; fi
     ;;
+  *"git/tags/$TAGOBJ_SHA"*) echo "$MAINSHA" ;;
   *"git/ref/tags/$agent/next"*) printf '%s\tcommit\n' "$NEXTSHA" ;;
   *"run list"*) echo "[]" ;;
   *) echo "{}" ;;
@@ -927,7 +939,7 @@ GITEOF
     blobMAIN blobNEXT aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa cccccccccccccccccccccccccccccccccccccccc "1.5.0 1.5.1" "" "1.5.1"
   run env CANARY_AUTO_CUT=true CANARY_RINGS="$AUTOCUT_RINGS" CUT_RELEASE="$CUT_RELEASE" bash "$ORCH" autocut
   [ "$status" -eq 0 ]
-  [ "$(grep -c . "$CUT_LOG")" -eq 1 ]
+  [ "$(grep -c . "$CUT_LOG" || true)" -eq 1 ]
   grep -q -- "--promote" "$CUT_LOG"
 }
 
@@ -951,4 +963,27 @@ GITEOF
   [[ "$output" == *"1.5.1"* ]]
   [[ "$output" == *"--promote"* ]]
   [ ! -s "$CUT_LOG" ]   # dry-run never invokes the real cut/promote
+}
+
+@test "orchestrator: autocut reuses an existing annotated release tag at main HEAD via --promote (#1076)" {
+  # Same reuse path as the lightweight-tag test above, but with an annotated tag (object.type=tag).
+  # Exercises the git/tags/<obj> dereference call in _host_release_version_at_commit — the path
+  # NOT covered by the lightweight-tag tests.
+  _autocut_stub dev-lead petry-projects/.github-private .github/workflows/dev-lead-reusable.yml \
+    blobMAIN blobNEXT aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa cccccccccccccccccccccccccccccccccccccccc "1.5.0 1.5.1" "" "1.5.1" "annotated"
+  run env CANARY_AUTO_CUT=true CANARY_RINGS="$AUTOCUT_RINGS" CUT_RELEASE="$CUT_RELEASE" bash "$ORCH" autocut
+  [ "$status" -eq 0 ]
+  grep -q "dev-lead 1.5.1 --channel next --promote --push" "$CUT_LOG"
+  ! grep -q -- "--ref" "$CUT_LOG"
+}
+
+@test "orchestrator: autocut picks the highest semver when multiple release tags point at main HEAD (#1076)" {
+  # Orphan-tag-spam scenario: both v1.5.0 and v1.5.1 point at main HEAD. autocut must reuse
+  # v1.5.1 (the highest), not v1.5.0 (a potentially first-found lower version).
+  _autocut_stub dev-lead petry-projects/.github-private .github/workflows/dev-lead-reusable.yml \
+    blobMAIN blobNEXT aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa cccccccccccccccccccccccccccccccccccccccc "1.5.0 1.5.1" "" "1.5.0 1.5.1"
+  run env CANARY_AUTO_CUT=true CANARY_RINGS="$AUTOCUT_RINGS" CUT_RELEASE="$CUT_RELEASE" bash "$ORCH" autocut
+  [ "$status" -eq 0 ]
+  grep -q "dev-lead 1.5.1 --channel next --promote --push" "$CUT_LOG"
+  ! grep -q "1.5.0 --channel next" "$CUT_LOG"
 }

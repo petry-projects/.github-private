@@ -864,9 +864,11 @@ _next_release_version() {
 # already-cut release at the target commit instead of minting a duplicate on a retry-after-partial-
 # failure (the orphan-tag spam of #1076). Best-effort: any API gap yields empty (→ cut a new bump).
 _host_release_version_at_commit() {
-  local agent="$1" commit="$2" host ref obj type csha
+  [ $# -lt 2 ] && return 0
+  local agent="$1" commit="$2" host ref="" obj="" type="" csha=""
   host="$(_agent_field "$agent" host)"
   { [ -z "$host" ] || [ -z "$commit" ]; } && return 0
+  local matching=""
   while IFS=$'\t' read -r ref obj type; do
     [ -z "$obj" ] && continue
     if [ "$type" = "tag" ]; then
@@ -875,11 +877,12 @@ _host_release_version_at_commit() {
       csha="$obj"
     fi
     if [ -n "$csha" ] && [ "$csha" = "$commit" ]; then
-      printf '%s\n' "${ref#refs/tags/${agent}/v}"
-      return 0
+      matching="${matching} ${ref#refs/tags/${agent}/v}"
     fi
-  done < <(gh api "repos/$host/git/matching-refs/tags/$agent/v" \
+  done < <(gh api "repos/$host/git/matching-refs/tags/$agent/v" --paginate \
              --jq '.[]? | [.ref, (.object?.sha // "" | tostring), (.object?.type // "" | tostring)] | @tsv' 2>/dev/null)
+  # shellcheck disable=SC2086
+  [ -n "$matching" ] && max_semver $matching
   return 0
 }
 
