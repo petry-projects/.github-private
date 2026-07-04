@@ -888,3 +888,165 @@ GITEOF
   [ "$status" -eq 0 ]
   grep -q "auto-rebase 2.1.1 --ref ece45480ece45480ece45480ece45480ece45480 --channel next --push" "$CUT_LOG"
 }
+
+# ── set_difference (pure set-diff core for drift detection, #1082) ─────────────
+# args: <set_a_newlines> <set_b_newlines> — echo lines in A that are NOT in B.
+@test "set_difference: A minus B keeps only A-only elements" {
+  run set_difference "$(printf 'a\nb\nc\n')" "$(printf 'b\n')"
+  [ "$status" -eq 0 ]
+  [ "$output" = "$(printf 'a\nc')" ]
+}
+@test "set_difference: no overlap returns all of A" {
+  run set_difference "$(printf 'x\ny\n')" "$(printf 'p\nq\n')"
+  [ "$output" = "$(printf 'x\ny')" ]
+}
+@test "set_difference: full overlap returns nothing" {
+  run set_difference "$(printf 'a\nb\n')" "$(printf 'a\nb\n')"
+  [ -z "$output" ]
+}
+@test "set_difference: empty A returns nothing" {
+  run set_difference "" "$(printf 'a\n')"
+  [ -z "$output" ]
+}
+@test "set_difference: empty B returns all of A (nothing removed)" {
+  run set_difference "$(printf 'a\nb\n')" ""
+  [ "$output" = "$(printf 'a\nb')" ]
+}
+@test "set_difference: matches whole lines only (a path is not a prefix match)" {
+  # '.github/workflows/foo-reusable.yml' must not be swallowed by a partial 'foo'.
+  run set_difference "$(printf '.github/workflows/foo-reusable.yml\n')" "$(printf 'foo\n')"
+  [ "$output" = ".github/workflows/foo-reusable.yml" ]
+}
+
+# ── orchestrator: drift — registry vs host reusables (read-only audit, #1082) ──
+# The registry (.agents{}) is the MANUAL source of truth for what the canary pipeline
+# manages. `drift` scans each registered host repo's .github/workflows/*-reusable.yml
+# and diffs it against the registry so an unregistered reusable (zero staged rollout) OR
+# a registry entry pointing at a deleted reusable surfaces within one scheduled cycle.
+#
+# The stub answers `gh api repos/<host>/contents/.github/workflows` with a per-host JSON
+# array (env HOSTPRIV_JSON / HOSTPUB_JSON); the orchestrator filters *-reusable.yml itself.
+_drift_stub() {
+  # $1 = JSON array for petry-projects/.github-private ; $2 = JSON array for petry-projects/.github
+  local priv_json="$1" pub_json="${2:-[]}"
+  STUB_BIN="$(mktemp -d "$BATS_TEST_TMPDIR/stub.XXXXXX")"; export PATH="$STUB_BIN:$PATH"
+  # '.github' is a substring of '.github-private', so match the more specific repo FIRST.
+  cat > "$STUB_BIN/gh" <<GHEOF
+#!/usr/bin/env bash
+case "\$*" in
+  *"repos/petry-projects/.github-private/contents/.github/workflows"*) cat <<'JSON'
+$priv_json
+JSON
+    ;;
+  *"repos/petry-projects/.github/contents/.github/workflows"*) cat <<'JSON'
+$pub_json
+JSON
+    ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN/gh"
+  cat > "$STUB_BIN/git" <<'GITEOF'
+#!/usr/bin/env bash
+: # drift never touches git
+GITEOF
+  chmod +x "$STUB_BIN/git"
+}
+
+# A registry with a single this-repo agent (dev-lead) so the present/registered sets are
+# fully controlled: registered on .github-private = {dev-lead-reusable.yml}, none on .github.
+_drift_rings_one_agent() {
+  DRIFT_RINGS="$BATS_TEST_TMPDIR/drift-rings.json"
+  jq '{version, description, org_infra_repos, member_tokens, agents: {"dev-lead": .agents["dev-lead"]}}' \
+    "$RINGS" > "$DRIFT_RINGS"
+}
+
+@test "orchestrator: drift flags a reusable present on a host but absent from the registry (unregistered)" {
+  _drift_rings_one_agent
+  # .github-private hosts an EXTRA foo-reusable.yml that no .agents{} block registers.
+  _drift_stub '[
+    {"type":"file","name":"dev-lead-reusable.yml","path":".github/workflows/dev-lead-reusable.yml"},
+    {"type":"file","name":"foo-reusable.yml","path":".github/workflows/foo-reusable.yml"},
+    {"type":"file","name":"ci.yml","path":".github/workflows/ci.yml"}
+  ]' '[]'
+  run env CANARY_RINGS="$DRIFT_RINGS" bash "$ORCH" drift
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"DRIFT[unregistered]"* ]]
+  [[ "$output" == *".github/workflows/foo-reusable.yml"* ]]
+  # the registered reusable and the non-reusable ci.yml are NOT flagged
+  [[ "$output" != *"DRIFT[unregistered] petry-projects/.github-private: .github/workflows/dev-lead-reusable.yml"* ]]
+  [[ "$output" != *"ci.yml present on host"* ]]
+}
+
+@test "orchestrator: drift flags a registry entry whose reusable file no longer exists on the host (missing-file)" {
+  # Registry has 'ghost' pointing at a reusable that is NOT present on the host.
+  DRIFT_RINGS="$BATS_TEST_TMPDIR/drift-ghost.json"
+  jq '{version, description, org_infra_repos, member_tokens,
+       agents: {"ghost": (.agents["dev-lead"] + {reusable: ".github/workflows/ghost-reusable.yml"})}}' \
+    "$RINGS" > "$DRIFT_RINGS"
+  # Host lists only an unrelated (registered-elsewhere-none) file — ghost-reusable.yml is gone.
+  _drift_stub '[
+    {"type":"file","name":"dev-lead-reusable.yml","path":".github/workflows/dev-lead-reusable.yml"}
+  ]' '[]'
+  run env CANARY_RINGS="$DRIFT_RINGS" bash "$ORCH" drift
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"DRIFT[missing-file]"* ]]
+  [[ "$output" == *"ghost"* ]]
+  [[ "$output" == *".github/workflows/ghost-reusable.yml"* ]]
+}
+
+@test "orchestrator: drift reports NO drift when the registry and host reusables are in sync" {
+  _drift_rings_one_agent
+  # Host lists exactly the one registered reusable — nothing extra, nothing missing.
+  _drift_stub '[
+    {"type":"file","name":"dev-lead-reusable.yml","path":".github/workflows/dev-lead-reusable.yml"}
+  ]' '[]'
+  run env CANARY_RINGS="$DRIFT_RINGS" bash "$ORCH" drift
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"DRIFT["* ]]
+  [[ "$output" == *"no reusable drift"* ]]
+  [[ "$output" == *"0 unregistered, 0 missing-file"* ]]
+}
+
+@test "orchestrator: drift --emit-stub prints a scaffold .agents[<name>] block for an unregistered reusable" {
+  _drift_rings_one_agent
+  _drift_stub '[
+    {"type":"file","name":"dev-lead-reusable.yml","path":".github/workflows/dev-lead-reusable.yml"},
+    {"type":"file","name":"foo-reusable.yml","path":".github/workflows/foo-reusable.yml"}
+  ]' '[]'
+  run env CANARY_RINGS="$DRIFT_RINGS" bash "$ORCH" drift --emit-stub
+  [ "$status" -eq 0 ]
+  # A scaffold JSON object keyed by the derived agent name 'foo' the maintainer can fill in.
+  [[ "$output" == *"\"foo\""* ]]
+  [[ "$output" == *"\"reusable\": \".github/workflows/foo-reusable.yml\""* ]]
+  [[ "$output" == *"petry-projects/.github-private"* ]]
+}
+
+@test "orchestrator: drift skips a host it cannot enumerate — no false missing-file avalanche" {
+  # Registry has 'ghost' on .github-private, but the contents API returns a non-array error
+  # body (no access / API error). The host must be SKIPPED, NOT reported as every registered
+  # reusable having been deleted.
+  DRIFT_RINGS="$BATS_TEST_TMPDIR/drift-noaccess.json"
+  jq '{version, description, org_infra_repos, member_tokens,
+       agents: {"ghost": (.agents["dev-lead"] + {reusable: ".github/workflows/ghost-reusable.yml"})}}' \
+    "$RINGS" > "$DRIFT_RINGS"
+  _drift_stub '{"message":"Not Found"}' '[]'
+  run env CANARY_RINGS="$DRIFT_RINGS" bash "$ORCH" drift
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"could not enumerate"* ]]
+  [[ "$output" != *"DRIFT[missing-file]"* ]]
+  [[ "$output" == *"0 unregistered, 0 missing-file"* ]]
+}
+
+@test "orchestrator: drift renders a fleet-drift table into the job summary when GITHUB_STEP_SUMMARY is set" {
+  _drift_rings_one_agent
+  _drift_stub '[
+    {"type":"file","name":"dev-lead-reusable.yml","path":".github/workflows/dev-lead-reusable.yml"},
+    {"type":"file","name":"foo-reusable.yml","path":".github/workflows/foo-reusable.yml"}
+  ]' '[]'
+  local summ="$BATS_TEST_TMPDIR/drift-summary.md"; : > "$summ"
+  run env CANARY_RINGS="$DRIFT_RINGS" GITHUB_STEP_SUMMARY="$summ" bash "$ORCH" drift
+  [ "$status" -eq 0 ]
+  grep -q "Canary Rollout — reusable drift" "$summ"
+  grep -q "foo-reusable.yml" "$summ"
+}
