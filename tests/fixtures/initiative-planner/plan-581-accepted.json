@@ -1,0 +1,115 @@
+{
+  "source_discussion": 572,
+  "epic": {
+    "title": "Initiative: Eval-gated, human-reviewed self-improving skills (SkillOpt-style)",
+    "body": "Stand up an eval-gated, human-reviewed self-improvement loop for agent skills/prompts, modeled on Microsoft SkillOpt and Anthropic skill-creator (discussion #572). An agent proposes a bounded edit to a skill markdown file, an offline eval gate decides on a held-out set, and the winner rides the existing idea->initiative->pr-review pipeline as a normal CODEOWNER-reviewed PR. Nothing self-promotes; no release-tag ruleset changes. Phase 1 lands the keystone with no loop; Phase 2 generalizes the harness; Phase 3 automates the scheduled proposer behind safe-rollout prerequisites."
+  },
+  "stories": [
+    {
+      "id": 1,
+      "title": "[Phase 1] Held-out eval set + deterministic scorer for prompts/triage.md",
+      "user_story": {
+        "role": "skill maintainer",
+        "action": "a versioned held-out eval set and a deterministic scorer for the triage prompt",
+        "benefit": "a proposed prompt edit can be scored offline before it ships"
+      },
+      "acceptance_criteria": [
+        "A held-out eval set for prompts/triage.md is committed under evals/ with a deterministic scorer",
+        "The scorer runs in CI as a non-blocking report"
+      ],
+      "tasks": [
+        { "task": "Author the held-out cases and commit them under evals/", "ac_refs": [1] },
+        { "task": "Write the deterministic scorer and wire a non-blocking CI report", "ac_refs": [2] }
+      ],
+      "dev_notes": [
+        "Eval cases and judge prompts are owned separately via CODEOWNERS and never writable by the proposer.",
+        "Testing: extend tests/test_validate_cases.bats for the dev/holdout split hygiene."
+      ],
+      "references": ["prompts/triage.md", "evals/README.md", "evals/validate-cases.py"],
+      "target_surface": ["evals/", "scripts/evals"],
+      "size": "M",
+      "blocked_by": []
+    },
+    {
+      "id": 2,
+      "title": "[Phase 2] Generalize the harness to prompts/deep-review.md with an LLM judge and a strict-improvement gate",
+      "user_story": {
+        "role": "skill maintainer",
+        "action": "the eval harness extended to the deep-review prompt with an LLM-judge scorer and a strict-improvement gate that rejects regressions",
+        "benefit": "prompt edits to the heavier reviewer are gated on proven, non-regressing quality"
+      },
+      "acceptance_criteria": [
+        "The harness scores prompts/deep-review.md via an LLM judge and promotes only strict winners",
+        "The judge prompt and rubric are tuned against a frozen held-out set with an immutable baseline artifact"
+      ],
+      "tasks": [
+        { "task": "Add the LLM-judge scorer for deep-review", "ac_refs": [1] },
+        { "task": "Tune the judge prompt and rubric against the frozen held-out set", "ac_refs": [2] }
+      ],
+      "dev_notes": [
+        "The judge prompt is iterated against a held-out set the candidate scorer never sees.",
+        "Testing: add a harness smoke test."
+      ],
+      "references": ["prompts/deep-review.md", "evals/README.md"],
+      "target_surface": ["evals/", "scripts/evals"],
+      "size": "M",
+      "blocked_by": [1]
+    },
+    {
+      "id": 3,
+      "title": "[Phase 3] Automate the scheduled proposer end-to-end behind safe-rollout guards",
+      "user_story": {
+        "role": "platform operator",
+        "action": "a scheduled proposer that drafts skill edits, runs them through shadow-mode dual-run, promotes via the health-gated workflow, and exposes dashboards plus a rollback path",
+        "benefit": "the self-improvement loop runs unattended behind safe-rollout guards"
+      },
+      "acceptance_criteria": [
+        "A scheduled workflow drafts bounded skill edits and opens PRs",
+        "Promotion is gated on the health-gated promotion workflow"
+      ],
+      "tasks": [
+        { "task": "Build the scheduled proposer workflow", "ac_refs": [1] },
+        { "task": "Wire promotion behind the health-gated promotion workflow", "ac_refs": [2] }
+      ],
+      "dev_notes": [
+        "Hands-off: activation is a human decision; the proposer never self-promotes.",
+        "Depends on health-gated promotion (#501) and shadow-mode dual-run being in place."
+      ],
+      "references": ["docs/initiatives/idea-to-initiative-pipeline.md"],
+      "target_surface": [".github/workflows/"],
+      "size": "L",
+      "blocked_by": [2],
+      "hands_off": true
+    }
+  ],
+  "open_questions": [
+    {
+      "question": "[eval_safeguards] The plan lacks held-out-set hygiene: the CODEOWNERS guard blocks editing the held-out cases but not overfitting to them, since the proposer can read them. A dev/test split is missing.",
+      "affected_story_ids": [1, 2],
+      "blocking": true,
+      "accepted": true,
+      "proposed_story": {
+        "title": "[Phase 1] Held-out-set hygiene: dev/test split so the proposer cannot overfit to eval cases",
+        "acceptance_criteria": [
+          "Eval cases are split into a proposer-visible dev set and a proposer-blind held-out test set",
+          "The scorer reports on the held-out test set the proposer never reads, closing the overfitting gap CODEOWNERS alone cannot"
+        ]
+      },
+      "proposed_blocked_by": 587
+    },
+    {
+      "question": "[eval_safeguards] There is no hard CI check enforcing case-immutability. CODEOWNERS only requests review; it is not a hard block on the automated proposer editing held-out cases.",
+      "affected_story_ids": [1, 2],
+      "blocking": true,
+      "accepted": true,
+      "proposed_story": {
+        "title": "[Phase 1] Hard CI case-immutability check enforcing held-out immutability for the proposer identity",
+        "acceptance_criteria": [
+          "A required CI check fails any PR authored by the automated proposer identity that changes a held-out case path",
+          "The check is keyed on PR author + changed paths and runs on every PR as a stable required status"
+        ]
+      },
+      "proposed_blocked_by": 587
+    }
+  ]
+}

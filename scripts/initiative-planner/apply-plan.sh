@@ -49,12 +49,17 @@ DISCUSSION_NODE_ID="${DISCUSSION_NODE_ID:-}"
 # discussion with "not yet planned" framing and exit cleanly (DRY_RUN honored
 # via comment_on_discussion). Re-running once the questions are answered then
 # materializes the real plan. Plain-string questions stay advisory only.
-blocking_count="$(jq '[(.open_questions // [])[] | select(type=="object" and .blocking==true)] | length' "$PLAN_PATH")"
+#
+# A finding a maintainer has explicitly accepted (`accepted:true`, #706) is no
+# longer an open blocker — it is resolved by materialization (see below) — so it
+# is excluded here. An un-accepted proposed_story finding still gates like any
+# other blocking open_question until the human accepts it.
+blocking_count="$(jq '[(.open_questions // [])[] | select(type=="object" and .blocking==true and .accepted != true)] | length' "$PLAN_PATH")"
 if [ "$blocking_count" -gt 0 ]; then
   src_g="$(jq -r '.source_discussion // empty' "$PLAN_PATH")"
   [ -n "$src_g" ] || src_g="$DISCUSSION_NUMBER"
   if [ -n "$DISCUSSION_NODE_ID" ]; then
-    blocking_list="$(jq -r '[(.open_questions // [])[] | select(type=="object" and .blocking==true) | .question] | map("- " + .) | join("\n")' "$PLAN_PATH")"
+    blocking_list="$(jq -r '[(.open_questions // [])[] | select(type=="object" and .blocking==true and .accepted != true) | .question] | map("- " + .) | join("\n")' "$PLAN_PATH")"
     other_list="$(jq -r '(.open_questions // []) | map(select((type=="string") or (type=="object" and .blocking != true))) | map(if type=="string" then . else .question end) | if length>0 then "\n\n_Also worth confirming (non-blocking):_\n" + (map("- " + .) | join("\n")) else "" end' "$PLAN_PATH")"
     printf -v gate_comment '<!-- initiative-planner -->\n**⏸️ Not yet planned — the BMAD Scrum Master (Bob) has blocking open questions.**\n\nThis idea cannot be turned into an epic until these are answered:\n\n%s%s\n\n---\n**No epic or stories were created.** Answer the questions above, then re-approve / re-dispatch the planner and Bob will materialize the full epic + sub-issue DAG.' \
       "$blocking_list" "$other_list"
@@ -198,6 +203,40 @@ for lid in "${local_ids[@]}"; do
     echo "  edge: #${issue_num} blocked_by existing #${dep_existing}"
   done < <(jq -r --argjson i "$lid" '.stories[] | select(.id==$i) | (.blocked_by_existing_issues // [])[]' "$PLAN_PATH")
 done
+
+# ── materialize accepted proposed-story findings (#706) ───────────────────────
+# A plan-critic finding may carry a proposed_story (a whole story the plan is
+# missing) + proposed_blocked_by (the existing issue that story gates). Until a
+# maintainer sets accepted:true it gates like any blocking open_question (the
+# gate above); on ACCEPTANCE we turn it into a real sub-issue of THIS epic and
+# wire the native blocked_by edge — instead of leaving it as advisory prose that
+# had to be created by hand (the #581 -> #691/#692 gap). Materialization happens
+# ONLY on explicit acceptance, never automatically. A plan with no accepted
+# proposed_story findings runs this loop zero times (clean no-op).
+while IFS= read -r q_index; do
+  [ -n "$q_index" ] || continue
+  ps_title="$(jq -r --argjson i "$q_index" '.open_questions[$i].proposed_story.title' "$PLAN_PATH")"
+  ps_body="$(jq -r --argjson i "$q_index" '
+    .open_questions[$i].proposed_story
+    | "## Story\n" + .title
+      + "\n\n## Acceptance Criteria\n"
+      + ([.acceptance_criteria | to_entries[] | "\(.key + 1). \(.value)"] | join("\n"))
+  ' "$PLAN_PATH")"
+  ps_body="${ps_body}"$'\n\n'"_Materialized from a maintainer-accepted plan-critic finding for epic #${epic_number} (issue #706). Status: ready-for-dev._"
+
+  ps_out="$(create_issue "$REPO" "$ps_title" "$ps_body" "initiative")"
+  read -r ps_number ps_id <<< "$ps_out"
+  echo "  materialized proposed_story: #${ps_number} (id ${ps_id}) — ${ps_title}"
+  link_sub_issue "$REPO" "$epic_number" "$ps_id"
+
+  # proposed_blocked_by is the EXISTING issue this new story gates; wire it so
+  # that issue becomes blocked_by the new story (the new story must land first).
+  pbb="$(jq -r --argjson i "$q_index" '.open_questions[$i].proposed_blocked_by // empty' "$PLAN_PATH")"
+  if [ -n "$pbb" ]; then
+    add_blocked_by "$REPO" "$pbb" "$ps_number"
+    echo "  edge: #${pbb} blocked_by materialized #${ps_number} (proposed_blocked_by)"
+  fi
+done < <(jq -r '(.open_questions // []) | to_entries[] | select(.value | type=="object") | select(.value?.accepted == true and .value?.proposed_story != null) | .key' "$PLAN_PATH")
 
 # ── post the plan back to the discussion ──────────────────────────────────────
 if [ -n "$DISCUSSION_NODE_ID" ]; then
