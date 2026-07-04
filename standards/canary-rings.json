@@ -10,6 +10,7 @@
     "$org_infra": "org_infra_repos minus the host (the host is already in `next`)",
     "*": "every other consumer not named in an earlier ring"
   },
+  "_autocut_note": "autocut (#1069): `canary-rollout.sh autocut` (gated by org var CANARY_AUTO_CUT) auto-cuts a new immutable <agent>/vX.Y.Z + moves `next` when a reusable's blob on its host main HEAD differs from the current `next` candidate. Version bump defaults to patch; override per agent with the optional `.agents[<a>].autocut.bump` knob (patch|minor|major).",
   "agents": {
     "dev-lead": {
       "host": "petry-projects/.github-private",
