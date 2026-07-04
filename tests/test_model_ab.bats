@@ -192,7 +192,7 @@ teardown() { rm -rf "$TMP"; }
   before="$(cat "$TMP/evals/triage/holdout/cases.jsonl" \
                 "$TMP/evals/deep-review/holdout/cases.jsonl" \
                 "$TMP/evals/deep-review/scorer.json" \
-                "$TMP/evals/judge.md" | md5sum)"
+                "$TMP/evals/judge.md" | sha256sum)"
   EVALS_DIR="$TMP/evals" EVAL_ENGINE_CMD="$GEN_STUB" EVAL_JUDGE_CMD="$JUDGE_STUB" \
     AB_JUDGE_MODEL="claude-sonnet-4-6" \
     run --separate-stderr bash "$AB" model-sonnet5-perfect model-sonnet46-perfect triage deep-review
@@ -200,7 +200,7 @@ teardown() { rm -rf "$TMP"; }
   after="$(cat "$TMP/evals/triage/holdout/cases.jsonl" \
                "$TMP/evals/deep-review/holdout/cases.jsonl" \
                "$TMP/evals/deep-review/scorer.json" \
-               "$TMP/evals/judge.md" | md5sum)"
+               "$TMP/evals/judge.md" | sha256sum)"
   [ "$before" = "$after" ]
 }
 

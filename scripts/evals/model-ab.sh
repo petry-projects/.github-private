@@ -97,10 +97,10 @@ fi
 _snapshot() {
   local skill f
   for skill in "${SKILLS[@]}"; do
-    f="$EVALS_DIR/$skill/holdout/cases.jsonl"; [ -f "$f" ] && md5sum "$f"
-    f="$EVALS_DIR/$skill/scorer.json";         [ -f "$f" ] && md5sum "$f"
+    f="$EVALS_DIR/$skill/holdout/cases.jsonl"; [ -f "$f" ] && sha256sum "$f"
+    f="$EVALS_DIR/$skill/scorer.json";         [ -f "$f" ] && sha256sum "$f"
   done
-  [ -f "$EVALS_DIR/judge.md" ] && md5sum "$EVALS_DIR/judge.md"
+  [ -f "$EVALS_DIR/judge.md" ] && sha256sum "$EVALS_DIR/judge.md"
   return 0
 }
 

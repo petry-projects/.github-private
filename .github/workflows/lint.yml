@@ -82,6 +82,7 @@ jobs:
             tests/test_pr_diff_dispatch.bats \
             tests/test_plan_review.bats \
             tests/test_plan_critic.bats \
+            tests/test_plan_materialize.bats \
             tests/test_skill_review.bats \
             tests/test_skill_evals.bats \
             tests/test_model_ab.bats \
