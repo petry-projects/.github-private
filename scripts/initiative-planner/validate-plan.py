@@ -164,12 +164,17 @@ def main() -> None:
 
     # open_questions object form may carry affected_story_ids (critic findings
     # routed here by route-findings.sh); each must reference a real story id.
+    # It may also carry a proposed_story (#706): an accepted finding must have
+    # one, else acceptance would silently materialize nothing.
     for q in plan.get("open_questions", []) or []:
         if isinstance(q, dict):
             for sid in q.get("affected_story_ids", []) or []:
                 if sid not in id_set:
                     fail(f"open question affected_story_ids references {sid}, "
                          "which is not a story id in this plan")
+            if q.get("accepted") and not q.get("proposed_story"):
+                fail("open question is accepted but carries no proposed_story to "
+                     "materialize — acceptance would create nothing")
 
     check_grounding(stories, repo_root())
 
