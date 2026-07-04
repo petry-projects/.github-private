@@ -26,6 +26,7 @@ set -euo pipefail
 #   canary-rollout.sh rollback <agent> <ring> --to <vX.Y.Z> [--dry-run]
 #   canary-rollout.sh resolve  <agent> <channel>       # debug: print resolved member repos
 #   canary-rollout.sh sync-issues [--dry-run]          # blocker issue per BLOCKED agent + fleet-status table to the job summary (auto-triage)
+#   canary-rollout.sh drift    [--emit-stub]           # read-only: report *-reusable.yml on a host but unregistered, + stale registry entries (#1082)
 #
 # Gate standard: .github#548 — graduated per-transition dwell/sample floors over a
 # per-candidate cumulative window (since the candidate's OWN vX.Y.Z cut), a robust
@@ -922,6 +923,161 @@ cmd_autocut() {
   return 0
 }
 
+# ── drift: registry vs host reusables (read-only audit, #1082) ──────────────────
+# canary-rings.json's .agents{} is the MANUAL source of truth for what the canary
+# pipeline manages — both autocut and evaluate-all iterate `.agents | keys`, so ANY
+# reusable not registered is covered by nothing (no cut, no soak, no gate, no dashboard).
+# There is otherwise no scan of the hosts' .github/workflows/*-reusable.yml, so a
+# first-party reusable that was added/renamed but never registered ships with ZERO staged
+# rollout until a human remembers to register it.
+#
+# `drift` closes that observability gap: it enumerates the *-reusable.yml on every
+# registered host repo, diffs against the registry's reusable paths, and REPORTS (stdout +
+# job summary) two classes of drift. It is read-only — it never registers anything (ring
+# topology/members need human intent); `--emit-stub` optionally prints a scaffold
+# .agents[<name>] block for a maintainer to fill in.
+#   - unregistered: a *-reusable.yml present on a host but absent from canary-rings.json.
+#   - missing-file: a registry entry whose reusable file no longer exists on its host.
+
+# _registered_hosts — the set of host repos to scan: the union of every agent's `host`
+# and the org_infra_repos list, deduped (one repo per line).
+_registered_hosts() {
+  _jq -r '([.agents[]?.host // empty] + (.org_infra_repos // []))
+          | map(select(. != "")) | unique | .[]'
+}
+
+# _gh_list_reusables <repo> — the full paths of *-reusable.yml files under the repo's
+# .github/workflows (one per line). Reads the directory listing via the contents API and
+# filters locally (mirrors _run_json: raw fetch, jq in the caller). Returns non-zero when
+# the listing could NOT be enumerated (the API errored or did not return a JSON array), so
+# the caller can distinguish "no reusables here" from "could not read the host" — the latter
+# must NOT be treated as every registered reusable having been deleted (a false missing-file
+# avalanche). A genuinely empty (but readable) workflows dir returns success with no output.
+_gh_list_reusables() {
+  local repo="$1" json
+  json="$(gh api "repos/$repo/contents/.github/workflows" 2>/dev/null)" || return 1
+  jq -e 'type=="array"' >/dev/null 2>&1 <<< "$json" || return 1
+  jq -r '[.[]? | select(.type=="file") | select((.name // "") | endswith("-reusable.yml")) | .path] | .[]' \
+    2>/dev/null <<< "$json" || true
+  return 0
+}
+
+# _registered_reusables_for_host <host> — the reusable paths registered to <host> (one
+# per line, deduped).
+_registered_reusables_for_host() {
+  _jq -r --arg h "$1" '[.agents[]? | select(.host==$h) | .reusable // empty] | unique | .[]'
+}
+
+# _agents_for_reusable <host> <path> — the registry agent name(s) whose (host,reusable)
+# match, joined by ", " (for the missing-file finding message).
+_agents_for_reusable() {
+  _jq -r --arg h "$1" --arg p "$2" \
+    '[.agents | to_entries[] | select(.value.host==$h and .value.reusable==$p) | .key] | join(", ")'
+}
+
+# _drift_scaffold <host> <path> — a scaffold .agents[<name>] JSON block for an unregistered
+# reusable, keyed by the name derived from the filename (foo-reusable.yml → foo). Clones an
+# existing agent's ring topology + gate defaults as a starting point (members need human
+# intent), resets host/reusable/run_workflow, and empties the per-reusable benign allowlist
+# so a new reusable does not silently inherit another agent's benign classes. --emit-stub only.
+_drift_scaffold() {
+  local host="$1" path="$2" name
+  name="${path##*/}"; name="${name%-reusable.yml}"
+  _jq --arg h "$host" --arg p "$path" --arg n "$name" '
+    (.agents | to_entries | (map(select(.value.host==$h)) + .) | .[0].value) as $tpl
+    | { ($n): ($tpl
+        | .host = $h
+        | .reusable = $p
+        | .run_workflow = "TODO: set to the reusable workflow name (the name: value)"
+        | (.gate.benign_failure_classes) = []) }'
+}
+
+# cmd_drift [--emit-stub] — the read-only registry/host drift audit. Exits 0 (report-only);
+# each finding is a ::warning:: annotation and a job-summary row. --emit-stub additionally
+# prints a scaffold .agents[<name>] block per unregistered reusable.
+cmd_drift() {
+  local emit_stub=false
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --emit-stub) emit_stub=true ;;
+      *) echo "::error::unknown drift flag: $1" >&2; return 2 ;;
+    esac; shift
+  done
+  echo "== canary-rollout drift: registry vs host reusables (read-only; gate standard: .github#548) =="
+  local hosts host rows="" stubs="" u_total=0 m_total=0
+  hosts="$(_registered_hosts)"
+  if [ -z "$hosts" ]; then
+    echo "no host repos resolved from $CANARY_RINGS — nothing to audit."; return 0
+  fi
+  while IFS= read -r host; do
+    [ -z "$host" ] && continue
+    echo "──────── host: $host ────────"
+    local present registered unregistered missing p agents
+    if ! present="$(_gh_list_reusables "$host")"; then
+      # Could not read the host's workflows dir — skip it rather than false-flag every
+      # registered reusable as missing-file. Read-only + best-effort: a warning, not a failure.
+      echo "::warning::drift $host: could not enumerate .github/workflows (API error / no access) — skipping host this cycle"
+      continue
+    fi
+    registered="$(_registered_reusables_for_host "$host")"
+    local reg_arr=() pres_arr=() reg_str="" pres_str=""
+    if [ -n "$registered" ]; then mapfile -t reg_arr <<< "$registered"; fi
+    if [ -n "$present" ]; then mapfile -t pres_arr <<< "$present"; fi
+    [ "${#reg_arr[@]}" -gt 0 ] && reg_str=" ${reg_arr[*]}"
+    [ "${#pres_arr[@]}" -gt 0 ] && pres_str=" ${pres_arr[*]}"
+    echo "  registered reusables (${#reg_arr[@]}):$reg_str"
+    echo "  present *-reusable.yml (${#pres_arr[@]}):$pres_str"
+    # unregistered = present on the host but not in the registry.
+    unregistered="$(set_difference "$present" "$registered")"
+    while IFS= read -r p; do
+      [ -z "$p" ] && continue
+      echo "::warning::DRIFT[unregistered] $host: $p present on host but absent from canary-rings.json (no cut/soak/gate/dashboard until registered)"
+      rows+="| \`$host\` | unregistered | \`$p\` | not in \`.agents{}\` — register it or delete the file |"$'\n'
+      u_total=$((u_total + 1))
+      if [ "$emit_stub" = true ]; then stubs+="$(_drift_scaffold "$host" "$p")"$'\n'; fi
+    done <<< "$unregistered"
+    # missing-file = registered in the registry but the file is gone from the host.
+    missing="$(set_difference "$registered" "$present")"
+    while IFS= read -r p; do
+      [ -z "$p" ] && continue
+      agents="$(_agents_for_reusable "$host" "$p")"
+      echo "::warning::DRIFT[missing-file] $host: registry agent '${agents:-?}' -> $p not found on host (deleted/renamed reusable; stale registry entry)"
+      rows+="| \`$host\` | missing-file | \`$p\` | registry agent \`${agents:-?}\` points at a file that no longer exists |"$'\n'
+      m_total=$((m_total + 1))
+    done <<< "$missing"
+  done <<< "$hosts"
+
+  echo "----"
+  local total=$((u_total + m_total))
+  echo "drift summary: $u_total unregistered, $m_total missing-file ($total total findings)"
+  if [ "$total" -eq 0 ]; then
+    echo "no reusable drift detected — the registry and host reusables are in sync."
+  fi
+  if [ "$emit_stub" = true ] && [ -n "$stubs" ]; then
+    echo "---- scaffold .agents[<name>] stubs for unregistered reusables (--emit-stub) ----"
+    echo "Paste into standards/canary-rings.json under .agents, then set run_workflow + review ring members:"
+    printf '%s' "$stubs"
+  fi
+
+  # Render the fleet-drift table into the run's job summary (a read-only snapshot). Falls
+  # back to stdout when GITHUB_STEP_SUMMARY is unset (local/manual runs).
+  local ts dmd
+  ts="$(date -u +%Y-%m-%dT%H:%MZ 2>/dev/null || echo unknown)"
+  if [ "$total" -eq 0 ]; then
+    dmd="$(printf '# Canary Rollout — reusable drift\n\nLast updated: `%s` · gate standard: .github#548.\n\n_No reusable drift — the registry and host `*-reusable.yml` are in sync._\n' "$ts")"
+  else
+    dmd="$(printf '# Canary Rollout — reusable drift\n\nLast updated: `%s` · gate standard: .github#548 · findings: **%s** (%s unregistered, %s missing-file).\n\n| host | class | reusable | note |\n|---|---|---|---|\n%s\n> `unregistered` ships with ZERO staged rollout until added to `.agents{}`; `missing-file` is a stale registry entry pointing at a deleted reusable. Report-only — no auto-registration.\n' "$ts" "$total" "$u_total" "$m_total" "${rows%$'\n'}")"
+  fi
+  if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+    if printf '\n%s\n' "$dmd" >> "$GITHUB_STEP_SUMMARY"; then
+      echo "  wrote reusable-drift table to the job summary"
+    else
+      echo "::warning::could not write the reusable-drift job summary"
+    fi
+  fi
+  return 0
+}
+
 main() {
   local cmd
   for cmd in jq gh git; do
@@ -944,7 +1100,8 @@ main() {
     resolve)      [ $# -ge 2 ] || { echo "usage: resolve <agent> <channel>" >&2; return 2; }; resolve_members "$@" ;;
     sync-issues)  cmd_sync_issues "$@" ;;   # upsert blocker issues + dashboard for held promotions
     autocut)      cmd_autocut "$@" ;;       # cut a new candidate when a reusable changes on main (#1069)
-    *) echo "::error::usage: canary-rollout.sh {autocut|evaluate|evaluate-all|promote|promote-all|rollback|resolve|sync-issues} <agent> ..." >&2; return 2 ;;
+    drift)        cmd_drift "$@" ;;         # report reusables present on a host but unregistered, + stale registry entries (#1082)
+    *) echo "::error::usage: canary-rollout.sh {autocut|drift|evaluate|evaluate-all|promote|promote-all|rollback|resolve|sync-issues} [args]" >&2; return 2 ;;
   esac
 }
 
