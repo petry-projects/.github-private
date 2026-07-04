@@ -140,8 +140,16 @@ set_engine_config() {
       #   - adaptive thinking only; budget_tokens/temperature/top_p/top_k removed
       #   - omit thinking param entirely (disabled returns 400 on fable-5)
       #   - min cacheable prefix: fable-5 = 2048 tok, opus-4-8 = 4096 tok
-      CLAUDE_TRIAGE_MODEL_CHAIN="${CLAUDE_TRIAGE_MODEL_CHAIN:-claude-haiku-4-5-20251001,claude-sonnet-4-6}"
-      CLAUDE_DEEP_MODEL_CHAIN="${CLAUDE_DEEP_MODEL_CHAIN:-claude-opus-4-8,claude-sonnet-4-6}"
+      # Sonnet 5 candidate (#1098): claude-sonnet-5-0 is appended AFTER the
+      # sonnet-4-6 slot in the triage and deep chains as a non-default fallback
+      # candidate — it earns its own TPM/RPM bucket for the layer-1 rate-limit
+      # walk without displacing the current primaries (haiku triage / opus deep)
+      # or the sonnet-4-6 fallback ordering. It is NOT the fleet default; a
+      # promotion to primary rides Story 5's canary rings. The daily cap is
+      # shared across Claude models (#206), so this hop only helps per-model RPM/
+      # TPM, not the subscription cap. Action tier is out of scope (#1098).
+      CLAUDE_TRIAGE_MODEL_CHAIN="${CLAUDE_TRIAGE_MODEL_CHAIN:-claude-haiku-4-5-20251001,claude-sonnet-4-6,claude-sonnet-5-0}"
+      CLAUDE_DEEP_MODEL_CHAIN="${CLAUDE_DEEP_MODEL_CHAIN:-claude-opus-4-8,claude-sonnet-4-6,claude-sonnet-5-0}"
       CLAUDE_AUDIT_MODEL_CHAIN="${CLAUDE_AUDIT_MODEL_CHAIN:-claude-fable-5,claude-opus-4-8,claude-opus-4-7}"
       CLAUDE_ACTION_MODEL_CHAIN="${CLAUDE_ACTION_MODEL_CHAIN:-claude-sonnet-4-6,claude-opus-4-8}"
       CLAUDE_SINGLE_MODEL_CHAIN="${CLAUDE_SINGLE_MODEL_CHAIN:-claude-fable-5,claude-opus-4-8,claude-opus-4-7}"
