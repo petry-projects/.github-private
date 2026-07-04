@@ -58,16 +58,6 @@
 #
 set -euo pipefail
 
-# Shared bot git identity — a THIS_REPO cut creates a LOCAL annotated tag (`git tag -a`),
-# which aborts with "fatal: empty ident name" on a GitHub-hosted runner that has no
-# user.name/user.email configured. Cross-repo cuts go through `gh api` (App identity) and
-# are unaffected; only the local path needs this. Sourced (no side effects) so tests can
-# still `source` this file; setup_git_identity is invoked lazily in the this-repo cut path.
-_CRHERE="$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]:-$0}")" && pwd -P)"
-readonly _CRHERE
-# shellcheck source=lib/git-identity.sh
-source "${_CRHERE}/lib/git-identity.sh"
-
 # The repo whose git refs hold cross-repo agents' release/channel tags.
 CROSS_REPO_TARGET="petry-projects/.github"
 
@@ -247,11 +237,11 @@ gh_move_tag() {
 }
 
 # strip_origin <ref> — normalize a local-style ref to a remote-repo ref name for
-# the cross-repo API path: `origin/main` → `main`, a bare ref/SHA passes through.
+# the API path: `origin/main` → `main`, a bare ref/SHA passes through.
 # (`git rev-parse` understands `origin/main`; the GitHub API does not.)
 strip_origin() { printf '%s\n' "${1#origin/}"; }
 
-# ── cross-repo tag operations (gh api; require GH_TOKEN with contents:write) ───
+# ── tag operations (gh api; require GH_TOKEN with contents:write on the host) ──
 # Thin wrappers kept separate from the pure helpers so the network surface is
 # explicit. Each targets an arbitrary <repo> so tests can mock `gh`.
 
