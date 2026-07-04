@@ -11,7 +11,14 @@ set -euo pipefail
 # Channel tags ARE the rollout state (#502): the frontier is derived from where each
 # channel tag resolves; there is no separate state store.
 #
+# The FRONT END that closes the last manual seam (#1069): `autocut` polls each registered
+# reusable and, when its blob on the host's main HEAD differs from the current `next`
+# candidate, cuts a new immutable <agent>/vX.Y.Z and moves `next` onto it — seeding the soak/
+# promote pipeline with no manual `cut-release.sh`. It is gated by CANARY_AUTO_CUT (the single
+# kill-switch), runs BEFORE promote-all on the scheduled tick, and is best-effort.
+#
 # Usage:
+#   canary-rollout.sh autocut      [--dry-run]         # cut+seed new candidates for changed reusables (gated by CANARY_AUTO_CUT)
 #   canary-rollout.sh evaluate     <agent>             # read-only gate + health report (also the #502 report)
 #   canary-rollout.sh evaluate-all                     # read-only evaluate for EVERY registry agent (fleet-wide; the 4h timer)
 #   canary-rollout.sh promote  <agent> [--override] [--allow-pre-existing] [--dry-run]
@@ -31,6 +38,7 @@ set -euo pipefail
 #   SOAK_WINDOW_DAYS    optional override of the baseline-window length in days
 #                       (default: .gate.baseline_window_days, else 14)
 #   CANARY_FAILURE_CATEGORY  optional triage hint (comment-cap|rate-limit|infra|data)
+#   CANARY_AUTO_CUT     autocut kill-switch — autocut is a no-op unless this == 'true'
 #   GH_TOKEN            credential; the workflow mints a GitHub App token and passes it here
 
 _HERE="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
@@ -38,6 +46,10 @@ _HERE="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 source "${_HERE}/lib/canary-rollout.sh"
 DEFAULT_RINGS="$(cd "${_HERE}/.." && pwd)/standards/canary-rings.json"
 CANARY_RINGS="${CANARY_RINGS:-$DEFAULT_RINGS}"
+
+# CUT_RELEASE — the cut-release.sh invoked by `autocut` to cut a new candidate. A
+# sibling of this script by default; overridable so tests can stub the cut (#1069).
+CUT_RELEASE="${CUT_RELEASE:-${_HERE}/cut-release.sh}"
 
 # THIS_REPO — the repo this checkout belongs to. Agents hosted HERE (dev-lead, pr-review)
 # keep their channel/release tags in this checkout and resolve them via local git. A
@@ -788,6 +800,124 @@ cmd_sync_issues() {
   return 0
 }
 
+# ── autocut: cut a new candidate when a reusable changes on main (#1069) ────────
+# The FRONT END of the canary pipeline (the promoter's counterpart). At each scheduled
+# tick — gated by CANARY_AUTO_CUT — for each registered agent it compares the reusable
+# blob at the host's default-branch HEAD against the blob at the current `next` candidate;
+# if they differ it cuts a new immutable <agent>/vX.Y.Z (patch bump by default) and moves
+# `next` onto it via cut-release.sh, seeding the candidate into the existing soak/promote
+# pipeline. Detection is done here in .github-private via the App token (which reads every
+# host), so no cross-repo Actions plumbing is needed. Best-effort: never fails the run.
+#
+# Scope/limitation (v1): detection is on the reusable FILE blob only (the registry
+# `reusable` path). A change to a shared library the reusable sources — without the
+# reusable file itself changing — is not detected. Acceptable for v1; could extend to a
+# path-set later.
+
+# _gh_default_branch <repo> — the repo's default branch name (empty on error).
+_gh_default_branch() { gh api "repos/$1" --jq '.default_branch' 2>/dev/null || echo ""; }
+
+# _gh_head_sha <repo> <branch> — the commit SHA at <branch> HEAD (empty on error).
+_gh_head_sha() { gh api "repos/$1/commits/$2" --jq '.sha' 2>/dev/null || echo ""; }
+
+# _gh_blob_sha <repo> <path> <ref> — the git blob SHA of <path> at <ref> (empty on error).
+_gh_blob_sha() { gh api "repos/$1/contents/$2?ref=$3" --jq '.sha' 2>/dev/null || echo ""; }
+
+# _host_release_versions <agent> — echo every MAJOR.MINOR.PATCH (one per line) that has an
+# immutable <agent>/vX.Y.Z tag on the agent's host, via the API (the App token reads every
+# host; release tags are on the remote for both this-repo and cross-repo agents).
+_host_release_versions() {
+  local agent="$1" host
+  host="$(_agent_field "$agent" host)"
+  [ -z "$host" ] && return 0
+  gh api "repos/$host/git/matching-refs/tags/$agent/v" --jq '.[]?.ref' 2>/dev/null \
+    | sed -n "s#^refs/tags/${agent}/v##p" || true
+}
+
+# _autocut_bump <agent> — the configured bump level for the agent (registry knob
+# .agents[a].autocut.bump), defaulting to patch. Anything but minor/major → patch.
+_autocut_bump() {
+  local b
+  b="$(_jq -r --arg a "$1" '.agents[$a]?.autocut?.bump // "patch"')"
+  case "$b" in major|minor|patch) echo "$b" ;; *) echo "patch" ;; esac
+}
+
+# _next_release_version <agent> <bump> — compute the next release version: bump the highest
+# existing <agent>/vX.Y.Z on the host by <bump>. No existing tags → seed from 0.0.0.
+_next_release_version() {
+  local agent="$1" bump="$2" versions highest
+  versions="$(_host_release_versions "$agent")"
+  # shellcheck disable=SC2086
+  highest="$(max_semver $versions)"
+  [ -z "$highest" ] && highest="0.0.0"
+  bump_version "$highest" "$bump"
+}
+
+# _autocut_agent <agent> <dry:true|false> — cut a new candidate for ONE agent if its reusable
+# blob on the host default-branch HEAD differs from the blob at the current `next` candidate.
+# Idempotent: no-op when the blobs match or main HEAD already equals the next candidate.
+# Best-effort: any resolution gap is a ::warning + skip, never a hard failure.
+_autocut_agent() {
+  local agent="$1" dry="$2"
+  local host reusable defbranch mainsha next_commit main_blob next_blob bump newver
+  host="$(_agent_field "$agent" host)"
+  reusable="$(_agent_field "$agent" reusable)"
+  if [ -z "$host" ] || [ -z "$reusable" ]; then
+    echo "::warning::autocut $agent: missing host/reusable in registry — skipping"; return 0
+  fi
+  defbranch="$(_gh_default_branch "$host")"; [ -z "$defbranch" ] && defbranch="main"
+  mainsha="$(_gh_head_sha "$host" "$defbranch")"
+  if [ -z "$mainsha" ]; then
+    echo "::warning::autocut $agent: could not resolve $host $defbranch HEAD — skipping"; return 0
+  fi
+  main_blob="$(_gh_blob_sha "$host" "$reusable" "$mainsha")"
+  if [ -z "$main_blob" ]; then
+    echo "::warning::autocut $agent: reusable '$reusable' not found at $host@${mainsha:0:12} — skipping"; return 0
+  fi
+  next_commit="$(channel_commit "$agent" next)"
+  next_blob=""
+  [ -n "$next_commit" ] && next_blob="$(_gh_blob_sha "$host" "$reusable" "$next_commit")"
+  # Idempotency: nothing to cut when main HEAD already IS the candidate, or the reusable blob
+  # is byte-identical between main and the current next candidate.
+  if [ "$mainsha" = "$next_commit" ] || { [ -n "$next_blob" ] && [ "$main_blob" = "$next_blob" ]; }; then
+    echo "autocut $agent: reusable unchanged on $host (next candidate up to date) — no cut."
+    return 0
+  fi
+  bump="$(_autocut_bump "$agent")"
+  newver="$(_next_release_version "$agent" "$bump")"
+  echo "autocut $agent: reusable changed on $host ($defbranch ${mainsha:0:12}) vs next ${next_commit:0:12} — cutting v$newver (bump=$bump), moving next."
+  if [ "$dry" = true ]; then
+    echo "[DRY-RUN] would: cut-release.sh $agent $newver --ref $mainsha --channel next --push"
+    return 0
+  fi
+  bash "$CUT_RELEASE" "$agent" "$newver" --ref "$mainsha" --channel next --push \
+    || { echo "::warning::autocut $agent: cut-release failed for v$newver (best-effort, continuing)"; return 0; }
+  echo "autocut $agent: cut v$newver from ${mainsha:0:12} and moved next."
+}
+
+# cmd_autocut [--dry-run] — the scheduled front end. Gated by CANARY_AUTO_CUT (the single
+# kill-switch): a clean no-op unless CANARY_AUTO_CUT == 'true'. Iterates every registry agent;
+# a per-agent failure is logged and skipped so one agent cannot halt the fleet sweep. Runs
+# BEFORE promote-all so a freshly cut candidate begins soaking the same tick (dwell=0 < floor
+# → it SOAKS, does not promote).
+cmd_autocut() {
+  local dry=false; [ "${1:-}" = "--dry-run" ] && dry=true
+  if [ "${CANARY_AUTO_CUT:-}" != "true" ]; then
+    echo "== canary-rollout autocut: DISABLED (CANARY_AUTO_CUT != 'true') — no-op. =="
+    return 0
+  fi
+  local agents agent
+  agents="$(_jq -r '.agents? | keys[]?' 2>/dev/null || true)"
+  [ -z "$agents" ] && { echo "no agents registered in $CANARY_RINGS — nothing to autocut."; return 0; }
+  echo "== canary-rollout autocut: fleet-wide dry=$dry (gate standard: .github#548) =="
+  while IFS= read -r agent; do
+    [ -z "$agent" ] && continue
+    echo "──────── agent: $agent ────────"
+    _autocut_agent "$agent" "$dry" || echo "::warning::autocut of $agent failed (continuing fleet)"
+  done <<< "$agents"
+  return 0
+}
+
 main() {
   local cmd
   for cmd in jq gh git; do
@@ -809,7 +939,8 @@ main() {
     rollback)     [ $# -ge 2 ] || { echo "usage: rollback <agent> <ring> --to <vX.Y.Z>" >&2; return 2; }; cmd_rollback "$@" ;;
     resolve)      [ $# -ge 2 ] || { echo "usage: resolve <agent> <channel>" >&2; return 2; }; resolve_members "$@" ;;
     sync-issues)  cmd_sync_issues "$@" ;;   # upsert blocker issues + dashboard for held promotions
-    *) echo "::error::usage: canary-rollout.sh {evaluate|evaluate-all|promote|promote-all|rollback|resolve|sync-issues} <agent> ..." >&2; return 2 ;;
+    autocut)      cmd_autocut "$@" ;;       # cut a new candidate when a reusable changes on main (#1069)
+    *) echo "::error::usage: canary-rollout.sh {autocut|evaluate|evaluate-all|promote|promote-all|rollback|resolve|sync-issues} <agent> ..." >&2; return 2 ;;
   esac
 }
 
