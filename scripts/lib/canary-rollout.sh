@@ -80,6 +80,45 @@ robust_sample_target() {
   clamp "$target_raw" "$lo" "$hi"
 }
 
+# ── version-bump math (autocut front end, #1069) ──────────────────────────────
+# Pure semver helpers used by `canary-rollout.sh autocut` to compute the next
+# immutable release version from the highest existing <agent>/vX.Y.Z on the host.
+
+# bump_version <version> <patch|minor|major> — echo MAJOR.MINOR.PATCH bumped by one
+# level. Unknown/absent level defaults to patch (the v1 default). Input must be a
+# strict MAJOR.MINOR.PATCH; callers validate the tag before calling.
+bump_version() {
+  local ver="$1" level="${2:-patch}" major minor patch
+  IFS=. read -r major minor patch <<< "$ver"
+  case "$level" in
+    major) echo "$((major + 1)).0.0" ;;
+    minor) echo "${major}.$((minor + 1)).0" ;;
+    *)     echo "${major}.${minor}.$((patch + 1))" ;;
+  esac
+}
+
+# _semver_gt <a> <b> — return 0 iff semver a is strictly greater than b (compared
+# by major, then minor, then patch). Equal is NOT greater.
+_semver_gt() {
+  local a1 a2 a3 b1 b2 b3
+  IFS=. read -r a1 a2 a3 <<< "$1"
+  IFS=. read -r b1 b2 b3 <<< "$2"
+  if [ "$a1" -ne "$b1" ]; then [ "$a1" -gt "$b1" ]; return; fi
+  if [ "$a2" -ne "$b2" ]; then [ "$a2" -gt "$b2" ]; return; fi
+  [ "$a3" -gt "$b3" ]
+}
+
+# max_semver <version...> — echo the highest strict MAJOR.MINOR.PATCH among the
+# args, ignoring any token that is not a strict semver. Empty if none are valid.
+max_semver() {
+  local v hi=""
+  for v in "$@"; do
+    [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || continue
+    if [ -z "$hi" ] || _semver_gt "$v" "$hi"; then hi="$v"; fi
+  done
+  echo "$hi"
+}
+
 # dwell_met <dwell_hours> <floor_hours> — echo 1 if the candidate has dwelled at
 # least floor_hours on the source tier, else 0.
 dwell_met() {
