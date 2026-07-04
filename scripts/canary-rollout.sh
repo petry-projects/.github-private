@@ -831,14 +831,14 @@ _host_release_versions() {
   host="$(_agent_field "$agent" host)"
   [ -z "$host" ] && return 0
   gh api "repos/$host/git/matching-refs/tags/$agent/v" --jq '.[]?.ref' 2>/dev/null \
-    | sed -n "s#^refs/tags/${agent}/v##p"
+    | sed -n "s#^refs/tags/${agent}/v##p" || true
 }
 
 # _autocut_bump <agent> — the configured bump level for the agent (registry knob
 # .agents[a].autocut.bump), defaulting to patch. Anything but minor/major → patch.
 _autocut_bump() {
   local b
-  b="$(_jq -r --arg a "$1" '.agents[$a].autocut.bump // "patch"')"
+  b="$(_jq -r --arg a "$1" '.agents[$a]?.autocut?.bump // "patch"')"
   case "$b" in major|minor|patch) echo "$b" ;; *) echo "patch" ;; esac
 }
 

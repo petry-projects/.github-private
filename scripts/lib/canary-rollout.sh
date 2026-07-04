@@ -88,7 +88,7 @@ robust_sample_target() {
 # level. Unknown/absent level defaults to patch (the v1 default). Input must be a
 # strict MAJOR.MINOR.PATCH; callers validate the tag before calling.
 bump_version() {
-  local ver="$1" level="${2:-patch}" major minor patch
+  local ver="$1" level="${2:-patch}" major=0 minor=0 patch=0
   IFS=. read -r major minor patch <<< "$ver"
   case "$level" in
     major) echo "$((major + 1)).0.0" ;;
@@ -100,7 +100,7 @@ bump_version() {
 # _semver_gt <a> <b> — return 0 iff semver a is strictly greater than b (compared
 # by major, then minor, then patch). Equal is NOT greater.
 _semver_gt() {
-  local a1 a2 a3 b1 b2 b3
+  local a1=0 a2=0 a3=0 b1=0 b2=0 b3=0
   IFS=. read -r a1 a2 a3 <<< "$1"
   IFS=. read -r b1 b2 b3 <<< "$2"
   if [ "$a1" -ne "$b1" ]; then [ "$a1" -gt "$b1" ]; return; fi
