@@ -771,8 +771,11 @@ GHEOF
 # SHAs, the `next` commit (git for a this-repo agent, gh api for a cross-repo one), the existing
 # release-tag versions (matching-refs), and a cut-release.sh stand-in (CUT_RELEASE) that logs args.
 _autocut_stub() {
-  # args: agent host reusable main_blob next_blob mainsha nextsha versions_ws [bump]
-  local agent="$1" host="$2" reusable="$3" MAIN_BLOB="$4" NEXT_BLOB="$5" MAINSHA="$6" NEXTSHA="$7" versions="$8" bump="${9:-}"
+  # args: agent host reusable main_blob next_blob mainsha nextsha versions_ws [bump] [release_at_main]
+  # release_at_main (optional): the version whose <agent>/vX.Y.Z tag points at MAINSHA (the target
+  # commit). Empty → no release tag points at main HEAD (the plain "cut a new bump" path). Non-empty →
+  # exercises the idempotent-reuse path (#1076): autocut must reuse that tag via --promote, not bump.
+  local agent="$1" host="$2" reusable="$3" MAIN_BLOB="$4" NEXT_BLOB="$5" MAINSHA="$6" NEXTSHA="$7" versions="$8" bump="${9:-}" RELEASE_AT_MAIN="${10:-}"
   STUB_BIN="$(mktemp -d "$BATS_TEST_TMPDIR/stub.XXXXXX")"; export PATH="$STUB_BIN:$PATH"
   export CUT_LOG="$STUB_BIN/cut.log"; : > "$CUT_LOG"
   export CUT_RELEASE="$STUB_BIN/cut-release"
@@ -781,8 +784,12 @@ _autocut_stub() {
 echo "\$*" >> "$CUT_LOG"
 CUTEOF
   chmod +x "$CUT_RELEASE"
-  local refs="" v
-  for v in $versions; do refs+="refs/tags/$agent/v$v"$'\n'; done
+  local refs="" tsv="" v sha
+  for v in $versions; do
+    refs+="refs/tags/$agent/v$v"$'\n'
+    if [ "$v" = "$RELEASE_AT_MAIN" ]; then sha="$MAINSHA"; else sha="deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"; fi
+    tsv+="refs/tags/$agent/v$v	$sha	commit"$'\n'
+  done
   cat > "$STUB_BIN/gh" <<GHEOF
 #!/usr/bin/env bash
 case "\$*" in
@@ -790,7 +797,11 @@ case "\$*" in
   *"contents/"*"ref=$MAINSHA"*) echo "$MAIN_BLOB" ;;
   *"contents/"*"ref=$NEXTSHA"*) echo "$NEXT_BLOB" ;;
   *"/commits/"*) echo "$MAINSHA" ;;
-  *"matching-refs/tags/$agent/v"*) printf '%s' "$refs" ;;
+  *"matching-refs/tags/$agent/v"*)
+    # The @tsv query (release-at-commit lookup, #1076) needs ref+sha+type; the plain
+    # .ref query (highest-version bump) needs just the refs.
+    if [[ "\$*" == *"@tsv"* ]]; then printf '%s' "$tsv"; else printf '%s' "$refs"; fi
+    ;;
   *"git/ref/tags/$agent/next"*) printf '%s\tcommit\n' "$NEXTSHA" ;;
   *"run list"*) echo "[]" ;;
   *) echo "{}" ;;
@@ -872,4 +883,57 @@ GITEOF
   run env CANARY_AUTO_CUT=true CANARY_RINGS="$AUTOCUT_RINGS" CUT_RELEASE="$CUT_RELEASE" bash "$ORCH" autocut
   [ "$status" -eq 0 ]
   grep -q "auto-rebase 2.1.1 --ref ece45480ece45480ece45480ece45480ece45480 --channel next --push" "$CUT_LOG"
+}
+
+# ── orchestrator: autocut idempotent reuse — a release tag already at main HEAD (#1076) ─
+# When a <agent>/vX.Y.Z already points at the target commit (main HEAD) but `next` is not on it
+# (the partial-failure state: the cut succeeded, the `next` move was blocked), autocut must REUSE
+# that tag by moving `next` onto it via `cut-release.sh --promote` — never mint a new bumped
+# version. This makes a retry converge instead of spamming a fresh orphan tag every tick.
+@test "orchestrator: autocut reuses an existing release tag at main HEAD, moving next via --promote (no new cut) (#1076)" {
+  # Reusable blob differs (would normally cut), but v1.5.1 already points at main HEAD (aaaa),
+  # and next is still on the old commit (cccc). Reuse v1.5.1, do NOT bump to v1.5.2.
+  _autocut_stub dev-lead petry-projects/.github-private .github/workflows/dev-lead-reusable.yml \
+    blobMAIN blobNEXT aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa cccccccccccccccccccccccccccccccccccccccc "1.5.0 1.5.1" "" "1.5.1"
+  run env CANARY_AUTO_CUT=true CANARY_RINGS="$AUTOCUT_RINGS" CUT_RELEASE="$CUT_RELEASE" bash "$ORCH" autocut
+  [ "$status" -eq 0 ]
+  # next is (re)moved onto the EXISTING v1.5.1 via --promote …
+  grep -q "dev-lead 1.5.1 --channel next --promote --push" "$CUT_LOG"
+  # … and NO new bumped version is cut (no orphan v1.5.2 spam).
+  ! grep -q -- "--ref" "$CUT_LOG"
+  ! grep -q "1.5.2" "$CUT_LOG"
+}
+
+@test "orchestrator: autocut retry-after-partial-failure cuts no duplicate version (#1076)" {
+  # Simulate the exact live regression: v1.5.1 was cut at main HEAD last tick but its next move
+  # was blocked, so next is stale. The next tick must NOT cut v1.5.2 — it re-attempts the move
+  # against the already-cut v1.5.1. Exactly ONE cut-release invocation, and it is the --promote.
+  _autocut_stub dev-lead petry-projects/.github-private .github/workflows/dev-lead-reusable.yml \
+    blobMAIN blobNEXT aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa cccccccccccccccccccccccccccccccccccccccc "1.5.0 1.5.1" "" "1.5.1"
+  run env CANARY_AUTO_CUT=true CANARY_RINGS="$AUTOCUT_RINGS" CUT_RELEASE="$CUT_RELEASE" bash "$ORCH" autocut
+  [ "$status" -eq 0 ]
+  [ "$(grep -c . "$CUT_LOG")" -eq 1 ]
+  grep -q -- "--promote" "$CUT_LOG"
+}
+
+@test "orchestrator: autocut still cuts a bumped version when NO release tag points at main HEAD (#1076)" {
+  # No existing tag points at main HEAD (release_at_main empty) → the today behavior is preserved:
+  # cut the bumped v2.1.1 from main HEAD and move next, NOT a --promote.
+  _autocut_stub dev-lead petry-projects/.github-private .github/workflows/dev-lead-reusable.yml \
+    blobMAIN blobNEXT aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa cccccccccccccccccccccccccccccccccccccccc "2.1.0"
+  run env CANARY_AUTO_CUT=true CANARY_RINGS="$AUTOCUT_RINGS" CUT_RELEASE="$CUT_RELEASE" bash "$ORCH" autocut
+  [ "$status" -eq 0 ]
+  grep -q "dev-lead 2.1.1 --ref aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --channel next --push" "$CUT_LOG"
+  ! grep -q -- "--promote" "$CUT_LOG"
+}
+
+@test "orchestrator: autocut --dry-run on the reuse path prints the --promote without invoking cut-release (#1076)" {
+  _autocut_stub dev-lead petry-projects/.github-private .github/workflows/dev-lead-reusable.yml \
+    blobMAIN blobNEXT aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa cccccccccccccccccccccccccccccccccccccccc "1.5.0 1.5.1" "" "1.5.1"
+  run env CANARY_AUTO_CUT=true CANARY_RINGS="$AUTOCUT_RINGS" CUT_RELEASE="$CUT_RELEASE" bash "$ORCH" autocut --dry-run
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"DRY-RUN"* ]]
+  [[ "$output" == *"1.5.1"* ]]
+  [[ "$output" == *"--promote"* ]]
+  [ ! -s "$CUT_LOG" ]   # dry-run never invokes the real cut/promote
 }

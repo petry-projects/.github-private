@@ -853,6 +853,32 @@ _next_release_version() {
   bump_version "$highest" "$bump"
 }
 
+# _host_release_version_at_commit <agent> <commit> — echo the MAJOR.MINOR.PATCH of an existing
+# <agent>/vX.Y.Z release tag on the host whose (dereferenced) commit equals <commit>, or empty if
+# none points there. Annotated tags (object.type=tag) are dereferenced to their commit via a
+# second git/tags/<obj> call, mirroring _gh_candidate_cut_date. This lets autocut REUSE an
+# already-cut release at the target commit instead of minting a duplicate on a retry-after-partial-
+# failure (the orphan-tag spam of #1076). Best-effort: any API gap yields empty (→ cut a new bump).
+_host_release_version_at_commit() {
+  local agent="$1" commit="$2" host ref obj type csha
+  host="$(_agent_field "$agent" host)"
+  { [ -z "$host" ] || [ -z "$commit" ]; } && return 0
+  while IFS=$'\t' read -r ref obj type; do
+    [ -z "$obj" ] && continue
+    if [ "$type" = "tag" ]; then
+      csha="$(gh api "repos/$host/git/tags/$obj" --jq '(.object?.sha // "" | tostring)' 2>/dev/null || echo "")"
+    else
+      csha="$obj"
+    fi
+    if [ -n "$csha" ] && [ "$csha" = "$commit" ]; then
+      printf '%s\n' "${ref#refs/tags/${agent}/v}"
+      return 0
+    fi
+  done < <(gh api "repos/$host/git/matching-refs/tags/$agent/v" \
+             --jq '.[]? | [.ref, (.object?.sha // "" | tostring), (.object?.type // "" | tostring)] | @tsv' 2>/dev/null)
+  return 0
+}
+
 # _autocut_agent <agent> <dry:true|false> — cut a new candidate for ONE agent if its reusable
 # blob on the host default-branch HEAD differs from the blob at the current `next` candidate.
 # Idempotent: no-op when the blobs match or main HEAD already equals the next candidate.
@@ -881,6 +907,24 @@ _autocut_agent() {
   # is byte-identical between main and the current next candidate.
   if [ "$mainsha" = "$next_commit" ] || { [ -n "$next_blob" ] && [ "$main_blob" = "$next_blob" ]; }; then
     echo "autocut $agent: reusable unchanged on $host (next candidate up to date) — no cut."
+    return 0
+  fi
+  # Idempotent reuse (#1076): if a <agent>/vX.Y.Z release tag already points at the target commit
+  # (main HEAD), do NOT cut a new version — just (re)move `next` onto that existing release via
+  # `cut-release.sh --promote`. This is the partial-failure retry path: last tick the cut succeeded
+  # but the `next` move was blocked (e.g. by the release-channel-tags ruleset), so re-attempting the
+  # move against the already-cut tag converges instead of minting a fresh orphaned version each tick.
+  local existing
+  existing="$(_host_release_version_at_commit "$agent" "$mainsha")"
+  if [ -n "$existing" ]; then
+    echo "autocut $agent: release tag v$existing already points at $host $defbranch HEAD (${mainsha:0:12}) — reusing it, moving next (no new cut)."
+    if [ "$dry" = true ]; then
+      echo "[DRY-RUN] would: cut-release.sh $agent $existing --channel next --promote --push"
+      return 0
+    fi
+    bash "$CUT_RELEASE" "$agent" "$existing" --channel next --promote --push \
+      || { echo "::warning::autocut $agent: cut-release --promote failed for v$existing (best-effort, continuing)"; return 0; }
+    echo "autocut $agent: moved next onto existing v$existing (${mainsha:0:12})."
     return 0
   fi
   bump="$(_autocut_bump "$agent")"
