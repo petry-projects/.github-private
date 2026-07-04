@@ -84,6 +84,7 @@ jobs:
             tests/test_plan_critic.bats \
             tests/test_skill_review.bats \
             tests/test_skill_evals.bats \
+            tests/test_model_ab.bats \
             tests/test_triage_prompt.bats \
             tests/test_holdout_guard.bats \
             tests/test_skill_eval_report.bats \
