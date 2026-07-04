@@ -745,16 +745,20 @@ cmd_sync_issues() {
     read -r cand frontier transition state _d _f _s _t cum_fail cum_startup _cb triage < <(_frontier_state "$agent")
     host="$(_agent_field "$agent" host)"
     local blk="—" num_state num istate
-    num_state="$(_issue_find canary-blocker "<!-- canary-blocker:$agent -->")"
+    # Best-effort (#1081): these substitutions call gh/jq. Under `set -euo pipefail`
+    # a bare assignment propagates a non-zero exit and would abort the whole step —
+    # before the fleet dashboard renders and before the intended fallback warnings
+    # below. `|| true` keeps sync-issues degrading gracefully (empty → handled).
+    num_state="$(_issue_find canary-blocker "<!-- canary-blocker:$agent -->" || true)"
     num="${num_state%%$'\t'*}"; istate="${num_state##*$'\t'}"
     if [ "$state" = "BLOCKED" ]; then
       local evidence body title
-      evidence="$(_blocker_evidence "$agent" "$cand")"
+      evidence="$(_blocker_evidence "$agent" "$cand" || true)"
       body="$(_blocker_body "$agent" "$transition" "$cand" "$cum_fail" "$cum_startup" "$triage" "$host" "$evidence")"
       title="Canary blocker: $agent $transition (cum_fail=$cum_fail, $triage)"
       if [ -z "$num" ]; then
         if [ "$dry" = true ]; then echo "  [DRY] would OPEN blocker issue for $agent ($triage)"; blk="(new)"; else
-          num="$(_gh_issue_create "$title" "$body" "canary-blocker")"
+          num="$(_gh_issue_create "$title" "$body" "canary-blocker" || true)"
           if [ -n "$num" ]; then
             [ "$triage" = "REGRESSION" ] && gh issue edit "$num" --repo "$ISSUE_REPO" --add-label needs-human >/dev/null 2>&1 || true
             echo "  opened blocker issue #$num for $agent"; blk="#$num"
