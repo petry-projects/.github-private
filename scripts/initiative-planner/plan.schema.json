@@ -141,6 +141,31 @@
                 "items": { "type": "integer", "minimum": 1 },
                 "description": "Local story ids this open question concerns. Set when a critic finding (see prompts/plan-review.md) could not be folded back into the plan and was routed here by route-findings.sh, so the question names which stories it gates. Empty/absent for epic- or plan-level questions.",
                 "default": []
+              },
+              "proposed_story": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["title", "acceptance_criteria"],
+                "description": "A whole story the plan is missing, surfaced by a plan-critic finding whose resolution is 'add story X' (#706). Until a maintainer sets `accepted:true` it gates like any blocking open_question; on acceptance apply-plan.sh materializes it as a sub-issue of the epic (title + acceptance-criteria scaffold), rather than dropping it into prose.",
+                "properties": {
+                  "title": { "type": "string", "minLength": 8 },
+                  "acceptance_criteria": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": { "type": "string", "minLength": 5 },
+                    "description": "Numbered, testable outcomes for the proposed story."
+                  }
+                }
+              },
+              "proposed_blocked_by": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "The existing issue that will become BLOCKED BY the materialized story — i.e., the new story is the prerequisite and this issue is the downstream dependent (it waits for the new story to land first). On acceptance, apply-plan.sh wires: `<proposed_blocked_by> blocked_by <new sub-issue>`. Despite the field name, this is NOT the upstream blocker of the new story; it is the issue that depends on it. Worked example: #587 blocked_by the two materialized #581 stories, meaning the new stories must land before #587 can proceed (#706)."
+              },
+              "accepted": {
+                "type": "boolean",
+                "default": false,
+                "description": "Maintainer acceptance marker (#706). When true, the finding no longer gates and apply-plan.sh materializes its proposed_story + proposed_blocked_by edge. NEVER set automatically — the human gate: the epic stays inert until a maintainer reviews and accepts."
               }
             }
           }

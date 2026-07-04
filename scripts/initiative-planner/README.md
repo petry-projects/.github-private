@@ -79,6 +79,21 @@ cat /tmp/plan.jsonl | jq .
   #650→#659, #666→#667). Re-running after the questions are answered then
   materializes the real plan. Plain-string `open_questions` stay advisory and do
   **not** gate — only objects shaped `{"question": "...", "blocking": true}` do.
+- **Materialize accepted critic findings (#706).** An `open_questions` object may
+  carry a `proposed_story` (a whole story the plan is missing — `title` +
+  `acceptance_criteria` scaffold) and a `proposed_blocked_by` (the existing issue
+  that story gates), surfaced by a plan-critic finding whose resolution is "add
+  story X". Until a maintainer sets **`accepted:true`** it gates exactly like a
+  blocking open-question (creates nothing). On acceptance, `apply-plan.sh`
+  materializes it: it creates the `proposed_story` as a **sub-issue of the epic**
+  and wires a **native** `blocked_by` edge (`<proposed_blocked_by> blocked_by
+  <new sub-issue>`, so the new story must land first) via `lib/mutations.sh`
+  `add_blocked_by` — instead of leaving it as advisory prose a human must wire by
+  hand (the #581 → #691/#692 gap). Acceptance is the human gate: materialization
+  never happens automatically, and the epic still lands **inert** (no
+  `initiative:auto`). A plan with no accepted `proposed_story` findings creates
+  zero extra issues/edges. An accepted finding with no `proposed_story` is
+  rejected by `validate-plan.py` (acceptance must have something to materialize).
 - **Idempotency + supersede (default-safe re-planning).** Every epic carries a
   deterministic back-reference (`Planned from idea discussion #<src>`).
   `apply-plan.sh` uses it to detect its own prior output, so re-approving /
