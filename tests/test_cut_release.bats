@@ -22,6 +22,18 @@ setup() {
   [ "$status" -eq 0 ]
 }
 
+@test "cut-release: setup_git_identity call precedes git tag -a in the this-repo annotated-tag path" {
+  # Regression guard: asserts the call ordering in source so this test fails
+  # if setup_git_identity is ever removed from before git tag -a (#1069).
+  local script id_line tag_line
+  script="$(dirname "$BATS_TEST_FILENAME")/../scripts/cut-release.sh"
+  id_line=$(grep -n '^[[:space:]]*setup_git_identity[[:space:]]*$' "$script" | cut -d: -f1)
+  tag_line=$(grep -n '^[[:space:]]*git tag -a' "$script" | cut -d: -f1)
+  [ -n "$id_line" ]
+  [ -n "$tag_line" ]
+  [ "$id_line" -lt "$tag_line" ]
+}
+
 @test "valid_agent: pr-review is accepted" {
   run valid_agent "pr-review"
   [ "$status" -eq 0 ]

@@ -52,7 +52,8 @@ set -euo pipefail
 # user.name/user.email configured. Cross-repo cuts go through `gh api` (App identity) and
 # are unaffected; only the local path needs this. Sourced (no side effects) so tests can
 # still `source` this file; setup_git_identity is invoked lazily in the this-repo cut path.
-_CRHERE="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+_CRHERE="$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]:-$0}")" && pwd -P)"
+readonly _CRHERE
 # shellcheck source=lib/git-identity.sh
 source "${_CRHERE}/lib/git-identity.sh"
 
