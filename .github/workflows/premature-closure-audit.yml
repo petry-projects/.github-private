@@ -1,0 +1,49 @@
+name: Premature-Closure Audit
+
+# Repo-specific backstop for issue #1077: flags issues closed as `completed`
+# within N minutes of opening with no merged closing PR, and (in live mode)
+# re-opens + relabels them `dev-lead:needs-human`. No org template — see AGENTS.md.
+
+on:
+  schedule:
+    - cron: '0 8 * * 1'   # Every Monday at 08:00 UTC
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "If true, report only — no re-open/label/comment writes"
+        required: false
+        default: "true"
+        type: string
+      target_repo:
+        description: "owner/repo to audit (default: petry-projects/.github-private)"
+        required: false
+        type: string
+
+# Staged: read-only permissions until LIVE_MODE=true is set and permissions are updated.
+# Live mode requires: issues: write
+permissions:
+  issues: read
+
+concurrency:
+  group: premature-closure-audit
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ secrets.DON_PETRY_BOT_GH_PAT }}
+      REPO: ${{ inputs.target_repo || vars.PC_AUDIT_REPO || 'petry-projects/.github-private' }}
+      PC_LOOKBACK_DAYS: ${{ vars.PC_LOOKBACK_DAYS || '7' }}
+      PC_MAX_OPEN_MINUTES: ${{ vars.PC_MAX_OPEN_MINUTES || '30' }}
+      # Staged by default: set LIVE_MODE=true repo variable to enable writes.
+      # LIVE_MODE is the authoritative gate — the dispatch input cannot bypass it.
+      DRY_RUN: ${{ vars.LIVE_MODE == 'true' && (inputs.dry_run || 'false') || 'true' }}
+
+    steps:
+      - name: Checkout agent repo
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Run premature-closure audit
+        run: bash scripts/premature-closure-audit.sh
