@@ -741,6 +741,21 @@ GHEOF
   grep -q "dev-lead" "$summ"
 }
 
+@test "orchestrator: sync-issues survives a failing 'gh issue create' — no abort under set -e, still renders the fleet summary (#1081)" {
+  # Regression: the blocker-issue create failing (App lacks Issues:write, rate-limit, …)
+  # must NOT abort the whole step before the dashboard renders. Make `gh issue create` exit
+  # non-zero and assert graceful degradation: warning logged, table still written, status 0.
+  _sync_stub failure '[]'
+  sed -i 's#"issue create"\*).*#"issue create"*) echo "gh: HTTP 403 (Issues:write?)" >\&2; exit 1 ;;#' "$STUB_BIN/gh"
+  local summ="$BATS_TEST_TMPDIR/summary_fail.md"; : > "$summ"
+  run env CANARY_RINGS="$SYNC_RINGS" ISSUE_REPO="petry-projects/.github-private" GITHUB_STEP_SUMMARY="$summ" bash "$ORCH" sync-issues
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"could not open blocker issue for dev-lead (Issues:write on the App?)"* ]]
+  [[ "$output" == *"wrote fleet-status table to the job summary"* ]]
+  grep -q "Canary Rollout — fleet status" "$summ"
+  grep -q "dev-lead" "$summ"
+}
+
 @test "orchestrator: sync-issues auto-closes a cleared agent's open blocker issue" {
   # dev-lead now clean (success → not BLOCKED) but an OPEN blocker issue #501 exists → close it.
   _sync_stub success '[{"number":501,"state":"OPEN","body":"<!-- canary-blocker:dev-lead -->"}]'
