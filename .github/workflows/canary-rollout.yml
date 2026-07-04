@@ -17,7 +17,13 @@
 # is a HARD requirement: if the token cannot be minted the job fails — it must not
 # silently degrade to github.token, which cannot move protected `.github` tags (#868).
 #
-#   - schedule (every 4h): the gated fleet auto-promote (#1045 part b). When the org
+#   - schedule (every 4h): the ordering is autocut → promote-all → sync-issues.
+#     FIRST `autocut` (#1069) — the FRONT END that closes the last manual seam: gated by the
+#     org variable CANARY_AUTO_CUT (the single kill-switch), it cuts a new <agent>/vX.Y.Z +
+#     moves `next` whenever a registered reusable's blob on its host main HEAD differs from the
+#     current `next` candidate, seeding the soak/promote pipeline with no manual cut-release.sh.
+#     A freshly cut candidate SOAKS the same tick (dwell=0 < floor). It is best-effort — a
+#     failure here never fails the run. THEN the gated fleet auto-promote (#1045 part b). When the org
 #     variable CANARY_AUTO_PROMOTE == 'true' the timer runs `promote-all` — the gate
 #     advances each PROMOTE-ready agent one ring per run and leaves BLOCKED/REGRESSION
 #     agents untouched (human approval is OVERRIDE-ONLY, never a required gate). When the
@@ -38,9 +44,9 @@ on:
   workflow_dispatch:
     inputs:
       command:
-        description: "evaluate | evaluate-all (read-only) | promote | promote-all (gated tag move) | rollback | sync-issues"
+        description: "autocut (gated cut+seed) | evaluate | evaluate-all (read-only) | promote | promote-all (gated tag move) | rollback | sync-issues"
         type: choice
-        options: [evaluate, evaluate-all, promote, promote-all, rollback, sync-issues]
+        options: [autocut, evaluate, evaluate-all, promote, promote-all, rollback, sync-issues]
         default: evaluate
       agent:
         description: "agent to act on"
@@ -114,9 +120,25 @@ jobs:
           # authorized under the release-channel-tags ruleset bypass (#868).
           token: ${{ steps.app-token.outputs.token }}
 
+      # FRONT END (#1069): cut a new candidate + move `next` whenever a registered reusable's
+      # blob on its host main HEAD differs from the current `next` candidate. Runs FIRST on the
+      # scheduled tick (before promote-all) so a freshly cut candidate begins soaking the same
+      # tick. Gated by CANARY_AUTO_CUT (the single kill-switch) — the script no-ops unless it is
+      # 'true'. Best-effort: a cut/detection hiccup must never fail the scheduled promotion run.
+      - name: Autocut new candidates (front end)
+        if: github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          CANARY_AUTO_CUT: ${{ vars.CANARY_AUTO_CUT }}
+        run: |
+          set -uo pipefail
+          bash scripts/canary-rollout.sh autocut || echo "::warning::autocut failed (non-fatal)"
+
       - name: Run canary-rollout
         id: run
         env:
+          # autocut kill-switch — honored when a dispatch runs `autocut` (the script no-ops unless 'true').
+          CANARY_AUTO_CUT: ${{ vars.CANARY_AUTO_CUT }}
           # On the 4h timer the arm variable decides: CANARY_AUTO_PROMOTE=='true' runs the
           # gated fleet auto-promote (promote-all, #1045 part b); anything else runs read-only
           # fleet-wide evaluate-all (#1025 P1). Either way EVERY registry agent is covered, not
@@ -139,6 +161,10 @@ jobs:
           set -euo pipefail
           args=()
           case "$CMD" in
+            autocut)                                           # gated cut+seed of new candidates (#1069)
+              args=(autocut)
+              [ "$DRY_RUN" != "false" ] && args+=(--dry-run)   # default-safe: dry unless explicitly false
+              ;;
             evaluate)     args=(evaluate "$AGENT") ;;
             evaluate-all) args=(evaluate-all) ;;   # fleet-wide read-only (the 4h timer, #1025 P1)
             promote)
