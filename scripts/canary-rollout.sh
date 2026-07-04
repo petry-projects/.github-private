@@ -978,7 +978,7 @@ _agents_for_reusable() {
 # so a new reusable does not silently inherit another agent's benign classes. --emit-stub only.
 _drift_scaffold() {
   local host="$1" path="$2" name
-  name="$(basename "$path")"; name="${name%-reusable.yml}"
+  name="${path##*/}"; name="${name%-reusable.yml}"
   _jq --arg h "$host" --arg p "$path" --arg n "$name" '
     (.agents | to_entries | (map(select(.value.host==$h)) + .) | .[0].value) as $tpl
     | { ($n): ($tpl
@@ -1016,8 +1016,13 @@ cmd_drift() {
       continue
     fi
     registered="$(_registered_reusables_for_host "$host")"
-    echo "  registered reusables ($(printf '%s' "$registered" | grep -c . || true)):$(printf '%s' "$registered" | paste -sd' ' - | sed 's/^/ /;s/^ $//')"
-    echo "  present *-reusable.yml ($(printf '%s' "$present" | grep -c . || true)):$(printf '%s' "$present" | paste -sd' ' - | sed 's/^/ /;s/^ $//')"
+    local reg_arr=() pres_arr=() reg_str="" pres_str=""
+    if [ -n "$registered" ]; then mapfile -t reg_arr <<< "$registered"; fi
+    if [ -n "$present" ]; then mapfile -t pres_arr <<< "$present"; fi
+    [ "${#reg_arr[@]}" -gt 0 ] && reg_str=" ${reg_arr[*]}"
+    [ "${#pres_arr[@]}" -gt 0 ] && pres_str=" ${pres_arr[*]}"
+    echo "  registered reusables (${#reg_arr[@]}):$reg_str"
+    echo "  present *-reusable.yml (${#pres_arr[@]}):$pres_str"
     # unregistered = present on the host but not in the registry.
     unregistered="$(set_difference "$present" "$registered")"
     while IFS= read -r p; do
@@ -1092,7 +1097,7 @@ main() {
     sync-issues)  cmd_sync_issues "$@" ;;   # upsert blocker issues + dashboard for held promotions
     autocut)      cmd_autocut "$@" ;;       # cut a new candidate when a reusable changes on main (#1069)
     drift)        cmd_drift "$@" ;;         # report reusables present on a host but unregistered, + stale registry entries (#1082)
-    *) echo "::error::usage: canary-rollout.sh {autocut|evaluate|evaluate-all|promote|promote-all|rollback|resolve|sync-issues|drift} <agent> ..." >&2; return 2 ;;
+    *) echo "::error::usage: canary-rollout.sh {autocut|drift|evaluate|evaluate-all|promote|promote-all|rollback|resolve|sync-issues} [args]" >&2; return 2 ;;
   esac
 }
 

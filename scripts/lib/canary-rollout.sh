@@ -225,12 +225,18 @@ transition_key() {
 
 # set_difference <set_a_newlines> <set_b_newlines> — echo each line of A that is NOT
 # present in B (whole-line match; order + duplicates of A preserved, blank lines dropped).
-# Pure: bash + grep only, no gh/git I/O — deterministically unit-testable.
+# Pure: bash only (associative-array lookup), no gh/git I/O — deterministically unit-testable.
 set_difference() {
   local a="$1" b="$2" line
+  declare -A b_map
+  while IFS= read -r line; do
+    [ -n "$line" ] && b_map["$line"]=1
+  done <<< "$b"
   while IFS= read -r line; do
     [ -z "$line" ] && continue
-    if ! grep -qxF -- "$line" <<< "$b"; then printf '%s\n' "$line"; fi
+    if [[ -z "${b_map["$line"]:-}" ]]; then
+      printf '%s\n' "$line"
+    fi
   done <<< "$a"
 }
 
