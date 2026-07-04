@@ -18,7 +18,7 @@ bats_require_minimum_version 1.5.0
 setup() {
   ROOT="$(cd "$BATS_TEST_DIRNAME/.." && pwd)"
   AB="$ROOT/scripts/evals/model-ab.sh"
-  TMP="$(mktemp -d)"
+  TMP="$(mktemp -d "$BATS_TEST_TMPDIR/model_ab_test.XXXXXX")"
   JUDGE_MODEL_LOG="$TMP/judge_models.log"
   export JUDGE_MODEL_LOG
 
@@ -55,7 +55,7 @@ JSONL
   cat >"$GEN_STUB" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
-prompt="$1"
+prompt="${1:-}"
 chain="${CLAUDE_TRIAGE_MODEL_CHAIN:-UNPINNED}"
 case "$chain" in
   *throttle*) echo "::warning::[claude] all models throttled (rc=1)" >&2; exit 1 ;;
@@ -83,7 +83,7 @@ SH
   cat >"$JUDGE_STUB" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
-prompt="$1"
+prompt="${1:-}"
 printf '%s\n' "${CLAUDE_TRIAGE_MODEL_CHAIN:-UNPINNED}" >>"$JUDGE_MODEL_LOG"
 if grep -q 'perfect' "$prompt"; then
   echo '{"score": 1, "reason": "matches"}'

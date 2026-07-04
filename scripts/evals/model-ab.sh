@@ -74,7 +74,8 @@ die() {
   exit 2
 }
 
-command -v jq >/dev/null 2>&1 || die "jq is required but not installed"
+command -v jq        >/dev/null 2>&1 || die "jq is required but not installed"
+command -v sha256sum >/dev/null 2>&1 || die "sha256sum is required but not installed"
 [ -f "$SCORER" ] || die "scorer not found (expected $SCORER)"
 
 CANDIDATE="${1:-}"
