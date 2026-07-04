@@ -21,7 +21,7 @@ setup() {
   FIXTURE_DIR="$ROOT/tests/fixtures/initiative-planner"
   PLAN_581="$FIXTURE_DIR/plan-581.json"
   PLAN_ACCEPTED="$FIXTURE_DIR/plan-581-accepted.json"
-  TMP="$(mktemp -d)"
+  TMP="$(mktemp -d "${BATS_TEST_TMPDIR}/test-XXXXXX")"
   LOG="$TMP/dry.jsonl"
 }
 
@@ -104,9 +104,9 @@ apply_dry() { # apply_dry <plan.json>
     DISCUSSION_NUMBER=572 DISCUSSION_NODE_ID="D_test" PLAN_PATH="$TMP/pending.json" \
     run bash "$APPLY"
   [ "$status" -eq 0 ]
-  [ "$(grep -c '"op":"create_issue"' "$LOG")" -eq 0 ]
-  [ "$(grep -c '"op":"add_sub_issue"' "$LOG")" -eq 0 ]
-  [ "$(grep -c '"op":"add_blocked_by"' "$LOG")" -eq 0 ]
+  [ "$(grep -c '"op":"create_issue"' "$LOG" || true)" -eq 0 ]
+  [ "$(grep -c '"op":"add_sub_issue"' "$LOG" || true)" -eq 0 ]
+  [ "$(grep -c '"op":"add_blocked_by"' "$LOG" || true)" -eq 0 ]
 }
 
 @test "an un-accepted proposed_story finding posts 'not yet planned' back to the discussion" {
@@ -133,7 +133,7 @@ apply_dry() { # apply_dry <plan.json>
     "$PLAN_ACCEPTED" > "$TMP/unaccepted.json"
   apply_dry "$TMP/unaccepted.json"
   # both findings are blocking:true & now accepted:false -> gate, create nothing
-  [ "$(grep -c '"op":"create_issue"' "$LOG")" -eq 0 ]
+  [ "$(grep -c '"op":"create_issue"' "$LOG" || true)" -eq 0 ]
 }
 
 # ---------------------------------------------------------------------------

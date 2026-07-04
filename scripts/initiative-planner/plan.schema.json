@@ -160,7 +160,7 @@
               "proposed_blocked_by": {
                 "type": "integer",
                 "minimum": 1,
-                "description": "Existing repo issue number that the proposed_story gates (blocks). On acceptance apply-plan.sh wires a NATIVE `<proposed_blocked_by> blocked_by <new sub-issue>` edge (the new story must land first). Worked example: #587 blocked_by the two materialized #581 stories (#706)."
+                "description": "The existing issue that will become BLOCKED BY the materialized story — i.e., the new story is the prerequisite and this issue is the downstream dependent (it waits for the new story to land first). On acceptance, apply-plan.sh wires: `<proposed_blocked_by> blocked_by <new sub-issue>`. Despite the field name, this is NOT the upstream blocker of the new story; it is the issue that depends on it. Worked example: #587 blocked_by the two materialized #581 stories, meaning the new stories must land before #587 can proceed (#706)."
               },
               "accepted": {
                 "type": "boolean",

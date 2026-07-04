@@ -54,12 +54,12 @@ DISCUSSION_NODE_ID="${DISCUSSION_NODE_ID:-}"
 # longer an open blocker — it is resolved by materialization (see below) — so it
 # is excluded here. An un-accepted proposed_story finding still gates like any
 # other blocking open_question until the human accepts it.
-blocking_count="$(jq '[(.open_questions // [])[] | select(type=="object" and .blocking==true and (.accepted // false) != true)] | length' "$PLAN_PATH")"
+blocking_count="$(jq '[(.open_questions // [])[] | select(type=="object" and .blocking==true and .accepted != true)] | length' "$PLAN_PATH")"
 if [ "$blocking_count" -gt 0 ]; then
   src_g="$(jq -r '.source_discussion // empty' "$PLAN_PATH")"
   [ -n "$src_g" ] || src_g="$DISCUSSION_NUMBER"
   if [ -n "$DISCUSSION_NODE_ID" ]; then
-    blocking_list="$(jq -r '[(.open_questions // [])[] | select(type=="object" and .blocking==true) | .question] | map("- " + .) | join("\n")' "$PLAN_PATH")"
+    blocking_list="$(jq -r '[(.open_questions // [])[] | select(type=="object" and .blocking==true and .accepted != true) | .question] | map("- " + .) | join("\n")' "$PLAN_PATH")"
     other_list="$(jq -r '(.open_questions // []) | map(select((type=="string") or (type=="object" and .blocking != true))) | map(if type=="string" then . else .question end) | if length>0 then "\n\n_Also worth confirming (non-blocking):_\n" + (map("- " + .) | join("\n")) else "" end' "$PLAN_PATH")"
     printf -v gate_comment '<!-- initiative-planner -->\n**⏸️ Not yet planned — the BMAD Scrum Master (Bob) has blocking open questions.**\n\nThis idea cannot be turned into an epic until these are answered:\n\n%s%s\n\n---\n**No epic or stories were created.** Answer the questions above, then re-approve / re-dispatch the planner and Bob will materialize the full epic + sub-issue DAG.' \
       "$blocking_list" "$other_list"
@@ -236,7 +236,7 @@ while IFS= read -r q_index; do
     add_blocked_by "$REPO" "$pbb" "$ps_number"
     echo "  edge: #${pbb} blocked_by materialized #${ps_number} (proposed_blocked_by)"
   fi
-done < <(jq -r '(.open_questions // []) | to_entries[] | select(.value | type=="object" and (.accepted // false)==true and (.proposed_story != null)) | .key' "$PLAN_PATH")
+done < <(jq -r '(.open_questions // []) | to_entries[] | select(.value | type=="object") | select(.value?.accepted == true and .value?.proposed_story != null) | .key' "$PLAN_PATH")
 
 # ── post the plan back to the discussion ──────────────────────────────────────
 if [ -n "$DISCUSSION_NODE_ID" ]; then
