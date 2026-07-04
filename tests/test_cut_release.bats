@@ -14,24 +14,28 @@ setup() {
 # valid_agent
 # ---------------------------------------------------------------------------
 
-# A this-repo cut creates a LOCAL annotated tag (`git tag -a`), which aborts with
-# "fatal: empty ident name" on a bare runner. cut-release.sh must source the shared
-# git-identity helper so the this-repo path can set a tagger identity (#1069 regression).
-@test "cut-release wires the shared git-identity helper for the this-repo annotated-tag cut" {
-  run declare -F setup_git_identity
-  [ "$status" -eq 0 ]
+# Consistent-path invariant (#1076): EVERY tag operation — this-repo AND cross-repo —
+# goes through `gh api`, never a local `git push`/`git tag`. A local push is not granted
+# the release-manager App's ruleset bypass for a tag UPDATE, so it GH013s ("Cannot update
+# this protected ref") on protected channel moves such as dev-lead/next. This guard fails
+# if the local-git path is ever reintroduced.
+@test "cut-release: no local git tag/push path — all tag ops go through gh api (#1076)" {
+  local script; script="$(dirname "$BATS_TEST_FILENAME")/../scripts/cut-release.sh"
+  ! grep -Ev '^[[:space:]]*#' "$script" | grep -Eq '\bgit[[:space:]]+(tag|push)\b'
+  grep -q 'agent_host_repo' "$script"
 }
 
-@test "cut-release: setup_git_identity call precedes git tag -a in the this-repo annotated-tag path" {
-  # Regression guard: asserts the call ordering in source so this test fails
-  # if setup_git_identity is ever removed from before git tag -a (#1069).
-  local script id_line tag_line
-  script="$(dirname "$BATS_TEST_FILENAME")/../scripts/cut-release.sh"
-  id_line=$(grep -n '^[[:space:]]*setup_git_identity[[:space:]]*$' "$script" | cut -d: -f1)
-  tag_line=$(grep -n '^[[:space:]]*git tag -a' "$script" | cut -d: -f1)
-  [ -n "$id_line" ]
-  [ -n "$tag_line" ]
-  [ "$id_line" -lt "$tag_line" ]
+@test "agent_host_repo: cross-repo agent resolves to petry-projects/.github" {
+  run agent_host_repo "agent-shield"
+  [ "$status" -eq 0 ]
+  [ "$output" = "petry-projects/.github" ]
+}
+
+@test "agent_host_repo: this-repo agent resolves to the current repo (GITHUB_REPOSITORY)" {
+  export GITHUB_REPOSITORY="petry-projects/.github-private"
+  run agent_host_repo "dev-lead"
+  [ "$status" -eq 0 ]
+  [ "$output" = "petry-projects/.github-private" ]
 }
 
 @test "valid_agent: pr-review is accepted" {
