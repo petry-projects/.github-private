@@ -35,7 +35,7 @@ source "${SCRIPT_DIR}/lib/premature-closure-detect.sh"
 
 REPO="${REPO:-${AGENT_REPO:-petry-projects/.github-private}}"
 DRY_RUN="${DRY_RUN:-true}"
-PC_LOOKBACK_DAYS="${PC_LOOKBACK_DAYS:-7}"
+PC_LOOKBACK_DAYS=$(_pc_threshold "${PC_LOOKBACK_DAYS:-}" 7)
 NEEDS_HUMAN_LABEL="${NEEDS_HUMAN_LABEL:-dev-lead:needs-human}"
 REPORT_FILE="${REPORT_FILE:-premature_closure_report.md}"
 COMMENT_MARKER="<!-- premature-closure-audit -->"
@@ -103,8 +103,10 @@ ensure_needs_human_label() {
 # already_flagged <issue_number> — 0 when this audit has already commented on the
 # issue (idempotency: never re-open/spam an issue we have already flagged).
 already_flagged() {
-  gh api --paginate "repos/${REPO}/issues/${1}/comments" \
-    --jq '.[].body' 2>/dev/null | grep -qF "$COMMENT_MARKER"
+  local body
+  body=$(gh api --paginate "repos/${REPO}/issues/${1}/comments" \
+    --jq '.[].body' 2>/dev/null) || return 1
+  grep -qF "$COMMENT_MARKER" <<< "$body"
 }
 
 # apply_action <issue_number> <reason> — re-open + label + comment (live only).
@@ -158,7 +160,9 @@ while IFS=$'\t' read -r number created_at closed_at html_url title; do
   [ -n "$number" ] || continue
   # Only audit issues actually closed within the lookback window.
   [ -n "$closed_at" ] || continue
-  closed_epoch=$(date -u -d "$closed_at" +%s 2>/dev/null || echo 0)
+  closed_epoch=$(date -u -d "$closed_at" +%s 2>/dev/null \
+    || date -u -jf "%Y-%m-%dT%H:%M:%SZ" "$closed_at" +%s 2>/dev/null \
+    || echo 0)
   [ "$closed_epoch" -ge "$cutoff_epoch" ] || continue
   scanned=$(( scanned + 1 ))
 
@@ -172,7 +176,7 @@ while IFS=$'\t' read -r number created_at closed_at html_url title; do
 
   reason=$(premature_closure_reasons "completed" "$minutes_open" "$has_pr")
   if [ -n "$reason" ]; then
-    safe_title=$(printf '%s' "$title" | tr '\n\t|' '   ')
+    safe_title="${title//[$'\n'$'\t'|]/ }"
     printf '%s\t%s\t%s\t%s\n' "$number" "$html_url" "$safe_title" "$reason" >> "$candidates_file"
     if [ "$DRY_RUN" != "true" ]; then
       apply_action "$number" "$reason"
@@ -189,10 +193,14 @@ echo "Scanned ${scanned} closed 'completed' issue(s); ${flagged_count} premature
 # ---------------------------------------------------------------------------
 # 3. Render report + export env flags
 # ---------------------------------------------------------------------------
+mode="live"
+if [ "$DRY_RUN" = "true" ]; then
+  mode="dry-run"
+fi
 {
   printf '# Premature-Closure Audit — %s\n\n' "$TODAY"
   printf '**Repo:** `%s` | **Closed-completed scanned:** %s | **Candidates:** %s | **Mode:** %s\n\n' \
-    "$REPO" "$scanned" "$flagged_count" "$([ "$DRY_RUN" = "true" ] && echo dry-run || echo live)"
+    "$REPO" "$scanned" "$flagged_count" "$mode"
   generate_premature_closure_report "$candidates_file"
 } > "$REPORT_FILE"
 

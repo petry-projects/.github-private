@@ -65,7 +65,8 @@ _pc_threshold() {
 #   undeterminable PR state as "has merged PR") so the audit never re-opens on a
 #   lookup it could not resolve.
 _pc_is_truthy() {
-  case "$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')" in
+  local v="${1:-}"
+  case "${v,,}" in
     true|1|yes|y) return 0 ;;
     *) return 1 ;;
   esac
@@ -75,7 +76,8 @@ _pc_is_truthy() {
 #   Print a reason line when all three candidate conditions hold; empty otherwise.
 premature_closure_reasons() {
   local state_reason minutes has_pr max_minutes
-  state_reason=$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')
+  state_reason="${1:-}"
+  state_reason="${state_reason,,}"
   minutes=$(_pc_int "${2:-0}")
   has_pr="${3:-}"
   max_minutes=$(_pc_threshold "${PC_MAX_OPEN_MINUTES}" 30)

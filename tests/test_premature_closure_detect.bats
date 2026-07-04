@@ -20,7 +20,7 @@
 # Run with: bats tests/test_premature_closure_detect.bats
 
 setup() {
-  STUB_BIN_DIR=$(mktemp -d)
+  STUB_BIN_DIR=$(mktemp -d "$BATS_TEST_TMPDIR/stub_bin.XXXXXX")
   source "$(dirname "$BATS_TEST_FILENAME")/../scripts/lib/premature-closure-detect.sh"
 }
 
