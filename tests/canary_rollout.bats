@@ -873,3 +873,49 @@ GITEOF
   [ "$status" -eq 0 ]
   grep -q "auto-rebase 2.1.1 --ref ece45480ece45480ece45480ece45480ece45480 --channel next --push" "$CUT_LOG"
 }
+
+@test "orchestrator: autocut warns and skips when registry entry has no host" {
+  _autocut_stub dev-lead petry-projects/.github-private .github/workflows/dev-lead-reusable.yml \
+    blobMAIN blobNEXT aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa cccccccccccccccccccccccccccccccccccccccc "2.1.0"
+  jq --arg a "dev-lead" '.agents[$a].host = ""' "$AUTOCUT_RINGS" \
+    > "$BATS_TEST_TMPDIR/rings-nohost.json"
+  run env CANARY_AUTO_CUT=true CANARY_RINGS="$BATS_TEST_TMPDIR/rings-nohost.json" \
+    CUT_RELEASE="$CUT_RELEASE" bash "$ORCH" autocut
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"missing host/reusable"* ]]
+  [ ! -s "$CUT_LOG" ]
+}
+
+@test "orchestrator: autocut warns and skips when registry entry has no reusable" {
+  _autocut_stub dev-lead petry-projects/.github-private .github/workflows/dev-lead-reusable.yml \
+    blobMAIN blobNEXT aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa cccccccccccccccccccccccccccccccccccccccc "2.1.0"
+  jq --arg a "dev-lead" '.agents[$a].reusable = ""' "$AUTOCUT_RINGS" \
+    > "$BATS_TEST_TMPDIR/rings-noreusable.json"
+  run env CANARY_AUTO_CUT=true CANARY_RINGS="$BATS_TEST_TMPDIR/rings-noreusable.json" \
+    CUT_RELEASE="$CUT_RELEASE" bash "$ORCH" autocut
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"missing host/reusable"* ]]
+  [ ! -s "$CUT_LOG" ]
+}
+
+@test "orchestrator: autocut warns and skips when default-branch HEAD cannot be resolved" {
+  # Passing empty MAINSHA causes the gh stub to return "" for the /commits/ call,
+  # so _gh_head_sha returns empty and _autocut_agent logs a warning and returns 0.
+  _autocut_stub dev-lead petry-projects/.github-private .github/workflows/dev-lead-reusable.yml \
+    blobMAIN blobNEXT "" "" "2.1.0"
+  run env CANARY_AUTO_CUT=true CANARY_RINGS="$AUTOCUT_RINGS" CUT_RELEASE="$CUT_RELEASE" bash "$ORCH" autocut
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"could not resolve"* ]]
+  [ ! -s "$CUT_LOG" ]
+}
+
+@test "orchestrator: autocut warns and skips when reusable path is not found at main" {
+  # MAIN_BLOB="" causes the gh stub to return "" for the contents call, so _gh_blob_sha
+  # returns empty and _autocut_agent logs a warning and returns 0.
+  _autocut_stub dev-lead petry-projects/.github-private .github/workflows/dev-lead-reusable.yml \
+    "" blobNEXT aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa cccccccccccccccccccccccccccccccccccccccc "2.1.0"
+  run env CANARY_AUTO_CUT=true CANARY_RINGS="$AUTOCUT_RINGS" CUT_RELEASE="$CUT_RELEASE" bash "$ORCH" autocut
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"not found at"* ]]
+  [ ! -s "$CUT_LOG" ]
+}

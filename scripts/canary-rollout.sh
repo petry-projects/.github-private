@@ -890,7 +890,7 @@ _autocut_agent() {
     echo "[DRY-RUN] would: cut-release.sh $agent $newver --ref $mainsha --channel next --push"
     return 0
   fi
-  bash "$CUT_RELEASE" "$agent" "$newver" --ref "$mainsha" --channel next --push \
+  timeout 120 bash "$CUT_RELEASE" "$agent" "$newver" --ref "$mainsha" --channel next --push \
     || { echo "::warning::autocut $agent: cut-release failed for v$newver (best-effort, continuing)"; return 0; }
   echo "autocut $agent: cut v$newver from ${mainsha:0:12} and moved next."
 }
@@ -909,7 +909,8 @@ cmd_autocut() {
   local agents agent
   agents="$(_jq -r '.agents? | keys[]?' 2>/dev/null || true)"
   [ -z "$agents" ] && { echo "no agents registered in $CANARY_RINGS — nothing to autocut."; return 0; }
-  echo "== canary-rollout autocut: fleet-wide dry=$dry (gate standard: .github#548) =="
+  # gate standard: petry-projects/.github#548
+  echo "== canary-rollout autocut: fleet-wide dry=$dry =="
   while IFS= read -r agent; do
     [ -z "$agent" ] && continue
     echo "──────── agent: $agent ────────"
