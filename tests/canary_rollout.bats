@@ -698,7 +698,7 @@ case "\$*" in
   *"run list"*) jq -nc --arg d "$run_iso" --arg c "$concl" '[range(3)|{conclusion:\$c,createdAt:\$d,databaseId:12345,workflowName:"Dev-Lead Agent"}]' ;;
   *"run view"*) echo '{"jobs":[{"steps":[{"name":"Some step","conclusion":"failure"}]}]}' ;;
   "issue list"*) echo '$blocker_list' ;;
-  "issue create"*) echo "CREATE|\$*" >> "$ISSUE_LOG"; echo "https://github.com/petry-projects/.github-private/issues/777" ;;
+  "issue create"*) echo "CREATE|\$*" >> "$ISSUE_LOG"; if [ -n "\${GH_CREATE_FAIL:-}" ]; then exit 1; fi; echo "https://github.com/petry-projects/.github-private/issues/777" ;;
   "issue edit"*)   echo "EDIT|\$*"   >> "$ISSUE_LOG" ;;
   "issue close"*)  echo "CLOSE|\$*"  >> "$ISSUE_LOG" ;;
   "issue reopen"*) echo "REOPEN|\$*" >> "$ISSUE_LOG" ;;
@@ -737,6 +737,22 @@ GHEOF
   ! grep -q -- "--label canary-dashboard" "$ISSUE_LOG"
   ! grep -q "^PIN|" "$ISSUE_LOG"
   # The fleet-status table landed in the job summary file.
+  grep -q "Canary Rollout — fleet status" "$summ"
+  grep -q "dev-lead" "$summ"
+}
+
+@test "orchestrator: sync-issues degrades gracefully when Issues:write is denied — warns, renders the dashboard, exits 0 (#1081)" {
+  # A BLOCKED agent with no existing issue, but `gh issue create` fails (App lacks Issues:write).
+  # _gh_issue_create returns non-zero (gh fails → grep matches nothing under pipefail); the bare
+  # `num="$(_gh_issue_create …)"` assignment must NOT trip `set -e` and abort the step before the
+  # dashboard renders. Expect: warning logged, fleet-status table still written, run still green.
+  _sync_stub failure '[]'
+  local summ="$BATS_TEST_TMPDIR/summary_denied.md"; : > "$summ"
+  run env GH_CREATE_FAIL=1 CANARY_RINGS="$SYNC_RINGS" ISSUE_REPO="petry-projects/.github-private" GITHUB_STEP_SUMMARY="$summ" bash "$ORCH" sync-issues
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"could not open blocker issue for dev-lead (Issues:write on the App?)"* ]]
+  [[ "$output" == *"wrote fleet-status table to the job summary"* ]]
+  # The fleet-status table still renders even though issue creation was denied.
   grep -q "Canary Rollout — fleet status" "$summ"
   grep -q "dev-lead" "$summ"
 }

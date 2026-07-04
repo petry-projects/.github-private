@@ -753,7 +753,10 @@ cmd_sync_issues() {
       title="Canary blocker: $agent $transition (cum_fail=$cum_fail, $triage)"
       if [ -z "$num" ]; then
         if [ "$dry" = true ]; then echo "  [DRY] would OPEN blocker issue for $agent ($triage)"; blk="(new)"; else
-          num="$(_gh_issue_create "$title" "$body" "canary-blocker")"
+          # `|| true` so a failed/denied create (gh error or grep no-match under pipefail) can
+          # never trip `set -e` on this bare assignment (not `local`) and abort the step before
+          # the warning below + the dashboard render — graceful degradation (#1081, cf. #594).
+          num="$(_gh_issue_create "$title" "$body" "canary-blocker" || true)"
           if [ -n "$num" ]; then
             [ "$triage" = "REGRESSION" ] && gh issue edit "$num" --repo "$ISSUE_REPO" --add-label needs-human >/dev/null 2>&1 || true
             echo "  opened blocker issue #$num for $agent"; blk="#$num"
