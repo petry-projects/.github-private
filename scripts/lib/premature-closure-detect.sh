@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-set -euo pipefail
 # premature-closure-detect.sh — the premature-closure DETECTION net (issue #1077).
 #
 # #1077: the dev-lead agent closed tracking issues as `completed` without the fix
@@ -145,6 +144,10 @@ generate_premature_closure_report() {
   local num url title reason
   while IFS=$'\t' read -r num url title reason; do
     [ -n "$num" ] || continue
+    title=${title//$'|'/'\|'}
+    title=${title//$'\n'/ }
+    reason=${reason//$'|'/'\|'}
+    reason=${reason//$'\n'/ }
     printf '| [#%s](%s) | %s | %s |\n' "$num" "$url" "$title" "$reason"
   done < "$f"
 }
