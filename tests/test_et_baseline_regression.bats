@@ -38,11 +38,7 @@ setup() {
 
 @test "ET baseline fixture is valid JSONL (every line parses)" {
   [ -s "$BASELINE" ]
-  local line
-  while IFS= read -r line; do
-    [ -n "$line" ] || continue
-    echo "$line" | jq empty
-  done < "$BASELINE"
+  jq empty "$BASELINE"
 }
 
 @test "ET baseline carries both the deep and audit tiers" {
@@ -60,17 +56,10 @@ setup() {
 # ---------------------------------------------------------------------------
 
 @test "every record's et matches the ET formula at its dated rate" {
-  local record model date input cache output stored expected
-  while IFS= read -r record; do
-    [ -n "$record" ] || continue
-    model=$(echo "$record"  | jq -r '.model')
-    date=$(echo "$record"   | jq -r '.ts[0:10]')
-    input=$(echo "$record"  | jq -r '.input_tokens')
-    cache=$(echo "$record"  | jq -r '.cache_read_tokens')
-    output=$(echo "$record" | jq -r '.output_tokens')
-    stored=$(echo "$record" | jq -r '.et')
+  local model date input cache output stored expected mult
+  while IFS=$'\t' read -r model date input cache output stored; do
+    [ -n "$model" ] || continue
 
-    local mult
     if declare -f et_multiplier_for >/dev/null 2>&1; then
       mult=$(et_multiplier_for "$model" "$date")
     else
@@ -85,7 +74,7 @@ setup() {
       echo "ET mismatch for model=$model date=$date: stored=$stored expected=$expected" >&2
       return 1
     fi
-  done < "$BASELINE"
+  done < <(jq -r '[.model, .ts[0:10], .input_tokens, .cache_read_tokens, .output_tokens, .et] | @tsv' "$BASELINE")
 }
 
 # ---------------------------------------------------------------------------
