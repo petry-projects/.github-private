@@ -154,10 +154,9 @@ setup() {
 @test "feature-ideation.yml declares a target_discussion workflow_dispatch input" {
   # The dispatched run carries the new Discussion number through this input so
   # single-idea enhancement runs under workflow_dispatch (where the action works).
-  run grep -cE '^[[:space:]]+target_discussion:' "$FEATURE_IDEATION_YML"
-  [ "$status" -eq 0 ]
-  # Declared as a dispatch input AND forwarded in the reusable's with: block.
-  [ "$output" -eq 2 ]
+  # The redispatch bridge forwards it (-f target_discussion=) and the prep job
+  # surfaces it to the reusable's with: block.
+  grep -qE '^[[:space:]]+target_discussion:' "$FEATURE_IDEATION_YML"
 }
 
 @test "feature-ideation.yml has a redispatch job that runs only on the discussion event" {
@@ -188,8 +187,21 @@ setup() {
   grep -qE "github\.event_name[[:space:]]*!=[[:space:]]*['\"]discussion['\"]" "$FEATURE_IDEATION_YML"
 }
 
-@test "feature-ideation.yml sources target_discussion from inputs.target_discussion" {
-  grep -qE 'target_discussion:[[:space:]]*"?\$\{\{[[:space:]]*inputs\.target_discussion' "$FEATURE_IDEATION_YML"
+@test "feature-ideation.yml sources target_discussion from the prep job output" {
+  # Routed via needs.prep.outputs (not ${{ inputs.target_discussion }}) so the
+  # reusable with: compiles on the discussion event instead of failing at setup
+  # with zero jobs (#571).
+  grep -qE 'target_discussion:[[:space:]]*\$\{\{[[:space:]]*needs\.prep\.outputs\.target_discussion[[:space:]]*\}\}' "$FEATURE_IDEATION_YML"
+}
+
+@test "feature-ideation.yml routes every reusable input through prep — no inputs.* in with: (#571)" {
+  # A reusable with: that references ${{ inputs.* }} is evaluated at workflow
+  # setup regardless of the calling job's if:, so it fails the whole run (zero
+  # jobs) on the discussion trigger. All dispatch inputs must be resolved in the
+  # prep job and passed via needs.prep.outputs.*. Comments are excluded so this
+  # guard does not trip on the explanatory notes in the stub.
+  run bash -c "grep -vE '^[[:space:]]*#' '$FEATURE_IDEATION_YML' | grep -qE '\\\$\{\{[[:space:]]*inputs\\.'"
+  [ "$status" -ne 0 ]
 }
 
 # ── #985: structural guard binding the off-discussion gate to the reusable call ──
