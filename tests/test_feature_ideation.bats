@@ -41,14 +41,16 @@ setup() {
 # and forwards it, matching the canonical stub template so the sync is drift-free.
 
 @test "feature-ideation.yml exposes the enhance_backlog backfill-sweep input" {
-  # Declared as a workflow_dispatch input AND forwarded in with: → two occurrences.
+  # Declared as a workflow_dispatch input, surfaced via prep.outputs, and
+  # forwarded in ideate.with → three occurrences (prep job adds one).
   run grep -c "enhance_backlog:" "$FEATURE_IDEATION_YML"
   [ "$status" -eq 0 ]
-  [ "$output" -eq 2 ]
+  [ "$output" -eq 3 ]
 }
 
 @test "feature-ideation.yml forwards enhance_backlog to the reusable workflow" {
-  grep -qE 'enhance_backlog:[[:space:]]*"?\$\{\{[[:space:]]*inputs\.enhance_backlog[[:space:]]*\|\|[[:space:]]*false[[:space:]]*\}\}"?' "$FEATURE_IDEATION_YML"
+  # #571: forwarded via needs.prep.outputs (not inputs.*) to avoid eager with: evaluation.
+  grep -qE 'enhance_backlog:[[:space:]]*\$\{\{[[:space:]]*fromJSON\(needs\.prep\.outputs\.enhance_backlog\)[[:space:]]*\}\}' "$FEATURE_IDEATION_YML"
 }
 
 # ── #963: discussion→dispatch redispatch bridge ──────────────────────────────
@@ -63,8 +65,9 @@ setup() {
   # single-idea enhancement runs under workflow_dispatch (where the action works).
   run grep -cE '^[[:space:]]+target_discussion:' "$FEATURE_IDEATION_YML"
   [ "$status" -eq 0 ]
-  # Declared as a dispatch input AND forwarded in the reusable's with: block.
-  [ "$output" -eq 2 ]
+  # Declared as a dispatch input, surfaced via prep.outputs, and forwarded in
+  # the reusable's with: block → three occurrences (prep job adds one).
+  [ "$output" -eq 3 ]
 }
 
 @test "feature-ideation.yml has a redispatch job that runs only on the discussion event" {
@@ -95,8 +98,9 @@ setup() {
   grep -qE "github\.event_name[[:space:]]*!=[[:space:]]*['\"]discussion['\"]" "$FEATURE_IDEATION_YML"
 }
 
-@test "feature-ideation.yml sources target_discussion from inputs.target_discussion" {
-  grep -qE 'target_discussion:[[:space:]]*"?\$\{\{[[:space:]]*inputs\.target_discussion' "$FEATURE_IDEATION_YML"
+@test "feature-ideation.yml sources target_discussion from needs.prep.outputs" {
+  # #571: forwarded via needs.prep.outputs (not inputs.*) to avoid eager with: evaluation.
+  grep -qE 'target_discussion:[[:space:]]*\$\{\{[[:space:]]*needs\.prep\.outputs\.target_discussion' "$FEATURE_IDEATION_YML"
 }
 
 # ── #985: structural guard binding the off-discussion gate to the reusable call ──

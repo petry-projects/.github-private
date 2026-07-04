@@ -153,7 +153,14 @@ jobs:
   # and are skipped on `discussion`) and hand them to `ideate` via
   # `needs.prep.outputs.*` — an always-valid context that defers the `with:`
   # evaluation to run time. Do not reference `inputs` in `ideate.with`.
+  #
+  # INVARIANT: `prep.if` and `ideate.if` MUST be identical. `ideate` reads
+  # `needs.prep.outputs.*` unconditionally (including `fromJSON(...)` casts); if
+  # `prep` skips while `ideate` runs, those outputs are empty strings and
+  # `fromJSON('')` throws at runtime — reintroducing the startup failure this
+  # pattern was designed to prevent. Keep the two `if:` expressions in sync.
   prep:
+    name: Resolve dispatch inputs
     if: github.event_name != 'discussion'
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -176,9 +183,10 @@ jobs:
           DRY_RUN: ${{ github.event.inputs.dry_run }}
           ENHANCE_BACKLOG: ${{ github.event.inputs.enhance_backlog }}
         run: |
+          # Strip CR/LF from free-text string inputs to prevent GITHUB_OUTPUT injection.
           {
-            echo "target_discussion=${TARGET_DISCUSSION:-}"
-            echo "focus_area=${FOCUS_AREA:-}"
+            printf 'target_discussion=%s\n' "$(printf '%s' "${TARGET_DISCUSSION:-}" | tr -d '\r\n')"
+            printf 'focus_area=%s\n' "$(printf '%s' "${FOCUS_AREA:-}" | tr -d '\r\n')"
             echo "research_depth=${RESEARCH_DEPTH:-standard}"
             echo "dry_run=${DRY_RUN:-false}"
             echo "enhance_backlog=${ENHANCE_BACKLOG:-false}"
@@ -187,6 +195,8 @@ jobs:
   ideate:
     # Runs on workflow_dispatch (incl. the redispatch bridge above) and schedule
     # only — never inline on a discussion event, where claude-code-action aborts.
+    # INVARIANT: This `if:` must stay identical to `prep.if` — see the prep job
+    # comment above. Diverging the two guards breaks `fromJSON(needs.prep.outputs.*)`.
     needs: [prep]
     if: github.event_name != 'discussion'
     # Permissions cascade from the calling job to the reusable workflow.
