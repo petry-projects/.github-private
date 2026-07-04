@@ -16,7 +16,7 @@ setup() {
 
 # Consistent-path invariant (#1076): EVERY tag operation — this-repo AND cross-repo —
 # goes through `gh api`, never a local `git push`/`git tag`. A local push is not granted
-# the release-manager App's ruleset bypass for a tag UPDATE, so it 013s ("Cannot update
+# the release-manager App's ruleset bypass for a tag UPDATE, so it GH013s ("Cannot update
 # this protected ref") on protected channel moves such as dev-lead/next. This guard fails
 # if the local-git path is ever reintroduced.
 @test "cut-release: no local git tag/push path — all tag ops go through gh api (#1076)" {
