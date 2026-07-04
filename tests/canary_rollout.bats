@@ -61,6 +61,41 @@ setup() {
   [ "$(clamp "$(round_div $((250*sum)) $((1000*n)))" 3 15)" -eq 15 ]
 }
 
+# ── version-bump math (autocut front end, #1069) ──────────────────────────────
+@test "bump_version: patch increments the patch component" {
+  [ "$(bump_version 2.1.0 patch)" = "2.1.1" ]
+  [ "$(bump_version 0.0.0 patch)" = "0.0.1" ]
+}
+@test "bump_version: minor increments minor and zeroes patch" {
+  [ "$(bump_version 2.1.3 minor)" = "2.2.0" ]
+}
+@test "bump_version: major increments major and zeroes minor+patch" {
+  [ "$(bump_version 2.1.3 major)" = "3.0.0" ]
+}
+@test "bump_version: default (no/unknown level) is patch" {
+  [ "$(bump_version 2.1.0)" = "2.1.1" ]
+  [ "$(bump_version 2.1.0 bogus)" = "2.1.1" ]
+}
+
+@test "_semver_gt: compares by major, then minor, then patch" {
+  run _semver_gt 2.1.1 2.1.0; [ "$status" -eq 0 ]
+  run _semver_gt 2.2.0 2.1.9; [ "$status" -eq 0 ]
+  run _semver_gt 3.0.0 2.9.9; [ "$status" -eq 0 ]
+  run _semver_gt 2.1.0 2.1.0; [ "$status" -ne 0 ]   # equal is not greater
+  run _semver_gt 2.1.0 2.1.1; [ "$status" -ne 0 ]
+}
+
+@test "max_semver: picks the highest version" {
+  [ "$(max_semver 2.0.5 2.1.0 2.0.9)" = "2.1.0" ]
+  [ "$(max_semver 1.0.0)" = "1.0.0" ]
+}
+@test "max_semver: ignores non-semver tokens" {
+  [ "$(max_semver 2.1.0 not-a-version 2.1.5 v3.0.0)" = "2.1.5" ]
+}
+@test "max_semver: empty input → empty" {
+  [ -z "$(max_semver)" ]
+}
+
 # ── dwell_met ─────────────────────────────────────────────────────────────────
 @test "dwell_met: at/over floor → 1" { [ "$(dwell_met 4 4)" -eq 1 ]; [ "$(dwell_met 9 8)" -eq 1 ]; }
 @test "dwell_met: under floor → 0" { [ "$(dwell_met 3 4)" -eq 0 ]; }
@@ -726,4 +761,115 @@ GHEOF
   # The header must appear at the start of a line — not concatenated onto the prior content.
   grep -q '^# Canary Rollout' "$summ"
   ! grep -q 'prior.*# Canary Rollout' "$summ"
+}
+
+# ── orchestrator: autocut — auto-cut a new candidate when a reusable changes on main (#1069) ─
+# The front end of the canary pipeline: at each scheduled tick (gated by CANARY_AUTO_CUT), for
+# each registered agent compare the reusable blob at the host's main HEAD against the blob at the
+# current `next` candidate; if they differ, cut a new immutable vX.Y.Z (patch bump default) and
+# move `next` onto it via cut-release.sh. The stub feeds: default_branch, main HEAD, the two blob
+# SHAs, the `next` commit (git for a this-repo agent, gh api for a cross-repo one), the existing
+# release-tag versions (matching-refs), and a cut-release.sh stand-in (CUT_RELEASE) that logs args.
+_autocut_stub() {
+  # args: agent host reusable main_blob next_blob mainsha nextsha versions_ws [bump]
+  local agent="$1" host="$2" reusable="$3" MAIN_BLOB="$4" NEXT_BLOB="$5" MAINSHA="$6" NEXTSHA="$7" versions="$8" bump="${9:-}"
+  STUB_BIN="$(mktemp -d "$BATS_TEST_TMPDIR/stub.XXXXXX")"; export PATH="$STUB_BIN:$PATH"
+  export CUT_LOG="$STUB_BIN/cut.log"; : > "$CUT_LOG"
+  export CUT_RELEASE="$STUB_BIN/cut-release"
+  cat > "$CUT_RELEASE" <<CUTEOF
+#!/usr/bin/env bash
+echo "\$*" >> "$CUT_LOG"
+CUTEOF
+  chmod +x "$CUT_RELEASE"
+  local refs="" v
+  for v in $versions; do refs+="refs/tags/$agent/v$v"$'\n'; done
+  cat > "$STUB_BIN/gh" <<GHEOF
+#!/usr/bin/env bash
+case "\$*" in
+  *".default_branch"*) echo "main" ;;
+  *"contents/"*"ref=$MAINSHA"*) echo "$MAIN_BLOB" ;;
+  *"contents/"*"ref=$NEXTSHA"*) echo "$NEXT_BLOB" ;;
+  *"/commits/"*) echo "$MAINSHA" ;;
+  *"matching-refs/tags/$agent/v"*) printf '%s' "$refs" ;;
+  *"git/ref/tags/$agent/next"*) printf '%s\tcommit\n' "$NEXTSHA" ;;
+  *"run list"*) echo "[]" ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN/gh"
+  cat > "$STUB_BIN/git" <<GITEOF
+#!/usr/bin/env bash
+case "\$*" in
+  *"rev-parse"*"$agent/next"*) echo "$NEXTSHA" ;;
+  *) : ;;
+esac
+GITEOF
+  chmod +x "$STUB_BIN/git"
+  AUTOCUT_RINGS="$BATS_TEST_TMPDIR/autocut-rings.json"
+  if [ -n "$bump" ]; then
+    jq --arg a "$agent" --arg b "$bump" \
+      '{version, description, org_infra_repos, member_tokens, agents: {($a): (.agents[$a] + {autocut: {bump: $b}})}}' \
+      "$RINGS" > "$AUTOCUT_RINGS"
+  else
+    jq --arg a "$agent" \
+      '{version, description, org_infra_repos, member_tokens, agents: {($a): .agents[$a]}}' \
+      "$RINGS" > "$AUTOCUT_RINGS"
+  fi
+}
+
+@test "orchestrator: autocut is a no-op when CANARY_AUTO_CUT is not 'true' (kill-switch off)" {
+  _autocut_stub dev-lead petry-projects/.github-private .github/workflows/dev-lead-reusable.yml \
+    blobMAIN blobNEXT aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa cccccccccccccccccccccccccccccccccccccccc "2.1.0"
+  run env CANARY_RINGS="$AUTOCUT_RINGS" CUT_RELEASE="$CUT_RELEASE" bash "$ORCH" autocut
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"DISABLED"* ]]
+  [ ! -s "$CUT_LOG" ]   # nothing cut when the kill-switch is off
+}
+
+@test "orchestrator: autocut cuts a patch-bumped version + moves next when the reusable blob differs on main" {
+  _autocut_stub dev-lead petry-projects/.github-private .github/workflows/dev-lead-reusable.yml \
+    blobMAIN blobNEXT aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa cccccccccccccccccccccccccccccccccccccccc "2.1.0"
+  run env CANARY_AUTO_CUT=true CANARY_RINGS="$AUTOCUT_RINGS" CUT_RELEASE="$CUT_RELEASE" bash "$ORCH" autocut
+  [ "$status" -eq 0 ]
+  # Highest existing tag is v2.1.0 → patch bump → v2.1.1, cut from main HEAD, channel next, pushed.
+  grep -q "dev-lead 2.1.1 --ref aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --channel next --push" "$CUT_LOG"
+}
+
+@test "orchestrator: autocut is idempotent — identical blob on main and next is a clean no-op" {
+  _autocut_stub dev-lead petry-projects/.github-private .github/workflows/dev-lead-reusable.yml \
+    sameBLOB sameBLOB aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa cccccccccccccccccccccccccccccccccccccccc "2.1.0"
+  run env CANARY_AUTO_CUT=true CANARY_RINGS="$AUTOCUT_RINGS" CUT_RELEASE="$CUT_RELEASE" bash "$ORCH" autocut
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"no cut"* ]]
+  [ ! -s "$CUT_LOG" ]   # nothing cut when the blob is unchanged
+}
+
+@test "orchestrator: autocut --dry-run prints the intended cut without invoking cut-release --push" {
+  _autocut_stub dev-lead petry-projects/.github-private .github/workflows/dev-lead-reusable.yml \
+    blobMAIN blobNEXT aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa cccccccccccccccccccccccccccccccccccccccc "2.1.0"
+  run env CANARY_AUTO_CUT=true CANARY_RINGS="$AUTOCUT_RINGS" CUT_RELEASE="$CUT_RELEASE" bash "$ORCH" autocut --dry-run
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"DRY-RUN"* ]]
+  [[ "$output" == *"2.1.1"* ]]
+  [ ! -s "$CUT_LOG" ]   # dry-run never pushes a real cut
+}
+
+@test "orchestrator: autocut honors the registry autocut.bump override (minor)" {
+  _autocut_stub dev-lead petry-projects/.github-private .github/workflows/dev-lead-reusable.yml \
+    blobMAIN blobNEXT aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa cccccccccccccccccccccccccccccccccccccccc "2.1.0" minor
+  run env CANARY_AUTO_CUT=true CANARY_RINGS="$AUTOCUT_RINGS" CUT_RELEASE="$CUT_RELEASE" bash "$ORCH" autocut
+  [ "$status" -eq 0 ]
+  # minor bump of v2.1.0 → v2.2.0
+  grep -q "dev-lead 2.2.0 --ref aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --channel next --push" "$CUT_LOG"
+}
+
+@test "orchestrator: autocut is cross-repo aware — cuts v2.1.1 for auto-rebase from the host main HEAD (#1069)" {
+  # auto-rebase is hosted in petry-projects/.github; its next candidate + release tags live there,
+  # so the next commit is resolved via gh api (not local git) and the cut is cross-repo.
+  _autocut_stub auto-rebase petry-projects/.github .github/workflows/auto-rebase-reusable.yml \
+    ece45480ece45480ece45480ece45480ece45480 2763750027637500276375002763750027637500 \
+    ece45480ece45480ece45480ece45480ece45480 2763750027637500276375002763750027637500 "2.1.0"
+  run env CANARY_AUTO_CUT=true CANARY_RINGS="$AUTOCUT_RINGS" CUT_RELEASE="$CUT_RELEASE" bash "$ORCH" autocut
+  [ "$status" -eq 0 ]
+  grep -q "auto-rebase 2.1.1 --ref ece45480ece45480ece45480ece45480ece45480 --channel next --push" "$CUT_LOG"
 }
