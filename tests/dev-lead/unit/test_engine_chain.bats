@@ -222,6 +222,50 @@ _source_engine() {
   [[ "$CLAUDE_ACTION_MODEL_CHAIN" != *"claude-sonnet-5"* ]]
 }
 
+# ── #1099: sonnet->opus in-engine hop retained under rate-limit equalization ──
+# Assessment outcome (issue #1099): Sonnet 5's rate-limit equalization makes each
+# model's RPM/TPM bucket the same SIZE, but does NOT merge them into one shared
+# bucket. Layer-1 recovery (engine.sh:13-22) depends on buckets being SEPARATE,
+# not on differing sizes — a saturated sonnet-4-6 bucket is still relieved by
+# hopping to opus-4-8's independent bucket. So the hop is NOT redundant for
+# RPM/TPM and is retained (no chain edit). The shared daily subscription cap
+# (#206) is a per-account pool no per-model hop can address; it stays handled by
+# the layer-2 cross-provider fallback via the exit-2 contract, guarded below.
+
+@test "issue-1099: action chain retains the sonnet->opus RPM/TPM hop (not trimmed)" {
+  _source_engine "claude"
+  # Equalization did NOT collapse the per-model bucket independence, so the hop
+  # stays. Trimming to a single model would silently drop layer-1 RPM/TPM cover.
+  [ "$CLAUDE_ACTION_MODEL_CHAIN" = "claude-sonnet-4-6,claude-opus-4-8" ]
+}
+
+@test "issue-1099: sonnet RPM/TPM limit still recovers via the opus hop (layer-1 intact)" {
+  _source_engine "claude"
+  # A per-model rate limit on sonnet-4-6 must still be relieved by opus-4-8's
+  # separate bucket without leaving the provider (no exit 2).
+  export STUB_ENGINE_EXIT_BY_MODEL="claude-sonnet-4-6=1|claude-opus-4-8=0"
+  export STUB_ENGINE_RESPONSE_BY_MODEL="claude-sonnet-4-6=429 too many requests|claude-opus-4-8=opus recovered"
+
+  run run_writer "$TEST_PROMPT"
+
+  [ "$status" -eq 0 ]
+  grep -q "claude-sonnet-4-6" "$MODEL_RECORD"
+  grep -q "claude-opus-4-8" "$MODEL_RECORD"
+}
+
+@test "issue-1099: daily-cap/exhaustion still yields exit 2 (cross-provider contract preserved)" {
+  _source_engine "claude"
+  # When BOTH per-model buckets are exhausted (the daily-cap-style case the hop
+  # cannot fix), the chain must still return 2 so layer-2 cross-provider fallback
+  # fires. This contract must survive the #1099 assessment unchanged.
+  export STUB_ENGINE_EXIT_BY_MODEL="claude-sonnet-4-6=1|claude-opus-4-8=1"
+  export STUB_ENGINE_RESPONSE_BY_MODEL="claude-sonnet-4-6=quota exceeded|claude-opus-4-8=quota exceeded"
+
+  run run_writer "$TEST_PROMPT"
+
+  [ "$status" -eq 2 ]
+}
+
 # ── Gemini/Copilot unchanged: no chain applied ────────────────────────────────
 
 @test "gemini: in-engine chain uses gemini model (not claude)" {
