@@ -185,6 +185,43 @@ _source_engine() {
   grep -q "claude-opus-4-8" "$MODEL_RECORD"
 }
 
+# ── Sonnet 5 candidate wiring (#1098) ─────────────────────────────────────────
+# Sonnet 5 is appended as a FALLBACK CANDIDATE after claude-sonnet-4-6 in the
+# triage and deep chains (not a replacement, not the fleet default). The action
+# tier is deliberately out of scope.
+
+@test "sonnet-5 candidate: triage chain default appends claude-sonnet-5-0 after sonnet-4-6" {
+  _source_engine "claude"
+  [ "$CLAUDE_TRIAGE_MODEL_CHAIN" = "claude-haiku-4-5-20251001,claude-sonnet-4-6,claude-sonnet-5-0" ]
+}
+
+@test "sonnet-5 candidate: deep chain default appends claude-sonnet-5-0 after sonnet-4-6" {
+  _source_engine "claude"
+  [ "$CLAUDE_DEEP_MODEL_CHAIN" = "claude-opus-4-8,claude-sonnet-4-6,claude-sonnet-5-0" ]
+}
+
+@test "sonnet-5 candidate: deep opus-4-8 + sonnet-4-6 both rate-limited → claude-sonnet-5-0 reached" {
+  _source_engine "claude"
+  # Both existing deep models throttle; the walk must reach the new candidate.
+  export STUB_ENGINE_EXIT_BY_MODEL="claude-opus-4-8=1|claude-sonnet-4-6=1|claude-sonnet-5-0=0"
+  export STUB_ENGINE_RESPONSE_BY_MODEL="claude-opus-4-8=429 too many requests|claude-sonnet-4-6=429 too many requests|claude-sonnet-5-0=sonnet 5 did the work"
+
+  run run_agentic "$TEST_PROMPT" "claude-opus-4-8" "deep"
+
+  [ "$status" -eq 0 ]
+  grep -q "claude-opus-4-8" "$MODEL_RECORD"
+  grep -q "claude-sonnet-4-6" "$MODEL_RECORD"
+  grep -q "claude-sonnet-5-0" "$MODEL_RECORD"
+  [[ "$output" == *"sonnet 5 did the work"* ]]
+}
+
+@test "sonnet-5 candidate: action chain default is NOT touched (scope guard)" {
+  _source_engine "claude"
+  # Action tier is out of scope for #1098 — must stay sonnet-4-6 → opus-4-8.
+  [ "$CLAUDE_ACTION_MODEL_CHAIN" = "claude-sonnet-4-6,claude-opus-4-8" ]
+  [[ "$CLAUDE_ACTION_MODEL_CHAIN" != *"claude-sonnet-5"* ]]
+}
+
 # ── Gemini/Copilot unchanged: no chain applied ────────────────────────────────
 
 @test "gemini: in-engine chain uses gemini model (not claude)" {
