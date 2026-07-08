@@ -20,6 +20,12 @@ set -euo pipefail
 #   2. Cross-provider fallback — run_writer_with_fallback / review-batch.sh
 #      walk claude → copilot → gemini only after the in-engine chain is fully
 #      rate-limited (exit code 2 from the engine-layer call).
+# Sonnet 5 rate-limit equalization (#1099): equalization makes each model's
+# RPM/TPM bucket the same SIZE across tiers, but does NOT merge them into one
+# shared bucket — layer-1 recovery above depends on the buckets being SEPARATE,
+# not on differing sizes, so the sonnet → opus hop stays useful and is retained.
+# It changes only per-model rate LIMITS, so it has no bearing on the shared
+# daily subscription cap (#206), which layer-2 alone covers via the exit-2 path.
 #
 # Token logging (opt-in):
 #   Set TOKEN_LOG_FILE=<path> to capture per-call JSONL token records.

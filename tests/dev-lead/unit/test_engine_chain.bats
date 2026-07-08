@@ -128,6 +128,7 @@ _source_engine() {
 @test "writer: sonnet rate-limited → opus-4-8 tried via CLAUDE_ACTION_MODEL_CHAIN" {
   _source_engine "claude"
   # Defaults from set_engine_config: CLAUDE_ACTION_MODEL_CHAIN=sonnet,opus-4-8
+  # (#1099) guard: per-model RPM/TPM recovery via the hop survives equalization.
   export STUB_ENGINE_EXIT_BY_MODEL="claude-sonnet-4-6=1|claude-opus-4-8=0"
   export STUB_ENGINE_RESPONSE_BY_MODEL="claude-sonnet-4-6=too many requests (429)|claude-opus-4-8=opus-4-8 did the work"
 
@@ -140,6 +141,7 @@ _source_engine() {
 
 @test "writer: sonnet rate-limited and opus-4-8 rate-limited → exit 2 (cross-provider fallback signal)" {
   _source_engine "claude"
+  # (#1099) guard: the exit-2 contract for daily-cap exhaustion survives the assessment.
   export STUB_ENGINE_EXIT_BY_MODEL="claude-sonnet-4-6=1|claude-opus-4-8=1"
   export STUB_ENGINE_RESPONSE_BY_MODEL="claude-sonnet-4-6=quota exceeded|claude-opus-4-8=quota exceeded"
 
@@ -218,9 +220,24 @@ _source_engine() {
 @test "sonnet-5 candidate: action chain default is NOT touched (scope guard)" {
   _source_engine "claude"
   # Action tier is out of scope for #1098 — must stay sonnet-4-6 → opus-4-8.
+  # (#1099) guard: equalization does not remove this hop.
   [ "$CLAUDE_ACTION_MODEL_CHAIN" = "claude-sonnet-4-6,claude-opus-4-8" ]
   [[ "$CLAUDE_ACTION_MODEL_CHAIN" != *"claude-sonnet-5"* ]]
 }
+
+# ── #1099: sonnet->opus in-engine hop retained under rate-limit equalization ──
+# Assessment outcome (issue #1099): Sonnet 5's rate-limit equalization makes each
+# model's RPM/TPM bucket the same SIZE, but does NOT merge them into one shared
+# bucket. The "Rate-limit fallback (two layers)" section in engine.sh depends on
+# buckets being SEPARATE, not on differing sizes — a saturated sonnet-4-6 bucket
+# is still relieved by hopping to opus-4-8's independent bucket. So the hop is
+# NOT redundant for RPM/TPM and is retained (no chain edit). The shared daily
+# subscription cap (#206) is a per-account pool that no per-model hop can address;
+# it stays handled by the layer-2 cross-provider fallback via the exit-2 contract.
+# The existing tests below already cover these behaviors and also guard #1099:
+#   • "sonnet-5 candidate: action chain default is NOT touched" — chain unchanged
+#   • "writer: sonnet rate-limited → opus-4-8 tried" — layer-1 RPM/TPM recovery
+#   • "writer: sonnet rate-limited and opus-4-8 rate-limited → exit 2" — layer-2 contract
 
 # ── Gemini/Copilot unchanged: no chain applied ────────────────────────────────
 
