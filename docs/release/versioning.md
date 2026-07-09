@@ -67,8 +67,8 @@ Concretely for **`dev-lead`** (hosted in `.github-private`): `next` = `.github-p
 `ring0` = `.github`, `ring1` = `{TalkTerm, bmad-bgreat-suite}`, `stable` = the rest.
 **Production self-review/dev duty stays pinned to `stable` even within ring 0** — the agent validating
 fixes is never the unvalidated candidate (the circular-dependency fix #500 targets). The intended
-machine-readable source of truth is `standards/canary-rings.json`, consumed by the promotion
-automation (#501).
+machine-readable source of truth is `standards/canary-rings.json`, now hosted in
+`petry-projects/.github` and consumed by the promotion automation (#501, relocated there under #613).
 
 A staged rollout advances the channels in order — `next` → `ring0` → `ring1` → `stable` — validating
 at each step (see [`runbook.md` §2c](./runbook.md#2c-staged-canary--ring-rollout)). All four channels
@@ -153,13 +153,11 @@ reusables (`agent-shield`, `auto-rebase`, `dependency-audit`, `dependabot-autome
   (the mutable-ref exception) is created **there**, not on this repo — see
   [`AGENTS.md`](../../AGENTS.md) "Release channel tags & the mutable-ref exception".
 
-> **Why not `standards/canary-rings.json` yet?** The machine-readable ring source of truth consumed by
-> the promotion automation (`scripts/canary-rollout.sh`, #501) carries only the agents whose channel
-> tags that automation can move. `cut-release.sh` now publishes cross-repo tags via `gh api` (#872), but
-> `canary-rollout.sh` does not yet use that cross-repo path, so `feature-ideation` and the six above stay
-> **absent** from `canary-rings.json` until the rollout automation is taught the same `gh api` move —
-> adding them sooner would advertise a promotion the automation cannot perform. (Manual/scripted cuts via
-> `cut-release.sh` work today.)
+> **Now registered in `standards/canary-rings.json`.** The promotion automation (`canary-rollout.sh`,
+> #501) — relocated to `petry-projects/.github` under #613 — moves channel tags **cross-repo** via `gh api`
+> ref updates on each agent's host repo (#1054), so the six reusables above are registered under the full
+> `{next, ring0, ring1, stable}` model (#870). `feature-ideation` remains **absent** for now: its host + ring
+> assignment aren't settled. (Manual/scripted cuts via `cut-release.sh` work today.)
 
 ### The six #482 reusables (ring assignment)
 
