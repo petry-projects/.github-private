@@ -129,29 +129,6 @@ PR_HEAD_SHA=$(echo "$PR_SNAPSHOT" | jq -r '.headRefOid')
 export PR_HEAD_SHA
 echo "    head SHA: $PR_HEAD_SHA"
 
-# LSP pilot (issue #960, story #844): when the recording flag is on, capture this
-# real production review as ONE pilot record. engine.sh tees the deep/audit/duck
-# stream-json transcripts into a per-PR stream dir; on exit (any path), the EXIT
-# trap folds them into one kind:"lsp_pilot_run" record on TOKEN_LOG_FILE via
-# lpe_emit_record. Strict no-op off-pilot — the consumer repos never set the flag.
-if [ "${LSP_PILOT_ENABLED:-}" = "true" ]; then
-  # shellcheck source=lsp_pilot_emit.sh
-  source "$SCRIPT_DIR/lsp_pilot_emit.sh"
-  LSP_PILOT_STREAM_DIR="$(mktemp -d 2>/dev/null || true)"
-  export LSP_PILOT_STREAM_DIR
-  _LSP_PILOT_T0="$(date +%s%N 2>/dev/null || echo 0)"
-  [[ "$_LSP_PILOT_T0" == *N ]] && _LSP_PILOT_T0="${_LSP_PILOT_T0%N}000000000"
-  _lsp_pilot_on_exit() {
-    local _t1 _wall
-    _t1="$(date +%s%N 2>/dev/null || echo 0)"
-    [[ "$_t1" == *N ]] && _t1="${_t1%N}000000000"
-    _wall="$(lpe_wall_seconds "${_LSP_PILOT_T0:-0}" "$_t1")"
-    lpe_emit_record "${LSP_PILOT_STREAM_DIR:-}" "$PR_URL" "${PR_HEAD_SHA:-}" "$_wall" || true
-    [ -n "${LSP_PILOT_STREAM_DIR:-}" ] && rm -rf "$LSP_PILOT_STREAM_DIR" 2>/dev/null || true
-  }
-  trap _lsp_pilot_on_exit EXIT
-fi
-
 CI_STATUS=$(compute_ci_status "$(jq '.statusCheckRollup' <<< "$PR_SNAPSHOT")")
 echo "    CI status: $CI_STATUS"
 
@@ -1364,13 +1341,6 @@ apply_finding_verification "$OUTPUT_FILE" "${TOKEN_WORKFLOW:-pr-review}" "deep" 
 # Wait for duck to finish (deep succeeded)
 [ -n "$DUCK_PID" ] && wait $DUCK_PID || true
 
-# LSP finding-verification (story #843): ground the deep tier's cross-file
-# findings before they are synthesized/posted. Inert (no change) unless the LSP
-# MCP server is wired and connected; the deep CLI output is scanned so a degraded
-# server skips verification. Operates in place on deep.json.
-apply_lsp_verification "$OUTPUT_FILE" "deep" \
-  /tmp/cascade/deep-stdout.txt /tmp/cascade/deep.log || true
-
 DEEP_DECISION=$(jq -r '.decision' "$OUTPUT_FILE")
 DEEP_RISK=$(jq -r '.risk' "$OUTPUT_FILE")
 echo "    [tier2] deep: decision=$DEEP_DECISION risk=$DEEP_RISK"
@@ -1499,12 +1469,6 @@ if [ ! -s "$OUTPUT_FILE" ] || ! jq empty "$OUTPUT_FILE" 2>/dev/null; then
   echo "::error::cascade failed at tier 3 for $PR_URL"
   exit 1
 fi
-
-# LSP finding-verification (story #843): ground the audit tier's cross-file
-# findings before the final verdict is posted. Inert unless the LSP MCP server is
-# wired and connected (audit CLI output scanned for a degraded server).
-apply_lsp_verification "$OUTPUT_FILE" "audit" \
-  /tmp/cascade/audit-stdout.txt /tmp/cascade/audit.log || true
 
 AUDIT_DECISION=$(jq -r '.decision' "$OUTPUT_FILE")
 AUDIT_RISK=$(jq -r '.risk' "$OUTPUT_FILE")
