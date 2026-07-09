@@ -55,9 +55,9 @@ teardown() {
 # ---------------------------------------------------------------------------
 @test "PP_REQUIRED_SA_SETTINGS matches the canonical standard set exactly (no drift)" {
   # Canonical keys per standards/push-protection.md. Update BOTH together.
-  local expected="dependabot_security_updates secret_scanning secret_scanning_ai_detection secret_scanning_non_provider_patterns secret_scanning_push_protection"
+  local expected=$'dependabot_security_updates\nsecret_scanning\nsecret_scanning_ai_detection\nsecret_scanning_non_provider_patterns\nsecret_scanning_push_protection'
   local actual
-  actual="$(printf '%s\n' "${PP_REQUIRED_SA_SETTINGS[@]}" | sort | tr '\n' ' ' | sed 's/ $//')"
+  actual="$(printf '%s\n' "${PP_REQUIRED_SA_SETTINGS[@]}" | sort)"
   [ "$actual" = "$expected" ]
 }
 
