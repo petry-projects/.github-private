@@ -44,6 +44,24 @@ teardown() {
 }
 
 # ---------------------------------------------------------------------------
+# Drift guard (#1133): the enforced key set must stay in lock-step with the org
+# standard — petry-projects/.github → standards/push-protection.md (the
+# security_and_analysis table). This repo's lean key list and .github's larger
+# structured apply/audit list are purpose-built variants of the SAME standard
+# (kept separate on purpose, epic #613), so an "includes" test per key is not
+# enough: adding or dropping a key here without updating the standard would let a
+# repo sync clean while missing (or over-asserting) a required security setting.
+# This asserts the EXACT set, catching both additions and removals.
+# ---------------------------------------------------------------------------
+@test "PP_REQUIRED_SA_SETTINGS matches the canonical standard set exactly (no drift)" {
+  # Canonical keys per standards/push-protection.md. Update BOTH together.
+  local expected="dependabot_security_updates secret_scanning secret_scanning_ai_detection secret_scanning_non_provider_patterns secret_scanning_push_protection"
+  local actual
+  actual="$(printf '%s\n' "${PP_REQUIRED_SA_SETTINGS[@]}" | sort | tr '\n' ' ' | sed 's/ $//')"
+  [ "$actual" = "$expected" ]
+}
+
+# ---------------------------------------------------------------------------
 # pp_apply_security_and_analysis — dry-run mode
 # ---------------------------------------------------------------------------
 
