@@ -32,18 +32,6 @@ on:
         type: string
         required: false
         default: ""
-      # LSP-MCP review pilot A/B leg selector (epic #839, story #844, issue #1031).
-      # Decouples pilot capture from LSP wiring so ONE production pipeline can emit
-      # both control legs:
-      #   on   → wire the LSP MCP (setup step) AND capture   → lsp-on  (B leg)
-      #   off  → capture only, skip LSP wiring               → lsp-off (A control)
-      #   none/'' → today's behaviour (defers to the legacy vars.LSP_PILOT_ENABLED)
-      # A trigger stub forwards this so the A/B can be driven on this repo's PRs.
-      lsp_pilot_variant:
-        description: "LSP pilot A/B leg: on (wire LSP + capture) | off (capture only) | none"
-        type: string
-        required: false
-        default: ""
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         required: false
@@ -214,26 +202,6 @@ jobs:
       # server handshake (`--debug mcp`) and surface a ::notice:: for a healthy
       # connection. Off by default; never changes the review verdict.
       REVIEW_MCP_DEBUG: ${{ vars.REVIEW_MCP_DEBUG || '' }}
-      # ── LSP-MCP review pilot capture gate (epic #839, story #844, issue #1031) ─
-      # engine.sh's _lsp_pilot_active() and review-one-pr.sh's emit trap gate on
-      # the ENV var LSP_PILOT_ENABLED — NOT the repo variable. Export it here so a
-      # production review actually captures the stream-json transcript and appends
-      # the kind:"lsp_pilot_run" record to TOKEN_LOG_FILE (Gap 1). On when the
-      # legacy repo variable is set OR a pilot A/B variant (on|off) is
-      # dispatched/defaulted. Empty (the default) → no capture, no records, no
-      # extra flags — byte-for-byte unchanged for the consumer repos (AC #4).
-      LSP_PILOT_ENABLED: >-
-        ${{ (vars.LSP_PILOT_ENABLED == 'true'
-             || inputs.lsp_pilot_variant == 'on' || inputs.lsp_pilot_variant == 'off'
-             || vars.LSP_PILOT_VARIANT == 'on' || vars.LSP_PILOT_VARIANT == 'off')
-            && 'true' || '' }}
-      # A/B leg selector that DECOUPLES capture from LSP wiring (Gap 2). 'on' wires
-      # the LSP MCP (the setup step below) → lsp-on (B); 'off' skips wiring → lsp-off
-      # (A control), capture only. lpe_variant() treats this as authoritative;
-      # empty/'none' preserves the legacy vars.LSP_PILOT_ENABLED behaviour (falls
-      # back to REVIEW_MCP_CONFIG detection). The dispatch input beats the repo-var
-      # default so the A/B can be driven per-run.
-      LSP_PILOT_VARIANT: ${{ inputs.lsp_pilot_variant || vars.LSP_PILOT_VARIANT || '' }}
       # Downstream-impact pass (epic #748 / discussion #653): annotate a review
       # with the consumer repos that pin a shared surface the PR changes. Enabled
       # by default here; set the repo variable DOWNSTREAM_IMPACT_ENABLED=false to
@@ -498,47 +466,6 @@ jobs:
               exit 1
               ;;
           esac
-
-      # ── LSP-MCP review pilot (epic #839, story #842/#844) ────────────────
-      # Opt-in ONLY: these WIRING steps run when the repo variable
-      # LSP_PILOT_ENABLED == 'true' OR the pilot variant resolves to 'on' (the B
-      # leg). The 'off' (A control) leg deliberately does NOT run them — it
-      # captures a review WITHOUT wiring the LSP MCP (issue #1031, Gap 2).
-      # When neither is set (the default) these steps are skipped entirely,
-      # REVIEW_MCP_CONFIG stays unset, and the review behaves byte-for-byte as
-      # today (the engine's .github/review-mcp.json default is untouched). When on, the
-      # script installs the pinned LSP-MCP candidate + bash-language-server and
-      # threads the deep/audit-only MCP knobs into $GITHUB_ENV. A missing tool
-      # degrades gracefully (::warning:: + skip) — it never fails the workflow.
-      # Pins/candidate are overridable via repo variables; see docs/lsp-pilot.md.
-      # Cache the LSP toolchain/index across ephemeral runs (story #846) so a warm
-      # run restores under the 30s cold-start SLA instead of re-installing. Keyed on
-      # OS + candidate + pinned tool versions + a hash of the indexed Shell sources
-      # (the "relevant lockfile" for a Shell-only index). SHA-pinned to the same
-      # actions/cache the Claude CLI cache above uses. Opt-in behind LSP_PILOT_ENABLED;
-      # its cache-hit output is threaded into the setup step for the cold-start metric.
-      - name: Cache LSP index
-        id: lsp-cache
-        # Wire the LSP toolchain for the legacy repo var OR the 'on' (B) leg only.
-        # The 'off' (A) control leg deliberately skips wiring — capture without LSP.
-        if: ${{ vars.LSP_PILOT_ENABLED == 'true' || (inputs.lsp_pilot_variant || vars.LSP_PILOT_VARIANT) == 'on' }}
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
-        with:
-          path: ~/.local
-          key: lsp-pilot-${{ runner.os }}-${{ vars.LSP_CANDIDATE || 'agent-lsp' }}-${{ vars.AGENT_LSP_VERSION || 'v0.15.0' }}-bls${{ vars.BASH_LANGUAGE_SERVER_VERSION || '5.6.0' }}-${{ hashFiles('scripts/**/*.sh', '**/package-lock.json') }}
-          restore-keys: |
-            lsp-pilot-${{ runner.os }}-${{ vars.LSP_CANDIDATE || 'agent-lsp' }}-${{ vars.AGENT_LSP_VERSION || 'v0.15.0' }}-bls${{ vars.BASH_LANGUAGE_SERVER_VERSION || '5.6.0' }}-
-
-      - name: Set up LSP pilot servers (opt-in)
-        # Wire the LSP MCP for the legacy repo var OR the 'on' (B) leg only; the
-        # 'off' (A) control leg captures WITHOUT wiring REVIEW_MCP_CONFIG.
-        if: ${{ vars.LSP_PILOT_ENABLED == 'true' || (inputs.lsp_pilot_variant || vars.LSP_PILOT_VARIANT) == 'on' }}
-        env:
-          LSP_CANDIDATE: ${{ vars.LSP_CANDIDATE || 'agent-lsp' }}
-          AGENT_LSP_VERSION: ${{ vars.AGENT_LSP_VERSION || 'v0.15.0' }}
-          BASH_LANGUAGE_SERVER_VERSION: ${{ vars.BASH_LANGUAGE_SERVER_VERSION || '5.6.0' }}
-          LSP_INDEX_CACHE_HIT: ${{ steps.lsp-cache.outputs.cache-hit }}
-        run: bash scripts/setup-lsp-pilot.sh
 
       - name: Enumerate candidate PRs
         run: |
