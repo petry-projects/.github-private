@@ -64,34 +64,6 @@ if [ "$output_format" = "json" ]; then
     printf '{"type":"result","result":"%s","usage":{"input_tokens":%s,"cache_read_input_tokens":%s,"cache_creation_input_tokens":%s,"output_tokens":%s}}\n' \
       "$response" "${_in:-0}" "${_cr:-0}" "${_cw:-0}" "${_out:-0}"
   fi
-elif [ "$output_format" = "stream-json" ]; then
-  # Mirror `claude --print --output-format stream-json --verbose`: an NDJSON
-  # transcript — one navigation tool_use + its tool_result, then a terminal
-  # `result` event carrying top-level .result + .usage (parsed by the engine and
-  # by lsp_pilot_measure.sh). Usage from STUB_CLAUDE_USAGE (same default as json).
-  read -r _in _cr _cw _out <<< "${STUB_CLAUDE_USAGE:-100 20 30 40}"
-  if command -v jq >/dev/null 2>&1; then
-    jq -cn '{type:"assistant", message:{content:[{type:"tool_use", id:"t1", name:"Grep", input:{pattern:"foo"}}]}}'
-    jq -cn '{type:"user", message:{content:[{type:"tool_result", tool_use_id:"t1", content:"scripts/x.sh:1:foo"}]}}'
-    jq -cn --arg result "$response" --arg model "${model:-claude-stub}" \
-      --argjson i "${_in:-0}" --argjson cr "${_cr:-0}" \
-      --argjson cw "${_cw:-0}" --argjson o "${_out:-0}" \
-      '{type:"result", subtype:"success", is_error:false, result:$result, model:$model,
-        usage:{input_tokens:$i, cache_read_input_tokens:$cr,
-               cache_creation_input_tokens:$cw, output_tokens:$o}}'
-  else
-    _resp_json="${response//\\/\\\\}"
-    _resp_json="${_resp_json//\"/\\\"}"
-    _resp_json="${_resp_json//$'\n'/\\n}"
-    _model_json="${model:-claude-stub}"
-    _model_json="${_model_json//\\/\\\\}"
-    _model_json="${_model_json//\"/\\\"}"
-    _model_json="${_model_json//$'\n'/\\n}"
-    printf '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Grep","input":{"pattern":"foo"}}]}}\n'
-    printf '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"scripts/x.sh:1:foo"}]}}\n'
-    printf '{"type":"result","subtype":"success","is_error":false,"result":"%s","model":"%s","usage":{"input_tokens":%s,"cache_read_input_tokens":%s,"cache_creation_input_tokens":%s,"output_tokens":%s}}\n' \
-      "$_resp_json" "$_model_json" "${_in:-0}" "${_cr:-0}" "${_cw:-0}" "${_out:-0}"
-  fi
 else
   printf '%s\n' "$response"
 fi

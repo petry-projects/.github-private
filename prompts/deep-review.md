@@ -80,26 +80,6 @@ enumeration. No actions on other PRs.
      review because MCP was unavailable, and never fabricate a scan result.
 6. Fetch linked issues if any.
 7. Check `statusCheckRollup` for CI status.
-8. **LSP finding-verification (only when the `mcp__lsp__*` navigation tools are
-   available).** These tools are exposed only when the LSP pilot is enabled; if
-   they are not present, skip this step entirely and review as usual. When they
-   are present, before you report any finding that makes a **cross-file or
-   semantic claim** — e.g. "X is undefined", "this breaks N callers", "this
-   symbol is unused", "this is a type/syntax error" — ground the claim against
-   real semantic context instead of a textual `grep` match:
-   - use `mcp__lsp__find_references` to confirm a "breaks N callers" / "unused
-     symbol" claim against the actual reference set;
-   - use `mcp__lsp__get_diagnostics` to confirm an "undefined" / "type or syntax
-     error" claim against the language server's own diagnostics.
-   Then annotate that finding with an `"lsp_verification"` field:
-   - `"verified"` — LSP confirmed the claim;
-   - `"unverifiable"` — LSP could not ground the claim. **Do not drop it and do
-     not post it as confident**: lower its `severity` one level; the
-     verification step also tags it `[lsp: unverifiable]` so the outcome is
-     auditable.
-   Findings that make no cross-file/semantic claim (style, docs, etc.) need no
-   `lsp_verification` field. Never fail or block a review because an LSP tool was
-   unavailable, and never fabricate a verification result.
 
 ## Semantic safety checks (issue #305 — the LLM-only half)
 
@@ -181,14 +161,10 @@ Write a JSON object to `$OUTPUT_FILE`:
       "category": "...",
       "message": "...",
       "file": "path or null",
-      "line": "number or null",
-      "lsp_verification": "verified|unverifiable (OMIT unless step 8 applied)"
+      "line": "number or null"
     }
   ]
 }
 ```
-
-Include `lsp_verification` **only** on a finding you grounded via the LSP tools
-in step 8 (`verified` or `unverifiable`); omit it otherwise.
 
 Write with `cat > "$OUTPUT_FILE" <<'JSON' ... JSON`. Ensure it parses with `jq`.
