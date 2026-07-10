@@ -26,6 +26,7 @@ setup() {
 # the next `## ` heading) so the pre-fed-specific assertions cannot accidentally
 # match text elsewhere in the prompt.
 _prefed_section() {
+  [ -f "${1:-}" ] || return 1
   awk '
     /^##[[:space:]]+Pre-fed PR context/ { insec=1; next }
     insec && /^##[[:space:]]/           { insec=0 }
