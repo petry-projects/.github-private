@@ -45,8 +45,8 @@ per-set candidate/incumbent scores and the verdict here:
 
 | Holdout set | `sonnet-4-6` (incumbent) | `sonnet-5` (candidate) | `>=` non-regression | Outcome |
 |-------------|--------------------------|------------------------|---------------------|---------|
-| `triage`      | *fill from model-ab run* | *fill* | *pass / regression / infra* | |
-| `deep-review` | *fill*                   | *fill* | *pass / regression / infra* | |
+| `triage`      | *fill from model-ab run* | *fill* | *pass / regression / infra* | *fill* |
+| `deep-review` | *fill*                   | *fill* | *pass / regression / infra* | *fill* |
 
 > Attach the `model-ab.sh` evidence JSON and a clean `git status --porcelain -- evals/`
 > (held-out immutability) alongside this row when the decision is signed.
