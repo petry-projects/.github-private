@@ -110,7 +110,7 @@ in `petry-projects/.github`:
 - baseline window: **14 days**; spike cap: **3×**
 - `next → ring0`: dwell **4h**, sample **min 3 / 25% / ≤15** (or documented waive)
 - `ring0 → ring1`: dwell **8h**, **waive_sample**
-- `ring1 → stable`: dwell **12h**
+- `ring1 → stable`: dwell **12h**, sample **min 1** (per `standards/canary-rings.json` `sample_min: 1`; not waivable without an explicit documented waiver approved by the Release_Manager)
 
 > **Ring1 repin blocker.** The ring1 health signal is not yet active — TalkTerm and
 > bmad-bgreat-suite currently pin `@dev-lead/stable`, not `@dev-lead/ring1` (see
@@ -139,7 +139,7 @@ first verifying the blob changed. Record the gate result per transition:
 |------------|-----------|-------:|----------------------------------|------|
 | `next → ring0`  | *fill* | *fill* | *none / detail* | *pass / hold* |
 | `ring0 → ring1` | *fill* | waived | *none / detail* | *pass / hold* |
-| `ring1 → stable` | *fill* | waived | *none / detail* | **hold** — do not fill until (a) the ring1 repin blocker is resolved (TalkTerm + bmad-bgreat-suite switched to `@dev-lead/ring1`) **and** (b) ring1 health evidence has been collected from a full dwell window |
+| `ring1 → stable` | *fill* | *fill (≥ 1 ring1 run required — `sample_min: 1` in `canary-rings.json`; or attach explicit Release_Manager waiver)* | *none / detail* | **hold** — do not fill until (a) the ring1 repin blocker is resolved (TalkTerm + bmad-bgreat-suite switched to `@dev-lead/ring1`), (b) ring1 health evidence has been collected from a full dwell window, **and** (c) at least one ring1 sample run is recorded |
 
 > `ring1 → stable` requires the ring1 repin blocker above to be resolved before the
 > row can be filled. Promotion to `stable` is the human action gated by this record
