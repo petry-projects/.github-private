@@ -34,6 +34,19 @@ _prefed_section() {
   ' "$1"
 }
 
+# Extract the body of an arbitrary named section (heading word(s) passed as $1,
+# file as $2) so fallback-step assertions cannot accidentally match prose in the
+# Pre-fed PR context section that also mentions `gh pr view` / `gh pr diff`.
+_section() {
+  local heading="$1" file="$2"
+  [ -f "${file:-}" ] || return 1
+  awk -v pat="^##[[:space:]]+${heading}" '
+    $0 ~ pat              { insec=1; next }
+    insec && /^##[[:space:]]/ { insec=0 }
+    insec                 { print }
+  ' "$file"
+}
+
 # --- security-audit.md ------------------------------------------------------
 
 @test "audit prompt has a Pre-fed PR context section" {
@@ -67,8 +80,9 @@ _prefed_section() {
 }
 
 @test "audit prompt still keeps gh pr view / gh pr diff as the fallback fetch" {
-  grep -q 'gh pr view' "$AUDIT"
-  grep -q 'gh pr diff' "$AUDIT"
+  steps="$(_section 'Steps' "$AUDIT")"
+  grep -q 'gh pr view' <<<"$steps"
+  grep -q 'gh pr diff' <<<"$steps"
 }
 
 # --- single-review.md -------------------------------------------------------
@@ -102,8 +116,9 @@ _prefed_section() {
 }
 
 @test "single-review prompt still keeps gh pr view / gh pr diff as the fallback fetch" {
-  grep -q 'gh pr view' "$SINGLE"
-  grep -q 'gh pr diff' "$SINGLE"
+  ctx="$(_section 'Context-gathering' "$SINGLE")"
+  grep -q 'gh pr view' <<<"$ctx"
+  grep -q 'gh pr diff' <<<"$ctx"
 }
 
 @test "single-review prompt preserves the draft / head-sha-changed skip checks" {
