@@ -25,12 +25,44 @@ reviewer, called only for PRs with real concerns.
 
 **FORBIDDEN**: enumeration commands, actions on other PRs.
 
+## Pre-fed PR context
+
+When the shared context prefetch is enabled (epic #1101, Story 2), the
+orchestrator fetches the FULL diff and a superset `gh pr view` metadata JSON
+ONCE and persists them to SHA-bound files, exporting their paths:
+
+- `$PR_CONTEXT_METADATA_FILE` — the superset metadata JSON, stamped with a
+  top-level `.pr_head_sha` field (read it with
+  `jq -r '.pr_head_sha' "$PR_CONTEXT_METADATA_FILE"`).
+- `$PR_CONTEXT_DIFF_FILE` — the full diff, whose first line is
+  `# PR_HEAD_SHA: <sha>`.
+
+**If** both variables are set, the files exist, **and** their stamp matches
+`$PR_HEAD_SHA`, then read the pre-fed metadata and diff from these files
+**instead of** running the `gh pr view` / `gh pr diff` in steps 2–3 below — it
+is the same context, already fetched, so do not re-fetch it.
+
+**Otherwise** (the prefetch flag is off, the variables are unset, a file is
+missing, or the stamp does NOT match `$PR_HEAD_SHA` — meaning the PR moved and
+the pre-fed copy is stale), fall back to running `gh pr view` / `gh pr diff`
+exactly as written in steps 2–3. Behavior is byte-identical when the prefetch
+is off.
+
+This covers only the primary metadata + diff (steps 2–3). Everything else —
+the linked-issue fetch (step 4), the org-standards fetch via `gh api`
+(step 5), and (when enabled) LSP finding-verification — stays dynamic; keep
+using `gh`, `gh api`, and the MCP/LSP tools for those.
+
 ## Steps
 
 1. Read `$TRIAGE_RESULT` (triage signals) and the deep review verdict at
    `$DEEP_RESULT` (its findings, risk, and reasoning).
 2. `gh pr view "$PR_URL" --json number,title,body,author,isDraft,baseRefName,headRefName,headRefOid,url,headRepository,headRepositoryOwner,labels,reviewDecision,mergeable,mergeStateStatus,statusCheckRollup,reviewRequests,reviews,comments,commits,closingIssuesReferences,additions,deletions,changedFiles,files`
-3. `gh pr diff "$PR_URL"` — read the diff. Focus on the areas the deep review flagged.
+   — unless the metadata was pre-fed (see **Pre-fed PR context**), in which case
+   read it from `$PR_CONTEXT_METADATA_FILE` instead of running this command.
+3. `gh pr diff "$PR_URL"` — read the diff. Focus on the areas the deep review
+   flagged. Unless the diff was pre-fed (see **Pre-fed PR context**), in which
+   case read it from `$PR_CONTEXT_DIFF_FILE` instead of running this command.
 4. Fetch linked issues if any.
 5. Read any CONTRIBUTING.md, AGENTS.md, CODEOWNERS in the repo to check
    standards compliance (fetch via `gh api`).
