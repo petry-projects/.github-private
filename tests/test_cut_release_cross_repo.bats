@@ -11,6 +11,8 @@ setup() {
   SCRIPT="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)/scripts/cut-release.sh"
   GH_CALLS="${TT_TMP}/gh-calls.log"; export GH_CALLS
   : > "$GH_CALLS"
+  # A this-repo agent resolves its host from GITHUB_REPOSITORY (#1076 unified path).
+  export GITHUB_REPOSITORY="petry-projects/.github-private"
   install_gh_stub
 }
 
@@ -73,11 +75,24 @@ STUB
   ! grep -qE 'POST .*git/tags' "$GH_CALLS"
 }
 
-@test "a this-repo agent still uses the local-git path (no gh api), dry-run" {
+@test "a this-repo agent also resolves via gh api against its own host (#1076), dry-run" {
   run env GH_TOKEN=x bash "$SCRIPT" pr-review 9.9.9 --dry-run
   [ "$status" -eq 0 ]
-  echo "$output" | grep -q 'target=origin (this repo)'
-  ! grep -q 'commits/' "$GH_CALLS"
+  # host is the current repo (GITHUB_REPOSITORY), and resolution goes through the API —
+  # the consistent gh-api path, not a local git resolve.
+  echo "$output" | grep -q 'target=petry-projects/.github-private'
+  grep -q 'commits/' "$GH_CALLS"
+  ! grep -qE 'POST .*git/(tags|refs)' "$GH_CALLS"
+}
+
+@test "a this-repo agent --push creates+moves tags via gh api on its host, not git push (#1076)" {
+  run env GH_TOKEN=x bash "$SCRIPT" dev-lead 1.5.4 --channel next --push
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q 'created dev-lead/v1.5.4 on petry-projects/.github-private'
+  echo "$output" | grep -q 'moved dev-lead/next'
+  # the create + channel move both went through the API on the this-repo host
+  grep -qE 'POST repos/petry-projects/\.github-private/git/tags' "$GH_CALLS"
+  grep -qE '(POST|PATCH) repos/petry-projects/\.github-private/git/refs' "$GH_CALLS"
 }
 
 # ── --promote (ring-to-ring channel move of an existing release) ──────────────

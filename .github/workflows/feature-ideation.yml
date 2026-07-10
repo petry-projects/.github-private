@@ -143,9 +143,51 @@ jobs:
           gh workflow run feature-ideation.yml --repo "${REPO}" \
             -f target_discussion="${DISCUSSION_NUMBER}"
 
+  # ── #571 input resolution — keep `inputs` out of the reusable `with:` ────────
+  # A reusable-workflow call graph (its `uses:` + `with:`) is validated at
+  # WORKFLOW SETUP, before — and regardless of — the calling job's `if:`. The
+  # `inputs` context is only populated for workflow_dispatch/workflow_call, so a
+  # `with:` that references `${{ inputs.* }}` trips a zero-job startup failure on
+  # the `discussion` event even though `ideate` is gated off it. We resolve the
+  # dispatch inputs in this ordinary job (whose step expressions run at run time
+  # and are skipped on `discussion`) and hand them to `ideate` via
+  # `needs.prep.outputs.*` — an always-valid context that defers the `with:`
+  # evaluation to run time. Do not reference `inputs` in `ideate.with`.
+  prep:
+    if: github.event_name != 'discussion'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    outputs:
+      target_discussion: ${{ steps.resolve.outputs.target_discussion }}
+      focus_area: ${{ steps.resolve.outputs.focus_area }}
+      research_depth: ${{ steps.resolve.outputs.research_depth }}
+      dry_run: ${{ steps.resolve.outputs.dry_run }}
+      enhance_backlog: ${{ steps.resolve.outputs.enhance_backlog }}
+    steps:
+      - name: Resolve dispatch inputs
+        id: resolve
+        # `github.event.inputs.*` (not the `inputs` context) so this reads
+        # cleanly on schedule too, where it is simply null → the defaults below.
+        env:
+          TARGET_DISCUSSION: ${{ github.event.inputs.target_discussion }}
+          FOCUS_AREA: ${{ github.event.inputs.focus_area }}
+          RESEARCH_DEPTH: ${{ github.event.inputs.research_depth }}
+          DRY_RUN: ${{ github.event.inputs.dry_run }}
+          ENHANCE_BACKLOG: ${{ github.event.inputs.enhance_backlog }}
+        run: |
+          {
+            echo "target_discussion=${TARGET_DISCUSSION:-}"
+            echo "focus_area=${FOCUS_AREA:-}"
+            echo "research_depth=${RESEARCH_DEPTH:-standard}"
+            echo "dry_run=${DRY_RUN:-false}"
+            echo "enhance_backlog=${ENHANCE_BACKLOG:-false}"
+          } >> "$GITHUB_OUTPUT"
+
   ideate:
     # Runs on workflow_dispatch (incl. the redispatch bridge above) and schedule
     # only — never inline on a discussion event, where claude-code-action aborts.
+    needs: [prep]
     if: github.event_name != 'discussion'
     # Permissions cascade from the calling job to the reusable workflow.
     # The reusable workflow's two jobs (gather-signals + analyze) need:
@@ -175,11 +217,13 @@ jobs:
     # Precedent: auto-rebase.yml intentionally pins its reusable @v2 ahead of canon.
     uses: petry-projects/.github/.github/workflows/feature-ideation-reusable.yml@feature-ideation/next
     with:
+      # All values below come from `needs.prep.outputs.*` (resolved in the `prep`
+      # job) — NOT the `inputs` context — so this reusable `with:` compiles on the
+      # `discussion` event without a zero-job startup failure (#571).
       # Carries the Idea's Discussion number → the reusable runs single-idea
-      # enhancement mode. Populated by the `redispatch` bridge (which forwards
-      # the new discussion's number into this dispatch input); empty on
-      # schedule/manual dispatch → normal scan. Do not edit this line.
-      target_discussion: ${{ inputs.target_discussion || '' }}
+      # enhancement mode. Forwarded by the `redispatch` bridge on
+      # `discussion: created`; empty on schedule/manual dispatch → normal scan.
+      target_discussion: ${{ needs.prep.outputs.target_discussion }}
       # === CUSTOMISE THIS PER REPO — the only required edit ===
       project_context: |
         petry-projects/.github-private is the org-level private automation
@@ -206,12 +250,14 @@ jobs:
       # === OPTIONAL: repo-local reputable source list ===
       # This repo ships .github/feature-ideation-sources.md, which is the
       # reusable workflow's default path — so no sources_file override is needed.
-      focus_area: ${{ inputs.focus_area || '' }}
-      research_depth: ${{ inputs.research_depth || 'standard' }}
-      dry_run: ${{ inputs.dry_run || false }}
+      focus_area: ${{ needs.prep.outputs.focus_area }}
+      research_depth: ${{ needs.prep.outputs.research_depth }}
+      # prep emits the string 'true'/'false'; fromJSON casts it to the boolean
+      # the reusable's typed inputs require.
+      dry_run: ${{ fromJSON(needs.prep.outputs.dry_run) }}
       # Operator-triggered backlog sweep (#934). Empty on schedule/discussion
       # triggers → false → normal scan/single-idea enhancement. Pair with
       # dry_run=true to preview the intended comments without posting.
-      enhance_backlog: ${{ inputs.enhance_backlog || false }}
+      enhance_backlog: ${{ fromJSON(needs.prep.outputs.enhance_backlog) }}
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}

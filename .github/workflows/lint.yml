@@ -51,8 +51,6 @@ jobs:
             tests/test_initiative_driver_canary.bats \
             tests/test_mcp_connectivity_check.bats \
             tests/token_report.bats \
-            tests/lsp_pilot_compare.bats \
-            tests/lsp_pilot_report.bats \
             tests/auto_rebase_health.bats \
             tests/model_pricing.bats \
             tests/test_review_cycle.bats \
@@ -85,6 +83,7 @@ jobs:
             tests/test_plan_materialize.bats \
             tests/test_skill_review.bats \
             tests/test_skill_evals.bats \
+            tests/test_model_ab.bats \
             tests/test_triage_prompt.bats \
             tests/test_holdout_guard.bats \
             tests/test_skill_eval_report.bats \

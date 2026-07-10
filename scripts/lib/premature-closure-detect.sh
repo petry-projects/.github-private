@@ -33,7 +33,8 @@
 
 # Soft threshold — an issue must have closed within this many minutes of opening
 # to count as the fast dev-lead task-attempt close. Env-overridable.
-: "${PC_MAX_OPEN_MINUTES:=30}"   # closed < this many minutes after open
+readonly _PC_THRESHOLD_DEFAULT=30
+: "${PC_MAX_OPEN_MINUTES:=$_PC_THRESHOLD_DEFAULT}"   # closed < this many minutes after open
 
 # _pc_int <value>
 #   Echo the value as a non-negative integer, or 0 for empty/non-numeric input.
@@ -79,7 +80,7 @@ premature_closure_reasons() {
   state_reason="${state_reason,,}"
   minutes=$(_pc_int "${2:-0}")
   has_pr="${3:-}"
-  max_minutes=$(_pc_threshold "${PC_MAX_OPEN_MINUTES}" 30)
+  max_minutes=$(_pc_threshold "${PC_MAX_OPEN_MINUTES}" "$_PC_THRESHOLD_DEFAULT")
 
   # 1. Only a "completed" close is premature; "not_planned"/other are legitimate.
   [ "$state_reason" = "completed" ] || return 0
@@ -127,7 +128,7 @@ minutes_between() {
 generate_premature_closure_report() {
   local f="${1:-}"
   local max_minutes
-  max_minutes=$(_pc_threshold "${PC_MAX_OPEN_MINUTES}" 30)
+  max_minutes=$(_pc_threshold "${PC_MAX_OPEN_MINUTES}" "$_PC_THRESHOLD_DEFAULT")
 
   printf '## Premature-Closure Candidates\n\n'
   printf 'Issues closed as `completed` within %sm of opening with **no merged closing PR** ' "$max_minutes"

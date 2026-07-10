@@ -20,6 +20,12 @@ set -euo pipefail
 #   2. Cross-provider fallback — run_writer_with_fallback / review-batch.sh
 #      walk claude → copilot → gemini only after the in-engine chain is fully
 #      rate-limited (exit code 2 from the engine-layer call).
+# Sonnet 5 rate-limit equalization (#1099): equalization makes each model's
+# RPM/TPM bucket the same SIZE across tiers, but does NOT merge them into one
+# shared bucket — layer-1 recovery above depends on the buckets being SEPARATE,
+# not on differing sizes, so the sonnet → opus hop stays useful and is retained.
+# It changes only per-model rate LIMITS, so it has no bearing on the shared
+# daily subscription cap (#206), which layer-2 alone covers via the exit-2 path.
 #
 # Token logging (opt-in):
 #   Set TOKEN_LOG_FILE=<path> to capture per-call JSONL token records.
@@ -107,16 +113,6 @@ REVIEW_MCP_DEBUG="${REVIEW_MCP_DEBUG:-}"
 # the export also covers any future invocation via a separate child shell.
 export REVIEW_MCP_CONFIG REVIEW_MCP_ALLOWED_TOOLS REVIEW_MCP_DEBUG
 
-# LSP-pilot stream capture (epic #839, story #844, issue #960).
-# The owner-gated A/B master switch. When LSP_PILOT_ENABLED=true, the capturing
-# review tiers (deep/audit/single via run_agentic, and run_duck) record their
-# per-tool-call stream-json transcript so a real pr-review can emit ONE
-# pilot-schema record (see scripts/lsp_pilot_emit.sh). When unset/not "true",
-# capture is fully inert: the claude tiers keep `--output-format json` and write
-# no transcript — byte-for-byte unchanged for every consumer repo that never
-# sets the flag.
-_lsp_pilot_active() { [ "${LSP_PILOT_ENABLED:-}" = "true" ]; }
-
 set_engine_config() {
   case "$REVIEW_ENGINE" in
     claude)
@@ -125,7 +121,7 @@ set_engine_config() {
       ENGINE_AUDIT_MODEL="claude-fable-5"
       ENGINE_ACTION_MODEL="claude-sonnet-4-6"
       ENGINE_SINGLE_MODEL="claude-fable-5"
-      ENGINE_LABEL="triage: haiku 4.5 → deep: opus 4.8 + duck: o4-mini → audit: fable 5"
+      ENGINE_LABEL="triage: haiku 4.5 [sonnet 4.6 → sonnet 5] → deep: opus 4.8 [sonnet 4.6 → sonnet 5] + duck: o4-mini → audit: fable 5"
       ENGINE_SINGLE_LABEL="single-reviewer mode: fable 5"
       # Cross-engine rubber duck: use Copilot when Claude is primary
       DUCK_ENGINE="copilot"
@@ -140,8 +136,16 @@ set_engine_config() {
       #   - adaptive thinking only; budget_tokens/temperature/top_p/top_k removed
       #   - omit thinking param entirely (disabled returns 400 on fable-5)
       #   - min cacheable prefix: fable-5 = 2048 tok, opus-4-8 = 4096 tok
-      CLAUDE_TRIAGE_MODEL_CHAIN="${CLAUDE_TRIAGE_MODEL_CHAIN:-claude-haiku-4-5-20251001,claude-sonnet-4-6}"
-      CLAUDE_DEEP_MODEL_CHAIN="${CLAUDE_DEEP_MODEL_CHAIN:-claude-opus-4-8,claude-sonnet-4-6}"
+      # Sonnet 5 candidate (#1098): claude-sonnet-5-0 is appended AFTER the
+      # sonnet-4-6 slot in the triage and deep chains as a non-default fallback
+      # candidate — it earns its own TPM/RPM bucket for the layer-1 rate-limit
+      # walk without displacing the current primaries (haiku triage / opus deep)
+      # or the sonnet-4-6 fallback ordering. It is NOT the fleet default; a
+      # promotion to primary rides Story 5's canary rings. The daily cap is
+      # shared across Claude models (#206), so this hop only helps per-model RPM/
+      # TPM, not the subscription cap. Action tier is out of scope (#1098).
+      CLAUDE_TRIAGE_MODEL_CHAIN="${CLAUDE_TRIAGE_MODEL_CHAIN:-claude-haiku-4-5-20251001,claude-sonnet-4-6,claude-sonnet-5-0}"
+      CLAUDE_DEEP_MODEL_CHAIN="${CLAUDE_DEEP_MODEL_CHAIN:-claude-opus-4-8,claude-sonnet-4-6,claude-sonnet-5-0}"
       CLAUDE_AUDIT_MODEL_CHAIN="${CLAUDE_AUDIT_MODEL_CHAIN:-claude-fable-5,claude-opus-4-8,claude-opus-4-7}"
       CLAUDE_ACTION_MODEL_CHAIN="${CLAUDE_ACTION_MODEL_CHAIN:-claude-sonnet-4-6,claude-opus-4-8}"
       CLAUDE_SINGLE_MODEL_CHAIN="${CLAUDE_SINGLE_MODEL_CHAIN:-claude-fable-5,claude-opus-4-8,claude-opus-4-7}"
@@ -684,23 +688,11 @@ _claude_chain_invoke() {
   # Gated by ENGINE_USAGE_JSON (default on) so it can be disabled without a code
   # change. Falls back to raw output if extraction yields nothing.
   declare -f reset_engine_usage >/dev/null 2>&1 && reset_engine_usage
-  local _usage_json=0 _stream_capture=0 fmt_args=()
+  local _usage_json=0 fmt_args=()
   if [ -n "${TOKEN_LOG_FILE:-}" ] && [ "${ENGINE_USAGE_JSON:-1}" != "0" ] \
      && declare -f parse_engine_usage >/dev/null 2>&1; then
     _usage_json=1
     fmt_args=(--output-format json)
-    # LSP pilot (issue #960): when the recording flag is on AND this caller is a
-    # capturing tier (run_agentic deep/audit/single, run_duck set
-    # _LSP_PILOT_CAPTURE=1), swap the aggregate json envelope for the per-tool-
-    # call stream-json transcript. The terminal `result` event still carries
-    # top-level .result + .usage, so usage/text parsing below is unchanged; the
-    # raw NDJSON is teed to a per-call file under $LSP_PILOT_STREAM_DIR for
-    # scripts/lsp_pilot_measure.sh. Off-pilot or non-capturing tiers keep
-    # `--output-format json` (no behaviour change).
-    if [ "${_LSP_PILOT_CAPTURE:-0}" = "1" ] && _lsp_pilot_active; then
-      _stream_capture=1
-      fmt_args=(--output-format stream-json --verbose)
-    fi
   fi
 
   local saved_ifs="$IFS"
@@ -793,28 +785,10 @@ _claude_chain_invoke() {
   # receive plain text); fall back to the raw payload if extraction is empty or
   # the call failed (preserves error/rate-limit text for downstream detection).
   if [ -n "$final_stdout" ]; then
-    # LSP pilot (issue #960): in stream-capture mode the buffer is NDJSON. Tee
-    # the raw transcript to a unique per-call file under the per-PR stream dir
-    # (unique name → concurrent deep+duck never interleave), then reduce it to
-    # the terminal `result` event so the claude usage/text parsers — which read
-    # top-level .usage/.result — keep working unchanged.
-    local _usage_src="$final_stdout" _result_evt=""
-    if [ "$_stream_capture" -eq 1 ]; then
-      if [ -n "${LSP_PILOT_STREAM_DIR:-}" ] && [ -d "${LSP_PILOT_STREAM_DIR}" ]; then
-        local _ps
-        _ps="$(mktemp "${LSP_PILOT_STREAM_DIR}/stream.XXXXXX" 2>/dev/null || true)"
-        [ -n "$_ps" ] && cat "$final_stdout" >> "$_ps" 2>/dev/null || true
-      fi
-      _result_evt="$(mktemp 2>/dev/null || true)"
-      if [ -n "$_result_evt" ]; then
-        jq -c 'select(.type=="result")' "$final_stdout" 2>/dev/null | tail -n1 > "$_result_evt" || true
-        [ -s "$_result_evt" ] && _usage_src="$_result_evt"
-      fi
-    fi
     if [ "$_usage_json" -eq 1 ] && [ "$final_rc" -eq 0 ]; then
-      parse_engine_usage claude "$_usage_src" || true
+      parse_engine_usage claude "$final_stdout" || true
       local _txt
-      _txt="$(extract_engine_text claude "$_usage_src")"
+      _txt="$(extract_engine_text claude "$final_stdout")"
       if [ -n "$_txt" ]; then
         printf '%s\n' "$_txt"
       else
@@ -823,7 +797,6 @@ _claude_chain_invoke() {
     else
       cat "$final_stdout"
     fi
-    [ -n "$_result_evt" ] && rm -f "$_result_evt"
     rm -f "$final_stdout"
   fi
   if [ -n "$final_stderr" ]; then
@@ -1051,11 +1024,6 @@ run_agentic() {
       fi
       # Thread the opt-in MCP config (no-op when REVIEW_MCP_CONFIG is unset).
       _mcp_review_flags "Bash,Read,Grep,Glob"
-      # LSP pilot (issue #960): opt the navigation-heavy review tiers into
-      # stream-json capture. Action (writer/synthesis) is excluded — it is not a
-      # navigation tier. Inert unless _lsp_pilot_active (gate inside the chain).
-      local _LSP_PILOT_CAPTURE=0
-      case "$tier" in deep|audit|single) _LSP_PILOT_CAPTURE=1 ;; esac
       if [ -n "$_tok_tmp" ]; then
         _claude_chain_invoke "$_agentic_chain" "$prompt_file" "$DEEP_TIMEOUT_SEC" \
           --permission-mode acceptEdits \
@@ -1487,9 +1455,6 @@ run_duck() {
       unset GEMINI_API_KEY 2>/dev/null || true
       # Thread the opt-in MCP config (no-op when REVIEW_MCP_CONFIG is unset).
       _mcp_review_flags "Bash,Read,Grep,Glob"
-      # LSP pilot (issue #960): the rubber-duck is a navigation tier — opt it into
-      # stream-json capture (inert unless _lsp_pilot_active).
-      local _LSP_PILOT_CAPTURE=1
       # Route through the chain helper so real token usage (incl. cache) is captured
       # when logging is on; a single-model "chain" preserves prior behaviour.
       if [ -n "$_tok_tmp" ]; then

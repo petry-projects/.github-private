@@ -90,8 +90,8 @@ for field in ("name", "trigger", "engine", "permissions"):
 
 # Validate engine — warn on unknown but don't fail (new models can be added without a code change)
 known_engines = {
-    "claude-sonnet-4-6", "claude-haiku-4-5-20251001", "claude-opus-4-7",
-    "claude-haiku-4-5",
+    "claude-sonnet-4-6", "claude-sonnet-5-0", "claude-haiku-4-5-20251001",
+    "claude-opus-4-7", "claude-haiku-4-5",
 }
 engine = fm.get("engine", "")
 if engine and engine not in known_engines:

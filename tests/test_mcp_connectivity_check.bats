@@ -93,12 +93,12 @@ setup() {
 
 @test "derive_allowed_tools: multiple servers are comma-joined" {
   cfg="$(mktemp)"
-  echo '{"mcpServers":{"context7":{},"lsp":{}}}' > "$cfg"
+  echo '{"mcpServers":{"context7":{},"github":{}}}' > "$cfg"
   run derive_allowed_tools "$cfg"
   rm -f "$cfg"
   [ "$status" -eq 0 ]
   [[ "$output" == *"mcp__context7__*"* ]]
-  [[ "$output" == *"mcp__lsp__*"* ]]
+  [[ "$output" == *"mcp__github__*"* ]]
 }
 
 @test "derive_allowed_tools: a config with no servers yields empty output" {
