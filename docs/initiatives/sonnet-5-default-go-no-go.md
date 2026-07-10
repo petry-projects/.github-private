@@ -6,10 +6,13 @@ realized cost + quality in production, and **record the human go/no-go** on maki
 `claude-sonnet-5` the default `claude-sonnet-4-6` replacement before the intro-pricing
 deadline of **2026-08-31**.
 
-This document is the recorded recommendation + decision, mirroring the #845 precedent
-("Record the human go/no-go decision and fleet-wide recommendation" for the Opus 4.8
-initiative). **No automation is built here.** The go/no-go and the stable/default
-promotion are **human** actions (see [Guardrail](#guardrail-human-only-promotion)).
+This document is the **template** that becomes the recorded recommendation + decision
+once the human owner fills the evidence sections and signs the decision block. Until
+those sections are complete this record does not close #1100 — the issue stays open
+until a real verdict is signed. It mirrors the #845 precedent ("Record the human go/no-go
+decision and fleet-wide recommendation" for the Opus 4.8 initiative). **No automation is
+built here.** The go/no-go and the stable/default promotion are **human** actions
+(see [Guardrail](#guardrail-human-only-promotion)).
 
 ## What is — and is not — being decided
 
@@ -60,7 +63,7 @@ per-MTok rates in effect:
 
 | Rate window | Model | input | cache-read | cache-write | output |
 |-------------|-------|------:|-----------:|------------:|-------:|
-| incumbent          | `claude-sonnet-4-6`            | 3.00 | 0.30 | 3.75 | 15.00 |
+| incumbent          | `claude-sonnet-4-*` @ 2025-01-01 | 3.00 | 0.30 | 3.75 | 15.00 |
 | **intro** (→ 2026-08-31) | `claude-sonnet-5-*` @ 2026-06-30 | **2.00** | 0.20 | 2.50 | **10.00** |
 | standard (2026-09-01 →)  | `claude-sonnet-5-*` @ 2026-09-01 | 3.00 | 0.30 | 3.75 | 15.00 |
 
@@ -90,7 +93,9 @@ affected tier, before vs. after the candidate rides the rings. Record it here:
 
 The Story-3 `engine.sh` change ships inside the dev-lead reusable, so promoting dev-lead
 through its rings is how the change reaches production incrementally. The gate walks
-`next → ring0 → ring1` under the dev-lead gate config:
+`next → ring0 → ring1` under the dev-lead gate config (canonical knobs in
+[`standards/canary-rings.json`](https://github.com/petry-projects/.github/blob/main/standards/canary-rings.json)
+in `petry-projects/.github`):
 
 - baseline window: **14 days**; spike cap: **3×**
 - `next → ring0`: dwell **4h**, sample **≤15**
