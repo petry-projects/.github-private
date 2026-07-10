@@ -154,6 +154,29 @@ list_sub_issue_numbers() {
   gh api "repos/${repo}/issues/${epic}/sub_issues" --jq '.[].number'
 }
 
+# existing_reconcile_keys <repo> <epic> — print the reconcile-key of every
+# sub-issue already materialized under <epic>, one per line. Used by the
+# reconcile-in-place pass (#708) to diff proposed additions against the existing
+# DAG so a re-run only adds work that is not already tracked. The key is the
+# `reconcile-key: <hex>` marker apply-plan.sh stamps into each materialized
+# sub-issue body (see _reconcile_key there); a missing marker (pre-#708 issue)
+# simply yields no line and never matches.
+#
+# DRY_RUN: returns the DRY_RUN_EXISTING_RECONCILE_KEYS stub (comma/space-separated,
+# empty if unset) so the offline bats suite can drive the idempotent re-run path
+# without touching the network — mirroring list_sub_issue_numbers.
+existing_reconcile_keys() {
+  local repo="$1" epic="$2"
+  if _is_dry_run; then
+    local keys="${DRY_RUN_EXISTING_RECONCILE_KEYS:-}"
+    # shellcheck disable=SC2086 # intentional word-splitting on space/comma
+    [ -n "$keys" ] && printf '%s\n' ${keys//,/ }
+    return 0
+  fi
+  gh api "repos/${repo}/issues/${epic}/sub_issues" --jq '.[].body' 2>/dev/null \
+    | grep -oE 'reconcile-key: [0-9a-f]{64}' | awk '{print $2}' || true
+}
+
 # close_issue <repo> <number> [comment] — close an issue, optionally leaving a
 # comment first. DRY_RUN-aware (logs a structured action instead of mutating).
 close_issue() {

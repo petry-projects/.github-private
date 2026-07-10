@@ -8,11 +8,19 @@
 # prerequisites). The agent reads everything else (AGENTS.md, scripts, docs)
 # straight from the checkout with its own tools.
 #
+# Under RECONCILE=1 (#708 reconcile-in-place) we additionally bind to the epic
+# already planned for this idea (via the same back-reference #598/apply-plan.sh
+# key) and harvest its sub-issues — their state, labels (in-flight detection),
+# and comments — so Bob can surface newly-flagged follow-ups from review/sub-issue
+# threads and route them through the plan-critic acceptance gate. Read-only: this
+# never mutates the epic.
+#
 # Emits:
 #   - $CONTEXT_PATH (JSON)               the planning context
 #   - DISCUSSION_NODE_ID -> $GITHUB_ENV  so apply-plan can comment back
 #
-# Env: REPO, DISCUSSION_NUMBER, CONTEXT_PATH (all required); GH_TOKEN.
+# Env: REPO, DISCUSSION_NUMBER, CONTEXT_PATH (all required); GH_TOKEN;
+#      RECONCILE (optional, "1" => also harvest the bound epic's sub-issues).
 set -euo pipefail
 
 REPO="${REPO:?REPO required}"
@@ -71,18 +79,57 @@ if [[ -n $refs ]]; then
     done <<<"$refs" | jq -sc '.')"
 fi
 
+# ── reconcile harvest (#708): the bound epic's sub-issues + comments ──────────
+# Only under RECONCILE=1. Bind to the epic already planned for this idea using
+# the SAME back-reference as apply-plan.sh/find_existing_epic, then harvest its
+# sub-issues (open + closed) with labels and comments so Bob can pick up
+# follow-ups flagged in review/sub-issue threads. Read-only; on no bound epic we
+# emit an empty harvest and let apply-plan's reconcile no-op path handle it.
+reconcile_json='null'
+if [[ "${RECONCILE:-0}" == "1" ]]; then
+  backref="Planned from idea discussion #${DISCUSSION_NUMBER}"
+  bound_epic="$(gh issue list --repo "$REPO" --label initiative --state open \
+    --search "\"$backref\"" --json number,body 2>/dev/null \
+    | jq -r --arg ref "$backref" 'first(.[] | select(.body | contains($ref)) | .number) // empty' || true)"
+  subs_json='[]'
+  if [[ -n $bound_epic ]]; then
+    # sub_issues returns every child regardless of state; enrich each with its
+    # labels and comment thread so in-flight (dev-lead-labelled) stories are
+    # distinguishable and comment-surfaced follow-ups are visible to Bob.
+    sub_nums="$(gh api "repos/${REPO}/issues/${bound_epic}/sub_issues" --paginate \
+      --jq '.[].number' 2>/dev/null || true)"
+    if [[ -n $sub_nums ]]; then
+      subs_json="$(while IFS= read -r sn; do
+          [[ -n $sn ]] || continue
+          meta="$(gh api "repos/${REPO}/issues/${sn}" \
+            --jq '{number, title, state, labels: [.labels[].name]}' 2>/dev/null)" || continue
+          cmts="$(gh api "repos/${REPO}/issues/${sn}/comments" --paginate \
+            --jq '[.[] | {author: .user.login, body, createdAt: .created_at}]' 2>/dev/null || echo '[]')"
+          jq -nc --argjson m "$meta" --argjson c "$cmts" '$m + {comments: $c}'
+        done <<<"$sub_nums" | jq -sc '.')"
+    fi
+    reconcile_json="$(jq -nc --argjson epic "$bound_epic" --argjson subs "$subs_json" \
+      '{mode:"reconcile", epic:$epic, sub_issues:$subs}')"
+  else
+    echo "::warning::reconcile: no existing epic bound to idea discussion #${DISCUSSION_NUMBER} — harvesting nothing."
+    reconcile_json="$(jq -nc '{mode:"reconcile", epic:null, sub_issues:[]}')"
+  fi
+fi
+
 # ── assemble ──────────────────────────────────────────────────────────────────
 jq -n \
   --argjson disc "$disc" \
   --argjson epics "$epics" \
   --argjson refs "$ref_json" \
+  --argjson reconcile "$reconcile_json" \
   --arg repo "$REPO" \
   --argjson num "$DISCUSSION_NUMBER" \
   '{
      repo: $repo,
      discussion: ($disc.data.repository.discussion | {number: $num, title, body, url, category: .category.name, comments: [.comments.nodes[] | {author: .author.login, body, createdAt}]}),
      open_epics: $epics,
-     referenced_issues: $refs
+     referenced_issues: $refs,
+     reconcile: $reconcile
    }' >"$CONTEXT_PATH"
 
-echo "context written to ${CONTEXT_PATH} (node=${node_id}, refs=$(printf '%s' "$ref_json" | jq 'length'), epics=$(printf '%s' "$epics" | jq 'length'))"
+echo "context written to ${CONTEXT_PATH} (node=${node_id}, refs=$(printf '%s' "$ref_json" | jq 'length'), epics=$(printf '%s' "$epics" | jq 'length')$(if [[ "${RECONCILE:-0}" == "1" ]]; then printf ', reconcile_subs=%s' "$(printf '%s' "$reconcile_json" | jq '.sub_issues | length')"; fi))"

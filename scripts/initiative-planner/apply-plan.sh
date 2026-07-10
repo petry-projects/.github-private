@@ -33,6 +33,65 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/mutations.sh
 . "${SCRIPT_DIR}/lib/mutations.sh"
 
+# _reconcile_key <src_discussion> <proposed_story_title>
+# Deterministic idempotency key for a materialized proposed_story, stamped into
+# its body as a `reconcile-key:` marker so a later reconcile-in-place pass (#708)
+# can detect the story is already tracked and skip it (the reconcile diff against
+# the existing DAG). Keyed on the source discussion + the exact proposed_story
+# title, so re-harvesting the same follow-up never mints a duplicate sub-issue.
+_reconcile_key() {
+  printf '%s::%s' "$1" "$2" | sha256sum | cut -d' ' -f1
+}
+
+# materialize_accepted_findings <epic_number> <reconcile_flag>
+# Reused by BOTH the plan-time path (#706) and the reconcile-in-place pass (#708),
+# so materialization is defined ONCE. For every maintainer-accepted proposed_story
+# finding it creates a sub-issue of <epic_number>, links it under the epic, wires
+# the native proposed_blocked_by edge, and stamps a reconcile-key marker into the
+# body. When <reconcile_flag>=1, a finding whose key already exists among the
+# epic's sub-issues is skipped, so a reconcile re-run with no new signal is a clean
+# no-op (zero create/edge ops). Sets MATERIALIZED_COUNT for the caller's summary.
+MATERIALIZED_COUNT=0
+materialize_accepted_findings() {
+  local epic_number="$1" reconcile="${2:-0}"
+  local existing_keys=""
+  if [ "$reconcile" = "1" ]; then
+    existing_keys="$(existing_reconcile_keys "$REPO" "$epic_number" || true)"
+  fi
+  MATERIALIZED_COUNT=0
+  local q_index ps_title rk ps_body ps_out ps_number ps_id pbb
+  while IFS= read -r q_index; do
+    [ -n "$q_index" ] || continue
+    ps_title="$(jq -r --argjson i "$q_index" '.open_questions[$i].proposed_story.title' "$PLAN_PATH")"
+    rk="$(_reconcile_key "${src:-0}" "$ps_title")"
+    if [ "$reconcile" = "1" ] && printf '%s\n' "$existing_keys" | grep -qxF "$rk"; then
+      echo "  reconcile: proposed_story already materialized (key match) — skipping: ${ps_title}"
+      continue
+    fi
+    ps_body="$(jq -r --argjson i "$q_index" '
+      .open_questions[$i].proposed_story
+      | "## Story\n" + .title
+        + "\n\n## Acceptance Criteria\n"
+        + ([.acceptance_criteria | to_entries[] | "\(.key + 1). \(.value)"] | join("\n"))
+    ' "$PLAN_PATH")"
+    ps_body="${ps_body}"$'\n\n'"_Materialized from a maintainer-accepted plan-critic finding for epic #${epic_number} (issue #706). Status: ready-for-dev._"$'\n'"<!-- reconcile-key: ${rk} -->"
+
+    ps_out="$(create_issue "$REPO" "$ps_title" "$ps_body" "initiative")"
+    read -r ps_number ps_id <<< "$ps_out"
+    echo "  materialized proposed_story: #${ps_number} (id ${ps_id}) — ${ps_title}"
+    link_sub_issue "$REPO" "$epic_number" "$ps_id"
+
+    # proposed_blocked_by is the EXISTING issue this new story gates; wire it so
+    # that issue becomes blocked_by the new story (the new story must land first).
+    pbb="$(jq -r --argjson i "$q_index" '.open_questions[$i].proposed_blocked_by // empty' "$PLAN_PATH")"
+    if [ -n "$pbb" ]; then
+      add_blocked_by "$REPO" "$pbb" "$ps_number"
+      echo "  edge: #${pbb} blocked_by materialized #${ps_number} (proposed_blocked_by)"
+    fi
+    MATERIALIZED_COUNT=$((MATERIALIZED_COUNT + 1))
+  done < <(jq -r '(.open_questions // []) | to_entries[] | select(.value | type=="object") | select(.value?.accepted == true and .value?.proposed_story != null) | .key' "$PLAN_PATH")
+}
+
 REPO="${REPO:?REPO required}"
 PLAN_PATH="${PLAN_PATH:?PLAN_PATH required}"
 DISCUSSION_NUMBER="${DISCUSSION_NUMBER:-}"
@@ -88,6 +147,23 @@ src="$(jq -r '.source_discussion // empty' "$PLAN_PATH")"
 # existing epic; consumed by the supersede step after the new DAG is created.
 SUPERSEDE_OLD_EPIC=""
 
+# ── mode guards (#708 reconcile-in-place) ─────────────────────────────────────
+# RECONCILE re-triggers the planner against a LIVE epic to ADD newly-surfaced
+# work in place; FORCE_REPLAN SUPERSEDES the epic (closes it, builds a fresh DAG).
+# They are opposite intents — reject setting both so a caller can't silently get
+# a supersede when they meant an additive reconcile (or vice versa).
+RECONCILE="${RECONCILE:-0}"
+if [ "$RECONCILE" = "1" ] && [ "${FORCE_REPLAN:-0}" = "1" ]; then
+  echo "::error::RECONCILE and FORCE_REPLAN are mutually exclusive — reconcile is additive-in-place; force_replan supersedes. Pick one." >&2
+  exit 2
+fi
+# Reconcile binds to the existing epic via the source-discussion back-reference,
+# so it requires a source discussion to key on.
+if [ "$RECONCILE" = "1" ] && [ -z "$src" ]; then
+  echo "::error::RECONCILE requires a source discussion (plan.source_discussion or DISCUSSION_NUMBER) to bind to the existing epic." >&2
+  exit 2
+fi
+
 # ── epic ──────────────────────────────────────────────────────────────────────
 epic_title="$(jq -r '.epic.title' "$PLAN_PATH")"
 epic_body="$(jq -r '.epic.body' "$PLAN_PATH")"
@@ -113,6 +189,53 @@ if [ -n "$src" ]; then
   # FORCE_REPLAN=1, record it for supersede instead and continue to build the
   # fresh DAG; the old epic + its sub-issues are CLOSED at the end (see below).
   existing_epic="$(find_existing_epic "$REPO" "$idem_key")"
+
+  # ── reconcile-in-place (#708) ───────────────────────────────────────────────
+  # Turn the idempotent "already planned" SKIP into an ADDITIVE pass: bind to the
+  # existing epic and materialize only the accepted proposed_story findings that
+  # are NOT already in the epic's DAG (the reconcile diff, keyed on the same
+  # back-reference idempotency scheme as #598). Reuses #706's materialization
+  # (materialize_accepted_findings) — it does not reimplement it. Writes are
+  # limited to NEW sub-issues + their edges: the epic and its base/in-flight
+  # stories are never recreated, edited, or closed. Un-accepted findings still
+  # gate above (the #682/#600 blocking-open-questions gate ran already), so
+  # nothing self-promotes and the epic stays inert.
+  if [ "$RECONCILE" = "1" ]; then
+    if [ -z "$existing_epic" ]; then
+      echo "::warning::reconcile: no existing epic for idea discussion #${src} — nothing to reconcile. Run the planner (idea:approved) first."
+      if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+        {
+          echo "## Initiative reconcile — nothing to do$(if [ "${DRY_RUN:-0}" = "1" ]; then echo " (DRY_RUN)"; fi)"
+          echo "- No existing epic found for idea discussion #${src}."
+          echo "- **Nothing created.** Plan the idea first (\`idea:approved\`), then reconcile."
+        } >>"$GITHUB_STEP_SUMMARY"
+      fi
+      echo "reconcile: no existing epic for #${src}; created nothing. dry_run=${DRY_RUN:-0}"
+      exit 0
+    fi
+
+    echo "reconcile: binding to existing epic #${existing_epic} for idea discussion #${src}"
+    materialize_accepted_findings "$existing_epic" 1
+
+    if [ "$MATERIALIZED_COUNT" -gt 0 ] && [ -n "$DISCUSSION_NODE_ID" ]; then
+      printf -v reconcile_comment '<!-- initiative-planner -->\n**🔁 Reconciled epic #%s in place.**\n\n%s newly-surfaced item(s) were added as sub-issues of the existing epic (harvested from sub-issue/review comments, vetted through the plan-critic + acceptance gate). No existing story was rewritten; the epic stays inert (labelled `initiative`, NOT `initiative:auto`).' \
+        "$existing_epic" "$MATERIALIZED_COUNT"
+      comment_on_discussion "$DISCUSSION_NODE_ID" "$reconcile_comment"
+      echo "posted reconcile summary to discussion #${DISCUSSION_NUMBER:-?}"
+    fi
+
+    if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+      {
+        echo "## Initiative reconciled in place$(if [ "${DRY_RUN:-0}" = "1" ]; then echo " (DRY_RUN)"; fi)"
+        echo "- Epic: #${existing_epic} (bound via back-reference; not recreated)"
+        echo "- New sub-issues added: ${MATERIALIZED_COUNT}"
+        echo "- Base/in-flight stories untouched; epic remains **inert** (no \`initiative:auto\`)."
+      } >>"$GITHUB_STEP_SUMMARY"
+    fi
+    echo "reconcile done. epic=#${existing_epic} added=${MATERIALIZED_COUNT} dry_run=${DRY_RUN:-0}"
+    exit 0
+  fi
+
   if [ -n "$existing_epic" ]; then
     if [ "${FORCE_REPLAN:-0}" = "1" ]; then
       SUPERSEDE_OLD_EPIC="$existing_epic"
@@ -212,31 +335,10 @@ done
 # wire the native blocked_by edge — instead of leaving it as advisory prose that
 # had to be created by hand (the #581 -> #691/#692 gap). Materialization happens
 # ONLY on explicit acceptance, never automatically. A plan with no accepted
-# proposed_story findings runs this loop zero times (clean no-op).
-while IFS= read -r q_index; do
-  [ -n "$q_index" ] || continue
-  ps_title="$(jq -r --argjson i "$q_index" '.open_questions[$i].proposed_story.title' "$PLAN_PATH")"
-  ps_body="$(jq -r --argjson i "$q_index" '
-    .open_questions[$i].proposed_story
-    | "## Story\n" + .title
-      + "\n\n## Acceptance Criteria\n"
-      + ([.acceptance_criteria | to_entries[] | "\(.key + 1). \(.value)"] | join("\n"))
-  ' "$PLAN_PATH")"
-  ps_body="${ps_body}"$'\n\n'"_Materialized from a maintainer-accepted plan-critic finding for epic #${epic_number} (issue #706). Status: ready-for-dev._"
-
-  ps_out="$(create_issue "$REPO" "$ps_title" "$ps_body" "initiative")"
-  read -r ps_number ps_id <<< "$ps_out"
-  echo "  materialized proposed_story: #${ps_number} (id ${ps_id}) — ${ps_title}"
-  link_sub_issue "$REPO" "$epic_number" "$ps_id"
-
-  # proposed_blocked_by is the EXISTING issue this new story gates; wire it so
-  # that issue becomes blocked_by the new story (the new story must land first).
-  pbb="$(jq -r --argjson i "$q_index" '.open_questions[$i].proposed_blocked_by // empty' "$PLAN_PATH")"
-  if [ -n "$pbb" ]; then
-    add_blocked_by "$REPO" "$pbb" "$ps_number"
-    echo "  edge: #${pbb} blocked_by materialized #${ps_number} (proposed_blocked_by)"
-  fi
-done < <(jq -r '(.open_questions // []) | to_entries[] | select(.value | type=="object") | select(.value?.accepted == true and .value?.proposed_story != null) | .key' "$PLAN_PATH")
+# proposed_story findings materializes nothing (clean no-op). The reconcile-in-place
+# pass (#708) reuses this SAME function against an existing epic — see the RECONCILE
+# branch above. Here (plan time) dedup is off: the epic is brand new.
+materialize_accepted_findings "$epic_number" 0
 
 # ── post the plan back to the discussion ──────────────────────────────────────
 if [ -n "$DISCUSSION_NODE_ID" ]; then
