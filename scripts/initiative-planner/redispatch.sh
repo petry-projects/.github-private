@@ -33,6 +33,10 @@
 #   FORCE_REPLAN       "1"/"true" => dispatch force_replan=true (default: false);
 #                      set by the `initiative:replan` label path to supersede an
 #                      already-planned discussion's epic instead of no-opping
+#   RECONCILE          "1"/"true" => dispatch reconcile=true (default: false); set
+#                      by the `initiative:reconcile` label path to ADD newly-surfaced
+#                      work to the discussion's existing epic in place (#708). Mutually
+#                      exclusive with FORCE_REPLAN — apply-plan.sh rejects both set.
 #   GH_TOKEN           a PAT with workflow scope (required at the call site)
 set -euo pipefail
 
@@ -65,6 +69,17 @@ else
   DISPATCH_FORCE_REPLAN="false"
 fi
 
+# Map RECONCILE to a boolean string for the workflow input. The
+# `initiative:reconcile` label path sets this so the re-dispatch binds to the
+# discussion's existing epic and ADDS newly-surfaced work in place (#708) instead
+# of no-opping on apply-plan's idempotency guard.
+_reconcile="${RECONCILE:-}"
+if [[ "$_reconcile" == "1" || "${_reconcile,,}" == "true" ]]; then
+  DISPATCH_RECONCILE="true"
+else
+  DISPATCH_RECONCILE="false"
+fi
+
 # Use GITHUB_REF if it is a branch or tag to support testing on feature branches
 REF_FLAGS=()
 if [[ -n "${GITHUB_REF:-}" && ( "$GITHUB_REF" == refs/heads/* || "$GITHUB_REF" == refs/tags/* ) ]]; then
@@ -76,5 +91,6 @@ gh workflow run "$WORKFLOW_FILE" --repo "$REPO" "${REF_FLAGS[@]}" \
   -f discussion="$DISCUSSION_NUMBER" \
   -f target_repo="$TARGET_REPO" \
   -f dry_run="$DISPATCH_DRY_RUN" \
-  -f force_replan="$DISPATCH_FORCE_REPLAN"
-echo "Dispatched ${WORKFLOW_FILE} (discussion=${DISCUSSION_NUMBER}, target_repo=${TARGET_REPO}, dry_run=${DISPATCH_DRY_RUN}, force_replan=${DISPATCH_FORCE_REPLAN})."
+  -f force_replan="$DISPATCH_FORCE_REPLAN" \
+  -f reconcile="$DISPATCH_RECONCILE"
+echo "Dispatched ${WORKFLOW_FILE} (discussion=${DISCUSSION_NUMBER}, target_repo=${TARGET_REPO}, dry_run=${DISPATCH_DRY_RUN}, force_replan=${DISPATCH_FORCE_REPLAN}, reconcile=${DISPATCH_RECONCILE})."

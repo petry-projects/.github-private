@@ -41,6 +41,11 @@ on:
         required: false
         default: false
         type: boolean
+      reconcile:
+        description: 'Reconcile in place (#708): bind to this discussion existing epic and ADD only newly-surfaced, accepted work as sub-issues — never rewrite in-flight stories. Mutually exclusive with force_replan.'
+        required: false
+        default: false
+        type: boolean
       plan_artifact_run_id:
         description: 'Apply a REVIEWED plan from a prior dry-run: the run ID whose initiative-plan-dry-run artifact (plan.json) to download and apply WITHOUT re-planning. Empty => the default plan-then-apply flow (Bob plans).'
         required: false
@@ -70,12 +75,15 @@ jobs:
   # type: discussion"), so we never plan inline on a discussion event. Two labels
   # fire this bridge job, which resolves the discussion number and re-invokes THIS
   # workflow via workflow_dispatch — under which the action runs:
-  #   - `idea:approved`     → plan the idea (default; idempotent no-op if already planned)
-  #   - `initiative:replan` → re-plan: force_replan=true so apply-plan SUPERSEDES
-  #                           the discussion's existing epic (close old, build fresh)
+  #   - `idea:approved`      → plan the idea (default; idempotent no-op if already planned)
+  #   - `initiative:replan`  → re-plan: force_replan=true so apply-plan SUPERSEDES
+  #                            the discussion's existing epic (close old, build fresh)
+  #   - `initiative:reconcile` → reconcile in place (#708): reconcile=true so apply-plan
+  #                            binds the existing epic and ADDS only newly-surfaced
+  #                            accepted work; in-flight stories are never rewritten
   # The label stays the human gate; the re-dispatch is an invisible bridge.
   redispatch:
-    if: github.event_name == 'discussion' && (github.event.label.name == 'idea:approved' || github.event.label.name == 'initiative:replan')
+    if: github.event_name == 'discussion' && (github.event.label.name == 'idea:approved' || github.event.label.name == 'initiative:replan' || github.event.label.name == 'initiative:reconcile')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -108,6 +116,9 @@ jobs:
           # The `initiative:replan` label supersedes an existing epic; `idea:approved`
           # uses the default idempotent plan path.
           FORCE_REPLAN: ${{ github.event.label.name == 'initiative:replan' && '1' || '0' }}
+          # The `initiative:reconcile` label re-triggers the planner against the
+          # existing epic to ADD newly-surfaced work in place (#708).
+          RECONCILE: ${{ github.event.label.name == 'initiative:reconcile' && '1' || '0' }}
         run: bash scripts/initiative-planner/redispatch.sh
 
   plan:
@@ -136,6 +147,11 @@ jobs:
       DISCUSSION_NUMBER: ${{ github.event.inputs.discussion }}
       DRY_RUN: ${{ inputs.dry_run == true && '1' || '0' }}
       FORCE_REPLAN: ${{ inputs.force_replan == true && '1' || '0' }}
+      # Reconcile-in-place (#708): bind the existing epic and ADD newly-surfaced
+      # accepted work. gather-context harvests the epic's sub-issue comments and
+      # apply-plan runs the additive reconcile path. Mutually exclusive with
+      # force_replan (apply-plan.sh hard-errors if both are set).
+      RECONCILE: ${{ inputs.reconcile == true && '1' || '0' }}
       # When set, the apply run loads this prior run's reviewed plan.json instead
       # of re-planning (the plan/apply split, #604). Empty => Bob plans as before.
       PLAN_ARTIFACT_RUN_ID: ${{ github.event.inputs.plan_artifact_run_id }}
@@ -328,8 +344,30 @@ jobs:
             DISCUSSION_NUMBER="$DISCUSSION_NUMBER" \
             DISCUSSION_NODE_ID="$DISCUSSION_NODE_ID" \
             FORCE_REPLAN="$FORCE_REPLAN" \
+            RECONCILE="$RECONCILE" \
             bash scripts/initiative-planner/apply-plan.sh
             ```
+
+            ## Reconcile mode (`RECONCILE=1`, #708)
+
+            When `RECONCILE=1`, this is a re-trigger against a LIVE epic — NOT a
+            fresh plan. `$CONTEXT_PATH` carries a `reconcile` block with the bound
+            epic and its sub-issues (state, labels, comments). Your job is to
+            surface ONLY newly-flagged follow-ups from those sub-issue/review
+            comments and add them as `proposed_story` findings on `open_questions`
+            (each `{question:"<summary>",blocking:true,proposed_story:{title,
+            acceptance_criteria},proposed_blocked_by:<existing issue #>}`). Do NOT
+            set `accepted:true` — that is a maintainer-only gate per
+            plan.schema.json; a human reviews the findings and sets `accepted:true`
+            before re-triggering reconcile to materialize them. These route through
+            the SAME plan-critic + acceptance path as plan-time (#706). apply-plan.sh
+            binds
+            the existing epic, skips epic/base-story/base-DAG creation, and
+            materializes only the accepted findings that are not already present
+            (deduped by reconcile-key). Do NOT recreate, edit, or close any
+            base/in-flight story. A sub-issue carrying a `dev-lead` label is
+            in-flight — never touch it. If nothing new has surfaced, still emit a
+            valid plan and run apply-plan.sh; it is a clean no-op.
 
             ## Hard constraints
 
