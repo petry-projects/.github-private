@@ -99,6 +99,7 @@ jobs:
             tests/test_safety_checks_triage_inline.bats \
             tests/test_prefetch_context.bats \
             tests/test_prefetch_prompt_rewire.bats \
+            tests/test_prefetch_freshness.bats \
             tests/test_engine_unavailable_notice.bats \
             tests/test_batch_skip_reporting.bats \
             tests/test_review_one_pr_ci_pending.bats \

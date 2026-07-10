@@ -793,6 +793,26 @@ TRIAGE_RISK=$(echo "$TRIAGE_RESULT" | jq -r '.risk')
 TRIAGE_SIGNALS=$(echo "$TRIAGE_RESULT" | jq -r '.signals | join(", ")')
 echo "    [tier1] escalate=$TRIAGE_ESCALATE risk=$TRIAGE_RISK signals=[$TRIAGE_SIGNALS]"
 
+# HEAD-SHA freshness safeguard (epic #1101, Story 5 / #1106). Just before the
+# agentic tiers (single / deep / audit) consume the Story 2 pre-fed context,
+# cheaply re-check the PR's CURRENT head SHA against the SHA that prefetch
+# stamped on the pre-fed files — a single `gh pr view --json headRefOid`. When
+# PREFETCH_CONTEXT_ENABLED is off this is a byte-identical no-op (no gh call). If
+# HEAD moved (force-push / new push mid-run), the stale pre-fed context is
+# invalidated and we take the skip sentinel (exit 100) so the scheduler re-runs
+# at the new SHA — never reviewing stale code. The idempotency marker prevents a
+# duplicate review on the retry.
+if [ "${PREFETCH_CONTEXT_ENABLED:-false}" = "true" ]; then
+  _freshness_rc=0
+  assert_prefetch_context_fresh "$PR_URL" "/tmp/cascade" || _freshness_rc=$?
+  if [ "$_freshness_rc" = "100" ]; then
+    echo "    HEAD moved since context prefetch — discarding stale pre-fed context and skipping (will retry at new SHA)"
+    echo "{\"pr\":\"$PR_URL\",\"sha\":\"$PR_HEAD_SHA\",\"decision\":\"skip\",\"reason\":\"head-moved-stale-context\"}"
+    exit 100
+  fi
+  unset _freshness_rc
+fi
+
 # If triage says no concerns → use single-review prompt for quick confirmation
 if [ "$TRIAGE_ESCALATE" = "false" ]; then
   echo "    [approve] triage cleared — running single confirmation ($ENGINE_SINGLE_MODEL)"
