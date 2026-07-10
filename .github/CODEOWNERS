@@ -11,3 +11,8 @@
 # it explicitly so the proposer can never weaken the judge it must satisfy.
 /evals/judge.md @petry-projects/org-leads
 /evals/**/scorer.json @petry-projects/org-leads
+
+# Frozen pre-change ET baseline (#1102, epic #1101) — the immutable before-number
+# Story 6 measures against. Owner-lock it so the goalpost cannot be moved without
+# a maintainer's explicit review.
+/tests/fixtures/et-baseline/ @petry-projects/org-leads
