@@ -108,7 +108,7 @@ in `petry-projects/.github`:
 
 - gate soak window: **7 days** (`soak_window_days` in `release/registry.yml`)
 - baseline window: **14 days**; spike cap: **3×**
-- `next → ring0`: dwell **4h**, sample **≤15**
+- `next → ring0`: dwell **4h**, sample **min 3 / 25% / ≤15** (or documented waive)
 - `ring0 → ring1`: dwell **8h**, **waive_sample**
 - `ring1 → stable`: dwell **12h**
 
@@ -123,18 +123,28 @@ in `petry-projects/.github`:
 
 Regression detection is **byte-identity-aware**: the benign-failure allowlist applies
 **only** when the reusable blob is byte-unchanged, so a candidate-introduced regression
-cannot be masked by the allowlist. Because the Story-3 change edits the reusable blob,
-the allowlist is inactive for this candidate and any regression surfaces as a real gate
-failure. Record the gate result per transition:
+cannot be masked by the allowlist when the blob changes. However, the Story-3 change
+targets `scripts/engine.sh`, not `.github/workflows/dev-lead-reusable.yml`; a
+script-only candidate can therefore leave the reusable blob byte-identical, in which
+case the allowlist **remains active** and pre-existing failures could mask
+candidate-introduced regressions. Before recording the gate result, the owner must
+confirm whether the reusable workflow blob changed in this candidate
+(`git diff <base>..HEAD -- .github/workflows/dev-lead-reusable.yml`). If the blob is
+byte-identical, perform a manual script diff check (`scripts/engine.sh` diff against
+the previous ring's content) to confirm no candidate-introduced regression is hidden
+behind the allowlist. Do not treat this row as proof the allowlist is inactive without
+first verifying the blob changed. Record the gate result per transition:
 
 | Transition | dwell met | sample | candidate-introduced regression? | gate |
 |------------|-----------|-------:|----------------------------------|------|
 | `next → ring0`  | *fill* | *fill* | *none / detail* | *pass / hold* |
 | `ring0 → ring1` | *fill* | waived | *none / detail* | *pass / hold* |
+| `ring1 → stable` | *fill* | waived | *none / detail* | **hold** — do not fill until (a) the ring1 repin blocker is resolved (TalkTerm + bmad-bgreat-suite switched to `@dev-lead/ring1`) **and** (b) ring1 health evidence has been collected from a full dwell window |
 
-> `ring1 → stable` is **not** filled by the canary automatically — promotion to `stable`
-> is the human action gated by this record (see [Guardrail](#guardrail-human-only-promotion)).
-> It also requires the ring1 repin blocker above to be resolved first.
+> `ring1 → stable` requires the ring1 repin blocker above to be resolved before the
+> row can be filled. Promotion to `stable` is the human action gated by this record
+> (see [Guardrail](#guardrail-human-only-promotion)) — do not sign GO while this row
+> is still **hold**.
 
 ## Recommendation
 
@@ -168,7 +178,7 @@ failure. Record the gate result per transition:
 |-------|-------|
 | Decision | **GO / NO-GO / DEFER** *(circle one)* |
 | Decided by | *human owner* |
-| Decided on | *YYYY-MM-DD* (must be **on or before 2026-08-31**) |
+| Decided on | *YYYY-MM-DD* (for a GO during intro pricing, must be **on or before 2026-08-31**; contingency decisions — "Proceed at standard pricing" or "Hold" — may be dated **after** 2026-08-31 and are still valid per [Deadline contingency](#deadline-contingency-2026-08-31)) |
 | Evidence cited | §1 eval verdict · §2 cost delta · §3 canary gate |
 | Rationale | *one paragraph* |
 
