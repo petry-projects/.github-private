@@ -51,6 +51,13 @@ source "$SCRIPT_DIR/lib/downstream-impact.sh"
 # Gated behind SAFETY_CHECKS_ENABLED (default ON; off => byte-identical prompt).
 # shellcheck source=lib/safety-checks.sh
 source "$SCRIPT_DIR/lib/safety-checks.sh"
+# Shared PR-context prefetch (epic #1101, Story 2): prefetch_pr_context persists
+# the FULL diff + superset metadata to SHA-bound files (PR_CONTEXT_DIFF_FILE /
+# PR_CONTEXT_METADATA_FILE) for the agentic tiers. Gated default-off behind
+# PREFETCH_CONTEXT_ENABLED — a byte-identical no-op (zero files, zero exports)
+# when off. Story 5 consumers verify the PR_HEAD_SHA stamp before use.
+# shellcheck source=lib/pr-context-prefetch.sh
+source "$SCRIPT_DIR/lib/pr-context-prefetch.sh"
 
 PR_URL="${1:?usage: review-one-pr.sh <pr-url>}"
 export PR_URL
@@ -524,6 +531,9 @@ fi
 
 if gh pr diff "$PR_URL" > "$_gh_diff_tmp" 2>"$_gh_diff_err"; then
   PR_DIFF=$(head -"$_diff_limit" "$_gh_diff_tmp")
+  # The full, untruncated diff stays on disk in $_gh_diff_tmp until the cleanup
+  # below — the context prefetch (Story 2) reuses it, so no extra diff fetch.
+  _prefetch_full_diff_file="$_gh_diff_tmp"
 else
   _gh_diff_err_content=$(cat "$_gh_diff_err" 2>/dev/null || true)
   if is_rate_limited "$_gh_diff_err_content"; then
@@ -554,8 +564,11 @@ else
         }
     } > "$_fallback_tmp"
     PR_DIFF=$(head -"$_diff_limit" "$_fallback_tmp")
-    rm -f "$_fallback_tmp" "$_fallback_err"
-    unset _changed_files _owner_repo_fallback _pr_num_fallback _fallback_tmp _fallback_err
+    # Preserve the full assembled diff for the context prefetch (Story 2) to
+    # reuse — it is removed in the common cleanup below. _fallback_err is done.
+    _prefetch_full_diff_file="$_fallback_tmp"
+    rm -f "$_fallback_err"
+    unset _changed_files _owner_repo_fallback _pr_num_fallback _fallback_err
   else
     echo "::error::gh pr diff failed during prefetch for $PR_URL"
     [ -n "$_gh_diff_err_content" ] && echo "    $_gh_diff_err_content"
@@ -563,8 +576,29 @@ else
     exit 1
   fi
 fi
-rm -f "$_gh_meta_err" "$_gh_diff_err" "$_gh_diff_tmp"
-unset _gh_meta_err _gh_diff_err _gh_diff_tmp _gh_meta_err_content _gh_diff_err_content
+# Shared PR-context prefetch (epic #1101, Story 2). Gated DEFAULT-OFF: when
+# PREFETCH_CONTEXT_ENABLED is not "true" this is a byte-identical no-op — zero
+# files written, zero env vars exported, zero extra fetches. When enabled, persist
+# the FULL diff (reused from the untruncated copy above — NOT the 3000-line triage
+# truncation) plus a superset metadata JSON to SHA-bound files exported as
+# PR_CONTEXT_DIFF_FILE / PR_CONTEXT_METADATA_FILE for the agentic tiers. A gh
+# rate-limit on the one extra metadata fetch degrades to the existing skip path
+# (exit 100) rather than crashing; the >300-file 406 case is already handled above
+# and the reused diff is the REST assembly.
+if [ "${PREFETCH_CONTEXT_ENABLED:-false}" = "true" ]; then
+  _prefetch_rc=0
+  prefetch_pr_context "$PR_URL" "$PR_HEAD_SHA" "${_prefetch_full_diff_file:-}" "/tmp/cascade" || _prefetch_rc=$?
+  if [ "$_prefetch_rc" = "100" ]; then
+    rm -f "$_gh_meta_err" "$_gh_diff_err" "$_gh_diff_tmp" "${_fallback_tmp:-}"
+    echo "    gh API rate limited during context prefetch — skipping PR (will retry next run)"
+    echo "{\"pr\":\"$PR_URL\",\"sha\":\"$PR_HEAD_SHA\",\"decision\":\"skip\",\"reason\":\"gh-rate-limited\"}"
+    exit 100
+  fi
+  unset _prefetch_rc
+fi
+
+rm -f "$_gh_meta_err" "$_gh_diff_err" "$_gh_diff_tmp" "${_fallback_tmp:-}"
+unset _gh_meta_err _gh_diff_err _gh_diff_tmp _gh_meta_err_content _gh_diff_err_content _fallback_tmp _prefetch_full_diff_file
 
 # Advisory bot feedback. The gate above waits for advisory bots to submit,
 # but the triage tier has NO tools — unless their findings are inlined here,
