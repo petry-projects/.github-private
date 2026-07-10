@@ -141,7 +141,7 @@ assert_prefetch_context_fresh() {
     stamped_sha=$(jq -r '.pr_head_sha // empty' "$meta_file" 2>/dev/null || true)
   fi
   if [ -z "$stamped_sha" ] && [ -f "$diff_file" ]; then
-    stamped_sha=$(sed -n 's/^# PR_HEAD_SHA: //p' "$diff_file" 2>/dev/null | head -1)
+    stamped_sha=$(sed -n '/^# PR_HEAD_SHA: /{s/^# PR_HEAD_SHA: //p;q;}' "$diff_file" 2>/dev/null || true)
   fi
   [ -n "$stamped_sha" ] || return 0
 
