@@ -3,7 +3,7 @@
 Part of epic **#1095** (Sonnet 5 model swap). This is **Phase 3 / issue #1100**: promote
 the Story-3 `engine.sh` chain change through the dev-lead canary rings, measure the
 realized cost + quality in production, and **record the human go/no-go** on making
-`claude-sonnet-5` the default `claude-sonnet-4-6` replacement before the intro-pricing
+`claude-sonnet-5-0` the default `claude-sonnet-4-6` replacement before the intro-pricing
 deadline of **2026-08-31**.
 
 This document is the **template** that becomes the recorded recommendation + decision
@@ -27,7 +27,7 @@ So there are two distinct steps, and this record separates them:
 
 1. **Canary-promote the fallback addition** (rides the dev-lead rings). Validates that
    adding Sonnet 5 as a tail fallback introduces no candidate-introduced regression.
-2. **The default swap** — moving `claude-sonnet-5` ahead of `claude-sonnet-4-6` in the
+2. **The default swap** — moving `claude-sonnet-5-0` ahead of `claude-sonnet-4-6` in the
    chains so it becomes the primary Sonnet tier. This is the decision this record
    authorizes (or declines), and it is a **human** action.
 
@@ -85,22 +85,41 @@ affected tier, before vs. after the candidate rides the rings. Record it here:
 |------|--------|--------:|-----------------------------|-------|--------------------|
 | deep / triage | *canary dwell window* | *fill* | *fill* | *fill* | *fill (target ≥30%)* |
 
-> This is a production measurement: it can only be filled from real canary traffic that
-> has dwelled through the rings, priced with the same `model-pricing.sh` cost report the
-> fleet already produces. It is a human-owner input to the decision, not an agent output.
+> **Measurement scope — re-price, do not read tail-fallback spend.** During the canary
+> dwell window `claude-sonnet-5-0` is the tail fallback (reached only after the
+> layer-1 primaries **and** `claude-sonnet-4-6` exhaust their rate-limit buckets), so
+> the fleet's before/after token-cost report will mostly reflect unchanged
+> haiku/opus/sonnet-4-6 traffic plus rare double-throttle Sonnet 5 calls. That number
+> is **not** the default-swap cost signal. Compute the realized reduction by re-pricing
+> the affected `claude-sonnet-4-6` records using `cost_usd` in `model-pricing.sh` with
+> the model overridden to `claude-sonnet-5-0` and an intro-window date, or by measuring
+> a separate canary where `claude-sonnet-5-0` is in the primary Sonnet slot rather than
+> the tail position. This is a human-owner input to the decision, not an agent output.
 
 ### 3. Canary gate status (dev-lead rings)
 
 The Story-3 `engine.sh` change ships inside the dev-lead reusable, so promoting dev-lead
 through its rings is how the change reaches production incrementally. The gate walks
-`next → ring0 → ring1` under the dev-lead gate config (canonical knobs in
+`next → ring0 → ring1` under the dev-lead gate config. Authoritative knobs are in
+[`release/registry.yml`](../../release/registry.yml) (this repo, source of truth for
+the Release_Manager loop; `gate: { soak_window_days: 7 }`); ring-level dwell knobs in
 [`standards/canary-rings.json`](https://github.com/petry-projects/.github/blob/main/standards/canary-rings.json)
-in `petry-projects/.github`):
+in `petry-projects/.github`:
 
+- gate soak window: **7 days** (`soak_window_days` in `release/registry.yml`)
 - baseline window: **14 days**; spike cap: **3×**
 - `next → ring0`: dwell **4h**, sample **≤15**
 - `ring0 → ring1`: dwell **8h**, **waive_sample**
 - `ring1 → stable`: dwell **12h**
+
+> **Ring1 repin blocker.** The ring1 health signal is not yet active — TalkTerm and
+> bmad-bgreat-suite currently pin `@dev-lead/stable`, not `@dev-lead/ring1` (see
+> COORDINATION NOTE in [`release/registry.yml`](../../release/registry.yml)). The
+> Release_Manager gate cannot soak `ring1 → stable` until staged repin PRs land in
+> those repos. The `ring0 → ring1` row below can be filled once `petry-projects/.github`
+> is on ring0 and healthy; the `ring1` row must remain *hold* until the external repin
+> is complete. Do not record a ring1 pass against the 4h/8h rows above — the rollout
+> machinery cannot observe ring1 until those repos switch channels.
 
 Regression detection is **byte-identity-aware**: the benign-failure allowlist applies
 **only** when the reusable blob is byte-unchanged, so a candidate-introduced regression
@@ -115,6 +134,7 @@ failure. Record the gate result per transition:
 
 > `ring1 → stable` is **not** filled by the canary automatically — promotion to `stable`
 > is the human action gated by this record (see [Guardrail](#guardrail-human-only-promotion)).
+> It also requires the ring1 repin blocker above to be resolved first.
 
 ## Recommendation
 
@@ -123,11 +143,21 @@ failure. Record the gate result per transition:
 - **If** §1 shows non-regression on both holdout sets **and** §3 shows no
   candidate-introduced regression through `ring1`, **and** the decision is made while
   intro pricing is live: **GO** — the ≥30% intro cost win ships with no quality
-  regression. Proceed to the default swap as a human action.
+  regression. Proceed to the default swap as a human action, with the requirement that
+  the default-order `engine.sh` change (moving `claude-sonnet-5-0` to the primary
+  Sonnet slot ahead of `claude-sonnet-4-6`) is a **separate** release that must itself
+  ride the dev-lead canary rings (`next → ring0 → ring1 → stable`) and pass the same
+  gate before `stable` consumers see it. This GO decision authorizes a human to initiate
+  that canary; it does not authorize skipping the ring walk for the default-order change.
 - **If** §1 shows a regression on either set, or §3 holds at any ring: **NO-GO** — do not
   swap the default; keep `sonnet-4-6` primary and Sonnet 5 as the tail fallback.
 
 ## Decision (human owner signs)
+
+> **Issue #1100 stays open until this block is signed.** A filled Decision table with a
+> real verdict, the owner's GitHub login, a date, and cited evidence is required to close
+> issue #1100. Do not close it programmatically or via this PR's merge — the human owner
+> must fill and sign this block, then close #1100 manually.
 
 | Field | Value |
 |-------|-------|
