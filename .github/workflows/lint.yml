@@ -94,6 +94,7 @@ jobs:
             tests/test_downstream_impact_assemble.bats \
             tests/test_downstream_impact_triage_inline.bats \
             tests/test_downstream_impact_regression.bats \
+            tests/test_et_baseline_regression.bats \
             tests/test_safety_checks.bats \
             tests/test_safety_checks_triage_inline.bats \
             tests/test_engine_unavailable_notice.bats \
