@@ -24,7 +24,7 @@
 
 setup() {
   source "$(dirname "$BATS_TEST_FILENAME")/../scripts/lib/token-metrics.sh"
-  BASELINE="$(dirname "$BATS_TEST_FILENAME")/fixtures/et-baseline/pre-change-baseline-2026-06.jsonl"
+  BASELINE="$(dirname "$BATS_TEST_FILENAME")/fixtures/et-baseline/pre-change-baseline-2026-07.jsonl"
 }
 
 # ---------------------------------------------------------------------------
@@ -86,14 +86,14 @@ setup() {
   local count total
   count=$(jq -r 'select(.tier == "deep") | .et' "$BASELINE" | wc -l | tr -d ' ')
   total=$(jq -s '[.[] | select(.tier == "deep") | .et] | add' "$BASELINE")
-  [ "$count" -eq 3 ]
-  [ "$total" = "170400" ]
+  [ "$count" -eq 10 ]
+  [ "$total" = "3642411.5" ]
 }
 
 @test "audit tier: frozen count and total ET" {
   local count total
   count=$(jq -r 'select(.tier == "audit") | .et' "$BASELINE" | wc -l | tr -d ' ')
   total=$(jq -s '[.[] | select(.tier == "audit") | .et] | add' "$BASELINE")
-  [ "$count" -eq 3 ]
-  [ "$total" = "378500" ]
+  [ "$count" -eq 2 ]
+  [ "$total" = "1716043" ]
 }

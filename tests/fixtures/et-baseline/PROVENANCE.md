@@ -1,7 +1,7 @@
 # Frozen pre-change ET baseline — provenance
 
 **Issue:** #1102 (Story 1) · **Epic:** #1101 — in-loop-fetch refactor
-**Artifact:** `pre-change-baseline-2026-06.jsonl` · **Status:** FROZEN / read-only
+**Artifact:** `pre-change-baseline-2026-07.jsonl` · **Status:** FROZEN / read-only
 
 ## What this is
 
@@ -13,16 +13,30 @@ the redundant deterministic fetch.
 
 ## Sample window & source
 
-- **Named sample:** `baseline-2026-06` (the `run_id` on every record).
-- **Dated window:** 2026-06-15 → 2026-06-17 (UTC), inclusive.
+- **Dated window:** 2026-07-03 → 2026-07-10 (UTC), inclusive — the earliest
+  non-expired production telemetry available at capture time (the Token Cost
+  Observatory uploads `token-usage-<run_id>.jsonl` artifacts under the repo's
+  default retention, so the pre-refactor window is bounded by that retention).
+- **Real, not synthesized.** Every record was extracted verbatim from the
+  `token-usage-<run_id>` CI artifacts uploaded by the live `pr-review` pipeline
+  (`.github/workflows/pr-review.yml` → `emit_token_record`). The `run_id`,
+  `ts`, token counts, `cache_creation_tokens`, and `context` (the actual PR
+  URL reviewed) are the exact values the pipeline emitted — nothing is
+  hand-authored.
+- **Source run IDs (deep + audit tiers, `pr-review` workflow):**
+  `28680719157`, `28680743571`, `28684575826`, `28690647414`, `28708785471`,
+  `28712486134`, `28945288331`, `28945290473`, `29004496155`, `29060937544`.
 - **Source schema:** the per-call token JSONL emitted by
   `scripts/lib/token-metrics.sh` `emit_token_record` and aggregated by
-  `scripts/token_report.sh` (Token Cost Observatory, #464). Each record carries
-  the same fields the live pipeline emits — the AC-required subset is
-  `input_tokens`, `cache_read_tokens`, `output_tokens`, `et`, `tier`, `model`.
-- **Tiers captured:** `deep` (runs on `claude-sonnet-4-6`) and `audit` (runs on
-  `claude-opus-4-7`) — the two agentic tiers whose in-loop `gh pr view` +
-  `gh pr diff` re-fetch is the redundant deterministic read the refactor targets.
+  `scripts/token_report.sh` (Token Cost Observatory, #464). Records carry the
+  full emitted field set — `ts`, `workflow`, `tier`, `engine`, `model`,
+  `input_tokens`, `cache_read_tokens`, `cache_creation_tokens`, `output_tokens`,
+  `et`, `run_id`, `context`.
+- **Tiers captured:** `deep` (runs on `claude-opus-4-8`) and `audit` (runs on
+  `claude-fable-5`) — the two agentic pr-review tiers whose in-loop `gh pr view`
+  + `gh pr diff` re-fetch is the redundant deterministic read the refactor
+  targets. Every retained record is a genuine pre-change run (the prefetch
+  refactor, Stories 2+, had not landed on any of these dates).
 
 ## Why the numbers cannot drift
 
@@ -37,14 +51,14 @@ fails CI and must be an explicit, reviewed fixture change visible in the diff.
 
 ## Frozen per-tier baseline (what Story 6 compares against)
 
-| Tier  | Model               | Records | Total ET |
-|-------|---------------------|---------|----------|
-| deep  | claude-sonnet-4-6   | 3       | 170,400  |
-| audit | claude-opus-4-7     | 3       | 378,500  |
+| Tier  | Model             | Records | Total ET    |
+|-------|-------------------|---------|-------------|
+| deep  | claude-opus-4-8   | 10      | 3,642,411.5 |
+| audit | claude-fable-5    | 2       | 1,716,043   |
 
 ## Immutability controls
 
 - Owner-locked in `.github/CODEOWNERS` (`/tests/fixtures/et-baseline/`).
 - Protected from silent deletion by `test-deletion-guard.yml` (anything under
   `tests/` requires the `ack-test-deletion` label to delete).
-- Pinned byte-for-behavior by the regression guard above.
+- Pinned by the regression guard above.

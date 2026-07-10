@@ -170,19 +170,21 @@ set is:
 
 ## Frozen ET baseline (AC #4)
 
-- **Artifact:** `tests/fixtures/et-baseline/pre-change-baseline-2026-06.jsonl`
+- **Artifact:** `tests/fixtures/et-baseline/pre-change-baseline-2026-07.jsonl`
   (provenance: `tests/fixtures/et-baseline/PROVENANCE.md`).
 - **Metric:** Effective Tokens, `ET = m × (1.0×I + 0.1×C + 4.0×O)`, precomputed per
   call by `scripts/lib/token-metrics.sh` and aggregated by `scripts/token_report.sh`
   (Token Cost Observatory, #464). No new metric is introduced.
-- **Sample:** `run_id = baseline-2026-06`, dated window 2026-06-15 → 2026-06-17 (UTC),
+- **Sample:** real `pr-review` per-call telemetry extracted verbatim from the
+  `token-usage-<run_id>` CI artifacts, dated window 2026-07-03 → 2026-07-10 (UTC),
   deep + audit tiers only (the two tiers whose redundant in-loop fetch is removed).
+  Source run IDs are enumerated in `PROVENANCE.md`.
 - **Frozen figures Story 6 compares against:**
 
-  | Tier  | Model             | Records | Total ET |
-  |-------|-------------------|---------|----------|
-  | deep  | claude-sonnet-4-6 | 3       | 170,400  |
-  | audit | claude-opus-4-7   | 3       | 378,500  |
+  | Tier  | Model             | Records | Total ET    |
+  |-------|-------------------|---------|-------------|
+  | deep  | claude-opus-4-8   | 10      | 3,642,411.5 |
+  | audit | claude-fable-5    | 2       | 1,716,043   |
 
 - **Immutability:** each record is priced at the multiplier in effect on its **own
   date** (`model-pricing.tsv` selection rule), so appending a future price row
