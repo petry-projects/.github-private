@@ -66,6 +66,7 @@ jobs:
             tests/test_gitleaks_config.bats \
             tests/test_initiative_planner.bats \
             tests/test_initiative_planner_redispatch.bats \
+            tests/test_initiative_reconcile.bats \
             tests/test_idea_triage.bats \
             tests/test_oversized_pr.bats \
             tests/test_dependabot.bats \
