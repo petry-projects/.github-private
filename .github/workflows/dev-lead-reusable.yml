@@ -71,9 +71,16 @@ jobs:
   # 2. Runs dev-lead-intent.sh to classify the event into an intent.
   # 3. Routes to the appropriate handler based on intent.
   dispatch:
+    # Skip Dependabot-triggered events (#864): a Dependabot `pull_request` run has no
+    # access to GH_PAT_WORKFLOWS, so the cross-repo dev-lead scripts checkout fails at
+    # startup — before dev-lead-intent.sh can classify the event (which already resolves
+    # a bot-authored PR to intent=skip, reason=bot-pr; see tests/dev-lead/e2e/scenarios/
+    # 01-skip-bot-pr.sh). Guarding at the job level skips cleanly before that checkout.
+    # dev-lead is not a required check, and dependabot-automerge handles these PRs.
     if: >-
-      (inputs.event_name == '' && github.event_name != 'check_run') ||
-      (inputs.event_name != '' && inputs.event_name != 'check_run')
+      github.actor != 'dependabot[bot]' &&
+      ((inputs.event_name == '' && github.event_name != 'check_run') ||
+       (inputs.event_name != '' && inputs.event_name != 'check_run'))
     runs-on: ubuntu-latest
     # Job backstop for a hung/stuck run — NOT a cost control (#1017, epic #901).
     # 120 min gives legitimately large issues room to finish across all engine
