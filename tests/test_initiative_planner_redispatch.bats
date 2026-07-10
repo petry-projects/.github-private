@@ -125,6 +125,26 @@ teardown() {
   grep -qF -- "-f force_replan=true" "$GH_LOG"
 }
 
+@test "forwards reconcile=false by default" {
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  grep -qF -- "-f reconcile=false" "$GH_LOG"
+}
+
+@test "honors RECONCILE=1 (initiative:reconcile path)" {
+  export RECONCILE="1"
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  grep -qF -- "-f reconcile=true" "$GH_LOG"
+}
+
+@test "honors RECONCILE=true (initiative:reconcile path)" {
+  export RECONCILE="true"
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  grep -qF -- "-f reconcile=true" "$GH_LOG"
+}
+
 @test "passes GITHUB_REF if it is a branch or tag" {
   export GITHUB_REF="refs/heads/feature-branch"
   run bash "$SCRIPT"

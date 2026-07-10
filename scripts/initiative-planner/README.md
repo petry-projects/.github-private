@@ -13,15 +13,15 @@ create-story template, which `plan.schema.json` mirrors field-for-field.
 
 | File | Role |
 |------|------|
-| `redispatch.sh` | Bridge the `discussion [labeled]` trigger to `workflow_dispatch` (claude-code-action rejects `discussion` event contexts). Fired with a PAT so the dispatch actually starts a run. Forwards `force_replan=true` when the firing label is `initiative:replan` (vs the default `idea:approved` plan path). |
-| `gather-context.sh` | Fetch the approved Discussion + repo context → `$CONTEXT_PATH`; export `DISCUSSION_NODE_ID`. |
+| `redispatch.sh` | Bridge the `discussion [labeled]` trigger to `workflow_dispatch` (claude-code-action rejects `discussion` event contexts). Fired with a PAT so the dispatch actually starts a run. Forwards `force_replan=true` when the firing label is `initiative:replan`, or `reconcile=true` when it is `initiative:reconcile` (vs the default `idea:approved` plan path). |
+| `gather-context.sh` | Fetch the approved Discussion + repo context → `$CONTEXT_PATH`; export `DISCUSSION_NODE_ID`. Under `RECONCILE=1` also harvests the bound epic's sub-issues (state, labels, comments) into a `reconcile` block so Bob can pick up comment-surfaced follow-ups (#708). |
 | `plan.schema.json` | The plan contract Bob must emit (epic + stories + `blocked_by`). |
 | `validate-plan.py` | Schema + semantic checks: unique ids, acyclic DAG, an entry point, no dangling edges. |
-| `lib/mutations.sh` | DRY_RUN-aware GitHub helpers (create issue, link sub-issue, add `blocked_by`, comment on Discussion, find/close issues for the idempotency guard). |
-| `apply-plan.sh` | Materialize a validated plan. Creates issues labelled `initiative` only — **never** `initiative:auto`. Idempotent: no-ops if the discussion is already planned, or supersedes the old epic when `FORCE_REPLAN=1`. |
+| `lib/mutations.sh` | DRY_RUN-aware GitHub helpers (create issue, link sub-issue, add `blocked_by`, comment on Discussion, find/close issues for the idempotency guard, list existing reconcile-keys for the reconcile diff). |
+| `apply-plan.sh` | Materialize a validated plan. Creates issues labelled `initiative` only — **never** `initiative:auto`. Idempotent: no-ops if the discussion is already planned, supersedes the old epic when `FORCE_REPLAN=1`, or reconciles it in place (adds only new accepted work) when `RECONCILE=1`. |
 | `apply-reviewed-plan.sh` | The plan/apply-split handoff (#604): apply a maintainer-**reviewed** plan.json WITHOUT re-planning — re-validates the reviewed artifact, then runs `apply-plan.sh`. The BMAD Scrum Master never runs on this path. |
 
-Tests: `tests/test_initiative_planner.bats`, `tests/test_initiative_planner_redispatch.bats` (run via `lint.yml`).
+Tests: `tests/test_initiative_planner.bats`, `tests/test_initiative_planner_redispatch.bats`, `tests/test_plan_materialize.bats`, `tests/test_initiative_reconcile.bats` (run via `lint.yml`).
 
 ## Plan → review → apply split (#604)
 
@@ -114,3 +114,31 @@ cat /tmp/plan.jsonl | jq .
   `apply-plan.sh` — so a maintainer can supersede an already-planned epic straight
   from the discussion, with no manual `workflow_dispatch`. The label must exist in
   the repo's label set (one-time config, like `idea:approved`).
+- **Reconcile in place (#708, `RECONCILE=1` / `initiative:reconcile`).** Where
+  `FORCE_REPLAN` *supersedes* the epic (closes it, builds a fresh DAG), reconcile
+  turns the idempotent "already planned" SKIP into an **additive** pass: it binds
+  to the existing epic (via the same back-reference as the idempotency guard),
+  skips epic/base-story/base-DAG creation, and materializes **only** the accepted
+  `proposed_story` findings that are not already in the epic's DAG — reusing #706's
+  materialization path verbatim (not a second copy). This is how newly-surfaced
+  work (a follow-up flagged in a sub-issue/review comment, harvested by
+  `gather-context.sh` under `RECONCILE=1`, accepted by a maintainer) lands on an
+  in-flight epic without a full re-plan. Guarantees, all proven offline via the
+  DRY_RUN mutation log:
+  - **Never rewrites in-flight work.** Writes are limited to NEW sub-issues + their
+    edges; base/in-flight stories (a sub-issue carrying a `dev-lead` label) are
+    never recreated, edited, or closed.
+  - **Idempotent + bounded.** Each materialized sub-issue is stamped with a
+    `reconcile-key` (`sha256(<src>::<title>)`); a re-run diffs proposed additions
+    against the epic's existing keys (`existing_reconcile_keys`) and skips anything
+    already present. A re-run with no new signal is a clean no-op (zero
+    create/edge ops).
+  - **Human gate preserved.** Un-accepted findings still gate (create nothing, post
+    "not yet planned"); the epic stays **inert** (never `initiative:auto`).
+  - **No existing epic ⇒ clean no-op.** If nothing is bound to the discussion yet,
+    reconcile creates nothing and exits 0 (plan the idea with `idea:approved`
+    first).
+  - **Mutually exclusive with `force_replan`.** `apply-plan.sh` hard-errors if both
+    `RECONCILE=1` and `FORCE_REPLAN=1` are set — additive-in-place and supersede
+    are opposite intents. The `initiative:reconcile` label must exist in the repo's
+    label set (one-time config, like `initiative:replan`).
