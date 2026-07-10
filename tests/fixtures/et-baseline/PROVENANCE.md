@@ -33,10 +33,10 @@ the redundant deterministic fetch.
   `input_tokens`, `cache_read_tokens`, `cache_creation_tokens`, `output_tokens`,
   `et`, `run_id`, `context`.
 - **Tiers captured:** `deep` (runs on `claude-opus-4-8`) and `audit` (runs on
-  `claude-fable-5`) — the two agentic pr-review tiers whose in-loop `gh pr view`
-  + `gh pr diff` re-fetch is the redundant deterministic read the refactor
-  targets. Every retained record is a genuine pre-change run (the prefetch
-  refactor, Stories 2+, had not landed on any of these dates).
+  `claude-fable-5`) — the two agentic pr-review tiers whose in-loop
+  `gh pr view` + `gh pr diff` re-fetch is the redundant deterministic read the
+  refactor targets. Every retained record is a genuine pre-change run (the
+  prefetch refactor, Stories 2+, had not landed on any of these dates).
 
 ## Why the numbers cannot drift
 
