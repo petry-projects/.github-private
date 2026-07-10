@@ -354,10 +354,14 @@ jobs:
             fresh plan. `$CONTEXT_PATH` carries a `reconcile` block with the bound
             epic and its sub-issues (state, labels, comments). Your job is to
             surface ONLY newly-flagged follow-ups from those sub-issue/review
-            comments and add them as **accepted `proposed_story` findings** on
-            `open_questions` (each `{proposed_story:{title,acceptance_criteria},
-            proposed_blocked_by:<existing issue #>}`), routed through the SAME
-            plan-critic + acceptance path as plan-time (#706). apply-plan.sh binds
+            comments and add them as `proposed_story` findings on `open_questions`
+            (each `{question:"<summary>",blocking:true,proposed_story:{title,
+            acceptance_criteria},proposed_blocked_by:<existing issue #>}`). Do NOT
+            set `accepted:true` — that is a maintainer-only gate per
+            plan.schema.json; a human reviews the findings and sets `accepted:true`
+            before re-triggering reconcile to materialize them. These route through
+            the SAME plan-critic + acceptance path as plan-time (#706). apply-plan.sh
+            binds
             the existing epic, skips epic/base-story/base-DAG creation, and
             materializes only the accepted findings that are not already present
             (deduped by reconcile-key). Do NOT recreate, edit, or close any
