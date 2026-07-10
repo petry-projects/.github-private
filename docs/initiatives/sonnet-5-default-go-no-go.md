@@ -140,17 +140,22 @@ failure. Record the gate result per transition:
 
 *To be written by the initiative owner from the three evidence sections above.*
 
-- **If** §1 shows non-regression on both holdout sets **and** §3 shows no
-  candidate-introduced regression through `ring1`, **and** the decision is made while
-  intro pricing is live: **GO** — the ≥30% intro cost win ships with no quality
-  regression. Proceed to the default swap as a human action, with the requirement that
-  the default-order `engine.sh` change (moving `claude-sonnet-5-0` to the primary
-  Sonnet slot ahead of `claude-sonnet-4-6`) is a **separate** release that must itself
-  ride the dev-lead canary rings (`next → ring0 → ring1 → stable`) and pass the same
-  gate before `stable` consumers see it. This GO decision authorizes a human to initiate
-  that canary; it does not authorize skipping the ring walk for the default-order change.
-- **If** §1 shows a regression on either set, or §3 holds at any ring: **NO-GO** — do not
-  swap the default; keep `sonnet-4-6` primary and Sonnet 5 as the tail fallback.
+- **If** §1 shows non-regression on both holdout sets **and** §2 realized-cost
+  measurement is complete and shows a measured intro-pricing input-cost reduction of
+  **at least 30%** **and** §3 shows no candidate-introduced regression through `ring1`,
+  **and** the decision is made while intro pricing is live: **GO** — the ≥30% intro cost
+  win ships with no quality regression. Proceed to the default swap as a human action,
+  with the requirement that the default-order `engine.sh` change (moving
+  `claude-sonnet-5-0` to the primary Sonnet slot ahead of `claude-sonnet-4-6`) is a
+  **separate** release that must itself ride the dev-lead canary rings
+  (`next → ring0 → ring1 → stable`) and pass the same gate before `stable` consumers
+  see it. This GO decision authorizes a human to initiate that canary; it does not
+  authorize skipping the ring walk for the default-order change.
+- **If** §1 shows a regression on either set, or §2 realized-cost measurement is missing
+  or shows less than 30% input-cost reduction under intro pricing, or §3 holds at any
+  ring: **NO-GO** — do not swap the default; keep `sonnet-4-6` primary and Sonnet 5 as
+  the tail fallback. If §2 evidence is not yet available, route to the documented
+  deadline contingency (see [Deadline contingency](#deadline-contingency-2026-08-31)).
 
 ## Decision (human owner signs)
 
