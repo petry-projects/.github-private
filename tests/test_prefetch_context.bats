@@ -24,7 +24,7 @@ setup() {
   source "$(dirname "$BATS_TEST_FILENAME")/../scripts/engine.sh" >/dev/null 2>&1 || true
   source "$(dirname "$BATS_TEST_FILENAME")/../scripts/lib/pr-context-prefetch.sh"
 
-  STUB_DIR="$(mktemp -d)"
+  STUB_DIR="$(mktemp -d "$BATS_TEST_TMPDIR/stub.XXXXXX")"
   export PATH="$STUB_DIR:$PATH"
   export GH_CALL_LOG="$STUB_DIR/gh_calls.log"
   : > "$GH_CALL_LOG"

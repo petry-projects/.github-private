@@ -59,15 +59,19 @@ prefetch_pr_context() {
   local meta_file="$out_dir/pr-context-metadata.json"
 
   # --- Superset metadata: exactly one additional `gh pr view` ---
-  local meta_err meta_json
-  meta_err=$(mktemp 2>/dev/null || echo "$out_dir/pr-context-meta-$$.err")
+  local meta_err meta_json meta_stamped=false
+  meta_err=$(mktemp "${TMPDIR:-/tmp}/pr-context-meta.XXXXXX") || { echo "Failed to create temp file" >&2; return 1; }
   if meta_json=$(gh pr view "$pr_url" --json "$PR_CONTEXT_METADATA_FIELDS" 2>"$meta_err"); then
     rm -f "$meta_err"
     # Stamp PR_HEAD_SHA as a top-level field so Story 5 consumers can verify
-    # freshness. Fall back to the raw JSON if jq is unavailable / errors.
-    printf '%s' "$meta_json" \
-      | jq --arg sha "$sha" '. + {pr_head_sha: $sha}' > "$meta_file" 2>/dev/null \
-      || printf '%s' "$meta_json" > "$meta_file"
+    # freshness. If jq is unavailable/errors skip the metadata file entirely so
+    # the exported path always points to a properly stamped file.
+    if printf '%s' "$meta_json" \
+       | jq --arg sha "$sha" '. + {pr_head_sha: $sha}' > "$meta_file" 2>/dev/null; then
+      meta_stamped=true
+    else
+      rm -f "$meta_file"
+    fi
   else
     local err_content
     err_content=$(cat "$meta_err" 2>/dev/null || true)
@@ -89,6 +93,6 @@ prefetch_pr_context() {
   } > "$diff_file"
 
   export PR_CONTEXT_DIFF_FILE="$diff_file"
-  export PR_CONTEXT_METADATA_FILE="$meta_file"
+  [ "$meta_stamped" = true ] && export PR_CONTEXT_METADATA_FILE="$meta_file"
   return 0
 }
