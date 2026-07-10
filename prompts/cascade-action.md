@@ -9,6 +9,12 @@ security audit) has produced a verdict in `$FINAL_RESULT`. Your job is to:
 
 The review will be posted by the bash script, not by this prompt.
 
+> **Pre-fed PR context (epic #1101):** This step synthesizes the already-resolved
+> verdict in `$FINAL_RESULT` (plus prior-tier context) into the posting body. It
+> **does not fetch** the PR diff or metadata — so it needs no pre-fed-context
+> rewire and is explicitly **out of scope** for the Story-5 (#1105) audit/single
+> prompt changes.
+
 ## Inputs (environment variables)
 
 - `$FINAL_RESULT` — path to verdict JSON from the resolving tier
