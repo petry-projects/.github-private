@@ -129,7 +129,7 @@ cat /tmp/plan.jsonl | jq .
     edges; base/in-flight stories (a sub-issue carrying a `dev-lead` label) are
     never recreated, edited, or closed.
   - **Idempotent + bounded.** Each materialized sub-issue is stamped with a
-    `reconcile-key` (`sha256(<src>::<title>`)); a re-run diffs proposed additions
+    `reconcile-key` (`sha256(<src>::<title>)`); a re-run diffs proposed additions
     against the epic's existing keys (`existing_reconcile_keys`) and skips anything
     already present. A re-run with no new signal is a clean no-op (zero
     create/edge ops).

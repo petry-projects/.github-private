@@ -73,7 +73,7 @@ write_one_finding() { # write_one_finding <dest> <title>
     run bash "$APPLY"
   [ "$status" -eq 0 ]
   [[ "$output" == *"no existing epic"* ]]
-  [ ! -s "$LOG" ] || [ "$(grep -c '"op":"create_issue"' "$LOG")" -eq 0 ]
+  [ ! -s "$LOG" ] || [ "$(grep -c '"op":"create_issue"' "$LOG" || true)" -eq 0 ]
 }
 
 # ---------------------------------------------------------------------------
@@ -139,9 +139,9 @@ write_one_finding() { # write_one_finding <dest> <title>
   # is never even created (guarded like the idempotency-skip tests).
   EPIC=812 run reconcile_dry "$PLAN_581"
   [ "$status" -eq 0 ]
-  [ ! -s "$LOG" ] || [ "$(grep -c '"op":"create_issue"' "$LOG")" -eq 0 ]
-  [ ! -s "$LOG" ] || [ "$(grep -c '"op":"add_sub_issue"' "$LOG")" -eq 0 ]
-  [ ! -s "$LOG" ] || [ "$(grep -c '"op":"add_blocked_by"' "$LOG")" -eq 0 ]
+  [ ! -s "$LOG" ] || [ "$(grep -c '"op":"create_issue"' "$LOG" || true)" -eq 0 ]
+  [ ! -s "$LOG" ] || [ "$(grep -c '"op":"add_sub_issue"' "$LOG" || true)" -eq 0 ]
+  [ ! -s "$LOG" ] || [ "$(grep -c '"op":"add_blocked_by"' "$LOG" || true)" -eq 0 ]
 }
 
 @test "reconcile dedups a proposed_story already materialized in the epic (idempotent re-run)" {
@@ -151,8 +151,8 @@ write_one_finding() { # write_one_finding <dest> <title>
   key="$(printf '%s' "572::${title}" | sha256sum | cut -d' ' -f1)"
   EPIC=812 DRY_RUN_EXISTING_RECONCILE_KEYS="$key" run reconcile_dry "$TMP/one.json"
   [ "$status" -eq 0 ]
-  [ ! -s "$LOG" ] || [ "$(grep -c '"op":"create_issue"' "$LOG")" -eq 0 ]
-  [ ! -s "$LOG" ] || [ "$(grep -c '"op":"add_blocked_by"' "$LOG")" -eq 0 ]
+  [ ! -s "$LOG" ] || [ "$(grep -c '"op":"create_issue"' "$LOG" || true)" -eq 0 ]
+  [ ! -s "$LOG" ] || [ "$(grep -c '"op":"add_blocked_by"' "$LOG" || true)" -eq 0 ]
   [[ "$output" == *"already materialized"* ]]
 }
 
@@ -176,9 +176,9 @@ write_one_finding() { # write_one_finding <dest> <title>
 @test "AC6(b): a re-run with no new signal logs zero create/edge ops" {
   EPIC=812 run reconcile_dry "$PLAN_581"
   [ "$status" -eq 0 ]
-  [ ! -s "$LOG" ] || [ "$(grep -c '"op":"create_issue"' "$LOG")" -eq 0 ]
-  [ ! -s "$LOG" ] || [ "$(grep -c '"op":"add_blocked_by"' "$LOG")" -eq 0 ]
-  [ ! -s "$LOG" ] || [ "$(grep -c '"op":"add_sub_issue"' "$LOG")" -eq 0 ]
+  [ ! -s "$LOG" ] || [ "$(grep -c '"op":"create_issue"' "$LOG" || true)" -eq 0 ]
+  [ ! -s "$LOG" ] || [ "$(grep -c '"op":"add_blocked_by"' "$LOG" || true)" -eq 0 ]
+  [ ! -s "$LOG" ] || [ "$(grep -c '"op":"add_sub_issue"' "$LOG" || true)" -eq 0 ]
 }
 
 # ---------------------------------------------------------------------------
@@ -192,7 +192,7 @@ write_one_finding() { # write_one_finding <dest> <title>
     run bash "$APPLY"
   [ "$status" -ne 0 ]
   [[ "$output" == *"mutually exclusive"* ]]
-  [ ! -s "$LOG" ] || [ "$(grep -c '"op":"create_issue"' "$LOG")" -eq 0 ]
+  [ ! -s "$LOG" ] || [ "$(grep -c '"op":"create_issue"' "$LOG" || true)" -eq 0 ]
 }
 
 @test "reconcile posts a summary comment naming the newly materialized work" {
@@ -218,9 +218,8 @@ case "$*" in
   *graphql*) echo '{"data":{"repository":{"discussion":{"id":"D_572","title":"Idea","body":"no refs","url":"http://x","category":{"name":"Ideas"},"comments":{"nodes":[]}}}}}' ;;
   *"issue list"*"--search"*) echo '[{"number":812,"body":"Planned from idea discussion #572 by Bob"}]' ;;
   *"issue list"*) echo '[]' ;;
-  *sub_issues*) printf '587\n' ;;
+  *sub_issues*) echo '{"number":587,"title":"Proposer story","state":"open","labels":["dev-lead"]}' ;;
   *comments*) echo '[{"author":"dev-lead","body":"[harvest] please add a loader-hardening follow-up","createdAt":"2026-07-01T00:00:00Z"}]' ;;
-  *"issues/587"*) echo '{"number":587,"title":"Proposer story","state":"open","labels":["dev-lead"]}' ;;
   *) echo '{}' ;;
 esac
 EOF

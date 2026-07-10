@@ -59,12 +59,16 @@ materialize_accepted_findings() {
     existing_keys="$(existing_reconcile_keys "$REPO" "$epic_number" || true)"
   fi
   MATERIALIZED_COUNT=0
+  declare -A existing_keys_map=()
+  while IFS= read -r k; do
+    [[ -n "$k" ]] && existing_keys_map["$k"]=1
+  done <<< "$existing_keys"
   local q_index ps_title rk ps_body ps_out ps_number ps_id pbb
   while IFS= read -r q_index; do
     [ -n "$q_index" ] || continue
     ps_title="$(jq -r --argjson i "$q_index" '.open_questions[$i].proposed_story.title' "$PLAN_PATH")"
     rk="$(_reconcile_key "${src:-0}" "$ps_title")"
-    if [ "$reconcile" = "1" ] && printf '%s\n' "$existing_keys" | grep -qxF "$rk"; then
+    if [ "$reconcile" = "1" ] && [[ -n "${existing_keys_map["$rk"]:-}" ]]; then
       echo "  reconcile: proposed_story already materialized (key match) — skipping: ${ps_title}"
       continue
     fi

@@ -90,23 +90,25 @@ if [[ "${RECONCILE:-0}" == "1" ]]; then
   backref="Planned from idea discussion #${DISCUSSION_NUMBER}"
   bound_epic="$(gh issue list --repo "$REPO" --label initiative --state open \
     --search "\"$backref\"" --json number,body 2>/dev/null \
-    | jq -r --arg ref "$backref" 'first(.[] | select(.body | contains($ref)) | .number) // empty' || true)"
+    | jq -r --arg ref "$backref" 'first(.[] | select((.body // "" | tostring) | contains($ref)) | .number) // empty' || true)"
   subs_json='[]'
   if [[ -n $bound_epic ]]; then
     # sub_issues returns every child regardless of state; enrich each with its
     # labels and comment thread so in-flight (dev-lead-labelled) stories are
     # distinguishable and comment-surfaced follow-ups are visible to Bob.
-    sub_nums="$(gh api "repos/${REPO}/issues/${bound_epic}/sub_issues" --paginate \
-      --jq '.[].number' 2>/dev/null || true)"
-    if [[ -n $sub_nums ]]; then
-      subs_json="$(while IFS= read -r sn; do
-          [[ -n $sn ]] || continue
-          meta="$(gh api "repos/${REPO}/issues/${sn}" \
-            --jq '{number, title, state, labels: [.labels[].name]}' 2>/dev/null)" || continue
-          cmts="$(gh api "repos/${REPO}/issues/${sn}/comments" --paginate \
-            --jq '[.[] | {author: .user.login, body, createdAt: .created_at}]' 2>/dev/null || echo '[]')"
-          jq -nc --argjson m "$meta" --argjson c "$cmts" '$m + {comments: $c}'
-        done <<<"$sub_nums" | jq -sc '.')"
+    # Fetch sub_issues once (paginated); --jq emits one NDJSON object per sub-issue
+    # so metadata is extracted without a separate API call per sub-issue. Comments are
+    # capped to the first page (no --paginate) to keep the harvest bounded (#708).
+    sub_issues_meta="$(gh api "repos/${REPO}/issues/${bound_epic}/sub_issues" --paginate \
+      --jq '.[] | {number, title, state, labels: [.labels[].name]}' 2>/dev/null || true)"
+    if [[ -n $sub_issues_meta ]]; then
+      subs_json="$(while IFS= read -r sub; do
+          [[ -n $sub ]] || continue
+          sn="$(jq -r '.number' <<< "$sub")"
+          cmts="$(gh api "repos/${REPO}/issues/${sn}/comments" \
+            --jq '[.[] | {author: .user?.login, body, createdAt: .created_at}]' 2>/dev/null || echo '[]')"
+          jq -nc --argjson m "$sub" --argjson c "$cmts" '$m + {comments: $c}'
+        done <<< "$sub_issues_meta" | jq -sc '.')"
     fi
     reconcile_json="$(jq -nc --argjson epic "$bound_epic" --argjson subs "$subs_json" \
       '{mode:"reconcile", epic:$epic, sub_issues:$subs}')"

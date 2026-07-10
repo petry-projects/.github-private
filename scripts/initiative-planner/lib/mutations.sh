@@ -173,7 +173,7 @@ existing_reconcile_keys() {
     [ -n "$keys" ] && printf '%s\n' ${keys//,/ }
     return 0
   fi
-  gh api "repos/${repo}/issues/${epic}/sub_issues" --jq '.[].body' 2>/dev/null \
+  gh api "repos/${repo}/issues/${epic}/sub_issues" --paginate --jq '.[].body' 2>/dev/null \
     | grep -oE 'reconcile-key: [0-9a-f]{64}' | awk '{print $2}' || true
 }
 
