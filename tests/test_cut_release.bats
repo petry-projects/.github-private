@@ -74,6 +74,17 @@ setup() {
   [ "$status" -eq 0 ]
 }
 
+@test "valid_agent: add-to-project is accepted" {
+  run valid_agent "add-to-project"
+  [ "$status" -eq 0 ]
+}
+
+@test "agent_host_repo: add-to-project resolves to petry-projects/.github (cross-repo)" {
+  run agent_host_repo "add-to-project"
+  [ "$status" -eq 0 ]
+  [ "$output" = "petry-projects/.github" ]
+}
+
 @test "agent_host_repo: idea-enhancer resolves to petry-projects/.github (cross-repo)" {
   run agent_host_repo "idea-enhancer"
   [ "$status" -eq 0 ]
