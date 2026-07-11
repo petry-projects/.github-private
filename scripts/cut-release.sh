@@ -54,13 +54,13 @@ CROSS_REPO_TARGET="petry-projects/.github"
 
 # ── pure helpers (sourced by tests; no side effects) ─────────────────────────
 
-# valid_agent <agent> — return 0 iff agent is a known agent name. Covers the two
-# agents hosted in this repo (pr-review, dev-lead) plus the cross-repo reusables
-# hosted in petry-projects/.github (feature-ideation and the six #482 reusables
-# brought under the ring model in #870).
+# valid_agent <agent> — return 0 iff agent is a known agent name. Covers the
+# agents hosted in this repo (pr-review, dev-lead, ci-failure-analyst) plus the
+# cross-repo reusables hosted in petry-projects/.github (feature-ideation and the
+# six #482 reusables brought under the ring model in #870).
 valid_agent() {
   case "$1" in
-    pr-review | dev-lead) return 0 ;;
+    pr-review | dev-lead | ci-failure-analyst) return 0 ;;
     *) cross_repo_agent "$1" ;;
   esac
 }
