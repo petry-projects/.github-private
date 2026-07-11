@@ -67,6 +67,19 @@ setup() {
   [ "$status" -eq 0 ]
 }
 
+# idea-enhancer's reusable is hosted cross-repo in petry-projects/.github, brought
+# under the versioned-release model in #515.
+@test "valid_agent: idea-enhancer is accepted" {
+  run valid_agent "idea-enhancer"
+  [ "$status" -eq 0 ]
+}
+
+@test "agent_host_repo: idea-enhancer resolves to petry-projects/.github (cross-repo)" {
+  run agent_host_repo "idea-enhancer"
+  [ "$status" -eq 0 ]
+  [ "$output" = "petry-projects/.github" ]
+}
+
 # The six .github-hosted reusables migrated by #482, brought under the ring model (#870).
 @test "valid_agent: agent-shield is accepted" {
   run valid_agent "agent-shield"
