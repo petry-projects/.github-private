@@ -48,6 +48,20 @@ setup() {
   [ "$status" -eq 0 ]
 }
 
+# ci-failure-analyst is hosted in THIS repo (.github-private), brought under the
+# versioned-release model in #1159.
+@test "valid_agent: ci-failure-analyst is accepted" {
+  run valid_agent "ci-failure-analyst"
+  [ "$status" -eq 0 ]
+}
+
+@test "agent_host_repo: ci-failure-analyst resolves to this repo (not cross-repo)" {
+  export GITHUB_REPOSITORY="petry-projects/.github-private"
+  run agent_host_repo "ci-failure-analyst"
+  [ "$status" -eq 0 ]
+  [ "$output" = "petry-projects/.github-private" ]
+}
+
 @test "valid_agent: feature-ideation is accepted" {
   run valid_agent "feature-ideation"
   [ "$status" -eq 0 ]
@@ -85,7 +99,7 @@ setup() {
 }
 
 @test "valid_agent: unknown agent is rejected" {
-  run valid_agent "ci-failure-analyst"
+  run valid_agent "totally-not-an-agent"
   [ "$status" -ne 0 ]
 }
 
