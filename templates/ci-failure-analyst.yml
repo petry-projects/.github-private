@@ -1,0 +1,46 @@
+# Deploy this file to target repos as: .github/workflows/ci-failure-analyst.yml
+#
+# Purpose: Posts a read-only diagnostic comment on PRs within 2 minutes of a
+#   CI check failure. Identifies the failing step, classifies the root cause,
+#   and suggests a concrete fix action.
+#
+# All analysis logic lives in petry-projects/.github-private — this stub is
+# intentionally minimal and never needs modification after initial deployment.
+#
+# Requirements:
+#   CLAUDE_CODE_OAUTH_TOKEN  org secret — must be granted to this repo in org
+#                            secret settings (Settings -> Secrets -> Actions)
+#
+# This workflow is independent of dev-lead. Both can coexist in the same repo:
+#   dev-lead        — diagnoses and attempts to fix CI failures (writes commits)
+#   ci-failure-analyst — diagnoses only, always posts a fast diagnostic comment
+#
+# Docs: https://github.com/petry-projects/.github-private/blob/main/docs/aw/ci-failure-analyst.md
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: "CI Failure Analyst"
+
+on:
+  check_run:
+    types: [completed]
+
+permissions:
+  pull-requests: write
+  issues: write        # post/read PR comments via the Issues comments API
+  actions: read
+  contents: read
+  checks: read
+
+concurrency:
+  group: "ci-failure-analyst-${{ github.event.check_run.head_sha }}"
+  cancel-in-progress: false
+
+jobs:
+  analyze:
+    # Skip non-failures and the analyst's own check run to prevent loops.
+    if: >-
+      github.event.check_run.conclusion == 'failure' &&
+      !startsWith(github.event.check_run.name, 'CI Failure Analyst')
+    uses: petry-projects/.github-private/.github/workflows/ci-failure-analyst-reusable.yml@ci-failure-analyst/stable
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
