@@ -9,7 +9,7 @@
 #   cut-release.sh <agent> <version> [--ref <ref>] [--channel <name>]
 #                                    [--push] [--dry-run]
 #
-#   <agent>      this repo: pr-review | dev-lead
+#   <agent>      this repo: pr-review | dev-lead | ci-failure-analyst
 #                cross-repo (reusable in petry-projects/.github): feature-ideation |
 #                  agent-shield | auto-rebase | dependency-audit |
 #                  dependabot-automerge | dependabot-rebase | pr-review-mention
@@ -189,7 +189,7 @@ main() {
   done
 
   if ! valid_agent "$agent"; then
-    echo "::error::unknown agent '$agent' (expected: pr-review | dev-lead | feature-ideation | agent-shield | auto-rebase | dependency-audit | dependabot-automerge | dependabot-rebase | pr-review-mention)" >&2
+    echo "::error::unknown agent '$agent' (expected: pr-review | dev-lead | ci-failure-analyst | feature-ideation | agent-shield | auto-rebase | dependency-audit | dependabot-automerge | dependabot-rebase | pr-review-mention)" >&2
     return 2
   fi
   if ! validate_version "$version"; then
