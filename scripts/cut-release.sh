@@ -10,7 +10,7 @@
 #                                    [--push] [--dry-run]
 #
 #   <agent>      this repo: pr-review | dev-lead
-#                cross-repo (reusable in petry-projects/.github): feature-ideation | idea-enhancer | add-to-project |
+#                cross-repo (reusable in petry-projects/.github): feature-ideation | idea-enhancer | add-to-project | pr-auto-review |
 #                  agent-shield | auto-rebase | dependency-audit |
 #                  dependabot-automerge | dependabot-rebase | pr-review-mention
 #   <version>    semantic version without the leading v, e.g. 1.2.0
@@ -72,7 +72,7 @@ valid_agent() {
 # docs/release/versioning.md "Cross-repo reusables".
 cross_repo_agent() {
   case "$1" in
-    feature-ideation | idea-enhancer | add-to-project) return 0 ;;
+    feature-ideation | idea-enhancer | add-to-project | pr-auto-review) return 0 ;;
     agent-shield | auto-rebase | dependency-audit) return 0 ;;
     dependabot-automerge | dependabot-rebase | pr-review-mention) return 0 ;;
     *) return 1 ;;
@@ -189,7 +189,7 @@ main() {
   done
 
   if ! valid_agent "$agent"; then
-    echo "::error::unknown agent '$agent' (expected: pr-review | dev-lead | feature-ideation | idea-enhancer | add-to-project | agent-shield | auto-rebase | dependency-audit | dependabot-automerge | dependabot-rebase | pr-review-mention)" >&2
+    echo "::error::unknown agent '$agent' (expected: pr-review | dev-lead | feature-ideation | idea-enhancer | add-to-project | pr-auto-review | agent-shield | auto-rebase | dependency-audit | dependabot-automerge | dependabot-rebase | pr-review-mention)" >&2
     return 2
   fi
   if ! validate_version "$version"; then
