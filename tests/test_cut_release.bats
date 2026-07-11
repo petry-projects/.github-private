@@ -79,6 +79,17 @@ setup() {
   [ "$status" -eq 0 ]
 }
 
+@test "valid_agent: pr-auto-review is accepted" {
+  run valid_agent "pr-auto-review"
+  [ "$status" -eq 0 ]
+}
+
+@test "agent_host_repo: pr-auto-review resolves to petry-projects/.github (cross-repo)" {
+  run agent_host_repo "pr-auto-review"
+  [ "$status" -eq 0 ]
+  [ "$output" = "petry-projects/.github" ]
+}
+
 @test "agent_host_repo: add-to-project resolves to petry-projects/.github (cross-repo)" {
   run agent_host_repo "add-to-project"
   [ "$status" -eq 0 ]
