@@ -42,16 +42,16 @@ skills:
     path: frameworks/bmad-test-architecture/src/agents/bmad-tea/SKILL.md
     source: vendored
   - name: bmad-testarch-test-review
-    path: frameworks/bmad-test-architecture/src/workflows/testarch
+    path: frameworks/bmad-test-architecture/src/workflows/testarch/bmad-testarch-test-review/SKILL.md
     source: vendored
   - name: bmad-testarch-ci
-    path: frameworks/bmad-test-architecture/src/workflows/testarch
+    path: frameworks/bmad-test-architecture/src/workflows/testarch/bmad-testarch-ci/SKILL.md
     source: vendored
   - name: bmad-testarch-nfr
-    path: frameworks/bmad-test-architecture/src/workflows/testarch
+    path: frameworks/bmad-test-architecture/src/workflows/testarch/bmad-testarch-nfr/SKILL.md
     source: vendored
   - name: bmad-testarch-trace
-    path: frameworks/bmad-test-architecture/src/workflows/testarch
+    path: frameworks/bmad-test-architecture/src/workflows/testarch/bmad-testarch-trace/SKILL.md
     source: vendored
 
 # Murat is a quality ADVISOR — advisory on every surface, write nowhere.
@@ -86,7 +86,7 @@ triggers:
       notes: "Discussions can't run the agent inline — must bridge (issue #571)."
 
     - surface: mention
-      events: []
+      events: [created]
       enabled: true
       mode: advisory
       notes: "@petry-review-bot / direct invocation: 'Murat, design tests for this epic'."
