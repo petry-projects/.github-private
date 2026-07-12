@@ -189,6 +189,12 @@ jobs:
         run: pip3 install --quiet 'jsonschema>=4' pyyaml
 
       - name: Validate persona manifests
+        # Read the canonical schema from petry-projects/.github. Prefer a
+        # same-named branch there (so companion PRs developed on a shared branch
+        # validate against each other before either merges); the validator falls
+        # back to main automatically, which is the steady state.
+        env:
+          PERSONA_SCHEMA_REF: ${{ github.head_ref || github.ref_name }}
         run: python3 personas/validate-personas.py personas
 
   gh-aw-compile:
