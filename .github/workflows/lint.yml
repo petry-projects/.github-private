@@ -7,6 +7,7 @@ on:
       - '.github/workflows/**'
       - 'tests/**'
       - 'agents/**'
+      - 'personas/**'
       - 'evals/**'
       - 'release/**'
       - '.gitleaks.toml'
@@ -37,8 +38,8 @@ jobs:
       - name: Install bats
         run: sudo apt-get install -y bats
 
-      - name: Install Python jsonschema (initiative-planner validator tests)
-        run: pip3 install --quiet 'jsonschema>=4'
+      - name: Install Python deps (validator tests)
+        run: pip3 install --quiet 'jsonschema>=4' pyyaml
 
       - name: Run tests
         run: |
@@ -104,7 +105,8 @@ jobs:
             tests/test_batch_skip_reporting.bats \
             tests/test_review_one_pr_ci_pending.bats \
             tests/test_release_registry.bats \
-            tests/test_readme_refresh_helpers.bats
+            tests/test_readme_refresh_helpers.bats \
+            tests/test_validate_personas.bats
 
   template-drift:
     # Drift guard (#969): fail when a file committed in petry-projects/repo-template
@@ -169,6 +171,25 @@ jobs:
             echo "OK: $f"
           done
           [ "$fail" -eq 0 ] || exit 1
+
+  validate-personas:
+    # Validate every personas/<id>/persona.yml against the canonical persona
+    # manifest schema (owned by petry-projects/.github, read the same way any
+    # consumer reads a published standard) plus the cross-invariants the schema
+    # can't express (id==dir==canary.agent, layer paths exist, vendor_pin ↔
+    # VENDOR.md, evals splits present, non-draft ⇒ canary-rings entry).
+    # NOTE: the schema is fetched from petry-projects/.github @ main, so this job
+    # only goes green once that repo's persona schema is on main (PR #670).
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+
+      - name: Install Python deps
+        run: pip3 install --quiet 'jsonschema>=4' pyyaml
+
+      - name: Validate persona manifests
+        run: python3 personas/validate-personas.py personas
 
   gh-aw-compile:
     runs-on: ubuntu-latest

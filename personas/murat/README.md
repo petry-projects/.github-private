@@ -27,10 +27,12 @@ To promote Murat past `draft`:
 
 1. Wire a dedicated advisory workflow (e.g. mention- or `check_run`-triggered
    test review) as a caller stub + reusable, and add its `runtime:` block.
-2. Reach ≥ `min_cases` held-out eval cases under
-   [`evals/murat/holdout/`](../../evals/murat/holdout/cases.jsonl) (the seeds
-   there are placeholders). They live under the repo `evals/` tree so
-   `validate-cases.py` and `holdout-guard.yml` already cover them.
+2. Expand the held-out eval set under
+   [`evals/murat/holdout/`](../../evals/murat/holdout/cases.jsonl). It already
+   carries a synthetic starter set that clears the `min_cases` gate (6 held-out,
+   4 dev); grow it with real (de-identified) cases and wire the scorer/judge
+   before promotion. The set lives under the repo `evals/` tree so
+   `validate-cases.py` and `holdout-guard.yml` already cover it.
 3. Register the one `agents.murat` entry in `canary-rings.json` and cut
    `murat/v0.1.0`.
 4. Soak `next → ring0 → ring1 → stable`, eval gate green before `stable`.
