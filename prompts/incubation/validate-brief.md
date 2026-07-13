@@ -7,7 +7,8 @@
 ## Procedure
 
 1. **Load** `ideas/<slug>/brief.md`, [`checklists/brief-checklist.md`](checklists/brief-checklist.md),
-   and the prior artifacts (brainstorm, market-research) for consistency.
+   and any available prior artifacts (brainstorm, market-research) for consistency
+   (gracefully skip consistency checks for any missing prior artifacts).
 2. **Judge each dimension** *strong / adequate / thin / broken*; cite + quote.
    Consistency with the package and "recommendation is an actual decision" are the
    load-bearing dimensions.

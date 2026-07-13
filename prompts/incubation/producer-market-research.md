@@ -22,7 +22,8 @@ ls  frameworks/bmad-method/src/bmm-skills/1-analysis/research/bmad-market-resear
 
 Use its **method** (how-it's-solved-today → the gap → market signal →
 competitive analysis), applied to our inputs (`idea_context`, `discussion_thread`,
-`prior_artifacts` — especially an existing `brainstorm.md`). Adaptation: the skill
+`prior_artifacts` — using `brainstorm.md` if available, or gracefully falling back
+to `discussion_thread` and `idea_context` if missing). Adaptation: the skill
 normally elicits interactively and writes its own template — here you run headless
 and the output is the incubation artifact below. Do **not** block on prompts. If
 web research is available, use it and cite; if not, say so and mark unknowns.

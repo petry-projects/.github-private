@@ -18,8 +18,9 @@ cat frameworks/bmad-method/src/bmm-skills/1-analysis/bmad-product-brief/assets/b
 ```
 
 Run it headless against `idea_context`, `discussion_thread`, and `prior_artifacts`
-(the `brainstorm.md` and `market-research.md` already in the package — the brief
-must be consistent with them). Fold the market-research takeaway into the
+(using `brainstorm.md` and `market-research.md` if available in the package — the
+brief must be consistent with them, but gracefully fall back to `discussion_thread`
+and `idea_context` if they are missing). Fold the market-research takeaway into the
 recommendation; keep the detail in `market-research.md`.
 
 ## Step 3 — Emit `ideas/<slug>/brief.md`

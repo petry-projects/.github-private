@@ -105,8 +105,16 @@ idea needs more discovery, which is the point.
 ```
 
 `blockers[]` are the findings the content-quality tier treats as gate-failing
-(anything critical/high, or a required section that is present-but-empty). A
-`validate` run always writes `report_path`, even with zero findings.
+(anything critical/high, or a required section that is present-but-empty). Each
+element is a structured object:
+
+```json
+{ "severity": "critical", "section": "Market signal", "reason": "section present but empty" }
+```
+
+Fields: `severity` (`"critical"` | `"high"`), `section` (the heading that failed),
+`reason` (one sentence). A `validate` run always writes `report_path`, even with
+zero findings.
 
 ### blocked
 

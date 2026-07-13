@@ -9,7 +9,8 @@ gate's content-quality tier consumes. Read [`shared.md`](shared.md) first
 
 1. **Load.** Read `ideas/<slug>/market-research.md` and
    [`checklists/market-research-checklist.md`](checklists/market-research-checklist.md).
-   Read `prior_artifacts` (brainstorm) for consistency checks.
+   Read `prior_artifacts` (brainstorm) for consistency checks if available
+   (gracefully skip if brainstorm is missing).
 2. **Judge each rubric dimension** — *strong / adequate / thin / broken*. Write a
    finding only where it adds information; cite the section and quote a phrase.
    Severity = impact on the artifact's usefulness, not fix difficulty.
