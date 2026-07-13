@@ -236,6 +236,52 @@ Environment, any other `contents: write` workflow in this repo could also move a
 > org Variable). This trades away the native `workflow_call` model and is **not** part of the
 > recommended baseline — listed only as a fallback for per-repo self-service overrides.
 
+### 5.2 Major-scoped channels: breaking changes are opt-in (epic #657)
+
+The channel model in [§5.1](#51-how-version-selection-works-without-per-caller-churn-moving-channel-tags)
+gives one moving tag per tier (`<agent>/{next,ring0,ring1,stable}`). That is correct for
+backward-compatible releases, but it has a sharp edge for **breaking** changes: because a promotion is a
+central tag move and callers never re-pin, advancing a major to `stable` would silently reach every
+`stable` consumer — the exact "instant fleet-wide" exposure this initiative exists to prevent. A breaking
+change is precisely the case where the consumer, not the release automation, must decide when to adopt.
+
+**Decision (Option 1 of #657, 2026-07-13): scope each channel by major.** A breaking (major) agent change
+gets its own channel line; a consumer opts in by re-pinning to the new major. It cannot silently reach a
+`stable` consumer that has not opted in.
+
+**Channel tag scheme.** Channel tags become `<agent>/v<MAJOR>-<tier>` where `tier ∈ {next, ring0, ring1,
+stable}` — e.g. `dev-lead/v1-stable`, `dev-lead/v2-next`. The immutable `<agent>/vX.Y.Z` release tags are
+**unchanged**: they remain the per-release audit trail and rollback anchors a channel points *at*. Only
+the moving channel tags gain the `v<MAJOR>-` prefix.
+
+**The major a consumer pins is its opt-in.** A consumer pins `@<agent>/v<M>-<tier>` (e.g.
+`@dev-lead/v1-stable`). A new v2 line soaks **independently** through
+`v2-{next → ring0 → ring1 → stable}` via the same staged canary/ring rollout used for any release (see
+the ring model in [`docs/release/versioning.md`](../release/versioning.md#ring-channels-live-for-dev-lead)
+and the staged rollout runbook [`§2c`](../release/runbook.md#2c-staged-canary--ring-rollout)). Reaching
+`v2-stable` **never touches a `v1-stable` consumer** — that consumer keeps receiving v1 patches on
+`v1-stable` until it deliberately re-pins its caller to `@<agent>/v2-stable`. The major bump is thus a
+consumer-controlled adoption, not a push.
+
+**Drift semantics.** For a given consumer, the expected ref is
+`<agent>/v<consumer's-current-major>-<tier-for-that-repo>` (the tier is determined by the repo's ring
+membership; the major is determined by what the consumer has opted into):
+
+- **Wrong tier within your major is drift.** A `ring1` consumer pinned to `v1-stable` (or `v1-next`)
+  instead of its assigned `v1-ring1` is misconfigured — flag it.
+- **Still on an older major is NOT drift.** A consumer on `v1-stable` while `v2` exists is in a
+  legitimate *not-yet-opted-in* state, not a misconfiguration. A drift audit must treat "older major, but
+  the correct tier for that major" as compliant, or every not-yet-migrated consumer would false-positive
+  the moment a major is cut.
+
+**Migration to the new scheme (forward-ref to F5).** The live bare-tier channels remain valid during the
+transition. Each agent's existing `<agent>/<tier>` channel maps to `<agent>/v<currentMajor>-<tier>`, where
+`currentMajor` is read from the agent's latest immutable `<agent>/vX.Y.Z` tag (e.g. if `dev-lead`'s newest
+release is `dev-lead/v1.7.2`, then `dev-lead/stable` maps to `dev-lead/v1-stable`). The bare-tier channels
+are **retired only after** consumers have moved to the `v<major>-<tier>` pins. The audit/drift + live-tag
+migration + consumer re-pins are delivered later in the epic (phase F5); this section records the target
+model that F5 realizes.
+
 ---
 
 ## 6. Options analysis
@@ -463,3 +509,12 @@ each agent has an independent promotion path and health gate.
   `vars.`-driven dispatcher is an optional fallback only, not the baseline — see §5.1.) Mutable
   channel tags are an accepted exception (dedicated actor + protected Environment + separate
   `*/v*` ruleset for release tags) to the SHA-pin standard for these first-party workflows.
+
+### 9.4 Decision log
+
+Design decisions taken *after* the initial proposal, in date order. Each is load-bearing for the
+implementation phases that follow it.
+
+- **2026-07-13 — Breaking (major) agent changes use major-scoped channels (Option 1 of #657).** A major
+  bump requires a deliberate consumer re-pin to opt in; it cannot silently reach `stable` consumers. See
+  [§5.2](#52-major-scoped-channels-breaking-changes-are-opt-in-epic-657).
