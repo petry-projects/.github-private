@@ -24,6 +24,13 @@ setup() {
 }
 JSON
 
+  # Framework-agent fixture for vendor_pin invariant tests.
+  mkdir -p "$TMP/frameworks/demo-fw"
+  printf '# Vendored framework\n\nPin: v1.2.3\n' >"$TMP/frameworks/demo-fw/VENDOR.md"
+
+  # Local canary-rings registry for non-draft invariant tests.
+  printf '{"agents": {"demo": {}}}\n' >"$TMP/registry.json"
+
   # A self-contained, valid fixture persona.
   mkdir -p "$TMP/personas/demo" "$TMP/agents" "$TMP/evals/demo/dev" "$TMP/evals/demo/holdout"
   printf -- '---\nname: demo\n---\n' >"$TMP/agents/demo.md"
@@ -101,4 +108,53 @@ teardown() { rm -rf "$TMP"; }
 @test "validate-personas is a no-op when there is no personas root" {
   run python3 "$VALIDATOR" "$TMP/nonexistent" --schema "$TMP/schema.json"
   [ "$status" -eq 0 ]
+}
+
+@test "validate-personas rejects a framework-agent with mismatched vendor_pin" {
+  cat >"$TMP/personas/demo/persona.yml" <<'YAML'
+id: demo
+name: Demo
+title: Demo Persona
+summary: A fixture persona for validator tests.
+status: draft
+owner: petry-projects/org-leads
+definition:
+  layers:
+    - kind: framework-agent
+      path: agents/demo.md
+      framework:
+        name: demo-fw
+        vendor_pin: v9.9.9
+        skill: demo
+triggers:
+  default_mode: advisory
+  opt_out_label: demo:hands-off
+  surfaces: []
+trust:
+  author_association_floor: [OWNER]
+evals:
+  required_before: stable
+  path: evals/demo/
+  min_cases: 1
+canary:
+  registry: petry-projects/.github/standards/canary-rings.json
+  agent: demo
+YAML
+  run python3 "$VALIDATOR" "$TMP/personas" --schema "$TMP/schema.json"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"vendor_pin"* ]]
+}
+
+@test "validate-personas accepts a non-draft persona with a registry entry" {
+  sed -i 's/^status: draft/status: stable/' "$TMP/personas/demo/persona.yml"
+  run python3 "$VALIDATOR" "$TMP/personas" --schema "$TMP/schema.json" --registry "$TMP/registry.json"
+  [ "$status" -eq 0 ]
+}
+
+@test "validate-personas rejects a non-draft persona without a registry entry" {
+  sed -i 's/^status: draft/status: stable/' "$TMP/personas/demo/persona.yml"
+  printf '{"agents": {}}\n' >"$TMP/empty-registry.json"
+  run python3 "$VALIDATOR" "$TMP/personas" --schema "$TMP/schema.json" --registry "$TMP/empty-registry.json"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"agents.demo"* ]]
 }
