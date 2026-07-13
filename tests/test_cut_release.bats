@@ -424,19 +424,52 @@ setup() {
   [ "$output" = "release/origin/x" ]
 }
 
-@test "channel_ref: feature-ideation ring0 channel" {
-  run channel_ref "feature-ideation" "ring0"
-  [ "$output" = "feature-ideation/ring0" ]
+@test "major_of: 12.4.37 is 12" {
+  run major_of "12.4.37"
+  [ "$output" = "12" ]
 }
 
-@test "channel_ref: pr-review-mention next channel" {
-  run channel_ref "pr-review-mention" "next"
-  [ "$output" = "pr-review-mention/next" ]
+# ---------------------------------------------------------------------------
+# channel_ref — major-scoped channel tag names (#1184, epic #657)
+# A bare tier is prefixed with v<major(version)>-; a fully-qualified
+# v<M>-<tier> passes through unchanged (its own major wins).
+# ---------------------------------------------------------------------------
+
+@test "channel_ref: bare tier is prefixed with the version's major" {
+  run channel_ref "pr-review" "1.0.0" "stable"
+  [ "$output" = "pr-review/v1-stable" ]
 }
 
-@test "channel_ref: auto-rebase stable channel" {
-  run channel_ref "auto-rebase" "stable"
-  [ "$output" = "auto-rebase/stable" ]
+@test "channel_ref: dev-lead 2.0.0 stable -> dev-lead/v2-stable" {
+  run channel_ref "dev-lead" "2.0.0" "stable"
+  [ "$output" = "dev-lead/v2-stable" ]
+}
+
+@test "channel_ref: next channel is major-scoped" {
+  run channel_ref "dev-lead" "1.4.2" "next"
+  [ "$output" = "dev-lead/v1-next" ]
+}
+
+@test "channel_ref: feature-ideation ring0 channel is major-scoped" {
+  run channel_ref "feature-ideation" "3.1.0" "ring0"
+  [ "$output" = "feature-ideation/v3-ring0" ]
+}
+
+@test "channel_ref: explicit v<M>-<tier> passes through unchanged" {
+  run channel_ref "dev-lead" "2.0.0" "v1-ring0"
+  [ "$output" = "dev-lead/v1-ring0" ]
+}
+
+@test "channel_ref: explicit v<M>-<tier> wins over the version's major" {
+  run channel_ref "pr-review" "9.9.9" "v1-stable"
+  [ "$output" = "pr-review/v1-stable" ]
+}
+
+@test "channel_ref: major bump is reflected in the prefix (1.x -> v1-, 2.x -> v2-)" {
+  run channel_ref "dev-lead" "1.7.2" "stable"
+  [ "$output" = "dev-lead/v1-stable" ]
+  run channel_ref "dev-lead" "2.0.0" "stable"
+  [ "$output" = "dev-lead/v2-stable" ]
 }
 
 # ---------------------------------------------------------------------------

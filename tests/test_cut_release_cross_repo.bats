@@ -199,3 +199,44 @@ STUB
   echo "$output" | grep -q 'dry-run'
   ! grep -qE '(PATCH|POST) .*git/refs' "$GH_CALLS"
 }
+
+# ── major-scoped channels (#1184, epic #657) ──────────────────────────────────
+# --channel <tier> derives the major from <version>; a fully-qualified
+# v<M>-<tier> passes through; the immutable vX.Y.Z release tag is unchanged.
+
+@test "major-scoped: --channel stable derives v2- from version 2.0.0 (dry-run)" {
+  run env GH_TOKEN=x bash "$SCRIPT" dev-lead 2.0.0 --channel stable --dry-run
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q 'channel tag: dev-lead/v2-stable -> dev-lead/v2.0.0'
+  # not the old bare-tier form
+  ! echo "$output" | grep -qE 'channel tag: dev-lead/stable '
+}
+
+@test "major-scoped: explicit --channel v1-ring0 passes through unchanged (dry-run)" {
+  run env GH_TOKEN=x bash "$SCRIPT" dev-lead 2.0.0 --channel v1-ring0 --dry-run
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q 'channel tag: dev-lead/v1-ring0 -> dev-lead/v2.0.0'
+}
+
+@test "major-scoped: bump of major is reflected in the channel prefix (1.x -> v1-)" {
+  run env GH_TOKEN=x bash "$SCRIPT" dev-lead 1.7.2 --channel stable --dry-run
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q 'channel tag: dev-lead/v1-stable -> dev-lead/v1.7.2'
+}
+
+@test "major-scoped: release tag <agent>/v2.0.0 is still created on --push" {
+  run env GH_TOKEN=x bash "$SCRIPT" dev-lead 2.0.0 --channel stable --push
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q 'created dev-lead/v2.0.0 on petry-projects/.github-private'
+  echo "$output" | grep -q 'moved dev-lead/v2-stable'
+  # the immutable release tag ref is the un-prefixed vX.Y.Z form
+  grep -qE 'POST repos/petry-projects/\.github-private/git/refs .*refs/tags/dev-lead/v2.0.0' "$GH_CALLS"
+  # the channel ref that moved is the major-scoped v2-stable
+  grep -qE '(POST|PATCH) repos/petry-projects/\.github-private/git/refs.*dev-lead/v2-stable' "$GH_CALLS"
+}
+
+@test "major-scoped: --promote moves the major-scoped channel of the release's major" {
+  GH_TAG_EXISTS=1 run env GH_TOKEN=x GH_TAG_EXISTS=1 bash "$SCRIPT" dev-lead 2.3.1 --channel ring1 --promote --push
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q 'moved dev-lead/v2-ring1'
+}
