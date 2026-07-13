@@ -3,7 +3,11 @@
 # cut-release.sh — cut an immutable agent release tag and (optionally) advance a
 # channel tag to it. The GitHub-native primitive behind the Release Strategy
 # initiative (epic #495): immutable `<agent>/vX.Y.Z` tags are audit/rollback
-# targets; moving `<agent>/<channel>` tags are what callers pin to.
+# targets; moving `<agent>/v<MAJOR>-<tier>` channel tags are what callers pin to.
+#
+# Channels are major-scoped (#1184, epic #657): a breaking (major) release gets
+# its own channel line, so it cannot silently reach a consumer that has not
+# opted into that major. See docs/initiatives/agentic-release-strategy.md §5.2.
 #
 # Usage:
 #   cut-release.sh <agent> <version> [--ref <ref>] [--channel <name>]
@@ -17,19 +21,24 @@
 #   --ref        commit/ref to tag (default: main). Resolved against the agent's
 #                HOST repo via the API for EVERY agent (an `origin/` prefix is
 #                stripped — `origin/main` means the host's `main`).
-#   --channel    also move <agent>/<name> (e.g. stable) to the new release
-#   --promote    move <agent>/<channel> to the EXISTING <agent>/vX.Y.Z release
-#                instead of cutting a new one (ring-to-ring promotion). Requires
-#                --channel; errors if the release tag does not already exist;
-#                --ref is ignored (the release's own commit is authoritative).
+#   --channel    also move the major-scoped channel to the new release. Accepts a
+#                bare tier (stable | next | ring0 | ring1) — resolved to
+#                <agent>/v<MAJOR-of-version>-<tier> — OR a fully-qualified
+#                v<M>-<tier> (e.g. v1-ring0), which pins that major as-is.
+#   --promote    move the channel to the EXISTING <agent>/vX.Y.Z release instead
+#                of cutting a new one (ring-to-ring promotion within the release's
+#                major). Requires --channel; errors if the release tag does not
+#                already exist; --ref is ignored (the release's own commit is
+#                authoritative).
 #   --push       publish the created/moved tags (default: print only).
 #   --dry-run    print what would happen; touch nothing
 #
 # Examples:
 #   cut-release.sh pr-review 1.1.0 --push
-#   cut-release.sh pr-review 1.1.0 --channel stable --push
-#   cut-release.sh dev-lead  2.0.0 --channel stable --dry-run
-#   cut-release.sh agent-shield 2.1.0 --channel next --push   # cross-repo → .github
+#   cut-release.sh pr-review 1.1.0 --channel stable --push    # moves pr-review/v1-stable
+#   cut-release.sh dev-lead  2.0.0 --channel stable --dry-run # plans dev-lead/v2-stable
+#   cut-release.sh dev-lead  1.4.0 --channel v1-ring0 --push  # explicit v1-ring0 (pins v1)
+#   cut-release.sh agent-shield 2.1.0 --channel next --push   # cross-repo → .github; agent-shield/v2-next
 #
 # ONE consistent path for every agent (#1076). All tag operations — resolve,
 # create, and channel-move — go through `gh api` against the agent's HOST repo
@@ -43,8 +52,8 @@
 # docs/release/versioning.md "Cross-repo reusables".
 #
 # The pure helpers (valid_agent, cross_repo_agent, agent_host_repo, this_repo,
-# validate_version, release_ref, channel_ref, strip_origin) are defined at the
-# top level so tests can `source` this file without executing it (see the
+# validate_version, release_ref, major_of, channel_ref, strip_origin) are defined
+# at the top level so tests can `source` this file without executing it (see the
 # source-guard at the bottom and tests/test_cut_release.bats).
 #
 set -euo pipefail
@@ -109,8 +118,25 @@ validate_version() {
 # release_ref <agent> <version> — echo the immutable release tag name.
 release_ref() { printf '%s/v%s\n' "$1" "$2"; }
 
-# channel_ref <agent> <channel> — echo the channel tag name.
-channel_ref() { printf '%s/%s\n' "$1" "$2"; }
+# major_of <version> — echo the MAJOR component of a MAJOR.MINOR.PATCH version.
+major_of() { printf '%s\n' "${1%%.*}"; }
+
+# channel_ref <agent> <version> <channel> — echo the major-scoped channel tag
+# name (#1184, epic #657). Channels are scoped by major so a breaking (major)
+# release cannot silently reach a consumer that has not opted into that major:
+#   - a bare tier (stable | next | ring0 | ring1) is prefixed with the version's
+#     major → channel_ref dev-lead 2.0.0 stable  = dev-lead/v2-stable
+#   - a fully-qualified v<M>-<tier> passes through unchanged; its OWN major wins,
+#     so an explicit --channel v1-ring0 pins v1 regardless of <version> →
+#     channel_ref dev-lead 2.0.0 v1-ring0 = dev-lead/v1-ring0
+channel_ref() {
+  local agent="$1" version="$2" channel="$3"
+  if [[ "$channel" =~ ^v[0-9]+- ]]; then
+    printf '%s/%s\n' "$agent" "$channel"
+  else
+    printf '%s/v%s-%s\n' "$agent" "$(major_of "$version")" "$channel"
+  fi
+}
 
 # strip_origin <ref> — normalize a local-style ref to a remote-repo ref name for
 # the API path: `origin/main` → `main`, a bare ref/SHA passes through.
@@ -210,7 +236,7 @@ main() {
   local rel chan sha pushrefs
   rel="$(release_ref "$agent" "$version")"
   pushrefs=("$rel")
-  if [ -n "$channel" ]; then chan="$(channel_ref "$agent" "$channel")"; pushrefs+=("$chan"); fi
+  if [ -n "$channel" ]; then chan="$(channel_ref "$agent" "$version" "$channel")"; pushrefs+=("$chan"); fi
 
   # ── --promote: move an existing release's channel; never cut a new tag ──
   # A ring-to-ring promotion (e.g. ring0 → ring1 of an already-cut vX.Y.Z). The
