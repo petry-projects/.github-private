@@ -61,7 +61,7 @@ STUB
   run env GH_TOKEN=x bash "$SCRIPT" agent-shield 2.1.0 --channel next --push
   [ "$status" -eq 0 ]
   echo "$output" | grep -q 'created agent-shield/v2.1.0 on petry-projects/.github'
-  echo "$output" | grep -q 'moved agent-shield/next'
+  echo "$output" | grep -q 'moved agent-shield/v2-next'
   echo "$output" | grep -q 'published to petry-projects/.github'
   # annotated tag object + ref creation both went to petry-projects/.github
   grep -qE 'POST repos/petry-projects/\.github/git/tags' "$GH_CALLS"
@@ -89,7 +89,7 @@ STUB
   run env GH_TOKEN=x bash "$SCRIPT" dev-lead 1.5.4 --channel next --push
   [ "$status" -eq 0 ]
   echo "$output" | grep -q 'created dev-lead/v1.5.4 on petry-projects/.github-private'
-  echo "$output" | grep -q 'moved dev-lead/next'
+  echo "$output" | grep -q 'moved dev-lead/v1-next'
   # the create + channel move both went through the API on the this-repo host
   grep -qE 'POST repos/petry-projects/\.github-private/git/tags' "$GH_CALLS"
   grep -qE '(POST|PATCH) repos/petry-projects/\.github-private/git/refs' "$GH_CALLS"
@@ -113,7 +113,7 @@ STUB
 @test "cross-repo --promote moves the channel to the existing release without cutting a new tag" {
   GH_TAG_EXISTS=1 run env GH_TOKEN=x GH_TAG_EXISTS=1 bash "$SCRIPT" agent-shield 2.1.0 --channel ring1 --promote --push
   [ "$status" -eq 0 ]
-  echo "$output" | grep -q 'moved agent-shield/ring1'
+  echo "$output" | grep -q 'moved agent-shield/v2-ring1'
   # the immutable release tag object is never (re)created
   ! grep -qE 'POST repos/petry-projects/\.github/git/tags' "$GH_CALLS"
   # the channel ref WAS moved
@@ -125,4 +125,45 @@ STUB
   [ "$status" -eq 0 ]
   echo "$output" | grep -q 'dry-run'
   ! grep -qE '(PATCH|POST) .*git/refs' "$GH_CALLS"
+}
+
+# ── major-scoped channels (#1184, epic #657) ──────────────────────────────────
+# --channel <tier> derives the major from <version>; a fully-qualified
+# v<M>-<tier> passes through; the immutable vX.Y.Z release tag is unchanged.
+
+@test "major-scoped: --channel stable derives v2- from version 2.0.0 (dry-run)" {
+  run env GH_TOKEN=x bash "$SCRIPT" dev-lead 2.0.0 --channel stable --dry-run
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q 'channel tag: dev-lead/v2-stable -> dev-lead/v2.0.0'
+  # not the old bare-tier form
+  ! echo "$output" | grep -qE 'channel tag: dev-lead/stable '
+}
+
+@test "major-scoped: explicit --channel v1-ring0 passes through unchanged (dry-run)" {
+  run env GH_TOKEN=x bash "$SCRIPT" dev-lead 2.0.0 --channel v1-ring0 --dry-run
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q 'channel tag: dev-lead/v1-ring0 -> dev-lead/v2.0.0'
+}
+
+@test "major-scoped: bump of major is reflected in the channel prefix (1.x -> v1-)" {
+  run env GH_TOKEN=x bash "$SCRIPT" dev-lead 1.7.2 --channel stable --dry-run
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q 'channel tag: dev-lead/v1-stable -> dev-lead/v1.7.2'
+}
+
+@test "major-scoped: release tag <agent>/v2.0.0 is still created on --push" {
+  run env GH_TOKEN=x bash "$SCRIPT" dev-lead 2.0.0 --channel stable --push
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q 'created dev-lead/v2.0.0 on petry-projects/.github-private'
+  echo "$output" | grep -q 'moved dev-lead/v2-stable'
+  # the immutable release tag ref is the un-prefixed vX.Y.Z form
+  grep -qE 'POST repos/petry-projects/\.github-private/git/refs .*refs/tags/dev-lead/v2.0.0' "$GH_CALLS"
+  # the channel ref that moved is the major-scoped v2-stable
+  grep -qE '(POST|PATCH) repos/petry-projects/\.github-private/git/refs.*dev-lead/v2-stable' "$GH_CALLS"
+}
+
+@test "major-scoped: --promote moves the major-scoped channel of the release's major" {
+  GH_TAG_EXISTS=1 run env GH_TOKEN=x GH_TAG_EXISTS=1 bash "$SCRIPT" dev-lead 2.3.1 --channel ring1 --promote --push
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q 'moved dev-lead/v2-ring1'
 }
