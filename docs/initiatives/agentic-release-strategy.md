@@ -250,37 +250,46 @@ gets its own channel line; a consumer opts in by re-pinning to the new major. It
 `stable` consumer that has not opted in.
 
 **Channel tag scheme.** Channel tags become `<agent>/v<MAJOR>-<tier>` where `tier ∈ {next, ring0, ring1,
-stable}` — e.g. `dev-lead/v1-stable`, `dev-lead/v2-next`. The immutable `<agent>/vX.Y.Z` release tags are
-**unchanged**: they remain the per-release audit trail and rollback anchors a channel points *at*. Only
-the moving channel tags gain the `v<MAJOR>-` prefix.
+stable}` for agents that support the full four-tier progression — currently `dev-lead` only. Some agents
+support a subset: `pr-review` is stable-only and does not have `next`, `ring0`, or `ring1` channels.
+The immutable `<agent>/vX.Y.Z` release tags are **unchanged**: they remain the per-release audit trail
+and rollback anchors a channel points *at*. Only the moving channel tags gain the `v<MAJOR>-` prefix.
 
-**The major a consumer pins is its opt-in.** A consumer pins `@<agent>/v<M>-<tier>` (e.g.
-`@dev-lead/v1-stable`). A new v2 line soaks **independently** through
-`v2-{next → ring0 → ring1 → stable}` via the same staged canary/ring rollout used for any release (see
-the ring model in [`docs/release/versioning.md`](../release/versioning.md#ring-channels-live-for-dev-lead)
-and the staged rollout runbook [`§2c`](../release/runbook.md#2c-staged-canary--ring-rollout)). Reaching
-`v2-stable` **never touches a `v1-stable` consumer** — that consumer keeps receiving v1 patches on
-`v1-stable` until it deliberately re-pins its caller to `@<agent>/v2-stable`. The major bump is thus a
-consumer-controlled adoption, not a push.
+**The major a consumer pins is its opt-in.** A consumer pins `@<agent>/v<M>-<tier>`, where the available
+tiers depend on the agent's support matrix:
+- `dev-lead` supports: `v<M>-{next, ring0, ring1, stable}` (e.g. `@dev-lead/v1-stable`, `@dev-lead/v1-next`).
+- `pr-review` supports: `v<M>-stable` only (e.g. `@pr-review/v1-stable`); consumers cannot select higher tiers
+  and should pin to the major's stable channel. For `pr-review`, all consumers receive the same `stable` release.
+
+A new v2 line for `dev-lead` soaks **independently** through `v2-{next → ring0 → ring1 → stable}` via the
+same staged canary/ring rollout used for any release (see the ring model in
+[`docs/release/versioning.md`](../release/versioning.md#ring-channels-live-for-dev-lead) and the staged
+rollout runbook [`§2c`](../release/runbook.md#2c-staged-canary--ring-rollout)). Reaching `v2-stable`
+**never touches a `v1-stable` consumer** — that consumer keeps receiving v1 patches on `v1-stable` until
+it deliberately re-pins its caller to `@dev-lead/v2-stable`. The major bump is thus a consumer-controlled
+adoption, not a push.
 
 **Drift semantics.** For a given consumer, the expected ref is
 `<agent>/v<consumer's-current-major>-<tier-for-that-repo>` (the tier is determined by the repo's ring
 membership; the major is determined by what the consumer has opted into):
 
-- **Wrong tier within your major is drift.** A `ring1` consumer pinned to `v1-stable` (or `v1-next`)
-  instead of its assigned `v1-ring1` is misconfigured — flag it.
-- **Still on an older major is NOT drift.** A consumer on `v1-stable` while `v2` exists is in a
-  legitimate *not-yet-opted-in* state, not a misconfiguration. A drift audit must treat "older major, but
-  the correct tier for that major" as compliant, or every not-yet-migrated consumer would false-positive
-  the moment a major is cut.
+- **Wrong tier within your major is drift.** A `ring1` consumer pinned to `@<agent>/v1-stable` (or
+  `@<agent>/v1-next`) instead of its assigned `@<agent>/v1-ring1` is misconfigured — flag it.
+- **Still on an older major is NOT drift.** A consumer on `@<agent>/v1-stable` while `@<agent>/v2` exists
+  is in a legitimate *not-yet-opted-in* state, not a misconfiguration. A drift audit must treat "older
+  major, but the correct tier for that major" as compliant, or every not-yet-migrated consumer would
+  false-positive the moment a major is cut.
 
 **Migration to the new scheme (forward-ref to F5).** The live bare-tier channels remain valid during the
-transition. Each agent's existing `<agent>/<tier>` channel maps to `<agent>/v<currentMajor>-<tier>`, where
-`currentMajor` is the major version of the release that the specific channel currently points to (e.g. if
-`dev-lead/stable` points to `dev-lead/v1.7.2`, then `dev-lead/stable` maps to `dev-lead/v1-stable`). The bare-tier channels
-are **retired only after** consumers have moved to the `v<major>-<tier>` pins. The audit/drift + live-tag
-migration + consumer re-pins are delivered later in the epic (phase F5); this section records the target
-model that F5 realizes.
+transition, but do **not** automatically track new majors. Each agent's existing `<agent>/<tier>` channel
+maps **once** to `<agent>/v<currentMajor>-<tier>`, where `currentMajor` is the major version of the
+release that the specific channel currently points to at migration time (e.g. if `dev-lead/stable` points
+to `dev-lead/v1.7.2` on migration day, then `dev-lead/stable` is mapped to track `dev-lead/v1-stable`
+exclusively — it remains pinned to the v1 line and will not follow a later v2 release). Each bare channel
+thus **remains pinned to its pre-migration major** until consumers explicitly re-pin to the new major's
+channel. The bare-tier channels are **retired only after** all consumers have moved to the `v<major>-<tier>`
+pins. The audit/drift + live-tag migration + consumer re-pins are delivered later in the epic (phase F5);
+this section records the target model that F5 realizes.
 
 ---
 
