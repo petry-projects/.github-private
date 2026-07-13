@@ -276,8 +276,8 @@ membership; the major is determined by what the consumer has opted into):
 
 **Migration to the new scheme (forward-ref to F5).** The live bare-tier channels remain valid during the
 transition. Each agent's existing `<agent>/<tier>` channel maps to `<agent>/v<currentMajor>-<tier>`, where
-`currentMajor` is read from the agent's latest immutable `<agent>/vX.Y.Z` tag (e.g. if `dev-lead`'s newest
-release is `dev-lead/v1.7.2`, then `dev-lead/stable` maps to `dev-lead/v1-stable`). The bare-tier channels
+`currentMajor` is the major version of the release that the specific channel currently points to (e.g. if
+`dev-lead/stable` points to `dev-lead/v1.7.2`, then `dev-lead/stable` maps to `dev-lead/v1-stable`). The bare-tier channels
 are **retired only after** consumers have moved to the `v<major>-<tier>` pins. The audit/drift + live-tag
 migration + consumer re-pins are delivered later in the epic (phase F5); this section records the target
 model that F5 realizes.
