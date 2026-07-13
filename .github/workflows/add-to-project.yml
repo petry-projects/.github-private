@@ -16,9 +16,10 @@
 #   • If you need different behaviour, open a PR against the reusable.
 # ─────────────────────────────────────────────────────────────────────────────
 #
-# Auto-add this repo's qualifying issues, PRs, and Ideas-category discussions
-# to the org-level Initiatives project
-# (https://github.com/orgs/petry-projects/projects/1).
+# Track this repo's issues (all, un-gated) and dev-lead-labeled PRs on the
+# org-level Initiatives project
+# (https://github.com/orgs/petry-projects/projects/1). Ideas live in
+# Discussions and are not tracked here.
 #
 # To adopt: copy this file to .github/workflows/add-to-project.yml in your
 # repo. Requires the org secrets INITIATIVES_APP_ID and
@@ -26,7 +27,6 @@
 # app installation must include this repo. See petry-projects/.github#387.
 #
 # Tracking: petry-projects/.github#387, #415
-# Discussion: petry-projects/.github#386
 name: Auto-add to Initiatives project
 
 on:
@@ -34,16 +34,12 @@ on:
     types: [opened, labeled, unlabeled, reopened]
   pull_request_target:
     types: [opened, labeled, unlabeled, reopened, ready_for_review]
-  discussion:
-    types: [created, category_changed, deleted, transferred]
 
 permissions: {}
 
 concurrency:
   group: >-
-    add-to-project-${{ github.event_name == 'discussion'
-    && format('disc-{0}', github.event.discussion.number)
-    || format('{0}-{1}', github.event_name,
+    add-to-project-${{ format('{0}-{1}', github.event_name,
        github.event.issue.number || github.event.pull_request.number) }}
   cancel-in-progress: false
 
@@ -51,7 +47,7 @@ jobs:
   add-to-project:
     permissions:
       contents: read
-    uses: petry-projects/.github/.github/workflows/add-to-project-reusable.yml@add-to-project/next  # NOSONAR(githubactions:S7637) first-party channel ref
+    uses: petry-projects/.github/.github/workflows/add-to-project-reusable.yml@add-to-project/stable  # NOSONAR(githubactions:S7637) first-party channel ref
     with:
       project_id: PVT_kwDOD2inqs4BZq3-
       project_url: https://github.com/orgs/petry-projects/projects/1
