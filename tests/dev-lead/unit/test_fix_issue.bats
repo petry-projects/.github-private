@@ -728,7 +728,7 @@ exit 0
 LINTEOF
   chmod +x "$STUB_BIN_DIR/dev-lead-lint.sh"
 
-  # Clean commit path
+  # Intentionally dirty working tree — exercises the commit path
   cat > "$STUB_BIN_DIR/git" <<'GITEOF'
 #!/usr/bin/env bash
 case "$*" in
