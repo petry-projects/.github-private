@@ -37,16 +37,22 @@ Target type: `${TARGET_TYPE}`. Produce the complete, final Markdown body for thi
    Improve clarity only where it helps. Do **not** blank or downgrade good existing text.
 2. **Only correct what the facts show is wrong or missing:** add repositories present in the facts but
    missing from the table; fix stale primary-language values; fix inaccurate framework and agent lists.
-3. **Never invent** repositories, agents, or frameworks that are not in the facts bundle above.
-4. For repos whose GitHub description is empty (flagged in the facts), **keep any existing curated
+3. **Never invent** repositories, agents, frameworks, or standards subtopics that are not in the facts
+   bundle above.
+4. **Enrich standards with subtopics.** The facts bundle lists each standards doc with its section
+   headings. In the Standards section, give each standard a few (up to ~5) *notable* subtopics drawn
+   from those headings — the ones a reader would search for (e.g. canary rings, soak windows,
+   permissions policy) — so the page is discoverable. Keep it concise: do not dump every heading, and
+   (per rule 3) never add a subtopic that is not among the provided headings.
+5. For repos whose GitHub description is empty (flagged in the facts), **keep any existing curated
    description** in the current content — do not replace it with an empty value.
-5. **Hard-wrap every prose line to at most ${LINT_MAXLEN} characters** — insert real line breaks so no
+6. **Hard-wrap every prose line to at most ${LINT_MAXLEN} characters** — insert real line breaks so no
    line exceeds the limit (a soft break inside a paragraph renders identically). Tables and fenced code
    blocks are exempt. This is a strict CI lint rule (markdownlint MD013); overly long lines fail CI.
-6. If the target repo is `.github` (types `org-profile-public`, `github-repo-readme`): the first line
+7. If the target repo is `.github` (types `org-profile-public`, `github-repo-readme`): the first line
    of the body MUST be a single top-level `# ` heading, and use `[text](url)` links — **no bare URLs**.
-7. Do **not** explain your reasoning, and do **not** add any preamble or trailing commentary.
-8. Emit the complete file body **between two marker lines**, exactly like this:
+8. Do **not** explain your reasoning, and do **not** add any preamble or trailing commentary.
+9. Emit the complete file body **between two marker lines**, exactly like this:
 
    ```
    ===README-BEGIN===
@@ -55,5 +61,5 @@ Target type: `${TARGET_TYPE}`. Produce the complete, final Markdown body for thi
    ```
 
    Put nothing except the file body between the markers, and nothing after `===README-END===`.
-9. If the current content is already fully accurate and needs no change, output exactly `SKIP`
-   (with no markers, no other text).
+10. If the current content is already fully accurate and needs no change, output exactly `SKIP`
+    (with no markers, no other text).

@@ -24,21 +24,21 @@ standards, and agentic infrastructure.
 Engineering standards live in
 [`petry-projects/.github/standards/`](https://github.com/petry-projects/.github/tree/main/standards).
 
-| Standard | Purpose |
-|---|---|
-| `advanced-security` | GitHub Advanced Security configuration |
-| `agent-standards` | Guidelines for building and deploying AI agents |
-| `ci-standards` | CI/CD pipeline conventions |
-| `codeowners-standard` | CODEOWNERS file requirements |
-| `copilot-instructions-standard` | Copilot custom instruction guidelines |
-| `dependabot-policy` | Dependency update and automerge policy |
-| `feature-ideation-sources` | Sources and process for feature ideation |
-| `github-settings` | Repository settings baselines |
-| `initiatives-project` | Project board for tracking org initiatives |
-| `persona-standards` | Agent and Copilot persona guidelines |
-| `pr-limits` | Pull request size and scope limits |
-| `push-protection` | Secret push protection configuration |
-| `ruleset-remediation-runbook` | Steps to remediate ruleset violations |
+| Standard | Purpose | Key sections |
+|---|---|---|
+| `advanced-security` | GitHub Advanced Security configuration | Enablement via Code Security Configurations · Push-protection live-fire test (canary) · Licensing & billing · Compliance audit checks |
+| `agent-standards` | Guidelines for building and deploying AI agents | Required Files · Compliance Exemptions · AgentShield CI Workflow · Decision-Making Reusables · BMAD Method Workflows |
+| `ci-standards` | CI/CD pipeline conventions | Staged promotion through concentric rings · Action Pinning Policy · Permissions Policy · Required Workflows · Dev-Lead Agent |
+| `codeowners-standard` | CODEOWNERS file requirements | Team Composition · Required Setup for New Bots · Branch Protection |
+| `copilot-instructions-standard` | Copilot custom instruction guidelines | Canonical Instruction Files · Required Sections · Content Quality Rules |
+| `dependabot-policy` | Dependency update and automerge policy | Dependabot Templates · Auto-Merge Workflow · Vulnerability Audit CI Check · CODEOWNERS Approval Timing |
+| `feature-ideation-sources` | Sources and process for feature ideation | AI / ML — Vendor & Lab Primary Sources · Developer Tooling & Platform Changelogs · Security & Compliance · Conferences |
+| `github-settings` | Repository settings baselines | Repository Rulesets · Organization-Level Secrets · GitHub Apps & Integrations · Labels — Standard Set · Compliance Audit Process |
+| `initiatives-project` | Project board for tracking org initiatives | What belongs on the board · Fields · Theme → Initiative · How the auto-add works |
+| `persona-standards` | Agent and Copilot persona guidelines | The trigger matrix (onboarding checklist) · Canary onboarding · Trust, permissions, and safety · Definition of Done |
+| `pr-limits` | Pull request size and scope limits | What is limited · Exempt actors · Reconciliation with the Dependabot cap · Operator runbook |
+| `push-protection` | Secret push protection configuration | Layer 1 — GitHub Push Protection · Layer 2 — Local Pre-Commit Prevention · Layer 3 — CI Secret Scanning · Incident Response |
+| `ruleset-remediation-runbook` | Steps to remediate ruleset violations | Bypass actors · Legacy rulesets — migrate checks first, then delete · Rollback |
 
 ## Custom Agents
 
