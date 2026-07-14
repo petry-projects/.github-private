@@ -270,12 +270,20 @@ process_repo() {
       LINT_WARNINGS="${LINT_WARNINGS}- \`$rel_path\`: body line(s) exceed ${maxlen} chars (${violations})"$'\n'
     fi
 
-    mkdir -p "$(dirname "$target_path")"
-    printf '%s\n' "$content" > "$target_path"
+    # Guard the write explicitly: process_repo runs under `if ! ...`, which disables
+    # set -e for the whole function, so an unchecked mkdir/write/copy failure would be
+    # swallowed and reintroduce false-green. Fail the repo loudly on any I/O error.
+    if ! mkdir -p "$(dirname "$target_path")" || ! printf '%s\n' "$content" > "$target_path"; then
+      echo "::error::readme-refresh: $full_repo: failed to write $rel_path" >&2
+      return 1
+    fi
     ok_count=$((ok_count + 1))
     if [ -n "${README_REFRESH_OUTPUT_DIR:-}" ]; then
-      mkdir -p "$README_REFRESH_OUTPUT_DIR/$repo/$(dirname "$rel_path")"
-      cp "$target_path" "$README_REFRESH_OUTPUT_DIR/$repo/$rel_path"
+      if ! mkdir -p "$README_REFRESH_OUTPUT_DIR/$repo/$(dirname "$rel_path")" \
+         || ! cp "$target_path" "$README_REFRESH_OUTPUT_DIR/$repo/$rel_path"; then
+        echo "::error::readme-refresh: $full_repo: failed to copy $rel_path into README_REFRESH_OUTPUT_DIR" >&2
+        return 1
+      fi
     fi
     if git -C "$dir" diff --quiet -- "$rel_path" 2>/dev/null && \
        [ -n "$(git -C "$dir" ls-files -- "$rel_path")" ]; then
