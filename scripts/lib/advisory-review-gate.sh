@@ -136,7 +136,7 @@ _head_age_seconds() {
   local pr_url="$1" head_time head_time_raw now
   head_time=$(_get_head_committer_date "$pr_url") || head_time=""
   [[ -z "$head_time" ]] && return 0
-  head_time_raw=$(date -u -d "$head_time" +%s 2>/dev/null) || head_time_raw=""
+  head_time_raw=$(date -u -d "$head_time" +%s 2>/dev/null) || head_time_raw=$(date -u -jf "%Y-%m-%dT%H:%M:%SZ" "$head_time" +%s 2>/dev/null) || head_time_raw=""
   [[ -z "$head_time_raw" ]] && return 0
   now=$(date -u +%s)
   printf '%s' "$((now - head_time_raw))"
@@ -365,7 +365,7 @@ check_advisory_reviews() {
     # in GitHub's GraphQL API (deprecated and no longer populated).
     head_time=$(_get_head_committer_date "$PR_URL") || head_time=""
     if [[ -n "$head_time" ]]; then
-      head_time_raw=$(date -u -d "$head_time" +%s 2>/dev/null) || head_time_raw=""
+      head_time_raw=$(date -u -d "$head_time" +%s 2>/dev/null) || head_time_raw=$(date -u -jf "%Y-%m-%dT%H:%M:%SZ" "$head_time" +%s 2>/dev/null) || head_time_raw=""
       [[ -n "$head_time_raw" ]] && head_age_sec=$((now - head_time_raw))
     fi
 
