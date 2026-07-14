@@ -43,5 +43,9 @@ claude-haiku-3-5*	2024-01-01	0.80	0.08	1.00	4.00
 # ── Cross-engine (VERIFY — provisional; cache_write placeholder = input) ───────
 o4-mini*	2025-01-01	2.00	0.50	2.00	8.00
 gemini-3.5-flash*	2026-06-11	0.30	0.03	0.30	1.20
+# Corrected 2026-07-14 (#1205): 2026-06-11 row understated output ~7.5x. Verified
+# against https://ai.google.dev/gemini-api/docs/pricing (retrieved 2026-07-13):
+# paid-tier input 1.50 / cache_read 0.15 / output 9.00. cache_write mirrors input (VERIFY).
+gemini-3.5-flash*	2026-07-14	1.50	0.15	1.50	9.00
 *gemini*flash*	2025-01-01	0.50	0.05	0.50	2.00
 *gemini*pro*	2025-01-01	2.00	0.20	2.00	8.00
