@@ -135,14 +135,16 @@ gather_facts() {
       rdesc="$(grep -m1 -E '^# readme-report:' "$wf" 2>/dev/null | sed -E 's/^# readme-report:[[:space:]]*//' || true)"
       [ -n "$rdesc" ] && printf -- '- `%s` (.github-private): %s\n' "$(basename "$wf")" "$rdesc"
     done
-    for wf in $(gh api "repos/$ORG/.github/contents/.github/workflows" \
-                  --jq '.[] | select((.name // "") | endswith(".yml")) | .name' 2>/dev/null || true); do
+    # Sorted --jq list + while-read for deterministic order (stable README diffs) and no word-splitting.
+    while IFS= read -r wf; do
+      [ -n "$wf" ] || continue
       rdesc="$(gh api "repos/$ORG/.github/contents/.github/workflows/$wf" \
                 -H "Accept: application/vnd.github.v3.raw" 2>/dev/null \
                 | grep -m1 -E '^# readme-report:' \
                 | sed -E 's/^# readme-report:[[:space:]]*//' || true)"
       [ -n "$rdesc" ] && printf -- '- `%s` (.github): %s\n' "$wf" "$rdesc"
-    done
+    done < <(gh api "repos/$ORG/.github/contents/.github/workflows" \
+               --jq '[.[] | select((.name // "") | endswith(".yml")) | .name] | sort | .[]' 2>/dev/null || true)
   } > "$facts_file"
 
   echo "$facts_file"
