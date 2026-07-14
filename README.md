@@ -46,6 +46,27 @@ Trigger manually: `gh workflow run pr-review.yml --repo petry-projects/.github-p
 
 Mention trigger: Comment `@petry-review-bot` on any org PR for immediate review.
 
+## Standards
+
+Engineering standards live in `petry-projects/.github/standards/`.
+Each standard below links to a doc in that repo; notable subtopics are listed to aid discoverability.
+
+| Standard | Notable subtopics |
+|----------|-------------------|
+| `advanced-security` | Code Security Configurations, push-protection live-fire (canary), custom secret scanning patterns, compliance audit checks |
+| `agent-standards` | Required files, compliance exemptions, AgentShield CI workflow, decision-making reusables, BMAD Method Workflows |
+| `ci-standards` | Staged promotion through concentric rings, reusable workflow versioning (`stable` channel), action pinning policy, permissions policy, Dev-Lead Agent |
+| `codeowners-standard` | Team composition, required setup for new bots, branch protection, bypass actors |
+| `copilot-instructions-standard` | Canonical instruction files, adding a new language, required sections, content quality rules |
+| `dependabot-policy` | Configuration files, auto-merge workflow, vulnerability audit CI check, applying to a repository |
+| `feature-ideation-sources` | AI/ML vendor & lab sources, developer tooling changelogs, security & compliance sources, newsletters, podcasts |
+| `github-settings` | Org-level settings, repository rulesets, required checks ruleset, GitHub Apps & integrations, org-level secrets |
+| `initiatives-project` | Project board fields, Theme → Initiative, how auto-add works, initiative classification |
+| `persona-standards` | Canary onboarding (the last step), trigger matrix, trust & permissions, definition of done |
+| `pr-limits` | Exempt actors, operator runbook, reconciliation with the Dependabot cap |
+| `push-protection` | Layer 1 (GitHub push protection), Layer 2 (local pre-commit), Layer 3 (CI secret scanning), incident response |
+| `ruleset-remediation-runbook` | Bypass actors, migrate checks into `code-quality`, delete legacy rulesets, rollback procedure |
+
 ## Documentation
 
 - [Architecture & Capabilities](docs/pr-review-agent/pr-review-agent.md)
