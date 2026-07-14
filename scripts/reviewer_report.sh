@@ -187,6 +187,7 @@ _NORMALIZE_JQ='
       | ($mine | map(select(.refusal | not))) as $real
       | ($mine | map(select(.refusal)))       as $refd
       | ($real | map(.at) | min) as $first_real
+      | ($real | map(select(.kind=="review")) | length) as $rev_events
       | { kind: "bot_pr", repo: $repo, pr: ($pr.url),
           bot: $grp[0].bot, created: $pr.createdAt,
           real_responses: ($real | length),
@@ -195,7 +196,14 @@ _NORMALIZE_JQ='
           # so refusals never pollute the latency percentiles).
           latency_s: (if ($real | length) == 0 then null
                       else (($first_real | fromdateiso8601) - ($pr.createdAt | fromdateiso8601)) end),
-          reviews:      ($real | map(select(.kind=="review")) | length),
+          # Reviews = formal review submissions. A bot that posts NO formal review
+          # but delivers its verdict as a top-level comment (e.g. SonarCloud'"'"'s
+          # quality-gate comment) has that comment counted as its review, so its
+          # work is not invisible. Bots that DO submit reviews are unaffected, so
+          # their extra summary comments are never double-counted. Refusals are
+          # already excluded ($real holds only non-refusal responses).
+          reviews:      (if $rev_events > 0 then $rev_events
+                         else ($real | map(select(.kind=="issue")) | length) end),
           approved:     ($real | map(select(.kind=="review" and .state=="APPROVED")) | length),
           changes_req:  ($real | map(select(.kind=="review" and .state=="CHANGES_REQUESTED")) | length),
           inline_comments:  ($real | map(select(.kind=="inline")) | length),
@@ -335,11 +343,10 @@ render_reviewer_report() {
   done
   printf '\n'
   printf -- '- **Total PRs** — review-eligible (non-draft) PRs in the window; the denominator each row is measured against.\n'
-  printf -- '- **Reviews** — count of real reviews the bot submitted, **each occurrence** (a PR re-reviewed on 5 commits = 5). Rate-limit notices are excluded.\n'
-  printf -- '- **✅ / 🔄** — of those reviews, how many were APPROVED / CHANGES_REQUESTED.\n'
+  printf -- '- **Reviews** — count of reviews the bot submitted, **each occurrence** (a PR re-reviewed on 5 commits = 5). A bot that posts no formal review but delivers its verdict as a comment (e.g. SonarCloud'"'"'s quality-gate comment) has that comment counted as its review. Rate-limit notices are never counted.\n'
+  printf -- '- **✅ / 🔄** — of those reviews, how many were APPROVED / CHANGES_REQUESTED (comment-only responses carry no verdict).\n'
   printf -- '- **Rate-limited** — count of out-of-quota / rate-limit refusals, each occurrence.\n'
-  printf -- '- **No response** — eligible PRs the bot never engaged with at all (no review, comment, or refusal).\n'
-  printf -- '- _Note: SonarCloud posts status-check comments rather than GitHub reviews, so its Reviews count reads 0 by design._\n\n'
+  printf -- '- **No response** — eligible PRs the bot never engaged with at all (no review, comment, or refusal).\n\n'
 
   # ---- Coverage / overlap --------------------------------------------------
   local co_review multi_bot

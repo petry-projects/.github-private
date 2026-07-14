@@ -61,7 +61,7 @@ reviews on a single PR).
 | Metric | Definition |
 |---|---|
 | **Total PRs** | Review-eligible (non-draft) PRs active in the window; the denominator each row is measured against. |
-| **Reviews** | Count of real review submissions by the bot, **each occurrence** (multiple per PR from multiple commits all count). Rate-limit notices are never counted as reviews. |
+| **Reviews** | Count of reviews the bot submitted, **each occurrence** (multiple per PR from multiple commits all count). A bot that posts no formal review but delivers its verdict as a top-level comment (e.g. SonarCloud's quality-gate comment) has that comment counted as its review; bots that do submit formal reviews are unaffected, so their extra summary comments are never double-counted. Rate-limit notices are never counted. |
 | **✅ / 🔄** | Of those reviews, how many carried state APPROVED / CHANGES_REQUESTED. |
 | **Rate-limited** | Count of out-of-quota / rate-limit refusal events (detected by body text via the shared gate pattern), each occurrence. |
 | **No response** | Eligible PRs the bot never engaged with at all — no review, comment, or refusal. |
@@ -72,8 +72,6 @@ reviews on a single PR).
 Per-PR bucket counts (`reviewed_prs` / `refused_prs` / `no_response_prs`, which partition the
 eligible PRs), plus thread-resolution and reaction counts, are still computed and stored in the
 snapshot for downstream use — they're just kept out of the headline table to keep it legible.
-SonarCloud posts status-check comments rather than GitHub reviews, so its **Reviews** reads 0
-by design.
 
 ### Week-over-week deltas
 

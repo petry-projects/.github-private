@@ -97,6 +97,31 @@ JSON
   echo "$output" | jq -e '.[] | select(.bot=="copilot-pull-request-reviewer") | .thumbs_up==2 and .thumbs_down==1 and .threads_resolved==1'
 }
 
+@test "reviews: a comment-only responder (SonarCloud) has its comment counted as a review" {
+  tmp="$(mktemp)"
+  cat > "$tmp" <<'JSON'
+{"url":"u","createdAt":"2026-07-10T10:00:00Z","updatedAt":"2026-07-10T10:00:00Z","mergedAt":null,"isDraft":false,"author":{"login":"h"},
+ "reviews":{"nodes":[]},
+ "reviewThreads":{"nodes":[]},
+ "comments":{"nodes":[{"author":{"login":"sonarqubecloud"},"createdAt":"2026-07-10T10:02:00Z","bodyText":"Quality Gate passed"}]}}
+JSON
+  run jq -c --arg repo "r" --argjson bots "$BOTS" --arg rl "$RATE_LIMIT_RE" "[ $_NORMALIZE_JQ ]" "$tmp"
+  echo "$output" | jq -e '.[] | select(.bot=="sonarqubecloud") | .reviews==1 and .real_responses==1'
+}
+
+@test "reviews: a bot with a formal review does NOT also count its summary comment (no double-count)" {
+  tmp="$(mktemp)"
+  cat > "$tmp" <<'JSON'
+{"url":"u","createdAt":"2026-07-10T10:00:00Z","updatedAt":"2026-07-10T10:00:00Z","mergedAt":null,"isDraft":false,"author":{"login":"h"},
+ "reviews":{"nodes":[{"author":{"login":"coderabbitai"},"state":"COMMENTED","submittedAt":"2026-07-10T10:05:00Z","bodyText":"formal review"}]},
+ "reviewThreads":{"nodes":[]},
+ "comments":{"nodes":[{"author":{"login":"coderabbitai"},"createdAt":"2026-07-10T10:01:00Z","bodyText":"Walkthrough summary comment"}]}}
+JSON
+  run jq -c --arg repo "r" --argjson bots "$BOTS" --arg rl "$RATE_LIMIT_RE" "[ $_NORMALIZE_JQ ]" "$tmp"
+  # 1 formal review only — the summary issue comment is not counted as a second review.
+  echo "$output" | jq -e '.[] | select(.bot=="coderabbitai") | .reviews==1'
+}
+
 # ---------------------------------------------------------------------------
 # aggregate_snapshot
 # ---------------------------------------------------------------------------
