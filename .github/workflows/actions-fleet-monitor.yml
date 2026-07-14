@@ -401,7 +401,7 @@ jobs:
             const found = await github.paginate(github.rest.search.issuesAndPullRequests, {
               q: `org:${org} is:issue is:open label:fleet-tracker`,
               per_page: 100,
-            });
+            }, response => response.data.items);
 
             let closed = 0, kept = 0, skipped = 0;
             for (const issue of found) {
