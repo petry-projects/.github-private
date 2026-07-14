@@ -7,14 +7,18 @@ eliminate (`dev-lead`/`pr-review` build, review, and merge changes *to themselve
 
 ## Why the invariant holds
 
-Two independent mechanisms guarantee it; either alone is sufficient, and together
-they are belt-and-suspenders:
+Two mechanisms together guarantee it. For downstream consumer repos pinned to
+`stable`, either alone is sufficient; for this repo (ring-0 canary, pinned to
+`next`), mechanism (2) is the operative SC2 safety net:
 
 1. **Channel decoupling (structural).** New versions are exercised on `next`/`ring0`
-   while production self-review/dev **duty stays pinned to `stable`**
-   (`versioning.md`). A break in `next` therefore does not, by construction, take
-   out the gate that reviews the fix — the fix PR is still evaluated by the last
-   known-good `stable`.
+   while downstream consumer repos keep their self-review/dev duty pinned to
+   `stable` ([versioning.md](./versioning.md)). A break in `next` does not, by
+   construction, take out a `stable`-pinned gate — the fix PR is still evaluated by
+   the last known-good `stable`. **This repo** is the ring-0 canary
+   (`pr-review-trigger.yml` and `dev-lead.yml` both pin to `next`), so channel
+   decoupling alone does not provide the SC2 guarantee here — mechanism (2) is
+   required.
 
 2. **Break-glass (operational, #619).** For the residual case where a break *does*
    reach the gate that must review its own fix — e.g. a bug in `compute_ci_status`
@@ -49,16 +53,18 @@ Run this after any material change to the CI gate (`compute_ci_status`,
 1. **Break `next` deliberately.** On a scratch branch, introduce a change to the
    `next`-channel review gate that marks all PRs as `ci-failing` (e.g. force
    `compute_ci_status` to return `failing`). Promote it to `pr-review/next` only
-   (`cut-release.sh --channel pr-review/next …`), never `stable`.
+   (`cut-release.sh pr-review <version> --channel next --push`), never `stable`.
 2. **Open the fix PR** that reverts/repairs the break, targeting `main`.
 3. **Confirm the block reproduces.** The unattended cascade skips the fix PR with
    `reason=ci-failing` (the broken gate is reviewing its own fix).
 4. **Apply the break-glass.** `@mention` the review bot (or `workflow_dispatch`
-   the trigger with `force_review=true`) on the fix PR. Expect the
+   the trigger with `force_review=true` **and the fix PR's `pr_url`**) on the fix
+   PR. Expect the
    `::warning::force-review: … bypassing the ci-failing gate (break-glass, #619)` line and an
    approval from the reviewer identity.
-5. **Merge** (required checks green at the ruleset), which restores `next`.
-6. **Restore** `pr-review/next` to the repaired version and record the drill
+5. **Merge** (required checks green at the ruleset); the fix lands on `main`.
+6. **Advance `pr-review/next`** to the repaired release:
+   `cut-release.sh pr-review <version> --channel next --push`. Record the drill
    outcome on #503.
 
 **Pass criteria:** the fix PR is reviewed and approved via the break-glass within
