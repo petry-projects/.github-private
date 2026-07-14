@@ -3,8 +3,12 @@
 Status: **active** (Phase 1 of the [Safe Release Strategy](../initiatives/agentic-release-strategy.md)
 initiative, epic #495). Implements issue #496.
 
-This defines how the **dev-lead** and **pr-review** agents are versioned and how callers select a
-version. It is the foundation the rest of the initiative (rings, promotion, rollback) builds on.
+This defines how **first-party reusables** are versioned and how callers select a version. It began
+with the **dev-lead** and **pr-review** agents and now covers every first-party reusable this repo (or
+`petry-projects/.github`) owns — including `ci-failure-analyst`. **One convention applies to all of
+them:** an immutable release `<name>/vMAJOR.MINOR.PATCH` plus major-scoped moving channel tags
+`<name>/v<MAJOR>-<tier>` (`stable`, and where live `next`/`ring0`/`ring1`). It is the foundation the
+rest of the initiative (rings, promotion, rollback) builds on.
 
 ## What is versioned
 
@@ -15,11 +19,13 @@ together, so a version is a single repo commit that contains a known-good combin
 |---|---|---|
 | `pr-review` | `.github/workflows/pr-review.yml` | `scripts/review-one-pr.sh`, `scripts/review-batch.sh`, `scripts/post-pr-review.sh`, `scripts/engine.sh`, `scripts/lib/*` |
 | `dev-lead` | `.github/workflows/dev-lead-reusable.yml` | `scripts/dev-lead-*.sh`, `scripts/engine.sh`, `scripts/lib/*` |
+| `ci-failure-analyst` | `.github/workflows/ci-failure-analyst-reusable.yml` | reusable-owned (inline `gh api` orchestration + the Claude Code action; no separate `scripts/`) |
 | `feature-ideation` | `petry-projects/.github` → `.github/workflows/feature-ideation-reusable.yml` (**cross-repo**) | reusable-owned (lives in the public repo; this repo holds only the thin caller `.github/workflows/feature-ideation.yml`) |
 | `agent-shield`, `auto-rebase`, `dependency-audit`, `dependabot-automerge`, `dependabot-rebase`, `pr-review-mention` (the six #482 reusables) | `petry-projects/.github` → `.github/workflows/<name>-reusable.yml` (**cross-repo**) | reusable-owned (live in the public repo; this repo holds only the thin caller stubs) |
 
-`pr-review` and `dev-lead` both live in this repo, so a release tag points at a whole-repo commit; the
-tag *name* scopes it to one agent so the two can be released and promoted independently.
+`pr-review`, `dev-lead`, and `ci-failure-analyst` all live in this repo, so a release tag points at a
+whole-repo commit; the tag *name* scopes it to one reusable so each can be released and promoted
+independently.
 
 The rest are the exception: their reusables live in **`petry-projects/.github`** (this repo holds only
 the thin caller stubs), so a "release" is a commit on that public repo, and their release/channel tags
