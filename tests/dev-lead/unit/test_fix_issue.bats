@@ -718,3 +718,53 @@ GHEOF
 
   rm -f "$comment_sentinel" 2>/dev/null || true
 }
+
+@test "fix-issue: opened PR is labeled auto-rebase:ready (breaks #711 review-ready deadlock)" {
+  # Lint passes
+  cat > "$STUB_BIN_DIR/dev-lead-lint.sh" <<'LINTEOF'
+#!/usr/bin/env bash
+echo "  [lint] all checks passed (stub)"
+exit 0
+LINTEOF
+  chmod +x "$STUB_BIN_DIR/dev-lead-lint.sh"
+
+  # Intentionally dirty working tree — exercises the commit path
+  cat > "$STUB_BIN_DIR/git" <<'GITEOF'
+#!/usr/bin/env bash
+case "$*" in
+  "status --porcelain") echo "M scripts/foo.sh" ;;
+  "rev-parse HEAD")     echo "abc123" ;;
+  *)                    exit 0 ;;
+esac
+GITEOF
+  chmod +x "$STUB_BIN_DIR/git"
+
+  # Record file lives in STUB_BIN_DIR (cleaned up by teardown); its path is baked
+  # into the gh stub below via the unquoted heredoc, so no export is needed.
+  LABEL_RECORD="$STUB_BIN_DIR/label_record"
+
+  # gh stub: pr create returns a URL so the label path is exercised; record pr edit args
+  cat > "$STUB_BIN_DIR/gh" <<GHEOF
+#!/usr/bin/env bash
+case "\$*" in
+  *"pr create"*)       echo "https://github.com/petry-projects/repo/pull/42" ;;
+  *"pr edit"*)         echo "\$*" >> "$LABEL_RECORD"; exit 0 ;;
+  *"label create"*)    exit 0 ;;
+  *"pulls?state=open"*) echo "0" ;;
+  *"api"*"repos/"*"issues/"*) echo '{"title":"Test","body":"body"}' ;;
+  *"api"*"users/"*)    echo '{"id":12345}' ;;
+  *"issue comment"*)   exit 0 ;;
+  *)                   echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+
+  export DEV_LEAD_DRY_RUN="false"
+  export LINT_SCRIPT="$STUB_BIN_DIR/dev-lead-lint.sh"
+
+  run bash "$FIX_ISSUE_SCRIPT"
+
+  [ "$status" -eq 0 ]
+  # The opened PR must be made auto-rebase-eligible from creation.
+  grep -q "add-label auto-rebase:ready" "$LABEL_RECORD"
+}
