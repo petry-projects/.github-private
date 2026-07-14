@@ -1,0 +1,10 @@
+name: Bad
+on:
+  schedule:
+    - cron: '0 * * * *'   # minute-0, top-of-hour — prohibited
+  workflow_dispatch:
+jobs:
+  noop:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo bad
