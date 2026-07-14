@@ -55,7 +55,7 @@ Run this after any material change to the CI gate (`compute_ci_status`,
    `reason=ci-failing` (the broken gate is reviewing its own fix).
 4. **Apply the break-glass.** `@mention` the review bot (or `workflow_dispatch`
    the trigger with `force_review=true`) on the fix PR. Expect the
-   `::warning:: force-review … bypassing the ci-failing gate (#619)` line and an
+   `::warning::force-review: … bypassing the ci-failing gate (break-glass, #619)` line and an
    approval from the reviewer identity.
 5. **Merge** (required checks green at the ruleset), which restores `next`.
 6. **Restore** `pr-review/next` to the repaired version and record the drill
