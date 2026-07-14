@@ -56,7 +56,7 @@ EMPTY_DESC_REPOS=""   # populated by gather_facts; surfaced in the PR body
 
 gather_facts() {
   local facts_file="$WORK_DIR/facts.md"
-  local repo_json standards_list
+  local repo_json standards_files
 
   repo_json=$(gh repo list "$ORG" --limit 1000 \
     --json name,description,primaryLanguage,isArchived,isPrivate \
@@ -68,9 +68,10 @@ gather_facts() {
   printf '%s' "$EMPTY_DESC_REPOS" > "$WORK_DIR/empty_desc.txt"
 
   # Standards docs live in the sibling .github repo; fetch via API (not checked out here).
-  standards_list=$(gh api "repos/$ORG/.github/contents/standards" \
-    --jq '[.[] | select((.name // "") | endswith(".md")) | .name | sub("\\.md$";"")] | sort | .[]' \
-    2>/dev/null || echo "(unavailable)")
+  # Keep the .md filenames so we can also pull each doc's section headings (subtopics) below.
+  standards_files=$(gh api "repos/$ORG/.github/contents/standards" \
+    --jq '[.[] | select((.name // "") | endswith(".md")) | .name] | sort | .[]' \
+    2>/dev/null || echo "")
 
   {
     echo "### Live repositories in \`$ORG\` (source of truth for the projects table)"
@@ -83,10 +84,24 @@ gather_facts() {
       echo "Repos with an EMPTY GitHub description (keep any existing curated text; do not blank): ${EMPTY_DESC_REPOS}"
       echo ""
     fi
-    echo "### Standards docs in \`$ORG/.github/standards/\`"
+    echo "### Standards docs in \`$ORG/.github/standards/\` (each with its section headings as subtopics)"
     echo ""
-    if [ -n "$standards_list" ]; then
-      echo "$standards_list" | sed 's/^/- /'
+    if [ -n "$standards_files" ]; then
+      local sf sname sheadings
+      while IFS= read -r sf; do
+        [ -n "$sf" ] || continue
+        sname="${sf%.md}"
+        printf -- '- `%s`\n' "$sname"
+        # Pull the doc body and list its ##/###/#### headings (fence-aware) as searchable subtopics.
+        sheadings=$(gh api "repos/$ORG/.github/contents/standards/$sf" \
+          --jq '.content' 2>/dev/null | base64 -d 2>/dev/null \
+          | awk '/^```/{f=!f;next} !f && /^#{2,4} /{sub(/^#{2,4}[[:space:]]+/,"");print}')
+        if [ -n "$sheadings" ]; then
+          printf '%s\n' "$sheadings" | sed 's/^/    - /'
+        fi
+      done <<< "$standards_files"
+    else
+      echo "(unavailable)"
     fi
     echo ""
     echo "### Custom agents in \`.github-private/agents/\`"
