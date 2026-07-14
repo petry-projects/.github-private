@@ -20,9 +20,9 @@ name: Reviewer Scorecard
 
 on:
   schedule:
-    # Mondays at 09:00 UTC — one hour after the token report (0 8 * * 1) to avoid
+    # Mondays at 09:53 UTC — after the token report (34 8 * * 1) to avoid
     # contending for the same GH_PAT_WORKFLOWS rate budget.
-    - cron: '0 9 * * 1'
+    - cron: '53 9 * * 1'
   workflow_dispatch:
     inputs:
       org:

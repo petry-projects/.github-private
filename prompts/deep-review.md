@@ -26,6 +26,13 @@ to approve or escalate further to the security auditor (Tier 3).
   downstream consumer repos that pin a reusable workflow / shell lib / prompt this
   PR changes. May be the literal `(none)`. This is an **informational signal** —
   annotate the impacted consumers; it is NOT an auto-escalation trigger.
+- `$SYMBOL_CONTEXT_FILE` — (optional; set only when the symbol-context pass is
+  enabled) path to a file containing the `SYMBOL_CONTEXT` block: for each function
+  touched in the diff, its caller/callee/type-definition reference contexts
+  (path + snippet) sourced from code search. May be the literal `(none)`, and a
+  symbol may be annotated `search unavailable` if navigation degraded. Use it to
+  reason about **why** a touched function exists and to catch cross-file logic
+  bugs the hunk alone hides — it is context, NOT an auto-escalation trigger.
 - `$SAFETY_CHECKS_FILE` — (optional; set only when the safety-checks pass is
   enabled) path to a file containing the deterministic `SAFETY_CHECKS` block:
   the pre-computed hard-stop flags (`CI_WEAKENING_DETECTED`,
@@ -54,6 +61,13 @@ enumeration. No actions on other PRs.
    surface them), and escalate ONLY if the change is independently risky per the
    taxonomy below (e.g. an interface-breaking edit to a consumed surface).
    Downstream impact alone — even with many consumers — is not a reason to escalate.
+   Also, if `$SYMBOL_CONTEXT_FILE` is set and the file exists and its contents are
+   not `(none)`, read it: for each function this PR touches it lists the
+   caller/callee/type-definition reference contexts across the repo. Use it to
+   verify the diff against how the symbol is actually used elsewhere (broken
+   callers, unhandled return shapes, type mismatches) — a cross-file
+   inconsistency it surfaces is a `correctness` finding; the context itself is
+   not an escalation trigger.
    Then, if `$SAFETY_CHECKS_FILE` is set and the file exists, read it. If
    `CI_WEAKENING_DETECTED` or `PROMPT_INJECTION_DETECTED` is `true`, that is a
    **blocking** deterministic verdict: set `risk: HIGH` and do not approve —
@@ -114,6 +128,25 @@ an appropriate `severity`, `category`, `file`, and `line`.
     breaking-change risk here? Note any dependency you recognize as having known
     CVEs. Report material dependency risk as a `dependency` finding; a pinned,
     reputable dependency needs no finding.
+12. **Iterative validation of logic/correctness findings (issue #1092).** Before
+    you report a suspected **logic** or **correctness** bug (a finding whose
+    `category` is `logic` or `correctness`), try to *confirm* it by running the
+    repo's relevant lint/test tool with your **Bash** tool — the same sandbox you
+    already have (Bash, Read, Grep, Glob). Do not install anything, reach the
+    network, or widen scope; run only the check that already maps to the finding
+    (e.g. `shellcheck path/to.sh`, the file's unit test, `npm test`/`pytest` for
+    the touched module). Keep each repro quick — you are inside the deep tier's
+    per-tier timeout, so a single bounded command, not a long suite. Then tag that
+    finding with a `verification` field recording the outcome:
+    - `"confirmed"` — the tool reproduced the bug (lint/test failed as you predicted).
+    - `"refuted"` — the tool ran and did **not** reproduce it (the lint/test passed).
+    - `"unverifiable"` — no runnable lint/test target maps to the finding.
+    Only use `"refuted"` when the tool **actively** failed to reproduce the issue;
+    if you simply have no runnable target, use `"unverifiable"` and leave your
+    stated severity as-is — never fabricate a repro. A downstream step downgrades
+    `refuted` findings by one severity (or drops an `info`) and records the
+    outcome, so honest tagging directly lowers the false-positive rate reviewers
+    triage. Findings that are not `logic`/`correctness` do not need this field.
 
 ## Risk classification
 
@@ -161,7 +194,8 @@ Write a JSON object to `$OUTPUT_FILE`:
       "category": "...",
       "message": "...",
       "file": "path or null",
-      "line": "number or null"
+      "line": "number or null",
+      "verification": "confirmed|refuted|unverifiable (logic/correctness findings only — see check 12)"
     }
   ]
 }

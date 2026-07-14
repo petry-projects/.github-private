@@ -38,6 +38,11 @@ source "$SCRIPT_DIR/lib/ci-status.sh"
 # an artifact_type — the input-adapter layer above engine.sh (issues #611/#612).
 # shellcheck source=lib/review-registry.sh
 source "$SCRIPT_DIR/lib/review-registry.sh"
+# Issue-type classifier routing (issue #1091): classify_triage_type reads the
+# triage `type` label and resolve_deep_specialist maps it to the specialist
+# deep-review prompt via the registry, falling back to prompts/deep-review.md.
+# shellcheck source=lib/deep-specialist.sh
+source "$SCRIPT_DIR/lib/deep-specialist.sh"
 # Downstream-impact pass (epic #748): assemble_downstream_impact maps the PR's
 # changed files to consumer repos that pin the changed shared surface, and
 # downstream_impact_triage_section inlines that block into the triage prompt.
@@ -51,6 +56,13 @@ source "$SCRIPT_DIR/lib/downstream-impact.sh"
 # Gated behind SAFETY_CHECKS_ENABLED (default ON; off => byte-identical prompt).
 # shellcheck source=lib/safety-checks.sh
 source "$SCRIPT_DIR/lib/safety-checks.sh"
+# Semantic symbol-context pass (issue #1090, epic #1088): assemble_symbol_context
+# gathers caller/callee/type-def reference contexts (via the GitHub search_code
+# path) for each function touched in the diff and writes them to a file whose
+# path is exported as SYMBOL_CONTEXT_FILE for the deep + duck tiers. Gated
+# default-off behind SYMBOL_CONTEXT_ENABLED (inert + byte-identical when off).
+# shellcheck source=lib/symbol-context.sh
+source "$SCRIPT_DIR/lib/symbol-context.sh"
 # Shared PR-context prefetch (epic #1101, Story 2): prefetch_pr_context persists
 # the FULL diff + superset metadata to SHA-bound files (PR_CONTEXT_DIFF_FILE /
 # PR_CONTEXT_METADATA_FILE) for the agentic tiers. Gated default-off behind
@@ -58,6 +70,13 @@ source "$SCRIPT_DIR/lib/safety-checks.sh"
 # when off. Story 5 consumers verify the PR_HEAD_SHA stamp before use.
 # shellcheck source=lib/pr-context-prefetch.sh
 source "$SCRIPT_DIR/lib/pr-context-prefetch.sh"
+# Agentic iterative validation (issue #1092): apply_finding_verification applies
+# the repro-outcome downgrade/drop discipline to the deep tier's logic/correctness
+# findings and emits kind:"finding_verification" records so the false-positive-rate
+# delta is measurable. Pure jq — the repro itself runs inside the deep tier's
+# already-bounded, privilege-flat run_agentic sandbox.
+# shellcheck source=lib/finding-verification.sh
+source "$SCRIPT_DIR/lib/finding-verification.sh"
 
 PR_URL="${1:?usage: review-one-pr.sh <pr-url>}"
 export PR_URL
@@ -120,9 +139,24 @@ echo "    review decision: $REVIEW_DECISION"
 # no-op and does not count it against the MAX_PRS review budget.
 # Reasons that produce a skip: already-reviewed-at-head, ci-failing, ci-pending, changes-requested.
 if [ "$CI_STATUS" = "failing" ]; then
-  echo "    skip: CI checks are failing — will re-evaluate after fixes are pushed"
-  echo "{\"pr\":\"$PR_URL\",\"sha\":\"$PR_HEAD_SHA\",\"decision\":\"skip\",\"reason\":\"ci-failing\"}"
-  exit 100
+  if [ "${FORCE_REVIEW:-false}" = "true" ]; then
+    # Break-glass (#619): a manual mention / dispatch (FORCE_REVIEW=true) overrides
+    # the ci-failing gate so a fix to the CI gate *itself* can be reviewed and
+    # approved through ring-0 self-host — the one case the pinned-stable design
+    # otherwise can't ship without an out-of-band admin merge. This is safe:
+    #   • FORCE_REVIEW is manual-only — it is true only for repository_dispatch
+    #     (human @mention) or an explicit force_review input; the scheduled sweep
+    #     dispatches with force_review=false, so this never fires event-driven.
+    #   • GitHub's ruleset still blocks the merge on any failing REQUIRED check, so
+    #     an override only unblocks the codeowner-approval gate for PRs whose
+    #     failing checks are non-required (e.g. superseded dev-lead orchestration
+    #     jobs) — it cannot merge a PR with a genuinely failing required check.
+    echo "::warning::force-review: CI is failing but FORCE_REVIEW=true — bypassing the ci-failing gate (break-glass, #619). Required-check failures still block the merge at the ruleset."
+  else
+    echo "    skip: CI checks are failing — will re-evaluate after fixes are pushed"
+    echo "{\"pr\":\"$PR_URL\",\"sha\":\"$PR_HEAD_SHA\",\"decision\":\"skip\",\"reason\":\"ci-failing\"}"
+    exit 100
+  fi
 fi
 
 # Pending CI gate: for normal runs, skip immediately.
@@ -169,9 +203,13 @@ if [ "$CI_STATUS" = "pending" ]; then
     unset _poll _FORCE_POLL_MAX _FORCE_POLL_SEC _gh_poll_err _gh_poll_err_content
 
     if [ "$CI_STATUS" = "failing" ]; then
-      echo "    skip: CI checks are failing (detected after polling) — will re-evaluate after fixes are pushed"
-      echo "{\"pr\":\"$PR_URL\",\"sha\":\"$PR_HEAD_SHA\",\"decision\":\"skip\",\"reason\":\"ci-failing\"}"
-      exit 100
+      if [ "${FORCE_REVIEW:-false}" = "true" ]; then
+        echo "::warning::force-review: CI is failing but FORCE_REVIEW=true — bypassing the ci-failing gate (break-glass, #619). Required-check failures still block the merge at the ruleset."
+      else
+        echo "    skip: CI checks are failing (detected after polling) — will re-evaluate after fixes are pushed"
+        echo "{\"pr\":\"$PR_URL\",\"sha\":\"$PR_HEAD_SHA\",\"decision\":\"skip\",\"reason\":\"ci-failing\"}"
+        exit 100
+      fi
     fi
 
     if [ "$CI_STATUS" = "pending" ]; then
@@ -256,24 +294,6 @@ fi
   fi
 }
 
-# Skip when a human has requested changes, with two guards:
-#   1. FORCE_REVIEW bypasses the skip — mention-triggered runs always proceed so
-#      authors can request a re-review after addressing feedback.
-#   2. Only skip when a CHANGES_REQUESTED review targets the current head SHA.
-#      On repos that don't dismiss stale reviews, reviewDecision can stay
-#      CHANGES_REQUESTED after the author pushes new commits; in that case the
-#      review is stale and the cascade should re-engage with the updated code.
-if [ "$REVIEW_DECISION" = "CHANGES_REQUESTED" ] && [ "${FORCE_REVIEW:-false}" != "true" ]; then
-  CHANGES_REQUESTED_AT_HEAD=$(echo "$PR_SNAPSHOT" | jq -r --arg sha "$PR_HEAD_SHA" '
-    [.reviews[] | select(.state == "CHANGES_REQUESTED" and .commit.oid == $sha)]
-    | if length > 0 then "true" else "false" end
-  ')
-  if [ "$CHANGES_REQUESTED_AT_HEAD" = "true" ]; then
-    echo "    skip: changes requested at current head — awaiting author response before reviewing"
-    echo "{\"pr\":\"$PR_URL\",\"sha\":\"$PR_HEAD_SHA\",\"decision\":\"skip\",\"reason\":\"changes-requested\"}"
-    exit 100
-  fi
-fi
 # Skip when a human has requested changes, with two guards:
 #   1. FORCE_REVIEW bypasses the skip — mention-triggered runs always proceed so
 #      authors can request a re-review after addressing feedback.
@@ -721,7 +741,10 @@ TRIAGE_RESULT=$(
 
 # Drop the bulky locals now that the prompt file is on disk. Keeps later
 # subprocess forks (jq, claude) from hitting E2BIG on hundreds-of-KB diffs.
+# PR_DIFF is saved as a local shell variable (not exported) for tier-2
+# symbol-context assembly and unset after that pass completes.
 # Advisory feedback is capped at 8 KB; write to disk for Tier 2/3 to read.
+_sc_diff="${PR_DIFF:-}"
 ADVISORY_BOT_FEEDBACK_FILE="/tmp/cascade/advisory-bot-feedback.txt"
 rm -f "$ADVISORY_BOT_FEEDBACK_FILE"
 if [[ -n "${ADVISORY_BOT_FEEDBACK//[[:space:]]/}" ]]; then
@@ -896,7 +919,42 @@ if [ "$TRIAGE_ESCALATE" = "false" ]; then
   exit 0
 fi
 
+# --- Issue-type classifier -> specialist deep-review prompt (issue #1091) ---
+# The triage tier classified the escalated diff with a `type` label. Resolve the
+# matching specialist deep-review prompt data-driven through the rubric registry
+# (deep_specialist:<type> rows). An ambiguous/absent label, a missing registry
+# row, or a missing specialist file falls back to the rubric's deep prompt
+# (prompts/deep-review.md) so the deep tier never dead-ends. The classifier rides
+# on the existing triage output — no new tier, no extra model call.
+TRIAGE_TYPE=$(classify_triage_type "$TRIAGE_RESULT")
+export TRIAGE_TYPE
+DEEP_TIER_PROMPT=$(resolve_deep_specialist "$TRIAGE_TYPE" "$RUBRIC_DEEP_PROMPT")
+
+# Export safety checks and downstream impact files if they exist
+if [ -f "/tmp/cascade/safety-checks.txt" ]; then
+  export SAFETY_CHECKS_FILE="/tmp/cascade/safety-checks.txt"
+fi
+if [ -f "/tmp/cascade/downstream-impact.txt" ]; then
+  export DOWNSTREAM_IMPACT_FILE="/tmp/cascade/downstream-impact.txt"
+fi
+
+# Semantic symbol-context pass (issue #1090). Runs here in tier-2 so
+# triage-cleared PRs never pay the gh search code cost (only deep-review and
+# rubber-duck read SYMBOL_CONTEXT_FILE). Gated default-off: when disabled
+# SYMBOL_CONTEXT_FILE is never set and the deep/duck prompts + cost are
+# byte-identical to pre-feature behavior (holdout-eval stability + rollback).
+# Best-effort — assemble_symbol_context always exits 0, degrading to a warning.
+if [ "${SYMBOL_CONTEXT_ENABLED:-false}" = "true" ]; then
+  if [ -z "${GITHUB_REPOSITORY:-}" ]; then
+    echo "::warning::[symbol-context] GITHUB_REPOSITORY is unset — skipping symbol context to avoid an unscoped cross-repository search" >&2
+  else
+    assemble_symbol_context "$_sc_diff" "$GITHUB_REPOSITORY" "/tmp/cascade/symbol-context.txt" || true
+  fi
+fi
+unset _sc_diff
+
 # --- Tier 2: Deep review + Rubber duck (parallel, cross-engine) ---
+echo "    [tier2] type=$TRIAGE_TYPE specialist=$DEEP_TIER_PROMPT"
 echo "    [tier2] deep review ($ENGINE_DEEP_MODEL) + rubber duck ($DUCK_MODEL via $DUCK_ENGINE)"
 
 # Launch both reviewers in parallel — different model families for diversity.
@@ -905,7 +963,7 @@ echo "    [tier2] deep review ($ENGINE_DEEP_MODEL) + rubber duck ($DUCK_MODEL vi
 # or tool-execution noise that could cause false positives.
 OUTPUT_FILE="/tmp/cascade/deep.json"
 export OUTPUT_FILE
-run_agentic "$RUBRIC_DEEP_PROMPT" "$ENGINE_DEEP_MODEL" "deep" \
+run_agentic "$DEEP_TIER_PROMPT" "$ENGINE_DEEP_MODEL" "deep" \
   > /tmp/cascade/deep-stdout.txt 2>/tmp/cascade/deep.log &
 DEEP_PID=$!
 
@@ -957,6 +1015,15 @@ fi
 # JSON is valid — if the process still exited non-zero log it but proceed:
 # the agent may have written the verdict before a non-fatal wrapper error.
 [ "$DEEP_RC" -ne 0 ] && echo "::warning::deep review process exited $DEEP_RC but produced valid JSON — proceeding"
+
+# --- Agentic iterative validation (issue #1092) ---
+# The deep tier attempted to reproduce its logic/correctness findings with the
+# repo's lint/test tools inside its already-bounded run_agentic sandbox and tagged
+# each with a `verification` outcome. Apply the downgrade/drop discipline now
+# (before synthesis/audit consume the findings) so refuted findings are demoted or
+# dropped and every processed finding is recorded as a kind:"finding_verification"
+# record for the FP-rate metric. Pure jq — adds no tool/network/timeout surface.
+apply_finding_verification "$OUTPUT_FILE" "${TOKEN_WORKFLOW:-pr-review}" "deep" "$PR_URL"
 
 # Wait for duck to finish (deep succeeded)
 [ -n "$DUCK_PID" ] && wait $DUCK_PID || true

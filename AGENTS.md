@@ -159,6 +159,35 @@ PR-triggered check on the existing Lint workflow — **no new cron/scheduled wor
   in `scripts/template_stub_drift.sh` (`TEMPLATE_DRIFT_ALLOWLIST`). Add a path to that allowlist **only** with
   a recorded rationale, the same way the exceptions above are documented.
 
+### Scheduled workflows
+
+- **Never schedule at minute 0.** A scheduled workflow must not use a `0 * * * *`
+  cron (or any `schedule.cron` whose minute field is `0`). Minute-0 crons cluster
+  every repo's automation onto the top of the hour, contending for shared
+  GitHub-hosted runner capacity and producing correlated bursts that are harder to
+  observe and debug.
+- **Use a staggered off-peak minute.** Pick a non-zero, non-round minute (e.g.
+  `'11 9 * * 1'`, `'34 8 * * 1'`, `'27 6 * * *'`) so runs are spread across the hour.
+  There is no single canonical offset — stagger distinct workflows onto different
+  minutes rather than sharing one.
+- **Idempotent/self-healing sweeps may run more often (Option 2).** A sweep that is
+  idempotent — extra ticks are harmless and a missed tick self-heals on the next run
+  — may run at a higher frequency on odd offsets (e.g. `'2,17,32,47 * * * *'`).
+  Because such a workflow converges regardless of exactly when it fires, precise
+  timing does not matter and the higher cadence buys lower worst-case latency at
+  negligible cost. This does not license minute-0: even high-frequency sweeps use
+  non-zero offsets.
+- **CI enforcement.** The `validate-workflow-schedules` job in `lint.yml`
+  (backed by `scripts/validate-workflow-schedules.sh`, tests in
+  `tests/test_validate_workflow_schedules.bats`) fails any PR that introduces a
+  minute-0 `schedule.cron` in `.github/workflows/*.yml`, `.github/workflows/*.md`,
+  or `docs/aw/*.md`. The `frameworks/` subtrees are upstream-owned knowledge docs,
+  not our schedules, and are intentionally out of scope.
+- **Promotion:** this is currently a repo-local standard. To make it org-wide,
+  lift it into [`petry-projects/.github`](https://github.com/petry-projects/.github/blob/main/standards/ci-standards.md)
+  (`standards/ci-standards.md`) and have repos defer to it — see the org-wide
+  rollout tracked under epic #722.
+
 ### Agent Profiles (`agents/*.md`)
 
 - Every agent profile must have YAML frontmatter with `name`, `description`, and `tools`.
@@ -227,33 +256,41 @@ HTTP 406 above that limit.
 
 ### Release channel tags & the mutable-ref exception
 
-The agents (`pr-review`, `dev-lead`) are versioned via tags — see
-[`docs/release/versioning.md`](./docs/release/versioning.md). Two kinds of tag exist per agent:
+First-party reusables are versioned via tags — see
+[`docs/release/versioning.md`](./docs/release/versioning.md). This began with the `pr-review` and
+`dev-lead` agents and now covers every first-party reusable we own — the reusables in this repo
+(`pr-review`, `dev-lead`, `ci-failure-analyst`) and the cross-repo reusables hosted in
+`petry-projects/.github` (`feature-ideation` and the six #482 reusables). **One convention applies to
+all of them.** Two kinds of tag exist per reusable:
 
-- **Immutable releases** `<agent>/vX.Y.Z` — never moved or deleted; the audit trail and rollback targets.
-- **Moving channel tags** `<agent>/stable` (later `/next`, `/ring*`) — what callers pin to; advanced on
-  promotion by **moving** the tag.
+- **Immutable releases** `<name>/vX.Y.Z` — never moved or deleted; the audit trail and rollback targets.
+- **Moving channel tags** `<name>/v<MAJOR>-<tier>` (major-scoped, #1184; tiers `stable`, and where live
+  `next`/`ring0`/`ring1`) — what callers pin to; advanced on promotion by **moving** the tag.
 
 **Scoped exception to the SHA-pin standard.** The org standard requires SHA-pinning actions to avoid
 mutable-ref supply-chain risk. That rule targets **third-party** actions. The channel tags above are
 intentionally **mutable** and are an accepted, documented exception because they reference
-**first-party** reusable workflows in this repo that we own. The exception is bounded by:
+**first-party** reusable workflows we own. The exception is bounded by:
 
-- The `release-channel-tags` repository **ruleset** (target: tags `pr-review/**`, `dev-lead/**`)
-  restricts `update` and `deletion`, with bypass limited to **OrganizationAdmin** and the automation
-  **Integration** app. Net effect: the dev-lead/pr-review agents (running as `GITHUB_TOKEN`) **cannot**
-  move or delete release tags; only an admin or the promotion automation can.
+- The `release-channel-tags` repository **ruleset** restricts `update` and `deletion` on the
+  first-party channel-tag namespaces (e.g. `pr-review/**`, `dev-lead/**`, `ci-failure-analyst/**`),
+  with bypass limited to **OrganizationAdmin** and the automation **Integration** app. Net effect: the
+  reusables' workflows (running as `GITHUB_TOKEN`) **cannot** move or delete release tags; only an admin
+  or the promotion automation can. Extending the ruleset's target list to a newly-versioned reusable is
+  an admin step that may lag the tooling/docs — the sanctioned-exception guidance below applies to a
+  first-party channel tag regardless of whether its namespace has been added to the ruleset yet.
 - Immutable `vX.Y.Z` tags are the real rollback targets; `scripts/cut-release.sh` refuses to overwrite
   an existing release tag.
 - Channel-tag moves happen only via the (forthcoming) health-gated promotion workflow (#501); the
   ruleset bypass will be tightened to that workflow's identity when it lands.
 
-Compliance audits must therefore **not** flag `@pr-review/stable` / `@dev-lead/stable` (or other channel
-tags) on first-party callers as "unpinned actions" — they are the sanctioned version-selection mechanism
-(see the initiative analysis §5.1: `docs/initiatives/agentic-release-strategy.md`).
+Compliance audits must therefore **not** flag any first-party reusable channel tag (e.g.
+`@pr-review/v1-stable`, `@dev-lead/v1-stable`, `@ci-failure-analyst/v0-stable`, or other `<name>/v<M>-<tier>`
+channel tags) on first-party callers as "unpinned actions" — they are the sanctioned version-selection
+mechanism (see the initiative analysis §5.1: `docs/initiatives/agentic-release-strategy.md`).
 
 **feature-ideation (cross-repo).** The `feature-ideation` agent is released through the same model with
-the channel set `{next, ring0, ring1, stable}`, so its `feature-ideation/<channel>` pins are the **same
+the channel set `{next, ring0, ring1, stable}`, so its `feature-ideation/v<MAJOR>-<tier>` pins (e.g., `feature-ideation/v1-stable`) are the **same
 sanctioned mutable-ref exception** and must not be flagged as unpinned. Unlike `pr-review`/`dev-lead`
 whose reusables live in this repo, `feature-ideation`'s reusable lives in **`petry-projects/.github`**
 (this repo holds only the thin caller stub), so its release/channel tags are cut against that public

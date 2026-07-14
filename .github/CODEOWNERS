@@ -16,3 +16,9 @@
 # Story 6 measures against. Owner-lock it so the goalpost cannot be moved without
 # a maintainer's explicit review.
 /tests/fixtures/et-baseline/ @petry-projects/org-leads
+
+# Frozen deep-review bug-hunter baseline (#1089, epic #1088) — the immutable
+# quality/cost before-numbers every downstream enhancement (#1090-#1093) proves
+# "no regression" against, and the #1094 convergence gate consumes. Owner-lock it
+# so later prompt-tuning stories cannot silently move the goalpost.
+/tests/fixtures/deep-review-baseline/ @petry-projects/org-leads

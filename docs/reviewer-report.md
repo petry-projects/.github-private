@@ -43,27 +43,37 @@ entire history. This is far fewer API calls than per-PR REST fetches.
 
 Each PR node is normalized (pure `jq`) into two record kinds:
 
-- `{kind:"pr", …}` — one per PR (the participation **denominator**).
-- `{kind:"bot_pr", …}` — one per tracked bot that touched the PR, carrying its first-touch
-  time, latency, verdict counts, inline-comment count, thread resolution, reactions, and a
-  rate-limited flag.
+- `{kind:"pr", …}` — one per PR (the eligible-PR **denominator**).
+- `{kind:"bot_pr", …}` — one per tracked bot that touched the PR, carrying its
+  `real_responses` / `refusals` split (a rate-limit-only touch is a refusal), latency to
+  first real response, verdict counts, inline-comment count, thread resolution, and reactions.
 
 Human authors and untracked bots are dropped at normalization time.
 
 ## Metrics
 
-Everything below is deterministic. _Participation denominator_ = non-draft PRs active in
-the window.
+Everything is deterministic. **Reviews** and **Rate-limited** count *every event*, not
+distinct PRs — GitHub creates a new review submission each time a bot re-reviews after a new
+commit, so a PR reviewed across 5 commits contributes 5 reviews. This matters: on live data
+CodeRabbit produced ~2× more review events than the distinct-PR count would suggest (up to 11
+reviews on a single PR).
 
-| Family | Metric | Definition |
-|---|---|---|
-| **Participation** | PRs reviewed, participation %, reviews, comments/PR | Distinct PRs a bot touched ÷ eligible PRs; review + inline-comment counts. |
-| **Timeliness** | Latency p50 / p95 | Seconds from PR creation to the bot's first review/comment (nearest-rank percentiles). Targets the "review arrived after auto-approval" failure mode (PR #453). |
-| **Verdict mix** | ✅ approved / 🔄 changes-requested | GitHub review `state` per bot. (CodeRabbit no longer approves — its mix reflects that.) |
-| **Reliability** | Rate-limited PRs, coverage gap, no-shows | Out-of-quota notices detected by body text (shared gate pattern); eligible PRs a bot did not touch. |
-| **Signal quality** | Thread resolution %, 👍/👎 | Share of a bot's inline threads later resolved; reactions on its comments. |
-| **Overlap** | PRs reviewed by ≥2 bots | Redundancy vs specialization signal. |
-| **Trend** | Week-over-week Δ (▲/▼) | Every headline metric vs last week's snapshot. Arrows are directional only. |
+| Metric | Definition |
+|---|---|
+| **Total PRs** | Review-eligible (non-draft) PRs active in the window; the denominator each row is measured against. |
+| **Reviews** | Count of real review submissions by the bot, **each occurrence** (multiple per PR from multiple commits all count). Rate-limit notices are never counted as reviews. |
+| **✅ / 🔄** | Of those reviews, how many carried state APPROVED / CHANGES_REQUESTED. |
+| **Rate-limited** | Count of out-of-quota / rate-limit refusal events (detected by body text via the shared gate pattern), each occurrence. |
+| **No response** | Eligible PRs the bot never engaged with at all — no review, comment, or refusal. |
+| **Latency p50 / p95** | Seconds from PR creation to the bot's first **real** review (refusals excluded, so quota notices don't pollute the percentiles). Targets the "review arrived after auto-approval" failure mode (PR #453). |
+| **Coverage overlap** | PRs reviewed by ≥2 bots — a redundancy vs specialization signal. |
+| **Trend** | Week-over-week Δ (▲/▼) on Reviews and Rate-limited (event counts) vs last week's snapshot. Arrows are directional only. |
+
+Per-PR bucket counts (`reviewed_prs` / `refused_prs` / `no_response_prs`, which partition the
+eligible PRs), plus thread-resolution and reaction counts, are still computed and stored in the
+snapshot for downstream use — they're just kept out of the headline table to keep it legible.
+SonarCloud posts status-check comments rather than GitHub reviews, so its **Reviews** reads 0
+by design.
 
 ### Week-over-week deltas
 
@@ -97,7 +107,7 @@ unattended:
 
 | Channel | Cadence | Where |
 |---|---|---|
-| **Tracking issue comment** | Weekly (Mon 09:00 UTC) | A single pinned issue in `.github-private` labelled `reviewer-report`; each run adds a comment. |
+| **Tracking issue comment** | Weekly (Mon 09:53 UTC) | A single pinned issue in `.github-private` labelled `reviewer-report`; each run adds a comment. |
 | **Step Summary** | Weekly | Actions run summary of `reviewer-report.yml`. |
 
 Scheduled one hour after the token report (Mon 08:00 UTC) to avoid contending for the same

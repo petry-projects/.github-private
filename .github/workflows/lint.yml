@@ -51,6 +51,8 @@ jobs:
             tests/test_initiative_canary.bats \
             tests/test_initiative_driver_canary.bats \
             tests/test_mcp_connectivity_check.bats \
+            tests/test_spec_drift.bats \
+            tests/test_spec_drift_eval.bats \
             tests/token_report.bats \
             tests/reviewer_report.bats \
             tests/auto_rebase_health.bats \
@@ -81,6 +83,7 @@ jobs:
             tests/test_sweep_stuck_reviews.bats \
             tests/test_validate_cases.bats \
             tests/test_review_registry.bats \
+            tests/test_deep_specialist.bats \
             tests/test_pr_diff_dispatch.bats \
             tests/test_plan_review.bats \
             tests/test_plan_critic.bats \
@@ -98,6 +101,7 @@ jobs:
             tests/test_downstream_impact_triage_inline.bats \
             tests/test_downstream_impact_regression.bats \
             tests/test_et_baseline_regression.bats \
+            tests/test_deep_review_baseline.bats \
             tests/test_safety_checks.bats \
             tests/test_safety_checks_triage_inline.bats \
             tests/test_prefetch_context.bats \
@@ -106,9 +110,25 @@ jobs:
             tests/test_engine_unavailable_notice.bats \
             tests/test_batch_skip_reporting.bats \
             tests/test_review_one_pr_ci_pending.bats \
+            tests/test_review_one_pr_force_ci_failing.bats \
             tests/test_release_registry.bats \
             tests/test_readme_refresh_helpers.bats \
-            tests/test_validate_personas.bats
+            tests/test_validate_personas.bats \
+            tests/test_dev_lead_concurrency_guard.bats \
+            tests/test_validate_workflow_schedules.bats
+
+  validate-workflow-schedules:
+    # Off-peak scheduling compliance (#724, epic #722): fail any PR that
+    # introduces a minute-0 (`0 * * * *`) schedule.cron in this repo's own
+    # workflow/agentic sources. Enforces the AGENTS.md "Scheduled workflows"
+    # standard. PR-triggered on the existing Lint workflow — no new cron.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+
+      - name: Check for minute-0 scheduled crons
+        run: bash scripts/validate-workflow-schedules.sh
 
   template-drift:
     # Drift guard (#969): fail when a file committed in petry-projects/repo-template

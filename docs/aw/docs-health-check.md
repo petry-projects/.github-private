@@ -2,7 +2,7 @@
 
 **Workflow:** `docs-health-check.yml`
 **Priority:** P2
-**Trigger:** `schedule` — weekly, Sunday 00:00 UTC
+**Trigger:** `schedule` — weekly, Sunday 00:21 UTC
 **Scenario spec:** [`tests/aw/docs-health-check/scenarios.md`](../../tests/aw/docs-health-check/scenarios.md)
 
 ---
@@ -20,7 +20,7 @@ updated in 90 or more days, so that doc owners can review and refresh stale cont
 ```yaml
 on:
   schedule:
-    - cron: '0 0 * * 0'   # weekly, Sunday midnight UTC
+    - cron: '21 0 * * 0'   # weekly, Sunday at 00:21 UTC
   workflow_dispatch:
     inputs:
       stale_days:
