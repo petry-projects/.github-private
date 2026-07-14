@@ -38,14 +38,15 @@ jobs:
         run: |
           set -euo pipefail
           dismissed=0
-          # Newest review per author already reflects its current verdict; iterate all
-          # and act only on an allow-listed bot whose CHANGES_REQUESTED sits on a
-          # commit other than the current head (i.e. superseded by this push).
+          # Iterate all reviews; act only on allow-listed bot CHANGES_REQUESTED
+          # reviews that sit on a commit other than the current head (i.e. superseded
+          # by this push). The bots re-review the new head automatically, so a
+          # still-valid concern returns as a fresh review on the new SHA.
           while IFS=$'\t' read -r id user state sha; do
             [ -n "$id" ] || continue
             case " $BOTS " in *" $user "*) ;; *) continue ;; esac
             [ "$state" = "CHANGES_REQUESTED" ] || continue
-            [ -n "$sha" ] && [ "$sha" != "$HEAD_SHA" ] || continue
+            if [ -z "$sha" ] || [ "$sha" = "$HEAD_SHA" ]; then continue; fi
             echo "Dismissing stale CHANGES_REQUESTED review $id by $user (on ${sha:0:8}, head ${HEAD_SHA:0:8})"
             msg="Auto-dismissed (#617): \`$user\` CHANGES_REQUESTED on a superseded commit. The bot re-reviews the new head automatically — a valid concern will return as a fresh review."
             if gh api -X PUT "repos/$REPO/pulls/$PR/reviews/$id/dismissals" \

@@ -129,6 +129,17 @@ This is the `.github-private` org infrastructure repo for `petry-projects`. It c
   template gains a cross-repo release-path canary equivalent, remove this exception and defer to the
   template instead.
 
+- **Exception:** `dismiss-stale-bot-reviews.yml` (#617, blocker 3) is a documented repo-specific
+  workflow with no corresponding org template in `standards/workflows/`. It fires on
+  `pull_request: synchronize` and auto-dismisses allow-listed bot `CHANGES_REQUESTED` reviews
+  that are attached to a superseded (non-head) commit — GitHub's built-in
+  `dismiss_stale_reviews_on_push` only clears stale *approvals*, so bot CHANGES_REQUESTED
+  reviews blocked merges after a re-review was already approved. The allow-list is a
+  space-delimited `BOTS` env var in the workflow (currently `coderabbitai`); only same-repo PRs
+  are processed (fork PRs receive a read-only token). It must not be removed by template syncs.
+  If the org template gains an equivalent stale-bot-review dismissal, remove this exception and
+  defer to the template instead.
+
 ### Template drift guard (`repo-template`)
 
 `petry-projects/repo-template` is a **distribution artifact** of the canonical `standards/` in the public
