@@ -128,6 +128,25 @@ an appropriate `severity`, `category`, `file`, and `line`.
     breaking-change risk here? Note any dependency you recognize as having known
     CVEs. Report material dependency risk as a `dependency` finding; a pinned,
     reputable dependency needs no finding.
+12. **Iterative validation of logic/correctness findings (issue #1092).** Before
+    you report a suspected **logic** or **correctness** bug (a finding whose
+    `category` is `logic` or `correctness`), try to *confirm* it by running the
+    repo's relevant lint/test tool with your **Bash** tool — the same sandbox you
+    already have (Bash, Read, Grep, Glob). Do not install anything, reach the
+    network, or widen scope; run only the check that already maps to the finding
+    (e.g. `shellcheck path/to.sh`, the file's unit test, `npm test`/`pytest` for
+    the touched module). Keep each repro quick — you are inside the deep tier's
+    per-tier timeout, so a single bounded command, not a long suite. Then tag that
+    finding with a `verification` field recording the outcome:
+    - `"confirmed"` — the tool reproduced the bug (lint/test failed as you predicted).
+    - `"refuted"` — the tool ran and did **not** reproduce it (the lint/test passed).
+    - `"unverifiable"` — no runnable lint/test target maps to the finding.
+    Only use `"refuted"` when the tool **actively** failed to reproduce the issue;
+    if you simply have no runnable target, use `"unverifiable"` and leave your
+    stated severity as-is — never fabricate a repro. A downstream step downgrades
+    `refuted` findings by one severity (or drops an `info`) and records the
+    outcome, so honest tagging directly lowers the false-positive rate reviewers
+    triage. Findings that are not `logic`/`correctness` do not need this field.
 
 ## Risk classification
 
@@ -175,7 +194,8 @@ Write a JSON object to `$OUTPUT_FILE`:
       "category": "...",
       "message": "...",
       "file": "path or null",
-      "line": "number or null"
+      "line": "number or null",
+      "verification": "confirmed|refuted|unverifiable (logic/correctness findings only — see check 12)"
     }
   ]
 }
