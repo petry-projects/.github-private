@@ -190,7 +190,7 @@ so we build on the existing surface rather than forking it.
 
 ---
 
-## 5. Frozen baseline (AC #3 / #4)
+## 5. Frozen baseline (AC #3 / #4 — artifact established; two metrics deferred to downstream stories)
 
 The immutable before-numbers live in
 [`tests/fixtures/deep-review-baseline/frozen-baseline-2026-07.json`](../../tests/fixtures/deep-review-baseline/frozen-baseline-2026-07.json),

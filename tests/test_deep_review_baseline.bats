@@ -59,10 +59,10 @@ setup() {
 
 @test "median escalated-review ET is frozen to the exact pinned value" {
   local v
-  v="$(jq -r '.metrics.median_escalated_review_et.value' "$BASELINE")"
+  v="$(jq -r '.metrics?.median_escalated_review_et?.value' "$BASELINE")"
   [ "$v" = "343068.25" ]
-  [ "$(jq -r '.metrics.median_escalated_review_et.status' "$BASELINE")" = "frozen" ]
-  [ "$(jq -r '.metrics.median_escalated_review_et.record_count' "$BASELINE")" = "10" ]
+  [ "$(jq -r '.metrics?.median_escalated_review_et?.status' "$BASELINE")" = "frozen" ]
+  [ "$(jq -r '.metrics?.median_escalated_review_et?.record_count' "$BASELINE")" = "10" ]
 }
 
 @test "stored median recomputes from the referenced et-baseline telemetry" {
@@ -70,12 +70,12 @@ setup() {
   local recomputed stored count
   recomputed="$(jq -s 'map(select(.tier=="deep").et) | sort as $s | ($s|length) as $n
       | if $n % 2 == 1 then $s[($n/2|floor)] else (($s[$n/2-1] + $s[$n/2]) / 2) end' "$ET_SOURCE")"
-  stored="$(jq -r '.metrics.median_escalated_review_et.value' "$BASELINE")"
+  stored="$(jq -r '.metrics?.median_escalated_review_et?.value' "$BASELINE")"
   # Numeric compare (avoid trailing-zero string mismatches).
   awk -v a="$recomputed" -v b="$stored" 'BEGIN { exit (a + 0 == b + 0) ? 0 : 1 }'
   # The pinned record_count must match the real source too.
   count="$(jq -s 'map(select(.tier=="deep")) | length' "$ET_SOURCE")"
-  [ "$count" = "$(jq -r '.metrics.median_escalated_review_et.record_count' "$BASELINE")" ]
+  [ "$count" = "$(jq -r '.metrics?.median_escalated_review_et?.record_count' "$BASELINE")" ]
 }
 
 # ---------------------------------------------------------------------------
@@ -85,13 +85,13 @@ setup() {
 # ---------------------------------------------------------------------------
 
 @test "deep-review holdout eval score stays pending (needs credentialed capture)" {
-  [ "$(jq -r '.metrics.deep_review_holdout_eval_score.value' "$BASELINE")" = "null" ]
-  [ "$(jq -r '.metrics.deep_review_holdout_eval_score.status' "$BASELINE")" = "pending-credentialed-capture" ]
+  [ "$(jq -r '.metrics?.deep_review_holdout_eval_score?.value' "$BASELINE")" = "null" ]
+  [ "$(jq -r '.metrics?.deep_review_holdout_eval_score?.status' "$BASELINE")" = "pending-credentialed-capture" ]
   # The reproducible capture command must be recorded so the number is fillable.
-  [ "$(jq -r '.metrics.deep_review_holdout_eval_score.reproduce' "$BASELINE")" != "null" ]
+  [ "$(jq -r '.metrics?.deep_review_holdout_eval_score?.reproduce' "$BASELINE")" != "null" ]
 }
 
 @test "finding_verification FP-rate stays unavailable (emitter not implemented)" {
-  [ "$(jq -r '.metrics.finding_verification_fp_rate.value' "$BASELINE")" = "null" ]
-  [ "$(jq -r '.metrics.finding_verification_fp_rate.status' "$BASELINE")" = "unavailable-no-emitter" ]
+  [ "$(jq -r '.metrics?.finding_verification_fp_rate?.value' "$BASELINE")" = "null" ]
+  [ "$(jq -r '.metrics?.finding_verification_fp_rate?.status' "$BASELINE")" = "unavailable-no-emitter" ]
 }

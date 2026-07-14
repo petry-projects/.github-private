@@ -5,9 +5,8 @@
 
 ## What this is
 
-The immutable **before-numbers** for the bug-hunter initiative. Every downstream
-enhancement (#1090 semantic symbol context, #1091 issue-type specialist routing,
-#1092 agentic validation, #1093 merged-PR few-shot) must prove **no regression**
+The immutable **before-numbers** for the bug-hunter initiative. Every downstream enhancement (#1090 semantic symbol context, #1091 issue-type specialist
+routing, #1092 agentic validation, #1093 merged-PR few-shot) must prove **no regression**
 against these figures, and the Phase-4 convergence gate (#1094) consumes them as
 the fixed reference before any `LIVE_MODE` flip. The numbers here must never move
 by prompt-tuning — otherwise a later "win" could be manufactured by shifting the
