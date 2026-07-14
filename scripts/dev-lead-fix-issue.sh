@@ -456,13 +456,30 @@ ${lint_output}
   fi
   git push --set-upstream origin "$branch"
 
-  gh pr create \
+  local pr_url
+  pr_url=$(gh pr create \
     --repo "$REPO" \
     --title "feat: implement issue #${ISSUE_NUMBER} — ${ISSUE_TITLE}" \
     --body "Closes #${ISSUE_NUMBER}
 
 Implemented by dev-lead agent. Please review." \
-    --head "$branch"
+    --head "$branch")
+  echo "$pr_url"
+
+  # Mark the PR auto-rebase-eligible from creation (petry-projects/.github#711).
+  # The auto-rebase 'review-ready' gate (#465) only rebases PRs that are approved
+  # OR carry the ready label; without this, a dev-lead PR that falls behind before
+  # it is approved is skipped, drifts into a merge conflict, and cannot be approved
+  # (pr-review skips red/conflicting PRs) — a deadlock that rots the PR for weeks.
+  # Ensure the label exists first (idempotent; || true absorbs the "already exists"
+  # error) so a repo missing it does not break; guard everything so PR creation
+  # never fails on a labeling hiccup.
+  if [ -n "$pr_url" ]; then
+    gh label create "auto-rebase:ready" --repo "$REPO" \
+      --description "Opts a non-draft PR into auto-rebase without an approval (auto-rebase ready_label)" \
+      --color "0e8a16" >/dev/null 2>&1 || true
+    gh pr edit "$pr_url" --repo "$REPO" --add-label "auto-rebase:ready" >/dev/null 2>&1 || true
+  fi
 
   rm -f "$prompt_file"
 }

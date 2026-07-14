@@ -1,0 +1,175 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# SOURCE OF TRUTH: petry-projects/.github-private/.github/workflows/reviewer-report.yml
+#
+# AGENTS — READ BEFORE EDITING:
+#   • Weekly Third-Party Reviewer Scorecard. Measures the external agentic PR
+#     reviewers (Copilot, Gemini, Codex, CodeRabbit, SonarCloud) org-wide.
+#   • All computation is DETERMINISTIC (jq/awk) in scripts/reviewer_report.sh
+#     (unit-tested in tests/reviewer_report.bats). NO LLM is invoked here — an
+#     LLM narrative is a deliberately separate, human-triggered add-on.
+#   • The script queries PRs + reviews across EVERY non-archived repo in the org,
+#     so it needs GH_PAT_WORKFLOWS (cross-repo read) — github.token cannot see
+#     other repos' PRs.
+#   • The report is posted as a comment on a single pinned tracking issue
+#     (label: reviewer-report) in .github-private, so github.token suffices there.
+#   • Week-over-week deltas come from a "reviewer-report-state" artifact this
+#     workflow uploads each run and the script fetches from the prior run.
+#   • Do NOT change checkout ref from 'main'.
+# ─────────────────────────────────────────────────────────────────────────────
+name: Reviewer Scorecard
+
+on:
+  schedule:
+    # Mondays at 09:00 UTC — one hour after the token report (0 8 * * 1) to avoid
+    # contending for the same GH_PAT_WORKFLOWS rate budget.
+    - cron: '0 9 * * 1'
+  workflow_dispatch:
+    inputs:
+      org:
+        description: "GitHub org to scan"
+        required: false
+        default: "petry-projects"
+        type: string
+      lookback_days:
+        description: "Days of PR review activity to include"
+        required: false
+        default: "7"
+        type: string
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: reviewer-report-${{ inputs.org || 'petry-projects' }}
+  cancel-in-progress: true
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      ORG: ${{ inputs.org || 'petry-projects' }}
+      LOOKBACK_DAYS: ${{ inputs.lookback_days || '7' }}
+
+    steps:
+      - name: Checkout agent repo
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          repository: petry-projects/.github-private
+          ref: main
+          token: ${{ secrets.GH_PAT_WORKFLOWS }}
+
+      - name: Generate org-wide reviewer scorecard
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
+          REVIEWER_REPORT_OUT: reviewer_report.md
+          REVIEWER_SNAPSHOT_OUT: reviewer-report-state.json
+        run: |
+          bash scripts/reviewer_report.sh >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload this week's snapshot for next week's week-over-week diff
+        # Best-effort: WoW deltas degrade gracefully if the upload is ever skipped.
+        if: ${{ success() && hashFiles('reviewer-report-state.json') != '' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: reviewer-report-state
+          path: reviewer-report-state.json
+          retention-days: 90
+
+      - name: Post report to tracking issue
+        # Only on a successful generation that actually wrote the report file.
+        if: ${{ success() && hashFiles('reviewer_report.md') != '' }}
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const fs = require('fs');
+            const MAX = 65000;
+            let report = fs.readFileSync('reviewer_report.md', 'utf8');
+            if (!report.trim()) { core.setFailed('Report file is empty'); return; }
+
+            const runUrl = `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`;
+            if (report.length > MAX) {
+              report = report.slice(0, MAX) +
+                `\n\n---\n_Report truncated — full output in the [workflow run summary](${runUrl})._`;
+            }
+
+            const LABEL = 'reviewer-report';
+            const TITLE = '🔎 Third-Party Reviewer Scorecard — Weekly Report';
+
+            // Ensure the tracking label exists.
+            try {
+              await github.rest.issues.getLabel({ owner: context.repo.owner, repo: context.repo.repo, name: LABEL });
+            } catch (e) {
+              await github.rest.issues.createLabel({
+                owner: context.repo.owner, repo: context.repo.repo,
+                name: LABEL, color: '1d76db',
+                description: 'Weekly Third-Party Reviewer Scorecard report',
+              });
+            }
+
+            // Find-or-create the single pinned tracking issue.
+            const existing = await github.paginate(github.rest.issues.listForRepo, {
+              owner: context.repo.owner, repo: context.repo.repo,
+              labels: LABEL, state: 'open', per_page: 100,
+            });
+
+            let issue = existing.find(i => i.title === TITLE);
+            if (!issue) {
+              const created = await github.rest.issues.create({
+                owner: context.repo.owner, repo: context.repo.repo,
+                title: TITLE, labels: [LABEL],
+                body: 'Tracking issue for the weekly Third-Party Reviewer Scorecard. ' +
+                      'Each run posts a new comment below measuring the external agentic PR ' +
+                      'reviewers (Copilot, Gemini, Codex, CodeRabbit, SonarCloud) across the org.\n\n' +
+                      'Source: `scripts/reviewer_report.sh` · `.github/workflows/reviewer-report.yml` — no LLM in this pipeline.',
+              });
+              issue = created.data;
+              core.notice(`Created tracking issue #${issue.number}: ${issue.html_url}`);
+            }
+
+            const comment = await github.rest.issues.createComment({
+              owner: context.repo.owner, repo: context.repo.repo,
+              issue_number: issue.number, body: report,
+            });
+            core.notice(`Posted weekly reviewer scorecard: ${comment.data.html_url}`);
+
+      - name: Alert tracking issue on failed/timed-out generation
+        # Fail loudly: a timed-out (job-cancelled) or failed run would otherwise
+        # silently skip the post step, leaving a quiet gap in the tracking issue.
+        if: ${{ failure() || cancelled() }}
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const runUrl = `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`;
+            const LABEL = 'reviewer-report';
+            const TITLE = '🔎 Third-Party Reviewer Scorecard — Weekly Report';
+
+            // Locate the existing tracking issue — don't create one just to alert.
+            const existing = await github.paginate(github.rest.issues.listForRepo, {
+              owner: context.repo.owner, repo: context.repo.repo,
+              labels: LABEL, state: 'open', per_page: 100,
+            });
+            const issue = existing.find(i => i.title === TITLE);
+            if (!issue) {
+              core.warning(`Reviewer scorecard generation failed and no tracking issue was found to alert. Run: ${runUrl}`);
+              return;
+            }
+
+            const body = [
+              '⚠️ **Third-Party Reviewer Scorecard — report generation failed.**',
+              '',
+              'This weekly run did not produce a report (collection timed out or the job failed), ' +
+              'so no fresh scorecard was posted. ' +
+              `See the [workflow run](${runUrl}) for details.`,
+              '',
+              '_Posted automatically so a failed run is visible rather than a silent gap._',
+            ].join('\n');
+
+            const comment = await github.rest.issues.createComment({
+              owner: context.repo.owner, repo: context.repo.repo,
+              issue_number: issue.number, body,
+            });
+            core.notice(`Posted reviewer scorecard failure alert: ${comment.data.html_url}`);

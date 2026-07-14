@@ -503,3 +503,227 @@ _mk_metrics() {
   [ -z "$output" ]
   rm -f "$f"
 }
+
+# ---------------------------------------------------------------------------
+# count_cron_ticks — cron-to-expected-ticks expansion (#725, epic #722)
+# Counts how many times a single 5-field cron fires in the half-open window
+# [start_epoch, end_epoch). Windows are chosen on minute boundaries so counts
+# are exact.
+# ---------------------------------------------------------------------------
+
+@test "cron ticks: daily 6am fires once over a 24h window" {
+  local s e
+  s=$(date -u -d '2026-06-01T00:00:00Z' +%s)
+  e=$(date -u -d '2026-06-02T00:00:00Z' +%s)
+  run count_cron_ticks '0 6 * * *' "$s" "$e"
+  [ "$status" -eq 0 ]
+  [ "$output" = "1" ]
+}
+
+@test "cron ticks: hourly fires 24 times over a 24h window" {
+  local s e
+  s=$(date -u -d '2026-06-01T00:00:00Z' +%s)
+  e=$(date -u -d '2026-06-02T00:00:00Z' +%s)
+  run count_cron_ticks '0 * * * *' "$s" "$e"
+  [ "$output" = "24" ]
+}
+
+@test "cron ticks: */15 fires 4 times over a 1h window" {
+  local s e
+  s=$(date -u -d '2026-06-01T00:00:00Z' +%s)
+  e=$(date -u -d '2026-06-01T01:00:00Z' +%s)
+  run count_cron_ticks '*/15 * * * *' "$s" "$e"
+  [ "$output" = "4" ]
+}
+
+@test "cron ticks: comma+range minute list fires the expected count" {
+  local s e
+  s=$(date -u -d '2026-06-01T00:00:00Z' +%s)
+  e=$(date -u -d '2026-06-01T01:00:00Z' +%s)
+  # minutes 0,30 plus 45-47 → 5 ticks in one hour
+  run count_cron_ticks '0,30,45-47 * * * *' "$s" "$e"
+  [ "$output" = "5" ]
+}
+
+@test "cron ticks: day-of-week Monday fires once over a week" {
+  local s e
+  # 2026-06-01 is a Monday
+  s=$(date -u -d '2026-06-01T00:00:00Z' +%s)
+  e=$(date -u -d '2026-06-08T00:00:00Z' +%s)
+  run count_cron_ticks '0 0 * * 1' "$s" "$e"
+  [ "$output" = "1" ]
+}
+
+@test "cron ticks: a cron that never matches in the window yields 0" {
+  local s e
+  s=$(date -u -d '2026-06-01T00:00:00Z' +%s)
+  e=$(date -u -d '2026-06-01T05:00:00Z' +%s)
+  # fires at 06:00 which is after the window end
+  run count_cron_ticks '0 6 * * *' "$s" "$e"
+  [ "$output" = "0" ]
+}
+
+@test "cron ticks: half-open window does not double-count the end boundary" {
+  local s e
+  # midnight daily over exactly 24h [00:00, next-00:00) → 1, not 2
+  s=$(date -u -d '2026-06-01T00:00:00Z' +%s)
+  e=$(date -u -d '2026-06-02T00:00:00Z' +%s)
+  run count_cron_ticks '0 0 * * *' "$s" "$e"
+  [ "$output" = "1" ]
+}
+
+@test "cron ticks: empty cron expression yields 0" {
+  run count_cron_ticks '' 0 60
+  [ "$output" = "0" ]
+}
+
+# ---------------------------------------------------------------------------
+# extract_crons — parse schedule.cron entries from workflow YAML (#725)
+# The actions/workflows API does not expose cron, so it is parsed from the file.
+# ---------------------------------------------------------------------------
+
+@test "extract crons: single cron entry is printed" {
+  local yaml=$'name: X\non:\n  schedule:\n    - cron: "0 6 * * *"\n'
+  run bash -c "source '${BATS_TEST_DIRNAME}/../scripts/fleet_report.sh' && printf '%s' '$yaml' | extract_crons"
+  [ "$status" -eq 0 ]
+  [ "$output" = "0 6 * * *" ]
+}
+
+@test "extract crons: multiple cron entries are each printed" {
+  local yaml=$'on:\n  schedule:\n    - cron: "0 6 * * *"\n    - cron: "30 18 * * *"\n'
+  run bash -c "source '${BATS_TEST_DIRNAME}/../scripts/fleet_report.sh' && printf '%s' '$yaml' | extract_crons"
+  [[ "$output" =~ "0 6 * * *" ]]
+  [[ "$output" =~ "30 18 * * *" ]]
+  [ "$(printf '%s\n' "$output" | grep -cv 'cron')" -eq 2 ]
+}
+
+@test "extract crons: workflow with no schedule prints nothing" {
+  local yaml=$'on:\n  push:\n    branches: [main]\n'
+  run bash -c "source '${BATS_TEST_DIRNAME}/../scripts/fleet_report.sh' && printf '%s' '$yaml' | extract_crons"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "extract crons: handles YAML 'on:' parsed as boolean true key" {
+  # PyYAML parses the bare key 'on' as boolean True — the parser must still find
+  # the schedule under that key.
+  local yaml=$'on:\n  schedule:\n    - cron: "15 3 * * *"\n'
+  run bash -c "source '${BATS_TEST_DIRNAME}/../scripts/fleet_report.sh' && printf '%s' '$yaml' | extract_crons"
+  [ "$output" = "15 3 * * *" ]
+}
+
+# ---------------------------------------------------------------------------
+# workflow_expected_ticks — extract + count + sum across all crons (#725)
+# ---------------------------------------------------------------------------
+
+@test "expected ticks: multi-cron workflow sums ticks across entries" {
+  local s e yaml
+  s=$(date -u -d '2026-06-01T00:00:00Z' +%s)
+  e=$(date -u -d '2026-06-02T00:00:00Z' +%s)
+  # two daily crons → 1 + 1 = 2 expected ticks over 24h
+  yaml=$'on:\n  schedule:\n    - cron: "0 6 * * *"\n    - cron: "0 18 * * *"\n'
+  run bash -c "source '${BATS_TEST_DIRNAME}/../scripts/fleet_report.sh' && printf '%s' '$yaml' | workflow_expected_ticks $s $e"
+  [ "$status" -eq 0 ]
+  [ "$output" = "2" ]
+}
+
+@test "expected ticks: workflow with no schedule yields 0" {
+  local s e yaml
+  s=$(date -u -d '2026-06-01T00:00:00Z' +%s)
+  e=$(date -u -d '2026-06-02T00:00:00Z' +%s)
+  yaml=$'on:\n  push:\n    branches: [main]\n'
+  run bash -c "source '${BATS_TEST_DIRNAME}/../scripts/fleet_report.sh' && printf '%s' '$yaml' | workflow_expected_ticks $s $e"
+  [ "$output" = "0" ]
+}
+
+# ---------------------------------------------------------------------------
+# classify_schedule_reliability — reliability classification (#725)
+# Prints: <label> <TAB> <hit_rate_display> <TAB> <missed>
+# ---------------------------------------------------------------------------
+
+@test "reliability: expected==actual is STABLE at 100%" {
+  run classify_schedule_reliability 1 1 1 50
+  [ "$status" -eq 0 ]
+  [ "$output" = $'STABLE\t100%\t0' ]
+}
+
+@test "reliability: zero actual against many expected is STALLED" {
+  run classify_schedule_reliability 24 0 1 50
+  [[ "$output" =~ "STALLED" ]]
+}
+
+@test "reliability: actual materially below threshold is DEGRADED" {
+  # 10/24 = 41.7% < 50% threshold
+  run classify_schedule_reliability 24 10 1 50
+  [[ "$output" =~ "DEGRADED" ]]
+  [[ "$output" =~ "41.7%" ]]
+}
+
+@test "reliability: a single missed tick within tolerance stays STABLE" {
+  # 23/24, missed 1 == tolerance → not surfaced
+  run classify_schedule_reliability 24 23 1 50
+  [[ "$output" =~ "STABLE" ]]
+}
+
+@test "reliability: hit rate is capped at 100% when actual exceeds expected" {
+  run classify_schedule_reliability 1 5 1 50
+  [[ "$output" =~ "100%" ]]
+  [[ "$output" =~ "STABLE" ]]
+}
+
+@test "reliability: whole-number rate renders without a decimal" {
+  # 12/24 = 50% (== threshold, so STABLE), whole number
+  run classify_schedule_reliability 24 12 0 50
+  [[ "$output" =~ "50%" ]]
+  [[ ! "$output" =~ "50.0%" ]]
+}
+
+# ---------------------------------------------------------------------------
+# generate_schedule_reliability_report — renders the section (#725)
+# Input TSV rows: repo <TAB> wf <TAB> expected <TAB> actual <TAB> hit_rate
+#                 <TAB> missed <TAB> label
+# ---------------------------------------------------------------------------
+
+@test "schedule report: renders a STALLED workflow and the caveat note" {
+  local f
+  f="$(mktemp "$BATS_TEST_TMPDIR/sr.XXXXXX")"
+  printf '%s\n' \
+    $'petry-projects/broodly\tnightly.yml\t24\t0\t0%\t24\tSTALLED' \
+    $'petry-projects/.github\tdaily.yml\t1\t1\t100%\t0\tSTABLE' \
+    > "$f"
+  run generate_schedule_reliability_report "$f"
+  [ "$status" -eq 0 ]
+  [[ "$output" =~ "Schedule Reliability" ]]
+  [[ "$output" =~ "nightly.yml" ]]
+  [[ "$output" =~ "STALLED" ]]
+  # best-effort / default-branch / tolerance / 1000-cap caveats are documented
+  [[ "$output" =~ "best-effort" ]]
+  [[ "$output" =~ "default branch" ]]
+  [[ "$output" =~ "1000" ]]
+  rm -f "$f"
+}
+
+@test "schedule report: STALLED sorts above STABLE" {
+  local f
+  f="$(mktemp "$BATS_TEST_TMPDIR/sr.XXXXXX")"
+  printf '%s\n' \
+    $'petry-projects/a\tstable.yml\t1\t1\t100%\t0\tSTABLE' \
+    $'petry-projects/b\tstalled.yml\t24\t0\t0%\t24\tSTALLED' \
+    > "$f"
+  run generate_schedule_reliability_report "$f"
+  local stalled_line stable_line
+  stalled_line=$(printf '%s\n' "$output" | grep -n 'stalled.yml' | cut -d: -f1)
+  stable_line=$(printf '%s\n' "$output" | grep -n 'stable.yml' | cut -d: -f1)
+  [ "$stalled_line" -lt "$stable_line" ]
+  rm -f "$f"
+}
+
+@test "schedule report: empty file produces no output" {
+  local f
+  f="$(mktemp "$BATS_TEST_TMPDIR/sr.XXXXXX")"
+  : > "$f"
+  run generate_schedule_reliability_report "$f"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  rm -f "$f"
+}
