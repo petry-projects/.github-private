@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Spec-Drift Eval Case",
+  "description": "One frozen offline spec-drift eval case: a labeled (diff, acceptance-criteria, expected-verdict) triple plus the frozen cheap-tier detector `analysis` fixture the pure classifier consumes, so the case can be scored offline and deterministically. Each line of evals/spec-drift/<split>/cases.jsonl is one object of this shape. The holdout split is the immutable 0-false-positive baseline; changing a holdout expectation is a reviewed fixture change, never a tuning-loop side effect.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "acceptance_criteria", "diff", "analysis", "expected"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+      "minLength": 3,
+      "description": "Stable, unique kebab-case identifier for the case (e.g. 'drift-ac-unimplemented'). Unique within a split and disjoint across dev/holdout (enforced by evals/validate-cases.py)."
+    },
+    "description": {
+      "type": "string",
+      "minLength": 5,
+      "description": "Human-readable note on what this case exercises and why the expected verdict is grounded (which AC drifted, or why the case is a false-positive trap)."
+    },
+    "tags": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 2 },
+      "uniqueItems": true,
+      "description": "Optional labels for coverage tracking, e.g. 'fp-trap', 'true-positive', 'timeout', 'token-variant'."
+    },
+    "acceptance_criteria": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The story's acceptance criteria — the machine-readable spec the shipped diff is judged against, as parse_acceptance_criteria would emit them (one criterion per line, numbering stripped)."
+    },
+    "diff": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The merged PR's unified diff (de-identified/synthetic). Grounds the scenario the frozen analysis is about; offline scoring reads `analysis`, not this field, but it documents what the detector was looking at."
+    },
+    "analysis": {
+      "type": "string",
+      "description": "The frozen cheap-tier detector output for this (diff, acceptance_criteria). Normally ends in a single `DRIFT_VERDICT: DRIFT|ALIGNED` line, exactly as build_drift_prompt instructs the model to emit. An empty string models a timeout/garbled tier (the INDETERMINATE path). This is the deterministic input the pure classify_drift consumes."
+    },
+    "expected": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["verdict"],
+      "description": "The fixed, reward-hack-resistant expected verdict classify_drift must produce for this analysis.",
+      "properties": {
+        "verdict": {
+          "type": "string",
+          "enum": ["DRIFT", "ALIGNED", "INDETERMINATE"],
+          "description": "Expected classifier verdict. A case whose verdict is ALIGNED or INDETERMINATE must never be classified DRIFT — doing so is a false positive the holdout gate forbids."
+        }
+      }
+    }
+  }
+}
