@@ -20,7 +20,7 @@ required additions. Produce a monthly compliance summary issue in `.github-priva
 ```yaml
 on:
   schedule:
-    # First Monday of each month at 09:00 UTC
+    # First Monday of each month at 09:11 UTC
     - cron: '11 9 1-7 * 1'
   workflow_dispatch: {}
 ```

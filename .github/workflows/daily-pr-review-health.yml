@@ -2,7 +2,7 @@ name: Daily PR Review Health Check
 
 on:
   schedule:
-    # Daily at 6:00 UTC — covers same-day run history before US work hours
+    # Daily at 06:13 UTC — covers same-day run history before US work hours
     - cron: '13 6 * * *'
   workflow_dispatch:
     inputs:

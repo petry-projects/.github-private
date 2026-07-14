@@ -6,7 +6,7 @@ name: README Refresh
 
 on:
   schedule:
-    # Weekly — Monday at 09:00 UTC
+    # Weekly — Monday at 09:41 UTC
     - cron: '41 9 * * 1'
   workflow_dispatch:
     inputs:
