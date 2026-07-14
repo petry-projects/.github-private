@@ -91,7 +91,8 @@ classify_drift() {
 # re-parsing prose. Empty pr/story render as JSON null. Pure: uses jq only.
 drift_verdict_envelope() {
   local verdict="${1:-INDETERMINATE}" pr="${2:-}" story="${3:-}" reason="${4:-}"
-  local now="${5:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
+  local now
+  now="${5:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
   jq -nc \
     --arg verdict "$verdict" \
     --arg pr "$pr" \
@@ -100,8 +101,8 @@ drift_verdict_envelope() {
     --arg now "$now" \
     '{
       verdict: $verdict,
-      pr: (if $pr == "" then null else ($pr | tonumber) end),
-      story: (if $story == "" then null else ($story | tonumber) end),
+      pr: (if $pr == "" then null else ($pr | try tonumber catch null) end),
+      story: (if $story == "" then null else ($story | try tonumber catch null) end),
       reason: $reason,
       generated_at: $now
     }'
@@ -184,6 +185,12 @@ main() {
   local body
   body="$(gh issue view "$story" "${gh_repo_args[@]}" --json body -q .body 2>/dev/null || true)"
 
+  if [ -z "${body//[[:space:]]/}" ]; then
+    echo "::warning::[spec-drift] could not fetch issue #${story} body (auth/network error or issue not found) — inert INDETERMINATE" >&2
+    _emit_verdict "INDETERMINATE" "$pr" "$story" "could not fetch issue #${story} body"
+    return 0
+  fi
+
   # Not an initiative story, or no ACs → inert INDETERMINATE, exit 0.
   if ! story_is_initiative "$body"; then
     echo "::notice::[spec-drift] issue #${story} is not an initiative story — inert INDETERMINATE" >&2
@@ -221,13 +228,15 @@ main() {
     source "$SPEC_DRIFT_DIR/engine.sh" >&2
   fi
 
-  local prompt_file
+  local prompt_file triage_stderr
   prompt_file="$(mktemp)"
+  triage_stderr="$(mktemp)"
   build_drift_prompt "$acs" "$diff" > "$prompt_file"
 
   local analysis rc=0
-  analysis="$(run_triage "$prompt_file" 2>/dev/null)" || rc=$?
-  rm -f "$prompt_file"
+  analysis="$(run_triage "$prompt_file" 2>"$triage_stderr")" || rc=$?
+  [ -s "$triage_stderr" ] && cat "$triage_stderr" >&2
+  rm -f "$prompt_file" "$triage_stderr"
 
   if [ "$rc" -ne 0 ]; then
     echo "::warning::[spec-drift] cheap-tier analysis failed (exit ${rc}) — verdict will be INDETERMINATE, not faked" >&2

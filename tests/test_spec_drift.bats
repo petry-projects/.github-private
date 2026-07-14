@@ -141,6 +141,15 @@ BODY
   [ "$(echo "$output" | jq -r '.verdict')" = "INDETERMINATE" ]
 }
 
+@test "drift_verdict_envelope: non-numeric pr/story (e.g. a URL) render as JSON null, not a failure" {
+  run drift_verdict_envelope "INDETERMINATE" "https://github.com/owner/repo/pull/42" "not-a-number" "bad input" "2026-07-14T00:00:00Z"
+  [ "$status" -eq 0 ]
+  echo "$output" | jq -e . >/dev/null
+  [ "$(echo "$output" | jq -r '.pr')" = "null" ]
+  [ "$(echo "$output" | jq -r '.story')" = "null" ]
+  [ "$(echo "$output" | jq -r '.verdict')" = "INDETERMINATE" ]
+}
+
 # ---------------------------------------------------------------------------
 # main() — mocked gh on PATH + pre-defined run_triage (no engine/network)
 # ---------------------------------------------------------------------------
@@ -148,7 +157,7 @@ BODY
 _install_gh_mock() {
   # $1 = issue body that `gh issue view` should emit
   # $2 = pr diff that `gh pr diff` should emit
-  MOCK_BIN="$(mktemp -d)"
+  MOCK_BIN="$(mktemp -d "$BATS_TEST_TMPDIR/mock_bin.XXXXXX")" || { echo "Failed to create temp directory" >&2; exit 1; }
   export MOCK_BIN
   export MOCK_ISSUE_BODY="$1" MOCK_PR_DIFF="$2"
   cat > "$MOCK_BIN/gh" <<'EOF'
@@ -188,6 +197,17 @@ teardown() {
   run bash -c 'source "'"$SCRIPT"'"; main 2>/dev/null'
   [ "$status" -eq 0 ]
   [ "$(echo "$output" | jq -r '.verdict')" = "INDETERMINATE" ]
+}
+
+@test "main: gh issue view returns empty body (fetch failure) → distinct INDETERMINATE reason, exit 0" {
+  # gh mock returns empty body to simulate auth/network failure or issue-not-found
+  _install_gh_mock '' 'diff --git a b'
+  export SPEC_DRIFT_STORY="999" SPEC_DRIFT_PR="42"
+  run bash -c 'source "'"$SCRIPT"'"; main 2>/dev/null'
+  [ "$status" -eq 0 ]
+  echo "$output" | jq -e . >/dev/null
+  [ "$(echo "$output" | jq -r '.verdict')" = "INDETERMINATE" ]
+  [[ "$(echo "$output" | jq -r '.reason')" == *"could not fetch"* ]]
 }
 
 @test "main: resolved ACs + DRIFT analysis → DRIFT verdict, exit 0" {
