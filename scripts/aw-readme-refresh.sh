@@ -94,7 +94,7 @@ gather_facts() {
         printf -- '- `%s`\n' "$sname"
         # Pull the doc body and list its ##/###/#### headings (fence-aware) as searchable subtopics.
         sheadings=$(gh api "repos/$ORG/.github/contents/standards/$sf" \
-          --jq '.content' 2>/dev/null | base64 -d 2>/dev/null \
+          -H "Accept: application/vnd.github.v3.raw" 2>/dev/null \
           | awk '/^[[:space:]]*```/{f=!f;next} !f && /^#{2,4} /{sub(/^#{2,4}[[:space:]]+/,"");print}' || true)
         if [ -n "$sheadings" ]; then
           printf '%s\n' "$sheadings" | sed 's/^/    - /'
