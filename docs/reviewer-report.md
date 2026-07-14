@@ -43,27 +43,33 @@ entire history. This is far fewer API calls than per-PR REST fetches.
 
 Each PR node is normalized (pure `jq`) into two record kinds:
 
-- `{kind:"pr", …}` — one per PR (the participation **denominator**).
-- `{kind:"bot_pr", …}` — one per tracked bot that touched the PR, carrying its first-touch
-  time, latency, verdict counts, inline-comment count, thread resolution, reactions, and a
-  rate-limited flag.
+- `{kind:"pr", …}` — one per PR (the eligible-PR **denominator**).
+- `{kind:"bot_pr", …}` — one per tracked bot that touched the PR, carrying its
+  `real_responses` / `refusals` split (a rate-limit-only touch is a refusal), latency to
+  first real response, verdict counts, inline-comment count, thread resolution, and reactions.
 
 Human authors and untracked bots are dropped at normalization time.
 
 ## Metrics
 
-Everything below is deterministic. _Participation denominator_ = non-draft PRs active in
-the window.
+Everything is deterministic. The headline is a **three-bucket partition of the eligible
+(non-draft) PRs, per reviewer**: every eligible PR is exactly one of Reviewed, Rate-limited,
+or No response for a given bot, so the three always sum to the eligible-PR count. This makes
+"did the reviewer actually do its job?" legible at a glance and separates *refused* work
+(out-of-quota) from *absent* work (never showed up).
 
-| Family | Metric | Definition |
-|---|---|---|
-| **Participation** | PRs reviewed, participation %, reviews, comments/PR | Distinct PRs a bot touched ÷ eligible PRs; review + inline-comment counts. |
-| **Timeliness** | Latency p50 / p95 | Seconds from PR creation to the bot's first review/comment (nearest-rank percentiles). Targets the "review arrived after auto-approval" failure mode (PR #453). |
-| **Verdict mix** | ✅ approved / 🔄 changes-requested | GitHub review `state` per bot. (CodeRabbit no longer approves — its mix reflects that.) |
-| **Reliability** | Rate-limited PRs, coverage gap, no-shows | Out-of-quota notices detected by body text (shared gate pattern); eligible PRs a bot did not touch. |
-| **Signal quality** | Thread resolution %, 👍/👎 | Share of a bot's inline threads later resolved; reactions on its comments. |
-| **Overlap** | PRs reviewed by ≥2 bots | Redundancy vs specialization signal. |
-| **Trend** | Week-over-week Δ (▲/▼) | Every headline metric vs last week's snapshot. Arrows are directional only. |
+| Metric | Definition |
+|---|---|
+| **Reviewed** | PRs where the bot delivered a real review or comment. A PR still counts as Reviewed if the bot *also* posted a rate-limit notice — only the real response matters. |
+| **Rate-limited** | PRs where the bot's **sole** action was to decline (out-of-quota / rate-limit notice, detected by body text via the shared gate pattern). It refused to review. |
+| **No response** | Eligible PRs the bot never appeared on. `= eligible − Reviewed − Rate-limited`. |
+| **✅ / 🔄** | APPROVED / CHANGES_REQUESTED review counts. A rate-limit notice is never counted as a review. |
+| **Latency p50 / p95** | Seconds from PR creation to the bot's first **real** response (refusals excluded, so quota notices don't pollute the percentiles). Targets the "review arrived after auto-approval" failure mode (PR #453). |
+| **Coverage overlap** | PRs reviewed by ≥2 bots — a redundancy vs specialization signal. |
+| **Trend** | Week-over-week Δ (▲/▼) on Reviewed and Rate-limited vs last week's snapshot. Arrows are directional only. |
+
+Thread-resolution and reaction counts are still computed and stored in the snapshot for
+downstream use, but are kept out of the headline table to keep it legible.
 
 ### Week-over-week deltas
 

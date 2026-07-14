@@ -73,10 +73,23 @@ setup() {
   echo "$output" | jq -e '.[] | select(.bot=="gemini-code-assist") | .latency_s == 50'
 }
 
-@test "normalize: rate-limit body text flags the bot as rate_limited" {
+@test "normalize: a rate-limit-only bot is a refusal (real_responses=0, refusals>=1)" {
   run jq -c --arg repo "r" --argjson bots "$BOTS" --arg rl "$RATE_LIMIT_RE" "[ $_NORMALIZE_JQ ]" "$PR_NODE"
-  echo "$output" | jq -e '.[] | select(.bot=="coderabbitai") | .rate_limited == 1'
-  echo "$output" | jq -e '.[] | select(.bot=="chatgpt-codex-connector") | .rate_limited == 1'
+  echo "$output" | jq -e '.[] | select(.bot=="coderabbitai") | .real_responses==0 and .refusals>=1'
+  echo "$output" | jq -e '.[] | select(.bot=="chatgpt-codex-connector") | .real_responses==0 and .refusals>=1'
+}
+
+@test "normalize: a real review alongside a rate-limit comment still counts as reviewed" {
+  tmp="$(mktemp)"
+  cat > "$tmp" <<'JSON'
+{"url":"u","createdAt":"2026-07-10T10:00:00Z","updatedAt":"2026-07-10T10:00:00Z","mergedAt":null,"isDraft":false,"author":{"login":"h"},
+ "reviews":{"nodes":[{"author":{"login":"coderabbitai"},"state":"CHANGES_REQUESTED","submittedAt":"2026-07-10T10:05:00Z","bodyText":"real review: please fix X"}]},
+ "reviewThreads":{"nodes":[]},
+ "comments":{"nodes":[{"author":{"login":"coderabbitai"},"createdAt":"2026-07-10T10:01:00Z","bodyText":"Review limit reached — out of credits"}]}}
+JSON
+  run jq -c --arg repo "r" --argjson bots "$BOTS" --arg rl "$RATE_LIMIT_RE" "[ $_NORMALIZE_JQ ]" "$tmp"
+  # The real CHANGES_REQUESTED review wins over the rate-limit comment.
+  echo "$output" | jq -e '.[] | select(.bot=="coderabbitai") | .real_responses>=1 and .refusals==1 and .reviews==1 and .changes_req==1'
 }
 
 @test "normalize: reactions and thread resolution captured on inline comments" {
@@ -95,10 +108,23 @@ setup() {
 
 @test "aggregate: per-bot rollups sum across repos" {
   run aggregate_snapshot "$FIXTURES"
-  # copilot touched both PRs (markets#42 + broodly#7)
-  echo "$output" | jq -e '.bots["copilot-pull-request-reviewer"].prs_reviewed == 2'
+  # copilot gave a real review on both PRs (markets#42 + broodly#7)
+  echo "$output" | jq -e '.bots["copilot-pull-request-reviewer"].reviewed_prs == 2'
   echo "$output" | jq -e '.bots["copilot-pull-request-reviewer"].changes_req == 1'
   echo "$output" | jq -e '.bots["copilot-pull-request-reviewer"].threads_resolved == 2'
+}
+
+@test "aggregate: Codex/CodeRabbit refused (rate-limited only) on markets#42, absent on broodly#7" {
+  run aggregate_snapshot "$FIXTURES"
+  echo "$output" | jq -e '.bots["chatgpt-codex-connector"] | .reviewed_prs==0 and .refused_prs==1 and .no_response_prs==1'
+  echo "$output" | jq -e '.bots["coderabbitai"]              | .reviewed_prs==0 and .refused_prs==1 and .no_response_prs==1'
+}
+
+@test "aggregate: the three buckets sum to eligible for every bot" {
+  run aggregate_snapshot "$FIXTURES"
+  echo "$output" | jq -e '.eligible_prs as $e
+    | .bots | to_entries
+    | all(.value.reviewed_prs + .value.refused_prs + .value.no_response_prs == $e)'
 }
 
 @test "aggregate: latency percentiles are numeric when data exists" {
@@ -142,6 +168,11 @@ setup() {
   echo "$output" | grep -q "PRs reviewed by ≥2 bots:\*\* 2 of 2"
 }
 
+@test "render: scorecard exposes the three-bucket columns" {
+  run render_reviewer_report "$FIXTURES" 7 12 2026-07-13
+  echo "$output" | grep -q "| Reviewer | Reviewed | Rate-limited | No response |"
+}
+
 @test "render: empty dir yields a no-data message" {
   empty="$(mktemp -d "$BATS_TEST_TMPDIR/empty.XXXXXX")"
   run render_reviewer_report "$empty" 7 0 2026-07-13
@@ -152,16 +183,16 @@ setup() {
 @test "render: week-over-week delta arrow appears when a prior snapshot is given" {
   prev="$(mktemp "$BATS_TEST_TMPDIR/prev.XXXXXX")"
   cat > "$prev" <<'JSON'
-{"eligible_prs":3,"total_prs":4,"bots":{"copilot-pull-request-reviewer":{"prs_reviewed":3}}}
+{"eligible_prs":3,"total_prs":4,"bots":{"copilot-pull-request-reviewer":{"reviewed_prs":3}}}
 JSON
   REVIEWER_PREV_SNAPSHOT="$prev" run render_reviewer_report "$FIXTURES" 7 12 2026-07-13
-  # copilot dropped from 3 → 2
+  # copilot reviewed_prs dropped from 3 → 2
   echo "$output" | grep -q "▼ -1"
 }
 
 @test "render: writes the snapshot artifact when REVIEWER_SNAPSHOT_OUT is set" {
   out="$(mktemp "$BATS_TEST_TMPDIR/out.XXXXXX")"
   REVIEWER_SNAPSHOT_OUT="$out" run render_reviewer_report "$FIXTURES" 7 12 2026-07-13
-  run jq -e '.bots["copilot-pull-request-reviewer"].prs_reviewed == 2' "$out"
+  run jq -e '.bots["copilot-pull-request-reviewer"].reviewed_prs == 2' "$out"
   [ "$status" -eq 0 ]
 }
