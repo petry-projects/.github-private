@@ -352,6 +352,35 @@ PR-triggered check on the existing Lint workflow — **no new cron/scheduled wor
   in `scripts/template_stub_drift.sh` (`TEMPLATE_DRIFT_ALLOWLIST`). Add a path to that allowlist **only** with
   a recorded rationale, the same way the exceptions above are documented.
 
+### Scheduled workflows
+
+- **Never schedule at minute 0.** A scheduled workflow must not use a `0 * * * *`
+  cron (or any `schedule.cron` whose minute field is `0`). Minute-0 crons cluster
+  every repo's automation onto the top of the hour, contending for shared
+  GitHub-hosted runner capacity and producing correlated bursts that are harder to
+  observe and debug.
+- **Use a staggered off-peak minute.** Pick a non-zero, non-round minute (e.g.
+  `'11 9 * * 1'`, `'34 8 * * 1'`, `'27 6 * * *'`) so runs are spread across the hour.
+  There is no single canonical offset — stagger distinct workflows onto different
+  minutes rather than sharing one.
+- **Idempotent/self-healing sweeps may run more often (Option 2).** A sweep that is
+  idempotent — extra ticks are harmless and a missed tick self-heals on the next run
+  — may run at a higher frequency on odd offsets (e.g. `'2,17,32,47 * * * *'`).
+  Because such a workflow converges regardless of exactly when it fires, precise
+  timing does not matter and the higher cadence buys lower worst-case latency at
+  negligible cost. This does not license minute-0: even high-frequency sweeps use
+  non-zero offsets.
+- **CI enforcement.** The `validate-workflow-schedules` job in `lint.yml`
+  (backed by `scripts/validate-workflow-schedules.sh`, tests in
+  `tests/test_validate_workflow_schedules.bats`) fails any PR that introduces a
+  minute-0 `schedule.cron` in `.github/workflows/*.yml`, `.github/workflows/*.md`,
+  or `docs/aw/*.md`. The `frameworks/` subtrees are upstream-owned knowledge docs,
+  not our schedules, and are intentionally out of scope.
+- **Promotion:** this is currently a repo-local standard. To make it org-wide,
+  lift it into [`petry-projects/.github`](https://github.com/petry-projects/.github/blob/main/standards/ci-standards.md)
+  (`standards/ci-standards.md`) and have repos defer to it — see the org-wide
+  rollout tracked under epic #722.
+
 ### Agent Profiles (`agents/*.md`)
 
 - Every agent profile must have YAML frontmatter with `name`, `description`, and `tools`.
