@@ -49,7 +49,7 @@ Mention trigger: Comment `@petry-review-bot` on any org PR for immediate review.
 ## Standards
 
 Engineering standards live in `petry-projects/.github/standards/`.
-Each standard below links to a doc in that repo; notable subtopics are listed to aid discoverability.
+Notable subtopics are listed below to aid discoverability; see the standards directory for full documentation.
 
 | Standard | Notable subtopics |
 |----------|-------------------|
