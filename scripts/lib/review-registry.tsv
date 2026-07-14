@@ -30,3 +30,18 @@ plan_json	prompts/plan-review.md	scripts/post-plan-findings.sh
 # gate consumes — NOT a GitHub review (post-skill-score.sh never calls
 # post-pr-review.sh).
 skill_candidate	prompts/skill-review.md	scripts/post-skill-score.sh
+# Phase 2 (#1091) registers the issue-type classifier's deep-tier specialist
+# routing additively. The Tier-1 triage now emits a `type` label in {security,
+# logic, performance, style}; the pr_diff cascade resolves the matching
+# specialist deep-review prompt for its deep entry from these rows via
+# scripts/lib/deep-specialist.sh — data-driven, not a switch in review-one-pr.sh
+# (AGENTS.md: add a manifest row, do not fork the reviewer). The rubric column
+# holds the single specialist prompt for the class; the output_channel stays the
+# pr_diff channel (post-pr-review.sh) because these route the deep tier of a PR
+# review, not a new artifact type. An ambiguous/absent label or a missing
+# specialist prompt falls back to prompts/deep-review.md (deep-specialist.sh),
+# so registering or removing a specialist can never dead-end the deep tier.
+deep_specialist:security	prompts/deep-review-security.md	scripts/post-pr-review.sh
+deep_specialist:logic	prompts/deep-review-logic.md	scripts/post-pr-review.sh
+deep_specialist:performance	prompts/deep-review-performance.md	scripts/post-pr-review.sh
+deep_specialist:style	prompts/deep-review-style.md	scripts/post-pr-review.sh
