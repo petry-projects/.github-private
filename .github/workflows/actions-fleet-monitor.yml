@@ -174,10 +174,31 @@ jobs:
                 `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID})._ `;
             }
             const today = new Date().toISOString().split('T')[0];
+            const titlePrefix = `${process.env.ORG} — workflow failures detected`;
+
+            // This daily digest embeds the date in its title, so a fresh issue is
+            // created every run — 42 had accumulated open. Close the prior digests
+            // before opening today's so only the current snapshot stays open (the
+            // digest is a point-in-time report; history lives in closed issues).
+            const priors = await github.paginate(github.rest.issues.listForRepo, {
+              owner: context.repo.owner, repo: context.repo.repo,
+              state: 'open', labels: 'health-check', per_page: 100,
+            });
+            for (const p of priors) {
+              if (!p.pull_request && p.title.startsWith(titlePrefix)) {
+                try {
+                  await github.rest.issues.update({
+                    owner: context.repo.owner, repo: context.repo.repo,
+                    issue_number: p.number, state: 'closed', state_reason: 'completed',
+                  });
+                } catch (err) { core.warning(`could not close prior digest #${p.number}: ${err.message}`); }
+              }
+            }
+
             const issue = await github.rest.issues.create({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              title: `${process.env.ORG} — workflow failures detected ${today}`,
+              title: `${titlePrefix} ${today}`,
               body: report,
               labels: ['health-check', 'automated-report'],
             });
