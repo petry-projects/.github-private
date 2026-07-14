@@ -92,7 +92,7 @@ jobs:
             // Close prior open digests before opening today's snapshot.
             const priors = await github.paginate(github.rest.issues.listForRepo, {
               owner: context.repo.owner, repo: context.repo.repo,
-              state: 'open', labels: 'health-check', per_page: 100,
+              state: 'open', labels: 'health-check,automated-report', per_page: 100,
             });
             for (const p of priors) {
               if (!p.pull_request && p.title.startsWith(titlePrefix)) {
@@ -157,7 +157,7 @@ jobs:
             // Date-stamped title → a fresh issue every run. Close prior open ones.
             const priors = await github.paginate(github.rest.issues.listForRepo, {
               owner: context.repo.owner, repo: context.repo.repo,
-              state: 'open', labels: 'health-check', per_page: 100,
+              state: 'open', labels: 'health-check,automated-report', per_page: 100,
             });
             for (const p of priors) {
               if (!p.pull_request && p.title.startsWith(titlePrefix)) {
