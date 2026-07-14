@@ -140,8 +140,8 @@ sc_search_symbol_contexts() {
 
   printf '%s' "$raw" | jq -r '
     if type == "array" then .[] else empty end
-    | .path as $p
-    | ((.textMatches // []) | (.[0].fragment // "")) as $frag
+    | (.path // "" | tostring) as $p
+    | ((.textMatches // []) | (.[0]?.fragment // "")) as $frag
     | ($frag | gsub("[[:space:]]+"; " ") | gsub("^ +| +$"; "")) as $snip
     | "\($p)\t\($snip)"
   ' 2>/dev/null || return 0

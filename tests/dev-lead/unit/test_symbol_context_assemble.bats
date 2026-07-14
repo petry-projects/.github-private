@@ -22,7 +22,7 @@
 setup() {
   source "$(cd "$(dirname "$BATS_TEST_FILENAME")/../../.." && pwd)/scripts/lib/symbol-context.sh"
 
-  STUB_DIR="$(mktemp -d)"
+  STUB_DIR="$(mktemp -d "$BATS_TEST_TMPDIR/stub.XXXXXX")"
   export PATH="$STUB_DIR:$PATH"
   export GH_CALL_LOG="$STUB_DIR/gh_calls.log"
   : > "$GH_CALL_LOG"
@@ -84,8 +84,9 @@ STUBEOF
   [ -f "$OUT_FILE" ]
   grep -q "assemble_thing" "$OUT_FILE"
   # At least 3 reference-context lines were written for the function.
-  [ "$(grep -c 'scripts/[a-d]\.sh' "$OUT_FILE")" -ge 3 ]
-  ! grep -qx "(none)" "$OUT_FILE"
+  [ "$(grep -c 'scripts/[a-d]\.sh' "$OUT_FILE" || true)" -ge 3 ]
+  run grep -qx "(none)" "$OUT_FILE"
+  [ "$status" -eq 1 ]
   # Searches actually happened.
   [ -s "$GH_CALL_LOG" ]
 }
@@ -114,7 +115,7 @@ STUBEOF
   make_gh_stub
   SYMBOL_CONTEXT_MIN=2 run assemble_symbol_context "$DIFF" "$REPO" "$OUT_FILE"
   [ "$status" -eq 0 ]
-  [ "$(grep -c 'scripts/[a-d]\.sh' "$OUT_FILE")" -ge 2 ]
+  [ "$(grep -c 'scripts/[a-d]\.sh' "$OUT_FILE" || true)" -ge 2 ]
 }
 
 # ---------------------------------------------------------------------------

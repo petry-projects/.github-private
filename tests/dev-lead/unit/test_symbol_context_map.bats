@@ -102,5 +102,5 @@ setup() {
   run sc_touched_functions "$diff"
   [ "$status" -eq 0 ]
   # exactly one line of output
-  [ "$(printf '%s\n' "$output" | grep -c 'assemble_thing')" -eq 1 ]
+  [ "$(printf '%s\n' "$output" | grep -c 'assemble_thing' || true)" -eq 1 ]
 }
