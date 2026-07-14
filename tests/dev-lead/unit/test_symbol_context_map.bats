@@ -104,3 +104,47 @@ setup() {
   # exactly one line of output
   [ "$(printf '%s\n' "$output" | grep -c 'assemble_thing' || true)" -eq 1 ]
 }
+
+# ---------------------------------------------------------------------------
+# Hunk-header (@@ line) signature extraction
+# ---------------------------------------------------------------------------
+
+@test "body-only change: function signature in @@ hunk header is extracted" {
+  # The signature appears only in the @@ line context field — not on any +/- line.
+  local diff='--- a/svc/handler.go
++++ b/svc/handler.go
+@@ -10,3 +10,3 @@ func ServeHTTP(w http.ResponseWriter, r *http.Request) {
+-  doOldThing()
++  doNewThing()
+ }
+'
+  run sc_touched_functions "$diff"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"ServeHTTP"* ]]
+}
+
+@test "body-only bash change: function name in @@ hunk header is extracted" {
+  local diff='--- a/scripts/foo.sh
++++ b/scripts/foo.sh
+@@ -5,3 +5,3 @@ assemble_thing() {
+-  old_cmd
++  new_cmd
+ }
+'
+  run sc_touched_functions "$diff"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"assemble_thing"* ]]
+}
+
+@test "body-only python change: function name in @@ hunk header is extracted" {
+  local diff='--- a/app/util.py
++++ b/app/util.py
+@@ -3,3 +3,3 @@ def compute_total(items):
+-    return 0
++    return sum(items)
+ }
+'
+  run sc_touched_functions "$diff"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"compute_total"* ]]
+}

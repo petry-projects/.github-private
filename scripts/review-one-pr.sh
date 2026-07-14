@@ -700,7 +700,11 @@ fi
 # PR_DIFF/PR_METADATA unset below so it can read the diff; best-effort —
 # assemble_symbol_context always exits 0, degrading to a warning (never fails).
 if [ "${SYMBOL_CONTEXT_ENABLED:-false}" = "true" ]; then
-  assemble_symbol_context "$PR_DIFF" "${GITHUB_REPOSITORY:-}" "/tmp/cascade/symbol-context.txt" || true
+  if [ -z "${GITHUB_REPOSITORY:-}" ]; then
+    echo "::warning::[symbol-context] GITHUB_REPOSITORY is unset — skipping symbol context to avoid an unscoped cross-repository search" >&2
+  else
+    assemble_symbol_context "$PR_DIFF" "$GITHUB_REPOSITORY" "/tmp/cascade/symbol-context.txt" || true
+  fi
 fi
 
 # Build the triage prompt: static template + inlined PR context.

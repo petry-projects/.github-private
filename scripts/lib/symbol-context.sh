@@ -44,10 +44,56 @@ sc_touched_functions() {
   local diff="${1:-}"
   [ -n "$diff" ] || return 0
   printf '%s\n' "$diff" | awk '
-    # Only consider added/removed content lines; skip diff file headers
-    # (+++/---) and hunk headers (@@).
+    # Only consider added/removed content lines and @@ hunk headers; skip diff
+    # file headers (+++/---).
     /^\+\+\+/ || /^---/ { next }
-    /^@@/ { next }
+    /^@@/ {
+      # Extract the trailing context field after the second @@ (e.g.
+      # "@@ -10,3 +10,3 @@ func ServeHTTP(...) {" -> "func ServeHTTP(...) {").
+      # This is the only source of the touched function name when the diff is a
+      # body-only change (signature line was not added or removed).
+      line = $0
+      if (match(line, /@@ [^@]* @@ /)) {
+        s = substr(line, RSTART + RLENGTH)
+        sub(/^[[:space:]]+/, "", s)
+      } else if (match(line, /@@ [^@]* @@$/)) {
+        next   # no context field on this hunk header
+      } else {
+        next
+      }
+      name = ""
+      # go: func (recv) Name(  |  func Name(
+      if (match(s, /^func[[:space:]]+(\([^)]*\)[[:space:]]*)?[A-Za-z_][A-Za-z0-9_]*[[:space:]]*\(/)) {
+        t = s
+        sub(/^func[[:space:]]+/, "", t)
+        sub(/^\([^)]*\)[[:space:]]*/, "", t)
+        if (match(t, /^[A-Za-z_][A-Za-z0-9_]*/)) { name = substr(t, 1, RLENGTH) }
+      }
+      # python: def name(
+      else if (match(s, /^def[[:space:]]+[A-Za-z_][A-Za-z0-9_]*[[:space:]]*\(/)) {
+        t = s; sub(/^def[[:space:]]+/, "", t)
+        match(t, /^[A-Za-z_][A-Za-z0-9_]*/); name = substr(t, 1, RLENGTH)
+      }
+      # js/ts: (export) function name(
+      else if (match(s, /^(export[[:space:]]+)?(async[[:space:]]+)?function[[:space:]]+[A-Za-z_$][A-Za-z0-9_$]*[[:space:]]*\(/)) {
+        t = s
+        sub(/^export[[:space:]]+/, "", t)
+        sub(/^async[[:space:]]+/, "", t)
+        sub(/^function[[:space:]]+/, "", t)
+        match(t, /^[A-Za-z_$][A-Za-z0-9_$]*/); name = substr(t, 1, RLENGTH)
+      }
+      # bash: function name
+      else if (match(s, /^function[[:space:]]+[A-Za-z_][A-Za-z0-9_-]*/)) {
+        t = s; sub(/^function[[:space:]]+/, "", t)
+        match(t, /^[A-Za-z_][A-Za-z0-9_-]*/); name = substr(t, 1, RLENGTH)
+      }
+      # bash/generic: name() {
+      else if (match(s, /^[A-Za-z_][A-Za-z0-9_-]*[[:space:]]*\(\)/)) {
+        match(s, /^[A-Za-z_][A-Za-z0-9_-]*/); name = substr(s, 1, RLENGTH)
+      }
+      if (name != "") print name
+      next
+    }
     /^[+-]/ {
       line = substr($0, 2)          # strip the +/- marker
       s = line
@@ -191,11 +237,11 @@ assemble_symbol_context() {
   local fn
   while IFS= read -r fn; do
     [ -n "$fn" ] || continue
-    fn_count=$((fn_count + 1))
-    if [ "$fn_count" -gt "$max_funcs" ]; then
+    if [ "$fn_count" -ge "$max_funcs" ]; then
       block+=$'\n'"(function cap reached: $max_funcs; remaining touched functions not searched)"$'\n'
       break
     fi
+    fn_count=$((fn_count + 1))
 
     local ctx rc=0 n=0
     ctx=$(sc_search_symbol_contexts "$fn" "$repo" "$min") || rc=$?
