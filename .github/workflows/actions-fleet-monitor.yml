@@ -207,8 +207,10 @@ jobs:
 
       - name: Migrate misaligned fleet-tracker issues
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
+        env:
+          GH_PAT_WORKFLOWS: ${{ secrets.GH_PAT_WORKFLOWS }}
         with:
-          github-token: ${{ secrets.GH_PAT_WORKFLOWS }}
+          github-token: ${{ env.GH_PAT_WORKFLOWS }}
           script: |
             // Find open fleet-tracker issues in .github-private that belong to other repos
             const allIssues = await github.paginate(github.rest.issues.listForRepo, {
@@ -266,9 +268,10 @@ jobs:
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
         env:
           ORG: ${{ env.ORG }}
+          GH_PAT_WORKFLOWS: ${{ secrets.GH_PAT_WORKFLOWS }}
         with:
           # Use GH_PAT_WORKFLOWS for cross-repo issues:write on target repos
-          github-token: ${{ secrets.GH_PAT_WORKFLOWS }}
+          github-token: ${{ env.GH_PAT_WORKFLOWS }}
           script: |
             const fs = require('fs');
 
