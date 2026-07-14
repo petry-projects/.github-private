@@ -47,6 +47,19 @@ setup() {
   [ -z "$output" ]
 }
 
+# gemini-3.5-flash: mis-priced 2026-06-11 row corrected by an appended 2026-07-14
+# row (issue #1205). Historical lookups stay on the old rate; post-correction
+# lookups pick up the verified Google rate (input 1.50 / cache_read 0.15 / output 9.00).
+@test "price_for: gemini-3.5-flash historical (pre-correction) → \$0.30 / \$0.03 / \$0.30 / \$1.20" {
+  run price_for "gemini-3.5-flash" "2026-07-01"
+  [ "$output" = "0.30 0.03 0.30 1.20" ]
+}
+
+@test "price_for: gemini-3.5-flash corrected (post-correction) → \$1.50 / \$0.15 / \$1.50 / \$9.00" {
+  run price_for "gemini-3.5-flash" "2026-07-14"
+  [ "$output" = "1.50 0.15 1.50 9.00" ]
+}
+
 # ---------------------------------------------------------------------------
 # Effective-date selection (dedicated fixture table with two dated rows)
 # ---------------------------------------------------------------------------
