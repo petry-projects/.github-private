@@ -52,6 +52,7 @@ jobs:
             tests/test_initiative_driver_canary.bats \
             tests/test_mcp_connectivity_check.bats \
             tests/token_report.bats \
+            tests/reviewer_report.bats \
             tests/auto_rebase_health.bats \
             tests/model_pricing.bats \
             tests/test_review_cycle.bats \
