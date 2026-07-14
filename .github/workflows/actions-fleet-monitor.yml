@@ -76,6 +76,11 @@ jobs:
         run: bash scripts/fleet_monitor.sh
 
       - name: Summarize token usage by workflow
+        # Best-effort observability only — it fetches/unzips every token-usage
+        # artifact, so a transient API rate-limit (HTTP 403) here must NOT abort
+        # the whole monitor and starve the later, load-bearing steps (issue
+        # tracking + the fleet-tracker auto-close). Let it fail soft.
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
           REPO: petry-projects/.github-private
