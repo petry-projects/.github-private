@@ -229,9 +229,9 @@ aggregate_snapshot() {
     | (map(select(.kind=="bot_pr"))) as $bp
     | ($prs | length) as $total
     # Bucket over ELIGIBLE (non-draft) PRs only, so the three buckets sum to eligible.
-    | ([ $prs[] | select(.draft == false) | .pr ] | unique) as $elig_urls
-    | ($elig_urls | length) as $eligible
-    | ($bp | map(select(.pr as $u | $elig_urls | index($u)))) as $bpe
+    | (reduce ($prs[] | select(.draft == false)) as $p ({}; .[$p.pr] = true)) as $elig_map
+    | ($elig_map | length) as $eligible
+    | ($bp | map(select($elig_map[.pr]))) as $bpe
     | ($bpe | group_by(.bot) | map(
         (.[0].bot) as $bot
         | (map(select((.real_responses // 0) > 0))) as $reviewed

@@ -80,7 +80,7 @@ setup() {
 }
 
 @test "normalize: a real review alongside a rate-limit comment still counts as reviewed" {
-  tmp="$(mktemp)"
+  tmp="$(mktemp "$BATS_TEST_TMPDIR/tmp.XXXXXX")"
   cat > "$tmp" <<'JSON'
 {"url":"u","createdAt":"2026-07-10T10:00:00Z","updatedAt":"2026-07-10T10:00:00Z","mergedAt":null,"isDraft":false,"author":{"login":"h"},
  "reviews":{"nodes":[{"author":{"login":"coderabbitai"},"state":"CHANGES_REQUESTED","submittedAt":"2026-07-10T10:05:00Z","bodyText":"real review: please fix X"}]},
