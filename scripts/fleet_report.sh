@@ -25,6 +25,229 @@ FLEET_GATE_WORKFLOWS="${FLEET_GATE_WORKFLOWS:-test-deletion-guard.yml holdout-gu
 # dev-lead scripts is a one-line fix here.
 DEV_LEAD_ISSUE_MARKER="${DEV_LEAD_ISSUE_MARKER:-<!-- dev-lead-issue }"
 
+# Schedule-reliability tuning (#725, epic #722). Scheduled GitHub Actions runs
+# are best-effort by design (#656): a tick can fire late or be dropped under
+# load. SCHEDULE_TOLERANCE_TICKS absorbs a few late/boundary ticks so a
+# late-but-present run is NOT scored as a miss; SCHEDULE_RELIABILITY_THRESHOLD
+# is the hit-rate percent below which a workflow is surfaced as DEGRADED.
+# A workflow with zero schedule-triggered runs against a non-trivial expected
+# count is the silent-never-fired case this feature exists to expose (STALLED).
+SCHEDULE_TOLERANCE_TICKS="${SCHEDULE_TOLERANCE_TICKS:-1}"
+SCHEDULE_RELIABILITY_THRESHOLD="${SCHEDULE_RELIABILITY_THRESHOLD:-50}"
+
+# count_cron_ticks <cron_expr> <start_epoch> <end_epoch>
+# Counts how many times a single 5-field cron expression fires in the half-open
+# window [start_epoch, end_epoch) (UTC). The actions/workflows API does not
+# expose cron, so callers parse it from the workflow YAML (see extract_crons).
+# Supports '*', ',', '-', and '/' in every field. Day-of-month / day-of-week
+# follow the standard Vixie-cron rule: when BOTH are restricted the tick fires
+# if EITHER matches; when one is '*' the other is ANDed. An empty or malformed
+# expression yields 0 (tolerated as unknown, never fatal).
+count_cron_ticks() {
+  local cron="${1:-}" start="${2:-0}" end="${3:-0}"
+  if [ -z "$cron" ]; then printf '0'; return 0; fi
+  CRON="$cron" START="$start" END="$end" python3 - <<'PY'
+import os, sys
+from datetime import datetime, timezone
+
+cron = os.environ.get("CRON", "").strip()
+try:
+    start = int(os.environ["START"]); end = int(os.environ["END"])
+except (KeyError, ValueError):
+    print(0); sys.exit(0)
+
+fields = cron.split()
+if len(fields) != 5:
+    print(0); sys.exit(0)
+
+def parse(spec, lo, hi):
+    allowed = set()
+    for term in spec.split(","):
+        term = term.strip()
+        if not term:
+            return None
+        step = 1
+        if "/" in term:
+            base, _, s = term.partition("/")
+            try:
+                step = int(s)
+            except ValueError:
+                return None
+            if step <= 0:
+                return None
+        else:
+            base = term
+        if base == "*":
+            a, b = lo, hi
+        elif "-" in base:
+            p, _, q = base.partition("-")
+            try:
+                a, b = int(p), int(q)
+            except ValueError:
+                return None
+        else:
+            try:
+                a = b = int(base)
+            except ValueError:
+                return None
+        v = a
+        while v <= b:
+            if lo <= v <= hi:
+                allowed.add(v)
+            v += step
+    return allowed
+
+mins  = parse(fields[0], 0, 59)
+hours = parse(fields[1], 0, 23)
+doms  = parse(fields[2], 1, 31)
+mons  = parse(fields[3], 1, 12)
+# Normalize day-of-week 7 -> 0 (both mean Sunday).
+dows_raw = parse(fields[4], 0, 7)
+if dows_raw is None:
+    dows = None
+else:
+    dows = {0 if d == 7 else d for d in dows_raw}
+
+if any(x is None for x in (mins, hours, doms, mons, dows)):
+    print(0); sys.exit(0)
+
+dom_restricted = fields[2].strip() != "*"
+dow_restricted = fields[4].strip() != "*"
+
+# Align to the first minute boundary at or after start.
+t = start + ((60 - (start % 60)) % 60)
+count = 0
+while t < end:
+    dt = datetime.fromtimestamp(t, tz=timezone.utc)
+    if dt.minute in mins and dt.hour in hours and dt.month in mons:
+        cron_dow = (dt.weekday() + 1) % 7  # Mon=0..Sun=6 -> Sun=0..Sat=6
+        if dom_restricted and dow_restricted:
+            day_ok = (dt.day in doms) or (cron_dow in dows)
+        elif dom_restricted:
+            day_ok = dt.day in doms
+        elif dow_restricted:
+            day_ok = cron_dow in dows
+        else:
+            day_ok = True
+        if day_ok:
+            count += 1
+    t += 60
+print(count)
+PY
+}
+
+# extract_crons  (reads workflow YAML on stdin)
+# Prints each schedule.cron expression, one per line. The workflows API does not
+# return cron, so it is parsed from the file content. Tolerates malformed YAML
+# and the PyYAML gotcha where the bare key `on:` parses as boolean True — both
+# the string 'on' and the boolean key are checked. Any parse failure prints
+# nothing and exits 0 (recorded upstream as "no schedule / unknown").
+extract_crons() {
+  local content
+  content=$(cat)
+  WF_CONTENT="$content" python3 - <<'PY'
+import os, sys
+try:
+    import yaml
+    d = yaml.safe_load(os.environ.get("WF_CONTENT", "")) or {}
+except Exception:
+    sys.exit(0)
+if not isinstance(d, dict):
+    sys.exit(0)
+on = d.get("on", d.get(True))
+if not isinstance(on, dict):
+    sys.exit(0)
+sched = on.get("schedule")
+if not isinstance(sched, list):
+    sys.exit(0)
+for item in sched:
+    if isinstance(item, dict) and "cron" in item:
+        c = item["cron"]
+        if isinstance(c, str) and c.strip():
+            print(c.strip())
+PY
+}
+
+# workflow_expected_ticks <start_epoch> <end_epoch>  (reads workflow YAML stdin)
+# Extracts every schedule.cron from the workflow YAML and sums the expected tick
+# counts across all cron entries over [start, end). Multi-cron workflows are
+# summed (each cron entry triggers its own run). Prints 0 for a workflow with no
+# schedule trigger.
+workflow_expected_ticks() {
+  local start="${1:-0}" end="${2:-0}" content crons total=0 c n
+  content=$(cat)
+  crons=$(printf '%s' "$content" | extract_crons)
+  if [ -z "$crons" ]; then printf '0'; return 0; fi
+  while IFS= read -r c; do
+    [ -n "$c" ] || continue
+    n=$(count_cron_ticks "$c" "$start" "$end")
+    total=$(( total + n ))
+  done <<< "$crons"
+  printf '%s' "$total"
+}
+
+# classify_schedule_reliability <expected> <actual> [tolerance] [threshold_pct]
+# Classifies scheduled-run reliability and prints TSV:
+#   <label> <TAB> <hit_rate_display> <TAB> <missed>
+# where missed = max(0, expected - actual) and hit_rate is capped at 100%.
+#   STALLED  — actual == 0 while a non-trivial number of ticks was expected
+#              (a cron that silently never fired — the #725 core signal)
+#   DEGRADED — actual materially below expected: missed exceeds the tolerance
+#              AND hit rate is below the threshold
+#   STABLE   — within tolerance, or hit rate at/above the threshold (not surfaced)
+# expected <= 0 (no schedule) yields "STABLE n/a 0".
+classify_schedule_reliability() {
+  local expected="${1:-0}" actual="${2:-0}"
+  local tol="${3:-$SCHEDULE_TOLERANCE_TICKS}"
+  local thr="${4:-$SCHEDULE_RELIABILITY_THRESHOLD}"
+  awk -v e="$expected" -v a="$actual" -v tol="$tol" -v thr="$thr" 'BEGIN {
+    e += 0; a += 0; tol += 0; thr += 0
+    if (e <= 0) { printf "STABLE\tn/a\t0"; exit }
+    missed = e - a; if (missed < 0) missed = 0
+    eff = missed - tol; if (eff < 0) eff = 0
+    hr = a * 100.0 / e; if (hr > 100) hr = 100
+    hr_disp = (hr == int(hr)) ? sprintf("%d%%", hr) : sprintf("%.1f%%", hr)
+    if (eff == 0)        label = "STABLE"
+    else if (a == 0)     label = "STALLED"
+    else if (hr < thr)   label = "DEGRADED"
+    else                 label = "STABLE"
+    printf "%s\t%s\t%d\n", label, hr_disp, missed
+  }'
+}
+
+# generate_schedule_reliability_report <schedule_metrics_file>
+# Renders the Schedule Reliability section (#725) from a TSV file with one row
+# per scheduled workflow:
+#   repo <TAB> wf <TAB> expected <TAB> actual <TAB> hit_rate <TAB> missed <TAB> label
+# Rows are sorted by severity (STALLED, then DEGRADED, then STABLE) so a silently
+# stalled cron surfaces at the top, consistent with the high-failure tracking
+# style. An empty or missing file prints nothing (section omitted when no
+# scheduled workflows were seen).
+generate_schedule_reliability_report() {
+  local f="${1:-}"
+  [ -n "$f" ] && [ -s "$f" ] || return 0
+  printf '## Schedule Reliability\n\n'
+  printf 'Expected cron ticks vs. actual `schedule`-triggered runs per scheduled workflow over the window. A cron that silently stopped firing shows as **STALLED** even when its last run "succeeded" — so a stalled backlog stops hiding behind a green check.\n\n'
+  printf '| Repo | Workflow | Expected | Actual | Hit Rate | Missed | Status |\n'
+  printf '|---|---|---|---|---|---|---|\n'
+  awk 'BEGIN { FS = OFS = "\t" } {
+    k = 3
+    if ($7 == "STALLED")      k = 0
+    else if ($7 == "DEGRADED") k = 1
+    print k, $0
+  }' "$f" | sort -t$'\t' -k1,1n -k2,2 -k3,3 | cut -f2- | \
+  while IFS=$'\t' read -r repo wf expected actual hr missed label; do
+    [ -n "$repo" ] || continue
+    local icon
+    icon=$(label_to_icon "$label")
+    printf '| `%s` | `%s` | %s | %s | %s | %s | %s %s |\n' \
+      "$repo" "$wf" "$expected" "$actual" "$hr" "$missed" "$icon" "$label"
+  done
+  printf '\n'
+  printf '_Scheduled runs are best-effort — GitHub may delay or drop ticks under load and only schedules crons on the **default branch**. A tolerance of %s tick(s) is applied so a late-but-present run is not scored as a miss, and only `schedule`-event runs are counted (workflow_dispatch / push / repository_dispatch excluded). Run queries are capped at 1000 results per window, so very high-volume workflows may under-report actual runs._\n' \
+    "$SCHEDULE_TOLERANCE_TICKS"
+}
+
 # label_to_icon <label>
 # Returns the health icon matching the scorecard legend.
 label_to_icon() {
@@ -35,6 +258,8 @@ label_to_icon() {
     HEALTHY)  printf '✅' ;;
     ERROR)    printf '⚫' ;;
     LOW-CONF) printf '🟡' ;;
+    STALLED)  printf '🔴' ;;
+    STABLE)   printf '✅' ;;
     *)        printf '⬜' ;;
   esac
 }
