@@ -23,11 +23,18 @@ Two mechanisms together guarantee it. For downstream consumer repos pinned to
 2. **Break-glass (operational, #619).** For the residual case where a break *does*
    reach the gate that must review its own fix — e.g. a bug in `compute_ci_status`
    that marks the fix PR "failing" — a manual `FORCE_REVIEW` run (`@mention` /
-   `workflow_dispatch`) bypasses **every** soft gate, including the `ci-failing`
-   gate:
+   `workflow_dispatch`) bypasses the following soft gates:
    - advisory-bot gate, `CHANGES_REQUESTED`, idempotency, and the review cap
      (pre-existing), **and**
    - the `ci-failing` gate (`scripts/review-one-pr.sh`, shipped in #1230).
+
+   **Exception — per-PR automation budget (`enforce_pr_budget`).** `FORCE_REVIEW`
+   does **not** bypass the `enforce_pr_budget` gate; a FORCE_REVIEW mention that
+   finds the budget exhausted exits with
+   `"reason":"automation-budget-exhausted"` before reaching the review cascade.
+   The budget resets only on a human interaction (comment, push, or approval).
+   If the fix PR has already exhausted its budget, a human must interact with the
+   PR first to reset the budget before the break-glass can proceed.
 
    `FORCE_REVIEW` is **manual-only** (the scheduled sweep dispatches
    `force_review=false`), and GitHub's ruleset still blocks the merge on any
@@ -40,8 +47,13 @@ Two mechanisms together guarantee it. For downstream consumer repos pinned to
 
 - a **normal** run on failing CI still skips (`reason=ci-failing`, exit 100) — the
   gate is not weakened for day-to-day operation;
-- a **`FORCE_REVIEW=true`** run on failing CI **bypasses** the gate — the fix can
-  be reviewed and approved.
+- a **`FORCE_REVIEW=true`** run on failing CI **bypasses** the `ci-failing` gate
+  (exit is not 100; the run is not skipped with `reason=ci-failing`).
+
+  Note: the test asserts the gate is not tripped (exit ≠ 100 and the bypass
+  warning appears). It does not verify that a review is subsequently submitted
+  and approved — a downstream engine or posting failure could still prevent
+  approval even with a passing test.
 
 If a future change re-couples the gate to its own fix, that test fails.
 
