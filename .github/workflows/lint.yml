@@ -83,6 +83,7 @@ jobs:
             tests/test_sweep_stuck_reviews.bats \
             tests/test_validate_cases.bats \
             tests/test_review_registry.bats \
+            tests/test_deep_specialist.bats \
             tests/test_pr_diff_dispatch.bats \
             tests/test_plan_review.bats \
             tests/test_plan_critic.bats \
