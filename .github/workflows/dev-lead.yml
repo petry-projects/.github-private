@@ -51,7 +51,7 @@ jobs:
     # scripts/prompts checkout to the same channel.
     uses: petry-projects/.github-private/.github/workflows/dev-lead-reusable.yml@dev-lead/v1-next
     with:
-      agent_ref: dev-lead/next
+      agent_ref: dev-lead/v1-next
     secrets: inherit
     permissions:
       contents: write
