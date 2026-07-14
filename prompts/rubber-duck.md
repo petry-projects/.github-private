@@ -19,6 +19,12 @@ otherwise. Prioritize concrete findings over vague concerns.
   `signals` array explaining why it escalated.
 - `$PRIOR_REVIEW_BODY` — prior review body if this is a re-review (empty if first).
 - `$PRIOR_REVIEW_SHA` — prior SHA if re-review.
+- `$SYMBOL_CONTEXT_FILE` — (optional; set only when the symbol-context pass is
+  enabled) path to a file containing the `SYMBOL_CONTEXT` block: for each function
+  touched in the diff, its caller/callee/type-definition reference contexts
+  (path + snippet) from code search. May be the literal `(none)`. You get the
+  same context as the primary reviewer so you reason on equal footing — use it to
+  hunt cross-file logic bugs and broken callers the hunk alone hides.
 - `$OUTPUT_FILE` — absolute path where you MUST write your JSON verdict.
 
 ## Scope
@@ -34,8 +40,13 @@ enumeration. No actions on other PRs.
    yourself to those signals. Your value comes from finding what others miss.
 2. `gh pr view "$PR_URL" --json number,title,body,author,isDraft,baseRefName,headRefName,headRefOid,url,repository,labels,reviewDecision,mergeable,mergeStateStatus,statusCheckRollup,reviewRequests,reviews,comments,commits,closingIssuesReferences,additions,deletions,changedFiles,files`
 3. `gh pr diff "$PR_URL"` — read the diff thoroughly.
-4. Fetch linked issues if any.
-5. Check `statusCheckRollup` for CI status.
+4. If `$SYMBOL_CONTEXT_FILE` is set and the file exists and its contents are not
+   `(none)`, read it: it lists caller/callee/type-definition reference contexts
+   for each function this PR touches. Cross-check the diff against how each symbol
+   is used elsewhere — broken callers, unhandled return shapes, type mismatches
+   are exactly the cross-file bugs the primary reviewer's model family may miss.
+5. Fetch linked issues if any.
+6. Check `statusCheckRollup` for CI status.
 
 ## Adversarial focus areas
 
