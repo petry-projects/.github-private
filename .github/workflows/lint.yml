@@ -111,7 +111,8 @@ jobs:
             tests/test_review_one_pr_ci_pending.bats \
             tests/test_release_registry.bats \
             tests/test_readme_refresh_helpers.bats \
-            tests/test_validate_personas.bats
+            tests/test_validate_personas.bats \
+            tests/test_dev_lead_concurrency_guard.bats
 
   template-drift:
     # Drift guard (#969): fail when a file committed in petry-projects/repo-template
