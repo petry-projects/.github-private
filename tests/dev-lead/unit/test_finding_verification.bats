@@ -2,7 +2,7 @@
 # Unit tests for scripts/lib/finding-verification.sh + emit_verification_record
 # (issue #1092, epic #1088 — agentic iterative validation). Written TDD-first.
 #
-# apply_finding_verification() mirrors the documented lsp-verification downgrade
+# apply_finding_verification() implements the finding-verification downgrade
 # discipline: it applies severity downgrades/drops to deep-tier logic/correctness
 # findings based on the repro `verification` tag the deep tier recorded, and emits
 # one kind:"finding_verification" record per processed finding so the FP-rate
@@ -41,7 +41,10 @@ _write_one() {
     }' > "$DEEP_JSON"
 }
 
-_records() { jq -c 'select(.kind=="finding_verification")' "$TOKEN_LOG_FILE" 2>/dev/null; }
+_records() {
+  [ -s "${TOKEN_LOG_FILE:-}" ] || return 0
+  jq -c 'select(.kind=="finding_verification")' "$TOKEN_LOG_FILE" 2>/dev/null || true
+}
 _record_count() { _records | wc -l | tr -d ' '; }
 
 # ── emit_verification_record ──────────────────────────────────────────────────

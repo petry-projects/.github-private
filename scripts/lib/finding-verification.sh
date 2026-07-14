@@ -16,9 +16,9 @@
 #   the downgrade/drop, tags the message auditable, and emits one
 #   kind:"finding_verification" record per processed finding (via
 #   emit_verification_record in token-metrics.sh) so the false-positive-rate delta
-#   is measurable. It mirrors the documented lsp-verification downgrade pattern:
-#   same record kind, same downgrade discipline, so token_report.sh aggregation and
-#   the FP-rate math already work.
+#   is measurable. It uses the same record kind and downgrade discipline as other
+#   finding post-processors, so token_report.sh aggregation and the FP-rate math
+#   work without further changes.
 #
 # PRIVILEGE / TIMEOUT GUARD (AC #3)
 #   This function runs NO external tools — it is jq-only. The actual repro happens
