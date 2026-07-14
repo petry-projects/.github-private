@@ -15,6 +15,7 @@
 #     (Workflow Files exception). Do not let template syncs remove it.
 # ─────────────────────────────────────────────────────────────────────────────
 name: Auto-rebase Health Report
+# readme-report: Daily auto-rebase health report (issue) — rebase success/failure trends.
 
 on:
   schedule:

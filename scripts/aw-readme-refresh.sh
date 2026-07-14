@@ -123,6 +123,25 @@ gather_facts() {
       src="$(grep -iE '^(source|upstream|tag|version)' "$d/VENDOR.md" 2>/dev/null | head -2 | tr '\n' '; ' | sed 's/; *$//' || true)"
       printf -- '- `%s` (%s)\n' "$name" "${src:-vendored}"
     done
+    echo ""
+    echo "### Reporting & dashboard workflows (scheduled reports/dashboards for human maintainers)"
+    echo ""
+    # Self-describing discovery: a reporting workflow opts in with a `# readme-report: <desc>` marker
+    # line. .github-private workflows are read from this checkout; .github workflows via API. Both are
+    # best-effort (|| true) so a transient fetch failure degrades to fewer rows, never an abort.
+    local wf rdesc
+    for wf in "$REPO_ROOT"/.github/workflows/*.yml; do
+      [ -e "$wf" ] || continue
+      rdesc="$(grep -m1 -E '^# readme-report:' "$wf" 2>/dev/null | sed -E 's/^# readme-report:[[:space:]]*//' || true)"
+      [ -n "$rdesc" ] && printf -- '- `%s` (.github-private): %s\n' "$(basename "$wf")" "$rdesc"
+    done
+    for wf in $(gh api "repos/$ORG/.github/contents/.github/workflows" \
+                  --jq '.[] | select((.name // "") | endswith(".yml")) | .name' 2>/dev/null || true); do
+      rdesc="$(gh api "repos/$ORG/.github/contents/.github/workflows/$wf" --jq '.content' 2>/dev/null \
+                | base64 -d 2>/dev/null | grep -m1 -E '^# readme-report:' \
+                | sed -E 's/^# readme-report:[[:space:]]*//' || true)"
+      [ -n "$rdesc" ] && printf -- '- `%s` (.github): %s\n' "$wf" "$rdesc"
+    done
   } > "$facts_file"
 
   echo "$facts_file"
