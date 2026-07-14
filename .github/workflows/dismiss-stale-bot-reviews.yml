@@ -26,7 +26,13 @@ concurrency:
 jobs:
   dismiss:
     # Same-repo PRs only — fork PRs get a read-only token that cannot dismiss.
-    if: github.event.pull_request.head.repo.full_name == github.repository
+    # Skip Dependabot events: Dependabot `pull_request` runs receive no repo
+    # secrets (same constraint documented in dev-lead-reusable.yml lines 74-79),
+    # so GH_TOKEN is empty and the first `gh api` call fails even though there
+    # is no stale bot review to dismiss.
+    if: >-
+      github.actor != 'dependabot[bot]' &&
+      github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     steps:
       - name: Dismiss stale bot CHANGES_REQUESTED reviews
