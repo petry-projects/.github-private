@@ -52,24 +52,28 @@ Human authors and untracked bots are dropped at normalization time.
 
 ## Metrics
 
-Everything is deterministic. The headline is a **three-bucket partition of the eligible
-(non-draft) PRs, per reviewer**: every eligible PR is exactly one of Reviewed, Rate-limited,
-or No response for a given bot, so the three always sum to the eligible-PR count. This makes
-"did the reviewer actually do its job?" legible at a glance and separates *refused* work
-(out-of-quota) from *absent* work (never showed up).
+Everything is deterministic. **Reviews** and **Rate-limited** count *every event*, not
+distinct PRs — GitHub creates a new review submission each time a bot re-reviews after a new
+commit, so a PR reviewed across 5 commits contributes 5 reviews. This matters: on live data
+CodeRabbit produced ~2× more review events than the distinct-PR count would suggest (up to 11
+reviews on a single PR).
 
 | Metric | Definition |
 |---|---|
-| **Reviewed** | PRs where the bot delivered a real review or comment. A PR still counts as Reviewed if the bot *also* posted a rate-limit notice — only the real response matters. |
-| **Rate-limited** | PRs where the bot's **sole** action was to decline (out-of-quota / rate-limit notice, detected by body text via the shared gate pattern). It refused to review. |
-| **No response** | Eligible PRs the bot never appeared on. `= eligible − Reviewed − Rate-limited`. |
-| **✅ / 🔄** | APPROVED / CHANGES_REQUESTED review counts. A rate-limit notice is never counted as a review. |
-| **Latency p50 / p95** | Seconds from PR creation to the bot's first **real** response (refusals excluded, so quota notices don't pollute the percentiles). Targets the "review arrived after auto-approval" failure mode (PR #453). |
+| **Total PRs** | Review-eligible (non-draft) PRs active in the window; the denominator each row is measured against. |
+| **Reviews** | Count of real review submissions by the bot, **each occurrence** (multiple per PR from multiple commits all count). Rate-limit notices are never counted as reviews. |
+| **✅ / 🔄** | Of those reviews, how many carried state APPROVED / CHANGES_REQUESTED. |
+| **Rate-limited** | Count of out-of-quota / rate-limit refusal events (detected by body text via the shared gate pattern), each occurrence. |
+| **No response** | Eligible PRs the bot never engaged with at all — no review, comment, or refusal. |
+| **Latency p50 / p95** | Seconds from PR creation to the bot's first **real** review (refusals excluded, so quota notices don't pollute the percentiles). Targets the "review arrived after auto-approval" failure mode (PR #453). |
 | **Coverage overlap** | PRs reviewed by ≥2 bots — a redundancy vs specialization signal. |
-| **Trend** | Week-over-week Δ (▲/▼) on Reviewed and Rate-limited vs last week's snapshot. Arrows are directional only. |
+| **Trend** | Week-over-week Δ (▲/▼) on Reviews and Rate-limited (event counts) vs last week's snapshot. Arrows are directional only. |
 
-Thread-resolution and reaction counts are still computed and stored in the snapshot for
-downstream use, but are kept out of the headline table to keep it legible.
+Per-PR bucket counts (`reviewed_prs` / `refused_prs` / `no_response_prs`, which partition the
+eligible PRs), plus thread-resolution and reaction counts, are still computed and stored in the
+snapshot for downstream use — they're just kept out of the headline table to keep it legible.
+SonarCloud posts status-check comments rather than GitHub reviews, so its **Reviews** reads 0
+by design.
 
 ### Week-over-week deltas
 

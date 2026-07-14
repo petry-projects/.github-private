@@ -120,11 +120,30 @@ JSON
   echo "$output" | jq -e '.bots["coderabbitai"]              | .reviewed_prs==0 and .refused_prs==1 and .no_response_prs==1'
 }
 
-@test "aggregate: the three buckets sum to eligible for every bot" {
+@test "aggregate: the three PR buckets sum to eligible for every bot" {
   run aggregate_snapshot "$FIXTURES"
   echo "$output" | jq -e '.eligible_prs as $e
     | .bots | to_entries
     | all(.value.reviewed_prs + .value.refused_prs + .value.no_response_prs == $e)'
+}
+
+@test "aggregate: reviews and refusals are EVENT counts (each occurrence)" {
+  run aggregate_snapshot "$FIXTURES"
+  # copilot submitted a real review on both PRs → 2 review events, 0 refusals
+  echo "$output" | jq -e '.bots["copilot-pull-request-reviewer"] | .reviews==2 and .refusal_events==0'
+  # codex + coderabbit only refused on markets#42 → 0 reviews, 1 refusal event each
+  echo "$output" | jq -e '.bots["chatgpt-codex-connector"] | .reviews==0 and .refusal_events==1'
+  echo "$output" | jq -e '.bots["coderabbitai"]            | .reviews==0 and .refusal_events==1'
+}
+
+@test "aggregate: a PR reviewed twice (2 commits) counts as 2 review events" {
+  tmp="$(mktemp -d "$BATS_TEST_TMPDIR/multi.XXXXXX")"
+  cat > "$tmp/r.jsonl" <<'JSON'
+{"kind":"pr","repo":"o/r","pr":"o/r/1","created":"2026-07-10T10:00:00Z","merged":null,"draft":false,"author":"h"}
+{"kind":"bot_pr","repo":"o/r","pr":"o/r/1","bot":"gemini-code-assist","created":"2026-07-10T10:00:00Z","real_responses":2,"refusals":0,"latency_s":60,"reviews":2,"approved":1,"changes_req":1,"inline_comments":0,"threads_total":0,"threads_resolved":0,"thumbs_up":0,"thumbs_down":0}
+JSON
+  run aggregate_snapshot "$tmp"
+  echo "$output" | jq -e '.bots["gemini-code-assist"] | .reviews==2 and .reviewed_prs==1'
 }
 
 @test "aggregate: latency percentiles are numeric when data exists" {
@@ -168,9 +187,9 @@ JSON
   echo "$output" | grep -q "PRs reviewed by ≥2 bots:\*\* 2 of 2"
 }
 
-@test "render: scorecard exposes the three-bucket columns" {
+@test "render: scorecard exposes the event-count columns" {
   run render_reviewer_report "$FIXTURES" 7 12 2026-07-13
-  echo "$output" | grep -q "| Reviewer | Reviewed | Rate-limited | No response |"
+  echo "$output" | grep -q "| Reviewer | Total PRs | Reviews | ✅ / 🔄 | Rate-limited | No response |"
 }
 
 @test "render: empty dir yields a no-data message" {
@@ -183,11 +202,11 @@ JSON
 @test "render: week-over-week delta arrow appears when a prior snapshot is given" {
   prev="$(mktemp "$BATS_TEST_TMPDIR/prev.XXXXXX")"
   cat > "$prev" <<'JSON'
-{"eligible_prs":3,"total_prs":4,"bots":{"copilot-pull-request-reviewer":{"reviewed_prs":3}}}
+{"eligible_prs":3,"total_prs":4,"bots":{"copilot-pull-request-reviewer":{"reviews":5}}}
 JSON
   REVIEWER_PREV_SNAPSHOT="$prev" run render_reviewer_report "$FIXTURES" 7 12 2026-07-13
-  # copilot reviewed_prs dropped from 3 → 2
-  echo "$output" | grep -q "▼ -1"
+  # copilot review events dropped from 5 → 2
+  echo "$output" | grep -q "▼ -3"
 }
 
 @test "render: writes the snapshot artifact when REVIEWER_SNAPSHOT_OUT is set" {
