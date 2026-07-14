@@ -78,7 +78,7 @@ CUTOFF=$(date -u -d "${LOOKBACK_DAYS} days ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null 
 # same [CUTOFF, now) window used for the run query is passed to the pure cron
 # tick counter in fleet_report.sh so expected ticks align with observed runs.
 WINDOW_START_EPOCH=$(date -u -d "$CUTOFF" +%s 2>/dev/null \
-  || date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$CUTOFF" +%s)
+  || date -u -jf "%Y-%m-%dT%H:%M:%SZ" "$CUTOFF" +%s)
 WINDOW_END_EPOCH=$(date -u +%s)
 
 echo "Discovering repos in ${ORG}..."

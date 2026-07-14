@@ -46,7 +46,7 @@ SCHEDULE_RELIABILITY_THRESHOLD="${SCHEDULE_RELIABILITY_THRESHOLD:-50}"
 count_cron_ticks() {
   local cron="${1:-}" start="${2:-0}" end="${3:-0}"
   if [ -z "$cron" ]; then printf '0'; return 0; fi
-  CRON="$cron" START="$start" END="$end" python3 - <<'PY'
+  CRON="$cron" START="$start" END="$end" python3 -c '
 import os, sys
 from datetime import datetime, timezone
 
@@ -133,57 +133,134 @@ while t < end:
             count += 1
     t += 60
 print(count)
-PY
+'
 }
 
 # extract_crons  (reads workflow YAML on stdin)
 # Prints each schedule.cron expression, one per line. The workflows API does not
-# return cron, so it is parsed from the file content. Tolerates malformed YAML
-# and the PyYAML gotcha where the bare key `on:` parses as boolean True — both
-# the string 'on' and the boolean key are checked. Any parse failure prints
-# nothing and exits 0 (recorded upstream as "no schedule / unknown").
+# return cron, so it is parsed from the file content via text pattern matching
+# (no third-party YAML parser required). Tolerates malformed or non-standard
+# YAML — any parse failure prints nothing and exits 0 (recorded upstream as
+# "no schedule / unknown").
 extract_crons() {
-  local content
-  content=$(cat)
-  WF_CONTENT="$content" python3 - <<'PY'
-import os, sys
-try:
-    import yaml
-    d = yaml.safe_load(os.environ.get("WF_CONTENT", "")) or {}
-except Exception:
-    sys.exit(0)
-if not isinstance(d, dict):
-    sys.exit(0)
-on = d.get("on", d.get(True))
-if not isinstance(on, dict):
-    sys.exit(0)
-sched = on.get("schedule")
-if not isinstance(sched, list):
-    sys.exit(0)
-for item in sched:
-    if isinstance(item, dict) and "cron" in item:
-        c = item["cron"]
-        if isinstance(c, str) and c.strip():
-            print(c.strip())
-PY
+  python3 -c '
+import sys, re
+content = sys.stdin.read()
+for m in re.finditer(r"^\s*-\s+cron:\s*(.+)$", content, re.MULTILINE):
+    v = m.group(1).strip()
+    v = v.split(" #")[0].strip()
+    if len(v) >= 2 and v[0] == v[-1] and v[0] in (chr(34), chr(39)):
+        v = v[1:-1]
+    if v:
+        print(v)
+'
 }
 
 # workflow_expected_ticks <start_epoch> <end_epoch>  (reads workflow YAML stdin)
 # Extracts every schedule.cron from the workflow YAML and sums the expected tick
 # counts across all cron entries over [start, end). Multi-cron workflows are
 # summed (each cron entry triggers its own run). Prints 0 for a workflow with no
-# schedule trigger.
+# schedule trigger. A single Python invocation handles both cron extraction and
+# tick counting to avoid O(N) process spawning per workflow.
 workflow_expected_ticks() {
-  local start="${1:-0}" end="${2:-0}" content crons total=0 c n
-  content=$(cat)
-  crons=$(printf '%s' "$content" | extract_crons)
-  if [ -z "$crons" ]; then printf '0'; return 0; fi
-  while IFS= read -r c; do
-    [ -n "$c" ] || continue
-    n=$(count_cron_ticks "$c" "$start" "$end")
-    total=$(( total + n ))
-  done <<< "$crons"
-  printf '%s' "$total"
+  local start="${1:-0}" end="${2:-0}"
+  START="$start" END="$end" python3 -c '
+import os, sys, re
+from datetime import datetime, timezone
+
+content = sys.stdin.read()
+
+# Extract cron expressions via line-based parsing (no third-party YAML parser needed).
+crons = []
+for m in re.finditer(r"^\s*-\s+cron:\s*(.+)$", content, re.MULTILINE):
+    v = m.group(1).strip()
+    v = v.split(" #")[0].strip()
+    if len(v) >= 2 and v[0] == v[-1] and v[0] in (chr(34), chr(39)):
+        v = v[1:-1]
+    if v:
+        crons.append(v)
+
+if not crons:
+    print(0); sys.exit(0)
+
+try:
+    start = int(os.environ.get("START", 0))
+    end = int(os.environ.get("END", 0))
+except ValueError:
+    print(0); sys.exit(0)
+
+def parse(spec, lo, hi):
+    allowed = set()
+    for term in spec.split(","):
+        term = term.strip()
+        if not term:
+            return None
+        step = 1
+        if "/" in term:
+            base, _, s = term.partition("/")
+            try:
+                step = int(s)
+            except ValueError:
+                return None
+            if step <= 0:
+                return None
+        else:
+            base = term
+        if base == "*":
+            a, b = lo, hi
+        elif "-" in base:
+            p, _, q = base.partition("-")
+            try:
+                a, b = int(p), int(q)
+            except ValueError:
+                return None
+        else:
+            try:
+                a = b = int(base)
+            except ValueError:
+                return None
+        v = a
+        while v <= b:
+            if lo <= v <= hi:
+                allowed.add(v)
+            v += step
+    return allowed
+
+total_ticks = 0
+for cron in crons:
+    fields = cron.split()
+    if len(fields) != 5:
+        continue
+    mins  = parse(fields[0], 0, 59)
+    hours = parse(fields[1], 0, 23)
+    doms  = parse(fields[2], 1, 31)
+    mons  = parse(fields[3], 1, 12)
+    dows_raw = parse(fields[4], 0, 7)
+    if dows_raw is None:
+        continue
+    dows = {0 if d == 7 else d for d in dows_raw}
+    if any(x is None for x in (mins, hours, doms, mons, dows)):
+        continue
+    dom_restricted = fields[2].strip() != "*"
+    dow_restricted = fields[4].strip() != "*"
+    t = start + ((60 - (start % 60)) % 60)
+    while t < end:
+        dt = datetime.fromtimestamp(t, tz=timezone.utc)
+        if dt.minute in mins and dt.hour in hours and dt.month in mons:
+            cron_dow = (dt.weekday() + 1) % 7
+            if dom_restricted and dow_restricted:
+                day_ok = (dt.day in doms) or (cron_dow in dows)
+            elif dom_restricted:
+                day_ok = dt.day in doms
+            elif dow_restricted:
+                day_ok = cron_dow in dows
+            else:
+                day_ok = True
+            if day_ok:
+                total_ticks += 1
+        t += 60
+print(total_ticks)
+'
 }
 
 # classify_schedule_reliability <expected> <actual> [tolerance] [threshold_pct]
@@ -238,7 +315,6 @@ generate_schedule_reliability_report() {
   }' "$f" | sort -t$'\t' -k1,1n -k2,2 -k3,3 | cut -f2- | \
   while IFS=$'\t' read -r repo wf expected actual hr missed label; do
     [ -n "$repo" ] || continue
-    local icon
     icon=$(label_to_icon "$label")
     printf '| `%s` | `%s` | %s | %s | %s | %s | %s %s |\n' \
       "$repo" "$wf" "$expected" "$actual" "$hr" "$missed" "$icon" "$label"

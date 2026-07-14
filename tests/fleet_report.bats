@@ -594,7 +594,7 @@ _mk_metrics() {
   run bash -c "source '${BATS_TEST_DIRNAME}/../scripts/fleet_report.sh' && printf '%s' '$yaml' | extract_crons"
   [[ "$output" =~ "0 6 * * *" ]]
   [[ "$output" =~ "30 18 * * *" ]]
-  [ "$(printf '%s\n' "$output" | grep -c cron -v)" -eq 2 ]
+  [ "$(printf '%s\n' "$output" | grep -cv 'cron')" -eq 2 ]
 }
 
 @test "extract crons: workflow with no schedule prints nothing" {
