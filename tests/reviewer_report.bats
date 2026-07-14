@@ -98,7 +98,7 @@ JSON
 }
 
 @test "reviews: a comment-only responder (SonarCloud) has its comment counted as a review" {
-  tmp="$(mktemp)"
+  tmp="$(mktemp "$BATS_TEST_TMPDIR/tmp.XXXXXX")"
   cat > "$tmp" <<'JSON'
 {"url":"u","createdAt":"2026-07-10T10:00:00Z","updatedAt":"2026-07-10T10:00:00Z","mergedAt":null,"isDraft":false,"author":{"login":"h"},
  "reviews":{"nodes":[]},
@@ -110,7 +110,7 @@ JSON
 }
 
 @test "reviews: a bot with a formal review does NOT also count its summary comment (no double-count)" {
-  tmp="$(mktemp)"
+  tmp="$(mktemp "$BATS_TEST_TMPDIR/tmp.XXXXXX")"
   cat > "$tmp" <<'JSON'
 {"url":"u","createdAt":"2026-07-10T10:00:00Z","updatedAt":"2026-07-10T10:00:00Z","mergedAt":null,"isDraft":false,"author":{"login":"h"},
  "reviews":{"nodes":[{"author":{"login":"coderabbitai"},"state":"COMMENTED","submittedAt":"2026-07-10T10:05:00Z","bodyText":"formal review"}]},
