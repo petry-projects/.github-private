@@ -20,7 +20,7 @@ updated in 90 or more days, so that doc owners can review and refresh stale cont
 ```yaml
 on:
   schedule:
-    - cron: '0 0 * * 0'   # weekly, Sunday midnight UTC
+    - cron: '21 0 * * 0'   # weekly, Sunday midnight UTC
   workflow_dispatch:
     inputs:
       stale_days:

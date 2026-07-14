@@ -10,7 +10,7 @@ them if they remain inactive through the grace period.
 
 ```yaml
 schedule:
-  - cron: '0 9 * * 1'   # Every Monday at 09:00 UTC
+  - cron: '29 9 * * 1'   # Every Monday at 09:00 UTC
 workflow_dispatch:         # Manual trigger for testing
 ```
 

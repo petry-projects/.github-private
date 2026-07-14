@@ -24,7 +24,7 @@ Review the ContentTwin content pipeline health daily. Open a GitHub issue in the
 ```yaml
 on:
   schedule:
-    - cron: '0 7 * * *'   # daily at 07:00 UTC
+    - cron: '19 7 * * *'   # daily at 07:00 UTC
   workflow_dispatch:
     inputs:
       stale_days:

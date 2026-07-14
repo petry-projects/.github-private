@@ -3,7 +3,7 @@ name: ContentTwin Content Audit
 on:
   schedule:
     # Daily at 07:00 UTC
-    - cron: '0 7 * * *'
+    - cron: '19 7 * * *'
   workflow_dispatch:
     inputs:
       stale_days:

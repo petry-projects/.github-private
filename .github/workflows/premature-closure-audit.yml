@@ -6,7 +6,7 @@ name: Premature-Closure Audit
 
 on:
   schedule:
-    - cron: '0 8 * * 1'   # Every Monday at 08:00 UTC
+    - cron: '49 8 * * 1'   # Every Monday at 08:00 UTC
   workflow_dispatch:
     inputs:
       dry_run:
