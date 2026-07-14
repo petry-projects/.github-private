@@ -38,6 +38,11 @@ source "$SCRIPT_DIR/lib/ci-status.sh"
 # an artifact_type — the input-adapter layer above engine.sh (issues #611/#612).
 # shellcheck source=lib/review-registry.sh
 source "$SCRIPT_DIR/lib/review-registry.sh"
+# Issue-type classifier routing (issue #1091): classify_triage_type reads the
+# triage `type` label and resolve_deep_specialist maps it to the specialist
+# deep-review prompt via the registry, falling back to prompts/deep-review.md.
+# shellcheck source=lib/deep-specialist.sh
+source "$SCRIPT_DIR/lib/deep-specialist.sh"
 # Downstream-impact pass (epic #748): assemble_downstream_impact maps the PR's
 # changed files to consumer repos that pin the changed shared surface, and
 # downstream_impact_triage_section inlines that block into the triage prompt.
@@ -896,7 +901,19 @@ if [ "$TRIAGE_ESCALATE" = "false" ]; then
   exit 0
 fi
 
+# --- Issue-type classifier -> specialist deep-review prompt (issue #1091) ---
+# The triage tier classified the escalated diff with a `type` label. Resolve the
+# matching specialist deep-review prompt data-driven through the rubric registry
+# (deep_specialist:<type> rows). An ambiguous/absent label, a missing registry
+# row, or a missing specialist file falls back to the rubric's deep prompt
+# (prompts/deep-review.md) so the deep tier never dead-ends. The classifier rides
+# on the existing triage output — no new tier, no extra model call.
+TRIAGE_TYPE=$(classify_triage_type "$TRIAGE_RESULT")
+export TRIAGE_TYPE
+DEEP_TIER_PROMPT=$(resolve_deep_specialist "$TRIAGE_TYPE" "$RUBRIC_DEEP_PROMPT")
+
 # --- Tier 2: Deep review + Rubber duck (parallel, cross-engine) ---
+echo "    [tier2] type=$TRIAGE_TYPE specialist=$DEEP_TIER_PROMPT"
 echo "    [tier2] deep review ($ENGINE_DEEP_MODEL) + rubber duck ($DUCK_MODEL via $DUCK_ENGINE)"
 
 # Launch both reviewers in parallel — different model families for diversity.
@@ -905,7 +922,7 @@ echo "    [tier2] deep review ($ENGINE_DEEP_MODEL) + rubber duck ($DUCK_MODEL vi
 # or tool-execution noise that could cause false positives.
 OUTPUT_FILE="/tmp/cascade/deep.json"
 export OUTPUT_FILE
-run_agentic "$RUBRIC_DEEP_PROMPT" "$ENGINE_DEEP_MODEL" "deep" \
+run_agentic "$DEEP_TIER_PROMPT" "$ENGINE_DEEP_MODEL" "deep" \
   > /tmp/cascade/deep-stdout.txt 2>/tmp/cascade/deep.log &
 DEEP_PID=$!
 
