@@ -130,8 +130,7 @@ _get_head_committer_date() {
 # _head_age_seconds <pr_url>
 #   Echo the age in seconds of the PR's head commit (now − committer.date), or an
 #   empty string when the committer date can't be determined (GraphQL unreachable
-#   or unparseable). Shared by the absent-bot head-age timeout paths so both the
-#   partial-submission and zero-output branches proceed on the same clock.
+#   or unparseable). Used by the zero-output branch to apply the head-age timeout.
 _head_age_seconds() {
   local pr_url="$1" head_time head_time_raw now
   head_time=$(_get_head_committer_date "$pr_url") || head_time=""

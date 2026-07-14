@@ -485,7 +485,9 @@ MOCK_EOF
 
 @test "Advisory gate: empty-state branch applies head-age timeout, not an unconditional wait (issue #1193)" {
   # The zero-output branch must consult head age before deciding to wait.
-  grep -q '_head_age_seconds' "$SCRIPT_DIR/lib/advisory-review-gate.sh"
+  # Use a fixed-string match on the assignment/call so the test fails if
+  # the call is removed, without also matching the function definition line.
+  grep -qF 'head_age_sec=$(_head_age_seconds' "$SCRIPT_DIR/lib/advisory-review-gate.sh"
 }
 
 @test "Gate runtime: rate-limited bot is classified RATE_LIMITED in gate output" {
