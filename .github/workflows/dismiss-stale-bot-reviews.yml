@@ -1,0 +1,59 @@
+name: Dismiss stale bot reviews
+
+# Agent-PR merge friction (#617, blocker 3): a bot's CHANGES_REQUESTED review is
+# NOT cleared by GitHub's `dismiss_stale_reviews_on_push` (that only dismisses
+# stale *approvals*), so it persists on a superseded commit and blocks
+# `reviewDecision` even with 0 unresolved threads — until the bot re-APPROVEs or
+# a human dismisses it by hand. This workflow dismisses a bot's CHANGES_REQUESTED
+# review once a NEWER commit has been pushed (the review is on a non-head SHA).
+# Safe: it only ever touches reviews left by the allow-listed bots, and only ones
+# on a superseded commit — those bots re-review the new head automatically, so a
+# still-valid problem simply comes back as a fresh CHANGES_REQUESTED on the new SHA.
+
+on:
+  pull_request:
+    types: [synchronize]
+
+permissions:
+  pull-requests: write
+
+concurrency:
+  group: dismiss-stale-bot-reviews-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  dismiss:
+    # Same-repo PRs only — fork PRs get a read-only token that cannot dismiss.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dismiss stale bot CHANGES_REQUESTED reviews
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          # Space-delimited allow-list of bot review authors to auto-dismiss.
+          BOTS: "coderabbitai coderabbitai[bot]"
+        run: |
+          set -euo pipefail
+          dismissed=0
+          # Newest review per author already reflects its current verdict; iterate all
+          # and act only on an allow-listed bot whose CHANGES_REQUESTED sits on a
+          # commit other than the current head (i.e. superseded by this push).
+          while IFS=$'\t' read -r id user state sha; do
+            [ -n "$id" ] || continue
+            case " $BOTS " in *" $user "*) ;; *) continue ;; esac
+            [ "$state" = "CHANGES_REQUESTED" ] || continue
+            [ -n "$sha" ] && [ "$sha" != "$HEAD_SHA" ] || continue
+            echo "Dismissing stale CHANGES_REQUESTED review $id by $user (on ${sha:0:8}, head ${HEAD_SHA:0:8})"
+            if gh api -X PUT "repos/$REPO/pulls/$PR/reviews/$id/dismissals" \
+                 -f message="Auto-dismissed (#617): this \`$user\` review requested changes on a superseded commit; a newer commit has since been pushed. The bot re-reviews the new head automatically — a still-valid concern will return as a fresh review." \
+                 -f event="DISMISS" >/dev/null 2>&1; then
+              dismissed=$((dismissed + 1))
+            else
+              echo "::warning::could not dismiss review $id by $user (token may lack dismissal rights)"
+            fi
+          done < <(gh api --paginate "repos/$REPO/pulls/$PR/reviews" \
+                     --jq '.[] | [(.id|tostring), .user.login, .state, (.commit_id // "")] | @tsv')
+          echo "Dismissed $dismissed stale bot review(s)."
