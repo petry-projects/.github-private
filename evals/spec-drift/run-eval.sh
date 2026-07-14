@@ -62,19 +62,30 @@ sd_is_false_positive() {
 # false positive was scored, else 0.
 sd_run_split() {
   local cases_file="${1:-}" label="${2:-}"
-  [ -n "$label" ] || label="$(basename "$(dirname "$cases_file")")"
+  if [ -z "$label" ]; then
+    if [[ "$cases_file" == */* ]]; then
+      local parent="${cases_file%/*}"
+      label="${parent##*/}"
+    else
+      label="."
+    fi
+  fi
 
   if [ ! -f "$cases_file" ]; then
     echo "::error::[spec-drift-eval] cases file not found: $cases_file" >&2
     return 2
   fi
 
-  local total=0 correct=0 false_positives=0 false_negatives=0 mismatches=0
-  local id expected b64 analysis actual
+  if ! jq '.' < "$cases_file" > /dev/null; then
+    printf '::error::[spec-drift-eval] malformed JSONL in %s — all lines must be valid JSON\n' "$cases_file" >&2
+    return 2
+  fi
 
-  while IFS=$'\t' read -r id expected b64; do
+  local total=0 correct=0 false_positives=0 false_negatives=0 mismatches=0
+  local id expected analysis actual
+
+  while IFS= read -r -d '' id && IFS= read -r -d '' expected && IFS= read -r -d '' analysis; do
     [ -n "$id" ] || continue
-    analysis="$(printf '%s' "$b64" | base64 -d)"
     actual="$(classify_drift "$analysis")"
     total=$((total + 1))
 
@@ -94,7 +105,7 @@ sd_run_split() {
       printf '  FAIL  %-40s expected=%s actual=%s (%s)\n' \
         "$id" "$expected" "$actual" "$kind" >&2
     fi
-  done < <(jq -rc 'select(.id) | [.id, (.expected.verdict // "INDETERMINATE"), (.analysis // "" | @base64)] | @tsv' "$cases_file")
+  done < <(jq -j 'select(.id) | .id, "\u0000", (.expected?.verdict // "INDETERMINATE" | tostring), "\u0000", (.analysis // "" | tostring), "\u0000"' "$cases_file")
 
   printf 'SUMMARY split=%s total=%d correct=%d false_positives=%d false_negatives=%d mismatches=%d\n' \
     "$label" "$total" "$correct" "$false_positives" "$false_negatives" "$mismatches"
@@ -154,7 +165,17 @@ main() {
       return 2
     fi
     label="$split"
-    case "$split" in dev|holdout) ;; *) label="$(basename "$(dirname "$path")")" ;; esac
+    case "$split" in
+      dev|holdout) ;;
+      *)
+        if [[ "$path" == */* ]]; then
+          local parent="${path%/*}"
+          label="${parent##*/}"
+        else
+          label="."
+        fi
+        ;;
+    esac
 
     rc=0
     sd_run_split "$path" "$label" || rc=$?
