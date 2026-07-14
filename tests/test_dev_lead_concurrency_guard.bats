@@ -6,18 +6,18 @@
 # cancel-in-progress:true, a later (non-dev-lead) labeled event could CANCEL the
 # run triggered by the dev-lead label before it dispatched — a "successful"
 # workflow that opened no PR. The fix (#450) is separate per-issue/per-PR lanes
-# with cancel-in-progress:FALSE, so same-lane events queue behind the active run
+# with cancel-in-progress: false, so same-lane events queue behind the active run
 # and the pickup always finishes. These asserts fail loudly if anyone flips it back.
 
 REUSABLE=".github/workflows/dev-lead-reusable.yml"
 
 @test "dev-lead reusable concurrency is cancel-in-progress: false (#443/#450)" {
-  run grep -E '^\s*cancel-in-progress:\s*false\s*$' "$REUSABLE"
+  run grep -E '^[[:space:]]*cancel-in-progress:[[:space:]]*false[[:space:]]*$' "$REUSABLE"
   [ "$status" -eq 0 ]
 }
 
 @test "dev-lead reusable has NO cancel-in-progress: true (would re-open the #443 race)" {
-  run grep -E '^\s*cancel-in-progress:\s*true\s*$' "$REUSABLE"
+  run grep -E '^[[:space:]]*cancel-in-progress:[[:space:]]*true[[:space:]]*$' "$REUSABLE"
   [ "$status" -eq 1 ]
 }
 
