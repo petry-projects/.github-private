@@ -2,7 +2,7 @@
 
 **Workflow:** `content-twin-audit.yml`
 **Priority:** P3
-**Trigger:** `schedule` — daily at 07:00 UTC
+**Trigger:** `schedule` — daily at 07:19 UTC
 **Repo scope:** `petry-projects/ContentTwin` only
 **Scenario spec:** [`tests/aw/content-twin-audit/scenarios.md`](../../tests/aw/content-twin-audit/scenarios.md)
 
@@ -24,7 +24,7 @@ Review the ContentTwin content pipeline health daily. Open a GitHub issue in the
 ```yaml
 on:
   schedule:
-    - cron: '0 7 * * *'   # daily at 07:00 UTC
+    - cron: '19 7 * * *'   # daily at 07:19 UTC
   workflow_dispatch:
     inputs:
       stale_days:
