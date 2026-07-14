@@ -87,10 +87,27 @@ jobs:
               return;
             }
             const today = new Date().toISOString().split('T')[0];
+            const titlePrefix = 'PR Review Agent — failures detected';
+            // Date-stamped title → a fresh issue every run (20 had piled up open).
+            // Close prior open digests before opening today's snapshot.
+            const priors = await github.paginate(github.rest.issues.listForRepo, {
+              owner: context.repo.owner, repo: context.repo.repo,
+              state: 'open', labels: 'health-check', per_page: 100,
+            });
+            for (const p of priors) {
+              if (!p.pull_request && p.title.startsWith(titlePrefix)) {
+                try {
+                  await github.rest.issues.update({
+                    owner: context.repo.owner, repo: context.repo.repo,
+                    issue_number: p.number, state: 'closed', state_reason: 'completed',
+                  });
+                } catch (err) { core.warning(`could not close prior digest #${p.number}: ${err.message}`); }
+              }
+            }
             const issue = await github.rest.issues.create({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              title: `PR Review Agent — failures detected ${today}`,
+              title: `${titlePrefix} ${today}`,
               body: report,
               labels: ['health-check', 'automated-report'],
             });
@@ -136,10 +153,26 @@ jobs:
               return;
             }
             const today = new Date().toISOString().split('T')[0];
+            const titlePrefix = 'Runaway PR candidate(s) detected';
+            // Date-stamped title → a fresh issue every run. Close prior open ones.
+            const priors = await github.paginate(github.rest.issues.listForRepo, {
+              owner: context.repo.owner, repo: context.repo.repo,
+              state: 'open', labels: 'health-check', per_page: 100,
+            });
+            for (const p of priors) {
+              if (!p.pull_request && p.title.startsWith(titlePrefix)) {
+                try {
+                  await github.rest.issues.update({
+                    owner: context.repo.owner, repo: context.repo.repo,
+                    issue_number: p.number, state: 'closed', state_reason: 'completed',
+                  });
+                } catch (err) { core.warning(`could not close prior digest #${p.number}: ${err.message}`); }
+              }
+            }
             const issue = await github.rest.issues.create({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              title: `Runaway PR candidate(s) detected ${today}`,
+              title: `${titlePrefix} ${today}`,
               body: report,
               labels: ['health-check', 'automated-report'],
             });
