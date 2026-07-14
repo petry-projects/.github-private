@@ -1,4 +1,6 @@
 #!/usr/bin/env bats
+# SC2 regression guard (Safe Release epic #495 · game-day story #503, see
+# docs/release/sc2-game-day.md): a broken in-dev gate must not block its own fix.
 # Guards the #619 break-glass in scripts/review-one-pr.sh:
 # a manual FORCE_REVIEW=true run overrides the ci-failing gate (so a fix to the
 # CI gate itself can be reviewed through ring-0 self-host), while a normal run
