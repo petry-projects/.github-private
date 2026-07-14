@@ -113,7 +113,7 @@ _source_engine() {
   [[ "$result" != *"sonnet"* ]]
 }
 
-@test "dispatch: fix-reviews gets sonnet (claude-sonnet-4-6)" {
+@test "dispatch: fix-reviews gets sonnet (claude-sonnet-5-0)" {
   _source_engine "claude"
   local result
   result="$(model_for_intent "fix-reviews")"
