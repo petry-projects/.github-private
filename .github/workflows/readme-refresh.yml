@@ -65,5 +65,6 @@ jobs:
 
       - name: Run README refresh
         env:
-          GH_TOKEN: ${{ secrets.DON_PETRY_BOT_GH_PAT }}
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+          BOT_USER: don-petry   # commit/push as don-petry (GH_PAT owner), not donpetry-bot
         run: bash scripts/aw-readme-refresh.sh
