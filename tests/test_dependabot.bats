@@ -8,10 +8,9 @@
 
 DEPENDABOT_YML=".github/dependabot.yml"
 AUTOMERGE_YML=".github/workflows/dependabot-automerge.yml"
-# This repo (.github-private) is the `next` ring tier (epic #495), so its stub
-# pins the dependabot-automerge/next channel rather than the former @v1 SHA
-# (#870). The org compliance audit is ring-aware (petry-projects/.github#529).
-AUTOMERGE_CHANNEL="dependabot-automerge/next"
+# This repo (.github-private) pins the v2-next ring channel (major-scope repin #657).
+# The org compliance audit is ring-aware (petry-projects/.github#529).
+AUTOMERGE_CHANNEL="dependabot-automerge/v2-next"
 
 setup() {
   # Run tests from repo root so relative paths resolve correctly.
