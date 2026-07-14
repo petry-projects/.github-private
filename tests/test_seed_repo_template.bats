@@ -237,6 +237,19 @@ EOF
   [[ "$output" == *"auto-trigger"* ]]
 }
 
+@test "baseline: BOOTSTRAP.md documents per-repo advisory-review-bot enablement (Gemini Developer Connect + Codex)" {
+  run bash "$SEED" --emit-baseline BOOTSTRAP.md
+  [ "$status" -eq 0 ]
+  # Gemini reviews are gated by Developer Connect repo linking, not the GitHub App grant.
+  [[ "$output" == *"Gemini"* ]]
+  [[ "$output" == *"Developer Connect"* ]]
+  [[ "$output" == *"Link Repositories"* ]]
+  # Codex connector needs per-repo review enablement too.
+  [[ "$output" == *"Codex"* ]]
+  # And a concrete verification step.
+  [[ "$output" == *"/gemini review"* ]]
+}
+
 # ── .gitleaks.toml baseline is fetched verbatim from standards/gitleaks.toml ───
 # Seeds the secret-scan job's required config (push-protection.md); without it the
 # template ci.yml's `gitleaks detect --config .gitleaks.toml` fails file-not-found.
