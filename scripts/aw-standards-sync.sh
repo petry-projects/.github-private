@@ -258,6 +258,14 @@ while IFS= read -r repo; do
   if [ -n "$pr_url" ]; then
     prs_opened=$((prs_opened + 1))
     echo "  [pr]   ${repo} — opened ${pr_url}"
+    # Make the PR auto-rebase-eligible from creation (petry-projects/.github#711):
+    # without the ready label an unapproved PR is skipped by auto-rebase, drifts
+    # into conflict, and cannot be approved (pr-review skips red PRs) — a deadlock.
+    # Ensure the label exists (idempotent) so a repo missing it does not break.
+    gh label create "auto-rebase:ready" --repo "$repo" \
+      --description "Opts a non-draft PR into auto-rebase without an approval (auto-rebase ready_label)" \
+      --color "0e8a16" --force >/dev/null 2>&1 || true
+    gh pr edit "$pr_url" --repo "$repo" --add-label "auto-rebase:ready" >/dev/null 2>&1 || true
     summary_rows="${summary_rows}| \`${repo}\` | ❌ | ❌ | PR opened: ${pr_url} |\n"
   else
     echo "  [warn] ${repo} — could not open PR"
@@ -274,6 +282,19 @@ summary_body="$(printf '## Standards Sync — %s\n\n| Repo | AGENTS.md | CODEOWN
   "$TODAY" "$summary_rows" "$total_scanned" "$compliant_count" "$prs_opened" "$settings_applied" "$TODAY")"
 
 echo ""
+# The summary issue embeds the date in its title, so a fresh one is created each
+# run with no close path. Close prior open standards-sync summaries before opening
+# today's so only the current snapshot stays open.
+gh issue list --repo "${REPORT_REPO}" --label "${SYNC_LABEL}" --state open \
+  --search "Standards Sync — in:title" --limit 200 \
+  --json number,title \
+  -q '.[] | select(.title | startswith("Standards Sync — ")) | .number' 2>/dev/null \
+| while read -r prev; do
+    [ -n "$prev" ] || continue
+    gh issue close "$prev" --repo "${REPORT_REPO}" \
+      --comment "Superseded by the newer standards-sync summary." >/dev/null 2>&1 || true
+  done || true
+
 echo "Opening summary issue in ${REPORT_REPO}..."
 gh api "repos/${REPORT_REPO}/issues" \
   --method POST \

@@ -74,6 +74,13 @@ fi
 CUTOFF=$(date -u -d "${LOOKBACK_DAYS} days ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
   || date -u -v-"${LOOKBACK_DAYS}"d +%Y-%m-%dT%H:%M:%SZ)
 
+# Window epochs for schedule-reliability expected-tick expansion (#725). The
+# same [CUTOFF, now) window used for the run query is passed to the pure cron
+# tick counter in fleet_report.sh so expected ticks align with observed runs.
+WINDOW_START_EPOCH=$(date -u -d "$CUTOFF" +%s 2>/dev/null \
+  || date -u -jf "%Y-%m-%dT%H:%M:%SZ" "$CUTOFF" +%s)
+WINDOW_END_EPOCH=$(date -u +%s)
+
 echo "Discovering repos in ${ORG}..."
 repos_raw=$(gh api "orgs/${ORG}/repos?per_page=100&type=all" --paginate \
   --jq '.[] | select(.archived == false) | .full_name' 2>/dev/null || true)
@@ -93,6 +100,10 @@ echo ""
 # ---------------------------------------------------------------------------
 metrics_file=$(mktemp)
 failed_file=$(mktemp)
+# Parallel schedule-reliability metrics (#725) — kept separate from the 12-field
+# metrics TSV so the existing high-failure JSON export contract is untouched.
+# TSV: repo <TAB> wf_file <TAB> expected <TAB> actual <TAB> hit_rate <TAB> missed <TAB> label
+schedule_metrics_file=$(mktemp)
 any_failures=0
 total_workflows=0
 
@@ -120,6 +131,7 @@ for repo in "${repos[@]}"; do
       --jq '.workflow_runs | map({
         run_number: .run_number,
         conclusion: .conclusion,
+        event: .event,
         created_at: .created_at,
         html_url: .html_url,
         duration_s: ((.updated_at | fromdate) - (.created_at | fromdate) | floor)
@@ -188,6 +200,36 @@ for repo in "${repos[@]}"; do
           [.[] | select(.conclusion == "failure" or .conclusion == "timed_out" or .conclusion == "action_required")] | sort_by(.run_number) | reverse[] |
           [(.run_number | tostring), .created_at, (.duration_s | tostring), .html_url] | @tsv')
       } >> "$failed_file"
+    fi
+
+    # --- Schedule reliability (#725) ---------------------------------------
+    # The actions/workflows API does not expose cron, so fetch the workflow file
+    # content and parse schedule.cron from it. A read/parse failure is non-fatal
+    # (warn + skip) — consistent with the ERROR-sentinel tolerance elsewhere.
+    # Only workflows with a schedule trigger (expected > 0) get a row, so a cron
+    # that silently never fired (actual 0, expected N) surfaces as STALLED even
+    # though it produced no runs to otherwise flag.
+    wf_content=$(gh api -H "Accept: application/vnd.github.raw" \
+      "repos/${repo}/contents/${wf_file}" 2>/dev/null || true)
+    if [ -n "$wf_content" ]; then
+      expected_ticks=$(printf '%s' "$wf_content" \
+        | workflow_expected_ticks "$WINDOW_START_EPOCH" "$WINDOW_END_EPOCH")
+    else
+      expected_ticks=0
+      echo "::warning::Cannot read workflow file ${repo}/${wf_file} for cron parse — schedule reliability skipped for this workflow"
+    fi
+    case "${expected_ticks:-0}" in ''|*[!0-9]*) expected_ticks=0 ;; esac
+    if [ "$expected_ticks" -gt 0 ]; then
+      # Count schedule-triggered runs from the raw set (incl. in-progress) so a
+      # tick that fired but is still running is not miscounted as a miss.
+      sched_actual=$(echo "$runs_raw" \
+        | jq -s 'add // [] | [.[] | select(.event == "schedule")] | length')
+      IFS=$'\t' read -r sched_label sched_hr sched_missed \
+        < <(classify_schedule_reliability "$expected_ticks" "$sched_actual")
+      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$repo" "$wf_file" "$expected_ticks" "$sched_actual" \
+        "$sched_hr" "$sched_missed" "$sched_label" \
+        >> "$schedule_metrics_file"
     fi
   done < <(echo "$workflows" | jq -r '.[] | [.id, .file] | @tsv')
 done
@@ -342,16 +384,24 @@ dev_lead_timeout_section() {
   generate_dev_lead_timeout_report "$dev_lead_reason_file" "${fleet_dl_runs:-0}"
 }
 
+# schedule_reliability_section — appends the Schedule Reliability block (#725)
+# when any scheduled workflow was seen in the window.
+schedule_reliability_section() {
+  [ -s "$schedule_metrics_file" ] || return 0
+  printf '\n'
+  generate_schedule_reliability_report "$schedule_metrics_file"
+}
+
 # Step Summary — Tier 1 visualizations only (Mermaid not rendered there)
 # GitHub Step Summary has a 1 MB hard limit per job. At ~200 bytes per row
 # this supports ~5 000 workflows before truncation.
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
-  { report_header; generate_report "$metrics_file" "$failed_file" "false" "$issues_lookup_file"; dev_lead_timeout_section; stub_drift_section; } \
+  { report_header; generate_report "$metrics_file" "$failed_file" "false" "$issues_lookup_file"; dev_lead_timeout_section; schedule_reliability_section; stub_drift_section; } \
     >> "$GITHUB_STEP_SUMMARY"
 fi
 
 # Report file — full report with Mermaid charts (used as Issue body)
-{ report_header; generate_report "$metrics_file" "$failed_file" "true" "$issues_lookup_file"; dev_lead_timeout_section; stub_drift_section; } \
+{ report_header; generate_report "$metrics_file" "$failed_file" "true" "$issues_lookup_file"; dev_lead_timeout_section; schedule_reliability_section; stub_drift_section; } \
   > "$REPORT_FILE"
 
 # ---------------------------------------------------------------------------
@@ -400,7 +450,7 @@ if [ -n "${GITHUB_ENV:-}" ]; then
   [ "$stub_drift_count" -gt 0 ] && echo "HAS_STUB_DRIFT=true" >> "$GITHUB_ENV"
 fi
 
-rm -f "$metrics_file" "$failed_file" "$issues_lookup_file" "$dev_lead_reason_file"
+rm -f "$metrics_file" "$failed_file" "$issues_lookup_file" "$dev_lead_reason_file" "$schedule_metrics_file"
 [ ${#stub_drift_files[@]} -gt 0 ] && rm -f "${stub_drift_files[@]}"
 
 # ---------------------------------------------------------------------------
