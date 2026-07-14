@@ -139,9 +139,24 @@ echo "    review decision: $REVIEW_DECISION"
 # no-op and does not count it against the MAX_PRS review budget.
 # Reasons that produce a skip: already-reviewed-at-head, ci-failing, ci-pending, changes-requested.
 if [ "$CI_STATUS" = "failing" ]; then
-  echo "    skip: CI checks are failing — will re-evaluate after fixes are pushed"
-  echo "{\"pr\":\"$PR_URL\",\"sha\":\"$PR_HEAD_SHA\",\"decision\":\"skip\",\"reason\":\"ci-failing\"}"
-  exit 100
+  if [ "${FORCE_REVIEW:-false}" = "true" ]; then
+    # Break-glass (#619): a manual mention / dispatch (FORCE_REVIEW=true) overrides
+    # the ci-failing gate so a fix to the CI gate *itself* can be reviewed and
+    # approved through ring-0 self-host — the one case the pinned-stable design
+    # otherwise can't ship without an out-of-band admin merge. This is safe:
+    #   • FORCE_REVIEW is manual-only — it is true only for repository_dispatch
+    #     (human @mention) or an explicit force_review input; the scheduled sweep
+    #     dispatches with force_review=false, so this never fires event-driven.
+    #   • GitHub's ruleset still blocks the merge on any failing REQUIRED check, so
+    #     an override only unblocks the codeowner-approval gate for PRs whose
+    #     failing checks are non-required (e.g. superseded dev-lead orchestration
+    #     jobs) — it cannot merge a PR with a genuinely failing required check.
+    echo "::warning::force-review: CI is failing but FORCE_REVIEW=true — bypassing the ci-failing gate (break-glass, #619). Required-check failures still block the merge at the ruleset."
+  else
+    echo "    skip: CI checks are failing — will re-evaluate after fixes are pushed"
+    echo "{\"pr\":\"$PR_URL\",\"sha\":\"$PR_HEAD_SHA\",\"decision\":\"skip\",\"reason\":\"ci-failing\"}"
+    exit 100
+  fi
 fi
 
 # Pending CI gate: for normal runs, skip immediately.
