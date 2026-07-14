@@ -177,35 +177,48 @@ _NORMALIZE_JQ='
   | ( { kind: "pr", repo: $repo, pr: ($pr.url),
         created: $pr.createdAt, merged: ($pr.mergedAt // null),
         draft: ($pr.isDraft // false), author: ($pr.author.login // "") } ),
-    ( $subs | group_by(.bot)[]
-      | { bot: .[0].bot }
-      | . as $g
-      | ($subs | map(select(.bot == $g.bot))) as $mine
-      | ($mine | map(.at) | sort | .[0]) as $first_at
+    ( $subs | group_by(.bot)[] as $grp
+      # Tag each submission as a refusal (an out-of-quota / rate-limit notice) vs a
+      # real response. A PR counts as "reviewed" if the bot gave ANY real response,
+      # even alongside a rate-limit notice; it counts as "refused" only when the
+      # bot'"'"'s SOLE action on the PR was to decline. This is the key correctness
+      # fix over the old "any rate-limit text present" flag.
+      | ($grp | map(. + {refusal: ((.body // "") | test($rl; "i"))})) as $mine
+      | ($mine | map(select(.refusal | not))) as $real
+      | ($mine | map(select(.refusal)))       as $refd
+      | ($real | map(.at) | min) as $first_real
       | { kind: "bot_pr", repo: $repo, pr: ($pr.url),
-          bot: $g.bot, created: $pr.createdAt, first_at: $first_at,
-          latency_s: (if $first_at == null then null
-                      else (($first_at | fromdateiso8601) - ($pr.createdAt | fromdateiso8601)) end),
-          reviews:      ($mine | map(select(.kind=="review")) | length),
-          approved:     ($mine | map(select(.kind=="review" and .state=="APPROVED")) | length),
-          changes_req:  ($mine | map(select(.kind=="review" and .state=="CHANGES_REQUESTED")) | length),
-          commented:    ($mine | map(select(.kind=="review" and .state=="COMMENTED")) | length),
-          dismissed:    ($mine | map(select(.kind=="review" and .state=="DISMISSED")) | length),
-          rate_limited: ($mine | map(select(.body | test($rl; "i"))) | length | if . > 0 then 1 else 0 end),
-          inline_comments:  ($mine | map(select(.kind=="inline")) | length),
-          threads_total:    ($mine | map(select(.kind=="inline")) | length),
-          threads_resolved: ($mine | map(select(.kind=="inline" and .resolved)) | length),
-          threads_outdated: ($mine | map(select(.kind=="inline" and .outdated)) | length),
-          thumbs_up:   ($mine | map(.reactions_up // 0)   | add // 0),
-          thumbs_down: ($mine | map(.reactions_down // 0) | add // 0) } )
+          bot: $grp[0].bot, created: $pr.createdAt,
+          real_responses: ($real | length),
+          refusals:       ($refd | length),
+          # Latency = time to first REAL response (null when the bot only refused,
+          # so refusals never pollute the latency percentiles).
+          latency_s: (if ($real | length) == 0 then null
+                      else (($first_real | fromdateiso8601) - ($pr.createdAt | fromdateiso8601)) end),
+          reviews:      ($real | map(select(.kind=="review")) | length),
+          approved:     ($real | map(select(.kind=="review" and .state=="APPROVED")) | length),
+          changes_req:  ($real | map(select(.kind=="review" and .state=="CHANGES_REQUESTED")) | length),
+          inline_comments:  ($real | map(select(.kind=="inline")) | length),
+          threads_total:    ($real | map(select(.kind=="inline")) | length),
+          threads_resolved: ($real | map(select(.kind=="inline" and .resolved)) | length),
+          thumbs_up:   ($real | map(.reactions_up // 0)   | add // 0),
+          thumbs_down: ($real | map(.reactions_down // 0) | add // 0) } )
 '
 
 # aggregate_snapshot <jsonl_dir> — PURE. Reads normalized JSONL and emits the
-# per-bot headline-metric snapshot as compact JSON (also the WoW artifact payload):
+# per-bot headline-metric snapshot as compact JSON (also the WoW artifact payload).
+# Every eligible (non-draft) PR falls into exactly one bucket PER BOT, and the three
+# buckets sum to eligible_prs:
+#   reviewed_prs     — the bot gave a real review/comment
+#   refused_prs      — the bot responded ONLY to decline (rate-limited / out of quota)
+#   no_response_prs  — the bot never appeared on the PR
+# reviews / refusal_events are EVENT counts (each submission counted, so a PR
+# re-reviewed across N commits contributes N reviews); the *_prs fields are PR
+# counts. reviewed_prs + refused_prs + no_response_prs == eligible_prs.
 #   { "eligible_prs": N, "total_prs": N,
-#     "bots": { "<login>": { prs_reviewed, reviews, inline_comments, approved,
-#               changes_req, commented, rate_limited, threads_total,
-#               threads_resolved, thumbs_up, thumbs_down,
+#     "bots": { "<login>": { reviewed_prs, refused_prs, no_response_prs, engaged_prs,
+#               reviews, refusal_events, approved, changes_req, inline_comments,
+#               threads_total, threads_resolved, thumbs_up, thumbs_down,
 #               latency_p50, latency_p95 } , ... } }
 aggregate_snapshot() {
   local dir="$1"
@@ -215,18 +228,25 @@ aggregate_snapshot() {
     (map(select(.kind=="pr"))) as $prs
     | (map(select(.kind=="bot_pr"))) as $bp
     | ($prs | length) as $total
-    | ($prs | map(select(.draft == false)) | length) as $eligible
-    | ($bp | group_by(.bot) | map(
+    # Bucket over ELIGIBLE (non-draft) PRs only, so the three buckets sum to eligible.
+    | (reduce ($prs[] | select(.draft == false)) as $p ({}; .[$p.pr] = true)) as $elig_map
+    | ($elig_map | length) as $eligible
+    | ($bp | map(select($elig_map[.pr]))) as $bpe
+    | ($bpe | group_by(.bot) | map(
         (.[0].bot) as $bot
+        | (map(select((.real_responses // 0) > 0))) as $reviewed
+        | (map(select((.real_responses // 0) == 0 and (.refusals // 0) > 0))) as $refused
         | ([.[].latency_s] | map(select(. != null)) | sort) as $lat
         | { key: $bot, value: {
-            prs_reviewed:     ([.[].pr] | unique | length),
+            reviewed_prs:     ($reviewed | length),
+            refused_prs:      ($refused | length),
+            no_response_prs:  ($eligible - ($reviewed | length) - ($refused | length)),
+            engaged_prs:      length,
             reviews:          ([.[].reviews] | add),
-            inline_comments:  ([.[].inline_comments] | add),
+            refusal_events:   ([.[].refusals] | add),
             approved:         ([.[].approved] | add),
             changes_req:      ([.[].changes_req] | add),
-            commented:        ([.[].commented] | add),
-            rate_limited:     ([.[].rate_limited] | add),
+            inline_comments:  ([.[].inline_comments] | add),
             threads_total:    ([.[].threads_total] | add),
             threads_resolved: ([.[].threads_resolved] | add),
             thumbs_up:        ([.[].thumbs_up] | add),
@@ -274,64 +294,52 @@ render_reviewer_report() {
   printf 'Deterministic report — every figure is computed with `jq`/`awk` from GitHub review data; '
   printf 'no LLM is involved. Bots are identified by their GraphQL App login '
   printf '(`scripts/lib/advisory-review-gate.sh`); rate-limit/out-of-quota notices are detected by body text. '
-  printf '_Participation_ = distinct non-draft PRs a bot touched ÷ %s review-eligible PRs. ' "$(_fmt_int "$eligible")"
-  printf '_Latency_ = time from PR creation to the bot'"'"'s first review/comment. '
+  printf '**Reviews** and **Rate-limited** count *every event*, not distinct PRs — a PR re-reviewed across N commits contributes N reviews. '
+  printf '**No response** counts eligible PRs the reviewer never engaged with at all. '
+  printf '_Latency_ = time from PR creation to the bot'"'"'s first **real** review (refusals excluded). '
   printf 'Deltas (▲/▼) are vs the prior week and directional only.\n\n'
 
   # ---- Scorecard table -----------------------------------------------------
   printf '## Scorecard\n\n'
-  printf '| Reviewer | PRs reviewed | Participation | Reviews | Comments/PR | Latency p50 | Latency p95 | ✅ / 🔄 | Rate-limited | Resolved | 👍/👎 |\n'
-  printf '|---|---:|---:|---:|---:|---:|---:|:--:|---:|---:|:--:|\n'
+  printf '| Reviewer | Total PRs | Reviews | ✅ / 🔄 | Rate-limited | No response | Latency p50 | Latency p95 |\n'
+  printf '|---|---:|---:|:--:|---:|---:|---:|---:|\n'
 
-  local bot label prs_reviewed reviews inline approved changes_req rate_limited thr_tot thr_res p50 p95 tup tdn
+  local bot label reviews refusal_events no_resp approved changes_req p50 p95
   for bot in "${REVIEWER_BOTS[@]}"; do
     label="${REVIEWER_LABELS[$bot]:-$bot}"
     # Pull this bot's aggregates out of the snapshot (0 when absent this week).
     # IFS=tab preserves empty latency fields (a missing percentile must not shift
     # the remaining columns left — that was a field-misalignment bug).
-    IFS=$'\t' read -r prs_reviewed reviews inline approved changes_req rate_limited thr_tot thr_res tup tdn p50 p95 <<<"$(
-      jq -r --arg b "$bot" '
+    IFS=$'\t' read -r reviews refusal_events no_resp approved changes_req p50 p95 <<<"$(
+      jq -r --arg b "$bot" --argjson elig "${eligible:-0}" '
         (.bots?[$b] // {}) as $x
-        | [ ($x.prs_reviewed // 0), ($x.reviews // 0), ($x.inline_comments // 0),
-            ($x.approved // 0), ($x.changes_req // 0), ($x.rate_limited // 0),
-            ($x.threads_total // 0), ($x.threads_resolved // 0),
-            ($x.thumbs_up // 0), ($x.thumbs_down // 0),
+        | [ ($x.reviews // 0), ($x.refusal_events // 0),
+            ($x.no_response_prs // $elig),
+            ($x.approved // 0), ($x.changes_req // 0),
             (if $x.latency_p50 == null then "" else $x.latency_p50 end),
             (if $x.latency_p95 == null then "" else $x.latency_p95 end) ]
         | @tsv' <<<"$snap"
     )"
 
-    local prev_prs; prev_prs="$(_prev "$prev" "$bot" prs_reviewed)"
-    local part cpp
-    part="$(_fmt_pct "$prs_reviewed" "$eligible")"
-    cpp="$(awk -v c="$inline" -v p="$prs_reviewed" 'BEGIN { if (p<=0) print "—"; else printf "%.1f", c/p }')"
-    local resolved_pct; resolved_pct="$(_fmt_pct "$thr_res" "$thr_tot")"
-    printf '| %s | %s %s | %s | %s | %s | %s | %s | %s / %s | %s | %s | %s/%s |\n' \
-      "$label" "$(_fmt_int "$prs_reviewed")" "$(_delta_arrow "$prs_reviewed" "$prev_prs")" \
-      "$part" "$(_fmt_int "$reviews")" "$cpp" \
-      "$(_fmt_dur "$p50")" "$(_fmt_dur "$p95")" \
+    local prev_reviews prev_refusals
+    prev_reviews="$(_prev "$prev" "$bot" reviews)"
+    prev_refusals="$(_prev "$prev" "$bot" refusal_events)"
+    printf '| %s | %s | %s %s | %s / %s | %s %s | %s | %s | %s |\n' \
+      "$label" \
+      "$(_fmt_int "$eligible")" \
+      "$(_fmt_int "$reviews")" "$(_delta_arrow "$reviews" "$prev_reviews")" \
       "$(_fmt_int "$approved")" "$(_fmt_int "$changes_req")" \
-      "$(_fmt_int "$rate_limited")" "$resolved_pct" \
-      "$(_fmt_int "$tup")" "$(_fmt_int "$tdn")"
+      "$(_fmt_int "$refusal_events")" "$(_delta_arrow "$refusal_events" "$prev_refusals")" \
+      "$(_fmt_int "$no_resp")" \
+      "$(_fmt_dur "$p50")" "$(_fmt_dur "$p95")"
   done
   printf '\n'
-  printf '_✅ = APPROVED reviews · 🔄 = CHANGES_REQUESTED · Resolved = share of a bot'"'"'s inline threads later resolved · Comments/PR = inline findings per reviewed PR._\n\n'
-
-  # ---- Reliability ---------------------------------------------------------
-  printf '## Reliability & no-shows\n\n'
-  printf '| Reviewer | Eligible PRs missed | Coverage gap | Rate-limited PRs |\n'
-  printf '|---|---:|---:|---:|\n'
-  for bot in "${REVIEWER_BOTS[@]}"; do
-    label="${REVIEWER_LABELS[$bot]:-$bot}"
-    prs_reviewed="$(jq -r --arg b "$bot" '.bots[$b].prs_reviewed // 0' <<<"$snap")"
-    rate_limited="$(jq -r --arg b "$bot" '.bots[$b].rate_limited // 0' <<<"$snap")"
-    local missed gap
-    missed=$(( eligible - prs_reviewed )); [ "$missed" -lt 0 ] && missed=0
-    gap="$(_fmt_pct "$missed" "$eligible")"
-    printf '| %s | %s | %s | %s |\n' \
-      "$label" "$(_fmt_int "$missed")" "$gap" "$(_fmt_int "$rate_limited")"
-  done
-  printf '\n_Coverage gap = eligible PRs a bot did **not** touch. External SaaS reviewers only sample a subset of PRs; this is a participation signal, not necessarily a fault._\n\n'
+  printf -- '- **Total PRs** — review-eligible (non-draft) PRs in the window; the denominator each row is measured against.\n'
+  printf -- '- **Reviews** — count of real reviews the bot submitted, **each occurrence** (a PR re-reviewed on 5 commits = 5). Rate-limit notices are excluded.\n'
+  printf -- '- **✅ / 🔄** — of those reviews, how many were APPROVED / CHANGES_REQUESTED.\n'
+  printf -- '- **Rate-limited** — count of out-of-quota / rate-limit refusals, each occurrence.\n'
+  printf -- '- **No response** — eligible PRs the bot never engaged with at all (no review, comment, or refusal).\n'
+  printf -- '- _Note: SonarCloud posts status-check comments rather than GitHub reviews, so its Reviews count reads 0 by design._\n\n'
 
   # ---- Coverage / overlap --------------------------------------------------
   local co_review multi_bot
