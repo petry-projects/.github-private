@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Validate that dependency-audit.yml is the canonical org stub pinned to @dependency-audit/next.
+"""Validate that dependency-audit.yml is the canonical org stub pinned to @dependency-audit/v2-next.
 
 The org standard requires dependency-audit.yml to be a thin caller stub that
-delegates to the reusable at @dependency-audit/next (not a SHA or any other ref).
+delegates to the reusable at @dependency-audit/v2-next (major-scope repin #657;
+this repo is pinned to the v2 channel ahead of the canonical @dependency-audit/next).
 
 Standard: petry-projects/.github/standards/ci-standards.md#centralization-tiers
 Source of truth: petry-projects/.github/standards/workflows/dependency-audit.yml
@@ -18,7 +19,7 @@ except ImportError:
     sys.exit(2)
 
 WORKFLOW = ".github/workflows/dependency-audit.yml"
-EXPECTED_USES = "petry-projects/.github/.github/workflows/dependency-audit-reusable.yml@dependency-audit/next"
+EXPECTED_USES = "petry-projects/.github/.github/workflows/dependency-audit-reusable.yml@dependency-audit/v2-next"
 
 
 def main() -> int:
