@@ -367,9 +367,10 @@ jobs:
         env:
           ORG: ${{ env.ORG }}
           STALE_DAYS: '3'
+          GH_PAT_WORKFLOWS: ${{ secrets.GH_PAT_WORKFLOWS }}
         with:
           # Use GH_PAT_WORKFLOWS for cross-repo issues:write on target repos
-          github-token: ${{ secrets.GH_PAT_WORKFLOWS }}
+          github-token: ${{ env.GH_PAT_WORKFLOWS }}
           script: |
             const org = process.env.ORG;
             const staleDays = parseInt(process.env.STALE_DAYS, 10);
