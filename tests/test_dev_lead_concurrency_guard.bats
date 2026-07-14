@@ -18,7 +18,7 @@ REUSABLE=".github/workflows/dev-lead-reusable.yml"
 
 @test "dev-lead reusable has NO cancel-in-progress: true (would re-open the #443 race)" {
   run grep -E '^\s*cancel-in-progress:\s*true\s*$' "$REUSABLE"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
 }
 
 @test "dev-lead reusable routes issue events to a per-issue lane (#402 lanes)" {
