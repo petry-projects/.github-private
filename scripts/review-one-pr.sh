@@ -912,6 +912,14 @@ TRIAGE_TYPE=$(classify_triage_type "$TRIAGE_RESULT")
 export TRIAGE_TYPE
 DEEP_TIER_PROMPT=$(resolve_deep_specialist "$TRIAGE_TYPE" "$RUBRIC_DEEP_PROMPT")
 
+# Export safety checks and downstream impact files if they exist
+if [ -f "/tmp/cascade/safety-checks.txt" ]; then
+  export SAFETY_CHECKS_FILE="/tmp/cascade/safety-checks.txt"
+fi
+if [ -f "/tmp/cascade/downstream-impact.txt" ]; then
+  export DOWNSTREAM_IMPACT_FILE="/tmp/cascade/downstream-impact.txt"
+fi
+
 # --- Tier 2: Deep review + Rubber duck (parallel, cross-engine) ---
 echo "    [tier2] type=$TRIAGE_TYPE specialist=$DEEP_TIER_PROMPT"
 echo "    [tier2] deep review ($ENGINE_DEEP_MODEL) + rubber duck ($DUCK_MODEL via $DUCK_ENGINE)"
