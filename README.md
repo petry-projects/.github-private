@@ -30,9 +30,9 @@ frameworks/               # Installed agentic frameworks (git subtree)
 | Agent | Purpose | Invoke with |
 |-------|---------|-------------|
 | `agentic-workflows` | Agentic workflow orchestration | `@agentic-workflows` in any org repo |
-| `pr-reviewer` | Cascading PR review (triage → deep → security audit) | `@pr-reviewer` in any org PR |
-| `feature-ideator` | Generate and prioritize feature ideas | `@feature-ideator` in any org repo |
 | `compliance-auditor` | Audit repo against org standards | `@compliance-auditor` in any org repo |
+| `feature-ideator` | Generate and prioritize feature ideas | `@feature-ideator` in any org repo |
+| `pr-reviewer` | Cascading PR review (triage → deep → security audit) | `@pr-reviewer` in any org PR |
 
 ## PR Review Automation
 
