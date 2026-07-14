@@ -117,7 +117,7 @@ mapped to its current code and to how the extension honors it.
 ### 2.1 `initiative:auto` opt-in — honored per epic, re-asserted per target repo
 
 - **Today:** the epic must carry `GATE_LABEL` (`initiative:auto`) or `drive_epic` no-ops
-  (`initiative-driver.sh:112-115`). In sweep mode it is the discovery filter (`:228`); in single-epic
+  (`initiative-driver.sh:112-115`). In sweep mode it is the discovery filter (`:227-229`); in single-epic
   mode it is re-checked (`:111-112`).
 - **Cross-repo:** the coordinating epic must carry `initiative:auto` (unchanged). **Additionally**, each
   target repo must independently opt in — a repo is only a valid release target if it, too, has enrolled
@@ -165,7 +165,7 @@ mapped to its current code and to how the extension honors it.
 ### 2.4 `holdout-guard` — a per-repo CI gate that is already independent and stays that way
 
 - **Today:** `holdout-guard.yml` runs on **every PR in the repo it lives in** (no `paths:` filter,
-  `.github/workflows/holdout-guard.yml:18-21`), failing any PR whose author is the skill-proposer
+  `.github/workflows/holdout-guard.yml:12-21`), failing any PR whose author is the skill-proposer
   identity and that touches a held-out path (`scripts/lib/holdout-guard.sh` `hg_evaluate`,
   `:81-116`). The decision keys purely on **PR author + changed paths** in that repo.
 - **Cross-repo:** this gate is **structurally already per-repo and requires no driver change** — it is a
