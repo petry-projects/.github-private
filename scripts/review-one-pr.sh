@@ -63,6 +63,13 @@ source "$SCRIPT_DIR/lib/safety-checks.sh"
 # when off. Story 5 consumers verify the PR_HEAD_SHA stamp before use.
 # shellcheck source=lib/pr-context-prefetch.sh
 source "$SCRIPT_DIR/lib/pr-context-prefetch.sh"
+# Agentic iterative validation (issue #1092): apply_finding_verification applies
+# the repro-outcome downgrade/drop discipline to the deep tier's logic/correctness
+# findings and emits kind:"finding_verification" records so the false-positive-rate
+# delta is measurable. Pure jq — the repro itself runs inside the deep tier's
+# already-bounded, privilege-flat run_agentic sandbox.
+# shellcheck source=lib/finding-verification.sh
+source "$SCRIPT_DIR/lib/finding-verification.sh"
 
 PR_URL="${1:?usage: review-one-pr.sh <pr-url>}"
 export PR_URL
@@ -982,6 +989,15 @@ fi
 # JSON is valid — if the process still exited non-zero log it but proceed:
 # the agent may have written the verdict before a non-fatal wrapper error.
 [ "$DEEP_RC" -ne 0 ] && echo "::warning::deep review process exited $DEEP_RC but produced valid JSON — proceeding"
+
+# --- Agentic iterative validation (issue #1092) ---
+# The deep tier attempted to reproduce its logic/correctness findings with the
+# repo's lint/test tools inside its already-bounded run_agentic sandbox and tagged
+# each with a `verification` outcome. Apply the downgrade/drop discipline now
+# (before synthesis/audit consume the findings) so refuted findings are demoted or
+# dropped and every processed finding is recorded as a kind:"finding_verification"
+# record for the FP-rate metric. Pure jq — adds no tool/network/timeout surface.
+apply_finding_verification "$OUTPUT_FILE" "${TOKEN_WORKFLOW:-pr-review}" "deep" "$PR_URL"
 
 # Wait for duck to finish (deep succeeded)
 [ -n "$DUCK_PID" ] && wait $DUCK_PID || true
