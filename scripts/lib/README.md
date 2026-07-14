@@ -42,6 +42,29 @@ registry resolves `rubric` and `output_channel` from the `artifact_type`.
 Data, not code — register a new artifact_type by adding a row; never fork the
 reviewer.
 
+### Deep-tier specialist routing (`deep_specialist:<type>`)
+
+Issue #1091 (epic #1088) adds the issue-type classifier: the Tier-1 triage
+prompt emits a `type` label in `{security, logic, performance, style}`, and the
+`pr_diff` cascade routes its **deep tier** to a specialist prompt per class. That
+routing is registry data, not a switch in `review-one-pr.sh` — the manifest
+carries one `deep_specialist:<type>` row per class whose `rubric` column is the
+single specialist prompt:
+
+```bash
+review_registry_lookup deep_specialist:security    rubric  # -> prompts/deep-review-security.md
+review_registry_lookup deep_specialist:logic       rubric  # -> prompts/deep-review-logic.md
+review_registry_lookup deep_specialist:performance rubric  # -> prompts/deep-review-performance.md
+review_registry_lookup deep_specialist:style       rubric  # -> prompts/deep-review-style.md
+```
+
+These rows extend the `pr_diff` cascade's deep entry, so their `output_channel`
+stays `scripts/post-pr-review.sh` (they route a PR review's deep tier, not a new
+artifact type). [`deep-specialist.sh`](./deep-specialist.sh) resolves the label →
+specialist prompt and **falls back to `prompts/deep-review.md`** whenever the
+label is absent/ambiguous, has no row, or points at a missing file — so the deep
+tier never dead-ends.
+
 - A `# schema_version: N` comment carries the manifest version.
 - Each data row is tab-separated: `artifact_type<TAB>rubric<TAB>output_channel`.
   - `rubric` is an ordered, comma-separated list of repo-root-relative prompt files.
