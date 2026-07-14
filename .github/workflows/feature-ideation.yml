@@ -215,7 +215,7 @@ jobs:
     # See AGENTS.md "Release channel tags & the mutable-ref exception" and
     # docs/release/versioning.md (ring channels; Cross-repo: feature-ideation).
     # Precedent: auto-rebase.yml intentionally pins its reusable @v2 ahead of canon.
-    uses: petry-projects/.github/.github/workflows/feature-ideation-reusable.yml@feature-ideation/next
+    uses: petry-projects/.github/.github/workflows/feature-ideation-reusable.yml@feature-ideation/v1-next
     with:
       # All values below come from `needs.prep.outputs.*` (resolved in the `prep`
       # job) — NOT the `inputs` context — so this reusable `with:` compiles on the
