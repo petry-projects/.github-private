@@ -52,6 +52,7 @@ jobs:
             tests/test_initiative_driver_canary.bats \
             tests/test_mcp_connectivity_check.bats \
             tests/token_report.bats \
+            tests/reviewer_report.bats \
             tests/auto_rebase_health.bats \
             tests/model_pricing.bats \
             tests/test_review_cycle.bats \
@@ -97,6 +98,7 @@ jobs:
             tests/test_downstream_impact_triage_inline.bats \
             tests/test_downstream_impact_regression.bats \
             tests/test_et_baseline_regression.bats \
+            tests/test_deep_review_baseline.bats \
             tests/test_safety_checks.bats \
             tests/test_safety_checks_triage_inline.bats \
             tests/test_prefetch_context.bats \
