@@ -218,7 +218,7 @@ HTTP 406 above that limit.
 
 First-party reusables are versioned via tags — see
 [`docs/release/versioning.md`](./docs/release/versioning.md). This began with the `pr-review` and
-`dev-lead` agents and now covers every first-party reusable we own — the this-repo reusables
+`dev-lead` agents and now covers every first-party reusable we own — the reusables in this repo
 (`pr-review`, `dev-lead`, `ci-failure-analyst`) and the cross-repo reusables hosted in
 `petry-projects/.github` (`feature-ideation` and the six #482 reusables). **One convention applies to
 all of them.** Two kinds of tag exist per reusable:
@@ -250,7 +250,7 @@ channel tags) on first-party callers as "unpinned actions" — they are the sanc
 mechanism (see the initiative analysis §5.1: `docs/initiatives/agentic-release-strategy.md`).
 
 **feature-ideation (cross-repo).** The `feature-ideation` agent is released through the same model with
-the channel set `{next, ring0, ring1, stable}`, so its `feature-ideation/<channel>` pins are the **same
+the channel set `{next, ring0, ring1, stable}`, so its `feature-ideation/v<MAJOR>-<tier>` pins (e.g., `feature-ideation/v1-stable`) are the **same
 sanctioned mutable-ref exception** and must not be flagged as unpinned. Unlike `pr-review`/`dev-lead`
 whose reusables live in this repo, `feature-ideation`'s reusable lives in **`petry-projects/.github`**
 (this repo holds only the thin caller stub), so its release/channel tags are cut against that public
