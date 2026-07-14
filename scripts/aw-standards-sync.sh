@@ -293,7 +293,7 @@ gh issue list --repo "${REPORT_REPO}" --label "${SYNC_LABEL}" --state open \
     [ -n "$prev" ] || continue
     gh issue close "$prev" --repo "${REPORT_REPO}" \
       --comment "Superseded by the newer standards-sync summary." >/dev/null 2>&1 || true
-  done
+  done || true
 
 echo "Opening summary issue in ${REPORT_REPO}..."
 gh api "repos/${REPORT_REPO}/issues" \
