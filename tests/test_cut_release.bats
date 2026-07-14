@@ -247,6 +247,11 @@ setup() {
   [ "$output" = "dev-lead/v2.3.1" ]
 }
 
+@test "release_ref: ci-failure-analyst variant" {
+  run release_ref "ci-failure-analyst" "0.1.0"
+  [ "$output" = "ci-failure-analyst/v0.1.0" ]
+}
+
 @test "release_ref: feature-ideation variant" {
   run release_ref "feature-ideation" "1.4.0"
   [ "$output" = "feature-ideation/v1.4.0" ]
@@ -295,6 +300,11 @@ setup() {
 @test "channel_ref: dev-lead 2.0.0 stable -> dev-lead/v2-stable" {
   run channel_ref "dev-lead" "2.0.0" "stable"
   [ "$output" = "dev-lead/v2-stable" ]
+}
+
+@test "channel_ref: ci-failure-analyst 0.1.0 stable -> ci-failure-analyst/v0-stable" {
+  run channel_ref "ci-failure-analyst" "0.1.0" "stable"
+  [ "$output" = "ci-failure-analyst/v0-stable" ]
 }
 
 @test "channel_ref: next channel is major-scoped" {
