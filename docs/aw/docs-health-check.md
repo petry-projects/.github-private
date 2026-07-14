@@ -2,7 +2,7 @@
 
 **Workflow:** `docs-health-check.yml`
 **Priority:** P2
-**Trigger:** `schedule` — weekly, Sunday 00:00 UTC
+**Trigger:** `schedule` — weekly, Sunday 00:21 UTC
 **Scenario spec:** [`tests/aw/docs-health-check/scenarios.md`](../../tests/aw/docs-health-check/scenarios.md)
 
 ---
