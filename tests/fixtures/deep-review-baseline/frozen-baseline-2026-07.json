@@ -1,0 +1,49 @@
+{
+  "status": "FROZEN",
+  "issue": 1089,
+  "epic": 1088,
+  "captured_at": "2026-07-14",
+  "description": "Immutable Phase-1 quality/cost baseline for the deep-review bug-hunter initiative (epic #1088). Downstream stories #1090-#1093 prove 'no regression' against these numbers; the Phase-4 gate #1094 consumes them as the before-reference. Do not edit without a CODEOWNER review — the pin in tests/test_deep_review_baseline.bats fails CI on any silent change.",
+  "metrics": {
+    "median_escalated_review_et": {
+      "value": 343068.25,
+      "unit": "effective_tokens",
+      "status": "frozen",
+      "tier": "deep",
+      "model": "claude-opus-4-8",
+      "record_count": 10,
+      "window": { "from": "2026-07-03", "to": "2026-07-10" },
+      "source": "tests/fixtures/et-baseline/pre-change-baseline-2026-07.jsonl",
+      "source_run_ids": [
+        "28680743571", "28680719157", "28684575826", "28690647414",
+        "28708785471", "28712486134", "28945288331", "28945290473",
+        "29004496155", "29060937544"
+      ],
+      "reproduce": "jq -s 'map(select(.tier==\"deep\").et)|sort as $s|($s|length) as $n|if $n%2==1 then $s[($n/2|floor)] else (($s[$n/2-1]+$s[$n/2])/2) end' tests/fixtures/et-baseline/pre-change-baseline-2026-07.jsonl",
+      "note": "The deep tier is the escalated-review tier (triage escalates into it). Median of the 10 real deep-tier per-call ET records already committed in the et-baseline fixture and priced by scripts/token_report.sh. Epic #1088 cost cap: median ET per escalated review must stay <= 1.5x this value (514602.375)."
+    },
+    "deep_review_holdout_eval_score": {
+      "value": null,
+      "status": "pending-credentialed-capture",
+      "scorer": "llm-judge",
+      "judge": "evals/judge.md",
+      "pass_threshold": 0.7,
+      "holdout": "evals/deep-review/holdout/cases.jsonl",
+      "reproduce": "scripts/evals/run-eval.sh deep-review",
+      "note": "run-eval.sh deep-review makes live model calls through the engine (run_triage). It cannot be scored in an un-credentialed context (the dev-lead sandbox reports 'Not logged in', so every case is an infra failure -> exit 2, un-scored). This aggregate score must be frozen by a credentialed CI run via an explicit CODEOWNER-reviewed PR; a proposer-identity run must never freeze its own goalpost (holdout-guard.yml, #692). Until then downstream 'no regression' checks compare a fresh credentialed run against a same-run baseline captured at gate time (#1094)."
+    },
+    "finding_verification_fp_rate": {
+      "value": null,
+      "status": "unavailable-no-emitter",
+      "signal_kind": "finding_verification",
+      "expected_source": "scripts/lib/token-metrics.sh",
+      "reproduce": "n/a until the emitter lands",
+      "note": "The false-positive signal (kind:\"finding_verification\" records with severity_before/after + outcome) is a DOCUMENTED SCHEMA ONLY (tests/token_report.bats, story #843) — no emit_verification_record() exists in scripts/lib/token-metrics.sh and no such records are present in the telemetry window. A real FP-rate baseline therefore cannot be captured yet; standing it up is itself a prioritized gap (see docs/initiatives/pr-review-bughunter-audit.md, mapped to #1092). Baseline = 0 finding_verification records -> FP-rate undefined. The story that first emits these records freezes this number via a CODEOWNER-reviewed PR."
+    }
+  },
+  "references": {
+    "audit": "docs/initiatives/pr-review-bughunter-audit.md",
+    "immutability_pattern": "tests/fixtures/et-baseline/PROVENANCE.md",
+    "regression_guard": "tests/test_deep_review_baseline.bats"
+  }
+}
