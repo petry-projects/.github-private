@@ -28,7 +28,7 @@ set -euo pipefail
 
 # The classes the triage classifier may emit. Anything else is "ambiguous"
 # and takes the monolithic fallback path.
-DEEP_SPECIALIST_CLASSES="security logic performance style"
+DEEP_SPECIALIST_CLASSES=(security logic performance style)
 
 # Bring in the shared registry lookup helper if the caller has not already
 # sourced it (review-one-pr.sh sources both; tests may source only this file).
@@ -44,7 +44,7 @@ fi
 normalize_diff_type() {
   local raw="${1:-}" c
   raw="$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
-  for c in $DEEP_SPECIALIST_CLASSES; do
+  for c in "${DEEP_SPECIALIST_CLASSES[@]}"; do
     if [ "$raw" = "$c" ]; then
       printf '%s\n' "$c"
       return 0
