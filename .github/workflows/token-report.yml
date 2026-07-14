@@ -13,6 +13,7 @@
 #   • Do NOT change checkout ref from 'main'.
 # ─────────────────────────────────────────────────────────────────────────────
 name: Token Cost Report
+# readme-report: LLM token-cost report (per workflow-run summary) for maintainers.
 
 on:
   schedule:

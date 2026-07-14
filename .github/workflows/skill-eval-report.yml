@@ -1,4 +1,5 @@
 name: Skill Eval Report
+# readme-report: Skill-eval results report — agent skill pass/fail trends (self-improving-skills pipeline).
 
 # Phase 1 of the self-improving-skills pipeline (epic #581, story #584).
 #

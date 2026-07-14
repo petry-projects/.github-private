@@ -15,6 +15,7 @@
 #     for feature-branch testing only and must never reach production.
 # ─────────────────────────────────────────────────────────────────────────────
 name: Actions Fleet Monitor
+# readme-report: Actions fleet monitor — org-wide workflow token usage and run anomalies.
 
 on:
   schedule:

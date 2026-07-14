@@ -1,4 +1,5 @@
 name: Docs Health Check
+# readme-report: Docs health check — flags stale/broken docs as an issue.
 
 on:
   schedule:
