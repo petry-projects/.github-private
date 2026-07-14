@@ -401,10 +401,14 @@ jobs:
             const cutoffMs = staleDays * 24 * 60 * 60 * 1000;
             const now = Date.now();
 
-            const found = await github.paginate(github.rest.search.issuesAndPullRequests, {
+            // octokit's paginate already flattens search results to their `.items`;
+            // a `response => response.data.items` mapFn on top produced `undefined`
+            // entries and crashed the step (TypeError reading 'repository_url'),
+            // failing the whole daily monitor. Drop the mapFn and defensively filter.
+            const found = (await github.paginate(github.rest.search.issuesAndPullRequests, {
               q: `org:${org} is:issue is:open label:fleet-tracker`,
               per_page: 100,
-            }, response => response.data.items);
+            })).filter(Boolean);
 
             let closed = 0, kept = 0, skipped = 0;
             for (const issue of found) {
