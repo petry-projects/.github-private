@@ -46,7 +46,8 @@ teardown() {
 }
 
 # Installs a gh stub. GH_STUB_MODE:
-#   found  — `gh search code` returns 3 result items with path + textMatches.
+#   found  — `gh search code` returns 4 result items with path + textMatches.
+#   two    — `gh search code` returns 2 result items (for SYMBOL_CONTEXT_MIN tests).
 #   fail   — `gh search code` exits 1 (search unavailable / no scope).
 make_gh_stub() {
   cat > "$STUB_DIR/gh" << 'STUBEOF'
@@ -57,6 +58,16 @@ printf '%s\n' "$*" >> "$GH_CALL_LOG"
 if [ "${GH_STUB_MODE:-found}" = "fail" ]; then
   echo "gh: code search failed" >&2
   exit 1
+fi
+
+if [ "${GH_STUB_MODE:-found}" = "two" ]; then
+  cat <<'JSON'
+[
+  {"path":"scripts/a.sh","textMatches":[{"fragment":"  assemble_thing arg1"}]},
+  {"path":"scripts/b.sh","textMatches":[{"fragment":"result=$(assemble_thing)"}]}
+]
+JSON
+  exit 0
 fi
 
 # Emit a JSON array shaped like `gh search code --json path,textMatches`.
@@ -99,7 +110,7 @@ STUBEOF
   # The count log line names the function and its attached-context count.
   [[ "$output" == *"[symbol-context]"* ]]
   [[ "$output" == *"assemble_thing"* ]]
-  [[ "$output" == *"context"* ]]
+  [[ "$output" =~ assemble_thing.*[0-9]+.*context ]]
 }
 
 @test "SYMBOL_CONTEXT_FILE is exported and points at the written file" {
@@ -111,11 +122,11 @@ STUBEOF
 }
 
 @test "the configured minimum contexts-per-function is honored" {
-  export GH_STUB_MODE=found
+  export GH_STUB_MODE=two
   make_gh_stub
   SYMBOL_CONTEXT_MIN=2 run assemble_symbol_context "$DIFF" "$REPO" "$OUT_FILE"
   [ "$status" -eq 0 ]
-  [ "$(grep -c 'scripts/[a-d]\.sh' "$OUT_FILE" || true)" -ge 2 ]
+  [ "$(grep -c 'scripts/[a-b]\.sh' "$OUT_FILE")" -eq 2 ]
 }
 
 # ---------------------------------------------------------------------------
@@ -164,4 +175,44 @@ STUBEOF
   [ "$status" -eq 0 ]
   [ -f "$OUT_FILE" ]
   [ "$(wc -c < "$OUT_FILE")" -le 40 ]
+}
+
+# ---------------------------------------------------------------------------
+# SYMBOL_CONTEXT_MAX_FUNCS: multi-function diff + cap enforcement
+# ---------------------------------------------------------------------------
+
+# Two-function diff used by the cap tests below.
+MULTI_DIFF='--- a/scripts/foo.sh
++++ b/scripts/foo.sh
+@@ -10,3 +10,3 @@
++assemble_thing() {
++  helper_fn
++}
+@@ -20,3 +20,3 @@
++another_function() {
++  more stuff
++}
+'
+
+@test "SYMBOL_CONTEXT_MAX_FUNCS caps the number of functions searched" {
+  export GH_STUB_MODE=found
+  make_gh_stub
+  SYMBOL_CONTEXT_MAX_FUNCS=1 run assemble_symbol_context "$MULTI_DIFF" "$REPO" "$OUT_FILE"
+  [ "$status" -eq 0 ]
+  grep -q "function cap reached: 1" "$OUT_FILE"
+  # Only one gh search was issued for the one allowed function.
+  [ "$(grep -c 'search code' "$GH_CALL_LOG")" -eq 1 ]
+}
+
+@test "each function keeps its own context output and logging isolated" {
+  export GH_STUB_MODE=found
+  make_gh_stub
+  run assemble_symbol_context "$MULTI_DIFF" "$REPO" "$OUT_FILE"
+  [ "$status" -eq 0 ]
+  # Both functions have their own section in the output file.
+  grep -q "assemble_thing" "$OUT_FILE"
+  grep -q "another_function" "$OUT_FILE"
+  # Both functions get their own per-function count log line.
+  [[ "$output" =~ assemble_thing.*[0-9]+.*context ]]
+  [[ "$output" =~ another_function.*[0-9]+.*context ]]
 }

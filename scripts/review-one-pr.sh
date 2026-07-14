@@ -696,22 +696,6 @@ if [ "${SAFETY_CHECKS_ENABLED:-true}" = "true" ]; then
   assemble_safety_checks "$PR_METADATA" "$PR_DIFF" "/tmp/cascade/safety-checks.txt" || true
 fi
 
-# Semantic symbol-context pass (issue #1090). Gated default-off so, when
-# disabled, SYMBOL_CONTEXT_FILE is never set and the deep/duck prompts + cost are
-# byte-identical to pre-feature behavior (holdout-eval stability + rollback).
-# When enabled: gather >=3 caller/callee/type-def reference contexts (via the
-# GitHub search_code path) for each function touched in the diff and export the
-# block path as SYMBOL_CONTEXT_FILE for the deep + duck tiers. Runs BEFORE the
-# PR_DIFF/PR_METADATA unset below so it can read the diff; best-effort —
-# assemble_symbol_context always exits 0, degrading to a warning (never fails).
-if [ "${SYMBOL_CONTEXT_ENABLED:-false}" = "true" ]; then
-  if [ -z "${GITHUB_REPOSITORY:-}" ]; then
-    echo "::warning::[symbol-context] GITHUB_REPOSITORY is unset — skipping symbol context to avoid an unscoped cross-repository search" >&2
-  else
-    assemble_symbol_context "$PR_DIFF" "$GITHUB_REPOSITORY" "/tmp/cascade/symbol-context.txt" || true
-  fi
-fi
-
 # Build the triage prompt: static template + inlined PR context.
 TRIAGE_PROMPT_FILE="/tmp/cascade/triage-prompt.md"
 {
@@ -749,7 +733,10 @@ TRIAGE_RESULT=$(
 
 # Drop the bulky locals now that the prompt file is on disk. Keeps later
 # subprocess forks (jq, claude) from hitting E2BIG on hundreds-of-KB diffs.
+# PR_DIFF is saved as a local shell variable (not exported) for tier-2
+# symbol-context assembly and unset after that pass completes.
 # Advisory feedback is capped at 8 KB; write to disk for Tier 2/3 to read.
+_sc_diff="${PR_DIFF:-}"
 ADVISORY_BOT_FEEDBACK_FILE="/tmp/cascade/advisory-bot-feedback.txt"
 rm -f "$ADVISORY_BOT_FEEDBACK_FILE"
 if [[ -n "${ADVISORY_BOT_FEEDBACK//[[:space:]]/}" ]]; then
@@ -942,6 +929,21 @@ fi
 if [ -f "/tmp/cascade/downstream-impact.txt" ]; then
   export DOWNSTREAM_IMPACT_FILE="/tmp/cascade/downstream-impact.txt"
 fi
+
+# Semantic symbol-context pass (issue #1090). Runs here in tier-2 so
+# triage-cleared PRs never pay the gh search code cost (only deep-review and
+# rubber-duck read SYMBOL_CONTEXT_FILE). Gated default-off: when disabled
+# SYMBOL_CONTEXT_FILE is never set and the deep/duck prompts + cost are
+# byte-identical to pre-feature behavior (holdout-eval stability + rollback).
+# Best-effort — assemble_symbol_context always exits 0, degrading to a warning.
+if [ "${SYMBOL_CONTEXT_ENABLED:-false}" = "true" ]; then
+  if [ -z "${GITHUB_REPOSITORY:-}" ]; then
+    echo "::warning::[symbol-context] GITHUB_REPOSITORY is unset — skipping symbol context to avoid an unscoped cross-repository search" >&2
+  else
+    assemble_symbol_context "$_sc_diff" "$GITHUB_REPOSITORY" "/tmp/cascade/symbol-context.txt" || true
+  fi
+fi
+unset _sc_diff
 
 # --- Tier 2: Deep review + Rubber duck (parallel, cross-engine) ---
 echo "    [tier2] type=$TRIAGE_TYPE specialist=$DEEP_TIER_PROMPT"

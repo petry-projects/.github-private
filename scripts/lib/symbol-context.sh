@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+set -euo pipefail
 # Semantic symbol-context assembler for the PR-review cascade (issue #1090,
 # epic #1088, Phase 2).
 #
@@ -216,7 +217,7 @@ assemble_symbol_context() {
   local repo="${2:-}"
   local out_file="${3:-${SYMBOL_CONTEXT_FILE:-/tmp/cascade/symbol-context.txt}}"
   local min="${SYMBOL_CONTEXT_MIN:-3}"
-  local max_funcs="${SYMBOL_CONTEXT_MAX_FUNCS:-20}"
+  local max_funcs="${SYMBOL_CONTEXT_MAX_FUNCS:-10}"
   local max_bytes="${SYMBOL_CONTEXT_MAX_BYTES:-8000}"
 
   mkdir -p "$(dirname "$out_file")" 2>/dev/null || true
