@@ -10,8 +10,8 @@ setup() {
   export REVIEW_SCRIPT="$REPO_ROOT/scripts/review-one-pr.sh"
   export SHA="deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
   export PR_URL="https://github.com/petry-projects/.github-private/pull/999"
-  export TEST_DIR="$BATS_TMPDIR/review-one-force-ci-failing"
-  rm -rf "$TEST_DIR"; mkdir -p "$TEST_DIR/bin"; cd "$TEST_DIR"
+  export TEST_DIR="$BATS_TEST_TMPDIR"
+  mkdir -p "$TEST_DIR/bin"; cd "$TEST_DIR"
   # A single external check FAILED -> compute_ci_status classifies "failing".
   cat > "$TEST_DIR/snapshot.json" <<EOF
 {
@@ -52,4 +52,5 @@ teardown() { rm -rf "$TEST_DIR"; }
   # Must NOT emit the ci-failing skip; must announce the break-glass bypass.
   [[ "$output" != *'"reason":"ci-failing"'* ]]
   [[ "$output" == *"bypassing the ci-failing gate"* ]]
+  [ "$status" -ne 100 ]
 }
