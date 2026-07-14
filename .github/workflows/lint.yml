@@ -52,6 +52,7 @@ jobs:
             tests/test_initiative_driver_canary.bats \
             tests/test_mcp_connectivity_check.bats \
             tests/test_spec_drift.bats \
+            tests/test_spec_drift_eval.bats \
             tests/token_report.bats \
             tests/reviewer_report.bats \
             tests/auto_rebase_health.bats \
