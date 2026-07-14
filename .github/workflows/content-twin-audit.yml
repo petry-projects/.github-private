@@ -1,4 +1,5 @@
 name: ContentTwin Content Audit
+# readme-report: ContentTwin content audit — audits the ContentTwin repo's published content.
 
 on:
   schedule:
