@@ -114,7 +114,21 @@ jobs:
             tests/test_release_registry.bats \
             tests/test_readme_refresh_helpers.bats \
             tests/test_validate_personas.bats \
-            tests/test_dev_lead_concurrency_guard.bats
+            tests/test_dev_lead_concurrency_guard.bats \
+            tests/test_validate_workflow_schedules.bats
+
+  validate-workflow-schedules:
+    # Off-peak scheduling compliance (#724, epic #722): fail any PR that
+    # introduces a minute-0 (`0 * * * *`) schedule.cron in this repo's own
+    # workflow/agentic sources. Enforces the AGENTS.md "Scheduled workflows"
+    # standard. PR-triggered on the existing Lint workflow — no new cron.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+
+      - name: Check for minute-0 scheduled crons
+        run: bash scripts/validate-workflow-schedules.sh
 
   template-drift:
     # Drift guard (#969): fail when a file committed in petry-projects/repo-template
