@@ -67,13 +67,14 @@ The smallest change that delivers cross-repo coordination while touching the lea
    declares its target repos, and each story is associated with the repo it lives in. Concretely, two
    plausible shapes:
    - **(a) `target_repos` list on the epic** — the epic body/field enumerates the repos in scope; each
-     native sub-issue already carries its own `repository` in the GitHub API payload, so the driver
-     reads the story's own repo from the `sub_issues` response rather than assuming `$REPO`. This is the
-     lowest-surface option: the DAG is authored as native cross-repo sub-issues/`blocked_by` edges, and
-     the driver simply stops hard-coding `$REPO` into per-story calls, deriving it from each node
-     instead. `target_repos` then functions as an **allowlist / scope assertion** — the driver refuses
-     to act on any story whose repo is not in the epic's declared `target_repos`, so a stray cross-repo
-     edge cannot widen blast radius silently.
+     native sub-issue already carries its own `repository` **and `labels`** in the GitHub API payload,
+     so the driver reads the story's own repo and label state directly from the `sub_issues` response
+     rather than assuming `$REPO` or calling `labels_of` per child — eliminating the N+1 query pattern
+     across the fan-out. This is the lowest-surface option: the DAG is authored as native cross-repo
+     sub-issues/`blocked_by` edges, and the driver simply stops hard-coding `$REPO` into per-story
+     calls, deriving repo and label state from each node instead. `target_repos` then functions as an
+     **allowlist / scope assertion** — the driver refuses to act on any story whose repo is not in the
+     epic's declared `target_repos`, so a stray cross-repo edge cannot widen blast radius silently.
    - **(b) per-story `repo` annotation** — if native cross-repo sub-issue links prove unreliable, the
      plan encodes each story's repo explicitly (mirroring the planner's existing `target_repo` notion,
      §4) and the driver reads that.
@@ -156,6 +157,11 @@ mapped to its current code and to how the extension honors it.
   reflects reality across the fan-out. Counting only the coordinating repo would under-count in-flight
   work and silently breach the cap — an explicit correctness requirement for any build.
 
+  **Implementation efficiency note:** the `sub_issues` API response already returns full issue objects
+  including both `labels` and `repository` fields. The in-flight count, hands-off check, and hold check
+  can all be satisfied from this initial payload — no per-child `labels_of` call is needed. This avoids
+  the N+1 query pattern (one extra API call per story) that would otherwise compound across the fan-out.
+
 ### 2.4 `holdout-guard` — a per-repo CI gate that is already independent and stays that way
 
 - **Today:** `holdout-guard.yml` runs on **every PR in the repo it lives in** (no `paths:` filter,
@@ -210,9 +216,16 @@ repos.
   - The PAT's repo scope is the *outer* bound on which repos an epic can ever touch — narrower than
     `target_repos` if the PAT lacks a repo, the release into that repo simply fails (fail-closed), which
     is the desired direction.
-  - Prefer a **fine-grained PAT** (or a GitHub App installation token) scoped to exactly the enrolled
-    target repos with only `issues: write`, over a broad classic PAT. This keeps the credential's blast
-    radius equal to the declared `target_repos`, not "every repo the owner can reach."
+  - Prefer a **fine-grained PAT** scoped to exactly the enrolled target repos with only
+    `issues: write`, over a broad classic PAT. This keeps the credential's blast radius equal to the
+    declared `target_repos`, not "every repo the owner can reach."
+  - **Fine-grained PAT limitation — cross-org constraint:** GitHub fine-grained PATs are restricted to
+    a single resource owner (one user or one organization). If the multi-repo initiative coordinates
+    repos that span *different organizations*, a single fine-grained PAT cannot cover them all. In that
+    case, prefer a **GitHub App installation token** (one installation per org, token scoped to that
+    org's enrolled repos) or, if an App is not available, a classic PAT scoped to the minimum required
+    permissions. For the primary use case — a coordinated epic whose target repos all live within one
+    organization — a fine-grained PAT remains the preferred choice and this limitation does not apply.
   - The workflow already runs with `contents: read` only and pushes all mutation through the PAT
     (`initiative-driver.yml:48-49`); that split is preserved — no target repo needs to grant the
     *workflow* write, only the PAT.
