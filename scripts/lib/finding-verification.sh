@@ -91,65 +91,60 @@ apply_finding_verification() {
   esac
   [ "$count" -gt 0 ] || return 0
 
-  local kept; kept="$(mktemp)"
-  : > "$kept"
+  local tmp; tmp="$(mktemp)"
+  if jq '
+    def downgrade_severity(sev):
+      if sev == "critical" then "major"
+      elif sev == "major" then "minor"
+      elif sev == "minor" then "info"
+      elif sev == "info" then ""
+      else sev end;
+    def is_logic_category(cat):
+      (cat | ascii_downcase) as $c | ($c == "logic" or $c == "correctness");
+    .findings as $orig_findings
+    | (reduce (range(0; $orig_findings | length)) as $i (
+        {findings: [], events: []};
+        . as $state
+        | $orig_findings[$i] as $f
+        | if ($f == null or $f == "null") then $state
+          else
+            ($f.category // "" | ascii_downcase) as $cat
+            | ($f.verification // "" | ascii_downcase) as $ver
+            | ($f.severity // "") as $sev
+            | if (is_logic_category($cat) and $ver != "") then
+                (if $ver == "confirmed" then
+                   {outcome: "confirmed", new_sev: $sev, dropped: 0}
+                 elif $ver == "refuted" then
+                   downgrade_severity($sev) as $new_sev
+                   | {outcome: "refuted", new_sev: $new_sev, dropped: (if $new_sev == "" then 1 else 0 end)}
+                 else
+                   {outcome: "unverifiable", new_sev: $sev, dropped: 0}
+                 end) as $res
+                | $res.new_sev as $new_sev
+                | (if $res.dropped == 1 then "dropped" else $new_sev end) as $sev_after
+                | $state
+                  | .events += [{index: $i, outcome: $res.outcome, severity_before: $sev, severity_after: $sev_after}]
+                  | if $res.dropped == 0 then
+                      .findings += [$f | .severity = $new_sev | .verified = $res.outcome | .message = ((.message // "") + " [auditable: repro " + $res.outcome + "]")]
+                    else
+                      .
+                    end
+              else
+                $state | .findings += [$f]
+              end
+          end
+      )) as $proc
+    | .findings = $proc.findings
+    | ._events = $proc.events
+  ' "$file" > "$tmp" 2>/dev/null; then
+    local idx outcome sev_before sev_after
+    while IFS=$'\t' read -r idx outcome sev_before sev_after; do
+      [ -n "$outcome" ] || continue
+      emit_verification_record "$workflow" "$tier" "$outcome" "$sev_before" "$sev_after" "$idx" "$context"
+    done < <(jq -r '._events[]? | "\(.index)\t\(.outcome)\t\(.severity_before)\t\(.severity_after)"' "$tmp" 2>/dev/null)
 
-  local i
-  for (( i = 0; i < count; i++ )); do
-    local finding category verification severity
-    finding="$(jq -c ".findings[$i]" "$file" 2>/dev/null)" || finding=""
-    if [ -z "$finding" ] || [ "$finding" = "null" ]; then
-      continue
-    fi
-    category="$(printf '%s' "$finding" | jq -r '(.category // "") | ascii_downcase' 2>/dev/null || printf '')"
-    verification="$(printf '%s' "$finding" | jq -r '(.verification // "") | ascii_downcase' 2>/dev/null || printf '')"
-    severity="$(printf '%s' "$finding" | jq -r '.severity // ""' 2>/dev/null || printf '')"
-
-    # Only logic/correctness findings that carry a verification tag are processed;
-    # everything else passes through byte-for-byte untouched (no record).
-    if ! _fv_is_logic_category "$category" || [ -z "$verification" ]; then
-      printf '%s\n' "$finding" >> "$kept"
-      continue
-    fi
-
-    local outcome new_severity dropped=0
-    case "$verification" in
-      confirmed)
-        outcome="confirmed"; new_severity="$severity" ;;
-      refuted)
-        outcome="refuted"; new_severity="$(_fv_downgrade_severity "$severity")"
-        [ -z "$new_severity" ] && dropped=1 ;;
-      *)
-        # unverifiable (or any unknown tag): never downgrade on absence of a repro.
-        outcome="unverifiable"; new_severity="$severity" ;;
-    esac
-
-    if [ "$dropped" -eq 1 ]; then
-      emit_verification_record "$workflow" "$tier" "$outcome" "$severity" "dropped" "$i" "$context"
-      continue
-    fi
-
-    emit_verification_record "$workflow" "$tier" "$outcome" "$severity" "$new_severity" "$i" "$context"
-
-    printf '%s' "$finding" | jq -c \
-      --arg sev "$new_severity" --arg oc "$outcome" \
-      '.severity = $sev
-       | .verified = $oc
-       | .message = ((.message // "") + " [auditable: repro " + $oc + "]")' \
-      >> "$kept" 2>/dev/null \
-      || printf '%s\n' "$finding" >> "$kept"
-  done
-
-  # Reassemble the surviving findings back into the file. On any failure, leave
-  # the original file untouched (fail-open — never corrupt the verdict).
-  local arr tmp; arr="$(mktemp)"; tmp="$(mktemp)"
-  if jq -s '.' "$kept" > "$arr" 2>/dev/null \
-    && jq --slurpfile f "$arr" '.findings = $f[0]' "$file" > "$tmp" 2>/dev/null \
-    && [ -s "$tmp" ]; then
-    mv "$tmp" "$file"
-  else
-    rm -f "$tmp"
+    jq 'del(._events)' "$tmp" > "$file" 2>/dev/null || true
   fi
-  rm -f "$kept" "$arr"
+  rm -f "$tmp"
   return 0
 }

@@ -18,9 +18,9 @@ setup() {
   source "$TOKEN_LIB"
   # shellcheck source=../../../scripts/lib/finding-verification.sh
   source "$FV_LIB"
-  TOKEN_LOG_FILE="$(mktemp)"
+  TOKEN_LOG_FILE="$(mktemp "$BATS_TEST_TMPDIR/token_log.XXXXXX")"
   export TOKEN_LOG_FILE
-  DEEP_JSON="$(mktemp)"
+  DEEP_JSON="$(mktemp "$BATS_TEST_TMPDIR/deep_json.XXXXXX")"
 }
 
 teardown() {
