@@ -353,6 +353,70 @@ jobs:
             }
 
 
+      - name: Close resolved fleet-tracker issues
+        # The tracking step stamps "Last updated ... on <today>" on an issue every
+        # run its workflow is still above threshold. A workflow that recovers (≤10%)
+        # or is deleted stops being updated, so its stamp goes stale — but nothing
+        # closed the issue, so fleet-tracker issues accumulated forever (#711-class
+        # bot backlog). Close any fleet-tracker issue whose stamp is older than
+        # STALE_DAYS daily runs. Gated on fleet_high_failure.json existing so a
+        # failed scan cannot mass-close; staleness (per-issue stamp, not the current
+        # run) means a single bad-scan day never false-closes.
+        if: hashFiles('fleet_high_failure.json') != ''
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
+        env:
+          ORG: ${{ env.ORG }}
+          STALE_DAYS: '3'
+        with:
+          # Use GH_PAT_WORKFLOWS for cross-repo issues:write on target repos
+          github-token: ${{ secrets.GH_PAT_WORKFLOWS }}
+          script: |
+            const org = process.env.ORG;
+            const staleDays = parseInt(process.env.STALE_DAYS, 10);
+            const cutoffMs = staleDays * 24 * 60 * 60 * 1000;
+            const now = Date.now();
+
+            const found = await github.paginate(github.rest.search.issuesAndPullRequests, {
+              q: `org:${org} is:issue is:open label:fleet-tracker`,
+              per_page: 100,
+            });
+
+            let closed = 0, kept = 0, skipped = 0;
+            for (const issue of found) {
+              const rm = (issue.repository_url || '').match(/repos\/([^/]+)\/([^/]+)$/);
+              const dm = (issue.body || '').match(/updated by \[Fleet Monitor run\]\([^)]*\) on (\d{4}-\d{2}-\d{2})/);
+              // No repo match or no stamp → not a monitor-managed body; leave it alone.
+              if (!rm || !dm) { skipped++; continue; }
+              const [ , owner, repo ] = rm;
+              const ageMs = now - Date.parse(`${dm[1]}T00:00:00Z`);
+              if (ageMs <= cutoffMs) { kept++; continue; }   // still fresh → workflow still failing
+              const days = Math.floor(ageMs / 86400000);
+              const body = [
+                `✅ **Auto-resolved by Fleet Monitor.** This workflow's failure rate has`,
+                `been below the 10% threshold (or the workflow was removed) since ${dm[1]}`,
+                `(${days} days) — the monitor stopped flagging it. Closing. It will reopen`,
+                `automatically if the workflow crosses the threshold again.`,
+              ].join(' ');
+              try {
+                await github.rest.issues.createComment({
+                  owner, repo, issue_number: issue.number, body,
+                });
+              } catch (err) {
+                core.warning(`comment failed on ${owner}/${repo}#${issue.number}: ${err.message}`);
+              }
+              try {
+                await github.rest.issues.update({
+                  owner, repo, issue_number: issue.number,
+                  state: 'closed', state_reason: 'completed',
+                });
+                closed++;
+              } catch (err) {
+                core.warning(`close failed on ${owner}/${repo}#${issue.number}: ${err.message}`);
+              }
+            }
+            core.notice(`fleet-tracker auto-close: closed=${closed} kept=${kept} skipped=${skipped} (stale>${staleDays}d)`);
+
+
       - name: Dispatch dev-lead for critical items
         if: env.HIGH_FAILURE_COUNT != '' && env.HIGH_FAILURE_COUNT != '0'
         env:
