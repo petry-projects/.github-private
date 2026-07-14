@@ -2,7 +2,7 @@
 
 **Workflow:** `standards-sync.yml`
 **Priority:** P3
-**Trigger:** `schedule` — monthly, first Monday at 09:00 UTC
+**Trigger:** `schedule` — monthly, first Monday at 09:11 UTC
 **Scenario spec:** [`tests/aw/standards-sync/scenarios.md`](../../tests/aw/standards-sync/scenarios.md)
 
 ---
