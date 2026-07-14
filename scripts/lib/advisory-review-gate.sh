@@ -45,6 +45,20 @@ declare -Ar ADVISORY_BOTS=(
 # shellcheck disable=SC2034
 readonly RATE_LIMIT_MARKERS='Review limit reached|used up its prepaid credits|reached your Codex usage limit'
 
+# Timeout-proceed windows for absent advisory bots (issue #1193, split from #1181).
+# The gate must not block a PR forever when an advisory bot never produces output
+# on the repo — a new repo where Gemini/Codex aren't vendor-side enabled, a bot
+# uninstalled entirely (Copilot on a Free plan), or a bot outage. Past these
+# windows an absent bot is treated as a *missing review*, not a *permanent block*.
+#   HEAD_AGE   — proceed once the head commit is this old (primary timeout; the
+#                only one that applies when NO bot has produced any output).
+#   QUIESCENCE — proceed once no new bot submission has arrived for this long
+#                (only meaningful once ≥1 bot has submitted).
+# shellcheck disable=SC2034
+readonly ADVISORY_HEAD_AGE_TIMEOUT_SEC=1200
+# shellcheck disable=SC2034
+readonly ADVISORY_QUIESCENCE_TIMEOUT_SEC=600
+
 # Color codes for output
 # shellcheck disable=SC2034
 readonly RED='\033[0;31m'
@@ -111,6 +125,20 @@ _get_head_committer_date() {
   local _gql='query($url:URI!){resource(url:$url){...on PullRequest{commits(last:1){nodes{commit{committer{date}}}}}}}'
   gh api graphql -f query="$_gql" -f url="$pr_url" \
     --jq '.data.resource.commits.nodes[0].commit.committer.date // empty' 2>/dev/null || true
+}
+
+# _head_age_seconds <pr_url>
+#   Echo the age in seconds of the PR's head commit (now − committer.date), or an
+#   empty string when the committer date can't be determined (GraphQL unreachable
+#   or unparseable). Used by the zero-output branch to apply the head-age timeout.
+_head_age_seconds() {
+  local pr_url="$1" head_time head_time_raw now
+  head_time=$(_get_head_committer_date "$pr_url") || head_time=""
+  [[ -z "$head_time" ]] && return 0
+  head_time_raw=$(date -u -d "$head_time" +%s 2>/dev/null) || head_time_raw=$(date -u -jf "%Y-%m-%dT%H:%M:%SZ" "$head_time" +%s 2>/dev/null) || head_time_raw=""
+  [[ -z "$head_time_raw" ]] && return 0
+  now=$(date -u +%s)
+  printf '%s' "$((now - head_time_raw))"
 }
 
 # Format bot states for display
@@ -265,9 +293,26 @@ check_advisory_reviews() {
   }
 
   if [[ -z "$current_states" ]]; then
+    # No advisory bot has produced ANY output on this PR. Historically the gate
+    # blocked here forever, permanently stranding PRs on repos where an advisory
+    # bot is not vendor-side enabled / not installed, or during a bot outage
+    # (issue #1193, split from #1181). Apply the same head-age timeout the
+    # partial-submission path uses: once the head commit is older than the window,
+    # treat every absent bot as a *missing review* and proceed instead of
+    # re-driving indefinitely — the scheduled sweep re-enters this gate until the
+    # window is crossed. Within the window we still wait so bots that are merely
+    # slow get their chance. When head age is undeterminable (GraphQL unreachable)
+    # there is no timing basis to declare bots absent, so stay conservative and
+    # wait; the next scheduled sweep retries once the API recovers.
+    local head_age_sec
+    head_age_sec=$(_head_age_seconds "$PR_URL")
+    if [[ -n "$head_age_sec" && "$head_age_sec" -gt "$ADVISORY_HEAD_AGE_TIMEOUT_SEC" ]]; then
+      log_warn "No advisory bot output; head is ${head_age_sec}s old (> ${ADVISORY_HEAD_AGE_TIMEOUT_SEC}s) — treating absent bots as missing reviews, proceeding (issue #1193)"
+      return 0
+    fi
     log_warn "No advisory bot reviews detected yet"
-    log_warn "Will re-check when bots submit their reviews (pull_request_review event)"
-    return 1  # Still waiting for bots
+    log_warn "Will re-check when bots submit their reviews (pull_request_review event), or proceed once the head-age timeout (${ADVISORY_HEAD_AGE_TIMEOUT_SEC}s) elapses"
+    return 1  # Within window — still waiting for bots
   fi
 
   # Extract participating bots (those who have submitted)
@@ -319,7 +364,7 @@ check_advisory_reviews() {
     # in GitHub's GraphQL API (deprecated and no longer populated).
     head_time=$(_get_head_committer_date "$PR_URL") || head_time=""
     if [[ -n "$head_time" ]]; then
-      head_time_raw=$(date -u -d "$head_time" +%s 2>/dev/null) || head_time_raw=""
+      head_time_raw=$(date -u -d "$head_time" +%s 2>/dev/null) || head_time_raw=$(date -u -jf "%Y-%m-%dT%H:%M:%SZ" "$head_time" +%s 2>/dev/null) || head_time_raw=""
       [[ -n "$head_time_raw" ]] && head_age_sec=$((now - head_time_raw))
     fi
 
@@ -348,9 +393,9 @@ check_advisory_reviews() {
       fi
     fi
 
-    if [[ "$head_age_sec" -gt 1200 ]]; then
+    if [[ "$head_age_sec" -gt "$ADVISORY_HEAD_AGE_TIMEOUT_SEC" ]]; then
       log_info "Only ${num_submitted}/${effective_total} required bots submitted; head is ${head_age_sec}s old — timeout fallback, proceeding"
-    elif [[ "$time_since_last_sub" -gt 600 ]]; then
+    elif [[ "$time_since_last_sub" -gt "$ADVISORY_QUIESCENCE_TIMEOUT_SEC" ]]; then
       log_info "Only ${num_submitted}/${effective_total} required bots submitted; no new submissions in ${time_since_last_sub}s — assuming absent bots won't participate, proceeding"
     else
       log_warn "Only ${num_submitted}/${effective_total} required advisory bots submitted so far (head age: ${head_age_sec}s, last submission: ${time_since_last_sub}s ago)"
