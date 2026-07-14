@@ -1,0 +1,27 @@
+{
+  "url": "https://github.com/petry-projects/markets/pull/42",
+  "number": 42,
+  "createdAt": "2026-07-10T10:00:00Z",
+  "updatedAt": "2026-07-10T12:00:00Z",
+  "mergedAt": "2026-07-10T13:00:00Z",
+  "isDraft": false,
+  "author": {"login": "alice"},
+  "reviews": {"nodes": [
+    {"author": {"login": "copilot-pull-request-reviewer"}, "state": "COMMENTED", "submittedAt": "2026-07-10T10:03:06Z", "bodyText": "Looks mostly good."},
+    {"author": {"login": "gemini-code-assist"}, "state": "APPROVED", "submittedAt": "2026-07-10T10:00:50Z", "bodyText": "LGTM"},
+    {"author": {"login": "coderabbitai"}, "state": "COMMENTED", "submittedAt": "2026-07-10T10:30:00Z", "bodyText": "Review limit reached — you have used up your prepaid credits."},
+    {"author": {"login": "alice"}, "state": "APPROVED", "submittedAt": "2026-07-10T11:00:00Z", "bodyText": "human ok"}
+  ]},
+  "reviewThreads": {"nodes": [
+    {"isResolved": true, "isOutdated": false, "comments": {"nodes": [
+      {"author": {"login": "copilot-pull-request-reviewer"}, "createdAt": "2026-07-10T10:03:10Z", "bodyText": "nit: rename var", "path": "a.py",
+       "reactionGroups": [{"content": "THUMBS_UP", "users": {"totalCount": 2}}, {"content": "THUMBS_DOWN", "users": {"totalCount": 1}}]}
+    ]}},
+    {"isResolved": false, "isOutdated": true, "comments": {"nodes": [
+      {"author": {"login": "gemini-code-assist"}, "createdAt": "2026-07-10T10:01:00Z", "bodyText": "consider edge case", "path": "b.py", "reactionGroups": []}
+    ]}}
+  ]},
+  "comments": {"nodes": [
+    {"author": {"login": "chatgpt-codex-connector"}, "createdAt": "2026-07-10T10:20:00Z", "bodyText": "You have reached your Codex usage limit."}
+  ]}
+}
