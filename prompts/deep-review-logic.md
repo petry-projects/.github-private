@@ -53,6 +53,20 @@ enumeration. No actions on other PRs.
 4. `gh pr diff "$PR_URL"` — read the diff.
 5. Fetch linked issues if any and confirm the diff actually addresses them.
 6. Check `statusCheckRollup` for CI status.
+7. **Iterative validation (issue #1092).** Before you report a suspected logic /
+   correctness bug, try to *confirm* it by running the repo's relevant lint/test
+   tool with your **Bash** tool (the same Bash/Read/Grep/Glob sandbox you already
+   have — do not install anything, reach the network, or widen scope; keep each
+   repro to a single quick command because you are inside the deep tier's per-tier
+   timeout). Run only the check that maps to the finding (e.g. `shellcheck
+   path/to.sh`, the touched module's unit test). Then tag that finding with a
+   `verification` field: `"confirmed"` (the tool reproduced the bug), `"refuted"`
+   (the tool ran and did **not** reproduce it), or `"unverifiable"` (no runnable
+   target maps to it). Use `"refuted"` only when the tool **actively** failed to
+   reproduce the issue; with no runnable target use `"unverifiable"` and leave the
+   severity as-is — never fabricate a repro. A downstream step downgrades
+   `refuted` findings by one severity (or drops an `info`) and records the outcome
+   for the false-positive-rate metric, so tag honestly.
 
 ## Your lens — correctness
 
@@ -122,7 +136,8 @@ Write a JSON object to `$OUTPUT_FILE`:
       "category": "...",
       "message": "...",
       "file": "path or null",
-      "line": "number or null"
+      "line": "number or null",
+      "verification": "confirmed|refuted|unverifiable (logic/correctness findings only — see step 7)"
     }
   ]
 }
