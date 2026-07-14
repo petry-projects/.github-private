@@ -110,6 +110,7 @@ jobs:
             tests/test_engine_unavailable_notice.bats \
             tests/test_batch_skip_reporting.bats \
             tests/test_review_one_pr_ci_pending.bats \
+            tests/test_review_one_pr_force_ci_failing.bats \
             tests/test_release_registry.bats \
             tests/test_readme_refresh_helpers.bats \
             tests/test_validate_personas.bats \
