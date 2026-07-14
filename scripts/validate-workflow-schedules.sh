@@ -60,22 +60,27 @@ slint_minute_field() {
   printf '%s\n' "${cron%%[[:space:]]*}"
 }
 
-# slint_minute_is_zero <cron> — exit 0 when the minute field is exactly 0.
+# slint_minute_is_zero <cron> — return 0 when the minute field is 0 or 00 (including in lists).
 slint_minute_is_zero() {
-  [ "$(slint_minute_field "$1")" = "0" ]
+  local min
+  min="$(slint_minute_field "$1")"
+  case ",$min," in
+    *,0,*|*,00,*) return 0 ;;
+  esac
+  return 1
 }
 
 # slint_scan_file <file> — print `file:lineno: <cron>` for every offending
 # minute-0 schedule.cron in the file. Returns 1 if any were found.
 slint_scan_file() {
-  local file="$1" lineno=0 line cron found=1
+  local file="$1" lineno=0 line cron found=0
   while IFS= read -r line || [ -n "$line" ]; do
     lineno=$((lineno + 1))
     cron="$(slint_extract_cron "$line")"
     [ -n "$cron" ] || continue
     if slint_minute_is_zero "$cron"; then
       printf '%s:%s: %s\n' "$file" "$lineno" "$cron"
-      found=0
+      found=1
     fi
   done < "$file"
   return $found
@@ -87,13 +92,11 @@ slint_scan_root() {
   local root="$1" file offenders=0
   while IFS= read -r file; do
     [ -n "$file" ] || continue
-    if slint_scan_file "$file"; then
-      offenders=1
-    fi
+    slint_scan_file "$file" || offenders=1
   done < <(
-    { find "$root/.github/workflows" -maxdepth 1 -type f \( -name '*.yml' -o -name '*.md' \) 2>/dev/null
-      find "$root/docs/aw" -maxdepth 1 -type f -name '*.md' 2>/dev/null
-    } | sort
+    { [ -d "$root/.github/workflows" ] && find "$root/.github/workflows" -maxdepth 1 -type f \( -name '*.yml' -o -name '*.md' \) 2>/dev/null
+      [ -d "$root/docs/aw" ] && find "$root/docs/aw" -maxdepth 1 -type f -name '*.md' 2>/dev/null
+    } | sort 2>/dev/null
   )
   return $offenders
 }

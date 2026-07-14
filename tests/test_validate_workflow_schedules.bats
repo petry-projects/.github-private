@@ -59,6 +59,16 @@ setup() {
   [ "$status" -eq 0 ]
 }
 
+@test "slint_minute_is_zero flags minute 00" {
+  run slint_minute_is_zero "00 12 * * *"
+  [ "$status" -eq 0 ]
+}
+
+@test "slint_minute_is_zero flags minute 0 in a list" {
+  run slint_minute_is_zero "0,30 12 * * *"
+  [ "$status" -eq 0 ]
+}
+
 @test "slint_minute_is_zero passes a staggered off-peak minute" {
   run slint_minute_is_zero "11 9 * * 1"
   [ "$status" -ne 0 ]
