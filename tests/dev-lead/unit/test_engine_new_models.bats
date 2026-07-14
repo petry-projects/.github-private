@@ -4,7 +4,7 @@
 # Verifies that Fable 5 (claude-fable-5) and Opus 4.8 (claude-opus-4-8) are
 # wired into the correct tiers and fallback chains for the claude engine:
 #   triage  → haiku-4-5    (unchanged)
-#   action  → sonnet-4-6   (unchanged)
+#   action  → sonnet-5-0   (#1100, was sonnet-4-6)
 #   deep    → opus-4-8     (was sonnet-4-6)
 #   audit   → fable-5      (was opus-4-7)
 #   single  → fable-5      (was opus-4-7)
@@ -71,9 +71,9 @@ _source_engine() {
   [ "$ENGINE_DEEP_MODEL" = "claude-opus-4-8" ]
 }
 
-@test "new-models: ENGINE_ACTION_MODEL still claude-sonnet-4-6 (unchanged)" {
+@test "new-models: ENGINE_ACTION_MODEL is claude-sonnet-5-0 (#1100)" {
   _source_engine "claude"
-  [ "$ENGINE_ACTION_MODEL" = "claude-sonnet-4-6" ]
+  [ "$ENGINE_ACTION_MODEL" = "claude-sonnet-5-0" ]
 }
 
 @test "new-models: ENGINE_TRIAGE_MODEL still claude-haiku-4-5-20251001 (unchanged)" {
@@ -156,11 +156,11 @@ _source_engine() {
   [ "$result" = "claude-opus-4-8" ]
 }
 
-@test "new-models: model_for_intent(fix-reviews) still returns claude-sonnet-4-6" {
+@test "new-models: model_for_intent(fix-reviews) returns claude-sonnet-5-0 (#1100)" {
   _source_engine "claude"
   local result
   result="$(model_for_intent "fix-reviews")"
-  [ "$result" = "claude-sonnet-4-6" ]
+  [ "$result" = "claude-sonnet-5-0" ]
 }
 
 # ── Chain fallback behaviour with new models ──────────────────────────────────
@@ -189,22 +189,22 @@ _source_engine() {
   [ "$status" -eq 2 ]
 }
 
-@test "new-models: deep opus-4-8 rate-limited → sonnet-4-6 tried" {
+@test "new-models: deep opus-4-8 rate-limited → sonnet-5-0 tried" {
   _source_engine "claude"
-  export STUB_ENGINE_EXIT_BY_MODEL="claude-opus-4-8=1|claude-sonnet-4-6=0"
-  export STUB_ENGINE_RESPONSE_BY_MODEL="claude-opus-4-8=quota exceeded|claude-sonnet-4-6=deep result ok"
+  export STUB_ENGINE_EXIT_BY_MODEL="claude-opus-4-8=1|claude-sonnet-5-0=0"
+  export STUB_ENGINE_RESPONSE_BY_MODEL="claude-opus-4-8=quota exceeded|claude-sonnet-5-0=deep result ok"
 
   run run_agentic "$TEST_PROMPT" "claude-opus-4-8" "deep"
 
   [ "$status" -eq 0 ]
   grep -q "claude-opus-4-8" "$MODEL_RECORD"
-  grep -q "claude-sonnet-4-6" "$MODEL_RECORD"
+  grep -q "claude-sonnet-5-0" "$MODEL_RECORD"
 }
 
 @test "new-models: action chain sonnet rate-limited → opus-4-8 tried (not opus-4-7)" {
   _source_engine "claude"
-  export STUB_ENGINE_EXIT_BY_MODEL="claude-sonnet-4-6=1|claude-opus-4-8=0"
-  export STUB_ENGINE_RESPONSE_BY_MODEL="claude-sonnet-4-6=too many requests|claude-opus-4-8=action done"
+  export STUB_ENGINE_EXIT_BY_MODEL="claude-sonnet-5-0=1|claude-opus-4-8=0"
+  export STUB_ENGINE_RESPONSE_BY_MODEL="claude-sonnet-5-0=too many requests|claude-opus-4-8=action done"
 
   run run_writer "$TEST_PROMPT"
 
@@ -215,14 +215,14 @@ _source_engine() {
 
 @test "new-models: passing tier default opus-4-8 expands to full deep chain on rate-limit" {
   _source_engine "claude"
-  export STUB_ENGINE_EXIT_BY_MODEL="claude-opus-4-8=1|claude-sonnet-4-6=0"
-  export STUB_ENGINE_RESPONSE_BY_MODEL="claude-opus-4-8=429 too many|claude-sonnet-4-6=ok"
+  export STUB_ENGINE_EXIT_BY_MODEL="claude-opus-4-8=1|claude-sonnet-5-0=0"
+  export STUB_ENGINE_RESPONSE_BY_MODEL="claude-opus-4-8=429 too many|claude-sonnet-5-0=ok"
 
   run run_agentic "$TEST_PROMPT" "claude-opus-4-8" "deep"
 
   [ "$status" -eq 0 ]
   grep -q "claude-opus-4-8" "$MODEL_RECORD"
-  grep -q "claude-sonnet-4-6" "$MODEL_RECORD"
+  grep -q "claude-sonnet-5-0" "$MODEL_RECORD"
 }
 
 # ── Non-claude engines unaffected ─────────────────────────────────────────────

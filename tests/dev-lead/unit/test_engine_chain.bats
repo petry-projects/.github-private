@@ -127,23 +127,23 @@ _source_engine() {
 
 @test "writer: sonnet rate-limited → opus-4-8 tried via CLAUDE_ACTION_MODEL_CHAIN" {
   _source_engine "claude"
-  # Defaults from set_engine_config: CLAUDE_ACTION_MODEL_CHAIN=sonnet,opus-4-8
+  # Defaults from set_engine_config: CLAUDE_ACTION_MODEL_CHAIN=sonnet-5-0,opus-4-8
   # (#1099) guard: per-model RPM/TPM recovery via the hop survives equalization.
-  export STUB_ENGINE_EXIT_BY_MODEL="claude-sonnet-4-6=1|claude-opus-4-8=0"
-  export STUB_ENGINE_RESPONSE_BY_MODEL="claude-sonnet-4-6=too many requests (429)|claude-opus-4-8=opus-4-8 did the work"
+  export STUB_ENGINE_EXIT_BY_MODEL="claude-sonnet-5-0=1|claude-opus-4-8=0"
+  export STUB_ENGINE_RESPONSE_BY_MODEL="claude-sonnet-5-0=too many requests (429)|claude-opus-4-8=opus-4-8 did the work"
 
   run run_writer "$TEST_PROMPT"
 
   [ "$status" -eq 0 ]
-  grep -q "claude-sonnet-4-6" "$MODEL_RECORD"
+  grep -q "claude-sonnet-5-0" "$MODEL_RECORD"
   grep -q "claude-opus-4-8" "$MODEL_RECORD"
 }
 
 @test "writer: sonnet rate-limited and opus-4-8 rate-limited → exit 2 (cross-provider fallback signal)" {
   _source_engine "claude"
   # (#1099) guard: the exit-2 contract for daily-cap exhaustion survives the assessment.
-  export STUB_ENGINE_EXIT_BY_MODEL="claude-sonnet-4-6=1|claude-opus-4-8=1"
-  export STUB_ENGINE_RESPONSE_BY_MODEL="claude-sonnet-4-6=quota exceeded|claude-opus-4-8=quota exceeded"
+  export STUB_ENGINE_EXIT_BY_MODEL="claude-sonnet-5-0=1|claude-opus-4-8=1"
+  export STUB_ENGINE_RESPONSE_BY_MODEL="claude-sonnet-5-0=quota exceeded|claude-opus-4-8=quota exceeded"
 
   run run_writer "$TEST_PROMPT"
 
@@ -166,13 +166,13 @@ _source_engine() {
 
 @test "agentic: deep tier opus-4-8 rate-limited → sonnet tried (CLAUDE_DEEP_MODEL_CHAIN)" {
   _source_engine "claude"
-  export STUB_ENGINE_EXIT_BY_MODEL="claude-opus-4-8=1|claude-sonnet-4-6=0"
-  export STUB_ENGINE_RESPONSE_BY_MODEL="claude-opus-4-8=service overload|claude-sonnet-4-6=deep result"
+  export STUB_ENGINE_EXIT_BY_MODEL="claude-opus-4-8=1|claude-sonnet-5-0=0"
+  export STUB_ENGINE_RESPONSE_BY_MODEL="claude-opus-4-8=service overload|claude-sonnet-5-0=deep result"
 
   run run_agentic "$TEST_PROMPT" "claude-opus-4-8" "deep"
 
   [ "$status" -eq 0 ]
-  grep -q "claude-sonnet-4-6" "$MODEL_RECORD"
+  grep -q "claude-sonnet-5-0" "$MODEL_RECORD"
 }
 
 @test "agentic: audit tier fable-5 rate-limited → opus-4-8 tried (CLAUDE_AUDIT_MODEL_CHAIN)" {
@@ -187,42 +187,44 @@ _source_engine() {
   grep -q "claude-opus-4-8" "$MODEL_RECORD"
 }
 
-# ── Sonnet 5 candidate wiring (#1098) ─────────────────────────────────────────
-# Sonnet 5 is appended as a FALLBACK CANDIDATE after claude-sonnet-4-6 in the
-# triage and deep chains (not a replacement, not the fleet default). The action
-# tier is deliberately out of scope.
+# ── Sonnet 5 default wiring (#1100, epic #1095) ───────────────────────────────
+# Sonnet 5 (claude-sonnet-5-0) is now the DEFAULT sonnet across the triage, deep,
+# and action chains, fully replacing claude-sonnet-4-6 (which #1098 first wired
+# as a non-default fallback candidate). It is the sonnet fallback hop in triage/
+# deep and the primary in action. The promotion rides the dev-lead canary rings.
 
-@test "sonnet-5 candidate: triage chain default appends claude-sonnet-5-0 after sonnet-4-6" {
+@test "sonnet-5 default: triage chain default is haiku → claude-sonnet-5-0" {
   _source_engine "claude"
-  [ "$CLAUDE_TRIAGE_MODEL_CHAIN" = "claude-haiku-4-5-20251001,claude-sonnet-4-6,claude-sonnet-5-0" ]
+  [ "$CLAUDE_TRIAGE_MODEL_CHAIN" = "claude-haiku-4-5-20251001,claude-sonnet-5-0" ]
+  [[ "$CLAUDE_TRIAGE_MODEL_CHAIN" != *"claude-sonnet-4-6"* ]]
 }
 
-@test "sonnet-5 candidate: deep chain default appends claude-sonnet-5-0 after sonnet-4-6" {
+@test "sonnet-5 default: deep chain default is opus-4-8 → claude-sonnet-5-0" {
   _source_engine "claude"
-  [ "$CLAUDE_DEEP_MODEL_CHAIN" = "claude-opus-4-8,claude-sonnet-4-6,claude-sonnet-5-0" ]
+  [ "$CLAUDE_DEEP_MODEL_CHAIN" = "claude-opus-4-8,claude-sonnet-5-0" ]
+  [[ "$CLAUDE_DEEP_MODEL_CHAIN" != *"claude-sonnet-4-6"* ]]
 }
 
-@test "sonnet-5 candidate: deep opus-4-8 + sonnet-4-6 both rate-limited → claude-sonnet-5-0 reached" {
+@test "sonnet-5 default: deep opus-4-8 rate-limited → claude-sonnet-5-0 reached" {
   _source_engine "claude"
-  # Both existing deep models throttle; the walk must reach the new candidate.
-  export STUB_ENGINE_EXIT_BY_MODEL="claude-opus-4-8=1|claude-sonnet-4-6=1|claude-sonnet-5-0=0"
-  export STUB_ENGINE_RESPONSE_BY_MODEL="claude-opus-4-8=429 too many requests|claude-sonnet-4-6=429 too many requests|claude-sonnet-5-0=sonnet 5 did the work"
+  # Deep primary throttles; the walk must reach the default sonnet fallback.
+  export STUB_ENGINE_EXIT_BY_MODEL="claude-opus-4-8=1|claude-sonnet-5-0=0"
+  export STUB_ENGINE_RESPONSE_BY_MODEL="claude-opus-4-8=429 too many requests|claude-sonnet-5-0=sonnet 5 did the work"
 
   run run_agentic "$TEST_PROMPT" "claude-opus-4-8" "deep"
 
   [ "$status" -eq 0 ]
   grep -q "claude-opus-4-8" "$MODEL_RECORD"
-  grep -q "claude-sonnet-4-6" "$MODEL_RECORD"
   grep -q "claude-sonnet-5-0" "$MODEL_RECORD"
   [[ "$output" == *"sonnet 5 did the work"* ]]
 }
 
-@test "sonnet-5 candidate: action chain default is NOT touched (scope guard)" {
+@test "sonnet-5 default: action chain default is claude-sonnet-5-0 → opus-4-8 (#1100)" {
   _source_engine "claude"
-  # Action tier is out of scope for #1098 — must stay sonnet-4-6 → opus-4-8.
-  # (#1099) guard: equalization does not remove this hop.
-  [ "$CLAUDE_ACTION_MODEL_CHAIN" = "claude-sonnet-4-6,claude-opus-4-8" ]
-  [[ "$CLAUDE_ACTION_MODEL_CHAIN" != *"claude-sonnet-5"* ]]
+  # Action tier is now promoted to sonnet-5-0 (#1100), replacing sonnet-4-6.
+  # (#1099) guard: equalization does not remove the sonnet → opus hop.
+  [ "$CLAUDE_ACTION_MODEL_CHAIN" = "claude-sonnet-5-0,claude-opus-4-8" ]
+  [[ "$CLAUDE_ACTION_MODEL_CHAIN" != *"claude-sonnet-4-6"* ]]
 }
 
 # ── #1099: sonnet->opus in-engine hop retained under rate-limit equalization ──
@@ -325,8 +327,8 @@ _source_engine() {
   # Model B (opus-4-8) fails with a non-rate-limit error. run_writer must return
   # opus-4-8's exit code, not 2, even though _tmp contains the throttled warning.
   _source_engine "claude"
-  export STUB_ENGINE_EXIT_BY_MODEL="claude-sonnet-4-6=1|claude-opus-4-8=1"
-  export STUB_ENGINE_RESPONSE_BY_MODEL="claude-sonnet-4-6=rate limit exceeded|claude-opus-4-8=segfault in agent runtime"
+  export STUB_ENGINE_EXIT_BY_MODEL="claude-sonnet-5-0=1|claude-opus-4-8=1"
+  export STUB_ENGINE_RESPONSE_BY_MODEL="claude-sonnet-5-0=rate limit exceeded|claude-opus-4-8=segfault in agent runtime"
 
   run run_writer "$TEST_PROMPT"
 
@@ -354,7 +356,7 @@ _source_engine() {
   # Only one invocation, and it's the pinned model — not opus-4-8 or sonnet.
   [ "$(wc -l < "$MODEL_RECORD")" -eq 1 ]
   grep -q "claude-haiku-4-5-20251001" "$MODEL_RECORD"
-  ! grep -q "claude-sonnet-4-6" "$MODEL_RECORD"
+  ! grep -q "claude-sonnet-5-0" "$MODEL_RECORD"
   ! grep -q "claude-opus-4-8" "$MODEL_RECORD"
 }
 
@@ -367,7 +369,7 @@ _source_engine() {
   [ "$status" -eq 0 ]
   [ "$(wc -l < "$MODEL_RECORD")" -eq 1 ]
   grep -q "claude-haiku-4-5-20251001" "$MODEL_RECORD"
-  ! grep -q "claude-sonnet-4-6" "$MODEL_RECORD"
+  ! grep -q "claude-sonnet-5-0" "$MODEL_RECORD"
   ! grep -q "claude-opus-4-8" "$MODEL_RECORD"
 }
 
@@ -375,12 +377,12 @@ _source_engine() {
   # Regression guard for the pin-check above: when caller passes the tier
   # default (opus-4-8), chain expansion still works (opus-4-8 → sonnet fallback).
   _source_engine "claude"
-  export STUB_ENGINE_EXIT_BY_MODEL="claude-opus-4-8=1|claude-sonnet-4-6=0"
-  export STUB_ENGINE_RESPONSE_BY_MODEL="claude-opus-4-8=429 too many|claude-sonnet-4-6=ok"
+  export STUB_ENGINE_EXIT_BY_MODEL="claude-opus-4-8=1|claude-sonnet-5-0=0"
+  export STUB_ENGINE_RESPONSE_BY_MODEL="claude-opus-4-8=429 too many|claude-sonnet-5-0=ok"
 
   run run_agentic "$TEST_PROMPT" "claude-opus-4-8" "deep"
 
   [ "$status" -eq 0 ]
   grep -q "claude-opus-4-8" "$MODEL_RECORD"
-  grep -q "claude-sonnet-4-6" "$MODEL_RECORD"
+  grep -q "claude-sonnet-5-0" "$MODEL_RECORD"
 }
