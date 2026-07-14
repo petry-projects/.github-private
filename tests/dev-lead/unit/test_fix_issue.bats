@@ -739,7 +739,9 @@ esac
 GITEOF
   chmod +x "$STUB_BIN_DIR/git"
 
-  LABEL_RECORD="$(mktemp)"; export LABEL_RECORD
+  # Record file lives in STUB_BIN_DIR (cleaned up by teardown); its path is baked
+  # into the gh stub below via the unquoted heredoc, so no export is needed.
+  LABEL_RECORD="$STUB_BIN_DIR/label_record"
 
   # gh stub: pr create returns a URL so the label path is exercised; record pr edit args
   cat > "$STUB_BIN_DIR/gh" <<GHEOF
@@ -765,6 +767,4 @@ GHEOF
   [ "$status" -eq 0 ]
   # The opened PR must be made auto-rebase-eligible from creation.
   grep -q "add-label auto-rebase:ready" "$LABEL_RECORD"
-
-  rm -f "$LABEL_RECORD" 2>/dev/null || true
 }
