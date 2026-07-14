@@ -2,7 +2,7 @@
 
 **Workflow:** `standards-sync.yml`
 **Priority:** P3
-**Trigger:** `schedule` — monthly, first Monday at 09:00 UTC
+**Trigger:** `schedule` — monthly, first Monday at 09:11 UTC
 **Scenario spec:** [`tests/aw/standards-sync/scenarios.md`](../../tests/aw/standards-sync/scenarios.md)
 
 ---
@@ -20,8 +20,8 @@ required additions. Produce a monthly compliance summary issue in `.github-priva
 ```yaml
 on:
   schedule:
-    # First Monday of each month at 09:00 UTC
-    - cron: '0 9 1-7 * 1'
+    # Every Monday at 09:11 UTC; the guard step below enforces first-Monday-only
+    - cron: '11 9 * * 1'
   workflow_dispatch: {}
 ```
 

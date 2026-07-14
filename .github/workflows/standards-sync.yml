@@ -2,8 +2,8 @@ name: Standards Sync
 
 on:
   schedule:
-    # Every Monday at 09:00 UTC; the guard step below enforces first-Monday-only
-    - cron: '0 9 * * 1'
+    # Every Monday at 09:11 UTC; the guard step below enforces first-Monday-only
+    - cron: '11 9 * * 1'
   workflow_dispatch: {}
 
 permissions:

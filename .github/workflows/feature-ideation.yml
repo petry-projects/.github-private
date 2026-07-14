@@ -43,7 +43,7 @@ name: Feature Research & Ideation (BMAD Analyst)
 
 on:
   schedule:
-    - cron: '0 7 * * 5' # Friday 07:00 UTC (3 AM EDT / 2 AM EST)
+    - cron: '7 7 * * 5' # Friday 07:07 UTC (3:07 AM EDT / 2:07 AM EST)
   workflow_dispatch:
     inputs:
       target_discussion:

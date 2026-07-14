@@ -97,7 +97,7 @@ unattended:
 
 | Channel | Cadence | Where |
 |---|---|---|
-| **Tracking issue comment** | Weekly (Mon 09:00 UTC) | A single pinned issue in `.github-private` labelled `reviewer-report`; each run adds a comment. |
+| **Tracking issue comment** | Weekly (Mon 09:53 UTC) | A single pinned issue in `.github-private` labelled `reviewer-report`; each run adds a comment. |
 | **Step Summary** | Weekly | Actions run summary of `reviewer-report.yml`. |
 
 Scheduled one hour after the token report (Mon 08:00 UTC) to avoid contending for the same

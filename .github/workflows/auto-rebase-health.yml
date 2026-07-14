@@ -18,9 +18,9 @@ name: Auto-rebase Health Report
 
 on:
   schedule:
-    # Daily at 07:00 UTC — between the PR-review health check (06:00) and the
-    # weekly token report (Mon 08:00).
-    - cron: '0 7 * * *'
+    # Daily at 07:43 UTC — between the PR-review health check (06:13) and the
+    # weekly token report (Mon 08:34).
+    - cron: '43 7 * * *'
   workflow_dispatch:
     inputs:
       lookback_days:

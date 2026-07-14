@@ -16,8 +16,8 @@ name: Token Cost Report
 
 on:
   schedule:
-    # Mondays at 08:00 UTC — weekly cost rollup before the work week
-    - cron: '0 8 * * 1'
+    # Mondays at 08:34 UTC — weekly cost rollup before the work week
+    - cron: '34 8 * * 1'
   workflow_dispatch:
     inputs:
       org:
