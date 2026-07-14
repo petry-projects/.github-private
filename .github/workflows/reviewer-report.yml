@@ -17,6 +17,7 @@
 #   • Do NOT change checkout ref from 'main'.
 # ─────────────────────────────────────────────────────────────────────────────
 name: Reviewer Scorecard
+# readme-report: Reviewer scorecard (per workflow-run summary) — per-reviewer PR-review activity.
 
 on:
   schedule:

@@ -1,4 +1,5 @@
 name: Daily PR Review Health Check
+# readme-report: Daily PR-review health check — flags PR-review agent failures as an issue.
 
 on:
   schedule:

@@ -1,4 +1,5 @@
 name: Premature-Closure Audit
+# readme-report: Premature-closure audit — flags issues closed as completed with no merged closing PR.
 
 # Repo-specific backstop for issue #1077: flags issues closed as `completed`
 # within N minutes of opening with no merged closing PR, and (in live mode)
