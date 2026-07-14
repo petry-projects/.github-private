@@ -131,6 +131,55 @@ emit_token_record() {
   printf '%s\n' "$record" >> "$TOKEN_LOG_FILE" 2>/dev/null || true
 }
 
+# emit_verification_record <workflow> <tier> <outcome>
+#                          <severity_before> <severity_after> <finding_index> <context>
+# Appends one kind:"finding_verification" audit record to TOKEN_LOG_FILE (the
+# shared Token Observatory JSONL channel). No-op when TOKEN_LOG_FILE is unset.
+#
+# These records are the false-positive-rate signal for the agentic-validation
+# story (#1092, epic #1088): the deep tier's iterative-validation post-processor
+# (scripts/lib/finding-verification.sh) emits one per verified logic/correctness
+# finding, recording whether a repro confirmed / refuted / could-not-verify it and
+# the resulting severity change. token_report.sh prices only records whose kind is
+# "token_usage" (the default), so these audit records never pollute the cost report
+# (story #843, pinned by tests/token_report.bats). Silently swallows I/O errors so
+# verification logging never aborts a review.
+emit_verification_record() {
+  [ -n "${TOKEN_LOG_FILE:-}" ] || return 0
+
+  local workflow="${1:-}" tier="${2:-}" outcome="${3:-}"
+  local sev_before="${4:-}" sev_after="${5:-}" idx="${6:-0}" context="${7:-}"
+
+  local ts run_id record
+  ts=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "")
+  run_id="${GITHUB_RUN_ID:-}"
+
+  record=$(jq -cn \
+    --arg ts "$ts" \
+    --arg workflow "$workflow" \
+    --arg tier "$tier" \
+    --arg outcome "$outcome" \
+    --arg sb "$sev_before" \
+    --arg sa "$sev_after" \
+    --arg idx "$idx" \
+    --arg run_id "$run_id" \
+    --arg context "$context" \
+    '{
+      kind: "finding_verification",
+      ts: $ts,
+      workflow: $workflow,
+      tier: $tier,
+      outcome: $outcome,
+      severity_before: $sb,
+      severity_after: $sa,
+      finding_index: ($idx | tonumber? // 0),
+      run_id: $run_id,
+      context: $context
+    }' 2>/dev/null) || return 0
+
+  printf '%s\n' "$record" >> "$TOKEN_LOG_FILE" 2>/dev/null || true
+}
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Real-usage capture (replaces the char/4 estimate when an engine reports usage)
 #
