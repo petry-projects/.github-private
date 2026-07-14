@@ -213,9 +213,9 @@ process_repo() {
     return 1
   fi
   local default_branch
-  default_branch="$(git -C "$dir" symbolic-ref --short HEAD)"
+  default_branch="$(git -C "$dir" symbolic-ref --short HEAD)" || return 1
   # Rolling branch: always reset to default HEAD so the PR reflects "main + fresh READMEs".
-  git -C "$dir" checkout -q -B "$BRANCH"
+  git -C "$dir" checkout -q -B "$BRANCH" || return 1
 
   local changed=0 ok_count=0 fail_count=0 rel_path target_type label maxlen
   while IFS='|' read -r rel_path target_type label maxlen; do
@@ -287,11 +287,8 @@ process_repo() {
     rm -f "$current_file"
   done < <(targets_for_repo "$repo")
 
-  # Distinguish a genuine no-op (every target generated cleanly and already matched)
-  # from a total generation failure (every target came back invalid/empty). Without
-  # this, both collapse into "nothing to do" and the run reports a false success.
-  if [ "$ok_count" -eq 0 ] && [ "$fail_count" -gt 0 ]; then
-    echo "::error::readme-refresh: $full_repo: all $fail_count README target(s) failed generation — no valid content produced (treating as failure, not \"nothing to do\")" >&2
+  if [ "$fail_count" -gt 0 ]; then
+    echo "::error::readme-refresh: $full_repo: $fail_count README target(s) failed generation (treating as failure)" >&2
     return 1
   fi
 
@@ -300,7 +297,7 @@ process_repo() {
     return 0
   fi
 
-  git -C "$dir" add -A
+  git -C "$dir" add -A || return 1
   if git -C "$dir" diff --cached --quiet; then
     notice "$full_repo: no net changes after staging — skipping"
     return 0
@@ -315,8 +312,8 @@ process_repo() {
     return 0
   fi
 
-  ( cd "$dir" && setup_git_identity )
-  git -C "$dir" commit -q -m "docs: refresh org READMEs from live state (automated) [skip ci]"
+  ( cd "$dir" && setup_git_identity ) || return 1
+  git -C "$dir" commit -q -m "docs: refresh org READMEs from live state (automated) [skip ci]" || return 1
   if ! git -C "$dir" push --force-with-lease --quiet origin "$BRANCH"; then
     echo "::error::readme-refresh: $full_repo: git push to $BRANCH failed — READMEs NOT updated (check GH_TOKEN write access)" >&2
     return 1
