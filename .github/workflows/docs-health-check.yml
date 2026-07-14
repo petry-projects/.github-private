@@ -2,8 +2,8 @@ name: Docs Health Check
 
 on:
   schedule:
-    # Weekly — Sunday at 00:00 UTC
-    - cron: '0 0 * * 0'
+    # Weekly — Sunday at 00:21 UTC
+    - cron: '21 0 * * 0'
   workflow_dispatch:
     inputs:
       stale_days:

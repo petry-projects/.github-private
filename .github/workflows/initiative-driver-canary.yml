@@ -28,7 +28,7 @@ name: Initiative Driver Canary
 
 on:
   schedule:
-    # Daily at 06:40 UTC — just after the Actions Fleet Monitor (06:00) and the
+    # Daily at 06:40 UTC — just after the Actions Fleet Monitor (06:27) and the
     # initiative-planner canary (06:30), off the top of the hour per the off-peak
     # scheduling standard (#722/#724), so the planner-path and driver-path
     # signals land in the same window without colliding.

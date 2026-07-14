@@ -18,8 +18,8 @@ name: Actions Fleet Monitor
 
 on:
   schedule:
-    # Daily at 6:00 UTC — covers same-day run history before US work hours
-    - cron: '0 6 * * *'
+    # Daily at 06:27 UTC — covers same-day run history before US work hours
+    - cron: '27 6 * * *'
   workflow_dispatch:
     inputs:
       org:
