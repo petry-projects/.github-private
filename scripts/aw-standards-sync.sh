@@ -258,6 +258,14 @@ while IFS= read -r repo; do
   if [ -n "$pr_url" ]; then
     prs_opened=$((prs_opened + 1))
     echo "  [pr]   ${repo} — opened ${pr_url}"
+    # Make the PR auto-rebase-eligible from creation (petry-projects/.github#711):
+    # without the ready label an unapproved PR is skipped by auto-rebase, drifts
+    # into conflict, and cannot be approved (pr-review skips red PRs) — a deadlock.
+    # Ensure the label exists (idempotent) so a repo missing it does not break.
+    gh label create "auto-rebase:ready" --repo "$repo" \
+      --description "Opts a non-draft PR into auto-rebase without an approval (auto-rebase ready_label)" \
+      --color "0e8a16" --force >/dev/null 2>&1 || true
+    gh pr edit "$pr_url" --repo "$repo" --add-label "auto-rebase:ready" >/dev/null 2>&1 || true
     summary_rows="${summary_rows}| \`${repo}\` | ❌ | ❌ | PR opened: ${pr_url} |\n"
   else
     echo "  [warn] ${repo} — could not open PR"
