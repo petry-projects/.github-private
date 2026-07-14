@@ -238,9 +238,42 @@ MOCK_EOF
   echo "$tmpdir"
 }
 
-@test "Gate runtime: returns 1 when no bots have submitted" {
+@test "Gate runtime: returns 1 when no bots have submitted and PR is recent" {
+  # Within the head-age window: absent bots may still be slow, so keep waiting.
+  local tmpdir
+  tmpdir=$(_make_mock_gh_dir_recent '{"reviews":[],"comments":[]}')
+  local gate_script="$SCRIPT_DIR/lib/advisory-review-gate.sh"
+  run env PATH="$tmpdir:$PATH" bash -c "
+    source '$gate_script'
+    check_advisory_reviews 'https://github.com/owner/repo/pull/123'
+  "
+  rm -rf "$tmpdir"
+  [ "$status" -eq 1 ]
+}
+
+@test "Gate runtime: returns 0 when no bots have submitted and head-age timeout elapsed (issue #1193)" {
+  # Durable hardening: when ZERO advisory bots have produced any output on the PR
+  # (bot not vendor-enabled / uninstalled / bot outage) and the head is older than
+  # the head-age window, the absent bots become *missing reviews* — the gate must
+  # proceed instead of blocking forever. _make_mock_gh_dir returns a committer date
+  # ~30 min old, past the 1200s window.
   local tmpdir
   tmpdir=$(_make_mock_gh_dir '{"reviews":[],"comments":[]}')
+  local gate_script="$SCRIPT_DIR/lib/advisory-review-gate.sh"
+  run env PATH="$tmpdir:$PATH" bash -c "
+    source '$gate_script'
+    check_advisory_reviews 'https://github.com/owner/repo/pull/123'
+  "
+  rm -rf "$tmpdir"
+  [ "$status" -eq 0 ]
+}
+
+@test "Gate runtime: no bots + head time unavailable → conservative wait (issue #1193)" {
+  # Graceful degradation: with no bot output AND no determinable head age (GraphQL
+  # unreachable), there is no timing basis to declare bots absent, so the gate stays
+  # conservative and waits — the next scheduled sweep retries once the API recovers.
+  local tmpdir
+  tmpdir=$(_make_mock_gh_dir_no_head_time '{"reviews":[],"comments":[]}')
   local gate_script="$SCRIPT_DIR/lib/advisory-review-gate.sh"
   run env PATH="$tmpdir:$PATH" bash -c "
     source '$gate_script'
@@ -443,6 +476,18 @@ MOCK_EOF
 
 @test "Advisory gate: drops rate-limited/unsupported bots from required total (effective_total)" {
   grep -q 'effective_total' "$SCRIPT_DIR/lib/advisory-review-gate.sh"
+}
+
+@test "Advisory gate: names the absent-bot timeout windows as constants (issue #1193)" {
+  grep -q 'ADVISORY_HEAD_AGE_TIMEOUT_SEC=1200' "$SCRIPT_DIR/lib/advisory-review-gate.sh"
+  grep -q 'ADVISORY_QUIESCENCE_TIMEOUT_SEC=600' "$SCRIPT_DIR/lib/advisory-review-gate.sh"
+}
+
+@test "Advisory gate: empty-state branch applies head-age timeout, not an unconditional wait (issue #1193)" {
+  # The zero-output branch must consult head age before deciding to wait.
+  # Use a fixed-string match on the assignment/call so the test fails if
+  # the call is removed, without also matching the function definition line.
+  grep -qF 'head_age_sec=$(_head_age_seconds' "$SCRIPT_DIR/lib/advisory-review-gate.sh"
 }
 
 @test "Gate runtime: rate-limited bot is classified RATE_LIMITED in gate output" {
