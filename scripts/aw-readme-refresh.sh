@@ -137,8 +137,9 @@ gather_facts() {
     done
     for wf in $(gh api "repos/$ORG/.github/contents/.github/workflows" \
                   --jq '.[] | select((.name // "") | endswith(".yml")) | .name' 2>/dev/null || true); do
-      rdesc="$(gh api "repos/$ORG/.github/contents/.github/workflows/$wf" --jq '.content' 2>/dev/null \
-                | base64 -d 2>/dev/null | grep -m1 -E '^# readme-report:' \
+      rdesc="$(gh api "repos/$ORG/.github/contents/.github/workflows/$wf" \
+                -H "Accept: application/vnd.github.v3.raw" 2>/dev/null \
+                | grep -m1 -E '^# readme-report:' \
                 | sed -E 's/^# readme-report:[[:space:]]*//' || true)"
       [ -n "$rdesc" ] && printf -- '- `%s` (.github): %s\n' "$wf" "$rdesc"
     done
