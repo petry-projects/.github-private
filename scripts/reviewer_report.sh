@@ -139,18 +139,6 @@ _delta_arrow() {
   }'
 }
 
-# percentile <p> — reads whitespace/newline-separated numbers on stdin, prints the
-# p-th percentile (nearest-rank) as an integer. Empty input → empty string.
-percentile() {
-  awk -v p="${1:-50}" '{ a[n++] = $1 }
-    END {
-      if (n == 0) exit 0
-      for (i = 0; i < n; i++) for (j = i+1; j < n; j++) if (a[j] < a[i]) { t = a[i]; a[i] = a[j]; a[j] = t }
-      rank = int((p/100) * (n-1) + 0.5)
-      printf "%d", a[rank]
-    }'
-}
-
 # normalize_pr_node — jq filter (as a string) that turns one GraphQL PR node into
 # a stream of normalized JSONL records. Emits:
 #   {kind:"pr", repo, pr, created, merged, draft, author}         (denominator)
@@ -254,7 +242,7 @@ aggregate_snapshot() {
 _prev() {
   local f="${1:-}" bot="$2" field="$3"
   [ -n "$f" ] && [ -f "$f" ] || { printf ''; return 0; }
-  jq -r --arg b "$bot" --arg k "$field" '.bots[$b][$k] // empty' "$f" 2>/dev/null || printf ''
+  jq -r --arg b "$bot" --arg k "$field" '.bots?[$b]?[$k]? // empty' "$f" 2>/dev/null || printf ''
 }
 
 # render_reviewer_report <jsonl_dir> <lookback> <repo_count> [generated_at]
@@ -303,7 +291,7 @@ render_reviewer_report() {
     # the remaining columns left — that was a field-misalignment bug).
     IFS=$'\t' read -r prs_reviewed reviews inline approved changes_req rate_limited thr_tot thr_res tup tdn p50 p95 <<<"$(
       jq -r --arg b "$bot" '
-        (.bots[$b] // {}) as $x
+        (.bots?[$b] // {}) as $x
         | [ ($x.prs_reviewed // 0), ($x.reviews // 0), ($x.inline_comments // 0),
             ($x.approved // 0), ($x.changes_req // 0), ($x.rate_limited // 0),
             ($x.threads_total // 0), ($x.threads_resolved // 0),
@@ -444,17 +432,17 @@ _collect_one_repo() {
     # in-window so we can stop paginating once a full page is older than CUTOFF.
     local in_window
     in_window="$(jq -r --arg cutoff "$CUTOFF" '
-      [ .data.repository.pullRequests.nodes[]? | select(.updatedAt >= $cutoff) ] | length
+      [ .data?.repository?.pullRequests?.nodes[]? | select(.updatedAt >= $cutoff) ] | length
     ' <<<"$resp" 2>/dev/null || echo 0)"
 
     jq -c --arg repo "$repo" --argjson bots "$bots_json" --arg rl "$RATE_LIMIT_RE" --arg cutoff "$CUTOFF" \
-      ".data.repository.pullRequests.nodes[]? | select(.updatedAt >= \$cutoff) | ${_NORMALIZE_JQ}" \
+      ".data?.repository?.pullRequests?.nodes[]? | select(.updatedAt >= \$cutoff) | ${_NORMALIZE_JQ}" \
       <<<"$resp" >> "$out" 2>/dev/null || true
 
     # Stop when this page had no in-window PRs, or there are no more pages.
     local has_next end_cursor
-    has_next="$(jq -r '.data.repository.pullRequests.pageInfo.hasNextPage // false' <<<"$resp" 2>/dev/null || echo false)"
-    end_cursor="$(jq -r '.data.repository.pullRequests.pageInfo.endCursor // empty' <<<"$resp" 2>/dev/null || echo '')"
+    has_next="$(jq -r '.data?.repository?.pullRequests?.pageInfo?.hasNextPage // false' <<<"$resp" 2>/dev/null || echo false)"
+    end_cursor="$(jq -r '.data?.repository?.pullRequests?.pageInfo?.endCursor // empty' <<<"$resp" 2>/dev/null || echo '')"
     { [ "$in_window" -eq 0 ] || [ "$has_next" != "true" ] || [ -z "$end_cursor" ]; } && break
     cursor="$end_cursor"
   done
@@ -516,7 +504,9 @@ _fetch_prev_snapshot() {
   tmpzip="$(mktemp)"; tmpdir="$(mktemp -d)"
   if _gh_timeout api "repos/${SNAPSHOT_REPO}/actions/artifacts/${id}/zip" > "$tmpzip" 2>/dev/null \
      && unzip -q -o "$tmpzip" -d "$tmpdir" 2>/dev/null; then
-    local f; f="$(find "$tmpdir" -type f -name '*.json' | head -1)"
+    local f
+    f="$(find "$tmpdir" -type f -name '*.json' 2>/dev/null)" || true
+    f="${f%%$'\n'*}"
     [ -n "$f" ] && cp "$f" "$dest"
   fi
   rm -rf "$tmpzip" "$tmpdir"

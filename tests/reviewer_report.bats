@@ -52,11 +52,6 @@ setup() {
   run _delta_arrow 4 ""; [ "$output" = "" ]
 }
 
-@test "percentile: nearest-rank p50 and p95" {
-  run bash -c 'printf "%s\n" 10 20 30 40 100 | { source '"${BATS_TEST_DIRNAME}"'/../scripts/reviewer_report.sh 2>/dev/null; percentile 50; }'
-  [ "$output" = "30" ]
-}
-
 # ---------------------------------------------------------------------------
 # _NORMALIZE_JQ — one GraphQL PR node → normalized records
 # ---------------------------------------------------------------------------
@@ -112,7 +107,7 @@ setup() {
 }
 
 @test "aggregate: empty dir yields a zeroed snapshot" {
-  empty="$(mktemp -d)"
+  empty="$(mktemp -d "$BATS_TEST_TMPDIR/empty.XXXXXX")"
   run aggregate_snapshot "$empty"
   echo "$output" | jq -e '.total_prs == 0 and (.bots | length == 0)'
 }
@@ -148,14 +143,14 @@ setup() {
 }
 
 @test "render: empty dir yields a no-data message" {
-  empty="$(mktemp -d)"
+  empty="$(mktemp -d "$BATS_TEST_TMPDIR/empty.XXXXXX")"
   run render_reviewer_report "$empty" 7 0 2026-07-13
   [ "$status" -eq 0 ]
   echo "$output" | grep -q "No pull-request activity found"
 }
 
 @test "render: week-over-week delta arrow appears when a prior snapshot is given" {
-  prev="$(mktemp)"
+  prev="$(mktemp "$BATS_TEST_TMPDIR/prev.XXXXXX")"
   cat > "$prev" <<'JSON'
 {"eligible_prs":3,"total_prs":4,"bots":{"copilot-pull-request-reviewer":{"prs_reviewed":3}}}
 JSON
@@ -165,7 +160,7 @@ JSON
 }
 
 @test "render: writes the snapshot artifact when REVIEWER_SNAPSHOT_OUT is set" {
-  out="$(mktemp)"
+  out="$(mktemp "$BATS_TEST_TMPDIR/out.XXXXXX")"
   REVIEWER_SNAPSHOT_OUT="$out" run render_reviewer_report "$FIXTURES" 7 12 2026-07-13
   run jq -e '.bots["copilot-pull-request-reviewer"].prs_reviewed == 2' "$out"
   [ "$status" -eq 0 ]
