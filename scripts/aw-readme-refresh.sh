@@ -25,6 +25,9 @@ CLAUDE_MODEL="${CLAUDE_MODEL:-claude-sonnet-4-6}"
 ACTION_TIMEOUT_SEC="${ACTION_TIMEOUT_SEC:-300}"
 BRANCH="chore/readme-refresh"
 LABEL="readme-refresh"
+# Rolling-branch push retry tuning (overridable for fast tests).
+PUSH_RETRY_ATTEMPTS="${PUSH_RETRY_ATTEMPTS:-3}"
+PUSH_RETRY_SLEEP_SEC="${PUSH_RETRY_SLEEP_SEC:-3}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -233,6 +236,27 @@ valid_content() {
   return 0
 }
 
+# Push the rolling branch with --force-with-lease, retrying on a stale-lease rejection.
+# The branch is bot-owned and always reset to main + freshly regenerated READMEs, so the
+# only thing that moves it out from under us is an auto-merge of the *previous* refresh PR:
+# that deletes or fast-forwards the branch mid-run and stales the --force-with-lease lease.
+# Re-sync (fetch --prune) the remote ref between attempts so the lease re-evaluates against
+# current state (branch deleted → recreate; branch moved → overwrite). Returns non-zero only
+# on a persistent failure (e.g. lost write access). Args: <dir> <branch> [<label>].
+push_branch_with_retry() {
+  local dir="$1"
+  local branch="$2" label="${3:-$dir}" attempt
+  for ((attempt=1; attempt<=PUSH_RETRY_ATTEMPTS; attempt++)); do
+    if git -C "$dir" push --force-with-lease --quiet origin "$branch" 2>/dev/null; then
+      return 0
+    fi
+    warn "$label: push to $branch failed (attempt $attempt/$PUSH_RETRY_ATTEMPTS) — re-syncing remote ref and retrying"
+    git -C "$dir" fetch --prune --quiet origin 2>/dev/null || true
+    if [ "$attempt" -lt "$PUSH_RETRY_ATTEMPTS" ]; then sleep "$PUSH_RETRY_SLEEP_SEC"; fi
+  done
+  return 1
+}
+
 # ── Per-repo processing ───────────────────────────────────────────────────────
 # Target matrix, grouped by repo. Fields: <rel_path>|<target_type>|<label>|<maxlen>
 
@@ -377,23 +401,9 @@ process_repo() {
 
   ( cd "$dir" && setup_git_identity ) || return 1
   git -C "$dir" commit -q -m "docs: refresh org READMEs from live state (automated) [skip ci]" || return 1
-  # Push the rolling branch. It is bot-owned and always reset to main + freshly regenerated READMEs,
-  # so the only thing that moves it out from under us is an auto-merge of the *previous* refresh PR:
-  # that deletes or fast-forwards the branch mid-run and stales the --force-with-lease lease. Retry a
-  # few times, re-syncing (fetch --prune) the remote ref between attempts so the lease re-evaluates
-  # against current state (branch deleted → recreate; branch moved → overwrite). Only a persistent
-  # failure (e.g. lost write access) fails the run.
-  local push_ok=0 attempt
-  for attempt in 1 2 3; do
-    if git -C "$dir" push --force-with-lease --quiet origin "$BRANCH" 2>/dev/null; then
-      push_ok=1; break
-    fi
-    warn "$full_repo: push to $BRANCH failed (attempt $attempt/3) — re-syncing remote ref and retrying"
-    git -C "$dir" fetch --prune --quiet origin 2>/dev/null || true
-    sleep 3
-  done
-  if [ "$push_ok" -ne 1 ]; then
-    echo "::error::readme-refresh: $full_repo: git push to $BRANCH failed after 3 attempts — READMEs NOT updated (check GH_TOKEN write access / branch state)" >&2
+  # Push the rolling branch, tolerating a mid-run stale-lease race (see push_branch_with_retry).
+  if ! push_branch_with_retry "$dir" "$BRANCH" "$full_repo"; then
+    echo "::error::readme-refresh: $full_repo: git push to $BRANCH failed after $PUSH_RETRY_ATTEMPTS attempts — READMEs NOT updated (check GH_TOKEN write access / branch state)" >&2
     return 1
   fi
 
