@@ -167,7 +167,10 @@ git push --force origin dev-lead/stable
   immutable `vX.Y.Z` (§3) — for that ring's channel, or for `stable` if already
   promoted.
 - The fully automated, health-gated version of this loop is issue #501; today it
-  is a human-driven sequence of the moves above.
+  is a human-driven sequence of the moves above. A required input to that gate is
+  the **shadow-mode dual-run** signal (#605) — run the `next` candidate silently
+  alongside `stable` on a PR and compare, blocking promotion on a regression. See
+  [`shadow-mode.md`](./shadow-mode.md).
 
 Then **verify** (§4).
 

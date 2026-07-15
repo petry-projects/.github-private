@@ -93,6 +93,7 @@ jobs:
             tests/test_model_ab.bats \
             tests/test_triage_prompt.bats \
             tests/test_holdout_guard.bats \
+            tests/test_shadow_compare.bats \
             tests/test_skill_eval_report.bats \
             tests/test_eval_health_notify.bats \
             tests/test_consumer_manifest.bats \

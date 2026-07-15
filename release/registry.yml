@@ -11,7 +11,11 @@
 #                   cross-repo and this repo holds only the thin caller stub).
 #     run_workflow  the workflow (file or display name) whose run history feeds the
 #                   health gate for this reusable.
-#     gate          per-reusable gate knobs (soak_window_days, ...).
+#     gate          per-reusable gate knobs (soak_window_days, signals, ...).
+#                   signals is the list of required health signals the gate must
+#                   confirm before promoting a candidate ring. `shadow_dual_run`
+#                   (#605) is the shadow-mode comparison signal emitted by
+#                   scripts/shadow-run.sh — see docs/release/shadow-mode.md.
 #     rings         ordered rollout ladder — a list of { channel, order, repos }.
 #                   A candidate soaks in each ring in `order` and is promoted to the
 #                   next only once the gate confirms the current ring is healthy.
@@ -29,7 +33,7 @@ reusables:
   dev-lead:
     host: petry-projects/.github-private
     run_workflow: dev-lead.yml
-    gate: { soak_window_days: 7 }
+    gate: { soak_window_days: 7, signals: [shadow_dual_run] }
     rings:
       - { channel: next,   order: 0, repos: [petry-projects/.github-private] }
       - { channel: ring0,  order: 1, repos: [petry-projects/.github] }
