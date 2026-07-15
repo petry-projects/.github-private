@@ -1,0 +1,19 @@
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+  pull_request_review:
+    types: [submitted]
+  pull_request_review_comment:
+    types: [created]
+  issue_comment:
+    types: [created]
+  issues:
+    types: [labeled]
+  check_run:
+    types: [completed]
+  repository_dispatch:
+    types: [dev-lead-ci-failure, dev-lead-reviews-retry, dev-lead-issue-retry]
+
+    uses: petry-projects/.github-private/.github/workflows/dev-lead-reusable.yml@dev-lead/v1-next
+    with:
+      agent_ref: dev-lead/v1-next
