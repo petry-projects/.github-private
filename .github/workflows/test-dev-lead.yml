@@ -14,6 +14,7 @@ on:
       - '.github/workflows/auto-rebase-retry.yml'
       - '.github/workflows/pr-review.yml'
       - '.github/workflows/pr-review-trigger.yml'
+      - '.github/workflows/spec-drift.yml'
       - 'tests/dev-lead/**'
       - 'prompts/dev-lead/**'
       - '.github/review-mcp.json'
@@ -38,6 +39,7 @@ on:
       - '.github/workflows/auto-rebase-retry.yml'
       - '.github/workflows/pr-review.yml'
       - '.github/workflows/pr-review-trigger.yml'
+      - '.github/workflows/spec-drift.yml'
   workflow_dispatch: {}
 
 permissions:
@@ -156,3 +158,16 @@ jobs:
         run: python3 -m pip install --quiet pyyaml
       - name: Validate auto-rebase.yml uses @auto-rebase/next (not a SHA or frozen tag)
         run: python3 tests/dev-lead/integration/test_auto_rebase_stub.py
+
+  spec-drift-workflow:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - name: Install PyYAML
+        run: python3 -m pip install --quiet pyyaml
+      - name: Validate spec-drift.yml post-merge advisory contract
+        run: python3 tests/dev-lead/integration/test_spec_drift_workflow.py
