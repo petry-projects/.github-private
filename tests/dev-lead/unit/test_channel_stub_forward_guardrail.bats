@@ -18,15 +18,25 @@ RELEVANT_PROMPTS=(fix-issue.md fix-ci.md fix-reviews.md review-changes.md fix-bo
 
 @test "channel-stub-forward guardrail: present in every relevant prompt (#1254)" {
   for p in "${RELEVANT_PROMPTS[@]}"; do
-    run grep -qiE "never (add|forward).*undeclared input" "$PROMPTS_DIR/$p"
-    [ "$status" -eq 0 ] || { echo "missing channel-stub-forward guardrail in prompts/dev-lead/$p"; return 1; }
+    # Match the actionable directive, not just the topic sentence: the prompt must
+    # tell the agent to "Never add or modify a `with:` forward …" (backticks optional).
+    run grep -qiE "never add or modify a .?with:.? forward" "$PROMPTS_DIR/$p"
+    [ "$status" -eq 0 ] || { echo "missing actionable channel-stub-forward guardrail in prompts/dev-lead/$p"; return 1; }
   done
 }
 
 @test "channel-stub-forward guardrail: names the land -> promote -> forward sequencing (#1254)" {
+  # Assert all three ordered steps are present, not merely that cut-release.sh is
+  # mentioned: (1) land the input in the reusable, (2) promote the channel via
+  # cut-release.sh --channel, (3) only then teach the stub to forward it.
   for p in "${RELEVANT_PROMPTS[@]}"; do
-    run grep -qE 'cut-release\.sh .*--channel' "$PROMPTS_DIR/$p"
-    [ "$status" -eq 0 ] || { echo "guardrail in $p does not name the cut-release.sh --channel promotion step"; return 1; }
+    body="$(cat "$PROMPTS_DIR/$p")"
+    grep -qiE 'land the input in the reusable' <<<"$body" \
+      || { echo "guardrail in $p omits step (1): land the input in the reusable"; return 1; }
+    grep -qE 'cut-release\.sh .*--channel' <<<"$body" \
+      || { echo "guardrail in $p omits step (2): cut-release.sh --channel promotion"; return 1; }
+    grep -qiE 'only then' <<<"$body" \
+      || { echo "guardrail in $p omits step (3): 'only then' forward ordering"; return 1; }
   done
 }
 
