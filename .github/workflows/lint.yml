@@ -46,6 +46,7 @@ jobs:
           scripts/run-bats.sh \
             tests/fleet_report.bats \
             tests/fleet_stub_drift.bats \
+            tests/fleet_stub_remediate.bats \
             tests/template_stub_drift.bats \
             tests/canary_rollout.bats \
             tests/test_initiative_canary.bats \
