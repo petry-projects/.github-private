@@ -228,13 +228,13 @@ teardown() {
 }
 
 @test "driver: --dry-run also forces dry-run even when DRY_RUN=false in env" {
-  run env DRY_RUN=false bash "$SCRIPT" --dry-run --repo petry-projects/bravo "$DRIFT_JSON"
+  run env DRY_RUN=false bash "$SCRIPT" --dry-run --pilot petry-projects/bravo "$DRIFT_JSON"
   [ "$status" -eq 0 ]
   [ ! -f "$CALLS" ]
 }
 
-@test "driver: a live drifted repo runs branch → PUT → one PR (AC #1, #4)" {
-  run env DRY_RUN=false bash "$SCRIPT" --repo petry-projects/bravo "$DRIFT_JSON"
+@test "driver: a live pilot repo runs branch → PUT → one PR (AC #1, #4)" {
+  run env DRY_RUN=false bash "$SCRIPT" --pilot petry-projects/bravo "$DRIFT_JSON"
   [ "$status" -eq 0 ]
   [ -f "$CALLS" ]
   # Branch created on the consumer repo, the drifted stub PUT, and exactly one PR.
@@ -243,13 +243,13 @@ teardown() {
   [ "$(grep -c 'pr create' "$CALLS")" -eq 1 ]
   # The PR targets the consumer default branch (a proposal, never a direct push).
   grep -q "pr create .*--base" "$CALLS"
-  # The out-of-scope drifted repo (delta) is never touched.
+  # The out-of-pilot-scope drifted repo (delta) is never touched.
   run grep -q "petry-projects/delta" "$CALLS"
   [ "$status" -eq 1 ]
 }
 
 @test "driver: PR title/body cite the canonical source of record (AC #4)" {
-  run env DRY_RUN=false bash "$SCRIPT" --repo petry-projects/bravo "$DRIFT_JSON"
+  run env DRY_RUN=false bash "$SCRIPT" --pilot petry-projects/bravo "$DRIFT_JSON"
   [ "$status" -eq 0 ]
   # The single PR references the canonical repo + path the drift was measured against.
   grep -q "pr create" "$CALLS"
@@ -258,7 +258,7 @@ teardown() {
 }
 
 @test "driver: an already-open remediation PR is skipped — no writes (AC #3)" {
-  run env DRY_RUN=false EXISTING_PR=77 bash "$SCRIPT" --repo petry-projects/bravo "$DRIFT_JSON"
+  run env DRY_RUN=false EXISTING_PR=77 bash "$SCRIPT" --pilot petry-projects/bravo "$DRIFT_JSON"
   [ "$status" -eq 0 ]
   [[ "$output" == *"77"* ]]
   # Idempotent: no branch create, no PUT, no second pr create.
@@ -278,7 +278,7 @@ teardown() {
   { "repo": "petry-projects/echo", "status": "DRIFTED", "repo_sha": "2222", "canonical_sha": "cccc", "stub": "Initiative-driver", "stub_file": "${DRIVER_STUB}" }
 ]
 JSON
-  run env DRY_RUN=false bash "$SCRIPT" --repo petry-projects/echo "$multi"
+  run env DRY_RUN=false bash "$SCRIPT" --pilot petry-projects/echo "$multi"
   [ "$status" -eq 0 ]
   [ "$(grep -c 'branch .*petry-projects/echo/git/refs' "$CALLS")" -eq 1 ]
   [ "$(grep -c 'put .*petry-projects/echo/contents/' "$CALLS")" -eq 2 ]
@@ -288,7 +288,7 @@ JSON
 
 @test "driver: a post-PUT blob SHA that != canonical SHA fails the repo and opens NO PR (AC #5)" {
   run env DRY_RUN=false WRITTEN_SHA=deadbeefdeadbeefdeadbeefdeadbeefdeadbeef \
-    bash "$SCRIPT" --repo petry-projects/bravo "$DRIFT_JSON"
+    bash "$SCRIPT" --pilot petry-projects/bravo "$DRIFT_JSON"
   [ "$status" -ne 0 ]
   [[ "$output" == *"mismatch"* || "$output" == *"::error::"* ]]
   # Wrote the file but the byte-identity check caught the mismatch → no misleading PR.
@@ -298,10 +298,99 @@ JSON
   fi
 }
 
-@test "driver: DRY_RUN=false with NO repo scope stays dry-run + warns (fail-closed, AC #7)" {
+@test "driver: DRY_RUN=false with NO pilot repo stays dry-run + warns (fail-closed, AC #4)" {
   run env DRY_RUN=false bash "$SCRIPT" "$DRIFT_JSON"
   [ "$status" -eq 0 ]
   [[ "$output" == *"::warning::"* ]]
-  # Fail-closed: no writes despite DRY_RUN=false, because no scope was supplied.
+  # Fail-closed: no writes despite DRY_RUN=false, because no pilot repo was named.
   [ ! -f "$CALLS" ]
+}
+
+# ---------------------------------------------------------------------------
+# Phase 3 (#1151) — pilot scope, per-run cap, drift-closed verification.
+#   Pilot scope (AC #1/#4): live remediation is bounded to the named pilot
+#   repo(s); other DRIFTED repos are announced 'out of pilot scope' and skipped.
+#   Per-run cap (AC #2): REMEDIATE_MAX_REPOS bounds live remediations; repos
+#   beyond the cap are logged as deferred (no silent truncation).
+#   Verification (AC #3): each live remediation reports drift-closed yes/no
+#   (pushed blob SHA == canon) to the run log and an optional summary artifact.
+# ---------------------------------------------------------------------------
+
+@test "driver: pilot scope remediates ONLY the named pilot; other DRIFTED repos are out-of-scope (AC #1)" {
+  run env DRY_RUN=false REMEDIATE_PILOT_REPO=petry-projects/bravo bash "$SCRIPT" "$DRIFT_JSON"
+  [ "$status" -eq 0 ]
+  # The pilot repo (bravo) is remediated: branch + PUT + one PR.
+  grep -q "put .*petry-projects/bravo/contents/${PLANNER_STUB}" "$CALLS"
+  [ "$(grep -c 'pr create' "$CALLS")" -eq 1 ]
+  # The out-of-pilot DRIFTED repo (delta) is announced and never written.
+  [[ "$output" == *"petry-projects/delta"*"out of pilot scope"* ]]
+  run grep -q "petry-projects/delta" "$CALLS"
+  [ "$status" -eq 1 ]
+}
+
+@test "driver: pilot unset forces fully dry-run even with DRY_RUN=false (AC #4)" {
+  run env DRY_RUN=false bash "$SCRIPT" "$DRIFT_JSON"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"::warning::"* ]]
+  [[ "$output" == *"pilot"* ]]
+  # No pilot named ⇒ no live writes at all.
+  [ ! -f "$CALLS" ]
+}
+
+@test "driver: per-run cap defers repos beyond REMEDIATE_MAX_REPOS (no silent truncation, AC #2)" {
+  # Both bravo and delta are named pilots and DRIFTED, but the cap allows only one.
+  run env DRY_RUN=false REMEDIATE_MAX_REPOS=1 \
+    REMEDIATE_PILOT_REPO="petry-projects/bravo petry-projects/delta" \
+    bash "$SCRIPT" "$DRIFT_JSON"
+  [ "$status" -eq 0 ]
+  # Exactly one repo remediated (bravo sorts first); the other is deferred, logged.
+  [ "$(grep -c 'pr create' "$CALLS")" -eq 1 ]
+  grep -q "put .*petry-projects/bravo/contents/" "$CALLS"
+  [[ "$output" == *"petry-projects/delta deferred"* ]]
+  [[ "$output" == *"REMEDIATE_MAX_REPOS=1"* ]]
+  # Deferred repo received no writes.
+  run grep -q "petry-projects/delta" "$CALLS"
+  [ "$status" -eq 1 ]
+}
+
+@test "driver: emits a per-repo drift-closed verification summary (log + artifact, AC #3)" {
+  summary="$(mktemp "${BATS_TEST_TMPDIR}/summary.XXXXXX.json")"
+  run env DRY_RUN=false REMEDIATE_PILOT_REPO=petry-projects/bravo \
+    REMEDIATE_SUMMARY_FILE="$summary" bash "$SCRIPT" "$DRIFT_JSON"
+  [ "$status" -eq 0 ]
+  # The run log surfaces the drift-closed verdict for the pilot repo.
+  [[ "$output" == *"drift-closed=yes"* ]]
+  [[ "$output" == *"petry-projects/bravo"* ]]
+  # The emitted JSON artifact records the verdict machine-readably.
+  [ "$(jq -r '.[0].repo' "$summary")" = "petry-projects/bravo" ]
+  [ "$(jq -r '.[0].drift_closed' "$summary")" = "true" ]
+  rm -f "$summary"
+}
+
+@test "driver: a byte-identity mismatch is reported drift-closed=no in the summary (AC #3, #5)" {
+  summary="$(mktemp "${BATS_TEST_TMPDIR}/summary.XXXXXX.json")"
+  run env DRY_RUN=false WRITTEN_SHA=deadbeefdeadbeefdeadbeefdeadbeefdeadbeef \
+    REMEDIATE_PILOT_REPO=petry-projects/bravo REMEDIATE_SUMMARY_FILE="$summary" \
+    bash "$SCRIPT" "$DRIFT_JSON"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"drift-closed=no"* ]]
+  [ "$(jq -r '.[0].drift_closed' "$summary")" = "false" ]
+  # No misleading PR was opened for the unverified remediation.
+  if [ -f "$CALLS" ]; then
+    run grep -q "pr create" "$CALLS"
+    [ "$status" -eq 1 ]
+  fi
+  rm -f "$summary"
+}
+
+@test "pilot helpers: _in_pilot matches a named repo and fail-closes on empty (AC #1, #4)" {
+  REMEDIATE_PILOT_REPO="petry-projects/bravo petry-projects/delta"
+  run _in_pilot "petry-projects/bravo"
+  [ "$status" -eq 0 ]
+  run _in_pilot "petry-projects/charlie"
+  [ "$status" -ne 0 ]
+  # An empty pilot list means NOTHING is eligible (fail-closed, unlike _in_scope).
+  REMEDIATE_PILOT_REPO=""
+  run _in_pilot "petry-projects/bravo"
+  [ "$status" -ne 0 ]
 }
