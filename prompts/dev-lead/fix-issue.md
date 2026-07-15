@@ -19,6 +19,8 @@ ${ISSUE_BODY}
 
 Work through each phase in order. **Do not skip phases.**
 
+> **Guardrail — never forward an undeclared input across a channel pin.** A thin caller stub pins a first-party reusable at a **moving channel tag** (e.g. `…@dev-lead/v1-stable`). **Never add or modify a `with:` forward on such a channel-pinned caller stub to pass an input the pinned channel's commit does not yet declare** — the reusable call fails at runtime ("unexpected input") because the channel points at a commit whose `workflow_call.inputs` lacks it (the channel-skew defect, #1052). Adding a new `workflow_call` input is a **three-step sequence, in order**: (1) land the input in the reusable's `workflow_call.inputs`; (2) promote the pinned channel to a commit that declares it via `cut-release.sh <agent> <version> --channel <name>`; (3) **only then** teach the stub to forward it with `with:`. If the issue asks you to forward an input the pinned channel does not declare, **do not** add the forward — note the missing sequencing instead. See AGENTS.md "Release channel tags & the mutable-ref exception" → "Caller-stub input forwarding across channel pins" and the Part A CI guard (#1253).
+
 ---
 
 ### Phase 1 — Scope & Plan
