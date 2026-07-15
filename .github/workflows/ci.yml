@@ -128,7 +128,11 @@ jobs:
     # bumps pinned action SHAs / manifest versions (no secret-introduction
     # surface), and the post-merge push-to-main run re-scans full history with
     # the license present — so skipping the PR scan loses no real coverage.
-    if: github.actor != 'dependabot[bot]'
+    # Gate on the PR author (github.event.pull_request.user.login) rather than
+    # github.actor: actor changes on workflow re-runs (e.g. a maintainer
+    # clicking "Re-run jobs"), while the PR author is immutable. Push runs on
+    # main always execute so the post-merge scan is never skipped.
+    if: github.event_name == 'push' || github.event.pull_request.user.login != 'dependabot[bot]'
     permissions:
       contents: read
       security-events: write
