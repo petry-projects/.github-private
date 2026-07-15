@@ -100,6 +100,32 @@ Notable subtopics are listed below to aid discoverability; see the standards dir
 | [`push-protection`](https://github.com/petry-projects/.github/blob/main/standards/push-protection.md) | Layer 1 (GitHub push protection), Layer 2 (local pre-commit), Layer 3 (CI secret scanning), incident response |
 | [`ruleset-remediation-runbook`](https://github.com/petry-projects/.github/blob/main/standards/ruleset-remediation-runbook.md) | Bypass actors, migrate checks into `code-quality`, delete legacy rulesets, rollback procedure |
 
+## Reporting & Dashboards
+
+Scheduled workflows post reports and dashboards as issues or run summaries for maintainers.
+
+**In this repo (`.github-private`):**
+
+| Workflow | Purpose |
+|----------|---------|
+| `actions-fleet-monitor.yml` | Actions fleet monitor — org-wide workflow token usage and run anomalies |
+| `auto-rebase-health.yml` | Daily auto-rebase health report (issue) — rebase success/failure trends |
+| `content-twin-audit.yml` | ContentTwin content audit — audits the ContentTwin repo's published content |
+| `daily-pr-review-health.yml` | Daily PR-review health check — flags PR-review agent failures as an issue |
+| `docs-health-check.yml` | Docs health check — flags stale/broken docs as an issue |
+| `premature-closure-audit.yml` | Premature-closure audit — flags issues closed as completed with no merged closing PR |
+| `reviewer-report.yml` | Reviewer scorecard (per workflow-run summary) — per-reviewer PR-review activity |
+| `skill-eval-report.yml` | Skill-eval results report — agent skill pass/fail trends (self-improving-skills pipeline) |
+| `token-report.yml` | LLM token-cost report (per workflow-run summary) for maintainers |
+
+**In `.github` (org-level):**
+
+| Workflow | Purpose |
+|----------|---------|
+| `compliance-audit-and-improvement.yml` | Weekly org standards compliance audit + runtime health survey, with per-finding remediation issues |
+| `daily-org-status.yml` | Daily "Org Status" digest posted as an issue for maintainers |
+| `org-scorecard.yml` | Weekly OpenSSF Scorecard security-posture review across public repos; findings tracked as issues |
+
 ## Standards
 
 Engineering standards live in `petry-projects/.github/standards/`.
@@ -110,7 +136,7 @@ Notable subtopics are listed below to aid discoverability; see the standards dir
 | `advanced-security` | Code Security Configurations, push-protection live-fire (canary), custom secret scanning patterns, compliance audit checks |
 | `agent-standards` | Required files, compliance exemptions, AgentShield CI workflow, decision-making reusables, BMAD Method Workflows |
 | `ci-standards` | Staged promotion through concentric rings, reusable workflow versioning (`stable` channel), action pinning policy, permissions policy, Dev-Lead Agent |
-| `codeowners-standard` | Team composition, required setup for new bots, branch protection, bypass actors |
+| `codeowners-standard` | Team composition, required setup for new bots, branch protection, verified end-to-end |
 | `copilot-instructions-standard` | Canonical instruction files, adding a new language, required sections, content quality rules |
 | `dependabot-policy` | Configuration files, auto-merge workflow, vulnerability audit CI check, applying to a repository |
 | `feature-ideation-sources` | AI/ML vendor & lab sources, developer tooling changelogs, security & compliance sources, newsletters, podcasts |
