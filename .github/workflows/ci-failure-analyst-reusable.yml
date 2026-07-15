@@ -1,6 +1,7 @@
 # This file is the source of truth. Callers: .github/workflows/ci-failure-analyst.lock.yml (this repo)
 # and any repo deploying templates/ci-failure-analyst.yml.
 name: "CI Failure Analyst — Reusable"
+# readme-agent: CI failure analyst — diagnoses failed CI/Lint/Test runs and comments root-cause analysis.
 
 on:
   workflow_call:

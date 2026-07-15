@@ -1,4 +1,5 @@
 name: Stale Manager
+# readme-agent: Stale manager agent — warns and closes stale issues/PRs across the org.
 
 on:
   schedule:

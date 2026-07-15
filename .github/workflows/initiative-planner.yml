@@ -18,6 +18,7 @@
 # (scripts/initiative-planner/, prompts/bmad/scrum-master.md).
 # ─────────────────────────────────────────────────────────────────────────────
 name: Initiative Planner (BMAD Scrum Master)
+# readme-agent: Initiative planner (BMAD Scrum Master) — breaks an approved initiative into an epic + sub-issues.
 
 on:
   workflow_dispatch:
