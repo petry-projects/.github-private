@@ -44,6 +44,11 @@ setup() {
   [ "$status" -eq 0 ]
 }
 
+@test "registry.yml: dev-lead gate requires the shadow_dual_run signal (#605)" {
+  run bash -c "yq -o=json '$REGISTRY' | jq -er '(.reusables.\"dev-lead\".gate.signals // []) | index(\"shadow_dual_run\") != null'"
+  [ "$status" -eq 0 ]
+}
+
 @test "registry.yml: dev-lead has four rings" {
   run yq -e '.reusables."dev-lead".rings | length == 4' "$REGISTRY"
   [ "$status" -eq 0 ]
