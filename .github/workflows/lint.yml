@@ -130,6 +130,30 @@ jobs:
       - name: Check for minute-0 scheduled crons
         run: bash scripts/validate-workflow-schedules.sh
 
+  validate-caller-inputs:
+    # Channel-skew guard (#1253, epic #1052; regression for #1034): for every
+    # reusable-workflow caller stub with a `with:` block, resolve the reusable at
+    # its PINNED ref and assert forwarded inputs ⊆ declared workflow_call inputs
+    # (and that required inputs are forwarded). `pull_request` CI runs the base
+    # stub and GitHub validates reusable inputs only at startup against the pinned
+    # ref, so an input-forwarding change to a channel-pinned caller is exercised
+    # by nothing in PR CI and only breaks post-merge — this closes that gap.
+    # Same-repo channel tags are resolved via `git fetch` of the tag; an
+    # unresolvable ref soft-passes with a logged ::warning:: (never silently).
+    # PR-triggered on the existing Lint workflow — no new cron/scheduled workload.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        # NOTE: persist-credentials is intentionally left at the default (true) —
+        # vci_resolve_reusable needs `git fetch origin` to authenticate against this
+        # private repo when resolving same-repo channel tags. Setting
+        # persist-credentials: false would silently push every such caller into the
+        # "unresolved ref" soft-pass/warning path, defeating the guard entirely.
+
+      - name: Validate caller inputs ⊆ reusable inputs at the pinned ref
+        run: bash scripts/validate-caller-inputs.sh
+
   template-drift:
     # Drift guard (#969): fail when a file committed in petry-projects/repo-template
     # has diverged from its standards-derived baseline, so the template stays a thin
