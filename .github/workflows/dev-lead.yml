@@ -17,6 +17,7 @@
 # ─────────────────────────────────────────────────────────────────────────────
 
 name: Dev-Lead Agent
+# readme-agent: Dev-Lead agent — autonomously implements an assigned issue (branch, code, tests, PR).
 
 on:
   pull_request:
