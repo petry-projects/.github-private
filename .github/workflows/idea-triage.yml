@@ -16,6 +16,7 @@
 #   -> initiative-driver -> dev-lead
 # ─────────────────────────────────────────────────────────────────────────────
 name: Idea Triage (Promotion Queue)
+# readme-agent: Idea triage agent — scores queued ideas and promotes them into the backlog.
 
 on:
   schedule:
