@@ -64,9 +64,11 @@ setup() {
 }
 
 # ---------------------------------------------------------------------------
-# extract_forwarding_block — the frozen region is the `on:` trigger block plus
-# the job's `uses:`/`with:` forwarding, and nothing else (no leaked permissions
-# header comments, no blank gaps, no secrets/permissions blocks).
+# extract_forwarding_block — the frozen region is the `on:` trigger block
+# (including blank lines and column-0 comments before the next top-level key)
+# plus the job's `uses:`/`with:` forwarding. Secrets/permissions blocks and
+# their values are excluded, but blank/comment separators within the on: zone
+# are included to prevent hidden-trigger bypass (#1268).
 # ---------------------------------------------------------------------------
 
 @test "extract: dev-lead block has the on trigger, the channel-pinned uses, and with" {
@@ -82,13 +84,16 @@ setup() {
   [[ "$output" != *"contents: write"* ]]
 }
 
-@test "extract: pr-review-trigger keeps the with-forwarding but drops the permissions header comment" {
+@test "extract: pr-review-trigger keeps the with-forwarding and the on-block separator comment" {
   run extract_forwarding_block "${REPO_ROOT}/.github/workflows/pr-review-trigger.yml"
   [ "$status" -eq 0 ]
   [[ "$output" == *"uses: petry-projects/.github-private/.github/workflows/pr-review.yml@pr-review/next"* ]]
   [[ "$output" == *"force_review: \${{ inputs.force_review || '' }}"* ]]
-  # The comment that documents the top-level permissions: block must not leak in.
-  [[ "$output" != *"Granted to the called reusable"* ]]
+  # Column-0 comments before the top-level permissions: key are now included in
+  # the frozen block (security fix: prevents hidden-trigger bypass via blank/comment).
+  [[ "$output" == *"Granted to the called reusable"* ]]
+  # The permissions values themselves are NOT part of the frozen forwarding region.
+  [[ "$output" != *"contents: read"* ]]
   [[ "$output" != *"secrets: inherit"* ]]
 }
 
@@ -107,7 +112,7 @@ setup() {
 # ---------------------------------------------------------------------------
 
 @test "annotate: a DRIFTED row emits a ::error:: naming the stub and both SHAs, and fails" {
-  tsv="$(mktemp)"
+  tsv="$(mktemp "${BATS_TEST_TMPDIR}/freeze_tsv.XXXXXX")"
   printf '%s\t%s\t%s\t%s\n' ".github/workflows/dev-lead.yml" "ALIGNED" "$EXPECTED" "$EXPECTED" >> "$tsv"
   printf '%s\t%s\t%s\t%s\n' ".github/workflows/pr-review-trigger.yml" "DRIFTED" "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" "$EXPECTED" >> "$tsv"
   run caller_freeze_annotate "$tsv"
@@ -121,7 +126,7 @@ setup() {
 }
 
 @test "annotate: an all-ALIGNED set passes (exit 0, no error annotation)" {
-  tsv="$(mktemp)"
+  tsv="$(mktemp "${BATS_TEST_TMPDIR}/freeze_tsv.XXXXXX")"
   printf '%s\t%s\t%s\t%s\n' ".github/workflows/dev-lead.yml" "ALIGNED" "$EXPECTED" "$EXPECTED" >> "$tsv"
   printf '%s\t%s\t%s\t%s\n' ".github/workflows/pr-review-trigger.yml" "ALIGNED" "$EXPECTED" "$EXPECTED" >> "$tsv"
   run caller_freeze_annotate "$tsv"
@@ -135,12 +140,12 @@ setup() {
   [ "$status" -eq 0 ]
 }
 
-@test "annotate: MISSING alone does not fail the job (only DRIFTED fails)" {
-  tsv="$(mktemp)"
+@test "annotate: a MISSING row fails the job (ring-0 stubs must have an extractable block)" {
+  tsv="$(mktemp "${BATS_TEST_TMPDIR}/freeze_tsv.XXXXXX")"
   printf '%s\t%s\t%s\t%s\n' ".github/workflows/dev-lead.yml" "MISSING" "" "$EXPECTED" >> "$tsv"
   run caller_freeze_annotate "$tsv"
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"::warning"* ]]
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"::error"* ]]
   rm -f "$tsv"
 }
 
@@ -174,7 +179,7 @@ setup() {
 # ---------------------------------------------------------------------------
 
 @test "acceptance: editing a frozen block fails, regenerating the baseline passes" {
-  work="$(mktemp -d)"
+  work="$(mktemp -d "${BATS_TEST_TMPDIR}/work.XXXXXX")"
   mkdir -p "$work/.github/workflows" "$work/tests/fixtures/caller-stub-freeze"
   cp "${REPO_ROOT}/.github/workflows/dev-lead.yml" "$work/.github/workflows/dev-lead.yml"
 
@@ -186,7 +191,9 @@ setup() {
   [ "$(classify_stub_drift "$base" "$cur")" = "ALIGNED" ]
 
   # Edit the frozen forwarding block (repoint the channel) → DRIFTED.
-  sed -i 's#@dev-lead/v1-next#@dev-lead/v1-stable#' "$work/.github/workflows/dev-lead.yml"
+  sed 's#@dev-lead/v1-next#@dev-lead/v1-stable#' "$work/.github/workflows/dev-lead.yml" \
+    > "$work/.github/workflows/dev-lead.yml.tmp"
+  mv "$work/.github/workflows/dev-lead.yml.tmp" "$work/.github/workflows/dev-lead.yml"
   cur2="$(caller_freeze_current_sha "$work/.github/workflows/dev-lead.yml")"
   [ "$(classify_stub_drift "$base" "$cur2")" = "DRIFTED" ]
 
@@ -195,6 +202,4 @@ setup() {
     > "$work/tests/fixtures/caller-stub-freeze/dev-lead.block"
   base2="$(caller_freeze_baseline_sha "$work/tests/fixtures/caller-stub-freeze/dev-lead.block")"
   [ "$(classify_stub_drift "$base2" "$cur2")" = "ALIGNED" ]
-
-  rm -rf "$work"
 }

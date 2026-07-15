@@ -172,6 +172,8 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          persist-credentials: false
 
       - name: Check ring-0 caller stubs match their frozen forwarding baselines
         run: bash scripts/caller_stub_freeze.sh

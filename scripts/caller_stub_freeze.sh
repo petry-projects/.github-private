@@ -63,9 +63,11 @@ caller_freeze_covered() {
 # and their header comments are excluded). Pure: reads the file, writes stdout.
 #
 # Boundaries (deterministic, byte-identity friendly):
-#   - `on:` block: the `on:` line plus every following INDENTED line; it ends at
-#     the first line that does not start with whitespace (a blank line, a
-#     column-0 comment, or the next top-level key).
+#   - `on:` block: the `on:` line plus every following indented line, blank
+#     line, or column-0 comment; it ends at the next non-blank, non-comment,
+#     column-0 line (i.e. the next top-level YAML key). Blank lines and
+#     column-0 comments are included so an attacker cannot hide new triggers
+#     after a blank line or comment within the `on:` mapping.
 #   - forwarding block: the first job-indented `uses:` line plus every following
 #     line, until a job-indented `secrets:` or `permissions:` key ends it.
 extract_forwarding_block() {
@@ -74,7 +76,7 @@ extract_forwarding_block() {
   awk '
     /^on:/ { insec="on"; print; next }
     insec=="on" {
-      if (/^[[:space:]]/) { print; next }
+      if (/^[[:space:]]/ || /^$/ || /^#/) { print; next }
       insec=""
     }
     insec=="" && /^[[:space:]]+uses:[[:space:]]/ { insec="fwd"; print; next }
@@ -92,7 +94,7 @@ caller_freeze_current_sha() {
   local file="${1:-}" block
   block="$(extract_forwarding_block "$file")"
   [ -n "$block" ] || return 0
-  printf '%s\n' "$block" | git hash-object --stdin
+  extract_forwarding_block "$file" | git hash-object --stdin
 }
 
 # caller_freeze_baseline_sha <baseline_file> — git blob SHA of the committed
@@ -104,10 +106,11 @@ caller_freeze_baseline_sha() {
 }
 
 # caller_freeze_annotate <tsv_file> — emit a GitHub `::error::` annotation for
-# every DRIFTED stub, naming the file and BOTH SHAs. Returns 1 if any row is
-# DRIFTED (so the CI job fails), 0 otherwise. MISSING rows surface as a
-# non-fatal `::warning::` — only DRIFTED fails the job. Pure: reads the TSV,
-# writes stdout. An absent/empty file is a clean pass.
+# every DRIFTED or MISSING stub, naming the file and BOTH SHAs. Returns 1 if
+# any row is DRIFTED or MISSING (so the CI job fails), 0 otherwise. For ring-0
+# stubs, MISSING (stub absent or extraction empty) is a hard failure — it means
+# the guard is broken and cannot protect the stub. Pure: reads the TSV, writes
+# stdout. An absent/empty file is a clean pass.
 caller_freeze_annotate() {
   local f="${1:-}" file status current baseline drifted=0
   [ -n "$f" ] && [ -f "$f" ] || return 0
@@ -116,11 +119,12 @@ caller_freeze_annotate() {
     case "$status" in
       DRIFTED)
         drifted=1
-        printf '::error file=%s::Caller stub %s forwarding block has DRIFTED from its frozen baseline (current block %s != baseline %s). A channel-pinned self-host stub change is invisible to PR CI and only breaks post-merge (#1034). If this change is intentional, regenerate the baseline: bash scripts/caller_stub_freeze.sh --update, and commit tests/fixtures/caller-stub-freeze/.\n' \
+        printf '::error file=%s::Caller stub %s forwarding block has DRIFTED from its frozen baseline (current block %s != baseline %s). A channel-pinned self-host stub change is invisible to PR CI and only breaks post-merge (#1034). If this change is intentional, regenerate the baseline: bash scripts/caller_stub_freeze.sh --update, and commit tests/fixtures/caller-stub-freeze/*.block\n' \
           "$file" "$file" "${current:0:12}" "${baseline:0:12}"
         ;;
       MISSING)
-        printf '::warning file=%s::Caller stub %s has no extractable forwarding block or its baseline is absent (current %s, baseline %s) — regenerate via bash scripts/caller_stub_freeze.sh --update.\n' \
+        drifted=1
+        printf '::error file=%s::Caller stub %s has no extractable forwarding block or its baseline is absent (current %s, baseline %s). For ring-0 stubs, MISSING means the guard cannot protect this stub — regenerate via bash scripts/caller_stub_freeze.sh --update, and commit tests/fixtures/caller-stub-freeze/*.block\n' \
           "$file" "$file" "${current:0:12}" "${baseline:0:12}"
         ;;
     esac
