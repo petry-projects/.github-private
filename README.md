@@ -110,7 +110,6 @@ Scheduled workflows post reports and dashboards as issues or run summaries for m
 |----------|---------|
 | [`actions-fleet-monitor.yml`](.github/workflows/actions-fleet-monitor.yml) | Actions fleet monitor — org-wide workflow token usage and run anomalies |
 | [`auto-rebase-health.yml`](.github/workflows/auto-rebase-health.yml) | Daily auto-rebase health report (issue) — rebase success/failure trends |
-| [`content-twin-audit.yml`](.github/workflows/content-twin-audit.yml) | ContentTwin content audit — audits the ContentTwin repo's published content |
 | [`daily-pr-review-health.yml`](.github/workflows/daily-pr-review-health.yml) | Daily PR-review health check — flags PR-review agent failures as an issue |
 | [`docs-health-check.yml`](.github/workflows/docs-health-check.yml) | Docs health check — flags stale/broken docs as an issue |
 | [`premature-closure-audit.yml`](.github/workflows/premature-closure-audit.yml) | Premature-closure audit — flags issues closed as completed with no merged closing PR |
