@@ -145,6 +145,11 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        # NOTE: persist-credentials is intentionally left at the default (true) —
+        # vci_resolve_reusable needs `git fetch origin` to authenticate against this
+        # private repo when resolving same-repo channel tags. Setting
+        # persist-credentials: false would silently push every such caller into the
+        # "unresolved ref" soft-pass/warning path, defeating the guard entirely.
 
       - name: Validate caller inputs ⊆ reusable inputs at the pinned ref
         run: bash scripts/validate-caller-inputs.sh

@@ -61,7 +61,8 @@ vci_parse_uses() {
     \'*\') val="${val#\'}"; val="${val%\'}" ;;
   esac
   case "$val" in
-    */.github/workflows/*.yml@*) : ;;
+    */.github/workflows/*.yml@*|\
+    */.github/workflows/*.yaml@*) : ;;
     *) return 0 ;;
   esac
   local left ref repo_slug wf_path
@@ -285,7 +286,7 @@ vci_scan_repo() {
   local i n
 
   shopt -s nullglob
-  for wf in "$root"/.github/workflows/*.yml; do
+  for wf in "$root"/.github/workflows/*.yml "$root"/.github/workflows/*.yaml; do
     mapfile -t lines < "$wf"
     n=${#lines[@]}
     for (( i = 0; i < n; i++ )); do
