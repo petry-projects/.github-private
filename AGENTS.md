@@ -24,7 +24,11 @@ This is the `.github-private` org infrastructure repo for `petry-projects`. It c
 - `.github/workflows/dev-lead.yml` is a thin caller stub that delegates to
   `dev-lead-reusable.yml` (the canonical org standard). To change behavior for
   all org repos, edit `dev-lead-reusable.yml`. Repo-specific trigger adjustments
-  may be made to `dev-lead.yml` per the stub's header comment.
+  may be made to `dev-lead.yml` per the stub's header comment. When adding a `with:`
+  forward to this (or any) channel-pinned caller stub, follow the input-change
+  sequencing in "Release channel tags & the mutable-ref exception" →
+  ["Caller-stub input forwarding across channel pins"](#caller-stub-input-forwarding-across-channel-pins):
+  never forward an input the pinned channel does not yet declare.
 - All other workflow changes must use templates from
   [`standards/workflows/`](https://github.com/petry-projects/.github/tree/main/standards/workflows) verbatim.
 - **Note:** `.github/workflows/auto-rebase.yml` pins the reusable workflow at the `@auto-rebase/stable`
@@ -32,7 +36,9 @@ This is the `.github-private` org infrastructure repo for `petry-projects`. It c
   repoint it to a frozen `@vX` tag, `@main`, or a SHA — `tests/dev-lead/integration/test_auto_rebase_stub.py`
   (#139) enforces this. The repo-specific `auto-rebase-retry.yml` and `auto-rebase-health.yml` workflows
   depend on the sentinel-trigger behavior provided by the current channel; downgrading to a pre-sentinel
-  frozen tag is a behavioral regression.
+  frozen tag is a behavioral regression. As a channel-pinned caller stub it is also subject to
+  ["Caller-stub input forwarding across channel pins"](#caller-stub-input-forwarding-across-channel-pins):
+  do not add a `with:` forward for an input the pinned channel does not yet declare.
 - **Exception:** The `gh-aw-compile` job in `lint.yml` is a documented repo-specific addition that gates
   agentic workflow compilation. It is not covered by the org template and must not be removed by template
   syncs. If the org template gains a `gh-aw-compile` equivalent, remove this exception and defer to the
@@ -128,6 +134,17 @@ This is the `.github-private` org infrastructure repo for `petry-projects`. It c
   `initiative:auto` with ≥1 ready open sub-issue). It must not be removed by template syncs. If the org
   template gains a cross-repo release-path canary equivalent, remove this exception and defer to the
   template instead.
+- **Exception:** `pr-review-canary.yml` (#1256, epic #1052 Part D) is a documented repo-specific workflow
+  with no corresponding org template in `standards/workflows/`. It is a post-merge (`push` to `main` on the
+  pr-review stub/reusable paths) + daily off-peak cron + `workflow_dispatch` canary that fires a **dry-run**
+  dispatch of `pr-review-trigger.yml` (the ring-0 self-host caller stub) and **fails loud if the run ends in
+  `startup_failure`** — the exact conclusion of the #1034 channel-skew defect (a `with:` forward the pinned
+  `pr-review/next` channel does not declare), which nothing in PR CI exercises. It complements the
+  `validate-caller-inputs` (#1253) and `caller-stub-freeze` (#1255) static guards with a live post-merge
+  signal. Logic lives in `scripts/pr_review_canary.sh` (tests: `tests/pr_review_canary.bats`); the dispatch
+  requires `GH_PAT_WORKFLOWS` (a `workflow_dispatch` fired with `GITHUB_TOKEN` never starts a run). It must
+  not be removed by template syncs. If the org template gains a self-host caller-stub canary equivalent,
+  remove this exception and defer to the template instead.
 
 - **Exception:** `dismiss-stale-bot-reviews.yml` (#617, blocker 3) is a documented repo-specific
   workflow with no corresponding org template in `standards/workflows/`. It fires on
@@ -158,6 +175,48 @@ PR-triggered check on the existing Lint workflow — **no new cron/scheduled wor
   template's richer `ci.yml` default, so it is **excluded** from the drift check via the documented allowlist
   in `scripts/template_stub_drift.sh` (`TEMPLATE_DRIFT_ALLOWLIST`). Add a path to that allowlist **only** with
   a recorded rationale, the same way the exceptions above are documented.
+
+### Reusable caller-input contract (`validate-caller-inputs`)
+
+The `validate-caller-inputs` job in `lint.yml` (#1253, epic #1052; regression guard for #1034)
+enforces that every reusable-workflow caller stub — `uses: <owner>/<repo>/.github/workflows/<wf>.yml@<ref>`
+with a `with:` block — forwards only inputs that are **declared as `workflow_call` inputs at the
+pinned `<ref>`**, and forwards every `required: true` input. `pull_request` CI runs the *base-branch*
+stub, and GitHub validates a reusable's inputs only at startup against the **pinned** ref — so an
+input-forwarding change to a channel-pinned caller stub is exercised by nothing in PR CI and only
+breaks post-merge (the #1034 defect). This guard closes that gap.
+
+- Logic lives in `scripts/validate-caller-inputs.sh` (pure parse/validate helpers + git resolution;
+  tests: `tests/dev-lead/unit/test_validate_caller_inputs.bats`, fixtures under
+  `tests/dev-lead/fixtures/caller-inputs/`, including a #1034 regression fixture).
+- Same-repo channel tags (`dev-lead/*`, `pr-review/*`, `ci-failure-analyst/*`, …) are resolved by
+  `git fetch`-ing the tag and reading the reusable at that ref. A ref that genuinely can't be resolved
+  **soft-passes with a logged `::warning::` — never silently.** Cross-repo reusables (hosted in another
+  repo, e.g. `petry-projects/.github`) are treated as unresolved here unless `VCI_RESOLVE_CROSS_REPO=1`
+  opts in; the warning keeps the skip visible. Extending resolution to cross-repo channel tags is the
+  scope of the later #1052 parts.
+- PR-triggered on the existing Lint workflow — **no new cron/scheduled workload.** It must not be
+  removed by template syncs. If the org template gains an equivalent, remove this exception and defer.
+
+### Ring-0 caller-stub freeze (`caller-stub-freeze`)
+
+The `caller-stub-freeze` job in `lint.yml` (#1255, epic #1052 Part B) is the byte-identity **backstop** to
+`validate-caller-inputs` for the specific **ring-0 / self-host** caller stubs — the ones whose reusable lives
+in **this** repo and is pinned to a canary channel tag (`docs/initiatives/agentic-release-strategy.md` §5):
+`dev-lead.yml` (`@dev-lead/v1-next`), `pr-review-trigger.yml` (`@pr-review/next`), and
+`ci-failure-analyst.lock.yml` (`@ci-failure-analyst/v1-stable`). A trigger/`with:` forwarding change to a
+channel-pinned self-host stub is exercised by nothing in PR CI and only breaks post-merge (the #1034 defect
+class), so each stub's `on:` trigger + `uses:`/`with:` forwarding block is frozen byte-for-byte against a
+committed baseline (`tests/fixtures/caller-stub-freeze/*.block`).
+
+- Any edit to a frozen block fails CI **unless** the baseline is intentionally regenerated in the same
+  reviewed diff — an explicit, visible channel change rather than a silent post-merge break. Regenerate via
+  `bash scripts/caller_stub_freeze.sh --update` and commit the changed `*.block` file(s).
+- Logic lives in `scripts/caller_stub_freeze.sh`, reusing the ALIGNED/DRIFTED byte-identity model from
+  `scripts/fleet_stub_drift.sh` (tests: `tests/caller_stub_freeze.bats`). To freeze another self-host caller
+  stub, add a row to `CALLER_FREEZE_STUBS` and commit its baseline.
+- PR-triggered on the existing Lint workflow — **no new cron/scheduled workload.** It must not be removed by
+  template syncs. If the org template gains an equivalent, remove this exception and defer.
 
 ### Scheduled workflows
 
@@ -297,3 +356,33 @@ whose reusables live in this repo, `feature-ideation`'s reusable lives in **`pet
 repo — and the protective ruleset bounding `feature-ideation/**` channel tags is therefore created
 **there**, not on this repo (an untracked prerequisite in the public repo). See
 [`docs/release/versioning.md`](./docs/release/versioning.md) "Cross-repo reusables".
+
+#### Caller-stub input forwarding across channel pins
+
+A thin caller stub pins its first-party reusable at a **moving channel tag** (e.g.
+`…/dev-lead-reusable.yml@dev-lead/v1-stable`). That channel resolves to a *specific commit*, and the
+stub may only forward (`with:`) inputs that the reusable **at that commit** declares under
+`workflow_call.inputs`. Forwarding an input the pinned channel's commit does not yet declare is a
+**channel-skew defect** (#1052): the reusable call fails at runtime with an "unexpected input" error
+even though every ref looks valid, because the stub is ahead of the channel it pins.
+
+- **Rule.** Never add or modify a `with:` forward on a channel-pinned caller stub to pass an input the
+  pinned channel does not yet declare. This is the mirror image of the mutable-ref exception above: the
+  channel tag is *deliberately* allowed to lag the reusable's `main`, so the stub must forward against
+  what the channel currently resolves to, not against what `main` will eventually ship.
+- **Sequencing for a new `workflow_call` input (in order):**
+  1. **Land it in the reusable** — add the input to `workflow_call.inputs` on `main` and merge.
+  2. **Promote the pinned channel** to a commit that declares it via
+     `cut-release.sh <agent> <version> --channel <name>` (cuts the immutable `vX.Y.Z` and moves the
+     `<name>` channel tag to it).
+  3. **Only then teach the stub to forward it** — add the `with:` line to the caller stub, now that the
+     pinned channel resolves to a commit that declares the input.
+
+  Doing these out of order (forwarding first) is exactly the skew this rule prevents.
+- **Enforcement.** The dev-lead prompt guardrail (part C, #1254) stops the agent from introducing the
+  skew at the source; the **Part A CI guard (#1253)** is the belt-and-braces check that fails a PR whose
+  caller-stub `with:` forwards an input the pinned channel does not declare.
+- **Promotion.** The canonical org-wide version of this rule is tracked for
+  [`petry-projects/.github`](https://github.com/petry-projects/.github/blob/main/standards/ci-standards.md)
+  (`standards/ci-standards.md`, "Reusable workflow versioning — the `stable` channel") in
+  petry-projects/.github#736; consumer repos defer to it once it lands.

@@ -1,0 +1,29 @@
+name: Fixture Reusable
+
+# Fixture reusable used by the caller-inputs guard tests. Declares two
+# workflow_call inputs — an optional `agent_ref` and a REQUIRED `mode` — plus a
+# required secret (secrets are intentionally NOT inputs, so the guard's
+# required-input check must ignore them).
+on:
+  workflow_call:
+    inputs:
+      agent_ref:
+        description: "Optional pinned ref"
+        type: string
+        required: false
+        default: ""
+      mode:
+        description: "Required run mode"
+        type: string
+        required: true
+    secrets:
+      TOKEN:
+        required: true
+
+permissions: {}
+
+jobs:
+  noop:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "fixture"

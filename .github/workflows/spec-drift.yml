@@ -1,0 +1,204 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# SOURCE OF TRUTH: petry-projects/.github-private/.github/workflows/spec-drift.yml
+#
+# AGENTS — READ BEFORE EDITING:
+#   • Post-merge SPEC-DRIFT ADVISORY (#1146, epic #1142). When a PR that closed an
+#     `initiative` story merges, this runs the VALIDATED detector
+#     scripts/spec-drift.sh ONCE and, only on a DRIFT verdict, posts exactly ONE
+#     advisory comment on the closed story issue. It NEVER edits code, NEVER
+#     reopens the issue, and NEVER fails the merge — a drift comment is a nudge
+#     for a human, not an enforcement gate.
+#   • OPT-IN, default-OFF. The job is gated on the repo variable
+#     SPEC_DRIFT_ENABLED == 'true'. When unset/false the whole job is SKIPPED —
+#     a byte-identical, zero-runner-minute no-op — mirroring how MCP review stays
+#     inert until REVIEW_MCP_CONFIG is set. A maintainer promotes it deliberately.
+#   • Drift LOGIC lives entirely in scripts/spec-drift.sh (unit-tested in
+#     tests/test_spec_drift.bats). This workflow only ORCHESTRATES: resolve the
+#     closed initiative story, invoke the detector once, surface the verdict. Do
+#     NOT re-implement drift detection here.
+#   • Cost cap: exactly ONE cheap-tier detector run per merged initiative PR — no
+#     matrix fan-out, no retries, no cron. This workflow adds no scheduled load.
+#   • Repo-specific workflow, no org template in standards/workflows/. Structure
+#     is pinned by tests/dev-lead/integration/test_spec_drift_workflow.py. Do not
+#     let template syncs remove it.
+# ─────────────────────────────────────────────────────────────────────────────
+name: Spec-Drift Advisory (post-merge)
+
+on:
+  pull_request:
+    types: [closed]
+
+permissions: {}
+
+concurrency:
+  # One advisory pass per merged PR; never cancel an in-flight run (a partial run
+  # that skips the comment would leave real drift unsurfaced).
+  group: spec-drift-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  spec-drift:
+    # OPT-IN + merged-only gate. Skipping the whole job (rather than an inner
+    # early-exit) is what makes "disabled" a zero-cost no-op: when
+    # SPEC_DRIFT_ENABLED is unset/false the runner never spins up. (AC#1, AC#2)
+    if: >-
+      github.event.pull_request.merged == true &&
+      vars.SPEC_DRIFT_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read        # checkout + detector reads the story body / PR diff
+      issues: write         # post the single advisory comment on the story issue
+      pull-requests: read   # resolve the PR's closingIssuesReferences
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      PR: ${{ github.event.pull_request.number }}
+      CLAUDE_CODE_VERSION: ${{ vars.CLAUDE_CODE_VERSION || 'latest' }}
+    steps:
+      - name: Checkout agent repo
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Resolve closing initiative story
+        id: resolve
+        run: |
+          set -euo pipefail
+          # A merged PR closes 0..N issues via `Closes #N`. The story whose
+          # acceptance criteria are the spec is the closing issue that is both
+          # labelled `initiative` AND has the BMAD story shape.
+          #
+          # apply-plan.sh labels BOTH epics and stories `initiative`, so the label
+          # alone is not sufficient: if a PR closes an epic and its story and the
+          # epic happens to sort first in closingIssuesReferences, picking the first
+          # `initiative` issue would run the detector against the epic (which has no
+          # "## Story"/"## Acceptance Criteria" spec), yield INDETERMINATE, and
+          # silently miss a real DRIFT on the story (AC#1 false negative). So also
+          # require the story body shape — a BMAD story has "## Story" and
+          # "## Acceptance Criteria"; an epic does not carry "## Story".
+          # If none match, the workflow no-ops before any detector/LLM cost. (AC#1)
+          mapfile -t nums < <(gh pr view "$PR" --repo "$REPO" \
+            --json closingIssuesReferences \
+            -q '.closingIssuesReferences[].number' 2>/dev/null || true)
+
+          story=""
+          for n in "${nums[@]}"; do
+            [ -n "$n" ] || continue
+            meta="$(gh issue view "$n" --repo "$REPO" --json labels,body 2>/dev/null || true)"
+            [ -n "$meta" ] || continue
+            printf '%s' "$meta" | jq -r '.labels[].name' 2>/dev/null | grep -qx 'initiative' || continue
+            body="$(printf '%s' "$meta" | jq -r '.body // ""')"
+            if printf '%s\n' "$body" | grep -qE '^##[[:space:]]+Story[[:space:]]*$' \
+               && printf '%s\n' "$body" | grep -qE '^##[[:space:]]+Acceptance Criteria[[:space:]]*$'; then
+              story="$n"
+              break
+            fi
+          done
+
+          if [ -z "$story" ]; then
+            echo "::notice::[spec-drift] PR #${PR} closed no initiative story — no-op."
+          else
+            echo "::notice::[spec-drift] PR #${PR} closed initiative story #${story} — running detector."
+          fi
+          echo "story=${story}" >> "$GITHUB_OUTPUT"
+
+      - name: Install review engine CLI
+        if: steps.resolve.outputs.story != ''
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.npm-global"
+          npm config set prefix "$HOME/.npm-global"
+          echo "$HOME/.npm-global/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.npm-global/bin:$PATH"
+          if ! command -v claude >/dev/null 2>&1; then
+            npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
+          fi
+
+      - name: Run spec-drift detector (once)
+        id: detect
+        if: steps.resolve.outputs.story != ''
+        env:
+          # Cheap-tier only; the detector self-limits to a single run_triage call.
+          REVIEW_ENGINE: ${{ vars.REVIEW_ENGINE || 'claude' }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          SPEC_DRIFT_REPO: ${{ github.repository }}
+          SPEC_DRIFT_STORY: ${{ steps.resolve.outputs.story }}
+          SPEC_DRIFT_PR: ${{ github.event.pull_request.number }}
+          SPEC_DRIFT_OUT: ${{ runner.temp }}/spec-drift-verdict.json
+        # The detector always exits 0 and never fakes a verdict; a drift check
+        # must never break CI (AC#4). `|| true` is belt-and-suspenders so an
+        # unexpected non-zero can never fail the merge's status.
+        run: bash scripts/spec-drift.sh || true
+
+      - name: Post advisory comment on DRIFT (idempotent, exactly one)
+        if: steps.resolve.outputs.story != ''
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          STORY: ${{ steps.resolve.outputs.story }}
+          VERDICT_FILE: ${{ runner.temp }}/spec-drift-verdict.json
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const fs = require('fs');
+
+            const file = process.env.VERDICT_FILE;
+            if (!file || !fs.existsSync(file)) {
+              core.notice('[spec-drift] no verdict envelope produced — nothing to surface.');
+              return;
+            }
+
+            let envelope;
+            try {
+              envelope = JSON.parse(fs.readFileSync(file, 'utf8'));
+            } catch (e) {
+              core.notice(`[spec-drift] verdict envelope unparseable (${e.message}) — no comment.`);
+              return;
+            }
+
+            const verdict = envelope.verdict;
+            const story = Number(process.env.STORY);
+            const pr = Number(process.env.PR);
+
+            // ALIGNED / INDETERMINATE → a single quiet notice, never a comment. A
+            // drift check that flags nothing must stay silent on the issue (AC#4).
+            if (verdict !== 'DRIFT') {
+              core.notice(`[spec-drift] story #${story} verdict: ${verdict} — no advisory comment.`);
+              return;
+            }
+
+            // Idempotent: keyed to this PR so a re-run never double-posts (AC#3).
+            const marker = `<!-- spec-drift-advisory:pr-${pr} -->`;
+            const existing = await github.paginate(github.rest.issues.listComments, {
+              owner: context.repo.owner, repo: context.repo.repo,
+              issue_number: story, per_page: 100,
+            });
+            if (existing.some(c => (c.body || '').includes(marker))) {
+              core.notice(`[spec-drift] advisory already posted on #${story} for PR #${pr} — skipping.`);
+              return;
+            }
+
+            const runUrl = `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`;
+            const reason = envelope.reason || 'the shipped diff diverges from the story acceptance criteria';
+            const body = [
+              marker,
+              '## ⚠️ Spec-drift advisory (automated, non-blocking)',
+              '',
+              `The spec-drift detector compared the merged **#${pr}** against this story's ` +
+                '**Acceptance Criteria** and flagged a possible **DRIFT**:',
+              '',
+              `> ${reason}`,
+              '',
+              '**This is advisory only.** Nothing was changed, reopened, or blocked — the ' +
+                'merge stands. A maintainer should skim the shipped diff against the acceptance ' +
+                'criteria and, if the drift is real, open a follow-up. If this is a false ' +
+                'positive, no action is needed.',
+              '',
+              `_[spec-drift.yml](${runUrl}) · deterministic detector \`scripts/spec-drift.sh\`_`,
+            ].join('\n');
+
+            const created = await github.rest.issues.createComment({
+              owner: context.repo.owner, repo: context.repo.repo,
+              issue_number: story, body,
+            });
+            core.notice(`[spec-drift] posted advisory on #${story}: ${created.data.html_url}`);
