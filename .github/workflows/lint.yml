@@ -116,7 +116,8 @@ jobs:
             tests/test_readme_refresh_push.bats \
             tests/test_validate_personas.bats \
             tests/test_dev_lead_concurrency_guard.bats \
-            tests/test_validate_workflow_schedules.bats
+            tests/test_validate_workflow_schedules.bats \
+            tests/caller_stub_freeze.bats
 
   validate-workflow-schedules:
     # Off-peak scheduling compliance (#724, epic #722): fail any PR that
@@ -154,6 +155,26 @@ jobs:
 
       - name: Validate caller inputs ⊆ reusable inputs at the pinned ref
         run: bash scripts/validate-caller-inputs.sh
+
+  caller-stub-freeze:
+    # Stub-freeze drift guard (#1255, epic #1052 Part B): backstops
+    # validate-caller-inputs (#1253) for the ring-0 / self-host caller stubs
+    # (dev-lead.yml, pr-review-trigger.yml, ci-failure-analyst.lock.yml) whose
+    # reusable lives in THIS repo and is pinned to a canary channel tag. A
+    # trigger/`with:` forwarding change to a channel-pinned self-host stub is
+    # exercised by nothing in PR CI and only breaks post-merge (#1034), so each
+    # stub's `on:` + `uses:`/`with:` block is frozen byte-for-byte against a
+    # committed baseline (tests/fixtures/caller-stub-freeze/*.block). Any edit
+    # fails here unless the baseline is intentionally regenerated in the same
+    # reviewed diff. Reuses the byte-identity model from scripts/fleet_stub_drift.sh.
+    # PR-triggered on the existing Lint workflow — no new cron/scheduled workload.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+
+      - name: Check ring-0 caller stubs match their frozen forwarding baselines
+        run: bash scripts/caller_stub_freeze.sh
 
   template-drift:
     # Drift guard (#969): fail when a file committed in petry-projects/repo-template
