@@ -326,6 +326,26 @@ breaks post-merge (the #1034 defect). This guard closes that gap.
 - PR-triggered on the existing Lint workflow — **no new cron/scheduled workload.** It must not be
   removed by template syncs. If the org template gains an equivalent, remove this exception and defer.
 
+### Ring-0 caller-stub freeze (`caller-stub-freeze`)
+
+The `caller-stub-freeze` job in `lint.yml` (#1255, epic #1052 Part B) is the byte-identity **backstop** to
+`validate-caller-inputs` for the specific **ring-0 / self-host** caller stubs — the ones whose reusable lives
+in **this** repo and is pinned to a canary channel tag (`docs/initiatives/agentic-release-strategy.md` §5):
+`dev-lead.yml` (`@dev-lead/v1-next`), `pr-review-trigger.yml` (`@pr-review/next`), and
+`ci-failure-analyst.lock.yml` (`@ci-failure-analyst/v1-stable`). A trigger/`with:` forwarding change to a
+channel-pinned self-host stub is exercised by nothing in PR CI and only breaks post-merge (the #1034 defect
+class), so each stub's `on:` trigger + `uses:`/`with:` forwarding block is frozen byte-for-byte against a
+committed baseline (`tests/fixtures/caller-stub-freeze/*.block`).
+
+- Any edit to a frozen block fails CI **unless** the baseline is intentionally regenerated in the same
+  reviewed diff — an explicit, visible channel change rather than a silent post-merge break. Regenerate via
+  `bash scripts/caller_stub_freeze.sh --update` and commit the changed `*.block` file(s).
+- Logic lives in `scripts/caller_stub_freeze.sh`, reusing the ALIGNED/DRIFTED byte-identity model from
+  `scripts/fleet_stub_drift.sh` (tests: `tests/caller_stub_freeze.bats`). To freeze another self-host caller
+  stub, add a row to `CALLER_FREEZE_STUBS` and commit its baseline.
+- PR-triggered on the existing Lint workflow — **no new cron/scheduled workload.** It must not be removed by
+  template syncs. If the org template gains an equivalent, remove this exception and defer.
+
 ### Scheduled workflows
 
 - **Never schedule at minute 0.** A scheduled workflow must not use a `0 * * * *`
