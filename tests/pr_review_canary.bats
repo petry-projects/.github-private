@@ -99,8 +99,8 @@ setup() {
 _install_gh_mock() {
   # $1 — conclusion the mocked `run list` reports for the dispatched run.
   local conclusion="${1:-success}"
-  MOCK_BIN="$(mktemp -d)"
-  GH_LOG="$(mktemp)"
+  MOCK_BIN="$(mktemp -d "$BATS_TEST_TMPDIR/mock_bin.XXXXXX")"
+  GH_LOG="$(mktemp "$BATS_TEST_TMPDIR/gh_log.XXXXXX")"
   export GH_LOG MOCK_BIN
   export PATH="$MOCK_BIN:$PATH"
   cat > "$MOCK_BIN/gh" <<EOF
@@ -132,8 +132,8 @@ teardown() {
   export GH_TOKEN="pat"
   export CANARY_POLL_TIMEOUT="5"
   export CANARY_POLL_INTERVAL="1"
-  CANARY_OUT="$(mktemp)"; export CANARY_OUT
-  GITHUB_ENV="$(mktemp)"; export GITHUB_ENV
+  CANARY_OUT="$(mktemp "$BATS_TEST_TMPDIR/canary_out.XXXXXX")"; export CANARY_OUT
+  GITHUB_ENV="$(mktemp "$BATS_TEST_TMPDIR/github_env.XXXXXX")"; export GITHUB_ENV
 
   run bash "$SCRIPT"
   [ "$status" -eq 0 ]
@@ -143,7 +143,8 @@ teardown() {
   grep -qF -- "-f dry_run=true" "$GH_LOG"
 
   grep -qF "CANARY_STATUS=OK" "$GITHUB_ENV"
-  ! grep -qF "CANARY_FAILED=true" "$GITHUB_ENV"
+  run grep -qF "CANARY_FAILED=true" "$GITHUB_ENV"
+  [ "$status" -eq 1 ]
 
   rm -f "$CANARY_OUT" "$GITHUB_ENV"
 }
@@ -154,8 +155,8 @@ teardown() {
   export GH_TOKEN="pat"
   export CANARY_POLL_TIMEOUT="5"
   export CANARY_POLL_INTERVAL="1"
-  CANARY_OUT="$(mktemp)"; export CANARY_OUT
-  GITHUB_ENV="$(mktemp)"; export GITHUB_ENV
+  CANARY_OUT="$(mktemp "$BATS_TEST_TMPDIR/canary_out.XXXXXX")"; export CANARY_OUT
+  GITHUB_ENV="$(mktemp "$BATS_TEST_TMPDIR/github_env.XXXXXX")"; export GITHUB_ENV
 
   run bash "$SCRIPT"
   [ "$status" -ne 0 ]
@@ -171,8 +172,8 @@ teardown() {
   export GH_TOKEN="pat"
   export CANARY_POLL_TIMEOUT="5"
   export CANARY_POLL_INTERVAL="1"
-  CANARY_OUT="$(mktemp)"; export CANARY_OUT
-  GITHUB_ENV="$(mktemp)"; export GITHUB_ENV
+  CANARY_OUT="$(mktemp "$BATS_TEST_TMPDIR/canary_out.XXXXXX")"; export CANARY_OUT
+  GITHUB_ENV="$(mktemp "$BATS_TEST_TMPDIR/github_env.XXXXXX")"; export GITHUB_ENV
 
   run bash "$SCRIPT"
   [ "$status" -ne 0 ]
