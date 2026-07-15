@@ -122,6 +122,13 @@ jobs:
   secret-scan:
     name: Secret scan (gitleaks)
     runs-on: ubuntu-latest
+    # Dependabot PRs run with the Dependabot secret store, not the Actions
+    # store, so secrets.GITLEAKS_LICENSE is empty and the org-licensed
+    # gitleaks-action hard-fails ("missing gitleaks license"). Dependabot only
+    # bumps pinned action SHAs / manifest versions (no secret-introduction
+    # surface), and the post-merge push-to-main run re-scans full history with
+    # the license present — so skipping the PR scan loses no real coverage.
+    if: github.actor != 'dependabot[bot]'
     permissions:
       contents: read
       security-events: write
