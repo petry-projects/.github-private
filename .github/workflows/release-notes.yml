@@ -1,4 +1,5 @@
 name: Release Notes Generator
+# readme-agent: Release-notes agent — drafts Keep-a-Changelog entries from merged PRs and opens a CHANGELOG PR.
 
 on:
   push:

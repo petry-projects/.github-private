@@ -104,14 +104,32 @@ gather_facts() {
       echo "(unavailable)"
     fi
     echo ""
-    echo "### Custom agents in \`.github-private/agents/\`"
+    echo "### Custom agents in \`.github-private/agents/\` (link each to agents/<name>.md)"
     echo ""
     local f name desc
     for f in "$REPO_ROOT"/agents/*.md; do
       [ -e "$f" ] || continue
       name="$(basename "$f" .md)"
-      desc="$(awk '/^description:/{sub(/^description:[[:space:]]*/,"");gsub(/^["'"'"']|["'"'"']$/,"");print;exit}' "$f")"
-      printf -- '- `%s`: %s\n' "$name" "$desc"
+      # Handle inline (`description: text`) AND folded/literal block scalars (`description: >` / `|`),
+      # where the text sits on the following indented lines. Collapse to one trimmed line.
+      desc="$(awk '
+        /^description:[[:space:]]*[>|]/ { blk=1; next }
+        /^description:[[:space:]]*/ { l=$0; sub(/^description:[[:space:]]*/,"",l); gsub(/^["'"'"']|["'"'"']$/,"",l); print l; exit }
+        blk && /^[[:space:]]/ { s=$0; sub(/^[[:space:]]+/,"",s); buf=(buf==""?s:buf" "s); next }
+        blk && /^[^[:space:]]/ { print buf; buf=""; exit }
+        END { if (blk && buf!="") print buf }
+      ' "$f" | cut -c1-200)"
+      printf -- '- `%s` (agents/%s.md): %s\n' "$name" "$name" "$desc"
+    done
+    echo ""
+    echo "### Agentic workflows in \`.github-private/.github/workflows/\` (link each to .github/workflows/<file>)"
+    echo ""
+    # Self-describing: an agentic workflow opts in with a `# readme-agent: <desc>` marker line.
+    local awf adesc
+    for awf in "$REPO_ROOT"/.github/workflows/*.yml; do
+      [ -e "$awf" ] || continue
+      adesc="$(grep -m1 -E '^# readme-agent:' "$awf" 2>/dev/null | sed -E 's/^# readme-agent:[[:space:]]*//' || true)"
+      [ -n "$adesc" ] && printf -- '- `%s` (.github/workflows/%s): %s\n' "$(basename "$awf")" "$(basename "$awf")" "$adesc"
     done
     echo ""
     echo "### Installed frameworks in \`.github-private/frameworks/\` (from each VENDOR.md)"
@@ -133,7 +151,7 @@ gather_facts() {
     for wf in "$REPO_ROOT"/.github/workflows/*.yml; do
       [ -e "$wf" ] || continue
       rdesc="$(grep -m1 -E '^# readme-report:' "$wf" 2>/dev/null | sed -E 's/^# readme-report:[[:space:]]*//' || true)"
-      [ -n "$rdesc" ] && printf -- '- `%s` (.github-private): %s\n' "$(basename "$wf")" "$rdesc"
+      [ -n "$rdesc" ] && printf -- '- `%s` (.github-private; link: .github/workflows/%s): %s\n' "$(basename "$wf")" "$(basename "$wf")" "$rdesc"
     done
     # Sorted --jq list + while-read for deterministic order (stable README diffs) and no word-splitting.
     while IFS= read -r wf; do
@@ -142,7 +160,7 @@ gather_facts() {
                 -H "Accept: application/vnd.github.v3.raw" 2>/dev/null \
                 | grep -m1 -E '^# readme-report:' \
                 | sed -E 's/^# readme-report:[[:space:]]*//' || true)"
-      [ -n "$rdesc" ] && printf -- '- `%s` (.github): %s\n' "$wf" "$rdesc"
+      [ -n "$rdesc" ] && printf -- '- `%s` (.github; link: https://github.com/%s/.github/blob/main/.github/workflows/%s): %s\n' "$wf" "$ORG" "$wf" "$rdesc"
     done < <(gh api "repos/$ORG/.github/contents/.github/workflows" \
                --jq '[.[] | select((.name // "") | endswith(".yml")) | .name] | sort | .[]' 2>/dev/null || true)
   } > "$facts_file"
@@ -359,8 +377,23 @@ process_repo() {
 
   ( cd "$dir" && setup_git_identity ) || return 1
   git -C "$dir" commit -q -m "docs: refresh org READMEs from live state (automated) [skip ci]" || return 1
-  if ! git -C "$dir" push --force-with-lease --quiet origin "$BRANCH"; then
-    echo "::error::readme-refresh: $full_repo: git push to $BRANCH failed — READMEs NOT updated (check GH_TOKEN write access)" >&2
+  # Push the rolling branch. It is bot-owned and always reset to main + freshly regenerated READMEs,
+  # so the only thing that moves it out from under us is an auto-merge of the *previous* refresh PR:
+  # that deletes or fast-forwards the branch mid-run and stales the --force-with-lease lease. Retry a
+  # few times, re-syncing (fetch --prune) the remote ref between attempts so the lease re-evaluates
+  # against current state (branch deleted → recreate; branch moved → overwrite). Only a persistent
+  # failure (e.g. lost write access) fails the run.
+  local push_ok=0 attempt
+  for attempt in 1 2 3; do
+    if git -C "$dir" push --force-with-lease --quiet origin "$BRANCH" 2>/dev/null; then
+      push_ok=1; break
+    fi
+    warn "$full_repo: push to $BRANCH failed (attempt $attempt/3) — re-syncing remote ref and retrying"
+    git -C "$dir" fetch --prune --quiet origin 2>/dev/null || true
+    sleep 3
+  done
+  if [ "$push_ok" -ne 1 ]; then
+    echo "::error::readme-refresh: $full_repo: git push to $BRANCH failed after 3 attempts — READMEs NOT updated (check GH_TOKEN write access / branch state)" >&2
     return 1
   fi
 
