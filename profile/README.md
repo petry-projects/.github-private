@@ -62,3 +62,29 @@ Frameworks are installed as git subtrees in
 |---|---|---|
 | `bmad-method` | v6.8.0 | [bmad-code-org/BMAD-METHOD](https://github.com/bmad-code-org/BMAD-METHOD) |
 | `bmad-test-architecture` | v1.19.0 | [bmad-code-org/bmad-method-test-architecture-enterprise](https://github.com/bmad-code-org/bmad-method-test-architecture-enterprise) |
+
+## Reporting & Dashboards
+
+Scheduled reports and dashboards post as issues or workflow-run summaries for maintainers.
+
+### `.github-private` reports
+
+| Workflow | Purpose |
+|---|---|
+| `actions-fleet-monitor.yml` | Actions fleet monitor — org-wide workflow token usage and run anomalies |
+| `auto-rebase-health.yml` | Daily auto-rebase health report (issue) — rebase success/failure trends |
+| `content-twin-audit.yml` | ContentTwin content audit — audits the ContentTwin repo's published content |
+| `daily-pr-review-health.yml` | Daily PR-review health check — flags PR-review agent failures as an issue |
+| `docs-health-check.yml` | Docs health check — flags stale/broken docs as an issue |
+| `premature-closure-audit.yml` | Premature-closure audit — flags issues closed as completed with no merged closing PR |
+| `reviewer-report.yml` | Reviewer scorecard (per workflow-run summary) — per-reviewer PR-review activity |
+| `skill-eval-report.yml` | Skill-eval results report — agent skill pass/fail trends (self-improving-skills pipeline) |
+| `token-report.yml` | LLM token-cost report (per workflow-run summary) for maintainers |
+
+### `.github` reports
+
+| Workflow | Purpose |
+|---|---|
+| `compliance-audit-and-improvement.yml` | Weekly org standards compliance audit + runtime health survey, with per-finding remediation issues |
+| `daily-org-status.yml` | Daily "Org Status" digest posted as an issue for maintainers |
+| `org-scorecard.yml` | Weekly OpenSSF Scorecard security-posture review across public repos; findings tracked as issues |
