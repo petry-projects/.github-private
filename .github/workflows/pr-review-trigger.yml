@@ -1,4 +1,5 @@
 name: PR Review Agent — Trigger
+# readme-agent: PR review agent — cascading triage → deep → security review on pull requests.
 
 # Thin trigger stub for .github-private's OWN pr-review duty (ring 0 / self-host).
 #
