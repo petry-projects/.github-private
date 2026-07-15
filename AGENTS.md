@@ -134,6 +134,17 @@ This is the `.github-private` org infrastructure repo for `petry-projects`. It c
   `initiative:auto` with ≥1 ready open sub-issue). It must not be removed by template syncs. If the org
   template gains a cross-repo release-path canary equivalent, remove this exception and defer to the
   template instead.
+- **Exception:** `pr-review-canary.yml` (#1256, epic #1052 Part D) is a documented repo-specific workflow
+  with no corresponding org template in `standards/workflows/`. It is a post-merge (`push` to `main` on the
+  pr-review stub/reusable paths) + daily off-peak cron + `workflow_dispatch` canary that fires a **dry-run**
+  dispatch of `pr-review-trigger.yml` (the ring-0 self-host caller stub) and **fails loud if the run ends in
+  `startup_failure`** — the exact conclusion of the #1034 channel-skew defect (a `with:` forward the pinned
+  `pr-review/next` channel does not declare), which nothing in PR CI exercises. It complements the
+  `validate-caller-inputs` (#1253) and `caller-stub-freeze` (#1255) static guards with a live post-merge
+  signal. Logic lives in `scripts/pr_review_canary.sh` (tests: `tests/pr_review_canary.bats`); the dispatch
+  requires `GH_PAT_WORKFLOWS` (a `workflow_dispatch` fired with `GITHUB_TOKEN` never starts a run). It must
+  not be removed by template syncs. If the org template gains a self-host caller-stub canary equivalent,
+  remove this exception and defer to the template instead.
 
 ### Template drift guard (`repo-template`)
 
@@ -175,6 +186,26 @@ breaks post-merge (the #1034 defect). This guard closes that gap.
   scope of the later #1052 parts.
 - PR-triggered on the existing Lint workflow — **no new cron/scheduled workload.** It must not be
   removed by template syncs. If the org template gains an equivalent, remove this exception and defer.
+
+### Ring-0 caller-stub freeze (`caller-stub-freeze`)
+
+The `caller-stub-freeze` job in `lint.yml` (#1255, epic #1052 Part B) is the byte-identity **backstop** to
+`validate-caller-inputs` for the specific **ring-0 / self-host** caller stubs — the ones whose reusable lives
+in **this** repo and is pinned to a canary channel tag (`docs/initiatives/agentic-release-strategy.md` §5):
+`dev-lead.yml` (`@dev-lead/v1-next`), `pr-review-trigger.yml` (`@pr-review/next`), and
+`ci-failure-analyst.lock.yml` (`@ci-failure-analyst/v1-stable`). A trigger/`with:` forwarding change to a
+channel-pinned self-host stub is exercised by nothing in PR CI and only breaks post-merge (the #1034 defect
+class), so each stub's `on:` trigger + `uses:`/`with:` forwarding block is frozen byte-for-byte against a
+committed baseline (`tests/fixtures/caller-stub-freeze/*.block`).
+
+- Any edit to a frozen block fails CI **unless** the baseline is intentionally regenerated in the same
+  reviewed diff — an explicit, visible channel change rather than a silent post-merge break. Regenerate via
+  `bash scripts/caller_stub_freeze.sh --update` and commit the changed `*.block` file(s).
+- Logic lives in `scripts/caller_stub_freeze.sh`, reusing the ALIGNED/DRIFTED byte-identity model from
+  `scripts/fleet_stub_drift.sh` (tests: `tests/caller_stub_freeze.bats`). To freeze another self-host caller
+  stub, add a row to `CALLER_FREEZE_STUBS` and commit its baseline.
+- PR-triggered on the existing Lint workflow — **no new cron/scheduled workload.** It must not be removed by
+  template syncs. If the org template gains an equivalent, remove this exception and defer.
 
 ### Scheduled workflows
 
