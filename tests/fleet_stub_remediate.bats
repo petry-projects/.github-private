@@ -17,6 +17,8 @@
 PLANNER_STUB=".github/workflows/initiative-planner.yml"
 DRIVER_STUB=".github/workflows/initiative-driver.yml"
 
+SCRIPT="${BATS_TEST_DIRNAME}/../scripts/fleet_stub_remediate.sh"
+
 setup() {
   # shellcheck source=scripts/fleet_stub_remediate.sh
   source "${BATS_TEST_DIRNAME}/../scripts/fleet_stub_remediate.sh"
@@ -33,10 +35,41 @@ setup() {
   { "repo": "petry-projects/delta", "status": "DRIFTED", "repo_sha": "dddd", "canonical_sha": "cccc", "stub": "Initiative-driver", "stub_file": "${DRIVER_STUB}" }
 ]
 JSON
+
+  # ── gh shim harness (network-driver tests) ──────────────────────────────────
+  # A gh stub on PATH logs every write (branch create / contents PUT / pr create)
+  # to $CALLS and answers reads deterministically so the driver's branch+PUT+PR
+  # sequence can be asserted with no network. Tunable via env the shim reads at
+  # call time: EXISTING_PR (pr list result), BASE_SHA, CANON_B64, CANON_SHA,
+  # WRITTEN_SHA (the post-PUT blob SHA — defaults to CANON_SHA ⇒ byte-identity).
+  STUB_BIN="$(mktemp -d)"
+  export PATH="$STUB_BIN:$PATH"
+  CALLS="$STUB_BIN/calls.log"; export CALLS
+  cat > "$STUB_BIN/gh" <<'SHIM'
+#!/usr/bin/env bash
+args="$*"
+: "${CALLS:?}"
+canon_b64="${CANON_B64:-$(printf 'name: canon\n' | base64 | tr -d '\n')}"
+canon_sha="${CANON_SHA:-cafebabecafebabecafebabecafebabecafebabe}"
+case "$args" in
+  *"pr list"*)              printf '%s' "${EXISTING_PR:-}" ;;
+  *"pr create"*)            printf 'pr create %s\n' "${args//$'\n'/ }" >> "$CALLS"; echo "https://example/pr/1" ;;
+  *"git/refs"*)             echo "branch $args" >> "$CALLS"; echo '{}' ;;   # POST create branch
+  *"--method PUT"*)         echo "put $args" >> "$CALLS"; echo '{}' ;;      # contents PUT
+  *"git/ref/heads/"*)       printf '%s' "${BASE_SHA:-basesha0000000000000000000000000000000000}" ;;
+  *"contents/"*".content"*) printf '%s' "$canon_b64" ;;                     # canonical bytes
+  *"contents/"*"?ref="*)    printf '%s' "${WRITTEN_SHA:-$canon_sha}" ;;     # consumer read/verify .sha
+  *"contents/"*)            printf '%s' "$canon_sha" ;;                     # canonical .sha
+  *)                        echo '{}' ;;
+esac
+SHIM
+  chmod +x "$STUB_BIN/gh"
 }
 
 teardown() {
   rm -f "${DRIFT_JSON:-}"
+  [ -n "${STUB_BIN:-}" ] && rm -rf "$STUB_BIN"
+  return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -175,4 +208,92 @@ teardown() {
   [ "$output" = "function" ]
   run type -t remediation_allowlisted
   [ "$output" = "function" ]
+}
+
+# ---------------------------------------------------------------------------
+# Network driver main() — DRY_RUN gate, branch+PUT+PR sequence, idempotency,
+# one-PR-per-repo grouping, SHA byte-identity verify, fail-closed scope guard.
+# The gh shim (setup) logs writes to $CALLS; reads are deterministic.
+# ---------------------------------------------------------------------------
+
+@test "driver: DRY_RUN is the default — logs intent and makes ZERO write API calls (AC #2)" {
+  run bash "$SCRIPT" "$DRIFT_JSON"
+  [ "$status" -eq 0 ]
+  # No branch create / contents PUT / pr create was ever invoked.
+  [ ! -f "$CALLS" ]
+  # The intended mutations are logged per repo.
+  [[ "$output" == *"dry-run"* ]]
+  [[ "$output" == *"petry-projects/bravo"* ]]
+  [[ "$output" == *"petry-projects/delta"* ]]
+}
+
+@test "driver: --dry-run also forces dry-run even when DRY_RUN=false in env" {
+  run env DRY_RUN=false bash "$SCRIPT" --dry-run --repo petry-projects/bravo "$DRIFT_JSON"
+  [ "$status" -eq 0 ]
+  [ ! -f "$CALLS" ]
+}
+
+@test "driver: a live drifted repo runs branch → PUT → one PR (AC #1, #4)" {
+  run env DRY_RUN=false bash "$SCRIPT" --repo petry-projects/bravo "$DRIFT_JSON"
+  [ "$status" -eq 0 ]
+  [ -f "$CALLS" ]
+  # Branch created on the consumer repo, the drifted stub PUT, and exactly one PR.
+  grep -q "branch .*petry-projects/bravo/git/refs" "$CALLS"
+  grep -q "put .*petry-projects/bravo/contents/${PLANNER_STUB}" "$CALLS"
+  [ "$(grep -c 'pr create' "$CALLS")" -eq 1 ]
+  # The PR targets the consumer default branch (a proposal, never a direct push).
+  grep -q "pr create .*--base" "$CALLS"
+  # The out-of-scope drifted repo (delta) is never touched.
+  ! grep -q "petry-projects/delta" "$CALLS"
+}
+
+@test "driver: PR title/body cite the canonical source of record (AC #4)" {
+  run env DRY_RUN=false bash "$SCRIPT" --repo petry-projects/bravo "$DRIFT_JSON"
+  [ "$status" -eq 0 ]
+  # The single PR references the canonical repo + path the drift was measured against.
+  grep -q "pr create" "$CALLS"
+  grep "pr create" "$CALLS" | grep -q "petry-projects/.github"
+  grep "pr create" "$CALLS" | grep -q "standards/workflows/initiative-planner.yml"
+}
+
+@test "driver: an already-open remediation PR is skipped — no writes (AC #3)" {
+  run env DRY_RUN=false EXISTING_PR=77 bash "$SCRIPT" --repo petry-projects/bravo "$DRIFT_JSON"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"77"* ]]
+  # Idempotent: no branch create, no PUT, no second pr create.
+  [ ! -f "$CALLS" ] || ! grep -q "pr create" "$CALLS"
+  [ ! -f "$CALLS" ] || ! grep -q "put " "$CALLS"
+}
+
+@test "driver: two drifted stubs in one repo yield ONE branch, two PUTs, ONE PR (AC #1)" {
+  multi="$(mktemp)"
+  cat > "$multi" <<JSON
+[
+  { "repo": "petry-projects/echo", "status": "DRIFTED", "repo_sha": "1111", "canonical_sha": "aaaa", "stub": "Initiative-planner", "stub_file": "${PLANNER_STUB}" },
+  { "repo": "petry-projects/echo", "status": "DRIFTED", "repo_sha": "2222", "canonical_sha": "cccc", "stub": "Initiative-driver", "stub_file": "${DRIVER_STUB}" }
+]
+JSON
+  run env DRY_RUN=false bash "$SCRIPT" --repo petry-projects/echo "$multi"
+  [ "$status" -eq 0 ]
+  [ "$(grep -c 'branch .*petry-projects/echo/git/refs' "$CALLS")" -eq 1 ]
+  [ "$(grep -c 'put .*petry-projects/echo/contents/' "$CALLS")" -eq 2 ]
+  [ "$(grep -c 'pr create' "$CALLS")" -eq 1 ]
+  rm -f "$multi"
+}
+
+@test "driver: a post-PUT blob SHA that != canonical SHA fails the repo and opens NO PR (AC #5)" {
+  run env DRY_RUN=false WRITTEN_SHA=deadbeefdeadbeefdeadbeefdeadbeefdeadbeef \
+    bash "$SCRIPT" --repo petry-projects/bravo "$DRIFT_JSON"
+  [ "$status" -ne 0 ]
+  # Wrote the file but the byte-identity check caught the mismatch → no misleading PR.
+  [ ! -f "$CALLS" ] || ! grep -q "pr create" "$CALLS"
+  [[ "$output" == *"mismatch"* || "$output" == *"::error::"* ]]
+}
+
+@test "driver: DRY_RUN=false with NO repo scope stays dry-run + warns (fail-closed, AC #7)" {
+  run env DRY_RUN=false bash "$SCRIPT" "$DRIFT_JSON"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"::warning::"* ]]
+  # Fail-closed: no writes despite DRY_RUN=false, because no scope was supplied.
+  [ ! -f "$CALLS" ]
 }
