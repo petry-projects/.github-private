@@ -69,7 +69,7 @@ jobs:
       DRY_RUN: ${{ inputs.dry_run && '1' || '0' }}
     steps:
       - name: Checkout agent repo
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
 
@@ -88,7 +88,7 @@ jobs:
       - name: Rank ripeness and refresh the queue
         env:
           GH_TOKEN: ${{ env.TARGET_GH_TOKEN }}
-        uses: anthropics/claude-code-action@d5726de019ec4498aa667642bc3a80fca83aa102 # v1.0.148
+        uses: anthropics/claude-code-action@12531344451323133b0493233c759991ac61da12 # v1.0.174
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # CRITICAL (same gotcha as initiative-planner): pass the target-repo
