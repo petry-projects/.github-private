@@ -49,12 +49,14 @@ sc_conclusion_ok() {
   [ "${1:-}" = "success" ]
 }
 
-# sc_conclusion_present <conclusion> — return 0 iff a run was actually observed
-# (non-empty, non-"null"). An absent conclusion means no run happened.
+# sc_conclusion_present <conclusion> — return 0 iff a run was actually observed.
+# Empty/"null" means no run happened; "skipped" means the lane was gated off
+# (conditional/paths filter) and never executed — both are "no shadow run", so
+# they classify as NO_SHADOW (inconclusive), NOT a REGRESSION false-positive.
 sc_conclusion_present() {
   case "${1:-}" in
-    ""|null) return 1 ;;
-    *)       return 0 ;;
+    ""|null|skipped) return 1 ;;
+    *)               return 0 ;;
   esac
 }
 
@@ -138,8 +140,8 @@ sc_signal_json() {
       status: $status,
       regression: $regression,
       blocks_promotion: $blocks,
-      stable_run_id: (if $stable_run_id == "" then null else ($stable_run_id | tonumber) end),
-      shadow_run_id: (if $shadow_run_id == "" then null else ($shadow_run_id | tonumber) end)
+      stable_run_id: (($stable_run_id | tonumber?) // null),
+      shadow_run_id: (($shadow_run_id | tonumber?) // null)
     }'
 }
 

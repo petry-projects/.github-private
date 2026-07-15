@@ -98,6 +98,13 @@ setup() {
   [ "$output" = "NO_SHADOW" ]
 }
 
+@test "NO_SHADOW: shadow lane was skipped (gated off, not a regression)" {
+  # A conditional/paths-filtered shadow lane reports conclusion "skipped" — it
+  # never ran, so it is inconclusive, NOT a REGRESSION false-positive.
+  run sc_classify "success" "skipped" "approved" ""
+  [ "$output" = "NO_SHADOW" ]
+}
+
 # ---------------------------------------------------------------------------
 # sc_is_blocking — only a REGRESSION blocks promotion
 # ---------------------------------------------------------------------------
@@ -160,6 +167,18 @@ setup() {
   json="$(sc_signal_json "MATCH" "dev-lead" "next" "111" "")"
   [ "$(printf '%s' "$json" | jq -r '.stable_run_id')" = "111" ]
   [ "$(printf '%s' "$json" | jq -r '.shadow_run_id')" = "null" ]
+}
+
+@test "sc_signal_json coerces a non-numeric run id to null (never crashes)" {
+  # A non-numeric run id (e.g. the literal "null" from gh --jq plumbing) must not
+  # make jq exit non-zero — that would break shadow-run.sh's "always exit 0,
+  # never disrupt the PR" contract under set -euo pipefail.
+  run sc_signal_json "MATCH" "dev-lead" "next" "null" "not-a-number"
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s' "$output" | jq -r '.stable_run_id')" = "null" ]
+  [ "$(printf '%s' "$output" | jq -r '.shadow_run_id')" = "null" ]
+  run bash -c 'printf "%s" "$1" | jq -e . >/dev/null' _ "$output"
+  [ "$status" -eq 0 ]   # output is still valid JSON
 }
 
 @test "sc_signal_json output is valid JSON" {
