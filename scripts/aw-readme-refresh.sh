@@ -246,7 +246,7 @@ valid_content() {
 push_branch_with_retry() {
   local dir="$1"
   local branch="$2" label="${3:-$dir}" attempt
-  for attempt in $(seq 1 "$PUSH_RETRY_ATTEMPTS"); do
+  for ((attempt=1; attempt<=PUSH_RETRY_ATTEMPTS; attempt++)); do
     if git -C "$dir" push --force-with-lease --quiet origin "$branch" 2>/dev/null; then
       return 0
     fi
