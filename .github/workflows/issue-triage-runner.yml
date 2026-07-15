@@ -1,4 +1,5 @@
 name: Issue Triage
+# readme-agent: Issue triage agent — labels and routes newly opened issues.
 
 on:
   issues:
