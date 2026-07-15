@@ -154,6 +154,28 @@ PR-triggered check on the existing Lint workflow — **no new cron/scheduled wor
   in `scripts/template_stub_drift.sh` (`TEMPLATE_DRIFT_ALLOWLIST`). Add a path to that allowlist **only** with
   a recorded rationale, the same way the exceptions above are documented.
 
+### Reusable caller-input contract (`validate-caller-inputs`)
+
+The `validate-caller-inputs` job in `lint.yml` (#1253, epic #1052; regression guard for #1034)
+enforces that every reusable-workflow caller stub — `uses: <owner>/<repo>/.github/workflows/<wf>.yml@<ref>`
+with a `with:` block — forwards only inputs that are **declared as `workflow_call` inputs at the
+pinned `<ref>`**, and forwards every `required: true` input. `pull_request` CI runs the *base-branch*
+stub, and GitHub validates a reusable's inputs only at startup against the **pinned** ref — so an
+input-forwarding change to a channel-pinned caller stub is exercised by nothing in PR CI and only
+breaks post-merge (the #1034 defect). This guard closes that gap.
+
+- Logic lives in `scripts/validate-caller-inputs.sh` (pure parse/validate helpers + git resolution;
+  tests: `tests/dev-lead/unit/test_validate_caller_inputs.bats`, fixtures under
+  `tests/dev-lead/fixtures/caller-inputs/`, including a #1034 regression fixture).
+- Same-repo channel tags (`dev-lead/*`, `pr-review/*`, `ci-failure-analyst/*`, …) are resolved by
+  `git fetch`-ing the tag and reading the reusable at that ref. A ref that genuinely can't be resolved
+  **soft-passes with a logged `::warning::` — never silently.** Cross-repo reusables (hosted in another
+  repo, e.g. `petry-projects/.github`) are treated as unresolved here unless `VCI_RESOLVE_CROSS_REPO=1`
+  opts in; the warning keeps the skip visible. Extending resolution to cross-repo channel tags is the
+  scope of the later #1052 parts.
+- PR-triggered on the existing Lint workflow — **no new cron/scheduled workload.** It must not be
+  removed by template syncs. If the org template gains an equivalent, remove this exception and defer.
+
 ### Scheduled workflows
 
 - **Never schedule at minute 0.** A scheduled workflow must not use a `0 * * * *`

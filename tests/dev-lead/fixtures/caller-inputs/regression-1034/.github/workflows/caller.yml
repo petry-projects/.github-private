@@ -1,0 +1,20 @@
+name: Regression #1034 Caller
+
+# Reproduces the #1034 channel-skew defect: the caller forwards `extra_flag`,
+# which is NOT a declared workflow_call input at the pinned ref. GitHub only
+# validates reusable inputs at startup against the pinned ref, so PR CI (running
+# the base-branch stub) never exercises this — it only breaks post-merge. The
+# guard must FAIL loud here.
+on:
+  workflow_dispatch: {}
+
+permissions: {}
+
+jobs:
+  call:
+    uses: petry-projects/.github-private/.github/workflows/dev-lead-reusable.yml@dev-lead/v1-test
+    with:
+      agent_ref: dev-lead/v1-test
+      mode: apply
+      extra_flag: "true"
+    secrets: inherit

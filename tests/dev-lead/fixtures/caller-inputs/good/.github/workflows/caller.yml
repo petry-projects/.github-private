@@ -1,0 +1,16 @@
+name: Good Caller
+
+# Forwards only declared inputs, and forwards the required `mode` — PASSES.
+on:
+  workflow_dispatch: {}
+
+permissions: {}
+
+jobs:
+  call:
+    uses: petry-projects/.github-private/.github/workflows/dev-lead-reusable.yml@dev-lead/v1-test
+    with:
+      # Pin the agent checkout to the same channel (mirrors the real stubs).
+      agent_ref: dev-lead/v1-test
+      mode: apply
+    secrets: inherit

@@ -40,6 +40,7 @@
 #
 # Standard: https://github.com/petry-projects/.github/blob/main/standards/ci-standards.md#8-feature-ideation-feature-ideationyml--bmad-method-repos
 name: Feature Research & Ideation (BMAD Analyst)
+# readme-agent: Feature research & ideation agent (BMAD Analyst) — turns sources into scoped feature ideas.
 
 on:
   schedule:
