@@ -42,7 +42,6 @@ WORKFLOWS=(
   "docs-health-check"
   "dependency-advisory"
   "standards-sync"
-  "content-twin-audit"
 )
 
 # ---------------------------------------------------------------------------

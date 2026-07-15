@@ -92,7 +92,6 @@ Scheduled reports and dashboards post as issues or workflow-run summaries for ma
 |---|---|
 | [`actions-fleet-monitor.yml`](https://github.com/petry-projects/.github-private/blob/main/.github/workflows/actions-fleet-monitor.yml) | Actions fleet monitor — org-wide workflow token usage and run anomalies |
 | [`auto-rebase-health.yml`](https://github.com/petry-projects/.github-private/blob/main/.github/workflows/auto-rebase-health.yml) | Daily auto-rebase health report (issue) — rebase success/failure trends |
-| [`content-twin-audit.yml`](https://github.com/petry-projects/.github-private/blob/main/.github/workflows/content-twin-audit.yml) | ContentTwin content audit — audits the ContentTwin repo's published content |
 | [`daily-pr-review-health.yml`](https://github.com/petry-projects/.github-private/blob/main/.github/workflows/daily-pr-review-health.yml) | Daily PR-review health check — flags PR-review agent failures as an issue |
 | [`docs-health-check.yml`](https://github.com/petry-projects/.github-private/blob/main/.github/workflows/docs-health-check.yml) | Docs health check — flags stale/broken docs as an issue |
 | [`premature-closure-audit.yml`](https://github.com/petry-projects/.github-private/blob/main/.github/workflows/premature-closure-audit.yml) | Premature-closure audit — flags issues closed as completed with no merged closing PR |
