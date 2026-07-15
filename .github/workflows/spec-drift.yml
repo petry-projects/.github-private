@@ -66,10 +66,18 @@ jobs:
         run: |
           set -euo pipefail
           # A merged PR closes 0..N issues via `Closes #N`. The story whose
-          # acceptance criteria are the spec is the closing issue labelled
-          # `initiative` (apply-plan.sh labels both epics and stories that way).
-          # Pick the first such issue; if none, the workflow no-ops before any
-          # detector/LLM cost — scoping it to initiative-story closures. (AC#1)
+          # acceptance criteria are the spec is the closing issue that is both
+          # labelled `initiative` AND has the BMAD story shape.
+          #
+          # apply-plan.sh labels BOTH epics and stories `initiative`, so the label
+          # alone is not sufficient: if a PR closes an epic and its story and the
+          # epic happens to sort first in closingIssuesReferences, picking the first
+          # `initiative` issue would run the detector against the epic (which has no
+          # "## Story"/"## Acceptance Criteria" spec), yield INDETERMINATE, and
+          # silently miss a real DRIFT on the story (AC#1 false negative). So also
+          # require the story body shape — a BMAD story has "## Story" and
+          # "## Acceptance Criteria"; an epic does not carry "## Story".
+          # If none match, the workflow no-ops before any detector/LLM cost. (AC#1)
           mapfile -t nums < <(gh pr view "$PR" --repo "$REPO" \
             --json closingIssuesReferences \
             -q '.closingIssuesReferences[].number' 2>/dev/null || true)
@@ -77,8 +85,12 @@ jobs:
           story=""
           for n in "${nums[@]}"; do
             [ -n "$n" ] || continue
-            if gh issue view "$n" --repo "$REPO" --json labels \
-                 -q '.labels[].name' 2>/dev/null | grep -qx 'initiative'; then
+            meta="$(gh issue view "$n" --repo "$REPO" --json labels,body 2>/dev/null || true)"
+            [ -n "$meta" ] || continue
+            printf '%s' "$meta" | jq -r '.labels[].name' 2>/dev/null | grep -qx 'initiative' || continue
+            body="$(printf '%s' "$meta" | jq -r '.body // ""')"
+            if printf '%s\n' "$body" | grep -qE '^##[[:space:]]+Story[[:space:]]*$' \
+               && printf '%s\n' "$body" | grep -qE '^##[[:space:]]+Acceptance Criteria[[:space:]]*$'; then
               story="$n"
               break
             fi

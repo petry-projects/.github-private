@@ -151,6 +151,30 @@ def main() -> int:
             f"{len(detector_steps)} (AC#5)."
         )
 
+    # ── AC#1 false-negative guard: story resolution must distinguish a story from
+    #    an epic by the BMAD story shape, not the `initiative` label alone —
+    #    apply-plan.sh labels BOTH epics and stories `initiative`, so an epic could
+    #    otherwise shadow the story, run the detector against a non-spec, return
+    #    INDETERMINATE, and silently miss a real story DRIFT. ────────────────────
+    resolve_steps = [
+        s for s in _iter_steps(jobs)
+        if "closingIssuesReferences" in str(s.get("run") or "")
+    ]
+    if not resolve_steps:
+        failures.append(
+            "expected a step resolving the closing story via "
+            "`closingIssuesReferences` (AC#1)."
+        )
+    for s in resolve_steps:
+        run = str(s.get("run") or "")
+        if "## Story" not in run or "## Acceptance Criteria" not in run:
+            failures.append(
+                "the story-resolution step must require the BMAD story shape "
+                "(`## Story` + `## Acceptance Criteria`), not just the `initiative` "
+                "label — an epic carries that label too and would shadow the story, "
+                "yielding INDETERMINATE and silently missing a real DRIFT (AC#1)."
+            )
+
     # ── Advisory must never reopen the closed issue ──────────────────────────
     for step in _iter_steps(jobs):
         blob = str(step.get("run") or "") + str((step.get("with") or {}).get("script") or "")
