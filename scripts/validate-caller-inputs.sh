@@ -1,0 +1,354 @@
+#!/usr/bin/env bash
+# validate-caller-inputs.sh — caller-input ⊆ reusable-input contract guard.
+# Part A of #1052 channel-skew prevention (issue #1253); regression guard for #1034.
+#
+# WHY THIS EXISTS
+#   `pull_request` CI runs the *base-branch* caller stub, and GitHub validates a
+#   reusable workflow's inputs only at startup against the **pinned** ref. So an
+#   input-forwarding change to a channel-pinned caller stub (e.g.
+#   `pr-review.yml@pr-review/next`, `dev-lead-reusable.yml@dev-lead/v1-next`) is
+#   exercised by nothing in PR CI and only breaks post-merge (the #1034 defect).
+#   This guard closes that gap.
+#
+# WHAT IT DOES
+#   For every workflow `uses: <owner>/<repo>/.github/workflows/<wf>.yml@<ref>`
+#   that carries a `with:` block, it resolves the reusable **at <ref>** and asserts
+#     (a) every forwarded `with:` key is a declared `workflow_call` input there, and
+#     (b) every `required: true` input is forwarded by the caller.
+#   Same-repo channel tags (`dev-lead/*`, `pr-review/*`, `ci-failure-analyst/*`, …)
+#   are resolved by `git fetch`-ing the ref and reading the reusable at that ref.
+#   A ref that genuinely can't be resolved SOFT-PASSES with a logged `::warning::`
+#   — never silently. Cross-repo refs (reusables hosted in another repo, e.g.
+#   petry-projects/.github) are treated as unresolved here unless
+#   VCI_RESOLVE_CROSS_REPO=1 opts in; the warning keeps the skip visible.
+#
+# USAGE
+#   validate-caller-inputs.sh
+#       Scan VCI_ROOT (default: repo containing this script) and validate every
+#       caller. Fails loud on any resolved contract violation.
+#   validate-caller-inputs.sh --pair <caller_file> <reusable_file> [uses_lineno]
+#       Validate a single caller against an explicit local reusable file
+#       (deterministic; used by the fixture tests).
+#
+# ENV
+#   VCI_ROOT             Repo root to scan (default: the repo containing this script).
+#   VCI_SELF_REPO        This repo's <owner>/<repo> slug (default petry-projects/.github-private).
+#   VCI_RESOLVE_DIR      Test hook: resolve any ref to <dir>/<wf-basename> instead of via git.
+#   VCI_RESOLVE_CROSS_REPO  Set to 1 to attempt anonymous git fetch of cross-repo reusables.
+
+set -euo pipefail
+
+# ── pure parsing helpers ─────────────────────────────────────────────────────
+
+# vci_parse_uses <line> — if the line is a reusable-workflow `uses:`, echo
+# "<owner>/<repo>\t<wf_path>\t<ref>". Otherwise echo nothing. Strips a trailing
+# ` # comment` and surrounding whitespace.
+vci_parse_uses() {
+  local line="$1" val
+  case "$line" in
+    *uses:*) : ;;
+    *) return 0 ;;
+  esac
+  val="${line#*uses:}"
+  val="${val#"${val%%[![:space:]]*}"}"   # ltrim
+  val="${val%%#*}"                        # strip trailing comment
+  val="${val%"${val##*[![:space:]]}"}"    # rtrim
+  # strip optional surrounding quotes
+  case "$val" in
+    \"*\") val="${val#\"}"; val="${val%\"}" ;;
+    \'*\') val="${val#\'}"; val="${val%\'}" ;;
+  esac
+  case "$val" in
+    */.github/workflows/*.yml@*) : ;;
+    *) return 0 ;;
+  esac
+  local left ref repo_slug wf_path
+  left="${val%@*}"
+  ref="${val##*@}"
+  repo_slug="${left%%/.github/workflows/*}"
+  wf_path=".github/workflows/${left##*/.github/workflows/}"
+  printf '%s\t%s\t%s\n' "$repo_slug" "$wf_path" "$ref"
+}
+
+# vci_with_keys_for_job <file> <uses_lineno> — print the direct `with:` keys of
+# the job whose `uses:` sits on <uses_lineno>. Prints nothing if the job has no
+# `with:` block. Blank lines and `#` comments are ignored.
+vci_with_keys_for_job() {
+  local file="$1" uses_lineno="$2"
+  local -a lines
+  mapfile -t lines < "$file"
+  local n=${#lines[@]}
+  local idx=$((uses_lineno - 1))
+  [ "$idx" -ge 0 ] && [ "$idx" -lt "$n" ] || return 0
+
+  local uses_line="${lines[idx]}" ws job_indent
+  ws="${uses_line%%[![:space:]]*}"
+  job_indent=${#ws}
+
+  local i line lws ind body with_indent=-1 child_indent=-1
+  for (( i = idx + 1; i < n; i++ )); do
+    line="${lines[i]}"
+    [ -n "${line//[[:space:]]/}" ] || continue    # skip blank
+    lws="${line%%[![:space:]]*}"
+    ind=${#lws}
+    body="${line#"$lws"}"
+    case "$body" in '#'*) continue ;; esac         # skip full-line comment
+
+    if [ "$with_indent" -lt 0 ]; then
+      # Still looking for `with:` within this job's body.
+      if [ "$ind" -lt "$job_indent" ]; then
+        return 0                                    # left the job without a with:
+      fi
+      if [ "$ind" -eq "$job_indent" ]; then
+        case "$body" in
+          with:*) with_indent=$ind ;;
+        esac
+      fi
+      continue
+    fi
+
+    # Collecting children of `with:`.
+    if [ "$ind" -le "$with_indent" ]; then
+      return 0                                      # end of the with: block
+    fi
+    if [ "$child_indent" -lt 0 ]; then
+      child_indent=$ind
+    fi
+    if [ "$ind" -eq "$child_indent" ]; then
+      printf '%s\n' "${body%%:*}"                   # a direct key: `name: value`
+    fi
+  done
+}
+
+# vci_declared_inputs <reusable_file> — print "<name>\t<required>" for every
+# declared `on.workflow_call.inputs` entry (<required> is `true` or `false`).
+vci_declared_inputs() {
+  local file="$1"
+  local -a lines
+  mapfile -t lines < "$file"
+  local n=${#lines[@]} i line lws ind body
+
+  # Locate `workflow_call:`.
+  local wc_indent=-1 wc_idx=-1
+  for (( i = 0; i < n; i++ )); do
+    line="${lines[i]}"
+    [ -n "${line//[[:space:]]/}" ] || continue
+    lws="${line%%[![:space:]]*}"
+    ind=${#lws}
+    body="${line#"$lws"}"
+    case "$body" in
+      workflow_call:*) wc_idx=$i; wc_indent=$ind; break ;;
+    esac
+  done
+  [ "$wc_idx" -ge 0 ] || return 0
+
+  # Locate `inputs:` nested under workflow_call.
+  local in_indent=-1 in_idx=-1
+  for (( i = wc_idx + 1; i < n; i++ )); do
+    line="${lines[i]}"
+    [ -n "${line//[[:space:]]/}" ] || continue
+    lws="${line%%[![:space:]]*}"
+    ind=${#lws}
+    body="${line#"$lws"}"
+    case "$body" in '#'*) continue ;; esac
+    [ "$ind" -gt "$wc_indent" ] || break            # left workflow_call
+    case "$body" in
+      inputs:*) in_idx=$i; in_indent=$ind; break ;;
+    esac
+  done
+  [ "$in_idx" -ge 0 ] || return 0
+
+  # Iterate input-name entries and read each one's `required:` flag.
+  local name_indent=-1 cur_name="" cur_required="false" rv
+  for (( i = in_idx + 1; i < n; i++ )); do
+    line="${lines[i]}"
+    [ -n "${line//[[:space:]]/}" ] || continue
+    lws="${line%%[![:space:]]*}"
+    ind=${#lws}
+    body="${line#"$lws"}"
+    case "$body" in '#'*) continue ;; esac
+    [ "$ind" -gt "$in_indent" ] || break            # end of inputs block
+    if [ "$name_indent" -lt 0 ]; then
+      name_indent=$ind
+    fi
+    if [ "$ind" -eq "$name_indent" ]; then
+      [ -n "$cur_name" ] && printf '%s\t%s\n' "$cur_name" "$cur_required"
+      cur_name="${body%%:*}"
+      cur_required="false"
+    else
+      case "$body" in
+        required:*)
+          rv="${body#required:}"
+          rv="${rv#"${rv%%[![:space:]]*}"}"         # ltrim
+          rv="${rv%%#*}"                            # strip comment
+          rv="${rv%"${rv##*[![:space:]]}"}"         # rtrim
+          rv="${rv//\"/}"; rv="${rv//\'/}"
+          cur_required="$rv"
+          ;;
+      esac
+    fi
+  done
+  [ -n "$cur_name" ] && printf '%s\t%s\n' "$cur_name" "$cur_required"
+  return 0
+}
+
+# vci_validate <forwarded_keys> <declared> — the pure (a)+(b) contract check.
+#   forwarded_keys: newline-separated forwarded `with:` key names.
+#   declared:       newline-separated "<name>\t<required>" rows.
+# Prints `::error::` lines for each violation; returns 1 if any, else 0.
+vci_validate() {
+  local keys="$1" declared="$2" rc=0 dnames k name req
+  dnames="$(printf '%s\n' "$declared" | awk -F'\t' 'NF{print $1}')"
+
+  # (a) every forwarded key must be a declared input.
+  while IFS= read -r k; do
+    [ -n "$k" ] || continue
+    if ! printf '%s\n' "$dnames" | grep -qxF -- "$k"; then
+      echo "::error::forwarded input '$k' is not a declared workflow_call input at the pinned ref"
+      rc=1
+    fi
+  done <<< "$keys"
+
+  # (b) every required input must be forwarded.
+  while IFS=$'\t' read -r name req; do
+    [ -n "$name" ] || continue
+    if [ "$req" = "true" ] && ! printf '%s\n' "$keys" | grep -qxF -- "$name"; then
+      echo "::error::required input '$name' is declared at the pinned ref but not forwarded by the caller"
+      rc=1
+    fi
+  done <<< "$declared"
+
+  return "$rc"
+}
+
+# vci_check_pair <caller_file> <uses_lineno> <reusable_file> [label] —
+# validate one caller job against a resolved reusable file.
+vci_check_pair() {
+  local caller="$1" uses_lineno="$2" reusable="$3" label="${4:-$1}"
+  local keys declared
+  keys="$(vci_with_keys_for_job "$caller" "$uses_lineno")"
+  declared="$(vci_declared_inputs "$reusable")"
+  if vci_validate "$keys" "$declared"; then
+    echo "OK: $label — forwarded inputs ⊆ declared; required inputs forwarded"
+    return 0
+  fi
+  echo "::error::caller-inputs contract FAILED for $label" >&2
+  return 1
+}
+
+# ── resolution ───────────────────────────────────────────────────────────────
+
+# vci_resolve_reusable <repo_slug> <wf_path> <ref> <out_file> — write the
+# reusable's content at <ref> to <out_file>. Returns 0 on success, 1 if the ref
+# could not be resolved (caller then soft-passes with a warning).
+vci_resolve_reusable() {
+  local repo_slug="$1" wf_path="$2" ref="$3" out="$4"
+  local self="${VCI_SELF_REPO:-petry-projects/.github-private}"
+
+  if [ -n "${VCI_RESOLVE_DIR:-}" ]; then
+    local base
+    base="$(basename "$wf_path")"
+    if [ -f "$VCI_RESOLVE_DIR/$base" ]; then
+      cp "$VCI_RESOLVE_DIR/$base" "$out"
+      return 0
+    fi
+    return 1
+  fi
+
+  if [ "$repo_slug" = "$self" ]; then
+    # Same-repo channel tag: fetch the ref, then read the file at that ref.
+    if git fetch --quiet --depth=1 origin "$ref" 2>/dev/null \
+       && git show "FETCH_HEAD:$wf_path" > "$out" 2>/dev/null; then
+      return 0
+    fi
+    return 1
+  fi
+
+  # Cross-repo reusable (hosted in another repo). Opt-in only — see header.
+  if [ "${VCI_RESOLVE_CROSS_REPO:-0}" = "1" ]; then
+    if git fetch --quiet --depth=1 "https://github.com/${repo_slug}" "$ref" 2>/dev/null \
+       && git show "FETCH_HEAD:$wf_path" > "$out" 2>/dev/null; then
+      return 0
+    fi
+  fi
+  return 1
+}
+
+# ── repo scan ────────────────────────────────────────────────────────────────
+
+vci_scan_repo() {
+  local root="$1" rc=0 checked=0 warned=0
+  local wf tmp parsed repo_slug wf_path ref uses_lineno keys label
+  local -a lines
+  local i n
+
+  shopt -s nullglob
+  for wf in "$root"/.github/workflows/*.yml; do
+    mapfile -t lines < "$wf"
+    n=${#lines[@]}
+    for (( i = 0; i < n; i++ )); do
+      parsed="$(vci_parse_uses "${lines[i]}")"
+      [ -n "$parsed" ] || continue
+      IFS=$'\t' read -r repo_slug wf_path ref <<< "$parsed"
+      uses_lineno=$((i + 1))
+
+      keys="$(vci_with_keys_for_job "$wf" "$uses_lineno")"
+      [ -n "$keys" ] || continue                    # no forwarded inputs — nothing to check
+
+      tmp="$(mktemp)"
+      label="$(basename "$wf") → ${repo_slug}/${wf_path}@${ref}"
+      if vci_resolve_reusable "$repo_slug" "$wf_path" "$ref" "$tmp"; then
+        checked=$((checked + 1))
+        if ! vci_check_pair "$wf" "$uses_lineno" "$tmp" "$label"; then
+          rc=1
+        fi
+      else
+        echo "::warning::caller-inputs: could not resolve ${repo_slug}/${wf_path}@${ref} (referenced by $(basename "$wf")) — skipping; verify the forwarded inputs manually"
+        warned=$((warned + 1))
+      fi
+      rm -f "$tmp"
+    done
+  done
+
+  echo "caller-inputs: checked=${checked} pinned ref(s); unresolved(warned)=${warned}"
+  return "$rc"
+}
+
+main() {
+  local root="${VCI_ROOT:-}"
+  if [ -z "$root" ]; then
+    root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+  fi
+
+  if vci_scan_repo "$root"; then
+    echo "caller-inputs: OK — every resolved caller forwards a valid input set."
+    return 0
+  fi
+
+  echo "" >&2
+  echo "caller-inputs: FAIL — a caller stub forwards inputs that do not match the reusable at its pinned ref." >&2
+  echo "Fix the caller's with: block, or the reusable's workflow_call.inputs at that ref. See issue #1052/#1034." >&2
+  return 1
+}
+
+# Run only when executed directly, so tests can source the helpers.
+if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
+  if [ "${1:-}" = "--pair" ]; then
+    caller="${2:?--pair requires <caller_file>}"
+    reusable="${3:?--pair requires <reusable_file>}"
+    lineno="${4:-}"
+    if [ -z "$lineno" ]; then
+      mapfile -t _lines < "$caller"
+      for (( _i = 0; _i < ${#_lines[@]}; _i++ )); do
+        if [ -n "$(vci_parse_uses "${_lines[_i]}")" ]; then
+          lineno=$((_i + 1))
+          break
+        fi
+      done
+    fi
+    : "${lineno:?no reusable uses: line found in $caller}"
+    vci_check_pair "$caller" "$lineno" "$reusable" "$caller → $reusable"
+    exit $?
+  fi
+  main "$@"
+fi

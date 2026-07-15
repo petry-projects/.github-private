@@ -1,0 +1,16 @@
+name: Missing-Required Caller
+
+# Omits the required `mode` input — GitHub would reject this at startup against
+# the pinned ref. The guard must FAIL loud (check (b): required input not
+# forwarded).
+on:
+  workflow_dispatch: {}
+
+permissions: {}
+
+jobs:
+  call:
+    uses: petry-projects/.github-private/.github/workflows/dev-lead-reusable.yml@dev-lead/v1-test
+    with:
+      agent_ref: dev-lead/v1-test
+    secrets: inherit
