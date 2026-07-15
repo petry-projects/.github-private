@@ -182,7 +182,7 @@ _in_scope() {
 # the canonical stub (the source of record the SHA drift was measured against).
 # Mirrors fleet_monitor.sh's canonical read: contents API .content, base64 -d.
 _canonical_bytes() {
-  gh api "repos/${1}/contents/${2}" --jq '.content' 2>/dev/null | base64 -d 2>/dev/null
+  gh api "repos/${1}/contents/${2}" --jq '.content' 2>/dev/null | base64 -d 2>/dev/null || true
 }
 
 # _canonical_sha <canonical_repo> <canonical_path> — echo the canonical git blob
@@ -241,14 +241,14 @@ _remediate_repo() {
   # the proposal exists — do not create a second branch/PR. Mirrors
   # seed-repo-template.sh's gh pr list --head check.
   local existing_pr
-  existing_pr="$(gh pr list --repo "$repo" --head "$branch" --state open --json number --jq '.[0].number' 2>/dev/null || true)"
+  existing_pr="$(gh pr list --repo "$repo" --head "$branch" --state open --json number --jq '(.[0]?.number // "" | tostring)' 2>/dev/null || true)"
   if [ -n "$existing_pr" ]; then
     echo "[remediate] PR #${existing_pr} already open for branch ${branch} on ${repo} — skipping (idempotent)"
     return 0
   fi
 
   default_branch="$(gh api "repos/${repo}" --jq '.default_branch' 2>/dev/null || echo main)"
-  base_sha="$(gh api "repos/${repo}/git/ref/heads/${default_branch}" --jq '.object.sha' 2>/dev/null || true)"
+  base_sha="$(gh api "repos/${repo}/git/ref/heads/${default_branch}" --jq '(.object?.sha // "" | tostring)' 2>/dev/null || true)"
   if [ -z "$base_sha" ]; then
     echo "::error::cannot read ${default_branch} head on ${repo}" >&2
     return 1
@@ -259,14 +259,18 @@ _remediate_repo() {
     || gh api "repos/${repo}/git/ref/heads/${branch}" --silent 2>/dev/null \
     || { echo "::error::cannot create branch ${branch} on ${repo}" >&2; return 1; }
 
-  local sf cr cp stub content canon_sha written_sha
+  local sf cr cp stub content canon_sha written_sha bytes_tmp
   while IFS=$'\t' read -r sf cr cp stub; do
     [ -n "$sf" ] || continue
-    content="$(_canonical_bytes "$cr" "$cp")"
-    if [ -z "$content" ]; then
+    bytes_tmp="$(mktemp)"
+    _canonical_bytes "$cr" "$cp" > "$bytes_tmp" 2>/dev/null || true
+    if [ ! -s "$bytes_tmp" ]; then
+      rm -f "$bytes_tmp"
       echo "::error::could not fetch canonical bytes ${cr}/${cp} for ${repo} — failing repo" >&2
       return 1
     fi
+    IFS= read -r -d '' content < "$bytes_tmp" || true
+    rm -f "$bytes_tmp"
     canon_sha="$(_canonical_sha "$cr" "$cp")"
     if [ -z "$canon_sha" ]; then
       echo "::error::could not read canonical blob SHA ${cr}/${cp} for ${repo} — cannot verify byte-identity; failing repo" >&2

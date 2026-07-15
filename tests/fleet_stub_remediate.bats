@@ -42,7 +42,7 @@ JSON
   # sequence can be asserted with no network. Tunable via env the shim reads at
   # call time: EXISTING_PR (pr list result), BASE_SHA, CANON_B64, CANON_SHA,
   # WRITTEN_SHA (the post-PUT blob SHA — defaults to CANON_SHA ⇒ byte-identity).
-  STUB_BIN="$(mktemp -d)"
+  STUB_BIN="$(mktemp -d "${BATS_TEST_TMPDIR}/stub_bin.XXXXXX")"
   export PATH="$STUB_BIN:$PATH"
   CALLS="$STUB_BIN/calls.log"; export CALLS
   cat > "$STUB_BIN/gh" <<'SHIM'
@@ -244,7 +244,8 @@ teardown() {
   # The PR targets the consumer default branch (a proposal, never a direct push).
   grep -q "pr create .*--base" "$CALLS"
   # The out-of-scope drifted repo (delta) is never touched.
-  ! grep -q "petry-projects/delta" "$CALLS"
+  run grep -q "petry-projects/delta" "$CALLS"
+  [ "$status" -eq 1 ]
 }
 
 @test "driver: PR title/body cite the canonical source of record (AC #4)" {
@@ -261,12 +262,16 @@ teardown() {
   [ "$status" -eq 0 ]
   [[ "$output" == *"77"* ]]
   # Idempotent: no branch create, no PUT, no second pr create.
-  [ ! -f "$CALLS" ] || ! grep -q "pr create" "$CALLS"
-  [ ! -f "$CALLS" ] || ! grep -q "put " "$CALLS"
+  if [ -f "$CALLS" ]; then
+    run grep -q "pr create" "$CALLS"
+    [ "$status" -eq 1 ]
+    run grep -q "put " "$CALLS"
+    [ "$status" -eq 1 ]
+  fi
 }
 
 @test "driver: two drifted stubs in one repo yield ONE branch, two PUTs, ONE PR (AC #1)" {
-  multi="$(mktemp)"
+  multi="$(mktemp "${BATS_TEST_TMPDIR}/multi.XXXXXX")"
   cat > "$multi" <<JSON
 [
   { "repo": "petry-projects/echo", "status": "DRIFTED", "repo_sha": "1111", "canonical_sha": "aaaa", "stub": "Initiative-planner", "stub_file": "${PLANNER_STUB}" },
@@ -285,9 +290,12 @@ JSON
   run env DRY_RUN=false WRITTEN_SHA=deadbeefdeadbeefdeadbeefdeadbeefdeadbeef \
     bash "$SCRIPT" --repo petry-projects/bravo "$DRIFT_JSON"
   [ "$status" -ne 0 ]
-  # Wrote the file but the byte-identity check caught the mismatch → no misleading PR.
-  [ ! -f "$CALLS" ] || ! grep -q "pr create" "$CALLS"
   [[ "$output" == *"mismatch"* || "$output" == *"::error::"* ]]
+  # Wrote the file but the byte-identity check caught the mismatch → no misleading PR.
+  if [ -f "$CALLS" ]; then
+    run grep -q "pr create" "$CALLS"
+    [ "$status" -eq 1 ]
+  fi
 }
 
 @test "driver: DRY_RUN=false with NO repo scope stays dry-run + warns (fail-closed, AC #7)" {
