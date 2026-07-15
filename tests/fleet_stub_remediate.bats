@@ -154,6 +154,15 @@ teardown() {
   [ "$output" = "[]" ]
 }
 
+@test "build_remediation_plan: malformed (non-array) input fails loud, not silently empty" {
+  bad="$(mktemp)"
+  echo '{ "not": "an array" }' > "$bad"
+  run build_remediation_plan "$bad"
+  [ "$status" -ne 0 ]                       # must NOT be a silent exit 0
+  [[ "$output" == *"not a readable JSON array"* ]]
+  rm -f "$bad"
+}
+
 # ---------------------------------------------------------------------------
 # Source-guard idiom (AC #4): sourcing exposes the pure helpers without
 # executing the CLI driver.

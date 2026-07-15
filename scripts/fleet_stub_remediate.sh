@@ -100,12 +100,25 @@ build_remediation_plan() {
     return 0
   fi
 
+  # Fail loud on malformed input. If the driving jq below can't parse "$json",
+  # the read loop sees nothing and the function would emit an empty plan with
+  # exit 0 — silently reading as "nothing to remediate" and hiding real drift.
+  if ! jq -e 'type == "array"' "$json" > /dev/null 2>&1; then
+    echo "::error::fleet_stub_remediate: input is not a readable JSON array: $json" >&2
+    return 1
+  fi
+
   local tmp repo stub stub_file canonical_path
   tmp="$(mktemp)"
   while IFS=$'\t' read -r repo stub stub_file; do
     [ -n "$repo" ] || continue
     remediation_allowlisted "$repo" "$stub_file" && continue
-    canonical_path="$(resolve_canonical_path "$stub_file")" || continue
+    if ! canonical_path="$(resolve_canonical_path "$stub_file")"; then
+      # Unrecognized stub_file: intentionally skipped (only registered stubs are
+      # remediable), but warn so a registry gap is auditable rather than silent.
+      echo "::warning::fleet_stub_remediate: no canonical source for stub_file '$stub_file' in $repo — skipping" >&2
+      continue
+    fi
     jq -n \
       --arg repo "$repo" \
       --arg stub "$stub" \
@@ -121,8 +134,13 @@ build_remediation_plan() {
     | [.repo, (.stub // ""), (.stub_file // "")]
     | @tsv' "$json")
 
-  jq -s '.' "$tmp"
+  # Guarantee temp cleanup regardless of the final jq's exit, and propagate its
+  # status rather than swallowing it.
+  local out status
+  out="$(jq -s '.' "$tmp")"; status=$?
   rm -f "$tmp"
+  [ "$status" -eq 0 ] || return "$status"
+  printf '%s\n' "$out"
 }
 
 # ── CLI driver (pure — reads a local JSON file, no network) ────────────────────
