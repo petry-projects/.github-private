@@ -36,7 +36,9 @@
 #   VCI_RESOLVE_DIR      Test hook: resolve any ref to <dir>/<wf-basename> instead of via git.
 #   VCI_RESOLVE_CROSS_REPO  Set to 1 to attempt anonymous git fetch of cross-repo reusables.
 
-set -euo pipefail
+# NOTE: strict mode is enabled only in the execute-directly guard at the bottom,
+# not here — so sourcing this file (the bats tests do) does not leak `set -euo
+# pipefail` into the caller's shell.
 
 # ── pure parsing helpers ─────────────────────────────────────────────────────
 
@@ -257,7 +259,7 @@ vci_resolve_reusable() {
 
   if [ "$repo_slug" = "$self" ]; then
     # Same-repo channel tag: fetch the ref, then read the file at that ref.
-    if git fetch --quiet --depth=1 origin "$ref" 2>/dev/null \
+    if git fetch --quiet --depth=1 origin -- "$ref" 2>/dev/null \
        && git show "FETCH_HEAD:$wf_path" > "$out" 2>/dev/null; then
       return 0
     fi
@@ -266,7 +268,7 @@ vci_resolve_reusable() {
 
   # Cross-repo reusable (hosted in another repo). Opt-in only — see header.
   if [ "${VCI_RESOLVE_CROSS_REPO:-0}" = "1" ]; then
-    if git fetch --quiet --depth=1 "https://github.com/${repo_slug}" "$ref" 2>/dev/null \
+    if git fetch --quiet --depth=1 "https://github.com/${repo_slug}" -- "$ref" 2>/dev/null \
        && git show "FETCH_HEAD:$wf_path" > "$out" 2>/dev/null; then
       return 0
     fi
@@ -333,6 +335,7 @@ main() {
 
 # Run only when executed directly, so tests can source the helpers.
 if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
+  set -euo pipefail
   if [ "${1:-}" = "--pair" ]; then
     caller="${2:?--pair requires <caller_file>}"
     reusable="${3:?--pair requires <reusable_file>}"
