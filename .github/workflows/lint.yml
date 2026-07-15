@@ -118,7 +118,46 @@ jobs:
             tests/test_validate_personas.bats \
             tests/test_dev_lead_concurrency_guard.bats \
             tests/test_validate_workflow_schedules.bats \
-            tests/caller_stub_freeze.bats
+            tests/caller_stub_freeze.bats \
+            tests/pr_review_canary.bats
+
+  actionlint:
+    # General workflow linting (#1256, epic #1052 Part D): actionlint validates
+    # syntax, expression usage, shellcheck-in-run, and (for reusable callers) the
+    # inputs of LOCAL `./…` reusable refs. Install matches ci.yml's Lint GitHub
+    # Actions step — pinned version + sha256 checksum via `gh release download`
+    # (no CDN curl, no unpinned marketplace action).
+    #
+    # NOTE — this does NOT cover the pinned-remote-ref channel skew. actionlint
+    # only input-checks a reusable referenced by a LOCAL path (`./.github/…`); it
+    # does not resolve a remote pin like `…/pr-review.yml@pr-review/next` and so
+    # cannot detect a caller stub forwarding an input the pinned channel lacks
+    # (the #1034 defect). That gap is closed by validate-caller-inputs (Part A,
+    # #1253) and caller-stub-freeze (Part B, #1255) above — do not mistake this
+    # job for that coverage.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+
+      - name: Lint GitHub Actions
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Install actionlint via GitHub API download (pinned version + checksum).
+          # Uses gh release download rather than direct CDN curl to avoid transient
+          # 504s from GitHub's release asset CDN. Keep in lockstep with ci.yml.
+          ACTIONLINT_VERSION="1.7.12"
+          ACTIONLINT_SHA="8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"
+          gh release download "v${ACTIONLINT_VERSION}" -R rhysd/actionlint \
+            -p "actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" \
+            --output actionlint.tar.gz
+          echo "${ACTIONLINT_SHA}  actionlint.tar.gz" | sha256sum -c -
+          tar xzf actionlint.tar.gz actionlint
+          chmod +x actionlint
+          rm actionlint.tar.gz
+          shopt -s extglob
+          ./actionlint -ignore 'SC2129' .github/workflows/!(*.lock).yml
 
   validate-workflow-schedules:
     # Off-peak scheduling compliance (#724, epic #722): fail any PR that
