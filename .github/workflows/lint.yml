@@ -113,6 +113,7 @@ jobs:
             tests/test_review_one_pr_force_ci_failing.bats \
             tests/test_release_registry.bats \
             tests/test_readme_refresh_helpers.bats \
+            tests/test_readme_refresh_push.bats \
             tests/test_validate_personas.bats \
             tests/test_dev_lead_concurrency_guard.bats \
             tests/test_validate_workflow_schedules.bats
