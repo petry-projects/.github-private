@@ -1,4 +1,5 @@
 name: Initiative Driver
+# readme-agent: Initiative driver — auto-releases an epic's ready sub-issues to Dev-Lead.
 
 # Dependency-aware label dispatcher. Releases an initiative epic's sub-issues to
 # the dev-lead agent (by applying the `dev-lead` label) as their "blocked by"
