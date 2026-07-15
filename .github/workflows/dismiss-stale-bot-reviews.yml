@@ -16,15 +16,15 @@ on:
   pull_request_review:
     types: [submitted]
 
-permissions:
-  pull-requests: write
-
 concurrency:
   group: dismiss-stale-bot-reviews-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
   dismiss:
+    name: Dismiss
+    permissions:
+      pull-requests: write # Required to dismiss PR reviews via API
     # Same-repo PRs only — fork PRs get a read-only token that cannot dismiss.
     # Skip Dependabot events: Dependabot `pull_request` runs receive no repo
     # secrets (same constraint documented in dev-lead-reusable.yml lines 74-79),
@@ -67,10 +67,10 @@ jobs:
             if [ -z "$sha" ] || [ "$sha" = "$HEAD_SHA" ]; then continue; fi
             echo "Dismissing stale CHANGES_REQUESTED review $id by $user (on ${sha:0:8}, head ${HEAD_SHA:0:8})"
             msg="Auto-dismissed (#617): \`$user\` CHANGES_REQUESTED on a superseded commit. The bot re-reviews the new head automatically — a valid concern will return as a fresh review."
-            if ! gh api -X PUT "repos/$REPO/pulls/$PR/reviews/$id/dismissals" \
+            if ! err=$(gh api -X PUT "repos/$REPO/pulls/$PR/reviews/$id/dismissals" \
                  -f message="$msg" \
-                 -f event="DISMISS" >/dev/null 2>&1; then
-              echo "::error::could not dismiss review $id by $user"
+                 2>&1 >/dev/null); then
+              echo "::error::could not dismiss review $id by $user. API said: $err"
               exit 1
             fi
             dismissed=$((dismissed + 1))
