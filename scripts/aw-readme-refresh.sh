@@ -377,8 +377,23 @@ process_repo() {
 
   ( cd "$dir" && setup_git_identity ) || return 1
   git -C "$dir" commit -q -m "docs: refresh org READMEs from live state (automated) [skip ci]" || return 1
-  if ! git -C "$dir" push --force-with-lease --quiet origin "$BRANCH"; then
-    echo "::error::readme-refresh: $full_repo: git push to $BRANCH failed — READMEs NOT updated (check GH_TOKEN write access)" >&2
+  # Push the rolling branch. It is bot-owned and always reset to main + freshly regenerated READMEs,
+  # so the only thing that moves it out from under us is an auto-merge of the *previous* refresh PR:
+  # that deletes or fast-forwards the branch mid-run and stales the --force-with-lease lease. Retry a
+  # few times, re-syncing (fetch --prune) the remote ref between attempts so the lease re-evaluates
+  # against current state (branch deleted → recreate; branch moved → overwrite). Only a persistent
+  # failure (e.g. lost write access) fails the run.
+  local push_ok=0 attempt
+  for attempt in 1 2 3; do
+    if git -C "$dir" push --force-with-lease --quiet origin "$BRANCH" 2>/dev/null; then
+      push_ok=1; break
+    fi
+    warn "$full_repo: push to $BRANCH failed (attempt $attempt/3) — re-syncing remote ref and retrying"
+    git -C "$dir" fetch --prune --quiet origin 2>/dev/null || true
+    sleep 3
+  done
+  if [ "$push_ok" -ne 1 ]; then
+    echo "::error::readme-refresh: $full_repo: git push to $BRANCH failed after 3 attempts — READMEs NOT updated (check GH_TOKEN write access / branch state)" >&2
     return 1
   fi
 
