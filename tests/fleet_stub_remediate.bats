@@ -354,7 +354,7 @@ JSON
 }
 
 @test "driver: emits a per-repo drift-closed verification summary (log + artifact, AC #3)" {
-  summary="$(mktemp "${BATS_TEST_TMPDIR}/summary.XXXXXX.json")"
+  summary="$(mktemp "${BATS_TEST_TMPDIR}/summary.XXXXXX")"
   run env DRY_RUN=false REMEDIATE_PILOT_REPO=petry-projects/bravo \
     REMEDIATE_SUMMARY_FILE="$summary" bash "$SCRIPT" "$DRIFT_JSON"
   [ "$status" -eq 0 ]
@@ -368,7 +368,7 @@ JSON
 }
 
 @test "driver: a byte-identity mismatch is reported drift-closed=no in the summary (AC #3, #5)" {
-  summary="$(mktemp "${BATS_TEST_TMPDIR}/summary.XXXXXX.json")"
+  summary="$(mktemp "${BATS_TEST_TMPDIR}/summary.XXXXXX")"
   run env DRY_RUN=false WRITTEN_SHA=deadbeefdeadbeefdeadbeefdeadbeefdeadbeef \
     REMEDIATE_PILOT_REPO=petry-projects/bravo REMEDIATE_SUMMARY_FILE="$summary" \
     bash "$SCRIPT" "$DRIFT_JSON"
@@ -381,6 +381,27 @@ JSON
     [ "$status" -eq 1 ]
   fi
   rm -f "$summary"
+}
+
+@test "driver: an idempotent skip (existing PR) reports status=skipped, NOT drift-closed=yes (AC #3)" {
+  # A pre-existing remediation PR must not be reported as a verified drift close:
+  # nothing was written or re-verified this run.
+  summary="$(mktemp "${BATS_TEST_TMPDIR}/summary.XXXXXX")"
+  run env DRY_RUN=false EXISTING_PR=77 REMEDIATE_PILOT_REPO=petry-projects/bravo \
+    REMEDIATE_SUMMARY_FILE="$summary" bash "$SCRIPT" "$DRIFT_JSON"
+  [ "$status" -eq 0 ]                                   # a skip is not a failure
+  [[ "$output" == *"drift-closed=skipped"* ]]
+  [[ "$output" != *"drift-closed=yes"* ]]               # must NOT claim a verified close
+  [ "$(jq -r '.[0].status' "$summary")" = "skipped" ]
+  [ "$(jq -r '.[0].drift_closed' "$summary")" = "false" ]
+  rm -f "$summary"
+}
+
+@test "driver: a non-numeric REMEDIATE_MAX_REPOS fails loud (never a bad -ge comparison, AC #2)" {
+  run env DRY_RUN=false REMEDIATE_MAX_REPOS=abc REMEDIATE_PILOT_REPO=petry-projects/bravo \
+    bash "$SCRIPT" "$DRIFT_JSON"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"REMEDIATE_MAX_REPOS must be a non-negative integer"* ]]
 }
 
 @test "pilot helpers: _in_pilot matches a named repo and fail-closes on empty (AC #1, #4)" {

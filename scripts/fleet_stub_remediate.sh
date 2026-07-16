@@ -186,23 +186,32 @@ REMEDIATE_SUMMARY_FILE="${REMEDIATE_SUMMARY_FILE:-}"
 
 _is_dry() { [ "$DRY_RUN" = "true" ]; }
 
+# Pure-Bash list splitting (comma/space separated) — no `tr`/`grep`/subshells, so
+# the per-repo _in_scope/_in_pilot checks in run_remediation's loop spawn no
+# external processes.
+
 # _scope_list — echo the normalized repo scope, one repo per line (may be empty).
 _scope_list() {
-  printf '%s' "$REMEDIATE_REPOS" | tr ', ' '\n\n' | grep -v '^$' || true
+  local r
+  for r in ${REMEDIATE_REPOS//,/ }; do echo "$r"; done
 }
 
 # _in_scope <repo> — 0 if <repo> is within scope. An empty scope means every repo
 # in the plan is in scope (used by dry-run, which never writes).
 _in_scope() {
-  local repo="$1" s
-  [ -z "$(_scope_list)" ] && return 0
-  while IFS= read -r s; do [ "$s" = "$repo" ] && return 0; done < <(_scope_list)
+  local repo="$1" r any=0
+  for r in ${REMEDIATE_REPOS//,/ }; do
+    any=1
+    [ "$r" = "$repo" ] && return 0
+  done
+  [ "$any" -eq 0 ] && return 0   # empty scope = every repo in scope
   return 1
 }
 
 # _pilot_list — echo the normalized pilot allowlist, one repo per line (may be empty).
 _pilot_list() {
-  printf '%s' "$REMEDIATE_PILOT_REPO" | tr ', ' '\n\n' | grep -v '^$' || true
+  local p
+  for p in ${REMEDIATE_PILOT_REPO//,/ }; do echo "$p"; done
 }
 
 # _in_pilot <repo> — 0 if <repo> is a named pilot repo. Unlike _in_scope, an EMPTY
@@ -210,33 +219,44 @@ _pilot_list() {
 # explicitly named pilot repo (AC #1/#4).
 _in_pilot() {
   local repo="$1" p
-  while IFS= read -r p; do [ "$p" = "$repo" ] && return 0; done < <(_pilot_list)
+  for p in ${REMEDIATE_PILOT_REPO//,/ }; do
+    [ "$p" = "$repo" ] && return 0
+  done
   return 1
 }
 
 # _emit_verification_summary <tsv> — surface the per-repo drift-closed verdicts
-# (AC #3). <tsv> is newline-separated "repo<TAB>true|false" where true means the
-# pushed blob SHA equals canon (drift closed). Always logs a summary block; when
-# REMEDIATE_SUMMARY_FILE is set, also writes the verdicts as a JSON array artifact.
+# (AC #3). <tsv> is newline-separated "repo<TAB>status" where status is one of:
+#   verified — a PR was opened AND the pushed blob SHA was verified == canon
+#              (drift_closed=true);
+#   skipped  — a remediation PR was already open (idempotent), so nothing was
+#              written or re-verified this run (drift_closed=false — NOT a
+#              verified close, and NOT a failure);
+#   failed   — remediation failed (e.g. byte-identity mismatch) (drift_closed=false).
+# Always logs a summary block; when REMEDIATE_SUMMARY_FILE is set, also writes the
+# verdicts as a JSON array artifact carrying BOTH the status and the drift_closed
+# boolean (true only for `verified`).
 _emit_verification_summary() {
-  local tsv="$1" repo closed
+  local tsv="$1" repo status
   echo "[remediate] Verification summary (drift-closed = pushed blob SHA == canon):"
   if [ ! -s "$tsv" ]; then
     echo "  [verify] (no live remediations this run)"
   else
-    while IFS=$'\t' read -r repo closed; do
+    while IFS=$'\t' read -r repo status; do
       [ -n "$repo" ] || continue
-      if [ "$closed" = "true" ]; then
-        echo "  [verify] ${repo}: drift-closed=yes"
-      else
-        echo "  [verify] ${repo}: drift-closed=no"
-      fi
+      case "$status" in
+        verified) echo "  [verify] ${repo}: drift-closed=yes" ;;
+        skipped)  echo "  [verify] ${repo}: drift-closed=skipped (remediation PR already open — not re-verified this run)" ;;
+        *)        echo "  [verify] ${repo}: drift-closed=no" ;;
+      esac
     done < "$tsv"
   fi
   if [ -n "$REMEDIATE_SUMMARY_FILE" ]; then
     if [ -s "$tsv" ]; then
       jq -R -s 'split("\n") | map(select(length > 0) | split("\t"))
-                | map({repo: .[0], drift_closed: (.[1] == "true")})' "$tsv" \
+                | map({repo: (.[0] // "" | tostring),
+                       status: (.[1] // "" | tostring),
+                       drift_closed: (.[1] == "verified")})' "$tsv" \
         > "$REMEDIATE_SUMMARY_FILE"
     else
       echo "[]" > "$REMEDIATE_SUMMARY_FILE"
@@ -311,7 +331,10 @@ _remediate_repo() {
   existing_pr="$(gh pr list --repo "$repo" --head "$branch" --state open --json number --jq '(.[0]?.number // "" | tostring)' 2>/dev/null || true)"
   if [ -n "$existing_pr" ]; then
     echo "[remediate] PR #${existing_pr} already open for branch ${branch} on ${repo} — skipping (idempotent)"
-    return 0
+    # Distinct code (not 0): a pre-existing PR is NOT a fresh verified remediation.
+    # The caller records this as `skipped`, not `verified`, so the verification
+    # summary never reports drift-closed=yes for a run that verified nothing.
+    return 3
   fi
 
   default_branch="$(gh api "repos/${repo}" --jq '.default_branch' 2>/dev/null || echo main)"
@@ -386,9 +409,17 @@ run_remediation() {
     return 0
   fi
 
-  local max remediated=0 summary_tmp
+  local max remediated=0 summary_tmp rc
   max="$REMEDIATE_MAX_REPOS"
-  summary_tmp="$(mktemp)"
+  # Validate the per-run cap before the numeric `-ge` comparison below: an empty
+  # or non-numeric value would make `[ "$remediated" -ge "$max" ]` error out and,
+  # under set -e, abort the whole run with an opaque failure.
+  case "$max" in
+    ''|*[!0-9]*)
+      echo "::error::fleet_stub_remediate: REMEDIATE_MAX_REPOS must be a non-negative integer, got '${max}'" >&2
+      return 2 ;;
+  esac
+  summary_tmp="$(mktemp)" || { echo "::error::fleet_stub_remediate: mktemp failed" >&2; return 1; }
 
   while IFS= read -r repo; do
     [ -n "$repo" ] || continue
@@ -416,11 +447,17 @@ run_remediation() {
 
     entries="$(printf '%s' "$plan" | jq -r --arg r "$repo" \
       '.[] | select(.repo == $r) | [.stub_file, .canonical_repo, .canonical_path, .stub] | @tsv')"
-    if _remediate_repo "$repo" "$entries"; then
-      if ! _is_dry; then printf '%s\t%s\n' "$repo" "true" >> "$summary_tmp"; fi
-    else
+    # Capture the exact exit code without tripping set -e: 0 = opened+verified,
+    # 3 = idempotent skip (PR already open, nothing verified), other = failed.
+    if _remediate_repo "$repo" "$entries"; then rc=0; else rc=$?; fi
+    if ! _is_dry; then
+      case "$rc" in
+        0) printf '%s\t%s\n' "$repo" "verified" >> "$summary_tmp" ;;
+        3) printf '%s\t%s\n' "$repo" "skipped"  >> "$summary_tmp" ;;
+        *) printf '%s\t%s\n' "$repo" "failed"   >> "$summary_tmp"; failed=1 ;;
+      esac
+    elif [ "$rc" -ne 0 ] && [ "$rc" -ne 3 ]; then
       failed=1
-      if ! _is_dry; then printf '%s\t%s\n' "$repo" "false" >> "$summary_tmp"; fi
     fi
   done < <(printf '%s' "$plan" | jq -r '[.[].repo] | unique | .[]')
 
