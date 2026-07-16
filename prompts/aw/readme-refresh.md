@@ -60,8 +60,10 @@ Target type: `${TARGET_TYPE}`. Produce the complete, final Markdown body for thi
    and the section headings must make the mechanism obvious:
    - The `agents/*.md` profiles are **interactive** — invoked by `@mention` from GitHub.com/IDEs/CLI.
      Title that section **"@-Mention Agents"** (not just "Agents").
-   - The facts bundle's *agentic workflows* are **autonomous** — Claude/Copilot agents that run as
-     GitHub Actions on events/schedules (dev-lead, PR review, triage, planners, etc.). In the
+   - The facts bundle's *agentic workflows* are **autonomous GitHub Actions workflows** that run on
+     events/schedules (dev-lead, PR review, triage, planners, etc.). The discovery gives each
+     workflow's filename and one-line purpose but **not** which engine drives it, so do not attribute
+     a provider (Claude/Copilot) to a workflow unless the facts state it. In the
      `github-private-repo-readme` and `org-profile-member` READMEs, list each with its one-line
      purpose under a section titled **"Automated Workflows"** (not "Agentic Workflows").
 
