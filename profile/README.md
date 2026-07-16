@@ -40,22 +40,23 @@ Engineering standards live in
 | [`push-protection`](https://github.com/petry-projects/.github/blob/main/standards/push-protection.md) | Secret push protection configuration | Layer 1 — GitHub Push Protection · Layer 2 — Local Pre-Commit Prevention · Layer 3 — CI Secret Scanning · Incident Response |
 | [`ruleset-remediation-runbook`](https://github.com/petry-projects/.github/blob/main/standards/ruleset-remediation-runbook.md) | Steps to remediate ruleset violations | Bypass actors · Legacy rulesets — migrate checks first, then delete · Rollback |
 
-## Custom Agents
+## @-Mention Agents
 
 Copilot custom agent profiles live in
 [`.github-private/agents/`](https://github.com/petry-projects/.github-private/tree/main/agents)
 and are available org-wide from GitHub.com, VS Code, and JetBrains.
+Invoke any agent by typing `@<agent-name>` in a supported surface.
 
 | Agent | Role |
 |---|---|
-| [`agentic-workflows`](https://github.com/petry-projects/.github-private/blob/main/agents/agentic-workflows.md) | Orchestrates multi-step agentic workflows |
-| [`compliance-auditor`](https://github.com/petry-projects/.github-private/blob/main/agents/compliance-auditor.md) | Audits repos for compliance with org standards |
-| [`feature-ideator`](https://github.com/petry-projects/.github-private/blob/main/agents/feature-ideator.md) | Generates and evaluates feature ideas |
-| [`pr-reviewer`](https://github.com/petry-projects/.github-private/blob/main/agents/pr-reviewer.md) | Reviews pull requests against org standards |
+| [`agentic-workflows`](https://github.com/petry-projects/.github-private/blob/main/agents/agentic-workflows.md) | Copilot custom agent for authoring, updating, debugging, and compiling gh-aw agentic workflow markdown files in petry-projects/.github-private |
+| [`compliance-auditor`](https://github.com/petry-projects/.github-private/blob/main/agents/compliance-auditor.md) | Audits a repository against petry-projects org standards (CI, agent config, repo settings, dependabot, push protection). Reports findings and can auto-fix non-breaking compliance gaps. |
+| [`feature-ideator`](https://github.com/petry-projects/.github-private/blob/main/agents/feature-ideator.md) | Generates feature ideas and improvements for a repository by analyzing its codebase, issues, discussions, and competitive landscape. Produces actionable feature proposals with effort estimates. |
+| [`pr-reviewer`](https://github.com/petry-projects/.github-private/blob/main/agents/pr-reviewer.md) | Multi-tier PR review agent with cascading risk assessment. Classifies PR risk (LOW/MEDIUM/HIGH), runs deep analysis with cross-engine adversarial review, and makes approve/escalate decisions. (Automated event-driven counterpart: [`pr-review-trigger.yml`](https://github.com/petry-projects/.github-private/blob/main/.github/workflows/pr-review-trigger.yml).) |
 
-## Agentic Workflows
+## Automated Workflows
 
-Autonomous CI agents run as GitHub Actions in
+Autonomous GitHub Actions workflows run on events and schedules in
 [`.github-private/.github/workflows/`](https://github.com/petry-projects/.github-private/tree/main/.github/workflows).
 These are distinct from the `@mention` Copilot agents above.
 
@@ -68,7 +69,7 @@ These are distinct from the `@mention` Copilot agents above.
 | [`initiative-driver.yml`](https://github.com/petry-projects/.github-private/blob/main/.github/workflows/initiative-driver.yml) | Initiative driver — auto-releases an epic's ready sub-issues to Dev-Lead |
 | [`initiative-planner.yml`](https://github.com/petry-projects/.github-private/blob/main/.github/workflows/initiative-planner.yml) | Initiative planner (BMAD Scrum Master) — breaks an approved initiative into an epic + sub-issues |
 | [`issue-triage-runner.yml`](https://github.com/petry-projects/.github-private/blob/main/.github/workflows/issue-triage-runner.yml) | Issue triage agent — labels and routes newly opened issues |
-| [`pr-review-trigger.yml`](https://github.com/petry-projects/.github-private/blob/main/.github/workflows/pr-review-trigger.yml) | PR review agent — cascading triage → deep → security review on pull requests |
+| [`pr-review-trigger.yml`](https://github.com/petry-projects/.github-private/blob/main/.github/workflows/pr-review-trigger.yml) | PR review agent — cascading triage → deep → security review on pull requests. (`@mention` counterpart: [`pr-reviewer`](https://github.com/petry-projects/.github-private/blob/main/agents/pr-reviewer.md).) |
 | [`release-notes.yml`](https://github.com/petry-projects/.github-private/blob/main/.github/workflows/release-notes.yml) | Release-notes agent — drafts Keep-a-Changelog entries from merged PRs and opens a CHANGELOG PR |
 | [`stale-manager.yml`](https://github.com/petry-projects/.github-private/blob/main/.github/workflows/stale-manager.yml) | Stale manager agent — warns and closes stale issues/PRs across the org |
 
