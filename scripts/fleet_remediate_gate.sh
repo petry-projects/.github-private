@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-set -euo pipefail
+# NOTE: strict mode is set in the execute-directly guard at the bottom, not at the
+# top level — so sourcing this file (the bats tests do) does not leak `set -euo
+# pipefail` into the caller's shell (repo standard, AGENTS.md / #1257).
 # fleet_remediate_gate.sh — pure go/no-go gate for the Actions Fleet Monitor's
 # opt-in stub-drift remediation (#1152, epic #1148, Phase 4). Sourced by bats to
 # exercise the pure decision, and invoked as a CLI by actions-fleet-monitor.yml
@@ -55,5 +57,6 @@ remediate_dry_run() {
 # Source-guard: tests source this to exercise the pure gate; a direct run prints
 # the DRY_RUN decision so the workflow step can capture it from stdout.
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+  set -euo pipefail
   remediate_dry_run "$@"
 fi
