@@ -423,6 +423,44 @@ committed baseline (`tests/fixtures/caller-stub-freeze/*.block`).
   (`standards/ci-standards.md`) and have repos defer to it — see the org-wide
   rollout tracked under epic #722.
 
+### Fleet stub-drift remediation loop
+
+The Actions Fleet Monitor (`.github/workflows/actions-fleet-monitor.yml`) detects per-repo
+thin-caller stub drift and writes `fleet_stub_drift.json` every run. Epic #1148 adds an **opt-in,
+DRY_RUN-default remediation loop** that consumes that artifact on the *same cadence* — it proposes
+(never direct-pushes) the canonical stub bytes back to a drifted consumer repo as one PR per repo.
+The loop is deliberately hard to fire by accident; it is bounded by four controls:
+
+- **DRY_RUN default (`scripts/fleet_stub_remediate.sh`).** `DRY_RUN` defaults to `true`. Every
+  scheduled and `workflow_call` run logs the remediation *intent* and makes zero write API calls.
+  Live remediation is only ever reached on an explicit `workflow_dispatch` with the `remediate=live`
+  input — the human go decision. The gate is `scripts/fleet_remediate_gate.sh`
+  (tests: `tests/fleet_remediate_gate.bats`): live requires `workflow_dispatch` + `remediate=live`
+  **and** the cross-repo write credential (`GH_PAT_WORKFLOWS`) **and** a configured pilot repo;
+  any missing precondition degrades to dry-run with a `::warning::` and never fails the monitor
+  (mirroring `fleet_monitor.sh`'s token-degradation posture). The remediation step is also
+  `continue-on-error: true`, so it is strictly non-blocking for the daily monitor.
+- **Pilot gate (`REMEDIATE_PILOT_REPO` / `vars.FLEET_REMEDIATE_PILOT_REPO`).** Live remediation is
+  fail-closed to an explicitly named pilot repo: with none set, the driver refuses to write and stays
+  dry-run. Every DRIFTED repo outside the pilot scope is logged `would remediate (out of pilot scope)`
+  and skipped without writes. This is the pilot-first blast-radius bound before widening fleet-wide.
+- **Per-run cap (`REMEDIATE_MAX_REPOS` / `vars.FLEET_REMEDIATE_MAX_REPOS`, default `1`).** The maximum
+  number of repos remediated live in a single run. Repos beyond the cap are logged as *deferred*
+  (never silently truncated) and picked up on a later run.
+- **Never-overwrite allowlist (`REMEDIATION_ALLOWLIST` in `scripts/fleet_stub_remediate.sh`).** Files a
+  consumer repo has intentionally customized are never re-synced — an allowlisted `owner/repo` or
+  `owner/repo|stub_file` never appears in the remediation plan. It is intentionally empty (every tracked
+  fleet stub is a verbatim deployment and *is* remediable) until a first deliberate customization is
+  recorded. Add an entry **only** with a recorded rationale, the same recorded-rationale rule the
+  template `ci.yml` drift exception follows.
+
+Each live remediation is verified byte-for-byte (pushed blob SHA == canonical blob SHA) before its PR
+is opened, and the per-repo drift-closed verdicts are surfaced in the run log (and an optional summary
+artifact). **The human go/no-go to enable live pilot remediation — and, later, to widen fleet-wide — is
+recorded as a comment on the tracking issue/PR**, consistent with the repo's go/no-go pattern and the
+initiative-planner inert-epic model: the loop stays inert (dry-run) until a human explicitly flips a
+run to `remediate=live` for the configured pilot.
+
 ### Agent Profiles (`agents/*.md`)
 
 - Every agent profile must have YAML frontmatter with `name`, `description`, and `tools`.
