@@ -38,8 +38,12 @@ Target type: `${TARGET_TYPE}`. Produce the complete, final Markdown body for thi
    Improve clarity only where it helps. Do **not** blank or downgrade good existing text.
 2. **Only correct what the facts show is wrong or missing:** add repositories present in the facts but
    missing from the table; fix stale primary-language values; fix inaccurate framework and agent lists.
-3. **Never invent** repositories, agents, agentic workflows, frameworks, standards subtopics, or
-   reporting workflows that are not in the facts bundle above.
+3. **Never invent** repositories, agents, agentic workflows, frameworks, standards subtopics,
+   reporting workflows, or **capability types** that are not in the facts bundle above. This applies
+   to the opening one-line description/tagline too: describe only artifact types the facts actually
+   contain (custom agents, automated workflows, prompts, scripts, frameworks, reporting dashboards).
+   In particular, do **not** claim the repo provides "skills"/"Claude Code skills" — there is no
+   skills artifact in the facts.
 4. **Enrich standards with subtopics.** The facts bundle lists each standards doc with its section
    headings. In the Standards section, give each standard a few (up to ~5) *notable* subtopics drawn
    from those headings — the ones a reader would search for (e.g. canary rings, soak windows,
@@ -51,11 +55,22 @@ Target type: `${TARGET_TYPE}`. Produce the complete, final Markdown body for thi
    list every reporting workflow with its one-line purpose; for `github-repo-readme` /
    `org-profile-public`, list only the ones tagged `(.github)`. Per rule 3, use only workflows present
    in the facts.
-6. **Agentic workflows.** The facts bundle lists the org's *agentic workflows* (autonomous Claude/
-   Copilot agents that run as GitHub Actions — dev-lead, PR review, triage, planners, etc.). In the
-   `github-private-repo-readme` and `org-profile-member` READMEs, include an **"Agentic Workflows"**
-   section listing each with its one-line purpose. These are distinct from the custom `@mention`
-   agents (in `agents/`) — keep both. Per rule 3, use only agentic workflows present in the facts.
+6. **Two agent surfaces — name them by mechanism, don't duplicate.** The org exposes agents two ways,
+   and the section headings must make the mechanism obvious:
+   - The `agents/*.md` profiles are **interactive** — invoked by `@mention` from GitHub.com/IDEs/CLI.
+     Title that section **"@-Mention Agents"** (not just "Agents").
+   - The facts bundle's *agentic workflows* are **autonomous** — Claude/Copilot agents that run as
+     GitHub Actions on events/schedules (dev-lead, PR review, triage, planners, etc.). In the
+     `github-private-repo-readme` and `org-profile-member` READMEs, list each with its one-line
+     purpose under a section titled **"Automated Workflows"** (not "Agentic Workflows").
+
+   Keep both sections — they are different mechanisms. But where one capability exists on **both**
+   surfaces (e.g. `pr-reviewer` has an `@`-mention profile *and* `pr-review-trigger.yml`), describe
+   it once per section and add a brief parenthetical cross-reference — do not write a third, separate
+   spotlight section for it. Specifically, do **not** emit a stand-alone "PR Review Automation"
+   section: fold any such detail into the `pr-review-trigger.yml` row of Automated Workflows and/or
+   the `pr-reviewer` row of @-Mention Agents. Per rule 3, use only agents/workflows present in the
+   facts.
 7. **Link every listed item to its file.** Agents, agentic workflows, reporting workflows, and
    standards each carry a link target in the facts (the path/URL in parentheses, e.g.
    `(agents/pr-reviewer.md)`, `(.github/workflows/dev-lead.yml)`, or a full `(link: https://…)`). Make
