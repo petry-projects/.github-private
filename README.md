@@ -1,13 +1,13 @@
 # .github-private
 
-Org-wide Copilot custom agents, Claude Code skills, and agentic workflow infrastructure for `petry-projects`.
+Org-wide Copilot custom agents, automated workflows, prompts, scripts, and frameworks for `petry-projects`.
 
 ## What This Repo Does
 
 This is the [`.github-private` convention](https://docs.github.com/en/copilot/how-tos/copilot-on-github/customize-copilot/customize-cloud-agent/create-custom-agents) repo for the petry-projects org.
 Agent profiles in `/agents/` are available org-wide — invocable from GitHub.com, VS Code, JetBrains, and Copilot CLI.
 
-It also contains agentic workflows (autonomous Claude/Copilot agents running as GitHub Actions),
+It also contains automated workflows (GitHub Actions agents running on events and schedules),
 prompts, scripts, and the scheduled reporting dashboards that run across the org.
 
 ## Structure
@@ -26,16 +26,16 @@ frameworks/               # Installed agentic frameworks (git subtree)
 .github/workflows/        # Scheduled automation (PR review, health checks)
 ```
 
-## Agents
+## @-Mention Agents
 
 | Agent | Purpose | Invoke with |
 |-------|---------|-------------|
 | [`agentic-workflows`](agents/agentic-workflows.md) | Agentic workflow orchestration | `@agentic-workflows` in any org repo |
 | [`compliance-auditor`](agents/compliance-auditor.md) | Audit repo against org standards | `@compliance-auditor` in any org repo |
 | [`feature-ideator`](agents/feature-ideator.md) | Generate and prioritize feature ideas | `@feature-ideator` in any org repo |
-| [`pr-reviewer`](agents/pr-reviewer.md) | Cascading PR review (triage → deep → security audit) | `@pr-reviewer` in any org PR |
+| [`pr-reviewer`](agents/pr-reviewer.md) | Cascading PR review (triage → deep → security audit) with cross-engine adversarial review (see also [`pr-review-trigger.yml`](.github/workflows/pr-review-trigger.yml) for scheduled automation) | `@pr-reviewer` in any org PR |
 
-## Agentic Workflows
+## Automated Workflows
 
 Autonomous agents that run as GitHub Actions, triggered by events or schedules across the org.
 
@@ -48,21 +48,9 @@ Autonomous agents that run as GitHub Actions, triggered by events or schedules a
 | [`initiative-driver.yml`](.github/workflows/initiative-driver.yml) | Initiative driver — auto-releases an epic's ready sub-issues to Dev-Lead |
 | [`initiative-planner.yml`](.github/workflows/initiative-planner.yml) | Initiative planner (BMAD Scrum Master) — breaks an approved initiative into an epic + sub-issues |
 | [`issue-triage-runner.yml`](.github/workflows/issue-triage-runner.yml) | Issue triage agent — labels and routes newly opened issues |
-| [`pr-review-trigger.yml`](.github/workflows/pr-review-trigger.yml) | PR review agent — cascading triage → deep → security review on pull requests |
+| [`pr-review-trigger.yml`](.github/workflows/pr-review-trigger.yml) | PR review agent — cascading triage → deep → security review on open PRs across the org, hourly; auto-approves LOW/MEDIUM risk PRs with passing CI, escalates HIGH risk to human review (see also [`@pr-reviewer`](agents/pr-reviewer.md)). Trigger manually: `gh workflow run pr-review-trigger.yml --repo petry-projects/.github-private` or comment `@petry-review-bot` on any org PR |
 | [`release-notes.yml`](.github/workflows/release-notes.yml) | Release-notes agent — drafts Keep-a-Changelog entries from merged PRs and opens a CHANGELOG PR |
 | [`stale-manager.yml`](.github/workflows/stale-manager.yml) | Stale manager agent — warns and closes stale issues/PRs across the org |
-
-## PR Review Automation
-
-The scheduled workflow reviews all open PRs across `petry-projects` hourly:
-- Classifies risk (LOW/MEDIUM/HIGH) via cascading tiers
-- Auto-approves LOW/MEDIUM risk PRs with passing CI
-- Cross-engine adversarial review (Claude + Copilot rubber duck)
-- Escalates HIGH risk or failing PRs to human review
-
-Trigger manually: `gh workflow run pr-review-trigger.yml --repo petry-projects/.github-private`
-
-Mention trigger: Comment `@petry-review-bot` on any org PR for immediate review.
 
 ## Reporting & Dashboards
 
@@ -96,7 +84,7 @@ Notable subtopics are listed below to aid discoverability; see the standards dir
 
 | Standard | Notable subtopics |
 |----------|-------------------|
-| [`advanced-security`](https://github.com/petry-projects/.github/blob/main/standards/advanced-security.md) | Code Security Configurations, push-protection live-fire (canary), custom secret scanning patterns, compliance audit checks |
+| [`advanced-security`](https://github.com/petry-projects/.github/blob/main/standards/advanced-security.md) | Code Security Configurations, push-protection live-fire (canary), licensing & billing, compliance audit checks |
 | [`agent-standards`](https://github.com/petry-projects/.github/blob/main/standards/agent-standards.md) | Required files, compliance exemptions, AgentShield CI workflow, decision-making reusables, BMAD Method Workflows |
 | [`ci-standards`](https://github.com/petry-projects/.github/blob/main/standards/ci-standards.md) | Staged promotion through concentric rings, reusable workflow versioning (`stable` channel), action pinning policy, permissions policy, Dev-Lead Agent |
 | [`codeowners-standard`](https://github.com/petry-projects/.github/blob/main/standards/codeowners-standard.md) | Team composition, required setup for new bots, branch protection, verified end-to-end |
