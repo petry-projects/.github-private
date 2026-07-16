@@ -63,7 +63,7 @@ setup() {
   run remediate_dry_run "workflow_dispatch" "live" "false" "true"
   [ "$status" -eq 0 ]
   # stdout carries the DRY_RUN decision; the warning is on stderr — `run` merges them.
-  [[ "${lines[0]}" == *"::warning::"* ]]
+  [[ "$output" == *"::warning::"* ]]
   [[ "$output" == *"credential"* ]]
   # The final decision must still be dry-run.
   [[ "$output" == *"true"* ]]

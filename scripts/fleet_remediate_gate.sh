@@ -54,6 +54,6 @@ remediate_dry_run() {
 
 # Source-guard: tests source this to exercise the pure gate; a direct run prints
 # the DRY_RUN decision so the workflow step can capture it from stdout.
-if [ "${BASH_SOURCE[0]:-$0}" = "$0" ]; then
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
   remediate_dry_run "$@"
 fi
