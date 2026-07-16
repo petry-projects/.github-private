@@ -33,6 +33,18 @@ on:
         required: false
         default: "1"
         type: string
+      remediate:
+        # Opt-in stub-drift remediation (#1152, epic #1148). Defaults to dry-run;
+        # `live` is the explicit human go for the pilot repo. Only ever honored on
+        # this workflow_dispatch path AND gated by the pilot scope + credential —
+        # scheduled/workflow_call runs can never go live (see the remediation step).
+        description: "Stub-drift remediation: dry-run (default) or live (pilot-only opt-in)"
+        required: false
+        default: "dry-run"
+        type: choice
+        options:
+          - dry-run
+          - live
   workflow_call:
     inputs:
       org:
@@ -553,6 +565,51 @@ jobs:
             --input - <<EOF
           {"event_type":"dev-lead-ci-failure","client_payload":{"source":"fleet-monitor-stub-drift","count":"${{ env.STUB_DRIFT_COUNT }}"}}
           EOF
+
+      - name: Remediate drifted stubs (opt-in, dry-run by default)
+        # #1152 (epic #1148, Phase 4) — wire the stub-drift remediation loop onto
+        # the SAME cadence as detection: run scripts/fleet_stub_remediate.sh here,
+        # AFTER fleet_monitor.sh wrote fleet_stub_drift.json and the report/dispatch
+        # steps above consumed it. This step never goes live by accident:
+        #   • DRY_RUN defaults to true; live requires an explicit workflow_dispatch
+        #     with remediate=live (scheduled/workflow_call runs stay dry-run).
+        #   • Live additionally requires the pilot scope (FLEET_REMEDIATE_PILOT_REPO)
+        #     and the cross-repo write credential (GH_PAT_WORKFLOWS); a missing one
+        #     degrades to dry-run with a ::warning:: (fleet_remediate_gate.sh).
+        #   • continue-on-error keeps remediation strictly non-blocking — it can
+        #     never fail the daily monitor (AC #3).
+        # The go/no-go decision to flip a run to live is recorded on the tracking
+        # issue per the repo's go/no-go pattern; the pilot repo + per-run cap are
+        # configured via repo variables, so enabling the pilot needs no code change.
+        continue-on-error: true
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REMEDIATE_MODE: ${{ inputs.remediate || 'dry-run' }}
+          REMEDIATE_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
+          REMEDIATE_PILOT_REPO: ${{ vars.FLEET_REMEDIATE_PILOT_REPO }}
+          REMEDIATE_MAX_REPOS: ${{ vars.FLEET_REMEDIATE_MAX_REPOS || '1' }}
+        run: |
+          set -euo pipefail
+
+          if [ ! -f fleet_stub_drift.json ]; then
+            echo "::warning::fleet_stub_drift.json not found — skipping remediation (no drift artifact to consume)."
+            exit 0
+          fi
+
+          token_present=false; [ -n "${REMEDIATE_TOKEN}" ] && token_present=true
+          pilot_present=false; [ -n "${REMEDIATE_PILOT_REPO}" ] && pilot_present=true
+
+          # Pure go/no-go gate: decides DRY_RUN vs live and emits the
+          # degrade-to-dry-run ::warning:: when a live precondition is missing.
+          DRY_RUN="$(bash scripts/fleet_remediate_gate.sh \
+            "${EVENT_NAME}" "${REMEDIATE_MODE}" "${token_present}" "${pilot_present}")"
+          export DRY_RUN
+          export GH_TOKEN="${REMEDIATE_TOKEN:-${GITHUB_TOKEN:-}}"
+          export REMEDIATE_PILOT_REPO REMEDIATE_MAX_REPOS
+          export REMEDIATE_SUMMARY_FILE="fleet_stub_remediate_summary.json"
+
+          echo "Fleet stub-drift remediation: DRY_RUN=${DRY_RUN} (event=${EVENT_NAME}, mode=${REMEDIATE_MODE}, pilot_set=${pilot_present})"
+          bash scripts/fleet_stub_remediate.sh fleet_stub_drift.json
 
       - name: Summarize token usage (org-wide)
         # Runs after all alerting steps so a token-report failure or timeout does
