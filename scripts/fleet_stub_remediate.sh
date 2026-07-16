@@ -162,20 +162,107 @@ DRY_RUN="${DRY_RUN:-true}"
 # (fail-closed); dry-run logs the whole plan regardless.
 REMEDIATE_REPOS="${REMEDIATE_REPOS:-}"
 
+# ── Phase 3 pilot-first rollout (#1151, epic #1148) ───────────────────────────
+# Mirror the repo's pilot/canary-first discipline (AGENTS.md): dry-run by default
+# → a single named pilot repo → human go/no-go → fleet-wide. These three additive
+# controls bound the blast radius of live remediation and prove the loop works
+# before it touches the whole fleet.
+#
+# Pilot scope (AC #1/#4): a space/comma-separated pilot allowlist — the ONLY
+# consumer repos eligible for LIVE remediation. Live remediation REQUIRES a named
+# pilot repo; with none set the driver stays fully dry-run (fail-closed). Every
+# DRIFTED repo outside the pilot scope is logged 'would remediate (out of pilot
+# scope)' and skipped without writes. Typically ONE repo (the per-run cap below
+# is the count bound); modeled as an allowlist so the two controls stay orthogonal.
+REMEDIATE_PILOT_REPO="${REMEDIATE_PILOT_REPO:-}"
+# Per-run repo cap (AC #2): the maximum number of repos remediated LIVE in a single
+# run. Repos beyond the cap are logged as deferred (never silently truncated) and
+# picked up on a later run. Small default keeps the pilot blast radius bounded.
+REMEDIATE_MAX_REPOS="${REMEDIATE_MAX_REPOS:-1}"
+# Optional path for the emitted per-repo drift-closed verification summary (AC #3).
+# When set, the run writes a JSON array [{repo, drift_closed}] artifact there in
+# addition to logging the verdicts.
+REMEDIATE_SUMMARY_FILE="${REMEDIATE_SUMMARY_FILE:-}"
+
 _is_dry() { [ "$DRY_RUN" = "true" ]; }
+
+# Pure-Bash list splitting (comma/space separated) — no `tr`/`grep`/subshells, so
+# the per-repo _in_scope/_in_pilot checks in run_remediation's loop spawn no
+# external processes.
 
 # _scope_list — echo the normalized repo scope, one repo per line (may be empty).
 _scope_list() {
-  printf '%s' "$REMEDIATE_REPOS" | tr ', ' '\n\n' | grep -v '^$' || true
+  local r
+  for r in ${REMEDIATE_REPOS//,/ }; do echo "$r"; done
 }
 
 # _in_scope <repo> — 0 if <repo> is within scope. An empty scope means every repo
 # in the plan is in scope (used by dry-run, which never writes).
 _in_scope() {
-  local repo="$1" s
-  [ -z "$(_scope_list)" ] && return 0
-  while IFS= read -r s; do [ "$s" = "$repo" ] && return 0; done < <(_scope_list)
+  local repo="$1" r any=0
+  for r in ${REMEDIATE_REPOS//,/ }; do
+    any=1
+    [ "$r" = "$repo" ] && return 0
+  done
+  [ "$any" -eq 0 ] && return 0   # empty scope = every repo in scope
   return 1
+}
+
+# _pilot_list — echo the normalized pilot allowlist, one repo per line (may be empty).
+_pilot_list() {
+  local p
+  for p in ${REMEDIATE_PILOT_REPO//,/ }; do echo "$p"; done
+}
+
+# _in_pilot <repo> — 0 if <repo> is a named pilot repo. Unlike _in_scope, an EMPTY
+# pilot list means NOTHING is eligible (fail-closed): live remediation requires an
+# explicitly named pilot repo (AC #1/#4).
+_in_pilot() {
+  local repo="$1" p
+  for p in ${REMEDIATE_PILOT_REPO//,/ }; do
+    [ "$p" = "$repo" ] && return 0
+  done
+  return 1
+}
+
+# _emit_verification_summary <tsv> — surface the per-repo drift-closed verdicts
+# (AC #3). <tsv> is newline-separated "repo<TAB>status" where status is one of:
+#   verified — a PR was opened AND the pushed blob SHA was verified == canon
+#              (drift_closed=true);
+#   skipped  — a remediation PR was already open (idempotent), so nothing was
+#              written or re-verified this run (drift_closed=false — NOT a
+#              verified close, and NOT a failure);
+#   failed   — remediation failed (e.g. byte-identity mismatch) (drift_closed=false).
+# Always logs a summary block; when REMEDIATE_SUMMARY_FILE is set, also writes the
+# verdicts as a JSON array artifact carrying BOTH the status and the drift_closed
+# boolean (true only for `verified`).
+_emit_verification_summary() {
+  local tsv="$1" repo status
+  echo "[remediate] Verification summary (drift-closed = pushed blob SHA == canon):"
+  if [ ! -s "$tsv" ]; then
+    echo "  [verify] (no live remediations this run)"
+  else
+    while IFS=$'\t' read -r repo status; do
+      [ -n "$repo" ] || continue
+      case "$status" in
+        verified) echo "  [verify] ${repo}: drift-closed=yes" ;;
+        skipped)  echo "  [verify] ${repo}: drift-closed=skipped (remediation PR already open — not re-verified this run)" ;;
+        *)        echo "  [verify] ${repo}: drift-closed=no" ;;
+      esac
+    done < "$tsv"
+  fi
+  if [ -n "$REMEDIATE_SUMMARY_FILE" ]; then
+    if [ -s "$tsv" ]; then
+      jq -R -s 'split("\n") | map(select(length > 0) | split("\t"))
+                | map({repo: (.[0] // "" | tostring),
+                       status: (.[1] // "" | tostring),
+                       drift_closed: (.[1] == "verified")})' "$tsv" \
+        > "$REMEDIATE_SUMMARY_FILE"
+    else
+      echo "[]" > "$REMEDIATE_SUMMARY_FILE"
+    fi
+    echo "[remediate] wrote verification summary artifact: ${REMEDIATE_SUMMARY_FILE}"
+  fi
 }
 
 # _canonical_bytes <canonical_repo> <canonical_path> — echo the decoded bytes of
@@ -244,7 +331,10 @@ _remediate_repo() {
   existing_pr="$(gh pr list --repo "$repo" --head "$branch" --state open --json number --jq '(.[0]?.number // "" | tostring)' 2>/dev/null || true)"
   if [ -n "$existing_pr" ]; then
     echo "[remediate] PR #${existing_pr} already open for branch ${branch} on ${repo} — skipping (idempotent)"
-    return 0
+    # Distinct code (not 0): a pre-existing PR is NOT a fresh verified remediation.
+    # The caller records this as `skipped`, not `verified`, so the verification
+    # summary never reports drift-closed=yes for a run that verified nothing.
+    return 3
   fi
 
   default_branch="$(gh api "repos/${repo}" --jq '.default_branch' 2>/dev/null || echo main)"
@@ -300,15 +390,16 @@ _remediate_repo() {
   echo "[remediate] PASS — ${repo} (1 PR opened against ${default_branch})"
 }
 
-# run_remediation <json> — build the plan, group by repo, apply the fail-closed
-# scope gate, and remediate each in-scope repo (one branch + one PR per repo).
+# run_remediation <json> — build the plan, group by repo, apply the pilot-scope
+# gate + per-run cap, remediate each eligible repo (one branch + one PR per repo),
+# and surface the per-repo drift-closed verification summary.
 run_remediation() {
   local json="$1" plan repo entries failed=0
 
-  # Fail-closed blast-radius bound (AC #7): live operation requires an explicit
-  # repo scope. With none, refuse to write — stay dry-run and warn.
-  if ! _is_dry && [ -z "$(_scope_list)" ]; then
-    echo "::warning::fleet_stub_remediate: DRY_RUN=false but no repo scope (REMEDIATE_REPOS/--repo) — refusing live writes; staying dry-run (fail-closed blast-radius bound)."
+  # Pilot-first fail-closed gate (AC #4): live remediation requires an explicitly
+  # named pilot repo. With none, refuse to write — stay fully dry-run and warn.
+  if ! _is_dry && [ -z "$(_pilot_list)" ]; then
+    echo "::warning::fleet_stub_remediate: DRY_RUN=false but no pilot repo (REMEDIATE_PILOT_REPO/--pilot) — refusing live writes; staying dry-run (pilot-scope gate: live remediation requires an explicitly named pilot repo)."
     DRY_RUN=true
   fi
 
@@ -318,16 +409,63 @@ run_remediation() {
     return 0
   fi
 
+  local max remediated=0 summary_tmp rc
+  max="$REMEDIATE_MAX_REPOS"
+  # Validate the per-run cap before the numeric `-ge` comparison below: an empty
+  # or non-numeric value would make `[ "$remediated" -ge "$max" ]` error out and,
+  # under set -e, abort the whole run with an opaque failure.
+  case "$max" in
+    ''|*[!0-9]*)
+      echo "::error::fleet_stub_remediate: REMEDIATE_MAX_REPOS must be a non-negative integer, got '${max}'" >&2
+      return 2 ;;
+  esac
+  summary_tmp="$(mktemp)" || { echo "::error::fleet_stub_remediate: mktemp failed" >&2; return 1; }
+
   while IFS= read -r repo; do
     [ -n "$repo" ] || continue
     if ! _in_scope "$repo"; then
       echo "[remediate] ${repo} not in scope — skipping"
       continue
     fi
+
+    # Live-only gating (dry-run logs the whole plan intent below; it never writes).
+    if ! _is_dry; then
+      # Pilot-scope gate (AC #1): only a named pilot repo is remediated live; every
+      # other DRIFTED repo is announced and skipped without writes.
+      if ! _in_pilot "$repo"; then
+        echo "[remediate] ${repo} would remediate (out of pilot scope) — skipping without writes"
+        continue
+      fi
+      # Per-run cap (AC #2): defer (and log) repos beyond the ceiling — no silent
+      # truncation; deferred repos are picked up on a later run.
+      if [ "$remediated" -ge "$max" ]; then
+        echo "[remediate] ${repo} deferred — per-run cap reached (REMEDIATE_MAX_REPOS=${max}); will be picked up on a later run"
+        continue
+      fi
+      remediated=$((remediated + 1))
+    fi
+
     entries="$(printf '%s' "$plan" | jq -r --arg r "$repo" \
       '.[] | select(.repo == $r) | [.stub_file, .canonical_repo, .canonical_path, .stub] | @tsv')"
-    _remediate_repo "$repo" "$entries" || failed=1
+    # Capture the exact exit code without tripping set -e: 0 = opened+verified,
+    # 3 = idempotent skip (PR already open, nothing verified), other = failed.
+    if _remediate_repo "$repo" "$entries"; then rc=0; else rc=$?; fi
+    if ! _is_dry; then
+      case "$rc" in
+        0) printf '%s\t%s\n' "$repo" "verified" >> "$summary_tmp" ;;
+        3) printf '%s\t%s\n' "$repo" "skipped"  >> "$summary_tmp" ;;
+        *) printf '%s\t%s\n' "$repo" "failed"   >> "$summary_tmp"; failed=1 ;;
+      esac
+    elif [ "$rc" -ne 0 ] && [ "$rc" -ne 3 ]; then
+      failed=1
+    fi
   done < <(printf '%s' "$plan" | jq -r '[.[].repo] | unique | .[]')
+
+  # Drift-closed verification (AC #3): surface per-repo verdicts for live runs.
+  if ! _is_dry; then
+    _emit_verification_summary "$summary_tmp"
+  fi
+  rm -f "$summary_tmp"
 
   return "$failed"
 }
@@ -345,6 +483,12 @@ main() {
       --repo)     [ $# -ge 2 ] || { echo "::error::--repo needs a value" >&2; return 2; }
                   REMEDIATE_REPOS="${REMEDIATE_REPOS:+$REMEDIATE_REPOS }$2"; shift 2; continue ;;
       --repo=*)   REMEDIATE_REPOS="${REMEDIATE_REPOS:+$REMEDIATE_REPOS }${1#--repo=}"; shift; continue ;;
+      --pilot)    [ $# -ge 2 ] || { echo "::error::--pilot needs a value" >&2; return 2; }
+                  REMEDIATE_PILOT_REPO="${REMEDIATE_PILOT_REPO:+$REMEDIATE_PILOT_REPO }$2"; shift 2; continue ;;
+      --pilot=*)  REMEDIATE_PILOT_REPO="${REMEDIATE_PILOT_REPO:+$REMEDIATE_PILOT_REPO }${1#--pilot=}"; shift; continue ;;
+      --max-repos)   [ $# -ge 2 ] || { echo "::error::--max-repos needs a value" >&2; return 2; }
+                  REMEDIATE_MAX_REPOS="$2"; shift 2; continue ;;
+      --max-repos=*) REMEDIATE_MAX_REPOS="${1#--max-repos=}"; shift; continue ;;
       --dry-run)  DRY_RUN=true; shift; continue ;;
       -h|--help)  sed -n '2,31p' "$0"; return 0 ;;
       --*)        echo "::error::unknown argument: $1" >&2; return 2 ;;
