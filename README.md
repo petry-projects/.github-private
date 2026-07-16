@@ -134,7 +134,7 @@ Notable subtopics are listed below to aid discoverability; see the standards dir
 
 | Standard | Notable subtopics |
 |----------|-------------------|
-| [`advanced-security`](https://github.com/petry-projects/.github/blob/main/standards/advanced-security.md) | Code Security Configurations, push-protection live-fire (canary), custom secret scanning patterns, compliance audit checks |
+| [`advanced-security`](https://github.com/petry-projects/.github/blob/main/standards/advanced-security.md) | Code Security Configurations, push-protection live-fire (canary), licensing & billing, compliance audit checks |
 | [`agent-standards`](https://github.com/petry-projects/.github/blob/main/standards/agent-standards.md) | Required files, compliance exemptions, AgentShield CI workflow, decision-making reusables, BMAD Method Workflows |
 | [`ci-standards`](https://github.com/petry-projects/.github/blob/main/standards/ci-standards.md) | Staged promotion through concentric rings, reusable workflow versioning (`stable` channel), action pinning policy, permissions policy, Dev-Lead Agent |
 | [`codeowners-standard`](https://github.com/petry-projects/.github/blob/main/standards/codeowners-standard.md) | Team composition, required setup for new bots, branch protection, verified end-to-end |
