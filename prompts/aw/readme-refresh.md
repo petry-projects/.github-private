@@ -40,8 +40,9 @@ Target type: `${TARGET_TYPE}`. Produce the complete, final Markdown body for thi
    missing from the table; fix stale primary-language values; fix inaccurate framework and agent lists.
 3. **Never invent** repositories, agents, agentic workflows, frameworks, standards subtopics,
    reporting workflows, or **capability types** that are not in the facts bundle above. This applies
-   to the opening one-line description/tagline too: describe only artifact types the facts actually
-   contain (custom agents, automated workflows, prompts, scripts, frameworks, reporting dashboards).
+   to the opening one-line description/tagline too: describe only artifact types actually present in
+   the repository or facts bundle (custom agents, automated workflows, prompts, scripts, frameworks,
+   reporting dashboards).
    In particular, do **not** claim the repo provides "skills"/"Claude Code skills" — there is no
    skills artifact in the facts.
 4. **Enrich standards with subtopics.** The facts bundle lists each standards doc with its section
@@ -66,8 +67,8 @@ Target type: `${TARGET_TYPE}`. Produce the complete, final Markdown body for thi
 
    Keep both sections — they are different mechanisms. But where one capability exists on **both**
    surfaces (e.g. `pr-reviewer` has an `@`-mention profile *and* `pr-review-trigger.yml`), describe
-   it once per section and add a brief parenthetical cross-reference — do not write a third, separate
-   spotlight section for it. Specifically, do **not** emit a stand-alone "PR Review Automation"
+   it in both sections (once in each) and add a brief parenthetical cross-reference — do not write a
+   third, separate spotlight section for it. Specifically, do **not** emit a stand-alone "PR Review Automation"
    section: fold any such detail into the `pr-review-trigger.yml` row of Automated Workflows and/or
    the `pr-reviewer` row of @-Mention Agents. Per rule 3, use only agents/workflows present in the
    facts.
