@@ -4,7 +4,7 @@
 
 ## About
 
-.github-private is the org's private CI infrastructure repository — it hosts Copilot custom agent profiles (org-wide), sophisticated agentic GitHub Actions workflows (PR review, content-twin audit, standards-sync, CI failure analysis, stale management, etc.), and agentic framework subtrees (bmad-method, spec-kit, gsd).
+.github-private is the org's private CI infrastructure repository — it hosts Copilot custom agent profiles (org-wide), sophisticated agentic GitHub Actions workflows (PR review, standards-sync, CI failure analysis, stale management, etc.), and agentic framework subtrees (bmad-method, spec-kit, gsd).
 
 ## Tech Stack
 
@@ -28,7 +28,6 @@ agents/                 # Copilot custom agent profiles (org-wide effect)
     dev-lead-reusable.yml   # Cross-org reusable workflow (edit to affect all repos)
     pr-review.yml           # Automated PR review
     lint.yml                # ShellCheck + markdownlint + gh-aw-compile (repo-specific gate)
-    content-twin-audit.yml  # Scheduled content-twin compliance check
     standards-sync.yml      # Standards propagation across org repos
     ci-failure-analyst.*    # CI failure triage automation
     stale-manager.*         # Stale PR/issue management

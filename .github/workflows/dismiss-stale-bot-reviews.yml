@@ -1,0 +1,78 @@
+name: Dismiss stale bot reviews
+
+# Agent-PR merge friction (#617, blocker 3): a bot's CHANGES_REQUESTED review is
+# NOT cleared by GitHub's `dismiss_stale_reviews_on_push` (that only dismisses
+# stale *approvals*), so it persists on a superseded commit and blocks
+# `reviewDecision` even with 0 unresolved threads — until the bot re-APPROVEs or
+# a human dismisses it by hand. This workflow dismisses a bot's CHANGES_REQUESTED
+# review once a NEWER commit has been pushed (the review is on a non-head SHA).
+# Safe: it only ever touches reviews left by the allow-listed bots, and only ones
+# on a superseded commit — those bots re-review the new head automatically, so a
+# still-valid problem simply comes back as a fresh CHANGES_REQUESTED on the new SHA.
+
+on:
+  pull_request:
+    types: [synchronize]
+  pull_request_review:
+    types: [submitted]
+
+concurrency:
+  group: dismiss-stale-bot-reviews-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  dismiss:
+    name: Dismiss
+    permissions:
+      pull-requests: write # Required to dismiss PR reviews via API
+    # Same-repo PRs only — fork PRs get a read-only token that cannot dismiss.
+    # Skip Dependabot events: Dependabot `pull_request` runs receive no repo
+    # secrets (same constraint documented in dev-lead-reusable.yml lines 74-79),
+    # so GH_TOKEN is empty and the first `gh api` call fails even though there
+    # is no stale bot review to dismiss.
+    if: >-
+      github.actor != 'dependabot[bot]' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dismiss stale bot CHANGES_REQUESTED reviews
+        env:
+          # Classic PAT required: the dismiss-review endpoint rejects fine-grained
+          # tokens on protected branches; fall back to fine-grained only if classic
+          # is unavailable.  See docs/pr-review-agent/bot-setup.md §75-83.
+          GH_TOKEN: ${{ secrets.DON_PETRY_BOT_GH_PAT_CLASSIC || secrets.DON_PETRY_BOT_GH_PAT }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          # Space-delimited allow-list of bot review authors to auto-dismiss.
+          BOTS: "coderabbitai coderabbitai[bot]"
+        run: |
+          set -euo pipefail
+          dismissed=0
+          # Fetch reviews explicitly so enumeration failures surface as errors
+          # rather than silently producing an empty list via process substitution.
+          if ! reviews=$(gh api --paginate "repos/$REPO/pulls/$PR/reviews" \
+                           --jq '.[] | [(.id|tostring), .user.login, .state, (.commit_id // "")] | @tsv'); then
+            echo "::error::Failed to enumerate PR reviews for $REPO#$PR"
+            exit 1
+          fi
+          # Iterate all reviews; act only on allow-listed bot CHANGES_REQUESTED
+          # reviews that sit on a commit other than the current head (i.e. superseded
+          # by this push). The bots re-review the new head automatically, so a
+          # still-valid concern returns as a fresh review on the new SHA.
+          while IFS=$'\t' read -r id user state sha; do
+            [ -n "$id" ] || continue
+            case " $BOTS " in *" $user "*) ;; *) continue ;; esac
+            [ "$state" = "CHANGES_REQUESTED" ] || continue
+            if [ -z "$sha" ] || [ "$sha" = "$HEAD_SHA" ]; then continue; fi
+            echo "Dismissing stale CHANGES_REQUESTED review $id by $user (on ${sha:0:8}, head ${HEAD_SHA:0:8})"
+            msg="Auto-dismissed (#617): \`$user\` CHANGES_REQUESTED on a superseded commit. The bot re-reviews the new head automatically — a valid concern will return as a fresh review."
+            if ! err=$(gh api -X PUT "repos/$REPO/pulls/$PR/reviews/$id/dismissals" \
+                 -f message="$msg" \
+                 2>&1 >/dev/null); then
+              echo "::error::could not dismiss review $id by $user. API said: $err"
+              exit 1
+            fi
+            dismissed=$((dismissed + 1))
+          done <<< "$reviews"
+          echo "Dismissed $dismissed stale bot review(s)."
