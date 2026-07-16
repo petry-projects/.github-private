@@ -48,7 +48,7 @@ Autonomous agents that run as GitHub Actions, triggered by events or schedules a
 | [`initiative-driver.yml`](.github/workflows/initiative-driver.yml) | Initiative driver — auto-releases an epic's ready sub-issues to Dev-Lead |
 | [`initiative-planner.yml`](.github/workflows/initiative-planner.yml) | Initiative planner (BMAD Scrum Master) — breaks an approved initiative into an epic + sub-issues |
 | [`issue-triage-runner.yml`](.github/workflows/issue-triage-runner.yml) | Issue triage agent — labels and routes newly opened issues |
-| [`pr-review-trigger.yml`](.github/workflows/pr-review-trigger.yml) | PR review agent — cascading triage → deep → security review on open PRs across the org; auto-approves LOW/MEDIUM risk PRs with passing CI, escalates HIGH risk to human review (see also [`@pr-reviewer`](agents/pr-reviewer.md)).<br>Trigger manually: `gh workflow run pr-review-trigger.yml --repo petry-projects/.github-private` or comment `@petry-review-bot` on any org PR |
+| [`pr-review-trigger.yml`](.github/workflows/pr-review-trigger.yml) | PR review agent — cascading triage → deep → security review on open PRs across the org; auto-approves LOW/MEDIUM risk PRs with passing CI, escalates HIGH risk to human review (see also [`@pr-reviewer`](agents/pr-reviewer.md)). Trigger manually: `gh workflow run pr-review-trigger.yml --repo petry-projects/.github-private` or comment `@petry-review-bot` on any org PR |
 | [`release-notes.yml`](.github/workflows/release-notes.yml) | Release-notes agent — drafts Keep-a-Changelog entries from merged PRs and opens a CHANGELOG PR |
 | [`stale-manager.yml`](.github/workflows/stale-manager.yml) | Stale manager agent — warns and closes stale issues/PRs across the org |
 
