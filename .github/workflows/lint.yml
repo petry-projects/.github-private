@@ -118,6 +118,7 @@ jobs:
             tests/test_readme_refresh_helpers.bats \
             tests/test_readme_refresh_push.bats \
             tests/test_validate_personas.bats \
+            tests/verify_persona_teams.bats \
             tests/test_dev_lead_concurrency_guard.bats \
             tests/test_validate_workflow_schedules.bats \
             tests/caller_stub_freeze.bats \
@@ -308,6 +309,32 @@ jobs:
         env:
           PERSONA_SCHEMA_REF: ${{ github.head_ref || github.ref_name }}
         run: python3 personas/validate-personas.py personas
+
+  verify-persona-teams:
+    # LIVE persona addressing-team check (#1280). The hermetic validate-personas.py
+    # (and its hermetic bats suite) verifies the handle SHAPE — the team slug ==
+    # id — but deliberately cannot reach the network. This separate job is the
+    # network-touching half: for every personas/<id>/persona.yml that declares an
+    # `address` block, it verifies the LIVE team named by address.handle EXISTS, is
+    # `privacy: closed` (secret teams are unmentionable), and is
+    # `notification_setting: notifications_disabled` (the handle routes a webhook,
+    # it must not page the team's members). Reading org teams needs an ORG-scoped
+    # token (GH_PAT_WORKFLOWS) — github.token cannot read teams. It FAILS CLOSED: an
+    # API error is never read as "the team is fine" (#755). Personas with no
+    # `address` block pass. It must not be folded back into validate-personas.py,
+    # whose hermeticity is the whole reason this was split out.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+
+      - name: Install PyYAML
+        run: pip3 install --quiet pyyaml
+
+      - name: Verify live persona addressing teams
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
+        run: bash scripts/verify-persona-teams.sh personas
 
   gh-aw-compile:
     runs-on: ubuntu-latest
