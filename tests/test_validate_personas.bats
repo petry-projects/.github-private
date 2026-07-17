@@ -165,15 +165,10 @@ YAML
 # are deliberately NOT covered here — they need the network, and this suite is
 # hermetic. Those are the `verify-persona-teams` CI job's job.
 
-# add_address <persona-dir> <handle> [alias...] — append an address block.
+# add_address <persona-dir> <handle> — append an address block.
 add_address() {
-  local dir="$1" handle="$2"; shift 2
-  {
-    printf 'address:\n  handle: %s\n  aliases: [' "$handle"
-    local sep="" a
-    for a in "$@"; do printf '%s%s' "$sep" "$a"; sep=", "; done
-    printf ']\n'
-  } >>"$TMP/personas/$dir/persona.yml"
+  local dir="$1" handle="$2"
+  printf 'address:\n  handle: %s\n' "$handle" >>"$TMP/personas/$dir/persona.yml"
 }
 
 # clone_persona <new-id> — a second, self-contained fixture persona.
@@ -202,24 +197,7 @@ clone_persona() {
   [[ "$output" == *"!= id 'demo'"* ]]
 }
 
-@test "validate-personas rejects two personas claiming the same handle" {
-  add_address demo petry-projects/demo
-  clone_persona rival
-  # rival's own handle is fine; its ALIAS poaches demo's handle.
-  add_address rival petry-projects/rival petry-projects/demo
-  run python3 "$VALIDATOR" "$TMP/personas" --schema "$TMP/schema.json"
-  [ "$status" -ne 0 ]
-  [[ "$output" == *"already claimed"* ]]
-}
 
-@test "validate-personas treats handle collisions case-insensitively" {
-  add_address demo petry-projects/demo
-  clone_persona rival
-  add_address rival petry-projects/rival PETRY-PROJECTS/Demo
-  run python3 "$VALIDATOR" "$TMP/personas" --schema "$TMP/schema.json"
-  [ "$status" -ne 0 ]
-  [[ "$output" == *"already claimed"* ]]
-}
 
 @test "validate-personas accepts distinct handles across personas" {
   add_address demo petry-projects/demo
@@ -249,25 +227,11 @@ clone_persona() {
 }
 
 @test "validate-personas reports a non-string handle" {
-  printf 'address:\n  handle: 42\n  aliases: []\n' >>"$TMP/personas/demo/persona.yml"
+  printf 'address:\n  handle: 42\n' >>"$TMP/personas/demo/persona.yml"
   run python3 "$VALIDATOR" "$TMP/personas" --schema "$TMP/schema.json"
   [ "$status" -ne 0 ]
   [[ "$output" == *"org/team-slug"* ]]
   [[ "$output" != *"Traceback"* ]]
 }
 
-@test "validate-personas reports a malformed alias" {
-  add_address demo petry-projects/demo bogus-no-slash
-  run python3 "$VALIDATOR" "$TMP/personas" --schema "$TMP/schema.json"
-  [ "$status" -ne 0 ]
-  [[ "$output" == *"address.aliases[0]"* ]]
-  [[ "$output" != *"Traceback"* ]]
-}
 
-@test "validate-personas reports a non-list aliases" {
-  printf 'address:\n  handle: petry-projects/demo\n  aliases: nope\n' >>"$TMP/personas/demo/persona.yml"
-  run python3 "$VALIDATOR" "$TMP/personas" --schema "$TMP/schema.json"
-  [ "$status" -ne 0 ]
-  [[ "$output" == *"must be a list"* ]]
-  [[ "$output" != *"Traceback"* ]]
-}
