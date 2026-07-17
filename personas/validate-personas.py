@@ -7,11 +7,19 @@ schema cannot express on its own:
 
   * `id` == the persona directory name == `canary.agent`
   * `address.handle`'s team slug == `id` (so a mention routes by prefix-strip).
-    This also makes handle uniqueness a THEOREM rather than a check: the schema
-    pins the org (^petry-projects/...), slug == id, id == the persona directory
-    name, and directory names are unique — so two personas cannot claim the same
-    handle. There is deliberately no cross-file uniqueness check; it could never
-    fire.
+    This makes handle uniqueness a THEOREM rather than a check: the schema pins
+    the org (^petry-projects/...), slug == id, id == the persona directory name,
+    and directory names are unique — so two personas cannot claim the same
+    handle. There is deliberately no cross-file uniqueness check.
+
+    Scope of that claim: it covers `address.handle`, which is the only thing the
+    mention router resolves. `address.aliases` shared the handle namespace and
+    was NOT covered by it — which is why a uniqueness check existed while
+    aliases did. Aliases are being removed from the addressing contract
+    (petry-projects/.github#755 finding 1); this repo has already dropped every
+    use, and the companion PR drops the field from the schema. Until that lands
+    the schema still PERMITS an alias, so re-adding one here would reopen the
+    namespace this theorem does not cover. Do not.
   * every `definition.layers[].path` exists on disk
   * a `framework-agent` layer's `framework.vendor_pin` actually appears in the
     referenced `frameworks/<name>/VENDOR.md` (pin ↔ vendored version agree)

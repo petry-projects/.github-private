@@ -41,7 +41,7 @@ make_persona() {
   {
     printf 'id: %s\nname: %s\n' "$id" "$id"
     if [ -n "$handle" ]; then
-      printf 'address:\n  handle: %s\n  aliases: []\n' "$handle"
+      printf 'address:\n  handle: %s\n' "$handle"
     fi
   } > "$TMP/personas/$id/persona.yml"
 }
