@@ -115,6 +115,22 @@ make_persona() {
   [[ "$output" != *"Traceback"* ]]
 }
 
+@test "vpt_list_addresses fails a persona with an empty address block" {
+  mkdir -p "$TMP/personas/empty-addr"
+  printf 'id: empty-addr\nname: empty-addr\naddress: {}\n' > "$TMP/personas/empty-addr/persona.yml"
+  run vpt_list_addresses "$TMP/personas"
+  [ "$status" -ne 0 ]
+  [[ "$output" != *"Traceback"* ]]
+}
+
+@test "vpt_list_addresses fails a handle whose org does not match VPT_ORG" {
+  make_persona wrong-org other-org/qa-lead
+  run vpt_list_addresses "$TMP/personas"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"other-org"* ]]
+  [[ "$output" != *"Traceback"* ]]
+}
+
 # ---------------------------------------------------------------------------
 # vpt_run — end-to-end orchestration over a fixture personas tree
 # ---------------------------------------------------------------------------

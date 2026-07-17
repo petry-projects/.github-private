@@ -24,15 +24,15 @@ set -euo pipefail
 #
 # Requires: gh (authenticated with an ORG-scoped token — github.token cannot read
 # teams; GH_PAT_WORKFLOWS is available in CI), jq, and python3 + PyYAML. Diagnostics
-# use the `::error::persona team invalid: ...` style of validate-personas.py.
+# use the `::error::persona manifest invalid: ...` style of validate-personas.py.
 #
 # Usage: verify-persona-teams.sh [personas_root]   (default: personas)
 #   VPT_ORG — org whose teams are read (default: petry-projects)
 
-VPT_ORG="${VPT_ORG:-petry-projects}"
+export VPT_ORG="${VPT_ORG:-petry-projects}"
 
 vpt_fail() {
-  echo "::error::persona team invalid: $*" >&2
+  echo "::error::persona manifest invalid: $*" >&2
   return 1
 }
 
@@ -51,35 +51,41 @@ import sys
 try:
     import yaml
 except ImportError:
-    print("::error::persona team invalid: PyYAML not installed (pip install pyyaml)",
+    print("::error::persona manifest invalid: PyYAML not installed (pip install pyyaml)",
           file=sys.stderr)
     sys.exit(1)
 
+vpt_org = os.environ.get("VPT_ORG", "petry-projects")
 root = sys.argv[1]
 for manifest in sorted(glob.glob(os.path.join(root, "*", "persona.yml"))):
     try:
         with open(manifest, encoding="utf-8") as fh:
             data = yaml.safe_load(fh)
     except (OSError, yaml.YAMLError) as exc:
-        print(f"::error::persona team invalid: could not read/parse {manifest}: {exc}",
+        print(f"::error::persona manifest invalid: could not read/parse {manifest}: {exc}",
               file=sys.stderr)
         sys.exit(1)
     if not isinstance(data, dict):
         continue
     address = data.get("address")
-    if not address:
+    if address is None:
         continue
     if not isinstance(address, dict):
-        print(f"::error::persona team invalid: {manifest}: address must be a mapping, "
+        print(f"::error::persona manifest invalid: {manifest}: address must be a mapping, "
               f"got {address!r}", file=sys.stderr)
         sys.exit(1)
     handle = address.get("handle")
     if not isinstance(handle, str) or "/" not in handle:
-        print(f"::error::persona team invalid: {manifest}: address.handle must be an "
+        print(f"::error::persona manifest invalid: {manifest}: address.handle must be an "
               f"'org/team-slug' string (e.g. 'petry-projects/qa-lead'), got {handle!r}",
               file=sys.stderr)
         sys.exit(1)
-    slug = handle.split("/", 1)[1]
+    org, slug = handle.split("/", 1)
+    if org != vpt_org:
+        print(f"::error::persona manifest invalid: {manifest}: address.handle org '{org}' "
+              f"does not match expected org '{vpt_org}' — cross-org handles cannot be verified",
+              file=sys.stderr)
+        sys.exit(1)
     print(f"{slug}\t{manifest}")
 PY
 }
