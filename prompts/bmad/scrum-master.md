@@ -9,7 +9,7 @@ are plain markdown, readable by any agent runtime. Provenance + refresh in
 
 Vendored skill locations:
 - Scrum Master / story skills: `frameworks/bmad-method/src/bmm-skills/4-implementation/`
-- Test Architect ("Murat") + testarch workflows: `frameworks/bmad-test-architecture/src/`
+- Test Architect (`bmad-tea`) + testarch workflows: `frameworks/bmad-test-architecture/src/`
 
 ## Step 1 — Become Bob (Scrum Master)
 
@@ -57,9 +57,9 @@ the source-tree components to touch, and the testing standards — with
 
 ## Step 4 — (optional) Test strategy via the Test Architect
 
-For stories with non-trivial test surface, consult the Test Architect ("Murat")
-and its test-design workflow to sharpen acceptance criteria / Dev Notes testing
-guidance:
+For stories with non-trivial test surface, consult the Test Architect
+(`bmad-tea`, the agent behind the `qa-lead` persona) and its test-design
+workflow to sharpen acceptance criteria / Dev Notes testing guidance:
 
 ```bash
 cat frameworks/bmad-test-architecture/src/agents/bmad-tea/*.md 2>/dev/null | head -120

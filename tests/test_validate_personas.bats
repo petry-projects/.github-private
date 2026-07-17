@@ -158,3 +158,79 @@ YAML
   [ "$status" -ne 0 ]
   [[ "$output" == *"agents.demo"* ]]
 }
+
+# --- Addressing (§4.1): handle slug == id, and handles are unique fleet-wide ---
+#
+# The live team properties (exists / privacy: closed / notifications_disabled)
+# are deliberately NOT covered here — they need the network, and this suite is
+# hermetic. Those are the `verify-persona-teams` CI job's job.
+
+# add_address <persona-dir> <handle> [alias...] — append an address block.
+add_address() {
+  local dir="$1" handle="$2"; shift 2
+  {
+    printf 'address:\n  handle: %s\n  aliases: [' "$handle"
+    local sep="" a
+    for a in "$@"; do printf '%s%s' "$sep" "$a"; sep=", "; done
+    printf ']\n'
+  } >>"$TMP/personas/$dir/persona.yml"
+}
+
+# clone_persona <new-id> — a second, self-contained fixture persona.
+clone_persona() {
+  local id="$1"
+  mkdir -p "$TMP/personas/$id" "$TMP/evals/$id/dev" "$TMP/evals/$id/holdout"
+  printf '{"id": "d1"}\n' >"$TMP/evals/$id/dev/cases.jsonl"
+  printf '{"id": "h1"}\n' >"$TMP/evals/$id/holdout/cases.jsonl"
+  sed -e "s/^id: demo/id: $id/" \
+      -e "s/^  opt_out_label: demo:hands-off/  opt_out_label: $id:hands-off/" \
+      -e "s|^  path: evals/demo/|  path: evals/$id/|" \
+      -e "s/^  agent: demo/  agent: $id/" \
+      "$TMP/personas/demo/persona.yml" >"$TMP/personas/$id/persona.yml"
+}
+
+@test "validate-personas accepts a manifest whose address handle slug matches its id" {
+  add_address demo petry-projects/demo
+  run python3 "$VALIDATOR" "$TMP/personas" --schema "$TMP/schema.json"
+  [ "$status" -eq 0 ]
+}
+
+@test "validate-personas rejects an address handle whose team slug != id" {
+  add_address demo petry-projects/something-else
+  run python3 "$VALIDATOR" "$TMP/personas" --schema "$TMP/schema.json"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"!= id 'demo'"* ]]
+}
+
+@test "validate-personas rejects two personas claiming the same handle" {
+  add_address demo petry-projects/demo
+  clone_persona rival
+  # rival's own handle is fine; its ALIAS poaches demo's handle.
+  add_address rival petry-projects/rival petry-projects/demo
+  run python3 "$VALIDATOR" "$TMP/personas" --schema "$TMP/schema.json"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"already claimed"* ]]
+}
+
+@test "validate-personas treats handle collisions case-insensitively" {
+  add_address demo petry-projects/demo
+  clone_persona rival
+  add_address rival petry-projects/rival PETRY-PROJECTS/Demo
+  run python3 "$VALIDATOR" "$TMP/personas" --schema "$TMP/schema.json"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"already claimed"* ]]
+}
+
+@test "validate-personas accepts distinct handles across personas" {
+  add_address demo petry-projects/demo
+  clone_persona rival
+  add_address rival petry-projects/rival
+  run python3 "$VALIDATOR" "$TMP/personas" --schema "$TMP/schema.json"
+  [ "$status" -eq 0 ]
+}
+
+@test "validate-personas ignores personas with no address block" {
+  clone_persona rival
+  run python3 "$VALIDATOR" "$TMP/personas" --schema "$TMP/schema.json"
+  [ "$status" -eq 0 ]
+}

@@ -123,7 +123,8 @@ inputs.
   v1.19.0 at `frameworks/bmad-test-architecture/`; `src/` skill trees only, see
   `prompts/bmad/README.md`). The planner reads the skills **by path** (not via any
   vendor-specific `.<tool>/skills` dir), following `bmad-sprint-planning` +
-  `bmad-create-story` (and the Test Architect "Murat"/`testarch` where useful) —
+  `bmad-create-story` (and the Test Architect `bmad-tea`/`testarch`, the agent
+  behind the `qa-lead` persona, where useful) —
   not a paraphrase. Stories are emitted in the canonical BMAD **create-story
   template** (Story / Acceptance Criteria / Tasks-Subtasks / Dev Notes / Project
   Structure Notes / References) and self-checked against the create-story

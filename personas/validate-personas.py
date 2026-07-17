@@ -6,6 +6,9 @@ schema (owned by petry-projects/.github) PLUS the cross-invariants the JSON
 schema cannot express on its own:
 
   * `id` == the persona directory name == `canary.agent`
+  * `address.handle`'s team slug == `id` (so a mention routes by prefix-strip)
+  * `address` handles/aliases are unique across ALL personas (no two roles
+    answer to the same mention)
   * every `definition.layers[].path` exists on disk
   * a `framework-agent` layer's `framework.vendor_pin` actually appears in the
     referenced `frameworks/<name>/VENDOR.md` (pin ↔ vendored version agree)
@@ -108,6 +111,19 @@ def check_invariants(manifest: dict, manifest_path: Path, repo_root: Path,
     if manifest["canary"]["agent"] != pid:
         fail(f"{manifest_path}: canary.agent '{manifest['canary']['agent']}' != id '{pid}'")
 
+    # The addressing handle is 'org/team-slug'; the slug carries the role name,
+    # so it MUST equal `id` — that is what lets the mention router resolve a
+    # persona by stripping the org prefix, with the role written exactly once.
+    # (That the team exists / is closed / has notifications off are LIVE
+    # properties; they need the network and are checked by CI, not here. This
+    # validator is hermetic on purpose — see tests/test_validate_personas.bats.)
+    address = manifest.get("address")
+    if address is not None:
+        slug = address["handle"].split("/", 1)[1]
+        if slug != pid:
+            fail(f"{manifest_path}: address.handle '{address['handle']}' team slug "
+                 f"'{slug}' != id '{pid}' (the handle must address the role by its id)")
+
     for i, layer in enumerate(manifest["definition"]["layers"]):
         lpath = repo_root / layer["path"]
         if not lpath.exists():
@@ -133,6 +149,33 @@ def check_invariants(manifest: dict, manifest_path: Path, repo_root: Path,
         if not registry_has_agent(registry, pid):
             fail(f"{manifest_path}: status '{manifest['status']}' is past draft but no "
                  f"agents.{pid} entry exists in {REGISTRY_PATH_IN_REPO} (register once)")
+
+
+def check_handles_unique(loaded: list[tuple[Path, dict]]) -> None:
+    """No two personas may answer to the same mention.
+
+    Cross-file, so JSON Schema cannot see it. A collision here is not cosmetic:
+    the mention router resolves a handle to exactly one persona, so two claimants
+    means either a silently-dropped mention or both firing on one comment.
+    Aliases share the namespace with handles — an alias kept from a rename must
+    not collide with a live role.
+    """
+    claims: dict[str, tuple[Path, str]] = {}
+    for manifest_path, manifest in loaded:
+        address = manifest.get("address")
+        if address is None:
+            continue
+        entries = [("address.handle", address["handle"])]
+        entries += [(f"address.aliases[{i}]", a)
+                    for i, a in enumerate(address.get("aliases", []))]
+        for field, handle in entries:
+            key = handle.lower()
+            if key in claims:
+                prior_path, prior_field = claims[key]
+                fail(f"{manifest_path}: {field} '{handle}' is already claimed by "
+                     f"{prior_path} ({prior_field}) — a mention must resolve to "
+                     f"exactly one persona")
+            claims[key] = (manifest_path, field)
 
 
 def main() -> None:
@@ -167,6 +210,7 @@ def main() -> None:
     jsonschema.Draft202012Validator.check_schema(schema)
     validator = jsonschema.Draft202012Validator(schema)
 
+    loaded: list[tuple[Path, dict]] = []
     for manifest_path in manifests:
         try:
             manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
@@ -177,6 +221,9 @@ def main() -> None:
             loc = "/".join(str(p) for p in error.absolute_path) or "<root>"
             fail(f"{manifest_path}: schema violation at {loc}: {error.message}")
         check_invariants(manifest, manifest_path, repo_root, args.registry)
+        loaded.append((manifest_path, manifest))
+
+    check_handles_unique(loaded)
 
     print(f"OK: {len(manifests)} persona manifest(s) valid, invariants hold.")
 

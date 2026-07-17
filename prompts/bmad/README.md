@@ -10,7 +10,7 @@ live under `frameworks/` (`CLAUDE.md`, `AGENTS.md`).
 | Path | Source (pinned) | Contents |
 |------|-----------------|----------|
 | `frameworks/bmad-method/` | `bmad-code-org/BMAD-METHOD` @ v6.8.0 | `src/bmm-skills` + `src/core-skills` (Scrum Master, create-story, sprint-planning, …) |
-| `frameworks/bmad-test-architecture/` | `bmad-code-org/bmad-method-test-architecture-enterprise` @ v1.19.0 | `src/` — the Test Architect ("Murat") + `testarch` workflows |
+| `frameworks/bmad-test-architecture/` | `bmad-code-org/bmad-method-test-architecture-enterprise` @ v1.19.0 | `src/` — the Test Architect (`bmad-tea`, behind the `qa-lead` persona) + `testarch` workflows |
 
 Only the upstream `src/` skill trees are vendored (no website/docs/build tooling);
 see each dir's `VENDOR.md` for provenance and the refresh command. The trees are
