@@ -36,7 +36,6 @@ owner: petry-projects/org-leads
 #   notification_setting: notifications_disabled  (routes a webhook, not a page)
 address:
   handle: petry-projects/qa-lead
-  aliases: []
 
 definition:
   layers:
