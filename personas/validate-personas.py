@@ -193,10 +193,18 @@ def check_handles_unique(loaded: list[tuple[Path, dict]]) -> None:
         address = manifest.get("address")
         if address is None:
             continue
-        entries = [("address.handle", address["handle"])]
+        raw_handle = address.get("handle")
+        if not isinstance(raw_handle, str):
+            fail(f"{manifest_path}: address.handle must be a string, got {raw_handle!r}")
+        aliases = address.get("aliases", [])
+        if not isinstance(aliases, list):
+            fail(f"{manifest_path}: address.aliases must be a list, got {aliases!r}")
+        entries = [("address.handle", raw_handle)]
         entries += [(f"address.aliases[{i}]", a)
-                    for i, a in enumerate(address.get("aliases", []))]
+                    for i, a in enumerate(aliases)]
         for field, handle in entries:
+            if not isinstance(handle, str):
+                fail(f"{manifest_path}: {field} must be a string, got {handle!r}")
             key = handle.lower()
             if key in claims:
                 prior_path, prior_field = claims[key]
