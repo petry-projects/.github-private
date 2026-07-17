@@ -6,6 +6,9 @@ schema (owned by petry-projects/.github) PLUS the cross-invariants the JSON
 schema cannot express on its own:
 
   * `id` == the persona directory name == `canary.agent`
+  * `address.handle`'s team slug == `id` (so a mention routes by prefix-strip)
+  * `address` handles/aliases are unique across ALL personas (no two roles
+    answer to the same mention)
   * every `definition.layers[].path` exists on disk
   * a `framework-agent` layer's `framework.vendor_pin` actually appears in the
     referenced `frameworks/<name>/VENDOR.md` (pin ↔ vendored version agree)
@@ -98,6 +101,21 @@ def discover_manifests(root: Path) -> list[Path]:
                   if p.is_dir() and (p / MANIFEST_NAME).is_file())
 
 
+def handle_slug(manifest_path: Path, field: str, value: object) -> str:
+    """Validate an 'org/team-slug' handle and return its slug.
+
+    The canonical schema's pattern already guarantees this shape, so against the
+    real schema this never fires. It earns its keep because the validator accepts
+    `--schema`: a test double, or a stale local copy, can let a malformed handle
+    through — and this module's contract is a diagnostic on failure, not a
+    traceback (see the module docstring).
+    """
+    if not isinstance(value, str) or "/" not in value:
+        fail(f"{manifest_path}: {field} must be an 'org/team-slug' string "
+             f"(e.g. 'petry-projects/qa-lead'), got {value!r}")
+    return value.split("/", 1)[1]
+
+
 def check_invariants(manifest: dict, manifest_path: Path, repo_root: Path,
                      registry_arg: str | None) -> None:
     persona_dir = manifest_path.parent
@@ -107,6 +125,29 @@ def check_invariants(manifest: dict, manifest_path: Path, repo_root: Path,
         fail(f"{manifest_path}: id '{pid}' != directory name '{persona_dir.name}'")
     if manifest["canary"]["agent"] != pid:
         fail(f"{manifest_path}: canary.agent '{manifest['canary']['agent']}' != id '{pid}'")
+
+    # The addressing handle is 'org/team-slug'; the slug carries the role name,
+    # so it MUST equal `id` — that is what lets the mention router resolve a
+    # persona by stripping the org prefix, with the role written exactly once.
+    # (That the team exists / is closed / has notifications off are LIVE
+    # properties; they need the network and are checked by CI, not here. This
+    # validator is hermetic on purpose — see tests/test_validate_personas.bats.)
+    address = manifest.get("address")
+    if address is not None:
+        if not isinstance(address, dict):
+            fail(f"{manifest_path}: address must be a mapping, got {address!r}")
+        slug = handle_slug(manifest_path, "address.handle", address.get("handle"))
+        if slug != pid:
+            fail(f"{manifest_path}: address.handle '{address['handle']}' team slug "
+                 f"'{slug}' != id '{pid}' (the handle must address the role by its id)")
+        # Alias shape is checked here, not in check_handles_unique, so that by the
+        # time that runs (after EVERY manifest has cleared this function) it can
+        # treat handles and aliases as well-formed strings.
+        aliases = address.get("aliases", [])
+        if not isinstance(aliases, list):
+            fail(f"{manifest_path}: address.aliases must be a list, got {aliases!r}")
+        for i, alias in enumerate(aliases):
+            handle_slug(manifest_path, f"address.aliases[{i}]", alias)
 
     for i, layer in enumerate(manifest["definition"]["layers"]):
         lpath = repo_root / layer["path"]
@@ -133,6 +174,44 @@ def check_invariants(manifest: dict, manifest_path: Path, repo_root: Path,
         if not registry_has_agent(registry, pid):
             fail(f"{manifest_path}: status '{manifest['status']}' is past draft but no "
                  f"agents.{pid} entry exists in {REGISTRY_PATH_IN_REPO} (register once)")
+
+
+def check_handles_unique(loaded: list[tuple[Path, dict]]) -> None:
+    """No two personas may answer to the same mention.
+
+    Cross-file, so JSON Schema cannot see it. A collision here is not cosmetic:
+    the mention router resolves a handle to exactly one persona, so two claimants
+    means either a silently-dropped mention or both firing on one comment.
+    Aliases share the namespace with handles — an alias kept from a rename must
+    not collide with a live role.
+
+    Runs only after every manifest has passed check_invariants, which has already
+    established that each handle/alias is a well-formed 'org/team-slug' string.
+    """
+    claims: dict[str, tuple[Path, str]] = {}
+    for manifest_path, manifest in loaded:
+        address = manifest.get("address")
+        if address is None:
+            continue
+        raw_handle = address.get("handle")
+        if not isinstance(raw_handle, str):
+            fail(f"{manifest_path}: address.handle must be a string, got {raw_handle!r}")
+        aliases = address.get("aliases", [])
+        if not isinstance(aliases, list):
+            fail(f"{manifest_path}: address.aliases must be a list, got {aliases!r}")
+        entries = [("address.handle", raw_handle)]
+        entries += [(f"address.aliases[{i}]", a)
+                    for i, a in enumerate(aliases)]
+        for field, handle in entries:
+            if not isinstance(handle, str):
+                fail(f"{manifest_path}: {field} must be a string, got {handle!r}")
+            key = handle.lower()
+            if key in claims:
+                prior_path, prior_field = claims[key]
+                fail(f"{manifest_path}: {field} '{handle}' is already claimed by "
+                     f"{prior_path} ({prior_field}) — a mention must resolve to "
+                     f"exactly one persona")
+            claims[key] = (manifest_path, field)
 
 
 def main() -> None:
@@ -167,6 +246,7 @@ def main() -> None:
     jsonschema.Draft202012Validator.check_schema(schema)
     validator = jsonschema.Draft202012Validator(schema)
 
+    loaded: list[tuple[Path, dict]] = []
     for manifest_path in manifests:
         try:
             manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
@@ -177,6 +257,9 @@ def main() -> None:
             loc = "/".join(str(p) for p in error.absolute_path) or "<root>"
             fail(f"{manifest_path}: schema violation at {loc}: {error.message}")
         check_invariants(manifest, manifest_path, repo_root, args.registry)
+        loaded.append((manifest_path, manifest))
+
+    check_handles_unique(loaded)
 
     print(f"OK: {len(manifests)} persona manifest(s) valid, invariants hold.")
 
