@@ -33,7 +33,7 @@ VPT_ORG="${VPT_ORG:-petry-projects}"
 
 vpt_fail() {
   echo "::error::persona team invalid: $*" >&2
-  exit 1
+  return 1
 }
 
 # vpt_list_addresses <root> — print a "<slug>\t<manifest>" line for every
@@ -97,19 +97,19 @@ vpt_team_api() {
 vpt_check_team() {
   local manifest="$1" slug="$2" json privacy notif
   if ! json="$(vpt_team_api "$slug")"; then
-    vpt_fail "$manifest: could not read team '${VPT_ORG}/${slug}' from the org teams API — failing closed (an API error is never treated as a valid team). The team may not exist, or the token may not be org-scoped (use GH_PAT_WORKFLOWS)."
+    vpt_fail "$manifest: could not read team '${VPT_ORG}/${slug}' from the org teams API — failing closed (an API error is never treated as a valid team). The team may not exist, or the token may not be org-scoped (use GH_PAT_WORKFLOWS)." || return 1
   fi
-  if ! privacy="$(printf '%s' "$json" | jq -er '.privacy')"; then
-    vpt_fail "$manifest: team '${VPT_ORG}/${slug}' API response has no 'privacy' field (or is not JSON) — failing closed."
+  if ! privacy="$(jq -er '.privacy?' <<< "$json")"; then
+    vpt_fail "$manifest: team '${VPT_ORG}/${slug}' API response has no 'privacy' field (or is not JSON) — failing closed." || return 1
   fi
-  if ! notif="$(printf '%s' "$json" | jq -er '.notification_setting')"; then
-    vpt_fail "$manifest: team '${VPT_ORG}/${slug}' API response has no 'notification_setting' field (or is not JSON) — failing closed."
+  if ! notif="$(jq -er '.notification_setting?' <<< "$json")"; then
+    vpt_fail "$manifest: team '${VPT_ORG}/${slug}' API response has no 'notification_setting' field (or is not JSON) — failing closed." || return 1
   fi
   if [ "$privacy" != "closed" ]; then
-    vpt_fail "$manifest: team '${VPT_ORG}/${slug}' has privacy '${privacy}', expected 'closed' — a secret team is unmentionable, so every mention silently no-ops."
+    vpt_fail "$manifest: team '${VPT_ORG}/${slug}' has privacy '${privacy}', expected 'closed' — a secret team is unmentionable, so every mention silently no-ops." || return 1
   fi
   if [ "$notif" != "notifications_disabled" ]; then
-    vpt_fail "$manifest: team '${VPT_ORG}/${slug}' has notification_setting '${notif}', expected 'notifications_disabled' — the handle routes a webhook, it must not page the team's members."
+    vpt_fail "$manifest: team '${VPT_ORG}/${slug}' has notification_setting '${notif}', expected 'notifications_disabled' — the handle routes a webhook, it must not page the team's members." || return 1
   fi
   echo "verify-persona-teams: OK — ${manifest} → ${VPT_ORG}/${slug} (exists, closed, notifications disabled)."
 }
@@ -128,7 +128,7 @@ vpt_run() {
   local lines
   if ! lines="$(vpt_list_addresses "$root")"; then
     # vpt_list_addresses already printed a ::error:: diagnostic; fail closed.
-    exit 1
+    return 1
   fi
 
   if [ -z "$lines" ]; then
@@ -139,7 +139,7 @@ vpt_run() {
   local count=0 slug manifest
   while IFS=$'\t' read -r slug manifest; do
     [ -n "$slug" ] || continue
-    vpt_check_team "$manifest" "$slug"
+    vpt_check_team "$manifest" "$slug" || return 1
     count=$((count + 1))
   done <<< "$lines"
 

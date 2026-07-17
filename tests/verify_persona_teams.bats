@@ -17,12 +17,12 @@
 setup() {
   REPO_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)"
   SCRIPT="$REPO_ROOT/scripts/verify-persona-teams.sh"
-  TMP="$(mktemp -d)"
+  TMP="$BATS_TEST_TMPDIR"
   # shellcheck source=/dev/null
   source "$SCRIPT"
 
-  # Stub `gh` so `vpt_team_api` never touches the network. It emulates
-  # `gh api orgs/<org>/teams/<slug>`: echo VPT_TEST_TEAM_JSON, or fail if
+  # Stub gh so vpt_team_api never touches the network. It emulates
+  # gh api orgs/<org>/teams/<slug>: echo VPT_TEST_TEAM_JSON, or fail if
   # VPT_TEST_GH_FAIL=1 (an API/HTTP error, e.g. 404 for a nonexistent team).
   gh() {
     if [ "${VPT_TEST_GH_FAIL:-0}" = "1" ]; then
@@ -32,8 +32,6 @@ setup() {
   }
   export -f gh
 }
-
-teardown() { rm -rf "$TMP"; }
 
 # make_persona <id> [handle] — write a minimal personas/<id>/persona.yml fixture.
 # With a handle, it carries an `address` block; without, it has none.
