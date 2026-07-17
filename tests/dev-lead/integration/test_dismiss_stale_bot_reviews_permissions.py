@@ -29,6 +29,9 @@ def main() -> int:
     except FileNotFoundError:
         print(f"FAIL: {WORKFLOW} not found")
         return 1
+    except yaml.YAMLError as exc:
+        print(f"FAIL: {WORKFLOW} could not be parsed as YAML: {exc}")
+        return 1
 
     if not isinstance(doc, dict):
         print(f"FAIL: {WORKFLOW} did not parse as a YAML mapping")
