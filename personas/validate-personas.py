@@ -101,6 +101,21 @@ def discover_manifests(root: Path) -> list[Path]:
                   if p.is_dir() and (p / MANIFEST_NAME).is_file())
 
 
+def handle_slug(manifest_path: Path, field: str, value: object) -> str:
+    """Validate an 'org/team-slug' handle and return its slug.
+
+    The canonical schema's pattern already guarantees this shape, so against the
+    real schema this never fires. It earns its keep because the validator accepts
+    `--schema`: a test double, or a stale local copy, can let a malformed handle
+    through — and this module's contract is a diagnostic on failure, not a
+    traceback (see the module docstring).
+    """
+    if not isinstance(value, str) or "/" not in value:
+        fail(f"{manifest_path}: {field} must be an 'org/team-slug' string "
+             f"(e.g. 'petry-projects/qa-lead'), got {value!r}")
+    return value.split("/", 1)[1]
+
+
 def check_invariants(manifest: dict, manifest_path: Path, repo_root: Path,
                      registry_arg: str | None) -> None:
     persona_dir = manifest_path.parent
@@ -119,10 +134,20 @@ def check_invariants(manifest: dict, manifest_path: Path, repo_root: Path,
     # validator is hermetic on purpose — see tests/test_validate_personas.bats.)
     address = manifest.get("address")
     if address is not None:
-        slug = address["handle"].split("/", 1)[1]
+        if not isinstance(address, dict):
+            fail(f"{manifest_path}: address must be a mapping, got {address!r}")
+        slug = handle_slug(manifest_path, "address.handle", address.get("handle"))
         if slug != pid:
             fail(f"{manifest_path}: address.handle '{address['handle']}' team slug "
                  f"'{slug}' != id '{pid}' (the handle must address the role by its id)")
+        # Alias shape is checked here, not in check_handles_unique, so that by the
+        # time that runs (after EVERY manifest has cleared this function) it can
+        # treat handles and aliases as well-formed strings.
+        aliases = address.get("aliases", [])
+        if not isinstance(aliases, list):
+            fail(f"{manifest_path}: address.aliases must be a list, got {aliases!r}")
+        for i, alias in enumerate(aliases):
+            handle_slug(manifest_path, f"address.aliases[{i}]", alias)
 
     for i, layer in enumerate(manifest["definition"]["layers"]):
         lpath = repo_root / layer["path"]
@@ -159,6 +184,9 @@ def check_handles_unique(loaded: list[tuple[Path, dict]]) -> None:
     means either a silently-dropped mention or both firing on one comment.
     Aliases share the namespace with handles — an alias kept from a rename must
     not collide with a live role.
+
+    Runs only after every manifest has passed check_invariants, which has already
+    established that each handle/alias is a well-formed 'org/team-slug' string.
     """
     claims: dict[str, tuple[Path, str]] = {}
     for manifest_path, manifest in loaded:

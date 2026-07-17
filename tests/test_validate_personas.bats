@@ -234,3 +234,40 @@ clone_persona() {
   run python3 "$VALIDATOR" "$TMP/personas" --schema "$TMP/schema.json"
   [ "$status" -eq 0 ]
 }
+
+# Malformed-address diagnostics. Unreachable against the canonical schema (its
+# pattern guarantees 'org/team-slug'), but the validator accepts --schema, so a
+# test double or a stale local copy can let these through. The contract is a
+# diagnostic, not a traceback.
+
+@test "validate-personas reports a bare handle with no org prefix" {
+  add_address demo demo
+  run python3 "$VALIDATOR" "$TMP/personas" --schema "$TMP/schema.json"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"org/team-slug"* ]]
+  [[ "$output" != *"Traceback"* ]]
+}
+
+@test "validate-personas reports a non-string handle" {
+  printf 'address:\n  handle: 42\n  aliases: []\n' >>"$TMP/personas/demo/persona.yml"
+  run python3 "$VALIDATOR" "$TMP/personas" --schema "$TMP/schema.json"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"org/team-slug"* ]]
+  [[ "$output" != *"Traceback"* ]]
+}
+
+@test "validate-personas reports a malformed alias" {
+  add_address demo petry-projects/demo bogus-no-slash
+  run python3 "$VALIDATOR" "$TMP/personas" --schema "$TMP/schema.json"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"address.aliases[0]"* ]]
+  [[ "$output" != *"Traceback"* ]]
+}
+
+@test "validate-personas reports a non-list aliases" {
+  printf 'address:\n  handle: petry-projects/demo\n  aliases: nope\n' >>"$TMP/personas/demo/persona.yml"
+  run python3 "$VALIDATOR" "$TMP/personas" --schema "$TMP/schema.json"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"must be a list"* ]]
+  [[ "$output" != *"Traceback"* ]]
+}
