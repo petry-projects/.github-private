@@ -270,6 +270,44 @@ def check_invariants(manifest: dict, manifest_path: Path, repo_root: Path,
                  f"agents.{pid} entry exists in {REGISTRY_PATH_IN_REPO} (register once)")
 
 
+def check_handles_unique(loaded: list[tuple[Path, dict]]) -> None:
+    """No two personas may answer to the same mention.
+
+    Cross-file, so JSON Schema cannot see it. A collision here is not cosmetic:
+    the mention router resolves a handle to exactly one persona, so two claimants
+    means either a silently-dropped mention or both firing on one comment.
+    Aliases share the namespace with handles — an alias kept from a rename must
+    not collide with a live role.
+
+    Runs only after every manifest has passed check_invariants, which has already
+    established that each handle/alias is a well-formed 'org/team-slug' string.
+    """
+    claims: dict[str, tuple[Path, str]] = {}
+    for manifest_path, manifest in loaded:
+        address = manifest.get("address")
+        if address is None:
+            continue
+        raw_handle = address.get("handle")
+        if not isinstance(raw_handle, str):
+            fail(f"{manifest_path}: address.handle must be a string, got {raw_handle!r}")
+        aliases = address.get("aliases", [])
+        if not isinstance(aliases, list):
+            fail(f"{manifest_path}: address.aliases must be a list, got {aliases!r}")
+        entries = [("address.handle", raw_handle)]
+        entries += [(f"address.aliases[{i}]", a)
+                    for i, a in enumerate(aliases)]
+        for field, handle in entries:
+            if not isinstance(handle, str):
+                fail(f"{manifest_path}: {field} must be a string, got {handle!r}")
+            key = handle.lower()
+            if key in claims:
+                prior_path, prior_field = claims[key]
+                fail(f"{manifest_path}: {field} '{handle}' is already claimed by "
+                     f"{prior_path} ({prior_field}) — a mention must resolve to "
+                     f"exactly one persona")
+            claims[key] = (manifest_path, field)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Validate persona manifests.")
     ap.add_argument("root", nargs="?", default="personas",
@@ -302,6 +340,7 @@ def main() -> None:
     jsonschema.Draft202012Validator.check_schema(schema)
     validator = jsonschema.Draft202012Validator(schema)
 
+    loaded: list[tuple[Path, dict]] = []
     for manifest_path in manifests:
         try:
             manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
@@ -312,6 +351,9 @@ def main() -> None:
             loc = "/".join(str(p) for p in error.absolute_path) or "<root>"
             fail(f"{manifest_path}: schema violation at {loc}: {error.message}")
         check_invariants(manifest, manifest_path, repo_root, args.registry)
+        loaded.append((manifest_path, manifest))
+
+    check_handles_unique(loaded)
 
     print(f"OK: {len(manifests)} persona manifest(s) valid, invariants hold.")
 
