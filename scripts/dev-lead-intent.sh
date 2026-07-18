@@ -124,8 +124,8 @@ is_fork_pr() {
 is_dev_lead_authored() {
   [ -n "$EVENT_PATH" ] && [ -f "$EVENT_PATH" ] || return 1
   local head_ref author
-  head_ref=$(jq -r '.pull_request.head.ref // empty' "$EVENT_PATH" 2>/dev/null || true)
-  author=$(jq -r '.pull_request.user.login // .issue.user.login // empty' "$EVENT_PATH" 2>/dev/null || true)
+  head_ref=$(jq -r '(.pull_request?.head?.ref // "" | tostring)' "$EVENT_PATH" 2>/dev/null || true)
+  author=$(jq -r '(.pull_request?.user?.login // .issue?.user?.login // "" | tostring)' "$EVENT_PATH" 2>/dev/null || true)
   case "$head_ref" in
     dev-lead/issue-*) return 0 ;;
   esac

@@ -11,13 +11,12 @@
 setup() {
   GUARD_LIB="$(cd "$(dirname "$BATS_TEST_FILENAME")/../../.." && pwd)/scripts/lib/git-push-guard.sh"
 
-  TMP_ROOT="$(mktemp -d)"
-  REMOTE="$TMP_ROOT/remote.git"
-  WORK="$TMP_ROOT/work"
+  REMOTE="$BATS_TEST_TMPDIR/remote.git"
+  WORK="$BATS_TEST_TMPDIR/work"
 
   # Bare remote seeded with commit A on `main`.
   git init -q --bare "$REMOTE"
-  local seed="$TMP_ROOT/seed"
+  local seed="$BATS_TEST_TMPDIR/seed"
   git init -q "$seed"
   (
     cd "$seed"
@@ -35,14 +34,10 @@ setup() {
   ( cd "$WORK"; git config user.email t@t.co; git config user.name t )
 }
 
-teardown() {
-  rm -rf "$TMP_ROOT"
-}
-
 # Advance the remote's `main` from an independent clone (a concurrent writer)
 # WITHOUT updating $WORK's remote-tracking ref — simulates an unseen commit.
 _advance_remote() {
-  local other="$TMP_ROOT/other"
+  local other="$BATS_TEST_TMPDIR/other"
   git clone -q "$REMOTE" "$other"
   (
     cd "$other"

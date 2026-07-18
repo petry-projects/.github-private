@@ -14,21 +14,17 @@ INTENT_SCRIPT="$SCRIPT_DIR/scripts/dev-lead-intent.sh"
 FIXTURES_DIR="$SCRIPT_DIR/tests/dev-lead/fixtures/events"
 
 setup() {
-  export GITHUB_ENV="$(mktemp)"
-  export GITHUB_OUTPUT="$(mktemp)"
+  export GITHUB_ENV="$BATS_TEST_TMPDIR/github_env"
+  export GITHUB_OUTPUT="$BATS_TEST_TMPDIR/github_output"
   export BOT_USER="donpetry-bot"
   export TRUSTED_BOTS="copilot-pull-request-reviewer[bot],gemini-code-assist[bot],sonarqubecloud[bot],coderabbitai[bot],chatgpt-codex-connector[bot]"
   export TRIGGER_PHRASES="@dev-lead"
   export GITHUB_REPOSITORY="petry-projects/.github-private"
 }
 
-teardown() {
-  rm -f "$GITHUB_ENV" "$GITHUB_OUTPUT"
-}
-
 _get_env() {
   local key="$1"
-  grep "^${key}=" "$GITHUB_ENV" | cut -d= -f2- | head -1
+  grep "^${key}=" "$GITHUB_ENV" | cut -d= -f2- | head -n 1 || true
 }
 
 # ── human-authored PRs must be left untouched ────────────────────────────────
