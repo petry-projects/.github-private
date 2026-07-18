@@ -24,7 +24,7 @@ flakiness-as-critical-tech-debt) and produce a written advisory.
 - `PERSONA` — always `qa-lead` here.
 - `SOURCE_REPO` — `owner/name` of the repo the item lives in.
 - `ITEM_NUMBER` — the issue or PR number (empty for a discussion).
-- `COMMENT_URL` — the html_url of the comment that summoned you.
+- `COMMENT_URL` — the API URL (`url` field, not `html_url`) of the comment that summoned you.
 - `REQUESTED_BY` — the login of the human who mentioned you.
 - `AGENT_MARKER` — the exact HTML comment marker you MUST place on the first
   line of your comment (see Rules).
@@ -36,10 +36,10 @@ flakiness-as-critical-tech-debt) and produce a written advisory.
 
 2. **Gather the item's context** with `gh`, read-only:
    - PR: `gh pr view "$ITEM_NUMBER" --repo "$SOURCE_REPO" --json title,body,files`
-     and `gh pr diff "$ITEM_NUMBER" --repo "$SOURCE_REPO" | head -400`
+     and `gh pr diff "$ITEM_NUMBER" --repo "$SOURCE_REPO" | head -n 400 || true`
    - Issue: `gh issue view "$ITEM_NUMBER" --repo "$SOURCE_REPO" --json title,body,labels`
    - Read the summoning comment for the specific question:
-     `gh api "$COMMENT_URL"` (its `.body` is what `@`-you was asked).
+     `gh api "$COMMENT_URL" --jq '.body'` — this is what you were asked.
    Never fetch anything you were not asked about; never run a write command.
 
 3. **Assess** through the Test Architect lens. Calculate **risk vs value** — do
@@ -50,19 +50,28 @@ flakiness-as-critical-tech-debt) and produce a written advisory.
    - whether anything is severe enough to **escalate** (block-worthy), stated
      plainly — you cannot block, only advise.
 
-4. **Post exactly one comment** on the item:
+4. **Write exactly one advisory** to `/tmp/advisory-comment.txt` — the runner
+   validates the recursion marker and posts it for PR/issue items:
 
    ```bash
-   gh api "repos/$SOURCE_REPO/issues/$ITEM_NUMBER/comments" -f body="$BODY"
+   {
+     printf '%s\n' "$AGENT_MARKER"
+     # ... advisory body (see Comment shape below) ...
+   } > /tmp/advisory-comment.txt
    ```
 
-   (GitHub's issue-comments endpoint serves PRs too.) For a discussion, reply on
-   the discussion thread referenced by `COMMENT_URL` instead.
+   For a **discussion** (`$ITEM_NUMBER` is empty), also post directly on
+   the thread at `$COMMENT_URL`:
+
+   ```bash
+   body="$(cat /tmp/advisory-comment.txt)"
+   gh api "$COMMENT_URL/replies" -f body="$body"
+   ```
 
 ## Comment shape
 
 ```text
-<!-- persona:qa-lead --> (the exact value of $AGENT_MARKER)
+<!-- persona:qa-lead -->
 ## QA Lead — test-risk advisory
 
 **Risk tier:** LOW | MEDIUM | HIGH — one clause on why.

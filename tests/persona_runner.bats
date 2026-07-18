@@ -27,6 +27,11 @@ setup() {
   [ "$status" -eq 0 ]
 }
 
+@test "pr_comment_has_marker accepts a body with CRLF line endings" {
+  run pr_comment_has_marker qa-lead "$(printf '<!-- persona:qa-lead -->\r\n## advisory\r\nbody')"
+  [ "$status" -eq 0 ]
+}
+
 @test "pr_comment_has_marker rejects a body missing the marker" {
   run pr_comment_has_marker qa-lead "$(printf '## advisory\nno marker')"
   [ "$status" -ne 0 ]

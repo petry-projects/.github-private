@@ -77,12 +77,13 @@ pr_require_advisory() {
 }
 
 # pr_comment_has_marker <persona-id> <body> — 0 if the body's FIRST line is the
-# persona's marker. The workflow asserts this on the agent's output before
-# posting: a comment without the marker would self-summon, so an unmarked
-# advisory is dropped rather than posted. Belt to the prompt's suspenders.
+# persona's marker. The runner validates this before posting: a comment without
+# the marker would self-summon, so an unmarked advisory is dropped. Belt to the
+# prompt's suspenders. Strips trailing \r so CRLF payloads compare correctly.
 pr_comment_has_marker() {
   local id="$1" body="$2" first marker
   marker="$(pr_agent_marker "$id")"
   IFS= read -r first <<<"$body"
+  first="${first%$'\r'}"
   [ "$first" = "$marker" ]
 }

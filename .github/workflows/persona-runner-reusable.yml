@@ -53,9 +53,9 @@ on:
 permissions: {}  # nothing from github.token; all cross-repo work uses the PAT
 
 concurrency:
-  # One run per (persona, item). A second mention while one is in flight is
-  # dropped rather than stacked — the advisory would be redundant.
-  group: persona-runner-${{ inputs.persona }}-${{ inputs.source_repo }}-${{ inputs.item_number }}
+  # One run per (persona, item, comment). item_number is empty for discussions,
+  # so comment_url disambiguates different discussion comments for the same persona.
+  group: persona-runner-${{ inputs.persona }}-${{ inputs.source_repo }}-${{ inputs.item_number }}-${{ inputs.comment_url }}
   cancel-in-progress: false
 
 jobs:
@@ -85,10 +85,17 @@ jobs:
           # repository_dispatch can be sent by anything holding a token, so the
           # payload is re-validated here rather than trusted. A malformed id must
           # never reach a path interpolation.
-          if ! prompt_path="$(pr_require_advisory "$PERSONA" .)"; then
+          prompt_path=""; resolve_rc=0
+          prompt_path="$(pr_require_advisory "$PERSONA" .)" || resolve_rc=$?
+          if [ "$resolve_rc" -eq 2 ]; then
+            echo "::error::malformed persona id '${PERSONA}' — check the routing payload"
+            exit 1
+          elif [ "$resolve_rc" -eq 3 ]; then
             echo "::notice::persona '${PERSONA}' has no advisory runtime — nothing to do"
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
+          elif [ "$resolve_rc" -ne 0 ]; then
+            exit "$resolve_rc"
           fi
           echo "skip=false" >> "$GITHUB_OUTPUT"
           echo "prompt_path=${prompt_path}" >> "$GITHUB_OUTPUT"
@@ -130,8 +137,9 @@ jobs:
           {
             echo "You are running headless for persona '${PERSONA}'. The work item is"
             echo "${SOURCE_REPO}#${ITEM_NUMBER} (${COMMENT_URL}); ${REQUESTED_BY} summoned you."
-            echo "Follow your instructions exactly. Post ONE comment; its first line"
-            echo "MUST be exactly: ${AGENT_MARKER}"
+            echo "Follow your instructions exactly. Write ONE advisory body to"
+            echo "/tmp/advisory-comment.txt — its first line MUST be exactly: ${AGENT_MARKER}"
+            echo "The runner validates the marker and posts for PR/issue items."
             echo
             cat "$PROMPT_PATH"
           } > /tmp/persona-prompt.txt
@@ -152,3 +160,30 @@ jobs:
           fi
           rm -f "$_out"
           exit "$_rc"
+
+      - name: Post advisory comment
+        if: steps.resolve.outputs.skip == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
+          PERSONA: ${{ inputs.persona }}
+          SOURCE_REPO: ${{ inputs.source_repo }}
+          ITEM_NUMBER: ${{ inputs.item_number }}
+        run: |
+          set -euo pipefail
+          # shellcheck source=scripts/lib/persona-runner.sh
+          source scripts/lib/persona-runner.sh
+
+          if [ ! -f /tmp/advisory-comment.txt ]; then
+            echo "::error::agent did not write /tmp/advisory-comment.txt — no comment to post"
+            exit 1
+          fi
+          body="$(cat /tmp/advisory-comment.txt)"
+          if ! pr_comment_has_marker "$PERSONA" "$body"; then
+            echo "::error::agent output missing recursion marker '$(pr_agent_marker "$PERSONA")' — dropping to prevent self-summon loop"
+            exit 1
+          fi
+          if [ -n "$ITEM_NUMBER" ]; then
+            gh api "repos/$SOURCE_REPO/issues/$ITEM_NUMBER/comments" -f body="$body"
+          else
+            echo "::notice::discussion posting: marker validated; agent handles posting for discussion items"
+          fi
