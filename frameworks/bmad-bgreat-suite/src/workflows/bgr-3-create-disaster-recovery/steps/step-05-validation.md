@@ -90,6 +90,11 @@ Run through each quality gate systematically:
 
 Check alignment with other completed workflow plans:
 
+**If Infrastructure Plan exists:**
+- Does the DR topology match the infrastructure architecture (multi-region, multi-AZ)?
+- Are DR regions consistent with infrastructure plans?
+- Does the IaC support DR environment provisioning?
+
 **If Observability Plan exists:**
 - Do SLO targets align with RTO/RPO definitions?
 - Are DR metrics monitored (replication lag, backup age, failover readiness)?
@@ -97,14 +102,8 @@ Check alignment with other completed workflow plans:
 
 **If Incident Response Plan exists:**
 - Is DR activation distinct from incident escalation?
-- Do communication procedures align (no conflicting templates)?
-- Is the handoff from incident response to DR clearly defined?
-- Do severity levels map to DR levels appropriately?
-
-**If Infrastructure Plan exists:**
-- Does the DR topology match the infrastructure architecture?
-- Are DR regions consistent with infrastructure plans?
-- Does the IaC support DR environment provisioning?
+- Is the handoff from incident response to DR activation clearly defined?
+- Do DR failover triggers map to incident severity levels?
 
 **If Pipeline Plan exists:**
 - Can the CI/CD pipeline deploy to DR regions?
@@ -357,9 +356,9 @@ After saving the disaster recovery plan, update the cross-workflow production re
    - DR testing cadence
    - Update checklist `lastUpdated` in both frontmatter and the Overview section
 4. Check for cross-plan dependency gaps:
+   - If Infrastructure Plan exists: Verify DR topology matches infrastructure architecture, DR regions are consistent
    - If Observability Plan exists: Verify DR monitoring metrics are defined, SLO targets align with RTO/RPO
    - If Incident Response Plan exists: Verify DR activation is distinct from incident escalation, communication procedures are consistent
-   - If Infrastructure Plan exists: Verify DR topology matches infrastructure architecture, DR regions are consistent
    - If Pipeline Plan exists: Verify CI/CD can deploy to DR regions, rollback aligns with failback
    - Record any inconsistencies in section **4.3 Consistency Issues**
 5. Update the `completedWorkflows` array in checklist frontmatter to include `disaster-recovery`. Add this workflow only if it is not already present (use set-style uniqueness to prevent duplicate entries on re-run).

@@ -287,7 +287,7 @@ After saving the incident response plan, update the cross-workflow production re
    - If Capacity Plan exists and status is `complete`: Verify capacity exhaustion is classified as an incident type with appropriate severity and escalation. If status is `draft`, note validation is deferred.
    - Record any inconsistencies or deferred validations in section **4.3 Consistency Issues**
 5. Update the `completedWorkflows` array in checklist frontmatter to include `incident-response`. Add this workflow only if it is not already present (use set-style uniqueness to prevent duplicate entries on re-run).
-6. If all 7 workflows are now complete, update **Overall Status** to `READY` (if no critical gaps remain). A **critical gap** is a missing workflow artifact, an unresolved cross-plan dependency, or a key decision conflict between plans that would block production readiness (e.g., mismatched environment topologies, missing rollback alignment, or undefined alerting-to-severity mappings).
+6. If all 8 workflows are now complete, update **Overall Status** to `READY` (if no critical gaps remain). A **critical gap** is a missing workflow artifact, an unresolved cross-plan dependency, or a key decision conflict between plans that would block production readiness (e.g., mismatched environment topologies, missing rollback alignment, or undefined alerting-to-severity mappings).
 7. Save the updated checklist
 
 ### 9. Finalization Report

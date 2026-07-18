@@ -224,7 +224,7 @@ After saving the chaos game day plan, update the cross-workflow production readi
 4. Check for cross-plan dependency gaps (verify each plan's `status` field before validating):
    - If Observability Plan exists and status is `complete`: Verify steady-state metrics align with SLOs and dashboards are referenced. If status is `draft`, note validation is deferred pending finalization.
    - If Incident Response Plan exists and status is `complete`: Verify abort conditions are distinct from incident escalation thresholds. If status is `draft`, note validation is deferred pending finalization.
-   - If Infrastructure Plan exists and status is `complete`: Verify experiments target infrastructure components consistent with the plan. If status is `draft`, note validation is deferred pending finalization.
+   - If Infrastructure Plan exists and status is `complete` or `approved`: Verify experiments target infrastructure components consistent with the plan. If status is `draft`, note validation is deferred pending finalization.
    - Record any inconsistencies or deferred validations in section **4.3 Consistency Issues**
 5. Update the `completedWorkflows` array in checklist frontmatter to include `chaos-gameday`. Add this workflow only if it is not already present (use set-style uniqueness to prevent duplicate entries on re-run).
 6. If all workflows are now complete, update **Overall Status** to `READY` (if no critical gaps remain). A **critical gap** is a missing workflow artifact, an unresolved cross-plan dependency, or a key decision conflict between plans that would block production readiness.
