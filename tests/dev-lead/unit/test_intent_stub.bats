@@ -60,7 +60,9 @@ _get_output() {
   [ "$(_get_env INTENT_REASON)" = "not-implemented" ]
 }
 
-@test "routing: pull_request opened by human emits review-changes" {
+@test "routing: pull_request opened by human is left to the human (#1311)" {
+  # A human-authored PR (branch not dev-lead/issue-*) must NOT be seized by
+  # dev-lead — it emits skip, leaving the PR for the human to finish.
   export GITHUB_EVENT_NAME="pull_request"
   export GITHUB_EVENT_PATH="$FIXTURES_DIR/pr_opened_human.json"
   export GITHUB_REPOSITORY="petry-projects/.github-private"
@@ -68,7 +70,8 @@ _get_output() {
   run bash "$INTENT_SCRIPT"
 
   [ "$status" -eq 0 ]
-  [ "$(_get_env INTENT_TYPE)" = "review-changes" ]
+  [ "$(_get_env INTENT_TYPE)" = "skip" ]
+  [ "$(_get_env INTENT_REASON)" = "not-dev-lead-authored" ]
 }
 
 @test "anti-loop: pull_request synchronize from BOT_USER emits skip" {
