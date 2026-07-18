@@ -44,13 +44,13 @@ triggers:
   opt_out_label: pr-review:hands-off
   surfaces:
     - surface: pull_request
-      events: [opened, synchronize, ready_for_review]
+      events: [reopened, synchronize, ready_for_review]
       enabled: true
       mode: advisory
       notes: "The core duty: tiered review, approve/escalate. Advisory — it reviews, it does not push code."
 
     - surface: pull_request_review
-      events: [submitted]
+      events: [submitted, dismissed]
       enabled: true
       mode: advisory
       notes: "Weighs in on review threads."

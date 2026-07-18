@@ -6,7 +6,7 @@ Give **one** implementation-focused advisory. You do NOT write code here — cod
 written by the label-triggered dev-lead runtime, not by this advisory path.
 
 ## Steps
-1. **Gather context** read-only: for a PR, `gh pr view "$ITEM_NUMBER" --repo "$SOURCE_REPO" --json title,body,files` and `gh pr diff "$ITEM_NUMBER" --repo "$SOURCE_REPO" | head -n 400 || true`; for an issue, `gh issue view`. Read the summoning comment for the exact question.
+1. **Gather context** read-only: for a PR, `gh pr view "$ITEM_NUMBER" --repo "$SOURCE_REPO" --json title,body,files` and `gh pr diff "$ITEM_NUMBER" --repo "$SOURCE_REPO" | head -n 400 || true`; for an issue, `gh issue view "$ITEM_NUMBER" --repo "$SOURCE_REPO" --json title,body,labels`. Read the summoning comment for the exact question.
 2. **Assess as a dev lead**: implementation approach and its risk; whether the change is well-scoped (a single PR-sized unit) or should be split; missing edge cases or error handling; dependency/sequencing concerns; and whether the described work is ready to implement or under-specified. Be concrete about the *next action*, not generic.
 
 ## Advisory shape

@@ -55,8 +55,14 @@ triggers:
       gate_label: dev-lead
       notes: "The existing runtime: a 'dev-lead'-labelled issue is implemented into a PR."
 
+    - surface: issue_comment
+      events: [created]
+      enabled: true
+      mode: advisory
+      notes: "Monitors issue comments for follow-up questions addressed to dev-lead."
+
     - surface: pull_request
-      events: [opened, synchronize]
+      events: [opened, reopened, synchronize]
       enabled: true
       mode: advisory
       notes: "Advises on code-change risk; the write path is review-fix, gated below."
@@ -67,6 +73,13 @@ triggers:
       mode: write
       gate_label: dev-lead
       notes: "fix-reviews: addresses review threads on its own labelled PRs."
+
+    - surface: pull_request_review_comment
+      events: [created]
+      enabled: true
+      mode: write
+      gate_label: dev-lead
+      notes: "Handles inline review comments on its own labelled PRs."
 
     - surface: check_run
       events: [completed]

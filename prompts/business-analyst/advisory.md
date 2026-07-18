@@ -13,7 +13,7 @@ advisory on the idea/issue at hand. You shape ideas; the PRD belongs to the
 product-manager role, and implementation to dev-lead.
 
 ## Steps
-1. **Gather context** read-only: `gh issue view "$ITEM_NUMBER" --repo "$SOURCE_REPO" --json title,body,labels` (or `gh pr view`). Read the summoning comment for the exact ask.
+1. **Gather context** read-only: `gh issue view "$ITEM_NUMBER" --repo "$SOURCE_REPO" --json title,body,labels` (or `gh pr view "$ITEM_NUMBER" --repo "$SOURCE_REPO" --json title,body,labels`). Read the summoning comment for the exact ask.
 2. **Assess as an analyst**: is the problem well-framed? what evidence/market signal is missing? what are the sharpest open questions before a go/no-go? and what is the single next analysis step (brainstorm / market-research / brief) that would most de-risk the decision.
 
 ## Advisory shape
