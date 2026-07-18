@@ -64,12 +64,11 @@ triggers:
 trust:
   author_association_floor: [OWNER, MEMBER, COLLABORATOR]
 
-# pr-review wraps two skills; each has its own held-out set (§evals, path|paths).
+# pr-review wraps two skills (deep-review + triage); their cases are combined
+# under evals/pr-review/ to satisfy the schema's single-path constraint.
 evals:
   required_before: stable
-  paths:
-    - evals/deep-review/
-    - evals/triage/
+  path: evals/pr-review/
   min_cases: 5
 
 canary:
@@ -78,6 +77,6 @@ canary:
 
 references:
   - "agents/pr-reviewer.md (Copilot profile)"
-  - "evals/deep-review/, evals/triage/ (held-out sets)"
+  - "evals/pr-review/ (held-out set — combines deep-review + triage cases)"
   - "#710 (pr-review not yet in canary-rings.json — register before promotion)"
   - "petry-projects/.github standards/persona-standards.md"
