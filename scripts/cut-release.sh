@@ -16,7 +16,7 @@
 #   <agent>      this repo: pr-review | dev-lead | ci-failure-analyst
 #                cross-repo (reusable in petry-projects/.github): feature-ideation | idea-enhancer | add-to-project | pr-auto-review |
 #                  agent-shield | auto-rebase | dependency-audit |
-#                  dependabot-automerge | dependabot-rebase | pr-review-mention
+#                  dependabot-automerge | dependabot-rebase | pr-review-mention | persona-mention
 #   <version>    semantic version without the leading v, e.g. 1.2.0
 #   --ref        commit/ref to tag (default: main). Resolved against the agent's
 #                HOST repo via the API for EVERY agent (an `origin/` prefix is
@@ -83,7 +83,7 @@ cross_repo_agent() {
   case "$1" in
     feature-ideation | idea-enhancer | add-to-project | pr-auto-review) return 0 ;;
     agent-shield | auto-rebase | dependency-audit) return 0 ;;
-    dependabot-automerge | dependabot-rebase | pr-review-mention) return 0 ;;
+    dependabot-automerge | dependabot-rebase | pr-review-mention | persona-mention) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -215,7 +215,7 @@ main() {
   done
 
   if ! valid_agent "$agent"; then
-    echo "::error::unknown agent '$agent' (expected: pr-review | dev-lead | ci-failure-analyst | feature-ideation | idea-enhancer | add-to-project | pr-auto-review | agent-shield | auto-rebase | dependency-audit | dependabot-automerge | dependabot-rebase | pr-review-mention)" >&2
+    echo "::error::unknown agent '$agent' (expected: pr-review | dev-lead | ci-failure-analyst | feature-ideation | idea-enhancer | add-to-project | pr-auto-review | agent-shield | auto-rebase | dependency-audit | dependabot-automerge | dependabot-rebase | pr-review-mention | persona-mention)" >&2
     return 2
   fi
   if ! validate_version "$version"; then

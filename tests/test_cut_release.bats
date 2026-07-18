@@ -133,6 +133,11 @@ setup() {
   [ "$status" -eq 0 ]
 }
 
+@test "valid_agent: persona-mention is accepted" {
+  run valid_agent "persona-mention"
+  [ "$status" -eq 0 ]
+}
+
 @test "valid_agent: unknown agent is rejected" {
   run valid_agent "totally-not-an-agent"
   [ "$status" -ne 0 ]
@@ -176,6 +181,11 @@ setup() {
 
 @test "cross_repo_agent: pr-review-mention is cross-repo" {
   run cross_repo_agent "pr-review-mention"
+  [ "$status" -eq 0 ]
+}
+
+@test "cross_repo_agent: persona-mention is cross-repo (reusable in .github)" {
+  run cross_repo_agent "persona-mention"
   [ "$status" -eq 0 ]
 }
 
