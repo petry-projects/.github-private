@@ -1,0 +1,27 @@
+{
+  "_test_expected_intent": "review-changes",
+  "action": "opened",
+  "number": 1402,
+  "pull_request": {
+    "number": 1402,
+    "title": "feat: implement issue #1402",
+    "body": "Implements the assigned issue.",
+    "state": "open",
+    "author_association": "OWNER",
+    "user": {
+      "login": "donpetry-bot",
+      "type": "Bot"
+    },
+    "head": {
+      "sha": "abc1402def",
+      "ref": "dev-lead/issue-1402-20260718-1200",
+      "repo": { "full_name": "petry-projects/.github-private" }
+    },
+    "base": {
+      "ref": "main",
+      "repo": { "full_name": "petry-projects/.github-private" }
+    }
+  },
+  "repository": { "full_name": "petry-projects/.github-private" },
+  "sender": { "login": "donpetry-bot", "type": "User" }
+}

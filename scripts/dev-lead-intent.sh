@@ -112,6 +112,27 @@ is_fork_pr() {
   [ -n "$head_repo" ] && [ "$head_repo" != "$base_repo" ]
 }
 
+# is_dev_lead_authored
+# Returns 0 (true) iff the PR in the event payload was authored by the dev-lead
+# identity: its head branch matches `dev-lead/issue-*` OR the PR/issue author
+# login equals BOT_USER. dev-lead's fix/push/merge intents must only ever act on
+# PRs it authored — a review or bot comment on a human's in-flight PR must be
+# left to the human (issue #1311: dev-lead drove a human PR to merge and dropped
+# an unseen commit). FAILS CLOSED: any indeterminate state (no payload, or no
+# head ref AND no author) returns 1, so callers skip rather than seize a PR whose
+# ownership cannot be established.
+is_dev_lead_authored() {
+  [ -n "$EVENT_PATH" ] && [ -f "$EVENT_PATH" ] || return 1
+  local head_ref author
+  head_ref=$(jq -r '(.pull_request?.head?.ref // "" | tostring)' "$EVENT_PATH" 2>/dev/null || true)
+  author=$(jq -r '(.pull_request?.user?.login // .issue?.user?.login // "" | tostring)' "$EVENT_PATH" 2>/dev/null || true)
+  case "$head_ref" in
+    dev-lead/issue-*) return 0 ;;
+  esac
+  [ -n "$author" ] && [ "$author" = "$BOT_USER" ] && return 0
+  return 1
+}
+
 # ── read event ───────────────────────────────────────────────────────────────
 
 EVENT_NAME="${GITHUB_EVENT_NAME:-}"
@@ -189,6 +210,12 @@ case "$EVENT_NAME" in
           emit_skip "bot-pr"
           exit 0
         fi
+        # Authorship gate (#1311): only act on PRs dev-lead authored. A human's
+        # own PR is theirs to finish — dev-lead must not seize and drive it.
+        if ! is_dev_lead_authored; then
+          emit_skip "not-dev-lead-authored"
+          exit 0
+        fi
         context=$(jq -nc \
           --argjson pr_number "${pr_number:-0}" \
           --arg head_sha "${head_sha:-}" \
@@ -200,6 +227,11 @@ case "$EVENT_NAME" in
         # Anti-loop already handled above; now route human syncs
         if [[ "$sender_login" == *"[bot]"* ]]; then
           emit_skip "bot-sync"
+          exit 0
+        fi
+        # Authorship gate (#1311): a human pushing to their own PR keeps it.
+        if ! is_dev_lead_authored; then
+          emit_skip "not-dev-lead-authored"
           exit 0
         fi
         context=$(jq -nc \
@@ -239,6 +271,15 @@ case "$EVENT_NAME" in
     # Skip fork PRs
     if is_fork_pr "$EVENT_PATH"; then
       emit_skip "fork-pr"
+      exit 0
+    fi
+
+    # Authorship gate (#1311): a review — from a trusted bot OR a trusted human —
+    # only drives dev-lead's fix/push/merge path on a PR dev-lead authored. On a
+    # human's in-flight PR, dev-lead stays out (it may still advise, but never
+    # pushes or merges). Fails closed on indeterminate authorship.
+    if ! is_dev_lead_authored; then
+      emit_skip "not-dev-lead-authored"
       exit 0
     fi
 
@@ -282,8 +323,16 @@ case "$EVENT_NAME" in
       '{"pr_number":$pr_number,"head_sha":$head_sha,"actor":$actor,"body":$body}')
 
     if is_trusted_bot "$commenter"; then
+      # Authorship gate (#1311): a bot review comment only drives dev-lead's
+      # auto-fix/push on a PR dev-lead authored. On a human's PR it is advisory.
+      if ! is_dev_lead_authored; then
+        emit_skip "not-dev-lead-authored"
+        exit 0
+      fi
       emit_intent "fix-reviews" "bot-review-comment" "$context"
     elif is_human_trusted "$author_assoc" && has_trigger_phrase "$comment_body"; then
+      # on-mention is an explicit human request (@dev-lead) — direct
+      # authorization — so it is exempt from the authorship gate.
       emit_intent "on-mention" "human-review-comment-trigger" "$context"
     else
       emit_skip "no-trigger-or-untrusted"
@@ -337,6 +386,14 @@ case "$EVENT_NAME" in
       '{"pr_number":$pr_number,"actor":$actor,"body":$body}')
 
     if is_trusted_bot "$commenter"; then
+      # Authorship gate (#1311): a bot comment only drives dev-lead's auto-fix/
+      # push on a PR dev-lead authored (author == BOT_USER; issue_comment
+      # payloads carry no head ref). On a human's PR it is advisory. The rebase
+      # sentinel above and the on-mention branch below are intentionally exempt.
+      if ! is_dev_lead_authored; then
+        emit_skip "not-dev-lead-authored"
+        exit 0
+      fi
       emit_intent "fix-bot-comment" "trusted-bot-comment" "$context"
     elif is_human_trusted "$author_assoc" && has_trigger_phrase "$comment_body"; then
       emit_intent "on-mention" "human-comment-trigger" "$context"

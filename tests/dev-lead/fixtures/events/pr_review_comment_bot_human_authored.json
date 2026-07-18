@@ -1,0 +1,35 @@
+{
+  "_test_expected_intent": "skip",
+  "action": "created",
+  "comment": {
+    "id": 4050,
+    "body": "This logic has a potential off-by-one error on line 17.",
+    "path": "src/index.js",
+    "line": 17,
+    "user": {
+      "login": "copilot-pull-request-reviewer[bot]",
+      "type": "Bot"
+    }
+  },
+  "pull_request": {
+    "number": 1303,
+    "title": "feat: onboard personas",
+    "state": "open",
+    "author_association": "OWNER",
+    "user": {
+      "login": "donpetry",
+      "type": "User"
+    },
+    "head": {
+      "sha": "08794259aaaa",
+      "ref": "feat/onboard-personas",
+      "repo": { "full_name": "petry-projects/.github-private" }
+    },
+    "base": {
+      "ref": "main",
+      "repo": { "full_name": "petry-projects/.github-private" }
+    }
+  },
+  "repository": { "full_name": "petry-projects/.github-private" },
+  "sender": { "login": "copilot-pull-request-reviewer[bot]", "type": "Bot" }
+}
