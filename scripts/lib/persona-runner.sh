@@ -77,13 +77,48 @@ pr_require_advisory() {
 }
 
 # pr_comment_has_marker <persona-id> <body> — 0 if the body's FIRST line is the
-# persona's marker. The runner validates this before posting: a comment without
-# the marker would self-summon, so an unmarked advisory is dropped. Belt to the
-# prompt's suspenders. Strips trailing \r so CRLF payloads compare correctly.
+# persona's marker.
+#
+# CRLF: GitHub API/webhook bodies often use '\r\n', and `read` keeps the '\r',
+# so the raw first line would be '<!-- persona:qa-lead -->\r' and never match.
+# Strip it.
 pr_comment_has_marker() {
   local id="$1" body="$2" first marker
   marker="$(pr_agent_marker "$id")"
   IFS= read -r first <<<"$body"
   first="${first%$'\r'}"
   [ "$first" = "$marker" ]
+}
+
+# pr_extract_advisory <agent-stdout> — emit the advisory body the agent placed
+# between the sentinels, or nothing.
+#
+# The agent does NOT post its own comment (it has no token that can write to the
+# source repo — see the reusable). It PRINTS the body between two sentinels, and
+# the workflow posts it. That is what makes the marker MECHANICALLY enforced
+# rather than merely prompt-requested: an agent that forgets the marker cannot
+# post an unmarked comment, because it cannot post at all. Prompt-only
+# enforcement is how #860 happened (1,481 acks in 4.5h).
+PR_ADVISORY_BEGIN='===PERSONA-ADVISORY-BEGIN==='
+PR_ADVISORY_END='===PERSONA-ADVISORY-END==='
+pr_extract_advisory() {
+  printf '%s' "$1" | awk -v b="$PR_ADVISORY_BEGIN" -v e="$PR_ADVISORY_END" '
+    $0 == b { grab = 1; next }
+    $0 == e { grab = 0 }
+    grab    { print }
+  '
+}
+
+# pr_ensure_marker <persona-id> <body> — echo the body guaranteed to start with
+# the persona marker: unchanged if it already leads with it, otherwise the
+# marker is prepended. The workflow calls this on the extracted advisory before
+# posting, so the recursion guard holds even if the agent omitted the marker.
+pr_ensure_marker() {
+  local id="$1" body="$2" marker
+  marker="$(pr_agent_marker "$id")"
+  if pr_comment_has_marker "$id" "$body"; then
+    printf '%s' "$body"
+  else
+    printf '%s\n%s' "$marker" "$body"
+  fi
 }

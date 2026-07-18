@@ -114,3 +114,45 @@ setup() {
   [ "$status" -eq 2 ]
   [[ "$output" == *"malformed persona id"* ]]
 }
+
+# --- marker enforced MECHANICALLY, not just prompt-requested ----------------
+# The agent prints between sentinels and cannot post (no write token). The
+# workflow extracts, guarantees the marker, and posts. These pin that path.
+
+@test "pr_comment_has_marker accepts a CRLF body (GitHub uses \\r\\n)" {
+  run pr_comment_has_marker qa-lead "$(printf '<!-- persona:qa-lead -->\r\n## advisory\r\nbody')"
+  [ "$status" -eq 0 ]
+}
+
+@test "pr_extract_advisory pulls only the text between the sentinels" {
+  raw="$(printf 'chatter before\n===PERSONA-ADVISORY-BEGIN===\n<!-- persona:qa-lead -->\nrisk: low\n===PERSONA-ADVISORY-END===\ntrailing noise')"
+  run pr_extract_advisory "$raw"
+  [ "${lines[0]}" = "<!-- persona:qa-lead -->" ]
+  [ "${lines[1]}" = "risk: low" ]
+  [ "${#lines[@]}" -eq 2 ]
+}
+
+@test "pr_extract_advisory yields nothing when the sentinels are absent" {
+  run pr_extract_advisory "the agent rambled but emitted no sentinels"
+  [ -z "$output" ]
+}
+
+@test "pr_ensure_marker leaves an already-marked body unchanged" {
+  body="$(printf '<!-- persona:qa-lead -->\n## advisory')"
+  run pr_ensure_marker qa-lead "$body"
+  [ "$output" = "$body" ]
+}
+
+@test "pr_ensure_marker PREPENDS the marker when the agent forgot it" {
+  run pr_ensure_marker qa-lead "$(printf '## advisory\nno marker here')"
+  [ "${lines[0]}" = "<!-- persona:qa-lead -->" ]
+  [ "${lines[1]}" = "## advisory" ]
+}
+
+@test "pr_ensure_marker output always satisfies pr_comment_has_marker" {
+  # The invariant the workflow relies on: whatever the agent produced, the posted
+  # body starts with the marker.
+  ensured="$(pr_ensure_marker qa-lead 'agent forgot the marker entirely')"
+  run pr_comment_has_marker qa-lead "$ensured"
+  [ "$status" -eq 0 ]
+}
