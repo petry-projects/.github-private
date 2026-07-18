@@ -119,6 +119,11 @@ setup() {
 # The agent prints between sentinels and cannot post (no write token). The
 # workflow extracts, guarantees the marker, and posts. These pin that path.
 
+@test "pr_comment_has_marker accepts a CRLF body (GitHub uses \\r\\n)" {
+  run pr_comment_has_marker qa-lead "$(printf '<!-- persona:qa-lead -->\r\n## advisory\r\nbody')"
+  [ "$status" -eq 0 ]
+}
+
 @test "pr_extract_advisory pulls only the text between the sentinels" {
   raw="$(printf 'chatter before\n===PERSONA-ADVISORY-BEGIN===\n<!-- persona:qa-lead -->\nrisk: low\n===PERSONA-ADVISORY-END===\ntrailing noise')"
   run pr_extract_advisory "$raw"

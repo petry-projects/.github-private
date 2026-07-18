@@ -27,7 +27,9 @@ flakiness-as-critical-tech-debt) and write the advisory.
 
 - `SOURCE_REPO` — `owner/name` the item lives in (a public repo).
 - `ITEM_NUMBER` — the issue or PR number (empty for a discussion).
-- `COMMENT_URL` — the API URL of the comment that summoned you.
+- `COMMENT_URL` — the **API** URL of the summoning comment (the router sends the
+  comment's `.url`, so `gh api "$COMMENT_URL"` returns it directly). It may be
+  empty; if so, work from the item's title/body/diff.
 - `REQUESTED_BY` — the login of the human who mentioned you.
 - `AGENT_MARKER` — the exact marker string; see "Output".
 
