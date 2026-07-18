@@ -144,11 +144,8 @@ jobs:
           set -euo pipefail
           export PATH="$HOME/.npm-global/bin:$PATH"
 
-          # Item facts go in via env (already exported), never interpolated into
-          # the prompt text the agent could be steered by.
           {
-            echo "You are running headless for persona '${PERSONA}'. The work item is"
-            echo "${SOURCE_REPO}#${ITEM_NUMBER} (${COMMENT_URL}); ${REQUESTED_BY} summoned you."
+            echo "You are running headless for persona '${PERSONA}'. The work item details and summoner are provided in the environment variables SOURCE_REPO, ITEM_NUMBER, COMMENT_URL, and REQUESTED_BY."
             echo "Follow your instructions exactly. PRINT the advisory between the"
             echo "sentinels; do not attempt to post it (you cannot)."
             echo

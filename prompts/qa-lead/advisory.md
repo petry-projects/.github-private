@@ -27,7 +27,7 @@ flakiness-as-critical-tech-debt) and write the advisory.
 
 - `SOURCE_REPO` — `owner/name` the item lives in (a public repo).
 - `ITEM_NUMBER` — the issue or PR number (empty for a discussion).
-- `COMMENT_URL` — the html_url of the comment that summoned you.
+- `COMMENT_URL` — the API URL of the comment that summoned you.
 - `REQUESTED_BY` — the login of the human who mentioned you.
 - `AGENT_MARKER` — the exact marker string; see "Output".
 
@@ -40,13 +40,9 @@ flakiness-as-critical-tech-debt) and write the advisory.
    - PR: `gh pr view "$ITEM_NUMBER" --repo "$SOURCE_REPO" --json title,body,files`
      and `gh pr diff "$ITEM_NUMBER" --repo "$SOURCE_REPO" | head -n 400 || true`
    - Issue: `gh issue view "$ITEM_NUMBER" --repo "$SOURCE_REPO" --json title,body,labels`
-   - Read the exact question you were asked. `COMMENT_URL` is a browser URL, so
-     derive the API URL for its body:
+   - Read the exact question you were asked:
      ```bash
-     api_url="${COMMENT_URL/https:\/\/github.com\//https://api.github.com/repos/}"
-     api_url="${api_url/\/pull\//\/issues\/}"            # PR-comment URLs sit under /issues/comments
-     api_url="$(printf '%s' "$api_url" | sed -E 's#(#issuecomment-)([0-9]+)$#/issues/comments/\2#')"
-     gh api "$api_url" --jq '.body' 2>/dev/null || true
+     gh api "$COMMENT_URL" --jq '.body' 2>/dev/null || true
      ```
      If that fails, proceed from the item title/body/diff alone.
    Never fetch anything you were not asked about. Never run a write command; you
