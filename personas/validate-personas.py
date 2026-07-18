@@ -23,8 +23,10 @@ schema cannot express on its own:
   * every `definition.layers[].path` exists on disk
   * a `framework-agent` layer's `framework.vendor_pin` actually appears in the
     referenced `frameworks/<name>/VENDOR.md` (pin ↔ vendored version agree)
-  * `evals.path` exists and carries both `dev/cases.jsonl` and
-    `holdout/cases.jsonl`
+  * each eval set (`evals.path`, or every entry of `evals.paths`) carries both
+    `dev/cases.jsonl` and `holdout/cases.jsonl`; and once the persona has reached
+    its `evals.required_before` ring, each held-out set has >= `min_cases`
+    (the enforceable half of principle 5 — a draft is exempt)
   * a non-`draft` persona has a matching `agents.<id>` entry in the canary ring
     registry (`canary-rings.json`), so status never outruns registration
 
@@ -127,6 +129,65 @@ def handle_slug(manifest_path: Path, field: str, value: object) -> str:
     return value.split("/", 1)[1]
 
 
+RING_ORDER = {"draft": 0, "canary": 1, "ring0": 2, "ring1": 3, "stable": 4, "retired": 5}
+
+
+def _eval_set_dirs(evals: dict) -> list[str]:
+    """The eval-set dir(s) a manifest declares — `path` (one) or `paths` (many).
+
+    The schema guarantees exactly one of the two is present; this mirrors that so
+    the validator reads both shapes. A stale --schema that allowed neither yields
+    an empty list (no sets to check), which is safe.
+    """
+    if "path" in evals:
+        return [evals["path"]]
+    return list(evals.get("paths", []))
+
+
+def check_evals(manifest: dict, manifest_path: Path, repo_root: Path) -> None:
+    """Every eval set has dev/ + holdout/ splits; and once the persona has reached
+    its `required_before` ring, each held-out set carries at least `min_cases`.
+
+    This is the enforceable half of principle 5 ("no persona reaches stable
+    without an eval gate"): the SCORED gate (running the cases against a judge)
+    needs a harness and is tracked separately, but "you cannot promote past
+    required_before on placeholder evals" is a hermetic line-count and belongs
+    here. A draft persona is exempt — draft is exactly when seed cases are still
+    placeholders.
+    """
+    evals = manifest.get("evals")
+    if evals is None:
+        return
+    min_cases = evals.get("min_cases", 1)
+    required_before = evals.get("required_before", "stable")
+    status = manifest.get("status", "draft")
+    # Gate the count once the persona has reached (or passed) the ring by which
+    # the evals were promised. Splits must always exist; the count only bites at
+    # promotion so seed sets can be filled in while draft.
+    enforce_count = RING_ORDER.get(status, 0) >= RING_ORDER.get(required_before, 4)
+
+    for rel in _eval_set_dirs(evals):
+        try:
+            eval_dir = (repo_root / rel).resolve()
+            eval_dir.relative_to(repo_root.resolve())
+        except (ValueError, OSError):
+            fail(f"{manifest_path}: eval set '{rel}' must be a valid path inside the repository root")
+        for split in ("dev", "holdout"):
+            cases = eval_dir / split / "cases.jsonl"
+            if not cases.is_file():
+                fail(f"{manifest_path}: eval set '{rel}' is missing its {split} split "
+                     f"(expected {cases})")
+        if enforce_count:
+            holdout = eval_dir / "holdout" / "cases.jsonl"
+            with holdout.open(encoding="utf-8") as f:
+                n = sum(1 for line in f if line.strip())
+            if n < min_cases:
+                fail(f"{manifest_path}: status '{status}' has reached required_before "
+                     f"'{required_before}', but eval set '{rel}' holds only {n} held-out "
+                     f"case(s) < min_cases {min_cases} (principle 5: no promotion on "
+                     f"placeholder evals)")
+
+
 def check_invariants(manifest: dict, manifest_path: Path, repo_root: Path,
                      registry_arg: str | None) -> None:
     persona_dir = manifest_path.parent
@@ -165,12 +226,7 @@ def check_invariants(manifest: dict, manifest_path: Path, repo_root: Path,
                 fail(f"{manifest_path}: vendor_pin '{fw['vendor_pin']}' not found in {vendor_md} "
                      f"(manifest pin and vendored version disagree)")
 
-    evals_dir = repo_root / manifest["evals"]["path"] if "evals" in manifest else None
-    if evals_dir is not None:
-        for split in ("dev", "holdout"):
-            cases = evals_dir / split / "cases.jsonl"
-            if not cases.is_file():
-                fail(f"{manifest_path}: evals.path missing {split} split (expected {cases})")
+    check_evals(manifest, manifest_path, repo_root)
 
     if manifest["status"] != "draft":
         registry = load_registry(registry_arg)
