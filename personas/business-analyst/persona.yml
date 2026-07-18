@@ -1,0 +1,82 @@
+# Persona manifest — Business Analyst (ideation, research & briefs).
+# Role, not a person (§1.6): wraps the vendored BMAD analysis skills; the
+# upstream agent's person-name stays upstream, referenced only by skill id.
+#
+# Validate against: petry-projects/.github standards/personas/persona.schema.json
+
+schema_version: 1
+
+id: business-analyst
+name: Business Analyst
+title: Business Analyst — ideation, market research, and decision briefs
+summary: >-
+  Advises on brainstorming, market research, and decision-grade briefs in the
+  analysis phase — turning a raw idea into a shaped, evidence-backed brief.
+
+# Draft: the incubation producers exist; a held-out eval set and the addressing
+# team must land before promotion. The PRD stays with a separate product-manager
+# persona (the Analyst→PM handoff is preserved — see README).
+status: draft
+
+owner: petry-projects/org-leads
+
+address:
+  handle: petry-projects/business-analyst
+
+definition:
+  layers:
+    # Vendored BMAD analysis agent, consumed by path (never hand-edited).
+    - kind: framework-agent
+      path: frameworks/bmad-method/src/bmm-skills/1-analysis/bmad-agent-analyst
+      framework:
+        name: bmad-method
+        upstream_repo: bmad-code-org/BMAD-METHOD
+        vendor_pin: v6.8.0
+        skill: bmad-agent-analyst
+    # Org-specific headless producers that wrap the analysis skills for CI
+    # (brainstorm / market-research / brief). The PRD producer belongs to the
+    # product-manager role, not this one.
+    - kind: workflow-prompts
+      path: prompts/incubation
+
+skills: []
+
+triggers:
+  default_mode: advisory
+  opt_out_label: business-analyst:hands-off
+  surfaces:
+    - surface: mention
+      events: [created]
+      enabled: true
+      mode: advisory
+      notes: "'@petry-projects/business-analyst' — ideation/research/brief advice."
+
+    - surface: issues
+      events: [labeled, commented]
+      enabled: true
+      mode: advisory
+      notes: "Shapes ideas and epics with analysis input."
+
+    - surface: discussion
+      events: [labeled, commented]
+      enabled: true
+      mode: advisory
+      bridge: repository_dispatch
+      notes: "Discussions can't run the agent inline — must bridge (issue #571)."
+
+trust:
+  author_association_floor: [OWNER, MEMBER, COLLABORATOR]
+
+evals:
+  required_before: stable
+  path: evals/business-analyst/
+  min_cases: 5
+
+canary:
+  registry: petry-projects/.github/standards/canary-rings.json
+  agent: business-analyst
+
+references:
+  - "prompts/incubation/producer-brainstorm.md, producer-market-research.md, producer-brief.md"
+  - "frameworks/bmad-method/VENDOR.md (v6.8.0)"
+  - "petry-projects/.github standards/persona-standards.md"
