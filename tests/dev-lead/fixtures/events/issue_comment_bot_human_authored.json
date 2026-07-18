@@ -1,0 +1,26 @@
+{
+  "_test_expected_intent": "skip",
+  "action": "created",
+  "issue": {
+    "number": 1303,
+    "title": "feat: onboard personas",
+    "state": "open",
+    "user": {
+      "login": "donpetry",
+      "type": "User"
+    },
+    "pull_request": {
+      "url": "https://api.github.com/repos/petry-projects/.github-private/pulls/1303"
+    }
+  },
+  "comment": {
+    "id": 4060,
+    "body": "SonarQube analysis found 3 new issues:\n- Critical: SQL injection vulnerability in line 42",
+    "user": {
+      "login": "sonarqubecloud[bot]",
+      "type": "Bot"
+    }
+  },
+  "repository": { "full_name": "petry-projects/.github-private" },
+  "sender": { "login": "sonarqubecloud[bot]", "type": "Bot" }
+}

@@ -1,0 +1,34 @@
+{
+  "_test_expected_intent": "fix-reviews",
+  "action": "submitted",
+  "review": {
+    "id": 4002,
+    "state": "COMMENTED",
+    "body": "Please address the following issues in your code.",
+    "user": {
+      "login": "copilot-pull-request-reviewer[bot]",
+      "type": "Bot"
+    }
+  },
+  "pull_request": {
+    "number": 1400,
+    "title": "feat: implement issue #1400",
+    "state": "open",
+    "author_association": "OWNER",
+    "user": {
+      "login": "donpetry-bot",
+      "type": "Bot"
+    },
+    "head": {
+      "sha": "beef1234cafe",
+      "ref": "dev-lead/issue-1400-20260718-1200",
+      "repo": { "full_name": "petry-projects/.github-private" }
+    },
+    "base": {
+      "ref": "main",
+      "repo": { "full_name": "petry-projects/.github-private" }
+    }
+  },
+  "repository": { "full_name": "petry-projects/.github-private" },
+  "sender": { "login": "copilot-pull-request-reviewer[bot]", "type": "Bot" }
+}

@@ -1,0 +1,34 @@
+{
+  "_test_expected_intent": "skip",
+  "action": "submitted",
+  "review": {
+    "id": 4001,
+    "state": "COMMENTED",
+    "body": "Please address the following issues in your code.",
+    "user": {
+      "login": "copilot-pull-request-reviewer[bot]",
+      "type": "Bot"
+    }
+  },
+  "pull_request": {
+    "number": 1303,
+    "title": "feat: onboard personas",
+    "state": "open",
+    "author_association": "OWNER",
+    "user": {
+      "login": "donpetry",
+      "type": "User"
+    },
+    "head": {
+      "sha": "08794259aaaa",
+      "ref": "feat/onboard-personas",
+      "repo": { "full_name": "petry-projects/.github-private" }
+    },
+    "base": {
+      "ref": "main",
+      "repo": { "full_name": "petry-projects/.github-private" }
+    }
+  },
+  "repository": { "full_name": "petry-projects/.github-private" },
+  "sender": { "login": "copilot-pull-request-reviewer[bot]", "type": "Bot" }
+}

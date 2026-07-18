@@ -173,15 +173,19 @@ main() {
   else
     echo "[PASS] ${SCENARIO_NAME}(B): human sync correctly NOT skipped with anti-loop reason (got: ${intent_reason_b})"
   fi
-  # human synchronize should route to human-pr
-  if ! assert_eq "${intent_type_b}" "human-pr" "${SCENARIO_NAME}(B): INTENT_TYPE=human-pr for human sync"; then
+  # A human sync on a human-authored branch (not dev-lead/issue-*) must be left
+  # to the human: skip not-dev-lead-authored (#1311), not seized by dev-lead.
+  if ! assert_eq "${intent_type_b}" "skip" "${SCENARIO_NAME}(B): INTENT_TYPE=skip for human sync"; then
+    all_pass=false
+  fi
+  if ! assert_eq "${intent_reason_b}" "not-dev-lead-authored" "${SCENARIO_NAME}(B): INTENT_REASON=not-dev-lead-authored for human sync"; then
     all_pass=false
   fi
 
   # ── Result ─────────────────────────────────────────────────────────────────
   if [ "${all_pass}" = "true" ]; then
-    log "[PASS] ${SCENARIO_NAME}: anti-loop guard fires for BOT_USER, not for human"
-    record_result "${SCENARIO_NAME}" "PASS" "bot→skip(dev-lead-own-commit) human→human-pr"
+    log "[PASS] ${SCENARIO_NAME}: anti-loop guard fires for BOT_USER, human PR left untouched"
+    record_result "${SCENARIO_NAME}" "PASS" "bot→skip(dev-lead-own-commit) human→skip(not-dev-lead-authored)"
     exit 0
   else
     err "[FAIL] ${SCENARIO_NAME}: one or more assertions failed"

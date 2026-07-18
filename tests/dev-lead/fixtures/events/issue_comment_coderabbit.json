@@ -7,6 +7,10 @@
     "state": "open",
     "pull_request": {
       "url": "https://api.github.com/repos/petry-projects/.github-private/pulls/62"
+    },
+    "user": {
+      "login": "donpetry-bot",
+      "type": "Bot"
     }
   },
   "comment": {
@@ -17,6 +21,11 @@
       "type": "Bot"
     }
   },
-  "repository": { "full_name": "petry-projects/.github-private" },
-  "sender": { "login": "coderabbitai[bot]", "type": "Bot" }
+  "repository": {
+    "full_name": "petry-projects/.github-private"
+  },
+  "sender": {
+    "login": "coderabbitai[bot]",
+    "type": "Bot"
+  }
 }
