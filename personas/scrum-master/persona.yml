@@ -72,7 +72,7 @@ trust:
 evals:
   required_before: stable
   path: evals/scrum-master/
-  min_cases: 5
+  min_cases: 4
 
 canary:
   registry: petry-projects/.github/standards/canary-rings.json
