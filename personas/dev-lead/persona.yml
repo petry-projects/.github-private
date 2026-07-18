@@ -1,0 +1,92 @@
+# Persona manifest — Dev Lead (Developer Lead & implementation advisor).
+# Formalizes the existing dev-lead agent under the persona standard
+# (petry-projects/.github standards/persona-standards.md). Role, not a person (§1.6).
+#
+# Validate against: petry-projects/.github standards/personas/persona.schema.json
+
+schema_version: 1
+
+id: dev-lead
+name: Dev Lead
+title: Developer Lead — implementation, CI, and code-change advisor
+summary: >-
+  Leads implementation of well-scoped stories and advises on code-change risk,
+  CI failures, and review follow-ups across the build phase.
+
+# Draft: the manifest formalizes the existing runtime; a real held-out eval set
+# and the addressing team must land before promotion (see README).
+status: draft
+
+owner: petry-projects/org-leads
+
+# --- How humans address this persona (§4.1) --------------------------------
+# Org TEAM handle, never a user account. The mention path is ADVISORY — code is
+# written by the existing label-triggered dev-lead.yml runtime, not by this
+# router (see triggers.issues, mode: write, which documents that path).
+address:
+  handle: petry-projects/dev-lead
+
+definition:
+  layers:
+    # A phase-keyed prompt library driven by the dev-lead shell orchestrator
+    # (dev-lead-reusable.yml) — the org's own first-party agent, not a vendored
+    # framework. One layer, consumed by path.
+    - kind: workflow-prompts
+      path: prompts/dev-lead
+
+skills: []
+
+# Advisory on mention; WRITE on labelled issues (the existing, gated dev-lead
+# runtime). Every write surface carries its arming gate_label (§4 rule 2).
+triggers:
+  default_mode: advisory
+  opt_out_label: dev-lead:hands-off
+  surfaces:
+    - surface: mention
+      events: [created]
+      enabled: true
+      mode: advisory
+      notes: "'@petry-projects/dev-lead' — implementation/risk advice, no writes."
+
+    - surface: issues
+      events: [labeled]
+      enabled: true
+      mode: write
+      gate_label: dev-lead
+      notes: "The existing runtime: a 'dev-lead'-labelled issue is implemented into a PR."
+
+    - surface: pull_request
+      events: [opened, synchronize]
+      enabled: true
+      mode: advisory
+      notes: "Advises on code-change risk; the write path is review-fix, gated below."
+
+    - surface: pull_request_review
+      events: [submitted]
+      enabled: true
+      mode: write
+      gate_label: dev-lead
+      notes: "fix-reviews: addresses review threads on its own labelled PRs."
+
+    - surface: check_run
+      events: [completed]
+      enabled: true
+      mode: advisory
+      notes: "CI-failure triage (fix-ci) on its own PRs."
+
+trust:
+  author_association_floor: [OWNER, MEMBER, COLLABORATOR]
+
+evals:
+  required_before: stable
+  path: evals/dev-lead/
+  min_cases: 5
+
+canary:
+  registry: petry-projects/.github/standards/canary-rings.json
+  agent: dev-lead
+
+references:
+  - "prompts/dev-lead/ (the phase-keyed prompt library)"
+  - ".github/workflows/dev-lead-reusable.yml (the runtime)"
+  - "petry-projects/.github standards/persona-standards.md"

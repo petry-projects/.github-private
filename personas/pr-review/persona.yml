@@ -1,0 +1,83 @@
+# Persona manifest — PR Review (Pull-Request Reviewer).
+# Formalizes the existing pr-review agent under the persona standard. Role, not a
+# person (§1.6).
+#
+# Validate against: petry-projects/.github standards/personas/persona.schema.json
+
+schema_version: 1
+
+id: pr-review
+name: PR Review
+title: Pull-Request Reviewer — cascading risk assessment & approval
+summary: >-
+  Reviews pull requests with tiered risk classification and cross-engine
+  adversarial review, then approves or escalates across the deliver phase.
+
+# Draft: registration in canary-rings.json is still pending (#710); the eval
+# sets exist but the addressing team and registration must land before promotion.
+status: draft
+
+owner: petry-projects/org-leads
+
+# --- How humans address this persona (§4.1) --------------------------------
+# The role handle. A legacy path also exists — '@donpetry-bot' / assigning
+# donpetry-bot as reviewer (pr-review-mention) — and is retained because it is a
+# real account that works; this adds the role-based handle the framework
+# standardises on. The mention here is ADVISORY (review guidance); the full
+# review runs on the existing pull_request path below.
+address:
+  handle: petry-projects/pr-review
+
+definition:
+  layers:
+    # Human-invocable Copilot profile.
+    - kind: copilot-profile
+      path: agents/pr-reviewer.md
+    # The phase-keyed review prompt library driven by the pr-review engine.
+    - kind: workflow-prompts
+      path: prompts
+
+skills: []
+
+triggers:
+  default_mode: advisory
+  opt_out_label: pr-review:hands-off
+  surfaces:
+    - surface: pull_request
+      events: [opened, synchronize, ready_for_review]
+      enabled: true
+      mode: advisory
+      notes: "The core duty: tiered review, approve/escalate. Advisory — it reviews, it does not push code."
+
+    - surface: pull_request_review
+      events: [submitted]
+      enabled: true
+      mode: advisory
+      notes: "Weighs in on review threads."
+
+    - surface: mention
+      events: [created]
+      enabled: true
+      mode: advisory
+      notes: "'@petry-projects/pr-review' — review-focus guidance. Legacy '@donpetry-bot' path retained."
+
+trust:
+  author_association_floor: [OWNER, MEMBER, COLLABORATOR]
+
+# pr-review wraps two skills; each has its own held-out set (§evals, path|paths).
+evals:
+  required_before: stable
+  paths:
+    - evals/deep-review/
+    - evals/triage/
+  min_cases: 5
+
+canary:
+  registry: petry-projects/.github/standards/canary-rings.json
+  agent: pr-review
+
+references:
+  - "agents/pr-reviewer.md (Copilot profile)"
+  - "evals/deep-review/, evals/triage/ (held-out sets)"
+  - "#710 (pr-review not yet in canary-rings.json — register before promotion)"
+  - "petry-projects/.github standards/persona-standards.md"
