@@ -1,0 +1,97 @@
+# Persona manifest — DevOps Lead (infrastructure, CI/CD & deployment advisor).
+# Role, not a person (§1.6): wraps the vendored BMAD B-Great DevOps agent; the
+# upstream agent's person-name stays upstream, referenced only by skill id.
+#
+# Validate against: petry-projects/.github standards/personas/persona.schema.json
+
+schema_version: 1
+
+id: devops-lead
+name: DevOps Lead
+title: DevOps Lead — infrastructure, CI/CD, and deployment advisor
+summary: >-
+  Advises on infrastructure-as-code, CI/CD pipeline design, container
+  orchestration, GitOps, and progressive-delivery (blue-green/canary) strategy —
+  automation-first, treating configuration drift and manual changes as defects.
+
+# Draft: the manifest, advisory prompt, and seed evals exist, but devops-lead is
+# not yet cut as a fleet reusable and is not yet in canary-rings.json (see
+# README). Promote once a dedicated advisory workflow + release are added.
+status: draft
+
+owner: petry-projects/org-leads
+
+# --- How humans address this persona (§4.1) --------------------------------
+# An org TEAM handle, never a user account: '@devops-lead' is a real GitHub
+# account owned by a stranger, so keying on the bare role would silently notify
+# them on every mention. The team slug equals `id`, so the router resolves a
+# mention by stripping the org prefix.
+address:
+  handle: petry-projects/devops-lead
+
+definition:
+  layers:
+    # A vendored BMAD B-Great Suite agent (module "bgr"), consumed by path
+    # (vendor-neutral markdown). We track upstream and contribute back rather
+    # than fork — so there are no local hand-edits to frameworks/.
+    - kind: framework-agent
+      path: frameworks/bmad-bgreat-suite/src/agents/bgr-agent-riley-devops
+      framework:
+        name: bmad-bgreat-suite
+        upstream_repo: petry-projects/bmad-bgreat-suite
+        vendor_pin: ae8914e84b87   # matches frameworks/bmad-bgreat-suite/VENDOR.md (commit SHA, no tags)
+        skill: bgr-agent-riley-devops
+
+skills: []
+
+# devops-lead is an infrastructure/delivery ADVISOR — advisory on every surface,
+# write nowhere. (A future `write` opt-in would add its own gate_label.)
+triggers:
+  default_mode: advisory
+  opt_out_label: devops-lead:hands-off
+  surfaces:
+    - surface: mention
+      events: [created]
+      enabled: true
+      mode: advisory
+      notes: "'@petry-projects/devops-lead' — IaC/CI-CD/deployment strategy advice."
+
+    - surface: issues
+      events: [labeled, commented]
+      enabled: true
+      mode: advisory
+      notes: "Infrastructure, pipeline, and deployment-strategy input on issues/epics."
+
+    - surface: discussion
+      events: [labeled, commented]
+      enabled: true
+      mode: advisory
+      bridge: repository_dispatch
+      notes: "Discussions can't run the agent inline — must bridge (issue #571)."
+
+trust:
+  author_association_floor: [OWNER, MEMBER, COLLABORATOR]
+
+# --- Runtime identity (§5.1) ------------------------------------------------
+# Advisory-only: devops-lead ships no dedicated reusable/stub in this pilot.
+# It is consumed by path and is human-invocable. On the comment path it posts
+# as `don-petry` (the persona runner authenticates with that account's PAT).
+runtime:
+  identity:
+    account: don-petry
+    credential: GH_PAT_DON_PETRY
+
+evals:
+  required_before: stable
+  path: evals/devops-lead/   # under the repo eval tree so validate-cases.py + holdout-guard.yml cover it
+  judge: evals/judge.md
+  min_cases: 5               # seed cases are placeholders; reach 5 held-out before stable
+
+canary:
+  registry: petry-projects/.github/standards/canary-rings.json
+  agent: devops-lead         # entry added at first release cut (not present while status: draft)
+
+references:
+  - "prompts/devops-lead/advisory.md (headless advisory contract)"
+  - "frameworks/bmad-bgreat-suite/VENDOR.md (ae8914e84b87)"
+  - "petry-projects/.github standards/persona-standards.md"
