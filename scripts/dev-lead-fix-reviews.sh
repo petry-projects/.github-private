@@ -1504,7 +1504,10 @@ commit_and_push() {
       # false "Changes committed and pushed" comment.
       git commit -m "$commit_msg" || { echo "::error::git commit failed — check git identity configuration on the runner" >&2; exit 1; }
     fi
-    git push || {
+    # No-clobber push (#1311): never discard a concurrent writer's unseen commit.
+    # push_no_clobber fast-forwards normally and only ever force-with-leases a
+    # rewritten branch, aborting if the remote moved beyond what we fetched.
+    push_no_clobber || {
       echo "::error::git push failed — check remote access and branch permissions" >&2
       exit 1
     }
