@@ -1,0 +1,33 @@
+# Persona Runtime — caller (receives the router's dispatch).
+# SOURCE OF TRUTH: petry-projects/.github-private/.github/workflows/persona-runner-reusable.yml
+# Standard: https://github.com/petry-projects/.github/blob/main/standards/persona-standards.md (§4.1)
+#
+# The mention router (in petry-projects/.github) fires `persona-mention` at this
+# repo with client_payload {persona, mode, source_repo, item_number, comment_url,
+# requested_by}. This stub hands that payload to the reusable, which runs the
+# addressed persona's advisory prompt.
+#
+# Thin caller: no logic here beyond mapping the payload to inputs. All behaviour
+# lives in the reusable. This repo is the `next` ring — the first, smallest
+# blast-radius soak for the persona runtime.
+name: Persona Runtime
+
+on:
+  repository_dispatch:
+    types: [persona-mention]
+
+permissions: {}
+
+jobs:
+  run:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/persona-runner-reusable.yml
+    with:
+      persona: ${{ github.event.client_payload.persona }}
+      source_repo: ${{ github.event.client_payload.source_repo }}
+      item_number: ${{ github.event.client_payload.item_number }}
+      comment_url: ${{ github.event.client_payload.comment_url }}
+      requested_by: ${{ github.event.client_payload.requested_by }}
+      mode: ${{ github.event.client_payload.mode }}
+    secrets: inherit

@@ -1,0 +1,154 @@
+# Persona Runtime — Reusable (dispatch side of the mention framework).
+# This file is the source of truth. Caller: .github/workflows/persona-runner.yml.
+# Standard: https://github.com/petry-projects/.github/blob/main/standards/persona-standards.md (§4.1)
+#
+# The router (petry-projects/.github persona-mention-reusable.yml) resolves an
+# `@petry-projects/<role>` mention and fires a `persona-mention`
+# repository_dispatch at this repo. This workflow receives it and runs the
+# addressed persona's advisory prompt (prompts/<id>/advisory.md), posting exactly
+# one advisory comment that carries the '<!-- persona:<id> -->' recursion marker.
+#
+# ONE runner for EVERY persona — manifest/convention driven, not one workflow per
+# persona (§4.1). Advisory only: this runtime is granted no write beyond posting
+# a comment, and the prompt forbids anything else.
+#
+# Requires:
+#   CLAUDE_CODE_OAUTH_TOKEN — org secret, the engine credential
+#   GH_PAT_WORKFLOWS        — org PAT: read the target item cross-repo, post the
+#                             comment. A PAT (not github.token) because the item
+#                             lives in a DIFFERENT repo than this workflow.
+name: Persona Runtime — Reusable
+
+on:
+  workflow_call:
+    inputs:
+      persona:
+        required: true
+        type: string
+      source_repo:
+        required: true
+        type: string
+      item_number:
+        required: false
+        type: string
+        default: ''
+      comment_url:
+        required: false
+        type: string
+        default: ''
+      requested_by:
+        required: false
+        type: string
+        default: ''
+      mode:
+        required: false
+        type: string
+        default: 'advisory'
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: true
+      GH_PAT_WORKFLOWS:
+        required: true
+
+permissions: {}  # nothing from github.token; all cross-repo work uses the PAT
+
+concurrency:
+  # One run per (persona, item). A second mention while one is in flight is
+  # dropped rather than stacked — the advisory would be redundant.
+  group: persona-runner-${{ inputs.persona }}-${{ inputs.source_repo }}-${{ inputs.item_number }}
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read   # checkout of THIS repo's tooling + prompts; all cross-repo
+                       # reads and the comment-post use GH_PAT_WORKFLOWS, not this.
+    steps:
+      - name: Checkout persona tooling + prompts
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Resolve the persona's advisory prompt
+        id: resolve
+        env:
+          PERSONA: ${{ inputs.persona }}
+        run: |
+          set -euo pipefail
+          # shellcheck source=scripts/lib/persona-runner.sh
+          source scripts/lib/persona-runner.sh
+
+          # This runner is a SEPARATE trust boundary from the router: a
+          # repository_dispatch can be sent by anything holding a token, so the
+          # payload is re-validated here rather than trusted. A malformed id must
+          # never reach a path interpolation.
+          if ! prompt_path="$(pr_require_advisory "$PERSONA" .)"; then
+            echo "::notice::persona '${PERSONA}' has no advisory runtime — nothing to do"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+          echo "prompt_path=${prompt_path}" >> "$GITHUB_OUTPUT"
+          echo "marker=$(pr_agent_marker "$PERSONA")" >> "$GITHUB_OUTPUT"
+
+      - name: Install Claude Code
+        if: steps.resolve.outputs.skip == 'false'
+        env:
+          CLAUDE_CODE_VERSION: ${{ vars.CLAUDE_CODE_VERSION || 'latest' }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.npm-global"
+          npm config set prefix "$HOME/.npm-global"
+          echo "$HOME/.npm-global/bin" >> "$GITHUB_PATH"
+          npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
+
+      - name: Run the persona advisory
+        if: steps.resolve.outputs.skip == 'false'
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # The PAT posts the comment and reads the cross-repo item. Exported as
+          # GH_TOKEN for the gh calls the agent makes from inside the prompt.
+          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
+          PERSONA: ${{ inputs.persona }}
+          SOURCE_REPO: ${{ inputs.source_repo }}
+          ITEM_NUMBER: ${{ inputs.item_number }}
+          COMMENT_URL: ${{ inputs.comment_url }}
+          REQUESTED_BY: ${{ inputs.requested_by }}
+          AGENT_MARKER: ${{ steps.resolve.outputs.marker }}
+          PROMPT_PATH: ${{ steps.resolve.outputs.prompt_path }}
+        run: |
+          set -euo pipefail
+          export PATH="$HOME/.npm-global/bin:$PATH"
+
+          # The advisory prompt is the persona's instructions; the header pins the
+          # concrete item so the agent does not have to be told twice. Fields go in
+          # via env (already exported) — never interpolated into the prompt text,
+          # which the agent could be steered by.
+          {
+            echo "You are running headless for persona '${PERSONA}'. The work item is"
+            echo "${SOURCE_REPO}#${ITEM_NUMBER} (${COMMENT_URL}); ${REQUESTED_BY} summoned you."
+            echo "Follow your instructions exactly. Post ONE comment; its first line"
+            echo "MUST be exactly: ${AGENT_MARKER}"
+            echo
+            cat "$PROMPT_PATH"
+          } > /tmp/persona-prompt.txt
+
+          _out=$(mktemp); _rc=0
+          claude --print \
+            --permission-mode bypassPermissions \
+            --allowedTools Bash \
+            --fallback-model opus \
+            -p "$(cat /tmp/persona-prompt.txt)" 2>&1 | tee "$_out" || _rc=${PIPESTATUS[0]}
+
+          # Rate-limit is a soft skip, matching ci-failure-analyst: do not fail the
+          # run (and do not retry-storm), just leave the mention un-answered.
+          if [ "$_rc" -ne 0 ] && \
+             grep -qiE "hit your.*(session )?limit|rate.?limit|usage limit|quota exceeded|too many requests" "$_out"; then
+            echo "::notice::engine rate-limited — leaving ${SOURCE_REPO}#${ITEM_NUMBER} un-answered (a future mention retries)"
+            rm -f "$_out"; exit 0
+          fi
+          rm -f "$_out"
+          exit "$_rc"
