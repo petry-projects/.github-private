@@ -125,7 +125,7 @@ jobs:
         # NEVER starts a run (loop prevention) — the enhancement would silently
         # no-op. Same constraint as scripts/initiative-planner/redispatch.sh.
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
+          GH_TOKEN: ${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS }}
         run: |
           if [ -z "${GH_TOKEN}" ]; then
             echo "::error::GH_PAT_WORKFLOWS is required — a workflow_dispatch fired with GITHUB_TOKEN will not start a run."
@@ -134,7 +134,7 @@ jobs:
 
       - name: Re-dispatch under workflow_dispatch
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
+          GH_TOKEN: ${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS }}
           REPO: ${{ github.repository }}
           # Discussion numbers are always positive integers, so this is safe to
           # forward directly to the dispatch input.

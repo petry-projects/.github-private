@@ -53,6 +53,10 @@ triggers:
   surfaces: []
 trust:
   author_association_floor: [OWNER]
+runtime:
+  identity:
+    account: demo
+    credential: GH_PAT_DEMO
 evals:
   required_before: stable
   path: evals/demo/
@@ -132,6 +136,10 @@ triggers:
   surfaces: []
 trust:
   author_association_floor: [OWNER]
+runtime:
+  identity:
+    account: demo
+    credential: GH_PAT_DEMO
 evals:
   required_before: stable
   path: evals/demo/
@@ -294,4 +302,20 @@ clone_persona() {
   run python3 "$VALIDATOR" "$TMP/personas" --schema "$TMP/schema.json" --registry "$TMP/reg.json"
   [ "$status" -ne 0 ]  # only 2 real < 3
   [[ "$output" == *"2 held-out"* ]]
+}
+
+@test "validate-personas REQUIRES runtime.identity" {
+  # Strip the runtime.identity block -> every persona must declare who it acts as.
+  sed '/^runtime:$/,/^    credential:/d' "$TMP/personas/demo/persona.yml" > "$TMP/personas/demo/persona.yml.tmp" && mv "$TMP/personas/demo/persona.yml.tmp" "$TMP/personas/demo/persona.yml"
+  run python3 "$VALIDATOR" "$TMP/personas" --schema "$TMP/schema.json"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"missing runtime.identity"* ]]
+}
+
+@test "validate-personas enforces the GH_PAT_<ACCOUNT> credential convention" {
+  # A non-grandfathered credential that isn't GH_PAT_* is rejected.
+  sed 's/^    credential: GH_PAT_DEMO/    credential: DEMO_TOKEN/' "$TMP/personas/demo/persona.yml" > "$TMP/personas/demo/persona.yml.tmp" && mv "$TMP/personas/demo/persona.yml.tmp" "$TMP/personas/demo/persona.yml"
+  run python3 "$VALIDATOR" "$TMP/personas" --schema "$TMP/schema.json"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"GH_PAT_<ACCOUNT>"* ]]
 }

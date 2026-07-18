@@ -46,7 +46,13 @@ on:
       # over DON_PETRY_BOT_GH_PAT when set; see docs/pr-review-agent/machine-user-setup.md.
       DON_PETRY_BOT_GH_PAT_CLASSIC:
         required: false
+      GH_PAT_DON_PETRY_COPILOT:
+        # don-petry's Copilot-subscription PAT (Copilot review engine). Canonical
+        # name under the GH_PAT_<ACCOUNT> schema; supersedes GH_PAT (below, kept as
+        # a transition fallback). The bot's own PATs keep their grandfathered names.
+        required: false
       GH_PAT:
+        # DEPRECATED alias of GH_PAT_DON_PETRY_COPILOT — kept during migration.
         required: false
 
 # ── Reusable-only (#497 self-host pinning) ───────────────────────────────
@@ -138,7 +144,7 @@ jobs:
       REVIEW_ENGINE: ${{ vars.REVIEW_ENGINE || 'claude' }}
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       # Copilot engine reuses GH_PAT (a separate user PAT with Copilot subscription).
-      COPILOT_GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+      COPILOT_GITHUB_TOKEN: ${{ secrets.GH_PAT_DON_PETRY_COPILOT || secrets.GH_PAT }}
       # Gemini engine auth — GOOGLE_API_KEY is the secret name; newer Gemini CLI
       # versions expect GEMINI_API_KEY so we expose the same value under both names.
       GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
@@ -210,6 +216,20 @@ jobs:
           # scripts to the known-good channel; empty defaults to main (#506/#536).
           repository: petry-projects/.github-private
           ref: ${{ inputs.agent_ref || 'main' }}
+
+      - name: Resolve persona identity
+        # pr-review's acting account is DECLARED in personas/pr-review/persona.yml
+        # (runtime.identity.account = donpetry-bot, the review-only machine user).
+        # Resolving BOT_USER from the manifest — instead of the shared vars.BOT_USER
+        # — is what keeps this identity from colliding with dev-lead's (#1316). The
+        # job-env BOT_USER remains the fail-safe default if the manifest is unreadable.
+        run: |
+          if account="$(bash scripts/lib/resolve-persona-identity.sh pr-review personas account)"; then
+            echo "BOT_USER=$account" >> "$GITHUB_ENV"
+            echo "resolved pr-review identity: BOT_USER=$account"
+          else
+            echo "::warning::could not resolve pr-review identity from manifest; using fallback BOT_USER=$BOT_USER"
+          fi
 
       - name: Cache claude-code CLI
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5

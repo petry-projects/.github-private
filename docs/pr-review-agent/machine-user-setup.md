@@ -118,11 +118,26 @@ gh secret list --repo petry-projects/.github-private | grep DON_PETRY_BOT_GH_PAT
 
 ### Secret naming reference
 
-| Secret | Purpose |
-|--------|---------|
-| `DON_PETRY_BOT_GH_PAT` | Machine user / bot reviewer PAT. Used by `pr-review.yml`, `repair-pr-approvals.yml`, `daily-pr-review-health.yml`, and `claude.yml` for GitHub API authentication as the bot. |
-| `GH_PAT` | User PAT with a Copilot subscription. Exposed as `COPILOT_GITHUB_TOKEN` in `pr-review.yml` for Copilot CLI access. Do **not** store the bot reviewer PAT here. |
-| `GOOGLE_API_KEY` | API key for Google AI (Gemini). Used by the `gemini` engine for triage, deep review, and audit tiers. |
+PAT secrets follow the schema **`GH_PAT_<ACCOUNT>[_<QUALIFIER>]`**, where `<ACCOUNT>`
+is the GitHub login upper-snake-cased (`don-petry` → `GH_PAT_DON_PETRY`). This makes
+the *owning account* obvious from the secret name — the ambiguity that let dev-lead
+regress to committing as the bot ([#1316](https://github.com/petry-projects/.github-private/issues/1316)).
+Each persona declares which account/secret it acts as in `runtime.identity`
+(`personas/<id>/persona.yml`); see `standards/persona-standards.md` §5.1.
+
+| Secret | Account | Purpose |
+|--------|---------|---------|
+| `GH_PAT_DON_PETRY` | don-petry | Write/workflows PAT — the account dev-lead and the persona runner commit/push/comment as. **Canonical name** for the PAT formerly stored as `GH_PAT_WORKFLOWS`. |
+| `GH_PAT_DON_PETRY_COPILOT` | don-petry | User PAT with a Copilot subscription. Exposed as `COPILOT_GITHUB_TOKEN` for Copilot CLI access. **Canonical name** for the PAT formerly stored as `GH_PAT`. |
+| `DON_PETRY_BOT_GH_PAT` | donpetry-bot | Machine user / bot reviewer PAT. Used by `pr-review.yml`, `repair-pr-approvals.yml`, `daily-pr-review-health.yml` for GitHub API auth as the bot. Grandfathered name (pre-dates the schema). |
+| `DON_PETRY_BOT_GH_PAT_CLASSIC` | donpetry-bot | Classic PAT for the bot; required for `gh pr review --approve`. Preferred over the fine-grained secret when set. Grandfathered. |
+| `GOOGLE_API_KEY` | — | API key for Google AI (Gemini). Used by the `gemini` engine for triage, deep review, and audit tiers. |
+
+> **Migration:** `GH_PAT_WORKFLOWS` → `GH_PAT_DON_PETRY` and `GH_PAT` →
+> `GH_PAT_DON_PETRY_COPILOT`. Workflows read `${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS }}`
+> during the transition, so **create the new secrets as copies of the old ones**;
+> once confirmed present, a follow-up drops the `|| secrets.GH_PAT_WORKFLOWS`
+> fallbacks and deletes the old secrets.
 
 ## Step 5: Verify the setup
 

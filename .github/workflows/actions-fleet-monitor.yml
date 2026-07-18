@@ -80,11 +80,11 @@ jobs:
         with:
           repository: petry-projects/.github-private
           ref: main  # Always checkout .github-private@main; workflow_call callers target @main per docs
-          token: ${{ secrets.GH_PAT_WORKFLOWS }}
+          token: ${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS }}
 
       - name: Run fleet monitor
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
+          GH_TOKEN: ${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS }}
         run: bash scripts/fleet_monitor.sh
 
       - name: Summarize token usage by workflow
@@ -94,7 +94,7 @@ jobs:
         # tracking + the fleet-tracker auto-close). Let it fail soft.
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
+          GH_TOKEN: ${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS }}
           REPO: petry-projects/.github-private
           LOOKBACK_DAYS: ${{ env.LOOKBACK_DAYS }}
         run: |
@@ -226,7 +226,7 @@ jobs:
       - name: Migrate misaligned fleet-tracker issues
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
         env:
-          GH_PAT_WORKFLOWS: ${{ secrets.GH_PAT_WORKFLOWS }}
+          GH_PAT_WORKFLOWS: ${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS }}
         with:
           github-token: ${{ env.GH_PAT_WORKFLOWS }}
           script: |
@@ -286,7 +286,7 @@ jobs:
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
         env:
           ORG: ${{ env.ORG }}
-          GH_PAT_WORKFLOWS: ${{ secrets.GH_PAT_WORKFLOWS }}
+          GH_PAT_WORKFLOWS: ${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS }}
         with:
           # Use GH_PAT_WORKFLOWS for cross-repo issues:write on target repos
           github-token: ${{ env.GH_PAT_WORKFLOWS }}
@@ -409,7 +409,7 @@ jobs:
         env:
           ORG: ${{ env.ORG }}
           STALE_DAYS: '3'
-          GH_PAT_WORKFLOWS: ${{ secrets.GH_PAT_WORKFLOWS }}
+          GH_PAT_WORKFLOWS: ${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS }}
         with:
           # Use GH_PAT_WORKFLOWS for cross-repo issues:write on target repos
           github-token: ${{ env.GH_PAT_WORKFLOWS }}
@@ -467,7 +467,7 @@ jobs:
       - name: Dispatch dev-lead for critical items
         if: env.HIGH_FAILURE_COUNT != '' && env.HIGH_FAILURE_COUNT != '0'
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
+          GH_TOKEN: ${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS }}
         run: |
           # github.token events do not trigger issues:labeled workflows; use the
           # PAT to fire repository_dispatch so Dev-Lead Agent is explicitly woken.
@@ -556,7 +556,7 @@ jobs:
       - name: Dispatch dev-lead for stub drift
         if: env.HAS_STUB_DRIFT == 'true'
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
+          GH_TOKEN: ${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS }}
         run: |
           # github.token events do not trigger issues:labeled workflows; use the
           # PAT to fire repository_dispatch so Dev-Lead Agent is explicitly woken.
@@ -585,7 +585,7 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           REMEDIATE_MODE: ${{ inputs.remediate || 'dry-run' }}
-          REMEDIATE_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
+          REMEDIATE_TOKEN: ${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS }}
           REMEDIATE_PILOT_REPO: ${{ vars.FLEET_REMEDIATE_PILOT_REPO }}
           REMEDIATE_MAX_REPOS: ${{ vars.FLEET_REMEDIATE_MAX_REPOS || '1' }}
         run: |
@@ -617,7 +617,7 @@ jobs:
         # continue-on-error keeps this informational step non-blocking.
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
+          GH_TOKEN: ${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS }}
           ORG: ${{ env.ORG }}
           LOOKBACK_DAYS: ${{ env.LOOKBACK_DAYS }}
         run: bash scripts/token_report.sh >> "$GITHUB_STEP_SUMMARY"

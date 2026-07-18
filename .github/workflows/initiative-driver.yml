@@ -88,7 +88,7 @@ jobs:
       - name: Guard — PAT present
         # PAT required: a label applied with GITHUB_TOKEN does NOT trigger dev-lead.yml.
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
+          GH_TOKEN: ${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS }}
         run: |
           if [ -z "${GH_TOKEN}" ]; then
             echo "::error::GH_PAT_WORKFLOWS is required — a label applied with GITHUB_TOKEN will not trigger dev-lead."
@@ -97,5 +97,5 @@ jobs:
 
       - name: Drive initiative
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
+          GH_TOKEN: ${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS }}
         run: bash scripts/initiative-driver.sh

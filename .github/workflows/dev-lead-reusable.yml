@@ -20,14 +20,27 @@ on:
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         required: true
+      GH_PAT_DON_PETRY:
+        # don-petry's write/workflows PAT (the account dev-lead commits/pushes as).
+        # Canonical name under the GH_PAT_<ACCOUNT> schema; supersedes GH_PAT_WORKFLOWS,
+        # which is kept below as a transition fallback.
+        required: false
       GH_PAT_WORKFLOWS:
+        # DEPRECATED alias of GH_PAT_DON_PETRY — kept during the rename migration so
+        # callers that haven't set the new secret yet still authenticate. Remove once
+        # GH_PAT_DON_PETRY is confirmed everywhere.
         # Required for cross-repo callers: the default github.token cannot read
         # petry-projects/.github-private from another repo. Callers must pass a
         # PAT that has read access to petry-projects/.github-private.
         required: false
       GOOGLE_API_KEY:
         required: false
+      GH_PAT_DON_PETRY_COPILOT:
+        # don-petry's Copilot-subscription PAT (Copilot review engine). Canonical
+        # name; supersedes GH_PAT, kept below as a transition fallback.
+        required: false
       GH_PAT:
+        # DEPRECATED alias of GH_PAT_DON_PETRY_COPILOT — kept during migration.
         required: false
 
 permissions: {}
@@ -98,14 +111,22 @@ jobs:
       checks: read
       statuses: read
     env:
-      BOT_USER: ${{ vars.BOT_USER || 'donpetry-bot' }}
+      # dev-lead's acting identity is DECLARED in personas/dev-lead/persona.yml
+      # (runtime.identity.account) and resolved into BOT_USER by the "Resolve
+      # persona identity" step below. This job-level value is only the fail-safe
+      # default if that step cannot read the manifest — it is `don-petry` (the
+      # human owner dev-lead commits as), NOT the review-only machine user
+      # donpetry-bot. Deriving the identity from the shared vars.BOT_USER is what
+      # caused the donpetry-bot regression (#1316); the manifest is now the source
+      # of truth. See scripts/lib/resolve-persona-identity.sh.
+      BOT_USER: ${{ vars.BOT_USER || 'don-petry' }}
       TRUSTED_BOTS: ${{ vars.TRUSTED_BOTS || 'copilot-pull-request-reviewer[bot],gemini-code-assist[bot],sonarqubecloud[bot],coderabbitai[bot],chatgpt-codex-connector[bot]' }}
       TRIGGER_PHRASES: ${{ vars.TRIGGER_PHRASES || '@dev-lead' }}
       DEV_LEAD_ENGINE: ${{ vars.DEV_LEAD_ENGINE || 'claude' }}
       DEV_LEAD_DRY_RUN: ${{ vars.DEV_LEAD_DRY_RUN || 'false' }}
       DEEP_TIMEOUT_SEC: ${{ vars.DEEP_TIMEOUT_SEC || '' }}
       ACTION_TIMEOUT_SEC: ${{ vars.ACTION_TIMEOUT_SEC || '' }}
-      GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS || github.token }}
+      GH_TOKEN: ${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS || github.token }}
       GEMINI_CLI_TRUST_WORKSPACE: "true"
       DEV_LEAD_SCRIPTS: .dev-lead/scripts
       DEV_LEAD_PROMPTS: .dev-lead/prompts/dev-lead
@@ -116,7 +137,7 @@ jobs:
       - name: Checkout caller repo
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
-          token: ${{ secrets.GH_PAT_WORKFLOWS || github.token }}
+          token: ${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS || github.token }}
 
       - name: Checkout dev-lead scripts
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
@@ -128,10 +149,11 @@ jobs:
           path: .dev-lead
           # Cross-repo callers: github.token cannot read a private org repo — ensure
           # GH_PAT_WORKFLOWS is set as an org or repo secret in the calling repo.
-          token: ${{ secrets.GH_PAT_WORKFLOWS || github.token }}
+          token: ${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS || github.token }}
           sparse-checkout: |
             scripts
             prompts/dev-lead
+            personas/dev-lead
 
       - name: Protect dev-lead scripts from accidental git staging
         run: echo ".dev-lead/" >> .gitignore
@@ -141,6 +163,20 @@ jobs:
           git checkout .gitignore || true
           echo ".dev-lead/" >> .git/info/exclude
 
+      - name: Resolve persona identity
+        # Source of truth for who dev-lead acts as: personas/dev-lead/persona.yml
+        # (runtime.identity.account). Exporting BOT_USER here overrides the job-env
+        # fallback for every later step — intent classification, git-identity, and
+        # the commit/push. On resolve failure we keep the job default (don-petry)
+        # and warn, rather than silently reverting to the shared machine user.
+        run: |
+          if account="$(bash .dev-lead/scripts/lib/resolve-persona-identity.sh dev-lead .dev-lead/personas account)"; then
+            echo "BOT_USER=$account" >> "$GITHUB_ENV"
+            echo "resolved dev-lead identity: BOT_USER=$account"
+          else
+            echo "::warning::could not resolve dev-lead identity from manifest; using fallback BOT_USER=$BOT_USER"
+          fi
+
       - name: Classify event intent
         id: intent
         env:
@@ -148,7 +184,7 @@ jobs:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-          COPILOT_GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+          COPILOT_GITHUB_TOKEN: ${{ secrets.GH_PAT_DON_PETRY_COPILOT || secrets.GH_PAT }}
         run: bash .dev-lead/scripts/dev-lead-intent.sh
 
       - name: Log intent
@@ -185,10 +221,10 @@ jobs:
         if: env.INTENT_TYPE != 'skip' && env.INTENT_TYPE != 'enable-auto-merge'
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          GH_PAT_WORKFLOWS: ${{ secrets.GH_PAT_WORKFLOWS }}
+          GH_PAT_WORKFLOWS: ${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-          GH_PAT: ${{ secrets.GH_PAT }}
+          GH_PAT: ${{ secrets.GH_PAT_DON_PETRY_COPILOT || secrets.GH_PAT }}
         run: bash .dev-lead/scripts/dev-lead-preflight.sh
 
       # ── Install engine CLIs ───────────────────────────────────────────────
@@ -244,7 +280,7 @@ jobs:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-          COPILOT_GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+          COPILOT_GITHUB_TOKEN: ${{ secrets.GH_PAT_DON_PETRY_COPILOT || secrets.GH_PAT }}
           PROMPTS_DIR: .dev-lead/prompts/dev-lead
         run: |
           bash .dev-lead/scripts/dev-lead-fix-ci.sh || rc=$?
@@ -263,7 +299,7 @@ jobs:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-          COPILOT_GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+          COPILOT_GITHUB_TOKEN: ${{ secrets.GH_PAT_DON_PETRY_COPILOT || secrets.GH_PAT }}
           PROMPTS_DIR: .dev-lead/prompts/dev-lead
         run: |
           bash .dev-lead/scripts/dev-lead-fix-reviews.sh || rc=$?
@@ -282,7 +318,7 @@ jobs:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-          COPILOT_GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+          COPILOT_GITHUB_TOKEN: ${{ secrets.GH_PAT_DON_PETRY_COPILOT || secrets.GH_PAT }}
           PROMPTS_DIR: .dev-lead/prompts/dev-lead
         run: |
           bash .dev-lead/scripts/dev-lead-fix-reviews.sh || rc=$?
@@ -301,7 +337,7 @@ jobs:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-          COPILOT_GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+          COPILOT_GITHUB_TOKEN: ${{ secrets.GH_PAT_DON_PETRY_COPILOT || secrets.GH_PAT }}
           PROMPTS_DIR: .dev-lead/prompts/dev-lead
         run: |
           bash .dev-lead/scripts/dev-lead-fix-reviews.sh || rc=$?
@@ -320,7 +356,7 @@ jobs:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-          COPILOT_GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+          COPILOT_GITHUB_TOKEN: ${{ secrets.GH_PAT_DON_PETRY_COPILOT || secrets.GH_PAT }}
           PROMPTS_DIR: .dev-lead/prompts/dev-lead
         run: |
           bash .dev-lead/scripts/dev-lead-fix-reviews.sh || rc=$?
@@ -337,7 +373,7 @@ jobs:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-          COPILOT_GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+          COPILOT_GITHUB_TOKEN: ${{ secrets.GH_PAT_DON_PETRY_COPILOT || secrets.GH_PAT }}
           PROMPTS_DIR: .dev-lead/prompts/dev-lead
         run: |
           bash .dev-lead/scripts/dev-lead-fix-issue.sh || rc=$?
@@ -354,7 +390,7 @@ jobs:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-          COPILOT_GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+          COPILOT_GITHUB_TOKEN: ${{ secrets.GH_PAT_DON_PETRY_COPILOT || secrets.GH_PAT }}
           PROMPTS_DIR: .dev-lead/prompts/dev-lead
         run: |
           bash .dev-lead/scripts/dev-lead-fix-reviews.sh || rc=$?
@@ -400,7 +436,7 @@ jobs:
       - name: Check for associated non-fork PR
         id: check-pr
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS || github.token }}
+          GH_TOKEN: ${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS || github.token }}
           CHECK_RUN_PRS: ${{ toJson(github.event.check_run.pull_requests) }}
           CHECK_RUN_HEAD_SHA: ${{ github.event.check_run.head_sha }}
           REPO_FULL_NAME: ${{ github.repository }}
@@ -446,7 +482,7 @@ jobs:
       - name: Emit repository_dispatch dev-lead-ci-failure
         if: steps.check-pr.outputs.should_relay == 'true'
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS || github.token }}
+          GH_TOKEN: ${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS || github.token }}
           RELAY_PR_NUMBER: ${{ steps.check-pr.outputs.pr_number }}
           RELAY_HEAD_SHA: ${{ github.event.check_run.head_sha }}
           RELAY_REPO: ${{ github.repository }}

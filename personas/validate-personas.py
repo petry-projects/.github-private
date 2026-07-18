@@ -188,6 +188,31 @@ def check_evals(manifest: dict, manifest_path: Path, repo_root: Path) -> None:
                      f"placeholder evals)")
 
 
+# Credentials that pre-date the GH_PAT_<ACCOUNT> naming convention and are kept
+# as-is (they are already account-named, just in the legacy suffix order). New
+# personas MUST use the GH_PAT_<ACCOUNT>[_<QUALIFIER>] form.
+GRANDFATHERED_CREDENTIALS = frozenset({
+    "DON_PETRY_BOT_GH_PAT",
+    "DON_PETRY_BOT_GH_PAT_CLASSIC",
+})
+
+
+def check_identity(manifest: dict, manifest_path: Path) -> None:
+    """Every persona MUST declare the account it acts as. The schema validates the
+    SHAPE of runtime.identity when present; this makes it MANDATORY and enforces
+    the credential naming convention — so no persona can silently fall back to a
+    shared machine user (the dev-lead->donpetry-bot regression, .github-private#1316)."""
+    runtime = manifest.get("runtime")
+    if not isinstance(runtime, dict) or "identity" not in runtime:
+        fail(f"{manifest_path}: missing runtime.identity — every persona must declare the "
+             f"account it acts as (account + credential). See persona-standards.md §5.1.")
+    credential = runtime["identity"]["credential"]
+    if credential not in GRANDFATHERED_CREDENTIALS and not credential.startswith("GH_PAT_"):
+        fail(f"{manifest_path}: runtime.identity.credential '{credential}' must follow the "
+             f"GH_PAT_<ACCOUNT>[_<QUALIFIER>] convention (or be a grandfathered secret). "
+             f"See persona-standards.md §5.1.")
+
+
 def check_invariants(manifest: dict, manifest_path: Path, repo_root: Path,
                      registry_arg: str | None) -> None:
     persona_dir = manifest_path.parent
@@ -225,6 +250,8 @@ def check_invariants(manifest: dict, manifest_path: Path, repo_root: Path,
             if fw["vendor_pin"] not in vendor_md.read_text(encoding="utf-8"):
                 fail(f"{manifest_path}: vendor_pin '{fw['vendor_pin']}' not found in {vendor_md} "
                      f"(manifest pin and vendored version disagree)")
+
+    check_identity(manifest, manifest_path)
 
     check_evals(manifest, manifest_path, repo_root)
 

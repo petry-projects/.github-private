@@ -56,11 +56,11 @@ jobs:
         with:
           repository: petry-projects/.github-private
           ref: main
-          token: ${{ secrets.GH_PAT_WORKFLOWS }}
+          token: ${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS }}
 
       - name: Generate org-wide token report
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
+          GH_TOKEN: ${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS }}
           TOKEN_REPORT_OUT: token_report.md
         run: |
           bash scripts/token_report.sh >> "$GITHUB_STEP_SUMMARY"

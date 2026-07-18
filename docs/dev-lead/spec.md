@@ -290,9 +290,12 @@ env:
   CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
   GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
   GEMINI_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-  COPILOT_GITHUB_TOKEN: ${{ secrets.GH_PAT }}
-  GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS || github.token }}
-  BOT_USER: ${{ vars.BOT_USER || 'donpetry-bot' }}
+  COPILOT_GITHUB_TOKEN: ${{ secrets.GH_PAT_DON_PETRY_COPILOT || secrets.GH_PAT }}
+  GH_TOKEN: ${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS || github.token }}
+  # Fail-safe default only; the real value is resolved from
+  # personas/dev-lead/persona.yml (runtime.identity.account = don-petry) by the
+  # "Resolve persona identity" step. See #1316 and persona-standards.md §5.1.
+  BOT_USER: ${{ vars.BOT_USER || 'don-petry' }}
   TRUSTED_BOTS: ${{ vars.TRUSTED_BOTS || 'copilot-pull-request-reviewer[bot],gemini-code-assist[bot],coderabbitai[bot],sonarqubecloud[bot]' }}
   TRIGGER_PHRASES: ${{ vars.TRIGGER_PHRASES || '@claude,@dev-lead' }}
 ```
@@ -579,7 +582,7 @@ No external script. Runs entirely as a `run:` shell block within the job.
 | `CLAUDE_CODE_VERSION` | `latest` | Claude CLI version to install and cache |
 | `TRUSTED_BOTS` | See §5.2 | Comma-separated list of trusted bot logins |
 | `TRIGGER_PHRASES` | `@claude,@dev-lead` | Phrases that trigger human intent in comments |
-| `BOT_USER` | `donpetry-bot` | Machine user login (excluded from self-triggering) |
+| `BOT_USER` | `don-petry` (resolved from `personas/dev-lead/persona.yml` `runtime.identity.account`) | The account dev-lead acts as — commits/pushes and self-exclusion. Manifest-driven since #1316; the env value is only a fail-safe default. |
 | `MAX_CI_CYCLES` | `3` | Max fix-CI loops before giving up |
 | `MAX_REVIEW_CYCLES` | `3` | Max review-fix loops before giving up |
 | `DEV_LEAD_LIVE_MODE` | `false` | If `true`, run live on all events; if `false`, dry-run for scheduled (N/A for event-driven) |

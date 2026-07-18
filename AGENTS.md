@@ -302,6 +302,27 @@ run to `remediate=live` for the configured pilot.
 - Scripts must be POSIX-compatible shell (`#!/usr/bin/env bash` with `set -euo pipefail`).
 - No hardcoded tokens or secrets — use `$GITHUB_TOKEN` from the environment.
 
+### Agent identity & credential secrets
+
+Every persona/agent declares the GitHub account it **acts as** — the login it
+commits, pushes, reviews, or comments as — in its manifest under
+`runtime.identity` (`personas/<id>/persona.yml`): an `account` and the `credential`
+secret holding that account's PAT. The runtime resolves `BOT_USER` from
+`account` via `scripts/lib/resolve-persona-identity.sh`; **never** derive a
+write persona's identity from a shared `vars.BOT_USER` — that coupling let
+dev-lead regress to committing as the review-only machine user `donpetry-bot`
+([#1316](https://github.com/petry-projects/.github-private/issues/1316)).
+
+- **dev-lead** acts as `don-petry` (the owner); **pr-review** acts as the
+  review-only machine user `donpetry-bot`. They are deliberately different accounts.
+- PAT secrets follow **`GH_PAT_<ACCOUNT>[_<QUALIFIER>]`** (login upper-snake-cased),
+  e.g. `GH_PAT_DON_PETRY`, `GH_PAT_DON_PETRY_COPILOT`. Pre-existing account-named
+  secrets (`DON_PETRY_BOT_GH_PAT`) are grandfathered.
+- `lint.yml`'s `verify-persona-identity` job enforces the manifest↔workflow
+  wiring; `validate-personas.py` makes `runtime.identity` mandatory. See
+  `standards/persona-standards.md` §5.1 and
+  `docs/pr-review-agent/machine-user-setup.md`.
+
 ### Initiative Planner — blocking open-questions gate
 
 `scripts/initiative-planner/apply-plan.sh` will **not** materialize an epic + sub-issue

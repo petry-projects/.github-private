@@ -81,7 +81,7 @@ jobs:
         if: steps.guard.outputs.configured == 'true'
         env:
           # PAT required — a workflow_dispatch fired with GITHUB_TOKEN never starts a run.
-          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
+          GH_TOKEN: ${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS }}
           REPO: ${{ github.repository }}
           CANARY_OUT: initiative_driver_canary.md
         run: bash scripts/initiative_driver_canary.sh

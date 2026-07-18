@@ -69,6 +69,15 @@ triggers:
 trust:
   author_association_floor: [OWNER, MEMBER, COLLABORATOR]
 
+# --- Runtime identity (§5.1) ------------------------------------------------
+# Advisory-only (consumed by the initiative-planner and the persona runner). On
+# the comment path it posts as `don-petry` (the runner authenticates with that
+# account's PAT). No dedicated reusable yet.
+runtime:
+  identity:
+    account: don-petry
+    credential: GH_PAT_DON_PETRY
+
 evals:
   required_before: stable
   path: evals/scrum-master/
