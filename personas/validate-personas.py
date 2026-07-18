@@ -167,7 +167,11 @@ def check_evals(manifest: dict, manifest_path: Path, repo_root: Path) -> None:
     enforce_count = RING_ORDER.get(status, 0) >= RING_ORDER.get(required_before, 4)
 
     for rel in _eval_set_dirs(evals):
-        eval_dir = repo_root / rel
+        try:
+            eval_dir = (repo_root / rel).resolve()
+            eval_dir.relative_to(repo_root.resolve())
+        except (ValueError, OSError):
+            fail(f"{manifest_path}: eval set '{rel}' must be a valid path inside the repository root")
         for split in ("dev", "holdout"):
             cases = eval_dir / split / "cases.jsonl"
             if not cases.is_file():
@@ -175,8 +179,8 @@ def check_evals(manifest: dict, manifest_path: Path, repo_root: Path) -> None:
                      f"(expected {cases})")
         if enforce_count:
             holdout = eval_dir / "holdout" / "cases.jsonl"
-            n = sum(1 for line in holdout.read_text(encoding="utf-8").splitlines()
-                    if line.strip())
+            with holdout.open(encoding="utf-8") as f:
+                n = sum(1 for line in f if line.strip())
             if n < min_cases:
                 fail(f"{manifest_path}: status '{status}' has reached required_before "
                      f"'{required_before}', but eval set '{rel}' holds only {n} held-out "

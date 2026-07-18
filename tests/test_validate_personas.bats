@@ -244,7 +244,7 @@ clone_persona() {
   printf '{"id":"a1"}\n' | tee "$TMP/evals/skill-a/dev/cases.jsonl" "$TMP/evals/skill-a/holdout/cases.jsonl" \
     "$TMP/evals/skill-b/dev/cases.jsonl" "$TMP/evals/skill-b/holdout/cases.jsonl" >/dev/null
   # swap path -> paths in the fixture manifest
-  sed -i 's#^  path: evals/demo/#  paths: [evals/skill-a/, evals/skill-b/]#' "$TMP/personas/demo/persona.yml"
+  sed 's#^  path: evals/demo/#  paths: [evals/skill-a/, evals/skill-b/]#' "$TMP/personas/demo/persona.yml" > "$TMP/personas/demo/persona.yml.tmp" && mv "$TMP/personas/demo/persona.yml.tmp" "$TMP/personas/demo/persona.yml"
   run python3 "$VALIDATOR" "$TMP/personas" --schema "$TMP/schema.json"
   [ "$status" -eq 0 ]
 }
@@ -253,7 +253,7 @@ clone_persona() {
   mkdir -p "$TMP/evals/skill-a/dev" "$TMP/evals/skill-a/holdout" "$TMP/evals/skill-b/dev"
   printf '{"id":"a1"}\n' | tee "$TMP/evals/skill-a/dev/cases.jsonl" "$TMP/evals/skill-a/holdout/cases.jsonl" \
     "$TMP/evals/skill-b/dev/cases.jsonl" >/dev/null  # skill-b has NO holdout
-  sed -i 's#^  path: evals/demo/#  paths: [evals/skill-a/, evals/skill-b/]#' "$TMP/personas/demo/persona.yml"
+  sed 's#^  path: evals/demo/#  paths: [evals/skill-a/, evals/skill-b/]#' "$TMP/personas/demo/persona.yml" > "$TMP/personas/demo/persona.yml.tmp" && mv "$TMP/personas/demo/persona.yml.tmp" "$TMP/personas/demo/persona.yml"
   run python3 "$VALIDATOR" "$TMP/personas" --schema "$TMP/schema.json"
   [ "$status" -ne 0 ]
   [[ "$output" == *"skill-b"* ]]
@@ -262,15 +262,15 @@ clone_persona() {
 
 @test "validate-personas does NOT enforce min_cases while draft (seed cases allowed)" {
   # holdout has 1 case; min_cases 5; status draft -> count NOT enforced.
-  sed -i 's/^  min_cases: 1/  min_cases: 5/' "$TMP/personas/demo/persona.yml"
+  sed 's/^  min_cases: 1/  min_cases: 5/' "$TMP/personas/demo/persona.yml" > "$TMP/personas/demo/persona.yml.tmp" && mv "$TMP/personas/demo/persona.yml.tmp" "$TMP/personas/demo/persona.yml"
   run python3 "$VALIDATOR" "$TMP/personas" --schema "$TMP/schema.json"
   [ "$status" -eq 0 ]
 }
 
 @test "validate-personas ENFORCES min_cases once status reaches required_before" {
   # required_before stable, status stable, holdout has 1 case < min_cases 5 -> FAIL.
-  sed -i -e 's/^  min_cases: 1/  min_cases: 5/' \
-         -e 's/^status: draft/status: stable/' "$TMP/personas/demo/persona.yml"
+  sed -e 's/^  min_cases: 1/  min_cases: 5/' \
+      -e 's/^status: draft/status: stable/' "$TMP/personas/demo/persona.yml" > "$TMP/personas/demo/persona.yml.tmp" && mv "$TMP/personas/demo/persona.yml.tmp" "$TMP/personas/demo/persona.yml"
   printf '{"agents":{"demo":{}}}\n' >"$TMP/reg.json"
   run python3 "$VALIDATOR" "$TMP/personas" --schema "$TMP/schema.json" --registry "$TMP/reg.json"
   [ "$status" -ne 0 ]
@@ -279,8 +279,8 @@ clone_persona() {
 
 @test "validate-personas passes the count gate when enough held-out cases exist" {
   printf '{"id":"h1"}\n{"id":"h2"}\n{"id":"h3"}\n{"id":"h4"}\n{"id":"h5"}\n' > "$TMP/evals/demo/holdout/cases.jsonl"
-  sed -i -e 's/^  min_cases: 1/  min_cases: 5/' \
-         -e 's/^status: draft/status: stable/' "$TMP/personas/demo/persona.yml"
+  sed -e 's/^  min_cases: 1/  min_cases: 5/' \
+      -e 's/^status: draft/status: stable/' "$TMP/personas/demo/persona.yml" > "$TMP/personas/demo/persona.yml.tmp" && mv "$TMP/personas/demo/persona.yml.tmp" "$TMP/personas/demo/persona.yml"
   printf '{"agents":{"demo":{}}}\n' >"$TMP/reg.json"
   run python3 "$VALIDATOR" "$TMP/personas" --schema "$TMP/schema.json" --registry "$TMP/reg.json"
   [ "$status" -eq 0 ]
@@ -288,8 +288,8 @@ clone_persona() {
 
 @test "validate-personas count gate ignores blank lines in holdout" {
   printf '{"id":"h1"}\n\n{"id":"h2"}\n' > "$TMP/evals/demo/holdout/cases.jsonl"  # 2 real, 1 blank
-  sed -i -e 's/^  min_cases: 1/  min_cases: 3/' \
-         -e 's/^status: draft/status: stable/' "$TMP/personas/demo/persona.yml"
+  sed -e 's/^  min_cases: 1/  min_cases: 3/' \
+      -e 's/^status: draft/status: stable/' "$TMP/personas/demo/persona.yml" > "$TMP/personas/demo/persona.yml.tmp" && mv "$TMP/personas/demo/persona.yml.tmp" "$TMP/personas/demo/persona.yml"
   printf '{"agents":{"demo":{}}}\n' >"$TMP/reg.json"
   run python3 "$VALIDATOR" "$TMP/personas" --schema "$TMP/schema.json" --registry "$TMP/reg.json"
   [ "$status" -ne 0 ]  # only 2 real < 3
