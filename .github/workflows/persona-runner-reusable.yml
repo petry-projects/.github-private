@@ -1,0 +1,209 @@
+# Persona Runtime — Reusable (dispatch side of the mention framework).
+# This file is the source of truth. Caller: .github/workflows/persona-runner.yml.
+# Standard: https://github.com/petry-projects/.github/blob/main/standards/persona-standards.md (§4.1)
+#
+# The router (petry-projects/.github persona-mention-reusable.yml) resolves an
+# `@petry-projects/<role>` mention and fires a `persona-mention`
+# repository_dispatch at this repo. This workflow receives it and runs the
+# addressed persona's advisory prompt (prompts/<id>/advisory.md), posting exactly
+# one advisory comment that carries the '<!-- persona:<id> -->' recursion marker.
+#
+# ONE runner for EVERY persona — manifest/convention driven, not one workflow per
+# persona (§4.1).
+#
+# Read/write split (the recursion guarantee):
+#   The AGENT gathers context and PRINTS the advisory between sentinels — it runs
+#   with github.token, which reads the (public) source repo but CANNOT post to
+#   it (that token is scoped to THIS repo). The WORKFLOW then enforces the marker
+#   and posts, using GH_PAT_WORKFLOWS. So an agent that forgets the marker cannot
+#   post an unmarked comment, because it cannot post at all. Prompt-only marker
+#   enforcement is how .github-private#860 happened (1,481 acks in 4.5h).
+#
+# Requires:
+#   CLAUDE_CODE_OAUTH_TOKEN — org secret, the engine credential
+#   GH_PAT_WORKFLOWS        — org PAT: the WORKFLOW uses it to post the comment on
+#                             the cross-repo item. The agent never sees it.
+name: Persona Runtime — Reusable
+
+on:
+  workflow_call:
+    inputs:
+      persona:
+        required: true
+        type: string
+      source_repo:
+        required: true
+        type: string
+      item_number:
+        required: false
+        type: string
+        default: ''
+      comment_url:
+        required: false
+        type: string
+        default: ''
+      requested_by:
+        required: false
+        type: string
+        default: ''
+      mode:
+        required: false
+        type: string
+        default: 'advisory'
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: true
+      GH_PAT_WORKFLOWS:
+        required: true
+
+permissions: {}
+
+concurrency:
+  # One run per (persona, item). item_number is empty for discussions, so key on
+  # comment_url too — otherwise every discussion mention for one persona+repo
+  # would collapse into a single group and drop concurrent advisories.
+  group: persona-runner-${{ inputs.persona }}-${{ inputs.source_repo }}-${{ inputs.item_number }}-${{ inputs.comment_url }}
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read   # checkout THIS repo's tooling + prompts. The agent reads
+                       # the public source repo with github.token; the comment is
+                       # posted by the workflow with GH_PAT_WORKFLOWS.
+    steps:
+      - name: Checkout persona tooling + prompts
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Resolve the persona's advisory prompt
+        id: resolve
+        env:
+          PERSONA: ${{ inputs.persona }}
+        run: |
+          set -euo pipefail
+          # shellcheck source=scripts/lib/persona-runner.sh
+          source scripts/lib/persona-runner.sh
+
+          # This runner is a SEPARATE trust boundary from the router: a
+          # repository_dispatch can be sent by anything holding a token, so the
+          # payload is re-validated here. Distinguish the two failure modes:
+          #   rc 2 = malformed id (a bad/hostile payload) — FAIL loudly, do not
+          #          mask it as a benign skip.
+          #   rc 3 = no advisory prompt for a well-formed id — benign ("persona
+          #          has no runtime wired yet"), skip quietly.
+          rc=0
+          prompt_path="$(pr_require_advisory "$PERSONA" .)" || rc=$?
+          case "$rc" in
+            0)
+              echo "skip=false" >> "$GITHUB_OUTPUT"
+              echo "prompt_path=${prompt_path}" >> "$GITHUB_OUTPUT"
+              echo "marker=$(pr_agent_marker "$PERSONA")" >> "$GITHUB_OUTPUT"
+              ;;
+            3)
+              echo "::notice::persona '${PERSONA}' has no advisory runtime — nothing to do"
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "::error::rejecting persona-mention dispatch for malformed persona id '${PERSONA}'"
+              exit 1
+              ;;
+          esac
+
+      - name: Install Claude Code
+        if: steps.resolve.outputs.skip == 'false'
+        env:
+          CLAUDE_CODE_VERSION: ${{ vars.CLAUDE_CODE_VERSION || 'latest' }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.npm-global"
+          npm config set prefix "$HOME/.npm-global"
+          echo "$HOME/.npm-global/bin" >> "$GITHUB_PATH"
+          npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
+
+      - name: Produce the advisory (agent — read only, no post)
+        if: steps.resolve.outputs.skip == 'false'
+        id: advise
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # github.token: reads the PUBLIC source repo, cannot post to it (scoped
+          # to THIS repo). The agent deliberately never receives GH_PAT_WORKFLOWS.
+          GH_TOKEN: ${{ github.token }}
+          PERSONA: ${{ inputs.persona }}
+          SOURCE_REPO: ${{ inputs.source_repo }}
+          ITEM_NUMBER: ${{ inputs.item_number }}
+          COMMENT_URL: ${{ inputs.comment_url }}
+          REQUESTED_BY: ${{ inputs.requested_by }}
+          AGENT_MARKER: ${{ steps.resolve.outputs.marker }}
+          PROMPT_PATH: ${{ steps.resolve.outputs.prompt_path }}
+        run: |
+          set -euo pipefail
+          export PATH="$HOME/.npm-global/bin:$PATH"
+
+          {
+            echo "You are running headless for persona '${PERSONA}'. The work item details and summoner are provided in the environment variables SOURCE_REPO, ITEM_NUMBER, COMMENT_URL, and REQUESTED_BY."
+            echo "Follow your instructions exactly. PRINT the advisory between the"
+            echo "sentinels; do not attempt to post it (you cannot)."
+            echo
+            cat "$PROMPT_PATH"
+          } > /tmp/persona-prompt.txt
+
+          _out=$(mktemp); _rc=0
+          claude --print \
+            --permission-mode bypassPermissions \
+            --allowedTools Bash \
+            --fallback-model opus \
+            -p "$(cat /tmp/persona-prompt.txt)" > "$_out" 2>&1 || _rc=$?
+
+          if [ "$_rc" -ne 0 ]; then
+            if grep -qiE "hit your.*(session )?limit|rate.?limit|usage limit|quota exceeded|too many requests" "$_out"; then
+              echo "::notice::engine rate-limited — leaving ${SOURCE_REPO}#${ITEM_NUMBER} un-answered (a future mention retries)"
+              echo "skip_post=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            cat "$_out"
+            echo "::error::persona agent failed (rc=$_rc)"
+            exit "$_rc"
+          fi
+
+          # Stash raw agent output for the post step to parse (multi-line, so a
+          # file, not a step output).
+          cp "$_out" "$RUNNER_TEMP/agent-out.txt"
+          echo "skip_post=false" >> "$GITHUB_OUTPUT"
+
+      - name: Enforce marker and post the comment (workflow — the only writer)
+        if: steps.resolve.outputs.skip == 'false' && steps.advise.outputs.skip_post == 'false'
+        env:
+          # The PAT lives ONLY here. The agent step above never had it.
+          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
+          PERSONA: ${{ inputs.persona }}
+          SOURCE_REPO: ${{ inputs.source_repo }}
+          ITEM_NUMBER: ${{ inputs.item_number }}
+        run: |
+          set -euo pipefail
+          # shellcheck source=scripts/lib/persona-runner.sh
+          source scripts/lib/persona-runner.sh
+
+          raw="$(cat "$RUNNER_TEMP/agent-out.txt")"
+          body="$(pr_extract_advisory "$raw")"
+          if [ -z "${body//[[:space:]]/}" ]; then
+            echo "::warning::agent produced no advisory between the sentinels for ${SOURCE_REPO}#${ITEM_NUMBER} — nothing to post"
+            exit 0
+          fi
+
+          # Mechanically guarantee the recursion marker — the agent could not post
+          # unmarked (no write token), and now cannot post unmarked via us either.
+          body="$(pr_ensure_marker "$PERSONA" "$body")"
+
+          if [ -z "${ITEM_NUMBER}" ]; then
+            echo "::notice::discussion advisory not yet supported by the runner post-path — skipping post for ${SOURCE_REPO}"
+            exit 0
+          fi
+
+          # Issue-comments endpoint serves PRs too.
+          gh api "repos/${SOURCE_REPO}/issues/${ITEM_NUMBER}/comments" -f body="$body" >/dev/null
+          echo "Posted ${PERSONA} advisory on ${SOURCE_REPO}#${ITEM_NUMBER}."
