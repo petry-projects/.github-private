@@ -1,0 +1,84 @@
+# Persona manifest — Scrum Master (sprint planning & story decomposition).
+# Role, not a person (§1.6): wraps the vendored BMAD sprint-planning skill; the
+# upstream agent's person-name stays upstream, referenced only by skill id.
+#
+# Validate against: petry-projects/.github standards/personas/persona.schema.json
+
+schema_version: 1
+
+id: scrum-master
+name: Scrum Master
+title: Scrum Master — sprint planning and story decomposition
+summary: >-
+  Advises on decomposing an approved initiative into a minimal, well-sequenced
+  set of PR-sized stories with crisp acceptance criteria, in the plan phase.
+
+# Draft: the org orchestration wrapper exists and is consumed by the
+# initiative-planner; a held-out eval set and the addressing team must land
+# before promotion.
+status: draft
+
+owner: petry-projects/org-leads
+
+address:
+  handle: petry-projects/scrum-master
+
+definition:
+  layers:
+    # Vendored BMAD sprint-planning skill, consumed by path (never hand-edited).
+    - kind: framework-agent
+      path: frameworks/bmad-method/src/bmm-skills/4-implementation/bmad-sprint-planning
+      framework:
+        name: bmad-method
+        upstream_repo: bmad-code-org/BMAD-METHOD
+        vendor_pin: v6.8.0
+        skill: bmad-sprint-planning
+      local_overrides:
+        path: prompts/bmad/scrum-master.md
+        upstream_candidate: false
+        notes: "Org orchestration wrapper that runs the sprint-planning + create-story skills non-interactively (idea Discussion -> epic + story DAG)."
+    # The wrapper library it drives.
+    - kind: workflow-prompts
+      path: prompts/bmad
+
+skills: []
+
+triggers:
+  default_mode: advisory
+  opt_out_label: scrum-master:hands-off
+  surfaces:
+    - surface: mention
+      events: [created]
+      enabled: true
+      mode: advisory
+      notes: "'@petry-projects/scrum-master' — decomposition/scoping/sequencing advice."
+
+    - surface: issues
+      events: [labeled, commented]
+      enabled: true
+      mode: advisory
+      notes: "Advises on epic/story shape, scoping, and blocked_by sequencing."
+
+    - surface: discussion
+      events: [labeled, commented]
+      enabled: true
+      mode: advisory
+      bridge: repository_dispatch
+      notes: "Discussions can't run the agent inline — must bridge (issue #571)."
+
+trust:
+  author_association_floor: [OWNER, MEMBER, COLLABORATOR]
+
+evals:
+  required_before: stable
+  path: evals/scrum-master/
+  min_cases: 4
+
+canary:
+  registry: petry-projects/.github/standards/canary-rings.json
+  agent: scrum-master
+
+references:
+  - "prompts/bmad/scrum-master.md (org orchestration wrapper, consumed by initiative-planner)"
+  - "frameworks/bmad-method/VENDOR.md (v6.8.0)"
+  - "petry-projects/.github standards/persona-standards.md"
