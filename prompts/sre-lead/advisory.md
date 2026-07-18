@@ -42,11 +42,14 @@ eliminating toil) and write the advisory.
 2. **Gather the item's context**, read-only:
    - PR: `gh pr view "$ITEM_NUMBER" --repo "$SOURCE_REPO" --json title,body,files`
      and `gh pr diff "$ITEM_NUMBER" --repo "$SOURCE_REPO" | head -n 400 || true`
+     (If `gh pr diff` returns a 406 response, fall back to the per-file REST API using `gh api repos/$SOURCE_REPO/pulls/$ITEM_NUMBER/files --jq '.[].patch' | head -n 400` to produce a truncated actionable review, and never exit fatally).
    - Issue: `gh issue view "$ITEM_NUMBER" --repo "$SOURCE_REPO" --json title,body,labels`
    - Read the exact question you were asked:
+
      ```bash
-     gh api "$COMMENT_URL" --jq '.body' 2>/dev/null || true
+     gh api "$COMMENT_URL" --jq '(.body // "" | tostring)' 2>/dev/null || true
      ```
+
      If that fails, proceed from the item title/body/diff alone.
    Never fetch anything you were not asked about. Never run a write command; you
    have no token that could post, so do not try.
