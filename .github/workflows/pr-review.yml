@@ -37,7 +37,11 @@ on:
         required: false
       GOOGLE_API_KEY:
         required: false
-      COPILOT_GITHUB_TOKEN:
+      GH_PAT_DON_PETRY:
+        # don-petry's write/workflows PAT, also exposed as COPILOT_GITHUB_TOKEN for
+        # the Copilot review engine (Copilot access is an account-subscription
+        # entitlement on don-petry, not a token scope, so the same PAT authenticates
+        # the engine). See docs/pr-review-agent/machine-user-setup.md.
         required: false
       DON_PETRY_BOT_GH_PAT:
         required: false
