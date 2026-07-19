@@ -21,10 +21,18 @@ setup() {
   # shellcheck source=/dev/null
   source "$SCRIPT"
 
-  # Stub gh so vpt_team_api never touches the network. It emulates
-  # gh api orgs/<org>/teams/<slug>: echo VPT_TEST_TEAM_JSON, or fail if
-  # VPT_TEST_GH_FAIL=1 (an API/HTTP error, e.g. 404 for a nonexistent team).
+  # Stub gh so vpt_team_api never touches the network. It emulates:
+  #   * gh auth status — the credential preflight; authenticated by default,
+  #     "no credential" (non-zero) when VPT_TEST_NO_CRED=1 (Dependabot/fork PRs).
+  #   * gh api orgs/<org>/teams/<slug> — echo VPT_TEST_TEAM_JSON, or fail if
+  #     VPT_TEST_GH_FAIL=1 (an API/HTTP error, e.g. 404 for a nonexistent team).
   gh() {
+    if [ "${1:-}" = "auth" ]; then
+      if [ "${VPT_TEST_NO_CRED:-0}" = "1" ]; then
+        return 1
+      fi
+      return 0
+    fi
     if [ "${VPT_TEST_GH_FAIL:-0}" = "1" ]; then
       return 1
     fi
@@ -174,4 +182,43 @@ make_persona() {
   run vpt_run "$TMP/personas"
   [ "$status" -ne 0 ]
   [[ "$output" != *"Traceback"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# Credential preflight — skip (never fail) when gh has no usable credential.
+# On Dependabot / fork PRs the org-scoped secret (GH_PAT_WORKFLOWS) is withheld,
+# so gh is unauthenticated and the LIVE team check cannot run. Skipping with a
+# ::warning:: (not failing closed) is what stops those PRs from reddening Lint
+# (#1323). Skipping is NOT a pass for a broken team — it means the check did not
+# run — so the fail-closed path must stay intact whenever a credential IS present.
+# ---------------------------------------------------------------------------
+
+@test "vpt_run skips with a warning when no gh credential is available" {
+  make_persona qa-lead petry-projects/qa-lead
+  # A misconfigured team is present; without a credential the check must NOT
+  # read it at all — it skips rather than failing closed.
+  export VPT_TEST_NO_CRED=1
+  export VPT_TEST_TEAM_JSON='{"slug":"qa-lead","privacy":"secret","notification_setting":"notifications_enabled"}'
+  run vpt_run "$TMP/personas"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"::warning::"* ]]
+  [[ "$output" != *"OK — 1 persona"* ]]
+}
+
+@test "vpt_run still fails closed on an API error when a credential IS present" {
+  # Regression guard: the credential-skip must not swallow a real live failure.
+  make_persona qa-lead petry-projects/qa-lead
+  export VPT_TEST_GH_FAIL=1
+  run vpt_run "$TMP/personas"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"could not read team"* ]]
+}
+
+@test "vpt_run passes cleanly (no skip warning) when no persona declares an address" {
+  # No addresses ⇒ existing no-op path, regardless of credential state.
+  make_persona no-addr
+  export VPT_TEST_NO_CRED=1
+  run vpt_run "$TMP/personas"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"::warning::"* ]]
 }
