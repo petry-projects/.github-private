@@ -127,17 +127,20 @@ Each persona declares which account/secret it acts as in `runtime.identity`
 
 | Secret | Account | Purpose |
 |--------|---------|---------|
-| `GH_PAT_DON_PETRY` | don-petry | Write/workflows PAT — the account dev-lead and the persona runner commit/push/comment as. **Canonical name** for the PAT formerly stored as `GH_PAT_WORKFLOWS`. |
-| `GH_PAT_DON_PETRY_COPILOT` | don-petry | User PAT with a Copilot subscription. Exposed as `COPILOT_GITHUB_TOKEN` for Copilot CLI access. **Canonical name** for the PAT formerly stored as `GH_PAT`. |
+| `GH_PAT_DON_PETRY` | don-petry | Write/workflows PAT — the account dev-lead and the persona runner commit/push/comment as. Also exposed as `COPILOT_GITHUB_TOKEN` for the Copilot review engine: Copilot access is an **account-subscription entitlement** on don-petry, not a token scope, so this same PAT authenticates the engine — no separate secret. **Canonical name** for the PAT formerly stored as `GH_PAT_WORKFLOWS`. |
 | `DON_PETRY_BOT_GH_PAT` | donpetry-bot | Machine user / bot reviewer PAT. Used by `pr-review.yml`, `repair-pr-approvals.yml`, `daily-pr-review-health.yml` for GitHub API auth as the bot. Grandfathered name (pre-dates the schema). |
 | `DON_PETRY_BOT_GH_PAT_CLASSIC` | donpetry-bot | Classic PAT for the bot; required for `gh pr review --approve`. Preferred over the fine-grained secret when set. Grandfathered. |
 | `GOOGLE_API_KEY` | — | API key for Google AI (Gemini). Used by the `gemini` engine for triage, deep review, and audit tiers. |
 
-> **Migration:** `GH_PAT_WORKFLOWS` → `GH_PAT_DON_PETRY` and `GH_PAT` →
-> `GH_PAT_DON_PETRY_COPILOT`. Workflows read `${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS }}`
-> during the transition, so **create the new secrets as copies of the old ones**;
-> once confirmed present, a follow-up drops the `|| secrets.GH_PAT_WORKFLOWS`
-> fallbacks and deletes the old secrets.
+> **Migration:** `GH_PAT_WORKFLOWS` → `GH_PAT_DON_PETRY`. Workflows read
+> `${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS }}` during the transition, so
+> **create the new secret as a copy of the old one**; once confirmed present, a follow-up
+> drops the `|| secrets.GH_PAT_WORKFLOWS` fallbacks and deletes the old secret.
+>
+> The former `GH_PAT` / `GH_PAT_DON_PETRY_COPILOT` Copilot-engine secret has been retired
+> (#1327): the Copilot engine now authenticates with the single `GH_PAT_DON_PETRY` classic
+> PAT. The only requirement is a **Copilot subscription on the don-petry account** — no
+> separate Copilot secret is needed.
 
 ## Step 5: Verify the setup
 
