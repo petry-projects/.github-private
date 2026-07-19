@@ -90,6 +90,16 @@ for manifest in sorted(glob.glob(os.path.join(root, "*", "persona.yml"))):
 PY
 }
 
+# vpt_have_credential — return 0 if gh has a usable GitHub credential to even
+# attempt the live teams API, non-zero otherwise. Isolated so the hermetic tests
+# can stub it. On Dependabot / fork PRs the org-scoped secret (GH_PAT_WORKFLOWS) is
+# withheld, so GH_TOKEN is empty and gh is unauthenticated: the live check cannot
+# run and must be SKIPPED (not failed) — see vpt_run. This is distinct from an API
+# error while authenticated, which still fails closed.
+vpt_have_credential() {
+  gh auth status >/dev/null 2>&1
+}
+
 # vpt_team_api <slug> — echo the JSON for org team <slug>, or return non-zero on
 # any API error (a nonexistent team returns HTTP 404, which is such an error).
 # Isolated so the hermetic test suite can stub `gh`.
@@ -139,6 +149,18 @@ vpt_run() {
 
   if [ -z "$lines" ]; then
     echo "verify-persona-teams: no personas declare an address block — nothing to verify."
+    return 0
+  fi
+
+  # Preflight: the LIVE team check needs a GitHub credential. On Dependabot / fork
+  # PRs the org-scoped secret is withheld (GH_TOKEN empty), so gh is unauthenticated
+  # and this check cannot run. Skip with a visible ::warning:: rather than failing —
+  # the token-degradation posture used across this repo (e.g. fleet_monitor.sh) —
+  # so those PRs stop reddening Lint (#1323). This is NOT a pass for a broken team:
+  # the check simply did not run, and it runs in full (fail-closed) on every
+  # credential-bearing PR and post-merge.
+  if ! vpt_have_credential; then
+    echo "::warning::verify-persona-teams: no usable GitHub credential (gh is not authenticated) — skipping the LIVE persona team check. Dependabot/fork PRs withhold the org-scoped token (GH_PAT_WORKFLOWS), so this check cannot run there; it runs in full on every credential-bearing PR and post-merge. Skipping is not a pass for a broken team." >&2
     return 0
   fi
 
