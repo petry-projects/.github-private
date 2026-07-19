@@ -84,11 +84,10 @@ triggers:
 trust:
   author_association_floor: [OWNER, MEMBER, COLLABORATOR]
 
-# sre-lead ships no dedicated reusable/stub in this pilot — consumed by path and
-# human-invocable via the persona runner. It declares only `runtime.identity`:
-# on the advisory/comment path it posts as `don-petry` (the runner authenticates
-# with that account's PAT). Add the rest of `runtime` + a canary-rings.json entry
-# when a dedicated advisory workflow is wired.
+# --- Runtime identity (§5.1) ------------------------------------------------
+# Advisory-only: sre-lead ships no dedicated reusable/stub in this pilot.
+# It is consumed by path and is human-invocable. On the comment path it posts
+# as `don-petry` (the persona runner authenticates with that account's PAT).
 runtime:
   identity:
     account: don-petry
