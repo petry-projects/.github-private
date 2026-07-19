@@ -206,11 +206,19 @@ def check_identity(manifest: dict, manifest_path: Path) -> None:
     if not isinstance(runtime, dict) or "identity" not in runtime:
         fail(f"{manifest_path}: missing runtime.identity — every persona must declare the "
              f"account it acts as (account + credential). See persona-standards.md §5.1.")
-    credential = runtime["identity"]["credential"]
-    if credential not in GRANDFATHERED_CREDENTIALS and not credential.startswith("GH_PAT_"):
-        fail(f"{manifest_path}: runtime.identity.credential '{credential}' must follow the "
-             f"GH_PAT_<ACCOUNT>[_<QUALIFIER>] convention (or be a grandfathered secret). "
-             f"See persona-standards.md §5.1.")
+    identity = runtime["identity"]
+    if not isinstance(identity, dict) or "credential" not in identity or "account" not in identity:
+        fail(f"{manifest_path}: runtime.identity must be a mapping containing 'account' and "
+             f"'credential'. See persona-standards.md §5.1.")
+    credential = identity["credential"]
+    account = identity["account"]
+    if credential not in GRANDFATHERED_CREDENTIALS:
+        upper_account = account.upper().replace("-", "_")
+        prefix = f"GH_PAT_{upper_account}"
+        if credential != prefix and not credential.startswith(prefix + "_"):
+            fail(f"{manifest_path}: runtime.identity.credential '{credential}' must follow the "
+                 f"GH_PAT_<ACCOUNT>[_<QUALIFIER>] convention for account '{account}' "
+                 f"(expected '{prefix}[_<QUALIFIER>]'). See persona-standards.md §5.1.")
 
 
 def check_invariants(manifest: dict, manifest_path: Path, repo_root: Path,

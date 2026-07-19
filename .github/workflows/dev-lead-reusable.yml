@@ -113,13 +113,12 @@ jobs:
     env:
       # dev-lead's acting identity is DECLARED in personas/dev-lead/persona.yml
       # (runtime.identity.account) and resolved into BOT_USER by the "Resolve
-      # persona identity" step below. This job-level value is only the fail-safe
-      # default if that step cannot read the manifest — it is `don-petry` (the
-      # human owner dev-lead commits as), NOT the review-only machine user
-      # donpetry-bot. Deriving the identity from the shared vars.BOT_USER is what
-      # caused the donpetry-bot regression (#1316); the manifest is now the source
-      # of truth. See scripts/lib/resolve-persona-identity.sh.
-      BOT_USER: ${{ vars.BOT_USER || 'don-petry' }}
+      # persona identity" step below. This job-level value is the hardcoded
+      # fail-safe default (don-petry) used only if that step cannot read the
+      # manifest. It does NOT consult vars.BOT_USER — that shared variable is
+      # what caused the donpetry-bot regression (#1316); the manifest is now the
+      # sole source of truth. See scripts/lib/resolve-persona-identity.sh.
+      BOT_USER: 'don-petry'
       TRUSTED_BOTS: ${{ vars.TRUSTED_BOTS || 'copilot-pull-request-reviewer[bot],gemini-code-assist[bot],sonarqubecloud[bot],coderabbitai[bot],chatgpt-codex-connector[bot]' }}
       TRIGGER_PHRASES: ${{ vars.TRIGGER_PHRASES || '@dev-lead' }}
       DEV_LEAD_ENGINE: ${{ vars.DEV_LEAD_ENGINE || 'claude' }}

@@ -292,10 +292,11 @@ env:
   GEMINI_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
   COPILOT_GITHUB_TOKEN: ${{ secrets.GH_PAT_DON_PETRY_COPILOT || secrets.GH_PAT }}
   GH_TOKEN: ${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS || github.token }}
-  # Fail-safe default only; the real value is resolved from
+  # Hardcoded fail-safe default only; the real value is resolved from
   # personas/dev-lead/persona.yml (runtime.identity.account = don-petry) by the
-  # "Resolve persona identity" step. See #1316 and persona-standards.md §5.1.
-  BOT_USER: ${{ vars.BOT_USER || 'don-petry' }}
+  # "Resolve persona identity" step. vars.BOT_USER is NOT consulted — that
+  # shared variable caused the donpetry-bot regression (#1316). See persona-standards.md §5.1.
+  BOT_USER: 'don-petry'
   TRUSTED_BOTS: ${{ vars.TRUSTED_BOTS || 'copilot-pull-request-reviewer[bot],gemini-code-assist[bot],coderabbitai[bot],sonarqubecloud[bot]' }}
   TRIGGER_PHRASES: ${{ vars.TRIGGER_PHRASES || '@claude,@dev-lead' }}
 ```

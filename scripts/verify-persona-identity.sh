@@ -44,8 +44,7 @@ is_grandfathered() {
   return 1
 }
 
-# don-petry -> DON_PETRY
-account_token() { printf '%s' "$1" | tr '[:lower:]-' '[:upper:]_'; }
+# Upper-snake-case conversion for account names is done inline via pure Bash parameter expansion.
 
 runtime_for() {
   local id="$1" pair
@@ -58,13 +57,15 @@ runtime_for() {
 count=0
 for manifest in "$ROOT"/*/persona.yml; do
   [ -f "$manifest" ] || continue
-  id="$(basename "$(dirname "$manifest")")"
+  manifest_dir="${manifest%/persona.yml}"
+  id="${manifest_dir##*/}"
   account="$(bash "$RESOLVE" "$id" "$ROOT" account)"
   credential="$(bash "$RESOLVE" "$id" "$ROOT" credential)"
 
   # 1. credential naming convention
   if ! is_grandfathered "$credential"; then
-    expect="GH_PAT_$(account_token "$account")"
+    upper_account="${account^^}"
+    expect="GH_PAT_${upper_account//-/_}"
     case "$credential" in
       "$expect" | "${expect}_"*) : ;;
       *) fail "$id: credential '$credential' does not match '${expect}[_<QUALIFIER>]' for account '$account'" ;;
@@ -79,7 +80,7 @@ for manifest in "$ROOT"/*/persona.yml; do
   # 3. write personas must consume the manifest identity at runtime
   if wf="$(runtime_for "$id")"; then
     [ -f "$wf" ] || fail "$id: declared runtime workflow '$wf' does not exist"
-    if ! grep -q 'resolve-persona-identity.sh' "$wf"; then
+    if ! grep -qE '(bash|sh)[[:space:]]+.*resolve-persona-identity\.sh' "$wf"; then
       fail "$id: runtime workflow '$wf' must resolve identity from the manifest (call resolve-persona-identity.sh), not vars.BOT_USER"
     fi
   fi
