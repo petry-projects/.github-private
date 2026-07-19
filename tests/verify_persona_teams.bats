@@ -28,7 +28,9 @@ setup() {
   #     VPT_TEST_GH_FAIL=1 (an API/HTTP error, e.g. 404 for a nonexistent team).
   gh() {
     if [ "${1:-}" = "auth" ]; then
-      [ "${VPT_TEST_NO_CRED:-0}" = "1" ] && return 1
+      if [ "${VPT_TEST_NO_CRED:-0}" = "1" ]; then
+        return 1
+      fi
       return 0
     fi
     if [ "${VPT_TEST_GH_FAIL:-0}" = "1" ]; then

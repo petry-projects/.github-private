@@ -160,7 +160,12 @@ vpt_run() {
   # the check simply did not run, and it runs in full (fail-closed) on every
   # credential-bearing PR and post-merge.
   if ! vpt_have_credential; then
-    echo "::warning::verify-persona-teams: no usable GitHub credential (gh is not authenticated) — skipping the LIVE persona team check. Dependabot/fork PRs withhold the org-scoped token (GH_PAT_WORKFLOWS), so this check cannot run there; it runs in full on every credential-bearing PR and post-merge. Skipping is not a pass for a broken team." >&2
+    local msg
+    msg="verify-persona-teams: no usable GitHub credential (gh is not authenticated) — "
+    msg+="skipping the LIVE persona team check. Dependabot/fork PRs withhold the org-scoped "
+    msg+="token, so this check cannot run there; it runs in full on every credential-bearing "
+    msg+="PR and post-merge. Skipping is not a pass for a broken team."
+    echo "::warning::${msg}" >&2
     return 0
   fi
 
