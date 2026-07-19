@@ -53,7 +53,12 @@ on:
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         required: true
+      GH_PAT_DON_PETRY:
+        # don-petry's PAT — the account the persona comment-poster authenticates as.
+        # Canonical name (GH_PAT_<ACCOUNT> schema); supersedes GH_PAT_WORKFLOWS below.
+        required: false
       GH_PAT_WORKFLOWS:
+        # DEPRECATED alias of GH_PAT_DON_PETRY — kept during the rename migration.
         required: true
 
 permissions: {}
@@ -179,7 +184,7 @@ jobs:
         if: steps.resolve.outputs.skip == 'false' && steps.advise.outputs.skip_post == 'false'
         env:
           # The PAT lives ONLY here. The agent step above never had it.
-          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
+          GH_TOKEN: ${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS }}
           PERSONA: ${{ inputs.persona }}
           SOURCE_REPO: ${{ inputs.source_repo }}
           ITEM_NUMBER: ${{ inputs.item_number }}

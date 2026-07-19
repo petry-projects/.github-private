@@ -83,6 +83,19 @@ triggers:
 trust:
   author_association_floor: [OWNER, MEMBER, COLLABORATOR]
 
+# --- Runtime identity (§5.1) ------------------------------------------------
+# The account dev-lead ACTS AS: it implements issues into PRs and commits/pushes
+# fixes, so it must author commits as the human owner `don-petry`, NOT the
+# review-only machine user `donpetry-bot`. dev-lead-reusable.yml resolves
+# BOT_USER from identity.account (see scripts/lib/resolve-persona-identity.sh);
+# git-identity.sh then attributes commits to it. Distinct from address.handle
+# (petry-projects/dev-lead, the mention team). This decoupling is the fix for
+# the donpetry-bot regression (.github-private#1316).
+runtime:
+  identity:
+    account: don-petry
+    credential: GH_PAT_DON_PETRY
+
 evals:
   required_before: stable
   path: evals/dev-lead/

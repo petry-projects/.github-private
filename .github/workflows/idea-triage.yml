@@ -65,7 +65,7 @@ jobs:
       # the self path only; cross-repo runs use GH_PAT_WORKFLOWS (same pattern as
       # initiative-planner.yml). S1 (#818) will replace this with a minted GitHub
       # App token for tighter scoping.
-      TARGET_GH_TOKEN: ${{ (github.event.inputs.target_repo == '' || github.event.inputs.target_repo == github.repository) && secrets.GITHUB_TOKEN || secrets.GH_PAT_WORKFLOWS }}
+      TARGET_GH_TOKEN: ${{ (github.event.inputs.target_repo == '' || github.event.inputs.target_repo == github.repository) && secrets.GITHUB_TOKEN || secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS }}
       DRY_RUN: ${{ inputs.dry_run && '1' || '0' }}
     steps:
       - name: Checkout agent repo

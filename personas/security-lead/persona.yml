@@ -86,9 +86,14 @@ triggers:
 trust:
   author_association_floor: [OWNER, MEMBER, COLLABORATOR]
 
-# No `runtime:` block yet — security-lead ships no dedicated reusable/stub in
-# this pilot. It is consumed by path and is human-invocable. Add `runtime` + a
-# canary-rings.json entry when a dedicated advisory workflow is wired.
+# --- Runtime identity (§5.1) ------------------------------------------------
+# Advisory-only: security-lead ships no dedicated reusable/stub in this pilot.
+# It is consumed by path and is human-invocable. On the comment path it posts
+# as `don-petry` (the persona runner authenticates with that account's PAT).
+runtime:
+  identity:
+    account: don-petry
+    credential: GH_PAT_DON_PETRY
 
 evals:
   required_before: stable

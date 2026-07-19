@@ -122,10 +122,16 @@ triggers:
 trust:
   author_association_floor: [OWNER, MEMBER, COLLABORATOR]
 
-# No `runtime:` block yet — qa-lead ships no dedicated reusable/stub in this
-# pilot. It is consumed by path (e.g. by the initiative-planner during
-# planning) and is human-invocable. Add `runtime` + a canary-rings.json entry
-# when a dedicated advisory workflow is wired.
+# qa-lead ships no dedicated reusable/stub in this pilot — it is consumed by
+# path (e.g. by the initiative-planner) and is human-invocable via the persona
+# runner. It declares only `runtime.identity`: on the advisory/comment path it
+# posts as `don-petry` (the persona runner authenticates with that account's
+# PAT). Add the rest of `runtime` + a canary-rings.json entry when a dedicated
+# advisory workflow is wired.
+runtime:
+  identity:
+    account: don-petry
+    credential: GH_PAT_DON_PETRY
 
 evals:
   required_before: stable

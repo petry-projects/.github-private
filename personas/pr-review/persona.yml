@@ -64,6 +64,18 @@ triggers:
 trust:
   author_association_floor: [OWNER, MEMBER, COLLABORATOR]
 
+# --- Runtime identity (§5.1) ------------------------------------------------
+# pr-review ACTS AS the dedicated machine user `donpetry-bot`: a review-only
+# account distinct from `don-petry` so its approvals satisfy CODEOWNERS and it
+# never authors code. It posts NO commits (review-only) — the identity is used
+# for its API auth and approvals. Credential is the bot's classic PAT (required
+# for addPullRequestReview); the base secret name is grandfathered (pre-dates
+# the GH_PAT_<ACCOUNT> convention). See docs/pr-review-agent/machine-user-setup.md.
+runtime:
+  identity:
+    account: donpetry-bot
+    credential: DON_PETRY_BOT_GH_PAT
+
 # pr-review wraps two skills (deep-review + triage); their cases are combined
 # under evals/pr-review/ to satisfy the schema's single-path constraint.
 evals:

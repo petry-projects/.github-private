@@ -99,7 +99,7 @@ jobs:
         # PAT required: a workflow_dispatch fired with GITHUB_TOKEN is accepted but
         # NEVER starts a run (loop prevention) — the planner would silently no-op.
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
+          GH_TOKEN: ${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS }}
         run: |
           if [ -z "${GH_TOKEN}" ]; then
             echo "::error::GH_PAT_WORKFLOWS is required — a workflow_dispatch fired with GITHUB_TOKEN will not start a run."
@@ -108,7 +108,7 @@ jobs:
 
       - name: Re-dispatch under workflow_dispatch
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
+          GH_TOKEN: ${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS }}
           REPO: ${{ github.repository }}
           # Dogfood path: this repo plans its own discussions, so the target is
           # self. Fleet callers (#820) live in their own repos and set their host.
@@ -144,7 +144,7 @@ jobs:
       # S1 (#818) will replace this with a minted GitHub App token for tighter scoping.
       # The workflow_dispatch re-invoke keeps GH_PAT_WORKFLOWS (redispatch job) — that
       # role is loop-prevention, not content writes, and is unaffected.
-      TARGET_GH_TOKEN: ${{ (github.event.inputs.target_repo == '' || github.event.inputs.target_repo == github.repository) && secrets.GITHUB_TOKEN || secrets.GH_PAT_WORKFLOWS }}
+      TARGET_GH_TOKEN: ${{ (github.event.inputs.target_repo == '' || github.event.inputs.target_repo == github.repository) && secrets.GITHUB_TOKEN || secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS }}
       DISCUSSION_NUMBER: ${{ github.event.inputs.discussion }}
       DRY_RUN: ${{ inputs.dry_run == true && '1' || '0' }}
       FORCE_REPLAN: ${{ inputs.force_replan == true && '1' || '0' }}

@@ -84,7 +84,7 @@ jobs:
         # the sweep "succeeds" while re-triggering nothing (the original #573 gap
         # regression). Fail loudly instead of silently no-op'ing.
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
+          GH_TOKEN: ${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS }}
         run: |
           if [ -z "${GH_TOKEN}" ]; then
             echo "::error::GH_PAT_WORKFLOWS is required — GITHUB_TOKEN cannot start a dispatched run and the bot comment PAT lacks actions:write."
@@ -96,7 +96,7 @@ jobs:
           # PAT with workflow/actions:write scope required: GITHUB_TOKEN cannot
           # start dispatched workflow runs, and the bot comment PAT lacks the
           # actions:write scope (HTTP 403 on the dispatch).
-          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
+          GH_TOKEN: ${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS }}
           DRY_RUN: ${{ inputs.dry_run || 'false' }}
           MAX_DISPATCH: ${{ inputs.max_dispatch || '20' }}
         run: bash scripts/sweep-stuck-reviews.sh

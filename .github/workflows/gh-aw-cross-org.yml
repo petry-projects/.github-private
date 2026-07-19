@@ -34,7 +34,7 @@ env:
   BOT_USER: ${{ vars.BOT_USER || 'donpetry-bot' }}
   DEV_LEAD_ENGINE: ${{ vars.DEV_LEAD_ENGINE || 'claude' }}
   DEV_LEAD_DRY_RUN: ${{ vars.DEV_LEAD_DRY_RUN || 'false' }}
-  GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
+  GH_TOKEN: ${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS }}
 
 jobs:
   dispatch:
@@ -45,7 +45,7 @@ jobs:
       GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
       GEMINI_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
       GEMINI_CLI_TRUST_WORKSPACE: "true"
-      COPILOT_GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+      COPILOT_GITHUB_TOKEN: ${{ secrets.GH_PAT_DON_PETRY_COPILOT || secrets.GH_PAT }}
 
     steps:
       - name: Validate source repo
@@ -62,7 +62,7 @@ jobs:
       - name: Checkout .github-private (scripts and prompts)
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
-          token: ${{ secrets.GH_PAT_WORKFLOWS || secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS || secrets.GITHUB_TOKEN }}
           path: dotgithub-private
 
       # Checkout the target (source) repo so the engine can read and modify its code.
@@ -71,7 +71,7 @@ jobs:
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           repository: ${{ github.event.client_payload.source_repo }}
-          token: ${{ secrets.GH_PAT_WORKFLOWS }}
+          token: ${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS }}
           path: target-repo
 
       - name: Configure git identity for target repo
@@ -89,7 +89,7 @@ jobs:
         env:
           CLAUDE_CODE_VERSION: ${{ vars.CLAUDE_CODE_VERSION || 'latest' }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-          GH_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GH_PAT_DON_PETRY_COPILOT || secrets.GH_PAT || secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           mkdir -p "$HOME/.npm-global"
@@ -127,7 +127,7 @@ jobs:
           REPO: ${{ github.event.client_payload.source_repo }}
           PROMPTS_DIR: ${{ github.workspace }}/dotgithub-private/prompts/dev-lead
           REVIEW_ENGINE: ${{ env.DEV_LEAD_ENGINE }}
-          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
+          GH_TOKEN: ${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS }}
         working-directory: target-repo
         run: bash ${{ github.workspace }}/dotgithub-private/scripts/dev-lead-fix-issue.sh
 
@@ -144,6 +144,6 @@ jobs:
           REPO: ${{ github.event.client_payload.source_repo }}
           PROMPTS_DIR: ${{ github.workspace }}/dotgithub-private/prompts/dev-lead
           REVIEW_ENGINE: ${{ env.DEV_LEAD_ENGINE }}
-          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
+          GH_TOKEN: ${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS }}
         working-directory: target-repo
         run: bash ${{ github.workspace }}/dotgithub-private/scripts/dev-lead-fix-ci.sh

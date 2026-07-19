@@ -59,11 +59,11 @@ jobs:
         with:
           repository: petry-projects/.github-private
           ref: main
-          token: ${{ secrets.GH_PAT_WORKFLOWS }}
+          token: ${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS }}
 
       - name: Generate org-wide reviewer scorecard
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
+          GH_TOKEN: ${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS }}
           REVIEWER_REPORT_OUT: reviewer_report.md
           REVIEWER_SNAPSHOT_OUT: reviewer-report-state.json
         run: |

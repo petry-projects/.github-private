@@ -334,8 +334,27 @@ jobs:
 
       - name: Verify live persona addressing teams
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
+          GH_TOKEN: ${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS }}
         run: bash scripts/verify-persona-teams.sh personas
+
+  verify-persona-identity:
+    # Drift check (.github-private#1316) that ties each persona's declared
+    # runtime.identity to the workflows that consume it: the credential follows the
+    # GH_PAT_<ACCOUNT> naming convention, the secret is actually referenced by a
+    # workflow, and every persona shipping a write workflow resolves BOT_USER from
+    # the manifest (not the shared vars.BOT_USER that let dev-lead regress to
+    # committing as donpetry-bot). No GitHub API calls / no gh — pure
+    # manifest↔workflow consistency (PyYAML installed via pip below).
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+
+      - name: Install PyYAML
+        run: pip3 install --quiet pyyaml
+
+      - name: Verify persona identity ↔ workflow wiring
+        run: bash scripts/verify-persona-identity.sh personas
 
   gh-aw-compile:
     runs-on: ubuntu-latest
