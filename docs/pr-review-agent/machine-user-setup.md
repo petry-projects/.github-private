@@ -120,7 +120,7 @@ gh secret list --repo petry-projects/.github-private | grep DON_PETRY_BOT_GH_PAT
 
 PAT secrets follow the schema **`GH_PAT_<ACCOUNT>[_<QUALIFIER>]`**, where `<ACCOUNT>`
 is the GitHub login upper-snake-cased (`don-petry` → `GH_PAT_DON_PETRY`). This makes
-the *owning account* obvious from the secret name — the ambiguity that let dev-lead
+the *owning account* obvious from the secret name, resolving the ambiguity that let dev-lead
 regress to committing as the bot ([#1316](https://github.com/petry-projects/.github-private/issues/1316)).
 Each persona declares which account/secret it acts as in `runtime.identity`
 (`personas/<id>/persona.yml`); see `standards/persona-standards.md` §5.1.

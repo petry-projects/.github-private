@@ -26,7 +26,10 @@ WORKFLOWS_DIR=".github/workflows"
 
 # Credentials that pre-date the GH_PAT_<ACCOUNT> convention (kept as-is). Mirror
 # GRANDFATHERED_CREDENTIALS in personas/validate-personas.py.
-GRANDFATHERED="DON_PETRY_BOT_GH_PAT DON_PETRY_BOT_GH_PAT_CLASSIC"
+GRANDFATHERED=(
+  DON_PETRY_BOT_GH_PAT
+  DON_PETRY_BOT_GH_PAT_CLASSIC
+)
 
 # Personas that ship a write workflow which MUST consume the manifest identity.
 # id:workflow-path pairs. Advisory personas post via the shared persona runner
@@ -40,7 +43,7 @@ fail() { echo "::error::verify-persona-identity: $*" >&2; exit 1; }
 
 is_grandfathered() {
   local c="$1" g
-  for g in $GRANDFATHERED; do [ "$c" = "$g" ] && return 0; done
+  for g in "${GRANDFATHERED[@]}"; do [ "$c" = "$g" ] && return 0; done
   return 1
 }
 
