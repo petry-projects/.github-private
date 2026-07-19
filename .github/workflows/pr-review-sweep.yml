@@ -108,7 +108,7 @@ jobs:
         # the sweep "succeeds" while re-triggering nothing (the original #573 gap
         # regression). Fail loudly instead of silently no-op'ing.
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
+          GH_TOKEN: ${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS }}
         run: |
           if [ -z "${GH_TOKEN}" ]; then
             echo "::error::GH_PAT_WORKFLOWS is required — GITHUB_TOKEN cannot start a dispatched run and the bot comment PAT lacks actions:write."
