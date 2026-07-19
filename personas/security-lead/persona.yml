@@ -1,0 +1,112 @@
+# Persona manifest — Security Lead (threat modeling & compliance advisor).
+# Follows the wrap-a-vendored-framework-agent, advisory-everywhere path
+# established by personas/qa-lead/ and personas/scrum-master/.
+#
+# Naming: this persona is `security-lead` — the ROLE (persona-standards.md §1.6).
+# The vendored agent it wraps carries a person-name upstream ("Sam"); that stays
+# upstream. We point at it only by its technical skill id (`framework.skill`).
+#
+# Validate against: petry-projects/.github standards/personas/persona.schema.json
+
+schema_version: 1
+
+id: security-lead
+name: Security Lead
+title: Threat Modeling & Compliance Advisor
+summary: >-
+  Advises on threat modeling, security architecture, compliance mapping
+  (SOC2/HIPAA/PCI/GDPR), and supply-chain security — quantifying risk by
+  likelihood and impact and framing security as an enabler, not a blocker.
+
+# Draft: the manifest, advisory prompt, and evals exist, but security-lead is
+# not yet cut as a fleet reusable and is not yet in canary-rings.json (see
+# README). Promote once a dedicated advisory workflow + release are added.
+status: draft
+
+owner: petry-projects/org-leads
+
+# --- How humans address this persona (§4.1) --------------------------------
+# An org TEAM handle, never a user account: '@security-lead' is a real, live
+# GitHub account owned by a stranger, so keying on the bare role would silently
+# notify them on every mention. The team slug equals `id`, so the router
+# resolves a mention by stripping the org prefix.
+#
+# Team requirements (verified by CI, not by the schema — they need the network):
+#   privacy: closed                               (secret teams are unmentionable)
+#   notification_setting: notifications_disabled  (routes a webhook, not a page)
+address:
+  handle: petry-projects/security-lead
+
+definition:
+  layers:
+    # A vendored BMAD B-Great Suite security agent, consumed by path
+    # (vendor-neutral markdown). We track upstream and contribute back rather
+    # than fork — so there are no local hand-edits to frameworks/.
+    - kind: framework-agent
+      path: frameworks/bmad-bgreat-suite/src/agents/bgr-agent-sam-security
+      framework:
+        name: bmad-bgreat-suite
+        upstream_repo: petry-projects/bmad-bgreat-suite
+        vendor_pin: ae8914e84b87       # matches frameworks/bmad-bgreat-suite/VENDOR.md
+        skill: bgr-agent-sam-security
+      # No local_overrides today. When security-lead gains an org-specific
+      # advisory wrapper beyond prompts/security-lead/advisory.md, add it here
+      # and set upstream_candidate honestly.
+
+skills:
+  - name: bgr-agent-sam-security
+    path: frameworks/bmad-bgreat-suite/src/agents/bgr-agent-sam-security/SKILL.md
+    source: vendored
+
+# security-lead is a security ADVISOR — advisory on every surface, write
+# nowhere. (A future `write` opt-in would add its own gate_label.)
+triggers:
+  default_mode: advisory
+  opt_out_label: security-lead:hands-off
+  surfaces:
+    - surface: mention
+      events: [created]
+      enabled: true
+      mode: advisory
+      notes: "Direct invocation: '@petry-projects/security-lead threat-model this design'."
+
+    - surface: issues
+      events: [labeled, commented]
+      enabled: true
+      mode: advisory
+      notes: "Threat-modeling / compliance / supply-chain input on issues and epics."
+
+    - surface: discussion
+      events: [labeled, commented]
+      enabled: true
+      mode: advisory
+      bridge: repository_dispatch
+      notes: "Discussions can't run the agent inline — must bridge (issue #571)."
+
+trust:
+  author_association_floor: [OWNER, MEMBER, COLLABORATOR]
+
+# security-lead ships no dedicated reusable/stub in this pilot — consumed by path
+# and human-invocable via the persona runner. It declares only `runtime.identity`:
+# on the advisory/comment path it posts as `don-petry` (the runner authenticates
+# with that account's PAT). Add the rest of `runtime` + a canary-rings.json entry
+# when a dedicated advisory workflow is wired.
+runtime:
+  identity:
+    account: don-petry
+    credential: GH_PAT_DON_PETRY
+
+evals:
+  required_before: stable
+  path: evals/security-lead/    # under the repo eval tree so validate-cases.py + holdout-guard.yml cover it
+  judge: evals/judge.md
+  min_cases: 5                  # seed cases are placeholders; reach 5 held-out before stable
+
+canary:
+  registry: petry-projects/.github/standards/canary-rings.json
+  agent: security-lead          # entry added at first release cut (not present while status: draft)
+
+references:
+  - "frameworks/bmad-bgreat-suite/VENDOR.md"
+  - "agents/compliance-auditor.md (overlapping surface — advisory persona, not a replacement)"
+  - "petry-projects/.github standards/persona-standards.md"

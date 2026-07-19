@@ -1,0 +1,88 @@
+code: bgr
+name: "BMad BGreat Suite"
+header: "BGreat Suite — SRE, DevOps & Security for Production Readiness"
+subheader: "Configure reliability engineering, observability, infrastructure, security, and CI/CD workflows.\nAdds three specialized agents (Morgan the SRE Lead, Riley the DevOps Lead, Sam the Security Lead), eight guided workflows, and a cross-agent operations review skill."
+description: "SRE, DevOps, and Security agents with workflows for observability, incident response, disaster recovery, resilience testing, chaos engineering game days, infrastructure, capacity planning, cost optimization, CI/CD pipeline design, security planning, and cross-agent operations review"
+module_version: 0.1.0
+default_selected: false
+recommendedModules: [bmm]
+requiredModules: [core]
+
+# Core config values automatically inherited:
+## user_name
+## communication_language
+## document_output_language
+## output_folder
+## project_knowledge
+
+bgr_artifacts:
+  prompt: "Where should operations artifacts be stored? (Observability plans, incident response, infrastructure decisions, pipeline specs)"
+  default: "{output_folder}/bgr-artifacts"
+  result: "{project-root}/{value}"
+
+bgr_maturity:
+  prompt: "What is your current operations maturity level?"
+  default: "growing"
+  result: "{value}"
+  single-select:
+    - value: "greenfield"
+      label: "Greenfield - No existing infrastructure or ops practices"
+    - value: "growing"
+      label: "Growing - Some infrastructure, limited observability and processes"
+    - value: "established"
+      label: "Established - Production systems running, improving reliability practices"
+    - value: "advanced"
+      label: "Advanced - Mature ops, optimizing SLOs, error budgets, and toil reduction"
+
+cloud_preference:
+  prompt: "Primary cloud provider (or multi-cloud)?"
+  default: "aws"
+  result: "{value}"
+  single-select:
+    - value: "aws"
+      label: "AWS"
+    - value: "gcp"
+      label: "Google Cloud Platform"
+    - value: "azure"
+      label: "Microsoft Azure"
+    - value: "multi"
+      label: "Multi-Cloud"
+    - value: "on-prem"
+      label: "On-Premises / Hybrid"
+    - value: "undecided"
+      label: "Undecided"
+
+container_orchestration:
+  prompt: "Container orchestration platform?"
+  default: "kubernetes"
+  result: "{value}"
+  single-select:
+    - value: "kubernetes"
+      label: "Kubernetes (EKS, GKE, AKS, self-managed)"
+    - value: "ecs"
+      label: "AWS ECS / Fargate"
+    - value: "cloud-run"
+      label: "Google Cloud Run / Azure Container Apps"
+    - value: "docker-compose"
+      label: "Docker Compose"
+    - value: "none"
+      label: "No containers yet"
+    - value: "undecided"
+      label: "Undecided"
+
+directories:
+  - "{bgr_artifacts}"
+
+post-install-notes: |
+  BGreat Suite installed successfully!
+
+  Your agents:
+    Morgan (SRE Lead) — observability, incident response, disaster recovery, SLO/SLI, reliability
+    Riley (DevOps Lead) — infrastructure, CI/CD pipelines, capacity planning, cost optimization, deployment strategy
+    Sam (Security Lead) — threat modeling, compliance mapping, security architecture
+
+  Getting started:
+    Wake Morgan, Riley, or Sam from the agent menu, or invoke workflows directly.
+
+  For support: https://github.com/petry-projects/bmad-bgreat-suite/issues
+  License: MIT
