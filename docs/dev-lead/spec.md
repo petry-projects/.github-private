@@ -290,7 +290,7 @@ env:
   CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
   GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
   GEMINI_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-  COPILOT_GITHUB_TOKEN: ${{ secrets.GH_PAT_DON_PETRY_COPILOT || secrets.GH_PAT }}
+  COPILOT_GITHUB_TOKEN: ${{ secrets.GH_PAT_DON_PETRY }}
   GH_TOKEN: ${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS || github.token }}
   # Hardcoded fail-safe default only; the real value is resolved from
   # personas/dev-lead/persona.yml (runtime.identity.account = don-petry) by the

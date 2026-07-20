@@ -35,13 +35,6 @@ on:
         required: false
       GOOGLE_API_KEY:
         required: false
-      GH_PAT_DON_PETRY_COPILOT:
-        # don-petry's Copilot-subscription PAT (Copilot review engine). Canonical
-        # name; supersedes GH_PAT, kept below as a transition fallback.
-        required: false
-      GH_PAT:
-        # DEPRECATED alias of GH_PAT_DON_PETRY_COPILOT — kept during migration.
-        required: false
 
 permissions: {}
 
@@ -183,7 +176,7 @@ jobs:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-          COPILOT_GITHUB_TOKEN: ${{ secrets.GH_PAT_DON_PETRY_COPILOT || secrets.GH_PAT }}
+          COPILOT_GITHUB_TOKEN: ${{ secrets.GH_PAT_DON_PETRY }}
         run: bash .dev-lead/scripts/dev-lead-intent.sh
 
       - name: Log intent
@@ -223,7 +216,7 @@ jobs:
           GH_PAT_WORKFLOWS: ${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-          GH_PAT: ${{ secrets.GH_PAT_DON_PETRY_COPILOT || secrets.GH_PAT }}
+          GH_PAT: ${{ secrets.GH_PAT_DON_PETRY }}
         run: bash .dev-lead/scripts/dev-lead-preflight.sh
 
       # ── Install engine CLIs ───────────────────────────────────────────────
@@ -279,7 +272,7 @@ jobs:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-          COPILOT_GITHUB_TOKEN: ${{ secrets.GH_PAT_DON_PETRY_COPILOT || secrets.GH_PAT }}
+          COPILOT_GITHUB_TOKEN: ${{ secrets.GH_PAT_DON_PETRY }}
           PROMPTS_DIR: .dev-lead/prompts/dev-lead
         run: |
           bash .dev-lead/scripts/dev-lead-fix-ci.sh || rc=$?
@@ -298,7 +291,7 @@ jobs:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-          COPILOT_GITHUB_TOKEN: ${{ secrets.GH_PAT_DON_PETRY_COPILOT || secrets.GH_PAT }}
+          COPILOT_GITHUB_TOKEN: ${{ secrets.GH_PAT_DON_PETRY }}
           PROMPTS_DIR: .dev-lead/prompts/dev-lead
         run: |
           bash .dev-lead/scripts/dev-lead-fix-reviews.sh || rc=$?
@@ -317,7 +310,7 @@ jobs:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-          COPILOT_GITHUB_TOKEN: ${{ secrets.GH_PAT_DON_PETRY_COPILOT || secrets.GH_PAT }}
+          COPILOT_GITHUB_TOKEN: ${{ secrets.GH_PAT_DON_PETRY }}
           PROMPTS_DIR: .dev-lead/prompts/dev-lead
         run: |
           bash .dev-lead/scripts/dev-lead-fix-reviews.sh || rc=$?
@@ -336,7 +329,7 @@ jobs:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-          COPILOT_GITHUB_TOKEN: ${{ secrets.GH_PAT_DON_PETRY_COPILOT || secrets.GH_PAT }}
+          COPILOT_GITHUB_TOKEN: ${{ secrets.GH_PAT_DON_PETRY }}
           PROMPTS_DIR: .dev-lead/prompts/dev-lead
         run: |
           bash .dev-lead/scripts/dev-lead-fix-reviews.sh || rc=$?
@@ -355,7 +348,7 @@ jobs:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-          COPILOT_GITHUB_TOKEN: ${{ secrets.GH_PAT_DON_PETRY_COPILOT || secrets.GH_PAT }}
+          COPILOT_GITHUB_TOKEN: ${{ secrets.GH_PAT_DON_PETRY }}
           PROMPTS_DIR: .dev-lead/prompts/dev-lead
         run: |
           bash .dev-lead/scripts/dev-lead-fix-reviews.sh || rc=$?
@@ -372,7 +365,7 @@ jobs:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-          COPILOT_GITHUB_TOKEN: ${{ secrets.GH_PAT_DON_PETRY_COPILOT || secrets.GH_PAT }}
+          COPILOT_GITHUB_TOKEN: ${{ secrets.GH_PAT_DON_PETRY }}
           PROMPTS_DIR: .dev-lead/prompts/dev-lead
         run: |
           bash .dev-lead/scripts/dev-lead-fix-issue.sh || rc=$?
@@ -389,7 +382,7 @@ jobs:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-          COPILOT_GITHUB_TOKEN: ${{ secrets.GH_PAT_DON_PETRY_COPILOT || secrets.GH_PAT }}
+          COPILOT_GITHUB_TOKEN: ${{ secrets.GH_PAT_DON_PETRY }}
           PROMPTS_DIR: .dev-lead/prompts/dev-lead
         run: |
           bash .dev-lead/scripts/dev-lead-fix-reviews.sh || rc=$?

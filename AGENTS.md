@@ -316,8 +316,8 @@ dev-lead regress to committing as the review-only machine user `donpetry-bot`
 - **dev-lead** acts as `don-petry` (the owner); **pr-review** acts as the
   review-only machine user `donpetry-bot`. They are deliberately different accounts.
 - PAT secrets follow **`GH_PAT_<ACCOUNT>[_<QUALIFIER>]`** (login upper-snake-cased),
-  e.g. `GH_PAT_DON_PETRY`, `GH_PAT_DON_PETRY_COPILOT`. Pre-existing account-named
-  secrets (`DON_PETRY_BOT_GH_PAT`) are grandfathered.
+  e.g. `GH_PAT_DON_PETRY`. Pre-existing account-named secrets (`DON_PETRY_BOT_GH_PAT`)
+  are grandfathered.
 - `lint.yml`'s `verify-persona-identity` job enforces the manifest↔workflow
   wiring; `validate-personas.py` makes `runtime.identity` mandatory. See
   `standards/persona-standards.md` §5.1 and
