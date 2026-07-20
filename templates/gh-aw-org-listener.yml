@@ -39,7 +39,7 @@ jobs:
       - name: Check sender is org member
         id: trust
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
+          GH_TOKEN: ${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS }}
           SENDER_LOGIN: ${{ github.event.sender.login }}
           SENDER_TYPE: ${{ github.event.sender.type }}
           TARGET_ORG: ${{ github.repository_owner }}
@@ -61,7 +61,7 @@ jobs:
       - name: Dispatch issue triage
         if: steps.trust.outputs.trusted == 'true'
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
+          GH_TOKEN: ${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS }}
           SOURCE_REPO: ${{ github.repository }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
           ISSUE_LABEL: ${{ github.event.label.name }}
@@ -99,7 +99,7 @@ jobs:
       - name: Resolve non-fork PR for check run
         id: pr
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
+          GH_TOKEN: ${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS }}
           CHECK_RUN_PRS: ${{ toJson(github.event.check_run.pull_requests) }}
           HEAD_SHA: ${{ github.event.check_run.head_sha }}
           REPO: ${{ github.repository }}
@@ -131,7 +131,7 @@ jobs:
       - name: Dispatch CI failure
         if: steps.pr.outputs.has_pr == 'true'
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
+          GH_TOKEN: ${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS }}
           SOURCE_REPO: ${{ github.repository }}
           PR_NUMBER: ${{ steps.pr.outputs.pr_number }}
           HEAD_SHA: ${{ github.event.check_run.head_sha }}
