@@ -476,7 +476,7 @@ jobs:
         with:
           repository: petry-projects/.github-private
           path: .dev-lead
-          token: ${{ secrets.GH_PAT_WORKFLOWS || github.token }}
+          token: ${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS || github.token }}
           sparse-checkout: |
             scripts/
             prompts/dev-lead/
@@ -518,7 +518,7 @@ jobs:
     steps:
       - name: Resolve PR and dispatch
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS || github.token }}
+          GH_TOKEN: ${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS || github.token }}
         run: |
           # ... same relay logic as dev-lead.yml ...
 ```
