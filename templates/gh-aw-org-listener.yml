@@ -8,9 +8,14 @@
 # This stub is intentionally minimal — do not add business logic here.
 #
 # Requires:
-#   GH_PAT_WORKFLOWS  org secret — cross-repo dispatch and API calls
+#   GH_PAT_DON_PETRY  org secret — cross-repo dispatch and API calls (canonical;
+#                     falls back to GH_PAT_WORKFLOWS during the #1326 migration)
 #                     (must be explicitly granted to this repo in org secret settings;
 #                      requires read:org scope for the org-member trust gate)
+#                     Must be a CLASSIC PAT: this listener dispatches across orgs
+#                     (target repo → petry-projects/.github-private), and fine-grained
+#                     PATs are restricted to a single resource owner. Classic PATs
+#                     are not, so they span orgs; do not swap in a fine-grained token.
 #
 # Architecture: docs/aw/cross-org-deployment.md
 # ─────────────────────────────────────────────────────────────────────────────
