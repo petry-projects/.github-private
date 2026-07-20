@@ -137,10 +137,12 @@ Each persona declares which account/secret it acts as in `runtime.identity`
 > **create the new secret as a copy of the old one**; once confirmed present, a follow-up
 > drops the `|| secrets.GH_PAT_WORKFLOWS` fallbacks and deletes the old secret.
 >
-> The former `GH_PAT` / `GH_PAT_DON_PETRY_COPILOT` Copilot-engine secret has been retired
-> (#1327): the Copilot engine now authenticates with the single `GH_PAT_DON_PETRY` classic
-> PAT. The only requirement is a **Copilot subscription on the don-petry account** — no
-> separate Copilot secret is needed.
+> The Copilot engine now authenticates with the single `GH_PAT_DON_PETRY` classic PAT
+> (#1327); the only requirement is a **Copilot subscription on the don-petry account** — no
+> separate Copilot secret is needed. The former `GH_PAT` / `GH_PAT_DON_PETRY_COPILOT` names
+> are kept only as a transitional by-name fallback in `pr-review.yml` for callers not yet on
+> `secrets: inherit` (currently `TalkTerm`); once those migrate, a follow-up drops the
+> fallback and deletes `GH_PAT`.
 
 ## Step 5: Verify the setup
 

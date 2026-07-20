@@ -41,7 +41,16 @@ on:
         # don-petry's write/workflows PAT, also exposed as COPILOT_GITHUB_TOKEN for
         # the Copilot review engine (Copilot access is an account-subscription
         # entitlement on don-petry, not a token scope, so the same PAT authenticates
-        # the engine). See docs/pr-review-agent/machine-user-setup.md.
+        # the engine). Supplied by `secrets: inherit` callers. See
+        # docs/pr-review-agent/machine-user-setup.md.
+        required: false
+      # Back-compat for callers that pass the Copilot token by name rather than via
+      # `secrets: inherit` (e.g. TalkTerm). Both hold the same don-petry PAT and are
+      # resolved only after GH_PAT_DON_PETRY. Retained until every pr-review caller
+      # migrates to `secrets: inherit`, after which they can be dropped (issue #1327).
+      COPILOT_GITHUB_TOKEN:
+        required: false
+      GH_PAT:
         required: false
       DON_PETRY_BOT_GH_PAT:
         required: false
@@ -140,8 +149,10 @@ jobs:
       REVIEW_ENGINE: ${{ vars.REVIEW_ENGINE || 'claude' }}
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       # Copilot engine authenticates with don-petry's PAT (the account holds the
-      # Copilot subscription entitlement, not a token scope).
-      COPILOT_GITHUB_TOKEN: ${{ secrets.GH_PAT_DON_PETRY }}
+      # Copilot subscription entitlement, not a token scope). Prefer the collapsed
+      # GH_PAT_DON_PETRY (inherit callers); fall back to the by-name secrets for
+      # callers not yet on `secrets: inherit` (TalkTerm). See issue #1327.
+      COPILOT_GITHUB_TOKEN: ${{ secrets.GH_PAT_DON_PETRY || secrets.COPILOT_GITHUB_TOKEN || secrets.GH_PAT }}
       # Gemini engine auth — GOOGLE_API_KEY is the secret name; newer Gemini CLI
       # versions expect GEMINI_API_KEY so we expose the same value under both names.
       GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
