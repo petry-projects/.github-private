@@ -121,11 +121,12 @@ check_maintainer_comments() {
     --arg markers "$_MAINTAINER_GATE_AGENT_MARKERS" \
     --arg botuser "$bot_user" \
     --argjson bots "$_MAINTAINER_GATE_EXCLUDED_BOTS_JSON" '
-      [ (.comments // [])[]
+      [ (.comments // [])[] | objects
         | (.author?.login // "" | tostring) as $l
         | select($l != $botuser and ($bots | index($l)) == null)
         | select(((.body // "") | test($markers)) | not)
-        | .createdAt ]
+        | .createdAt? ]
+      | map(select(. != null))
       | sort
       | last // ""
     ' 2>/dev/null) || {
