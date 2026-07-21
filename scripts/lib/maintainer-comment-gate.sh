@@ -103,7 +103,7 @@ maintainer_gate_head_committer_date() {
   # shellcheck disable=SC2016  # $url is a GraphQL variable placeholder, not shell
   local _gql='query($url:URI!){resource(url:$url){...on PullRequest{commits(last:1){nodes{commit{committer{date}}}}}}}'
   gh api graphql -f query="$_gql" -f url="$pr_url" \
-    --jq '.data.resource.commits.nodes[0].commit.committer.date // empty' 2>/dev/null || true
+    --jq '.data?.resource?.commits?.nodes[0]?.commit?.committer?.date // empty' 2>/dev/null || true
 }
 
 # check_maintainer_comments <pr_snapshot_json> <head_committer_date_iso> [bot_user]
@@ -122,7 +122,7 @@ check_maintainer_comments() {
     --arg botuser "$bot_user" \
     --argjson bots "$_MAINTAINER_GATE_EXCLUDED_BOTS_JSON" '
       [ (.comments // [])[]
-        | (.author.login // "") as $l
+        | (.author?.login // "" | tostring) as $l
         | select($l != $botuser and ($bots | index($l)) == null)
         | select(((.body // "") | test($markers)) | not)
         | .createdAt ]
