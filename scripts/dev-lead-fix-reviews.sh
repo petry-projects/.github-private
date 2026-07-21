@@ -626,71 +626,6 @@ try_enable_auto_merge() {
   fi
 }
 
-# commit_and_push: stages any uncommitted changes (including untracked files),
-# commits if needed, and pushes. Returns 0 if changes were pushed, 1 if nothing to push.
-# Handles two cases:
-#   (a) Engine left uncommitted/untracked working-tree changes — stage, commit, push.
-#   (b) Engine committed via Bash but didn't push — detected via upstream comparison
-#       so changes are not silently dropped when the ephemeral runner exits.
-commit_and_push() {
-  local intent="$1"
-  local has_uncommitted=false has_unpushed=false
-
-  # git status --porcelain covers untracked files that git diff misses
-  [ -n "$(git status --porcelain)" ] && has_uncommitted=true
-
-  # Detect engine-committed but not pushed: prefer @{u} if upstream is configured,
-  # fall back to HEAD_SHA (resolved from PR API at script startup) for fork checkouts.
-  local upstream
-  upstream=$(git rev-parse --abbrev-ref --symbolic-full-name "@{u}" 2>/dev/null || true)
-  if [ -n "$upstream" ]; then
-    git log "${upstream}..HEAD" --oneline 2>/dev/null | grep -q . && has_unpushed=true
-  elif [ -n "${HEAD_SHA:-}" ]; then
-    git log "${HEAD_SHA}..HEAD" --oneline 2>/dev/null | grep -q . && has_unpushed=true
-  fi
-
-  if ! $has_uncommitted && ! $has_unpushed; then
-    echo "::notice::No changes to commit for intent=${intent}"
-    return 1
-  fi
-
-  local commit_msg
-  case "$intent" in
-    fix-reviews)     commit_msg="fix(reviews): address review comments [skip ci-relay]" ;;
-    fix-bot-comment) commit_msg="fix(bot): address bot feedback [skip ci-relay]" ;;
-    on-mention|review-changes)  commit_msg="chore: apply manual instructions [skip ci-relay]" ;;
-    rebase)          commit_msg="chore: resolve rebase conflicts [skip ci-relay]" ;;
-    *)               commit_msg="chore: dev-lead update (${intent}) [skip ci-relay]" ;;
-  esac
-
-  if [ "$DEV_LEAD_DRY_RUN" = "true" ]; then
-    if $has_uncommitted; then
-      echo "[dry-run] would git add -A, commit '${commit_msg}', and push"
-    else
-      echo "[dry-run] engine already committed — would push existing commit(s) without re-committing"
-    fi
-  else
-    if $has_uncommitted; then
-      # GitHub-hosted runners have no default git identity; configure it
-      # before committing or commit fails with "fatal: empty ident name".
-      setup_git_identity
-      git add -A
-      # Ensure git identity is set — actions/checkout only sets local config for the
-      # repo it checks out (.github-private), not for target repos cloned separately.
-      setup_git_identity
-      # Explicit exit on failure: set -e is suspended when commit_and_push is called from
-      # an if-statement condition, so git commit failures would be silently swallowed
-      # otherwise. Using exit (not return) ensures CI fails visibly instead of posting a
-      # false "Changes committed and pushed" comment.
-      git commit -m "$commit_msg" || { echo "::error::git commit failed — check git identity configuration on the runner" >&2; exit 1; }
-    fi
-    # push_with_merge_guard exits 0 cleanly if the PR was merged/closed mid-run
-    # (its branch deleted); a genuine push failure still aborts with exit 1.
-    push_with_merge_guard || exit 1
-  fi
-  return 0
-}
-
 # detect_conflicting_paths <base_ref> — list paths that conflict when merging
 # origin/<base_ref> into the current HEAD, one per line. Uses a trial merge
 # (immediately aborted) because it is robust across git versions: the former
@@ -975,11 +910,28 @@ NOOP_MARKER_PREFIX="<!-- dev-lead-noop-guard pr="
 pr_nets_to_zero() {
   local base="${1:-${BASE_REF:-main}}"
   local baseref="origin/${base}"
+  # actions/checkout defaults to a depth-1 shallow clone, which lacks the common
+  # ancestor "${baseref}...HEAD" needs. A plain `git fetch origin "$base"` does NOT
+  # deepen a shallow checkout, so the merge-base stays absent, the diff below errors,
+  # and the guard silently fails OPEN (returns 1 → "not net-zero" → push proceeds).
+  # Deepen to full history first so the merge-base resolves; fall back to a bounded
+  # fetch if --unshallow is unavailable.
+  if [ "$(git rev-parse --is-shallow-repository 2>/dev/null)" = "true" ]; then
+    git fetch --quiet --unshallow origin 2>/dev/null \
+      || git fetch --quiet --depth=2147483647 origin "$base" 2>/dev/null \
+      || true
+  fi
   if ! git rev-parse --verify --quiet "${baseref}^{commit}" >/dev/null 2>&1; then
     git fetch --quiet origin "$base" 2>/dev/null || {
       echo "::warning::no-op guard: could not resolve ${baseref} — skipping net-zero check" >&2
       return 1
     }
+  fi
+  # A merge-base must exist before diffing; without it "${baseref}...HEAD" errors and
+  # the guard would fail open. Treat a genuinely absent merge-base as unverifiable.
+  if ! git merge-base "$baseref" HEAD >/dev/null 2>&1; then
+    echo "::warning::no-op guard: no merge-base between ${baseref} and HEAD — skipping net-zero check" >&2
+    return 1
   fi
   local changed
   changed=$(git diff --name-only "${baseref}...HEAD" 2>/dev/null) || {

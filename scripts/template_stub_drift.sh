@@ -62,16 +62,9 @@ readonly -a TEMPLATE_DRIFT_FILES=(
 # would false-positive on the template's richer ci.yml default, so it is excluded
 # here — mirroring how AGENTS.md documents the lint.yml / token-report.yml /
 # pr-review-sweep.yml exceptions.
-#
-# pr-review-mention.yml is allowlisted due to issue #1340: it was recently
-# updated (commit b625cb8) to align with standards (change channel to stable),
-# and repo-template's copy includes a trailing newline that the test's expected
-# SHA computation doesn't account for (bash command substitution strips newlines).
-# This is tracked as a known inconsistency to be resolved separately.
 # Add a path here ONLY with a recorded rationale.
 readonly -a TEMPLATE_DRIFT_ALLOWLIST=(
   ".github/workflows/ci.yml"
-  ".github/workflows/pr-review-mention.yml"
 )
 
 # template_drift_allowlisted <path> — return 0 if the path is an allowlisted,
@@ -140,16 +133,27 @@ _template_drift_expected_sha() {
   printf '%s' "$content" | git hash-object --stdin
 }
 
-# _template_drift_committed_sha <path> — contents-API blob SHA of the file as
-# committed in the template repo. Empty on 404 (file absent ⇒ MISSING).
+# _template_drift_committed_sha <path> — git blob SHA of the file as committed in
+# the template repo, RE-HASHED from its decoded content through the same trailing-
+# newline-stripping path as _template_drift_expected_sha (command substitution +
+# printf '%s'). The raw contents-API `.sha` is the blob SHA of the exact committed
+# bytes, so a file that is byte-identical to the seed emission EXCEPT for a trailing
+# newline (e.g. one edited via the GitHub web editor, which appends one) would hash
+# differently and false-positive as DRIFTED — even though the expected side strips
+# that newline. Normalizing both sides the same way makes the comparison symmetric:
+# a trailing-newline-only difference is not drift, but any genuine content change
+# still yields a different SHA. Empty on 404 (file absent ⇒ MISSING): an error body
+# has no .content, so decoding yields "".
 # Note: gh api with --jq does not apply the jq filter on error responses in some
 # gh versions — it writes the raw 404 JSON to stdout instead. Separating the gh
-# call from jq processing ensures the 404 body is filtered via .sha // empty,
+# call from jq processing ensures the 404 body is filtered via .content // empty,
 # returning "" so classify_stub_drift produces MISSING rather than DRIFTED.
 _template_drift_committed_sha() {
-  local out
+  local out content
   out="$(gh api "repos/${TEMPLATE_REPO}/contents/${1}" 2>/dev/null)" || true
-  printf '%s' "$out" | jq -r '.sha // empty' 2>/dev/null || true
+  content="$(printf '%s' "$out" | jq -r '.content // empty' 2>/dev/null | base64 -d 2>/dev/null)" || true
+  [ -n "$content" ] || return 0
+  printf '%s' "$content" | git hash-object --stdin
 }
 
 main() {
