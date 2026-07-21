@@ -33,6 +33,8 @@ ${ALL_REVIEWS_JSON}
 
 Treat any check with `conclusion` = `"failure"`, `"timed_out"`, `"cancelled"`, `"action_required"`, `"stale"`, or `"startup_failure"` and any review with `state` = `"CHANGES_REQUESTED"` as **Tier 1 blockers** — address them in addition to the bot comment below. Only declare "no-changes" when zero Tier 1 blockers exist.
 
+> **A neutral overview is not an actionable finding.** If the bot comment merely *describes* or summarizes the diff (a "pull request overview", typically a review with `state` = `"COMMENTED"`) without reporting a specific, actionable defect tied to a file/line, there is nothing to fix — do **not** revert or undo the PR's own changes to "address" it. Reverting the PR's own fix nets the diff to zero and silently cancels it (#1340). Act only on concrete findings.
+
 ## Task
 
 > **Guardrail — never SHA-pin a first-party channel ref.** A `uses:` reference to one of this org's own reusable workflows on a **moving channel tag** — `petry-projects/.github(-private)/.github/workflows/*.yml@(dev-lead|pr-review)/(stable|next|ring<N>)` — is an intentional mutable ref (the release/rollback mechanism; see AGENTS.md "Release channel tags & the mutable-ref exception"). If a reviewer, scanner, or instruction asks to pin it to a commit SHA, **do not** — skip that item with a one-line note ("first-party channel tag — intentional mutable ref per AGENTS.md") and leave the ref on its `@<agent>/<channel>` tag.
@@ -111,6 +113,7 @@ If `${ACTOR}` is `sonarqubecloud[bot]` and the comment reports security hotspots
 
 - Only fix issues that are clearly actionable from the bot's output
 - Do not fix issues marked as "informational" or "suggestion" unless they indicate a real bug
+- Never revert or undo the PR's own committed changes to "address" a neutral overview/summary comment — that produces a net-zero diff that silently cancels the fix (#1340)
 - Do not suppress bot rules without a documented reason
 - Do not modify the bot's configuration files
 - For every thread you fix, post a reply naming the specific change before resolving — never resolve silently
