@@ -161,6 +161,7 @@
       "prompts/triage.md",
       "scripts/lib/advisory-review-gate.sh",
       "scripts/lib/ci-status.sh",
+      "scripts/lib/maintainer-comment-gate.sh",
       "scripts/lib/review-cycle.sh",
       "scripts/lib/review-registry.sh",
       "scripts/lib/token-metrics.sh"

@@ -294,6 +294,40 @@ fi
   fi
 }
 
+# Maintainer issue-comment gate (issue #1290). A maintainer finding posted as a
+# PR *issue comment* (`gh pr comment` / the GitHub main comment box) creates no
+# review thread, so it neither trips `required_review_thread_resolution` nor is
+# read by dev-lead's fix-reviews prompt — pr-review approves and the PR
+# auto-merges with the defect. Withhold approval while the latest maintainer
+# issue comment postdates the last push. It FAILS CLOSED: an undeterminable
+# snapshot/push-time blocks rather than reading as "no findings".
+#   • FORCE_REVIEW bypasses (a human @mention IS the human-in-the-loop, and the
+#     same comment that triggers a re-review would otherwise deadlock the gate).
+#   • rc=1 → skip (exit 100); a later reply/push re-triggers pr-review.
+#   • rc=2 → fail the PR (exit 1) so a scheduled run retries, never approve blind.
+if [ "${FORCE_REVIEW:-false}" != "true" ]; then
+  (
+    # Subshell isolation so the gate's helpers/vars don't leak into the caller.
+    # shellcheck source=lib/maintainer-comment-gate.sh
+    source "$SCRIPT_DIR/lib/maintainer-comment-gate.sh"
+    _mc_head_date=$(maintainer_gate_head_committer_date "$PR_URL")
+    check_maintainer_comments "$PR_SNAPSHOT" "$_mc_head_date" "${BOT_USER:-donpetry-bot}"
+  ) || {
+    mc_gate_rc=$?
+    if [ "$mc_gate_rc" -eq 1 ]; then
+      echo "    skip: unaddressed maintainer issue comment postdates last push — withholding approval (#1290)"
+      echo "{\"pr\":\"$PR_URL\",\"sha\":\"$PR_HEAD_SHA\",\"decision\":\"skip\",\"reason\":\"unaddressed-maintainer-comment\"}"
+      exit 100
+    elif [ "$mc_gate_rc" -eq 2 ]; then
+      echo "    error: maintainer-comment gate could not evaluate the PR snapshot — failing closed to avoid uninformed approval"
+      echo "{\"pr\":\"$PR_URL\",\"sha\":\"$PR_HEAD_SHA\",\"decision\":\"error\",\"reason\":\"maintainer-comment-gate-error\"}"
+      exit 1
+    else
+      exit "$mc_gate_rc"
+    fi
+  }
+fi
+
 # Skip when a human has requested changes, with two guards:
 #   1. FORCE_REVIEW bypasses the skip — mention-triggered runs always proceed so
 #      authors can request a re-review after addressing feedback.
