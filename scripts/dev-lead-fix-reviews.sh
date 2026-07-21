@@ -2527,9 +2527,87 @@ ${summary}"
   gh pr comment "$PR_NUMBER" --repo "$REPO" --body "$body" 2>/dev/null || true
 }
 
+# Marker for the no-op guard flag comment (#1340), deduped per PR+intent.
+NOOP_MARKER_PREFIX="<!-- dev-lead-noop-guard pr="
+
+# pr_nets_to_zero [base] — returns 0 (true) when the PR branch's net diff against
+# its base is empty: every change the PR's own commits introduced has been undone,
+# so `origin/<base>...HEAD` shows zero changed files. Such a PR must never carry a
+# pushed fix — merging a `Closes #N` PR that nets to zero would auto-close its
+# compliance issue while the finding remains unfixed (#1340). When the base cannot
+# be resolved (no ref, fetch fails, no common ancestor) it returns 1 and warns,
+# so an unverifiable state never blocks a legitimate push.
+pr_nets_to_zero() {
+  local base="${1:-${BASE_REF:-main}}"
+  local baseref="origin/${base}"
+  # actions/checkout defaults to a depth-1 shallow clone, which lacks the common
+  # ancestor "${baseref}...HEAD" needs. A plain `git fetch origin "$base"` does NOT
+  # deepen a shallow checkout, so the merge-base stays absent, the diff below errors,
+  # and the guard silently fails OPEN (returns 1 → "not net-zero" → push proceeds).
+  # Deepen to full history first so the merge-base resolves; fall back to a bounded
+  # fetch if --unshallow is unavailable.
+  if [ "$(git rev-parse --is-shallow-repository 2>/dev/null)" = "true" ]; then
+    git fetch --quiet --unshallow origin 2>/dev/null \
+      || git fetch --quiet --depth=2147483647 origin "$base" 2>/dev/null \
+      || true
+  fi
+  if ! git rev-parse --verify --quiet "${baseref}^{commit}" >/dev/null 2>&1; then
+    git fetch --quiet origin "$base" 2>/dev/null || {
+      echo "::warning::no-op guard: could not resolve ${baseref} — skipping net-zero check" >&2
+      return 1
+    }
+  fi
+  # A merge-base must exist before diffing; without it "${baseref}...HEAD" errors and
+  # the guard would fail open. Treat a genuinely absent merge-base as unverifiable.
+  if ! git merge-base "$baseref" HEAD >/dev/null 2>&1; then
+    echo "::warning::no-op guard: no merge-base between ${baseref} and HEAD — skipping net-zero check" >&2
+    return 1
+  fi
+  local changed
+  changed=$(git diff --name-only "${baseref}...HEAD" 2>/dev/null) || {
+    echo "::warning::no-op guard: git diff against ${baseref} failed — skipping net-zero check" >&2
+    return 1
+  }
+  [ -z "$changed" ]
+}
+
+# flag_noop_pr <intent> — a fix pass reverted the PR's own changes, netting the
+# base…head diff to zero (#1340). Post one deduped human-attention comment, add
+# the needs-human-review label, and disable auto-merge — and suppress the
+# EXIT-trap auto-merge restore so a self-cancelling PR is never silently made
+# mergeable again. Mirrors pr_automation_escalate's escalation shape.
+flag_noop_pr() {
+  local intent="$1"
+  # A self-cancelling PR must stay unmergeable until a human looks: prevent
+  # restore_auto_merge (EXIT trap) from re-enabling what we are about to disable.
+  _AM_NEEDS_RESTORE=0
+  if [ "${DEV_LEAD_DRY_RUN:-false}" = "true" ]; then
+    echo "[dry-run] no-op guard: would flag PR #${PR_NUMBER} (${intent}) as net-zero, add ${NEEDS_HUMAN_REVIEW_LABEL:-needs-human-review}, disable auto-merge"
+    return 0
+  fi
+  local marker="${NOOP_MARKER_PREFIX}${PR_NUMBER} intent=${intent} -->"
+  if gh api --paginate "repos/${REPO}/issues/${PR_NUMBER}/comments?per_page=100" 2>/dev/null \
+       | jq -r '.[].body // ""' 2>/dev/null | grep -qF "$marker"; then
+    echo "::notice::PR #${PR_NUMBER} already flagged as net-zero for intent=${intent} — not reposting"
+  else
+    gh pr comment "$PR_NUMBER" --repo "$REPO" --body "${marker}
+## No-op fix detected — human attention needed
+
+The \`${intent}\` pass reverted this PR's own changes, so its net diff against \`${BASE_REF:-main}\` is now **empty** (zero changed files). Merging a PR that nets to zero would auto-close its \`Closes #N\` compliance issue while the underlying finding remains unfixed (#1340), and the idempotent audit would immediately re-open it.
+
+Auto-merge has been disabled and no commit was pushed. A human should restore the correct fix or close this PR." \
+      || echo "::warning::could not post no-op flag comment on PR #${PR_NUMBER}"
+  fi
+  gh pr edit "$PR_NUMBER" --repo "$REPO" --add-label "${NEEDS_HUMAN_REVIEW_LABEL:-needs-human-review}" 2>/dev/null \
+    || echo "::warning::could not add ${NEEDS_HUMAN_REVIEW_LABEL:-needs-human-review} label on PR #${PR_NUMBER}"
+  gh pr merge "$PR_NUMBER" --repo "$REPO" --disable-auto 2>/dev/null \
+    || echo "::notice::auto-merge was not enabled on PR #${PR_NUMBER} (nothing to disable)"
+  return 0
+}
+
 # commit_and_push: adds all changes, commits with an intent-specific message,
 # and pushes to the PR branch. Returns 0 if changes were made and pushed,
-# 1 if no changes were found.
+# 1 if no changes were found, 3 if the no-op guard aborted the push (#1340).
 commit_and_push() {
   local intent="$1"
   local has_uncommitted=false has_unpushed=false
@@ -2579,6 +2657,19 @@ commit_and_push() {
       # false "Changes committed and pushed" comment.
       git commit -m "$commit_msg" || { echo "::error::git commit failed — check git identity configuration on the runner" >&2; exit 1; }
     fi
+    # No-op guard (#1340): a fix pass that reverts the PR's own changes nets the
+    # base…head diff to zero. Pushing it would let a `Closes #N` PR auto-close its
+    # compliance issue while the finding remains unfixed. Abort the push and flag
+    # for a human instead of self-cancelling the fix.
+    case "$intent" in
+      fix-reviews|fix-bot-comment)
+        if pr_nets_to_zero "${BASE_REF:-main}"; then
+          echo "::error::No-op guard: PR #${PR_NUMBER} nets to zero changed files against ${BASE_REF:-main} after ${intent} — refusing to push a self-cancelling fix (#1340)"
+          flag_noop_pr "$intent"
+          return 3
+        fi
+        ;;
+    esac
     # No-clobber push (#1311): never discard a concurrent writer's unseen commit.
     # push_no_clobber fast-forwards normally and only ever force-with-leases a
     # rewritten branch, aborting if the remote moved beyond what we fetched.
