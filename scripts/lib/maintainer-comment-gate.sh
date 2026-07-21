@@ -58,9 +58,10 @@ declare -ar MAINTAINER_GATE_EXCLUDED_BOTS=(
   "dependabot[bot]"
 )
 
-# JSON array form of the excluded-bot list, built once from the single source of
-# truth above so the jq filter never hard-codes individual logins.
-_MAINTAINER_GATE_EXCLUDED_BOTS_JSON=$(printf '%s\n' "${MAINTAINER_GATE_EXCLUDED_BOTS[@]}" | jq -R . | jq -sc .)
+# JSON array form of the excluded-bot list, built lazily on first use so jq
+# execution (and potential failures) happen inside check_maintainer_comments,
+# where errors are caught and the gate can fail closed properly.
+_MAINTAINER_GATE_EXCLUDED_BOTS_JSON=""
 
 # Regex (case-sensitive) matching the HTML markers our own automation stamps into
 # comment bodies — pr-review reviews/acks (`<!-- pr-review-agent ... -->`,
@@ -111,6 +112,16 @@ check_maintainer_comments() {
   local json="${1:-}"
   local head_date="${2:-}"
   local bot_user="${3:-donpetry-bot}"
+
+  # Build excluded-bots JSON lazily on first use. This keeps jq execution inside
+  # the function so errors are caught properly and the gate can fail closed.
+  if [[ -z "$_MAINTAINER_GATE_EXCLUDED_BOTS_JSON" ]]; then
+    _MAINTAINER_GATE_EXCLUDED_BOTS_JSON=$(printf '%s\n' "${MAINTAINER_GATE_EXCLUDED_BOTS[@]}" | jq -R . | jq -sc .) \
+      || {
+        log_warn "could not build excluded-bots list — failing closed (blocking approval)"
+        return 2
+      }
+  fi
 
   # Latest maintainer (human, non-agent, non-bot) issue-comment timestamp. A jq
   # failure here (malformed snapshot, or a JSON value that can't be indexed with

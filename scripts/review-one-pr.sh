@@ -316,6 +316,14 @@ if [ "${FORCE_REVIEW:-false}" != "true" ]; then
     mc_gate_rc=$?
     if [ "$mc_gate_rc" -eq 1 ]; then
       echo "    skip: unaddressed maintainer issue comment postdates last push — withholding approval (#1290)"
+      # Dismiss any existing pr-review-agent APPROVED review so the PR remains blocked
+      # until the maintainer comment is addressed (best-effort).
+      if [ "${DRY_RUN:-false}" != "true" ]; then
+        _agent_approval=$(echo "$PR_SNAPSHOT" | jq -r '.reviews[] | select(.author.login == "pr-review-agent" and .state == "APPROVED" and .commit.oid == "'"$PR_HEAD_SHA"'") | .id' 2>/dev/null | head -1 || true)
+        if [ -n "$_agent_approval" ]; then
+          gh pr review "$PR_URL" --dismiss "Dismissing approval due to unaddressed maintainer issue comment (#1290)" 2>/dev/null || echo "    warn: could not dismiss prior approval"
+        fi
+      fi
       echo "{\"pr\":\"$PR_URL\",\"sha\":\"$PR_HEAD_SHA\",\"decision\":\"skip\",\"reason\":\"unaddressed-maintainer-comment\"}"
       exit 100
     elif [ "$mc_gate_rc" -eq 2 ]; then
