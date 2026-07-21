@@ -2954,8 +2954,12 @@ GITEOF
 }
 
 @test "no-op guard: fix-reviews net-zero diff flags PR and does not push (#1340)" {
-  local git_repo comment_file merge_file push_file
-  git_repo="$(mktemp -d)"; comment_file="$(mktemp)"; merge_file="$(mktemp)"; push_file="$(mktemp)"
+  local git_repo="$BATS_TEST_TMPDIR/git_repo"
+  local comment_file="$BATS_TEST_TMPDIR/comment_file"
+  local merge_file="$BATS_TEST_TMPDIR/merge_file"
+  local push_file="$BATS_TEST_TMPDIR/push_file"
+  mkdir -p "$git_repo"
+  touch "$comment_file" "$merge_file" "$push_file"
 
   # Engine reverts the feature line → net base…head diff becomes empty.
   _noop_setup_repo "$git_repo" 'base\n'
@@ -2981,14 +2985,17 @@ GITEOF
   # Auto-merge was disabled
   grep -q "disable-auto" "$merge_file"
   # No false "applied" terminal marker
-  ! grep -q "status=applied" "$comment_file"
-
-  rm -rf "$git_repo"; rm -f "$comment_file" "$merge_file" "$push_file"
+  run grep -q "status=applied" "$comment_file"
+  [ "$status" -eq 1 ]
 }
 
 @test "no-op guard: fix-bot-comment net-zero diff flags PR and does not push (#1340)" {
-  local git_repo comment_file merge_file push_file
-  git_repo="$(mktemp -d)"; comment_file="$(mktemp)"; merge_file="$(mktemp)"; push_file="$(mktemp)"
+  local git_repo="$BATS_TEST_TMPDIR/git_repo"
+  local comment_file="$BATS_TEST_TMPDIR/comment_file"
+  local merge_file="$BATS_TEST_TMPDIR/merge_file"
+  local push_file="$BATS_TEST_TMPDIR/push_file"
+  mkdir -p "$git_repo"
+  touch "$comment_file" "$merge_file" "$push_file"
 
   _noop_setup_repo "$git_repo" 'base\n'
   _noop_gh_stub "$comment_file" "$merge_file"
@@ -3009,14 +3016,17 @@ GITEOF
   [ ! -s "$push_file" ]
   grep -q "No-op fix detected" "$comment_file"
   grep -q "disable-auto" "$merge_file"
-  ! grep -q "status=applied" "$comment_file"
-
-  rm -rf "$git_repo"; rm -f "$comment_file" "$merge_file" "$push_file"
+  run grep -q "status=applied" "$comment_file"
+  [ "$status" -eq 1 ]
 }
 
 @test "no-op guard: non-empty net diff pushes normally and posts applied (#1340)" {
-  local git_repo comment_file merge_file push_file
-  git_repo="$(mktemp -d)"; comment_file="$(mktemp)"; merge_file="$(mktemp)"; push_file="$(mktemp)"
+  local git_repo="$BATS_TEST_TMPDIR/git_repo"
+  local comment_file="$BATS_TEST_TMPDIR/comment_file"
+  local merge_file="$BATS_TEST_TMPDIR/merge_file"
+  local push_file="$BATS_TEST_TMPDIR/push_file"
+  mkdir -p "$git_repo"
+  touch "$comment_file" "$merge_file" "$push_file"
 
   # Engine keeps the feature and adds a real fix → net diff is NOT empty.
   _noop_setup_repo "$git_repo" 'base\nfeature\nfix\n'
@@ -3039,14 +3049,17 @@ GITEOF
   [ -s "$push_file" ]
   # An applied terminal marker was posted; no no-op flag
   grep -q "status=applied" "$comment_file"
-  ! grep -q "No-op fix detected" "$comment_file"
-
-  rm -rf "$git_repo"; rm -f "$comment_file" "$merge_file" "$push_file"
+  run grep -q "No-op fix detected" "$comment_file"
+  [ "$status" -eq 1 ]
 }
 
 @test "no-op guard: net-zero path does not re-enable auto-merge (#1340)" {
-  local git_repo comment_file merge_file push_file
-  git_repo="$(mktemp -d)"; comment_file="$(mktemp)"; merge_file="$(mktemp)"; push_file="$(mktemp)"
+  local git_repo="$BATS_TEST_TMPDIR/git_repo"
+  local comment_file="$BATS_TEST_TMPDIR/comment_file"
+  local merge_file="$BATS_TEST_TMPDIR/merge_file"
+  local push_file="$BATS_TEST_TMPDIR/push_file"
+  mkdir -p "$git_repo"
+  touch "$comment_file" "$merge_file" "$push_file"
 
   _noop_setup_repo "$git_repo" 'base\n'
   _noop_gh_stub "$comment_file" "$merge_file"
@@ -3064,9 +3077,8 @@ GITEOF
   [ "$status" -eq 0 ]
   # The only merge call on the no-op path must be a disable-auto — never --auto
   grep -q "disable-auto" "$merge_file"
-  ! grep -q -- "--auto" "$merge_file"
-
-  rm -rf "$git_repo"; rm -f "$comment_file" "$merge_file" "$push_file"
+  run grep -q -- "--auto" "$merge_file"
+  [ "$status" -eq 1 ]
 }
 
 # ── Prompt guidance (#1340): COMMENTED/overview is neutral, not a change-request ─
