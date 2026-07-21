@@ -31,6 +31,11 @@ This repository contains several documentation files describing the PR Review Ag
   - Per-PR fetch + size caps
   - How/when to refresh the consumer manifest
 
+- **[maintainer-comment-gate.md](maintainer-comment-gate.md)** — Maintainer issue-comment gate (#1290)
+  - Why a review thread blocks merge but a plain PR comment did not
+  - How pr-review withholds approval on an unaddressed maintainer issue comment
+  - Its fail-closed semantics, what clears it, and the `FORCE_REVIEW` bypass
+
 ## Setting Up Authentication
 - **[machine-user-setup.md](machine-user-setup.md)** — Machine user and PAT setup
   - Create machine user account and org team

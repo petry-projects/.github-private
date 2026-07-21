@@ -89,6 +89,22 @@ Instead of the agent directly posting reviews, the agent outputs JSON:
 
 This JSON is captured by `scripts/review-one-pr.sh` and passed to `scripts/post-pr-review.sh` for execution.
 
+## Approval gates
+
+Before pr-review posts its approval, `scripts/review-one-pr.sh` runs a series of
+deterministic gates that can defer or fail the review. Two are signal-incorporation
+gates that withhold approval until an external finding is accounted for:
+
+- **Advisory-bot gate** (`scripts/lib/advisory-review-gate.sh`, #457/#458) — waits
+  for advisory review bots (Gemini, Copilot, SonarCloud, Codex) to submit before
+  approving.
+- **Maintainer issue-comment gate** (`scripts/lib/maintainer-comment-gate.sh`,
+  #1290) — withholds approval while the latest maintainer *issue comment*
+  (`gh pr comment` / the main comment box, which creates no review thread) postdates
+  the last push. It **fails closed**. See
+  [maintainer-comment-gate.md](maintainer-comment-gate.md) for why a review thread
+  blocks merge but a plain PR comment previously did not, and how the block clears.
+
 ## Approval and Auto-Merge
 
 ### Why Not Agent-Driven Posting?
