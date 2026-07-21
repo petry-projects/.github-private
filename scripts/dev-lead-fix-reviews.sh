@@ -1391,7 +1391,8 @@ ${retry_msg}"
 > ${actor_mention}I reviewed this PR and no code changes were needed, but it still has blocking checks or reviews (failing or cancelled checks, or changes-requested reviews), so I cannot mark it done yet. I'll re-check automatically.
 > Next attempt after: \`${reset_display}\`"
         else
-          ack_body="> [!NOTE]
+          ack_body="<!-- dev-lead rate-limit-ack -->
+> [!NOTE]
 > ${actor_mention}I received your request but all AI engines are currently rate-limited. I'll retry automatically once the rate limit clears.
 > Rate limit resets at: \`${reset_display}\`"
         fi
@@ -1406,7 +1407,8 @@ ${retry_msg}"
         local actor_mention=""
         [ -n "${ACTOR:-}" ] && actor_mention="@${ACTOR} "
         local reset_display="${reset_time:-unknown}"
-        local ack_body="> [!NOTE]
+        local ack_body="<!-- dev-lead rate-limit-ack -->
+> [!NOTE]
 > ${actor_mention}I received your request but all AI engines are currently rate-limited. Please re-mention \`@dev-lead\` when the rate limit clears (estimated: \`${reset_display}\`) — I cannot reconstruct the original instruction automatically."
         if [ "$DEV_LEAD_DRY_RUN" = "true" ]; then
           echo "[dry-run] would post user-visible rate-limit acknowledgment"
@@ -1797,11 +1799,13 @@ ${retry_msg}"
         local reset_display="${reset_time:-unknown}"
         local ack_body
         if [ "$reason" = "blocked" ]; then
-          ack_body="> [!NOTE]
+          ack_body="<!-- dev-lead rate-limit-ack -->
+> [!NOTE]
 > ${actor_mention}I reviewed this PR and no code changes were needed, but it still has blocking checks or reviews (failing or cancelled checks, or changes-requested reviews), so I cannot mark it done yet. I'll re-check automatically.
 > Next attempt after: \`${reset_display}\`"
         else
-          ack_body="> [!NOTE]
+          ack_body="<!-- dev-lead rate-limit-ack -->
+> [!NOTE]
 > ${actor_mention}I received your request but all AI engines are currently rate-limited. I'll retry automatically once the rate limit clears.
 > Rate limit resets at: \`${reset_display}\`"
         fi
@@ -1816,7 +1820,8 @@ ${retry_msg}"
         local actor_mention=""
         [ -n "${ACTOR:-}" ] && actor_mention="@${ACTOR} "
         local reset_display="${reset_time:-unknown}"
-        local ack_body="> [!NOTE]
+        local ack_body="<!-- dev-lead rate-limit-ack -->
+> [!NOTE]
 > ${actor_mention}I received your request but all AI engines are currently rate-limited. Please re-mention \`@dev-lead\` when the rate limit clears (estimated: \`${reset_display}\`) — I cannot reconstruct the original instruction automatically."
         if [ "$DEV_LEAD_DRY_RUN" = "true" ]; then
           echo "[dry-run] would post user-visible rate-limit acknowledgment"
