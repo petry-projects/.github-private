@@ -2897,7 +2897,8 @@ STUB
 # Shared setup helper: build a repo whose feat commit adds a line, point
 # refs/remotes/origin/main at the base commit, and install a gh/git stub that
 # records flag comments, label edits, merges, and pushes. The engine (claude
-# stub) rewrites file.txt to the caller-provided content.
+# stub) rewrites file.txt to the caller-provided content. Captures both base and
+# head SHAs as NOOP_BASE_SHA and NOOP_HEAD_SHA.
 _noop_setup_repo() {
   local git_repo="$1" engine_content="$2"
   git -C "$git_repo" init -q
@@ -2911,6 +2912,7 @@ _noop_setup_repo() {
   printf 'base\nfeature\n' > "$git_repo/file.txt"
   git -C "$git_repo" add .
   git -C "$git_repo" -c user.email="t@test" -c user.name="T" commit -q -m "feat: add feature"
+  NOOP_HEAD_SHA="$(git -C "$git_repo" rev-parse HEAD)"
 
   cat > "$STUB_BIN_DIR/claude" << STUB
 #!/usr/bin/env bash
@@ -2921,7 +2923,7 @@ STUB
 }
 
 _noop_gh_stub() {
-  local comment_file="$1" merge_file="$2"
+  local comment_file="$1" merge_file="$2" head_sha="${3:-}"
   cat > "$STUB_BIN_DIR/gh" << GHEOF
 #!/usr/bin/env bash
 ARGS="\$*"
@@ -2936,7 +2938,7 @@ case "\$ARGS" in
   *"reviews"*) echo '[]' ;;
   *"graphql"*) echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}' ;;
   *"issues/"*"comments"*) echo '[]' ;;
-  *"pulls/"*) echo '{"head":{"sha":"feat"},"auto_merge":null,"state":"open"}' ;;
+  *"pulls/"*) echo '{"head":{"sha":"${head_sha}"},"auto_merge":null,"state":"open"}' ;;
   *) echo "{}" ;;
 esac
 GHEOF
@@ -2963,13 +2965,13 @@ GITEOF
 
   # Engine reverts the feature line → net base…head diff becomes empty.
   _noop_setup_repo "$git_repo" 'base\n'
-  _noop_gh_stub "$comment_file" "$merge_file"
+  _noop_gh_stub "$comment_file" "$merge_file" "$NOOP_HEAD_SHA"
   _noop_git_stub "$push_file"
 
   cd "$git_repo"
   run bash -c "
     export INTENT_TYPE=fix-reviews DEV_LEAD_DRY_RUN=false
-    export PR_NUMBER=54 HEAD_SHA=$NOOP_BASE_SHA REPO='petry-projects/.github-private'
+    export PR_NUMBER=54 HEAD_SHA=$NOOP_HEAD_SHA REPO='petry-projects/.github-private'
     export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
     export PATH="$STUB_BIN_DIR:\$PATH"
     bash '$FIX_REVIEWS_SCRIPT'
@@ -2998,13 +3000,13 @@ GITEOF
   touch "$comment_file" "$merge_file" "$push_file"
 
   _noop_setup_repo "$git_repo" 'base\n'
-  _noop_gh_stub "$comment_file" "$merge_file"
+  _noop_gh_stub "$comment_file" "$merge_file" "$NOOP_HEAD_SHA"
   _noop_git_stub "$push_file"
 
   cd "$git_repo"
   run bash -c "
     export INTENT_TYPE=fix-bot-comment DEV_LEAD_DRY_RUN=false
-    export PR_NUMBER=54 HEAD_SHA=$NOOP_BASE_SHA REPO='petry-projects/.github-private'
+    export PR_NUMBER=54 HEAD_SHA=$NOOP_HEAD_SHA REPO='petry-projects/.github-private'
     export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
     export ACTOR='github-copilot[bot]' COMMENT_BODY='This PR overview describes the diff.'
     export PATH="$STUB_BIN_DIR:\$PATH"
@@ -3030,13 +3032,13 @@ GITEOF
 
   # Engine keeps the feature and adds a real fix → net diff is NOT empty.
   _noop_setup_repo "$git_repo" 'base\nfeature\nfix\n'
-  _noop_gh_stub "$comment_file" "$merge_file"
+  _noop_gh_stub "$comment_file" "$merge_file" "$NOOP_HEAD_SHA"
   _noop_git_stub "$push_file"
 
   cd "$git_repo"
   run bash -c "
     export INTENT_TYPE=fix-reviews DEV_LEAD_DRY_RUN=false
-    export PR_NUMBER=54 HEAD_SHA=$NOOP_BASE_SHA REPO='petry-projects/.github-private'
+    export PR_NUMBER=54 HEAD_SHA=$NOOP_HEAD_SHA REPO='petry-projects/.github-private'
     export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
     export PATH="$STUB_BIN_DIR:\$PATH"
     bash '$FIX_REVIEWS_SCRIPT'
@@ -3062,13 +3064,13 @@ GITEOF
   touch "$comment_file" "$merge_file" "$push_file"
 
   _noop_setup_repo "$git_repo" 'base\n'
-  _noop_gh_stub "$comment_file" "$merge_file"
+  _noop_gh_stub "$comment_file" "$merge_file" "$NOOP_HEAD_SHA"
   _noop_git_stub "$push_file"
 
   cd "$git_repo"
   run bash -c "
     export INTENT_TYPE=fix-reviews DEV_LEAD_DRY_RUN=false
-    export PR_NUMBER=54 HEAD_SHA=$NOOP_BASE_SHA REPO='petry-projects/.github-private'
+    export PR_NUMBER=54 HEAD_SHA=$NOOP_HEAD_SHA REPO='petry-projects/.github-private'
     export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
     export PATH="$STUB_BIN_DIR:\$PATH"
     bash '$FIX_REVIEWS_SCRIPT'
