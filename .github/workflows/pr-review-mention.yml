@@ -6,21 +6,25 @@
 # AGENTS — READ BEFORE EDITING:
 #   • This file is a THIN CALLER STUB. All review-dispatch logic lives in the
 #     reusable workflow above.
-#   • You MAY change: the tag in the `uses:` line when upgrading the reusable
-#     workflow version (e.g. bump `@v1` → `@v2` when petry-projects/.github cuts a new release).
-#   • You MUST NOT change: trigger events or the job-level `permissions:` block —
-#     reusable workflows can be granted no more permissions than the calling job,
-#     so removing the stanza breaks the reusable's gh API calls.
+#   • You MUST NOT change: the `uses:` ref — it is pinned to the
+#     `pr-review-mention/stable` channel, a moving tag advanced centrally.
+#     Never repoint it to `@main`, a SHA, or a frozen `@vX` (see
+#     ci-standards.md → Reusable workflow versioning). Also do not change the
+#     trigger events or the job-level `permissions:` block — reusable workflows
+#     can be granted no more permissions than the calling job, so removing the
+#     stanza breaks the reusable's gh API calls.
 #   • If you need different behaviour, open a PR against the reusable in the
-#     central repo.
-#   • When publishing a new version of this reusable, also update this template and
-#     open a fanout PR across all caller repos.
+#     central repo. A new release is rolled out by moving the channel tag
+#     centrally — never by editing callers, so no fanout PR is needed.
 # ─────────────────────────────────────────────────────────────────────────────
 #
 # PR Review Mention — thin caller for the org-level reusable.
 # To adopt: copy this file to .github/workflows/pr-review-mention.yml in your repo.
-# Requires: GH_PAT_WORKFLOWS     org secret — API calls and dispatching the review agent
-#           DON_PETRY_BOT_GH_PAT org secret — posting acknowledgement comments as the bot
+# Requires (org secrets, already present in petry-projects org):
+#   GH_PAT_DON_PETRY     canonical PAT for API calls and dispatching the review agent.
+#                        GH_PAT_WORKFLOWS is the deprecated transition alias, kept as the
+#                        `||` fallback until the persona rename lands fleet-wide.
+#   DON_PETRY_BOT_GH_PAT PAT owned by donpetry-bot, for posting acknowledgement comments.
 name: PR Review — Mention Trigger
 
 on:
@@ -37,7 +41,7 @@ jobs:
   pr-review-mention:
     permissions:
       pull-requests: write
-    uses: petry-projects/.github/.github/workflows/pr-review-mention-reusable.yml@pr-review-mention/v2-next
+    uses: petry-projects/.github/.github/workflows/pr-review-mention-reusable.yml@pr-review-mention/stable  # NOSONAR(githubactions:S7637) first-party channel ref
     secrets:
       GH_PAT_WORKFLOWS: ${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS }}
       DON_PETRY_BOT_GH_PAT: ${{ secrets.DON_PETRY_BOT_GH_PAT }}
