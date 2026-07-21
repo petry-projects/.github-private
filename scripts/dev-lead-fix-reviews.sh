@@ -626,71 +626,6 @@ try_enable_auto_merge() {
   fi
 }
 
-# commit_and_push: stages any uncommitted changes (including untracked files),
-# commits if needed, and pushes. Returns 0 if changes were pushed, 1 if nothing to push.
-# Handles two cases:
-#   (a) Engine left uncommitted/untracked working-tree changes — stage, commit, push.
-#   (b) Engine committed via Bash but didn't push — detected via upstream comparison
-#       so changes are not silently dropped when the ephemeral runner exits.
-commit_and_push() {
-  local intent="$1"
-  local has_uncommitted=false has_unpushed=false
-
-  # git status --porcelain covers untracked files that git diff misses
-  [ -n "$(git status --porcelain)" ] && has_uncommitted=true
-
-  # Detect engine-committed but not pushed: prefer @{u} if upstream is configured,
-  # fall back to HEAD_SHA (resolved from PR API at script startup) for fork checkouts.
-  local upstream
-  upstream=$(git rev-parse --abbrev-ref --symbolic-full-name "@{u}" 2>/dev/null || true)
-  if [ -n "$upstream" ]; then
-    git log "${upstream}..HEAD" --oneline 2>/dev/null | grep -q . && has_unpushed=true
-  elif [ -n "${HEAD_SHA:-}" ]; then
-    git log "${HEAD_SHA}..HEAD" --oneline 2>/dev/null | grep -q . && has_unpushed=true
-  fi
-
-  if ! $has_uncommitted && ! $has_unpushed; then
-    echo "::notice::No changes to commit for intent=${intent}"
-    return 1
-  fi
-
-  local commit_msg
-  case "$intent" in
-    fix-reviews)     commit_msg="fix(reviews): address review comments [skip ci-relay]" ;;
-    fix-bot-comment) commit_msg="fix(bot): address bot feedback [skip ci-relay]" ;;
-    on-mention|review-changes)  commit_msg="chore: apply manual instructions [skip ci-relay]" ;;
-    rebase)          commit_msg="chore: resolve rebase conflicts [skip ci-relay]" ;;
-    *)               commit_msg="chore: dev-lead update (${intent}) [skip ci-relay]" ;;
-  esac
-
-  if [ "$DEV_LEAD_DRY_RUN" = "true" ]; then
-    if $has_uncommitted; then
-      echo "[dry-run] would git add -A, commit '${commit_msg}', and push"
-    else
-      echo "[dry-run] engine already committed — would push existing commit(s) without re-committing"
-    fi
-  else
-    if $has_uncommitted; then
-      # GitHub-hosted runners have no default git identity; configure it
-      # before committing or commit fails with "fatal: empty ident name".
-      setup_git_identity
-      git add -A
-      # Ensure git identity is set — actions/checkout only sets local config for the
-      # repo it checks out (.github-private), not for target repos cloned separately.
-      setup_git_identity
-      # Explicit exit on failure: set -e is suspended when commit_and_push is called from
-      # an if-statement condition, so git commit failures would be silently swallowed
-      # otherwise. Using exit (not return) ensures CI fails visibly instead of posting a
-      # false "Changes committed and pushed" comment.
-      git commit -m "$commit_msg" || { echo "::error::git commit failed — check git identity configuration on the runner" >&2; exit 1; }
-    fi
-    # push_with_merge_guard exits 0 cleanly if the PR was merged/closed mid-run
-    # (its branch deleted); a genuine push failure still aborts with exit 1.
-    push_with_merge_guard || exit 1
-  fi
-  return 0
-}
-
 # detect_conflicting_paths <base_ref> — list paths that conflict when merging
 # origin/<base_ref> into the current HEAD, one per line. Uses a trial merge
 # (immediately aborted) because it is robust across git versions: the former
@@ -965,9 +900,87 @@ ${summary}"
   gh pr comment "$PR_NUMBER" --repo "$REPO" --body "$body" 2>/dev/null || true
 }
 
+# Marker for the no-op guard flag comment (#1340), deduped per PR+intent.
+NOOP_MARKER_PREFIX="<!-- dev-lead-noop-guard pr="
+
+# pr_nets_to_zero [base] — returns 0 (true) when the PR branch's net diff against
+# its base is empty: every change the PR's own commits introduced has been undone,
+# so `origin/<base>...HEAD` shows zero changed files. Such a PR must never carry a
+# pushed fix — merging a `Closes #N` PR that nets to zero would auto-close its
+# compliance issue while the finding remains unfixed (#1340). When the base cannot
+# be resolved (no ref, fetch fails, no common ancestor) it returns 1 and warns,
+# so an unverifiable state never blocks a legitimate push.
+pr_nets_to_zero() {
+  local base="${1:-${BASE_REF:-main}}"
+  local baseref="origin/${base}"
+  # actions/checkout defaults to a depth-1 shallow clone, which lacks the common
+  # ancestor "${baseref}...HEAD" needs. A plain `git fetch origin "$base"` does NOT
+  # deepen a shallow checkout, so the merge-base stays absent, the diff below errors,
+  # and the guard silently fails OPEN (returns 1 → "not net-zero" → push proceeds).
+  # Deepen to full history first so the merge-base resolves; fall back to a bounded
+  # fetch if --unshallow is unavailable.
+  if [ "$(git rev-parse --is-shallow-repository 2>/dev/null)" = "true" ]; then
+    git fetch --quiet --unshallow origin 2>/dev/null \
+      || git fetch --quiet --depth=2147483647 origin "$base" 2>/dev/null \
+      || true
+  fi
+  if ! git rev-parse --verify --quiet "${baseref}^{commit}" >/dev/null 2>&1; then
+    git fetch --quiet origin "$base" 2>/dev/null || {
+      echo "::warning::no-op guard: could not resolve ${baseref} — skipping net-zero check" >&2
+      return 1
+    }
+  fi
+  # A merge-base must exist before diffing; without it "${baseref}...HEAD" errors and
+  # the guard would fail open. Treat a genuinely absent merge-base as unverifiable.
+  if ! git merge-base "$baseref" HEAD >/dev/null 2>&1; then
+    echo "::warning::no-op guard: no merge-base between ${baseref} and HEAD — skipping net-zero check" >&2
+    return 1
+  fi
+  local changed
+  changed=$(git diff --name-only "${baseref}...HEAD" 2>/dev/null) || {
+    echo "::warning::no-op guard: git diff against ${baseref} failed — skipping net-zero check" >&2
+    return 1
+  }
+  [ -z "$changed" ]
+}
+
+# flag_noop_pr <intent> — a fix pass reverted the PR's own changes, netting the
+# base…head diff to zero (#1340). Post one deduped human-attention comment, add
+# the needs-human-review label, and disable auto-merge — and suppress the
+# EXIT-trap auto-merge restore so a self-cancelling PR is never silently made
+# mergeable again. Mirrors pr_automation_escalate's escalation shape.
+flag_noop_pr() {
+  local intent="$1"
+  # A self-cancelling PR must stay unmergeable until a human looks: prevent
+  # restore_auto_merge (EXIT trap) from re-enabling what we are about to disable.
+  _AM_NEEDS_RESTORE=0
+  if [ "${DEV_LEAD_DRY_RUN:-false}" = "true" ]; then
+    echo "[dry-run] no-op guard: would flag PR #${PR_NUMBER} (${intent}) as net-zero, add ${NEEDS_HUMAN_REVIEW_LABEL:-needs-human-review}, disable auto-merge"
+    return 0
+  fi
+  local marker="${NOOP_MARKER_PREFIX}${PR_NUMBER} intent=${intent} -->"
+  if gh api --paginate "repos/${REPO}/issues/${PR_NUMBER}/comments?per_page=100" 2>/dev/null \
+       | jq -r '.[].body // ""' 2>/dev/null | grep -qF "$marker"; then
+    echo "::notice::PR #${PR_NUMBER} already flagged as net-zero for intent=${intent} — not reposting"
+  else
+    gh pr comment "$PR_NUMBER" --repo "$REPO" --body "${marker}
+## No-op fix detected — human attention needed
+
+The \`${intent}\` pass reverted this PR's own changes, so its net diff against \`${BASE_REF:-main}\` is now **empty** (zero changed files). Merging a PR that nets to zero would auto-close its \`Closes #N\` compliance issue while the underlying finding remains unfixed (#1340), and the idempotent audit would immediately re-open it.
+
+Auto-merge has been disabled and no commit was pushed. A human should restore the correct fix or close this PR." \
+      || echo "::warning::could not post no-op flag comment on PR #${PR_NUMBER}"
+  fi
+  gh pr edit "$PR_NUMBER" --repo "$REPO" --add-label "${NEEDS_HUMAN_REVIEW_LABEL:-needs-human-review}" 2>/dev/null \
+    || echo "::warning::could not add ${NEEDS_HUMAN_REVIEW_LABEL:-needs-human-review} label on PR #${PR_NUMBER}"
+  gh pr merge "$PR_NUMBER" --repo "$REPO" --disable-auto 2>/dev/null \
+    || echo "::notice::auto-merge was not enabled on PR #${PR_NUMBER} (nothing to disable)"
+  return 0
+}
+
 # commit_and_push: adds all changes, commits with an intent-specific message,
 # and pushes to the PR branch. Returns 0 if changes were made and pushed,
-# 1 if no changes were found.
+# 1 if no changes were found, 3 if the no-op guard aborted the push (#1340).
 commit_and_push() {
   local intent="$1"
   local has_uncommitted=false has_unpushed=false
@@ -1017,6 +1030,19 @@ commit_and_push() {
       # false "Changes committed and pushed" comment.
       git commit -m "$commit_msg" || { echo "::error::git commit failed — check git identity configuration on the runner" >&2; exit 1; }
     fi
+    # No-op guard (#1340): a fix pass that reverts the PR's own changes nets the
+    # base…head diff to zero. Pushing it would let a `Closes #N` PR auto-close its
+    # compliance issue while the finding remains unfixed. Abort the push and flag
+    # for a human instead of self-cancelling the fix.
+    case "$intent" in
+      fix-reviews|fix-bot-comment)
+        if pr_nets_to_zero "${BASE_REF:-main}"; then
+          echo "::error::No-op guard: PR #${PR_NUMBER} nets to zero changed files against ${BASE_REF:-main} after ${intent} — refusing to push a self-cancelling fix (#1340)"
+          flag_noop_pr "$intent"
+          return 3
+        fi
+        ;;
+    esac
     # No-clobber push (#1311): never discard a concurrent writer's unseen commit.
     # push_no_clobber fast-forwards normally and only ever force-with-leases a
     # rewritten branch, aborting if the remote moved beyond what we fetched.
@@ -1297,9 +1323,16 @@ case "$INTENT_TYPE" in
     build_and_run "fix-reviews" || rc=$?
     [ "$rc" -eq 2 ] && handle_rate_limit "fix-reviews"
     if [ "$rc" -eq 0 ]; then
-      if commit_and_push "fix-reviews"; then
+      cp_rc=0
+      commit_and_push "fix-reviews" || cp_rc=$?
+      if [ "$cp_rc" -eq 0 ]; then
         notify_coderabbit_resolve
         post_reviews_terminal "fix-reviews" "applied" "Changes committed and pushed."
+      elif [ "$cp_rc" -eq 3 ]; then
+        # No-op guard (#1340): the fix nets base…head to zero — already flagged
+        # for a human, auto-merge disabled. Post no applied/no-changes/retry
+        # marker and do not re-enable auto-merge or resolve threads.
+        echo "::warning::fix-reviews produced a net-zero diff — flagged for human, not pushed (#1340)"
       else
         notify_coderabbit_resolve
         if has_hard_blockers; then
@@ -1311,10 +1344,12 @@ case "$INTENT_TYPE" in
           post_no_changes "fix-reviews"
         fi
       fi
-      # Always resolve outdated bot threads in the no-changes path as cleanup
-      resolve_bot_outdated_threads "fix-reviews"
-      resolve_actor_outdated_threads "fix-reviews"
-      try_enable_auto_merge
+      if [ "$cp_rc" -ne 3 ]; then
+        # Always resolve outdated bot threads in the no-changes path as cleanup
+        resolve_bot_outdated_threads "fix-reviews"
+        resolve_actor_outdated_threads "fix-reviews"
+        try_enable_auto_merge
+      fi
     fi
     exit "$rc"
     ;;
@@ -1326,9 +1361,16 @@ case "$INTENT_TYPE" in
     build_and_run "fix-bot-comment" || rc=$?
     [ "$rc" -eq 2 ] && handle_rate_limit "fix-bot-comment"
     if [ "$rc" -eq 0 ]; then
-      if commit_and_push "fix-bot-comment"; then
+      cp_rc=0
+      commit_and_push "fix-bot-comment" || cp_rc=$?
+      if [ "$cp_rc" -eq 0 ]; then
         notify_coderabbit_resolve
         post_reviews_terminal "fix-bot-comment" "applied" "Changes committed and pushed."
+      elif [ "$cp_rc" -eq 3 ]; then
+        # No-op guard (#1340): the fix nets base…head to zero — already flagged
+        # for a human, auto-merge disabled. Post no terminal marker and do not
+        # re-enable auto-merge or resolve threads.
+        echo "::warning::fix-bot-comment produced a net-zero diff — flagged for human, not pushed (#1340)"
       else
         notify_coderabbit_resolve
         if has_hard_blockers; then
@@ -1341,10 +1383,12 @@ case "$INTENT_TYPE" in
           post_no_changes "fix-bot-comment"
         fi
       fi
-      # Always resolve outdated bot threads in the no-changes path as cleanup
-      resolve_bot_outdated_threads "fix-bot-comment"
-      resolve_actor_outdated_threads "fix-bot-comment"
-      try_enable_auto_merge
+      if [ "$cp_rc" -ne 3 ]; then
+        # Always resolve outdated bot threads in the no-changes path as cleanup
+        resolve_bot_outdated_threads "fix-bot-comment"
+        resolve_actor_outdated_threads "fix-bot-comment"
+        try_enable_auto_merge
+      fi
     fi
     exit "$rc"
     ;;

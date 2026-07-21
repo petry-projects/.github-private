@@ -2891,3 +2891,209 @@ STUB
   rm -rf "$tmpdir"
   rm -f "$deletions_file"
 }
+
+# ── No-op guard (#1340): never push a fix that nets base…head to zero ──────────
+
+# Shared setup helper: build a repo whose feat commit adds a line, point
+# refs/remotes/origin/main at the base commit, and install a gh/git stub that
+# records flag comments, label edits, merges, and pushes. The engine (claude
+# stub) rewrites file.txt to the caller-provided content. Captures both base and
+# head SHAs as NOOP_BASE_SHA and NOOP_HEAD_SHA.
+_noop_setup_repo() {
+  local git_repo="$1" engine_content="$2"
+  git -C "$git_repo" init -q
+  printf 'base\n' > "$git_repo/file.txt"
+  git -C "$git_repo" add .
+  git -C "$git_repo" -c user.email="t@test" -c user.name="T" commit -q -m "base"
+  NOOP_BASE_SHA="$(git -C "$git_repo" rev-parse HEAD)"
+  # origin/main is shared across worktrees created from this repo
+  git -C "$git_repo" update-ref refs/remotes/origin/main "$NOOP_BASE_SHA"
+  # feat commit adds a line the fix pass may (or may not) revert
+  printf 'base\nfeature\n' > "$git_repo/file.txt"
+  git -C "$git_repo" add .
+  git -C "$git_repo" -c user.email="t@test" -c user.name="T" commit -q -m "feat: add feature"
+  NOOP_HEAD_SHA="$(git -C "$git_repo" rev-parse HEAD)"
+
+  cat > "$STUB_BIN_DIR/claude" << STUB
+#!/usr/bin/env bash
+echo "Addressed review feedback."
+printf '${engine_content}' > file.txt
+STUB
+  chmod +x "$STUB_BIN_DIR/claude"
+}
+
+_noop_gh_stub() {
+  local comment_file="$1" merge_file="$2" head_sha="${3:-}"
+  cat > "$STUB_BIN_DIR/gh" << GHEOF
+#!/usr/bin/env bash
+ARGS="\$*"
+case "\$ARGS" in
+  *"pr view"*) echo '{"state":"OPEN","headRefName":"feat"}' ;;
+  *"pr checkout"*) exit 0 ;;
+  *"pr comment"*) echo "\$*" >> "${comment_file}"; exit 0 ;;
+  *"pr edit"*) echo "\$*" >> "${comment_file}"; exit 0 ;;
+  *"pr merge"*) echo "\$*" >> "${merge_file}"; exit 0 ;;
+  *"check-runs"*) echo '{"check_runs":[]}' ;;
+  *"statuses"*) echo '[]' ;;
+  *"reviews"*) echo '[]' ;;
+  *"graphql"*) echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}' ;;
+  *"issues/"*"comments"*) echo '[]' ;;
+  *"pulls/"*) echo '{"head":{"sha":"${head_sha}"},"auto_merge":null,"state":"open"}' ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+}
+
+_noop_git_stub() {
+  local push_file="$1"
+  cat > "$STUB_BIN_DIR/git" << GITEOF
+#!/usr/bin/env bash
+if [ "\$1" = "push" ]; then echo "\$*" >> "${push_file}"; exit 0; fi
+exec /usr/bin/git "\$@"
+GITEOF
+  chmod +x "$STUB_BIN_DIR/git"
+}
+
+@test "no-op guard: fix-reviews net-zero diff flags PR and does not push (#1340)" {
+  local git_repo="$BATS_TEST_TMPDIR/git_repo"
+  local comment_file="$BATS_TEST_TMPDIR/comment_file"
+  local merge_file="$BATS_TEST_TMPDIR/merge_file"
+  local push_file="$BATS_TEST_TMPDIR/push_file"
+  mkdir -p "$git_repo"
+  touch "$comment_file" "$merge_file" "$push_file"
+
+  # Engine reverts the feature line → net base…head diff becomes empty.
+  _noop_setup_repo "$git_repo" 'base\n'
+  _noop_gh_stub "$comment_file" "$merge_file" "$NOOP_HEAD_SHA"
+  _noop_git_stub "$push_file"
+
+  cd "$git_repo"
+  run bash -c "
+    export INTENT_TYPE=fix-reviews DEV_LEAD_DRY_RUN=false
+    export PR_NUMBER=54 HEAD_SHA=$NOOP_HEAD_SHA REPO='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export PATH="$STUB_BIN_DIR:\$PATH"
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+
+  [ "$status" -eq 0 ]
+  # Guard fired and announced the net-zero refusal
+  [[ "$output" == *"No-op guard"* ]]
+  # The self-cancelling fix was NOT pushed
+  [ ! -s "$push_file" ]
+  # A needs-human flag comment was posted
+  grep -q "No-op fix detected" "$comment_file"
+  # Auto-merge was disabled
+  grep -q "disable-auto" "$merge_file"
+  # No false "applied" terminal marker
+  run grep -q "status=applied" "$comment_file"
+  [ "$status" -eq 1 ]
+}
+
+@test "no-op guard: fix-bot-comment net-zero diff flags PR and does not push (#1340)" {
+  local git_repo="$BATS_TEST_TMPDIR/git_repo"
+  local comment_file="$BATS_TEST_TMPDIR/comment_file"
+  local merge_file="$BATS_TEST_TMPDIR/merge_file"
+  local push_file="$BATS_TEST_TMPDIR/push_file"
+  mkdir -p "$git_repo"
+  touch "$comment_file" "$merge_file" "$push_file"
+
+  _noop_setup_repo "$git_repo" 'base\n'
+  _noop_gh_stub "$comment_file" "$merge_file" "$NOOP_HEAD_SHA"
+  _noop_git_stub "$push_file"
+
+  cd "$git_repo"
+  run bash -c "
+    export INTENT_TYPE=fix-bot-comment DEV_LEAD_DRY_RUN=false
+    export PR_NUMBER=54 HEAD_SHA=$NOOP_HEAD_SHA REPO='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export ACTOR='github-copilot[bot]' COMMENT_BODY='This PR overview describes the diff.'
+    export PATH="$STUB_BIN_DIR:\$PATH"
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"No-op guard"* ]]
+  [ ! -s "$push_file" ]
+  grep -q "No-op fix detected" "$comment_file"
+  grep -q "disable-auto" "$merge_file"
+  run grep -q "status=applied" "$comment_file"
+  [ "$status" -eq 1 ]
+}
+
+@test "no-op guard: non-empty net diff pushes normally and posts applied (#1340)" {
+  local git_repo="$BATS_TEST_TMPDIR/git_repo"
+  local comment_file="$BATS_TEST_TMPDIR/comment_file"
+  local merge_file="$BATS_TEST_TMPDIR/merge_file"
+  local push_file="$BATS_TEST_TMPDIR/push_file"
+  mkdir -p "$git_repo"
+  touch "$comment_file" "$merge_file" "$push_file"
+
+  # Engine keeps the feature and adds a real fix → net diff is NOT empty.
+  _noop_setup_repo "$git_repo" 'base\nfeature\nfix\n'
+  _noop_gh_stub "$comment_file" "$merge_file" "$NOOP_HEAD_SHA"
+  _noop_git_stub "$push_file"
+
+  cd "$git_repo"
+  run bash -c "
+    export INTENT_TYPE=fix-reviews DEV_LEAD_DRY_RUN=false
+    export PR_NUMBER=54 HEAD_SHA=$NOOP_HEAD_SHA REPO='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export PATH="$STUB_BIN_DIR:\$PATH"
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+
+  [ "$status" -eq 0 ]
+  # Guard must NOT fire on a legitimate non-empty fix
+  [[ "$output" != *"No-op guard"* ]]
+  # The fix was pushed
+  [ -s "$push_file" ]
+  # An applied terminal marker was posted; no no-op flag
+  grep -q "status=applied" "$comment_file"
+  run grep -q "No-op fix detected" "$comment_file"
+  [ "$status" -eq 1 ]
+}
+
+@test "no-op guard: net-zero path does not re-enable auto-merge (#1340)" {
+  local git_repo="$BATS_TEST_TMPDIR/git_repo"
+  local comment_file="$BATS_TEST_TMPDIR/comment_file"
+  local merge_file="$BATS_TEST_TMPDIR/merge_file"
+  local push_file="$BATS_TEST_TMPDIR/push_file"
+  mkdir -p "$git_repo"
+  touch "$comment_file" "$merge_file" "$push_file"
+
+  _noop_setup_repo "$git_repo" 'base\n'
+  _noop_gh_stub "$comment_file" "$merge_file" "$NOOP_HEAD_SHA"
+  _noop_git_stub "$push_file"
+
+  cd "$git_repo"
+  run bash -c "
+    export INTENT_TYPE=fix-reviews DEV_LEAD_DRY_RUN=false
+    export PR_NUMBER=54 HEAD_SHA=$NOOP_HEAD_SHA REPO='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export PATH="$STUB_BIN_DIR:\$PATH"
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+
+  [ "$status" -eq 0 ]
+  # The only merge call on the no-op path must be a disable-auto — never --auto
+  grep -q "disable-auto" "$merge_file"
+  run grep -q -- "--auto" "$merge_file"
+  [ "$status" -eq 1 ]
+}
+
+# ── Prompt guidance (#1340): COMMENTED/overview is neutral, not a change-request ─
+
+@test "fix-reviews prompt: instructs never to treat COMMENTED/overview as a change-request (#1340)" {
+  local p="$SCRIPT_DIR/prompts/dev-lead/fix-reviews.md"
+  grep -q "COMMENTED" "$p"
+  grep -qi "pull request overview" "$p"
+  grep -q "#1340" "$p"
+}
+
+@test "fix-bot-comment prompt: a neutral overview is not an actionable finding (#1340)" {
+  local p="$SCRIPT_DIR/prompts/dev-lead/fix-bot-comment.md"
+  grep -qi "overview" "$p"
+  grep -q "#1340" "$p"
+}

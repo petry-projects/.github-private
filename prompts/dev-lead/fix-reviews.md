@@ -46,6 +46,8 @@ ${ALL_REVIEWS_JSON}
 
 Identify any entries with `state` = `"CHANGES_REQUESTED"`. Each one is a **Tier 1 blocker**. Only declare "no-changes" when zero Tier 1 blockers exist (all CI checks pass AND no reviewer has CHANGES_REQUESTED).
 
+> **A `COMMENTED` review is neutral — never treat it as a change-request.** A reviewer's "pull request overview" or any review submitted with `state` = `"COMMENTED"` merely *describes* the diff; it is **not** an instruction to change anything. Do **not** revert, undo, or restore lines your own commits added or removed just because such an overview mentions them. Only `CHANGES_REQUESTED` reviews and explicit, actionable review-thread comments are change-requests. Reverting the PR's own fix to satisfy a neutral overview nets the diff to zero and silently cancels the fix (#1340).
+
 ### Phase 1 — Address Threads
 
 For each open review thread:
@@ -113,6 +115,7 @@ Read every changed line as if you are the reviewer seeing the response:
 - Resolve every bot thread you fix (regardless of which reviewer triggered this run) and outdated threads; for human threads, resolve only the triggering reviewer's and leave other humans' open (replied)
 - Do not resolve threads you are skipping due to ambiguity — leave those open and note them in your output
 - Do not make changes beyond what the review threads request, except that fixing Tier-1 blockers (failure/timed_out/cancelled/action_required/stale/startup_failure CI checks and CHANGES_REQUESTED reviews) is always in-scope
+- Never revert or undo the PR's own committed changes to satisfy a neutral `COMMENTED`/overview review — that produces a net-zero diff that silently cancels the fix (#1340)
 - If a review thread is ambiguous, apply the most conservative interpretation
 - Do not commit or push — the CI workflow handles git operations after you finish
 
