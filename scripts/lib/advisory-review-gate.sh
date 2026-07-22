@@ -52,7 +52,7 @@ declare -Ar ADVISORY_BOTS=(
 # Kept reasonably specific so a genuine review that mentions "rate limit" in
 # passing does not arm a retry.
 # shellcheck disable=SC2034
-readonly ADVISORY_RATE_LIMIT_RE='usage limit|rate.?limit|too many requests|quota (exceeded|reached|exhausted)|out of (quota|credits|tokens|requests)|limit (reached|exceeded|exhausted)|(reached|exceeded|hit) (the |your )?(usage |rate |daily |monthly )?limit|used up its prepaid credits|Qodo.{0,40}(monthly|usage|PR|review) limit|CodeAnt.{0,40}(monthly|trial|usage) limit'
+readonly ADVISORY_RATE_LIMIT_RE='usage limit|rate[-_ ]?limit|too many requests|quota (exceeded|reached|exhausted)|out of (quota|credits|tokens|requests)|limit (reached|exceeded|exhausted)|(reached|exceeded|hit) (the |your )?(usage |rate |daily |monthly )?limit|used up its prepaid credits|Qodo.{0,40}(monthly|usage|PR|review) limit|CodeAnt.{0,40}(monthly|trial|usage) limit'
 
 # Gate classification alias — same canonical regex, so get_advisory_bot_states()
 # can never diverge from the sweep/scorecard detector.
