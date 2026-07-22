@@ -71,7 +71,7 @@ readonly -a WORKFLOW_MANIFEST=(
   "dependabot-rebase|caller|petry-projects/.github|dependabot-rebase/stable"
   "dependency-audit|caller|petry-projects/.github|dependency-audit/stable"
   "dev-lead|caller|petry-projects/.github-private|dev-lead/stable"
-  "pr-review-mention|caller|petry-projects/.github|pr-review-mention/stable"
+  "pr-review-mention|caller|petry-projects/.github|pr-review-mention/v2-next"
   "sonarcloud|inline|-|-"
 )
 
