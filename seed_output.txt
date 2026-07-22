@@ -1,0 +1,4 @@
+[seed] target repo: petry-projects/repo-template (stack: frontend)
+[seed] workflow stubs: agent-shield auto-rebase ci copilot-setup-steps dependabot-automerge dependabot-rebase dependency-audit dev-lead pr-review-mention sonarcloud 
+[seed] baseline files: AGENTS.md CLAUDE.md .github/CODEOWNERS .github/dependabot.yml .gitleaks.toml sonar-project.properties .gitignore LICENSE SECURITY.md README.md BOOTSTRAP.md 
+::error::cannot read main head on petry-projects/repo-template
