@@ -31,7 +31,7 @@ This is the `.github-private` org infrastructure repo for `petry-projects`. It c
   never forward an input the pinned channel does not yet declare.
 - All other workflow changes must use templates from
   [`standards/workflows/`](https://github.com/petry-projects/.github/tree/main/standards/workflows) verbatim.
-- **Note:** `.github/workflows/auto-rebase.yml` pins the reusable workflow at the `@auto-rebase/stable`
+- **Note:** `.github/workflows/auto-rebase.yml` pins the reusable workflow at the `@auto-rebase/v2-stable`
   moving channel tag, matching the canonical org stub in `standards/workflows/auto-rebase.yml`. Do not
   repoint it to a frozen `@vX` tag, `@main`, or a SHA — `tests/dev-lead/integration/test_auto_rebase_stub.py`
   (#139) enforces this. The repo-specific `auto-rebase-retry.yml` and `auto-rebase-health.yml` workflows
@@ -167,7 +167,7 @@ This is the `.github-private` org infrastructure repo for `petry-projects`. It c
 
 `petry-projects/repo-template` is a **distribution artifact** of the canonical `standards/` in the public
 `petry-projects/.github` repo: `scripts/seed-repo-template.sh` fetches each canonical workflow stub /
-baseline file and ships it (caller stubs repinned to the published `@<name>/stable` channel, inline stubs +
+baseline file and ships it (caller stubs repinned to the published `@<name>/v<major>-stable` channel, inline stubs +
 baseline files verbatim). The `template-drift` job in `lint.yml` (#969, epic #964) guards that the files
 **committed** in the template have not diverged from that standards-derived baseline — it re-derives the
 expected content via `seed-repo-template.sh --emit-*`, compares its git blob SHA against the template repo's

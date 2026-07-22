@@ -50,9 +50,9 @@ jobs:
     # Pinning a channel tag (not @main) keeps a broken change on main from gating
     # its own fix (the circular dependency). agent_ref pins the dev-lead
     # scripts/prompts checkout to the same channel.
-    uses: petry-projects/.github-private/.github/workflows/dev-lead-reusable.yml@dev-lead/v1-next
+    uses: petry-projects/.github-private/.github/workflows/dev-lead-reusable.yml@dev-lead/v1-stable  # NOSONAR(githubactions:S7637) first-party channel ref
     with:
-      agent_ref: dev-lead/v1-next
+      agent_ref: dev-lead/v1-stable
     secrets: inherit
     permissions:
       contents: write
