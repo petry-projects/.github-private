@@ -63,15 +63,15 @@ _is_dry() { [ "$DRY_RUN" = "true" ]; }
 #   kind=inline → self-contained; shipped byte-identically (host/channel unused).
 # ci is the documented customize-per-stack inline stub (AC #4).
 readonly -a WORKFLOW_MANIFEST=(
-  "agent-shield|caller|petry-projects/.github|agent-shield/stable"
-  "auto-rebase|caller|petry-projects/.github|auto-rebase/stable"
+  "agent-shield|caller|petry-projects/.github|agent-shield/v2-stable"
+  "auto-rebase|caller|petry-projects/.github|auto-rebase/v2-stable"
   "ci|inline|-|-"
   "copilot-setup-steps|inline|-|-"
-  "dependabot-automerge|caller|petry-projects/.github|dependabot-automerge/stable"
-  "dependabot-rebase|caller|petry-projects/.github|dependabot-rebase/stable"
-  "dependency-audit|caller|petry-projects/.github|dependency-audit/stable"
-  "dev-lead|caller|petry-projects/.github-private|dev-lead/stable"
-  "pr-review-mention|caller|petry-projects/.github|pr-review-mention/stable"
+  "dependabot-automerge|caller|petry-projects/.github|dependabot-automerge/v2-stable"
+  "dependabot-rebase|caller|petry-projects/.github|dependabot-rebase/v2-stable"
+  "dependency-audit|caller|petry-projects/.github|dependency-audit/v2-stable"
+  "dev-lead|caller|petry-projects/.github-private|dev-lead/v1-stable"
+  "pr-review-mention|caller|petry-projects/.github|pr-review-mention/v2-stable"
   "sonarcloud|inline|-|-"
 )
 
