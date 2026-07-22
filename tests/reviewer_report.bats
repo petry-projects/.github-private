@@ -17,10 +17,26 @@ setup() {
 # Registry wiring — bots come from the shared advisory-review-gate list
 # ---------------------------------------------------------------------------
 
-@test "REVIEWER_BOTS: five tracked reviewers, sourced from the gate registry" {
-  [ "${#REVIEWER_BOTS[@]}" -eq 5 ]
+@test "REVIEWER_BOTS: seven tracked reviewers, sourced from the gate registry" {
+  [ "${#REVIEWER_BOTS[@]}" -eq 7 ]
   [[ " ${REVIEWER_BOTS[*]} " == *" coderabbitai "* ]]
   [[ " ${REVIEWER_BOTS[*]} " == *" copilot-pull-request-reviewer "* ]]
+  # Qodo Merge + CodeAnt registered via the shared gate registry (issue #1349).
+  [[ " ${REVIEWER_BOTS[*]} " == *" qodo-code-review "* ]]
+  [[ " ${REVIEWER_BOTS[*]} " == *" codeant-ai "* ]]
+}
+
+@test "REVIEWER_LABELS: Qodo Merge + CodeAnt have display names (issue #1349)" {
+  [ "${REVIEWER_LABELS[qodo-code-review]}" = "Qodo Merge" ]
+  [ "${REVIEWER_LABELS[codeant-ai]}" = "CodeAnt" ]
+}
+
+@test "REVIEWER_LABELS: every tracked reviewer has a display name (no drift, issue #1349)" {
+  # The report list is derived from the gate list; each tracked login must carry a
+  # human-facing label so no reviewer renders as a bare GraphQL login.
+  for bot in "${REVIEWER_BOTS[@]}"; do
+    [ -n "${REVIEWER_LABELS[$bot]:-}" ] || { echo "missing label for $bot"; return 1; }
+  done
 }
 
 # ---------------------------------------------------------------------------
@@ -95,6 +111,20 @@ JSON
 @test "normalize: reactions and thread resolution captured on inline comments" {
   run jq -c --arg repo "r" --argjson bots "$BOTS" --arg rl "$RATE_LIMIT_RE" "[ $_NORMALIZE_JQ ]" "$PR_NODE"
   echo "$output" | jq -e '.[] | select(.bot=="copilot-pull-request-reviewer") | .thumbs_up==2 and .thumbs_down==1 and .threads_resolved==1'
+}
+
+@test "normalize: Qodo real review counts as reviewed; CodeAnt quota notice is a refusal (issue #1349)" {
+  local newbots='["qodo-code-review","codeant-ai"]'
+  tmp="$(mktemp "$BATS_TEST_TMPDIR/tmp.XXXXXX")"
+  cat > "$tmp" <<'JSON'
+{"url":"u","createdAt":"2026-07-10T10:00:00Z","updatedAt":"2026-07-10T10:00:00Z","mergedAt":null,"isDraft":false,"author":{"login":"h"},
+ "reviews":{"nodes":[{"author":{"login":"qodo-code-review"},"state":"CHANGES_REQUESTED","submittedAt":"2026-07-10T10:05:00Z","bodyText":"Code Review by Qodo: please fix the null deref on line 42."}]},
+ "reviewThreads":{"nodes":[]},
+ "comments":{"nodes":[{"author":{"login":"codeant-ai"},"createdAt":"2026-07-10T10:01:00Z","bodyText":"CodeAnt AI: your free trial limit reached — reviews are paused."}]}}
+JSON
+  run jq -c --arg repo "r" --argjson bots "$newbots" --arg rl "$RATE_LIMIT_RE" "[ $_NORMALIZE_JQ ]" "$tmp"
+  echo "$output" | jq -e '.[] | select(.bot=="qodo-code-review") | .real_responses>=1 and .reviews==1 and .changes_req==1'
+  echo "$output" | jq -e '.[] | select(.bot=="codeant-ai") | .real_responses==0 and .refusals>=1'
 }
 
 @test "reviews: a comment-only responder (SonarCloud) has its comment counted as a review" {

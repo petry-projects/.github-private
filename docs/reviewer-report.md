@@ -28,6 +28,8 @@ drift from the approval gate's notion of who these bots are.
 | Codex | `chatgpt-codex-connector` |
 | CodeRabbit | `coderabbitai` |
 | SonarCloud | `sonarqubecloud` |
+| Qodo Merge | `qodo-code-review` |
+| CodeAnt | `codeant-ai` |
 
 The org's own Claude reviewer (`donpetry-bot`) is intentionally **out of scope** here — its
 cost lives in the [Token Cost Observatory](./token-report.md); this report is about the

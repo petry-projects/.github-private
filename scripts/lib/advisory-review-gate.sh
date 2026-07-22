@@ -34,6 +34,8 @@ declare -Ar ADVISORY_BOTS=(
   [copilot-pull-request-reviewer]="Copilot PR Reviewer (advisory)"
   [sonarqubecloud]="SonarCloud (advisory)"
   [chatgpt-codex-connector]="Codex (advisory, newer bot)"
+  [qodo-code-review]="Qodo Merge (advisory)"
+  [codeant-ai]="CodeAnt (advisory)"
 )
 
 # Known rate-limit / usage-limit markers an advisory bot posts when it is out of
@@ -42,8 +44,10 @@ declare -Ar ADVISORY_BOTS=(
 # non-participating so a permanently out-of-quota bot can't hold the gate open.
 #   - CodeRabbit: "Review limit reached" / "used up its prepaid credits"
 #   - Codex:      "reached your Codex usage limits"
+#   - Qodo Merge: "reached your monthly usage limit" (capped free trial, #1349)
+#   - CodeAnt:    "free trial limit reached" (capped free trial, #1349)
 # shellcheck disable=SC2034
-readonly RATE_LIMIT_MARKERS='Review limit reached|used up its prepaid credits|reached your Codex usage limit'
+readonly RATE_LIMIT_MARKERS='Review limit reached|used up its prepaid credits|reached your Codex usage limit|Qodo.{0,40}(monthly|usage|PR|review) limit|CodeAnt.{0,40}(monthly|trial|usage) limit'
 
 # Timeout-proceed windows for absent advisory bots (issue #1193, split from #1181).
 # The gate must not block a PR forever when an advisory bot never produces output
@@ -176,6 +180,8 @@ declare -ar RATE_LIMIT_NOTICE_BOTS=(
   sonarqubecloud
   chatgpt-codex-connector
   coderabbitai
+  qodo-code-review
+  codeant-ai
 )
 
 # Case-insensitive phrases that indicate a bot is itself rate-limited / out of
