@@ -53,7 +53,7 @@ jobs:
     uses: petry-projects/.github-private/.github/workflows/dev-lead-reusable.yml@dev-lead/v1-next
     with:
       agent_ref: dev-lead/v1-next
-    secrets: inherit
+    secrets: inherit  # NOSONAR(githubactions:S7635) first-party trusted reusable
     permissions:
       contents: write
       pull-requests: write
