@@ -39,6 +39,12 @@ This is the `.github-private` org infrastructure repo for `petry-projects`. It c
   frozen tag is a behavioral regression. As a channel-pinned caller stub it is also subject to
   ["Caller-stub input forwarding across channel pins"](#caller-stub-input-forwarding-across-channel-pins):
   do not add a `with:` forward for an input the pinned channel does not yet declare.
+- **Note:** `.github/workflows/add-to-project.yml` is a thin caller stub that mirrors the canonical org
+  stub in `standards/workflows/add-to-project.yml` (petry-projects/.github), with the `uses:` ref pinned
+  to a moving channel tag (`@add-to-project/v1-stable`). Do not repoint it to a frozen `@vX` tag, `@main`,
+  or a SHA — keep it synchronized with the public standards. As a channel-pinned caller stub it is also
+  subject to ["Caller-stub input forwarding across channel pins"](#caller-stub-input-forwarding-across-channel-pins):
+  do not add a `with:` forward for an input the pinned channel does not yet declare.
 - **Exception:** The `gh-aw-compile` job in `lint.yml` is a documented repo-specific addition that gates
   agentic workflow compilation. It is not covered by the org template and must not be removed by template
   syncs. If the org template gains a `gh-aw-compile` equivalent, remove this exception and defer to the
