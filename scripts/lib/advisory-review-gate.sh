@@ -38,16 +38,26 @@ declare -Ar ADVISORY_BOTS=(
   [codeant-ai]="CodeAnt (advisory)"
 )
 
-# Known rate-limit / usage-limit markers an advisory bot posts when it is out of
-# quota and cannot submit a real review (issue #657). A comment from an advisory
-# bot whose body matches any of these is classified RATE_LIMITED and treated as
-# non-participating so a permanently out-of-quota bot can't hold the gate open.
+# Canonical rate-limit / out-of-quota body pattern — the SINGLE source of truth
+# for "this bot is itself rate-limited". Three call sites reuse this one regex so
+# they cannot drift (issue #1349 follow-up): the gate's get_advisory_bot_states()
+# classifies a comment RATE_LIMITED, detect_advisory_rate_limit() arms the sweep
+# retry, and scripts/reviewer_report.sh (via RATE_LIMIT_RE) counts scorecard
+# refusals. Case-insensitive matching is applied by every consumer. It blends
+# generic quota phrasing with the bot-specific notices we have observed:
 #   - CodeRabbit: "Review limit reached" / "used up its prepaid credits"
 #   - Codex:      "reached your Codex usage limits"
-#   - Qodo Merge: "reached your monthly usage limit" (capped free trial, #1349)
+#   - Qodo Merge: "reached your monthly usage limit" / "monthly PR limit" (#1349)
 #   - CodeAnt:    "free trial limit reached" (capped free trial, #1349)
+# Kept reasonably specific so a genuine review that mentions "rate limit" in
+# passing does not arm a retry.
 # shellcheck disable=SC2034
-readonly RATE_LIMIT_MARKERS='Review limit reached|used up its prepaid credits|reached your Codex usage limit|Qodo.{0,40}(monthly|usage|PR|review) limit|CodeAnt.{0,40}(monthly|trial|usage) limit'
+readonly ADVISORY_RATE_LIMIT_RE='usage limit|rate.?limit|too many requests|quota (exceeded|reached|exhausted)|out of (quota|credits|tokens|requests)|limit (reached|exceeded|exhausted)|(reached|exceeded|hit) (the |your )?(usage |rate |daily |monthly )?limit|used up its prepaid credits|Qodo.{0,40}(monthly|usage|PR|review) limit|CodeAnt.{0,40}(monthly|trial|usage) limit'
+
+# Gate classification alias — same canonical regex, so get_advisory_bot_states()
+# can never diverge from the sweep/scorecard detector.
+# shellcheck disable=SC2034
+readonly RATE_LIMIT_MARKERS="$ADVISORY_RATE_LIMIT_RE"
 
 # Timeout-proceed windows for absent advisory bots (issue #1193, split from #1181).
 # The gate must not block a PR forever when an advisory bot never produces output
@@ -185,10 +195,11 @@ declare -ar RATE_LIMIT_NOTICE_BOTS=(
 )
 
 # Case-insensitive phrases that indicate a bot is itself rate-limited / out of
-# quota (not merely discussing rate limiting). Kept reasonably specific so a
-# genuine review that mentions "rate limit" in passing does not arm a retry.
+# quota (not merely discussing rate limiting). Returns the canonical
+# ADVISORY_RATE_LIMIT_RE so the sweep detector and reviewer scorecard share the
+# exact regex the gate uses for RATE_LIMITED classification (no drift).
 _advisory_rate_limit_pattern() {
-  printf '%s' 'usage limit|rate.?limit|too many requests|quota (exceeded|reached|exhausted)|out of (quota|credits|tokens|requests)|limit (reached|exceeded|exhausted)|(reached|exceeded|hit) (the |your )?(usage |rate |daily |monthly )?limit'
+  printf '%s' "$ADVISORY_RATE_LIMIT_RE"
 }
 
 # detect_advisory_rate_limit <reviews-comments-json>

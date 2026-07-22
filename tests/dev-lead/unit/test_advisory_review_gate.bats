@@ -716,6 +716,31 @@ _events_dir() {
   grep -q 'codeant-ai' "$SCRIPT_DIR/lib/advisory-review-gate.sh"
 }
 
+@test "Advisory gate: gate markers and sweep/scorecard detector share one regex (no drift, issue #1349)" {
+  # RATE_LIMIT_MARKERS (gate classification) and _advisory_rate_limit_pattern
+  # (sweep retry + reviewer scorecard) must resolve to the SAME canonical regex,
+  # so a quota refusal can never be a RATE_LIMITED comment in one path and a
+  # normal COMMENTED submission in another.
+  run bash -c "source '$SCRIPT_DIR/lib/advisory-review-gate.sh'
+    [ \"\$RATE_LIMIT_MARKERS\" = \"\$(_advisory_rate_limit_pattern)\" ] && echo SAME"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"SAME"* ]]
+}
+
+@test "Advisory gate: bot-specific Qodo/CodeAnt trial phrases match the shared detector (no drift, issue #1349)" {
+  # The exact phrases the gate matches for the new trial bots must ALSO be caught
+  # by _advisory_rate_limit_pattern, or a refusal would arm the gate but never
+  # trigger a sweep retry / scorecard refusal count.
+  run bash -c "source '$SCRIPT_DIR/lib/advisory-review-gate.sh'
+    pat=\"\$(_advisory_rate_limit_pattern)\"
+    for msg in 'CodeAnt AI: free trial limit' 'Qodo Merge: monthly PR limit'; do
+      printf '%s' \"\$msg\" | grep -qiE \"\$pat\" || { echo \"MISS:\$msg\"; exit 1; }
+    done
+    echo OK"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"OK"* ]]
+}
+
 @test "Advisory gate: Qodo + CodeAnt are in the rate-limit notice superset (issue #1349)" {
   # RATE_LIMIT_NOTICE_BOTS must be a superset of ADVISORY_BOTS so the scorecard /
   # sweep never drift below the gate's set.
