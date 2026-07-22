@@ -8,7 +8,7 @@
 #     reusable workflow above.
 #   • You MAY change: the workflow name(s) in `workflow_run.workflows` to match
 #     your repository's CI workflow name(s).
-#   • You MUST NOT change: the `@pr-auto-review/stable` channel in the `uses:`
+#   • You MUST NOT change: the `@pr-auto-review/v1-stable` channel in the `uses:`
 #     line — this reusable is on the org-wide moving-channel model (rollout and
 #     rollback are a single central tag move; a frozen `@vN`/`@<sha>` pin is
 #     rejected by the compliance audit). Nor the trigger event types or the
