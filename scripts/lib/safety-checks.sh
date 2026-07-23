@@ -240,8 +240,9 @@ sc_description_missing() {
 # first-party reusable (no secret interpolated into a `run:` step), pulls in no
 # third-party reusable, and is bot-authored or carries the standards-sync title.
 
-# sc_secret_in_run <diff> — prints a finding per added `${{ secrets.* }}`
-# interpolated directly INSIDE a `run:` step in a changed workflow file. Secret
+# sc_secret_in_run <diff> — prints a finding per added `${{ secrets.* }}` or
+# `${{ secrets['*'] }}` interpolated directly INSIDE a `run:` step in a changed
+# workflow file (both dot and bracket access forms count). Secret
 # *handling* (echoing/using a raw secret in a shell step) is a real smell;
 # forwarding via a `secrets:`/`with:`/`env:` mapping is not, and is ignored.
 sc_secret_in_run() {
@@ -275,7 +276,7 @@ sc_secret_in_run() {
       c=substr($0,2)
       if (iswf) {
         update_run_state(c)
-        if (in_run && c ~ /\$\{\{[[:space:]]*secrets\./)
+        if (in_run && c ~ /\$\{\{[[:space:]]*secrets[.[]/)
           report("secret interpolated directly into a run step: " c)
       }
       line++
@@ -359,10 +360,12 @@ sc_trusted_stub_sync() {
   case "$author" in
     *"[bot]"|donpetry-bot|don-petry|github-actions|dependabot) is_bot="true" ;;
   esac
-  if grep -qiE 'org-standard workflow stub|sync .*(caller )?stub|standards.sync' <<< "$title"; then
+  if grep -qiE 'org-standard workflow stub|sync .*(caller )?stub|standards[._-]sync' <<< "$title"; then
     title_sync="true"
   fi
-  { [ "$is_bot" = "true" ] || [ "$title_sync" = "true" ]; } && sync="true"
+  if [ "$is_bot" = "true" ] || [ "$title_sync" = "true" ]; then
+    sync="true"
+  fi
 
   local trusted="false"
   if [ "$wf_only" = "true" ] && [ "$sir_flag" = "false" ] && [ "$tpr_flag" = "false" ] && [ "$sync" = "true" ]; then

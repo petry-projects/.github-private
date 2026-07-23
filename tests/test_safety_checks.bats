@@ -535,6 +535,18 @@ diff --git a/b/unrelated.txt b/b/unrelated.txt
   echo "$output" | grep -q "secret interpolated directly into a run step"
 }
 
+@test "secret-in-run: flags a secret in bracket syntax inside a run step" {
+  local diff='--- a/.github/workflows/deploy.yml
++++ b/.github/workflows/deploy.yml
+@@ -3,2 +3,4 @@ jobs:
+   deploy:
++      - run: |
++          curl -H "t: ${{ secrets['\''DEPLOY_TOKEN'\''] }}" https://x.example'
+  run sc_secret_in_run "$diff"
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "secret interpolated directly into a run step"
+}
+
 @test "secret-in-run: does NOT flag secrets: inherit forwarding" {
   local diff='--- a/.github/workflows/pr-auto-review.yml
 +++ b/.github/workflows/pr-auto-review.yml
@@ -616,6 +628,45 @@ diff --git a/b/unrelated.txt b/b/unrelated.txt
   run sc_trusted_stub_sync "$meta" "$diff"
   [ "$status" -eq 0 ]
   echo "$output" | grep -q "SECRET_IN_RUN_STEP: true"
+  echo "$output" | grep -q "TRUSTED_STUB_SYNC: false"
+}
+
+@test "trusted-stub-sync: false when a bracket-syntax secret is in a run step" {
+  local meta='{"title":"chore: sync org-standard workflow stub","author":{"login":"donpetry-bot"},"files":[{"path":".github/workflows/deploy.yml"}]}'
+  local diff='--- a/.github/workflows/deploy.yml
++++ b/.github/workflows/deploy.yml
+@@ -3,2 +3,4 @@ jobs:
+   deploy:
++      - run: |
++          echo "${{ secrets['\''DEPLOY_TOKEN'\''] }}"'
+  run sc_trusted_stub_sync "$meta" "$diff"
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "SECRET_IN_RUN_STEP: true"
+  echo "$output" | grep -q "TRUSTED_STUB_SYNC: false"
+}
+
+@test "trusted-stub-sync: hyphenated standards-sync title classifies as sync" {
+  local meta='{"title":"chore: standards-sync workflow refresh","author":{"login":"rachel-petry"},"files":[{"path":".github/workflows/ci.yml"}]}'
+  local diff='--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -3,2 +3,3 @@ jobs:
+   review:
++    secrets: inherit'
+  run sc_trusted_stub_sync "$meta" "$diff"
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "STANDARDS_SYNC_PR: true"
+}
+
+@test "trusted-stub-sync: unrelated title with metacharacter is not a sync" {
+  local meta='{"title":"chore: standardsXsync tweak","author":{"login":"rachel-petry"},"files":[{"path":".github/workflows/ci.yml"}]}'
+  local diff='--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -3,2 +3,3 @@ jobs:
+   review:
++    secrets: inherit'
+  run sc_trusted_stub_sync "$meta" "$diff"
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "STANDARDS_SYNC_PR: false"
   echo "$output" | grep -q "TRUSTED_STUB_SYNC: false"
 }
 
