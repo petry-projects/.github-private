@@ -45,11 +45,17 @@ if ! grep -Eq 'retry\s*\(\)' <<<"$run"; then
   fail=1
 fi
 
-# 2. Every network fetch must go through retry.
+# 2. Every network fetch must go through retry (check all occurrences are wrapped).
 while IFS= read -r cmd; do
-  if grep -Eq "$cmd" <<<"$run" && ! grep -Eq "retry .*$cmd" <<<"$run"; then
-    echo "FAIL: \"$cmd\" in \"$STEP_NAME\" must be wrapped in retry (issue #1364)"
-    fail=1
+  if grep -Eq "$cmd" <<<"$run"; then
+    # Count total occurrences and retry-wrapped occurrences; they must match.
+    total=$(grep -Eo "(^|[^a-z])$cmd" <<<"$run" | wc -l)
+    wrapped=$(grep -Eo "retry.*$cmd" <<<"$run" | wc -l)
+    if [ "$total" -ne "$wrapped" ]; then
+      echo "FAIL: all occurrences of \"$cmd\" in \"$STEP_NAME\" must be wrapped in retry"
+      echo "  (found $total, wrapped $wrapped) — issue #1364"
+      fail=1
+    fi
   fi
 done <<'CMDS'
 apt-get update
@@ -59,12 +65,13 @@ CMDS
 
 # 3. pip must be pinned and binary-only so it never falls back to a source build.
 if grep -Eq 'pip install' <<<"$run"; then
-  if ! grep -Fq -- '--only-binary' <<<"$run"; then
+  pip_lines=$(grep -E 'pip install' <<<"$run")
+  if ! grep -F -- '--only-binary' <<<"$pip_lines" >/dev/null; then
     echo "FAIL: the pip install in \"$STEP_NAME\" must use --only-binary to avoid"
     echo "  a flaky source build (issue #1364)."
     fail=1
   fi
-  if ! grep -Eq 'pyyaml==[0-9]' <<<"$run"; then
+  if ! grep -E 'pyyaml==[0-9]+\.[0-9]+\.[0-9]+' <<<"$pip_lines" >/dev/null; then
     echo "FAIL: the pip install in \"$STEP_NAME\" must pin pyyaml to a specific"
     echo "  version (pyyaml==X.Y.Z) for reproducible installs (issue #1364)."
     fail=1
