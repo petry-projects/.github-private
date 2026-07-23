@@ -38,8 +38,18 @@ if [ -z "$run" ] || [ "$run" = "null" ]; then
   exit 1
 fi
 
+# Normalize newlines and repeated spaces into a single logical line so the checks
+# below are robust to multi-line run blocks and backslash line continuations
+# (e.g. "retry \<newline>  pip install ...") that a line-by-line grep would miss.
+normalized_run=$(printf '%s\n' "$run" | tr '\n' ' ' | tr -s ' ')
+
 # 1. A retry helper must be defined so transient fetch failures are absorbed.
-if ! grep -Eq 'retry\s*\(\)' <<<"$run"; then
+# Use POSIX [[:space:]] rather than the PCRE \s shorthand so the check is
+# portable to BSD/macOS grep. Assert grep exits exactly 1 (no match) so a grep
+# error (exit 2) can't be mistaken for "not found".
+status=0
+grep -Eq 'retry[[:space:]]*\(\)' <<<"$normalized_run" || status=$?
+if [ "$status" -eq 1 ]; then
   echo "FAIL: \"$STEP_NAME\" must define a retry() helper to absorb transient"
   echo "  network failures (apt mirror / PyPI) — issue #1364."
   fail=1
@@ -47,10 +57,10 @@ fi
 
 # 2. Every network fetch must go through retry (check all occurrences are wrapped).
 while IFS= read -r cmd; do
-  if grep -Eq "$cmd" <<<"$run"; then
+  if grep -Eq "$cmd" <<<"$normalized_run"; then
     # Count total occurrences and retry-wrapped occurrences; they must match.
-    total=$(grep -Eo "(^|[^a-z])$cmd" <<<"$run" | wc -l)
-    wrapped=$(grep -Eo "retry.*$cmd" <<<"$run" | wc -l)
+    total=$(grep -Eo "(^|[^a-z])$cmd" <<<"$normalized_run" | wc -l)
+    wrapped=$(grep -Eo "retry.*$cmd" <<<"$normalized_run" | wc -l)
     if [ "$total" -ne "$wrapped" ]; then
       echo "FAIL: all occurrences of \"$cmd\" in \"$STEP_NAME\" must be wrapped in retry"
       echo "  (found $total, wrapped $wrapped) — issue #1364"
@@ -64,14 +74,17 @@ pip install
 CMDS
 
 # 3. pip must be pinned and binary-only so it never falls back to a source build.
-if grep -Eq 'pip install' <<<"$run"; then
-  pip_lines=$(grep -E 'pip install' <<<"$run")
-  if ! grep -F -- '--only-binary' <<<"$pip_lines" >/dev/null; then
+if grep -Eq 'pip install' <<<"$normalized_run"; then
+  status=0
+  grep -Fq -- '--only-binary' <<<"$normalized_run" || status=$?
+  if [ "$status" -eq 1 ]; then
     echo "FAIL: the pip install in \"$STEP_NAME\" must use --only-binary to avoid"
     echo "  a flaky source build (issue #1364)."
     fail=1
   fi
-  if ! grep -E 'pyyaml==[0-9]+\.[0-9]+\.[0-9]+' <<<"$pip_lines" >/dev/null; then
+  status=0
+  grep -Eiq 'pyyaml==[0-9]+\.[0-9]+\.[0-9]+' <<<"$normalized_run" || status=$?
+  if [ "$status" -eq 1 ]; then
     echo "FAIL: the pip install in \"$STEP_NAME\" must pin pyyaml to a specific"
     echo "  version (pyyaml==X.Y.Z) for reproducible installs (issue #1364)."
     fail=1
