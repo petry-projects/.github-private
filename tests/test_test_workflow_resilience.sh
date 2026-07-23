@@ -29,7 +29,9 @@ if [ ! -f "$WORKFLOW" ]; then
   exit 1
 fi
 
-run=$(yq '.jobs.unit-tests.steps[] | select(.name == "'"$STEP_NAME"'") | .run' "$WORKFLOW")
+# Bracket-index the hyphenated job key: under jq-based yq (kislyuk), `.jobs.unit-tests`
+# parses as `.jobs.unit - tests` and fails with "tests/0 is not defined" (issue #1364).
+run=$(yq '.jobs["unit-tests"].steps[] | select(.name == "'"$STEP_NAME"'") | .run' "$WORKFLOW")
 
 if [ -z "$run" ] || [ "$run" = "null" ]; then
   echo "FAIL: could not find the \"$STEP_NAME\" step in $WORKFLOW"
