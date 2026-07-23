@@ -23,8 +23,27 @@ jobs:
 
       - name: Install test dependencies
         run: |
-          pip install pyyaml
-          sudo apt-get update && sudo apt-get install -y yq
+          # Retry network fetches to absorb transient PyPI / apt-mirror failures
+          # that flaked this workflow (~14.8% of runs, issue #1364). pip is pinned
+          # and binary-only so it never falls back to a slow, flaky source build.
+          retry() {
+            local n=1 max=3 delay=5
+            until "$@"; do
+              if [ "$n" -ge "$max" ]; then
+                echo "::error::command failed after ${n} attempts: $*" >&2
+                return 1
+              fi
+              echo "::warning::attempt ${n} failed: $* — retrying in ${delay}s" >&2
+              n=$((n + 1))
+              sleep "$delay"
+            done
+          }
+          retry pip install "pyyaml==6.0.3" --only-binary=":all:" --quiet
+          retry sudo apt-get update
+          retry sudo apt-get install -y yq
+
+      - name: Run test.yml resilience guard
+        run: bash tests/test_test_workflow_resilience.sh
 
       - name: Run sonarcloud workflow tests
         run: bash tests/test_sonarcloud_workflow.sh
