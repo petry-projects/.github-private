@@ -657,6 +657,19 @@ diff --git a/b/unrelated.txt b/b/unrelated.txt
   echo "$output" | grep -q "STANDARDS_SYNC_PR: true"
 }
 
+@test "trusted-stub-sync: false for human-authored PR with standards-sync title (title alone is insufficient)" {
+  local meta='{"title":"chore: standards-sync workflow refresh","author":{"login":"rachel-petry"},"files":[{"path":".github/workflows/ci.yml"}]}'
+  local diff='--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -3,2 +3,3 @@ jobs:
+   review:
++    secrets: inherit'
+  run sc_trusted_stub_sync "$meta" "$diff"
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "STANDARDS_SYNC_PR: true"
+  echo "$output" | grep -q "TRUSTED_STUB_SYNC: false"
+}
+
 @test "trusted-stub-sync: unrelated title with metacharacter is not a sync" {
   local meta='{"title":"chore: standardsXsync tweak","author":{"login":"rachel-petry"},"files":[{"path":".github/workflows/ci.yml"}]}'
   local diff='--- a/.github/workflows/ci.yml

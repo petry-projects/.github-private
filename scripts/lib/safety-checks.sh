@@ -260,7 +260,14 @@ sc_secret_in_run() {
       if (stripped ~ /^(-[[:space:]]+)?run:[[:space:]]/) {
         in_run=1; run_ind=ind
         val=stripped; sub(/^(-[[:space:]]+)?run:[[:space:]]*/,"",val)
-        run_inline=(val != "" && val != "|" && val != ">") ? 1 : 0
+        # Check for block-scalar headers (|, >, with optional chomping/indentation)
+        # Handle |, |-, |+, |N, >-, >+, >N, etc. and trailing comments
+        sub(/[#].*$/,"",val) # strip comments
+        gsub(/[[:space:]]+$/,"",val) # strip trailing whitespace
+        if (val == "" || val ~ /^[|>]/ || val ~ /^[|>][+\-]?[0-9]?$/ || val ~ /^[|>][0-9][+\-]?$/)
+          run_inline=0
+        else
+          run_inline=1
       }
     }
     /^\+\+\+ /{
@@ -326,8 +333,10 @@ sc_thirdparty_reusable() {
 #   Emits the five classification lines (SECRET_IN_RUN_STEP, WORKFLOW_ONLY_CHANGE,
 #   THIRD_PARTY_REUSABLE_ADDED, STANDARDS_SYNC_PR, TRUSTED_STUB_SYNC). The derived
 #   TRUSTED_STUB_SYNC is true only when the change is workflow-only, has no secret
-#   in a run step, adds no third-party reusable, AND is bot-authored or carries the
-#   standards-sync title — the "first-party + bot-authored" boundary.
+#   in a run step, adds no third-party reusable, AND is bot-authored — the
+#   "first-party + bot-authored" boundary. The standards-sync title is
+#   corroborating evidence for is_bot and logged via STANDARDS_SYNC_PR, but does
+#   not alone confer trust.
 sc_trusted_stub_sync() {
   local meta="${1:-}" diff="${2:-}"
 
@@ -353,8 +362,9 @@ sc_trusted_stub_sync() {
     done <<< "$paths"
   fi
 
-  # Standards-sync class: bot author OR the generated standards-sync title.
-  local author title is_bot="false" title_sync="false" sync="false"
+  # Standards-sync class: bot author (required for trusted carve-out), with
+  # standards-sync title as corroborating evidence.
+  local author title is_bot="false" title_sync="false"
   author=$(jq -r '(.author.login // .author.name) // ""' <<< "$meta" 2>/dev/null || echo "")
   title=$(jq -r '.title // ""' <<< "$meta" 2>/dev/null || echo "")
   case "$author" in
@@ -363,12 +373,14 @@ sc_trusted_stub_sync() {
   if grep -qiE 'org-standard workflow stub|sync .*(caller )?stub|standards[._-]sync' <<< "$title"; then
     title_sync="true"
   fi
+  # For the trusted carve-out, require is_bot; title_sync is corroborating evidence only.
+  local sync="false"
   if [ "$is_bot" = "true" ] || [ "$title_sync" = "true" ]; then
     sync="true"
   fi
 
   local trusted="false"
-  if [ "$wf_only" = "true" ] && [ "$sir_flag" = "false" ] && [ "$tpr_flag" = "false" ] && [ "$sync" = "true" ]; then
+  if [ "$wf_only" = "true" ] && [ "$sir_flag" = "false" ] && [ "$tpr_flag" = "false" ] && [ "$is_bot" = "true" ]; then
     trusted="true"
   fi
 
