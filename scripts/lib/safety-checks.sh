@@ -329,23 +329,97 @@ sc_thirdparty_reusable() {
   '
 }
 
+# sc_firstparty_reusable <diff> — prints a finding per reusable-workflow call to a
+# FIRST-PARTY `petry-projects/*` reusable (`uses: petry-projects/…*.yml@<ref>`) in
+# a changed workflow file. This is a POSITIVE-PROOF detector for the trusted-stub
+# shape, so it scans added (+) AND context ( ) lines within the changed workflow —
+# a sync that only repins the `@channel` tag still leaves the forwarding target
+# visible in the surrounding hunk. Removed (-) lines are ignored.
+sc_firstparty_reusable() {
+  local diff="${1:-}"
+  printf '%s' "$diff" | awk '
+    function report(msg){ printf "%s:%d\t%s\n", f, line, msg }
+    /^\+\+\+ /{
+      f=$0; sub(/^\+\+\+ [ab]\//, "", f); sub(/\t.*/, "", f); line=0; in_hunk=0
+      iswf=(f~/^\.github\/workflows\/.*\.(yml|yaml)$/) ? 1 : 0
+      next
+    }
+    /^@@/ { m=$0; sub(/^@@ -[0-9,]+ \+/, "", m); sub(/[, ].*/, "", m); line=m+0; in_hunk=1; next }
+    !in_hunk { next }
+    /^-/ && !/^---/ { next }
+    /^[+ ]/ {
+      c=substr($0,2)
+      if (iswf && match(c, /uses:[[:space:]]*petry-projects\/[^[:space:]]+\.(yml|yaml)@/))
+        report("first-party petry-projects reusable workflow call present: " c)
+      line++
+      next
+    }
+  '
+}
+
+# sc_secret_forwarding <diff> — prints a finding per secret-FORWARDING signal in a
+# changed workflow file: `secrets: inherit`, or a secret mapped into a
+# `secrets:`/`with:`/`env:` block (`NAME: ${{ secrets.* }}` / `${{ secrets['*'] }}`).
+# This is the benign, org-standard forwarding pattern (contrast sc_secret_in_run,
+# which flags a secret piped into a `run:` step). Like sc_firstparty_reusable it is
+# a positive-proof detector and scans added (+) and context ( ) lines; removed (-)
+# lines are ignored. A `secrets:` mapping value is recognized by the `: ${{ secrets`
+# shape, which cannot match a `run: … ${{ secrets` inline (text sits between the
+# colon and the expression there).
+sc_secret_forwarding() {
+  local diff="${1:-}"
+  printf '%s' "$diff" | awk '
+    function report(msg){ printf "%s:%d\t%s\n", f, line, msg }
+    /^\+\+\+ /{
+      f=$0; sub(/^\+\+\+ [ab]\//, "", f); sub(/\t.*/, "", f); line=0; in_hunk=0
+      iswf=(f~/^\.github\/workflows\/.*\.(yml|yaml)$/) ? 1 : 0
+      next
+    }
+    /^@@/ { m=$0; sub(/^@@ -[0-9,]+ \+/, "", m); sub(/[, ].*/, "", m); line=m+0; in_hunk=1; next }
+    !in_hunk { next }
+    /^-/ && !/^---/ { next }
+    /^[+ ]/ {
+      c=substr($0,2)
+      s=c; gsub(/^[[:space:]]+/,"",s)  # strip indent so we can anchor on the YAML key
+      if (iswf) {
+        if (s ~ /^secrets:[[:space:]]*inherit([[:space:]]|$)/)
+          report("secrets: inherit forwarding present: " c)
+        # A mapping value ONLY: the line must START (post-indent) with a bare YAML
+        # key, so a secret piped mid-line into a run: command (e.g. -H "t: ${{
+        # secrets.X }}") is NOT mistaken for forwarding.
+        else if (s ~ /^[A-Za-z_][A-Za-z0-9_-]*:[[:space:]]*\$\{\{[[:space:]]*secrets[.[]/)
+          report("secret forwarded via a secrets:/with:/env: mapping: " c)
+      }
+      line++
+      next
+    }
+  '
+}
+
 # sc_trusted_stub_sync <pr_metadata_json> <pr_diff>
-#   Emits the five classification lines (SECRET_IN_RUN_STEP, WORKFLOW_ONLY_CHANGE,
-#   THIRD_PARTY_REUSABLE_ADDED, STANDARDS_SYNC_PR, TRUSTED_STUB_SYNC). The derived
-#   TRUSTED_STUB_SYNC is true only when the change is workflow-only, has no secret
-#   in a run step, adds no third-party reusable, AND is bot-authored — the
-#   "first-party + bot-authored" boundary. The standards-sync title is
-#   corroborating evidence for is_bot and logged via STANDARDS_SYNC_PR, but does
-#   not alone confer trust.
+#   Emits seven classification lines (SECRET_IN_RUN_STEP, WORKFLOW_ONLY_CHANGE,
+#   THIRD_PARTY_REUSABLE_ADDED, FIRST_PARTY_REUSABLE_CALL, SECRET_FORWARDING,
+#   STANDARDS_SYNC_PR, TRUSTED_STUB_SYNC). The derived TRUSTED_STUB_SYNC is true
+#   only when the change is workflow-only, is bot-authored, has no secret in a run
+#   step, adds no third-party reusable, AND carries POSITIVE PROOF of the trusted
+#   stub shape — a first-party `petry-projects/*` reusable call and secret
+#   forwarding to it. Requiring positive proof (not merely the absence of the two
+#   disqualifiers) keeps unrelated workflow-only bot edits from bypassing the
+#   process gates. The standards-sync title is corroborating evidence for is_bot
+#   and logged via STANDARDS_SYNC_PR, but does not alone confer trust.
 sc_trusted_stub_sync() {
   local meta="${1:-}" diff="${2:-}"
 
-  local secret_in_run tp_reusable
+  local secret_in_run tp_reusable fp_reusable secret_fwd
   secret_in_run=$(sc_secret_in_run "$diff" || true)
   tp_reusable=$(sc_thirdparty_reusable "$diff" || true)
-  local sir_flag="false" tpr_flag="false"
+  fp_reusable=$(sc_firstparty_reusable "$diff" || true)
+  secret_fwd=$(sc_secret_forwarding "$diff" || true)
+  local sir_flag="false" tpr_flag="false" fpr_flag="false" sfw_flag="false"
   [ -n "$secret_in_run" ] && sir_flag="true"
   [ -n "$tp_reusable" ] && tpr_flag="true"
+  [ -n "$fp_reusable" ] && fpr_flag="true"
+  [ -n "$secret_fwd" ] && sfw_flag="true"
 
   # Workflow-only change: every changed path is a .github/workflows/*.yml file.
   # Empty/absent file list (e.g. metadata without .files) => not workflow-only.
@@ -379,14 +453,24 @@ sc_trusted_stub_sync() {
     sync="true"
   fi
 
+  # Trusted only with POSITIVE PROOF of the stub shape: workflow-only, bot-authored,
+  # a first-party petry-projects reusable call AND secret forwarding to it, and
+  # neither disqualifier (secret in a run step / third-party reusable). Absence of
+  # the disqualifiers is necessary but NOT sufficient — the two positive detectors
+  # are what prove this is a first-party secret-forwarding stub, not just any
+  # workflow-only bot edit.
   local trusted="false"
-  if [ "$wf_only" = "true" ] && [ "$sir_flag" = "false" ] && [ "$tpr_flag" = "false" ] && [ "$is_bot" = "true" ]; then
+  if [ "$wf_only" = "true" ] && [ "$is_bot" = "true" ] \
+     && [ "$fpr_flag" = "true" ] && [ "$sfw_flag" = "true" ] \
+     && [ "$sir_flag" = "false" ] && [ "$tpr_flag" = "false" ]; then
     trusted="true"
   fi
 
   printf 'SECRET_IN_RUN_STEP: %s\n' "$sir_flag"
   printf 'WORKFLOW_ONLY_CHANGE: %s\n' "$wf_only"
   printf 'THIRD_PARTY_REUSABLE_ADDED: %s\n' "$tpr_flag"
+  printf 'FIRST_PARTY_REUSABLE_CALL: %s\n' "$fpr_flag"
+  printf 'SECRET_FORWARDING: %s\n' "$sfw_flag"
   printf 'STANDARDS_SYNC_PR: %s\n' "$sync"
   printf 'TRUSTED_STUB_SYNC: %s\n' "$trusted"
 }

@@ -96,10 +96,17 @@ re-derive** these mechanically — trust and consume the verdicts exactly as giv
   `"risk": "HIGH"`, and **NEVER approve**. Add the reason to `signals`.
 - **`LARGE_PR: true`** — the PR is over the size threshold with no
   implementation-plan/breakdown section. Set `"escalate": true` and note it in
-  `signals` (risk band per the criteria below; size alone is not automatically HIGH).
+  `signals` (risk band per the criteria below; size alone is not automatically HIGH)
+  — **EXCEPT** when `TRUSTED_STUB_SYNC: true` (with no overriding hard-stop or
+  `SECRET_IN_RUN_STEP`/`THIRD_PARTY_REUSABLE_ADDED` signal): a bulk stub sync is
+  expected to be large, so `LARGE_PR` is informational for this class and does not,
+  on its own, force escalation (see the Trusted first-party stub exception above).
 - **`DESCRIPTION_MISSING: N`** — when `N >= 3`, the description is missing 3+ of
   the 5 required sections (problem, risk, test plan, rollback, monitoring). Set
-  `"escalate": true` and note it in `signals`.
+  `"escalate": true` and note it in `signals` — **EXCEPT** when
+  `TRUSTED_STUB_SYNC: true` (same overriding-signal caveat): a terse bot
+  description is expected for this class, so `DESCRIPTION_MISSING` is informational
+  and does not, on its own, force escalation.
 - **`DEPENDENCY_RISK`** and the per-finding `Findings:` list are informational
   context — surface notable ones in `signals`; the Tier 2 deep review does the
   CVE/narrative adjudication. They do not by themselves force escalation.
