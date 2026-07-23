@@ -59,8 +59,15 @@ fi
 while IFS= read -r cmd; do
   if grep -Eq "$cmd" <<<"$normalized_run"; then
     # Count total occurrences and retry-wrapped occurrences; they must match.
+    # Anchor "retry" directly before the command (allowing only a "sudo" prefix,
+    # which is how the real invocations read: "retry pip install", "retry sudo
+    # apt-get update"). A greedy "retry.*$cmd" is wrong two ways: it spans across
+    # logical commands — after newline normalization there are no ;|& separators
+    # to stop it, so an un-retried "apt-get install" preceded by any earlier
+    # "retry" would false-pass — and its single leftmost-longest match undercounts
+    # when a command legitimately appears more than once.
     total=$(grep -Eo "(^|[^a-z])$cmd" <<<"$normalized_run" | wc -l)
-    wrapped=$(grep -Eo "retry.*$cmd" <<<"$normalized_run" | wc -l)
+    wrapped=$(grep -Eo "retry[[:space:]]+(sudo[[:space:]]+)?$cmd" <<<"$normalized_run" | wc -l)
     if [ "$total" -ne "$wrapped" ]; then
       echo "FAIL: all occurrences of \"$cmd\" in \"$STEP_NAME\" must be wrapped in retry"
       echo "  (found $total, wrapped $wrapped) — issue #1364"
