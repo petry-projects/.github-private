@@ -76,9 +76,9 @@ setup() {
   [ "$status" -eq 0 ]
   [[ "$output" == on:* ]]
   [[ "$output" == *"pull_request_review:"* ]]
-  [[ "$output" == *"uses: petry-projects/.github-private/.github/workflows/dev-lead-reusable.yml@dev-lead/v1-next"* ]]
+  [[ "$output" == *"uses: petry-projects/.github-private/.github/workflows/dev-lead-reusable.yml@dev-lead/stable"* ]]
   [[ "$output" == *"with:"* ]]
-  [[ "$output" == *"agent_ref: dev-lead/v1-next"* ]]
+  [[ "$output" == *"agent_ref: dev-lead/stable"* ]]
   # The secrets/permissions blocks are NOT part of the frozen forwarding region.
   [[ "$output" != *"secrets: inherit"* ]]
   [[ "$output" != *"contents: write"* ]]
@@ -191,7 +191,7 @@ setup() {
   [ "$(classify_stub_drift "$base" "$cur")" = "ALIGNED" ]
 
   # Edit the frozen forwarding block (repoint the channel) → DRIFTED.
-  sed 's#@dev-lead/v1-next#@dev-lead/v1-stable#' "$work/.github/workflows/dev-lead.yml" \
+  sed 's#@dev-lead/stable#@dev-lead/next#' "$work/.github/workflows/dev-lead.yml" \
     > "$work/.github/workflows/dev-lead.yml.tmp"
   mv "$work/.github/workflows/dev-lead.yml.tmp" "$work/.github/workflows/dev-lead.yml"
   cur2="$(caller_freeze_current_sha "$work/.github/workflows/dev-lead.yml")"
