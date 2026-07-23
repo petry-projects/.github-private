@@ -40,6 +40,30 @@ Output `"escalate": false` (approve) if ALL of these are true:
 Output `"escalate": true` if ANY of those checks fail. When in doubt, escalate.
 False positives are fine (the next tier will sort it out). False negatives are not.
 
+### Trusted first-party stub / standards-sync exception
+
+Criterion 1 is about a change that *handles* a secret or *adds* a security-sensitive
+surface — not about a caller stub that merely *forwards* secrets to trusted
+first-party plumbing. If the `SAFETY_CHECKS` block reports **`TRUSTED_STUB_SYNC:
+true`**, the diff is a workflow-only, bot-authored/standards-sync caller-stub change
+that forwards `secrets: inherit` (or maps a secret into a `secrets:`/`with:` block)
+to a pinned `petry-projects/*` reusable, adds no third-party reusable, and pipes no
+secret into a `run:` step. That forwarding is the org-standard, SonarCloud-suppressed
+(S7635) pattern — it is **not** secret handling. For such a PR:
+
+- Do **not** escalate or rate HIGH solely because a workflow touches `secrets:`,
+  repins a channel tag, or lacks a linked issue / full description. These are
+  expected for the class and the org ships them through a canary rollout (a
+  staged, auto-reverting deploy channel), which materially de-risks them.
+- **Still** escalate on any genuine signal: the two hard-stops always override
+  (`CI_WEAKENING_DETECTED` / `PROMPT_INJECTION_DETECTED`), and so do
+  `SECRET_IN_RUN_STEP: true` and `THIRD_PARTY_REUSABLE_ADDED: true` — either means
+  the carve-out does not apply. A stub diff that deviates from the org standard
+  (unexpected permission grant, trigger change, non-first-party target) still escalates.
+
+A documented canary / staged-rollout strategy is a risk *reducer*, never a reason
+to escalate. Weigh it like any other de-risking signal.
+
 ## Downstream impact (informational signal)
 
 If a `DOWNSTREAM_IMPACT` block is present and is not `(none)`, this PR changes a
@@ -106,7 +130,11 @@ escalate criteria above:
 
 When a change spans more than one band, use the highest that applies (a
 criterion-1 or criterion-3 hit is always HIGH, regardless of how small the diff
-looks).
+looks) — **unless** the Trusted first-party stub / standards-sync exception
+applies (`TRUSTED_STUB_SYNC: true` with no overriding hard-stop or
+`SECRET_IN_RUN_STEP`/`THIRD_PARTY_REUSABLE_ADDED` signal), in which case
+`secrets:`-forwarding and workflow edits do not by themselves make the PR HIGH;
+rate it on its actual content (typically LOW/MEDIUM).
 
 ## Issue-type classification
 
