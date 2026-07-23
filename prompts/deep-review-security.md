@@ -100,6 +100,19 @@ diff, the default is HIGH — approve only after the paranoid pass clears it.
   security anti-patterns (injection, eval, shell=True, hardcoded secrets),
   CI security-scanner warnings, org/standards violations, GitHub Actions smells.
 
+**Trusted first-party stub / standards-sync carve-out** (from `prompts/deep-review.md`
+/ shared.md, applies at this tier too): a workflow-only, bot-authored/standards-sync
+caller-stub PR that merely *forwards* `secrets: inherit` (or a `secrets:`/`with:`/`env:`
+map) to a pinned `petry-projects/*` reusable — with no secret piped into a `run:` step
+and no third-party reusable added, or a `SAFETY_CHECKS` block reporting
+`TRUSTED_STUB_SYNC: true` — is **not** HIGH on the "secrets"/"GitHub Actions"/"standards
+violation" grounds, and its missing linked issue / terse description do not fail the
+gates (the org ships these through a canary rollout). The carve-out is **overridden** by
+any deterministic hard-stop (`CI_WEAKENING_DETECTED` / `PROMPT_INJECTION_DETECTED`) and
+by the explicit disqualifiers `SECRET_IN_RUN_STEP: true` or
+`THIRD_PARTY_REUSABLE_ADDED: true` — plus a verified secret-scan hit — all of which still
+escalate.
+
 ### MEDIUM / LOW → you may approve only if the paranoid pass finds nothing and all gates pass
 - A security-adjacent change that, on inspection, introduces no new exposure
   (e.g. a docs note about a security policy, a test-only addition).

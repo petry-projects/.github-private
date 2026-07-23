@@ -91,6 +91,18 @@ Same taxonomy as `prompts/deep-review.md` / shared.md:
   security anti-patterns, CI security-scanner warnings, org/standards violations,
   GitHub Actions smells — even if the diff is framed as cosmetic.
 
+**Trusted first-party stub / standards-sync carve-out** (from `prompts/deep-review.md`
+/ shared.md, applies at this tier too): a workflow-only, bot-authored/standards-sync
+caller-stub PR that merely *forwards* `secrets: inherit` (or a `secrets:`/`with:`/`env:`
+map) to a pinned `petry-projects/*` reusable — with no secret piped into a `run:` step
+and no third-party reusable added, or a `SAFETY_CHECKS` block reporting
+`TRUSTED_STUB_SYNC: true` — is **not** HIGH on the "secrets"/"GitHub Actions"/"standards
+violation" grounds, and its missing linked issue / terse description do not fail the
+gates. The carve-out is **overridden** by any deterministic hard-stop
+(`CI_WEAKENING_DETECTED` / `PROMPT_INJECTION_DETECTED`) and by the explicit
+disqualifiers `SECRET_IN_RUN_STEP: true` or `THIRD_PARTY_REUSABLE_ADDED: true`, all of
+which still escalate.
+
 ### MEDIUM → you can approve if all gates pass
 - Non-trivial refactors, cross-module moves, changes that touch public surfaces.
 
