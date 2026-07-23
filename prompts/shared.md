@@ -70,6 +70,30 @@ any single HIGH signal makes the whole PR HIGH.
 - GitHub Actions security smells: `pull_request_target` + checkout of PR head,
   secret exposure to forked PRs, unpinned third-party actions in security paths.
 
+**Trusted first-party stub / standards-sync carve-out.** The "touches secrets"
+and "GitHub Actions" HIGH signals target a change that *handles* a secret or
+*adds* a security-sensitive surface — not a thin caller stub that *forwards*
+secrets to trusted first-party plumbing. A PR does **not** count as HIGH on those
+grounds when ALL of the following hold (verify against the diff and metadata you
+already fetched, or a `SAFETY_CHECKS` block reporting `TRUSTED_STUB_SYNC: true`):
+
+- Every changed file is a `.github/workflows/*.yml` caller stub.
+- It is bot-authored or a standards-sync PR (e.g. `chore: sync N org-standard
+  workflow stub(s)`).
+- Secrets are only *forwarded* — `secrets: inherit`, or a `secrets:`/`with:`/`env:`
+  mapping into a pinned `petry-projects/*` reusable. No secret is interpolated
+  into a `run:` step (that would be handling → still HIGH).
+- No third-party (non-`petry-projects`) reusable-workflow call is added.
+
+Forwarding `secrets: inherit` to a first-party reusable is the org-standard,
+SonarCloud-suppressed (S7635) pattern, and the org ships these through a **canary
+rollout** (a staged, auto-reverting deploy channel) that materially de-risks them.
+Rate such a PR on its actual content (typically LOW/MEDIUM). "Violates org/project
+standards" means an *actual* documented-rule violation — a standards-*sync* PR
+brings stubs *into* compliance and is the opposite of a violation. The HIGH
+signals above (hard-stops, a secret in a `run:` step, a third-party reusable, a
+CI security warning) still apply and still escalate.
+
 ### MEDIUM (auto-approve allowed if all gates pass)
 
 - Non-trivial logic changes in application code that aren't HIGH.
@@ -98,6 +122,14 @@ You may recommend `approve` only if ALL of:
 6. PR is well-structured: clear title, description, single coherent purpose.
 
 Otherwise → `escalate`.
+
+For a trusted first-party stub / standards-sync PR (see the carve-out above),
+gates 3 and 6 are satisfied by the class: an automated sync PR is *expected* to
+have no linked issue and a terse, templated description, and a single coherent
+purpose (deploy the org-standard stub). Do not escalate one solely for a missing
+linked issue, a thin description, or "not well-structured." Gates 2, 4, and 5 —
+green CI, no unresolved change requests, no unanswered human questions — still
+apply in full.
 
 ## Output format (MANDATORY)
 

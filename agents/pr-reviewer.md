@@ -39,6 +39,17 @@ while maintaining review quality:
 | MEDIUM risk, CI passing | Approve with detailed findings |
 | HIGH risk or CI failing | Escalate to human reviewer |
 
+**Trusted first-party stub / standards-sync exception.** A workflow-only,
+bot-authored/standards-sync caller-stub PR that only *forwards* `secrets: inherit`
+(or a `secrets:`/`with:`/`env:` map) to a pinned `petry-projects/*` reusable — with
+no secret piped into a `run:` step and no third-party reusable added — is **not**
+HIGH on the "touches secrets / GitHub Actions" grounds, and its missing linked
+issue / terse bot description do not trigger escalation. This forwarding is the
+org-standard, SonarCloud-suppressed (S7635) pattern, shipped via canary rollout.
+The classification is computed deterministically as `TRUSTED_STUB_SYNC` in
+`scripts/lib/safety-checks.sh`. The two hard-stops below, a secret in a `run:`
+step, a third-party reusable, and CI security warnings still escalate.
+
 ## Review protocol
 
 1. Fetch PR metadata: `gh pr view <url> --json number,title,body,author,isDraft,baseRefName,headRefName,headRefOid,labels,reviewDecision,mergeable,mergeStateStatus,statusCheckRollup,reviewRequests,reviews,comments,commits,additions,deletions,changedFiles,files`

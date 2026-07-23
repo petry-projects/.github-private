@@ -22,6 +22,16 @@ CALLER_STUBS=(
 # Self-contained inline workflows that ship byte-identically (no reusable ref).
 INLINE_STUBS=(ci copilot-setup-steps sonarcloud)
 
+# Published channel a caller stub is repinned to, read from the script's
+# WORKFLOW_MANIFEST row ("name|kind|host|channel"). Keeps this test in lockstep
+# with the shipped repin target rather than hard-coding a channel that goes stale
+# when a stub advances its major line — e.g. pr-review-mention rides
+# `pr-review-mention/v2-next` during its v2 migration (documented in the shipped
+# caller stub as a centrally-advanced tag that must not be repointed).
+_manifest_channel() {
+  sed -nE "s/^[[:space:]]*\"$1\|caller\|[^|]+\|([^\"]+)\".*/\1/p" "$SEED"
+}
+
 setup() {
   STUB_BIN="$(mktemp -d)" || { echo "Failed to create STUB_BIN" >&2; exit 1; }
   export PATH="$STUB_BIN:$PATH"
@@ -126,11 +136,14 @@ _stub_gh_empty() {
     src="    uses: ./.github/workflows/${name}-reusable.yml@${name}/next"
     run bash -c 'printf "%s\n" "$1" | bash "$0" --repin "$2"' "$SEED" "$src" "$name"
     [ "$status" -eq 0 ]
+    channel="$(_manifest_channel "$name")"
+    [ -n "$channel" ] || { echo "$name has no caller channel in the manifest" >&2; false; }
     [[ "$output" != *"./.github/workflows/${name}-reusable.yml"* ]] \
       || { echo "$name still has ./ ref" >&2; false; }
-    [[ "$output" != *"${name}/next"* ]] || { echo "$name still has /next" >&2; false; }
-    [[ "$output" == *"${name}-reusable.yml@${name}/stable"* ]] \
-      || { echo "$name not pinned to @${name}/stable" >&2; false; }
+    [[ "$output" != *"${name}/next"* ]] \
+      || { echo "$name still has the bare /next dogfood channel" >&2; false; }
+    [[ "$output" == *"${name}-reusable.yml@${channel}"* ]] \
+      || { echo "$name not pinned to its manifest channel @${channel}" >&2; false; }
   done
 }
 

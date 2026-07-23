@@ -161,6 +161,17 @@ Same taxonomy as shared.md:
 - Org/project standards violations
 - GitHub Actions security smells
 
+The **Trusted first-party stub / standards-sync carve-out** from shared.md
+applies here too: a workflow-only, bot-authored/standards-sync caller-stub PR
+that merely *forwards* `secrets: inherit` (or a `secrets:`/`with:`/`env:` map) to
+a pinned `petry-projects/*` reusable — with no secret piped into a `run:` step and
+no third-party reusable added (or a `SAFETY_CHECKS` block reporting
+`TRUSTED_STUB_SYNC: true`) — is not HIGH on the "secrets"/"GitHub Actions"/
+"standards violation" grounds, and its missing linked issue / terse description do
+not fail the gates. The org ships these through a canary rollout. The real HIGH
+signals (secret in a `run:` step, third-party reusable, CI security warning, a
+verified secret-scan hit, or a deterministic hard-stop) still escalate.
+
 ### MEDIUM → you can approve if all gates pass
 - Non-trivial logic changes, new deps, cross-module refactors
 
