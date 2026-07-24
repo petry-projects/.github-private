@@ -1,3 +1,4 @@
+# >>> BEGIN petry-projects secrets baseline (managed by .github — do not edit) >>>
 # ============================================================================
 # petry-projects baseline .gitignore — SECRETS ONLY
 # ----------------------------------------------------------------------------
@@ -390,6 +391,7 @@ private.yml
 # ============================================================================
 # End of petry-projects secrets baseline
 # ============================================================================
+# <<< END petry-projects secrets baseline <<<
 
 # Python bytecode
 __pycache__/
