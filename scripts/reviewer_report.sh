@@ -63,13 +63,13 @@ if [ -f "$_here/lib/advisory-review-gate.sh" ]; then
 fi
 
 # The reviewers this scorecard tracks. RATE_LIMIT_NOTICE_BOTS (from the gate) is
-# exactly our target set — the 4 gate bots PLUS coderabbitai — so we reuse it as
+# exactly our target set — the gate bots PLUS coderabbitai — so we reuse it as
 # the canonical login list rather than re-declaring it (#drift-guard). If the
 # library is unavailable (e.g. a stripped test env), fall back to a literal list.
 if declare -p RATE_LIMIT_NOTICE_BOTS >/dev/null 2>&1 && [ "${#RATE_LIMIT_NOTICE_BOTS[@]}" -gt 0 ]; then
   REVIEWER_BOTS=("${RATE_LIMIT_NOTICE_BOTS[@]}")
 else
-  REVIEWER_BOTS=(gemini-code-assist copilot-pull-request-reviewer sonarqubecloud chatgpt-codex-connector coderabbitai)
+  REVIEWER_BOTS=(gemini-code-assist copilot-pull-request-reviewer sonarqubecloud chatgpt-codex-connector coderabbitai qodo-code-review codeant-ai)
 fi
 
 # Human-facing display names, keyed by GraphQL login (no "[bot]" suffix).
@@ -83,13 +83,15 @@ declare -gA REVIEWER_LABELS=(
   [chatgpt-codex-connector]="Codex"
   [coderabbitai]="CodeRabbit"
   [sonarqubecloud]="SonarCloud"
+  [qodo-code-review]="Qodo Merge"
+  [codeant-ai]="CodeAnt"
 )
 
 # Rate-limit / out-of-quota body pattern — reuse the gate's if present.
 if declare -F _advisory_rate_limit_pattern >/dev/null 2>&1; then
   RATE_LIMIT_RE="$(_advisory_rate_limit_pattern)"
 else
-  RATE_LIMIT_RE='usage limit|rate.?limit|too many requests|quota (exceeded|reached|exhausted)|out of (quota|credits|tokens|requests)|limit (reached|exceeded|exhausted)'
+  RATE_LIMIT_RE='usage limit|rate[-_ ]?limit|too many requests|quota (exceeded|reached|exhausted)|out of (quota|credits|tokens|requests)|limit (reached|exceeded|exhausted)|(reached|exceeded|hit) (the |your )?(usage |rate |daily |monthly )?limit|used up its prepaid credits|Qodo.{0,40}(monthly|usage|PR|review) limit|CodeAnt.{0,40}(monthly|trial|usage) limit'
 fi
 
 # ---------------------------------------------------------------------------

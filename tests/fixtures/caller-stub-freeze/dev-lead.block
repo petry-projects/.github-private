@@ -1,5 +1,6 @@
 on:
   pull_request:
+    branches: [main]
     types: [opened, reopened, synchronize]
   pull_request_review:
     types: [submitted]
@@ -14,6 +15,6 @@ on:
   repository_dispatch:
     types: [dev-lead-ci-failure, dev-lead-reviews-retry, dev-lead-issue-retry]
 
-    uses: petry-projects/.github-private/.github/workflows/dev-lead-reusable.yml@dev-lead/v1-next
+    uses: petry-projects/.github-private/.github/workflows/dev-lead-reusable.yml@dev-lead/stable  # NOSONAR(githubactions:S7637) first-party channel ref
     with:
-      agent_ref: dev-lead/v1-next
+      agent_ref: dev-lead/stable

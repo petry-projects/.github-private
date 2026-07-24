@@ -7,7 +7,7 @@
 #   • This file is a THIN CALLER STUB. All review-dispatch logic lives in the
 #     reusable workflow above.
 #   • You MUST NOT change: the `uses:` ref — it is pinned to the
-#     `pr-review-mention/v2-next` channel, a moving tag advanced centrally.
+#     `pr-review-mention/v2-stable` channel, a moving tag advanced centrally.
 #     Never repoint it to `@main`, a SHA, or a frozen `@vX` (see
 #     ci-standards.md → Reusable workflow versioning). Also do not change the
 #     trigger events or the job-level `permissions:` block — reusable workflows

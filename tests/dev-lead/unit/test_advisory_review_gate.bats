@@ -525,7 +525,7 @@ MOCK_EOF
   # Three real advisory reviews + Codex signalling it is out of quota, head + submissions
   # recent (timeout fallbacks disarmed). All available bots have submitted, so the gate approves.
   local json
-  json='{"reviews":[{"author":{"login":"gemini-code-assist"},"state":"COMMENTED","submittedAt":"2099-01-01T00:00:00Z"},{"author":{"login":"sonarqubecloud"},"state":"COMMENTED","submittedAt":"2099-01-01T00:00:00Z"},{"author":{"login":"copilot-pull-request-reviewer"},"state":"COMMENTED","submittedAt":"2099-01-01T00:00:00Z"}],"comments":[{"author":{"login":"chatgpt-codex-connector"},"body":"You have reached your Codex usage limits for code reviews.","createdAt":"2099-01-01T00:00:00Z"}]}'
+  json='{"reviews":[{"author":{"login":"gemini-code-assist"},"state":"COMMENTED","submittedAt":"2099-01-01T00:00:00Z"},{"author":{"login":"sonarqubecloud"},"state":"COMMENTED","submittedAt":"2099-01-01T00:00:00Z"},{"author":{"login":"copilot-pull-request-reviewer"},"state":"COMMENTED","submittedAt":"2099-01-01T00:00:00Z"},{"author":{"login":"qodo-code-review"},"state":"COMMENTED","submittedAt":"2099-01-01T00:00:00Z"},{"author":{"login":"codeant-ai"},"state":"COMMENTED","submittedAt":"2099-01-01T00:00:00Z"}],"comments":[{"author":{"login":"chatgpt-codex-connector"},"body":"You have reached your Codex usage limits for code reviews.","createdAt":"2099-01-01T00:00:00Z"}]}'
   local tmpdir
   tmpdir=$(_make_mock_gh_dir_recent "$json")
   local gate_script="$SCRIPT_DIR/lib/advisory-review-gate.sh"
@@ -694,4 +694,134 @@ MOCK_EOF
   [ "$status" -eq 0 ]
   # No new comment should be posted when a marker for this head already exists
   [[ "$calls" != *"pr comment"* ]]
+}
+
+# ────────────────────────────────────────────────────────────────────
+# NEW ADVISORY REVIEWERS — Qodo Merge + CodeAnt (issue #1349)
+#
+# Graphite is intentionally NOT registered: it had authored no review/comment
+# at implementation time, so its GraphQL author login is unverified (the app
+# slug `graphite-app` is not the same identifier namespace as `.author.login`,
+# and the Qodo guess `qodo-merge-pro` was already proven wrong — real login is
+# `qodo-code-review`). Adding a guessed login would violate the "do not guess
+# identifiers" guardrail; it is held pending its first real review.
+# ────────────────────────────────────────────────────────────────────
+
+_events_dir() {
+  echo "$(cd "$(dirname "$BATS_TEST_FILENAME")/../fixtures/events" && pwd)"
+}
+
+@test "Advisory gate: Qodo + CodeAnt are registered advisory bots (issue #1349)" {
+  grep -q 'qodo-code-review' "$SCRIPT_DIR/lib/advisory-review-gate.sh"
+  grep -q 'codeant-ai' "$SCRIPT_DIR/lib/advisory-review-gate.sh"
+}
+
+@test "Advisory gate: gate markers and sweep/scorecard detector share one regex (no drift, issue #1349)" {
+  # RATE_LIMIT_MARKERS (gate classification) and _advisory_rate_limit_pattern
+  # (sweep retry + reviewer scorecard) must resolve to the SAME canonical regex,
+  # so a quota refusal can never be a RATE_LIMITED comment in one path and a
+  # normal COMMENTED submission in another.
+  run bash -c "source '$SCRIPT_DIR/lib/advisory-review-gate.sh'
+    [ \"\$RATE_LIMIT_MARKERS\" = \"\$(_advisory_rate_limit_pattern)\" ] && echo SAME"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"SAME"* ]]
+}
+
+@test "Advisory gate: bot-specific Qodo/CodeAnt trial phrases match the shared detector (no drift, issue #1349)" {
+  # The exact phrases the gate matches for the new trial bots must ALSO be caught
+  # by _advisory_rate_limit_pattern, or a refusal would arm the gate but never
+  # trigger a sweep retry / scorecard refusal count.
+  run bash -c "source '$SCRIPT_DIR/lib/advisory-review-gate.sh'
+    pat=\"\$(_advisory_rate_limit_pattern)\"
+    for msg in 'CodeAnt AI: free trial limit' 'Qodo Merge: monthly PR limit'; do
+      printf '%s' \"\$msg\" | grep -qiE \"\$pat\" || { echo \"MISS:\$msg\"; exit 1; }
+    done
+    echo OK"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"OK"* ]]
+}
+
+@test "Advisory gate: Qodo + CodeAnt are in the rate-limit notice superset (issue #1349)" {
+  # RATE_LIMIT_NOTICE_BOTS must be a superset of ADVISORY_BOTS so the scorecard /
+  # sweep never drift below the gate's set.
+  run bash -c "source '$SCRIPT_DIR/lib/advisory-review-gate.sh'
+    printf '%s\n' \"\${RATE_LIMIT_NOTICE_BOTS[@]}\""
+  [[ "$output" == *"qodo-code-review"* ]]
+  [[ "$output" == *"codeant-ai"* ]]
+}
+
+@test "Advisory gate: RATE_LIMIT_NOTICE_BOTS is a superset of ADVISORY_BOTS (no drift, issue #1349)" {
+  run bash -c "source '$SCRIPT_DIR/lib/advisory-review-gate.sh'
+    for b in \"\${!ADVISORY_BOTS[@]}\"; do
+      printf '%s\n' \"\${RATE_LIMIT_NOTICE_BOTS[@]}\" | grep -qx \"\$b\" || { echo \"MISSING:\$b\"; exit 1; }
+    done
+    echo OK"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"OK"* ]]
+}
+
+@test "Gate runtime: a Qodo review is detected as an advisory bot submission (issue #1349)" {
+  local json; json="$(cat "$(_events_dir)/advisory_qodo_reviewed.json")"
+  local tmpdir; tmpdir=$(_make_mock_gh_dir_recent "$json")
+  local gate_script="$SCRIPT_DIR/lib/advisory-review-gate.sh"
+  run env PATH="$tmpdir:$PATH" bash -c "
+    source '$gate_script'
+    check_advisory_reviews 'https://github.com/owner/repo/pull/123'
+  "
+  rm -rf "$tmpdir"
+  # If Qodo were unregistered it would be filtered out and never appear in output.
+  [[ "$output" == *"qodo-code-review"* ]]
+}
+
+@test "Gate runtime: a CodeAnt review is detected as an advisory bot submission (issue #1349)" {
+  local json; json="$(cat "$(_events_dir)/advisory_codeant_reviewed.json")"
+  local tmpdir; tmpdir=$(_make_mock_gh_dir_recent "$json")
+  local gate_script="$SCRIPT_DIR/lib/advisory-review-gate.sh"
+  run env PATH="$tmpdir:$PATH" bash -c "
+    source '$gate_script'
+    check_advisory_reviews 'https://github.com/owner/repo/pull/123'
+  "
+  rm -rf "$tmpdir"
+  [[ "$output" == *"codeant-ai"* ]]
+}
+
+@test "Gate runtime: a Qodo out-of-quota notice is classified RATE_LIMITED (issue #1349)" {
+  local json; json="$(cat "$(_events_dir)/advisory_qodo_rate_limited.json")"
+  local tmpdir; tmpdir=$(_make_mock_gh_dir_recent "$json")
+  local gate_script="$SCRIPT_DIR/lib/advisory-review-gate.sh"
+  run env PATH="$tmpdir:$PATH" bash -c "
+    source '$gate_script'
+    check_advisory_reviews 'https://github.com/owner/repo/pull/123'
+  "
+  rm -rf "$tmpdir"
+  [[ "$output" == *"RATE_LIMITED"* ]]
+  [[ "$output" == *"qodo-code-review"* ]]
+}
+
+@test "Gate runtime: a CodeAnt out-of-quota notice is classified RATE_LIMITED (issue #1349)" {
+  local json; json="$(cat "$(_events_dir)/advisory_codeant_rate_limited.json")"
+  local tmpdir; tmpdir=$(_make_mock_gh_dir_recent "$json")
+  local gate_script="$SCRIPT_DIR/lib/advisory-review-gate.sh"
+  run env PATH="$tmpdir:$PATH" bash -c "
+    source '$gate_script'
+    check_advisory_reviews 'https://github.com/owner/repo/pull/123'
+  "
+  rm -rf "$tmpdir"
+  [[ "$output" == *"RATE_LIMITED"* ]]
+  [[ "$output" == *"codeant-ai"* ]]
+}
+
+@test "Gate runtime: an out-of-quota trial bot does not wedge the gate (issue #1349, cf #657)" {
+  # Qodo is out of quota; all other advisory bots have submitted real reviews.
+  # The rate-limited Qodo must drop out of the required set so the gate approves.
+  local json
+  json='{"reviews":[{"author":{"login":"gemini-code-assist"},"state":"COMMENTED","submittedAt":"2099-01-01T00:00:00Z"},{"author":{"login":"copilot-pull-request-reviewer"},"state":"COMMENTED","submittedAt":"2099-01-01T00:00:00Z"},{"author":{"login":"sonarqubecloud"},"state":"COMMENTED","submittedAt":"2099-01-01T00:00:00Z"},{"author":{"login":"chatgpt-codex-connector"},"state":"COMMENTED","submittedAt":"2099-01-01T00:00:00Z"},{"author":{"login":"codeant-ai"},"state":"COMMENTED","submittedAt":"2099-01-01T00:00:00Z"}],"comments":[{"author":{"login":"qodo-code-review"},"body":"Qodo Merge has reached your monthly usage limit for pull-request reviews.","createdAt":"2099-01-01T00:00:00Z"}]}'
+  local tmpdir; tmpdir=$(_make_mock_gh_dir_recent "$json")
+  local gate_script="$SCRIPT_DIR/lib/advisory-review-gate.sh"
+  run env PATH="$tmpdir:$PATH" bash -c "
+    source '$gate_script'
+    check_advisory_reviews 'https://github.com/owner/repo/pull/123'
+  "
+  rm -rf "$tmpdir"
+  [ "$status" -eq 0 ]
 }
