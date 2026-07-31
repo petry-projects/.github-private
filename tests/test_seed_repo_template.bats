@@ -25,9 +25,9 @@ INLINE_STUBS=(ci copilot-setup-steps sonarcloud)
 # Published channel a caller stub is repinned to, read from the script's
 # WORKFLOW_MANIFEST row ("name|kind|host|channel"). Keeps this test in lockstep
 # with the shipped repin target rather than hard-coding a channel that goes stale
-# when a stub advances its major line — e.g. pr-review-mention rides
-# `pr-review-mention/v2-next` during its v2 migration (documented in the shipped
-# caller stub as a centrally-advanced tag that must not be repointed).
+# when a stub advances its major line — e.g. dependabot-rebase promoted from
+# `dependabot-rebase/stable` to `dependabot-rebase/v2-stable` (centrally-advanced
+# tags that must not be repointed by consumers).
 _manifest_channel() {
   sed -nE "s/^[[:space:]]*\"$1\|caller\|[^|]+\|([^\"]+)\".*/\1/p" "$SEED"
 }
