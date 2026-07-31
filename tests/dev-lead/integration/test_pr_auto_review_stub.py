@@ -39,6 +39,9 @@ def main() -> int:
     except FileNotFoundError:
         print(f"FAIL: {WORKFLOW} not found")
         return 1
+    except yaml.YAMLError as exc:
+        print(f"FAIL: {WORKFLOW} contains invalid YAML: {exc}", file=sys.stderr)
+        return 1
 
     if not isinstance(doc, dict):
         print(f"FAIL: {WORKFLOW} did not parse as a YAML mapping")
@@ -70,13 +73,19 @@ def main() -> int:
                 "  moving channel (AGENTS.md §Release channel tags)."
             )
 
+        expected_guard = (
+            f"github.actor != '{DEPENDABOT_ACTOR}' && "
+            f"github.event.pull_request.user.login != '{DEPENDABOT_ACTOR}'"
+        )
         guard = job.get("if")
-        if not isinstance(guard, str) or DEPENDABOT_ACTOR not in guard:
+        if not isinstance(guard, str) or guard.strip() != expected_guard:
             failures.append(
                 f"  Missing Dependabot guard: job 'if' is {guard!r}\n"
-                f"  Expected an 'if' that skips {DEPENDABOT_ACTOR!r}, e.g.\n"
-                "    if: github.actor != 'dependabot[bot]'\n"
-                "  Reason: Dependabot runs lack GH_PAT_WORKFLOWS, so the reusable's\n"
+                f"  Expected exactly:\n"
+                f"    if: {expected_guard}\n"
+                "  Reason: actor-only guard is bypassed on re-runs; PR-author check\n"
+                "  also skips pull_request_review events on Dependabot PRs.\n"
+                "  Dependabot runs lack GH_PAT_WORKFLOWS, so the reusable's\n"
                 "  checkout fails with 'Input required and not supplied: token' (#1390, #864)."
             )
 
