@@ -54,7 +54,8 @@ setup() {
 @test "dependabot-automerge.yml does not reference an off-channel pin" {
   # Reject the pre-ring @vN pins, raw SHAs, and any non-next ring channel
   # (stable/ring0/ring1); only dependabot-automerge/next is acceptable here.
-  ! grep -qE 'dependabot-automerge-reusable\.yml@(v[0-9]|[0-9a-f]{7,}|[a-z-]+/(stable|ring[0-9]))' "$AUTOMERGE_YML"
+  run grep -qE 'dependabot-automerge-reusable\.yml@(v[0-9]|[0-9a-f]{7,}|[a-z-]+/(stable|ring[0-9]))' "$AUTOMERGE_YML"
+  [ "$status" -eq 1 ]
 }
 
 @test "dependabot-automerge.yml triggers on pull_request_target" {
@@ -75,5 +76,6 @@ setup() {
 @test "dependabot-rebase.yml does not reference an off-channel pin" {
   # Reject the pre-ring @vN pins, raw SHAs, and any non-next ring channel
   # (stable/ring0/ring1); only dependabot-rebase/v2-next is acceptable here.
-  ! grep -qE 'dependabot-rebase-reusable\.yml@(v[0-9]|[0-9a-f]{7,}|[a-z-]+/(stable|ring[0-9]))' "$REBASE_YML"
+  run grep -qE 'dependabot-rebase-reusable\.yml@(v[0-9]|[0-9a-f]{7,}|[a-z-]+/(stable|ring[0-9]))' "$REBASE_YML"
+  [ "$status" -eq 1 ]
 }
