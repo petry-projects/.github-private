@@ -14,6 +14,7 @@ on:
       - '.github/workflows/auto-rebase-retry.yml'
       - '.github/workflows/pr-review.yml'
       - '.github/workflows/pr-review-trigger.yml'
+      - '.github/workflows/pr-auto-review.yml'
       - '.github/workflows/spec-drift.yml'
       - 'tests/dev-lead/**'
       - 'prompts/dev-lead/**'
@@ -39,6 +40,7 @@ on:
       - '.github/workflows/auto-rebase-retry.yml'
       - '.github/workflows/pr-review.yml'
       - '.github/workflows/pr-review-trigger.yml'
+      - '.github/workflows/pr-auto-review.yml'
       - '.github/workflows/spec-drift.yml'
   workflow_dispatch: {}
 
@@ -171,3 +173,16 @@ jobs:
         run: python3 -m pip install --quiet pyyaml
       - name: Validate spec-drift.yml post-merge advisory contract
         run: python3 tests/dev-lead/integration/test_spec_drift_workflow.py
+
+  pr-auto-review-stub:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install PyYAML
+        run: python3 -m pip install --quiet pyyaml
+      - name: Validate pr-auto-review.yml skips Dependabot and pins @pr-auto-review/v1-next
+        run: python3 tests/dev-lead/integration/test_pr_auto_review_stub.py

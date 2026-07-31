@@ -46,6 +46,15 @@ permissions: {}
 
 jobs:
   pr-auto-review:
+    # Skip Dependabot-triggered events (#1390, mirrors the #864 guard in
+    # dev-lead-reusable.yml): a Dependabot `pull_request` run has no access to
+    # GH_PAT_WORKFLOWS, so the secrets expression below resolves empty and the
+    # reusable's ready-check checkout fails at startup with
+    # "Input required and not supplied: token". Dependabot PRs are handled by
+    # dependabot-automerge.yml and never need the review-agent dispatch, so
+    # skipping cleanly here removes the false failure without touching the
+    # channel, trigger event types, or permissions block.
+    if: github.actor != 'dependabot[bot]'
     permissions:
       pull-requests: read
       checks: read
