@@ -47,7 +47,7 @@ TIMER_ROLES = frozenset({"backstop", "safety-net", "self-heal"})
 KINDS = frozenset({"persona", "runtime"})
 BUDGETS = frozenset({"pr-automation-budget", "none"})
 EMIT_BARE = frozenset({"commit", "push"})
-EMIT_PREFIXES = ("label:", "comment-marker:", "comment:", "review:", "dispatch:")
+EMIT_PREFIXES = ("label:", "comment-marker:", "comment:", "review:", "dispatch:", "workflow_dispatch:")
 
 
 def fail(msg: str) -> NoReturn:
@@ -94,7 +94,7 @@ def check_timer(timer: object, where: str) -> None:
         fail(f"{where}.event_fast_path must be a non-empty string or null, got {efp!r}")
 
 
-def check_self_trigger_guards(guards: object, where: str) -> frozenset:
+def check_self_trigger_guards(guards: object, where: str, emits: list) -> frozenset:
     """Validate self_trigger_guards entries and return the set of guarded emit names.
 
     A self_trigger_guards entry documents an in-code guard (with a verifiable
@@ -109,10 +109,12 @@ def check_self_trigger_guards(guards: object, where: str) -> frozenset:
     for i, g in enumerate(guards):
         if not isinstance(g, dict):
             fail(f"{where}[{i}] must be a mapping, got {g!r}")
-        _require_nonempty_str(g.get("emit"), f"{where}[{i}].emit")
+        emit_name = _require_nonempty_str(g.get("emit"), f"{where}[{i}].emit")
+        if emit_name not in emits:
+            fail(f"{where}[{i}].emit {emit_name!r} is not declared in interaction.emits")
         _require_nonempty_str(g.get("guard"), f"{where}[{i}].guard")
         _require_nonempty_str(g.get("location"), f"{where}[{i}].location")
-        guarded.add(g["emit"])
+        guarded.add(emit_name)
     return frozenset(guarded)
 
 
@@ -191,7 +193,7 @@ def check_contract(path: Path, repo_root: Path) -> None:
         _require_nonempty_str(emit, f"{path}: interaction.emits[]")
         if emit not in EMIT_BARE:
             matched = next((p for p in EMIT_PREFIXES if emit.startswith(p)), None)
-            if not matched or emit == matched:
+            if not matched or not emit[len(matched):].strip():
                 fail(f"{path}: interaction.emits entry '{emit}' must be one of "
                      f"{sorted(EMIT_BARE)} or start with one of "
                      f"{list(EMIT_PREFIXES)} followed by a non-empty value so its "
@@ -199,7 +201,7 @@ def check_contract(path: Path, repo_root: Path) -> None:
 
     guards_raw = interaction.get("self_trigger_guards")
     guarded_emits = check_self_trigger_guards(
-        guards_raw, f"{path}: interaction.self_trigger_guards"
+        guards_raw, f"{path}: interaction.self_trigger_guards", emits
     )
     check_self_trigger(events, emits, guarded_emits, f"{path}")
 

@@ -38,6 +38,7 @@ interaction:
     - "review:approved"
     - "review:changes-requested"
     - "comment:<!-- pr-review -->"
+    - "workflow_dispatch:pr-review-trigger"
   idempotency_key: "pr_url + head_sha (the review marker makes a same-head re-review a fast no-op)"
   concurrency_lane: "pr-review-pr-<pr_url> / pr-review-batch (pr-review.yml); pr-review-sweep-<branch|event_name> (pr-review-sweep.yml)"
   stop_markers:

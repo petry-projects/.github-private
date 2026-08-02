@@ -347,3 +347,40 @@ YAML
   [ "$status" -ne 0 ]
   [[ "$output" == *"location"* ]]
 }
+
+@test "validate-interaction-contracts rejects a self_trigger_guards emit not declared in interaction.emits" {
+  # Guard entry references an emit name that is not in the contract's emits list.
+  cat >"$TMP/personas/demo/interaction.yml" <<'YAML'
+schema_version: 1
+role: demo
+kind: persona
+workflows:
+  - .github/workflows/demo.yml
+interaction:
+  triggers:
+    events:
+      - issues
+    timers: []
+  emits:
+    - "label:demo"
+  self_trigger_guards:
+    - emit: "label:not-in-emits"
+      guard: "some guard"
+      location: "scripts/demo.sh:1-5"
+  idempotency_key: "issue_number"
+  concurrency_lane: "demo-${{ issue }}"
+  stop_markers:
+    - demo:hands-off
+  budget: none
+YAML
+  run python3 "$VALIDATOR" "$TMP"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"not declared in interaction.emits"* ]]
+}
+
+@test "validate-interaction-contracts rejects an emit with a whitespace-only payload (label:   )" {
+  sed -i 's#    - "label:demo"#    - "label:   "#' "$TMP/personas/demo/interaction.yml"
+  run python3 "$VALIDATOR" "$TMP"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"emits"* ]]
+}
