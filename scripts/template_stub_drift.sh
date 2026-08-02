@@ -8,7 +8,7 @@ set -euo pipefail
 # repo-template is a DISTRIBUTION ARTIFACT of the canonical standards/ in the
 # public petry-projects/.github repo: scripts/seed-repo-template.sh fetches each
 # canonical workflow stub / baseline file and ships it (caller stubs repinned to
-# the published @<name>/stable channel, inline stubs + baseline files verbatim).
+# the published @<name>/v<MAJOR>-stable channel, inline stubs + baseline files verbatim).
 # This guard re-derives that standards-based content and compares it, file by
 # file, against what is actually committed in the template repo.
 #

@@ -12,8 +12,8 @@ set -euo pipefail
 #   • copies the workflow stubs byte-identically (AC #1), and
 #   • repins each CALLER stub from the local `./…`/`@<name>/next` dogfood ref the
 #     source repo uses internally to the PUBLISHED channel tag a consumer must pin
-#     (`@<name>/stable`; public reusables on petry-projects/.github, the private
-#     dev-lead reusable on petry-projects/.github-private). Inline workflows
+#     (`@<name>/v<MAJOR>-stable`; public reusables on petry-projects/.github, the
+#     private dev-lead reusable on petry-projects/.github-private). Inline workflows
 #     (ci/copilot-setup-steps/sonarcloud) carry no reusable ref and ship verbatim
 #     (AC #2). ci.yml is a customize-per-stack stub; the post-clone "pick your
 #     Dependabot + ci.yml stack" step is documented in the generated BOOTSTRAP.md
@@ -274,7 +274,7 @@ EOF
 # Bootstrap a new repo from this template
 
 This template ships the org baseline: the thin-caller workflow stubs (pinned to
-their published `@<name>/stable` channel tags) and the root/baseline files. Most
+their published `@<name>/v<MAJOR>-stable` channel tags) and the root/baseline files. Most
 of it works out of the box. Two things are **per-stack** and must be picked once,
 after you create your repo from the template:
 
