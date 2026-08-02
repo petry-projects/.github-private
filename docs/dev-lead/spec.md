@@ -24,7 +24,7 @@ The agent is the reactive counterpart to the [PR Review Agent](../pr-review-agen
 
 ### Interaction contract
 
-dev-lead is a **Class 1 event-driven role** under the
+dev-lead pairs a **Class 1 event-driven role** with a **Class 2 self-heal backstop timer** (dev-lead-retry.yml) under the
 [agentic interaction model](../agentic-interaction-model.md) (the normative standard). Its
 trigger/emit/idempotency pattern is declared as machine-readable, CI-verified contracts, not
 prose in this spec:
