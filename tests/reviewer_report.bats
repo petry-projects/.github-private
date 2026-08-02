@@ -17,18 +17,24 @@ setup() {
 # Registry wiring — bots come from the shared advisory-review-gate list
 # ---------------------------------------------------------------------------
 
-@test "REVIEWER_BOTS: seven tracked reviewers, sourced from the gate registry" {
-  [ "${#REVIEWER_BOTS[@]}" -eq 7 ]
+@test "REVIEWER_BOTS: eight tracked reviewers, sourced from the gate registry" {
+  [ "${#REVIEWER_BOTS[@]}" -eq 8 ]
   [[ " ${REVIEWER_BOTS[*]} " == *" coderabbitai "* ]]
   [[ " ${REVIEWER_BOTS[*]} " == *" copilot-pull-request-reviewer "* ]]
   # Qodo Merge + CodeAnt registered via the shared gate registry (issue #1349).
   [[ " ${REVIEWER_BOTS[*]} " == *" qodo-code-review "* ]]
   [[ " ${REVIEWER_BOTS[*]} " == *" codeant-ai "* ]]
+  # Graphite registered via advisory-review-gate (issue #1401).
+  [[ " ${REVIEWER_BOTS[*]} " == *" graphite-app "* ]]
 }
 
 @test "REVIEWER_LABELS: Qodo Merge + CodeAnt have display names (issue #1349)" {
   [ "${REVIEWER_LABELS[qodo-code-review]}" = "Qodo Merge" ]
   [ "${REVIEWER_LABELS[codeant-ai]}" = "CodeAnt" ]
+}
+
+@test "REVIEWER_LABELS: Graphite has display name (issue #1401)" {
+  [ "${REVIEWER_LABELS[graphite-app]}" = "Graphite" ]
 }
 
 @test "REVIEWER_LABELS: every tracked reviewer has a display name (no drift, issue #1349)" {

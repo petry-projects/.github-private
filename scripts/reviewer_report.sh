@@ -2,8 +2,8 @@
 # reviewer_report.sh — org-wide Third-Party Reviewer Scorecard.
 #
 # Measures the agentic third-party code reviewers (GitHub Apps) that participate
-# in PR review across the org — Copilot, Gemini Code Assist, Codex, CodeRabbit,
-# and SonarCloud — and renders a DETERMINISTIC weekly Markdown report. No LLM is
+# in PR review across the org and renders a DETERMINISTIC weekly Markdown report.
+# No LLM is
 # used anywhere in this pipeline: every metric is computed with jq/awk/bash from
 # GitHub's own review data. (An LLM narrative is a deliberately separate, human-
 # triggered add-on — not part of this script.)
