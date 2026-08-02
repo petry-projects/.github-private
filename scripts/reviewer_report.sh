@@ -69,7 +69,7 @@ fi
 if declare -p RATE_LIMIT_NOTICE_BOTS >/dev/null 2>&1 && [ "${#RATE_LIMIT_NOTICE_BOTS[@]}" -gt 0 ]; then
   REVIEWER_BOTS=("${RATE_LIMIT_NOTICE_BOTS[@]}")
 else
-  REVIEWER_BOTS=(gemini-code-assist copilot-pull-request-reviewer sonarqubecloud chatgpt-codex-connector coderabbitai qodo-code-review codeant-ai)
+  REVIEWER_BOTS=(gemini-code-assist copilot-pull-request-reviewer sonarqubecloud chatgpt-codex-connector coderabbitai qodo-code-review codeant-ai graphite-app)
 fi
 
 # Human-facing display names, keyed by GraphQL login (no "[bot]" suffix).
@@ -85,6 +85,7 @@ declare -gA REVIEWER_LABELS=(
   [sonarqubecloud]="SonarCloud"
   [qodo-code-review]="Qodo Merge"
   [codeant-ai]="CodeAnt"
+  [graphite-app]="Graphite"
 )
 
 # Rate-limit / out-of-quota body pattern — reuse the gate's if present.
