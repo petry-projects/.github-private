@@ -22,15 +22,12 @@ CALLER_STUBS=(
 # Self-contained inline workflows that ship byte-identically (no reusable ref).
 INLINE_STUBS=(ci copilot-setup-steps sonarcloud)
 
-# Published channel a caller stub is repinned to, read from the script's
-# WORKFLOW_MANIFEST row ("name|kind|host|channel"). Keeps this test in lockstep
-# with the shipped repin target rather than hard-coding a channel that goes stale
-# when a stub advances its major line — e.g. dependabot-rebase promoted from
-# `dependabot-rebase/stable` to `dependabot-rebase/v2-stable` (centrally-advanced
-# tags that must not be repointed by consumers).
-_manifest_channel() {
-  sed -nE "s/^[[:space:]]*\"$1\|caller\|[^|]+\|([^\"]+)\".*/\1/p" "$SEED"
-}
+# The published channel a caller stub is repinned to is DERIVED from the canonical
+# stub's own major-scoped `uses:` ref (`<name>/v<MAJOR>-stable`, #1184) rather than
+# read from a hardcoded table — so a future channel promotion (e.g. v2 → v3) cannot
+# reintroduce the pre-#1184 skew fixed in #1436. These tests therefore assert against
+# the derived major-scoped channel, and exercise the script's own
+# `_derive_stable_channel` helper directly where the derivation itself is under test.
 
 setup() {
   STUB_BIN="$(mktemp -d)" || { echo "Failed to create STUB_BIN" >&2; exit 1; }
@@ -113,38 +110,66 @@ _stub_gh_empty() {
   done
 }
 
-# ── repin: caller stubs → published channel tags (AC #2) ───────────────────────
-@test "repin: public caller ./… dogfood ref → @<name>/stable on petry-projects/.github" {
-  run bash -c 'printf "%s\n" "    uses: ./.github/workflows/auto-rebase-reusable.yml@auto-rebase/next" | bash "$0" --repin auto-rebase' "$SEED"
+# ── repin: caller stubs → published major-scoped channel tags (AC #1, #2) ──────
+@test "repin: public caller dogfood ref → major-scoped @<name>/v<MAJOR>-stable on petry-projects/.github" {
+  run bash -c 'printf "%s\n" "    uses: ./.github/workflows/auto-rebase-reusable.yml@auto-rebase/v2-next" | bash "$0" --repin auto-rebase' "$SEED"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"uses: petry-projects/.github/.github/workflows/auto-rebase-reusable.yml@auto-rebase/stable"* ]]
+  [[ "$output" == *"uses: petry-projects/.github/.github/workflows/auto-rebase-reusable.yml@auto-rebase/v2-stable"* ]]
   [[ "$output" != *"./.github/workflows/auto-rebase-reusable.yml"* ]]
-  [[ "$output" != *"auto-rebase/next"* ]]
+  [[ "$output" != *"auto-rebase/v2-next"* ]]
+  # AC #1: never the pre-#1184 legacy non-major-scoped channel.
+  [[ "$output" != *"@auto-rebase/stable"* ]]
 }
 
-@test "repin: private dev-lead → @dev-lead/stable on .github-private and agent_ref repinned" {
-  src=$'    uses: petry-projects/.github-private/.github/workflows/dev-lead-reusable.yml@dev-lead/next\n    with:\n      agent_ref: dev-lead/next'
+@test "repin: private dev-lead → @dev-lead/v<MAJOR>-stable on .github-private and agent_ref repinned" {
+  src=$'    uses: petry-projects/.github-private/.github/workflows/dev-lead-reusable.yml@dev-lead/v1-next\n    with:\n      agent_ref: dev-lead/v1-next'
   run bash -c 'printf "%s\n" "$1" | bash "$0" --repin dev-lead' "$SEED" "$src"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"uses: petry-projects/.github-private/.github/workflows/dev-lead-reusable.yml@dev-lead/stable"* ]]
-  [[ "$output" == *"agent_ref: dev-lead/stable"* ]]
-  [[ "$output" != *"dev-lead/next"* ]]
+  [[ "$output" == *"uses: petry-projects/.github-private/.github/workflows/dev-lead-reusable.yml@dev-lead/v1-stable"* ]]
+  [[ "$output" == *"agent_ref: dev-lead/v1-stable"* ]]
+  [[ "$output" != *"dev-lead/v1-next"* ]]
+  [[ "$output" != *"@dev-lead/stable"* ]]
 }
 
-@test "repin: NO shipped caller stub retains a ./… dogfood ref or a /next channel" {
+@test "repin: NO shipped caller stub retains a ./… dogfood ref, a /next channel, or a legacy non-major-scoped pin" {
+  # The derived channel preserves whatever major the canonical stub carries and
+  # flips the tier to stable; v3 here is arbitrary, proving the derivation tracks
+  # the stub's own major line rather than a hardcoded per-stub channel.
   for name in "${CALLER_STUBS[@]}"; do
-    src="    uses: ./.github/workflows/${name}-reusable.yml@${name}/next"
+    src="    uses: ./.github/workflows/${name}-reusable.yml@${name}/v3-next"
     run bash -c 'printf "%s\n" "$1" | bash "$0" --repin "$2"' "$SEED" "$src" "$name"
     [ "$status" -eq 0 ]
-    channel="$(_manifest_channel "$name")"
-    [ -n "$channel" ] || { echo "$name has no caller channel in the manifest" >&2; false; }
     [[ "$output" != *"./.github/workflows/${name}-reusable.yml"* ]] \
       || { echo "$name still has ./ ref" >&2; false; }
-    [[ "$output" != *"${name}/next"* ]] \
-      || { echo "$name still has the bare /next dogfood channel" >&2; false; }
-    [[ "$output" == *"${name}-reusable.yml@${channel}"* ]] \
-      || { echo "$name not pinned to its manifest channel @${channel}" >&2; false; }
+    [[ "$output" != *"${name}/v3-next"* ]] \
+      || { echo "$name still has the dogfood /next channel" >&2; false; }
+    [[ "$output" == *"${name}-reusable.yml@${name}/v3-stable"* ]] \
+      || { echo "$name not repinned to its derived major-scoped stable channel" >&2; false; }
+    # AC #1: never the pre-#1184 legacy non-major-scoped <name>/stable.
+    [[ "$output" != *"@${name}/stable"* ]] \
+      || { echo "$name emitted the legacy non-major-scoped channel" >&2; false; }
   done
+}
+
+# AC #2/#4: the repin channel is DERIVED from the canonical stub's own ref.
+@test "_derive_stable_channel: preserves the major line and flips the tier to stable" {
+  source "$SEED"
+  # dogfood next tier → published stable tier, same major.
+  got="$(printf '%s\n' '    uses: x/dev-lead-reusable.yml@dev-lead/v1-next' | _derive_stable_channel dev-lead)"
+  [ "$got" = "dev-lead/v1-stable" ]
+  # already-stable major-scoped pin → unchanged.
+  got="$(printf '%s\n' '    uses: x/agent-shield-reusable.yml@agent-shield/v2-stable' | _derive_stable_channel agent-shield)"
+  [ "$got" = "agent-shield/v2-stable" ]
+  # a different major is preserved verbatim.
+  got="$(printf '%s\n' '    uses: x/pr-review-mention-reusable.yml@pr-review-mention/v7-next' | _derive_stable_channel pr-review-mention)"
+  [ "$got" = "pr-review-mention/v7-stable" ]
+}
+
+@test "_derive_stable_channel: FAILS LOUD on a legacy non-major-scoped ref (no v<MAJOR> to preserve)" {
+  # A canonical stub that is NOT major-scoped is itself a standards violation
+  # (#1184); the derivation must error rather than silently emit a legacy pin.
+  run bash -c 'source "$0"; printf "%s\n" "    uses: x/agent-shield-reusable.yml@agent-shield/stable" | _derive_stable_channel agent-shield' "$SEED"
+  [ "$status" -ne 0 ]
 }
 
 # ── emit-workflow: fetch byte-identical, repin callers, pass inline through ────
@@ -156,14 +181,29 @@ _stub_gh_empty() {
   [ "$output" = "$(cat "$STANDARDS_DIR/standards/workflows/ci.yml")" ]
 }
 
-@test "emit-workflow: caller stub fetched from standards is repinned" {
+@test "emit-workflow: caller stub fetched from standards is repinned to its derived major-scoped channel" {
   printf '%s\n' 'jobs:' '  run:' \
-    '    uses: ./.github/workflows/dependency-audit-reusable.yml@dependency-audit/next' \
+    '    uses: ./.github/workflows/dependency-audit-reusable.yml@dependency-audit/v2-next' \
     | _fixture_workflow dependency-audit.yml
   run bash "$SEED" --emit-workflow dependency-audit.yml
   [ "$status" -eq 0 ]
-  [[ "$output" == *"uses: petry-projects/.github/.github/workflows/dependency-audit-reusable.yml@dependency-audit/stable"* ]]
+  [[ "$output" == *"uses: petry-projects/.github/.github/workflows/dependency-audit-reusable.yml@dependency-audit/v2-stable"* ]]
   [[ "$output" != *"./.github/workflows/dependency-audit-reusable.yml"* ]]
+  [[ "$output" != *"@dependency-audit/stable"* ]]
+}
+
+@test "emit-workflow: AC#4 regression — a canonical @<name>/v<MAJOR>-stable pin is emitted verbatim, NOT rewritten to legacy @<name>/stable" {
+  # #1436: the pre-#1184 hardcoded table took the CORRECT major-scoped canonical
+  # pin and rewrote it to legacy <name>/stable, so template-drift's expected
+  # baseline contradicted standards/ and reported the correct template as DRIFTED.
+  # The repin must reproduce the canonical major-scoped stable pin byte-for-byte.
+  printf '%s\n' 'jobs:' '  run:' \
+    '    uses: petry-projects/.github/.github/workflows/agent-shield-reusable.yml@agent-shield/v2-stable' \
+    | _fixture_workflow agent-shield.yml
+  run bash "$SEED" --emit-workflow agent-shield.yml
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"@agent-shield/v2-stable"* ]]
+  [[ "$output" != *"@agent-shield/stable"* ]]
 }
 
 @test "emit-workflow: sonarcloud inline stub ships byte-identically (no repin)" {
@@ -337,7 +377,7 @@ EOF
     if printf '%s\n' "${INLINE_STUBS[@]}" | grep -qx "$n"; then
       printf 'name: %s\n' "$n" | _fixture_workflow "$n.yml"
     else
-      printf '  uses: ./.github/workflows/%s-reusable.yml@%s/next\n' "$n" "$n" \
+      printf '  uses: ./.github/workflows/%s-reusable.yml@%s/v2-next\n' "$n" "$n" \
         | _fixture_workflow "$n.yml"
     fi
   done
@@ -367,7 +407,7 @@ EOF
     if printf '%s\n' "${INLINE_STUBS[@]}" | grep -qx "$n"; then
       printf 'name: %s\n' "$n" | _fixture_workflow "$n.yml"
     else
-      printf '  uses: ./.github/workflows/%s-reusable.yml@%s/next\n' "$n" "$n" \
+      printf '  uses: ./.github/workflows/%s-reusable.yml@%s/v2-next\n' "$n" "$n" \
         | _fixture_workflow "$n.yml"
     fi
   done
