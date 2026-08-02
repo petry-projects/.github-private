@@ -2,8 +2,8 @@
 # reviewer_report.sh — org-wide Third-Party Reviewer Scorecard.
 #
 # Measures the agentic third-party code reviewers (GitHub Apps) that participate
-# in PR review across the org — Copilot, Gemini Code Assist, Codex, CodeRabbit,
-# and SonarCloud — and renders a DETERMINISTIC weekly Markdown report. No LLM is
+# in PR review across the org and renders a DETERMINISTIC weekly Markdown report.
+# No LLM is
 # used anywhere in this pipeline: every metric is computed with jq/awk/bash from
 # GitHub's own review data. (An LLM narrative is a deliberately separate, human-
 # triggered add-on — not part of this script.)
@@ -69,7 +69,7 @@ fi
 if declare -p RATE_LIMIT_NOTICE_BOTS >/dev/null 2>&1 && [ "${#RATE_LIMIT_NOTICE_BOTS[@]}" -gt 0 ]; then
   REVIEWER_BOTS=("${RATE_LIMIT_NOTICE_BOTS[@]}")
 else
-  REVIEWER_BOTS=(gemini-code-assist copilot-pull-request-reviewer sonarqubecloud chatgpt-codex-connector coderabbitai qodo-code-review codeant-ai)
+  REVIEWER_BOTS=(gemini-code-assist copilot-pull-request-reviewer sonarqubecloud chatgpt-codex-connector coderabbitai qodo-code-review codeant-ai graphite-app)
 fi
 
 # Human-facing display names, keyed by GraphQL login (no "[bot]" suffix).
@@ -85,6 +85,7 @@ declare -gA REVIEWER_LABELS=(
   [sonarqubecloud]="SonarCloud"
   [qodo-code-review]="Qodo Merge"
   [codeant-ai]="CodeAnt"
+  [graphite-app]="Graphite"
 )
 
 # Rate-limit / out-of-quota body pattern — reuse the gate's if present.
