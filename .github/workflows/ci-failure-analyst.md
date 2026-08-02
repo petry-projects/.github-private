@@ -7,7 +7,8 @@ permissions:
   actions: read
   checks: read
   contents: read
-  pull-requests: read
+  issues: write
+  pull-requests: write
 
 engine: claude
 
