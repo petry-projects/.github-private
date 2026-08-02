@@ -107,9 +107,49 @@ record it by appending a dated row here rather than overwriting this baseline.
   first-party agent comments — bodies that carry one of our automation markers (`<!-- pr-review-agent
   …-->`, `<!-- dev-lead …-->`, etc.). Third-party reviewer bots (Codex, Qodo, SonarCloud, etc.) do
   not emit these markers and are classified as `non-agent`; they are already measured separately via
-  the reviewer scorecard. The AC #4 ~12% figure cited in issue #1411 was also measured over
-  first-party markers only (it pre-dates the classifier and was an estimate, not a live
-  all-comments count), so the denominators are consistent. Any future comparison against an
-  all-comments denominator should be labelled explicitly to avoid confusion.
+  the reviewer scorecard. **[Corrected 2026-08-02 — the following sentence is factually wrong and is
+  retained here, not silently deleted, per this doc's dated-correction convention; see the
+  *Correction (2026-08-02)* section at the end of this document, which supersedes it.]** ~~The AC #4
+  ~12% figure cited in issue #1411 was also measured over first-party markers only (it pre-dates the
+  classifier and was an estimate, not a live all-comments count), so the denominators are
+  consistent.~~ Any future comparison against an all-comments denominator should be labelled
+  explicitly to avoid confusion.
 - **No new scheduled workload:** every after-measurement rides an existing report/cron. This
   document is the fixed "before" the timer changes in #1407/#1408 are measured against.
+
+---
+
+### Correction (2026-08-02) — denominator scope of the ~12% noise estimate
+
+An earlier version of the denominator-scope note above (landed in #1414) concluded that the AC #4
+~12% figure "was also measured over first-party markers only … so the denominators are consistent."
+**That claim is wrong.** The original sentence is struck in place above rather than silently rewritten;
+this dated section corrects it (raised as finding F3 on PR #1414, tracked in #1419).
+
+- **Actual basis of the ~12% figure (AC #1).** The ~12% figure was derived over **all** PR comments in
+  a sampled window — third-party reviewer bots included — and classified by a phrase scan
+  ("no action", "no issues", "LGTM", "no blocking", "advisory") across every comment, **not** over a
+  marker-bearing subset. Provenance: a 10-PR sample (#1355, #1366, #1372, #1359, #1351, #1357, #1356,
+  #1347, #1346, #1345) with **total comments (issue + review) = 180** and
+  **est. no-action/advisory = 21** → 21/180 ≈ 12%. In that same sample **254/254 comments+reviews were
+  machine-authored and 0 were human** — a figure only meaningful because third-party bots
+  (`codeant-ai`, `coderabbitai`, `qodo-code-review`, `sonarqubecloud`, `chatgpt-codex-connector`,
+  `gemini-code-assist`) were in scope.
+
+- **The two populations genuinely differ (AC #2).** `cn_render_noise_section` counts only first-party,
+  marker-bearing comments — a **narrower** population than the all-comments basis of the ~12% estimate.
+  The denominators are therefore **not** consistent. The first measured first-party value is
+  **expected to differ** from ~12%, and a difference of that kind is a **population change — not a
+  regression and not an improvement** in reviewer noise.
+
+- **Interpreting the first scheduled run (AC #3).** Read a first-party number below ~12% as the
+  *expected* consequence of the narrower denominator, **not** as a noise reduction to claim. A genuine
+  measurement correction is one that the population difference cannot explain — for example, the
+  first-party classifier disagreeing with a hand-count of first-party markers on the same PRs, or the
+  first-party share moving materially across runs at a *fixed* first-party denominator. Record only the
+  latter as a dated append; never treat the first-party-vs-all-comments gap itself as a change in noise.
+
+- **All-comments series (AC #4).** No all-comments noise series is maintained. The first-party
+  no-action share is the **only** noise time-series in this document; the **reviewer scorecard**
+  (`scripts/reviewer_report.sh`) is the only view that accounts for third-party reviewer bots. A reader
+  must not mistake the first-party series for total reviewer noise — for that, consult the scorecard.
