@@ -276,3 +276,16 @@ JSON
   run jq -e '.bots["copilot-pull-request-reviewer"].reviewed_prs == 2' "$out"
   [ "$status" -eq 0 ]
 }
+
+@test "render: agent-comment noise section is wired into the report (#1411)" {
+  dir="$(mktemp -d "$BATS_TEST_TMPDIR/noise.XXXXXX")"
+  cat > "$dir/r.jsonl" <<'JSON'
+{"kind":"pr","repo":"o/r","pr":"o/r/1","created":"2026-07-10T10:00:00Z","merged":null,"draft":false,"author":"h"}
+{"kind":"agent_comment","repo":"o/r","pr":"o/r/1","no_action":true}
+{"kind":"agent_comment","repo":"o/r","pr":"o/r/1","no_action":false}
+JSON
+  run render_reviewer_report "$dir" 7 1 2026-07-13
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "Agent comment noise"
+  echo "$output" | grep -q "No-action comments"
+}
