@@ -9,6 +9,11 @@ pattern is explicit, reviewable, and enforceable rather than tribal knowledge. I
 normative source later phases reference — a contract, a validator, or a leak fix cites a
 rule here rather than re-deriving it.
 
+> **Adding a new role?** Follow the step-by-step runbook
+> [How to add an agentic role](./adding-an-agentic-role.md) — it walks the trigger-class
+> choice, the contract shape, the event-vs-bridge decision, and the timer contract, each
+> pointing back to the governing section here.
+
 It is written **repo-local first** but shaped for promotion into an org-wide
 `standards/agent-standards.md` in [`petry-projects/.github`](https://github.com/petry-projects/.github):
 the principles and rules are org-general; only the classification table (§4) is
