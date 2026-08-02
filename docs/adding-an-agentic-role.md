@@ -10,8 +10,9 @@ runbook says *how* to declare one so it passes CI on the first try. Every step c
 standard section that governs it — read that section for the rules, and follow this page
 for the sequence.
 
-Do not treat any step as optional: a role whose `on:` block, contract, and classification
-row disagree fails CI (see [Enforcement](#enforcement) below).
+Do not treat any step as optional: the contract is CI-validated today (schema, timers,
+self-trigger violations), and the full `on:`-block / §4-row / contract cross-check will be
+enforced once Story 4 / #1406 lands (see [Enforcement](#enforcement) below).
 
 ---
 
@@ -56,10 +57,10 @@ decision — option (b), so there is **no** cross-repo `persona.schema.json` dep
 
 - `personas/<id>/interaction.yml` — for a role backed by a persona manifest.
 - `interaction-contracts/<name>.yml` — for a non-persona runtime whose triggers live only in
-  its workflow(s) (e.g. `dev-lead`, `pr-review`, `ci-failure-analyst`).
+  its workflow(s) (e.g. `pr-review`, `ci-failure-analyst`).
 
 Copy the shape from an existing contract of the same kind
-([`personas/<id>/interaction.yml`](../personas/<id>/interaction.yml) for the persona
+([`personas/dev-lead/interaction.yml`](../personas/dev-lead/interaction.yml) for the persona
 lens, [`interaction-contracts/dev-lead.yml`](../interaction-contracts/dev-lead.yml) for the
 runtime lens). Fill in every required field:
 
@@ -122,9 +123,16 @@ contract's `interaction.triggers.timers`:
 
 ## Enforcement
 
-The classification table and the per-role contracts are **CI-verified, not review-verified**:
-the [`validate-interaction-model`](./agentic-interaction-model.md#10-how-this-document-is-enforced)
-check (Story 4 / [#1406](https://github.com/petry-projects/.github-private/issues/1406)) fails
-any PR whose `on:` block, §4 row, and contract disagree — so a non-conforming role cannot
-merge. That validator is the single source of truth for the exact rules; this runbook does not
-restate them.
+The per-role contracts are **CI-validated today** by `validate-interaction-contracts` (the
+`Lint` workflow). It checks: schema compliance, workflow file existence, timer structure
+(`role`, `justification`, `stop_condition`, `event_fast_path`), self-trigger violations
+([§7](./agentic-interaction-model.md#7-the-860-normative-rules)), and
+budget/stop-marker consistency ([§9](./agentic-interaction-model.md#9-the-cost--run-count-bound)).
+A contract that fails these checks blocks the PR.
+
+The **full cross-check** — verifying that a workflow's `on:` block, its §4 classification
+row, and its contract all agree — is **planned** for Story 4 /
+[#1406](https://github.com/petry-projects/.github-private/issues/1406)
+([`validate-interaction-model`](./agentic-interaction-model.md#10-how-this-document-is-enforced)).
+Until that check lands, keep the three artefacts in sync by convention; a mismatch will not
+block merge today but will fail CI once Story 4 ships.
