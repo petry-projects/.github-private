@@ -649,8 +649,8 @@ for a gate-integrity fix and are not clearly net-positive:
   mechanism for both paths; option (a) would still need the marker for #1290 while adding an identity
   migration for #1415.
 
-The marker-keyed gate closes the gap **without** touching the identity model, reuses the proven
-#1290 shape, and keeps a single discriminator across both the comment and review paths. If a distinct
+The marker-keyed gate closes the gap **without** touching the identity model, reuses the proven #1290
+shape, and keeps a single discriminator across both the comment and review paths. If a distinct
 dev-lead identity is later adopted for *other* reasons, this gate remains correct (a marker-less
 maintainer thread is still a maintainer finding) and the login signal simply becomes a redundant
 confirmation — so option (b) does not foreclose option (a).
