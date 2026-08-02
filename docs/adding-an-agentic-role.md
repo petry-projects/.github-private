@@ -51,7 +51,7 @@ add it to the §4 **exclusion list** instead, with a one-line reason.
 Declare the role's interaction pattern as a **machine-readable contract** in the shape fixed
 by standard [§8.1](./agentic-interaction-model.md#81-fields) — do not restate the pattern in
 prose scattered across workflow comments. The contract lives in one of two standalone
-repo-local locations (the [§8.2](./agentic-interaction-model.md#82-file-location--decision-standalone-repo-local-contract-not-personayml-yet)
+repo-local locations (the [§8.2](./agentic-interaction-model.md#82-file-location---decision-standalone-repo-local-contract-not-personayml-yet)
 decision — option (b), so there is **no** cross-repo `persona.schema.json` dependency):
 
 - `personas/<id>/interaction.yml` — for a role backed by a persona manifest.
@@ -59,7 +59,7 @@ decision — option (b), so there is **no** cross-repo `persona.schema.json` dep
   its workflow(s) (e.g. `dev-lead`, `pr-review`, `ci-failure-analyst`).
 
 Copy the shape from an existing contract of the same kind
-([`personas/dev-lead/interaction.yml`](../personas/dev-lead/interaction.yml) for the persona
+([`personas/<id>/interaction.yml`](../personas/<id>/interaction.yml) for the persona
 lens, [`interaction-contracts/dev-lead.yml`](../interaction-contracts/dev-lead.yml) for the
 runtime lens). Fill in every required field:
 
