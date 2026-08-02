@@ -492,3 +492,82 @@ update the table (and the role's §8 contract) in the same PR, or CI fails.
 The table's exact shape is fixed **here** (this document is the normative source); #1406
 consumes it. If the shape must change, it changes here first and #1406's fixtures change with
 it — never the reverse.
+
+---
+
+## 11. Narrowing the Class-2 backstop timers — stall detector, rollback trigger, monitoring window
+
+The Class-2 backstop timers that reconcile un-eventable transitions — `pr-review-sweep.yml`
+(§4, `backstop`) and `dev-lead-retry.yml` (§4, `self-heal`, the §6.3 leak) — are slated to be
+**narrowed** (#1407 / #1408) to cut the redundant fan-out they produce. Narrowing a safety net
+is exactly the pattern the #860 post-mortem warns against: it can trade a *known, noisy* failure
+mode (over-firing) for an *unknown, silent* one (a genuinely un-eventable transition that no fast
+path re-fires and, once the cron is narrowed, nothing sweeps). #1410 therefore builds the
+instrument **before** the net is narrowed, and defines the rollback path here so the decision is
+explicit, not tribal.
+
+### 11.1 The stall detector (the instrument)
+
+`scripts/lib/pr-stall-detect.sh` is a **detect-only** pure lib (mirroring
+`scripts/lib/pr-runaway-detect.sh`, §9 rule 2) — it never labels, comments, or halts. It flags an
+open PR that is **CI-green + `REVIEW_REQUIRED`, not reviewed at head, with no agent activity and no
+pending triggering event, idle longer than `STALL_MIN_AGE_MINUTES` (default 30 min — double the
+sweep's ≤15-min backstop cadence)**. It is **fail-quiet on intentional stops**: a PR carrying
+`needs-human-review`, `dev-lead:hands-off`, `initiative:hold`, or the `<!-- pr-automation-budget
+exhausted -->` marker is never reported (the human-gate exclusions reuse the canonical
+`pr_has_escalation_label`, §6.2.3). `scripts/pr_stall_scan.sh` runs it over every open PR as an
+**additive step on the existing `daily-pr-review-health.yml`** and surfaces any candidate through
+the same health-check / automated-report issue channel — **no new scheduled workload** (§1: this
+adds a pushed signal and a documented human decision, not another automated brake). This is the
+push detection §7 rule 7 requires: the un-eventable green transition the narrowed cron would drop
+is caught here and **still resolves** (surfaced → human/backstop acts) instead of stalling unseen.
+
+### 11.2 The rollback trigger (the condition)
+
+**Trigger condition.** Roll back the narrowing if the stall detector reports **≥ 2 distinct
+stalled PRs within any rolling 24-hour window**, *or* **any single PR stalled for ≥ 4 hours** (≈8×
+the default threshold), during the monitoring window (§11.3). Either signal means the narrowed
+timer let a genuinely un-eventable transition sit unresolved — the silent failure mode the
+narrowing risked. A stall that is later explained by a human-gate marker does **not** count (it is
+excluded by design and never reported). One transient single-PR stall under the 4-hour bar is a
+watch item, not a revert.
+
+Both thresholds are deliberately low: the cost of a false rollback is a return to the *known* noisy
+state (fully recoverable), while the cost of tolerating a silent stall is the #860 blindness. When
+in doubt, revert.
+
+### 11.3 The revert procedure (the exact steps)
+
+The narrowing lands as one or more PRs that edit the `schedule.cron` (and/or the `workflow_run`
+scoping) of `pr-review-sweep.yml` / `dev-lead-retry.yml`. To revert:
+
+1. **Identify** the merged narrowing PR(s) for #1407 / #1408 (labelled against those issues).
+2. **Revert** them — `git revert <merge-sha>` for each, in reverse merge order — restoring
+   `pr-review-sweep.yml`'s guaranteed backstop cadence (`schedule: '2,17,32,47 * * * *'`, ≤15 min)
+   and `dev-lead-retry.yml`'s `schedule: '15 */2 * * *'`. Do **not** hand-edit the cron to a
+   guessed value; restore the exact pre-narrowing lines from history so the backstop returns to its
+   proven state.
+3. **Open the revert PR** referencing the triggering stall issue(s), and confirm CI green +
+   `validate-workflow-schedules` passing (the restored crons are non-minute-0, AGENTS.md
+   "Scheduled workflows").
+4. **Verify recovery**: after merge, confirm the previously-stalled PR(s) get re-reviewed on the
+   next backstop tick and the daily stall scan returns to all-clear.
+5. **Record** the rollback as a comment on the epic (#1402) and this story (#1410) — the go/no-go
+   audit trail this repo uses for every safety-net change (mirrors the fleet-remediation
+   human-gate record in AGENTS.md). Reverting is the *expected*, low-cost response to the trigger,
+   not an incident.
+
+### 11.4 The monitoring window (how long, who checks)
+
+**Window.** The narrowed timers run under observation for **14 days** after the narrowing merges
+(≥14 daily stall-scan runs — a full two weeks covers weekday *and* weekend PR cadence, since some
+un-eventable transitions only appear under low-traffic conditions). The change is considered
+**settled** only after 14 consecutive days with **zero** rollback-trigger hits (§11.2).
+
+**Who/what checks.** The **daily `daily-pr-review-health.yml` stall scan** is the automated watcher
+— it is the pushed signal, so no human has to remember to look (the #860 anti-pattern). A stall
+candidate opens a `health-check` / `automated-report` issue labelled for **dev-lead** attention,
+which is the human checkpoint. During the 14-day window, treat any stall-candidate issue as a
+rollback decision per §11.2 rather than a routine triage item. After the window settles, the stall
+scan remains as a **permanent** detector (it is cheap and detect-only) — settling ends the
+*heightened* watch, not the instrument.
