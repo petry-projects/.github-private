@@ -180,6 +180,58 @@ EOF
   [ "$(_get_env INTENT_TYPE)" = "fix-reviews" ]
 }
 
+# ── reviewer-trust gate: gate on the REVIEWER's association (#1417) ───────────
+# The pull_request_review branch must evaluate the reviewer's association
+# (.review.author_association), NOT the PR author's (.pull_request.author_association).
+# Every fixture below holds .pull_request.author_association at OWNER (as it always
+# is on a dev-lead-authored PR) and varies only .review.author_association, so each
+# assertion would fail against the pre-fix code that read the PR author's field.
+
+@test "reviews: reviewer-trust — trusted-human reviewer (COLLABORATOR) → review-changes" {
+  export GITHUB_EVENT_NAME="pull_request_review"
+  export GITHUB_EVENT_PATH="$FIXTURES_DIR/pr_review_reviewer_trusted_human.json"
+
+  run bash "$INTENT_SCRIPT"
+
+  [ "$status" -eq 0 ]
+  [ "$(_get_env INTENT_TYPE)" = "review-changes" ]
+}
+
+@test "reviews: reviewer-trust — untrusted reviewer (CONTRIBUTOR) on OWNER-authored PR → skip untrusted-reviewer" {
+  # Regression guard (#1417): under the pre-fix code this read .pull_request.author_association
+  # (OWNER) and routed review-changes — the untrusted-reviewer skip was dead code. The fixed
+  # gate reads .review.author_association (CONTRIBUTOR) and reaches the skip.
+  export GITHUB_EVENT_NAME="pull_request_review"
+  export GITHUB_EVENT_PATH="$FIXTURES_DIR/pr_review_reviewer_untrusted.json"
+
+  run bash "$INTENT_SCRIPT"
+
+  [ "$status" -eq 0 ]
+  [ "$(_get_env INTENT_TYPE)" = "skip" ]
+  [ "$(_get_env INTENT_REASON)" = "untrusted-reviewer" ]
+}
+
+@test "reviews: reviewer-trust — trusted bot (assoc NONE) → fix-reviews (bot path ignores assoc)" {
+  export GITHUB_EVENT_NAME="pull_request_review"
+  export GITHUB_EVENT_PATH="$FIXTURES_DIR/pr_review_reviewer_trusted_bot.json"
+
+  run bash "$INTENT_SCRIPT"
+
+  [ "$status" -eq 0 ]
+  [ "$(_get_env INTENT_TYPE)" = "fix-reviews" ]
+}
+
+@test "reviews: reviewer-trust — missing reviewer association fails closed → skip untrusted-reviewer" {
+  export GITHUB_EVENT_NAME="pull_request_review"
+  export GITHUB_EVENT_PATH="$FIXTURES_DIR/pr_review_reviewer_missing_assoc.json"
+
+  run bash "$INTENT_SCRIPT"
+
+  [ "$status" -eq 0 ]
+  [ "$(_get_env INTENT_TYPE)" = "skip" ]
+  [ "$(_get_env INTENT_REASON)" = "untrusted-reviewer" ]
+}
+
 # ── pull_request_review_comment tests ────────────────────────────────────────
 
 @test "reviews: pull_request_review_comment codex → fix-reviews" {

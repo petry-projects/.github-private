@@ -5,6 +5,7 @@
     "id": 1004,
     "state": "CHANGES_REQUESTED",
     "body": "Please refactor the authentication logic and add more tests.",
+    "author_association": "OWNER",
     "user": {
       "login": "donpetry",
       "type": "User"
