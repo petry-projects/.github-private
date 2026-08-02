@@ -51,18 +51,24 @@ add it to the §4 **exclusion list** instead, with a one-line reason.
 
 Declare the role's interaction pattern as a **machine-readable contract** in the shape fixed
 by standard [§8.1](./agentic-interaction-model.md#81-fields) — do not restate the pattern in
-prose scattered across workflow comments. The contract lives in one of two standalone
-repo-local locations (the [§8.2](./agentic-interaction-model.md#82-file-location---decision-standalone-repo-local-contract-not-personayml-yet)
-decision — option (b), so there is **no** cross-repo `persona.schema.json` dependency):
+prose scattered across workflow comments. Create the file(s) for the lens(es) your role
+requires (the [§8.2](./agentic-interaction-model.md#82-file-location---decision-standalone-repo-local-contract-not-personayml-yet)
+decision — option (b), so there is **no** cross-repo `persona.schema.json` dependency).
+These are independent requirements, not alternatives — a role that qualifies for both
+needs both:
 
-- `personas/<id>/interaction.yml` — for a role backed by a persona manifest.
-- `interaction-contracts/<name>.yml` — for a non-persona runtime whose triggers live only in
-  its workflow(s) (e.g. `pr-review`, `ci-failure-analyst`).
+- **Role lens** → `personas/<id>/interaction.yml` — required when the role is backed by a
+  persona manifest. Copy the shape from
+  [`personas/dev-lead/interaction.yml`](../personas/dev-lead/interaction.yml).
+- **Runtime lens** → `interaction-contracts/<name>.yml` — required for any deployed runtime
+  (a role whose triggers live in a workflow file), whether or not a persona manifest also
+  exists (e.g. `pr-review`, `ci-failure-analyst`). Copy the shape from
+  [`interaction-contracts/dev-lead.yml`](../interaction-contracts/dev-lead.yml).
 
-Copy the shape from an existing contract of the same kind
-([`personas/dev-lead/interaction.yml`](../personas/dev-lead/interaction.yml) for the persona
-lens, [`interaction-contracts/dev-lead.yml`](../interaction-contracts/dev-lead.yml) for the
-runtime lens). Fill in every required field:
+For example, `dev-lead` has both a persona manifest and a deployed workflow, so it carries
+both `personas/dev-lead/interaction.yml` (role lens) and
+`interaction-contracts/dev-lead.yml` (runtime lens). Fill in every required field in
+whichever file(s) you create:
 
 - `interaction.triggers.events` — mirror the workflow's `on:` webhook subscriptions verbatim.
 - `interaction.triggers.timers` — empty for a pure Class 1 role; one entry per `schedule.cron`
