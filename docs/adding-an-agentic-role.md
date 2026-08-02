@@ -67,10 +67,20 @@ runtime lens). Fill in every required field:
 - `interaction.triggers.events` — mirror the workflow's `on:` webhook subscriptions verbatim.
 - `interaction.triggers.timers` — empty for a pure Class 1 role; one entry per `schedule.cron`
   otherwise (see Step 4).
-- `emits` — the events / markers this role produces. This is what proves the role never
-  subscribes to its own output (#860 rule 1,
-  [§7](./agentic-interaction-model.md#7-the-860-normative-rules)): an emit must not name an
-  event class the role also subscribes to.
+- `emits` — the events / markers this role produces. An emit that names an event class the
+  role also subscribes to is allowed **only** when accompanied by a matching
+  `self_trigger_guards` entry — without it, the validator rejects the contract (#860 rule 1,
+  [§7](./agentic-interaction-model.md#7-the-860-normative-rules)). Each `self_trigger_guards`
+  entry carries three required fields:
+  - `emit` — the colliding event name.
+  - `guard` — one sentence describing the in-code stop-condition-gated mechanism that
+    prevents the loop.
+  - `location` — the file (and optional line range) where the guard lives.
+
+  `interaction-contracts/dev-lead.yml` provides four worked examples: three
+  `dispatch:dev-lead-*-retry` guards (the retry timer fires only when its stop-condition
+  holds — PR still rate-limited and limit now cleared) and a `commit` guard (the intent
+  script drops `pull_request:synchronize` events from the bot's own commits).
 - `idempotency_key`, `concurrency_lane`, `stop_markers`, and `budget` — the role obeys the
   existing `pr-automation-budget` ceiling ([§9](./agentic-interaction-model.md#9-the-cost--run-count-bound));
   do **not** invent a new numeric cap.
@@ -125,7 +135,7 @@ contract's `interaction.triggers.timers`:
 
 The per-role contracts are **CI-validated today** by `validate-interaction-contracts` (the
 `Lint` workflow). It checks: schema compliance, workflow file existence, timer structure
-(`role`, `justification`, `stop_condition`, `event_fast_path`), self-trigger violations
+(`role`, `justification`, `stop_condition`, `event_fast_path`), unguarded self-trigger violations
 ([§7](./agentic-interaction-model.md#7-the-860-normative-rules)), and
 budget/stop-marker consistency ([§9](./agentic-interaction-model.md#9-the-cost--run-count-bound)).
 A contract that fails these checks blocks the PR.
