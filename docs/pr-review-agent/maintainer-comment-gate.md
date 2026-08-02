@@ -147,8 +147,12 @@ cannot reach.
 ### Clears the #1290 way, fails closed the #1290 way
 
 - **Addressed by a push.** A commit pushed at/after the finding (head commit
-  `committer.date` ≥ the thread's originating `createdAt`) marks it addressed, so the
-  normal fix-then-continue flow is not deadlocked.
+  `pushedDate` ≥ the thread's originating `createdAt`) marks it addressed, so the
+  normal fix-then-continue flow is not deadlocked. `pushedDate` is a server-recorded
+  timestamp written by GitHub on receipt of the push — unlike `committer.date` (which
+  is commit metadata the author controls), it cannot be set to an arbitrary past or
+  future value. When `pushedDate` is unavailable, the gate fails closed (finding
+  treated as unresolved).
 - **Addressed by a human resolving the thread** (safe per the coupling above).
 - **Fails closed.** Undeterminable authorship, `createdAt`, or push-time → **block**
   (return 1); a malformed threads snapshot → **fail the PR** (return 2 → exit 1). An

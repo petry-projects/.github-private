@@ -135,18 +135,25 @@ review_thread_login_is_excluded_bot() {
 #   each node shaped {isResolved, comments:{nodes:[{author:{login}, body,
 #   createdAt}]}} — exactly what check_maintainer_review_threads consumes. Echoes
 #   empty string on any API failure; the caller treats empty/malformed as fail
-#   closed. Paginated to the GraphQL max single page (100); PRs with >100 threads
-#   are rare and any dropped page only makes the gate *more* conservative for the
-#   threads it did see.
+#   closed. Fetches up to 100 threads (GraphQL single-page max); emits an operator-
+#   visible warning when pageInfo.hasNextPage is true so the operator can detect
+#   when a PR exceeds the cap and threads beyond page 1 are not evaluated.
 mrtg_fetch_review_threads() {
   local pr_url="${1:-}"
   if [[ -z "$pr_url" ]]; then
     return 0
   fi
   # shellcheck disable=SC2016  # $url is a GraphQL variable placeholder, not shell
-  local _gql='query($url:URI!){resource(url:$url){...on PullRequest{reviewThreads(first:100){nodes{isResolved comments(first:1){nodes{author{login} body createdAt}}}}}}}'
-  gh api graphql -f query="$_gql" -f url="$pr_url" \
-    --jq '{reviewThreads: (.data?.resource?.reviewThreads?.nodes // [])}' 2>/dev/null || true
+  local _gql='query($url:URI!){resource(url:$url){...on PullRequest{reviewThreads(first:100){pageInfo{hasNextPage} nodes{isResolved comments(first:1){nodes{author{login} body createdAt}}}}}}}'
+  local _raw
+  _raw=$(gh api graphql -f query="$_gql" -f url="$pr_url" 2>/dev/null) || true
+  [[ -z "$_raw" ]] && return 0
+  local _has_next
+  _has_next=$(printf '%s' "$_raw" | jq -r '.data?.resource?.reviewThreads?.pageInfo?.hasNextPage // false' 2>/dev/null) || true
+  if [[ "$_has_next" == "true" ]]; then
+    log_review_gate_warn "PR has >100 review threads — pages beyond the first are not fetched; a maintainer finding in a later page would not block approval. Consider paginating."
+  fi
+  printf '%s' "$_raw" | jq '{reviewThreads: (.data?.resource?.reviewThreads?.nodes // [])}' 2>/dev/null || true
 }
 
 # check_maintainer_review_threads <threads_json> <head_committer_date_iso> [bot_user]

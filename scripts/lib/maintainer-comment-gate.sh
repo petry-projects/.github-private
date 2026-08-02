@@ -94,17 +94,28 @@ _mcg_to_epoch() {
 }
 
 # maintainer_gate_head_committer_date <pr_url>
-#   Echo the committer.date of the PR's head commit via a single GraphQL query.
-#   committer.date (not author.date) reflects when a cherry-pick/rebase was applied
-#   (≈push time), preserving the "was a fix pushed after the finding?" semantics.
-#   Echoes empty string on any API failure; the caller treats empty as fail-closed.
+#   Echo the server-recorded push timestamp for the PR's head commit via a single
+#   GraphQL query. Prefers pushedDate (a server-recorded field GitHub writes on
+#   receipt of the push — not settable by the committer) over committer.date so
+#   a future-dated no-op commit cannot make an old finding appear addressed. Fails
+#   closed (empty string) when pushedDate is unavailable; the caller treats empty
+#   as fail-closed (finding unresolved). Echoes empty on any API failure.
 maintainer_gate_head_committer_date() {
   local pr_url="${1:-}"
   [[ -z "$pr_url" ]] && return 0
   # shellcheck disable=SC2016  # $url is a GraphQL variable placeholder, not shell
-  local _gql='query($url:URI!){resource(url:$url){...on PullRequest{commits(last:1){nodes{commit{committer{date}}}}}}}'
-  gh api graphql -f query="$_gql" -f url="$pr_url" \
-    --jq '.data?.resource?.commits?.nodes[0]?.commit?.committer?.date // empty' 2>/dev/null || true
+  local _gql='query($url:URI!){resource(url:$url){...on PullRequest{commits(last:1){nodes{commit{pushedDate committer{date}}}}}}}'
+  local _raw
+  _raw=$(gh api graphql -f query="$_gql" -f url="$pr_url" 2>/dev/null) || return 0
+  # Use pushedDate (server-recorded) if available; fail closed if not.
+  local _pushed
+  _pushed=$(printf '%s' "$_raw" | jq -r '.data?.resource?.commits?.nodes[0]?.commit?.pushedDate // empty' 2>/dev/null) || true
+  if [[ -n "$_pushed" ]]; then
+    printf '%s' "$_pushed"
+    return 0
+  fi
+  # pushedDate unavailable — return empty so the caller fails closed.
+  return 0
 }
 
 # check_maintainer_comments <pr_snapshot_json> <head_committer_date_iso> [bot_user]
