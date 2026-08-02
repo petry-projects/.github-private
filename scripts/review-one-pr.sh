@@ -294,6 +294,115 @@ fi
   fi
 }
 
+# Maintainer issue-comment gate (issue #1290). A maintainer finding posted as a
+# PR *issue comment* (`gh pr comment` / the GitHub main comment box) creates no
+# review thread, so it neither trips `required_review_thread_resolution` nor is
+# read by dev-lead's fix-reviews prompt — pr-review approves and the PR
+# auto-merges with the defect. Withhold approval while the latest maintainer
+# issue comment postdates the last push. It FAILS CLOSED: an undeterminable
+# snapshot/push-time blocks rather than reading as "no findings".
+#   • FORCE_REVIEW bypasses (a human @mention IS the human-in-the-loop, and the
+#     same comment that triggers a re-review would otherwise deadlock the gate).
+#   • rc=1 → skip (exit 100); a later reply/push re-triggers pr-review.
+#   • rc=2 → fail the PR (exit 1) so a scheduled run retries, never approve blind.
+if [ "${FORCE_REVIEW:-false}" != "true" ]; then
+  (
+    # Subshell isolation so the gate's helpers/vars don't leak into the caller.
+    # shellcheck source=lib/maintainer-comment-gate.sh
+    source "$SCRIPT_DIR/lib/maintainer-comment-gate.sh"
+    _mc_head_date=$(maintainer_gate_head_committer_date "$PR_URL")
+    check_maintainer_comments "$PR_SNAPSHOT" "$_mc_head_date" "${BOT_USER:-donpetry-bot}"
+  ) || {
+    mc_gate_rc=$?
+    if [ "$mc_gate_rc" -eq 1 ]; then
+      echo "    skip: unaddressed maintainer issue comment postdates last push — withholding approval (#1290)"
+      # Dismiss any existing pr-review-agent APPROVED review so the PR remains blocked
+      # until the maintainer comment is addressed (best-effort).
+      if [ "${DRY_RUN:-false}" != "true" ]; then
+        _agent_approval=$(echo "$PR_SNAPSHOT" | jq -r --arg bot "${BOT_USER:-donpetry-bot}" --arg sha "$PR_HEAD_SHA" 'first((.reviews // [])[] | select(.author?.login == $bot and .state == "APPROVED" and .commit?.oid == $sha) | .id) // empty' 2>/dev/null || true)
+        if [ -n "$_agent_approval" ]; then
+          gh api graphql -f query='mutation($id:ID!,$msg:String!){dismissPullRequestReview(input:{pullRequestReviewId:$id,message:$msg}){clientMutationId}}' -f id="$_agent_approval" -f msg="Dismissing approval due to unaddressed maintainer issue comment (#1290)" 2>/dev/null || echo "    warn: could not dismiss prior approval"
+        fi
+      fi
+      echo "{\"pr\":\"$PR_URL\",\"sha\":\"$PR_HEAD_SHA\",\"decision\":\"skip\",\"reason\":\"unaddressed-maintainer-comment\"}"
+      exit 100
+    elif [ "$mc_gate_rc" -eq 2 ]; then
+      echo "    error: maintainer-comment gate could not evaluate the PR snapshot — failing closed to avoid uninformed approval"
+      echo "{\"pr\":\"$PR_URL\",\"sha\":\"$PR_HEAD_SHA\",\"decision\":\"error\",\"reason\":\"maintainer-comment-gate-error\"}"
+      exit 1
+    else
+      exit "$mc_gate_rc"
+    fi
+  }
+fi
+
+# Maintainer review-thread gate (issue #1415). The review-path sibling of the
+# issue-comment gate above. On a dev-lead-authored PR the owner cannot use
+# CHANGES_REQUESTED ("Can not request changes on your own pull request") and the
+# agent — acting as the owner `don-petry` — can resolve the maintainer's own
+# review threads (observed on PR #1413), defeating both blocking paths. This gate
+# keys on the automation MARKER (not login, which cannot separate the two) and
+# withholds approval while an UNRESOLVED maintainer review thread postdates the
+# last push. It FAILS CLOSED: an undeterminable authorship/created/push-time
+# blocks rather than reading as "no findings". The coupled resolve-guard in
+# dev-lead-fix-reviews.sh is what makes a thread's resolution a safe human signal.
+#   • FORCE_REVIEW bypasses (a human @mention IS the human-in-the-loop).
+#   • rc=1 → skip (exit 100); a later reply/push re-triggers pr-review.
+#   • rc=2 → fail the PR (exit 1) so a scheduled run retries, never approve blind.
+if [ "${FORCE_REVIEW:-false}" != "true" ]; then
+  (
+    # Subshell isolation so the gate's helpers/vars don't leak into the caller.
+    # The issue-comment gate is sourced too for its head-commit committer.date
+    # helper (same cherry-pick-safe push-time semantics both gates share).
+    # shellcheck source=lib/maintainer-comment-gate.sh
+    source "$SCRIPT_DIR/lib/maintainer-comment-gate.sh"
+    # shellcheck source=lib/maintainer-review-thread-gate.sh
+    source "$SCRIPT_DIR/lib/maintainer-review-thread-gate.sh"
+    _mrt_head_date=$(maintainer_gate_head_committer_date "$PR_URL")
+    _mrt_threads=$(mrtg_fetch_review_threads "$PR_URL")
+    check_maintainer_review_threads "$_mrt_threads" "$_mrt_head_date" "${BOT_USER:-donpetry-bot}"
+  ) || {
+    mrt_gate_rc=$?
+    if [ "$mrt_gate_rc" -eq 1 ]; then
+      echo "    skip: unaddressed maintainer review thread postdates last push — withholding approval (#1415)"
+      # Dismiss any existing pr-review-agent APPROVED review at head so the PR
+      # remains blocked until the maintainer thread is addressed (best-effort).
+      if [ "${DRY_RUN:-false}" != "true" ]; then
+        _agent_approval=$(echo "$PR_SNAPSHOT" | jq -r --arg bot "${BOT_USER:-donpetry-bot}" --arg sha "$PR_HEAD_SHA" 'first((.reviews // [])[] | select(.author?.login == $bot and .state == "APPROVED" and .commit?.oid == $sha) | .id) // empty' 2>/dev/null || true)
+        if [ -n "$_agent_approval" ]; then
+          gh api graphql -f query='mutation($id:ID!,$msg:String!){dismissPullRequestReview(input:{pullRequestReviewId:$id,message:$msg}){clientMutationId}}' -f id="$_agent_approval" -f msg="Dismissing approval due to unaddressed maintainer review thread (#1415)" 2>/dev/null || echo "    warn: could not dismiss prior approval"
+        fi
+      fi
+      echo "{\"pr\":\"$PR_URL\",\"sha\":\"$PR_HEAD_SHA\",\"decision\":\"skip\",\"reason\":\"unaddressed-maintainer-review-thread\"}"
+      exit 100
+    elif [ "$mrt_gate_rc" -eq 2 ]; then
+      echo "    error: maintainer-review-thread gate could not evaluate the review threads — failing closed to avoid uninformed approval"
+      echo "{\"pr\":\"$PR_URL\",\"sha\":\"$PR_HEAD_SHA\",\"decision\":\"error\",\"reason\":\"maintainer-review-thread-gate-error\"}"
+      exit 1
+    else
+      exit "$mrt_gate_rc"
+    fi
+  }
+fi
+
+# Skip when a human has requested changes, with two guards:
+#   1. FORCE_REVIEW bypasses the skip — mention-triggered runs always proceed so
+#      authors can request a re-review after addressing feedback.
+#   2. Only skip when a CHANGES_REQUESTED review targets the current head SHA.
+#      On repos that don't dismiss stale reviews, reviewDecision can stay
+#      CHANGES_REQUESTED after the author pushes new commits; in that case the
+#      review is stale and the cascade should re-engage with the updated code.
+if [ "$REVIEW_DECISION" = "CHANGES_REQUESTED" ] && [ "${FORCE_REVIEW:-false}" != "true" ]; then
+  CHANGES_REQUESTED_AT_HEAD=$(echo "$PR_SNAPSHOT" | jq -r --arg sha "$PR_HEAD_SHA" '
+    [.reviews[] | select(.state == "CHANGES_REQUESTED" and .commit.oid == $sha)]
+    | if length > 0 then "true" else "false" end
+  ')
+  if [ "$CHANGES_REQUESTED_AT_HEAD" = "true" ]; then
+    echo "    skip: changes requested at current head — awaiting author response before reviewing"
+    echo "{\"pr\":\"$PR_URL\",\"sha\":\"$PR_HEAD_SHA\",\"decision\":\"skip\",\"reason\":\"changes-requested\"}"
+    exit 100
+  fi
+fi
 # Skip when a human has requested changes, with two guards:
 #   1. FORCE_REVIEW bypasses the skip — mention-triggered runs always proceed so
 #      authors can request a re-review after addressing feedback.
@@ -619,6 +728,90 @@ fi
 
 rm -f "$_gh_meta_err" "$_gh_diff_err" "$_gh_diff_tmp" "${_fallback_tmp:-}"
 unset _gh_meta_err _gh_diff_err _gh_diff_tmp _gh_meta_err_content _gh_diff_err_content _fallback_tmp _prefetch_full_diff_file
+
+# Advisory bot feedback. The gate above waits for advisory bots to submit,
+# but the triage tier has NO tools — unless their findings are inlined here,
+# the cascade can approve without ever seeing the feedback it waited for
+# (Codex P1 on PR #458). Collect, per advisory bot: the latest review body at
+# the current head, the latest PR-level (issue) comment, and the most recent
+# inline review comments at the current head — truncated to keep the prompt
+# small. Three correctness rules (Codex follow-ups):
+#   - group/sort FIRST, then drop empty bodies: a later empty approval must
+#     suppress an older findings body, not resurrect it as "current";
+#   - bound reviews/inline comments to PR_HEAD_SHA so findings from previous
+#     heads (already fixed by newer pushes) don't trigger false escalation;
+#   - PR-level issue comments (e.g. SonarCloud's quality-gate report) count
+#     as advisory submissions in the gate, so include them here too. They
+#     carry no commit binding — take the newest per bot.
+# Best-effort: a fetch failure degrades to "(none)" rather than failing the run.
+_owner_repo=$(echo "$PR_URL" | sed -E 's|https://github.com/([^/]+/[^/]+)/pull/.*|\1|')
+_pr_num=${PR_URL##*/}
+# Derive advisory bot list from the gate script — single source of truth so
+# adding a new bot to ADVISORY_BOTS is automatically reflected here.
+_adv_bots=$(
+  # shellcheck source=lib/advisory-review-gate.sh
+  source "$SCRIPT_DIR/lib/advisory-review-gate.sh" 2>/dev/null
+  [[ ${#ADVISORY_BOTS[@]} -gt 0 ]] && printf '%s\n' "${!ADVISORY_BOTS[@]}" | sort | jq -R . | jq -s .
+) || _adv_bots=''
+if [[ -z "$_adv_bots" ]]; then
+  _adv_bots='["chatgpt-codex-connector","copilot-pull-request-reviewer","gemini-code-assist","sonarqubecloud"]'
+fi
+ADVISORY_REVIEW_BODIES=$(echo "$PR_SNAPSHOT" | jq -r --argjson bots "$_adv_bots" --arg head "$PR_HEAD_SHA" '
+  [(.reviews // [])[] | select([.author.login] | inside($bots)) | select(.commit.oid == $head)]
+  | group_by(.author.login) | map(sort_by(.submittedAt) | last)
+  | map(select(.body != null and .body != ""))
+  | .[] | "--- \(.author.login) review (\(.state), \(.submittedAt)) ---\n\(.body[0:800])"
+' 2>/dev/null || true)
+ADVISORY_PR_COMMENTS=$(echo "$PR_SNAPSHOT" | jq -r --argjson bots "$_adv_bots" '
+  [(.comments // [])[] | select([.author.login] | inside($bots))]
+  | group_by(.author.login) | map(sort_by(.createdAt) | last)
+  | map(select(.body != null and .body != ""))
+  | .[] | "--- \(.author.login) PR comment (\(.createdAt)) ---\n\(.body[0:600])"
+' 2>/dev/null || true)
+# REST user.login carries a "[bot]" suffix (e.g. "gemini-code-assist[bot]"),
+# unlike the GraphQL-backed `gh pr view` — strip it before matching. --slurp
+# is required with --paginate: pages arrive as separate JSON arrays, and
+# without slurping the sort/limit would apply per page, not across all pages.
+# gh rejects --slurp together with --jq, so pipe to external jq instead.
+ADVISORY_INLINE_COMMENTS=$(gh api "repos/$_owner_repo/pulls/$_pr_num/comments" --paginate --slurp 2>/dev/null \
+  | jq -r --argjson bots "$_adv_bots" --arg head "$PR_HEAD_SHA" '
+      add
+      | map(select([.user.login | sub("\\[bot\\]$"; "")] | inside($bots)))
+      | map(select(.commit_id == $head))
+      | sort_by(.created_at) | reverse | .[0:15] | .[]
+      | "--- \(.user.login) @ \(.path):\(.line // .original_line) (\(.created_at)) ---\n\(.body[0:600])"
+    ' 2>/dev/null || true)
+ADVISORY_BOT_FEEDBACK=$(printf '%s\n%s\n%s' "$ADVISORY_REVIEW_BODIES" "$ADVISORY_PR_COMMENTS" "$ADVISORY_INLINE_COMMENTS")
+# Cap total size so huge bot histories can't blow up the prompt.
+ADVISORY_BOT_FEEDBACK="${ADVISORY_BOT_FEEDBACK:0:8000}"
+unset _owner_repo _pr_num _adv_bots ADVISORY_REVIEW_BODIES ADVISORY_PR_COMMENTS ADVISORY_INLINE_COMMENTS
+
+# Downstream-impact pass (epic #748). Gated default-off behind the Story 5
+# feature flag so that, when disabled, the triage prompt is byte-identical to
+# pre-feature behavior and zero `gh` consumer-reference fetches are performed.
+# When enabled: map the PR's changed files (from PR_METADATA) to the org repos
+# that pin the changed reusable-workflow / lib / prompt surface, fetch each
+# impacted consumer's referencing workflow, and write the human-readable block
+# to a file whose path is exported as DOWNSTREAM_IMPACT_FILE for the deep/audit
+# tiers (mirroring ADVISORY_BOT_FEEDBACK_FILE). The block is inlined into the
+# triage prompt below (triage has NO tools). Best-effort: assemble_downstream_impact
+# always exits 0, so a fetch failure degrades to "(none)" rather than failing the run.
+if [ "${DOWNSTREAM_IMPACT_ENABLED:-false}" = "true" ]; then
+  _di_changed=$(printf '%s' "$PR_METADATA" | jq -r '.files[]?.path // empty' 2>/dev/null || true)
+  assemble_downstream_impact "$_di_changed" "$SCRIPT_DIR/lib/consumer-manifest.json" "/tmp/cascade/downstream-impact.txt" || true
+  unset _di_changed
+fi
+
+# Deterministic safety-checks pass (issue #305). Safety-critical, so gated
+# DEFAULT-ON: compute the SAFETY_CHECKS block from the already-fetched
+# PR_METADATA + PR_DIFF (no `gh`/network) and write it to a file whose path is
+# exported as SAFETY_CHECKS_FILE for the deep/audit tiers. The block is inlined
+# into the triage prompt below (triage has NO tools). When SAFETY_CHECKS_ENABLED
+# is explicitly "false" nothing is computed and the triage prompt stays
+# byte-identical to pre-feature behavior (rollback + holdout-eval stability).
+if [ "${SAFETY_CHECKS_ENABLED:-true}" = "true" ]; then
+  assemble_safety_checks "$PR_METADATA" "$PR_DIFF" "/tmp/cascade/safety-checks.txt" || true
+fi
 
 # Advisory bot feedback. The gate above waits for advisory bots to submit,
 # but the triage tier has NO tools — unless their findings are inlined here,

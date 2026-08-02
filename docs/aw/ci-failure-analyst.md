@@ -31,6 +31,24 @@ repo-x (check_run: failure)
 
 **Why reusable workflow (not dispatch)?** CI Failure Analyst is read-only — it only posts a comment using the caller's own `GITHUB_TOKEN`. No `GH_PAT_WORKFLOWS` is needed. The reusable pattern is simpler: one file, `secrets: inherit`, and GitHub automatically scopes the token to the caller's repo.
 
+### Interaction contract
+
+CI Failure Analyst is a **Class 1 event-driven role** (a single reaction to
+`check_run:[completed]`, no schedule) under the
+[agentic interaction model](../agentic-interaction-model.md) (the normative standard). It has
+no persona manifest — its trigger lives entirely in the byte-frozen thin caller
+`.github/workflows/ci-failure-analyst.lock.yml` — so its pattern is declared in one
+machine-readable, CI-verified contract:
+
+- **Runtime lens** — [`interaction-contracts/ci-failure-analyst.yml`](../../interaction-contracts/ci-failure-analyst.yml)
+  (the `check_run` trigger, the `<!-- ci-analyst sha=... -->` emit, the per-SHA idempotency key
+  and concurrency lane, and why it is not bound by `pr-automation-budget`).
+
+It structurally cannot loop — one comment per failing head SHA, deduped by the `ci-analyst`
+marker and serialized by the per-head-SHA concurrency lane — so it carries no `stop_markers` and
+`budget: none`. When the caller stub's `on:` block changes, update that contract and the
+standard's §4 classification table in the same change.
+
 ### Files
 
 | File | Role |

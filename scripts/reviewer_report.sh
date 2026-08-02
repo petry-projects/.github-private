@@ -2,8 +2,8 @@
 # reviewer_report.sh — org-wide Third-Party Reviewer Scorecard.
 #
 # Measures the agentic third-party code reviewers (GitHub Apps) that participate
-# in PR review across the org — Copilot, Gemini Code Assist, Codex, CodeRabbit,
-# and SonarCloud — and renders a DETERMINISTIC weekly Markdown report. No LLM is
+# in PR review across the org and renders a DETERMINISTIC weekly Markdown report.
+# No LLM is
 # used anywhere in this pipeline: every metric is computed with jq/awk/bash from
 # GitHub's own review data. (An LLM narrative is a deliberately separate, human-
 # triggered add-on — not part of this script.)
@@ -62,14 +62,25 @@ if [ -f "$_here/lib/advisory-review-gate.sh" ]; then
   source "$_here/lib/advisory-review-gate.sh"
 fi
 
+# No-action agent-comment noise classifier (#1411). Provides CN_AGENT_COMMENT_JQ
+# (the shared jq pre-classifier applied during collection) and the pure
+# cn_render_noise_section renderer. Derive its two decision patterns once so the
+# collection workers and the renderer agree by construction.
+if [ -f "$_here/lib/comment-noise.sh" ]; then
+  # shellcheck source=scripts/lib/comment-noise.sh
+  source "$_here/lib/comment-noise.sh"
+  CN_MARKER_RE="$(cn_marker_pattern)"
+  CN_NOACTION_RE="$(cn_no_action_pattern)"
+fi
+
 # The reviewers this scorecard tracks. RATE_LIMIT_NOTICE_BOTS (from the gate) is
-# exactly our target set — the 4 gate bots PLUS coderabbitai — so we reuse it as
+# exactly our target set — the gate bots PLUS coderabbitai — so we reuse it as
 # the canonical login list rather than re-declaring it (#drift-guard). If the
 # library is unavailable (e.g. a stripped test env), fall back to a literal list.
 if declare -p RATE_LIMIT_NOTICE_BOTS >/dev/null 2>&1 && [ "${#RATE_LIMIT_NOTICE_BOTS[@]}" -gt 0 ]; then
   REVIEWER_BOTS=("${RATE_LIMIT_NOTICE_BOTS[@]}")
 else
-  REVIEWER_BOTS=(gemini-code-assist copilot-pull-request-reviewer sonarqubecloud chatgpt-codex-connector coderabbitai)
+  REVIEWER_BOTS=(gemini-code-assist copilot-pull-request-reviewer sonarqubecloud chatgpt-codex-connector coderabbitai qodo-code-review codeant-ai graphite-app)
 fi
 
 # Human-facing display names, keyed by GraphQL login (no "[bot]" suffix).
@@ -83,13 +94,16 @@ declare -gA REVIEWER_LABELS=(
   [chatgpt-codex-connector]="Codex"
   [coderabbitai]="CodeRabbit"
   [sonarqubecloud]="SonarCloud"
+  [qodo-code-review]="Qodo Merge"
+  [codeant-ai]="CodeAnt"
+  [graphite-app]="Graphite"
 )
 
 # Rate-limit / out-of-quota body pattern — reuse the gate's if present.
 if declare -F _advisory_rate_limit_pattern >/dev/null 2>&1; then
   RATE_LIMIT_RE="$(_advisory_rate_limit_pattern)"
 else
-  RATE_LIMIT_RE='usage limit|rate.?limit|too many requests|quota (exceeded|reached|exhausted)|out of (quota|credits|tokens|requests)|limit (reached|exceeded|exhausted)'
+  RATE_LIMIT_RE='usage limit|rate[-_ ]?limit|too many requests|quota (exceeded|reached|exhausted)|out of (quota|credits|tokens|requests)|limit (reached|exceeded|exhausted)|(reached|exceeded|hit) (the |your )?(usage |rate |daily |monthly )?limit|used up its prepaid credits|Qodo.{0,40}(monthly|usage|PR|review) limit|CodeAnt.{0,40}(monthly|trial|usage) limit'
 fi
 
 # ---------------------------------------------------------------------------
@@ -296,6 +310,9 @@ render_reviewer_report() {
 
   if [ "${total:-0}" -eq 0 ]; then
     printf 'No pull-request activity found in the last %s days.\n' "$lookback"
+    if declare -F cn_render_noise_section >/dev/null 2>&1; then
+      cn_render_noise_section "$dir"
+    fi
     return 0
   fi
 
@@ -360,10 +377,17 @@ render_reviewer_report() {
     "$(_fmt_int "$co_review")" "$(_fmt_int "$eligible")" "$multi_bot"
   printf -- '- Higher overlap = more redundant coverage; lower = reviewers are specializing or missing PRs.\n\n'
 
+  # ---- Agent comment noise (#1411) -----------------------------------------
+  # The no-action share of OUR automation's own comments — the net-new noise
+  # metric. Same code path produces the pre-rollout baseline and every after-run.
+  if declare -F cn_render_noise_section >/dev/null 2>&1; then
+    cn_render_noise_section "$dir"
+  fi
+
   # ---- Known gaps ----------------------------------------------------------
   printf '## Known gaps\n\n'
   printf -- '- **Cost is not measured here.** These reviewers are external SaaS GitHub Apps and emit no token-usage artifacts, so per-review $ cost is not observable from our side. For our own Claude reviewer'"'"'s spend, see the [Token Cost Observatory](../../issues?q=is%%3Aissue+label%%3Atoken-report).\n'
-  printf -- '- **Comment usefulness / false-positive rate** requires judgment and is intentionally out of this deterministic report. It is a separate, human-approved LLM add-on.\n'
+  printf -- '- **Comment usefulness / false-positive rate** for the third-party reviewers requires judgment and is intentionally out of this deterministic report (a separate, human-approved LLM add-on). Note the **Agent comment noise** section above is a different, deterministic metric — it scores OUR automation'"'"'s no-action share from the markers each comment already carries.\n'
   printf -- '- **Latency baseline** is PR-creation time (v1). A refinement to last-human-push is tracked for v2.\n\n'
   printf -- '_Source: `scripts/reviewer_report.sh` · `.github/workflows/reviewer-report.yml` — no LLM in this pipeline._\n'
 
@@ -454,6 +478,29 @@ _collect_one_repo() {
       ".data?.repository?.pullRequests?.nodes[]? | select(.updatedAt >= \$cutoff) | ${_NORMALIZE_JQ}" \
       <<<"$resp" >> "$out" 2>/dev/null || true
 
+    # Additive no-action-noise pass (#1411): emit one agent_comment record per
+    # marker-bearing comment/review on each in-window PR, regardless of author
+    # (our agents commit as human logins). A distinct record kind, so it never
+    # perturbs the bot scorecard aggregation above.
+    if [ -n "${CN_AGENT_COMMENT_JQ:-}" ] && [ -n "${CN_MARKER_RE:-}" ] && [ -n "${CN_NOACTION_RE:-}" ]; then
+      jq -c --arg repo "$repo" --arg mark "$CN_MARKER_RE" --arg noact "$CN_NOACTION_RE" --arg cutoff "$CUTOFF" \
+        '.data?.repository?.pullRequests?.nodes[]? | select(.updatedAt >= $cutoff) | '"${CN_AGENT_COMMENT_JQ}" \
+        <<<"$resp" >> "$out" 2>/dev/null || true
+      # Warn when per-PR arrays hit the GraphQL fetch cap (≥50), as truncated arrays
+      # produce an incomplete noise baseline (#1411).
+      jq -r --arg repo "$repo" '
+        .data?.repository?.pullRequests?.nodes[]? |
+        [
+          if ((.reviews?.nodes // []) | length) >= 50 then "reviews" else empty end,
+          if ((.comments?.nodes // []) | length) >= 50 then "comments" else empty end,
+          if ((.reviewThreads?.nodes // []) | length) >= 50 then "reviewThreads" else empty end
+        ] as $capped |
+        if ($capped | length) > 0 then
+          "WARN: \($repo) PR \(.url // "unknown") hit GraphQL cap on: \($capped | join(", ")) — noise baseline may be incomplete"
+        else empty end
+      ' <<<"$resp" >&2 2>/dev/null || true
+    fi
+
     # Stop when this page had no in-window PRs, or there are no more pages.
     local has_next end_cursor
     has_next="$(jq -r '.data?.repository?.pullRequests?.pageInfo?.hasNextPage // false' <<<"$resp" 2>/dev/null || echo false)"
@@ -485,6 +532,9 @@ collect_org_reviews() {
   export CUTOFF COLLECT_JSONL_DIR="$jsonl_dir" GH_OP_TIMEOUT MAX_PR_PAGES
   # shellcheck disable=SC2090  # jq/GraphQL program strings: literal content is intended
   export _PR_QUERY _NORMALIZE_JQ RATE_LIMIT_RE
+  # No-action noise classifier (#1411) — exported so each worker subshell can run
+  # the second (agent_comment) collection pass. Absent in a stripped lib env.
+  export CN_AGENT_COMMENT_JQ="${CN_AGENT_COMMENT_JQ:-}" CN_MARKER_RE="${CN_MARKER_RE:-}" CN_NOACTION_RE="${CN_NOACTION_RE:-}"
   # REVIEWER_BOTS is a plain array; export as newline string the workers re-split.
   REVIEWER_BOTS_STR="$(printf '%s\n' "${REVIEWER_BOTS[@]}")"
   export REVIEWER_BOTS_STR

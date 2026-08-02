@@ -61,7 +61,7 @@ pull_request (dep file touched)
 
 | Variable | Source | Default | Description |
 |----------|--------|---------|-------------|
-| `GH_TOKEN` | `secrets.GH_PAT_WORKFLOWS` or `GITHUB_TOKEN` | — | Token for PR comment |
+| `GH_TOKEN` | `secrets.GH_PAT_DON_PETRY` or `secrets.GH_PAT_WORKFLOWS` or `GITHUB_TOKEN` | — | Token for PR comment |
 | `CLAUDE_CODE_OAUTH_TOKEN` | `secrets.CLAUDE_CODE_OAUTH_TOKEN` | — | Claude auth token |
 | `SKIP_BOT_PRS` | `vars.DEP_ADVISORY_SKIP_BOT_PRS` | `true` | Skip Dependabot/Renovate PRs |
 

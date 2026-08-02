@@ -33,7 +33,7 @@ jobs:
       - name: Check commenter trust level
         id: trust
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
+          GH_TOKEN: ${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS }}
           AUTHOR_ASSOCIATION: ${{ github.event.comment.author_association }}
           COMMENTER: ${{ github.event.comment.user.login }}
         run: |
@@ -54,7 +54,7 @@ jobs:
         id: pr
         if: steps.trust.outputs.trusted == 'true'
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
+          GH_TOKEN: ${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS }}
         run: |
           if [ "${{ github.event_name }}" = "pull_request_review_comment" ]; then
             PR_URL="${{ github.event.pull_request.html_url }}"
@@ -68,7 +68,7 @@ jobs:
       - name: Post acknowledgement comment
         if: steps.trust.outputs.trusted == 'true'
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
+          GH_TOKEN: ${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS }}
           PR_URL: ${{ steps.pr.outputs.pr_url }}
           COMMENTER: ${{ github.event.comment.user.login }}
         run: |
@@ -81,7 +81,7 @@ jobs:
       - name: Trigger review agent
         if: steps.trust.outputs.trusted == 'true'
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
+          GH_TOKEN: ${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS }}
           PR_URL: ${{ steps.pr.outputs.pr_url }}
         run: |
           # Use repository_dispatch (requires only Contents: write, not Actions: write).

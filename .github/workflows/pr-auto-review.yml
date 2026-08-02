@@ -1,0 +1,70 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# SOURCE OF TRUTH: petry-projects/.github/standards/workflows/pr-auto-review.yml
+# Standard:        petry-projects/.github/standards/ci-standards.md
+# Reusable:        petry-projects/.github/.github/workflows/pr-auto-review-reusable.yml
+#
+# AGENTS — READ BEFORE EDITING:
+#   • This file is a THIN CALLER STUB. All readiness-gate logic lives in the
+#     reusable workflow above.
+#   • You MAY change: the workflow name(s) in `workflow_run.workflows` to match
+#     your repository's CI workflow name(s).
+#   • You MUST NOT change: the `@pr-auto-review/v1-next` channel in the `uses:`
+#     line — this reusable is on the org-wide moving-channel model (rollout and
+#     rollback are a single central tag move; a frozen `@vN`/`@<sha>` pin is
+#     rejected by the compliance audit). Nor the trigger event types or the
+#     job-level `permissions:` block — reusable workflows can be granted no more
+#     permissions than the calling job, so removing the stanza breaks the
+#     reusable's gh API calls.
+#   • If you need different behaviour, open a PR against the reusable in the
+#     central repo. The change will propagate everywhere on next run.
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# PR Auto-Review — thin caller for the org-level reusable.
+# To adopt: copy this file to .github/workflows/pr-auto-review.yml in your repo.
+# Requires: GH_PAT_WORKFLOWS org secret (already present in petry-projects org).
+name: PR Auto-Review — Ready Check
+
+on:
+  # workflow_run fires when a named GitHub Actions workflow completes.
+  # check_suite does NOT trigger for GitHub Actions runs, so this is required
+  # to catch CI turning green on a PR.
+  # TODO: replace "CI" with your repository's CI workflow name(s).
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+  # check_suite covers third-party CI checks (e.g. SonarCloud, external apps).
+  check_suite:
+    types: [completed]
+  # Re-evaluate readiness after review state changes.
+  pull_request_review:
+    types: [submitted, dismissed]
+  # Re-evaluate when the PR is first opened, updated, or comes out of draft.
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+
+permissions: {}
+
+jobs:
+  pr-auto-review:
+    # Skip Dependabot-authored events (#1390, mirrors the #864 guard in
+    # dev-lead-reusable.yml): a Dependabot `pull_request` run has no access to
+    # GH_PAT_WORKFLOWS, so the secrets expression below resolves empty and the
+    # reusable's ready-check checkout fails at startup with
+    # "Input required and not supplied: token". Dependabot PRs are handled by
+    # dependabot-automerge.yml and never need the review-agent dispatch, so
+    # skipping cleanly here removes the false failure without touching the
+    # channel, trigger event types, or permissions block.
+    # Two conditions: actor covers Dependabot-triggered events (pull_request,
+    # workflow_run); PR-author login covers pull_request_review events where the
+    # actor is the human reviewer, not Dependabot.
+    if: github.actor != 'dependabot[bot]' && github.event.pull_request.user.login != 'dependabot[bot]'
+    permissions:
+      pull-requests: read
+      checks: read
+      actions: read
+    uses: petry-projects/.github/.github/workflows/pr-auto-review-reusable.yml@pr-auto-review/v1-next  # NOSONAR(githubactions:S7637) first-party channel ref
+    secrets:
+      # Canonical-first fallback (.github-private#1326). The reusable resolves this
+      # secret BY NAME, so only the VALUE changes — the passed key stays named
+      # GH_PAT_WORKFLOWS.
+      GH_PAT_WORKFLOWS: ${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS }}

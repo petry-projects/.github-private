@@ -50,7 +50,13 @@ on:
       # migrates to `secrets: inherit`, after which they can be dropped (issue #1327).
       COPILOT_GITHUB_TOKEN:
         required: false
+      GH_PAT_DON_PETRY_COPILOT:
+        # don-petry's Copilot-subscription PAT (Copilot review engine). Canonical
+        # name under the GH_PAT_<ACCOUNT> schema; supersedes GH_PAT (below, kept as
+        # a transition fallback). The bot's own PATs keep their grandfathered names.
+        required: false
       GH_PAT:
+        # DEPRECATED alias of GH_PAT_DON_PETRY_COPILOT — kept during migration.
         required: false
       DON_PETRY_BOT_GH_PAT:
         required: false
@@ -214,7 +220,7 @@ jobs:
 
     steps:
       - name: Checkout agent repo
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # Always check out the AGENT repo (.github-private) for the scripts —
           # NOT the caller's repo. When invoked from a consumer (e.g. markets),
@@ -237,6 +243,81 @@ jobs:
             echo "resolved pr-review identity: BOT_USER=$account"
           else
             echo "::warning::could not resolve pr-review identity from manifest; using fallback BOT_USER=$BOT_USER"
+          fi
+
+      - name: Cache claude-code CLI
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.npm-global
+          key: claude-code-${{ env.CLAUDE_CODE_VERSION }}-${{ runner.os }}
+
+      - name: Verify auth scopes
+        # Inlined from scripts/verify-auth-scopes.sh so this step is self-contained
+        # when pr-review.yml is deployed to target repos that do not have the scripts/ dir.
+        run: |
+          set -euo pipefail
+
+          if auth_status="$(gh auth status 2>&1)"; then
+            :
+          else
+            auth_rc=$?
+            printf '%s\n' "$auth_status"
+            echo "::error::gh auth status failed"
+            exit "$auth_rc"
+          fi
+          printf '%s\n' "$auth_status"
+
+          # Fine-grained PATs are NOT supported — they fail at addPullRequestReview.
+          # Two detection methods: (1) prefix in auth status output; (2) gh auth token
+          # for gh versions that mask the prefix in status output (token never logged).
+          _fgpat=0
+          if grep -qi 'Token:.*github_pat_' <<< "$auth_status"; then
+            _fgpat=1
+          else
+            _tok="$(gh auth token 2>/dev/null || true)"
+            if [[ "${_tok:-}" == github_pat_* ]]; then
+              _fgpat=1
+            fi
+            unset _tok
+          fi
+          if [[ "$_fgpat" -eq 1 ]]; then
+            unset _fgpat
+            echo "::error::Fine-grained PAT detected — fine-grained PATs are not supported by this workflow."
+            echo "::error::Fine-grained PATs fail at addPullRequestReview (GraphQL: Resource not accessible by personal access token)."
+            echo "::error::Replace DON_PETRY_BOT_GH_PAT with a classic PAT that has repo, workflow, and read:org scopes."
+            echo "::error::See docs/pr-review-agent/setup.md → Troubleshooting for details."
+            exit 1
+          fi
+          unset _fgpat
+
+          scopes_line="$(grep 'Token scopes:' <<< "$auth_status" || true)"
+          normalized_scopes="${scopes_line//,/ }"
+          normalized_scopes="${normalized_scopes//$'\''/ }"
+
+          if [ -z "$normalized_scopes" ] || grep -qiE '(cannot determine|fine.grained)' <<< "$auth_status"; then
+            echo "::warning::Token scopes could not be determined. Skipping scope validation."
+            echo "::warning::Ensure the token has: repo + read:org (classic PAT) or contents + pull_requests:write."
+            exit 0
+          fi
+
+          if grep -qE "(^|[[:space:]])repo([[:space:]]|$)" <<< "$normalized_scopes"; then
+            if ! grep -qE "(^|[[:space:]])read:org([[:space:]]|$)" <<< "$normalized_scopes"; then
+              echo "::error::GH_TOKEN has 'repo' scope but is missing 'read:org'."
+              echo "::error::PRs with team-based reviewers will fail at 'gh pr view --json reviewRequests'."
+              echo "::error::Edit the classic PAT and check the 'read:org' box (no regeneration needed)."
+              exit 1
+            fi
+          else
+            if ! grep -qE "(^|[[:space:]])contents(:[^[:space:]]+)?([[:space:]]|$)" <<< "$normalized_scopes"; then
+              echo "::error::GH_TOKEN is missing required scope: contents"
+              echo "::error::Token must have either 'repo' + 'read:org' (classic) or 'contents' + 'pull_requests:write'"
+              exit 1
+            fi
+            if ! grep -qE "(^|[[:space:]])pull_requests(:write)?([[:space:]]|$)" <<< "$normalized_scopes"; then
+              echo "::error::GH_TOKEN is missing required scope: pull_requests with write access"
+              echo "::error::Token must have either 'repo' + 'read:org' (classic) or 'contents' + 'pull_requests:write'"
+              exit 1
+            fi
           fi
 
       - name: Cache claude-code CLI

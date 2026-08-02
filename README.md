@@ -10,6 +10,8 @@ Agent profiles in `/agents/` are available org-wide — invocable from GitHub.co
 It also contains automated workflows (GitHub Actions agents running on events and schedules),
 prompts, scripts, and the scheduled reporting dashboards that run across the org.
 
+It also contains the scheduled PR review automation (workflows + scripts + prompts) that runs hourly across the org.
+
 ## Structure
 
 ```

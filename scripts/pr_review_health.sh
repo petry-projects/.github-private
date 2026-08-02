@@ -83,14 +83,13 @@ else
   failure_rate="0.0"
 fi
 
-# Duration percentiles across all completed runs (computed but not surfaced in the
-# LLM prompt — reserved for future structured-report use).
-# shellcheck disable=SC2034
-read -r dur_min dur_p50 dur_p95 dur_max < <(echo "$runs_json" | jq -r '
+# Duration percentiles across all completed runs. Surfaced deterministically in the
+# report output as a convergence-latency signal for the pre/post baseline (#1411).
+read -r dur_n dur_min dur_p50 dur_p95 dur_max < <(echo "$runs_json" | jq -r '
   [.[] | select(.conclusion != null and .duration_s > 0) | .duration_s] | sort |
-  if length == 0 then "0 0 0 0"
+  if length == 0 then "0 0 0 0 0"
   else . as $d | ($d | length) as $n |
-    "\($d | min) \($d[$n * 50 / 100 | floor]) \($d[$n * 95 / 100 | floor]) \($d | max)"
+    "\($n) \($d | min) \($d[$n * 50 / 100 | floor]) \($d[$n * 95 / 100 | floor]) \($d | max)"
   end')
 
 # ---------------------------------------------------------------------------
@@ -163,11 +162,29 @@ workflow_source=$(gh api "repos/${WORKFLOW_REPO}/contents/.github/workflows/${WO
   --jq '.content' 2>/dev/null | tr -d '\n' | base64 -d 2>/dev/null \
   || echo "(workflow source unavailable)")
 
+# ---------------------------------------------------------------------------
+# 5. Surface the (already-computed) duration percentiles deterministically.
+# Written BEFORE the model-generated content so that workflow truncation
+# (60 000 bytes in daily-pr-review-health.yml) cannot discard this section.
+# ---------------------------------------------------------------------------
+{
+  printf '## Convergence latency (deterministic)\n\n'
+  printf 'Workflow duration across %s completed run(s) in the window — computed by `%s`, not the model.\n\n' \
+    "$dur_n" "$(basename "$0")"
+  printf '| Workflow | Runs | min | p50 | p95 | max |\n'
+  printf '|---|---:|---:|---:|---:|---:|\n'
+  printf '| `%s` | %s | %s | %s | %s | %s |\n' \
+    "$WORKFLOW_FILE" "$dur_n" \
+    "$(fmt_dur "$dur_min")" "$(fmt_dur "$dur_p50")" "$(fmt_dur "$dur_p95")" "$(fmt_dur "$dur_max")"
+} > "$REPORT_FILE"
+
+echo "Duration percentiles — p50 $(fmt_dur "$dur_p50") / p95 $(fmt_dur "$dur_p95") across $dur_n run(s)"
+
 echo "Invoking Claude for log analysis..."
 # Claude writes errors to stdout (not stderr), so they'd silently land in
 # $REPORT_FILE with the stdout redirect below.  Wrap in `if !` so a non-zero
 # exit surfaces the file contents to the Actions log before aborting.
-if ! claude --print --model claude-sonnet-4-6 --no-session-persistence > "$REPORT_FILE" <<PROMPT
+if ! claude --print --model claude-sonnet-4-6 --no-session-persistence >> "$REPORT_FILE" <<PROMPT
 You are analyzing GitHub Actions workflow run logs for the PR Review Agent.
 
 ## Context
@@ -175,6 +192,7 @@ You are analyzing GitHub Actions workflow run logs for the PR Review Agent.
 - Analysis window: last ${LOOKBACK_DAYS} days, up to 100 most recent runs
 - Report date: ${TODAY}
 - Total runs fetched: ${total_runs} | Successful: ${success_runs} | Failed: ${failed_runs} | Cancelled: ${cancelled_runs}
+- Run duration across ${dur_n} completed run(s): p50 $(fmt_dur "$dur_p50") | p95 $(fmt_dur "$dur_p95") (min $(fmt_dur "$dur_min") / max $(fmt_dur "$dur_max"))
 
 ## Run Summary
 ${RUNS_SUMMARY}

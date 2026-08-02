@@ -7,7 +7,7 @@
 #   • This file is a THIN CALLER STUB. All branch-update logic lives in the
 #     reusable workflow above.
 #   • You MUST NOT change: the `uses:` ref — it is pinned to the
-#     `auto-rebase/stable` channel, a moving tag advanced centrally. Never
+#     `auto-rebase/v2-stable` channel, a moving tag advanced centrally. Never
 #     repoint it to `@main`, a SHA, or a frozen `@vX` (see ci-standards.md →
 #     Reusable workflow versioning). Also do not change the trigger event,
 #     the concurrency group name,
@@ -50,5 +50,5 @@ jobs:
     permissions:
       contents: write      # update-branch via GITHUB_TOKEN (may touch .github/workflows/)
       pull-requests: write # post comments on PRs
-    uses: petry-projects/.github/.github/workflows/auto-rebase-reusable.yml@auto-rebase/v2-next
-    secrets: inherit
+    uses: petry-projects/.github/.github/workflows/auto-rebase-reusable.yml@auto-rebase/v2-next  # NOSONAR(githubactions:S7637) first-party channel ref
+    secrets: inherit  # NOSONAR(githubactions:S7635) first-party trusted reusable

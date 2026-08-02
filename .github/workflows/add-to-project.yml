@@ -7,7 +7,7 @@
 #   • This file is a THIN CALLER STUB. All noise-gate / reconcile logic lives
 #     in the reusable workflow above.
 #   • You MAY change: nothing in normal use. The `uses:` ref and `agent_ref`
-#     are pinned to the `add-to-project/stable` channel and move with it — do
+#     are pinned to the `add-to-project/v1-stable` channel and move with it — do
 #     not change them to `@main` or a SHA (see ci-standards.md → Reusable
 #     workflow versioning).
 #   • You MUST NOT change: trigger events, the concurrency group, or the

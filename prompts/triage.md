@@ -40,6 +40,31 @@ Output `"escalate": false` (approve) if ALL of these are true:
 Output `"escalate": true` if ANY of those checks fail. When in doubt, escalate.
 False positives are fine (the next tier will sort it out). False negatives are not.
 
+### Trusted first-party stub / standards-sync exception
+
+Criterion 1 is about a change that *handles* a secret or *adds* a security-sensitive
+surface — not about a caller stub that merely *forwards* secrets to trusted
+first-party plumbing. If the `SAFETY_CHECKS` block reports **`TRUSTED_STUB_SYNC:
+true`**, the diff is a workflow-only, bot-authored/standards-sync caller-stub change
+that forwards `secrets: inherit` (or maps a secret into a `secrets:`/`with:` block)
+to a pinned `petry-projects/*` reusable, adds no third-party reusable, and pipes no
+secret into a `run:` step. That forwarding is the org-standard, SonarCloud-suppressed
+(S7635) pattern — it is **not** secret handling. For such a PR:
+
+- Do **not** escalate or rate HIGH solely because a workflow touches `secrets:`,
+  repins a channel tag, lacks a linked issue / full description, or reports
+  `LARGE_PR: true`; these process findings are informational for this class and
+  the org ships them through a canary rollout (a staged, auto-reverting deploy
+  channel), which materially de-risks them.
+- **Still** escalate on any genuine signal: the two hard-stops always override
+  (`CI_WEAKENING_DETECTED` / `PROMPT_INJECTION_DETECTED`), and so do
+  `SECRET_IN_RUN_STEP: true` and `THIRD_PARTY_REUSABLE_ADDED: true` — either means
+  the carve-out does not apply. A stub diff that deviates from the org standard
+  (unexpected permission grant, trigger change, non-first-party target) still escalates.
+
+A documented canary / staged-rollout strategy is a risk *reducer*, never a reason
+to escalate. Weigh it like any other de-risking signal.
+
 ## Downstream impact (informational signal)
 
 If a `DOWNSTREAM_IMPACT` block is present and is not `(none)`, this PR changes a
@@ -71,10 +96,17 @@ re-derive** these mechanically — trust and consume the verdicts exactly as giv
   `"risk": "HIGH"`, and **NEVER approve**. Add the reason to `signals`.
 - **`LARGE_PR: true`** — the PR is over the size threshold with no
   implementation-plan/breakdown section. Set `"escalate": true` and note it in
-  `signals` (risk band per the criteria below; size alone is not automatically HIGH).
+  `signals` (risk band per the criteria below; size alone is not automatically HIGH)
+  — **EXCEPT** when `TRUSTED_STUB_SYNC: true` (with no overriding hard-stop or
+  `SECRET_IN_RUN_STEP`/`THIRD_PARTY_REUSABLE_ADDED` signal): a bulk stub sync is
+  expected to be large, so `LARGE_PR` is informational for this class and does not,
+  on its own, force escalation (see the Trusted first-party stub exception above).
 - **`DESCRIPTION_MISSING: N`** — when `N >= 3`, the description is missing 3+ of
   the 5 required sections (problem, risk, test plan, rollback, monitoring). Set
-  `"escalate": true` and note it in `signals`.
+  `"escalate": true` and note it in `signals` — **EXCEPT** when
+  `TRUSTED_STUB_SYNC: true` (same overriding-signal caveat): a terse bot
+  description is expected for this class, so `DESCRIPTION_MISSING` is informational
+  and does not, on its own, force escalation.
 - **`DEPENDENCY_RISK`** and the per-finding `Findings:` list are informational
   context — surface notable ones in `signals`; the Tier 2 deep review does the
   CVE/narrative adjudication. They do not by themselves force escalation.
@@ -106,7 +138,39 @@ escalate criteria above:
 
 When a change spans more than one band, use the highest that applies (a
 criterion-1 or criterion-3 hit is always HIGH, regardless of how small the diff
-looks).
+looks) — **unless** the Trusted first-party stub / standards-sync exception
+applies (`TRUSTED_STUB_SYNC: true` with no overriding hard-stop or
+`SECRET_IN_RUN_STEP`/`THIRD_PARTY_REUSABLE_ADDED` signal), in which case
+`secrets:`-forwarding and workflow edits do not by themselves make the PR HIGH;
+rate it on its actual content (typically LOW/MEDIUM).
+
+## Issue-type classification
+
+Also classify the *dominant* nature of the diff into exactly one `type`. A deeper
+tier uses this to pick a specialist reviewer (a security diff gets a paranoid
+security lens; a logic diff gets a correctness lens), so pick the class that best
+describes what the change is fundamentally *about* — not merely which files it
+touches. Pick exactly one:
+
+- **`security`** — the change is fundamentally about authentication,
+  authorization, secrets/credentials/crypto/tokens, injection surfaces, GitHub
+  Actions security, or dependency/supply-chain risk. Any diff that touches a
+  criterion-1 high-risk area or contains a criterion-3 security anti-pattern is
+  `security`, regardless of what else it does.
+- **`performance`** — the change is fundamentally about speed, scalability, or
+  resource use: algorithmic complexity, query/IO patterns (N+1, caching,
+  batching), memory/allocation, or concurrency, with no overriding security angle.
+- **`style`** — the change is fundamentally cosmetic or organizational and
+  behavior-preserving: formatting, naming, comments, docs, or a pure
+  readability/structure refactor. Test-only and docs-only diffs are `style`.
+- **`logic`** — the default for a substantive code/behavior change that is not
+  dominated by any of the above: correctness, control flow, edge cases, new
+  functionality, or bug fixes.
+
+Precedence when a diff spans classes: `security` first (any security exposure
+wins), then `logic` (a real behavior change), then `performance`, then `style`.
+If you genuinely cannot tell, pick `logic` — it maps to the general-purpose deep
+reviewer, the safe default.
 
 ## Issue-type classification
 

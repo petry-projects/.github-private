@@ -91,7 +91,7 @@ jobs:
       contents: read  # actions/checkout; the workflow_dispatch is fired with the PAT
     steps:
       - name: Checkout agent repo
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -159,7 +159,7 @@ jobs:
       TOOLING_DIR: ${{ github.workspace }}/scripts/initiative-planner
     steps:
       - name: Checkout agent repo
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -213,7 +213,7 @@ jobs:
         env:
           # Bob materializes the epic + DAG in the TARGET repo via apply-plan.sh.
           GH_TOKEN: ${{ env.TARGET_GH_TOKEN }}
-        uses: anthropics/claude-code-action@d5726de019ec4498aa667642bc3a80fca83aa102 # v1.0.148
+        uses: anthropics/claude-code-action@be7b93b1907a4abad570368f3c74b6fe3807510b # v1.0.183
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # CRITICAL (same gotcha as feature-ideation): pass the target-repo write

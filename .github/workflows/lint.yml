@@ -8,6 +8,7 @@ on:
       - 'tests/**'
       - 'agents/**'
       - 'personas/**'
+      - 'interaction-contracts/**'
       - 'evals/**'
       - 'release/**'
       - '.gitleaks.toml'
@@ -21,7 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: shellcheck
         # --severity=warning: SC2016 (info) fires on printf '`%s`' where backticks
@@ -33,7 +34,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Install bats
         run: sudo apt-get install -y bats
@@ -57,12 +58,15 @@ jobs:
             tests/test_spec_drift_eval.bats \
             tests/token_report.bats \
             tests/reviewer_report.bats \
+            tests/comment_noise.bats \
             tests/auto_rebase_health.bats \
             tests/model_pricing.bats \
             tests/test_review_cycle.bats \
             tests/test_pr_automation_budget.bats \
             tests/test_pr_runaway_regression.bats \
             tests/test_pr_runaway_detect.bats \
+            tests/test_pr_stall_detect.bats \
+            tests/test_pr_stall_regression.bats \
             tests/test_premature_closure_detect.bats \
             tests/test_ci_status.bats \
             tests/test_push_protection.bats \
@@ -118,12 +122,14 @@ jobs:
             tests/test_readme_refresh_helpers.bats \
             tests/test_readme_refresh_push.bats \
             tests/test_validate_personas.bats \
+            tests/test_validate_interaction_contracts.bats \
             tests/verify_persona_teams.bats \
             tests/persona_runner.bats \
             tests/test_dev_lead_concurrency_guard.bats \
             tests/test_validate_workflow_schedules.bats \
             tests/caller_stub_freeze.bats \
-            tests/pr_review_canary.bats
+            tests/pr_review_canary.bats \
+            tests/dev-lead/unit/test_maintainer_review_thread_gate.bats
 
   actionlint:
     # General workflow linting (#1256, epic #1052 Part D): actionlint validates
@@ -142,7 +148,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Lint GitHub Actions
         env:
@@ -171,7 +177,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Check for minute-0 scheduled crons
         run: bash scripts/validate-workflow-schedules.sh
@@ -190,7 +196,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         # NOTE: persist-credentials is intentionally left at the default (true) —
         # vci_resolve_reusable needs `git fetch origin` to authenticate against this
         # private repo when resolving same-repo channel tags. Setting
@@ -215,7 +221,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
 
@@ -231,7 +237,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Check repo-template stubs have not drifted from standards/
         env:
@@ -242,7 +248,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Install PyYAML
         run: pip3 install --quiet pyyaml
@@ -297,7 +303,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Install Python deps
         run: pip3 install --quiet 'jsonschema>=4' pyyaml
@@ -310,6 +316,31 @@ jobs:
         env:
           PERSONA_SCHEMA_REF: ${{ github.head_ref || github.ref_name }}
         run: python3 personas/validate-personas.py personas
+
+  validate-interaction-contracts:
+    # Interaction-contract well-formedness gate (Story 2 / #1404, AC #5). Parses
+    # every machine-readable interaction contract — the co-located persona lenses
+    # (personas/<id>/interaction.yml) and the standalone runtime lenses
+    # (interaction-contracts/*.yml) — and asserts the §8.1 shape plus the
+    # invariants the shape alone can't express: kind/budget enums, timer role ∈
+    # {backstop,safety-net,self-heal} with justification + stop_condition +
+    # event_fast_path present, every declared workflow file exists, and the narrow
+    # §7 rule-1 self-trigger check (an emit must not name an event the same
+    # contract subscribes to). Fully HERMETIC — no schema fetch, no network — so
+    # unlike validate-personas it needs no cross-repo ref; keep it that way. Deep
+    # semantic self-trigger analysis is deferred to Story 4 / #1406.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install PyYAML
+        run: pip3 install --quiet "pyyaml==6.0.3" --only-binary=":all:"
+
+      - name: Validate interaction contracts
+        run: python3 interaction-contracts/validate-interaction-contracts.py .
 
   verify-persona-teams:
     # LIVE persona addressing-team check (#1280). The hermetic validate-personas.py
@@ -327,7 +358,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Install PyYAML
         run: pip3 install --quiet pyyaml
@@ -348,7 +379,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Install PyYAML
         run: pip3 install --quiet pyyaml
@@ -360,7 +391,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Check for agentic workflow files
         id: check-aw-files

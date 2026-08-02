@@ -68,10 +68,10 @@ readonly -a WORKFLOW_MANIFEST=(
   "ci|inline|-|-"
   "copilot-setup-steps|inline|-|-"
   "dependabot-automerge|caller|petry-projects/.github|dependabot-automerge/stable"
-  "dependabot-rebase|caller|petry-projects/.github|dependabot-rebase/stable"
+  "dependabot-rebase|caller|petry-projects/.github|dependabot-rebase/v2-stable"
   "dependency-audit|caller|petry-projects/.github|dependency-audit/stable"
   "dev-lead|caller|petry-projects/.github-private|dev-lead/stable"
-  "pr-review-mention|caller|petry-projects/.github|pr-review-mention/stable"
+  "pr-review-mention|caller|petry-projects/.github|pr-review-mention/v2-stable"
   "sonarcloud|inline|-|-"
 )
 

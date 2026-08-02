@@ -1,0 +1,37 @@
+# Interaction contract — pr-review (persona lens).
+#
+# Shape fixed by docs/agentic-interaction-model.md §8.1; standalone repo-local
+# file per the §8.2 location decision (option b). Story 2 / #1404.
+#
+# ROLE lens: the pr-review persona's event surface, backed by the ring-0 caller
+# stub .github/workflows/pr-review-trigger.yml. The DEPLOYMENT lens (which folds
+# in the pr-review-sweep.yml backstop timer) is interaction-contracts/pr-review.yml.
+#
+# triggers.events mirror pr-review-trigger.yml's on: block (AC #3), minus
+# workflow_dispatch (a manual escape hatch, not a work-carrying webhook — §3).
+# repository_dispatch:pr-review-mention is the PAT-backed mention bridge (§5 A).
+# pr-review is review-only: it approves/comments, it never pushes commits.
+
+schema_version: 1
+role: pr-review
+kind: persona
+workflows:
+  - .github/workflows/pr-review-trigger.yml
+interaction:
+  triggers:
+    events:
+      - check_suite
+      - pull_request_review
+      - pull_request
+      - repository_dispatch:pr-review-mention
+    timers: []
+  emits:
+    - "review:approved"
+    - "review:changes-requested"
+    - "comment:<!-- pr-review -->"
+  idempotency_key: "pr_url + head_sha (the review marker makes a same-head re-review a fast no-op)"
+  concurrency_lane: "pr-review-pr-<pr_url> / pr-review-batch (pr-review.yml)"
+  stop_markers:
+    - needs-human-review
+    - pr-review:hands-off
+  budget: pr-automation-budget

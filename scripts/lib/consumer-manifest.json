@@ -149,6 +149,7 @@
       "prompts/dev-lead/review-changes.md",
       "scripts/lib/auto-merge.sh",
       "scripts/lib/git-identity.sh",
+      "scripts/lib/maintainer-review-thread-gate.sh",
       "scripts/lib/pr-worktree.sh"
     ],
     ".github/workflows/pr-review.yml": [
@@ -161,6 +162,8 @@
       "prompts/triage.md",
       "scripts/lib/advisory-review-gate.sh",
       "scripts/lib/ci-status.sh",
+      "scripts/lib/maintainer-comment-gate.sh",
+      "scripts/lib/maintainer-review-thread-gate.sh",
       "scripts/lib/review-cycle.sh",
       "scripts/lib/review-registry.sh",
       "scripts/lib/token-metrics.sh"

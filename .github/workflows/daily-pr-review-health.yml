@@ -35,15 +35,15 @@ jobs:
 
     steps:
       - name: Checkout agent repo
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Set up Node
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
         with:
           node-version: '20'
 
       - name: Cache claude-code CLI
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.npm-global
           key: claude-code-${{ env.CLAUDE_CODE_VERSION }}-${{ runner.os }}
@@ -178,6 +178,70 @@ jobs:
               labels: ['health-check', 'automated-report'],
             });
             core.notice(`Runaway issue created: ${issue.data.html_url}`);
+
+      # Stall-PR detection net (#1410, epic #1402). The mirror image of the
+      # runaway scan above: a pure gh-API + jq sweep of every open PR for the
+      # SILENT failure mode the narrowed Class-2 timers (#1407/#1408) could
+      # introduce — a PR stuck CI-green + REVIEW_REQUIRED with no agent activity
+      # and no pending event, that no fast path re-fires. #860's lesson was that
+      # detection must be pushed, not pulled; this builds that instrument BEFORE
+      # the timers narrow. Detect-only — no PR is mutated. Sets HAS_STALL when any
+      # candidate is found, surfaced through the same health-check /
+      # automated-report issue channel. No new scheduled workload.
+      - name: Scan for stalled PRs
+        env:
+          GH_TOKEN: ${{ secrets.DON_PETRY_BOT_GH_PAT }}
+          REPO: ${{ github.repository }}
+        run: bash scripts/pr_stall_scan.sh
+
+      - name: Truncate stall report if needed
+        run: |
+          if [ -f pr_stall_report.md ]; then
+            if [ "$(wc -c < pr_stall_report.md)" -gt 60000 ]; then
+              last_line=$(awk '{s+=length($0)+1; if(s>60000){print NR-1; exit}} END{if(s<=60000) print NR}' pr_stall_report.md)
+              head -n "${last_line:-0}" pr_stall_report.md > pr_stall_report.md.tmp
+              mv pr_stall_report.md.tmp pr_stall_report.md
+              printf '\n\n---\n_Report truncated at 60 000 bytes._\n' >> pr_stall_report.md
+            fi
+          fi
+
+      - name: Create stall-candidate issue
+        if: env.HAS_STALL == 'true' && hashFiles('pr_stall_report.md') != ''
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const fs = require('fs');
+            const report = fs.readFileSync('pr_stall_report.md', 'utf8');
+            if (!report.trim()) {
+              core.setFailed('Stall report file is empty');
+              return;
+            }
+            const today = new Date().toISOString().split('T')[0];
+            const titlePrefix = 'Stalled PR candidate(s) detected';
+            // Date-stamped title → a fresh issue every run. Close prior open ones.
+            const priors = await github.paginate(github.rest.issues.listForRepo, {
+              owner: context.repo.owner, repo: context.repo.repo,
+              state: 'open', labels: 'health-check,automated-report', per_page: 100,
+            });
+            for (const p of priors) {
+              if (!p.pull_request && p.title.startsWith(titlePrefix)) {
+                try {
+                  await github.rest.issues.update({
+                    owner: context.repo.owner, repo: context.repo.repo,
+                    issue_number: p.number, state: 'closed', state_reason: 'completed',
+                  });
+                } catch (err) { core.warning(`could not close prior digest #${p.number}: ${err.message}`); }
+              }
+            }
+            const issue = await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `${titlePrefix} ${today}`,
+              body: report,
+              labels: ['health-check', 'automated-report'],
+            });
+            core.notice(`Stall issue created: ${issue.data.html_url}`);
 
       # Durable, affirmative MCP-connectivity monitor (#903, part of #676).
       # Additive final step: when .github/review-mcp.json is present, assert that

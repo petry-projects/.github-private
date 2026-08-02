@@ -107,6 +107,42 @@ inputs.
    marker) — the idempotency guarantee that let the standalone `idea-enhancer`
    be retired (#876).
 
+There is exactly **one** Discussion-triggered enhancer. The standalone
+`idea-enhancer.yml` (with its `scripts/idea-enhancer/` tooling) has been
+**removed** (#876) now that its capability is fully folded into the
+`feature-ideation` reusable workflow (epic #872) — so a human-authored idea is
+enhanced **once**, never twice.
+
+For each open, human-authored, not-yet-enhanced **Ideas** Discussion the folded
+enhancer posts **one** comment (sharpened problem/goal, repo + market context,
+impact/effort, suggested acceptance criteria). Bot-authored ideas are skipped —
+they are already AI-generated. It never approves, labels, or promotes — that
+stays with triage and the human gates.
+
+The enhancement logic lives in the **central** reusable `petry-projects/.github`
+(`feature-ideation-reusable.yml`); `.github-private` ships only the thin
+`feature-ideation.yml` caller stub (pinned to the `@feature-ideation/next`
+dogfood ring), which exposes the enhancement modes as `workflow_dispatch`
+inputs.
+
+- **Backfill sweep** — dispatch `feature-ideation` with `enhance_backlog: true`.
+  It sweeps the target repo's open, human-authored, not-yet-enhanced **Ideas**
+  Discussions and posts **exactly one** structured enhancement comment each.
+  Bot-authored and already-enhanced ideas are skipped. This is the safety-net
+  backfill that catches human ideas added before the folded enhancer went live.
+- **Dry-run** — dispatch with `dry_run: true` **and** `enhance_backlog: true`.
+  Every intended per-Discussion enhancement comment is logged to the JSONL
+  artifact and **nothing** is posted (one artifact entry per candidate
+  Discussion). The dry-run is free of model spend beyond candidate gathering.
+- **Marker continuity (cutover-safe).** The idempotency check honors **both**
+  the legacy `<!-- idea-enhancer:enhanced -->` marker and the canonical
+  `<!-- feature-ideation:enhanced -->` marker; new enhancement comments emit the
+  single canonical marker. So **no** idea enhanced by the old `idea-enhancer` is
+  re-enhanced after the cutover, and a repeated backfill is a no-op.
+- **Cost.** Operator-triggered (`workflow_dispatch`), **no new cron** — the
+  backfill reuses `feature-ideation`'s existing model budget and 20-minute
+  timeout, so it is cost-neutral-to-reducing.
+
 ### `idea-triage.yml` — weekly ripeness shortlist
 - Scans every open **Ideas** Discussion, scores each **Ripe / Soon / Not yet**
   on evidence, prerequisites, alignment, coverage, and freshness.

@@ -8,9 +8,14 @@
 # This stub is intentionally minimal — do not add business logic here.
 #
 # Requires:
-#   GH_PAT_WORKFLOWS  org secret — cross-repo dispatch and API calls
+#   GH_PAT_DON_PETRY  org secret — cross-repo dispatch and API calls (canonical;
+#                     falls back to GH_PAT_WORKFLOWS during the #1326 migration)
 #                     (must be explicitly granted to this repo in org secret settings;
 #                      requires read:org scope for the org-member trust gate)
+#                     Must be a CLASSIC PAT: this listener dispatches across orgs
+#                     (target repo → petry-projects/.github-private), and fine-grained
+#                     PATs are restricted to a single resource owner. Classic PATs
+#                     are not, so they span orgs; do not swap in a fine-grained token.
 #
 # Architecture: docs/aw/cross-org-deployment.md
 # ─────────────────────────────────────────────────────────────────────────────
@@ -39,7 +44,7 @@ jobs:
       - name: Check sender is org member
         id: trust
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
+          GH_TOKEN: ${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS }}
           SENDER_LOGIN: ${{ github.event.sender.login }}
           SENDER_TYPE: ${{ github.event.sender.type }}
           TARGET_ORG: ${{ github.repository_owner }}
@@ -61,7 +66,7 @@ jobs:
       - name: Dispatch issue triage
         if: steps.trust.outputs.trusted == 'true'
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
+          GH_TOKEN: ${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS }}
           SOURCE_REPO: ${{ github.repository }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
           ISSUE_LABEL: ${{ github.event.label.name }}
@@ -99,7 +104,7 @@ jobs:
       - name: Resolve non-fork PR for check run
         id: pr
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
+          GH_TOKEN: ${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS }}
           CHECK_RUN_PRS: ${{ toJson(github.event.check_run.pull_requests) }}
           HEAD_SHA: ${{ github.event.check_run.head_sha }}
           REPO: ${{ github.repository }}
@@ -131,7 +136,7 @@ jobs:
       - name: Dispatch CI failure
         if: steps.pr.outputs.has_pr == 'true'
         env:
-          GH_TOKEN: ${{ secrets.GH_PAT_WORKFLOWS }}
+          GH_TOKEN: ${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS }}
           SOURCE_REPO: ${{ github.repository }}
           PR_NUMBER: ${{ steps.pr.outputs.pr_number }}
           HEAD_SHA: ${{ github.event.check_run.head_sha }}

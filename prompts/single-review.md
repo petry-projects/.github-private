@@ -108,6 +108,22 @@ Use the same taxonomy as the full cascade (from shared.md):
 - Org/project standards violations (CONTRIBUTING.md, AGENTS.md, CODEOWNERS)
 - GitHub Actions security smells
 
+**Trusted first-party stub / standards-sync carve-out.** The "secrets" and
+"GitHub Actions" HIGH signals mean a change that *handles* a secret or *adds* a
+security-sensitive surface — not a thin caller stub that *forwards* secrets to
+first-party plumbing. Do **not** rate a PR HIGH on those grounds when ALL hold
+(or a `SAFETY_CHECKS` block reports `TRUSTED_STUB_SYNC: true`): every changed
+file is a `.github/workflows/*.yml` caller stub; it is bot-authored or a
+standards-sync PR; secrets are only forwarded (`secrets: inherit` / a
+`secrets:`/`with:`/`env:` map) to a pinned `petry-projects/*` reusable with no
+secret piped into a `run:` step; and no third-party reusable-workflow call is
+added. Forwarding `secrets: inherit` to a first-party reusable is the
+org-standard, SonarCloud-suppressed (S7635) pattern, shipped through a canary
+rollout that de-risks it — rate on actual content (LOW/MEDIUM). A standards-*sync*
+PR brings stubs *into* compliance, so it is not a standards *violation*. The real
+signals still escalate: a secret in a `run:` step, a third-party reusable, a CI
+security warning, or the deterministic hard-stops.
+
 ### MEDIUM
 - Non-trivial logic changes, new dependencies, cross-module refactors
 
@@ -125,6 +141,13 @@ Approve only if ALL:
 6. Well-structured PR
 
 Otherwise → escalate.
+
+For a trusted first-party stub / standards-sync PR (see the carve-out above),
+gates 3 and 6 are satisfied by the class — an automated sync PR is expected to
+have no linked issue and a terse, templated description. Do not escalate one
+solely for a missing linked issue, thin description, or "not well-structured."
+Gates 2, 4, and 5 (green CI, no unresolved change requests, no unanswered human
+questions) still apply in full.
 
 ### Triage-approved mode
 

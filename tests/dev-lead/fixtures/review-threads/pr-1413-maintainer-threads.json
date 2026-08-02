@@ -1,0 +1,53 @@
+{
+  "_note": "Regression fixture for issue #1415, reproducing PR #1413. Four inline review threads first-authored by the owner account `don-petry` with NO automation marker (i.e. maintainer findings), unresolved, postdating the last push (2026-08-02T01:00:00Z). On #1413 these were self-resolved with resolvedBy: don-petry — the agent clearing the maintainer's own review gate. The gate must BLOCK on this shape, and the resolve-guard must refuse to resolve each marker-less thread.",
+  "reviewThreads": [
+    {
+      "isResolved": false,
+      "comments": {
+        "nodes": [
+          {
+            "author": { "login": "don-petry" },
+            "body": "This gate's reset is reachable by the agent — resolving it here defeats the block. It must be human-gated.",
+            "createdAt": "2026-08-02T01:30:00Z"
+          }
+        ]
+      }
+    },
+    {
+      "isResolved": false,
+      "comments": {
+        "nodes": [
+          {
+            "author": { "login": "don-petry" },
+            "body": "Fail-open: when authorship can't be determined this returns success instead of blocking.",
+            "createdAt": "2026-08-02T01:35:00Z"
+          }
+        ]
+      }
+    },
+    {
+      "isResolved": false,
+      "comments": {
+        "nodes": [
+          {
+            "author": { "login": "don-petry" },
+            "body": "Login-based discrimination cannot separate the agent from the maintainer here; key on the marker.",
+            "createdAt": "2026-08-02T01:40:00Z"
+          }
+        ]
+      }
+    },
+    {
+      "isResolved": false,
+      "comments": {
+        "nodes": [
+          {
+            "author": { "login": "don-petry" },
+            "body": "Add a regression test that a maintainer thread never ends up resolvedBy the agent identity.",
+            "createdAt": "2026-08-02T01:45:00Z"
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -1,3 +1,4 @@
+# >>> BEGIN petry-projects secrets baseline (managed by .github — do not edit) >>>
 # ============================================================================
 # petry-projects baseline .gitignore — SECRETS ONLY
 # ----------------------------------------------------------------------------
@@ -384,12 +385,13 @@ private.yml
 # paths to be ignored in every repo so an agent's scratch worktree cannot
 # be committed accidentally.
 .claude/worktrees/
-.claude/scheduled_tasks.lock
 .worktrees/
+.dev-lead/
 
 # ============================================================================
 # End of petry-projects secrets baseline
 # ============================================================================
+# <<< END petry-projects secrets baseline <<<
 
 # Python bytecode
 __pycache__/
@@ -400,3 +402,6 @@ __pycache__/
 
 # gitleaks scanner binary — downloaded fresh in CI, never committed
 /gitleaks
+# actionlint scanner binary — downloaded fresh in CI, never committed
+/actionlint
+/actionlint.tar.gz

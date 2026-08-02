@@ -217,7 +217,9 @@ Excluding: CodeRabbit rate-limits, PRs blocked by CodeRabbit
 
 ### Bot Customization
 
-To add/remove bots, edit the `ADVISORY_BOTS` map:
+To add/remove bots, edit the `ADVISORY_BOTS` map (code in
+`scripts/lib/advisory-review-gate.sh` remains the source of truth; this block is
+illustrative and mirrors the current registry):
 
 ```bash
 declare -A ADVISORY_BOTS=(
@@ -225,9 +227,17 @@ declare -A ADVISORY_BOTS=(
   [copilot-pull-request-reviewer]="Copilot PR Reviewer (advisory)"
   [sonarqubecloud]="SonarCloud (advisory)"
   [chatgpt-codex-connector]="Codex (advisory, newer bot)"
+  [qodo-code-review]="Qodo Merge (advisory)"
+  [codeant-ai]="CodeAnt (advisory)"
+  [graphite-app]="Graphite (advisory)"
   # Add new bots here
 )
 ```
+
+CodeRabbit (`coderabbitai`) is deliberately **not** in `ADVISORY_BOTS` — the gate
+does not wait on it (see [CodeRabbit Status](#coderabbit-status)) — but it is
+tracked by the reviewer scorecard, so it appears in `RATE_LIMIT_NOTICE_BOTS` /
+`scripts/reviewer_report.sh` alongside the bots above.
 
 ## Testing
 

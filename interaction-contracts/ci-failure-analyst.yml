@@ -1,0 +1,31 @@
+# Interaction contract — ci-failure-analyst (runtime / deployment lens).
+#
+# Shape fixed by docs/agentic-interaction-model.md §8.1; standalone repo-local
+# file per the §8.2 location decision (option b). Story 2 / #1404.
+#
+# The ci-failure-analyst has no persona manifest — its trigger lives entirely in
+# .github/workflows/ci-failure-analyst.lock.yml, a byte-frozen ring-0 caller stub
+# (caller-stub-freeze, AGENTS.md). This contract DESCRIBES that stub; it does not
+# edit it. A single Class-1 reaction to check_run:[completed]; no schedule.
+#
+# It posts one analysis comment per failing head SHA, deduped by the leading
+# `<!-- ci-analyst sha=<HEAD_SHA> -->` marker and serialized by the per-head-SHA
+# concurrency lane — so it structurally cannot loop and is not bound by the
+# pr-automation-budget (budget: none; its ceiling is the per-SHA idempotency key).
+
+schema_version: 1
+role: ci-failure-analyst
+kind: runtime
+workflows:
+  - .github/workflows/ci-failure-analyst.lock.yml
+interaction:
+  triggers:
+    events:
+      - check_run
+    timers: []
+  emits:
+    - "comment:<!-- ci-analyst sha=<HEAD_SHA> -->"
+  idempotency_key: "check_run head_sha (one analysis comment per failing SHA, deduped by the ci-analyst marker)"
+  concurrency_lane: "ci-failure-analyst-<head_sha> (ci-failure-analyst.lock.yml, cancel-in-progress: false)"
+  stop_markers: []
+  budget: none
