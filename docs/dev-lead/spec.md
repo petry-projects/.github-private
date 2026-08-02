@@ -22,6 +22,21 @@ When a CI check fails, a trusted bot leaves a review, or a human mentions `@clau
 
 The agent is the reactive counterpart to the [PR Review Agent](../pr-review-agent/pr-review-agent.md) (which is proactive and read-only). The dev-lead agent is reactive and write-enabled.
 
+### Interaction contract
+
+dev-lead pairs a **Class 1 event-driven role** with a **Class 2 self-heal backstop timer** (dev-lead-retry.yml) under the
+[agentic interaction model](../agentic-interaction-model.md) (the normative standard). Its
+trigger/emit/idempotency pattern is declared as machine-readable, CI-verified contracts, not
+prose in this spec:
+
+- **Runtime lens** — [`interaction-contracts/dev-lead.yml`](../../interaction-contracts/dev-lead.yml)
+  (the deployed workflow's `on:` events, emits, idempotency key, concurrency lane, and budget).
+- **Role lens** — [`personas/dev-lead/interaction.yml`](../../personas/dev-lead/interaction.yml)
+  (the persona-manifest view of the same pattern).
+
+When this spec's event taxonomy (§4) or the workflow triggers (§7.1) change, update those
+contracts and the standard's §4 classification table in the same change.
+
 ---
 
 ## 2. Design Principles
