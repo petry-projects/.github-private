@@ -36,6 +36,7 @@ declare -Ar ADVISORY_BOTS=(
   [chatgpt-codex-connector]="Codex (advisory, newer bot)"
   [qodo-code-review]="Qodo Merge (advisory)"
   [codeant-ai]="CodeAnt (advisory)"
+  [graphite-app]="Graphite (advisory)"
 )
 
 # Canonical rate-limit / out-of-quota body pattern — the SINGLE source of truth
@@ -192,6 +193,7 @@ declare -ar RATE_LIMIT_NOTICE_BOTS=(
   coderabbitai
   qodo-code-review
   codeant-ai
+  graphite-app
 )
 
 # Case-insensitive phrases that indicate a bot is itself rate-limited / out of

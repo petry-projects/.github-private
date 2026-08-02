@@ -525,7 +525,7 @@ MOCK_EOF
   # Three real advisory reviews + Codex signalling it is out of quota, head + submissions
   # recent (timeout fallbacks disarmed). All available bots have submitted, so the gate approves.
   local json
-  json='{"reviews":[{"author":{"login":"gemini-code-assist"},"state":"COMMENTED","submittedAt":"2099-01-01T00:00:00Z"},{"author":{"login":"sonarqubecloud"},"state":"COMMENTED","submittedAt":"2099-01-01T00:00:00Z"},{"author":{"login":"copilot-pull-request-reviewer"},"state":"COMMENTED","submittedAt":"2099-01-01T00:00:00Z"},{"author":{"login":"qodo-code-review"},"state":"COMMENTED","submittedAt":"2099-01-01T00:00:00Z"},{"author":{"login":"codeant-ai"},"state":"COMMENTED","submittedAt":"2099-01-01T00:00:00Z"}],"comments":[{"author":{"login":"chatgpt-codex-connector"},"body":"You have reached your Codex usage limits for code reviews.","createdAt":"2099-01-01T00:00:00Z"}]}'
+  json='{"reviews":[{"author":{"login":"gemini-code-assist"},"state":"COMMENTED","submittedAt":"2099-01-01T00:00:00Z"},{"author":{"login":"sonarqubecloud"},"state":"COMMENTED","submittedAt":"2099-01-01T00:00:00Z"},{"author":{"login":"copilot-pull-request-reviewer"},"state":"COMMENTED","submittedAt":"2099-01-01T00:00:00Z"},{"author":{"login":"qodo-code-review"},"state":"COMMENTED","submittedAt":"2099-01-01T00:00:00Z"},{"author":{"login":"codeant-ai"},"state":"COMMENTED","submittedAt":"2099-01-01T00:00:00Z"},{"author":{"login":"graphite-app"},"state":"COMMENTED","submittedAt":"2099-01-01T00:00:00Z"}],"comments":[{"author":{"login":"chatgpt-codex-connector"},"body":"You have reached your Codex usage limits for code reviews.","createdAt":"2099-01-01T00:00:00Z"}]}'
   local tmpdir
   tmpdir=$(_make_mock_gh_dir_recent "$json")
   local gate_script="$SCRIPT_DIR/lib/advisory-review-gate.sh"
@@ -699,12 +699,12 @@ MOCK_EOF
 # ────────────────────────────────────────────────────────────────────
 # NEW ADVISORY REVIEWERS — Qodo Merge + CodeAnt (issue #1349)
 #
-# Graphite is intentionally NOT registered: it had authored no review/comment
-# at implementation time, so its GraphQL author login is unverified (the app
-# slug `graphite-app` is not the same identifier namespace as `.author.login`,
-# and the Qodo guess `qodo-merge-pro` was already proven wrong — real login is
-# `qodo-code-review`). Adding a guessed login would violate the "do not guess
-# identifiers" guardrail; it is held pending its first real review.
+# Graphite was deferred here because it had authored no review/comment at
+# #1349/#1355 implementation time, so its GraphQL author login was unverified
+# (the Qodo guess `qodo-merge-pro` was already proven wrong — real login is
+# `qodo-code-review`). It has since posted real COMMENTED reviews on PR #1355,
+# verifying its login is `graphite-app`, and is now registered under #1401
+# (see the Graphite section below).
 # ────────────────────────────────────────────────────────────────────
 
 _events_dir() {
@@ -815,7 +815,7 @@ _events_dir() {
   # Qodo is out of quota; all other advisory bots have submitted real reviews.
   # The rate-limited Qodo must drop out of the required set so the gate approves.
   local json
-  json='{"reviews":[{"author":{"login":"gemini-code-assist"},"state":"COMMENTED","submittedAt":"2099-01-01T00:00:00Z"},{"author":{"login":"copilot-pull-request-reviewer"},"state":"COMMENTED","submittedAt":"2099-01-01T00:00:00Z"},{"author":{"login":"sonarqubecloud"},"state":"COMMENTED","submittedAt":"2099-01-01T00:00:00Z"},{"author":{"login":"chatgpt-codex-connector"},"state":"COMMENTED","submittedAt":"2099-01-01T00:00:00Z"},{"author":{"login":"codeant-ai"},"state":"COMMENTED","submittedAt":"2099-01-01T00:00:00Z"}],"comments":[{"author":{"login":"qodo-code-review"},"body":"Qodo Merge has reached your monthly usage limit for pull-request reviews.","createdAt":"2099-01-01T00:00:00Z"}]}'
+  json='{"reviews":[{"author":{"login":"gemini-code-assist"},"state":"COMMENTED","submittedAt":"2099-01-01T00:00:00Z"},{"author":{"login":"copilot-pull-request-reviewer"},"state":"COMMENTED","submittedAt":"2099-01-01T00:00:00Z"},{"author":{"login":"sonarqubecloud"},"state":"COMMENTED","submittedAt":"2099-01-01T00:00:00Z"},{"author":{"login":"chatgpt-codex-connector"},"state":"COMMENTED","submittedAt":"2099-01-01T00:00:00Z"},{"author":{"login":"codeant-ai"},"state":"COMMENTED","submittedAt":"2099-01-01T00:00:00Z"},{"author":{"login":"graphite-app"},"state":"COMMENTED","submittedAt":"2099-01-01T00:00:00Z"}],"comments":[{"author":{"login":"qodo-code-review"},"body":"Qodo Merge has reached your monthly usage limit for pull-request reviews.","createdAt":"2099-01-01T00:00:00Z"}]}'
   local tmpdir; tmpdir=$(_make_mock_gh_dir_recent "$json")
   local gate_script="$SCRIPT_DIR/lib/advisory-review-gate.sh"
   run env PATH="$tmpdir:$PATH" bash -c "
@@ -824,4 +824,50 @@ _events_dir() {
   "
   rm -rf "$tmpdir"
   [ "$status" -eq 0 ]
+}
+
+# ────────────────────────────────────────────────────────────────────
+# GRAPHITE ADVISORY REVIEWER (issue #1401, follow-up to #1349 / #1355)
+#
+# Deferred in #1355 because Graphite had authored no review/comment, so its
+# GraphQL author login was unverified. It has since posted real COMMENTED
+# reviews on PR #1355, confirming its login is `graphite-app` (the app slug
+# happens to equal the .author.login here) — so it is now registered per the
+# "do not guess identifiers" guardrail (login verified, not guessed).
+# ────────────────────────────────────────────────────────────────────
+
+@test "Advisory gate: Graphite is a registered advisory bot (issue #1401)" {
+  grep -q 'graphite-app' "$SCRIPT_DIR/lib/advisory-review-gate.sh"
+}
+
+@test "Advisory gate: Graphite is in the rate-limit notice superset (issue #1401)" {
+  run bash -c "source '$SCRIPT_DIR/lib/advisory-review-gate.sh'
+    printf '%s\n' \"\${RATE_LIMIT_NOTICE_BOTS[@]}\""
+  [[ "$output" == *"graphite-app"* ]]
+}
+
+@test "Gate runtime: a Graphite review is detected as an advisory bot submission (issue #1401)" {
+  local json; json="$(cat "$(_events_dir)/advisory_graphite_reviewed.json")"
+  local tmpdir; tmpdir=$(_make_mock_gh_dir_recent "$json")
+  local gate_script="$SCRIPT_DIR/lib/advisory-review-gate.sh"
+  run env PATH="$tmpdir:$PATH" bash -c "
+    source '$gate_script'
+    check_advisory_reviews 'https://github.com/owner/repo/pull/123'
+  "
+  rm -rf "$tmpdir"
+  # If Graphite were unregistered it would be filtered out and never appear in output.
+  [[ "$output" == *"graphite-app"* ]]
+}
+
+@test "Gate runtime: a Graphite out-of-quota notice is classified RATE_LIMITED (issue #1401)" {
+  local json; json="$(cat "$(_events_dir)/advisory_graphite_rate_limited.json")"
+  local tmpdir; tmpdir=$(_make_mock_gh_dir_recent "$json")
+  local gate_script="$SCRIPT_DIR/lib/advisory-review-gate.sh"
+  run env PATH="$tmpdir:$PATH" bash -c "
+    source '$gate_script'
+    check_advisory_reviews 'https://github.com/owner/repo/pull/123'
+  "
+  rm -rf "$tmpdir"
+  [[ "$output" == *"RATE_LIMITED"* ]]
+  [[ "$output" == *"graphite-app"* ]]
 }

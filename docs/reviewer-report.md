@@ -2,7 +2,7 @@
 
 Org-wide, **deterministic** visibility into the agentic third-party code reviewers that
 participate in PR review across `petry-projects` — GitHub Copilot, Gemini Code Assist,
-Codex, CodeRabbit, SonarCloud, Qodo Merge, and CodeAnt. Every figure is computed with `jq`/`awk` from GitHub's
+Codex, CodeRabbit, SonarCloud, Qodo Merge, CodeAnt, and Graphite. Every figure is computed with `jq`/`awk` from GitHub's
 own review data. **No LLM is involved** in this pipeline: a narrative / quality-scoring
 layer is a deliberately separate, human-approved add-on (see [Roadmap](#roadmap-v2--llm-optional-human-approved)).
 
@@ -30,6 +30,7 @@ drift from the approval gate's notion of who these bots are.
 | SonarCloud | `sonarqubecloud` |
 | Qodo Merge | `qodo-code-review` |
 | CodeAnt | `codeant-ai` |
+| Graphite | `graphite-app` |
 
 The org's own Claude reviewer (`donpetry-bot`) is intentionally **out of scope** here — its
 cost lives in the [Token Cost Observatory](./token-report.md); this report is about the
