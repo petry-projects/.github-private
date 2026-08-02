@@ -47,20 +47,24 @@
 # all prefixed <!-- dev-lead… -->), persona advisories (<!-- persona:… -->), and
 # the dependency advisory (<!-- dependency-advisory -->).
 cn_marker_pattern() {
-  printf '%s' '<!-- (pr-review-agent|dev-lead|persona:|dependency-advisory)'
+  printf '%s' '^<!-- (pr-review-agent|dev-lead|persona:|dependency-advisory)'
 }
 
 # cn_no_action_pattern — matches a comment that asks nothing of a human. Two kinds
 # of signal, both stable and grep/jq-identical (literal phrases + marker fields):
-#   * Known no-action bodies:
-#       "No actionable items found."      (post_no_changes, dev-lead-fix-reviews)
-#       "Engine ran but made no changes." (dev-lead-fix-ci / on-mention no-changes)
-#       "No action required."             (dependency advisory, all-LOW verdict)
-#   * Marker fields that are terminal no-ops:
-#       status=no-changes                 (dev-lead fix-ci / fix-reviews)
-#       decision=approved                 (pr-review clean/repeat approval)
+#   * Known no-action body phrases — anchored so a reviewer quoting them mid-sentence
+#     does NOT produce a false positive (unanchored substrings would match a comment
+#     like '<!-- dev-lead --> The engine says "No actionable items found." — re-run'):
+#       ^No actionable items found\.      (post_no_changes, dev-lead-fix-reviews — phrase starts its own line)
+#       ^Engine ran but made no changes\. (dev-lead-fix-ci / on-mention no-changes  — same)
+#       No action required\.$            (dependency advisory, all-LOW verdict — phrase ends the line)
+#   * Marker attributes — anchored inside the leading HTML comment so a quoted
+#     attribute in body text does not match (e.g. '<!-- dev-lead --> decision=approved but…'):
+#       <!-- [^>]*status=no-changes       (dev-lead fix-ci / fix-reviews)
+#       <!-- [^>]*decision=approved       (pr-review approval — in CN_AGENT_COMMENT_JQ only the FIRST
+#                                          approval per head SHA is actionable; repeats are no-action)
 cn_no_action_pattern() {
-  printf '%s' 'No actionable items found\.|Engine ran but made no changes\.|No action required\.|status=no-changes|decision=approved|pr-review-agent superseded'
+  printf '%s' '^No actionable items found\.|^Engine ran but made no changes\.|No action required\.$|<!-- [^>]*status=no-changes|<!-- [^>]*decision=approved|<!-- pr-review-agent superseded'
 }
 
 # ---------------------------------------------------------------------------
@@ -101,18 +105,34 @@ cn_classify() {
 #   .reviews.nodes[], .comments.nodes[], .reviewThreads.nodes[].comments.nodes[],
 #   each carrying .bodyText and submittedAt/createdAt). Output: one agent_comment
 #   record per marker-bearing body whose own timestamp is >= $cutoff, pre-flagged
-#   no_action. Args: --arg repo, --arg mark, --arg noact, --arg cutoff.
+#   no_action. Uses test($noact; "m") for multiline ^ / $ anchors. Approvals with
+#   decision=approved: the FIRST occurrence per head SHA within the PR is marked
+#   no_action:false (it unblocks merge); subsequent repeats are no_action:true.
+#   Args: --arg repo, --arg mark, --arg noact, --arg cutoff.
 # shellcheck disable=SC2034  # consumed by callers via jq, not executed here
 CN_AGENT_COMMENT_JQ='
   . as $pr
   | ( [ (.reviews?.nodes // [])[]?      | { body: .bodyText?, ts: (.submittedAt? // .createdAt?) } ]
     + [ (.comments?.nodes // [])[]?     | { body: .bodyText?, ts: .createdAt? } ]
     + [ (.reviewThreads?.nodes // [])[]? | (.comments?.nodes // [])[]? | { body: .bodyText?, ts: .createdAt? } ] )
-  | .[]
-  | select(.body != null)
-  | select(.ts != null and .ts >= $cutoff)
-  | select(.body | test($mark))
-  | { kind: "agent_comment", repo: $repo, pr: ($pr.url // "" | tostring), no_action: (.body | test($noact)) }
+  | map(select(.body != null and .ts != null and .ts >= $cutoff and (.body | test($mark))))
+  | sort_by(.ts)
+  | reduce .[] as $c (
+      { shas: [], out: [] };
+      ( $c.body | test($noact; "m") ) as $na |
+      if $na and ($c.body | test("<!-- [^>]*decision=approved")) then
+        ( $c.body | (capture("sha=(?<s>[0-9a-f]+)")? // {s:null}) | .s ) as $sha |
+        if $sha != null and ([ .shas[] | select(. == $sha) ] | length) > 0 then
+          .out += [{ kind: "agent_comment", repo: $repo, pr: ($pr.url // "" | tostring), no_action: true }]
+        else
+          .shas += (if $sha != null then [$sha] else [] end) |
+          .out += [{ kind: "agent_comment", repo: $repo, pr: ($pr.url // "" | tostring), no_action: false }]
+        end
+      else
+        .out += [{ kind: "agent_comment", repo: $repo, pr: ($pr.url // "" | tostring), no_action: $na }]
+      end
+    )
+  | .out[]
 '
 
 # ---------------------------------------------------------------------------

@@ -87,6 +87,19 @@ Fix committed and pushed.'
   [ "$output" = "non-agent" ]
 }
 
+@test "classify: a human comment quoting a marker is non-agent (marker must lead the body)" {
+  # Unanchored pattern would wrongly classify this as an agent comment.
+  run cn_classify 'Comments carrying our markers — <!-- pr-review-agent v1 --> and <!-- dev-lead --> — are ours.'
+  [ "$output" = "non-agent" ]
+}
+
+@test "classify: a comment quoting a no-action phrase mid-line is actionable, not noise" {
+  # Unanchored pattern would wrongly classify this as no-action.
+  run cn_classify '<!-- dev-lead-fix-reviews pr=7 sha=abc intent=on-mention status=applied -->
+The engine says "No actionable items found." but that is wrong — please re-run.'
+  [ "$output" = "actionable" ]
+}
+
 # ---------------------------------------------------------------------------
 # CN_AGENT_COMMENT_JQ — shared pre-classifier over a GraphQL PR node
 # (the exact program reviewer_report.sh applies during collection)
@@ -106,10 +119,32 @@ Fix committed and pushed.'
 JSON
   run jq -c --arg repo "o/r" --arg mark "$(cn_marker_pattern)" --arg noact "$(cn_no_action_pattern)" --arg cutoff "2026-07-01T00:00:00Z" \
     "[ $CN_AGENT_COMMENT_JQ ]" "$tmp"
-  # 3 marker-bearing bodies (2 reviews + 1 dev-lead comment); the human comment is dropped.
+  # 3 marker-bearing bodies (2 reviews + 1 dev-lead comment); human comment is dropped.
+  # The approved review is sha=def — first (and only) approval for that SHA → actionable.
+  # The no-changes dev-lead comment is no-action. The escalated review is actionable.
   echo "$output" | jq -e 'length == 3'
-  echo "$output" | jq -e 'map(select(.no_action)) | length == 2'   # approved + no-changes
+  echo "$output" | jq -e 'map(select(.no_action)) | length == 1'   # only the no-changes
   echo "$output" | jq -e 'all(.[]; .pr == "o/r/1" and .kind == "agent_comment")'
+}
+
+@test "jq pre-classifier: repeat approval of same SHA is no-action, first approval is actionable" {
+  tmp="$(mktemp "$BATS_TEST_TMPDIR/repeat.XXXXXX.json")"
+  cat > "$tmp" <<'JSON'
+{"url":"o/r/3","createdAt":"2026-07-10T10:00:00Z",
+ "reviews":{"nodes":[
+   {"bodyText":"<!-- pr-review-agent v1 sha=aaa decision=approved risk=LOW -->\nAPPROVED","submittedAt":"2026-07-10T10:00:00Z"},
+   {"bodyText":"<!-- pr-review-agent v1 sha=aaa decision=approved risk=LOW -->\nAPPROVED","submittedAt":"2026-07-10T11:00:00Z"},
+   {"bodyText":"<!-- pr-review-agent v1 sha=bbb decision=approved risk=LOW -->\nAPPROVED","submittedAt":"2026-07-10T12:00:00Z"}]},
+ "reviewThreads":{"nodes":[]},
+ "comments":{"nodes":[]}}
+JSON
+  run jq -c --arg repo "o/r" --arg mark "$(cn_marker_pattern)" --arg noact "$(cn_no_action_pattern)" --arg cutoff "2026-07-01T00:00:00Z" \
+    "[ $CN_AGENT_COMMENT_JQ ]" "$tmp"
+  [ "$status" -eq 0 ]
+  # sha=aaa first → actionable; sha=aaa second → no-action (repeat); sha=bbb first → actionable.
+  echo "$output" | jq -e 'length == 3'
+  echo "$output" | jq -e 'map(select(.no_action)) | length == 1'
+  echo "$output" | jq -e 'map(select(.no_action == false)) | length == 2'
 }
 
 @test "jq pre-classifier: old agent comments before cutoff are excluded even on a recently-updated PR" {

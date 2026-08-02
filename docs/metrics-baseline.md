@@ -75,7 +75,7 @@ PRs it is labelled *(all PRs)*.
 | Convergence — cycles-to-merge | **~7–13 commits** per merged substantive PR | trivial stub-sync merges in minutes | pr-review re-review events |
 | Redundancy — workflow runs/hr | — | **~52 runs/hr** (7-day window, all-PRs scope) | `pr_review_health.sh` run telemetry / `reviewer_report.sh` |
 | Redundancy — coverage overlap | — | PRs reviewed by ≥2 bots (see scorecard) | `reviewer_report.sh` "Coverage overlap" |
-| Noise — no-action comment share | — | **~12%** of all agent comments; raw counts confirmed on first scheduled run (see reconciliation notes) | `reviewer_report.sh` "Agent comment noise" |
+| Noise — no-action comment share | — | **~12%** of first-party agent comments (our markers only); raw counts confirmed on first scheduled run (see denominator reconciliation note) | `reviewer_report.sh` "Agent comment noise" |
 
 ### Noise metric — raw measurement details
 
@@ -85,11 +85,11 @@ baseline was captured. The ~12% figure is the pre-rollout estimate; the first sc
 
 | Field | Value | Note |
 |---|---|---|
-| Agent comments (total) | _confirmed on first run_ | all marker-bearing comments/reviews in the 7-day window |
-| No-action comments | _confirmed on first run_ | ~12% of the total (pre-rollout estimate) |
-| Active PRs (window) | _confirmed on first run_ | distinct `kind:"pr"` records in the JSONL collection |
-| Affected PRs (≥1 no-action) | _confirmed on first run_ | distinct PRs with at least one no-action agent comment |
-| No-action comments per PR | _confirmed on first run_ | no-action count ÷ PRs with any agent comment |
+| Agent comments (total) | *confirmed on first run* | all marker-bearing comments/reviews in the 7-day window (first-party only — see denominator note below) |
+| No-action comments | *confirmed on first run* | share of first-party agent comments (~12% pre-rollout estimate; see denominator note) |
+| Active PRs (window) | *confirmed on first run* | distinct `kind:"pr"` records in the JSONL collection |
+| Affected PRs (≥1 no-action) | *confirmed on first run* | distinct PRs with at least one no-action agent comment |
+| No-action comments per PR | *confirmed on first run* | no-action count ÷ PRs with any agent comment |
 
 Any divergence between the ~12% estimate and the first measured value is a measurement correction;
 record it by appending a dated row here rather than overwriting this baseline.
@@ -103,5 +103,13 @@ record it by appending a dated row here rather than overwriting this baseline.
   had no prior deterministic source; the first scheduled `reviewer-report.yml` run confirms it via
   `cn_render_noise_section`. Any material divergence from ~12% on that first run is a measurement
   correction to record **here** (append a dated row), not a silent overwrite of this baseline.
+- **Denominator scope (first-party only):** The `cn_render_noise_section` metric counts only
+  first-party agent comments — bodies that carry one of our automation markers (`<!-- pr-review-agent
+  …-->`, `<!-- dev-lead …-->`, etc.). Third-party reviewer bots (Codex, Qodo, SonarCloud, etc.) do
+  not emit these markers and are classified as `non-agent`; they are already measured separately via
+  the reviewer scorecard. The AC #4 ~12% figure cited in issue #1411 was also measured over
+  first-party markers only (it pre-dates the classifier and was an estimate, not a live
+  all-comments count), so the denominators are consistent. Any future comparison against an
+  all-comments denominator should be labelled explicitly to avoid confusion.
 - **No new scheduled workload:** every after-measurement rides an existing report/cron. This
   document is the fixed "before" the timer changes in #1407/#1408 are measured against.
