@@ -514,9 +514,11 @@ open PR that is **CI-green + `REVIEW_REQUIRED`, not reviewed at head, with no ag
 pending triggering event, idle longer than `STALL_MIN_AGE_MINUTES` (default 30 min — double the
 sweep's ≤15-min backstop cadence; **#1408 must re-derive this default when the sweep cadence
 is narrowed** so it remains ≥ 2× the new backstop interval)**. It is **fail-quiet on intentional stops**: a PR carrying
-`needs-human-review`, `dev-lead:hands-off`, `initiative:hold`, or the `<!-- pr-automation-budget
-exhausted -->` marker is never reported (the human-gate exclusions reuse the canonical
-`pr_has_escalation_label`, §6.2.3). `scripts/pr_stall_scan.sh` runs it over every open PR as an
+`needs-human-review` (checked via `pr_has_escalation_label`, §6.2.3), `dev-lead:hands-off`, or
+`initiative:hold` (checked via a `STALL_HOLD_LABELS` loop) is never reported. The
+`<!-- pr-automation-budget exhausted -->` marker is **not inspected directly** — it is excluded
+only because budget exhaustion simultaneously applies `needs-human-review`; the marker alone does
+not gate stall detection, preserving re-engagement for PRs that have the marker but no hold label. `scripts/pr_stall_scan.sh` runs it over every open PR as an
 **additive step on the existing `daily-pr-review-health.yml`** and surfaces any candidate through
 the same health-check / automated-report issue channel — **no new scheduled workload** (§1: this
 adds a pushed signal and a documented human decision, not another automated brake). This is the

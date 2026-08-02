@@ -127,6 +127,7 @@ jobs:
             tests/persona_runner.bats \
             tests/test_dev_lead_concurrency_guard.bats \
             tests/test_validate_workflow_schedules.bats \
+            tests/test_validate_interaction_contracts.bats \
             tests/caller_stub_freeze.bats \
             tests/pr_review_canary.bats
 
