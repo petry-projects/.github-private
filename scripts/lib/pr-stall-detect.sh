@@ -46,6 +46,9 @@ source "${SCRIPT_DIR}/pr-automation-budget.sh"
 # scheduled backstop cadence (≤15 min, `2,17,32,47 * * * *`), so a candidate has
 # outlived at least two full backstop windows — a genuine stall, not a PR merely
 # in flight. Env-overridable (AC#1).
+# TASK FOR #1408: when pr-review-sweep's cron is narrowed, re-derive this default
+# so it remains ≥ 2× the new backstop interval (see §11.1 of
+# docs/agentic-interaction-model.md — the derivation is stale once the cadence changes).
 : "${STALL_MIN_AGE_MINUTES:=30}"
 
 # Never-release labels beyond needs-human-review (which pr_has_escalation_label

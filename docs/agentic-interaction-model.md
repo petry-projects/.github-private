@@ -512,7 +512,8 @@ explicit, not tribal.
 `scripts/lib/pr-runaway-detect.sh`, §9 rule 2) — it never labels, comments, or halts. It flags an
 open PR that is **CI-green + `REVIEW_REQUIRED`, not reviewed at head, with no agent activity and no
 pending triggering event, idle longer than `STALL_MIN_AGE_MINUTES` (default 30 min — double the
-sweep's ≤15-min backstop cadence)**. It is **fail-quiet on intentional stops**: a PR carrying
+sweep's ≤15-min backstop cadence; **#1408 must re-derive this default when the sweep cadence
+is narrowed** so it remains ≥ 2× the new backstop interval)**. It is **fail-quiet on intentional stops**: a PR carrying
 `needs-human-review`, `dev-lead:hands-off`, `initiative:hold`, or the `<!-- pr-automation-budget
 exhausted -->` marker is never reported (the human-gate exclusions reuse the canonical
 `pr_has_escalation_label`, §6.2.3). `scripts/pr_stall_scan.sh` runs it over every open PR as an
@@ -526,7 +527,7 @@ is caught here and **still resolves** (surfaced → human/backstop acts) instead
 
 **Trigger condition.** Roll back the narrowing if the stall detector reports **≥ 2 distinct
 stalled PRs within any rolling 24-hour window**, *or* **any single PR stalled for ≥ 4 hours** (≈8×
-the default threshold), during the monitoring window (§11.3). Either signal means the narrowed
+the default threshold), during the monitoring window (§11.4). Either signal means the narrowed
 timer let a genuinely un-eventable transition sit unresolved — the silent failure mode the
 narrowing risked. A stall that is later explained by a human-gate marker does **not** count (it is
 excluded by design and never reported). One transient single-PR stall under the 4-hour bar is a
