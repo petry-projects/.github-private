@@ -59,8 +59,12 @@ that event and acts, scoped to the event's payload.
 - **Rule.** Subscribe to the narrowest event(s) that carry the signal. Do **not** add a
   `schedule` — a Class 1 role with a cron is either a disguised Class 2 (declare it and
   give the timer a `timer_role` + stop condition, §6) or a leak.
-- Permitted non-webhook triggers: `workflow_dispatch` (human/manual escape hatch) and
-  `repository_dispatch` (the sanctioned cross-workflow bridge, §4) — neither is a clock.
+- Permitted non-webhook triggers: `workflow_dispatch` (human/manual escape hatch) — not a
+  clock. `repository_dispatch` is included in `E` (§3) when it delivers scoped work to a
+  receiver role (e.g. `persona-runner.yml`, `gh-aw-cross-org.yml`); it is the PAT-backed
+  bridge that carries real work, not a manual escape hatch. A `workflow_dispatch`-only
+  workflow with no clock is Class 1 by declaration (validator verifies `not S and not R`);
+  it acts as a human-explicit bridge for non-subscribable events (e.g. `discussion:[labeled]`).
 - **Self-trigger is forbidden** (§7 rule 1): a Class 1 role must never subscribe to an
   event class its own output emits (e.g. a role that posts an `issue_comment` must not act
   on `issue_comment: created` without filtering out its own actor/marker).
@@ -120,10 +124,14 @@ Let S  = the workflow has a schedule.cron trigger.
 Let E  = the workflow has >=1 GitHub webhook event trigger that represents work
          (pull_request, pull_request_review, pull_request_review_comment,
           issue_comment, issues, check_run, check_suite, workflow_run,
-          discussion_comment, push, ...), EXCLUDING workflow_dispatch and
-          repository_dispatch (a manual/bridge trigger, not a clock and not a
-          primary-work webhook).
-Let R  = the row's timer_role column is non-empty (backstop | safety-net | self-heal).
+          discussion_comment, push, repository_dispatch, ...), EXCLUDING only
+          workflow_dispatch (a manual/human escape-hatch trigger, not a clock
+          and not a primary-work event). A workflow whose only trigger is
+          workflow_dispatch (no E, no S) is Class 1 by declaration — the
+          validator verifies not S and not R but cannot derive E from the on: block.
+Let R  = the row's timer_role column carries a role value
+         (backstop | safety-net | self-heal); a cell containing only `—` or
+         `N/A` is treated as empty (R = false).
 
 Class 1  ⇒  E and not S and not R     (pure event reaction; a schedule here is drift)
 Class 2  ⇒  S and R                   (a cadence whose role reconciles event-driven work)
@@ -152,6 +160,10 @@ is a **fixed-column markdown table** with exactly these columns, in this order:
 CI-verified, not review-verified** (§10) — treat it as load-bearing. When a workflow's
 triggers change, its row here must change in the same PR or the validator fails.
 
+**Escaping convention:** justification cells must be `|`-free (rephrase rather than escape);
+backtick spans (e.g. `` `path/to/file.yml` ``) are allowed; the separator row uses
+`---|---|---|---` with no padding.
+
 | Workflow (path) | Class | timer_role | Justification (cite the `on:` triggers) |
 |---|---|---|---|
 | `.github/workflows/dev-lead.yml` | 1 | — | `pull_request`, `pull_request_review`, `pull_request_review_comment`, `issue_comment`, `issues:labeled`, `check_run`, `repository_dispatch` — pure webhook reactions; no `schedule`. |
@@ -161,6 +173,14 @@ triggers change, its row here must change in the same PR or the validator fails.
 | `.github/workflows/issue-triage-runner.yml` | 1 | — | `issues:[opened, reopened]` — reacts to a new/reopened issue. |
 | `.github/workflows/pr-review-mention.yml` | 1 | — | Mention router: `issue_comment`, `pull_request_review_comment`, `pull_request:[review_requested]`; parses + dispatches, no clock. |
 | `.github/workflows/persona-mention.yml` | 1 | — | Mention router: `issue_comment`, `pull_request_review_comment`, `discussion_comment` — dispatches to the persona runner, no clock. |
+| `.github/workflows/auto-rebase-retry.yml` | 1 | — | `workflow_run:[completed]` on `Auto-rebase non-Dependabot PRs` — event-driven retry handler; re-runs failed jobs bounded by attempt counter. No `timer_role`: event-driven retry handlers are Class 1 regardless of semantic role (see §6.1). |
+| `.github/workflows/dependency-advisory.yml` | 1 | — | `pull_request:[opened, synchronize, reopened]` (paths-filtered to manifest files) — reacts to dependency changes in a PR; posts an advisory comment. |
+| `.github/workflows/spec-drift.yml` | 1 | — | `pull_request:[closed]` — reacts to a merged initiative PR; runs the drift detector once and posts at most one advisory comment on the closed story. |
+| `.github/workflows/release-notes.yml` | 1 | — | `push:[main]` — reacts to a merge to main; drafts a Keep-a-Changelog entry and opens a CHANGELOG PR. `workflow_dispatch` for ad-hoc runs. |
+| `.github/workflows/gh-aw-cross-org.yml` | 1 | — | `repository_dispatch:[gh-aw-issue-triage, gh-aw-ci-failure]` — PAT-backed cross-org dispatch receiver; no schedule. |
+| `.github/workflows/persona-runner.yml` | 1 | — | `repository_dispatch:[persona-mention]` — PAT-backed dispatch receiver for persona invocations; no schedule. |
+| `.github/workflows/initiative-planner.yml` | 1 | — | `workflow_dispatch` only — human-explicit bridge for the `discussion:[labeled]` signal that cannot be subscribed to inline; §2 Class 1 by declaration (no schedule, no `timer_role`). |
+| `.github/workflows/pr-auto-review.yml` | 1 | — | `workflow_run:[completed]`, `check_suite:[completed]`, `pull_request_review:[submitted, dismissed]`, `pull_request:[opened, reopened, synchronize, ready_for_review]` — multi-event readiness gate; no schedule. |
 | `.github/workflows/pr-review-sweep.yml` | 2 | backstop | `schedule: '2,17,32,47 * * * *'` backstop **plus** `workflow_run:[completed]` fast path (#898) scoped to the completing CI run's PR(s); idempotent, per-branch `cancel-in-progress`. |
 | `.github/workflows/initiative-driver.yml` | 2 | safety-net | `issues:[closed, labeled]` fast path **plus** `schedule: '23 */6 * * *'` explicitly "safety net for missed close events"; sweeps every open `initiative:auto` epic idempotently. |
 | `.github/workflows/dev-lead-retry.yml` | 2 | self-heal | `schedule: '15 */2 * * *'` + `workflow_dispatch`; re-dispatches `status=rate-limited` PRs once the limit clears. **Leak flagged in §6** — no event fast-path, so it behaves as a de-facto convergence clock rather than a true backstop. |
@@ -174,10 +194,38 @@ triggers change, its row here must change in the same PR or the validator fails.
 | `.github/workflows/initiative-planner-canary.yml` | 3 | — | `schedule: '30 6 * * *'` daily dry-run canary of `initiative-planner.yml`. |
 | `.github/workflows/initiative-driver-canary.yml` | 3 | — | `schedule: '40 6 * * *'` daily dry-run canary of `initiative-driver.yml`. |
 | `.github/workflows/pr-review-canary.yml` | 3 | — | `schedule: '50 6 * * *'` daily canary; the `push:[main]` (paths-gated) trigger is a post-merge gate, not an event fast-path — origin is the cadence. |
+| `.github/workflows/actions-fleet-monitor.yml` | 3 | — | `schedule: '27 6 * * *'` daily org-wide fleet scan; cadence is the origin. Cited in §5 as the canonical PAT-bridge example. |
+| `.github/workflows/stale-manager.yml` | 3 | — | `schedule: '29 9 * * 1'` weekly stale scan across issues/PRs; cadence is the origin. |
+| `.github/workflows/docs-health-check.yml` | 3 | — | `schedule: '21 0 * * 0'` weekly docs health scan; cadence is the origin. |
+| `.github/workflows/skill-eval-report.yml` | 3 | — | `schedule: '51 7 * * *'` daily skill eval scoring (self-improving-skills pipeline); cadence is the origin. |
+| `.github/workflows/premature-closure-audit.yml` | 3 | — | `schedule: '49 8 * * 1'` weekly premature-closure audit; cadence is the origin. |
+| `.github/workflows/auto-rebase-health.yml` | 3 | — | `schedule: '43 7 * * *'` daily auto-rebase health report; cadence is the origin. |
 
-> Non-agentic infrastructure workflows (CI, Lint, gate guards such as `holdout-guard.yml`
-> and `test-deletion-guard.yml`, dependabot plumbing, thin caller stubs) are out of scope:
-> they are not roles that *interact*, so they carry no trigger class here.
+> **Out-of-scope workflows (exclusion list).** The completeness check (§10) ignores the paths
+> below. A workflow absent from both this table and this list is a completeness failure.
+>
+> | Path | Reason |
+> |---|---|
+> | `.github/workflows/ci.yml` | CI infrastructure — build and test, not an agentic role |
+> | `.github/workflows/lint.yml` | CI infrastructure — linter, not an agentic role |
+> | `.github/workflows/dependency-audit.yml` | CI infrastructure — dependency audit, not an agentic role |
+> | `.github/workflows/sonarcloud.yml` | CI infrastructure — code-quality scan, not an agentic role |
+> | `.github/workflows/copilot-setup-steps.yml` | CI infrastructure — runner setup, not an agentic role |
+> | `.github/workflows/test.yml` | CI test workflow, not an agentic role |
+> | `.github/workflows/test-dev-lead.yml` | CI test workflow, not an agentic role |
+> | `.github/workflows/test-aw.yml` | CI test workflow, not an agentic role |
+> | `.github/workflows/holdout-guard.yml` | Gate guard — enforces merge conditions, not an agentic role |
+> | `.github/workflows/test-deletion-guard.yml` | Gate guard — enforces test retention, not an agentic role |
+> | `.github/workflows/dependabot-automerge.yml` | Dependabot plumbing — thin caller stub |
+> | `.github/workflows/dependabot-rebase.yml` | Dependabot plumbing — thin caller stub |
+> | `.github/workflows/auto-rebase.yml` | Thin caller stub — all logic in org-level reusable |
+> | `.github/workflows/agent-shield.yml` | Thin caller stub — all logic in org-level reusable |
+> | `.github/workflows/add-to-project.yml` | Thin caller stub — all logic in org-level reusable |
+> | `.github/workflows/dev-lead-reusable.yml` | Reusable workflow — invoked via `workflow_call`, not a direct entrypoint |
+> | `.github/workflows/ci-failure-analyst-reusable.yml` | Reusable workflow — invoked via `workflow_call`, not a direct entrypoint |
+> | `.github/workflows/persona-runner-reusable.yml` | Reusable workflow — invoked via `workflow_call`, not a direct entrypoint |
+> | `.github/workflows/pr-review.yml` | Reusable workflow — invoked via `workflow_call`, not a direct entrypoint |
+> | `.github/workflows/repair-pr-approvals.yml` | Manual admin tool — `workflow_dispatch` only, no automated agentic trigger |
 
 ---
 
@@ -251,6 +299,12 @@ A timer must declare its role. There are three:
 
 A Class 3 report/canary carries **no** `timer_role` — its cadence is the origin of the
 work, not a net under an event.
+
+A Class 1 event-driven workflow also carries **no** `timer_role` even when it is
+semantically self-healing. `auto-rebase-retry.yml`, for example, re-runs a failed job via
+`workflow_run` — but it is Class 1 (a `workflow_run` reaction), and `timer_role` is
+exclusively a property of Class 2/3 **scheduled** workflows. An event-driven retry handler
+has no schedule and therefore needs no `timer_role` declaration.
 
 ### 6.2 Requirements every timer must meet
 
@@ -419,6 +473,12 @@ update the table (and the role's §8 contract) in the same PR, or CI fails.
   columns: `Workflow (path) | Class | timer_role | Justification`) and its asserted `Class`
   is checked against that workflow's actual `on:` triggers via the §3 discriminator. A row
   whose class no longer matches the workflow fails.
+- **Completeness (bidirectional).** Every `.github/workflows/*.yml` file not in the §4
+  exclusion list must have exactly one row. A workflow absent from both the §4 table and the
+  §4 exclusion list fails the check. This prevents a new agentic role from being added with
+  no classification row — the enforcement is bidirectional, not row-to-reality only. The
+  matching AC for #1406: *every in-scope workflow has exactly one row; any in-scope workflow
+  with no row fails CI*.
 - **Per-role contracts vs. workflows** (once Story 2 lands): each contract's
   `triggers.events` / `triggers.timers` match the workflow's `on:` block, `emits` does not
   intersect subscribed `events` (§7 rule 1), and every Class 2 timer declares a
