@@ -213,7 +213,9 @@ its normal event-driven path, scoped to the payload.
   on high-failure signal.
 - **Requirement:** the PAT is the identity boundary — it must be the role's declared
   `runtime.identity.credential` (AGENTS.md "Agent identity & credential secrets"), never a
-  shared token borrowed to punch through the boundary.
+  shared token borrowed to punch through the boundary. Note that fine-grained PATs are
+  restricted to a single resource owner (one user or organization); if the workflow must span
+  multiple organizations, classic PATs or GitHub App installation tokens should be used instead.
 
 ### Bridge B — a stop-condition-gated backstop timer
 
