@@ -23,6 +23,7 @@ agents/                   # Copilot custom agent profiles (org-wide)
 prompts/                  # Prompt libraries used by workflows
 scripts/                  # Shell orchestration for GitHub Actions
 frameworks/               # Installed agentic frameworks (git subtree)
+  bmad-bgreat-suite/      # bmad-bgreat-suite @ ae8914e84b87: SRE, DevOps, and Security agents
   bmad-method/            # BMAD-METHOD v6.8.0: multi-agent development lifecycle
   bmad-test-architecture/ # bmad-method-test-architecture-enterprise v1.19.0
 .github/workflows/        # Scheduled automation (PR review, health checks)
@@ -94,6 +95,7 @@ Notable subtopics are listed below to aid discoverability; see the standards dir
 | [`dependabot-policy`](https://github.com/petry-projects/.github/blob/main/standards/dependabot-policy.md) | Configuration files, auto-merge workflow, vulnerability audit CI check, applying to a repository |
 | [`feature-ideation-sources`](https://github.com/petry-projects/.github/blob/main/standards/feature-ideation-sources.md) | AI/ML vendor & lab sources, developer tooling changelogs, security & compliance sources, newsletters, podcasts |
 | [`github-settings`](https://github.com/petry-projects/.github/blob/main/standards/github-settings.md) | Org-level settings, repository rulesets, required checks ruleset, GitHub Apps & integrations, org-level secrets |
+| [`gitignore-standard`](https://github.com/petry-projects/.github/blob/main/standards/gitignore-standard.md) | Two-Layer Model (L1 secrets baseline, L2 ecosystem extension), managed-block markers, negation discipline, compliance check |
 | [`initiatives-project`](https://github.com/petry-projects/.github/blob/main/standards/initiatives-project.md) | Project board fields, Theme → Initiative, how auto-add works, initiative classification |
 | [`persona-standards`](https://github.com/petry-projects/.github/blob/main/standards/persona-standards.md) | Canary onboarding (the last step), trigger matrix, trust & permissions, definition of done |
 | [`pr-limits`](https://github.com/petry-projects/.github/blob/main/standards/pr-limits.md) | Exempt actors, operator runbook, reconciliation with the Dependabot cap |
