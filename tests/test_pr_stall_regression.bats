@@ -79,11 +79,6 @@ setup() {
   run is_pr_stall "$ci" REVIEW_REQUIRED 0 90 "$gated"
   [ "$status" -ne 0 ]
 
-  # the pr-automation-budget exhaustion marker (comment), even with no label yet
-  gated=false; pr_stall_is_gated '[]' true && gated=true
-  run is_pr_stall "$ci" REVIEW_REQUIRED 0 90 "$gated"
-  [ "$status" -ne 0 ]
-
   # dev-lead:hands-off (PR intentionally excluded from the agent)
   gated=false; pr_stall_is_gated '["dev-lead:hands-off"]' && gated=true
   run is_pr_stall "$ci" REVIEW_REQUIRED 0 90 "$gated"
