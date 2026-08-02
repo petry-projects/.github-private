@@ -253,3 +253,97 @@ YAML
   [ "$status" -ne 0 ]
   [[ "$output" != *"Traceback"* ]]
 }
+
+@test "validate-interaction-contracts allows a guarded self-dispatch when a matching self_trigger_guards entry exists" {
+  # Subscribes to repository_dispatch:demo-mention and emits dispatch:demo-mention,
+  # but declares the in-code guard that prevents the runaway loop (#860 rule 1).
+  cat >"$TMP/personas/demo/interaction.yml" <<'YAML'
+schema_version: 1
+role: demo
+kind: persona
+workflows:
+  - .github/workflows/demo.yml
+interaction:
+  triggers:
+    events:
+      - issues
+      - repository_dispatch:demo-mention
+    timers: []
+  emits:
+    - "dispatch:demo-mention"
+    - "label:demo"
+  self_trigger_guards:
+    - emit: "dispatch:demo-mention"
+      guard: "demo-intent.sh drops events where sender.login == BOT_USER"
+      location: "scripts/demo-intent.sh:10-20"
+  idempotency_key: "issue_number"
+  concurrency_lane: "demo-${{ issue }}"
+  stop_markers:
+    - demo:hands-off
+  budget: none
+YAML
+  run python3 "$VALIDATOR" "$TMP"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"OK"* ]]
+}
+
+@test "validate-interaction-contracts rejects a self-dispatch when the guard entry names a different emit" {
+  # Guard entry exists but for a different emit — the collision is still unguarded.
+  cat >"$TMP/personas/demo/interaction.yml" <<'YAML'
+schema_version: 1
+role: demo
+kind: persona
+workflows:
+  - .github/workflows/demo.yml
+interaction:
+  triggers:
+    events:
+      - issues
+      - repository_dispatch:demo-mention
+    timers: []
+  emits:
+    - "dispatch:demo-mention"
+    - "label:demo"
+  self_trigger_guards:
+    - emit: "label:demo"
+      guard: "unrelated guard entry — does not cover dispatch:demo-mention"
+      location: "scripts/demo-intent.sh:1-5"
+  idempotency_key: "issue_number"
+  concurrency_lane: "demo-${{ issue }}"
+  stop_markers:
+    - demo:hands-off
+  budget: none
+YAML
+  run python3 "$VALIDATOR" "$TMP"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"self-trigger"* ]]
+}
+
+@test "validate-interaction-contracts rejects a self_trigger_guards entry missing the location field" {
+  # Guard entry is malformed (missing location) — must fail validation.
+  cat >"$TMP/personas/demo/interaction.yml" <<'YAML'
+schema_version: 1
+role: demo
+kind: persona
+workflows:
+  - .github/workflows/demo.yml
+interaction:
+  triggers:
+    events:
+      - issues
+    timers: []
+  emits:
+    - "label:demo"
+  self_trigger_guards:
+    - emit: "label:demo"
+      guard: "some guard description"
+  idempotency_key: "issue_number"
+  concurrency_lane: "demo-${{ issue }}"
+  stop_markers:
+    - demo:hands-off
+  budget: none
+YAML
+  run python3 "$VALIDATOR" "$TMP"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"location"* ]]
+}

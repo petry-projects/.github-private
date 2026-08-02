@@ -94,22 +94,50 @@ def check_timer(timer: object, where: str) -> None:
         fail(f"{where}.event_fast_path must be a non-empty string or null, got {efp!r}")
 
 
-def check_self_trigger(events: list, emits: list, where: str) -> None:
+def check_self_trigger_guards(guards: object, where: str) -> frozenset:
+    """Validate self_trigger_guards entries and return the set of guarded emit names.
+
+    A self_trigger_guards entry documents an in-code guard (with a verifiable
+    location) that prevents a named emit from producing a runaway loop despite
+    a literal self-trigger collision.  Story 4 (#1406) will verify that the
+    declared location still exists in code — removing the guard then breaks CI."""
+    if guards is None:
+        return frozenset()
+    if not isinstance(guards, list):
+        fail(f"{where} must be a list, got {guards!r}")
+    guarded: set[str] = set()
+    for i, g in enumerate(guards):
+        if not isinstance(g, dict):
+            fail(f"{where}[{i}] must be a mapping, got {g!r}")
+        _require_nonempty_str(g.get("emit"), f"{where}[{i}].emit")
+        _require_nonempty_str(g.get("guard"), f"{where}[{i}].guard")
+        _require_nonempty_str(g.get("location"), f"{where}[{i}].location")
+        guarded.add(g["emit"])
+    return frozenset(guarded)
+
+
+def check_self_trigger(events: list, emits: list, guarded_emits: frozenset, where: str) -> None:
     """The well-formedness half of #860 rule 1 (§7): a role must not name, in its
-    emits, an event class it also subscribes to. The DEEP semantic analysis
-    (e.g. a `comment` emit vs an `issue_comment` subscription, which real roles
-    do safely via actor/marker filtering) is Story 4's job — here we catch only
-    the unambiguous cases: a self-dispatch, and a literal event/emit collision."""
+    emits, an event class it also subscribes to. A collision is legal only when a
+    matching self_trigger_guards entry names the in-code guard — so Story 4 (#1406)
+    can verify the guard location still exists and removing it breaks CI.
+
+    The DEEP semantic analysis (e.g. a `comment` emit vs an `issue_comment`
+    subscription, which real roles do safely via actor/marker filtering) is Story
+    4's job — here we catch only the unambiguous cases: a self-dispatch, and a
+    literal event/emit collision."""
     event_set = set(events)
     for emit in emits:
         if emit.startswith("dispatch:"):
             dispatched = emit.split(":", 1)[1]
-            if f"repository_dispatch:{dispatched}" in event_set:
+            if f"repository_dispatch:{dispatched}" in event_set and emit not in guarded_emits:
                 fail(f"{where}: emit {emit!r} self-triggers — the role also "
-                     f"subscribes to repository_dispatch:{dispatched} (#860 rule 1)")
-        if emit in event_set:
+                     f"subscribes to repository_dispatch:{dispatched} (#860 rule 1); "
+                     f"add a self_trigger_guards: entry naming the in-code guard")
+        if emit in event_set and emit not in guarded_emits:
             fail(f"{where}: emit {emit!r} is also a subscribed event — a role "
-                 f"must never be triggered by its own output (#860 rule 1)")
+                 f"must never be triggered by its own output (#860 rule 1); "
+                 f"add a self_trigger_guards: entry naming the in-code guard")
 
 
 def check_contract(path: Path, repo_root: Path) -> None:
@@ -168,7 +196,12 @@ def check_contract(path: Path, repo_root: Path) -> None:
                      f"{sorted(EMIT_BARE)} or start with one of "
                      f"{list(EMIT_PREFIXES)} followed by a non-empty value so its "
                      f"produced event class is declared")
-    check_self_trigger(events, emits, f"{path}")
+
+    guards_raw = interaction.get("self_trigger_guards")
+    guarded_emits = check_self_trigger_guards(
+        guards_raw, f"{path}: interaction.self_trigger_guards"
+    )
+    check_self_trigger(events, emits, guarded_emits, f"{path}")
 
     _require_nonempty_str(interaction.get("idempotency_key"),
                           f"{path}: interaction.idempotency_key")
