@@ -83,14 +83,13 @@ else
   failure_rate="0.0"
 fi
 
-# Duration percentiles across all completed runs (computed but not surfaced in the
-# LLM prompt — reserved for future structured-report use).
-# shellcheck disable=SC2034
-read -r dur_min dur_p50 dur_p95 dur_max < <(echo "$runs_json" | jq -r '
+# Duration percentiles across all completed runs. Surfaced deterministically in the
+# report output as a convergence-latency signal for the pre/post baseline (#1411).
+read -r dur_n dur_min dur_p50 dur_p95 dur_max < <(echo "$runs_json" | jq -r '
   [.[] | select(.conclusion != null and .duration_s > 0) | .duration_s] | sort |
-  if length == 0 then "0 0 0 0"
+  if length == 0 then "0 0 0 0 0"
   else . as $d | ($d | length) as $n |
-    "\($d | min) \($d[$n * 50 / 100 | floor]) \($d[$n * 95 / 100 | floor]) \($d | max)"
+    "\($n) \($d | min) \($d[$n * 50 / 100 | floor]) \($d[$n * 95 / 100 | floor]) \($d | max)"
   end')
 
 # ---------------------------------------------------------------------------
@@ -175,6 +174,7 @@ You are analyzing GitHub Actions workflow run logs for the PR Review Agent.
 - Analysis window: last ${LOOKBACK_DAYS} days, up to 100 most recent runs
 - Report date: ${TODAY}
 - Total runs fetched: ${total_runs} | Successful: ${success_runs} | Failed: ${failed_runs} | Cancelled: ${cancelled_runs}
+- Run duration across ${dur_n} completed run(s): p50 $(fmt_dur "$dur_p50") | p95 $(fmt_dur "$dur_p95") (min $(fmt_dur "$dur_min") / max $(fmt_dur "$dur_max"))
 
 ## Run Summary
 ${RUNS_SUMMARY}
@@ -243,6 +243,25 @@ then
   exit 1
 fi
 rm -f "$logs_file"
+
+# ---------------------------------------------------------------------------
+# 5. Surface the (already-computed) duration percentiles deterministically.
+# These were calculated above and previously discarded; appending them here gives
+# the convergence metric a near-free latency signal in the same report the model
+# writes, without depending on the model to reproduce them (#1411, AC#6).
+# ---------------------------------------------------------------------------
+{
+  printf '\n## Convergence latency (deterministic)\n\n'
+  printf 'Workflow duration across %s completed run(s) in the window — computed by `%s`, not the model.\n\n' \
+    "$dur_n" "$(basename "$0")"
+  printf '| Workflow | Runs | min | p50 | p95 | max |\n'
+  printf '|---|---:|---:|---:|---:|---:|\n'
+  printf '| `%s` | %s | %s | %s | %s | %s |\n' \
+    "$WORKFLOW_FILE" "$dur_n" \
+    "$(fmt_dur "$dur_min")" "$(fmt_dur "$dur_p50")" "$(fmt_dur "$dur_p95")" "$(fmt_dur "$dur_max")"
+} >> "$REPORT_FILE"
+
+echo "Duration percentiles — p50 $(fmt_dur "$dur_p50") / p95 $(fmt_dur "$dur_p95") across $dur_n run(s)"
 
 [ -n "${GITHUB_STEP_SUMMARY:-}" ] && [ -f "$REPORT_FILE" ] && cat "$REPORT_FILE" >> "$GITHUB_STEP_SUMMARY"
 
