@@ -99,7 +99,9 @@ log_review_gate_warn() {
 #   is ours). Pure — no gh/network, no jq.
 review_thread_is_agent_authored() {
   local body="${1:-}"
-  [[ -z "$body" ]] && return 1
+  if [[ -z "$body" ]]; then
+    return 1
+  fi
   if [[ "$body" =~ $_MAINTAINER_REVIEW_GATE_AGENT_MARKERS ]]; then
     return 0
   fi
@@ -118,7 +120,9 @@ review_thread_is_agent_authored() {
 #   omits the suffix), and the list carries both forms for safety.
 review_thread_login_is_excluded_bot() {
   local login="${1:-}"
-  [[ -z "$login" ]] && return 1
+  if [[ -z "$login" ]]; then
+    return 1
+  fi
   local b
   for b in "${MAINTAINER_REVIEW_GATE_EXCLUDED_BOTS[@]}"; do
     [[ "$login" == "$b" ]] && return 0
@@ -136,7 +140,9 @@ review_thread_login_is_excluded_bot() {
 #   threads it did see.
 mrtg_fetch_review_threads() {
   local pr_url="${1:-}"
-  [[ -z "$pr_url" ]] && return 0
+  if [[ -z "$pr_url" ]]; then
+    return 0
+  fi
   # shellcheck disable=SC2016  # $url is a GraphQL variable placeholder, not shell
   local _gql='query($url:URI!){resource(url:$url){...on PullRequest{reviewThreads(first:100){nodes{isResolved comments(first:1){nodes{author{login} body createdAt}}}}}}}'
   gh api graphql -f query="$_gql" -f url="$pr_url" \
@@ -149,10 +155,15 @@ check_maintainer_review_threads() {
   local head_date="${2:-}"
   local bot_user="${3:-donpetry-bot}"
 
+  if [[ -z "$json" ]]; then
+    log_review_gate_warn "review-threads snapshot is empty — failing closed (blocking approval)"
+    return 2
+  fi
+
   # Build excluded-bots JSON lazily on first use so jq execution stays inside the
   # function where errors are caught and the gate can fail closed.
   if [[ -z "$_MAINTAINER_REVIEW_GATE_EXCLUDED_BOTS_JSON" ]]; then
-    _MAINTAINER_REVIEW_GATE_EXCLUDED_BOTS_JSON=$(printf '%s\n' "${MAINTAINER_REVIEW_GATE_EXCLUDED_BOTS[@]}" | jq -R . | jq -sc .) \
+    _MAINTAINER_REVIEW_GATE_EXCLUDED_BOTS_JSON=$(jq -n '$ARGS.positional' --args "${MAINTAINER_REVIEW_GATE_EXCLUDED_BOTS[@]}") \
       || {
         log_review_gate_warn "could not build excluded-bots list — failing closed (blocking approval)"
         return 2
@@ -160,25 +171,23 @@ check_maintainer_review_threads() {
   fi
 
   # Classify every thread as "ok" (not a blocking maintainer finding) or "block".
-  # A thread blocks when it is a maintainer thread (originating comment marker-less,
-  # author not an excluded bot and not the agent's own login) AND it is unaddressed:
-  # not resolved, and no commit was pushed at/after the finding. Undeterminable
-  # originating comment / createdAt / push-time all fail closed to "block".
+  # A thread blocks when it is a maintainer thread (author not the agent's own login
+  # and not an excluded advisory bot) AND it is unaddressed: not resolved, and no
+  # commit was pushed at/after the finding. Body markers are NOT used to determine
+  # maintainer authorship — a user-controlled field is not a server-verifiable record.
+  # Undeterminable originating comment / createdAt / push-time all fail closed to "block".
   #
   # A jq failure here (malformed snapshot) exits non-zero → return 2 so
   # undeterminable input fails closed rather than reading as "no findings".
   local blockers
   blockers=$(printf '%s' "$json" | jq -r \
-    --arg markers "$_MAINTAINER_REVIEW_GATE_AGENT_MARKERS" \
     --arg botuser "$bot_user" \
     --argjson bots "$_MAINTAINER_REVIEW_GATE_EXCLUDED_BOTS_JSON" \
     --arg headdate "$head_date" '
       def is_maintainer($c):
-        ($c.author.login // "" | tostring) as $l
-        | ($c.body // "") as $b
+        ($c.author?.login // "" | tostring) as $l
         | ($l != $botuser)
-          and (($bots | index($l)) == null)
-          and (($b | test($markers)) | not);
+          and (($bots | index($l)) == null);
       ($headdate | if . == "" then null else (try fromdateiso8601 catch null) end) as $head
       | [ (.reviewThreads // [])[] | objects
           | (.comments.nodes[0]? // null) as $c

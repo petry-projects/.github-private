@@ -47,7 +47,7 @@ _run_classify() {
 }
 
 @test "Review-thread gate: script has correct shebang" {
-  head -1 "$GATE" | grep -q "^#!/usr/bin/env bash"
+  (head -n 1 "$GATE" || true) | grep -q "^#!/usr/bin/env bash"
 }
 
 @test "Review-thread gate: script uses set -euo pipefail" {
@@ -161,10 +161,13 @@ _run_classify() {
   [ "$status" -eq 0 ]
 }
 
-@test "Gate: our own marker-carrying thread postdates push → 0 (ignored)" {
+@test "Gate: marker-carrying thread from shared identity postdates push → 1 (marker alone not proof of bot authorship)" {
+  # Body markers are user-controlled and not server-verifiable; a maintainer could
+  # include <!-- dev-lead --> to spoof the exemption. The gate now classifies solely
+  # on author login (excluded bots list + bot_user), so this thread blocks.
   local json='{"reviewThreads":[{"isResolved":false,"comments":{"nodes":[{"author":{"login":"don-petry"},"body":"<!-- dev-lead --> Noted.","createdAt":"2026-08-02T12:00:00Z"}]}}]}'
   _run_check "$json" '2026-08-02T10:00:00Z'
-  [ "$status" -eq 0 ]
+  [ "$status" -eq 1 ]
 }
 
 @test "Gate: advisory-bot thread postdates push → 0 (handled by advisory gate)" {

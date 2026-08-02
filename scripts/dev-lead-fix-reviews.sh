@@ -353,9 +353,9 @@ resolve_actor_outdated_threads() {
         '.data.repository.pullRequest.reviewThreads.nodes
           | map(select(.isResolved == false
                        and .isOutdated == true
-                       and (.comments.nodes[0].author.login == $actor
-                            or .comments.nodes[0].author.login == $actor_stripped)))
-          | .[] | .id + "\t" + ((.comments.nodes[0].body // "") | @base64)' 2>/dev/null || true)
+                       and (.comments.nodes[0]?.author?.login == $actor
+                            or .comments.nodes[0]?.author?.login == $actor_stripped)))
+          | .[] | .id + "\t" + ((.comments.nodes[0]?.body // "") | @base64)' 2>/dev/null || true)
 
   if [ -z "$pairs" ]; then
     echo "::notice::no outdated unresolved threads from ${ACTOR} on PR #${PR_NUMBER}"
@@ -378,7 +378,7 @@ resolve_actor_outdated_threads() {
   local id body_b64 body
   while IFS=$'\t' read -r id body_b64; do
     [ -z "$id" ] && continue
-    body=$(printf '%s' "$body_b64" | base64 -d 2>/dev/null || echo "")
+    body=$(printf '%s' "$body_b64" | base64 --decode 2>/dev/null || printf '%s' "$body_b64" | base64 -d 2>/dev/null || echo "")
     # Resolve-guard (#1415): for a maintainer-capable ACTOR, only resolve a thread
     # whose originating comment carries one of our automation markers. A marker-less
     # thread authored as `don-petry` is a maintainer finding the agent must NOT clear

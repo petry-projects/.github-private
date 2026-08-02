@@ -319,7 +319,7 @@ if [ "${FORCE_REVIEW:-false}" != "true" ]; then
       # Dismiss any existing pr-review-agent APPROVED review so the PR remains blocked
       # until the maintainer comment is addressed (best-effort).
       if [ "${DRY_RUN:-false}" != "true" ]; then
-        _agent_approval=$(echo "$PR_SNAPSHOT" | jq -r --arg bot "${BOT_USER:-donpetry-bot}" --arg sha "$PR_HEAD_SHA" '(.reviews // [])[] | select(.author.login == $bot and .state == "APPROVED" and .commit.oid == $sha) | .id' 2>/dev/null | head -1 || true)
+        _agent_approval=$(echo "$PR_SNAPSHOT" | jq -r --arg bot "${BOT_USER:-donpetry-bot}" --arg sha "$PR_HEAD_SHA" 'first((.reviews // [])[] | select(.author?.login == $bot and .state == "APPROVED" and .commit?.oid == $sha) | .id) // empty' 2>/dev/null || true)
         if [ -n "$_agent_approval" ]; then
           gh api graphql -f query='mutation($id:ID!,$msg:String!){dismissPullRequestReview(input:{pullRequestReviewId:$id,message:$msg}){clientMutationId}}' -f id="$_agent_approval" -f msg="Dismissing approval due to unaddressed maintainer issue comment (#1290)" 2>/dev/null || echo "    warn: could not dismiss prior approval"
         fi
@@ -368,7 +368,7 @@ if [ "${FORCE_REVIEW:-false}" != "true" ]; then
       # Dismiss any existing pr-review-agent APPROVED review at head so the PR
       # remains blocked until the maintainer thread is addressed (best-effort).
       if [ "${DRY_RUN:-false}" != "true" ]; then
-        _agent_approval=$(echo "$PR_SNAPSHOT" | jq -r --arg bot "${BOT_USER:-donpetry-bot}" --arg sha "$PR_HEAD_SHA" '(.reviews // [])[] | select(.author.login == $bot and .state == "APPROVED" and .commit.oid == $sha) | .id' 2>/dev/null | head -1 || true)
+        _agent_approval=$(echo "$PR_SNAPSHOT" | jq -r --arg bot "${BOT_USER:-donpetry-bot}" --arg sha "$PR_HEAD_SHA" 'first((.reviews // [])[] | select(.author?.login == $bot and .state == "APPROVED" and .commit?.oid == $sha) | .id) // empty' 2>/dev/null || true)
         if [ -n "$_agent_approval" ]; then
           gh api graphql -f query='mutation($id:ID!,$msg:String!){dismissPullRequestReview(input:{pullRequestReviewId:$id,message:$msg}){clientMutationId}}' -f id="$_agent_approval" -f msg="Dismissing approval due to unaddressed maintainer review thread (#1415)" 2>/dev/null || echo "    warn: could not dismiss prior approval"
         fi
