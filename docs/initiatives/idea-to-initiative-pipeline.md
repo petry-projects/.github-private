@@ -143,22 +143,6 @@ inputs.
   backfill reuses `feature-ideation`'s existing model budget and 20-minute
   timeout, so it is cost-neutral-to-reducing.
 
-#### Operator runbook — backfilling the `.github-private` backlog
-
-1. **Dry-run first.** Run the **Feature Research & Ideation** workflow via
-   *Run workflow* with `enhance_backlog: true` **and** `dry_run: true`. Download
-   the dry-run JSONL artifact and confirm its entry count equals an independent
-   count of open, human-authored, not-yet-enhanced Ideas (the candidate set).
-   Nothing is posted.
-2. **Go live.** Re-dispatch with `enhance_backlog: true` and `dry_run: false`.
-   After one live run, every open, human-authored, not-yet-enhanced Idea carries
-   exactly one structured enhancement comment — the un-enhanced backlog drops to
-   **0**.
-3. **Verify idempotency.** A second live backfill run posts **0** new comments
-   (no idea is double-enhanced, including ideas already carrying the legacy
-   marker) — the idempotency guarantee that let the standalone `idea-enhancer`
-   be retired (#876).
-
 ### `idea-triage.yml` — weekly ripeness shortlist
 - Scans every open **Ideas** Discussion, scores each **Ripe / Soon / Not yet**
   on evidence, prerequisites, alignment, coverage, and freshness.
