@@ -7,8 +7,6 @@ permissions:
   actions: read
   checks: read
   contents: read
-  issues: write
-  pull-requests: write
 
 engine: claude
 
@@ -37,9 +35,11 @@ and post a single root-cause comment on the associated pull request.
 > posts **live** (declaring `issues: write` + `pull-requests: write`), and delegates all logic to
 > `ci-failure-analyst-reusable.yml@ci-failure-analyst/v1-stable`. This `.md` is the gh-aw source
 > retained alongside that stub (the `gh-aw-compile` orphaned-lock detector requires a sibling
-> `.md` for every `*.lock.yml`); its `on:`/`safe-outputs` posture is kept in sync with the
-> deployed stub — `check_run:[completed]`, one live comment per failing head SHA — so the spec
-> and the deployment agree. Do **not** edit the frozen `.lock.yml` block (caller-stub-freeze,
+> `.md` for every `*.lock.yml`). The spec's `on:` trigger and comment posture are kept in sync
+> with the deployed stub — `check_run:[completed]`, one comment per failing head SHA — but
+> permission models differ: the deployed stub carries live `issues: write` + `pull-requests: write`,
+> while this spec uses `safe-outputs.add-comment` (gh-aw strict mode disallows raw write
+> permissions). Do **not** edit the frozen `.lock.yml` block (caller-stub-freeze,
 > AGENTS.md). For the full deployed architecture and permission table see
 > [`docs/aw/ci-failure-analyst.md`](../../docs/aw/ci-failure-analyst.md); for the machine-readable
 > interaction contract see
