@@ -127,8 +127,9 @@ _fetch_standard() {
 # stub that is not major-scoped is itself a standards violation, and silently
 # emitting a legacy `<name>/stable` pin is exactly the bug this replaces.
 _derive_stable_channel() {
-  local name="$1" ref
-  ref="$(grep -oE "${name}-reusable\.yml@[^[:space:]\"']+" | head -n1)"
+  local name="$1" ref ref_matches
+  ref_matches="$(grep -oE "${name}-reusable\.yml@[^[:space:]\"']+" || true)"
+  ref="${ref_matches%%$'\n'*}"
   ref="${ref#*@}"
   if [[ "$ref" =~ ^${name}/v([0-9]+)(-|$) ]]; then
     printf '%s/v%s-stable\n' "$name" "${BASH_REMATCH[1]}"
