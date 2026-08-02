@@ -43,9 +43,11 @@ only as a Class 2 backstop under an event path, or as a Class 3 scheduled origin
 in the standard
 ([Classification of current agentic workflows](./agentic-interaction-model.md#4-classification-of-current-agentic-workflows)),
 in the fixed column order `Workflow (path) | Class | timer_role | Justification`. The
-completeness check is bidirectional — a workflow with no row (and not on the exclusion list)
-fails CI. If the role is CI infrastructure or a thin caller stub rather than an agentic role,
-add it to the §4 **exclusion list** instead, with a one-line reason.
+bidirectional completeness check (a workflow absent from both this table and the exclusion
+list will fail CI) is planned for Story 4 / `validate-interaction-model` (#1406) and is not
+yet enforced; keep the table in sync by convention until that check lands. If the role is CI
+infrastructure or a thin caller stub rather than an agentic role, add it to the §4
+**exclusion list** instead, with a one-line reason.
 
 ## Step 2 — Author the interaction contract (the Story-1 shape)
 
@@ -93,26 +95,29 @@ whichever file(s) you create:
 
 ## Step 3 — Choose the event path vs. a sanctioned bridge
 
-A workflow step running as the default `GITHUB_TOKEN` **cannot emit webhooks that trigger
-other workflows** — GitHub suppresses recursive triggering, so an event a Class 1 role is
-waiting for will silently never arrive if its upstream producer runs as `GITHUB_TOKEN`
+A workflow step running as the default `GITHUB_TOKEN` **cannot emit most webhooks that
+trigger other workflows** — GitHub suppresses recursive triggering for push, label, comment,
+and similar events, so an event a Class 1 role is waiting for will silently never arrive if
+its upstream producer runs as `GITHUB_TOKEN`
 (standard [§5](./agentic-interaction-model.md#5-the-github_token-event-boundary-rule-and-sanctioned-bridges)).
+`repository_dispatch` and `workflow_dispatch` are permitted exceptions — GitHub allows
+`GITHUB_TOKEN` to fire these as explicit, intentional dispatch calls.
 
 - **Prefer the direct event.** If the work is represented by a real webhook that a real
   actor produces, subscribe to it directly — no bridge needed.
-- If you must wake a downstream role across the `GITHUB_TOKEN` boundary, cross it **only**
-  via one of the two sanctioned bridges:
-  - **Bridge A — PAT-backed `repository_dispatch`** (event-preserving). Fire the dispatch (or
-    apply the triggering label) with the role's declared
-    `runtime.identity.credential` PAT — never a shared token borrowed to punch through the
-    boundary. The downstream Class 1 role wakes on its normal event path, scoped to the
-    payload.
-  - **Bridge B — a stop-condition-gated backstop timer.** Where a PAT bridge is not warranted,
-    a Class 2 backstop timer may reconcile the missed event on a cadence — but it must satisfy
-    the full timer contract in Step 4.
+- If you must wake a downstream role, cross the boundary via one of the two sanctioned bridges:
+  - **Bridge A — `repository_dispatch` with the role's declared credential** (event-preserving).
+    Fire the dispatch (or apply the triggering label) with the role's declared
+    `runtime.identity.credential` PAT — never a shared token. This repo's identity policy
+    (AGENTS.md "Agent identity & credential secrets") requires using the named credential even
+    though `GITHUB_TOKEN` is technically permitted to fire `repository_dispatch`. The downstream
+    Class 1 role wakes on its normal event path, scoped to the payload.
+  - **Bridge B — a stop-condition-gated backstop timer.** Where a dispatch bridge is not
+    warranted, a Class 2 backstop timer may reconcile the missed event on a cadence — but
+    it must satisfy the full timer contract in Step 4.
 
-Never try to cross the boundary by having `GITHUB_TOKEN` emit the triggering event and hoping
-it fires — it will not, and the failure is silent.
+Never try to produce a suppressed event (push, label, comment) as `GITHUB_TOKEN` and expect
+it to trigger a downstream workflow — the failure is silent.
 
 ## Step 4 — Declare the timer contract (only if the role uses a timer)
 
@@ -129,9 +134,10 @@ contract's `interaction.triggers.timers`:
 - **`stop_condition`** — the timer checks it *before* acting and re-dispatches only work that
   is still open and not human-gated
   ([§6.2](./agentic-interaction-model.md#62-requirements-every-timer-must-meet)).
-- **`event_fast_path`** — the Class 1 event this timer backstops; `null` marks the
-  [§6.3](./agentic-interaction-model.md#63-the-correct-example-vs-the-leak) leak (a schedule
-  as the *only* path to event-driven work).
+- **`event_fast_path`** — **Class 2 only:** the Class 1 event this timer backstops; `null`
+  marks the [§6.3](./agentic-interaction-model.md#63-the-correct-example-vs-the-leak) leak
+  (a schedule as the *only* path to fundamentally event-driven work). For **Class 3**, omit
+  or set `null` — no fast path exists and that is not a leak.
 - The timer must be **idempotent** (extra ticks harmless, missed ticks self-heal), must
   **skip human-gate markers** (`needs-human-review`, `dev-lead:needs-human`, …), and must
   **never re-arm a runaway** — its reset path is human-gated. Also obey the off-peak
