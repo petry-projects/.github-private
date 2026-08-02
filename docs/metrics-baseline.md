@@ -61,8 +61,9 @@ PRs it is labelled *(all PRs)*.
 ## Pre-rollout baseline snapshot
 
 - **Captured (dated):** 2026-08-02
-- **Pre-change window:** the 7-day rolling window ending on the capture date, over all non-archived
-  `petry-projects` repos.
+- **Pre-change window:** 2026-07-26T00:00:00Z – 2026-08-02T00:00:00Z (7-day rolling window, over all non-archived `petry-projects` repos)
+- **Repository scope:** all non-archived repos in the `petry-projects` org (count logged by `reviewer_report.sh` at each run start)
+- **PR cohorts:** substantive PRs = non-generated source changed, non-draft, merged in window; trivial stub-sync PRs = verbatim canonical-stub propagation (reported separately, never averaged into substantive figures)
 - **Sample:** the known-working figures below are the measured pre-change references cited on epic
   #1402; they are reproduced (or corrected, with the discrepancy explained) by the same code path
   that produces every after-run — `scripts/reviewer_report.sh` (noise, redundancy overlap),
@@ -70,19 +71,36 @@ PRs it is labelled *(all PRs)*.
 
 | Metric | Baseline (substantive) | Baseline (all PRs) | Source of the after-measurement |
 |---|---|---:|---|
-| Convergence — time-to-converge | **~20–48 h** | — | `pr_review_health.sh` "Convergence latency" (p50/p95) |
-| Convergence — cycles-to-merge | **~7–13 commits** | trivial stub-sync merges in minutes | pr-review re-review events |
-| Redundancy — workflow runs/hr | — | **~52 runs/hr** | `pr_review_health.sh` run telemetry / `reviewer_report.sh` |
+| Convergence — time-to-converge | **~20–48 h** (p50 / p95 range) | — | `pr_review_health.sh` "Convergence latency" (p50/p95) |
+| Convergence — cycles-to-merge | **~7–13 commits** per merged substantive PR | trivial stub-sync merges in minutes | pr-review re-review events |
+| Redundancy — workflow runs/hr | — | **~52 runs/hr** (7-day window, all-PRs scope) | `pr_review_health.sh` run telemetry / `reviewer_report.sh` |
 | Redundancy — coverage overlap | — | PRs reviewed by ≥2 bots (see scorecard) | `reviewer_report.sh` "Coverage overlap" |
-| Noise — no-action comment share | — | **~12%** of all agent comments | `reviewer_report.sh` "Agent comment noise" |
+| Noise — no-action comment share | — | **~12%** of all agent comments; raw counts confirmed on first scheduled run (see reconciliation notes) | `reviewer_report.sh` "Agent comment noise" |
+
+### Noise metric — raw measurement details
+
+Because the classifier is net-new (#1411), no deterministic pre-change count existed before this
+baseline was captured. The ~12% figure is the pre-rollout estimate; the first scheduled
+`reviewer-report.yml` run will produce the exact values below via `cn_render_noise_section`:
+
+| Field | Value | Note |
+|---|---|---|
+| Agent comments (total) | _confirmed on first run_ | all marker-bearing comments/reviews in the 7-day window |
+| No-action comments | _confirmed on first run_ | ~12% of the total (pre-rollout estimate) |
+| Active PRs (window) | _confirmed on first run_ | distinct `kind:"pr"` records in the JSONL collection |
+| Affected PRs (≥1 no-action) | _confirmed on first run_ | distinct PRs with at least one no-action agent comment |
+| No-action comments per PR | _confirmed on first run_ | no-action count ÷ PRs with any agent comment |
+
+Any divergence between the ~12% estimate and the first measured value is a measurement correction;
+record it by appending a dated row here rather than overwriting this baseline.
 
 ### Reconciliation notes
 
 - **Convergence** and **redundancy** baselines are quoted as ranges because the pre-change data is
   bimodal (see the split above); the substantive band (~20–48 h, ~7–13 commits) is the target of the
   initiative, while trivial stub-sync PRs sit far below it and are reported, not averaged in.
-- **Noise ~12%** is the pre-rollout no-action share. Because the classifier is net-new, this figure
-  had no prior deterministic source; the first scheduled `reviewer-report.yml` run reproduces it via
+- **Noise ~12%** is the pre-rollout no-action estimate. Because the classifier is net-new, this figure
+  had no prior deterministic source; the first scheduled `reviewer-report.yml` run confirms it via
   `cn_render_noise_section`. Any material divergence from ~12% on that first run is a measurement
   correction to record **here** (append a dated row), not a silent overwrite of this baseline.
 - **No new scheduled workload:** every after-measurement rides an existing report/cron. This

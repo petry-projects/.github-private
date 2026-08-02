@@ -22,8 +22,8 @@ setup() {
 }
 
 @test "agent-comment: a plain human comment is NOT an agent comment" {
-  run cn_is_agent_comment 'LGTM, thanks for the fix!'; [ "$status" -ne 0 ]
-  run cn_is_agent_comment 'No actionable items found.'; [ "$status" -ne 0 ]
+  run cn_is_agent_comment 'LGTM, thanks for the fix!'; [ "$status" -eq 1 ]
+  run cn_is_agent_comment 'No actionable items found.'; [ "$status" -eq 1 ]
 }
 
 # ---------------------------------------------------------------------------
@@ -51,6 +51,15 @@ All changes are LOW risk. No action required.'
 @test "classify: a clean repeat approval (decision=approved) is no-action" {
   run cn_classify '<!-- pr-review-agent v1 sha=abc decision=approved risk=LOW -->
 ## APPROVED ✓'
+  [ "$output" = "no-action" ]
+}
+
+@test "classify: a superseded agent comment is no-action regardless of embedded body" {
+  run cn_classify '<!-- pr-review-agent superseded -->
+<details><summary>Prior review</summary>
+<!-- pr-review-agent v1 sha=old decision=escalated risk=HIGH -->
+## NEEDS HUMAN REVIEW
+</details>'
   [ "$output" = "no-action" ]
 }
 
@@ -88,19 +97,35 @@ Fix committed and pushed.'
   cat > "$tmp" <<'JSON'
 {"url":"o/r/1","createdAt":"2026-07-10T10:00:00Z",
  "reviews":{"nodes":[
-   {"author":{"login":"donpetry-bot"},"bodyText":"<!-- pr-review-agent v1 sha=abc decision=escalated risk=HIGH -->\nNEEDS HUMAN REVIEW"},
-   {"author":{"login":"donpetry-bot"},"bodyText":"<!-- pr-review-agent v1 sha=def decision=approved risk=LOW -->\nAPPROVED"}]},
+   {"author":{"login":"donpetry-bot"},"bodyText":"<!-- pr-review-agent v1 sha=abc decision=escalated risk=HIGH -->\nNEEDS HUMAN REVIEW","submittedAt":"2026-07-10T10:00:00Z"},
+   {"author":{"login":"donpetry-bot"},"bodyText":"<!-- pr-review-agent v1 sha=def decision=approved risk=LOW -->\nAPPROVED","submittedAt":"2026-07-10T10:00:00Z"}]},
  "reviewThreads":{"nodes":[]},
  "comments":{"nodes":[
-   {"author":{"login":"don-petry"},"bodyText":"<!-- dev-lead-fix-reviews pr=1 sha=abc intent=on-mention status=no-changes -->\nNo actionable items found."},
-   {"author":{"login":"alice"},"bodyText":"Looks good to me, no markers here."}]}}
+   {"author":{"login":"don-petry"},"bodyText":"<!-- dev-lead-fix-reviews pr=1 sha=abc intent=on-mention status=no-changes -->\nNo actionable items found.","createdAt":"2026-07-10T10:00:00Z"},
+   {"author":{"login":"alice"},"bodyText":"Looks good to me, no markers here.","createdAt":"2026-07-10T10:00:00Z"}]}}
 JSON
-  run jq -c --arg repo "o/r" --arg mark "$(cn_marker_pattern)" --arg noact "$(cn_no_action_pattern)" \
+  run jq -c --arg repo "o/r" --arg mark "$(cn_marker_pattern)" --arg noact "$(cn_no_action_pattern)" --arg cutoff "2026-07-01T00:00:00Z" \
     "[ $CN_AGENT_COMMENT_JQ ]" "$tmp"
   # 3 marker-bearing bodies (2 reviews + 1 dev-lead comment); the human comment is dropped.
   echo "$output" | jq -e 'length == 3'
   echo "$output" | jq -e 'map(select(.no_action)) | length == 2'   # approved + no-changes
   echo "$output" | jq -e 'all(.[]; .pr == "o/r/1" and .kind == "agent_comment")'
+}
+
+@test "jq pre-classifier: old agent comments before cutoff are excluded even on a recently-updated PR" {
+  tmp="$(mktemp "$BATS_TEST_TMPDIR/old.XXXXXX.json")"
+  cat > "$tmp" <<'JSON'
+{"url":"o/r/2","updatedAt":"2026-07-25T10:00:00Z",
+ "reviews":{"nodes":[
+   {"bodyText":"<!-- pr-review-agent v1 sha=old decision=approved -->","submittedAt":"2026-06-01T00:00:00Z"}]},
+ "reviewThreads":{"nodes":[]},
+ "comments":{"nodes":[]}}
+JSON
+  run jq -c --arg repo "o/r" --arg mark "$(cn_marker_pattern)" --arg noact "$(cn_no_action_pattern)" --arg cutoff "2026-07-10T00:00:00Z" \
+    "[ $CN_AGENT_COMMENT_JQ ]" "$tmp"
+  [ "$status" -eq 0 ]
+  # Review submitted before the cutoff — excluded even though the PR's updatedAt is in-window.
+  echo "$output" | jq -e 'length == 0'
 }
 
 # ---------------------------------------------------------------------------
@@ -110,6 +135,9 @@ JSON
 @test "render: counts, share, per-PR, and empty-state" {
   dir="$(mktemp -d "$BATS_TEST_TMPDIR/noise.XXXXXX")"
   cat > "$dir/a.jsonl" <<'JSON'
+{"kind":"pr","repo":"o/r","pr":"o/r/1","created":"x","merged":null,"draft":false,"author":"h"}
+{"kind":"pr","repo":"o/r","pr":"o/r/2","created":"x","merged":null,"draft":false,"author":"h"}
+{"kind":"pr","repo":"o/r","pr":"o/r/3","created":"x","merged":null,"draft":false,"author":"h"}
 {"kind":"agent_comment","repo":"o/r","pr":"o/r/1","no_action":true}
 {"kind":"agent_comment","repo":"o/r","pr":"o/r/1","no_action":false}
 {"kind":"agent_comment","repo":"o/r","pr":"o/r/2","no_action":true}
@@ -119,10 +147,13 @@ JSON
   run cn_render_noise_section "$dir"
   [ "$status" -eq 0 ]
   [[ "$output" == *"Agent comments"* ]]
-  # 4 agent comments, 3 no-action (75%), across 3 PRs.
+  # 4 agent comments (3 no-action = 75%) across 3 PRs with agent comments; 4 active PRs total.
   [[ "$output" == *"4"* ]]
-  [[ "$output" == *"3"* ]]
   [[ "$output" == *"75%"* ]]
+  [[ "$output" == *"Active PRs"* ]]
+  [[ "$output" == *"Affected PRs"* ]]
+  # 3 affected PRs (o/r/1, o/r/2, o/r/3 each have ≥1 no-action comment).
+  [[ "$output" == *"3"* ]]
 }
 
 @test "render: empty dir yields a clean zero-state, never an error" {

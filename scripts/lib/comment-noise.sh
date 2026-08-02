@@ -6,8 +6,9 @@
 #
 # It is a set of PURE functions with NO network I/O and NO top-level side effects,
 # so it can be sourced by both the report (reviewer_report.sh) and its unit tests
-# (tests/comment_noise.bats). It does NOT call `set` itself — the caller owns shell
-# options — mirroring the sourced-helper convention in persona-runner.sh.
+# (tests/comment_noise.bats). It does NOT call `set -euo pipefail` — sourced-library
+# exception: adding it would change the caller's shell options (mirroring the
+# approved convention in persona-runner.sh; see AGENTS.md Bash guideline note).
 #
 # What it classifies
 #   An *agent comment* is any PR comment/review whose body carries one of OUR
@@ -59,7 +60,7 @@ cn_marker_pattern() {
 #       status=no-changes                 (dev-lead fix-ci / fix-reviews)
 #       decision=approved                 (pr-review clean/repeat approval)
 cn_no_action_pattern() {
-  printf '%s' 'No actionable items found\.|Engine ran but made no changes\.|No action required\.|status=no-changes|decision=approved'
+  printf '%s' 'No actionable items found\.|Engine ran but made no changes\.|No action required\.|status=no-changes|decision=approved|pr-review-agent superseded'
 }
 
 # ---------------------------------------------------------------------------
@@ -98,18 +99,20 @@ cn_classify() {
 # ---------------------------------------------------------------------------
 # Input: one GraphQL PR node (same shape reviewer_report.sh collects: .url plus
 #   .reviews.nodes[], .comments.nodes[], .reviewThreads.nodes[].comments.nodes[],
-#   each carrying .bodyText). Output: one agent_comment record per marker-bearing
-#   body, pre-flagged no_action. Args: --arg repo, --arg mark, --arg noact.
+#   each carrying .bodyText and submittedAt/createdAt). Output: one agent_comment
+#   record per marker-bearing body whose own timestamp is >= $cutoff, pre-flagged
+#   no_action. Args: --arg repo, --arg mark, --arg noact, --arg cutoff.
 # shellcheck disable=SC2034  # consumed by callers via jq, not executed here
 CN_AGENT_COMMENT_JQ='
   . as $pr
-  | ( [ (.reviews.nodes // [])[]      | .bodyText ]
-    + [ (.comments.nodes // [])[]     | .bodyText ]
-    + [ (.reviewThreads.nodes // [])[] | (.comments.nodes // [])[] | .bodyText ] )
+  | ( [ (.reviews?.nodes // [])[]?      | { body: .bodyText?, ts: (.submittedAt? // .createdAt?) } ]
+    + [ (.comments?.nodes // [])[]?     | { body: .bodyText?, ts: .createdAt? } ]
+    + [ (.reviewThreads?.nodes // [])[]? | (.comments?.nodes // [])[]? | { body: .bodyText?, ts: .createdAt? } ] )
   | .[]
-  | select(. != null)
-  | select(test($mark))
-  | { kind: "agent_comment", repo: $repo, pr: ($pr.url), no_action: (test($noact)) }
+  | select(.body != null)
+  | select(.ts != null and .ts >= $cutoff)
+  | select(.body | test($mark))
+  | { kind: "agent_comment", repo: $repo, pr: ($pr.url // "" | tostring), no_action: (.body | test($noact)) }
 '
 
 # ---------------------------------------------------------------------------
@@ -131,25 +134,33 @@ _cn_ratio() {
 # PURE: no network. A dir with no agent comments renders a clean zero-state.
 cn_render_noise_section() {
   local dir="${1:-}"
-  local total=0 noact=0 prs=0
-  local files=("$dir"/*.jsonl)
-  if [ -e "${files[0]}" ]; then
-    local counts
-    # One jq pass: total agent comments, no-action count, and distinct PRs touched.
-    counts="$(jq -rs '
-      map(select(.kind == "agent_comment")) as $ac
-      | [ ($ac | length),
-          ($ac | map(select(.no_action)) | length),
-          ($ac | map(.pr) | unique | length) ]
-      | @tsv' "${files[@]}" 2>/dev/null || printf '0\t0\t0')"
-    IFS=$'\t' read -r total noact prs <<<"$counts"
+  local total=0 noact=0 prs=0 active_prs=0 affected_prs=0
+  if [ -n "$dir" ] && [ -d "$dir" ]; then
+    local files=("$dir"/*.jsonl)
+    if [ -e "${files[0]}" ]; then
+      local counts
+      # One jq pass: agent comment totals, distinct PR sets, and active-PR denominator.
+      counts="$(jq -rs '
+        map(select(.kind == "agent_comment")) as $ac
+        | map(select(.kind == "pr")) as $all_prs
+        | [ ($ac | length),
+            ($ac | map(select(.no_action)) | length),
+            ($ac | map(.pr) | unique | length),
+            ($all_prs | map(.pr) | unique | length),
+            ($ac | map(select(.no_action)) | map(.pr) | unique | length) ]
+        | @tsv' "${files[@]}" 2>/dev/null || printf '0\t0\t0\t0\t0')"
+      IFS=$'\t' read -r total noact prs active_prs affected_prs <<<"$counts"
+    fi
   fi
   total="${total:-0}"; noact="${noact:-0}"; prs="${prs:-0}"
+  active_prs="${active_prs:-0}"; affected_prs="${affected_prs:-0}"
 
   printf '## Agent comment noise\n\n'
   printf -- '- **Agent comments:** %s\n' "$total"
   printf -- '- **No-action comments:** %s (%s of agent comments)\n' "$noact" "$(_cn_pct "$noact" "$total")"
+  printf -- '- **Active PRs (window):** %s\n' "$active_prs"
   printf -- '- **PRs with agent comments:** %s\n' "$prs"
+  printf -- '- **Affected PRs (≥1 no-action comment):** %s\n' "$affected_prs"
   printf -- '- **No-action comments per PR:** %s\n\n' "$(_cn_ratio "$noact" "$prs")"
   printf -- '- **Noise** = agent comments that ask nothing of a human — a reported no-change, a no-op engine run, or a clean/repeat approval. '
   printf 'Actionable agent comments (applied fixes, escalated findings, human-attention flags) are excluded. '

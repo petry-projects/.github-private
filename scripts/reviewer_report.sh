@@ -310,6 +310,9 @@ render_reviewer_report() {
 
   if [ "${total:-0}" -eq 0 ]; then
     printf 'No pull-request activity found in the last %s days.\n' "$lookback"
+    if declare -F cn_render_noise_section >/dev/null 2>&1; then
+      cn_render_noise_section "$dir"
+    fi
     return 0
   fi
 
@@ -479,10 +482,23 @@ _collect_one_repo() {
     # marker-bearing comment/review on each in-window PR, regardless of author
     # (our agents commit as human logins). A distinct record kind, so it never
     # perturbs the bot scorecard aggregation above.
-    if [ -n "${CN_AGENT_COMMENT_JQ:-}" ] && [ -n "${CN_MARKER_RE:-}" ]; then
+    if [ -n "${CN_AGENT_COMMENT_JQ:-}" ] && [ -n "${CN_MARKER_RE:-}" ] && [ -n "${CN_NOACTION_RE:-}" ]; then
       jq -c --arg repo "$repo" --arg mark "$CN_MARKER_RE" --arg noact "$CN_NOACTION_RE" --arg cutoff "$CUTOFF" \
-        ".data?.repository?.pullRequests?.nodes[]? | select(.updatedAt >= \$cutoff) | ${CN_AGENT_COMMENT_JQ}" \
+        '.data?.repository?.pullRequests?.nodes[]? | select(.updatedAt >= $cutoff) | '"${CN_AGENT_COMMENT_JQ}" \
         <<<"$resp" >> "$out" 2>/dev/null || true
+      # Warn when per-PR arrays hit the GraphQL fetch cap (≥50), as truncated arrays
+      # produce an incomplete noise baseline (#1411).
+      jq -r --arg repo "$repo" '
+        .data?.repository?.pullRequests?.nodes[]? |
+        [
+          if ((.reviews?.nodes // []) | length) >= 50 then "reviews" else empty end,
+          if ((.comments?.nodes // []) | length) >= 50 then "comments" else empty end,
+          if ((.reviewThreads?.nodes // []) | length) >= 50 then "reviewThreads" else empty end
+        ] as $capped |
+        if ($capped | length) > 0 then
+          "WARN: \($repo) PR \(.url // "unknown") hit GraphQL cap on: \($capped | join(", ")) — noise baseline may be incomplete"
+        else empty end
+      ' <<<"$resp" >&2 2>/dev/null || true
     fi
 
     # Stop when this page had no in-window PRs, or there are no more pages.

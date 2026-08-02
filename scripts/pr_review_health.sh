@@ -162,11 +162,29 @@ workflow_source=$(gh api "repos/${WORKFLOW_REPO}/contents/.github/workflows/${WO
   --jq '.content' 2>/dev/null | tr -d '\n' | base64 -d 2>/dev/null \
   || echo "(workflow source unavailable)")
 
+# ---------------------------------------------------------------------------
+# 5. Surface the (already-computed) duration percentiles deterministically.
+# Written BEFORE the model-generated content so that workflow truncation
+# (60 000 bytes in daily-pr-review-health.yml) cannot discard this section.
+# ---------------------------------------------------------------------------
+{
+  printf '## Convergence latency (deterministic)\n\n'
+  printf 'Workflow duration across %s completed run(s) in the window — computed by `%s`, not the model.\n\n' \
+    "$dur_n" "$(basename "$0")"
+  printf '| Workflow | Runs | min | p50 | p95 | max |\n'
+  printf '|---|---:|---:|---:|---:|---:|\n'
+  printf '| `%s` | %s | %s | %s | %s | %s |\n' \
+    "$WORKFLOW_FILE" "$dur_n" \
+    "$(fmt_dur "$dur_min")" "$(fmt_dur "$dur_p50")" "$(fmt_dur "$dur_p95")" "$(fmt_dur "$dur_max")"
+} > "$REPORT_FILE"
+
+echo "Duration percentiles — p50 $(fmt_dur "$dur_p50") / p95 $(fmt_dur "$dur_p95") across $dur_n run(s)"
+
 echo "Invoking Claude for log analysis..."
 # Claude writes errors to stdout (not stderr), so they'd silently land in
 # $REPORT_FILE with the stdout redirect below.  Wrap in `if !` so a non-zero
 # exit surfaces the file contents to the Actions log before aborting.
-if ! claude --print --model claude-sonnet-4-6 --no-session-persistence > "$REPORT_FILE" <<PROMPT
+if ! claude --print --model claude-sonnet-4-6 --no-session-persistence >> "$REPORT_FILE" <<PROMPT
 You are analyzing GitHub Actions workflow run logs for the PR Review Agent.
 
 ## Context
@@ -243,25 +261,6 @@ then
   exit 1
 fi
 rm -f "$logs_file"
-
-# ---------------------------------------------------------------------------
-# 5. Surface the (already-computed) duration percentiles deterministically.
-# These were calculated above and previously discarded; appending them here gives
-# the convergence metric a near-free latency signal in the same report the model
-# writes, without depending on the model to reproduce them (#1411, AC#6).
-# ---------------------------------------------------------------------------
-{
-  printf '\n## Convergence latency (deterministic)\n\n'
-  printf 'Workflow duration across %s completed run(s) in the window — computed by `%s`, not the model.\n\n' \
-    "$dur_n" "$(basename "$0")"
-  printf '| Workflow | Runs | min | p50 | p95 | max |\n'
-  printf '|---|---:|---:|---:|---:|---:|\n'
-  printf '| `%s` | %s | %s | %s | %s | %s |\n' \
-    "$WORKFLOW_FILE" "$dur_n" \
-    "$(fmt_dur "$dur_min")" "$(fmt_dur "$dur_p50")" "$(fmt_dur "$dur_p95")" "$(fmt_dur "$dur_max")"
-} >> "$REPORT_FILE"
-
-echo "Duration percentiles — p50 $(fmt_dur "$dur_p50") / p95 $(fmt_dur "$dur_p95") across $dur_n run(s)"
 
 [ -n "${GITHUB_STEP_SUMMARY:-}" ] && [ -f "$REPORT_FILE" ] && cat "$REPORT_FILE" >> "$GITHUB_STEP_SUMMARY"
 
