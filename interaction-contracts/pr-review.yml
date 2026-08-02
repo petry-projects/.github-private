@@ -1,0 +1,46 @@
+# Interaction contract — pr-review (runtime / deployment lens).
+#
+# Shape fixed by docs/agentic-interaction-model.md §8.1; standalone repo-local
+# file per the §8.2 location decision (option b). Story 2 / #1404.
+#
+# DEPLOYMENT lens for the pr-review runtime: the ring-0 caller stub
+# pr-review-trigger.yml (Class-1 event fast path) folded together with the
+# pr-review-sweep.yml backstop (Class-2). The role-level view is
+# personas/pr-review/interaction.yml.
+#
+# pr-review-sweep re-dispatches a stuck PR's review through the normal trigger via
+# a PAT (§5 Bridge A) — its stop-condition-gated re-dispatch is the TIMER below,
+# not a free emit. Unlike dev-lead-retry, this timer DOES pair with an event fast
+# path (workflow_run:[completed] scoped to the PR whose CI just went green), so it
+# is a textbook §2 Class-2 backstop, not a §6.3 leak.
+
+schema_version: 1
+role: pr-review
+kind: runtime
+workflows:
+  - .github/workflows/pr-review-trigger.yml
+  - .github/workflows/pr-review-sweep.yml
+interaction:
+  triggers:
+    events:
+      - check_suite
+      - pull_request_review
+      - pull_request
+      - workflow_run
+      - repository_dispatch:pr-review-mention
+    timers:
+      - cron: "2,17,32,47 * * * *"
+        role: backstop
+        justification: "pr-review-sweep.yml re-dispatches reviews for PRs that went green after a ci-pending/ci-failing skip; the guaranteed <=15-min latency bound"
+        stop_condition: "PR still open and its review still stale/needed, and not human-gated"
+        event_fast_path: "workflow_run:[completed] scoped to the completing CI run's PR(s)"
+  emits:
+    - "review:approved"
+    - "review:changes-requested"
+    - "comment:<!-- pr-review -->"
+  idempotency_key: "pr_url + head_sha (the review marker makes a same-head re-review a fast no-op)"
+  concurrency_lane: "pr-review-pr-<pr_url> / pr-review-batch (pr-review.yml); pr-review-sweep-<branch|event_name> (pr-review-sweep.yml)"
+  stop_markers:
+    - needs-human-review
+    - pr-review:hands-off
+  budget: pr-automation-budget

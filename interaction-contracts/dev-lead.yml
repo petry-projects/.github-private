@@ -1,0 +1,53 @@
+# Interaction contract — dev-lead (runtime / deployment lens).
+#
+# Shape fixed by docs/agentic-interaction-model.md §8.1; standalone repo-local
+# file per the §8.2 location decision (option b). Story 2 / #1404.
+#
+# DEPLOYMENT lens for the dev-lead runtime whose triggers live in the workflows
+# (no persona manifest of its own). It folds the Class-1 event surface of
+# dev-lead.yml together with the Class-2 self-heal backstop dev-lead-retry.yml.
+# The role-level view is personas/dev-lead/interaction.yml.
+#
+# The dev-lead-retry.yml timer re-arms dev-lead by firing PAT-backed
+# repository_dispatch (dev-lead-ci-failure / -reviews-retry / -issue-retry) — the
+# events dev-lead.yml subscribes to above. That controlled re-dispatch is the
+# TIMER's stop-condition-gated mechanism (captured in triggers.timers below), NOT
+# a free emit; modeling it as the timer is what keeps the #860 rule-1 self-trigger
+# check meaningful. Per §6.3 this timer is the flagged LEAK: event_fast_path is
+# null, so the cron is the only path that reacts to a cleared rate limit.
+
+schema_version: 1
+role: dev-lead
+kind: runtime
+workflows:
+  - .github/workflows/dev-lead.yml
+  - .github/workflows/dev-lead-retry.yml
+interaction:
+  triggers:
+    events:
+      - pull_request
+      - pull_request_review
+      - pull_request_review_comment
+      - issue_comment
+      - issues
+      - check_run
+      - repository_dispatch:dev-lead-ci-failure
+      - repository_dispatch:dev-lead-reviews-retry
+      - repository_dispatch:dev-lead-issue-retry
+    timers:
+      - cron: "15 */2 * * *"
+        role: self-heal
+        justification: "dev-lead-retry.yml re-dispatches status=rate-limited PRs once the limit clears"
+        stop_condition: "PR still open and not needs-human-review / dev-lead:needs-human, and the pr-automation-budget is not exhausted"
+        event_fast_path: null
+  emits:
+    - "commit"
+    - "comment:<!-- pr-automation-budget exhausted -->"
+    - "label:needs-human-review"
+  idempotency_key: "one in-flight run per work item: check_run head_sha, else pull_request number, else issue number"
+  concurrency_lane: "dev-lead-pr-<pr> / dev-lead-issue-<issue> / dev-lead-ci-relay-<head_sha> (dev-lead-reusable.yml); dev-lead-retry (dev-lead-retry.yml)"
+  stop_markers:
+    - needs-human-review
+    - dev-lead:needs-human
+    - dev-lead:hands-off
+  budget: pr-automation-budget

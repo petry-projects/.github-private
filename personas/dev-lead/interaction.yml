@@ -1,0 +1,44 @@
+# Interaction contract — dev-lead (persona lens).
+#
+# Shape fixed by docs/agentic-interaction-model.md §8.1; standalone repo-local
+# file per the §8.2 location decision (option b — NOT a persona.yml block, so no
+# cross-repo persona.schema.json dependency). Story 2 / #1404.
+#
+# This is the ROLE lens: the dev-lead persona's full event surface, backed by the
+# dedicated runtime .github/workflows/dev-lead.yml. The DEPLOYMENT lens (which
+# also folds in the dev-lead-retry.yml self-heal backstop timer) is the runtime
+# contract at interaction-contracts/dev-lead.yml.
+#
+# triggers.events mirror dev-lead.yml's on: block verbatim (AC #3). workflow_dispatch
+# is not present on dev-lead.yml; the repository_dispatch types are the PAT-backed
+# bridges (§5 Bridge A) that wake dev-lead — ci-relay, fleet-monitor, dev-lead-retry.
+
+schema_version: 1
+role: dev-lead
+kind: persona
+workflows:
+  - .github/workflows/dev-lead.yml
+interaction:
+  triggers:
+    events:
+      - pull_request
+      - pull_request_review
+      - pull_request_review_comment
+      - issue_comment
+      - issues
+      - check_run
+      - repository_dispatch:dev-lead-ci-failure
+      - repository_dispatch:dev-lead-reviews-retry
+      - repository_dispatch:dev-lead-issue-retry
+    timers: []
+  emits:
+    - "commit"
+    - "comment:<!-- pr-automation-budget exhausted -->"
+    - "label:needs-human-review"
+  idempotency_key: "one in-flight run per work item: check_run head_sha, else pull_request number, else issue number"
+  concurrency_lane: "dev-lead-pr-<pr> / dev-lead-issue-<issue> / dev-lead-ci-relay-<head_sha> (dev-lead-reusable.yml)"
+  stop_markers:
+    - needs-human-review
+    - dev-lead:needs-human
+    - dev-lead:hands-off
+  budget: pr-automation-budget

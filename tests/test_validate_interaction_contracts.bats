@@ -1,0 +1,229 @@
+#!/usr/bin/env bats
+# Tests for interaction-contracts/validate-interaction-contracts.py — the hermetic
+# well-formedness check for the per-role interaction contracts authored under
+# docs/agentic-interaction-model.md §8 (Story 2 / #1404).
+#
+# This suite is HERMETIC (no network, no live schema). It exercises the parse /
+# consistency invariants the validator enforces against a self-contained fixture
+# contract under $TMP. The DEEP cross-check of triggers.events/timers against each
+# workflow's real on: block is Story 4's validate-interaction-model (#1406), not
+# this check — so these tests only cover well-formedness + workflow-path existence.
+
+setup() {
+  ROOT="$(cd "$BATS_TEST_DIRNAME/.." && pwd)"
+  VALIDATOR="$ROOT/interaction-contracts/validate-interaction-contracts.py"
+  TMP="$(mktemp -d)"
+
+  # A fake workflow file so the workflows[] path-existence invariant is satisfied.
+  mkdir -p "$TMP/.github/workflows"
+  printf 'on:\n  issues:\n    types: [labeled]\n' >"$TMP/.github/workflows/demo.yml"
+
+  # A self-contained, well-formed persona interaction contract.
+  mkdir -p "$TMP/personas/demo"
+  cat >"$TMP/personas/demo/interaction.yml" <<'YAML'
+schema_version: 1
+role: demo
+kind: persona
+workflows:
+  - .github/workflows/demo.yml
+interaction:
+  triggers:
+    events:
+      - issues
+      - repository_dispatch:demo-mention
+    timers: []
+  emits:
+    - "label:demo"
+    - "comment:<!-- demo marker -->"
+  idempotency_key: "issue_number"
+  concurrency_lane: "demo-${{ issue }}"
+  stop_markers:
+    - demo:hands-off
+  budget: none
+YAML
+}
+
+teardown() { rm -rf "$TMP"; }
+
+@test "validate-interaction-contracts accepts a well-formed contract" {
+  run python3 "$VALIDATOR" "$TMP"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"OK"* ]]
+}
+
+@test "validate-interaction-contracts is a no-op when there are no contracts" {
+  rm -rf "$TMP/personas"
+  run python3 "$VALIDATOR" "$TMP"
+  [ "$status" -eq 0 ]
+}
+
+@test "validate-interaction-contracts rejects a missing required field (role)" {
+  sed -i '/^role: demo/d' "$TMP/personas/demo/interaction.yml"
+  run python3 "$VALIDATOR" "$TMP"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"role"* ]]
+}
+
+@test "validate-interaction-contracts rejects an unknown kind" {
+  sed -i 's/^kind: persona/kind: gremlin/' "$TMP/personas/demo/interaction.yml"
+  run python3 "$VALIDATOR" "$TMP"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"kind"* ]]
+}
+
+@test "validate-interaction-contracts rejects a workflows path that does not exist" {
+  sed -i 's#- .github/workflows/demo.yml#- .github/workflows/nope.yml#' "$TMP/personas/demo/interaction.yml"
+  run python3 "$VALIDATOR" "$TMP"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"does not exist"* ]]
+}
+
+@test "validate-interaction-contracts rejects an empty emits list" {
+  # Replace the two-item emits block with an empty list.
+  python3 - "$TMP/personas/demo/interaction.yml" <<'PY'
+import sys, re, pathlib
+p = pathlib.Path(sys.argv[1]); t = p.read_text()
+t = re.sub(r"  emits:\n    - \"label:demo\"\n    - \"comment:<!-- demo marker -->\"\n", "  emits: []\n", t)
+p.write_text(t)
+PY
+  run python3 "$VALIDATOR" "$TMP"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"emits"* ]]
+}
+
+@test "validate-interaction-contracts rejects an unknown budget value" {
+  sed -i 's/^  budget: none/  budget: infinite-money/' "$TMP/personas/demo/interaction.yml"
+  run python3 "$VALIDATOR" "$TMP"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"budget"* ]]
+}
+
+@test "validate-interaction-contracts rejects a self-trigger (emit dispatches an event it subscribes to)" {
+  # The contract subscribes to repository_dispatch:demo-mention; emitting that
+  # same dispatch would make it trigger on its own output (#860 rule 1).
+  sed -i 's/    - "label:demo"/    - "dispatch:demo-mention"/' "$TMP/personas/demo/interaction.yml"
+  run python3 "$VALIDATOR" "$TMP"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"self-trigger"* ]]
+}
+
+@test "validate-interaction-contracts rejects a Class 2 timer with no timer_role" {
+  cat >"$TMP/personas/demo/interaction.yml" <<'YAML'
+schema_version: 1
+role: demo
+kind: runtime
+workflows:
+  - .github/workflows/demo.yml
+interaction:
+  triggers:
+    events: []
+    timers:
+      - cron: "15 */2 * * *"
+        justification: "retry stalled work"
+        stop_condition: "item still open"
+        event_fast_path: null
+  emits:
+    - "dispatch:demo-retry"
+  idempotency_key: "issue_number"
+  concurrency_lane: "demo-retry"
+  stop_markers: []
+  budget: pr-automation-budget
+YAML
+  run python3 "$VALIDATOR" "$TMP"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"role"* ]]
+}
+
+@test "validate-interaction-contracts rejects a timer with an invalid role value" {
+  cat >"$TMP/personas/demo/interaction.yml" <<'YAML'
+schema_version: 1
+role: demo
+kind: runtime
+workflows:
+  - .github/workflows/demo.yml
+interaction:
+  triggers:
+    events: []
+    timers:
+      - cron: "15 */2 * * *"
+        role: convergence-clock
+        justification: "retry stalled work"
+        stop_condition: "item still open"
+        event_fast_path: null
+  emits:
+    - "dispatch:demo-retry"
+  idempotency_key: "issue_number"
+  concurrency_lane: "demo-retry"
+  stop_markers: []
+  budget: pr-automation-budget
+YAML
+  run python3 "$VALIDATOR" "$TMP"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"backstop"* ]]
+}
+
+@test "validate-interaction-contracts rejects a timer missing the event_fast_path key" {
+  cat >"$TMP/personas/demo/interaction.yml" <<'YAML'
+schema_version: 1
+role: demo
+kind: runtime
+workflows:
+  - .github/workflows/demo.yml
+interaction:
+  triggers:
+    events: []
+    timers:
+      - cron: "15 */2 * * *"
+        role: self-heal
+        justification: "retry stalled work"
+        stop_condition: "item still open"
+  emits:
+    - "dispatch:demo-retry"
+  idempotency_key: "issue_number"
+  concurrency_lane: "demo-retry"
+  stop_markers: []
+  budget: pr-automation-budget
+YAML
+  run python3 "$VALIDATOR" "$TMP"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"event_fast_path"* ]]
+}
+
+@test "validate-interaction-contracts accepts a standalone runtime contract under interaction-contracts/" {
+  rm -rf "$TMP/personas"
+  mkdir -p "$TMP/interaction-contracts"
+  cat >"$TMP/interaction-contracts/demo-runtime.yml" <<'YAML'
+schema_version: 1
+role: demo-runtime
+kind: runtime
+workflows:
+  - .github/workflows/demo.yml
+interaction:
+  triggers:
+    events:
+      - issues
+    timers:
+      - cron: "2,17,32,47 * * * *"
+        role: backstop
+        justification: "reconciles a missed event"
+        stop_condition: "item still open and not human-gated"
+        event_fast_path: "workflow_run:[completed]"
+  emits:
+    - "commit"
+  idempotency_key: "pr_number + head_sha"
+  concurrency_lane: "demo-${{ pr }}"
+  stop_markers:
+    - needs-human-review
+  budget: pr-automation-budget
+YAML
+  run python3 "$VALIDATOR" "$TMP"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"OK"* ]]
+}
+
+@test "validate-interaction-contracts reports a parse error without a traceback" {
+  printf 'schema_version: 1\nrole: [unterminated\n' >"$TMP/personas/demo/interaction.yml"
+  run python3 "$VALIDATOR" "$TMP"
+  [ "$status" -ne 0 ]
+  [[ "$output" != *"Traceback"* ]]
+}
