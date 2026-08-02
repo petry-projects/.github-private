@@ -84,6 +84,7 @@ candidates_file=$(mktemp) || {
 trap 'rm -f "$candidates_file"' EXIT
 now_epoch=$(date -u +%s)
 scanned=0
+scan_incomplete=false
 
 while IFS= read -r pr; do
   [ -n "$pr" ] || continue
@@ -94,6 +95,7 @@ while IFS= read -r pr; do
   if ! snapshot=$(gh pr view "$pr" --repo "$REPO" \
         --json headRefOid,statusCheckRollup,reviewDecision,reviews,comments,labels,title,url,updatedAt 2>/dev/null); then
     echo "  skip PR #${pr} — could not fetch (deleted, no access, or rate-limited)"
+    scan_incomplete=true
     continue
   fi
 
@@ -115,22 +117,29 @@ while IFS= read -r pr; do
       | select(test("<!-- pr-review-agent v1 sha=" + $sha + " ")) ]
     | length' <<< "$snapshot" 2>/dev/null || echo 0)
 
-  # Human-gate exclusions (AC#2). Labels + the pr-automation-budget exhaustion
-  # marker (a comment) are the intentional stops; pr_stall_is_gated owns the
-  # canonical decision.
+  # Human-gate exclusions (AC#2). Only the current label state is consulted:
+  # the exhaustion marker is an immutable audit comment that can never be cleared,
+  # so gating on it would permanently suppress detection for re-engaged PRs —
+  # unlike needs-human-review, which a human can remove to resume detection.
   labels_json=$(jq -c '[.labels[]?.name]' <<< "$snapshot" 2>/dev/null || echo '[]')
-  marker_present=$(jq -r --arg m "$PR_AUTOMATION_EXHAUSTION_MARKER" '
-    [ ((.reviews // []) + (.comments // []))[] | (.body // "") ]
-    | map(select(contains($m))) | (length > 0)' <<< "$snapshot" 2>/dev/null || echo false)
   gated=false
-  if pr_stall_is_gated "$labels_json" "$marker_present"; then
+  if pr_stall_is_gated "$labels_json"; then
     gated=true
   fi
 
   # Idle minutes = time since the last activity of ANY kind (commit / comment /
   # review) — reuse the #926 event gather so "activity" means the same thing the
-  # budget breaker counts. Fall back to the PR's updated_at when there are none.
+  # budget breaker counts. gather_pr_automation_events silently returns [] on API
+  # failures (rate limits, errors), making it impossible to distinguish genuine
+  # "no activity" from unavailable data. A PR always has at least one commit, so
+  # an empty result is a reliable signal that the event API is unavailable — skip
+  # the PR rather than falling back to potentially misleading updatedAt data.
   events=$(gather_pr_automation_events "$pr" "$REPO")
+  if [ "$events" = "[]" ] || [ -z "$events" ]; then
+    echo "  skip PR #${pr} — event API returned no data (possible rate-limit or error); skipping to avoid false stall signal"
+    scan_incomplete=true
+    continue
+  fi
   last_activity=$(jq -r '[ .[] | .when | select(. != null and . != "") ] | max // ""' <<< "$events" 2>/dev/null || echo "")
   [ -n "$last_activity" ] || last_activity="$updated_at"
   mins_idle=$(pr_minutes_since "$last_activity" "$now_epoch")
@@ -159,15 +168,22 @@ echo "Scanned ${scanned} open PR(s); ${stall_count} stall candidate(s)."
   printf '# Stalled PR Detection — %s\n\n' "$TODAY"
   printf '**Repo:** `%s` | **Open PRs scanned:** %s | **Candidates:** %s\n\n' \
     "$REPO" "$scanned" "$stall_count"
+  if [ "$scan_incomplete" = "true" ]; then
+    printf '> ⚠️ **Scan incomplete**: one or more PRs were skipped due to API errors or rate limits. The candidate count above may understate actual stalls.\n\n'
+  fi
   generate_stall_report "$candidates_file"
 } > "$REPORT_FILE"
 
-[ -n "${GITHUB_STEP_SUMMARY:-}" ] && cat "$REPORT_FILE" >> "$GITHUB_STEP_SUMMARY"
+if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+  cat "$REPORT_FILE" >> "$GITHUB_STEP_SUMMARY"
+fi
 
 if [ -n "${GITHUB_ENV:-}" ]; then
   echo "STALL_COUNT=${stall_count}" >> "$GITHUB_ENV"
   if [ "$stall_count" -gt 0 ]; then
     echo "HAS_STALL=true" >> "$GITHUB_ENV"
+  elif [ "$scan_incomplete" = "true" ]; then
+    echo "::warning::Stall scan incomplete (PRs skipped due to API errors) — not emitting HAS_STALL=false to avoid a false all-clear"
   else
     echo "HAS_STALL=false" >> "$GITHUB_ENV"
   fi

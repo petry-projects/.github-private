@@ -208,7 +208,7 @@ jobs:
         if: env.HAS_STALL == 'true' && hashFiles('pr_stall_report.md') != ''
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
         with:
-          github-token: ${{ github.token }}
+          github-token: ${{ secrets.DON_PETRY_BOT_GH_PAT }}
           script: |
             const fs = require('fs');
             const report = fs.readFileSync('pr_stall_report.md', 'utf8');

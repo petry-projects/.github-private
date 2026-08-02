@@ -24,10 +24,10 @@ set -euo pipefail
 #     under test. <gated> is "true"/"false" — computed by pr_stall_is_gated.
 #   is_pr_stall <...same args...>
 #     Exit 0 when the PR is stalled, 1 otherwise.
-#   pr_stall_is_gated <labels_json> [budget_marker_present]
+#   pr_stall_is_gated <labels_json>
 #     Exit 0 (GATED → never a stall) when the PR carries an INTENTIONAL, human-
-#     gated stop: needs-human-review, dev-lead:hands-off, initiative:hold, or the
-#     pr-automation-budget exhaustion marker. This is AC#2's fail-quiet clause.
+#     gated stop: needs-human-review, dev-lead:hands-off, or initiative:hold.
+#     This is AC#2's fail-quiet clause.
 #   pr_minutes_since <iso8601> [now_epoch]
 #     Whole minutes between a timestamp and now (default: current time).
 #   generate_stall_report <candidates_tsv_file>
@@ -76,19 +76,20 @@ _stall_threshold() {
   esac
 }
 
-# pr_stall_is_gated <labels_json> [budget_marker_present]
+# pr_stall_is_gated <labels_json>
 #   Exit 0 when the PR is INTENTIONALLY stopped by a human gate — in which case it
 #   is NEVER a stall (AC#2, fail-quiet on intentional stops). Gates:
 #     • needs-human-review           — via the canonical pr_has_escalation_label
-#     • the pr-automation-budget exhaustion marker — passed as "true"/"1" in $2
 #     • any label in STALL_HOLD_LABELS (dev-lead:hands-off, initiative:hold)
+#   The pr-automation-budget exhaustion marker is intentionally excluded: it is an
+#   immutable audit comment that can never be cleared, so gating on it would
+#   permanently suppress stall detection after a re-engaged PR removes
+#   needs-human-review. Only removable labels are valid gates (see pr-automation-
+#   budget.sh pr_has_escalation_label for the same reasoning).
 #   Malformed/empty labels degrade to NOT gated (exit 1) so a data glitch fails
 #   loud (a real stall is still reported) rather than quietly suppressing one.
 pr_stall_is_gated() {
-  local labels_json="${1:-[]}" marker="${2:-false}"
-  case "$marker" in
-    true|TRUE|1) return 0 ;;
-  esac
+  local labels_json="${1:-[]}"
   if pr_has_escalation_label "$labels_json"; then
     return 0
   fi
@@ -154,7 +155,9 @@ pr_minutes_since() {
     return 0
   fi
   local diff=$(( now - ts_epoch ))
-  [ "$diff" -lt 0 ] && diff=0
+  if [ "$diff" -lt 0 ]; then
+    diff=0
+  fi
   echo $(( diff / 60 ))
 }
 

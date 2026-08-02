@@ -17,12 +17,12 @@
 # Run with: bats tests/test_pr_stall_detect.bats
 
 setup() {
-  STUB_DIR=$(mktemp -d)
+  STUB_DIR="$BATS_TEST_TMPDIR"
   source "$(dirname "$BATS_TEST_FILENAME")/../scripts/lib/pr-stall-detect.sh"
 }
 
 teardown() {
-  rm -rf "$STUB_DIR"
+  :
 }
 
 # ---------------------------------------------------------------------------
@@ -153,9 +153,12 @@ teardown() {
   [ "$status" -eq 0 ]
 }
 
-@test "the pr-automation-budget exhaustion marker is gated (2nd arg)" {
+@test "the pr-automation-budget exhaustion marker alone does NOT gate stall detection" {
+  # The marker is an immutable audit record that can never be cleared; gating on
+  # it would permanently suppress detection for re-engaged PRs. Only the
+  # removable needs-human-review label (or STALL_HOLD_LABELS) suppresses detection.
   run pr_stall_is_gated '[]' true
-  [ "$status" -eq 0 ]
+  [ "$status" -ne 0 ]
 }
 
 @test "a clean PR with no gate label or marker is NOT gated" {
@@ -183,7 +186,7 @@ teardown() {
   # last activity 2026-08-01T00:00:00Z, now 2026-08-01T00:45:00Z -> 45m.
   local now last
   last="2026-08-01T00:00:00Z"
-  now=$(date -u -d "2026-08-01T00:45:00Z" +%s 2>/dev/null || date -u -v0d -f "%Y-%m-%dT%H:%M:%SZ" "2026-08-01T00:45:00Z" +%s 2>/dev/null)
+  now=$(date -u -d "2026-08-01T00:45:00Z" +%s 2>/dev/null || date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "2026-08-01T00:45:00Z" +%s 2>/dev/null)
   run pr_minutes_since "$last" "$now"
   [ "$output" -eq 45 ]
 }
