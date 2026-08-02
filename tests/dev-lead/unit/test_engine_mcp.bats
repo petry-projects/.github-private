@@ -18,6 +18,14 @@ setup() {
   unset CLAUDE_TRIAGE_MODEL_CHAIN CLAUDE_DEEP_MODEL_CHAIN CLAUDE_AUDIT_MODEL_CHAIN
   unset CLAUDE_ACTION_MODEL_CHAIN CLAUDE_SINGLE_MODEL_CHAIN
   unset REVIEW_MCP_CONFIG REVIEW_MCP_ALLOWED_TOOLS REVIEW_MCP_CONFIG_DEFAULT_PATH REVIEW_MCP_DEBUG
+  # TOKEN_LOG_FILE enables JSON-mode capture (--output-format json) in _claude_chain_invoke.
+  # In JSON mode the stub wraps its response in a JSON envelope, which breaks the plain-text
+  # grep inside _emit_mcp_failure_warning (the "Successfully connected" text ends up
+  # backslash-escaped inside the .result field and the pattern doesn't match).  In
+  # production the MCP handshake lines come from claude's stderr — never JSON-wrapped —
+  # so unsetting here reproduces the correct signal path without disabling any real
+  # production behaviour.
+  unset TOKEN_LOG_FILE ENGINE_USAGE_JSON
 
   STUB_BIN_DIR="$(mktemp -d)"
   cp "$STUB_ENGINES_DIR/stub-claude" "$STUB_BIN_DIR/claude"

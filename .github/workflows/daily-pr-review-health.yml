@@ -179,6 +179,70 @@ jobs:
             });
             core.notice(`Runaway issue created: ${issue.data.html_url}`);
 
+      # Stall-PR detection net (#1410, epic #1402). The mirror image of the
+      # runaway scan above: a pure gh-API + jq sweep of every open PR for the
+      # SILENT failure mode the narrowed Class-2 timers (#1407/#1408) could
+      # introduce — a PR stuck CI-green + REVIEW_REQUIRED with no agent activity
+      # and no pending event, that no fast path re-fires. #860's lesson was that
+      # detection must be pushed, not pulled; this builds that instrument BEFORE
+      # the timers narrow. Detect-only — no PR is mutated. Sets HAS_STALL when any
+      # candidate is found, surfaced through the same health-check /
+      # automated-report issue channel. No new scheduled workload.
+      - name: Scan for stalled PRs
+        env:
+          GH_TOKEN: ${{ secrets.DON_PETRY_BOT_GH_PAT }}
+          REPO: ${{ github.repository }}
+        run: bash scripts/pr_stall_scan.sh
+
+      - name: Truncate stall report if needed
+        run: |
+          if [ -f pr_stall_report.md ]; then
+            if [ "$(wc -c < pr_stall_report.md)" -gt 60000 ]; then
+              last_line=$(awk '{s+=length($0)+1; if(s>60000){print NR-1; exit}} END{if(s<=60000) print NR}' pr_stall_report.md)
+              head -n "${last_line:-0}" pr_stall_report.md > pr_stall_report.md.tmp
+              mv pr_stall_report.md.tmp pr_stall_report.md
+              printf '\n\n---\n_Report truncated at 60 000 bytes._\n' >> pr_stall_report.md
+            fi
+          fi
+
+      - name: Create stall-candidate issue
+        if: env.HAS_STALL == 'true' && hashFiles('pr_stall_report.md') != ''
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const fs = require('fs');
+            const report = fs.readFileSync('pr_stall_report.md', 'utf8');
+            if (!report.trim()) {
+              core.setFailed('Stall report file is empty');
+              return;
+            }
+            const today = new Date().toISOString().split('T')[0];
+            const titlePrefix = 'Stalled PR candidate(s) detected';
+            // Date-stamped title → a fresh issue every run. Close prior open ones.
+            const priors = await github.paginate(github.rest.issues.listForRepo, {
+              owner: context.repo.owner, repo: context.repo.repo,
+              state: 'open', labels: 'health-check,automated-report', per_page: 100,
+            });
+            for (const p of priors) {
+              if (!p.pull_request && p.title.startsWith(titlePrefix)) {
+                try {
+                  await github.rest.issues.update({
+                    owner: context.repo.owner, repo: context.repo.repo,
+                    issue_number: p.number, state: 'closed', state_reason: 'completed',
+                  });
+                } catch (err) { core.warning(`could not close prior digest #${p.number}: ${err.message}`); }
+              }
+            }
+            const issue = await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `${titlePrefix} ${today}`,
+              body: report,
+              labels: ['health-check', 'automated-report'],
+            });
+            core.notice(`Stall issue created: ${issue.data.html_url}`);
+
       # Durable, affirmative MCP-connectivity monitor (#903, part of #676).
       # Additive final step: when .github/review-mcp.json is present, assert that
       # the configured server(s) handshake through the same flags engine.sh uses
