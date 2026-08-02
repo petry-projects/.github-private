@@ -1,0 +1,36 @@
+# Interaction contract — scrum-master (persona lens).
+#
+# Shape fixed by docs/agentic-interaction-model.md §8.1; standalone repo-local
+# file per the §8.2 location decision (option b). Story 2 / #1404.
+#
+# scrum-master is an advisory, mention-routed persona: a human @petry-projects/scrum-master
+# mention is parsed by the shared router .github/workflows/persona-mention.yml and
+# bridged (repository_dispatch:persona-mention) to persona-runner, which posts a
+# single advisory comment as the persona's runtime.identity. It writes nothing else.
+#
+# triggers.events mirror persona-mention.yml's DEPLOYED on: block (AC #3):
+# issue_comment / pull_request_review_comment / discussion_comment. Note
+# personas/scrum-master/persona.yml declares broader advisory surfaces (issues:labeled,
+# discussion:labeled, reviewer-assignment) that the router does not yet wire — the
+# contract records what is actually deployed, not the aspiration (persona-standards
+# finding 10 / petry-projects/.github#755).
+
+schema_version: 1
+role: scrum-master
+kind: persona
+workflows:
+  - .github/workflows/persona-mention.yml
+interaction:
+  triggers:
+    events:
+      - issue_comment
+      - pull_request_review_comment
+      - discussion_comment
+    timers: []
+  emits:
+    - "comment:advisory-response"
+  idempotency_key: "one run per mention: source_repo + item_number + comment_url"
+  concurrency_lane: "persona-runner-scrum-master-<source_repo>-<item_number>-<comment_url> (persona-runner-reusable.yml)"
+  stop_markers:
+    - scrum-master:hands-off
+  budget: none

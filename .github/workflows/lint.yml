@@ -8,6 +8,7 @@ on:
       - 'tests/**'
       - 'agents/**'
       - 'personas/**'
+      - 'interaction-contracts/**'
       - 'evals/**'
       - 'release/**'
       - '.gitleaks.toml'
@@ -119,6 +120,7 @@ jobs:
             tests/test_readme_refresh_helpers.bats \
             tests/test_readme_refresh_push.bats \
             tests/test_validate_personas.bats \
+            tests/test_validate_interaction_contracts.bats \
             tests/verify_persona_teams.bats \
             tests/persona_runner.bats \
             tests/test_dev_lead_concurrency_guard.bats \
@@ -311,6 +313,31 @@ jobs:
         env:
           PERSONA_SCHEMA_REF: ${{ github.head_ref || github.ref_name }}
         run: python3 personas/validate-personas.py personas
+
+  validate-interaction-contracts:
+    # Interaction-contract well-formedness gate (Story 2 / #1404, AC #5). Parses
+    # every machine-readable interaction contract — the co-located persona lenses
+    # (personas/<id>/interaction.yml) and the standalone runtime lenses
+    # (interaction-contracts/*.yml) — and asserts the §8.1 shape plus the
+    # invariants the shape alone can't express: kind/budget enums, timer role ∈
+    # {backstop,safety-net,self-heal} with justification + stop_condition +
+    # event_fast_path present, every declared workflow file exists, and the narrow
+    # §7 rule-1 self-trigger check (an emit must not name an event the same
+    # contract subscribes to). Fully HERMETIC — no schema fetch, no network — so
+    # unlike validate-personas it needs no cross-repo ref; keep it that way. Deep
+    # semantic self-trigger analysis is deferred to Story 4 / #1406.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install PyYAML
+        run: pip3 install --quiet "pyyaml==6.0.3" --only-binary=":all:"
+
+      - name: Validate interaction contracts
+        run: python3 interaction-contracts/validate-interaction-contracts.py .
 
   verify-persona-teams:
     # LIVE persona addressing-team check (#1280). The hermetic validate-personas.py
