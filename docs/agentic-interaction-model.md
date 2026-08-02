@@ -574,3 +574,83 @@ which is the human checkpoint. During the 14-day window, treat any stall-candida
 rollback decision per §11.2 rather than a routine triage item. After the window settles, the stall
 scan remains as a **permanent** detector (it is cheap and detect-only) — settling ends the
 *heightened* watch, not the instrument.
+
+---
+
+## 12. §7 rule 2 applies to review and merge gates, not just automation budgets (#1415)
+
+**Normative rule.** §7 rule 2 — *"a safety cap whose reset is reachable by the runaway is not a
+cap; resets must be human-gated"* — is **not limited to numeric budgets and circuit breakers.** It
+governs **every gate an agent's merge must pass**, including **review gates** and the **merge gate
+itself**. Restated for this class:
+
+> **A review or merge gate whose reset is reachable by the agent is not a gate.** If an agent can
+> clear the very signal that is supposed to block its own PR — by resolving the blocking review
+> thread, dismissing the blocking review, or otherwise satisfying the check itself — the gate holds
+> only by the agent's goodwill, not by control. The reset must be reachable **only by a human**.
+
+This is the review-path counterpart of two existing applications of the same rule: the per-PR
+automation budget (§9), whose re-engagement is human-gated; and the timer stop-condition (§6.2.4),
+which forbids a timer from re-arming a runaway. The maintainer **issue-comment** gate (#1290) and
+the maintainer **review-thread** gate (#1415) are the same rule applied to the two ways a
+maintainer finding reaches a PR.
+
+### 12.1 Why the shared-identity case makes this acute
+
+On a **dev-lead-authored PR**, dev-lead commits, reviews, and resolves as the owner account
+`don-petry` (AGENTS.md "Agent identity & credential secrets"; #1316 set this deliberately — dev-lead
+acts as the owner, `pr-review` as the machine user `donpetry-bot`). That shared identity removes
+**both** of the owner's mechanically-blocking review paths:
+
+1. GitHub refuses `CHANGES_REQUESTED` on your own PR ("Can not request changes on your own pull
+   request"), so the ergonomic blocking review is unavailable to the owner.
+2. The inline-review-thread fallback (`required_review_thread_resolution`) is defeated because the
+   agent, running as `don-petry`, can **resolve the maintainer's own threads** — observed on PR
+   #1413, where four maintainer threads ended `resolvedBy: don-petry` and auto-merge proceeded.
+
+Because **login cannot separate the agent from the maintainer** in this case, the discriminator is
+the **automation marker** in a thread's originating comment (`<!-- pr-review-agent … -->`,
+`<!-- persona:… -->`, `<!-- dev-lead … -->`, `<!-- dependency-advisory -->`), exactly as the
+issue-comment gate discriminates. The rule is enforced by two **coupled** halves — a resolve-guard
+that stops the agent clearing a marker-less (maintainer) thread, and an approval gate that withholds
+pr-review's approval while an unresolved maintainer thread postdates the last push. The gate can
+safely treat *resolution* as a human clear **only because** the guard makes resolution unreachable by
+the agent. See `docs/pr-review-agent/maintainer-comment-gate.md` ("The review-thread sibling") and
+`scripts/lib/maintainer-review-thread-gate.sh`.
+
+### 12.2 Decision: keep the shared identity + add the gate — the distinct-identity alternative is rejected (AC #7)
+
+Two ways to close the #1413 gap were evaluated:
+
+- **(a) Give dev-lead a distinct commit/PR identity** (e.g. its own `dev-lead-bot` account) so a PR
+  it authors is authored by a *different* account than the owner. GitHub would then permit the owner
+  to `CHANGES_REQUESTED` it, and login alone would separate the agent's thread resolutions from the
+  maintainer's — no marker discriminator needed.
+- **(b) Keep the shared `don-petry` identity and add the marker-keyed gate + resolve-guard** (this
+  implementation).
+
+**Decision: option (b).** Option (a) **reverses the deliberate #1316 choice** (dev-lead acts as the
+owner `don-petry`; `pr-review` acts as `donpetry-bot`) and carries consequences that are out of scope
+for a gate-integrity fix and are not clearly net-positive:
+
+- **CODEOWNERS.** dev-lead PRs are authored-as-owner today; a distinct bot identity would need to be
+  added to CODEOWNERS / review-requirement rulesets to retain the same approval semantics, and would
+  change who is requested for review across the fleet.
+- **PAT / credential surface.** A new account means a new PAT secret
+  (`GH_PAT_<ACCOUNT>` per AGENTS.md), new `runtime.identity` manifest wiring, and a new machine user
+  to provision, secure, and rotate — widening the credential surface the #1316 model deliberately
+  kept to two accounts.
+- **Persona-manifest / identity-resolution.** `runtime.identity.account`, `resolve-persona-identity.sh`,
+  and the `verify-persona-identity` lint job all encode the current account mapping; a re-identity is a
+  cross-cutting change to that machinery, not a localized fix.
+- **It does not generalize.** Even with distinct identities, the *dependency-advisory* pass and other
+  automation still post **as `don-petry`**, so login-based discrimination would remain insufficient on
+  the issue-comment path (#1290) — the marker discriminator is needed regardless. Option (b) reuses one
+  mechanism for both paths; option (a) would still need the marker for #1290 while adding an identity
+  migration for #1415.
+
+The marker-keyed gate closes the gap **without** touching the identity model, reuses the proven
+#1290 shape, and keeps a single discriminator across both the comment and review paths. If a distinct
+dev-lead identity is later adopted for *other* reasons, this gate remains correct (a marker-less
+maintainer thread is still a maintainer finding) and the login signal simply becomes a redundant
+confirmation — so option (b) does not foreclose option (a).
