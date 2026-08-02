@@ -75,41 +75,89 @@ PRs it is labelled *(all PRs)*.
 | Convergence — cycles-to-merge | **~7–13 commits** per merged substantive PR | trivial stub-sync merges in minutes | pr-review re-review events |
 | Redundancy — workflow runs/hr | — | **~52 runs/hr** (7-day window, all-PRs scope) | `pr_review_health.sh` run telemetry / `reviewer_report.sh` |
 | Redundancy — coverage overlap | — | PRs reviewed by ≥2 bots (see scorecard) | `reviewer_report.sh` "Coverage overlap" |
-| Noise — no-action comment share | — | **~12%** of first-party agent comments (our markers only); raw counts confirmed on first scheduled run (see denominator reconciliation note) | `reviewer_report.sh` "Agent comment noise" |
+| Noise — no-action comment share | — | **~12%** (all-comments historical estimate — phrase-scan over all bots, **not** a first-party marker count; see denominator reconciliation note and Correction 2026-08-02) | `reviewer_report.sh` "Agent comment noise" |
 
 ### Noise metric — raw measurement details
 
 Because the classifier is net-new (#1411), no deterministic pre-change count existed before this
-baseline was captured. The ~12% figure is the pre-rollout estimate; the first scheduled
-`reviewer-report.yml` run will produce the exact values below via `cn_render_noise_section`:
+baseline was captured. The ~12% figure is an **all-comments historical estimate** (phrase-scan over
+all bots, third-party included) — it is **not** a first-party marker count and is not the
+first-party baseline. The first scheduled `reviewer-report.yml` run **establishes** the first-party
+baseline via `cn_render_noise_section`:
 
 | Field | Value | Note |
 |---|---|---|
-| Agent comments (total) | *confirmed on first run* | all marker-bearing comments/reviews in the 7-day window (first-party only — see denominator note below) |
-| No-action comments | *confirmed on first run* | share of first-party agent comments (~12% pre-rollout estimate; see denominator note) |
-| Active PRs (window) | *confirmed on first run* | distinct `kind:"pr"` records in the JSONL collection |
-| Affected PRs (≥1 no-action) | *confirmed on first run* | distinct PRs with at least one no-action agent comment |
-| No-action comments per PR | *confirmed on first run* | no-action count ÷ PRs with any agent comment |
+| Agent comments (total) | *established on first run* | all marker-bearing comments/reviews in the 7-day window (first-party only — see denominator note below) |
+| No-action comments | *established on first run* | share of first-party agent comments (the all-comments historical estimate was ~12%; first-party value is expected to differ — see denominator note) |
+| Active PRs (window) | *established on first run* | distinct `kind:"pr"` records in the JSONL collection |
+| Affected PRs (≥1 no-action) | *established on first run* | distinct PRs with at least one no-action agent comment |
+| No-action comments per PR | *established on first run* | no-action count ÷ PRs with any agent comment |
 
-Any divergence between the ~12% estimate and the first measured value is a measurement correction;
-record it by appending a dated row here rather than overwriting this baseline.
+Any divergence between the first-party value and the ~12% all-comments estimate is the **expected
+population difference** (narrower denominator) — not a measurement correction. A genuine
+measurement correction is one the population difference cannot explain (e.g., the first-party
+classifier disagreeing with a hand-count of first-party markers on the same PRs). Record only those
+as dated appends here; never treat the first-party-vs-all-comments gap itself as a change in noise.
 
 ### Reconciliation notes
 
 - **Convergence** and **redundancy** baselines are quoted as ranges because the pre-change data is
   bimodal (see the split above); the substantive band (~20–48 h, ~7–13 commits) is the target of the
   initiative, while trivial stub-sync PRs sit far below it and are reported, not averaged in.
-- **Noise ~12%** is the pre-rollout no-action estimate. Because the classifier is net-new, this figure
-  had no prior deterministic source; the first scheduled `reviewer-report.yml` run confirms it via
-  `cn_render_noise_section`. Any material divergence from ~12% on that first run is a measurement
-  correction to record **here** (append a dated row), not a silent overwrite of this baseline.
+- **Noise ~12%** is an all-comments historical estimate (phrase-scanned over all bots, third-party
+  included) — **not** a first-party marker count. The first scheduled `reviewer-report.yml` run
+  **establishes** the first-party baseline via `cn_render_noise_section`. Divergence from ~12% on
+  that first run is the expected consequence of the narrower denominator — not a measurement
+  correction. Only within-denominator anomalies (e.g., classifier disagreeing with a hand-count of
+  the same PRs at a fixed first-party denominator) should be recorded as dated appends here.
 - **Denominator scope (first-party only):** The `cn_render_noise_section` metric counts only
   first-party agent comments — bodies that carry one of our automation markers (`<!-- pr-review-agent
   …-->`, `<!-- dev-lead …-->`, etc.). Third-party reviewer bots (Codex, Qodo, SonarCloud, etc.) do
   not emit these markers and are classified as `non-agent`; they are already measured separately via
-  the reviewer scorecard. The AC #4 ~12% figure cited in issue #1411 was also measured over
-  first-party markers only (it pre-dates the classifier and was an estimate, not a live
-  all-comments count), so the denominators are consistent. Any future comparison against an
-  all-comments denominator should be labelled explicitly to avoid confusion.
+  the reviewer scorecard. **[Corrected 2026-08-02 — the following sentence is factually wrong and is
+  retained here, not silently deleted, per this doc's dated-correction convention; see the
+  *Correction (2026-08-02)* section at the end of this document, which supersedes it.]** ~~The AC #4
+  ~12% figure cited in issue #1411 was also measured over first-party markers only (it pre-dates the
+  classifier and was an estimate, not a live all-comments count), so the denominators are
+  consistent.~~ Any future comparison against an all-comments denominator should be labelled
+  explicitly to avoid confusion.
 - **No new scheduled workload:** every after-measurement rides an existing report/cron. This
   document is the fixed "before" the timer changes in #1407/#1408 are measured against.
+
+---
+
+### Correction (2026-08-02) — denominator scope of the ~12% noise estimate
+
+An earlier version of the denominator-scope note above (landed in #1414) concluded that the AC #4
+~12% figure "was also measured over first-party markers only … so the denominators are consistent."
+**That claim is wrong.** The original sentence is struck in place above rather than silently rewritten;
+this dated section corrects it (raised as finding F3 on PR #1414, tracked in #1419).
+
+- **Actual basis of the ~12% figure (AC #1).** The ~12% figure was derived over **all** PR comments in
+  a sampled window — third-party reviewer bots included — and classified by a phrase scan
+  ("no action", "no issues", "LGTM", "no blocking", "advisory") across every comment, **not** over a
+  marker-bearing subset. Provenance: a 10-PR sample (#1355, #1366, #1372, #1359, #1351, #1357, #1356,
+  #1347, #1346, #1345) with **180 comment bodies (issue + inline review comments; the
+  phrase-scan denominator)** and **est. no-action/advisory = 21** → 21/180 ≈ 12%. In that same
+  sample **all 254 distinct review activities (comment bodies + review-submission events) were
+  machine-authored and 0 were human** — a figure only meaningful because third-party bots
+  (`codeant-ai`, `coderabbitai`, `qodo-code-review`, `sonarqubecloud`, `chatgpt-codex-connector`,
+  `gemini-code-assist`) were in scope.
+
+- **The two populations genuinely differ (AC #2).** `cn_render_noise_section` counts only first-party,
+  marker-bearing comments — a **narrower** population than the all-comments basis of the ~12% estimate.
+  The denominators are therefore **not** consistent. The first measured first-party value is
+  **expected to differ** from ~12%, and a difference of that kind is a **population change — not a
+  regression and not an improvement** in reviewer noise.
+
+- **Interpreting the first scheduled run (AC #3).** Read a first-party number below ~12% as the
+  *expected* consequence of the narrower denominator, **not** as a noise reduction to claim. A genuine
+  measurement correction is one that the population difference cannot explain — for example, the
+  first-party classifier disagreeing with a hand-count of first-party markers on the same PRs, or the
+  first-party share moving materially across runs at a *fixed* first-party denominator. Record only the
+  latter as a dated append; never treat the first-party-vs-all-comments gap itself as a change in noise.
+
+- **All-comments series (AC #4).** No all-comments noise series is maintained. The first-party
+  no-action share is the **only** noise time-series in this document; the **reviewer scorecard**
+  (`scripts/reviewer_report.sh`) is the only view that accounts for third-party reviewer bots. A reader
+  must not mistake the first-party series for total reviewer noise — for that, consult the scorecard.
