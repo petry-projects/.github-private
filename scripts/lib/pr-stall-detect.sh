@@ -178,9 +178,8 @@ generate_stall_report() {
   printf 'Open PRs stuck **CI-green + REVIEW_REQUIRED** with no agent activity and '
   printf 'no pending triggering event for over %sm — the un-eventable-transition ' "$min_age"
   printf 'failure mode the narrowed Class-2 timers (#1407/#1408) could introduce. '
-  printf 'Human-gated halts (needs-human-review, dev-lead:hands-off, initiative:hold, '
-  printf 'automation-budget exhausted) are excluded. Detection only — no PR is '
-  printf 'mutated. See #1410 / the #860 post-mortem (detection must be pushed).\n\n'
+  printf 'Human-gated halts (needs-human-review, dev-lead:hands-off, initiative:hold) are excluded. '
+  printf 'Detection only — no PR is mutated. See #1410 / the #860 post-mortem (detection must be pushed).\n\n'
 
   if [ -z "$f" ] || [ ! -s "$f" ]; then
     printf '✅ No open PR is stalled.\n'
