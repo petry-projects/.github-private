@@ -23,6 +23,14 @@ setup() {
 
   export DEV_LEAD_DRY_RUN="false"
   export GEMINI_API_KEY="dummy-test-key"
+
+  # TOKEN_LOG_FILE enables JSON-mode capture (--output-format json) in
+  # _claude_chain_invoke.  When set, the stub-claude fixture wraps its response
+  # in a JSON envelope, which breaks plain-text pattern matching (e.g. rate-limit
+  # detection on the raw capture).  Unsetting here reproduces the correct signal
+  # path and eliminates the CI environment-variable leak without disabling any
+  # real production behaviour.
+  unset TOKEN_LOG_FILE ENGINE_USAGE_JSON
 }
 
 teardown() {
