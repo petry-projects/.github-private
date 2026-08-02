@@ -12,7 +12,7 @@
 setup() {
   ROOT="$(cd "$BATS_TEST_DIRNAME/.." && pwd)"
   VALIDATOR="$ROOT/interaction-contracts/validate-interaction-contracts.py"
-  TMP="$(mktemp -d)"
+  TMP="$BATS_TEST_TMPDIR"
 
   # A fake workflow file so the workflows[] path-existence invariant is satisfied.
   mkdir -p "$TMP/.github/workflows"
@@ -42,8 +42,6 @@ interaction:
   budget: none
 YAML
 }
-
-teardown() { rm -rf "$TMP"; }
 
 @test "validate-interaction-contracts accepts a well-formed contract" {
   run python3 "$VALIDATOR" "$TMP"
@@ -219,6 +217,34 @@ YAML
   run python3 "$VALIDATOR" "$TMP"
   [ "$status" -eq 0 ]
   [[ "$output" == *"OK"* ]]
+}
+
+@test "validate-interaction-contracts accepts a comment-marker: emit (normative docs form)" {
+  sed -i 's#    - "label:demo"#    - "comment-marker:<!-- pr-budget exhausted -->"#' "$TMP/personas/demo/interaction.yml"
+  run python3 "$VALIDATOR" "$TMP"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"OK"* ]]
+}
+
+@test "validate-interaction-contracts rejects a bare-token emit with trailing garbage (commitfoo)" {
+  sed -i 's#    - "label:demo"#    - "commitfoo"#' "$TMP/personas/demo/interaction.yml"
+  run python3 "$VALIDATOR" "$TMP"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"emits"* ]]
+}
+
+@test "validate-interaction-contracts rejects an emit with an empty payload (label:)" {
+  sed -i 's#    - "label:demo"#    - "label:"#' "$TMP/personas/demo/interaction.yml"
+  run python3 "$VALIDATOR" "$TMP"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"emits"* ]]
+}
+
+@test "validate-interaction-contracts rejects a workflow path that escapes the repo root" {
+  sed -i 's#- .github/workflows/demo.yml#- ../escape.yml#' "$TMP/personas/demo/interaction.yml"
+  run python3 "$VALIDATOR" "$TMP"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"escapes"* ]]
 }
 
 @test "validate-interaction-contracts reports a parse error without a traceback" {

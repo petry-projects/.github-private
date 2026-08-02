@@ -37,10 +37,17 @@ import sys
 from pathlib import Path
 from typing import NoReturn
 
+try:
+    import yaml
+except ImportError:
+    print("::error::interaction contract invalid: PyYAML not installed (pip install pyyaml)", file=sys.stderr)
+    sys.exit(1)
+
 TIMER_ROLES = frozenset({"backstop", "safety-net", "self-heal"})
 KINDS = frozenset({"persona", "runtime"})
 BUDGETS = frozenset({"pr-automation-budget", "none"})
-EMIT_PREFIXES = ("label:", "comment:", "review:", "dispatch:", "commit", "push")
+EMIT_BARE = frozenset({"commit", "push"})
+EMIT_PREFIXES = ("label:", "comment-marker:", "comment:", "review:", "dispatch:")
 
 
 def fail(msg: str) -> NoReturn:
@@ -106,7 +113,6 @@ def check_self_trigger(events: list, emits: list, where: str) -> None:
 
 
 def check_contract(path: Path, repo_root: Path) -> None:
-    import yaml
     try:
         contract = yaml.safe_load(path.read_text(encoding="utf-8"))
     except (OSError, yaml.YAMLError) as exc:
@@ -124,9 +130,14 @@ def check_contract(path: Path, repo_root: Path) -> None:
     workflows = _require_list(contract.get("workflows"), f"{path}: workflows")
     if not workflows:
         fail(f"{path}: workflows must name at least one deployed workflow")
+    repo_root_resolved = repo_root.resolve()
     for wf in workflows:
         _require_nonempty_str(wf, f"{path}: workflows[]")
-        if not (repo_root / wf).is_file():
+        resolved_wf = (repo_root / wf).resolve()
+        if not resolved_wf.is_relative_to(repo_root_resolved):
+            fail(f"{path}: workflows entry '{wf}' escapes the repository root — "
+                 f"paths must be relative to the repo root")
+        if not resolved_wf.is_file():
             fail(f"{path}: workflows entry '{wf}' does not exist (contract is bound "
                  f"to a real workflow — see AC #3)")
 
@@ -150,9 +161,13 @@ def check_contract(path: Path, repo_root: Path) -> None:
              f"nothing has no self-trigger surface to prove safe — declare what it emits)")
     for emit in emits:
         _require_nonempty_str(emit, f"{path}: interaction.emits[]")
-        if not emit.startswith(EMIT_PREFIXES):
-            fail(f"{path}: interaction.emits entry '{emit}' must start with one of "
-                 f"{list(EMIT_PREFIXES)} so its produced event class is declared")
+        if emit not in EMIT_BARE:
+            matched = next((p for p in EMIT_PREFIXES if emit.startswith(p)), None)
+            if not matched or emit == matched:
+                fail(f"{path}: interaction.emits entry '{emit}' must be one of "
+                     f"{sorted(EMIT_BARE)} or start with one of "
+                     f"{list(EMIT_PREFIXES)} followed by a non-empty value so its "
+                     f"produced event class is declared")
     check_self_trigger(events, emits, f"{path}")
 
     _require_nonempty_str(interaction.get("idempotency_key"),
@@ -179,11 +194,6 @@ def check_contract(path: Path, repo_root: Path) -> None:
 
 def main() -> None:
     root = Path(sys.argv[1]) if len(sys.argv) > 1 else Path.cwd()
-    try:
-        import yaml  # noqa: F401
-    except ImportError:
-        fail("PyYAML not installed (pip install pyyaml)")
-
     contracts = discover_contracts(root)
     if not contracts:
         print(f"no interaction contracts found under {root} — nothing to validate.")
