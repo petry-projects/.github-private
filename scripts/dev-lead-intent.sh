@@ -262,9 +262,10 @@ case "$EVENT_NAME" in
     # not the PR author's from .pull_request. On a dev-lead-authored PR the author
     # is always dev-lead's own OWNER identity, so gating on the PR author made
     # is_human_trusted always true and the untrusted-reviewer skip dead code.
-    # `// empty` keeps the gate fail-closed: a missing/unparseable reviewer
-    # association is untrusted (is_human_trusted returns false → skip).
-    reviewer_assoc=$(jq -r '.review.author_association // empty' "$EVENT_PATH" 2>/dev/null || true)
+    # `.review?` + `// "" | tostring` keeps the gate fail-closed: a missing or
+    # null reviewer association produces an empty string that is_human_trusted
+    # rejects (returns false → skip).
+    reviewer_assoc=$(jq -r '(.review?.author_association // "" | tostring)' "$EVENT_PATH")
 
     # Skip if actor is BOT_USER (self-review)
     if [ "$reviewer" = "$BOT_USER" ]; then
