@@ -229,6 +229,12 @@ while IFS= read -r pr_url; do
     rc=2
   fi
 
+  # Treat known engine-unavailable setup/runtime errors as fallback-eligible
+  if [ "$rc" -eq 55 ] || [ "$rc" -eq 127 ]; then
+    echo "::warning::Engine ${REVIEW_ENGINE:-claude} unavailable at runtime (exit $rc) — treating as fallback-eligible"
+    rc=2
+  fi
+
   # Exit code 2 = engine rate-limited.
   # Fallback chain: claude -> copilot -> gemini (Gemini is the last resort).
   if [ "$rc" -eq 2 ] && [ "${REVIEW_ENGINE:-claude}" = "claude" ]; then
