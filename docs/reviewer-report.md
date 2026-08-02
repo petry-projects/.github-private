@@ -76,6 +76,25 @@ Per-PR bucket counts (`reviewed_prs` / `refused_prs` / `no_response_prs`, which 
 eligible PRs), plus thread-resolution and reaction counts, are still computed and stored in the
 snapshot for downstream use — they're just kept out of the headline table to keep it legible.
 
+### Agent comment noise (our own automation)
+
+Distinct from the third-party scorecard above, the report also measures the **no-action share of
+our own automation's comments** — the net-new noise metric from [#1411](https://github.com/petry-projects/.github-private/issues/1411).
+This is deterministic (`scripts/lib/comment-noise.sh`), computed from the automation markers each
+comment already carries — **no LLM**.
+
+| Term | Definition |
+|---|---|
+| **Agent comment** | A PR comment or review whose body carries one of OUR automation markers: `<!-- pr-review-agent … -->`, `<!-- dev-lead… -->` (fix-reviews / fix-ci / noop-guard / issue / rate-limit), `<!-- persona:… -->`, or `<!-- dependency-advisory -->`. This is the **denominator**. Third-party reviewer bots are excluded (they emit no such marker and are scored in the table above). |
+| **No-action comment** | An agent comment that asks nothing of a human. Two signals, both stable: known no-action **bodies** — "No actionable items found." (`post_no_changes`), "Engine ran but made no changes." (fix-ci), "No action required." (dependency advisory all-LOW) — and terminal no-op **marker fields** — `status=no-changes` (dev-lead) and `decision=approved` (a clean / repeat pr-review approval). |
+| **Actionable comment** | Every other agent comment — an applied fix (`status=applied`), an escalated finding (`decision=escalated`), or a human-attention flag (no-op guard). |
+| **Noise metric** | No-action comments as a **count** and as a **share** of all agent comments; **affected PRs** (distinct PRs with ≥1 no-action comment); and **no-action comments per PR** (denominator = PRs with any agent comment). |
+
+- **Window / scope:** the same rolling `LOOKBACK_DAYS` window and the same all-non-archived-repo sweep as the scorecard; every PR active in the window (agent comments on draft PRs are vanishingly rare and not separately excluded).
+- **PR denominator:** distinct PRs from `kind:"pr"` JSONL records — all active PRs in the window as set by the collection pass. **Affected PRs** = distinct PRs containing ≥1 no-action comment.
+- **Attribution:** by marker, not by author — our agents commit/comment as human logins (`don-petry`, `donpetry-bot`), so identity is taken from the marker embedded in the body, never the login.
+- **One code path:** the classifier is applied during the report's existing per-PR collection pass, so the pre-rollout **baseline** and every **after** measurement are produced by the same code (see [`docs/metrics-baseline.md`](./metrics-baseline.md)).
+
 ### Week-over-week deltas
 
 The report has no external time-series store. Instead each run writes a compact per-bot
@@ -88,8 +107,10 @@ First-ever runs (or an expired artifact) simply omit the deltas — never an err
 - **Cost is not measured.** These reviewers are external SaaS GitHub Apps and emit no
   token-usage artifacts, so per-review `$` cost is not observable from our side. For our
   own Claude reviewer's spend, see the [Token Cost Observatory](./token-report.md).
-- **Comment usefulness / false-positive rate** requires judgment and is intentionally out
-  of this deterministic report (see roadmap).
+- **Comment usefulness / false-positive rate** *for the third-party reviewers* requires judgment
+  and is intentionally out of this deterministic report (see roadmap). The **Agent comment noise**
+  metric above is different and deterministic — it scores only OUR automation's no-action share
+  from the markers each comment already carries.
 - **Latency baseline** is PR-creation time in v1; a refinement to last-human-push is
   tracked for v2.
 
@@ -137,6 +158,7 @@ ORG=petry-projects LOOKBACK_DAYS=7 GH_TOKEN="$(gh auth token)" \
 | File | Role |
 |---|---|
 | `scripts/lib/advisory-review-gate.sh` | Single source of truth for bot logins + rate-limit body patterns (reused, not forked). |
+| `scripts/lib/comment-noise.sh` | Pure no-action agent-comment classifier + `cn_render_noise_section` (the noise metric). Unit-tested in `tests/comment_noise.bats`. |
 | `scripts/reviewer_report.sh` | Org-wide GraphQL collection (`main` / `collect_org_reviews`) + pure normalization, aggregation, and rendering (`aggregate_snapshot`, `render_reviewer_report`). |
 | `tests/reviewer_report.bats` | Unit tests for the pure normalize / aggregate / render path (no network). |
 | `.github/workflows/reviewer-report.yml` | Weekly cron → snapshot upload + tracking-issue comment. |

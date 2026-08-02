@@ -58,6 +58,7 @@ jobs:
             tests/test_spec_drift_eval.bats \
             tests/token_report.bats \
             tests/reviewer_report.bats \
+            tests/comment_noise.bats \
             tests/auto_rebase_health.bats \
             tests/model_pricing.bats \
             tests/test_review_cycle.bats \
