@@ -75,34 +75,41 @@ PRs it is labelled *(all PRs)*.
 | Convergence — cycles-to-merge | **~7–13 commits** per merged substantive PR | trivial stub-sync merges in minutes | pr-review re-review events |
 | Redundancy — workflow runs/hr | — | **~52 runs/hr** (7-day window, all-PRs scope) | `pr_review_health.sh` run telemetry / `reviewer_report.sh` |
 | Redundancy — coverage overlap | — | PRs reviewed by ≥2 bots (see scorecard) | `reviewer_report.sh` "Coverage overlap" |
-| Noise — no-action comment share | — | **~12%** of first-party agent comments (our markers only); raw counts confirmed on first scheduled run (see denominator reconciliation note) | `reviewer_report.sh` "Agent comment noise" |
+| Noise — no-action comment share | — | **~12%** (all-comments historical estimate — phrase-scan over all bots, **not** a first-party marker count; see denominator reconciliation note and Correction 2026-08-02) | `reviewer_report.sh` "Agent comment noise" |
 
 ### Noise metric — raw measurement details
 
 Because the classifier is net-new (#1411), no deterministic pre-change count existed before this
-baseline was captured. The ~12% figure is the pre-rollout estimate; the first scheduled
-`reviewer-report.yml` run will produce the exact values below via `cn_render_noise_section`:
+baseline was captured. The ~12% figure is an **all-comments historical estimate** (phrase-scan over
+all bots, third-party included) — it is **not** a first-party marker count and is not the
+first-party baseline. The first scheduled `reviewer-report.yml` run **establishes** the first-party
+baseline via `cn_render_noise_section`:
 
 | Field | Value | Note |
 |---|---|---|
-| Agent comments (total) | *confirmed on first run* | all marker-bearing comments/reviews in the 7-day window (first-party only — see denominator note below) |
-| No-action comments | *confirmed on first run* | share of first-party agent comments (~12% pre-rollout estimate; see denominator note) |
-| Active PRs (window) | *confirmed on first run* | distinct `kind:"pr"` records in the JSONL collection |
-| Affected PRs (≥1 no-action) | *confirmed on first run* | distinct PRs with at least one no-action agent comment |
-| No-action comments per PR | *confirmed on first run* | no-action count ÷ PRs with any agent comment |
+| Agent comments (total) | *established on first run* | all marker-bearing comments/reviews in the 7-day window (first-party only — see denominator note below) |
+| No-action comments | *established on first run* | share of first-party agent comments (the all-comments historical estimate was ~12%; first-party value is expected to differ — see denominator note) |
+| Active PRs (window) | *established on first run* | distinct `kind:"pr"` records in the JSONL collection |
+| Affected PRs (≥1 no-action) | *established on first run* | distinct PRs with at least one no-action agent comment |
+| No-action comments per PR | *established on first run* | no-action count ÷ PRs with any agent comment |
 
-Any divergence between the ~12% estimate and the first measured value is a measurement correction;
-record it by appending a dated row here rather than overwriting this baseline.
+Any divergence between the first-party value and the ~12% all-comments estimate is the **expected
+population difference** (narrower denominator) — not a measurement correction. A genuine
+measurement correction is one the population difference cannot explain (e.g., the first-party
+classifier disagreeing with a hand-count of first-party markers on the same PRs). Record only those
+as dated appends here; never treat the first-party-vs-all-comments gap itself as a change in noise.
 
 ### Reconciliation notes
 
 - **Convergence** and **redundancy** baselines are quoted as ranges because the pre-change data is
   bimodal (see the split above); the substantive band (~20–48 h, ~7–13 commits) is the target of the
   initiative, while trivial stub-sync PRs sit far below it and are reported, not averaged in.
-- **Noise ~12%** is the pre-rollout no-action estimate. Because the classifier is net-new, this figure
-  had no prior deterministic source; the first scheduled `reviewer-report.yml` run confirms it via
-  `cn_render_noise_section`. Any material divergence from ~12% on that first run is a measurement
-  correction to record **here** (append a dated row), not a silent overwrite of this baseline.
+- **Noise ~12%** is an all-comments historical estimate (phrase-scanned over all bots, third-party
+  included) — **not** a first-party marker count. The first scheduled `reviewer-report.yml` run
+  **establishes** the first-party baseline via `cn_render_noise_section`. Divergence from ~12% on
+  that first run is the expected consequence of the narrower denominator — not a measurement
+  correction. Only within-denominator anomalies (e.g., classifier disagreeing with a hand-count of
+  the same PRs at a fixed first-party denominator) should be recorded as dated appends here.
 - **Denominator scope (first-party only):** The `cn_render_noise_section` metric counts only
   first-party agent comments — bodies that carry one of our automation markers (`<!-- pr-review-agent
   …-->`, `<!-- dev-lead …-->`, etc.). Third-party reviewer bots (Codex, Qodo, SonarCloud, etc.) do
@@ -130,8 +137,9 @@ this dated section corrects it (raised as finding F3 on PR #1414, tracked in #14
   a sampled window — third-party reviewer bots included — and classified by a phrase scan
   ("no action", "no issues", "LGTM", "no blocking", "advisory") across every comment, **not** over a
   marker-bearing subset. Provenance: a 10-PR sample (#1355, #1366, #1372, #1359, #1351, #1357, #1356,
-  #1347, #1346, #1345) with **total comments (issue + inline review) = 180** and
-  **est. no-action/advisory = 21** → 21/180 ≈ 12%. In that same sample **254/254 total comments and review submissions were
+  #1347, #1346, #1345) with **180 comment bodies (issue + inline review comments; the
+  phrase-scan denominator)** and **est. no-action/advisory = 21** → 21/180 ≈ 12%. In that same
+  sample **all 254 distinct review activities (comment bodies + review-submission events) were
   machine-authored and 0 were human** — a figure only meaningful because third-party bots
   (`codeant-ai`, `coderabbitai`, `qodo-code-review`, `sonarqubecloud`, `chatgpt-codex-connector`,
   `gemini-code-assist`) were in scope.
