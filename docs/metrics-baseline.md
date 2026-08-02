@@ -130,8 +130,8 @@ this dated section corrects it (raised as finding F3 on PR #1414, tracked in #14
   a sampled window — third-party reviewer bots included — and classified by a phrase scan
   ("no action", "no issues", "LGTM", "no blocking", "advisory") across every comment, **not** over a
   marker-bearing subset. Provenance: a 10-PR sample (#1355, #1366, #1372, #1359, #1351, #1357, #1356,
-  #1347, #1346, #1345) with **total comments (issue + review) = 180** and
-  **est. no-action/advisory = 21** → 21/180 ≈ 12%. In that same sample **254/254 comments+reviews were
+  #1347, #1346, #1345) with **total comments (issue + inline review) = 180** and
+  **est. no-action/advisory = 21** → 21/180 ≈ 12%. In that same sample **254/254 total comments and review submissions were
   machine-authored and 0 were human** — a figure only meaningful because third-party bots
   (`codeant-ai`, `coderabbitai`, `qodo-code-review`, `sonarqubecloud`, `chatgpt-codex-connector`,
   `gemini-code-assist`) were in scope.
