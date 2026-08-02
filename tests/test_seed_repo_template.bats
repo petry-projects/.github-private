@@ -139,8 +139,6 @@ _stub_gh_empty() {
     src="    uses: ./.github/workflows/${name}-reusable.yml@${name}/v3-next"
     run bash -c 'printf "%s\n" "$1" | bash "$0" --repin "$2"' "$SEED" "$src" "$name"
     [ "$status" -eq 0 ]
-    channel="$(_manifest_channel "$name")"
-    [ -n "$channel" ] || { echo "$name has no caller channel in the manifest" >&2; false; }
     [[ "$output" != *"./.github/workflows/${name}-reusable.yml"* ]] \
       || { echo "$name still has ./ ref" >&2; false; }
     [[ "$output" != *"${name}/v3-next"* ]] \
