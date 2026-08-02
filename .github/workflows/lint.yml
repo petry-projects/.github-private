@@ -331,7 +331,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Install PyYAML
-        run: pip3 install --quiet pyyaml
+        run: pip3 install --quiet "pyyaml==6.0.3" --only-binary=":all:"
 
       - name: Validate interaction contracts
         run: python3 interaction-contracts/validate-interaction-contracts.py .
