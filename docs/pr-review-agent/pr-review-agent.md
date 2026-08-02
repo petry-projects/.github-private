@@ -110,6 +110,23 @@ and **Copilot**.
    knows the PR has new commits since the last review and runs the cascade
    again — handling iterative review cycles cleanly.
 
+## Interaction contract
+
+pr-review pairs a **Class 1 event fast-path** (the `pr-review-trigger.yml` caller stub) with a
+**Class 2 backstop timer** (`pr-review-sweep.yml`) under the
+[agentic interaction model](../agentic-interaction-model.md) (the normative standard). Its
+triggers, timers, emits, and stop markers are declared as machine-readable, CI-verified
+contracts rather than prose:
+
+- **Runtime lens** — [`interaction-contracts/pr-review.yml`](../../interaction-contracts/pr-review.yml)
+  (the deployed trigger/sweep `on:` blocks, the backstop timer's `stop_condition` +
+  `event_fast_path`, emits, and budget).
+- **Role lens** — [`personas/pr-review/interaction.yml`](../../personas/pr-review/interaction.yml)
+  (the persona-manifest view of the same pattern).
+
+When the trigger or sweep workflow's `on:` block changes, update those contracts and the
+standard's §4 classification table in the same change.
+
 ## Setup
 
 ### Reviewer identity

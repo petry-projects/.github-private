@@ -1,7 +1,6 @@
 ---
 on:
-  workflow_run:
-    workflows: [CI, Lint, Tests]
+  check_run:
     types: [completed]
 
 permissions:
@@ -24,38 +23,58 @@ network: defaults
 safe-outputs:
   add-comment:
     max: 1
-    staged: true
 ---
 
 # CI Failure Analyst
 
-When a CI workflow run completes, diagnose failures and post a root-cause comment on the associated pull request.
+When a CI check run completes with `conclusion: failure` on a non-fork PR, diagnose the failure
+and post a single root-cause comment on the associated pull request.
+
+> **Deployed runtime.** The live CI Failure Analyst in this repo is **not** a compiled
+> gh-aw workflow — it is the byte-frozen ring-0 thin caller
+> `.github/workflows/ci-failure-analyst.lock.yml`, which triggers on `check_run:[completed]`,
+> posts **live** (declaring `issues: write` + `pull-requests: write`), and delegates all logic to
+> `ci-failure-analyst-reusable.yml@ci-failure-analyst/v1-stable`. This `.md` is the gh-aw source
+> retained alongside that stub (the `gh-aw-compile` orphaned-lock detector requires a sibling
+> `.md` for every `*.lock.yml`); its `on:`/`safe-outputs` posture is kept in sync with the
+> deployed stub — `check_run:[completed]`, one live comment per failing head SHA — so the spec
+> and the deployment agree. Do **not** edit the frozen `.lock.yml` block (caller-stub-freeze,
+> AGENTS.md). For the full deployed architecture and permission table see
+> [`docs/aw/ci-failure-analyst.md`](../../docs/aw/ci-failure-analyst.md); for the machine-readable
+> interaction contract see
+> [`interaction-contracts/ci-failure-analyst.yml`](../../interaction-contracts/ci-failure-analyst.yml).
 
 ## Instructions
 
 Follow these steps in order.
 
-### 1. Guard: conclusion must be `failure`
+### 1. Guard: conclusion must be `failure` and this must not be the analyst's own check
 
-Check `github.event.workflow_run.conclusion`. If it is anything other than `failure`
+Check `github.event.check_run.conclusion`. If it is anything other than `failure`
 (e.g. `cancelled`, `skipped`, `success`, `neutral`), output a `noop` action and stop.
 Do not post any comment.
 
-### 2. Guard: workflow run must be associated with a PR
+Also skip the analyst's own check run to prevent loops: if
+`github.event.check_run.name` starts with `CI Failure Analyst`, output a `noop` and stop.
 
-Check `github.event.workflow_run.pull_requests`. If the array is empty, the workflow run is
-not attached to any open pull request. Output a `noop` and stop. Do not comment on
-issues or any other thread.
+### 2. Guard: the check run must be associated with a non-fork PR
+
+Check `github.event.check_run.pull_requests`. If the array is empty, resolve the PR from the
+commits-to-pulls API (`repos/{owner}/{repo}/commits/{head_sha}/pulls`) as a fallback. If no open
+PR is found, output a `noop` and stop. Do not comment on issues or any other thread.
+
+Filter to **non-fork** PRs only (the PR's head repo must equal the base repo). A fork PR is a
+`noop`.
 
 ### 3. Identify the target PR
 
-Use the first entry in `github.event.workflow_run.pull_requests`. Note:
+Use the first non-fork PR. Note:
 
 - PR number
-- Head SHA: `github.event.workflow_run.head_sha`
-- Workflow name: `github.event.workflow_run.name`
-- Details URL: `github.event.workflow_run.html_url`
-- Workflow run ID: `github.event.workflow_run.id`
+- Head SHA: `github.event.check_run.head_sha`
+- Check run name: `github.event.check_run.name`
+- Details URL: `github.event.check_run.details_url` (fall back to `github.event.check_run.html_url`)
+- Check run ID: `github.event.check_run.id`
 
 ### 4. Check for an existing analyst comment (idempotency)
 
@@ -65,16 +84,16 @@ List comments on the PR and search for one that starts with the exact marker:
 <!-- ci-analyst sha=HEAD_SHA -->
 ```
 
-where `HEAD_SHA` is the workflow run's `head_sha`. If a comment with this marker already
+where `HEAD_SHA` is the check run's `head_sha`. If a comment with this marker already
 exists, output a `noop` and stop. Do not post a duplicate comment.
 
 ### 5. Fetch failure details
 
-Use the workflow run ID (`github.event.workflow_run.id`) with the actions toolset to retrieve
-the workflow run logs. Parse the logs to find the failing job and step.
+Use the failed check run / its workflow run with the actions toolset to retrieve the run logs.
+Parse the logs to find the failing job and step.
 
 If logs are unavailable (e.g. the run has expired), note this in the comment and
-provide a best-guess diagnosis from the workflow name and any available context.
+provide a best-guess diagnosis from the check run name and any available context.
 
 ### 6. Identify the failing step and error
 
@@ -96,7 +115,7 @@ Choose the single best-fit category:
 | **Lint/style** | `eslint`, `shellcheck`, `markdownlint`, `yamllint`, `ruff`, `golangci-lint` errors |
 | **Build error** | Compilation error, `npm ERR!`, `cargo build` failed, dependency resolution failure |
 
-If the workflow name is `lint`, `shellcheck`, `markdownlint`, `yamllint`, or similar, the
+If the check run name is `lint`, `shellcheck`, `markdownlint`, `yamllint`, or similar, the
 category **must** be Lint/style — do not classify it as Test failure.
 
 ### 8. Post the diagnostic comment
@@ -105,7 +124,7 @@ Post a comment to the PR (identified in Step 3 by PR number) using exactly this 
 
 ```markdown
 <!-- ci-analyst sha=HEAD_SHA -->
-## CI Failure: WORKFLOW_NAME
+## CI Failure: CHECK_RUN_NAME
 
 **Step:** FAILING_STEP_NAME
 **Root cause:** ROOT_CAUSE_CATEGORY

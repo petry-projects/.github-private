@@ -218,6 +218,27 @@ committed baseline (`tests/fixtures/caller-stub-freeze/*.block`).
 - PR-triggered on the existing Lint workflow — **no new cron/scheduled workload.** It must not be removed by
   template syncs. If the org template gains an equivalent, remove this exception and defer.
 
+### Agentic interaction model
+
+How agentic roles are triggered and how they interact is a **normative repo-local standard**,
+[`docs/agentic-interaction-model.md`](./docs/agentic-interaction-model.md). It codifies the
+event-first principle, the three trigger classes (event-driven / backstop-timer /
+scheduled-origin), the `GITHUB_TOKEN` event-boundary rule and its two sanctioned bridges, the
+timer contract, and the #860 runaway rules. Read it before adding or changing an agentic
+workflow's `on:` block, a `schedule.cron`, or a cross-workflow dispatch — a new role must add a
+row to its §4 classification table and declare a machine-readable per-role interaction contract
+(`interaction-contracts/<name>.yml` and/or `personas/<id>/interaction.yml`), both CI-verified.
+
+- **Adding a role?** Follow the step-by-step runbook
+  [`docs/adding-an-agentic-role.md`](./docs/adding-an-agentic-role.md); each step cites the
+  governing section of the standard.
+- This section is consistent with, not competing with, "Scheduled workflows" below (which
+  governs *when* a timer may fire) and the "Ring-0 caller-stub freeze" above (which byte-freezes
+  the self-host caller stubs the standard classifies as Class 1). Like the off-peak scheduling
+  standard, it is **repo-local first**, shaped for promotion into an org-wide
+  `standards/agent-standards.md` in
+  [`petry-projects/.github`](https://github.com/petry-projects/.github).
+
 ### Scheduled workflows
 
 - **Never schedule at minute 0.** A scheduled workflow must not use a `0 * * * *`
