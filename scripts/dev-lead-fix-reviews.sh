@@ -9,6 +9,7 @@ source "$(dirname "$0")/lib/pr-worktree.sh"
 source "$(dirname "$0")/lib/auto-merge.sh"
 source "$(dirname "$0")/lib/git-push-guard.sh"
 source "$(dirname "$0")/lib/pr-automation-budget.sh"
+source "$(dirname "$0")/lib/maintainer-review-thread-gate.sh"
 
 INTENT_TYPE="${INTENT_TYPE:-fix-reviews}"
 PR_NUMBER="${PR_NUMBER:-}"
@@ -300,6 +301,22 @@ notify_coderabbit_resolve() {
 # Outdated threads reference code that no longer exists, so resolution is unambiguously
 # safe. Independent of whether the agent decided to resolve them.
 #
+# RESOLVE-GUARD (#1415). dev-lead acts as the owner `don-petry` — the SAME account a
+# human maintainer uses — so ACTOR-authored is NOT sufficient to prove a thread is
+# ours: a maintainer's inline review left as `don-petry` matches the ACTOR filter
+# exactly (this is the PR #1413 shape). Login cannot discriminate a maintainer from
+# the agent here, so when the author is maintainer-capable — NOT one of the advisory/
+# automation bots (review_thread_login_is_excluded_bot) and NOT our own bot login —
+# each candidate is additionally gated on the automation MARKER in its originating
+# comment via review_thread_is_agent_authored(): a marker-less thread is a maintainer
+# finding and is SKIPPED with a visible ::warning:: rather than silently resolved.
+# The guard uses the SAME maintainer definition as check_maintainer_review_threads
+# (marker-less AND non-excluded-bot AND non-bot_user), so an outdated advisory-bot
+# thread (e.g. codex/coderabbit) stays freely resolvable — only a genuine maintainer
+# finding is held back. This is the review-path application of #860 rule 2 — "a gate
+# whose reset is reachable by the agent is not a gate" — to review/merge gates
+# (docs/agentic-interaction-model.md).
+#
 # ACTOR is passed to jq via --arg (not shell interpolation) so a hostile actor value
 # can't escape the filter. reviewThreads(first:100) is the GraphQL max for a single
 # page — PRs with >100 review threads will still leave some outdated ones unresolved,
@@ -316,15 +333,17 @@ resolve_actor_outdated_threads() {
   fi
 
   local actor_stripped="${ACTOR%\[bot\]}"
-  local ids
-  # gh api's --jq does not accept --arg, so pipe to jq directly to bind the actor
-  # values as data (not shell-interpolated into the filter source).
-  ids=$(gh api graphql -f query='
+  local pairs
+  # Emit "<thread_id>\t<base64(originating comment body)>" per candidate so the
+  # resolve-guard can inspect the marker without the body's quotes/newlines
+  # breaking the read loop. gh api's --jq does not accept --arg, so pipe to jq
+  # directly to bind the actor values as data (not shell-interpolated).
+  pairs=$(gh api graphql -f query='
     query($owner:String!,$repo:String!,$pr:Int!) {
       repository(owner:$owner, name:$repo) {
         pullRequest(number:$pr) {
           reviewThreads(first:100) {
-            nodes { id isResolved isOutdated comments(first:1) { nodes { author { login } } } }
+            nodes { id isResolved isOutdated comments(first:1) { nodes { author { login } body } } }
           }
         }
       }
@@ -334,18 +353,40 @@ resolve_actor_outdated_threads() {
         '.data.repository.pullRequest.reviewThreads.nodes
           | map(select(.isResolved == false
                        and .isOutdated == true
-                       and (.comments.nodes[0].author.login == $actor
-                            or .comments.nodes[0].author.login == $actor_stripped)))
-          | .[].id' 2>/dev/null || true)
+                       and (.comments.nodes[0]?.author?.login == $actor
+                            or .comments.nodes[0]?.author?.login == $actor_stripped)))
+          | .[] | .id + "\t" + ((.comments.nodes[0]?.body // "") | @base64)' 2>/dev/null || true)
 
-  if [ -z "$ids" ]; then
+  if [ -z "$pairs" ]; then
     echo "::notice::no outdated unresolved threads from ${ACTOR} on PR #${PR_NUMBER}"
     return 0
   fi
 
+  # The jq filter binds every candidate's originating author.login to ACTOR (raw or
+  # [bot]-stripped), so a single up-front check decides whether the marker guard
+  # applies: it fires only for a maintainer-capable ACTOR — one that is NOT an
+  # advisory/automation bot and NOT our own bot login. An advisory-bot ACTOR (e.g.
+  # codex/coderabbit) leaves its outdated threads freely resolvable, preserving the
+  # pre-#1415 safety-net behavior.
+  local actor_is_maintainer_capable=true
+  if review_thread_login_is_excluded_bot "$actor_stripped" \
+     || [ "$actor_stripped" = "${BOT_USER:-donpetry-bot}" ]; then
+    actor_is_maintainer_capable=false
+  fi
+
   local resolved_count=0
-  while IFS= read -r id; do
+  local id body_b64 body
+  while IFS=$'\t' read -r id body_b64; do
     [ -z "$id" ] && continue
+    body=$(printf '%s' "$body_b64" | base64 --decode 2>/dev/null || printf '%s' "$body_b64" | base64 -d 2>/dev/null || echo "")
+    # Resolve-guard (#1415): for a maintainer-capable ACTOR, only resolve a thread
+    # whose originating comment carries one of our automation markers. A marker-less
+    # thread authored as `don-petry` is a maintainer finding the agent must NOT clear
+    # — fail closed and log the skip.
+    if [ "$actor_is_maintainer_capable" = true ] && ! review_thread_is_agent_authored "$body"; then
+      echo "::warning::resolve-guard: skipping thread ${id} — originating comment carries no automation marker, treated as a maintainer finding (must not be agent-resolved, #1415)"
+      continue
+    fi
     if gh api graphql -f query='mutation($id: ID!) { resolveReviewThread(input: {threadId: $id}) { thread { isResolved } } }' \
         -f id="$id" >/dev/null 2>&1; then
       resolved_count=$((resolved_count + 1))
@@ -353,7 +394,7 @@ resolve_actor_outdated_threads() {
     else
       echo "::warning::failed to resolve outdated thread ${id}"
     fi
-  done <<< "$ids"
+  done <<< "$pairs"
   echo "::notice::resolve_actor_outdated_threads: resolved ${resolved_count} outdated thread(s) on PR #${PR_NUMBER}"
 }
 

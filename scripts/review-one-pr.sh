@@ -319,7 +319,7 @@ if [ "${FORCE_REVIEW:-false}" != "true" ]; then
       # Dismiss any existing pr-review-agent APPROVED review so the PR remains blocked
       # until the maintainer comment is addressed (best-effort).
       if [ "${DRY_RUN:-false}" != "true" ]; then
-        _agent_approval=$(echo "$PR_SNAPSHOT" | jq -r --arg bot "${BOT_USER:-donpetry-bot}" --arg sha "$PR_HEAD_SHA" '(.reviews // [])[] | select(.author.login == $bot and .state == "APPROVED" and .commit.oid == $sha) | .id' 2>/dev/null | head -1 || true)
+        _agent_approval=$(echo "$PR_SNAPSHOT" | jq -r --arg bot "${BOT_USER:-donpetry-bot}" --arg sha "$PR_HEAD_SHA" 'first((.reviews // [])[] | select(.author?.login == $bot and .state == "APPROVED" and .commit?.oid == $sha) | .id) // empty' 2>/dev/null || true)
         if [ -n "$_agent_approval" ]; then
           gh api graphql -f query='mutation($id:ID!,$msg:String!){dismissPullRequestReview(input:{pullRequestReviewId:$id,message:$msg}){clientMutationId}}' -f id="$_agent_approval" -f msg="Dismissing approval due to unaddressed maintainer issue comment (#1290)" 2>/dev/null || echo "    warn: could not dismiss prior approval"
         fi
@@ -332,6 +332,55 @@ if [ "${FORCE_REVIEW:-false}" != "true" ]; then
       exit 1
     else
       exit "$mc_gate_rc"
+    fi
+  }
+fi
+
+# Maintainer review-thread gate (issue #1415). The review-path sibling of the
+# issue-comment gate above. On a dev-lead-authored PR the owner cannot use
+# CHANGES_REQUESTED ("Can not request changes on your own pull request") and the
+# agent — acting as the owner `don-petry` — can resolve the maintainer's own
+# review threads (observed on PR #1413), defeating both blocking paths. This gate
+# keys on the automation MARKER (not login, which cannot separate the two) and
+# withholds approval while an UNRESOLVED maintainer review thread postdates the
+# last push. It FAILS CLOSED: an undeterminable authorship/created/push-time
+# blocks rather than reading as "no findings". The coupled resolve-guard in
+# dev-lead-fix-reviews.sh is what makes a thread's resolution a safe human signal.
+#   • FORCE_REVIEW bypasses (a human @mention IS the human-in-the-loop).
+#   • rc=1 → skip (exit 100); a later reply/push re-triggers pr-review.
+#   • rc=2 → fail the PR (exit 1) so a scheduled run retries, never approve blind.
+if [ "${FORCE_REVIEW:-false}" != "true" ]; then
+  (
+    # Subshell isolation so the gate's helpers/vars don't leak into the caller.
+    # The issue-comment gate is sourced too for its head-commit committer.date
+    # helper (same cherry-pick-safe push-time semantics both gates share).
+    # shellcheck source=lib/maintainer-comment-gate.sh
+    source "$SCRIPT_DIR/lib/maintainer-comment-gate.sh"
+    # shellcheck source=lib/maintainer-review-thread-gate.sh
+    source "$SCRIPT_DIR/lib/maintainer-review-thread-gate.sh"
+    _mrt_head_date=$(maintainer_gate_head_committer_date "$PR_URL")
+    _mrt_threads=$(mrtg_fetch_review_threads "$PR_URL")
+    check_maintainer_review_threads "$_mrt_threads" "$_mrt_head_date" "${BOT_USER:-donpetry-bot}"
+  ) || {
+    mrt_gate_rc=$?
+    if [ "$mrt_gate_rc" -eq 1 ]; then
+      echo "    skip: unaddressed maintainer review thread postdates last push — withholding approval (#1415)"
+      # Dismiss any existing pr-review-agent APPROVED review at head so the PR
+      # remains blocked until the maintainer thread is addressed (best-effort).
+      if [ "${DRY_RUN:-false}" != "true" ]; then
+        _agent_approval=$(echo "$PR_SNAPSHOT" | jq -r --arg bot "${BOT_USER:-donpetry-bot}" --arg sha "$PR_HEAD_SHA" 'first((.reviews // [])[] | select(.author?.login == $bot and .state == "APPROVED" and .commit?.oid == $sha) | .id) // empty' 2>/dev/null || true)
+        if [ -n "$_agent_approval" ]; then
+          gh api graphql -f query='mutation($id:ID!,$msg:String!){dismissPullRequestReview(input:{pullRequestReviewId:$id,message:$msg}){clientMutationId}}' -f id="$_agent_approval" -f msg="Dismissing approval due to unaddressed maintainer review thread (#1415)" 2>/dev/null || echo "    warn: could not dismiss prior approval"
+        fi
+      fi
+      echo "{\"pr\":\"$PR_URL\",\"sha\":\"$PR_HEAD_SHA\",\"decision\":\"skip\",\"reason\":\"unaddressed-maintainer-review-thread\"}"
+      exit 100
+    elif [ "$mrt_gate_rc" -eq 2 ]; then
+      echo "    error: maintainer-review-thread gate could not evaluate the review threads — failing closed to avoid uninformed approval"
+      echo "{\"pr\":\"$PR_URL\",\"sha\":\"$PR_HEAD_SHA\",\"decision\":\"error\",\"reason\":\"maintainer-review-thread-gate-error\"}"
+      exit 1
+    else
+      exit "$mrt_gate_rc"
     fi
   }
 fi

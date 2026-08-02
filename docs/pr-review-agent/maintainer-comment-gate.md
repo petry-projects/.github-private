@@ -92,6 +92,82 @@ dispatch) bypasses the gate — a human `@mention` *is* the human-in-the-loop th
 exists to obtain, and the same comment that triggers a re-review would otherwise
 deadlock the gate. Required-check enforcement at the ruleset still applies.
 
+## The review-thread sibling (issue #1415)
+
+The issue-comment gate above closes the *comment* path. Its sibling — the
+**maintainer review-thread gate**
+([`scripts/lib/maintainer-review-thread-gate.sh`](../../scripts/lib/maintainer-review-thread-gate.sh))
+— closes the *review* path, for the specific case that makes a dev-lead-authored
+PR different from any other PR: **dev-lead acts as the owner `don-petry`**
+(AGENTS.md "Agent identity & credential secrets"; #1316 set this on purpose). That
+shared identity removes *both* of the owner's mechanically-blocking review paths:
+
+1. **`CHANGES_REQUESTED` is unavailable** — GitHub refuses "Can not request changes
+   on your own pull request" when the owner reviews a PR authored by the owner
+   account.
+2. **The inline-thread fallback is defeated** — inline review threads normally block
+   via `required_review_thread_resolution`, but the agent (running as `don-petry`)
+   can *resolve the maintainer's own threads*. Observed on PR #1413: four maintainer
+   threads, all `resolvedBy: don-petry`, gate cleared, auto-merge enabled.
+
+This is [#860](https://github.com/petry-projects/.github-private/issues/860)
+normative rule 2 applied to review gates: **a gate whose reset is reachable by the
+agent is not a gate** (`docs/agentic-interaction-model.md` §7 rule 2, extended in
+§12 to review/merge gates).
+
+### Two coupled halves
+
+Because login cannot separate the agent from the maintainer here (both are
+`don-petry`), the fix keys on the **automation marker** in a thread's originating
+comment — the *same* discriminator this issue-comment gate uses — and has two
+coupled halves:
+
+- **The resolve-guard (dev-lead side).** `review_thread_is_agent_authored` classifies
+  a thread by its originating comment's marker. dev-lead's resolve call-site
+  (`resolve_actor_outdated_threads` in
+  [`scripts/dev-lead-fix-reviews.sh`](../../scripts/dev-lead-fix-reviews.sh)) and its
+  prompt ([`prompts/dev-lead/fix-reviews.md`](../../prompts/dev-lead/fix-reviews.md))
+  **skip** any marker-less thread — a maintainer finding — logging a visible
+  `::warning::` rather than silently resolving it. The agent may only resolve threads
+  carrying one of our markers (`<!-- pr-review-agent … -->`, `<!-- persona:… -->`,
+  `<!-- dev-lead … -->`, `<!-- dependency-advisory -->`).
+- **The approval gate (pr-review side).** `check_maintainer_review_threads` withholds
+  pr-review's automated approval while an **unresolved maintainer review thread
+  postdates the last push**, wired into
+  [`scripts/review-one-pr.sh`](../../scripts/review-one-pr.sh) right after the
+  issue-comment gate. Withholding the code-owner approval means the PR does not
+  auto-merge — the same approval-boundary lever the issue-comment gate pulls.
+
+The two halves are **coupled by design**: the gate treats a *resolved* maintainer
+thread as cleared (AC #4: "a human resolving the thread also clears it"), and that is
+safe **only because** the resolve-guard prevents the agent from resolving marker-less
+threads. Resolution therefore becomes a human-only signal — a reset the runaway
+cannot reach.
+
+### Clears the #1290 way, fails closed the #1290 way
+
+- **Addressed by a push.** A commit pushed at/after the finding (head commit
+  `pushedDate` ≥ the thread's originating `createdAt`) marks it addressed, so the
+  normal fix-then-continue flow is not deadlocked. `pushedDate` is a server-recorded
+  timestamp written by GitHub on receipt of the push — unlike `committer.date` (which
+  is commit metadata the author controls), it cannot be set to an arbitrary past or
+  future value. When `pushedDate` is unavailable, the gate fails closed (finding
+  treated as unresolved).
+- **Addressed by a human resolving the thread** (safe per the coupling above).
+- **Fails closed.** Undeterminable authorship, `createdAt`, or push-time → **block**
+  (return 1); a malformed threads snapshot → **fail the PR** (return 2 → exit 1). An
+  inability to confirm a finding was addressed must never read as "no findings".
+- **`FORCE_REVIEW` bypasses** — a human `@mention` *is* the human-in-the-loop the gate
+  exists to obtain, and the same comment that triggers a re-review would otherwise
+  deadlock the gate.
+
+Tests:
+[`tests/dev-lead/unit/test_maintainer_review_thread_gate.bats`](../../tests/dev-lead/unit/test_maintainer_review_thread_gate.bats),
+including a #1413 regression fixture
+([`tests/dev-lead/fixtures/review-threads/pr-1413-maintainer-threads.json`](../../tests/dev-lead/fixtures/review-threads/pr-1413-maintainer-threads.json))
+that reproduces the four marker-less `don-petry` threads and asserts the gate blocks
+and the classifier refuses to resolve each one.
+
 ## Interim workaround (still valid)
 
 Posting findings as **reviews with `CHANGES_REQUESTED`** (or inline review comments)

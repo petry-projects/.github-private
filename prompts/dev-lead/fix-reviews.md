@@ -56,7 +56,7 @@ For each open review thread:
 2. Understand the reviewer's concern
 3. Apply the appropriate fix using Edit/Write tools
 4. **Reply to the thread with the specific fix** — see below
-5. **Resolve the thread** — do this for every thread you fix *and* for every thread with `isOutdated: true` (the code it referenced no longer exists)
+5. **Resolve the thread according to the scope below** — never resolve a marker-less human thread, including one with `isOutdated: true` (outdated status never overrides marker ownership).
 
 #### Replying to a thread
 
@@ -81,12 +81,14 @@ After replying, resolve the thread using its `id` from the JSON above:
 gh api graphql -f query='mutation { resolveReviewThread(input: {threadId: "THREAD_NODE_ID"}) { thread { isResolved } } }'
 ```
 
-Resolve a thread when **you actually fixed it** (or it is `isOutdated: true`), per this scope:
+Resolve a thread when **you actually fixed it**, per this scope (outdated status never overrides marker ownership for human threads):
 
-- **Bot threads** (`comments.nodes[0].author.__typename` is `"Bot"` — the GitHub GraphQL API sets this for all bot accounts; note that GraphQL omits the `[bot]` suffix from `comments.nodes[0].author.login` for bots, so the login field alone is not a reliable bot indicator): resolve every one you fixed, **regardless of which reviewer triggered this run**. A thread you addressed must not be left open just because a different bot's comment triggered the run — that is what leaves fixed threads stuck open and blocks re-review.
-- **Human threads** (`comments.nodes[0].author.__typename` is `"User"`): resolve only when `comments.nodes[0].author.login` matches `${TRIGGERING_REVIEWER}`. For other human reviewers, post your fix reply but leave the thread open for them to resolve.
+- **Bot threads** (`comments.nodes[0].author.__typename` is `"Bot"` — the GitHub GraphQL API sets this for all bot accounts; note that GraphQL omits the `[bot]` suffix from `comments.nodes[0].author.login` for bots, so the login field alone is not a reliable bot indicator): resolve every one you fixed **and** every thread with `isOutdated: true`, **regardless of which reviewer triggered this run**. A thread you addressed must not be left open just because a different bot's comment triggered the run — that is what leaves fixed threads stuck open and blocks re-review.
+- **Human threads** (`comments.nodes[0].author.__typename` is `"User"`): **never resolve a maintainer's review thread.** You run as the owner account `don-petry` — the *same* account a human maintainer uses — so `comments.nodes[0].author.login` (even when it matches `${TRIGGERING_REVIEWER}`) **cannot** tell your own thread apart from the maintainer's. Discriminate by the **automation marker** in the thread's originating comment (`comments.nodes[0].body`) instead:
+  - If the originating comment carries one of **our** markers — `<!-- pr-review-agent … -->`, `<!-- persona:… -->`, `<!-- dev-lead … -->`, `<!-- dependency-advisory -->` — the thread is ours and you may resolve it once fixed.
+  - If it carries **no** marker, it is a **maintainer finding**: post your fix reply, **but leave the thread open** for the maintainer to resolve. Resolving it yourself would clear the maintainer's own review gate — exactly the PR #1413 defect this rule closes (#1415). If you cannot determine the marker, **treat it as a maintainer finding and leave it open** (fail closed).
 
-Never resolve a thread you did not fix (except `isOutdated: true` ones). Resolving signals the issue is handled and gives the reviewer a clean slate to re-review.
+Never resolve a thread you did not fix, except outdated bot threads. Never resolve a marker-less human thread — even when you fixed it, and even when it is `isOutdated: true` — reply and leave it for the maintainer to resolve. Resolving signals the issue is handled and gives the reviewer a clean slate to re-review.
 
 ### Phase 2 — Test Verification
 
@@ -132,7 +134,7 @@ Read every changed line as if you are the reviewer seeing the response:
 
 - Address each open thread individually
 - For every thread you fix, post a reply naming the specific change before resolving — never resolve silently
-- Resolve every bot thread you fix (regardless of which reviewer triggered this run) and outdated threads; for human threads, resolve only the triggering reviewer's and leave other humans' open (replied)
+- Resolve every bot thread you fix and every outdated bot thread (regardless of which reviewer triggered this run); for human threads, resolve **only** those whose originating comment carries one of our automation markers, and leave every marker-less (maintainer) thread open with a fix reply — never clear a maintainer's review gate, including when that thread is `isOutdated: true` (#1415)
 - Do not resolve threads you are skipping due to ambiguity — leave those open and note them in your output
 - Do not make changes beyond what the review threads request, except that fixing Tier-1 blockers (failure/timed_out/cancelled/action_required/stale/startup_failure CI checks and CHANGES_REQUESTED reviews) is always in-scope
 - Never revert or undo the PR's own committed changes to satisfy a neutral `COMMENTED`/overview review — that produces a net-zero diff that silently cancels the fix (#1340)
