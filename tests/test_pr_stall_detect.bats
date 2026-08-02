@@ -154,10 +154,11 @@ teardown() {
 }
 
 @test "the pr-automation-budget exhaustion marker alone does NOT gate stall detection" {
-  # The marker is an immutable audit record that can never be cleared; gating on
-  # it would permanently suppress detection for re-engaged PRs. Only the
-  # removable needs-human-review label (or STALL_HOLD_LABELS) suppresses detection.
-  run pr_stall_is_gated '[]' true
+  # The marker is an immutable audit record tracked outside of labels and is
+  # intentionally excluded from pr_stall_is_gated, which only inspects labels_json.
+  # An empty label set (representing a PR with only the exhaustion marker and no
+  # hold labels) must not gate stall detection.
+  run pr_stall_is_gated '[]'
   [ "$status" -ne 0 ]
 }
 
