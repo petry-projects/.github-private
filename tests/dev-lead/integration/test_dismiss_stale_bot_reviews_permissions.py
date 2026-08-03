@@ -53,7 +53,39 @@ def main() -> int:
         )
         return 1
 
+    # Validate the dismiss job's scoped permissions contract.
+    jobs = doc.get("jobs", {})
+    if "dismiss" not in jobs:
+        print(f"FAIL: {WORKFLOW} is missing the expected 'dismiss' job.")
+        return 1
+
+    dismiss_job = jobs["dismiss"]
+    job_perms = dismiss_job.get("permissions")
+    if not isinstance(job_perms, dict):
+        print(
+            f"FAIL: {WORKFLOW} 'dismiss' job is missing a 'permissions:' block.\n"
+            "  The job must declare `pull-requests: write` to dismiss PR reviews."
+        )
+        return 1
+
+    if job_perms.get("pull-requests") != "write":
+        print(
+            f"FAIL: {WORKFLOW} 'dismiss' job must set 'pull-requests: write'.\n"
+            f"  Got: {job_perms!r}"
+        )
+        return 1
+
+    allowed_keys = {"pull-requests"}
+    extra = set(job_perms.keys()) - allowed_keys
+    if extra:
+        print(
+            f"FAIL: {WORKFLOW} 'dismiss' job has unexpected extra permissions: {sorted(extra)}.\n"
+            "  Least-privilege policy requires only 'pull-requests: write' on this job."
+        )
+        return 1
+
     print(f"PASS: {WORKFLOW} has a top-level 'permissions: {{}}' declaration.")
+    print("PASS: 'dismiss' job declares exactly 'pull-requests: write' (least-privilege).")
     return 0
 
 
