@@ -30,6 +30,21 @@ setup() {
     {"conclusion":"success","created_at":"2026-06-11T00:00:00Z"},
     {"conclusion":"success","created_at":"2026-06-11T06:00:00Z"}
   ]'
+
+  # Open-PR set for merge-state (BEHIND/DIRTY) observability:
+  #   2 BEHIND (non-draft, human-authored) — counted
+  #   1 DIRTY  (non-draft, human-authored) — counted
+  #   1 CLEAN  (non-draft, human-authored) — ignored (not BEHIND/DIRTY)
+  #   1 BEHIND but DRAFT                    — excluded
+  #   1 DIRTY  but Dependabot-authored      — excluded
+  PRS_JSON='[
+    {"number":1,"mergeStateStatus":"BEHIND","isDraft":false,"author":{"login":"don-petry"}},
+    {"number":2,"mergeStateStatus":"BEHIND","isDraft":false,"author":{"login":"alice"}},
+    {"number":3,"mergeStateStatus":"DIRTY","isDraft":false,"author":{"login":"bob"}},
+    {"number":4,"mergeStateStatus":"CLEAN","isDraft":false,"author":{"login":"carol"}},
+    {"number":5,"mergeStateStatus":"BEHIND","isDraft":true,"author":{"login":"dave"}},
+    {"number":6,"mergeStateStatus":"DIRTY","isDraft":false,"author":{"login":"dependabot[bot]"}}
+  ]'
 }
 
 # ---------------------------------------------------------------------------
@@ -78,6 +93,46 @@ setup() {
 @test "summarize_runs: empty telemetry yields all zeros" {
   run summarize_runs "[]"
   [ "$output" = "$(printf '0\t0\t0')" ]
+}
+
+# ---------------------------------------------------------------------------
+# summarize_merge_states — BEHIND / DIRTY over open non-draft non-Dependabot PRs
+# ---------------------------------------------------------------------------
+
+@test "summarize_merge_states: counts BEHIND and DIRTY over eligible PRs" {
+  run summarize_merge_states "$PRS_JSON"
+  [ "$status" -eq 0 ]
+  # TSV: behind<TAB>dirty — 2 BEHIND, 1 DIRTY (draft + dependabot excluded)
+  [ "$output" = "$(printf '2\t1')" ]
+}
+
+@test "summarize_merge_states: excludes draft PRs" {
+  run summarize_merge_states '[
+    {"mergeStateStatus":"BEHIND","isDraft":true,"author":{"login":"alice"}}
+  ]'
+  [ "$output" = "$(printf '0\t0')" ]
+}
+
+@test "summarize_merge_states: excludes Dependabot-authored PRs" {
+  run summarize_merge_states '[
+    {"mergeStateStatus":"DIRTY","isDraft":false,"author":{"login":"dependabot[bot]"}}
+  ]'
+  [ "$output" = "$(printf '0\t0')" ]
+}
+
+@test "summarize_merge_states: empty/absent JSON returns zeros (no error)" {
+  run summarize_merge_states ""
+  [ "$status" -eq 0 ]
+  [ "$output" = "$(printf '0\t0')" ]
+}
+
+@test "summarize_merge_states: handles null or missing author safely" {
+  run summarize_merge_states '[
+    {"mergeStateStatus":"BEHIND","isDraft":false,"author":null},
+    {"mergeStateStatus":"DIRTY","isDraft":false}
+  ]'
+  [ "$status" -eq 0 ]
+  [ "$output" = "$(printf '1\t1')" ]
 }
 
 # ---------------------------------------------------------------------------
@@ -137,4 +192,31 @@ setup() {
   run render_report "[]" "[]" 7 0 2026-06-15
   [ "$status" -eq 0 ]
   [[ "$output" == *"n/a"* ]]
+}
+
+@test "render_report: surfaces BEHIND/DIRTY merge-state observability section" {
+  run render_report "$COMMENTS_JSON" "$RUNS_JSON" 7 3 2026-06-15 "$PRS_JSON"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"merge-state"* ]]
+  [[ "$output" == *"BEHIND"* ]]
+  [[ "$output" == *"DIRTY"* ]]
+}
+
+@test "render_report: absent PR JSON renders merge-state counts as zero" {
+  run render_report "$COMMENTS_JSON" "$RUNS_JSON" 7 0 2026-06-15
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"BEHIND"* ]]
+}
+
+@test "render_report: truncation flag renders capped-count warning in merge-state section" {
+  run render_report "$COMMENTS_JSON" "$RUNS_JSON" 7 3 2026-06-15 "$PRS_JSON" true 1000
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"PR list capped at 1000"* ]]
+  [[ "$output" == *"undercount"* ]]
+}
+
+@test "render_report: no truncation flag suppresses capped-count warning" {
+  run render_report "$COMMENTS_JSON" "$RUNS_JSON" 7 3 2026-06-15 "$PRS_JSON" false 1000
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"PR list capped"* ]]
 }
