@@ -21,6 +21,13 @@
 #      logged in this repo (the update-branch calls live in the central reusable),
 #      so the re-run volume is an ESTIMATE: runs × current open non-Dependabot PRs.
 #
+#   3. Fleet merge-state observability (AC7, #1440) — a snapshot of how many open
+#      non-draft, non-Dependabot PRs are currently `mergeStateStatus: BEHIND` vs
+#      DIRTY. This makes the effectiveness of the AC1/AC2 auto-rebase fixes
+#      (petry-projects/.github#926) measurable per run without another manual
+#      audit. Repo-scoped — fleet-wide would need a cross-repo PAT this report
+#      does not carry.
+#
 # Layout (mirrors scripts/token_report.sh):
 #   * The count_*/summarize_*/fmt_*/render_report functions are PURE — they take
 #     JSON / scalars and write to stdout. Unit-tested in tests/auto_rebase_health.bats.
@@ -78,6 +85,29 @@ summarize_sentinels() {
       ] | @tsv'
 }
 
+# summarize_merge_states <prs_json>
+# Emits TSV: behind<TAB>dirty — counts of open PRs whose GitHub `mergeStateStatus`
+# is BEHIND (head is behind base; needs an auto-rebase update) vs DIRTY (merge
+# conflict; needs human/agent resolution), over the subset of PRs that are
+# non-draft AND non-Dependabot-authored. This is the AC7 observability metric
+# (#1440): it makes the effectiveness of the AC1/AC2 fixes measurable per run.
+# Input JSON is an array of {mergeStateStatus, isDraft, author:{login}} objects
+# (as returned by `gh pr list --json mergeStateStatus,isDraft,author`).
+# Absent/empty JSON → "0\t0".
+summarize_merge_states() {
+  local json="${1:-}"
+  [ -n "$json" ] || json='[]'
+  printf '%s' "$json" | jq -r '
+    [ .[]
+      | select((.isDraft // false) | not)
+      | select(((.author.login // "") | test("dependabot"; "i")) | not)
+    ] as $prs |
+    [
+      ([$prs[] | select(.mergeStateStatus == "BEHIND")] | length),
+      ([$prs[] | select(.mergeStateStatus == "DIRTY")]  | length)
+    ] | @tsv'
+}
+
 # summarize_runs <runs_json>
 # Emits TSV: total<TAB>success<TAB>failed over the auto-rebase run telemetry.
 summarize_runs() {
@@ -110,11 +140,11 @@ fmt_rate() {
   echo "$(( num * 100 / denom ))%"
 }
 
-# render_report <comments_json> <runs_json> <lookback_days> <behind_prs> [today]
+# render_report <comments_json> <runs_json> <lookback_days> <behind_prs> [today] [prs_json]
 # Writes the full Markdown report to stdout. Pure: no network.
 render_report() {
   local comments_json="${1:-[]}" runs_json="${2:-[]}"
-  local lookback="${3:-7}" behind="${4:-0}" today="${5:-}"
+  local lookback="${3:-7}" behind="${4:-0}" today="${5:-}" prs_json="${6:-[]}"
   [ -n "$today" ] || today="$(date -u +%Y-%m-%d)"
 
   local sentinels responses applied
@@ -122,6 +152,9 @@ render_report() {
 
   local total success failed
   IFS=$'\t' read -r total success failed < <(summarize_runs "$runs_json")
+
+  local ms_behind ms_dirty
+  IFS=$'\t' read -r ms_behind ms_dirty < <(summarize_merge_states "$prs_json")
 
   local fanout
   fanout="$(estimate_fanout "$total" "$behind")"
@@ -148,7 +181,14 @@ render_report() {
   printf -- '- **Per-day baseline**: %s auto-rebase run(s)/day · ~%s CI re-run(s)/day\n\n' \
     "$runs_per_day" "$rerun_per_day"
   printf '> Fan-out is an **estimate** — per-run behind-PR counts are not logged in this repo, '
-  printf 'so re-runs = runs × current open non-Dependabot PR count.\n'
+  printf 'so re-runs = runs × current open non-Dependabot PR count.\n\n'
+
+  printf '## Fleet merge-state observability (AC7)\n\n'
+  printf -- '- **BEHIND** (open non-draft non-Dependabot PRs `mergeStateStatus: BEHIND`): %s\n' "$ms_behind"
+  printf -- '- **DIRTY** (open non-draft non-Dependabot PRs `mergeStateStatus: DIRTY`): %s\n\n' "$ms_dirty"
+  printf '> Snapshot of the current open-PR queue, scoped to **`%s`** — fleet-wide counts would '  "$WORKFLOW_REPO"
+  printf 'require a cross-repo PAT this report does not carry. Tracks the effectiveness of the '
+  printf 'AC1/AC2 auto-rebase fixes (petry-projects/.github#926) without a manual audit.\n'
 }
 
 # ---------------------------------------------------------------------------
@@ -196,15 +236,23 @@ main() {
     --paginate --jq '.workflow_runs | map({conclusion, created_at})' 2>/dev/null \
     | jq -s 'add // []' 2>/dev/null || echo '[]')"
 
-  # 3. Behind-PR multiplier — open non-Dependabot PRs (proxy for branches the
-  #    fan-out updates). Best-effort; defaults to 0 so the report still renders.
+  # 3. Open-PR snapshot — pulled once with the fields both the behind-PR
+  #    multiplier and the AC7 merge-state (BEHIND/DIRTY) metric need. Best-effort;
+  #    defaults to [] so the report still renders when the query fails.
+  local prs_json
+  prs_json="$(gh pr list --repo "$WORKFLOW_REPO" --state open --limit 200 \
+    --json author,isDraft,mergeStateStatus 2>/dev/null || echo '[]')"
+  [ -n "$prs_json" ] || prs_json='[]'
+
+  # Behind-PR multiplier — open non-Dependabot PRs (proxy for branches the
+  # fan-out updates), derived from the same snapshot.
   local behind
-  behind="$(gh pr list --repo "$WORKFLOW_REPO" --state open --limit 200 --json author \
-    --jq '[.[] | select((.author?.login // "") | test("dependabot"; "i") | not)] | length' \
+  behind="$(printf '%s' "$prs_json" \
+    | jq '[.[] | select((.author?.login // "") | test("dependabot"; "i") | not)] | length' \
     2>/dev/null || echo 0)"
 
   local report
-  report="$(render_report "$comments_json" "$runs_json" "$LOOKBACK_DAYS" "$behind" "$today")"
+  report="$(render_report "$comments_json" "$runs_json" "$LOOKBACK_DAYS" "$behind" "$today" "$prs_json")"
 
   printf '%s\n' "$report"
   if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
