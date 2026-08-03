@@ -364,13 +364,25 @@ EOF
 # child lines; its immediately-preceding comment line(s) are discarded with it.
 _dependabot_scope_out_actions() {
   awk '
-    /^[[:space:]]*#/ { pending = pending $0 ORS; next }
+    /^[[:space:]]*#/ {
+      match($0, /^[[:space:]]*/)
+      if (drop && RLENGTH < drop_indent) { drop = 0 }
+      pending = pending $0 ORS; next
+    }
     /^[[:space:]]*-[[:space:]]+package-ecosystem:/ {
+      match($0, /^[[:space:]]*/)
+      drop_indent = RLENGTH
       if ($0 ~ /github-actions/) { drop = 1; pending = "" }
       else { drop = 0; printf "%s", pending; pending = ""; print }
       next
     }
-    { if (!drop) { printf "%s", pending; print } pending = "" }
+    {
+      match($0, /^[[:space:]]*/)
+      if (drop && RLENGTH < drop_indent) { drop = 0 }
+      if (!drop) { printf "%s", pending; print }
+      pending = ""
+    }
+    END { if (!drop) printf "%s", pending }
   '
 }
 

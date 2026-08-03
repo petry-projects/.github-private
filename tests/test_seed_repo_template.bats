@@ -450,6 +450,31 @@ EOF
   [ "$out" = "$in" ]
 }
 
+@test "scope-out: keeps subsequent top-level keys after a dropped block (#1435)" {
+  source "$SEED"
+  out="$(printf '%s\n' \
+    'updates:' \
+    '  - package-ecosystem: github-actions' \
+    '    directory: "/"' \
+    'registries:' \
+    '  some-registry:' \
+    '    type: docker-registry' \
+    | _dependabot_scope_out_actions)"
+  [[ "$out" != *"github-actions"* ]]
+  [[ "$out" == *"registries:"* ]]
+  [[ "$out" == *"some-registry:"* ]]
+}
+
+@test "scope-out: preserves trailing comments at the end of the file (#1435)" {
+  source "$SEED"
+  out="$(printf '%s\n' \
+    'updates:' \
+    '  - package-ecosystem: npm' \
+    '# trailing comment' \
+    | _dependabot_scope_out_actions)"
+  [[ "$out" == *"# trailing comment"* ]]
+}
+
 @test "baseline: emitted dependabot.yml ships with github-actions scoped out (#1435)" {
   cat > "$STANDARDS_DIR/standards/dependabot/frontend.yml" <<'EOF'
 version: 2
