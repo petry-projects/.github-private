@@ -719,6 +719,205 @@ GHEOF
   rm -f "$comment_sentinel" 2>/dev/null || true
 }
 
+# ── durable completion claim (#1445) ──────────────────────────────────────────
+
+@test "fix-issue: durable completion claim posted after PR create, with pr= and sha= (AC #1,#2)" {
+  # A trustworthy completion record is posted only AFTER the work is durable
+  # (commits pushed + PR open) and must reference a verifiable artifact.
+  cat > "$STUB_BIN_DIR/dev-lead-lint.sh" <<'LINTEOF'
+#!/usr/bin/env bash
+echo "  [lint] all checks passed (stub)"
+exit 0
+LINTEOF
+  chmod +x "$STUB_BIN_DIR/dev-lead-lint.sh"
+
+  cat > "$STUB_BIN_DIR/git" <<'GITEOF'
+#!/usr/bin/env bash
+case "$*" in
+  "status --porcelain") echo "M scripts/foo.sh" ;;
+  "rev-parse HEAD")     echo "deadbeef1234" ;;
+  *)                    exit 0 ;;
+esac
+GITEOF
+  chmod +x "$STUB_BIN_DIR/git"
+
+  COMMENT_FILE="$STUB_BIN_DIR/comment_record"
+
+  cat > "$STUB_BIN_DIR/gh" <<GHEOF
+#!/usr/bin/env bash
+cmd="\$1"; shift || true
+case "\$cmd" in
+  pr)
+    case "\$*" in
+      create*) echo "https://github.com/petry-projects/.github-private/pull/42" ;;
+      *)       exit 0 ;;
+    esac ;;
+  label) exit 0 ;;
+  api)
+    case "\$*" in
+      *"pulls?state=open"*) echo "0" ;;
+      *comments*)           echo "[]" ;;
+      *"users/"*)           echo '{"id":12345}' ;;
+      *"issues/"*)          echo '{"title":"Test","body":"body"}' ;;
+      *)                    echo "{}" ;;
+    esac ;;
+  issue)
+    sub="\$1"; shift || true
+    case "\$sub" in
+      comment)
+        body=""
+        while [ \$# -gt 0 ]; do
+          if [ "\$1" = "--body" ]; then body="\$2"; shift 2; continue; fi
+          shift
+        done
+        printf '%s\n----8<----\n' "\$body" >> "$COMMENT_FILE"
+        exit 0 ;;
+      *) exit 0 ;;
+    esac ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+
+  export DEV_LEAD_DRY_RUN="false"
+  export LINT_SCRIPT="$STUB_BIN_DIR/dev-lead-lint.sh"
+  export GITHUB_RUN_ID="99"
+
+  run bash "$FIX_ISSUE_SCRIPT"
+
+  [ "$status" -eq 0 ]
+  local posted; posted=$(cat "$COMMENT_FILE")
+  # Durable, machine-readable completion marker referencing PR number + head SHA
+  [[ "$posted" == *"<!-- dev-lead-issue 100 status=completed pr=42 sha=deadbeef1234 run=99 -->"* ]]
+  # Human-readable record links the verifiable artifact
+  [[ "$posted" == *"pull/42"* ]]
+  [[ "$posted" == *"deadbeef1234"* ]]
+}
+
+# ── retraction on terminal failure (#1445, AC #3) ─────────────────────────────
+
+@test "fix-issue: on timeout, a prior standing completion claim is retracted in place (AC #3)" {
+  cat > "$STUB_BIN_DIR/claude" <<'STUB'
+#!/usr/bin/env bash
+echo "operation timed out after 2100s"
+exit 124
+STUB
+  chmod +x "$STUB_BIN_DIR/claude"
+  cat > "$STUB_BIN_DIR/curl" <<'CURLEOF'
+#!/usr/bin/env bash
+exit 0
+CURLEOF
+  chmod +x "$STUB_BIN_DIR/curl"
+  cat > "$STUB_BIN_DIR/git" <<'GITEOF'
+#!/usr/bin/env bash
+case "$*" in
+  "config"*)         exit 0 ;;
+  "checkout -b"*)    exit 0 ;;
+  "rev-parse HEAD")  echo "abc123deadbeef" ;;
+  *)                 exit 0 ;;
+esac
+GITEOF
+  chmod +x "$STUB_BIN_DIR/git"
+
+  unset GEMINI_API_KEY GOOGLE_API_KEY
+  export COPILOT_GITHUB_TOKEN="ghp_stub"
+  export ACTION_TIMEOUT_SEC=2100
+  export DEV_LEAD_DRY_RUN="false"
+
+  RETRACT_FILE="$STUB_BIN_DIR/retract_record"
+  # A prior "## Completed" claim stands on the issue (comment id 555).
+  PRIOR='[{"id":555,"body":"## Completed — event-first resume\n726/726 pass"}]'
+
+  cat > "$STUB_BIN_DIR/gh" <<GHEOF
+#!/usr/bin/env bash
+cmd="\$1"; shift || true
+case "\$cmd" in
+  copilot) echo "rate limit exceeded"; exit 1 ;;
+  label)   exit 0 ;;
+  api)
+    case "\$*" in
+      *"-X PATCH"*"comments/"*) printf '%s\n' "\$*" >> "$RETRACT_FILE"; echo "{}" ;;
+      *"pulls?state=open"*)     echo "0" ;;
+      *comments*)               printf '%s' '${PRIOR}' ;;
+      *"users/"*)               echo '{"id":12345}' ;;
+      *"issues/"*)              echo '{"title":"Test","body":"body"}' ;;
+      *)                        echo "{}" ;;
+    esac ;;
+  issue) exit 0 ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+
+  run bash "$FIX_ISSUE_SCRIPT"
+
+  [ "$status" -eq 1 ]
+  # Retraction fired: a PATCH targeted the standing claim's comment id.
+  [ -f "$RETRACT_FILE" ]
+  grep -q "comments/555" "$RETRACT_FILE"
+  grep -q "PATCH" "$RETRACT_FILE"
+}
+
+@test "fix-issue: a retryable failure does NOT retract (only terminal failures do)" {
+  # engine-error, attempt 1 → retry path, which is NOT terminal: the work may
+  # still land on retry, so a standing claim must be left alone.
+  cat > "$STUB_BIN_DIR/claude" <<'STUB'
+#!/usr/bin/env bash
+echo "boom: transient engine error"
+exit 1
+STUB
+  chmod +x "$STUB_BIN_DIR/claude"
+  cat > "$STUB_BIN_DIR/curl" <<'CURLEOF'
+#!/usr/bin/env bash
+exit 0
+CURLEOF
+  chmod +x "$STUB_BIN_DIR/curl"
+  cat > "$STUB_BIN_DIR/git" <<'GITEOF'
+#!/usr/bin/env bash
+case "$*" in
+  "config"*)         exit 0 ;;
+  "checkout -b"*)    exit 0 ;;
+  "rev-parse HEAD")  echo "abc123deadbeef" ;;
+  *)                 exit 0 ;;
+esac
+GITEOF
+  chmod +x "$STUB_BIN_DIR/git"
+
+  export COPILOT_GITHUB_TOKEN="stub-token"
+  export DEV_LEAD_DRY_RUN="false"
+
+  RETRACT_FILE="$STUB_BIN_DIR/retract_record"
+  PRIOR='[{"id":555,"body":"## Completed — old claim"}]'
+
+  cat > "$STUB_BIN_DIR/gh" <<GHEOF
+#!/usr/bin/env bash
+cmd="\$1"; shift || true
+case "\$cmd" in
+  copilot) echo "rate limit exceeded"; exit 1 ;;
+  label)   exit 0 ;;
+  api)
+    case "\$*" in
+      *"-X PATCH"*"comments/"*) printf '%s\n' "\$*" >> "$RETRACT_FILE"; echo "{}" ;;
+      *"pulls?state=open"*)     echo "0" ;;
+      *comments*)               printf '%s' '${PRIOR}' ;;
+      *"users/"*)               echo '{"id":12345}' ;;
+      *"issues/"*)              echo '{"title":"Test","body":"body"}' ;;
+      *)                        echo "{}" ;;
+    esac ;;
+  issue) exit 0 ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+
+  run bash "$FIX_ISSUE_SCRIPT"
+
+  # Retry path (rate-limited copilot + engine-error claude → exit 1 or 2), not terminal
+  [ "$status" -ne 0 ]
+  # No retraction on a non-terminal failure
+  [ ! -f "$RETRACT_FILE" ]
+}
+
 @test "fix-issue: opened PR is labeled auto-rebase:ready (breaks #711 review-ready deadlock)" {
   # Lint passes
   cat > "$STUB_BIN_DIR/dev-lead-lint.sh" <<'LINTEOF'

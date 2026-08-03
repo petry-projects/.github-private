@@ -133,33 +133,46 @@ Perform a self-review of all changes as if you are a code reviewer seeing this f
 
 ---
 
-### Phase 6 — Report
+### Phase 6 — Report (PROVISIONAL — pre-push)
 
-Post a completion summary as a comment on Issue #${ISSUE_NUMBER}:
+> **Your work is not durable yet.** You commit nothing and push nothing — the automation commits, pushes, and opens the PR *after* you finish, then posts the single authoritative **"## Dev-Lead: Implementation Complete"** record referencing the **PR number + head commit SHA** (the verifiable artifacts). Until that push happens, your workspace can still be discarded (e.g. a later stage times out), so **any completion claim you post now could evaporate** — exactly the #1445 defect where a detailed "726/726 pass" claim was published, the run timed out, and nothing landed on `main`.
 
-```bash
+Therefore, if you post a status comment in this phase, it must be **explicitly provisional**. It must **NOT**:
+
+- use a "Completed" / "Implementation Complete" heading, or check off acceptance criteria as done;
+- present test tallies as *results* (e.g. "726/726 pass") — a tally from this pre-push workspace is **not** evidence, because it was not produced by the run that pushed the work (#1445 AC #4);
+- claim a per-file change table as delivered.
+
+Post it as an **in-progress note** instead — no AC checkmarks, no result tallies, and a clear statement that the durable record follows the push:
+
+````bash
 # Use --body-file to safely handle test output and file paths that may contain special characters
 REPORT_FILE="$(mktemp /tmp/dev-lead-report.XXXXXX.md)"
 cat > "$REPORT_FILE" << 'REPORT'
-## Dev-Lead: Implementation Complete
+## Dev-Lead: Progress (in progress — not yet durable)
 
-### Plan Execution
-- [x] <completed step>
-- [x] <completed step>
+> Provisional. Nothing is pushed yet; the automation posts the authoritative
+> completion record (with PR number + head SHA) after the push. Treat the notes
+> below as intent, not delivered results.
 
-### Test Results
+### Plan Execution (intended)
+- <step being worked / just done in this workspace>
+
+### Local check output (provisional — not the pushed run)
 ```
-<paste full test output — trim to last 50 lines if long>
+<paste local test output if useful — labelled provisional, NOT presented as final results>
 ```
 
-### Files Changed
+### Files touched (this workspace, not yet pushed)
 - `<file>`: <description of change>
 
 ### Notes
-<edge cases handled, known limitations, follow-up issues to open, or 'none'>
+<edge cases, known limitations, follow-ups, or 'none'>
 REPORT
 gh issue comment "${ISSUE_NUMBER}" --repo "${REPO}" --body-file "$REPORT_FILE"
-```
+````
+
+If you have nothing provisional to add, you may skip posting in this phase entirely — the automation's post-push record is the one that matters.
 
 ---
 
