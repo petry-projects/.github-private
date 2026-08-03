@@ -1,0 +1,35 @@
+{
+  "_test_expected_intent": "skip",
+  "_test_note": "Reviewer-trust gate fail-closed case (#1417, AC #4): PR author held at OWNER, human reviewer with NO .review.author_association field. A missing/unparseable reviewer association must be treated as untrusted → skip untrusted-reviewer, never as trusted.",
+  "action": "submitted",
+  "review": {
+    "id": 5004,
+    "state": "CHANGES_REQUESTED",
+    "body": "Missing association on this review.",
+    "user": {
+      "login": "unknown-reviewer",
+      "type": "User"
+    }
+  },
+  "pull_request": {
+    "number": 1417,
+    "title": "fix: reviewer-trust gate",
+    "state": "open",
+    "author_association": "OWNER",
+    "user": {
+      "login": "donpetry-bot",
+      "type": "Bot"
+    },
+    "head": {
+      "sha": "aaa111bbb222",
+      "ref": "dev-lead/issue-1417-20260802-0956",
+      "repo": { "full_name": "petry-projects/.github-private" }
+    },
+    "base": {
+      "ref": "main",
+      "repo": { "full_name": "petry-projects/.github-private" }
+    }
+  },
+  "repository": { "full_name": "petry-projects/.github-private" },
+  "sender": { "login": "unknown-reviewer", "type": "User" }
+}

@@ -1,0 +1,36 @@
+{
+  "_test_expected_intent": "fix-reviews",
+  "_test_note": "Reviewer-trust gate (#1417): PR author held at OWNER, reviewer is a trusted bot whose review association is NONE. The bot path keys on the reviewer login, not the association, so it still routes fix-reviews — no regression from the association fix.",
+  "action": "submitted",
+  "review": {
+    "id": 5003,
+    "state": "CHANGES_REQUESTED",
+    "body": "Several issues need to be addressed.",
+    "author_association": "NONE",
+    "user": {
+      "login": "gemini-code-assist[bot]",
+      "type": "Bot"
+    }
+  },
+  "pull_request": {
+    "number": 1417,
+    "title": "fix: reviewer-trust gate",
+    "state": "open",
+    "author_association": "OWNER",
+    "user": {
+      "login": "donpetry-bot",
+      "type": "Bot"
+    },
+    "head": {
+      "sha": "aaa111bbb222",
+      "ref": "dev-lead/issue-1417-20260802-0956",
+      "repo": { "full_name": "petry-projects/.github-private" }
+    },
+    "base": {
+      "ref": "main",
+      "repo": { "full_name": "petry-projects/.github-private" }
+    }
+  },
+  "repository": { "full_name": "petry-projects/.github-private" },
+  "sender": { "login": "gemini-code-assist[bot]", "type": "Bot" }
+}
