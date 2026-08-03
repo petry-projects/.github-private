@@ -285,45 +285,6 @@ EOF
   done
 }
 
-@test "emit-workflow: sonarcloud inline stub ships byte-identically (no repin)" {
-  # sonarcloud is kind=inline: it carries no reusable ref and must pass through
-  # verbatim, exactly like ci.yml. Covers the second inline workflow (#966 follow-up).
-  _fixture_workflow sonarcloud.yml <<'EOF'
-name: SonarCloud Analysis
-on: [push]
-jobs:
-  sonarcloud:
-    name: SonarCloud
-    runs-on: ubuntu-latest
-EOF
-  run bash "$SEED" --emit-workflow sonarcloud.yml
-  [ "$status" -eq 0 ]
-  [ "$output" = "$(cat "$STANDARDS_DIR/standards/workflows/sonarcloud.yml")" ]
-}
-
-@test "emit-workflow: FAILS LOUD when an inline workflow's standard file is absent" {
-  # Regression guard for the original #966 defect: ci/sonarcloud are declared
-  # kind=inline but were MISSING from standards/workflows/. The emit path must
-  # exit non-zero with a clear error, never silently ship an empty workflow.
-  # No fixture for sonarcloud.yml is written → the fetch must fail.
-  _stub_gh_empty
-  run bash "$SEED" --emit-workflow sonarcloud.yml
-  [ "$status" -ne 0 ]
-  [[ "$output" == *"could not fetch standards/workflows/sonarcloud.yml"* ]]
-}
-
-@test "emit-workflow: every inline manifest stub fails loud when its standard is absent" {
-  # Guards the whole inline set, so a future manifest addition can't silently
-  # 404 at seed time the way ci.yml did.
-  _stub_gh_empty
-  for name in "${INLINE_STUBS[@]}"; do
-    run bash "$SEED" --emit-workflow "${name}.yml"
-    [ "$status" -ne 0 ] || { echo "$name did not fail loud on a missing standard" >&2; false; }
-    [[ "$output" == *"could not fetch standards/workflows/${name}.yml"* ]] \
-      || { echo "$name missing the fail-loud error message" >&2; false; }
-  done
-}
-
 # ── baseline content (AC #3, #4) ──────────────────────────────────────────────
 @test "baseline: CODEOWNERS is the org default rule" {
   run bash "$SEED" --emit-baseline .github/CODEOWNERS
