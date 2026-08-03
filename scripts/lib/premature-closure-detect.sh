@@ -120,6 +120,26 @@ minutes_between() {
   echo $(( diff / 60 ))
 }
 
+# _pc_render_candidate_table <tsv_file>
+#   Shared helper: render a markdown "| Issue | Title | Why flagged |" table
+#   from a TSV file (columns: issue_number, html_url, title, reason). Called by
+#   both generate_premature_closure_report and generate_unbacked_claim_report
+#   after each prints its own header and all-clear handling.
+_pc_render_candidate_table() {
+  local f="${1:-}"
+  printf '| Issue | Title | Why flagged |\n'
+  printf '|---|---|---|\n'
+  local num url title reason
+  while IFS=$'\t' read -r num url title reason; do
+    [ -n "$num" ] || continue
+    title=${title//$'|'/'\|'}
+    title=${title//$'\n'/ }
+    reason=${reason//$'|'/'\|'}
+    reason=${reason//$'\n'/ }
+    printf '| [#%s](%s) | %s | %s |\n' "$num" "$url" "$title" "$reason"
+  done < "$f"
+}
+
 # generate_premature_closure_report <candidates_tsv_file>
 #   Render the "Premature-Closure Candidates" markdown section for the audit
 #   report. Input TSV rows: issue_number <TAB> html_url <TAB> title <TAB> reason.
@@ -140,17 +160,7 @@ generate_premature_closure_report() {
     return 0
   fi
 
-  printf '| Issue | Title | Why flagged |\n'
-  printf '|---|---|---|\n'
-  local num url title reason
-  while IFS=$'\t' read -r num url title reason; do
-    [ -n "$num" ] || continue
-    title=${title//$'|'/'\|'}
-    title=${title//$'\n'/ }
-    reason=${reason//$'|'/'\|'}
-    reason=${reason//$'\n'/ }
-    printf '| [#%s](%s) | %s | %s |\n' "$num" "$url" "$title" "$reason"
-  done < "$f"
+  _pc_render_candidate_table "$f"
 }
 
 # ---------------------------------------------------------------------------
@@ -271,15 +281,5 @@ generate_unbacked_claim_report() {
     return 0
   fi
 
-  printf '| Issue | Title | Why flagged |\n'
-  printf '|---|---|---|\n'
-  local num url title reason
-  while IFS=$'\t' read -r num url title reason; do
-    [ -n "$num" ] || continue
-    title=${title//$'|'/'\|'}
-    title=${title//$'\n'/ }
-    reason=${reason//$'|'/'\|'}
-    reason=${reason//$'\n'/ }
-    printf '| [#%s](%s) | %s | %s |\n' "$num" "$url" "$title" "$reason"
-  done < "$f"
+  _pc_render_candidate_table "$f"
 }

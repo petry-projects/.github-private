@@ -96,13 +96,14 @@ has_merged_closing_pr() {
   esac
 }
 
-# has_linked_pr <issue_number> — echo "true" when the issue has ANY linked pull
-# request (open OR merged) or was closed by a commit, "false" when we can confirm
+# has_linked_pr <issue_number> — echo "true" when the issue has a durable
+# closing/fixed-by PR link or was closed by a commit, "false" when we can confirm
 # none, "unknown" when the timeline could not be read. For the OPEN-issue unbacked-
-# claim scan (#1445), *any* linked PR is a legitimate backing artifact — an in-
-# flight dev-lead PR is exactly what a durable claim points at — so unlike the
-# closed-issue path this does NOT require the PR to be merged (that would
-# false-positive on every healthy open PR). Callers treat "unknown" as fail-safe.
+# claim scan (#1445) we require a `connected` timeline event (the specific signal
+# GitHub emits when a PR carries "Closes/Fixes #N" keywords and is linked to close
+# the issue) rather than any `cross-referenced` event, which fires for any incidental
+# mention. Generic cross-references are not a durable backing signal; a `connected`
+# event is. Callers treat "unknown" as fail-safe.
 has_linked_pr() {
   local number="$1" timeline linked
   timeline=$(gh api --paginate "repos/${REPO}/issues/${number}/timeline" \
@@ -113,7 +114,7 @@ has_linked_pr() {
     [ .[] | .[]? |
       ( (.event == "closed") and (.commit_id != null) )
       or
-      ( (.source?.issue?.pull_request) != null )
+      ( .event == "connected" )
     ] | any' <<< "$timeline" 2>/dev/null) || { echo "unknown"; return 0; }
 
   case "$linked" in
@@ -136,8 +137,11 @@ issue_has_unretracted_completion_claim() {
   while IFS= read -r enc; do
     [ -n "$enc" ] || continue
     body=$(printf '%s' "$enc" | base64 -d 2>/dev/null) || continue
-    claim_is_retracted "$body" && continue
-    if body_has_completion_claim "$body"; then state="claim"; break; fi
+    # Process every comment in API order so a later retraction overrides an
+    # earlier claim. A retracted body clears any prior claim state; a
+    # non-retracted completion-claim body sets it. The last relevant comment wins.
+    if claim_is_retracted "$body"; then state="none"; continue; fi
+    if body_has_completion_claim "$body"; then state="claim"; fi
   done <<< "$raw"
   echo "$state"
 }
@@ -203,7 +207,7 @@ apply_open_action() {
   ensure_needs_human_label
   gh issue edit "$number" --repo "$REPO" --add-label "$NEEDS_HUMAN_LABEL" 2>/dev/null || true
   local body_file
-  body_file="$(mktemp)"
+  body_file=$(mktemp) || { echo "::warning::Failed to create temp comment body for issue #${number} — skipping comment"; return 0; }
   {
     printf '%s\n' "$OPEN_COMMENT_MARKER"
     printf '## Dev-Lead: open issue carries an unbacked completion claim (#1445)\n\n'
@@ -288,8 +292,17 @@ open_candidates_file=$(mktemp) || { echo "Failed to create temp file" >&2; exit 
 trap 'rm -f "$candidates_file" "$open_candidates_file"' EXIT
 open_scanned=0
 
+# Open-issue unbacked claims may linger far longer than the closed-issue
+# lookback window (default 7 days). Use a separate, longer lookback so stale
+# claims that have sat open for weeks are not silently skipped.
+# PC_OPEN_LOOKBACK_DAYS defaults to 90; env-overridable.
+_pc_open_lookback=$(_pc_threshold "${PC_OPEN_LOOKBACK_DAYS:-}" 90)
+_pc_open_cutoff=$(( $(date -u +%s) - _pc_open_lookback * 86400 ))
+_pc_open_since=$(date -u -d "@${_pc_open_cutoff}" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+  || date -u -r "${_pc_open_cutoff}" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "")
+
 open_issues=$(gh api --paginate \
-  "repos/${REPO}/issues?state=open&since=${since_iso}&per_page=100" \
+  "repos/${REPO}/issues?state=open&since=${_pc_open_since}&per_page=100" \
   --jq '.[] | select(.pull_request == null)
         | [.number, .html_url, (.title // "" | tostring)]
         | @tsv' 2>/dev/null) || {

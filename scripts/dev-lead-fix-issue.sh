@@ -142,6 +142,16 @@ retract_prior_completion_claims() {
     body_has_completion_claim "$body" || continue
     claim_is_retracted "$body" && continue
 
+    # If the claim references a durable merged PR (pr=NNN), the work did land —
+    # retraction would incorrectly strike a genuine completion record. Skip it.
+    local pr_ref
+    pr_ref=$(printf '%s' "$body" | grep -oE 'pr=[0-9]+' | grep -oE '[0-9]+' | head -1 2>/dev/null || true)
+    if [ -n "$pr_ref" ]; then
+      local pr_state
+      pr_state=$(gh pr view "$pr_ref" --repo "$REPO" --json state --jq '.state' 2>/dev/null || echo "")
+      [ "$pr_state" = "MERGED" ] && continue
+    fi
+
     banner="${PC_CLAIM_RETRACTED_MARKER}
 > **[Retracted ${today} — superseded]** This completion claim was published **before the work was durable**. The run subsequently ended without landing anything on \`main\` (reason=\`${reason}\`, run=${GITHUB_RUN_ID:-}), so it produced nothing. The claim is struck in place (not deleted) per this repo's dated-correction convention; see the \`needs-human\` escalation on this issue for status."
     new_body=$(supersede_claim_body "$body" "$banner")

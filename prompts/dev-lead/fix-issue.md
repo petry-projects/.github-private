@@ -145,7 +145,7 @@ Therefore, if you post a status comment in this phase, it must be **explicitly p
 
 Post it as an **in-progress note** instead — no AC checkmarks, no result tallies, and a clear statement that the durable record follows the push:
 
-```bash
+````bash
 # Use --body-file to safely handle test output and file paths that may contain special characters
 REPORT_FILE="$(mktemp /tmp/dev-lead-report.XXXXXX.md)"
 cat > "$REPORT_FILE" << 'REPORT'
@@ -170,7 +170,7 @@ cat > "$REPORT_FILE" << 'REPORT'
 <edge cases, known limitations, follow-ups, or 'none'>
 REPORT
 gh issue comment "${ISSUE_NUMBER}" --repo "${REPO}" --body-file "$REPORT_FILE"
-```
+````
 
 If you have nothing provisional to add, you may skip posting in this phase entirely — the automation's post-push record is the one that matters.
 
