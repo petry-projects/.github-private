@@ -39,6 +39,9 @@ PC_LOOKBACK_DAYS=$(_pc_threshold "${PC_LOOKBACK_DAYS:-}" 7)
 NEEDS_HUMAN_LABEL="${NEEDS_HUMAN_LABEL:-dev-lead:needs-human}"
 REPORT_FILE="${REPORT_FILE:-premature_closure_report.md}"
 COMMENT_MARKER="<!-- premature-closure-audit -->"
+# Distinct marker for the OPEN-issue unbacked-claim path (#1445) so its
+# idempotency check never collides with the closed-issue re-open marker.
+OPEN_COMMENT_MARKER="<!-- premature-closure-audit-open -->"
 TODAY=$(date -u +%Y-%m-%d)
 
 echo "=== Premature-Closure Audit — #1077 backstop ==="
@@ -93,6 +96,52 @@ has_merged_closing_pr() {
   esac
 }
 
+# has_linked_pr <issue_number> — echo "true" when the issue has ANY linked pull
+# request (open OR merged) or was closed by a commit, "false" when we can confirm
+# none, "unknown" when the timeline could not be read. For the OPEN-issue unbacked-
+# claim scan (#1445), *any* linked PR is a legitimate backing artifact — an in-
+# flight dev-lead PR is exactly what a durable claim points at — so unlike the
+# closed-issue path this does NOT require the PR to be merged (that would
+# false-positive on every healthy open PR). Callers treat "unknown" as fail-safe.
+has_linked_pr() {
+  local number="$1" timeline linked
+  timeline=$(gh api --paginate "repos/${REPO}/issues/${number}/timeline" \
+    -H "Accept: application/vnd.github+json" 2>/dev/null) || { echo "unknown"; return 0; }
+  [ -n "$timeline" ] || { echo "unknown"; return 0; }
+
+  linked=$(jq -s -r '
+    [ .[] | .[]? |
+      ( (.event == "closed") and (.commit_id != null) )
+      or
+      ( (.source?.issue?.pull_request) != null )
+    ] | any' <<< "$timeline" 2>/dev/null) || { echo "unknown"; return 0; }
+
+  case "$linked" in
+    true)  echo "true" ;;
+    false) echo "false" ;;
+    *)     echo "unknown" ;;
+  esac
+}
+
+# issue_has_unretracted_completion_claim <issue_number> — echo "claim" when the
+# issue carries at least one NON-retracted completion-claim comment, "none" when
+# comments are readable but none qualify, "unknown" when comments can't be read.
+# Uses the pure body predicates from premature-closure-detect.sh; base64 per
+# comment preserves multi-line bodies through the read loop.
+issue_has_unretracted_completion_claim() {
+  local number="$1" raw enc body
+  raw=$(gh api --paginate "repos/${REPO}/issues/${number}/comments?per_page=100" \
+    --jq '.[] | (.body // "") | @base64' 2>/dev/null) || { echo "unknown"; return 0; }
+  local state="none"
+  while IFS= read -r enc; do
+    [ -n "$enc" ] || continue
+    body=$(printf '%s' "$enc" | base64 -d 2>/dev/null) || continue
+    claim_is_retracted "$body" && continue
+    if body_has_completion_claim "$body"; then state="claim"; break; fi
+  done <<< "$raw"
+  echo "$state"
+}
+
 # ensure_needs_human_label — idempotently ensure the escalation label exists.
 ensure_needs_human_label() {
   gh label create "$NEEDS_HUMAN_LABEL" --repo "$REPO" \
@@ -130,6 +179,45 @@ be marked done.
 Re-opened automatically. Please verify the underlying problem and land a merged,
 verifying change (or re-triage) before closing again." 2>/dev/null || true
   echo "::warning::Re-opened prematurely-closed issue #${number} — ${reason}"
+}
+
+# already_flagged_open <issue_number> — 0 when the OPEN-issue audit already
+# commented on the issue (idempotency; distinct from the closed-issue marker).
+already_flagged_open() {
+  local body
+  body=$(gh api --paginate "repos/${REPO}/issues/${1}/comments" \
+    --jq '.[].body' 2>/dev/null) || return 1
+  grep -qF "$OPEN_COMMENT_MARKER" <<< "$body"
+}
+
+# apply_open_action <issue_number> <reason> — label + comment (live only) for an
+# OPEN issue carrying an unbacked completion claim. Unlike the closed path there
+# is nothing to re-open; the action makes the false-"done" state visibly open for
+# a human by applying the escalation label and posting one idempotent comment.
+apply_open_action() {
+  local number="$1" reason="$2"
+  if already_flagged_open "$number"; then
+    echo "::notice::Open issue #${number} already flagged by a prior audit run — skipping"
+    return 0
+  fi
+  ensure_needs_human_label
+  gh issue edit "$number" --repo "$REPO" --add-label "$NEEDS_HUMAN_LABEL" 2>/dev/null || true
+  local body_file
+  body_file="$(mktemp)"
+  {
+    printf '%s\n' "$OPEN_COMMENT_MARKER"
+    printf '## Dev-Lead: open issue carries an unbacked completion claim (#1445)\n\n'
+    printf 'This issue carries a **completion claim** but **no linked pull request** backs it\n'
+    printf '(%s) — so it reads as delivered while nothing became durable on `main`.\n' "$reason"
+    printf 'This is the #1445 shape: a "Completed" record published before the work was\n'
+    printf 'durable, then lost (e.g. a timeout discarded the workspace).\n\n'
+    printf 'Labeled `%s` and left **open**. Please verify whether the work\n' "$NEEDS_HUMAN_LABEL"
+    printf 'exists; if not, re-run implementation (its terminal-failure path now retracts the\n'
+    printf 'stale claim) or retract the claim before treating this issue as done.\n'
+  } > "$body_file"
+  gh issue comment "$number" --repo "$REPO" --body-file "$body_file" 2>/dev/null || true
+  rm -f "$body_file"
+  echo "::warning::Flagged open issue #${number} with an unbacked completion claim — ${reason}"
 }
 
 # ---------------------------------------------------------------------------
@@ -191,6 +279,55 @@ flagged_count=${flagged_count:-0}
 echo "Scanned ${scanned} closed 'completed' issue(s); ${flagged_count} premature-closure candidate(s)."
 
 # ---------------------------------------------------------------------------
+# 2b. OPEN-issue scan (#1445): flag OPEN issues carrying an UNBACKED completion
+# claim — a "Completed" record with no linked PR. This is the standing case the
+# closed-only audit above never fires on: the issue stays open (so no close event
+# to inspect) yet reads as delivered while nothing landed.
+# ---------------------------------------------------------------------------
+open_candidates_file=$(mktemp) || { echo "Failed to create temp file" >&2; exit 1; }
+trap 'rm -f "$candidates_file" "$open_candidates_file"' EXIT
+open_scanned=0
+
+open_issues=$(gh api --paginate \
+  "repos/${REPO}/issues?state=open&since=${since_iso}&per_page=100" \
+  --jq '.[] | select(.pull_request == null)
+        | [.number, .html_url, (.title // "" | tostring)]
+        | @tsv' 2>/dev/null) || {
+  echo "::warning::Failed to fetch open issues — skipping unbacked-claim scan" >&2
+  open_issues=""
+}
+
+while IFS=$'\t' read -r number html_url title; do
+  [ -n "$number" ] || continue
+  # Only issues that actually carry a (non-retracted) completion claim are in
+  # scope. "unknown"/"none" are skipped — fail-safe, never flag on a bad read.
+  claim_state=$(issue_has_unretracted_completion_claim "$number")
+  [ "$claim_state" = "claim" ] || continue
+  open_scanned=$(( open_scanned + 1 ))
+
+  # Fail-safe: an undeterminable link state counts as "has backing PR" so an
+  # unreadable timeline never flags a healthy issue.
+  linked_state=$(has_linked_pr "$number")
+  has_backing_pr=true
+  [ "$linked_state" = "false" ] && has_backing_pr=false
+
+  reason=$(unbacked_completion_claim_reasons "true" "$has_backing_pr")
+  if [ -n "$reason" ]; then
+    safe_title="${title//[$'\n'$'\t'|]/ }"
+    printf '%s\t%s\t%s\t%s\n' "$number" "$html_url" "$safe_title" "$reason" >> "$open_candidates_file"
+    if [ "$DRY_RUN" != "true" ]; then
+      apply_open_action "$number" "$reason"
+    else
+      echo "::notice::[dry-run] would flag open issue #${number} — ${reason}"
+    fi
+  fi
+done <<< "$open_issues"
+
+open_flagged_count=$(grep -c . "$open_candidates_file" 2>/dev/null || true)
+open_flagged_count=${open_flagged_count:-0}
+echo "Scanned ${open_scanned} open claim-carrying issue(s); ${open_flagged_count} unbacked-claim candidate(s)."
+
+# ---------------------------------------------------------------------------
 # 3. Render report + export env flags
 # ---------------------------------------------------------------------------
 mode="live"
@@ -199,9 +336,11 @@ if [ "$DRY_RUN" = "true" ]; then
 fi
 {
   printf '# Premature-Closure Audit — %s\n\n' "$TODAY"
-  printf '**Repo:** `%s` | **Closed-completed scanned:** %s | **Candidates:** %s | **Mode:** %s\n\n' \
-    "$REPO" "$scanned" "$flagged_count" "$mode"
+  printf '**Repo:** `%s` | **Closed-completed scanned:** %s | **Candidates:** %s | **Open claim-carrying scanned:** %s | **Unbacked-claim candidates:** %s | **Mode:** %s\n\n' \
+    "$REPO" "$scanned" "$flagged_count" "$open_scanned" "$open_flagged_count" "$mode"
   generate_premature_closure_report "$candidates_file"
+  printf '\n'
+  generate_unbacked_claim_report "$open_candidates_file"
 } > "$REPORT_FILE"
 
 [ -n "${GITHUB_STEP_SUMMARY:-}" ] && cat "$REPORT_FILE" >> "$GITHUB_STEP_SUMMARY"
@@ -212,6 +351,12 @@ if [ -n "${GITHUB_ENV:-}" ]; then
     echo "HAS_PREMATURE_CLOSURE=true" >> "$GITHUB_ENV"
   else
     echo "HAS_PREMATURE_CLOSURE=false" >> "$GITHUB_ENV"
+  fi
+  echo "UNBACKED_CLAIM_COUNT=${open_flagged_count}" >> "$GITHUB_ENV"
+  if [ "$open_flagged_count" -gt 0 ]; then
+    echo "HAS_UNBACKED_CLAIM=true" >> "$GITHUB_ENV"
+  else
+    echo "HAS_UNBACKED_CLAIM=false" >> "$GITHUB_ENV"
   fi
 fi
 

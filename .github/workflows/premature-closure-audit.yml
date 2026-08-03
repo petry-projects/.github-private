@@ -1,9 +1,15 @@
 name: Premature-Closure Audit
-# readme-report: Premature-closure audit — flags issues closed as completed with no merged closing PR.
+# readme-report: Premature-closure audit — flags issues closed as completed with no merged closing PR, and OPEN issues carrying an unbacked completion claim (#1445).
 
 # Repo-specific backstop for issue #1077: flags issues closed as `completed`
 # within N minutes of opening with no merged closing PR, and (in live mode)
 # re-opens + relabels them `dev-lead:needs-human`. No org template — see AGENTS.md.
+#
+# Extended for issue #1445: the same run also scans OPEN issues for an UNBACKED
+# completion claim — a "Completed" record with no linked PR (the standing case the
+# closed-only net never fires on) — and (in live mode) labels them
+# `dev-lead:needs-human` with an explanatory comment. Both scans share this one
+# script/workflow by design (#1445 AC5: extend, do not fork a parallel workflow).
 
 on:
   schedule:

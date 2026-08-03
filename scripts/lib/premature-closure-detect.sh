@@ -152,3 +152,134 @@ generate_premature_closure_report() {
     printf '| [#%s](%s) | %s | %s |\n' "$num" "$url" "$title" "$reason"
   done < "$f"
 }
+
+# ---------------------------------------------------------------------------
+# Unbacked completion claim on an OPEN issue (issue #1445).
+#
+# #1445: dev-lead posted a highly specific "Completed" claim (checkmarked ACs,
+# "726/726 pass", a per-file change table) on #1407 *before the work was durable*,
+# then the run timed out and the workspace was discarded — nothing landed on
+# `main`, yet the issue stays OPEN and reads as delivered. The premature-closure
+# net above only inspects CLOSED issues, so this shape slips through. This is the
+# machine-checkable detector (AC #5): given whether an OPEN issue carries a
+# completion claim and whether a merged closing/linked PR backs it, decide whether
+# it is an unbacked-claim CANDIDATE. Detection only — never mutates an issue.
+#
+# The marker a durable, trustworthy claim now carries (posted by
+# scripts/dev-lead-fix-issue.sh only AFTER push+PR) and the machine marker a
+# retracted claim carries.
+readonly PC_COMPLETED_MARKER_TOKEN="status=completed"
+readonly PC_CLAIM_RETRACTED_MARKER="<!-- dev-lead-claim-retracted -->"
+
+# body_has_completion_claim <comment_body>
+#   Exit 0 when the body reads as a completion claim: the durable
+#   `status=completed` marker OR a legacy completion heading ("## Completed" /
+#   "Implementation Complete"). Used to find the claim(s) to retract or to flag.
+body_has_completion_claim() {
+  case "${1:-}" in
+    *"$PC_COMPLETED_MARKER_TOKEN"*)   return 0 ;;
+    *"## Completed"*)                 return 0 ;;
+    *"Implementation Complete"*)      return 0 ;;
+    *)                                return 1 ;;
+  esac
+}
+
+# claim_is_retracted <comment_body>
+#   Exit 0 when the body already carries the retraction marker — so retraction is
+#   idempotent (never double-strikes) and the audit never re-flags a withdrawn claim.
+claim_is_retracted() {
+  case "${1:-}" in
+    *"$PC_CLAIM_RETRACTED_MARKER"*) return 0 ;;
+    *)                              return 1 ;;
+  esac
+}
+
+# supersede_claim_body <original_body> <banner>
+#   Rewrite a standing completion-claim body to retract it IN PLACE: prepend
+#   <banner> (which must carry PC_CLAIM_RETRACTED_MARKER + a dated note) and strike
+#   through the first markdown heading, leaving the rest legible below. Reuses the
+#   strike-through-plus-dated-note convention from docs/metrics-baseline.md. Pure —
+#   no I/O; the caller supplies the dated banner and performs the comment edit.
+supersede_claim_body() {
+  local body="${1:-}" banner="${2:-}"
+  printf '%s\n' "$banner"
+  local line prefix text struck=0
+  while IFS= read -r line || [ -n "$line" ]; do
+    if [ "$struck" -eq 0 ]; then
+      case "$line" in
+        '#'*)
+          # Split the leading run of '#'/spaces from the heading text, then strike
+          # only the text so the markdown heading level is preserved.
+          prefix="${line%%[! #]*}"
+          text="${line#"$prefix"}"
+          printf '%s~~%s~~ [RETRACTED]\n' "$prefix" "$text"
+          struck=1
+          continue ;;
+      esac
+    fi
+    printf '%s\n' "$line"
+  done <<< "$body"
+}
+
+# unbacked_completion_claim_reasons <has_completion_claim> <has_backing_pr>
+#   Print a reason line when an OPEN issue carries a completion claim with no
+#   backing PR; empty otherwise. For an OPEN issue "backing" means *any* linked PR
+#   (open or merged) — an in-flight dev-lead PR is a legitimate artifact, so
+#   requiring a *merged* PR here would false-positive on every healthy open PR
+#   (that is why the CLOSED-issue premature_closure_reasons — where a fix should
+#   already have landed — requires merged, but this OPEN-issue analogue does not).
+#   The caller must fail SAFE — pass has_backing_pr=true whenever the PR state
+#   cannot be determined — so an undeterminable lookup never flags.
+unbacked_completion_claim_reasons() {
+  local has_claim has_pr
+  has_claim="${1:-}"
+  has_pr="${2:-}"
+  # 1. No completion claim → nothing to flag.
+  _pc_is_truthy "$has_claim" || return 0
+  # 2. Any linked PR backs the claim → not unbacked.
+  if _pc_is_truthy "$has_pr"; then
+    return 0
+  fi
+  printf 'carries a completion claim with no backing PR (unbacked)\n'
+  return 0
+}
+
+# is_unbacked_completion_claim <has_completion_claim> <has_backing_pr>
+#   Exit 0 when the issue is an unbacked-claim candidate, 1 otherwise.
+is_unbacked_completion_claim() {
+  local reasons
+  reasons=$(unbacked_completion_claim_reasons "$@")
+  [ -n "$reasons" ]
+}
+
+# generate_unbacked_claim_report <candidates_tsv_file>
+#   Render the "Unbacked Completion Claims (open)" markdown section. Input TSV
+#   rows: issue_number <TAB> html_url <TAB> title <TAB> reason. An empty/missing
+#   file prints an all-clear line and no table, so a clean run gets an explicit
+#   signal (same shape as generate_premature_closure_report).
+generate_unbacked_claim_report() {
+  local f="${1:-}"
+
+  printf '## Unbacked Completion Claims (open issues)\n\n'
+  printf 'Open issues carrying a "Completed" claim with **no backing PR** '
+  printf '(no linked pull request exists, so the claimed work never became durable). See '
+  printf '#1445 — a completion claim must be backed by a verifiable artifact (PR/SHA) and '
+  printf 'retracted on terminal failure.\n\n'
+
+  if [ -z "$f" ] || [ ! -s "$f" ]; then
+    printf 'No open issue with an unbacked completion claim detected in the audited window.\n'
+    return 0
+  fi
+
+  printf '| Issue | Title | Why flagged |\n'
+  printf '|---|---|---|\n'
+  local num url title reason
+  while IFS=$'\t' read -r num url title reason; do
+    [ -n "$num" ] || continue
+    title=${title//$'|'/'\|'}
+    title=${title//$'\n'/ }
+    reason=${reason//$'|'/'\|'}
+    reason=${reason//$'\n'/ }
+    printf '| [#%s](%s) | %s | %s |\n' "$num" "$url" "$title" "$reason"
+  done < "$f"
+}
