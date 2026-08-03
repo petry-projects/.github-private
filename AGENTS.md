@@ -193,15 +193,15 @@ PR-triggered check on the existing Lint workflow — **no new cron/scheduled wor
   (see "Release channel tags & the mutable-ref exception"). Other ecosystems (npm/gomod/pip/…) pass through
   unchanged, and a consumer that wants Dependabot-managed action updates for its **own** (non-artifact)
   workflows adds the `github-actions` ecosystem back when it customizes its stack per `BOOTSTRAP.md`.
-    - **Why not the alternatives.** *Option 2 — keep Dependabot, automate a re-seed after each bump* — was
-      rejected: it leaves a permanent drift window between the bump and the re-seed during which
-      `template-drift` is red and review here is halted. *Option 3 — point Dependabot at
-      `petry-projects/.github` and let bumps flow to the template by re-seeding* — reaches the same
-      end state but additionally requires a change in the public standards repo; the scope-out above is
-      implementable entirely from this repo (which owns `seed-repo-template.sh`) and is a prerequisite for
-      Option 3 anyway (the template still must not run its own `github-actions` Dependabot). If the standards
-      repo later grows its own `github-actions` Dependabot + re-seed automation, this scope-out remains the
-      correct template-side behavior.
+  - **Why not the alternatives.** *Option 2 — keep Dependabot, automate a re-seed after each bump* — was
+    rejected: it leaves a permanent drift window between the bump and the re-seed during which
+    `template-drift` is red and review here is halted. *Option 3 — point Dependabot at
+    `petry-projects/.github` and let bumps flow to the template by re-seeding* — reaches the same
+    end state but additionally requires a change in the public standards repo; the scope-out above is
+    implementable entirely from this repo (which owns `seed-repo-template.sh`) and is a prerequisite for
+    Option 3 anyway (the template still must not run its own `github-actions` Dependabot). If the standards
+    repo later grows its own `github-actions` Dependabot + re-seed automation, this scope-out remains the
+    correct template-side behavior.
 
 ### Reusable caller-input contract (`validate-caller-inputs`)
 
