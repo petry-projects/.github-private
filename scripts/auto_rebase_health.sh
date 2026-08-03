@@ -38,6 +38,9 @@
 #   GH_PAT_FALLBACK — optional fallback PAT if GH_TOKEN lacks run-telemetry access
 #   AGENT_REPO      — repo to scan (default: petry-projects/.github-private)
 #   LOOKBACK_DAYS   — days of history to consider (default: 7)
+#   PR_LIST_LIMIT   — max open PRs fetched for BEHIND/DIRTY/multiplier metrics (default: 1000)
+#                     raise if the repo regularly has >1000 open PRs; a truncation warning
+#                     is rendered in the report whenever the fetched count equals the limit
 #   AUTO_REBASE_HEALTH_OUT — optional path; report is written there in addition to stdout
 #   GITHUB_STEP_SUMMARY — written by the Actions runner when present
 
@@ -45,6 +48,7 @@ set -euo pipefail
 
 WORKFLOW_REPO="${AGENT_REPO:-petry-projects/.github-private}"
 LOOKBACK_DAYS="${LOOKBACK_DAYS:-7}"
+PR_LIST_LIMIT="${PR_LIST_LIMIT:-1000}"
 AUTO_REBASE_WORKFLOW="auto-rebase.yml"
 
 # Markers (kept in one place so a rename in the dev-lead scripts is a one-line fix).
@@ -140,11 +144,13 @@ fmt_rate() {
   echo "$(( num * 100 / denom ))%"
 }
 
-# render_report <comments_json> <runs_json> <lookback_days> <behind_prs> [today] [prs_json]
+# render_report <comments_json> <runs_json> <lookback_days> <behind_prs> [today] [prs_json] [pr_list_truncated] [pr_list_limit]
 # Writes the full Markdown report to stdout. Pure: no network.
+# pr_list_truncated=true renders a warning that BEHIND/DIRTY counts may undercount.
 render_report() {
   local comments_json="${1:-[]}" runs_json="${2:-[]}"
   local lookback="${3:-7}" behind="${4:-0}" today="${5:-}" prs_json="${6:-[]}"
+  local pr_list_truncated="${7:-false}" pr_list_limit="${8:-1000}"
   [ -n "$today" ] || today="$(date -u +%Y-%m-%d)"
 
   local sentinels responses applied
@@ -186,6 +192,11 @@ render_report() {
   printf '## Fleet merge-state observability (AC7)\n\n'
   printf -- '- **BEHIND** (open non-draft non-Dependabot PRs `mergeStateStatus: BEHIND`): %s\n' "$ms_behind"
   printf -- '- **DIRTY** (open non-draft non-Dependabot PRs `mergeStateStatus: DIRTY`): %s\n\n' "$ms_dirty"
+  if [ "$pr_list_truncated" = "true" ]; then
+    printf '> ⚠ **PR list capped at %s** — BEHIND/DIRTY counts cover only the first %s open PRs ' \
+      "$pr_list_limit" "$pr_list_limit"
+    printf 'and may undercount the true backlog. Set `PR_LIST_LIMIT` to raise the cap.\n\n'
+  fi
   printf '> Snapshot of the current open-PR queue, scoped to **`%s`** — fleet-wide counts would '  "$WORKFLOW_REPO"
   printf 'require a cross-repo PAT this report does not carry. Tracks the effectiveness of the '
   printf 'AC1/AC2 auto-rebase fixes (petry-projects/.github#926) without a manual audit.\n'
@@ -239,10 +250,16 @@ main() {
   # 3. Open-PR snapshot — pulled once with the fields both the behind-PR
   #    multiplier and the AC7 merge-state (BEHIND/DIRTY) metric need. Best-effort;
   #    defaults to [] so the report still renders when the query fails.
-  local prs_json
-  prs_json="$(gh pr list --repo "$WORKFLOW_REPO" --state open --limit 200 \
+  local prs_json pr_list_truncated pr_count
+  prs_json="$(gh pr list --repo "$WORKFLOW_REPO" --state open --limit "$PR_LIST_LIMIT" \
     --json author,isDraft,mergeStateStatus 2>/dev/null || echo '[]')"
   [ -n "$prs_json" ] || prs_json='[]'
+  pr_count="$(printf '%s' "$prs_json" | jq 'length' 2>/dev/null || echo 0)"
+  if [ "$pr_count" -ge "$PR_LIST_LIMIT" ]; then
+    pr_list_truncated=true
+  else
+    pr_list_truncated=false
+  fi
 
   # Behind-PR multiplier — open non-Dependabot PRs (proxy for branches the
   # fan-out updates), derived from the same snapshot.
@@ -252,7 +269,7 @@ main() {
     2>/dev/null || echo 0)"
 
   local report
-  report="$(render_report "$comments_json" "$runs_json" "$LOOKBACK_DAYS" "$behind" "$today" "$prs_json")"
+  report="$(render_report "$comments_json" "$runs_json" "$LOOKBACK_DAYS" "$behind" "$today" "$prs_json" "$pr_list_truncated" "$PR_LIST_LIMIT")"
 
   printf '%s\n' "$report"
   if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then

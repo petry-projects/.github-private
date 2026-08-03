@@ -207,3 +207,16 @@ setup() {
   [ "$status" -eq 0 ]
   [[ "$output" == *"BEHIND"* ]]
 }
+
+@test "render_report: truncation flag renders capped-count warning in merge-state section" {
+  run render_report "$COMMENTS_JSON" "$RUNS_JSON" 7 3 2026-06-15 "$PRS_JSON" true 1000
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"PR list capped at 1000"* ]]
+  [[ "$output" == *"undercount"* ]]
+}
+
+@test "render_report: no truncation flag suppresses capped-count warning" {
+  run render_report "$COMMENTS_JSON" "$RUNS_JSON" 7 3 2026-06-15 "$PRS_JSON" false 1000
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"PR list capped"* ]]
+}
