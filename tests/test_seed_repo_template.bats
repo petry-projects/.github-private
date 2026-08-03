@@ -359,6 +359,141 @@ EOF
   [[ "$output" == *"could not fetch standards/dependabot/frontend.yml"* ]]
 }
 
+# ── #1435: Dependabot must not bump the byte-identity workflow artifacts ───────
+# repo-template's shipped workflows are a distribution artifact of standards/ and
+# are kept current by re-seeding, not by Dependabot. A github-actions Dependabot
+# run in the template edits those artifacts directly and drifts template-drift.
+# The seed therefore scopes the github-actions package-ecosystem out of the
+# shipped .github/dependabot.yml; other ecosystems (npm/gomod/…) pass through.
+@test "scope-out: removes the github-actions ecosystem, keeps npm (#1435)" {
+  source "$SEED"
+  out="$(printf '%s\n' \
+    'version: 2' \
+    'updates:' \
+    '  - package-ecosystem: "github-actions"' \
+    '    directory: "/"' \
+    '    schedule:' \
+    '      interval: weekly' \
+    '  - package-ecosystem: "npm"' \
+    '    directory: "/"' \
+    | _dependabot_scope_out_actions)"
+  [[ "$out" != *"github-actions"* ]]
+  [[ "$out" == *"package-ecosystem: \"npm\""* ]]
+  [[ "$out" == *"version: 2"* ]]
+}
+
+@test "scope-out: removes a github-actions block that is LAST in the list (#1435)" {
+  source "$SEED"
+  out="$(printf '%s\n' \
+    'version: 2' \
+    'updates:' \
+    '  - package-ecosystem: gomod' \
+    '    directory: "/"' \
+    '  - package-ecosystem: github-actions' \
+    '    directory: "/"' \
+    '    open-pull-requests-limit: 10' \
+    | _dependabot_scope_out_actions)"
+  [[ "$out" != *"github-actions"* ]]
+  [[ "$out" != *"open-pull-requests-limit"* ]]   # its child lines go too
+  [[ "$out" == *"package-ecosystem: gomod"* ]]
+}
+
+@test "scope-out: removes a github-actions block in the MIDDLE, keeps both siblings (#1435)" {
+  source "$SEED"
+  out="$(printf '%s\n' \
+    'updates:' \
+    '  - package-ecosystem: npm' \
+    '  - package-ecosystem: github-actions' \
+    '    directory: "/"' \
+    '  - package-ecosystem: pip' \
+    | _dependabot_scope_out_actions)"
+  [[ "$out" != *"github-actions"* ]]
+  [[ "$out" == *"package-ecosystem: npm"* ]]
+  [[ "$out" == *"package-ecosystem: pip"* ]]
+}
+
+@test "scope-out: discards the dropped block's leading comment (#1435)" {
+  source "$SEED"
+  out="$(printf '%s\n' \
+    'updates:' \
+    '  # GitHub Actions — version updates (keep actions current)' \
+    '  - package-ecosystem: "github-actions"' \
+    '    directory: "/"' \
+    '  # npm deps' \
+    '  - package-ecosystem: "npm"' \
+    | _dependabot_scope_out_actions)"
+  [[ "$out" != *"GitHub Actions"* ]]            # the block's own comment is gone
+  [[ "$out" == *"# npm deps"* ]]                # a kept block keeps its comment
+  [[ "$out" == *"package-ecosystem: \"npm\""* ]]
+}
+
+@test "scope-out: a standalone comment inside the dropped block does not leak (#1435)" {
+  source "$SEED"
+  out="$(printf '%s\n' \
+    'updates:' \
+    '  - package-ecosystem: "github-actions"' \
+    '    directory: "/"' \
+    '    # inline note that belongs to the dropped block' \
+    '    schedule:' \
+    '      interval: weekly' \
+    '  - package-ecosystem: "npm"' \
+    | _dependabot_scope_out_actions)"
+  [[ "$out" != *"github-actions"* ]]
+  [[ "$out" != *"inline note"* ]]                 # the mid-block comment is dropped too
+  [[ "$out" == *"package-ecosystem: \"npm\""* ]]
+}
+
+@test "scope-out: a config with no github-actions passes through unchanged (#1435)" {
+  source "$SEED"
+  in="$(printf '%s\n' 'version: 2' 'updates:' '  - package-ecosystem: npm' '    directory: "/"')"
+  out="$(printf '%s' "$in" | _dependabot_scope_out_actions)"
+  [ "$out" = "$in" ]
+}
+
+@test "scope-out: keeps subsequent top-level keys after a dropped block (#1435)" {
+  source "$SEED"
+  out="$(printf '%s\n' \
+    'updates:' \
+    '  - package-ecosystem: github-actions' \
+    '    directory: "/"' \
+    'registries:' \
+    '  some-registry:' \
+    '    type: docker-registry' \
+    | _dependabot_scope_out_actions)"
+  [[ "$out" != *"github-actions"* ]]
+  [[ "$out" == *"registries:"* ]]
+  [[ "$out" == *"some-registry:"* ]]
+}
+
+@test "scope-out: preserves trailing comments at the end of the file (#1435)" {
+  source "$SEED"
+  out="$(printf '%s\n' \
+    'updates:' \
+    '  - package-ecosystem: npm' \
+    '# trailing comment' \
+    | _dependabot_scope_out_actions)"
+  [[ "$out" == *"# trailing comment"* ]]
+}
+
+@test "baseline: emitted dependabot.yml ships with github-actions scoped out (#1435)" {
+  cat > "$STANDARDS_DIR/standards/dependabot/frontend.yml" <<'EOF'
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: weekly
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: weekly
+EOF
+  run env DEPENDABOT_STACK=frontend bash "$SEED" --emit-baseline .github/dependabot.yml
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"github-actions"* ]]
+  [[ "$output" == *"package-ecosystem: \"npm\""* ]]
+}
+
 # ── seeding orchestration: DRY_RUN ────────────────────────────────────────────
 @test "DRY_RUN: exits 0, names the target repo, makes no write API calls" {
   _stub_gh

@@ -346,6 +346,46 @@ EOF
   esac
 }
 
+# ── Scope Dependabot out of the byte-identity workflow artifacts (#1435) ───────
+# Reads a dependabot.yml on stdin and DROPS the `github-actions` package-ecosystem
+# block, passing every other ecosystem (npm/gomod/pip/…) through unchanged.
+#
+# repo-template's shipped workflows are a DISTRIBUTION ARTIFACT of standards/ and
+# are kept current by re-seeding, not by Dependabot. A `github-actions` Dependabot
+# run in the template edits those artifacts directly — every bump changes a
+# committed blob, drifts template-drift, and (because a non-required red check
+# halts pr-review here) silently stops review. Dependabot's github-actions
+# ecosystem has no per-file exclusion, so the whole ecosystem is scoped out; this
+# also correctly stops Dependabot from bumping the first-party channel-tag pins in
+# the caller stubs (the sanctioned mutable-ref exception). See AGENTS.md
+# "Template drift guard (repo-template)".
+#
+# A block is the `- package-ecosystem:` list item and all of its deeper-indented
+# child lines; its immediately-preceding comment line(s) are discarded with it.
+_dependabot_scope_out_actions() {
+  awk '
+    /^[[:space:]]*#/ {
+      match($0, /^[[:space:]]*/)
+      if (drop && RLENGTH < drop_indent) { drop = 0 }
+      pending = pending $0 ORS; next
+    }
+    /^[[:space:]]*-[[:space:]]+package-ecosystem:/ {
+      match($0, /^[[:space:]]*/)
+      drop_indent = RLENGTH
+      if ($0 ~ /github-actions/) { drop = 1; pending = "" }
+      else { drop = 0; printf "%s", pending; pending = ""; print }
+      next
+    }
+    {
+      match($0, /^[[:space:]]*/)
+      if (drop && RLENGTH < drop_indent) { drop = 0 }
+      if (!drop) { printf "%s", pending; print }
+      pending = ""
+    }
+    END { if (!drop) printf "%s", pending }
+  '
+}
+
 # _emit_baseline <path> — print a baseline file's shipped content.
 _emit_baseline() {
   local path="$1" row source
@@ -356,13 +396,15 @@ _emit_baseline() {
     echo "::error::unknown baseline file: $path" >&2
     return 2
   fi
-  local content std_path
+  local content std_path scope_actions=0
   if [ "$source" = "gen" ]; then
     _gen_baseline "$path"
   else
     if [ "$source" = "fetch" ]; then
       # Dependabot special case: the standards path is DEPENDABOT_STACK-derived.
+      # Scope github-actions out so a Dependabot bump can't drift the template (#1435).
       std_path="standards/dependabot/${DEPENDABOT_STACK}.yml"
+      scope_actions=1
     elif [ "${source#fetch:}" != "$source" ]; then
       # General verbatim fetch: source=fetch:<standards-path> (e.g. .gitleaks.toml).
       std_path="${source#fetch:}"
@@ -379,7 +421,11 @@ _emit_baseline() {
       echo "::error::could not fetch ${std_path} from ${STANDARDS_REPO}" >&2
       return 1
     fi
-    printf '%s\n' "$content"
+    if [ "$scope_actions" = 1 ]; then
+      printf '%s\n' "$content" | _dependabot_scope_out_actions
+    else
+      printf '%s\n' "$content"
+    fi
   fi
 }
 
