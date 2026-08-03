@@ -31,8 +31,9 @@ This is the `.github-private` org infrastructure repo for `petry-projects`. It c
   never forward an input the pinned channel does not yet declare.
 - All other workflow changes must use templates from
   [`standards/workflows/`](https://github.com/petry-projects/.github/tree/main/standards/workflows) verbatim.
-- **Note:** `.github/workflows/auto-rebase.yml` pins the reusable workflow at the `@auto-rebase/stable`
-  moving channel tag, matching the canonical org stub in `standards/workflows/auto-rebase.yml`. Do not
+- **Note:** `.github/workflows/auto-rebase.yml` pins the reusable workflow at the `@auto-rebase/v2-next`
+  moving channel tag — the major-scoped dogfood channel this repo rides ahead of the canonical
+  `@auto-rebase/v2-stable` org stub in `standards/workflows/auto-rebase.yml`. Do not
   repoint it to a frozen `@vX` tag, `@main`, or a SHA — `tests/dev-lead/integration/test_auto_rebase_stub.py`
   (#139) enforces this. The repo-specific `auto-rebase-retry.yml` and `auto-rebase-health.yml` workflows
   depend on the sentinel-trigger behavior provided by the current channel; downgrading to a pre-sentinel
