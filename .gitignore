@@ -402,6 +402,14 @@ __pycache__/
 # third-party package READMEs it contains (#1450).
 node_modules/
 
+# Other CI/dev-time generated and third-party directories — mirrors the
+# markdownlint-cli2.jsonc ignores list so neither git nor the linter ever sees
+# content that wasn't authored in this repo.
+vendor/
+dist/
+build/
+coverage/
+
 # Vendor-specific Claude Code skill projections — BMAD lives in frameworks/ (agent-agnostic).
 .claude/skills/
 
