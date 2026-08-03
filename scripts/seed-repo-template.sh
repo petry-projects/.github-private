@@ -12,8 +12,8 @@ set -euo pipefail
 #   • copies the workflow stubs byte-identically (AC #1), and
 #   • repins each CALLER stub from the local `./…`/`@<name>/next` dogfood ref the
 #     source repo uses internally to the PUBLISHED channel tag a consumer must pin
-#     (`@<name>/stable`; public reusables on petry-projects/.github, the private
-#     dev-lead reusable on petry-projects/.github-private). Inline workflows
+#     (`@<name>/v<MAJOR>-stable`; public reusables on petry-projects/.github, the
+#     private dev-lead reusable on petry-projects/.github-private). Inline workflows
 #     (ci/copilot-setup-steps/sonarcloud) carry no reusable ref and ship verbatim
 #     (AC #2). ci.yml is a customize-per-stack stub; the post-clone "pick your
 #     Dependabot + ci.yml stack" step is documented in the generated BOOTSTRAP.md
@@ -58,21 +58,24 @@ DEPENDABOT_STACK="${DEPENDABOT_STACK:-frontend}"
 _is_dry() { [ "$DRY_RUN" = "true" ]; }
 
 # ── Workflow manifest ─────────────────────────────────────────────────────────
-# One row per shipped stub: "name|kind|host|channel".
-#   kind=caller → wraps <name>-reusable.yml; repinned to <host>@<channel>.
-#   kind=inline → self-contained; shipped byte-identically (host/channel unused).
+# One row per shipped stub: "name|kind|host".
+#   kind=caller → wraps <name>-reusable.yml; repinned to <host>@<channel>, where
+#                 <channel> is DERIVED from the canonical stub's own major-scoped
+#                 `uses:` ref (`<name>/v<MAJOR>-stable`, #1184) — not hardcoded, so
+#                 a channel promotion (v2→v3) cannot reintroduce a stale pin (#1436).
+#   kind=inline → self-contained; shipped byte-identically (host unused).
 # ci is the documented customize-per-stack inline stub (AC #4).
 readonly -a WORKFLOW_MANIFEST=(
-  "agent-shield|caller|petry-projects/.github|agent-shield/stable"
-  "auto-rebase|caller|petry-projects/.github|auto-rebase/stable"
-  "ci|inline|-|-"
-  "copilot-setup-steps|inline|-|-"
-  "dependabot-automerge|caller|petry-projects/.github|dependabot-automerge/stable"
-  "dependabot-rebase|caller|petry-projects/.github|dependabot-rebase/v2-stable"
-  "dependency-audit|caller|petry-projects/.github|dependency-audit/stable"
-  "dev-lead|caller|petry-projects/.github-private|dev-lead/stable"
-  "pr-review-mention|caller|petry-projects/.github|pr-review-mention/v2-stable"
-  "sonarcloud|inline|-|-"
+  "agent-shield|caller|petry-projects/.github"
+  "auto-rebase|caller|petry-projects/.github"
+  "ci|inline|-"
+  "copilot-setup-steps|inline|-"
+  "dependabot-automerge|caller|petry-projects/.github"
+  "dependabot-rebase|caller|petry-projects/.github"
+  "dependency-audit|caller|petry-projects/.github"
+  "dev-lead|caller|petry-projects/.github-private"
+  "pr-review-mention|caller|petry-projects/.github"
+  "sonarcloud|inline|-"
 )
 
 # Baseline files (AC #3). One row per file: "path|source".
@@ -114,14 +117,39 @@ _fetch_standard() {
     | base64 -d 2>/dev/null
 }
 
-# ── Repin a caller stub (AC #2) ───────────────────────────────────────────────
+# ── Derive the published channel from the canonical stub (AC #1, #2) ───────────
+# Reads stub content on stdin and derives the channel a consumer must pin: the
+# SAME major-scoped line as the canonical stub's own `<name>-reusable.yml@<ref>`
+# pin, `stable` tier (`<name>/v<MAJOR>-stable`, #1184). This tracks the canonical
+# stub's major line instead of a hardcoded per-stub channel that goes stale on a
+# promotion (v2→v3) — the pre-#1184 skew that made template-drift's baseline
+# contradict standards/ (#1436). Fails loud on a non-major-scoped ref: a canonical
+# stub that is not major-scoped is itself a standards violation, and silently
+# emitting a legacy `<name>/stable` pin is exactly the bug this replaces.
+_derive_stable_channel() {
+  local name="$1" ref ref_matches
+  ref_matches="$(grep -oE "${name}-reusable\.yml@[^[:space:]\"']+" || true)"
+  ref="${ref_matches%%$'\n'*}"
+  ref="${ref#*@}"
+  if [[ "$ref" =~ ^${name}/v([0-9]+)(-|$) ]]; then
+    printf '%s/v%s-stable\n' "$name" "${BASH_REMATCH[1]}"
+    return 0
+  fi
+  echo "::error::could not derive a major-scoped stable channel for ${name} — canonical stub ref '${ref:-<none>}' is not <name>/v<MAJOR>-<tier> (#1184)." >&2
+  return 1
+}
+
+# ── Repin a caller stub (AC #1, #2) ───────────────────────────────────────────
 # Reads stub content on stdin; rewrites the `uses:` ref for <name>-reusable.yml
 # (whether a local ./… ref or any owner/repo@ref form) to <host>@<channel>, and
-# repins any `agent_ref:` value to <channel>. Inline stubs (no reusable ref) and
-# unrelated lines pass through unchanged. Indentation is preserved.
+# repins any `agent_ref:` value to <channel>, where <channel> is DERIVED from the
+# stub's own major-scoped ref via _derive_stable_channel. Inline stubs (no reusable
+# ref) and unrelated lines pass through unchanged. Indentation is preserved.
 _repin_stub_content() {
-  local name="$1" host="$2" channel="$3"
-  sed -E \
+  local name="$1" host="$2" content channel
+  content="$(cat)"
+  channel="$(printf '%s' "$content" | _derive_stable_channel "$name")" || return 1
+  printf '%s' "$content" | sed -E \
     -e "s#^([[:space:]]*)uses:[[:space:]]*[^[:space:]]*${name}-reusable\.yml(@[^[:space:]]*)?#\1uses: ${host}/.github/workflows/${name}-reusable.yml@${channel}#" \
     -e "s#^([[:space:]]*)(agent_ref:[[:space:]]*['\"]?)[^[:space:]'\"]+#\1\2${channel}#"
 }
@@ -129,16 +157,16 @@ _repin_stub_content() {
 # _emit_workflow <name.yml> — fetch the stub from standards/ and (for callers)
 # repin it; print the shipped content.
 _emit_workflow() {
-  local row name kind host channel content
+  local row name kind host content
   row="$(_manifest_row "$1")" || { echo "::error::unknown workflow stub: $1" >&2; return 2; }
-  IFS='|' read -r name kind host channel <<<"$row"
+  IFS='|' read -r name kind host <<<"$row"
   content="$(_fetch_standard "standards/workflows/${name}.yml")" || true
   if [ -z "$content" ]; then
     echo "::error::could not fetch standards/workflows/${name}.yml from ${STANDARDS_REPO}" >&2
     return 1
   fi
   if [ "$kind" = "caller" ]; then
-    _repin_stub_content "$name" "$host" "$channel" <<< "$content"
+    _repin_stub_content "$name" "$host" <<< "$content"
   else
     printf '%s\n' "$content"
   fi
@@ -246,7 +274,7 @@ EOF
 # Bootstrap a new repo from this template
 
 This template ships the org baseline: the thin-caller workflow stubs (pinned to
-their published `@<name>/stable` channel tags) and the root/baseline files. Most
+their published `@<name>/v<MAJOR>-stable` channel tags) and the root/baseline files. Most
 of it works out of the box. Two things are **per-stack** and must be picked once,
 after you create your repo from the template:
 
@@ -445,11 +473,11 @@ main() {
       --emit-baseline)  [ $# -ge 2 ] || { echo "::error::--emit-baseline needs a path" >&2; return 2; }; _emit_baseline "$2"; return $? ;;
       --repin)
         [ $# -ge 2 ] || { echo "::error::--repin needs a stub name" >&2; return 2; }
-        local row name kind host channel
+        local row name kind host
         row="$(_manifest_row "$2")" || { echo "::error::unknown workflow stub: $2" >&2; return 2; }
-        IFS='|' read -r name kind host channel <<<"$row"
+        IFS='|' read -r name kind host <<<"$row"
         if [ "$kind" = "caller" ]; then
-          _repin_stub_content "$name" "$host" "$channel"
+          _repin_stub_content "$name" "$host"
         else
           cat
         fi

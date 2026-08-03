@@ -11,7 +11,7 @@ standards, and agentic infrastructure.
 | [.github-private](https://github.com/petry-projects/.github-private) | Org-wide Copilot custom agents, Claude Code skills, and agentic workflow infrastructure | Shell |
 | [ContentTwin](https://github.com/petry-projects/ContentTwin) | AI-powered Social Media Agent for small organizations — enterprise-quality social presence at non-profit pricing | Shell |
 | [TalkTerm](https://github.com/petry-projects/TalkTerm) | | HTML |
-| [bmad-bgreat-suite](https://github.com/petry-projects/bmad-bgreat-suite) | BMad Operations Suite — SRE and DevOps agents and workflows for the BMad Method ecosystem | Shell |
+| [bmad-bgreat-suite](https://github.com/petry-projects/bmad-bgreat-suite) | BMad Operations Suite — SRE, DevOps, and Security agents and workflows for the BMad Method ecosystem | Shell |
 | [broodly](https://github.com/petry-projects/broodly) | A test implementation of the BMAD method | HTML |
 | [broodminder-export](https://github.com/petry-projects/broodminder-export) | Extract all of your data from the BroodMinder API into portable files — resumable, rate-limit-aware. | Python |
 | [google-app-scripts](https://github.com/petry-projects/google-app-scripts) | A place to share Google AppScripts for personal productivity | JavaScript |
@@ -34,6 +34,7 @@ Engineering standards live in
 | [`dependabot-policy`](https://github.com/petry-projects/.github/blob/main/standards/dependabot-policy.md) | Dependency update and automerge policy | Dependabot Templates · Auto-Merge Workflow · Vulnerability Audit CI Check · CODEOWNERS Approval Timing |
 | [`feature-ideation-sources`](https://github.com/petry-projects/.github/blob/main/standards/feature-ideation-sources.md) | Sources and process for feature ideation | AI / ML — Vendor & Lab Primary Sources · Developer Tooling & Platform Changelogs · Security & Compliance · Conferences |
 | [`github-settings`](https://github.com/petry-projects/.github/blob/main/standards/github-settings.md) | Repository settings baselines | Repository Rulesets · Organization-Level Secrets · GitHub Apps & Integrations · Labels — Standard Set · Compliance Audit Process |
+| [`gitignore-standard`](https://github.com/petry-projects/.github/blob/main/standards/gitignore-standard.md) | `.gitignore` management with a two-layer (secrets + ecosystem) model | Two-Layer Model · L1 — Secrets baseline (org-managed, verbatim, required) · L2 — Ecosystem / OS extension · Managed-block markers · Compliance check |
 | [`initiatives-project`](https://github.com/petry-projects/.github/blob/main/standards/initiatives-project.md) | Project board for tracking org initiatives | What belongs on the board · Fields · Theme → Initiative · How the auto-add works |
 | [`persona-standards`](https://github.com/petry-projects/.github/blob/main/standards/persona-standards.md) | Agent and Copilot persona guidelines | The trigger matrix (onboarding checklist) · Canary onboarding · Trust, permissions, and safety · Definition of Done |
 | [`pr-limits`](https://github.com/petry-projects/.github/blob/main/standards/pr-limits.md) | Pull request size and scope limits | What is limited · Exempt actors · Reconciliation with the Dependabot cap · Operator runbook |
@@ -80,6 +81,7 @@ Frameworks are installed as git subtrees in
 
 | Framework | Version | Source |
 |---|---|---|
+| `bmad-bgreat-suite` | ae8914e84b87 | [petry-projects/bmad-bgreat-suite](https://github.com/petry-projects/bmad-bgreat-suite) |
 | `bmad-method` | v6.8.0 | [bmad-code-org/BMAD-METHOD](https://github.com/bmad-code-org/BMAD-METHOD) |
 | `bmad-test-architecture` | v1.19.0 | [bmad-code-org/bmad-method-test-architecture-enterprise](https://github.com/bmad-code-org/bmad-method-test-architecture-enterprise) |
 
