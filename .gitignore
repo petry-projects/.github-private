@@ -397,7 +397,9 @@ private.yml
 __pycache__/
 *.pyc
 
-# npm dependencies — never vendored; bats is installed via apt in CI (#1455)
+# Node dependencies — installed from package.json at CI/dev time (bats lives here).
+# A local install must never be committed, and markdownlint must never lint the
+# third-party package READMEs it contains (#1450).
 node_modules/
 
 # Vendor-specific Claude Code skill projections — BMAD lives in frameworks/ (agent-agnostic).
