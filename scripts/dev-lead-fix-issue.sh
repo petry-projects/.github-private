@@ -5,6 +5,9 @@ set -euo pipefail
 
 source "$(dirname "$0")/engine.sh"
 source "$(dirname "$0")/lib/git-identity.sh"
+# Pure completion-claim helpers (#1445): body_has_completion_claim /
+# claim_is_retracted / supersede_claim_body + the PC_CLAIM_RETRACTED_MARKER.
+source "$(dirname "$0")/lib/premature-closure-detect.sh"
 
 ISSUE_NUMBER="${ISSUE_NUMBER:-}"
 REPO="${REPO:-${GITHUB_REPOSITORY:-}}"
@@ -103,7 +106,62 @@ escalate_needs_human() {
 ${cause_markdown}
 
 ${snippet}" 2>/dev/null || true
+  # Terminal failure (#1445, AC #3): any completion claim posted before the work
+  # was durable is now false — supersede it in place so the issue never reads as
+  # delivered while nothing landed. Runs on every needs-human branch (missing-
+  # binary / timeout / retries-exhausted), never on the retryable path.
+  retract_prior_completion_claims "$reason"
   exit "$exit_code"
+}
+
+# retract_prior_completion_claims <reason>
+# Find any standing completion claim on this issue (the durable status=completed
+# marker OR a legacy "## Completed" / "Implementation Complete" comment the engine
+# posted mid-run) and supersede it IN PLACE: prepend a dated strike-through banner
+# (carrying PC_CLAIM_RETRACTED_MARKER) and strike the claim's heading, reusing the
+# docs/metrics-baseline.md dated-correction convention. Idempotent — a comment
+# already carrying the marker is skipped. Best-effort: every gh failure is
+# swallowed so retraction never turns a clean escalation into a hard error.
+retract_prior_completion_claims() {
+  local reason="${1:-}" today comments enc obj id body banner new_body tmp
+  today=$(date -u +%Y-%m-%d)
+
+  # List id+body for every comment, base64-encoded per row so multi-line bodies
+  # survive the read loop intact. Uses jq as a pipe stage (gh's own --jq is not
+  # applied by the test stubs), mirroring count_prior_attempts.
+  comments=$(gh api --paginate "repos/${REPO}/issues/${ISSUE_NUMBER}/comments?per_page=100" 2>/dev/null \
+    | jq -s -r '[ .[] | .[]? ] | .[] | {id: .id, body: (.body // "")} | @base64' 2>/dev/null) || return 0
+  [ -n "$comments" ] || return 0
+
+  while IFS= read -r enc; do
+    [ -n "$enc" ] || continue
+    obj=$(printf '%s' "$enc" | base64 -d 2>/dev/null) || continue
+    id=$(printf '%s' "$obj" | jq -r '.id' 2>/dev/null) || continue
+    body=$(printf '%s' "$obj" | jq -r '.body' 2>/dev/null) || continue
+    [ -n "$id" ] && [ "$id" != "null" ] || continue
+    body_has_completion_claim "$body" || continue
+    claim_is_retracted "$body" && continue
+
+    # If the claim references a durable merged PR (pr=NNN), the work did land —
+    # retraction would incorrectly strike a genuine completion record. Skip it.
+    local pr_ref
+    pr_ref=$(printf '%s' "$body" | grep -oE 'pr=[0-9]+' | grep -oE '[0-9]+' | head -1 2>/dev/null || true)
+    if [ -n "$pr_ref" ]; then
+      local pr_state
+      pr_state=$(gh pr view "$pr_ref" --repo "$REPO" --json state --jq '.state' 2>/dev/null || echo "")
+      [ "$pr_state" = "MERGED" ] && continue
+    fi
+
+    banner="${PC_CLAIM_RETRACTED_MARKER}
+> **[Retracted ${today} — superseded]** This completion claim was published **before the work was durable**. The run subsequently ended without landing anything on \`main\` (reason=\`${reason}\`, run=${GITHUB_RUN_ID:-}), so it produced nothing. The claim is struck in place (not deleted) per this repo's dated-correction convention; see the \`needs-human\` escalation on this issue for status."
+    new_body=$(supersede_claim_body "$body" "$banner")
+
+    tmp=$(mktemp) || continue
+    printf '%s' "$new_body" > "$tmp"
+    gh api -X PATCH "repos/${REPO}/issues/comments/${id}" -F "body=@${tmp}" >/dev/null 2>&1 || true
+    rm -f "$tmp"
+    echo "::notice::Retracted stale completion claim (comment ${id}) on issue #${ISSUE_NUMBER} — run failed (${reason}), nothing landed."
+  done <<< "$comments"
 }
 
 # handle_engine_failure <engine_rc>
@@ -336,6 +394,30 @@ This issue stays labeled \`dev-lead\` and will be re-attempted automatically onc
 the queue drains — no action is required." 2>/dev/null || true
 }
 
+# post_completion_claim <pr_url> <head_sha>
+# Post the DURABLE completion record (#1445, AC #1/#2) — only ever called AFTER
+# the work is durable (commits pushed + PR opened). It carries a machine-readable
+# marker plus the two verifiable artifacts (PR number + head SHA) so a reader can
+# confirm it in one click and the #1445 audit can check it mechanically. This is
+# the ONLY completion claim the pipeline posts; the engine's own Phase-6 note is
+# explicitly provisional (see prompts/dev-lead/fix-issue.md).
+post_completion_claim() {
+  local pr_url="$1" head_sha="$2" pr_number run_url
+  pr_number=$(printf '%s' "$pr_url" | sed -nE 's#.*/pull/([0-9]+).*#\1#p')
+  [ -n "$pr_number" ] || pr_number="unknown"
+  run_url="${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-$REPO}/actions/runs/${GITHUB_RUN_ID:-}"
+  gh issue comment "$ISSUE_NUMBER" --repo "$REPO" --body "<!-- dev-lead-issue ${ISSUE_NUMBER} status=completed pr=${pr_number} sha=${head_sha} run=${GITHUB_RUN_ID:-} -->
+## Dev-Lead: Implementation Complete — PR #${pr_number}
+
+The implementation for issue #${ISSUE_NUMBER} is **durable**: commits are pushed and a pull request is open. This record is backed by verifiable artifacts you can confirm in one click.
+
+- **Pull request:** ${pr_url}
+- **Head commit:** \`${head_sha}\`
+- **Run:** ${run_url}
+
+Review happens on the PR. Acceptance criteria and test results are evidenced by the PR's diff and CI checks — not asserted here. If a later stage fails, this claim is retracted in place." 2>/dev/null || true
+}
+
 main() {
   if [ -z "$ISSUE_NUMBER" ]; then
     echo "::error::ISSUE_NUMBER is required"
@@ -456,6 +538,11 @@ ${lint_output}
   fi
   git push --set-upstream origin "$branch"
 
+  # Head SHA of the durable, pushed work — the verifiable artifact the completion
+  # claim references (#1445, AC #2).
+  local head_sha
+  head_sha=$(git rev-parse HEAD)
+
   local pr_url
   pr_url=$(gh pr create \
     --repo "$REPO" \
@@ -480,6 +567,12 @@ Implemented by dev-lead agent. Please review." \
       --color "0e8a16" >/dev/null 2>&1 || true
     gh pr edit "$pr_url" --repo "$REPO" --add-label "auto-rebase:ready" >/dev/null 2>&1 || true
   fi
+
+  # Durable completion claim (#1445): posted ONLY here — after commits are pushed
+  # and the PR is open — and referencing the PR number + head SHA. Ordering this
+  # after the push/PR is the fix for the #1407 defect where a detailed "Completed"
+  # claim was published before the work was durable and then lost to a timeout.
+  post_completion_claim "$pr_url" "$head_sha"
 
   rm -f "$prompt_file"
 }
