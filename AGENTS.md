@@ -177,6 +177,32 @@ PR-triggered check on the existing Lint workflow — **no new cron/scheduled wor
   in `scripts/template_stub_drift.sh` (`TEMPLATE_DRIFT_ALLOWLIST`). Add a path to that allowlist **only** with
   a recorded rationale, the same way the exceptions above are documented.
 
+- **Dependabot must not bump the shipped artifacts (#1435).** Dependabot runs in `repo-template` off the
+  seeded `.github/dependabot.yml`. If that config enables the `github-actions` ecosystem, Dependabot bumps
+  action versions **inside the shipped workflow stubs** — each bump rewrites a committed blob, so the file no
+  longer matches the standards-derived baseline and `template-drift` fails **in this repo for a change made in
+  another repo**. Because a non-required red check still halts pr-review here (`compute_ci_status` has no
+  required/non-required notion — `scripts/lib/ci-status.sh`, `scripts/review-one-pr.sh`), a Dependabot bump in
+  `repo-template` silently stops all PR review here with no signal on any PR. **Mechanism:**
+  `scripts/seed-repo-template.sh` scopes the `github-actions` package-ecosystem **out** of the shipped
+  `.github/dependabot.yml` (`_dependabot_scope_out_actions`; tests in `tests/test_seed_repo_template.bats`).
+  The template's workflows are a distribution artifact of `standards/` and their action versions stay current
+  by **re-seeding** (`bump standards/` → re-run `seed-repo-template.sh`), not by Dependabot — the same
+  edit-standards-not-the-copy contract as the drift guard itself. This also correctly stops Dependabot from
+  bumping the first-party channel-tag pins in the caller stubs, which are the sanctioned mutable-ref exception
+  (see "Release channel tags & the mutable-ref exception"). Other ecosystems (npm/gomod/pip/…) pass through
+  unchanged, and a consumer that wants Dependabot-managed action updates for its **own** (non-artifact)
+  workflows adds the `github-actions` ecosystem back when it customizes its stack per `BOOTSTRAP.md`.
+    - **Why not the alternatives.** *Option 2 — keep Dependabot, automate a re-seed after each bump* — was
+      rejected: it leaves a permanent drift window between the bump and the re-seed during which
+      `template-drift` is red and review here is halted. *Option 3 — point Dependabot at
+      `petry-projects/.github` and let bumps flow to the template by re-seeding* — reaches the same
+      end state but additionally requires a change in the public standards repo; the scope-out above is
+      implementable entirely from this repo (which owns `seed-repo-template.sh`) and is a prerequisite for
+      Option 3 anyway (the template still must not run its own `github-actions` Dependabot). If the standards
+      repo later grows its own `github-actions` Dependabot + re-seed automation, this scope-out remains the
+      correct template-side behavior.
+
 ### Reusable caller-input contract (`validate-caller-inputs`)
 
 The `validate-caller-inputs` job in `lint.yml` (#1253, epic #1052; regression guard for #1034)
