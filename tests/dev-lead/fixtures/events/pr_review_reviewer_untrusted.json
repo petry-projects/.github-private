@@ -1,0 +1,36 @@
+{
+  "_test_expected_intent": "skip",
+  "_test_note": "Reviewer-trust gate regression guard (#1417): PR author held at OWNER while reviewer association is CONTRIBUTOR (untrusted). Under the pre-fix code (which read .pull_request.author_association == OWNER) this routed review-changes; the fixed gate reads .review.author_association == CONTRIBUTOR and emits skip untrusted-reviewer.",
+  "action": "submitted",
+  "review": {
+    "id": 5002,
+    "state": "CHANGES_REQUESTED",
+    "body": "I think this needs work.",
+    "author_association": "CONTRIBUTOR",
+    "user": {
+      "login": "outside-contributor",
+      "type": "User"
+    }
+  },
+  "pull_request": {
+    "number": 1417,
+    "title": "fix: reviewer-trust gate",
+    "state": "open",
+    "author_association": "OWNER",
+    "user": {
+      "login": "donpetry-bot",
+      "type": "Bot"
+    },
+    "head": {
+      "sha": "aaa111bbb222",
+      "ref": "dev-lead/issue-1417-20260802-0956",
+      "repo": { "full_name": "petry-projects/.github-private" }
+    },
+    "base": {
+      "ref": "main",
+      "repo": { "full_name": "petry-projects/.github-private" }
+    }
+  },
+  "repository": { "full_name": "petry-projects/.github-private" },
+  "sender": { "login": "outside-contributor", "type": "User" }
+}

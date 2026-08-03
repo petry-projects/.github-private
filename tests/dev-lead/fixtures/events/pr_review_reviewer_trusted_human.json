@@ -1,0 +1,36 @@
+{
+  "_test_expected_intent": "review-changes",
+  "_test_note": "Reviewer-trust gate (#1417): PR author held at OWNER, reviewer association COLLABORATOR → the reviewer is a trusted human, so route review-changes. Distinguishes the reviewer's association from the PR author's.",
+  "action": "submitted",
+  "review": {
+    "id": 5001,
+    "state": "CHANGES_REQUESTED",
+    "body": "Please tighten the error handling here.",
+    "author_association": "COLLABORATOR",
+    "user": {
+      "login": "trusted-maintainer",
+      "type": "User"
+    }
+  },
+  "pull_request": {
+    "number": 1417,
+    "title": "fix: reviewer-trust gate",
+    "state": "open",
+    "author_association": "OWNER",
+    "user": {
+      "login": "donpetry-bot",
+      "type": "Bot"
+    },
+    "head": {
+      "sha": "aaa111bbb222",
+      "ref": "dev-lead/issue-1417-20260802-0956",
+      "repo": { "full_name": "petry-projects/.github-private" }
+    },
+    "base": {
+      "ref": "main",
+      "repo": { "full_name": "petry-projects/.github-private" }
+    }
+  },
+  "repository": { "full_name": "petry-projects/.github-private" },
+  "sender": { "login": "trusted-maintainer", "type": "User" }
+}
