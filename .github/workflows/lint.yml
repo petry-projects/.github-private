@@ -42,6 +42,9 @@ jobs:
       - name: Install Python deps (validator tests)
         run: pip3 install --quiet 'jsonschema>=4' pyyaml
 
+      - name: Install markdownlint-cli2 (behavioral regression test)
+        run: npm install -g markdownlint-cli2@0.23.2
+
       - name: Run tests
         run: |
           scripts/run-bats.sh \

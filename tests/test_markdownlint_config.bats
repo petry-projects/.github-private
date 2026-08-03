@@ -39,7 +39,7 @@ PY
 # Regression guard for #1455: the ignores list must exclude node_modules so
 # markdownlint never lints vendored dependency markdown.
 @test ".markdownlint-cli2.jsonc ignores node_modules" {
-  run _load_cfg "any('node_modules' in p for p in cfg.get('ignores', []))"
+  run _load_cfg "'node_modules/**' in cfg.get('ignores', [])"
   [ "$status" -eq 0 ]
   [ "$output" = "True" ]
 }
@@ -52,6 +52,8 @@ PY
   run git -C "$REPO_ROOT" ls-files node_modules
   [ "$status" -eq 0 ]
   [ -z "$output" ]
+  run git -C "$REPO_ROOT" check-ignore --no-index -q -- node_modules/somepkg/README.md
+  [ "$status" -eq 0 ]
 }
 
 # Behavioral guard: run the real linter against a fixture tree containing both a
@@ -61,19 +63,17 @@ PY
 # mirroring the gitleaks behavioral test.
 @test "markdownlint ignores node_modules markdown but still flags non-ignored files" {
   command -v markdownlint-cli2 >/dev/null 2>&1 || skip "markdownlint-cli2 not installed"
-  local dir
-  dir="$(mktemp -d)"
-  cp "$MDL_CONFIG" "$dir/.markdownlint-cli2.jsonc"
-  mkdir -p "$dir/node_modules/somepkg" "$dir/docs"
-  printf '# Pkg\n\n<div>inline html</div>\n' > "$dir/node_modules/somepkg/README.md"
-  printf '# Doc\n\n<div>inline html</div>\n' > "$dir/docs/bad.md"
-  run bash -c "cd '$dir' && markdownlint-cli2 '**/*.md' 2>&1"
-  rm -rf "$dir"
+  cp "$MDL_CONFIG" "$BATS_TEST_TMPDIR/.markdownlint-cli2.jsonc"
+  mkdir -p "$BATS_TEST_TMPDIR/node_modules/somepkg" "$BATS_TEST_TMPDIR/docs"
+  printf '# Pkg\n\n<div>inline html</div>\n' > "$BATS_TEST_TMPDIR/node_modules/somepkg/README.md"
+  printf '# Doc\n\n<div>inline html</div>\n' > "$BATS_TEST_TMPDIR/docs/bad.md"
+  run bash -c "cd '$BATS_TEST_TMPDIR' && markdownlint-cli2 '**/*.md' 2>&1"
   # The non-ignored doc violation is reported (linter exits non-zero)...
   [ "$status" -ne 0 ]
   echo "$output" | grep -q "docs/bad.md"
   # ...and the vendored node_modules markdown is never linted. Match the fixture
   # file path specifically, not the bare string "node_modules/", so the ignore
   # glob echoed on the informational "Finding:" line is not a false positive.
-  ! echo "$output" | grep -q "node_modules/somepkg/README.md"
+  run grep -q "node_modules/somepkg/README.md" <<< "$output"
+  [ "$status" -eq 1 ]
 }
