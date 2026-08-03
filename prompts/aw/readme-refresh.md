@@ -88,7 +88,7 @@ Target type: `${TARGET_TYPE}`. Produce the complete, final Markdown body for thi
    line exceeds the limit (a soft break inside a paragraph renders identically). Tables and fenced code
    blocks are exempt. This is a strict CI lint rule (markdownlint MD013); overly long lines fail CI.
 10. If the target repo is `.github` (types `org-profile-public`, `github-repo-readme`): the first line
-    of the body MUST be a single top-level `#` heading, and use `[text](url)` links — **no bare URLs**.
+    of the body MUST be a single top-level `# ` heading, and use `[text](url)` links — **no bare URLs**.
 11. Do **not** explain your reasoning, and do **not** add any preamble or trailing commentary.
 12. Emit the complete file body **between two marker lines**, exactly like this:
 

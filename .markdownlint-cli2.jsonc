@@ -47,31 +47,24 @@
     //        that renderers handle correctly but linter expects 1/1/1 style.
     "MD029": false,
     // MD060: table-column-style — newer rule; many tables use compact style.
-    "MD060": false,
-    // MD028: no-blanks-blockquote — prompts use blank lines between consecutive
-    //        guardrail blockquotes as intentional visual separation; suppressed here.
-    "MD028": false,
-    // MD004: ul-style — prompts use dash (-) list style throughout; the markdownlint
-    //        default resolves to plus, so we set dash explicitly.
-    "MD004": { "style": "dash" }
+    "MD060": false
   },
   // Exclude generated/internal directories from linting.
   //
   // These fall into two buckets, both third-party or generated — never
   // repo-authored markdown:
-  //   - vendored upstream content committed into the tree (.claude, frameworks)
+  //   - vendored upstream content committed into the tree (.claude, frameworks,
+  //     prompts)
   //   - directories a package manager or build step populates at CI time
   //     (node_modules, vendor, dist, build, coverage). markdownlint runs against
   //     whatever is on disk, so a `node_modules/` present on the runner would
   //     otherwise fail Lint on third-party package READMEs the repo never wrote
   //     (#1450). These mirror the build/dependency dirs the org repo-template
   //     ignores (scripts/seed-repo-template.sh).
-  //
-  // NOTE: prompts/ is repo-authored content and intentionally NOT excluded here —
-  // prompt markdown is covered by the lint gate.
   "ignores": [
     ".claude/**",
     "frameworks/**",
+    "prompts/**",
     "node_modules/**",
     "vendor/**",
     "dist/**",

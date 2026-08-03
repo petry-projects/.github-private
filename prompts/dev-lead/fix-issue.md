@@ -19,18 +19,7 @@ ${ISSUE_BODY}
 
 Work through each phase in order. **Do not skip phases.**
 
-> **Guardrail — never forward an undeclared input across a channel pin.** A thin caller stub pins a
-> first-party reusable at a **moving channel tag** (e.g. `…@dev-lead/v1-stable`). **Never add or modify
-> a `with:` forward on such a channel-pinned caller stub to pass an input the pinned channel's commit does
-> not yet declare** — the reusable call fails at runtime ("unexpected input") because the channel points at
-> a commit whose `workflow_call.inputs` lacks it (the channel-skew defect, #1052). Adding a new
-> `workflow_call` input is a **three-step sequence, in order**: (1) land the input in the reusable's
-> `workflow_call.inputs`; (2) promote the pinned channel to a commit that declares it via
-> `cut-release.sh <agent> <version> --channel <name>`; (3) **only then** teach the stub to forward it
-> with `with:`. If the issue asks you to forward an input the pinned channel does not declare, **do not**
-> add the forward — note the missing sequencing instead. See AGENTS.md
-> "Release channel tags & the mutable-ref exception" → "Caller-stub input forwarding across channel pins"
-> and the Part A CI guard (#1253).
+> **Guardrail — never forward an undeclared input across a channel pin.** A thin caller stub pins a first-party reusable at a **moving channel tag** (e.g. `…@dev-lead/v1-stable`). **Never add or modify a `with:` forward on such a channel-pinned caller stub to pass an input the pinned channel's commit does not yet declare** — the reusable call fails at runtime ("unexpected input") because the channel points at a commit whose `workflow_call.inputs` lacks it (the channel-skew defect, #1052). Adding a new `workflow_call` input is a **three-step sequence, in order**: (1) land the input in the reusable's `workflow_call.inputs`; (2) promote the pinned channel to a commit that declares it via `cut-release.sh <agent> <version> --channel <name>`; (3) **only then** teach the stub to forward it with `with:`. If the issue asks you to forward an input the pinned channel does not declare, **do not** add the forward — note the missing sequencing instead. See AGENTS.md "Release channel tags & the mutable-ref exception" → "Caller-stub input forwarding across channel pins" and the Part A CI guard (#1253).
 
 ---
 
@@ -146,12 +135,7 @@ Perform a self-review of all changes as if you are a code reviewer seeing this f
 
 ### Phase 6 — Report (PROVISIONAL — pre-push)
 
-> **Your work is not durable yet.** You commit nothing and push nothing — the automation commits, pushes,
-> and opens the PR *after* you finish, then posts the single authoritative
-> **"## Dev-Lead: Implementation Complete"** record referencing the **PR number + head commit SHA** (the
-> verifiable artifacts). Until that push happens, your workspace can still be discarded (e.g. a later
-> stage times out), so **any completion claim you post now could evaporate** — exactly the #1445 defect
-> where a detailed "726/726 pass" claim was published, the run timed out, and nothing landed on `main`.
+> **Your work is not durable yet.** You commit nothing and push nothing — the automation commits, pushes, and opens the PR *after* you finish, then posts the single authoritative **"## Dev-Lead: Implementation Complete"** record referencing the **PR number + head commit SHA** (the verifiable artifacts). Until that push happens, your workspace can still be discarded (e.g. a later stage times out), so **any completion claim you post now could evaporate** — exactly the #1445 defect where a detailed "726/726 pass" claim was published, the run timed out, and nothing landed on `main`.
 
 Therefore, if you post a status comment in this phase, it must be **explicitly provisional**. It must **NOT**:
 

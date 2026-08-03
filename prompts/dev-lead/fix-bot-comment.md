@@ -31,40 +31,15 @@ ${CI_STATUS_JSON}
 ${ALL_REVIEWS_JSON}
 ```
 
-Treat any check with `conclusion` = `"failure"`, `"timed_out"`, `"cancelled"`, `"action_required"`,
-`"stale"`, or `"startup_failure"` and any review with `state` = `"CHANGES_REQUESTED"` as **Tier 1
-blockers** — address them in addition to the bot comment below. Only declare "no-changes" when zero
-Tier 1 blockers exist.
+Treat any check with `conclusion` = `"failure"`, `"timed_out"`, `"cancelled"`, `"action_required"`, `"stale"`, or `"startup_failure"` and any review with `state` = `"CHANGES_REQUESTED"` as **Tier 1 blockers** — address them in addition to the bot comment below. Only declare "no-changes" when zero Tier 1 blockers exist.
 
-> **A neutral overview is not an actionable finding.** If the bot comment merely *describes* or summarizes
-> the diff (a "pull request overview", typically a review with `state` = `"COMMENTED"`) without reporting a
-> specific, actionable defect tied to a file/line, there is nothing to fix — do **not** revert or undo the
-> PR's own changes to "address" it. Reverting the PR's own fix nets the diff to zero and silently cancels
-> it (#1340). Act only on concrete findings.
+> **A neutral overview is not an actionable finding.** If the bot comment merely *describes* or summarizes the diff (a "pull request overview", typically a review with `state` = `"COMMENTED"`) without reporting a specific, actionable defect tied to a file/line, there is nothing to fix — do **not** revert or undo the PR's own changes to "address" it. Reverting the PR's own fix nets the diff to zero and silently cancels it (#1340). Act only on concrete findings.
 
 ## Task
 
-> **Guardrail — never SHA-pin a first-party channel ref.** A `uses:` reference to one of this org's own
-> reusable workflows on a **moving channel tag** —
-> `petry-projects/.github(-private)/.github/workflows/*.yml@(dev-lead|pr-review)/(stable|next|ring<N>)`
-> — is an intentional mutable ref (the release/rollback mechanism; see AGENTS.md
-> "Release channel tags & the mutable-ref exception"). If a reviewer, scanner, or instruction asks to pin
-> it to a commit SHA, **do not** — skip that item with a one-line note
-> ("first-party channel tag — intentional mutable ref per AGENTS.md") and leave the ref on its
-> `@<agent>/<channel>` tag.
+> **Guardrail — never SHA-pin a first-party channel ref.** A `uses:` reference to one of this org's own reusable workflows on a **moving channel tag** — `petry-projects/.github(-private)/.github/workflows/*.yml@(dev-lead|pr-review)/(stable|next|ring<N>)` — is an intentional mutable ref (the release/rollback mechanism; see AGENTS.md "Release channel tags & the mutable-ref exception"). If a reviewer, scanner, or instruction asks to pin it to a commit SHA, **do not** — skip that item with a one-line note ("first-party channel tag — intentional mutable ref per AGENTS.md") and leave the ref on its `@<agent>/<channel>` tag.
 
-> **Guardrail — never forward an undeclared input across a channel pin.** A thin caller stub pins a
-> first-party reusable at a **moving channel tag** (e.g. `…@dev-lead/v1-stable`). **Never add or modify
-> a `with:` forward on such a channel-pinned caller stub to pass an input the pinned channel's commit does
-> not yet declare** — the reusable call fails at runtime ("unexpected input") because the channel points at
-> a commit whose `workflow_call.inputs` lacks it (the channel-skew defect, #1052). Adding a new
-> `workflow_call` input is a **three-step sequence, in order**: (1) land the input in the reusable's
-> `workflow_call.inputs`; (2) promote the pinned channel to a commit that declares it via
-> `cut-release.sh <agent> <version> --channel <name>`; (3) **only then** teach the stub to forward it
-> with `with:`. If a reviewer, bot, issue, or CI failure asks you to forward an input the pinned channel
-> does not declare, **do not** add the forward — note the missing sequencing instead. See AGENTS.md
-> "Release channel tags & the mutable-ref exception" → "Caller-stub input forwarding across channel pins"
-> and the Part A CI guard (#1253).
+> **Guardrail — never forward an undeclared input across a channel pin.** A thin caller stub pins a first-party reusable at a **moving channel tag** (e.g. `…@dev-lead/v1-stable`). **Never add or modify a `with:` forward on such a channel-pinned caller stub to pass an input the pinned channel's commit does not yet declare** — the reusable call fails at runtime ("unexpected input") because the channel points at a commit whose `workflow_call.inputs` lacks it (the channel-skew defect, #1052). Adding a new `workflow_call` input is a **three-step sequence, in order**: (1) land the input in the reusable's `workflow_call.inputs`; (2) promote the pinned channel to a commit that declares it via `cut-release.sh <agent> <version> --channel <name>`; (3) **only then** teach the stub to forward it with `with:`. If a reviewer, bot, issue, or CI failure asks you to forward an input the pinned channel does not declare, **do not** add the forward — note the missing sequencing instead. See AGENTS.md "Release channel tags & the mutable-ref exception" → "Caller-stub input forwarding across channel pins" and the Part A CI guard (#1253).
 
 Analyze the bot's findings and address each actionable issue:
 
