@@ -397,6 +397,9 @@ private.yml
 __pycache__/
 *.pyc
 
+# npm dependencies — never vendored; bats is installed via apt in CI (#1455)
+node_modules/
+
 # Vendor-specific Claude Code skill projections — BMAD lives in frameworks/ (agent-agnostic).
 .claude/skills/
 

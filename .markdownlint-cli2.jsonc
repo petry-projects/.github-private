@@ -53,6 +53,8 @@
   "ignores": [
     ".claude/**",
     "frameworks/**",
-    "prompts/**"
+    "prompts/**",
+    // Vendored npm dependencies — third-party markdown we do not lint (#1455).
+    "node_modules/**"
   ]
 }

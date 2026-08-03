@@ -75,6 +75,7 @@ jobs:
             tests/test_cut_release.bats \
             tests/test_cut_release_cross_repo.bats \
             tests/test_gitleaks_config.bats \
+            tests/test_markdownlint_config.bats \
             tests/test_initiative_planner.bats \
             tests/test_initiative_planner_redispatch.bats \
             tests/test_initiative_reconcile.bats \
