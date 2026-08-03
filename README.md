@@ -102,52 +102,6 @@ Notable subtopics are listed below to aid discoverability; see the standards dir
 | [`push-protection`](https://github.com/petry-projects/.github/blob/main/standards/push-protection.md) | Layer 1 (GitHub push protection), Layer 2 (local pre-commit), Layer 3 (CI secret scanning), incident response |
 | [`ruleset-remediation-runbook`](https://github.com/petry-projects/.github/blob/main/standards/ruleset-remediation-runbook.md) | Bypass actors, migrate checks into `code-quality`, delete legacy rulesets, rollback procedure |
 
-## Reporting & Dashboards
-
-Scheduled workflows post reports and dashboards as issues or run summaries for maintainers.
-
-**In this repo (`.github-private`):**
-
-| Workflow | Purpose |
-|----------|---------|
-| [`actions-fleet-monitor.yml`](.github/workflows/actions-fleet-monitor.yml) | Actions fleet monitor — org-wide workflow token usage and run anomalies |
-| [`auto-rebase-health.yml`](.github/workflows/auto-rebase-health.yml) | Daily auto-rebase health report (issue) — rebase success/failure trends |
-| [`daily-pr-review-health.yml`](.github/workflows/daily-pr-review-health.yml) | Daily PR-review health check — flags PR-review agent failures as an issue |
-| [`docs-health-check.yml`](.github/workflows/docs-health-check.yml) | Docs health check — flags stale/broken docs as an issue |
-| [`premature-closure-audit.yml`](.github/workflows/premature-closure-audit.yml) | Premature-closure audit — flags issues closed as completed with no merged closing PR |
-| [`reviewer-report.yml`](.github/workflows/reviewer-report.yml) | Reviewer scorecard (per workflow-run summary) — per-reviewer PR-review activity |
-| [`skill-eval-report.yml`](.github/workflows/skill-eval-report.yml) | Skill-eval results report — agent skill pass/fail trends (self-improving-skills pipeline) |
-| [`token-report.yml`](.github/workflows/token-report.yml) | LLM token-cost report (per workflow-run summary) for maintainers |
-
-**In `.github` (org-level):**
-
-| Workflow | Purpose |
-|----------|---------|
-| [`compliance-audit-and-improvement.yml`](https://github.com/petry-projects/.github/blob/main/.github/workflows/compliance-audit-and-improvement.yml) | Weekly org standards compliance audit + runtime health survey, with per-finding remediation issues |
-| [`daily-org-status.yml`](https://github.com/petry-projects/.github/blob/main/.github/workflows/daily-org-status.yml) | Daily "Org Status" digest posted as an issue for maintainers |
-| [`org-scorecard.yml`](https://github.com/petry-projects/.github/blob/main/.github/workflows/org-scorecard.yml) | Weekly OpenSSF Scorecard security-posture review across public repos; findings tracked as issues |
-
-## Standards
-
-Engineering standards live in `petry-projects/.github/standards/`.
-Notable subtopics are listed below to aid discoverability; see the standards directory for full documentation.
-
-| Standard | Notable subtopics |
-|----------|-------------------|
-| [`advanced-security`](https://github.com/petry-projects/.github/blob/main/standards/advanced-security.md) | Code Security Configurations, push-protection live-fire (canary), licensing & billing, compliance audit checks |
-| [`agent-standards`](https://github.com/petry-projects/.github/blob/main/standards/agent-standards.md) | Required files, compliance exemptions, AgentShield CI workflow, decision-making reusables, BMAD Method Workflows |
-| [`ci-standards`](https://github.com/petry-projects/.github/blob/main/standards/ci-standards.md) | Staged promotion through concentric rings, reusable workflow versioning (`stable` channel), action pinning policy, permissions policy, Dev-Lead Agent |
-| [`codeowners-standard`](https://github.com/petry-projects/.github/blob/main/standards/codeowners-standard.md) | Team composition, required setup for new bots, branch protection, verified end-to-end |
-| [`copilot-instructions-standard`](https://github.com/petry-projects/.github/blob/main/standards/copilot-instructions-standard.md) | Canonical instruction files, adding a new language, required sections, content quality rules |
-| [`dependabot-policy`](https://github.com/petry-projects/.github/blob/main/standards/dependabot-policy.md) | Configuration files, auto-merge workflow, vulnerability audit CI check, applying to a repository |
-| [`feature-ideation-sources`](https://github.com/petry-projects/.github/blob/main/standards/feature-ideation-sources.md) | AI/ML vendor & lab sources, developer tooling changelogs, security & compliance sources, newsletters, podcasts |
-| [`github-settings`](https://github.com/petry-projects/.github/blob/main/standards/github-settings.md) | Org-level settings, repository rulesets, required checks ruleset, GitHub Apps & integrations, org-level secrets |
-| [`initiatives-project`](https://github.com/petry-projects/.github/blob/main/standards/initiatives-project.md) | Project board fields, Theme → Initiative, how auto-add works, initiative classification |
-| [`persona-standards`](https://github.com/petry-projects/.github/blob/main/standards/persona-standards.md) | Canary onboarding (the last step), trigger matrix, trust & permissions, definition of done |
-| [`pr-limits`](https://github.com/petry-projects/.github/blob/main/standards/pr-limits.md) | Exempt actors, operator runbook, reconciliation with the Dependabot cap |
-| [`push-protection`](https://github.com/petry-projects/.github/blob/main/standards/push-protection.md) | Layer 1 (GitHub push protection), Layer 2 (local pre-commit), Layer 3 (CI secret scanning), incident response |
-| [`ruleset-remediation-runbook`](https://github.com/petry-projects/.github/blob/main/standards/ruleset-remediation-runbook.md) | Bypass actors, migrate checks into `code-quality`, delete legacy rulesets, rollback procedure |
-
 ## Documentation
 
 - [Architecture & Capabilities](docs/pr-review-agent/pr-review-agent.md)

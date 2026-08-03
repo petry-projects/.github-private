@@ -49,32 +49,6 @@ within that window. With `plan_artifact_run_id` empty, behavior is unchanged
 **inert** (no `initiative:auto`); `apply-plan.sh` enforces that regardless of
 path.
 
-## Plan → review → apply split (#604)
-
-By default `initiative-planner.yml` plans **and** applies in a single run (Bob
-emits `plan.json`, then `apply-plan.sh` materializes it). But because the preview
-should bind the result — *what a maintainer reviewed is what materializes* — the
-workflow also supports a two-step split:
-
-1. **Plan (dry-run).** Dispatch with `dry_run: true` (the default). Bob plans and
-   the run uploads the authoritative `plan.json` as the `initiative-plan-dry-run`
-   artifact. **No issues are created.**
-2. **Review.** A maintainer downloads `plan.json` from that run and reviews it.
-   *This is the human review gate for the plan contents* — distinct from the later
-   `initiative:auto` gate that activates auto-implementation.
-3. **Apply (no re-plan).** Re-dispatch with `plan_artifact_run_id` set to the
-   dry-run's run ID. The workflow downloads that run's reviewed `plan.json`,
-   **skips the LLM planning step entirely**, then re-validates and applies it via
-   `apply-reviewed-plan.sh`. The reviewed artifact is what materializes.
-
-The handoff is **artifact download by run ID** (`gh run download`), not a
-committed plan file — it keeps reviewed plans out of git and ties each apply to a
-specific, auditable dry-run. Artifact retention is the default 90 days, so apply
-within that window. With `plan_artifact_run_id` empty, behavior is unchanged
-(plan-then-apply in one run). Even a human-reviewed plan still materializes
-**inert** (no `initiative:auto`); `apply-plan.sh` enforces that regardless of
-path.
-
 ## Local dry run
 
 ```bash
