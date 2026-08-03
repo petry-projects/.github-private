@@ -126,6 +126,15 @@ setup() {
   [ "$output" = "$(printf '0\t0')" ]
 }
 
+@test "summarize_merge_states: handles null or missing author safely" {
+  run summarize_merge_states '[
+    {"mergeStateStatus":"BEHIND","isDraft":false,"author":null},
+    {"mergeStateStatus":"DIRTY","isDraft":false}
+  ]'
+  [ "$status" -eq 0 ]
+  [ "$output" = "$(printf '1\t1')" ]
+}
+
 # ---------------------------------------------------------------------------
 # estimate_fanout — run_count × behind_prs
 # ---------------------------------------------------------------------------

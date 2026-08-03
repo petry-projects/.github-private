@@ -97,15 +97,15 @@ summarize_sentinels() {
 summarize_merge_states() {
   local json="${1:-}"
   [ -n "$json" ] || json='[]'
-  printf '%s' "$json" | jq -r '
+  jq -r '
     [ .[]
       | select((.isDraft // false) | not)
-      | select(((.author.login // "") | test("dependabot"; "i")) | not)
+      | select(((.author?.login // "" | tostring) | test("dependabot"; "i")) | not)
     ] as $prs |
     [
       ([$prs[] | select(.mergeStateStatus == "BEHIND")] | length),
       ([$prs[] | select(.mergeStateStatus == "DIRTY")]  | length)
-    ] | @tsv'
+    ] | @tsv' <<< "$json"
 }
 
 # summarize_runs <runs_json>
