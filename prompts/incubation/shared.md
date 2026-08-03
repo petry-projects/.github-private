@@ -2,8 +2,8 @@
 
 Every `producer-*.md` and `validate-*.md` overlay in this directory follows this
 contract. It is the incubation adaptation of bmad-prd's headless discipline
-(`frameworks/bmad-method/src/bmm-skills/2-plan-workflows/bmad-prd/references/headless.md`
-+ `assets/headless-schemas.md`). Read this before the artifact-specific overlay.
+(`frameworks/bmad-method/src/bmm-skills/2-plan-workflows/bmad-prd/references/headless.md` +
+`assets/headless-schemas.md`). Read this before the artifact-specific overlay.
 
 ## Headless is mandatory
 

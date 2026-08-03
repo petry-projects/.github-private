@@ -25,9 +25,27 @@ ${OPEN_THREADS_JSON}
 
 ## Task
 
-> **Guardrail — never SHA-pin a first-party channel ref.** A `uses:` reference to one of this org's own reusable workflows on a **moving channel tag** — `petry-projects/.github(-private)/.github/workflows/*.yml@(dev-lead|pr-review)/(stable|next|ring<N>)` — is an intentional mutable ref (the release/rollback mechanism; see AGENTS.md "Release channel tags & the mutable-ref exception"). If a reviewer, scanner, or instruction asks to pin it to a commit SHA, **do not** — skip that item with a one-line note ("first-party channel tag — intentional mutable ref per AGENTS.md") and leave the ref on its `@<agent>/<channel>` tag.
+> **Guardrail — never SHA-pin a first-party channel ref.** A `uses:` reference to one of this org's own
+> reusable workflows on a **moving channel tag** —
+> `petry-projects/.github(-private)/.github/workflows/*.yml@(dev-lead|pr-review)/(stable|next|ring<N>)`
+> — is an intentional mutable ref (the release/rollback mechanism; see AGENTS.md
+> "Release channel tags & the mutable-ref exception"). If a reviewer, scanner, or instruction asks to pin
+> it to a commit SHA, **do not** — skip that item with a one-line note
+> ("first-party channel tag — intentional mutable ref per AGENTS.md") and leave the ref on its
+> `@<agent>/<channel>` tag.
 
-> **Guardrail — never forward an undeclared input across a channel pin.** A thin caller stub pins a first-party reusable at a **moving channel tag** (e.g. `…@dev-lead/v1-stable`). **Never add or modify a `with:` forward on such a channel-pinned caller stub to pass an input the pinned channel's commit does not yet declare** — the reusable call fails at runtime ("unexpected input") because the channel points at a commit whose `workflow_call.inputs` lacks it (the channel-skew defect, #1052). Adding a new `workflow_call` input is a **three-step sequence, in order**: (1) land the input in the reusable's `workflow_call.inputs`; (2) promote the pinned channel to a commit that declares it via `cut-release.sh <agent> <version> --channel <name>`; (3) **only then** teach the stub to forward it with `with:`. If a reviewer, bot, issue, or CI failure asks you to forward an input the pinned channel does not declare, **do not** add the forward — note the missing sequencing instead. See AGENTS.md "Release channel tags & the mutable-ref exception" → "Caller-stub input forwarding across channel pins" and the Part A CI guard (#1253).
+> **Guardrail — never forward an undeclared input across a channel pin.** A thin caller stub pins a
+> first-party reusable at a **moving channel tag** (e.g. `…@dev-lead/v1-stable`). **Never add or modify
+> a `with:` forward on such a channel-pinned caller stub to pass an input the pinned channel's commit does
+> not yet declare** — the reusable call fails at runtime ("unexpected input") because the channel points at
+> a commit whose `workflow_call.inputs` lacks it (the channel-skew defect, #1052). Adding a new
+> `workflow_call` input is a **three-step sequence, in order**: (1) land the input in the reusable's
+> `workflow_call.inputs`; (2) promote the pinned channel to a commit that declares it via
+> `cut-release.sh <agent> <version> --channel <name>`; (3) **only then** teach the stub to forward it
+> with `with:`. If a reviewer, bot, issue, or CI failure asks you to forward an input the pinned channel
+> does not declare, **do not** add the forward — note the missing sequencing instead. See AGENTS.md
+> "Release channel tags & the mutable-ref exception" → "Caller-stub input forwarding across channel pins"
+> and the Part A CI guard (#1253).
 
 Work through each phase in order. Human reviewer feedback is high-priority — implement exactly what is asked.
 
@@ -76,7 +94,11 @@ gh api graphql \
 
 #### Resolving a thread
 
-After replying, resolve the thread using the `id` from the JSON above. Only resolve threads from human reviewers (`comments.nodes[0].author.__typename` is `"User"`) — do not resolve threads posted by bots (`comments.nodes[0].author.__typename` is `"Bot"`). Identify bots by `__typename`, **not** by a `[bot]` login suffix: GraphQL omits the `[bot]` suffix from bot logins, so a suffix check would misclassify `coderabbitai`, `chatgpt-codex-connector`, etc. as human.
+After replying, resolve the thread using the `id` from the JSON above. Only resolve threads from human
+reviewers (`comments.nodes[0].author.__typename` is `"User"`) — do not resolve threads posted by bots
+(`comments.nodes[0].author.__typename` is `"Bot"`). Identify bots by `__typename`, **not** by a `[bot]`
+login suffix: GraphQL omits the `[bot]` suffix from bot logins, so a suffix check would misclassify
+`coderabbitai`, `chatgpt-codex-connector`, etc. as human.
 
 ```bash
 # Replace THREAD_NODE_ID with the id value from the thread JSON

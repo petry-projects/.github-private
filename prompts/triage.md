@@ -172,39 +172,12 @@ wins), then `logic` (a real behavior change), then `performance`, then `style`.
 If you genuinely cannot tell, pick `logic` — it maps to the general-purpose deep
 reviewer, the safe default.
 
-## Issue-type classification
-
-Also classify the *dominant* nature of the diff into exactly one `type`. A deeper
-tier uses this to pick a specialist reviewer (a security diff gets a paranoid
-security lens; a logic diff gets a correctness lens), so pick the class that best
-describes what the change is fundamentally *about* — not merely which files it
-touches. Pick exactly one:
-
-- **`security`** — the change is fundamentally about authentication,
-  authorization, secrets/credentials/crypto/tokens, injection surfaces, GitHub
-  Actions security, or dependency/supply-chain risk. Any diff that touches a
-  criterion-1 high-risk area or contains a criterion-3 security anti-pattern is
-  `security`, regardless of what else it does.
-- **`performance`** — the change is fundamentally about speed, scalability, or
-  resource use: algorithmic complexity, query/IO patterns (N+1, caching,
-  batching), memory/allocation, or concurrency, with no overriding security angle.
-- **`style`** — the change is fundamentally cosmetic or organizational and
-  behavior-preserving: formatting, naming, comments, docs, or a pure
-  readability/structure refactor. Test-only and docs-only diffs are `style`.
-- **`logic`** — the default for a substantive code/behavior change that is not
-  dominated by any of the above: correctness, control flow, edge cases, new
-  functionality, or bug fixes.
-
-Precedence when a diff spans classes: `security` first (any security exposure
-wins), then `logic` (a real behavior change), then `performance`, then `style`.
-If you genuinely cannot tell, pick `logic` — it maps to the general-purpose deep
-reviewer, the safe default.
-
 ## Output format
 
 Output EXACTLY one JSON object, nothing else. No markdown fences, no
 explanation, no preamble. Just the raw JSON object on its own:
 
+```json
 {
   "escalate": true|false,
   "risk": "LOW|MEDIUM|HIGH",
@@ -212,6 +185,7 @@ explanation, no preamble. Just the raw JSON object on its own:
   "signals": ["<short reason 1>", "<short reason 2>"],
   "summary": "<one sentence describing the PR>"
 }
+```
 
 If `escalate` is `false`, `signals` should be empty or contain only positive
 notes. If `escalate` is `true`, `signals` must list every reason for escalation.
