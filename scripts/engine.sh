@@ -2235,16 +2235,6 @@ run_triage() {
             --approval-mode auto_edit || rc=$?
         fi
         ;;
-      gemini)
-        if [ -n "$_tok_tmp" ]; then
-          _GEMINI_CHAIN_MODEL_USED=""
-          _gemini_chain_invoke "$_triage_gemini_chain" "$prompt_file" "$TRIAGE_TIMEOUT_SEC" \
-            --approval-mode auto_edit > >(tee "$_tok_tmp") || rc=$?
-        else
-          _gemini_chain_invoke "$_triage_gemini_chain" "$prompt_file" "$TRIAGE_TIMEOUT_SEC" \
-            --approval-mode auto_edit || rc=$?
-        fi
-        ;;
       copilot)
         # In triage mode, we deny all tools to keep it fast and restricted.
         if [ -n "$_tok_tmp" ]; then
@@ -2361,16 +2351,6 @@ run_agentic() {
       if [ -n "$_gemini_tier_default" ] && [ "$model" != "$_gemini_tier_default" ]; then
         _agentic_gemini_chain="$model"
       fi
-      if [ -n "$_tok_tmp" ]; then
-        _GEMINI_CHAIN_MODEL_USED=""
-        _gemini_chain_invoke "$_agentic_gemini_chain" "$prompt_file" "$DEEP_TIMEOUT_SEC" \
-          --approval-mode auto_edit > >(tee "$_tok_tmp") || rc=$?
-      else
-        _gemini_chain_invoke "$_agentic_gemini_chain" "$prompt_file" "$DEEP_TIMEOUT_SEC" \
-          --approval-mode auto_edit || rc=$?
-      fi
-      ;;
-    gemini)
       if [ -n "$_tok_tmp" ]; then
         _GEMINI_CHAIN_MODEL_USED=""
         _gemini_chain_invoke "$_agentic_gemini_chain" "$prompt_file" "$DEEP_TIMEOUT_SEC" \
