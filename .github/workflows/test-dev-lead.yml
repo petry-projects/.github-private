@@ -128,6 +128,19 @@ jobs:
       - name: Validate issue-triage-runner.yml top-level permissions declaration
         run: python3 tests/dev-lead/integration/test_workflow_toplevel_permissions.py
 
+  dismiss-stale-bot-reviews-permissions:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+      - name: Install PyYAML
+        run: python3 -m pip install --quiet pyyaml
+      - name: Validate dismiss-stale-bot-reviews.yml top-level permissions declaration
+        run: python3 tests/dev-lead/integration/test_dismiss_stale_bot_reviews_permissions.py
+
   stub-structure:
     runs-on: ubuntu-latest
     permissions:
