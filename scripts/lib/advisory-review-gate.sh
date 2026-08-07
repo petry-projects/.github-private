@@ -74,20 +74,6 @@ readonly ADVISORY_HEAD_AGE_TIMEOUT_SEC=1200
 # shellcheck disable=SC2034
 readonly ADVISORY_QUIESCENCE_TIMEOUT_SEC=600
 
-# Timeout-proceed windows for absent advisory bots (issue #1193, split from #1181).
-# The gate must not block a PR forever when an advisory bot never produces output
-# on the repo — a new repo where Gemini/Codex aren't vendor-side enabled, a bot
-# uninstalled entirely (Copilot on a Free plan), or a bot outage. Past these
-# windows an absent bot is treated as a *missing review*, not a *permanent block*.
-#   HEAD_AGE   — proceed once the head commit is this old (primary timeout; the
-#                only one that applies when NO bot has produced any output).
-#   QUIESCENCE — proceed once no new bot submission has arrived for this long
-#                (only meaningful once ≥1 bot has submitted).
-# shellcheck disable=SC2034
-readonly ADVISORY_HEAD_AGE_TIMEOUT_SEC=1200
-# shellcheck disable=SC2034
-readonly ADVISORY_QUIESCENCE_TIMEOUT_SEC=600
-
 # Color codes for output
 # shellcheck disable=SC2034
 readonly RED='\033[0;31m'

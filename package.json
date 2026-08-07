@@ -1,5 +1,8 @@
 {
-  "dependencies": {
-    "bats": "^1.13.0"
+  "name": ".github-private",
+  "version": "1.0.0",
+  "private": true,
+  "devDependencies": {
+    "bats": "1.13.0"
   }
 }

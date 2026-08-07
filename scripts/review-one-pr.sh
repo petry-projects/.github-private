@@ -403,60 +403,6 @@ if [ "$REVIEW_DECISION" = "CHANGES_REQUESTED" ] && [ "${FORCE_REVIEW:-false}" !=
     exit 100
   fi
 fi
-# Skip when a human has requested changes, with two guards:
-#   1. FORCE_REVIEW bypasses the skip — mention-triggered runs always proceed so
-#      authors can request a re-review after addressing feedback.
-#   2. Only skip when a CHANGES_REQUESTED review targets the current head SHA.
-#      On repos that don't dismiss stale reviews, reviewDecision can stay
-#      CHANGES_REQUESTED after the author pushes new commits; in that case the
-#      review is stale and the cascade should re-engage with the updated code.
-if [ "$REVIEW_DECISION" = "CHANGES_REQUESTED" ] && [ "${FORCE_REVIEW:-false}" != "true" ]; then
-  CHANGES_REQUESTED_AT_HEAD=$(echo "$PR_SNAPSHOT" | jq -r --arg sha "$PR_HEAD_SHA" '
-    [.reviews[] | select(.state == "CHANGES_REQUESTED" and .commit.oid == $sha)]
-    | if length > 0 then "true" else "false" end
-  ')
-  if [ "$CHANGES_REQUESTED_AT_HEAD" = "true" ]; then
-    echo "    skip: changes requested at current head — awaiting author response before reviewing"
-    echo "{\"pr\":\"$PR_URL\",\"sha\":\"$PR_HEAD_SHA\",\"decision\":\"skip\",\"reason\":\"changes-requested\"}"
-    exit 100
-  fi
-fi
-# Skip when a human has requested changes, with two guards:
-#   1. FORCE_REVIEW bypasses the skip — mention-triggered runs always proceed so
-#      authors can request a re-review after addressing feedback.
-#   2. Only skip when a CHANGES_REQUESTED review targets the current head SHA.
-#      On repos that don't dismiss stale reviews, reviewDecision can stay
-#      CHANGES_REQUESTED after the author pushes new commits; in that case the
-#      review is stale and the cascade should re-engage with the updated code.
-if [ "$REVIEW_DECISION" = "CHANGES_REQUESTED" ] && [ "${FORCE_REVIEW:-false}" != "true" ]; then
-  CHANGES_REQUESTED_AT_HEAD=$(echo "$PR_SNAPSHOT" | jq -r --arg sha "$PR_HEAD_SHA" '
-    [.reviews[] | select(.state == "CHANGES_REQUESTED" and .commit.oid == $sha)]
-    | if length > 0 then "true" else "false" end
-  ')
-  if [ "$CHANGES_REQUESTED_AT_HEAD" = "true" ]; then
-    echo "    skip: changes requested at current head — awaiting author response before reviewing"
-    echo "{\"pr\":\"$PR_URL\",\"sha\":\"$PR_HEAD_SHA\",\"decision\":\"skip\",\"reason\":\"changes-requested\"}"
-    exit 100
-  fi
-fi
-# Skip when a human has requested changes, with two guards:
-#   1. FORCE_REVIEW bypasses the skip — mention-triggered runs always proceed so
-#      authors can request a re-review after addressing feedback.
-#   2. Only skip when a CHANGES_REQUESTED review targets the current head SHA.
-#      On repos that don't dismiss stale reviews, reviewDecision can stay
-#      CHANGES_REQUESTED after the author pushes new commits; in that case the
-#      review is stale and the cascade should re-engage with the updated code.
-if [ "$REVIEW_DECISION" = "CHANGES_REQUESTED" ] && [ "${FORCE_REVIEW:-false}" != "true" ]; then
-  CHANGES_REQUESTED_AT_HEAD=$(echo "$PR_SNAPSHOT" | jq -r --arg sha "$PR_HEAD_SHA" '
-    [.reviews[] | select(.state == "CHANGES_REQUESTED" and .commit.oid == $sha)]
-    | if length > 0 then "true" else "false" end
-  ')
-  if [ "$CHANGES_REQUESTED_AT_HEAD" = "true" ]; then
-    echo "    skip: changes requested at current head — awaiting author response before reviewing"
-    echo "{\"pr\":\"$PR_URL\",\"sha\":\"$PR_HEAD_SHA\",\"decision\":\"skip\",\"reason\":\"changes-requested\"}"
-    exit 100
-  fi
-fi
 
 # 2. Idempotency: look for our marker at this SHA in existing reviews+comments.
 # We tag every review/comment with reviews' submittedAt / comments' createdAt,
@@ -989,33 +935,6 @@ ADVISORY_BOT_FEEDBACK=$(printf '%s\n%s\n%s' "$ADVISORY_REVIEW_BODIES" "$ADVISORY
 # Cap total size so huge bot histories can't blow up the prompt.
 ADVISORY_BOT_FEEDBACK="${ADVISORY_BOT_FEEDBACK:0:8000}"
 unset _owner_repo _pr_num _adv_bots ADVISORY_REVIEW_BODIES ADVISORY_PR_COMMENTS ADVISORY_INLINE_COMMENTS
-
-# Downstream-impact pass (epic #748). Gated default-off behind the Story 5
-# feature flag so that, when disabled, the triage prompt is byte-identical to
-# pre-feature behavior and zero `gh` consumer-reference fetches are performed.
-# When enabled: map the PR's changed files (from PR_METADATA) to the org repos
-# that pin the changed reusable-workflow / lib / prompt surface, fetch each
-# impacted consumer's referencing workflow, and write the human-readable block
-# to a file whose path is exported as DOWNSTREAM_IMPACT_FILE for the deep/audit
-# tiers (mirroring ADVISORY_BOT_FEEDBACK_FILE). The block is inlined into the
-# triage prompt below (triage has NO tools). Best-effort: assemble_downstream_impact
-# always exits 0, so a fetch failure degrades to "(none)" rather than failing the run.
-if [ "${DOWNSTREAM_IMPACT_ENABLED:-false}" = "true" ]; then
-  _di_changed=$(printf '%s' "$PR_METADATA" | jq -r '.files[]?.path // empty' 2>/dev/null || true)
-  assemble_downstream_impact "$_di_changed" "$SCRIPT_DIR/lib/consumer-manifest.json" "/tmp/cascade/downstream-impact.txt" || true
-  unset _di_changed
-fi
-
-# Deterministic safety-checks pass (issue #305). Safety-critical, so gated
-# DEFAULT-ON: compute the SAFETY_CHECKS block from the already-fetched
-# PR_METADATA + PR_DIFF (no `gh`/network) and write it to a file whose path is
-# exported as SAFETY_CHECKS_FILE for the deep/audit tiers. The block is inlined
-# into the triage prompt below (triage has NO tools). When SAFETY_CHECKS_ENABLED
-# is explicitly "false" nothing is computed and the triage prompt stays
-# byte-identical to pre-feature behavior (rollback + holdout-eval stability).
-if [ "${SAFETY_CHECKS_ENABLED:-true}" = "true" ]; then
-  assemble_safety_checks "$PR_METADATA" "$PR_DIFF" "/tmp/cascade/safety-checks.txt" || true
-fi
 
 # Build the triage prompt: static template + inlined PR context.
 TRIAGE_PROMPT_FILE="/tmp/cascade/triage-prompt.md"
