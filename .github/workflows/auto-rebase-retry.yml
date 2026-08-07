@@ -11,6 +11,14 @@
 #
 # workflow_run handlers run from the default branch only, so changes here take
 # effect after merge to main.
+#
+# NO actions/checkout: this handler must self-heal a *transient action-resolution
+# outage* (#1473: the Auto-rebase run failed in "Set up job" with "Failed to
+# resolve action download info. Error: Service Unavailable"). If this job also
+# resolved a marketplace action during "Set up job", it would hang on the very
+# same outage — which it did, and got cancelled. So it uses zero `uses:` steps
+# and self-fetches the retry script with the pre-installed gh CLI (the REST
+# contents API is a different service than action resolution).
 # ─────────────────────────────────────────────────────────────────────────────
 name: Auto-rebase retry
 
@@ -34,12 +42,8 @@ jobs:
     timeout-minutes: 5
     permissions:
       actions: write   # gh run rerun --failed
+      contents: read   # fetch the retry script via the gh REST contents API (no actions/checkout)
     steps:
-      - name: Checkout agent repo
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
       - name: Retry failed Auto-rebase run
         env:
           # Prefer a PAT: a re-run requested via GITHUB_TOKEN does not re-fire
@@ -54,4 +58,14 @@ jobs:
           WORKFLOW_NAME: ${{ github.event.workflow_run.name }}
           HTML_URL: ${{ github.event.workflow_run.html_url }}
           MAX_ATTEMPTS: "3"
-        run: bash scripts/auto-rebase-retry.sh
+        run: |
+          set -euo pipefail
+          # Self-fetch the retry script instead of checking out the repo: a
+          # handler that heals an action-resolution outage must not itself need
+          # to resolve a marketplace action during "Set up job" (#1473).
+          # workflow_run handlers run from the default branch, so the default
+          # branch copy of the script is exactly what a checkout would give us.
+          script="${RUNNER_TEMP}/auto-rebase-retry.sh"
+          gh api "repos/${GITHUB_REPOSITORY}/contents/scripts/auto-rebase-retry.sh" \
+            -H "Accept: application/vnd.github.raw" > "$script"
+          bash "$script"

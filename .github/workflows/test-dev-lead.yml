@@ -174,6 +174,19 @@ jobs:
       - name: Validate auto-rebase.yml uses @auto-rebase/next (not a SHA or frozen tag)
         run: python3 tests/dev-lead/integration/test_auto_rebase_stub.py
 
+  auto-rebase-retry-resilience:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install PyYAML
+        run: python3 -m pip install --quiet pyyaml
+      - name: Validate auto-rebase-retry.yml resolves no actions (survives action-resolution outage)
+        run: python3 tests/dev-lead/integration/test_auto_rebase_retry_no_action_resolution.py
+
   spec-drift-workflow:
     runs-on: ubuntu-latest
     permissions:
