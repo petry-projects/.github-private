@@ -56,6 +56,8 @@ def main() -> int:
     on = doc.get(True, doc.get("on")) or {}
     if isinstance(on, str):
         on = {on: None}
+    elif isinstance(on, list):
+        on = {item: None for item in on}
     missing_triggers = REQUIRED_TRIGGERS - set(on.keys())
     if missing_triggers:
         print(f"FAIL: {WORKFLOW} is missing required triggers: {sorted(missing_triggers)}")
