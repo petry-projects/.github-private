@@ -7,7 +7,7 @@
 #   • This file is a THIN CALLER STUB. All branch-update logic lives in the
 #     reusable workflow above.
 #   • You MUST NOT change: the `uses:` ref — it is pinned to the
-#     `auto-rebase/v2-next` channel, a moving tag advanced centrally. Never
+#     `auto-rebase/v2-stable` channel, a moving tag advanced centrally. Never
 #     repoint it to `@main`, a SHA, or a frozen `@vX` (see ci-standards.md →
 #     Reusable workflow versioning). Also do not change the trigger event,
 #     the concurrency group name,
@@ -22,14 +22,12 @@
 # To adopt: copy this file to .github/workflows/auto-rebase.yml in your repo.
 # No secrets required — uses GITHUB_TOKEN only.
 #
-# By default the reusable only updates *review-ready* PRs: non-draft AND
-# (carrying a current APPROVED review OR the `auto-rebase:ready` label). This
-# keeps the workflow from fanning out branch-update CI runs to every behind PR.
-# To tune it, pass inputs to the reusable, e.g.:
+# By default the reusable updates *every* behind PR (`eligibility: all`). The
+# `eligibility` input is a tunable extension point for future modes; to select
+# one, pass it to the reusable, e.g.:
 #
 #   with:
-#     eligibility: review-ready      # default; or `all` to update every behind PR
-#     ready_label: auto-rebase:ready # label that opts a non-draft PR in
+#     eligibility: all  # default — update every behind PR
 #
 name: Auto-rebase non-Dependabot PRs
 
@@ -50,5 +48,5 @@ jobs:
     permissions:
       contents: write      # update-branch via GITHUB_TOKEN (may touch .github/workflows/)
       pull-requests: write # post comments on PRs
-    uses: petry-projects/.github/.github/workflows/auto-rebase-reusable.yml@auto-rebase/v2-next  # NOSONAR(githubactions:S7637) first-party channel ref
+    uses: petry-projects/.github/.github/workflows/auto-rebase-reusable.yml@auto-rebase/v2-stable  # NOSONAR(githubactions:S7637) first-party channel ref
     secrets: inherit  # NOSONAR(githubactions:S7635) first-party trusted reusable
