@@ -30,4 +30,4 @@ permissions:
 
 jobs:
   agent-shield:
-    uses: petry-projects/.github/.github/workflows/agent-shield-reusable.yml@agent-shield/stable  # NOSONAR(githubactions:S7637) first-party channel ref
+    uses: petry-projects/.github/.github/workflows/agent-shield-reusable.yml@agent-shield/v2-stable  # NOSONAR(githubactions:S7637) first-party channel ref
