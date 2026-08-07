@@ -1914,7 +1914,8 @@ ${retry_msg}"
         local reset_display="${reset_time:-unknown}"
         local ack_body
         if [ "$reason" = "blocked" ]; then
-          ack_body="> [!NOTE]
+          ack_body="<!-- dev-lead rate-limit-ack -->
+> [!NOTE]
 > ${actor_mention}I reviewed this PR and no code changes were needed, but it still has blocking checks or reviews (failing or cancelled checks, or changes-requested reviews), so I cannot mark it done yet. I'll re-check automatically.
 > Next attempt after: \`${reset_display}\`"
         else
@@ -2454,7 +2455,8 @@ ${retry_msg}"
         local reset_display="${reset_time:-unknown}"
         local ack_body
         if [ "$reason" = "blocked" ]; then
-          ack_body="> [!NOTE]
+          ack_body="<!-- dev-lead rate-limit-ack -->
+> [!NOTE]
 > ${actor_mention}I reviewed this PR and no code changes were needed, but it still has blocking checks or reviews (failing or cancelled checks, or changes-requested reviews), so I cannot mark it done yet. I'll re-check automatically.
 > Next attempt after: \`${reset_display}\`"
         else

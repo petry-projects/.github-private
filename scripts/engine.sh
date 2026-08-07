@@ -2120,84 +2120,6 @@ parse_reset_time_files() {
 #   2. Agent printed JSON to stdout captured in raw_file (scan for first valid
 #      JSON object containing a 'decision' field, ignoring preamble text).
 
-# run_duck <prompt_file> <model>
-# Used by: review-one-pr.sh only (not the dev-lead writer pipeline).
-# Cross-engine adversarial "rubber duck" review.
-# DUCK_ENGINE is set by engine.sh init: claude→copilot, gemini→claude, copilot→gemini.
-# All three engine branches (claude, gemini, copilot) are reachable — the gemini
-# branch executes when REVIEW_ENGINE=copilot (copilot primary → gemini duck).
-# Output to stdout. Strips non-selected engine credentials to prevent cross-engine leakage.
-run_duck() {
-  local prompt_file="$1"
-  local model="$2"
-  local _tok_tmp="" rc=0
-  if [ -n "${TOKEN_LOG_FILE:-}" ]; then
-    unset _ENGINE_USAGE_OUT
-    _tok_tmp="$(mktemp 2>/dev/null || true)"
-    # Per-call usage-sidecar key: a unique mktemp path, exported so the engine's
-    # pipeline subshell and _record_engine_tokens agree on it. Unique per call →
-    # concurrent run_agentic/run_duck (review-one-pr.sh) never collide.
-    [[ -n "$_tok_tmp" ]] && local -x _ENGINE_USAGE_OUT="${_tok_tmp}.usage"
-  fi
-  case "$DUCK_ENGINE" in
-    claude)
-      unset COPILOT_GITHUB_TOKEN 2>/dev/null || true
-      unset GOOGLE_API_KEY 2>/dev/null || true
-      # Thread the opt-in MCP config (no-op when REVIEW_MCP_CONFIG is unset).
-      _mcp_review_flags "Bash,Read,Grep,Glob"
-      # Route through the chain helper so real token usage (incl. cache) is captured
-      # when logging is on; a single-model "chain" preserves prior behaviour.
-      if [ -n "$_tok_tmp" ]; then
-        _claude_chain_invoke "$model" "$prompt_file" "$DUCK_TIMEOUT_SEC" \
-          --permission-mode acceptEdits \
-          --allowed-tools "$_MCP_ALLOWED_TOOLS" \
-          --max-turns 25 \
-          ${_MCP_FLAGS[@]+"${_MCP_FLAGS[@]}"} \
-          | tee "$_tok_tmp" || rc=${PIPESTATUS[0]}
-      else
-        _claude_chain_invoke "$model" "$prompt_file" "$DUCK_TIMEOUT_SEC" \
-          --permission-mode acceptEdits \
-          --allowed-tools "$_MCP_ALLOWED_TOOLS" \
-          --max-turns 25 \
-          ${_MCP_FLAGS[@]+"${_MCP_FLAGS[@]}"} \
-          || rc=$?
-      fi
-      ;;
-    gemini)
-      unset CLAUDE_CODE_OAUTH_TOKEN 2>/dev/null || true
-      unset COPILOT_GITHUB_TOKEN 2>/dev/null || true
-      if [ -n "$_tok_tmp" ]; then
-        _gemini_invoke "$prompt_file" "$DUCK_TIMEOUT_SEC" "$model" \
-          --approval-mode auto_edit | tee "$_tok_tmp" || rc=${PIPESTATUS[0]}
-      else
-        _gemini_invoke "$prompt_file" "$DUCK_TIMEOUT_SEC" "$model" \
-          --approval-mode auto_edit || rc=$?
-      fi
-      ;;
-    copilot)
-      unset CLAUDE_CODE_OAUTH_TOKEN 2>/dev/null || true
-      unset GOOGLE_API_KEY 2>/dev/null || true
-      # Do NOT tee stdout to OUTPUT_FILE — same rationale as run_agentic copilot
-      # branch: the prompt writes verdict JSON directly via the Bash tool.
-      if [ -n "$_tok_tmp" ]; then
-        copilot_chat "$prompt_file" "$DUCK_TIMEOUT_SEC" --yolo | tee "$_tok_tmp" || rc=${PIPESTATUS[0]}
-      else
-        copilot_chat "$prompt_file" "$DUCK_TIMEOUT_SEC" --yolo || rc=$?
-      fi
-      ;;
-    *)
-      echo "::error::Unknown DUCK_ENGINE='$DUCK_ENGINE'" >&2
-      [ -n "$_tok_tmp" ] && rm -f "$_tok_tmp"
-      return 1
-      ;;
-  esac
-  if [ "$rc" -eq 0 ]; then
-    _record_engine_tokens "duck" "$DUCK_ENGINE" "$model" "$prompt_file" "$_tok_tmp"
-  fi
-  [ -n "$_tok_tmp" ] && rm -f "$_tok_tmp"
-  return "$rc"
-}
-
 # _emit_reset_iso <hhmm_with_meridiem>
 # Shared helper: converts e.g. "11:20pm" into an ISO-8601 UTC timestamp
 # (writing to /tmp/dev-lead-rate-limit-reset), advancing to tomorrow if the
@@ -3024,6 +2946,7 @@ run_writer() {
   # to stdout, not stderr), so is_rate_limited never fired and fallback engines
   # were never tried.
   local _tmp rc=0
+  unset _ENGINE_USAGE_OUT
   _tmp="$(mktemp 2>/dev/null || true)"
   # Per-call usage-sidecar key (see run_triage); unique mktemp path shared with
   # the engine subshell via export.
@@ -3051,6 +2974,11 @@ run_writer() {
       fi
       ;;
     gemini)
+      # Flash chain for writer (action) tier; honor explicit model pin.
+      local _writer_gemini_chain="${GEMINI_FLASH_MODEL_CHAIN:-$model}"
+      if [ -n "${ENGINE_ACTION_MODEL:-}" ] && [ "$model" != "$ENGINE_ACTION_MODEL" ]; then
+        _writer_gemini_chain="$model"
+      fi
       if [ -n "$_tmp" ]; then
         _GEMINI_CHAIN_MODEL_USED=""
         _gemini_chain_invoke "$_writer_gemini_chain" "$prompt_file" "$ACTION_TIMEOUT_SEC" \
@@ -3070,13 +2998,6 @@ run_writer() {
       ;;
   esac
 
-  # Map rate-limit to exit code 2 for caller to detect; parse reset time for
-  # marker embedding. Use the file-based helpers to avoid OOM on large captures.
-  if [ "$rc" -ne 0 ] && [ -n "$_tmp" ] && is_rate_limited_files "$_tmp"; then
-    parse_reset_time_files "$_tmp"
-    [ -n "$_tmp" ] && rm -f "$_tmp"
-    return 2
-  fi
   if [ "$rc" -eq 0 ]; then
     local _writer_used="$model"
     if [ "$REVIEW_ENGINE" = "claude" ] && [ -n "${_CLAUDE_CHAIN_MODEL_USED:-}" ]; then
