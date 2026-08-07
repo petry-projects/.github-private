@@ -397,8 +397,18 @@ private.yml
 __pycache__/
 *.pyc
 
-# npm dependencies — never vendored; bats is installed via apt in CI (#1455)
+# Node dependencies — installed from package.json at CI/dev time (bats lives here).
+# A local install must never be committed, and markdownlint must never lint the
+# third-party package READMEs it contains (#1450).
 node_modules/
+
+# Other CI/dev-time generated and third-party directories — mirrors the
+# markdownlint-cli2.jsonc ignores list so neither git nor the linter ever sees
+# content that wasn't authored in this repo.
+vendor/
+dist/
+build/
+coverage/
 
 # Vendor-specific Claude Code skill projections — BMAD lives in frameworks/ (agent-agnostic).
 .claude/skills/

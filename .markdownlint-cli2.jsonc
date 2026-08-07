@@ -50,11 +50,25 @@
     "MD060": false
   },
   // Exclude generated/internal directories from linting.
+  //
+  // These fall into two buckets, both third-party or generated — never
+  // repo-authored markdown:
+  //   - vendored upstream content committed into the tree (.claude, frameworks,
+  //     prompts)
+  //   - directories a package manager or build step populates at CI time
+  //     (node_modules, vendor, dist, build, coverage). markdownlint runs against
+  //     whatever is on disk, so a `node_modules/` present on the runner would
+  //     otherwise fail Lint on third-party package READMEs the repo never wrote
+  //     (#1450). These mirror the build/dependency dirs the org repo-template
+  //     ignores (scripts/seed-repo-template.sh).
   "ignores": [
     ".claude/**",
     "frameworks/**",
     "prompts/**",
-    // Vendored npm dependencies — third-party markdown we do not lint (#1455).
-    "node_modules/**"
+    "node_modules/**",
+    "vendor/**",
+    "dist/**",
+    "build/**",
+    "coverage/**"
   ]
 }
