@@ -1951,6 +1951,139 @@ run_agentic() {
 # When DEV_LEAD_DRY_RUN=true: builds prompt but does NOT call engine; exits 0.
 # Exit codes: 0=success, 1=non-retriable failure, 2=rate-limited
 # On exit 2, writes parsed reset timestamp to /tmp/dev-lead-rate-limit-reset.
+run_writer() {
+  local prompt_file="$1"
+  local model="${2:-$ENGINE_ACTION_MODEL}"
+
+  if [ "${DEV_LEAD_DRY_RUN:-false}" = "true" ]; then
+    echo "  [dry-run] run_writer: would invoke $REVIEW_ENGINE with prompt $(wc -l < "$prompt_file") lines"
+    return 0
+  fi
+
+  # Capture stdout to a temp file so is_rate_limited can inspect it, while
+  # still streaming output to the caller. The old approach read from
+  # /tmp/dev-lead-writer-stderr which was never written (claude --print outputs
+  # to stdout, not stderr), so is_rate_limited never fired and fallback engines
+  # were never tried.
+  local _tmp rc=0
+  unset _ENGINE_USAGE_OUT
+  _tmp="$(mktemp 2>/dev/null || true)"
+  # Per-call usage-sidecar key (see run_triage); unique mktemp path shared with
+  # the engine subshell via export.
+  [[ -n "$_tmp" ]] && local -x _ENGINE_USAGE_OUT="${_tmp}.usage"
+
+  case "$REVIEW_ENGINE" in
+    claude)
+      # See run_agentic — honor caller's explicit model pin when it differs
+      # from the tier default. Chain only applies when the caller used the
+      # default action model for this engine.
+      local _writer_chain="${CLAUDE_ACTION_MODEL_CHAIN:-$model}"
+      if [ -n "${ENGINE_ACTION_MODEL:-}" ] && [ "$model" != "$ENGINE_ACTION_MODEL" ]; then
+        _writer_chain="$model"
+      fi
+      if [ -n "$_tmp" ]; then
+        _claude_chain_invoke "$_writer_chain" "$prompt_file" "$ACTION_TIMEOUT_SEC" \
+          --permission-mode acceptEdits \
+          --allowed-tools "Bash,Read,Write,Edit,Grep,Glob,WebFetch" \
+          2>&1 | tee "$_tmp" || rc=${PIPESTATUS[0]}
+      else
+        _claude_chain_invoke "$_writer_chain" "$prompt_file" "$ACTION_TIMEOUT_SEC" \
+          --permission-mode acceptEdits \
+          --allowed-tools "Bash,Read,Write,Edit,Grep,Glob,WebFetch" \
+          || rc=$?
+      fi
+      ;;
+    gemini)
+      # Flash chain for writer (action) tier; honor explicit model pin.
+      local _writer_gemini_chain="${GEMINI_FLASH_MODEL_CHAIN:-$model}"
+      if [ -n "${ENGINE_ACTION_MODEL:-}" ] && [ "$model" != "$ENGINE_ACTION_MODEL" ]; then
+        _writer_gemini_chain="$model"
+      fi
+      if [ -n "$_tmp" ]; then
+        _GEMINI_CHAIN_MODEL_USED=""
+        _gemini_chain_invoke "$_writer_gemini_chain" "$prompt_file" "$ACTION_TIMEOUT_SEC" \
+          --approval-mode auto_edit > >(tee "$_tmp") 2>&1 || rc=$?
+      else
+        _gemini_chain_invoke "$_writer_gemini_chain" "$prompt_file" "$ACTION_TIMEOUT_SEC" \
+          --approval-mode auto_edit || rc=$?
+      fi
+      ;;
+    copilot)
+      # Self-sufficient write support via gh copilot --yolo
+      if [ -n "$_tmp" ]; then
+        copilot_chat "$prompt_file" "$ACTION_TIMEOUT_SEC" --yolo 2>&1 | tee "$_tmp" || rc=${PIPESTATUS[0]}
+      else
+        copilot_chat "$prompt_file" "$ACTION_TIMEOUT_SEC" --yolo || rc=$?
+      fi
+      ;;
+  esac
+
+  if [ "$rc" -eq 0 ]; then
+    local _writer_used="$model"
+    if [ "$REVIEW_ENGINE" = "claude" ] && [ -n "${_CLAUDE_CHAIN_MODEL_USED:-}" ]; then
+      _writer_used="$_CLAUDE_CHAIN_MODEL_USED"
+    elif [ "$REVIEW_ENGINE" = "gemini" ] && [ -n "${_GEMINI_CHAIN_MODEL_USED:-}" ]; then
+      _writer_used="$_GEMINI_CHAIN_MODEL_USED"
+    fi
+    _record_engine_tokens "writer" "$REVIEW_ENGINE" "$_writer_used" "$prompt_file" "$_tmp"
+  fi
+  if [ -n "$_tmp" ]; then
+    # Redact once: write secret-scrubbed content to the persisted path, then
+    # use that redacted file as the source for the step summary so credentials
+    # cannot leak via /tmp persistence or the public run summary. Patterns
+    # kept in sync with scripts/dev-lead-fix-reviews.sh:redact_secrets.
+    #
+    # This runs for ALL terminal paths — success, generic failure, AND the
+    # rate-limit early return below — so the session output (where the real
+    # failure cause appears) reaches the run summary and the persisted sidecar
+    # regardless of exit code. The rate-limit check further down reads the raw
+    # capture ($_tmp), which redaction leaves intact (separate file), so
+    # persisting first is safe.
+    rm -f /tmp/dev-lead-session-output.txt
+    if ! sed -E \
+      -e 's/(gh[opsu]|ghr)_[A-Za-z0-9_]{20,}/***REDACTED-GH-TOKEN***/g' \
+      -e 's/github_pat_[A-Za-z0-9_]{20,}/***REDACTED-GH-PAT***/g' \
+      -e 's/sk-(ant-)?[A-Za-z0-9_-]{20,}/***REDACTED-API-KEY***/g' \
+      -e 's/AKIA[A-Z0-9]{16}/***REDACTED-AWS-KEY***/g' \
+      -e 's/AIza[A-Za-z0-9_-]{35}/***REDACTED-GOOGLE-KEY***/g' \
+      -e 's|ya29\.[A-Za-z0-9_-]+|***REDACTED-GOOGLE-OAUTH***|g' \
+      -e 's/[Bb]earer [A-Za-z0-9._-]{20,}/Bearer ***REDACTED***/g' \
+      -e '/-----BEGIN [A-Z ]*PRIVATE KEY-----/,/-----END [A-Z ]*PRIVATE KEY-----/c\
+***REDACTED-PRIVATE-KEY***' \
+      "$_tmp" > /tmp/dev-lead-session-output.txt; then
+      : > /tmp/dev-lead-session-output.txt 2>/dev/null || true
+      echo "::warning::Failed to redact/persist /tmp/dev-lead-session-output.txt" >&2
+    fi
+    if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+      # HTML-escape the redacted log so literal </details> or </summary> in
+      # the agent output cannot break the wrapping <details> block on the run
+      # summary page.
+      {
+        echo "## Dev-Lead session output"
+        echo "<details><summary>Click to expand session logs</summary>"
+        echo ""
+        echo "<pre>"
+        sed 's|&|\&amp;|g; s|<|\&lt;|g; s|>|\&gt;|g' /tmp/dev-lead-session-output.txt
+        echo "</pre>"
+        echo ""
+        echo "</details>"
+      } >> "$GITHUB_STEP_SUMMARY" || \
+        echo "::warning::Failed to append session output to GITHUB_STEP_SUMMARY" >&2
+    fi
+  fi
+
+  # Map rate-limit to exit code 2 for caller to detect; parse reset time for
+  # marker embedding. Use the file-based helpers to avoid OOM on large captures.
+  # Runs AFTER the persist/summary block above so a rate-limited session is also
+  # captured to the run summary; reads the raw capture ($_tmp) left intact above.
+  if [ "$rc" -ne 0 ] && [ -n "$_tmp" ] && is_rate_limited_files "$_tmp"; then
+    parse_reset_time_files "$_tmp"
+    rm -f "$_tmp"
+    return 2
+  fi
+  [ -n "$_tmp" ] && rm -f "$_tmp"
+  return "$rc"
+}
 
 # ── Run-scoped engine-exhaustion registry (issue #947) ────────────────────────
 # Once an engine is found rate-limited / unavailable during this run (process),
@@ -1995,6 +2128,129 @@ _mark_engine_exhausted() {
 # other failures propagate immediately.
 # An engine found rate-limited/unavailable in an earlier call this run is skipped
 # (not re-invoked) — see the exhaustion registry above (#947).
+run_writer_with_fallback() {
+  local prompt_file="$1"
+  local intent="${2:-}"
+  local engines=("$REVIEW_ENGINE")
+
+  # Clear any stale failure-reason sidecar from a prior invocation in the same
+  # process. Before each terminal failure return below we write a one-line
+  # cause class (rate-limited | missing-binary | engine-error) to this path,
+  # mirroring the existing /tmp/dev-lead-rate-limit-reset sidecar. Downstream
+  # handlers (dev-lead-fix-issue.sh) read it to classify the failure and pick
+  # the right retry behavior. This is purely additive — no control-flow change.
+  # The timeout-* sidecars (tier/budget/elapsed) are written only on a per-tier
+  # timeout (#1018); clear any stale copies here so a later non-timeout failure
+  # never surfaces a previous run's timeout context.
+  rm -f /tmp/dev-lead-failure-reason \
+        /tmp/dev-lead-timeout-tier \
+        /tmp/dev-lead-timeout-budget \
+        /tmp/dev-lead-timeout-elapsed
+
+  for e in claude copilot gemini; do
+    [ "$e" != "$REVIEW_ENGINE" ] && engines+=("$e")
+  done
+
+  local any_rate_limited=0
+  local any_missing=0
+  for engine in "${engines[@]}"; do
+    if [ "$engine" = "copilot" ] && [[ "${COPILOT_GITHUB_TOKEN:-}" == ghp_* ]]; then
+      echo "::warning::Skipping copilot fallback: classic PAT in COPILOT_GITHUB_TOKEN is unsupported" >&2
+      continue
+    fi
+    if [ "$engine" = "gemini" ] && [ -z "${GEMINI_API_KEY:-}${GOOGLE_API_KEY:-}" ]; then
+      echo "::warning::Skipping gemini fallback: GEMINI_API_KEY or GOOGLE_API_KEY not configured" >&2
+      continue
+    fi
+
+    # Run-scoped exhaustion (#947): an engine already found rate-limited/
+    # unavailable earlier in this run is not re-invoked. Reflect its recorded
+    # reason into the aggregate so the final return code is unchanged, and emit
+    # no repeat notice (the one-time notice fired when it was first marked).
+    if _engine_is_exhausted "$engine"; then
+      case "${_ENGINE_EXHAUSTED_REASON["$engine"]}" in
+        missing-binary) any_missing=1 ;;
+        *)              any_rate_limited=1 ;;
+      esac
+      echo "  [engine] $engine already exhausted this run — skipping (not re-invoked)" >&2
+      continue
+    fi
+
+    if ! check_provider_headroom "$engine"; then
+      echo "::warning::$engine at/above usage threshold — trying next engine" >&2
+      any_rate_limited=1
+      _mark_engine_exhausted "$engine" "rate-limited"
+      continue
+    fi
+
+    local saved="$REVIEW_ENGINE"
+    export REVIEW_ENGINE="$engine"
+    # Re-evaluate model names for the new engine so model_for_intent returns
+    # the correct engine-specific model for the requested tier.
+    set_engine_config
+    local model
+    model="$(model_for_intent "$intent")"
+    local rc=0 _t_start _t_end
+    _t_start=$(date +%s)
+    run_writer "$prompt_file" "$model" || rc=$?
+    _t_end=$(date +%s)
+    export REVIEW_ENGINE="$saved"
+    # Restore original config for subsequent PRs in the same session
+    set_engine_config
+    [ "$rc" -eq 0 ] && return 0
+    if [ "$rc" -eq 2 ] || [ "$rc" -eq 127 ]; then
+      # exit 2: rate-limited or text-only engine unavailable for writes
+      # exit 127: engine binary not installed in this environment (also returned by
+      #           GNU timeout when the command is not found — treated as a missing
+      #           binary rather than a retryable quota error so that infra failures
+      #           surface loudly instead of being masked as rate-limit retries).
+      echo "::warning::$engine unavailable (exit $rc), trying next engine" >&2
+      if [ "$rc" -eq 2 ]; then
+        any_rate_limited=1
+        _mark_engine_exhausted "$engine" "rate-limited"
+      else
+        any_missing=1
+        _mark_engine_exhausted "$engine" "missing-binary"
+      fi
+      continue
+    fi
+    # A non-fallback engine error (137/143=signal, generic non-zero) — propagate
+    # immediately, classifying it as engine-error.
+    #
+    # A per-tier stage timeout (exit 124 from GNU `timeout`) is treated
+    # separately (#1018): it is a first-class, NON-retryable condition, so a
+    # same-budget retry — on this engine or a fallback engine — is deliberately
+    # avoided (we already `return` here rather than `continue`). Classify it as a
+    # distinct `timeout` reason and record the tier/budget/elapsed sidecars the
+    # escalation comment surfaces, so the caller escalates to a human on the
+    # FIRST occurrence instead of burning a same-budget model call.
+    if [ "$rc" -eq 124 ]; then
+      printf 'timeout\n' > /tmp/dev-lead-failure-reason
+      printf 'action\n' > /tmp/dev-lead-timeout-tier
+      printf '%s\n' "${ACTION_TIMEOUT_SEC}" > /tmp/dev-lead-timeout-budget
+      printf '%s\n' "$(( _t_end - _t_start ))" > /tmp/dev-lead-timeout-elapsed
+    else
+      printf 'engine-error\n' > /tmp/dev-lead-failure-reason
+    fi
+    return "$rc"
+  done
+
+  echo "::error::All engines rate-limited or unavailable" >&2
+  # If any engine binary was missing (exit 127), return 1 (hard infra failure) so
+  # downstream handlers do not post rate-limit retry markers for what is really a
+  # configuration/environment problem.  Only return 2 when every failure was a
+  # genuine quota/rate-limit so callers know a later retry may succeed.
+  if [ "$any_missing" -eq 1 ]; then
+    printf 'missing-binary\n' > /tmp/dev-lead-failure-reason
+    return 1
+  fi
+  if [ "$any_rate_limited" -eq 1 ]; then
+    printf 'rate-limited\n' > /tmp/dev-lead-failure-reason
+    return 2
+  fi
+  printf 'engine-error\n' > /tmp/dev-lead-failure-reason
+  return 1
+}
 
 # extract_verdict_json <raw_file> <dest_file>
 # Resolves the verdict JSON from an agentic run, handling two output styles:
@@ -2036,6 +2292,80 @@ sys.exit(1)
 # All three engine branches (claude, gemini, copilot) are reachable — the gemini
 # branch executes when REVIEW_ENGINE=copilot (copilot primary → gemini duck).
 # Output to stdout. Strips non-selected engine credentials to prevent cross-engine leakage.
+run_duck() {
+  local prompt_file="$1"
+  local model="$2"
+  local _tok_tmp="" rc=0
+  if [ -n "${TOKEN_LOG_FILE:-}" ]; then
+    unset _ENGINE_USAGE_OUT
+    _tok_tmp="$(mktemp 2>/dev/null || true)"
+    # Per-call usage-sidecar key: a unique mktemp path, exported so the engine's
+    # pipeline subshell and _record_engine_tokens agree on it. Unique per call →
+    # concurrent run_agentic/run_duck (review-one-pr.sh) never collide.
+    [[ -n "$_tok_tmp" ]] && local -x _ENGINE_USAGE_OUT="${_tok_tmp}.usage"
+  fi
+  case "$DUCK_ENGINE" in
+    claude)
+      unset COPILOT_GITHUB_TOKEN 2>/dev/null || true
+      unset GOOGLE_API_KEY 2>/dev/null || true
+      unset GEMINI_API_KEY 2>/dev/null || true
+      # Thread the opt-in MCP config (no-op when REVIEW_MCP_CONFIG is unset).
+      _mcp_review_flags "Bash,Read,Grep,Glob"
+      # Route through the chain helper so real token usage (incl. cache) is captured
+      # when logging is on; a single-model "chain" preserves prior behaviour.
+      if [ -n "$_tok_tmp" ]; then
+        _claude_chain_invoke "$model" "$prompt_file" "$DUCK_TIMEOUT_SEC" \
+          --permission-mode acceptEdits \
+          --allowed-tools "$_MCP_ALLOWED_TOOLS" \
+          --max-turns 25 \
+          ${_MCP_FLAGS[@]+"${_MCP_FLAGS[@]}"} \
+          | tee "$_tok_tmp" || rc=${PIPESTATUS[0]}
+      else
+        _claude_chain_invoke "$model" "$prompt_file" "$DUCK_TIMEOUT_SEC" \
+          --permission-mode acceptEdits \
+          --allowed-tools "$_MCP_ALLOWED_TOOLS" \
+          --max-turns 25 \
+          ${_MCP_FLAGS[@]+"${_MCP_FLAGS[@]}"} \
+          || rc=$?
+      fi
+      ;;
+    gemini)
+      unset CLAUDE_CODE_OAUTH_TOKEN 2>/dev/null || true
+      unset ANTHROPIC_API_KEY 2>/dev/null || true
+      unset COPILOT_GITHUB_TOKEN 2>/dev/null || true
+      if [ -n "$_tok_tmp" ]; then
+        _gemini_invoke "$prompt_file" "$DUCK_TIMEOUT_SEC" "$model" \
+          --approval-mode auto_edit | tee "$_tok_tmp" || rc=${PIPESTATUS[0]}
+      else
+        _gemini_invoke "$prompt_file" "$DUCK_TIMEOUT_SEC" "$model" \
+          --approval-mode auto_edit || rc=$?
+      fi
+      ;;
+    copilot)
+      unset CLAUDE_CODE_OAUTH_TOKEN 2>/dev/null || true
+      unset ANTHROPIC_API_KEY 2>/dev/null || true
+      unset GOOGLE_API_KEY 2>/dev/null || true
+      unset GEMINI_API_KEY 2>/dev/null || true
+      # Do NOT tee stdout to OUTPUT_FILE — same rationale as run_agentic copilot
+      # branch: the prompt writes verdict JSON directly via the Bash tool.
+      if [ -n "$_tok_tmp" ]; then
+        copilot_chat "$prompt_file" "$DUCK_TIMEOUT_SEC" --yolo | tee "$_tok_tmp" || rc=${PIPESTATUS[0]}
+      else
+        copilot_chat "$prompt_file" "$DUCK_TIMEOUT_SEC" --yolo || rc=$?
+      fi
+      ;;
+    *)
+      echo "::error::Unknown DUCK_ENGINE='$DUCK_ENGINE'" >&2
+      [ -n "$_tok_tmp" ] && rm -f "$_tok_tmp"
+      return 1
+      ;;
+  esac
+  if [ "$rc" -eq 0 ]; then
+    _record_engine_tokens "duck" "$DUCK_ENGINE" "$model" "$prompt_file" "$_tok_tmp"
+  fi
+  [ -n "$_tok_tmp" ] && rm -f "$_tok_tmp"
+  return "$rc"
+}
 
 # _emit_reset_iso <hhmm_with_meridiem>
 # Shared helper: converts e.g. "11:20pm" into an ISO-8601 UTC timestamp
@@ -2113,12 +2443,745 @@ parse_reset_time_files() {
 #   1. Agent wrote JSON to $dest via Bash tool (dest already valid — use it as-is).
 #   2. Agent printed JSON to stdout captured in raw_file (scan for first valid
 #      JSON object containing a 'decision' field, ignoring preamble text).
+extract_verdict_json() {
+  local raw="$1" dest="$2"
+  # Style 1: agent wrote to $dest via Bash tool (our stdout redirect didn't clobber it).
+  if jq empty "$dest" 2>/dev/null; then
+    return 0
+  fi
+  # Style 2: agent printed JSON to stdout.
+  if jq empty "$raw" 2>/dev/null; then
+    cp "$raw" "$dest"
+    return 0
+  fi
+  python3 -c "
+import sys, json
+text = open(sys.argv[1]).read()
+decoder = json.JSONDecoder()
+pos = text.find('{')
+while pos >= 0:
+    try:
+        obj, _ = decoder.raw_decode(text, pos)
+        if isinstance(obj, dict) and 'decision' in obj:
+            print(json.dumps(obj))
+            sys.exit(0)
+    except Exception:
+        pass
+    pos = text.find('{', pos + 1)
+sys.exit(1)
+" "$raw" > "$dest" 2>/dev/null
+}
 
 # extract_verdict_json <raw_file> <dest_file>
 # Resolves the verdict JSON from an agentic run, handling two output styles:
 #   1. Agent wrote JSON to $dest via Bash tool (dest already valid — use it as-is).
 #   2. Agent printed JSON to stdout captured in raw_file (scan for first valid
 #      JSON object containing a 'decision' field, ignoring preamble text).
+extract_verdict_json() {
+  local raw="$1" dest="$2"
+  # Style 1: agent wrote to $dest via Bash tool (our stdout redirect didn't clobber it).
+  if jq empty "$dest" 2>/dev/null; then
+    return 0
+  fi
+  # Style 2: agent printed JSON to stdout.
+  if jq empty "$raw" 2>/dev/null; then
+    cp "$raw" "$dest"
+    return 0
+  fi
+  python3 -c "
+import sys, json
+text = open(sys.argv[1]).read()
+decoder = json.JSONDecoder()
+pos = text.find('{')
+while pos >= 0:
+    try:
+        obj, _ = decoder.raw_decode(text, pos)
+        if isinstance(obj, dict) and 'decision' in obj:
+            print(json.dumps(obj))
+            sys.exit(0)
+    except Exception:
+        pass
+    pos = text.find('{', pos + 1)
+sys.exit(1)
+" "$raw" > "$dest" 2>/dev/null
+}
+
+# run_duck <prompt_file> <model>
+# Used by: review-one-pr.sh only (not the dev-lead writer pipeline).
+# Cross-engine adversarial "rubber duck" review.
+# DUCK_ENGINE is set by engine.sh init: claude→copilot, gemini→claude, copilot→gemini.
+# All three engine branches (claude, gemini, copilot) are reachable — the gemini
+# branch executes when REVIEW_ENGINE=copilot (copilot primary → gemini duck).
+# Output to stdout. Strips non-selected engine credentials to prevent cross-engine leakage.
+run_duck() {
+  local prompt_file="$1"
+  local model="$2"
+  local _tok_tmp="" rc=0
+  if [ -n "${TOKEN_LOG_FILE:-}" ]; then
+    unset _ENGINE_USAGE_OUT
+    _tok_tmp="$(mktemp 2>/dev/null || true)"
+    # Per-call usage-sidecar key: a unique mktemp path, exported so the engine's
+    # pipeline subshell and _record_engine_tokens agree on it. Unique per call →
+    # concurrent run_agentic/run_duck (review-one-pr.sh) never collide.
+    [[ -n "$_tok_tmp" ]] && local -x _ENGINE_USAGE_OUT="${_tok_tmp}.usage"
+  fi
+  case "$DUCK_ENGINE" in
+    claude)
+      unset COPILOT_GITHUB_TOKEN 2>/dev/null || true
+      unset GOOGLE_API_KEY 2>/dev/null || true
+      # Thread the opt-in MCP config (no-op when REVIEW_MCP_CONFIG is unset).
+      _mcp_review_flags "Bash,Read,Grep,Glob"
+      # Route through the chain helper so real token usage (incl. cache) is captured
+      # when logging is on; a single-model "chain" preserves prior behaviour.
+      if [ -n "$_tok_tmp" ]; then
+        _claude_chain_invoke "$model" "$prompt_file" "$DUCK_TIMEOUT_SEC" \
+          --permission-mode acceptEdits \
+          --allowed-tools "$_MCP_ALLOWED_TOOLS" \
+          --max-turns 25 \
+          ${_MCP_FLAGS[@]+"${_MCP_FLAGS[@]}"} \
+          | tee "$_tok_tmp" || rc=${PIPESTATUS[0]}
+      else
+        _claude_chain_invoke "$model" "$prompt_file" "$DUCK_TIMEOUT_SEC" \
+          --permission-mode acceptEdits \
+          --allowed-tools "$_MCP_ALLOWED_TOOLS" \
+          --max-turns 25 \
+          ${_MCP_FLAGS[@]+"${_MCP_FLAGS[@]}"} \
+          || rc=$?
+      fi
+      ;;
+    gemini)
+      unset CLAUDE_CODE_OAUTH_TOKEN 2>/dev/null || true
+      unset COPILOT_GITHUB_TOKEN 2>/dev/null || true
+      if [ -n "$_tok_tmp" ]; then
+        _gemini_invoke "$prompt_file" "$DUCK_TIMEOUT_SEC" "$model" \
+          --approval-mode auto_edit | tee "$_tok_tmp" || rc=${PIPESTATUS[0]}
+      else
+        _gemini_invoke "$prompt_file" "$DUCK_TIMEOUT_SEC" "$model" \
+          --approval-mode auto_edit || rc=$?
+      fi
+      ;;
+    copilot)
+      unset CLAUDE_CODE_OAUTH_TOKEN 2>/dev/null || true
+      unset GOOGLE_API_KEY 2>/dev/null || true
+      # Do NOT tee stdout to OUTPUT_FILE — same rationale as run_agentic copilot
+      # branch: the prompt writes verdict JSON directly via the Bash tool.
+      if [ -n "$_tok_tmp" ]; then
+        copilot_chat "$prompt_file" "$DUCK_TIMEOUT_SEC" --yolo | tee "$_tok_tmp" || rc=${PIPESTATUS[0]}
+      else
+        copilot_chat "$prompt_file" "$DUCK_TIMEOUT_SEC" --yolo || rc=$?
+      fi
+      ;;
+    *)
+      echo "::error::Unknown DUCK_ENGINE='$DUCK_ENGINE'" >&2
+      [ -n "$_tok_tmp" ] && rm -f "$_tok_tmp"
+      return 1
+      ;;
+  esac
+  if [ "$rc" -eq 0 ]; then
+    _record_engine_tokens "duck" "$DUCK_ENGINE" "$model" "$prompt_file" "$_tok_tmp"
+  fi
+  [ -n "$_tok_tmp" ] && rm -f "$_tok_tmp"
+  return "$rc"
+}
+
+# _emit_reset_iso <hhmm_with_meridiem>
+# Shared helper: converts e.g. "11:20pm" into an ISO-8601 UTC timestamp
+# (writing to /tmp/dev-lead-rate-limit-reset), advancing to tomorrow if the
+# computed time is already in the past for today.
+_emit_reset_iso() {
+  local hhmm="$1"
+  if [ -z "$hhmm" ]; then
+    printf '' > /tmp/dev-lead-rate-limit-reset
+    return 0
+  fi
+  local today iso
+  today=$(date -u +%Y-%m-%d)
+  iso=$(date -u -d "${today} ${hhmm} UTC" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)
+  if [ -n "$iso" ] && [ "$(date -u +%s)" -gt "$(date -u -d "$iso" +%s 2>/dev/null || echo 0)" ]; then
+    local tomorrow
+    tomorrow=$(date -u -d "tomorrow" +%Y-%m-%d)
+    iso=$(date -u -d "${tomorrow} ${hhmm} UTC" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)
+  fi
+  printf '%s' "${iso:-}" > /tmp/dev-lead-rate-limit-reset
+}
+
+# parse_reset_time <text>
+# Extracts the rate-limit reset time from engine output and writes an ISO-8601
+# UTC timestamp to /tmp/dev-lead-rate-limit-reset for callers to embed in
+# status=rate-limited markers. Pattern: "resets H:MMam/pm (UTC)" or
+# "resets H:MM(am|pm) UTC".
+# Writes empty string if no reset time is found (caller treats as unknown).
+#
+# Prefer parse_reset_time_files for large captures — same OOM rationale as
+# is_rate_limited / is_rate_limited_files above.
+parse_reset_time() {
+  local text="$1"
+  # Match "resets 11:20pm (UTC)" or "resets 11:20pm UTC"
+  local time_str
+  time_str=$(printf '%s\n' "$text" | grep -oiE 'resets [0-9]{1,2}:[0-9]{2}(am|pm)' | head -1 || true)
+  if [ -z "$time_str" ]; then
+    printf '' > /tmp/dev-lead-rate-limit-reset
+    return 0
+  fi
+  # Extract H:MM(am|pm) part
+  local hhmm
+  hhmm=$(printf '%s' "$time_str" | grep -oiE '[0-9]{1,2}:[0-9]{2}(am|pm)$' || true)
+  _emit_reset_iso "$hhmm"
+}
+
+# parse_reset_time_files <file>...
+# File-aware variant of parse_reset_time. Scans each non-empty existing file
+# for the first "resets H:MMam/pm" match and writes the ISO timestamp via
+# _emit_reset_iso. Uses grep directly on files to avoid loading large LLM
+# outputs into a shell variable.
+parse_reset_time_files() {
+  local files=()
+  local f
+  for f in "$@"; do
+    [ -n "$f" ] && [ -f "$f" ] && files+=("$f")
+  done
+  if [ "${#files[@]}" -eq 0 ]; then
+    printf '' > /tmp/dev-lead-rate-limit-reset
+    return 0
+  fi
+  local time_str
+  time_str=$(grep -hoiE 'resets [0-9]{1,2}:[0-9]{2}(am|pm)' "${files[@]}" 2>/dev/null | head -1 || true)
+  if [ -z "$time_str" ]; then
+    printf '' > /tmp/dev-lead-rate-limit-reset
+    return 0
+  fi
+  local hhmm
+  hhmm=$(printf '%s' "$time_str" | grep -oiE '[0-9]{1,2}:[0-9]{2}(am|pm)$' || true)
+  _emit_reset_iso "$hhmm"
+}
+
+# run_writer <prompt_file> [model]
+# Full write-access mode for applying code fixes.
+# When DEV_LEAD_DRY_RUN=true: builds prompt but does NOT call engine; exits 0.
+# Exit codes: 0=success, 1=non-retriable failure, 2=rate-limited
+# On exit 2, writes parsed reset timestamp to /tmp/dev-lead-rate-limit-reset.
+run_writer() {
+  local prompt_file="$1"
+  local model="${2:-$ENGINE_ACTION_MODEL}"
+
+  if [ "${DEV_LEAD_DRY_RUN:-false}" = "true" ]; then
+    echo "  [dry-run] run_writer: would invoke $REVIEW_ENGINE with prompt $(wc -l < "$prompt_file") lines"
+    return 0
+  fi
+
+  # Capture stdout to a temp file so is_rate_limited can inspect it, while
+  # still streaming output to the caller. The old approach read from
+  # /tmp/dev-lead-writer-stderr which was never written (claude --print outputs
+  # to stdout, not stderr), so is_rate_limited never fired and fallback engines
+  # were never tried.
+  local _tmp rc=0
+  unset _ENGINE_USAGE_OUT
+  _tmp="$(mktemp 2>/dev/null || true)"
+  # Per-call usage-sidecar key (see run_triage); unique mktemp path shared with
+  # the engine subshell via export.
+  [[ -n "$_tmp" ]] && local -x _ENGINE_USAGE_OUT="${_tmp}.usage"
+
+  case "$REVIEW_ENGINE" in
+    claude)
+      # See run_agentic — honor caller's explicit model pin when it differs
+      # from the tier default. Chain only applies when the caller used the
+      # default action model for this engine.
+      local _writer_chain="${CLAUDE_ACTION_MODEL_CHAIN:-$model}"
+      if [ -n "${ENGINE_ACTION_MODEL:-}" ] && [ "$model" != "$ENGINE_ACTION_MODEL" ]; then
+        _writer_chain="$model"
+      fi
+      if [ -n "$_tmp" ]; then
+        _claude_chain_invoke "$_writer_chain" "$prompt_file" "$ACTION_TIMEOUT_SEC" \
+          --permission-mode acceptEdits \
+          --allowed-tools "Bash,Read,Write,Edit,Grep,Glob,WebFetch" \
+          2>&1 | tee "$_tmp" || rc=${PIPESTATUS[0]}
+      else
+        _claude_chain_invoke "$_writer_chain" "$prompt_file" "$ACTION_TIMEOUT_SEC" \
+          --permission-mode acceptEdits \
+          --allowed-tools "Bash,Read,Write,Edit,Grep,Glob,WebFetch" \
+          || rc=$?
+      fi
+      ;;
+    gemini)
+      # Flash chain for writer (action) tier; honor explicit model pin.
+      local _writer_gemini_chain="${GEMINI_FLASH_MODEL_CHAIN:-$model}"
+      if [ -n "${ENGINE_ACTION_MODEL:-}" ] && [ "$model" != "$ENGINE_ACTION_MODEL" ]; then
+        _writer_gemini_chain="$model"
+      fi
+      if [ -n "$_tmp" ]; then
+        _GEMINI_CHAIN_MODEL_USED=""
+        _gemini_chain_invoke "$_writer_gemini_chain" "$prompt_file" "$ACTION_TIMEOUT_SEC" \
+          --approval-mode auto_edit > >(tee "$_tmp") 2>&1 || rc=$?
+      else
+        _gemini_chain_invoke "$_writer_gemini_chain" "$prompt_file" "$ACTION_TIMEOUT_SEC" \
+          --approval-mode auto_edit || rc=$?
+      fi
+      ;;
+    copilot)
+      # Self-sufficient write support via gh copilot --yolo
+      if [ -n "$_tmp" ]; then
+        copilot_chat "$prompt_file" "$ACTION_TIMEOUT_SEC" --yolo 2>&1 | tee "$_tmp" || rc=${PIPESTATUS[0]}
+      else
+        copilot_chat "$prompt_file" "$ACTION_TIMEOUT_SEC" --yolo || rc=$?
+      fi
+      ;;
+  esac
+
+  if [ "$rc" -eq 0 ]; then
+    local _writer_used="$model"
+    if [ "$REVIEW_ENGINE" = "claude" ] && [ -n "${_CLAUDE_CHAIN_MODEL_USED:-}" ]; then
+      _writer_used="$_CLAUDE_CHAIN_MODEL_USED"
+    elif [ "$REVIEW_ENGINE" = "gemini" ] && [ -n "${_GEMINI_CHAIN_MODEL_USED:-}" ]; then
+      _writer_used="$_GEMINI_CHAIN_MODEL_USED"
+    fi
+    _record_engine_tokens "writer" "$REVIEW_ENGINE" "$_writer_used" "$prompt_file" "$_tmp"
+  fi
+  if [ -n "$_tmp" ]; then
+    # Redact once: write secret-scrubbed content to the persisted path, then
+    # use that redacted file as the source for the step summary so credentials
+    # cannot leak via /tmp persistence or the public run summary. Patterns
+    # kept in sync with scripts/dev-lead-fix-reviews.sh:redact_secrets.
+    #
+    # This runs for ALL terminal paths — success, generic failure, AND the
+    # rate-limit early return below — so the session output (where the real
+    # failure cause appears) reaches the run summary and the persisted sidecar
+    # regardless of exit code. The rate-limit check further down reads the raw
+    # capture ($_tmp), which redaction leaves intact (separate file), so
+    # persisting first is safe.
+    rm -f /tmp/dev-lead-session-output.txt
+    if ! sed -E \
+      -e 's/(gh[opsu]|ghr)_[A-Za-z0-9_]{20,}/***REDACTED-GH-TOKEN***/g' \
+      -e 's/github_pat_[A-Za-z0-9_]{20,}/***REDACTED-GH-PAT***/g' \
+      -e 's/sk-(ant-)?[A-Za-z0-9_-]{20,}/***REDACTED-API-KEY***/g' \
+      -e 's/AKIA[A-Z0-9]{16}/***REDACTED-AWS-KEY***/g' \
+      -e 's/AIza[A-Za-z0-9_-]{35}/***REDACTED-GOOGLE-KEY***/g' \
+      -e 's|ya29\.[A-Za-z0-9_-]+|***REDACTED-GOOGLE-OAUTH***|g' \
+      -e 's/[Bb]earer [A-Za-z0-9._-]{20,}/Bearer ***REDACTED***/g' \
+      -e '/-----BEGIN [A-Z ]*PRIVATE KEY-----/,/-----END [A-Z ]*PRIVATE KEY-----/c\
+***REDACTED-PRIVATE-KEY***' \
+      "$_tmp" > /tmp/dev-lead-session-output.txt; then
+      : > /tmp/dev-lead-session-output.txt 2>/dev/null || true
+      echo "::warning::Failed to redact/persist /tmp/dev-lead-session-output.txt" >&2
+    fi
+    if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+      # HTML-escape the redacted log so literal </details> or </summary> in
+      # the agent output cannot break the wrapping <details> block on the run
+      # summary page.
+      {
+        echo "## Dev-Lead session output"
+        echo "<details><summary>Click to expand session logs</summary>"
+        echo ""
+        echo "<pre>"
+        sed 's|&|\&amp;|g; s|<|\&lt;|g; s|>|\&gt;|g' /tmp/dev-lead-session-output.txt
+        echo "</pre>"
+        echo ""
+        echo "</details>"
+      } >> "$GITHUB_STEP_SUMMARY" || \
+        echo "::warning::Failed to append session output to GITHUB_STEP_SUMMARY" >&2
+    fi
+  fi
+
+  # Map rate-limit to exit code 2 for caller to detect; parse reset time for
+  # marker embedding. Use the file-based helpers to avoid OOM on large captures.
+  # Runs AFTER the persist/summary block above so a rate-limited session is also
+  # captured to the run summary; reads the raw capture ($_tmp) left intact above.
+  if [ "$rc" -ne 0 ] && [ -n "$_tmp" ] && is_rate_limited_files "$_tmp"; then
+    parse_reset_time_files "$_tmp"
+    rm -f "$_tmp"
+    return 2
+  fi
+  [ -n "$_tmp" ] && rm -f "$_tmp"
+  return "$rc"
+}
+
+# run_writer_with_fallback <prompt_file> [intent_type]
+# Tries primary engine, falls back through claude → copilot → gemini on rate-limit.
+# intent_type is passed to model_for_intent() so each engine uses the appropriate
+# tier model for the given task complexity (e.g. haiku for triage, sonnet for writes).
+# Only rate-limit (exit 2) and missing-binary (exit 127) trigger fallback;
+# other failures propagate immediately.
+# An engine found rate-limited/unavailable in an earlier call this run is skipped
+# (not re-invoked) — see the exhaustion registry above (#947).
+run_writer_with_fallback() {
+  local prompt_file="$1"
+  local intent="${2:-}"
+  local engines=("$REVIEW_ENGINE")
+
+  # Clear any stale failure-reason sidecar from a prior invocation in the same
+  # process. Before each terminal failure return below we write a one-line
+  # cause class (rate-limited | missing-binary | engine-error) to this path,
+  # mirroring the existing /tmp/dev-lead-rate-limit-reset sidecar. Downstream
+  # handlers (dev-lead-fix-issue.sh) read it to classify the failure and pick
+  # the right retry behavior. This is purely additive — no control-flow change.
+  # The timeout-* sidecars (tier/budget/elapsed) are written only on a per-tier
+  # timeout (#1018); clear any stale copies here so a later non-timeout failure
+  # never surfaces a previous run's timeout context.
+  rm -f /tmp/dev-lead-failure-reason \
+        /tmp/dev-lead-timeout-tier \
+        /tmp/dev-lead-timeout-budget \
+        /tmp/dev-lead-timeout-elapsed
+
+  for e in claude copilot gemini; do
+    [ "$e" != "$REVIEW_ENGINE" ] && engines+=("$e")
+  done
+
+  local any_rate_limited=0
+  local any_missing=0
+  for engine in "${engines[@]}"; do
+    if [ "$engine" = "copilot" ] && [[ "${COPILOT_GITHUB_TOKEN:-}" == ghp_* ]]; then
+      echo "::warning::Skipping copilot fallback: classic PAT in COPILOT_GITHUB_TOKEN is unsupported" >&2
+      continue
+    fi
+    if [ "$engine" = "gemini" ] && [ -z "${GEMINI_API_KEY:-}${GOOGLE_API_KEY:-}" ]; then
+      echo "::warning::Skipping gemini fallback: GEMINI_API_KEY or GOOGLE_API_KEY not configured" >&2
+      continue
+    fi
+
+    # Run-scoped exhaustion (#947): an engine already found rate-limited/
+    # unavailable earlier in this run is not re-invoked. Reflect its recorded
+    # reason into the aggregate so the final return code is unchanged, and emit
+    # no repeat notice (the one-time notice fired when it was first marked).
+    if _engine_is_exhausted "$engine"; then
+      case "${_ENGINE_EXHAUSTED_REASON["$engine"]}" in
+        missing-binary) any_missing=1 ;;
+        *)              any_rate_limited=1 ;;
+      esac
+      echo "  [engine] $engine already exhausted this run — skipping (not re-invoked)" >&2
+      continue
+    fi
+
+    if ! check_provider_headroom "$engine"; then
+      echo "::warning::$engine at/above usage threshold — trying next engine" >&2
+      any_rate_limited=1
+      _mark_engine_exhausted "$engine" "rate-limited"
+      continue
+    fi
+
+    local saved="$REVIEW_ENGINE"
+    export REVIEW_ENGINE="$engine"
+    # Re-evaluate model names for the new engine so model_for_intent returns
+    # the correct engine-specific model for the requested tier.
+    set_engine_config
+    local model
+    model="$(model_for_intent "$intent")"
+    local rc=0 _t_start _t_end
+    _t_start=$(date +%s)
+    run_writer "$prompt_file" "$model" || rc=$?
+    _t_end=$(date +%s)
+    export REVIEW_ENGINE="$saved"
+    # Restore original config for subsequent PRs in the same session
+    set_engine_config
+    [ "$rc" -eq 0 ] && return 0
+    if [ "$rc" -eq 2 ] || [ "$rc" -eq 127 ]; then
+      # exit 2: rate-limited or text-only engine unavailable for writes
+      # exit 127: engine binary not installed in this environment (also returned by
+      #           GNU timeout when the command is not found — treated as a missing
+      #           binary rather than a retryable quota error so that infra failures
+      #           surface loudly instead of being masked as rate-limit retries).
+      echo "::warning::$engine unavailable (exit $rc), trying next engine" >&2
+      if [ "$rc" -eq 2 ]; then
+        any_rate_limited=1
+        _mark_engine_exhausted "$engine" "rate-limited"
+      else
+        any_missing=1
+        _mark_engine_exhausted "$engine" "missing-binary"
+      fi
+      continue
+    fi
+    # A non-fallback engine error (137/143=signal, generic non-zero) — propagate
+    # immediately, classifying it as engine-error.
+    #
+    # A per-tier stage timeout (exit 124 from GNU `timeout`) is treated
+    # separately (#1018): it is a first-class, NON-retryable condition, so a
+    # same-budget retry — on this engine or a fallback engine — is deliberately
+    # avoided (we already `return` here rather than `continue`). Classify it as a
+    # distinct `timeout` reason and record the tier/budget/elapsed sidecars the
+    # escalation comment surfaces, so the caller escalates to a human on the
+    # FIRST occurrence instead of burning a same-budget model call.
+    if [ "$rc" -eq 124 ]; then
+      printf 'timeout\n' > /tmp/dev-lead-failure-reason
+      printf 'action\n' > /tmp/dev-lead-timeout-tier
+      printf '%s\n' "${ACTION_TIMEOUT_SEC}" > /tmp/dev-lead-timeout-budget
+      printf '%s\n' "$(( _t_end - _t_start ))" > /tmp/dev-lead-timeout-elapsed
+    else
+      printf 'engine-error\n' > /tmp/dev-lead-failure-reason
+    fi
+    return "$rc"
+  done
+
+  echo "::error::All engines rate-limited or unavailable" >&2
+  # If any engine binary was missing (exit 127), return 1 (hard infra failure) so
+  # downstream handlers do not post rate-limit retry markers for what is really a
+  # configuration/environment problem.  Only return 2 when every failure was a
+  # genuine quota/rate-limit so callers know a later retry may succeed.
+  if [ "$any_missing" -eq 1 ]; then
+    printf 'missing-binary\n' > /tmp/dev-lead-failure-reason
+    return 1
+  fi
+  if [ "$any_rate_limited" -eq 1 ]; then
+    printf 'rate-limited\n' > /tmp/dev-lead-failure-reason
+    return 2
+  fi
+  printf 'engine-error\n' > /tmp/dev-lead-failure-reason
+  return 1
+}
+
+# extract_verdict_json <raw_file> <dest_file>
+# Resolves the verdict JSON from an agentic run, handling two output styles:
+#   1. Agent wrote JSON to $dest via Bash tool (dest already valid — use it as-is).
+#   2. Agent printed JSON to stdout captured in raw_file (scan for first valid
+#      JSON object containing a 'decision' field, ignoring preamble text).
+extract_verdict_json() {
+  local raw="$1" dest="$2"
+  # Style 1: agent wrote to $dest via Bash tool (our stdout redirect didn't clobber it).
+  if jq empty "$dest" 2>/dev/null; then
+    return 0
+  fi
+  # Style 2: agent printed JSON to stdout.
+  if jq empty "$raw" 2>/dev/null; then
+    cp "$raw" "$dest"
+    return 0
+  fi
+  python3 -c "
+import sys, json
+text = open(sys.argv[1]).read()
+decoder = json.JSONDecoder()
+pos = text.find('{')
+while pos >= 0:
+    try:
+        obj, _ = decoder.raw_decode(text, pos)
+        if isinstance(obj, dict) and 'decision' in obj:
+            print(json.dumps(obj))
+            sys.exit(0)
+    except Exception:
+        pass
+    pos = text.find('{', pos + 1)
+sys.exit(1)
+" "$raw" > "$dest" 2>/dev/null
+}
+
+# run_duck <prompt_file> <model>
+# Cross-engine adversarial "rubber duck" review.
+# DUCK_ENGINE is set by engine.sh init: claude→copilot, gemini→claude, copilot→gemini.
+# All three engine branches (claude, gemini, copilot) are reachable — the gemini
+# branch executes when REVIEW_ENGINE=copilot (copilot primary → gemini duck).
+# Output to stdout. Strips non-selected engine credentials to prevent cross-engine leakage.
+run_duck() {
+  local prompt_file="$1"
+  local model="$2"
+  local _tok_tmp="" rc=0
+  if [ -n "${TOKEN_LOG_FILE:-}" ]; then
+    unset _ENGINE_USAGE_OUT
+    _tok_tmp="$(mktemp 2>/dev/null || true)"
+    # Per-call usage-sidecar key: a unique mktemp path, exported so the engine's
+    # pipeline subshell and _record_engine_tokens agree on it. Unique per call →
+    # concurrent run_agentic/run_duck (review-one-pr.sh) never collide.
+    [[ -n "$_tok_tmp" ]] && local -x _ENGINE_USAGE_OUT="${_tok_tmp}.usage"
+  fi
+  case "$DUCK_ENGINE" in
+    claude)
+      unset COPILOT_GITHUB_TOKEN 2>/dev/null || true
+      unset GOOGLE_API_KEY 2>/dev/null || true
+      unset GEMINI_API_KEY 2>/dev/null || true
+      # Thread the opt-in MCP config (no-op when REVIEW_MCP_CONFIG is unset).
+      _mcp_review_flags "Bash,Read,Grep,Glob"
+      # LSP pilot (issue #960): the rubber-duck is a navigation tier — opt it into
+      # stream-json capture (inert unless _lsp_pilot_active).
+      local _LSP_PILOT_CAPTURE=1
+      # Route through the chain helper so real token usage (incl. cache) is captured
+      # when logging is on; a single-model "chain" preserves prior behaviour.
+      if [ -n "$_tok_tmp" ]; then
+        _claude_chain_invoke "$model" "$prompt_file" "$DUCK_TIMEOUT_SEC" \
+          --permission-mode acceptEdits \
+          --allowed-tools "$_MCP_ALLOWED_TOOLS" \
+          --max-turns 25 \
+          ${_MCP_FLAGS[@]+"${_MCP_FLAGS[@]}"} \
+          | tee "$_tok_tmp" || rc=${PIPESTATUS[0]}
+      else
+        _claude_chain_invoke "$model" "$prompt_file" "$DUCK_TIMEOUT_SEC" \
+          --permission-mode acceptEdits \
+          --allowed-tools "$_MCP_ALLOWED_TOOLS" \
+          --max-turns 25 \
+          ${_MCP_FLAGS[@]+"${_MCP_FLAGS[@]}"} \
+          || rc=$?
+      fi
+      ;;
+    gemini)
+      unset CLAUDE_CODE_OAUTH_TOKEN 2>/dev/null || true
+      unset ANTHROPIC_API_KEY 2>/dev/null || true
+      unset COPILOT_GITHUB_TOKEN 2>/dev/null || true
+      if [ -n "$_tok_tmp" ]; then
+        _gemini_invoke "$prompt_file" "$DUCK_TIMEOUT_SEC" "$model" \
+          --approval-mode auto_edit | tee "$_tok_tmp" || rc=${PIPESTATUS[0]}
+      else
+        _gemini_invoke "$prompt_file" "$DUCK_TIMEOUT_SEC" "$model" \
+          --approval-mode auto_edit || rc=$?
+      fi
+      ;;
+    copilot)
+      unset CLAUDE_CODE_OAUTH_TOKEN 2>/dev/null || true
+      unset ANTHROPIC_API_KEY 2>/dev/null || true
+      unset GOOGLE_API_KEY 2>/dev/null || true
+      unset GEMINI_API_KEY 2>/dev/null || true
+      # Do NOT tee stdout to OUTPUT_FILE — same rationale as run_agentic copilot
+      # branch: the prompt writes verdict JSON directly via the Bash tool.
+      if [ -n "$_tok_tmp" ]; then
+        copilot_chat "$prompt_file" "$DUCK_TIMEOUT_SEC" --yolo | tee "$_tok_tmp" || rc=${PIPESTATUS[0]}
+      else
+        copilot_chat "$prompt_file" "$DUCK_TIMEOUT_SEC" --yolo || rc=$?
+      fi
+      ;;
+    *)
+      echo "::error::Unknown DUCK_ENGINE='$DUCK_ENGINE'" >&2
+      [ -n "$_tok_tmp" ] && rm -f "$_tok_tmp"
+      return 1
+      ;;
+  esac
+  if [ "$rc" -eq 0 ]; then
+    _record_engine_tokens "duck" "$DUCK_ENGINE" "$model" "$prompt_file" "$_tok_tmp"
+  fi
+  [ -n "$_tok_tmp" ] && rm -f "$_tok_tmp"
+  return "$rc"
+}
+
+# _emit_reset_iso <hhmm_with_meridiem>
+# Shared helper: converts e.g. "11:20pm" into an ISO-8601 UTC timestamp
+# (writing to /tmp/dev-lead-rate-limit-reset), advancing to tomorrow if the
+# computed time is already in the past for today.
+_emit_reset_iso() {
+  local hhmm="$1"
+  if [ -z "$hhmm" ]; then
+    printf '' > /tmp/dev-lead-rate-limit-reset
+    return 0
+  fi
+  local today iso
+  today=$(date -u +%Y-%m-%d)
+  iso=$(date -u -d "${today} ${hhmm} UTC" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)
+  if [ -n "$iso" ] && [ "$(date -u +%s)" -gt "$(date -u -d "$iso" +%s 2>/dev/null || echo 0)" ]; then
+    local tomorrow
+    tomorrow=$(date -u -d "tomorrow" +%Y-%m-%d)
+    iso=$(date -u -d "${tomorrow} ${hhmm} UTC" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)
+  fi
+  printf '%s' "${iso:-}" > /tmp/dev-lead-rate-limit-reset
+}
+
+# parse_reset_time <text>
+# Extracts the rate-limit reset time from engine output and writes an ISO-8601
+# UTC timestamp to /tmp/dev-lead-rate-limit-reset for callers to embed in
+# status=rate-limited markers. Pattern: "resets H:MMam/pm (UTC)" or
+# "resets H:MM(am|pm) UTC".
+# Writes empty string if no reset time is found (caller treats as unknown).
+#
+# Prefer parse_reset_time_files for large captures — same OOM rationale as
+# is_rate_limited / is_rate_limited_files above.
+parse_reset_time() {
+  local text="$1"
+  # Match "resets 11:20pm (UTC)" or "resets 11:20pm UTC"
+  local time_str
+  time_str=$(printf '%s\n' "$text" | grep -oiE 'resets [0-9]{1,2}:[0-9]{2}(am|pm)' | head -1 || true)
+  if [ -z "$time_str" ]; then
+    printf '' > /tmp/dev-lead-rate-limit-reset
+    return 0
+  fi
+  # Extract H:MM(am|pm) part
+  local hhmm
+  hhmm=$(printf '%s' "$time_str" | grep -oiE '[0-9]{1,2}:[0-9]{2}(am|pm)$' || true)
+  _emit_reset_iso "$hhmm"
+}
+
+# parse_reset_time_files <file>...
+# File-aware variant of parse_reset_time. Scans each non-empty existing file
+# for the first "resets H:MMam/pm" match and writes the ISO timestamp via
+# _emit_reset_iso. Uses grep directly on files to avoid loading large LLM
+# outputs into a shell variable.
+parse_reset_time_files() {
+  local files=()
+  local f
+  for f in "$@"; do
+    [ -n "$f" ] && [ -f "$f" ] && files+=("$f")
+  done
+  if [ "${#files[@]}" -eq 0 ]; then
+    printf '' > /tmp/dev-lead-rate-limit-reset
+    return 0
+  fi
+  local time_str
+  time_str=$(grep -hoiE 'resets [0-9]{1,2}:[0-9]{2}(am|pm)' "${files[@]}" 2>/dev/null | head -1 || true)
+  if [ -z "$time_str" ]; then
+    printf '' > /tmp/dev-lead-rate-limit-reset
+    return 0
+  fi
+  local hhmm
+  hhmm=$(printf '%s' "$time_str" | grep -oiE '[0-9]{1,2}:[0-9]{2}(am|pm)$' || true)
+  _emit_reset_iso "$hhmm"
+}
+
+# extract_verdict_json <raw_file> <dest_file>
+# Resolves the verdict JSON from an agentic run, handling two output styles:
+#   1. Agent wrote JSON to $dest via Bash tool (dest already valid — use it as-is).
+#   2. Agent printed JSON to stdout captured in raw_file (scan for first valid
+#      JSON object containing a 'decision' field, ignoring preamble text).
+extract_verdict_json() {
+  local raw="$1" dest="$2"
+  # Style 1: agent wrote to $dest via Bash tool (our stdout redirect didn't clobber it).
+  if jq empty "$dest" 2>/dev/null; then
+    return 0
+  fi
+  # Style 2: agent printed JSON to stdout.
+  if jq empty "$raw" 2>/dev/null; then
+    cp "$raw" "$dest"
+    return 0
+  fi
+  python3 -c "
+import sys, json
+text = open(sys.argv[1]).read()
+decoder = json.JSONDecoder()
+pos = text.find('{')
+while pos >= 0:
+    try:
+        obj, _ = decoder.raw_decode(text, pos)
+        if isinstance(obj, dict) and 'decision' in obj:
+            print(json.dumps(obj))
+            sys.exit(0)
+    except Exception:
+        pass
+    pos = text.find('{', pos + 1)
+sys.exit(1)
+" "$raw" > "$dest" 2>/dev/null
+}
+
+# extract_verdict_json <raw_file> <dest_file>
+# Resolves the verdict JSON from an agentic run, handling two output styles:
+#   1. Agent wrote JSON to $dest via Bash tool (dest already valid — use it as-is).
+#   2. Agent printed JSON to stdout captured in raw_file (scan for first valid
+#      JSON object containing a 'decision' field, ignoring preamble text).
+extract_verdict_json() {
+  local raw="$1" dest="$2"
+  # Style 1: agent wrote to $dest via Bash tool (our stdout redirect didn't clobber it).
+  if jq empty "$dest" 2>/dev/null; then
+    return 0
+  fi
+  # Style 2: agent printed JSON to stdout.
+  if jq empty "$raw" 2>/dev/null; then
+    cp "$raw" "$dest"
+    return 0
+  fi
+  python3 -c "
+import sys, json
+text = open(sys.argv[1]).read()
+decoder = json.JSONDecoder()
+pos = text.find('{')
+while pos >= 0:
+    try:
+        obj, _ = decoder.raw_decode(text, pos)
+        if isinstance(obj, dict) and 'decision' in obj:
+            print(json.dumps(obj))
+            sys.exit(0)
+    except Exception:
+        pass
+    pos = text.find('{', pos + 1)
+sys.exit(1)
+" "$raw" > "$dest" 2>/dev/null
+}
 
 # run_duck <prompt_file> <model>
 # Used by: review-one-pr.sh only (not the dev-lead writer pipeline).
@@ -2423,781 +3486,6 @@ run_writer() {
 # other failures propagate immediately.
 # An engine found rate-limited/unavailable in an earlier call this run is skipped
 # (not re-invoked) — see the exhaustion registry above (#947).
-
-# extract_verdict_json <raw_file> <dest_file>
-# Resolves the verdict JSON from an agentic run, handling two output styles:
-#   1. Agent wrote JSON to $dest via Bash tool (dest already valid — use it as-is).
-#   2. Agent printed JSON to stdout captured in raw_file (scan for first valid
-#      JSON object containing a 'decision' field, ignoring preamble text).
-
-# run_duck <prompt_file> <model>
-# Cross-engine adversarial "rubber duck" review.
-# DUCK_ENGINE is set by engine.sh init: claude→copilot, gemini→claude, copilot→gemini.
-# All three engine branches (claude, gemini, copilot) are reachable — the gemini
-# branch executes when REVIEW_ENGINE=copilot (copilot primary → gemini duck).
-# Output to stdout. Strips non-selected engine credentials to prevent cross-engine leakage.
-
-# _emit_reset_iso <hhmm_with_meridiem>
-# Shared helper: converts e.g. "11:20pm" into an ISO-8601 UTC timestamp
-# (writing to /tmp/dev-lead-rate-limit-reset), advancing to tomorrow if the
-# computed time is already in the past for today.
-_emit_reset_iso() {
-  local hhmm="$1"
-  if [ -z "$hhmm" ]; then
-    printf '' > /tmp/dev-lead-rate-limit-reset
-    return 0
-  fi
-  local today iso
-  today=$(date -u +%Y-%m-%d)
-  iso=$(date -u -d "${today} ${hhmm} UTC" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)
-  if [ -n "$iso" ] && [ "$(date -u +%s)" -gt "$(date -u -d "$iso" +%s 2>/dev/null || echo 0)" ]; then
-    local tomorrow
-    tomorrow=$(date -u -d "tomorrow" +%Y-%m-%d)
-    iso=$(date -u -d "${tomorrow} ${hhmm} UTC" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)
-  fi
-  printf '%s' "${iso:-}" > /tmp/dev-lead-rate-limit-reset
-}
-
-# parse_reset_time <text>
-# Extracts the rate-limit reset time from engine output and writes an ISO-8601
-# UTC timestamp to /tmp/dev-lead-rate-limit-reset for callers to embed in
-# status=rate-limited markers. Pattern: "resets H:MMam/pm (UTC)" or
-# "resets H:MM(am|pm) UTC".
-# Writes empty string if no reset time is found (caller treats as unknown).
-#
-# Prefer parse_reset_time_files for large captures — same OOM rationale as
-# is_rate_limited / is_rate_limited_files above.
-parse_reset_time() {
-  local text="$1"
-  # Match "resets 11:20pm (UTC)" or "resets 11:20pm UTC"
-  local time_str
-  time_str=$(printf '%s\n' "$text" | grep -oiE 'resets [0-9]{1,2}:[0-9]{2}(am|pm)' | head -1 || true)
-  if [ -z "$time_str" ]; then
-    printf '' > /tmp/dev-lead-rate-limit-reset
-    return 0
-  fi
-  # Extract H:MM(am|pm) part
-  local hhmm
-  hhmm=$(printf '%s' "$time_str" | grep -oiE '[0-9]{1,2}:[0-9]{2}(am|pm)$' || true)
-  _emit_reset_iso "$hhmm"
-}
-
-# parse_reset_time_files <file>...
-# File-aware variant of parse_reset_time. Scans each non-empty existing file
-# for the first "resets H:MMam/pm" match and writes the ISO timestamp via
-# _emit_reset_iso. Uses grep directly on files to avoid loading large LLM
-# outputs into a shell variable.
-parse_reset_time_files() {
-  local files=()
-  local f
-  for f in "$@"; do
-    [ -n "$f" ] && [ -f "$f" ] && files+=("$f")
-  done
-  if [ "${#files[@]}" -eq 0 ]; then
-    printf '' > /tmp/dev-lead-rate-limit-reset
-    return 0
-  fi
-  local time_str
-  time_str=$(grep -hoiE 'resets [0-9]{1,2}:[0-9]{2}(am|pm)' "${files[@]}" 2>/dev/null | head -1 || true)
-  if [ -z "$time_str" ]; then
-    printf '' > /tmp/dev-lead-rate-limit-reset
-    return 0
-  fi
-  local hhmm
-  hhmm=$(printf '%s' "$time_str" | grep -oiE '[0-9]{1,2}:[0-9]{2}(am|pm)$' || true)
-  _emit_reset_iso "$hhmm"
-}
-
-# extract_verdict_json <raw_file> <dest_file>
-# Resolves the verdict JSON from an agentic run, handling two output styles:
-#   1. Agent wrote JSON to $dest via Bash tool (dest already valid — use it as-is).
-#   2. Agent printed JSON to stdout captured in raw_file (scan for first valid
-#      JSON object containing a 'decision' field, ignoring preamble text).
-
-# extract_verdict_json <raw_file> <dest_file>
-# Resolves the verdict JSON from an agentic run, handling two output styles:
-#   1. Agent wrote JSON to $dest via Bash tool (dest already valid — use it as-is).
-#   2. Agent printed JSON to stdout captured in raw_file (scan for first valid
-#      JSON object containing a 'decision' field, ignoring preamble text).
-
-# run_duck <prompt_file> <model>
-# Used by: review-one-pr.sh only (not the dev-lead writer pipeline).
-# Cross-engine adversarial "rubber duck" review.
-# DUCK_ENGINE is set by engine.sh init: claude→copilot, gemini→claude, copilot→gemini.
-# All three engine branches (claude, gemini, copilot) are reachable — the gemini
-# branch executes when REVIEW_ENGINE=copilot (copilot primary → gemini duck).
-# Output to stdout. Strips non-selected engine credentials to prevent cross-engine leakage.
-
-# _emit_reset_iso <hhmm_with_meridiem>
-# Shared helper: converts e.g. "11:20pm" into an ISO-8601 UTC timestamp
-# (writing to /tmp/dev-lead-rate-limit-reset), advancing to tomorrow if the
-# computed time is already in the past for today.
-_emit_reset_iso() {
-  local hhmm="$1"
-  if [ -z "$hhmm" ]; then
-    printf '' > /tmp/dev-lead-rate-limit-reset
-    return 0
-  fi
-  local today iso
-  today=$(date -u +%Y-%m-%d)
-  iso=$(date -u -d "${today} ${hhmm} UTC" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)
-  if [ -n "$iso" ] && [ "$(date -u +%s)" -gt "$(date -u -d "$iso" +%s 2>/dev/null || echo 0)" ]; then
-    local tomorrow
-    tomorrow=$(date -u -d "tomorrow" +%Y-%m-%d)
-    iso=$(date -u -d "${tomorrow} ${hhmm} UTC" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)
-  fi
-  printf '%s' "${iso:-}" > /tmp/dev-lead-rate-limit-reset
-}
-
-# parse_reset_time <text>
-# Extracts the rate-limit reset time from engine output and writes an ISO-8601
-# UTC timestamp to /tmp/dev-lead-rate-limit-reset for callers to embed in
-# status=rate-limited markers. Pattern: "resets H:MMam/pm (UTC)" or
-# "resets H:MM(am|pm) UTC".
-# Writes empty string if no reset time is found (caller treats as unknown).
-#
-# Prefer parse_reset_time_files for large captures — same OOM rationale as
-# is_rate_limited / is_rate_limited_files above.
-parse_reset_time() {
-  local text="$1"
-  # Match "resets 11:20pm (UTC)" or "resets 11:20pm UTC"
-  local time_str
-  time_str=$(printf '%s\n' "$text" | grep -oiE 'resets [0-9]{1,2}:[0-9]{2}(am|pm)' | head -1 || true)
-  if [ -z "$time_str" ]; then
-    printf '' > /tmp/dev-lead-rate-limit-reset
-    return 0
-  fi
-  # Extract H:MM(am|pm) part
-  local hhmm
-  hhmm=$(printf '%s' "$time_str" | grep -oiE '[0-9]{1,2}:[0-9]{2}(am|pm)$' || true)
-  _emit_reset_iso "$hhmm"
-}
-
-# parse_reset_time_files <file>...
-# File-aware variant of parse_reset_time. Scans each non-empty existing file
-# for the first "resets H:MMam/pm" match and writes the ISO timestamp via
-# _emit_reset_iso. Uses grep directly on files to avoid loading large LLM
-# outputs into a shell variable.
-parse_reset_time_files() {
-  local files=()
-  local f
-  for f in "$@"; do
-    [ -n "$f" ] && [ -f "$f" ] && files+=("$f")
-  done
-  if [ "${#files[@]}" -eq 0 ]; then
-    printf '' > /tmp/dev-lead-rate-limit-reset
-    return 0
-  fi
-  local time_str
-  time_str=$(grep -hoiE 'resets [0-9]{1,2}:[0-9]{2}(am|pm)' "${files[@]}" 2>/dev/null | head -1 || true)
-  if [ -z "$time_str" ]; then
-    printf '' > /tmp/dev-lead-rate-limit-reset
-    return 0
-  fi
-  local hhmm
-  hhmm=$(printf '%s' "$time_str" | grep -oiE '[0-9]{1,2}:[0-9]{2}(am|pm)$' || true)
-  _emit_reset_iso "$hhmm"
-}
-
-# run_writer <prompt_file> [model]
-# Full write-access mode for applying code fixes.
-# When DEV_LEAD_DRY_RUN=true: builds prompt but does NOT call engine; exits 0.
-# Exit codes: 0=success, 1=non-retriable failure, 2=rate-limited
-# On exit 2, writes parsed reset timestamp to /tmp/dev-lead-rate-limit-reset.
-run_writer() {
-  local prompt_file="$1"
-  local model="${2:-$ENGINE_ACTION_MODEL}"
-
-  if [ "${DEV_LEAD_DRY_RUN:-false}" = "true" ]; then
-    echo "  [dry-run] run_writer: would invoke $REVIEW_ENGINE with prompt $(wc -l < "$prompt_file") lines"
-    return 0
-  fi
-
-  # Capture stdout to a temp file so is_rate_limited can inspect it, while
-  # still streaming output to the caller. The old approach read from
-  # /tmp/dev-lead-writer-stderr which was never written (claude --print outputs
-  # to stdout, not stderr), so is_rate_limited never fired and fallback engines
-  # were never tried.
-  local _tmp rc=0
-  unset _ENGINE_USAGE_OUT
-  _tmp="$(mktemp 2>/dev/null || true)"
-  # Per-call usage-sidecar key (see run_triage); unique mktemp path shared with
-  # the engine subshell via export.
-  [[ -n "$_tmp" ]] && local -x _ENGINE_USAGE_OUT="${_tmp}.usage"
-
-  case "$REVIEW_ENGINE" in
-    claude)
-      # See run_agentic — honor caller's explicit model pin when it differs
-      # from the tier default. Chain only applies when the caller used the
-      # default action model for this engine.
-      local _writer_chain="${CLAUDE_ACTION_MODEL_CHAIN:-$model}"
-      if [ -n "${ENGINE_ACTION_MODEL:-}" ] && [ "$model" != "$ENGINE_ACTION_MODEL" ]; then
-        _writer_chain="$model"
-      fi
-      if [ -n "$_tmp" ]; then
-        _claude_chain_invoke "$_writer_chain" "$prompt_file" "$ACTION_TIMEOUT_SEC" \
-          --permission-mode acceptEdits \
-          --allowed-tools "Bash,Read,Write,Edit,Grep,Glob,WebFetch" \
-          2>&1 | tee "$_tmp" || rc=${PIPESTATUS[0]}
-      else
-        _claude_chain_invoke "$_writer_chain" "$prompt_file" "$ACTION_TIMEOUT_SEC" \
-          --permission-mode acceptEdits \
-          --allowed-tools "Bash,Read,Write,Edit,Grep,Glob,WebFetch" \
-          || rc=$?
-      fi
-      ;;
-    gemini)
-      # Flash chain for writer (action) tier; honor explicit model pin.
-      local _writer_gemini_chain="${GEMINI_FLASH_MODEL_CHAIN:-$model}"
-      if [ -n "${ENGINE_ACTION_MODEL:-}" ] && [ "$model" != "$ENGINE_ACTION_MODEL" ]; then
-        _writer_gemini_chain="$model"
-      fi
-      if [ -n "$_tmp" ]; then
-        _GEMINI_CHAIN_MODEL_USED=""
-        _gemini_chain_invoke "$_writer_gemini_chain" "$prompt_file" "$ACTION_TIMEOUT_SEC" \
-          --approval-mode auto_edit > >(tee "$_tmp") 2>&1 || rc=$?
-      else
-        _gemini_chain_invoke "$_writer_gemini_chain" "$prompt_file" "$ACTION_TIMEOUT_SEC" \
-          --approval-mode auto_edit || rc=$?
-      fi
-      ;;
-    copilot)
-      # Self-sufficient write support via gh copilot --yolo
-      if [ -n "$_tmp" ]; then
-        copilot_chat "$prompt_file" "$ACTION_TIMEOUT_SEC" --yolo 2>&1 | tee "$_tmp" || rc=${PIPESTATUS[0]}
-      else
-        copilot_chat "$prompt_file" "$ACTION_TIMEOUT_SEC" --yolo || rc=$?
-      fi
-      ;;
-  esac
-
-  # Map rate-limit to exit code 2 for caller to detect; parse reset time for
-  # marker embedding. Use the file-based helpers to avoid OOM on large captures.
-  if [ "$rc" -ne 0 ] && [ -n "$_tmp" ] && is_rate_limited_files "$_tmp"; then
-    parse_reset_time_files "$_tmp"
-    [ -n "$_tmp" ] && rm -f "$_tmp"
-    return 2
-  fi
-  if [ "$rc" -eq 0 ]; then
-    local _writer_used="$model"
-    if [ "$REVIEW_ENGINE" = "claude" ] && [ -n "${_CLAUDE_CHAIN_MODEL_USED:-}" ]; then
-      _writer_used="$_CLAUDE_CHAIN_MODEL_USED"
-    elif [ "$REVIEW_ENGINE" = "gemini" ] && [ -n "${_GEMINI_CHAIN_MODEL_USED:-}" ]; then
-      _writer_used="$_GEMINI_CHAIN_MODEL_USED"
-    fi
-    _record_engine_tokens "writer" "$REVIEW_ENGINE" "$_writer_used" "$prompt_file" "$_tmp"
-  fi
-  if [ -n "$_tmp" ]; then
-    # Redact once: write secret-scrubbed content to the persisted path, then
-    # use that redacted file as the source for the step summary so credentials
-    # cannot leak via /tmp persistence or the public run summary. Patterns
-    # kept in sync with scripts/dev-lead-fix-reviews.sh:redact_secrets.
-    #
-    # This runs for ALL terminal paths — success, generic failure, AND the
-    # rate-limit early return below — so the session output (where the real
-    # failure cause appears) reaches the run summary and the persisted sidecar
-    # regardless of exit code. The rate-limit check further down reads the raw
-    # capture ($_tmp), which redaction leaves intact (separate file), so
-    # persisting first is safe.
-    rm -f /tmp/dev-lead-session-output.txt
-    if ! sed -E \
-      -e 's/(gh[opsu]|ghr)_[A-Za-z0-9_]{20,}/***REDACTED-GH-TOKEN***/g' \
-      -e 's/github_pat_[A-Za-z0-9_]{20,}/***REDACTED-GH-PAT***/g' \
-      -e 's/sk-(ant-)?[A-Za-z0-9_-]{20,}/***REDACTED-API-KEY***/g' \
-      -e 's/AKIA[A-Z0-9]{16}/***REDACTED-AWS-KEY***/g' \
-      -e 's/AIza[A-Za-z0-9_-]{35}/***REDACTED-GOOGLE-KEY***/g' \
-      -e 's|ya29\.[A-Za-z0-9_-]+|***REDACTED-GOOGLE-OAUTH***|g' \
-      -e 's/[Bb]earer [A-Za-z0-9._-]{20,}/Bearer ***REDACTED***/g' \
-      -e '/-----BEGIN [A-Z ]*PRIVATE KEY-----/,/-----END [A-Z ]*PRIVATE KEY-----/c\
-***REDACTED-PRIVATE-KEY***' \
-      "$_tmp" > /tmp/dev-lead-session-output.txt; then
-      : > /tmp/dev-lead-session-output.txt 2>/dev/null || true
-      echo "::warning::Failed to redact/persist /tmp/dev-lead-session-output.txt" >&2
-    fi
-    if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
-      # HTML-escape the redacted log so literal </details> or </summary> in
-      # the agent output cannot break the wrapping <details> block on the run
-      # summary page.
-      {
-        echo "## Dev-Lead session output"
-        echo "<details><summary>Click to expand session logs</summary>"
-        echo ""
-        echo "<pre>"
-        sed 's|&|\&amp;|g; s|<|\&lt;|g; s|>|\&gt;|g' /tmp/dev-lead-session-output.txt
-        echo "</pre>"
-        echo ""
-        echo "</details>"
-      } >> "$GITHUB_STEP_SUMMARY" || \
-        echo "::warning::Failed to append session output to GITHUB_STEP_SUMMARY" >&2
-    fi
-  fi
-
-  # Map rate-limit to exit code 2 for caller to detect; parse reset time for
-  # marker embedding. Use the file-based helpers to avoid OOM on large captures.
-  # Runs AFTER the persist/summary block above so a rate-limited session is also
-  # captured to the run summary; reads the raw capture ($_tmp) left intact above.
-  if [ "$rc" -ne 0 ] && [ -n "$_tmp" ] && is_rate_limited_files "$_tmp"; then
-    parse_reset_time_files "$_tmp"
-    rm -f "$_tmp"
-    return 2
-  fi
-  [ -n "$_tmp" ] && rm -f "$_tmp"
-  return "$rc"
-}
-
-# run_writer_with_fallback <prompt_file> [intent_type]
-# Tries primary engine, falls back through claude → copilot → gemini on rate-limit.
-# intent_type is passed to model_for_intent() so each engine uses the appropriate
-# tier model for the given task complexity (e.g. haiku for triage, sonnet for writes).
-# Only rate-limit (exit 2) and missing-binary (exit 127) trigger fallback;
-# other failures propagate immediately.
-# An engine found rate-limited/unavailable in an earlier call this run is skipped
-# (not re-invoked) — see the exhaustion registry above (#947).
-run_writer_with_fallback() {
-  local prompt_file="$1"
-  local intent="${2:-}"
-  local engines=("$REVIEW_ENGINE")
-
-  # Clear any stale failure-reason sidecar from a prior invocation in the same
-  # process. Before each terminal failure return below we write a one-line
-  # cause class (rate-limited | missing-binary | engine-error) to this path,
-  # mirroring the existing /tmp/dev-lead-rate-limit-reset sidecar. Downstream
-  # handlers (dev-lead-fix-issue.sh) read it to classify the failure and pick
-  # the right retry behavior. This is purely additive — no control-flow change.
-  # The timeout-* sidecars (tier/budget/elapsed) are written only on a per-tier
-  # timeout (#1018); clear any stale copies here so a later non-timeout failure
-  # never surfaces a previous run's timeout context.
-  rm -f /tmp/dev-lead-failure-reason \
-        /tmp/dev-lead-timeout-tier \
-        /tmp/dev-lead-timeout-budget \
-        /tmp/dev-lead-timeout-elapsed
-
-  for e in claude copilot gemini; do
-    [ "$e" != "$REVIEW_ENGINE" ] && engines+=("$e")
-  done
-
-  local any_rate_limited=0
-  local any_missing=0
-  for engine in "${engines[@]}"; do
-    if [ "$engine" = "copilot" ] && [[ "${COPILOT_GITHUB_TOKEN:-}" == ghp_* ]]; then
-      echo "::warning::Skipping copilot fallback: classic PAT in COPILOT_GITHUB_TOKEN is unsupported" >&2
-      continue
-    fi
-    if [ "$engine" = "gemini" ] && [ -z "${GEMINI_API_KEY:-}${GOOGLE_API_KEY:-}" ]; then
-      echo "::warning::Skipping gemini fallback: GEMINI_API_KEY or GOOGLE_API_KEY not configured" >&2
-      continue
-    fi
-
-    # Run-scoped exhaustion (#947): an engine already found rate-limited/
-    # unavailable earlier in this run is not re-invoked. Reflect its recorded
-    # reason into the aggregate so the final return code is unchanged, and emit
-    # no repeat notice (the one-time notice fired when it was first marked).
-    if _engine_is_exhausted "$engine"; then
-      case "${_ENGINE_EXHAUSTED_REASON["$engine"]}" in
-        missing-binary) any_missing=1 ;;
-        *)              any_rate_limited=1 ;;
-      esac
-      echo "  [engine] $engine already exhausted this run — skipping (not re-invoked)" >&2
-      continue
-    fi
-
-    if ! check_provider_headroom "$engine"; then
-      echo "::warning::$engine at/above usage threshold — trying next engine" >&2
-      any_rate_limited=1
-      _mark_engine_exhausted "$engine" "rate-limited"
-      continue
-    fi
-
-    local saved="$REVIEW_ENGINE"
-    export REVIEW_ENGINE="$engine"
-    # Re-evaluate model names for the new engine so model_for_intent returns
-    # the correct engine-specific model for the requested tier.
-    set_engine_config
-    local model
-    model="$(model_for_intent "$intent")"
-    local rc=0 _t_start _t_end
-    _t_start=$(date +%s)
-    run_writer "$prompt_file" "$model" || rc=$?
-    _t_end=$(date +%s)
-    export REVIEW_ENGINE="$saved"
-    # Restore original config for subsequent PRs in the same session
-    set_engine_config
-    [ "$rc" -eq 0 ] && return 0
-    if [ "$rc" -eq 2 ] || [ "$rc" -eq 127 ]; then
-      # exit 2: rate-limited or text-only engine unavailable for writes
-      # exit 127: engine binary not installed in this environment (also returned by
-      #           GNU timeout when the command is not found — treated as a missing
-      #           binary rather than a retryable quota error so that infra failures
-      #           surface loudly instead of being masked as rate-limit retries).
-      echo "::warning::$engine unavailable (exit $rc), trying next engine" >&2
-      if [ "$rc" -eq 2 ]; then
-        any_rate_limited=1
-        _mark_engine_exhausted "$engine" "rate-limited"
-      else
-        any_missing=1
-        _mark_engine_exhausted "$engine" "missing-binary"
-      fi
-      continue
-    fi
-    # A non-fallback engine error (137/143=signal, generic non-zero) — propagate
-    # immediately, classifying it as engine-error.
-    #
-    # A per-tier stage timeout (exit 124 from GNU `timeout`) is treated
-    # separately (#1018): it is a first-class, NON-retryable condition, so a
-    # same-budget retry — on this engine or a fallback engine — is deliberately
-    # avoided (we already `return` here rather than `continue`). Classify it as a
-    # distinct `timeout` reason and record the tier/budget/elapsed sidecars the
-    # escalation comment surfaces, so the caller escalates to a human on the
-    # FIRST occurrence instead of burning a same-budget model call.
-    if [ "$rc" -eq 124 ]; then
-      printf 'timeout\n' > /tmp/dev-lead-failure-reason
-      printf 'action\n' > /tmp/dev-lead-timeout-tier
-      printf '%s\n' "${ACTION_TIMEOUT_SEC}" > /tmp/dev-lead-timeout-budget
-      printf '%s\n' "$(( _t_end - _t_start ))" > /tmp/dev-lead-timeout-elapsed
-    else
-      printf 'engine-error\n' > /tmp/dev-lead-failure-reason
-    fi
-    return "$rc"
-  done
-
-  echo "::error::All engines rate-limited or unavailable" >&2
-  # If any engine binary was missing (exit 127), return 1 (hard infra failure) so
-  # downstream handlers do not post rate-limit retry markers for what is really a
-  # configuration/environment problem.  Only return 2 when every failure was a
-  # genuine quota/rate-limit so callers know a later retry may succeed.
-  if [ "$any_missing" -eq 1 ]; then
-    printf 'missing-binary\n' > /tmp/dev-lead-failure-reason
-    return 1
-  fi
-  if [ "$any_rate_limited" -eq 1 ]; then
-    printf 'rate-limited\n' > /tmp/dev-lead-failure-reason
-    return 2
-  fi
-  printf 'engine-error\n' > /tmp/dev-lead-failure-reason
-  return 1
-}
-
-# extract_verdict_json <raw_file> <dest_file>
-# Resolves the verdict JSON from an agentic run, handling two output styles:
-#   1. Agent wrote JSON to $dest via Bash tool (dest already valid — use it as-is).
-#   2. Agent printed JSON to stdout captured in raw_file (scan for first valid
-#      JSON object containing a 'decision' field, ignoring preamble text).
-
-# run_duck <prompt_file> <model>
-# Cross-engine adversarial "rubber duck" review.
-# DUCK_ENGINE is set by engine.sh init: claude→copilot, gemini→claude, copilot→gemini.
-# All three engine branches (claude, gemini, copilot) are reachable — the gemini
-# branch executes when REVIEW_ENGINE=copilot (copilot primary → gemini duck).
-# Output to stdout. Strips non-selected engine credentials to prevent cross-engine leakage.
-
-# _emit_reset_iso <hhmm_with_meridiem>
-# Shared helper: converts e.g. "11:20pm" into an ISO-8601 UTC timestamp
-# (writing to /tmp/dev-lead-rate-limit-reset), advancing to tomorrow if the
-# computed time is already in the past for today.
-_emit_reset_iso() {
-  local hhmm="$1"
-  if [ -z "$hhmm" ]; then
-    printf '' > /tmp/dev-lead-rate-limit-reset
-    return 0
-  fi
-  local today iso
-  today=$(date -u +%Y-%m-%d)
-  iso=$(date -u -d "${today} ${hhmm} UTC" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)
-  if [ -n "$iso" ] && [ "$(date -u +%s)" -gt "$(date -u -d "$iso" +%s 2>/dev/null || echo 0)" ]; then
-    local tomorrow
-    tomorrow=$(date -u -d "tomorrow" +%Y-%m-%d)
-    iso=$(date -u -d "${tomorrow} ${hhmm} UTC" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)
-  fi
-  printf '%s' "${iso:-}" > /tmp/dev-lead-rate-limit-reset
-}
-
-# parse_reset_time <text>
-# Extracts the rate-limit reset time from engine output and writes an ISO-8601
-# UTC timestamp to /tmp/dev-lead-rate-limit-reset for callers to embed in
-# status=rate-limited markers. Pattern: "resets H:MMam/pm (UTC)" or
-# "resets H:MM(am|pm) UTC".
-# Writes empty string if no reset time is found (caller treats as unknown).
-#
-# Prefer parse_reset_time_files for large captures — same OOM rationale as
-# is_rate_limited / is_rate_limited_files above.
-parse_reset_time() {
-  local text="$1"
-  # Match "resets 11:20pm (UTC)" or "resets 11:20pm UTC"
-  local time_str
-  time_str=$(printf '%s\n' "$text" | grep -oiE 'resets [0-9]{1,2}:[0-9]{2}(am|pm)' | head -1 || true)
-  if [ -z "$time_str" ]; then
-    printf '' > /tmp/dev-lead-rate-limit-reset
-    return 0
-  fi
-  # Extract H:MM(am|pm) part
-  local hhmm
-  hhmm=$(printf '%s' "$time_str" | grep -oiE '[0-9]{1,2}:[0-9]{2}(am|pm)$' || true)
-  _emit_reset_iso "$hhmm"
-}
-
-# parse_reset_time_files <file>...
-# File-aware variant of parse_reset_time. Scans each non-empty existing file
-# for the first "resets H:MMam/pm" match and writes the ISO timestamp via
-# _emit_reset_iso. Uses grep directly on files to avoid loading large LLM
-# outputs into a shell variable.
-parse_reset_time_files() {
-  local files=()
-  local f
-  for f in "$@"; do
-    [ -n "$f" ] && [ -f "$f" ] && files+=("$f")
-  done
-  if [ "${#files[@]}" -eq 0 ]; then
-    printf '' > /tmp/dev-lead-rate-limit-reset
-    return 0
-  fi
-  local time_str
-  time_str=$(grep -hoiE 'resets [0-9]{1,2}:[0-9]{2}(am|pm)' "${files[@]}" 2>/dev/null | head -1 || true)
-  if [ -z "$time_str" ]; then
-    printf '' > /tmp/dev-lead-rate-limit-reset
-    return 0
-  fi
-  local hhmm
-  hhmm=$(printf '%s' "$time_str" | grep -oiE '[0-9]{1,2}:[0-9]{2}(am|pm)$' || true)
-  _emit_reset_iso "$hhmm"
-}
-
-# parse_reset_time <text>
-# Extracts the rate-limit reset time from engine output and writes an ISO-8601
-# UTC timestamp to /tmp/dev-lead-rate-limit-reset for callers to embed in
-# status=rate-limited markers. Pattern: "resets H:MMam/pm (UTC)" or
-# "resets H:MM(am|pm) UTC".
-# Writes empty string if no reset time is found (caller treats as unknown).
-#
-# Prefer parse_reset_time_files for large captures — same OOM rationale as
-# is_rate_limited / is_rate_limited_files above.
-parse_reset_time() {
-  local text="$1"
-  # Match "resets 11:20pm (UTC)" or "resets 11:20pm UTC"
-  local time_str
-  time_str=$(printf '%s\n' "$text" | grep -oiE 'resets [0-9]{1,2}:[0-9]{2}(am|pm)' | head -1 || true)
-  if [ -z "$time_str" ]; then
-    printf '' > /tmp/dev-lead-rate-limit-reset
-    return 0
-  fi
-  # Extract H:MM(am|pm) part
-  local hhmm
-  hhmm=$(printf '%s' "$time_str" | grep -oiE '[0-9]{1,2}:[0-9]{2}(am|pm)$' || true)
-  _emit_reset_iso "$hhmm"
-}
-
-# parse_reset_time_files <file>...
-# File-aware variant of parse_reset_time. Scans each non-empty existing file
-# for the first "resets H:MMam/pm" match and writes the ISO timestamp via
-# _emit_reset_iso. Uses grep directly on files to avoid loading large LLM
-# outputs into a shell variable.
-parse_reset_time_files() {
-  local files=()
-  local f
-  for f in "$@"; do
-    [ -n "$f" ] && [ -f "$f" ] && files+=("$f")
-  done
-  if [ "${#files[@]}" -eq 0 ]; then
-    printf '' > /tmp/dev-lead-rate-limit-reset
-    return 0
-  fi
-  local time_str
-  time_str=$(grep -hoiE 'resets [0-9]{1,2}:[0-9]{2}(am|pm)' "${files[@]}" 2>/dev/null | head -1 || true)
-  if [ -z "$time_str" ]; then
-    printf '' > /tmp/dev-lead-rate-limit-reset
-    return 0
-  fi
-  local hhmm
-  hhmm=$(printf '%s' "$time_str" | grep -oiE '[0-9]{1,2}:[0-9]{2}(am|pm)$' || true)
-  _emit_reset_iso "$hhmm"
-}
-
-# run_writer <prompt_file> [model]
-# Full write-access mode for applying code fixes.
-# When DEV_LEAD_DRY_RUN=true: builds prompt but does NOT call engine; exits 0.
-# Exit codes: 0=success, 1=non-retriable failure, 2=rate-limited
-# On exit 2, writes parsed reset timestamp to /tmp/dev-lead-rate-limit-reset.
-run_writer() {
-  local prompt_file="$1"
-  local model="${2:-$ENGINE_ACTION_MODEL}"
-
-  if [ "${DEV_LEAD_DRY_RUN:-false}" = "true" ]; then
-    echo "  [dry-run] run_writer: would invoke $REVIEW_ENGINE with prompt $(wc -l < "$prompt_file") lines"
-    return 0
-  fi
-
-  # Capture stdout to a temp file so is_rate_limited can inspect it, while
-  # still streaming output to the caller. The old approach read from
-  # /tmp/dev-lead-writer-stderr which was never written (claude --print outputs
-  # to stdout, not stderr), so is_rate_limited never fired and fallback engines
-  # were never tried.
-  local _tmp rc=0
-  _tmp="$(mktemp 2>/dev/null || true)"
-  # Per-call usage-sidecar key (see run_triage); unique mktemp path shared with
-  # the engine subshell via export.
-  [[ -n "$_tmp" ]] && local -x _ENGINE_USAGE_OUT="${_tmp}.usage"
-
-  case "$REVIEW_ENGINE" in
-    claude)
-      # See run_agentic — honor caller's explicit model pin when it differs
-      # from the tier default. Chain only applies when the caller used the
-      # default action model for this engine.
-      local _writer_chain="${CLAUDE_ACTION_MODEL_CHAIN:-$model}"
-      if [ -n "${ENGINE_ACTION_MODEL:-}" ] && [ "$model" != "$ENGINE_ACTION_MODEL" ]; then
-        _writer_chain="$model"
-      fi
-      if [ -n "$_tmp" ]; then
-        _claude_chain_invoke "$_writer_chain" "$prompt_file" "$ACTION_TIMEOUT_SEC" \
-          --permission-mode acceptEdits \
-          --allowed-tools "Bash,Read,Write,Edit,Grep,Glob,WebFetch" \
-          2>&1 | tee "$_tmp" || rc=${PIPESTATUS[0]}
-      else
-        _claude_chain_invoke "$_writer_chain" "$prompt_file" "$ACTION_TIMEOUT_SEC" \
-          --permission-mode acceptEdits \
-          --allowed-tools "Bash,Read,Write,Edit,Grep,Glob,WebFetch" \
-          || rc=$?
-      fi
-      ;;
-    gemini)
-      if [ -n "$_tmp" ]; then
-        _GEMINI_CHAIN_MODEL_USED=""
-        _gemini_chain_invoke "$_writer_gemini_chain" "$prompt_file" "$ACTION_TIMEOUT_SEC" \
-          --approval-mode auto_edit > >(tee "$_tmp") 2>&1 || rc=$?
-      else
-        _gemini_chain_invoke "$_writer_gemini_chain" "$prompt_file" "$ACTION_TIMEOUT_SEC" \
-          --approval-mode auto_edit || rc=$?
-      fi
-      ;;
-    copilot)
-      # Self-sufficient write support via gh copilot --yolo
-      if [ -n "$_tmp" ]; then
-        copilot_chat "$prompt_file" "$ACTION_TIMEOUT_SEC" --yolo 2>&1 | tee "$_tmp" || rc=${PIPESTATUS[0]}
-      else
-        copilot_chat "$prompt_file" "$ACTION_TIMEOUT_SEC" --yolo || rc=$?
-      fi
-      ;;
-  esac
-
-  # Map rate-limit to exit code 2 for caller to detect; parse reset time for
-  # marker embedding. Use the file-based helpers to avoid OOM on large captures.
-  if [ "$rc" -ne 0 ] && [ -n "$_tmp" ] && is_rate_limited_files "$_tmp"; then
-    parse_reset_time_files "$_tmp"
-    [ -n "$_tmp" ] && rm -f "$_tmp"
-    return 2
-  fi
-  if [ "$rc" -eq 0 ]; then
-    local _writer_used="$model"
-    if [ "$REVIEW_ENGINE" = "claude" ] && [ -n "${_CLAUDE_CHAIN_MODEL_USED:-}" ]; then
-      _writer_used="$_CLAUDE_CHAIN_MODEL_USED"
-    elif [ "$REVIEW_ENGINE" = "gemini" ] && [ -n "${_GEMINI_CHAIN_MODEL_USED:-}" ]; then
-      _writer_used="$_GEMINI_CHAIN_MODEL_USED"
-    fi
-    _record_engine_tokens "writer" "$REVIEW_ENGINE" "$_writer_used" "$prompt_file" "$_tmp"
-  fi
-  if [ -n "$_tmp" ]; then
-    # Redact once: write secret-scrubbed content to the persisted path, then
-    # use that redacted file as the source for the step summary so credentials
-    # cannot leak via /tmp persistence or the public run summary. Patterns
-    # kept in sync with scripts/dev-lead-fix-reviews.sh:redact_secrets.
-    rm -f /tmp/dev-lead-session-output.txt
-    if ! sed -E \
-      -e 's/(gh[opsu]|ghr)_[A-Za-z0-9_]{20,}/***REDACTED-GH-TOKEN***/g' \
-      -e 's/github_pat_[A-Za-z0-9_]{20,}/***REDACTED-GH-PAT***/g' \
-      -e 's/sk-(ant-)?[A-Za-z0-9_-]{20,}/***REDACTED-API-KEY***/g' \
-      -e 's/AKIA[A-Z0-9]{16}/***REDACTED-AWS-KEY***/g' \
-      -e 's/AIza[A-Za-z0-9_-]{35}/***REDACTED-GOOGLE-KEY***/g' \
-      -e 's|ya29\.[A-Za-z0-9_-]+|***REDACTED-GOOGLE-OAUTH***|g' \
-      -e 's/[Bb]earer [A-Za-z0-9._-]{20,}/Bearer ***REDACTED***/g' \
-      -e '/-----BEGIN [A-Z ]*PRIVATE KEY-----/,/-----END [A-Z ]*PRIVATE KEY-----/c\
-***REDACTED-PRIVATE-KEY***' \
-      "$_tmp" > /tmp/dev-lead-session-output.txt; then
-      : > /tmp/dev-lead-session-output.txt 2>/dev/null || true
-      echo "::warning::Failed to redact/persist /tmp/dev-lead-session-output.txt" >&2
-    fi
-    if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
-      # HTML-escape the redacted log so literal </details> or </summary> in
-      # the agent output cannot break the wrapping <details> block on the run
-      # summary page.
-      {
-        echo "## Dev-Lead session output"
-        echo "<details><summary>Click to expand session logs</summary>"
-        echo ""
-        echo "<pre>"
-        sed 's|&|\&amp;|g; s|<|\&lt;|g; s|>|\&gt;|g' /tmp/dev-lead-session-output.txt
-        echo "</pre>"
-        echo ""
-        echo "</details>"
-      } >> "$GITHUB_STEP_SUMMARY" || \
-        echo "::warning::Failed to append session output to GITHUB_STEP_SUMMARY" >&2
-    fi
-  fi
-
-  # Map rate-limit to exit code 2 for caller to detect; parse reset time for
-  # marker embedding. Use the file-based helpers to avoid OOM on large captures.
-  # Runs AFTER the persist/summary block above so a rate-limited session is also
-  # captured to the run summary; reads the raw capture ($_tmp) left intact above.
-  if [ "$rc" -ne 0 ] && [ -n "$_tmp" ] && is_rate_limited_files "$_tmp"; then
-    parse_reset_time_files "$_tmp"
-    rm -f "$_tmp"
-    return 2
-  fi
-  if [ -n "$_tmp" ]; then
-    # Redact once: write secret-scrubbed content to the persisted path, then
-    # use that redacted file as the source for the step summary so credentials
-    # cannot leak via /tmp persistence or the public run summary. Patterns
-    # kept in sync with scripts/dev-lead-fix-reviews.sh:redact_secrets.
-    rm -f /tmp/dev-lead-session-output.txt
-    if ! sed -E \
-      -e 's/(gh[opsu]|ghr)_[A-Za-z0-9_]{20,}/***REDACTED-GH-TOKEN***/g' \
-      -e 's/github_pat_[A-Za-z0-9_]{20,}/***REDACTED-GH-PAT***/g' \
-      -e 's/sk-(ant-)?[A-Za-z0-9_-]{20,}/***REDACTED-API-KEY***/g' \
-      -e 's/AKIA[A-Z0-9]{16}/***REDACTED-AWS-KEY***/g' \
-      -e 's/AIza[A-Za-z0-9_-]{35}/***REDACTED-GOOGLE-KEY***/g' \
-      -e 's|ya29\.[A-Za-z0-9_-]+|***REDACTED-GOOGLE-OAUTH***|g' \
-      -e 's/[Bb]earer [A-Za-z0-9._-]{20,}/Bearer ***REDACTED***/g' \
-      -e '/-----BEGIN [A-Z ]*PRIVATE KEY-----/,/-----END [A-Z ]*PRIVATE KEY-----/c\
-***REDACTED-PRIVATE-KEY***' \
-      "$_tmp" > /tmp/dev-lead-session-output.txt; then
-      : > /tmp/dev-lead-session-output.txt 2>/dev/null || true
-      echo "::warning::Failed to redact/persist /tmp/dev-lead-session-output.txt" >&2
-    fi
-    if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
-      # HTML-escape the redacted log so literal </details> or </summary> in
-      # the agent output cannot break the wrapping <details> block on the run
-      # summary page.
-      {
-        echo "## Dev-Lead session output"
-        echo "<details><summary>Click to expand session logs</summary>"
-        echo ""
-        echo "<pre>"
-        sed 's|&|\&amp;|g; s|<|\&lt;|g; s|>|\&gt;|g' /tmp/dev-lead-session-output.txt
-        echo "</pre>"
-        echo ""
-        echo "</details>"
-      } >> "$GITHUB_STEP_SUMMARY" || \
-        echo "::warning::Failed to append session output to GITHUB_STEP_SUMMARY" >&2
-    fi
-    rm -f "$_tmp"
-  fi
-
-  # Map rate-limit to exit code 2 for caller to detect; parse reset time for
-  # marker embedding. Use the file-based helpers to avoid OOM on large captures.
-  # Runs AFTER the persist/summary block above so a rate-limited session is also
-  # captured to the run summary; reads the raw capture ($_tmp) left intact above.
-  if [ "$rc" -ne 0 ] && [ -n "$_tmp" ] && is_rate_limited_files "$_tmp"; then
-    parse_reset_time_files "$_tmp"
-    rm -f "$_tmp"
-    return 2
-  fi
-  [ -n "$_tmp" ] && rm -f "$_tmp"
-  return "$rc"
-}
-
-# run_writer_with_fallback <prompt_file> [intent_type]
-# Tries primary engine, falls back through claude → copilot → gemini on rate-limit.
-# intent_type is passed to model_for_intent() so each engine uses the appropriate
-# tier model for the given task complexity (e.g. haiku for triage, sonnet for writes).
-# Only rate-limit (exit 2) and missing-binary (exit 127) trigger fallback;
-# other failures propagate immediately.
 run_writer_with_fallback() {
   local prompt_file="$1"
   local intent="${2:-}"
