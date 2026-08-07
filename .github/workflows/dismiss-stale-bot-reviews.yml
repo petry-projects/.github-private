@@ -20,8 +20,6 @@ concurrency:
   group: dismiss-stale-bot-reviews-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
-permissions: {}  # Reset to none; the dismiss job declares its own scoped block below.
-
 jobs:
   dismiss:
     name: Dismiss
