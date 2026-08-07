@@ -91,30 +91,6 @@ jobs:
             exit 1
           fi
 
-      - name: Guard — workflow-dispatch PAT present
-        # Without a workflow/actions:write PAT every dispatch returns HTTP 403 and
-        # the sweep "succeeds" while re-triggering nothing (the original #573 gap
-        # regression). Fail loudly instead of silently no-op'ing.
-        env:
-          GH_TOKEN: ${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS }}
-        run: |
-          if [ -z "${GH_TOKEN}" ]; then
-            echo "::error::GH_PAT_WORKFLOWS is required — GITHUB_TOKEN cannot start a dispatched run and the bot comment PAT lacks actions:write."
-            exit 1
-          fi
-
-      - name: Guard — workflow-dispatch PAT present
-        # Without a workflow/actions:write PAT every dispatch returns HTTP 403 and
-        # the sweep "succeeds" while re-triggering nothing (the original #573 gap
-        # regression). Fail loudly instead of silently no-op'ing.
-        env:
-          GH_TOKEN: ${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS }}
-        run: |
-          if [ -z "${GH_TOKEN}" ]; then
-            echo "::error::GH_PAT_WORKFLOWS is required — GITHUB_TOKEN cannot start a dispatched run and the bot comment PAT lacks actions:write."
-            exit 1
-          fi
-
       - name: Run stuck-review sweep
         env:
           # PAT with workflow/actions:write scope required: GITHUB_TOKEN cannot
