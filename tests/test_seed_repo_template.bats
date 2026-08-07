@@ -259,7 +259,7 @@ jobs:
 EOF
   run bash "$SEED" --emit-workflow sonarcloud.yml
   [ "$status" -eq 0 ]
-  [ "$output" = "$(cat "$STANDARDS_DIR/standards/workflows/sonarcloud.yml")" ]
+  cmp -s "$emitted" "$STANDARDS_DIR/standards/workflows/sonarcloud.yml"
 }
 
 @test "emit-workflow: FAILS LOUD when an inline workflow's standard file is absent" {
