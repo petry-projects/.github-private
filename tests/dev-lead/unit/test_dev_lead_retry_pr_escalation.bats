@@ -14,7 +14,7 @@ SCRIPT_DIR="$(cd "$(dirname "$BATS_TEST_FILENAME")/../../.." && pwd)"
 RETRY_SCRIPT="$SCRIPT_DIR/scripts/dev-lead-retry.sh"
 
 setup() {
-  MOCK_BIN="$(mktemp -d)" || { echo "Failed to create temp dir" >&2; exit 1; }
+  MOCK_BIN="$BATS_TEST_TMPDIR"
   export PATH="$MOCK_BIN:$PATH"
 
   export DRY_RUN="true"
@@ -56,7 +56,7 @@ GHEOF
 }
 
 teardown() {
-  rm -rf "$MOCK_BIN"
+  :
 }
 
 @test "retry PR: needs-human-review present → skips (no dispatch)" {
