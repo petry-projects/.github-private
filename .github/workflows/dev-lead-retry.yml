@@ -1,6 +1,23 @@
 name: Dev-Lead Retry (rate-limited)
-# Scans open PRs across the org for status=rate-limited markers and
-# re-dispatches the appropriate dev-lead event once the rate limit clears.
+# timer_role: safety-net (docs/agentic-interaction-model.md §6.1). Scans open PRs
+# across the org for status=rate-limited markers and re-dispatches the appropriate
+# dev-lead event once the rate limit clears.
+#
+# THIS IS A BACKSTOP, NOT THE CONVERGENCE CLOCK. Since #1407, a blocked/
+# rate-limited dev-lead state is resumed EVENT-FIRST — the moment a clearing event
+# arrives (a review submitted or a check_run success) the resume job in
+# dev-lead-reusable.yml fires scripts/dev-lead-resume.sh via a PAT-backed
+# repository_dispatch. This 2 h cron is retained ONLY for the rare, genuinely
+# un-eventable rate-limit recovery where no such clearing event ever fires (e.g. a
+# stalled issue with no PR, or a rate limit that clears with no subsequent PR
+# activity). It is no longer the de-facto convergence clock the #860 postmortem
+# named the "amplifier".
+#
+# Stop-condition-before-acting (§6.2.1): scripts/dev-lead-retry.sh re-checks,
+# BEFORE any dispatch, that the PR is still open, not human-gated
+# (needs-human-review), has not exhausted its per-PR automation budget
+# (pr_resume_suppressed — the SAME gate the event path uses), and that the
+# rate-limit reset window has elapsed with no terminal marker already posted.
 #
 # Runs every 2 hours (single schedule, no staggered offsets needed since the
 # concurrency group serialises any overlap from GitHub scheduler jitter).
