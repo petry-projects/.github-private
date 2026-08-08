@@ -27,15 +27,21 @@ setup() {
   COMMENTS_JSON="$(jq -nc --arg s "$HEAD_SHA" \
     '["<!-- dev-lead-fix-ci sha=\($s) status=rate-limited reset=2020-01-01T00:00:00Z check=CI failure -->"]')"
   export LABELS_JSON='[]'
+  # gather_pr_automation_events pulls commits/reviews for the budget check;
+  # default to empty so the budget is not exhausted unless a test says so.
+  export COMMITS_JSON='[]'
 
-  # gh stub. Distinguishes the PR-object fetch (returns {head,labels}) from the
-  # comments fetch (returns the post-jq array of bodies) and captures dispatches.
+  # gh stub. Distinguishes the PR-object fetch (returns {head,labels}), the
+  # comments fetch (returns the post-jq array of bodies), the budget commits
+  # fetch, and captures dispatches.
   export PAYLOAD_FILE="$MOCK_BIN/payload.json"
   cat > "$MOCK_BIN/gh" <<'GHEOF'
 #!/usr/bin/env bash
 args="$*"
 case "$args" in
   *dispatches*)        cat > "${PAYLOAD_FILE:-/dev/null}"; exit 0 ;;
+  *pulls/*/commits*)   printf '%s' "${COMMITS_JSON}" ;;
+  *pulls/*/reviews*)   printf '%s' '[]' ;;
   *issues/*/comments*) printf '%s' "${COMMENTS_JSON}" ;;
   *check-runs*)        printf '%s' '{"id":"","details_url":""}' ;;
   *pulls/*)            jq -nc --arg s "${HEAD_SHA}" --argjson l "${LABELS_JSON}" \
@@ -72,6 +78,21 @@ teardown() {
   [ "$status" -eq 0 ]
   [[ "$output" == *"would dispatch dev-lead-ci-failure"* ]]
   [ "$(printf '%s\n' "$output" | tail -n1)" = "1" ]
+}
+
+@test "retry PR: exhausted automation budget (no label) → skips (no dispatch)" {
+  # No needs-human-review label, but 10 bot commits since the last human
+  # interaction → the per-PR automation budget is exhausted (#926). The
+  # safety-net cron must consult the budget, not just the label, so it can
+  # never re-ignite the #860 amplifier (#1407 AC #3).
+  LABELS_JSON='["bug"]'
+  COMMITS_JSON="$(jq -nc '[range(10) | {commit:{author:{date:"2026-06-18T00:00:00Z"}}, author:{login:"donpetry-bot"}}]')"
+
+  run scan_pr_for_rate_limits "petry-projects/demo" 860
+
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"would dispatch"* ]]
+  [ "$(printf '%s\n' "$output" | tail -n1)" = "0" ]
 }
 
 @test "retry PR: removing needs-human-review re-enables dispatch (AC3)" {

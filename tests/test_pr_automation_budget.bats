@@ -212,3 +212,38 @@ mk_bot_events() {  # mk_bot_events <count>
   NEEDS_HUMAN_REVIEW_LABEL="paused" run pr_has_escalation_label '["paused"]'
   [ "$status" -eq 0 ]
 }
+
+# ---------------------------------------------------------------------------
+# pr_resume_suppressed: the single stop-condition both the event-first resume
+# (scripts/dev-lead-resume.sh) and the safety-net cron (scripts/dev-lead-retry.sh)
+# consult before re-dispatching a blocked/rate-limited state (#1407 AC #3). It
+# must SUPPRESS (exit 0 = do not resume) when the PR is human-gated OR its
+# per-PR automation budget is exhausted, so neither path can re-ignite the #860
+# amplifier. labels_json + events_json are injected here to keep the unit test
+# hermetic (no gh network); the callers pass what they already fetched.
+# ---------------------------------------------------------------------------
+
+@test "pr_resume_suppressed: needs-human-review label → suppress (exit 0)" {
+  run pr_resume_suppressed 860 petry-projects/demo '["needs-human-review"]' '[]'
+  [ "$status" -eq 0 ]
+}
+
+@test "pr_resume_suppressed: exhausted budget (no label) → suppress (exit 0)" {
+  run pr_resume_suppressed 860 petry-projects/demo '["bug"]' "$(mk_bot_events 10)"
+  [ "$status" -eq 0 ]
+}
+
+@test "pr_resume_suppressed: clean labels + budget remaining → proceed (exit 1)" {
+  run pr_resume_suppressed 860 petry-projects/demo '["bug"]' "$(mk_bot_events 3)"
+  [ "$status" -ne 0 ]
+}
+
+@test "pr_resume_suppressed: human label wins even with budget remaining" {
+  run pr_resume_suppressed 860 petry-projects/demo '["needs-human-review"]' "$(mk_bot_events 1)"
+  [ "$status" -eq 0 ]
+}
+
+@test "pr_resume_suppressed: FORCE_REVIEW must not bypass the budget" {
+  FORCE_REVIEW=true run pr_resume_suppressed 860 petry-projects/demo '["bug"]' "$(mk_bot_events 10)"
+  [ "$status" -eq 0 ]
+}

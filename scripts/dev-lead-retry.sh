@@ -2,6 +2,21 @@
 set -euo pipefail
 # dev-lead-retry.sh — scan open PRs + issues for failure markers and re-dispatch
 #
+# timer_role: safety-net (docs/agentic-interaction-model.md §6.1). This is the
+# 2 h cron's *backstop* — NOT the normal-path convergence clock it used to be
+# (the #860 "amplifier"). Since #1407, a blocked/rate-limited dev-lead state is
+# resumed EVENT-FIRST the moment a clearing event arrives (a review submitted or
+# a check_run success) via scripts/dev-lead-resume.sh; this timer only catches
+# the rare, genuinely un-eventable rate-limit recovery where no such event ever
+# fires. Both paths dispatch through the SAME logic here (scan_pr_for_rate_limits)
+# and the SAME stop-condition (pr_resume_suppressed), so the timer can never
+# re-dispatch work the event path would not.
+#
+# Stop-condition-before-acting (§6.2.1): every scan re-checks, BEFORE any
+# dispatch, that the PR is still open, is not human-gated (needs-human-review),
+# has not exhausted its per-PR automation budget, and that the rate-limit reset
+# window has actually elapsed with no terminal marker already posted.
+#
 # Called by the dev-lead-retry.yml scheduled cron workflow.
 # Scans all open PRs across TARGET_ORG (plus DELEGATION_ORGS if set) for
 # status=rate-limited markers on the current HEAD SHA, then re-dispatches the
@@ -212,15 +227,16 @@ scan_pr_for_rate_limits() {
     return 0
   fi
 
-  # Skip PRs already escalated to a human (#946). The per-PR automation budget
-  # breaker (#928) adds the needs-human-review label and disables auto-merge on an
-  # exhausted PR; re-dispatching here would re-ignite exactly the runaway the
-  # breaker stops (the #860 "amplifier" failure mode). Gate on the label — the
-  # human-controlled resume signal — so a human removing it re-enables retries.
+  # Stop-condition-before-acting (§6.2.1 timer contract). This safety-net cron and
+  # the event-first resume bridge (scripts/dev-lead-resume.sh) share ONE gate,
+  # pr_resume_suppressed, so the timer can never re-dispatch work the event path
+  # would not (#1407 AC #3). It suppresses a PR that is human-gated
+  # (needs-human-review, #946) OR that has exhausted its per-PR automation budget
+  # (#926) — re-dispatching either would re-ignite the #860 "amplifier". We reuse
+  # the already-fetched labels to avoid a redundant PR fetch.
   local labels_json
   labels_json=$(jq -c '[.labels[]?.name]' <<< "$pr_obj" 2>/dev/null || echo '[]')
-  if pr_has_escalation_label "$labels_json"; then
-    echo "  [skip] PR ${pr_number} in ${repo} carries ${NEEDS_HUMAN_REVIEW_LABEL} — escalated to a human; not re-dispatching (#946)" >&2
+  if pr_resume_suppressed "$pr_number" "$repo" "$labels_json"; then
     echo "0"
     return 0
   fi
