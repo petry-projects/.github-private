@@ -131,22 +131,6 @@ ${details}"
   fi
 }
 
-post_exhaustion() {
-  local reason="$1"
-  local body="${EXHAUSTION_MARKER}
-## Dev-Lead Fix CI — exhausted
-
-This PR has had **${MAX_FAIL_ATTEMPTS}** consecutive engine failures (timeouts or errors). Automated CI fixing has been paused to avoid consuming further tokens.
-
-**Reason for last failure:** ${reason}
-
-To re-enable, delete this comment or push a new commit with a substantially different change."
-  if [ "${DEV_LEAD_DRY_RUN:-false}" = "true" ]; then
-    echo "[dry-run] would post exhaustion comment"
-  else
-    gh pr comment "$PR_NUMBER" --repo "$REPO" --body "$body"
-  fi
-}
 
 # post_rate_limited: posts a status=rate-limited marker with embedded reset
 # time and check name. Skips if a marker already exists for HEAD_SHA (dedup).
