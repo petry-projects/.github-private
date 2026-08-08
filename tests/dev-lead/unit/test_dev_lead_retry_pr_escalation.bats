@@ -45,7 +45,8 @@ case "$args" in
   *issues/*/comments*) printf '%s' "${COMMENTS_JSON}" ;;
   *check-runs*)        printf '%s' '{"id":"","details_url":""}' ;;
   *pulls/*)            jq -nc --arg s "${HEAD_SHA}" --argjson l "${LABELS_JSON}" \
-                         '{head:{sha:$s}, labels:($l | map({name:.}))}' ;;
+                         --arg state "${PR_STATE:-open}" \
+                         '{head:{sha:$s}, labels:($l | map({name:.})), state:$state}' ;;
   *)                   echo "[]" ;;
 esac
 GHEOF
@@ -98,6 +99,54 @@ teardown() {
 @test "retry PR: removing needs-human-review re-enables dispatch (AC3)" {
   # Same PR/markers as the skip case, but the human has dropped the label.
   LABELS_JSON='["bug","p1"]'
+
+  run scan_pr_for_rate_limits "petry-projects/demo" 860
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"would dispatch dev-lead-ci-failure"* ]]
+  [ "$(printf '%s\n' "$output" | tail -n1)" = "1" ]
+}
+
+@test "retry PR: closed PR → skips (no dispatch)" {
+  # PR resolved from an event but already closed/merged before scan runs.
+  export PR_STATE="closed"
+
+  run scan_pr_for_rate_limits "petry-projects/demo" 860
+
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"would dispatch"* ]]
+  [ "$(printf '%s\n' "$output" | tail -n1)" = "0" ]
+}
+
+@test "retry PR: merged PR → skips (no dispatch)" {
+  export PR_STATE="merged"
+
+  run scan_pr_for_rate_limits "petry-projects/demo" 860
+
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"would dispatch"* ]]
+  [ "$(printf '%s\n' "$output" | tail -n1)" = "0" ]
+}
+
+@test "retry PR: recent dispatch guard in comments → skips to avoid duplicate" {
+  # A dispatch guard for the current SHA posted 5 minutes before NOW_ISO
+  # (within the 10-minute DISPATCH_GUARD_WINDOW_SEC window).
+  COMMENTS_JSON="$(jq -nc --arg s "$HEAD_SHA" \
+    '["<!-- dev-lead-fix-ci sha=\($s) status=rate-limited reset=2020-01-01T00:00:00Z check=CI failure -->",
+      "<!-- dev-lead-dispatch-guard sha=\($s) at=2026-06-18T23:55:00Z -->"]')"
+
+  run scan_pr_for_rate_limits "petry-projects/demo" 860
+
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"would dispatch"* ]]
+  [ "$(printf '%s\n' "$output" | tail -n1)" = "0" ]
+}
+
+@test "retry PR: stale dispatch guard (> window) → proceeds with dispatch" {
+  # Guard posted 20 minutes before NOW_ISO — outside the 10-minute window.
+  COMMENTS_JSON="$(jq -nc --arg s "$HEAD_SHA" \
+    '["<!-- dev-lead-fix-ci sha=\($s) status=rate-limited reset=2020-01-01T00:00:00Z check=CI failure -->",
+      "<!-- dev-lead-dispatch-guard sha=\($s) at=2026-06-18T23:40:00Z -->"]')"
 
   run scan_pr_for_rate_limits "petry-projects/demo" 860
 

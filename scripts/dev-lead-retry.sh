@@ -63,6 +63,13 @@ CI_MARKER_PREFIX="<!-- dev-lead-fix-ci sha="
 REVIEWS_MARKER_PREFIX="<!-- dev-lead-fix-reviews pr="
 ISSUE_MARKER_PREFIX="<!-- dev-lead-issue "
 
+# Dispatch deduplication guard: prevents duplicate repository_dispatch calls
+# when the event-first resume path and the safety-net cron arrive concurrently
+# on the same PR. A guard marker is posted BEFORE dispatch; concurrent callers
+# that see a recent guard skip instead of double-dispatching.
+DISPATCH_GUARD_PREFIX="<!-- dev-lead-dispatch-guard sha="
+DISPATCH_GUARD_WINDOW_SEC="${DISPATCH_GUARD_WINDOW_SEC:-600}"
+
 # Issue-retry config (#781). MAX_ATTEMPTS matches dev-lead-fix-issue.sh and the
 # auto-rebase-retry.sh convention: total attempts (initial + retries) before the
 # issue is escalated to a human and skipped here.
@@ -91,6 +98,35 @@ is_reset_in_future() {
   local reset_epoch
   reset_epoch=$(date -u -d "$reset_iso" +%s 2>/dev/null || echo 0)
   [ "$(get_now_epoch)" -lt "$reset_epoch" ]
+}
+
+# has_dispatch_guard <comments_json> <sha>
+# Returns 0 when a dispatch guard for this SHA was posted within
+# DISPATCH_GUARD_WINDOW_SEC seconds, indicating a concurrent caller already
+# claimed dispatch for this PR and the current caller should skip.
+has_dispatch_guard() {
+  local comments_json="$1" sha="$2" guard_time guard_epoch now_epoch age
+  guard_time=$(echo "$comments_json" | jq -r \
+    --arg pat "${DISPATCH_GUARD_PREFIX}${sha}" \
+    '[.[] | select(. | test($pat))] | .[0] | capture("at=(?<t>[0-9T:Z-]+)") | .t // ""' \
+    2>/dev/null || true)
+  [ -z "$guard_time" ] && return 1
+  guard_epoch=$(date -u -d "$guard_time" +%s 2>/dev/null || echo 0)
+  now_epoch=$(get_now_epoch)
+  age=$(( now_epoch - guard_epoch ))
+  [ "$age" -lt "${DISPATCH_GUARD_WINDOW_SEC:-600}" ]
+}
+
+# post_dispatch_guard <repo> <pr_number> <sha>
+# Posts a deduplication guard comment before dispatching. Skipped in DRY_RUN
+# so tests stay clean; best-effort (failure is non-fatal).
+post_dispatch_guard() {
+  local repo="$1" pr_number="$2" sha="$3" now_iso
+  [ "${DRY_RUN:-false}" = "true" ] && return 0
+  now_iso="${NOW_ISO:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
+  local body="${DISPATCH_GUARD_PREFIX}${sha} at=${now_iso} -->"
+  gh api --method POST "repos/${repo}/issues/${pr_number}/comments" \
+    -f body="$body" >/dev/null 2>&1 || true
 }
 
 # lookup_check_run_details <repo> <head_sha> <check_name>
@@ -227,6 +263,17 @@ scan_pr_for_rate_limits() {
     return 0
   fi
 
+  # Guard against dispatching on closed or merged PRs. A review or check event
+  # can race with a PR close/merge, leaving a historical rate-limited marker
+  # still eligible — we must not re-dispatch work for a non-open PR.
+  local pr_state
+  pr_state=$(jq -r '.state // empty' <<< "$pr_obj" 2>/dev/null || true)
+  if [ "$pr_state" != "open" ]; then
+    echo "  [skip] PR ${pr_number} in ${repo} is ${pr_state:-unknown} — not re-dispatching closed/merged PR" >&2
+    echo "0"
+    return 0
+  fi
+
   # Stop-condition-before-acting (§6.2.1 timer contract). This safety-net cron and
   # the event-first resume bridge (scripts/dev-lead-resume.sh) share ONE gate,
   # pr_resume_suppressed, so the timer can never re-dispatch work the event path
@@ -245,6 +292,15 @@ scan_pr_for_rate_limits() {
   local comments_json
   comments_json=$(gh api --paginate "repos/${repo}/issues/${pr_number}/comments?per_page=100" \
     --jq '[.[].body]' 2>/dev/null | jq -s 'add // []' || echo "[]")
+
+  # Deduplication guard: if a concurrent resume path already claimed dispatch
+  # for this SHA, skip to prevent duplicate repository_dispatch calls (#1407).
+  if has_dispatch_guard "$comments_json" "$head_sha"; then
+    echo "  [skip] PR ${pr_number} SHA ${head_sha:0:8} has a recent dispatch guard — skipping to avoid duplicate" >&2
+    echo "0"
+    return 0
+  fi
+  local guard_posted=0
 
   local dispatched=0
 
@@ -271,6 +327,10 @@ scan_pr_for_rate_limits() {
           --arg pat "$ci_pattern" \
           '[.[] | select(. | test($pat))] | .[0] | capture("check=(?P<c>[^\\s\"<>]+)") | .c // "CI failure"' \
           2>/dev/null || echo "CI failure")
+        if [ "$guard_posted" -eq 0 ]; then
+          post_dispatch_guard "$repo" "$pr_number" "$head_sha"
+          guard_posted=1
+        fi
         dispatch_ci_retry "$repo" "$pr_number" "$head_sha" "$check_name"
         dispatched=$(( dispatched + 1 ))
       fi
@@ -311,6 +371,10 @@ scan_pr_for_rate_limits() {
         continue
       fi
 
+      if [ "$guard_posted" -eq 0 ]; then
+        post_dispatch_guard "$repo" "$pr_number" "$head_sha"
+        guard_posted=1
+      fi
       dispatch_reviews_retry "$repo" "$pr_number" "$head_sha" "$dispatch_intent"
       dispatched=$(( dispatched + 1 ))
     fi

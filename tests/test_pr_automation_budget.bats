@@ -247,3 +247,27 @@ mk_bot_events() {  # mk_bot_events <count>
   FORCE_REVIEW=true run pr_resume_suppressed 860 petry-projects/demo '["bug"]' "$(mk_bot_events 10)"
   [ "$status" -eq 0 ]
 }
+
+@test "pr_resume_suppressed: API failure in gather_pr_automation_events → suppress (fail-closed)" {
+  # When the GitHub API is unavailable, gather_pr_automation_events exits 1.
+  # pr_resume_suppressed must suppress (return 0) rather than proceeding with
+  # an unproven budget — prevents runaway automation during outages.
+  gather_pr_automation_events() { return 1; }
+  # No events_json passed so pr_resume_suppressed calls gather_pr_automation_events.
+  run pr_resume_suppressed 860 petry-projects/demo '[]'
+  [ "$status" -eq 0 ]
+}
+
+@test "gather_pr_automation_events: any API failure propagates as exit 1" {
+  # Use a PATH-based gh stub so the mock is visible inside the run subshell.
+  cat > "$BATS_TEST_TMPDIR/gh" <<'EOF'
+#!/usr/bin/env bash
+case "$*" in
+  *commits*) exit 1 ;;
+  *) printf '[]' ;;
+esac
+EOF
+  chmod +x "$BATS_TEST_TMPDIR/gh"
+  PATH="$BATS_TEST_TMPDIR:$PATH" run gather_pr_automation_events 860 petry-projects/demo
+  [ "$status" -ne 0 ]
+}

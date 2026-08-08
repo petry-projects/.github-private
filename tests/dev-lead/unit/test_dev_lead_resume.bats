@@ -41,7 +41,8 @@ case "$args" in
   *issues/*/comments*)   printf '%s' "${COMMENTS_JSON}" ;;
   *check-runs*)          printf '%s' '{"id":"","details_url":""}' ;;
   *pulls/*)              jq -nc --arg s "${HEAD_SHA}" --argjson l "${LABELS_JSON}" \
-                           '{head:{sha:$s}, labels:($l | map({name:.}))}' ;;
+                           --arg state "${PR_STATE:-open}" \
+                           '{head:{sha:$s}, labels:($l | map({name:.})), state:$state}' ;;
   *)                     echo "[]" ;;
 esac
 GHEOF
@@ -89,6 +90,16 @@ teardown() {
 # ── (d) no pending blocked state → nothing to resume ──────────────────────────
 @test "resume: no rate-limited marker → no dispatch" {
   COMMENTS_JSON='["just a normal human comment"]'
+
+  run resume_main
+
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"would dispatch"* ]]
+}
+
+# ── (e) clearing event for a closed PR → no dispatch ──────────────────────────
+@test "resume: closed PR suppresses the resume" {
+  export PR_STATE="closed"
 
   run resume_main
 

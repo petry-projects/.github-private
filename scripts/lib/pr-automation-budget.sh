@@ -118,7 +118,10 @@ pr_resume_suppressed() {
   fi
 
   if [ -z "$events_json" ]; then
-    events_json=$(gather_pr_automation_events "$pr" "$repo")
+    if ! events_json=$(gather_pr_automation_events "$pr" "$repo"); then
+      echo "  [suppress] PR #${pr} in ${repo} — budget events unavailable (API error); suppressing fail-closed" >&2
+      return 0
+    fi
   fi
   if pr_budget_exhausted "$events_json"; then
     echo "  [suppress] PR #${pr} in ${repo} exhausted its per-PR automation budget (MAX_PR_AUTOMATION_CYCLES=${MAX_PR_AUTOMATION_CYCLES}) since the last human interaction — not resuming (#926/#860)" >&2
@@ -139,15 +142,36 @@ pr_budget_exhausted() {
 
 # gather_pr_automation_events <pr> <repo>
 #   Assemble {when, login}[] from the PR's commits, issue comments, and reviews.
+#   Exits 1 (failure) when any GitHub API call fails so callers can distinguish
+#   an unavailable result from a genuinely empty event list — critical for the
+#   fail-closed budget gate in pr_resume_suppressed. Each gh call is captured
+#   separately from jq so gh failures are not masked by jq succeeding on
+#   empty/partial input.
 gather_pr_automation_events() {
   local pr="$1" repo="$2"
-  local comments commits reviews
-  comments=$(gh api --paginate "repos/${repo}/issues/${pr}/comments?per_page=100" 2>/dev/null \
-    | jq -s '[.[][] | {when: .created_at, login: (.user?.login // "")}]' 2>/dev/null) || comments='[]'
-  commits=$(gh api --paginate "repos/${repo}/pulls/${pr}/commits?per_page=100" 2>/dev/null \
-    | jq -s '[.[][] | {when: (.commit?.author?.date // .commit?.committer?.date), login: (.author?.login // .commit?.author?.name // "")}]' 2>/dev/null) || commits='[]'
-  reviews=$(gh api --paginate "repos/${repo}/pulls/${pr}/reviews?per_page=100" 2>/dev/null \
-    | jq -s '[.[][] | {when: .submitted_at, login: (.user?.login // "")}]' 2>/dev/null) || reviews='[]'
+  local comments commits reviews api_error=0 _raw
+  if _raw=$(gh api --paginate "repos/${repo}/issues/${pr}/comments?per_page=100" 2>/dev/null); then
+    comments=$(jq -s '[.[][] | {when: .created_at, login: (.user?.login // "")}]' \
+      <<< "$_raw" 2>/dev/null) || comments='[]'
+  else
+    api_error=1; comments='[]'
+  fi
+  if _raw=$(gh api --paginate "repos/${repo}/pulls/${pr}/commits?per_page=100" 2>/dev/null); then
+    commits=$(jq -s '[.[][] | {when: (.commit?.author?.date // .commit?.committer?.date), login: (.author?.login // .commit?.author?.name // "")}]' \
+      <<< "$_raw" 2>/dev/null) || commits='[]'
+  else
+    api_error=1; commits='[]'
+  fi
+  if _raw=$(gh api --paginate "repos/${repo}/pulls/${pr}/reviews?per_page=100" 2>/dev/null); then
+    reviews=$(jq -s '[.[][] | {when: .submitted_at, login: (.user?.login // "")}]' \
+      <<< "$_raw" 2>/dev/null) || reviews='[]'
+  else
+    api_error=1; reviews='[]'
+  fi
+  if [ "$api_error" -ne 0 ]; then
+    echo "  [warn] budget event collection incomplete for PR ${pr} in ${repo} — API unavailable" >&2
+    return 1
+  fi
   jq -n --argjson a "${comments:-[]}" --argjson b "${commits:-[]}" --argjson c "${reviews:-[]}" \
     '$a + $b + $c' 2>/dev/null || echo '[]'
 }
