@@ -498,3 +498,74 @@ jobs:
           echo "$payload" | gh api \
             --method POST "repos/$RELAY_REPO/dispatches" --input -
           echo "::notice::Relayed CI failure for PR $RELAY_PR_NUMBER"
+
+  # ── resume ────────────────────────────────────────────────────────────────────
+  # Event-first resume of a blocked/rate-limited dev-lead state (#1407). On a
+  # CLEARING EVENT — a review submitted or a check_run SUCCESS — this resumes any
+  # pending status=rate-limited retry IMMEDIATELY, instead of waiting for the 2 h
+  # dev-lead-retry.yml safety-net cron (the #860 "amplifier"). Same Bridge A
+  # pattern as ci-relay above (§5): resolve the PR, then fire a PAT-backed
+  # repository_dispatch so dev-lead's normal retry path wakes — GITHUB_TOKEN
+  # cannot fire the downstream event (the recursion guard). The resume reuses
+  # scripts/dev-lead-resume.sh → scan_pr_for_rate_limits, so its dispatch AND its
+  # stop-condition (pr_resume_suppressed: human markers + per-PR automation
+  # budget) are identical to the cron path — it can never re-ignite a runaway.
+  #
+  # Both trigger events are already forwarded by the frozen ring-0 caller stub
+  # (dev-lead.yml: pull_request_review[submitted], check_run[completed]), so this
+  # bridge needs NO new trigger on the stub and leaves its caller-stub-freeze
+  # baseline untouched (#1407 AC #5). check_run success is the genuine gap the
+  # dispatch job ignores (its if: excludes check_run); a human review already
+  # wakes dispatch, but resuming there too is harmless (budget-gated).
+  resume:
+    if: >-
+      (github.event_name == 'pull_request_review' && github.event.action == 'submitted') ||
+      (github.event_name == 'check_run' &&
+       github.event.action == 'completed' &&
+       github.event.check_run.conclusion == 'success' &&
+       !startsWith(github.event.check_run.name, 'dev-lead / '))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      pull-requests: read
+      issues: read
+
+    steps:
+      - name: Checkout dev-lead scripts
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: petry-projects/.github-private
+          # Pinned channel (e.g. dev-lead/stable) when a trigger stub passes it;
+          # defaults to "main" → unchanged behaviour (#535/#506).
+          ref: ${{ inputs.agent_ref }}
+          path: .dev-lead
+          token: ${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS || github.token }}
+          persist-credentials: false
+          sparse-checkout: |
+            scripts
+
+      - name: Resolve PR from check_run
+        id: relay
+        if: github.event_name == 'check_run'
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS || github.token }}
+          CHECK_RUN_PRS: ${{ toJson(github.event.check_run.pull_requests) }}
+          CHECK_RUN_HEAD_SHA: ${{ github.event.check_run.head_sha }}
+          REPO_FULL_NAME: ${{ github.repository }}
+        # Reuse the sanctioned check_run→PR resolver (falls back to commits-to-pulls,
+        # skips forks). Writes should_relay / pr_number to GITHUB_OUTPUT.
+        run: bash .dev-lead/scripts/dev-lead-ci-relay.sh
+
+      - name: Resume blocked/rate-limited state (event-first)
+        # check_run: only when the relay resolved a non-fork PR. review: the PR
+        # number comes straight from the event payload.
+        if: >-
+          github.event_name == 'pull_request_review' ||
+          steps.relay.outputs.should_relay == 'true'
+        env:
+          # PAT identity — GITHUB_TOKEN cannot fire the downstream repository_dispatch.
+          GH_TOKEN: ${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS || github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event_name == 'check_run' && steps.relay.outputs.pr_number || github.event.pull_request.number }}
+        run: bash .dev-lead/scripts/dev-lead-resume.sh
