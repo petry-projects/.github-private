@@ -14,7 +14,7 @@ SCRIPT_DIR="$(cd "$(dirname "$BATS_TEST_FILENAME")/../../.." && pwd)"
 RESUME_SCRIPT="$SCRIPT_DIR/scripts/dev-lead-resume.sh"
 
 setup() {
-  MOCK_BIN="$(mktemp -d)" || { echo "Failed to create temp dir" >&2; exit 1; }
+  MOCK_BIN="$BATS_TEST_TMPDIR"
   export PATH="$MOCK_BIN:$PATH"
 
   export DRY_RUN="true"
@@ -54,7 +54,7 @@ GHEOF
 }
 
 teardown() {
-  rm -rf "$MOCK_BIN"
+  :
 }
 
 # ── (a) a clearing event resumes a pending rate-limited state ──────────────────
