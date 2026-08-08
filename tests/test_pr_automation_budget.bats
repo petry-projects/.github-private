@@ -212,3 +212,62 @@ mk_bot_events() {  # mk_bot_events <count>
   NEEDS_HUMAN_REVIEW_LABEL="paused" run pr_has_escalation_label '["paused"]'
   [ "$status" -eq 0 ]
 }
+
+# ---------------------------------------------------------------------------
+# pr_resume_suppressed: the single stop-condition both the event-first resume
+# (scripts/dev-lead-resume.sh) and the safety-net cron (scripts/dev-lead-retry.sh)
+# consult before re-dispatching a blocked/rate-limited state (#1407 AC #3). It
+# must SUPPRESS (exit 0 = do not resume) when the PR is human-gated OR its
+# per-PR automation budget is exhausted, so neither path can re-ignite the #860
+# amplifier. labels_json + events_json are injected here to keep the unit test
+# hermetic (no gh network); the callers pass what they already fetched.
+# ---------------------------------------------------------------------------
+
+@test "pr_resume_suppressed: needs-human-review label → suppress (exit 0)" {
+  run pr_resume_suppressed 860 petry-projects/demo '["needs-human-review"]' '[]'
+  [ "$status" -eq 0 ]
+}
+
+@test "pr_resume_suppressed: exhausted budget (no label) → suppress (exit 0)" {
+  run pr_resume_suppressed 860 petry-projects/demo '["bug"]' "$(mk_bot_events 10)"
+  [ "$status" -eq 0 ]
+}
+
+@test "pr_resume_suppressed: clean labels + budget remaining → proceed (exit 1)" {
+  run pr_resume_suppressed 860 petry-projects/demo '["bug"]' "$(mk_bot_events 3)"
+  [ "$status" -ne 0 ]
+}
+
+@test "pr_resume_suppressed: human label wins even with budget remaining" {
+  run pr_resume_suppressed 860 petry-projects/demo '["needs-human-review"]' "$(mk_bot_events 1)"
+  [ "$status" -eq 0 ]
+}
+
+@test "pr_resume_suppressed: FORCE_REVIEW must not bypass the budget" {
+  FORCE_REVIEW=true run pr_resume_suppressed 860 petry-projects/demo '["bug"]' "$(mk_bot_events 10)"
+  [ "$status" -eq 0 ]
+}
+
+@test "pr_resume_suppressed: API failure in gather_pr_automation_events → suppress (fail-closed)" {
+  # When the GitHub API is unavailable, gather_pr_automation_events exits 1.
+  # pr_resume_suppressed must suppress (return 0) rather than proceeding with
+  # an unproven budget — prevents runaway automation during outages.
+  gather_pr_automation_events() { return 1; }
+  # No events_json passed so pr_resume_suppressed calls gather_pr_automation_events.
+  run pr_resume_suppressed 860 petry-projects/demo '[]'
+  [ "$status" -eq 0 ]
+}
+
+@test "gather_pr_automation_events: any API failure propagates as exit 1" {
+  # Use a PATH-based gh stub so the mock is visible inside the run subshell.
+  cat > "$BATS_TEST_TMPDIR/gh" <<'EOF'
+#!/usr/bin/env bash
+case "$*" in
+  *commits*) exit 1 ;;
+  *) printf '[]' ;;
+esac
+EOF
+  chmod +x "$BATS_TEST_TMPDIR/gh"
+  PATH="$BATS_TEST_TMPDIR:$PATH" run gather_pr_automation_events 860 petry-projects/demo
+  [ "$status" -ne 0 ]
+}

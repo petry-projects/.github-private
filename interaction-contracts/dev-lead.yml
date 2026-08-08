@@ -13,14 +13,22 @@
 # events dev-lead.yml subscribes to above. That controlled re-dispatch is the
 # TIMER's stop-condition-gated mechanism (captured in triggers.timers below), NOT
 # a free emit; modeling it as the timer is what keeps the #860 rule-1 self-trigger
-# check meaningful. Per §6.3 this timer is the flagged LEAK: event_fast_path is
-# null, so the cron is the only path that reacts to a cleared rate limit.
+# check meaningful.
+#
+# Since #1407 the §6.3 LEAK is CLOSED: the timer now has an event_fast_path. A
+# blocked/rate-limited state resumes event-first via the resume job in
+# dev-lead-reusable.yml (scripts/dev-lead-resume.sh) on a review submitted or a
+# check_run success, through the SAME PAT repository_dispatch bridge and the SAME
+# stop-condition (pr_resume_suppressed). The 2 h cron is demoted to timer_role:
+# safety-net — a rare backstop for genuinely un-eventable rate-limit recovery, no
+# longer the de-facto convergence clock.
 
 schema_version: 1
 role: dev-lead
 kind: runtime
 workflows:
   - .github/workflows/dev-lead.yml
+  - .github/workflows/dev-lead-reusable.yml
   - .github/workflows/dev-lead-retry.yml
 interaction:
   triggers:
@@ -36,10 +44,10 @@ interaction:
       - repository_dispatch:dev-lead-issue-retry
     timers:
       - cron: "15 */2 * * *"
-        role: self-heal
-        justification: "dev-lead-retry.yml re-dispatches status=rate-limited PRs once the limit clears"
-        stop_condition: "PR still open and not needs-human-review / dev-lead:needs-human, and the pr-automation-budget is not exhausted"
-        event_fast_path: null
+        role: safety-net
+        justification: "dev-lead-retry.yml is the backstop for genuinely un-eventable rate-limit recovery; normal convergence is event-first via the dev-lead-reusable.yml resume job (#1407), so the cron is no longer the #860 amplifier"
+        stop_condition: "PR still open and not needs-human-review / dev-lead:needs-human, and the pr-automation-budget is not exhausted (pr_resume_suppressed — the same gate the event fast-path uses)"
+        event_fast_path: "check_run:success + pull_request_review:submitted → dev-lead-reusable.yml resume job → scripts/dev-lead-resume.sh PAT repository_dispatch"
   emits:
     - "commit"
     - "dispatch:dev-lead-ci-failure"
@@ -49,13 +57,13 @@ interaction:
     - "label:needs-human-review"
   self_trigger_guards:
     - emit: "dispatch:dev-lead-ci-failure"
-      guard: "dev-lead-retry.yml fires only when the stop_condition holds (PR still rate-limited, limit now cleared) — stop-condition-gated timer mechanism, not a free emit path"
-      location: ".github/workflows/dev-lead-retry.yml"
+      guard: "Both emit paths — the safety-net timer (dev-lead-retry.sh) and the event-first resume (dev-lead-resume.sh) — dispatch only through scan_pr_for_rate_limits, which fires solely when pr_resume_suppressed is false (PR open, not human-gated, budget not exhausted) and the rate-limit reset has elapsed. Stop-condition-gated, not a free emit path"
+      location: "scripts/dev-lead-retry.sh (scan_pr_for_rate_limits) via scripts/lib/pr-automation-budget.sh (pr_resume_suppressed)"
     - emit: "dispatch:dev-lead-reviews-retry"
-      guard: "dev-lead-retry.yml fires only when the stop_condition holds (PR still rate-limited, limit now cleared) — stop-condition-gated timer mechanism, not a free emit path"
-      location: ".github/workflows/dev-lead-retry.yml"
+      guard: "Both emit paths — the safety-net timer (dev-lead-retry.sh) and the event-first resume (dev-lead-resume.sh) — dispatch only through scan_pr_for_rate_limits, which fires solely when pr_resume_suppressed is false (PR open, not human-gated, budget not exhausted) and the rate-limit reset has elapsed. Stop-condition-gated, not a free emit path"
+      location: "scripts/dev-lead-retry.sh (scan_pr_for_rate_limits) via scripts/lib/pr-automation-budget.sh (pr_resume_suppressed)"
     - emit: "dispatch:dev-lead-issue-retry"
-      guard: "dev-lead-retry.yml fires only when the stop_condition holds (PR still rate-limited, limit now cleared) — stop-condition-gated timer mechanism, not a free emit path"
+      guard: "dev-lead-retry.yml fires only when the stop_condition holds (issue still failed/rate-limited, under the attempt ceiling, no open PR, limit now cleared) — stop-condition-gated timer mechanism, not a free emit path"
       location: ".github/workflows/dev-lead-retry.yml"
     - emit: "commit"
       guard: "scripts/dev-lead-intent.sh drops pull_request:synchronize events where sender.login == BOT_USER (dev-lead-own-commit skip) — prevents the commit → PR synchronize → re-trigger loop"
