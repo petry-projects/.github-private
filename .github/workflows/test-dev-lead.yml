@@ -16,6 +16,8 @@ on:
       - '.github/workflows/pr-review-trigger.yml'
       - '.github/workflows/pr-auto-review.yml'
       - '.github/workflows/spec-drift.yml'
+      - '.github/workflows/*.yml'
+      - 'templates/**'
       - 'tests/dev-lead/**'
       - 'prompts/dev-lead/**'
       - '.github/review-mcp.json'
@@ -42,6 +44,8 @@ on:
       - '.github/workflows/pr-review-trigger.yml'
       - '.github/workflows/pr-auto-review.yml'
       - '.github/workflows/spec-drift.yml'
+      - '.github/workflows/*.yml'
+      - 'templates/**'
   workflow_dispatch: {}
 
 permissions:
@@ -186,6 +190,19 @@ jobs:
         run: python3 -m pip install --quiet pyyaml
       - name: Validate auto-rebase-retry.yml resolves no actions (survives action-resolution outage)
         run: python3 tests/dev-lead/integration/test_auto_rebase_retry_no_action_resolution.py
+
+  reusable-pin-compliance:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install PyYAML
+        run: python3 -m pip install --quiet pyyaml
+      - name: Reject SHA / off-channel pins on any first-party reusable
+        run: python3 tests/dev-lead/integration/test_reusable_pin_compliance.py
 
   spec-drift-workflow:
     runs-on: ubuntu-latest
