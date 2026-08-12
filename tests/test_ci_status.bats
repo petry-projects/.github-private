@@ -410,6 +410,69 @@ rollup() {
   [ "$output" = "pending" ]
 }
 
+# ---------------------------------------------------------------------------
+# classify_rollup_eventability (#1408) — split a PR's non-own checks into the
+# genuinely un-eventable residue (GitHub-App / cross-repo checks like SonarCloud
+# that emit no workflow_run, detected by the absence of a workflowName) versus
+# eventable GitHub Actions check runs (which carry a workflowName and whose
+# completion the pr-review-sweep fast path already keys on). The scheduled
+# (cron) sweep re-dispatches only for the un-eventable residue.
+#   Emits: "none" | "eventable-only" | "has-uneventable"
+# ---------------------------------------------------------------------------
+
+@test "classify_rollup_eventability: a GitHub Actions check (has workflowName) is eventable-only" {
+  local r
+  r=$(rollup "$(check_run_wf "build" "CI" "COMPLETED" "SUCCESS")")
+  run classify_rollup_eventability "$r"
+  [ "$output" = "eventable-only" ]
+}
+
+@test "classify_rollup_eventability: a StatusContext (no workflowName) is un-eventable residue" {
+  local r
+  r=$(rollup "$(status_ctx "SonarCloud" "SUCCESS")")
+  run classify_rollup_eventability "$r"
+  [ "$output" = "has-uneventable" ]
+}
+
+@test "classify_rollup_eventability: a GitHub-App CheckRun with no workflowName is un-eventable" {
+  local r
+  r=$(rollup "$(check_run "SonarCloud Code Analysis" "COMPLETED" "SUCCESS")")
+  run classify_rollup_eventability "$r"
+  [ "$output" = "has-uneventable" ]
+}
+
+@test "classify_rollup_eventability: mixed eventable + un-eventable is has-uneventable" {
+  local r
+  r=$(rollup \
+    "$(check_run_wf "build" "CI" "COMPLETED" "SUCCESS")" \
+    "$(status_ctx "SonarCloud" "SUCCESS")")
+  run classify_rollup_eventability "$r"
+  [ "$output" = "has-uneventable" ]
+}
+
+@test "classify_rollup_eventability: own pr-review checks are ignored, not counted as un-eventable" {
+  # A bare own 'review' check has no workflowName but must not be mistaken for the
+  # un-eventable residue — it is filtered before classification.
+  local r
+  r=$(rollup \
+    "$(check_run "review" "COMPLETED" "SUCCESS")" \
+    "$(check_run_wf "build" "CI" "COMPLETED" "SUCCESS")")
+  run classify_rollup_eventability "$r"
+  [ "$output" = "eventable-only" ]
+}
+
+@test "classify_rollup_eventability: no external checks at all → none" {
+  local r
+  r=$(rollup "$(check_run "review" "COMPLETED" "SUCCESS")")
+  run classify_rollup_eventability "$r"
+  [ "$output" = "none" ]
+}
+
+@test "classify_rollup_eventability: empty rollup → none" {
+  run classify_rollup_eventability '[]'
+  [ "$output" = "none" ]
+}
+
 @test "rollup of only CANCELLED dev-lead orchestration checks → passing (issue #608 repro)" {
   local r
   r=$(rollup \

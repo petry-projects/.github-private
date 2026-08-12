@@ -62,6 +62,19 @@ else
   DRY_RUN_BOOL=false
 fi
 
+# Scheduled (cron) backstop mode (#1408). On the schedule event the sweep is the
+# GUARANTEED backstop for genuinely UN-eventable cases only — GitHub-App /
+# cross-repo checks (e.g. SonarCloud) that emit no workflow_run this repo can key
+# on. A stuck-green PR whose green state is fully determined by EVENTABLE GitHub
+# Actions checks is already owned by the workflow_run fast path, so the cron must
+# not re-review it. The narrowing is scheduled-only: the workflow_run fast path,
+# workflow_dispatch, and explicit SWEEP_PRS_FILE runs keep the original selection.
+if [[ "${GITHUB_EVENT_NAME:-}" == "schedule" ]]; then
+  SCHEDULED_SWEEP=true
+else
+  SCHEDULED_SWEEP=false
+fi
+
 # Use GITHUB_REF as --ref only when it is a branch or tag (supports testing on
 # feature branches); a pull-request merge ref is not dispatchable.
 REF_FLAGS=()
@@ -235,6 +248,18 @@ while IFS= read -r pr_url; do
   if [ "${reviewed_at_head:-0}" -gt 0 ]; then
     echo "  skip $pr_url — already reviewed at head ${head_sha:0:8}"
     continue
+  fi
+
+  # Scheduled-backstop narrowing (#1408): on the cron event, only re-review the
+  # un-eventable residue. A PR whose external checks are all eventable GitHub
+  # Actions runs is owned by the workflow_run fast path, so re-dispatching it here
+  # would be the redundant re-review this story removes.
+  if [ "$SCHEDULED_SWEEP" = "true" ]; then
+    eventability=$(classify_rollup_eventability "$(jq '.statusCheckRollup' <<< "$snapshot")")
+    if [ "$eventability" = "eventable-only" ]; then
+      echo "  skip $pr_url — all checks eventable (workflow_run fast path owns it); scheduled sweep is un-eventable-only (#1408)"
+      continue
+    fi
   fi
 
   dispatch_review "$pr_url" "stuck-green (head ${head_sha:0:8})"
