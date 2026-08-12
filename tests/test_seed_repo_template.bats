@@ -73,6 +73,84 @@ _stub_gh_empty() {
   chmod +x "$STUB_BIN/gh"
 }
 
+# gh stub for the STANDARDS_REF pinning tests (#1448): records every call to
+# $CALLS, resolves the published channel commit for <exists-ref> (default
+# standards/v1-stable), 404s any other /commits/ ref, and returns a base64
+# caller-stub body for /contents/ reads so the emit/repin path stays valid.
+_stub_gh_ref_recorder() { # [exists-commit-ref]
+  local exists="${1:-standards/v1-stable}"
+  cat > "$STUB_BIN/gh" <<EOF
+#!/usr/bin/env bash
+echo "\$*" >> "$CALLS"
+case "\$*" in
+  *"/commits/${exists}"*) echo "cafef00d00000000000000000000000000000000" ;;
+  *"/commits/"*) exit 0 ;;
+  *"/contents/"*) printf '%s' "\$(printf '    uses: petry-projects/.github-private/.github/workflows/dev-lead-reusable.yml@dev-lead/v1-next\n' | base64 -w0 2>/dev/null || printf '    uses: petry-projects/.github-private/.github/workflows/dev-lead-reusable.yml@dev-lead/v1-next\n' | base64)" ;;
+  *) echo '' ;;
+esac
+EOF
+  chmod +x "$STUB_BIN/gh"
+}
+
+# ── #1448: standards content is fetched at an explicit, logged ref ─────────────
+@test "print-ref: STANDARDS_DIR local override short-circuits resolution (no network)" {
+  # setup() exports STANDARDS_DIR → the local-checkout seam is used, resolution
+  # never hits the network. The retained test override (issue #1448 step 2).
+  _stub_gh_empty
+  run bash "$SEED" --print-ref
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"STANDARDS_DIR"* || "$output" == *"local"* ]]
+}
+
+@test "print-ref: defaults to the published stable channel when it exists (AC #7)" {
+  unset STANDARDS_DIR
+  _stub_gh_ref_recorder standards/v1-stable
+  run bash "$SEED" --print-ref
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"standards/v1-stable"* ]]
+  [[ "$output" == *"cafef00d"* ]]          # resolved commit SHA recorded (AC #7)
+  [[ "$output" == *"channel"* ]]
+}
+
+@test "print-ref: STANDARDS_REF overrides resolution with an explicit pin (AC #7)" {
+  unset STANDARDS_DIR
+  _stub_gh_ref_recorder standards/v9-stable
+  run env STANDARDS_REF="standards/v2-stable" bash "$SEED" --print-ref
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"standards/v2-stable"* ]]
+  [[ "$output" == *"explicit"* ]]
+}
+
+@test "print-ref: HEAD fallback logs the resolved commit SHA when the channel is absent (AC #10)" {
+  # step-1 prerequisite (corpus channel) not yet published → the fetch stays on
+  # HEAD but resolves + reports the commit SHA so runs remain explainable.
+  unset STANDARDS_DIR
+  cat > "$STUB_BIN/gh" <<'EOF'
+#!/usr/bin/env bash
+case "$*" in
+  *"/commits/standards/v1-stable"*) exit 0 ;;               # channel not published
+  *"/commits/HEAD"*) echo "abc123def4567890000000000000000000000000" ;;
+  *) echo '' ;;
+esac
+EOF
+  chmod +x "$STUB_BIN/gh"
+  run bash "$SEED" --print-ref
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"abc123def456"* ]]        # HEAD commit SHA is resolved + logged
+  [[ "$output" == *"head-fallback"* ]]
+}
+
+@test "emit-workflow: fetches standards at the pinned ref, never unpinned (AC #7)" {
+  unset STANDARDS_DIR
+  _stub_gh_ref_recorder standards/v1-stable
+  run env STANDARDS_REF="standards/v1-stable" bash "$SEED" --emit-workflow ci.yml
+  [ "$status" -eq 0 ]
+  # every standards contents read carries an explicit ref — never an unpinned
+  # default-branch read (the #1448 defect at seed-repo-template.sh:116).
+  grep -q "contents/standards/workflows/ci.yml" "$CALLS"
+  grep "contents/standards/workflows/ci.yml" "$CALLS" | grep -q "ref=standards/v1-stable"
+}
+
 # ── manifest: workflow set (AC #1, #5) ────────────────────────────────────────
 @test "list-workflows: ships exactly the 10 named stubs" {
   run bash "$SEED" --list-workflows
@@ -234,6 +312,27 @@ EOF
   [[ "$output" == *"could not fetch standards/workflows/sonarcloud.yml"* ]]
 }
 
+@test "emit-workflow: FAILS LOUD when gh api returns a non-empty 404 JSON body (exits non-zero)" {
+  # Regression guard for the #1448 defect observed in CI: when fetching a file that
+  # does not exist at the pinned standards ref, gh api writes the 404 JSON body to
+  # stdout AND exits non-zero. A naive `content="$(gh api ...)" || true` captures the
+  # non-empty JSON and bypasses the empty-content guard, using the error body as the
+  # "expected" content. The corrected `|| content=""` must clear content so the guard
+  # catches it and the emit fails loud rather than silently shipping the 404 body.
+  unset STANDARDS_DIR
+  cat > "$STUB_BIN/gh" <<'GHEOF'
+#!/usr/bin/env bash
+printf '{"message":"Not Found","documentation_url":"https://docs.github.com/rest/repos/contents","status":"404"}'
+exit 1
+GHEOF
+  chmod +x "$STUB_BIN/gh"
+  run bash "$SEED" --emit-workflow sonarcloud.yml
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"could not fetch standards/workflows/sonarcloud.yml"* ]]
+  # Must NOT have shipped the raw 404 JSON body as workflow content.
+  [[ "$output" != *'"message":"Not Found"'* ]]
+}
+
 @test "emit-workflow: every inline manifest stub fails loud when its standard is absent" {
   # Guards the whole inline set, so a future manifest addition can't silently
   # 404 at seed time the way ci.yml did.
@@ -323,6 +422,38 @@ EOF
   run bash "$SEED" --emit-baseline .gitleaks.toml
   [ "$status" -ne 0 ]
   [[ "$output" == *"standards/gitleaks.toml"* ]]
+}
+
+@test "baseline: .gitleaks.toml FAILS LOUD when gh api returns a non-empty 404 JSON body (exits non-zero)" {
+  # Regression guard for the #1448 defect observed in CI: gh api returns a 404 JSON
+  # body to stdout AND exits non-zero when the file doesn't exist at the pinned ref.
+  # `content="$(gh api ...)" || content=""` must clear content so the empty-guard fires.
+  unset STANDARDS_DIR
+  cat > "$STUB_BIN/gh" <<'GHEOF'
+#!/usr/bin/env bash
+printf '{"message":"Not Found","documentation_url":"https://docs.github.com/rest/repos/contents","status":"404"}'
+exit 1
+GHEOF
+  chmod +x "$STUB_BIN/gh"
+  run bash "$SEED" --emit-baseline .gitleaks.toml
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"gitleaks.toml"* ]]
+  [[ "$output" != *'"message":"Not Found"'* ]]
+}
+
+@test "baseline: dependabot.yml FAILS LOUD when gh api returns a non-empty 404 JSON body (exits non-zero)" {
+  # Same regression: the Dependabot special-case path uses `_fetch_standard` too.
+  unset STANDARDS_DIR
+  cat > "$STUB_BIN/gh" <<'GHEOF'
+#!/usr/bin/env bash
+printf '{"message":"Not Found","documentation_url":"https://docs.github.com/rest/repos/contents","status":"404"}'
+exit 1
+GHEOF
+  chmod +x "$STUB_BIN/gh"
+  run env DEPENDABOT_STACK=frontend bash "$SEED" --emit-baseline .github/dependabot.yml
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"dependabot"* || "$output" == *"frontend"* ]]
+  [[ "$output" != *'"message":"Not Found"'* ]]
 }
 
 # ── dependabot baseline is sourced from the chosen standards/ stack template ───

@@ -25,8 +25,15 @@ set -euo pipefail
 # reads + git hash-object of the seed emission) lives only in the CLI driver
 # (main) at the bottom, mirroring how fleet_monitor.sh drives fleet_stub_drift.sh.
 #
-# Drift TSV format (4 fields, tab-separated), shared with fleet_stub_drift.sh:
-#   1:file  2:status  3:committed_sha  4:expected_sha
+# Drift TSV format (5 fields, tab-separated); the first 4 are shared with
+# fleet_stub_drift.sh, the 5th records which published version the committed file
+# matched under #1448's N / N-1 acceptance:
+#   1:file  2:status  3:committed_sha  4:expected_sha(N)  5:matched(N|N-1|"")
+# A file is ALIGNED if it matches the emission at the current published version (N)
+# or the immediately-preceding one (N-1); an N-1 match is a visible propagation
+# notice, not silent (#1448 AC #8). The resolved standards ref + commit SHA the
+# baseline is derived at is recorded in the report header (AC #7), and a guard
+# asserts neither N nor N-1 carries a pre-#1184 legacy non-major-scoped pin (AC #9).
 
 TEMPLATE_DRIFT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 TEMPLATE_REPO="${TEMPLATE_REPO:-petry-projects/repo-template}"
@@ -88,21 +95,119 @@ template_drift_covered() {
   done
 }
 
-# template_drift_annotate <tsv_file> — emit a GitHub `::error::` annotation for
-# every DRIFTED row, naming the file and BOTH SHAs (AC #3). Returns 1 if any row
-# is DRIFTED (so the CI job fails), 0 otherwise. MISSING rows are surfaced as a
-# non-fatal `::warning::` — only DRIFTED fails the job (AC #1). Pure: reads the
-# TSV, writes stdout. An absent/empty file is a clean pass.
+# ── N / N-1 acceptance (#1448 AC #8) ──────────────────────────────────────────
+# A stub is ALIGNED if its committed blob matches the emission at EITHER the
+# current published version (N) or the immediately preceding one (N-1) — so a
+# standards promotion does not instantly fail every consumer while the new version
+# propagates. An N-1 match is reported (matched=N-1) so the annotate step can raise
+# a visible propagation notice rather than accept it silently.
+#
+# template_drift_classify <committed> <expected_n> <expected_n1>
+#   → "<status>\t<matched>"  where status ∈ ALIGNED|DRIFTED|MISSING and
+#     matched ∈ N | N-1 | "" (empty when not ALIGNED). N-1 is only consulted when
+#     <expected_n1> is non-empty (the publication scheme provides a previous ref).
+template_drift_classify() {
+  local committed="${1:-}" expected_n="${2:-}" expected_n1="${3:-}"
+  if [ -z "$committed" ] || [ "$committed" = "null" ]; then
+    printf 'MISSING\t\n'
+  elif [ -n "$expected_n" ] && [ "$committed" = "$expected_n" ]; then
+    printf 'ALIGNED\tN\n'
+  elif [ -n "$expected_n1" ] && [ "$committed" = "$expected_n1" ]; then
+    printf 'ALIGNED\tN-1\n'
+  else
+    printf 'DRIFTED\t\n'
+  fi
+}
+
+# template_drift_row5 <file> <committed> <expected_n> <expected_n1>
+#   → one 5-field TSV row: file<TAB>status<TAB>committed<TAB>expected_n<TAB>matched.
+# The expected SHA column carries N (the current published version) so a DRIFTED
+# annotation points at what the file SHOULD be at the current version.
+template_drift_row5() {
+  local file="${1:-}" committed="${2:-}" expected_n="${3:-}" expected_n1="${4:-}"
+  local status matched
+  IFS=$'\t' read -r status matched < <(template_drift_classify "$committed" "$expected_n" "$expected_n1")
+  printf '%s\t%s\t%s\t%s\t%s\n' "$file" "$status" "$committed" "$expected_n" "$matched"
+}
+
+# template_drift_report_header <resolved_ref> <resolved_sha> <prev_ref>
+# One-line report header naming the resolved standards ref + commit SHA the
+# baseline was derived at (#1448 AC #7), and — when a previous (N-1) ref is
+# configured — noting that N-1 emissions are also accepted (AC #8). Pure.
+template_drift_report_header() {
+  local ref="${1:-}" sha="${2:-}" prev="${3:-}"
+  printf 'Baseline derived from standards ref `%s` (commit `%s`) on %s.\n' \
+    "$ref" "${sha:0:12}" "$TEMPLATE_REPO"
+  if [ -n "$prev" ]; then
+    printf 'Also accepting the immediately-preceding version (N-1) at ref `%s` while a promotion propagates.\n' "$prev"
+  fi
+}
+
+# ── Major-scoped pin guard (#1448 AC #9) ──────────────────────────────────────
+# Assert the resolved standards content does NOT carry a pre-#1184 legacy
+# non-major-scoped reusable pin (`<name>-reusable.yml@<name>/<tier>` with a bare
+# tier — stable/next/ring0/ring1 — instead of `<name>/v<MAJOR>-<tier>`). Neither N
+# nor N-1 may resolve to such content, so this issue's fix cannot be undone by a
+# pin. Content with no reusable pin (inline stubs, baseline files) passes. Returns
+# 1 and annotates on any legacy pin found; 0 otherwise. Pure: reads args/stdin.
+template_drift_assert_major_scoped() {
+  local content legacy
+  if [ $# -ge 1 ]; then
+    content="$1"
+  else
+    content="$(cat)"
+  fi
+  # A reusable pin whose tier is a bare stable|next|ring0|ring1 not preceded by v<MAJOR>-.
+  legacy="$(printf '%s\n' "$content" \
+    | grep -oE '[A-Za-z0-9._-]+-reusable\.yml@[A-Za-z0-9._-]+/(stable|next|ring0|ring1)([^A-Za-z0-9./-]|$)' \
+    || true)"
+  if [ -n "$legacy" ]; then
+    printf '::error::resolved standards content carries a pre-#1184 legacy non-major-scoped reusable pin (%s) — neither N nor N-1 may reintroduce it (#1448 AC #9).\n' \
+      "${legacy%%$'\n'*}"
+    return 1
+  fi
+  return 0
+}
+
+# template_drift_annotate <tsv_file> — walk the drift TSV and annotate:
+#   • DRIFTED → `::error::` naming the file and BOTH SHAs (AC #3); fails the job.
+#   • ALIGNED with matched=N-1 → `::notice::` (propagation pending): the file
+#     matches the immediately-preceding published version, not the current one, so
+#     it is accepted but flagged visibly, not silently (#1448 AC #8).
+#   • MISSING → non-fatal `::warning::` — only DRIFTED fails the job (AC #1).
+# Reads either the legacy 4-field rows or the 5-field (matched) rows; a missing
+# 5th field is treated as an N (current-version) match. Pure: reads the TSV,
+# writes stdout. An absent/empty file is a clean pass.
 template_drift_annotate() {
-  local f="${1:-}" file status committed expected drifted=0
+  local f="${1:-}" row file status committed expected matched drifted=0
   [ -n "$f" ] && [ -f "$f" ] || return 0
-  while IFS=$'\t' read -r file status committed expected; do
+  # Split each row on tabs WITHOUT collapsing empty fields — `IFS=$'\t' read`
+  # treats a tab as whitespace-IFS and would coalesce the empty committed field on
+  # a MISSING row, shifting every later column. Peel fields off explicitly instead.
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    file="${row%%$'\t'*}";      row="${row#*$'\t'}"
+    status="${row%%$'\t'*}";    row="${row#*$'\t'}"
+    committed="${row%%$'\t'*}"; row="${row#*$'\t'}"
+    expected="${row%%$'\t'*}"
+    if [ "$row" != "$expected" ] || [[ "$row" == *$'\t'* ]]; then
+      row="${row#*$'\t'}"
+      matched="${row%%$'\t'*}"
+    else
+      matched=""
+    fi
     [ -n "$file" ] || continue
     case "$status" in
       DRIFTED)
         drifted=1
         printf '::error file=%s::Template stub %s has DRIFTED from the standards-derived baseline (committed blob %s != expected %s). Re-seed it via scripts/seed-repo-template.sh — do not hand-edit the template; edit standards/ instead.\n' \
           "$file" "$file" "${committed:0:12}" "${expected:0:12}"
+        ;;
+      ALIGNED)
+        if [ "$matched" = "N-1" ]; then
+          printf '::notice file=%s::Template stub %s matches the immediately-preceding published standards version (N-1), not the current one (N) — propagation pending, accepted as ALIGNED (#1448 AC #8).\n' \
+            "$file" "$file"
+        fi
         ;;
       MISSING)
         printf '::warning file=%s::Template stub %s is MISSING from %s (expected blob %s) — re-seed via scripts/seed-repo-template.sh.\n' \
@@ -122,15 +227,18 @@ template_drift_annotate() {
 # `::warning::` skip (mirrors fleet_monitor.sh) so a transient cross-repo read
 # failure does not flake the PR lint job — only real drift fails it.
 
-# _template_drift_expected_sha <emit_flag> <emit_arg> — git blob SHA of the
-# standards-derived content seed-repo-template.sh would ship for this file.
-# Captures via $(...) so trailing newlines are stripped exactly the way the seed
-# script strips them before writing the file (contents-API blob parity).
-_template_drift_expected_sha() {
+# _template_drift_emit <emit_flag> <emit_arg> <standards_ref> — the standards-
+# derived content seed-repo-template.sh ships for this file, fetched PINNED at
+# <standards_ref> (#1448 AC #7). The ref is passed as STANDARDS_REF on the child
+# process env so both the N and N-1 passes read the same corpus at a fixed ref
+# rather than the live default branch. Empty output → return 1 (seed emit failed
+# / file absent). Captures via $(...)+printf '%s' so trailing newlines are stripped
+# exactly the way the seed script / committed-SHA path strip them (blob parity).
+_template_drift_emit() {
   local content
-  content="$(DRY_RUN=false bash "${TEMPLATE_DRIFT_DIR}/seed-repo-template.sh" "$1" "$2" 2>/dev/null)" || return 1
+  content="$(DRY_RUN=false STANDARDS_REF="${3:-}" bash "${TEMPLATE_DRIFT_DIR}/seed-repo-template.sh" "$1" "$2" 2>/dev/null)" || return 1
   [ -n "$content" ] || return 1
-  printf '%s' "$content" | git hash-object --stdin
+  printf '%s' "$content"
 }
 
 # _template_drift_committed_sha <path> — git blob SHA of the file as committed in
@@ -162,23 +270,52 @@ main() {
     command -v "$cmd" > /dev/null 2>&1 || { echo "::error::${cmd} is required but not installed." >&2; return 1; }
   done
 
-  local tsv row path flag arg expected committed
-  tsv="$(mktemp)"
+  # Resolve N — the ref the current published baseline is derived at (#1448 AC #7).
+  # STANDARDS_PREV_REF, when set, is N-1: the immediately-preceding published
+  # version, also accepted while a promotion propagates (AC #8). It defaults empty
+  # because the corpus-level publication scheme (step 1) is not yet available — in
+  # that state seed-repo-template.sh resolves N to the HEAD commit SHA and there is
+  # no N-1, so the check degrades to single-ref matching but stays explainable.
+  local n_ref n_sha n_src prev_ref
+  IFS=$'\t' read -r n_ref n_sha n_src < <(bash "${TEMPLATE_DRIFT_DIR}/seed-repo-template.sh" --print-ref 2>/dev/null || true)
+  prev_ref="${STANDARDS_PREV_REF:-}"
+
   echo "Template stub drift check — ${TEMPLATE_REPO} vs standards-derived baseline:"
+  echo "Resolved standards ref source: ${n_src:-<unresolved>} (#1448 AC #7/#10)."
+  template_drift_report_header "${n_ref:-<unresolved>}" "${n_sha:-}" "$prev_ref"
+
+  local tsv row path flag arg content_n content_n1 expected_n expected_n1 committed guard_rc=0
+  tsv="$(mktemp)"
   for row in "${TEMPLATE_DRIFT_FILES[@]}"; do
     IFS='|' read -r path flag arg <<< "$row"
     template_drift_allowlisted "$path" && continue
-    if ! expected="$(_template_drift_expected_sha "$flag" "$arg")"; then
-      echo "::warning::Could not compute the standards-derived SHA for ${path} (seed emit failed) — skipping its drift check."
+
+    if ! content_n="$(_template_drift_emit "$flag" "$arg" "$n_ref")"; then
+      echo "::warning::Could not compute the standards-derived content for ${path} at N (${n_ref:-<unresolved>}) — skipping its drift check."
       continue
     fi
+    # AC #9: neither N nor N-1 may reintroduce a pre-#1184 legacy channel pin.
+    template_drift_assert_major_scoped "$content_n" || guard_rc=1
+    expected_n="$(printf '%s' "$content_n" | git hash-object --stdin)"
+
+    expected_n1=""
+    if [ -n "$prev_ref" ]; then
+      if content_n1="$(_template_drift_emit "$flag" "$arg" "$prev_ref")"; then
+        template_drift_assert_major_scoped "$content_n1" || guard_rc=1
+        expected_n1="$(printf '%s' "$content_n1" | git hash-object --stdin)"
+      else
+        echo "::warning::Could not compute the N-1 baseline for ${path} at ${prev_ref} — comparing against N only."
+      fi
+    fi
+
     committed="$(_template_drift_committed_sha "$path")"
-    stub_drift_row "$path" "$expected" "$committed" >> "$tsv"
+    template_drift_row5 "$path" "$committed" "$expected_n" "$expected_n1" >> "$tsv"
   done
 
   cat "$tsv"
   local rc=0
   template_drift_annotate "$tsv" || rc=$?
+  [ "$guard_rc" -eq 0 ] || { echo "::error::a resolved standards baseline (N or N-1) carries a legacy non-major-scoped reusable pin — see annotations above (#1448 AC #9)."; rc=1; }
   rm -f "$tsv"
   return "$rc"
 }
