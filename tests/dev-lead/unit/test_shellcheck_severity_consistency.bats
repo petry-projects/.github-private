@@ -26,8 +26,12 @@ teardown() {
   # Command invocations start the line (after indentation) with the tool name.
   # This excludes `# shellcheck …` directives and `command -v shellcheck` probes.
   while IFS= read -r line; do
-    [ -z "$line" ] && continue
-    case "$line" in
+    if [ -z "$line" ]; then
+      continue
+    fi
+    local cmd="${line#*:}"
+    cmd="${cmd#*:}"
+    case "$cmd" in
       *--severity=warning*) : ;;
       *) offenders="${offenders}${line}"$'\n' ;;
     esac
