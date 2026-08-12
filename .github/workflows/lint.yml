@@ -64,6 +64,7 @@ jobs:
             tests/comment_noise.bats \
             tests/auto_rebase_health.bats \
             tests/pr_review_outcomes.bats \
+            tests/pr_review_sweep_metrics.bats \
             tests/model_pricing.bats \
             tests/test_review_cycle.bats \
             tests/test_pr_automation_budget.bats \

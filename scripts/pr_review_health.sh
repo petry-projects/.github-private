@@ -19,9 +19,17 @@ set -euo pipefail
 # shellcheck source=scripts/lib/pr-review-outcomes.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/pr-review-outcomes.sh"
 
+# Pure sweep-hit-rate helpers (#1408, epic #1402). Sourced so the metric that
+# tracks how often the pr-review-sweep scheduled backstop actually had to act is
+# unit-tested (tests/pr_review_sweep_metrics.bats) rather than inlined. Live
+# gh-API I/O for this metric lives below in this wrapper.
+# shellcheck source=scripts/lib/pr-review-sweep-metrics.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/pr-review-sweep-metrics.sh"
+
 LOOKBACK_DAYS="${LOOKBACK_DAYS:-1}"
 WORKFLOW_REPO="${AGENT_REPO:-petry-projects/.github-private}"
 WORKFLOW_FILE="pr-review-trigger.yml"
+SWEEP_WORKFLOW_FILE="pr-review-sweep.yml"
 REPORT_FILE="pr_review_health_report.md"
 TODAY=$(date -u +%Y-%m-%d)
 
@@ -67,6 +75,51 @@ runs_json=$(gh api \
     html_url: .html_url,
     duration_s: ((.updated_at | fromdate) - (.created_at | fromdate))
   })' 2>/dev/null | jq -s 'add // []' 2>/dev/null || echo '[]')
+
+# ---------------------------------------------------------------------------
+# 1b. Sweep-hit-rate telemetry (#1408)
+#
+# Fetch pr-review-sweep runs in the window and, for each SCHEDULED (cron) tick,
+# derive how many reviews it re-dispatched by parsing the deterministic
+# "Sweep summary: … K review(s) dispatched." line from the run's log. The pure
+# helper (pr_review_sweep_hit_rate) counts only event=="schedule" entries, so
+# workflow_run fast-path runs are naturally excluded. A scheduled tick that
+# re-dispatched a review is, by construction (#1408 narrowing), a genuinely
+# un-eventable case the event fast path did not cover.
+#
+# Best-effort and gracefully degrading: a log that cannot be fetched yields a
+# dispatched count of 0 (the tick still counts, mirroring the LOG_DIR pattern
+# for failed-run logs above). SWEEP_MAX_LOG_FETCH bounds the per-run log I/O so
+# a busy window cannot blow the job's time budget; ticks beyond the cap are
+# omitted so the denominator stays consistent with the hits actually measured.
+# ---------------------------------------------------------------------------
+SWEEP_MAX_LOG_FETCH="${SWEEP_MAX_LOG_FETCH:-200}"
+sweep_runs_meta=$(gh api \
+  --paginate \
+  "repos/${WORKFLOW_REPO}/actions/workflows/${SWEEP_WORKFLOW_FILE}/runs?per_page=100&created=>=${CUTOFF}" \
+  --jq '[.workflow_runs[]? | select(.event == "schedule") | {id: .id, event: .event}]' \
+  2>/dev/null | jq -s 'add // []' 2>/dev/null || echo '[]')
+
+sweep_dispatched=()
+sweep_fetched=0
+total_sweep_ticks=$(jq 'length' <<< "$sweep_runs_meta" 2>/dev/null || echo 0)
+while IFS= read -r sweep_id; do
+  [ -n "$sweep_id" ] || continue
+  if [ "$sweep_fetched" -ge "$SWEEP_MAX_LOG_FETCH" ]; then
+    echo "::warning::sweep-hit-rate: reached SWEEP_MAX_LOG_FETCH=${SWEEP_MAX_LOG_FETCH}; omitting remaining ticks from the metric"
+    break
+  fi
+  sweep_fetched=$((sweep_fetched + 1))
+  sweep_log=$(gh run view "$sweep_id" --repo "$WORKFLOW_REPO" --log 2>/dev/null || true)
+  dispatched=$(pr_review_sweep_dispatched_from_log "$sweep_log")
+  sweep_dispatched+=("${dispatched:-0}")
+done < <(jq -r '.[].id' <<< "$sweep_runs_meta")
+
+if [ "${#sweep_dispatched[@]}" -gt 0 ]; then
+  sweep_telemetry=$(jq -n '$ARGS.positional | map({event: "schedule", dispatched: (. | tonumber)})' --args "${sweep_dispatched[@]}")
+else
+  sweep_telemetry='[]'
+fi
 
 # ---------------------------------------------------------------------------
 # 2. Compute aggregate stats
@@ -187,11 +240,20 @@ workflow_source=$(gh api "repos/${WORKFLOW_REPO}/contents/.github/workflows/${WO
   # Run-outcome mix by triggering event (#1422). Deterministic — same truncation
   # guarantee as the percentiles above: written before the model-generated body.
   pr_review_render_outcome_mix "$runs_json"
+  # Sweep hit-rate (#1408). Deterministic — how often the scheduled backstop
+  # actually re-reviewed a PR the event fast path did not cover. Same truncation
+  # guarantee: written before the model-generated body.
+  pr_review_render_sweep_hit_rate "$sweep_telemetry" "$total_sweep_ticks"
 } > "$REPORT_FILE"
 
 echo "Duration percentiles — p50 $(fmt_dur "$dur_p50") / p95 $(fmt_dur "$dur_p95") across $dur_n run(s)"
 echo "Outcome mix (by event):"
 pr_review_outcomes_by_event "$runs_json" | sed 's/^/  /'
+IFS=$'\t' read -r sweep_ticks sweep_hits sweep_rate < <(pr_review_sweep_hit_rate "$sweep_telemetry")
+echo "Sweep hit-rate: ${sweep_hits}/${sweep_ticks} scheduled tick(s) re-dispatched — ${sweep_rate}"
+if [ "${total_sweep_ticks:-0}" -gt 0 ] && [ "$sweep_ticks" -lt "$total_sweep_ticks" ]; then
+  echo "  (partial: ${sweep_ticks} of ${total_sweep_ticks} ticks measured — cap or fetch errors omitted the rest)"
+fi
 
 echo "Invoking Claude for log analysis..."
 # Claude writes errors to stdout (not stderr), so they'd silently land in

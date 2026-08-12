@@ -423,3 +423,131 @@ ghp_event_url() { echo "https://github.com/petry-projects/.github-private/pull/$
   grep -qF -- "-f pr_url=$(ghp_event_url 901)" "$GH_LOG"
   ! grep -qF -- "-f pr_url=$(ghp_event_url 902)" "$GH_LOG"
 }
+
+# ───────────────────────────────────────────────────────────────────────────
+# Scheduled-path narrowing (#1408): on the schedule (cron) event the sweep is
+# the GUARANTEED backstop for genuinely un-eventable cases — GitHub-App /
+# cross-repo checks like SonarCloud that emit no workflow_run (no workflowName in
+# the rollup). A PR whose green state is fully determined by EVENTABLE GitHub
+# Actions checks (each carrying a workflowName) belongs to the workflow_run fast
+# path, so the cron must NOT re-dispatch it. The narrowing is scheduled-only:
+# the fast path, workflow_dispatch, and explicit-file paths are unchanged.
+# ───────────────────────────────────────────────────────────────────────────
+
+# Eventable rollup: every passing check is a GitHub Actions check (workflowName).
+ROLLUP_PASS_EVENTABLE='[{"name":"build","workflowName":"CI","status":"COMPLETED","conclusion":"SUCCESS"}]'
+# Un-eventable rollup: a SonarCloud-style check with no workflowName (emits no
+# workflow_run this repo can key on) — only the cron re-reviews it.
+ROLLUP_PASS_UNEVENTABLE='[{"context":"SonarCloud","state":"SUCCESS"}]'
+# Mixed: an eventable CI check plus the un-eventable SonarCloud residue.
+ROLLUP_PASS_MIXED='[{"name":"build","workflowName":"CI","status":"COMPLETED","conclusion":"SUCCESS"},{"context":"SonarCloud","state":"SUCCESS"}]'
+
+@test "scheduled path: stuck-green PR with ONLY eventable checks is NOT dispatched (fast path owns it)" {
+  write_pr 1408 "REVIEW_REQUIRED" "$ROLLUP_PASS_EVENTABLE" "evt1408"
+  url_for 1408 > "$SWEEP_PRS_FILE"
+  export GITHUB_EVENT_NAME=schedule
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ ! -s "$GH_LOG" ]
+}
+
+@test "scheduled path: stuck-green PR with an un-eventable (SonarCloud) check IS dispatched" {
+  write_pr 1409 "REVIEW_REQUIRED" "$ROLLUP_PASS_UNEVENTABLE" "unev1409"
+  url_for 1409 > "$SWEEP_PRS_FILE"
+  export GITHUB_EVENT_NAME=schedule
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  grep -qF -- "-f pr_url=$(url_for 1409)" "$GH_LOG"
+}
+
+@test "scheduled path: mixed eventable + un-eventable residue IS dispatched" {
+  write_pr 1410 "REVIEW_REQUIRED" "$ROLLUP_PASS_MIXED" "mix1410"
+  url_for 1410 > "$SWEEP_PRS_FILE"
+  export GITHUB_EVENT_NAME=schedule
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  grep -qF -- "-f pr_url=$(url_for 1410)" "$GH_LOG"
+}
+
+@test "scheduled path: mixed batch keeps only the un-eventable residue on the cron" {
+  write_pr 1411 "REVIEW_REQUIRED" "$ROLLUP_PASS_EVENTABLE"   "evt1411"   # fast-path → skip on cron
+  write_pr 1412 "REVIEW_REQUIRED" "$ROLLUP_PASS_UNEVENTABLE" "unev1412"  # un-eventable → dispatch
+  { url_for 1411; url_for 1412; } > "$SWEEP_PRS_FILE"
+  export GITHUB_EVENT_NAME=schedule
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(grep -c 'workflow run' "$GH_LOG")" -eq 1 ]
+  grep -qF -- "-f pr_url=$(url_for 1412)" "$GH_LOG"
+  run grep -qF -- "-f pr_url=$(url_for 1411)" "$GH_LOG"
+  [ "$status" -eq 1 ]
+}
+
+@test "fast path is UNCHANGED: workflow_run kick dispatches an eventable-only PR" {
+  # The narrowing must not touch the fast path — a PR that just went green on an
+  # eventable CI workflow is exactly what the workflow_run path is for.
+  unset SWEEP_PRS_FILE
+  local ev="$FIXTURE_DIR/event.json"
+  write_event "$ev" "petry-projects/.github-private" '[1413]'
+  export GITHUB_EVENT_NAME=workflow_run
+  export GITHUB_EVENT_PATH="$ev"
+  write_pr 1413 "REVIEW_REQUIRED" "$ROLLUP_PASS_EVENTABLE" "evt1413"
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  grep -qF -- "-f pr_url=$(ghp_event_url 1413)" "$GH_LOG"
+}
+
+@test "non-scheduled path is UNCHANGED: eventable-only PR still dispatches (no narrowing)" {
+  # Default invocation (no GITHUB_EVENT_NAME) is not the scheduled backstop, so
+  # the un-eventable narrowing must not apply.
+  write_pr 1414 "REVIEW_REQUIRED" "$ROLLUP_PASS_EVENTABLE" "evt1414"
+  url_for 1414 > "$SWEEP_PRS_FILE"
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  grep -qF -- "-f pr_url=$(url_for 1414)" "$GH_LOG"
+}
+
+# ───────────────────────────────────────────────────────────────────────────
+# Rate-limit retry + scheduled narrowing (#1408 + #711 interaction)
+#
+# When the scheduled sweep encounters a PR with an elapsed rate-limit marker it
+# must still apply the un-eventable narrowing before dispatching: an eventable-only
+# PR should be skipped (the workflow_run fast path covers it once the rate limit
+# clears), while a PR with any un-eventable check must be re-dispatched.
+# ───────────────────────────────────────────────────────────────────────────
+
+@test "scheduled path: rate-limited marker (elapsed) with eventable-only rollup is NOT dispatched (#1408+#711)" {
+  write_pr 1415 "REVIEW_REQUIRED" "$ROLLUP_PASS_EVENTABLE" "rl1415" "[]" "$(rl_comment rl1415 "$PAST_RESET")"
+  url_for 1415 > "$SWEEP_PRS_FILE"
+  export GITHUB_EVENT_NAME=schedule
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ ! -s "$GH_LOG" ]
+  [[ "$output" == *"un-eventable-only"* ]]
+}
+
+@test "scheduled path: rate-limited marker (elapsed) with un-eventable rollup IS dispatched" {
+  write_pr 1416 "REVIEW_REQUIRED" "$ROLLUP_PASS_UNEVENTABLE" "rl1416" "[]" "$(rl_comment rl1416 "$PAST_RESET")"
+  url_for 1416 > "$SWEEP_PRS_FILE"
+  export GITHUB_EVENT_NAME=schedule
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  grep -qF -- "-f pr_url=$(url_for 1416)" "$GH_LOG"
+}
+
+@test "non-scheduled path: rate-limited retry with eventable-only rollup still dispatches (narrowing is schedule-only)" {
+  write_pr 1417 "REVIEW_REQUIRED" "$ROLLUP_PASS_EVENTABLE" "rl1417" "[]" "$(rl_comment rl1417 "$PAST_RESET")"
+  url_for 1417 > "$SWEEP_PRS_FILE"
+  # No GITHUB_EVENT_NAME → not the scheduled backstop → narrowing must not apply.
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  grep -qF -- "-f pr_url=$(url_for 1417)" "$GH_LOG"
+}
