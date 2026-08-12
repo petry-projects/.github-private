@@ -44,7 +44,16 @@ set -euo pipefail
 #   TEMPLATE_REPO    target repo to seed (default petry-projects/repo-template).
 #   STANDARDS_REPO   repo holding the canonical standards/ (default petry-projects/.github).
 #   STANDARDS_DIR    optional local checkout of STANDARDS_REPO; when set, files are
-#                    read from disk instead of the GitHub API (regeneration seam).
+#                    read from disk instead of the GitHub API (regeneration seam,
+#                    retained for tests — #1448 step 2).
+#   STANDARDS_REF    explicit ref to fetch standards content at (a tag, branch, or
+#                    SHA). When empty (default), the ref is RESOLVED: the published
+#                    corpus-level stable channel (STANDARDS_CHANNEL) if it exists,
+#                    else the default-branch HEAD commit SHA (a logged fallback while
+#                    the step-1 publication scheme is unavailable). A standards read
+#                    is therefore NEVER an unpinned default-branch read (#1448 AC #7).
+#   STANDARDS_CHANNEL the published corpus-level moving channel the fetch defaults
+#                    to (default standards/v1-stable, #1448 step 1).
 #   DEPENDABOT_STACK standards/dependabot/<stack>.yml to ship as .github/dependabot.yml
 #                    (default frontend; one of: frontend, backend-go, backend-python,
 #                    backend-rust, fullstack, infra-terraform).
@@ -53,6 +62,8 @@ set -euo pipefail
 DRY_RUN="${DRY_RUN:-false}"
 TEMPLATE_REPO="${TEMPLATE_REPO:-petry-projects/repo-template}"
 STANDARDS_REPO="${STANDARDS_REPO:-petry-projects/.github}"
+STANDARDS_REF="${STANDARDS_REF:-}"
+STANDARDS_CHANNEL="${STANDARDS_CHANNEL:-standards/v1-stable}"
 DEPENDABOT_STACK="${DEPENDABOT_STACK:-frontend}"
 
 _is_dry() { [ "$DRY_RUN" = "true" ]; }
@@ -106,15 +117,74 @@ _manifest_row() {
   return 1
 }
 
+# ── Resolve the ref standards content is fetched at (#1448 AC #7, #10) ─────────
+# The pre-#1448 bug read standards/ from the default branch WITHOUT a ref, so the
+# "expected" baseline was whatever petry-projects/.github had at the moment of
+# execution — the same commit passed or failed template-drift purely on WHEN the
+# check ran. The fetch is now pinned to an explicit, logged ref.
+#
+# Precedence (memoized in _STD_REF / _STD_SHA / _STD_SRC; first call resolves):
+#   1. STANDARDS_DIR set    → local checkout seam; ref="STANDARDS_DIR", no network.
+#   2. STANDARDS_REF set     → explicit override, used verbatim.
+#   3. STANDARDS_CHANNEL      → the published corpus-level stable channel, IF it
+#                              resolves to a commit (step-1 publication scheme live).
+#   4. otherwise              → the default-branch HEAD commit SHA (AC #10): the
+#                              step-1 prerequisite is not yet published, so the fetch
+#                              stays on HEAD but resolves to a concrete SHA that is
+#                              LOGGED, so runs stay explainable rather than mysterious.
+# Never resolves to an unpinned default-branch read.
+
+# _ref_commit_sha <ref> — commit SHA <ref> resolves to on STANDARDS_REPO, or empty
+# if the ref does not exist / cannot be read.
+_ref_commit_sha() {
+  gh api "repos/${STANDARDS_REPO}/commits/${1}" --jq '.sha' 2>/dev/null || true
+}
+
+_resolve_standards_ref() {
+  if [ -n "${_STD_REF+x}" ]; then printf '%s' "$_STD_REF"; return 0; fi
+  local ref sha src
+  if [ -n "${STANDARDS_DIR:-}" ]; then
+    ref="STANDARDS_DIR"; sha=""; src="local"
+  elif [ -n "${STANDARDS_REF:-}" ]; then
+    ref="$STANDARDS_REF"; sha=""; src="explicit"
+  else
+    sha="$(_ref_commit_sha "$STANDARDS_CHANNEL")"
+    if [ -n "$sha" ]; then
+      ref="$STANDARDS_CHANNEL"; src="channel"
+    else
+      sha="$(_ref_commit_sha HEAD)"; ref="${sha:-HEAD}"; src="head-fallback"
+    fi
+  fi
+  _STD_REF="$ref"; _STD_SHA="$sha"; _STD_SRC="$src"
+  printf '%s' "$_STD_REF"
+}
+
+# _resolved_standards_sha — commit SHA of the resolved ref (for logging + the drift
+# report). Computed lazily so the explicit-ref emit path makes no extra API call
+# unless a caller actually wants the SHA. Empty for the STANDARDS_DIR local seam.
+_resolved_standards_sha() {
+  _resolve_standards_ref > /dev/null
+  if [ -z "${_STD_SHA:-}" ] && [ "$_STD_REF" != "STANDARDS_DIR" ]; then
+    _STD_SHA="$(_ref_commit_sha "$_STD_REF")"
+  fi
+  printf '%s' "${_STD_SHA:-}"
+}
+
 # ── Fetch a path from the canonical standards repo (or a local checkout) ───────
 _fetch_standard() {
-  local path="$1"
+  local path="$1" ref
   if [ -n "${STANDARDS_DIR:-}" ] && [ -f "${STANDARDS_DIR}/${path}" ]; then
     cat "${STANDARDS_DIR}/${path}"
     return 0
   fi
-  gh api "repos/${STANDARDS_REPO}/contents/${path}" --jq '.content' 2>/dev/null \
-    | base64 -d 2>/dev/null
+  ref="$(_resolve_standards_ref)"
+  local -a ref_q=()
+  case "$ref" in
+    ""|STANDARDS_DIR) : ;;                 # no explicit ref (local seam / default)
+    *) ref_q=(-f "ref=${ref}") ;;          # GET field → URL-encoded ?ref=<ref>
+  esac
+  gh api --method GET -H "Accept: application/vnd.github.v3.raw" \
+    "repos/${STANDARDS_REPO}/contents/${path}" "${ref_q[@]}" 2>/dev/null
 }
 
 # ── Derive the published channel from the canonical stub (AC #1, #2) ───────────
@@ -160,7 +230,7 @@ _emit_workflow() {
   local row name kind host content
   row="$(_manifest_row "$1")" || { echo "::error::unknown workflow stub: $1" >&2; return 2; }
   IFS='|' read -r name kind host <<<"$row"
-  content="$(_fetch_standard "standards/workflows/${name}.yml")" || true
+  content="$(_fetch_standard "standards/workflows/${name}.yml")" || content=""
   if [ -z "$content" ]; then
     echo "::error::could not fetch standards/workflows/${name}.yml from ${STANDARDS_REPO}" >&2
     return 1
@@ -416,7 +486,7 @@ _emit_baseline() {
       echo "::error::unknown baseline source '${source}' for ${path}" >&2
       return 2
     fi
-    content="$(_fetch_standard "$std_path")" || true
+    content="$(_fetch_standard "$std_path")" || content=""
     if [ -z "$content" ]; then
       echo "::error::could not fetch ${std_path} from ${STANDARDS_REPO}" >&2
       return 1
@@ -434,7 +504,14 @@ _seed_repo() {
   local repo="$1" branch default_branch base_sha
   branch="seed-scaffold/$(date -u +%Y-%m-%d)"
 
+  # Resolve in the current shell (not $()) so the memoized _STD_* globals persist.
+  _resolve_standards_ref > /dev/null
+  _resolved_standards_sha > /dev/null
   echo "[seed] target repo: ${repo} (stack: ${DEPENDABOT_STACK})"
+  echo "[seed] standards ref: ${_STD_REF} (commit ${_STD_SHA:-unknown}, source ${_STD_SRC:-?}) on ${STANDARDS_REPO}"
+  if [ "${_STD_SRC:-}" = "head-fallback" ]; then
+    echo "[seed] note: STANDARDS_CHANNEL '${STANDARDS_CHANNEL}' is not published yet — fetching at HEAD commit ${_STD_SHA:-unknown} (#1448 AC #10)."
+  fi
   echo "[seed] workflow stubs: $(printf '%s ' "${WORKFLOW_MANIFEST[@]%%|*}")"
   echo "[seed] baseline files: $(printf '%s ' "${BASELINE_MANIFEST[@]%%|*}")"
 
@@ -515,6 +592,14 @@ main() {
     case "$1" in
       --list-workflows) _list_workflows; return 0 ;;
       --list-baseline)  _list_baseline;  return 0 ;;
+      --print-ref)
+        # Report the resolved standards ref for the drift report (#1448 AC #7):
+        # "<ref>\t<commit-sha>\t<source>". source ∈ local|explicit|channel|head-fallback.
+        # Resolve in the current shell (not $()) so the memoized _STD_* globals persist.
+        _resolve_standards_ref > /dev/null
+        _resolved_standards_sha > /dev/null
+        printf '%s\t%s\t%s\n' "$_STD_REF" "${_STD_SHA:-}" "${_STD_SRC:-?}"
+        return 0 ;;
       --emit-workflow)  [ $# -ge 2 ] || { echo "::error::--emit-workflow needs a name" >&2; return 2; }; _emit_workflow "$2"; return $? ;;
       --emit-baseline)  [ $# -ge 2 ] || { echo "::error::--emit-baseline needs a path" >&2; return 2; }; _emit_baseline "$2"; return $? ;;
       --repin)
