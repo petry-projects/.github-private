@@ -41,8 +41,7 @@ _sorted() { printf '%s\n' "$@" | sort; }
 }
 
 @test "invariant: a thread-creator that is NOT trusted is rejected" {
-  local bad
-  bad="$(mktemp)"
+  local bad="${BATS_TEST_TMPDIR}/bad.tsv"
   cat > "$bad" <<'TSV'
 # login	creates_threads	dev_lead_trusted	advisory_gate	rationale
 some-bot	yes	no	yes	synthetic violation
@@ -50,19 +49,16 @@ TSV
   REVIEWER_SOURCES_MANIFEST="$bad" run reviewer_sources_assert_invariant
   [ "$status" -ne 0 ]
   [[ "$output" == *"some-bot"* ]]
-  rm -f "$bad"
 }
 
 @test "invariant: a non-thread-creating advisory-only source may be untrusted" {
-  local ok
-  ok="$(mktemp)"
+  local ok="${BATS_TEST_TMPDIR}/ok.tsv"
   cat > "$ok" <<'TSV'
 # login	creates_threads	dev_lead_trusted	advisory_gate	rationale
 comment-only-bot	no	no	yes	top-level comment only, advisory-only-and-non-blocking
 TSV
   REVIEWER_SOURCES_MANIFEST="$ok" run reviewer_sources_assert_invariant
   [ "$status" -eq 0 ]
-  rm -f "$ok"
 }
 
 # ── The #1425 fix: graphite/qodo/codeant are now trusted ─────────────────────
@@ -136,8 +132,7 @@ TSV
 @test "dev-lead: intent script derives TRUSTED_BOTS from the registry when unset" {
   # With TRUSTED_BOTS unset the classifier must fall back to the registry-derived
   # default — which trusts graphite-app — rather than the legacy five-bot literal.
-  local ev
-  ev="$(mktemp --suffix=.json)"
+  local ev="${BATS_TEST_TMPDIR}/event.json"
   cat > "$ev" <<'JSON'
 {
   "action": "submitted",
@@ -156,13 +151,13 @@ TSV
   "sender": { "login": "graphite-app[bot]", "type": "Bot" }
 }
 JSON
-  local out; out="$(mktemp)"
+  local out="${BATS_TEST_TMPDIR}/out.env"
+  local out_output="${BATS_TEST_TMPDIR}/out_output"
   unset TRUSTED_BOTS
-  GITHUB_ENV="$out" GITHUB_OUTPUT="$(mktemp)" \
+  GITHUB_ENV="$out" GITHUB_OUTPUT="$out_output" \
     GITHUB_EVENT_NAME="pull_request_review" GITHUB_EVENT_PATH="$ev" \
     BOT_USER="donpetry-bot" GITHUB_REPOSITORY="petry-projects/.github-private" \
     run bash "$REPO_ROOT/scripts/dev-lead-intent.sh"
   [ "$status" -eq 0 ]
   grep -q "^INTENT_TYPE=fix-reviews$" "$out"
-  rm -f "$ev" "$out"
 }

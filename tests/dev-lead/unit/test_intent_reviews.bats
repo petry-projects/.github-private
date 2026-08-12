@@ -261,8 +261,7 @@ EOF
   # TRUSTED_BOTS unset the classifier now derives its default from the reviewer
   # source registry, which trusts graphite-app — so the comment routes to fix-reviews.
   unset TRUSTED_BOTS
-  local tmp_event
-  tmp_event=$(mktemp --suffix=.json)
+  local tmp_event="${BATS_TEST_TMPDIR}/event.json"
   cat > "$tmp_event" <<'EOF'
 {
   "action": "created",
@@ -286,7 +285,6 @@ EOF
 
   [ "$status" -eq 0 ]
   [ "$(_get_env INTENT_TYPE)" = "fix-reviews" ]
-  rm -f "$tmp_event"
 }
 
 @test "reviews: pull_request_review_comment human + @dev-lead → on-mention" {

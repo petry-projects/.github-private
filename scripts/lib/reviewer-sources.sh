@@ -28,7 +28,9 @@ fi
 # _reviewer_sources_manifest_or_die <caller>
 #   Guards manifest existence; prints a diagnostic naming the caller.
 _reviewer_sources_manifest_or_die() {
-  [ -f "$REVIEWER_SOURCES_MANIFEST" ] && return 0
+  if [ -f "$REVIEWER_SOURCES_MANIFEST" ]; then
+    return 0
+  fi
   echo "$1: manifest file not found at $REVIEWER_SOURCES_MANIFEST" >&2
   return 1
 }
@@ -101,7 +103,9 @@ reviewer_sources_invariant_violations() {
 reviewer_sources_assert_invariant() {
   local violations
   violations="$(reviewer_sources_invariant_violations)" || return 1
-  [ -z "$violations" ] && return 0
+  if [ -z "$violations" ]; then
+    return 0
+  fi
   echo "reviewer_sources: #1425 invariant violated — thread-creating sources that are not dev-lead-trusted:" >&2
   printf '%s\n' "$violations" >&2
   return 1
