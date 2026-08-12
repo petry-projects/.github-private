@@ -419,6 +419,25 @@ rollup() {
   [ "$output" = "passing" ]
 }
 
+@test "own pr-review 'review / review' check CANCELLED → passing (issue #1421 regression)" {
+  # PR #1421: the pr-review run was evicted while pending, leaving a terminal
+  # CANCELLED "review / review" check that gh pr checks rendered as `fail`. The
+  # cascade must not treat its own cancelled check as a merge-blocking failure.
+  local r
+  r=$(rollup "$(check_run "review / review" "COMPLETED" "CANCELLED")")
+  run compute_ci_status "$r"
+  [ "$output" = "passing" ]
+}
+
+@test "own pr-review CANCELLED check alongside external SUCCESS → passing (issue #1421)" {
+  local r
+  r=$(rollup \
+    "$(check_run "review / review" "COMPLETED" "CANCELLED")" \
+    "$(check_run "Build" "COMPLETED" "SUCCESS")")
+  run compute_ci_status "$r"
+  [ "$output" = "passing" ]
+}
+
 @test "status context CANCELLED-equivalent: real TIMED_OUT conclusion still → failing" {
   # Guards that only CANCELLED is whitelisted — other non-success terminal
   # conclusions (e.g. TIMED_OUT) must still block.
