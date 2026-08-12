@@ -482,7 +482,8 @@ ROLLUP_PASS_MIXED='[{"name":"build","workflowName":"CI","status":"COMPLETED","co
   [ "$status" -eq 0 ]
   [ "$(grep -c 'workflow run' "$GH_LOG")" -eq 1 ]
   grep -qF -- "-f pr_url=$(url_for 1412)" "$GH_LOG"
-  ! grep -qF -- "-f pr_url=$(url_for 1411)" "$GH_LOG"
+  run grep -qF -- "-f pr_url=$(url_for 1411)" "$GH_LOG"
+  [ "$status" -eq 1 ]
 }
 
 @test "fast path is UNCHANGED: workflow_run kick dispatches an eventable-only PR" {

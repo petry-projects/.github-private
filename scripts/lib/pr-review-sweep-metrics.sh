@@ -60,7 +60,7 @@ pr_review_sweep_dispatched_from_log() {
   count=$(printf '%s\n' "$log" \
     | grep -oE '[0-9]+ review\(s\) dispatched' \
     | grep -oE '^[0-9]+' \
-    | tail -n1)
+    | tail -n1 || true)
   printf '%s' "${count:-0}"
 }
 

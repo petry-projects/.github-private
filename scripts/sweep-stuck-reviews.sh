@@ -262,7 +262,7 @@ while IFS= read -r pr_url; do
   # Actions runs is owned by the workflow_run fast path, so re-dispatching it here
   # would be the redundant re-review this story removes.
   if [ "$SCHEDULED_SWEEP" = "true" ]; then
-    eventability=$(classify_rollup_eventability "$(jq '.statusCheckRollup' <<< "$snapshot")")
+    eventability=$(classify_rollup_eventability "$(jq '.statusCheckRollup? // []' <<< "$snapshot" 2>/dev/null || echo '[]')")
     if [ "$eventability" = "eventable-only" ]; then
       echo "  skip $pr_url — all checks eventable (workflow_run fast path owns it); scheduled sweep is un-eventable-only (#1408)"
       continue

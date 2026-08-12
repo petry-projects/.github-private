@@ -97,27 +97,29 @@ SWEEP_MAX_LOG_FETCH="${SWEEP_MAX_LOG_FETCH:-200}"
 sweep_runs_meta=$(gh api \
   --paginate \
   "repos/${WORKFLOW_REPO}/actions/workflows/${SWEEP_WORKFLOW_FILE}/runs?per_page=100&created=>=${CUTOFF}" \
-  --jq '.workflow_runs | map(select(.event == "schedule") | {id: .id, event: .event})' \
+  --jq '[.workflow_runs[]? | select(.event == "schedule") | {id: .id, event: .event}]' \
   2>/dev/null | jq -s 'add // []' 2>/dev/null || echo '[]')
 
-sweep_telemetry='[]'
+sweep_dispatched=()
 sweep_fetched=0
 total_sweep_ticks=$(jq 'length' <<< "$sweep_runs_meta" 2>/dev/null || echo 0)
 while IFS= read -r sweep_id; do
   [ -n "$sweep_id" ] || continue
   if [ "$sweep_fetched" -ge "$SWEEP_MAX_LOG_FETCH" ]; then
-    echo "::warning::sweep-hit-rate: reached SWEEP_MAX_LOG_FETCH=${SWEEP_MAX_LOG_FETCH}; omitting remaining ticks from the metric (partial)"
+    echo "::warning::sweep-hit-rate: reached SWEEP_MAX_LOG_FETCH=${SWEEP_MAX_LOG_FETCH}; omitting remaining ticks from the metric"
     break
   fi
   sweep_fetched=$((sweep_fetched + 1))
-  if ! sweep_log=$(gh run view "$sweep_id" --repo "$WORKFLOW_REPO" --log 2>/dev/null); then
-    echo "::warning::sweep-hit-rate: could not fetch log for run $sweep_id; skipping tick from metric"
-    continue
-  fi
+  sweep_log=$(gh run view "$sweep_id" --repo "$WORKFLOW_REPO" --log 2>/dev/null || true)
   dispatched=$(pr_review_sweep_dispatched_from_log "$sweep_log")
-  sweep_telemetry=$(jq -c --argjson d "${dispatched:-0}" \
-    '. + [{event: "schedule", dispatched: $d}]' <<< "$sweep_telemetry")
+  sweep_dispatched+=("${dispatched:-0}")
 done < <(jq -r '.[].id' <<< "$sweep_runs_meta")
+
+if [ "${#sweep_dispatched[@]}" -gt 0 ]; then
+  sweep_telemetry=$(jq -n '$ARGS.positional | map({event: "schedule", dispatched: (. | tonumber)})' --args "${sweep_dispatched[@]}")
+else
+  sweep_telemetry='[]'
+fi
 
 # ---------------------------------------------------------------------------
 # 2. Compute aggregate stats
