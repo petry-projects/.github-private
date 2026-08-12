@@ -61,6 +61,26 @@ TSV
   [ "$status" -eq 0 ]
 }
 
+# ── Missing-manifest error propagation ──────────────────────────────────────
+
+@test "missing-manifest: trusted_bots_csv propagates failure" {
+  REVIEWER_SOURCES_MANIFEST="/nonexistent/reviewer-sources.tsv" \
+    run reviewer_sources_trusted_bots_csv
+  [ "$status" -ne 0 ]
+}
+
+@test "missing-manifest: advisory_gate_logins propagates failure" {
+  REVIEWER_SOURCES_MANIFEST="/nonexistent/reviewer-sources.tsv" \
+    run reviewer_sources_advisory_gate_logins
+  [ "$status" -ne 0 ]
+}
+
+@test "missing-manifest: logins propagates failure" {
+  REVIEWER_SOURCES_MANIFEST="/nonexistent/reviewer-sources.tsv" \
+    run reviewer_sources_logins
+  [ "$status" -ne 0 ]
+}
+
 # ── The #1425 fix: graphite/qodo/codeant are now trusted ─────────────────────
 
 @test "registry: graphite-app, qodo-code-review, codeant-ai are thread creators" {

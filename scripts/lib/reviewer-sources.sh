@@ -79,11 +79,12 @@ reviewer_sources_advisory_gate_logins() {
 #   dev-lead's webhook-facing trusted set: each trusted login with a "[bot]"
 #   suffix, joined by commas. This is exactly the TRUSTED_BOTS default.
 reviewer_sources_trusted_bots_csv() {
-  local login csv=""
+  local login csv="" logins
+  logins="$(reviewer_sources_trusted_logins)" || return 1
   while IFS= read -r login; do
     [ -n "$login" ] || continue
     csv="${csv:+$csv,}${login}[bot]"
-  done < <(reviewer_sources_trusted_logins)
+  done <<< "$logins"
   printf '%s\n' "$csv"
 }
 

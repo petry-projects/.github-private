@@ -37,10 +37,14 @@ if [ -f "$_gate_reg_sh" ]; then
   source "$_gate_reg_sh"
   # shellcheck disable=SC2034
   declare -A ADVISORY_BOTS=()
+  _adv_logins="$(reviewer_sources_advisory_gate_logins)" || {
+    echo "advisory-review-gate: reviewer_sources_advisory_gate_logins failed — manifest missing or unreadable" >&2
+    exit 1
+  }
   while IFS= read -r _adv_login; do
     [ -n "$_adv_login" ] && ADVISORY_BOTS[$_adv_login]="$_adv_login (advisory)"
-  done < <(reviewer_sources_advisory_gate_logins)
-  unset _adv_login
+  done <<< "$_adv_logins"
+  unset _adv_login _adv_logins
 else
   # shellcheck disable=SC2034
   declare -A ADVISORY_BOTS=(
@@ -203,8 +207,17 @@ format_bot_status() {
 # Derived from the reviewer-source registry (all logins) when available; falls
 # back to a literal list for stripped test environments.
 if declare -f reviewer_sources_logins >/dev/null 2>&1; then
+  _rlnb_raw="$(reviewer_sources_logins)" || {
+    echo "advisory-review-gate: reviewer_sources_logins failed — manifest missing or unreadable" >&2
+    exit 1
+  }
   # shellcheck disable=SC2034
-  mapfile -t RATE_LIMIT_NOTICE_BOTS < <(reviewer_sources_logins)
+  if [ -n "$_rlnb_raw" ]; then
+    mapfile -t RATE_LIMIT_NOTICE_BOTS <<< "$_rlnb_raw"
+  else
+    RATE_LIMIT_NOTICE_BOTS=()
+  fi
+  unset _rlnb_raw
 else
   # shellcheck disable=SC2034
   declare -a RATE_LIMIT_NOTICE_BOTS=(
