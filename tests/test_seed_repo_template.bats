@@ -312,6 +312,27 @@ EOF
   [[ "$output" == *"could not fetch standards/workflows/sonarcloud.yml"* ]]
 }
 
+@test "emit-workflow: FAILS LOUD when gh api returns a non-empty 404 JSON body (exits non-zero)" {
+  # Regression guard for the #1448 defect observed in CI: when fetching a file that
+  # does not exist at the pinned standards ref, gh api writes the 404 JSON body to
+  # stdout AND exits non-zero. A naive `content="$(gh api ...)" || true` captures the
+  # non-empty JSON and bypasses the empty-content guard, using the error body as the
+  # "expected" content. The corrected `|| content=""` must clear content so the guard
+  # catches it and the emit fails loud rather than silently shipping the 404 body.
+  unset STANDARDS_DIR
+  cat > "$STUB_BIN/gh" <<'GHEOF'
+#!/usr/bin/env bash
+printf '{"message":"Not Found","documentation_url":"https://docs.github.com/rest/repos/contents","status":"404"}'
+exit 1
+GHEOF
+  chmod +x "$STUB_BIN/gh"
+  run bash "$SEED" --emit-workflow sonarcloud.yml
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"could not fetch standards/workflows/sonarcloud.yml"* ]]
+  # Must NOT have shipped the raw 404 JSON body as workflow content.
+  [[ "$output" != *'"message":"Not Found"'* ]]
+}
+
 @test "emit-workflow: every inline manifest stub fails loud when its standard is absent" {
   # Guards the whole inline set, so a future manifest addition can't silently
   # 404 at seed time the way ci.yml did.
@@ -401,6 +422,38 @@ EOF
   run bash "$SEED" --emit-baseline .gitleaks.toml
   [ "$status" -ne 0 ]
   [[ "$output" == *"standards/gitleaks.toml"* ]]
+}
+
+@test "baseline: .gitleaks.toml FAILS LOUD when gh api returns a non-empty 404 JSON body (exits non-zero)" {
+  # Regression guard for the #1448 defect observed in CI: gh api returns a 404 JSON
+  # body to stdout AND exits non-zero when the file doesn't exist at the pinned ref.
+  # `content="$(gh api ...)" || content=""` must clear content so the empty-guard fires.
+  unset STANDARDS_DIR
+  cat > "$STUB_BIN/gh" <<'GHEOF'
+#!/usr/bin/env bash
+printf '{"message":"Not Found","documentation_url":"https://docs.github.com/rest/repos/contents","status":"404"}'
+exit 1
+GHEOF
+  chmod +x "$STUB_BIN/gh"
+  run bash "$SEED" --emit-baseline .gitleaks.toml
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"gitleaks.toml"* ]]
+  [[ "$output" != *'"message":"Not Found"'* ]]
+}
+
+@test "baseline: dependabot.yml FAILS LOUD when gh api returns a non-empty 404 JSON body (exits non-zero)" {
+  # Same regression: the Dependabot special-case path uses `_fetch_standard` too.
+  unset STANDARDS_DIR
+  cat > "$STUB_BIN/gh" <<'GHEOF'
+#!/usr/bin/env bash
+printf '{"message":"Not Found","documentation_url":"https://docs.github.com/rest/repos/contents","status":"404"}'
+exit 1
+GHEOF
+  chmod +x "$STUB_BIN/gh"
+  run env DEPENDABOT_STACK=frontend bash "$SEED" --emit-baseline .github/dependabot.yml
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"dependabot"* || "$output" == *"frontend"* ]]
+  [[ "$output" != *'"message":"Not Found"'* ]]
 }
 
 # ── dependabot baseline is sourced from the chosen standards/ stack template ───

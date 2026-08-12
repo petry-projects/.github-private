@@ -230,7 +230,7 @@ _emit_workflow() {
   local row name kind host content
   row="$(_manifest_row "$1")" || { echo "::error::unknown workflow stub: $1" >&2; return 2; }
   IFS='|' read -r name kind host <<<"$row"
-  content="$(_fetch_standard "standards/workflows/${name}.yml")" || true
+  content="$(_fetch_standard "standards/workflows/${name}.yml")" || content=""
   if [ -z "$content" ]; then
     echo "::error::could not fetch standards/workflows/${name}.yml from ${STANDARDS_REPO}" >&2
     return 1
@@ -486,7 +486,7 @@ _emit_baseline() {
       echo "::error::unknown baseline source '${source}' for ${path}" >&2
       return 2
     fi
-    content="$(_fetch_standard "$std_path")" || true
+    content="$(_fetch_standard "$std_path")" || content=""
     if [ -z "$content" ]; then
       echo "::error::could not fetch ${std_path} from ${STANDARDS_REPO}" >&2
       return 1
