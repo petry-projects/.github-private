@@ -83,12 +83,18 @@ permissions:
   checks: read
 
 concurrency:
-  # Event-triggered and mention-triggered runs for a specific PR get a per-PR
-  # concurrency slot so they never queue behind unrelated PRs.
+  # Per-PR-AND-head-SHA concurrency slot so runs never queue behind unrelated
+  # PRs, AND a new push (new head SHA) does not share a slot with an in-flight
+  # review of a now-stale SHA (#1422). SHA sources per trigger:
+  #   pull_request / pull_request_review → github.event.pull_request.head.sha
+  #   check_suite                        → github.event.check_suite.head_sha
+  #   repository_dispatch (mention)      → github.event.client_payload.sha (if sent)
+  # Triggers whose payload carries no SHA (workflow_dispatch's pr_url, a mention
+  # without a sha) fall back to the bare per-PR group — identical to the prior
+  # behaviour — so those are still serialized per PR.
   # check_suite events carry the associated PR in pull_requests[0]; including
   # that URL here prevents cross-PR cancellation when multiple PRs' CI suites
-  # complete simultaneously (each PR competes only with itself, which is safe
-  # since same-PR runs are idempotent on the same head SHA).
+  # complete simultaneously.
   # Note: check_suite.pull_requests entries expose the API `url` field, not
   # `html_url` — using `url` here matches the payload shape.
   # Manual batch runs (workflow_dispatch without pr_url) use a shared slot.
@@ -98,24 +104,41 @@ concurrency:
        || github.event.client_payload.pr_url
        || github.event.pull_request.html_url
        || github.event.check_suite.pull_requests[0].url)
-      && format('pr-review-pr-{0}',
+      && format('pr-review-pr-{0}{1}',
            inputs.pr_url
            || github.event.client_payload.pr_url
            || github.event.pull_request.html_url
-           || github.event.check_suite.pull_requests[0].url)
+           || github.event.check_suite.pull_requests[0].url,
+           (github.event.pull_request.head.sha
+            || github.event.check_suite.head_sha
+            || github.event.client_payload.sha)
+           && format('-{0}',
+                github.event.pull_request.head.sha
+                || github.event.check_suite.head_sha
+                || github.event.client_payload.sha)
+           || '')
       || 'pr-review-batch'
     }}
-  # cancel-in-progress is intentionally FALSE (#534). The per-PR group means
-  # the four trigger event types (check_suite, pull_request,
-  # pull_request_review, repository_dispatch) all land in the same slot for a
-  # given PR; with cancellation on, each new event killed the in-flight review,
-  # so reviews never completed and left a trail of `cancelled` check runs (the
-  # long-standing ~34% cancel rate). Same-head-SHA reviews are idempotent — the
-  # agent's marker makes a redundant run a fast no-op — so racing runs are safe
-  # to QUEUE rather than cancel: the first reviews, the rest no-op. No lost work,
-  # no cancelled-check noise. (Future refinement: key the group by head SHA so a
-  # new push doesn't queue behind a now-stale review; deferred because the SHA
-  # isn't in every trigger payload, e.g. workflow_dispatch's pr_url.)
+  # cancel-in-progress is intentionally FALSE (#534): re-enabling it kills the
+  # IN-FLIGHT review — strictly worse than dropping a pending duplicate.
+  # What FALSE does and does not protect (corrected per #1422 — the previous
+  # "no cancelled-check noise" claim was contradicted by measurement):
+  #   • IN-FLIGHT run — PROTECTED. A newer same-group event never cancels the
+  #     run that is already executing.
+  #   • PENDING run — NOT protected. GitHub's concurrency model admits one
+  #     running + one pending per group; a third same-group event evicts the
+  #     older PENDING run, which concludes as `cancelled`. Under high event
+  #     volume most runs are cancelled BEFORE they start (~49% over the
+  #     2026-08-02 window), and a cancelled run rendered as a failing check on
+  #     the PR (#1421). So FALSE does not eliminate cancelled-check noise; it
+  #     only moves it from in-flight to pending.
+  # Keying the group by head SHA (above) removes the dominant CROSS-SHA eviction
+  # path, so a run for the final head SHA is never evicted by churn on a stale
+  # SHA — the coverage guarantee argued in
+  # docs/pr-review-agent/concurrency-and-coverage.md. Same-head-SHA reviews stay
+  # idempotent (the agent's marker makes a redundant run a fast no-op), so the
+  # residual same-SHA races are safe to QUEUE rather than cancel. The outcome mix
+  # is now a tracked number via scripts/pr_review_health.sh (run-outcome by event).
   cancel-in-progress: false
 
 jobs:

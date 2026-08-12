@@ -76,6 +76,36 @@ PRs it is labelled *(all PRs)*.
 | Redundancy — workflow runs/hr | — | **~52 runs/hr** (7-day window, all-PRs scope) | `pr_review_health.sh` run telemetry / `reviewer_report.sh` |
 | Redundancy — coverage overlap | — | PRs reviewed by ≥2 bots (see scorecard) | `reviewer_report.sh` "Coverage overlap" |
 | Noise — no-action comment share | — | **~12%** (all-comments historical estimate — phrase-scan over all bots, **not** a first-party marker count; see denominator reconciliation note and Correction 2026-08-02) | `reviewer_report.sh` "Agent comment noise" |
+| Noise — pr-review cancelled-run share | — | **~49%** cancelled (2026-08-02 3-hour observation; see below) | `pr_review_health.sh` "Run-outcome mix by triggering event" |
+
+### pr-review run-outcome mix — 2026-08-02 starting observation (#1422)
+
+The starting observation recorded by issue #1422, over a **3-hour window on 2026-08-02** (the
+epic #1402 PR traffic on `pr-review-trigger.yml`). This is the dated "before" the SHA-keyed
+concurrency change (#1422) and the trigger-narrowing coupled to #1408 are measured against. The
+after-run source is the `scripts/pr_review_health.sh` **"Run-outcome mix by triggering event"**
+table (pure aggregation in `scripts/lib/pr-review-outcomes.sh`), which makes this a tracked number
+on the existing daily report — no new cron.
+
+| Conclusion | Count |
+|---|---:|
+| cancelled | **49** |
+| success | 34 |
+| skipped | 17 |
+
+Cancellation rate ≈ **49%** (49 / 100), roughly the magnitude of the ~34% in-flight cancel rate
+that issue #534 addressed. Cancellations by triggering event in the same window:
+
+| Event | Cancelled |
+|---|---:|
+| `pull_request_review` | 21 |
+| `repository_dispatch` | 17 |
+| `pull_request` | 5 |
+| `check_suite` | 5 |
+| `workflow_dispatch` | 1 |
+
+Mechanism and the coverage guarantee behind the fix:
+[`docs/pr-review-agent/concurrency-and-coverage.md`](./pr-review-agent/concurrency-and-coverage.md).
 
 ### Noise metric — raw measurement details
 

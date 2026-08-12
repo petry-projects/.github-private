@@ -14,6 +14,11 @@
 
 set -euo pipefail
 
+# Pure by-event outcome-mix helpers (#1422). Sourced so the cancellation-rate
+# breakdown is unit-tested (tests/pr_review_outcomes.bats) rather than inlined.
+# shellcheck source=scripts/lib/pr-review-outcomes.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/pr-review-outcomes.sh"
+
 LOOKBACK_DAYS="${LOOKBACK_DAYS:-1}"
 WORKFLOW_REPO="${AGENT_REPO:-petry-projects/.github-private}"
 WORKFLOW_FILE="pr-review-trigger.yml"
@@ -56,6 +61,7 @@ runs_json=$(gh api \
     run_number: .run_number,
     status: .status,
     conclusion: .conclusion,
+    event: .event,
     created_at: .created_at,
     html_url: .html_url,
     duration_s: ((.updated_at | fromdate) - (.created_at | fromdate))
@@ -176,9 +182,15 @@ workflow_source=$(gh api "repos/${WORKFLOW_REPO}/contents/.github/workflows/${WO
   printf '| `%s` | %s | %s | %s | %s | %s |\n' \
     "$WORKFLOW_FILE" "$dur_n" \
     "$(fmt_dur "$dur_min")" "$(fmt_dur "$dur_p50")" "$(fmt_dur "$dur_p95")" "$(fmt_dur "$dur_max")"
+  printf '\n'
+  # Run-outcome mix by triggering event (#1422). Deterministic — same truncation
+  # guarantee as the percentiles above: written before the model-generated body.
+  pr_review_render_outcome_mix "$runs_json"
 } > "$REPORT_FILE"
 
 echo "Duration percentiles — p50 $(fmt_dur "$dur_p50") / p95 $(fmt_dur "$dur_p95") across $dur_n run(s)"
+echo "Outcome mix (by event):"
+pr_review_outcomes_by_event "$runs_json" | sed 's/^/  /'
 
 echo "Invoking Claude for log analysis..."
 # Claude writes errors to stdout (not stderr), so they'd silently land in
