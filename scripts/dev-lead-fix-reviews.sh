@@ -10,6 +10,7 @@ source "$(dirname "$0")/lib/auto-merge.sh"
 source "$(dirname "$0")/lib/git-push-guard.sh"
 source "$(dirname "$0")/lib/pr-automation-budget.sh"
 source "$(dirname "$0")/lib/maintainer-review-thread-gate.sh"
+source "$(dirname "$0")/lib/conflict-integrity.sh"
 
 INTENT_TYPE="${INTENT_TYPE:-fix-reviews}"
 PR_NUMBER="${PR_NUMBER:-}"
@@ -24,6 +25,7 @@ PROMPTS_DIR="$(resolve_abs "$PROMPTS_DIR")"
 export PROMPTS_DIR
 
 REVIEWS_MARKER_PREFIX="<!-- dev-lead-fix-reviews pr="
+INTEGRITY_MARKER_PREFIX="<!-- dev-lead-conflict-integrity pr="
 
 if [ -z "$PR_NUMBER" ] && [ "$INTENT_TYPE" != "rebase" ]; then
   echo "::error::PR_NUMBER is required"
@@ -204,6 +206,77 @@ ${fence}
 </details>"
   fi
   post_reviews_terminal "$intent" "no-changes" "$msg"
+}
+
+# post_integrity_warning: posts a single advisory PR comment when the
+# post-resolution integrity check finds duplicate top-level declarations the
+# resolution introduced. Signal-only (#1482 AC #4) — it never blocks, reverts,
+# or changes the caller's exit code; a maintainer decides what to do. The
+# marker keeps it idempotent so a re-dispatched rebase does not stack comments.
+post_integrity_warning() {
+  local report="$1"
+  local marker="${INTEGRITY_MARKER_PREFIX}${PR_NUMBER} -->"
+  local body="${marker}
+> [!WARNING]
+> **Post-conflict-resolution integrity check flagged this resolution.**
+> The automated rebase introduced **duplicate top-level declarations** — the
+> #1449 corruption pattern, where a botched merge silently doubled functions and
+> the damage was only found hours later by an unrelated failing test. This is
+> **advisory**: the resolution is not blocked or reverted. Please verify the
+> file(s) below before trusting this branch.
+
+${report}
+_Detected by \`scripts/lib/conflict-integrity.sh\` (#1482). If this repetition is intentional, disregard._"
+
+  if [ "$DEV_LEAD_DRY_RUN" = "true" ]; then
+    echo "[dry-run] would post conflict-integrity warning for PR ${PR_NUMBER}"
+    echo "$body"
+    return 0
+  fi
+  # Idempotent: skip if an integrity marker for this PR already exists.
+  if gh pr view "$PR_NUMBER" --repo "$REPO" --json comments \
+       --jq '.comments[].body' 2>/dev/null | grep -qF "$marker"; then
+    echo "conflict-integrity marker already present on PR ${PR_NUMBER} — skipping"
+    return 0
+  fi
+  # Best-effort: don't fail the overall rebase if the advisory post fails.
+  gh pr comment "$PR_NUMBER" --repo "$REPO" --body "$body" 2>/dev/null || true
+}
+
+# run_post_resolution_integrity_check: after an automated conflict resolution
+# lands, scan the shell files it touched for duplicate top-level declarations
+# the resolution *introduced* (#1449 corruption class). Parents are the base ref
+# (origin/<base>) and the branch tip before the resolution (<pre_ref>); a symbol
+# whose declaration count exceeds both parents is flagged. Runs on the
+# conflict-resolution path itself (#1482 AC #2) rather than waiting for an
+# unrelated downstream test to trip over the corruption.
+run_post_resolution_integrity_check() {
+  local base_ref="$1" pre_ref="$2"
+  [ -n "$pre_ref" ] || return 0
+
+  local changed
+  changed="$(git diff --name-only "$pre_ref" HEAD -- '*.sh' 2>/dev/null || true)"
+  [ -n "$changed" ] || return 0
+
+  local report="" file findings pa pb
+  while IFS= read -r file; do
+    [ -n "$file" ] || continue
+    [ -f "$file" ] || continue   # deleted by the resolution — nothing to check
+    pa="$(mktemp)"; pb="$(mktemp)"
+    git show "origin/${base_ref}:${file}" >"$pa" 2>/dev/null || : >"$pa"
+    git show "${pre_ref}:${file}" >"$pb" 2>/dev/null || : >"$pb"
+    findings="$(new_duplicate_symbols "$file" "$pa" "$pb")"
+    rm -f "$pa" "$pb"
+    if [ -n "$findings" ]; then
+      report="${report}$(format_integrity_findings "$file" "$findings")
+"
+    fi
+  done <<EOF
+${changed}
+EOF
+
+  [ -n "$report" ] || return 0
+  post_integrity_warning "$report"
 }
 
 # notify_coderabbit_resolve: posts @coderabbitai resolve if coderabbitai[bot]'s
@@ -1235,10 +1308,17 @@ case "$INTENT_TYPE" in
     git fetch origin "$BASE_REF"
     CONFLICTING_FILES=$(detect_conflicting_paths "$BASE_REF")
     export CONFLICTING_FILES
+    # Capture the branch tip *before* the resolution so the integrity check can
+    # use it as one parent (the base ref is the other) when scanning the resolved
+    # tree for introduced duplicate declarations (#1482).
+    PRE_RESOLVE_SHA="$(git rev-parse HEAD 2>/dev/null || true)"
     rc=0
     build_and_run "rebase" || rc=$?
     [ "$rc" -eq 2 ] && handle_rate_limit "rebase"
     if [ "$rc" -eq 0 ]; then
+      # Advisory post-resolution integrity check (#1482): flag, do not block.
+      # `|| true` guarantees a detector fault can never fail a real resolution.
+      run_post_resolution_integrity_check "$BASE_REF" "${PRE_RESOLVE_SHA:-}" || true
       if commit_and_push "rebase"; then
         # Engine left commits/changes for the script to push — resolution applied.
         post_reviews_terminal "rebase" "applied" "Rebase completed and pushed."
