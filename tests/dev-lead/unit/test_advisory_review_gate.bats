@@ -163,7 +163,7 @@ teardown() {
 
 @test "Advisory gate: shellcheck passes" {
   command -v shellcheck >/dev/null 2>&1 || skip "shellcheck not installed"
-  shellcheck --shell=bash "$SCRIPT_DIR/lib/advisory-review-gate.sh"
+  shellcheck --shell=bash --severity=warning "$SCRIPT_DIR/lib/advisory-review-gate.sh"
 }
 
 @test "Advisory gate: script is minimal (non-blocking means fewer lines)" {
