@@ -112,7 +112,7 @@ teardown() {
   # Same external check, but started ~2h ago → older than the 30-min default,
   # so ci_pending_age_exceeded is true and the ci-pending skip is bounded out.
   local old
-  old=$(date -u -d "-2 hours" +%Y-%m-%dT%H:%M:%SZ)
+  old=$(date -u -d "2 hours ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-2H +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)
   cat > "$TEST_DIR/snapshot.json" <<EOF
 {
   "headRefOid": "$FIXED_SHA",
@@ -140,7 +140,7 @@ EOF
 
 @test "review-one-pr: stuck-pending escalation comment does not recommend a re-mention" {
   local old
-  old=$(date -u -d "-2 hours" +%Y-%m-%dT%H:%M:%SZ)
+  old=$(date -u -d "2 hours ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-2H +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)
   cat > "$TEST_DIR/snapshot.json" <<EOF
 {
   "headRefOid": "$FIXED_SHA",
@@ -157,7 +157,8 @@ EOF
   run bash "$REVIEW_SCRIPT" "$PR_URL"
   cat "$GH_LOG" >&2
   # AC #5: no re-mention advice that would re-arm dev-lead.
-  ! grep -qi 're-mention' "$GH_LOG"
+  run grep -qi 're-mention' "$GH_LOG"
+  [ "$status" -eq 1 ]
 }
 
 # ---------------------------------------------------------------------------
@@ -179,6 +180,8 @@ EOF
   # The ack marker is posted…
   grep -q 'ci-pending-ack' "$GH_LOG"
   # …but it must not tell anyone to re-mention the bot (the self-inflicted loop).
-  ! grep -qi 're-mention' "$GH_LOG"
-  ! grep -q 'trigger a fresh review' "$GH_LOG"
+  run grep -qi 're-mention' "$GH_LOG"
+  [ "$status" -eq 1 ]
+  run grep -q 'trigger a fresh review' "$GH_LOG"
+  [ "$status" -eq 1 ]
 }

@@ -108,14 +108,18 @@ _ci_status_agent_roles_json() {
   fi
   local dir="${CI_STATUS_CONTRACTS_DIR:-$_CI_STATUS_LIB_DIR/../../interaction-contracts}"
   local roles_json="[]"
-  if [ -d "$dir" ]; then
-    roles_json=$(
-      grep -hE '^role:[[:space:]]' "$dir"/*.yml 2>/dev/null \
-        | sed -E 's/^role:[[:space:]]*//; s/[[:space:]]+$//' \
-        | jq -R 'select(length > 0)' 2>/dev/null \
-        | jq -s 'unique' 2>/dev/null
-    ) || roles_json="[]"
-    [ -n "$roles_json" ] || roles_json="[]"
+  if [ -n "$dir" ] && [ -d "$dir" ]; then
+    local files
+    files=("$dir"/*.yml)
+    if [ -e "${files[0]}" ]; then
+      roles_json=$(
+        grep -hE '^role:[[:space:]]' "${files[@]}" 2>/dev/null \
+          | sed -E 's/^role:[[:space:]]*//; s/[[:space:]]+$//' \
+          | jq -R 'select(length > 0)' 2>/dev/null \
+          | jq -s 'unique' 2>/dev/null
+      ) || roles_json="[]"
+      [ -n "$roles_json" ] || roles_json="[]"
+    fi
   fi
   printf '%s' "$roles_json"
 }
@@ -178,7 +182,7 @@ ci_pending_age_exceeded() {
   local agent_roles now_arg
   agent_roles="$(_ci_status_agent_roles_json)"
   case "$max_age" in ''|*[!0-9]*) max_age=1800 ;; esac
-  if [ -n "$now_epoch" ] && printf '%s' "$now_epoch" | grep -qE '^[0-9]+$'; then
+  if [[ -n "$now_epoch" && "$now_epoch" =~ ^[0-9]+$ ]]; then
     now_arg="$now_epoch"
   else
     now_arg="null"

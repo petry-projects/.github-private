@@ -335,7 +335,7 @@ rollup() {
 @test "ci_pending_age_exceeded: pending check older than max age → true" {
   local now old r
   now=2000000000
-  old=$(date -u -d @1000000000 +%Y-%m-%dT%H:%M:%SZ)
+  old="2001-09-09T01:46:40Z"
   r=$(rollup "$(check_run_started "Build" "IN_PROGRESS" "null" "$old")")
   run ci_pending_age_exceeded "$r" 1800 "$now"
   [ "$output" = "true" ]
@@ -344,7 +344,7 @@ rollup() {
 @test "ci_pending_age_exceeded: recently-started pending check → false" {
   local now recent r
   now=2000000000
-  recent=$(date -u -d @1999999400 +%Y-%m-%dT%H:%M:%SZ)
+  recent="2033-05-18T03:23:20Z"
   r=$(rollup "$(check_run_started "Build" "IN_PROGRESS" "null" "$recent")")
   run ci_pending_age_exceeded "$r" 1800 "$now"
   [ "$output" = "false" ]
@@ -367,8 +367,8 @@ rollup() {
 @test "ci_pending_age_exceeded: one old + one recent pending → false (not all stuck)" {
   local now old recent r
   now=2000000000
-  old=$(date -u -d @1000000000 +%Y-%m-%dT%H:%M:%SZ)
-  recent=$(date -u -d @1999999400 +%Y-%m-%dT%H:%M:%SZ)
+  old="2001-09-09T01:46:40Z"
+  recent="2033-05-18T03:23:20Z"
   r=$(rollup \
     "$(check_run_started "Old" "IN_PROGRESS" "null" "$old")" \
     "$(check_run_started "Recent" "IN_PROGRESS" "null" "$recent")")
@@ -381,7 +381,7 @@ rollup() {
   # cannot itself trip the external-pending timeout.
   local now old r
   now=2000000000
-  old=$(date -u -d @1000000000 +%Y-%m-%dT%H:%M:%SZ)
+  old="2001-09-09T01:46:40Z"
   r=$(rollup "$(check_run_started "dev-lead / dispatch" "IN_PROGRESS" "null" "$old")")
   run ci_pending_age_exceeded "$r" 1800 "$now"
   [ "$output" = "false" ]
