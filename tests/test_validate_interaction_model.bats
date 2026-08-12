@@ -67,7 +67,7 @@ setup() {
 
 @test "imv_on_has_schedule is false for an event-only workflow" {
   run imv_on_has_schedule "$FIXTURES/pass/.github/workflows/alpha.yml"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
 }
 
 @test "imv_on_event_set lists the webhook events, excluding dispatch/call" {

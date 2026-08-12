@@ -83,7 +83,7 @@ imv_on_signals() {
     /^on:[[:space:]]*\[/ {
       s=$0; sub(/^on:[[:space:]]*\[/,"",s); sub(/\].*/,"",s);
       n=split(s,a,",");
-      for (i=1;i<=n;i++) { gsub(/[[:space:]"]/,"",a[i]);
+      for (i=1;i<=n;i++) { gsub(/[[:space:]"\\047]/,"",a[i]);
         if (a[i]=="schedule") print "SCHEDULE";
         else if (a[i]!="" && a[i]!="workflow_dispatch" && a[i]!="workflow_call") print "EVENT " a[i] }
       next
@@ -110,7 +110,7 @@ imv_on_signals() {
       if (topkey=="repository_dispatch" && $0 ~ /types:[[:space:]]*\[/) {
         s=$0; sub(/.*\[/,"",s); sub(/\].*/,"",s);
         n=split(s,a,",");
-        for (i=1;i<=n;i++) { gsub(/[[:space:]"]/,"",a[i]); if (a[i]!="") print "EVENT repository_dispatch:" a[i] }
+        for (i=1;i<=n;i++) { gsub(/[[:space:]"\\047]/,"",a[i]); if (a[i]!="") print "EVENT repository_dispatch:" a[i] }
         next
       }
     }
@@ -364,15 +364,14 @@ imv_v_contracts() {
 # GITHUB_TOKEN-authored suppressed events (push, …) never trigger a downstream
 # workflow (§5); such a chain must cross the boundary via a sanctioned bridge.
 imv_v_boundary() {
-  local root="$1" c role subs_file
-  subs_file="$(mktemp)"
+  local root="$1" c role ev emit sub_role sub_ev subs=""
   # Collect `role<TAB>bare-event` subscription pairs across all contracts.
   while IFS= read -r c; do
     [ -n "$c" ] || continue
     role="$(imv_c_role "$c")"
     while IFS= read -r ev; do
       case "$ev" in ""|*:*) continue ;; esac   # skip empties and prefixed (bridge) events
-      printf '%s\t%s\n' "$role" "$ev" >> "$subs_file"
+      subs+="${role}"$'\t'"${ev}"$'\n'
     done < <(imv_c_events "$c")
   done < <(imv_contract_files "$root")
 
@@ -382,14 +381,15 @@ imv_v_boundary() {
     while IFS= read -r emit; do
       case "$emit" in ""|*:*) continue ;; esac  # only bare emits (commit, push) can be a raw event
       while IFS=$'\t' read -r sub_role sub_ev; do
+        [ -n "$sub_role" ] || continue
+        [ -n "$sub_ev" ] || continue
         [ "$sub_ev" = "$emit" ] || continue
         [ "$sub_role" != "$role" ] || continue
         printf 'FAIL[e]: role %s emits the suppressed event %q that role %s subscribes to, with no repository_dispatch bridge — a GITHUB_TOKEN-authored %s never triggers a downstream workflow (§5).\n' \
           "$role" "$emit" "$sub_role" "$emit"
-      done < "$subs_file"
+      done <<< "$subs"
     done < <(imv_c_emits "$c")
   done < <(imv_contract_files "$root")
-  rm -f "$subs_file"
 }
 
 # ── main ─────────────────────────────────────────────────────────────────────
