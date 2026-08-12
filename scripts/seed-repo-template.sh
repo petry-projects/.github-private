@@ -183,8 +183,8 @@ _fetch_standard() {
     ""|STANDARDS_DIR) : ;;                 # no explicit ref (local seam / default)
     *) ref_q=(-f "ref=${ref}") ;;          # GET field → URL-encoded ?ref=<ref>
   esac
-  gh api "repos/${STANDARDS_REPO}/contents/${path}" "${ref_q[@]}" --jq '.content' 2>/dev/null \
-    | base64 -d 2>/dev/null
+  gh api --method GET -H "Accept: application/vnd.github.v3.raw" \
+    "repos/${STANDARDS_REPO}/contents/${path}" "${ref_q[@]}" 2>/dev/null
 }
 
 # ── Derive the published channel from the canonical stub (AC #1, #2) ───────────
@@ -509,8 +509,9 @@ _seed_repo() {
   _resolved_standards_sha > /dev/null
   echo "[seed] target repo: ${repo} (stack: ${DEPENDABOT_STACK})"
   echo "[seed] standards ref: ${_STD_REF} (commit ${_STD_SHA:-unknown}, source ${_STD_SRC:-?}) on ${STANDARDS_REPO}"
-  [ "${_STD_SRC:-}" = "head-fallback" ] && \
+  if [ "${_STD_SRC:-}" = "head-fallback" ]; then
     echo "[seed] note: STANDARDS_CHANNEL '${STANDARDS_CHANNEL}' is not published yet — fetching at HEAD commit ${_STD_SHA:-unknown} (#1448 AC #10)."
+  fi
   echo "[seed] workflow stubs: $(printf '%s ' "${WORKFLOW_MANIFEST[@]%%|*}")"
   echo "[seed] baseline files: $(printf '%s ' "${BASELINE_MANIFEST[@]%%|*}")"
 

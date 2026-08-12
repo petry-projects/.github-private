@@ -151,15 +151,19 @@ template_drift_report_header() {
 # pin. Content with no reusable pin (inline stubs, baseline files) passes. Returns
 # 1 and annotates on any legacy pin found; 0 otherwise. Pure: reads args/stdin.
 template_drift_assert_major_scoped() {
-  local content="${1-}" legacy
-  [ -n "$content" ] || content="$(cat)"
+  local content legacy
+  if [ $# -ge 1 ]; then
+    content="$1"
+  else
+    content="$(cat)"
+  fi
   # A reusable pin whose tier is a bare stable|next|ring0|ring1 not preceded by v<MAJOR>-.
   legacy="$(printf '%s\n' "$content" \
     | grep -oE '[A-Za-z0-9._-]+-reusable\.yml@[A-Za-z0-9._-]+/(stable|next|ring0|ring1)([^A-Za-z0-9./-]|$)' \
     || true)"
   if [ -n "$legacy" ]; then
     printf '::error::resolved standards content carries a pre-#1184 legacy non-major-scoped reusable pin (%s) — neither N nor N-1 may reintroduce it (#1448 AC #9).\n' \
-      "$(printf '%s' "$legacy" | head -n1)"
+      "${legacy%%$'\n'*}"
     return 1
   fi
   return 0

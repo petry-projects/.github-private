@@ -179,24 +179,22 @@ setup() {
 }
 
 @test "annotate: an N-1 match is ALIGNED but emits a visible ::notice:: (propagation pending, AC #8)" {
-  tsv="$(mktemp)"
+  tsv="$BATS_TEST_TMPDIR/drift.tsv"
   printf '%s\t%s\t%s\t%s\t%s\n' ".github/workflows/dev-lead.yml" "ALIGNED" "$N1" "$EXPECTED" "N-1" >> "$tsv"
   run template_drift_annotate "$tsv"
   [ "$status" -eq 0 ]                                  # N-1 match still passes
   [[ "$output" == *"::notice"* ]]
   [[ "$output" == *".github/workflows/dev-lead.yml"* ]]
   [[ "$output" == *"N-1"* || "$output" == *"preceding"* || "$output" == *"propagation"* ]]
-  rm -f "$tsv"
 }
 
 @test "annotate: an N match (matched=N) passes with no notice and no error" {
-  tsv="$(mktemp)"
+  tsv="$BATS_TEST_TMPDIR/drift.tsv"
   printf '%s\t%s\t%s\t%s\t%s\n' ".github/CODEOWNERS" "ALIGNED" "$EXPECTED" "$EXPECTED" "N" >> "$tsv"
   run template_drift_annotate "$tsv"
   [ "$status" -eq 0 ]
   [[ "$output" != *"::notice"* ]]
   [[ "$output" != *"::error"* ]]
-  rm -f "$tsv"
 }
 
 # ---------------------------------------------------------------------------
