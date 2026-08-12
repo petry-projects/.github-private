@@ -510,3 +510,43 @@ ROLLUP_PASS_MIXED='[{"name":"build","workflowName":"CI","status":"COMPLETED","co
   [ "$status" -eq 0 ]
   grep -qF -- "-f pr_url=$(url_for 1414)" "$GH_LOG"
 }
+
+# ───────────────────────────────────────────────────────────────────────────
+# Rate-limit retry + scheduled narrowing (#1408 + #711 interaction)
+#
+# When the scheduled sweep encounters a PR with an elapsed rate-limit marker it
+# must still apply the un-eventable narrowing before dispatching: an eventable-only
+# PR should be skipped (the workflow_run fast path covers it once the rate limit
+# clears), while a PR with any un-eventable check must be re-dispatched.
+# ───────────────────────────────────────────────────────────────────────────
+
+@test "scheduled path: rate-limited marker (elapsed) with eventable-only rollup is NOT dispatched (#1408+#711)" {
+  write_pr 1415 "REVIEW_REQUIRED" "$ROLLUP_PASS_EVENTABLE" "rl1415" "[]" "$(rl_comment rl1415 "$PAST_RESET")"
+  url_for 1415 > "$SWEEP_PRS_FILE"
+  export GITHUB_EVENT_NAME=schedule
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ ! -s "$GH_LOG" ]
+  [[ "$output" == *"un-eventable-only"* ]]
+}
+
+@test "scheduled path: rate-limited marker (elapsed) with un-eventable rollup IS dispatched" {
+  write_pr 1416 "REVIEW_REQUIRED" "$ROLLUP_PASS_UNEVENTABLE" "rl1416" "[]" "$(rl_comment rl1416 "$PAST_RESET")"
+  url_for 1416 > "$SWEEP_PRS_FILE"
+  export GITHUB_EVENT_NAME=schedule
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  grep -qF -- "-f pr_url=$(url_for 1416)" "$GH_LOG"
+}
+
+@test "non-scheduled path: rate-limited retry with eventable-only rollup still dispatches (narrowing is schedule-only)" {
+  write_pr 1417 "REVIEW_REQUIRED" "$ROLLUP_PASS_EVENTABLE" "rl1417" "[]" "$(rl_comment rl1417 "$PAST_RESET")"
+  url_for 1417 > "$SWEEP_PRS_FILE"
+  # No GITHUB_EVENT_NAME → not the scheduled backstop → narrowing must not apply.
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  grep -qF -- "-f pr_url=$(url_for 1417)" "$GH_LOG"
+}

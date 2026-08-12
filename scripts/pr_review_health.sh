@@ -102,14 +102,18 @@ sweep_runs_meta=$(gh api \
 
 sweep_telemetry='[]'
 sweep_fetched=0
+total_sweep_ticks=$(jq 'length' <<< "$sweep_runs_meta" 2>/dev/null || echo 0)
 while IFS= read -r sweep_id; do
   [ -n "$sweep_id" ] || continue
   if [ "$sweep_fetched" -ge "$SWEEP_MAX_LOG_FETCH" ]; then
-    echo "::warning::sweep-hit-rate: reached SWEEP_MAX_LOG_FETCH=${SWEEP_MAX_LOG_FETCH}; omitting remaining ticks from the metric"
+    echo "::warning::sweep-hit-rate: reached SWEEP_MAX_LOG_FETCH=${SWEEP_MAX_LOG_FETCH}; omitting remaining ticks from the metric (partial)"
     break
   fi
   sweep_fetched=$((sweep_fetched + 1))
-  sweep_log=$(gh run view "$sweep_id" --repo "$WORKFLOW_REPO" --log 2>/dev/null || true)
+  if ! sweep_log=$(gh run view "$sweep_id" --repo "$WORKFLOW_REPO" --log 2>/dev/null); then
+    echo "::warning::sweep-hit-rate: could not fetch log for run $sweep_id; skipping tick from metric"
+    continue
+  fi
   dispatched=$(pr_review_sweep_dispatched_from_log "$sweep_log")
   sweep_telemetry=$(jq -c --argjson d "${dispatched:-0}" \
     '. + [{event: "schedule", dispatched: $d}]' <<< "$sweep_telemetry")
@@ -237,7 +241,7 @@ workflow_source=$(gh api "repos/${WORKFLOW_REPO}/contents/.github/workflows/${WO
   # Sweep hit-rate (#1408). Deterministic — how often the scheduled backstop
   # actually re-reviewed a PR the event fast path did not cover. Same truncation
   # guarantee: written before the model-generated body.
-  pr_review_render_sweep_hit_rate "$sweep_telemetry"
+  pr_review_render_sweep_hit_rate "$sweep_telemetry" "$total_sweep_ticks"
 } > "$REPORT_FILE"
 
 echo "Duration percentiles — p50 $(fmt_dur "$dur_p50") / p95 $(fmt_dur "$dur_p95") across $dur_n run(s)"
@@ -245,6 +249,9 @@ echo "Outcome mix (by event):"
 pr_review_outcomes_by_event "$runs_json" | sed 's/^/  /'
 IFS=$'\t' read -r sweep_ticks sweep_hits sweep_rate < <(pr_review_sweep_hit_rate "$sweep_telemetry")
 echo "Sweep hit-rate: ${sweep_hits}/${sweep_ticks} scheduled tick(s) re-dispatched — ${sweep_rate}"
+if [ "${total_sweep_ticks:-0}" -gt 0 ] && [ "$sweep_ticks" -lt "$total_sweep_ticks" ]; then
+  echo "  (partial: ${sweep_ticks} of ${total_sweep_ticks} ticks measured — cap or fetch errors omitted the rest)"
+fi
 
 echo "Invoking Claude for log analysis..."
 # Claude writes errors to stdout (not stderr), so they'd silently land in

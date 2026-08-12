@@ -232,6 +232,13 @@ while IFS= read -r pr_url; do
     # Dispatch once the reset has elapsed; an unparseable reset fails open to a
     # retry so a malformed marker can never strand the PR indefinitely.
     if [ -z "$reset_epoch" ] || [ "$now_epoch" -ge "$reset_epoch" ]; then
+      if [ "$SCHEDULED_SWEEP" = "true" ]; then
+        eventability=$(classify_rollup_eventability "$(jq '.statusCheckRollup' <<< "$snapshot")")
+        if [ "$eventability" = "eventable-only" ]; then
+          echo "  skip $pr_url — rate-limited marker elapsed but all checks eventable; scheduled sweep is un-eventable-only (#1408)"
+          continue
+        fi
+      fi
       dispatch_review "$pr_url" "rate-limited (reset $rl_reset elapsed, head ${head_sha:0:8})"
     else
       echo "  defer $pr_url — rate-limited until $rl_reset (head ${head_sha:0:8})"

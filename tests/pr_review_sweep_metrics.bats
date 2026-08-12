@@ -118,3 +118,25 @@ Sweep summary: inspected 12 candidate(s), 3 stuck-green, 2 review(s) dispatched.
   [[ "$output" == *"Sweep hit-rate"* ]]
   [[ "$output" == *"n/a"* ]]
 }
+
+@test "render_sweep_hit_rate: partial label when total_in_window exceeds measured ticks" {
+  # 1 tick in telemetry, 3 total scheduled in window → cap or fetch errors omitted 2.
+  local partial='[{"event":"schedule","dispatched":1}]'
+  run pr_review_render_sweep_hit_rate "$partial" 3
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"partial"* ]]
+  [[ "$output" == *"1 of 3"* ]]
+}
+
+@test "render_sweep_hit_rate: no partial label when total_in_window matches measured ticks" {
+  local partial='[{"event":"schedule","dispatched":1}]'
+  run pr_review_render_sweep_hit_rate "$partial" 1
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"partial"* ]]
+}
+
+@test "render_sweep_hit_rate: no partial label when total_in_window is 0 (not provided)" {
+  run pr_review_render_sweep_hit_rate "$SWEEP_JSON" 0
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"partial"* ]]
+}

@@ -105,9 +105,13 @@ compute_ci_status() {
 # StatusContext or an app CheckRun carrying no workflowName, so no workflow_run
 # ever fires for them and only the timer re-reviews them.
 #
-# A rollup entry is EVENTABLE iff it carries a non-empty workflowName (a GitHub
-# Actions check run in this repo). Everything else — StatusContexts and
-# App/cross-repo CheckRuns with no workflowName — is un-eventable.
+# A rollup entry is EVENTABLE iff it carries a workflowName that matches one of
+# the pr-review-sweep workflow_run trigger workflows (CI, Tests, Holdout Guard,
+# SonarCloud Analysis, Lint). Checks with an absent/empty workflowName —
+# StatusContexts and App/cross-repo CheckRuns — are un-eventable. Checks from
+# workflows not in the trigger list are also treated as un-eventable: the sweep
+# cannot receive a workflow_run for them and so only the scheduled backstop covers
+# those PRs. The list mirrors pr-review-sweep.yml's `workflow_run.workflows:`.
 #
 # Outputs (stdout) one of:
 #   "none"            — no external (non-own) checks at all
@@ -119,7 +123,10 @@ classify_rollup_eventability() {
   local rollup_json="${1:-[]}"
   jq -r "
     $_CI_STATUS_JQ_IS_OWN_CHECK
-    def is_uneventable: (.workflowName // \"\") == \"\";
+    def is_uneventable:
+      (.workflowName // \"\") as \$wf |
+      \$wf == \"\" or
+      ([\"CI\",\"Tests\",\"Holdout Guard\",\"SonarCloud Analysis\",\"Lint\"] | index(\$wf)) == null;
     if (. == null or (type != \"array\")) then \"none\"
     else
       (map(select(is_own_check | not))) as \$ext |

@@ -70,7 +70,7 @@ pr_review_sweep_dispatched_from_log() {
 #   health script into the report BEFORE any model-generated content so
 #   truncation can never discard it (same guarantee as the outcome-mix section).
 pr_review_render_sweep_hit_rate() {
-  local json="${1:-}"
+  local json="${1:-}" total_in_window="${2:-0}"
   [ -n "$json" ] || json='[]'
 
   local ticks hits rate
@@ -89,6 +89,10 @@ pr_review_render_sweep_hit_rate() {
   printf '| Scheduled sweep ticks | %s |\n' "$ticks"
   printf '| Ticks that re-dispatched a review (hits) | %s |\n' "$hits"
   printf '| **Sweep hit-rate** | **%s** |\n' "$rate"
+  if [ "${total_in_window:-0}" -gt 0 ] && [ "$ticks" -lt "$total_in_window" ]; then
+    printf '| _Coverage_ | _%s of %s ticks measured (partial — cap or fetch errors)_ |\n' \
+      "$ticks" "$total_in_window"
+  fi
   printf '\n'
   printf '_Interpretation:_ a **low** rate confirms the timer stays '
   printf '**exception-only** (the event fast path is carrying the load); a '

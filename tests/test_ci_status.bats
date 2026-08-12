@@ -473,6 +473,25 @@ rollup() {
   [ "$output" = "none" ]
 }
 
+@test "classify_rollup_eventability: workflowName NOT in sweep trigger list is un-eventable" {
+  # 'Dependency audit' and 'AgentShield' are not in the workflow_run trigger list;
+  # the sweep never fires for them, so they can only be covered by the cron backstop.
+  local r
+  r=$(rollup "$(check_run_wf "dep-audit" "Dependency audit" "COMPLETED" "SUCCESS")")
+  run classify_rollup_eventability "$r"
+  [ "$output" = "has-uneventable" ]
+}
+
+@test "classify_rollup_eventability: all five trigger workflow names are individually eventable" {
+  # Each name in pr-review-sweep.yml's workflow_run.workflows: list must be eventable.
+  local r
+  for wf in "CI" "Tests" "Holdout Guard" "SonarCloud Analysis" "Lint"; do
+    r=$(rollup "$(check_run_wf "job" "$wf" "COMPLETED" "SUCCESS")")
+    run classify_rollup_eventability "$r"
+    [ "$output" = "eventable-only" ] || { echo "FAIL for workflowName='$wf': got '$output'"; return 1; }
+  done
+}
+
 @test "rollup of only CANCELLED dev-lead orchestration checks → passing (issue #608 repro)" {
   local r
   r=$(rollup \
