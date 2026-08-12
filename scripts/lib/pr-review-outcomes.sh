@@ -63,10 +63,21 @@ pr_review_outcomes_by_event() {
 #   window with no runs must never divide by zero). Internal helper.
 _pr_review_cancel_rate() {
   local cancelled="${1:-0}" total="${2:-0}"
-  if [ "$total" -le 0 ] 2>/dev/null; then
+  case "${total#-}" in
+    ''|*[!0-9]*)
+      printf 'n/a'
+      return 0
+      ;;
+  esac
+  if [ "$total" -le 0 ]; then
     printf 'n/a'
     return 0
   fi
+  case "${cancelled#-}" in
+    ''|*[!0-9]*)
+      cancelled=0
+      ;;
+  esac
   printf '%d%%' "$(( cancelled * 100 / total ))"
 }
 

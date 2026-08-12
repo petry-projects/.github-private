@@ -115,3 +115,37 @@ setup() {
   [[ "$output" == *"Run-outcome mix by triggering event"* ]]
   [[ "$output" == *"n/a"* ]]
 }
+
+# ---------------------------------------------------------------------------
+# _pr_review_cancel_rate — integer validation via case statement
+# ---------------------------------------------------------------------------
+
+@test "_pr_review_cancel_rate: non-numeric total returns n/a without crashing" {
+  run _pr_review_cancel_rate 5 "abc"
+  [ "$status" -eq 0 ]
+  [ "$output" = "n/a" ]
+}
+
+@test "_pr_review_cancel_rate: empty total returns n/a without crashing" {
+  run _pr_review_cancel_rate 5 ""
+  [ "$status" -eq 0 ]
+  [ "$output" = "n/a" ]
+}
+
+@test "_pr_review_cancel_rate: non-numeric cancelled is treated as 0" {
+  run _pr_review_cancel_rate "abc" 10
+  [ "$status" -eq 0 ]
+  [ "$output" = "0%" ]
+}
+
+@test "_pr_review_cancel_rate: valid integers produce correct percentage" {
+  run _pr_review_cancel_rate 4 10
+  [ "$status" -eq 0 ]
+  [ "$output" = "40%" ]
+}
+
+@test "_pr_review_cancel_rate: zero total returns n/a" {
+  run _pr_review_cancel_rate 0 0
+  [ "$status" -eq 0 ]
+  [ "$output" = "n/a" ]
+}
