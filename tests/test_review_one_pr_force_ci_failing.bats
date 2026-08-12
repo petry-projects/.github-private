@@ -15,11 +15,14 @@ setup() {
   export TEST_DIR="$BATS_TEST_TMPDIR"
   mkdir -p "$TEST_DIR/bin"; cd "$TEST_DIR"
   # A single external check FAILED -> compute_ci_status classifies "failing".
+  # Uses a genuine external check name: a first-party agent's own check (e.g.
+  # "dev-lead / dispatch") is now filtered from the CI gate (#1427), so it would
+  # read green — the break-glass path under test only triggers on real failing CI.
   cat > "$TEST_DIR/snapshot.json" <<EOF
 {
   "headRefOid": "$SHA",
   "statusCheckRollup": [
-    { "name": "dev-lead / dispatch", "status": "COMPLETED", "conclusion": "FAILURE" }
+    { "name": "CI / build", "status": "COMPLETED", "conclusion": "FAILURE" }
   ],
   "reviewDecision": "",
   "reviews": [],
