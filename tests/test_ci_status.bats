@@ -38,6 +38,20 @@ check_run_wf() {
   fi
 }
 
+# check_run_started <name> <status> <conclusion|null> <startedAt>
+# Models a CheckRun that also carries a startedAt timestamp (as the real rollup
+# does) — used by the ci_pending_age_exceeded bounded-deferral tests (#1427).
+check_run_started() {
+  local name="$1" status="$2" conclusion="$3" started="$4"
+  if [ "$conclusion" = "null" ]; then
+    jq -n --arg name "$name" --arg status "$status" --arg started "$started" \
+      '{name: $name, status: $status, conclusion: null, startedAt: $started}'
+  else
+    jq -n --arg name "$name" --arg status "$status" --arg conclusion "$conclusion" --arg started "$started" \
+      '{name: $name, status: $status, conclusion: $conclusion, startedAt: $started}'
+  fi
+}
+
 # status_ctx <context> <state>
 # Models a commit StatusContext in the statusCheckRollup array.
 status_ctx() {
@@ -113,8 +127,10 @@ rollup() {
 # workflow name, per gh/cli#9091), so the PR Review Agent's own job appears as
 # a bare name: "review". This is filtered to prevent the cascade from blocking
 # on its own pending check run.
-# Dev-Lead bare job names ("dispatch", "ci-relay") are NOT filtered because
-# Dev-Lead can commit back to the PR branch.
+# Dev-Lead BARE job names ("dispatch", "ci-relay") remain NOT filtered: only the
+# nested "<role> / <job>" form (e.g. "dev-lead / dispatch", the real rollup shape)
+# is filtered as an agent check (#1427), so a genuine external check that merely
+# happens to be named "dispatch" is never swallowed.
 # ---------------------------------------------------------------------------
 
 @test "bare PR Review Agent check 'review' (IN_PROGRESS) is filtered → passing" {
@@ -219,31 +235,156 @@ rollup() {
 }
 
 # ---------------------------------------------------------------------------
-# Dev-lead and generic workflow/job-suffix checks are NOT filtered
-# Dev-lead can commit back to the PR branch, so it must remain a real CI gate.
-# A generic 'workflow / review' suffix (e.g., 'Build / review') must also block
-# so external required checks are never silently bypassed.
+# Other first-party agents' own check runs ARE filtered (issue #1427, AC #1/#2)
+# A writing agent's own orchestration check (e.g. 'dev-lead / dispatch') must not
+# gate the reviewing agent. The excluded roles are derived from the declared
+# interaction contracts (interaction-contracts/*.yml, #1404) — the same registry
+# that names each role's workflows — not a second hand-maintained name list.
+# The nested "<role> / <job>" form is what the real rollup carries (caller-job /
+# reusable-job); a generic external 'workflow / review' suffix (e.g. 'Build /
+# review') is NOT a role slug and must still block so external required checks are
+# never silently bypassed.
 # ---------------------------------------------------------------------------
 
-@test "'dev-lead / dispatch' (IN_PROGRESS) is NOT filtered → pending" {
+@test "'dev-lead / dispatch' (IN_PROGRESS) is filtered → passing (#1427)" {
   local r
   r=$(rollup "$(check_run "dev-lead / dispatch" "IN_PROGRESS")")
   run compute_ci_status "$r"
-  [ "$output" = "pending" ]
+  [ "$output" = "passing" ]
 }
 
-@test "'dev-lead / ci-relay' (IN_PROGRESS) is NOT filtered → pending" {
+@test "'dev-lead / ci-relay' (IN_PROGRESS) is filtered → passing (#1427)" {
   local r
   r=$(rollup "$(check_run "dev-lead / ci-relay" "IN_PROGRESS")")
   run compute_ci_status "$r"
-  [ "$output" = "pending" ]
+  [ "$output" = "passing" ]
 }
 
+# #1420 fixture: a lone in-progress 'dev-lead / dispatch' alongside an otherwise
+# fully-green PR must not defer the review.
+@test "#1420 fixture: dev-lead/dispatch IN_PROGRESS + all external green → passing" {
+  local r
+  r=$(rollup \
+    "$(check_run "dev-lead / dispatch" "IN_PROGRESS")" \
+    "$(check_run "bats" "COMPLETED" "SUCCESS")" \
+    "$(check_run "unit" "COMPLETED" "SUCCESS")" \
+    "$(check_run "unit-tests" "COMPLETED" "SUCCESS")")
+  run compute_ci_status "$r"
+  [ "$output" = "passing" ]
+}
+
+# A genuine external check literally named '<role> / *' is still filtered only for
+# a real declared role. 'Build / review' does not start with any role slug, so it
+# still blocks.
 @test "'Build / review' (IN_PROGRESS) is NOT filtered → pending" {
   local r
   r=$(rollup "$(check_run "Build / review" "IN_PROGRESS")")
   run compute_ci_status "$r"
   [ "$output" = "pending" ]
+}
+
+# A genuinely-pending external required check must still defer (AC #4/#6): the
+# agent-check filter and the terminal-conclusion rule must not swallow it.
+@test "genuinely-pending external required check still → pending (regression)" {
+  local r
+  r=$(rollup \
+    "$(check_run "dev-lead / dispatch" "IN_PROGRESS")" \
+    "$(check_run "required-ci" "IN_PROGRESS")")
+  run compute_ci_status "$r"
+  [ "$output" = "pending" ]
+}
+
+# ---------------------------------------------------------------------------
+# Zombie check: IN_PROGRESS carrying a terminal conclusion is complete (#1427,
+# AC #3). Observed on PR #1426: 'Validate AW specs, docs, and workflows' reported
+# status IN_PROGRESS while carrying conclusion SUCCESS. A conclusion is by
+# definition terminal, so the check is classified by its conclusion, not deferred.
+# ---------------------------------------------------------------------------
+
+@test "zombie check: IN_PROGRESS + conclusion SUCCESS → passing (#1426)" {
+  local r
+  r=$(rollup "$(check_run "Validate AW specs, docs, and workflows" "IN_PROGRESS" "SUCCESS")")
+  run compute_ci_status "$r"
+  [ "$output" = "passing" ]
+}
+
+@test "zombie SUCCESS alongside a genuine external pending → still pending" {
+  local r
+  r=$(rollup \
+    "$(check_run "Validate AW specs" "IN_PROGRESS" "SUCCESS")" \
+    "$(check_run "Build" "IN_PROGRESS")")
+  run compute_ci_status "$r"
+  [ "$output" = "pending" ]
+}
+
+@test "IN_PROGRESS carrying terminal conclusion FAILURE → failing (terminal wins)" {
+  local r
+  r=$(rollup "$(check_run "Flaky" "IN_PROGRESS" "FAILURE")")
+  run compute_ci_status "$r"
+  [ "$output" = "failing" ]
+}
+
+# ---------------------------------------------------------------------------
+# ci_pending_age_exceeded — bounded ci-pending deferral (#1427, AC #3/#4).
+# True only when there is ≥1 external (non-own, non-agent) pending check AND every
+# such check has been pending longer than the configured max age. Unknown age is
+# fail-safe (not exceeded). Callers use it to bound the review DECISION only; the
+# merge gate is enforced independently by the ruleset.
+# ---------------------------------------------------------------------------
+
+@test "ci_pending_age_exceeded: pending check older than max age → true" {
+  local now old r
+  now=2000000000
+  old="2001-09-09T01:46:40Z"
+  r=$(rollup "$(check_run_started "Build" "IN_PROGRESS" "null" "$old")")
+  run ci_pending_age_exceeded "$r" 1800 "$now"
+  [ "$output" = "true" ]
+}
+
+@test "ci_pending_age_exceeded: recently-started pending check → false" {
+  local now recent r
+  now=2000000000
+  recent="2033-05-18T03:23:20Z"
+  r=$(rollup "$(check_run_started "Build" "IN_PROGRESS" "null" "$recent")")
+  run ci_pending_age_exceeded "$r" 1800 "$now"
+  [ "$output" = "false" ]
+}
+
+@test "ci_pending_age_exceeded: no pending checks → false" {
+  local r
+  r=$(rollup "$(check_run "Build" "COMPLETED" "SUCCESS")")
+  run ci_pending_age_exceeded "$r" 1800 2000000000
+  [ "$output" = "false" ]
+}
+
+@test "ci_pending_age_exceeded: pending check with no timestamp → false (fail-safe)" {
+  local r
+  r=$(rollup "$(check_run "Build" "IN_PROGRESS")")
+  run ci_pending_age_exceeded "$r" 1800 2000000000
+  [ "$output" = "false" ]
+}
+
+@test "ci_pending_age_exceeded: one old + one recent pending → false (not all stuck)" {
+  local now old recent r
+  now=2000000000
+  old="2001-09-09T01:46:40Z"
+  recent="2033-05-18T03:23:20Z"
+  r=$(rollup \
+    "$(check_run_started "Old" "IN_PROGRESS" "null" "$old")" \
+    "$(check_run_started "Recent" "IN_PROGRESS" "null" "$recent")")
+  run ci_pending_age_exceeded "$r" 1800 "$now"
+  [ "$output" = "false" ]
+}
+
+@test "ci_pending_age_exceeded: a stuck agent check is ignored → false" {
+  # A stuck 'dev-lead / dispatch' is filtered from the pending set entirely, so it
+  # cannot itself trip the external-pending timeout.
+  local now old r
+  now=2000000000
+  old="2001-09-09T01:46:40Z"
+  r=$(rollup "$(check_run_started "dev-lead / dispatch" "IN_PROGRESS" "null" "$old")")
+  run ci_pending_age_exceeded "$r" 1800 "$now"
+  [ "$output" = "false" ]
 }
 
 # ---------------------------------------------------------------------------
