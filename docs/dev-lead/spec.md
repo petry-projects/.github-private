@@ -165,14 +165,28 @@ Trust gates are evaluated in `dev-lead-intent.sh` before any other logic. An eve
 
 ### 5.2 Trusted bot list
 
-Configurable via `vars.TRUSTED_BOTS` (comma-separated). Default:
+Configurable via `vars.TRUSTED_BOTS` (comma-separated). When unset, the default is
+**derived from the reviewer-source registry** (`scripts/lib/reviewer-sources.tsv`) —
+the single source of truth the trust check, advisory gate, and scorecard all project
+from, so the list can never drift again (issue #1425). Each registry login with
+`dev_lead_trusted=yes` contributes its `[bot]`-suffixed login:
 
 ```
 copilot-pull-request-reviewer[bot]
 gemini-code-assist[bot]
+chatgpt-codex-connector[bot]
 coderabbitai[bot]
 sonarqubecloud[bot]
+qodo-code-review[bot]
+codeant-ai[bot]
+graphite-app[bot]
 ```
+
+The registry enforces the invariant *(can create a review thread) ⇒ (dev-lead may
+act on it)*: any source that posts inline review comments (creating a blocking
+review thread) **must** be trusted, or its thread becomes an unclearable merge block
+(the 2026-08-02 graphite-app deadlock). `tests/test_reviewer_sources.bats` asserts
+this in CI.
 
 The `ci-relay` job separately gates on the check name not starting with `dev-lead /` to prevent recursive self-triggering.
 

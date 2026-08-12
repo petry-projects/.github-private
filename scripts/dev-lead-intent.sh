@@ -138,7 +138,20 @@ is_dev_lead_authored() {
 EVENT_NAME="${GITHUB_EVENT_NAME:-}"
 EVENT_PATH="${GITHUB_EVENT_PATH:-}"
 BOT_USER="${BOT_USER:-donpetry-bot}"
-TRUSTED_BOTS="${TRUSTED_BOTS:-copilot-pull-request-reviewer[bot],gemini-code-assist[bot],sonarqubecloud[bot],coderabbitai[bot],chatgpt-codex-connector[bot]}"
+
+# TRUSTED_BOTS: the webhook-facing set of review bots dev-lead may act on. When
+# unset/empty, derive it from the reviewer-source registry (scripts/lib/reviewer-
+# sources.tsv) so this list can never drift from the gate/scorecard again — the
+# #1425 fix that unblocks graphite-app/qodo-code-review/codeant-ai threads. The
+# literal is a fallback for when the registry helper cannot be sourced.
+if [ -z "${TRUSTED_BOTS:-}" ]; then
+  _reg_sh="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/reviewer-sources.sh"
+  # shellcheck source=scripts/lib/reviewer-sources.sh
+  if [ -f "$_reg_sh" ] && source "$_reg_sh" 2>/dev/null; then
+    TRUSTED_BOTS="$(reviewer_sources_trusted_bots_csv 2>/dev/null || true)"
+  fi
+fi
+TRUSTED_BOTS="${TRUSTED_BOTS:-copilot-pull-request-reviewer[bot],gemini-code-assist[bot],sonarqubecloud[bot],coderabbitai[bot],chatgpt-codex-connector[bot],qodo-code-review[bot],codeant-ai[bot],graphite-app[bot]}"
 TRIGGER_PHRASES="${TRIGGER_PHRASES:-@dev-lead}"
 
 if [ -z "$EVENT_NAME" ]; then

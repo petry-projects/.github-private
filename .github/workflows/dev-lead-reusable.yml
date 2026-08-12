@@ -112,7 +112,11 @@ jobs:
       # what caused the donpetry-bot regression (#1316); the manifest is now the
       # sole source of truth. See scripts/lib/resolve-persona-identity.sh.
       BOT_USER: 'don-petry'
-      TRUSTED_BOTS: ${{ vars.TRUSTED_BOTS || 'copilot-pull-request-reviewer[bot],gemini-code-assist[bot],sonarqubecloud[bot],coderabbitai[bot],chatgpt-codex-connector[bot]' }}
+      # Empty by default so dev-lead-intent.sh derives the trusted set from the
+      # reviewer-source registry (scripts/lib/reviewer-sources.tsv), the single
+      # source of truth — no hardcoded list to drift from the gate/scorecard
+      # (#1425). vars.TRUSTED_BOTS still overrides for an emergency pin.
+      TRUSTED_BOTS: ${{ vars.TRUSTED_BOTS || '' }}
       TRIGGER_PHRASES: ${{ vars.TRIGGER_PHRASES || '@dev-lead' }}
       DEV_LEAD_ENGINE: ${{ vars.DEV_LEAD_ENGINE || 'claude' }}
       DEV_LEAD_DRY_RUN: ${{ vars.DEV_LEAD_DRY_RUN || 'false' }}
