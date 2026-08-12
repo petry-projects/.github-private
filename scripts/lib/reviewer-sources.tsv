@@ -1,0 +1,41 @@
+# reviewer-sources.tsv — the single reviewer-source registry (issue #1425).
+#
+# One row per third-party review bot (GitHub App) the org recognizes. This is the
+# source of truth that three consumers agree with, so their lists can never drift:
+#   * dev-lead's trust check   — scripts/dev-lead-intent.sh (TRUSTED_BOTS)
+#   * the advisory approval gate — scripts/lib/advisory-review-gate.sh (ADVISORY_BOTS,
+#                                  RATE_LIMIT_NOTICE_BOTS)
+#   * the reviewer scorecard    — scripts/reviewer_report.sh (REVIEWER_BOTS)
+#
+# Read by scripts/lib/reviewer-sources.sh. Data, not code — register a reviewer by
+# adding a row; tests/test_reviewer_sources.bats asserts the three consumer lists
+# stay projections of this file and enforces the invariant below.
+#
+# THE #1425 INVARIANT — (can create a review thread) ⇒ (dev-lead may act on it):
+#   any row with creates_threads=yes MUST have dev_lead_trusted=yes. A bot that
+#   posts inline review comments creates a review thread, and an unresolved thread
+#   trips required_review_thread_resolution and blocks the merge; if dev-lead is not
+#   permitted to act on it, no automation can clear it (the 2026-08-02 deadlock,
+#   root-caused to graphite-app). A source that only posts a top-level comment
+#   (creates_threads=no) MAY be advisory-only-and-non-blocking (dev_lead_trusted=no)
+#   with the reason recorded in the rationale column.
+#
+# schema_version: 1
+#
+# Columns (tab-separated):
+#   login            — the bot's GraphQL App login (no "[bot]" suffix). dev-lead's
+#                      webhook-facing trusted set appends "[bot]" to each login.
+#   creates_threads  — yes|no: posts inline review comments (→ blocking review thread).
+#   dev_lead_trusted — yes|no: in dev-lead's trusted set (dev-lead may act on it).
+#   advisory_gate    — yes|no: one of the bots the advisory approval gate waits on.
+#   rationale        — why this bot is classified as it is.
+#
+# login	creates_threads	dev_lead_trusted	advisory_gate	rationale
+copilot-pull-request-reviewer	yes	yes	yes	Inline review comments; dev-lead addresses the findings.
+gemini-code-assist	yes	yes	yes	Inline review comments; dev-lead addresses the findings.
+chatgpt-codex-connector	yes	yes	yes	Inline review comments (pull_request_review_comment); dev-lead addresses the findings.
+coderabbitai	yes	yes	no	Inline review comments; tracked by the scorecard and rate-limit detector but not part of the advisory approval-wait set.
+sonarqubecloud	no	yes	yes	Top-level quality-gate comment only — no inline review threads; trusted so dev-lead acts on the comment via the issue-comment path.
+qodo-code-review	yes	yes	yes	Inline review comments (#1355 recognized it for gating/scorecard; trusted for acting per #1425).
+codeant-ai	yes	yes	yes	Inline review comments (#1355 recognized it for gating/scorecard; trusted for acting per #1425).
+graphite-app	yes	yes	yes	Inline review comments; root cause of the 2026-08-02 unclearable-thread deadlock — now trusted so dev-lead can act on its findings (#1425).

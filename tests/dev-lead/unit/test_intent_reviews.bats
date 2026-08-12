@@ -254,6 +254,39 @@ EOF
   [ "$(_get_env INTENT_TYPE)" = "fix-reviews" ]
 }
 
+@test "reviews: pull_request_review_comment graphite inline → fix-reviews (registry-derived default, #1425)" {
+  # Regression guard for the 2026-08-02 deadlock: graphite-app posts inline review
+  # comments (creating a blocking review thread) but was absent from dev-lead's
+  # trusted set, so dev-lead skipped it and the thread was unclearable. With
+  # TRUSTED_BOTS unset the classifier now derives its default from the reviewer
+  # source registry, which trusts graphite-app — so the comment routes to fix-reviews.
+  unset TRUSTED_BOTS
+  local tmp_event="${BATS_TEST_TMPDIR}/event.json"
+  cat > "$tmp_event" <<'EOF'
+{
+  "action": "created",
+  "comment": {
+    "body": "The runbook contradicts itself on lines 57-62.",
+    "author_association": "NONE",
+    "user": { "login": "graphite-app[bot]", "type": "Bot" }
+  },
+  "pull_request": {
+    "number": 1421,
+    "head": { "sha": "deadbee", "ref": "dev-lead/issue-1425", "repo": { "full_name": "petry-projects/.github-private" } }
+  },
+  "repository": { "full_name": "petry-projects/.github-private" },
+  "sender": { "login": "graphite-app[bot]", "type": "Bot" }
+}
+EOF
+  export GITHUB_EVENT_NAME="pull_request_review_comment"
+  export GITHUB_EVENT_PATH="$tmp_event"
+
+  run bash "$INTENT_SCRIPT"
+
+  [ "$status" -eq 0 ]
+  [ "$(_get_env INTENT_TYPE)" = "fix-reviews" ]
+}
+
 @test "reviews: pull_request_review_comment human + @dev-lead → on-mention" {
   export GITHUB_EVENT_NAME="pull_request_review_comment"
   export GITHUB_EVENT_PATH="$FIXTURES_DIR/pr_review_comment_human_trigger.json"
