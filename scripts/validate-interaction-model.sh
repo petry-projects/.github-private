@@ -78,7 +78,7 @@ imv_on_signals() {
   local file="${1:-}"
   [ -n "$file" ] && [ -f "$file" ] || return 0
   awk '
-    BEGIN { inon=0; topkey="" }
+    BEGIN { inon=0; topkey=""; in_rd_types=0; rd_had_types=0 }
     # inline array form: on: [push, pull_request]
     /^on:[[:space:]]*\[/ {
       s=$0; sub(/^on:[[:space:]]*\[/,"",s); sub(/\].*/,"",s);
@@ -97,11 +97,15 @@ imv_on_signals() {
     }
     # block form
     /^on:/ { inon=1; next }
-    inon && /^[A-Za-z_]/ { inon=0 }
+    inon && /^[A-Za-z_]/ {
+      if (topkey=="repository_dispatch" && !rd_had_types) print "EVENT repository_dispatch"
+      inon=0; in_rd_types=0; rd_had_types=0; topkey=""
+    }
     inon {
       if ($0 ~ /^  [A-Za-z_]+:/) {
         key=$0; sub(/^  /,"",key); sub(/:.*/,"",key);
-        topkey=key;
+        if (topkey=="repository_dispatch" && !rd_had_types) print "EVENT repository_dispatch"
+        topkey=key; in_rd_types=0; rd_had_types=0;
         if (key=="schedule") print "SCHEDULE";
         else if (key=="workflow_dispatch" || key=="workflow_call" || key=="repository_dispatch") { }
         else print "EVENT " key;
@@ -111,8 +115,21 @@ imv_on_signals() {
         s=$0; sub(/.*\[/,"",s); sub(/\].*/,"",s);
         n=split(s,a,",");
         for (i=1;i<=n;i++) { gsub(/[[:space:]"\\047]/,"",a[i]); if (a[i]!="") print "EVENT repository_dispatch:" a[i] }
-        next
+        rd_had_types=1; next
       }
+      if (topkey=="repository_dispatch" && $0 ~ /types:[[:space:]]*$/) {
+        in_rd_types=1; rd_had_types=1; next
+      }
+      if (in_rd_types) {
+        if ($0 ~ /^[[:space:]]*-[[:space:]]/) {
+          val=$0; sub(/^[[:space:]]*-[[:space:]]*/,"",val); gsub(/[[:space:]"\\047]/,"",val);
+          if (val!="") print "EVENT repository_dispatch:" val
+          next
+        } else { in_rd_types=0 }
+      }
+    }
+    END {
+      if (inon && topkey=="repository_dispatch" && !rd_had_types) print "EVENT repository_dispatch"
     }
   ' "$file"
 }

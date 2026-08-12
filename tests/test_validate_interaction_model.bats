@@ -88,6 +88,26 @@ setup() {
   [ "$output" = "17 */2 * * *" ]
 }
 
+@test "imv_on_signals emits typed events for block-form repository_dispatch types" {
+  tmp="$(mktemp)"
+  printf 'on:\n  repository_dispatch:\n    types:\n      - foo\n      - bar\njobs: {}\n' > "$tmp"
+  run imv_on_signals "$tmp"
+  rm -f "$tmp"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"EVENT repository_dispatch:foo"* ]]
+  [[ "$output" == *"EVENT repository_dispatch:bar"* ]]
+  [[ "$output" != *"EVENT repository_dispatch"$'\n'* ]]
+}
+
+@test "imv_on_signals emits bare EVENT repository_dispatch for an unfiltered trigger" {
+  tmp="$(mktemp)"
+  printf 'on:\n  repository_dispatch:\npermissions: {}\n' > "$tmp"
+  run imv_on_signals "$tmp"
+  rm -f "$tmp"
+  [ "$status" -eq 0 ]
+  [ "$output" = "EVENT repository_dispatch" ]
+}
+
 # ---------------------------------------------------------------------------
 # §4 classification-table parsing
 # ---------------------------------------------------------------------------
