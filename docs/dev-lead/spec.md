@@ -182,8 +182,8 @@ codeant-ai[bot]
 graphite-app[bot]
 ```
 
-The registry enforces the invariant *(can create a review thread) ⇒ (dev-lead may
-act on it)*: any source that posts inline review comments (creating a blocking
+The registry enforces the invariant _(can create a review thread) ⇒ (dev-lead may
+act on it)_: any source that posts inline review comments (creating a blocking
 review thread) **must** be trusted, or its thread becomes an unclearable merge block
 (the 2026-08-02 graphite-app deadlock). `tests/test_reviewer_sources.bats` asserts
 this in CI.

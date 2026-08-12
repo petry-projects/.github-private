@@ -147,8 +147,13 @@ BOT_USER="${BOT_USER:-donpetry-bot}"
 if [ -z "${TRUSTED_BOTS:-}" ]; then
   _reg_sh="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/reviewer-sources.sh"
   # shellcheck source=scripts/lib/reviewer-sources.sh
-  if [ -f "$_reg_sh" ] && source "$_reg_sh" 2>/dev/null; then
-    TRUSTED_BOTS="$(reviewer_sources_trusted_bots_csv 2>/dev/null || true)"
+  if [ -f "$_reg_sh" ]; then
+    source "$_reg_sh" || { echo "::error::dev-lead-intent: failed to source reviewer-sources registry at $_reg_sh" >&2; exit 1; }
+    TRUSTED_BOTS="$(reviewer_sources_trusted_bots_csv)" || { echo "::error::dev-lead-intent: reviewer_sources_trusted_bots_csv failed — registry may be malformed" >&2; exit 1; }
+    if [ -z "$TRUSTED_BOTS" ]; then
+      echo "::error::dev-lead-intent: reviewer_sources_trusted_bots_csv returned empty — registry has no trusted bots" >&2
+      exit 1
+    fi
   fi
 fi
 TRUSTED_BOTS="${TRUSTED_BOTS:-copilot-pull-request-reviewer[bot],gemini-code-assist[bot],sonarqubecloud[bot],coderabbitai[bot],chatgpt-codex-connector[bot],qodo-code-review[bot],codeant-ai[bot],graphite-app[bot]}"

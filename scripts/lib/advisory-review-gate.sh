@@ -26,18 +26,34 @@
 
 set -euo pipefail
 
-# Define advisory bots we monitor
-# Ordered by typical response time (fastest first)
-# shellcheck disable=SC2034
-declare -Ar ADVISORY_BOTS=(
-  [gemini-code-assist]="Gemini Code Assist (advisory)"
-  [copilot-pull-request-reviewer]="Copilot PR Reviewer (advisory)"
-  [sonarqubecloud]="SonarCloud (advisory)"
-  [chatgpt-codex-connector]="Codex (advisory, newer bot)"
-  [qodo-code-review]="Qodo Merge (advisory)"
-  [codeant-ai]="CodeAnt (advisory)"
-  [graphite-app]="Graphite (advisory)"
-)
+# ── Reviewer-source registry (single source of truth, #1425) ─────────────────
+# Source the registry helper so ADVISORY_BOTS is a projection of
+# reviewer-sources.tsv (advisory_gate=yes rows), not a hardcoded list.
+# Fallback to literal values only when the registry file is absent (stripped
+# test env or very early boot before the lib/ directory exists).
+_gate_reg_sh="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/reviewer-sources.sh"
+if [ -f "$_gate_reg_sh" ]; then
+  # shellcheck source=scripts/lib/reviewer-sources.sh
+  source "$_gate_reg_sh"
+  # shellcheck disable=SC2034
+  declare -A ADVISORY_BOTS=()
+  while IFS= read -r _adv_login; do
+    [ -n "$_adv_login" ] && ADVISORY_BOTS[$_adv_login]="$_adv_login (advisory)"
+  done < <(reviewer_sources_advisory_gate_logins)
+  unset _adv_login
+else
+  # shellcheck disable=SC2034
+  declare -A ADVISORY_BOTS=(
+    [gemini-code-assist]="Gemini Code Assist (advisory)"
+    [copilot-pull-request-reviewer]="Copilot PR Reviewer (advisory)"
+    [sonarqubecloud]="SonarCloud (advisory)"
+    [chatgpt-codex-connector]="Codex (advisory, newer bot)"
+    [qodo-code-review]="Qodo Merge (advisory)"
+    [codeant-ai]="CodeAnt (advisory)"
+    [graphite-app]="Graphite (advisory)"
+  )
+fi
+unset _gate_reg_sh
 
 # Canonical rate-limit / out-of-quota body pattern — the SINGLE source of truth
 # for "this bot is itself rate-limited". Three call sites reuse this one regex so
@@ -184,17 +200,24 @@ format_bot_status() {
 # Bots whose out-of-quota notice should arm the sweep retry. Superset of the
 # gate's ADVISORY_BOTS — adds coderabbitai, which posts an explicit rate-limit
 # comment but is not one of the bots the gate blocks on.
-# shellcheck disable=SC2034
-declare -ar RATE_LIMIT_NOTICE_BOTS=(
-  gemini-code-assist
-  copilot-pull-request-reviewer
-  sonarqubecloud
-  chatgpt-codex-connector
-  coderabbitai
-  qodo-code-review
-  codeant-ai
-  graphite-app
-)
+# Derived from the reviewer-source registry (all logins) when available; falls
+# back to a literal list for stripped test environments.
+if declare -f reviewer_sources_logins >/dev/null 2>&1; then
+  # shellcheck disable=SC2034
+  mapfile -t RATE_LIMIT_NOTICE_BOTS < <(reviewer_sources_logins)
+else
+  # shellcheck disable=SC2034
+  declare -a RATE_LIMIT_NOTICE_BOTS=(
+    gemini-code-assist
+    copilot-pull-request-reviewer
+    sonarqubecloud
+    chatgpt-codex-connector
+    coderabbitai
+    qodo-code-review
+    codeant-ai
+    graphite-app
+  )
+fi
 
 # Case-insensitive phrases that indicate a bot is itself rate-limited / out of
 # quota (not merely discussing rate limiting). Returns the canonical
