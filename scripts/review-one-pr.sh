@@ -159,6 +159,36 @@ if [ "$CI_STATUS" = "failing" ]; then
   fi
 fi
 
+# Bounded ci-pending deferral (issue #1427, AC #3/#4). A genuinely stuck check —
+# one that stays pending indefinitely with no terminal conclusion — must not defer
+# the review forever. If every remaining external pending check has been pending
+# longer than CI_PENDING_MAX_AGE_SEC (default 30 min), proceed on the completed
+# checks rather than skipping. This bounds only the review DECISION: the merge gate
+# is enforced independently by the branch-protection ruleset, which still blocks the
+# merge on any genuinely-pending *required* check, so this can never merge a
+# not-yet-green PR (fail-safe, not fail-open). Own-agent and other first-party agent
+# checks are already excluded by compute_ci_status / ci_pending_age_exceeded.
+if [ "$CI_STATUS" = "pending" ]; then
+  _CI_PENDING_MAX_AGE="${CI_PENDING_MAX_AGE_SEC:-1800}"
+  case "$_CI_PENDING_MAX_AGE" in ''|*[!0-9]*) _CI_PENDING_MAX_AGE=1800 ;; esac
+  if [ "$(ci_pending_age_exceeded "$(jq '.statusCheckRollup' <<< "$PR_SNAPSHOT")" "$_CI_PENDING_MAX_AGE")" = "true" ]; then
+    echo "::warning::ci-pending: external check(s) have been pending longer than ${_CI_PENDING_MAX_AGE}s without completing — proceeding with the review on the completed checks (bounded deferral, #1427). The merge gate still blocks on any genuinely-pending required check at the ruleset."
+    # Escalate once — post a visible, deduped note so a human sees the stuck check.
+    _timeout_marker='<!-- pr-review-agent ci-pending-timeout -->'
+    if [ "${DRY_RUN:-false}" != "true" ] && \
+       ! jq -e --arg m "$_timeout_marker" '(.comments // []) | any((.body // "") | contains($m))' <<< "$PR_SNAPSHOT" >/dev/null 2>&1; then
+      _tmsg=$(printf '%s\n\nSome CI checks have been pending for over %ss without completing, so this review is proceeding on the checks that did complete. This does not merge the PR — the branch-protection rules still require every genuinely-pending required check before merge. No action is needed.\n\n_Posted by the %s PR-review cascade._' \
+        "$_timeout_marker" "$_CI_PENDING_MAX_AGE" "${BOT_USER:-donpetry-bot}")
+      gh pr comment "$PR_URL" --body "$_tmsg" || echo "    warn: could not post ci-pending-timeout comment"
+      unset _tmsg
+    fi
+    unset _timeout_marker
+    CI_STATUS="passing"
+    echo "    ci-pending bounded out (stuck > ${_CI_PENDING_MAX_AGE}s) — proceeding with the review"
+  fi
+  unset _CI_PENDING_MAX_AGE
+fi
+
 # Pending CI gate: for normal runs, skip immediately.
 # For FORCE_REVIEW=true (mention-triggered), poll briefly so transient check
 # churn (caused by the mention burst itself) doesn't silently swallow the run
@@ -215,8 +245,13 @@ if [ "$CI_STATUS" = "pending" ]; then
     if [ "$CI_STATUS" = "pending" ]; then
       echo "    force-review: CI still pending after polling — posting visible comment"
       if [ "${DRY_RUN:-false}" != "true" ]; then
-        _msg=$(printf '<!-- pr-review-agent ci-pending-ack -->\n\nCI checks on this PR are still running. Once they complete, re-mention `@%s` to trigger a fresh review.\n\n_Posted by the %s PR-review cascade._' \
-          "${BOT_USER:-donpetry-bot}" "${BOT_USER:-donpetry-bot}")
+        # AC #5 (#1427): the ack must NOT recommend a re-mention. A re-mention is
+        # an issue_comment that fires dev-lead, whose own "dev-lead / dispatch"
+        # check going IN_PROGRESS is exactly the condition that used to re-arm this
+        # deferral. The PR-review sweep already re-reviews automatically once the
+        # checks complete, so no user action is required.
+        _msg=$(printf '<!-- pr-review-agent ci-pending-ack -->\n\nCI checks on this PR are still running. The PR-review sweep re-reviews this PR automatically once the checks complete — no action is needed.\n\n_Posted by the %s PR-review cascade._' \
+          "${BOT_USER:-donpetry-bot}")
         gh pr comment "$PR_URL" --body "$_msg" || echo "    warn: could not post ci-pending-ack comment"
         unset _msg
       fi
