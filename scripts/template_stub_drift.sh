@@ -189,8 +189,13 @@ template_drift_annotate() {
     file="${row%%$'\t'*}";      row="${row#*$'\t'}"
     status="${row%%$'\t'*}";    row="${row#*$'\t'}"
     committed="${row%%$'\t'*}"; row="${row#*$'\t'}"
-    expected="${row%%$'\t'*}";  row="${row#*$'\t'}"
-    matched="${row%%$'\t'*}"
+    expected="${row%%$'\t'*}"
+    if [ "$row" != "$expected" ] || [[ "$row" == *$'\t'* ]]; then
+      row="${row#*$'\t'}"
+      matched="${row%%$'\t'*}"
+    else
+      matched=""
+    fi
     [ -n "$file" ] || continue
     case "$status" in
       DRIFTED)
