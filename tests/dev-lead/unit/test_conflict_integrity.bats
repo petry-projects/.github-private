@@ -92,11 +92,10 @@ EOF
   [ -z "$output" ]
 }
 
-@test "new_duplicate_symbols: missing parent blob is treated as empty (new file)" {
-  run new_duplicate_symbols "$FIX/resolved_clean.sh" "$FIX/parent_base.sh" "/nonexistent/path.sh"
+@test "new_duplicate_symbols: missing parent blobs are treated as empty (new file)" {
+  run new_duplicate_symbols "$FIX/resolved_corrupted.sh" "/nonexistent/base.sh" "/nonexistent/branch.sh"
   [ "$status" -eq 0 ]
-  # resolved_clean has no intra-file duplicates, so still clean.
-  [ -z "$output" ]
+  [[ "$output" == *$'fn:run_writer\t2'* ]]
 }
 
 # ---------------------------------------------------------------------------

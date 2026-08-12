@@ -235,7 +235,7 @@ _Detected by \`scripts/lib/conflict-integrity.sh\` (#1482). If this repetition i
   fi
   # Idempotent: skip if an integrity marker for this PR already exists.
   if gh pr view "$PR_NUMBER" --repo "$REPO" --json comments \
-       --jq '.comments[].body' 2>/dev/null | grep -qF "$marker"; then
+       --jq '.comments[].body' 2>/dev/null | grep -F "$marker" > /dev/null; then
     echo "conflict-integrity marker already present on PR ${PR_NUMBER} — skipping"
     return 0
   fi
