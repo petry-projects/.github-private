@@ -189,46 +189,6 @@ To re-enable, delete this comment or push a new commit with a substantially diff
   fi
 }
 
-# post_rate_limited: posts a status=rate-limited marker with embedded reset
-# time and check name. Skips if a marker already exists for HEAD_SHA (dedup).
-# The check= field lets the retry cron look up current check-run details when
-# re-dispatching, giving the engine full failure logs/annotations on retry.
-post_rate_limited() {
-  # Dedup: don't accumulate multiple rate-limited markers for the same SHA
-  if has_rate_limited_marker; then
-    echo "::notice::rate-limited marker already posted for SHA ${HEAD_SHA} — skipping duplicate"
-    return 0
-  fi
-
-  local reset_time
-  reset_time=$(cat /tmp/dev-lead-rate-limit-reset 2>/dev/null || true)
-  local reset_detail=""
-  if [ -n "$reset_time" ]; then
-    reset_detail=" reset=${reset_time}"
-  fi
-
-  # Embed check name so the retry cron can look up the current check run for logs
-  local check_name
-  check_name=$(echo "${CHECKS_JSON:-[]}" | jq -r '.[0].name // "CI failure"' 2>/dev/null || echo "CI failure")
-
-  local marker="${MARKER_PREFIX}${HEAD_SHA} status=rate-limited${reset_detail} check=${check_name} -->"
-  local details="All engines were rate-limited. The retry cron will re-attempt automatically."
-  if [ -n "$reset_time" ]; then
-    details="${details} Rate limit resets at: \`${reset_time}\`"
-  fi
-  local body="${marker}
-## Dev-Lead Fix CI — rate-limited
-**PR:** #${PR_NUMBER} | **SHA:** \`${HEAD_SHA}\`
-${details}"
-
-  if [ "${DEV_LEAD_DRY_RUN:-false}" = "true" ]; then
-    echo "[dry-run] would post PR comment: rate-limited"
-    echo "$body"
-  else
-    gh pr comment "$PR_NUMBER" --repo "$REPO" --body "$body"
-  fi
-}
-
 main() {
   if [ -z "$PR_NUMBER" ] || [ -z "$HEAD_SHA" ]; then
     echo "::error::PR_NUMBER and HEAD_SHA are required"
