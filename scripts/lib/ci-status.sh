@@ -47,21 +47,11 @@
 #   • "PR Review Agent / *"
 #   • "PR Review Reusable / *"
 #   • "PR Review — Mention Trigger / *"
-compute_ci_status() {
-  local rollup_json="${1:-[]}"
-  jq -r '
-    def is_pending:
-      .status == "IN_PROGRESS" or .status == "QUEUED" or .status == "WAITING" or
-      .state  == "PENDING"     or .state  == "EXPECTED" or
-      (.status == "COMPLETED" and (.conclusion == null or .conclusion == ""));
-    def is_success:
-      .conclusion == "SUCCESS" or .conclusion == "SKIPPED" or .conclusion == "NEUTRAL" or
-      .state == "SUCCESS";
-    # CANCELLED checks are non-blocking, not failing (issue #608): superseded
-    # dev-lead orchestration jobs leave terminal CANCELLED check-runs that are
-    # not a real merge-readiness signal.
-    def is_cancelled:
-      .conclusion == "CANCELLED";
+
+# Shared jq `def is_own_check` — the PR Review cascade's own check runs, excluded
+# by both compute_ci_status and classify_rollup_eventability so neither blocks nor
+# misclassifies the cascade on its own output. Kept in one place to prevent drift.
+_CI_STATUS_JQ_IS_OWN_CHECK='
     def is_own_check:
       (.name // .context // "") as $n |
       (.workflowName // "") as $wf |
@@ -75,15 +65,82 @@ compute_ci_status() {
       ($n == "review") or
       ($n == "review / review") or
       ($n | test("^PR Review (Agent|Reusable) /")) or
-      ($n | test("^PR Review — Mention Trigger /"));
-    if (. == null or (type != "array")) then "passing"
+      ($n | test("^PR Review — Mention Trigger /"));'
+
+compute_ci_status() {
+  local rollup_json="${1:-[]}"
+  jq -r "
+    def is_pending:
+      .status == \"IN_PROGRESS\" or .status == \"QUEUED\" or .status == \"WAITING\" or
+      .state  == \"PENDING\"     or .state  == \"EXPECTED\" or
+      (.status == \"COMPLETED\" and (.conclusion == null or .conclusion == \"\"));
+    def is_success:
+      .conclusion == \"SUCCESS\" or .conclusion == \"SKIPPED\" or .conclusion == \"NEUTRAL\" or
+      .state == \"SUCCESS\";
+    # CANCELLED checks are non-blocking, not failing (issue #608): superseded
+    # dev-lead orchestration jobs leave terminal CANCELLED check-runs that are
+    # not a real merge-readiness signal.
+    def is_cancelled:
+      .conclusion == \"CANCELLED\";
+    $_CI_STATUS_JQ_IS_OWN_CHECK
+    if (. == null or (type != \"array\")) then \"passing\"
     else
-      (map(select(is_own_check | not))) as $ext |
-      if ($ext | length) == 0 then "passing"
-      elif ([$ext[] | select(is_pending)] | length) > 0 then "pending"
-      elif all($ext[]; is_success or is_cancelled) then "passing"
-      else "failing"
+      (map(select(is_own_check | not))) as \$ext |
+      if (\$ext | length) == 0 then \"passing\"
+      elif ([\$ext[] | select(is_pending)] | length) > 0 then \"pending\"
+      elif all(\$ext[]; is_success or is_cancelled) then \"passing\"
+      else \"failing\"
       end
     end
-  ' <<< "$rollup_json" 2>/dev/null || echo "passing"
+  " <<< "$rollup_json" 2>/dev/null || echo "passing"
+}
+
+# Workflow names from pr-review-sweep.yml's workflow_run.workflows: — the
+# complete set the fast path can key on. Any check whose workflowName is absent
+# from this list (or that has no workflowName at all) is un-eventable and falls
+# to the scheduled cron backstop. Must stay in sync with pr-review-sweep.yml;
+# test_ci_status.bats validates drift automatically.
+_CI_STATUS_EVENTABLE_WORKFLOWS='["CI","Tests","Holdout Guard","SonarCloud Analysis","Lint"]'
+
+# classify_rollup_eventability <rollup_json>
+#
+# Split a PR's non-own checks by whether their completion emits a `workflow_run`
+# this repo can key on (#1408). The pr-review-sweep's workflow_run fast path
+# re-reviews a PR the instant an eventable GitHub Actions check finishes; the
+# scheduled (cron) sweep exists for the genuinely UN-eventable residue —
+# GitHub-App / cross-repo checks (SonarCloud is the named example) that post a
+# StatusContext or an app CheckRun carrying no workflowName, so no workflow_run
+# ever fires for them and only the timer re-reviews them.
+#
+# A rollup entry is EVENTABLE iff it carries a workflowName that matches one of
+# the pr-review-sweep workflow_run trigger workflows (_CI_STATUS_EVENTABLE_WORKFLOWS).
+# Checks with an absent/empty workflowName — StatusContexts and App/cross-repo
+# CheckRuns — are un-eventable. Checks from workflows not in the trigger list are
+# also treated as un-eventable: the sweep cannot receive a workflow_run for them
+# and so only the scheduled backstop covers those PRs.
+#
+# Outputs (stdout) one of:
+#   "none"            — no external (non-own) checks at all
+#   "eventable-only"  — ≥1 external check, and every external check is eventable
+#                       (the fast path fully covers this PR)
+#   "has-uneventable" — ≥1 external check is un-eventable (missing a workflowName
+#                       or workflowName outside the sweep's allowlist); only the
+#                       scheduled sweep can re-review these PRs
+classify_rollup_eventability() {
+  local rollup_json="${1:-[]}"
+  jq -r "
+    $_CI_STATUS_JQ_IS_OWN_CHECK
+    def is_uneventable:
+      (.workflowName // \"\") as \$wf |
+      \$wf == \"\" or
+      ($_CI_STATUS_EVENTABLE_WORKFLOWS | index(\$wf)) == null;
+    if (. == null or (type != \"array\")) then \"none\"
+    else
+      (map(select(is_own_check | not))) as \$ext |
+      if (\$ext | length) == 0 then \"none\"
+      elif ([\$ext[] | select(is_uneventable)] | length) > 0 then \"has-uneventable\"
+      else \"eventable-only\"
+      end
+    end
+  " <<< "$rollup_json" 2>/dev/null || echo "none"
 }
