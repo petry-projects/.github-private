@@ -95,6 +95,13 @@ compute_ci_status() {
   " <<< "$rollup_json" 2>/dev/null || echo "passing"
 }
 
+# Workflow names from pr-review-sweep.yml's workflow_run.workflows: — the
+# complete set the fast path can key on. Any check whose workflowName is absent
+# from this list (or that has no workflowName at all) is un-eventable and falls
+# to the scheduled cron backstop. Must stay in sync with pr-review-sweep.yml;
+# test_ci_status.bats validates drift automatically.
+_CI_STATUS_EVENTABLE_WORKFLOWS='["CI","Tests","Holdout Guard","SonarCloud Analysis","Lint"]'
+
 # classify_rollup_eventability <rollup_json>
 #
 # Split a PR's non-own checks by whether their completion emits a `workflow_run`
@@ -106,19 +113,19 @@ compute_ci_status() {
 # ever fires for them and only the timer re-reviews them.
 #
 # A rollup entry is EVENTABLE iff it carries a workflowName that matches one of
-# the pr-review-sweep workflow_run trigger workflows (CI, Tests, Holdout Guard,
-# SonarCloud Analysis, Lint). Checks with an absent/empty workflowName —
-# StatusContexts and App/cross-repo CheckRuns — are un-eventable. Checks from
-# workflows not in the trigger list are also treated as un-eventable: the sweep
-# cannot receive a workflow_run for them and so only the scheduled backstop covers
-# those PRs. The list mirrors pr-review-sweep.yml's `workflow_run.workflows:`.
+# the pr-review-sweep workflow_run trigger workflows (_CI_STATUS_EVENTABLE_WORKFLOWS).
+# Checks with an absent/empty workflowName — StatusContexts and App/cross-repo
+# CheckRuns — are un-eventable. Checks from workflows not in the trigger list are
+# also treated as un-eventable: the sweep cannot receive a workflow_run for them
+# and so only the scheduled backstop covers those PRs.
 #
 # Outputs (stdout) one of:
 #   "none"            — no external (non-own) checks at all
 #   "eventable-only"  — ≥1 external check, and every external check is eventable
 #                       (the fast path fully covers this PR)
-#   "has-uneventable" — ≥1 external check has no workflowName (un-eventable residue
-#                       that only the scheduled sweep can re-review)
+#   "has-uneventable" — ≥1 external check is un-eventable (missing a workflowName
+#                       or workflowName outside the sweep's allowlist); only the
+#                       scheduled sweep can re-review these PRs
 classify_rollup_eventability() {
   local rollup_json="${1:-[]}"
   jq -r "
@@ -126,7 +133,7 @@ classify_rollup_eventability() {
     def is_uneventable:
       (.workflowName // \"\") as \$wf |
       \$wf == \"\" or
-      ([\"CI\",\"Tests\",\"Holdout Guard\",\"SonarCloud Analysis\",\"Lint\"] | index(\$wf)) == null;
+      ($_CI_STATUS_EVENTABLE_WORKFLOWS | index(\$wf)) == null;
     if (. == null or (type != \"array\")) then \"none\"
     else
       (map(select(is_own_check | not))) as \$ext |

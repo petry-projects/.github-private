@@ -15,13 +15,14 @@
 # is a textbook §2 Class-2 backstop, not a §6.3 leak.
 #
 # #1408 narrowing: the SCHEDULED (cron) path now re-dispatches ONLY for genuinely
-# un-eventable cases — GitHub-App / cross-repo checks (SonarCloud is the named
-# example) that post a StatusContext or app CheckRun carrying no workflowName, so
-# no workflow_run ever fires for them. Every EVENTABLE check (a GitHub Actions
-# check run in this repo, which does emit workflow_run) is handled by the fast
-# path, so the timer is pared down to the exception residue the events cannot
-# cover. The daily health report surfaces a deterministic sweep-hit-rate so a
-# rising rate flags an eventable case leaking onto the timer.
+# un-eventable cases — checks that either have no workflowName (GitHub-App /
+# cross-repo StatusContexts and CheckRuns; SonarCloud is the named example) or
+# carry a workflowName absent from pr-review-sweep.yml's workflow_run.workflows
+# allowlist (so no workflow_run fires for them either). Every EVENTABLE check —
+# one whose workflowName is in that allowlist — is handled by the fast path, so
+# the timer is pared down to the residue those events cannot cover. The daily
+# health report surfaces a deterministic sweep-hit-rate so a rising rate flags an
+# eventable case leaking onto the timer.
 
 schema_version: 1
 role: pr-review
@@ -41,7 +42,7 @@ interaction:
       - cron: "2,17,32,47 * * * *"
         role: backstop
         justification: "pr-review-sweep.yml re-dispatches reviews for PRs that went green after a ci-pending/ci-failing skip; #1408 narrows the scheduled path to genuinely un-eventable checks only (GitHub-App/cross-repo checks like SonarCloud that emit no workflow_run), the guaranteed <=15-min latency bound for the residue the event fast path cannot cover"
-        stop_condition: "PR still open and its review still stale/needed, not human-gated, and at least one blocking check is un-eventable (no workflowName, so no workflow_run fires) — eventable-only PRs are left to the fast path"
+        stop_condition: "PR still open and its review still stale/needed, not human-gated, and at least one blocking check is un-eventable (missing a workflowName or using a workflowName outside the pr-review-sweep workflow_run allowlist) — eventable-only PRs are left to the fast path"
         event_fast_path: "workflow_run:[completed] scoped to the completing CI run's PR(s) — fully covers every eventable GitHub Actions check, leaving only un-eventable cases to the cron"
   emits:
     - "review:approved"

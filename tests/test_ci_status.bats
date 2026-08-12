@@ -483,13 +483,24 @@ rollup() {
 }
 
 @test "classify_rollup_eventability: all five trigger workflow names are individually eventable" {
-  # Each name in pr-review-sweep.yml's workflow_run.workflows: list must be eventable.
-  local r
-  for wf in "CI" "Tests" "Holdout Guard" "SonarCloud Analysis" "Lint"; do
+  # Each name in the classifier's eventable-workflow list must classify as eventable-only.
+  local r wf
+  while IFS= read -r wf; do
     r=$(rollup "$(check_run_wf "job" "$wf" "COMPLETED" "SUCCESS")")
     run classify_rollup_eventability "$r"
     [ "$output" = "eventable-only" ] || { echo "FAIL for workflowName='$wf': got '$output'"; return 1; }
-  done
+  done < <(jq -r '.[]' <<< "$_CI_STATUS_EVENTABLE_WORKFLOWS")
+}
+
+@test "classify_rollup_eventability: classifier allowlist matches pr-review-sweep.yml workflow_run.workflows" {
+  # Drift guard: the classifier's _CI_STATUS_EVENTABLE_WORKFLOWS must stay in
+  # sync with the actual trigger list in pr-review-sweep.yml. This test fails
+  # automatically when either list is updated without updating the other.
+  local sweep_yml configured_json
+  sweep_yml="$(dirname "$BATS_TEST_FILENAME")/../.github/workflows/pr-review-sweep.yml"
+  configured_json=$(grep -m1 'workflows: \[' "$sweep_yml" | sed 's/.*workflows: //')
+  [ "$(jq -r '.[]' <<< "$configured_json" | sort)" = \
+    "$(jq -r '.[]' <<< "$_CI_STATUS_EVENTABLE_WORKFLOWS" | sort)" ]
 }
 
 @test "rollup of only CANCELLED dev-lead orchestration checks → passing (issue #608 repro)" {
