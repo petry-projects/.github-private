@@ -55,6 +55,7 @@ CUTOFF=$(date -u -d "${LOOKBACK_DAYS} days ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null 
 echo "Fetching runs since: $CUTOFF"
 
 runs_json=$(gh api \
+  --paginate \
   "repos/${WORKFLOW_REPO}/actions/workflows/${WORKFLOW_FILE}/runs?per_page=100&created=>=${CUTOFF}" \
   --jq '.workflow_runs | map({
     id: .id,
@@ -65,7 +66,7 @@ runs_json=$(gh api \
     created_at: .created_at,
     html_url: .html_url,
     duration_s: ((.updated_at | fromdate) - (.created_at | fromdate))
-  })' 2>/dev/null || echo '[]')
+  })' 2>/dev/null | jq -s 'add // []' 2>/dev/null || echo '[]')
 
 # ---------------------------------------------------------------------------
 # 2. Compute aggregate stats
@@ -201,7 +202,7 @@ You are analyzing GitHub Actions workflow run logs for the PR Review Agent.
 
 ## Context
 - Workflow: \`${WORKFLOW_FILE}\` in repo \`${WORKFLOW_REPO}\`
-- Analysis window: last ${LOOKBACK_DAYS} days, up to 100 most recent runs
+- Analysis window: last ${LOOKBACK_DAYS} days (all runs fetched via pagination)
 - Report date: ${TODAY}
 - Total runs fetched: ${total_runs} | Successful: ${success_runs} | Failed: ${failed_runs} | Cancelled: ${cancelled_runs}
 - Run duration across ${dur_n} completed run(s): p50 $(fmt_dur "$dur_p50") | p95 $(fmt_dur "$dur_p95") (min $(fmt_dur "$dur_min") / max $(fmt_dur "$dur_max"))
