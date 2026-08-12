@@ -1,0 +1,12 @@
+name: alpha
+on:
+  pull_request:
+  issue_comment:
+    types: [created]
+  push:
+    branches: [main]
+jobs:
+  a:
+    runs-on: ubuntu-latest
+    steps:
+      - run: 'true'

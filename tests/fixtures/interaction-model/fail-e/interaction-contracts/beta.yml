@@ -1,0 +1,21 @@
+schema_version: 1
+role: beta
+kind: runtime
+workflows:
+  - .github/workflows/beta.yml
+interaction:
+  triggers:
+    events:
+    timers:
+      - cron: "17 */2 * * *"
+        role: backstop
+        justification: "reconcile stragglers the event surface can miss"
+        stop_condition: "work item remains and budget not exhausted"
+  emits:
+    - "dispatch:beta-retry"
+    - "push"
+  idempotency_key: "work item id"
+  concurrency_lane: "beta"
+  stop_markers:
+    - beta:done
+  budget: none

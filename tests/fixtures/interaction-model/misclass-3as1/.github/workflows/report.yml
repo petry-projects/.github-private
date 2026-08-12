@@ -1,0 +1,9 @@
+name: report
+on:
+  schedule:
+    - cron: "23 6 * * *"
+jobs:
+  r:
+    runs-on: ubuntu-latest
+    steps:
+      - run: 'true'
