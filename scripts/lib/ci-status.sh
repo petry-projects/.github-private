@@ -1,9 +1,14 @@
 #!/usr/bin/env bash
 # ci-status.sh — compute CI gate status from a statusCheckRollup JSON array,
-# filtering out the PR Review Agent's own check runs so the cascade never
-# blocks on itself (issue #469).
+# filtering out first-party agents' own check runs so the reviewing cascade never
+# blocks on itself (issue #469) or on another writing agent's orchestration check
+# (issue #1427).
 #
 # Usage: source this file, then call compute_ci_status with the rollup array.
+
+# Directory this library lives in — used to resolve the interaction contracts
+# (../../interaction-contracts) relative to the script, independent of CWD.
+_CI_STATUS_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # compute_ci_status <rollup_json>
 #
@@ -67,13 +72,72 @@ _CI_STATUS_JQ_IS_OWN_CHECK='
       ($n | test("^PR Review (Agent|Reusable) /")) or
       ($n | test("^PR Review — Mention Trigger /"));'
 
+# Shared jq `def is_agent_check` — a check run belonging to any *first-party
+# agentic role's* own workflow, excluded from the CI gate so a writing agent's own
+# orchestration check (e.g. dev-lead's "dev-lead / dispatch") cannot defer the
+# reviewing agent (#1427, AC #1/#2). This GENERALISES the #469 self-filter above:
+# rather than hard-coding each agent, the role slugs are derived from the declared
+# interaction contracts (interaction-contracts/*.yml, #1404) — the single registry
+# that already names each role and its workflows — and passed in via `$agent_roles`.
+#
+# A role's check runs surface in the rollup as the nested "<role> / <job>" form
+# (caller-job / reusable-job), e.g. "dev-lead / dispatch", "dev-lead / ci-relay".
+# We match that exact shape (name == role, or name starts with "<role> / ") so a
+# genuine external check that merely shares a job name (bare "dispatch", or
+# "Build / review") is never swallowed — the same conservative matching the
+# self-filter uses for "review" vs "Build / review".
+_CI_STATUS_JQ_IS_AGENT_CHECK='
+    def is_agent_check:
+      (.name // .context // "") as $n |
+      ($agent_roles | any(. as $r | ($r | length) > 0 and
+        ($n == $r or ($n | startswith($r + " / ")))));'
+
+# _ci_status_agent_roles_json — JSON array of first-party agent role slugs whose
+# own check runs must be excluded from the CI gate (#1427). Derived from the
+# declared interaction contracts so the exclusion can never drift from a second
+# hand-maintained list. Each contract file declares `role: <slug>`.
+#
+# Overridable for tests / callers via CI_STATUS_AGENT_ROLES_JSON (a JSON array) or
+# CI_STATUS_CONTRACTS_DIR (the contracts directory). Always emits valid JSON — on
+# any error it degrades to "[]" (no agent filtering), which is safe: it only
+# reverts to the pre-#1427 behavior of counting those checks.
+_ci_status_agent_roles_json() {
+  if [ -n "${CI_STATUS_AGENT_ROLES_JSON:-}" ]; then
+    printf '%s' "$CI_STATUS_AGENT_ROLES_JSON"
+    return 0
+  fi
+  local dir="${CI_STATUS_CONTRACTS_DIR:-$_CI_STATUS_LIB_DIR/../../interaction-contracts}"
+  local roles_json="[]"
+  if [ -d "$dir" ]; then
+    roles_json=$(
+      grep -hE '^role:[[:space:]]' "$dir"/*.yml 2>/dev/null \
+        | sed -E 's/^role:[[:space:]]*//; s/[[:space:]]+$//' \
+        | jq -R 'select(length > 0)' 2>/dev/null \
+        | jq -s 'unique' 2>/dev/null
+    ) || roles_json="[]"
+    [ -n "$roles_json" ] || roles_json="[]"
+  fi
+  printf '%s' "$roles_json"
+}
+
 compute_ci_status() {
   local rollup_json="${1:-[]}"
-  jq -r "
+  local agent_roles
+  agent_roles="$(_ci_status_agent_roles_json)"
+  jq -r --argjson agent_roles "$agent_roles" "
+    # A check carrying a non-empty conclusion is terminal, whatever its status
+    # says (#1427, AC #3): GitHub can report a zombie check as IN_PROGRESS while
+    # already carrying a terminal conclusion (observed on PR #1426:
+    # status IN_PROGRESS + conclusion SUCCESS). A conclusion is by definition
+    # terminal, so it wins over a stale running status.
+    def is_terminal:
+      (.conclusion != null and .conclusion != \"\");
     def is_pending:
-      .status == \"IN_PROGRESS\" or .status == \"QUEUED\" or .status == \"WAITING\" or
-      .state  == \"PENDING\"     or .state  == \"EXPECTED\" or
-      (.status == \"COMPLETED\" and (.conclusion == null or .conclusion == \"\"));
+      (is_terminal | not) and (
+        .status == \"IN_PROGRESS\" or .status == \"QUEUED\" or .status == \"WAITING\" or
+        .status == \"COMPLETED\"  or
+        .state  == \"PENDING\"     or .state  == \"EXPECTED\"
+      );
     def is_success:
       .conclusion == \"SUCCESS\" or .conclusion == \"SKIPPED\" or .conclusion == \"NEUTRAL\" or
       .state == \"SUCCESS\";
@@ -83,9 +147,10 @@ compute_ci_status() {
     def is_cancelled:
       .conclusion == \"CANCELLED\";
     $_CI_STATUS_JQ_IS_OWN_CHECK
+    $_CI_STATUS_JQ_IS_AGENT_CHECK
     if (. == null or (type != \"array\")) then \"passing\"
     else
-      (map(select(is_own_check | not))) as \$ext |
+      (map(select((is_own_check or is_agent_check) | not))) as \$ext |
       if (\$ext | length) == 0 then \"passing\"
       elif ([\$ext[] | select(is_pending)] | length) > 0 then \"pending\"
       elif all(\$ext[]; is_success or is_cancelled) then \"passing\"
@@ -93,6 +158,56 @@ compute_ci_status() {
       end
     end
   " <<< "$rollup_json" 2>/dev/null || echo "passing"
+}
+
+# ci_pending_age_exceeded <rollup_json> <max_age_sec> [now_epoch]
+#
+# Bounded-deferral guard (issue #1427, AC #3/#4). Given the same external checks
+# compute_ci_status would classify as pending (own + agent checks already
+# excluded), returns "true" iff there is at least one such pending check AND every
+# one of them has been pending longer than <max_age_sec> — i.e. the pending state
+# is genuinely STUCK, not merely slow. A pending check with no usable timestamp
+# counts as NOT-exceeded, so an unknown age can never trip the timeout (fail-safe).
+#
+# Callers use this only to bound the review DECISION, never the merge gate: a
+# genuinely-pending *required* check still blocks the merge at the ruleset
+# regardless of this timeout, so proceeding here can never merge a not-yet-green
+# PR (AC #4).
+ci_pending_age_exceeded() {
+  local rollup_json="${1:-[]}" max_age="${2:-1800}" now_epoch="${3:-}"
+  local agent_roles now_arg
+  agent_roles="$(_ci_status_agent_roles_json)"
+  case "$max_age" in ''|*[!0-9]*) max_age=1800 ;; esac
+  if [ -n "$now_epoch" ] && printf '%s' "$now_epoch" | grep -qE '^[0-9]+$'; then
+    now_arg="$now_epoch"
+  else
+    now_arg="null"
+  fi
+  jq -r --argjson agent_roles "$agent_roles" --argjson max "$max_age" --argjson nowarg "$now_arg" "
+    def is_terminal:
+      (.conclusion != null and .conclusion != \"\");
+    def is_pending:
+      (is_terminal | not) and (
+        .status == \"IN_PROGRESS\" or .status == \"QUEUED\" or .status == \"WAITING\" or
+        .status == \"COMPLETED\"  or
+        .state  == \"PENDING\"     or .state  == \"EXPECTED\"
+      );
+    $_CI_STATUS_JQ_IS_OWN_CHECK
+    $_CI_STATUS_JQ_IS_AGENT_CHECK
+    (if \$nowarg == null then now else \$nowarg end) as \$now |
+    if (. == null or (type != \"array\")) then \"false\"
+    else
+      [ .[] | select((is_own_check or is_agent_check) | not) | select(is_pending) ] as \$pend |
+      if (\$pend | length) == 0 then \"false\"
+      elif all(\$pend[];
+             ((.startedAt // .createdAt // .started_at // \"\") as \$ts |
+              if (\$ts | type) != \"string\" or \$ts == \"\" then false
+              else (\$now - (\$ts | fromdateiso8601? // \$now)) > \$max
+              end))
+        then \"true\" else \"false\"
+      end
+    end
+  " <<< "$rollup_json" 2>/dev/null || echo "false"
 }
 
 # Workflow names from pr-review-sweep.yml's workflow_run.workflows: — the
@@ -128,15 +243,18 @@ _CI_STATUS_EVENTABLE_WORKFLOWS='["CI","Tests","Holdout Guard","SonarCloud Analys
 #                       scheduled sweep can re-review these PRs
 classify_rollup_eventability() {
   local rollup_json="${1:-[]}"
-  jq -r "
+  local agent_roles
+  agent_roles="$(_ci_status_agent_roles_json)"
+  jq -r --argjson agent_roles "$agent_roles" "
     $_CI_STATUS_JQ_IS_OWN_CHECK
+    $_CI_STATUS_JQ_IS_AGENT_CHECK
     def is_uneventable:
       (.workflowName // \"\") as \$wf |
       \$wf == \"\" or
       ($_CI_STATUS_EVENTABLE_WORKFLOWS | index(\$wf)) == null;
     if (. == null or (type != \"array\")) then \"none\"
     else
-      (map(select(is_own_check | not))) as \$ext |
+      (map(select((is_own_check or is_agent_check) | not))) as \$ext |
       if (\$ext | length) == 0 then \"none\"
       elif ([\$ext[] | select(is_uneventable)] | length) > 0 then \"has-uneventable\"
       else \"eventable-only\"

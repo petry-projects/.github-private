@@ -98,3 +98,87 @@ teardown() {
   grep -q 'pr view' "$GH_LOG"
   ! grep -qE 'pr (comment|review)' "$GH_LOG"
 }
+
+# ---------------------------------------------------------------------------
+# Bounded ci-pending deferral (issue #1427, AC #3/#4). A pending check with no
+# usable timestamp is fail-safe (never timed out), so the incident snapshot above
+# still skips as ci-pending — verified by the two tests above. When the pending
+# check is genuinely STUCK (started long ago), the review proceeds on the completed
+# checks instead of deferring forever, and escalates once via a visible comment.
+# The merge gate is unaffected (it is enforced by the ruleset, not by this script).
+# ---------------------------------------------------------------------------
+
+@test "review-one-pr: a stuck pending check proceeds past the ci-pending gate (#1427)" {
+  # Same external check, but started ~2h ago → older than the 30-min default,
+  # so ci_pending_age_exceeded is true and the ci-pending skip is bounded out.
+  local old
+  old=$(date -u -d "-2 hours" +%Y-%m-%dT%H:%M:%SZ)
+  cat > "$TEST_DIR/snapshot.json" <<EOF
+{
+  "headRefOid": "$FIXED_SHA",
+  "statusCheckRollup": [
+    { "name": "build", "status": "IN_PROGRESS", "conclusion": null, "startedAt": "$old" }
+  ],
+  "reviewDecision": "",
+  "reviews": [],
+  "labels": [],
+  "comments": []
+}
+EOF
+
+  run bash "$REVIEW_SCRIPT" "$PR_URL"
+  echo "status=$status" >&2
+  echo "$output" >&2
+  echo "--- gh calls ---" >&2
+  cat "$GH_LOG" >&2
+
+  # It must NOT record a ci-pending skip — the whole point of the bound.
+  [[ "$output" != *'"reason":"ci-pending"'* ]]
+  # It escalates once with the timeout marker.
+  grep -q 'ci-pending-timeout' "$GH_LOG"
+}
+
+@test "review-one-pr: stuck-pending escalation comment does not recommend a re-mention" {
+  local old
+  old=$(date -u -d "-2 hours" +%Y-%m-%dT%H:%M:%SZ)
+  cat > "$TEST_DIR/snapshot.json" <<EOF
+{
+  "headRefOid": "$FIXED_SHA",
+  "statusCheckRollup": [
+    { "name": "build", "status": "IN_PROGRESS", "conclusion": null, "startedAt": "$old" }
+  ],
+  "reviewDecision": "",
+  "reviews": [],
+  "labels": [],
+  "comments": []
+}
+EOF
+
+  run bash "$REVIEW_SCRIPT" "$PR_URL"
+  cat "$GH_LOG" >&2
+  # AC #5: no re-mention advice that would re-arm dev-lead.
+  ! grep -qi 're-mention' "$GH_LOG"
+}
+
+# ---------------------------------------------------------------------------
+# ci-pending-ack copy (issue #1427, AC #5). When FORCE_REVIEW polling exhausts on
+# a still-pending (no-timestamp) PR, the ack comment must NOT recommend a
+# re-mention — a re-mention fires dev-lead, whose own check re-arms the deferral.
+# ---------------------------------------------------------------------------
+
+@test "review-one-pr: FORCE_REVIEW ci-pending-ack copy contains no re-mention advice" {
+  export FORCE_REVIEW=true
+  export FORCE_REVIEW_POLL_ATTEMPTS=1
+  export FORCE_REVIEW_POLL_INTERVAL_SEC=1
+
+  run bash "$REVIEW_SCRIPT" "$PR_URL"
+  echo "$output" >&2
+  echo "--- gh calls ---" >&2
+  cat "$GH_LOG" >&2
+
+  # The ack marker is posted…
+  grep -q 'ci-pending-ack' "$GH_LOG"
+  # …but it must not tell anyone to re-mention the bot (the self-inflicted loop).
+  ! grep -qi 're-mention' "$GH_LOG"
+  ! grep -q 'trigger a fresh review' "$GH_LOG"
+}
