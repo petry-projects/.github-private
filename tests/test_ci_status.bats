@@ -410,6 +410,99 @@ rollup() {
   [ "$output" = "pending" ]
 }
 
+# ---------------------------------------------------------------------------
+# classify_rollup_eventability (#1408) — split a PR's non-own checks into the
+# genuinely un-eventable residue (GitHub-App / cross-repo checks like SonarCloud
+# that emit no workflow_run, detected by the absence of a workflowName) versus
+# eventable GitHub Actions check runs (which carry a workflowName and whose
+# completion the pr-review-sweep fast path already keys on). The scheduled
+# (cron) sweep re-dispatches only for the un-eventable residue.
+#   Emits: "none" | "eventable-only" | "has-uneventable"
+# ---------------------------------------------------------------------------
+
+@test "classify_rollup_eventability: a GitHub Actions check (has workflowName) is eventable-only" {
+  local r
+  r=$(rollup "$(check_run_wf "build" "CI" "COMPLETED" "SUCCESS")")
+  run classify_rollup_eventability "$r"
+  [ "$output" = "eventable-only" ]
+}
+
+@test "classify_rollup_eventability: a StatusContext (no workflowName) is un-eventable residue" {
+  local r
+  r=$(rollup "$(status_ctx "SonarCloud" "SUCCESS")")
+  run classify_rollup_eventability "$r"
+  [ "$output" = "has-uneventable" ]
+}
+
+@test "classify_rollup_eventability: a GitHub-App CheckRun with no workflowName is un-eventable" {
+  local r
+  r=$(rollup "$(check_run "SonarCloud Code Analysis" "COMPLETED" "SUCCESS")")
+  run classify_rollup_eventability "$r"
+  [ "$output" = "has-uneventable" ]
+}
+
+@test "classify_rollup_eventability: mixed eventable + un-eventable is has-uneventable" {
+  local r
+  r=$(rollup \
+    "$(check_run_wf "build" "CI" "COMPLETED" "SUCCESS")" \
+    "$(status_ctx "SonarCloud" "SUCCESS")")
+  run classify_rollup_eventability "$r"
+  [ "$output" = "has-uneventable" ]
+}
+
+@test "classify_rollup_eventability: own pr-review checks are ignored, not counted as un-eventable" {
+  # A bare own 'review' check has no workflowName but must not be mistaken for the
+  # un-eventable residue — it is filtered before classification.
+  local r
+  r=$(rollup \
+    "$(check_run "review" "COMPLETED" "SUCCESS")" \
+    "$(check_run_wf "build" "CI" "COMPLETED" "SUCCESS")")
+  run classify_rollup_eventability "$r"
+  [ "$output" = "eventable-only" ]
+}
+
+@test "classify_rollup_eventability: no external checks at all → none" {
+  local r
+  r=$(rollup "$(check_run "review" "COMPLETED" "SUCCESS")")
+  run classify_rollup_eventability "$r"
+  [ "$output" = "none" ]
+}
+
+@test "classify_rollup_eventability: empty rollup → none" {
+  run classify_rollup_eventability '[]'
+  [ "$output" = "none" ]
+}
+
+@test "classify_rollup_eventability: workflowName NOT in sweep trigger list is un-eventable" {
+  # 'Dependency audit' and 'AgentShield' are not in the workflow_run trigger list;
+  # the sweep never fires for them, so they can only be covered by the cron backstop.
+  local r
+  r=$(rollup "$(check_run_wf "dep-audit" "Dependency audit" "COMPLETED" "SUCCESS")")
+  run classify_rollup_eventability "$r"
+  [ "$output" = "has-uneventable" ]
+}
+
+@test "classify_rollup_eventability: all five trigger workflow names are individually eventable" {
+  # Each name in the classifier's eventable-workflow list must classify as eventable-only.
+  local r wf
+  while IFS= read -r wf; do
+    r=$(rollup "$(check_run_wf "job" "$wf" "COMPLETED" "SUCCESS")")
+    run classify_rollup_eventability "$r"
+    [ "$output" = "eventable-only" ] || { echo "FAIL for workflowName='$wf': got '$output'"; return 1; }
+  done < <(jq -r '.[]' <<< "$_CI_STATUS_EVENTABLE_WORKFLOWS")
+}
+
+@test "classify_rollup_eventability: classifier allowlist matches pr-review-sweep.yml workflow_run.workflows" {
+  # Drift guard: the classifier's _CI_STATUS_EVENTABLE_WORKFLOWS must stay in
+  # sync with the actual trigger list in pr-review-sweep.yml. This test fails
+  # automatically when either list is updated without updating the other.
+  local sweep_yml configured_json
+  sweep_yml="$(dirname "$BATS_TEST_FILENAME")/../.github/workflows/pr-review-sweep.yml"
+  configured_json=$(grep -m1 'workflows: \[' "$sweep_yml" | sed 's/.*workflows: //')
+  [ "$(jq -r '.[]' <<< "$configured_json" | sort)" = \
+    "$(jq -r '.[]' <<< "$_CI_STATUS_EVENTABLE_WORKFLOWS" | sort)" ]
+}
+
 @test "rollup of only CANCELLED dev-lead orchestration checks → passing (issue #608 repro)" {
   local r
   r=$(rollup \
