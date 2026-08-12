@@ -21,7 +21,8 @@
 #             event<TAB>success<TAB>cancelled<TAB>skipped<TAB>failure<TAB>total
 #           `total` is the count of ALL runs for the event (so in-flight/other
 #           conclusions are still counted in the denominator, not silently
-#           dropped). A run with a null event folds into an "unknown" bucket.
+#           dropped). `failure` counts both `failure` and `timed_out` conclusions.
+#           A run with a null event folds into an "unknown" bucket.
 #           Absent/empty JSON → a single zeroed TOTAL row.
 pr_review_outcomes_by_event() {
   local json="${1:-}"
@@ -35,7 +36,7 @@ pr_review_outcomes_by_event() {
            success:   (map(select(.conclusion == "success"))   | length),
            cancelled: (map(select(.conclusion == "cancelled")) | length),
            skipped:   (map(select(.conclusion == "skipped"))   | length),
-           failure:   (map(select(.conclusion == "failure"))   | length),
+           failure:   (map(select(.conclusion == "failure" or .conclusion == "timed_out")) | length),
            total:     length
          })
        | sort_by(.event)) as $rows

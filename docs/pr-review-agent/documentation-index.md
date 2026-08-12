@@ -39,6 +39,7 @@ This repository contains several documentation files describing the PR Review Ag
 - **[concurrency-and-coverage.md](concurrency-and-coverage.md)** — Concurrency, coverage & the cancelled-check surface (#1422)
   - What `cancel-in-progress: false` does and does not protect (in-flight yes, pending no)
   - Why the concurrency group is keyed by head SHA, and the SHA-source per trigger
+  - How the PR identity is normalized to `{repo}/pull/{N}` so `pull_request` and `check_suite` share one slot
   - The argument that at least one review completes at the final head SHA per push
   - The #1408 sweep-narrowing interaction and how the outcome mix is now tracked
 

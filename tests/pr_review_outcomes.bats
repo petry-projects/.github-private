@@ -69,6 +69,15 @@ setup() {
   [ "$row" = "$(printf 'pull_request_review\t0\t1\t0\t0\t1')" ]
 }
 
+@test "outcomes_by_event: timed_out runs are classified as failure, not cancelled" {
+  local one_run='[{"event":"pull_request","conclusion":"timed_out"}]'
+  run pr_review_outcomes_by_event "$one_run"
+  [ "$status" -eq 0 ]
+  row=$(printf '%s\n' "$output" | awk -F'\t' '$1=="pull_request"')
+  # success 0, cancelled 0, skipped 0, failure 1, total 1
+  [ "$row" = "$(printf 'pull_request\t0\t0\t0\t1\t1')" ]
+}
+
 @test "outcomes_by_event: empty array yields a zeroed TOTAL row only" {
   run pr_review_outcomes_by_event '[]'
   [ "$status" -eq 0 ]

@@ -49,7 +49,10 @@ triggers gain per-SHA isolation; SHA-less triggers behave as before.
 
 Claim: **for any push, at least one review runs to completion at that push's head SHA.**
 
-Let `S` be the head SHA produced by a push, and `G(S) = pr-review-pr-<PR>-<S>` its concurrency group.
+Let `S` be the head SHA produced by a push, `N` the PR number, and
+`G(S) = pr-review-pr-{repo}/pull/{N}-{S}` its concurrency group. The PR identity is derived from
+the PR **number** field (not the raw event URL) so that `pull_request` (which carries an `html_url`)
+and `check_suite` (which carries an API `url`) produce the **same group key** for the same PR.
 
 1. A push emits `pull_request: synchronize`, whose group key resolves to `G(S)` (the SHA comes from
    `github.event.pull_request.head.sha`). CI completing for `S` later emits `check_suite: completed`

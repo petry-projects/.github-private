@@ -92,23 +92,24 @@ concurrency:
   # Triggers whose payload carries no SHA (workflow_dispatch's pr_url, a mention
   # without a sha) fall back to the bare per-PR group — identical to the prior
   # behaviour — so those are still serialized per PR.
-  # check_suite events carry the associated PR in pull_requests[0]; including
-  # that URL here prevents cross-PR cancellation when multiple PRs' CI suites
-  # complete simultaneously.
-  # Note: check_suite.pull_requests entries expose the API `url` field, not
-  # `html_url` — using `url` here matches the payload shape.
-  # Manual batch runs (workflow_dispatch without pr_url) use a shared slot.
+  # PR identity is normalized to {repo}/pull/{number} for SHA-bearing event
+  # triggers (pull_request, pull_request_review, check_suite) so all of them
+  # land in the same concurrency slot for the same PR regardless of whether
+  # the payload carries an html_url or an API url. URL-keyed triggers
+  # (workflow_dispatch pr_url, repository_dispatch client_payload.pr_url)
+  # keep their raw URL as the identifier. Manual batch runs (workflow_dispatch
+  # without pr_url) use a shared slot.
   group: >-
     ${{
       (inputs.pr_url
        || github.event.client_payload.pr_url
-       || github.event.pull_request.html_url
-       || github.event.check_suite.pull_requests[0].url)
+       || (github.event.pull_request.number && format('{0}/pull/{1}', github.repository, github.event.pull_request.number))
+       || (github.event.check_suite.pull_requests[0].number && format('{0}/pull/{1}', github.repository, github.event.check_suite.pull_requests[0].number)))
       && format('pr-review-pr-{0}{1}',
            inputs.pr_url
            || github.event.client_payload.pr_url
-           || github.event.pull_request.html_url
-           || github.event.check_suite.pull_requests[0].url,
+           || (github.event.pull_request.number && format('{0}/pull/{1}', github.repository, github.event.pull_request.number))
+           || (github.event.check_suite.pull_requests[0].number && format('{0}/pull/{1}', github.repository, github.event.check_suite.pull_requests[0].number)),
            (github.event.pull_request.head.sha
             || github.event.check_suite.head_sha
             || github.event.client_payload.sha)
