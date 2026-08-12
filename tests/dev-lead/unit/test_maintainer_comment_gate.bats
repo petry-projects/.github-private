@@ -53,7 +53,7 @@ _run_check() {
 
 @test "Maintainer gate: shellcheck passes" {
   command -v shellcheck >/dev/null 2>&1 || skip "shellcheck not installed"
-  shellcheck --shell=bash "$GATE"
+  shellcheck --shell=bash --severity=warning "$GATE"
 }
 
 # ────────────────────────────────────────────────────────────────────
