@@ -1,0 +1,10 @@
+name: beta
+on:
+  schedule:
+    - cron: "17 */2 * * *"
+  workflow_dispatch:
+jobs:
+  b:
+    runs-on: ubuntu-latest
+    steps:
+      - run: 'true'
