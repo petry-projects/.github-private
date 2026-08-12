@@ -30,8 +30,7 @@ setup() {
 }
 
 @test "extract_top_level_symbols: ignores indented / nested declarations" {
-  local f
-  f="$(mktemp)"
+  local f="$BATS_TEST_TMPDIR/test_file.sh"
   cat > "$f" <<'EOF'
 top() {
   local nested=1
@@ -39,7 +38,6 @@ top() {
 }
 EOF
   run extract_top_level_symbols "$f"
-  rm -f "$f"
   [ "$status" -eq 0 ]
   [[ "$output" == *"fn:top"* ]]
   # A function defined *inside* another (indented) is not a top-level decl.

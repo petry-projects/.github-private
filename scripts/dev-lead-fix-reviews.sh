@@ -255,7 +255,9 @@ run_post_resolution_integrity_check() {
   [ -n "$pre_ref" ] || return 0
 
   local changed
-  changed="$(git diff --name-only "$pre_ref" HEAD -- '*.sh' 2>/dev/null || true)"
+  # Compare pre_ref to the working tree (not just HEAD) so that uncommitted
+  # worktree edits left by the agent are also included in the scan (#1496).
+  changed="$(git diff --name-only "$pre_ref" -- '*.sh' 2>/dev/null || true)"
   [ -n "$changed" ] || return 0
 
   local report="" file findings pa pb

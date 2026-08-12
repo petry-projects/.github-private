@@ -76,20 +76,28 @@ _count_of() {
 # ships duplicate declarations is still flagged).
 new_duplicate_symbols() {
   local resolved="$1" parent_a="$2" parent_b="$3"
-  local counts_a counts_b
-  counts_a="$(symbol_counts "$parent_a")"
-  counts_b="$(symbol_counts "$parent_b")"
-  symbol_counts "$resolved" | while IFS="$(printf '\t')" read -r sym rcount; do
-    [ "${rcount:-0}" -gt 1 ] || continue
-    local acount bcount maxp
-    acount="$(_count_of "$counts_a" "$sym")"
-    bcount="$(_count_of "$counts_b" "$sym")"
-    maxp="$acount"
-    [ "$bcount" -gt "$maxp" ] && maxp="$bcount"
-    if [ "$rcount" -gt "$maxp" ]; then
-      printf '%s\t%s\n' "$sym" "$rcount"
-    fi
-  done
+  {
+    extract_top_level_symbols "$parent_a" | awk '{print "a\t" $0}'
+    extract_top_level_symbols "$parent_b" | awk '{print "b\t" $0}'
+    extract_top_level_symbols "$resolved"  | awk '{print "r\t" $0}'
+  } | awk -F'\t' '
+    $1 == "a" { count_a[$2]++ }
+    $1 == "b" { count_b[$2]++ }
+    $1 == "r" { count_r[$2]++ }
+    END {
+      for (sym in count_r) {
+        rcount = count_r[sym]
+        if (rcount > 1) {
+          acount = count_a[sym] + 0
+          bcount = count_b[sym] + 0
+          maxp = (acount > bcount) ? acount : bcount
+          if (rcount > maxp) {
+            print sym "\t" rcount
+          }
+        }
+      }
+    }
+  ' | LC_ALL=C sort
 }
 
 # format_integrity_findings <file> <findings>
