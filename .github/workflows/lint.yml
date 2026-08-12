@@ -130,6 +130,7 @@ jobs:
             tests/test_readme_refresh_push.bats \
             tests/test_validate_personas.bats \
             tests/test_validate_interaction_contracts.bats \
+            tests/test_validate_interaction_model.bats \
             tests/verify_persona_teams.bats \
             tests/persona_runner.bats \
             tests/test_dev_lead_concurrency_guard.bats \
@@ -348,6 +349,32 @@ jobs:
 
       - name: Validate interaction contracts
         run: python3 interaction-contracts/validate-interaction-contracts.py .
+
+  validate-interaction-model:
+    # Mechanical enforcement (§10) of the agentic interaction model (Story 4 /
+    # #1406, epic #1402). docs/agentic-interaction-model.md is a NORMATIVE
+    # repo-local standard: the three trigger classes (§2/§3), the timer contract
+    # (§6), the GITHUB_TOKEN event-boundary rule + its sanctioned bridges (§5),
+    # and a machine-checkable §4 classification table. This job cross-checks the
+    # §4 table against the real workflow on: blocks (both misclassification
+    # directions + dangling rows + bidirectional completeness), that every
+    # Class-2 backstop declares a valid timer_role, and that each role's
+    # interaction contract (personas/<id>/interaction.yml,
+    # interaction-contracts/*.yml) mirrors its workflows' triggers and declares an
+    # idempotency_key + concurrency_lane — surfacing drift and unsafe agent→agent
+    # chains at PR time instead of as post-merge runaways. Fully HERMETIC (reads
+    # in-repo files only, no schema fetch / no network), like
+    # validate-interaction-contracts. PR-triggered on the existing Lint workflow —
+    # no new cron/scheduled workload.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Validate the agentic interaction model
+        run: bash scripts/validate-interaction-model.sh
 
   verify-persona-teams:
     # LIVE persona addressing-team check (#1280). The hermetic validate-personas.py

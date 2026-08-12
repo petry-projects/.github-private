@@ -1,0 +1,8 @@
+name: gamma
+on:
+  pull_request:
+jobs:
+  g:
+    runs-on: ubuntu-latest
+    steps:
+      - run: 'true'
