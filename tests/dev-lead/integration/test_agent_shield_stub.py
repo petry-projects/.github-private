@@ -70,51 +70,46 @@ def main() -> int:
 
     jobs = doc["jobs"]
 
-    # Validate no extra inline jobs (thin-stub must only delegate via `uses:`)
-    inline_jobs = [
-        job_key for job_key, job in jobs.items()
-        if isinstance(job, dict) and "uses" not in job
-    ]
-    if inline_jobs:
-        print(f"FAIL: {WORKFLOW} has inline job(s) that bypass delegation: {inline_jobs}")
-        return 1
-
     # Validate required job identity exists
     if EXPECTED_JOB not in jobs:
         print(f"FAIL: {WORKFLOW} is missing required job '{EXPECTED_JOB}'")
         return 1
 
-    # Collect ALL reusable-workflow references (not just the first match)
-    found_jobs = []
-    for job_key, job in jobs.items():
-        if not isinstance(job, dict):
-            continue
-        uses = job.get("uses")
-        if isinstance(uses, str) and "agent-shield-reusable.yml" in uses:
-            found_jobs.append((job_key, uses))
-
-    if not found_jobs:
+    expected_job = jobs[EXPECTED_JOB]
+    if not isinstance(expected_job, dict):
         print(
-            f"FAIL: {WORKFLOW} has no job calling agent-shield-reusable.yml\n"
-            f"  Expected a job with: uses: {EXPECTED_USES}"
+            f"FAIL: {WORKFLOW} job '{EXPECTED_JOB}' is not a mapping\n"
+            f"  Expected a mapping with: uses: {EXPECTED_USES}"
         )
         return 1
 
-    all_valid = True
-    for job_key, uses in found_jobs:
-        if uses != EXPECTED_USES:
-            print(
-                f"FAIL: {WORKFLOW} job '{job_key}' uses '{uses}'\n"
-                f"  Expected: '{EXPECTED_USES}'\n"
-                f"  Fix: replace the `uses:` value with the canonical @agent-shield/v2-stable ref."
-            )
-            all_valid = False
-
-    if all_valid:
-        print(f"PASS: All jobs delegate to {EXPECTED_USES}")
-        return 0
-    else:
+    uses = expected_job.get("uses")
+    if not isinstance(uses, str):
+        print(
+            f"FAIL: {WORKFLOW} job '{EXPECTED_JOB}' is missing the 'uses' key\n"
+            f"  Expected: uses: {EXPECTED_USES}"
+        )
         return 1
+
+    if uses != EXPECTED_USES:
+        print(
+            f"FAIL: {WORKFLOW} job '{EXPECTED_JOB}' uses '{uses}'\n"
+            f"  Expected: '{EXPECTED_USES}'\n"
+            f"  Fix: replace the `uses:` value with the canonical @agent-shield/v2-stable ref."
+        )
+        return 1
+
+    # Validate no extra jobs (thin-stub delegates only via single job)
+    extra_jobs = [job_key for job_key in jobs.keys() if job_key != EXPECTED_JOB]
+    if extra_jobs:
+        print(
+            f"FAIL: {WORKFLOW} has unexpected job(s): {extra_jobs}\n"
+            f"  A thin stub must have only the '{EXPECTED_JOB}' job."
+        )
+        return 1
+
+    print(f"PASS: {EXPECTED_JOB} job correctly delegates to {EXPECTED_USES}")
+    return 0
 
 
 if __name__ == "__main__":

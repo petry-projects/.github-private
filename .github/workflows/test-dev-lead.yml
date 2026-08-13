@@ -112,7 +112,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install PyYAML
-        run: python3 -m pip install --quiet pyyaml
+        run: python3 -m pip install --quiet --only-binary ":all:" pyyaml==6.0.3
       - name: Validate caller<->reusable permission contract
         # Reads the public petry-projects/.github caller template; github.token suffices.
         env:
@@ -128,7 +128,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Install PyYAML
-        run: python3 -m pip install --quiet pyyaml
+        run: python3 -m pip install --quiet --only-binary ":all:" pyyaml==6.0.3
       - name: Validate issue-triage-runner.yml top-level permissions declaration
         run: python3 tests/dev-lead/integration/test_workflow_toplevel_permissions.py
 
@@ -141,7 +141,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Install PyYAML
-        run: python3 -m pip install --quiet pyyaml
+        run: python3 -m pip install --quiet --only-binary ":all:" pyyaml==6.0.3
       - name: Validate dismiss-stale-bot-reviews.yml top-level permissions declaration
         run: python3 tests/dev-lead/integration/test_dismiss_stale_bot_reviews_permissions.py
 
@@ -161,7 +161,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install PyYAML
-        run: python3 -m pip install --quiet pyyaml
+        run: python3 -m pip install --quiet --only-binary ":all:" pyyaml==6.0.3
       - name: Validate dependency-audit.yml is pinned to the canonical @dependency-audit/next ref
         run: python3 tests/dev-lead/integration/test_dependency_audit_stub.py
 
@@ -174,7 +174,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Install PyYAML
-        run: python3 -m pip install --quiet pyyaml
+        run: python3 -m pip install --quiet --only-binary ":all:" pyyaml==6.0.3
       - name: Validate auto-rebase.yml uses @auto-rebase/next (not a SHA or frozen tag)
         run: python3 tests/dev-lead/integration/test_auto_rebase_stub.py
 
@@ -187,7 +187,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Install PyYAML
-        run: python3 -m pip install --quiet pyyaml
+        run: python3 -m pip install --quiet --only-binary ":all:" pyyaml==6.0.3
       - name: Validate agent-shield.yml is pinned to the canonical @agent-shield/v2-stable ref
         run: python3 tests/dev-lead/integration/test_agent_shield_stub.py
 
@@ -200,7 +200,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Install PyYAML
-        run: python3 -m pip install --quiet pyyaml
+        run: python3 -m pip install --quiet --only-binary ":all:" pyyaml==6.0.3
       - name: Validate auto-rebase-retry.yml resolves no actions (survives action-resolution outage)
         run: python3 tests/dev-lead/integration/test_auto_rebase_retry_no_action_resolution.py
 
@@ -213,7 +213,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Install PyYAML
-        run: python3 -m pip install --quiet pyyaml
+        run: python3 -m pip install --quiet --only-binary ":all:" pyyaml==6.0.3
       - name: Reject SHA / off-channel pins on any first-party reusable
         run: python3 tests/dev-lead/integration/test_reusable_pin_compliance.py
 
@@ -226,7 +226,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Install PyYAML
-        run: python3 -m pip install --quiet pyyaml
+        run: python3 -m pip install --quiet --only-binary ":all:" pyyaml==6.0.3
       - name: Validate spec-drift.yml post-merge advisory contract
         run: python3 tests/dev-lead/integration/test_spec_drift_workflow.py
 
@@ -239,6 +239,6 @@ jobs:
         with:
           persist-credentials: false
       - name: Install PyYAML
-        run: python3 -m pip install --quiet pyyaml
+        run: python3 -m pip install --quiet --only-binary ":all:" pyyaml==6.0.3
       - name: Validate pr-auto-review.yml skips Dependabot and pins @pr-auto-review/v1-next
         run: python3 tests/dev-lead/integration/test_pr_auto_review_stub.py
