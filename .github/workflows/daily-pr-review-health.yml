@@ -199,7 +199,8 @@ jobs:
           if [ -f pr_stall_report.md ]; then
             if [ "$(wc -c < pr_stall_report.md)" -gt 60000 ]; then
               last_line=$(awk '{s+=length($0)+1; if(s>60000){print NR-1; exit}} END{if(s<=60000) print NR}' pr_stall_report.md)
-              head -n "${last_line:-0}" pr_stall_report.md > pr_stall_report.md.tmp
+              last_line=$((last_line > 0 ? last_line : 1))
+              head -n "${last_line}" pr_stall_report.md > pr_stall_report.md.tmp
               mv pr_stall_report.md.tmp pr_stall_report.md
               printf '\n\n---\n_Report truncated at 60 000 bytes._\n' >> pr_stall_report.md
             fi
@@ -265,7 +266,8 @@ jobs:
           if [ -f pr_mergeready_report.md ]; then
             if [ "$(wc -c < pr_mergeready_report.md)" -gt 60000 ]; then
               last_line=$(awk '{s+=length($0)+1; if(s>60000){print NR-1; exit}} END{if(s<=60000) print NR}' pr_mergeready_report.md)
-              head -n "${last_line:-0}" pr_mergeready_report.md > pr_mergeready_report.md.tmp
+              last_line=$((last_line > 0 ? last_line : 1))
+              head -n "${last_line}" pr_mergeready_report.md > pr_mergeready_report.md.tmp
               mv pr_mergeready_report.md.tmp pr_mergeready_report.md
               printf '\n\n---\n_Report truncated at 60 000 bytes._\n' >> pr_mergeready_report.md
             fi

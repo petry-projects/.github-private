@@ -149,7 +149,7 @@ while IFS= read -r pr; do
   html_url=$(jq -r '.url // ""' <<< "$snapshot")
   updated_at=$(jq -r '.updatedAt // ""' <<< "$snapshot")
 
-  ci_status=$(compute_ci_status "$(jq '.statusCheckRollup' <<< "$snapshot")")
+  ci_status=$(compute_ci_status "$(jq '[.statusCheckRollup[]? | select(.isRequired == true)]' <<< "$snapshot")")
 
   # Human-gate exclusions (AC#2). Only the current label state is consulted.
   labels_json=$(jq -c '[.labels[]?.name]' <<< "$snapshot" 2>/dev/null || echo '[]')
@@ -164,7 +164,7 @@ while IFS= read -r pr; do
   # "commit, comment, or check run". gather_pr_automation_events returns [] on API
   # failure; a PR always has ≥1 commit, so [] is a reliable signal the event API is
   # unavailable — skip rather than emit a false stranded signal.
-  events=$(gather_pr_automation_events "$pr" "$REPO")
+  events=$(gather_pr_automation_events "$pr" "$REPO") || events=""
   if [ "$events" = "[]" ] || [ -z "$events" ]; then
     echo "  skip PR #${pr} — event API returned no data (possible rate-limit or error); skipping to avoid false merge-ready signal"
     scan_incomplete=true
