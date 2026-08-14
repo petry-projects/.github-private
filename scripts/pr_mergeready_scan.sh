@@ -175,10 +175,14 @@ while IFS= read -r pr; do
     [ (.statusCheckRollup // [])[]
       | (.completedAt // .startedAt // .completed_at // .started_at // "")
       | select(. != null and . != "") ] | max // ""' <<< "$snapshot" 2>/dev/null || echo "")
-  # Most recent of event / check-run / updatedAt (string ISO-8601 compares safely).
-  last_activity=$(printf '%s\n%s\n%s\n' "$last_event" "$last_check" "$updated_at" \
-    | jq -R . | jq -s 'map(select(. != "")) | max // ""' -r 2>/dev/null || echo "")
-  [ -n "$last_activity" ] || last_activity="$updated_at"
+  # Most recent of event / check-run / updatedAt (ISO-8601 sorts lexicographically).
+  last_activity="$updated_at"
+  if [[ "$last_event" > "$last_activity" ]]; then
+    last_activity="$last_event"
+  fi
+  if [[ "$last_check" > "$last_activity" ]]; then
+    last_activity="$last_check"
+  fi
   hours_idle=$(pr_mergeready_hours_since "$last_activity" "$now_epoch")
 
   # Compute the #1425 discriminator only when the PR is otherwise a merge-ready

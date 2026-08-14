@@ -146,7 +146,7 @@ pr_mergeready_thread_agent_blocked() {
     else
       [ (.reviewThreads // [])[]
         | select(.isResolved != true)
-        | (.comments.nodes[0].author // null) as $a
+        | (.comments?.nodes?[0]?.author // null) as $a
         | select($a != null)
         | select(($a.__typename // "") == "Bot")
         | (($a.login // "") | strip) as $login
