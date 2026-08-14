@@ -243,6 +243,72 @@ jobs:
             });
             core.notice(`Stall issue created: ${issue.data.html_url}`);
 
+      # Merge-ready-and-idle detection net (#1469, epic #1402). The third member of
+      # the runaway (#948) / stall (#1410) detection family: a pure gh-API + jq sweep
+      # of every open PR for the SILENT failure mode #1451 sat in for 77h — APPROVED
+      # + MERGEABLE + green on required checks, yet idle with no agent acting and
+      # nothing reporting it. It classifies this DISTINCTLY from #1425 (agent-blocked
+      # by an untrusted-bot thread) and #1427 (reviewer deferring on a pending check),
+      # neither of which is double-counted. Detect-only — no PR is mutated, nudged, or
+      # auto-merged (a well-meaning nudge can itself re-arm the churn this epic fights,
+      # see #1427 Case A). Sets HAS_MERGEREADY when any candidate is found, surfaced
+      # through the same health-check / automated-report issue channel. No new
+      # scheduled workload.
+      - name: Scan for merge-ready idle PRs
+        env:
+          GH_TOKEN: ${{ secrets.DON_PETRY_BOT_GH_PAT }}
+          REPO: ${{ github.repository }}
+        run: bash scripts/pr_mergeready_scan.sh
+
+      - name: Truncate merge-ready report if needed
+        run: |
+          if [ -f pr_mergeready_report.md ]; then
+            if [ "$(wc -c < pr_mergeready_report.md)" -gt 60000 ]; then
+              last_line=$(awk '{s+=length($0)+1; if(s>60000){print NR-1; exit}} END{if(s<=60000) print NR}' pr_mergeready_report.md)
+              head -n "${last_line:-0}" pr_mergeready_report.md > pr_mergeready_report.md.tmp
+              mv pr_mergeready_report.md.tmp pr_mergeready_report.md
+              printf '\n\n---\n_Report truncated at 60 000 bytes._\n' >> pr_mergeready_report.md
+            fi
+          fi
+
+      - name: Create merge-ready-candidate issue
+        if: env.HAS_MERGEREADY == 'true' && hashFiles('pr_mergeready_report.md') != ''
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const fs = require('fs');
+            const report = fs.readFileSync('pr_mergeready_report.md', 'utf8');
+            if (!report.trim()) {
+              core.setFailed('Merge-ready report file is empty');
+              return;
+            }
+            const today = new Date().toISOString().split('T')[0];
+            const titlePrefix = 'Merge-ready but idle PR candidate(s) detected';
+            // Date-stamped title → a fresh issue every run. Close prior open ones.
+            const priors = await github.paginate(github.rest.issues.listForRepo, {
+              owner: context.repo.owner, repo: context.repo.repo,
+              state: 'open', labels: 'health-check,automated-report', per_page: 100,
+            });
+            for (const p of priors) {
+              if (!p.pull_request && p.title.startsWith(titlePrefix)) {
+                try {
+                  await github.rest.issues.update({
+                    owner: context.repo.owner, repo: context.repo.repo,
+                    issue_number: p.number, state: 'closed', state_reason: 'completed',
+                  });
+                } catch (err) { core.warning(`could not close prior digest #${p.number}: ${err.message}`); }
+              }
+            }
+            const issue = await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `${titlePrefix} ${today}`,
+              body: report,
+              labels: ['health-check', 'automated-report'],
+            });
+            core.notice(`Merge-ready issue created: ${issue.data.html_url}`);
+
       # Durable, affirmative MCP-connectivity monitor (#903, part of #676).
       # Additive final step: when .github/review-mcp.json is present, assert that
       # the configured server(s) handshake through the same flags engine.sh uses
