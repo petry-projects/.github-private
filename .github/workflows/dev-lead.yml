@@ -61,9 +61,9 @@ jobs:
     # dependency). Promotion is done by moving the dev-lead/v1-stable tag centrally; this
     # caller is never edited on release. agent_ref threads the same channel into
     # dev-lead's own scripts/prompts checkout. See https://github.com/petry-projects/.github/blob/main/standards/ci-standards.md#dev-lead-agent.
-    uses: petry-projects/.github-private/.github/workflows/dev-lead-reusable.yml@dev-lead/stable  # NOSONAR(githubactions:S7637) first-party channel ref
+    uses: petry-projects/.github-private/.github/workflows/dev-lead-reusable.yml@dev-lead/v1-stable  # NOSONAR(githubactions:S7637) first-party channel ref
     with:
-      agent_ref: dev-lead/stable
+      agent_ref: dev-lead/v1-stable
     secrets: inherit  # NOSONAR(githubactions:S7635) first-party trusted reusable
     permissions:
       contents: write

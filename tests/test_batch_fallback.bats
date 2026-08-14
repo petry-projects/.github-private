@@ -135,7 +135,6 @@ exit 0
 EOF
   chmod +x "scripts/review-one-pr.sh"
 
-  rm -f engine_calls.txt
   export REVIEW_ENGINE="gemini"
   run bash scripts/review-batch.sh
 

@@ -224,7 +224,19 @@ while IFS= read -r pr_url; do
   run_review_capture "$pr_url" || rc=$?
 
   # Treat known engine-unavailable setup/runtime errors as fallback-eligible
-  if [ "$rc" -eq 55 ]; then
+  if [ "$rc" -eq 55 ] || [ "$rc" -eq 127 ]; then
+    echo "::warning::Engine ${REVIEW_ENGINE:-claude} unavailable at runtime (exit $rc) — treating as fallback-eligible"
+    rc=2
+  fi
+
+  # Treat known engine-unavailable setup/runtime errors as fallback-eligible
+  if [ "$rc" -eq 55 ] || [ "$rc" -eq 127 ]; then
+    echo "::warning::Engine ${REVIEW_ENGINE:-claude} unavailable at runtime (exit $rc) — treating as fallback-eligible"
+    rc=2
+  fi
+
+  # Treat known engine-unavailable setup/runtime errors as fallback-eligible
+  if [ "$rc" -eq 55 ] || [ "$rc" -eq 127 ]; then
     echo "::warning::Engine ${REVIEW_ENGINE:-claude} unavailable at runtime (exit $rc) — treating as fallback-eligible"
     rc=2
   fi
