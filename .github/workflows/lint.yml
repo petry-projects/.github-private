@@ -137,7 +137,8 @@ jobs:
             tests/test_validate_workflow_schedules.bats \
             tests/caller_stub_freeze.bats \
             tests/pr_review_canary.bats \
-            tests/dev-lead/unit/test_maintainer_review_thread_gate.bats
+            tests/dev-lead/unit/test_maintainer_review_thread_gate.bats \
+            tests/dev-lead/unit/test_conflict_integrity.bats
 
   actionlint:
     # General workflow linting (#1256, epic #1052 Part D): actionlint validates
