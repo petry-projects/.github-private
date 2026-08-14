@@ -230,7 +230,7 @@ breaks post-merge (the #1034 defect). This guard closes that gap.
 The `caller-stub-freeze` job in `lint.yml` (#1255, epic #1052 Part B) is the byte-identity **backstop** to
 `validate-caller-inputs` for the specific **ring-0 / self-host** caller stubs — the ones whose reusable lives
 in **this** repo and is pinned to a canary channel tag (`docs/initiatives/agentic-release-strategy.md` §5):
-`dev-lead.yml` (`@dev-lead/v1-next`), `pr-review-trigger.yml` (`@pr-review/next`), and
+`dev-lead.yml` (`@dev-lead/v1-stable`), `pr-review-trigger.yml` (`@pr-review/next`), and
 `ci-failure-analyst.lock.yml` (`@ci-failure-analyst/v1-stable`). A trigger/`with:` forwarding change to a
 channel-pinned self-host stub is exercised by nothing in PR CI and only breaks post-merge (the #1034 defect
 class), so each stub's `on:` trigger + `uses:`/`with:` forwarding block is frozen byte-for-byte against a

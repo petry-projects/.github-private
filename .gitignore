@@ -418,3 +418,6 @@ coverage/
 # actionlint scanner binary — downloaded fresh in CI, never committed
 /actionlint
 /actionlint.tar.gz
+
+# Editor/tooling backup artifacts — never committed (see #1378)
+*.backup

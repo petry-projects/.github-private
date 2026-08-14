@@ -94,6 +94,7 @@ brings stubs *into* compliance and is the opposite of a violation. The HIGH
 signals above (hard-stops, a secret in a `run:` step, a third-party reusable, a
 CI security warning) still apply and still escalate.
 
+
 ### MEDIUM (auto-approve allowed if all gates pass)
 
 - Non-trivial logic changes in application code that aren't HIGH.
@@ -130,6 +131,7 @@ purpose (deploy the org-standard stub). Do not escalate one solely for a missing
 linked issue, a thin description, or "not well-structured." Gates 2, 4, and 5 —
 green CI, no unresolved change requests, no unanswered human questions — still
 apply in full.
+
 
 ## Output format (MANDATORY)
 
