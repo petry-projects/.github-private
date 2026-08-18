@@ -276,6 +276,32 @@ TRUSTED_CSV="copilot-pull-request-reviewer[bot],coderabbitai[bot],graphite-app[b
   [ "$status" -ne 0 ]
 }
 
+@test "untrusted-bot thread on a paginated second page (combined nodes) is agent-blocked" {
+  # mergeready_fetch_review_threads aggregates all pages into one array before
+  # returning.  This test passes combined nodes from what would be two pages and
+  # verifies that an untrusted-bot thread appearing after the first 100 nodes is
+  # still correctly detected as agent-blocked.
+  local threads
+  threads='{"reviewThreads":[
+    {"isResolved":false,"comments":{"nodes":[{"author":{"login":"coderabbitai","__typename":"Bot"}}]}},
+    {"isResolved":false,"comments":{"nodes":[{"author":{"login":"graphite-app","__typename":"Bot"}}]}},
+    {"isResolved":false,"comments":{"nodes":[{"author":{"login":"second-page-unknown-bot","__typename":"Bot"}}]}}
+  ]}'
+  run pr_mergeready_thread_agent_blocked "$threads" "$TRUSTED_CSV"
+  [ "$status" -eq 0 ]
+}
+
+@test "failed thread query (empty threads_json) does NOT cause agent-blocked classification" {
+  # When mergeready_fetch_review_threads fails (returns exit 1), the scan marks
+  # the PR scan_incomplete and skips it — it does NOT pass empty JSON to this
+  # function.  This test confirms the pure classification function itself is safe
+  # against empty/missing data: empty input is NOT agent-blocked.
+  run pr_mergeready_thread_agent_blocked '' "$TRUSTED_CSV"
+  [ "$status" -ne 0 ]
+  run pr_mergeready_thread_agent_blocked '{"reviewThreads":[]}' "$TRUSTED_CSV"
+  [ "$status" -ne 0 ]
+}
+
 # ---------------------------------------------------------------------------
 # pr_mergeready_hours_since — ISO-8601 -> integer hours since (injected now)
 # ---------------------------------------------------------------------------

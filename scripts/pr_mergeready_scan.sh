@@ -80,12 +80,28 @@ mergeready_fetch_review_threads() {
   local pr="${1:-}"
   [ -n "$pr" ] || return 0
   local pr_url="https://github.com/${REPO}/pull/${pr}"
-  # shellcheck disable=SC2016  # $url is a GraphQL variable placeholder, not shell
-  local _gql='query($url:URI!){resource(url:$url){...on PullRequest{reviewThreads(first:100){nodes{isResolved comments(first:1){nodes{author{login __typename}}}}}}}}'
-  local _raw
-  _raw=$(gh api graphql -f query="$_gql" -f url="$pr_url" 2>/dev/null) || return 0
-  [ -n "$_raw" ] || return 0
-  printf '%s' "$_raw" | jq '{reviewThreads: (.data?.resource?.reviewThreads?.nodes // [])}' 2>/dev/null || return 0
+  # Two query shapes: first page (no cursor) and subsequent pages (with cursor).
+  # shellcheck disable=SC2016  # $url/$cursor are GraphQL variable placeholders, not shell
+  local _gql_first='query($url:URI!){resource(url:$url){...on PullRequest{reviewThreads(first:100){nodes{isResolved comments(first:1){nodes{author{login __typename}}}}pageInfo{hasNextPage endCursor}}}}}'
+  # shellcheck disable=SC2016
+  local _gql_next='query($url:URI!,$cursor:String!){resource(url:$url){...on PullRequest{reviewThreads(first:100,after:$cursor){nodes{isResolved comments(first:1){nodes{author{login __typename}}}}pageInfo{hasNextPage endCursor}}}}}'
+  local all_nodes='[]' cursor="" has_next="true" _raw _page_nodes
+
+  while [ "$has_next" = "true" ]; do
+    if [ -z "$cursor" ]; then
+      _raw=$(gh api graphql -f query="$_gql_first" -f url="$pr_url" 2>/dev/null) || return 1
+    else
+      _raw=$(gh api graphql -f query="$_gql_next" -f url="$pr_url" -f cursor="$cursor" 2>/dev/null) || return 1
+    fi
+    [ -n "$_raw" ] || return 1
+    _page_nodes=$(printf '%s' "$_raw" | jq '.data?.resource?.reviewThreads?.nodes // empty' 2>/dev/null) || return 1
+    [ -n "$_page_nodes" ] || return 1
+    all_nodes=$(jq -n --argjson a "$all_nodes" --argjson b "$_page_nodes" '$a + $b') || return 1
+    has_next=$(printf '%s' "$_raw" | jq -r '.data?.resource?.reviewThreads?.pageInfo?.hasNextPage // false' 2>/dev/null) || return 1
+    cursor=$(printf '%s' "$_raw" | jq -r '.data?.resource?.reviewThreads?.pageInfo?.endCursor // ""' 2>/dev/null) || return 1
+  done
+
+  printf '%s' "$all_nodes" | jq '{reviewThreads: .}'
 }
 
 # ---------------------------------------------------------------------------
@@ -194,7 +210,11 @@ while IFS= read -r pr; do
      && [ "$mergeable" = "MERGEABLE" ] \
      && [ "$ci_status" = "passing" ] \
      && [ "$hours_idle" -gt "$(_mergeready_threshold "${MERGEREADY_MIN_AGE_HOURS}" 12)" ]; then
-    threads_json=$(mergeready_fetch_review_threads "$pr")
+    if ! threads_json=$(mergeready_fetch_review_threads "$pr"); then
+      echo "  skip PR #${pr} — review-thread query failed (API error or parse failure); skipping to avoid false merge-ready signal"
+      scan_incomplete=true
+      continue
+    fi
     if [ -n "$threads_json" ] && pr_mergeready_thread_agent_blocked "$threads_json" "$TRUSTED_BOTS"; then
       agent_blocked=true
     fi

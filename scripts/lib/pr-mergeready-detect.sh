@@ -103,7 +103,9 @@ pr_mergeready_is_gated() {
     return 0
   fi
   local lbl
-  for lbl in $MERGEREADY_HOLD_LABELS; do
+  local -a hold_labels
+  read -r -a hold_labels <<< "$MERGEREADY_HOLD_LABELS"
+  for lbl in "${hold_labels[@]}"; do
     if jq -e --arg l "$lbl" \
          'if type == "array" then any(.[]; . == $l) else false end' \
          <<<"$labels_json" >/dev/null 2>&1; then
