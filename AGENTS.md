@@ -371,6 +371,19 @@ dev-lead regress to committing as the review-only machine user `donpetry-bot`
   `standards/persona-standards.md` §5.1 and
   `docs/pr-review-agent/machine-user-setup.md`.
 
+### Pausing the agent fleet (`AGENTS_PAUSED`)
+
+To take the agents offline deliberately (quota conservation, incident response),
+set the Actions **variable** `AGENTS_PAUSED=true` (repo- or org-level) — do
+**not** delete or withhold `CLAUDE_CODE_OAUTH_TOKEN`. With the variable set,
+dev-lead's dispatch/relay/resume jobs skip cleanly (neutral, not red) and
+`validate-engines.sh` reports the paused state distinctly. Withholding the
+secret instead presents as a fleet-wide outage of failing dispatch runs that
+took real diagnosis time when it happened (2026-08-16, #1525). Resume by
+deleting the variable or setting it to anything other than `true`. If the
+secret is genuinely missing while unpaused, the reusable's "Engine token
+preflight" step fails with a single actionable error naming the secret.
+
 ### Initiative Planner — blocking open-questions gate
 
 `scripts/initiative-planner/apply-plan.sh` will **not** materialize an epic + sub-issue
