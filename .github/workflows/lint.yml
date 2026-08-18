@@ -73,6 +73,7 @@ jobs:
             tests/test_pr_runaway_detect.bats \
             tests/test_pr_stall_detect.bats \
             tests/test_pr_stall_regression.bats \
+            tests/test_pr_mergeready_detect.bats \
             tests/test_premature_closure_detect.bats \
             tests/test_ci_status.bats \
             tests/test_push_protection.bats \
