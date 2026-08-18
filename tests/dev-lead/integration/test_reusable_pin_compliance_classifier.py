@@ -275,6 +275,49 @@ def test_nested_workflow_included_in_inventory() -> None:
         check("DEPRECATED" in proc.stdout, f"nested pin inventoried as DEPRECATED -> {proc.stdout}")
 
 
+def test_scan_file_four_space_job_indent_line_mapping_and_comment() -> None:
+    """Four-space job-key indentation: line mapping and comment detection must both work."""
+    print("test_scan_file_four_space_job_indent_line_mapping_and_comment")
+    # Deprecated legacy pin at four-space indent — line must be captured (not 0).
+    body_deprecated = (
+        "name: x\n"
+        "on: [push]\n"
+        "jobs:\n"
+        "    review:\n"
+        "        uses: petry-projects/.github-private/.github/workflows/pr-review.yml"
+        "@pr-review/next\n"
+    )
+    with tempfile.TemporaryDirectory() as d:
+        p = _write(Path(d), "wf.yml", body_deprecated)
+        violations, deprecations, checked, canonical = mod.scan_file(p)
+        check(not violations, f"no violations for four-space job indent (deprecated) -> {violations}")
+        check(len(deprecations) == 1, f"one deprecation at four-space indent -> {len(deprecations)}")
+        if deprecations:
+            check(
+                deprecations[0]["line"] == 5,
+                f"correct line 5 (not 0) for four-space job indent -> {deprecations[0].get('line')}",
+            )
+
+    # Canonical pin with off-channel comment at four-space indent — raw_comment_map()
+    # must capture the comment so the violation is reported (not silently bypassed).
+    body_canonical_comment = (
+        "name: x\n"
+        "on: [push]\n"
+        "jobs:\n"
+        "    review:\n"
+        "        uses: petry-projects/.github-private/.github/workflows/pr-review.yml"
+        "@pr-review/v1-stable  # main\n"
+    )
+    with tempfile.TemporaryDirectory() as d:
+        p = _write(Path(d), "wf.yml", body_canonical_comment)
+        violations, deprecations, checked, canonical = mod.scan_file(p)
+        check(
+            len(violations) == 1,
+            f"canonical + off-channel comment is a violation at four-space indent -> {violations}",
+        )
+        check(not deprecations, f"no deprecations for canonical pin -> {deprecations}")
+
+
 def main() -> int:
     test_classify_ref_canonical()
     test_classify_ref_deprecated()
@@ -288,6 +331,7 @@ def main() -> int:
     test_scan_file_quoted_job_id_line_mapping()
     test_scan_file_deprecated_with_off_channel_comment_stays_warning()
     test_nested_workflow_included_in_inventory()
+    test_scan_file_four_space_job_indent_line_mapping_and_comment()
     if _failures:
         print(f"\nFAIL: {len(_failures)} classifier assertion(s) failed")
         return 1

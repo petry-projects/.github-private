@@ -76,17 +76,30 @@ USES_LINE_RE = re.compile(r"^\s*uses:\s*(?P<val>[^\s#]+)\s*(?P<comment>#.*)?$")
 # is the classic pin-with-branch-note that this standard forbids for first-party.
 OFF_CHANNEL_COMMENT_RE = re.compile(r"(?<![\w-])(?:main|master)(?![\w-])", re.IGNORECASE)
 
-# Matches a top-level job key line (two-space indent) with or without quoting:
-#   "  job-id:"   or   '  "job-id":'   or   "  'job-id':"
+# Matches a job key line at any consistent indentation (two-space, four-space, etc.)
+# with or without quoting.  The `indent` group captures leading spaces so callers
+# can detect and enforce the actual jobs-child indentation level.
 _JOB_KEY_RE = re.compile(
-    r"""^  (?:(?P<bare>[A-Za-z0-9_-]+)|["'](?P<quoted>[A-Za-z0-9_-]+)["']):\s*(?:#.*)?$"""
+    r"""^(?P<indent> +)(?:(?P<bare>[A-Za-z0-9_-]+)|["'](?P<quoted>[A-Za-z0-9_-]+)["']):\s*(?:#.*)?$"""
 )
 
 
-def _parse_job_id(line: str) -> str | None:
-    """Return the job ID from a top-level job-key line, or None if not a job key."""
+def _detect_job_indent(line: str) -> str | None:
+    """Return the leading-space string if `line` looks like a job key, else None."""
+    m = _JOB_KEY_RE.match(line)
+    return m.group("indent") if m else None
+
+
+def _parse_job_id(line: str, expected_indent: str | None = None) -> str | None:
+    """Return the job ID if `line` is a job-key line at `expected_indent`, else None.
+
+    When `expected_indent` is None any leading-space indent is accepted (only safe
+    before the first job key has been seen and the indent level is known).
+    """
     m = _JOB_KEY_RE.match(line)
     if not m:
+        return None
+    if expected_indent is not None and m.group("indent") != expected_indent:
         return None
     return m.group("bare") or m.group("quoted")
 
@@ -176,18 +189,23 @@ def raw_comment_map(text: str) -> dict[tuple[str, str], str]:
     out: dict[tuple[str, str], str] = {}
     current_job: str | None = None
     in_jobs = False
+    job_indent: str | None = None
     for line in text.splitlines():
         if line.strip() == "jobs:":
             in_jobs = True
+            job_indent = None
             continue
         if in_jobs:
-            job_id = _parse_job_id(line)
+            if job_indent is None:
+                job_indent = _detect_job_indent(line)
+            job_id = _parse_job_id(line, job_indent)
             if job_id is not None:
                 current_job = job_id
                 continue
             elif re.match(r"^[^#\s]", line):
                 in_jobs = False
                 current_job = None
+                job_indent = None
                 continue
             if current_job:
                 m_uses = USES_LINE_RE.match(line)
@@ -202,18 +220,23 @@ def uses_line_map(text: str) -> dict[tuple[str, str], int]:
     out: dict[tuple[str, str], int] = {}
     current_job: str | None = None
     in_jobs = False
+    job_indent: str | None = None
     for i, line in enumerate(text.splitlines(), start=1):
         if line.strip() == "jobs:":
             in_jobs = True
+            job_indent = None
             continue
         if in_jobs:
-            job_id = _parse_job_id(line)
+            if job_indent is None:
+                job_indent = _detect_job_indent(line)
+            job_id = _parse_job_id(line, job_indent)
             if job_id is not None:
                 current_job = job_id
                 continue
             elif re.match(r"^[^#\s]", line):
                 in_jobs = False
                 current_job = None
+                job_indent = None
                 continue
             if current_job:
                 m_uses = USES_LINE_RE.match(line)
