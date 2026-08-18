@@ -19,7 +19,7 @@ on:
 permissions: {}
 
 concurrency:
-  group: duplicate-decl-gate-${{ github.ref }}-${{ github.sha }}
+  group: duplicate-decl-gate-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:

@@ -7,11 +7,7 @@ setup() {
   REPO_ROOT="$(cd "$BATS_TEST_DIRNAME/.." && pwd)"
   GATE="$REPO_ROOT/scripts/check-duplicate-decls.sh"
   FIXTURES="$REPO_ROOT/tests/dev-lead/fixtures/conflict-integrity"
-  WORKDIR="$(mktemp -d)"
-}
-
-teardown() {
-  rm -rf "$WORKDIR"
+  WORKDIR="$BATS_TEST_TMPDIR"
 }
 
 @test "gate: repo's own scripts/ tree is clean (green on restored main)" {
@@ -45,6 +41,23 @@ two() { echo 2; }
 EOF
   run bash "$GATE" "$WORKDIR"
   [ "$status" -eq 0 ]
+}
+
+@test "gate: catches duplicates defined with multiline 'name()\\n{' syntax" {
+  cat > "$WORKDIR/multiline_dup.sh" <<'EOF'
+#!/usr/bin/env bash
+foo()
+{
+  echo 1
+}
+foo()
+{
+  echo 2
+}
+EOF
+  run bash "$GATE" "$WORKDIR"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"foo"* ]]
 }
 
 @test "gate: scans nested lib/ subdirectories" {
