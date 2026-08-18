@@ -60,6 +60,18 @@ _gemini_billing_probe() {
 validate_engines() {
   local claude_ok=false gemini_ok=false copilot_ok=false
 
+  # Deliberate fleet pause (#1525): AGENTS_PAUSED=true is a maintainer decision,
+  # not a misconfiguration — report it distinctly and skip availability probes
+  # so the paused state is never mistaken for missing/broken engine credentials.
+  if [ "${AGENTS_PAUSED:-false}" = "true" ]; then
+    echo "::notice::validate-engines: agent fleet deliberately paused (AGENTS_PAUSED=true) — engine availability not evaluated (#1525)"
+    if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+      echo "**Engines: fleet paused** (\`AGENTS_PAUSED=true\`, #1525) — availability not evaluated." >> "$GITHUB_STEP_SUMMARY"
+    fi
+    export CLAUDE_AVAILABLE=false GEMINI_AVAILABLE=false COPILOT_AVAILABLE=false
+    return 0
+  fi
+
   # ── Claude ──────────────────────────────────────────────────────────────────
   if command -v claude >/dev/null 2>&1 && [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
     claude_ok=true
