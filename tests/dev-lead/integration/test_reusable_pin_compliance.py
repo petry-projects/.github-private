@@ -126,6 +126,25 @@ def classify_ref(ref: str) -> tuple[str, str | None]:
     return "ok", None
 
 
+def _expected_channel_name(job_path: str) -> str | None:
+    """Return the expected ref name-prefix for a first-party reusable path, or None.
+
+    Derives the channel-name segment from the reusable filename:
+      dev-lead-reusable.yml  → 'dev-lead'
+      pr-review.yml          → 'pr-review'
+    Returns None when the path is not a recognised first-party reusable.
+    """
+    m = FIRST_PARTY_PATH_RE.match(job_path)
+    if not m:
+        return None
+    filename = m.group("file")
+    for suffix in ("-reusable.yml", "-reusable.yaml"):
+        if filename.endswith(suffix):
+            return filename[: -len(suffix)]
+    # pr-review.yml / pr-review.yaml (special allowlisted non-reusable name)
+    return filename.rsplit(".", 1)[0]
+
+
 def off_channel_comment(comment: str | None) -> bool:
     if not comment:
         return False
@@ -224,6 +243,19 @@ def scan_file(path: Path) -> tuple[list[str], list[dict], int, int]:
             continue
         checked += 1
         status, detail = classify_ref(ref)
+        # Reject refs whose name prefix doesn't match the reusable filename's channel name.
+        # A ref like 'pr-review/v1-stable' on 'dev-lead-reusable.yml' would otherwise
+        # pass as canonical even though it points to the wrong reusable's channel.
+        if status != "violation" and "/" in ref:
+            ref_name = ref.split("/")[0]
+            expected_name = _expected_channel_name(job_path)
+            if expected_name and ref_name != expected_name:
+                filename = job_path.rsplit("/", 1)[-1]
+                status = "violation"
+                detail = (
+                    f"ref name mismatch: '@{ref}' does not belong to '{filename}' "
+                    f"(expected prefix '{expected_name}/')"
+                )
         if status == "violation":
             violations.append(f"{path}: job '{job_id}': {detail}")
         elif status == "deprecated":

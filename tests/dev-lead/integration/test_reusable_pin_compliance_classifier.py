@@ -175,12 +175,52 @@ def test_cli_sha_still_fails() -> None:
         check(proc.returncode == 1, f"SHA pin still fails -> {proc.returncode}")
 
 
+def test_scan_file_rejects_canonical_ref_with_mismatched_name() -> None:
+    """A syntactically canonical ref whose name prefix does not match the reusable is a violation."""
+    print("test_scan_file_rejects_canonical_ref_with_mismatched_name")
+    # dev-lead-reusable.yml expects 'dev-lead/' prefix; 'pr-review/' belongs to another reusable.
+    body = (
+        "jobs:\n"
+        "  dl:\n"
+        "    uses: petry-projects/.github-private/.github/workflows/dev-lead-reusable.yml"
+        "@pr-review/v1-stable\n"
+    )
+    with tempfile.TemporaryDirectory() as d:
+        p = _write(Path(d), "wf.yml", body)
+        violations, deprecations, checked, canonical = mod.scan_file(p)
+        check(len(violations) == 1, f"mismatched canonical name is a violation -> {violations}")
+        check(
+            any("mismatch" in v for v in violations),
+            f"violation message mentions mismatch -> {violations}",
+        )
+        check(not deprecations, f"not classified as deprecation -> {deprecations}")
+
+
+def test_scan_file_rejects_legacy_ref_with_mismatched_name() -> None:
+    """A syntactically deprecated ref whose name prefix does not match the reusable is a violation, not a warning."""
+    print("test_scan_file_rejects_legacy_ref_with_mismatched_name")
+    # dev-lead-reusable.yml expects 'dev-lead/' prefix; 'other-name/' is wrong.
+    body = (
+        "jobs:\n"
+        "  dl:\n"
+        "    uses: petry-projects/.github-private/.github/workflows/dev-lead-reusable.yml"
+        "@other-name/next\n"
+    )
+    with tempfile.TemporaryDirectory() as d:
+        p = _write(Path(d), "wf.yml", body)
+        violations, deprecations, checked, canonical = mod.scan_file(p)
+        check(len(violations) == 1, f"mismatched legacy name is a violation -> {violations}")
+        check(not deprecations, f"not classified as deprecation -> {deprecations}")
+
+
 def main() -> int:
     test_classify_ref_canonical()
     test_classify_ref_deprecated()
     test_classify_ref_violation()
     test_scan_file_captures_line_and_suggestion()
     test_scan_file_canonical_passes_clean()
+    test_scan_file_rejects_canonical_ref_with_mismatched_name()
+    test_scan_file_rejects_legacy_ref_with_mismatched_name()
     test_cli_deprecated_is_warning_not_failure()
     test_cli_sha_still_fails()
     if _failures:
