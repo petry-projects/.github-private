@@ -25,8 +25,15 @@ extract_top_level_symbols() {
   local file="$1"
   [ -f "$file" ] || return 0
   awk '
-    # NAME() {   /   NAME()      (POSIX + ksh function forms), column 0 only.
+    # NAME() {   (POSIX + ksh, brace same line), column 0 only.
     /^[A-Za-z_][A-Za-z0-9_]*[[:space:]]*\(\)[[:space:]]*\{/ {
+      name = $0
+      sub(/[[:space:]]*\(\).*$/, "", name)
+      print "fn:" name
+      next
+    }
+    # NAME()      (brace on next line), column 0 only.
+    /^[A-Za-z_][A-Za-z0-9_]*[[:space:]]*\(\)[[:space:]]*$/ {
       name = $0
       sub(/[[:space:]]*\(\).*$/, "", name)
       print "fn:" name
