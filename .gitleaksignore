@@ -15,11 +15,10 @@ eb7fd4c955378d274794e38ee9b942912ce79c6f:tests/dev-lead/unit/test_engine_fallbac
 # 40-char classic-PAT-length test placeholder verbatim; commit a547c50 rewrote
 # it to avoid the literal. Fingerprint suppresses the historical commit's finding.
 334fac2ca4528d821b7511e1a0f8e5051a2aca65:.gitleaksignore:github-pat:5
-# commit 95fe0d4 (refactor: migrate to org-wide .github-private convention):
-# framework subtree import introduced test fixture files with dummy API keys used
-# for testing security scanning. These are not real credentials.
-95fe0d46addc83e56a0ba36468583c2970b104e3:frameworks/bmad-method/test/adversarial-review-tests/sample-content.md:generic-api-key:24
-95fe0d46addc83e56a0ba36468583c2970b104e3:frameworks/gsd/sdk/src/query/config-query.test.ts:generic-api-key:228
-95fe0d46addc83e56a0ba36468583c2970b104e3:frameworks/gsd/sdk/src/query/config-mutation.test.ts:generic-api-key:501
-95fe0d46addc83e56a0ba36468583c2970b104e3:frameworks/gsd/tests/commands.test.cjs:generic-api-key:759
-95fe0d46addc83e56a0ba36468583c2970b104e3:frameworks/gsd/tests/security-scan.test.cjs:generic-api-key:300
+# Framework test fixtures with sample/fake API keys (not real credentials).
+# These are included in the frameworks subtree (git subtree) as test data.
+68ab3109d74633dc4aa4c09ff58d1901795bbd11:frameworks/bmad-method/test/adversarial-review-tests/sample-content.md:generic-api-key:24
+68ab3109d74633dc4aa4c09ff58d1901795bbd11:frameworks/gsd/sdk/src/query/config-query.test.ts:generic-api-key:228
+68ab3109d74633dc4aa4c09ff58d1901795bbd11:frameworks/gsd/sdk/src/query/config-mutation.test.ts:generic-api-key:501
+68ab3109d74633dc4aa4c09ff58d1901795bbd11:frameworks/gsd/tests/security-scan.test.cjs:generic-api-key:300
+68ab3109d74633dc4aa4c09ff58d1901795bbd11:frameworks/gsd/tests/commands.test.cjs:generic-api-key:759
