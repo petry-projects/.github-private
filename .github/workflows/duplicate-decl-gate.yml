@@ -1,0 +1,36 @@
+name: duplicate-decl-gate
+
+# Required CI gate against the #1485 corruption class (#1520): fails any PR (or
+# main push) whose scripts/ tree contains a top-level function declared more
+# than once. Runs on EVERY pull request — no paths filter — because a required
+# check that is path-skipped never reports and blocks the merge forever; the
+# scan itself costs seconds. Complements the advisory, parent-aware detector on
+# the rebase path (scripts/lib/conflict-integrity.sh, #1482/#1496).
+#
+# Maintainer action after this lands: add the `duplicate-decl-gate` check to
+# branch protection's required status checks — the blocking property is the
+# point (a non-required red check is silently ignored by the cascade, #1427).
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions: {}
+
+concurrency:
+  group: duplicate-decl-gate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  duplicate-decl-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Reject duplicate top-level function declarations in scripts/
+        run: bash scripts/check-duplicate-decls.sh
