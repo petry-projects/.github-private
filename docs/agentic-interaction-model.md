@@ -219,6 +219,7 @@ backtick spans (e.g. `` `path/to/file.yml` ``) are allowed; the separator row us
 > | `.github/workflows/test.yml` | CI test workflow, not an agentic role |
 > | `.github/workflows/test-dev-lead.yml` | CI test workflow, not an agentic role |
 > | `.github/workflows/test-aw.yml` | CI test workflow, not an agentic role |
+> | `.github/workflows/duplicate-decl-gate.yml` | CI gate guard — enforces duplicate declaration check, not an agentic role |
 > | `.github/workflows/holdout-guard.yml` | Gate guard — enforces merge conditions, not an agentic role |
 > | `.github/workflows/test-deletion-guard.yml` | Gate guard — enforces test retention, not an agentic role |
 > | `.github/workflows/dependabot-automerge.yml` | Dependabot plumbing — thin caller stub |
