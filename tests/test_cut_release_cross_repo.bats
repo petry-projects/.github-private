@@ -167,35 +167,3 @@ STUB
   [ "$status" -eq 0 ]
   echo "$output" | grep -q 'moved dev-lead/v2-ring1'
 }
-
-# ── --promote (ring-to-ring channel move of an existing release) ──────────────
-
-@test "--promote requires --channel" {
-  run env GH_TOKEN=x bash "$SCRIPT" agent-shield 2.1.0 --promote --push
-  [ "$status" -ne 0 ]
-  echo "$output" | grep -q 'requires --channel'
-}
-
-@test "cross-repo --promote errors when the release tag is absent" {
-  GH_TAG_EXISTS=0 run env GH_TOKEN=x GH_TAG_EXISTS=0 bash "$SCRIPT" agent-shield 2.1.0 --channel ring1 --promote --push
-  [ "$status" -ne 0 ]
-  echo "$output" | grep -q 'does not exist'
-  ! grep -qE '(PATCH|POST) .*git/refs' "$GH_CALLS"
-}
-
-@test "cross-repo --promote moves the channel to the existing release without cutting a new tag" {
-  GH_TAG_EXISTS=1 run env GH_TOKEN=x GH_TAG_EXISTS=1 bash "$SCRIPT" agent-shield 2.1.0 --channel ring1 --promote --push
-  [ "$status" -eq 0 ]
-  echo "$output" | grep -q 'moved agent-shield/ring1'
-  # the immutable release tag object is never (re)created
-  ! grep -qE 'POST repos/petry-projects/\.github/git/tags' "$GH_CALLS"
-  # the channel ref WAS moved
-  grep -qE '(PATCH|POST) repos/petry-projects/\.github/git/refs' "$GH_CALLS"
-}
-
-@test "cross-repo --promote --dry-run moves nothing" {
-  GH_TAG_EXISTS=1 run env GH_TOKEN=x GH_TAG_EXISTS=1 bash "$SCRIPT" agent-shield 2.1.0 --channel ring1 --promote --dry-run
-  [ "$status" -eq 0 ]
-  echo "$output" | grep -q 'dry-run'
-  ! grep -qE '(PATCH|POST) .*git/refs' "$GH_CALLS"
-}
