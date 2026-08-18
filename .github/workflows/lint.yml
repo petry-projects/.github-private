@@ -48,6 +48,7 @@ jobs:
       - name: Run tests
         run: |
           scripts/run-bats.sh \
+            tests/test_duplicate_decl_gate.bats \
             tests/fleet_report.bats \
             tests/fleet_stub_drift.bats \
             tests/fleet_stub_remediate.bats \
