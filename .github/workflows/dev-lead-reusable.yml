@@ -19,7 +19,13 @@ on:
         default: "main"
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
-        required: true
+        # required:false (#1525) — a hard required:true fails the CALLER at
+        # secrets evaluation ("Secret … required, but not provided") before any
+        # step runs, so an absent/disabled token presents as an opaque fleet-wide
+        # dispatch failure (observed 2026-08-16). Presence is now enforced by the
+        # "Engine token preflight" step below with a single actionable error;
+        # deliberate pauses use the AGENTS_PAUSED variable instead.
+        required: false
       GH_PAT_DON_PETRY:
         # don-petry's write/workflows PAT (the account dev-lead commits/pushes as).
         # Canonical name under the GH_PAT_<ACCOUNT> schema; supersedes GH_PAT_WORKFLOWS,
@@ -83,7 +89,11 @@ jobs:
     # a bot-authored PR to intent=skip, reason=bot-pr; see tests/dev-lead/e2e/scenarios/
     # 01-skip-bot-pr.sh). Guarding at the job level skips cleanly before that checkout.
     # dev-lead is not a required check, and dependabot-automerge handles these PRs.
+    # AGENTS_PAUSED (#1525): a maintainer sets this Actions VARIABLE (visible,
+    # unlike secrets) to pause the fleet deliberately — jobs skip cleanly
+    # (neutral, not red) instead of failing on a withheld token.
     if: >-
+      vars.AGENTS_PAUSED != 'true' &&
       github.actor != 'dependabot[bot]' &&
       ((inputs.event_name == '' && github.event_name != 'check_run') ||
        (inputs.event_name != '' && inputs.event_name != 'check_run'))
@@ -130,6 +140,23 @@ jobs:
       TOKEN_WORKFLOW: dev-lead
 
     steps:
+      - name: Engine token preflight (#1525)
+        # With the secret declaration relaxed to required:false, presence is
+        # enforced here instead — one actionable line, not a secrets-evaluation
+        # stack error on every event.
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          if [ -z "$CLAUDE_CODE_OAUTH_TOKEN" ]; then
+            msg="CLAUDE_CODE_OAUTH_TOKEN is not provided to dev-lead-reusable."
+            msg="$msg To pause deliberately, set AGENTS_PAUSED=true Actions variable"
+            msg="$msg instead of withholding the secret (see #1525)."
+            msg="$msg Otherwise restore the secret (claude setup-token) in the calling repo/org."
+            echo "::error::$msg"
+            exit 1
+          fi
+          echo "engine token present — proceeding"
+
       - name: Checkout caller repo
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -418,6 +445,7 @@ jobs:
   # fires repository_dispatch dev-lead-ci-failure back to the calling repo.
   ci-relay:
     if: >-
+      vars.AGENTS_PAUSED != 'true' &&
       github.event_name == 'check_run' &&
       github.event.action == 'completed' &&
       github.event.check_run.conclusion == 'failure' &&
@@ -523,11 +551,12 @@ jobs:
   # wakes dispatch, but resuming there too is harmless (budget-gated).
   resume:
     if: >-
-      (github.event_name == 'pull_request_review' && github.event.action == 'submitted') ||
+      vars.AGENTS_PAUSED != 'true' &&
+      ((github.event_name == 'pull_request_review' && github.event.action == 'submitted') ||
       (github.event_name == 'check_run' &&
        github.event.action == 'completed' &&
        github.event.check_run.conclusion == 'success' &&
-       !startsWith(github.event.check_run.name, 'dev-lead / '))
+       !startsWith(github.event.check_run.name, 'dev-lead / ')))
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -536,6 +565,20 @@ jobs:
       issues: read
 
     steps:
+      - name: Engine token preflight (#1525)
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          if [ -z "$CLAUDE_CODE_OAUTH_TOKEN" ]; then
+            msg="CLAUDE_CODE_OAUTH_TOKEN is not provided to dev-lead-reusable."
+            msg="$msg To pause deliberately, set AGENTS_PAUSED=true Actions variable"
+            msg="$msg instead of withholding the secret (see #1525)."
+            msg="$msg Otherwise restore the secret (claude setup-token) in the calling repo/org."
+            echo "::error::$msg"
+            exit 1
+          fi
+          echo "engine token present — proceeding"
+
       - name: Checkout dev-lead scripts
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
