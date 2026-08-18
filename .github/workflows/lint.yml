@@ -12,6 +12,17 @@ on:
       - 'evals/**'
       - 'release/**'
       - '.gitleaks.toml'
+  # Post-merge coverage parity with `unit` (#1486, epic #1402): re-run the bats
+  # suite against actual trunk state after every merge so shell-script behavioral
+  # regressions surface on `main`, not just on PRs. Paths are scoped to the
+  # bats-relevant surface. `template-drift` opts OUT of push runs (see its `if:`)
+  # while it is known-red under #1448.
+  push:
+    branches: [main]
+    paths:
+      - 'scripts/**'
+      - 'tests/**'
+      - '.github/workflows/**'
   workflow_dispatch:
 
 permissions:
@@ -136,6 +147,7 @@ jobs:
             tests/persona_runner.bats \
             tests/test_dev_lead_concurrency_guard.bats \
             tests/test_validate_workflow_schedules.bats \
+            tests/test_lint_main_push_trigger.bats \
             tests/caller_stub_freeze.bats \
             tests/pr_review_canary.bats \
             tests/dev-lead/unit/test_maintainer_review_thread_gate.bats \
@@ -244,6 +256,11 @@ jobs:
     # distribution layer of standards/ and never becomes a competing fork. Reuses the
     # byte-identity (blob-SHA) model from scripts/fleet_stub_drift.sh. PR-triggered via
     # this existing Lint workflow — no new scheduled/cron workload is added.
+    #
+    # Excluded from the main-push trigger (#1486, AC4): this job is known-red under
+    # #1448, so it must not fail every merge until that is resolved. It still runs
+    # on pull_request and workflow_dispatch exactly as before.
+    if: github.event_name != 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
