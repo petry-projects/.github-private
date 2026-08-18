@@ -148,7 +148,11 @@ jobs:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
         run: |
           if [ -z "$CLAUDE_CODE_OAUTH_TOKEN" ]; then
-            echo "::error::CLAUDE_CODE_OAUTH_TOKEN is not provided to dev-lead-reusable. To pause the agent fleet deliberately, set the AGENTS_PAUSED=true Actions variable instead of withholding the secret (see #1525). Otherwise restore the secret (claude setup-token) in the calling repo/org."
+            msg="CLAUDE_CODE_OAUTH_TOKEN is not provided to dev-lead-reusable."
+            msg="$msg To pause deliberately, set AGENTS_PAUSED=true Actions variable"
+            msg="$msg instead of withholding the secret (see #1525)."
+            msg="$msg Otherwise restore the secret (claude setup-token) in the calling repo/org."
+            echo "::error::$msg"
             exit 1
           fi
           echo "engine token present — proceeding"
@@ -566,7 +570,11 @@ jobs:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
         run: |
           if [ -z "$CLAUDE_CODE_OAUTH_TOKEN" ]; then
-            echo "::error::CLAUDE_CODE_OAUTH_TOKEN is not provided to dev-lead-reusable. To pause the agent fleet deliberately, set the AGENTS_PAUSED=true Actions variable instead of withholding the secret (see #1525). Otherwise restore the secret (claude setup-token) in the calling repo/org."
+            msg="CLAUDE_CODE_OAUTH_TOKEN is not provided to dev-lead-reusable."
+            msg="$msg To pause deliberately, set AGENTS_PAUSED=true Actions variable"
+            msg="$msg instead of withholding the secret (see #1525)."
+            msg="$msg Otherwise restore the secret (claude setup-token) in the calling repo/org."
+            echo "::error::$msg"
             exit 1
           fi
           echo "engine token present — proceeding"
