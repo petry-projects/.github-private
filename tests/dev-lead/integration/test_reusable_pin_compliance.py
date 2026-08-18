@@ -47,6 +47,11 @@ except ImportError:
 DEFAULT_GLOBS = (
     ".github/workflows/*.yml",
     ".github/workflows/*.yaml",
+    # Recursive patterns cover files in subdirectories of .github/workflows/.
+    # Python < 3.12 requires ** to match at least one component, so the
+    # non-recursive *.yml lines above remain to catch top-level files.
+    ".github/workflows/**/*.yml",
+    ".github/workflows/**/*.yaml",
     "templates/**/*.yml",
     "templates/**/*.yaml",
 )
@@ -70,6 +75,20 @@ USES_LINE_RE = re.compile(r"^\s*uses:\s*(?P<val>[^\s#]+)\s*(?P<comment>#.*)?$")
 # A branch annotation naming main/master is off-channel; a SHA + `# main` comment
 # is the classic pin-with-branch-note that this standard forbids for first-party.
 OFF_CHANNEL_COMMENT_RE = re.compile(r"(?<![\w-])(?:main|master)(?![\w-])", re.IGNORECASE)
+
+# Matches a top-level job key line (two-space indent) with or without quoting:
+#   "  job-id:"   or   '  "job-id":'   or   "  'job-id':"
+_JOB_KEY_RE = re.compile(
+    r"""^  (?:(?P<bare>[A-Za-z0-9_-]+)|["'](?P<quoted>[A-Za-z0-9_-]+)["']):\s*(?:#.*)?$"""
+)
+
+
+def _parse_job_id(line: str) -> str | None:
+    """Return the job ID from a top-level job-key line, or None if not a job key."""
+    m = _JOB_KEY_RE.match(line)
+    if not m:
+        return None
+    return m.group("bare") or m.group("quoted")
 
 
 def is_first_party_reusable(path: str) -> bool:
@@ -162,9 +181,9 @@ def raw_comment_map(text: str) -> dict[tuple[str, str], str]:
             in_jobs = True
             continue
         if in_jobs:
-            m_job = re.match(r"^  (?P<job_id>[A-Za-z0-9_-]+):\s*(?:#.*)?$", line)
-            if m_job:
-                current_job = m_job.group("job_id")
+            job_id = _parse_job_id(line)
+            if job_id is not None:
+                current_job = job_id
                 continue
             elif re.match(r"^[^#\s]", line):
                 in_jobs = False
@@ -188,9 +207,9 @@ def uses_line_map(text: str) -> dict[tuple[str, str], int]:
             in_jobs = True
             continue
         if in_jobs:
-            m_job = re.match(r"^  (?P<job_id>[A-Za-z0-9_-]+):\s*(?:#.*)?$", line)
-            if m_job:
-                current_job = m_job.group("job_id")
+            job_id = _parse_job_id(line)
+            if job_id is not None:
+                current_job = job_id
                 continue
             elif re.match(r"^[^#\s]", line):
                 in_jobs = False
@@ -270,12 +289,15 @@ def scan_file(path: Path) -> tuple[list[str], list[dict], int, int]:
             )
         else:
             canonical += 1
-        comment = comments.get((job_id, uses))
-        if off_channel_comment(comment):
-            violations.append(
-                f"{path}: job '{job_id}': off-channel `{comment.strip()}` annotation "
-                "on a first-party reusable pin"
-            )
+            # Only check for off-channel comments on canonical pins. A deprecated pin
+            # already carries a migration warning; escalating it to a failure via a
+            # comment would violate the AC #8 grace-period intent (#687).
+            comment = comments.get((job_id, uses))
+            if off_channel_comment(comment):
+                violations.append(
+                    f"{path}: job '{job_id}': off-channel `{comment.strip()}` annotation "
+                    "on a first-party reusable pin"
+                )
     return violations, deprecations, checked, canonical
 
 

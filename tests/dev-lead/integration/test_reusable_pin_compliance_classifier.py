@@ -155,9 +155,11 @@ def test_cli_deprecated_is_warning_not_failure() -> None:
         check(proc.returncode == 0, f"DEPRECATED-only exits 0 (main stays green) -> {proc.returncode}\n{proc.stdout}")
         check("DEPRECATED" in proc.stdout, "output labels the pin DEPRECATED")
         check("pr-review/v<MAJOR>-next" in proc.stdout, "output shows the suggested major-scoped ref")
-        # AC 9: counts land in the run summary.
+        # AC 9: exact counts land in the run summary.
         text = summary.read_text(encoding="utf-8") if summary.exists() else ""
-        check("legacy" in text.lower() and "1" in text, f"run summary carries the legacy count -> {text!r}")
+        check("- **canonical (major-scoped)**: 0" in text, f"run summary carries canonical count -> {text!r}")
+        check("- **legacy (DEPRECATED)**: 1" in text, f"run summary carries legacy count -> {text!r}")
+        check("- **checked**: 1" in text, f"run summary carries checked count -> {text!r}")
 
 
 def test_cli_sha_still_fails() -> None:
@@ -213,6 +215,66 @@ def test_scan_file_rejects_legacy_ref_with_mismatched_name() -> None:
         check(not deprecations, f"not classified as deprecation -> {deprecations}")
 
 
+def test_scan_file_quoted_job_id_line_mapping() -> None:
+    """Quoted job keys like '"review":' must be tracked with the correct line number."""
+    print("test_scan_file_quoted_job_id_line_mapping")
+    body = (
+        'name: x\n'
+        'on: [push]\n'
+        'jobs:\n'
+        '  "review":\n'
+        '    uses: petry-projects/.github-private/.github/workflows/pr-review.yml@pr-review/next\n'
+    )
+    with tempfile.TemporaryDirectory() as d:
+        p = _write(Path(d), "wf.yml", body)
+        violations, deprecations, checked, canonical = mod.scan_file(p)
+        check(not violations, f"no hard violations for quoted job key -> {violations}")
+        check(checked == 1, f"one first-party ref checked -> {checked}")
+        check(len(deprecations) == 1, f"one deprecation -> {len(deprecations)}")
+        if deprecations:
+            dep = deprecations[0]
+            check(dep["line"] == 5, f"correct line 5 (not 0) for quoted job -> {dep.get('line')}")
+
+
+def test_scan_file_deprecated_with_off_channel_comment_stays_warning() -> None:
+    """A deprecated legacy pin with an off-channel comment must not escalate to a failure."""
+    print("test_scan_file_deprecated_with_off_channel_comment_stays_warning")
+    body = (
+        "jobs:\n"
+        "  review:\n"
+        "    uses: petry-projects/.github-private/.github/workflows/pr-review.yml"
+        "@pr-review/next  # main\n"
+    )
+    with tempfile.TemporaryDirectory() as d:
+        p = _write(Path(d), "wf.yml", body)
+        violations, deprecations, checked, canonical = mod.scan_file(p)
+        check(not violations, f"deprecated + off-channel comment stays warning, not violation -> {violations}")
+        check(len(deprecations) == 1, f"one deprecation -> {len(deprecations)}")
+
+
+def test_nested_workflow_included_in_inventory() -> None:
+    """DEFAULT_GLOBS must inventory first-party pins in .github/workflows/ subdirectories."""
+    print("test_nested_workflow_included_in_inventory")
+    body = (
+        "jobs:\n"
+        "  dl:\n"
+        "    uses: petry-projects/.github-private/.github/workflows/dev-lead-reusable.yml@dev-lead/next\n"
+    )
+    with tempfile.TemporaryDirectory() as d:
+        tmp = Path(d)
+        nested_dir = tmp / ".github" / "workflows" / "subdir"
+        nested_dir.mkdir(parents=True)
+        (nested_dir / "nested.yml").write_text(body, encoding="utf-8")
+        proc = subprocess.run(
+            [sys.executable, str(SCANNER)],
+            capture_output=True,
+            text=True,
+            cwd=d,
+        )
+        check(proc.returncode == 0, f"nested legacy pin exits 0 (warning not failure) -> {proc.returncode}\n{proc.stdout}")
+        check("DEPRECATED" in proc.stdout, f"nested pin inventoried as DEPRECATED -> {proc.stdout}")
+
+
 def main() -> int:
     test_classify_ref_canonical()
     test_classify_ref_deprecated()
@@ -223,6 +285,9 @@ def main() -> int:
     test_scan_file_rejects_legacy_ref_with_mismatched_name()
     test_cli_deprecated_is_warning_not_failure()
     test_cli_sha_still_fails()
+    test_scan_file_quoted_job_id_line_mapping()
+    test_scan_file_deprecated_with_off_channel_comment_stays_warning()
+    test_nested_workflow_included_in_inventory()
     if _failures:
         print(f"\nFAIL: {len(_failures)} classifier assertion(s) failed")
         return 1
