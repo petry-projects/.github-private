@@ -214,7 +214,9 @@ jobs:
           persist-credentials: false
       - name: Install PyYAML
         run: python3 -m pip install --quiet --only-binary ":all:" pyyaml==6.0.3
-      - name: Reject SHA / off-channel pins on any first-party reusable
+      - name: Classifier semantics (canonical / DEPRECATED-legacy / violation) — #1493
+        run: python3 tests/dev-lead/integration/test_reusable_pin_compliance_classifier.py
+      - name: Reject SHA / off-channel pins; inventory legacy → major-scoped migration
         run: python3 tests/dev-lead/integration/test_reusable_pin_compliance.py
 
   spec-drift-workflow:

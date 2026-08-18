@@ -431,7 +431,14 @@ all of them.** Two kinds of tag exist per reusable:
 
 - **Immutable releases** `<name>/vX.Y.Z` — never moved or deleted; the audit trail and rollback targets.
 - **Moving channel tags** `<name>/v<MAJOR>-<tier>` (major-scoped, #1184; tiers `stable`, and where live
-  `next`/`ring0`/`ring1`) — what callers pin to; advanced on promotion by **moving** the tag.
+  `next`/`ring0`/`ring1`) — the **canonical** form callers pin to; advanced on promotion by **moving** the tag.
+  Examples: `@dev-lead/v1-stable`, `@pr-review/v1-next`, `@ci-failure-analyst/v1-stable`.
+- **Legacy bare-tier channel** `<name>/<tier>` (e.g. `@pr-review/next`) — the pre-#1184 form, **DEPRECATED**.
+  It is still the sanctioned mutable-ref exception (never flagged as an "unpinned action"), but it is being
+  migrated to the major-scoped canonical form. The `reusable-pin-compliance` check
+  (`tests/dev-lead/integration/test_reusable_pin_compliance.py`) reports a bare-tier pin as DEPRECATED with the
+  major-scoped ref it should become; during the migration window this is a **warning, not a failure**
+  (#687 AC #8), so `main` stays green until every legacy pin is repinned.
 
 **Scoped exception to the SHA-pin standard.** The org standard requires SHA-pinning actions to avoid
 mutable-ref supply-chain risk. That rule targets **third-party** actions. The channel tags above are

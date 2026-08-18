@@ -243,6 +243,26 @@ EOF
   [ "$got" = "pr-review-mention/v7-stable" ]
 }
 
+# AC #13 (#1493): a canonical stub ALREADY pinned @<name>/v<MAJOR>-stable must round-trip
+# through the generator UNCHANGED — the repin is idempotent and can never reintroduce a
+# legacy bare-tier <name>/stable pin. Supersedes #1436 AC #5 (the guard #1448 references).
+@test "repin round-trip: a canonical @<name>/v<MAJOR>-stable stub is unchanged (#1493 AC 13)" {
+  for name in "${CALLER_STUBS[@]}"; do
+    # Multi-line stub so the round-trip covers surrounding context, not just the uses: line.
+    host="petry-projects/.github"
+    [ "$name" = "dev-lead" ] && host="petry-projects/.github-private"
+    src=$'jobs:\n  call:\n    uses: '"${host}/.github/workflows/${name}-reusable.yml@${name}/v1-stable"$'\n    with:\n      agent_ref: '"${name}/v1-stable"
+    run bash -c 'printf "%s" "$1" | bash "$0" --repin "$2"' "$SEED" "$src" "$name"
+    [ "$status" -eq 0 ]
+    # Byte-for-byte identical: canonical in → canonical out (idempotent).
+    [ "$output" = "$src" ] \
+      || { echo "$name: canonical stub was mutated by round-trip" >&2; printf 'IN:\n%s\nOUT:\n%s\n' "$src" "$output" >&2; false; }
+    # And it certainly must not have become the pre-#1184 legacy bare-tier pin.
+    [[ "$output" != *"@${name}/stable"* ]] \
+      || { echo "$name: round-trip emitted legacy bare-tier channel" >&2; false; }
+  done
+}
+
 @test "_derive_stable_channel: FAILS LOUD on a legacy non-major-scoped ref (no v<MAJOR> to preserve)" {
   # A canonical stub that is NOT major-scoped is itself a standards violation
   # (#1184); the derivation must error rather than silently emit a legacy pin.
