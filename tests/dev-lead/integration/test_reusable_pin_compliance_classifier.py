@@ -156,7 +156,7 @@ def test_cli_deprecated_is_warning_not_failure() -> None:
         check("DEPRECATED" in proc.stdout, "output labels the pin DEPRECATED")
         check("pr-review/v<MAJOR>-next" in proc.stdout, "output shows the suggested major-scoped ref")
         # AC 9: counts land in the run summary.
-        text = summary.read_text() if summary.exists() else ""
+        text = summary.read_text(encoding="utf-8") if summary.exists() else ""
         check("legacy" in text.lower() and "1" in text, f"run summary carries the legacy count -> {text!r}")
 
 
