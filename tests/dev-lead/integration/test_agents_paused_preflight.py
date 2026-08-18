@@ -40,10 +40,21 @@ def main():
 
     # PyYAML parses the bare `on:` key as boolean True.
     triggers = doc.get("on") or doc.get(True)
+    if not isinstance(triggers, dict):
+        rc |= fail("workflow_call trigger declaration is not a dict")
+        return rc
+    if "workflow_call" not in triggers or not isinstance(triggers["workflow_call"], dict):
+        rc |= fail("workflow_call key not found or is not a dict")
+        return rc
     secrets = triggers["workflow_call"].get("secrets", {})
+    if not isinstance(secrets, dict):
+        rc |= fail("secrets is not a dict")
+        return rc
     token = secrets.get("CLAUDE_CODE_OAUTH_TOKEN")
     if token is None:
         rc |= fail("CLAUDE_CODE_OAUTH_TOKEN is no longer declared in workflow_call secrets")
+    elif not isinstance(token, dict):
+        rc |= fail("CLAUDE_CODE_OAUTH_TOKEN is not a dict")
     elif token.get("required") is not False:
         rc |= fail(
             "CLAUDE_CODE_OAUTH_TOKEN must be required:false — required:true fails "
@@ -51,10 +62,16 @@ def main():
         )
 
     jobs = doc.get("jobs", {})
+    if not isinstance(jobs, dict):
+        rc |= fail("jobs is not a dict")
+        return rc
     if not jobs:
         rc |= fail("no jobs parsed from the reusable")
 
     for name, job in jobs.items():
+        if not isinstance(job, dict):
+            rc |= fail(f"job '{name}' is not a dict")
+            continue
         cond = str(job.get("if", ""))
         if PAUSE_EXPR not in cond:
             rc |= fail(f"job '{name}' is missing the {PAUSE_EXPR} pause gate in its if:")
@@ -64,10 +81,17 @@ def main():
         if job is None:
             rc |= fail(f"expected engine job '{name}' not found")
             continue
-        step_names = [str(s.get("name", "")) for s in job.get("steps", [])]
+        if not isinstance(job, dict):
+            rc |= fail(f"job '{name}' is not a dict")
+            continue
+        steps = job.get("steps", [])
+        if not isinstance(steps, list):
+            rc |= fail(f"job '{name}' steps is not a list")
+            continue
+        step_names = [str(s.get("name", "") if isinstance(s, dict) else "") for s in steps]
         if not any(PREFLIGHT_STEP in n for n in step_names):
             rc |= fail(f"job '{name}' is missing the '{PREFLIGHT_STEP}' step")
-        elif PREFLIGHT_STEP not in step_names[0]:
+        elif step_names and PREFLIGHT_STEP not in step_names[0]:
             rc |= fail(
                 f"job '{name}': '{PREFLIGHT_STEP}' must be the FIRST step — a later "
                 "step could burn work before discovering the token is absent"
