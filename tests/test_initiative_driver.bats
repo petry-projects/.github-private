@@ -399,6 +399,7 @@ fi
 if [[ "$args" == *"issues/1/sub_issues"* ]]; then printf '2\n3\n4'; exit 0; fi
 # #2 is actively in-flight (dev-lead, no needs-human); labeled recently -> not a zombie
 if [[ "$args" == *"issues/2/events"* ]]; then date -u +%Y-%m-%dT%H:%M:%SZ; exit 0; fi
+if [[ "$args" == *"issues/2 --jq"* ]] && [[ "$args" == *".updated_at"* ]]; then date -u +%Y-%m-%dT%H:%M:%SZ; exit 0; fi
 if [[ "$args" == *"issues/2 --jq"* ]] && [[ "$args" != *"sub_issues"* ]]; then printf 'dev-lead'; exit 0; fi
 # #3 is gated: dev-lead + dev-lead:needs-human
 if [[ "$args" == *"issues/3 --jq"* ]] && [[ "$args" != *"sub_issues"* ]]; then printf 'dev-lead\ndev-lead:needs-human'; exit 0; fi
@@ -437,6 +438,7 @@ fi
 # #2 active, #3 gated, #5 & #6 both ready
 if [[ "$args" == *"issues/1/sub_issues"* ]]; then printf '2\n3\n5\n6'; exit 0; fi
 if [[ "$args" == *"issues/2/events"* ]]; then date -u +%Y-%m-%dT%H:%M:%SZ; exit 0; fi
+if [[ "$args" == *"issues/2 --jq"* ]] && [[ "$args" == *".updated_at"* ]]; then date -u +%Y-%m-%dT%H:%M:%SZ; exit 0; fi
 if [[ "$args" == *"issues/2 --jq"* ]] && [[ "$args" != *"sub_issues"* ]]; then printf 'dev-lead'; exit 0; fi
 if [[ "$args" == *"issues/3 --jq"* ]] && [[ "$args" != *"sub_issues"* ]]; then printf 'dev-lead\ndev-lead:needs-human'; exit 0; fi
 if [[ "$args" == *"issues/5/sub_issues"* ]]; then printf ''; exit 0; fi
@@ -472,8 +474,9 @@ if [[ "$args" == *"issues/1 --jq"* ]] && [[ "$args" != *"sub_issues"* ]] && [[ "
   printf 'initiative:auto'; exit 0
 fi
 if [[ "$args" == *"issues/1/sub_issues"* ]]; then printf '2'; exit 0; fi
-# #2 is in-flight but its dev-lead label was applied long ago -> zombie
+# #2 is in-flight but both its dev-lead label event AND last activity are old -> zombie
 if [[ "$args" == *"issues/2/events"* ]]; then printf '2020-01-01T00:00:00Z'; exit 0; fi
+if [[ "$args" == *"issues/2 --jq"* ]] && [[ "$args" == *".updated_at"* ]]; then printf '2020-01-01T00:00:00Z'; exit 0; fi
 if [[ "$args" == *"issues/2 --jq"* ]] && [[ "$args" != *"sub_issues"* ]]; then printf 'dev-lead'; exit 0; fi
 # no prior zombie report exists on the epic
 if [[ "$args" == *"issues/1/comments"* ]]; then printf ''; exit 0; fi
@@ -489,5 +492,42 @@ EOF
   # a comment naming the stale slot-holder was posted on the epic
   grep -qF "issue comment 1" "$GH_LOG"
   # labels are never mutated on the zombie
+  ! grep -qF "issue edit" "$GH_LOG"
+}
+
+# ── not-a-zombie: an OLD label event but RECENT activity is not stale ───────────
+# dev-lead records retries/progress via comments and dispatches WITHOUT reapplying
+# the label. Staleness keys on the freshest of the label event and `updated_at`,
+# so a slot released long ago but still progressing must NOT be flagged a zombie
+# (else active retries produce misleading epic reports and needless human pokes).
+
+@test "not-a-zombie: old dev-lead label but recent activity is not reported" {
+  export MAX_IN_FLIGHT="2"
+  cat > "$MOCK_BIN/gh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$GH_LOG"
+args="$*"
+if [[ "$args" == *"issues/1 --jq"* ]] && [[ "$args" != *"sub_issues"* ]] && [[ "$args" != *"comments"* ]]; then
+  printf 'initiative:auto'; exit 0
+fi
+if [[ "$args" == *"issues/1/sub_issues"* ]]; then printf '2'; exit 0; fi
+# #2's dev-lead label was applied long ago…
+if [[ "$args" == *"issues/2/events"* ]]; then printf '2020-01-01T00:00:00Z'; exit 0; fi
+# …but the issue was updated (e.g. a progress comment) moments ago -> not stale
+if [[ "$args" == *"issues/2 --jq"* ]] && [[ "$args" == *".updated_at"* ]]; then date -u +%Y-%m-%dT%H:%M:%SZ; exit 0; fi
+if [[ "$args" == *"issues/2 --jq"* ]] && [[ "$args" != *"sub_issues"* ]]; then printf 'dev-lead'; exit 0; fi
+if [[ "$args" == *"issues/1/comments"* ]]; then printf ''; exit 0; fi
+if [[ "$args" == "issue comment"* ]]; then exit 0; fi
+printf '[]'
+EOF
+  chmod +x "$MOCK_BIN/gh"
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  # counts the slot as in-flight, but does NOT flag it as a zombie…
+  [[ "$output" == *"in-flight=1 (0 gated excluded)"* ]]
+  [[ "$output" != *"ZOMBIE"* ]]
+  # …and posts no zombie report on the epic
+  ! grep -qF "issue comment 1" "$GH_LOG"
   ! grep -qF "issue edit" "$GH_LOG"
 }

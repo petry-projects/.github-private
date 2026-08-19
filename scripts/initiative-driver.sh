@@ -115,14 +115,27 @@ sub_issue_numbers() {
   gh api --paginate "repos/$REPO/issues/$1/sub_issues" --jq '.[].number'
 }
 
-# dev_lead_label_ts <issue-number> — ISO 8601 timestamp of the MOST RECENT
-# `labeled` event for DEV_LEAD_LABEL on the issue, or "" if none is recorded.
-# This is the proxy for "when did the agent last get handed this slot"; a slot
-# whose label has sat untouched past STALE_HOURS is a zombie (#1494).
-dev_lead_label_ts() {
-  local filter
-  filter="[.[] | select(.event==\"labeled\" and .label.name==\"$DEV_LEAD_LABEL\")] | last | .created_at // empty"
-  gh api --paginate "repos/$REPO/issues/$1/events" --jq "$filter"
+# last_activity_ts <issue-number> — ISO 8601 timestamp of the slot's most recent
+# ACTIVITY, or "" if the issue carries no DEV_LEAD_LABEL `labeled` event (i.e. it
+# is not a tracked slot). The zombie clock must reflect real progress, not just
+# when the label was first applied: dev-lead records retries and progress through
+# issue comments and workflow dispatches WITHOUT reapplying the label, so keying
+# staleness on the `labeled` event alone would falsely flag an actively-
+# progressing slot once it crossed STALE_HOURS. We therefore return the freshest
+# of the last DEV_LEAD_LABEL event and the issue's `updated_at` (GitHub bumps the
+# latter on comments, edits, and label changes), so any activity resets the clock.
+last_activity_ts() {
+  local label_ts activity_ts
+  label_ts="$(gh api --paginate "repos/$REPO/issues/$1/events" \
+    --jq "[.[] | select(.event==\"labeled\" and .label.name==\"$DEV_LEAD_LABEL\")] | last | .created_at // empty")"
+  [[ -z "$label_ts" ]] && return 0
+  activity_ts="$(gh api "repos/$REPO/issues/$1" --jq '.updated_at // empty')"
+  # ISO-8601 UTC (…Z) timestamps sort chronologically as plain strings.
+  if [[ -n "$activity_ts" && "$activity_ts" > "$label_ts" ]]; then
+    printf '%s\n' "$activity_ts"
+  else
+    printf '%s\n' "$label_ts"
+  fi
 }
 
 # is_stale <iso-ts> <hours> — true iff <iso-ts> is older than <hours> ago.
@@ -175,7 +188,7 @@ EOF
 # Returns 0 on success (including no-ops); never aborts the caller's sweep.
 drive_epic() {
   local epic="$1"
-  local epic_labels all_children_raw open_children_raw n n_labels labels open_blockers applied_ts
+  local epic_labels all_children_raw open_children_raw n n_labels labels open_blockers activity_ts
   local -a all_children open_children zombies
   local -A released
   local in_flight gated slots released_now in_epic
@@ -238,10 +251,10 @@ drive_epic() {
       continue
     fi
     in_flight=$((in_flight + 1))
-    applied_ts="$(dev_lead_label_ts "$n")"
-    if is_stale "$applied_ts" "$STALE_HOURS"; then
+    activity_ts="$(last_activity_ts "$n")"
+    if is_stale "$activity_ts" "$STALE_HOURS"; then
       zombies+=("$n")
-      log "  #$n — ZOMBIE: '$DEV_LEAD_LABEL' applied ${applied_ts:-<unknown>} (≥ ${STALE_HOURS}h, no activity) — occupying a slot; needs a human."
+      log "  #$n — ZOMBIE: '$DEV_LEAD_LABEL' carrier, last activity ${activity_ts:-<unknown>} (≥ ${STALE_HOURS}h ago, no progress) — occupying a slot; needs a human."
     fi
   done
   log "Epic #$epic: ${#open_children[@]} open sub-issue(s); in-flight=$in_flight ($gated gated excluded); cap=$MAX_IN_FLIGHT."
