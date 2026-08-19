@@ -37,6 +37,16 @@
 #   - MAX_IN_FLIGHT bounds how many sub-issues run at once, per epic
 #     (cost / blast radius).
 #
+# In-flight = "actively workable" (#1494): a sub-issue paused with
+# NEEDS_HUMAN_LABEL (dev-lead:needs-human) cannot progress without a human, so it
+# is EXCLUDED from the in-flight count (holding a slot buys nothing and starves
+# the epic — #1402 deadlocked at slots=0 for days). It is still never re-released
+# while gated. A "zombie" — an open sub-issue whose DEV_LEAD_LABEL was applied
+# more than STALE_HOURS ago (default 72h) with no fresh activity — is surfaced
+# (log line + one idempotent epic comment) so it cannot silently occupy a slot
+# forever. Labels are never auto-removed from gated/zombie items; exclude/report
+# only, so human-readable state is preserved.
+#
 # Env:
 #   REPO            owner/repo (default: petry-projects/.github-private)
 #   EPIC            epic issue number, or empty to sweep all gated epics
@@ -46,6 +56,10 @@
 #   GATE_LABEL      opt-in label on the epic (default: initiative:auto)
 #   HANDS_OFF_LABEL never-release label (default: dev-lead:hands-off)
 #   HOLD_LABEL      never-release label (default: initiative:hold)
+#   NEEDS_HUMAN_LABEL  human-gated label excluded from in-flight (default:
+#                   dev-lead:needs-human)
+#   STALE_HOURS     hours a dev-lead label may sit before a slot-holder is
+#                   flagged a zombie (default: 72)
 #   MAX_IN_FLIGHT   cap on concurrently-released sub-issues (default: 2)
 #   DRY_RUN         "true" to log decisions without labeling (default: false)
 #
@@ -58,6 +72,8 @@ DEV_LEAD_LABEL="${DEV_LEAD_LABEL:-dev-lead}"
 GATE_LABEL="${GATE_LABEL:-initiative:auto}"
 HANDS_OFF_LABEL="${HANDS_OFF_LABEL:-dev-lead:hands-off}"
 HOLD_LABEL="${HOLD_LABEL:-initiative:hold}"
+NEEDS_HUMAN_LABEL="${NEEDS_HUMAN_LABEL:-dev-lead:needs-human}"
+STALE_HOURS="${STALE_HOURS:-72}"
 MAX_IN_FLIGHT="${MAX_IN_FLIGHT:-2}"
 DRY_RUN="${DRY_RUN:-false}"
 
@@ -67,6 +83,7 @@ if [[ -n "$EPIC" ]] && ! [[ "$EPIC" =~ ^[1-9][0-9]*$ ]]; then
   echo "::error::EPIC must be a positive integer or empty, got: '$EPIC'"; exit 1
 fi
 [[ "$MAX_IN_FLIGHT" =~ ^[0-9]+$ ]] || { echo "::error::MAX_IN_FLIGHT must be a non-negative integer, got: '$MAX_IN_FLIGHT'"; exit 1; }
+[[ "$STALE_HOURS" =~ ^[0-9]+$ ]] || { echo "::error::STALE_HOURS must be a non-negative integer, got: '$STALE_HOURS'"; exit 1; }
 if [[ -n "$CLOSED_ISSUE" ]] && ! [[ "$CLOSED_ISSUE" =~ ^[0-9]+$ ]]; then
   echo "::warning::CLOSED_ISSUE is not a valid issue number ('$CLOSED_ISSUE') — treating as unset."
   CLOSED_ISSUE=""
@@ -77,7 +94,7 @@ case "$DRY_RUN" in
   false|0|no)  DRY_RUN=false ;;
   *) echo "::error::DRY_RUN must be true or false, got: '$DRY_RUN'"; exit 1 ;;
 esac
-readonly REPO EPIC CLOSED_ISSUE DEV_LEAD_LABEL GATE_LABEL HANDS_OFF_LABEL HOLD_LABEL MAX_IN_FLIGHT DRY_RUN
+readonly REPO EPIC CLOSED_ISSUE DEV_LEAD_LABEL GATE_LABEL HANDS_OFF_LABEL HOLD_LABEL NEEDS_HUMAN_LABEL STALE_HOURS MAX_IN_FLIGHT DRY_RUN
 
 log() { printf '%s\n' "$*"; }
 
@@ -98,14 +115,70 @@ sub_issue_numbers() {
   gh api --paginate "repos/$REPO/issues/$1/sub_issues" --jq '.[].number'
 }
 
+# dev_lead_label_ts <issue-number> — ISO 8601 timestamp of the MOST RECENT
+# `labeled` event for DEV_LEAD_LABEL on the issue, or "" if none is recorded.
+# This is the proxy for "when did the agent last get handed this slot"; a slot
+# whose label has sat untouched past STALE_HOURS is a zombie (#1494).
+dev_lead_label_ts() {
+  local filter
+  filter="[.[] | select(.event==\"labeled\" and .label.name==\"$DEV_LEAD_LABEL\")] | last | .created_at // empty"
+  gh api --paginate "repos/$REPO/issues/$1/events" --jq "$filter"
+}
+
+# is_stale <iso-ts> <hours> — true iff <iso-ts> is older than <hours> ago.
+# An empty or unparseable timestamp is treated as NOT stale (fail safe: never
+# flag a slot-holder we cannot date, to avoid false zombies).
+is_stale() {
+  local ts="$1" hours="$2" ts_epoch now cutoff
+  [[ -z "$ts" ]] && return 1
+  ts_epoch="$(date -u -d "$ts" +%s 2>/dev/null)" || return 1
+  now="$(date -u +%s)"
+  cutoff=$(( now - hours * 3600 ))
+  [[ "$ts_epoch" -lt "$cutoff" ]]
+}
+
+# report_zombies <epic-number> <slot-number>... — surface stale slot-holders on
+# the epic with one idempotent comment (keyed on the exact zombie set), so the
+# same set is not re-commented every ~25-minute run. Labels are never mutated.
+report_zombies() {
+  local epic="$1"; shift
+  local list marker body existing
+  list="$(printf '%s\n' "$@" | sort -n | tr '\n' ',' | sed 's/,$//')"
+  marker="<!-- initiative-driver:zombie slots=$list -->"
+  existing="$(gh api --paginate "repos/$REPO/issues/$epic/comments" --jq '.[].body' 2>/dev/null || true)"
+  if grep -qF "$marker" <<< "$existing"; then
+    log "Epic #$epic: zombie report already posted for slot(s) [$list] — not re-commenting."
+    return 0
+  fi
+  if [[ "$DRY_RUN" = "true" ]]; then
+    log "Epic #$epic: [dry-run] would comment zombie report for slot(s) [$list]."
+    return 0
+  fi
+  body="$(cat <<EOF
+### Initiative driver — stale in-flight slot(s) detected
+
+The following open sub-issue(s) still carry the \`$DEV_LEAD_LABEL\` label but have
+had no dev-lead activity for ≥ ${STALE_HOURS}h, so they are occupying an in-flight
+slot without progressing: **#${list//,/, #}**.
+
+No labels were changed. A human should decide whether to split-and-close, retry,
+or park each one so the slot is freed for the rest of the epic.
+
+$marker
+EOF
+)"
+  gh issue comment "$epic" --repo "$REPO" --body "$body" >/dev/null
+  log "Epic #$epic: posted zombie report for slot(s) [$list]."
+}
+
 # drive_epic <epic-number> — release the ready sub-issues of one epic.
 # Returns 0 on success (including no-ops); never aborts the caller's sweep.
 drive_epic() {
   local epic="$1"
-  local epic_labels all_children_raw open_children_raw n n_labels labels open_blockers
-  local -a all_children open_children
+  local epic_labels all_children_raw open_children_raw n n_labels labels open_blockers applied_ts
+  local -a all_children open_children zombies
   local -A released
-  local in_flight slots released_now in_epic
+  local in_flight gated slots released_now in_epic
 
   # ── gate: the epic must opt in ──────────────────────────────────────────────
   epic_labels="$(labels_of "$epic")"
@@ -139,7 +212,15 @@ drive_epic() {
   fi
 
   # ── count in-flight (released but not yet closed) ───────────────────────────
+  # in-flight = "actively workable": a DEV_LEAD_LABEL carrier that is NOT gated
+  # by NEEDS_HUMAN_LABEL. Gated carriers still go into released[] (never
+  # re-released) but are excluded from the count so they cannot starve the epic
+  # (#1494). A non-gated carrier whose label has sat past STALE_HOURS is flagged
+  # a zombie: it still counts (we do not free the slot automatically), but it is
+  # surfaced so a human can act.
   in_flight=0
+  gated=0
+  zombies=()
   open_children_raw="$(gh api --paginate "repos/$REPO/issues/$epic/sub_issues" \
       --jq '.[] | select(.state=="open") | .number')"
   if [[ -z "$open_children_raw" ]]; then
@@ -149,12 +230,24 @@ drive_epic() {
   fi
   for n in "${open_children[@]}"; do
     n_labels="$(labels_of "$n")"
-    if has_label "$n_labels" "$DEV_LEAD_LABEL"; then
-      released[$n]=1
-      in_flight=$((in_flight + 1))
+    has_label "$n_labels" "$DEV_LEAD_LABEL" || continue
+    released[$n]=1
+    if has_label "$n_labels" "$NEEDS_HUMAN_LABEL"; then
+      gated=$((gated + 1))
+      log "  #$n — gated: $NEEDS_HUMAN_LABEL (excluded from in-flight; needs a human)."
+      continue
+    fi
+    in_flight=$((in_flight + 1))
+    applied_ts="$(dev_lead_label_ts "$n")"
+    if is_stale "$applied_ts" "$STALE_HOURS"; then
+      zombies+=("$n")
+      log "  #$n — ZOMBIE: '$DEV_LEAD_LABEL' applied ${applied_ts:-<unknown>} (≥ ${STALE_HOURS}h, no activity) — occupying a slot; needs a human."
     fi
   done
-  log "Epic #$epic: ${#open_children[@]} open sub-issue(s); in-flight=$in_flight; cap=$MAX_IN_FLIGHT."
+  log "Epic #$epic: ${#open_children[@]} open sub-issue(s); in-flight=$in_flight ($gated gated excluded); cap=$MAX_IN_FLIGHT."
+  if [[ "${#zombies[@]}" -gt 0 ]]; then
+    report_zombies "$epic" "${zombies[@]}"
+  fi
 
   # ── release ready sub-issues up to the cap ──────────────────────────────────
   slots=$((MAX_IN_FLIGHT - in_flight))
@@ -214,7 +307,7 @@ drive_epic() {
     released_now=$((released_now + 1))
   done
 
-  log "Released this run for epic #$epic: $released_now."
+  log "Epic #$epic slots: in-flight=$in_flight ($gated gated excluded), cap=$MAX_IN_FLIGHT, releasing $released_now."
 }
 
 # ── entrypoint: single epic, or sweep all gated epics ─────────────────────────
