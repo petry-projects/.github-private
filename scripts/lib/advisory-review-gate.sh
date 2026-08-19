@@ -57,7 +57,9 @@ if [ -f "$_gate_reg_sh" ]; then
   declare -A ADVISORY_BOTS=()
   if _adv_logins="$(reviewer_sources_advisory_gate_logins)"; then
     while IFS= read -r _adv_login; do
-      [ -n "$_adv_login" ] && ADVISORY_BOTS[$_adv_login]="$_adv_login (advisory)"
+      if [ -n "$_adv_login" ]; then
+        ADVISORY_BOTS[$_adv_login]="$_adv_login (advisory)"
+      fi
     done <<< "$_adv_logins"
   fi
   # If the read failed or produced nothing, degrade to the built-in set rather
