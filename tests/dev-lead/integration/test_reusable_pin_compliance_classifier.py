@@ -318,6 +318,89 @@ def test_scan_file_four_space_job_indent_line_mapping_and_comment() -> None:
         check(not deprecations, f"no deprecations for canonical pin -> {deprecations}")
 
 
+def test_scan_file_quoted_root_jobs_key_line_and_comment() -> None:
+    """A quoted root key (`"jobs":`) must still map lines and off-channel comments."""
+    print("test_scan_file_quoted_root_jobs_key_line_and_comment")
+    # Deprecated legacy pin under a quoted root jobs key — line must be captured (not 0).
+    body_deprecated = (
+        'name: x\n'
+        'on: [push]\n'
+        '"jobs":\n'
+        '  review:\n'
+        '    uses: petry-projects/.github-private/.github/workflows/pr-review.yml'
+        '@pr-review/next\n'
+    )
+    with tempfile.TemporaryDirectory() as d:
+        p = _write(Path(d), "wf.yml", body_deprecated)
+        violations, deprecations, checked, canonical = mod.scan_file(p)
+        check(not violations, f"no violations under quoted root jobs key -> {violations}")
+        check(len(deprecations) == 1, f"one deprecation under quoted root jobs key -> {len(deprecations)}")
+        if deprecations:
+            check(
+                deprecations[0]["line"] == 5,
+                f"correct line 5 (not 0) under quoted root jobs key -> {deprecations[0].get('line')}",
+            )
+
+    # Canonical pin with off-channel comment under a quoted root jobs key — the
+    # comment must be captured so the violation is reported (not silently bypassed).
+    body_canonical_comment = (
+        'name: x\n'
+        'on: [push]\n'
+        '"jobs":\n'
+        '  review:\n'
+        '    uses: petry-projects/.github-private/.github/workflows/pr-review.yml'
+        '@pr-review/v1-stable  # main\n'
+    )
+    with tempfile.TemporaryDirectory() as d:
+        p = _write(Path(d), "wf.yml", body_canonical_comment)
+        violations, deprecations, checked, canonical = mod.scan_file(p)
+        check(
+            len(violations) == 1,
+            f"canonical + off-channel comment is a violation under quoted root jobs key -> {violations}",
+        )
+
+
+def test_scan_file_commented_root_jobs_key_line_and_comment() -> None:
+    """A root key with a trailing comment (`jobs: # …`) must still map lines and comments."""
+    print("test_scan_file_commented_root_jobs_key_line_and_comment")
+    # Deprecated legacy pin under a comment-trailed root jobs key — line captured (not 0).
+    body_deprecated = (
+        "name: x\n"
+        "on: [push]\n"
+        "jobs:  # source-map test\n"
+        "  review:\n"
+        "    uses: petry-projects/.github-private/.github/workflows/pr-review.yml"
+        "@pr-review/next\n"
+    )
+    with tempfile.TemporaryDirectory() as d:
+        p = _write(Path(d), "wf.yml", body_deprecated)
+        violations, deprecations, checked, canonical = mod.scan_file(p)
+        check(not violations, f"no violations under commented root jobs key -> {violations}")
+        check(len(deprecations) == 1, f"one deprecation under commented root jobs key -> {len(deprecations)}")
+        if deprecations:
+            check(
+                deprecations[0]["line"] == 5,
+                f"correct line 5 (not 0) under commented root jobs key -> {deprecations[0].get('line')}",
+            )
+
+    # Canonical pin with off-channel comment under a comment-trailed root jobs key.
+    body_canonical_comment = (
+        "name: x\n"
+        "on: [push]\n"
+        "jobs:  # source-map test\n"
+        "  review:\n"
+        "    uses: petry-projects/.github-private/.github/workflows/pr-review.yml"
+        "@pr-review/v1-stable  # main\n"
+    )
+    with tempfile.TemporaryDirectory() as d:
+        p = _write(Path(d), "wf.yml", body_canonical_comment)
+        violations, deprecations, checked, canonical = mod.scan_file(p)
+        check(
+            len(violations) == 1,
+            f"canonical + off-channel comment is a violation under commented root jobs key -> {violations}",
+        )
+
+
 def main() -> int:
     test_classify_ref_canonical()
     test_classify_ref_deprecated()
@@ -332,6 +415,8 @@ def main() -> int:
     test_scan_file_deprecated_with_off_channel_comment_stays_warning()
     test_nested_workflow_included_in_inventory()
     test_scan_file_four_space_job_indent_line_mapping_and_comment()
+    test_scan_file_quoted_root_jobs_key_line_and_comment()
+    test_scan_file_commented_root_jobs_key_line_and_comment()
     if _failures:
         print(f"\nFAIL: {len(_failures)} classifier assertion(s) failed")
         return 1

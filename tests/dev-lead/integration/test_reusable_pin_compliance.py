@@ -83,6 +83,17 @@ _JOB_KEY_RE = re.compile(
     r"""^(?P<indent> +)(?:(?P<bare>[A-Za-z0-9_-]+)|["'](?P<quoted>[A-Za-z0-9_-]+)["']):\s*(?:#.*)?$"""
 )
 
+# Matches the root `jobs:` mapping key. YAML permits the key to be quoted
+# (`"jobs":` / `'jobs':`) and to carry a trailing comment (`jobs: # …`); a plain
+# `line.strip() == "jobs:"` misses those forms, leaving the source maps empty so
+# deprecated pins report line 0 and canonical pins bypass off-channel validation.
+_ROOT_JOBS_KEY_RE = re.compile(r"""^(?:jobs|["']jobs["']):\s*(?:#.*)?$""")
+
+
+def _is_root_jobs_key(line: str) -> bool:
+    """Return True if `line` is the root `jobs:` key (quoted or comment-trailed)."""
+    return bool(_ROOT_JOBS_KEY_RE.match(line))
+
 
 def _detect_job_indent(line: str) -> str | None:
     """Return the leading-space string if `line` looks like a job key, else None."""
@@ -191,7 +202,7 @@ def raw_comment_map(text: str) -> dict[tuple[str, str], str]:
     in_jobs = False
     job_indent: str | None = None
     for line in text.splitlines():
-        if line.strip() == "jobs:":
+        if _is_root_jobs_key(line):
             in_jobs = True
             job_indent = None
             continue
@@ -222,7 +233,7 @@ def uses_line_map(text: str) -> dict[tuple[str, str], int]:
     in_jobs = False
     job_indent: str | None = None
     for i, line in enumerate(text.splitlines(), start=1):
-        if line.strip() == "jobs:":
+        if _is_root_jobs_key(line):
             in_jobs = True
             job_indent = None
             continue
