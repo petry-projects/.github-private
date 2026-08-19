@@ -464,6 +464,43 @@ MOCK_EOF
 }
 
 # ────────────────────────────────────────────────────────────────────
+# SOURCE-TIME RESILIENCE (issue #1538)
+#
+# The gate is *sourced* by long-running review processes and by the whole bats
+# suite. A registry-read failure must never `exit` the caller — historically it
+# did (exit 1 at source time), so a transient/edge read failure silently killed
+# every runtime gate test in a run and surfaced as the DEGRADED test-dev-lead
+# signal. The gate must instead fall back to its built-in bot lists.
+# ────────────────────────────────────────────────────────────────────
+
+@test "Advisory gate: sourcing survives an unreadable reviewer-source registry (no exit, uses fallback) (#1538)" {
+  local gate_script="$SCRIPT_DIR/lib/advisory-review-gate.sh"
+  run env REVIEWER_SOURCES_MANIFEST=/nonexistent/reviewer-sources.tsv bash -c "
+    source '$gate_script'
+    echo \"BOTS=\${#ADVISORY_BOTS[@]}\"
+    echo \"NOTICE=\${#RATE_LIMIT_NOTICE_BOTS[@]}\"
+  "
+  # Must NOT exit the sourcing shell; must expose the built-in fallback sets.
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"BOTS=7"* ]]
+  [[ "$output" == *"NOTICE=8"* ]]
+}
+
+@test "Advisory gate: runtime check still runs when the registry is unreadable (#1538)" {
+  # With the registry unreadable, check_advisory_reviews must still execute and
+  # apply the head-age timeout (return 0) rather than dying at source time.
+  local tmpdir
+  tmpdir=$(_make_mock_gh_dir '{"reviews":[],"comments":[]}')
+  local gate_script="$SCRIPT_DIR/lib/advisory-review-gate.sh"
+  run env REVIEWER_SOURCES_MANIFEST=/nonexistent/reviewer-sources.tsv PATH="$tmpdir:$PATH" bash -c "
+    source '$gate_script'
+    check_advisory_reviews 'https://github.com/owner/repo/pull/123'
+  "
+  rm -rf "$tmpdir"
+  [ "$status" -eq 0 ]
+}
+
+# ────────────────────────────────────────────────────────────────────
 # RATE-LIMIT HANDLING TESTS (issue #657)
 # ────────────────────────────────────────────────────────────────────
 
