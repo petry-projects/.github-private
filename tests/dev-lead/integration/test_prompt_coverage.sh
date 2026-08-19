@@ -122,6 +122,33 @@ else
   echo "  ok: all $author_sel_total OPEN_THREADS_JSON build(s) select author.__typename"
 fi
 
+# ── 6. review-changes must explain a failing-check fix (check vs. intent) ─────
+# Regression for issue #1468: the "agent optimizes the check, not the intent"
+# failure mode — a red check driven green by changing what the check measures
+# rather than making the thing it protects true. When review-changes fixes a
+# failing check (a Tier-1 blocker), its posted fix comment must state WHAT the
+# check verifies and WHY the diff makes that true — not merely "check now passes"
+# — so a reviewer (or pr-review) has a concrete claim to spot-check.
+
+echo ""
+echo "Checking review-changes explains a failing-check fix (check vs. intent, #1468)..."
+rc_path="$PROMPTS_DIR/review-changes.md"
+if [ ! -f "$rc_path" ]; then
+  echo "  FAIL: review-changes.md — missing"
+  FAILED=1
+else
+  rc_missing=""
+  grep -qiE "what (the|a) (failing )?check verifies" "$rc_path" || rc_missing="$rc_missing what-check-verifies"
+  grep -qiE "why (this|the|your) diff (makes that true|satisfies)" "$rc_path" || rc_missing="$rc_missing why-diff-satisfies"
+  grep -qiE "not (just|merely) .*check (now )?passes" "$rc_path" || rc_missing="$rc_missing not-just-passes"
+  if [ -n "$rc_missing" ]; then
+    echo "  FAIL: review-changes.md — missing check-vs-intent statement:$rc_missing"
+    FAILED=1
+  else
+    echo "  ok: review-changes.md (requires what-check-verifies / why-diff-satisfies on a failing-check fix)"
+  fi
+fi
+
 # ── result ────────────────────────────────────────────────────────────────────
 
 echo ""

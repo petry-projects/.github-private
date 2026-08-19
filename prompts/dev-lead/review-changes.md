@@ -51,6 +51,14 @@ ${ALL_REVIEWS_JSON}
 
 Identify any entries with `state` = `"CHANGES_REQUESTED"`. Each is a **Tier 1 blocker**. Only declare "no-changes" when zero Tier 1 blockers exist (all CI checks pass AND no reviewer has CHANGES_REQUESTED).
 
+#### Reporting a failing-check fix — state the check's intent, not just its status (#1468)
+
+When you fix a failing check (a Tier 1 CI blocker), your posted fix comment must state, in one line, **what the failing check verifies** and **why this diff makes that true** — **not just that the check now passes**. A red check exists to protect something (an invariant, a contract, a behavior); the fix must make *that thing* true, not merely flip the check green by changing what the check measures. Stating the intent gives a reviewer (or `pr-review`) a concrete claim to spot-check instead of a bare before/after CI status, and guards against the "agent optimizes the check, not the intent" failure mode (`docs/agentic-interaction-model.md` §13).
+
+- Post this as a PR comment (`gh pr comment`) for a failing check that has no associated review thread; when the failing check *is* referenced by a review thread, put the same one-line statement in that thread reply.
+- Concrete shape: "`<check>` verifies `<invariant/behavior>`; this diff makes that true by `<root-cause change>` (not by silencing/relaxing the check)." Example: "`bats` verifies the test tooling is installed the documented way; this diff removes the vendored `node_modules/bats/` because `lint.yml` already installs bats via `apt-get` — the tool was already available, so the fix is deletion, not re-vendoring."
+- If the only way you can make the check green is to change what the check asserts (edit its threshold, its fixture, its expected output, or the assertion itself), **stop** — that is the failure mode this guards against. Fix the root cause the check protects, or leave the check red and explain why in your comment.
+
 ### Phase 1 — Address Threads
 
 For each open review thread:
@@ -110,6 +118,7 @@ Read all your changes from the reviewer's perspective:
 - Treat human reviewer feedback with high priority — implement exactly what is asked
 - Write tests before implementing new behavior (for threads that introduce new functionality)
 - For every thread you fix, post a reply naming the specific change before resolving — never resolve silently
+- When you fix a failing check, your posted comment must state what the check verifies and why this diff makes that true — not just that the check now passes (#1468); never make a check green by changing what it asserts
 - Resolve every thread you fix; resolve outdated threads without a corresponding code change
 - Only resolve threads from human reviewers — do not resolve bot review threads
 - Do not resolve threads you are intentionally skipping — leave those open and explain why
@@ -127,6 +136,8 @@ Human review threads addressed: N
 - Thread <author>: <brief description of change> [replied + resolved]
 - Thread <author>: outdated — resolved without change
 - Thread <author>: skipped — <reason> [left open]
+Failing checks fixed: N
+- <check>: verifies <invariant/behavior>; diff makes it true by <root-cause change>
 Test verification: <pass/fail — paste output if relevant>
 Files changed: <list of files>
 ```
