@@ -442,13 +442,9 @@ def main(argv: list[str]) -> int:
         # (AC #9) so the failure is fully diagnosable, then the run fails.
         print(
             f"\nFAIL: {len(deprecations)} legacy bare-tier pin(s) remain — the #1184 "
-            "migration is complete and DEPRECATED pins are now rejected (#1493 AC #12):"
+            "migration is complete and DEPRECATED pins are now rejected (#1493 AC #12). "
+            "See the DEPRECATED lines in the inventory above for each offending pin."
         )
-        for d in deprecations:
-            print(
-                f"  {d['path']}:{d['line']} job '{d['job']}' pins @{d['ref']} — "
-                f"repin to @{d['suggestion']}."
-            )
         print(
             "\n  Fix: repin the first-party reusable to its major-scoped channel "
             "(<name>/v<MAJOR>-<tier>).\n"
