@@ -389,8 +389,8 @@ private.yml
 .dev-lead/
 # CI downloads actionlint into the repo root during linting; ignore the
 # generated binary so local lint runs cannot accidentally commit it.
-/actionlint
-/actionlint.tar.gz
+actionlint
+actionlint.tar.gz
 
 # ============================================================================
 # End of petry-projects secrets baseline
