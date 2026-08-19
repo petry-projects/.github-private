@@ -31,7 +31,7 @@ source of truth against the single-source-of-truth model the standard establishe
 
 Consequently the reported drift is a **live GitHub settings** value, not a value stored in any committed
 file. No edit to a file in this repo converges it; the sanctioned convergence path is the public
-`apply-rulesets.sh` run (admin / automation-Integration credentials), which is outside dev-lead's
+`apply-rulesets.sh` run (admin / automation-integration credentials), which is outside `<id>`'s
 code-change and git scope.
 
 ## 3. Live-state verification (2026-08-18)
