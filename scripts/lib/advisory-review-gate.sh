@@ -29,25 +29,16 @@ set -euo pipefail
 # ── Reviewer-source registry (single source of truth, #1425) ─────────────────
 # Source the registry helper so ADVISORY_BOTS is a projection of
 # reviewer-sources.tsv (advisory_gate=yes rows), not a hardcoded list.
-# Fallback to literal values only when the registry file is absent (stripped
-# test env or very early boot before the lib/ directory exists).
-_gate_reg_sh="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/reviewer-sources.sh"
-if [ -f "$_gate_reg_sh" ]; then
-  # shellcheck source=scripts/lib/reviewer-sources.sh
-  source "$_gate_reg_sh"
+# Built-in fallback set, used when the registry is absent (stripped test env or
+# very early boot) OR unreadable (transient read failure). This gate is *sourced*
+# into long-running review processes and the whole test suite, so a recoverable
+# registry-read failure must degrade to this list — never `exit`, which would kill
+# the caller and strand every PR review (and intermittently failed the unit suite,
+# the #1538 DEGRADED signal). Kept in sync with reviewer-sources.tsv
+# (advisory_gate=yes) by tests/test_reviewer_sources.bats.
+_advisory_gate_load_fallback_bots() {
   # shellcheck disable=SC2034
-  declare -A ADVISORY_BOTS=()
-  _adv_logins="$(reviewer_sources_advisory_gate_logins)" || {
-    echo "advisory-review-gate: reviewer_sources_advisory_gate_logins failed — manifest missing or unreadable" >&2
-    exit 1
-  }
-  while IFS= read -r _adv_login; do
-    [ -n "$_adv_login" ] && ADVISORY_BOTS[$_adv_login]="$_adv_login (advisory)"
-  done <<< "$_adv_logins"
-  unset _adv_login _adv_logins
-else
-  # shellcheck disable=SC2034
-  declare -A ADVISORY_BOTS=(
+  declare -gA ADVISORY_BOTS=(
     [gemini-code-assist]="Gemini Code Assist (advisory)"
     [copilot-pull-request-reviewer]="Copilot PR Reviewer (advisory)"
     [sonarqubecloud]="SonarCloud (advisory)"
@@ -56,6 +47,30 @@ else
     [codeant-ai]="CodeAnt (advisory)"
     [graphite-app]="Graphite (advisory)"
   )
+}
+
+_gate_reg_sh="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/reviewer-sources.sh"
+if [ -f "$_gate_reg_sh" ]; then
+  # shellcheck source=scripts/lib/reviewer-sources.sh
+  source "$_gate_reg_sh"
+  # shellcheck disable=SC2034
+  declare -A ADVISORY_BOTS=()
+  if _adv_logins="$(reviewer_sources_advisory_gate_logins)"; then
+    while IFS= read -r _adv_login; do
+      if [ -n "$_adv_login" ]; then
+        ADVISORY_BOTS[$_adv_login]="$_adv_login (advisory)"
+      fi
+    done <<< "$_adv_logins"
+  fi
+  # If the read failed or produced nothing, degrade to the built-in set rather
+  # than leaving the gate with zero advisory bots (or exiting the caller).
+  if [ "${#ADVISORY_BOTS[@]}" -eq 0 ]; then
+    echo "advisory-review-gate: reviewer_sources_advisory_gate_logins unavailable — using built-in advisory-bot fallback" >&2
+    _advisory_gate_load_fallback_bots
+  fi
+  unset _adv_login _adv_logins
+else
+  _advisory_gate_load_fallback_bots
 fi
 unset _gate_reg_sh
 
@@ -205,22 +220,11 @@ format_bot_status() {
 # gate's ADVISORY_BOTS — adds coderabbitai, which posts an explicit rate-limit
 # comment but is not one of the bots the gate blocks on.
 # Derived from the reviewer-source registry (all logins) when available; falls
-# back to a literal list for stripped test environments.
-if declare -f reviewer_sources_logins >/dev/null 2>&1; then
-  _rlnb_raw="$(reviewer_sources_logins)" || {
-    echo "advisory-review-gate: reviewer_sources_logins failed — manifest missing or unreadable" >&2
-    exit 1
-  }
+# back to this literal list when the registry is absent or unreadable — never
+# `exit` (see the ADVISORY_BOTS fallback rationale above, #1538).
+_advisory_gate_load_fallback_notice_bots() {
   # shellcheck disable=SC2034
-  if [ -n "$_rlnb_raw" ]; then
-    mapfile -t RATE_LIMIT_NOTICE_BOTS <<< "$_rlnb_raw"
-  else
-    RATE_LIMIT_NOTICE_BOTS=()
-  fi
-  unset _rlnb_raw
-else
-  # shellcheck disable=SC2034
-  declare -a RATE_LIMIT_NOTICE_BOTS=(
+  declare -ga RATE_LIMIT_NOTICE_BOTS=(
     gemini-code-assist
     copilot-pull-request-reviewer
     sonarqubecloud
@@ -230,6 +234,16 @@ else
     codeant-ai
     graphite-app
   )
+}
+
+if declare -f reviewer_sources_logins >/dev/null 2>&1 \
+    && _rlnb_raw="$(reviewer_sources_logins)" && [ -n "$_rlnb_raw" ]; then
+  # shellcheck disable=SC2034
+  mapfile -t RATE_LIMIT_NOTICE_BOTS <<< "$_rlnb_raw"
+  unset _rlnb_raw
+else
+  unset _rlnb_raw 2>/dev/null || true
+  _advisory_gate_load_fallback_notice_bots
 fi
 
 # Case-insensitive phrases that indicate a bot is itself rate-limited / out of
