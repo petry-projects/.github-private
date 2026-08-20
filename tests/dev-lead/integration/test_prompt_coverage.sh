@@ -137,10 +137,19 @@ if [ ! -f "$rc_path" ]; then
   echo "  FAIL: review-changes.md — missing"
   FAILED=1
 else
+  # Scope the phrase checks to the "Reporting a failing-check fix" section so
+  # unrelated prompt text cannot mask a regression in the operative instruction.
+  rc_section="$(sed -n '/^#### Reporting a failing-check fix/,/^###/p' "$rc_path")"
   rc_missing=""
-  grep -qiE "what (the|a) (failing )?check verifies" "$rc_path" || rc_missing="$rc_missing what-check-verifies"
-  grep -qiE "why (this|the|your) diff (makes that true|satisfies)" "$rc_path" || rc_missing="$rc_missing why-diff-satisfies"
-  grep -qiE "not (just|merely) .*check (now )?passes" "$rc_path" || rc_missing="$rc_missing not-just-passes"
+  [ -n "$rc_section" ] || rc_missing="$rc_missing reporting-section"
+  printf '%s' "$rc_section" | grep -qiE "what (the|a) (failing )?check verifies" || rc_missing="$rc_missing what-check-verifies"
+  printf '%s' "$rc_section" | grep -qiE "why (this|the|your) diff (makes that true|satisfies)" || rc_missing="$rc_missing why-diff-satisfies"
+  printf '%s' "$rc_section" | grep -qiE "not (just|merely) .*check (now )?passes" || rc_missing="$rc_missing not-just-passes"
+  # The prohibition is load-bearing, not just the reporting duty: the prompt must
+  # forbid making a check green by changing what it asserts (its threshold,
+  # fixture, expected output, or the assertion itself).
+  grep -qiE "never make a check green by changing what it asserts" "$rc_path" || rc_missing="$rc_missing prohibition-no-assert-change"
+  printf '%s' "$rc_section" | grep -qiE "change what the check asserts" || rc_missing="$rc_missing section-stop-condition"
   if [ -n "$rc_missing" ]; then
     echo "  FAIL: review-changes.md — missing check-vs-intent statement:$rc_missing"
     FAILED=1

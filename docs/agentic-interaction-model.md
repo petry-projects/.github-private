@@ -674,8 +674,9 @@ re-discovered each time a purpose-built guard happens to catch one.
 
 ### 13.1 Worked instances (the empirical basis)
 
-Across epic #1402's session the same shape surfaced five times, each caught only by a purpose-built
-guard rather than by review:
+Across epic #1402's session the same shape surfaced five times — four caught only by a
+purpose-built guard rather than by review, and one (instance 5) caught only by a manual diff
+review after the check itself had passed:
 
 1. **Vendored a tool that was already installed (#1449, 2026-08-06).** `bats` failed on
    `node_modules/ is not tracked by git` (#1451's guard). dev-lead vendored `node_modules/bats/` (the
