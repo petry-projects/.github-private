@@ -43,7 +43,9 @@ compute_pr_metadata_digest() {
   elif command -v md5 >/dev/null 2>&1; then
     printf '%s' "$canonical" | md5 | cut -c1-16
   else
-    printf '%s' "$canonical" | cut -c1-16
+    # Fallback: use cksum (POSIX checksum) converted to hex to ensure valid output.
+    # cksum computes a CRC; convert to hex and pad to 16 chars.
+    printf '%s' "$canonical" | cksum 2>/dev/null | awk '{printf "%016x\n", $1}' || printf '%016x\n' 0
   fi
 }
 
