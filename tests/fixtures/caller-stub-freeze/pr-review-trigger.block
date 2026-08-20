@@ -28,10 +28,10 @@ on:
 
 # Granted to the called reusable's job (a reusable can be granted no more than
 # the calling job has). Mirrors pr-review.yml's own permissions block.
-    uses: petry-projects/.github-private/.github/workflows/pr-review.yml@pr-review/next
+    uses: petry-projects/.github-private/.github/workflows/pr-review.yml@pr-review/v1-next
     with:
       # Pin the agent's own script checkout to the same channel (#506).
-      agent_ref: pr-review/next
+      agent_ref: pr-review/v1-next
       # Forward manual/dispatch inputs; empty for event triggers (the reusable
       # then derives everything from the inherited github.event context).
       pr_url: ${{ inputs.pr_url || '' }}
