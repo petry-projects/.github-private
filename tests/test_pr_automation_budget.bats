@@ -271,3 +271,69 @@ EOF
   PATH="$BATS_TEST_TMPDIR:$PATH" run gather_pr_automation_events 860 petry-projects/demo
   [ "$status" -ne 0 ]
 }
+
+# ---------------------------------------------------------------------------
+# pr_hold_kind — classify WHY a needs-human-review PR is held so the sweep can
+# log the honored hold (#1550 AC#5) and exempt the rate-limit-only hold whose
+# recovery it must not disable (#1550 AC#1/#3). Genuine escalations take
+# precedence over a co-present rate-limit marker (AC#3).
+# ---------------------------------------------------------------------------
+
+# items <body>...  → JSON array of {body} objects (reviews + comments shape).
+items() { printf '%s\n' "$@" | jq -R '{body: .}' | jq -s '.'; }
+
+RL_AT() {  # RL_AT <head> → a rate-limited withhold marker body at <head>
+  printf '<!-- pr-review-agent rate-limited v1 sha=%s status=rate-limited reset=2000-01-01T00:00:00Z -->' "$1"
+}
+
+@test "pr_hold_kind: budget-exhaustion marker wins" {
+  local j; j=$(items "<!-- pr-automation-budget exhausted -->" "$(RL_AT deadbeef)")
+  run pr_hold_kind "$j" deadbeef
+  [ "$output" = "budget-exhaustion" ]
+}
+
+@test "pr_hold_kind: cycle-cap escalation marker wins" {
+  local j; j=$(items "<!-- pr-review-agent escalation -->" "$(RL_AT deadbeef)")
+  run pr_hold_kind "$j" deadbeef
+  [ "$output" = "cycle-cap" ]
+}
+
+@test "pr_hold_kind: rate-limit marker at head + no escalation marker → rate-limit-only" {
+  local j; j=$(items "$(RL_AT deadbeef)")
+  run pr_hold_kind "$j" deadbeef
+  [ "$output" = "rate-limit-only" ]
+}
+
+@test "pr_hold_kind: SHA-prefixed lookalike WITHOUT status=rate-limited is NOT rate-limit-only (spoof-resistant, #1553)" {
+  # A body that quotes the marker opener + current head but omits the canonical
+  # status=rate-limited field must fall through to manual (stay paused) — it must
+  # not grant the rate-limit-only exemption to a user/unrelated-automation lookalike.
+  local j; j=$(items "<!-- pr-review-agent rate-limited v1 sha=deadbeef spoofed, no status field -->")
+  run pr_hold_kind "$j" deadbeef
+  [ "$output" = "manual" ]
+}
+
+@test "pr_hold_kind: rate-limit marker for a DIFFERENT head is NOT rate-limit-only (manual)" {
+  local j; j=$(items "$(RL_AT 0ldhead0)")
+  run pr_hold_kind "$j" deadbeef
+  [ "$output" = "manual" ]
+}
+
+@test "pr_hold_kind: no markers → manual" {
+  local j; j=$(items "just a normal comment")
+  run pr_hold_kind "$j" deadbeef
+  [ "$output" = "manual" ]
+}
+
+@test "pr_hold_kind: budget marker present even without a rate-limit marker → budget-exhaustion" {
+  local j; j=$(items "<!-- pr-automation-budget exhausted -->")
+  run pr_hold_kind "$j" deadbeef
+  [ "$output" = "budget-exhaustion" ]
+}
+
+@test "pr_hold_kind: empty/missing input degrades to manual" {
+  run pr_hold_kind '[]' deadbeef
+  [ "$output" = "manual" ]
+  run pr_hold_kind
+  [ "$output" = "manual" ]
+}

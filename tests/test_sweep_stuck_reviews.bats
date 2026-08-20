@@ -551,3 +551,84 @@ ROLLUP_PASS_MIXED='[{"name":"build","workflowName":"CI","status":"COMPLETED","co
   [ "$status" -eq 0 ]
   grep -qF -- "-f pr_url=$(url_for 1417)" "$GH_LOG"
 }
+
+# ───────────────────────────────────────────────────────────────────────────
+# Rate-limit-only hold recovery (issue #1550)
+#
+# A PR held ONLY for advisory-bot rate limiting — it carries needs-human-review
+# AND a rate-limited withhold marker at head, but NO genuine-escalation marker
+# (budget exhaustion / cycle cap) — must NOT be paused by the label: the sweep
+# exempts it so the marker's "will re-review after <reset>" promise comes true
+# (AC#1). A genuine escalation (budget exhaustion, churn-breaker cap) still
+# pauses everything, even with a co-present rate-limit marker (AC#3). For every
+# held PR it skips, the sweep logs WHICH hold it honored (AC#5).
+# ───────────────────────────────────────────────────────────────────────────
+
+# rl_and_escalation <head> <reset> <escalation-marker-body>
+#   comments array carrying BOTH a rate-limited marker and an escalation marker.
+rl_and_escalation() {
+  printf '[{"body":"<!-- pr-review-agent rate-limited v1 sha=%s status=rate-limited reset=%s -->"},{"body":"%s"}]' \
+    "$1" "$2" "$3"
+}
+
+@test "rate-limit-only hold (needs-human-review + elapsed marker, no escalation) recovers (#1550 AC1)" {
+  write_pr 1550 "REVIEW_REQUIRED" "$ROLLUP_PASS" "rl1550" "[]" \
+    "$(rl_comment rl1550 "$PAST_RESET")" '["needs-human-review"]'
+  url_for 1550 > "$SWEEP_PRS_FILE"
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  # Assert on $output BEFORE any `run`, which would overwrite it.
+  [[ "$output" == *"rate-limit-only"* ]]
+  grep -qF -- "-f pr_url=$(url_for 1550)" "$GH_LOG"
+  # Strict exit 1 (pattern absent), not just non-zero — a missing/unreadable
+  # GH_LOG returns 2 and would otherwise false-pass this negative assertion.
+  run grep -qF -- "force_review" "$GH_LOG"
+  [ "$status" -eq 1 ]
+}
+
+@test "budget-escalation hold (needs-human-review + budget marker + rate-limit marker) does NOT recover (#1550 AC3)" {
+  write_pr 1551 "REVIEW_REQUIRED" "$ROLLUP_PASS" "rl1551" "[]" \
+    "$(rl_and_escalation rl1551 "$PAST_RESET" "<!-- pr-automation-budget exhausted -->")" \
+    '["needs-human-review"]'
+  url_for 1551 > "$SWEEP_PRS_FILE"
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ ! -s "$GH_LOG" ]
+  [[ "$output" == *"budget-exhaustion"* ]]
+}
+
+@test "cycle-cap hold (needs-human-review + escalation marker + rate-limit marker) does NOT recover (#1550 AC3)" {
+  write_pr 1552 "REVIEW_REQUIRED" "$ROLLUP_PASS" "rl1552" "[]" \
+    "$(rl_and_escalation rl1552 "$PAST_RESET" "<!-- pr-review-agent escalation -->")" \
+    '["needs-human-review"]'
+  url_for 1552 > "$SWEEP_PRS_FILE"
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ ! -s "$GH_LOG" ]
+  [[ "$output" == *"cycle-cap"* ]]
+}
+
+@test "manual hold (needs-human-review, no rate-limit marker) skip log names the honored hold (#1550 AC5)" {
+  write_pr 1553 "REVIEW_REQUIRED" "$ROLLUP_PASS" "sha1553" "[]" "[]" '["needs-human-review"]'
+  url_for 1553 > "$SWEEP_PRS_FILE"
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ ! -s "$GH_LOG" ]
+  [[ "$output" == *"needs-human-review"* ]]
+  [[ "$output" == *"manual"* ]]
+}
+
+@test "rate-limit-only hold whose reset is still in the FUTURE is exempt from the pause but deferred, not dispatched (#1550)" {
+  write_pr 1554 "REVIEW_REQUIRED" "$ROLLUP_PASS" "rl1554" "[]" \
+    "$(rl_comment rl1554 "$FUTURE_RESET")" '["needs-human-review"]'
+  url_for 1554 > "$SWEEP_PRS_FILE"
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ ! -s "$GH_LOG" ]
+  [[ "$output" == *"defer"* ]]
+}
