@@ -13,9 +13,14 @@
 #   • reviewDecision == REVIEW_REQUIRED   (GitHub still wants a review), AND
 #   • CI status == passing                (own pr-review checks filtered out via
 #                                          lib/ci-status.sh, same as the cascade), AND
-#   • NOT already reviewed at the current head
+#   • NOT already reviewed at the current head with a VERDICT
 #                                         (no `<!-- pr-review-agent v1 sha=<head> -->`
-#                                          marker), so genuine no-ops aren't re-fired.
+#                                          marker carrying a decision=... token), so
+#                                          genuine no-ops aren't re-fired.
+# A marker present at head but WITHOUT a verdict is an orphan (issue #1548): the
+# review crashed after stamping the head and before posting any decision. That PR
+# is re-dispatched WITH force_review to bypass review-one-pr.sh's idempotency
+# no-op on the orphan marker — otherwise it strands silently forever.
 # Each selected PR is re-dispatched through the normal trigger
 # (pr-review-trigger.yml -f pr_url=<url>); review-one-pr.sh remains the
 # authoritative gate, so the sweep only decides WHAT to re-trigger.
@@ -141,19 +146,26 @@ inspected=0
 stuck=0
 dispatched=0
 
-# dispatch_review <pr_url> <label>
-# Re-dispatch a review through the normal trigger (never force_review — the
-# advisory gate must stay armed). Honours DRY_RUN and updates the counters.
+# dispatch_review <pr_url> <label> [force]
+# Re-dispatch a review through the normal trigger. Honours DRY_RUN and updates
+# the counters. A 3rd arg of "force" appends `-f force_review=true`, used ONLY
+# for the orphaned-marker rescue (#1548): an unforced re-dispatch would hit
+# review-one-pr.sh's idempotency no-op on the orphan marker. For every other
+# selection force stays OFF so the advisory/CI gates remain armed.
 dispatch_review() {
-  local _url="$1" _label="$2"
+  local _url="$1" _label="$2" _force="${3:-}"
   stuck=$((stuck + 1))
   echo "  $_label: $_url — needs re-review"
   if [ "$DRY_RUN_BOOL" = "true" ]; then
     echo "    dry-run: would dispatch $TRIGGER_WORKFLOW for $_url"
     return 0
   fi
+  local force_flags=()
+  if [ "$_force" = "force" ]; then
+    force_flags=(-f force_review=true)
+  fi
   if gh workflow run "$TRIGGER_WORKFLOW" --repo "$AGENT_REPO" "${REF_FLAGS[@]}" \
-       -f pr_url="$_url"; then
+       -f pr_url="$_url" "${force_flags[@]}"; then
     dispatched=$((dispatched + 1))
     echo "    dispatched review for $_url"
   else
@@ -217,14 +229,29 @@ while IFS= read -r pr_url; do
     echo "  skip $pr_url — reviewDecision='$review_decision' (not REVIEW_REQUIRED)"
     continue
   fi
-  # Already reviewed at this exact head? The cascade stamps each review with
-  # `<!-- pr-review-agent v1 sha=<HEAD> -->`; a marker at the current head means
-  # there is nothing to re-trigger. Match the sha followed by a space so one
-  # sha is never treated as a prefix of another.
-  reviewed_at_head=$(jq -r --arg sha "$head_sha" '
+  # Marker vs. verdict at this exact head (#1548). The cascade stamps each review
+  # with `<!-- pr-review-agent v1 sha=<HEAD> -->`, but a review can CRASH (Claude
+  # 429 usage-limit, or a 429 between the escalation review and its follow-through)
+  # after stamping that marker and before posting any VERDICT. A genuine verdict
+  # additionally carries a `decision=` token in the same body (see
+  # scripts/lib/review-cycle.sh):
+  #   approval:    <!-- pr-review-agent v1 sha=<SHA> decision=approved  risk=... -->
+  #   escalated:   <!-- pr-review-agent v1 sha=<SHA> decision=escalated risk=... -->
+  #   fix-request: <!-- pr-review-agent v1 sha=<SHA> --> <!-- decision=fix-requested risk=... -->
+  # Match the sha followed by a space so one sha is never a prefix of another.
+  # marker_at_head  — any v1 marker at head (crashed or complete).
+  # verdict_at_head — a marker at head that also posted a decision.
+  # An orphan (marker present, verdict absent) is the silent strand this fixes.
+  marker_at_head=$(jq -r --arg sha "$head_sha" '
     [ ((.reviews // []) + (.comments // []))[]
       | (.body // "")
       | select(test("<!-- pr-review-agent v1 sha=" + $sha + " ")) ]
+    | length' <<< "$snapshot" 2>/dev/null || echo 0)
+  verdict_at_head=$(jq -r --arg sha "$head_sha" '
+    [ ((.reviews // []) + (.comments // []))[]
+      | (.body // "")
+      | select(test("<!-- pr-review-agent v1 sha=" + $sha + " ")
+               and test("decision=(approved|escalated|fix-requested)")) ]
     | length' <<< "$snapshot" 2>/dev/null || echo 0)
 
   # Rate-limited withhold retry (issue #711). A pr-review run that withheld
@@ -240,8 +267,9 @@ while IFS= read -r pr_url; do
       | capture("reset=(?<r>[^ ]+)") | .r ]
     | last // ""' <<< "$snapshot" 2>/dev/null || echo "")
   if [ -n "$rl_reset" ]; then
-    if [ "${reviewed_at_head:-0}" -gt 0 ]; then
-      # A real review already landed at this head — rate-limit state is resolved.
+    if [ "${verdict_at_head:-0}" -gt 0 ]; then
+      # A real VERDICT already landed at this head — rate-limit state is resolved.
+      # (A bare orphan marker must NOT resolve it: the retry still needs to fire.)
       echo "  skip $pr_url — rate-limited marker present but already reviewed at head ${head_sha:0:8}"
       continue
     fi
@@ -272,8 +300,21 @@ while IFS= read -r pr_url; do
     continue
   fi
 
-  if [ "${reviewed_at_head:-0}" -gt 0 ]; then
-    echo "  skip $pr_url — already reviewed at head ${head_sha:0:8}"
+  if [ "${verdict_at_head:-0}" -gt 0 ]; then
+    echo "  skip $pr_url — already reviewed at head ${head_sha:0:8} (verdict posted)"
+    continue
+  fi
+
+  # Orphaned marker (#1548): the head was stamped but the review crashed before
+  # posting a verdict. Re-dispatch WITH force_review — an unforced re-dispatch
+  # would hit review-one-pr.sh's idempotency no-op on this very marker. This runs
+  # BEFORE the scheduled-narrowing gate below so a genuine strand is rescued even
+  # in the cron's un-eventable-only mode; the strand is not the redundant re-review
+  # the narrowing removes. force_review bypasses the idempotency and advisory/CI
+  # gates but NOT the per-PR automation budget (#926) nor the needs-human-review
+  # escalation gate (already handled above), so it cannot re-ignite a runaway.
+  if [ "${marker_at_head:-0}" -gt 0 ]; then
+    dispatch_review "$pr_url" "orphaned-marker (head ${head_sha:0:8}, no verdict)" force
     continue
   fi
 
