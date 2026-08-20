@@ -181,9 +181,11 @@ PR-triggered check on the existing Lint workflow — **no new cron/scheduled wor
   seeded `.github/dependabot.yml`. If that config enables the `github-actions` ecosystem, Dependabot bumps
   action versions **inside the shipped workflow stubs** — each bump rewrites a committed blob, so the file no
   longer matches the standards-derived baseline and `template-drift` fails **in this repo for a change made in
-  another repo**. Because a non-required red check still halts pr-review here (`compute_ci_status` has no
-  required/non-required notion — `scripts/lib/ci-status.sh`, `scripts/review-one-pr.sh`), a Dependabot bump in
-  `repo-template` silently stops all PR review here with no signal on any PR. **Mechanism:**
+  another repo**. Since #1549 `compute_ci_status` (`scripts/lib/ci-status.sh`) gates only on checks the
+  rollup marks **required** (their `.isRequired` field), so a non-required `template-drift` failure no longer
+  halts pr-review here — but a Dependabot bump still rewrites the shipped blob and turns the check red for no
+  useful reason (and the gate degrades to the old all-checks behavior whenever nothing is flagged required),
+  so it must still be prevented at the source. **Mechanism:**
   `scripts/seed-repo-template.sh` scopes the `github-actions` package-ecosystem **out** of the shipped
   `.github/dependabot.yml` (`_dependabot_scope_out_actions`; tests in `tests/test_seed_repo_template.bats`).
   The template's workflows are a distribution artifact of `standards/` and their action versions stay current
