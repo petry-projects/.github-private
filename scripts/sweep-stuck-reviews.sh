@@ -242,16 +242,26 @@ while IFS= read -r pr_url; do
   # marker_at_head  — any v1 marker at head (crashed or complete).
   # verdict_at_head — a marker at head that also posted a decision.
   # An orphan (marker present, verdict absent) is the silent strand this fixes.
+  #
+  # The verdict test binds the decision token to the CANONICAL marker relationship
+  # the writers emit (see above), not to a `decision=…` string anywhere in the
+  # body — otherwise a marker followed by quoted/unrelated `decision=approved`
+  # prose would masquerade as a completed review and permanently suppress the
+  # orphan's rescue. Two canonical shapes:
+  #   • approved|escalated — the token sits INSIDE the head marker: `sha=<SHA> decision=…`
+  #   • fix-requested      — the bare head marker plus its companion `<!-- decision=fix-requested … -->`
   marker_at_head=$(jq -r --arg sha "$head_sha" '
     [ ((.reviews // []) + (.comments // []))[]
       | (.body // "")
       | select(test("<!-- pr-review-agent v1 sha=" + $sha + " ")) ]
     | length' <<< "$snapshot" 2>/dev/null || echo 0)
   verdict_at_head=$(jq -r --arg sha "$head_sha" '
-    [ ((.reviews // []) + (.comments // []))[]
-      | (.body // "")
-      | select(test("<!-- pr-review-agent v1 sha=" + $sha + " ")
-               and test("decision=(approved|escalated|fix-requested)")) ]
+    def is_verdict($sha):
+      (.body // "") as $b
+      | ($b | test("<!-- pr-review-agent v1 sha=" + $sha + "\\s+decision=(approved|escalated)\\b"))
+        or (($b | test("<!-- pr-review-agent v1 sha=" + $sha + " -->"))
+            and ($b | test("<!-- decision=fix-requested\\b")));
+    [ ((.reviews // []) + (.comments // []))[] | select(is_verdict($sha)) ]
     | length' <<< "$snapshot" 2>/dev/null || echo 0)
 
   # Rate-limited withhold retry (issue #711). A pr-review run that withheld

@@ -693,6 +693,21 @@ rl_and_escalation() {
   [ ! -s "$GH_LOG" ]
 }
 
+@test "orphan marker with non-canonical decision= prose is still force-dispatched (verdict must be a canonical marker token) (#1548)" {
+  # The head marker crashed before a verdict, but the same body quotes an
+  # unrelated `decision=approved` string (e.g. a reviewer pasting a marker). The
+  # decision token is NOT part of the canonical marker relationship, so it must
+  # NOT count as a verdict — otherwise the orphan is skipped as reviewed forever.
+  local comments='[{"body":"<!-- pr-review-agent v1 sha=orphq --> quoting an old note: decision=approved risk=LOW"}]'
+  write_pr 1554 "REVIEW_REQUIRED" "$ROLLUP_PASS" "orphq" "[]" "$comments"
+  url_for 1554 > "$SWEEP_PRS_FILE"
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  grep -qF -- "-f pr_url=$(url_for 1554)" "$GH_LOG"
+  grep -qF -- "force_review=true" "$GH_LOG"
+}
+
 @test "scheduled path: orphaned marker with eventable-only rollup IS still force-dispatched (strand rescue bypasses narrowing) (#1548)" {
   local comments='[{"body":"<!-- pr-review-agent v1 sha=orph3 -->"}]'
   write_pr 1551 "REVIEW_REQUIRED" "$ROLLUP_PASS_EVENTABLE" "orph3" "[]" "$comments"
@@ -712,5 +727,8 @@ rl_and_escalation() {
   run bash "$SCRIPT"
   [ "$status" -eq 0 ]
   grep -qF -- "-f pr_url=$(url_for 1552)" "$GH_LOG"
-  ! grep -qF -- "force_review" "$GH_LOG"
+  # Assert the exact "no match" status (1), not merely non-zero: a grep error
+  # (status 2) would satisfy `! grep` and pass falsely.
+  run grep -qF -- "force_review" "$GH_LOG"
+  [ "$status" -eq 1 ]
 }
