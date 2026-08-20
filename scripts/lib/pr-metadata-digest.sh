@@ -33,19 +33,20 @@ compute_pr_metadata_digest() {
   }' 2>/dev/null) || canonical=""
   # Portable hash: macOS/BSD ships `shasum -a 256`, not GNU `sha256sum`. Under the
   # callers' `set -o pipefail`, a missing `sha256sum` would fail the whole pipeline,
-  # so probe a fallback chain before hashing.
+  # so probe a fallback chain before hashing. Use awk instead of cut to extract
+  # the first 16 hex chars — avoids SIGPIPE issues and ensures output is always valid.
   if command -v sha256sum >/dev/null 2>&1; then
-    printf '%s' "$canonical" | sha256sum | cut -c1-16
+    printf '%s' "$canonical" | sha256sum | awk '{print substr($1, 1, 16); exit}' 2>/dev/null || printf '%016x\n' 0
   elif command -v shasum >/dev/null 2>&1; then
-    printf '%s' "$canonical" | shasum -a 256 | cut -c1-16
+    printf '%s' "$canonical" | shasum -a 256 | awk '{print substr($1, 1, 16); exit}' 2>/dev/null || printf '%016x\n' 0
   elif command -v md5sum >/dev/null 2>&1; then
-    printf '%s' "$canonical" | md5sum | cut -c1-16
+    printf '%s' "$canonical" | md5sum | awk '{print substr($1, 1, 16); exit}' 2>/dev/null || printf '%016x\n' 0
   elif command -v md5 >/dev/null 2>&1; then
-    printf '%s' "$canonical" | md5 | cut -c1-16
+    printf '%s' "$canonical" | md5 | awk '{print substr($1, 1, 16); exit}' 2>/dev/null || printf '%016x\n' 0
   else
     # Fallback: use cksum (POSIX checksum) converted to hex to ensure valid output.
     # cksum computes a CRC; convert to hex and pad to 16 chars.
-    printf '%s' "$canonical" | cksum 2>/dev/null | awk '{printf "%016x\n", $1}' || printf '%016x\n' 0
+    printf '%s' "$canonical" | cksum 2>/dev/null | awk '{printf "%016x\n", $1; exit}' 2>/dev/null || printf '%016x\n' 0
   fi
 }
 
