@@ -81,6 +81,26 @@ source "$SCRIPT_DIR/lib/finding-verification.sh"
 PR_URL="${1:?usage: review-one-pr.sh <pr-url>}"
 export PR_URL
 
+# emit_verdict <decision> <reason> <would_change>
+#   Emit THE single structured verdict line for a run that DECLINES to review this
+#   PR (skip / noop / escalate / error). It carries pr, head sha, decision, a
+#   machine-readable reason AND `would_change` — the condition that would flip the
+#   decision — so a no-op is fully diagnosable from ONE log line instead of log
+#   archaeology + manual re-runs (issue #1552 AC#2; the PR-review-side mirror of
+#   #1494 AC#3's slot-math line). jq-built so the prose `would_change` is escaped
+#   and the line stays valid JSON: review-batch.sh's reason parser and the batch
+#   skip reporting keep working unchanged. PR_HEAD_SHA is resolved at call time
+#   (every decline branch runs after it is set).
+emit_verdict() {
+  jq -cn \
+    --arg pr "$PR_URL" \
+    --arg sha "${PR_HEAD_SHA:-}" \
+    --arg decision "$1" \
+    --arg reason "$2" \
+    --arg would_change "$3" \
+    '{pr:$pr, sha:$sha, decision:$decision, reason:$reason, would_change:$would_change}'
+}
+
 echo "==> $PR_URL"
 
 # ==========================================================================
@@ -154,7 +174,7 @@ if [ "$CI_STATUS" = "failing" ]; then
     echo "::warning::force-review: CI is failing but FORCE_REVIEW=true — bypassing the ci-failing gate (break-glass, #619). Required-check failures still block the merge at the ruleset."
   else
     echo "    skip: CI checks are failing — will re-evaluate after fixes are pushed"
-    echo "{\"pr\":\"$PR_URL\",\"sha\":\"$PR_HEAD_SHA\",\"decision\":\"skip\",\"reason\":\"ci-failing\"}"
+    emit_verdict skip ci-failing "the failing (non-superseded) required checks turn green; a new push or the pr-review sweep then re-triggers review"
     exit 100
   fi
 fi
@@ -217,7 +237,7 @@ if [ "$CI_STATUS" = "pending" ]; then
         rm -f "$_gh_poll_err"
         if is_rate_limited "$_gh_poll_err_content"; then
           echo "    gh API rate limited during polling — skipping PR"
-          echo "{\"pr\":\"$PR_URL\",\"sha\":\"$PR_HEAD_SHA\",\"decision\":\"skip\",\"reason\":\"gh-rate-limited\"}"
+          emit_verdict skip gh-rate-limited "the GitHub API rate limit resets and the next scheduled pr-review sweep retries this PR"
           exit 100
         fi
         echo "::error::gh pr view failed during polling for $PR_URL"
@@ -237,7 +257,7 @@ if [ "$CI_STATUS" = "pending" ]; then
         echo "::warning::force-review: CI is failing but FORCE_REVIEW=true — bypassing the ci-failing gate (break-glass, #619). Required-check failures still block the merge at the ruleset."
       else
         echo "    skip: CI checks are failing (detected after polling) — will re-evaluate after fixes are pushed"
-        echo "{\"pr\":\"$PR_URL\",\"sha\":\"$PR_HEAD_SHA\",\"decision\":\"skip\",\"reason\":\"ci-failing\"}"
+        emit_verdict skip ci-failing "the failing (non-superseded) required checks turn green; a new push or the pr-review sweep then re-triggers review"
         exit 100
       fi
     fi
@@ -255,7 +275,7 @@ if [ "$CI_STATUS" = "pending" ]; then
         gh pr comment "$PR_URL" --body "$_msg" || echo "    warn: could not post ci-pending-ack comment"
         unset _msg
       fi
-      echo "{\"pr\":\"$PR_URL\",\"sha\":\"$PR_HEAD_SHA\",\"decision\":\"skip\",\"reason\":\"ci-pending-after-poll\"}"
+      emit_verdict skip ci-pending-after-poll "the pending checks finish green; the pr-review sweep re-reviews automatically once they complete (no re-mention needed)"
       exit 100
     fi
 
@@ -264,7 +284,7 @@ if [ "$CI_STATUS" = "pending" ]; then
     echo "    review decision (after CI poll): $REVIEW_DECISION"
   else
     echo "    skip: CI checks still in progress — will re-evaluate when checks complete"
-    echo "{\"pr\":\"$PR_URL\",\"sha\":\"$PR_HEAD_SHA\",\"decision\":\"skip\",\"reason\":\"ci-pending\"}"
+    emit_verdict skip ci-pending "the pending checks finish green; the pr-review sweep re-reviews automatically once they complete"
     exit 100
   fi
 fi
@@ -313,7 +333,7 @@ fi
       # Bots are still reviewing — skip this run, will re-check on next bot review submission
       # Exit 100 (no-op) prevents workflow from consuming budget while awaiting bots
       echo "    skip: advisory bots still reviewing (non-blocking, will re-check on bot submission)"
-      echo "{\"pr\":\"$PR_URL\",\"sha\":\"$PR_HEAD_SHA\",\"decision\":\"skip\",\"reason\":\"waiting-for-advisory-bots\"}"
+      emit_verdict skip waiting-for-advisory-bots "the advisory bots (Gemini/Copilot/SonarCloud/Codex) submit their reviews, whose pull_request_review event re-triggers this review"
       exit 100
     fi
   elif [ $gate_rc -eq 2 ]; then
@@ -321,7 +341,7 @@ fi
     # No bot event will re-trigger this run, so exit 1 (per-PR failure) allows the
     # scheduler to retry on a subsequent scheduled run instead of silently skipping.
     echo "    error: advisory gate API/parse error — failing PR to avoid uninformed approval"
-    echo "{\"pr\":\"$PR_URL\",\"sha\":\"$PR_HEAD_SHA\",\"decision\":\"error\",\"reason\":\"advisory-gate-api-error\"}"
+    emit_verdict error advisory-gate-api-error "the advisory-bot gate API/parse error clears; the next scheduled pr-review sweep retries this PR"
     exit 1
   else
     # Unexpected error
@@ -359,11 +379,11 @@ if [ "${FORCE_REVIEW:-false}" != "true" ]; then
           gh api graphql -f query='mutation($id:ID!,$msg:String!){dismissPullRequestReview(input:{pullRequestReviewId:$id,message:$msg}){clientMutationId}}' -f id="$_agent_approval" -f msg="Dismissing approval due to unaddressed maintainer issue comment (#1290)" 2>/dev/null || echo "    warn: could not dismiss prior approval"
         fi
       fi
-      echo "{\"pr\":\"$PR_URL\",\"sha\":\"$PR_HEAD_SHA\",\"decision\":\"skip\",\"reason\":\"unaddressed-maintainer-comment\"}"
+      emit_verdict skip unaddressed-maintainer-comment "the maintainer comment is addressed by a new push, or an @mention (FORCE_REVIEW) overrides the gate"
       exit 100
     elif [ "$mc_gate_rc" -eq 2 ]; then
       echo "    error: maintainer-comment gate could not evaluate the PR snapshot — failing closed to avoid uninformed approval"
-      echo "{\"pr\":\"$PR_URL\",\"sha\":\"$PR_HEAD_SHA\",\"decision\":\"error\",\"reason\":\"maintainer-comment-gate-error\"}"
+      emit_verdict error maintainer-comment-gate-error "the gate can determine head push-time and comment authorship; the next scheduled pr-review sweep retries this PR"
       exit 1
     else
       exit "$mc_gate_rc"
@@ -408,11 +428,11 @@ if [ "${FORCE_REVIEW:-false}" != "true" ]; then
           gh api graphql -f query='mutation($id:ID!,$msg:String!){dismissPullRequestReview(input:{pullRequestReviewId:$id,message:$msg}){clientMutationId}}' -f id="$_agent_approval" -f msg="Dismissing approval due to unaddressed maintainer review thread (#1415)" 2>/dev/null || echo "    warn: could not dismiss prior approval"
         fi
       fi
-      echo "{\"pr\":\"$PR_URL\",\"sha\":\"$PR_HEAD_SHA\",\"decision\":\"skip\",\"reason\":\"unaddressed-maintainer-review-thread\"}"
+      emit_verdict skip unaddressed-maintainer-review-thread "the maintainer review thread is resolved and a new commit is pushed, or an @mention (FORCE_REVIEW) overrides the gate"
       exit 100
     elif [ "$mrt_gate_rc" -eq 2 ]; then
       echo "    error: maintainer-review-thread gate could not evaluate the review threads — failing closed to avoid uninformed approval"
-      echo "{\"pr\":\"$PR_URL\",\"sha\":\"$PR_HEAD_SHA\",\"decision\":\"error\",\"reason\":\"maintainer-review-thread-gate-error\"}"
+      emit_verdict error maintainer-review-thread-gate-error "the gate can determine review-thread authorship and head push-time; the next scheduled pr-review sweep retries this PR"
       exit 1
     else
       exit "$mrt_gate_rc"
@@ -434,7 +454,7 @@ if [ "$REVIEW_DECISION" = "CHANGES_REQUESTED" ] && [ "${FORCE_REVIEW:-false}" !=
   ')
   if [ "$CHANGES_REQUESTED_AT_HEAD" = "true" ]; then
     echo "    skip: changes requested at current head — awaiting author response before reviewing"
-    echo "{\"pr\":\"$PR_URL\",\"sha\":\"$PR_HEAD_SHA\",\"decision\":\"skip\",\"reason\":\"changes-requested\"}"
+    emit_verdict skip changes-requested "the author pushes a new commit (making the CHANGES_REQUESTED review stale), or @mentions the bot for a re-review"
     exit 100
   fi
 fi
@@ -467,7 +487,7 @@ if [ -n "${EXISTING_MARKER_SHA:-}" ] && [ "$EXISTING_MARKER_SHA" = "$PR_HEAD_SHA
     echo "    force-review: prior marker $PR_HEAD_SHA matches head, but FORCE_REVIEW=true — re-running cascade"
   else
     echo "    noop: already reviewed at $PR_HEAD_SHA"
-    echo "{\"pr\":\"$PR_URL\",\"sha\":\"$PR_HEAD_SHA\",\"decision\":\"noop\",\"reason\":\"already-reviewed-at-head\"}"
+    emit_verdict noop already-reviewed-at-head "a new commit moves the head SHA, or an @mention (FORCE_REVIEW) forces a re-review at the same SHA"
     # Exit 100 is the no-op sentinel: the caller can skip this PR without
     # counting it against the MAX_PRS budget of actual reviews.
     exit 100
@@ -521,7 +541,7 @@ if has_escalation_marker "$PR_ITEMS"; then
     fi
   elif [ "$HAS_HUMAN_LABEL" = "true" ]; then
     echo "    noop: human-escalation active (needs-human-review label present) — remove the label or mention the bot to re-engage"
-    echo "{\"pr\":\"$PR_URL\",\"sha\":\"$PR_HEAD_SHA\",\"decision\":\"noop\",\"reason\":\"human-escalated\"}"
+    emit_verdict noop human-escalated "a human removes the needs-human-review label, or @mentions the bot to re-engage the cascade"
     exit 100
   else
     echo "    re-engage: escalation marker present but needs-human-review label removed — resuming cascade"
@@ -557,7 +577,7 @@ ESCALATION_END
     bash "$SCRIPT_DIR/request-codeowners-review.sh" "$PR_URL" || true
     rm -f "$ESCALATION_BODY"
   fi
-  echo "{\"pr\":\"$PR_URL\",\"sha\":\"$PR_HEAD_SHA\",\"decision\":\"escalate\",\"reason\":\"max-cycles-reached\"}"
+  emit_verdict escalate max-cycles-reached "a human removes the needs-human-review label to grant a fresh cycle budget (an @mention will not reset the cap)"
   exit 100
 fi
 
@@ -572,7 +592,7 @@ if [ "${DRY_RUN:-false}" != "true" ]; then
   PR_BUDGET_REPO=$(echo "$PR_URL" | sed -E 's|https://github.com/([^/]+/[^/]+)/pull/.*|\1|')
   if enforce_pr_budget "$PR_BUDGET_NUMBER" "$PR_BUDGET_REPO"; then
     echo "    cap: per-PR automation budget exhausted — halting automated review (escalated to human)"
-    echo "{\"pr\":\"$PR_URL\",\"sha\":\"$PR_HEAD_SHA\",\"decision\":\"escalate\",\"reason\":\"automation-budget-exhausted\"}"
+    emit_verdict escalate automation-budget-exhausted "a human interaction (comment or approval) resets the per-PR automation budget"
     exit 100
   fi
 fi
@@ -658,7 +678,7 @@ PR_METADATA=$(gh pr view "$PR_URL" --json "$_meta_fields,files" --jq '
   if is_rate_limited "$_gh_meta_err_content"; then
     rm -f "$_gh_meta_err" "$_gh_diff_err" "$_gh_diff_tmp"
     echo "    gh API rate limited on metadata fetch — skipping PR (will retry next run)"
-    echo "{\"pr\":\"$PR_URL\",\"sha\":\"$PR_HEAD_SHA\",\"decision\":\"skip\",\"reason\":\"gh-rate-limited\"}"
+    emit_verdict skip gh-rate-limited "the GitHub API rate limit resets and the next scheduled pr-review sweep retries this PR"
     exit 100
   fi
   echo "::error::gh pr view failed during metadata prefetch for $PR_URL"
@@ -685,7 +705,7 @@ else
   if is_rate_limited "$_gh_diff_err_content"; then
     rm -f "$_gh_meta_err" "$_gh_diff_err" "$_gh_diff_tmp"
     echo "    gh API rate limited on diff fetch — skipping PR (will retry next run)"
-    echo "{\"pr\":\"$PR_URL\",\"sha\":\"$PR_HEAD_SHA\",\"decision\":\"skip\",\"reason\":\"gh-rate-limited\"}"
+    emit_verdict skip gh-rate-limited "the GitHub API rate limit resets and the next scheduled pr-review sweep retries this PR"
     exit 100
   fi
   if is_diff_too_large "$_gh_diff_err_content"; then
@@ -737,7 +757,7 @@ if [ "${PREFETCH_CONTEXT_ENABLED:-false}" = "true" ]; then
   if [ "$_prefetch_rc" = "100" ]; then
     rm -f "$_gh_meta_err" "$_gh_diff_err" "$_gh_diff_tmp" "${_fallback_tmp:-}"
     echo "    gh API rate limited during context prefetch — skipping PR (will retry next run)"
-    echo "{\"pr\":\"$PR_URL\",\"sha\":\"$PR_HEAD_SHA\",\"decision\":\"skip\",\"reason\":\"gh-rate-limited\"}"
+    emit_verdict skip gh-rate-limited "the GitHub API rate limit resets and the next scheduled pr-review sweep retries this PR"
     exit 100
   fi
   unset _prefetch_rc
@@ -956,7 +976,7 @@ if [ "${PREFETCH_CONTEXT_ENABLED:-false}" = "true" ]; then
   assert_prefetch_context_fresh "$PR_URL" "/tmp/cascade" || _freshness_rc=$?
   if [ "$_freshness_rc" = "100" ]; then
     echo "    HEAD moved since context prefetch — discarding stale pre-fed context and skipping (will retry at new SHA)"
-    echo "{\"pr\":\"$PR_URL\",\"sha\":\"$PR_HEAD_SHA\",\"decision\":\"skip\",\"reason\":\"head-moved-stale-context\"}"
+    emit_verdict skip head-moved-stale-context "the next run observes a head SHA that stays stable through the prefetch window (no concurrent push mid-run)"
     exit 100
   fi
   unset _freshness_rc
