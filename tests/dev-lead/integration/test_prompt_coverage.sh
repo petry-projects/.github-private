@@ -122,6 +122,42 @@ else
   echo "  ok: all $author_sel_total OPEN_THREADS_JSON build(s) select author.__typename"
 fi
 
+# ── 6. review-changes must explain a failing-check fix (check vs. intent) ─────
+# Regression for issue #1468: the "agent optimizes the check, not the intent"
+# failure mode — a red check driven green by changing what the check measures
+# rather than making the thing it protects true. When review-changes fixes a
+# failing check (a Tier-1 blocker), its posted fix comment must state WHAT the
+# check verifies and WHY the diff makes that true — not merely "check now passes"
+# — so a reviewer (or pr-review) has a concrete claim to spot-check.
+
+echo ""
+echo "Checking review-changes explains a failing-check fix (check vs. intent, #1468)..."
+rc_path="$PROMPTS_DIR/review-changes.md"
+if [ ! -f "$rc_path" ]; then
+  echo "  FAIL: review-changes.md — missing"
+  FAILED=1
+else
+  # Scope the phrase checks to the "Reporting a failing-check fix" section so
+  # unrelated prompt text cannot mask a regression in the operative instruction.
+  rc_section="$(sed -n '/^#### Reporting a failing-check fix/,/^###/p' "$rc_path")"
+  rc_missing=""
+  [ -n "$rc_section" ] || rc_missing="$rc_missing reporting-section"
+  printf '%s' "$rc_section" | grep -qiE "what (the|a) (failing )?check verifies" || rc_missing="$rc_missing what-check-verifies"
+  printf '%s' "$rc_section" | grep -qiE "why (this|the|your) diff (makes that true|satisfies)" || rc_missing="$rc_missing why-diff-satisfies"
+  printf '%s' "$rc_section" | grep -qiE "not (just|merely) .*check (now )?passes" || rc_missing="$rc_missing not-just-passes"
+  # The prohibition is load-bearing, not just the reporting duty: the prompt must
+  # forbid making a check green by changing what it asserts (its threshold,
+  # fixture, expected output, or the assertion itself).
+  grep -qiE "never make a check green by changing what it asserts" "$rc_path" || rc_missing="$rc_missing prohibition-no-assert-change"
+  printf '%s' "$rc_section" | grep -qiE "change what the check asserts" || rc_missing="$rc_missing section-stop-condition"
+  if [ -n "$rc_missing" ]; then
+    echo "  FAIL: review-changes.md — missing check-vs-intent statement:$rc_missing"
+    FAILED=1
+  else
+    echo "  ok: review-changes.md (requires what-check-verifies / why-diff-satisfies on a failing-check fix)"
+  fi
+fi
+
 # ── result ────────────────────────────────────────────────────────────────────
 
 echo ""
