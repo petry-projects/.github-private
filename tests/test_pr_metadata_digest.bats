@@ -81,3 +81,25 @@ setup() {
   [ "$status" -eq 0 ]
   [ -z "$output" ]
 }
+
+@test "marker_meta_digest ignores stray decision=fix-requested meta= text on an approval marker (AC3)" {
+  # An approval marker whose findings body quotes a fix-request marker (e.g. the
+  # review narrates a superseded verdict) must NOT be treated as metadata-only.
+  # The extraction is anchored to the real agent header + adjacent fix-request
+  # comment, so the stray text below cannot opt this approval into re-arming.
+  local body='<!-- pr-review-agent v1 sha=abc123 decision=approved risk=LOW -->
+
+Prior cascade posted: <!-- decision=fix-requested risk=LOW meta=0000000000000000 --> — now resolved.'
+  run marker_meta_digest "$body"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "marker_meta_digest requires exactly 16 hex digits for meta=" {
+  # A short/garbage meta= that is not the 16-hex digest the writer stamps must
+  # not be extracted — guards against a malformed or truncated marker re-arming.
+  local body='<!-- pr-review-agent v1 sha=abc123 --> <!-- decision=fix-requested risk=LOW meta=dead -->'
+  run marker_meta_digest "$body"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}

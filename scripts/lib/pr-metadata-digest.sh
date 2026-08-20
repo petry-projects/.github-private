@@ -51,15 +51,19 @@ compute_pr_metadata_digest() {
 # marker_meta_digest <marker_body>
 #   Echo the `meta=<hex>` digest stamped in a fix-request marker body, or nothing
 #   when absent (approval markers and code-change fix-requests carry no `meta=`).
-#   The match is scoped to the `decision=fix-requested … meta=<hex>` marker header
-#   (`[^>]*` keeps it inside the same HTML comment) so a stray `meta=deadbeef` in
-#   review findings or an approval explanation can never opt a non-fix-request
-#   marker into metadata re-arming. Uses Bash parameter expansion instead of a
-#   `head -1` pipe, which can raise SIGPIPE (exit 141) under the callers' pipefail.
+#   The match is anchored to the FULL fix-request marker the writer emits
+#   (post-pr-review.sh): the `<!-- pr-review-agent v1 sha=<hex> -->` header
+#   immediately followed by the `<!-- decision=fix-requested … meta=<16hex> -->`
+#   comment. Requiring the leading agent header, the adjacent `decision=fix-requested`
+#   comment, and exactly 16 lowercase hex digits means a stray
+#   `decision=fix-requested … meta=deadbeef…` in review findings, or on an approval
+#   marker whose body quotes that text, can never opt a non-fix-request marker into
+#   metadata re-arming (AC3). Uses Bash parameter expansion instead of a `head -1`
+#   pipe, which can raise SIGPIPE (exit 141) under the callers' pipefail.
 marker_meta_digest() {
   local body="${1:-}"
   local match
-  match=$(printf '%s' "$body" | grep -oE 'decision=fix-requested[^>]*meta=[a-f0-9]+' || true)
+  match=$(printf '%s' "$body" | grep -oE '<!--[[:space:]]*pr-review-agent v1 sha=[a-f0-9]+[[:space:]]*-->[[:space:]]*<!--[[:space:]]*decision=fix-requested[^>]*meta=[a-f0-9]{16}' || true)
   match="${match%%$'\n'*}"
   printf '%s' "${match##*meta=}"
 }
