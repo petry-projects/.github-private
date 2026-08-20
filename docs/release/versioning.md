@@ -80,8 +80,24 @@ A staged rollout advances the channels in order — `next` → `ring0` → `ring
 at each step (see [`runbook.md` §2c](./runbook.md#2c-staged-canary--ring-rollout)). All four channels
 may sit at the same commit between releases; they diverge while a candidate is being staged. The
 `check_dev_lead_stub` compliance audit accepts any `dev-lead/v<M>-{stable,next,ring<N>}` channel pin (it
-rejects `@main` and frozen `@vX.Y.Z`/`@<sha>` — callers must pin a *moving* channel). pr-review still
-uses `stable` only; its ring channels are pending under #499.
+rejects `@main` and frozen `@vX.Y.Z`/`@<sha>` — callers must pin a *moving* channel).
+
+**pr-review major-scoped channels cut (#1184 migration, #1493 AC #10).** `pr-review` previously had
+only the pre-#1184 legacy bare-tier channels (`pr-review/next`, `pr-review/stable`). To complete the
+legacy → major-scoped migration, its major-scoped channels were cut from the exact commits the legacy
+channels already pointed at, so the repin is behaviourally inert and independently revertible:
+
+| Major-scoped channel | Cut at (legacy channel commit) | Legacy source |
+|---|---|---|
+| `pr-review/v1-next` | `ded84ce4` | `pr-review/next` |
+| `pr-review/v1-stable` | `ceab48a1` | `pr-review/stable` (annotated tag `8e00cde6`, dereferencing to this commit) |
+
+Cut via `scripts/cut-release.sh` (a tag operation at existing commits — no content change). This is the
+Class B prerequisite for repinning the ring-0 `pr-review-trigger.yml` caller to `@pr-review/v1-next`
+(#1493 AC #11): the two channel tags must exist on the host repo **before** that repin lands, or the
+ring-0 pr-review workflow resolves an unpublished ref and `startup_failure`s, halting all review in this
+repo (#1034 / #1427 AC #7). pr-review's remaining ring channels (`ring0`/`ring1`) are still pending
+under #499.
 
 `feature-ideation` uses the full per-ring channel set — `{next, ring0, ring1, stable}` — so it can be
 promoted through the same canary → ring → stable model. Its tags follow the identical name scheme

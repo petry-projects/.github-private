@@ -7,9 +7,11 @@ on top of the original #687 scanner:
   - AC 7: the *canonical* form is the major-scoped channel `<name>/v<MAJOR>-<tier>`
     (or an immutable `<name>/vX.Y.Z`); a bare `<name>/<tier>` is NOT canonical.
   - AC 8: a bare `<name>/<tier>` is classified DEPRECATED — reported with file, line,
-    and the major-scoped ref it should become — and during the migration window this
-    is a WARNING, not a failure (exit 0 so `main` stays green).
+    and the major-scoped ref it should become.
   - AC 9: every legacy pin is inventoried with counts.
+  - AC 12 (enforcement flip): the #1184 migration is complete, so a DEPRECATED legacy
+    pin is now a FAILURE (exit 1), not a migration-window warning. The pin is still
+    inventoried as DEPRECATED first (AC 9) and then fails the run.
 
 Standalone runner (repo convention: `python3 <file>`, exit 0 = pass). No pytest.
 """
@@ -141,8 +143,10 @@ def _run_cli(files: list[str], env_extra: dict | None = None) -> subprocess.Comp
     )
 
 
-def test_cli_deprecated_is_warning_not_failure() -> None:
-    print("test_cli_deprecated_is_warning_not_failure")
+def test_cli_deprecated_now_fails_after_enforcement_flip() -> None:
+    """AC 12: with the migration complete, a legacy bare-tier pin FAILS the run
+    (exit 1) — it is still inventoried as DEPRECATED, then fails."""
+    print("test_cli_deprecated_now_fails_after_enforcement_flip")
     body = (
         "jobs:\n"
         "  review:\n"
@@ -152,10 +156,10 @@ def test_cli_deprecated_is_warning_not_failure() -> None:
         summary = Path(d) / "summary.md"
         p = _write(Path(d), "wf.yml", body)
         proc = _run_cli([str(p)], {"GITHUB_STEP_SUMMARY": str(summary)})
-        check(proc.returncode == 0, f"DEPRECATED-only exits 0 (main stays green) -> {proc.returncode}\n{proc.stdout}")
-        check("DEPRECATED" in proc.stdout, "output labels the pin DEPRECATED")
+        check(proc.returncode == 1, f"DEPRECATED legacy pin now fails (exit 1) -> {proc.returncode}\n{proc.stdout}")
+        check("DEPRECATED" in proc.stdout, "output still labels the pin DEPRECATED (inventoried before failing)")
         check("pr-review/v<MAJOR>-next" in proc.stdout, "output shows the suggested major-scoped ref")
-        # AC 9: exact counts land in the run summary.
+        # AC 9: exact counts still land in the run summary even on failure.
         text = summary.read_text(encoding="utf-8") if summary.exists() else ""
         check("- **canonical (major-scoped)**: 0" in text, f"run summary carries canonical count -> {text!r}")
         check("- **legacy (DEPRECATED)**: 1" in text, f"run summary carries legacy count -> {text!r}")
@@ -236,9 +240,9 @@ def test_scan_file_quoted_job_id_line_mapping() -> None:
             check(dep["line"] == 5, f"correct line 5 (not 0) for quoted job -> {dep.get('line')}")
 
 
-def test_scan_file_deprecated_with_off_channel_comment_stays_warning() -> None:
-    """A deprecated legacy pin with an off-channel comment must not escalate to a failure."""
-    print("test_scan_file_deprecated_with_off_channel_comment_stays_warning")
+def test_scan_file_deprecated_with_off_channel_comment_classified_deprecation() -> None:
+    """A deprecated legacy pin with an off-channel comment is classified as a deprecation, not a violation (enforcement of deprecations is decided by the caller, #1493 AC #12)."""
+    print("test_scan_file_deprecated_with_off_channel_comment_classified_deprecation")
     body = (
         "jobs:\n"
         "  review:\n"
@@ -253,7 +257,10 @@ def test_scan_file_deprecated_with_off_channel_comment_stays_warning() -> None:
 
 
 def test_nested_workflow_included_in_inventory() -> None:
-    """DEFAULT_GLOBS must inventory first-party pins in .github/workflows/ subdirectories."""
+    """DEFAULT_GLOBS must inventory first-party pins in .github/workflows/ subdirectories.
+
+    Post-flip (AC 12) a nested legacy pin is inventoried as DEPRECATED and then fails
+    the run (exit 1)."""
     print("test_nested_workflow_included_in_inventory")
     body = (
         "jobs:\n"
@@ -271,8 +278,8 @@ def test_nested_workflow_included_in_inventory() -> None:
             text=True,
             cwd=d,
         )
-        check(proc.returncode == 0, f"nested legacy pin exits 0 (warning not failure) -> {proc.returncode}\n{proc.stdout}")
-        check("DEPRECATED" in proc.stdout, f"nested pin inventoried as DEPRECATED -> {proc.stdout}")
+        check(proc.returncode == 1, f"nested legacy pin fails after the flip (exit 1) -> {proc.returncode}\n{proc.stdout}")
+        check("DEPRECATED" in proc.stdout, f"nested pin still inventoried as DEPRECATED -> {proc.stdout}")
 
 
 def test_scan_file_four_space_job_indent_line_mapping_and_comment() -> None:
@@ -409,10 +416,10 @@ def main() -> int:
     test_scan_file_canonical_passes_clean()
     test_scan_file_rejects_canonical_ref_with_mismatched_name()
     test_scan_file_rejects_legacy_ref_with_mismatched_name()
-    test_cli_deprecated_is_warning_not_failure()
+    test_cli_deprecated_now_fails_after_enforcement_flip()
     test_cli_sha_still_fails()
     test_scan_file_quoted_job_id_line_mapping()
-    test_scan_file_deprecated_with_off_channel_comment_stays_warning()
+    test_scan_file_deprecated_with_off_channel_comment_classified_deprecation()
     test_nested_workflow_included_in_inventory()
     test_scan_file_four_space_job_indent_line_mapping_and_comment()
     test_scan_file_quoted_root_jobs_key_line_and_comment()

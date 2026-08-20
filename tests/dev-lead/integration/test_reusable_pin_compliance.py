@@ -22,9 +22,9 @@ form `<name>/v<MAJOR>-{stable,next,ring<N>}`, an immutable
 `<name>/vMAJOR.MINOR.PATCH` release tag, or a bare `@vN`. A bare
 `<name>/{stable,next,ring<N>}` channel is the pre-#1184 **legacy** form: it is
 reported as DEPRECATED (with file, line, and the major-scoped ref it should
-become) but, during the migration window, is a WARNING — not a failure — so a
-repo carrying a not-yet-migrated legacy pin keeps `main` green (#687 AC #8). The
-enforcement flip to a hard failure is a separate, later change (#687 AC #12).
+become). The #1184 migration is now complete, so the enforcement flip has landed
+(#687/#1493 AC #12): a DEPRECATED pin is a hard **failure** — inventoried first
+(AC #9) so it is diagnosable, then it fails the run. It can never merge again.
 
 Usage:
     python3 tests/dev-lead/integration/test_reusable_pin_compliance.py [FILE ...]
@@ -142,7 +142,9 @@ def classify_ref(ref: str) -> tuple[str, str | None]:
       - ``"ok"``         — a canonical pin; ``detail`` is ``None``.
       - ``"deprecated"`` — a legacy bare `<name>/<tier>` channel (#1184); ``detail``
                             is the major-scoped ref it should become
-                            (``<name>/v<MAJOR>-<tier>``). A WARNING, not a failure.
+                            (``<name>/v<MAJOR>-<tier>``). Post-migration this is a
+                            hard failure at the run level (#1493 AC #12); the status
+                            stays ``"deprecated"`` so the pin is inventoried first.
       - ``"violation"``  — a hard violation (SHA / off-channel / unsanctioned /
                             missing ref); ``detail`` is the human-readable reason.
     """
@@ -323,9 +325,9 @@ def scan_file(path: Path) -> tuple[list[str], list[dict], int, int]:
             )
         else:
             canonical += 1
-            # Only check for off-channel comments on canonical pins. A deprecated pin
-            # already carries a migration warning; escalating it to a failure via a
-            # comment would violate the AC #8 grace-period intent (#687).
+            # Off-channel comments are only checked on canonical pins; a deprecated
+            # pin already fails the run on its own (#1493 AC #12), so there is no
+            # separate off-channel escalation to add for it.
             comment = comments.get((job_id, uses))
             if off_channel_comment(comment):
                 violations.append(
@@ -385,9 +387,8 @@ def emit_inventory(deprecations: list[dict], checked: int, canonical: int) -> No
             )
         rows.append("")
         rows.append(
-            "> Legacy pins are a **warning** during the #1184 migration window; "
-            "enforcement flips to a failure only after the migration is complete "
-            "(#687 AC #12)."
+            "> The #1184 migration is complete: legacy bare-tier pins are now a "
+            "**failure** (#1493 AC #12) — repin each to its major-scoped channel."
         )
     else:
         rows.append("No legacy bare-tier pins remain. ✅")
@@ -435,17 +436,26 @@ def main(argv: list[str]) -> int:
         return 1
 
     if deprecations:
-        # A warning, not a failure: `main` stays green while the migration proceeds
-        # (#687 AC #8). The enforcement flip is a separate change (#687 AC #12).
+        # Enforcement flip (#687/#1493 AC #12): the #1184 legacy→major-scoped
+        # migration is complete, so a bare `<name>/<tier>` pin is now a hard
+        # FAILURE — it can never merge again. The pin is still inventoried above
+        # (AC #9) so the failure is fully diagnosable, then the run fails.
         print(
-            f"\nPASS (with warnings): {canonical} canonical pin(s) compliant; "
-            f"{len(deprecations)} legacy pin(s) DEPRECATED and pending repin."
+            f"\nFAIL: {len(deprecations)} legacy bare-tier pin(s) remain — the #1184 "
+            "migration is complete and DEPRECATED pins are now rejected (#1493 AC #12). "
+            "See the DEPRECATED lines in the inventory above for each offending pin."
         )
-    else:
         print(
-            f"\nPASS: {checked} first-party reusable pin(s) across {len(files)} "
-            "file(s) compliant (all canonical)."
+            "\n  Fix: repin the first-party reusable to its major-scoped channel "
+            "(<name>/v<MAJOR>-<tier>).\n"
+            "  See AGENTS.md 'Release channel tags & the mutable-ref exception'."
         )
+        return 1
+
+    print(
+        f"\nPASS: {checked} first-party reusable pin(s) across {len(files)} "
+        "file(s) compliant (all canonical)."
+    )
     return 0
 
 
