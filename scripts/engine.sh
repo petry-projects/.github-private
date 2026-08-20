@@ -1346,15 +1346,30 @@ run_writer_with_fallback() {
   # order.
   local _chain_spec="${DEV_LEAD_ENGINES:-claude copilot gemini}"
   _chain_spec="${_chain_spec//,/ }"
+  # Split with `read -r -a` (IFS scoped to this one command) so a spec containing
+  # glob metacharacters (e.g. "*") is never pathname-expanded, unlike an unquoted
+  # `for e in $_chain_spec`.
+  local -a _specs=()
+  IFS=' ' read -r -a _specs <<< "$_chain_spec"
   local _enabled=()
+  local _spec_invalid=0
   local e
-  for e in $_chain_spec; do
+  for e in "${_specs[@]}"; do
     case "$e" in
       claude|copilot|gemini)
         [[ " ${_enabled[*]-} " == *" $e "* ]] || _enabled+=("$e") ;;
+      *)
+        _spec_invalid=1 ;;
     esac
   done
-  [ "${#_enabled[@]}" -eq 0 ] && _enabled=(claude copilot gemini)
+  # An unrecognized token (typo, unknown engine) invalidates the WHOLE spec →
+  # fall back to the full default chain rather than silently accepting a partial
+  # subset that disables fallbacks (e.g. "claude,cluade" must NOT become
+  # claude-only). Matches the documented "unrecognized/empty specs fall back to
+  # the full chain" contract.
+  if [ "$_spec_invalid" -eq 1 ] || [ "${#_enabled[@]}" -eq 0 ]; then
+    _enabled=(claude copilot gemini)
+  fi
 
   local engines=()
   # Primary first when it is an enabled engine.
@@ -1370,6 +1385,15 @@ run_writer_with_fallback() {
   for engine in "${engines[@]}"; do
     if [ "$engine" = "copilot" ] && [[ "${COPILOT_GITHUB_TOKEN:-}" == ghp_* ]]; then
       echo "::warning::Skipping copilot fallback: classic PAT in COPILOT_GITHUB_TOKEN is unsupported" >&2
+      continue
+    fi
+    # A missing/placeholder Copilot token is a deterministic configuration gap, not
+    # a rate limit. Skip it here (plain continue) so it never reaches the headroom
+    # probe, whose return-1 skip would otherwise be classified as any_rate_limited
+    # below — making callers retry a config error as though a later attempt could
+    # succeed (#1546).
+    if [ "$engine" = "copilot" ] && { [ -z "${COPILOT_GITHUB_TOKEN:-}" ] || [[ ! "${COPILOT_GITHUB_TOKEN:-}" =~ ^(github_pat_|ghp_|ghs_) ]]; }; then
+      echo "::warning::Skipping copilot fallback: COPILOT_GITHUB_TOKEN missing or unsupported (configuration gap, not a rate limit)" >&2
       continue
     fi
     if [ "$engine" = "gemini" ] && [ -z "${GEMINI_API_KEY:-}${GOOGLE_API_KEY:-}" ]; then

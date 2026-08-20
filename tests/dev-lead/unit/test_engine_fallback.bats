@@ -324,7 +324,7 @@ GHEOF
   run is_license_denied "model is not supported by Copilot"
   [ "$status" -eq 0 ]
   run is_license_denied "some perfectly normal output"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
 }
 
 @test "license: copilot policy denial → continue to gemini (not engine-error)" {
@@ -399,8 +399,7 @@ GHEOF
   export GEMINI_API_KEY="test-key"
   export COPILOT_GITHUB_TOKEN="github_pat_testdummyvalue123"
   export DEV_LEAD_ENGINES="claude,gemini"
-  local copilot_record
-  copilot_record="$(mktemp)"
+  local copilot_record="$BATS_TEST_TMPDIR/copilot_record"
   cat > "$STUB_BIN_DIR/gh" <<GHEOF
 #!/usr/bin/env bash
 case "\$*" in
@@ -416,7 +415,56 @@ GHEOF
   [ "$status" -eq 0 ]
   # copilot was excluded from the chain → never invoked
   [ ! -s "$copilot_record" ]
-  rm -f "$copilot_record"
+  unset DEV_LEAD_ENGINES
+}
+
+@test "kill-switch: unrecognized token (typo) falls back to the full default chain" {
+  # A partially invalid spec (e.g. a "cluade" typo) must NOT be silently accepted
+  # as a claude-only subset that disables fallbacks. The whole spec is invalid →
+  # the default claude,copilot,gemini chain applies, so claude's rate-limit still
+  # falls through to gemini.
+  _make_stub "claude" 2
+  _make_stub "gemini" 0
+  export GEMINI_API_KEY="test-key"
+  export COPILOT_GITHUB_TOKEN="ghp_stub"   # copilot skipped → gemini is the fallback
+  export DEV_LEAD_ENGINES="claude,cluade"
+  _source_engine "claude"
+
+  run run_writer_with_fallback "$TEST_PROMPT"
+
+  # gemini reached → the spec fell back to the full chain (not claude-only)
+  [ "$status" -eq 0 ]
+  unset DEV_LEAD_ENGINES
+}
+
+@test "kill-switch: glob metacharacter in DEV_LEAD_ENGINES is not pathname-expanded" {
+  # "*" must be treated as one unrecognized token (→ default chain), never
+  # expanded against the filesystem when the spec is split.
+  _make_stub "claude" 2
+  _make_stub "gemini" 0
+  export GEMINI_API_KEY="test-key"
+  export COPILOT_GITHUB_TOKEN="ghp_stub"
+  export DEV_LEAD_ENGINES="*"
+  _source_engine "claude"
+
+  run run_writer_with_fallback "$TEST_PROMPT"
+
+  [ "$status" -eq 0 ]
+  unset DEV_LEAD_ENGINES
+}
+
+@test "config: copilot-only with missing token → engine-error, not rate-limited" {
+  # A missing Copilot token is a deterministic configuration gap. When copilot is
+  # the only enabled engine, the aggregate reason must be engine-error (exit 1),
+  # NOT a retryable rate-limit (exit 2) — retrying cannot conjure a token.
+  export DEV_LEAD_ENGINES="copilot"
+  unset COPILOT_GITHUB_TOKEN GEMINI_API_KEY GOOGLE_API_KEY 2>/dev/null || true
+  _source_engine "claude"
+
+  run run_writer_with_fallback "$TEST_PROMPT"
+
+  [ "$status" -eq 1 ]
+  [ "$(cat /tmp/dev-lead-failure-reason)" = "engine-error" ]
   unset DEV_LEAD_ENGINES
 }
 
