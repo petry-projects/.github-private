@@ -39,6 +39,18 @@
 
 PR_AUTOMATION_EXHAUSTION_MARKER="<!-- pr-automation-budget exhausted -->"
 
+# The cycle-cap human-escalation marker (owned by scripts/lib/review-cycle.sh's
+# has_escalation_marker). Mirrored here as a literal so pr_hold_kind can tell a
+# GENUINE escalation from a rate-limit-only hold WITHOUT sourcing review-cycle.sh
+# (kept in sync by tests/test_pr_automation_budget.bats).
+PR_CYCLE_CAP_ESCALATION_MARKER="<!-- pr-review-agent escalation -->"
+
+# The rate-limit withhold marker prefix (owned by scripts/lib/advisory-review-gate.sh's
+# maybe_post_rate_limited_marker). A hold carrying ONLY this marker at the current
+# head PROMISES autonomous recovery after a reset; the sweep must not let the pause
+# label disable that recovery (#1550).
+PR_RATE_LIMITED_MARKER_PREFIX="<!-- pr-review-agent rate-limited v1 sha="
+
 _PR_BUDGET_JQ_DEFS='
   def is_bot($bots):
     . as $login
@@ -86,6 +98,60 @@ pr_has_escalation_label() {
   jq -e --arg l "${NEEDS_HUMAN_REVIEW_LABEL}" \
     'if type == "array" then any(.[]; . == $l) else false end' \
     <<<"$labels_json" >/dev/null 2>&1
+}
+
+# pr_hold_kind <items_json> <head_sha>
+#   Classify WHY a PR carrying NEEDS_HUMAN_REVIEW_LABEL is held, so a re-trigger
+#   timer can log the exact hold it honors (#1550 AC#5) and exempt the ONE hold
+#   whose recovery the label would otherwise disable. <items_json> is a JSON array
+#   of {body} objects (the PR's reviews + comments). Prints exactly one of:
+#     "budget-exhaustion" — the <!-- pr-automation-budget exhausted --> marker
+#     "cycle-cap"         — the <!-- pr-review-agent escalation --> marker
+#     "rate-limit-only"   — a rate-limited withhold marker at <head_sha> and NONE
+#                           of the genuine-escalation markers above (the recovery-
+#                           promising hold the sweep must exempt, #1550 AC#1)
+#     "manual"            — held with none of the above markers (e.g. a manual /
+#                           single-review-failure escalation) — pause as today
+#   A GENUINE escalation takes PRECEDENCE over a co-present rate-limit marker so a
+#   real escalation still pauses everything (#1550 AC#3): the exemption keys on the
+#   marker set, it does not weaken the hold semantics generally. Malformed/empty
+#   input degrades to "manual" (fail-closed — an undeterminable hold stays paused).
+pr_hold_kind() {
+  local items_json="${1:-[]}" head_sha="${2:-}"
+  if _pr_items_have_marker "$items_json" "$PR_AUTOMATION_EXHAUSTION_MARKER"; then
+    echo "budget-exhaustion"
+    return 0
+  fi
+  if _pr_items_have_marker "$items_json" "$PR_CYCLE_CAP_ESCALATION_MARKER"; then
+    echo "cycle-cap"
+    return 0
+  fi
+  # Require the CANONICAL marker — prefix + head SHA + the literal
+  # `status=rate-limited` field — not just the SHA-prefixed opener. Matching only
+  # the prefix would let any comment/review body that merely quotes
+  # `…rate-limited v1 sha=<HEAD> ` (a lookalike from a user or unrelated
+  # automation) bypass the needs-human-review gate and re-arm dispatch. Demanding
+  # the `status=rate-limited` field of the real marker closes that spoof path
+  # while staying a literal substring match (canonical producer:
+  # advisory-review-gate.sh's maybe_post_rate_limited_marker).
+  if [ -n "$head_sha" ] \
+      && _pr_items_have_marker "$items_json" "${PR_RATE_LIMITED_MARKER_PREFIX}${head_sha} status=rate-limited "; then
+    echo "rate-limit-only"
+    return 0
+  fi
+  echo "manual"
+}
+
+# _pr_items_have_marker <items_json> <literal-substring>
+#   Exit 0 if any item's body CONTAINS the literal substring. Substring (not regex)
+#   match, so marker strings with regex metacharacters compare literally. Malformed/
+#   non-array input degrades to "no match" (exit 1).
+_pr_items_have_marker() {
+  local items_json="${1:-[]}" needle="${2:-}"
+  [ -n "$needle" ] || return 1
+  jq -e --arg needle "$needle" '
+    if type == "array" then any(.[]; (.body? // "" | tostring) | contains($needle)) else false end
+  ' <<<"$items_json" >/dev/null 2>&1
 }
 
 # pr_resume_suppressed <pr> <repo> [labels_json] [events_json]
