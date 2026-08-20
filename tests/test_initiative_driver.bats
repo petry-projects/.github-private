@@ -420,8 +420,10 @@ EOF
   # the freed slot released the ready story #4 (would have been slots=0 before the fix)
   [[ "$output" == *"RELEASED"* ]]
   grep -qF "issue edit 4 --repo owner/repo --add-label dev-lead" "$GH_LOG"
-  # the gated item was never re-released
-  ! grep -qF "issue edit 3" "$GH_LOG"
+  # the gated item was never re-released (status must be exactly 1: pattern
+  # absent — not 2, which would mean grep itself errored, e.g. a missing log)
+  run grep -qF "issue edit 3" "$GH_LOG"
+  [ "$status" -eq 1 ]
 }
 
 # ── cap: the release path still respects MAX_IN_FLIGHT after gated exclusion ────
@@ -491,8 +493,9 @@ EOF
   [[ "$output" == *"in-flight=1 (0 gated excluded)"* ]]
   # a comment naming the stale slot-holder was posted on the epic
   grep -qF "issue comment 1" "$GH_LOG"
-  # labels are never mutated on the zombie
-  ! grep -qF "issue edit" "$GH_LOG"
+  # labels are never mutated on the zombie (status exactly 1: absent, not error)
+  run grep -qF "issue edit" "$GH_LOG"
+  [ "$status" -eq 1 ]
 }
 
 # ── not-a-zombie: an OLD label event but RECENT activity is not stale ───────────
