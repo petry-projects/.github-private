@@ -578,9 +578,13 @@ rl_and_escalation() {
 
   run bash "$SCRIPT"
   [ "$status" -eq 0 ]
-  grep -qF -- "-f pr_url=$(url_for 1550)" "$GH_LOG"
-  ! grep -qF -- "force_review" "$GH_LOG"
+  # Assert on $output BEFORE any `run`, which would overwrite it.
   [[ "$output" == *"rate-limit-only"* ]]
+  grep -qF -- "-f pr_url=$(url_for 1550)" "$GH_LOG"
+  # Strict exit 1 (pattern absent), not just non-zero — a missing/unreadable
+  # GH_LOG returns 2 and would otherwise false-pass this negative assertion.
+  run grep -qF -- "force_review" "$GH_LOG"
+  [ "$status" -eq 1 ]
 }
 
 @test "budget-escalation hold (needs-human-review + budget marker + rate-limit marker) does NOT recover (#1550 AC3)" {

@@ -304,6 +304,15 @@ RL_AT() {  # RL_AT <head> → a rate-limited withhold marker body at <head>
   [ "$output" = "rate-limit-only" ]
 }
 
+@test "pr_hold_kind: SHA-prefixed lookalike WITHOUT status=rate-limited is NOT rate-limit-only (spoof-resistant, #1553)" {
+  # A body that quotes the marker opener + current head but omits the canonical
+  # status=rate-limited field must fall through to manual (stay paused) — it must
+  # not grant the rate-limit-only exemption to a user/unrelated-automation lookalike.
+  local j; j=$(items "<!-- pr-review-agent rate-limited v1 sha=deadbeef spoofed, no status field -->")
+  run pr_hold_kind "$j" deadbeef
+  [ "$output" = "manual" ]
+}
+
 @test "pr_hold_kind: rate-limit marker for a DIFFERENT head is NOT rate-limit-only (manual)" {
   local j; j=$(items "$(RL_AT 0ldhead0)")
   run pr_hold_kind "$j" deadbeef

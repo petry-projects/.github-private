@@ -201,7 +201,7 @@ while IFS= read -r pr_url; do
   # WHICH hold was honored so a stranded PR is diagnosable from one run (#1550 AC#5).
   labels_json=$(jq -c '[.labels[]?.name]' <<< "$snapshot" 2>/dev/null || echo '[]')
   if pr_has_escalation_label "$labels_json"; then
-    hold_items=$(jq -c '((.reviews // []) + (.comments // [])) | map({body: (.body // "")})' \
+    hold_items=$(jq -c '((.reviews? // []) + (.comments? // [])) | map({body: (.body? // "" | tostring)})' \
       <<< "$snapshot" 2>/dev/null || echo '[]')
     hold_kind=$(pr_hold_kind "$hold_items" "$head_sha")
     if [ "$hold_kind" = "rate-limit-only" ]; then

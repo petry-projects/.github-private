@@ -126,8 +126,16 @@ pr_hold_kind() {
     echo "cycle-cap"
     return 0
   fi
+  # Require the CANONICAL marker — prefix + head SHA + the literal
+  # `status=rate-limited` field — not just the SHA-prefixed opener. Matching only
+  # the prefix would let any comment/review body that merely quotes
+  # `…rate-limited v1 sha=<HEAD> ` (a lookalike from a user or unrelated
+  # automation) bypass the needs-human-review gate and re-arm dispatch. Demanding
+  # the `status=rate-limited` field of the real marker closes that spoof path
+  # while staying a literal substring match (canonical producer:
+  # advisory-review-gate.sh's maybe_post_rate_limited_marker).
   if [ -n "$head_sha" ] \
-      && _pr_items_have_marker "$items_json" "${PR_RATE_LIMITED_MARKER_PREFIX}${head_sha} "; then
+      && _pr_items_have_marker "$items_json" "${PR_RATE_LIMITED_MARKER_PREFIX}${head_sha} status=rate-limited "; then
     echo "rate-limit-only"
     return 0
   fi
@@ -142,7 +150,7 @@ _pr_items_have_marker() {
   local items_json="${1:-[]}" needle="${2:-}"
   [ -n "$needle" ] || return 1
   jq -e --arg needle "$needle" '
-    if type == "array" then any(.[]; (.body // "") | contains($needle)) else false end
+    if type == "array" then any(.[]; (.body? // "" | tostring) | contains($needle)) else false end
   ' <<<"$items_json" >/dev/null 2>&1
 }
 
