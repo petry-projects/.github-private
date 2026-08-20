@@ -140,7 +140,7 @@ This is the `.github-private` org infrastructure repo for `petry-projects`. It c
   pr-review stub/reusable paths) + daily off-peak cron + `workflow_dispatch` canary that fires a **dry-run**
   dispatch of `pr-review-trigger.yml` (the ring-0 self-host caller stub) and **fails loud if the run ends in
   `startup_failure`** — the exact conclusion of the #1034 channel-skew defect (a `with:` forward the pinned
-  `pr-review/next` channel does not declare), which nothing in PR CI exercises. It complements the
+  then-current `pr-review/next` channel — now `pr-review/v1-next` — did not declare), which nothing in PR CI exercises. It complements the
   `validate-caller-inputs` (#1253) and `caller-stub-freeze` (#1255) static guards with a live post-merge
   signal. Logic lives in `scripts/pr_review_canary.sh` (tests: `tests/pr_review_canary.bats`); the dispatch
   requires `GH_PAT_WORKFLOWS` (a `workflow_dispatch` fired with `GITHUB_TOKEN` never starts a run). It must
@@ -232,7 +232,7 @@ breaks post-merge (the #1034 defect). This guard closes that gap.
 The `caller-stub-freeze` job in `lint.yml` (#1255, epic #1052 Part B) is the byte-identity **backstop** to
 `validate-caller-inputs` for the specific **ring-0 / self-host** caller stubs — the ones whose reusable lives
 in **this** repo and is pinned to a canary channel tag (`docs/initiatives/agentic-release-strategy.md` §5):
-`dev-lead.yml` (`@dev-lead/v1-stable`), `pr-review-trigger.yml` (`@pr-review/next`), and
+`dev-lead.yml` (`@dev-lead/v1-stable`), `pr-review-trigger.yml` (`@pr-review/v1-next`), and
 `ci-failure-analyst.lock.yml` (`@ci-failure-analyst/v1-stable`). A trigger/`with:` forwarding change to a
 channel-pinned self-host stub is exercised by nothing in PR CI and only breaks post-merge (the #1034 defect
 class), so each stub's `on:` trigger + `uses:`/`with:` forwarding block is frozen byte-for-byte against a
@@ -452,8 +452,8 @@ all of them.** Two kinds of tag exist per reusable:
   It is still the sanctioned mutable-ref exception (never flagged as an "unpinned action"), but it is being
   migrated to the major-scoped canonical form. The `reusable-pin-compliance` check
   (`tests/dev-lead/integration/test_reusable_pin_compliance.py`) reports a bare-tier pin as DEPRECATED with the
-  major-scoped ref it should become; during the migration window this is a **warning, not a failure**
-  (#687 AC #8), so `main` stays green until every legacy pin is repinned.
+  major-scoped ref it should become. The migration window is closed: with every first-party pin repinned
+  (#1493 AC #11), a bare-tier pin is now a **failure**, not a warning (#1493 AC #12).
 
 **Scoped exception to the SHA-pin standard.** The org standard requires SHA-pinning actions to avoid
 mutable-ref supply-chain risk. That rule targets **third-party** actions. The channel tags above are
