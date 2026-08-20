@@ -35,14 +35,12 @@ compute_pr_metadata_digest() {
   # callers' `set -o pipefail`, a missing `sha256sum` would fail the whole pipeline,
   # so probe a fallback chain before hashing. Use awk instead of cut to extract
   # the first 16 hex chars — avoids SIGPIPE issues and ensures output is always valid.
+  # MD5 is omitted (S4790: weak hash) since sha256sum (GNU) and shasum -a 256 (macOS/BSD)
+  # cover all realistic CI runners; cksum provides a final non-cryptographic fallback.
   if command -v sha256sum >/dev/null 2>&1; then
     printf '%s' "$canonical" | sha256sum | awk '{print substr($1, 1, 16); exit}' 2>/dev/null || printf '%016x\n' 0
   elif command -v shasum >/dev/null 2>&1; then
     printf '%s' "$canonical" | shasum -a 256 | awk '{print substr($1, 1, 16); exit}' 2>/dev/null || printf '%016x\n' 0
-  elif command -v md5sum >/dev/null 2>&1; then
-    printf '%s' "$canonical" | md5sum | awk '{print substr($1, 1, 16); exit}' 2>/dev/null || printf '%016x\n' 0
-  elif command -v md5 >/dev/null 2>&1; then
-    printf '%s' "$canonical" | md5 | awk '{print substr($1, 1, 16); exit}' 2>/dev/null || printf '%016x\n' 0
   else
     # Fallback: use cksum (POSIX checksum) converted to hex to ensure valid output.
     # cksum computes a CRC; convert to hex and pad to 16 chars.
