@@ -184,6 +184,13 @@ SUMMARY="..."
 ISSUE_ANALYSIS="..."
 FINDINGS="..."
 CI_STATUS="..."
+# metadata_only (#1551): set "true" ONLY when DECISION="escalate" and EVERY blocking
+# finding is fixable by editing PR metadata alone — the PR body, its labels, or its
+# linked/closing issues — with NO code change (e.g. a `Closes #N` that would wrongly
+# auto-close a staged issue, where the fix is to write "Refs #N"). If any blocking
+# finding needs a code edit, leave it "false". This lets the demanded metadata fix
+# (which mints no commit) re-arm the re-review; "false" keeps commit-only re-arm.
+METADATA_ONLY="false"
 # Marker vocabulary: "approved"/"escalated" (review-cycle.sh expects these exact strings)
 DECISION_MARKER=$([ "$DECISION" = "approve" ] && echo "approved" || echo "escalated")
 ```
@@ -233,7 +240,8 @@ jq -n \
   --arg summary   "$SUMMARY" \
   --arg body      "$BODY" \
   --argjson escalate_to_ai "$ESCALATE_TO_AI" \
-  '{pr: $pr, sha: $sha, risk: $risk, decision: $decision, mode: $mode, summary: $summary, body: $body, escalate_to_ai: $escalate_to_ai}' \
+  --argjson metadata_only "$METADATA_ONLY" \
+  '{pr: $pr, sha: $sha, risk: $risk, decision: $decision, mode: $mode, summary: $summary, body: $body, escalate_to_ai: $escalate_to_ai, metadata_only: $metadata_only}' \
   > "$OUTPUT_FILE"
 ```
 

@@ -28,10 +28,23 @@ if [ ! -f "$VERDICT_JSON" ]; then
   exit 1
 fi
 
+# PR-metadata digest helper (issue #1551) — used to stamp `meta=<digest>` into a
+# metadata-only fix-request marker so a later body/label/linked-issue edit can
+# re-arm the review without a new commit.
+POST_PR_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/pr-metadata-digest.sh
+source "$POST_PR_SCRIPT_DIR/lib/pr-metadata-digest.sh"
+
 # Extract fields from verdict
 DECISION=$(jq -r '.decision' "$VERDICT_JSON")
 RISK=$(jq -r '.risk' "$VERDICT_JSON")
 BODY=$(jq -r '.body // ""' "$VERDICT_JSON")
+# metadata_only (#1551): the reviewer sets this true when EVERY blocking finding
+# is fixable by editing PR metadata alone (body / labels / linked issues) with no
+# code change. Absent/false ⇒ current behavior (no digest stamp, commit-only
+# re-arm), so an un-flagged or code-change fix-request cannot be re-armed by a
+# body edit (AC3).
+METADATA_ONLY=$(jq -r '.metadata_only // false' "$VERDICT_JSON")
 
 # mark_prior_agent_items_obsolete <pr_url>
 # After successfully posting a new review/comment, dismiss prior agent reviews
@@ -264,8 +277,21 @@ elif [ "$DECISION" = "escalate" ]; then
     # to count this cycle as 2 (grep -c counts matching lines), prematurely hitting
     # the max-cycle escalation cap.
     BODY_FOR_COMMENT=$(printf '%s' "$BODY" | sed 's/<!-- pr-review-agent v1 sha=[a-f0-9][^>]*-->//g')
+    # For a metadata-only fix-request, stamp a metadata digest into the marker so a
+    # PR body/label/linked-issue edit (which mints no new commit) re-arms the review
+    # (#1551). The re-arm condition stated in the footer must match the marker: a
+    # metadata-only marker re-arms on a metadata change too; every other marker
+    # re-arms only on a new commit (AC3/AC4).
+    META_ATTR=""
+    REARM_FOOTER="_The review cascade will automatically re-review after new commits are pushed._"
+    if [ "$METADATA_ONLY" = "true" ]; then
+      META_SNAPSHOT=$(gh pr view "$PR_URL" --json body,closingIssuesReferences,labels 2>/dev/null || echo '{}')
+      META_DIGEST=$(compute_pr_metadata_digest "$META_SNAPSHOT")
+      META_ATTR=" meta=$META_DIGEST"
+      REARM_FOOTER="_The review cascade will automatically re-review after new commits are pushed, or after a change to the PR body, labels, or linked issues._"
+    fi
     cat > "$COMMENT_FILE" <<COMMENT_END
-<!-- pr-review-agent v1 sha=$PR_HEAD_SHA --> <!-- decision=fix-requested risk=$RISK -->
+<!-- pr-review-agent v1 sha=$PR_HEAD_SHA --> <!-- decision=fix-requested risk=$RISK$META_ATTR -->
 
 ## Review — fix requested (cycle $NEXT_CYCLE/$MAX_REVIEW_CYCLES)
 
@@ -280,7 +306,7 @@ $BODY_FOR_COMMENT
 3. Rebase on the target branch if behind
 4. Do NOT modify files unrelated to the findings above
 
-_The review cascade will automatically re-review after new commits are pushed._
+$REARM_FOOTER
 COMMENT_END
 
     echo "Posting fix-request comment..."
