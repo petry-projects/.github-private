@@ -175,26 +175,46 @@ while IFS= read -r pr_url; do
     continue
   fi
 
-  # Skip PRs already escalated to a human (#946). When the per-PR automation
-  # budget (#928) or the cycle cap escalates a PR, it adds needs-human-review and
-  # the cascade pauses; re-reviewing it here would re-ignite the runaway the
-  # breaker stops (the #860 "amplifier" failure mode). Gate on the label — the
-  # human-controlled resume signal — so removing it re-enables the sweep.
+  head_sha=$(jq -r '.headRefOid // ""' <<< "$snapshot")
+  if [ -z "$head_sha" ]; then
+    echo "  skip $pr_url — head SHA is empty"
+    continue
+  fi
+
+  # Skip PRs held for a human (#946). When the per-PR automation budget (#928) or
+  # the cycle cap escalates a PR, it adds needs-human-review and the cascade
+  # pauses; re-reviewing it here would re-ignite the runaway the breaker stops
+  # (the #860 "amplifier" failure mode). Gate on the label — the human-controlled
+  # resume signal — so removing it re-enables the sweep.
+  #
+  # EXCEPTION — a rate-limit-ONLY hold (#1550). The rate-limited withhold marker
+  # PROMISES "pr-review-sweep will re-review this PR after <reset>", but a
+  # concurrent hold label (from a budget/cycle-cap escalation OR a manual
+  # escalation) would pause the very sweep that makes the promise good, stranding
+  # the PR until a human removes the label. So when the ONLY hold is the
+  # rate-limit marker at the current head (no genuine-escalation marker present),
+  # exempt it from the pause and fall through to the rate-limit retry below — the
+  # reset gate there still governs WHEN it re-dispatches. A GENUINE escalation
+  # (budget exhaustion / churn-breaker cap) keeps pausing everything, even with a
+  # co-present rate-limit marker (#1550 AC#3): the exemption keys on the marker
+  # set, it does not weaken the hold semantics. For EVERY held PR skipped, log
+  # WHICH hold was honored so a stranded PR is diagnosable from one run (#1550 AC#5).
   labels_json=$(jq -c '[.labels[]?.name]' <<< "$snapshot" 2>/dev/null || echo '[]')
   if pr_has_escalation_label "$labels_json"; then
-    echo "  skip $pr_url — escalated to a human ($NEEDS_HUMAN_REVIEW_LABEL present); not re-reviewing (#946)"
-    continue
+    hold_items=$(jq -c '((.reviews // []) + (.comments // [])) | map({body: (.body // "")})' \
+      <<< "$snapshot" 2>/dev/null || echo '[]')
+    hold_kind=$(pr_hold_kind "$hold_items" "$head_sha")
+    if [ "$hold_kind" = "rate-limit-only" ]; then
+      echo "  exempt $pr_url — held by $NEEDS_HUMAN_REVIEW_LABEL but hold is rate-limit-only (no escalation marker) — recovery not disabled, continuing to rate-limit retry (#1550)"
+    else
+      echo "  skip $pr_url — held ($hold_kind; $NEEDS_HUMAN_REVIEW_LABEL present); not re-reviewing (#946/#1550)"
+      continue
+    fi
   fi
 
   review_decision=$(jq -r '.reviewDecision // ""' <<< "$snapshot")
   if [ "$review_decision" != "REVIEW_REQUIRED" ]; then
     echo "  skip $pr_url — reviewDecision='$review_decision' (not REVIEW_REQUIRED)"
-    continue
-  fi
-
-  head_sha=$(jq -r '.headRefOid // ""' <<< "$snapshot")
-  if [ -z "$head_sha" ]; then
-    echo "  skip $pr_url — head SHA is empty"
     continue
   fi
   # Already reviewed at this exact head? The cascade stamps each review with

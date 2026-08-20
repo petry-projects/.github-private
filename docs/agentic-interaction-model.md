@@ -321,7 +321,10 @@ has no schedule and therefore needs no `timer_role` declaration.
 3. **Skip human-gated markers.** The timer must **skip** any work carrying a human-gate
    marker (`needs-human-review`, `dev-lead:needs-human`, the `<!-- pr-automation-budget
    exhausted -->` marker, `initiative:hold`, `dev-lead:hands-off`). A timer that re-ignites
-   human-paused work is a runaway amplifier (§7 rules 2, 6).
+   human-paused work is a runaway amplifier (§7 rules 2, 6). **One narrow exception —
+   the rate-limit-only hold (§6.4):** a `needs-human-review` hold whose ONLY basis is the
+   rate-limit withhold marker (no genuine-escalation marker present) is exempt from this skip,
+   because that marker's whole purpose is to promise the timer's OWN recovery.
 4. **Never re-arm a runaway.** A timer must never reset a safety cap or re-dispatch work
    that a breaker has already stopped. Its reset path must be **human-gated** (§7 rule 2).
 
@@ -342,6 +345,46 @@ has no schedule and therefore needs no `timer_role` declaration.
   The standing remediation is to give it an event fast-path (so the timer reverts to a rare
   backstop) or to fold its retry into the state that already carries the rate-limit signal —
   not to shorten the cron.
+
+### 6.4 The rate-limit-only exemption to §6.2.3 (#1550)
+
+The rate-limit withhold path (`scripts/lib/advisory-review-gate.sh` →
+`maybe_post_rate_limited_marker`, called from `scripts/review-one-pr.sh`) stamps a
+machine-detectable marker —
+`<!-- pr-review-agent rate-limited v1 sha=<HEAD> status=rate-limited reset=<ISO> -->` —
+whose body **promises** "pr-review-sweep will re-review this PR after `<reset>`". That marker
+is `pr-review-sweep.yml`'s (§4, `backstop`) *own* recovery signal: the sweep's rate-limit
+retry branch reads it, waits for the reset, and re-dispatches a review.
+
+**The defect (observed on PR #1531, 2026-08-19).** The rate-limit path never applies
+`needs-human-review` — it only posts the marker. But a *concurrent* hold label (from a
+budget/cycle-cap escalation, or a manual escalation) made the sweep's blanket §6.2.3 skip fire
+**before** its rate-limit retry branch, so the label paused the very sweep the marker promised
+would recover the PR. The hold disabled its own advertised recovery, and the PR stranded at
+`REVIEW_REQUIRED` for >2h past the reset until a human removed the label — the same
+self-blocking shape as the #1427 ci-pending deferral and the #1494 slot deadlock.
+
+**The decision (of the two options in #1550 AC#2, we take the second).** The sweep **exempts a
+rate-limit-only hold** from the §6.2.3 `needs-human-review` skip, rather than having the
+rate-limit path strip the label. A hold is **rate-limit-only** iff a rate-limit marker sits at
+the current head **and** no genuine-escalation marker is present. The classifier is the pure
+`pr_hold_kind` (`scripts/lib/pr-automation-budget.sh`), which the sweep consults at its label
+gate; it returns exactly one of:
+
+- `budget-exhaustion` — `<!-- pr-automation-budget exhausted -->` present → **still paused**
+- `cycle-cap` — `<!-- pr-review-agent escalation -->` present → **still paused**
+- `rate-limit-only` — rate-limit marker at head, none of the above → **exempt** (fall through
+  to the rate-limit retry; the embedded `reset` gate still governs *when* it re-dispatches)
+- `manual` — `needs-human-review` with none of those markers → **still paused**
+
+A genuine escalation takes **precedence** over a co-present rate-limit marker, so
+budget-exhaustion / churn-breaker-cap holds keep pausing everything exactly as before (#1550
+AC#3): the exemption keys on the marker set, it does **not** weaken the hold semantics
+generally (§7 rules 2, 6 are preserved for every genuine escalation). For every held PR it
+skips, the sweep **logs which hold it honored**, so a stranded PR is diagnosable from a single
+sweep run (#1550 AC#5). Regression coverage:
+`tests/test_sweep_stuck_reviews.bats` (rate-limit-only recovers; budget / cycle-cap holds do
+not) and `tests/test_pr_automation_budget.bats` (`pr_hold_kind` classification).
 
 ---
 
