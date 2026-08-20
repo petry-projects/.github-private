@@ -289,8 +289,12 @@ check_provider_headroom() {
       # unset or set to a placeholder value.
       local _tok="${COPILOT_GITHUB_TOKEN:-}"
       if [[ -z "$_tok" ]] || [[ ! "$_tok" =~ ^(github_pat_|ghp_|ghs_) ]]; then
-        echo "  [headroom] copilot — no valid token, proceeding" >&2
-        return 0
+        # No valid Copilot token → skip the engine (#1546). Proceeding fail-open
+        # here let a dead Copilot tier (subscription ended) convert a transient
+        # Claude 429 into a hard job failure; skipping lets the chain reach the
+        # next engine (e.g. gemini) instead.
+        echo "  [headroom] copilot — no valid token, skipping engine" >&2
+        return 1
       fi
       # Probe GitHub Models API rate-limit headers via a lightweight HEAD.
       local _resp _remaining _limit
@@ -395,6 +399,40 @@ is_cli_error() {
 is_diff_too_large() {
   local text="$1"
   printf '%s\n' "$text" | grep -qiE "(HTTP 406|exceeded the maximum number of files|diff exceeded the maximum)"
+}
+
+# _license_denied_pattern
+# Single source of truth for the licensing/policy-denial regex used by both
+# is_license_denied (text) and is_license_denied_files (paths). A `gh copilot`
+# invocation on an org with no Copilot subscription fails deterministically with
+# "Access denied by policy settings" (or "not supported by Copilot"). This is a
+# dead-tier condition, NOT a transient rate-limit, so it is kept out of
+# _rate_limit_pattern's vocabulary — but the fallback chain must treat it the
+# same way (warn + continue to the next engine, never engine-error), so callers
+# map a match to exit 2. See #1546 (sibling of the #1495 classic-PAT skip).
+_license_denied_pattern() {
+  printf '%s' "(access denied by policy settings|not supported by copilot)"
+}
+
+# is_license_denied <text>
+# Returns 0 (true) if the text looks like a Copilot licensing/policy denial.
+is_license_denied() {
+  local text="$1"
+  printf '%s\n' "$text" | grep -qiE "$(_license_denied_pattern)"
+}
+
+# is_license_denied_files <file>...
+# File-aware variant of is_license_denied. Returns 0 if any of the given files
+# matches the license-denial pattern. Empty/absent paths are skipped silently so
+# callers can pass optional tmp files without pre-checks.
+is_license_denied_files() {
+  local files=()
+  local f
+  for f in "$@"; do
+    [ -n "$f" ] && [ -f "$f" ] && files+=("$f")
+  done
+  [ "${#files[@]}" -eq 0 ] && return 1
+  grep -qiE "$(_license_denied_pattern)" "${files[@]}"
 }
 
 # _mcp_failure_pattern
@@ -1225,6 +1263,16 @@ run_writer() {
     rm -f "$_tmp"
     return 2
   fi
+  # Copilot licensing/policy denial (#1546): the org's Copilot subscription
+  # ended, so `gh copilot` fails deterministically with "Access denied by policy
+  # settings". That is not a rate-limit phrase, so without this the raw exit
+  # would be classified as engine-error and abort the chain before gemini. Map it
+  # to exit 2 so run_writer_with_fallback warns and continues to the next engine.
+  if [ "$rc" -ne 0 ] && [ -n "$_tmp" ] && is_license_denied_files "$_tmp"; then
+    echo "::warning::$REVIEW_ENGINE licensing/policy denial — treating as unavailable, trying next engine" >&2
+    rm -f "$_tmp"
+    return 2
+  fi
   [ -n "$_tmp" ] && rm -f "$_tmp"
   return "$rc"
 }
@@ -1275,7 +1323,6 @@ _mark_engine_exhausted() {
 run_writer_with_fallback() {
   local prompt_file="$1"
   local intent="${2:-}"
-  local engines=("$REVIEW_ENGINE")
 
   # Clear any stale failure-reason sidecar from a prior invocation in the same
   # process. Before each terminal failure return below we write a one-line
@@ -1291,7 +1338,30 @@ run_writer_with_fallback() {
         /tmp/dev-lead-timeout-budget \
         /tmp/dev-lead-timeout-elapsed
 
-  for e in claude copilot gemini; do
+  # Engine chain (#1546): DEV_LEAD_ENGINES is an optional org-wide kill-switch to
+  # drop an engine (e.g. an unlicensed Copilot) from the fallback chain without a
+  # code change. Comma- or space-separated; unrecognized/empty specs fall back to
+  # the full claude,copilot,gemini chain. The primary REVIEW_ENGINE is tried
+  # first when it is enabled; the remaining enabled engines follow in default
+  # order.
+  local _chain_spec="${DEV_LEAD_ENGINES:-claude copilot gemini}"
+  _chain_spec="${_chain_spec//,/ }"
+  local _enabled=()
+  local e
+  for e in $_chain_spec; do
+    case "$e" in
+      claude|copilot|gemini)
+        [[ " ${_enabled[*]-} " == *" $e "* ]] || _enabled+=("$e") ;;
+    esac
+  done
+  [ "${#_enabled[@]}" -eq 0 ] && _enabled=(claude copilot gemini)
+
+  local engines=()
+  # Primary first when it is an enabled engine.
+  for e in "${_enabled[@]}"; do
+    [ "$e" = "$REVIEW_ENGINE" ] && engines+=("$e")
+  done
+  for e in "${_enabled[@]}"; do
     [ "$e" != "$REVIEW_ENGINE" ] && engines+=("$e")
   done
 
