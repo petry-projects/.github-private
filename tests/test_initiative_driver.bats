@@ -378,3 +378,159 @@ EOF
   grep -qF "issue edit 2 --repo other/repo --add-label dev-lead" "$GH_LOG"
   ! grep -qF "petry-projects/.github-private" "$GH_LOG"
 }
+
+# ── gated exclusion: dev-lead:needs-human carriers do not consume a slot (#1494) ─
+# A sub-issue paused with `dev-lead:needs-human` cannot progress without a human,
+# so holding an in-flight slot buys nothing and starves the rest of the epic
+# (epic #1402 deadlocked at slots=0 for days). Such carriers are excluded from the
+# in-flight count — but must never be re-released while gated (kept via released[]).
+
+@test "gated: dev-lead:needs-human carrier is excluded from in-flight, freeing a slot" {
+  export MAX_IN_FLIGHT="2"
+  cat > "$MOCK_BIN/gh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$GH_LOG"
+args="$*"
+# Epic #1 carries the gate label
+if [[ "$args" == *"issues/1 --jq"* ]] && [[ "$args" != *"sub_issues"* ]]; then
+  printf 'initiative:auto'; exit 0
+fi
+# Epic #1 sub-issues: #2 (active), #3 (gated), #4 (ready story)
+if [[ "$args" == *"issues/1/sub_issues"* ]]; then printf '2\n3\n4'; exit 0; fi
+# #2 is actively in-flight (dev-lead, no needs-human); labeled recently -> not a zombie
+if [[ "$args" == *"issues/2/events"* ]]; then date -u +%Y-%m-%dT%H:%M:%SZ; exit 0; fi
+if [[ "$args" == *"issues/2 --jq"* ]] && [[ "$args" == *".updated_at"* ]]; then date -u +%Y-%m-%dT%H:%M:%SZ; exit 0; fi
+if [[ "$args" == *"issues/2 --jq"* ]] && [[ "$args" != *"sub_issues"* ]]; then printf 'dev-lead'; exit 0; fi
+# #3 is gated: dev-lead + dev-lead:needs-human
+if [[ "$args" == *"issues/3 --jq"* ]] && [[ "$args" != *"sub_issues"* ]]; then printf 'dev-lead\ndev-lead:needs-human'; exit 0; fi
+# #4 is a ready story: no dev-lead label, no children, no blockers
+if [[ "$args" == *"issues/4/sub_issues"* ]]; then printf ''; exit 0; fi
+if [[ "$args" == *"issues/4 --jq"* ]]; then printf ''; exit 0; fi
+if [[ "$args" == *"issues/4/dependencies/blocked_by"* ]]; then printf ''; exit 0; fi
+if [[ "$args" == "issue edit"* ]]; then exit 0; fi
+printf '[]'
+EOF
+  chmod +x "$MOCK_BIN/gh"
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  # gated item is named and excluded; slot math reported explicitly (AC3)
+  [[ "$output" == *"#3"*"gated"* ]]
+  [[ "$output" == *"in-flight=1 (1 gated excluded), cap=2, releasing 1"* ]]
+  # the freed slot released the ready story #4 (would have been slots=0 before the fix)
+  [[ "$output" == *"RELEASED"* ]]
+  grep -qF "issue edit 4 --repo owner/repo --add-label dev-lead" "$GH_LOG"
+  # the gated item was never re-released (status must be exactly 1: pattern
+  # absent — not 2, which would mean grep itself errored, e.g. a missing log)
+  run grep -qF "issue edit 3" "$GH_LOG"
+  [ "$status" -eq 1 ]
+}
+
+# ── cap: the release path still respects MAX_IN_FLIGHT after gated exclusion ────
+
+@test "cap: releases only up to the remaining slots even when more are ready" {
+  export MAX_IN_FLIGHT="2"
+  cat > "$MOCK_BIN/gh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$GH_LOG"
+args="$*"
+if [[ "$args" == *"issues/1 --jq"* ]] && [[ "$args" != *"sub_issues"* ]]; then
+  printf 'initiative:auto'; exit 0
+fi
+# #2 active, #3 gated, #5 & #6 both ready
+if [[ "$args" == *"issues/1/sub_issues"* ]]; then printf '2\n3\n5\n6'; exit 0; fi
+if [[ "$args" == *"issues/2/events"* ]]; then date -u +%Y-%m-%dT%H:%M:%SZ; exit 0; fi
+if [[ "$args" == *"issues/2 --jq"* ]] && [[ "$args" == *".updated_at"* ]]; then date -u +%Y-%m-%dT%H:%M:%SZ; exit 0; fi
+if [[ "$args" == *"issues/2 --jq"* ]] && [[ "$args" != *"sub_issues"* ]]; then printf 'dev-lead'; exit 0; fi
+if [[ "$args" == *"issues/3 --jq"* ]] && [[ "$args" != *"sub_issues"* ]]; then printf 'dev-lead\ndev-lead:needs-human'; exit 0; fi
+if [[ "$args" == *"issues/5/sub_issues"* ]]; then printf ''; exit 0; fi
+if [[ "$args" == *"issues/5 --jq"* ]]; then printf ''; exit 0; fi
+if [[ "$args" == *"issues/5/dependencies/blocked_by"* ]]; then printf ''; exit 0; fi
+if [[ "$args" == *"issues/6/sub_issues"* ]]; then printf ''; exit 0; fi
+if [[ "$args" == *"issues/6 --jq"* ]]; then printf ''; exit 0; fi
+if [[ "$args" == *"issues/6/dependencies/blocked_by"* ]]; then printf ''; exit 0; fi
+if [[ "$args" == "issue edit"* ]]; then exit 0; fi
+printf '[]'
+EOF
+  chmod +x "$MOCK_BIN/gh"
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  # in_flight=1, cap=2 -> exactly one slot, so exactly one release despite two ready
+  [[ "$output" == *"releasing 1"* ]]
+  [ "$(grep -c 'issue edit' "$GH_LOG")" -eq 1 ]
+}
+
+# ── zombie: a stale in-flight slot-holder is surfaced (log + epic comment) ──────
+# #687 on epic #1402: dev-lead label lingered on an open issue whose PR had long
+# merged — a slot occupied forever with no re-firing event. Surface it; do not
+# auto-remove labels (that erases human-readable state).
+
+@test "zombie: stale dev-lead slot-holder is reported and commented, label untouched" {
+  export MAX_IN_FLIGHT="2"
+  cat > "$MOCK_BIN/gh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$GH_LOG"
+args="$*"
+if [[ "$args" == *"issues/1 --jq"* ]] && [[ "$args" != *"sub_issues"* ]] && [[ "$args" != *"comments"* ]]; then
+  printf 'initiative:auto'; exit 0
+fi
+if [[ "$args" == *"issues/1/sub_issues"* ]]; then printf '2'; exit 0; fi
+# #2 is in-flight but both its dev-lead label event AND last activity are old -> zombie
+if [[ "$args" == *"issues/2/events"* ]]; then printf '2020-01-01T00:00:00Z'; exit 0; fi
+if [[ "$args" == *"issues/2 --jq"* ]] && [[ "$args" == *".updated_at"* ]]; then printf '2020-01-01T00:00:00Z'; exit 0; fi
+if [[ "$args" == *"issues/2 --jq"* ]] && [[ "$args" != *"sub_issues"* ]]; then printf 'dev-lead'; exit 0; fi
+# no prior zombie report exists on the epic
+if [[ "$args" == *"issues/1/comments"* ]]; then printf ''; exit 0; fi
+if [[ "$args" == "issue comment"* ]]; then exit 0; fi
+printf '[]'
+EOF
+  chmod +x "$MOCK_BIN/gh"
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"#2"*"ZOMBIE"* ]]
+  [[ "$output" == *"in-flight=1 (0 gated excluded)"* ]]
+  # a comment naming the stale slot-holder was posted on the epic
+  grep -qF "issue comment 1" "$GH_LOG"
+  # labels are never mutated on the zombie (status exactly 1: absent, not error)
+  run grep -qF "issue edit" "$GH_LOG"
+  [ "$status" -eq 1 ]
+}
+
+# ── not-a-zombie: an OLD label event but RECENT activity is not stale ───────────
+# dev-lead records retries/progress via comments and dispatches WITHOUT reapplying
+# the label. Staleness keys on the freshest of the label event and `updated_at`,
+# so a slot released long ago but still progressing must NOT be flagged a zombie
+# (else active retries produce misleading epic reports and needless human pokes).
+
+@test "not-a-zombie: old dev-lead label but recent activity is not reported" {
+  export MAX_IN_FLIGHT="2"
+  cat > "$MOCK_BIN/gh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$GH_LOG"
+args="$*"
+if [[ "$args" == *"issues/1 --jq"* ]] && [[ "$args" != *"sub_issues"* ]] && [[ "$args" != *"comments"* ]]; then
+  printf 'initiative:auto'; exit 0
+fi
+if [[ "$args" == *"issues/1/sub_issues"* ]]; then printf '2'; exit 0; fi
+# #2's dev-lead label was applied long ago…
+if [[ "$args" == *"issues/2/events"* ]]; then printf '2020-01-01T00:00:00Z'; exit 0; fi
+# …but the issue was updated (e.g. a progress comment) moments ago -> not stale
+if [[ "$args" == *"issues/2 --jq"* ]] && [[ "$args" == *".updated_at"* ]]; then date -u +%Y-%m-%dT%H:%M:%SZ; exit 0; fi
+if [[ "$args" == *"issues/2 --jq"* ]] && [[ "$args" != *"sub_issues"* ]]; then printf 'dev-lead'; exit 0; fi
+if [[ "$args" == *"issues/1/comments"* ]]; then printf ''; exit 0; fi
+if [[ "$args" == "issue comment"* ]]; then exit 0; fi
+printf '[]'
+EOF
+  chmod +x "$MOCK_BIN/gh"
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  # counts the slot as in-flight, but does NOT flag it as a zombie…
+  [[ "$output" == *"in-flight=1 (0 gated excluded)"* ]]
+  [[ "$output" != *"ZOMBIE"* ]]
+  # …and posts no zombie report on the epic
+  ! grep -qF "issue comment 1" "$GH_LOG"
+  ! grep -qF "issue edit" "$GH_LOG"
+}
