@@ -240,9 +240,9 @@ def test_scan_file_quoted_job_id_line_mapping() -> None:
             check(dep["line"] == 5, f"correct line 5 (not 0) for quoted job -> {dep.get('line')}")
 
 
-def test_scan_file_deprecated_with_off_channel_comment_stays_warning() -> None:
-    """A deprecated legacy pin with an off-channel comment must not escalate to a failure."""
-    print("test_scan_file_deprecated_with_off_channel_comment_stays_warning")
+def test_scan_file_deprecated_with_off_channel_comment_classified_deprecation() -> None:
+    """A deprecated legacy pin with an off-channel comment is classified as a deprecation, not a violation (enforcement of deprecations is decided by the caller, #1493 AC #12)."""
+    print("test_scan_file_deprecated_with_off_channel_comment_classified_deprecation")
     body = (
         "jobs:\n"
         "  review:\n"
@@ -419,7 +419,7 @@ def main() -> int:
     test_cli_deprecated_now_fails_after_enforcement_flip()
     test_cli_sha_still_fails()
     test_scan_file_quoted_job_id_line_mapping()
-    test_scan_file_deprecated_with_off_channel_comment_stays_warning()
+    test_scan_file_deprecated_with_off_channel_comment_classified_deprecation()
     test_nested_workflow_included_in_inventory()
     test_scan_file_four_space_job_indent_line_mapping_and_comment()
     test_scan_file_quoted_root_jobs_key_line_and_comment()

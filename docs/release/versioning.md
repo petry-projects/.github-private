@@ -90,7 +90,7 @@ channels already pointed at, so the repin is behaviourally inert and independent
 | Major-scoped channel | Cut at (legacy channel commit) | Legacy source |
 |---|---|---|
 | `pr-review/v1-next` | `ded84ce4` | `pr-review/next` |
-| `pr-review/v1-stable` | `8e00cde6` | `pr-review/stable` |
+| `pr-review/v1-stable` | `ceab48a1` | `pr-review/stable` (annotated tag `8e00cde6`, dereferencing to this commit) |
 
 Cut via `scripts/cut-release.sh` (a tag operation at existing commits — no content change). This is the
 Class B prerequisite for repinning the ring-0 `pr-review-trigger.yml` caller to `@pr-review/v1-next`
