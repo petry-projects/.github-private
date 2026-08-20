@@ -103,3 +103,13 @@ Prior cascade posted: <!-- decision=fix-requested risk=LOW meta=0000000000000000
   [ "$status" -eq 0 ]
   [ -z "$output" ]
 }
+
+@test "marker_meta_digest rejects oversized meta values (truncation guard)" {
+  # If the marker is malformed with meta= followed by MORE than 16 hex chars,
+  # the regex with the closing boundary requirement must reject it entirely,
+  # preventing accidental truncation of malformed markers.
+  local body='<!-- pr-review-agent v1 sha=abc123 --> <!-- decision=fix-requested meta=deadbeefdeadbeefABCDEFGH -->'
+  run marker_meta_digest "$body"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}

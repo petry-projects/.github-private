@@ -63,7 +63,7 @@ compute_pr_metadata_digest() {
 marker_meta_digest() {
   local body="${1:-}"
   local match
-  match=$(printf '%s' "$body" | grep -oE '<!--[[:space:]]*pr-review-agent v1 sha=[a-f0-9]+[[:space:]]*-->[[:space:]]*<!--[[:space:]]*decision=fix-requested[^>]*meta=[a-f0-9]{16}' || true)
+  match=$(printf '%s' "$body" | grep -oE '<!--[[:space:]]*pr-review-agent v1 sha=[a-f0-9]+[[:space:]]*-->[[:space:]]*<!--[[:space:]]*decision=fix-requested[^>]*meta=[a-f0-9]{16}[[:space:]]*-->' || true)
   match="${match%%$'\n'*}"
   printf '%s' "${match##*meta=}"
 }
