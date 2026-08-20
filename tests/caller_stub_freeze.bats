@@ -87,7 +87,7 @@ setup() {
 @test "extract: pr-review-trigger keeps the with-forwarding and the on-block separator comment" {
   run extract_forwarding_block "${REPO_ROOT}/.github/workflows/pr-review-trigger.yml"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"uses: petry-projects/.github-private/.github/workflows/pr-review.yml@pr-review/next"* ]]
+  [[ "$output" == *"uses: petry-projects/.github-private/.github/workflows/pr-review.yml@pr-review/v1-next"* ]]
   [[ "$output" == *"force_review: \${{ inputs.force_review || '' }}"* ]]
   # Column-0 comments before the top-level permissions: key are now included in
   # the frozen block (security fix: prevents hidden-trigger bypass via blank/comment).
