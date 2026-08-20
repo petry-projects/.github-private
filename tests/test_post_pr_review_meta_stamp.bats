@@ -83,7 +83,10 @@ write_verdict() {
   echo "$output" >&2
   cat "$COMMENT_OUT" >&2
 
-  ! grep -q 'meta=' "$COMMENT_OUT"
+  # Assert grep's exit is exactly 1 (no match) — a bare `! grep` would also pass
+  # on status 2 (e.g. an unreadable/missing file), masking a real failure.
+  run grep -q 'meta=' "$COMMENT_OUT"
+  [ "$status" -eq 1 ]
   grep -q 'after new commits are pushed' "$COMMENT_OUT"
 }
 
@@ -92,6 +95,8 @@ write_verdict() {
   run bash "$POST_SCRIPT" "$PR_URL" "$vf" "false"
   cat "$COMMENT_OUT" >&2
 
-  ! grep -q 'meta=' "$COMMENT_OUT"
+  # Assert grep's exit is exactly 1 (no match) rather than any non-zero status.
+  run grep -q 'meta=' "$COMMENT_OUT"
+  [ "$status" -eq 1 ]
   grep -q 'after new commits are pushed' "$COMMENT_OUT"
 }

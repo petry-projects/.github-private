@@ -285,10 +285,21 @@ elif [ "$DECISION" = "escalate" ]; then
     META_ATTR=""
     REARM_FOOTER="_The review cascade will automatically re-review after new commits are pushed._"
     if [ "$METADATA_ONLY" = "true" ]; then
-      META_SNAPSHOT=$(gh pr view "$PR_URL" --json body,closingIssuesReferences,labels 2>/dev/null || echo '{}')
-      META_DIGEST=$(compute_pr_metadata_digest "$META_SNAPSHOT")
-      META_ATTR=" meta=$META_DIGEST"
-      REARM_FOOTER="_The review cascade will automatically re-review after new commits are pushed, or after a change to the PR body, labels, or linked issues._"
+      # Only stamp `meta=` when the metadata snapshot fetch actually succeeds. A
+      # transient `gh pr view` failure that fell back to `{}` would record the
+      # digest of EMPTY metadata; the next re-review would compare real metadata
+      # against it, spuriously conclude "metadata changed", and launch an
+      # unnecessary same-SHA cascade. On fetch failure, omit `meta=` and keep the
+      # commit-only footer — the metadata-only deadlock persists (safe, prior
+      # behavior) rather than manufacturing false re-arm churn.
+      META_SNAPSHOT=$(gh pr view "$PR_URL" --json body,closingIssuesReferences,labels 2>/dev/null || true)
+      if [ -n "$META_SNAPSHOT" ] && printf '%s' "$META_SNAPSHOT" | jq -e . >/dev/null 2>&1; then
+        META_DIGEST=$(compute_pr_metadata_digest "$META_SNAPSHOT")
+        META_ATTR=" meta=$META_DIGEST"
+        REARM_FOOTER="_The review cascade will automatically re-review after new commits are pushed, or after a change to the PR body, labels, or linked issues._"
+      else
+        echo "::warning::metadata snapshot fetch failed for $PR_URL — stamping a commit-only marker (no meta=)"
+      fi
     fi
     cat > "$COMMENT_FILE" <<COMMENT_END
 <!-- pr-review-agent v1 sha=$PR_HEAD_SHA --> <!-- decision=fix-requested risk=$RISK$META_ATTR -->

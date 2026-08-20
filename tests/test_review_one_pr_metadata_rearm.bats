@@ -111,6 +111,13 @@ write_snapshot() {
   [[ "$output" != *'"reason":"already-reviewed-at-head"'* ]]
   # …and must announce the metadata re-arm (AC1/AC4).
   [[ "$output" == *"metadata changed"* ]]
+  # Assert the exit status too: re-arm must leave the idempotency gate and enter
+  # the cascade, so it must NOT be the no-op sentinel (100). Otherwise a later
+  # failure that still printed "metadata changed" could mask a regression where
+  # the script actually no-oped. (The stub engines can't complete a real cascade,
+  # so an exact success exit isn't reachable here — `!= 100` is the load-bearing
+  # signal that the deadlock is broken.)
+  [ "$status" -ne 100 ]
 }
 
 @test "AC5/AC3: metadata-only fix-request no-ops when the metadata digest still matches" {
@@ -130,10 +137,16 @@ write_snapshot() {
   [[ "$output" == *"metadata change"* ]]
 }
 
-@test "AC3: an approval marker at head still no-ops after a metadata change (no re-arm)" {
-  # Approval markers carry NO meta= — a body/label edit must not re-arm them,
-  # or a noisy body-editor could burn review cycles.
-  local marker='<!-- pr-review-agent v1 sha='"$SHA"' decision=approved risk=LOW -->'
+@test "AC3: an approval marker at head still no-ops even with a stale meta= present (no re-arm)" {
+  # Approval markers must NEVER re-arm on a metadata edit, or a noisy body-editor
+  # could burn review cycles. To prove the metadata surface is genuinely ignored
+  # for non-fix-requests, embed a meta= digest that CANNOT match the current
+  # snapshot metadata (all-zeros) on an approval marker, and the snapshot metadata
+  # is a distinct non-default state. marker_meta_digest scopes extraction to
+  # `decision=fix-requested`, so this approval meta= must be ignored and the run
+  # must still no-op on new-commit-only wording. Were the scoping to regress, the
+  # mismatching digest would trigger a spurious metadata re-arm and fail here.
+  local marker='<!-- pr-review-agent v1 sha='"$SHA"' decision=approved risk=LOW meta=0000000000000000 -->'
   write_snapshot "$marker"
 
   run timeout 25 bash "$REVIEW_SCRIPT" "$PR_URL"

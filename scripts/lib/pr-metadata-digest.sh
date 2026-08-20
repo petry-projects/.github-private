@@ -31,13 +31,34 @@ compute_pr_metadata_digest() {
     closes: ([$s.closingIssuesReferences[]?.number] | sort),
     labels: ([$s.labels[]?.name] | sort)
   }' 2>/dev/null) || canonical=""
-  printf '%s' "$canonical" | sha256sum | cut -c1-16
+  # Portable hash: macOS/BSD ships `shasum -a 256`, not GNU `sha256sum`. Under the
+  # callers' `set -o pipefail`, a missing `sha256sum` would fail the whole pipeline,
+  # so probe a fallback chain before hashing.
+  if command -v sha256sum >/dev/null 2>&1; then
+    printf '%s' "$canonical" | sha256sum | cut -c1-16
+  elif command -v shasum >/dev/null 2>&1; then
+    printf '%s' "$canonical" | shasum -a 256 | cut -c1-16
+  elif command -v md5sum >/dev/null 2>&1; then
+    printf '%s' "$canonical" | md5sum | cut -c1-16
+  elif command -v md5 >/dev/null 2>&1; then
+    printf '%s' "$canonical" | md5 | cut -c1-16
+  else
+    printf '%s' "$canonical" | cut -c1-16
+  fi
 }
 
 # marker_meta_digest <marker_body>
 #   Echo the `meta=<hex>` digest stamped in a fix-request marker body, or nothing
 #   when absent (approval markers and code-change fix-requests carry no `meta=`).
+#   The match is scoped to the `decision=fix-requested … meta=<hex>` marker header
+#   (`[^>]*` keeps it inside the same HTML comment) so a stray `meta=deadbeef` in
+#   review findings or an approval explanation can never opt a non-fix-request
+#   marker into metadata re-arming. Uses Bash parameter expansion instead of a
+#   `head -1` pipe, which can raise SIGPIPE (exit 141) under the callers' pipefail.
 marker_meta_digest() {
   local body="${1:-}"
-  printf '%s' "$body" | grep -oE 'meta=[a-f0-9]+' | head -1 | cut -d= -f2 || true
+  local match
+  match=$(printf '%s' "$body" | grep -oE 'decision=fix-requested[^>]*meta=[a-f0-9]+' || true)
+  match="${match%%$'\n'*}"
+  printf '%s' "${match##*meta=}"
 }

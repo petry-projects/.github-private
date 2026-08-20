@@ -488,10 +488,12 @@ LATEST_MARKER_BODY=$(
     ' 2>/dev/null || true
 )
 EXISTING_MARKER_SHA=$(
-  printf '%s' "$LATEST_MARKER_BODY" \
-  | grep -oE '<!-- pr-review-agent v1 sha=[a-f0-9]+' \
-  | grep -oE '[a-f0-9]+$' \
-  | head -1 || true
+  # Bash parameter expansion for the first line instead of a `head -1` pipe, which
+  # can raise SIGPIPE (exit 141) under `set -o pipefail`.
+  matches=$(printf '%s' "$LATEST_MARKER_BODY" \
+    | grep -oE '<!-- pr-review-agent v1 sha=[a-f0-9]+' \
+    | grep -oE '[a-f0-9]+$' || true)
+  printf '%s' "${matches%%$'\n'*}"
 )
 
 if [ -n "${EXISTING_MARKER_SHA:-}" ] && [ "$EXISTING_MARKER_SHA" = "$PR_HEAD_SHA" ]; then
