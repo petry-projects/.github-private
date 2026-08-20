@@ -182,7 +182,7 @@ PR-triggered check on the existing Lint workflow — **no new cron/scheduled wor
   action versions **inside the shipped workflow stubs** — each bump rewrites a committed blob, so the file no
   longer matches the standards-derived baseline and `template-drift` fails **in this repo for a change made in
   another repo**. Since #1549 `compute_ci_status` (`scripts/lib/ci-status.sh`) gates only on checks the
-  rollup marks **required** (their `.isRequired` field), so a non-required `template-drift` failure no longer
+  rollup marks **required** (their `.isRequired` field), a non-required `template-drift` failure no longer
   halts pr-review here — but a Dependabot bump still rewrites the shipped blob and turns the check red for no
   useful reason (and the gate degrades to the old all-checks behavior whenever nothing is flagged required),
   so it must still be prevented at the source. **Mechanism:**

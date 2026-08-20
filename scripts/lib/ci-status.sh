@@ -171,7 +171,7 @@ compute_ci_status() {
     # else failing. An empty set is passing (nothing left to gate on).
     def classify(\$set):
       if (\$set | length) == 0 then \"passing\"
-      elif ([\$set[] | select(is_pending)] | length) > 0 then \"pending\"
+      elif any(\$set[]; is_pending) then \"pending\"
       elif all(\$set[]; is_success or is_cancelled) then \"passing\"
       else \"failing\"
       end;
@@ -185,7 +185,7 @@ compute_ci_status() {
       # required checks not yet reported) fall back to evaluating every external
       # check. Fail-safe and backward-compatible: a genuine failure is never
       # silently passed just because nothing was flagged required.
-      ([ \$ext[] | select(is_required) ]) as \$req |
+      (\$ext | map(select(is_required))) as \$req |
       (if (\$req | length) > 0 then \$req else \$ext end) as \$gate |
       classify(\$gate)
     end

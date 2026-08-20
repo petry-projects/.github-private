@@ -165,7 +165,13 @@ while IFS= read -r pr; do
   html_url=$(jq -r '.url // ""' <<< "$snapshot")
   updated_at=$(jq -r '.updatedAt // ""' <<< "$snapshot")
 
-  ci_status=$(compute_ci_status "$(jq '[.statusCheckRollup[]? | select(.isRequired == true)]' <<< "$snapshot")")
+  # Pass the COMPLETE rollup: compute_ci_status now does the #1549 required-check
+  # gating internally (and its fail-safe fallback to all external checks when the
+  # rollup flags nothing required). Prefiltering to isRequired==true here would
+  # hand it an empty set whenever required metadata is absent (older gh CLI, or
+  # not yet propagated), which classifies as passing and silently bypasses the
+  # fallback — misreading a genuinely-failing PR as green.
+  ci_status=$(compute_ci_status "$(jq '.statusCheckRollup // []' <<< "$snapshot")")
 
   # Human-gate exclusions (AC#2). Only the current label state is consulted.
   labels_json=$(jq -c '[.labels[]?.name]' <<< "$snapshot" 2>/dev/null || echo '[]')
