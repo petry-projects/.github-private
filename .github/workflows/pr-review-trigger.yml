@@ -4,12 +4,14 @@ name: PR Review Agent — Trigger
 # Thin trigger stub for .github-private's OWN pr-review duty (ring 0 / self-host).
 #
 # It fires on the review events and invokes the reusable pinned to
-# `pr-review.yml@pr-review/next`, passing `agent_ref: pr-review/next` so the
+# `pr-review.yml@pr-review/v1-next`, passing `agent_ref: pr-review/v1-next` so the
 # agent's scripts (engine.sh, review-one-pr.sh, …) also run at the same channel.
+# The pin is the major-scoped channel (#1184); the pre-#1184 bare `pr-review/next`
+# form is legacy (#1493).
 # Per the ring strategy (docs/initiatives/agentic-release-strategy.md §5),
 # .github-private is the ring-0 canary: it dogfoods the `next` channel so a new
 # pr-review release is exercised on this repo's own PRs before it is promoted to
-# `pr-review/stable` (the fleet). The pin is independent of whatever pr-review.yml
+# `pr-review/v1-stable` (the fleet). The pin is independent of whatever pr-review.yml
 # is on the branch under review — which is what breaks the self-hosting circular
 # dependency (#497).
 #
@@ -60,10 +62,10 @@ permissions:
 jobs:
   review:
     # Ring-0 channel — see the header block for the dogfooding rationale.
-    uses: petry-projects/.github-private/.github/workflows/pr-review.yml@pr-review/next
+    uses: petry-projects/.github-private/.github/workflows/pr-review.yml@pr-review/v1-next
     with:
       # Pin the agent's own script checkout to the same channel (#506).
-      agent_ref: pr-review/next
+      agent_ref: pr-review/v1-next
       # Forward manual/dispatch inputs; empty for event triggers (the reusable
       # then derives everything from the inherited github.event context).
       pr_url: ${{ inputs.pr_url || '' }}
