@@ -576,6 +576,103 @@ resolve_bot_outdated_threads() {
   echo "::notice::resolve_bot_outdated_threads: resolved ${resolved_count} outdated bot thread(s) on PR #${PR_NUMBER}"
 }
 
+# resolve_addressed_bot_threads: resolves bot-originated review threads that dev-lead
+# has already ADDRESSED in-thread but left unresolved (#1547). Every pr-quality ruleset
+# sets required_review_thread_resolution:true, so such a thread — replied-to with
+# "Applied in …" / "Verified and confirmed …" yet never resolved — leaves a fully green +
+# approved PR silently unmergeable (the 2026-08-18 sweep hand-resolved 20 of these).
+#
+# Complements resolve_bot_outdated_threads: that net only covers isOutdated threads,
+# but an addressed-at-head finding is frequently NOT marked outdated by GitHub. This
+# net keys on the addressed-marker (`<!-- dev-lead:addressed -->`) in the thread's LAST
+# reply instead of on outdated status, so a non-outdated but already-addressed thread is
+# resolved. A *skip* reply carries no marker, so it is never auto-resolved.
+#
+# Scope guard (#1415): only BOT-originated threads are touched (originating comment
+# author is a Bot). A marker-less human/maintainer finding is never resolved here — the
+# #1415 resolve-guard applies to the owner-account ambiguity on human threads, and this
+# net deliberately stays clear of them.
+#
+# Paginated via cursor (GraphQL 100/page max). The addressed-marker decision is delegated
+# to review_reply_is_addressed_marker (maintainer-review-thread-gate.sh) so the marker is
+# defined in exactly one place. The last reply body is passed base64-encoded so quotes/
+# newlines don't break the read loop (same technique as resolve_actor_outdated_threads).
+resolve_addressed_bot_threads() {
+  local intent="$1"
+  if [ "${DEV_LEAD_DRY_RUN:-false}" = "true" ]; then
+    echo "[dry-run] would resolve addressed review threads from bot reviewers on PR #${PR_NUMBER}"
+    return 0
+  fi
+
+  if [ -z "${PR_NUMBER:-}" ]; then
+    echo "::notice::resolve_addressed_bot_threads: PR_NUMBER not set for intent=${intent} — skipping"
+    return 0
+  fi
+
+  local pairs=""
+  local cursor="" has_next_page="true" page_response page_pairs
+  local cursor_args=()
+  local addressed_query='query($owner:String!,$repo:String!,$pr:Int!,$cursor:String){
+    repository(owner:$owner,name:$repo){
+      pullRequest(number:$pr){
+        reviewThreads(first:100,after:$cursor){
+          pageInfo{hasNextPage endCursor}
+          nodes{
+            id isResolved
+            origin: comments(first:1){nodes{author{login __typename}}}
+            latest: comments(last:1){nodes{body}}
+          }
+        }
+      }
+    }
+  }'
+  while [ "$has_next_page" = "true" ]; do
+    page_response=$(gh api graphql -f query="$addressed_query" \
+      -F owner="${REPO%%/*}" -F repo="${REPO##*/}" -F pr="$PR_NUMBER" \
+      "${cursor_args[@]}" 2>/dev/null || echo "{}")
+    # Emit "<thread_id>\t<base64(last reply body)>" for each unresolved bot-originated
+    # thread; the marker decision happens in bash so the regex lives in one place.
+    page_pairs=$(printf '%s' "$page_response" | jq -r \
+      '.data?.repository?.pullRequest?.reviewThreads?.nodes // []
+       | map(select(.isResolved == false
+                    and (((.origin.nodes?[0]?.author?.login // "") | endswith("[bot]"))
+                         or ((.origin.nodes?[0]?.author?.__typename // "") == "Bot"))))
+       | .[] | .id + "\t" + ((.latest.nodes?[0]?.body // "") | @base64)' 2>/dev/null || true)
+    [ -n "$page_pairs" ] && pairs=$(printf '%s\n%s' "$pairs" "$page_pairs")
+    has_next_page=$(printf '%s' "$page_response" | jq -r \
+      '.data?.repository?.pullRequest?.reviewThreads?.pageInfo?.hasNextPage // false' \
+      2>/dev/null || echo "false")
+    cursor=$(printf '%s' "$page_response" | jq -r \
+      '.data?.repository?.pullRequest?.reviewThreads?.pageInfo?.endCursor // ""' \
+      2>/dev/null || echo "")
+    [ -z "$cursor" ] && has_next_page="false"
+    cursor_args=("-f" "cursor=${cursor}")
+  done
+
+  if [ -z "$(printf '%s' "$pairs" | sed '/^[[:space:]]*$/d')" ]; then
+    echo "::notice::no addressed unresolved bot threads on PR #${PR_NUMBER}"
+    return 0
+  fi
+
+  local resolved_count=0
+  local id body_b64 body
+  while IFS=$'\t' read -r id body_b64; do
+    [ -z "$id" ] && continue
+    body=$(printf '%s' "$body_b64" | base64 --decode 2>/dev/null || printf '%s' "$body_b64" | base64 -d 2>/dev/null || echo "")
+    # Only resolve when the last reply carries the addressed-marker — a skip note or
+    # any other reply leaves the thread open.
+    review_reply_is_addressed_marker "$body" || continue
+    if gh api graphql -f query='mutation($id: ID!) { resolveReviewThread(input: {threadId: $id}) { thread { isResolved } } }' \
+        -f id="$id" >/dev/null 2>&1; then
+      resolved_count=$((resolved_count + 1))
+      echo "::notice::resolved addressed bot thread ${id}"
+    else
+      echo "::warning::failed to resolve addressed bot thread ${id}"
+    fi
+  done <<< "$pairs"
+  echo "::notice::resolve_addressed_bot_threads: resolved ${resolved_count} addressed bot thread(s) on PR #${PR_NUMBER}"
+}
+
 # has_hard_blockers: returns 0 (true) if CI_STATUS_JSON or ALL_REVIEWS_JSON contain
 # hard Tier-1 blockers (failing CI checks or CHANGES_REQUESTED reviews).
 # Unlike has_tier1_blockers, does NOT check for unresolved bot threads — used to
@@ -1183,6 +1280,9 @@ case "$INTENT_TYPE" in
         # Always resolve outdated bot threads in the no-changes path as cleanup
         resolve_bot_outdated_threads "fix-reviews"
         resolve_actor_outdated_threads "fix-reviews"
+        # Resolve bot threads dev-lead addressed in-thread but left open (#1547) —
+        # these are not necessarily outdated, so the nets above miss them.
+        resolve_addressed_bot_threads "fix-reviews"
         try_enable_auto_merge
       fi
       try_enable_auto_merge
@@ -1223,6 +1323,9 @@ case "$INTENT_TYPE" in
         # Always resolve outdated bot threads in the no-changes path as cleanup
         resolve_bot_outdated_threads "fix-bot-comment"
         resolve_actor_outdated_threads "fix-bot-comment"
+        # Resolve bot threads dev-lead addressed in-thread but left open (#1547) —
+        # these are not necessarily outdated, so the nets above miss them.
+        resolve_addressed_bot_threads "fix-bot-comment"
         try_enable_auto_merge
       fi
       try_enable_auto_merge
@@ -1291,6 +1394,9 @@ case "$INTENT_TYPE" in
       # Always resolve outdated bot threads in the no-changes path as cleanup
       resolve_bot_outdated_threads "review-changes"
       resolve_actor_outdated_threads "review-changes"
+      # Resolve bot threads dev-lead addressed in-thread but left open (#1547) —
+      # these are not necessarily outdated, so the nets above miss them.
+      resolve_addressed_bot_threads "review-changes"
       try_enable_auto_merge
     fi
     exit "$rc"

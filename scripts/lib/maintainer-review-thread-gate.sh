@@ -83,6 +83,16 @@ _MAINTAINER_REVIEW_GATE_EXCLUDED_BOTS_JSON=""
 # gate's marker set (the discriminator is deliberately shared across both paths).
 readonly _MAINTAINER_REVIEW_GATE_AGENT_MARKERS='<!-- (pr-review-agent|persona:|dev-lead|dependency-advisory)'
 
+# Addressed-marker (#1547): the stable HTML marker dev-lead stamps into a review-thread
+# REPLY when it has ADDRESSED that thread's finding (fix applied or verified live at
+# head). It is distinct from the generic `<!-- dev-lead -->` note marker above so a
+# neutral note or a *skip* reply is never mistaken for an addressed one. The script-side
+# safety net (resolve_addressed_bot_threads in dev-lead-fix-reviews.sh) resolves a
+# bot-originated thread whose LAST reply carries this marker — the exact class of thread
+# that, during the 2026-08-18 sweep, sat replied-to ("Applied in …") but UNRESOLVED and
+# silently blocked merge under every pr-quality ruleset's required_review_thread_resolution.
+readonly _DEV_LEAD_ADDRESSED_MARKER='<!--[[:space:]]*dev-lead:addressed'
+
 log_review_gate_info() {
   echo "[maintainer-review-gate] $*" >&2
 }
@@ -103,6 +113,24 @@ review_thread_is_agent_authored() {
     return 1
   fi
   if [[ "$body" =~ $_MAINTAINER_REVIEW_GATE_AGENT_MARKERS ]]; then
+    return 0
+  fi
+  return 1
+}
+
+# review_reply_is_addressed_marker <reply_comment_body>
+#   The addressed-marker classifier (#1547). Returns 0 when <body> carries the
+#   dev-lead addressed-marker (`<!-- dev-lead:addressed -->`, whitespace-tolerant) —
+#   the reply confirms the finding was addressed at head, so a bot thread ending in
+#   this reply is safe for the safety net to resolve. Returns 1 otherwise (marker-less
+#   or empty → not a confirmed-addressed reply, e.g. a skip note; leave the thread
+#   open). Pure — no gh/network, no jq.
+review_reply_is_addressed_marker() {
+  local body="${1:-}"
+  if [[ -z "$body" ]]; then
+    return 1
+  fi
+  if [[ "$body" =~ $_DEV_LEAD_ADDRESSED_MARKER ]]; then
     return 0
   fi
   return 1
