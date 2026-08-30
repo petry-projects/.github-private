@@ -60,6 +60,7 @@ jobs:
         run: |
           scripts/run-bats.sh \
             tests/test_duplicate_decl_gate.bats \
+            tests/test_vendored_installed_tools.bats \
             tests/fleet_report.bats \
             tests/fleet_stub_drift.bats \
             tests/fleet_stub_remediate.bats \
