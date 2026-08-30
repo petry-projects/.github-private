@@ -78,6 +78,13 @@ source "$SCRIPT_DIR/lib/pr-context-prefetch.sh"
 # shellcheck source=lib/finding-verification.sh
 source "$SCRIPT_DIR/lib/finding-verification.sh"
 
+# PR-metadata digest for the reviewed-state fingerprint (issue #1551). Lets a
+# metadata-only fix-request re-arm on a body/label/linked-issue edit that mints
+# no new commit, without changing same-SHA no-op behavior for approvals or
+# code-change findings.
+# shellcheck source=lib/pr-metadata-digest.sh
+source "$SCRIPT_DIR/lib/pr-metadata-digest.sh"
+
 PR_URL="${1:?usage: review-one-pr.sh <pr-url>}"
 export PR_URL
 
@@ -144,7 +151,7 @@ echo "    output_channel=$REVIEW_OUTPUT_CHANNEL"
 #                NEUTRAL covers informational checks that don't gate merging.
 #      failing — anything else (FAILURE, ACTION_REQUIRED, TIMED_OUT, CANCELLED,
 #                STALE, STARTUP_FAILURE, or unknown conclusions)
-PR_SNAPSHOT=$(gh pr view "$PR_URL" --json headRefOid,statusCheckRollup,reviewDecision,reviews,labels,comments)
+PR_SNAPSHOT=$(gh pr view "$PR_URL" --json headRefOid,statusCheckRollup,reviewDecision,reviews,labels,comments,body,closingIssuesReferences)
 PR_HEAD_SHA=$(echo "$PR_SNAPSHOT" | jq -r '.headRefOid')
 export PR_HEAD_SHA
 echo "    head SHA: $PR_HEAD_SHA"
@@ -255,7 +262,7 @@ if [ "$CI_STATUS" = "pending" ]; then
       echo "    force-review: CI pending, waiting ${_FORCE_POLL_SEC}s for checks to settle (attempt ${_poll}/${_FORCE_POLL_MAX})"
       sleep "$_FORCE_POLL_SEC"
       _gh_poll_err=$(mktemp 2>/dev/null || echo "/tmp/cascade/gh-poll-$$.err")
-      if ! PR_SNAPSHOT=$(gh pr view "$PR_URL" --json headRefOid,statusCheckRollup,reviewDecision,reviews,labels,comments 2>"$_gh_poll_err"); then
+      if ! PR_SNAPSHOT=$(gh pr view "$PR_URL" --json headRefOid,statusCheckRollup,reviewDecision,reviews,labels,comments,body,closingIssuesReferences 2>"$_gh_poll_err"); then
         _gh_poll_err_content=$(cat "$_gh_poll_err" 2>/dev/null || true)
         rm -f "$_gh_poll_err"
         if is_rate_limited "$_gh_poll_err_content"; then
@@ -526,7 +533,9 @@ fi
 # rather than timestamp — when an old comment with a marker existed alongside
 # newer reviews with markers, it picked the wrong (older) marker SHA and
 # we re-reviewed the same head SHA on every run.
-EXISTING_MARKER_SHA=$(
+# Capture the latest marker's full body (not just its SHA) so the metadata-digest
+# re-arm (#1551) can inspect a `meta=<digest>` attribute if one is present.
+LATEST_MARKER_BODY=$(
   gh pr view "$PR_URL" --json reviews,comments \
     --jq '
       ((.reviews   // [] | map({when: .submittedAt, body: .body})) +
@@ -535,21 +544,47 @@ EXISTING_MARKER_SHA=$(
       | sort_by(.when)
       | last
       | .body // ""
-    ' 2>/dev/null \
-  | grep -oE '<!-- pr-review-agent v1 sha=[a-f0-9]+' \
-  | grep -oE '[a-f0-9]+$' \
-  | head -1 || true
+    ' 2>/dev/null || true
+)
+EXISTING_MARKER_SHA=$(
+  # Bash parameter expansion for the first line instead of a `head -1` pipe, which
+  # can raise SIGPIPE (exit 141) under `set -o pipefail`.
+  matches=$(printf '%s' "$LATEST_MARKER_BODY" \
+    | grep -oE '<!-- pr-review-agent v1 sha=[a-f0-9]+' \
+    | grep -oE '[a-f0-9]+$' || true)
+  printf '%s' "${matches%%$'\n'*}"
 )
 
 if [ -n "${EXISTING_MARKER_SHA:-}" ] && [ "$EXISTING_MARKER_SHA" = "$PR_HEAD_SHA" ]; then
   if [ "${FORCE_REVIEW:-false}" = "true" ]; then
     echo "    force-review: prior marker $PR_HEAD_SHA matches head, but FORCE_REVIEW=true — re-running cascade"
   else
-    echo "    noop: already reviewed at $PR_HEAD_SHA"
-    emit_verdict noop already-reviewed-at-head "a new commit moves the head SHA, or an @mention (FORCE_REVIEW) forces a re-review at the same SHA"
-    # Exit 100 is the no-op sentinel: the caller can skip this PR without
-    # counting it against the MAX_PRS budget of actual reviews.
-    exit 100
+    # Metadata-digest re-arm (#1551). A metadata-only fix-request stamps
+    # `meta=<digest>` (body + closingIssuesReferences + labels) into its marker.
+    # When that digest is present but the current PR metadata no longer matches
+    # it, the demanded metadata fix has landed with no new commit — proceed with
+    # the re-review instead of no-oping. Approval markers and code-change
+    # fix-requests carry no `meta=`, so they keep the exact same-SHA no-op
+    # behavior (AC3) and the churn breaker (cycle cap + budget) stays authoritative.
+    MARKER_META_DIGEST=$(marker_meta_digest "$LATEST_MARKER_BODY")
+    if [ -n "${MARKER_META_DIGEST:-}" ]; then
+      CURRENT_META_DIGEST=$(compute_pr_metadata_digest "$PR_SNAPSHOT")
+      if [ "$MARKER_META_DIGEST" != "$CURRENT_META_DIGEST" ]; then
+        echo "    re-review: metadata changed since a metadata-only fix-request at $PR_HEAD_SHA (marker meta=$MARKER_META_DIGEST, current=$CURRENT_META_DIGEST) — re-reviewing without a new commit (#1551)"
+      else
+        echo "    noop: already reviewed at $PR_HEAD_SHA — re-arms on a new commit or a metadata change (PR body, labels, or linked issues)"
+        emit_verdict noop already-reviewed-at-head "a new commit moves the head SHA, a metadata change (PR body, labels, or linked issues) updates the marker digest, or an @mention (FORCE_REVIEW) forces a re-review at the same SHA"
+        # Exit 100 is the no-op sentinel: the caller can skip this PR without
+        # counting it against the MAX_PRS budget of actual reviews.
+        exit 100
+      fi
+    else
+      echo "    noop: already reviewed at $PR_HEAD_SHA — re-arms on a new commit"
+      emit_verdict noop already-reviewed-at-head "a new commit moves the head SHA, or an @mention (FORCE_REVIEW) forces a re-review at the same SHA"
+      # Exit 100 is the no-op sentinel: the caller can skip this PR without
+      # counting it against the MAX_PRS budget of actual reviews.
+      exit 100
+    fi
   fi
 fi
 
