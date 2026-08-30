@@ -104,6 +104,16 @@ Prior cascade posted: <!-- decision=fix-requested risk=LOW meta=0000000000000000
   [ -z "$output" ]
 }
 
+@test "marker_meta_digest rejects a run-on attribute name like notmeta= (boundary guard)" {
+  # `notmeta=deadbeefdeadbeef` must NOT match: the attribute name is not `meta`.
+  # The extraction requires whitespace immediately before `meta=`, so a run-on
+  # name whose suffix happens to be `meta=` cannot be mistaken for a real digest.
+  local body='<!-- pr-review-agent v1 sha=abc123 --> <!-- decision=fix-requested risk=LOW notmeta=deadbeefdeadbeef -->'
+  run marker_meta_digest "$body"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
 @test "marker_meta_digest rejects oversized meta values (truncation guard)" {
   # If the marker is malformed with meta= followed by MORE than 16 hex chars,
   # the regex with the closing boundary requirement must reject it entirely,
