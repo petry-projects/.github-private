@@ -17,7 +17,16 @@ _CI_STATUS_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 #
 # Outputs (stdout): one of "passing", "pending", "failing"
 #
-# Classification rules (after filtering own checks):
+# Required-check gating (#1549): after own/agent filtering, if the rollup marks
+# any remaining check required (its .isRequired field, which GitHub computes from
+# the branch's rulesets AND classic protection), classification gates ONLY on
+# those required checks — a red NON-required check (a superseded
+# 'dev-lead / dispatch', or 'template-drift' from a repo-template Dependabot bump)
+# no longer blocks the review that would approve an otherwise-green PR. When no
+# remaining check is flagged required (isRequired absent, or no protection), the
+# gate falls back to evaluating every external check (fail-safe, unchanged).
+#
+# Classification rules (after filtering own checks, over the gated set):
 #   passing — empty rollup, or every item is SUCCESS/SKIPPED/NEUTRAL/CANCELLED
 #             conclusion or SUCCESS state
 #   pending — any item is IN_PROGRESS/QUEUED/WAITING/PENDING/EXPECTED or
@@ -150,16 +159,35 @@ compute_ci_status() {
     # not a real merge-readiness signal.
     def is_cancelled:
       .conclusion == \"CANCELLED\";
+    # A rollup entry is required iff GitHub marks it required for THIS PR — the
+    # .isRequired field on the statusCheckRollup entry, which reflects the target
+    # branch's rulesets AND classic branch protection combined (#1549). Gating on
+    # it means a red NON-required check (a superseded 'dev-lead / dispatch', or
+    # 'template-drift' from a repo-template Dependabot bump) no longer blocks the
+    # review that would post the approval — the circular skip in #1549.
+    def is_required:
+      (.isRequired == true);
+    # Classify a list of checks: pending dominates, then all-green/cancelled,
+    # else failing. An empty set is passing (nothing left to gate on).
+    def classify(\$set):
+      if (\$set | length) == 0 then \"passing\"
+      elif any(\$set[]; is_pending) then \"pending\"
+      elif all(\$set[]; is_success or is_cancelled) then \"passing\"
+      else \"failing\"
+      end;
     $_CI_STATUS_JQ_IS_OWN_CHECK
     $_CI_STATUS_JQ_IS_AGENT_CHECK
     if (. == null or (type != \"array\")) then \"passing\"
     else
       (map(select((is_own_check or is_agent_check) | not))) as \$ext |
-      if (\$ext | length) == 0 then \"passing\"
-      elif ([\$ext[] | select(is_pending)] | length) > 0 then \"pending\"
-      elif all(\$ext[]; is_success or is_cancelled) then \"passing\"
-      else \"failing\"
-      end
+      # Gate on required checks only when the rollup marks at least one external
+      # check required; otherwise (isRequired absent — older gh, no protection, or
+      # required checks not yet reported) fall back to evaluating every external
+      # check. Fail-safe and backward-compatible: a genuine failure is never
+      # silently passed just because nothing was flagged required.
+      (\$ext | map(select(is_required))) as \$req |
+      (if (\$req | length) > 0 then \$req else \$ext end) as \$gate |
+      classify(\$gate)
     end
   " <<< "$rollup_json" 2>/dev/null || echo "passing"
 }
