@@ -140,6 +140,9 @@ jobs:
             tests/test_review_one_pr_ci_pending.bats \
             tests/test_review_one_pr_decline_verdict.bats \
             tests/test_review_one_pr_force_ci_failing.bats \
+            tests/test_review_one_pr_metadata_rearm.bats \
+            tests/test_pr_metadata_digest.bats \
+            tests/test_post_pr_review_meta_stamp.bats \
             tests/test_release_registry.bats \
             tests/test_readme_refresh_helpers.bats \
             tests/test_readme_refresh_push.bats \
