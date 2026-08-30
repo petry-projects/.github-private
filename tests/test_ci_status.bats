@@ -776,3 +776,142 @@ rollup() {
   run compute_ci_status "null"
   [ "$output" = "passing" ]
 }
+
+# ---------------------------------------------------------------------------
+# Required-check gating (#1549). `gh pr view --json statusCheckRollup` marks each
+# entry with .isRequired (GitHub's per-PR verdict combining the target branch's
+# rulesets AND classic protection). When any remaining (non-own, non-agent) check
+# is flagged required, compute_ci_status gates ONLY on the required set — a red
+# NON-required check (a superseded 'dev-lead / dispatch', or 'template-drift' from
+# a repo-template Dependabot bump) no longer blocks the review that would approve
+# an otherwise-green PR (the circular skip in #1549). When nothing is flagged
+# required (isRequired absent — older gh, no protection, or required checks not
+# yet reported), the gate falls back to evaluating every external check.
+# ---------------------------------------------------------------------------
+
+# check_run_req <name> <status> <conclusion|null> <isRequired: true|false>
+# Models a CheckRun carrying the .isRequired field the real rollup exposes (#1549).
+check_run_req() {
+  local name="$1" status="$2" conclusion="$3" req="$4"
+  if [ "$conclusion" = "null" ]; then
+    jq -n --arg name "$name" --arg status "$status" --argjson req "$req" \
+      '{name: $name, status: $status, conclusion: null, isRequired: $req}'
+  else
+    jq -n --arg name "$name" --arg status "$status" --arg conclusion "$conclusion" --argjson req "$req" \
+      '{name: $name, status: $status, conclusion: $conclusion, isRequired: $req}'
+  fi
+}
+
+# status_ctx_req <context> <state> <isRequired: true|false>
+status_ctx_req() {
+  jq -n --arg context "$1" --arg state "$2" --argjson req "$3" \
+    '{context: $context, state: $state, isRequired: $req}'
+}
+
+@test "required gating: required SUCCESS + non-required FAILURE → passing (#1549)" {
+  local r
+  r=$(rollup \
+    "$(check_run_req "Lint" "COMPLETED" "SUCCESS" true)" \
+    "$(check_run_req "template-drift" "COMPLETED" "FAILURE" false)")
+  run compute_ci_status "$r"
+  [ "$output" = "passing" ]
+}
+
+@test "required gating: required FAILURE + non-required SUCCESS → failing" {
+  local r
+  r=$(rollup \
+    "$(check_run_req "Lint" "COMPLETED" "FAILURE" true)" \
+    "$(check_run_req "template-drift" "COMPLETED" "SUCCESS" false)")
+  run compute_ci_status "$r"
+  [ "$output" = "failing" ]
+}
+
+# #1549 repro (ContentTwin #372, 2026-08-18): every required check green while a
+# non-required org-plumbing check is red must classify passing so the review can
+# post the approval that is the PR's only remaining merge requirement.
+@test "#1549 repro: all required green + non-required 'template-drift' FAILURE → passing" {
+  local r
+  r=$(rollup \
+    "$(check_run_req "SonarCloud" "COMPLETED" "SUCCESS" true)" \
+    "$(check_run_req "CodeQL" "COMPLETED" "SUCCESS" true)" \
+    "$(check_run_req "Lint" "COMPLETED" "SUCCESS" true)" \
+    "$(check_run_req "Format" "COMPLETED" "SUCCESS" true)" \
+    "$(check_run_req "agent-shield" "COMPLETED" "SUCCESS" true)" \
+    "$(check_run_req "dependency-audit" "COMPLETED" "SUCCESS" true)" \
+    "$(check_run_req "template-drift" "COMPLETED" "FAILURE" false)")
+  run compute_ci_status "$r"
+  [ "$output" = "passing" ]
+}
+
+@test "required gating: pending required check → pending (non-required failure ignored)" {
+  local r
+  r=$(rollup \
+    "$(check_run_req "Lint" "IN_PROGRESS" "null" true)" \
+    "$(check_run_req "template-drift" "COMPLETED" "FAILURE" false)")
+  run compute_ci_status "$r"
+  [ "$output" = "pending" ]
+}
+
+@test "required gating: non-required pending is ignored → passing" {
+  local r
+  r=$(rollup \
+    "$(check_run_req "Lint" "COMPLETED" "SUCCESS" true)" \
+    "$(check_run_req "template-drift" "IN_PROGRESS" "null" false)")
+  run compute_ci_status "$r"
+  [ "$output" = "passing" ]
+}
+
+@test "required gating: required StatusContext (isRequired) is gated" {
+  local r
+  r=$(rollup \
+    "$(status_ctx_req "sonarcloud" "FAILURE" true)" \
+    "$(check_run_req "template-drift" "COMPLETED" "FAILURE" false)")
+  run compute_ci_status "$r"
+  [ "$output" = "failing" ]
+}
+
+# Fail-safe: when NOTHING is flagged required (isRequired absent — the shape today's
+# fixtures produce), classification must not silently pass a genuine failure. It
+# reverts to evaluating every external check (backward-compatible).
+@test "required gating: no isRequired anywhere → evaluates all external (failing)" {
+  local r
+  r=$(rollup \
+    "$(check_run "Lint" "COMPLETED" "SUCCESS")" \
+    "$(check_run "template-drift" "COMPLETED" "FAILURE")")
+  run compute_ci_status "$r"
+  [ "$output" = "failing" ]
+}
+
+# Fail-safe: every check explicitly isRequired:false and one is failing → the
+# required set is empty, so the gate falls back to all-external and still fails.
+@test "required gating: all isRequired:false with a failure → fail-safe evaluates all (failing)" {
+  local r
+  r=$(rollup \
+    "$(check_run_req "Lint" "COMPLETED" "SUCCESS" false)" \
+    "$(check_run_req "template-drift" "COMPLETED" "FAILURE" false)")
+  run compute_ci_status "$r"
+  [ "$output" = "failing" ]
+}
+
+@test "required gating: own/agent checks still filtered even when required marks present" {
+  local r
+  r=$(rollup \
+    "$(check_run "review / review" "COMPLETED" "FAILURE")" \
+    "$(check_run "dev-lead / dispatch" "COMPLETED" "FAILURE")" \
+    "$(check_run_req "Lint" "COMPLETED" "SUCCESS" true)")
+  run compute_ci_status "$r"
+  [ "$output" = "passing" ]
+}
+
+# Direct #1549 fingerprint: required checks green + a red 'dev-lead / dispatch'.
+# Belt-and-braces: the agent filter (#1427) already drops dev-lead's check, and
+# even if it did not, isRequired:false would exclude it from the gate.
+@test "#1549 fingerprint: required green + non-required 'dev-lead / dispatch' FAILURE → passing" {
+  local r
+  r=$(rollup \
+    "$(check_run_req "SonarCloud" "COMPLETED" "SUCCESS" true)" \
+    "$(check_run_req "Lint" "COMPLETED" "SUCCESS" true)" \
+    "$(check_run_req "dev-lead / dispatch" "COMPLETED" "FAILURE" false)")
+  run compute_ci_status "$r"
+  [ "$output" = "passing" ]
+}
