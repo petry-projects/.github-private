@@ -22,7 +22,7 @@ setup() {
   export SHA="e655425fabcdef0123456789abcdef0123456789"
   export PR_URL="https://github.com/petry-projects/.github-private/pull/1531"
 
-  export TEST_DIR="$BATS_TMPDIR/review-one-decline-verdict"
+  export TEST_DIR="$BATS_TEST_TMPDIR"
   mkdir -p "$TEST_DIR/bin"
   cd "$TEST_DIR"
 
@@ -35,9 +35,7 @@ setup() {
   unset FORCE_REVIEW
 }
 
-teardown() {
-  rm -rf "$TEST_DIR"
-}
+# No manual teardown needed: $BATS_TEST_TMPDIR is per-test isolated and auto-cleaned by BATS.
 
 # write_snapshot <rollup-json>
 # Installs a gh stub whose `pr view` returns a snapshot with the given rollup.
