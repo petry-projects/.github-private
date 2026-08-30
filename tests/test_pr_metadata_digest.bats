@@ -114,6 +114,17 @@ Prior cascade posted: <!-- decision=fix-requested risk=LOW meta=0000000000000000
   [ -z "$output" ]
 }
 
+@test "marker_meta_digest rejects a run-on decision value like fix-requestedness (boundary guard)" {
+  # `decision=fix-requestedness` is NOT `decision=fix-requested`: the extraction
+  # requires a field delimiter immediately after `fix-requested`, so a run-on
+  # decision value whose prefix happens to be `fix-requested` cannot re-arm a
+  # non-fix-request verdict even when it carries a valid 16-hex meta=.
+  local body='<!-- pr-review-agent v1 sha=abc123 --> <!-- decision=fix-requestedness risk=LOW meta=deadbeefdeadbeef -->'
+  run marker_meta_digest "$body"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
 @test "marker_meta_digest rejects oversized meta values (truncation guard)" {
   # If the marker is malformed with meta= followed by MORE than 16 hex chars,
   # the regex with the closing boundary requirement must reject it entirely,

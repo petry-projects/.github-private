@@ -61,7 +61,11 @@ compute_pr_metadata_digest() {
 #   metadata re-arming (AC3). The `meta=` attribute must be preceded by whitespace
 #   (`[[:space:]]meta=`) — the writer always emits ` meta=<digest>` with a leading
 #   space — so a run-on attribute name like `notmeta=deadbeefdeadbeef` cannot match
-#   and be mistaken for a real digest. A follow-up `grep -oE 'meta=[a-f0-9]{16}'`
+#   and be mistaken for a real digest. `decision=fix-requested` is likewise followed
+#   by a mandatory field delimiter (`[[:space:]]meta=` directly, or `[[:space:]]…`
+#   then ` meta=`) so a run-on decision value like `decision=fix-requestedness` can
+#   never satisfy the match and re-arm a non-fix-request verdict. A follow-up
+#   `grep -oE 'meta=[a-f0-9]{16}'`
 #   isolates the exact 16-hex token from the space-delimited match, so no leading
 #   space, trailing whitespace, or `-->` leaks into the digest; `tail -1` (not
 #   `head -1`) drains its input fully and so cannot raise SIGPIPE (exit 141) under
@@ -69,6 +73,6 @@ compute_pr_metadata_digest() {
 marker_meta_digest() {
   local body="${1:-}"
   local match
-  match=$(printf '%s' "$body" | grep -oE '<!--[[:space:]]*pr-review-agent v1 sha=[a-f0-9]+[[:space:]]*-->[[:space:]]*<!--[[:space:]]*decision=fix-requested[^>]*[[:space:]]meta=[a-f0-9]{16}[[:space:]]*-->' | grep -oE '[[:space:]]meta=[a-f0-9]{16}' | grep -oE 'meta=[a-f0-9]{16}' | tail -1 || true)
+  match=$(printf '%s' "$body" | grep -oE '<!--[[:space:]]*pr-review-agent v1 sha=[a-f0-9]+[[:space:]]*-->[[:space:]]*<!--[[:space:]]*decision=fix-requested([[:space:]]meta=|[[:space:]][^>]*[[:space:]]meta=)[a-f0-9]{16}[[:space:]]*-->' | grep -oE '[[:space:]]meta=[a-f0-9]{16}' | grep -oE 'meta=[a-f0-9]{16}' | tail -1 || true)
   printf '%s' "${match#meta=}"
 }
