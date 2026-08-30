@@ -151,10 +151,14 @@ STUB
   [ "$status" -eq 1 ]
 }
 
-@test "headroom: copilot returns 0 (proceed) when COPILOT_GITHUB_TOKEN is unset" {
+# #1546: no valid Copilot token → SKIP the engine (return 1), not fail-open
+# proceed. The org's Copilot subscription ended, so proceeding fail-open turned a
+# transient Claude 429 into a hard job failure. Skipping lets the chain reach
+# gemini instead.
+@test "headroom: copilot returns 1 (skip) when COPILOT_GITHUB_TOKEN is unset" {
   _source_engine "copilot"
   unset COPILOT_GITHUB_TOKEN
-  # curl stub fails so an accidental call would be caught
+  # curl stub fails so an accidental probe call would be caught
   cat > "$STUB_BIN_DIR/curl" <<'STUB'
 #!/usr/bin/env bash
 exit 1
@@ -162,14 +166,14 @@ STUB
   chmod +x "$STUB_BIN_DIR/curl"
 
   run check_provider_headroom "copilot"
-  [ "$status" -eq 0 ]
+  [ "$status" -eq 1 ]
   [[ "$output" == *"no valid token"* ]]
 }
 
-@test "headroom: copilot returns 0 (proceed) when COPILOT_GITHUB_TOKEN is a placeholder" {
+@test "headroom: copilot returns 1 (skip) when COPILOT_GITHUB_TOKEN is a placeholder" {
   _source_engine "copilot"
   export COPILOT_GITHUB_TOKEN="dummy"
-  # curl stub fails so an accidental call would be caught
+  # curl stub fails so an accidental probe call would be caught
   cat > "$STUB_BIN_DIR/curl" <<'STUB'
 #!/usr/bin/env bash
 exit 1
@@ -177,7 +181,7 @@ STUB
   chmod +x "$STUB_BIN_DIR/curl"
 
   run check_provider_headroom "copilot"
-  [ "$status" -eq 0 ]
+  [ "$status" -eq 1 ]
   [[ "$output" == *"no valid token"* ]]
 }
 
