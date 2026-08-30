@@ -79,14 +79,14 @@ gh api graphql -f query='
               ))))'
 ```
 
-For each thread you fixed, first **reply with the specific change** — name the file(s)/function(s) you touched and how the change addresses the finding (one or two concrete sentences; never just "done"). Pass the body as a GraphQL variable so quotes and newlines are safe:
+For each thread you fixed, first **reply with the specific change** — name the file(s)/function(s) you touched and how the change addresses the finding (one or two concrete sentences; never just "done"). End the reply with the addressed-marker `<!-- dev-lead:addressed -->` so the automation can safely resolve the thread even if the resolve step below is missed (#1547) — stamp it **only** on a genuine addressed reply, never on a skip note. Pass the body as a GraphQL variable so quotes and newlines are safe:
 
 ```bash
 # Replace THREAD_NODE_ID with the id value from the query above.
 gh api graphql \
   -f query='mutation($tid: ID!, $body: String!) { addPullRequestReviewThreadReply(input: {pullRequestReviewThreadId: $tid, body: $body}) { comment { id } } }' \
   -f tid="THREAD_NODE_ID" \
-  -f body="Fixed in scripts/foo.sh: replaced the unpinned curl|bash install with a SHA-verified binary download."
+  -f body="Fixed in scripts/foo.sh: replaced the unpinned curl|bash install with a SHA-verified binary download. <!-- dev-lead:addressed -->"
 ```
 
 Then resolve each thread you addressed (and any from this bot marked `isOutdated: true`):
