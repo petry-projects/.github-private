@@ -73,6 +73,7 @@ Write a JSON object to `$OUTPUT_FILE`:
   "risk": "LOW|MEDIUM|HIGH",
   "decision": "approve|escalate",
   "escalate_to_opus": true|false,
+  "metadata_only": true|false,
   "reason_codes": ["..."],
   "agreement": "full|partial|divergent",
   "summary": "2-4 sentences",
@@ -88,6 +89,13 @@ Write a JSON object to `$OUTPUT_FILE`:
   ]
 }
 ```
+
+`metadata_only` (#1551): set `true` ONLY when `decision` is `escalate` AND every
+blocking finding is fixable by editing PR metadata alone — the PR body, its labels,
+or its linked/closing issues — with NO code change (e.g. a `Closes #N` that would
+wrongly auto-close a staged issue, where the fix is to write "Refs #N"). If any
+blocking finding needs a code edit, set `false`. This lets the demanded metadata fix
+(which mints no commit) re-arm the re-review instead of deadlocking. Default `false`.
 
 `agreement` values:
 - `full` — same risk AND same decision

@@ -40,6 +40,14 @@ SUMMARY=$(jq -r '.summary' "$FINAL_RESULT")
 FINDINGS=$(jq -c '.findings // []' "$FINAL_RESULT")
 AGREEMENT=$(jq -r '.agreement // ""' "$FINAL_RESULT")
 ESCALATE_TO_AI=$(jq -r 'if .decision == "escalate" and .risk != "HIGH" then "true" else "false" end' "$FINAL_RESULT")
+# metadata_only (#1551): true only when the decision is escalate/fix-requested AND
+# EVERY blocking finding is fixable by editing PR metadata alone — the PR body, its
+# labels, or its linked/closing issues — with NO code change (e.g. a `Closes #N`
+# that would wrongly auto-close a staged issue, so the fix is "Refs #N"). When any
+# blocking finding needs a code edit, this is false. It lets post-pr-review.sh stamp
+# a metadata digest so the demanded metadata fix (which mints no commit) re-arms the
+# re-review; a false value keeps commit-only re-arm. Default false.
+METADATA_ONLY=$(jq -r 'if .decision == "escalate" and (.metadata_only == true) then "true" else "false" end' "$FINAL_RESULT")
 ```
 
 2. Compose the review body. Write it to a temp file to avoid shell quoting issues:
@@ -125,7 +133,8 @@ jq -n \
   --argjson findings "$FINDINGS" \
   --arg body "$BODY" \
   --argjson escalate_to_ai "$ESCALATE_TO_AI" \
-  '{decision: $decision, risk: $risk, summary: $summary, findings: $findings, body: $body, escalate_to_ai: $escalate_to_ai}' \
+  --argjson metadata_only "$METADATA_ONLY" \
+  '{decision: $decision, risk: $risk, summary: $summary, findings: $findings, body: $body, escalate_to_ai: $escalate_to_ai, metadata_only: $metadata_only}' \
   > "$OUTPUT_FILE"
 ```
 
