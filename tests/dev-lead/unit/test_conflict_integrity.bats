@@ -46,6 +46,24 @@ EOF
   [[ "$output" != *"var:nested"* ]]
 }
 
+@test "extract_top_level_symbols: recognizes allman-style bare name() (brace on next line)" {
+  local f="$BATS_TEST_TMPDIR/allman.sh"
+  cat > "$f" <<'EOF'
+alpha()
+{
+  echo a
+}
+beta()
+{
+  echo b
+}
+EOF
+  run extract_top_level_symbols "$f"
+  [ "$status" -eq 0 ]
+  # Verify the output is exactly the expected functions with no extras or malformed entries
+  [ "$(echo "$output" | sort)" = "$(printf 'fn:alpha\nfn:beta' | sort)" ]
+}
+
 # ---------------------------------------------------------------------------
 # new_duplicate_symbols — the #1449 regression
 # ---------------------------------------------------------------------------
@@ -68,6 +86,27 @@ EOF
   [ "$status" -eq 0 ]
   # Each doubled symbol appears twice in the resolved file.
   [[ "$output" == *$'fn:run_writer\t2'* ]]
+}
+
+@test "new_duplicate_symbols: flags an allman-style duplicated function" {
+  # The #1532 blind spot: a botched resolution that duplicates a function in
+  # allman style (bare signature, brace on the next line) must be caught by the
+  # #1482 detector just like the same-line-brace form.
+  local resolved="$BATS_TEST_TMPDIR/allman_dup.sh"
+  cat > "$resolved" <<'EOF'
+gamma()
+{
+  echo 1
+}
+gamma()
+{
+  echo 2
+}
+EOF
+  run new_duplicate_symbols "$resolved" "/nonexistent/base.sh" "/nonexistent/branch.sh"
+  [ "$status" -eq 0 ]
+  # Verify the output is exactly the expected duplicate detection with no extras
+  [ "$output" = $'fn:gamma\t2' ]
 }
 
 @test "new_duplicate_symbols: a correct union resolution is clean" {
