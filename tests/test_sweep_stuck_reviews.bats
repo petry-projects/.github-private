@@ -305,7 +305,7 @@ FUTURE_RESET='2999-01-01T00:00:00Z'
   # An idempotency marker at the same head means a real review already landed —
   # the rate-limited state is resolved, so the retry must NOT fire.
   local comments
-  comments='[{"body":"<!-- pr-review-agent rate-limited v1 sha=rl715 status=rate-limited reset=2000-01-01T00:00:00Z -->"},{"body":"<!-- pr-review-agent v1 sha=rl715 --> reviewed"}]'
+  comments='[{"body":"<!-- pr-review-agent rate-limited v1 sha=rl715 status=rate-limited reset=2000-01-01T00:00:00Z -->"},{"body":"<!-- pr-review-agent v1 sha=rl715 --> <!-- decision=fix-requested risk=low -->"}]'
   write_pr 715 "REVIEW_REQUIRED" "$ROLLUP_PASS" "rl715" "[]" "$comments"
   url_for 715 > "$SWEEP_PRS_FILE"
 
@@ -401,7 +401,7 @@ ghp_event_url() { echo "https://github.com/petry-projects/.github-private/pull/$
   write_event "$ev" "petry-projects/.github-private" '[900]'
   export GITHUB_EVENT_NAME=workflow_run
   export GITHUB_EVENT_PATH="$ev"
-  local comments='[{"body":"<!-- pr-review-agent v1 sha=donesha --> reviewed"}]'
+  local comments='[{"body":"<!-- pr-review-agent v1 sha=donesha --> <!-- decision=fix-requested risk=low -->"}]'
   write_pr 900 "REVIEW_REQUIRED" "$ROLLUP_PASS" "donesha" "[]" "$comments"
 
   run bash "$SCRIPT"
@@ -631,4 +631,104 @@ rl_and_escalation() {
   [ "$status" -eq 0 ]
   [ ! -s "$GH_LOG" ]
   [[ "$output" == *"defer"* ]]
+}
+
+# ───────────────────────────────────────────────────────────────────────────
+# Orphaned idempotency marker (issue #1548)
+#
+# A review can stamp the reviewed-at-head marker `<!-- pr-review-agent v1
+# sha=<HEAD> -->` and then CRASH (Claude 429 usage-limit, or a 429 between the
+# escalation review and its follow-through) before posting any VERDICT — no
+# approval, no fix-request, no escalation `decision=` token. The old sweep keyed
+# only on the marker, so it skipped the PR as "already reviewed" forever. The
+# sweep now distinguishes a genuine verdict (a marker whose body also carries a
+# `decision=(approved|escalated|fix-requested)` token) from an orphaned marker,
+# and re-dispatches the orphan WITH force_review — an unforced re-dispatch would
+# hit review-one-pr.sh's idempotency no-op on that very marker. The rescue runs
+# BEFORE the scheduled-narrowing gate so a strand is recovered even on the cron.
+# ───────────────────────────────────────────────────────────────────────────
+
+@test "orphaned marker at head (no verdict) IS re-dispatched WITH force_review (#1548)" {
+  local comments='[{"body":"<!-- pr-review-agent v1 sha=orph1 -->"}]'
+  write_pr 1548 "REVIEW_REQUIRED" "$ROLLUP_PASS" "orph1" "[]" "$comments"
+  url_for 1548 > "$SWEEP_PRS_FILE"
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  grep -qF -- "-f pr_url=$(url_for 1548)" "$GH_LOG"
+  grep -qF -- "force_review=true" "$GH_LOG"
+}
+
+@test "orphaned marker in a crashed REVIEW (no decision token) IS re-dispatched WITH force (#1548)" {
+  local reviews='[{"state":"COMMENTED","body":"<!-- pr-review-agent v1 sha=orph2 -->"}]'
+  write_pr 1549 "REVIEW_REQUIRED" "$ROLLUP_PASS" "orph2" "$reviews"
+  url_for 1549 > "$SWEEP_PRS_FILE"
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  grep -qF -- "-f pr_url=$(url_for 1549)" "$GH_LOG"
+  grep -qF -- "force_review=true" "$GH_LOG"
+}
+
+@test "genuine APPROVED verdict at head is NOT re-dispatched (#1548)" {
+  # reviewDecision stays REVIEW_REQUIRED (the bot approval doesn't satisfy a
+  # required human/CODEOWNER reviewer) yet the cascade posted its verdict — this
+  # is exactly the strand scenario, and a verdict must suppress re-review.
+  local reviews='[{"state":"APPROVED","body":"<!-- pr-review-agent v1 sha=appr1 decision=approved risk=LOW -->"}]'
+  write_pr 1550 "REVIEW_REQUIRED" "$ROLLUP_PASS" "appr1" "$reviews"
+  url_for 1550 > "$SWEEP_PRS_FILE"
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ ! -s "$GH_LOG" ]
+}
+
+@test "escalated verdict at head is NOT re-dispatched (#1548)" {
+  local reviews='[{"state":"COMMENTED","body":"<!-- pr-review-agent v1 sha=esc1 decision=escalated risk=HIGH -->"}]'
+  write_pr 1553 "REVIEW_REQUIRED" "$ROLLUP_PASS" "esc1" "$reviews"
+  url_for 1553 > "$SWEEP_PRS_FILE"
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ ! -s "$GH_LOG" ]
+}
+
+@test "orphan marker with non-canonical decision= prose is still force-dispatched (verdict must be a canonical marker token) (#1548)" {
+  # The head marker crashed before a verdict, but the same body quotes an
+  # unrelated `decision=approved` string (e.g. a reviewer pasting a marker). The
+  # decision token is NOT part of the canonical marker relationship, so it must
+  # NOT count as a verdict — otherwise the orphan is skipped as reviewed forever.
+  local comments='[{"body":"<!-- pr-review-agent v1 sha=orphq --> quoting an old note: decision=approved risk=LOW"}]'
+  write_pr 1554 "REVIEW_REQUIRED" "$ROLLUP_PASS" "orphq" "[]" "$comments"
+  url_for 1554 > "$SWEEP_PRS_FILE"
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  grep -qF -- "-f pr_url=$(url_for 1554)" "$GH_LOG"
+  grep -qF -- "force_review=true" "$GH_LOG"
+}
+
+@test "scheduled path: orphaned marker with eventable-only rollup IS still force-dispatched (strand rescue bypasses narrowing) (#1548)" {
+  local comments='[{"body":"<!-- pr-review-agent v1 sha=orph3 -->"}]'
+  write_pr 1551 "REVIEW_REQUIRED" "$ROLLUP_PASS_EVENTABLE" "orph3" "[]" "$comments"
+  url_for 1551 > "$SWEEP_PRS_FILE"
+  export GITHUB_EVENT_NAME=schedule
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  grep -qF -- "-f pr_url=$(url_for 1551)" "$GH_LOG"
+  grep -qF -- "force_review=true" "$GH_LOG"
+}
+
+@test "normal stuck-green dispatch does NOT force_review (idempotency/advisory gate stays armed) (#1548)" {
+  write_pr 1552 "REVIEW_REQUIRED" "$ROLLUP_PASS" "sg1552"
+  url_for 1552 > "$SWEEP_PRS_FILE"
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  grep -qF -- "-f pr_url=$(url_for 1552)" "$GH_LOG"
+  # Assert the exact "no match" status (1), not merely non-zero: a grep error
+  # (status 2) would satisfy `! grep` and pass falsely.
+  run grep -qF -- "force_review" "$GH_LOG"
+  [ "$status" -eq 1 ]
 }
