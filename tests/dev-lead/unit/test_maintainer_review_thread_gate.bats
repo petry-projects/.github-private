@@ -38,6 +38,11 @@ _run_classify() {
   run bash -c "source '$GATE'; review_thread_is_agent_authored \"\$1\"" _ "$1"
 }
 
+_run_addressed() {
+  # _run_addressed <reply_comment_body>
+  run bash -c "source '$GATE'; review_reply_is_addressed_marker \"\$1\"" _ "$1"
+}
+
 # ────────────────────────────────────────────────────────────────────
 # STRUCTURAL TESTS
 # ────────────────────────────────────────────────────────────────────
@@ -64,6 +69,10 @@ _run_classify() {
 
 @test "Review-thread gate: defines review_thread_login_is_excluded_bot function" {
   grep -q "review_thread_login_is_excluded_bot()" "$GATE"
+}
+
+@test "Review-thread gate: defines review_reply_is_addressed_marker function" {
+  grep -q "review_reply_is_addressed_marker()" "$GATE"
 }
 
 @test "Review-thread gate: BASH_SOURCE guard prevents source-time execution" {
@@ -131,6 +140,49 @@ _run_classify() {
 
 @test "Login: empty login → 1 (not excluded)" {
   run bash -c "source '$GATE'; review_thread_login_is_excluded_bot ''"
+  [ "$status" -eq 1 ]
+}
+
+# ────────────────────────────────────────────────────────────────────
+# ADDRESSED-MARKER TESTS — review_reply_is_addressed_marker (#1547)
+# The safety-net classifier: 0 when a thread's last reply carries the
+# dev-lead addressed-marker (the agent already addressed it in-thread →
+# resolvable), 1 otherwise (no marker → not a confirmed-addressed reply,
+# e.g. a skip note or a maintainer comment → leave open).
+# ────────────────────────────────────────────────────────────────────
+
+@test "Addressed: reply with dev-lead:addressed marker → 0 (addressed, resolvable)" {
+  _run_addressed 'Applied in scripts/foo.sh: pinned the action. <!-- dev-lead:addressed -->'
+  [ "$status" -eq 0 ]
+}
+
+@test "Addressed: marker with surrounding whitespace → 0" {
+  _run_addressed '<!--   dev-lead:addressed   --> Verified and confirmed at head.'
+  [ "$status" -eq 0 ]
+}
+
+@test "Addressed: plain fix reply without marker → 1 (not confirmed addressed)" {
+  _run_addressed 'Fixed in scripts/foo.sh: pinned the action.'
+  [ "$status" -eq 1 ]
+}
+
+@test "Addressed: skip note without marker → 1 (must not resolve)" {
+  _run_addressed 'Skipping — first-party channel tag, intentional mutable ref per AGENTS.md.'
+  [ "$status" -eq 1 ]
+}
+
+@test "Addressed: generic dev-lead marker (no :addressed) → 1" {
+  _run_addressed '<!-- dev-lead --> Some note.'
+  [ "$status" -eq 1 ]
+}
+
+@test "Addressed: marker with a suffix before --> → 1 (must be a complete comment)" {
+  _run_addressed '<!-- dev-lead:addressed-wrong --> Not a real addressed marker.'
+  [ "$status" -eq 1 ]
+}
+
+@test "Addressed: empty body → 1 (fail closed, must not resolve)" {
+  _run_addressed ''
   [ "$status" -eq 1 ]
 }
 

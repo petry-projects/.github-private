@@ -72,14 +72,14 @@ For each open review thread:
 
 #### Replying to a thread
 
-For every thread you fix, post a reply that states **specifically what you changed** — name the file(s)/function(s) you touched and how the change satisfies the request (one or two concrete sentences; never just "done"). Pass the body as a GraphQL variable so quotes and newlines are safe:
+For every thread you fix, post a reply that states **specifically what you changed** — name the file(s)/function(s) you touched and how the change satisfies the request (one or two concrete sentences; never just "done"). End the reply with the addressed-marker `<!-- dev-lead:addressed -->` so the automation can safely resolve any bot-originated thread even if the resolve step below is missed (#1547) — stamp it **only** on a genuine addressed reply, never on a skip note. Pass the body as a GraphQL variable so quotes and newlines are safe:
 
 ```bash
 # Replace THREAD_NODE_ID with the id value from the thread JSON.
 gh api graphql \
   -f query='mutation($tid: ID!, $body: String!) { addPullRequestReviewThreadReply(input: {pullRequestReviewThreadId: $tid, body: $body}) { comment { id } } }' \
   -f tid="THREAD_NODE_ID" \
-  -f body="Done in src/foo.ts: extracted the retry logic into withRetry() and added a unit test covering the timeout path."
+  -f body="Done in src/foo.ts: extracted the retry logic into withRetry() and added a unit test covering the timeout path. <!-- dev-lead:addressed -->"
 ```
 
 #### Resolving a thread

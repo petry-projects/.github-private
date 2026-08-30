@@ -576,6 +576,151 @@ resolve_bot_outdated_threads() {
   echo "::notice::resolve_bot_outdated_threads: resolved ${resolved_count} outdated bot thread(s) on PR #${PR_NUMBER}"
 }
 
+# resolve_addressed_bot_threads: resolves bot-originated review threads that dev-lead
+# has already ADDRESSED in-thread but left unresolved (#1547). Every pr-quality ruleset
+# sets required_review_thread_resolution:true, so such a thread — replied-to with
+# "Applied in …" / "Verified and confirmed …" yet never resolved — leaves a fully green +
+# approved PR silently unmergeable (the 2026-08-18 sweep hand-resolved 20 of these).
+#
+# Complements resolve_bot_outdated_threads: that net only covers isOutdated threads,
+# but an addressed-at-head finding is frequently NOT marked outdated by GitHub. This
+# net keys on the addressed-marker (`<!-- dev-lead:addressed -->`) in the thread's LAST
+# reply instead of on outdated status, so a non-outdated but already-addressed thread is
+# resolved. A *skip* reply carries no marker, so it is never auto-resolved.
+#
+# Scope guard (#1415): only BOT-originated threads are touched (originating comment
+# author is a Bot). A marker-less human/maintainer finding is never resolved here — the
+# #1415 resolve-guard applies to the owner-account ambiguity on human threads, and this
+# net deliberately stays clear of them.
+#
+# Paginated via cursor (GraphQL 100/page max). The addressed-marker decision is delegated
+# to review_reply_is_addressed_marker (maintainer-review-thread-gate.sh) so the marker is
+# defined in exactly one place.
+#
+# The enumeration pass yields only candidate ids; the authorizing state (isResolved, the
+# latest reply's author, and the marker) is re-read per candidate via a fresh node(id)
+# fetch taken immediately before the mutation. This closes two gaps in the earlier
+# snapshot-trusting design: (a) the marker only authorizes resolution when OUR account
+# (BOT_USER, [bot]-suffix-stripped) posted it, so a marker-bearing reply from any other
+# human or bot cannot resolve a bot thread; and (b) a reply that landed after enumeration
+# is re-checked, so concurrent maintainer feedback can't be resolved against a stale
+# snapshot. isResolved is branched on null explicitly so a failed fetch fails closed.
+resolve_addressed_bot_threads() {
+  local intent="$1"
+  if [ "${DEV_LEAD_DRY_RUN:-false}" = "true" ]; then
+    echo "[dry-run] would resolve addressed review threads from bot reviewers on PR #${PR_NUMBER}"
+    return 0
+  fi
+
+  if [ -z "${PR_NUMBER:-}" ]; then
+    echo "::notice::resolve_addressed_bot_threads: PR_NUMBER not set for intent=${intent} — skipping"
+    return 0
+  fi
+
+  # Our own account: the addressed-marker reply must have been posted by us before
+  # it can authorize resolution. GraphQL author.login omits the "[bot]" suffix, so
+  # match both the raw BOT_USER and its [bot]-stripped form (same pattern as
+  # resolve_actor_outdated_threads).
+  local bot_user="${BOT_USER:-donpetry-bot}"
+  local bot_user_stripped="${bot_user%\[bot\]}"
+
+  # The enumeration pass ONLY collects candidate thread ids (unresolved,
+  # bot-originated). It deliberately does NOT capture the last reply's body or
+  # author: that snapshot goes stale the moment a new reply lands, and trusting it
+  # would (a) let a marker-bearing reply from any other account authorize
+  # resolution (#codeant-623) and (b) resolve a thread a maintainer has since
+  # replied to (#codeant-666). The authorizing state is re-read per candidate via a
+  # fresh node(id) fetch taken immediately before the mutation below.
+  local ids=""
+  local cursor="" has_next_page="true" page_response page_ids
+  local cursor_args=()
+  local addressed_query='query($owner:String!,$repo:String!,$pr:Int!,$cursor:String){
+    repository(owner:$owner,name:$repo){
+      pullRequest(number:$pr){
+        reviewThreads(first:100,after:$cursor){
+          pageInfo{hasNextPage endCursor}
+          nodes{
+            id isResolved
+            origin: comments(first:1){nodes{author{login __typename}}}
+          }
+        }
+      }
+    }
+  }'
+  while [ "$has_next_page" = "true" ]; do
+    page_response=$(gh api graphql -f query="$addressed_query" \
+      -F owner="${REPO%%/*}" -F repo="${REPO##*/}" -F pr="$PR_NUMBER" \
+      "${cursor_args[@]}" 2>/dev/null || echo "{}")
+    page_ids=$(printf '%s' "$page_response" | jq -r \
+      '.data?.repository?.pullRequest?.reviewThreads?.nodes // []
+       | map(select(.isResolved == false
+                    and (((.origin.nodes?[0]?.author?.login // "") | endswith("[bot]"))
+                         or ((.origin.nodes?[0]?.author?.__typename // "") == "Bot"))))
+       | .[] | .id' 2>/dev/null || true)
+    [ -n "$page_ids" ] && ids=$(printf '%s\n%s' "$ids" "$page_ids")
+    has_next_page=$(printf '%s' "$page_response" | jq -r \
+      '.data?.repository?.pullRequest?.reviewThreads?.pageInfo?.hasNextPage // false' \
+      2>/dev/null || echo "false")
+    cursor=$(printf '%s' "$page_response" | jq -r \
+      '.data?.repository?.pullRequest?.reviewThreads?.pageInfo?.endCursor // ""' \
+      2>/dev/null || echo "")
+    [ -z "$cursor" ] && has_next_page="false"
+    cursor_args=("-f" "cursor=${cursor}")
+  done
+
+  if [ -z "$(printf '%s' "$ids" | sed '/^[[:space:]]*$/d')" ]; then
+    echo "::notice::no addressed unresolved bot threads on PR #${PR_NUMBER}"
+    return 0
+  fi
+
+  local node_query='query($id:ID!){
+    node(id:$id){
+      ... on PullRequestReviewThread {
+        isResolved
+        latest: comments(last:1){nodes{author{login} body}}
+      }
+    }
+  }'
+
+  local resolved_count=0
+  local id node_json cur_resolved reply_author reply_body
+  while IFS= read -r id; do
+    [ -z "$id" ] && continue
+    # Re-read the thread's CURRENT state immediately before resolving so a reply
+    # that landed after enumeration is not resolved against a stale snapshot.
+    node_json=$(gh api graphql -f query="$node_query" -f id="$id" 2>/dev/null || echo "{}")
+    # isResolved is branched on null explicitly (not `// false`) so a fetch that
+    # failed to return the field is treated as "unknown" and skipped (fail closed),
+    # never as a resolvable false.
+    cur_resolved=$(printf '%s' "$node_json" | jq -r \
+      'if .data.node.isResolved == null then "unknown"
+       elif .data.node.isResolved then "true" else "false" end' 2>/dev/null || echo "unknown")
+    if [ "$cur_resolved" != "false" ]; then
+      echo "::notice::skipping thread ${id} — already resolved or state unknown at re-check (${cur_resolved})"
+      continue
+    fi
+    reply_author=$(printf '%s' "$node_json" | jq -r '.data.node.latest.nodes?[0]?.author?.login // ""' 2>/dev/null || echo "")
+    reply_body=$(printf '%s' "$node_json" | jq -r '.data.node.latest.nodes?[0]?.body // ""' 2>/dev/null || echo "")
+    # The addressed-marker only authorizes resolution when OUR account posted it.
+    # A marker-bearing reply from any other human or bot is not our confirmation.
+    if [ "$reply_author" != "$bot_user" ] && [ "$reply_author" != "$bot_user_stripped" ]; then
+      echo "::notice::skipping thread ${id} — latest reply author '${reply_author}' is not our account; a marker from another account does not authorize resolution"
+      continue
+    fi
+    # And the reply must actually carry the addressed-marker — a skip note or any
+    # other reply leaves the thread open.
+    review_reply_is_addressed_marker "$reply_body" || continue
+    if gh api graphql -f query='mutation($id: ID!) { resolveReviewThread(input: {threadId: $id}) { thread { isResolved } } }' \
+        -f id="$id" >/dev/null 2>&1; then
+      resolved_count=$((resolved_count + 1))
+      echo "::notice::resolved addressed bot thread ${id}"
+    else
+      echo "::warning::failed to resolve addressed bot thread ${id}"
+    fi
+  done <<< "$ids"
+  echo "::notice::resolve_addressed_bot_threads: resolved ${resolved_count} addressed bot thread(s) on PR #${PR_NUMBER}"
+}
+
 # has_hard_blockers: returns 0 (true) if CI_STATUS_JSON or ALL_REVIEWS_JSON contain
 # hard Tier-1 blockers (failing CI checks or CHANGES_REQUESTED reviews).
 # Unlike has_tier1_blockers, does NOT check for unresolved bot threads — used to
@@ -1183,6 +1328,9 @@ case "$INTENT_TYPE" in
         # Always resolve outdated bot threads in the no-changes path as cleanup
         resolve_bot_outdated_threads "fix-reviews"
         resolve_actor_outdated_threads "fix-reviews"
+        # Resolve bot threads dev-lead addressed in-thread but left open (#1547) —
+        # these are not necessarily outdated, so the nets above miss them.
+        resolve_addressed_bot_threads "fix-reviews"
         try_enable_auto_merge
       fi
       try_enable_auto_merge
@@ -1223,6 +1371,9 @@ case "$INTENT_TYPE" in
         # Always resolve outdated bot threads in the no-changes path as cleanup
         resolve_bot_outdated_threads "fix-bot-comment"
         resolve_actor_outdated_threads "fix-bot-comment"
+        # Resolve bot threads dev-lead addressed in-thread but left open (#1547) —
+        # these are not necessarily outdated, so the nets above miss them.
+        resolve_addressed_bot_threads "fix-bot-comment"
         try_enable_auto_merge
       fi
       try_enable_auto_merge
@@ -1291,6 +1442,9 @@ case "$INTENT_TYPE" in
       # Always resolve outdated bot threads in the no-changes path as cleanup
       resolve_bot_outdated_threads "review-changes"
       resolve_actor_outdated_threads "review-changes"
+      # Resolve bot threads dev-lead addressed in-thread but left open (#1547) —
+      # these are not necessarily outdated, so the nets above miss them.
+      resolve_addressed_bot_threads "review-changes"
       try_enable_auto_merge
     fi
     exit "$rc"
