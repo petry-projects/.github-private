@@ -24,7 +24,12 @@ setup() {
 # --- AC #3: the #1449 fixture fails -----------------------------------------
 
 @test "guard: fails on node_modules/bats alongside lint.yml's apt-get install -y bats" {
-  cp "$REPO_ROOT/.github/workflows/lint.yml" "$FIX/.github/workflows/lint.yml"
+  cat > "$FIX/.github/workflows/lint.yml" <<'YML'
+jobs:
+  lint:
+    steps:
+      - run: sudo apt-get install -y bats
+YML
   mkdir -p "$FIX/node_modules/bats/bin"
   touch "$FIX/node_modules/bats/bin/bats" "$FIX/node_modules/bats/package.json"
 
@@ -36,13 +41,35 @@ setup() {
 }
 
 @test "guard: names the vendoring dependency-manager directory in the report" {
-  cp "$REPO_ROOT/.github/workflows/lint.yml" "$FIX/.github/workflows/lint.yml"
+  cat > "$FIX/.github/workflows/lint.yml" <<'YML'
+jobs:
+  lint:
+    steps:
+      - run: sudo apt-get install -y bats
+YML
   mkdir -p "$FIX/vendor/bats"
   touch "$FIX/vendor/bats/bats"
 
   run bash "$GUARD" "$FIX"
   [ "$status" -eq 1 ]
   [[ "$output" == *"vendor/bats"* ]]
+}
+
+@test "guard: detects an install split across a shell line-continuation" {
+  cat > "$FIX/.github/workflows/lint.yml" <<'YML'
+jobs:
+  lint:
+    steps:
+      - run: |
+          sudo apt-get install -y \
+            bats
+YML
+  mkdir -p "$FIX/node_modules/bats/bin"
+  touch "$FIX/node_modules/bats/bin/bats"
+
+  run bash "$GUARD" "$FIX"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"node_modules/bats"* ]]
 }
 
 # --- AC #2: narrowness — no false positives ---------------------------------
@@ -74,7 +101,12 @@ YML
 }
 
 @test "guard: a first-party committed asset named like a tool but NOT under a dep dir passes" {
-  cp "$REPO_ROOT/.github/workflows/lint.yml" "$FIX/.github/workflows/lint.yml"
+  cat > "$FIX/.github/workflows/lint.yml" <<'YML'
+jobs:
+  lint:
+    steps:
+      - run: sudo apt-get install -y bats
+YML
   # committed first-party file at tools/bats — not under node_modules/vendor/.venv
   mkdir -p "$FIX/tools/bats"
   touch "$FIX/tools/bats/helper.sh"

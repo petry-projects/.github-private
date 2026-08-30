@@ -49,12 +49,15 @@ TOOL_LEAVES=(bats yq markdownlint-cli2)
 # The install-step regex for a tool: an install verb (apt-get install /
 # npm install|ci / pip[3] install) followed on the same line by the tool name as
 # a whole word.
+# Word boundaries use POSIX ERE character classes — (^|[^...]) / ($|[^...]) —
+# rather than the GNU-only `\b`, so the regex behaves the same under BSD/macOS
+# grep as under GNU grep.
 tool_install_regex() {
   local verb='(apt-get +install|npm +(install|ci)|pip[0-9]* +install)'
   case "$1" in
-    bats)             printf '%s.*\\bbats\\b\n' "$verb" ;;
-    yq)               printf '%s.*\\byq\\b\n' "$verb" ;;
-    markdownlint-cli2) printf '%s.*\\bmarkdownlint-cli2\\b\n' "$verb" ;;
+    bats|yq|markdownlint-cli2)
+      printf '%s.*(^|[^a-zA-Z0-9_-])%s($|[^a-zA-Z0-9_-])\n' "$verb" "$1"
+      ;;
     *) return 1 ;;
   esac
 }
@@ -62,17 +65,31 @@ tool_install_regex() {
 # List the tree's files. Prefer git-tracked paths (so an untracked/gitignored
 # local install is invisible); fall back to a filesystem walk for non-git trees.
 list_tree_files() {
-  if git -C "$TREE" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  # Check that $TREE is itself a git work tree root (has a .git dir/file), not
+  # merely nested inside a parent repo — otherwise `git ls-files` would run
+  # against the parent and return nothing for an untracked tree (e.g. a BATS
+  # temp dir created under the repo during local dev), silently passing.
+  if [ -e "$TREE/.git" ]; then
     git -C "$TREE" ls-files
   else
     ( cd "$TREE" && find . -type f | sed 's|^\./||' )
   fi
 }
 
-# Workflow files whose text contains an install step matching $1 (ERE).
+# Workflow files whose text contains an install step matching $1 (ERE). Each
+# file's shell line-continuations (a trailing `\` folding onto the next line)
+# are joined before matching, so an install split across physical lines — e.g.
+# `apt-get install -y \` then `bats` on the next line — is still detected;
+# plain per-line grep would miss it.
 workflow_install_files() {
   [ -d "$WF_DIR" ] || return 0
-  grep -rElE "$1" "$WF_DIR" 2>/dev/null || true
+  local f
+  find "$WF_DIR" -type f 2>/dev/null | while IFS= read -r f; do
+    if awk '{ while (sub(/\\$/, "")) { if ((getline nxt) > 0) $0 = $0 nxt; else break } print }' "$f" \
+      | grep -qE "$1"; then
+      printf '%s\n' "$f"
+    fi
+  done
 }
 
 tree_files="$(list_tree_files || true)"
