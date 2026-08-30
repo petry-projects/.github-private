@@ -218,7 +218,14 @@ GHEOF
   gemini_record="$(mktemp)"
   _make_recording_stub "gemini" 1 "$gemini_record"
   unset GEMINI_API_KEY GOOGLE_API_KEY 2>/dev/null || true
-  export COPILOT_GITHUB_TOKEN="stub-token"
+  # Valid Copilot token so the headroom probe proceeds (an invalid/placeholder
+  # token now skips copilot per #1546); curl stub reports available headroom.
+  export COPILOT_GITHUB_TOKEN="github_pat_testdummyvalue123"
+  cat > "$STUB_BIN_DIR/curl" <<'STUB'
+#!/usr/bin/env bash
+printf 'HTTP/2 200\r\nx-ratelimit-remaining-requests: 100\r\nx-ratelimit-limit-requests: 200\r\n\r\n'
+STUB
+  chmod +x "$STUB_BIN_DIR/curl"
   cat > "$STUB_BIN_DIR/gh" <<'GHEOF'
 #!/usr/bin/env bash
 case "$*" in
@@ -299,6 +306,166 @@ GHEOF
 
   [ "$status" -eq 1 ]
   [ "$(cat /tmp/dev-lead-failure-reason)" = "engine-error" ]
+}
+
+# ── Copilot license/policy denial (#1546) ─────────────────────────────────────
+# The org's Copilot subscription ended, so `gh copilot` fails deterministically
+# with "Access denied by policy settings" (exit 1). That is NOT a rate-limit
+# phrase, so run_writer used to return the raw exit 1, which run_writer_with_
+# fallback classified as engine-error and returned immediately — aborting before
+# gemini and hard-failing the job. The denial must be treated like exit 2
+# (warn + continue to the next engine).
+
+@test "license: is_license_denied matches policy/license denial phrases" {
+  _source_engine "claude"
+
+  run is_license_denied "Error: Access denied by policy settings (Request ID: BC83:26AFAD)"
+  [ "$status" -eq 0 ]
+  run is_license_denied "model is not supported by Copilot"
+  [ "$status" -eq 0 ]
+  run is_license_denied "some perfectly normal output"
+  [ "$status" -eq 1 ]
+}
+
+@test "license: copilot policy denial → continue to gemini (not engine-error)" {
+  # claude rate-limited (2); copilot reached with a valid token but `gh copilot`
+  # returns the policy/license denial (exit 1); gemini succeeds. The chain must
+  # NOT abort at copilot — it must fall through to gemini.
+  _make_stub "claude" 2
+  _make_stub "gemini" 0
+  export GEMINI_API_KEY="test-key"
+  export COPILOT_GITHUB_TOKEN="github_pat_testdummyvalue123"
+  # headroom probe: copilot has headroom (valid token → probe runs)
+  cat > "$STUB_BIN_DIR/curl" <<'STUB'
+#!/usr/bin/env bash
+printf 'HTTP/2 200\r\nx-ratelimit-remaining-requests: 100\r\nx-ratelimit-limit-requests: 200\r\n\r\n'
+STUB
+  chmod +x "$STUB_BIN_DIR/curl"
+  cat > "$STUB_BIN_DIR/gh" <<'GHEOF'
+#!/usr/bin/env bash
+case "$*" in
+  *"copilot"*) echo "Error: Access denied by policy settings (Request ID: BC83:26AFAD)"; exit 1 ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+  _source_engine "claude"
+
+  run run_writer_with_fallback "$TEST_PROMPT"
+
+  [ "$status" -eq 0 ]
+  # success clears the sidecar → the run did not hard-fail as engine-error
+  [ ! -f /tmp/dev-lead-failure-reason ]
+}
+
+@test "license: copilot denial with all engines exhausted → reason=rate-limited (never engine-error)" {
+  # claude + gemini rate-limited (2); copilot reached but policy-denied. All
+  # engines exhausted → aggregate reason is rate-limited, NOT engine-error.
+  _make_stub "claude" 2
+  _make_stub "gemini" 2
+  export GEMINI_API_KEY="test-key"
+  export COPILOT_GITHUB_TOKEN="github_pat_testdummyvalue123"
+  cat > "$STUB_BIN_DIR/curl" <<'STUB'
+#!/usr/bin/env bash
+printf 'HTTP/2 200\r\nx-ratelimit-remaining-requests: 100\r\nx-ratelimit-limit-requests: 200\r\n\r\n'
+STUB
+  chmod +x "$STUB_BIN_DIR/curl"
+  cat > "$STUB_BIN_DIR/gh" <<'GHEOF'
+#!/usr/bin/env bash
+case "$*" in
+  *"copilot"*) echo "Access denied by policy settings"; exit 1 ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+  _source_engine "claude"
+
+  run run_writer_with_fallback "$TEST_PROMPT"
+
+  [ "$status" -eq 2 ]
+  [ "$(cat /tmp/dev-lead-failure-reason)" = "rate-limited" ]
+}
+
+# ── DEV_LEAD_ENGINES kill-switch (#1546) ──────────────────────────────────────
+# An optional comma/space-separated allow-list removes an unlicensed engine from
+# the chain org-wide without a code change. A removed engine is never invoked.
+
+@test "kill-switch: DEV_LEAD_ENGINES=claude,gemini removes copilot from the chain" {
+  # claude rate-limited; copilot would succeed if invoked, but it is excluded, so
+  # the chain must skip straight to gemini. Record any `gh copilot` invocation to
+  # prove copilot was never called.
+  _make_stub "claude" 2
+  _make_stub "gemini" 0
+  export GEMINI_API_KEY="test-key"
+  export COPILOT_GITHUB_TOKEN="github_pat_testdummyvalue123"
+  export DEV_LEAD_ENGINES="claude,gemini"
+  local copilot_record="$BATS_TEST_TMPDIR/copilot_record"
+  cat > "$STUB_BIN_DIR/gh" <<GHEOF
+#!/usr/bin/env bash
+case "\$*" in
+  *"copilot"*) echo "\$*" >> "$copilot_record"; echo "success output"; exit 0 ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+  _source_engine "claude"
+
+  run run_writer_with_fallback "$TEST_PROMPT"
+
+  [ "$status" -eq 0 ]
+  # copilot was excluded from the chain → never invoked
+  [ ! -s "$copilot_record" ]
+  unset DEV_LEAD_ENGINES
+}
+
+@test "kill-switch: unrecognized token (typo) falls back to the full default chain" {
+  # A partially invalid spec (e.g. a "cluade" typo) must NOT be silently accepted
+  # as a claude-only subset that disables fallbacks. The whole spec is invalid →
+  # the default claude,copilot,gemini chain applies, so claude's rate-limit still
+  # falls through to gemini.
+  _make_stub "claude" 2
+  _make_stub "gemini" 0
+  export GEMINI_API_KEY="test-key"
+  export COPILOT_GITHUB_TOKEN="ghp_stub"   # copilot skipped → gemini is the fallback
+  export DEV_LEAD_ENGINES="claude,cluade"
+  _source_engine "claude"
+
+  run run_writer_with_fallback "$TEST_PROMPT"
+
+  # gemini reached → the spec fell back to the full chain (not claude-only)
+  [ "$status" -eq 0 ]
+  unset DEV_LEAD_ENGINES
+}
+
+@test "kill-switch: glob metacharacter in DEV_LEAD_ENGINES is not pathname-expanded" {
+  # "*" must be treated as one unrecognized token (→ default chain), never
+  # expanded against the filesystem when the spec is split.
+  _make_stub "claude" 2
+  _make_stub "gemini" 0
+  export GEMINI_API_KEY="test-key"
+  export COPILOT_GITHUB_TOKEN="ghp_stub"
+  export DEV_LEAD_ENGINES="*"
+  _source_engine "claude"
+
+  run run_writer_with_fallback "$TEST_PROMPT"
+
+  [ "$status" -eq 0 ]
+  unset DEV_LEAD_ENGINES
+}
+
+@test "config: copilot-only with missing token → engine-error, not rate-limited" {
+  # A missing Copilot token is a deterministic configuration gap. When copilot is
+  # the only enabled engine, the aggregate reason must be engine-error (exit 1),
+  # NOT a retryable rate-limit (exit 2) — retrying cannot conjure a token.
+  export DEV_LEAD_ENGINES="copilot"
+  unset COPILOT_GITHUB_TOKEN GEMINI_API_KEY GOOGLE_API_KEY 2>/dev/null || true
+  _source_engine "claude"
+
+  run run_writer_with_fallback "$TEST_PROMPT"
+
+  [ "$status" -eq 1 ]
+  [ "$(cat /tmp/dev-lead-failure-reason)" = "engine-error" ]
+  unset DEV_LEAD_ENGINES
 }
 
 # ── timeout classification (#1018) ───────────────────────────────────────────
