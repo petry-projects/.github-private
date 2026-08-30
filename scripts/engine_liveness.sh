@@ -200,8 +200,8 @@ pat_expiry="UNKNOWN"
 pat_scopes_seen=""
 pat_expiry_raw=""
 if resp=$(gh api -i user 2>/dev/null); then
-  pat_scopes_seen=$(printf '%s\n' "$resp" | grep -i '^x-oauth-scopes:' | head -1 | cut -d: -f2- | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-  pat_expiry_raw=$(printf '%s\n' "$resp" | grep -i '^github-authentication-token-expiration:' | head -1 | cut -d: -f2- | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+  pat_scopes_seen=$(printf '%s\n' "$resp" | grep -im 1 '^x-oauth-scopes:' | cut -d: -f2- | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+  pat_expiry_raw=$(printf '%s\n' "$resp" | grep -im 1 '^github-authentication-token-expiration:' | cut -d: -f2- | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
   pat_missing=$(pat_missing_scopes "$pat_scopes_seen" "$PAT_REQUIRED_SCOPES")
   if [ -z "$pat_missing" ]; then
     pat_scope_state="OK"

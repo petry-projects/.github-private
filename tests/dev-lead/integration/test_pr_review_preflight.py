@@ -80,7 +80,12 @@ def main():
             "step could burn runner setup before discovering the token is absent"
         )
 
-    preflight = next(s for s in steps if PREFLIGHT_STEP in str(s.get("name", "")))
+    preflight = next(
+        (s for s in steps if isinstance(s, dict) and PREFLIGHT_STEP in str(s.get("name", ""))),
+        None
+    )
+    if preflight is None:
+        return fail(f"preflight step not found in {REVIEW_JOB} steps")
 
     env = preflight.get("env", {})
     if not isinstance(env, dict) or "CLAUDE_CODE_OAUTH_TOKEN" not in env:
