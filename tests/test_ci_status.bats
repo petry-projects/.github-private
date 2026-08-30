@@ -672,6 +672,60 @@ rollup() {
   [ "$output" = "passing" ]
 }
 
+@test "PR #1531 rollup: many superseded CANCELLED agent checks + a real green check → passing (issue #1552 repro)" {
+  # PR #1531 (2026-08-19) sat clean-but-unreviewed for 100 min. Its rollup carried
+  # 12-13 red-rendering CANCELLED entries, ALL concurrency-superseded agent-workflow
+  # runs (review / review ×5, dev-lead / dispatch|ci-relay|resume, Dismiss), while a
+  # real required check (CI) was green. The operator's in-incident theory was that
+  # pr-review defers on these reds — this test rules that out: the whole rollup
+  # classifies PASSING, so NO human re-run of the cancelled checks is needed to
+  # converge (#1552 AC#1/AC#4). "Dismiss" is not an agent role — it is non-blocking
+  # purely via the CANCELLED whitelist (#608), which is exactly the point.
+  local r
+  r=$(rollup \
+    "$(check_run "review / review" "COMPLETED" "CANCELLED")" \
+    "$(check_run "review / review" "COMPLETED" "CANCELLED")" \
+    "$(check_run "review / review" "COMPLETED" "CANCELLED")" \
+    "$(check_run "review / review" "COMPLETED" "CANCELLED")" \
+    "$(check_run "review / review" "COMPLETED" "CANCELLED")" \
+    "$(check_run "dev-lead / dispatch" "COMPLETED" "CANCELLED")" \
+    "$(check_run "dev-lead / ci-relay" "COMPLETED" "CANCELLED")" \
+    "$(check_run "dev-lead / resume" "COMPLETED" "CANCELLED")" \
+    "$(check_run "Dismiss" "COMPLETED" "CANCELLED")" \
+    "$(check_run "CI" "COMPLETED" "SUCCESS")")
+  run compute_ci_status "$r"
+  [ "$output" = "passing" ]
+}
+
+@test "PR #1531 rollup: the same superseded CANCELLED agent checks with NO real check → passing (issue #1552)" {
+  # The pre-green window of the same incident: only the superseded CANCELLED agent
+  # runs are present (no external required check yet). This must still be passing —
+  # a rollup of only cancelled agent orchestration checks is never a merge blocker.
+  local r
+  r=$(rollup \
+    "$(check_run "review / review" "COMPLETED" "CANCELLED")" \
+    "$(check_run "dev-lead / dispatch" "COMPLETED" "CANCELLED")" \
+    "$(check_run "dev-lead / ci-relay" "COMPLETED" "CANCELLED")" \
+    "$(check_run "dev-lead / resume" "COMPLETED" "CANCELLED")" \
+    "$(check_run "Dismiss" "COMPLETED" "CANCELLED")")
+  run compute_ci_status "$r"
+  [ "$output" = "passing" ]
+}
+
+@test "PR #1531 rollup regression guard: one genuinely FAILING required check among the CANCELLED still → failing (issue #1552)" {
+  # The safety converse: the CANCELLED whitelist must not mask a real failure. If a
+  # required check genuinely fails alongside the superseded cancelled agent runs,
+  # the rollup must still classify failing so pr-review correctly withholds.
+  local r
+  r=$(rollup \
+    "$(check_run "review / review" "COMPLETED" "CANCELLED")" \
+    "$(check_run "dev-lead / dispatch" "COMPLETED" "CANCELLED")" \
+    "$(check_run "Dismiss" "COMPLETED" "CANCELLED")" \
+    "$(check_run "CI" "COMPLETED" "FAILURE")")
+  run compute_ci_status "$r"
+  [ "$output" = "failing" ]
+}
+
 @test "status context CANCELLED-equivalent: real TIMED_OUT conclusion still → failing" {
   # Guards that only CANCELLED is whitelisted — other non-success terminal
   # conclusions (e.g. TIMED_OUT) must still block.
