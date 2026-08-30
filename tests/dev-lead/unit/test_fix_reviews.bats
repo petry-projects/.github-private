@@ -1035,9 +1035,9 @@ STUB
 }
 
 @test "resolve_addressed_bot_threads: resolves a non-outdated bot thread with an addressed reply" {
-  local tmpdir mutations_file
-  tmpdir="$(mktemp -d)"
-  mutations_file="$(mktemp)"
+  local tmpdir="$BATS_TEST_TMPDIR/workdir"
+  mkdir -p "$tmpdir"
+  local mutations_file="$BATS_TEST_TMPDIR/mutations"
   rm -f /tmp/dev-lead-session-output.txt
 
   cat > "$STUB_BIN_DIR/gh" << GHEOF
@@ -1048,8 +1048,11 @@ case "\$ARGS" in
     echo "\$*" >> "$mutations_file"
     echo '{"data":{"resolveReviewThread":{"thread":{"isResolved":true}}}}'
     ;;
+  *"PullRequestReviewThread"*)
+    echo '{"data":{"node":{"isResolved":false,"latest":{"nodes":[{"author":{"login":"donpetry-bot"},"body":"Applied in scripts/foo.sh: pinned the action. <!-- dev-lead:addressed -->"}]}}}}'
+    ;;
   *"reviewThreads"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":""},"nodes":[{"id":"PRRT_addressed_bot","isResolved":false,"isOutdated":false,"origin":{"nodes":[{"author":{"login":"gemini-code-assist[bot]","__typename":"Bot"}}]},"latest":{"nodes":[{"body":"Applied in scripts/foo.sh: pinned the action. <!-- dev-lead:addressed -->"}]}}]}}}}}'
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":""},"nodes":[{"id":"PRRT_addressed_bot","isResolved":false,"isOutdated":false,"origin":{"nodes":[{"author":{"login":"gemini-code-assist[bot]","__typename":"Bot"}}]}}]}}}}}'
     ;;
   *"check-runs"*) echo '{"check_runs":[]}' ;;
   *"statuses"*) echo '[]' ;;
@@ -1080,21 +1083,21 @@ STUB
     export PR_NUMBER=54 HEAD_SHA=abc123 REPO='petry-projects/.github-private'
     export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
     export ACTOR='gemini-code-assist[bot]'
+    export BOT_USER='donpetry-bot'
     export PATH='$STUB_BIN_DIR:$PATH'
     bash '$FIX_REVIEWS_SCRIPT'
   " 2>&1
 
   grep -q "resolveReviewThread" "$mutations_file"
   grep -q "PRRT_addressed_bot" "$mutations_file"
-
-  rm -rf "$tmpdir"
-  rm -f "$mutations_file"
 }
 
 @test "resolve_addressed_bot_threads: does NOT resolve a bot thread without the addressed-marker" {
-  local tmpdir mutations_file
-  tmpdir="$(mktemp -d)"
-  mutations_file="$(mktemp)"
+  local tmpdir="$BATS_TEST_TMPDIR/workdir"
+  mkdir -p "$tmpdir"
+  local mutations_file="$BATS_TEST_TMPDIR/mutations"
+  # Pre-create empty so a no-resolve run yields grep exit 1 (no match), not 2 (missing file).
+  : > "$mutations_file"
   rm -f /tmp/dev-lead-session-output.txt
 
   cat > "$STUB_BIN_DIR/gh" << GHEOF
@@ -1105,8 +1108,11 @@ case "\$ARGS" in
     echo "\$*" >> "$mutations_file"
     echo '{"data":{"resolveReviewThread":{"thread":{"isResolved":true}}}}'
     ;;
+  *"PullRequestReviewThread"*)
+    echo '{"data":{"node":{"isResolved":false,"latest":{"nodes":[{"author":{"login":"donpetry-bot"},"body":"Skipping — first-party channel tag, intentional mutable ref."}]}}}}'
+    ;;
   *"reviewThreads"*)
-    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":""},"nodes":[{"id":"PRRT_skipped_bot","isResolved":false,"isOutdated":false,"origin":{"nodes":[{"author":{"login":"gemini-code-assist[bot]","__typename":"Bot"}}]},"latest":{"nodes":[{"body":"Skipping — first-party channel tag, intentional mutable ref."}]}}]}}}}}'
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":""},"nodes":[{"id":"PRRT_skipped_bot","isResolved":false,"isOutdated":false,"origin":{"nodes":[{"author":{"login":"gemini-code-assist[bot]","__typename":"Bot"}}]}}]}}}}}'
     ;;
   *"check-runs"*) echo '{"check_runs":[]}' ;;
   *"statuses"*) echo '[]' ;;
@@ -1137,20 +1143,21 @@ STUB
     export PR_NUMBER=54 HEAD_SHA=abc123 REPO='petry-projects/.github-private'
     export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
     export ACTOR='gemini-code-assist[bot]'
+    export BOT_USER='donpetry-bot'
     export PATH='$STUB_BIN_DIR:$PATH'
     bash '$FIX_REVIEWS_SCRIPT'
   " 2>&1
 
-  ! grep -q "PRRT_skipped_bot" "$mutations_file"
-
-  rm -rf "$tmpdir"
-  rm -f "$mutations_file"
+  run grep -q "PRRT_skipped_bot" "$mutations_file"
+  [ "$status" -eq 1 ]
 }
 
 @test "resolve_addressed_bot_threads: does NOT resolve a maintainer-originated thread even with an addressed reply" {
-  local tmpdir mutations_file
-  tmpdir="$(mktemp -d)"
-  mutations_file="$(mktemp)"
+  local tmpdir="$BATS_TEST_TMPDIR/workdir"
+  mkdir -p "$tmpdir"
+  local mutations_file="$BATS_TEST_TMPDIR/mutations"
+  # Pre-create empty so a no-resolve run yields grep exit 1 (no match), not 2 (missing file).
+  : > "$mutations_file"
   rm -f /tmp/dev-lead-session-output.txt
 
   cat > "$STUB_BIN_DIR/gh" << GHEOF
@@ -1193,14 +1200,76 @@ STUB
     export PR_NUMBER=54 HEAD_SHA=abc123 REPO='petry-projects/.github-private'
     export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
     export ACTOR='gemini-code-assist[bot]'
+    export BOT_USER='donpetry-bot'
     export PATH='$STUB_BIN_DIR:$PATH'
     bash '$FIX_REVIEWS_SCRIPT'
   " 2>&1
 
-  ! grep -q "PRRT_maintainer" "$mutations_file"
+  run grep -q "PRRT_maintainer" "$mutations_file"
+  [ "$status" -eq 1 ]
+}
 
-  rm -rf "$tmpdir"
-  rm -f "$mutations_file"
+@test "resolve_addressed_bot_threads: does NOT resolve when the addressed-marker reply is from another account" {
+  local tmpdir="$BATS_TEST_TMPDIR/workdir"
+  mkdir -p "$tmpdir"
+  local mutations_file="$BATS_TEST_TMPDIR/mutations"
+  # Pre-create empty so a no-resolve run yields grep exit 1 (no match), not 2 (missing file).
+  : > "$mutations_file"
+  rm -f /tmp/dev-lead-session-output.txt
+
+  # Bot-originated thread (a valid candidate), but the addressed-marker reply the
+  # node(id) re-fetch returns was posted by SOME OTHER account — not our BOT_USER.
+  # A marker from a foreign human/bot must not authorize resolution (#codeant-623).
+  cat > "$STUB_BIN_DIR/gh" << GHEOF
+#!/usr/bin/env bash
+ARGS="\$*"
+case "\$ARGS" in
+  *"resolveReviewThread"*)
+    echo "\$*" >> "$mutations_file"
+    echo '{"data":{"resolveReviewThread":{"thread":{"isResolved":true}}}}'
+    ;;
+  *"PullRequestReviewThread"*)
+    echo '{"data":{"node":{"isResolved":false,"latest":{"nodes":[{"author":{"login":"someone-else"},"body":"Applied in scripts/foo.sh. <!-- dev-lead:addressed -->"}]}}}}'
+    ;;
+  *"reviewThreads"*)
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":""},"nodes":[{"id":"PRRT_foreign_marker","isResolved":false,"isOutdated":false,"origin":{"nodes":[{"author":{"login":"gemini-code-assist[bot]","__typename":"Bot"}}]}}]}}}}}'
+    ;;
+  *"check-runs"*) echo '{"check_runs":[]}' ;;
+  *"statuses"*) echo '[]' ;;
+  *"pulls/"*"reviews"*) echo '[]' ;;
+  *"pulls/"*) echo '{"head":{"sha":"abc123"},"auto_merge":null}' ;;
+  *"pr checkout"*) exit 0 ;;
+  *"pr comment"*) exit 0 ;;
+  *"pr merge"*) exit 0 ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+
+  git -C "$tmpdir" init -q
+  echo "initial" > "$tmpdir/file.txt"
+  git -C "$tmpdir" add .
+  git -C "$tmpdir" -c user.email="t@test" -c user.name="T" commit -q -m "init"
+
+  cat > "$STUB_BIN_DIR/claude" << 'STUB'
+#!/usr/bin/env bash
+echo "No actionable items."
+STUB
+  chmod +x "$STUB_BIN_DIR/claude"
+
+  run bash -c "
+    cd '$tmpdir'
+    export INTENT_TYPE=fix-reviews DEV_LEAD_DRY_RUN=false
+    export PR_NUMBER=54 HEAD_SHA=abc123 REPO='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export ACTOR='gemini-code-assist[bot]'
+    export BOT_USER='donpetry-bot'
+    export PATH='$STUB_BIN_DIR:$PATH'
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+
+  run grep -q "PRRT_foreign_marker" "$mutations_file"
+  [ "$status" -eq 1 ]
 }
 
 # ── ALL_REVIEWS_JSON deduplication: latest review per user ───────────────────

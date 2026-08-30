@@ -595,8 +595,16 @@ resolve_bot_outdated_threads() {
 #
 # Paginated via cursor (GraphQL 100/page max). The addressed-marker decision is delegated
 # to review_reply_is_addressed_marker (maintainer-review-thread-gate.sh) so the marker is
-# defined in exactly one place. The last reply body is passed base64-encoded so quotes/
-# newlines don't break the read loop (same technique as resolve_actor_outdated_threads).
+# defined in exactly one place.
+#
+# The enumeration pass yields only candidate ids; the authorizing state (isResolved, the
+# latest reply's author, and the marker) is re-read per candidate via a fresh node(id)
+# fetch taken immediately before the mutation. This closes two gaps in the earlier
+# snapshot-trusting design: (a) the marker only authorizes resolution when OUR account
+# (BOT_USER, [bot]-suffix-stripped) posted it, so a marker-bearing reply from any other
+# human or bot cannot resolve a bot thread; and (b) a reply that landed after enumeration
+# is re-checked, so concurrent maintainer feedback can't be resolved against a stale
+# snapshot. isResolved is branched on null explicitly so a failed fetch fails closed.
 resolve_addressed_bot_threads() {
   local intent="$1"
   if [ "${DEV_LEAD_DRY_RUN:-false}" = "true" ]; then
@@ -609,8 +617,22 @@ resolve_addressed_bot_threads() {
     return 0
   fi
 
-  local pairs=""
-  local cursor="" has_next_page="true" page_response page_pairs
+  # Our own account: the addressed-marker reply must have been posted by us before
+  # it can authorize resolution. GraphQL author.login omits the "[bot]" suffix, so
+  # match both the raw BOT_USER and its [bot]-stripped form (same pattern as
+  # resolve_actor_outdated_threads).
+  local bot_user="${BOT_USER:-donpetry-bot}"
+  local bot_user_stripped="${bot_user%\[bot\]}"
+
+  # The enumeration pass ONLY collects candidate thread ids (unresolved,
+  # bot-originated). It deliberately does NOT capture the last reply's body or
+  # author: that snapshot goes stale the moment a new reply lands, and trusting it
+  # would (a) let a marker-bearing reply from any other account authorize
+  # resolution (#codeant-623) and (b) resolve a thread a maintainer has since
+  # replied to (#codeant-666). The authorizing state is re-read per candidate via a
+  # fresh node(id) fetch taken immediately before the mutation below.
+  local ids=""
+  local cursor="" has_next_page="true" page_response page_ids
   local cursor_args=()
   local addressed_query='query($owner:String!,$repo:String!,$pr:Int!,$cursor:String){
     repository(owner:$owner,name:$repo){
@@ -620,7 +642,6 @@ resolve_addressed_bot_threads() {
           nodes{
             id isResolved
             origin: comments(first:1){nodes{author{login __typename}}}
-            latest: comments(last:1){nodes{body}}
           }
         }
       }
@@ -630,15 +651,13 @@ resolve_addressed_bot_threads() {
     page_response=$(gh api graphql -f query="$addressed_query" \
       -F owner="${REPO%%/*}" -F repo="${REPO##*/}" -F pr="$PR_NUMBER" \
       "${cursor_args[@]}" 2>/dev/null || echo "{}")
-    # Emit "<thread_id>\t<base64(last reply body)>" for each unresolved bot-originated
-    # thread; the marker decision happens in bash so the regex lives in one place.
-    page_pairs=$(printf '%s' "$page_response" | jq -r \
+    page_ids=$(printf '%s' "$page_response" | jq -r \
       '.data?.repository?.pullRequest?.reviewThreads?.nodes // []
        | map(select(.isResolved == false
                     and (((.origin.nodes?[0]?.author?.login // "") | endswith("[bot]"))
                          or ((.origin.nodes?[0]?.author?.__typename // "") == "Bot"))))
-       | .[] | .id + "\t" + ((.latest.nodes?[0]?.body // "") | @base64)' 2>/dev/null || true)
-    [ -n "$page_pairs" ] && pairs=$(printf '%s\n%s' "$pairs" "$page_pairs")
+       | .[] | .id' 2>/dev/null || true)
+    [ -n "$page_ids" ] && ids=$(printf '%s\n%s' "$ids" "$page_ids")
     has_next_page=$(printf '%s' "$page_response" | jq -r \
       '.data?.repository?.pullRequest?.reviewThreads?.pageInfo?.hasNextPage // false' \
       2>/dev/null || echo "false")
@@ -649,19 +668,48 @@ resolve_addressed_bot_threads() {
     cursor_args=("-f" "cursor=${cursor}")
   done
 
-  if [ -z "$(printf '%s' "$pairs" | sed '/^[[:space:]]*$/d')" ]; then
+  if [ -z "$(printf '%s' "$ids" | sed '/^[[:space:]]*$/d')" ]; then
     echo "::notice::no addressed unresolved bot threads on PR #${PR_NUMBER}"
     return 0
   fi
 
+  local node_query='query($id:ID!){
+    node(id:$id){
+      ... on PullRequestReviewThread {
+        isResolved
+        latest: comments(last:1){nodes{author{login} body}}
+      }
+    }
+  }'
+
   local resolved_count=0
-  local id body_b64 body
-  while IFS=$'\t' read -r id body_b64; do
+  local id node_json cur_resolved reply_author reply_body
+  while IFS= read -r id; do
     [ -z "$id" ] && continue
-    body=$(printf '%s' "$body_b64" | base64 --decode 2>/dev/null || printf '%s' "$body_b64" | base64 -d 2>/dev/null || echo "")
-    # Only resolve when the last reply carries the addressed-marker — a skip note or
-    # any other reply leaves the thread open.
-    review_reply_is_addressed_marker "$body" || continue
+    # Re-read the thread's CURRENT state immediately before resolving so a reply
+    # that landed after enumeration is not resolved against a stale snapshot.
+    node_json=$(gh api graphql -f query="$node_query" -f id="$id" 2>/dev/null || echo "{}")
+    # isResolved is branched on null explicitly (not `// false`) so a fetch that
+    # failed to return the field is treated as "unknown" and skipped (fail closed),
+    # never as a resolvable false.
+    cur_resolved=$(printf '%s' "$node_json" | jq -r \
+      'if .data.node.isResolved == null then "unknown"
+       elif .data.node.isResolved then "true" else "false" end' 2>/dev/null || echo "unknown")
+    if [ "$cur_resolved" != "false" ]; then
+      echo "::notice::skipping thread ${id} — already resolved or state unknown at re-check (${cur_resolved})"
+      continue
+    fi
+    reply_author=$(printf '%s' "$node_json" | jq -r '.data.node.latest.nodes?[0]?.author?.login // ""' 2>/dev/null || echo "")
+    reply_body=$(printf '%s' "$node_json" | jq -r '.data.node.latest.nodes?[0]?.body // ""' 2>/dev/null || echo "")
+    # The addressed-marker only authorizes resolution when OUR account posted it.
+    # A marker-bearing reply from any other human or bot is not our confirmation.
+    if [ "$reply_author" != "$bot_user" ] && [ "$reply_author" != "$bot_user_stripped" ]; then
+      echo "::notice::skipping thread ${id} — latest reply author '${reply_author}' is not our account; a marker from another account does not authorize resolution"
+      continue
+    fi
+    # And the reply must actually carry the addressed-marker — a skip note or any
+    # other reply leaves the thread open.
+    review_reply_is_addressed_marker "$reply_body" || continue
     if gh api graphql -f query='mutation($id: ID!) { resolveReviewThread(input: {threadId: $id}) { thread { isResolved } } }' \
         -f id="$id" >/dev/null 2>&1; then
       resolved_count=$((resolved_count + 1))
@@ -669,7 +717,7 @@ resolve_addressed_bot_threads() {
     else
       echo "::warning::failed to resolve addressed bot thread ${id}"
     fi
-  done <<< "$pairs"
+  done <<< "$ids"
   echo "::notice::resolve_addressed_bot_threads: resolved ${resolved_count} addressed bot thread(s) on PR #${PR_NUMBER}"
 }
 

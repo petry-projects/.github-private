@@ -91,7 +91,7 @@ readonly _MAINTAINER_REVIEW_GATE_AGENT_MARKERS='<!-- (pr-review-agent|persona:|d
 # bot-originated thread whose LAST reply carries this marker — the exact class of thread
 # that, during the 2026-08-18 sweep, sat replied-to ("Applied in …") but UNRESOLVED and
 # silently blocked merge under every pr-quality ruleset's required_review_thread_resolution.
-readonly _DEV_LEAD_ADDRESSED_MARKER='<!--[[:space:]]*dev-lead:addressed'
+readonly _DEV_LEAD_ADDRESSED_MARKER='<!--[[:space:]]*dev-lead:addressed[[:space:]]*-->'
 
 log_review_gate_info() {
   echo "[maintainer-review-gate] $*" >&2

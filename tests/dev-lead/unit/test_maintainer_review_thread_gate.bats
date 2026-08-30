@@ -176,6 +176,11 @@ _run_addressed() {
   [ "$status" -eq 1 ]
 }
 
+@test "Addressed: marker with a suffix before --> → 1 (must be a complete comment)" {
+  _run_addressed '<!-- dev-lead:addressed-wrong --> Not a real addressed marker.'
+  [ "$status" -eq 1 ]
+}
+
 @test "Addressed: empty body → 1 (fail closed, must not resolve)" {
   _run_addressed ''
   [ "$status" -eq 1 ]
