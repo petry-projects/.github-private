@@ -60,8 +60,8 @@ beta()
 EOF
   run extract_top_level_symbols "$f"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"fn:alpha"* ]]
-  [[ "$output" == *"fn:beta"* ]]
+  # Verify the output is exactly the expected functions with no extras or malformed entries
+  [ "$(echo "$output" | sort)" = "$(printf 'fn:alpha\nfn:beta' | sort)" ]
 }
 
 # ---------------------------------------------------------------------------
@@ -105,7 +105,8 @@ gamma()
 EOF
   run new_duplicate_symbols "$resolved" "/nonexistent/base.sh" "/nonexistent/branch.sh"
   [ "$status" -eq 0 ]
-  [[ "$output" == *$'fn:gamma\t2'* ]]
+  # Verify the output is exactly the expected duplicate detection with no extras
+  [ "$output" = $'fn:gamma\t2' ]
 }
 
 @test "new_duplicate_symbols: a correct union resolution is clean" {
