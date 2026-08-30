@@ -29,6 +29,20 @@ setup() {
   # in this repo ever fires for it — the sweep's fast path is structurally blind to
   # this transition. This is the exact "un-eventable green" fingerprint.
   SONAR_GREEN_ROLLUP='[{"name":"SonarCloud Code Analysis","status":"COMPLETED","conclusion":"SUCCESS"}]'
+
+  # The exact PR #1531 rollup fingerprint (issue #1552): a swarm of superseded
+  # agent orchestration checks that were CANCELLED when a newer run took over, plus
+  # the one real required "CI" check that settled SUCCESS. compute_ci_status treats
+  # the CANCELLED agent churn as non-blocking (#608/#1421) and classifies the gate
+  # green — so #1531's clean-but-unreviewed shape is the SAME actionable-but-
+  # unresolved state the detector must catch.
+  PR1531_GREEN_ROLLUP='[
+    {"name":"review / review","status":"COMPLETED","conclusion":"CANCELLED"},
+    {"name":"review / review","status":"COMPLETED","conclusion":"CANCELLED"},
+    {"name":"dev-lead / dispatch","status":"COMPLETED","conclusion":"CANCELLED"},
+    {"name":"dev-lead / ci-relay","status":"COMPLETED","conclusion":"CANCELLED"},
+    {"name":"CI","status":"COMPLETED","conclusion":"SUCCESS"}
+  ]'
 }
 
 # ---------------------------------------------------------------------------
@@ -101,4 +115,36 @@ setup() {
   ci=$(compute_ci_status "$SONAR_GREEN_ROLLUP")
   run is_pr_stall "$ci" REVIEW_REQUIRED 1 90 false
   [ "$status" -ne 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# The #1531 incident shape itself (issue #1552, AC#5). PR #1531 sat CI-green +
+# REVIEW_REQUIRED, never reviewed at head, for ~100 minutes while every pr-review
+# run reported "success" and no-oped invisibly. The convergence backstop for that
+# stall is this same #1410 detector: given #1531's real (CANCELLED-agent-churn +
+# green CI) rollup, the un-reviewed PR left idle past the window MUST be caught,
+# so a clean-but-unreviewed PR is surfaced instead of stalling unseen again.
+# ---------------------------------------------------------------------------
+
+@test "premise: PR #1531's CANCELLED-agent-churn + green CI rollup is classified CI-passing" {
+  run compute_ci_status "$PR1531_GREEN_ROLLUP"
+  [ "$status" -eq 0 ]
+  [ "$output" = "passing" ]
+}
+
+@test "AC#5: the #1531 clean-but-unreviewed shape (idle 100m) is caught by the stall detector" {
+  local ci
+  ci=$(compute_ci_status "$PR1531_GREEN_ROLLUP")
+  # green + REVIEW_REQUIRED + never reviewed at head + idle 100m (the incident
+  # window, >30m default) + not human-gated → the backstop flags it.
+  run is_pr_stall "$ci" REVIEW_REQUIRED 0 100 false
+  [ "$status" -eq 0 ]
+}
+
+@test "AC#5: the caught #1531 stall names the green + REVIEW_REQUIRED, no-pending-event condition" {
+  local ci
+  ci=$(compute_ci_status "$PR1531_GREEN_ROLLUP")
+  run pr_stall_reasons "$ci" REVIEW_REQUIRED 0 100 false
+  [[ "$output" == *"REVIEW_REQUIRED"* ]]
+  [[ "$output" == *"no agent activity or pending event"* ]]
 }
