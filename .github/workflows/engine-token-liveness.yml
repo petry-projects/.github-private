@@ -1,0 +1,120 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# SOURCE OF TRUTH: petry-projects/.github-private/.github/workflows/engine-token-liveness.yml
+#
+# AGENTS — READ BEFORE EDITING:
+#   • Repo-specific monitor for issue #1587; there is no org template — see AGENTS.md.
+#   • The DECISION logic lives in scripts/engine_liveness.sh +
+#     scripts/lib/engine_liveness_detect.sh (unit-tested in
+#     tests/test_engine_liveness_detect.bats). This workflow is only the schedule +
+#     the find-or-create of the FLEET-level alert issue.
+#   • The alert step is gated on ENGINE_LIVENESS_ESCALATION == 'FLEET' — an ISOLATED
+#     single-repo failure is deliberately routed to routine health-check reporting,
+#     and AGENTS_PAUSED=true suppresses the monitor entirely (a maintainer pause is
+#     never a false alarm). Do NOT widen that gate.
+#   • Do NOT change checkout ref from 'main'.
+# ─────────────────────────────────────────────────────────────────────────────
+name: Engine-Token Liveness
+# readme-report: Engine-token liveness monitor — asserts dev-lead/pr-review caller stubs are not failing at the "Engine token preflight" step, and escalates a sustained fleet-wide outage that would otherwise go unalerted (#1587).
+
+on:
+  schedule:
+    # Daily at 07:23 UTC — off-peak, non-zero staggered minute (schedule standard).
+    - cron: '23 7 * * *'
+  workflow_dispatch:
+    inputs:
+      repos:
+        description: "Optional space/comma repo override (owner/repo …); default: consumer manifest"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: engine-token-liveness
+  cancel-in-progress: false
+
+jobs:
+  liveness:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # A deliberate maintainer pause must stay silent — the monitor honors the
+      # same AGENTS_PAUSED variable the preflight step points people at (#1525).
+      AGENTS_PAUSED: ${{ vars.AGENTS_PAUSED }}
+      ENGINE_LIVENESS_REPOS: ${{ inputs.repos }}
+
+    steps:
+      - name: Checkout agent repo
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          repository: petry-projects/.github-private
+          ref: main  # Always checkout .github-private@main
+          token: ${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS }}
+          persist-credentials: false
+
+      - name: Run engine-token liveness monitor
+        env:
+          # Same classic PAT whose scope/expiry this monitor also audits (#1587
+          # scope 4) — reading it here is what lets `gh api -i user` classify it.
+          GH_TOKEN: ${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS }}
+        run: bash scripts/engine_liveness.sh
+
+      - name: Raise or refresh the fleet-outage alert
+        # ONLY on a sustained, fleet-wide preflight failure — the outage class this
+        # monitor exists to catch. ISOLATED/NONE fall through to the run summary the
+        # script already wrote; AGENTS_PAUSED short-circuits the script to NONE.
+        if: env.ENGINE_LIVENESS_ESCALATION == 'FLEET' && hashFiles('engine_liveness_alert.md') != ''
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9.0.0
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const fs = require('fs');
+            const MAX = 65000;
+            let body = fs.readFileSync('engine_liveness_alert.md', 'utf8');
+            if (!body.trim()) { core.setFailed('Alert body is empty'); return; }
+            const runUrl = `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`;
+            const today = new Date().toISOString().split('T')[0];
+            body += `\n\n> _Raised by [Engine-Token Liveness run](${runUrl}) on ${today} (#1587)._`;
+            if (body.length > MAX) body = body.slice(0, MAX) + '\n\n---\n_Truncated — see the run summary._';
+
+            // A DISTINCT label so the fleet-outage alarm is never confused with the
+            // routine health-check digest (which fails-open looked "healthy" in the
+            // outage this monitor was built for).
+            const LABEL = 'engine-outage';
+            for (const [name, color, description] of [
+              [LABEL, 'b60205', 'Sustained fleet-wide engine-token preflight outage (#1587)'],
+            ]) {
+              try {
+                await github.rest.issues.createLabel({ owner: context.repo.owner, repo: context.repo.repo, name, color, description });
+              } catch (e) { if (e.status !== 422) throw e; }
+            }
+
+            // Find-or-refresh a SINGLE standing alert issue (not a per-day digest):
+            // an outage that persists across runs must stack context on one issue,
+            // not spawn a new one every night.
+            const TITLE = 'Engine-token preflight — FLEET-WIDE OUTAGE (#1587)';
+            const open = await github.paginate(github.rest.issues.listForRepo, {
+              owner: context.repo.owner, repo: context.repo.repo,
+              labels: LABEL, state: 'open', per_page: 100,
+            });
+            const existing = open.find(i => !i.pull_request && i.title === TITLE);
+            if (existing) {
+              await github.rest.issues.update({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: existing.number, body,
+              });
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: existing.number,
+                body: `Still failing as of ${today} — refreshed from [this run](${runUrl}).`,
+              });
+              core.notice(`Refreshed fleet-outage alert #${existing.number}: ${existing.html_url}`);
+            } else {
+              const created = await github.rest.issues.create({
+                owner: context.repo.owner, repo: context.repo.repo,
+                title: TITLE, body, labels: [LABEL, 'dev-lead'],
+              });
+              core.notice(`Opened fleet-outage alert #${created.data.number}: ${created.data.html_url}`);
+            }
