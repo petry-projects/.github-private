@@ -169,7 +169,11 @@ teardown() {
 @test "Advisory gate: script is minimal (non-blocking means fewer lines)" {
   local lines
   lines=$(wc -l < "$SCRIPT_DIR/lib/advisory-review-gate.sh")
-  [ "$lines" -lt 500 ]
+  # Budget raised 500→515 for the #1596 partial-evidence decision-point hooks. The
+  # heavy marker logic lives in scripts/lib/partial-evidence-marker.sh; only the
+  # three irreducible timeout-branch hooks (deduplicated via _record_partial_evidence)
+  # are here. This still guards the original intent: no polling loops, no ballooning.
+  [ "$lines" -lt 515 ]
 }
 
 # ────────────────────────────────────────────────────────────────────

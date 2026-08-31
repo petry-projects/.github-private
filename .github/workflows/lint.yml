@@ -74,6 +74,9 @@ jobs:
             tests/test_spec_drift_eval.bats \
             tests/token_report.bats \
             tests/reviewer_report.bats \
+            tests/test_pr_review_miss_rate.bats \
+            tests/test_miss_harvest.bats \
+            tests/test_invalidate_standing_approval.bats \
             tests/comment_noise.bats \
             tests/auto_rebase_health.bats \
             tests/pr_review_outcomes.bats \

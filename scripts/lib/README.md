@@ -101,3 +101,105 @@ The registry and helper are covered by the repo's global CODEOWNERS rule
 (`* @petry-projects/org-leads` in `.github/CODEOWNERS`), so changes here are
 gated by default. Unit tests live in
 [`tests/test_review_registry.bats`](../../tests/test_review_registry.bats).
+
+---
+
+## pr-review miss rate — the deterministic false-negative metric (#1596)
+
+We already measure pr-review's operational health (`pr_review_health.sh`) and its
+false **positives** (`evals/deep-review`). The missing signal was the one that was
+free and perfectly labelled but evaporating: a trusted third-party advisory bot
+(CodeRabbit, Copilot, Gemini, Codex, SonarCloud, Qodo, CodeAnt, Graphite) found a
+**real** defect on a PR that pr-review had already **approved**. That is a false
+**negative** — a *miss*. [`pr-review-miss-rate.sh`](./pr-review-miss-rate.sh)
+computes it deterministically: no LLM is involved, every figure is `jq` over the
+same GitHub review data the [reviewer scorecard](../reviewer_report.sh) already
+fetches (one GraphQL round-trip per repo).
+
+### The metric
+
+| Field | Meaning |
+| --- | --- |
+| `missed_findings` | Threads a trusted advisory bot opened **after** pr-review's approving review, resolved as **accepted** (a fix landed / it was explicitly accepted). The core miss count. |
+| `caught_findings` | Findings pr-review raised itself that were accepted — the denominator partner. |
+| `partial_evidence_approvals` | Approvals issued via the advisory-gate **timeout fallback**, i.e. before all registered bots reported (see below). |
+| `miss_rate_pct` | `missed / (missed + caught)`, integer percent (floor). |
+| `per_bot` | Which reviewer found the miss **first** — a class of defect one bot repeatedly catches first is a directly actionable prompt gap for pr-review. |
+
+The scorecard renders all of this in a **"pr-review miss rate"** section, overall
+and per third-party reviewer (AC3). The per-PR record kind is `miss_pr`, emitted
+by an **additive** collection pass in `reviewer_report.sh` (mirroring the #1411
+`agent_comment` pass) so it never perturbs the existing bot scorecard.
+
+### The crux: accepted vs refuted vs ambiguous (AC2)
+
+Roughly 3 of 4 advisory-bot findings are false positives that are correctly
+refuted. A naive "a bot opened a thread → pr-review missed it" counter would be
+dominated by that noise and would push the agent toward *more* false positives. So
+each finding is classified by the disposition recorded in its **resolving reply**,
+and only **accepted** findings count. The rule (`pr_review_classify_disposition`):
+
+1. An explicit machine marker wins: `<!-- disposition: accepted|refuted -->`
+   (the last one on the thread takes effect).
+2. Otherwise keyword heuristics over the **non-bot** reply comments:
+   - accepted: "good catch", "fixed", "addressed", "accepted", "valid point/concern", …
+   - refuted: "false positive", "not applicable", "by design", "won't fix", …
+3. If neither (or both) fire → **ambiguous**.
+
+A finding is a miss **only** when the disposition is `accepted` **and** the thread
+is resolved. **Ambiguous counts as NOT a miss** — we deliberately under-count
+rather than manufacture misses from noise. Both the real-miss and the
+refuted-false-positive cases are unit-tested in
+[`tests/test_pr_review_miss_rate.bats`](../../tests/test_pr_review_miss_rate.bats).
+
+### Partial-evidence approvals (AC5)
+
+The advisory-review gate proceeds via a **timeout fallback** (head-age or
+quiescence) when some registered bots never report, so a slow/absent bot cannot
+strand a PR forever. But that silently turns "all reviewers agreed" into "the ones
+that answered agreed". [`partial-evidence-marker.sh`](./partial-evidence-marker.sh)
+stamps a machine-detectable marker on the PR
+(`<!-- pr-review-agent partial-evidence v1 sha=… submitted=… required=… reason=… -->`)
+whenever this happens, so the metric can count `partial_evidence_approvals` and a
+standing approval is never read as stronger evidence than it is. The marker is
+posted from inside the gate (which sees the PR head SHA + snapshot); the gate
+degrades to a silent no-op if the helper is not composed alongside it.
+
+### Invalidating a standing approval (AC6)
+
+When an accepted advisory finding lands **after** an approval at the same head, the
+approval is a known false negative. `pr_review_invalidatable_approvals` (pure,
+unit-tested) reports the approving-review SHA(s) that should be dismissed, and
+[`scripts/invalidate-standing-approval.sh`](../invalidate-standing-approval.sh)
+acts on it. **`DRY_RUN` defaults to `true`** — dismissing an approval is a
+shared-state, hard-to-reverse action, so applying it is opt-in
+(`DRY_RUN=false scripts/invalidate-standing-approval.sh <pr_url>`).
+
+### Harvesting misses into regression cases (AC4)
+
+An accepted miss is a free, perfectly-labelled regression case.
+[`miss-harvest.sh`](./miss-harvest.sh) turns one into a de-identified JSONL case
+for `evals/deep-review/dev/cases.jsonl`.
+
+**HARD INVARIANT — dev/ ONLY, never holdout/.** The dev split is proposer-visible;
+`holdout/` is CODEOWNER-gated and is the one control that keeps the eval's success
+metric meaningful (#1088). Auto-harvesting into `holdout/` would silently destroy
+it, so `mh_assert_dev_path` refuses any `holdout/` target and `mh_harvest` writes
+**nothing** on refusal. Cases are also de-identified (URLs, @mentions,
+tokens/secrets, emails → placeholders) before they are ever written
+(`evals/README.md` decision A3). Both invariants are tested in
+[`tests/test_miss_harvest.bats`](../../tests/test_miss_harvest.bats).
+
+### Baselining the 30-day miss rate (AC7)
+
+The metric is a rolling window; `reviewer_report.sh` honors `LOOKBACK_DAYS`
+(default 7). To capture the **30-day baseline** the acceptance criterion asks for,
+run the scorecard over a 30-day window and read the "pr-review miss rate" section:
+
+```bash
+ORG=petry-projects LOOKBACK_DAYS=30 GH_TOKEN=<pat> \
+  bash scripts/reviewer_report.sh > /tmp/reviewer-30d.md
+```
+
+The `miss_rate_pct`, `partial_evidence_approvals`, and per-reviewer table in that
+report are the baseline the weekly (7-day) reports are then tracked against.
