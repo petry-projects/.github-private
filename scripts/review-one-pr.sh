@@ -167,13 +167,15 @@ echo "    review decision: $REVIEW_DECISION"
 # Reasons that produce a skip: already-reviewed-at-head, ci-failing, ci-pending, changes-requested.
 if [ "$CI_STATUS" = "failing" ]; then
   if [ "${FORCE_REVIEW:-false}" = "true" ]; then
-    # Break-glass (#619): a manual mention / dispatch (FORCE_REVIEW=true) overrides
-    # the ci-failing gate so a fix to the CI gate *itself* can be reviewed and
+    # Break-glass (#619): a human @mention (FORCE_REVIEW=true) overrides the
+    # ci-failing gate so a fix to the CI gate *itself* can be reviewed and
     # approved through ring-0 self-host — the one case the pinned-stable design
     # otherwise can't ship without an out-of-band admin merge. This is safe:
-    #   • FORCE_REVIEW is manual-only — it is true only for repository_dispatch
-    #     (human @mention) or an explicit force_review input; the scheduled sweep
-    #     dispatches with force_review=false, so this never fires event-driven.
+    #   • FORCE_REVIEW is @mention-only — pr-review.yml sets it true ONLY for a
+    #     repository_dispatch (the mention-listener path). An automated force_review
+    #     input (the orphan-rescue sweep) maps to the NARROW FORCE_RE_REVIEW instead
+    #     (#1590), which does not reach this gate — so this never fires
+    #     automatically, only on a deliberate human override.
     #   • GitHub's ruleset still blocks the merge on any failing REQUIRED check, so
     #     an override only unblocks the codeowner-approval gate for PRs whose
     #     failing checks are non-required (e.g. superseded dev-lead orchestration
@@ -497,8 +499,16 @@ EXISTING_MARKER_SHA=$(
 )
 
 if [ -n "${EXISTING_MARKER_SHA:-}" ] && [ "$EXISTING_MARKER_SHA" = "$PR_HEAD_SHA" ]; then
-  if [ "${FORCE_REVIEW:-false}" = "true" ]; then
-    echo "    force-review: prior marker $PR_HEAD_SHA matches head, but FORCE_REVIEW=true — re-running cascade"
+  # Two flags bypass the same-SHA idempotency no-op, but they are NOT interchangeable
+  # (issue #1590). FORCE_REVIEW is the human @mention break-glass: it bypasses EVERY
+  # gate (ci-failing/ci-pending/advisory/maintainer/…). FORCE_RE_REVIEW is the narrow
+  # mode used by the automated orphan-rescue sweep: it clears ONLY this idempotency
+  # marker and leaves all the quality gates above armed — so a forced re-review on a
+  # crashed orphan marker still respects a CI status that went red after the sweep's
+  # snapshot (the TOCTOU the sweep otherwise papered over). Every other gate keys on
+  # FORCE_REVIEW alone; only this no-op honors FORCE_RE_REVIEW as well.
+  if [ "${FORCE_REVIEW:-false}" = "true" ] || [ "${FORCE_RE_REVIEW:-false}" = "true" ]; then
+    echo "    force-review: prior marker $PR_HEAD_SHA matches head, but FORCE_REVIEW/FORCE_RE_REVIEW=true — re-running cascade (idempotency bypass)"
   else
     # Metadata-digest re-arm (#1551). A metadata-only fix-request stamps
     # `meta=<digest>` (body + closingIssuesReferences + labels) into its marker.
