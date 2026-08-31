@@ -78,7 +78,9 @@ mh_build_case() {
 
   clean_finding="$(printf '%s' "$finding" | _mh_deidentify)"
   # Stable id from the de-identified finding text (no raw identifiers leak into it).
-  id="deep-miss-$(printf '%s' "$clean_finding" | sha1sum | cut -c1-12)"
+  # sha256sum, not sha1sum: this is only a content-addressed idempotency key, but
+  # SonarCloud flags SHA-1 as a weak hash (S4790) regardless of context.
+  id="deep-miss-$(printf '%s' "$clean_finding" | sha256sum | cut -c1-12)"
 
   jq -cn --arg id "$id" --arg bot "$bot" --arg finding "$clean_finding" '
     {
