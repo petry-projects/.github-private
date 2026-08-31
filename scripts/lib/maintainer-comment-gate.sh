@@ -65,13 +65,15 @@ _MAINTAINER_GATE_EXCLUDED_BOTS_JSON=""
 
 # Regex (case-sensitive) matching the HTML markers our own automation stamps into
 # comment bodies — pr-review reviews/acks (`<!-- pr-review-agent ... -->`,
-# `<!-- persona:pr-review -->`), dev-lead notes (`<!-- dev-lead ... -->`), and the
-# dependency-advisory pass (`<!-- dependency-advisory -->`). A comment carrying any
-# of these is one of ours, never a maintainer finding. This marker-based exclusion
-# is essential because these workflows post as the human owner (`don-petry`) — the
-# same account a human maintainer would use — so login alone cannot separate the
-# agent's comments from a person's.
-readonly _MAINTAINER_GATE_AGENT_MARKERS='<!-- (pr-review-agent|persona:|dev-lead|dependency-advisory)'
+# `<!-- persona:pr-review -->`), the pr-review re-review claim marker
+# (`<!-- pr-review-claim ... -->`, issue #1589), dev-lead notes
+# (`<!-- dev-lead ... -->`), and the dependency-advisory pass
+# (`<!-- dependency-advisory -->`). A comment carrying any of these is one of
+# ours, never a maintainer finding. This marker-based exclusion is essential
+# because these workflows post as the human owner (`don-petry`) — the same account
+# a human maintainer would use — so login alone cannot separate the agent's
+# comments from a person's.
+readonly _MAINTAINER_GATE_AGENT_MARKERS='<!-- (pr-review-agent|pr-review-claim|persona:|dev-lead|dependency-advisory)'
 
 log_info() {
   echo "[maintainer-gate] $*" >&2
