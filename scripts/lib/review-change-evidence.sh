@@ -24,13 +24,16 @@
 # unresolved threads; the isResolved guard here is belt-and-suspenders.
 rce_named_regions() {
   local json="${1:-[]}"
+  # No error masking: malformed/failed jq input must abort loudly rather than be
+  # swallowed into an empty region set, which rce_classify would read as "review
+  # named nothing" and pass a substantive commit off as applied (#1567).
   printf '%s' "$json" | jq -r '
     (. // [])
     | map(select((.isResolved // false) != true))
     | .[]
     | select(((.path // "") | length) > 0)
     | (.path) + "\t" + (((.line // 0)) | tostring)
-  ' 2>/dev/null || true
+  '
 }
 
 # rce_parse_hunks  (unified diff on stdin)
@@ -40,7 +43,14 @@ rce_named_regions() {
 # a hunk with old_count 0 (pure insertion) collapses to a single anchor line.
 rce_parse_hunks() {
   awk '
-    /^\+\+\+ /  { p=$2; sub(/^b\//,"",p); path=p; next }
+    /^\+\+\+ /  {
+      p=$0
+      sub(/^\+\+\+ [ab]\//, "", p)   # strip "+++ a/" or "+++ b/"
+      if (p == $0) sub(/^\+\+\+ /, "", p)   # no a//b/ prefix (e.g. /dev/null)
+      sub(/\t.*$/, "", p)            # drop trailing tab + timestamp
+      path=p
+      next
+    }
     /^@@ /      {
       m=$2                       # -old_start[,old_count]
       sub(/^-/,"",m)
@@ -59,14 +69,16 @@ rce_parse_hunks() {
 # A line of 0 (unknown) falls back to a file-level touch: any hunk in that path.
 rce_region_covered() {
   local path="$1" line="$2" changed="$3" window="${4:-3}"
-  printf '%s\n' "$changed" | awk -F'\t' -v p="$path" -v l="$line" -v w="$window" '
+  [ -z "$changed" ] && return 1
+  awk -F'\t' -v p="$path" -v l="$line" -v w="$window" '
+    $1 == "" { next }
     $1 != p { next }
     {
       if (l+0 <= 0) { hit=1; next }          # unknown line → file-level touch
       if (l >= $2-w && l <= $3+w) hit=1
     }
     END { exit (hit ? 0 : 1) }
-  '
+  ' <<< "$changed"
 }
 
 # rce_classify <substantive true|false> <named_regions> <changed_regions> [window]

@@ -1281,9 +1281,10 @@ count_not_applied_markers() {
   local intent="$1"
   [ "${DEV_LEAD_DRY_RUN:-false}" = "true" ] && { echo 0; return 0; }
   local pattern="${REVIEWS_MARKER_PREFIX}${PR_NUMBER}.* intent=${intent} status=not-applied"
-  gh api --paginate "repos/${REPO}/issues/${PR_NUMBER}/comments?per_page=100" 2>/dev/null \
-    | jq -r --arg pat "$pattern" '[.[] | select((.body // "") | test($pat))] | length' 2>/dev/null \
-    || echo 0
+  # No error masking: a failing gh api (auth, rate-limit, network) must abort
+  # loudly rather than silently return 0, which would suppress escalation.
+  gh api --paginate "repos/${REPO}/issues/${PR_NUMBER}/comments?per_page=100" \
+    | jq -r --arg pat "$pattern" '[.[] | select((.body // "") | test($pat))] | length'
 }
 
 # clear_not_applied_markers <intent> — delete the not-applied markers once a pass
@@ -1293,10 +1294,18 @@ clear_not_applied_markers() {
   [ "${DEV_LEAD_DRY_RUN:-false}" = "true" ] && return 0
   local pattern="${REVIEWS_MARKER_PREFIX}${PR_NUMBER}.* intent=${intent} status=not-applied"
   local ids id
-  ids=$(gh api --paginate "repos/${REPO}/issues/${PR_NUMBER}/comments?per_page=100" 2>/dev/null \
-    | jq -r --arg pat "$pattern" '[.[] | select((.body // "") | test($pat))] | .[].id' 2>/dev/null || true)
-  for id in $ids; do
-    gh api -X DELETE "repos/${REPO}/issues/comments/${id}" 2>/dev/null || true
+  # No error masking: a failing gh api|jq must abort loudly rather than silently
+  # skip the clear, which would leave a stale non-convergence count behind.
+  ids=$(gh api --paginate "repos/${REPO}/issues/${PR_NUMBER}/comments?per_page=100" \
+    | jq -r --arg pat "$pattern" '[.[] | select((.body // "") | test($pat))] | .[].id')
+  # Split safely into an array (IFS scoped to read) so no glob metacharacter in
+  # the id list undergoes pathname expansion.
+  local -a ids_arr=()
+  if [ -n "$ids" ]; then
+    IFS=$'\n' read -r -d '' -a ids_arr <<< "$ids" || true
+  fi
+  for id in "${ids_arr[@]}"; do
+    gh api -X DELETE "repos/${REPO}/issues/comments/${id}"
   done
 }
 
@@ -1378,6 +1387,13 @@ ${enumerated}"
       post_reviews_terminal "$intent" "applied" "$summary"
       ;;
     partial)
+      # Progress was made (some named region was touched), so the run of
+      # consecutive zero-progress passes is broken — reset the not-applied
+      # counter so old cycles cannot trigger premature escalation (#1567).
+      clear_not_applied_markers "$intent"
+      # The requested changes are not fully applied — do not let this pass become
+      # auto-mergeable.
+      _REVIEW_INCOMPLETE=1
       local summary="A commit was pushed, but **not every requested change was applied**. Per requested item:
 ${enumerated}
 
@@ -1385,6 +1401,9 @@ The unaddressed items above still need work."
       post_reviews_terminal "$intent" "partial" "$summary"
       ;;
     *)  # not-applied
+      # The requested changes were not applied — do not let this pass become
+      # auto-mergeable, even before the escalation limit is reached.
+      _REVIEW_INCOMPLETE=1
       local summary
       if [ "$substantive" = "false" ]; then
         summary="A commit was pushed, but it made **no substantive change** (whitespace/cosmetic only) — the requested review changes were not applied."
@@ -1470,9 +1489,11 @@ case "$INTENT_TYPE" in
         # Resolve bot threads dev-lead addressed in-thread but left open (#1547) —
         # these are not necessarily outdated, so the nets above miss them.
         resolve_addressed_bot_threads "fix-reviews"
-        [ "${_REVIEW_ESCALATED:-0}" -eq 1 ] || try_enable_auto_merge
+        # Never auto-merge an escalated or not-fully-applied review pass (#1567).
+        if [ "${_REVIEW_ESCALATED:-0}" -ne 1 ] && [ "${_REVIEW_INCOMPLETE:-0}" -ne 1 ]; then
+          try_enable_auto_merge
+        fi
       fi
-      [ "${_REVIEW_ESCALATED:-0}" -eq 1 ] || try_enable_auto_merge
     fi
     exit "$rc"
     ;;
@@ -1584,7 +1605,10 @@ case "$INTENT_TYPE" in
       # Resolve bot threads dev-lead addressed in-thread but left open (#1547) —
       # these are not necessarily outdated, so the nets above miss them.
       resolve_addressed_bot_threads "review-changes"
-      [ "${_REVIEW_ESCALATED:-0}" -eq 1 ] || try_enable_auto_merge
+      # Never auto-merge an escalated or not-fully-applied review pass (#1567).
+      if [ "${_REVIEW_ESCALATED:-0}" -ne 1 ] && [ "${_REVIEW_INCOMPLETE:-0}" -ne 1 ]; then
+        try_enable_auto_merge
+      fi
     fi
     exit "$rc"
     ;;
