@@ -40,7 +40,7 @@ source "$_isa_here/lib/pr-review-miss-rate.sh"
 # isa_bots_json — the trusted advisory-bot set as a JSON array (registry or default).
 isa_bots_json() {
   if declare -p RATE_LIMIT_NOTICE_BOTS >/dev/null 2>&1 && [ "${#RATE_LIMIT_NOTICE_BOTS[@]}" -gt 0 ]; then
-    printf '%s\n' "${RATE_LIMIT_NOTICE_BOTS[@]}" | jq -R . | jq -sc .
+    jq -n '$ARGS.positional' --args "${RATE_LIMIT_NOTICE_BOTS[@]}"
   else
     printf '%s' "$PR_REVIEW_DEFAULT_BOTS"
   fi
@@ -80,11 +80,16 @@ invalidate_standing_approval() {
   local pr_url="${1:-}"
   [ -n "$pr_url" ] || { echo "usage: invalidate_standing_approval <pr_url>" >&2; return 2; }
 
+  # Match-or-fail: a `sed s///` that does not match returns the input UNCHANGED, so
+  # a malformed URL would yield three nonempty copies of the whole string that pass
+  # the emptiness check and produce garbage API paths. A single anchored regex match
+  # errors out cleanly instead.
   local owner name number
-  owner="$(sed -E 's#https?://[^/]+/([^/]+)/([^/]+)/pull/([0-9]+).*#\1#' <<<"$pr_url")"
-  name="$(sed -E 's#https?://[^/]+/([^/]+)/([^/]+)/pull/([0-9]+).*#\2#' <<<"$pr_url")"
-  number="$(sed -E 's#https?://[^/]+/([^/]+)/([^/]+)/pull/([0-9]+).*#\3#' <<<"$pr_url")"
-  if [ -z "$owner" ] || [ -z "$name" ] || [ -z "$number" ]; then
+  if [[ "$pr_url" =~ ^https?://[^/]+/([^/]+)/([^/]+)/pull/([0-9]+) ]]; then
+    owner="${BASH_REMATCH[1]}"
+    name="${BASH_REMATCH[2]}"
+    number="${BASH_REMATCH[3]}"
+  else
     echo "ERROR: could not parse owner/name/number from '$pr_url'" >&2
     return 2
   fi

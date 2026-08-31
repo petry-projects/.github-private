@@ -30,7 +30,7 @@ teardown() {
 }
 
 @test "DRY_RUN default: reports the review it WOULD dismiss and makes NO gh call" {
-  local tmpdir; tmpdir="$(mktemp -d)"
+  local tmpdir="$BATS_TEST_TMPDIR"
   cat > "$tmpdir/gh" <<'MOCK'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$TMP_GH_CALLS"
@@ -43,11 +43,10 @@ MOCK
   [[ "$output" == *"WOULD dismiss approval review 55"* ]]
   # No mutating dismissals call was made in DRY_RUN.
   [ ! -s "$tmpdir/calls" ] || ! grep -q "dismissals" "$tmpdir/calls"
-  rm -rf "$tmpdir"
 }
 
 @test "DRY_RUN=false: dismisses the stale approval via the REST dismissals endpoint" {
-  local tmpdir; tmpdir="$(mktemp -d)"
+  local tmpdir="$BATS_TEST_TMPDIR"
   cat > "$tmpdir/gh" <<'MOCK'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$TMP_GH_CALLS"
@@ -59,7 +58,6 @@ MOCK
   [ "$status" -eq 0 ]
   [[ "$output" == *"DISMISSING approval review 55"* ]]
   grep -q "reviews/55/dismissals" "$tmpdir/calls"
-  rm -rf "$tmpdir"
 }
 
 @test "standing approval stands when the post-approval finding was refuted" {

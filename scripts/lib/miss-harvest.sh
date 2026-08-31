@@ -39,17 +39,28 @@ mh_assert_dev_path() {
       return 1
       ;;
   esac
+  # Positive assertion: the target must live under a dev/ split. Rejecting only
+  # holdout/ would let a caller write to any arbitrary location while still passing
+  # this guard — the invariant is dev/ ONLY, so require an explicit dev/ segment.
+  case "/$path/" in
+    */dev/*) : ;;
+    *)
+      echo "[miss-harvest] REFUSED: '$path' is not under a dev/ split — harvested cases go to dev/ ONLY (#1596/#1088)." >&2
+      return 1
+      ;;
+  esac
   return 0
 }
 
 # _mh_deidentify — read text on stdin, write a de-identified copy to stdout.
 # Redacts URLs, @mentions, and common secret/token shapes into stable placeholders.
 _mh_deidentify() {
+  # POSIX ERE word boundaries only — \b is a GNU extension and fails on BSD/macOS sed.
   sed -E \
     -e 's#https?://[^[:space:]]+#<url>#g' \
-    -e 's#\bgh[pousr]_[A-Za-z0-9]{16,}#<token>#g' \
-    -e 's#\bgithub_pat_[A-Za-z0-9_]{20,}#<token>#g' \
-    -e 's#\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b#<email>#g' \
+    -e 's#(^|[^A-Za-z0-9_-])gh[pousr]_[A-Za-z0-9]{16,}#\1<token>#g' \
+    -e 's#(^|[^A-Za-z0-9_-])github_pat_[A-Za-z0-9_]{20,}#\1<token>#g' \
+    -e 's#(^|[^A-Za-z0-9_-])[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}($|[^A-Za-z0-9_-])#\1<email>\2#g' \
     -e 's#(^|[^A-Za-z0-9_/])@[A-Za-z0-9][A-Za-z0-9-]*#\1<mention>#g'
 }
 
@@ -96,6 +107,16 @@ mh_harvest() {
   local case_line
   case_line="$(mh_build_case "$miss")" || return 1
   [ -n "$case_line" ] || return 1
+
+  # The case id is a stable content hash, so harvesting is idempotent ONLY if we
+  # skip cases already present. Without this the same production miss appends a
+  # duplicate on every run and the eval set grows without bound.
+  local case_id
+  case_id="$(jq -r '.id // ""' <<<"$case_line" 2>/dev/null)"
+  if [ -n "$case_id" ] && [ -f "$target" ] && grep -qF "$case_id" "$target" 2>/dev/null; then
+    echo "[miss-harvest] case $case_id already present in $target — skipping (idempotent)" >&2
+    return 0
+  fi
 
   mkdir -p "$(dirname "$target")"
   printf '%s\n' "$case_line" >> "$target"

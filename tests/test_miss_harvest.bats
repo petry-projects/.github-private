@@ -12,12 +12,9 @@
 setup() {
   # shellcheck source=scripts/lib/miss-harvest.sh
   source "${BATS_TEST_DIRNAME}/../scripts/lib/miss-harvest.sh"
-  TMP="$(mktemp -d)"
+  # $BATS_TEST_TMPDIR is created per-test and auto-removed on exit (incl. failure).
+  TMP="$BATS_TEST_TMPDIR"
   MISS='{"repo":"petry-projects/.github","pr":"https://github.com/petry-projects/.github/pull/995","bot":"coderabbitai","finding":"ADR asserts a rolling 5-hour window while also asserting utilization is monotonic — a self-contradiction. cc @don-petry https://internal.example.com/x token ghp_ABCDEF0000000000000000"}'
-}
-
-teardown() {
-  rm -rf "$TMP"
 }
 
 # ---------------------------------------------------------------------------
@@ -32,6 +29,11 @@ teardown() {
 @test "mh_assert_dev_path: accepts a dev/ path" {
   run mh_assert_dev_path "evals/deep-review/dev/cases.jsonl"
   [ "$status" -eq 0 ]
+}
+
+@test "mh_assert_dev_path: rejects a path that is neither dev/ nor holdout/" {
+  run mh_assert_dev_path "/tmp/somewhere/cases.jsonl"
+  [ "$status" -ne 0 ]
 }
 
 @test "mh_harvest: refuses to write when handed a holdout/ target and writes nothing" {
@@ -52,6 +54,17 @@ teardown() {
   [ "$(wc -l < "$target")" -eq 1 ]
   run jq -e '.id | type == "string" and length > 0' "$target"
   [ "$status" -eq 0 ]
+}
+
+@test "mh_harvest: harvesting the same miss twice is idempotent (no duplicate case)" {
+  target="$TMP/dev/cases.jsonl"
+  mkdir -p "$TMP/dev"
+  run mh_harvest "$MISS" "$target"
+  [ "$status" -eq 0 ]
+  run mh_harvest "$MISS" "$target"
+  [ "$status" -eq 0 ]
+  # The stable id is checked against the file, so the second harvest is a no-op.
+  [ "$(wc -l < "$target")" -eq 1 ]
 }
 
 # ---------------------------------------------------------------------------

@@ -132,8 +132,13 @@ pr_review_pr_metrics() {
     "$_MISS_JQ_DEFS"'
     ($pr | _first_approval_at(.; $approval_re)) as $appr
     | ($appr != null) as $approved
+    | ([ ($pr.reviews.nodes // [])[]
+         | select((.bodyText // "") | test($approval_re))
+         | ((.bodyText // "") | scan("sha=([a-f0-9]+)"; "i") | .[0]) ] | unique) as $appr_shas
     | ([ (($pr.reviews.nodes // []) + ($pr.comments.nodes // []))[]
-         | (.bodyText // "") | select(test($partial_re)) ] | length) as $partial
+         | (.bodyText // "") | select(test($partial_re))
+         | (scan("sha=([a-f0-9]+)"; "i") | .[0])
+         | select(. as $s | $appr_shas | index($s)) ] | length) as $partial
     | _missed($pr; $bots; $approver; $approval_re) as $missed
     | ([ _threads($pr; $bots; $approver)[]
          | select(.pr_opened and .resolved and (.disp == "accepted")) ]) as $caught
@@ -159,12 +164,16 @@ pr_review_invalidatable_approvals() {
     --arg approval_re "$PR_REVIEW_APPROVAL_RE" \
     "$_MISS_JQ_DEFS"'
     _missed($pr; $bots; $approver; $approval_re) as $missed
-    | if ($missed | length) > 0 then
-        [ ($pr.reviews.nodes // [])[]
-          | select((.bodyText // "") | test($approval_re))
-          | ((.bodyText // "") | scan("sha=([a-f0-9]+)"; "i") | .[0]) ]
-        | unique | .[]
-      else empty end' 2>/dev/null || true
+    | [ ($pr.reviews.nodes // [])[]
+        | select((.bodyText // "") | test($approval_re))
+        | . as $rev
+        # Only dismiss an approval that was STANDING when an accepted finding
+        # arrived, i.e. a finding opened after this approval was submitted. A
+        # fresh re-approval submitted after the finding already accounts for it,
+        # so it must not be swept up (thread data carries no head SHA to match).
+        | select([ $missed[] | select(.opened_at > ($rev.submittedAt // "")) ] | length > 0)
+        | ((.bodyText // "") | scan("sha=([a-f0-9]+)"; "i") | .[0]) ]
+      | unique | .[]' 2>/dev/null || true
 }
 
 # pr_review_aggregate_misses  (stdin: miss_pr JSONL; stdout: aggregate JSON)
@@ -246,8 +255,13 @@ PR_REVIEW_MISS_COLLECT_JQ='
   . as $pr
   | ($pr | _first_approval_at(.; $approval_re)) as $appr
   | ($appr != null) as $approved
+  | ([ ($pr.reviews.nodes // [])[]
+       | select((.bodyText // "") | test($approval_re))
+       | ((.bodyText // "") | scan("sha=([a-f0-9]+)"; "i") | .[0]) ] | unique) as $appr_shas
   | ([ (($pr.reviews.nodes // []) + ($pr.comments.nodes // []))[]
-       | (.bodyText // "") | select(test($partial_re)) ] | length) as $partial
+       | (.bodyText // "") | select(test($partial_re))
+       | (scan("sha=([a-f0-9]+)"; "i") | .[0])
+       | select(. as $s | $appr_shas | index($s)) ] | length) as $partial
   | _missed($pr; $bots; $approver; $approval_re) as $missed
   | ([ _threads($pr; $bots; $approver)[]
        | select(.pr_opened and .resolved and (.disp == "accepted")) ]) as $caught

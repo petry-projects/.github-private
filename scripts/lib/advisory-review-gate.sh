@@ -377,7 +377,10 @@ check_advisory_reviews() {
     head_age_sec=$(_head_age_seconds "$PR_URL")
     if [[ -n "$head_age_sec" && "$head_age_sec" -gt "$ADVISORY_HEAD_AGE_TIMEOUT_SEC" ]]; then
       log_warn "No advisory bot output; head is ${head_age_sec}s old (> ${ADVISORY_HEAD_AGE_TIMEOUT_SEC}s) — treating absent bots as missing reviews, proceeding (issue #1193)"
-      command -v maybe_post_partial_evidence_marker >/dev/null 2>&1 && maybe_post_partial_evidence_marker "$PR_URL" "${PR_HEAD_SHA:-}" 0 "${#ADVISORY_BOTS[@]}" "no-output-head-age-timeout" "${PR_SNAPSHOT:-}" || true  # partial-evidence record (#1596)
+      if command -v maybe_post_partial_evidence_marker >/dev/null 2>&1; then
+        maybe_post_partial_evidence_marker "$PR_URL" "${PR_HEAD_SHA:-}" 0 "${#ADVISORY_BOTS[@]}" "no-output-head-age-timeout" "${PR_SNAPSHOT:-}" \
+          || echo "::warning::partial-evidence marker post failed on ${PR_URL} — this partial-evidence approval may be uncounted by the miss-rate metric (#1596)"
+      fi
       return 0
     fi
     log_warn "No advisory bot reviews detected yet"
@@ -465,10 +468,19 @@ check_advisory_reviews() {
 
     if [[ "$head_age_sec" -gt "$ADVISORY_HEAD_AGE_TIMEOUT_SEC" ]]; then
       log_info "Only ${num_submitted}/${effective_total} required bots submitted; head is ${head_age_sec}s old — timeout fallback, proceeding"
-      command -v maybe_post_partial_evidence_marker >/dev/null 2>&1 && maybe_post_partial_evidence_marker "$PR_URL" "${PR_HEAD_SHA:-}" "$num_submitted" "$effective_total" "head-age-timeout" "${PR_SNAPSHOT:-}" || true  # partial-evidence record (#1596)
+      if command -v maybe_post_partial_evidence_marker >/dev/null 2>&1; then
+        # Liveness wins: a failed marker post must not block the timeout fallback,
+        # but do NOT swallow it silently — surface a CI warning so this partial
+        # approval is not lost to the miss-rate metric unnoticed (#1596).
+        maybe_post_partial_evidence_marker "$PR_URL" "${PR_HEAD_SHA:-}" "$num_submitted" "$effective_total" "head-age-timeout" "${PR_SNAPSHOT:-}" \
+          || echo "::warning::partial-evidence marker post failed on ${PR_URL} — this partial-evidence approval may be uncounted by the miss-rate metric (#1596)"
+      fi
     elif [[ "$time_since_last_sub" -gt "$ADVISORY_QUIESCENCE_TIMEOUT_SEC" ]]; then
       log_info "Only ${num_submitted}/${effective_total} required bots submitted; no new submissions in ${time_since_last_sub}s — assuming absent bots won't participate, proceeding"
-      command -v maybe_post_partial_evidence_marker >/dev/null 2>&1 && maybe_post_partial_evidence_marker "$PR_URL" "${PR_HEAD_SHA:-}" "$num_submitted" "$effective_total" "quiescence-timeout" "${PR_SNAPSHOT:-}" || true  # partial-evidence record (#1596)
+      if command -v maybe_post_partial_evidence_marker >/dev/null 2>&1; then
+        maybe_post_partial_evidence_marker "$PR_URL" "${PR_HEAD_SHA:-}" "$num_submitted" "$effective_total" "quiescence-timeout" "${PR_SNAPSHOT:-}" \
+          || echo "::warning::partial-evidence marker post failed on ${PR_URL} — this partial-evidence approval may be uncounted by the miss-rate metric (#1596)"
+      fi
     else
       log_warn "Only ${num_submitted}/${effective_total} required advisory bots submitted so far (head age: ${head_age_sec}s, last submission: ${time_since_last_sub}s ago)"
       log_warn "Will re-check when remaining bots submit their reviews"
