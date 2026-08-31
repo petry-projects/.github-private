@@ -248,7 +248,7 @@ _el_to_epoch() {
   local v="${1:-}"
   [ -n "$v" ] || { echo ""; return 0; }
   date -u -d "$v" +%s 2>/dev/null \
-    || date -u -jf "%Y-%m-%d %H:%M:%S %Z" "$v" +%s 2>/dev/null \
+    || date -u -jf "%Y-%m-%dT%H:%M:%SZ" "$v" +%s 2>/dev/null \
     || echo ""
 }
 

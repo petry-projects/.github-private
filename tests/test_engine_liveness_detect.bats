@@ -297,22 +297,22 @@ setup() {
 # ---------------------------------------------------------------------------
 
 @test "within_lookback: a run inside the window is within (exit 0)" {
-  now=$(date -u -d "2026-08-31T00:00:00Z" +%s)
-  ep=$(date -u -d "2026-08-30T00:00:00Z" +%s)   # 1 day old
+  now=1788134400   # 2026-08-31T00:00:00Z
+  ep=1788048000    # 2026-08-30T00:00:00Z (1 day old)
   run within_lookback "$ep" "$now" 3
   [ "$status" -eq 0 ]
 }
 
 @test "within_lookback: a run older than the window is outside (non-zero)" {
-  now=$(date -u -d "2026-08-31T00:00:00Z" +%s)
-  ep=$(date -u -d "2026-08-25T00:00:00Z" +%s)   # 6 days old
+  now=1788134400   # 2026-08-31T00:00:00Z
+  ep=1787616000    # 2026-08-25T00:00:00Z (6 days old)
   run within_lookback "$ep" "$now" 3
   [ "$status" -ne 0 ]
 }
 
 @test "within_lookback: a run exactly at the cutoff is still within (inclusive boundary)" {
-  now=$(date -u -d "2026-08-31T00:00:00Z" +%s)
-  ep=$(date -u -d "2026-08-28T00:00:00Z" +%s)   # exactly 3 days
+  now=1788134400   # 2026-08-31T00:00:00Z
+  ep=1787875200    # 2026-08-28T00:00:00Z (exactly 3 days)
   run within_lookback "$ep" "$now" 3
   [ "$status" -eq 0 ]
 }
@@ -329,7 +329,7 @@ setup() {
 
 @test "repo_liveness_from_runs: STALE when failures predate the window, OUTAGE when >=2 are inside it (#1600 — both directions)" {
   # now = the first real run of the monitor (2026-08-31T03:19Z, from the issue).
-  now=$(date -u -d "2026-08-31T03:19:00Z" +%s)
+  now=1788146340   # 2026-08-31T03:19:00Z
 
   # ContentTwin's exact shape: two preflight failures 3-6 days old, no runs since.
   # Its streak never cleared, but the newest run predates the lookback window, so
@@ -356,7 +356,7 @@ setup() {
 }
 
 @test "repo_liveness_from_runs: failures older than the window are ignored in the streak" {
-  now=$(date -u -d "2026-08-31T03:19:00Z" +%s)
+  now=1788146340   # 2026-08-31T03:19:00Z
   f="$TMP/mix.tsv"
   {
     printf '%s\t%s\n' "2026-08-31T00:00:00Z" "no"    # recent success
@@ -368,7 +368,7 @@ setup() {
 }
 
 @test "repo_liveness_from_runs: a single recent preflight failure -> FAIL (not yet sustained)" {
-  now=$(date -u -d "2026-08-31T03:19:00Z" +%s)
+  now=1788146340   # 2026-08-31T03:19:00Z
   f="$TMP/one.tsv"
   {
     printf '%s\t%s\n' "2026-08-31T00:00:00Z" "yes"   # recent failure
@@ -379,7 +379,7 @@ setup() {
 }
 
 @test "repo_liveness_from_runs: no runs at all -> STALE (unverified, the honest state)" {
-  now=$(date -u -d "2026-08-31T03:19:00Z" +%s)
+  now=1788146340   # 2026-08-31T03:19:00Z
   f="$TMP/empty.tsv"; : > "$f"
   run repo_liveness_from_runs "$f" "$now" 3
   [ "$output" = "STALE" ]
