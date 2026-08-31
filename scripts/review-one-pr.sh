@@ -568,7 +568,7 @@ if [ -n "${EXISTING_MARKER_SHA:-}" ] && [ "$EXISTING_MARKER_SHA" = "$PR_HEAD_SHA
           gh pr comment "$PR_URL" --body "$CLAIM_MARKER_BODY" >/dev/null 2>&1 \
             || echo "    warn: could not post pr-review claim marker (#1589 slice 1)"
         fi
-        CLAIM_COMMENTS_JSON="$(gh pr view "$PR_URL" --json comments --jq '.comments' 2>/dev/null || echo '[]')"
+        CLAIM_COMMENTS_JSON="$(gh pr view "$PR_URL" --json comments --jq '.comments')"
         if concurrent_claim_present "$CLAIM_RUN_TOKEN" "$PR_HEAD_SHA" "$CURRENT_META_DIGEST" "$CLAIM_COMMENTS_JSON"; then
           echo "    concurrent-claim: another live re-review claim exists for the same key (sha=$PR_HEAD_SHA meta=$CURRENT_META_DIGEST) — proceeding (slice 1 observe-only, #1589)"
           emit_verdict proceed concurrent-claim-detected "slice 2 (#1589) arbitrates the earliest-posted claim as the winner so a losing run no-ops instead of both launching the cascade"
@@ -722,7 +722,7 @@ if [ -n "${EXISTING_MARKER_SHA:-}" ]; then
   PRIOR_REVIEW_BODY=$(
     gh pr view "$PR_URL" --json reviews,comments \
       --jq "((.reviews // []) + (.comments // [])) | .[].body | select(. != null) | select(test(\"sha=$PRIOR_REVIEW_SHA\"))" 2>/dev/null \
-    | tail -1 || true
+    | tail -n 1 || true
   )
   # Validate that the matched body actually contains our marker to reduce
   # prompt-injection surface area.

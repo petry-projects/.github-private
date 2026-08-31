@@ -73,7 +73,7 @@ _MAINTAINER_GATE_EXCLUDED_BOTS_JSON=""
 # because these workflows post as the human owner (`don-petry`) — the same account
 # a human maintainer would use — so login alone cannot separate the agent's
 # comments from a person's.
-readonly _MAINTAINER_GATE_AGENT_MARKERS='<!-- (pr-review-agent|pr-review-claim|persona:|dev-lead|dependency-advisory)'
+readonly _MAINTAINER_GATE_AGENT_MARKERS='<!-- (pr-review-agent|pr-review-claim|persona:|dev-lead|dependency-advisory)[^>]*-->'
 
 log_info() {
   echo "[maintainer-gate] $*" >&2

@@ -49,7 +49,7 @@ claim_marker() {
 _claim_marker_match() {
   printf '%s' "${1:-}" \
     | grep -oE '<!--[[:space:]]*pr-review-claim v1 sha=[a-f0-9]+ meta=[a-f0-9]{16} run=[^[:space:]]+ at=[^[:space:]]+[[:space:]]*-->' \
-    | tail -1 || true
+    | tail -n 1 || true
 }
 
 # claim_marker_key <marker_body>
@@ -59,8 +59,8 @@ claim_marker_key() {
   local match sha meta
   match="$(_claim_marker_match "${1:-}")"
   [ -n "$match" ] || return 0
-  sha="$(printf '%s' "$match" | grep -oE 'sha=[a-f0-9]+' | tail -1)"
-  meta="$(printf '%s' "$match" | grep -oE 'meta=[a-f0-9]{16}' | tail -1)"
+  sha="$(printf '%s' "$match" | grep -oE 'sha=[a-f0-9]+' | tail -n 1)"
+  meta="$(printf '%s' "$match" | grep -oE 'meta=[a-f0-9]{16}' | tail -n 1)"
   claim_key "${sha#sha=}" "${meta#meta=}"
 }
 
@@ -71,7 +71,7 @@ claim_marker_run() {
   local match
   match="$(_claim_marker_match "${1:-}")"
   [ -n "$match" ] || return 0
-  printf '%s' "$match" | grep -oE 'run=[^[:space:]]+' | tail -1 | sed 's/^run=//'
+  printf '%s' "$match" | grep -oE 'run=[^[:space:]]+' | tail -n 1 | sed 's/^run=//'
 }
 
 # concurrent_claim_present <own_token> <sha> <digest> <comments_json>
