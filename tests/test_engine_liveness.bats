@@ -35,6 +35,27 @@ setup() {
   export GH_CALL_LOG="$BATS_TEST_TMPDIR/gh_calls.log"
   : > "$GH_CALL_LOG"
 
+  # Pin "now" so the recency math (#1600 lookback window) and the report date are
+  # deterministic regardless of the wall clock: without this, the suite would start
+  # failing by calendar once real time passes the hardcoded run/expiry timestamps
+  # below. The stub fixes only the two "now" reads the wrapper makes (`date -u +%s`
+  # and `date -u +%Y-%m-%d`) and delegates every other invocation — notably the
+  # detector's ISO→epoch `date -u -d …` conversions — to the real binary.
+  # 1800000000 == 2027-01-15T08:00:00Z.
+  export REAL_DATE
+  REAL_DATE="$(command -v date)"
+  cat > "$STUB_DIR/date" << 'DATEEOF'
+#!/usr/bin/env bash
+if [ "$1" = "-u" ] && [ "$2" = "+%s" ]; then
+  echo "1800000000"      # 2027-01-15T08:00:00Z
+elif [ "$1" = "-u" ] && [ "$2" = "+%Y-%m-%d" ]; then
+  echo "2027-01-15"
+else
+  exec "$REAL_DATE" "$@"
+fi
+DATEEOF
+  chmod +x "$STUB_DIR/date"
+
   # Wrapper side-effect sinks — kept out of the repo working tree.
   export GITHUB_ENV="$BATS_TEST_TMPDIR/github_env"
   : > "$GITHUB_ENV"
@@ -54,11 +75,39 @@ env_val() {
   grep -m1 "^$1=" "$GITHUB_ENV" | cut -d= -f2-
 }
 
-# workflow_run_outcome — mirror the workflow's final gating step
-#   `if: always() && env.ENGINE_LIVENESS_SHOULD_FAIL == 'true'  -> exit 1`
-# so the run's exit status can be asserted to equal SHOULD_FAIL (#1605 AC).
+# _fail_gate_if <workflow_yml> — echo the `if:` expression of the step whose run
+# body contains `exit 1` (the run's fail-gate). Empty when no such step exists, so
+# a removed/renamed gate is DETECTABLE rather than silently assumed present.
+_fail_gate_if() {
+  awk '
+    function flush() { if (cur_if != "" && cur_exit) print cur_if }
+    /^      - / { flush(); cur_if=""; cur_exit=0 }
+    /^        if:/ { line=$0; sub(/^ *if:[ ]*/, "", line); cur_if=line }
+    /exit 1/ { cur_exit=1 }
+    END { flush() }
+  ' "$1"
+}
+
+# workflow_run_outcome — derive the run's red/green from the ACTUAL workflow's
+# fail-gate, NOT a hand-copied condition (#1606 review, codeant): a duplicated
+# inline condition passes even when the real gate is deleted or reordered. This
+# reads the fail step's `if:` straight out of engine-token-liveness.yml, requires
+# that gate to be an always() guard on an `env.<NAME> == '<value>'` comparison,
+# then evaluates THAT parsed comparison against what the wrapper wrote to
+# GITHUB_ENV — returning 1 (run red) when it holds, 0 (green) otherwise. If the
+# gate step is removed, no longer wraps an `exit 1` body, loses always(), or stops
+# comparing an env var, the parse fails (return 2) and the asserting test fails.
 workflow_run_outcome() {
-  [ "$(env_val ENGINE_LIVENESS_SHOULD_FAIL)" = "true" ] && return 1
+  local wf gate var want
+  wf="$REPO_ROOT/.github/workflows/engine-token-liveness.yml"
+  [ -f "$wf" ] || return 2
+  gate=$(_fail_gate_if "$wf")
+  [ -n "$gate" ] || return 2
+  case "$gate" in *"always()"*) : ;; *) return 2 ;; esac
+  [[ "$gate" =~ env\.([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*==[[:space:]]*\'([^\']*)\' ]] || return 2
+  var="${BASH_REMATCH[1]}"
+  want="${BASH_REMATCH[2]}"
+  [ "$(env_val "$var")" = "$want" ] && return 1
   return 0
 }
 
@@ -106,9 +155,11 @@ case "$resource" in
     ;;
   */actions/workflows/*/runs*)
     # Two most-recent COMPLETED runs, both RECENT (inside the default 3-day
-    # lookback), post-jq form: "<id>\t<run_started_at_iso>".
-    printf '111\t%s\n' "$(date -u -d '-1 hour'  +%Y-%m-%dT%H:%M:%SZ)"
-    printf '222\t%s\n' "$(date -u -d '-6 hours' +%Y-%m-%dT%H:%M:%SZ)"
+    # lookback relative to the stubbed now 2027-01-15T08:00:00Z), post-jq form:
+    # "<id>\t<run_started_at_iso>". Hardcoded ISO literals — no GNU-only
+    # `date -u -d` — so the stub is portable (GNU/BSD) and fully deterministic.
+    printf '111\t2027-01-15T07:00:00Z\n'   # 1 hour before now
+    printf '222\t2027-01-15T02:00:00Z\n'   # 6 hours before now
     ;;
   */actions/runs/*/jobs)
     # Per-run job steps, post-jq form: "<step_name>\t<conclusion>".
