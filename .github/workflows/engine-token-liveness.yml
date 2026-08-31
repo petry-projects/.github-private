@@ -11,6 +11,10 @@
 #     single-repo failure is deliberately routed to routine health-check reporting,
 #     and AGENTS_PAUSED=true suppresses the monitor entirely (a maintainer pause is
 #     never a false alarm). Do NOT widen that gate.
+#   • The run is failed (red) ONLY on a WITHIN-WINDOW OUTAGE — the final step gates
+#     on ENGINE_LIVENESS_SHOULD_FAIL. A STALE stub (newest run older than the
+#     ENGINE_LIVENESS_LOOKBACK_DAYS window) is reported but never fails the run, so a
+#     resolved pre-incident streak no longer holds every scheduled run red (#1600).
 #   • Do NOT change checkout ref from 'main'.
 # ─────────────────────────────────────────────────────────────────────────────
 name: Engine-Token Liveness
@@ -118,3 +122,16 @@ jobs:
               });
               core.notice(`Opened fleet-outage alert #${created.data.number}: ${created.data.html_url}`);
             }
+
+      - name: Fail the run on a within-window engine-token outage (#1600)
+        # Fail RED only for a genuine, live, within-window OUTAGE (>=2 recent
+        # consecutive preflight failures in some repo). Runs after the alert step
+        # (always()) so a FLEET outage still opens/refreshes its issue before the
+        # run goes red. A STALE stub — newest run older than the lookback window —
+        # sets SHOULD_FAIL=false, so a resolved pre-incident streak no longer keeps
+        # every scheduled run red (the #1600 defect). AGENTS_PAUSED also short-
+        # circuits the script to SHOULD_FAIL=false.
+        if: always() && env.ENGINE_LIVENESS_SHOULD_FAIL == 'true'
+        run: |
+          echo "::error::engine-liveness: within-window engine-token OUTAGE detected (${ENGINE_LIVENESS_SUSTAINED_REPOS:-?} sustained-outage repo(s)) — failing the run (#1587/#1600)."
+          exit 1

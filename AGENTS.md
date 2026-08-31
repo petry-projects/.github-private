@@ -133,7 +133,12 @@ This is the `.github-private` org infrastructure repo for `petry-projects`. It c
   at the preflight step, escalating on breadth: `AGENTS_PAUSED=true` → silent (a deliberate pause is never a
   false alarm); **≥2 consecutive preflight failures in ≥2 repos → a distinct `engine-outage` fleet-alert
   issue** (find-or-refresh a single standing issue, not a per-day digest); an isolated single-repo failure →
-  routine run-summary reporting only. It also audits the `GH_PAT_DON_PETRY` classic-PAT scope/expiry — a
+  routine run-summary reporting only. The failure signal is **recency-bounded** (#1600): runs older than
+  `ENGINE_LIVENESS_LOOKBACK_DAYS` (default **3**) are ignored when computing the streak, a stub whose newest
+  run predates that window is reported as a distinct **STALE** (unverified) state that does **not** fail the
+  run, and the run is failed red only on a within-window OUTAGE — so a low-traffic repo's resolved
+  pre-incident failure streak is no longer reported as a live outage that holds every scheduled run red. It
+  also audits the `GH_PAT_DON_PETRY` classic-PAT scope/expiry — a
   silent single point of failure whose rotation surfaces only as an opaque 401/403 on the next run. It is a
   no-LLM gh-API + jq monitor (pure logic in `scripts/lib/engine_liveness_detect.sh`, tests in
   `tests/test_engine_liveness_detect.bats`; network wrapper in `scripts/engine_liveness.sh`). It must not be
