@@ -453,19 +453,74 @@ GHEOF
   unset DEV_LEAD_ENGINES
 }
 
-@test "config: copilot-only with missing token → engine-error, not rate-limited" {
-  # A missing Copilot token is a deterministic configuration gap. When copilot is
-  # the only enabled engine, the aggregate reason must be engine-error (exit 1),
-  # NOT a retryable rate-limit (exit 2) — retrying cannot conjure a token.
+# ── copilot credential config-gap → reason=unconfigured (#1591) ───────────────
+# A missing/placeholder Copilot token is a deterministic AUTH/configuration gap,
+# not a retryable rate limit. When copilot is the only enabled engine, the
+# aggregate reason must be a DISTINCT `unconfigured` (exit 1), NOT a retryable
+# rate-limit (exit 2) and NOT the generic `engine-error` (which the retry cron
+# treats as retryable). Retrying cannot conjure a secret, so the classification
+# must be distinguishable so the caller escalates instead of requeuing.
+
+@test "config: copilot-only with missing token → unconfigured, not rate-limited" {
   export DEV_LEAD_ENGINES="copilot"
   unset COPILOT_GITHUB_TOKEN GEMINI_API_KEY GOOGLE_API_KEY 2>/dev/null || true
   _source_engine "claude"
 
   run run_writer_with_fallback "$TEST_PROMPT"
 
+  # Distinct config-gap classification: exit 1, reason=unconfigured — never
+  # rate-limited (exit 2 would send the retry cron back at an unchangeable state).
+  [ "$status" -ne 2 ]
   [ "$status" -eq 1 ]
-  [ "$(cat /tmp/dev-lead-failure-reason)" = "engine-error" ]
+  [ "$(cat /tmp/dev-lead-failure-reason)" = "unconfigured" ]
   unset DEV_LEAD_ENGINES
+}
+
+@test "config: copilot-only with placeholder token → unconfigured, not rate-limited" {
+  # A placeholder value that is not one of the accepted token prefixes
+  # (github_pat_ / ghp_ / ghs_) is treated as not-provided.
+  export DEV_LEAD_ENGINES="copilot"
+  export COPILOT_GITHUB_TOKEN="changeme"
+  unset GEMINI_API_KEY GOOGLE_API_KEY 2>/dev/null || true
+  _source_engine "claude"
+
+  run run_writer_with_fallback "$TEST_PROMPT"
+
+  [ "$status" -eq 1 ]
+  [ "$(cat /tmp/dev-lead-failure-reason)" = "unconfigured" ]
+  unset DEV_LEAD_ENGINES COPILOT_GITHUB_TOKEN
+}
+
+@test "config: copilot-only with unsupported classic PAT → unconfigured, not rate-limited" {
+  # A classic ghp_ PAT is unsupported for the Copilot engine — also a config gap.
+  export DEV_LEAD_ENGINES="copilot"
+  export COPILOT_GITHUB_TOKEN="ghp_classicpatstub"
+  unset GEMINI_API_KEY GOOGLE_API_KEY 2>/dev/null || true
+  _source_engine "claude"
+
+  run run_writer_with_fallback "$TEST_PROMPT"
+
+  [ "$status" -eq 1 ]
+  [ "$(cat /tmp/dev-lead-failure-reason)" = "unconfigured" ]
+  unset DEV_LEAD_ENGINES COPILOT_GITHUB_TOKEN
+}
+
+@test "config: genuine rate-limit still wins over a copilot config-gap" {
+  # claude rate-limited (2), gemini rate-limited (2), copilot token missing.
+  # A genuine quota exhaustion elsewhere in the chain means a later retry could
+  # succeed, so the aggregate must remain rate-limited (exit 2) — the config-gap
+  # classification only takes over when it is the SOLE cause.
+  _make_stub "claude" 2
+  _make_stub "gemini" 2
+  export GEMINI_API_KEY="test-key"
+  unset COPILOT_GITHUB_TOKEN 2>/dev/null || true
+  _source_engine "claude"
+
+  run run_writer_with_fallback "$TEST_PROMPT"
+
+  [ "$status" -eq 2 ]
+  [ "$(cat /tmp/dev-lead-failure-reason)" = "rate-limited" ]
+  unset GEMINI_API_KEY
 }
 
 # ── timeout classification (#1018) ───────────────────────────────────────────

@@ -530,6 +530,38 @@ GHEOF
   rm -f "$COMMENT_FILE" "$LABEL_FILE"
 }
 
+# ── credential config-gap escalation (#1591) ─────────────────────────────────
+# A missing/placeholder Copilot credential is a deterministic AUTH/configuration
+# gap. When copilot is the only enabled engine, run_writer_with_fallback returns
+# reason=unconfigured (exit 1). handle_engine_failure must treat it like
+# missing-binary: escalate to needs-human with NO retryable status=failed marker,
+# so the retry cron does not requeue an attempt that cannot succeed without a
+# human setting the secret.
+
+@test "fix-issue: unconfigured (copilot-only, missing token) → escalates to needs-human, no retry marker" {
+  _setup_failure_stubs 0 "unused — copilot is the only enabled engine"
+  # Copilot is the only enabled engine and its token is missing → the sole cause
+  # is a config gap (reason=unconfigured), not a rate limit or transient error.
+  export DEV_LEAD_ENGINES="copilot"
+  unset COPILOT_GITHUB_TOKEN GEMINI_API_KEY GOOGLE_API_KEY
+
+  run bash "$FIX_ISSUE_SCRIPT"
+
+  [ "$status" -eq 1 ]
+  local posted; posted=$(cat "$COMMENT_FILE")
+  [[ "$posted" == *"needs human attention"* ]]
+  [[ "$posted" == *"reason=unconfigured"* ]]
+  # Deterministic config gap → must NOT post a retryable status=failed marker
+  # (AC #4: no retry is scheduled) and must NOT be classed as rate-limited.
+  [[ "$posted" != *"status=failed"* ]]
+  [[ "$posted" != *"status=rate-limited"* ]]
+  # needs-human label applied
+  [[ "$(cat "$LABEL_FILE")" == *"dev-lead:needs-human"* ]]
+
+  rm -f "$COMMENT_FILE" "$LABEL_FILE"
+  unset DEV_LEAD_ENGINES
+}
+
 @test "fix-issue: non-124 transient (rate-limit) still retries — no timeout regression" {
   # A genuine transient (rate-limit, exit 1 + rate-limit phrase) must still take
   # the retry path (exit 2), NOT the timeout escalation. Skip gemini (no key) so

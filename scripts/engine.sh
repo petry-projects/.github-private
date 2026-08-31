@@ -1382,18 +1382,28 @@ run_writer_with_fallback() {
 
   local any_rate_limited=0
   local any_missing=0
+  # A deterministic credential config-gap (missing/placeholder/unsupported engine
+  # token) is tracked separately from quota exhaustion (#1591). It must NOT feed
+  # any_rate_limited — retrying cannot conjure a secret, so classifying it as a
+  # retryable rate-limit sends the retry cron back at an unchangeable state and
+  # burns cycles. When it is the SOLE terminal cause, the aggregate reason is a
+  # distinct `unconfigured` so the caller escalates to a human instead of retrying.
+  local any_unconfigured=0
   for engine in "${engines[@]}"; do
     if [ "$engine" = "copilot" ] && [[ "${COPILOT_GITHUB_TOKEN:-}" == ghp_* ]]; then
-      echo "::warning::Skipping copilot fallback: classic PAT in COPILOT_GITHUB_TOKEN is unsupported" >&2
+      echo "::warning::Skipping copilot fallback: classic PAT in COPILOT_GITHUB_TOKEN is unsupported (configuration gap, not a rate limit)" >&2
+      any_unconfigured=1
       continue
     fi
     # A missing/placeholder Copilot token is a deterministic configuration gap, not
     # a rate limit. Skip it here (plain continue) so it never reaches the headroom
     # probe, whose return-1 skip would otherwise be classified as any_rate_limited
     # below — making callers retry a config error as though a later attempt could
-    # succeed (#1546).
+    # succeed (#1546). Record it as a config-gap so the aggregate reason is the
+    # distinct `unconfigured`, not the retryable `engine-error` (#1591).
     if [ "$engine" = "copilot" ] && { [ -z "${COPILOT_GITHUB_TOKEN:-}" ] || [[ ! "${COPILOT_GITHUB_TOKEN:-}" =~ ^(github_pat_|ghp_|ghs_) ]]; }; then
       echo "::warning::Skipping copilot fallback: COPILOT_GITHUB_TOKEN missing or unsupported (configuration gap, not a rate limit)" >&2
+      any_unconfigured=1
       continue
     fi
     if [ "$engine" = "gemini" ] && [ -z "${GEMINI_API_KEY:-}${GOOGLE_API_KEY:-}" ]; then
@@ -1482,9 +1492,19 @@ run_writer_with_fallback() {
     printf 'missing-binary\n' > /tmp/dev-lead-failure-reason
     return 1
   fi
+  # A genuine quota/rate-limit anywhere in the chain wins over a config-gap: a
+  # later retry could succeed once the limit resets, so keep the retryable
+  # rate-limited classification (exit 2).
   if [ "$any_rate_limited" -eq 1 ]; then
     printf 'rate-limited\n' > /tmp/dev-lead-failure-reason
     return 2
+  fi
+  # Deterministic credential config-gap as the SOLE cause (#1591): a distinct
+  # non-retryable `unconfigured` reason (exit 1). Downstream handlers escalate to
+  # a human rather than posting a retryable marker — retrying cannot set a secret.
+  if [ "$any_unconfigured" -eq 1 ]; then
+    printf 'unconfigured\n' > /tmp/dev-lead-failure-reason
+    return 1
   fi
   printf 'engine-error\n' > /tmp/dev-lead-failure-reason
   return 1
