@@ -243,6 +243,34 @@ jobs:
       FORCE_REVIEW: ${{ github.event_name == 'repository_dispatch' && 'true' || inputs.force_review || 'false' }}
 
     steps:
+      - name: Engine token preflight (#1525)
+        # Mirrors dev-lead-reusable.yml's #1525 step (#1587): CLAUDE_CODE_OAUTH_TOKEN
+        # is declared required:false (a required:true fails the CALLER at secrets
+        # evaluation before any step runs — the opaque fleet-wide dispatch failure
+        # #1525 deliberately relaxed), so PRESENCE is enforced here instead. Without
+        # this, a tokenless pr-review run fails OPEN: it can exit `success` having
+        # reviewed nothing, and that green conclusion was cited as "engine healthy"
+        # during the 2026-08-23..30 outage. First step so a missing token is caught
+        # before any runner setup is burned.
+        #
+        # Gated on REVIEW_ENGINE=claude (the default, and the engine that was in the
+        # outage): the copilot/gemini engines authenticate with their own credentials
+        # and install claude only best-effort, so they legitimately run WITHOUT this
+        # token — failing them here would be a regression, not the fail-loud we want.
+        env:
+          REVIEW_ENGINE: ${{ vars.REVIEW_ENGINE || 'claude' }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          if [ "$REVIEW_ENGINE" = "claude" ] && [ -z "$CLAUDE_CODE_OAUTH_TOKEN" ]; then
+            msg="CLAUDE_CODE_OAUTH_TOKEN is not provided to pr-review."
+            msg="$msg To pause deliberately, set AGENTS_PAUSED=true Actions variable"
+            msg="$msg instead of withholding the secret (see #1525)."
+            msg="$msg Otherwise restore the secret (claude setup-token) in the calling repo/org."
+            echo "::error::$msg"
+            exit 1
+          fi
+          echo "engine token present (or non-claude engine) — proceeding"
+
       - name: Checkout agent repo
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
