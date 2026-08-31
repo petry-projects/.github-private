@@ -45,7 +45,6 @@ Autonomous agents that run as GitHub Actions, triggered by events or schedules a
 | Workflow | Purpose |
 |----------|---------|
 | [`ci-failure-analyst-reusable.yml`](.github/workflows/ci-failure-analyst-reusable.yml) | CI failure analyst — diagnoses failed CI/Lint/Test runs and comments root-cause analysis |
-| [`dev-lead.yml`](.github/workflows/dev-lead.yml) | Dev-Lead agent — autonomously implements an assigned issue (branch, code, tests, PR) |
 | [`feature-ideation.yml`](.github/workflows/feature-ideation.yml) | Feature research & ideation agent (BMAD Analyst) — turns sources into scoped feature ideas |
 | [`idea-triage.yml`](.github/workflows/idea-triage.yml) | Idea triage agent — scores queued ideas and promotes them into the backlog |
 | [`initiative-driver.yml`](.github/workflows/initiative-driver.yml) | Initiative driver — auto-releases an epic's ready sub-issues to Dev-Lead |
@@ -68,7 +67,8 @@ Scheduled workflows post reports and dashboards as issues or run summaries for m
 | [`content-twin-audit.yml`](.github/workflows/content-twin-audit.yml) | ContentTwin content audit — audits the ContentTwin repo's published content |
 | [`daily-pr-review-health.yml`](.github/workflows/daily-pr-review-health.yml) | Daily PR-review health check — flags PR-review agent failures as an issue |
 | [`docs-health-check.yml`](.github/workflows/docs-health-check.yml) | Docs health check — flags stale/broken docs as an issue |
-| [`premature-closure-audit.yml`](.github/workflows/premature-closure-audit.yml) | Premature-closure audit — flags issues closed as completed with no merged closing PR |
+| [`engine-token-liveness.yml`](.github/workflows/engine-token-liveness.yml) | Engine-token liveness monitor — asserts dev-lead/pr-review caller stubs are not failing at the "Engine token preflight" step, and escalates a sustained fleet-wide outage that would otherwise go unalerted |
+| [`premature-closure-audit.yml`](.github/workflows/premature-closure-audit.yml) | Premature-closure audit — flags issues closed as completed with no merged closing PR, and OPEN issues carrying an unbacked completion claim |
 | [`reviewer-report.yml`](.github/workflows/reviewer-report.yml) | Reviewer scorecard (per workflow-run summary) — per-reviewer PR-review activity |
 | [`skill-eval-report.yml`](.github/workflows/skill-eval-report.yml) | Skill-eval results report — agent skill pass/fail trends (self-improving-skills pipeline) |
 | [`token-report.yml`](.github/workflows/token-report.yml) | LLM token-cost report (per workflow-run summary) for maintainers |
@@ -80,6 +80,7 @@ Scheduled workflows post reports and dashboards as issues or run summaries for m
 | [`compliance-audit-and-improvement.yml`](https://github.com/petry-projects/.github/blob/main/.github/workflows/compliance-audit-and-improvement.yml) | Weekly org standards compliance audit + runtime health survey, with per-finding remediation issues |
 | [`daily-org-status.yml`](https://github.com/petry-projects/.github/blob/main/.github/workflows/daily-org-status.yml) | Daily "Org Status" digest posted as an issue for maintainers |
 | [`org-scorecard.yml`](https://github.com/petry-projects/.github/blob/main/.github/workflows/org-scorecard.yml) | Weekly OpenSSF Scorecard security-posture review across public repos; findings tracked as issues |
+| [`standards-deploy.yml`](https://github.com/petry-projects/.github/blob/main/.github/workflows/standards-deploy.yml) | Weekly fleet sweep that opens standards-sync PRs for repos drifted off the org-standard workflow stubs |
 
 ## Standards
 
@@ -89,6 +90,7 @@ Notable subtopics are listed below to aid discoverability; see the standards dir
 | Standard | Notable subtopics |
 |----------|-------------------|
 | [`advanced-security`](https://github.com/petry-projects/.github/blob/main/standards/advanced-security.md) | Code Security Configurations, push-protection live-fire (canary), licensing & billing, compliance audit checks |
+| [`agent-rate-limits`](https://github.com/petry-projects/.github/blob/main/standards/agent-rate-limits.md) | Token-budget breaker, daily budget as per-agent cost bound, exempt actors, operator runbook, status (inert pending human sign-off) |
 | [`agent-standards`](https://github.com/petry-projects/.github/blob/main/standards/agent-standards.md) | Required files, compliance exemptions, AgentShield CI workflow, decision-making reusables, BMAD Method Workflows |
 | [`ci-standards`](https://github.com/petry-projects/.github/blob/main/standards/ci-standards.md) | Staged promotion through concentric rings, reusable workflow versioning (`stable` channel), action pinning policy, permissions policy, Dev-Lead Agent |
 | [`codeowners-standard`](https://github.com/petry-projects/.github/blob/main/standards/codeowners-standard.md) | Team composition, required setup for new bots, branch protection, verified end-to-end |
