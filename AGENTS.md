@@ -123,6 +123,22 @@ This is the `.github-private` org infrastructure repo for `petry-projects`. It c
   writes require setting `LIVE_MODE=true` and adding `issues: write`. It must not be removed by template
   syncs. If the org template gains a closure-audit equivalent, remove this exception and defer to the
   template instead.
+- **Exception:** `engine-token-liveness.yml` (#1587) is a documented repo-specific workflow with no
+  corresponding org template in `standards/workflows/`. It is a daily off-peak (`23 7 * * *`) +
+  `workflow_dispatch` monitor for the fleet-wide engine-token outage class: dev-lead failed 100% of runs
+  across 8 repos for seven days — every run died at the **"Engine token preflight"** step
+  (`CLAUDE_CODE_OAUTH_TOKEN is not provided`) — and nothing escalated to a human, while pr-review (which had
+  no preflight) failed **open**, reviewing nothing yet reporting success. For every repo hosting a dev-lead
+  or pr-review caller stub it inspects the most-recent run(s) of that stub and asserts they did **not** fail
+  at the preflight step, escalating on breadth: `AGENTS_PAUSED=true` → silent (a deliberate pause is never a
+  false alarm); **≥2 consecutive preflight failures in ≥2 repos → a distinct `engine-outage` fleet-alert
+  issue** (find-or-refresh a single standing issue, not a per-day digest); an isolated single-repo failure →
+  routine run-summary reporting only. It also audits the `GH_PAT_DON_PETRY` classic-PAT scope/expiry — a
+  silent single point of failure whose rotation surfaces only as an opaque 401/403 on the next run. It is a
+  no-LLM gh-API + jq monitor (pure logic in `scripts/lib/engine_liveness_detect.sh`, tests in
+  `tests/test_engine_liveness_detect.bats`; network wrapper in `scripts/engine_liveness.sh`). It must not be
+  removed by template syncs. If the org template gains an engine-token liveness equivalent, remove this
+  exception and defer to the template instead.
 - **Exception:** `initiative-driver-canary.yml` (#885, epic #882) is a documented repo-specific workflow
   with no corresponding org template in `standards/workflows/`. It is a daily (≤1/day) +
   `workflow_dispatch` post-merge canary that fires a **dry-run** dispatch of `initiative-driver.yml`
