@@ -24,9 +24,8 @@ eb7fd4c955378d274794e38ee9b942912ce79c6f:tests/dev-lead/unit/test_engine_fallbac
 68ab3109d74633dc4aa4c09ff58d1901795bbd11:frameworks/gsd/tests/commands.test.cjs:generic-api-key:759
 # commit 79e5a98 (#1596 miss-harvest tests): the de-identification test fixture
 # initially embedded a 40-char classic-PAT-length placeholder (ghp_ABCDEFabcdef...)
-# to prove _mh_deidentify scrubs ghp_* tokens. The working tree has since shortened
-# it to ghp_abcdefghijklmnop (22 chars), which is below entropy/length detection
-# thresholds but still matches the redaction pattern. The full-history gitleaks scan
-# still flags the historical commit 79e5a98 which contained the longer version; this
-# entry suppresses that. Current code uses the shortened version. Not a real credential.
+# to prove _mh_deidentify scrubs ghp_* tokens. The full-history gitleaks scan still
+# flags the historical commit 79e5a98 which contained the longer version; this entry
+# suppresses that finding. Current code uses ghp_NOTAREALTOKEN1234, an obviously-fake
+# token format that gitleaks no longer flags. Not a real credential.
 79e5a98825c5e5c69cf0e51b9907390bcc565218:tests/test_miss_harvest.bats:github-pat:16

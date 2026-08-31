@@ -14,9 +14,8 @@ setup() {
   source "${BATS_TEST_DIRNAME}/../scripts/lib/miss-harvest.sh"
   # $BATS_TEST_TMPDIR is created per-test and auto-removed on exit (incl. failure).
   TMP="$BATS_TEST_TMPDIR"
-  # Test fixture token constructed dynamically to avoid SonarQube hardcoded-credential detection.
-  local test_token="ghp_$(printf '%016d' 0)"
-  MISS="{\"repo\":\"petry-projects/.github\",\"pr\":\"https://github.com/petry-projects/.github/pull/995\",\"bot\":\"coderabbitai\",\"finding\":\"ADR asserts a rolling 5-hour window while also asserting utilization is monotonic — a self-contradiction. cc @don-petry https://internal.example.com/x token $test_token\"}"
+  # Test fixture with obviously-fake token format to test redaction without triggering credential detectors.
+  MISS="{\"repo\":\"petry-projects/.github\",\"pr\":\"https://github.com/petry-projects/.github/pull/995\",\"bot\":\"coderabbitai\",\"finding\":\"ADR asserts a rolling 5-hour window while also asserting utilization is monotonic — a self-contradiction. cc @don-petry https://internal.example.com/x token ghp_NOTAREALTOKEN1234\"}"
 }
 
 # ---------------------------------------------------------------------------
