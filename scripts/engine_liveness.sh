@@ -34,6 +34,10 @@
 #   ENGINE_LIVENESS_REPOS        — optional space/comma repo override (else manifest)
 #   ENGINE_LIVENESS_STUBS        — optional space/comma stub-file override
 #   ENGINE_LIVENESS_MAX_RUNS     — most-recent runs to inspect per stub (default 3)
+#   ENGINE_LIVENESS_LOOKBACK_DAYS— recency window in days (default 3); runs older
+#                                  than this are ignored when computing the streak,
+#                                  and a stub whose newest run predates it is STALE,
+#                                  not OUTAGE, and does NOT fail the run (#1600)
 #   ENGINE_PAT_EXPIRY_WARN_DAYS  — expiry warn window in days (default 14)
 #   ENGINE_PAT_REQUIRED_SCOPES   — space-separated required scopes (default "repo workflow")
 #   MANIFEST_FILE                — consumer manifest path (default scripts/lib/consumer-manifest.json)
@@ -49,6 +53,9 @@ source "${SCRIPT_DIR}/lib/engine_liveness_detect.sh"
 MANIFEST_FILE="${MANIFEST_FILE:-${SCRIPT_DIR}/lib/consumer-manifest.json}"
 MAX_RUNS=$(_el_int "${ENGINE_LIVENESS_MAX_RUNS:-3}")
 [ "$MAX_RUNS" -ge 1 ] || MAX_RUNS=3
+LOOKBACK_DAYS=$(_el_int "${ENGINE_LIVENESS_LOOKBACK_DAYS:-$ENGINE_LIVENESS_DEFAULT_LOOKBACK_DAYS}")
+[ "$LOOKBACK_DAYS" -ge 1 ] || LOOKBACK_DAYS=$ENGINE_LIVENESS_DEFAULT_LOOKBACK_DAYS
+NOW_EPOCH=$(date -u +%s)
 PAT_WARN_DAYS=$(_el_int "${ENGINE_PAT_EXPIRY_WARN_DAYS:-14}")
 [ "$PAT_WARN_DAYS" -ge 1 ] || PAT_WARN_DAYS=14
 PAT_REQUIRED_SCOPES="${ENGINE_PAT_REQUIRED_SCOPES:-repo workflow}"
@@ -81,6 +88,7 @@ if [ "${AGENTS_PAUSED:-false}" = "true" ]; then
     {
       echo "ENGINE_LIVENESS_PAUSED=true"
       echo "ENGINE_LIVENESS_ESCALATION=NONE"
+      echo "ENGINE_LIVENESS_SHOULD_FAIL=false"
     } >> "$GITHUB_ENV"
   fi
   exit 0
@@ -125,19 +133,26 @@ run_failed_at_preflight() {
   echo "no"
 }
 
-# consecutive_preflight_failures <repo> <stub_file> — echo the count of leading
-# (most-recent-first) COMPLETED runs of <stub_file> that failed at the preflight
-# step. The streak stops at the first run that did NOT fail at preflight. Echoes
-# "SKIP" when the workflow does not exist in the repo (HTTP 404 — the stub is not
-# counted as failing just because it is absent). Echoes "ERROR" on any OTHER API
-# failure (auth/rate-limit/5xx): such a query inspected nothing, and treating it
-# as SKIP would let a fleet-wide outage masquerade as a clean NONE all-clear
-# (#1587). The caller counts ERROR separately and degrades the run.
-consecutive_preflight_failures() {
-  local repo="$1" stub="$2" run_ids errfile
+# gather_runs_tsv <repo> <stub_file> <out_tsv> — write, most-recent-first, one row
+# "<run_started_at_iso> <TAB> <yes|no>" per COMPLETED run of <stub_file> to
+# <out_tsv> (yes == the run failed at the engine-token preflight step). This gives
+# the recency-aware detector (#1600) BOTH each run's timestamp and its preflight
+# verdict so a stale pre-incident streak is not read as a live outage.
+#   Echoes "SKIP"  when the workflow is absent (HTTP 404) — a stub is not counted
+#          as failing just because it does not exist in this repo.
+#   Echoes "STALE" when the workflow EXISTS (HTTP 200) but has no completed runs:
+#          it is present-yet-unverified, so it must be reported STALE and counted
+#          as inspected, NOT silently skipped like an absent stub — otherwise the
+#          monitor falsely appears fully covered (#1601).
+#   Echoes "ERROR" on any OTHER API failure (auth/rate-limit/5xx) or an unreadable
+#          jobs API: such a query inspected nothing, and treating it as SKIP would
+#          let a fleet-wide outage masquerade as a clean NONE all-clear (#1587).
+#   Echoes "OK"    when <out_tsv> was populated with >=1 inspected run.
+gather_runs_tsv() {
+  local repo="$1" stub="$2" out="$3" lines errfile
   errfile=$(mktemp)
-  if ! run_ids=$(gh api "repos/${repo}/actions/workflows/${stub}/runs?status=completed&per_page=${MAX_RUNS}" \
-        --jq '.workflow_runs[].id' 2>"$errfile"); then
+  if ! lines=$(gh api "repos/${repo}/actions/workflows/${stub}/runs?status=completed&per_page=${MAX_RUNS}" \
+        --jq '.workflow_runs[] | [(.id|tostring), (.run_started_at // .created_at // "")] | @tsv' 2>"$errfile"); then
     if grep -qi 'HTTP 404' "$errfile"; then
       rm -f "$errfile"
       echo "SKIP"        # workflow absent in this repo — legitimately not counted
@@ -149,78 +164,107 @@ consecutive_preflight_failures() {
     return 0
   fi
   rm -f "$errfile"
-  [ -n "$run_ids" ] || { echo "SKIP"; return 0; }
+  # Workflow exists (200) but has no completed runs: present-yet-unverified. Report
+  # STALE so it is counted/inspected rather than skipped as if absent (#1601).
+  [ -n "$lines" ] || { echo "STALE"; return 0; }
 
-  local streak=0 rid verdict
-  while IFS= read -r rid; do
+  # The workflow-runs API orders by created_at desc, which is NOT guaranteed to be
+  # run_started_at desc for delayed/queued runs. The detector treats row order as
+  # recency order (most-recent first), so re-sort by the gathered timestamp
+  # (run_started_at, created_at fallback — field 2) descending to make that
+  # invariant hold; otherwise a delayed run mis-orders the streak/stale verdict
+  # (#1601). ISO-8601 Z timestamps sort lexically == chronologically.
+  lines=$(printf '%s\n' "$lines" | sort -t$'\t' -k2,2r)
+
+  : > "$out"
+  local rid iso verdict failed
+  while IFS=$'\t' read -r rid iso; do
     [ -n "$rid" ] || continue
     verdict=$(run_failed_at_preflight "$repo" "$rid")
-    if [ "$verdict" = "yes" ]; then
-      streak=$(( streak + 1 ))
-    elif [ "$verdict" = "unknown" ]; then
-      # The jobs API could not be read for this run — the streak inspected
+    if [ "$verdict" = "unknown" ]; then
+      # The jobs API could not be read for this run — the streak would inspect
       # nothing reliable, so surface it as a blind spot rather than silently
-      # breaking the streak and reporting a trustworthy count (#1587).
+      # reporting a trustworthy count (#1587).
       echo "ERROR"
       return 0
-    else
-      # A passing or other-failure run breaks the consecutive streak.
-      break
     fi
-  done <<< "$run_ids"
-  echo "$streak"
+    failed="no"; [ "$verdict" = "yes" ] && failed="yes"
+    printf '%s\t%s\n' "$iso" "$failed" >> "$out"
+  done <<< "$lines"
+  [ -s "$out" ] || { echo "SKIP"; return 0; }
+  echo "OK"
 }
 
 # ---------------------------------------------------------------------------
 # 2. Per-repo × per-stub inspection.
 # ---------------------------------------------------------------------------
 rows_file=$(mktemp) || { echo "mktemp failed" >&2; exit 1; }
-trap 'rm -f "$rows_file"' EXIT
+runs_tsv=$(mktemp) || { echo "mktemp failed" >&2; exit 1; }
+trap 'rm -f "$rows_file" "$runs_tsv"' EXIT
 
-sustained_repos=0   # repos with >=1 stub in OUTAGE (>=2 consecutive preflight failures)
-failing_repos=0     # repos with >=1 stub failing at all (FAIL or OUTAGE)
+sustained_repos=0   # repos with >=1 stub in a WITHIN-WINDOW OUTAGE (>=2 recent preflight failures)
+failing_repos=0     # repos with >=1 stub failing at all in-window (FAIL or OUTAGE)
+stale_repos=0       # repos whose worst stub is STALE — no run inside the lookback window (#1600)
 inspected_stubs=0   # stubs actually inspected (a real runs answer, incl. empty)
 api_errors=0        # non-404 API failures — queries that inspected nothing
 
 mapfile -t REPOS < <(enumerate_repos)
-echo "=== Engine-Token Liveness Monitor — #1587 ==="
-echo "  Date:        $TODAY"
-echo "  Repos:       ${#REPOS[@]}"
-echo "  Stubs:       $STUBS"
-echo "  Runs/stub:   $MAX_RUNS"
+echo "=== Engine-Token Liveness Monitor — #1587 / #1600 ==="
+echo "  Date:         $TODAY"
+echo "  Repos:        ${#REPOS[@]}"
+echo "  Stubs:        $STUBS"
+echo "  Runs/stub:    $MAX_RUNS"
+echo "  Lookback:     ${LOOKBACK_DAYS} day(s) — runs older than this are ignored (#1600)"
 echo ""
+
+# repo_worst severity ranking: OK(0) < STALE(1) < FAIL(2) < OUTAGE(3). STALE is
+# BELOW FAIL — it is unverified, not failing (#1600).
+_worse() { # <current> <candidate> -> the more-severe of the two
+  local -A rank=( [OK]=0 [STALE]=1 [FAIL]=2 [OUTAGE]=3 )
+  if [ "${rank[$2]:-0}" -gt "${rank[$1]:-0}" ]; then echo "$2"; else echo "$1"; fi
+}
 
 for repo in "${REPOS[@]}"; do
   [ -n "$repo" ] || continue
-  repo_worst="OK"   # OK < FAIL < OUTAGE
+  repo_worst="OK"
   for stub in $STUBS; do
-    consec=$(consecutive_preflight_failures "$repo" "$stub")
-    [ "$consec" = "SKIP" ] && continue
-    if [ "$consec" = "ERROR" ]; then
+    gather=$(gather_runs_tsv "$repo" "$stub" "$runs_tsv")
+    [ "$gather" = "SKIP" ] && continue
+    if [ "$gather" = "ERROR" ]; then
       api_errors=$(( api_errors + 1 ))
       echo "  ${repo} / ${stub}: ERROR (API query failed — stub not inspected)"
       continue
     fi
+    if [ "$gather" = "STALE" ]; then
+      # Workflow present but no completed runs — inspected yet unverified (#1601).
+      inspected_stubs=$(( inspected_stubs + 1 ))
+      printf '%s\t%s\t%s\t%s\t%s\n' "$repo" "$stub" "STALE" "0" "" >> "$rows_file"
+      echo "  ${repo} / ${stub}: STALE (workflow exists but has no completed runs — unverified)"
+      repo_worst=$(_worse "$repo_worst" "STALE")
+      continue
+    fi
     inspected_stubs=$(( inspected_stubs + 1 ))
-    state=$(repo_liveness_state "$consec")
-    printf '%s\t%s\t%s\t%s\n' "$repo" "$stub" "$state" "$consec" >> "$rows_file"
-    echo "  ${repo} / ${stub}: ${state} (${consec} consecutive preflight failure(s))"
-    case "$state" in
-      OUTAGE) repo_worst="OUTAGE" ;;
-      FAIL)   [ "$repo_worst" = "OUTAGE" ] || repo_worst="FAIL" ;;
-    esac
+    state=$(repo_liveness_from_runs "$runs_tsv" "$NOW_EPOCH" "$LOOKBACK_DAYS")
+    consec=$(within_window_streak "$runs_tsv" "$NOW_EPOCH" "$LOOKBACK_DAYS")
+    IFS=$'\t' read -r last_run _ < "$runs_tsv"
+    printf '%s\t%s\t%s\t%s\t%s\n' "$repo" "$stub" "$state" "$consec" "$last_run" >> "$rows_file"
+    echo "  ${repo} / ${stub}: ${state} (${consec} in-window preflight failure(s); last run ${last_run:-unknown})"
+    repo_worst=$(_worse "$repo_worst" "$state")
   done
   case "$repo_worst" in
     OUTAGE) sustained_repos=$(( sustained_repos + 1 )); failing_repos=$(( failing_repos + 1 )) ;;
     FAIL)   failing_repos=$(( failing_repos + 1 )) ;;
+    STALE)  stale_repos=$(( stale_repos + 1 )) ;;
   esac
 done
 
 escalation=$(fleet_escalation "$sustained_repos" "$failing_repos")
 monitoring=$(monitoring_status "$inspected_stubs" "$api_errors")
+should_fail="false"
+if run_should_fail "$sustained_repos"; then should_fail="true"; fi
 echo ""
-echo "Inspected ${inspected_stubs} stub(s); API errors: ${api_errors}; sustained-outage repos: ${sustained_repos}; failing repos: ${failing_repos}."
-echo "Escalation: ${escalation}; Monitoring: ${monitoring}"
+echo "Inspected ${inspected_stubs} stub(s); API errors: ${api_errors}; sustained-outage repos: ${sustained_repos}; failing repos: ${failing_repos}; stale repos: ${stale_repos}."
+echo "Escalation: ${escalation}; Monitoring: ${monitoring}; Should-fail: ${should_fail}"
 if [ "$monitoring" = "DEGRADED" ]; then
   # 0 stubs inspected AND >=1 non-404 API error: the monitor learned nothing, so
   # the NONE escalation above is not a trustworthy all-clear (#1587).
@@ -260,8 +304,9 @@ echo "  GH_PAT_DON_PETRY expiry: '${pat_expiry_raw:-<none>}' -> ${pat_expiry}"
   if [ "$monitoring" = "DEGRADED" ]; then
     printf '> **⚠️ Monitoring DEGRADED** — %s non-404 API error(s) and **0 stubs inspected**. The escalation above is **not** a reliable all-clear: an outage or auth failure can look like `NONE`. Investigate `GH_TOKEN` scope/validity and GitHub API availability (#1587).\n\n' "$api_errors"
   fi
-  printf '**Repos monitored:** %s | **Stubs inspected:** %s | **API errors:** %s | **Sustained-outage repos:** %s | **Failing repos:** %s\n\n' \
-    "${#REPOS[@]}" "$inspected_stubs" "$api_errors" "$sustained_repos" "$failing_repos"
+  printf '**Repos monitored:** %s | **Stubs inspected:** %s | **API errors:** %s | **Sustained-outage repos:** %s | **Failing repos:** %s | **Stale repos:** %s\n\n' \
+    "${#REPOS[@]}" "$inspected_stubs" "$api_errors" "$sustained_repos" "$failing_repos" "$stale_repos"
+  printf '> **Recency window:** `%s` day(s) (`ENGINE_LIVENESS_LOOKBACK_DAYS`). A stub whose newest run predates this window is reported **STALE** (unverified) — a resolved pre-incident failure streak is not a live outage, and does not fail the run (#1600).\n\n' "$LOOKBACK_DAYS"
   printf '## Per-repo caller-stub preflight liveness\n\n'
   render_liveness_table "$rows_file"
   printf '\n## Credential — GH_PAT_DON_PETRY (#1587 scope 4)\n\n'
@@ -293,6 +338,8 @@ if [ -n "${GITHUB_ENV:-}" ]; then
     echo "ENGINE_LIVENESS_API_ERRORS=${api_errors}"
     echo "ENGINE_LIVENESS_SUSTAINED_REPOS=${sustained_repos}"
     echo "ENGINE_LIVENESS_FAILING_REPOS=${failing_repos}"
+    echo "ENGINE_LIVENESS_STALE_REPOS=${stale_repos}"
+    echo "ENGINE_LIVENESS_SHOULD_FAIL=${should_fail}"
     echo "ENGINE_LIVENESS_PAT_SCOPE_STATE=${pat_scope_state}"
     echo "ENGINE_LIVENESS_PAT_EXPIRY_STATE=${pat_expiry}"
   } >> "$GITHUB_ENV"
