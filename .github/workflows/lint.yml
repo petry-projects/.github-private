@@ -91,6 +91,8 @@ jobs:
             tests/test_push_protection.bats \
             tests/test_verify_auth_scopes.bats \
             tests/test_initiative_driver.bats \
+            tests/test_hold_gate.bats \
+            tests/test_hold_release_audit.bats \
             tests/test_cut_release.bats \
             tests/test_cut_release_cross_repo.bats \
             tests/test_gitleaks_config.bats \

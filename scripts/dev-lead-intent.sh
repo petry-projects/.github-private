@@ -23,6 +23,23 @@ set -euo pipefail
 GITHUB_ENV="${GITHUB_ENV:-/dev/null}"
 GITHUB_OUTPUT="${GITHUB_OUTPUT:-/dev/null}"
 
+# Shared "human hold" predicate — one source of truth across the initiative
+# driver, this intent classifier, and any retry/sweep path (#1595). A held
+# issue/PR (needs-human-review / dev-lead:needs-human / dev-lead:hands-off) is
+# never picked up, regardless of the event that would otherwise route it.
+# shellcheck source=scripts/lib/hold-gate.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/hold-gate.sh"
+
+# emit_hold_skip <blocking-label> — skip a held work item. The hands-off label
+# keeps its historical `hands-off-label` reason; every other hold label reports
+# `hold-label:<label>` so the specific hold is visible in the skip reason.
+emit_hold_skip() {
+  case "$1" in
+    dev-lead:hands-off) emit_skip "hands-off-label" ;;
+    *) emit_skip "hold-label:$1" ;;
+  esac
+}
+
 emit_intent() {
   local intent="$1" reason="${2:-}" context="${3:-}"
   echo "INTENT_TYPE=${intent}" >> "$GITHUB_ENV"
@@ -173,19 +190,28 @@ if [ "$EVENT_NAME" = "check_run" ]; then
   exit 0
 fi
 
-# ── hands-off guard ───────────────────────────────────────────────────────────
-# A PR or issue labeled `dev-lead:hands-off` is intentionally excluded from the
-# agent — e.g. PRs that modify the dev-lead workflow itself, so the agent does
-# not pile commits onto its own infrastructure changes. Runs before the anti-loop
-# guard so a hands-off sync from BOT_USER emits `hands-off-label` rather than
-# `dev-lead-own-commit`, keeping the skip reason stable whenever the label is
-# present. Applies to every label-bearing event (PR opens/syncs, reviews, review
-# comments, issue comments on PRs, issue labeling). repository_dispatch payloads
-# carry no labels; those are checked via the API in the dispatch branch below.
-if has_label "dev-lead:hands-off"; then
-  emit_skip "hands-off-label"
+# ── hold guard ────────────────────────────────────────────────────────────────
+# A PR or issue carrying a fleet hold label (dev-lead:hands-off, needs-human-
+# review, dev-lead:needs-human) is intentionally excluded from the agent. This is
+# the label-triggered half of #1595: even if `dev-lead` is applied to a held
+# issue (bypassing or racing the driver), the agent must not pick it up — #1532
+# was released to dev-lead with `needs-human-review` still attached. hands-off
+# keeps its historical purpose (e.g. PRs that modify the dev-lead workflow itself,
+# so the agent does not pile commits onto its own infrastructure). Runs before the
+# anti-loop guard so a hold sync from BOT_USER emits the hold reason rather than
+# `dev-lead-own-commit`, keeping the skip reason stable whenever a hold is present.
+# Applies to every label-bearing event (PR opens/syncs, reviews, review comments,
+# issue comments on PRs, issue labeling). repository_dispatch payloads carry no
+# labels; those are checked via the API in the dispatch branch below.
+_event_labels=""
+if [ -n "$EVENT_PATH" ] && [ -f "$EVENT_PATH" ]; then
+  _event_labels="$(jq -r '[.pull_request.labels[]?, .issue.labels[]?] | .[].name' "$EVENT_PATH" 2>/dev/null || true)"
+fi
+if _hold_label="$(hold_gate_first_match "$_event_labels")"; then
+  emit_hold_skip "$_hold_label"
   exit 0
 fi
+unset _event_labels _hold_label
 
 # ── anti-loop guard: pull_request synchronize ────────────────────────────────
 # If the synchronize event was triggered by BOT_USER's own commit, skip to
@@ -472,9 +498,9 @@ case "$EVENT_NAME" in
       exit 0
     fi
 
-    # Honour hands-off for dispatch events: the event payload carries no labels,
-    # so fetch them via the API before routing. Fail closed: if the API call
-    # fails (auth error, transient failure, token without label read access),
+    # Honour the hold gate for dispatch events: the event payload carries no
+    # labels, so fetch them via the API before routing. Fail closed: if the API
+    # call fails (auth error, transient failure, token without label read access),
     # skip rather than route with unknown label state.
     _dispatch_labels=""
     if ! _dispatch_labels=$(gh api "repos/${GITHUB_REPOSITORY}/issues/${subject_number}/labels" \
@@ -482,11 +508,11 @@ case "$EVENT_NAME" in
       emit_skip "label-lookup-error"
       exit 0
     fi
-    if echo "$_dispatch_labels" | grep -qxF "dev-lead:hands-off"; then
-      emit_skip "hands-off-label"
+    if _hold_label="$(hold_gate_first_match "$_dispatch_labels")"; then
+      emit_hold_skip "$_hold_label"
       exit 0
     fi
-    unset _dispatch_labels
+    unset _dispatch_labels _hold_label
 
     case "$dispatch_type" in
       dev-lead-ci-failure)

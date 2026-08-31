@@ -461,6 +461,67 @@ EOF
   [ "$(grep -c 'issue edit' "$GH_LOG")" -eq 1 ]
 }
 
+# ── hold gate: needs-human-review is never released (#1595) ─────────────────────
+# #1532 was released to dev-lead with `needs-human-review` still attached because
+# the driver only honoured dev-lead:hands-off / initiative:hold. The shared hold
+# predicate (scripts/lib/hold-gate.sh) now blocks release on the fleet hold set,
+# and the skip is logged with the issue number and the blocking label.
+
+@test "hold: a sub-issue carrying needs-human-review is not released and is logged with the label" {
+  cat > "$MOCK_BIN/gh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$GH_LOG"
+args="$*"
+# Epic #1 carries the gate label
+if [[ "$args" == *"issues/1 --jq"* ]] && [[ "$args" != *"sub_issues"* ]]; then
+  printf 'initiative:auto'; exit 0
+fi
+# Epic #1 sub-issues: only issue 2
+if [[ "$args" == *"issues/1/sub_issues"* ]]; then printf '2'; exit 0; fi
+# Issue 2 has no sub-issues of its own (a story, not an epic)
+if [[ "$args" == *"issues/2/sub_issues"* ]]; then printf ''; exit 0; fi
+# Issue 2 is held: needs-human-review, and NOT yet dev-lead
+if [[ "$args" == *"issues/2 --jq"* ]]; then printf 'needs-human-review'; exit 0; fi
+# No open blockers (so only the hold gate can stop the release)
+if [[ "$args" == *"issues/2/dependencies/blocked_by"* ]]; then printf ''; exit 0; fi
+if [[ "$args" == "issue edit"* ]]; then exit 0; fi
+printf '[]'
+EOF
+  chmod +x "$MOCK_BIN/gh"
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  # skip is logged with the issue number AND the blocking label (AC #1)
+  [[ "$output" == *"#2"*"needs-human-review"* ]]
+  [[ "$output" != *"RELEASED"* ]]
+  # the dev-lead label was never applied
+  ! grep -qF "issue edit" "$GH_LOG"
+}
+
+@test "hold: removing needs-human-review makes the same sub-issue eligible on the next run" {
+  cat > "$MOCK_BIN/gh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$GH_LOG"
+args="$*"
+if [[ "$args" == *"issues/1 --jq"* ]] && [[ "$args" != *"sub_issues"* ]]; then
+  printf 'initiative:auto'; exit 0
+fi
+if [[ "$args" == *"issues/1/sub_issues"* ]]; then printf '2'; exit 0; fi
+if [[ "$args" == *"issues/2/sub_issues"* ]]; then printf ''; exit 0; fi
+# Hold label removed — issue 2 now carries only a plain label
+if [[ "$args" == *"issues/2 --jq"* ]]; then printf 'initiative'; exit 0; fi
+if [[ "$args" == *"issues/2/dependencies/blocked_by"* ]]; then printf ''; exit 0; fi
+if [[ "$args" == "issue edit"* ]]; then exit 0; fi
+printf '[]'
+EOF
+  chmod +x "$MOCK_BIN/gh"
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"RELEASED"* ]]
+  grep -qF "issue edit 2 --repo owner/repo --add-label dev-lead" "$GH_LOG"
+}
+
 # ── zombie: a stale in-flight slot-holder is surfaced (log + epic comment) ──────
 # #687 on epic #1402: dev-lead label lingered on an open issue whose PR had long
 # merged — a slot occupied forever with no re-firing event. Surface it; do not
