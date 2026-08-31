@@ -426,6 +426,51 @@ EOF
   [ "$status" -eq 1 ]
 }
 
+# ── gated exclusion: needs-human-review carriers are also excluded (#1595) ──────
+# A carrier held by the fleet-wide `needs-human-review` label (not just
+# `dev-lead:needs-human`) equally cannot progress without a human. It must be
+# excluded from the in-flight count too, or a held item consumes MAX_IN_FLIGHT and
+# starves eligible siblings — the same starvation class as #1494/#1402.
+
+@test "gated: needs-human-review carrier is excluded from in-flight, freeing a slot" {
+  export MAX_IN_FLIGHT="2"
+  cat > "$MOCK_BIN/gh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$GH_LOG"
+args="$*"
+# Epic #1 carries the gate label
+if [[ "$args" == *"issues/1 --jq"* ]] && [[ "$args" != *"sub_issues"* ]]; then
+  printf 'initiative:auto'; exit 0
+fi
+# Epic #1 sub-issues: #2 (active), #3 (held by needs-human-review), #4 (ready)
+if [[ "$args" == *"issues/1/sub_issues"* ]]; then printf '2\n3\n4'; exit 0; fi
+# #2 is actively in-flight (dev-lead, no hold); labeled recently -> not a zombie
+if [[ "$args" == *"issues/2/events"* ]]; then date -u +%Y-%m-%dT%H:%M:%SZ; exit 0; fi
+if [[ "$args" == *"issues/2 --jq"* ]] && [[ "$args" == *".updated_at"* ]]; then date -u +%Y-%m-%dT%H:%M:%SZ; exit 0; fi
+if [[ "$args" == *"issues/2 --jq"* ]] && [[ "$args" != *"sub_issues"* ]]; then printf 'dev-lead'; exit 0; fi
+# #3 is held: dev-lead + needs-human-review (the fleet hold, not dev-lead:needs-human)
+if [[ "$args" == *"issues/3 --jq"* ]] && [[ "$args" != *"sub_issues"* ]]; then printf 'dev-lead\nneeds-human-review'; exit 0; fi
+# #4 is a ready story: no dev-lead label, no children, no blockers
+if [[ "$args" == *"issues/4/sub_issues"* ]]; then printf ''; exit 0; fi
+if [[ "$args" == *"issues/4 --jq"* ]]; then printf ''; exit 0; fi
+if [[ "$args" == *"issues/4/dependencies/blocked_by"* ]]; then printf ''; exit 0; fi
+if [[ "$args" == "issue edit"* ]]; then exit 0; fi
+printf '[]'
+EOF
+  chmod +x "$MOCK_BIN/gh"
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  # #3 is named, gated on needs-human-review, and excluded from the count
+  [[ "$output" == *"#3"*"gated"*"needs-human-review"* ]]
+  [[ "$output" == *"in-flight=1 (1 gated excluded), cap=2, releasing 1"* ]]
+  # the freed slot released the ready story #4
+  grep -qF "issue edit 4 --repo owner/repo --add-label dev-lead" "$GH_LOG"
+  # the held item was never re-released (status exactly 1: pattern absent)
+  run grep -qF "issue edit 3" "$GH_LOG"
+  [ "$status" -eq 1 ]
+}
+
 # ── cap: the release path still respects MAX_IN_FLIGHT after gated exclusion ────
 
 @test "cap: releases only up to the remaining slots even when more are ready" {
@@ -459,6 +504,67 @@ EOF
   # in_flight=1, cap=2 -> exactly one slot, so exactly one release despite two ready
   [[ "$output" == *"releasing 1"* ]]
   [ "$(grep -c 'issue edit' "$GH_LOG")" -eq 1 ]
+}
+
+# ── hold gate: needs-human-review is never released (#1595) ─────────────────────
+# #1532 was released to dev-lead with `needs-human-review` still attached because
+# the driver only honoured dev-lead:hands-off / initiative:hold. The shared hold
+# predicate (scripts/lib/hold-gate.sh) now blocks release on the fleet hold set,
+# and the skip is logged with the issue number and the blocking label.
+
+@test "hold: a sub-issue carrying needs-human-review is not released and is logged with the label" {
+  cat > "$MOCK_BIN/gh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$GH_LOG"
+args="$*"
+# Epic #1 carries the gate label
+if [[ "$args" == *"issues/1 --jq"* ]] && [[ "$args" != *"sub_issues"* ]]; then
+  printf 'initiative:auto'; exit 0
+fi
+# Epic #1 sub-issues: only issue 2
+if [[ "$args" == *"issues/1/sub_issues"* ]]; then printf '2'; exit 0; fi
+# Issue 2 has no sub-issues of its own (a story, not an epic)
+if [[ "$args" == *"issues/2/sub_issues"* ]]; then printf ''; exit 0; fi
+# Issue 2 is held: needs-human-review, and NOT yet dev-lead
+if [[ "$args" == *"issues/2 --jq"* ]]; then printf 'needs-human-review'; exit 0; fi
+# No open blockers (so only the hold gate can stop the release)
+if [[ "$args" == *"issues/2/dependencies/blocked_by"* ]]; then printf ''; exit 0; fi
+if [[ "$args" == "issue edit"* ]]; then exit 0; fi
+printf '[]'
+EOF
+  chmod +x "$MOCK_BIN/gh"
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  # skip is logged with the issue number AND the blocking label (AC #1)
+  [[ "$output" == *"#2"*"needs-human-review"* ]]
+  [[ "$output" != *"RELEASED"* ]]
+  # the dev-lead label was never applied
+  ! grep -qF "issue edit" "$GH_LOG"
+}
+
+@test "hold: removing needs-human-review makes the same sub-issue eligible on the next run" {
+  cat > "$MOCK_BIN/gh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$GH_LOG"
+args="$*"
+if [[ "$args" == *"issues/1 --jq"* ]] && [[ "$args" != *"sub_issues"* ]]; then
+  printf 'initiative:auto'; exit 0
+fi
+if [[ "$args" == *"issues/1/sub_issues"* ]]; then printf '2'; exit 0; fi
+if [[ "$args" == *"issues/2/sub_issues"* ]]; then printf ''; exit 0; fi
+# Hold label removed — issue 2 now carries only a plain label
+if [[ "$args" == *"issues/2 --jq"* ]]; then printf 'initiative'; exit 0; fi
+if [[ "$args" == *"issues/2/dependencies/blocked_by"* ]]; then printf ''; exit 0; fi
+if [[ "$args" == "issue edit"* ]]; then exit 0; fi
+printf '[]'
+EOF
+  chmod +x "$MOCK_BIN/gh"
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"RELEASED"* ]]
+  grep -qF "issue edit 2 --repo owner/repo --add-label dev-lead" "$GH_LOG"
 }
 
 # ── zombie: a stale in-flight slot-holder is surfaced (log + epic comment) ──────
