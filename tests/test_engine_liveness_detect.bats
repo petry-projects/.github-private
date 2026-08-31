@@ -404,3 +404,36 @@ setup() {
   run run_should_fail "x"
   [ "$status" -ne 0 ]
 }
+
+# ---------------------------------------------------------------------------
+# _el_to_epoch normalization must be ANCHORED (#1600 regression guard).
+# A blanket `${v//T/ }` also rewrites the T inside a timezone NAME: GitHub's PAT
+# `expires_at` form "YYYY-MM-DD HH:MM:SS UTC" became "... U C" and stopped
+# parsing, so pat_expiry_state reported every real expiry as UNKNOWN.
+# ---------------------------------------------------------------------------
+
+@test "_el_to_epoch: a 'UTC' timezone suffix survives normalization (#1600)" {
+  run _el_to_epoch "2026-08-01 12:00:00 UTC"
+  [ "$status" -eq 0 ]
+  [ -n "$output" ]
+  [ "$output" -gt 0 ]
+}
+
+@test "_el_to_epoch: an ISO 8601 T/Z timestamp still parses (#1600)" {
+  run _el_to_epoch "2026-08-31T03:19:00Z"
+  [ "$status" -eq 0 ]
+  [ "$output" = "1788146340" ]
+}
+
+@test "_el_to_epoch: the ISO and 'UTC' forms of the same instant agree (#1600)" {
+  local a b
+  a="$(_el_to_epoch "2026-08-31T03:19:00Z")"
+  b="$(_el_to_epoch "2026-08-31 03:19:00 UTC")"
+  [ -n "$a" ] && [ "$a" = "$b" ]
+}
+
+@test "_el_to_epoch: unparseable input still yields empty (#1600)" {
+  run _el_to_epoch "not-a-date"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}

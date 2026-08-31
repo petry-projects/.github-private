@@ -249,10 +249,22 @@ escalation_headline() {
 _el_to_epoch() {
   local v="${1:-}" normalized
   [ -n "$v" ] || { echo ""; return 0; }
-  # Normalize ISO 8601 (T and Z) to space-separated format for consistent parsing
-  normalized="${v//T/ }"
-  normalized="${normalized//Z/}"
+  # Normalize ISO 8601 to a space-separated form for the BSD fallback below.
+  #
+  # This MUST be anchored, not a blanket substitution: `${v//T/ }` also rewrites
+  # the T inside a timezone name, so GitHub's PAT `expires_at` form
+  # "2026-08-01 12:00:00 UTC" became "2026-08-01 12:00:00 U C" and stopped
+  # parsing — pat_expiry_state then fell through to UNKNOWN and reported every
+  # real expiry as unknown. Replace only the `T` that separates date from time,
+  # and only a TRAILING `Z`.
+  if [[ "$v" =~ ^([0-9]{4}-[0-9]{2}-[0-9]{2})T([0-9]{2}:[0-9]{2}:[0-9]{2}.*)$ ]]; then
+    normalized="${BASH_REMATCH[1]} ${BASH_REMATCH[2]}"
+  else
+    normalized="$v"
+  fi
+  normalized="${normalized%Z}"
   date -u -d "$normalized" +%s 2>/dev/null \
+    || date -u -jf "%Y-%m-%d %H:%M:%S %Z" "$normalized" +%s 2>/dev/null \
     || date -u -jf "%Y-%m-%d %H:%M:%S" "$normalized" +%s 2>/dev/null \
     || echo ""
 }
