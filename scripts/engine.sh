@@ -1406,8 +1406,13 @@ run_writer_with_fallback() {
       any_unconfigured=1
       continue
     fi
+    # A missing Gemini API key is the same deterministic credential config-gap as a
+    # missing/placeholder Copilot token (#1591): record it so a Gemini-only run
+    # with no key yields the distinct non-retryable `unconfigured` reason rather
+    # than the retryable `engine-error`. Retrying cannot conjure an API key.
     if [ "$engine" = "gemini" ] && [ -z "${GEMINI_API_KEY:-}${GOOGLE_API_KEY:-}" ]; then
-      echo "::warning::Skipping gemini fallback: GEMINI_API_KEY or GOOGLE_API_KEY not configured" >&2
+      echo "::warning::Skipping gemini fallback: GEMINI_API_KEY or GOOGLE_API_KEY not configured (configuration gap, not a rate limit)" >&2
+      any_unconfigured=1
       continue
     fi
 

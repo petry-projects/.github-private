@@ -505,6 +505,23 @@ GHEOF
   unset DEV_LEAD_ENGINES COPILOT_GITHUB_TOKEN
 }
 
+@test "config: gemini-only with missing API key → unconfigured, not engine-error" {
+  # Gemini is the sole enabled engine and neither GEMINI_API_KEY nor
+  # GOOGLE_API_KEY is set. Like a missing Copilot token, this is a deterministic
+  # config gap — the aggregate reason must be the DISTINCT `unconfigured` (exit
+  # 1), never the retryable `engine-error`, so the caller escalates to a human
+  # instead of requeuing a run that cannot succeed without a key.
+  export DEV_LEAD_ENGINES="gemini"
+  unset GEMINI_API_KEY GOOGLE_API_KEY COPILOT_GITHUB_TOKEN 2>/dev/null || true
+  _source_engine "gemini"
+
+  run run_writer_with_fallback "$TEST_PROMPT"
+
+  [ "$status" -eq 1 ]
+  [ "$(cat /tmp/dev-lead-failure-reason)" = "unconfigured" ]
+  unset DEV_LEAD_ENGINES
+}
+
 @test "config: genuine rate-limit still wins over a copilot config-gap" {
   # claude rate-limited (2), gemini rate-limited (2), copilot token missing.
   # A genuine quota exhaustion elsewhere in the chain means a later retry could
