@@ -24,8 +24,8 @@
 # resolve), which is precisely the #1024 no-commit vector. Emits nothing.
 ri_may_resolve() {
   local sha_before="${1:-}" sha_after="${2:-}"
-  [ -n "$sha_before" ] || return 1
-  [ -n "$sha_after" ] || return 1
-  [ "$sha_before" != "$sha_after" ] || return 1
+  [[ -n "$sha_before" ]] || return 1
+  [[ -n "$sha_after" ]] || return 1
+  [[ "$sha_before" != "$sha_after" ]] || return 1
   return 0
 }

@@ -29,7 +29,7 @@ setup() {
 }
 
 @test "ri_may_resolve is declared exactly once (no #1485 duplicate class)" {
-  run grep -c '^ri_may_resolve()' "$LIB"
+  run grep -E -c '^[[:space:]]*ri_may_resolve[[:space:]]*\(' "$LIB"
   [ "$status" -eq 0 ]
   [ "$output" -eq 1 ]
 }
