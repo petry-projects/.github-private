@@ -85,6 +85,15 @@ source "$SCRIPT_DIR/lib/finding-verification.sh"
 # shellcheck source=lib/pr-metadata-digest.sh
 source "$SCRIPT_DIR/lib/pr-metadata-digest.sh"
 
+# Per-PR review-claim primitive (issue #1589, slice 1 — OBSERVE-ONLY). Provides
+# the claim key = (head SHA, metadata digest), the claim marker format, and
+# concurrent_claim_present so the #1551 same-SHA re-review race is observable
+# before slice 2 adds compare-and-set arbitration. It changes no behaviour here:
+# the digest-mismatch path still proceeds; it only records when a concurrent
+# claim exists.
+# shellcheck source=lib/pr-review-claim.sh
+source "$SCRIPT_DIR/lib/pr-review-claim.sh"
+
 PR_URL="${1:?usage: review-one-pr.sh <pr-url>}"
 export PR_URL
 
@@ -603,6 +612,26 @@ if [ -n "${EXISTING_MARKER_SHA:-}" ] && [ "$EXISTING_MARKER_SHA" = "$PR_HEAD_SHA
       CURRENT_META_DIGEST=$(compute_pr_metadata_digest "$PR_SNAPSHOT")
       if [ "$MARKER_META_DIGEST" != "$CURRENT_META_DIGEST" ]; then
         echo "    re-review: metadata changed since a metadata-only fix-request at $PR_HEAD_SHA (marker meta=$MARKER_META_DIGEST, current=$CURRENT_META_DIGEST) — re-reviewing without a new commit (#1551)"
+        # Slice 1 of #1589 (OBSERVE-ONLY): the #1551 re-arm above is reachable at
+        # the SAME head SHA, so two triggers can both read this stale marker, both
+        # see the digest mismatch, and BOTH launch the cascade — a duplicate the
+        # #1551 fix newly made reachable. We do NOT arbitrate yet (slice 2); we
+        # only make the race observable. Post a per-PR claim marker keyed on
+        # (head SHA, current metadata digest) BEFORE the cascade, then read back
+        # live claims for the same key. If another run has already claimed the
+        # same key, record a #1552-style decision/reason line and proceed exactly
+        # as before — behaviour is unchanged.
+        CLAIM_RUN_TOKEN="${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-0}-$$-${RANDOM}"
+        CLAIM_MARKER_BODY="$(claim_marker "$PR_HEAD_SHA" "$CURRENT_META_DIGEST" "$CLAIM_RUN_TOKEN" "$(date -u +%Y-%m-%dT%H:%M:%SZ)")"
+        if [ "${DRY_RUN:-false}" != "true" ]; then
+          gh pr comment "$PR_URL" --body "$CLAIM_MARKER_BODY" >/dev/null 2>&1 \
+            || echo "    warn: could not post pr-review claim marker (#1589 slice 1)"
+        fi
+        CLAIM_COMMENTS_JSON="$(gh pr view "$PR_URL" --json comments --jq '.comments')"
+        if concurrent_claim_present "$CLAIM_RUN_TOKEN" "$PR_HEAD_SHA" "$CURRENT_META_DIGEST" "$CLAIM_COMMENTS_JSON"; then
+          echo "    concurrent-claim: another live re-review claim exists for the same key (sha=$PR_HEAD_SHA meta=$CURRENT_META_DIGEST) — proceeding (slice 1 observe-only, #1589)"
+          emit_verdict proceed concurrent-claim-detected "slice 2 (#1589) arbitrates the earliest-posted claim as the winner so a losing run no-ops instead of both launching the cascade"
+        fi
       else
         echo "    noop: already reviewed at $PR_HEAD_SHA — re-arms on a new commit or a metadata change (PR body, labels, or linked issues)"
         emit_verdict noop already-reviewed-at-head "a new commit moves the head SHA, a metadata change (PR body, labels, or linked issues) updates the marker digest, or an @mention (FORCE_REVIEW) forces a re-review at the same SHA"
@@ -752,7 +781,7 @@ if [ -n "${EXISTING_MARKER_SHA:-}" ]; then
   PRIOR_REVIEW_BODY=$(
     gh pr view "$PR_URL" --json reviews,comments \
       --jq "((.reviews // []) + (.comments // [])) | .[].body | select(. != null) | select(test(\"sha=$PRIOR_REVIEW_SHA\"))" 2>/dev/null \
-    | tail -1 || true
+    | tail -n 1 || true
   )
   # Validate that the matched body actually contains our marker to reduce
   # prompt-injection surface area.
