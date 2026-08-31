@@ -138,8 +138,12 @@ run_failed_at_preflight() {
 # <out_tsv> (yes == the run failed at the engine-token preflight step). This gives
 # the recency-aware detector (#1600) BOTH each run's timestamp and its preflight
 # verdict so a stale pre-incident streak is not read as a live outage.
-#   Echoes "SKIP"  when the workflow is absent (HTTP 404) or has no completed runs
-#          — a stub is not counted as failing just because it is absent.
+#   Echoes "SKIP"  when the workflow is absent (HTTP 404) — a stub is not counted
+#          as failing just because it does not exist in this repo.
+#   Echoes "STALE" when the workflow EXISTS (HTTP 200) but has no completed runs:
+#          it is present-yet-unverified, so it must be reported STALE and counted
+#          as inspected, NOT silently skipped like an absent stub — otherwise the
+#          monitor falsely appears fully covered (#1601).
 #   Echoes "ERROR" on any OTHER API failure (auth/rate-limit/5xx) or an unreadable
 #          jobs API: such a query inspected nothing, and treating it as SKIP would
 #          let a fleet-wide outage masquerade as a clean NONE all-clear (#1587).
@@ -160,7 +164,17 @@ gather_runs_tsv() {
     return 0
   fi
   rm -f "$errfile"
-  [ -n "$lines" ] || { echo "SKIP"; return 0; }
+  # Workflow exists (200) but has no completed runs: present-yet-unverified. Report
+  # STALE so it is counted/inspected rather than skipped as if absent (#1601).
+  [ -n "$lines" ] || { echo "STALE"; return 0; }
+
+  # The workflow-runs API orders by created_at desc, which is NOT guaranteed to be
+  # run_started_at desc for delayed/queued runs. The detector treats row order as
+  # recency order (most-recent first), so re-sort by the gathered timestamp
+  # (run_started_at, created_at fallback — field 2) descending to make that
+  # invariant hold; otherwise a delayed run mis-orders the streak/stale verdict
+  # (#1601). ISO-8601 Z timestamps sort lexically == chronologically.
+  lines=$(printf '%s\n' "$lines" | sort -t$'\t' -k2,2r)
 
   : > "$out"
   local rid iso verdict failed
@@ -219,6 +233,14 @@ for repo in "${REPOS[@]}"; do
     if [ "$gather" = "ERROR" ]; then
       api_errors=$(( api_errors + 1 ))
       echo "  ${repo} / ${stub}: ERROR (API query failed — stub not inspected)"
+      continue
+    fi
+    if [ "$gather" = "STALE" ]; then
+      # Workflow present but no completed runs — inspected yet unverified (#1601).
+      inspected_stubs=$(( inspected_stubs + 1 ))
+      printf '%s\t%s\t%s\t%s\t%s\n' "$repo" "$stub" "STALE" "0" "" >> "$rows_file"
+      echo "  ${repo} / ${stub}: STALE (workflow exists but has no completed runs — unverified)"
+      repo_worst=$(_worse "$repo_worst" "STALE")
       continue
     fi
     inspected_stubs=$(( inspected_stubs + 1 ))
