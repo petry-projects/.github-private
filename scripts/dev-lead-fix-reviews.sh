@@ -11,6 +11,7 @@ source "$(dirname "$0")/lib/git-push-guard.sh"
 source "$(dirname "$0")/lib/pr-automation-budget.sh"
 source "$(dirname "$0")/lib/maintainer-review-thread-gate.sh"
 source "$(dirname "$0")/lib/conflict-integrity.sh"
+source "$(dirname "$0")/lib/review-change-evidence.sh"
 
 INTENT_TYPE="${INTENT_TYPE:-fix-reviews}"
 PR_NUMBER="${PR_NUMBER:-}"
@@ -26,6 +27,11 @@ export PROMPTS_DIR
 
 REVIEWS_MARKER_PREFIX="<!-- dev-lead-fix-reviews pr="
 INTEGRITY_MARKER_PREFIX="<!-- dev-lead-conflict-integrity pr="
+NONCONVERGE_MARKER_PREFIX="<!-- dev-lead-review-nonconverge pr="
+# Consecutive not-applied passes against the same review before escalating to a
+# human (#1567 AC #4). A pass "does not converge" when it commits something but
+# addresses none of the regions the review named.
+REVIEW_NONCONVERGENCE_LIMIT="${REVIEW_NONCONVERGENCE_LIMIT:-3}"
 
 if [ -z "$PR_NUMBER" ] && [ "$INTENT_TYPE" != "rebase" ]; then
   echo "::error::PR_NUMBER is required"
@@ -1268,6 +1274,139 @@ commit_and_push() {
   return 0
 }
 
+# count_not_applied_markers <intent> — number of not-applied terminal markers
+# currently on the PR for this intent. They are cleared on the next `applied`,
+# so the count is the run of consecutive non-converging passes (#1567 AC #4).
+count_not_applied_markers() {
+  local intent="$1"
+  [ "${DEV_LEAD_DRY_RUN:-false}" = "true" ] && { echo 0; return 0; }
+  local pattern="${REVIEWS_MARKER_PREFIX}${PR_NUMBER}.* intent=${intent} status=not-applied"
+  gh api --paginate "repos/${REPO}/issues/${PR_NUMBER}/comments?per_page=100" 2>/dev/null \
+    | jq -r --arg pat "$pattern" '[.[] | select((.body // "") | test($pat))] | length' 2>/dev/null \
+    || echo 0
+}
+
+# clear_not_applied_markers <intent> — delete the not-applied markers once a pass
+# genuinely applies the requested changes, so the convergence counter resets.
+clear_not_applied_markers() {
+  local intent="$1"
+  [ "${DEV_LEAD_DRY_RUN:-false}" = "true" ] && return 0
+  local pattern="${REVIEWS_MARKER_PREFIX}${PR_NUMBER}.* intent=${intent} status=not-applied"
+  local ids id
+  ids=$(gh api --paginate "repos/${REPO}/issues/${PR_NUMBER}/comments?per_page=100" 2>/dev/null \
+    | jq -r --arg pat "$pattern" '[.[] | select((.body // "") | test($pat))] | .[].id' 2>/dev/null || true)
+  for id in $ids; do
+    gh api -X DELETE "repos/${REPO}/issues/comments/${id}" 2>/dev/null || true
+  done
+}
+
+# escalate_review_nonconvergence <intent> <count> — the fix pass has committed
+# <count> times without applying the requested review changes. Add the
+# needs-human label, post one deduped attention comment, disable auto-merge, and
+# set _REVIEW_ESCALATED so the caller does not re-enable it (#1567 AC #4).
+escalate_review_nonconvergence() {
+  local intent="$1" count="$2"
+  _REVIEW_ESCALATED=1
+  # Keep the EXIT-trap restore from re-enabling auto-merge we are about to disable.
+  _AM_NEEDS_RESTORE=0
+  if [ "${DEV_LEAD_DRY_RUN:-false}" = "true" ]; then
+    echo "[dry-run] review non-convergence: would escalate PR #${PR_NUMBER} (${intent}) after ${count} not-applied passes"
+    return 0
+  fi
+  local marker="${NONCONVERGE_MARKER_PREFIX}${PR_NUMBER} intent=${intent} -->"
+  if gh api --paginate "repos/${REPO}/issues/${PR_NUMBER}/comments?per_page=100" 2>/dev/null \
+       | jq -r '.[].body // ""' 2>/dev/null | grep -qF "$marker"; then
+    echo "::notice::PR #${PR_NUMBER} already escalated for review non-convergence (${intent})"
+  else
+    gh pr comment "$PR_NUMBER" --repo "$REPO" --body "${marker}
+## Review changes not converging — human attention needed
+
+The \`${intent}\` pass has now committed **${count}** times against this review without applying the requested changes: each pass changed something, but none touched the regions the review named. Automatic retries are unlikely to converge, so this needs a human.
+
+Auto-merge has been disabled and no further automatic passes will run until a human intervenes. A human should apply the requested changes, or clarify the review." \
+      || echo "::warning::could not post review non-convergence comment on PR #${PR_NUMBER}"
+  fi
+  gh pr edit "$PR_NUMBER" --repo "$REPO" --add-label "${NEEDS_HUMAN_REVIEW_LABEL:-needs-human-review}" 2>/dev/null \
+    || echo "::warning::could not add ${NEEDS_HUMAN_REVIEW_LABEL:-needs-human-review} label on PR #${PR_NUMBER}"
+  gh pr merge "$PR_NUMBER" --repo "$REPO" --disable-auto 2>/dev/null \
+    || echo "::notice::auto-merge was not enabled on PR #${PR_NUMBER} (nothing to disable)"
+}
+
+# finalize_review_application <intent> — called after commit_and_push succeeds on
+# the fix-reviews / review-changes path. It gates the status=applied claim on
+# evidence the pushed commit actually addressed the requested changes: the commit
+# must be non-trivial (has a non-whitespace change) AND touch the regions the
+# review named (#1567). Otherwise it posts an honest partial / not-applied
+# terminal, enumerating per requested item what landed and what did not, and — on
+# repeated non-convergence — escalates to a human.
+#
+# Fail-open: when the diff cannot be computed (no base SHA, shallow clone, fork
+# weirdness) it treats the change as substantive so a genuine fix is never
+# wrongly downgraded — the guard only downgrades on positive evidence of a
+# non-fix.
+finalize_review_application() {
+  local intent="$1"
+  # Dry-run has no worktree diff to assess — preserve the prior announcement.
+  if [ "${DEV_LEAD_DRY_RUN:-false}" = "true" ]; then
+    post_reviews_terminal "$intent" "applied" "Changes committed and pushed."
+    return 0
+  fi
+
+  local pre_sha="${HEAD_SHA:-}" cur_sha
+  cur_sha="$(git rev-parse HEAD 2>/dev/null || true)"
+
+  local substantive="true" changed_regions="" named_regions verdict
+  if [ -n "$pre_sha" ] && [ -n "$cur_sha" ] \
+     && git rev-parse --verify --quiet "${pre_sha}^{commit}" >/dev/null 2>&1; then
+    if [ -z "$(git diff -w --name-only "$pre_sha" "$cur_sha" 2>/dev/null)" ]; then
+      substantive="false"
+    fi
+    changed_regions="$(git diff --unified=0 "$pre_sha" "$cur_sha" 2>/dev/null | rce_parse_hunks)"
+  fi
+  named_regions="$(rce_named_regions "${OPEN_THREADS_JSON:-[]}")"
+  verdict="$(rce_classify "$substantive" "$named_regions" "$changed_regions")"
+
+  local enumerated=""
+  [ -n "$named_regions" ] && enumerated="$(rce_enumerate "$named_regions" "$changed_regions")"
+
+  case "$verdict" in
+    applied)
+      clear_not_applied_markers "$intent"
+      local summary="Changes committed and pushed."
+      [ -n "$enumerated" ] && summary="Changes committed and pushed. Requested items addressed:
+${enumerated}"
+      post_reviews_terminal "$intent" "applied" "$summary"
+      ;;
+    partial)
+      local summary="A commit was pushed, but **not every requested change was applied**. Per requested item:
+${enumerated}
+
+The unaddressed items above still need work."
+      post_reviews_terminal "$intent" "partial" "$summary"
+      ;;
+    *)  # not-applied
+      local summary
+      if [ "$substantive" = "false" ]; then
+        summary="A commit was pushed, but it made **no substantive change** (whitespace/cosmetic only) — the requested review changes were not applied."
+      elif [ -n "$enumerated" ]; then
+        summary="A commit was pushed, but it **did not touch any region the review named** — the requested changes were not applied. Per requested item:
+${enumerated}"
+      else
+        summary="A commit was pushed, but there is no evidence it addressed the requested review changes."
+      fi
+      post_reviews_terminal "$intent" "not-applied" "$summary"
+      # AC #4: escalate to a human once non-convergence reaches the limit. The
+      # marker for this pass is already posted, so it is included in the count.
+      local nonconverged
+      nonconverged="$(count_not_applied_markers "$intent")"
+      if [ "${nonconverged:-0}" -ge "${REVIEW_NONCONVERGENCE_LIMIT:-3}" ]; then
+        echo "::warning::review-changes non-convergence: ${nonconverged} consecutive not-applied passes for intent=${intent} on PR #${PR_NUMBER} — escalating to a human"
+        escalate_review_nonconvergence "$intent" "$nonconverged"
+      fi
+      ;;
+  esac
+}
+
 case "$INTENT_TYPE" in
   fix-reviews)
     # Get open review threads
@@ -1307,7 +1446,7 @@ case "$INTENT_TYPE" in
       commit_and_push "fix-reviews" || cp_rc=$?
       if [ "$cp_rc" -eq 0 ]; then
         notify_coderabbit_resolve
-        post_reviews_terminal "fix-reviews" "applied" "Changes committed and pushed."
+        finalize_review_application "fix-reviews"
       elif [ "$cp_rc" -eq 3 ]; then
         # No-op guard (#1340): the fix nets base…head to zero — already flagged
         # for a human, auto-merge disabled. Post no applied/no-changes/retry
@@ -1331,9 +1470,9 @@ case "$INTENT_TYPE" in
         # Resolve bot threads dev-lead addressed in-thread but left open (#1547) —
         # these are not necessarily outdated, so the nets above miss them.
         resolve_addressed_bot_threads "fix-reviews"
-        try_enable_auto_merge
+        [ "${_REVIEW_ESCALATED:-0}" -eq 1 ] || try_enable_auto_merge
       fi
-      try_enable_auto_merge
+      [ "${_REVIEW_ESCALATED:-0}" -eq 1 ] || try_enable_auto_merge
     fi
     exit "$rc"
     ;;
@@ -1427,7 +1566,7 @@ case "$INTENT_TYPE" in
     if [ "$rc" -eq 0 ]; then
       if commit_and_push "review-changes"; then
         notify_coderabbit_resolve
-        post_reviews_terminal "review-changes" "applied" "Changes committed and pushed."
+        finalize_review_application "review-changes"
       else
         notify_coderabbit_resolve
         if has_hard_blockers; then
@@ -1445,7 +1584,7 @@ case "$INTENT_TYPE" in
       # Resolve bot threads dev-lead addressed in-thread but left open (#1547) —
       # these are not necessarily outdated, so the nets above miss them.
       resolve_addressed_bot_threads "review-changes"
-      try_enable_auto_merge
+      [ "${_REVIEW_ESCALATED:-0}" -eq 1 ] || try_enable_auto_merge
     fi
     exit "$rc"
     ;;
