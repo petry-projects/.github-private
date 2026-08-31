@@ -99,14 +99,16 @@ _MISS_JQ_DEFS='
           bot_opened: _is_bot($cs[0].author.login; $bots),
           pr_opened: ($opener == ($approver | ascii_downcase)) } ];
 
-  # _first_approval_at(pr; approval_re) -> earliest approving-review timestamp or null.
-  def _first_approval_at($pr; $approval_re):
+  # _first_approval_at(pr; approval_re; approver) -> earliest approving-review timestamp or null.
+  def _first_approval_at($pr; $approval_re; $approver):
     [ ($pr.reviews.nodes // [])[]
+      | select((.state // "") == "APPROVED")
+      | select((.author.login // "" | ascii_downcase) == ($approver | ascii_downcase))
       | select((.bodyText // "") | test($approval_re)) | .submittedAt ] | min;
 
   # _missed(pr; bots; approver; approval_re) -> accepted bot findings opened after approval.
   def _missed($pr; $bots; $approver; $approval_re):
-    _first_approval_at($pr; $approval_re) as $appr
+    _first_approval_at($pr; $approval_re; $approver) as $appr
     | if $appr == null then []
       else [ _threads($pr; $bots; $approver)[]
              | select(.bot_opened and .resolved and (.disp == "accepted") and (.opened_at > $appr)) ]
@@ -130,7 +132,7 @@ pr_review_pr_metrics() {
     --arg approver "$approver" --arg repo "$repo" \
     --arg approval_re "$PR_REVIEW_APPROVAL_RE" --arg partial_re "$PR_REVIEW_PARTIAL_RE" \
     "$_MISS_JQ_DEFS"'
-    ($pr | _first_approval_at(.; $approval_re)) as $appr
+    ($pr | _first_approval_at(.; $approval_re; $approver)) as $appr
     | ($appr != null) as $approved
     | ([ ($pr.reviews.nodes // [])[]
          | select((.bodyText // "") | test($approval_re))
@@ -165,6 +167,8 @@ pr_review_invalidatable_approvals() {
     "$_MISS_JQ_DEFS"'
     _missed($pr; $bots; $approver; $approval_re) as $missed
     | [ ($pr.reviews.nodes // [])[]
+        | select((.state // "") == "APPROVED")
+        | select((.author.login // "" | ascii_downcase) == ($approver | ascii_downcase))
         | select((.bodyText // "") | test($approval_re))
         | . as $rev
         # Only dismiss an approval that was STANDING when an accepted finding
@@ -253,9 +257,11 @@ pr_review_render_miss_section() {
 # shellcheck disable=SC2016,SC2034  # jq literal ($-refs are jq vars); consumed by reviewer_report.sh via env
 PR_REVIEW_MISS_COLLECT_JQ='
   . as $pr
-  | ($pr | _first_approval_at(.; $approval_re)) as $appr
+  | ($pr | _first_approval_at(.; $approval_re; $approver)) as $appr
   | ($appr != null) as $approved
   | ([ ($pr.reviews.nodes // [])[]
+       | select((.state // "") == "APPROVED")
+       | select((.author.login // "" | ascii_downcase) == ($approver | ascii_downcase))
        | select((.bodyText // "") | test($approval_re))
        | ((.bodyText // "") | scan("sha=([a-f0-9]+)"; "i") | .[0]) ] | unique) as $appr_shas
   | ([ (($pr.reviews.nodes // []) + ($pr.comments.nodes // []))[]

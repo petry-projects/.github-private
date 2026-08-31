@@ -45,7 +45,7 @@ maybe_post_partial_evidence_marker() {
   already=$(jq -r --arg sha "$head_sha" '
     [ (.comments // [])[]
       | (.body // "")
-      | select(test("<!-- pr-review-agent partial-evidence v1 sha=" + $sha + " ")) ]
+      | select(contains("<!-- pr-review-agent partial-evidence v1 sha=" + $sha)) ]
     | length' <<< "$cj" 2>/dev/null || echo 0)
   if [[ "${already:-0}" -gt 0 ]]; then
     log_info "Partial-evidence marker already present at head ${head_sha:0:8} — not re-posting"

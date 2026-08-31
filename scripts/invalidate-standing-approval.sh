@@ -111,10 +111,12 @@ invalidate_standing_approval() {
   while IFS= read -r sha; do
     [ -n "$sha" ] || continue
     # Approving reviews stamped with this exact head SHA in their pr-review marker.
-    ids="$(jq -r --arg sha "$sha" '
+    # Authenticate: only dismiss reviews by the pr-review bot itself.
+    ids="$(jq -r --arg sha "$sha" --arg approver_login "$PR_REVIEW_APPROVER" '
       (. // []) | .[]
       | select((.state // "") == "APPROVED")
-      | select((.body // "") | test("<!-- pr-review-agent v1 sha=" + $sha))
+      | select((.user.login // "" | ascii_downcase) == ($approver_login | ascii_downcase))
+      | select((.body // "") | contains("<!-- pr-review-agent v1 sha=" + $sha))
       | .id' <<<"$reviews" 2>/dev/null || true)"
     while IFS= read -r id; do
       [ -n "$id" ] || continue
