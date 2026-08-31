@@ -22,10 +22,10 @@ eb7fd4c955378d274794e38ee9b942912ce79c6f:tests/dev-lead/unit/test_engine_fallbac
 68ab3109d74633dc4aa4c09ff58d1901795bbd11:frameworks/gsd/sdk/src/query/config-mutation.test.ts:generic-api-key:501
 68ab3109d74633dc4aa4c09ff58d1901795bbd11:frameworks/gsd/tests/security-scan.test.cjs:generic-api-key:300
 68ab3109d74633dc4aa4c09ff58d1901795bbd11:frameworks/gsd/tests/commands.test.cjs:generic-api-key:759
-# commit 79e5a98 (#1596 miss-harvest tests): the de-identification test fixture
+# commit e27ed0f (#1596 miss-harvest tests): the de-identification test fixture
 # initially embedded a 40-char classic-PAT-length placeholder (ghp_ABCDEFabcdef...)
 # to prove _mh_deidentify scrubs ghp_* tokens. The full-history gitleaks scan still
-# flags the historical commit 79e5a98 which contained the longer version; this entry
+# flags the historical commit e27ed0f which contained the longer version; this entry
 # suppresses that finding. Current code uses ghp_NOTAREALTOKEN1234, an obviously-fake
 # token format that gitleaks no longer flags. Not a real credential.
-79e5a98825c5e5c69cf0e51b9907390bcc565218:tests/test_miss_harvest.bats:github-pat:16
+e27ed0f3d755e58b9d5ccc30e8eec835bb0ccb68:tests/test_miss_harvest.bats:github-pat:16
