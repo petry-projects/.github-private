@@ -231,6 +231,15 @@ setup() {
   [[ "$output" == *"workflow"* ]]
 }
 
+@test "pat_missing_scopes: a glob in required is treated literally, not path-expanded" {
+  # Run from a dir with files present, so an unquoted '*' would expand to them.
+  cd "$BATS_TEST_TMPDIR"
+  : > sentinel-file
+  run pat_missing_scopes "repo, workflow" "*"
+  [ "$status" -eq 0 ]
+  [ "$output" = "*" ]
+}
+
 # ---------------------------------------------------------------------------
 # escalation_headline — one-line human summary per level
 # ---------------------------------------------------------------------------

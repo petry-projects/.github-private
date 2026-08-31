@@ -195,7 +195,11 @@ pat_missing_scopes() {
   # Normalise the CSV to space-delimited tokens for whole-word matching.
   local normalized=" ${scopes_csv//,/ } "
   local missing="" scope
-  for scope in $required; do
+  # Split into an array so a glob in the required override cannot trigger
+  # pathname expansion (which could turn a token into repository paths).
+  local -a required_scopes
+  read -r -a required_scopes <<< "$required"
+  for scope in "${required_scopes[@]}"; do
     case "$normalized" in
       *" $scope "*) : ;;
       *) missing="${missing:+$missing }$scope" ;;

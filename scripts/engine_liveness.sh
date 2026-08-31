@@ -157,8 +157,14 @@ consecutive_preflight_failures() {
     verdict=$(run_failed_at_preflight "$repo" "$rid")
     if [ "$verdict" = "yes" ]; then
       streak=$(( streak + 1 ))
+    elif [ "$verdict" = "unknown" ]; then
+      # The jobs API could not be read for this run — the streak inspected
+      # nothing reliable, so surface it as a blind spot rather than silently
+      # breaking the streak and reporting a trustworthy count (#1587).
+      echo "ERROR"
+      return 0
     else
-      # A passing/other-failure/unknown run breaks the consecutive streak.
+      # A passing or other-failure run breaks the consecutive streak.
       break
     fi
   done <<< "$run_ids"
