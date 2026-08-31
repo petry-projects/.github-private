@@ -67,7 +67,7 @@ interaction:
       location: ".github/workflows/dev-lead-retry.yml"
     - emit: "commit"
       guard: "scripts/dev-lead-intent.sh drops pull_request:synchronize events where sender.login == BOT_USER (dev-lead-own-commit skip) — prevents the commit → PR synchronize → re-trigger loop"
-      location: "scripts/dev-lead-intent.sh:176-185"
+      location: "scripts/dev-lead-intent.sh:216-227"
   idempotency_key: "one in-flight run per work item: check_run head_sha, else pull_request number, else issue number"
   concurrency_lane: "dev-lead-pr-<pr> / dev-lead-issue-<issue> / dev-lead-ci-relay-<head_sha> (dev-lead-reusable.yml); dev-lead-retry (dev-lead-retry.yml)"
   stop_markers:
