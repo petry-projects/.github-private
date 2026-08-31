@@ -39,6 +39,12 @@ def main():
     with open(WORKFLOW, encoding="utf-8") as fh:
         doc = yaml.safe_load(fh)
 
+    # An empty/malformed workflow makes yaml.safe_load return None (or a scalar);
+    # guard before doc.get so this fails with a clear diagnostic instead of an
+    # opaque AttributeError on None (gemini review, #1587).
+    if not isinstance(doc, dict):
+        return fail(f"{WORKFLOW} did not parse to a YAML mapping")
+
     rc = 0
 
     # PyYAML parses the bare `on:` key as boolean True.
@@ -102,11 +108,24 @@ def main():
         rc |= fail("preflight error must point at AGENTS_PAUSED for a deliberate pause (#1525)")
     # pr-review is multi-engine (claude/copilot/gemini); copilot/gemini runs
     # legitimately have no CLAUDE_CODE_OAUTH_TOKEN. The hard failure must be gated
-    # on the claude engine so the fix does not regress the other engines.
-    if "REVIEW_ENGINE" not in run:
+    # on the claude engine so the fix does not regress the other engines. A mere
+    # mention of REVIEW_ENGINE anywhere in the script (e.g. in a comment) is too
+    # weak: an UNCONDITIONAL `exit 1` on a missing token could still pass while
+    # breaking copilot/gemini. Require the engine check, the 'claude' literal, and
+    # the token to coincide on ONE condition line — the actual gate.
+    gate_line = next(
+        (
+            ln for ln in run.splitlines()
+            if "REVIEW_ENGINE" in ln and "claude" in ln and "CLAUDE_CODE_OAUTH_TOKEN" in ln
+        ),
+        None,
+    )
+    if gate_line is None:
         rc |= fail(
-            "preflight must gate the failure on REVIEW_ENGINE=claude — copilot/gemini "
-            "engines run without the claude token and must not be failed by this check"
+            "preflight must gate the token failure on REVIEW_ENGINE=claude — the engine "
+            "check, the 'claude' literal and CLAUDE_CODE_OAUTH_TOKEN must appear together "
+            "on ONE condition; copilot/gemini engines run without the claude token and "
+            "must not be failed by an unconditional check"
         )
     if "REVIEW_ENGINE" not in env:
         rc |= fail("preflight step must map REVIEW_ENGINE into its env to gate the check")

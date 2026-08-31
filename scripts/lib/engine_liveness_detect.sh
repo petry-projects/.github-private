@@ -99,6 +99,27 @@ fleet_escalation() {
   fi
 }
 
+# monitoring_status <inspected_stubs> <api_errors>
+#   Distinguish a genuine all-clear from a BLIND run. GitHub API errors on the
+#   workflow-runs query are treated as SKIP by the gathering layer (a repo that
+#   simply lacks a stub 404s), so an outage or auth failure that errors EVERY
+#   query would otherwise surface as escalation=NONE with zero stubs inspected — a
+#   false all-clear. When not a single stub could be inspected AND at least one
+#   query failed with a non-404 API error, the monitor learned nothing:
+#     inspected_stubs == 0 AND api_errors >= 1 -> DEGRADED (fail loud, not NONE)
+#     else                                     -> OK
+#   (#1587 — GitHub-API-error / false-all-clear defect.)
+monitoring_status() {
+  local inspected api_errors
+  inspected=$(_el_int "${1:-0}")
+  api_errors=$(_el_int "${2:-0}")
+  if [ "$inspected" -eq 0 ] && [ "$api_errors" -ge 1 ]; then
+    echo "DEGRADED"
+  else
+    echo "OK"
+  fi
+}
+
 # escalation_headline <escalation>
 #   One-line human summary for a level — reused in the step summary and the
 #   fleet-alert issue body so both read consistently.

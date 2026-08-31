@@ -23,12 +23,11 @@
 # Run with: bats tests/test_engine_liveness_detect.bats
 
 setup() {
-  TMP=$(mktemp -d "$BATS_TEST_TMPDIR/el.XXXXXX")
+  # BATS creates $BATS_TEST_TMPDIR fresh per test and removes it afterwards, so
+  # use it directly — no manual mktemp/teardown, no parallel-run collisions or
+  # leftover dirs on failure (gemini review, #1587).
+  TMP="$BATS_TEST_TMPDIR"
   source "$(dirname "$BATS_TEST_FILENAME")/../scripts/lib/engine_liveness_detect.sh"
-}
-
-teardown() {
-  rm -rf "$TMP"
 }
 
 # ---------------------------------------------------------------------------
@@ -135,6 +134,33 @@ teardown() {
 @test "fleet_escalation: non-numeric input degrades to NONE" {
   run fleet_escalation "x" "y"
   [ "$output" = "NONE" ]
+}
+
+# ---------------------------------------------------------------------------
+# monitoring_status <inspected_stubs> <api_errors>
+# A NONE all-clear is only trustworthy if the monitor actually inspected
+# something. 0 stubs inspected + >=1 non-404 API error -> DEGRADED (#1587).
+# ---------------------------------------------------------------------------
+
+@test "monitoring_status: 0 inspected and >=1 API error -> DEGRADED (blind run, not all-clear)" {
+  run monitoring_status 0 1
+  [ "$output" = "DEGRADED" ]
+}
+
+@test "monitoring_status: 0 inspected but 0 API errors -> OK (genuinely nothing to monitor)" {
+  run monitoring_status 0 0
+  [ "$output" = "OK" ]
+}
+
+@test "monitoring_status: some stubs inspected despite an API error -> OK (partial visibility)" {
+  run monitoring_status 3 2
+  [ "$output" = "OK" ]
+}
+
+@test "monitoring_status: non-numeric input degrades to OK (never crashes)" {
+  run monitoring_status "x" "y"
+  [ "$status" -eq 0 ]
+  [ "$output" = "OK" ]
 }
 
 # ---------------------------------------------------------------------------

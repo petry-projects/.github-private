@@ -57,10 +57,13 @@ ALERT_BODY_FILE="${ALERT_BODY_FILE:-engine_liveness_alert.md}"
 TODAY=$(date -u +%Y-%m-%d)
 
 # Caller-stub workflow filenames to inspect in each repo. dev-lead callers use
-# dev-lead.yml; pr-review callers use pr-review.yml (consumers) or
+# dev-lead.yml; pr-review callers use pr-review.yml or pr-review-reusable.yml
+# (both are live during the pr-review.yml -> pr-review-reusable.yml rename — the
+# manifest enumerates consumers pinned to EITHER, so both must be queried or the
+# reusable-pinned consumers go unmonitored and falsely healthy, #1587), or
 # pr-review-trigger.yml (the ring-0 self-host stub in this repo). A repo that has
 # none of these under a given name is skipped silently (404 on the runs API).
-DEFAULT_STUBS="dev-lead.yml pr-review.yml pr-review-trigger.yml"
+DEFAULT_STUBS="dev-lead.yml pr-review.yml pr-review-reusable.yml pr-review-trigger.yml"
 STUBS="${ENGINE_LIVENESS_STUBS:-$DEFAULT_STUBS}"
 STUBS="${STUBS//,/ }"
 
@@ -125,12 +128,27 @@ run_failed_at_preflight() {
 # consecutive_preflight_failures <repo> <stub_file> — echo the count of leading
 # (most-recent-first) COMPLETED runs of <stub_file> that failed at the preflight
 # step. The streak stops at the first run that did NOT fail at preflight. Echoes
-# "SKIP" when the workflow does not exist in the repo (so the stub is not counted
-# as failing just because it is absent).
+# "SKIP" when the workflow does not exist in the repo (HTTP 404 — the stub is not
+# counted as failing just because it is absent). Echoes "ERROR" on any OTHER API
+# failure (auth/rate-limit/5xx): such a query inspected nothing, and treating it
+# as SKIP would let a fleet-wide outage masquerade as a clean NONE all-clear
+# (#1587). The caller counts ERROR separately and degrades the run.
 consecutive_preflight_failures() {
-  local repo="$1" stub="$2" run_ids
-  run_ids=$(gh api "repos/${repo}/actions/workflows/${stub}/runs?status=completed&per_page=${MAX_RUNS}" \
-    --jq '.workflow_runs[].id' 2>/dev/null) || { echo "SKIP"; return 0; }
+  local repo="$1" stub="$2" run_ids errfile
+  errfile=$(mktemp)
+  if ! run_ids=$(gh api "repos/${repo}/actions/workflows/${stub}/runs?status=completed&per_page=${MAX_RUNS}" \
+        --jq '.workflow_runs[].id' 2>"$errfile"); then
+    if grep -qi 'HTTP 404' "$errfile"; then
+      rm -f "$errfile"
+      echo "SKIP"        # workflow absent in this repo — legitimately not counted
+      return 0
+    fi
+    echo "::warning::engine-liveness: ${repo} / ${stub}: workflow-runs query failed with a non-404 API error (auth/rate-limit/5xx) — this stub could NOT be inspected: $(tr '\n' ' ' < "$errfile")" >&2
+    rm -f "$errfile"
+    echo "ERROR"         # blind spot — a NONE all-clear must not be trusted
+    return 0
+  fi
+  rm -f "$errfile"
   [ -n "$run_ids" ] || { echo "SKIP"; return 0; }
 
   local streak=0 rid verdict
@@ -155,7 +173,8 @@ trap 'rm -f "$rows_file"' EXIT
 
 sustained_repos=0   # repos with >=1 stub in OUTAGE (>=2 consecutive preflight failures)
 failing_repos=0     # repos with >=1 stub failing at all (FAIL or OUTAGE)
-inspected_stubs=0
+inspected_stubs=0   # stubs actually inspected (a real runs answer, incl. empty)
+api_errors=0        # non-404 API failures — queries that inspected nothing
 
 mapfile -t REPOS < <(enumerate_repos)
 echo "=== Engine-Token Liveness Monitor — #1587 ==="
@@ -171,6 +190,11 @@ for repo in "${REPOS[@]}"; do
   for stub in $STUBS; do
     consec=$(consecutive_preflight_failures "$repo" "$stub")
     [ "$consec" = "SKIP" ] && continue
+    if [ "$consec" = "ERROR" ]; then
+      api_errors=$(( api_errors + 1 ))
+      echo "  ${repo} / ${stub}: ERROR (API query failed — stub not inspected)"
+      continue
+    fi
     inspected_stubs=$(( inspected_stubs + 1 ))
     state=$(repo_liveness_state "$consec")
     printf '%s\t%s\t%s\t%s\n' "$repo" "$stub" "$state" "$consec" >> "$rows_file"
@@ -187,9 +211,15 @@ for repo in "${REPOS[@]}"; do
 done
 
 escalation=$(fleet_escalation "$sustained_repos" "$failing_repos")
+monitoring=$(monitoring_status "$inspected_stubs" "$api_errors")
 echo ""
-echo "Inspected ${inspected_stubs} stub(s); sustained-outage repos: ${sustained_repos}; failing repos: ${failing_repos}."
-echo "Escalation: ${escalation}"
+echo "Inspected ${inspected_stubs} stub(s); API errors: ${api_errors}; sustained-outage repos: ${sustained_repos}; failing repos: ${failing_repos}."
+echo "Escalation: ${escalation}; Monitoring: ${monitoring}"
+if [ "$monitoring" = "DEGRADED" ]; then
+  # 0 stubs inspected AND >=1 non-404 API error: the monitor learned nothing, so
+  # the NONE escalation above is not a trustworthy all-clear (#1587).
+  echo "::error::engine-liveness: monitoring DEGRADED — 0 stubs inspected and ${api_errors} non-404 API error(s) (auth/rate-limit/5xx). A '${escalation}' escalation is NOT a reliable all-clear; investigate GH_TOKEN scope/validity and GitHub API availability."
+fi
 
 # ---------------------------------------------------------------------------
 # 3. GH_PAT_DON_PETRY scope/expiry (#1587 scope 4).
@@ -221,8 +251,11 @@ echo "  GH_PAT_DON_PETRY expiry: '${pat_expiry_raw:-<none>}' -> ${pat_expiry}"
 {
   printf '# Engine-Token Liveness — %s\n\n' "$TODAY"
   printf '**Escalation:** `%s` — %s\n\n' "$escalation" "$(escalation_headline "$escalation")"
-  printf '**Repos monitored:** %s | **Stubs inspected:** %s | **Sustained-outage repos:** %s | **Failing repos:** %s\n\n' \
-    "${#REPOS[@]}" "$inspected_stubs" "$sustained_repos" "$failing_repos"
+  if [ "$monitoring" = "DEGRADED" ]; then
+    printf '> **⚠️ Monitoring DEGRADED** — %s non-404 API error(s) and **0 stubs inspected**. The escalation above is **not** a reliable all-clear: an outage or auth failure can look like `NONE`. Investigate `GH_TOKEN` scope/validity and GitHub API availability (#1587).\n\n' "$api_errors"
+  fi
+  printf '**Repos monitored:** %s | **Stubs inspected:** %s | **API errors:** %s | **Sustained-outage repos:** %s | **Failing repos:** %s\n\n' \
+    "${#REPOS[@]}" "$inspected_stubs" "$api_errors" "$sustained_repos" "$failing_repos"
   printf '## Per-repo caller-stub preflight liveness\n\n'
   render_liveness_table "$rows_file"
   printf '\n## Credential — GH_PAT_DON_PETRY (#1587 scope 4)\n\n'
@@ -250,6 +283,8 @@ if [ -n "${GITHUB_ENV:-}" ]; then
   {
     echo "ENGINE_LIVENESS_PAUSED=false"
     echo "ENGINE_LIVENESS_ESCALATION=${escalation}"
+    echo "ENGINE_LIVENESS_MONITORING=${monitoring}"
+    echo "ENGINE_LIVENESS_API_ERRORS=${api_errors}"
     echo "ENGINE_LIVENESS_SUSTAINED_REPOS=${sustained_repos}"
     echo "ENGINE_LIVENESS_FAILING_REPOS=${failing_repos}"
     echo "ENGINE_LIVENESS_PAT_SCOPE_STATE=${pat_scope_state}"
