@@ -3352,3 +3352,193 @@ GITEOF
   grep -qi "overview" "$p"
   grep -q "#1340" "$p"
 }
+
+# ── Review-application evidence (#1567): status=applied requires the commit to ──
+# ── be non-trivial AND touch the region the review named. ──────────────────────
+
+# Build a repo whose HEAD carries a 10-line doc, point origin/main at a base
+# commit, and install a gh stub that (a) returns a single unresolved review
+# thread naming doc.md line 5 for every graphql query, (b) records comments,
+# labels and merges. The engine (claude stub) rewrites doc.md to the
+# caller-provided content, simulating what a fix pass changed.
+# The review-changes branch assigns OPEN_THREADS_JSON via `gh api graphql … --jq
+# '…reviewThreads.nodes | map(select(.isResolved == false))'`. A real gh applies
+# that server-side jq; the stub cannot, so it must echo the ALREADY-EXTRACTED
+# array shape (what the --jq would have produced), not the raw GraphQL wrapper.
+_ev_named_thread_json='[{"id":"T1","isResolved":false,"isOutdated":false,"line":5,"path":"doc.md","comments":{"nodes":[{"body":"Please rework line 5.","author":{"login":"humanreviewer","__typename":"User"}}]}}]'
+
+_ev_setup_repo() {
+  local git_repo="$1" engine_content="$2"
+  git -C "$git_repo" init -q
+  printf 'line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n' > "$git_repo/doc.md"
+  git -C "$git_repo" add .
+  git -C "$git_repo" -c user.email="t@test" -c user.name="T" commit -q -m "base"
+  git -C "$git_repo" update-ref refs/remotes/origin/main "$(git -C "$git_repo" rev-parse HEAD)"
+  EV_HEAD_SHA="$(git -C "$git_repo" rev-parse HEAD)"
+
+  cat > "$STUB_BIN_DIR/claude" << STUB
+#!/usr/bin/env bash
+echo "Addressed review feedback."
+printf '${engine_content}' > doc.md
+STUB
+  chmod +x "$STUB_BIN_DIR/claude"
+}
+
+# gh stub: $3 = comments-endpoint JSON (default empty array), $4 = threads JSON.
+_ev_gh_stub() {
+  local comment_file="$1" merge_file="$2" comments_json="${3:-[]}" threads_json="${4:-$_ev_named_thread_json}"
+  cat > "$STUB_BIN_DIR/gh" << GHEOF
+#!/usr/bin/env bash
+ARGS="\$*"
+case "\$ARGS" in
+  *"pr view"*) echo '{"state":"OPEN","headRefName":"feat"}' ;;
+  *"pr checkout"*) exit 0 ;;
+  *"pr comment"*) echo "\$*" >> "${comment_file}"; exit 0 ;;
+  *"pr edit"*) echo "\$*" >> "${comment_file}"; exit 0 ;;
+  *"pr merge"*) echo "\$*" >> "${merge_file}"; exit 0 ;;
+  *"check-runs"*) echo '{"check_runs":[]}' ;;
+  *"statuses"*) echo '[]' ;;
+  *"reviews"*) echo '[]' ;;
+  *"graphql"*) echo '${threads_json}' ;;
+  *"issues/"*"comments"*) echo '${comments_json}' ;;
+  *"issues/comments/"*) exit 0 ;;
+  *"pulls/"*) echo '{"head":{"sha":"'"${EV_HEAD_SHA}"'"},"auto_merge":null,"state":"open"}' ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+}
+
+_ev_git_stub() {
+  local push_file="$1"
+  cat > "$STUB_BIN_DIR/git" << GITEOF
+#!/usr/bin/env bash
+if [ "\$1" = "push" ]; then echo "\$*" >> "${push_file}"; exit 0; fi
+exec /usr/bin/git "\$@"
+GITEOF
+  chmod +x "$STUB_BIN_DIR/git"
+}
+
+@test "review-changes evidence: substantive change to the named region → applied (#1567)" {
+  local git_repo="$BATS_TEST_TMPDIR/r" comment_file="$BATS_TEST_TMPDIR/c" merge_file="$BATS_TEST_TMPDIR/m" push_file="$BATS_TEST_TMPDIR/p"
+  mkdir -p "$git_repo"; touch "$comment_file" "$merge_file" "$push_file"
+  # Engine reworks line 5 (the region the review named).
+  _ev_setup_repo "$git_repo" 'line1\nline2\nline3\nline4\nline5 REWORKED\nline6\nline7\nline8\nline9\nline10\n'
+  _ev_gh_stub "$comment_file" "$merge_file"
+  _ev_git_stub "$push_file"
+
+  cd "$git_repo"
+  run bash -c "
+    export INTENT_TYPE=review-changes DEV_LEAD_DRY_RUN=false
+    export PR_NUMBER=54 HEAD_SHA=$EV_HEAD_SHA REPO='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead' ACTOR=humanreviewer
+    export PATH="$STUB_BIN_DIR:\$PATH"
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+
+  [ "$status" -eq 0 ]
+  [ -s "$push_file" ]
+  grep -q "status=applied" "$comment_file"
+  ! grep -q "status=not-applied" "$comment_file"
+}
+
+@test "review-changes evidence: whitespace/cosmetic-only change → not applied (#1567)" {
+  local git_repo="$BATS_TEST_TMPDIR/r" comment_file="$BATS_TEST_TMPDIR/c" merge_file="$BATS_TEST_TMPDIR/m" push_file="$BATS_TEST_TMPDIR/p"
+  mkdir -p "$git_repo"; touch "$comment_file" "$merge_file" "$push_file"
+  # Engine only adds trailing whitespace to line 5 — no substantive change.
+  _ev_setup_repo "$git_repo" 'line1\nline2\nline3\nline4\nline5   \nline6\nline7\nline8\nline9\nline10\n'
+  _ev_gh_stub "$comment_file" "$merge_file"
+  _ev_git_stub "$push_file"
+
+  cd "$git_repo"
+  run bash -c "
+    export INTENT_TYPE=review-changes DEV_LEAD_DRY_RUN=false
+    export PR_NUMBER=54 HEAD_SHA=$EV_HEAD_SHA REPO='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead' ACTOR=humanreviewer
+    export PATH="$STUB_BIN_DIR:\$PATH"
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+
+  [ "$status" -eq 0 ]
+  # A commit exists but it is not substantive: must NOT report applied.
+  ! grep -q "status=applied" "$comment_file"
+  grep -q "status=not-applied" "$comment_file"
+}
+
+@test "review-changes evidence: substantive change to an unrelated region → not applied (#1567)" {
+  local git_repo="$BATS_TEST_TMPDIR/r" comment_file="$BATS_TEST_TMPDIR/c" merge_file="$BATS_TEST_TMPDIR/m" push_file="$BATS_TEST_TMPDIR/p"
+  mkdir -p "$git_repo"; touch "$comment_file" "$merge_file" "$push_file"
+  # Engine reworks line 1, but the review named line 5 — the #1567 shape.
+  _ev_setup_repo "$git_repo" 'line1 UNRELATED\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n'
+  _ev_gh_stub "$comment_file" "$merge_file"
+  _ev_git_stub "$push_file"
+
+  cd "$git_repo"
+  run bash -c "
+    export INTENT_TYPE=review-changes DEV_LEAD_DRY_RUN=false
+    export PR_NUMBER=54 HEAD_SHA=$EV_HEAD_SHA REPO='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead' ACTOR=humanreviewer
+    export PATH="$STUB_BIN_DIR:\$PATH"
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+
+  [ "$status" -eq 0 ]
+  ! grep -q "status=applied" "$comment_file"
+  grep -q "status=not-applied" "$comment_file"
+  # The terminal comment enumerates the unaddressed requested item.
+  grep -q "doc.md:5" "$comment_file"
+}
+
+@test "review-changes evidence: no change → existing no-changes path (#1567)" {
+  local git_repo="$BATS_TEST_TMPDIR/r" comment_file="$BATS_TEST_TMPDIR/c" merge_file="$BATS_TEST_TMPDIR/m" push_file="$BATS_TEST_TMPDIR/p"
+  mkdir -p "$git_repo"; touch "$comment_file" "$merge_file" "$push_file"
+  # Engine leaves the file unchanged → commit_and_push finds nothing.
+  _ev_setup_repo "$git_repo" 'line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n'
+  # No named threads so the else branch reaches the no-changes terminal.
+  _ev_gh_stub "$comment_file" "$merge_file" "[]" '[]'
+  _ev_git_stub "$push_file"
+
+  cd "$git_repo"
+  run bash -c "
+    export INTENT_TYPE=review-changes DEV_LEAD_DRY_RUN=false
+    export PR_NUMBER=54 HEAD_SHA=$EV_HEAD_SHA REPO='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead' ACTOR=humanreviewer
+    export PATH="$STUB_BIN_DIR:\$PATH"
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+
+  [ "$status" -eq 0 ]
+  [ ! -s "$push_file" ]
+  grep -q "status=no-changes" "$comment_file"
+  ! grep -q "status=applied" "$comment_file"
+  ! grep -q "status=not-applied" "$comment_file"
+}
+
+@test "review-changes evidence: N consecutive not-applied passes escalate to a human (#1567)" {
+  local git_repo="$BATS_TEST_TMPDIR/r" comment_file="$BATS_TEST_TMPDIR/c" merge_file="$BATS_TEST_TMPDIR/m" push_file="$BATS_TEST_TMPDIR/p"
+  mkdir -p "$git_repo"; touch "$comment_file" "$merge_file" "$push_file"
+  _ev_setup_repo "$git_repo" 'line1 UNRELATED\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\n'
+  # The comments endpoint already carries 2 prior not-applied markers; this pass
+  # posts the 3rd, reaching the default limit of 3 → escalate.
+  local prior='[{"id":1,"body":"<!-- dev-lead-fix-reviews pr=54 sha=aaa intent=review-changes status=not-applied -->"},{"id":2,"body":"<!-- dev-lead-fix-reviews pr=54 sha=bbb intent=review-changes status=not-applied -->"},{"id":3,"body":"<!-- dev-lead-fix-reviews pr=54 sha=ccc intent=review-changes status=not-applied -->"}]'
+  _ev_gh_stub "$comment_file" "$merge_file" "$prior"
+  _ev_git_stub "$push_file"
+
+  cd "$git_repo"
+  run bash -c "
+    export INTENT_TYPE=review-changes DEV_LEAD_DRY_RUN=false
+    export PR_NUMBER=54 HEAD_SHA=$EV_HEAD_SHA REPO='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead' ACTOR=humanreviewer
+    export PATH="$STUB_BIN_DIR:\$PATH"
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+
+  [ "$status" -eq 0 ]
+  # A needs-human label was applied and an escalation comment posted.
+  grep -q "add-label" "$comment_file"
+  grep -q "needs-human-review" "$comment_file"
+  grep -qi "not converging" "$comment_file"
+  # Auto-merge is disabled and never re-enabled on the escalation path.
+  grep -q "disable-auto" "$merge_file"
+  ! grep -q -- "--auto" "$merge_file"
+}
