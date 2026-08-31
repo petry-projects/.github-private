@@ -30,8 +30,12 @@ audit_one() {
   # commit + its first parent from each line. The GitHub commits endpoint lists
   # the PR's commits with their parents in topological order.
   local graph
+  # No `2>/dev/null || true` guard: masking a `gh api` failure (auth, rate-limit,
+  # pagination) here would fake an empty result set and let the audit report a
+  # clean/skipped PR when it actually could not read the commit graph. Under
+  # `set -euo pipefail` a failure aborts loudly instead (#1607).
   graph=$(gh api --paginate "repos/${repo}/pulls/${pr}/commits" \
-    --jq '.[] | .sha + " " + ((.parents // []) | map(.sha) | join(" "))' 2>/dev/null || true)
+    --jq '.[] | .sha + " " + ((.parents // []) | map(.sha) | join(" "))')
 
   # The commits endpoint lists ONLY commits still reachable from the PR head, so a
   # force-pushed-away steering commit (the #1604 discard) is absent — and the

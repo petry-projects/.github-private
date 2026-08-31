@@ -145,9 +145,9 @@ incorporate_remote_head() {
   # Foreign (steering) commits present. They must never be discarded; try to
   # incorporate them by rebasing HEAD onto the fetched remote head.
   local foreign_oneline
-  foreign_oneline=$(printf '%s' "$foreign" | sed '/^$/d' | while IFS= read -r sha; do
-    git log -1 --format='%h %an: %s' "$sha" 2>/dev/null
-  done)
+  foreign_oneline=$(while IFS= read -r sha; do
+    [ -n "$sha" ] && git log -1 --format='%h %an: %s' "$sha" 2>/dev/null
+  done <<< "$foreign")
   echo "::warning::steering detected on ${remote}/${branch} — commit(s) by a non-dev-lead identity present on the remote that HEAD did not incorporate; rebasing onto them so they are never discarded (#1607):" >&2
   printf '%s\n' "$foreign_oneline" >&2
 

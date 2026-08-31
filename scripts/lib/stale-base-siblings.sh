@@ -35,10 +35,13 @@ detect_stale_base_siblings() {
   done
 
   local found=0 p kids
+  local -a kids_arr
   for p in "${parents_seen[@]}"; do
     kids="${children[$p]}"
-    # More than one child => stale-base sibling group.
-    if [ "$(printf '%s\n' $kids | grep -c .)" -gt 1 ]; then
+    # More than one child => stale-base sibling group. Split the space-separated
+    # SHAs into an array and check its length — no `grep` subshell per parent.
+    read -ra kids_arr <<< "$kids"
+    if [ "${#kids_arr[@]}" -gt 1 ]; then
       found=1
       echo "stale-base sibling group: parent ${p} has children: ${kids}"
     fi
