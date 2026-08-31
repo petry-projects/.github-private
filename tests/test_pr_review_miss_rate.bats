@@ -137,6 +137,34 @@ setup() {
   [ "$(jq -r '.partial_evidence_approvals' <<<"$output")" = "1" ]
 }
 
+@test "pr_metrics: a partial-evidence marker from a non-approver is NOT counted (authenticated)" {
+  # A participant copies an approved SHA into a partial-evidence marker. It must
+  # not inflate partial_evidence_approvals: only the authenticated approver's
+  # markers count.
+  pr='{"url":"https://x/pull/5b","createdAt":"2026-08-30T09:00:00Z","isDraft":false,"author":{"login":"alice"},
+    "reviews":{"nodes":['"$APPROVAL"']},
+    "comments":{"nodes":[
+      {"author":{"login":"mallory"},"createdAt":"2026-08-30T10:00:05Z","bodyText":"<!-- pr-review-agent partial-evidence v1 sha=deadbeef submitted=2 required=3 reason=head-age-timeout -->"}
+    ]},
+    "reviewThreads":{"nodes":[]}}'
+  run pr_review_pr_metrics "$pr" "$BOTS"
+  [ "$(jq -r '.partial_evidence_approvals' <<<"$output")" = "0" ]
+}
+
+@test "pr_metrics: duplicate partial-evidence markers at one head count once" {
+  # Concurrent gate runs can post the same marker twice at one head; the metric
+  # deduplicates by head SHA so a partial approval is counted exactly once.
+  pr='{"url":"https://x/pull/5c","createdAt":"2026-08-30T09:00:00Z","isDraft":false,"author":{"login":"alice"},
+    "reviews":{"nodes":['"$APPROVAL"']},
+    "comments":{"nodes":[
+      {"author":{"login":"donpetry-bot"},"createdAt":"2026-08-30T10:00:05Z","bodyText":"<!-- pr-review-agent partial-evidence v1 sha=deadbeef submitted=2 required=3 reason=head-age-timeout -->"},
+      {"author":{"login":"donpetry-bot"},"createdAt":"2026-08-30T10:00:06Z","bodyText":"<!-- pr-review-agent partial-evidence v1 sha=deadbeef submitted=2 required=3 reason=head-age-timeout -->"}
+    ]},
+    "reviewThreads":{"nodes":[]}}'
+  run pr_review_pr_metrics "$pr" "$BOTS"
+  [ "$(jq -r '.partial_evidence_approvals' <<<"$output")" = "1" ]
+}
+
 # ---------------------------------------------------------------------------
 # Aggregation — overall miss rate + per reviewer
 # ---------------------------------------------------------------------------

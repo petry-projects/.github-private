@@ -53,7 +53,7 @@ maybe_post_partial_evidence_marker() {
   fi
 
   local body="${marker}
-pr-review approved on PARTIAL advisory evidence: ${submitted}/${required} registered advisory bots reported before the gate's ${reason} fallback proceeded. Recorded for the miss-rate metric (#1596)."
+pr-review approved on PARTIAL advisory evidence: ${submitted}/${required} required advisory bots reported before the gate's ${reason} fallback proceeded. Recorded for the miss-rate metric (#1596)."
 
   if gh pr comment "$pr_url" --body "$body" >/dev/null 2>&1; then
     log_info "Posted partial-evidence marker on $pr_url (head ${head_sha:0:8}, ${submitted}/${required}, ${reason})"

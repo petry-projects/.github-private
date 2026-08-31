@@ -43,6 +43,20 @@ setup() {
   [ "$status" -ne 0 ]
 }
 
+@test "mh_assert_dev_path: rejects a dev/ path with a .. traversal component" {
+  # A lexical dev/ match is defeated by '..' that resolves outside the dev split.
+  run mh_assert_dev_path "evals/deep-review/dev/../../../README.md"
+  [ "$status" -ne 0 ]
+}
+
+@test "mh_harvest: refuses a dev/ target that escapes via .. and writes nothing" {
+  target="$TMP/dev/../escape.jsonl"
+  mkdir -p "$TMP/dev"
+  run mh_harvest "$MISS" "$target"
+  [ "$status" -ne 0 ]
+  [ ! -f "$TMP/escape.jsonl" ]
+}
+
 @test "mh_harvest: refuses to write when handed a holdout/ target and writes nothing" {
   target="$TMP/holdout/cases.jsonl"
   mkdir -p "$TMP/holdout"
@@ -71,6 +85,20 @@ setup() {
   run mh_harvest "$MISS" "$target"
   [ "$status" -eq 0 ]
   # The stable id is checked against the file, so the second harvest is a no-op.
+  [ "$(wc -l < "$target")" -eq 1 ]
+}
+
+@test "mh_harvest: concurrent harvests of the same miss write the case only once" {
+  target="$TMP/dev/cases.jsonl"
+  mkdir -p "$TMP/dev"
+  # Fire several harvesters of the same miss in parallel. The flock-guarded
+  # recheck+append must let exactly one writer win — without the lock two
+  # processes both see the id absent and both append a duplicate.
+  for _ in 1 2 3 4 5 6 7 8; do
+    mh_harvest "$MISS" "$target" &
+  done
+  wait
+  [ -f "$target" ]
   [ "$(wc -l < "$target")" -eq 1 ]
 }
 

@@ -135,12 +135,15 @@ pr_review_pr_metrics() {
     ($pr | _first_approval_at(.; $approval_re; $approver)) as $appr
     | ($appr != null) as $approved
     | ([ ($pr.reviews.nodes // [])[]
+         | select((.state // "") == "APPROVED")
+         | select((.author.login // "" | ascii_downcase) == ($approver | ascii_downcase))
          | select((.bodyText // "") | test($approval_re))
          | ((.bodyText // "") | scan("sha=([a-f0-9]+)"; "i") | .[0]) ] | unique) as $appr_shas
     | ([ (($pr.reviews.nodes // []) + ($pr.comments.nodes // []))[]
+         | select((.author.login // "" | ascii_downcase) == ($approver | ascii_downcase))
          | (.bodyText // "") | select(test($partial_re))
          | (scan("sha=([a-f0-9]+)"; "i") | .[0])
-         | select(. as $s | $appr_shas | index($s)) ] | length) as $partial
+         | select(. as $s | $appr_shas | index($s)) ] | unique | length) as $partial
     | _missed($pr; $bots; $approver; $approval_re) as $missed
     | ([ _threads($pr; $bots; $approver)[]
          | select(.pr_opened and .resolved and (.disp == "accepted")) ]) as $caught
@@ -265,9 +268,10 @@ PR_REVIEW_MISS_COLLECT_JQ='
        | select((.bodyText // "") | test($approval_re))
        | ((.bodyText // "") | scan("sha=([a-f0-9]+)"; "i") | .[0]) ] | unique) as $appr_shas
   | ([ (($pr.reviews.nodes // []) + ($pr.comments.nodes // []))[]
+       | select((.author.login // "" | ascii_downcase) == ($approver | ascii_downcase))
        | (.bodyText // "") | select(test($partial_re))
        | (scan("sha=([a-f0-9]+)"; "i") | .[0])
-       | select(. as $s | $appr_shas | index($s)) ] | length) as $partial
+       | select(. as $s | $appr_shas | index($s)) ] | unique | length) as $partial
   | _missed($pr; $bots; $approver; $approval_re) as $missed
   | ([ _threads($pr; $bots; $approver)[]
        | select(.pr_opened and .resolved and (.disp == "accepted")) ]) as $caught

@@ -33,6 +33,16 @@ mh_assert_dev_path() {
     echo "[miss-harvest] ERROR: no target path supplied" >&2
     return 1
   fi
+  # Reject any parent-directory traversal component first. A purely lexical dev/
+  # match is defeated by 'evals/deep-review/dev/../../../README.md', which contains
+  # a dev/ segment yet resolves outside the dev split. Refusing '..' outright keeps
+  # every harvested case inside dev/ (#1596/#1088).
+  case "/$path/" in
+    */../*)
+      echo "[miss-harvest] REFUSED: '$path' contains a '..' traversal component — harvested cases go to dev/ ONLY (#1596/#1088)." >&2
+      return 1
+      ;;
+  esac
   case "/$path/" in
     */holdout/*)
       echo "[miss-harvest] REFUSED: '$path' is a holdout/ path — harvested cases go to dev/ ONLY (#1596/#1088)." >&2
@@ -115,12 +125,21 @@ mh_harvest() {
   # duplicate on every run and the eval set grows without bound.
   local case_id
   case_id="$(jq -r '.id // ""' <<<"$case_line" 2>/dev/null)"
-  if [ -n "$case_id" ] && [ -f "$target" ] && grep -qF "$case_id" "$target" 2>/dev/null; then
-    echo "[miss-harvest] case $case_id already present in $target — skipping (idempotent)" >&2
-    return 0
-  fi
 
   mkdir -p "$(dirname "$target")"
-  printf '%s\n' "$case_line" >> "$target"
-  echo "[miss-harvest] appended case to $target" >&2
+
+  # The recheck-then-append must be atomic: two concurrent harvesters of the same
+  # miss can both observe the id absent and both append, writing the case twice.
+  # Hold an exclusive flock on a per-target lockfile across the whole critical
+  # section so exactly one writer wins and the rest see the id and skip.
+  local lockfile="${target}.lock"
+  (
+    flock 9 || { echo "[miss-harvest] ERROR: could not acquire lock on $lockfile" >&2; exit 1; }
+    if [ -n "$case_id" ] && [ -f "$target" ] && grep -qF "$case_id" "$target" 2>/dev/null; then
+      echo "[miss-harvest] case $case_id already present in $target — skipping (idempotent)" >&2
+      exit 0
+    fi
+    printf '%s\n' "$case_line" >> "$target"
+    echo "[miss-harvest] appended case to $target" >&2
+  ) 9>"$lockfile"
 }
