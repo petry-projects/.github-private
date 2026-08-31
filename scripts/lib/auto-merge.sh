@@ -27,6 +27,13 @@ set -euo pipefail
 #
 # All functions read PR_NUMBER / REPO / DEV_LEAD_DRY_RUN from the environment.
 
+# push_with_merge_guard shares the #1607 stale-base guard with push_no_clobber:
+# incorporate the true remote head (or escalate) before pushing, and pin every
+# force-push lease. Source it here so callers that pull in auto-merge.sh but not
+# git-push-guard.sh (e.g. dev-lead-fix-ci.sh) still get those helpers.
+# shellcheck source=scripts/lib/git-push-guard.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/git-push-guard.sh"
+
 # Set to 1 by hold_auto_merge only when it actually turned auto-merge off, so
 # restore_auto_merge re-enables exactly what we disabled and nothing else (it
 # must never newly enable auto-merge on a PR that never had it).
@@ -120,6 +127,26 @@ restore_auto_merge() {
 # cleanly when the push fails because the PR was merged/closed (its branch
 # deleted) mid-run. Returns 0 on a real push; returns 1 on a genuine failure.
 push_with_merge_guard() {
+  # #1607: reconcile with the true remote head first — incorporate a concurrent
+  # steering commit, or stop/escalate (return non-zero) if it cannot be
+  # incorporated cleanly. A fetch failure (e.g. the branch was deleted by a
+  # mid-run merge) returns 0, leaving the merge-race handling below to run.
+  local reconcile_rc=0
+  incorporate_remote_head "$@" || reconcile_rc=$?
+  if [ "$reconcile_rc" -ne 0 ]; then
+    # A PR merged/closed mid-run can make the reconcile fail (e.g. a rebase
+    # conflict against a head that is about to vanish). That is the benign merge
+    # race this guard exists for, not a genuine escalation — check the PR's state
+    # before failing the job, exactly as the post-push path below does.
+    local reconcile_state
+    reconcile_state=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}" --jq '.state' 2>/dev/null || true)
+    if [ -n "$reconcile_state" ] && [ "$reconcile_state" != "open" ]; then
+      echo "::notice::PR #${PR_NUMBER} is ${reconcile_state} — merged/closed mid-run; nothing to push. Exiting cleanly."
+      exit 0
+    fi
+    return "$reconcile_rc"
+  fi
+
   local errf
   errf="$(mktemp)"
   if git push "$@" 2>"$errf"; then
@@ -133,17 +160,20 @@ push_with_merge_guard() {
   # A non-fast-forward rejection while the local branch has diverged from its
   # upstream means the engine rewrote history — e.g. it resolved a rebase under
   # an intent (on-mention, review-changes) whose plain push can never publish
-  # the rewritten branch. Retry once with --force-with-lease, which still aborts
-  # if the remote ref advanced under us (the lease = our remote-tracking ref, so
-  # a concurrent push by someone else is never clobbered). This mirrors the
-  # dedicated rebase intent's own force-push (prompts/dev-lead/rebase.md).
+  # the rewritten branch. Retry once with a PINNED lease (#1607): an explicit
+  # lease against the remote head incorporate_remote_head just verified, or
+  # --force-with-lease --force-if-includes when no fetch succeeded. Either aborts
+  # if the remote advanced to a commit we did not incorporate, so a concurrent
+  # steering push is never clobbered.
   local upstream
   upstream=$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)
   if grep -qiE 'non-fast-forward|\[rejected\]|fetch first' "$errf" \
      && [ -n "$upstream" ] \
      && ! git merge-base --is-ancestor "$upstream" HEAD 2>/dev/null; then
-    echo "::notice::push rejected (non-fast-forward) and HEAD has diverged from ${upstream} — history was rewritten (likely a rebase); retrying with --force-with-lease" >&2
-    if git push --force-with-lease "$@" 2>>"$errf"; then
+    local discarded
+    discarded=$(git rev-list "HEAD..${upstream}" 2>/dev/null | tr '\n' ' ')
+    echo "::notice::push rejected (non-fast-forward) and HEAD has diverged from ${upstream} — history was rewritten (likely a self-rebase); retrying with a pinned lease. Overwriting dev-lead's own commit(s): ${discarded:-<none>}" >&2
+    if _pinned_force_push "$@" 2>>"$errf"; then
       rm -f "$errf"
       _AM_HEAD_SHA=$(git rev-parse HEAD 2>/dev/null || true)
       return 0
