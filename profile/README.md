@@ -8,12 +8,13 @@ standards, and agentic infrastructure.
 | Repository | Description | Language |
 |---|---|---|
 | [.github](https://github.com/petry-projects/.github) | Organization-wide GitHub configuration and workflows | Shell |
-| [.github-private](https://github.com/petry-projects/.github-private) | Org-wide Copilot custom agents, Claude Code skills, and agentic workflow infrastructure | Shell |
+| [.github-private](https://github.com/petry-projects/.github-private) | Org-wide Copilot custom agents and agentic workflow infrastructure | Shell |
 | [ContentTwin](https://github.com/petry-projects/ContentTwin) | AI-powered Social Media Agent for small organizations — enterprise-quality social presence at non-profit pricing | Shell |
 | [TalkTerm](https://github.com/petry-projects/TalkTerm) | | HTML |
-| [bmad-bgreat-suite](https://github.com/petry-projects/bmad-bgreat-suite) | BMad Operations Suite — SRE, DevOps, and Security agents and workflows for the BMad Method ecosystem | Shell |
+| [bmad-bgreat-suite](https://github.com/petry-projects/bmad-bgreat-suite) | BMad Operations Suite — SRE and DevOps agents and workflows for the BMad Method ecosystem | Shell |
 | [broodly](https://github.com/petry-projects/broodly) | A test implementation of the BMAD method | HTML |
 | [broodminder-export](https://github.com/petry-projects/broodminder-export) | Extract all of your data from the BroodMinder API into portable files — resumable, rate-limit-aware. | Python |
+| [demo-repository](https://github.com/petry-projects/demo-repository) | A code repository designed to show the best GitHub has to offer. | HTML |
 | [google-app-scripts](https://github.com/petry-projects/google-app-scripts) | A place to share Google AppScripts for personal productivity | JavaScript |
 | [incubator](https://github.com/petry-projects/incubator) | Product incubator: pre-product idea Discussions, decision briefs/PRD-lite, and disposable POCs. Ideas graduate to their own product repo once a POC proves out. Front-of-funnel for the .github-private ideation pipeline. | Shell |
 | [markets](https://github.com/petry-projects/markets) | | HTML |
@@ -27,6 +28,7 @@ Engineering standards live in
 | Standard | Purpose | Key sections |
 |---|---|---|
 | [`advanced-security`](https://github.com/petry-projects/.github/blob/main/standards/advanced-security.md) | GitHub Advanced Security configuration | Enablement via Code Security Configurations · Push-protection live-fire test (canary) · Licensing & billing · Compliance audit checks |
+| [`agent-rate-limits`](https://github.com/petry-projects/.github/blob/main/standards/agent-rate-limits.md) | Per-agent token budget and rate-limit controls | What is limited · The token-budget breaker · Status — inert pending human sign-off · Exempt actors — sanctioned, not a misconfiguration · Operator runbook |
 | [`agent-standards`](https://github.com/petry-projects/.github/blob/main/standards/agent-standards.md) | Guidelines for building and deploying AI agents | Required Files · Compliance Exemptions · AgentShield CI Workflow · Decision-Making Reusables · BMAD Method Workflows |
 | [`ci-standards`](https://github.com/petry-projects/.github/blob/main/standards/ci-standards.md) | CI/CD pipeline conventions | Staged promotion through concentric rings · Action Pinning Policy · Permissions Policy · Required Workflows · Dev-Lead Agent |
 | [`codeowners-standard`](https://github.com/petry-projects/.github/blob/main/standards/codeowners-standard.md) | CODEOWNERS file requirements | Team Composition · Required Setup for New Bots · Branch Protection |
@@ -64,7 +66,6 @@ These are distinct from the `@mention` Copilot agents above.
 | Workflow | Purpose |
 |---|---|
 | [`ci-failure-analyst-reusable.yml`](https://github.com/petry-projects/.github-private/blob/main/.github/workflows/ci-failure-analyst-reusable.yml) | CI failure analyst — diagnoses failed CI/Lint/Test runs and comments root-cause analysis |
-| [`dev-lead.yml`](https://github.com/petry-projects/.github-private/blob/main/.github/workflows/dev-lead.yml) | Dev-Lead agent — autonomously implements an assigned issue (branch, code, tests, PR) |
 | [`feature-ideation.yml`](https://github.com/petry-projects/.github-private/blob/main/.github/workflows/feature-ideation.yml) | Feature research & ideation agent (BMAD Analyst) — turns sources into scoped feature ideas |
 | [`idea-triage.yml`](https://github.com/petry-projects/.github-private/blob/main/.github/workflows/idea-triage.yml) | Idea triage agent — scores queued ideas and promotes them into the backlog |
 | [`initiative-driver.yml`](https://github.com/petry-projects/.github-private/blob/main/.github/workflows/initiative-driver.yml) | Initiative driver — auto-releases an epic's ready sub-issues to Dev-Lead |
@@ -97,7 +98,8 @@ Scheduled reports and dashboards post as issues or workflow-run summaries for ma
 | [`auto-rebase-health.yml`](https://github.com/petry-projects/.github-private/blob/main/.github/workflows/auto-rebase-health.yml) | Daily auto-rebase health report (issue) — rebase success/failure trends |
 | [`daily-pr-review-health.yml`](https://github.com/petry-projects/.github-private/blob/main/.github/workflows/daily-pr-review-health.yml) | Daily PR-review health check — flags PR-review agent failures as an issue |
 | [`docs-health-check.yml`](https://github.com/petry-projects/.github-private/blob/main/.github/workflows/docs-health-check.yml) | Docs health check — flags stale/broken docs as an issue |
-| [`premature-closure-audit.yml`](https://github.com/petry-projects/.github-private/blob/main/.github/workflows/premature-closure-audit.yml) | Premature-closure audit — flags issues closed as completed with no merged closing PR |
+| [`engine-token-liveness.yml`](https://github.com/petry-projects/.github-private/blob/main/.github/workflows/engine-token-liveness.yml) | Engine-token liveness monitor — asserts dev-lead/pr-review caller stubs are not failing at the "Engine token preflight" step, and escalates a sustained fleet-wide outage that would otherwise go unalerted |
+| [`premature-closure-audit.yml`](https://github.com/petry-projects/.github-private/blob/main/.github/workflows/premature-closure-audit.yml) | Premature-closure audit — flags issues closed as completed with no merged closing PR, and OPEN issues carrying an unbacked completion claim |
 | [`reviewer-report.yml`](https://github.com/petry-projects/.github-private/blob/main/.github/workflows/reviewer-report.yml) | Reviewer scorecard (per workflow-run summary) — per-reviewer PR-review activity |
 | [`skill-eval-report.yml`](https://github.com/petry-projects/.github-private/blob/main/.github/workflows/skill-eval-report.yml) | Skill-eval results report — agent skill pass/fail trends (self-improving-skills pipeline) |
 | [`token-report.yml`](https://github.com/petry-projects/.github-private/blob/main/.github/workflows/token-report.yml) | LLM token-cost report (per workflow-run summary) for maintainers |
@@ -109,3 +111,4 @@ Scheduled reports and dashboards post as issues or workflow-run summaries for ma
 | [`compliance-audit-and-improvement.yml`](https://github.com/petry-projects/.github/blob/main/.github/workflows/compliance-audit-and-improvement.yml) | Weekly org standards compliance audit + runtime health survey, with per-finding remediation issues |
 | [`daily-org-status.yml`](https://github.com/petry-projects/.github/blob/main/.github/workflows/daily-org-status.yml) | Daily "Org Status" digest posted as an issue for maintainers |
 | [`org-scorecard.yml`](https://github.com/petry-projects/.github/blob/main/.github/workflows/org-scorecard.yml) | Weekly OpenSSF Scorecard security-posture review across public repos; findings tracked as issues |
+| [`standards-deploy.yml`](https://github.com/petry-projects/.github/blob/main/.github/workflows/standards-deploy.yml) | Weekly fleet sweep that opens standards-sync PRs for repos drifted off the org-standard workflow stubs |
