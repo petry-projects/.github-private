@@ -237,11 +237,22 @@ jobs:
       # 'latest' caches an install indefinitely under that key — flush via the
       # Actions cache UI or bump the variable to pick up new releases.
       CLAUDE_CODE_VERSION: ${{ vars.CLAUDE_CODE_VERSION || 'latest' }}
-      # Mention-triggered reviews always force a re-review; all other triggers
-      # respect the idempotency check (no double-reviews on the same head SHA).
       TOKEN_LOG_FILE: /tmp/token-usage-${{ github.run_id }}.jsonl
       TOKEN_WORKFLOW: pr-review
-      FORCE_REVIEW: ${{ github.event_name == 'repository_dispatch' && 'true' || inputs.force_review || 'false' }}
+      # Two distinct force flags (issue #1590 — do NOT re-merge them):
+      #   FORCE_REVIEW    — the human @mention break-glass. A repository_dispatch
+      #                     (the mention-listener path) bypasses EVERY review gate
+      #                     (ci-failing/ci-pending/advisory/maintainer/…). This is a
+      #                     deliberate human override and is reachable ONLY here.
+      #   FORCE_RE_REVIEW — the narrow idempotency bypass. The `force_review` input
+      #                     (workflow_dispatch / workflow_call, e.g. the automated
+      #                     orphan-rescue sweep in scripts/sweep-stuck-reviews.sh)
+      #                     clears ONLY the same-SHA idempotency no-op and leaves the
+      #                     quality gates armed — so an automated re-review can never
+      #                     silently convert into a gate bypass, and a stale CI
+      #                     snapshot (TOCTOU) is re-validated at execution time.
+      FORCE_REVIEW: ${{ github.event_name == 'repository_dispatch' && 'true' || 'false' }}
+      FORCE_RE_REVIEW: ${{ inputs.force_review || 'false' }}
 
     steps:
       - name: Engine token preflight (#1525)

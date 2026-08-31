@@ -20,7 +20,12 @@
 # A marker present at head but WITHOUT a verdict is an orphan (issue #1548): the
 # review crashed after stamping the head and before posting any decision. That PR
 # is re-dispatched WITH force_review to bypass review-one-pr.sh's idempotency
-# no-op on the orphan marker — otherwise it strands silently forever.
+# no-op on the orphan marker — otherwise it strands silently forever. The
+# force_review input is the NARROW idempotency bypass (FORCE_RE_REVIEW), not the
+# human @mention break-glass (FORCE_REVIEW): it clears ONLY the same-SHA marker and
+# leaves the CI/advisory/maintainer gates armed, so a rescue can never bypass a
+# quality gate and a CI status that went red since this sweep's snapshot is
+# re-validated when review-one-pr.sh runs (issue #1590).
 # Each selected PR is re-dispatched through the normal trigger
 # (pr-review-trigger.yml -f pr_url=<url>); review-one-pr.sh remains the
 # authoritative gate, so the sweep only decides WHAT to re-trigger.
@@ -150,8 +155,10 @@ dispatched=0
 # Re-dispatch a review through the normal trigger. Honours DRY_RUN and updates
 # the counters. A 3rd arg of "force" appends `-f force_review=true`, used ONLY
 # for the orphaned-marker rescue (#1548): an unforced re-dispatch would hit
-# review-one-pr.sh's idempotency no-op on the orphan marker. For every other
-# selection force stays OFF so the advisory/CI gates remain armed.
+# review-one-pr.sh's idempotency no-op on the orphan marker. The force_review
+# input is the NARROW idempotency bypass (FORCE_RE_REVIEW in pr-review.yml, #1590),
+# so the CI/advisory/maintainer gates stay armed for the rescue too — force here
+# defeats only the same-SHA no-op, never a quality gate.
 dispatch_review() {
   local _url="$1" _label="$2" _force="${3:-}"
   stuck=$((stuck + 1))
@@ -320,9 +327,12 @@ while IFS= read -r pr_url; do
   # would hit review-one-pr.sh's idempotency no-op on this very marker. This runs
   # BEFORE the scheduled-narrowing gate below so a genuine strand is rescued even
   # in the cron's un-eventable-only mode; the strand is not the redundant re-review
-  # the narrowing removes. force_review bypasses the idempotency and advisory/CI
-  # gates but NOT the per-PR automation budget (#926) nor the needs-human-review
-  # escalation gate (already handled above), so it cannot re-ignite a runaway.
+  # the narrowing removes. force_review here is the NARROW idempotency bypass
+  # (FORCE_RE_REVIEW, #1590): it clears ONLY the same-SHA marker no-op. The CI,
+  # advisory, and maintainer gates stay armed (so a CI status that went red since
+  # this sweep's snapshot re-blocks at execution time), as do the per-PR automation
+  # budget (#926) and the needs-human-review escalation gate (handled above) — so
+  # the rescue can neither bypass a quality gate nor re-ignite a runaway.
   if [ "${marker_at_head:-0}" -gt 0 ]; then
     dispatch_review "$pr_url" "orphaned-marker (head ${head_sha:0:8}, no verdict)" force
     continue
