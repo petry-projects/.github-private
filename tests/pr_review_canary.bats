@@ -109,10 +109,14 @@ setup() {
   [[ "$output" == *"https://x/run/1"* ]]
 }
 
-@test "canary_report: a downstream FAILED states channel skew is ruled out (non-fatal)" {
+@test "canary_report: a FAILED report does not overclaim channel skew is ruled out (non-fatal)" {
+  # A cancelled/timed_out run (both classified FAILED) can end before the
+  # reusable call reaches startup, so the report must not assert skew is ruled
+  # out — only that FAILED is not the startup_failure fingerprint this canary gates on.
   run canary_report "FAILED" "petry-projects/.github-private" "https://x/run/1" "2026-07-15"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"ruled out"* ]]
+  [[ "$output" == *"startup_failure"* ]]
+  [[ "$output" != *"**ruled out**"* ]]
 }
 
 # ---------------------------------------------------------------------------

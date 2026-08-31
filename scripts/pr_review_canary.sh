@@ -80,8 +80,8 @@ canary_report() {
     OK)              icon='✅'; headline='canary passed' ;;
     STARTUP_FAILURE) icon='🔴'; headline='STARTUP FAILURE — the reusable call failed at startup (channel skew)' ;;
     NO_RUN)          icon='🟠'; headline='no pr-review-trigger run observed within the poll window' ;;
-    FAILED)          icon='🟡'; headline='dispatch started (channel skew ruled out) — downstream cascade failed for an unrelated reason' ;;
-    *)               icon='🟡'; headline='dispatch started (channel skew ruled out) — run concluded non-success for an unrelated reason' ;;
+    FAILED)          icon='🟡'; headline='run concluded FAILED — not the startup_failure channel-skew fingerprint' ;;
+    *)               icon='🟡'; headline='run concluded non-success — not the startup_failure channel-skew fingerprint' ;;
   esac
 
   printf '# %s PR-review-trigger canary — %s\n\n' "$icon" "$today"
@@ -103,10 +103,11 @@ canary_report() {
     printf 'The dispatch may have been rejected (PAT missing/expired) or the run is still queued. '
     printf 'This is not the channel-skew signal (no `startup_failure` observed), so it does not fail the canary.\n'
   elif [ "$st" != "OK" ]; then
-    printf '> The dry-run pr-review-trigger dispatch got past startup, so the #1034 channel-skew defect is '
-    printf '**ruled out** — the reusable call was accepted. The run then concluded non-success for a reason '
-    printf 'unrelated to this canary (e.g. the review cascade failed against a real fleet PR). This canary '
-    printf 'fails loud only on `startup_failure`, so it does not turn red here; inspect the run log if the '
+    printf '> The dry-run pr-review-trigger dispatch concluded non-success, but NOT with `startup_failure` — '
+    printf 'the sole fingerprint of the #1034 channel-skew defect. Because a `cancelled` or `timed_out` run '
+    printf 'can end BEFORE the reusable call reaches startup, this result does not by itself confirm the '
+    printf 'reusable call was accepted (channel skew is neither confirmed nor definitively ruled out). It is '
+    printf 'simply not the signal this canary gates on, so it does not turn red; inspect the run log if the '
     printf 'downstream failure itself is unexpected.\n'
   fi
 }
@@ -182,7 +183,14 @@ main() {
     echo "::error::PR-review-trigger canary result: ${result}" >&2
     exit 1
   fi
-  echo "::notice::PR-review-trigger canary passed (dry-run dispatch concluded success)." >&2
+  # Keep the green exit for OK/FAILED/NO_RUN (only startup_failure gates this
+  # canary, per #1612), but do not announce non-OK results as a successful
+  # dispatch — that would report a downstream failure or missing run as healthy.
+  if [ "$result" = "OK" ]; then
+    echo "::notice::PR-review-trigger canary passed (dry-run dispatch concluded success)." >&2
+  else
+    echo "::notice::PR-review-trigger canary completed with ${result}; not the startup_failure channel-skew fingerprint, so no Fleet Monitor alert." >&2
+  fi
 }
 
 # Only run main when executed directly (not when sourced by tests).
