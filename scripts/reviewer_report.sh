@@ -73,6 +73,15 @@ if [ -f "$_here/lib/comment-noise.sh" ]; then
   CN_NOACTION_RE="$(cn_no_action_pattern)"
 fi
 
+# Deterministic false-NEGATIVE metric (#1596): accepted findings a trusted advisory
+# bot raised on a PR pr-review had already approved. Provides _MISS_JQ_DEFS +
+# PR_REVIEW_MISS_COLLECT_JQ (the additive collection pass) and the pure
+# pr_review_render_miss_section renderer. Reuses REVIEWER_BOTS as its trusted set.
+if [ -f "$_here/lib/pr-review-miss-rate.sh" ]; then
+  # shellcheck source=scripts/lib/pr-review-miss-rate.sh
+  source "$_here/lib/pr-review-miss-rate.sh"
+fi
+
 # The reviewers this scorecard tracks. RATE_LIMIT_NOTICE_BOTS (from the gate) is
 # exactly our target set — the gate bots PLUS coderabbitai — so we reuse it as
 # the canonical login list rather than re-declaring it (#drift-guard). If the
@@ -384,6 +393,13 @@ render_reviewer_report() {
     cn_render_noise_section "$dir"
   fi
 
+  # ---- pr-review miss rate (#1596) -----------------------------------------
+  # The false-negative signal: accepted defects an advisory bot found on a PR
+  # pr-review had already approved, overall and per third-party reviewer.
+  if declare -F pr_review_render_miss_section >/dev/null 2>&1; then
+    pr_review_render_miss_section "$dir"
+  fi
+
   # ---- Known gaps ----------------------------------------------------------
   printf '## Known gaps\n\n'
   printf -- '- **Cost is not measured here.** These reviewers are external SaaS GitHub Apps and emit no token-usage artifacts, so per-review $ cost is not observable from our side. For our own Claude reviewer'"'"'s spend, see the [Token Cost Observatory](../../issues?q=is%%3Aissue+label%%3Atoken-report).\n'
@@ -501,6 +517,19 @@ _collect_one_repo() {
       ' <<<"$resp" >&2 2>/dev/null || true
     fi
 
+    # Additive miss-rate pass (#1596): emit one {kind:"miss_pr"} record per in-window
+    # PR — the deterministic false-negative signal (accepted advisory-bot findings
+    # after a pr-review approval, plus caught/partial-evidence counts). A distinct
+    # record kind, so it never perturbs the bot scorecard aggregation above.
+    if [ -n "${PR_REVIEW_MISS_COLLECT_JQ:-}" ] && [ -n "${_MISS_JQ_DEFS:-}" ]; then
+      jq -c --arg repo "$repo" --argjson bots "$bots_json" \
+        --arg approver "${PR_REVIEW_APPROVER:-donpetry-bot}" \
+        --arg approval_re "${PR_REVIEW_APPROVAL_RE:-}" --arg partial_re "${PR_REVIEW_PARTIAL_RE:-}" \
+        --arg cutoff "$CUTOFF" \
+        "${_MISS_JQ_DEFS} .data?.repository?.pullRequests?.nodes[]? | select(.updatedAt >= \$cutoff) | ${PR_REVIEW_MISS_COLLECT_JQ}" \
+        <<<"$resp" >> "$out" 2>/dev/null || true
+    fi
+
     # Stop when this page had no in-window PRs, or there are no more pages.
     local has_next end_cursor
     has_next="$(jq -r '.data?.repository?.pullRequests?.pageInfo?.hasNextPage // false' <<<"$resp" 2>/dev/null || echo false)"
@@ -535,6 +564,11 @@ collect_org_reviews() {
   # No-action noise classifier (#1411) — exported so each worker subshell can run
   # the second (agent_comment) collection pass. Absent in a stripped lib env.
   export CN_AGENT_COMMENT_JQ="${CN_AGENT_COMMENT_JQ:-}" CN_MARKER_RE="${CN_MARKER_RE:-}" CN_NOACTION_RE="${CN_NOACTION_RE:-}"
+  # Miss-rate collection pass (#1596) — exported so each worker subshell can run the
+  # third (miss_pr) collection pass. Absent in a stripped lib env.
+  # shellcheck disable=SC2090
+  export _MISS_JQ_DEFS="${_MISS_JQ_DEFS:-}" PR_REVIEW_MISS_COLLECT_JQ="${PR_REVIEW_MISS_COLLECT_JQ:-}"
+  export PR_REVIEW_APPROVER="${PR_REVIEW_APPROVER:-donpetry-bot}" PR_REVIEW_APPROVAL_RE="${PR_REVIEW_APPROVAL_RE:-}" PR_REVIEW_PARTIAL_RE="${PR_REVIEW_PARTIAL_RE:-}"
   # REVIEWER_BOTS is a plain array; export as newline string the workers re-split.
   REVIEWER_BOTS_STR="$(printf '%s\n' "${REVIEWER_BOTS[@]}")"
   export REVIEWER_BOTS_STR
