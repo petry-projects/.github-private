@@ -277,3 +277,163 @@ setup() {
   [ "$status" -eq 0 ]
   [[ "$output" != *"| Repo |"* ]]
 }
+
+@test "render_liveness_table surfaces each repo's last-run timestamp (#1600)" {
+  # A reader must be able to tell "healthy" from "not recently exercised" without
+  # opening Actions — the table carries the newest run's timestamp per stub.
+  f=$(mktemp "$TMP/rows.XXXXXX")
+  printf '%s\t%s\t%s\t%s\t%s\n' \
+    "petry-projects/ContentTwin" "dev-lead.yml" "STALE" "0" "2026-08-28T18:57:00Z" > "$f"
+  run render_liveness_table "$f"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Last run"* ]]
+  [[ "$output" == *"2026-08-28T18:57:00Z"* ]]
+  [[ "$output" == *"STALE"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# Recency bound (#1600) — a stale pre-incident failure streak must NOT be
+# reported as a live OUTAGE. The signal is bounded by BOTH streak and recency.
+# ---------------------------------------------------------------------------
+
+@test "within_lookback: a run inside the window is within (exit 0)" {
+  now=1788134400   # 2026-08-31T00:00:00Z
+  ep=1788048000    # 2026-08-30T00:00:00Z (1 day old)
+  run within_lookback "$ep" "$now" 3
+  [ "$status" -eq 0 ]
+}
+
+@test "within_lookback: a run older than the window is outside (non-zero)" {
+  now=1788134400   # 2026-08-31T00:00:00Z
+  ep=1787616000    # 2026-08-25T00:00:00Z (6 days old)
+  run within_lookback "$ep" "$now" 3
+  [ "$status" -ne 0 ]
+}
+
+@test "within_lookback: a run exactly at the cutoff is still within (inclusive boundary)" {
+  now=1788134400   # 2026-08-31T00:00:00Z
+  ep=1787875200    # 2026-08-28T00:00:00Z (exactly 3 days)
+  run within_lookback "$ep" "$now" 3
+  [ "$status" -eq 0 ]
+}
+
+@test "repo_liveness_state: newest run not recent -> STALE regardless of streak" {
+  run repo_liveness_state 5 no
+  [ "$output" = "STALE" ]
+}
+
+@test "repo_liveness_state: recency flag defaults to recent (back-compat, one-arg form)" {
+  run repo_liveness_state 2
+  [ "$output" = "OUTAGE" ]
+}
+
+@test "repo_liveness_from_runs: STALE when failures predate the window, OUTAGE when >=2 are inside it (#1600 — both directions)" {
+  # now = the first real run of the monitor (2026-08-31T03:19Z, from the issue).
+  now=1788146340   # 2026-08-31T03:19:00Z
+
+  # ContentTwin's exact shape: two preflight failures 3-6 days old, no runs since.
+  # Its streak never cleared, but the newest run predates the lookback window, so
+  # this is STALE (unverified) — NOT a live OUTAGE.
+  stale="$TMP/stale.tsv"
+  {
+    printf '%s\t%s\n' "2026-08-27T18:57:00Z" "yes"   # ~3.4 days old
+    printf '%s\t%s\n' "2026-08-25T07:21:00Z" "yes"   # ~6 days old
+  } > "$stale"
+  run repo_liveness_from_runs "$stale" "$now" 3
+  [ "$status" -eq 0 ]
+  [ "$output" = "STALE" ]
+
+  # A GENUINE live outage: >=2 consecutive preflight failures INSIDE the window.
+  # The #1587 behaviour must not regress — this still reports OUTAGE.
+  live="$TMP/live.tsv"
+  {
+    printf '%s\t%s\n' "2026-08-31T00:10:00Z" "yes"   # hours old
+    printf '%s\t%s\n' "2026-08-30T09:00:00Z" "yes"   # ~18h old
+  } > "$live"
+  run repo_liveness_from_runs "$live" "$now" 3
+  [ "$status" -eq 0 ]
+  [ "$output" = "OUTAGE" ]
+}
+
+@test "repo_liveness_from_runs: failures older than the window are ignored in the streak" {
+  now=1788146340   # 2026-08-31T03:19:00Z
+  f="$TMP/mix.tsv"
+  {
+    printf '%s\t%s\n' "2026-08-31T00:00:00Z" "no"    # recent success
+    printf '%s\t%s\n' "2026-08-24T00:00:00Z" "yes"   # old failure, outside window
+    printf '%s\t%s\n' "2026-08-23T00:00:00Z" "yes"   # old failure, outside window
+  } > "$f"
+  run repo_liveness_from_runs "$f" "$now" 3
+  [ "$output" = "OK" ]
+}
+
+@test "repo_liveness_from_runs: a single recent preflight failure -> FAIL (not yet sustained)" {
+  now=1788146340   # 2026-08-31T03:19:00Z
+  f="$TMP/one.tsv"
+  {
+    printf '%s\t%s\n' "2026-08-31T00:00:00Z" "yes"   # recent failure
+    printf '%s\t%s\n' "2026-08-30T00:00:00Z" "no"    # recent success -> breaks streak
+  } > "$f"
+  run repo_liveness_from_runs "$f" "$now" 3
+  [ "$output" = "FAIL" ]
+}
+
+@test "repo_liveness_from_runs: no runs at all -> STALE (unverified, the honest state)" {
+  now=1788146340   # 2026-08-31T03:19:00Z
+  f="$TMP/empty.tsv"; : > "$f"
+  run repo_liveness_from_runs "$f" "$now" 3
+  [ "$output" = "STALE" ]
+}
+
+# ---------------------------------------------------------------------------
+# run_should_fail — a STALE repo must NOT fail the workflow (#1600 AC), while a
+# within-window OUTAGE still does (#1587 must not regress).
+# ---------------------------------------------------------------------------
+
+@test "run_should_fail: a within-window sustained OUTAGE fails the run" {
+  run run_should_fail 1
+  [ "$status" -eq 0 ]
+}
+
+@test "run_should_fail: no within-window outage does not fail the run (STALE/OK non-failing)" {
+  run run_should_fail 0
+  [ "$status" -ne 0 ]
+}
+
+@test "run_should_fail: non-numeric input degrades to non-failing" {
+  run run_should_fail "x"
+  [ "$status" -ne 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# _el_to_epoch normalization must be ANCHORED (#1600 regression guard).
+# A blanket `${v//T/ }` also rewrites the T inside a timezone NAME: GitHub's PAT
+# `expires_at` form "YYYY-MM-DD HH:MM:SS UTC" became "... U C" and stopped
+# parsing, so pat_expiry_state reported every real expiry as UNKNOWN.
+# ---------------------------------------------------------------------------
+
+@test "_el_to_epoch: a 'UTC' timezone suffix survives normalization (#1600)" {
+  run _el_to_epoch "2026-08-01 12:00:00 UTC"
+  [ "$status" -eq 0 ]
+  [ -n "$output" ]
+  [ "$output" -gt 0 ]
+}
+
+@test "_el_to_epoch: an ISO 8601 T/Z timestamp still parses (#1600)" {
+  run _el_to_epoch "2026-08-31T03:19:00Z"
+  [ "$status" -eq 0 ]
+  [ "$output" = "1788146340" ]
+}
+
+@test "_el_to_epoch: the ISO and 'UTC' forms of the same instant agree (#1600)" {
+  local a b
+  a="$(_el_to_epoch "2026-08-31T03:19:00Z")"
+  b="$(_el_to_epoch "2026-08-31 03:19:00 UTC")"
+  [ -n "$a" ] && [ "$a" = "$b" ]
+}
+
+@test "_el_to_epoch: unparseable input still yields empty (#1600)" {
+  run _el_to_epoch "not-a-date"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
