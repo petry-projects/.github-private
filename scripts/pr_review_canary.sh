@@ -188,8 +188,6 @@ main() {
   # dispatch — that would report a downstream failure or missing run as healthy.
   if [ "$result" = "OK" ]; then
     echo "::notice::PR-review-trigger canary passed (dry-run dispatch concluded success)." >&2
-  else
-    echo "::notice::PR-review-trigger canary completed with ${result}; not the startup_failure channel-skew fingerprint, so no Fleet Monitor alert." >&2
   fi
 }
 
