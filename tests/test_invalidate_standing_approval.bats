@@ -22,7 +22,9 @@ setup() {
       {"author":{"login":"donpetry-bot"},"createdAt":"2026-08-30T11:05:00Z","bodyText":"Good catch, fixed."}
     ]}}]},
     "comments":{"nodes":[]}}'
-  export REST_REVIEWS_JSON='[{"id":55,"state":"APPROVED","body":"<!-- pr-review-agent v1 sha=deadbeef decision=approved risk=LOW -->","commit_id":"deadbeef"}]'
+  # The REST /pulls/{n}/reviews response carries the review author under user.login;
+  # the wrapper only dismisses reviews authored by the pr-review bot itself.
+  export REST_REVIEWS_JSON='[{"id":55,"state":"APPROVED","user":{"login":"donpetry-bot"},"body":"<!-- pr-review-agent v1 sha=deadbeef decision=approved risk=LOW -->","commit_id":"deadbeef"}]'
 }
 
 teardown() {

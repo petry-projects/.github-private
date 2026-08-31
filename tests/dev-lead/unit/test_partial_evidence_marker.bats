@@ -11,7 +11,7 @@
 # Run locally: bats tests/dev-lead/unit/test_partial_evidence_marker.bats
 
 setup() {
-  export SCRIPT_DIR="$(cd "$(dirname "${BATS_TEST_FILENAME%/*}")" && pwd)/../../../scripts"
+  export SCRIPT_DIR="$(cd "$(dirname "${BATS_TEST_FILENAME%/*}")" && pwd)/../../scripts"
   # Gate first (defines log_info/log_warn), then the helper under test.
   source "$SCRIPT_DIR/lib/advisory-review-gate.sh"
   source "$SCRIPT_DIR/lib/partial-evidence-marker.sh"
