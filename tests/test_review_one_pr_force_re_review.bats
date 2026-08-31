@@ -74,7 +74,8 @@ GHEOF
   unset FORCE_REVIEW FORCE_RE_REVIEW
 }
 
-teardown() { rm -rf "$TEST_DIR"; }
+# No teardown: $BATS_TEST_TMPDIR (our $TEST_DIR) is a per-test dir that BATS
+# creates and removes automatically, so manual `rm -rf` cleanup is redundant.
 
 # write_snapshot <rollup-json> [marker-comment-body]
 # Green rollup by default is the caller's; marker comment is optional (an orphan
@@ -135,6 +136,19 @@ ROLLUP_PENDING='[{"name":"CI / build","status":"IN_PROGRESS","conclusion":null}]
   [ "$status" -ne 100 ]
 }
 
+# ── The narrow flag is orphan-only: a genuine verdict at head is NOT re-run ───
+
+@test "AC2b: FORCE_RE_REVIEW=true + green CI + COMPLETE verdict at head → no-op (does NOT re-run a completed review — #1598 race)" {
+  export FORCE_RE_REVIEW="true"
+  # A genuine verdict (decision=approved) landed at head after the sweep snapshot.
+  # FORCE_RE_REVIEW rescues orphans only, so this must defer to the idempotency no-op.
+  write_snapshot "$ROLLUP_PASS" '<!-- pr-review-agent v1 sha='"$SHA"' decision=approved risk=LOW -->'
+  run timeout 25 bash "$REVIEW_SCRIPT" "$PR_URL"
+  [ "$status" -eq 100 ]
+  [[ "$output" == *'"reason":"already-reviewed-at-head"'* ]]
+  [[ "$output" != *"re-running cascade"* ]]
+}
+
 # ── Control: with NO flag the same-SHA marker still no-ops (idempotency armed) ─
 
 @test "control: no flag + green CI + marker at head → no-op already-reviewed-at-head" {
@@ -159,6 +173,16 @@ ROLLUP_PENDING='[{"name":"CI / build","status":"IN_PROGRESS","conclusion":null}]
 @test "unchanged: FORCE_REVIEW=true + green CI + marker at head → idempotency bypassed" {
   export FORCE_REVIEW="true"
   write_snapshot "$ROLLUP_PASS" '<!-- pr-review-agent v1 sha='"$SHA"' -->'
+  run timeout 25 bash "$REVIEW_SCRIPT" "$PR_URL"
+  [[ "$output" != *'"reason":"already-reviewed-at-head"'* ]]
+  [[ "$output" == *"re-running cascade"* ]]
+  [ "$status" -ne 100 ]
+}
+
+@test "unchanged: FORCE_REVIEW=true + green CI + COMPLETE verdict at head → break-glass still bypasses (orphan-only gate is FORCE_RE_REVIEW's)" {
+  export FORCE_REVIEW="true"
+  # The human break-glass bypasses idempotency even for a genuine verdict at head.
+  write_snapshot "$ROLLUP_PASS" '<!-- pr-review-agent v1 sha='"$SHA"' decision=approved risk=LOW -->'
   run timeout 25 bash "$REVIEW_SCRIPT" "$PR_URL"
   [[ "$output" != *'"reason":"already-reviewed-at-head"'* ]]
   [[ "$output" == *"re-running cascade"* ]]

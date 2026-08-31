@@ -507,7 +507,29 @@ if [ -n "${EXISTING_MARKER_SHA:-}" ] && [ "$EXISTING_MARKER_SHA" = "$PR_HEAD_SHA
   # crashed orphan marker still respects a CI status that went red after the sweep's
   # snapshot (the TOCTOU the sweep otherwise papered over). Every other gate keys on
   # FORCE_REVIEW alone; only this no-op honors FORCE_RE_REVIEW as well.
-  if [ "${FORCE_REVIEW:-false}" = "true" ] || [ "${FORCE_RE_REVIEW:-false}" = "true" ]; then
+  #
+  # FORCE_RE_REVIEW is orphan-only. The sweep dispatches it off a snapshot where the
+  # head marker is a crashed orphan (marker stamped, no verdict). Between that snapshot
+  # and this execution a genuine verdict can land at the same head — re-checked here on
+  # the fresh snapshot — and bypassing idempotency for it would re-run a completed
+  # review (a duplicate cascade). So FORCE_RE_REVIEW bypasses only while the head marker
+  # is still an orphan; once a verdict is present it defers to the normal no-op. The
+  # verdict shapes (bound to the head marker, per scripts/lib/review-cycle.sh and
+  # scripts/sweep-stuck-reviews.sh):
+  #   approval/escalated — `<!-- pr-review-agent v1 sha=<HEAD> decision=approved|escalated …`
+  #   fix-request        — `<!-- pr-review-agent v1 sha=<HEAD> -->` + `<!-- decision=fix-requested …`
+  # FORCE_REVIEW (human break-glass) still bypasses unconditionally, verdict or not.
+  VERDICT_AT_HEAD=false
+  if printf '%s' "$LATEST_MARKER_BODY" \
+       | grep -qE "<!-- pr-review-agent v1 sha=${PR_HEAD_SHA}[[:space:]]+decision=(approved|escalated)\b"; then
+    VERDICT_AT_HEAD=true
+  elif printf '%s' "$LATEST_MARKER_BODY" \
+         | grep -qE "<!-- pr-review-agent v1 sha=${PR_HEAD_SHA} -->" \
+       && printf '%s' "$LATEST_MARKER_BODY" | grep -qE "<!-- decision=fix-requested\b"; then
+    VERDICT_AT_HEAD=true
+  fi
+  if [ "${FORCE_REVIEW:-false}" = "true" ] \
+     || { [ "${FORCE_RE_REVIEW:-false}" = "true" ] && [ "$VERDICT_AT_HEAD" != "true" ]; }; then
     echo "    force-review: prior marker $PR_HEAD_SHA matches head, but FORCE_REVIEW/FORCE_RE_REVIEW=true — re-running cascade (idempotency bypass)"
   else
     # Metadata-digest re-arm (#1551). A metadata-only fix-request stamps
