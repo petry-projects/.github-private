@@ -1,0 +1,29 @@
+{
+  "_test_expected_intent": "skip",
+  "action": "labeled",
+  "issue": {
+    "number": 1532,
+    "title": "conflict-integrity parser misses next-line-brace function definitions",
+    "body": "Held awaiting an explicit maintainer decision to release.",
+    "state": "open",
+    "author_association": "OWNER",
+    "labels": [
+      {
+        "name": "needs-human-review"
+      },
+      {
+        "name": "dev-lead"
+      }
+    ]
+  },
+  "label": {
+    "name": "dev-lead"
+  },
+  "repository": {
+    "full_name": "petry-projects/.github-private"
+  },
+  "sender": {
+    "login": "don-petry",
+    "type": "User"
+  }
+}
