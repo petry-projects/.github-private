@@ -13,7 +13,7 @@ setup() {
   # shellcheck source=scripts/lib/miss-harvest.sh
   source "${BATS_TEST_DIRNAME}/../scripts/lib/miss-harvest.sh"
   TMP="$(mktemp -d)"
-  MISS='{"repo":"petry-projects/.github","pr":"https://github.com/petry-projects/.github/pull/995","bot":"coderabbitai","finding":"ADR asserts a rolling 5-hour window while also asserting utilization is monotonic — a self-contradiction. cc @don-petry https://internal.example.com/x token ghp_ABCDEFabcdef0123456789ABCDEFabcdef01"}'
+  MISS='{"repo":"petry-projects/.github","pr":"https://github.com/petry-projects/.github/pull/995","bot":"coderabbitai","finding":"ADR asserts a rolling 5-hour window while also asserting utilization is monotonic — a self-contradiction. cc @don-petry https://internal.example.com/x token ghp_ABCDEF0000000000000000"}'
 }
 
 teardown() {
