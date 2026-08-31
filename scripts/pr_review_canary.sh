@@ -58,9 +58,15 @@ classify_canary_run() {
 }
 
 # canary_is_failure <status>
-# Exit 0 (alert) for any status other than OK; exit 1 for OK.
+# The canary exists to catch the #1034 channel-skew defect, whose ONLY
+# fingerprint is a `startup_failure` conclusion. So it fails loud (exit 0)
+# solely on STARTUP_FAILURE. Once the dispatched run gets past startup, channel
+# skew is ruled out — a downstream FAILED (the dry-run review cascade failed
+# against a real fleet PR for an unrelated reason) or NO_RUN (no completed run
+# observed) is NOT this canary's signal and must not turn it red, or unrelated
+# flakes raise false Fleet Monitor trackers (#1612). Exit 1 (no alert) otherwise.
 canary_is_failure() {
-  [ "${1:-}" != "OK" ]
+  [ "${1:-}" = "STARTUP_FAILURE" ]
 }
 
 # canary_report <status> <repo> <run_url> [today]
@@ -74,7 +80,8 @@ canary_report() {
     OK)              icon='✅'; headline='canary passed' ;;
     STARTUP_FAILURE) icon='🔴'; headline='STARTUP FAILURE — the reusable call failed at startup (channel skew)' ;;
     NO_RUN)          icon='🟠'; headline='no pr-review-trigger run observed within the poll window' ;;
-    *)               icon='🔴'; headline='pr-review-trigger dispatch run failed' ;;
+    FAILED)          icon='🟡'; headline='dispatch started (channel skew ruled out) — downstream cascade failed for an unrelated reason' ;;
+    *)               icon='🟡'; headline='dispatch started (channel skew ruled out) — run concluded non-success for an unrelated reason' ;;
   esac
 
   printf '# %s PR-review-trigger canary — %s\n\n' "$icon" "$today"
@@ -93,9 +100,14 @@ canary_report() {
     printf 'channel, then teach the stub to forward it.\n'
   elif [ "$st" = "NO_RUN" ]; then
     printf '> No `workflow_dispatch` pr-review-trigger run completed within the poll window. '
-    printf 'The dispatch may have been rejected (PAT missing/expired) or the run is still queued.\n'
+    printf 'The dispatch may have been rejected (PAT missing/expired) or the run is still queued. '
+    printf 'This is not the channel-skew signal (no `startup_failure` observed), so it does not fail the canary.\n'
   elif [ "$st" != "OK" ]; then
-    printf '> The dry-run pr-review-trigger dispatch did not conclude successfully — inspect the run log.\n'
+    printf '> The dry-run pr-review-trigger dispatch got past startup, so the #1034 channel-skew defect is '
+    printf '**ruled out** — the reusable call was accepted. The run then concluded non-success for a reason '
+    printf 'unrelated to this canary (e.g. the review cascade failed against a real fleet PR). This canary '
+    printf 'fails loud only on `startup_failure`, so it does not turn red here; inspect the run log if the '
+    printf 'downstream failure itself is unexpected.\n'
   fi
 }
 
