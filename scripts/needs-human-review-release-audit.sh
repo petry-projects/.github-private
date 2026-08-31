@@ -44,10 +44,15 @@ echo "Auditing '$REPO' for issues released to '$RELEASE_LABEL' while '$HOLD_LABE
 
 # ── candidate set: union of hold-labelled and released issues since --since ──────
 # `since` filters by updated_at; state=all covers closed issues like #1532.
+# NOTE: no `2>/dev/null || true` here. An audit that swallows API failures
+# (auth, rate-limit, pagination) would turn them into an empty candidate set and
+# report a false "nothing to audit" / "no silent releases". Under set -euo
+# pipefail a gh failure aborts loudly instead — a failed audit must never look
+# like a clean one.
 candidates_of() {
   gh api --paginate -X GET "repos/$REPO/issues" \
     -f state=all -f "labels=$1" -f "since=${SINCE}T00:00:00Z" \
-    --jq '.[] | select(.pull_request | not) | .number' 2>/dev/null || true
+    --jq '.[] | select(.pull_request | not) | .number'
 }
 
 candidates="$(
@@ -63,10 +68,12 @@ fi
 findings=0
 while IFS= read -r n; do
   [[ -z "$n" ]] && continue
+  # One pipeline: --paginate emits one array per page, so slurp with `jq -s`
+  # ('add // []' yields [] for empty input). Optional chaining (`?`) tolerates
+  # null objects (e.g. a deleted actor). As with candidates_of, failures are NOT
+  # masked — a gh error aborts under pipefail rather than faking an empty stream.
   events="$(gh api --paginate "repos/$REPO/issues/$n/events" \
-    --jq '[.[] | select(.event=="labeled" or .event=="unlabeled")]' 2>/dev/null || echo '[]')"
-  # jq --paginate concatenates one array per page; slurp them into a single array.
-  events="$(printf '%s' "$events" | jq -s 'add // []')"
+    --jq '[.[]? | select(.event? == "labeled" or .event? == "unlabeled")]' | jq -s 'add // []')"
   hits="$(printf '%s' "$events" | hold_release_audit_scan "$SINCE")"
   if [[ -n "$hits" ]]; then
     while IFS= read -r hit; do

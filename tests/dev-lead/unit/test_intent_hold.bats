@@ -20,18 +20,25 @@ setup() {
   export TRUSTED_BOTS="copilot-pull-request-reviewer[bot],gemini-code-assist[bot]"
   export TRIGGER_PHRASES="@dev-lead"
   export GITHUB_REPOSITORY="petry-projects/.github-private"
-  MOCK_BIN="$(mktemp -d)"
+  # $BATS_TEST_TMPDIR is per-test and auto-removed on teardown/failure — no
+  # manual mktemp -d / rm -rf, which is safer under parallel execution.
+  MOCK_BIN="$BATS_TEST_TMPDIR/bin"
+  mkdir -p "$MOCK_BIN"
   export PATH="$MOCK_BIN:$PATH"
 }
 
 teardown() {
   rm -f "$GITHUB_ENV" "$GITHUB_OUTPUT"
-  rm -rf "$MOCK_BIN"
 }
 
 _get_env() {
   local key="$1"
-  grep "^${key}=" "$GITHUB_ENV" | cut -d= -f2- | head -1
+  local val
+  # No `head -1`: under set -o pipefail a closed pipe would SIGPIPE (141). Grab
+  # the value (grep guarded with `|| true` for the no-match case) and take the
+  # first line via parameter expansion instead.
+  val="$(grep "^${key}=" "$GITHUB_ENV" | cut -d= -f2- || true)"
+  printf '%s\n' "${val%%$'\n'*}"
 }
 
 @test "hold: issue labeled dev-lead while needs-human-review present → skip (the #1532 case)" {

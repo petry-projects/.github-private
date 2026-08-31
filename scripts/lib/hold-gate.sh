@@ -21,9 +21,13 @@
 # hold_gate_labels — print the active hold-label set, one per line.
 hold_gate_labels() {
   if [[ -n "${HOLD_GATE_LABELS:-}" ]]; then
-    # Intentional word-splitting: the override is a whitespace-separated list.
-    # shellcheck disable=SC2086
-    printf '%s\n' ${HOLD_GATE_LABELS}
+    # Split the whitespace-separated override into an array with IFS scoped to
+    # the read alone — never glob-expand it (an unquoted ${HOLD_GATE_LABELS}
+    # would pathname-expand a `*`/`?` in a configured label, breaking the
+    # literal-match contract documented below).
+    local -a labels_arr
+    IFS=' ' read -r -a labels_arr <<< "${HOLD_GATE_LABELS}"
+    printf '%s\n' "${labels_arr[@]}"
   else
     printf '%s\n' 'needs-human-review' 'dev-lead:needs-human' 'dev-lead:hands-off'
   fi
