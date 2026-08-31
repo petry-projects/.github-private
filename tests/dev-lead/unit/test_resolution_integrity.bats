@@ -24,14 +24,14 @@ setup() {
 
 @test "resolution-integrity.sh is safe to source under set -euo pipefail" {
   run bash -c "set -euo pipefail; source '$LIB'"
-  [ "$status" -eq 0 ]
-  [ -z "$output" ]
+  [[ "$status" -eq 0 ]]
+  [[ -z "$output" ]]
 }
 
 @test "ri_may_resolve is declared exactly once (no #1485 duplicate class)" {
-  run grep -E -c '^[[:space:]]*ri_may_resolve[[:space:]]*\(' "$LIB"
-  [ "$status" -eq 0 ]
-  [ "$output" -eq 1 ]
+  run grep -E -c '^\s*ri_may_resolve\s*\(\)' "$LIB"
+  [[ "$status" -eq 0 ]]
+  [[ "$output" -eq 1 ]]
 }
 
 # ---------------------------------------------------------------------------
@@ -40,30 +40,30 @@ setup() {
 
 @test "ri_may_resolve: both empty -> deny" {
   run ri_may_resolve "" ""
-  [ "$status" -ne 0 ]
-  [ -z "$output" ]
+  [[ "$status" -ne 0 ]]
+  [[ -z "$output" ]]
 }
 
 @test "ri_may_resolve: before empty -> deny" {
   run ri_may_resolve "" "30375c5c"
-  [ "$status" -ne 0 ]
-  [ -z "$output" ]
+  [[ "$status" -ne 0 ]]
+  [[ -z "$output" ]]
 }
 
 @test "ri_may_resolve: after empty -> deny" {
   run ri_may_resolve "30375c5c" ""
-  [ "$status" -ne 0 ]
-  [ -z "$output" ]
+  [[ "$status" -ne 0 ]]
+  [[ -z "$output" ]]
 }
 
 @test "ri_may_resolve: equal SHAs -> deny (the #1024 no-commit vector)" {
   run ri_may_resolve "30375c5c" "30375c5c"
-  [ "$status" -ne 0 ]
-  [ -z "$output" ]
+  [[ "$status" -ne 0 ]]
+  [[ -z "$output" ]]
 }
 
 @test "ri_may_resolve: differing non-empty SHAs -> allow" {
   run ri_may_resolve "30375c5c" "9b3bc2b0"
-  [ "$status" -eq 0 ]
-  [ -z "$output" ]
+  [[ "$status" -eq 0 ]]
+  [[ -z "$output" ]]
 }
