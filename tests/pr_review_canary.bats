@@ -104,13 +104,13 @@ setup() {
 }
 
 @test "canary_report: the startup_failure status surfaces the channel-skew hint" {
-  run canary_report "STARTUP_FAILURE" "petry-projects/.github-private" "https://x/run/1"
+  run canary_report "STARTUP_FAILURE" "petry-projects/.github-private" "https://x/run/1" "2026-07-15"
   [[ "$output" == *"startup_failure"* ]]
   [[ "$output" == *"https://x/run/1"* ]]
 }
 
 @test "canary_report: a downstream FAILED states channel skew is ruled out (non-fatal)" {
-  run canary_report "FAILED" "petry-projects/.github-private" "https://x/run/1"
+  run canary_report "FAILED" "petry-projects/.github-private" "https://x/run/1" "2026-07-15"
   [ "$status" -eq 0 ]
   [[ "$output" == *"ruled out"* ]]
 }
