@@ -243,12 +243,17 @@ escalation_headline() {
 }
 
 # _el_to_epoch <value>
-#   Best-effort ISO/RFC parse to epoch seconds via GNU/BSD date. Empty on failure.
+#   Best-effort parse of space-separated UTC timestamp (YYYY-MM-DD HH:MM:SS) or
+#   ISO 8601 (YYYY-MM-DDTHH:MM:SSZ) to epoch seconds. Returns empty on failure.
+#   Portable across GNU/BSD date implementations (#1600).
 _el_to_epoch() {
-  local v="${1:-}"
+  local v="${1:-}" normalized
   [ -n "$v" ] || { echo ""; return 0; }
-  date -u -d "$v" +%s 2>/dev/null \
-    || date -u -jf "%Y-%m-%dT%H:%M:%SZ" "$v" +%s 2>/dev/null \
+  # Normalize ISO 8601 (T and Z) to space-separated format for consistent parsing
+  normalized="${v//T/ }"
+  normalized="${normalized//Z/}"
+  date -u -d "$normalized" +%s 2>/dev/null \
+    || date -u -jf "%Y-%m-%d %H:%M:%S" "$normalized" +%s 2>/dev/null \
     || echo ""
 }
 
