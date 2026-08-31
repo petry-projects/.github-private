@@ -324,6 +324,10 @@ fi
   # the caller's environment after this block exits.
   # shellcheck source=lib/advisory-review-gate.sh
   source "$SCRIPT_DIR/lib/advisory-review-gate.sh"
+  # Provides maybe_post_partial_evidence_marker so a timeout-fallback approval is
+  # recorded on the PR for the miss-rate metric (#1596); the gate no-ops without it.
+  # shellcheck source=lib/partial-evidence-marker.sh
+  source "$SCRIPT_DIR/lib/partial-evidence-marker.sh"
   check_advisory_reviews "$PR_URL"
 ) || {
   gate_rc=$?

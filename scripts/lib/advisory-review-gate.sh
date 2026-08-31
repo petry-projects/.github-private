@@ -336,6 +336,17 @@ Advisory bots were rate-limited; auto-approval is withheld until they recover. p
 #   0 = All detected participating bots have submitted (ready to approve)
 #   1 = Waiting for bots (skip, will re-check on next review event)
 #
+# _record_partial_evidence <submitted> <required> <reason> — record that approval
+# is proceeding on PARTIAL advisory evidence (a timeout fallback where fewer than
+# all registered bots reported) so the miss-rate metric can count it (#1596).
+# Liveness wins: a failed post must not block the fallback, but is not swallowed
+# silently. No-op when the marker helper is not composed alongside the gate.
+_record_partial_evidence() {
+  command -v maybe_post_partial_evidence_marker >/dev/null 2>&1 || return 0
+  maybe_post_partial_evidence_marker "$PR_URL" "${PR_HEAD_SHA:-}" "$1" "$2" "$3" "${PR_SNAPSHOT:-}" \
+    || echo "::warning::partial-evidence marker post failed on ${PR_URL} — approval may be uncounted by the miss-rate metric (#1596)"
+}
+
 check_advisory_reviews() {
   local pr_url="${1:-}"
   if [[ -z "$pr_url" ]]; then
@@ -377,6 +388,7 @@ check_advisory_reviews() {
     head_age_sec=$(_head_age_seconds "$PR_URL")
     if [[ -n "$head_age_sec" && "$head_age_sec" -gt "$ADVISORY_HEAD_AGE_TIMEOUT_SEC" ]]; then
       log_warn "No advisory bot output; head is ${head_age_sec}s old (> ${ADVISORY_HEAD_AGE_TIMEOUT_SEC}s) — treating absent bots as missing reviews, proceeding (issue #1193)"
+      _record_partial_evidence 0 "${#ADVISORY_BOTS[@]}" "no-output-head-age-timeout"
       return 0
     fi
     log_warn "No advisory bot reviews detected yet"
@@ -464,8 +476,10 @@ check_advisory_reviews() {
 
     if [[ "$head_age_sec" -gt "$ADVISORY_HEAD_AGE_TIMEOUT_SEC" ]]; then
       log_info "Only ${num_submitted}/${effective_total} required bots submitted; head is ${head_age_sec}s old — timeout fallback, proceeding"
+      _record_partial_evidence "$num_submitted" "$effective_total" "head-age-timeout"
     elif [[ "$time_since_last_sub" -gt "$ADVISORY_QUIESCENCE_TIMEOUT_SEC" ]]; then
       log_info "Only ${num_submitted}/${effective_total} required bots submitted; no new submissions in ${time_since_last_sub}s — assuming absent bots won't participate, proceeding"
+      _record_partial_evidence "$num_submitted" "$effective_total" "quiescence-timeout"
     else
       log_warn "Only ${num_submitted}/${effective_total} required advisory bots submitted so far (head age: ${head_age_sec}s, last submission: ${time_since_last_sub}s ago)"
       log_warn "Will re-check when remaining bots submit their reviews"
