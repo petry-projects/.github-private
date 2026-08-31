@@ -61,6 +61,13 @@ setup() {
 
 # ---------------------------------------------------------------------------
 # canary_is_failure <status> — alert decision
+#
+# The canary exists to catch the #1034 channel-skew defect, whose sole
+# fingerprint is `startup_failure`. Only STARTUP_FAILURE fails the canary loud.
+# Once the dispatched run gets PAST startup, channel skew is ruled out — so a
+# downstream FAILED (the dry-run review cascade failed against a real fleet PR
+# for an unrelated reason) and NO_RUN (no completed run observed) must NOT trip
+# the canary, or unrelated flakes produce false Fleet Monitor trackers (#1612).
 # ---------------------------------------------------------------------------
 
 @test "canary_is_failure: OK does not alert" {
@@ -68,11 +75,21 @@ setup() {
   [ "$status" -ne 0 ]
 }
 
-@test "canary_is_failure: every non-OK status alerts" {
-  for s in STARTUP_FAILURE FAILED NO_RUN; do
-    run canary_is_failure "$s"
-    [ "$status" -eq 0 ]
-  done
+@test "canary_is_failure: STARTUP_FAILURE is the only status that alerts" {
+  run canary_is_failure "STARTUP_FAILURE"
+  [ "$status" -eq 0 ]
+}
+
+@test "canary_is_failure: a downstream FAILED does not alert (channel skew ruled out)" {
+  # The dispatched run got past startup — a non-startup failure in the review
+  # cascade is unrelated to the channel-skew defect this canary guards.
+  run canary_is_failure "FAILED"
+  [ "$status" -ne 0 ]
+}
+
+@test "canary_is_failure: NO_RUN does not alert (cannot confirm channel skew)" {
+  run canary_is_failure "NO_RUN"
+  [ "$status" -ne 0 ]
 }
 
 # ---------------------------------------------------------------------------
@@ -87,9 +104,19 @@ setup() {
 }
 
 @test "canary_report: the startup_failure status surfaces the channel-skew hint" {
-  run canary_report "STARTUP_FAILURE" "petry-projects/.github-private" "https://x/run/1"
+  run canary_report "STARTUP_FAILURE" "petry-projects/.github-private" "https://x/run/1" "2026-07-15"
   [[ "$output" == *"startup_failure"* ]]
   [[ "$output" == *"https://x/run/1"* ]]
+}
+
+@test "canary_report: a FAILED report does not overclaim channel skew is ruled out (non-fatal)" {
+  # A cancelled/timed_out run (both classified FAILED) can end before the
+  # reusable call reaches startup, so the report must not assert skew is ruled
+  # out — only that FAILED is not the startup_failure fingerprint this canary gates on.
+  run canary_report "FAILED" "petry-projects/.github-private" "https://x/run/1" "2026-07-15"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"startup_failure"* ]]
+  [[ "$output" != *"**ruled out**"* ]]
 }
 
 # ---------------------------------------------------------------------------
@@ -166,7 +193,11 @@ teardown() {
   rm -f "$CANARY_OUT" "$GITHUB_ENV"
 }
 
-@test "main: a plain failing run sets CANARY_FAILED and exits non-zero" {
+@test "main: a plain downstream failing run does NOT fail the canary (channel skew ruled out)" {
+  # The dry-run dispatch got past startup, so the channel-skew defect is ruled
+  # out even though the review cascade concluded `failure` against a real fleet
+  # PR. The canary must stay green so it does not raise a false Fleet Monitor
+  # tracker (#1612) — only startup_failure fails it loud.
   _install_gh_mock "failure"
   export REPO="petry-projects/.github-private"
   export GH_TOKEN="pat"
@@ -176,9 +207,10 @@ teardown() {
   GITHUB_ENV="$(mktemp "$BATS_TEST_TMPDIR/github_env.XXXXXX")"; export GITHUB_ENV
 
   run bash "$SCRIPT"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 0 ]
   grep -qF "CANARY_STATUS=FAILED" "$GITHUB_ENV"
-  grep -qF "CANARY_FAILED=true" "$GITHUB_ENV"
+  run grep -qF "CANARY_FAILED=true" "$GITHUB_ENV"
+  [ "$status" -eq 1 ]
 
   rm -f "$CANARY_OUT" "$GITHUB_ENV"
 }
