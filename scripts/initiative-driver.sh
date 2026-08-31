@@ -58,6 +58,8 @@
 #   HOLD_LABEL      never-release label (default: initiative:hold)
 #   NEEDS_HUMAN_LABEL  human-gated label excluded from in-flight (default:
 #                   dev-lead:needs-human)
+#   NEEDS_HUMAN_REVIEW_LABEL  fleet hold label applied by github-actions
+#                   (default: needs-human-review) — never-release (#1595)
 #   STALE_HOURS     hours a dev-lead label may sit before a slot-holder is
 #                   flagged a zombie (default: 72)
 #   MAX_IN_FLIGHT   cap on concurrently-released sub-issues (default: 2)
@@ -73,6 +75,25 @@ GATE_LABEL="${GATE_LABEL:-initiative:auto}"
 HANDS_OFF_LABEL="${HANDS_OFF_LABEL:-dev-lead:hands-off}"
 HOLD_LABEL="${HOLD_LABEL:-initiative:hold}"
 NEEDS_HUMAN_LABEL="${NEEDS_HUMAN_LABEL:-dev-lead:needs-human}"
+NEEDS_HUMAN_REVIEW_LABEL="${NEEDS_HUMAN_REVIEW_LABEL:-needs-human-review}"
+
+# The never-release check is the shared hold-gate predicate (scripts/lib/hold-
+# gate.sh) — one source of truth across the driver, the dev-lead intent
+# classifier, and any retry/sweep path (#1595 AC #3). The driver's hold set is
+# the union of its configurable hold labels plus the fleet-wide needs-human-review
+# hold; export it so hold_gate_first_match consults exactly this set.
+# shellcheck source=scripts/lib/hold-gate.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/hold-gate.sh"
+HOLD_GATE_LABELS="${HOLD_GATE_LABELS:-$HANDS_OFF_LABEL $HOLD_LABEL $NEEDS_HUMAN_LABEL $NEEDS_HUMAN_REVIEW_LABEL}"
+# needs-human-review is the fleet-wide hold that MUST gate at the release point
+# (#1595) — a caller that narrows HOLD_GATE_LABELS must not be able to drop it
+# and re-open the #1532 silent release. Force it into the set, deduped, so an
+# override extends rather than replaces the required fleet hold.
+case " $HOLD_GATE_LABELS " in
+  *" $NEEDS_HUMAN_REVIEW_LABEL "*) ;;
+  *) HOLD_GATE_LABELS="$HOLD_GATE_LABELS $NEEDS_HUMAN_REVIEW_LABEL" ;;
+esac
+export HOLD_GATE_LABELS
 STALE_HOURS="${STALE_HOURS:-72}"
 MAX_IN_FLIGHT="${MAX_IN_FLIGHT:-2}"
 DRY_RUN="${DRY_RUN:-false}"
@@ -94,7 +115,7 @@ case "$DRY_RUN" in
   false|0|no)  DRY_RUN=false ;;
   *) echo "::error::DRY_RUN must be true or false, got: '$DRY_RUN'"; exit 1 ;;
 esac
-readonly REPO EPIC CLOSED_ISSUE DEV_LEAD_LABEL GATE_LABEL HANDS_OFF_LABEL HOLD_LABEL NEEDS_HUMAN_LABEL STALE_HOURS MAX_IN_FLIGHT DRY_RUN
+readonly REPO EPIC CLOSED_ISSUE DEV_LEAD_LABEL GATE_LABEL HANDS_OFF_LABEL HOLD_LABEL NEEDS_HUMAN_LABEL NEEDS_HUMAN_REVIEW_LABEL STALE_HOURS MAX_IN_FLIGHT DRY_RUN
 
 log() { printf '%s\n' "$*"; }
 
@@ -188,7 +209,7 @@ EOF
 # Returns 0 on success (including no-ops); never aborts the caller's sweep.
 drive_epic() {
   local epic="$1"
-  local epic_labels all_children_raw open_children_raw n n_labels labels open_blockers activity_ts
+  local epic_labels all_children_raw open_children_raw n n_labels labels open_blockers activity_ts hold_blocking_label gated_by
   local -a all_children open_children zombies
   local -A released
   local in_flight gated slots released_now in_epic
@@ -245,9 +266,16 @@ drive_epic() {
     n_labels="$(labels_of "$n")"
     has_label "$n_labels" "$DEV_LEAD_LABEL" || continue
     released[$n]=1
-    if has_label "$n_labels" "$NEEDS_HUMAN_LABEL"; then
+    # A carrier that is also HELD (any hold-gate label: needs-human-review,
+    # dev-lead:needs-human, hands-off, initiative:hold) cannot progress without a
+    # human, so — like #1494's dev-lead:needs-human case — it is excluded from the
+    # in-flight count and never re-released. Counting a held carrier would let it
+    # consume MAX_IN_FLIGHT and starve eligible siblings (the #1402 slots=0
+    # deadlock); checking only NEEDS_HUMAN_LABEL missed the fleet-wide
+    # needs-human-review hold (#1595).
+    if gated_by="$(hold_gate_first_match "$n_labels")"; then
       gated=$((gated + 1))
-      log "  #$n — gated: $NEEDS_HUMAN_LABEL (excluded from in-flight; needs a human)."
+      log "  #$n — gated: $gated_by (excluded from in-flight; needs a human)."
       continue
     fi
     in_flight=$((in_flight + 1))
@@ -272,12 +300,13 @@ drive_epic() {
     [[ -n "${released[$n]:-}" ]] && continue
 
     labels="$(labels_of "$n")"
-    if has_label "$labels" "$HANDS_OFF_LABEL"; then
-      log "  #$n — skip: $HANDS_OFF_LABEL (needs a human)."
-      continue
-    fi
-    if has_label "$labels" "$HOLD_LABEL"; then
-      log "  #$n — skip: $HOLD_LABEL (held)."
+    # Never release a held sub-issue. The hold set (hands-off / initiative:hold /
+    # dev-lead:needs-human / needs-human-review) is the shared hold-gate predicate;
+    # #1595: needs-human-review MUST block release — #1532 shipped with it attached
+    # because the driver did not consult it here. Log the issue number AND the
+    # blocking label so a skipped release is auditable (AC #1).
+    if hold_blocking_label="$(hold_gate_first_match "$labels")"; then
+      log "  #$n — skip: held by '$hold_blocking_label' (needs a human)."
       continue
     fi
     # Never release a sub-issue that is itself an epic (#882; the #934/#938
