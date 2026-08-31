@@ -131,7 +131,21 @@ push_with_merge_guard() {
   # steering commit, or stop/escalate (return non-zero) if it cannot be
   # incorporated cleanly. A fetch failure (e.g. the branch was deleted by a
   # mid-run merge) returns 0, leaving the merge-race handling below to run.
-  incorporate_remote_head "$@" || return $?
+  local reconcile_rc=0
+  incorporate_remote_head "$@" || reconcile_rc=$?
+  if [ "$reconcile_rc" -ne 0 ]; then
+    # A PR merged/closed mid-run can make the reconcile fail (e.g. a rebase
+    # conflict against a head that is about to vanish). That is the benign merge
+    # race this guard exists for, not a genuine escalation — check the PR's state
+    # before failing the job, exactly as the post-push path below does.
+    local reconcile_state
+    reconcile_state=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}" --jq '.state' 2>/dev/null || true)
+    if [ -n "$reconcile_state" ] && [ "$reconcile_state" != "open" ]; then
+      echo "::notice::PR #${PR_NUMBER} is ${reconcile_state} — merged/closed mid-run; nothing to push. Exiting cleanly."
+      exit 0
+    fi
+    return "$reconcile_rc"
+  fi
 
   local errf
   errf="$(mktemp)"

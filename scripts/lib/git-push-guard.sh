@@ -38,21 +38,28 @@ _push_guard_summary() {
 }
 
 # _commit_is_dev_lead SHA — true when the commit was authored by dev-lead's own
-# identity. dev-lead commits with the bot's noreply email
-# (<id>+<login>@users.noreply.github.com or <login>@users.noreply.github.com;
-# see setup_git_identity in git-identity.sh), so match on that suffix. Anything
-# else — a human maintainer's real email, another bot — is foreign (steering)
-# and must never be silently discarded. The email is the reliable signal: a
-# human owner may share the `don-petry` *name* but not the bot noreply address.
+# identity. dev-lead commits with the bot's noreply email — exactly
+# <login>@users.noreply.github.com or <id>+<login>@users.noreply.github.com
+# (see setup_git_identity in git-identity.sh) — so match ONLY those two forms.
+# A bare "*<login>@…" suffix match would also accept a spoofed local-part such as
+# attacker-<login>@users.noreply.github.com and misclassify a foreign commit as
+# dev-lead-owned; anchoring the local part to the exact login (optionally an
+# all-digit user-id prefix) closes that. Anything else — a human maintainer's
+# real email, another bot — is foreign (steering) and must never be silently
+# discarded. The email is the reliable signal: a human owner may share the
+# `don-petry` *name* but not the bot noreply address.
 _commit_is_dev_lead() {
   local sha="$1"
   local bot="${BOT_USER:-donpetry-bot}"
   local email
   email=$(git log -1 --format='%ce' "$sha" 2>/dev/null || true)
-  case "$email" in
-    *"${bot}@users.noreply.github.com") return 0 ;;
-    *) return 1 ;;
-  esac
+  # Quoted "${bot}" is a literal in the regex; the id-prefix and domain are
+  # anchored so the login must be the WHOLE local part (or follow "<digits>+").
+  if [[ "$email" == "${bot}@users.noreply.github.com" ]] \
+     || [[ "$email" =~ ^[0-9]+\+"${bot}"@users\.noreply\.github\.com$ ]]; then
+    return 0
+  fi
+  return 1
 }
 
 # _resolve_remote_branch [remote branch] — echo "<remote> <branch>" for the push

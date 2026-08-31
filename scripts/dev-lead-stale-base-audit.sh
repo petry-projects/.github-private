@@ -32,6 +32,30 @@ audit_one() {
   local graph
   graph=$(gh api --paginate "repos/${repo}/pulls/${pr}/commits" \
     --jq '.[] | .sha + " " + ((.parents // []) | map(.sha) | join(" "))' 2>/dev/null || true)
+
+  # The commits endpoint lists ONLY commits still reachable from the PR head, so a
+  # force-pushed-away steering commit (the #1604 discard) is absent — and the
+  # sibling fingerprint, which needs BOTH the discarded commit and its
+  # replacement, would be invisible. Recover the discarded heads from the repo
+  # activity log: every force_push on the PR's branch records its pre-push
+  # `before` SHA. Append each discarded commit + its parent to the graph so
+  # detect_stale_base_siblings can see the discarded/replacement pair sharing a
+  # parent. Best-effort: a since-collected `before` commit simply 404s and is
+  # skipped, which is still strictly better than never seeing the discard.
+  local branch
+  branch=$(gh api "repos/${repo}/pulls/${pr}" --jq '.head.ref' 2>/dev/null || true)
+  if [ -n "$branch" ]; then
+    local before line
+    while IFS= read -r before; do
+      [ -n "$before" ] || continue
+      line=$(gh api "repos/${repo}/commits/${before}" \
+        --jq '.sha + " " + ((.parents // []) | map(.sha) | join(" "))' 2>/dev/null || true)
+      [ -n "$line" ] && graph+=$'\n'"$line"
+    done < <(gh api --paginate \
+      "repos/${repo}/activity?ref=refs/heads/${branch}&activity_type=force_push&per_page=100" \
+      --jq '.[].before' 2>/dev/null || true)
+  fi
+
   if [ -z "$graph" ]; then
     echo "  [audit] ${repo}#${pr}: no commits returned — skipping"
     return 0
@@ -58,16 +82,25 @@ main() {
   # Full sweep: reuse list-prs.sh to enumerate the open PR queue, then audit each.
   local list_prs
   list_prs="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/list-prs.sh"
-  local url
+  # Capture the enumeration explicitly and check its exit status. A `< <(... ||
+  # true)` process substitution would swallow a list-prs.sh failure as empty
+  # output, so the loop would audit ZERO PRs and the sweep would exit 0 — a false
+  # all-clear for a CI-gating audit. Fail loud instead. (Empty output with a
+  # success exit is legitimate: no open PRs.)
+  local pr_urls
+  if ! pr_urls=$(bash "$list_prs" 2>/dev/null); then
+    echo "::error::could not enumerate open PRs (list-prs.sh failed) — refusing to report a clean audit over zero PRs (#1607)" >&2
+    return 1
+  fi
+  local url slug num
   while IFS= read -r url; do
     [ -n "$url" ] || continue
     # url form: https://github.com/<owner>/<repo>/pull/<n>
-    local slug num
     slug=$(printf '%s' "$url" | sed -E 's#https://github.com/([^/]+/[^/]+)/pull/[0-9]+#\1#')
     num=$(printf '%s' "$url" | sed -E 's#.*/pull/([0-9]+)$#\1#')
     [ -n "$slug" ] && [ -n "$num" ] || continue
     audit_one "$slug" "$num" || fail=1
-  done < <(bash "$list_prs" 2>/dev/null || true)
+  done <<< "$pr_urls"
 
   return "$fail"
 }

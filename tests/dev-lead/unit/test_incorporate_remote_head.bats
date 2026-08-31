@@ -145,6 +145,35 @@ _remote_log()  { git --git-dir="$REMOTE" log --format='%s' main; }
   echo "$output" | grep -q "${discarded:0:12}"
 }
 
+@test "security: only the exact bot noreply local-part is classified as dev-lead (#1610)" {
+  cd "$WORK"
+  source "$GUARD_LIB"
+
+  # Exact login as the whole local part → OWN.
+  GIT_COMMITTER_EMAIL="don-petry@users.noreply.github.com" \
+    git commit -q --allow-empty -m bare
+  run _commit_is_dev_lead HEAD
+  [ "$status" -eq 0 ]
+
+  # Numeric user-id prefix + login → OWN.
+  GIT_COMMITTER_EMAIL="12345+don-petry@users.noreply.github.com" \
+    git commit -q --allow-empty -m idprefix
+  run _commit_is_dev_lead HEAD
+  [ "$status" -eq 0 ]
+
+  # A spoofed local part that merely ENDS WITH the login is FOREIGN (steering).
+  GIT_COMMITTER_EMAIL="attacker-don-petry@users.noreply.github.com" \
+    git commit -q --allow-empty -m spoof
+  run _commit_is_dev_lead HEAD
+  [ "$status" -ne 0 ]
+
+  # A non-numeric prefix before "+login" is also FOREIGN.
+  GIT_COMMITTER_EMAIL="evil+don-petry@users.noreply.github.com" \
+    git commit -q --allow-empty -m evilprefix
+  run _commit_is_dev_lead HEAD
+  [ "$status" -ne 0 ]
+}
+
 @test "no divergence: plain fast-forward push still works" {
   cd "$WORK"
   source "$GUARD_LIB"

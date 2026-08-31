@@ -210,6 +210,25 @@ EOF
   [ ! -f "$STUB_BIN_DIR/pushed" ]
 }
 
+@test "push_with_merge_guard: exits 0 cleanly when reconcile fails because the PR merged/closed mid-run (#1610)" {
+  source "$LIB"
+  # Reconcile cannot incorporate (return 2), but the PR was merged/closed in the
+  # window — that is the benign merge race, not an escalation, so exit 0 without
+  # pushing rather than failing the job.
+  incorporate_remote_head() { return 2; }
+  PR_STATE="closed"
+  cat > "$STUB_BIN_DIR/git" <<'EOF'
+#!/usr/bin/env bash
+[ "$1" = push ] && { echo "PUSHED" > "$STUB_BIN_DIR/pushed"; exit 0; }
+exec /usr/bin/git "$@"
+EOF
+  chmod +x "$STUB_BIN_DIR/git"
+  run push_with_merge_guard
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"nothing to push"* ]]
+  [ ! -f "$STUB_BIN_DIR/pushed" ]
+}
+
 # ── push_with_merge_guard — force-with-lease retry on rewritten history ────────
 
 # git stub for the rebase/force-push path. $1 = "diverged" | "not-diverged"
