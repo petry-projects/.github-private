@@ -280,13 +280,30 @@ pat_expiry="UNKNOWN"
 pat_scopes_seen=""
 pat_expiry_raw=""
 if resp=$(gh api -i user 2>/dev/null); then
-  pat_scopes_seen=$(printf '%s\n' "$resp" | grep -im 1 '^x-oauth-scopes:' | cut -d: -f2- | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-  pat_expiry_raw=$(printf '%s\n' "$resp" | grep -im 1 '^github-authentication-token-expiration:' | cut -d: -f2- | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-  pat_missing=$(pat_missing_scopes "$pat_scopes_seen" "$PAT_REQUIRED_SCOPES")
-  if [ -z "$pat_missing" ]; then
-    pat_scope_state="OK"
+  # An ABSENT header here is a normal, expected condition — a fine-grained PAT or
+  # a GitHub App token carries no `x-oauth-scopes`, and a never-expiring classic
+  # PAT carries no `github-authentication-token-expiration`. Under `set -euo
+  # pipefail` an unguarded `grep` that legitimately finds nothing exits 1, the
+  # pipeline/assignment inherits it, and errexit kills the script BEFORE section 4
+  # ever writes the report, the GITHUB_ENV flags, or the alert body (#1605). Guard
+  # the extraction with `|| true` so a missing header yields empty — a
+  # classification INPUT, not a fatal error.
+  pat_scopes_seen=$(printf '%s\n' "$resp" | grep -im 1 '^x-oauth-scopes:' | cut -d: -f2- | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' || true)
+  pat_expiry_raw=$(printf '%s\n' "$resp" | grep -im 1 '^github-authentication-token-expiration:' | cut -d: -f2- | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' || true)
+  if [ -z "$pat_scopes_seen" ]; then
+    # No x-oauth-scopes header: a fine-grained PAT or App token, whose access is
+    # not expressible as classic oauth scopes. That is UNKNOWN (unclassifiable),
+    # NOT a MISSING classic-scope failure — reporting a fine-grained token as
+    # "missing repo workflow" would be a false alarm (#1605).
+    pat_scope_state="UNKNOWN"
+    pat_missing=""
   else
-    pat_scope_state="MISSING"
+    pat_missing=$(pat_missing_scopes "$pat_scopes_seen" "$PAT_REQUIRED_SCOPES")
+    if [ -z "$pat_missing" ]; then
+      pat_scope_state="OK"
+    else
+      pat_scope_state="MISSING"
+    fi
   fi
   pat_expiry=$(pat_expiry_state "$pat_expiry_raw" "$PAT_WARN_DAYS")
 else
@@ -348,3 +365,11 @@ fi
 echo ""
 echo "Report written to ${REPORT_FILE} ($(wc -c < "$REPORT_FILE") bytes)"
 echo "=== Engine-token liveness monitor complete ==="
+
+# The wrapper itself always exits 0 once it has written the report, the alert body
+# and the GITHUB_ENV flags. The workflow's final `always() && SHOULD_FAIL == 'true'`
+# step owns the run's red/green decision, so the FLEET alert step (which lacks
+# always()) stays reachable and the run's exit status tracks SHOULD_FAIL rather
+# than an incidental abort (#1605). Never turn a normal classification outcome
+# into a non-zero exit here.
+exit 0
