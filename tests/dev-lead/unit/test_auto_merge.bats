@@ -143,6 +143,13 @@ teardown() { rm -rf "$STUB_BIN_DIR" "$GH_CALLS"; }
 
 # ── push_with_merge_guard ─────────────────────────────────────────────────────
 
+# The stale-base reconcile (incorporate_remote_head, #1607) has its own hermetic
+# suite in test_incorporate_remote_head.bats. Neutralize it here so these tests
+# stay focused on the merge-race / force-retry logic and never touch a real
+# remote. _PUSH_GUARD_REMOTE_SHA/_BRANCH stay empty, so the force retry exercises
+# the --force-with-lease --force-if-includes fallback.
+_neutralize_incorporate() { incorporate_remote_head() { return 0; }; }
+
 _install_git_stub() {  # $1 = push exit code
   cat > "$STUB_BIN_DIR/git" <<EOF
 #!/usr/bin/env bash
@@ -157,6 +164,7 @@ EOF
 
 @test "push_with_merge_guard: returns 0 on a successful push" {
   source "$LIB"
+  _neutralize_incorporate
   cat > "$STUB_BIN_DIR/git" <<'EOF'
 #!/usr/bin/env bash
 [ "$1" = push ] && exit 0
@@ -169,6 +177,7 @@ EOF
 
 @test "push_with_merge_guard: exits 0 cleanly when the PR was merged/closed mid-run" {
   source "$LIB"
+  _neutralize_incorporate
   _install_git_stub 1
   PR_STATE="closed"
   run push_with_merge_guard
@@ -178,6 +187,7 @@ EOF
 
 @test "push_with_merge_guard: returns 1 on a genuine push failure (PR still open)" {
   source "$LIB"
+  _neutralize_incorporate
   _install_git_stub 1
   PR_STATE="open"
   run push_with_merge_guard
@@ -185,12 +195,46 @@ EOF
   [[ "$output" == *"git push failed"* ]]
 }
 
+@test "push_with_merge_guard: escalates (non-zero, no push) when reconcile stops on un-incorporable steering (#1607)" {
+  source "$LIB"
+  # incorporate_remote_head returns 2 = STOP/escalate; the guard must not push.
+  incorporate_remote_head() { return 2; }
+  cat > "$STUB_BIN_DIR/git" <<'EOF'
+#!/usr/bin/env bash
+[ "$1" = push ] && { echo "PUSHED" > "$STUB_BIN_DIR/pushed"; exit 0; }
+exec /usr/bin/git "$@"
+EOF
+  chmod +x "$STUB_BIN_DIR/git"
+  run push_with_merge_guard
+  [ "$status" -eq 2 ]
+  [ ! -f "$STUB_BIN_DIR/pushed" ]
+}
+
+@test "push_with_merge_guard: exits 0 cleanly when reconcile fails because the PR merged/closed mid-run (#1610)" {
+  source "$LIB"
+  # Reconcile cannot incorporate (return 2), but the PR was merged/closed in the
+  # window — that is the benign merge race, not an escalation, so exit 0 without
+  # pushing rather than failing the job.
+  incorporate_remote_head() { return 2; }
+  PR_STATE="closed"
+  cat > "$STUB_BIN_DIR/git" <<'EOF'
+#!/usr/bin/env bash
+[ "$1" = push ] && { echo "PUSHED" > "$STUB_BIN_DIR/pushed"; exit 0; }
+exec /usr/bin/git "$@"
+EOF
+  chmod +x "$STUB_BIN_DIR/git"
+  run push_with_merge_guard
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"nothing to push"* ]]
+  [ ! -f "$STUB_BIN_DIR/pushed" ]
+}
+
 # ── push_with_merge_guard — force-with-lease retry on rewritten history ────────
 
 # git stub for the rebase/force-push path. $1 = "diverged" | "not-diverged"
 # controls whether merge-base --is-ancestor reports the upstream as reachable
 # from HEAD (i.e. whether history was rewritten). The plain push always reports a
-# non-fast-forward rejection; the force-with-lease push succeeds.
+# non-fast-forward rejection; the pinned force push (--force-with-lease…) succeeds.
 _install_git_stub_force() {
   cat > "$STUB_BIN_DIR/git" <<EOF
 #!/usr/bin/env bash
@@ -198,7 +242,7 @@ case "\$1" in
   push)
     shift
     for a in "\$@"; do
-      [ "\$a" = "--force-with-lease" ] && exit 0
+      case "\$a" in --force-with-lease*) exit 0 ;; esac
     done
     echo "  ! [rejected]        feature -> feature (non-fast-forward)" >&2
     exit 1
@@ -221,23 +265,25 @@ EOF
   chmod +x "$STUB_BIN_DIR/git"
 }
 
-@test "push_with_merge_guard: force-with-lease retry succeeds when history was rewritten (rebase)" {
+@test "push_with_merge_guard: pinned force retry succeeds when history was rewritten (rebase)" {
   source "$LIB"
+  _neutralize_incorporate
   _install_git_stub_force diverged
   PR_STATE="open"
   run push_with_merge_guard
   [ "$status" -eq 0 ]
-  [[ "$output" == *"--force-with-lease"* ]]
+  [[ "$output" == *"pinned lease"* ]]
 }
 
 @test "push_with_merge_guard: does NOT force-push when branch is not diverged (remote advanced legitimately)" {
   source "$LIB"
+  _neutralize_incorporate
   _install_git_stub_force not-diverged
   PR_STATE="open"
   run push_with_merge_guard
   [ "$status" -eq 1 ]
   [[ "$output" == *"git push failed"* ]]
-  [[ "$output" != *"retrying with --force-with-lease"* ]]
+  [[ "$output" != *"pinned lease"* ]]
 }
 
 # ── hold_auto_merge — commit text capture ─────────────────────────────────────

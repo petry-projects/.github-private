@@ -11,16 +11,21 @@
 setup() {
   GUARD_LIB="$(cd "$(dirname "$BATS_TEST_FILENAME")/../../.." && pwd)/scripts/lib/git-push-guard.sh"
 
+  # dev-lead acts as `don-petry`; its own commits carry the bot noreply email so
+  # the #1607 identity-aware guard classifies them as OWN (a self-rewrite may be
+  # force-with-leased) rather than foreign steering (which is never discarded).
+  export BOT_USER="don-petry"
+
   REMOTE="$BATS_TEST_TMPDIR/remote.git"
   WORK="$BATS_TEST_TMPDIR/work"
 
-  # Bare remote seeded with commit A on `main`.
+  # Bare remote seeded with commit A on `main` (authored as dev-lead).
   git init -q --bare "$REMOTE"
   local seed="$BATS_TEST_TMPDIR/seed"
   git init -q "$seed"
   (
     cd "$seed"
-    git config user.email t@t.co; git config user.name t
+    git config user.email "1+don-petry@users.noreply.github.com"; git config user.name don-petry
     echo A > f; git add f; git commit -q -m A
     git branch -M main
     git remote add origin "$REMOTE"
@@ -31,7 +36,7 @@ setup() {
 
   # dev-lead's working checkout (origin/main tracked, last seen = A).
   git clone -q "$REMOTE" "$WORK"
-  ( cd "$WORK"; git config user.email t@t.co; git config user.name t )
+  ( cd "$WORK"; git config user.email "1+don-petry@users.noreply.github.com"; git config user.name don-petry )
 }
 
 # Advance the remote's `main` from an independent clone (a concurrent writer)
@@ -108,4 +113,18 @@ _remote_head() { git --git-dir="$REMOTE" rev-parse main; }
   local bare
   bare=$(grep -nE 'git push[^|&]*--force([^-]|$)' "$GUARD_LIB" | grep -v -- '--force-with-lease' || true)
   [ -z "$bare" ]
+}
+
+@test "push_no_clobber: every force-with-lease is pinned — explicit value or --force-if-includes (#1607)" {
+  # A bare --force-with-lease leases against the remote-tracking ref and is
+  # silently defeated by any fetch that refreshed it (the #1604 hole). Every
+  # lease in the lib must be pinned: either an explicit =<ref>:<sha> value or
+  # paired with --force-if-includes.
+  local leased weak
+  leased=$(grep -nE 'git push[^|&]*--force-with-lease' "$GUARD_LIB" || true)
+  [ -n "$leased" ]
+  weak=$(printf '%s\n' "$leased" \
+    | grep -v -- '--force-if-includes' \
+    | grep -v -- '--force-with-lease=' || true)
+  [ -z "$weak" ]
 }

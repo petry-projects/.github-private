@@ -31,7 +31,13 @@ Resolve the merge conflicts and rebase the branch onto `${BASE_REF}`:
    - Resolve the conflict by keeping the correct logic from each side
    - Stage the resolved file: `git add <file>`
 5. Continue the rebase: `git rebase --continue`
-6. Force-push the rebased branch: `git push --force-with-lease origin ${HEAD_REF}`
+6. Force-push the rebased branch, pinning the lease so a concurrent steering
+   commit cannot be silently discarded (#1607): `git push --force-with-lease --force-if-includes origin ${HEAD_REF}`.
+   `--force-if-includes` aborts the push unless the commits being overwritten are
+   reachable from a ref this checkout actually fetched — so if a maintainer
+   pushed to `${HEAD_REF}` after step 2's fetch, the push fails loudly instead of
+   destroying their commit. If it is rejected, re-run steps 2–5 to rebase onto
+   the new head (incorporating their commit), then push again.
 
 ## Constraints
 
