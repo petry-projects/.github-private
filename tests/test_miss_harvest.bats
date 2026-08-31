@@ -14,7 +14,7 @@ setup() {
   source "${BATS_TEST_DIRNAME}/../scripts/lib/miss-harvest.sh"
   # $BATS_TEST_TMPDIR is created per-test and auto-removed on exit (incl. failure).
   TMP="$BATS_TEST_TMPDIR"
-  MISS='{"repo":"petry-projects/.github","pr":"https://github.com/petry-projects/.github/pull/995","bot":"coderabbitai","finding":"ADR asserts a rolling 5-hour window while also asserting utilization is monotonic — a self-contradiction. cc @don-petry https://internal.example.com/x token ghp_0000000000000000"}'
+  MISS='{"repo":"petry-projects/.github","pr":"https://github.com/petry-projects/.github/pull/995","bot":"coderabbitai","finding":"ADR asserts a rolling 5-hour window while also asserting utilization is monotonic — a self-contradiction. cc @don-petry https://internal.example.com/x token ghp_testtoken1234567"}'
 }
 
 # ---------------------------------------------------------------------------
@@ -77,7 +77,7 @@ setup() {
   # No raw URL, @mention, or ghp_ token survives into the committed case.
   ! grep -q "https://" <<<"$output"
   ! grep -q "@don-petry" <<<"$output"
-  ! grep -q "ghp_0000000000000000" <<<"$output"
+  ! grep -q "ghp_testtoken1234567" <<<"$output"
   # Still valid JSON with the expected shape.
   run jq -e '.id and .input and .expected' <<<"$output"
   [ "$status" -eq 0 ]
