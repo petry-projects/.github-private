@@ -205,6 +205,23 @@ handle_engine_failure() {
 Please check the runner/engine configuration, then re-apply the \`dev-lead\` label to retry."
   fi
 
+  # Deterministic credential config-gap (#1591): an engine (e.g. Copilot) was
+  # skipped because its token was missing/placeholder/unsupported and it was the
+  # sole terminal cause. Like missing-binary, retrying cannot help until a human
+  # sets the secret — escalate immediately with NO retry marker so the retry cron
+  # does not requeue an attempt that can never succeed. This is distinct from a
+  # rate limit: the condition cannot change on its own.
+  if [ "$reason" = "unconfigured" ]; then
+    escalate_needs_human "$reason" "$attempt" "$snippet" \
+      "Engine credential missing/placeholder while implementing issue #${ISSUE_NUMBER} — escalating to human" \
+      "A required engine credential (e.g. the Copilot token \`COPILOT_GITHUB_TOKEN\`) was **missing, a placeholder, or an unsupported type** while implementing this issue. This is a deterministic **authentication/configuration** gap, not a transient rate limit, so automatic retry is disabled — retrying cannot succeed until the secret is set.
+
+- **Cause:** \`${reason}\`
+- **Run:** ${run_url}
+
+Set the missing engine credential (and confirm it is a supported token type), then re-apply the \`dev-lead\` label to retry."
+  fi
+
   # Stage timeout (exit 124): a first-class, NON-retryable condition. A
   # same-budget retry would just time out again, so — like missing-binary —
   # escalate to a human on the FIRST occurrence with NO retry marker (the retry
