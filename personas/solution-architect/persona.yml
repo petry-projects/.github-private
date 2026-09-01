@@ -102,7 +102,7 @@ runtime:
 
 evals:
   required_before: stable
-  path: evals/solution-architect/   # under the repo eval tree so validate-cases.py + holdout-guard.yml cover it
+  path: evals/solution-architect    # under the repo eval tree so validate-cases.py + holdout-guard.yml cover it
   judge: evals/judge.md
   min_cases: 5                      # seed cases are placeholders; reach 5 held-out before stable
 

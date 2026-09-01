@@ -41,7 +41,10 @@ advisory.
    you measure the change against what has been *decided*, not against taste:
    ```bash
    ls docs/architecture/adr/
-   cat docs/architecture/adr/*.md
+   # From the listing, pick the ADR(s) relevant to this change and read ONLY
+   # those — do not cat every ADR (the set grows; reading all of it bloats
+   # context and can blow the token budget).
+   cat docs/architecture/adr/ADR-NNNN.md
    ```
    Identify which ADR (by number, e.g. ADR-0002) governs the change under review.
 
