@@ -128,6 +128,7 @@ validate_engines() {
 EOF
 
   # Track every engine that review-one-pr.sh is called with.
+  rm -f engine_calls.txt
   cat > "scripts/review-one-pr.sh" <<'EOF'
 #!/bin/bash
 printf '%s\n' "$REVIEW_ENGINE" >> engine_calls.txt

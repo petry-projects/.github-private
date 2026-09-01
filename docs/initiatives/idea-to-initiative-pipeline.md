@@ -143,37 +143,6 @@ inputs.
   backfill reuses `feature-ideation`'s existing model budget and 20-minute
   timeout, so it is cost-neutral-to-reducing.
 
-### Enhancement is folding into `feature-ideation` (#872) — backfill + dry-run
-
-The standalone `idea-enhancer` capability is being **consolidated** into the
-`feature-ideation` reusable workflow (epic #872) and the standalone enhancer is
-slated for deprecation (#876) **once** the folded path is validated. The two
-enhancement modes `idea-enhancer` provided — the existing-backlog **sweep** and
-the enhancement **dry-run** — are restored on the folded path (#934, planned
-from discussion #933). The enhancement logic lives in the **central** reusable
-`petry-projects/.github` (`feature-ideation-reusable.yml`); `.github-private`
-ships only the thin `feature-ideation.yml` caller stub (pinned to the
-`@feature-ideation/next` dogfood ring), which exposes these modes as
-`workflow_dispatch` inputs.
-
-- **Backfill sweep** — dispatch `feature-ideation` with `enhance_backlog: true`.
-  It sweeps the target repo's open, human-authored, not-yet-enhanced **Ideas**
-  Discussions and posts **exactly one** structured enhancement comment each.
-  Bot-authored and already-enhanced ideas are skipped. This is the safety-net
-  backfill that catches human ideas added before the folded enhancer went live.
-- **Dry-run** — dispatch with `dry_run: true` **and** `enhance_backlog: true`.
-  Every intended per-Discussion enhancement comment is logged to the JSONL
-  artifact and **nothing** is posted (one artifact entry per candidate
-  Discussion). The dry-run is free of model spend beyond candidate gathering.
-- **Marker continuity (cutover-safe).** The idempotency check honors **both**
-  the legacy `<!-- idea-enhancer:enhanced -->` marker and the canonical
-  `<!-- feature-ideation:enhanced -->` marker; new enhancement comments emit the
-  single canonical marker. So **no** idea enhanced by the old `idea-enhancer` is
-  re-enhanced after the cutover, and a repeated backfill is a no-op.
-- **Cost.** Operator-triggered (`workflow_dispatch`), **no new cron** — the
-  backfill reuses `feature-ideation`'s existing model budget and 20-minute
-  timeout, so it is cost-neutral-to-reducing.
-
 #### Operator runbook — backfilling the `.github-private` backlog
 
 1. **Dry-run first.** Run the **Feature Research & Ideation** workflow via
@@ -187,7 +156,8 @@ ships only the thin `feature-ideation.yml` caller stub (pinned to the
    **0**.
 3. **Verify idempotency.** A second live backfill run posts **0** new comments
    (no idea is double-enhanced, including ideas already carrying the legacy
-   marker). Only then is `idea-enhancer` safe to deprecate (#876).
+   marker) — the idempotency guarantee that let the standalone `idea-enhancer`
+   be retired (#876).
 
 ### `idea-triage.yml` — weekly ripeness shortlist
 - Scans every open **Ideas** Discussion, scores each **Ripe / Soon / Not yet**

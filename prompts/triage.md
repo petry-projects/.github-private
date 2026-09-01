@@ -195,11 +195,6 @@ touches. Pick exactly one:
   dominated by any of the above: correctness, control flow, edge cases, new
   functionality, or bug fixes.
 
-Precedence when a diff spans classes: `security` first (any security exposure
-wins), then `logic` (a real behavior change), then `performance`, then `style`.
-If you genuinely cannot tell, pick `logic` — it maps to the general-purpose deep
-reviewer, the safe default.
-
 ## Issue-type classification
 
 Also classify the *dominant* nature of the diff into exactly one `type`. A deeper
