@@ -63,6 +63,14 @@ source "$SCRIPT_DIR/lib/safety-checks.sh"
 # default-off behind SYMBOL_CONTEXT_ENABLED (inert + byte-identical when off).
 # shellcheck source=lib/symbol-context.sh
 source "$SCRIPT_DIR/lib/symbol-context.sh"
+# Merged-PR few-shot injection pass (issue #1093, epic #1088, Phase 2):
+# assemble_fewshot renders de-identified past review->merge examples from a
+# proposer-visible dev split into a FEWSHOT block whose path is exported as
+# FEWSHOT_FILE for the deep tier (mirroring SYMBOL_CONTEXT_FILE). Gated
+# default-off behind FEWSHOT_ENABLED (inert + byte-identical when off); the
+# source is hard-guarded to never be evals/**/holdout (held-out discipline).
+# shellcheck source=lib/fewshot.sh
+source "$SCRIPT_DIR/lib/fewshot.sh"
 # Shared PR-context prefetch (epic #1101, Story 2): prefetch_pr_context persists
 # the FULL diff + superset metadata to SHA-bound files (PR_CONTEXT_DIFF_FILE /
 # PR_CONTEXT_METADATA_FILE) for the agentic tiers. Gated default-off behind
@@ -1198,6 +1206,28 @@ if [ "${SYMBOL_CONTEXT_ENABLED:-false}" = "true" ]; then
   fi
 fi
 unset _sc_diff
+
+# Merged-PR few-shot injection pass (issue #1093). Runs here in tier-2 so
+# triage-cleared PRs never pay for it (only the deep tier reads FEWSHOT_FILE).
+# Gated default-off: when disabled FEWSHOT_FILE is never set and the deep prompt
+# + cost are byte-identical to pre-feature behavior (holdout-eval stability +
+# rollback). The source is a proposer-visible dev split; assemble_fewshot
+# hard-refuses an evals/**/holdout source (AC #2) by returning non-zero — the
+# ONLY non-zero it emits (a missing/empty/unparseable source degrades to an inert
+# "(none)" and exit 0). That refusal is a deliberate hard-stop, so it is NOT
+# swallowed with `|| true`: a mis-pointed holdout source must fail the run rather
+# than silently teach the reviewer the held-out set.
+#
+# Assemble into a private per-run mktemp -d directory (0700) instead of a
+# predictable /tmp/cascade path, so a co-tenant process on a shared /tmp cannot
+# race assemble_fewshot to redirect or replace the prompt-visible few-shot file
+# (CWE-377). The directory is removed on any script exit — after the deep-review
+# consumer that reads FEWSHOT_FILE has finished.
+if [ "${FEWSHOT_ENABLED:-false}" = "true" ]; then
+  _fewshot_dir="$(mktemp -d "${TMPDIR:-/tmp}/fewshot.XXXXXX")"
+  trap 'rm -rf "$_fewshot_dir"' EXIT
+  assemble_fewshot "${FEWSHOT_SOURCE_FILE:-$SCRIPT_DIR/../evals/deep-review/dev/fewshot.jsonl}" "$_fewshot_dir/fewshot.txt"
+fi
 
 # --- Tier 2: Deep review + Rubber duck (parallel, cross-engine) ---
 echo "    [tier2] type=$TRIAGE_TYPE specialist=$DEEP_TIER_PROMPT"
