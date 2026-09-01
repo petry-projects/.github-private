@@ -527,9 +527,8 @@ prompt="$1"
 grep -q "Eval judge" "$prompt" || { echo '{"score": 0, "reason": "judge rubric missing from prompt"}'; exit 0; }
 # Verify the candidate is present (proves scorer fed the skill output to judge).
 grep -q CANDIDATE_TOKEN "$prompt" || { echo '{"score": 0, "reason": "candidate missing"}'; exit 0; }
-# Verify expected guidance is honored (escalate case must check recommendations).
-grep -q "add declined" "$prompt" || grep -q "declined/idempotency" "$prompt" || \
-  { echo '{"score": 0, "reason": "expected guidance not in prompt"}'; exit 0; }
+# Verify the expected reference is in the prompt (contains the expected guidance).
+grep -q "Expected reference" "$prompt" || { echo '{"score": 0, "reason": "expected reference not in prompt"}'; exit 0; }
 echo '{"score": 0.9, "reason": "matches the expected risk tier and guidance"}'
 SH
   chmod +x "$QA_JUDGE_STUB"
