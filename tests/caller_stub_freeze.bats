@@ -76,9 +76,19 @@ setup() {
   [ "$status" -eq 0 ]
   [[ "$output" == on:* ]]
   [[ "$output" == *"pull_request_review:"* ]]
-  [[ "$output" == *"uses: petry-projects/.github-private/.github/workflows/dev-lead-reusable.yml@dev-lead/v1-stable"* ]]
+  # Version-agnostic: assert the SHAPE (a dev-lead channel pin forwarded into
+  # agent_ref), not a literal version, so cutting a release or moving the stub to
+  # a new major's channel family does not break this test. Same reasoning as
+  # tests/test_sc2_self_review_channel.bats, which parses the tier from the pin
+  # "never a hardcoded version".
+  [[ "$output" =~ uses:\ petry-projects/\.github-private/\.github/workflows/dev-lead-reusable\.yml@dev-lead/[A-Za-z0-9._-]+ ]]
   [[ "$output" == *"with:"* ]]
-  [[ "$output" == *"agent_ref: dev-lead/v1-stable"* ]]
+  [[ "$output" =~ agent_ref:\ dev-lead/[A-Za-z0-9._-]+ ]]
+  # The forwarded agent_ref MUST equal the uses: pin — a mismatch means the
+  # reusable and the scripts it checks out come from different channels.
+  _uses_ref="$(printf '%s\n' "$output" | sed -n 's#.*dev-lead-reusable\.yml@\([^[:space:]]*\).*#\1#p' | head -1)"
+  _aref="$(printf '%s\n' "$output" | sed -n 's#.*agent_ref:[[:space:]]*\([^[:space:]]*\).*#\1#p' | head -1)"
+  [ -n "$_uses_ref" ] && [ "$_uses_ref" = "$_aref" ]
   # The secrets/permissions blocks are NOT part of the frozen forwarding region.
   [[ "$output" != *"secrets: inherit"* ]]
   [[ "$output" != *"contents: write"* ]]
@@ -191,7 +201,13 @@ setup() {
   [ "$(classify_stub_drift "$base" "$cur")" = "ALIGNED" ]
 
   # Edit the frozen forwarding block (repoint the channel) → DRIFTED.
-  sed 's#@dev-lead/v1-stable#@dev-lead/next#' "$work/.github/workflows/dev-lead.yml" \
+  # Derive the CURRENT pin rather than hardcoding one: a literal sed silently
+  # matches nothing after a channel move, making the "edit" a no-op and the
+  # assertion below vacuously wrong (it would report ALIGNED, not DRIFTED).
+  _cur_ref="$(sed -n 's#.*dev-lead-reusable\.yml@\([^[:space:]]*\).*#\1#p' \
+    "$work/.github/workflows/dev-lead.yml" | head -1)"
+  [ -n "$_cur_ref" ]
+  sed "s#@${_cur_ref}#@dev-lead/some-other-channel#" "$work/.github/workflows/dev-lead.yml" \
     > "$work/.github/workflows/dev-lead.yml.tmp"
   mv "$work/.github/workflows/dev-lead.yml.tmp" "$work/.github/workflows/dev-lead.yml"
   cur2="$(caller_freeze_current_sha "$work/.github/workflows/dev-lead.yml")"
