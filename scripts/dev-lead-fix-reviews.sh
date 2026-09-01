@@ -1449,8 +1449,7 @@ resolution_gate_open() {
   local pre_sha="${HEAD_SHA:-}" cur_sha
   cur_sha="$(git rev-parse HEAD 2>/dev/null || true)"
   if [ -z "$pre_sha" ] || [ -z "$cur_sha" ]; then
-    [ "$cp_rc" -eq 0 ]
-    return
+    return "$cp_rc"
   fi
   ri_may_resolve "$pre_sha" "$cur_sha"
 }
