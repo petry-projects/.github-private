@@ -496,7 +496,16 @@ fi
 # ---------------------------------------------------------------------------
 PERSONA_OPTOUT_JSON="fleet_persona_optout.json"
 persona_optout_alert_json "$persona_optout_file" > "$PERSONA_OPTOUT_JSON"
-echo "Persona opt-out INCOMPLETE repos: $(jq 'length' "$PERSONA_OPTOUT_JSON")"
+persona_optout_incomplete_count=$(jq 'length' "$PERSONA_OPTOUT_JSON")
+echo "Persona opt-out INCOMPLETE repos: ${persona_optout_incomplete_count}"
+# Export the drift count + a HAS_ flag so a downstream workflow step can track/
+# alert on incomplete opt-out coverage — mirrors the HIGH_FAILURE_COUNT (3b) and
+# STUB_DRIFT_COUNT/HAS_STUB_DRIFT (3c) idiom. Without this the JSON artifact is
+# written but never consumed, so the drift is neither tracked nor alerted.
+if [ -n "${GITHUB_ENV:-}" ]; then
+  echo "PERSONA_OPTOUT_INCOMPLETE_COUNT=${persona_optout_incomplete_count}" >> "$GITHUB_ENV"
+  [ "$persona_optout_incomplete_count" -gt 0 ] && echo "HAS_PERSONA_OPTOUT_DRIFT=true" >> "$GITHUB_ENV"
+fi
 
 rm -f "$metrics_file" "$failed_file" "$issues_lookup_file" "$dev_lead_reason_file" "$schedule_metrics_file" "$persona_optout_file"
 [ ${#stub_drift_files[@]} -gt 0 ] && rm -f "${stub_drift_files[@]}"
