@@ -1212,10 +1212,21 @@ unset _sc_diff
 # Gated default-off: when disabled FEWSHOT_FILE is never set and the deep prompt
 # + cost are byte-identical to pre-feature behavior (holdout-eval stability +
 # rollback). The source is a proposer-visible dev split; assemble_fewshot
-# hard-refuses an evals/**/holdout source (AC #2). Best-effort — a refusal or
-# parse failure degrades to no injection rather than failing the run.
+# hard-refuses an evals/**/holdout source (AC #2) by returning non-zero — the
+# ONLY non-zero it emits (a missing/empty/unparseable source degrades to an inert
+# "(none)" and exit 0). That refusal is a deliberate hard-stop, so it is NOT
+# swallowed with `|| true`: a mis-pointed holdout source must fail the run rather
+# than silently teach the reviewer the held-out set.
+#
+# Assemble into a private per-run mktemp -d directory (0700) instead of a
+# predictable /tmp/cascade path, so a co-tenant process on a shared /tmp cannot
+# race assemble_fewshot to redirect or replace the prompt-visible few-shot file
+# (CWE-377). The directory is removed on any script exit — after the deep-review
+# consumer that reads FEWSHOT_FILE has finished.
 if [ "${FEWSHOT_ENABLED:-false}" = "true" ]; then
-  assemble_fewshot "${FEWSHOT_SOURCE_FILE:-$SCRIPT_DIR/../evals/deep-review/dev/fewshot.jsonl}" "/tmp/cascade/fewshot.txt" || true
+  _fewshot_dir="$(mktemp -d "${TMPDIR:-/tmp}/fewshot.XXXXXX")"
+  trap 'rm -rf "$_fewshot_dir"' EXIT
+  assemble_fewshot "${FEWSHOT_SOURCE_FILE:-$SCRIPT_DIR/../evals/deep-review/dev/fewshot.jsonl}" "$_fewshot_dir/fewshot.txt"
 fi
 
 # --- Tier 2: Deep review + Rubber duck (parallel, cross-engine) ---

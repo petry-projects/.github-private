@@ -122,6 +122,25 @@ teardown() {
   [[ "$output" == *"REDACTED"* ]]
 }
 
+@test "fewshot_scrub redacts a fine-grained github_pat_ token" {
+  # Assemble the token from a prefix fragment so the literal github_pat_ + body
+  # shape never appears contiguously in source (keeps secret scanners quiet); the
+  # runtime value still exercises fewshot_scrub's github_pat_ redaction rule.
+  local fine_prefix='github_pat_'
+  local fake_fine_pat="${fine_prefix}11ABCDEF0123456789NOTAREAL0123456789"
+  run fewshot_scrub "leaked $fake_fine_pat in a run step"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"$fake_fine_pat"* ]]
+  [[ "$output" == *"REDACTED"* ]]
+}
+
+@test "fewshot_scrub redacts standalone localhost and localhost URLs" {
+  run fewshot_scrub "ping localhost then browse http://localhost:8080/admin now"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"localhost"* ]]
+  [[ "$output" == *"REDACTED"* ]]
+}
+
 # ---------------------------------------------------------------------------
 # Export + happy path
 # ---------------------------------------------------------------------------
@@ -139,6 +158,19 @@ teardown() {
   grep -q "Add formatter tests" "$OUT_FILE"
 }
 
+@test "the synthetic seed fixture renders through assemble_fewshot" {
+  # The synthetic fs-seed-* examples live under tests/ (a test-only fixture), NOT
+  # in the enabled evals/deep-review/dev/fewshot.jsonl dev split — that path is
+  # populated only by scripts/evals/extract-fewshot.sh from real merged-PR history.
+  local repo_root fixture
+  repo_root="$(cd "$(dirname "$BATS_TEST_FILENAME")/../../.." && pwd)"
+  fixture="$repo_root/tests/dev-lead/fixtures/fewshot-seed.jsonl"
+  [ -f "$fixture" ]
+  FEWSHOT_MAX_EXAMPLES=3 run assemble_fewshot "$fixture" "$OUT_FILE"
+  [ "$status" -eq 0 ]
+  [ "$(grep -c '^- \[' "$OUT_FILE")" -eq 3 ]
+}
+
 # ---------------------------------------------------------------------------
 # Bounds (AC #3 — stays within the ET cost cap)
 # ---------------------------------------------------------------------------
@@ -151,6 +183,17 @@ teardown() {
 }
 
 @test "the assembled block is truncated to the configured byte cap" {
+  FEWSHOT_MAX_BYTES=40 run assemble_fewshot "$SRC" "$OUT_FILE"
+  [ "$status" -eq 0 ]
+  [ -f "$OUT_FILE" ]
+  [ "$(wc -c < "$OUT_FILE")" -le 40 ]
+}
+
+@test "FEWSHOT_MAX_BYTES caps output in BYTES even for multi-byte UTF-8" {
+  # A block full of multi-byte characters (é = 2 bytes, 😀 = 4 bytes) must not
+  # overrun the byte cap — character-based slicing (${block:0:n}) would let the
+  # byte count exceed n. The cap is enforced with head -c, so wc -c must hold.
+  printf '%s\n' '{"id":"u1","title":"ééééééééééééé 😀😀😀😀😀😀😀😀","summary":"ünïcödé rätiönälé","decision":"approve","risk":"LOW","rationale":"çà"}' > "$SRC"
   FEWSHOT_MAX_BYTES=40 run assemble_fewshot "$SRC" "$OUT_FILE"
   [ "$status" -eq 0 ]
   [ -f "$OUT_FILE" ]

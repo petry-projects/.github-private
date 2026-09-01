@@ -76,6 +76,7 @@ fewshot_source_is_holdout() {
 fewshot_scrub() {
   { if [ "$#" -gt 0 ]; then printf '%s' "$1"; else cat; fi; } | sed -E \
     -e 's/gh[pousr]_[A-Za-z0-9]{16,}/[REDACTED]/g' \
+    -e 's/github_pat_[A-Za-z0-9_]{20,}/[REDACTED]/g' \
     -e 's/AKIA[0-9A-Z]{16}/[REDACTED]/g' \
     -e 's/(xox[baprs]-[A-Za-z0-9-]{10,})/[REDACTED]/g' \
     -e 's/[Bb]earer[[:space:]]+[A-Za-z0-9._~+\/-]+=*/[REDACTED]/g' \
@@ -83,6 +84,7 @@ fewshot_scrub() {
     -e 's/([Tt]oken|[Ss]ecret|[Pp]assword|[Aa]pi[_-]?[Kk]ey)([[:space:]]*[=:][[:space:]]*)[^[:space:]"'"'"']+/\1\2[REDACTED]/g' \
     -e 's/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/[REDACTED]/g' \
     -e 's/[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9-]+)*\.(internal|corp|local|intranet|lan)([:/][^[:space:]]*)?/[REDACTED]/g' \
+    -e 's/(^|[^A-Za-z0-9._-])localhost([:/][^[:space:]]*)?/\1[REDACTED]/g' \
     -e 's/(^|[^A-Za-z0-9_-])([0-9]{1,3}\.){3}[0-9]{1,3}($|[^A-Za-z0-9_-])/\1[REDACTED]\3/g'
 }
 
@@ -173,8 +175,16 @@ assemble_fewshot() {
   # De-identify the whole assembled block (A3) — defense-in-depth over the
   # extractor's commit-time scrub — then cap total size (AC #3).
   block="$(fewshot_scrub "$block")"
-  block="${block:0:max_bytes}"
+  # Enforce FEWSHOT_MAX_BYTES as a hard BYTE cap, not a UTF-8 character count:
+  # `${block:0:max_bytes}` counts characters in a UTF-8 locale, so multi-byte
+  # content could overrun the documented byte bound. Write the block, then
+  # re-truncate the file in place with head -c reading from a REGULAR FILE (not a
+  # pipe) so there is no SIGPIPE/pipefail interaction — assemble_fewshot's exit
+  # status is holdout-fatal, and only the holdout guard may make it non-zero.
   printf '%s' "$block" > "$out_file"
+  if [ "$(wc -c < "$out_file")" -gt "$max_bytes" ]; then
+    head -c "$max_bytes" "$out_file" > "$out_file.cap" && mv -f "$out_file.cap" "$out_file"
+  fi
   export FEWSHOT_FILE="$out_file"
   echo "::notice::[fewshot] injected $n de-identified example(s) from '$source_file'" >&2
   return 0
