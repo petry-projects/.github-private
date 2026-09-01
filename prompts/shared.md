@@ -99,8 +99,12 @@ CI security warning) still apply and still escalate.
 
 - Non-trivial logic changes in application code that aren't HIGH.
 - New dependencies (non security-sensitive).
-- Refactors crossing module boundaries.
 - Test changes coupled with logic changes.
+
+A refactor that **crosses module boundaries** is MEDIUM-risk but is **not** on the
+auto-approve path: a boundary-crossing/structural refactor alters the shape of the
+system, so it escalates for human and architectural review (decision gate 7 below)
+rather than being auto-approved.
 
 ### LOW (auto-approve allowed if all gates pass)
 
@@ -121,6 +125,10 @@ You may recommend `approve` only if ALL of:
 4. No unresolved review threads requesting changes.
 5. No unanswered questions in human-reviewer comments.
 6. PR is well-structured: clear title, description, single coherent purpose.
+7. The change is not a boundary-crossing / structural refactor. A refactor that
+   crosses module boundaries alters the shape of the system, so it escalates for
+   human and architectural review rather than being auto-approved — even when
+   every other gate passes.
 
 Otherwise → `escalate`.
 
