@@ -37,8 +37,8 @@ Checkable boundaries a check can later assert:
 - **Adding a new `workflow_call` input is a three-step sequence, in order:**
   (1) land the input in the reusable's `workflow_call.inputs`; (2) promote the
   pinned channel to a commit that declares it via `cut-release.sh`; (3) only
-  then add the stub's `with:` forward. Forwarding first is the channel-skew
-  defect (#1052).
+  then add the stub's `with:` forward. Forwarding first is the #1034
+  channel-skew defect (epic #1052) — the same defect ADR-0001 names.
 
 ## Consequences
 

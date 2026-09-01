@@ -30,8 +30,12 @@ explicit, separately-gated opt-in:
 
 The boundary a check can later assert: **for a persona whose
 `default_mode: advisory`, every `triggers.surfaces[].mode` is `advisory` unless
-that surface names an explicit write opt-in with a gate label.** A persona with
-no write opt-in declares no write runtime identity.
+that surface names an explicit write opt-in with a gate label.** "Write runtime
+identity" here means code/branch write capability (commit, push, label, close),
+*not* the account a persona posts advisory comments as: an advisory-only persona
+may still run under a real account — `security-lead`, for instance, posts as the
+owner account `don-petry` — yet a persona with no write opt-in acquires none of
+that commit/push/label/close capability.
 
 ## Consequences
 

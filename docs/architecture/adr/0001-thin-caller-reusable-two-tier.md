@@ -28,11 +28,13 @@ boundary:
   `petry-projects/*` reusable. Repo-specific trigger adjustments are the only
   logic a stub may carry (per the stub's header comment).
 
-The boundary a check can later assert: **a caller stub must `uses:` a pinned
-first-party `petry-projects/*` reusable, must forward only inputs the pinned
-ref declares under `workflow_call.inputs`, and must not interpolate secrets
-into a `run:` step.** (The `validate-caller-inputs` job in `lint.yml`, #1253,
-already enforces the input-declaration half.)
+The boundary a check can later assert: **a caller-stub job must `uses:` a
+pinned first-party `petry-projects/*` reusable — and, because a `uses:` job
+carries no `steps` or `run:` keys of its own under the Actions schema, it must
+declare none — must forward only inputs the pinned ref declares under
+`workflow_call.inputs`, and must pass any secret only via the `secrets:` key,
+never interpolated into a `with:` input.** (The `validate-caller-inputs` job in
+`lint.yml`, #1253, already enforces the input-declaration half.)
 
 ## Consequences
 
