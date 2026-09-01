@@ -12,7 +12,7 @@ solutioning agent (`bmad-agent-architect`, pinned `v6.8.0`), consumed **by path*
 as plain markdown. It advises on **structural review**: it reads the recorded
 architecture decisions in [`docs/architecture/adr/`](../../docs/architecture/adr/)
 (the S1 ADRs) and measures a proposed change against them, **citing the governing
-ADR by number**. It is **advisory on every surface and writes nowhere** — the
+ADR by number**. It is **advisory on every deployed surface and writes nowhere** — the
 safe default for a new persona. The advisory contract lives in
 [`prompts/solution-architect/advisory.md`](../../prompts/solution-architect/advisory.md).
 

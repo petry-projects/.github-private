@@ -25,7 +25,7 @@ advisory.
 ## Inputs (environment variables)
 
 - `SOURCE_REPO` — `owner/name` the item lives in (a public repo).
-- `ITEM_NUMBER` — the issue or PR number (empty for a discussion).
+- `ITEM_NUMBER` — the issue, PR, or discussion number.
 - `COMMENT_URL` — the **API** URL of the summoning comment (the router sends the
   comment's `.url`, so `gh api "$COMMENT_URL"` returns it directly). It may be
   empty; if so, work from the item's title/body/diff.
@@ -52,6 +52,15 @@ advisory.
    - PR: `gh pr view "$ITEM_NUMBER" --repo "$SOURCE_REPO" --json title,body,files`
      and `gh pr diff "$ITEM_NUMBER" --repo "$SOURCE_REPO" | head -n 400 || true`
    - Issue: `gh issue view "$ITEM_NUMBER" --repo "$SOURCE_REPO" --json title,body,labels`
+   - Discussion: `gh pr/issue view` cannot read a Discussion, so query its title
+     and body over the read-only GraphQL API using the forwarded `SOURCE_REPO`
+     and `ITEM_NUMBER` (the discussion number):
+     ```bash
+     gh api graphql \
+       -f owner="${SOURCE_REPO%/*}" -f name="${SOURCE_REPO#*/}" -F number="$ITEM_NUMBER" \
+       -f query='query($owner:String!,$name:String!,$number:Int!){ repository(owner:$owner,name:$name){ discussion(number:$number){ title body } } }' \
+       --jq '.data.repository.discussion | "\(.title)\n\n\(.body)"' 2>/dev/null || true
+     ```
    - Read the exact question you were asked:
      ```bash
      gh api "$COMMENT_URL" --jq '.body' 2>/dev/null || true
