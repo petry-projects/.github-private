@@ -727,3 +727,158 @@ _mk_metrics() {
   [ -z "$output" ]
   rm -f "$f"
 }
+
+# ---------------------------------------------------------------------------
+# Persona opt-out label coverage / drift (#1644)
+#   Drift TSV format (5 fields):
+#     1:repo  2:status  3:present_count  4:total  5:missing_csv
+#   status ∈ { COMPLETE, INCOMPLETE, ABSENT }
+# ---------------------------------------------------------------------------
+
+# Build a throwaway personas/ tree with the given ids, each carrying an
+# `opt_out_label: <id>:hands-off` under a triggers: block (mirrors the real
+# personas/<id>/persona.yml shape).
+_make_personas_dir() {
+  local dir="$1"; shift
+  local id
+  for id in "$@"; do
+    mkdir -p "${dir}/${id}"
+    cat > "${dir}/${id}/persona.yml" <<YAML
+id: ${id}
+triggers:
+  default_mode: advisory
+  opt_out_label: ${id}:hands-off
+YAML
+  done
+}
+
+@test "derive_persona_optout_labels: derives the family from persona manifests, sorted" {
+  local d="${BATS_TEST_TMPDIR}/p"
+  _make_personas_dir "$d" qa-lead dev-lead sre-lead
+  run derive_persona_optout_labels "$d"
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s\n' "$output" | wc -l | tr -d ' ')" -eq 3 ]
+  [ "$(printf '%s\n' "$output" | head -1)" = "dev-lead:hands-off" ]
+  [[ "$output" =~ "qa-lead:hands-off" ]]
+}
+
+@test "derive_persona_optout_labels: real personas/ include qa-lead and dev-lead (derived, not enumerated)" {
+  run derive_persona_optout_labels "${BATS_TEST_DIRNAME}/../personas"
+  [ "$status" -eq 0 ]
+  [[ "$output" =~ "qa-lead:hands-off" ]]
+  [[ "$output" =~ "dev-lead:hands-off" ]]
+  # A newly added persona directory joins automatically; do not assert an exact
+  # count that would break every time a persona is added — assert the floor.
+  [ "$(printf '%s\n' "$output" | grep -c ':hands-off$')" -ge 8 ]
+}
+
+@test "derive_persona_optout_labels: missing dir yields no output, no crash" {
+  run derive_persona_optout_labels "${BATS_TEST_TMPDIR}/does-not-exist"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "persona_optout_row: repo with the full family is COMPLETE (no missing)" {
+  local exp; exp="$(printf 'a:hands-off\nb:hands-off\nc:hands-off')"
+  run persona_optout_row "petry-projects/x" "$exp" "$exp"
+  [ "$status" -eq 0 ]
+  IFS=$'\t' read -r repo status present total missing <<< "$output"
+  [ "$status" = "COMPLETE" ]
+  [ "$present" = "3" ]
+  [ "$total" = "3" ]
+  [ -z "$missing" ]
+}
+
+@test "persona_optout_row: repo with a subset is INCOMPLETE and names the missing labels" {
+  local exp act
+  exp="$(printf 'a:hands-off\nb:hands-off\nc:hands-off')"
+  act="$(printf 'a:hands-off')"
+  run persona_optout_row "petry-projects/x" "$exp" "$act"
+  [ "$status" -eq 0 ]
+  IFS=$'\t' read -r repo st present total missing <<< "$output"
+  [ "$st" = "INCOMPLETE" ]
+  [ "$present" = "1" ]
+  [ "$total" = "3" ]
+  [[ "$missing" =~ "b:hands-off" ]]
+  [[ "$missing" =~ "c:hands-off" ]]
+}
+
+@test "persona_optout_row: repo carrying none of the family is ABSENT (not enrolled)" {
+  local exp; exp="$(printf 'a:hands-off\nb:hands-off')"
+  run persona_optout_row "petry-projects/x" "$exp" ""
+  [ "$status" -eq 0 ]
+  IFS=$'\t' read -r repo st present total missing <<< "$output"
+  [ "$st" = "ABSENT" ]
+  [ "$present" = "0" ]
+}
+
+@test "persona_optout_row: extra non-persona labels on the repo are ignored" {
+  local exp act
+  exp="$(printf 'a:hands-off\nb:hands-off')"
+  act="$(printf 'a:hands-off\nb:hands-off\nbug\nenhancement')"
+  run persona_optout_row "petry-projects/x" "$exp" "$act"
+  IFS=$'\t' read -r repo st present total missing <<< "$output"
+  [ "$st" = "COMPLETE" ]
+  [ -z "$missing" ]
+}
+
+@test "generate_persona_optout_report: lists INCOMPLETE repos with the missing label named" {
+  local f; f="$(mktemp "$BATS_TEST_TMPDIR/po.XXXXXX")"
+  printf '%s\n' \
+    $'petry-projects/.github-private\tCOMPLETE\t9\t9\t' \
+    $'petry-projects/TalkTerm\tINCOMPLETE\t1\t9\tqa-lead:hands-off,sre-lead:hands-off' \
+    $'petry-projects/broodly\tABSENT\t0\t9\tdev-lead:hands-off' \
+    > "$f"
+  run generate_persona_optout_report "$f" 9
+  [ "$status" -eq 0 ]
+  [[ "$output" =~ "Persona opt-out label coverage" ]]
+  # The INCOMPLETE repo and its missing label are surfaced by name.
+  [[ "$output" =~ "TalkTerm" ]]
+  [[ "$output" =~ "qa-lead:hands-off" ]]
+  # A COMPLETE repo is not in the drift table.
+  ! [[ "$output" =~ "\`petry-projects/.github-private\`" ]]
+}
+
+@test "generate_persona_optout_report: all-COMPLETE reports a clean state" {
+  local f; f="$(mktemp "$BATS_TEST_TMPDIR/po.XXXXXX")"
+  printf '%s\n' \
+    $'petry-projects/.github-private\tCOMPLETE\t9\t9\t' \
+    > "$f"
+  run generate_persona_optout_report "$f" 9
+  [ "$status" -eq 0 ]
+  [[ "$output" =~ "Persona opt-out label coverage" ]]
+  # Clean state: the drift table / fan-out call-to-action is absent.
+  [[ "$output" =~ "No persona opt-out drift" ]]
+  ! [[ "$output" =~ "Fan out the derived family" ]]
+}
+
+@test "generate_persona_optout_report: empty/missing file produces no output" {
+  local f; f="$(mktemp "$BATS_TEST_TMPDIR/po.XXXXXX")"
+  : > "$f"
+  run generate_persona_optout_report "$f" 9
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "persona_optout_alert_json: emits only INCOMPLETE repos with their missing labels" {
+  local f; f="$(mktemp "$BATS_TEST_TMPDIR/po.XXXXXX")"
+  printf '%s\n' \
+    $'petry-projects/.github-private\tCOMPLETE\t9\t9\t' \
+    $'petry-projects/TalkTerm\tINCOMPLETE\t1\t9\tqa-lead:hands-off,sre-lead:hands-off' \
+    $'petry-projects/broodly\tABSENT\t0\t9\tdev-lead:hands-off' \
+    > "$f"
+  run persona_optout_alert_json "$f"
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s' "$output" | jq 'length')" -eq 1 ]
+  [ "$(printf '%s' "$output" | jq -r '.[0].repo')" = "petry-projects/TalkTerm" ]
+  [ "$(printf '%s' "$output" | jq -r '.[0].missing | length')" -eq 2 ]
+  [ "$(printf '%s' "$output" | jq -r '.[0].missing[0]')" = "qa-lead:hands-off" ]
+}
+
+@test "persona_optout_alert_json: empty file yields []" {
+  local f; f="$(mktemp "$BATS_TEST_TMPDIR/po.XXXXXX")"
+  : > "$f"
+  run persona_optout_alert_json "$f"
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s' "$output" | jq 'length')" -eq 0 ]
+}
