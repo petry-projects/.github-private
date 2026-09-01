@@ -1,0 +1,11 @@
+# Fixture: a stable `uses:` reusable pin with NO `agent_ref` input. The reusable
+# defaults agent_ref to `main`, so the dev-lead scripts would run from `main`
+# (not stable) — the guard must FAIL closed rather than accept the stable `uses:`.
+name: Dev-Lead Agent
+on:
+  pull_request:
+    branches: [main]
+jobs:
+  dev-lead:
+    uses: petry-projects/.github-private/.github/workflows/dev-lead-reusable.yml@dev-lead/v1-stable  # NOSONAR(githubactions:S7637) first-party channel ref
+    secrets: inherit

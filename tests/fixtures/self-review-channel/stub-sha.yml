@@ -1,0 +1,11 @@
+# Fixture: a self-review-duty caller stub pinned to a bare commit SHA (never allowed).
+name: Dev-Lead Agent
+on:
+  pull_request:
+    branches: [main]
+jobs:
+  dev-lead:
+    uses: petry-projects/.github-private/.github/workflows/dev-lead-reusable.yml@abcdef1234567890abcdef1234567890abcdef12
+    with:
+      agent_ref: abcdef1234567890abcdef1234567890abcdef12
+    secrets: inherit

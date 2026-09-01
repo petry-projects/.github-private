@@ -1,0 +1,12 @@
+# Fixture: a legacy bare-tier `stable` pin (pre-#1184). Deprecated form, but its
+# TIER is still stable, so the SC2 stable-tier assertion accepts it.
+name: Dev-Lead Agent
+on:
+  pull_request:
+    branches: [main]
+jobs:
+  dev-lead:
+    uses: petry-projects/.github-private/.github/workflows/dev-lead-reusable.yml@dev-lead/stable  # NOSONAR(githubactions:S7637) first-party channel ref
+    with:
+      agent_ref: dev-lead/stable
+    secrets: inherit
