@@ -27,9 +27,10 @@
 #   `# NOSONAR …` comment and surrounding whitespace stripped. Returns non-zero
 #   if the file has no such pin.
 src_stub_uses_ref() {
-  local file="$1" line stripped ref
+  local file="$1" line stripped ref content
   [ -f "$file" ] || return 1
-  line="$(grep -E '^[[:space:]]*uses:[[:space:]]*[^[:space:]#]+\.yml@' "$file" | head -n1)" || true
+  content="$(grep -E '^[[:space:]]*uses:[[:space:]]*[^[:space:]#]+\.yml@' "$file")" || true
+  line="${content%%$'\n'*}"               # first matching line, no pipe to head (avoids SIGPIPE under pipefail)
   [ -n "$line" ] || return 1
   stripped="${line%%#*}"                 # drop any inline comment
   read -r ref <<<"${stripped##*@}"       # token after the last @, whitespace-trimmed
