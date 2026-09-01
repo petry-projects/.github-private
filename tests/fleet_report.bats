@@ -758,7 +758,7 @@ YAML
   run derive_persona_optout_labels "$d"
   [ "$status" -eq 0 ]
   [ "$(printf '%s\n' "$output" | wc -l | tr -d ' ')" -eq 3 ]
-  [ "$(printf '%s\n' "$output" | head -1)" = "dev-lead:hands-off" ]
+  [ "${output%%$'\n'*}" = "dev-lead:hands-off" ]
   [[ "$output" =~ "qa-lead:hands-off" ]]
 }
 
