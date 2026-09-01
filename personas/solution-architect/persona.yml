@@ -1,0 +1,117 @@
+# Persona manifest — Solution Architect (structural review & ADR advisor).
+# Follows the wrap-a-vendored-framework-agent, advisory-everywhere path
+# established by personas/qa-lead/ and personas/security-lead/.
+#
+# Naming: this persona is `solution-architect` — the ROLE (persona-standards.md
+# §1.6). The vendored agent it wraps carries a person-name upstream ("Winston");
+# that stays upstream. We point at it only by its technical skill id
+# (`framework.skill`).
+#
+# Validate against: petry-projects/.github standards/personas/persona.schema.json
+
+schema_version: 1
+
+id: solution-architect
+name: Solution Architect
+title: System Architecture & ADR Advisor
+summary: >-
+  Advises on structural review — measuring a proposed change against the
+  recorded architecture decisions (the S1 ADRs) and citing the governing ADR by
+  number, so structural drift is noticed rather than ratified. Favors boring
+  technology, trade-offs over verdicts, and says so plainly when no ADR governs.
+
+# Draft: the manifest, advisory prompt, and evals exist, but solution-architect
+# is not yet cut as a fleet reusable and is not yet in canary-rings.json (see
+# README). Promote once a dedicated advisory workflow + release are added.
+status: draft
+
+owner: petry-projects/org-leads
+
+# --- How humans address this persona (§4.1) --------------------------------
+# An org TEAM handle, never a user account: '@solution-architect' would be a
+# bare role mention that could notify a stranger, so we key on the team slug.
+# The team slug equals `id`, so the router resolves a mention by stripping the
+# org prefix.
+#
+# Team requirements (verified by CI, not by the schema — they need the network):
+#   privacy: closed                               (secret teams are unmentionable)
+#   notification_setting: notifications_disabled  (routes a webhook, not a page)
+address:
+  handle: petry-projects/solution-architect
+
+definition:
+  layers:
+    # A vendored BMAD Method solutioning agent, consumed by path (vendor-neutral
+    # markdown). We track upstream and contribute back rather than fork — so
+    # there are no local hand-edits to frameworks/.
+    - kind: framework-agent
+      path: frameworks/bmad-method/src/bmm-skills/3-solutioning/bmad-agent-architect
+      framework:
+        name: bmad-method
+        upstream_repo: bmad-code-org/BMAD-METHOD
+        vendor_pin: v6.8.0             # matches frameworks/bmad-method/VENDOR.md
+        skill: bmad-agent-architect
+      # No local_overrides today. When solution-architect gains an org-specific
+      # advisory wrapper beyond prompts/solution-architect/advisory.md, add it
+      # here and set upstream_candidate honestly.
+
+skills:
+  - name: bmad-agent-architect
+    path: frameworks/bmad-method/src/bmm-skills/3-solutioning/bmad-agent-architect/SKILL.md
+    source: vendored
+
+# solution-architect is a structural ADVISOR — advisory on every surface, write
+# nowhere. Surfaces are trimmed to exactly what the shared router serves
+# (mention/issues/discussion); it declares NO pull_request/check_run/schedule
+# surface (the qa-lead lesson: do not declare surfaces nothing dispatches).
+triggers:
+  default_mode: advisory
+  opt_out_label: solution-architect:hands-off
+  surfaces:
+    - surface: mention
+      events: [created]
+      enabled: true
+      mode: advisory
+      notes: "Direct invocation: '@petry-projects/solution-architect measure this against our ADRs'."
+
+    - surface: issues
+      events: [labeled, commented]
+      enabled: true
+      mode: advisory
+      notes: "Structural / ADR-alignment input on issues and epics."
+
+    - surface: discussion
+      events: [labeled, commented]
+      enabled: true
+      mode: advisory
+      bridge: repository_dispatch
+      notes: "Discussions can't run the agent inline — must bridge (issue #571)."
+
+trust:
+  author_association_floor: [OWNER, MEMBER, COLLABORATOR]
+
+# --- Runtime identity (§5.1) ------------------------------------------------
+# Present from birth. Advisory-only: solution-architect ships no dedicated
+# reusable/stub in this pilot. It is consumed by path and is human-invocable. On
+# the comment path it posts as `don-petry` (the persona runner authenticates
+# with that account's PAT).
+runtime:
+  identity:
+    account: don-petry
+    credential: GH_PAT_DON_PETRY
+
+evals:
+  required_before: stable
+  path: evals/solution-architect/   # under the repo eval tree so validate-cases.py + holdout-guard.yml cover it
+  judge: evals/judge.md
+  min_cases: 5                      # seed cases are placeholders; reach 5 held-out before stable
+
+canary:
+  registry: petry-projects/.github/standards/canary-rings.json
+  agent: solution-architect         # entry added at first release cut (not present while status: draft)
+
+references:
+  - "frameworks/bmad-method/VENDOR.md"
+  - "docs/architecture/adr/ (the S1 ADRs this persona measures changes against)"
+  - "prompts/deep-review-style.md (overlapping lens — advisory persona, not a replacement)"
+  - "petry-projects/.github standards/persona-standards.md"

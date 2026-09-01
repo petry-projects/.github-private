@@ -1,0 +1,39 @@
+# Interaction contract — solution-architect (persona lens).
+#
+# Shape fixed by docs/agentic-interaction-model.md §8.1; standalone repo-local
+# file per the §8.2 location decision (option b). Ships in the SAME PR as the
+# manifest — the qa-lead interaction.yml was backfilled three weeks late (#1404)
+# and that must not repeat.
+#
+# solution-architect is an advisory, mention-routed persona: a human
+# @petry-projects/solution-architect mention is parsed by the shared router
+# .github/workflows/persona-mention.yml and bridged
+# (repository_dispatch:persona-mention) to persona-runner, which posts a single
+# advisory comment as the persona's runtime.identity. It writes nothing else.
+#
+# triggers.events mirror persona-mention.yml's DEPLOYED on: block:
+# issue_comment / pull_request_review_comment / discussion_comment. Note
+# personas/solution-architect/persona.yml declares broader advisory surfaces
+# (issues:labeled, discussion:labeled) that the router does not yet wire — the
+# contract records what is actually deployed, not the aspiration (persona-standards
+# finding 10 / petry-projects/.github#755).
+
+schema_version: 1
+role: solution-architect
+kind: persona
+workflows:
+  - .github/workflows/persona-mention.yml
+interaction:
+  triggers:
+    events:
+      - issue_comment
+      - pull_request_review_comment
+      - discussion_comment
+    timers: []
+  emits:
+    - "comment:advisory-response"
+  idempotency_key: "one run per mention: source_repo + item_number + comment_url"
+  concurrency_lane: "persona-runner-solution-architect-<source_repo>-<item_number>-<comment_url> (persona-runner-reusable.yml)"
+  stop_markers:
+    - solution-architect:hands-off
+  budget: none
