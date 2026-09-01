@@ -282,41 +282,37 @@ row to its §4 classification table and declare a machine-readable per-role inte
 - **Adding a role?** Follow the step-by-step runbook
   [`docs/adding-an-agentic-role.md`](./docs/adding-an-agentic-role.md); each step cites the
   governing section of the standard.
-- This section is consistent with, not competing with, "Scheduled workflows" below (which
-  governs *when* a timer may fire) and the "Ring-0 caller-stub freeze" above (which byte-freezes
-  the self-host caller stubs the standard classifies as Class 1). Like the off-peak scheduling
-  standard, it is **repo-local first**, shaped for promotion into an org-wide
-  `standards/agent-standards.md` in
-  [`petry-projects/.github`](https://github.com/petry-projects/.github).
+- This section is consistent with, not competing with, "Scheduled workflows" below (which now
+  defers to the org-wide off-peak timing standard governing *when* a timer may fire) and the
+  "Ring-0 caller-stub freeze" above (which byte-freezes the self-host caller stubs the standard
+  classifies as Class 1). This section is still **repo-local first**, shaped for promotion into an
+  org-wide `standards/agent-standards.md` in
+  [`petry-projects/.github`](https://github.com/petry-projects/.github) — the same repo-local → org
+  path the off-peak scheduling standard has already completed.
 
 ### Scheduled workflows
 
-- **Never schedule at minute 0.** A scheduled workflow must not use a `0 * * * *`
-  cron (or any `schedule.cron` whose minute field is `0`). Minute-0 crons cluster
-  every repo's automation onto the top of the hour, contending for shared
-  GitHub-hosted runner capacity and producing correlated bursts that are harder to
-  observe and debug.
-- **Use a staggered off-peak minute.** Pick a non-zero, non-round minute (e.g.
-  `'11 9 * * 1'`, `'34 8 * * 1'`, `'27 6 * * *'`) so runs are spread across the hour.
-  There is no single canonical offset — stagger distinct workflows onto different
-  minutes rather than sharing one.
-- **Idempotent/self-healing sweeps may run more often (Option 2).** A sweep that is
-  idempotent — extra ticks are harmless and a missed tick self-heals on the next run
-  — may run at a higher frequency on odd offsets (e.g. `'2,17,32,47 * * * *'`).
-  Because such a workflow converges regardless of exactly when it fires, precise
-  timing does not matter and the higher cadence buys lower worst-case latency at
-  negligible cost. This does not license minute-0: even high-frequency sweeps use
-  non-zero offsets.
-- **CI enforcement.** The `validate-workflow-schedules` job in `lint.yml`
-  (backed by `scripts/validate-workflow-schedules.sh`, tests in
+> **Promoted — defer to the org standard.** The off-peak scheduling rule (never
+> schedule at minute 0; pick a staggered, non-round minute; idempotent sweeps may
+> run more often but still off the top of the hour) is now the **canonical,
+> org-wide standard**. Read it in
+> [`petry-projects/.github`](https://github.com/petry-projects/.github/blob/main/standards/ci-standards.md)
+> → `standards/ci-standards.md` → **Scheduled Workflow Timing**, which was
+> promoted out of this repo-local section under epic #722 / story #726 and now
+> names this repo as its origin. That section is the single source of truth for
+> the rule and its rationale; this repo defers to it — there is no separate
+> repo-local copy to keep in sync. (Same repo-local → org promotion path the
+> Cost-reporting section documents.)
+
+- **CI enforcement (repo-local).** This repo enforces the org rule above with its
+  own check: the `validate-workflow-schedules` job in `lint.yml` (backed by
+  `scripts/validate-workflow-schedules.sh`, tests in
   `tests/test_validate_workflow_schedules.bats`) fails any PR that introduces a
   minute-0 `schedule.cron` in `.github/workflows/*.yml`, `.github/workflows/*.md`,
   or `docs/aw/*.md`. The `frameworks/` subtrees are upstream-owned knowledge docs,
-  not our schedules, and are intentionally out of scope.
-- **Promotion:** this is currently a repo-local standard. To make it org-wide,
-  lift it into [`petry-projects/.github`](https://github.com/petry-projects/.github/blob/main/standards/ci-standards.md)
-  (`standards/ci-standards.md`) and have repos defer to it — see the org-wide
-  rollout tracked under epic #722.
+  not our schedules, and are intentionally out of scope. This is a distinct
+  implementation from the org standard's own reference check
+  (`scripts/check-cron-timing.sh`), so it is retained here rather than deferred.
 
 ### Fleet stub-drift remediation loop
 
