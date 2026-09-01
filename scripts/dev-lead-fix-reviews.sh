@@ -12,6 +12,7 @@ source "$(dirname "$0")/lib/pr-automation-budget.sh"
 source "$(dirname "$0")/lib/maintainer-review-thread-gate.sh"
 source "$(dirname "$0")/lib/conflict-integrity.sh"
 source "$(dirname "$0")/lib/review-change-evidence.sh"
+source "$(dirname "$0")/lib/resolution-integrity.sh"
 
 INTENT_TYPE="${INTENT_TYPE:-fix-reviews}"
 PR_NUMBER="${PR_NUMBER:-}"
@@ -67,6 +68,15 @@ if [ "${DEV_LEAD_DRY_RUN:-false}" = "false" ] && [ -n "${PR_NUMBER:-}" ]; then
     HEAD_SHA=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}" --jq '.head.sha' 2>/dev/null || true)
   fi
   checkout_pr_in_worktree "$PR_NUMBER" "$REPO"
+  # Immutable snapshot of the head this pass starts from — captured at the one
+  # moment that actually means "before this pass did any work" (#1617). The
+  # resolution gate compares against THIS, not HEAD_SHA: HEAD_SHA is the
+  # event-time SHA (only re-resolved when empty, line 67) and is reassigned by
+  # try_enable_auto_merge, so a commit landing between the event and this
+  # checkout would make HEAD_SHA differ from the checked-out head and open the
+  # gate on a no-commit pass. RESOLUTION_BASE_SHA is set once here and never
+  # reassigned, so the gate measures only whether THIS pass advanced the head.
+  RESOLUTION_BASE_SHA="$(git rev-parse HEAD 2>/dev/null || true)"
   setup_git_identity
 fi
 
@@ -1426,6 +1436,37 @@ ${enumerated}"
   esac
 }
 
+# resolution_gate_open <cp_rc> — the #1617 gate that wires the pure #1609
+# head-movement predicate (ri_may_resolve) into the resolve_* review-thread nets.
+# A dev-lead fix pass may auto-resolve review threads ONLY when it advanced the PR
+# head; a pass that produced no commit resolves zero threads. This closes the #1024
+# vector where a no-commit pass resolved 18 threads (incl. a Critical finding) purely
+# on reply markers. Returns 0 (gate open — resolution permitted) / non-zero (closed).
+#
+# - Dry-run passes through so the announce-only nets keep announcing what they would
+#   resolve — that existing behaviour and its tests are preserved.
+# - Otherwise compares the immutable pre-pass RESOLUTION_BASE_SHA (snapshotted right
+#   after the worktree checkout, before any work) against the post-pass
+#   `git rev-parse HEAD` via ri_may_resolve (fail-closed: an empty or unchanged SHA
+#   closes the gate). RESOLUTION_BASE_SHA — not HEAD_SHA — is used deliberately:
+#   HEAD_SHA is the event-time value and is reassigned by try_enable_auto_merge, so
+#   gating on it could open on a no-commit pass whose checkout drifted from the event.
+# - Falls back to cp_rc == 0 ONLY when a SHA is genuinely unavailable (base snapshot
+#   unset or `git rev-parse HEAD` unresolvable), so a pass that legitimately pushed a
+#   commit is never wrongly gated shut just because the runner cannot report a SHA.
+resolution_gate_open() {
+  local cp_rc="${1:-1}"
+  if [ "${DEV_LEAD_DRY_RUN:-false}" = "true" ]; then
+    return 0
+  fi
+  local pre_sha="${RESOLUTION_BASE_SHA:-}" cur_sha
+  cur_sha="$(git rev-parse HEAD 2>/dev/null || true)"
+  if [ -z "$pre_sha" ] || [ -z "$cur_sha" ]; then
+    return "$cp_rc"
+  fi
+  ri_may_resolve "$pre_sha" "$cur_sha"
+}
+
 case "$INTENT_TYPE" in
   fix-reviews)
     # Get open review threads
@@ -1483,12 +1524,17 @@ case "$INTENT_TYPE" in
         fi
       fi
       if [ "$cp_rc" -ne 3 ]; then
-        # Always resolve outdated bot threads in the no-changes path as cleanup
-        resolve_bot_outdated_threads "fix-reviews"
-        resolve_actor_outdated_threads "fix-reviews"
-        # Resolve bot threads dev-lead addressed in-thread but left open (#1547) —
-        # these are not necessarily outdated, so the nets above miss them.
-        resolve_addressed_bot_threads "fix-reviews"
+        # Resolution gate (#1617): auto-resolve threads only when this pass advanced
+        # the PR head. A no-commit pass resolves zero threads (#1609/#1024).
+        if resolution_gate_open "$cp_rc"; then
+          resolve_bot_outdated_threads "fix-reviews"
+          resolve_actor_outdated_threads "fix-reviews"
+          # Resolve bot threads dev-lead addressed in-thread but left open (#1547) —
+          # these are not necessarily outdated, so the nets above miss them.
+          resolve_addressed_bot_threads "fix-reviews"
+        else
+          echo "::notice::resolution gate closed (#1609): the fix-reviews pass did not advance PR #${PR_NUMBER}'s head — zero review threads resolved"
+        fi
         # Never auto-merge an escalated or not-fully-applied review pass (#1567).
         if [ "${_REVIEW_ESCALATED:-0}" -ne 1 ] && [ "${_REVIEW_INCOMPLETE:-0}" -ne 1 ]; then
           try_enable_auto_merge
@@ -1528,12 +1574,17 @@ case "$INTENT_TYPE" in
         fi
       fi
       if [ "$cp_rc" -ne 3 ]; then
-        # Always resolve outdated bot threads in the no-changes path as cleanup
-        resolve_bot_outdated_threads "fix-bot-comment"
-        resolve_actor_outdated_threads "fix-bot-comment"
-        # Resolve bot threads dev-lead addressed in-thread but left open (#1547) —
-        # these are not necessarily outdated, so the nets above miss them.
-        resolve_addressed_bot_threads "fix-bot-comment"
+        # Resolution gate (#1617): auto-resolve threads only when this pass advanced
+        # the PR head. A no-commit pass resolves zero threads (#1609/#1024).
+        if resolution_gate_open "$cp_rc"; then
+          resolve_bot_outdated_threads "fix-bot-comment"
+          resolve_actor_outdated_threads "fix-bot-comment"
+          # Resolve bot threads dev-lead addressed in-thread but left open (#1547) —
+          # these are not necessarily outdated, so the nets above miss them.
+          resolve_addressed_bot_threads "fix-bot-comment"
+        else
+          echo "::notice::resolution gate closed (#1609): the fix-bot-comment pass did not advance PR #${PR_NUMBER}'s head — zero review threads resolved"
+        fi
         try_enable_auto_merge
       fi
       try_enable_auto_merge
@@ -1585,7 +1636,9 @@ case "$INTENT_TYPE" in
     build_and_run "review-changes" || rc=$?
     [ "$rc" -eq 2 ] && handle_rate_limit "review-changes"
     if [ "$rc" -eq 0 ]; then
-      if commit_and_push "review-changes"; then
+      cp_rc=0
+      commit_and_push "review-changes" || cp_rc=$?
+      if [ "$cp_rc" -eq 0 ]; then
         notify_coderabbit_resolve
         finalize_review_application "review-changes"
       else
@@ -1599,12 +1652,17 @@ case "$INTENT_TYPE" in
           post_reviews_terminal "review-changes" "no-changes" "No changes were needed for this PR."
         fi
       fi
-      # Always resolve outdated bot threads in the no-changes path as cleanup
-      resolve_bot_outdated_threads "review-changes"
-      resolve_actor_outdated_threads "review-changes"
-      # Resolve bot threads dev-lead addressed in-thread but left open (#1547) —
-      # these are not necessarily outdated, so the nets above miss them.
-      resolve_addressed_bot_threads "review-changes"
+      # Resolution gate (#1617): auto-resolve threads only when this pass advanced
+      # the PR head. A no-commit pass resolves zero threads (#1609/#1024).
+      if resolution_gate_open "$cp_rc"; then
+        resolve_bot_outdated_threads "review-changes"
+        resolve_actor_outdated_threads "review-changes"
+        # Resolve bot threads dev-lead addressed in-thread but left open (#1547) —
+        # these are not necessarily outdated, so the nets above miss them.
+        resolve_addressed_bot_threads "review-changes"
+      else
+        echo "::notice::resolution gate closed (#1609): the review-changes pass did not advance PR #${PR_NUMBER}'s head — zero review threads resolved"
+      fi
       # Never auto-merge an escalated or not-fully-applied review pass (#1567).
       if [ "${_REVIEW_ESCALATED:-0}" -ne 1 ] && [ "${_REVIEW_INCOMPLETE:-0}" -ne 1 ]; then
         try_enable_auto_merge
