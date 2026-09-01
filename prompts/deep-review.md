@@ -33,6 +33,12 @@ to approve or escalate further to the security auditor (Tier 3).
   symbol may be annotated `search unavailable` if navigation degraded. Use it to
   reason about **why** a touched function exists and to catch cross-file logic
   bugs the hunk alone hides — it is context, NOT an auto-escalation trigger.
+- `$FEWSHOT_FILE` — (optional; set only when the few-shot pass is enabled) path
+  to a file containing the `FEWSHOT` block: a few de-identified past
+  review→merge outcomes for THIS repo (title, decision, risk, rationale), drawn
+  ONLY from a proposer-visible dev split. Use it to calibrate to what these
+  maintainers actually accept and flag. It is **informational context**, NOT an
+  auto-approve/escalate trigger, and may be the literal `(none)`.
 - `$SAFETY_CHECKS_FILE` — (optional; set only when the safety-checks pass is
   enabled) path to a file containing the deterministic `SAFETY_CHECKS` block:
   the pre-computed hard-stop flags (`CI_WEAKENING_DETECTED`,
@@ -75,6 +81,12 @@ enumeration. No actions on other PRs.
    `DEPENDENCY_RISK` findings as the starting point for step 11. Do NOT re-derive
    the mechanical checks; the lib already computed them — your job is the
    semantic layer (steps 9–11).
+   Finally, if `$FEWSHOT_FILE` is set and the file exists and its contents are
+   not `(none)`, read it: these are de-identified past review→merge outcomes for
+   this repo. Use them to calibrate your decision/risk to what these maintainers
+   actually accept and flag (precision), NOT as a rule — they are illustrative
+   context, never an auto-approve/escalate trigger, and never override the risk
+   taxonomy or a deterministic hard-stop.
 3. `gh pr view "$PR_URL" --json number,title,body,author,isDraft,baseRefName,headRefName,headRefOid,url,headRepository,headRepositoryOwner,labels,reviewDecision,mergeable,mergeStateStatus,statusCheckRollup,reviewRequests,reviews,comments,commits,closingIssuesReferences,additions,deletions,changedFiles,files`
 4. `gh pr diff "$PR_URL"` — read the diff.
 5. **Secret scan (MCP, when available).** If the `run_secret_scanning` MCP tool

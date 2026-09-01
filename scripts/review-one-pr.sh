@@ -63,6 +63,14 @@ source "$SCRIPT_DIR/lib/safety-checks.sh"
 # default-off behind SYMBOL_CONTEXT_ENABLED (inert + byte-identical when off).
 # shellcheck source=lib/symbol-context.sh
 source "$SCRIPT_DIR/lib/symbol-context.sh"
+# Merged-PR few-shot injection pass (issue #1093, epic #1088, Phase 2):
+# assemble_fewshot renders de-identified past review->merge examples from a
+# proposer-visible dev split into a FEWSHOT block whose path is exported as
+# FEWSHOT_FILE for the deep tier (mirroring SYMBOL_CONTEXT_FILE). Gated
+# default-off behind FEWSHOT_ENABLED (inert + byte-identical when off); the
+# source is hard-guarded to never be evals/**/holdout (held-out discipline).
+# shellcheck source=lib/fewshot.sh
+source "$SCRIPT_DIR/lib/fewshot.sh"
 # Shared PR-context prefetch (epic #1101, Story 2): prefetch_pr_context persists
 # the FULL diff + superset metadata to SHA-bound files (PR_CONTEXT_DIFF_FILE /
 # PR_CONTEXT_METADATA_FILE) for the agentic tiers. Gated default-off behind
@@ -1198,6 +1206,17 @@ if [ "${SYMBOL_CONTEXT_ENABLED:-false}" = "true" ]; then
   fi
 fi
 unset _sc_diff
+
+# Merged-PR few-shot injection pass (issue #1093). Runs here in tier-2 so
+# triage-cleared PRs never pay for it (only the deep tier reads FEWSHOT_FILE).
+# Gated default-off: when disabled FEWSHOT_FILE is never set and the deep prompt
+# + cost are byte-identical to pre-feature behavior (holdout-eval stability +
+# rollback). The source is a proposer-visible dev split; assemble_fewshot
+# hard-refuses an evals/**/holdout source (AC #2). Best-effort — a refusal or
+# parse failure degrades to no injection rather than failing the run.
+if [ "${FEWSHOT_ENABLED:-false}" = "true" ]; then
+  assemble_fewshot "${FEWSHOT_SOURCE_FILE:-$SCRIPT_DIR/../evals/deep-review/dev/fewshot.jsonl}" "/tmp/cascade/fewshot.txt" || true
+fi
 
 # --- Tier 2: Deep review + Rubber duck (parallel, cross-engine) ---
 echo "    [tier2] type=$TRIAGE_TYPE specialist=$DEEP_TIER_PROMPT"
