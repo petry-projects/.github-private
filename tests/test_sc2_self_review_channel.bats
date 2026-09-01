@@ -119,6 +119,28 @@ setup() {
 }
 
 # ---------------------------------------------------------------------------
+# src_stub_agent_ref — parse the `agent_ref:` input (the ref dev-lead's own
+# scripts are checked out from), dropping any inline comment.
+# ---------------------------------------------------------------------------
+
+@test "stub_agent_ref: parses the agent_ref value from a stable stub" {
+  run src_stub_agent_ref "${FIXTURES}/stub-stable.yml"
+  [ "$status" -eq 0 ]
+  [ "$output" = "dev-lead/v1-stable" ]
+}
+
+@test "stub_agent_ref: parses a mismatched next agent_ref" {
+  run src_stub_agent_ref "${FIXTURES}/stub-agent-next.yml"
+  [ "$status" -eq 0 ]
+  [ "$output" = "dev-lead/v1-next" ]
+}
+
+@test "stub_agent_ref: a stub with no agent_ref input returns non-zero" {
+  run src_stub_agent_ref "${FIXTURES}/stub-no-agent-ref.yml"
+  [ "$status" -ne 0 ]
+}
+
+# ---------------------------------------------------------------------------
 # src_assert_self_review_stable — the end-to-end guard + its SC2 message (AC #3).
 # ---------------------------------------------------------------------------
 
@@ -143,6 +165,23 @@ setup() {
   # The offending ref/tier are named so the failure is actionable.
   [[ "$output" == *"dev-lead/v1-next"* ]]
   [[ "$output" == *"next"* ]]
+}
+
+@test "assert: a stable uses: with a next agent_ref FAILS (the SC2 bypass)" {
+  run src_assert_self_review_stable "${FIXTURES}/stub-agent-next.yml" "dev-lead.yml"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"SC2"* ]]
+  [[ "$output" == *"circular dependency"* ]]
+  # The offending agent_ref is named so the failure is actionable.
+  [[ "$output" == *"agent_ref"* ]]
+  [[ "$output" == *"dev-lead/v1-next"* ]]
+}
+
+@test "assert: a stable uses: with NO agent_ref FAILS closed (defaults to main)" {
+  run src_assert_self_review_stable "${FIXTURES}/stub-no-agent-ref.yml" "dev-lead.yml"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"agent_ref"* ]]
+  [[ "$output" == *"main"* ]]
 }
 
 @test "assert: a @main pin FAILS the guard" {
