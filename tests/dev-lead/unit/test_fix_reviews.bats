@@ -901,10 +901,36 @@ GITEOF
 }
 
 @test "resolve_actor_outdated_threads: matches actor with [bot] suffix stripped" {
-  local tmpdir mutations_file
+  local tmpdir mutations_file base_sha
   tmpdir="$(mktemp -d)"
   mutations_file="$(mktemp)"
   rm -f /tmp/dev-lead-session-output.txt
+
+  # A real git repo whose PR head advances beyond the pre-pass HEAD_SHA, so the
+  # #1617 resolution gate is open and resolve_actor_outdated_threads actually runs
+  # (resolution is now permitted only when the pass advanced the head — #1609).
+  git -C "$tmpdir" init -q
+  echo "initial" > "$tmpdir/file.txt"
+  git -C "$tmpdir" add .
+  git -C "$tmpdir" -c user.email="t@test" -c user.name="T" commit -q -m "init"
+  git -C "$tmpdir" update-ref refs/remotes/origin/main "$(git -C "$tmpdir" rev-parse HEAD)"
+  base_sha="$(git -C "$tmpdir" rev-parse HEAD)"
+
+  # Engine advances the head with a substantive new file (non-zero net vs base).
+  cat > "$STUB_BIN_DIR/claude" << 'STUB'
+#!/usr/bin/env bash
+echo "Addressed feedback."
+printf 'fixed\n' > fix.txt
+STUB
+  chmod +x "$STUB_BIN_DIR/claude"
+
+  # git stub swallows the push (no remote) and passes everything else to real git.
+  cat > "$STUB_BIN_DIR/git" << 'GITEOF'
+#!/usr/bin/env bash
+if [ "$1" = "push" ]; then exit 0; fi
+exec /usr/bin/git "$@"
+GITEOF
+  chmod +x "$STUB_BIN_DIR/git"
 
   # gh stub: returns the JSON unfiltered (we pipe to real jq), and records mutations.
   cat > "$STUB_BIN_DIR/gh" << GHEOF
@@ -918,31 +944,24 @@ case "\$ARGS" in
   *"reviewThreads"*)
     echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"id":"PRRT_outdated_thread_id","isResolved":false,"isOutdated":true,"comments":{"nodes":[{"author":{"login":"chatgpt-codex-connector"}}]}}]}}}}}'
     ;;
-  *"pulls/"*) echo '{"head":{"sha":"abc123"}}' ;;
+  *"check-runs"*) echo '{"check_runs":[]}' ;;
+  *"statuses"*) echo '[]' ;;
+  *"pulls/"*"reviews"*) echo '[]' ;;
+  *"pulls/"*) echo '{"head":{"sha":"${base_sha}"},"auto_merge":null}' ;;
   *"pr checkout"*) exit 0 ;;
   *"pr comment"*) exit 0 ;;
+  *"pr merge"*) exit 0 ;;
+  *"issues/"*"comments"*) echo '[]' ;;
   *) echo "{}" ;;
 esac
 GHEOF
   chmod +x "$STUB_BIN_DIR/gh"
 
-  # Use a real git repo so commit_and_push returns "no changes"
-  git -C "$tmpdir" init -q
-  echo "initial" > "$tmpdir/file.txt"
-  git -C "$tmpdir" add .
-  git -C "$tmpdir" -c user.email="t@test" -c user.name="T" commit -q -m "init"
-
-  cat > "$STUB_BIN_DIR/claude" << 'STUB'
-#!/usr/bin/env bash
-echo "No actionable items."
-STUB
-  chmod +x "$STUB_BIN_DIR/claude"
-
   run bash -c "
     cd '$tmpdir'
     export INTENT_TYPE=fix-bot-comment DEV_LEAD_DRY_RUN=false
-    export PR_NUMBER=54 HEAD_SHA=abc123 REPO='petry-projects/.github-private'
-    export REVIEW_ENGINE=claude PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export PR_NUMBER=54 HEAD_SHA=$base_sha REPO='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
     export ACTOR='chatgpt-codex-connector[bot]' COMMENT_BODY='something'
     export PATH='$STUB_BIN_DIR:$PATH'
     bash '$FIX_REVIEWS_SCRIPT'
@@ -1038,7 +1057,18 @@ STUB
   local tmpdir="$BATS_TEST_TMPDIR/workdir"
   mkdir -p "$tmpdir"
   local mutations_file="$BATS_TEST_TMPDIR/mutations"
+  local base_sha
   rm -f /tmp/dev-lead-session-output.txt
+
+  # A real git repo whose PR head advances beyond the pre-pass HEAD_SHA, so the
+  # #1617 resolution gate is open and resolve_addressed_bot_threads actually runs
+  # (resolution is now permitted only when the pass advanced the head — #1609).
+  git -C "$tmpdir" init -q
+  echo "initial" > "$tmpdir/file.txt"
+  git -C "$tmpdir" add .
+  git -C "$tmpdir" -c user.email="t@test" -c user.name="T" commit -q -m "init"
+  git -C "$tmpdir" update-ref refs/remotes/origin/main "$(git -C "$tmpdir" rev-parse HEAD)"
+  base_sha="$(git -C "$tmpdir" rev-parse HEAD)"
 
   cat > "$STUB_BIN_DIR/gh" << GHEOF
 #!/usr/bin/env bash
@@ -1057,7 +1087,7 @@ case "\$ARGS" in
   *"check-runs"*) echo '{"check_runs":[]}' ;;
   *"statuses"*) echo '[]' ;;
   *"pulls/"*"reviews"*) echo '[]' ;;
-  *"pulls/"*) echo '{"head":{"sha":"abc123"},"auto_merge":null}' ;;
+  *"pulls/"*) echo '{"head":{"sha":"${base_sha}"},"auto_merge":null}' ;;
   *"pr checkout"*) exit 0 ;;
   *"pr comment"*) exit 0 ;;
   *"pr merge"*) exit 0 ;;
@@ -1066,21 +1096,26 @@ esac
 GHEOF
   chmod +x "$STUB_BIN_DIR/gh"
 
-  git -C "$tmpdir" init -q
-  echo "initial" > "$tmpdir/file.txt"
-  git -C "$tmpdir" add .
-  git -C "$tmpdir" -c user.email="t@test" -c user.name="T" commit -q -m "init"
-
+  # Engine advances the head with a substantive new file (non-zero net vs base).
   cat > "$STUB_BIN_DIR/claude" << 'STUB'
 #!/usr/bin/env bash
-echo "No actionable items."
+echo "Addressed feedback."
+printf 'fixed\n' > fix.txt
 STUB
   chmod +x "$STUB_BIN_DIR/claude"
+
+  # git stub swallows the push (no remote) and passes everything else to real git.
+  cat > "$STUB_BIN_DIR/git" << 'GITEOF'
+#!/usr/bin/env bash
+if [ "$1" = "push" ]; then exit 0; fi
+exec /usr/bin/git "$@"
+GITEOF
+  chmod +x "$STUB_BIN_DIR/git"
 
   run bash -c "
     cd '$tmpdir'
     export INTENT_TYPE=fix-reviews DEV_LEAD_DRY_RUN=false
-    export PR_NUMBER=54 HEAD_SHA=abc123 REPO='petry-projects/.github-private'
+    export PR_NUMBER=54 HEAD_SHA=$base_sha REPO='petry-projects/.github-private'
     export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
     export ACTOR='gemini-code-assist[bot]'
     export BOT_USER='donpetry-bot'
@@ -1270,6 +1305,120 @@ STUB
 
   run grep -q "PRRT_foreign_marker" "$mutations_file"
   [ "$status" -eq 1 ]
+}
+
+# ── Resolution gate (#1617): a no-commit pass resolves zero threads ──────────
+# #1609/#1024: a dev-lead fix pass may auto-resolve review threads ONLY when it
+# advanced the PR head. A pass that produces no commit must resolve ZERO threads,
+# in every intent branch. Each test drives a real git repo whose HEAD equals the
+# pre-pass HEAD_SHA and an engine that makes no change, so nothing is advanced —
+# resolution_gate_open must close the gate even though the gh stub offers an
+# outdated bot thread the resolve_* nets would otherwise take.
+_gate_no_commit_setup() {
+  local tmpdir="$1" mutations_file="$2"
+  git -C "$tmpdir" init -q
+  echo "initial" > "$tmpdir/file.txt"
+  git -C "$tmpdir" add .
+  git -C "$tmpdir" -c user.email="t@test" -c user.name="T" commit -q -m "init"
+  GATE_HEAD_SHA="$(git -C "$tmpdir" rev-parse HEAD)"
+
+  cat > "$STUB_BIN_DIR/claude" << 'STUB'
+#!/usr/bin/env bash
+echo "No actionable items."
+STUB
+  chmod +x "$STUB_BIN_DIR/claude"
+
+  cat > "$STUB_BIN_DIR/gh" << GHEOF
+#!/usr/bin/env bash
+ARGS="\$*"
+case "\$ARGS" in
+  *"resolveReviewThread"*)
+    echo "\$*" >> "$mutations_file"
+    echo '{"data":{"resolveReviewThread":{"thread":{"isResolved":true}}}}'
+    ;;
+  *"PullRequestReviewThread"*)
+    echo '{"data":{"node":{"isResolved":false,"latest":{"nodes":[{"author":{"login":"donpetry-bot"},"body":"Applied. <!-- dev-lead:addressed -->"}]}}}}'
+    ;;
+  *"reviewThreads"*)
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":""},"nodes":[{"id":"PRRT_outdated_bot","isResolved":false,"isOutdated":true,"comments":{"nodes":[{"author":{"login":"gemini-code-assist[bot]","__typename":"Bot"}}]},"origin":{"nodes":[{"author":{"login":"gemini-code-assist[bot]","__typename":"Bot"}}]}}]}}}}}'
+    ;;
+  *"check-runs"*) echo '{"check_runs":[]}' ;;
+  *"statuses"*) echo '[]' ;;
+  *"pulls/"*"reviews"*) echo '[]' ;;
+  *"pulls/"*) echo '{"head":{"sha":"${GATE_HEAD_SHA}"},"auto_merge":null}' ;;
+  *"pr checkout"*) exit 0 ;;
+  *"pr comment"*) exit 0 ;;
+  *"pr merge"*) exit 0 ;;
+  *"issues/"*"comments"*) echo '[]' ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+}
+
+@test "resolution gate (#1617): fix-reviews no-commit pass resolves zero threads" {
+  local tmpdir="$BATS_TEST_TMPDIR/fr" mutations_file="$BATS_TEST_TMPDIR/fr-mut"
+  mkdir -p "$tmpdir"; : > "$mutations_file"
+  rm -f /tmp/dev-lead-session-output.txt
+  _gate_no_commit_setup "$tmpdir" "$mutations_file"
+
+  run bash -c "
+    cd '$tmpdir'
+    export INTENT_TYPE=fix-reviews DEV_LEAD_DRY_RUN=false
+    export PR_NUMBER=54 HEAD_SHA=$GATE_HEAD_SHA REPO='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export ACTOR='gemini-code-assist[bot]' BOT_USER='donpetry-bot'
+    export PATH='$STUB_BIN_DIR:$PATH'
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+
+  [ "$status" -eq 0 ]
+  # The pass advanced nothing → the gate is closed → zero threads resolved.
+  [ ! -s "$mutations_file" ]
+  [[ "$output" == *"resolution gate closed (#1609)"* ]]
+}
+
+@test "resolution gate (#1617): fix-bot-comment no-commit pass resolves zero threads" {
+  local tmpdir="$BATS_TEST_TMPDIR/fbc" mutations_file="$BATS_TEST_TMPDIR/fbc-mut"
+  mkdir -p "$tmpdir"; : > "$mutations_file"
+  rm -f /tmp/dev-lead-session-output.txt
+  _gate_no_commit_setup "$tmpdir" "$mutations_file"
+
+  run bash -c "
+    cd '$tmpdir'
+    export INTENT_TYPE=fix-bot-comment DEV_LEAD_DRY_RUN=false
+    export PR_NUMBER=54 HEAD_SHA=$GATE_HEAD_SHA REPO='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export ACTOR='gemini-code-assist[bot]' BOT_USER='donpetry-bot' COMMENT_BODY='something'
+    export PATH='$STUB_BIN_DIR:$PATH'
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+
+  [ "$status" -eq 0 ]
+  [ ! -s "$mutations_file" ]
+  [[ "$output" == *"resolution gate closed (#1609)"* ]]
+}
+
+@test "resolution gate (#1617): review-changes no-commit pass resolves zero threads" {
+  local tmpdir="$BATS_TEST_TMPDIR/rc" mutations_file="$BATS_TEST_TMPDIR/rc-mut"
+  mkdir -p "$tmpdir"; : > "$mutations_file"
+  rm -f /tmp/dev-lead-session-output.txt
+  _gate_no_commit_setup "$tmpdir" "$mutations_file"
+
+  run bash -c "
+    cd '$tmpdir'
+    export INTENT_TYPE=review-changes DEV_LEAD_DRY_RUN=false
+    export PR_NUMBER=54 HEAD_SHA=$GATE_HEAD_SHA REPO='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export ACTOR='gemini-code-assist[bot]' BOT_USER='donpetry-bot'
+    export PR_TITLE='Test PR' PR_DESCRIPTION='A test PR'
+    export PATH='$STUB_BIN_DIR:$PATH'
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+
+  [ "$status" -eq 0 ]
+  [ ! -s "$mutations_file" ]
+  [[ "$output" == *"resolution gate closed (#1609)"* ]]
 }
 
 # ── ALL_REVIEWS_JSON deduplication: latest review per user ───────────────────
