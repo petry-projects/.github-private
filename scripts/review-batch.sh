@@ -248,7 +248,7 @@ while IFS= read -r pr_url; do
       run_review_capture "$pr_url" || rc=$?
 
       # Handle Copilot engine-unavailable setup/runtime errors post-fallback
-      if [ "$rc" -eq 55 ] || [ "$rc" -eq 127 ]; then
+      if [ "$rc" -eq 55 ]; then
         echo "::warning::Copilot engine unavailable at runtime (exit $rc) — falling through to Gemini"
         rc=2
         export REVIEW_ENGINE=copilot # ensure the next block catches it

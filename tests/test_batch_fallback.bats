@@ -2,6 +2,7 @@
 
 setup() {
   export TEST_DIR="$BATS_TMPDIR/batch-test"
+  rm -rf "$TEST_DIR"
   mkdir -p "$TEST_DIR/scripts"
   mkdir -p "$TEST_DIR/bin"
   cd "$TEST_DIR" || return
