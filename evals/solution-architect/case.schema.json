@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Solution-Architect Eval Case",
+  "description": "One held-out eval case for the solution-architect advisory persona: a structural-review input paired with its expected ADR-alignment decision. Each line of evals/solution-architect/<split>/cases.jsonl is one object of this shape. The persona measures a change against the recorded ADRs and cites the governing one, so the expected decision is ADR-shaped (risk_tier / escalate / cite_adr / recommend) — NOT the triage {escalate, risk} shape of evals/case.schema.json. This is the trust anchor for the persona's skill-quality measurement and is CODEOWNER-gated separately from any scorer/proposer.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "input", "expected"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+      "minLength": 3,
+      "description": "Stable, unique kebab-case identifier for the case (e.g. 'sa-dev-frozen-tag-pin'). Unique within a split and disjoint across dev/holdout (enforced by evals/validate-cases.py)."
+    },
+    "description": {
+      "type": "string",
+      "minLength": 5,
+      "description": "Human-readable note on what this case exercises and which ADR grounds the expected decision (or why no ADR governs)."
+    },
+    "tags": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 2
+      },
+      "uniqueItems": true,
+      "description": "Optional labels for coverage tracking, e.g. the ADR a case exercises ('adr-0002', 'no-adr', 'structural-drift', 'negative')."
+    },
+    "input": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The pre-fetched structural-review context exactly as the advisory consumes it: a self-contained description of the proposed change under review."
+    },
+    "expected": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["risk_tier", "escalate", "cite_adr", "recommend"],
+      "description": "The fixed, reward-hack-resistant expected structural advisory the persona must produce for this change.",
+      "properties": {
+        "risk_tier": {
+          "type": "string",
+          "enum": ["LOW", "MEDIUM", "HIGH"],
+          "description": "Expected structural risk classification. Any HIGH signal must pair with escalate=true."
+        },
+        "escalate": {
+          "type": "boolean",
+          "description": "Whether the advisory must flag the change for escalation (true) or may say no escalation is warranted (false)."
+        },
+        "cite_adr": {
+          "type": "string",
+          "pattern": "^(ADR-[0-9]{4}|none)$",
+          "description": "The governing ADR the advisory must cite by number (e.g. 'ADR-0002'), or the literal 'none' when no recorded ADR governs the change — the load-bearing 'say so rather than invent doctrine' case."
+        },
+        "recommend": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The structural recommendation the advisory must land, grounded in the cited ADR (or in naming the ADR gap when cite_adr is 'none')."
+        }
+      },
+      "if": {
+        "properties": {
+          "risk_tier": { "const": "HIGH" }
+        }
+      },
+      "then": {
+        "properties": {
+          "escalate": { "const": true }
+        }
+      }
+    }
+  }
+}
