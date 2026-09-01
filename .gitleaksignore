@@ -38,3 +38,12 @@ eb7fd4c955378d274794e38ee9b942912ce79c6f:tests/dev-lead/unit/test_engine_fallbac
 # runtime, so no literal token pattern appears in source and neither gitleaks nor
 # SonarCloud's secret detector flags it. Not a real credential.
 e27ed0f3d755e58b9d5ccc30e8eec835bb0ccb68:tests/test_miss_harvest.bats:github-pat:16
+# commit b378777 (#1093 few-shot injection): the de-identification test fixture
+# initially embedded a 40-char classic-PAT-length placeholder to prove
+# fewshot_scrub redacts classic-PAT tokens. A later commit (5124320) rewrote the
+# fixture to assemble the fake token from fragments at runtime, so no literal
+# token pattern appears in current source. The full-history gitleaks scan still
+# flags the historical commit b378777 on both lines that carried the literal;
+# these entries suppress those findings. Not a real credential.
+b37877721cd419b963b86d970c26cc3383761e33:tests/dev-lead/unit/test_fewshot_assemble.bats:github-pat:33
+b37877721cd419b963b86d970c26cc3383761e33:tests/dev-lead/unit/test_fewshot_assemble.bats:github-pat:85
