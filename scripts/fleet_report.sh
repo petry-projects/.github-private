@@ -754,7 +754,8 @@ derive_persona_optout_labels() {
   local f val
   for f in "$dir"/*/persona.yml; do
     [ -f "$f" ] || continue
-    val=$(sed -n 's/^[[:space:]]*opt_out_label:[[:space:]]*//p' "$f" | head -1)
+    val=$(sed -n 's/^[[:space:]]*opt_out_label:[[:space:]]*//p' "$f")
+    val="${val%%$'\n'*}"
     val="${val%\"}"; val="${val#\"}"; val="${val%\'}"; val="${val#\'}"
     [ -n "$val" ] && printf '%s\n' "$val"
   done | sort -u
