@@ -1,0 +1,11 @@
+# Fixture: a self-review-duty caller stub pinned to a stable-tier channel.
+name: Dev-Lead Agent
+on:
+  pull_request:
+    branches: [main]
+jobs:
+  dev-lead:
+    uses: petry-projects/.github-private/.github/workflows/dev-lead-reusable.yml@dev-lead/v1-stable  # NOSONAR(githubactions:S7637) first-party channel ref
+    with:
+      agent_ref: dev-lead/v1-stable
+    secrets: inherit

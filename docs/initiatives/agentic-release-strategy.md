@@ -182,6 +182,15 @@ staging, branch protection).
 blue/green rollback story **and** break the circular dependency — because production review/dev duty
 runs the pinned `stable` version, fully independent of whatever broken thing is sitting on `main`/`next`.
 
+> **SC2 in this repo, enforced continuously (#1624).** `.github-private` sits in ring `next`, but its own
+> dev/merge duty stub `dev-lead.yml` pins `@dev-lead/v1-stable` — the deliberate SC2 exception, so a broken
+> `next` cannot block its own fix. `pinned-version-report` flags this as a ⚠️ ring mismatch; that flag and
+> the stable pin are reconciled (correct from the ring view and the SC2 view respectively) — see
+> [`docs/release/versioning.md`](../release/versioning.md) "Production self-review/dev duty stays pinned to
+> `stable`". The property is guarded by `tests/test_sc2_self_review_channel.bats`, which parses the stub's
+> channel tier and fails on any non-`stable` pin, so this SC2 half is asserted continuously rather than only
+> demonstrated in the #503 game-day.
+
 ### 5.1 How version selection works without per-caller churn (moving channel tags)
 
 A natural instinct is to point each caller at an org/repo **Variable** (`uses: …@${{ vars.PR_REVIEW_VERSION }}`)
