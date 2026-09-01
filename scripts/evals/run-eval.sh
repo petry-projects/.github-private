@@ -99,6 +99,10 @@ command -v jq >/dev/null 2>&1 || die "jq is required but not installed"
 skill="${1:-}"
 [ -n "$skill" ] || die "usage: run-eval.sh <skill>"
 
+# shellcheck source=../lib/persona-runner.sh
+source "$REPO_ROOT/scripts/lib/persona-runner.sh"
+pr_valid_persona_id "$skill" || die "invalid skill name '$skill' (expected kebab-case)"
+
 cases_file="$EVALS_DIR/$skill/holdout/cases.jsonl"
 # Resolve the skill markdown to score. SKILL_PROMPT_FILE overrides everything: the
 # strict-improvement gate (#586) scores an arbitrary incumbent/candidate file

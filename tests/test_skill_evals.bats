@@ -516,14 +516,20 @@ fi
 SH
   chmod +x "$QA_SKILL_STUB"
 
-  # Judge stub: passes both candidates (their tokens prove the candidate reached
-  # the judge prompt); returns a numeric score >= threshold.
+  # Judge stub: validates both the judge rubric and the candidate are present,
+  # checks that expected guidance is honored, then returns a numeric score.
   QA_JUDGE_STUB="$TMP/qa_judge_stub.sh"
   cat >"$QA_JUDGE_STUB" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
 prompt="$1"
+# Verify the judge prompt itself (rubric) is in the assembled prompt.
+grep -q "Eval judge" "$prompt" || { echo '{"score": 0, "reason": "judge rubric missing from prompt"}'; exit 0; }
+# Verify the candidate is present (proves scorer fed the skill output to judge).
 grep -q CANDIDATE_TOKEN "$prompt" || { echo '{"score": 0, "reason": "candidate missing"}'; exit 0; }
+# Verify expected guidance is honored (escalate case must check recommendations).
+grep -q "add declined" "$prompt" || grep -q "declined/idempotency" "$prompt" || \
+  { echo '{"score": 0, "reason": "expected guidance not in prompt"}'; exit 0; }
 echo '{"score": 0.9, "reason": "matches the expected risk tier and guidance"}'
 SH
   chmod +x "$QA_JUDGE_STUB"
