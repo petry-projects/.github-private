@@ -84,6 +84,38 @@ setup() {
   [ "$output" = "0.7" ]
 }
 
+@test "sg_resolve_threshold: rejects a negative CLI threshold (would pass everything)" {
+  run sg_resolve_threshold "-1" ""
+  [ "$status" -eq 2 ]
+}
+
+@test "sg_resolve_threshold: rejects a CLI threshold above 1 (would fail everything)" {
+  run sg_resolve_threshold "1.5" ""
+  [ "$status" -eq 2 ]
+}
+
+@test "sg_resolve_threshold: rejects a non-numeric CLI threshold" {
+  run sg_resolve_threshold "high" ""
+  [ "$status" -eq 2 ]
+}
+
+@test "sg_resolve_threshold: an in-range CLI boundary value (0 or 1) is accepted" {
+  run sg_resolve_threshold "1" ""
+  [ "$status" -eq 0 ]
+  [ "$output" = "1" ]
+  run sg_resolve_threshold "0" ""
+  [ "$status" -eq 0 ]
+  [ "$output" = "0" ]
+}
+
+@test "sg_resolve_threshold: an out-of-range scorer.json gate_threshold falls back to default" {
+  local cfg="$BATS_TEST_TMPDIR/scorer.json"
+  echo '{"mode":"llm-judge","gate_threshold":2}' >"$cfg"
+  run sg_resolve_threshold "" "$cfg"
+  [ "$status" -eq 0 ]
+  [ "$output" = "0.7" ]
+}
+
 # ── sg_extract_score <report_json> ────────────────────────────────────────────
 
 @test "sg_extract_score: pulls a numeric score from a scorer report" {
@@ -100,6 +132,25 @@ setup() {
 @test "sg_extract_score: rejects non-JSON garbage" {
   run sg_extract_score 'not json at all'
   [ "$status" -ne 0 ]
+}
+
+@test "sg_extract_score: rejects a score above 1 (out of scorer range)" {
+  run sg_extract_score '{"skill":"x","score":2,"passed":6,"total":3}'
+  [ "$status" -ne 0 ]
+}
+
+@test "sg_extract_score: rejects a negative score" {
+  run sg_extract_score '{"skill":"x","score":-0.5,"passed":0,"total":7}'
+  [ "$status" -ne 0 ]
+}
+
+@test "sg_extract_score: accepts the boundary scores 0 and 1" {
+  run sg_extract_score '{"skill":"x","score":1,"passed":7,"total":7}'
+  [ "$status" -eq 0 ]
+  [ "$output" = "1" ]
+  run sg_extract_score '{"skill":"x","score":0,"passed":0,"total":7}'
+  [ "$status" -eq 0 ]
+  [ "$output" = "0" ]
 }
 
 # ── main: end-to-end over a stub report (offline, no LLM) ──────────────────────
@@ -135,5 +186,23 @@ _write_report() {
 
 @test "main: missing role argument is a usage error (exit 2)" {
   run bash "$GATE"
+  [ "$status" -eq 2 ]
+}
+
+@test "main: a negative --threshold is rejected as a hard error (exit 2)" {
+  _write_report '{"skill":"solution-architect","score":0.5,"passed":3,"failed":3,"total":6,"cases":[]}'
+  run bash "$GATE" solution-architect --threshold -1 --report "$BATS_TEST_TMPDIR/report.json"
+  [ "$status" -eq 2 ]
+}
+
+@test "main: a report tagged for a different role is refused (exit 2)" {
+  _write_report '{"skill":"qa-lead","score":0.9,"passed":9,"failed":1,"total":10,"cases":[]}'
+  run bash "$GATE" solution-architect --threshold 0.7 --report "$BATS_TEST_TMPDIR/report.json"
+  [ "$status" -eq 2 ]
+}
+
+@test "main: a report with a score above 1 is a hard error (exit 2)" {
+  _write_report '{"skill":"solution-architect","score":2,"passed":6,"failed":0,"total":3,"cases":[]}'
+  run bash "$GATE" solution-architect --threshold 0.7 --report "$BATS_TEST_TMPDIR/report.json"
   [ "$status" -eq 2 ]
 }
