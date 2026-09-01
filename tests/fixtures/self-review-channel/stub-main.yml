@@ -1,0 +1,11 @@
+# Fixture: a self-review-duty caller stub pinned to @main (never allowed).
+name: Dev-Lead Agent
+on:
+  pull_request:
+    branches: [main]
+jobs:
+  dev-lead:
+    uses: petry-projects/.github-private/.github/workflows/dev-lead-reusable.yml@main
+    with:
+      agent_ref: main
+    secrets: inherit

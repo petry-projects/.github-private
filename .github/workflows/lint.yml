@@ -165,6 +165,7 @@ jobs:
             tests/test_validate_workflow_schedules.bats \
             tests/test_lint_main_push_trigger.bats \
             tests/caller_stub_freeze.bats \
+            tests/test_sc2_self_review_channel.bats \
             tests/pr_review_canary.bats \
             tests/dev-lead/unit/test_maintainer_review_thread_gate.bats \
             tests/dev-lead/unit/test_conflict_integrity.bats \

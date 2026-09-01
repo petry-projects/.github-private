@@ -8,17 +8,27 @@ eliminate (`dev-lead`/`pr-review` build, review, and merge changes *to themselve
 ## Why the invariant holds
 
 Two mechanisms together guarantee it. For downstream consumer repos pinned to
-`stable`, either alone is sufficient; for this repo (ring-0 canary, pinned to
-`next`), mechanism (2) is the operative SC2 safety net:
+`stable`, either alone is sufficient. For **this repo** (the ring-0 canary) the
+two duties are split by design: `dev-lead.yml` (the dev/merge duty) pins a
+**stable-tier** channel (`@dev-lead/v1-stable`) so mechanism (1) protects it here
+exactly as it does a downstream consumer, while `pr-review-trigger.yml`
+deliberately pins `next` to dogfood the candidate, so mechanism (2) is that
+path's operative SC2 safety net:
 
 1. **Channel decoupling (structural).** New versions are exercised on `next`/`ring0`
-   while downstream consumer repos keep their self-review/dev duty pinned to
-   `stable` ([versioning.md](./versioning.md)). A break in `next` does not, by
+   while production self-review/dev duty stays pinned to `stable`
+   ([versioning.md](./versioning.md)). A break in `next` does not, by
    construction, take out a `stable`-pinned gate — the fix PR is still evaluated by
-   the last known-good `stable`. **This repo** is the ring-0 canary
-   (`pr-review-trigger.yml` and `dev-lead.yml` both pin to `next`), so channel
-   decoupling alone does not provide the SC2 guarantee here — mechanism (2) is
-   required.
+   the last known-good `stable`. **This repo keeps its dev/merge duty
+   (`dev-lead.yml`) pinned to `@dev-lead/v1-stable` even though it sits in ring
+   `next`** — the deliberate SC2 exception (#1624). `pinned-version-report` flags
+   that pin as a ⚠️ ring mismatch (it expects `next` for a ring-`next` repo); that
+   flag is correct from the ring-rollout view and the stable pin is correct from
+   the SC2 view — the two are reconciled, not contradictory (see
+   [versioning.md](./versioning.md) "Production self-review/dev duty stays pinned
+   to `stable`"). By contrast `pr-review-trigger.yml` pins `next` to dogfood the
+   candidate, so for the pr-review path channel decoupling alone does not provide
+   the SC2 guarantee — mechanism (2) is required there.
 
 2. **Break-glass (operational, #619).** For the residual case where a break *does*
    reach the gate that must review its own fix — e.g. a bug in `compute_ci_status`
@@ -41,7 +51,15 @@ Two mechanisms together guarantee it. For downstream consumer repos pinned to
    failing **required** check, so the break-glass only unblocks the
    codeowner-approval gate — it cannot merge a genuinely-broken PR.
 
-## Automated regression guard
+## Automated regression guards
+
+`tests/test_sc2_self_review_channel.bats` codifies mechanism (1) for this repo:
+it parses the `uses:` channel pin of `dev-lead.yml` (never a hardcoded version)
+and asserts it resolves to a **stable-tier** channel — failing with an
+SC2-naming message if a future "fix the ring drift" PR repins the dev/merge duty
+to `next`/`ring*`/`@main`/a bare SHA and silently restores the circular
+dependency. It is the automatable half of #503 (this repo's structural SC2
+property), complementing the game-day drill below.
 
 `tests/test_review_one_pr_force_ci_failing.bats` codifies mechanism (2):
 

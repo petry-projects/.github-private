@@ -1,0 +1,14 @@
+# Fixture: the SC2 bypass — a stable `uses:` reusable pin, but the `agent_ref`
+# input (the ref dev-lead's own scripts are checked out from) points at `next`.
+# The workflow runs from stable while the actual review/merge logic runs from an
+# unsafe channel, so the guard must FAIL even though `uses:` looks stable.
+name: Dev-Lead Agent
+on:
+  pull_request:
+    branches: [main]
+jobs:
+  dev-lead:
+    uses: petry-projects/.github-private/.github/workflows/dev-lead-reusable.yml@dev-lead/v1-stable  # NOSONAR(githubactions:S7637) first-party channel ref
+    with:
+      agent_ref: dev-lead/v1-next
+    secrets: inherit
