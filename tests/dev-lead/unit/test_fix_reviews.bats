@@ -1421,6 +1421,42 @@ GHEOF
   [[ "$output" == *"resolution gate closed (#1609)"* ]]
 }
 
+# Regression for the stale-HEAD_SHA hole (#1617): HEAD_SHA is the event-time SHA
+# and is only re-resolved when empty, but checkout loads the CURRENT PR head. If a
+# commit lands between the event firing and the checkout, HEAD_SHA differs from the
+# checked-out head while THIS pass has done no work — the old gate (which compared
+# HEAD_SHA) would then see two different non-empty SHAs and open, resolving threads
+# on a no-commit pass. The gate must instead compare the immutable RESOLUTION_BASE_SHA
+# snapshotted right after checkout, so a stale HEAD_SHA is irrelevant: a no-commit
+# pass resolves ZERO threads even when HEAD_SHA != the checked-out head.
+@test "resolution gate (#1617): stale HEAD_SHA differing from checkout head resolves zero threads on a no-commit pass" {
+  local tmpdir="$BATS_TEST_TMPDIR/stale" mutations_file="$BATS_TEST_TMPDIR/stale-mut"
+  mkdir -p "$tmpdir"; : > "$mutations_file"
+  rm -f /tmp/dev-lead-session-output.txt
+  _gate_no_commit_setup "$tmpdir" "$mutations_file"
+
+  # A stale, event-time SHA that deliberately does NOT match the checked-out head
+  # (GATE_HEAD_SHA). Non-empty, so the script skips the API refresh at line 67.
+  local stale_sha="deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+  [ "$stale_sha" != "$GATE_HEAD_SHA" ]
+
+  run bash -c "
+    cd '$tmpdir'
+    export INTENT_TYPE=fix-reviews DEV_LEAD_DRY_RUN=false
+    export PR_NUMBER=54 HEAD_SHA=$stale_sha REPO='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export ACTOR='gemini-code-assist[bot]' BOT_USER='donpetry-bot'
+    export PATH='$STUB_BIN_DIR:$PATH'
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+
+  [ "$status" -eq 0 ]
+  # Old code compared the stale HEAD_SHA against the checkout head, saw a diff,
+  # and opened the gate. The immutable snapshot closes it — zero threads resolved.
+  [ ! -s "$mutations_file" ]
+  [[ "$output" == *"resolution gate closed (#1609)"* ]]
+}
+
 # ── ALL_REVIEWS_JSON deduplication: latest review per user ───────────────────
 # The GitHub Reviews API returns the full history of all reviews. If a reviewer
 # previously requested changes but later approved, both entries are present.

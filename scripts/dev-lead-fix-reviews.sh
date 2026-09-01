@@ -68,6 +68,15 @@ if [ "${DEV_LEAD_DRY_RUN:-false}" = "false" ] && [ -n "${PR_NUMBER:-}" ]; then
     HEAD_SHA=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}" --jq '.head.sha' 2>/dev/null || true)
   fi
   checkout_pr_in_worktree "$PR_NUMBER" "$REPO"
+  # Immutable snapshot of the head this pass starts from — captured at the one
+  # moment that actually means "before this pass did any work" (#1617). The
+  # resolution gate compares against THIS, not HEAD_SHA: HEAD_SHA is the
+  # event-time SHA (only re-resolved when empty, line 67) and is reassigned by
+  # try_enable_auto_merge, so a commit landing between the event and this
+  # checkout would make HEAD_SHA differ from the checked-out head and open the
+  # gate on a no-commit pass. RESOLUTION_BASE_SHA is set once here and never
+  # reassigned, so the gate measures only whether THIS pass advanced the head.
+  RESOLUTION_BASE_SHA="$(git rev-parse HEAD 2>/dev/null || true)"
   setup_git_identity
 fi
 
@@ -1436,17 +1445,21 @@ ${enumerated}"
 #
 # - Dry-run passes through so the announce-only nets keep announcing what they would
 #   resolve — that existing behaviour and its tests are preserved.
-# - Otherwise compares the pre-pass HEAD_SHA against the post-pass `git rev-parse HEAD`
-#   via ri_may_resolve (fail-closed: an empty or unchanged SHA closes the gate).
-# - Falls back to cp_rc == 0 ONLY when a SHA is genuinely unavailable (HEAD_SHA unset
-#   or `git rev-parse HEAD` unresolvable), so a pass that legitimately pushed a commit
-#   is never wrongly gated shut just because the runner cannot report a SHA.
+# - Otherwise compares the immutable pre-pass RESOLUTION_BASE_SHA (snapshotted right
+#   after the worktree checkout, before any work) against the post-pass
+#   `git rev-parse HEAD` via ri_may_resolve (fail-closed: an empty or unchanged SHA
+#   closes the gate). RESOLUTION_BASE_SHA — not HEAD_SHA — is used deliberately:
+#   HEAD_SHA is the event-time value and is reassigned by try_enable_auto_merge, so
+#   gating on it could open on a no-commit pass whose checkout drifted from the event.
+# - Falls back to cp_rc == 0 ONLY when a SHA is genuinely unavailable (base snapshot
+#   unset or `git rev-parse HEAD` unresolvable), so a pass that legitimately pushed a
+#   commit is never wrongly gated shut just because the runner cannot report a SHA.
 resolution_gate_open() {
   local cp_rc="${1:-1}"
   if [ "${DEV_LEAD_DRY_RUN:-false}" = "true" ]; then
     return 0
   fi
-  local pre_sha="${HEAD_SHA:-}" cur_sha
+  local pre_sha="${RESOLUTION_BASE_SHA:-}" cur_sha
   cur_sha="$(git rev-parse HEAD 2>/dev/null || true)"
   if [ -z "$pre_sha" ] || [ -z "$cur_sha" ]; then
     return "$cp_rc"
