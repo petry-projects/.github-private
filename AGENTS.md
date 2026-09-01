@@ -296,8 +296,8 @@ row to its §4 classification table and declare a machine-readable per-role inte
 > schedule at minute 0; pick a staggered, non-round minute; idempotent sweeps may
 > run more often but still off the top of the hour) is now the **canonical,
 > org-wide standard**. Read it in
-> [`petry-projects/.github`](https://github.com/petry-projects/.github/blob/main/standards/ci-standards.md)
-> → `standards/ci-standards.md` → **Scheduled Workflow Timing**, which was
+> [standards/ci-standards.md in petry-projects/.github](https://github.com/petry-projects/.github/blob/main/standards/ci-standards.md)
+> → **Scheduled Workflow Timing**, which was
 > promoted out of this repo-local section under epic #722 / story #726 and now
 > names this repo as its origin. That section is the single source of truth for
 > the rule and its rationale; this repo defers to it — there is no separate
