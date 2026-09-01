@@ -363,6 +363,31 @@ jobs:
           PERSONA_SCHEMA_REF: ${{ github.head_ref || github.ref_name }}
         run: python3 personas/validate-personas.py personas
 
+  validate-eval-cases:
+    # Tree-wide per-case eval schema gate (#1645 AC #6). Per-case schema
+    # conformance was only ever checked in the validator's FILE mode, which
+    # nothing in CI invoked — so a non-conforming held-out set (qa-lead's) sat
+    # green for six weeks. This runs `validate-cases.py --schema-tree`, which
+    # validates every case in every split against evals/case.schema.json. It is
+    # deliberately SCOPED: SCHEMA_TREE_ALLOWLIST in the validator exempts the
+    # other 11 skills whose cases do not yet conform (that reconciliation is
+    # #1651's job), so the gate protects qa-lead now without failing every
+    # unrelated PR. When #1651 empties the allowlist, this gate covers the whole
+    # fleet unchanged. Fully HERMETIC (in-repo files + case.schema.json, no
+    # network). PR-triggered on the existing Lint workflow — no new cron.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Python deps
+        run: pip3 install --quiet 'jsonschema>=4'
+
+      - name: Validate per-case eval schema conformance across the tree
+        run: python3 evals/validate-cases.py --schema-tree evals
+
   validate-interaction-contracts:
     # Interaction-contract well-formedness gate (Story 2 / #1404, AC #5). Parses
     # every machine-readable interaction contract — the co-located persona lenses

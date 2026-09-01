@@ -35,16 +35,21 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["escalate", "risk"],
-      "description": "The fixed, reward-hack-resistant expected decision fields triage.md must emit.",
+      "description": "The fixed, reward-hack-resistant expected decision fields the skill must emit. `escalate` and `risk` are the deterministic anchors; `recommend` is an optional advisory-guidance field for prose skills graded by the llm-judge (see below).",
       "properties": {
         "escalate": {
           "type": "boolean",
-          "description": "Whether triage must escalate (true) or may approve (false)."
+          "description": "Whether the skill must escalate (true) or may approve (false)."
         },
         "risk": {
           "type": "string",
           "enum": ["LOW", "MEDIUM", "HIGH"],
           "description": "Expected risk classification. Any HIGH signal must pair with escalate=true."
+        },
+        "recommend": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Optional expected advisory guidance for prose skills scored by the llm-judge (e.g. qa-lead's test-risk advisory), NOT by deterministic equality. Deliberately named (not an `additionalProperties` widening, #1645): it carries the concrete 'what to shore up' judgment the judge reads as part of the expected reference. Deterministic skills like triage omit it."
         }
       },
       "if": {

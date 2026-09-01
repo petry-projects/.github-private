@@ -479,6 +479,100 @@ SH
   [ "$before" = "$after" ]
 }
 
+@test "llm-judge mode: qa-lead resolves prompts/qa-lead/advisory.md and scores via the judge (#1645)" {
+  # qa-lead is a prose advisory scored by the shared judge (evals/judge.md). This
+  # exercises the reconciled prompt-path convention (run-eval.sh must resolve the
+  # persona advisory path prompts/<skill>/advisory.md, not prompts/<skill>.md) AND
+  # the llm-judge scorer end-to-end, fully offline via stubbed skill + judge.
+  mkdir -p "$TMP/evals/qa-lead/holdout"
+  cat >"$TMP/evals/qa-lead/scorer.json" <<'JSON'
+{"mode": "llm-judge", "judge_prompt": "judge.md", "pass_threshold": 0.7}
+JSON
+  cat >"$TMP/evals/judge.md" <<'MD'
+# Eval judge
+Score the candidate qa-lead advisory against the expected reference.
+Emit a single JSON object: {"score": <0..1>, "reason": "..."}.
+MD
+  cat >"$TMP/evals/qa-lead/holdout/cases.jsonl" <<'JSONL'
+{"id": "qa-hold-payment", "input": "MARKER_ESCALATE\nPR adds card-capture; only the success path is tested.", "expected": {"escalate": true, "risk": "HIGH", "recommend": "add declined/duplicate-submit/refund cases"}}
+{"id": "qa-hold-refactor", "input": "MARKER_APPROVE\nBehavior-preserving rename in a well-covered module.", "expected": {"escalate": false, "risk": "LOW", "recommend": "no additional tests required"}}
+JSONL
+
+  # Skill-under-test stub standing in for the persona advisory. It carries a
+  # CANDIDATE_TOKEN plus a per-case token so the judge stub can prove the scorer
+  # fed it the candidate advisory (prose, not a JSON decision).
+  QA_SKILL_STUB="$TMP/qa_skill_stub.sh"
+  cat >"$QA_SKILL_STUB" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+prompt="$1"
+if grep -q MARKER_ESCALATE "$prompt"; then
+  echo 'CANDIDATE_TOKEN DECISION_ESCALATE Risk tier: HIGH. What I'"'"'d shore up: add declined and idempotency cases. Escalate? yes.'
+elif grep -q MARKER_APPROVE "$prompt"; then
+  echo 'CANDIDATE_TOKEN DECISION_APPROVE Risk tier: LOW. Existing coverage is sufficient. Escalate? no.'
+else
+  echo 'no marker found'
+fi
+SH
+  chmod +x "$QA_SKILL_STUB"
+
+  # Judge stub: passes both candidates (their tokens prove the candidate reached
+  # the judge prompt); returns a numeric score >= threshold.
+  QA_JUDGE_STUB="$TMP/qa_judge_stub.sh"
+  cat >"$QA_JUDGE_STUB" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+prompt="$1"
+grep -q CANDIDATE_TOKEN "$prompt" || { echo '{"score": 0, "reason": "candidate missing"}'; exit 0; }
+echo '{"score": 0.9, "reason": "matches the expected risk tier and guidance"}'
+SH
+  chmod +x "$QA_JUDGE_STUB"
+
+  EVALS_DIR="$TMP/evals" EVAL_ENGINE_CMD="$QA_SKILL_STUB" EVAL_JUDGE_CMD="$QA_JUDGE_STUB" \
+    run --separate-stderr bash "$SCORER" qa-lead
+  [ "$status" -eq 0 ]
+  [ "$(jq '.total'  <<<"$output")" -eq 2 ]
+  [ "$(jq '.passed' <<<"$output")" -eq 2 ]
+  [ "$(jq '.score'  <<<"$output")" = "1" ]
+  # Per-case numeric judge score is recorded.
+  [ "$(jq '.cases[0].score' <<<"$output")" = "0.9" ]
+}
+
+@test "llm-judge mode: qa-lead sub-threshold advisory fails the case (exit 1, #1645)" {
+  mkdir -p "$TMP/evals/qa-lead/holdout"
+  cat >"$TMP/evals/qa-lead/scorer.json" <<'JSON'
+{"mode": "llm-judge", "judge_prompt": "judge.md", "pass_threshold": 0.7}
+JSON
+  cat >"$TMP/evals/judge.md" <<'MD'
+# Eval judge
+Emit {"score": <0..1>, "reason": "..."}.
+MD
+  cat >"$TMP/evals/qa-lead/holdout/cases.jsonl" <<'JSONL'
+{"id": "qa-hold-payment", "input": "MARKER_ESCALATE\nMoney path, happy-only tests.", "expected": {"escalate": true, "risk": "HIGH", "recommend": "add declined/idempotency/refund"}}
+JSONL
+  QA_SKILL_STUB="$TMP/qa_skill_stub.sh"
+  cat >"$QA_SKILL_STUB" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+echo 'CANDIDATE_TOKEN Risk tier: LOW. Looks fine. Escalate? no.'
+SH
+  chmod +x "$QA_SKILL_STUB"
+  # Judge scores the (wrong) advisory below threshold.
+  QA_JUDGE_STUB="$TMP/qa_judge_stub.sh"
+  cat >"$QA_JUDGE_STUB" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+echo '{"score": 0.2, "reason": "missed the HIGH risk on the money path"}'
+SH
+  chmod +x "$QA_JUDGE_STUB"
+
+  EVALS_DIR="$TMP/evals" EVAL_ENGINE_CMD="$QA_SKILL_STUB" EVAL_JUDGE_CMD="$QA_JUDGE_STUB" \
+    run --separate-stderr bash "$SCORER" qa-lead
+  [ "$status" -eq 1 ]
+  [ "$(jq '.failed' <<<"$output")" -eq 1 ]
+  [ "$(jq '.cases[0].score' <<<"$output")" = "0.2" ]
+}
+
 @test "absent scorer.json defaults to deterministic mode (triage unchanged)" {
   # Triage has no scorer.json in the fixture; it must still score deterministically.
   EVALS_DIR="$TMP/evals" EVAL_ENGINE_CMD="$STUB_OK" \
