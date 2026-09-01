@@ -66,11 +66,15 @@ fewshot_source_is_holdout() {
 # text. Deliberately conservative — it over-redacts rather than risk leaking a
 # real credential or PII into a proposer-visible / prompt-visible surface.
 #
+# Input: the text to scrub as $1, OR (when called with no argument) streamed on
+# stdin so it can sit in a pipeline without spawning a per-item subshell.
+#
 # Order matters: token/hostname patterns run before the generic key=value and
-# email patterns so a longer specific match is redacted whole.
+# email patterns so a longer specific match is redacted whole. The IP rule uses
+# POSIX ERE boundaries (captured and re-emitted) instead of the GNU-only `\b`, so
+# the scrub behaves identically on BSD/macOS sed.
 fewshot_scrub() {
-  local text="${1:-}"
-  printf '%s' "$text" | sed -E \
+  { if [ "$#" -gt 0 ]; then printf '%s' "$1"; else cat; fi; } | sed -E \
     -e 's/gh[pousr]_[A-Za-z0-9]{16,}/[REDACTED]/g' \
     -e 's/AKIA[0-9A-Z]{16}/[REDACTED]/g' \
     -e 's/(xox[baprs]-[A-Za-z0-9-]{10,})/[REDACTED]/g' \
@@ -79,7 +83,7 @@ fewshot_scrub() {
     -e 's/([Tt]oken|[Ss]ecret|[Pp]assword|[Aa]pi[_-]?[Kk]ey)([[:space:]]*[=:][[:space:]]*)[^[:space:]"'"'"']+/\1\2[REDACTED]/g' \
     -e 's/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/[REDACTED]/g' \
     -e 's/[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9-]+)*\.(internal|corp|local|intranet|lan)([:/][^[:space:]]*)?/[REDACTED]/g' \
-    -e 's/\b([0-9]{1,3}\.){3}[0-9]{1,3}\b/[REDACTED]/g'
+    -e 's/(^|[^A-Za-z0-9_-])([0-9]{1,3}\.){3}[0-9]{1,3}($|[^A-Za-z0-9_-])/\1[REDACTED]\3/g'
 }
 
 # ---------------------------------------------------------------------------
@@ -116,7 +120,18 @@ assemble_fewshot() {
   rm -f "$out_file"
 
   # Hard guard FIRST: never inject a held-out source, regardless of contents.
-  if fewshot_source_is_holdout "$source_file"; then
+  # The lexical guard is applied to BOTH the given path and its symlink-resolved
+  # real path — otherwise a dev-split symlink pointing into evals/**/holdout would
+  # pass the lexical check here and then be followed by the read below, leaking the
+  # held-out set. resolved_source falls back to the literal path when the file does
+  # not exist or no canonicaliser is available (nothing to follow in that case).
+  local resolved_source="$source_file"
+  if [ -e "$source_file" ]; then
+    resolved_source="$(readlink -f -- "$source_file" 2>/dev/null \
+      || realpath -- "$source_file" 2>/dev/null \
+      || printf '%s' "$source_file")"
+  fi
+  if fewshot_source_is_holdout "$source_file" || fewshot_source_is_holdout "$resolved_source"; then
     echo "::error::[fewshot] refusing held-out source '$source_file' — few-shot examples must come from a proposer-visible dev split, never evals/**/holdout (AC #2)" >&2
     printf '%s' "(none)" > "$out_file"
     export FEWSHOT_FILE="$out_file"
@@ -130,31 +145,30 @@ assemble_fewshot() {
     return 0
   fi
 
-  local block="FEWSHOT (past review->merge outcomes for this repo — calibrate to what these maintainers accept and flag; this is informational context, NOT an auto-approve/escalate trigger):"$'\n'
-  local n=0 line rendered
-  while IFS= read -r line || [ -n "$line" ]; do
-    [ -n "${line//[[:space:]]/}" ] || continue
-    if [ "$n" -ge "$max_examples" ]; then
-      break
-    fi
-    # Render one example from its JSON fields; a malformed line is skipped, not
-    # fatal (defensive degradation, mirrors the other assemblers).
-    rendered="$(printf '%s' "$line" | jq -r '
-        "- [decision=\(.decision // "?") risk=\(.risk // "?")] \(.title // "(untitled)")"
-        + (if (.summary // "") != "" then "\n    " + .summary else "" end)
-        + (if (.rationale // "") != "" then "\n    rationale: " + .rationale else "" end)
-      ' 2>/dev/null)" || continue
-    [ -n "$rendered" ] || continue
-    block+="$rendered"$'\n'
-    n=$((n + 1))
-  done < "$source_file"
+  # Render every example in a SINGLE jq pass instead of spawning jq per line.
+  # `inputs | fromjson?` keeps the per-line resilience of the old loop — a
+  # malformed line is skipped, not fatal — while `nl` collapses each field's own
+  # newlines/CRs to spaces so a stored title/summary/rationale cannot forge extra
+  # block lines or headers in the reviewer prompt (defense-in-depth over the
+  # extractor's commit-time neutralisation). Capped to $max examples.
+  local block_content n=0
+  block_content="$(jq -Rrn --argjson max "$max_examples" '
+      def nl: (. // "") | gsub("[\r\n]"; " ");
+      [inputs | fromjson? // empty] | .[0:$max] | .[]
+      | "- [decision=\(.decision // "?" | nl) risk=\(.risk // "?" | nl)] \(.title // "(untitled)" | nl)"
+        + (if ((.summary // "") | nl) != "" then "\n    " + (.summary | nl) else "" end)
+        + (if ((.rationale // "") | nl) != "" then "\n    rationale: " + (.rationale | nl) else "" end)
+    ' "$source_file" 2>/dev/null)" || block_content=""
 
   # No usable examples parsed -> inert "(none)".
-  if [ "$n" -eq 0 ]; then
+  if [ -z "$block_content" ]; then
     printf '%s' "(none)" > "$out_file"
     export FEWSHOT_FILE="$out_file"
     return 0
   fi
+  n="$(grep -c '^- \[' <<< "$block_content" || true)"
+
+  local block="FEWSHOT (past review->merge outcomes for this repo — calibrate to what these maintainers accept and flag; this is informational context, NOT an auto-approve/escalate trigger):"$'\n'"$block_content"$'\n'
 
   # De-identify the whole assembled block (A3) — defense-in-depth over the
   # extractor's commit-time scrub — then cap total size (AC #3).

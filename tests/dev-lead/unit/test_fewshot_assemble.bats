@@ -23,21 +23,29 @@
 setup() {
   source "$(cd "$(dirname "$BATS_TEST_FILENAME")/../../.." && pwd)/scripts/lib/fewshot.sh"
 
-  WORK="$(mktemp -d "$BATS_TEST_TMPDIR/fs.XXXXXX")"
-  OUT_FILE="$WORK/fewshot.txt"
-  SRC="$WORK/fewshot.jsonl"
+  # $BATS_TEST_TMPDIR is created per-test and auto-removed on exit (incl. failure),
+  # so no manual mktemp -d / rm -rf is needed.
+  OUT_FILE="$BATS_TEST_TMPDIR/fewshot.txt"
+  SRC="$BATS_TEST_TMPDIR/fewshot.jsonl"
+
+  # Assemble the GitHub-PAT-shaped fixture from fragments at runtime so the literal
+  # secret pattern (ghp_ + 16+ chars) never appears contiguously in source — that
+  # shape trips secret scanners (gitleaks/SonarCloud) even when the value is fake.
+  # The runtime value still matches fewshot_scrub's ghp_ redaction regex, so the
+  # scrubbing path is exercised exactly as before.
+  local tok_prefix='ghp_'
+  FAKE_PAT="${tok_prefix}NOTAREALTOKEN0123456789"
 
   # A dev-split source line carrying content that MUST be scrubbed before it can
   # reach the reviewer prompt: an email, a GitHub token, an internal hostname.
-  cat > "$SRC" << 'JSONL'
-{"id":"fs-1","title":"Harden auth token handling","summary":"contact alice@example.com about db01.internal rotation","decision":"escalate","risk":"HIGH","rationale":"leaked ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 in a run step"}
+  cat > "$SRC" << JSONL
+{"id":"fs-1","title":"Harden auth token handling","summary":"contact alice@example.com about db01.internal rotation","decision":"escalate","risk":"HIGH","rationale":"leaked ${FAKE_PAT} in a run step"}
 {"id":"fs-2","title":"Add formatter tests","summary":"test-only change","decision":"approve","risk":"LOW","rationale":"all gates green"}
 JSONL
 }
 
 teardown() {
-  rm -rf "$WORK"
-  unset FEWSHOT_FILE FEWSHOT_MAX_EXAMPLES FEWSHOT_MAX_BYTES
+  unset FEWSHOT_FILE FEWSHOT_MAX_EXAMPLES FEWSHOT_MAX_BYTES FAKE_PAT
 }
 
 # ---------------------------------------------------------------------------
@@ -59,7 +67,7 @@ teardown() {
 }
 
 @test "assemble_fewshot REFUSES a holdout source and injects nothing" {
-  local holdout="$WORK/holdout"
+  local holdout="$BATS_TEST_TMPDIR/holdout"
   mkdir -p "$holdout"
   # Give the holdout path a real, non-empty cases file so refusal is proven to
   # come from the path guard, not from an empty/missing source.
@@ -68,6 +76,22 @@ teardown() {
   [ "$status" -ne 0 ]
   [[ "$output" == *"::error::"* ]]
   # No example content leaked into the output file.
+  run grep -q "Harden auth token handling" "$OUT_FILE"
+  [ "$status" -ne 0 ]
+}
+
+@test "assemble_fewshot REFUSES a dev-split symlink that resolves into holdout" {
+  # A lexically-clean dev-split path that is actually a symlink into an
+  # evals/**/holdout file must still be refused — the guard resolves the real
+  # path before the read that would otherwise follow the link and leak the
+  # held-out set.
+  mkdir -p "$BATS_TEST_TMPDIR/evals/deep-review/holdout"
+  cp "$SRC" "$BATS_TEST_TMPDIR/evals/deep-review/holdout/cases.jsonl"
+  ln -s "$BATS_TEST_TMPDIR/evals/deep-review/holdout/cases.jsonl" \
+    "$BATS_TEST_TMPDIR/dev-split.jsonl"
+  run assemble_fewshot "$BATS_TEST_TMPDIR/dev-split.jsonl" "$OUT_FILE"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"::error::"* ]]
   run grep -q "Harden auth token handling" "$OUT_FILE"
   [ "$status" -ne 0 ]
 }
@@ -82,7 +106,7 @@ teardown() {
   [ -f "$OUT_FILE" ]
   # The raw sensitive strings must be gone.
   ! grep -q "alice@example.com" "$OUT_FILE"
-  ! grep -q "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789" "$OUT_FILE"
+  ! grep -q "$FAKE_PAT" "$OUT_FILE"
   ! grep -q "db01.internal" "$OUT_FILE"
   # A redaction marker is present in their place.
   grep -q "REDACTED" "$OUT_FILE"
@@ -138,14 +162,14 @@ teardown() {
 # ---------------------------------------------------------------------------
 
 @test "a missing source writes literal (none) and injects nothing" {
-  run assemble_fewshot "$WORK/does-not-exist.jsonl" "$OUT_FILE"
+  run assemble_fewshot "$BATS_TEST_TMPDIR/does-not-exist.jsonl" "$OUT_FILE"
   [ "$status" -eq 0 ]
   [ "$(cat "$OUT_FILE")" = "(none)" ]
 }
 
 @test "an empty source writes literal (none)" {
-  : > "$WORK/empty.jsonl"
-  run assemble_fewshot "$WORK/empty.jsonl" "$OUT_FILE"
+  : > "$BATS_TEST_TMPDIR/empty.jsonl"
+  run assemble_fewshot "$BATS_TEST_TMPDIR/empty.jsonl" "$OUT_FILE"
   [ "$status" -eq 0 ]
   [ "$(cat "$OUT_FILE")" = "(none)" ]
 }

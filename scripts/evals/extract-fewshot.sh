@@ -98,26 +98,25 @@ examples="$(printf '%s' "$raw" | jq -c '
 
 [ -n "$examples" ] || die "no examples derived from $REPO (no merged PRs?)"
 
-# Second pass: de-identify every string field (A3). Scrub per-field so structure
-# is preserved, then re-emit a compact JSONL line.
+# Second pass: de-identify every string field (A3) AND neutralise prompt-injection
+# vectors in the attacker-controllable merged-PR text (title/summary/body). This
+# runs as a single O(1)-process pipeline instead of spawning jq+sed per example:
+#   1. @tsv flattens each example to one row and escapes any embedded newline/tab/
+#      CR in the merged text to a literal \n/\t/\r — so a crafted PR title or body
+#      cannot forge new lines or headers when the example is later rendered into
+#      the deep-review prompt (structural hardening on top of credential scrubbing;
+#      the deep prompt also treats FEWSHOT as informational context, never an
+#      instruction).
+#   2. fewshot_scrub redacts secrets/tokens/hostnames/PII across the whole stream.
+#   3. the row is reconstructed into a compact JSONL object.
 tmp="$(mktemp)"
 trap 'rm -f "$tmp"' EXIT
-count=0
-while IFS= read -r line; do
-  [ -n "${line//[[:space:]]/}" ] || continue
-  id="$(printf '%s' "$line"     | jq -r '.id')"
-  title="$(fewshot_scrub "$(printf '%s' "$line" | jq -r '.title')")"
-  summary="$(fewshot_scrub "$(printf '%s' "$line" | jq -r '.summary')")"
-  decision="$(printf '%s' "$line" | jq -r '.decision')"
-  risk="$(printf '%s' "$line"   | jq -r '.risk')"
-  rationale="$(fewshot_scrub "$(printf '%s' "$line" | jq -r '.rationale')")"
-  jq -cn \
-    --arg id "$id" --arg title "$title" --arg summary "$summary" \
-    --arg decision "$decision" --arg risk "$risk" --arg rationale "$rationale" \
-    '{id:$id, title:$title, summary:$summary, decision:$decision, risk:$risk, rationale:$rationale}' \
-    >> "$tmp"
-  count=$((count + 1))
-done <<< "$examples"
+jq -r '[.id, .title, .summary, .decision, .risk, .rationale] | @tsv' <<< "$examples" \
+  | fewshot_scrub \
+  | jq -R -c 'select(length > 0) | split("\t")
+      | {id: .[0], title: .[1], summary: .[2], decision: .[3], risk: .[4], rationale: .[5]}' \
+  > "$tmp"
+count=$(wc -l < "$tmp")
 
 mkdir -p "$(dirname "$OUT")"
 mv "$tmp" "$OUT"
