@@ -128,7 +128,9 @@ You may recommend `approve` only if ALL of:
 7. The change is not a boundary-crossing / structural refactor. A refactor that
    crosses module boundaries alters the shape of the system, so it escalates for
    human and architectural review rather than being auto-approved — even when
-   every other gate passes.
+   every other gate passes. Report this gate with the `boundary-refactor`
+   reason code, not `poorly-structured` — the change may be perfectly well
+   structured; it escalates because it changes system shape.
 
 Otherwise → `escalate`.
 
@@ -154,7 +156,7 @@ Do not print the JSON to stdout — write it to the file. Schema:
   "head_sha": "<the SHA you reviewed>",
   "risk": "LOW|MEDIUM|HIGH",
   "decision": "approve|escalate|skip",
-  "reason_codes": ["high-risk-content"|"ci-failing"|"issue-not-addressed"|"unresolved-threads"|"poorly-structured"|"no-linked-issue"|"draft"|"head-sha-changed"|"none"],
+  "reason_codes": ["high-risk-content"|"ci-failing"|"issue-not-addressed"|"unresolved-threads"|"poorly-structured"|"no-linked-issue"|"draft"|"head-sha-changed"|"boundary-refactor"|"none"],
   "summary": "<2-3 sentence summary from your lens's perspective>",
   "findings": [
     {
