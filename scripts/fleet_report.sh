@@ -736,12 +736,9 @@ generate_report() {
 #
 # Drift TSV format (5 fields, tab-separated):
 #   1:repo  2:status  3:present_count  4:total  5:missing_csv
-# status ∈ { COMPLETE, INCOMPLETE, ABSENT }
+# status ∈ { COMPLETE, INCOMPLETE }
 #   COMPLETE   — repo carries every derived opt-out label
-#   INCOMPLETE — some but not all present (escape hatch partially inert — the
-#                alertable signal)
-#   ABSENT     — none present (repo not enrolled in any persona surface) —
-#                informational, not alerted (mirrors stub-drift MISSING)
+#   INCOMPLETE — missing one or more labels (the alertable signal, even if all are missing)
 
 # derive_persona_optout_labels [personas_dir]
 # Prints the derived <id>:hands-off family, one per line, sorted-unique, by
@@ -781,9 +778,7 @@ persona_optout_row() {
   missing=$(persona_optout_missing "$expected" "$actual")
   missing_ct=$(printf '%s' "$missing" | grep -c . || true)
   present=$(( total - missing_ct ))
-  if [ "$present" -le 0 ]; then
-    status="ABSENT"; present=0
-  elif [ "$missing_ct" -eq 0 ]; then
+  if [ "$missing_ct" -eq 0 ]; then
     status="COMPLETE"
   else
     status="INCOMPLETE"
@@ -794,21 +789,19 @@ persona_optout_row() {
 
 # generate_persona_optout_report <tsv_file> [total_expected]
 # Renders the "Persona opt-out label coverage" section. Surfaces every INCOMPLETE
-# repo (a persona can be mentioned there but its mandated opt-out does not exist);
-# COMPLETE repos are counted only; ABSENT repos are summarized as not-enrolled.
+# repo (missing one or more derived labels). COMPLETE repos are counted only.
 # An empty or missing file prints nothing (section omitted).
 generate_persona_optout_report() {
   local f="${1:-}" total="${2:-}"
   [ -n "$f" ] && [ -s "$f" ] || return 0
-  local complete incomplete absent
+  local complete incomplete
   complete=$(awk -F'\t' '$2 == "COMPLETE"'   "$f" | wc -l | tr -d ' ')
   incomplete=$(awk -F'\t' '$2 == "INCOMPLETE"' "$f" | wc -l | tr -d ' ')
-  absent=$(awk -F'\t' '$2 == "ABSENT"'       "$f" | wc -l | tr -d ' ')
 
   printf '## Persona opt-out label coverage\n\n'
   printf 'Every persona advisory tells maintainers they can opt out with `<id>:hands-off`, and the mention router matches that label by **exact name** — a label that does not exist can never match, so a missing opt-out reads silently as "not opted out" (fail-open by omission, #1644). The family is **derived** from `personas/*/persona.yml`, so a new persona is covered automatically.\n\n'
-  printf '✅ COMPLETE: %s  🔴 INCOMPLETE: %s  ⬜ ABSENT (not enrolled): %s' \
-    "$complete" "$incomplete" "$absent"
+  printf '✅ COMPLETE: %s  🔴 INCOMPLETE: %s' \
+    "$complete" "$incomplete"
   [ -n "$total" ] && printf '  ·  derived family size: %s' "$total"
   printf '\n\n'
 
