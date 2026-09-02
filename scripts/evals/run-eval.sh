@@ -75,6 +75,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 EVALS_DIR="${EVALS_DIR:-$REPO_ROOT/evals}"
+# EVAL_PROMPTS_DIR (not PROMPTS_DIR — that name is already used by the dev-lead
+# runtime for an unrelated path) overrides the prompt root, mirroring EVALS_DIR,
+# so offline tests can point it at a fixture tree.
+EVAL_PROMPTS_DIR="${EVAL_PROMPTS_DIR:-$REPO_ROOT/prompts}"
 EVAL_ENGINE_CMD="${EVAL_ENGINE_CMD:-run_triage}"
 EVAL_JUDGE_CMD="${EVAL_JUDGE_CMD:-run_triage}"
 
@@ -95,9 +99,22 @@ cases_file="$EVALS_DIR/$skill/holdout/cases.jsonl"
 # gate (#586) scores an arbitrary incumbent/candidate file against the SAME
 # held-out set — so SKILL_PROMPT_FILE overrides which file is scored while the
 # cases stay fixed. Held-out cases remain read-only regardless of the override.
-prompt_file_base="${SKILL_PROMPT_FILE:-$REPO_ROOT/prompts/$skill.md}"
+#
+# Role-generic resolution (#1630, AC #4): personas keep their prompt at
+# prompts/<role>/advisory.md, not prompts/<role>.md, so the shared harness scores
+# ANY persona eval tree by falling back to the advisory prompt when the flat
+# prompts/<role>.md is absent. EVAL_PROMPTS_DIR overrides the prompt root the same way
+# EVALS_DIR overrides the cases root, keeping offline tests network-free.
+if [ -n "${SKILL_PROMPT_FILE:-}" ]; then
+  prompt_file_base="$SKILL_PROMPT_FILE"
+else
+  prompt_file_base="$EVAL_PROMPTS_DIR/$skill.md"
+  if [ ! -f "$prompt_file_base" ] && [ -f "$EVAL_PROMPTS_DIR/$skill/advisory.md" ]; then
+    prompt_file_base="$EVAL_PROMPTS_DIR/$skill/advisory.md"
+  fi
+fi
 [ -f "$cases_file" ] || die "no cases for skill '$skill' (expected $cases_file)"
-[ -f "$prompt_file_base" ] || die "no skill prompt for '$skill' (expected $prompt_file_base)"
+[ -f "$prompt_file_base" ] || die "no skill prompt for '$skill' (expected $EVAL_PROMPTS_DIR/$skill.md or $EVAL_PROMPTS_DIR/$skill/advisory.md)"
 
 # Resolve the per-skill scorer mode from an optional config. This is the only
 # place the mode is decided: the comparator core below dispatches on $SCORER_MODE,

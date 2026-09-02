@@ -167,6 +167,54 @@ teardown() { rm -rf "$TMP"; }
   [ "$(jq -r '.actual.risk'     <<<"$esc")" = "HIGH" ]
 }
 
+# --- role-generic prompt resolution: persona advisory prompt fallback (#1630) --
+#
+# Personas keep their prompt at prompts/<role>/advisory.md, not prompts/<role>.md.
+# For the shared harness to score ANY persona eval tree (AC #4 — unblock the
+# other seven drafted personas, not just solution-architect), run-eval.sh must
+# fall back to prompts/<role>/advisory.md when prompts/<role>.md is absent. This
+# proves the fallback loads the advisory prompt (a marker unique to advisory.md
+# reaches the engine) and scores against it. EVAL_PROMPTS_DIR overrides the prompt
+# root the same way EVALS_DIR overrides the cases root, so the test stays offline.
+
+@test "prompt resolution: falls back to prompts/<role>/advisory.md for a persona (no <role>.md)" {
+  local root="$TMP/persona"
+  mkdir -p "$root/evals/sample-persona/holdout" "$root/prompts/sample-persona"
+
+  cat >"$root/evals/sample-persona/holdout/cases.jsonl" <<'JSONL'
+{"id": "p-approve", "input": "MARKER_APPROVE", "expected": {"escalate": false, "risk": "LOW"}}
+JSONL
+
+  # No prompts/sample-persona.md — ONLY the advisory prompt exists. It carries a
+  # unique marker so the stub can confirm THIS file was the one concatenated.
+  cat >"$root/prompts/sample-persona/advisory.md" <<'MD'
+# Sample persona advisory
+ADVISORY_PROMPT_MARKER
+MD
+
+  local stub="$root/stub.sh"
+  cat >"$stub" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+prompt="$1"
+# Only answer when the advisory prompt (its marker) was actually loaded, proving
+# the fallback resolved prompts/<role>/advisory.md rather than dying on a missing
+# prompts/<role>.md.
+if grep -q ADVISORY_PROMPT_MARKER "$prompt" && grep -q MARKER_APPROVE "$prompt"; then
+  echo '{"escalate": false, "risk": "LOW"}'
+else
+  echo 'advisory prompt not loaded'
+fi
+SH
+  chmod +x "$stub"
+
+  EVALS_DIR="$root/evals" EVAL_PROMPTS_DIR="$root/prompts" EVAL_ENGINE_CMD="$stub" \
+    run --separate-stderr bash "$SCORER" sample-persona
+  [ "$status" -eq 0 ]
+  [ "$(jq '.passed' <<<"$output")" -eq 1 ]
+  [ "$(jq -r '.cases[0].pass' <<<"$output")" = "true" ]
+}
+
 # --- infra failure vs. quality regression (throttle classification, #920) ------
 #
 # A throttle (every model in the engine fallback chain exits non-zero) means the
