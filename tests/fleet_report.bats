@@ -732,7 +732,7 @@ _mk_metrics() {
 # Persona opt-out label coverage / drift (#1644)
 #   Drift TSV format (5 fields):
 #     1:repo  2:status  3:present_count  4:total  5:missing_csv
-#   status ∈ { COMPLETE, INCOMPLETE, ABSENT }
+#   status ∈ { COMPLETE, INCOMPLETE }
 # ---------------------------------------------------------------------------
 
 # Build a throwaway personas/ tree with the given ids, each carrying an
@@ -803,12 +803,12 @@ YAML
   [[ "$missing" =~ "c:hands-off" ]]
 }
 
-@test "persona_optout_row: repo carrying none of the family is ABSENT (not enrolled)" {
+@test "persona_optout_row: repo carrying none of the family is INCOMPLETE (missing all)" {
   local exp; exp="$(printf 'a:hands-off\nb:hands-off')"
   run persona_optout_row "petry-projects/x" "$exp" ""
   [ "$status" -eq 0 ]
   IFS=$'\t' read -r repo st present total missing <<< "$output"
-  [ "$st" = "ABSENT" ]
+  [ "$st" = "INCOMPLETE" ]
   [ "$present" = "0" ]
 }
 
@@ -827,7 +827,6 @@ YAML
   printf '%s\n' \
     $'petry-projects/.github-private\tCOMPLETE\t9\t9\t' \
     $'petry-projects/TalkTerm\tINCOMPLETE\t1\t9\tqa-lead:hands-off,sre-lead:hands-off' \
-    $'petry-projects/broodly\tABSENT\t0\t9\tdev-lead:hands-off' \
     > "$f"
   run generate_persona_optout_report "$f" 9
   [ "$status" -eq 0 ]
@@ -865,7 +864,6 @@ YAML
   printf '%s\n' \
     $'petry-projects/.github-private\tCOMPLETE\t9\t9\t' \
     $'petry-projects/TalkTerm\tINCOMPLETE\t1\t9\tqa-lead:hands-off,sre-lead:hands-off' \
-    $'petry-projects/broodly\tABSENT\t0\t9\tdev-lead:hands-off' \
     > "$f"
   run persona_optout_alert_json "$f"
   [ "$status" -eq 0 ]
