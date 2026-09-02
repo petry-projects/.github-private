@@ -206,3 +206,33 @@ _write_report() {
   run bash "$GATE" solution-architect --threshold 0.7 --report "$BATS_TEST_TMPDIR/report.json"
   [ "$status" -eq 2 ]
 }
+
+# --- flag-arity usage errors (must be exit 2, never bash's own exit 1) -------
+# Regression guard: these flags previously used ${2:?...}, whose expansion error
+# aborts with status 1 — indistinguishable from a legitimate "gate failed"
+# verdict — and, when the flag was the final argument, `shift 2` failed under
+# `set -e` before any handler ran.
+
+@test "main: --threshold as the final argument is a usage error (exit 2)" {
+  run bash "$GATE" solution-architect --threshold
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"--threshold needs a value"* ]]
+}
+
+@test "main: --report as the final argument is a usage error (exit 2)" {
+  run bash "$GATE" solution-architect --report
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"--report needs a file"* ]]
+}
+
+@test "main: --evals-dir as the final argument is a usage error (exit 2)" {
+  run bash "$GATE" solution-architect --evals-dir
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"--evals-dir needs a directory"* ]]
+}
+
+@test "main: a non-numeric --threshold is rejected as a hard error (exit 2)" {
+  _write_report '{"skill":"solution-architect","score":0.5,"passed":3,"failed":3,"total":6,"cases":[]}'
+  run bash "$GATE" solution-architect --threshold abc --report "$BATS_TEST_TMPDIR/report.json"
+  [ "$status" -eq 2 ]
+}

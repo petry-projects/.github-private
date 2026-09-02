@@ -132,9 +132,16 @@ main() {
   local role="" cli_threshold="" report_file="" evals_dir="${EVALS_DIR:-$repo_root/evals}"
   while [ "$#" -gt 0 ]; do
     case "$1" in
-      --threshold) cli_threshold="${2:?--threshold needs a value}"; shift 2 ;;
-      --report)    report_file="${2:?--report needs a file}"; shift 2 ;;
-      --evals-dir) evals_dir="${2:?--evals-dir needs a directory}"; shift 2 ;;
+      # NOTE: use an explicit arity check + die (exit 2), NOT ${2:?...}. The
+      # :? expansion aborts with status 1, which collides with the documented
+      # "gate failed" exit and misreports a usage error; and when the flag is
+      # the final argument, `shift 2` itself fails under `set -e`.
+      --threshold) [ "$#" -ge 2 ] || die "--threshold needs a value"
+                   cli_threshold="$2"; shift 2 ;;
+      --report)    [ "$#" -ge 2 ] || die "--report needs a file"
+                   report_file="$2"; shift 2 ;;
+      --evals-dir) [ "$#" -ge 2 ] || die "--evals-dir needs a directory"
+                   evals_dir="$2"; shift 2 ;;
       -h|--help)   grep '^#' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; return 0 ;;
       --) shift; break ;;
       -*) die "unknown option: $1" ;;
