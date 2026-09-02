@@ -106,6 +106,24 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           exit "$status"
 
+      - name: Score promotion gate verdict (report-only)
+        id: gate
+        # Give the scored promotion gate (scripts/evals/score-gate.sh, #1630) a
+        # real repository caller: it consumes the artifact this workflow just
+        # produced (`--report eval-report.json`) — the "CI scores once, gate on
+        # the artifact" path the gate was built for — and emits the machine-
+        # readable {role,score,threshold,verdict} against the role's documented
+        # threshold. Report-only here (continue-on-error), consistent with this
+        # workflow's Phase-1 non-blocking contract; the HARD promotion bar
+        # (draft -> stable) is enforced at release-cut time, not on this cron.
+        if: always() && hashFiles('eval-report.json') != ''
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          gate_status=0
+          bash scripts/evals/score-gate.sh "$SKILL" --report eval-report.json > gate-verdict.json || gate_status=$?
+          echo "status=$gate_status" >> "$GITHUB_OUTPUT"
+
       - name: Render report to step summary
         if: always() && hashFiles('eval-report.json') != ''
         run: |
@@ -126,6 +144,13 @@ jobs:
                 echo ""
                 echo "### Regressed cases"
                 jq -r '.cases[] | select(.pass | not) | "- `\(.id)` — expected \(.expected|tojson), got \(.actual|tojson)"' eval-report.json
+              fi
+              if [ -f gate-verdict.json ] && jq -e . gate-verdict.json >/dev/null 2>&1; then
+                echo ""
+                echo "### Promotion gate verdict (informational)"
+                verdict=$(jq -r '.verdict'   gate-verdict.json)
+                threshold=$(jq -r '.threshold' gate-verdict.json)
+                echo "- \`${SKILL}\`: **${verdict}** (score ${score} vs threshold ${threshold})"
               fi
             else
               echo "Scorer produced no parseable JSON report (outcome: ${{ steps.eval.outputs.outcome }})."
