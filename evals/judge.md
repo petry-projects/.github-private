@@ -21,12 +21,15 @@ Use `prompts/shared.md`'s shared risk taxonomy as the ground truth:
   anti-patterns (SQL string concatenation, eval/exec on untrusted input,
   `shell=True`, hardcoded secrets, disabled TLS verification, etc.); CI security
   scanner warnings; org/standards violations; GitHub Actions security smells.
-- **MEDIUM**: non-trivial logic changes, new deps, cross-module refactors.
+- **MEDIUM**: non-trivial logic changes, new deps.
 - **LOW**: docs, comments, typos, tests-only, lockfile updates.
 
 A correct review may **approve** only when risk is LOW or MEDIUM **and** every
 decision gate passes (CI green, linked issue addressed, no unresolved threads,
-well-structured). Otherwise it must **escalate**.
+well-structured). Otherwise it must **escalate**. A **cross-module / boundary-crossing
+refactor** is MEDIUM-risk but is **not** on the auto-approve path: it alters system
+shape, so a correct review escalates it for human + architectural review rather than
+approving.
 
 ## How to score (0.0 – 1.0)
 
