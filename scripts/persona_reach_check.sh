@@ -60,9 +60,9 @@ PRC_RING_ORDER="draft canary next ring0 ring1 stable retired"
 # names the offending event on stdout. Surrounding whitespace is ignored.
 prc_surface_is_mention_only() {
   local csv="${1:-}" ev seen=0
-  local IFS=','
-  # shellcheck disable=SC2086
-  for ev in $csv; do
+  local -a events
+  IFS=',' read -r -a events <<< "$csv"
+  for ev in "${events[@]}"; do
     ev="${ev#"${ev%%[![:space:]]*}"}"   # ltrim
     ev="${ev%"${ev##*[![:space:]]}"}"   # rtrim
     [ -n "$ev" ] || continue
@@ -88,7 +88,10 @@ prc_is_past_draft() {
     i=$((i + 1))
   done
   [ "$status_i" -ge 0 ] || return 1
-  [ "$status_i" -gt "$draft_i" ]
+  if [ "$status_i" -gt "$draft_i" ]; then
+    return 0
+  fi
+  return 1
 }
 
 # prc_promotion_verdict <status> <registered>
@@ -143,9 +146,9 @@ prc_deployed_events() {
 prc_router_serves_events() {
   local router="${1:-}" csv="${2:-}" ev
   [ -f "$router" ] || prc_die "router workflow not found: $router"
-  local IFS=','
-  # shellcheck disable=SC2086
-  for ev in $csv; do
+  local -a events
+  IFS=',' read -r -a events <<< "$csv"
+  for ev in "${events[@]}"; do
     ev="${ev#"${ev%%[![:space:]]*}"}"; ev="${ev%"${ev##*[![:space:]]}"}"
     [ -n "$ev" ] || continue
     grep -Eq "^[[:space:]]+${ev}:" "$router" || { echo "router does not subscribe event: $ev"; return 1; }
@@ -180,6 +183,7 @@ main() {
     esac
   done
   [ -n "$role" ] || prc_die "usage: persona_reach_check.sh <role> [--registry FILE]"
+  command -v jq >/dev/null 2>&1 || prc_die "jq is required to run this check"
 
   local manifest="$personas_dir/$role/persona.yml"
   local contract="$personas_dir/$role/interaction.yml"
