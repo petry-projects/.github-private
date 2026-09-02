@@ -162,6 +162,7 @@ jobs:
             tests/test_validate_interaction_model.bats \
             tests/verify_persona_teams.bats \
             tests/persona_runner.bats \
+            tests/persona_reach_check.bats \
             tests/test_dev_lead_concurrency_guard.bats \
             tests/test_validate_workflow_schedules.bats \
             tests/test_lint_main_push_trigger.bats \
