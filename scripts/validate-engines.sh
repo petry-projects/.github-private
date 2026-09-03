@@ -98,12 +98,6 @@ validate_engines() {
   if [ "${GEMINI_CLI_TRUST_WORKSPACE:-false}" != "true" ]; then
     append_gemini_reason "GEMINI_CLI_TRUST_WORKSPACE is not true (fix: set in env or pass --skip-trust)"
   fi
-  if [ "${GEMINI_CLI_TRUST_WORKSPACE:-false}" != "true" ]; then
-    append_gemini_reason "GEMINI_CLI_TRUST_WORKSPACE is not true (fix: set in env or pass --skip-trust)"
-  fi
-  if [ "${GEMINI_CLI_TRUST_WORKSPACE:-false}" != "true" ]; then
-    append_gemini_reason "GEMINI_CLI_TRUST_WORKSPACE is not true (fix: set in env or pass --skip-trust)"
-  fi
 
   if [ -z "$gemini_reasons" ]; then
     # All basic checks pass — probe the REST API for billing depletion.

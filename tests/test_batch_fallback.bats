@@ -2,9 +2,10 @@
 
 setup() {
   export TEST_DIR="$BATS_TMPDIR/batch-test"
+  rm -rf "$TEST_DIR"
   mkdir -p "$TEST_DIR/scripts"
   mkdir -p "$TEST_DIR/bin"
-  cd "$TEST_DIR"
+  cd "$TEST_DIR" || return
   
   export PRS_FILE="prs.txt"
   echo "https://github.com/fake/pull/1" > "$PRS_FILE"
@@ -65,9 +66,9 @@ teardown() {
 }
 
 @test "batch: Claude runtime error (exit 55) falls back to Copilot" {
-  # Gemini is now last in the fallback chain (claude→copilot→gemini, #571), so
+  # Gemini is now last in the fallback chain (claude->copilot->gemini, #571), so
   # a Gemini trust error no longer falls back to Copilot.  The equivalent test
-  # of the trust-error→fallback path is: Claude exits 55 (treated as
+  # of the trust-error->fallback path is: Claude exits 55 (treated as
   # fallback-eligible by the exit-55 normaliser), then Copilot picks up.
   cat > "scripts/review-one-pr.sh" <<'EOF'
 #!/bin/bash
@@ -104,7 +105,7 @@ validate_engines() {
 }
 EOF
 
-  # Empty PRS_FILE — nothing to review.
+  # Empty PRS_FILE  -  nothing to review.
   : > "$PRS_FILE"
   unset COPILOT_GITHUB_TOKEN
 
@@ -128,6 +129,7 @@ validate_engines() {
 EOF
 
   # Track every engine that review-one-pr.sh is called with.
+  rm -f engine_calls.txt
   cat > "scripts/review-one-pr.sh" <<'EOF'
 #!/bin/bash
 printf '%s\n' "$REVIEW_ENGINE" >> engine_calls.txt
@@ -135,7 +137,6 @@ exit 0
 EOF
   chmod +x "scripts/review-one-pr.sh"
 
-  rm -f engine_calls.txt
   export REVIEW_ENGINE="gemini"
   run bash scripts/review-batch.sh
 
@@ -144,7 +145,8 @@ EOF
   [ "$status" -eq 0 ]
   # review-one-pr.sh must have been called, and never as gemini.
   [ -f engine_calls.txt ]
-  ! grep -q "^gemini$" engine_calls.txt
+  run ! grep -q "^gemini$" engine_calls.txt
+  [ "$status" -eq 0 ]
   grep -q "^copilot$" engine_calls.txt
   [[ "$output" == *"unavailable"* ]]
 }

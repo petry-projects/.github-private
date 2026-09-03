@@ -48,7 +48,8 @@ setup() {
 }
 
 @test "dependabot-automerge.yml pins the reusable to the next ring channel (compliance-audit check)" {
-  grep -qE "^[[:space:]]*uses:[[:space:]]*petry-projects/\.github/\.github/workflows/dependabot-automerge-reusable\.yml@${AUTOMERGE_CHANNEL}[[:space:]]*\$" "$AUTOMERGE_YML"
+  # A trailing NOSONAR annotation is permitted after the ref.
+  grep -qE "^[[:space:]]*uses:[[:space:]]*petry-projects/\.github/\.github/workflows/dependabot-automerge-reusable\.yml@${AUTOMERGE_CHANNEL}([[:space:]]|\$)" "$AUTOMERGE_YML"
 }
 
 @test "dependabot-automerge.yml does not reference an off-channel pin" {

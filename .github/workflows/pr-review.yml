@@ -140,6 +140,7 @@ concurrency:
   # idempotent (the agent's marker makes a redundant run a fast no-op), so the
   # residual same-SHA races are safe to QUEUE rather than cancel. The outcome mix
   # is now a tracked number via scripts/pr_review_health.sh (run-outcome by event).
+
   cancel-in-progress: false
 
 jobs:

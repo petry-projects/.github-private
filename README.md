@@ -64,6 +64,7 @@ Scheduled workflows post reports and dashboards as issues or run summaries for m
 |----------|---------|
 | [`actions-fleet-monitor.yml`](.github/workflows/actions-fleet-monitor.yml) | Actions fleet monitor — org-wide workflow token usage and run anomalies |
 | [`auto-rebase-health.yml`](.github/workflows/auto-rebase-health.yml) | Daily auto-rebase health report (issue) — rebase success/failure trends |
+| [`content-twin-audit.yml`](.github/workflows/content-twin-audit.yml) | ContentTwin content audit — audits the ContentTwin repo's published content |
 | [`daily-pr-review-health.yml`](.github/workflows/daily-pr-review-health.yml) | Daily PR-review health check — flags PR-review agent failures as an issue |
 | [`docs-health-check.yml`](.github/workflows/docs-health-check.yml) | Docs health check — flags stale/broken docs as an issue |
 | [`engine-token-liveness.yml`](.github/workflows/engine-token-liveness.yml) | Engine-token liveness monitor — asserts dev-lead/pr-review caller stubs are not failing at the "Engine token preflight" step, and escalates a sustained fleet-wide outage that would otherwise go unalerted |
