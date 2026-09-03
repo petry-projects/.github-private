@@ -94,3 +94,104 @@ JSONL
   [ "$status" -eq 0 ]
   [[ "$output" == *"OK"* ]]
 }
+
+# --- tree-wide per-case schema validation (--schema-tree, #1645 AC #6) ---------
+#
+# `--schema-tree` validates EVERY case in every split against case.schema.json,
+# not just the split hygiene the default tree mode checks. A documented allowlist
+# (SCHEMA_TREE_ALLOWLIST) exempts the skills whose cases do not yet conform,
+# pending the fleet-wide reconciliation (#1651), so the gate can protect qa-lead
+# now without blocking every unrelated PR. The schema resolved is always the
+# validator's sibling case.schema.json regardless of the eval_root argument.
+
+@test "schema-tree fails a non-conforming gated (qa-lead) case" {
+  # qa-lead is NOT allowlisted -> its cases ARE schema-validated.
+  mkdir -p "$TMP/qa-lead/dev" "$TMP/qa-lead/holdout"
+  printf '%s\n' '{"id":"qa-ho-bad","input":"x","expected":{"risk_tier":"HIGH","escalate":true}}' \
+    >"$TMP/qa-lead/holdout/cases.jsonl"
+  printf '%s\n' '{"id":"qa-dev-ok","input":"y","expected":{"escalate":false,"risk":"LOW"}}' \
+    >"$TMP/qa-lead/dev/cases.jsonl"
+  run python3 "$VALIDATOR" --schema-tree "$TMP"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"qa-lead"* ]]
+}
+
+@test "schema-tree accepts conforming gated (qa-lead) cases including recommend" {
+  mkdir -p "$TMP/qa-lead/dev" "$TMP/qa-lead/holdout"
+  printf '%s\n' '{"id":"qa-ho-ok","input":"x","expected":{"escalate":true,"risk":"HIGH","recommend":"add negative-path tests"}}' \
+    >"$TMP/qa-lead/holdout/cases.jsonl"
+  printf '%s\n' '{"id":"qa-dev-ok","input":"y","expected":{"escalate":false,"risk":"LOW","recommend":"no additional tests required"}}' \
+    >"$TMP/qa-lead/dev/cases.jsonl"
+  run python3 "$VALIDATOR" --schema-tree "$TMP"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"OK"* ]]
+}
+
+@test "schema-tree skips allowlisted skills (the rest, pending #1651)" {
+  # triage is allowlisted -> a non-conforming case must NOT fail the gate yet.
+  mkdir -p "$TMP/triage/dev" "$TMP/triage/holdout"
+  printf '%s\n' '{"id":"tri-ho-bad","expected":{"unexpected":"shape"}}' \
+    >"$TMP/triage/holdout/cases.jsonl"
+  printf '%s\n' '{"id":"tri-dev-bad","expected":{"unexpected":"shape"}}' \
+    >"$TMP/triage/dev/cases.jsonl"
+  run python3 "$VALIDATOR" --schema-tree "$TMP"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"skip"* ]]
+}
+
+@test "schema-tree fails a gated skill missing its holdout split" {
+  # qa-lead is gated: a missing split must fail the schema gate, not skip
+  # silently (#1645 AC #9).
+  mkdir -p "$TMP/qa-lead/dev"
+  printf '%s\n' '{"id":"qa-dev-ok","input":"y","expected":{"escalate":false,"risk":"LOW"}}' \
+    >"$TMP/qa-lead/dev/cases.jsonl"
+  run python3 "$VALIDATOR" --schema-tree "$TMP"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"holdout"* ]]
+}
+
+@test "schema-tree fails a gated skill with an id in both dev and holdout" {
+  # Cross-split overlap defeats the held-out guarantee and must fail the gate.
+  mkdir -p "$TMP/qa-lead/dev" "$TMP/qa-lead/holdout"
+  printf '%s\n' '{"id":"qa-shared","input":"y","expected":{"escalate":false,"risk":"LOW"}}' \
+    >"$TMP/qa-lead/dev/cases.jsonl"
+  printf '%s\n' '{"id":"qa-shared","input":"x","expected":{"escalate":true,"risk":"HIGH"}}' \
+    >"$TMP/qa-lead/holdout/cases.jsonl"
+  run python3 "$VALIDATOR" --schema-tree "$TMP"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"qa-shared"* ]]
+  [[ "$output" == *"both"* ]]
+}
+
+@test "schema-tree fails a gated skill with a duplicate id within a split" {
+  mkdir -p "$TMP/qa-lead/dev" "$TMP/qa-lead/holdout"
+  printf '%s\n%s\n' \
+    '{"id":"qa-dup","input":"a","expected":{"escalate":false,"risk":"LOW"}}' \
+    '{"id":"qa-dup","input":"b","expected":{"escalate":true,"risk":"HIGH"}}' \
+    >"$TMP/qa-lead/dev/cases.jsonl"
+  printf '%s\n' '{"id":"qa-ho-ok","input":"x","expected":{"escalate":true,"risk":"HIGH"}}' \
+    >"$TMP/qa-lead/holdout/cases.jsonl"
+  run python3 "$VALIDATOR" --schema-tree "$TMP"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"duplicate"* ]]
+}
+
+@test "schema-tree fails a gated skill whose split has zero cases" {
+  # Both split files exist but the dev split is empty (all blank lines). The
+  # schema gate must reject it rather than pass with zero cases, matching
+  # validate_file's "contains no cases" behavior.
+  mkdir -p "$TMP/qa-lead/dev" "$TMP/qa-lead/holdout"
+  printf '\n\n' >"$TMP/qa-lead/dev/cases.jsonl"
+  printf '%s\n' '{"id":"qa-ho-ok","input":"x","expected":{"escalate":true,"risk":"HIGH"}}' \
+    >"$TMP/qa-lead/holdout/cases.jsonl"
+  run python3 "$VALIDATOR" --schema-tree "$TMP"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"qa-lead/dev"* ]]
+  [[ "$output" == *"no cases"* ]]
+}
+
+@test "schema-tree validates the committed evals tree (qa-lead conforms)" {
+  run python3 "$VALIDATOR" --schema-tree "$ROOT/evals"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"OK"* ]]
+}
