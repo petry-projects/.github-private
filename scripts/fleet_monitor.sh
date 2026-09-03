@@ -356,6 +356,34 @@ fleet_dl_runs=$(awk -F'\t' '
 ' "$metrics_file")
 
 # ---------------------------------------------------------------------------
+# 2d. Persona opt-out label coverage (#1644)
+# Every persona advisory tells maintainers to opt out with `<id>:hands-off`, and
+# the mention router matches that label by EXACT name — a label that does not
+# exist can never match, so a missing opt-out is silently read as "not opted
+# out" (fail-open by omission). Surface any repo missing a derived opt-out label
+# so the drift is reported here, not discovered by hand. The family is DERIVED
+# from personas/*/persona.yml (never enumerated): a new persona is covered
+# automatically. Best-effort: a per-repo labels-read failure is a `::warning::`,
+# never fatal (mirrors the stub-drift / dev-lead paths). Reuses the already
+# discovered repo list rather than building a parallel monitor (#627).
+# ---------------------------------------------------------------------------
+persona_optout_file=$(mktemp)
+persona_optout_family=$(derive_persona_optout_labels "${SCRIPT_DIR}/../personas")
+persona_optout_total=$(printf '%s\n' "$persona_optout_family" | sed '/^$/d' | grep -c . || true)
+if [ "${persona_optout_total:-0}" -gt 0 ]; then
+  for repo in "${repos[@]}"; do
+    if ! repo_labels=$(gh api "repos/${repo}/labels?per_page=100" --paginate \
+      --jq '.[].name' 2>/dev/null); then
+      echo "::warning::Cannot read labels for ${repo} — persona opt-out coverage skipped for this repo"
+      continue
+    fi
+    persona_optout_row "$repo" "$persona_optout_family" "$repo_labels" >> "$persona_optout_file"
+  done
+else
+  echo "::warning::No persona opt-out labels derived from personas/ — coverage check skipped"
+fi
+
+# ---------------------------------------------------------------------------
 # 3. Generate reports
 # ---------------------------------------------------------------------------
 report_header() {
@@ -392,16 +420,24 @@ schedule_reliability_section() {
   generate_schedule_reliability_report "$schedule_metrics_file"
 }
 
+# persona_optout_section — appends the Persona opt-out label coverage block
+# (#1644) when any repo's labels were readable.
+persona_optout_section() {
+  [ -s "$persona_optout_file" ] || return 0
+  printf '\n'
+  generate_persona_optout_report "$persona_optout_file" "${persona_optout_total:-0}"
+}
+
 # Step Summary — Tier 1 visualizations only (Mermaid not rendered there)
 # GitHub Step Summary has a 1 MB hard limit per job. At ~200 bytes per row
 # this supports ~5 000 workflows before truncation.
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
-  { report_header; generate_report "$metrics_file" "$failed_file" "false" "$issues_lookup_file"; dev_lead_timeout_section; schedule_reliability_section; stub_drift_section; } \
+  { report_header; generate_report "$metrics_file" "$failed_file" "false" "$issues_lookup_file"; dev_lead_timeout_section; schedule_reliability_section; persona_optout_section; stub_drift_section; } \
     >> "$GITHUB_STEP_SUMMARY"
 fi
 
 # Report file — full report with Mermaid charts (used as Issue body)
-{ report_header; generate_report "$metrics_file" "$failed_file" "true" "$issues_lookup_file"; dev_lead_timeout_section; schedule_reliability_section; stub_drift_section; } \
+{ report_header; generate_report "$metrics_file" "$failed_file" "true" "$issues_lookup_file"; dev_lead_timeout_section; schedule_reliability_section; persona_optout_section; stub_drift_section; } \
   > "$REPORT_FILE"
 
 # ---------------------------------------------------------------------------
@@ -450,7 +486,28 @@ if [ -n "${GITHUB_ENV:-}" ]; then
   [ "$stub_drift_count" -gt 0 ] && echo "HAS_STUB_DRIFT=true" >> "$GITHUB_ENV"
 fi
 
-rm -f "$metrics_file" "$failed_file" "$issues_lookup_file" "$dev_lead_reason_file" "$schedule_metrics_file"
+# ---------------------------------------------------------------------------
+# 3d. Export persona opt-out drift as a machine-readable JSON artifact (#1644)
+# fleet_persona_optout.json is the array of INCOMPLETE repos (a persona can be
+# mentioned there but its mandated <id>:hands-off opt-out does not exist), each
+# with its missing labels — the same idiom as fleet_high_failure.json so the
+# drift is available to a follow-up tracker, not just the rendered report.
+# Empty array when nothing drifted.
+# ---------------------------------------------------------------------------
+PERSONA_OPTOUT_JSON="fleet_persona_optout.json"
+persona_optout_alert_json "$persona_optout_file" > "$PERSONA_OPTOUT_JSON"
+persona_optout_incomplete_count=$(jq 'length' "$PERSONA_OPTOUT_JSON")
+echo "Persona opt-out INCOMPLETE repos: ${persona_optout_incomplete_count}"
+# Export the drift count + a HAS_ flag so a downstream workflow step can track/
+# alert on incomplete opt-out coverage — mirrors the HIGH_FAILURE_COUNT (3b) and
+# STUB_DRIFT_COUNT/HAS_STUB_DRIFT (3c) idiom. Without this the JSON artifact is
+# written but never consumed, so the drift is neither tracked nor alerted.
+if [ -n "${GITHUB_ENV:-}" ]; then
+  echo "PERSONA_OPTOUT_INCOMPLETE_COUNT=${persona_optout_incomplete_count}" >> "$GITHUB_ENV"
+  [ "$persona_optout_incomplete_count" -gt 0 ] && echo "HAS_PERSONA_OPTOUT_DRIFT=true" >> "$GITHUB_ENV"
+fi
+
+rm -f "$metrics_file" "$failed_file" "$issues_lookup_file" "$dev_lead_reason_file" "$schedule_metrics_file" "$persona_optout_file"
 [ ${#stub_drift_files[@]} -gt 0 ] && rm -f "${stub_drift_files[@]}"
 
 # ---------------------------------------------------------------------------

@@ -718,3 +718,124 @@ generate_report() {
 
   rm -f "$filtered"
 }
+
+# ---------------------------------------------------------------------------
+# Persona opt-out label coverage / drift (#1644)
+#
+# Every persona advisory footer tells maintainers they can opt out with an
+# `<id>:hands-off` label, and the mention router matches that label by EXACT
+# name (persona-mention-reusable.yml `grep -qxF`). A label that does not exist
+# can never match, so a missing opt-out reads silently as "not opted out" —
+# fail-open by omission. This block lets the Fleet Monitor SURFACE that drift
+# (a repo missing a persona opt-out label) instead of it being found by hand.
+#
+# All functions are PURE (args/stdin -> stdout; no network). Label fetching
+# lives in fleet_monitor.sh. The opt-out family is DERIVED from the persona
+# manifests, never enumerated: adding a persona directory adds its label
+# automatically (#756's explicit constraint, #1644 AC #3).
+#
+# Drift TSV format (5 fields, tab-separated):
+#   1:repo  2:status  3:present_count  4:total  5:missing_csv
+# status ∈ { COMPLETE, INCOMPLETE }
+#   COMPLETE   — repo carries every derived opt-out label
+#   INCOMPLETE — missing one or more labels (the alertable signal, even if all are missing)
+
+# derive_persona_optout_labels [personas_dir]
+# Prints the derived <id>:hands-off family, one per line, sorted-unique, by
+# reading `opt_out_label:` from every <personas_dir>/*/persona.yml. A missing
+# dir, a missing manifest, or a manifest without the key contributes nothing
+# (no crash) — the family is whatever the manifests currently declare.
+derive_persona_optout_labels() {
+  local dir="${1:-}"
+  [ -n "$dir" ] && [ -d "$dir" ] || return 0
+  local f val
+  for f in "$dir"/*/persona.yml; do
+    [ -f "$f" ] || continue
+    val=$(sed -n 's/^[[:space:]]*opt_out_label:[[:space:]]*//p' "$f")
+    val="${val%%$'\n'*}"
+    val="${val%\"}"; val="${val#\"}"; val="${val%\'}"; val="${val#\'}"
+    [ -n "$val" ] && printf '%s\n' "$val"
+  done | sort -u
+}
+
+# persona_optout_missing <expected_multiline> <actual_multiline>
+# Prints the labels present in <expected> but absent from <actual>, sorted-unique.
+# Both inputs are newline-separated label lists; blank lines are ignored.
+persona_optout_missing() {
+  local expected="${1:-}" actual="${2:-}"
+  comm -23 \
+    <(printf '%s\n' "$expected" | sed '/^$/d' | sort -u) \
+    <(printf '%s\n' "$actual"   | sed '/^$/d' | sort -u)
+}
+
+# persona_optout_row <repo> <expected_multiline> <actual_multiline>
+# Classifies one repo's opt-out coverage and emits one TSV row (see format above).
+# Labels on the repo that are not part of the derived family are ignored.
+persona_optout_row() {
+  local repo="${1:-}" expected="${2:-}" actual="${3:-}"
+  local total missing missing_ct present status missing_csv
+  total=$(printf '%s\n' "$expected" | sed '/^$/d' | sort -u | grep -c . || true)
+  missing=$(persona_optout_missing "$expected" "$actual")
+  missing_ct=$(printf '%s' "$missing" | grep -c . || true)
+  present=$(( total - missing_ct ))
+  if [ "$missing_ct" -eq 0 ]; then
+    status="COMPLETE"
+  else
+    status="INCOMPLETE"
+  fi
+  missing_csv=$(printf '%s' "$missing" | paste -sd, -)
+  printf '%s\t%s\t%s\t%s\t%s\n' "$repo" "$status" "$present" "$total" "$missing_csv"
+}
+
+# generate_persona_optout_report <tsv_file> [total_expected]
+# Renders the "Persona opt-out label coverage" section. Surfaces every INCOMPLETE
+# repo (missing one or more derived labels). COMPLETE repos are counted only.
+# An empty or missing file prints nothing (section omitted).
+generate_persona_optout_report() {
+  local f="${1:-}" total="${2:-}"
+  [ -n "$f" ] && [ -s "$f" ] || return 0
+  local complete incomplete
+  complete=$(awk -F'\t' '$2 == "COMPLETE"'   "$f" | wc -l | tr -d ' ')
+  incomplete=$(awk -F'\t' '$2 == "INCOMPLETE"' "$f" | wc -l | tr -d ' ')
+
+  printf '## Persona opt-out label coverage\n\n'
+  printf 'Every persona advisory tells maintainers they can opt out with `<id>:hands-off`, and the mention router matches that label by **exact name** — a label that does not exist can never match, so a missing opt-out reads silently as "not opted out" (fail-open by omission, #1644). The family is **derived** from `personas/*/persona.yml`, so a new persona is covered automatically.\n\n'
+  printf '✅ COMPLETE: %s  🔴 INCOMPLETE: %s' \
+    "$complete" "$incomplete"
+  [ -n "$total" ] && printf '  ·  derived family size: %s' "$total"
+  printf '\n\n'
+
+  if [ "$incomplete" -eq 0 ]; then
+    printf '_No persona opt-out drift — every enrolled repo carries the full derived family._\n'
+    return 0
+  fi
+
+  printf 'These repos carry **some but not all** persona opt-out labels — the escape hatch is inert for the missing personas. Fan out the derived family:\n\n'
+  printf '| Repo | Present | Missing opt-out labels |\n'
+  printf '|---|---|---|\n'
+  awk -F'\t' '$2 == "INCOMPLETE" {
+    printf "| `%s` | %s/%s | `%s` |\n", $1, $3, $4, $5
+  }' "$f"
+}
+
+# persona_optout_alert_json <tsv_file>
+# Emits a JSON array of the INCOMPLETE repos (the alertable drift set), each with
+# its missing labels, so a downstream step can route/track. Empty/absent → [].
+persona_optout_alert_json() {
+  local f="${1:-}"
+  if [ -z "$f" ] || [ ! -s "$f" ]; then
+    echo "[]"
+    return 0
+  fi
+  jq -Rn '
+    [ inputs
+      | select(length > 0)
+      | split("\t")
+      | select(length >= 5 and .[1] == "INCOMPLETE")
+      | { repo:    .[0],
+          status:  .[1],
+          present: (.[2] | tonumber? // 0),
+          total:   (.[3] | tonumber? // 0),
+          missing: (.[4] | split(",") | map(select(length > 0))) }
+    ]' < "$f"
+}
