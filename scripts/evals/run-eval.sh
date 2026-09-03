@@ -43,9 +43,14 @@ set -euo pipefail
 # Env overrides:
 #   EVAL_ENGINE_CMD   skill-under-test command, invoked as `<cmd> <prompt_file>` (default: run_triage)
 #   EVAL_JUDGE_CMD    llm-judge command, invoked as `<cmd> <prompt_file>` (default: run_triage)
-#   SKILL_PROMPT_FILE skill markdown to score (default: prompts/<skill>.md). The
-#                     strict-improvement gate (#586) sets this to an incumbent or
-#                     candidate file to score either against the same held-out set.
+#   SKILL_PROMPT_FILE skill markdown to score. Default resolves the flat
+#                     prompts/<skill>.md, falling back to the persona advisory
+#                     convention prompts/<skill>/advisory.md when the flat file is
+#                     absent (#1630, #1645). The strict-improvement gate (#586)
+#                     sets this to an incumbent or candidate file to score either
+#                     against the same held-out set.
+#   EVAL_PROMPTS_DIR  prompt root (default: <repo>/prompts); mirrors EVALS_DIR so
+#                     offline tests can point it at a fixture tree
 #   EVALS_DIR         held-out cases root (default: <repo>/evals); read-only
 #   TOKEN_LOG_FILE    optional per-call token capture (honored by engine.sh; unset = zero overhead)
 #
@@ -94,17 +99,23 @@ command -v jq >/dev/null 2>&1 || die "jq is required but not installed"
 skill="${1:-}"
 [ -n "$skill" ] || die "usage: run-eval.sh <skill>"
 
+# shellcheck source=../lib/persona-runner.sh
+source "$REPO_ROOT/scripts/lib/persona-runner.sh"
+pr_valid_persona_id "$skill" || die "invalid skill name '$skill' (expected kebab-case)"
+
 cases_file="$EVALS_DIR/$skill/holdout/cases.jsonl"
-# The skill markdown defaults to prompts/<skill>.md, but the strict-improvement
-# gate (#586) scores an arbitrary incumbent/candidate file against the SAME
-# held-out set — so SKILL_PROMPT_FILE overrides which file is scored while the
-# cases stay fixed. Held-out cases remain read-only regardless of the override.
+# Resolve the skill markdown to score. SKILL_PROMPT_FILE overrides everything: the
+# strict-improvement gate (#586) scores an arbitrary incumbent/candidate file
+# against the SAME held-out set while the cases stay fixed.
 #
-# Role-generic resolution (#1630, AC #4): personas keep their prompt at
-# prompts/<role>/advisory.md, not prompts/<role>.md, so the shared harness scores
-# ANY persona eval tree by falling back to the advisory prompt when the flat
-# prompts/<role>.md is absent. EVAL_PROMPTS_DIR overrides the prompt root the same way
+# Otherwise the two prompt-path conventions are reconciled rather than
+# special-cased: a persona's advisory prompt lives at prompts/<role>/advisory.md
+# (#1645 AC #5, making qa-lead scorable), while the pre-persona skills (triage,
+# deep-review) keep the flat prompts/<role>.md. The harness scores ANY persona
+# eval tree by falling back to the advisory prompt when the flat prompts/<role>.md
+# is absent (#1630, AC #4). EVAL_PROMPTS_DIR overrides the prompt root the same way
 # EVALS_DIR overrides the cases root, keeping offline tests network-free.
+# Held-out cases remain read-only regardless of the override.
 if [ -n "${SKILL_PROMPT_FILE:-}" ]; then
   prompt_file_base="$SKILL_PROMPT_FILE"
 else
