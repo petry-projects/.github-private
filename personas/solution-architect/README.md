@@ -69,32 +69,83 @@ to measure it against the ADRs — a gap the surfaces below deliberately leave o
 Neither is superseded — `solution-architect` is a mention-invoked advisor that
 sits alongside them.
 
-## Status: draft
+## Status: draft — and the propagation posture for promoting it
 
-`solution-architect` ships **no dedicated reusable workflow yet** (it is served
-by the shared mention router, not a per-persona stub), so:
-
-- there is **no `agents.solution-architect` entry in `canary-rings.json`** yet
-  (nothing to roll out via rings until it has a reusable).
-
-The `address` block and the `mention` surface are declared and served by the
-shared router; the `interaction.yml` in this directory records what is actually
+`solution-architect` ships **no dedicated reusable workflow** (it is served by the
+shared mention router, not a per-persona stub), so there is **no
+`agents.solution-architect` entry in `canary-rings.json`** yet. The `address` block
+and the `mention` surface are declared and served by the shared router; the
+[`interaction.yml`](./interaction.yml) in this directory records what is actually
 deployed (`issue_comment` / `pull_request_review_comment` / `discussion_comment`),
 not aspirational surfaces.
 
-To promote `solution-architect` past `draft`:
+### The #1592 propagation hazard — routed around, not silently ignored
 
-1. Wire a dedicated advisory workflow (if one is needed beyond the shared router)
-   as a caller stub + reusable, or promote via the router's release channel.
-2. Expand the held-out eval set under
-   [`evals/solution-architect/holdout/`](../../evals/solution-architect/holdout/cases.jsonl).
-   It carries a synthetic starter set; grow it to `min_cases` with real
-   (de-identified) cases and wire the scorer/judge before promotion. The set
-   lives under the repo `evals/` tree so `validate-cases.py` and
-   `holdout-guard.yml` already cover it.
-3. Register the one `agents.solution-architect` entry in `canary-rings.json` and
-   cut `solution-architect/v0.1.0`.
-4. Soak `next → ring0 → ring1 → stable`, eval gate green before `stable`.
+Autocut cuts a new channel version only when a **reusable's blob** changes, but
+`solution-architect`'s advisory logic is a **prompt file**
+([`prompts/solution-architect/advisory.md`](../../prompts/solution-architect/advisory.md))
+checked out at the pinned `agent_ref`, not a reusable of its own. A status/ring move
+on a prompt-only persona can therefore advance the scoreboard yet **propagate to
+nobody** — the [#1592](https://github.com/petry-projects/.github/issues/1592) hazard.
+
+**Posture: route-around, not resolve.** Because `solution-architect` is
+mention-routed via the **shared** `persona-mention` channel
+([`.github/workflows/persona-mention.yml`](../../.github/workflows/persona-mention.yml)),
+which the router already owns and cuts, promotion rides **that** channel rather than a
+dedicated reusable. The #1592 hazard does not apply on a dedicated-blob axis here —
+there is no dedicated blob — so this persona does **not** rely on a ring label moving
+to reach consumers. Instead promotion is **verified against a real consumer** (below).
+
+### Verification: propagation must reach a consumer (routes-to ≠ promoted)
+
+A ring label moving is **not** evidence a promotion reached a consumer
+([Discussion #1360](https://github.com/petry-projects/.github/discussions/1360) §3b,
+learning 12). Two checks gate promotion:
+
+- **Hermetic guard, re-runnable at PR time** —
+  [`scripts/persona_reach_check.sh`](../../scripts/persona_reach_check.sh) (tests:
+  [`tests/persona_reach_check.bats`](../../tests/persona_reach_check.bats)) asserts the
+  persona's deployed surface stays a subset of the shared mention router's events (no
+  new trigger surface) and separates *routes-to* from *promoted*: it **fails** only on
+  the skew state — status past `draft` with **no** `agents.solution-architect`
+  registration — which is the [#1052](https://github.com/petry-projects/.github/issues/1052)
+  hollow-green class. Run: `bash scripts/persona_reach_check.sh solution-architect`.
+- **Live smoke, operational** — mirror qa-lead's
+  [#1300](https://github.com/petry-projects/.github/issues/1300) mention smoke test:
+  post a real `@petry-projects/solution-architect` mention on a fixture item and
+  confirm the resulting `persona-runner` run **resolves to this persona** and posts its
+  advisory. Trust the live mention, not the ring label.
+
+### Promotion sequencing — why status is still `draft`
+
+Advancing `status` past `draft` makes the `validate-personas` job
+([`personas/validate-personas.py`](../validate-personas.py)) require an
+`agents.solution-architect` entry in the **cross-repo**
+`petry-projects/.github/standards/canary-rings.json` (persona-standards §6 step 2 —
+"register once", the single place ring membership is written). That entry is an
+**untracked cross-repo prerequisite** and cannot be authored from this repo; flipping
+`status` here **before** it lands turns `validate-personas` red post-merge — the exact
+skew this route-around exists to prevent. So the order is fixed:
+
+1. **Register first (cross-repo).** Add the one `agents.solution-architect` entry to
+   `petry-projects/.github/standards/canary-rings.json` (`host`, `run_workflow`,
+   `rings[]`, `gate`) — served by the shared `persona-mention` router, not a dedicated
+   reusable, so it registers on that channel the way the existing `persona-mention`
+   entry does. This is the epic's untracked prerequisite.
+2. **Green the scored eval gate.** The held-out set under
+   [`evals/solution-architect/holdout/`](../../evals/solution-architect/holdout/cases.jsonl)
+   must clear `scripts/evals/score-gate.sh solution-architect` (threshold from
+   [`evals/solution-architect/scorer.json`](../../evals/solution-architect/scorer.json))
+   — the **scored** (not counted) gate is the precondition for `stable`
+   (persona-standards §7 Definition of Done).
+3. **Only then flip `status`** `draft → next` here, and stage outward one ring at a
+   time — `next → ring0 → ring1 → stable` — each a single central channel-tag move,
+   gated by the soak/dwell defaults in the registry, with the scored gate green before
+   `stable`.
+4. **No new trigger surface** at any step — promotion changes status/rings only, never
+   the trigger surface (still mention-routed only; no `pull_request: synchronize`, no
+   cron, no fan-out — §7 of the story, learning 11). `persona_reach_check.sh` enforces
+   this.
 
 The full gate is the Definition of Done in `persona-standards.md` §7.
 
