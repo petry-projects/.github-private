@@ -101,3 +101,52 @@ setup() {
   [ "$status" -ne 0 ]
   [ "$output" = "skew" ]
 }
+
+# ---------------------------------------------------------------------------
+# prc_deployed_events <interaction.yml>
+# The deployed surface must parse from BOTH the block-style and inline flow-style
+# `events:` list forms — an inline list silently parsing to empty would flag a
+# real persona as an empty (nothing-routes) surface.
+# ---------------------------------------------------------------------------
+
+@test "prc_deployed_events: parses a block-style events list" {
+  f="$(mktemp)"
+  printf 'interaction:\n  triggers:\n    events:\n      - issue_comment\n      - discussion_comment\n    timers: []\n' > "$f"
+  run prc_deployed_events "$f"
+  rm -f "$f"
+  [ "$status" -eq 0 ]
+  [ "$output" = "issue_comment,discussion_comment" ]
+}
+
+@test "prc_deployed_events: parses an inline flow-style events list" {
+  f="$(mktemp)"
+  printf 'interaction:\n  triggers:\n    events: [issue_comment, discussion_comment]\n    timers: []\n' > "$f"
+  run prc_deployed_events "$f"
+  rm -f "$f"
+  [ "$status" -eq 0 ]
+  [ "$output" = "issue_comment,discussion_comment" ]
+}
+
+# ---------------------------------------------------------------------------
+# prc_manifest_status <persona.yml>
+# The scalar must normalize away surrounding quotes and inline comments so an
+# unknown ring cannot masquerade past the caller's PRC_RING_ORDER validation.
+# ---------------------------------------------------------------------------
+
+@test "prc_manifest_status: strips surrounding quotes" {
+  f="$(mktemp)"
+  printf 'status: "next"\n' > "$f"
+  run prc_manifest_status "$f"
+  rm -f "$f"
+  [ "$status" -eq 0 ]
+  [ "$output" = "next" ]
+}
+
+@test "prc_manifest_status: strips an inline comment" {
+  f="$(mktemp)"
+  printf 'status: next # promoted\n' > "$f"
+  run prc_manifest_status "$f"
+  rm -f "$f"
+  [ "$status" -eq 0 ]
+  [ "$output" = "next" ]
+}

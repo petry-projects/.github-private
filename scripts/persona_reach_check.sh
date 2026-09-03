@@ -117,11 +117,22 @@ prc_promotion_verdict() {
 
 prc_die() { echo "::error::persona reach check: $1"; exit 3; }
 
-# prc_manifest_status <persona.yml> — the manifest's top-level `status:` scalar.
+# prc_manifest_status <persona.yml> — the manifest's top-level `status:` scalar,
+# normalized: inline `# comment` stripped, surrounding quotes removed, trimmed. The
+# caller (main) rejects any value not in PRC_RING_ORDER, so a malformed scalar such
+# as `status: next # promoted` can no longer masquerade as an unknown ring and skip
+# the registration gate.
 prc_manifest_status() {
-  local f="${1:-}"
+  local f="${1:-}" line status
   [ -f "$f" ] || prc_die "manifest not found: $f"
-  awk -F: '/^status:[[:space:]]*/ {gsub(/[[:space:]]/,"",$2); print $2; exit}' "$f"
+  line="$(grep -m1 '^status:' "$f" || true)"
+  status="${line#status:}"
+  status="${status%%#*}"                          # strip inline comment
+  status="${status#"${status%%[![:space:]]*}"}"   # ltrim
+  status="${status%"${status##*[![:space:]]}"}"   # rtrim
+  status="${status%\"}"; status="${status#\"}"     # strip surrounding double quotes
+  status="${status%\'}"; status="${status#\'}"     # strip surrounding single quotes
+  printf '%s\n' "$status"
 }
 
 # prc_deployed_events <interaction.yml> — the DEPLOYED interaction.triggers.events as
@@ -132,6 +143,16 @@ prc_deployed_events() {
   [ -f "$f" ] || prc_die "interaction contract not found: $f"
   awk '
     /^[[:space:]]*triggers:[[:space:]]*$/ {intrig=1; next}
+    # Inline flow-style list: events: [issue_comment, discussion_comment]
+    intrig && /^[[:space:]]*events:[[:space:]]*\[.*\][[:space:]]*$/ {
+      line=$0
+      sub(/^[[:space:]]*events:[[:space:]]*\[/,"",line)
+      sub(/\][[:space:]]*$/,"",line)
+      n=split(line, arr, ",")
+      for (i=1;i<=n;i++) { item=arr[i]; gsub(/[^A-Za-z0-9_]/,"",item); if (item != "") print item }
+      next
+    }
+    # Block-style list under `events:`
     intrig && /^[[:space:]]*events:[[:space:]]*$/ {inev=1; next}
     inev {
       if ($0 ~ /^[[:space:]]*-[[:space:]]*/) { line=$0; sub(/^[[:space:]]*-[[:space:]]*/,"",line); sub(/[[:space:]]*(#.*)?$/,"",line); print line; next }
@@ -191,6 +212,10 @@ main() {
   local status events registered="false" routes_via_router="false" surface_ok="true" surface_msg=""
   status="$(prc_manifest_status "$manifest")"
   [ -n "$status" ] || prc_die "could not read status from $manifest"
+  case " $PRC_RING_ORDER " in
+    *" $status "*) : ;;
+    *) prc_die "unknown status '$status' in $manifest (must be one of: $PRC_RING_ORDER)" ;;
+  esac
   events="$(prc_deployed_events "$contract")"
 
   if surface_msg="$(prc_surface_is_mention_only "$events")"; then
@@ -226,6 +251,10 @@ main() {
   fi
   if [ "$prom_rc" -ne 0 ]; then
     echo "::error::persona reach check: $role is past draft but has no agents.$role entry in canary-rings.json — a ring label moved without registration (the #1052 hollow-green skew)" >&2
+    return 2
+  fi
+  if [ "$verdict" = "promoted" ] && [ "$routes_via_router" != "true" ]; then
+    echo "::error::persona reach check: $role is promoted and registered, but the shared mention router does not serve its deployed events — the promotion did not reach a consumer (routes_via_router=false)" >&2
     return 2
   fi
   if [ "$verdict" = "draft" ]; then

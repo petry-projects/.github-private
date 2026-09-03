@@ -460,6 +460,35 @@ jobs:
       - name: Verify persona identity ↔ workflow wiring
         run: bash scripts/verify-persona-identity.sh personas
 
+  persona-reach-check:
+    # Consumer-reached / no-new-trigger-surface guard (#1631, epic #1627). The bats
+    # suite (tests/persona_reach_check.bats, run by the `bats` job) unit-tests the pure
+    # predicates; this job runs the guard END-TO-END against the real personas/ tree,
+    # passing --registry with the cross-repo canary-rings.json snapshot fetched from the
+    # PUBLIC petry-projects/.github standards (the same registry validate-personas reads).
+    # Without this, a status advanced past `draft` with no matching cross-repo
+    # registration only surfaces post-merge (the #1052 hollow-green skew) — this catches
+    # it at PR time. The fetch soft-fails to a warning (registration UNVERIFIED) so a
+    # transient network blip never turns an honest still-draft persona red.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Run persona reach check (solution-architect)
+        run: |
+          curl -fsSL --retry 3 \
+            https://raw.githubusercontent.com/petry-projects/.github/main/standards/canary-rings.json \
+            -o canary-rings.json \
+            || echo "::warning::could not fetch cross-repo canary-rings.json; running reach check without --registry (registration UNVERIFIED)"
+          if [ -f canary-rings.json ]; then
+            bash scripts/persona_reach_check.sh solution-architect --registry canary-rings.json
+          else
+            bash scripts/persona_reach_check.sh solution-architect
+          fi
+
   gh-aw-compile:
     runs-on: ubuntu-latest
     timeout-minutes: 5
