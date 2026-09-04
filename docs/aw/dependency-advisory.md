@@ -64,6 +64,8 @@ pull_request (dep file touched)
 | `GH_TOKEN` | `secrets.GH_PAT_DON_PETRY` or `secrets.GH_PAT_WORKFLOWS` or `GITHUB_TOKEN` | — | Token for PR comment |
 | `CLAUDE_CODE_OAUTH_TOKEN` | `secrets.CLAUDE_CODE_OAUTH_TOKEN` | — | Claude auth token |
 | `SKIP_BOT_PRS` | `vars.DEP_ADVISORY_SKIP_BOT_PRS` | `true` | Skip Dependabot/Renovate PRs |
+| `DEP_ADVISORY_MAX_ATTEMPTS` | env | `3` | Total Claude attempts before a transient failure degrades gracefully |
+| `DEP_ADVISORY_RETRY_BASE_SEC` | env | `5` | Base backoff (exponential) between transient retries |
 
 ---
 
@@ -133,3 +135,11 @@ subdirectories may not match — extend the `paths:` list if needed.
 **Duplicate comments on re-push:**
 The script checks for an existing advisory comment before posting. If a duplicate
 appears, the dedup logic may have failed — check `scripts/aw-dependency-advisory.sh`.
+
+**Workflow failed on `API Error: 529 Overloaded` (or another transient error):**
+A transient/server-side Claude error (`529`, `429`, `5xx`, timeout) is retried with
+exponential backoff up to `DEP_ADVISORY_MAX_ATTEMPTS`. If it persists across all
+attempts the advisory degrades gracefully — it emits a `::warning::` and exits `0`
+rather than failing this non-gating check. A genuinely non-transient error still
+fails the run. Tune retries via `DEP_ADVISORY_MAX_ATTEMPTS` /
+`DEP_ADVISORY_RETRY_BASE_SEC`.

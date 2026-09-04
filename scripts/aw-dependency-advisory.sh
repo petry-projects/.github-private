@@ -84,7 +84,20 @@ echo "  Dep diff:   ${diff_lines} lines"
 # 4. Invoke Claude for risk assessment
 # ---------------------------------------------------------------------------
 ADVISORY_FILE=$(mktemp)
-trap 'rm -f "$ADVISORY_FILE"' EXIT
+PROMPT_FILE=$(mktemp)
+trap 'rm -f "$ADVISORY_FILE" "$PROMPT_FILE"' EXIT
+
+# Retry knobs: a transient Claude failure (529 Overloaded, 429, 5xx, timeout) is
+# retried with exponential backoff, and a persistent transient failure degrades
+# gracefully instead of hard-failing this advisory (non-gating) workflow (#1672).
+DEP_ADVISORY_MAX_ATTEMPTS="${DEP_ADVISORY_MAX_ATTEMPTS:-3}"
+DEP_ADVISORY_RETRY_BASE_SEC="${DEP_ADVISORY_RETRY_BASE_SEC:-5}"
+
+# A server-side/transient CLI failure a later retry may clear — distinct from a
+# genuine (non-transient) error, which stays fatal.
+_advisory_error_is_transient() {
+  grep -qiE '(^|[^0-9])(429|500|502|503|504|529)([^0-9]|$)|overload|rate.?limit|timed? ?out|service unavailable|internal server error' "$1"
+}
 
 # Skip Claude invocation when fork PR secrets are unavailable (GitHub does not
 # pass repository secrets to fork PRs, so CLAUDE_CODE_OAUTH_TOKEN will be unset).
@@ -94,9 +107,7 @@ if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
   exit 0
 fi
 
-echo "Invoking Claude for dependency risk assessment..."
-if ! claude --print --model claude-sonnet-4-6 --no-session-persistence \
-     > "$ADVISORY_FILE" <<PROMPT
+cat > "$PROMPT_FILE" <<PROMPT
 You are reviewing dependency changes in a pull request for security and stability risk.
 
 ## Context
@@ -133,11 +144,35 @@ ${COMMENT_MARKER}
 
 Output ONLY the comment body — no preamble outside the markdown.
 PROMPT
-then
+
+echo "Invoking Claude for dependency risk assessment..."
+attempt=1
+while :; do
+  claude_rc=0
+  claude --print --model claude-sonnet-4-6 --no-session-persistence \
+    > "$ADVISORY_FILE" < "$PROMPT_FILE" || claude_rc=$?
+  [ "$claude_rc" -eq 0 ] && break
+
+  if _advisory_error_is_transient "$ADVISORY_FILE"; then
+    if [ "$attempt" -lt "$DEP_ADVISORY_MAX_ATTEMPTS" ]; then
+      delay=$(( DEP_ADVISORY_RETRY_BASE_SEC * (2 ** (attempt - 1)) ))
+      echo "::notice::Claude hit a transient error (attempt ${attempt}/${DEP_ADVISORY_MAX_ATTEMPTS}); retrying in ${delay}s."
+      sleep "$delay"
+      attempt=$((attempt + 1))
+      continue
+    fi
+    # Persistent transient/overload — never fail an advisory (non-gating) check on
+    # a server-side outage; degrade gracefully instead (#1672).
+    echo "::warning::Claude unavailable after ${attempt} attempt(s) (transient/overload) — skipping dependency advisory for PR #${PR_NUMBER}."
+    cat "$ADVISORY_FILE" >&2
+    echo "=== Dependency advisory complete (skipped — Claude transiently unavailable) ==="
+    exit 0
+  fi
+
   echo "::error::Claude invocation failed. CLI output:"
   cat "$ADVISORY_FILE" >&2
   exit 1
-fi
+done
 
 advisory_body=$(cat "$ADVISORY_FILE")
 
