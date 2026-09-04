@@ -83,9 +83,10 @@ echo "  Dep diff:   ${diff_lines} lines"
 # ---------------------------------------------------------------------------
 # 4. Invoke Claude for risk assessment
 # ---------------------------------------------------------------------------
-ADVISORY_FILE=$(mktemp)
-PROMPT_FILE=$(mktemp)
-trap 'rm -f "$ADVISORY_FILE" "$PROMPT_FILE"' EXIT
+ADVISORY_FILE=$(mktemp) || { echo "Failed to create temp file" >&2; exit 1; }
+PROMPT_FILE=$(mktemp) || { echo "Failed to create temp file" >&2; exit 1; }
+CLAUDE_ERR=$(mktemp) || { echo "Failed to create temp file" >&2; exit 1; }
+trap 'rm -f "$ADVISORY_FILE" "$PROMPT_FILE" "$CLAUDE_ERR"' EXIT
 
 # Retry knobs: a transient Claude failure (529 Overloaded, 429, 5xx, timeout) is
 # retried with exponential backoff, and a persistent transient failure degrades
@@ -150,8 +151,9 @@ attempt=1
 while :; do
   claude_rc=0
   claude --print --model claude-sonnet-4-6 --no-session-persistence \
-    > "$ADVISORY_FILE" < "$PROMPT_FILE" || claude_rc=$?
+    > "$ADVISORY_FILE" < "$PROMPT_FILE" 2> "$CLAUDE_ERR" || claude_rc=$?
   [ "$claude_rc" -eq 0 ] && break
+  cat "$CLAUDE_ERR" >> "$ADVISORY_FILE"
 
   if _advisory_error_is_transient "$ADVISORY_FILE"; then
     if [ "$attempt" -lt "$DEP_ADVISORY_MAX_ATTEMPTS" ]; then
