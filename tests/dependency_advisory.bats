@@ -17,7 +17,7 @@ bats_require_minimum_version 1.5.0
 setup() {
   ROOT="$(cd "$BATS_TEST_DIRNAME/.." && pwd)"
   SCRIPT="$ROOT/scripts/aw-dependency-advisory.sh"
-  TMP="$(mktemp -d)"
+  TMP="$BATS_TEST_TMPDIR"
   GH_LOG="$TMP/gh.log"
   CLAUDE_LOG="$TMP/claude.log"
   CLAUDE_COUNT_FILE="$TMP/claude.count"
@@ -101,8 +101,8 @@ n=$((n + 1))
 echo "$n" >"$CLAUDE_COUNT_FILE"
 if [ "$n" -le "${CLAUDE_FAIL_ATTEMPTS:-0}" ]; then
   case "${CLAUDE_FAIL_MODE:-transient}" in
-    nontransient) echo "API Error: 400 invalid_request_error: bad prompt" ;;
-    *) echo "API Error: 529 Overloaded. This is a server-side issue, usually temporary — try again in a moment." ;;
+    nontransient) echo "API Error: 400 invalid_request_error: bad prompt" >&2 ;;
+    *) echo "API Error: 529 Overloaded. This is a server-side issue, usually temporary — try again in a moment." >&2 ;;
   esac
   exit 1
 fi
@@ -116,8 +116,6 @@ exit 0
 SH
   chmod +x "$BIN/claude"
 }
-
-teardown() { rm -rf "$TMP"; }
 
 run_advisory() {
   run env "PATH=$BIN:$PATH" \
