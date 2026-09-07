@@ -67,6 +67,10 @@ triggers:
 trust:
   author_association_floor: [OWNER, MEMBER, COLLABORATOR]
 
+canary:
+  registry: petry-projects/.github/standards/canary-rings.json
+  agent: business-analyst
+
 # --- Runtime identity (§5.1) ------------------------------------------------
 # Advisory-only (producers under prompts/incubation, consumed by path and the
 # persona runner). On the comment path it posts as `don-petry` (the runner

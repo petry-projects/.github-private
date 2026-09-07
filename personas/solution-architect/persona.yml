@@ -90,6 +90,10 @@ triggers:
 trust:
   author_association_floor: [OWNER, MEMBER, COLLABORATOR]
 
+canary:
+  registry: petry-projects/.github/standards/canary-rings.json
+  agent: solution-architect
+
 # --- Runtime identity (§5.1) ------------------------------------------------
 # Present from birth. Advisory-only: solution-architect ships no dedicated
 # reusable/stub in this pilot. It is consumed by path and is human-invocable. On

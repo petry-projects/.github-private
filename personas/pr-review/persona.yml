@@ -64,6 +64,10 @@ triggers:
 trust:
   author_association_floor: [OWNER, MEMBER, COLLABORATOR]
 
+canary:
+  registry: petry-projects/.github/standards/canary-rings.json
+  agent: pr-review
+
 # --- Runtime identity (§5.1) ------------------------------------------------
 # pr-review ACTS AS the dedicated machine user `donpetry-bot`: a review-only
 # account distinct from `don-petry` so its approvals satisfy CODEOWNERS and it

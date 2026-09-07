@@ -99,13 +99,10 @@ if ! [[ "$DEP_ADVISORY_MAX_ATTEMPTS" =~ ^[0-9]+$ ]] || [ "$DEP_ADVISORY_MAX_ATTE
   echo "::error::DEP_ADVISORY_MAX_ATTEMPTS must be a positive integer (>= 1), got: ${DEP_ADVISORY_MAX_ATTEMPTS}" >&2
   exit 1
 fi
-if ! [[ "$DEP_ADVISORY_RETRY_BASE_SEC" =~ ^([0-9]+|[0-9]+\.[0-9]+)$ ]]; then
-  echo "::error::DEP_ADVISORY_RETRY_BASE_SEC must be a non-negative decimal number, got: ${DEP_ADVISORY_RETRY_BASE_SEC}" >&2
+if ! [[ "$DEP_ADVISORY_RETRY_BASE_SEC" =~ ^(0|[1-9][0-9]*)$ ]]; then
+  echo "::error::DEP_ADVISORY_RETRY_BASE_SEC must be a non-negative integer without leading zeros, got: ${DEP_ADVISORY_RETRY_BASE_SEC}" >&2
   exit 1
 fi
-# Strip leading zeros to prevent octal interpretation in arithmetic expansion.
-DEP_ADVISORY_RETRY_BASE_SEC="${DEP_ADVISORY_RETRY_BASE_SEC##+(0)}"
-DEP_ADVISORY_RETRY_BASE_SEC="${DEP_ADVISORY_RETRY_BASE_SEC:-.0}"
 
 # A server-side/transient CLI failure a later retry may clear — distinct from a
 # genuine (non-transient) error, which stays fatal.
