@@ -94,7 +94,7 @@ setup() {
   # a defect, which is the gap that let one slip through when this was gated on
   # status alone.
   run prc_promotion_verdict "draft" "true"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 2 ]
   [ "$output" = "registered" ]
 }
 
@@ -107,7 +107,7 @@ setup() {
 
 @test "prc_promotion_verdict: past draft WITH registration is the inverted defect (fails)" {
   run prc_promotion_verdict "canary" "true"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 2 ]
   [ "$output" = "registered" ]
 }
 
