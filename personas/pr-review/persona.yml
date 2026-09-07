@@ -84,6 +84,10 @@ evals:
   path: evals/pr-review/
   min_cases: 5
 
+canary:
+  registry: petry-projects/.github/standards/canary-rings.json
+  agent: pr-review
+
 references:
   - "agents/pr-reviewer.md (Copilot profile)"
   - "evals/pr-review/ (held-out set — combines deep-review + triage cases)"
