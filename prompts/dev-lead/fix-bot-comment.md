@@ -46,11 +46,11 @@ Analyze the bot's findings and address each actionable issue:
 1. Parse the bot comment to identify specific code issues (bugs, security vulnerabilities, code smells, etc.)
 2. Locate the referenced files and line numbers using Read/Grep/Glob tools
 3. Apply targeted fixes using Edit/Write tools
-4. **Reply to each fixed thread with the specific change**, then **resolve** open review threads from this bot that are now fixed or outdated (see below)
+4. **Reply to each fixed thread with the specific change** — the harness resolves the addressed bot threads afterward (see below); do not resolve them yourself
 
-### Resolving threads from this bot
+### Replying to threads from this bot
 
-After fixing an issue, resolve the corresponding review thread so the bot gets a clean slate to re-review. First, find open threads from this bot:
+After fixing an issue, reply to the corresponding review thread with the addressed-marker so the harness can resolve it and the bot gets a clean slate to re-review. First, find open threads from this bot:
 
 ```bash
 # Pipe through jq --arg to safely pass the bot login as a variable
@@ -89,12 +89,7 @@ gh api graphql \
   -f body="Fixed in scripts/foo.sh: replaced the unpinned curl|bash install with a SHA-verified binary download. <!-- dev-lead:addressed -->"
 ```
 
-Then resolve each thread you addressed (and any from this bot marked `isOutdated: true`):
-
-```bash
-# Replace THREAD_NODE_ID with the id value from the query above
-gh api graphql -f query='mutation { resolveReviewThread(input: {threadId: "THREAD_NODE_ID"}) { thread { isResolved } } }'
-```
+**Do not resolve the thread yourself.** You must not call the `resolveReviewThread` (or `unresolveReviewThread`) GraphQL mutation under any circumstance — resolution is done **only** by the harness (`dev-lead-fix-reviews.sh`), whose deterministic guards are the authoritative merge gate. The harness resolves every bot thread you addressed with an our-account addressed-marker reply, plus any thread from this bot marked `isOutdated: true`. Your reply and its marker are your only lever on resolution.
 
 ## SonarQube / SonarCloud comments
 
@@ -116,8 +111,8 @@ If `${ACTOR}` is `sonarqubecloud[bot]` and the comment reports security hotspots
 - Never revert or undo the PR's own committed changes to "address" a neutral overview/summary comment — that produces a net-zero diff that silently cancels the fix (#1340)
 - Do not suppress bot rules without a documented reason
 - Do not modify the bot's configuration files
-- For every thread you fix, post a reply naming the specific change before resolving — never resolve silently
-- Only resolve threads from `${ACTOR}` — do not resolve threads from other reviewers
+- For every thread you fix, post a reply naming the specific change, ending with the addressed-marker — never reply-less
+- **Never resolve a thread yourself**: do not call the `resolveReviewThread` (or `unresolveReviewThread`) mutation. Resolution is the harness's job — it resolves the addressed and outdated threads from `${ACTOR}`; your only lever is the addressed-marker on your reply
 - Stay within the scope of the pull request's changed files where possible
 - Do not commit or push — the CI workflow handles git operations after you finish
 
@@ -127,8 +122,8 @@ After applying fixes, output a summary:
 ```
 Bot: ${ACTOR}
 Issues addressed: N
-- <issue description>: <fix applied> [replied + thread resolved]
-- <issue description>: outdated thread resolved
+- <issue description>: <fix applied> [replied + addressed-marker]
+- <issue description>: outdated — replied (harness resolves)
 Files changed: <list of files>
 Skipped (informational): <count>
 ```
