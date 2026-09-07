@@ -30,18 +30,30 @@ set -euo pipefail
 # scorer.json schema (all fields optional unless noted):
 #   { "mode": "deterministic" | "llm-judge",
 #     "judge_prompt": "<path relative to EVALS_DIR>",   # required for llm-judge
-#     "pass_threshold": <number in [0,1]> }             # llm-judge only (default 0.7)
-# Absent file => deterministic mode (keeps existing skills unchanged).
+#     "pass_threshold": <number in [0,1]>,              # llm-judge only (default 0.7)
+#     "engine": "triage" | "persona" }                  # scoring tier (default triage)
+# Absent file => deterministic mode + triage tier (keeps existing skills unchanged).
+#
+# Engine parity tier (#1686): a persona advisory must be scored on the SAME model
+# tier + tool posture the persona runtime uses, or a promotion gate measures the
+# wrong artifact. The tier is declared PER SKILL via scorer.json's `engine` field:
+#   triage  (default) -> run_triage  : Haiku-tier, NO tools — today's behaviour.
+#   persona           -> run_persona : Opus-tier WITH tools (Bash,Read,Grep,Glob),
+#                                      matching persona-runner-reusable.yml.
+# Absent declaration keeps run_triage, so existing skills are never silently
+# upgraded into a costlier model. The report records `engine_tier`/`engine_model`
+# so a score is never ambiguous about what produced it.
 #
 # Engine abstraction (AC #3): every model invocation goes through the engine
-# layer, NOT a re-implemented model call. By default the skill command is
-# `run_triage` and the judge command is also `run_triage` (sourced from
-# scripts/engine.sh, Haiku-tier, no tools, stdout capture). Both are injectable
-# (EVAL_ENGINE_CMD / EVAL_JUDGE_CMD) exactly as engine.sh lets REVIEW_ENGINE be
-# overridden, so offline tests can drive stubs with no network.
+# layer, NOT a re-implemented model call. The skill command defaults to the tier's
+# run_* function (above) and the judge command to `run_triage` (sourced from
+# scripts/engine.sh; the judge grades output, it is not the shipped persona). Both
+# are injectable (EVAL_ENGINE_CMD / EVAL_JUDGE_CMD) exactly as engine.sh lets
+# REVIEW_ENGINE be overridden, so offline tests can drive stubs with no network.
 #
 # Env overrides:
-#   EVAL_ENGINE_CMD   skill-under-test command, invoked as `<cmd> <prompt_file>` (default: run_triage)
+#   EVAL_ENGINE_CMD   skill-under-test command, invoked as `<cmd> <prompt_file>`
+#                     (default: the declared tier's run_* function; wins when set)
 #   EVAL_JUDGE_CMD    llm-judge command, invoked as `<cmd> <prompt_file>` (default: run_triage)
 #   SKILL_PROMPT_FILE skill markdown to score. Default resolves the flat
 #                     prompts/<skill>.md, falling back to the persona advisory
@@ -84,7 +96,11 @@ EVALS_DIR="${EVALS_DIR:-$REPO_ROOT/evals}"
 # runtime for an unrelated path) overrides the prompt root, mirroring EVALS_DIR,
 # so offline tests can point it at a fixture tree.
 EVAL_PROMPTS_DIR="${EVAL_PROMPTS_DIR:-$REPO_ROOT/prompts}"
-EVAL_ENGINE_CMD="${EVAL_ENGINE_CMD:-run_triage}"
+# EVAL_ENGINE_CMD (skill-under-test command) is resolved AFTER the per-skill
+# scorer.json tier and engine.sh have loaded (see "engine parity tier" below):
+# an explicit env override still wins, otherwise the command is derived from the
+# skill's declared tier (default: run_triage). EVAL_JUDGE_CMD keeps its Haiku-tier
+# default — the judge grades output, it is not the shipped persona being scored.
 EVAL_JUDGE_CMD="${EVAL_JUDGE_CMD:-run_triage}"
 
 die() {
@@ -135,9 +151,20 @@ scorer_config="$EVALS_DIR/$skill/scorer.json"
 SCORER_MODE="deterministic"
 JUDGE_PROMPT_FILE=""
 PASS_THRESHOLD="0.7"
+# Engine parity tier (#1686): the model tier + tool posture the skill is scored on
+# is declared PER SKILL here, never hardcoded and never a silent upgrade. Absent
+# declaration => "triage" (today's Haiku-tier, tool-less run_triage), so existing
+# skills keep their cost profile. "persona" routes to run_persona (Opus + tools),
+# matching the live persona runtime so a promotion gate scores the shipped artifact.
+ENGINE_TIER="triage"
 if [ -f "$scorer_config" ]; then
   SCORER_MODE="$(jq -r '.mode // "deterministic"' "$scorer_config")"
+  ENGINE_TIER="$(jq -r '.engine // "triage"' "$scorer_config")"
 fi
+case "$ENGINE_TIER" in
+  triage|persona) ;;
+  *) die "unknown engine tier '$ENGINE_TIER' for skill '$skill' (expected: triage, persona)" ;;
+esac
 case "$SCORER_MODE" in
   deterministic) ;;
   llm-judge)
@@ -156,6 +183,18 @@ esac
 # run_triage simply goes unused.
 # shellcheck source=../engine.sh
 source "$REPO_ROOT/scripts/engine.sh" >&2
+
+# Resolve the skill-under-test engine command + its model from the declared tier,
+# now that engine.sh has defined the run_* functions and ENGINE_*_MODEL. An
+# explicit EVAL_ENGINE_CMD env override still wins (offline tests / the gate drive
+# a stub), but the RECORDED tier + model reflect the declaration so a score is
+# never ambiguous about the intended parity (#1686 AC #1). ENGINE_MODEL is
+# report-only metadata; the actual chain/fallback lives in engine.sh.
+case "$ENGINE_TIER" in
+  triage)  _tier_default_cmd="run_triage";  ENGINE_MODEL="$ENGINE_TRIAGE_MODEL" ;;
+  persona) _tier_default_cmd="run_persona"; ENGINE_MODEL="$ENGINE_DEEP_MODEL" ;;
+esac
+EVAL_ENGINE_CMD="${EVAL_ENGINE_CMD:-$_tier_default_cmd}"
 
 results="$(mktemp)"
 work_prompt="$(mktemp)"
@@ -305,13 +344,16 @@ while IFS= read -r line; do
 done <"$cases_file"
 
 # Assemble the aggregate report. score = passed/total (0 when there are no cases).
-jq -s --arg skill "$skill" '
+jq -s --arg skill "$skill" \
+     --arg engine_tier "$ENGINE_TIER" --arg engine_model "$ENGINE_MODEL" '
   {
     skill:  $skill,
     total:  length,
     passed: (map(select(.pass)) | length),
     failed: (map(select(.pass | not)) | length),
     score:  (if length == 0 then 0 else ((map(select(.pass)) | length) / length) end),
+    engine_tier:  $engine_tier,
+    engine_model: $engine_model,
     cases:  .
   }' "$results"
 

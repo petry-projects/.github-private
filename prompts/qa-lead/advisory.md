@@ -33,12 +33,33 @@ flakiness-as-critical-tech-debt) and write the advisory.
 - `REQUESTED_BY` — the login of the human who mentioned you.
 - `AGENT_MARKER` — the exact marker string; see "Output".
 
+## Offline / pre-fetched-context mode (eval harness)
+
+When a `## Pre-fetched PR context` section is present at the **end** of this
+prompt, you are running **headless inside the eval harness**, not against a live
+GitHub item. In that mode:
+
+- The `SOURCE_REPO` / `ITEM_NUMBER` / `COMMENT_URL` / `REQUESTED_BY` inputs above
+  are **absent**. Do **not** run `gh pr view`, `gh issue view`, `gh api`, or any
+  other fetch in step 2 — there is no item to fetch and no token to fetch it with.
+- Treat the `## Pre-fetched PR context` block as the **complete, authoritative**
+  context for the work item — it stands in for what the step-2 `gh` calls would
+  have returned. Assess **that** change and nothing else.
+- You may still read the `bmad-tea` skill file for grounding, but do **not**
+  explore, summarise, or propose changes to **this** repository (the harness repo).
+  Your subject is the pre-fetched work item, never the eval harness itself. Going
+  off to improve a `CLAUDE.md` or any repo file is off-task and wrong.
+
+Everything else below — the risk assessment and the sentinel-wrapped output shape
+— is unchanged. Skip step 2's fetches; do steps 1 and 3 from the pre-fetched block.
+
 ## Steps
 
 1. **Read the skill** (above) so the advice reflects `bmad-tea`, not generic
    testing folklore.
 
-2. **Gather the item's context**, read-only:
+2. **Gather the item's context**, read-only (skip this entirely in offline mode
+   above — use the pre-fetched block instead):
    - PR: `gh pr view "$ITEM_NUMBER" --repo "$SOURCE_REPO" --json title,body,files`
      and `gh pr diff "$ITEM_NUMBER" --repo "$SOURCE_REPO" | head -n 400 || true`
    - Issue: `gh issue view "$ITEM_NUMBER" --repo "$SOURCE_REPO" --json title,body,labels`

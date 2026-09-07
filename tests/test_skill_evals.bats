@@ -309,6 +309,152 @@ SH
   [[ "$output" == *"::error::"* ]]
 }
 
+# --- per-skill engine parity tier (#1686 AC #1/#2) -----------------------------
+#
+# A persona eval must score the SAME tier + tool posture the persona runtime uses
+# (Opus + tools), not the Haiku-tier run_triage the harness defaults to. The tier
+# is declared PER SKILL in scorer.json ("engine": "persona"), never hardcoded and
+# never a silent upgrade: absent declaration keeps today's run_triage. The report
+# records the tier actually used so a score is never ambiguous about what produced
+# it. These stay offline — EVAL_ENGINE_CMD still overrides the resolved command, so
+# no real provider is invoked, but the RECORDED tier reflects the declaration.
+
+@test "engine tier: scorer.json 'engine: persona' is recorded as the tier + Opus model (#1686)" {
+  mkdir -p "$TMP/evals/persona-skill/holdout"
+  cat >"$TMP/evals/persona-skill/scorer.json" <<'JSON'
+{"engine": "persona"}
+JSON
+  cat >"$TMP/evals/persona-skill/holdout/cases.jsonl" <<'JSONL'
+{"id": "p-approve", "input": "MARKER_APPROVE", "expected": {"escalate": false, "risk": "LOW"}}
+JSONL
+  mkdir -p "$TMP/prompts"
+  printf '# persona-skill\n' >"$TMP/prompts/persona-skill.md"
+
+  # Override the engine with a stub so no real Opus call happens; the recorded
+  # tier must still reflect the persona declaration (parity is declared, not
+  # silently forced by the stub).
+  EVALS_DIR="$TMP/evals" EVAL_PROMPTS_DIR="$TMP/prompts" EVAL_ENGINE_CMD="$STUB_OK" \
+    run --separate-stderr bash "$SCORER" persona-skill
+  [ "$status" -eq 0 ]
+  [ "$(jq -r '.engine_tier' <<<"$output")" = "persona" ]
+  [[ "$(jq -r '.engine_model' <<<"$output")" == *opus* ]]
+}
+
+@test "engine tier: absent 'engine' field records triage + Haiku (no silent upgrade, #1686)" {
+  # Triage has no scorer.json in the fixture -> tier defaults to triage, and the
+  # recorded model is the Haiku triage model. This is the no-silent-upgrade
+  # guarantee: existing skills keep their cost profile unless they declare otherwise.
+  EVALS_DIR="$TMP/evals" EVAL_ENGINE_CMD="$STUB_OK" \
+    run --separate-stderr bash "$SCORER" triage
+  [ "$status" -eq 0 ]
+  [ "$(jq -r '.engine_tier' <<<"$output")" = "triage" ]
+  [[ "$(jq -r '.engine_model' <<<"$output")" == *haiku* ]]
+}
+
+@test "engine tier: an unknown 'engine' value is a hard error (#1686)" {
+  mkdir -p "$TMP/evals/bad-tier/holdout"
+  cat >"$TMP/evals/bad-tier/scorer.json" <<'JSON'
+{"engine": "nonsense-tier"}
+JSON
+  cat >"$TMP/evals/bad-tier/holdout/cases.jsonl" <<'JSONL'
+{"id": "x", "input": "MARKER_APPROVE", "expected": {"escalate": false, "risk": "LOW"}}
+JSONL
+  mkdir -p "$TMP/prompts"
+  printf '# bad-tier\n' >"$TMP/prompts/bad-tier.md"
+  EVALS_DIR="$TMP/evals" EVAL_PROMPTS_DIR="$TMP/prompts" EVAL_ENGINE_CMD="$STUB_OK" \
+    run bash "$SCORER" bad-tier
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"::error::"* ]]
+}
+
+# --- off-task regression: the offline context contract (#1686 AC #4/#5) ---------
+#
+# The live advisory prompt gathers context via `gh pr view` and, given none, the
+# qa-lead held-out run went entirely off-task on `well-tested-refactor` — the
+# candidate discussed THIS repo's CLAUDE.md instead of the case. The fix is an
+# explicit offline / pre-fetched-context mode in prompts/qa-lead/advisory.md: when
+# a `## Pre-fetched PR context` section is present, the persona assesses THAT item
+# and does not explore the repo. This test runs the REAL advisory prompt against a
+# well-tested-refactor-shaped fixture case with a stub engine that models a
+# compliant reader: it emits an on-task advisory ONLY when the offline directive is
+# present in the assembled prompt, else it reproduces the off-task CLAUDE.md failure.
+# Fully offline (stub engine + stub judge), no held-out case touched.
+
+@test "off-task regression: real advisory carries the offline directive so a compliant model stays on-task (#1686)" {
+  local realprompts="$ROOT/prompts"
+  # The real advisory must exist and declare the offline mode this contract needs.
+  [ -f "$realprompts/qa-lead/advisory.md" ]
+
+  mkdir -p "$TMP/evals/qa-lead/holdout"
+  cat >"$TMP/evals/qa-lead/scorer.json" <<'JSON'
+{"mode": "llm-judge", "judge_prompt": "qa-lead/judge.md", "pass_threshold": 0.7, "engine": "persona"}
+JSON
+  cat >"$TMP/evals/qa-lead/judge.md" <<'MD'
+# QA Lead judge
+Emit {"score": <0..1>, "reason": "..."}.
+MD
+  # A negative-control (well-tested-refactor) case: correct answer is "no extra
+  # tests needed". This is a FIXTURE case, never the held-out file (AC #7).
+  cat >"$TMP/evals/qa-lead/holdout/cases.jsonl" <<'JSONL'
+{"id": "fixture-well-tested-refactor", "input": "REFACTOR_CASE_MARKER\nPR: behavior-preserving rename in a module with full existing coverage. No new branches, no new I/O.", "expected": {"escalate": false, "risk": "LOW", "recommend": "no additional tests required"}}
+JSONL
+
+  # Stub engine modelling a compliant persona: it stays on-task ONLY when the
+  # offline directive from the REAL advisory reached it AND the pre-fetched case
+  # context is present. Otherwise it reproduces the off-task CLAUDE.md failure.
+  local stub="$TMP/persona_stub.sh"
+  cat >"$stub" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+prompt="$1"
+if grep -qi "Offline / pre-fetched-context mode" "$prompt" \
+   && grep -q "REFACTOR_CASE_MARKER" "$prompt"; then
+  cat <<'ADV'
+<!-- persona:qa-lead -->
+## QA Lead — test-risk advisory
+
+**Risk tier:** LOW — behavior-preserving rename in a well-covered module.
+
+**What I'd shore up:**
+- Nothing material; existing coverage already exercises this path.
+
+**Escalate?** no — no additional tests required for this refactor.
+ADV
+else
+  # The off-task failure: no item context / no offline directive -> the model
+  # wanders into exploring this repository instead.
+  echo 'Plan Summary: Improve CLAUDE.md documentation for the repository.'
+fi
+SH
+  chmod +x "$stub"
+
+  # Judge stub: on-task iff the candidate is a qa-lead advisory about the refactor
+  # (not a CLAUDE.md plan). Keys off the candidate reproduced in the judge prompt.
+  local judge="$TMP/judge_stub.sh"
+  cat >"$judge" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+prompt="$1"
+if grep -q "Improve CLAUDE.md" "$prompt"; then
+  echo '{"score": 0.0, "reason": "off-task: explored the repo instead of the item"}'
+elif grep -qi "test-risk advisory" "$prompt"; then
+  echo '{"score": 0.95, "reason": "on-task advisory for the refactor"}'
+else
+  echo '{"score": 0.0, "reason": "unrecognised"}'
+fi
+SH
+  chmod +x "$judge"
+
+  EVALS_DIR="$TMP/evals" EVAL_PROMPTS_DIR="$realprompts" \
+    EVAL_ENGINE_CMD="$stub" EVAL_JUDGE_CMD="$judge" \
+    run --separate-stderr bash "$SCORER" qa-lead
+  [ "$status" -eq 0 ]
+  # On-task: the candidate is the advisory, NOT a CLAUDE.md exploration plan.
+  cand="$(jq -r '.cases[0].candidate' <<<"$output")"
+  [[ "$cand" == *"test-risk advisory"* ]]
+  [[ "$cand" != *"Improve CLAUDE.md"* ]]
+}
+
 @test "scorer reads holdout/ only — never the proposer-visible dev/ split" {
   # A dev/ case that, if the scorer read it, would change total. The scorer must
   # ignore dev/ entirely (#691 hygiene: only holdout/ is ever scored).

@@ -1128,6 +1128,21 @@ run_agentic() {
   return "$rc"
 }
 
+# run_persona <prompt_file>
+# Eval-harness parity tier for persona advisory skills (#1686). Bridges the
+# eval scorer's one-argument calling convention (`<cmd> <prompt_file>`, see
+# scripts/evals/run-eval.sh) to run_agentic's `<prompt_file> <model> [tier]` shape
+# WITHOUT changing that convention for every existing skill. It scores the skill on
+# the SAME tier + tool posture the live persona runtime uses
+# (.github/workflows/persona-runner-reusable.yml: `--fallback-model opus` +
+# `--allowedTools Bash`): the deep (Opus) model chain with full tool access
+# (Bash,Read,Grep,Glob). A persona eval that scored the Haiku-tier run_triage would
+# gate the wrong artifact — a weaker, tool-less model — so a scorer.json declaring
+# `"engine": "persona"` routes here instead. Not used by any non-persona skill.
+run_persona() {
+  run_agentic "$1" "$ENGINE_DEEP_MODEL" deep
+}
+
 # run_writer <prompt_file> [model]
 # Full write-access mode for applying code fixes.
 # When DEV_LEAD_DRY_RUN=true: builds prompt but does NOT call engine; exits 0.
