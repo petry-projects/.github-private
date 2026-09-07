@@ -167,6 +167,47 @@ YAML
   [[ "$output" == *"agents.demo"* ]]
 }
 
+# --- ADR-0006: registration is CONDITIONAL on the manifest's own `canary` block ---
+#
+# A persona WITH a canary block ships its own reusable — past draft it must be
+# registered (the two tests above). A persona WITHOUT one rides the shared
+# persona runtime: no caller pins a per-persona channel tag, so it is never
+# registered. For it, "past draft and unregistered" is the NORMAL state and a
+# registry entry is the defect. These two tests pin that inversion.
+
+@test "validate-personas accepts a non-draft shared-runtime persona (no canary) that is unregistered" {
+  python3 -c "from pathlib import Path; p = Path(\"$TMP/personas/demo/persona.yml\"); txt = p.read_text().replace('status: draft', 'status: stable'); p.write_text(''.join(l for l in txt.splitlines(True) if not any(l.strip().startswith(k) for k in ('canary:', 'registry:', 'agent:'))))"
+  printf '{"agents": {}}\n' >"$TMP/empty-registry.json"
+  run python3 "$VALIDATOR" "$TMP/personas" --schema "$TMP/schema.json" --registry "$TMP/empty-registry.json"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"OK"* ]]
+}
+
+@test "validate-personas rejects a shared-runtime persona (no canary) that IS registered" {
+  python3 -c "from pathlib import Path; p = Path(\"$TMP/personas/demo/persona.yml\"); txt = p.read_text().replace('status: draft', 'status: stable'); p.write_text(''.join(l for l in txt.splitlines(True) if not any(l.strip().startswith(k) for k in ('canary:', 'registry:', 'agent:'))))"
+  run python3 "$VALIDATOR" "$TMP/personas" --schema "$TMP/schema.json" --registry "$TMP/registry.json"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"defect, not a promotion"* ]]
+}
+
+# The registry prohibition is UNCONDITIONAL of status (ADR-0006): a shared-runtime
+# persona ID is a defect in the registry draft or not, so even a DRAFT persona
+# with no canary block must be rejected when an agents.<id> entry exists.
+@test "validate-personas rejects a DRAFT shared-runtime persona (no canary) that IS registered" {
+  python3 -c "from pathlib import Path; p = Path(\"$TMP/personas/demo/persona.yml\"); p.write_text(''.join(l for l in p.read_text().splitlines(True) if not any(l.strip().startswith(k) for k in ('canary:', 'registry:', 'agent:'))))"
+  run python3 "$VALIDATOR" "$TMP/personas" --schema "$TMP/schema.json" --registry "$TMP/registry.json"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"defect, not a promotion"* ]]
+}
+
+@test "validate-personas still checks canary.agent when the block IS present" {
+  python3 -c "from pathlib import Path; p = Path(\"$TMP/personas/demo/persona.yml\"); p.write_text(p.read_text().replace('agent: demo', 'agent: nope'))"
+  run python3 "$VALIDATOR" "$TMP/personas" --schema "$TMP/schema.json"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"canary.agent"* ]]
+  [[ "$output" != *"Traceback"* ]]
+}
+
 # --- Addressing (§4.1): handle slug == id, and handles are unique fleet-wide ---
 #
 # The live team properties (exists / privacy: closed / notifications_disabled)
