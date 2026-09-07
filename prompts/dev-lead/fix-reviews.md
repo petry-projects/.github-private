@@ -56,7 +56,7 @@ For each open review thread:
 2. Understand the reviewer's concern
 3. Apply the appropriate fix using Edit/Write tools
 4. **Reply to the thread with the specific fix** — see below
-5. **Resolve the thread according to the scope below** — never resolve a marker-less human thread, including one with `isOutdated: true` (outdated status never overrides marker ownership).
+5. **Do not resolve the thread yourself** — the harness resolves it (see "Resolution is the harness's responsibility" below). A marker-less human thread is never resolved, including one with `isOutdated: true` (outdated status never overrides marker ownership).
 
 #### Replying to a thread
 
@@ -72,23 +72,18 @@ gh api graphql \
 
 For a thread that is `isOutdated: true` with no code change, a reply is optional — a one-line note that the referenced code no longer exists is helpful but not required.
 
-#### Resolving a thread
+#### Resolution is the harness's responsibility — never call `resolveReviewThread`
 
-After replying, resolve the thread using its `id` from the JSON above:
+**Do not resolve review threads yourself.** You have a shell, but resolution is not yours to perform: you must not call the `resolveReviewThread` (or `unresolveReviewThread`) GraphQL mutation under any circumstance. Thread resolution is done **only** by the harness (`dev-lead-fix-reviews.sh`), whose deterministic guards are the authoritative merge gate (`required_review_thread_resolution`). Your contract is: **reply with the addressed-marker on the threads you genuinely fixed; the harness resolves them once this pass commits your fix.** A pass that advances the PR head triggers resolution; a no-commit pass resolves nothing (the #1617 resolution gate — a pass that produced no commit resolves zero threads).
 
-```bash
-# Replace THREAD_NODE_ID with the id value from the thread JSON
-gh api graphql -f query='mutation { resolveReviewThread(input: {threadId: "THREAD_NODE_ID"}) { thread { isResolved } } }'
-```
+Your reply and its marker are the *only* lever you have on resolution — which is why the reply above is mandatory. The harness resolves by exactly this scope (outdated status never overrides marker ownership for human threads):
 
-Resolve a thread when **you actually fixed it**, per this scope (outdated status never overrides marker ownership for human threads):
+- **Bot threads** (`comments.nodes[0].author.__typename` is `"Bot"` — the GitHub GraphQL API sets this for all bot accounts; note that GraphQL omits the `[bot]` suffix from `comments.nodes[0].author.login` for bots, so the login field alone is not a reliable bot indicator): the harness resolves every bot thread you addressed with an our-account `<!-- dev-lead:addressed -->` reply **and** every thread with `isOutdated: true`, **regardless of which reviewer triggered this run**. So stamp the addressed-marker on your reply whenever you genuinely fixed a bot thread — a thread you addressed must not be left open just because a different bot's comment triggered the run.
+- **Human threads** (`comments.nodes[0].author.__typename` is `"User"`): **a maintainer's review thread is never resolved** — not by you, not by the harness — unless its originating comment carries one of our automation markers. You run as the owner account `don-petry` — the *same* account a human maintainer uses — so `comments.nodes[0].author.login` (even when it matches `${TRIGGERING_REVIEWER}`) **cannot** tell your own thread apart from the maintainer's. The harness discriminates by the **automation marker** in the thread's originating comment (`comments.nodes[0].body`):
+  - If the originating comment carries one of **our** markers — `<!-- pr-review-agent … -->`, `<!-- persona:… -->`, `<!-- dev-lead … -->`, `<!-- dependency-advisory -->` — the thread is ours and the harness may resolve it once addressed.
+  - If it carries **no** marker, it is a **maintainer finding**: post your fix reply, **but the thread stays open** for the maintainer to resolve. Resolving it would clear the maintainer's own review gate — exactly the PR #1413 defect this rule closes (#1415). A marker that cannot be determined is treated as a maintainer finding and left open (fail closed).
 
-- **Bot threads** (`comments.nodes[0].author.__typename` is `"Bot"` — the GitHub GraphQL API sets this for all bot accounts; note that GraphQL omits the `[bot]` suffix from `comments.nodes[0].author.login` for bots, so the login field alone is not a reliable bot indicator): resolve every one you fixed **and** every thread with `isOutdated: true`, **regardless of which reviewer triggered this run**. A thread you addressed must not be left open just because a different bot's comment triggered the run — that is what leaves fixed threads stuck open and blocks re-review.
-- **Human threads** (`comments.nodes[0].author.__typename` is `"User"`): **never resolve a maintainer's review thread.** You run as the owner account `don-petry` — the *same* account a human maintainer uses — so `comments.nodes[0].author.login` (even when it matches `${TRIGGERING_REVIEWER}`) **cannot** tell your own thread apart from the maintainer's. Discriminate by the **automation marker** in the thread's originating comment (`comments.nodes[0].body`) instead:
-  - If the originating comment carries one of **our** markers — `<!-- pr-review-agent … -->`, `<!-- persona:… -->`, `<!-- dev-lead … -->`, `<!-- dependency-advisory -->` — the thread is ours and you may resolve it once fixed.
-  - If it carries **no** marker, it is a **maintainer finding**: post your fix reply, **but leave the thread open** for the maintainer to resolve. Resolving it yourself would clear the maintainer's own review gate — exactly the PR #1413 defect this rule closes (#1415). If you cannot determine the marker, **treat it as a maintainer finding and leave it open** (fail closed).
-
-Never resolve a thread you did not fix, except outdated bot threads. Never resolve a marker-less human thread — even when you fixed it, and even when it is `isOutdated: true` — reply and leave it for the maintainer to resolve. Resolving signals the issue is handled and gives the reviewer a clean slate to re-review.
+Never stamp the addressed-marker on a thread you did not fix, and never on a marker-less human thread — even when you fixed it, and even when it is `isOutdated: true`. Reply and leave it for the maintainer. Resolution — signalling the issue is handled and giving the reviewer a clean slate — is the harness's job, not yours.
 
 ### Phase 2 — Test Verification
 
@@ -107,7 +102,7 @@ Read every changed line as if you are the reviewer seeing the response:
 2. Ask: does each change directly and completely address its thread?
 3. Ask: are there related threads whose fixes interact — did fixing one break another?
 4. Ask: would the reviewer be satisfied, or is there still an issue?
-5. Ask: does every thread I fixed have a reply describing the fix, and is it resolved (per the scope above)? Reply/resolve any I missed.
+5. Ask: does every thread I fixed have a reply describing the fix, ending with the addressed-marker where appropriate? Reply to any I missed — the harness resolves the thread; do not resolve it yourself.
 6. Fix anything found, then re-run Phase 2
 
 ### Phase 2 — Test Verification
@@ -127,15 +122,15 @@ Read every changed line as if you are the reviewer seeing the response:
 2. Ask: does each change directly and completely address its thread?
 3. Ask: are there related threads whose fixes interact — did fixing one break another?
 4. Ask: would the reviewer be satisfied, or is there still an issue?
-5. Ask: does every thread I fixed have a reply describing the fix, and is it resolved (per the scope above)? Reply/resolve any I missed.
+5. Ask: does every thread I fixed have a reply describing the fix, ending with the addressed-marker where appropriate? Reply to any I missed — the harness resolves the thread; do not resolve it yourself.
 6. Fix anything found, then re-run Phase 2
 
 ## Constraints
 
 - Address each open thread individually
-- For every thread you fix, post a reply naming the specific change before resolving — never resolve silently
-- Resolve every bot thread you fix and every outdated bot thread (regardless of which reviewer triggered this run); for human threads, resolve **only** those whose originating comment carries one of our automation markers, and leave every marker-less (maintainer) thread open with a fix reply — never clear a maintainer's review gate, including when that thread is `isOutdated: true` (#1415)
-- Do not resolve threads you are skipping due to ambiguity — leave those open and note them in your output
+- For every thread you fix, post a reply naming the specific change — never reply-less. End the reply with the addressed-marker `<!-- dev-lead:addressed -->` **only** on bot threads and marker-carrying human threads; on a marker-less human (maintainer) thread, reply **without** the marker so it stays open for the maintainer
+- **Never resolve a thread yourself**: do not call the `resolveReviewThread` (or `unresolveReviewThread`) mutation. Resolution is the harness's job — it resolves every bot thread you addressed (via your our-account addressed-marker reply) and every outdated bot thread, and it leaves every marker-less (maintainer) thread open (#1415). Your only lever is the addressed-marker on your reply
+- For a thread you are skipping due to ambiguity, post a skip note **without** the addressed-marker and leave it in your output
 - Do not make changes beyond what the review threads request, except that fixing Tier-1 blockers (failure/timed_out/cancelled/action_required/stale/startup_failure CI checks and CHANGES_REQUESTED reviews) is always in-scope
 - Never revert or undo the PR's own committed changes to satisfy a neutral `COMMENTED`/overview review — that produces a net-zero diff that silently cancels the fix (#1340)
 - If a review thread is ambiguous, apply the most conservative interpretation
@@ -147,9 +142,11 @@ After applying fixes, output a summary:
 
 ```
 Addressed N threads:
-- Thread <id>: <brief description of fix> [replied + resolved]
-- Thread <id>: outdated — resolved without change
-- Thread <id>: skipped — <reason> [left open]
+- Thread <id>: <brief description of fix> [replied + addressed-marker]                 # bot / marked human thread
+- Thread <id>: <brief description of fix> — maintainer thread [reply without marker, left open]
+- Thread <id>: outdated — replied (harness resolves)                                   # bot thread
+- Thread <id>: outdated — maintainer thread — replied [reply without marker, left open]
+- Thread <id>: skipped — <reason> [reply without marker]
 Test verification: <pass/fail — paste output if relevant>
 Files changed: <list of files>
 ```

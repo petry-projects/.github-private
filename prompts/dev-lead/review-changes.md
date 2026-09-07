@@ -68,7 +68,7 @@ For each open review thread:
 3. Apply the requested changes using Edit/Write tools
 4. If a thread requests new behavior that has no existing test coverage, write a test for it **before** making the implementation change
 5. **Reply to the thread with the specific fix** — see below
-6. **Resolve the thread** after replying, or if it is `isOutdated: true`
+6. **Do not resolve the thread yourself** — the harness resolves it after your reply (see below)
 
 #### Replying to a thread
 
@@ -82,16 +82,11 @@ gh api graphql \
   -f body="Done in src/foo.ts: extracted the retry logic into withRetry() and added a unit test covering the timeout path. <!-- dev-lead:addressed -->"
 ```
 
-#### Resolving a thread
+#### Resolution is the harness's responsibility — never call `resolveReviewThread`
 
-After replying, resolve the thread using the `id` from the JSON above. Only resolve threads from human reviewers (`comments.nodes[0].author.__typename` is `"User"`) — do not resolve threads posted by bots (`comments.nodes[0].author.__typename` is `"Bot"`). Identify bots by `__typename`, **not** by a `[bot]` login suffix: GraphQL omits the `[bot]` suffix from bot logins, so a suffix check would misclassify `coderabbitai`, `chatgpt-codex-connector`, etc. as human.
+**Do not resolve review threads yourself.** You must not call the `resolveReviewThread` (or `unresolveReviewThread`) GraphQL mutation under any circumstance — resolution is done **only** by the harness (`dev-lead-fix-reviews.sh`), whose deterministic guards are the authoritative merge gate (`required_review_thread_resolution`). Your contract is: **reply with the addressed-marker on the threads you genuinely fixed; the harness resolves them.** Your reply and its marker are your only lever on resolution.
 
-```bash
-# Replace THREAD_NODE_ID with the id value from the thread JSON
-gh api graphql -f query='mutation { resolveReviewThread(input: {threadId: "THREAD_NODE_ID"}) { thread { isResolved } } }'
-```
-
-Resolving signals to the reviewer that the issue is handled and gives them a chance to re-review if anything remains.
+The harness never resolves a marker-less human (maintainer) thread — it leaves those open for the maintainer to resolve (#1415) — so a fix reply is the correct and complete action on a human review thread. Signalling that the issue is handled, and giving the reviewer a chance to re-review, is the harness's job once your reply lands.
 
 ### Phase 2 — Test Verification
 
@@ -110,18 +105,17 @@ Read all your changes from the reviewer's perspective:
 2. For each thread, ask: does this change fully satisfy what the reviewer requested?
 3. Ask: if multiple threads conflict, was priority applied correctly (security > correctness > style)?
 4. Ask: would this response prompt further review comments, or is it clean?
-5. Ask: does every thread I fixed have a reply describing the fix, and is it resolved? Reply/resolve any I missed.
+5. Ask: does every thread I fixed have a reply describing the fix, ending with the addressed-marker where appropriate? Reply to any I missed — the harness resolves the thread; do not resolve it yourself.
 6. Fix anything found, then re-run Phase 2
 
 ## Constraints
 
 - Treat human reviewer feedback with high priority — implement exactly what is asked
 - Write tests before implementing new behavior (for threads that introduce new functionality)
-- For every thread you fix, post a reply naming the specific change before resolving — never resolve silently
+- For every thread you fix, post a reply naming the specific change — never reply-less. Stamp the addressed-marker `<!-- dev-lead:addressed -->` **only** on bot or marker-carrying human threads; on a marker-less human (maintainer) thread, reply **without** the marker and leave it open for the maintainer (#1415)
 - When you fix a failing check, your posted comment must state what the check verifies and why this diff makes that true — not just that the check now passes (#1468); never make a check green by changing what it asserts
-- Resolve every thread you fix; resolve outdated threads without a corresponding code change
-- Only resolve threads from human reviewers — do not resolve bot review threads
-- Do not resolve threads you are intentionally skipping — leave those open and explain why
+- **Never resolve a thread yourself**: do not call the `resolveReviewThread` (or `unresolveReviewThread`) mutation. Resolution is the harness's job; your only lever is the addressed-marker on your reply
+- For a thread you are intentionally skipping, post a skip note **without** the addressed-marker and explain why in your output
 - If multiple threads conflict, prioritize: security > correctness > style
 - Maintain the existing code style and patterns
 - Do not commit or push — the CI workflow handles git operations after you finish
@@ -133,9 +127,11 @@ After applying fixes, output a summary:
 ```
 PR: #${PR_NUMBER} - ${PR_TITLE}
 Human review threads addressed: N
-- Thread <author>: <brief description of change> [replied + resolved]
-- Thread <author>: outdated — resolved without change
-- Thread <author>: skipped — <reason> [left open]
+- Thread <author>: <brief description of change> [replied + addressed-marker]              # bot / marked thread
+- Thread <author>: <brief description of change> — maintainer thread [reply without marker, left open]
+- Thread <author>: outdated — replied (harness resolves)                                   # bot thread
+- Thread <author>: outdated — maintainer thread — replied [reply without marker, left open]
+- Thread <author>: skipped — <reason> [reply without marker]
 Failing checks fixed: N
 - <check>: verifies <invariant/behavior>; diff makes it true by <root-cause change>
 Test verification: <pass/fail — paste output if relevant>
