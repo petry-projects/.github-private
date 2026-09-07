@@ -39,29 +39,82 @@ with `notification_setting: notifications_disabled`: it exists to route a
 webhook, not to page anyone. See
 [§4.1](https://github.com/petry-projects/.github/blob/main/standards/persona-standards.md).
 
-## Status: draft
+## How a mention becomes an advisory
 
-`qa-lead` ships **no dedicated reusable workflow yet**, so:
+Nothing about serving `qa-lead` is persona-specific — it rides the **one shared
+router → one shared runner** path §4.1 mandates, and its only persona-owned
+runtime surface is a prompt:
 
-- there is **no `agents.qa-lead` entry in `canary-rings.json`** yet (nothing to
-  roll out via rings until it has a reusable), and
-- the manifest carries no `runtime:` block.
+1. A human `@petry-projects/qa-lead …` comment is parsed by the **one shared
+   mention router** — `persona-mention-reusable.yml` in `petry-projects/.github`,
+   pinned here through the thin caller stub
+   [`.github/workflows/persona-mention.yml`](../../.github/workflows/persona-mention.yml).
+   There is deliberately **no qa-lead workflow**: one stub per persona is the
+   drift the manifest exists to prevent (§4.1).
+2. The router fires a `repository_dispatch: persona-mention` at this repo,
+   carrying `{persona, source_repo, item_number, comment_url, requested_by}`.
+3. The **one shared runner** —
+   [`.github/workflows/persona-runner-reusable.yml`](../../.github/workflows/persona-runner-reusable.yml),
+   received via the `persona-runner.yml` caller — resolves the addressed
+   persona's advisory prompt **by convention** and runs it.
+4. For `qa-lead` that prompt is
+   [`prompts/qa-lead/advisory.md`](../../prompts/qa-lead/advisory.md) — the
+   actual behaviour surface, where the test-risk advisory is defined. The
+   manifest only points the router at it.
 
-The `address` block and the `mention` surface are declared, but nothing
-dispatches on them until the router and a runtime exist — declaring the
-addressing contract is deliberately separate from serving it.
+What is *actually wired* today (a subset of the surfaces the manifest declares)
+is recorded in [`interaction.yml`](./interaction.yml); the full declared surface
+set lives in [`persona.yml`](./persona.yml). This README does not restate either
+— per §4.1 the manifest is the index of record and the docs restate none of it.
 
-To promote `qa-lead` past `draft`:
+## Read/write split — the security property the framework rests on
 
-1. Wire a dedicated advisory workflow (e.g. mention- or `check_run`-triggered
-   test review) as a caller stub + reusable, and add its `runtime:` block.
-2. Expand the held-out eval set under
-   [`evals/qa-lead/holdout/`](../../evals/qa-lead/holdout/cases.jsonl). It
-   already carries a synthetic starter set that clears the `min_cases` gate
-   (6 held-out, 4 dev); grow it with real (de-identified) cases and wire the
-   scorer/judge before promotion. The set lives under the repo `evals/` tree so
-   `validate-cases.py` and `holdout-guard.yml` already cover it.
-3. Register the one `agents.qa-lead` entry in `canary-rings.json` and cut
+The whole framework is safe because **the agent cannot post**:
+
+- The **agent** runs with `github.token`. That token reads the (public) source
+  repo but is scoped to *this* repo, so it **cannot comment on the target**. The
+  agent only *prints* its advisory between sentinels.
+- The **workflow** is the only writer. It extracts the advisory, mechanically
+  guarantees the `<!-- persona:qa-lead -->` recursion marker, and posts with the
+  persona's PAT (declared as `runtime.identity` in the manifest).
+
+So an agent that forgets the marker cannot post an unmarked comment — because it
+cannot post at all. This split is the fix for
+[#860](../../docs/postmortems/2026-06-pr-860-runaway.md): **prompt-only** marker
+enforcement is exactly what failed there, when a self-mention ack looped to
+**1,481 identical comments in ~4.5h**. Marker enforcement now lives in the
+workflow, not in the prompt.
+
+## Status: pre-release (served on the `next` ring)
+
+The runtime **shipped** (#1293) and the mention → dispatch → runner chain has
+fired in production (soak on #1300, 2026-07-18; again on #1402, 2026-08-02).
+`qa-lead` is not `draft` in the "nothing runs yet" sense — it is addressable and
+answering today. What is still `draft` is the **release**: it has not been cut as
+a versioned reusable rollout.
+
+Genuinely still outstanding before it can be cut as a release:
+
+- **Not in the canary rings.** There is no `agents.qa-lead` entry in the central
+  `canary-rings.json`, so there is nothing to roll ring-to-ring yet.
+- **`next`-ring only.** This repo pins the router at the `persona-mention/v1-next`
+  channel — the smallest-blast-radius soak. The `persona-mention/v1-ring0`,
+  `v1-ring1`, and `v1-stable` channels do not exist yet.
+
+The eval set is now **scorable**: #1645 added the llm-judge scorer
+(`evals/qa-lead/scorer.json`) over the held-out cases
+([`evals/qa-lead/holdout/cases.jsonl`](../../evals/qa-lead/holdout/cases.jsonl)),
+so the `required_before: stable` gate the manifest declares can actually run.
+
+To promote `qa-lead` toward `stable`:
+
+1. **Do not add a workflow.** A new persona ships a **manifest** (`persona.yml`)
+   and an **advisory prompt** (`prompts/<id>/advisory.md`); the shared router and
+   runner already serve it by convention. Adding a per-persona caller stub is the
+   drift §4.1 exists to prevent, and it is not what shipped.
+2. Grow the held-out eval set with real (de-identified) cases and keep it above
+   the judge gate.
+3. Register the `agents.qa-lead` entry in `canary-rings.json` and cut
    `qa-lead/v0.1.0`.
 4. Soak `next → ring0 → ring1 → stable`, eval gate green before `stable`.
 
