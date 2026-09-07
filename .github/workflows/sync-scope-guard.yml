@@ -1,0 +1,36 @@
+name: Sync Scope Guard
+
+# Required CI check for the sync-PR scope guarantee (#1700 AC1, #1523 post-mortem).
+# Fails a GENERATED standards-sync PR whose diff touches any path outside the set
+# it declared in its body. Human PRs (no sync automation marker) always pass.
+#
+# No `paths:` filter on purpose: it must run (and report) on EVERY PR so it stays
+# a stable required status check. The scope decision is pure/deterministic and
+# lives in scripts/lib/sync-scope-check.sh (tests: tests/test_sync_scope_check.bats);
+# the network wrapper is scripts/sync-scope-guard.sh.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: sync-scope-guard-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  sync-scope-guard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Enforce sync-PR scope
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: bash scripts/sync-scope-guard.sh
