@@ -23,9 +23,10 @@ set -euo pipefail
 #      into a queue (§7 of the story body, learning 11).
 #   2. ROUTES-TO != PROMOTED (AC #4). The verdict separates "a mention would route to
 #      this persona" (wiring) from "this persona is actually promoted" (status past
-#      draft AND registered once in the cross-repo canary-rings.json). The dangerous
-#      state — status past draft with NO registration — is the #1052 hollow-green
-#      skew, and is the ONLY state this guard fails on.
+#      draft, with NO cross-repo canary-rings entry — see ADR-0006). The dangerous
+#      state is now the INVERSE: a canary-rings entry for a persona that has no
+#      dedicated reusable, which produces unconsumed tags and an unattributable
+#      gate. That, or a widened trigger surface, is what this guard fails on.
 #
 # The truly-live confirmation (dispatch a real @petry-projects/solution-architect
 # mention and confirm the resulting persona-runner run resolves to this persona,
@@ -38,10 +39,11 @@ set -euo pipefail
 # confines all I/O (reading manifests, the router, an optional registry, printing).
 #
 # Exit codes:
-#   0  safe state — either an honest still-draft persona, or a promoted-and-registered
-#      persona whose surface stayed mention-only.
-#   2  SKEW / new surface — status advanced past draft with no cross-repo registration,
-#      or promotion added a trigger surface beyond the shared mention router.
+#   0  safe state — either an honest still-draft persona, or a promoted persona
+#      (past draft, UNREGISTERED per ADR-0006) whose surface stayed mention-only.
+#   2  DEFECT / new surface — a canary-rings entry exists for this shared-runtime
+#      persona at any status (ADR-0006 forbids it), or promotion added a trigger
+#      surface beyond the shared mention router.
 #   3  hard error — bad usage / missing inputs.
 
 # The shared persona-mention router's DEPLOYED trigger events (persona-standards §4.1;
@@ -95,22 +97,37 @@ prc_is_past_draft() {
 }
 
 # prc_promotion_verdict <status> <registered>
-# The routes-to != promoted predicate (learning 12). Prints one of:
-#   draft     — status is draft: not promoted regardless of routing wiring (safe, 0)
-#   promoted  — status past draft AND registered "true" (safe, 0)
-#   skew      — status past draft but NOT registered: the #1052 hollow-green hazard (2)
+# The routes-to != promoted predicate (learning 12), INVERTED per ADR-0006
+# (docs/architecture/adr/0006-shared-runtime-personas-are-not-ring-registered.md).
+#
+# This persona rides the SHARED persona runtime: persona-runner.yml consumes the
+# reusable by local relative path with no agent_ref, so NO caller pins a
+# per-persona channel tag. There is nothing for a ring promotion to advance, and
+# ADR-0006 therefore forbids a per-persona canary-rings entry outright — "a
+# registered persona ID is a defect, not a promotion."
+#
+# So the state this guard used to fail on is now the NORMAL one, and the state it
+# used to treat as safe is now the defect:
+#   draft      — status is draft and unregistered: not promoted (safe, 0)
+#   promoted   — status past draft and NOT registered: the ADR-0006 shape (safe, 0)
+#   registered — registered at ANY status: forbidden for a shared-runtime persona,
+#                the inverted skew (2). Checked before the draft branch, because a
+#                draft persona carrying a registry entry is equally a defect.
+#
+# Promotion evidence is this check plus an observed live mention — never a ring
+# label. That was already true; ADR-0006 removes the label that was never evidence.
 prc_promotion_verdict() {
   local status="${1:-}" registered="${2:-false}"
+  if [ "$registered" = "true" ]; then
+    echo "registered"
+    return 2
+  fi
   if ! prc_is_past_draft "$status"; then
     echo "draft"
     return 0
   fi
-  if [ "$registered" = "true" ]; then
-    echo "promoted"
-    return 0
-  fi
-  echo "skew"
-  return 2
+  echo "promoted"
+  return 0
 }
 
 # ── I/O orchestration ─────────────────────────────────────────────────────────
@@ -250,17 +267,17 @@ main() {
     return 2
   fi
   if [ "$prom_rc" -ne 0 ]; then
-    echo "::error::persona reach check: $role is past draft but has no agents.$role entry in canary-rings.json — a ring label moved without registration (the #1052 hollow-green skew)" >&2
+    echo "::error::persona reach check: $role has an agents.$role entry in canary-rings.json, but rides the SHARED persona runtime — no caller pins a per-persona channel tag, so the entry produces unconsumed tags and an unattributable gate. A registered shared-runtime persona is a defect, not a promotion (ADR-0006); remove the entry" >&2
     return 2
   fi
   if [ "$verdict" = "promoted" ] && [ "$routes_via_router" != "true" ]; then
-    echo "::error::persona reach check: $role is promoted and registered, but the shared mention router does not serve its deployed events — the promotion did not reach a consumer (routes_via_router=false)" >&2
+    echo "::error::persona reach check: $role is promoted, but the shared mention router does not serve its deployed events — the promotion did not reach a consumer (routes_via_router=false)" >&2
     return 2
   fi
   if [ "$verdict" = "draft" ]; then
     echo "::notice::persona reach check: $role is still draft — routing wiring present ($routes_via_router), NOT promoted (routes-to != promoted; do not trust the ring label)" >&2
   else
-    echo "::notice::persona reach check: $role is promoted and registered; surface stayed mention-only" >&2
+    echo "::notice::persona reach check: $role is promoted (unregistered by design, ADR-0006); the shared router serves its events and the surface stayed mention-only" >&2
   fi
   return 0
 }
