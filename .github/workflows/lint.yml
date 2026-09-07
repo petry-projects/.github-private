@@ -108,6 +108,7 @@ jobs:
             tests/test_idea_triage.bats \
             tests/test_oversized_pr.bats \
             tests/test_dependabot.bats \
+            tests/dependency_advisory.bats \
             tests/test_feature_ideation.bats \
             tests/test_apply_repo_settings.bats \
             tests/test_apply_rulesets.bats \
