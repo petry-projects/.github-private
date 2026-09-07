@@ -76,7 +76,6 @@ runtime:
   identity:
     account: donpetry-bot
     credential: DON_PETRY_BOT_GH_PAT
-  reusable: .github/workflows/persona-runner-reusable.yml
 
 evals:
   required_before: stable
