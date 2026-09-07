@@ -139,6 +139,43 @@ JSONL
   [[ "$output" == *"skip"* ]]
 }
 
+@test "schema-tree fails a gated skill missing its holdout split" {
+  # qa-lead is gated: a missing split must fail the schema gate, not skip
+  # silently (#1645 AC #9).
+  mkdir -p "$TMP/qa-lead/dev"
+  printf '%s\n' '{"id":"qa-dev-ok","input":"y","expected":{"escalate":false,"risk":"LOW"}}' \
+    >"$TMP/qa-lead/dev/cases.jsonl"
+  run python3 "$VALIDATOR" --schema-tree "$TMP"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"holdout"* ]]
+}
+
+@test "schema-tree fails a gated skill with an id in both dev and holdout" {
+  # Cross-split overlap defeats the held-out guarantee and must fail the gate.
+  mkdir -p "$TMP/qa-lead/dev" "$TMP/qa-lead/holdout"
+  printf '%s\n' '{"id":"qa-shared","input":"y","expected":{"escalate":false,"risk":"LOW"}}' \
+    >"$TMP/qa-lead/dev/cases.jsonl"
+  printf '%s\n' '{"id":"qa-shared","input":"x","expected":{"escalate":true,"risk":"HIGH"}}' \
+    >"$TMP/qa-lead/holdout/cases.jsonl"
+  run python3 "$VALIDATOR" --schema-tree "$TMP"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"qa-shared"* ]]
+  [[ "$output" == *"both"* ]]
+}
+
+@test "schema-tree fails a gated skill with a duplicate id within a split" {
+  mkdir -p "$TMP/qa-lead/dev" "$TMP/qa-lead/holdout"
+  printf '%s\n%s\n' \
+    '{"id":"qa-dup","input":"a","expected":{"escalate":false,"risk":"LOW"}}' \
+    '{"id":"qa-dup","input":"b","expected":{"escalate":true,"risk":"HIGH"}}' \
+    >"$TMP/qa-lead/dev/cases.jsonl"
+  printf '%s\n' '{"id":"qa-ho-ok","input":"x","expected":{"escalate":true,"risk":"HIGH"}}' \
+    >"$TMP/qa-lead/holdout/cases.jsonl"
+  run python3 "$VALIDATOR" --schema-tree "$TMP"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"duplicate"* ]]
+}
+
 @test "schema-tree validates the committed evals tree (qa-lead conforms)" {
   run python3 "$VALIDATOR" --schema-tree "$ROOT/evals"
   [ "$status" -eq 0 ]

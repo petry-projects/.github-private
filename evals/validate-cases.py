@@ -288,10 +288,14 @@ def validate_schema_tree(eval_root: Path, schema_path: Path) -> None:
             skipped.append(skill_dir.name)
             continue
         validated += 1
+        # Enforce the split contract for every gated skill before schema-checking
+        # its cases: both dev/ and holdout/ must exist, ids must be unique within
+        # each split, and disjoint across splits. Reuses directory-mode logic so a
+        # gated skill cannot report schema-valid while violating the split
+        # contract (#1645 AC #9).
+        validate_skill(skill_dir)
         for split in SPLITS:
             cases_path = skill_dir / split / CASES_FILENAME
-            if not cases_path.is_file():
-                continue
             try:
                 raw = cases_path.read_text(encoding="utf-8")
             except OSError as exc:
