@@ -72,6 +72,7 @@ trust:
 # for addPullRequestReview); the base secret name is grandfathered (pre-dates
 # the GH_PAT_<ACCOUNT> convention). See docs/pr-review-agent/machine-user-setup.md.
 runtime:
+  reusable: .github/workflows/persona-runner-reusable.yml
   identity:
     account: donpetry-bot
     credential: DON_PETRY_BOT_GH_PAT

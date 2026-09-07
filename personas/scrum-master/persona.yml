@@ -72,8 +72,9 @@ trust:
 # --- Runtime identity (§5.1) ------------------------------------------------
 # Advisory-only (consumed by the initiative-planner and the persona runner). On
 # the comment path it posts as `don-petry` (the runner authenticates with that
-# account's PAT). No dedicated reusable yet.
+# account's PAT). Uses the shared persona-runner-reusable.
 runtime:
+  reusable: .github/workflows/persona-runner-reusable.yml
   identity:
     account: don-petry
     credential: GH_PAT_DON_PETRY
