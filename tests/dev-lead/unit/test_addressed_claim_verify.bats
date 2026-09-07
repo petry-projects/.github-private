@@ -209,7 +209,15 @@ setup() {
   [[ "$(echo "$output" | jq -r '.own_files[0]')" == "b.txt" ]]
   # cumulative mid^..HEAD covers b.txt (mid) and c.txt (the later commit).
   [[ "$(echo "$output" | jq -c '.cumulative_files|sort')" == '["b.txt","c.txt"]' ]]
-  [[ -n "$(echo "$output" | jq -r .commit_date)" ]]
+  # commit_date must be a Z-terminated UTC ISO-8601 instant (same shape as
+  # GitHub's createdAt) so jq's fromdateiso8601 and the lexicographic disposition
+  # comparison both accept it — a `%cI` `+00:00` offset would break both.
+  local cdate
+  cdate="$(echo "$output" | jq -r .commit_date)"
+  [[ -n "$cdate" ]]
+  [[ "$cdate" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]
+  run bash -c "source '$LIB' && _acv_is_iso8601 '$cdate'"
+  [[ "$status" -eq 0 ]]
 }
 
 @test "acv_gather_commit_facts: a sha absent from the repo -> on_head false, fail closed" {

@@ -796,10 +796,15 @@ resolve_addressed_bot_threads() {
       continue
     fi
     if [ "${disp_rc:-0}" -eq 0 ] && [ -n "$disposition" ]; then
-      # Require a parseable verified-commit date strictly after the disposition.
-      local newer
-      newer=$(jq -n --arg c "$commit_date" --arg d "$disposition" \
-        'if ($c == "") then false else (($c | fromdateiso8601) > ($d | fromdateiso8601)) end' 2>/dev/null || echo "false")
+      # Require the verified-commit date strictly after the disposition. Both are
+      # Z-terminated UTC ISO-8601 instants of identical width (commit_date from
+      # acv_gather_commit_facts, disposition from GitHub's createdAt), so a pure
+      # Bash lexicographical compare orders them chronologically — no jq needed,
+      # matching the same comparison acv_latest_maintainer_disposition uses.
+      local newer="false"
+      if [ -n "$commit_date" ] && [[ "$commit_date" > "$disposition" ]]; then
+        newer="true"
+      fi
       if [ "$newer" != "true" ]; then
         echo "::notice::skipping thread ${id} — a maintainer disposition (${disposition}) is not postdated by the verified fix (${commit_date:-unknown}); leaving unresolved (#1692 AC4)"
         continue

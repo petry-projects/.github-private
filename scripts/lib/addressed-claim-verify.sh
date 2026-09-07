@@ -77,8 +77,12 @@ acv_parse_claim() {
 
   # Count claim comments. Zero -> pre-migration (unverifiable). More than one ->
   # malformed; never silently pick one.
+  # Guard the grep: under `set -o pipefail` a no-match `grep` exits 1 and would
+  # terminate the script on this bare assignment (the pre-migration no-claim case
+  # is the common path). `|| true` neutralises only grep's exit; `wc -l` still
+  # reports 0 for the empty stream, so the count stays correct.
   local count
-  count=$(grep -oF "$_ACV_CLAIM_PREFIX" <<<"$body" | wc -l | tr -d '[:space:]')
+  count=$( { grep -oF "$_ACV_CLAIM_PREFIX" <<<"$body" || true; } | wc -l | tr -d '[:space:]')
   if [[ "$count" == "0" ]]; then
     echo "no-claim"
     return 1
@@ -265,7 +269,11 @@ acv_gather_commit_facts() {
     if git merge-base --is-ancestor "$sha" HEAD 2>/dev/null; then
       on_head=true
     fi
-    commit_date=$(git show -s --format=%cI "$sha" 2>/dev/null || printf '')
+    # Emit a Z-terminated UTC ISO-8601 instant (e.g. 2026-09-07T21:40:05Z), the
+    # SAME shape GitHub's createdAt uses. `%cI` would emit a `+00:00` offset that
+    # jq's fromdateiso8601 rejects and that does not compare lexicographically
+    # against the Z-form disposition timestamps.
+    commit_date=$(TZ=UTC git show -s --date=format-local:'%Y-%m-%dT%H:%M:%SZ' --format=%cd "$sha" 2>/dev/null || printf '')
     own_files=$(git diff-tree --no-commit-id --name-only -r "$sha" 2>/dev/null \
       | jq -R -s 'split("\n") | map(select(length > 0))' 2>/dev/null || printf '[]')
     local range="${sha}^..HEAD"
