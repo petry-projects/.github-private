@@ -83,10 +83,6 @@ evals:
   path: evals/business-analyst/
   min_cases: 5
 
-canary:
-  registry: petry-projects/.github/standards/canary-rings.json
-  agent: business-analyst
-
 references:
   - "prompts/incubation/producer-brainstorm.md, producer-market-research.md, producer-brief.md"
   - "frameworks/bmad-method/VENDOR.md (v6.8.0)"

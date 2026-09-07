@@ -89,10 +89,6 @@ evals:
   judge: evals/judge.md
   min_cases: 5               # seed cases are placeholders; reach 5 held-out before stable
 
-canary:
-  registry: petry-projects/.github/standards/canary-rings.json
-  agent: devops-lead         # entry added at first release cut (not present while status: draft)
-
 references:
   - "prompts/devops-lead/advisory.md (headless advisory contract)"
   - "frameworks/bmad-bgreat-suite/VENDOR.md (ae8914e84b87)"

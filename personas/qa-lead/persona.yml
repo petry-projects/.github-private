@@ -168,10 +168,6 @@ evals:
   judge: evals/judge.md
   min_cases: 5            # seed cases are placeholders; reach 5 held-out before stable
 
-canary:
-  registry: petry-projects/.github/standards/canary-rings.json
-  agent: qa-lead         # entry added at first release cut (not present while status: draft)
-
 references:
   - "frameworks/bmad-test-architecture/VENDOR.md"
   - "prompts/bmad/scrum-master.md (qa-lead consulted during planning)"
