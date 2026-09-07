@@ -72,16 +72,11 @@ triggers:
 trust:
   author_association_floor: [OWNER, MEMBER, COLLABORATOR]
 
-canary:
-  registry: petry-projects/.github/standards/canary-rings.json
-  agent: devops-lead
-
 # --- Runtime identity (§5.1) ------------------------------------------------
 # Advisory-only: devops-lead ships no dedicated reusable/stub in this pilot.
 # It is consumed by path and is human-invocable. On the comment path it posts
 # as `don-petry` (the persona runner authenticates with that account's PAT).
 runtime:
-  reusable: .github/workflows/persona-runner-reusable.yml
   identity:
     account: don-petry
     credential: GH_PAT_DON_PETRY

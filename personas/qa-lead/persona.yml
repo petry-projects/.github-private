@@ -145,10 +145,6 @@ triggers:
 trust:
   author_association_floor: [OWNER, MEMBER, COLLABORATOR]
 
-canary:
-  registry: petry-projects/.github/standards/canary-rings.json
-  agent: qa-lead
-
 # qa-lead ships no dedicated reusable/stub in this pilot — it is consumed by
 # path (e.g. by the initiative-planner) and is human-invocable via the persona
 # runner. It declares only `runtime.identity`: on the advisory/comment path it
@@ -156,7 +152,6 @@ canary:
 # PAT). Add the rest of `runtime` + a canary-rings.json entry when a dedicated
 # advisory workflow is wired.
 runtime:
-  reusable: .github/workflows/persona-runner-reusable.yml
   identity:
     account: don-petry
     credential: GH_PAT_DON_PETRY
