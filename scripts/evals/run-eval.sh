@@ -38,8 +38,8 @@ set -euo pipefail
 # tier + tool posture the persona runtime uses, or a promotion gate measures the
 # wrong artifact. The tier is declared PER SKILL via scorer.json's `engine` field:
 #   triage  (default) -> run_triage  : Haiku-tier, NO tools — today's behaviour.
-#   persona           -> run_persona : Opus-tier WITH tools (Bash,Read,Grep,Glob),
-#                                      matching persona-runner-reusable.yml.
+#   persona           -> run_persona : Opus-tier, Bash-only tool posture, matching
+#                                      persona-runner-reusable.yml (--allowedTools Bash).
 # Absent declaration keeps run_triage, so existing skills are never silently
 # upgraded into a costlier model. The report records `engine_tier`/`engine_model`
 # so a score is never ambiguous about what produced it.

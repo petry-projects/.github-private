@@ -93,14 +93,12 @@ judge_pc="$(price_call "$triage_model" "$judge_in" "$judge_out")"
 # Aggregate over the held-out set: each case is one engine call + one judge call.
 # The judge runs at the Haiku tier in BOTH scenarios, so it cancels out of the
 # delta — but it is included in the absolute per-run figures for an honest total.
-read -r parity_run triage_run delta_run <<EOF
-$(awk -v n="$n_cases" -v ep="$engine_parity_pc" -v et="$engine_triage_pc" -v j="$judge_pc" \
+read -r parity_run triage_run delta_run <<<"$(awk -v n="$n_cases" -v ep="$engine_parity_pc" -v et="$engine_triage_pc" -v j="$judge_pc" \
     'BEGIN {
        parity = n * (ep + j);
        triage = n * (et + j);
        printf "%.2f %.2f %.2f", parity, triage, parity - triage
-     }')
-EOF
+     }')"
 
 jq -cn \
   --arg skill "$skill" \

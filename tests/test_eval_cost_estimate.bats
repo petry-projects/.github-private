@@ -12,7 +12,8 @@ bats_require_minimum_version 1.5.0
 setup() {
   ROOT="$(cd "$BATS_TEST_DIRNAME/.." && pwd)"
   EST="$ROOT/scripts/evals/eval-cost-estimate.sh"
-  TMP="$(mktemp -d)"
+  # Per-test temp dir BATS creates and cleans up automatically (even on failure).
+  TMP="$BATS_TEST_TMPDIR"
 
   # Fixture skill declaring the persona tier with a known held-out case count (3).
   mkdir -p "$TMP/evals/fixture-persona/holdout"
@@ -25,8 +26,6 @@ JSON
 {"id": "c", "input": "three"}
 JSONL
 }
-
-teardown() { rm -rf "$TMP"; }
 
 @test "prints a per-run cost estimate as valid JSON with a positive Haiku->Opus delta" {
   EVALS_DIR="$TMP/evals" run --separate-stderr bash "$EST" fixture-persona

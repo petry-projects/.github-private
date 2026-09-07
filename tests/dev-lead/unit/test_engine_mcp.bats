@@ -106,6 +106,29 @@ _source_engine() {
   grep -q -- "--allowed-tools Bash,Read,Grep,Glob" "$ARGS_RECORD"
 }
 
+# ── run_persona: tool posture must mirror the live persona runtime ─────────────
+# persona-runner-reusable.yml grants `--allowedTools Bash` only. The eval-parity
+# tier (#1686) must score that SAME tool posture, not run_agentic's default
+# review set (Bash,Read,Grep,Glob), or the promotion gate measures a more
+# tool-capable artifact than the one that ships.
+
+@test "persona: run_persona restricts tools to Bash (matches --allowedTools Bash)" {
+  _source_engine "claude"
+  run run_persona "$TEST_PROMPT"
+  [ "$status" -eq 0 ]
+  grep -q -- "--allowed-tools Bash" "$ARGS_RECORD"
+  # Must NOT widen to the full review posture.
+  ! grep -q -- "--allowed-tools Bash,Read,Grep,Glob" "$ARGS_RECORD"
+}
+
+@test "agentic: explicit allowed_tools arg overrides the default review posture" {
+  _source_engine "claude"
+  run run_agentic "$TEST_PROMPT" "claude-opus-4-8" "deep" "Bash"
+  [ "$status" -eq 0 ]
+  grep -q -- "--allowed-tools Bash" "$ARGS_RECORD"
+  ! grep -q -- "--allowed-tools Bash,Read,Grep,Glob" "$ARGS_RECORD"
+}
+
 # ── Knob set: MCP flags threaded into agentic ────────────────────────────────
 
 @test "agentic: REVIEW_MCP_CONFIG set → MCP flags appended to claude call" {

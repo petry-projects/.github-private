@@ -1013,9 +1013,11 @@ run_triage() {
   return "$rc"
 }
 
-# run_agentic <prompt_file> <model> [tier]
-# Used by: review-one-pr.sh only (not the dev-lead writer pipeline).
-# Full tool access (Bash, Read, Grep, Glob). Output to stdout.
+# run_agentic <prompt_file> <model> [tier] [allowed_tools]
+# Used by: review-one-pr.sh (full tool access) and run_persona (Bash-only, to
+# match the live persona runtime — see run_persona).
+# allowed_tools defaults to the full review posture "Bash,Read,Grep,Glob"; callers
+# that must mirror a narrower runtime pass their own comma-separated set.
 #
 # No retry here: callers redirect stdout to a file, so a retry inside this
 # function would append the second attempt's output to a partial first-attempt
@@ -1027,6 +1029,7 @@ run_agentic() {
   local prompt_file="$1"
   local model="$2"
   local tier="${3:-deep}"
+  local _allowed_tools="${4:-Bash,Read,Grep,Glob}"
   local _tok_tmp="" rc=0
   if [ -n "${TOKEN_LOG_FILE:-}" ]; then
     unset _ENGINE_USAGE_OUT
@@ -1061,7 +1064,7 @@ run_agentic() {
         _agentic_chain="$model"
       fi
       # Thread the opt-in MCP config (no-op when REVIEW_MCP_CONFIG is unset).
-      _mcp_review_flags "Bash,Read,Grep,Glob"
+      _mcp_review_flags "$_allowed_tools"
       if [ -n "$_tok_tmp" ]; then
         _claude_chain_invoke "$_agentic_chain" "$prompt_file" "$DEEP_TIMEOUT_SEC" \
           --permission-mode acceptEdits \
@@ -1131,16 +1134,18 @@ run_agentic() {
 # run_persona <prompt_file>
 # Eval-harness parity tier for persona advisory skills (#1686). Bridges the
 # eval scorer's one-argument calling convention (`<cmd> <prompt_file>`, see
-# scripts/evals/run-eval.sh) to run_agentic's `<prompt_file> <model> [tier]` shape
-# WITHOUT changing that convention for every existing skill. It scores the skill on
-# the SAME tier + tool posture the live persona runtime uses
+# scripts/evals/run-eval.sh) to run_agentic's `<prompt_file> <model> [tier]
+# [allowed_tools]` shape WITHOUT changing that convention for every existing skill.
+# It scores the skill on the SAME tier + tool posture the live persona runtime uses
 # (.github/workflows/persona-runner-reusable.yml: `--fallback-model opus` +
-# `--allowedTools Bash`): the deep (Opus) model chain with full tool access
-# (Bash,Read,Grep,Glob). A persona eval that scored the Haiku-tier run_triage would
-# gate the wrong artifact — a weaker, tool-less model — so a scorer.json declaring
-# `"engine": "persona"` routes here instead. Not used by any non-persona skill.
+# `--allowedTools Bash`): the deep (Opus) model chain, allowed ONLY the Bash tool.
+# It must NOT use run_agentic's default review posture (Bash,Read,Grep,Glob), which
+# would score a more tool-capable artifact than the one that ships (#1686). A persona
+# eval that scored the Haiku-tier run_triage would likewise gate the wrong artifact —
+# a weaker model — so a scorer.json declaring `"engine": "persona"` routes here
+# instead. Not used by any non-persona skill.
 run_persona() {
-  run_agentic "$1" "$ENGINE_DEEP_MODEL" deep
+  run_agentic "$1" "$ENGINE_DEEP_MODEL" deep "Bash"
 }
 
 # run_writer <prompt_file> [model]
