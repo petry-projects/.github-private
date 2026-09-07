@@ -296,6 +296,7 @@ def validate_schema_tree(eval_root: Path, schema_path: Path) -> None:
         validate_skill(skill_dir)
         for split in SPLITS:
             cases_path = skill_dir / split / CASES_FILENAME
+            split_cases = 0
             try:
                 raw = cases_path.read_text(encoding="utf-8")
             except OSError as exc:
@@ -313,6 +314,9 @@ def validate_schema_tree(eval_root: Path, schema_path: Path) -> None:
                     fail(f"{skill_dir.name}/{split}:{lineno}: schema violation "
                          f"at {loc}: {error.message}")
                 total_cases += 1
+                split_cases += 1
+            if split_cases == 0:
+                fail(f"{skill_dir.name}/{split}: contains no cases")
 
     skip_note = (f" (skipped {len(skipped)}, pending #1651: "
                  f"{', '.join(sorted(skipped))})" if skipped else "")

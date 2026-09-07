@@ -176,6 +176,20 @@ JSONL
   [[ "$output" == *"duplicate"* ]]
 }
 
+@test "schema-tree fails a gated skill whose split has zero cases" {
+  # Both split files exist but the dev split is empty (all blank lines). The
+  # schema gate must reject it rather than pass with zero cases, matching
+  # validate_file's "contains no cases" behavior.
+  mkdir -p "$TMP/qa-lead/dev" "$TMP/qa-lead/holdout"
+  printf '\n\n' >"$TMP/qa-lead/dev/cases.jsonl"
+  printf '%s\n' '{"id":"qa-ho-ok","input":"x","expected":{"escalate":true,"risk":"HIGH"}}' \
+    >"$TMP/qa-lead/holdout/cases.jsonl"
+  run python3 "$VALIDATOR" --schema-tree "$TMP"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"qa-lead/dev"* ]]
+  [[ "$output" == *"no cases"* ]]
+}
+
 @test "schema-tree validates the committed evals tree (qa-lead conforms)" {
   run python3 "$VALIDATOR" --schema-tree "$ROOT/evals"
   [ "$status" -eq 0 ]
