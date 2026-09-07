@@ -78,7 +78,6 @@ trust:
 # the machine user `donpetry-bot`, NOT the human owner — an advisory must be
 # identifiably a bot in the audit trail (.github-private#1650).
 runtime:
-  reusable: ./.github/workflows/persona-runner-reusable.yml
   identity:
     account: donpetry-bot
     credential: DON_PETRY_BOT_GH_PAT

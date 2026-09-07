@@ -157,7 +157,6 @@ trust:
 # Add the rest of `runtime` + a canary-rings.json entry when a dedicated advisory
 # workflow is wired.
 runtime:
-  reusable: ./.github/workflows/persona-runner-reusable.yml
   identity:
     account: donpetry-bot
     credential: DON_PETRY_BOT_GH_PAT
