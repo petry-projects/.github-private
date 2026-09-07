@@ -232,15 +232,35 @@ def check_skills(manifest: dict, manifest_path: Path, repo_root: Path) -> None:
     `src/workflows/<...>/<n>/SKILL.md`) and hardcodes no framework layout, so a
     mislabelled entry — a name that points at a different skill's SKILL.md — fails.
 
+    A `path` must be repo-relative and resolve inside `repo_root`: an absolute or
+    `..`-escaping path would let an unrelated filesystem object masquerade as a
+    declared skill, so it is rejected before the existence check.
+
     Filesystem existence only, no network: this validator is hermetic on purpose.
     The schema guarantees the shape of each entry; the defensive shape check keeps
     a stale/test-double --schema producing a diagnostic rather than a traceback
     (the module's contract — see the docstring)."""
-    for i, skill in enumerate(manifest.get("skills") or []):
-        if not isinstance(skill, dict) or "path" not in skill or "name" not in skill:
-            fail(f"{manifest_path}: skills[{i}] must be a mapping with 'name' and 'path', "
-                 f"got {skill!r}")
-        spath = repo_root / skill["path"]
+    skills = manifest.get("skills")
+    if skills is None:
+        return
+    if not isinstance(skills, list):
+        fail(f"{manifest_path}: 'skills' must be a list, got {skills!r}")
+    for i, skill in enumerate(skills):
+        if (not isinstance(skill, dict)
+                or not isinstance(skill.get("name"), str)
+                or not isinstance(skill.get("path"), str)):
+            fail(f"{manifest_path}: skills[{i}] must be a mapping with string 'name' and "
+                 f"'path', got {skill!r}")
+        # A skill path is a repo-relative pointer. An absolute or `..`-escaping
+        # path would let an unrelated filesystem object masquerade as a declared
+        # skill, so require it to resolve inside repo_root (mirrors the eval-set
+        # containment check above).
+        try:
+            spath = (repo_root / skill["path"]).resolve()
+            spath.relative_to(repo_root.resolve())
+        except (ValueError, OSError):
+            fail(f"{manifest_path}: skills[{i}].path '{skill['path']}' must be a "
+                 f"repo-relative path inside the repository root")
         if not spath.exists():
             fail(f"{manifest_path}: skills[{i}].path '{skill['path']}' does not exist")
         p = Path(skill["path"])

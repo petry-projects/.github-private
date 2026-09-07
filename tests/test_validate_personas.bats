@@ -384,3 +384,37 @@ add_skill() {
   [[ "$output" == *"wrong-name"* ]]
   [[ "$output" != *"Traceback"* ]]
 }
+
+@test "validate-personas rejects a skills[] absolute path that escapes the repo root" {
+  add_skill demo passwd /etc/passwd
+  run python3 "$VALIDATOR" "$TMP/personas" --schema "$TMP/schema.json"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"skills[0].path"* ]]
+  [[ "$output" == *"inside the repository root"* ]]
+  [[ "$output" != *"Traceback"* ]]
+}
+
+@test "validate-personas rejects a skills[] path that traverses out with .." {
+  add_skill demo escape ../../../../etc/passwd
+  run python3 "$VALIDATOR" "$TMP/personas" --schema "$TMP/schema.json"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"skills[0].path"* ]]
+  [[ "$output" == *"inside the repository root"* ]]
+  [[ "$output" != *"Traceback"* ]]
+}
+
+@test "validate-personas rejects a skills[] that is not a list" {
+  printf 'skills: not-a-list\n' >>"$TMP/personas/demo/persona.yml"
+  run python3 "$VALIDATOR" "$TMP/personas" --schema "$TMP/schema.json"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"'skills' must be a list"* ]]
+  [[ "$output" != *"Traceback"* ]]
+}
+
+@test "validate-personas rejects a skills[] entry with a non-string name or path" {
+  printf 'skills:\n  - name: 123\n    path: 456\n' >>"$TMP/personas/demo/persona.yml"
+  run python3 "$VALIDATOR" "$TMP/personas" --schema "$TMP/schema.json"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"string 'name' and 'path'"* ]]
+  [[ "$output" != *"Traceback"* ]]
+}
