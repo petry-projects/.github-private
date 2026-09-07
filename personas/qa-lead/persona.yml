@@ -53,12 +53,35 @@ definition:
       # wrapper (like prompts/bmad/scrum-master.md does for the Scrum Master
       # role), add it here and set upstream_candidate honestly.
 
+# DECLARATIVE INVENTORY — not consumed at runtime (see issue #1649, AC #7).
+# This list is the persona's index-of-record of the vendored skills it draws on;
+# it is validated by personas/validate-personas.py (each path exists, and a
+# `<name>/SKILL.md` path's directory equals `name`) but nothing reads it when the
+# agent runs. The advisory prompt (prompts/qa-lead/advisory.md) reads the bmad-tea
+# agent SKILL.md and lists the testarch workflows directory directly, so wiring
+# skills[] into it would only duplicate that enumeration and enlarge the agent's
+# context on every run. Keep this list accurate; it is the maintainer's inventory,
+# not a runtime input.
+#
+# Coverage: eight of the nine vendored testarch workflows. `bmad-teach-me-testing`
+# is deliberately excluded — it is a self-paced learner-tutorial workflow, not
+# advisory test-architecture expertise, and is out of scope for this advisory
+# persona (see README "What qa-lead is").
 skills:
   - name: bmad-testarch-test-design
-    path: frameworks/bmad-test-architecture/src/agents/bmad-tea/SKILL.md
+    path: frameworks/bmad-test-architecture/src/workflows/testarch/bmad-testarch-test-design/SKILL.md
     source: vendored
   - name: bmad-testarch-test-review
     path: frameworks/bmad-test-architecture/src/workflows/testarch/bmad-testarch-test-review/SKILL.md
+    source: vendored
+  - name: bmad-testarch-atdd
+    path: frameworks/bmad-test-architecture/src/workflows/testarch/bmad-testarch-atdd/SKILL.md
+    source: vendored
+  - name: bmad-testarch-automate
+    path: frameworks/bmad-test-architecture/src/workflows/testarch/bmad-testarch-automate/SKILL.md
+    source: vendored
+  - name: bmad-testarch-framework
+    path: frameworks/bmad-test-architecture/src/workflows/testarch/bmad-testarch-framework/SKILL.md
     source: vendored
   - name: bmad-testarch-ci
     path: frameworks/bmad-test-architecture/src/workflows/testarch/bmad-testarch-ci/SKILL.md

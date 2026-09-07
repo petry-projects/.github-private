@@ -21,6 +21,8 @@ schema cannot express on its own:
     the schema still PERMITS an alias, so re-adding one here would reopen the
     namespace this theorem does not cover. Do not.
   * every `definition.layers[].path` exists on disk
+  * every `skills[].path` exists on disk, and when it points at a `<name>/SKILL.md`
+    the directory name equals the entry `name` (name<->path agreement)
   * a `framework-agent` layer's `framework.vendor_pin` actually appears in the
     referenced `frameworks/<name>/VENDOR.md` (pin ↔ vendored version agree)
   * each eval set (`evals.path`, or every entry of `evals.paths`) carries both
@@ -221,6 +223,52 @@ def check_identity(manifest: dict, manifest_path: Path) -> None:
                  f"(expected '{prefix}[_<QUALIFIER>]'). See persona-standards.md §5.1.")
 
 
+def check_skills(manifest: dict, manifest_path: Path, repo_root: Path) -> None:
+    """`skills[]` is the persona's declarative skill inventory. Validate that each
+    entry's `path` exists on disk (mirroring the definition.layers[].path check),
+    and that name and path agree: when a path points at a `<name>/SKILL.md`, the
+    directory name must equal the entry `name`. That name<->directory rule is
+    general (it holds for both `src/agents/<n>/SKILL.md` and
+    `src/workflows/<...>/<n>/SKILL.md`) and hardcodes no framework layout, so a
+    mislabelled entry — a name that points at a different skill's SKILL.md — fails.
+
+    A `path` must be repo-relative and resolve inside `repo_root`: an absolute or
+    `..`-escaping path would let an unrelated filesystem object masquerade as a
+    declared skill, so it is rejected before the existence check.
+
+    Filesystem existence only, no network: this validator is hermetic on purpose.
+    The schema guarantees the shape of each entry; the defensive shape check keeps
+    a stale/test-double --schema producing a diagnostic rather than a traceback
+    (the module's contract — see the docstring)."""
+    skills = manifest.get("skills")
+    if skills is None:
+        return
+    if not isinstance(skills, list):
+        fail(f"{manifest_path}: 'skills' must be a list, got {skills!r}")
+    for i, skill in enumerate(skills):
+        if (not isinstance(skill, dict)
+                or not isinstance(skill.get("name"), str)
+                or not isinstance(skill.get("path"), str)):
+            fail(f"{manifest_path}: skills[{i}] must be a mapping with string 'name' and "
+                 f"'path', got {skill!r}")
+        # A skill path is a repo-relative pointer. An absolute or `..`-escaping
+        # path would let an unrelated filesystem object masquerade as a declared
+        # skill, so require it to resolve inside repo_root (mirrors the eval-set
+        # containment check above).
+        try:
+            spath = (repo_root / skill["path"]).resolve()
+            spath.relative_to(repo_root.resolve())
+        except (ValueError, OSError):
+            fail(f"{manifest_path}: skills[{i}].path '{skill['path']}' must be a "
+                 f"repo-relative path inside the repository root")
+        if not spath.exists():
+            fail(f"{manifest_path}: skills[{i}].path '{skill['path']}' does not exist")
+        p = Path(skill["path"])
+        if p.name == "SKILL.md" and p.parent.name != skill["name"]:
+            fail(f"{manifest_path}: skills[{i}].name '{skill['name']}' does not match its "
+                 f"skill directory '{p.parent.name}' (path '{skill['path']}')")
+
+
 def check_invariants(manifest: dict, manifest_path: Path, repo_root: Path,
                      registry_arg: str | None) -> None:
     persona_dir = manifest_path.parent
@@ -258,6 +306,8 @@ def check_invariants(manifest: dict, manifest_path: Path, repo_root: Path,
             if fw["vendor_pin"] not in vendor_md.read_text(encoding="utf-8"):
                 fail(f"{manifest_path}: vendor_pin '{fw['vendor_pin']}' not found in {vendor_md} "
                      f"(manifest pin and vendored version disagree)")
+
+    check_skills(manifest, manifest_path, repo_root)
 
     check_identity(manifest, manifest_path)
 
