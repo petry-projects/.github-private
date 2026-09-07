@@ -106,6 +106,10 @@ evals:
   path: evals/dev-lead/
   min_cases: 5
 
+canary:
+  registry: petry-projects/.github/standards/canary-rings.json
+  agent: dev-lead
+
 references:
   - "prompts/dev-lead/ (the phase-keyed prompt library)"
   - ".github/workflows/dev-lead-reusable.yml (the runtime)"
