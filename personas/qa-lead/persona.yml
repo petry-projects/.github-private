@@ -124,14 +124,19 @@ trust:
 
 # qa-lead ships no dedicated reusable/stub in this pilot — it is consumed by
 # path (e.g. by the initiative-planner) and is human-invocable via the persona
-# runner. It declares only `runtime.identity`: on the advisory/comment path it
-# posts as `don-petry` (the persona runner authenticates with that account's
-# PAT). Add the rest of `runtime` + a canary-rings.json entry when a dedicated
-# advisory workflow is wired.
+# runner. It declares only `runtime.identity`: on the advisory/comment path the
+# persona runner authenticates with this account's PAT. It is the machine user
+# `donpetry-bot`, NOT the human owner `don-petry` — a persona advisory must be
+# identifiably a bot in the audit trail, and posting under a human account halved
+# the router's recursion guard (only the marker axis protected it) and carried
+# owner `author_association` (.github-private#1650). `donpetry-bot` is already in
+# the router's bot-actor exclusion, so posting as it restores two-axis protection.
+# Add the rest of `runtime` + a canary-rings.json entry when a dedicated advisory
+# workflow is wired.
 runtime:
   identity:
-    account: don-petry
-    credential: GH_PAT_DON_PETRY
+    account: donpetry-bot
+    credential: DON_PETRY_BOT_GH_PAT
 
 evals:
   required_before: stable

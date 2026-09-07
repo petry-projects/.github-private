@@ -15,14 +15,26 @@
 #   The AGENT gathers context and PRINTS the advisory between sentinels — it runs
 #   with github.token, which reads the (public) source repo but CANNOT post to
 #   it (that token is scoped to THIS repo). The WORKFLOW then enforces the marker
-#   and posts, using GH_PAT_WORKFLOWS. So an agent that forgets the marker cannot
-#   post an unmarked comment, because it cannot post at all. Prompt-only marker
-#   enforcement is how .github-private#860 happened (1,481 acks in 4.5h).
+#   and posts, using the persona's declared posting PAT. So an agent that forgets
+#   the marker cannot post an unmarked comment, because it cannot post at all.
+#   Prompt-only marker enforcement is how .github-private#860 happened (1,481 acks
+#   in 4.5h).
+#
+# Posting identity (per persona, from the manifest — NOT a repo-wide default):
+#   Which account a persona's advisory posts as is read from that persona's
+#   personas/<id>/persona.yml runtime.identity (account + credential), the
+#   #1316/#1317 pattern. Advisory personas post as the machine user donpetry-bot
+#   (DON_PETRY_BOT_GH_PAT), never a human maintainer — a human byline halves the
+#   router's recursion guard and carries owner author_association
+#   (.github-private#1650). The runner holds only the PATs for the sanctioned
+#   posting identities and fails loudly on any other declared credential.
 #
 # Requires:
 #   CLAUDE_CODE_OAUTH_TOKEN — org secret, the engine credential
-#   GH_PAT_WORKFLOWS        — org PAT: the WORKFLOW uses it to post the comment on
-#                             the cross-repo item. The agent never sees it.
+#   DON_PETRY_BOT_GH_PAT    — org PAT: the WORKFLOW uses it to post the comment as
+#                             donpetry-bot on the cross-repo item. The agent never
+#                             sees it. (dev-lead advisories still post via
+#                             GH_PAT_DON_PETRY pending its identity split.)
 name: Persona Runtime — Reusable
 
 on:
@@ -53,13 +65,19 @@ on:
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         required: true
-      GH_PAT_DON_PETRY:
-        # don-petry's PAT — the account the persona comment-poster authenticates as.
-        # Canonical name (GH_PAT_<ACCOUNT> schema); supersedes GH_PAT_WORKFLOWS below.
+      DON_PETRY_BOT_GH_PAT:
+        # donpetry-bot's PAT — the machine account advisory personas post as. Which
+        # PAT is used is chosen per persona from runtime.identity.credential, not a
+        # repo-wide default (.github-private#1650). Grandfathered credential name.
         required: false
-      GH_PAT_WORKFLOWS:
-        # DEPRECATED alias of GH_PAT_DON_PETRY — kept during the rename migration.
-        required: true
+      GH_PAT_DON_PETRY:
+        # don-petry's PAT — used only by a persona that still declares it as its
+        # posting identity (currently dev-lead, whose commit-vs-advisory identity
+        # split is tracked separately). Advisory-only personas post as donpetry-bot.
+        required: false
+      # GH_PAT_WORKFLOWS removed (#1650): the broadly-scoped workflows PAT is no
+      # longer a posting fallback here — least privilege, and posting under it
+      # attributed advisories to a human owner account.
 
 permissions: {}
 
@@ -77,7 +95,7 @@ jobs:
     permissions:
       contents: read   # checkout THIS repo's tooling + prompts. The agent reads
                        # the public source repo with github.token; the comment is
-                       # posted by the workflow with GH_PAT_WORKFLOWS.
+                       # posted by the workflow with the persona's manifest PAT.
     steps:
       - name: Checkout persona tooling + prompts
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -119,6 +137,32 @@ jobs:
               ;;
           esac
 
+      - name: Resolve the persona's posting identity from its manifest
+        # Source of truth for who a persona posts as: personas/<id>/persona.yml
+        # runtime.identity (the #1316/#1317 pattern). The runner honors the
+        # manifest rather than a repo-wide default — a persona posting under a
+        # human maintainer's PAT is exactly what #1650 removes. The runner holds
+        # PATs only for the sanctioned posting identities; any other declared
+        # credential fails loudly rather than silently borrowing a default.
+        id: identity
+        if: steps.resolve.outputs.skip == 'false'
+        env:
+          PERSONA: ${{ inputs.persona }}
+        run: |
+          set -euo pipefail
+          account="$(bash scripts/lib/resolve-persona-identity.sh "$PERSONA" personas account)"
+          credential="$(bash scripts/lib/resolve-persona-identity.sh "$PERSONA" personas credential)"
+          case "$credential" in
+            DON_PETRY_BOT_GH_PAT | GH_PAT_DON_PETRY) ;;
+            *)
+              echo "::error::persona '${PERSONA}' declares posting credential '${credential}', which this runner holds no PAT for. Add it to the reusable's secrets: block and the token map in the post step."
+              exit 1
+              ;;
+          esac
+          echo "account=${account}" >> "$GITHUB_OUTPUT"
+          echo "credential=${credential}" >> "$GITHUB_OUTPUT"
+          echo "resolved posting identity for '${PERSONA}': ${account} (${credential})"
+
       - name: Install Claude Code
         if: steps.resolve.outputs.skip == 'false'
         env:
@@ -136,7 +180,7 @@ jobs:
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # github.token: reads the PUBLIC source repo, cannot post to it (scoped
-          # to THIS repo). The agent deliberately never receives GH_PAT_WORKFLOWS.
+          # to THIS repo). The agent deliberately never receives a posting PAT.
           GH_TOKEN: ${{ github.token }}
           PERSONA: ${{ inputs.persona }}
           SOURCE_REPO: ${{ inputs.source_repo }}
@@ -183,15 +227,37 @@ jobs:
       - name: Enforce marker and post the comment (workflow — the only writer)
         if: steps.resolve.outputs.skip == 'false' && steps.advise.outputs.skip_post == 'false'
         env:
-          # The PAT lives ONLY here. The agent step above never had it.
-          GH_TOKEN: ${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS }}
+          # The PAT lives ONLY here. The agent step above never had it. WHICH PAT
+          # is used is driven by the persona manifest (runtime.identity.credential),
+          # resolved in the "identity" step — never a repo-wide default. The
+          # resolve step already constrained credential to this known set.
+          GH_TOKEN: ${{ steps.identity.outputs.credential == 'DON_PETRY_BOT_GH_PAT' && secrets.DON_PETRY_BOT_GH_PAT || secrets.GH_PAT_DON_PETRY }}
           PERSONA: ${{ inputs.persona }}
+          POSTING_ACCOUNT: ${{ steps.identity.outputs.account }}
+          POSTING_CREDENTIAL: ${{ steps.identity.outputs.credential }}
           SOURCE_REPO: ${{ inputs.source_repo }}
           ITEM_NUMBER: ${{ inputs.item_number }}
         run: |
           set -euo pipefail
           # shellcheck source=scripts/lib/persona-runner.sh
           source scripts/lib/persona-runner.sh
+
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::error::no PAT available to post as '${POSTING_ACCOUNT}' (credential '${POSTING_CREDENTIAL}') — is that secret set on this repo/org?"
+            exit 1
+          fi
+
+          # Defense in depth: the selected token MUST authenticate as the
+          # manifest-declared account. The GH_TOKEN expression falls through to
+          # GH_PAT_DON_PETRY if the chosen secret is unset, which could silently
+          # post an advisory under a human owner account — the exact #1650
+          # regression. Fail closed (a future mention retries) rather than post
+          # under the wrong identity.
+          actual_login="$(gh api user -q .login 2>/dev/null || true)"
+          if [ "$actual_login" != "$POSTING_ACCOUNT" ]; then
+            echo "::error::posting token authenticates as '${actual_login:-<unknown>}', not the manifest identity '${POSTING_ACCOUNT}' (credential '${POSTING_CREDENTIAL}') — refusing to post under the wrong identity"
+            exit 1
+          fi
 
           raw="$(cat "$RUNNER_TEMP/agent-out.txt")"
           body="$(pr_extract_advisory "$raw")"
