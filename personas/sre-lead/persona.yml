@@ -100,6 +100,10 @@ evals:
   judge: evals/judge.md
   min_cases: 5              # seed cases are placeholders; reach 5 held-out before stable
 
+canary:
+  registry: petry-projects/.github/standards/canary-rings.json
+  agent: sre-lead
+
 references:
   - "frameworks/bmad-bgreat-suite/VENDOR.md"
   - "petry-projects/.github standards/persona-standards.md"

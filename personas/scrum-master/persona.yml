@@ -84,6 +84,10 @@ evals:
   path: evals/scrum-master/
   min_cases: 4
 
+canary:
+  registry: petry-projects/.github/standards/canary-rings.json
+  agent: scrum-master
+
 references:
   - "prompts/bmad/scrum-master.md (org orchestration wrapper, consumed by initiative-planner)"
   - "frameworks/bmad-method/VENDOR.md (v6.8.0)"
