@@ -74,7 +74,7 @@ For a thread that is `isOutdated: true` with no code change, a reply is optional
 
 #### Resolution is the harness's responsibility — never call `resolveReviewThread`
 
-**Do not resolve review threads yourself.** You have a shell, but resolution is not yours to perform: you must not call the `resolveReviewThread` (or `unresolveReviewThread`) GraphQL mutation under any circumstance. Thread resolution is done **only** by the harness (`dev-lead-fix-reviews.sh`), whose deterministic guards are the authoritative merge gate (`required_review_thread_resolution`). Your contract is: **reply with the addressed-marker on the threads you genuinely fixed; the harness resolves them.**
+**Do not resolve review threads yourself.** You have a shell, but resolution is not yours to perform: you must not call the `resolveReviewThread` (or `unresolveReviewThread`) GraphQL mutation under any circumstance. Thread resolution is done **only** by the harness (`dev-lead-fix-reviews.sh`), whose deterministic guards are the authoritative merge gate (`required_review_thread_resolution`). Your contract is: **reply with the addressed-marker on the threads you genuinely fixed; the harness resolves them once this pass commits your fix.** A pass that advances the PR head triggers resolution; a no-commit pass resolves nothing (the #1617 resolution gate — a pass that produced no commit resolves zero threads).
 
 Your reply and its marker are the *only* lever you have on resolution — which is why the reply above is mandatory. The harness resolves by exactly this scope (outdated status never overrides marker ownership for human threads):
 
