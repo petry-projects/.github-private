@@ -83,23 +83,40 @@ setup() {
   [ "$output" = "draft" ]
 }
 
-@test "prc_promotion_verdict: draft stays 'draft' even if routing wiring exists" {
-  # routes-to != promoted: registration true but still draft is not yet promoted.
+# --- ADR-0006 inversion -------------------------------------------------------
+# A shared-runtime persona is never ring-registered: no caller pins a per-persona
+# channel tag, so an entry produces unconsumed tags and an unattributable gate.
+# The state this guard used to fail on (past draft, unregistered) is now the
+# NORMAL one; a registry entry at ANY status is now the defect.
+
+@test "prc_promotion_verdict: a registry entry while still draft is a defect (fails)" {
+  # Checked BEFORE the draft branch: a draft persona carrying an entry is equally
+  # a defect, which is the gap that let one slip through when this was gated on
+  # status alone.
   run prc_promotion_verdict "draft" "true"
-  [ "$status" -eq 0 ]
-  [ "$output" = "draft" ]
+  [ "$status" -eq 2 ]
+  [ "$output" = "registered" ]
 }
 
-@test "prc_promotion_verdict: past draft WITH registration is 'promoted' (exit 0)" {
-  run prc_promotion_verdict "next" "true"
+@test "prc_promotion_verdict: past draft WITHOUT registration is 'promoted' (exit 0)" {
+  # The ADR-0006 shape, and the state that unblocks a real promotion.
+  run prc_promotion_verdict "canary" "false"
   [ "$status" -eq 0 ]
   [ "$output" = "promoted" ]
 }
 
-@test "prc_promotion_verdict: past draft WITHOUT registration is 'skew' and fails" {
+@test "prc_promotion_verdict: past draft WITH registration is the inverted defect (fails)" {
+  run prc_promotion_verdict "canary" "true"
+  [ "$status" -eq 2 ]
+  [ "$output" = "registered" ]
+}
+
+@test "prc_promotion_verdict: 'next' is honoured as past-draft even though the schema enum omits it" {
+  # PRC_RING_ORDER carries `next` but persona.schema.json's status enum does not.
+  # The vocabularies disagree; this guard must not silently treat `next` as draft.
   run prc_promotion_verdict "next" "false"
-  [ "$status" -ne 0 ]
-  [ "$output" = "skew" ]
+  [ "$status" -eq 0 ]
+  [ "$output" = "promoted" ]
 }
 
 # ---------------------------------------------------------------------------
