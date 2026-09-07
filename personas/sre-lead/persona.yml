@@ -89,6 +89,7 @@ trust:
 # It is consumed by path and is human-invocable. On the comment path it posts
 # as `don-petry` (the persona runner authenticates with that account's PAT).
 runtime:
+  reusable: ''
   identity:
     account: don-petry
     credential: GH_PAT_DON_PETRY

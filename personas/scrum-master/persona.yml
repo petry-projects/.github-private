@@ -74,6 +74,7 @@ trust:
 # the comment path it posts as `don-petry` (the runner authenticates with that
 # account's PAT). No dedicated reusable yet.
 runtime:
+  reusable: ''
   identity:
     account: don-petry
     credential: GH_PAT_DON_PETRY
