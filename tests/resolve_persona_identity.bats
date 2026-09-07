@@ -78,3 +78,29 @@ YAML
   [ "$status" -eq 0 ]
   [ "$output" = "DON_PETRY_BOT_GH_PAT" ]
 }
+
+# --- every shipped credential is one the runner actually holds a PAT for ------
+# The resolver prints whatever a manifest declares, but the runner only accepts
+# and maps two credentials to a PAT (persona-runner-reusable.yml: the identity
+# step's allowlist case, and the post step's DON_PETRY_BOT_GH_PAT -> BOT_PAT /
+# else -> OWNER_PAT map). A persona shipping any other credential (e.g. the
+# GH_PAT_SOMEONE_ELSE stub above) fails closed at runtime — the runner refuses to
+# post rather than borrow the wrong PAT (#1650). Pin the live manifests to that
+# allowlist so an out-of-allowlist credential fails HERE, at CI, instead of
+# silently never-posting in production while this suite stays green.
+@test "every shipped persona's credential is one the runner's token map holds a PAT for" {
+  local manifest id credential
+  for manifest in "$SCRIPT_DIR"/personas/*/persona.yml; do
+    id="$(basename "$(dirname "$manifest")")"
+    # Personas without a runtime.identity don't post; skip them (resolver exits
+    # non-zero, which is the fail-loud path the other tests already pin).
+    credential="$(RESOLVE "$id" "$SCRIPT_DIR/personas" credential)" || continue
+    case "$credential" in
+      DON_PETRY_BOT_GH_PAT | GH_PAT_DON_PETRY) ;;
+      *)
+        echo "persona '$id' declares credential '$credential', which the runner holds no PAT for" >&2
+        return 1
+        ;;
+    esac
+  done
+}
