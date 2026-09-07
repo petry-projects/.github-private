@@ -11,7 +11,10 @@ name: Sync Scope Guard
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
+    # Include labeled/unlabeled: the sync-PR classification keys off the
+    # `standards-sync` label, so adding/removing it must re-run the guard —
+    # otherwise the required check goes stale or missing on a label change.
+    types: [opened, synchronize, reopened, labeled, unlabeled]
 
 permissions:
   contents: read
@@ -26,11 +29,27 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      # Check out the trusted BASE commit, not the PR head/merge ref. This is a
+      # required status check whose whole job is to fail out-of-scope sync PRs;
+      # checking out the PR's own tree would let an author edit the guard script
+      # (e.g. `exit 0`) and neuter the check. The PR's actual body/labels/files
+      # are read from the API by PR_NUMBER, so scope is still enforced on the
+      # PR's real content — only the guard LOGIC comes from trusted base.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
 
       - name: Enforce sync-PR scope
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: bash scripts/sync-scope-guard.sh
+        run: |
+          # Bootstrap: the introducing PR adds this script, so it is absent on
+          # base. Nothing to enforce from trusted code yet — pass. Every later
+          # PR runs the base-tree guard, which the PR cannot tamper with.
+          if [ -f scripts/sync-scope-guard.sh ]; then
+            bash scripts/sync-scope-guard.sh
+          else
+            echo "sync-scope-guard.sh not present on base ${{ github.event.pull_request.base.sha }} — nothing to enforce."
+          fi

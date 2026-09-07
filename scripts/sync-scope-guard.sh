@@ -28,11 +28,12 @@ fi
 
 echo "=== Sync-PR Scope Guard — PR #${PR_NUMBER} in ${REPO} ==="
 
-# Labels (newline-separated) + body in a single call.
-labels=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json labels \
-  --jq '.labels[].name' 2>/dev/null || true)
-body=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json body \
-  --jq '.body' 2>/dev/null || true)
+# Labels (newline-separated) + body in a single call. No `|| true`: a failed API
+# read must abort loudly (set -euo pipefail) rather than fake an empty result and
+# silently skip the scope check.
+pr_json=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json labels,body)
+labels=$(jq -r '.labels[].name' <<< "$pr_json")
+body=$(jq -r '.body // ""' <<< "$pr_json")
 
 if ! is_generated_sync_pr "$labels" "$body"; then
   echo "Not a generated sync PR (no '${SYNC_SCOPE_LABEL}' label or declared-paths marker) — scope check does not apply."
@@ -54,7 +55,7 @@ printf '  %s\n' "$declared"
 # Full changed-file list via the REST files endpoint (paginated) so an oversized
 # diff never trips the 300-file / HTTP 406 cap on `gh pr diff` (see AGENTS.md).
 changed=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/files" --paginate \
-  --jq '.[].filename' 2>/dev/null || true)
+  --jq '.[].filename')
 
 violations=$(sync_scope_violations "$declared" "$changed")
 
