@@ -231,7 +231,7 @@ jobs:
           # is used is driven by the persona manifest (runtime.identity.credential),
           # resolved in the "identity" step — never a repo-wide default. The
           # resolve step already constrained credential to this known set.
-          GH_TOKEN: ${{ steps.identity.outputs.credential == 'DON_PETRY_BOT_GH_PAT' && secrets.DON_PETRY_BOT_GH_PAT || secrets.GH_PAT_DON_PETRY }}
+          GH_TOKEN: ${{ if(steps.identity.outputs.credential == 'DON_PETRY_BOT_GH_PAT', secrets.DON_PETRY_BOT_GH_PAT, secrets.GH_PAT_DON_PETRY) }}
           PERSONA: ${{ inputs.persona }}
           POSTING_ACCOUNT: ${{ steps.identity.outputs.account }}
           POSTING_CREDENTIAL: ${{ steps.identity.outputs.credential }}

@@ -15,7 +15,8 @@ RESOLVE() {
 
 setup() {
   SCRIPT_DIR="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)"
-  ROOT="$(mktemp -d "$BATS_TEST_TMPDIR/personas.XXXXXX")"
+  ROOT="$BATS_TEST_TMPDIR/personas"
+  mkdir -p "$ROOT"
 }
 
 # Write a stub persona manifest declaring a runtime.identity.
