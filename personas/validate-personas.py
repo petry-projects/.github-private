@@ -285,8 +285,11 @@ def check_invariants(manifest: dict, manifest_path: Path, repo_root: Path,
     # itself. Read it defensively; an unconditional read here is what would turn
     # a conforming shared-runtime manifest into a crash.
     canary = manifest.get("canary")
-    if canary is not None and canary.get("agent") != pid:
-        fail(f"{manifest_path}: canary.agent '{canary.get('agent')}' != id '{pid}'")
+    if canary is not None:
+        if not isinstance(canary, dict):
+            fail(f"{manifest_path}: canary must be a mapping, got {canary!r}")
+        if canary.get("agent") != pid:
+            fail(f"{manifest_path}: canary.agent '{canary.get('agent')}' != id '{pid}'")
 
     # The addressing handle is 'org/team-slug'; the slug carries the role name,
     # so it MUST equal `id` — that is what lets the mention router resolve a
@@ -322,13 +325,18 @@ def check_invariants(manifest: dict, manifest_path: Path, repo_root: Path,
 
     check_evals(manifest, manifest_path, repo_root)
 
-    # Registration is CONDITIONAL (ADR-0006). A persona that ships its own
-    # reusable still must not outrun its registration. A shared-runtime persona
-    # has no per-persona channel tag for a ring to advance, so it is never
-    # registered — for it, "past draft and unregistered" is the NORMAL state,
-    # and a registry entry is the defect. Keyed on the manifest's own `canary`
-    # block, which is exactly the declaration of which path the persona is on.
-    if manifest["status"] != "draft":
+    # Registration is CONDITIONAL (ADR-0006), keyed on the manifest's own
+    # `canary` block — the declaration of which path the persona is on:
+    #   - Ships its own reusable (canary present): it must not outrun its
+    #     registration, so once past draft it must be registered.
+    #   - Shared-runtime (no canary): it has no per-persona channel tag for a
+    #     ring to advance, so it is NEVER registered at ANY status — a registry
+    #     entry is always a defect, draft or not (ADR-0006: "a registered
+    #     persona ID is a defect, not a promotion").
+    # We need the registry to answer either question, so load it unless the
+    # persona is a draft that declares a canary block (the only case with no
+    # invariant to check here).
+    if manifest["status"] != "draft" or canary is None:
         registry = load_registry(registry_arg)
         registered = registry_has_agent(registry, pid)
         if canary is not None and not registered:

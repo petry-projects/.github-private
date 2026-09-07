@@ -176,8 +176,7 @@ YAML
 # registry entry is the defect. These two tests pin that inversion.
 
 @test "validate-personas accepts a non-draft shared-runtime persona (no canary) that is unregistered" {
-  sed -i 's/^status: draft/status: stable/' "$TMP/personas/demo/persona.yml"
-  sed -i '/^canary:/,+2d' "$TMP/personas/demo/persona.yml"
+  python3 -c "from pathlib import Path; p = Path(\"$TMP/personas/demo/persona.yml\"); txt = p.read_text().replace('status: draft', 'status: stable'); p.write_text(''.join(l for l in txt.splitlines(True) if not any(l.strip().startswith(k) for k in ('canary:', 'registry:', 'agent:'))))"
   printf '{"agents": {}}\n' >"$TMP/empty-registry.json"
   run python3 "$VALIDATOR" "$TMP/personas" --schema "$TMP/schema.json" --registry "$TMP/empty-registry.json"
   [ "$status" -eq 0 ]
@@ -185,15 +184,24 @@ YAML
 }
 
 @test "validate-personas rejects a shared-runtime persona (no canary) that IS registered" {
-  sed -i 's/^status: draft/status: stable/' "$TMP/personas/demo/persona.yml"
-  sed -i '/^canary:/,+2d' "$TMP/personas/demo/persona.yml"
+  python3 -c "from pathlib import Path; p = Path(\"$TMP/personas/demo/persona.yml\"); txt = p.read_text().replace('status: draft', 'status: stable'); p.write_text(''.join(l for l in txt.splitlines(True) if not any(l.strip().startswith(k) for k in ('canary:', 'registry:', 'agent:'))))"
+  run python3 "$VALIDATOR" "$TMP/personas" --schema "$TMP/schema.json" --registry "$TMP/registry.json"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"defect, not a promotion"* ]]
+}
+
+# The registry prohibition is UNCONDITIONAL of status (ADR-0006): a shared-runtime
+# persona ID is a defect in the registry draft or not, so even a DRAFT persona
+# with no canary block must be rejected when an agents.<id> entry exists.
+@test "validate-personas rejects a DRAFT shared-runtime persona (no canary) that IS registered" {
+  python3 -c "from pathlib import Path; p = Path(\"$TMP/personas/demo/persona.yml\"); p.write_text(''.join(l for l in p.read_text().splitlines(True) if not any(l.strip().startswith(k) for k in ('canary:', 'registry:', 'agent:'))))"
   run python3 "$VALIDATOR" "$TMP/personas" --schema "$TMP/schema.json" --registry "$TMP/registry.json"
   [ "$status" -ne 0 ]
   [[ "$output" == *"defect, not a promotion"* ]]
 }
 
 @test "validate-personas still checks canary.agent when the block IS present" {
-  sed -i 's/^  agent: demo/  agent: nope/' "$TMP/personas/demo/persona.yml"
+  python3 -c "from pathlib import Path; p = Path(\"$TMP/personas/demo/persona.yml\"); p.write_text(p.read_text().replace('agent: demo', 'agent: nope'))"
   run python3 "$VALIDATOR" "$TMP/personas" --schema "$TMP/schema.json"
   [ "$status" -ne 0 ]
   [[ "$output" == *"canary.agent"* ]]
