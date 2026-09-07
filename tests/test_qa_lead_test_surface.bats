@@ -53,6 +53,11 @@ setup() {
   [ "$output" = "DOCS" ]
 }
 
+@test "classify: a markdown doc starting with test_ is DOCS, not TEST" {
+  run qa_lead_classify_path "docs/test_plan.md"
+  [ "$output" = "DOCS" ]
+}
+
 @test "classify: a shell script is SOURCE" {
   run qa_lead_classify_path "scripts/lib/foo.sh"
   [ "$output" = "SOURCE" ]
@@ -84,6 +89,11 @@ setup() {
 
 @test "AC#3: a docs-only PR does NOT fire" {
   run qa_lead_test_surface "$(printf 'README.md\ndocs/guide.md\n')"
+  [ "$status" -ne 0 ]
+}
+
+@test "AC#3: a PR with only a test_*.md doc does NOT fire" {
+  run qa_lead_test_surface "$(printf 'docs/test_plan.md\n')"
   [ "$status" -ne 0 ]
 }
 

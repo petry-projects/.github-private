@@ -33,7 +33,15 @@ qa_lead_classify_path() {
     *.bats)            echo "TEST"; return 0 ;;
   esac
   case "$base" in
-    test_*|*_test.*|*.test.*|*_spec.*|*.spec.*) echo "TEST"; return 0 ;;
+    test_*|*_test.*|*.test.*|*_spec.*|*.spec.*)
+      # The bare test_* wildcard also matches prose whose name merely starts with
+      # "test_" (e.g. docs/test_plan.md). Documentation/metadata extensions are
+      # NOT test surface, so fall through to DOCS for them rather than firing.
+      case "$base" in
+        *.md|*.markdown|*.rst|*.txt|LICENSE|COPYING|CODEOWNERS) ;;
+        *) echo "TEST"; return 0 ;;
+      esac
+      ;;
   esac
 
   # --- DOCS: prose / licence / ownership metadata ---
