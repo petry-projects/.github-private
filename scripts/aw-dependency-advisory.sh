@@ -94,6 +94,19 @@ trap 'rm -f "$ADVISORY_FILE" "$PROMPT_FILE" "$CLAUDE_ERR"' EXIT
 DEP_ADVISORY_MAX_ATTEMPTS="${DEP_ADVISORY_MAX_ATTEMPTS:-3}"
 DEP_ADVISORY_RETRY_BASE_SEC="${DEP_ADVISORY_RETRY_BASE_SEC:-5}"
 
+# Validate retry configuration before arithmetic expansion.
+if ! [[ "$DEP_ADVISORY_MAX_ATTEMPTS" =~ ^[0-9]+$ ]] || [ "$DEP_ADVISORY_MAX_ATTEMPTS" -lt 1 ]; then
+  echo "::error::DEP_ADVISORY_MAX_ATTEMPTS must be a positive integer (>= 1), got: ${DEP_ADVISORY_MAX_ATTEMPTS}" >&2
+  exit 1
+fi
+if ! [[ "$DEP_ADVISORY_RETRY_BASE_SEC" =~ ^([0-9]+|[0-9]+\.[0-9]+)$ ]]; then
+  echo "::error::DEP_ADVISORY_RETRY_BASE_SEC must be a non-negative decimal number, got: ${DEP_ADVISORY_RETRY_BASE_SEC}" >&2
+  exit 1
+fi
+# Strip leading zeros to prevent octal interpretation in arithmetic expansion.
+DEP_ADVISORY_RETRY_BASE_SEC="${DEP_ADVISORY_RETRY_BASE_SEC##+(0)}"
+DEP_ADVISORY_RETRY_BASE_SEC="${DEP_ADVISORY_RETRY_BASE_SEC:-.0}"
+
 # A server-side/transient CLI failure a later retry may clear — distinct from a
 # genuine (non-transient) error, which stays fatal.
 _advisory_error_is_transient() {
