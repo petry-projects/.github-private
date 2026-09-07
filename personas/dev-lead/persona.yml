@@ -92,6 +92,11 @@ trust:
 # (petry-projects/dev-lead, the mention team). This decoupling is the fix for
 # the donpetry-bot regression (.github-private#1316).
 runtime:
+  # dev-lead ships its OWN reusable, so ADR-0002 applies in full: it is a
+  # registered ring agent (agents.dev-lead in canary-rings.json) and therefore
+  # keeps its `canary` block. ADR-0006's omit-the-block rule covers only
+  # personas served wholly by the SHARED persona runtime.
+  reusable: .github/workflows/dev-lead-reusable.yml
   identity:
     account: don-petry
     credential: GH_PAT_DON_PETRY
