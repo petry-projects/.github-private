@@ -76,28 +76,35 @@ for prompt in "${EXPECTED_PROMPTS[@]}"; do
   fi
 done
 
-# ── 4. review prompts must reply-with-specifics, then resolve ────────────────
+# ── 4. review prompts must reply-with-specifics; resolution is harness-only ───
 # Regression for issue #452: dev-lead resolved (or silently left) review threads
 # without replying what it fixed, and bot threads fixed during another
 # reviewer's run stayed unresolved. Each review prompt must instruct the engine
 # to post a thread reply (addPullRequestReviewThreadReply) describing the
-# specific change, then resolve the thread (resolveReviewThread).
+# specific change.
+#
+# Updated for #1691 (epic #1621): the model must NOT resolve threads itself —
+# resolution is performed only by the harness (dev-lead-fix-reviews.sh). So each
+# review prompt must (a) still reply with specifics, and (b) state that the
+# harness resolves and the model must not call the resolveReviewThread mutation.
+# The forbidden mutation-invocation form is asserted separately in section 7.
 
 echo ""
-echo "Checking review prompts reply-with-specifics then resolve..."
+echo "Checking review prompts reply-with-specifics; resolution is harness-only..."
 REVIEW_PROMPTS=("fix-reviews.md" "review-changes.md" "fix-bot-comment.md")
 for prompt in "${REVIEW_PROMPTS[@]}"; do
   path="$PROMPTS_DIR/$prompt"
   [ -f "$path" ] || { echo "  FAIL: $prompt — missing"; FAILED=1; continue; }
   missing=""
   grep -q "addPullRequestReviewThreadReply" "$path" || missing="$missing reply-mutation"
-  grep -q "resolveReviewThread"             "$path" || missing="$missing resolve-mutation"
   grep -qiE "specific(ally)?" "$path"               || missing="$missing specific-details"
+  grep -qiE "harness resolves" "$path"              || missing="$missing harness-resolves"
+  grep -qiE "must not call[^.]*resolveReviewThread" "$path" || missing="$missing forbid-resolve-mutation"
   if [ -n "$missing" ]; then
     echo "  FAIL: $prompt — missing:$missing"
     FAILED=1
   else
-    echo "  ok: $prompt (replies with specifics, then resolves)"
+    echo "  ok: $prompt (replies with specifics; harness resolves)"
   fi
 done
 
@@ -157,6 +164,28 @@ else
     echo "  ok: review-changes.md (requires what-check-verifies / why-diff-satisfies on a failing-check fix)"
   fi
 fi
+
+# ── 7. no dev-lead prompt may hand the model the resolveReviewThread mutation ─
+# Regression for #1691 (epic #1621): thread resolution must be performed ONLY by
+# the harness (dev-lead-fix-reviews.sh), never by the model. A prompt that hands
+# the model the raw resolveReviewThread / unresolveReviewThread GraphQL mutation
+# lets it bypass the deterministic resolve_* guards (review_thread_is_agent_authored,
+# the addressed-marker + our-account check, and the fail-closed re-read). The prose
+# may NAME the mutation in order to forbid it (e.g. "must not call resolveReviewThread"),
+# so this assertion targets the mutation-INVOCATION form `resolveReviewThread(` only —
+# an open paren directly following the mutation name — not a bare mention.
+
+echo ""
+echo "Checking no dev-lead prompt reintroduces the resolveReviewThread mutation (#1691)..."
+for path in "$PROMPTS_DIR"/*.md; do
+  [ -f "$path" ] || continue
+  if grep -qE '(un)?resolveReviewThread[[:space:]]*\(' "$path"; then
+    echo "  FAIL: $(basename "$path") — contains a resolveReviewThread mutation invocation; resolution is harness-only (#1691)"
+    FAILED=1
+  else
+    echo "  ok: $(basename "$path") (no resolve mutation)"
+  fi
+done
 
 # ── result ────────────────────────────────────────────────────────────────────
 

@@ -1307,6 +1307,94 @@ STUB
   [ "$status" -eq 1 ]
 }
 
+# ── Harness-only resolution (#1691, epic #1621) ──────────────────────────────
+# Story 1 removes the model's resolveReviewThread path from the prompts, leaving
+# the harness as the ONLY resolver. This asserts the guarantee at the harness
+# boundary: even on a head-advancing pass (resolution gate OPEN), a bot thread
+# whose latest reply is NOT an our-account addressed-marker is left unresolved —
+# resolution only ever comes from the harness's marker-gated code path, never for
+# a thread the marker check rejects. The head DOES advance here (a substantive new
+# file), so the gate is open and resolve_addressed_bot_threads actually runs and
+# then declines on the missing marker — distinguishing this from the #1617 gate.
+@test "harness-only resolution (#1691): fix-reviews leaves a thread unresolved when its latest reply lacks our addressed-marker" {
+  local tmpdir="$BATS_TEST_TMPDIR/workdir"
+  mkdir -p "$tmpdir"
+  local mutations_file="$BATS_TEST_TMPDIR/mutations"
+  # Pre-create empty so a no-resolve run yields grep exit 1 (no match), not 2 (missing file).
+  : > "$mutations_file"
+  local base_sha
+  rm -f /tmp/dev-lead-session-output.txt
+
+  git -C "$tmpdir" init -q
+  echo "initial" > "$tmpdir/file.txt"
+  git -C "$tmpdir" add .
+  git -C "$tmpdir" -c user.email="t@test" -c user.name="T" commit -q -m "init"
+  git -C "$tmpdir" update-ref refs/remotes/origin/main "$(git -C "$tmpdir" rev-parse HEAD)"
+  base_sha="$(git -C "$tmpdir" rev-parse HEAD)"
+
+  # Bot-originated thread (a valid harness candidate), but the latest reply the
+  # node(id) re-fetch returns carries NO addressed-marker — so the harness's
+  # marker gate must decline to resolve it.
+  cat > "$STUB_BIN_DIR/gh" << GHEOF
+#!/usr/bin/env bash
+ARGS="\$*"
+case "\$ARGS" in
+  *"resolveReviewThread"*)
+    echo "\$*" >> "$mutations_file"
+    echo '{"data":{"resolveReviewThread":{"thread":{"isResolved":true}}}}'
+    ;;
+  *"PullRequestReviewThread"*)
+    echo '{"data":{"node":{"isResolved":false,"latest":{"nodes":[{"author":{"login":"donpetry-bot"},"body":"Looked into this but made no change."}]}}}}'
+    ;;
+  *"reviewThreads"*)
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":""},"nodes":[{"id":"PRRT_unmarked_bot","isResolved":false,"isOutdated":false,"origin":{"nodes":[{"author":{"login":"gemini-code-assist[bot]","__typename":"Bot"}}]}}]}}}}}'
+    ;;
+  *"check-runs"*) echo '{"check_runs":[]}' ;;
+  *"statuses"*) echo '[]' ;;
+  *"pulls/"*"reviews"*) echo '[]' ;;
+  *"pulls/"*) echo '{"head":{"sha":"${base_sha}"},"auto_merge":null}' ;;
+  *"pr checkout"*) exit 0 ;;
+  *"pr comment"*) exit 0 ;;
+  *"pr merge"*) exit 0 ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+
+  # Engine advances the head with a substantive new file (gate OPEN).
+  cat > "$STUB_BIN_DIR/claude" << 'STUB'
+#!/usr/bin/env bash
+echo "Addressed feedback."
+printf 'fixed\n' > fix.txt
+STUB
+  chmod +x "$STUB_BIN_DIR/claude"
+
+  cat > "$STUB_BIN_DIR/git" << 'GITEOF'
+#!/usr/bin/env bash
+if [ "$1" = "push" ]; then exit 0; fi
+exec /usr/bin/git "$@"
+GITEOF
+  chmod +x "$STUB_BIN_DIR/git"
+
+  run bash -c "
+    cd '$tmpdir'
+    export INTENT_TYPE=fix-reviews DEV_LEAD_DRY_RUN=false
+    export PR_NUMBER=54 HEAD_SHA=$base_sha REPO='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export ACTOR='gemini-code-assist[bot]'
+    export BOT_USER='donpetry-bot'
+    export PATH='$STUB_BIN_DIR:$PATH'
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+
+  # The pass advanced the head, so the resolution gate was OPEN (not the #1617 case)...
+  [[ "$output" != *"resolution gate closed"* ]]
+  # ...yet the harness's marker gate declined: zero resolutions for the unmarked thread.
+  [ ! -s "$mutations_file" ]
+  run grep -q "PRRT_unmarked_bot" "$mutations_file"
+  [ "$status" -eq 1 ]
+}
+
 # ── Resolution gate (#1617): a no-commit pass resolves zero threads ──────────
 # #1609/#1024: a dev-lead fix pass may auto-resolve review threads ONLY when it
 # advanced the PR head. A pass that produces no commit must resolve ZERO threads,
