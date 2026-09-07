@@ -337,3 +337,50 @@ clone_persona() {
   [ "$status" -ne 0 ]
   [[ "$output" == *"GH_PAT_<ACCOUNT>"* ]]
 }
+
+# --- skills[] validation: path existence + name<->directory agreement (#1649) ---
+#
+# skills[] is the persona's declarative skill inventory. Each entry's path must
+# exist on disk (mirroring the definition.layers[].path check), and when it points
+# at a `<name>/SKILL.md` the parent directory must equal the entry name — the
+# vendored-skill convention every persona follows. This is hermetic (filesystem
+# existence only, no network), like the rest of this suite.
+
+# add_skill <persona-dir> <name> <path> — append a one-entry skills[] block.
+add_skill() {
+  local dir="$1" name="$2" path="$3"
+  printf 'skills:\n  - name: %s\n    path: %s\n    source: vendored\n' "$name" "$path" >>"$TMP/personas/$dir/persona.yml"
+}
+
+@test "validate-personas accepts a skills[] entry whose path exists and name matches its directory" {
+  mkdir -p "$TMP/frameworks/demo-fw/src/workflows/demo-skill"
+  printf '# skill\n' >"$TMP/frameworks/demo-fw/src/workflows/demo-skill/SKILL.md"
+  add_skill demo demo-skill frameworks/demo-fw/src/workflows/demo-skill/SKILL.md
+  run python3 "$VALIDATOR" "$TMP/personas" --schema "$TMP/schema.json"
+  [ "$status" -eq 0 ]
+}
+
+@test "validate-personas rejects a skills[] path that does not exist" {
+  add_skill demo demo-skill frameworks/demo-fw/src/workflows/demo-skill/SKILL.md
+  run python3 "$VALIDATOR" "$TMP/personas" --schema "$TMP/schema.json"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"skills[0].path"* ]]
+  [[ "$output" == *"does not exist"* ]]
+}
+
+@test "validate-personas accepts a persona with no skills[]" {
+  # base demo has no skills block; add an explicit empty list to be sure.
+  printf 'skills: []\n' >>"$TMP/personas/demo/persona.yml"
+  run python3 "$VALIDATOR" "$TMP/personas" --schema "$TMP/schema.json"
+  [ "$status" -eq 0 ]
+}
+
+@test "validate-personas rejects a skills[] entry whose name disagrees with its SKILL.md directory" {
+  mkdir -p "$TMP/frameworks/demo-fw/src/workflows/actual-dir"
+  printf '# skill\n' >"$TMP/frameworks/demo-fw/src/workflows/actual-dir/SKILL.md"
+  add_skill demo wrong-name frameworks/demo-fw/src/workflows/actual-dir/SKILL.md
+  run python3 "$VALIDATOR" "$TMP/personas" --schema "$TMP/schema.json"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"wrong-name"* ]]
+  [[ "$output" != *"Traceback"* ]]
+}
