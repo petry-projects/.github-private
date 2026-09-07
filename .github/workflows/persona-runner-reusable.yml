@@ -227,11 +227,13 @@ jobs:
       - name: Enforce marker and post the comment (workflow — the only writer)
         if: steps.resolve.outputs.skip == 'false' && steps.advise.outputs.skip_post == 'false'
         env:
-          # The PAT lives ONLY here. The agent step above never had it. WHICH PAT
-          # is used is driven by the persona manifest (runtime.identity.credential),
-          # resolved in the "identity" step — never a repo-wide default. The
-          # resolve step already constrained credential to this known set.
-          GH_TOKEN: ${{ if(steps.identity.outputs.credential == 'DON_PETRY_BOT_GH_PAT', secrets.DON_PETRY_BOT_GH_PAT, secrets.GH_PAT_DON_PETRY) }}
+          # The PAT lives ONLY here. The agent step above never had it. WHICH
+          # PAT is used is driven by the persona manifest
+          # (runtime.identity.credential), resolved in the "identity" step —
+          # never a repo-wide default. The resolve step already constrained
+          # credential to this known set.
+          BOT_PAT: ${{ secrets.DON_PETRY_BOT_GH_PAT }}
+          OWNER_PAT: ${{ secrets.GH_PAT_DON_PETRY }}
           PERSONA: ${{ inputs.persona }}
           POSTING_ACCOUNT: ${{ steps.identity.outputs.account }}
           POSTING_CREDENTIAL: ${{ steps.identity.outputs.credential }}
@@ -242,20 +244,30 @@ jobs:
           # shellcheck source=scripts/lib/persona-runner.sh
           source scripts/lib/persona-runner.sh
 
+          # Select the appropriate PAT based on the persona's manifest identity
+          if [ "$POSTING_CREDENTIAL" = "DON_PETRY_BOT_GH_PAT" ]; then
+            GH_TOKEN="${BOT_PAT}"
+          else
+            GH_TOKEN="${OWNER_PAT}"
+          fi
+          export GH_TOKEN
+
           if [ -z "${GH_TOKEN:-}" ]; then
             echo "::error::no PAT available to post as '${POSTING_ACCOUNT}' (credential '${POSTING_CREDENTIAL}') — is that secret set on this repo/org?"
             exit 1
           fi
 
           # Defense in depth: the selected token MUST authenticate as the
-          # manifest-declared account. The GH_TOKEN expression falls through to
-          # GH_PAT_DON_PETRY if the chosen secret is unset, which could silently
-          # post an advisory under a human owner account — the exact #1650
-          # regression. Fail closed (a future mention retries) rather than post
-          # under the wrong identity.
+          # manifest-declared account. If the chosen secret is unset, we
+          # could silently post under the wrong identity — the exact #1650
+          # regression. Fail closed (a future mention retries) rather than
+          # post under the wrong identity.
           actual_login="$(gh api user -q .login 2>/dev/null || true)"
           if [ "$actual_login" != "$POSTING_ACCOUNT" ]; then
-            echo "::error::posting token authenticates as '${actual_login:-<unknown>}', not the manifest identity '${POSTING_ACCOUNT}' (credential '${POSTING_CREDENTIAL}') — refusing to post under the wrong identity"
+            msg="posting token authenticates as '${actual_login:-<unknown>}', "
+            msg="${msg}not the manifest identity '${POSTING_ACCOUNT}' "
+            msg="${msg}(credential '${POSTING_CREDENTIAL}') — refusing to post"
+            echo "::error::${msg} under the wrong identity"
             exit 1
           fi
 
