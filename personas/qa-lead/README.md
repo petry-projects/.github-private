@@ -55,7 +55,7 @@ runtime surface is a prompt:
    carrying `{persona, source_repo, item_number, comment_url, requested_by}`.
 3. The **one shared runner** —
    [`.github/workflows/persona-runner-reusable.yml`](../../.github/workflows/persona-runner-reusable.yml),
-   received via the `persona-runner.yml` caller — resolves the addressed
+   received via the [`.github/workflows/persona-runner.yml`](../../.github/workflows/persona-runner.yml) caller — resolves the addressed
    persona's advisory prompt **by convention** and runs it.
 4. For `qa-lead` that prompt is
    [`prompts/qa-lead/advisory.md`](../../prompts/qa-lead/advisory.md) — the
@@ -102,13 +102,13 @@ Genuinely still outstanding before it can be cut as a release:
   `v1-ring1`, and `v1-stable` channels do not exist yet.
 
 The eval set is now **scorable**: #1645 added the llm-judge scorer
-(`evals/qa-lead/scorer.json`) over the held-out cases
+([`evals/qa-lead/scorer.json`](../../evals/qa-lead/scorer.json)) over the held-out cases
 ([`evals/qa-lead/holdout/cases.jsonl`](../../evals/qa-lead/holdout/cases.jsonl)),
 so the `required_before: stable` gate the manifest declares can actually run.
 
 To promote `qa-lead` toward `stable`:
 
-1. **Do not add a workflow.** A new persona ships a **manifest** (`persona.yml`)
+1. **Do not add a workflow.** A new persona ships a **manifest** ([`persona.yml`](./persona.yml))
    and an **advisory prompt** (`prompts/<id>/advisory.md`); the shared router and
    runner already serve it by convention. Adding a per-persona caller stub is the
    drift §4.1 exists to prevent, and it is not what shipped.
