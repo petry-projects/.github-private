@@ -167,6 +167,39 @@ YAML
   [[ "$output" == *"agents.demo"* ]]
 }
 
+# --- ADR-0006: registration is CONDITIONAL on the manifest's own `canary` block ---
+#
+# A persona WITH a canary block ships its own reusable — past draft it must be
+# registered (the two tests above). A persona WITHOUT one rides the shared
+# persona runtime: no caller pins a per-persona channel tag, so it is never
+# registered. For it, "past draft and unregistered" is the NORMAL state and a
+# registry entry is the defect. These two tests pin that inversion.
+
+@test "validate-personas accepts a non-draft shared-runtime persona (no canary) that is unregistered" {
+  sed -i 's/^status: draft/status: stable/' "$TMP/personas/demo/persona.yml"
+  sed -i '/^canary:/,+2d' "$TMP/personas/demo/persona.yml"
+  printf '{"agents": {}}\n' >"$TMP/empty-registry.json"
+  run python3 "$VALIDATOR" "$TMP/personas" --schema "$TMP/schema.json" --registry "$TMP/empty-registry.json"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"OK"* ]]
+}
+
+@test "validate-personas rejects a shared-runtime persona (no canary) that IS registered" {
+  sed -i 's/^status: draft/status: stable/' "$TMP/personas/demo/persona.yml"
+  sed -i '/^canary:/,+2d' "$TMP/personas/demo/persona.yml"
+  run python3 "$VALIDATOR" "$TMP/personas" --schema "$TMP/schema.json" --registry "$TMP/registry.json"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"defect, not a promotion"* ]]
+}
+
+@test "validate-personas still checks canary.agent when the block IS present" {
+  sed -i 's/^  agent: demo/  agent: nope/' "$TMP/personas/demo/persona.yml"
+  run python3 "$VALIDATOR" "$TMP/personas" --schema "$TMP/schema.json"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"canary.agent"* ]]
+  [[ "$output" != *"Traceback"* ]]
+}
+
 # --- Addressing (§4.1): handle slug == id, and handles are unique fleet-wide ---
 #
 # The live team properties (exists / privacy: closed / notifications_disabled)

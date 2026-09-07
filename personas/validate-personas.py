@@ -29,8 +29,11 @@ schema cannot express on its own:
     `dev/cases.jsonl` and `holdout/cases.jsonl`; and once the persona has reached
     its `evals.required_before` ring, each held-out set has >= `min_cases`
     (the enforceable half of principle 5 — a draft is exempt)
-  * a non-`draft` persona has a matching `agents.<id>` entry in the canary ring
-    registry (`canary-rings.json`), so status never outruns registration
+  * registration matches the manifest's own declaration (ADR-0006): a persona
+    WITH a `canary` block ships its own reusable, so past `draft` it must have a
+    matching `agents.<id>` entry in `canary-rings.json` (status never outruns
+    registration); a persona WITHOUT one rides the shared persona runtime, is
+    never ring-registered, and must NOT appear in the registry at all
 
 Schema resolution order:
   1. --schema PATH                     (explicit local file; used by tests)
@@ -276,8 +279,14 @@ def check_invariants(manifest: dict, manifest_path: Path, repo_root: Path,
 
     if pid != persona_dir.name:
         fail(f"{manifest_path}: id '{pid}' != directory name '{persona_dir.name}'")
-    if manifest["canary"]["agent"] != pid:
-        fail(f"{manifest_path}: canary.agent '{manifest['canary']['agent']}' != id '{pid}'")
+    # `canary` is OPTIONAL per ADR-0006: a persona served wholly by the shared
+    # persona runtime is NOT ring-registered and omits the block entirely. Only
+    # a persona that ships its own reusable carries one — and then it must name
+    # itself. Read it defensively; an unconditional read here is what would turn
+    # a conforming shared-runtime manifest into a crash.
+    canary = manifest.get("canary")
+    if canary is not None and canary.get("agent") != pid:
+        fail(f"{manifest_path}: canary.agent '{canary.get('agent')}' != id '{pid}'")
 
     # The addressing handle is 'org/team-slug'; the slug carries the role name,
     # so it MUST equal `id` — that is what lets the mention router resolve a
@@ -313,11 +322,23 @@ def check_invariants(manifest: dict, manifest_path: Path, repo_root: Path,
 
     check_evals(manifest, manifest_path, repo_root)
 
+    # Registration is CONDITIONAL (ADR-0006). A persona that ships its own
+    # reusable still must not outrun its registration. A shared-runtime persona
+    # has no per-persona channel tag for a ring to advance, so it is never
+    # registered — for it, "past draft and unregistered" is the NORMAL state,
+    # and a registry entry is the defect. Keyed on the manifest's own `canary`
+    # block, which is exactly the declaration of which path the persona is on.
     if manifest["status"] != "draft":
         registry = load_registry(registry_arg)
-        if not registry_has_agent(registry, pid):
-            fail(f"{manifest_path}: status '{manifest['status']}' is past draft but no "
-                 f"agents.{pid} entry exists in {REGISTRY_PATH_IN_REPO} (register once)")
+        registered = registry_has_agent(registry, pid)
+        if canary is not None and not registered:
+            fail(f"{manifest_path}: status '{manifest['status']}' is past draft and the manifest "
+                 f"declares a canary block, but no agents.{pid} entry exists in "
+                 f"{REGISTRY_PATH_IN_REPO} (register once)")
+        if canary is None and registered:
+            fail(f"{manifest_path}: no canary block (shared-runtime persona, ADR-0006) but an "
+                 f"agents.{pid} entry exists in {REGISTRY_PATH_IN_REPO} — a registered "
+                 f"shared-runtime persona is a defect, not a promotion; remove the entry")
 
 
 def main() -> None:
