@@ -101,10 +101,6 @@ evals:
   judge: evals/judge.md
   min_cases: 5                  # seed cases are placeholders; reach 5 held-out before stable
 
-canary:
-  registry: petry-projects/.github/standards/canary-rings.json
-  agent: security-lead          # entry added at first release cut (not present while status: draft)
-
 references:
   - "frameworks/bmad-bgreat-suite/VENDOR.md"
   - "agents/compliance-auditor.md (overlapping surface — advisory persona, not a replacement)"
