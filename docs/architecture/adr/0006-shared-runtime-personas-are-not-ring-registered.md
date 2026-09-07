@@ -58,15 +58,18 @@ The checkable boundaries:
   wholly by the shared runtime MUST omit it rather than point at an entry that
   does not exist.
 - **`agents.<persona-id>` MUST NOT appear in `canary-rings.json`** while that
-  persona has no dedicated reusable. A registered persona id is a defect, not a
+  persona has no dedicated reusable. A registered persona ID is a defect, not a
   promotion — it produces unconsumed tags and an unattributable gate.
 - **Promotion evidence is the reach check, not a ring label.** A persona's
   `status` may advance past `draft` with no registry entry; the previously
   dangerous "status past draft, unregistered" state is the **normal** state for
-  a shared-runtime persona. `scripts/persona_reach_check.sh` inverts
-  accordingly: it fails on an unexpected registration or a trigger surface
-  beyond the shared router's deployed events, and on a persona claiming
-  promotion without the wiring that would make a mention resolve.
+  a shared-runtime persona. `scripts/persona_reach_check.sh` must invert
+  accordingly: once this decision lands it will fail on an unexpected
+  registration or a trigger surface beyond the shared router's deployed events,
+  and on a persona claiming promotion without the wiring that would make a
+  mention resolve. (Today the guard still treats registration as the safe state
+  and fails on the unregistered-past-draft skew; that inversion is the
+  implementation work this ADR authorizes — see the Consequences below.)
 - **This ADR governs shared-runtime personas only.** A persona that ever gains
   its own reusable — a dedicated advisory workflow with its own caller stub —
   returns to ADR-0002 in full and MUST be registered like any other agent.
@@ -82,7 +85,12 @@ The checkable boundaries:
 - **The reach check becomes the sole automated promotion gate.** This is the
   real cost of this decision. Under a ring model the check was one control among
   several; here it stands alone, so a defect in it is a defect in the only thing
-  standing between `status: draft` and `status: stable`. It is pure-logic and
+  standing between `status: draft` and `status: stable`. Reaching that state
+  requires removing the other current control: `personas/validate-personas.py`
+  today rejects any past-`draft` persona that lacks an `agents.<id>` registry
+  entry, which directly contradicts the "MUST NOT be registered" boundary above,
+  so that non-`draft`→registered requirement must be relaxed for shared-runtime
+  personas as part of this decision. The reach check is pure-logic and
   bats-covered per ADR-0004, and that coverage is now load-bearing rather than
   merely good practice.
 - **Blast radius is coarser.** Ring membership for personas is the router's, so
