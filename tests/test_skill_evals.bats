@@ -578,6 +578,58 @@ SH
   [ "$(jq '.cases[0].score' <<<"$output")" = "0.2" ]
 }
 
+@test "llm-judge mode: qa-lead resolves its own qa-lead/judge.md, not the shared judge.md (AC #10, #1645)" {
+  # qa-lead emits a prose test-risk advisory, so it needs its OWN judge rubric —
+  # the shared evals/judge.md grades a deep-review JSON verdict (decision/risk/
+  # findings) and marks a correct prose advisory down for structure it never emits.
+  # scorer.json must therefore point at qa-lead/judge.md (mirroring
+  # solution-architect's per-persona judge), and run-eval.sh must resolve THAT file,
+  # never the shared judge.md. Both rubrics carry a distinct marker so the judge
+  # stub can prove which one the scorer assembled into the prompt — fully offline.
+  mkdir -p "$TMP/evals/qa-lead/holdout"
+  cat >"$TMP/evals/qa-lead/scorer.json" <<'JSON'
+{"mode": "llm-judge", "judge_prompt": "qa-lead/judge.md", "pass_threshold": 0.7, "gate_threshold": 0.7}
+JSON
+  cat >"$TMP/evals/judge.md" <<'MD'
+# Shared deep-review judge
+SHARED_JUDGE_MARKER
+MD
+  cat >"$TMP/evals/qa-lead/judge.md" <<'MD'
+# QA Lead test-risk advisory judge
+QA_LEAD_JUDGE_MARKER
+MD
+  cat >"$TMP/evals/qa-lead/holdout/cases.jsonl" <<'JSONL'
+{"id": "qa-hold-payment", "input": "MARKER_ESCALATE\nMoney path, happy-only tests.", "expected": {"escalate": true, "risk": "HIGH", "recommend": "add declined/idempotency/refund"}}
+JSONL
+
+  QA_SKILL_STUB="$TMP/qa_skill_stub.sh"
+  cat >"$QA_SKILL_STUB" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+echo 'CANDIDATE_TOKEN Risk tier: HIGH. Add declined/idempotency/refund cases. Escalate? yes.'
+SH
+  chmod +x "$QA_SKILL_STUB"
+
+  # Judge stub: passes ONLY when the persona rubric reached it AND the shared
+  # rubric did not. Wrong resolution (shared judge, or persona judge absent) fails.
+  QA_JUDGE_STUB="$TMP/qa_judge_stub.sh"
+  cat >"$QA_JUDGE_STUB" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+prompt="$1"
+grep -q QA_LEAD_JUDGE_MARKER "$prompt" || { echo '{"score": 0, "reason": "persona judge qa-lead/judge.md not resolved"}'; exit 0; }
+grep -q SHARED_JUDGE_MARKER "$prompt" && { echo '{"score": 0, "reason": "shared judge.md wrongly used"}'; exit 0; }
+echo '{"score": 0.9, "reason": "persona judge resolved"}'
+SH
+  chmod +x "$QA_JUDGE_STUB"
+
+  EVALS_DIR="$TMP/evals" EVAL_ENGINE_CMD="$QA_SKILL_STUB" EVAL_JUDGE_CMD="$QA_JUDGE_STUB" \
+    run --separate-stderr bash "$SCORER" qa-lead
+  [ "$status" -eq 0 ]
+  [ "$(jq '.passed' <<<"$output")" -eq 1 ]
+  [ "$(jq '.cases[0].score' <<<"$output")" = "0.9" ]
+}
+
 @test "absent scorer.json defaults to deterministic mode (triage unchanged)" {
   # Triage has no scorer.json in the fixture; it must still score deterministically.
   EVALS_DIR="$TMP/evals" EVAL_ENGINE_CMD="$STUB_OK" \
