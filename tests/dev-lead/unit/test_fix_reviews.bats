@@ -1386,6 +1386,7 @@ GITEOF
     export PATH='$STUB_BIN_DIR:$PATH'
     bash '$FIX_REVIEWS_SCRIPT'
   " 2>&1
+  [ "$status" -eq 0 ]
 
   # The pass advanced the head, so the resolution gate was OPEN (not the #1617 case)...
   [[ "$output" != *"resolution gate closed"* ]]

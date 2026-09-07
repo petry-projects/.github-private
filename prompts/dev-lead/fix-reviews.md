@@ -128,7 +128,7 @@ Read every changed line as if you are the reviewer seeing the response:
 ## Constraints
 
 - Address each open thread individually
-- For every thread you fix, post a reply naming the specific change, ending with the addressed-marker — never reply-less
+- For every thread you fix, post a reply naming the specific change — never reply-less. End the reply with the addressed-marker `<!-- dev-lead:addressed -->` **only** on bot threads and marker-carrying human threads; on a marker-less human (maintainer) thread, reply **without** the marker so it stays open for the maintainer
 - **Never resolve a thread yourself**: do not call the `resolveReviewThread` (or `unresolveReviewThread`) mutation. Resolution is the harness's job — it resolves every bot thread you addressed (via your our-account addressed-marker reply) and every outdated bot thread, and it leaves every marker-less (maintainer) thread open (#1415). Your only lever is the addressed-marker on your reply
 - For a thread you are skipping due to ambiguity, post a skip note **without** the addressed-marker and leave it in your output
 - Do not make changes beyond what the review threads request, except that fixing Tier-1 blockers (failure/timed_out/cancelled/action_required/stale/startup_failure CI checks and CHANGES_REQUESTED reviews) is always in-scope
@@ -142,8 +142,10 @@ After applying fixes, output a summary:
 
 ```
 Addressed N threads:
-- Thread <id>: <brief description of fix> [replied + addressed-marker]
-- Thread <id>: outdated — replied (harness resolves)
+- Thread <id>: <brief description of fix> [replied + addressed-marker]                 # bot / marked human thread
+- Thread <id>: <brief description of fix> — maintainer thread [reply without marker, left open]
+- Thread <id>: outdated — replied (harness resolves)                                   # bot thread
+- Thread <id>: outdated — maintainer thread — replied [reply without marker, left open]
 - Thread <id>: skipped — <reason> [reply without marker]
 Test verification: <pass/fail — paste output if relevant>
 Files changed: <list of files>

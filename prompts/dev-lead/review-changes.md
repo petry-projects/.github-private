@@ -112,7 +112,7 @@ Read all your changes from the reviewer's perspective:
 
 - Treat human reviewer feedback with high priority — implement exactly what is asked
 - Write tests before implementing new behavior (for threads that introduce new functionality)
-- For every thread you fix, post a reply naming the specific change, ending with the addressed-marker — never reply-less
+- For every thread you fix, post a reply naming the specific change — never reply-less. Stamp the addressed-marker `<!-- dev-lead:addressed -->` **only** on bot or marker-carrying human threads; on a marker-less human (maintainer) thread, reply **without** the marker and leave it open for the maintainer (#1415)
 - When you fix a failing check, your posted comment must state what the check verifies and why this diff makes that true — not just that the check now passes (#1468); never make a check green by changing what it asserts
 - **Never resolve a thread yourself**: do not call the `resolveReviewThread` (or `unresolveReviewThread`) mutation. Resolution is the harness's job; your only lever is the addressed-marker on your reply
 - For a thread you are intentionally skipping, post a skip note **without** the addressed-marker and explain why in your output
@@ -127,8 +127,10 @@ After applying fixes, output a summary:
 ```
 PR: #${PR_NUMBER} - ${PR_TITLE}
 Human review threads addressed: N
-- Thread <author>: <brief description of change> [replied + addressed-marker]
-- Thread <author>: outdated — replied (harness resolves)
+- Thread <author>: <brief description of change> [replied + addressed-marker]              # bot / marked thread
+- Thread <author>: <brief description of change> — maintainer thread [reply without marker, left open]
+- Thread <author>: outdated — replied (harness resolves)                                   # bot thread
+- Thread <author>: outdated — maintainer thread — replied [reply without marker, left open]
 - Thread <author>: skipped — <reason> [reply without marker]
 Failing checks fixed: N
 - <check>: verifies <invariant/behavior>; diff makes it true by <root-cause change>
