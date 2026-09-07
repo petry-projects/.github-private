@@ -102,6 +102,7 @@ runtime:
   identity:
     account: don-petry
     credential: GH_PAT_DON_PETRY
+  reusable: .github/workflows/dev-lead-reusable.yml
 
 evals:
   required_before: stable
