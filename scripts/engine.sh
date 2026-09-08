@@ -1013,11 +1013,14 @@ run_triage() {
   return "$rc"
 }
 
-# run_agentic <prompt_file> <model> [tier] [allowed_tools]
+# run_agentic <prompt_file> <model> [tier] [allowed_tools] [skip_mcp]
 # Used by: review-one-pr.sh (full tool access) and run_persona (Bash-only, to
 # match the live persona runtime — see run_persona).
 # allowed_tools defaults to the full review posture "Bash,Read,Grep,Glob"; callers
 # that must mirror a narrower runtime pass their own comma-separated set.
+# skip_mcp (non-empty) bypasses MCP merging so allowed_tools is passed through
+# verbatim — used by run_persona, whose live runtime grants no MCP tools, so the
+# opt-in MCP knobs must never widen its Bash-only allowlist (#1696).
 #
 # No retry here: callers redirect stdout to a file, so a retry inside this
 # function would append the second attempt's output to a partial first-attempt
@@ -1030,6 +1033,7 @@ run_agentic() {
   local model="$2"
   local tier="${3:-deep}"
   local _allowed_tools="${4:-Bash,Read,Grep,Glob}"
+  local _skip_mcp="${5:-}"
   local _tok_tmp="" rc=0
   if [ -n "${TOKEN_LOG_FILE:-}" ]; then
     unset _ENGINE_USAGE_OUT
@@ -1064,7 +1068,15 @@ run_agentic() {
         _agentic_chain="$model"
       fi
       # Thread the opt-in MCP config (no-op when REVIEW_MCP_CONFIG is unset).
-      _mcp_review_flags "$_allowed_tools"
+      # The persona parity path (skip_mcp) bypasses merging entirely so the
+      # allowlist stays exactly the Bash-only posture the live persona runtime
+      # ships — MCP knobs must never widen it to Bash,<MCP tools> (#1696).
+      if [ -n "$_skip_mcp" ]; then
+        _MCP_FLAGS=()
+        _MCP_ALLOWED_TOOLS="$_allowed_tools"
+      else
+        _mcp_review_flags "$_allowed_tools"
+      fi
       if [ -n "$_tok_tmp" ]; then
         _claude_chain_invoke "$_agentic_chain" "$prompt_file" "$DEEP_TIMEOUT_SEC" \
           --permission-mode acceptEdits \
@@ -1145,7 +1157,20 @@ run_agentic() {
 # a weaker model — so a scorer.json declaring `"engine": "persona"` routes here
 # instead. Not used by any non-persona skill.
 run_persona() {
-  run_agentic "$1" "$ENGINE_DEEP_MODEL" deep "Bash"
+  # The live persona runtime is Claude Opus with `--allowedTools Bash` only
+  # (persona-runner-reusable.yml). Only the claude engine honors that Bash-only
+  # allowlist: gemini uses gemini-2.5-pro and ignores --allowed-tools, copilot
+  # runs o4-mini with --yolo — either would score a differently-modelled, more
+  # tool-capable artifact than production ships. A persona parity score under a
+  # non-claude engine is meaningless, so fail fast rather than silently gate the
+  # wrong artifact (#1696).
+  if [ "$REVIEW_ENGINE" != "claude" ]; then
+    echo "::error::run_persona requires REVIEW_ENGINE=claude (persona parity is Claude Opus + Bash-only); got '$REVIEW_ENGINE'" >&2
+    return 1
+  fi
+  # skip_mcp: the persona workflow grants no MCP tools, so parity must never widen
+  # the allowlist beyond Bash even when REVIEW_MCP_CONFIG is set (#1696).
+  run_agentic "$1" "$ENGINE_DEEP_MODEL" deep "Bash" skip-mcp
 }
 
 # run_writer <prompt_file> [model]

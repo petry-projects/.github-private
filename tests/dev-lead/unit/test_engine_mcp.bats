@@ -129,6 +129,36 @@ _source_engine() {
   ! grep -q -- "--allowed-tools Bash,Read,Grep,Glob" "$ARGS_RECORD"
 }
 
+@test "persona: MCP knobs set → run_persona still passes EXACTLY --allowed-tools Bash (#1696)" {
+  # The live persona workflow grants no MCP tools. Even with the opt-in MCP knobs
+  # set, the parity tier must not widen the allowlist to Bash,<MCP tools> — else
+  # the gate scores a more tool-capable artifact than production runs.
+  _source_engine "claude"
+  export REVIEW_MCP_CONFIG="$MCP_CONFIG_FILE"
+  export REVIEW_MCP_ALLOWED_TOOLS="mcp__context7__*"
+  run run_persona "$TEST_PROMPT"
+  [ "$status" -eq 0 ]
+  # Exactly Bash: present, and NOT followed by a comma-appended MCP tool.
+  grep -q -- "--allowed-tools Bash" "$ARGS_RECORD"
+  ! grep -q -- "--allowed-tools Bash," "$ARGS_RECORD"
+  # And the MCP config flags themselves must not be threaded for persona parity.
+  ! grep -q -- "--mcp-config" "$ARGS_RECORD"
+  ! grep -q -- "--strict-mcp-config" "$ARGS_RECORD"
+}
+
+@test "persona: non-claude engine → run_persona fails fast, no engine call (#1696)" {
+  # Gemini ignores --allowed-tools and copilot runs --yolo, so neither reproduces
+  # the Claude Opus + Bash-only persona posture. run_persona must refuse rather
+  # than gate a differently-modelled, more tool-capable artifact.
+  _source_engine "gemini"
+  run run_persona "$TEST_PROMPT"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"::error::"* ]]
+  [[ "$output" == *"REVIEW_ENGINE=claude"* ]]
+  # It bailed before invoking any engine.
+  [ ! -s "$ARGS_RECORD" ]
+}
+
 # ── Knob set: MCP flags threaded into agentic ────────────────────────────────
 
 @test "agentic: REVIEW_MCP_CONFIG set → MCP flags appended to claude call" {
