@@ -12,6 +12,14 @@ source "$(dirname "$0")/lib/git-identity.sh"
 source "$(dirname "$0")/lib/pr-worktree.sh"
 source "$(dirname "$0")/lib/auto-merge.sh"
 source "$(dirname "$0")/lib/pr-automation-budget.sh"
+# shadow_mode_active / shadow_apply_suppression (#1713): total PR-output
+# suppression when this lane runs in shadow mode.
+source "$(dirname "$0")/lib/shadow-suppress.sh"
+
+# In shadow mode, force the already-tested dry-run "post nothing" path so no
+# PR output escapes. Must run before any posting site.
+DEV_LEAD_DRY_RUN="${DEV_LEAD_DRY_RUN:-false}"
+shadow_apply_suppression
 
 PR_NUMBER="${PR_NUMBER:-}"
 HEAD_SHA="${HEAD_SHA:-}"

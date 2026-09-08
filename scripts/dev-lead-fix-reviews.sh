@@ -13,12 +13,18 @@ source "$(dirname "$0")/lib/maintainer-review-thread-gate.sh"
 source "$(dirname "$0")/lib/conflict-integrity.sh"
 source "$(dirname "$0")/lib/review-change-evidence.sh"
 source "$(dirname "$0")/lib/resolution-integrity.sh"
+# shadow_mode_active / shadow_apply_suppression (#1713): total PR-output
+# suppression when this lane runs in shadow mode.
+source "$(dirname "$0")/lib/shadow-suppress.sh"
 
 INTENT_TYPE="${INTENT_TYPE:-fix-reviews}"
 PR_NUMBER="${PR_NUMBER:-}"
 REPO="${REPO:-${GITHUB_REPOSITORY:-}}"
 HEAD_SHA="${HEAD_SHA:-}"
 DEV_LEAD_DRY_RUN="${DEV_LEAD_DRY_RUN:-false}"
+# In shadow mode, force the already-tested dry-run "post nothing" path so no PR
+# output escapes. Must run before the budget/hold/dispatch posting sites below.
+shadow_apply_suppression
 export PROMPTS_DIR="${PROMPTS_DIR:-prompts/dev-lead}"
 # Pin PROMPTS_DIR to an absolute path now, while CWD still points at the agent
 # checkout — checkout_pr_in_worktree cds into the PR worktree, after which a
