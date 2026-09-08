@@ -2,5 +2,6 @@
   "mode": "llm-judge",
   "judge_prompt": "qa-lead/judge.md",
   "pass_threshold": 0.7,
-  "gate_threshold": 0.7
+  "gate_threshold": 0.7,
+  "engine": "persona"
 }

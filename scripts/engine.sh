@@ -893,6 +893,19 @@ _record_engine_tokens() {
     "$input_tokens" "$cache_read_tokens" "$output_tokens" "$context" "$cache_write_tokens" || true
 }
 
+# _record_model_used <model>
+# Records the model that ACTUALLY produced the final output to ENGINE_MODEL_USED_FILE
+# when that path is set (no-op otherwise, so live review paths pay nothing). A caller
+# that runs the engine inside a command substitution — the eval scorer,
+# scripts/evals/run-eval.sh — cannot read an exported var back across the `$(...)`
+# subshell boundary, but it CAN read a file. So a rate-limit fallback down the chain
+# (e.g. opus -> sonnet) surfaces as the observed model in the eval report instead of
+# being silently attributed to the tier's declared model (#1686 AC #1).
+_record_model_used() {
+  [ -n "${ENGINE_MODEL_USED_FILE:-}" ] || return 0
+  printf '%s\n' "$1" >"$ENGINE_MODEL_USED_FILE" 2>/dev/null || true
+}
+
 # _mcp_review_flags <base_allowed_tools>
 # Threads the opt-in MCP config into the claude agentic/duck tiers. Populates two
 # globals for the caller to splice into the claude --print invocation:
@@ -996,6 +1009,7 @@ run_triage() {
         _triage_used="$ENGINE_TRIAGE_MODEL"
       fi
       _record_engine_tokens "triage" "$REVIEW_ENGINE" "$_triage_used" "$prompt_file" "$_tok_tmp"
+      _record_model_used "$_triage_used"
       [ -n "$_tok_tmp" ] && rm -f "$_tok_tmp"
       return 0
     fi
@@ -1013,9 +1027,14 @@ run_triage() {
   return "$rc"
 }
 
-# run_agentic <prompt_file> <model> [tier]
-# Used by: review-one-pr.sh only (not the dev-lead writer pipeline).
-# Full tool access (Bash, Read, Grep, Glob). Output to stdout.
+# run_agentic <prompt_file> <model> [tier] [allowed_tools] [skip_mcp]
+# Used by: review-one-pr.sh (full tool access) and run_persona (Bash-only, to
+# match the live persona runtime — see run_persona).
+# allowed_tools defaults to the full review posture "Bash,Read,Grep,Glob"; callers
+# that must mirror a narrower runtime pass their own comma-separated set.
+# skip_mcp (non-empty) bypasses MCP merging so allowed_tools is passed through
+# verbatim — used by run_persona, whose live runtime grants no MCP tools, so the
+# opt-in MCP knobs must never widen its Bash-only allowlist (#1696).
 #
 # No retry here: callers redirect stdout to a file, so a retry inside this
 # function would append the second attempt's output to a partial first-attempt
@@ -1027,6 +1046,8 @@ run_agentic() {
   local prompt_file="$1"
   local model="$2"
   local tier="${3:-deep}"
+  local _allowed_tools="${4:-Bash,Read,Grep,Glob}"
+  local _skip_mcp="${5:-}"
   local _tok_tmp="" rc=0
   if [ -n "${TOKEN_LOG_FILE:-}" ]; then
     unset _ENGINE_USAGE_OUT
@@ -1061,7 +1082,15 @@ run_agentic() {
         _agentic_chain="$model"
       fi
       # Thread the opt-in MCP config (no-op when REVIEW_MCP_CONFIG is unset).
-      _mcp_review_flags "Bash,Read,Grep,Glob"
+      # The persona parity path (skip_mcp) bypasses merging entirely so the
+      # allowlist stays exactly the Bash-only posture the live persona runtime
+      # ships — MCP knobs must never widen it to Bash,<MCP tools> (#1696).
+      if [ -n "$_skip_mcp" ]; then
+        _MCP_FLAGS=()
+        _MCP_ALLOWED_TOOLS="$_allowed_tools"
+      else
+        _mcp_review_flags "$_allowed_tools"
+      fi
       if [ -n "$_tok_tmp" ]; then
         _claude_chain_invoke "$_agentic_chain" "$prompt_file" "$DEEP_TIMEOUT_SEC" \
           --permission-mode acceptEdits \
@@ -1123,9 +1152,60 @@ run_agentic() {
       _agentic_used="$_GEMINI_CHAIN_MODEL_USED"
     fi
     _record_engine_tokens "$tier" "$REVIEW_ENGINE" "$_agentic_used" "$prompt_file" "$_tok_tmp"
+    _record_model_used "$_agentic_used"
   fi
   [ -n "$_tok_tmp" ] && rm -f "$_tok_tmp"
   return "$rc"
+}
+
+# run_persona <prompt_file>
+# Eval-harness parity tier for persona advisory skills (#1686). Bridges the
+# eval scorer's one-argument calling convention (`<cmd> <prompt_file>`, see
+# scripts/evals/run-eval.sh) to run_agentic's `<prompt_file> <model> [tier]
+# [allowed_tools]` shape WITHOUT changing that convention for every existing skill.
+# It scores the skill on the SAME tier + tool posture the live persona runtime uses
+# (.github/workflows/persona-runner-reusable.yml: `--fallback-model opus` +
+# `--allowedTools Bash`): the deep (Opus) model chain, allowed ONLY the Bash tool.
+# It must NOT use run_agentic's default review posture (Bash,Read,Grep,Glob), which
+# would score a more tool-capable artifact than the one that ships (#1686). A persona
+# eval that scored the Haiku-tier run_triage would likewise gate the wrong artifact —
+# a weaker model — so a scorer.json declaring `"engine": "persona"` routes here
+# instead. Not used by any non-persona skill.
+run_persona() {
+  # The live persona runtime is Claude Opus with `--allowedTools Bash` only
+  # (persona-runner-reusable.yml). Only the claude engine honors that Bash-only
+  # allowlist: gemini uses gemini-2.5-pro and ignores --allowed-tools, copilot
+  # runs o4-mini with --yolo — either would score a differently-modelled, more
+  # tool-capable artifact than production ships. A persona parity score under a
+  # non-claude engine is meaningless, so fail fast rather than silently gate the
+  # wrong artifact (#1696).
+  if [ "$REVIEW_ENGINE" != "claude" ]; then
+    echo "::error::run_persona requires REVIEW_ENGINE=claude (persona parity is Claude Opus + Bash-only); got '$REVIEW_ENGINE'" >&2
+    return 1
+  fi
+  # Environment boundary (#1696): the eval feeds an UNTRUSTED held-out case into
+  # the prompt and the parity posture grants the Bash tool, so a prompt-injected
+  # shell command could try to read a token, push to the repo, or hit the GitHub
+  # API. The in-prompt untrusted-data directive (prompts/qa-lead/advisory.md) is
+  # only defence-in-depth — a boundary that lives solely in the model prompt is
+  # not a boundary. Enforce it OUTSIDE the prompt here: run the invocation in a
+  # subshell with every GitHub credential scrubbed from the environment, so even
+  # if the model obeys an injection there is no token to exfiltrate and no
+  # authenticated path to write a repo or call the GitHub API. This is faithful
+  # to parity, not a departure from it: parity is the MODEL + TOOL posture (Opus
+  # + Bash-only), and the live persona runtime is deliberately read-only with no
+  # write token (advisory.md) — so denying credentials makes the eval MORE like
+  # production, never less. (The model API call needs network and its own
+  # CLAUDE_CODE_OAUTH_TOKEN, and the skill must read the checked-out BMAD data,
+  # so network egress to the model and repo READ access are intentionally
+  # retained — they are required for the eval to run at all.)
+  (
+    unset GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN \
+          GITHUB_API_TOKEN GH_HOST
+    # skip_mcp: the persona workflow grants no MCP tools, so parity must never widen
+    # the allowlist beyond Bash even when REVIEW_MCP_CONFIG is set (#1696).
+    run_agentic "$1" "$ENGINE_DEEP_MODEL" deep "Bash" skip-mcp
+  )
 }
 
 # run_writer <prompt_file> [model]
