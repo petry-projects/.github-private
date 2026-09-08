@@ -1183,9 +1183,29 @@ run_persona() {
     echo "::error::run_persona requires REVIEW_ENGINE=claude (persona parity is Claude Opus + Bash-only); got '$REVIEW_ENGINE'" >&2
     return 1
   fi
-  # skip_mcp: the persona workflow grants no MCP tools, so parity must never widen
-  # the allowlist beyond Bash even when REVIEW_MCP_CONFIG is set (#1696).
-  run_agentic "$1" "$ENGINE_DEEP_MODEL" deep "Bash" skip-mcp
+  # Environment boundary (#1696): the eval feeds an UNTRUSTED held-out case into
+  # the prompt and the parity posture grants the Bash tool, so a prompt-injected
+  # shell command could try to read a token, push to the repo, or hit the GitHub
+  # API. The in-prompt untrusted-data directive (prompts/qa-lead/advisory.md) is
+  # only defence-in-depth — a boundary that lives solely in the model prompt is
+  # not a boundary. Enforce it OUTSIDE the prompt here: run the invocation in a
+  # subshell with every GitHub credential scrubbed from the environment, so even
+  # if the model obeys an injection there is no token to exfiltrate and no
+  # authenticated path to write a repo or call the GitHub API. This is faithful
+  # to parity, not a departure from it: parity is the MODEL + TOOL posture (Opus
+  # + Bash-only), and the live persona runtime is deliberately read-only with no
+  # write token (advisory.md) — so denying credentials makes the eval MORE like
+  # production, never less. (The model API call needs network and its own
+  # CLAUDE_CODE_OAUTH_TOKEN, and the skill must read the checked-out BMAD data,
+  # so network egress to the model and repo READ access are intentionally
+  # retained — they are required for the eval to run at all.)
+  (
+    unset GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN \
+          GITHUB_API_TOKEN GH_HOST
+    # skip_mcp: the persona workflow grants no MCP tools, so parity must never widen
+    # the allowlist beyond Bash even when REVIEW_MCP_CONFIG is set (#1696).
+    run_agentic "$1" "$ENGINE_DEEP_MODEL" deep "Bash" skip-mcp
+  )
 }
 
 # run_writer <prompt_file> [model]
