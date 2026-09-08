@@ -13,6 +13,7 @@ source "$(dirname "$0")/lib/maintainer-review-thread-gate.sh"
 source "$(dirname "$0")/lib/conflict-integrity.sh"
 source "$(dirname "$0")/lib/review-change-evidence.sh"
 source "$(dirname "$0")/lib/resolution-integrity.sh"
+source "$(dirname "$0")/lib/addressed-claim-verify.sh"
 
 INTENT_TYPE="${INTENT_TYPE:-fix-reviews}"
 PR_NUMBER="${PR_NUMBER:-}"
@@ -689,11 +690,16 @@ resolve_addressed_bot_threads() {
     return 0
   fi
 
+  # Full-thread fetch (#1692 AC4): the earlier `comments(last:1)` read saw only the
+  # latest reply, so a maintainer disposition posted before the model appended its
+  # marker went invisible (the PR #1044 hole). Read ALL comments — author login +
+  # __typename + body + createdAt — plus the thread `path` for the AC3 advisory.
   local node_query='query($id:ID!){
     node(id:$id){
       ... on PullRequestReviewThread {
         isResolved
-        latest: comments(last:1){nodes{author{login} body}}
+        path
+        comments(first:100){nodes{author{login __typename} body createdAt}}
       }
     }
   }'
@@ -715,8 +721,9 @@ resolve_addressed_bot_threads() {
       echo "::notice::skipping thread ${id} — already resolved or state unknown at re-check (${cur_resolved})"
       continue
     fi
-    reply_author=$(printf '%s' "$node_json" | jq -r '.data.node.latest.nodes?[0]?.author?.login // ""' 2>/dev/null || echo "")
-    reply_body=$(printf '%s' "$node_json" | jq -r '.data.node.latest.nodes?[0]?.body // ""' 2>/dev/null || echo "")
+    # The latest reply is the last node of the full-thread fetch.
+    reply_author=$(printf '%s' "$node_json" | jq -r '.data.node.comments.nodes[-1]?.author?.login // ""' 2>/dev/null || echo "")
+    reply_body=$(printf '%s' "$node_json" | jq -r '.data.node.comments.nodes[-1]?.body // ""' 2>/dev/null || echo "")
     # The addressed-marker only authorizes resolution when OUR account posted it.
     # A marker-bearing reply from any other human or bot is not our confirmation.
     if [ "$reply_author" != "$bot_user" ] && [ "$reply_author" != "$bot_user_stripped" ]; then
@@ -726,10 +733,88 @@ resolve_addressed_bot_threads() {
     # And the reply must actually carry the addressed-marker — a skip note or any
     # other reply leaves the thread open.
     review_reply_is_addressed_marker "$reply_body" || continue
+
+    # ── #1692: the marker is now a VERIFIABLE CLAIM, not an assertion ──────────
+    # A marker with no claim payload (pre-migration replies) is unverifiable — do
+    # NOT resolve (the safe direction; may leave some existing threads open until
+    # re-run). A malformed/contract-violating claim is likewise unverifiable.
+    local claim_json parse_reason
+    if ! claim_json=$(acv_parse_claim "$reply_body"); then
+      parse_reason="$claim_json"
+      echo "::notice::skipping thread ${id} — addressed-marker claim not verifiable (${parse_reason:-unparseable}); leaving unresolved (#1692)"
+      continue
+    fi
+    local claim_sha
+    claim_sha=$(printf '%s' "$claim_json" | jq -r '.sha // ""' 2>/dev/null || echo "")
+
+    # Gather the git facts for the claimed commit (the only impure step). Fail
+    # closed: an unresolvable commit reads as on_head=false with empty diffs.
+    local facts on_head own_files cumulative_files commit_date
+    facts=$(acv_gather_commit_facts "$claim_sha")
+    on_head=$(printf '%s' "$facts" | jq -r '.on_head // false' 2>/dev/null || echo "false")
+    if [ "$on_head" != "true" ]; then
+      echo "::notice::skipping thread ${id} — claimed commit ${claim_sha} is not on PR #${PR_NUMBER}'s head branch; leaving unresolved (#1692)"
+      continue
+    fi
+    own_files=$(printf '%s' "$facts" | jq -r '.own_files[]? // empty' 2>/dev/null || echo "")
+    cumulative_files=$(printf '%s' "$facts" | jq -r '.cumulative_files[]? // empty' 2>/dev/null || echo "")
+    commit_date=$(printf '%s' "$facts" | jq -r '.commit_date // ""' 2>/dev/null || echo "")
+
+    # File-level hard gate (AC2): non-empty diff touching ≥1 claimed file, named
+    # commit's own diff first then the cumulative <sha>^..HEAD range.
+    local claim_files_json verify_range
+    claim_files_json=$(printf '%s' "$claim_json" | jq -c '.files' 2>/dev/null || echo "[]")
+    if ! verify_range=$(acv_verify_intersection "$claim_files_json" "$own_files" "$cumulative_files"); then
+      echo "::notice::skipping thread ${id} — claim ${claim_sha} not verified against the diff (${verify_range}); leaving unresolved (#1692)"
+      continue
+    fi
+    if [ "$verify_range" = "cumulative" ]; then
+      echo "::notice::thread ${id} verified from the cumulative range ${claim_sha}^..HEAD (fix amended/split across commits) (#1692)"
+    fi
+
+    # AC3: file-level is the hard gate; region proximity is advisory. If the claim's
+    # files do not include the thread's own path, still resolve but surface the
+    # mismatch so it is visible without producing a false block.
+    local thread_path
+    thread_path=$(printf '%s' "$node_json" | jq -r '.data.node.path // ""' 2>/dev/null || echo "")
+    if [ -n "$thread_path" ]; then
+      local path_in_claim
+      path_in_claim=$(printf '%s' "$claim_json" | jq -r --arg p "$thread_path" 'if (.files | index($p)) != null then "yes" else "no" end' 2>/dev/null || echo "no")
+      if [ "$path_in_claim" != "yes" ]; then
+        echo "::warning::thread ${id}: claimed files do not include the thread's path '${thread_path}' (claim: $(printf '%s' "$claim_files_json")) — resolving on the file-level gate, but the region mismatch is advisory (#1692 AC3)"
+      fi
+    fi
+
+    # AC4: honour a standing maintainer disposition. Scan ALL comments; if a
+    # marker-less human maintainer asserted a required disposition, resolve only if
+    # the verified commit postdates it. Unparseable disposition -> fail closed.
+    local comments_json disposition disp_rc
+    comments_json=$(printf '%s' "$node_json" | jq -c '.data.node.comments.nodes // []' 2>/dev/null || echo "[]")
+    disposition=$(acv_latest_maintainer_disposition "$comments_json" "$bot_user") && disp_rc=0 || disp_rc=$?
+    if [ "${disp_rc:-0}" -eq 2 ]; then
+      echo "::notice::skipping thread ${id} — a maintainer disposition could not be parsed; leaving unresolved (fail closed) (#1692 AC4)"
+      continue
+    fi
+    if [ "${disp_rc:-0}" -eq 0 ] && [ -n "$disposition" ]; then
+      # Require the verified-commit date strictly after the disposition. Both are
+      # Z-terminated UTC ISO-8601 instants of identical width (commit_date from
+      # acv_gather_commit_facts, disposition from GitHub's createdAt), so a pure
+      # Bash lexicographical compare orders them chronologically — no jq needed,
+      # matching the same comparison acv_latest_maintainer_disposition uses.
+      local newer="false"
+      if [ -n "$commit_date" ] && [[ "$commit_date" > "$disposition" ]]; then
+        newer="true"
+      fi
+      if [ "$newer" != "true" ]; then
+        echo "::notice::skipping thread ${id} — a maintainer disposition (${disposition}) is not postdated by the verified fix (${commit_date:-unknown}); leaving unresolved (#1692 AC4)"
+        continue
+      fi
+    fi
+
     if gh api graphql -f query='mutation($id: ID!) { resolveReviewThread(input: {threadId: $id}) { thread { isResolved } } }' \
         -f id="$id" >/dev/null 2>&1; then
       resolved_count=$((resolved_count + 1))
-      echo "::notice::resolved addressed bot thread ${id}"
+      echo "::notice::resolved addressed bot thread ${id} (claim ${claim_sha} verified via ${verify_range} range)"
     else
       echo "::warning::failed to resolve addressed bot thread ${id}"
     fi
