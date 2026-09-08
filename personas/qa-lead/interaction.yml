@@ -3,34 +3,46 @@
 # Shape fixed by docs/agentic-interaction-model.md §8.1; standalone repo-local
 # file per the §8.2 location decision (option b). Story 2 / #1404.
 #
-# qa-lead is an advisory, mention-routed persona: a human @petry-projects/qa-lead
-# mention is parsed by the shared router .github/workflows/persona-mention.yml and
-# bridged (repository_dispatch:persona-mention) to persona-runner, which posts a
-# single advisory comment as the persona's runtime.identity. It writes nothing else.
+# qa-lead is an advisory persona served on two surfaces:
+#   1. Mention-routed: a human @petry-projects/qa-lead mention is parsed by the
+#      shared router .github/workflows/persona-mention.yml and bridged
+#      (repository_dispatch:persona-mention) to persona-runner.
+#   2. Event-driven PR advisory (#1646 — [qa-lead S3]): qa-lead-pr-advisory.yml
+#      fires on pull_request:[opened, ready_for_review], gates on real test
+#      surface (scripts/qa-lead-advisory-gate.sh), and reuses the SAME
+#      persona-runner-reusable.yml to post one advisory. `synchronize` is
+#      deliberately NOT wired.
+# Both paths post a single advisory comment as the persona's runtime.identity and
+# write nothing else. The workflow's read/write split mechanically stamps the
+# <!-- persona:qa-lead --> recursion marker; the prompt is not trusted to.
 #
-# triggers.events mirror persona-mention.yml's DEPLOYED on: block (AC #3):
-# issue_comment / pull_request_review_comment / discussion_comment. Note
+# triggers.events mirror the DEPLOYED on: blocks (AC #3/#8) — the union across
+# both workflows: persona-mention.yml's issue_comment / pull_request_review_comment
+# / discussion_comment PLUS qa-lead-pr-advisory.yml's pull_request. Note
 # personas/qa-lead/persona.yml declares broader advisory surfaces (issues:labeled,
-# discussion:labeled, reviewer-assignment) that the router does not yet wire — the
-# contract records what is actually deployed, not the aspiration (persona-standards
+# discussion:labeled, reviewer-assignment) that are not yet wired — the contract
+# records what is actually deployed, not the aspiration (persona-standards
 # finding 10 / petry-projects/.github#755).
-
 schema_version: 1
 role: qa-lead
 kind: persona
 workflows:
   - .github/workflows/persona-mention.yml
+  - .github/workflows/qa-lead-pr-advisory.yml
 interaction:
   triggers:
     events:
       - issue_comment
       - pull_request_review_comment
       - discussion_comment
+      - pull_request
     timers: []
   emits:
     - "comment:advisory-response"
-  idempotency_key: "one run per mention: source_repo + item_number + comment_url"
-  concurrency_lane: "persona-runner-qa-lead-<source_repo>-<item_number>-<comment_url> (persona-runner-reusable.yml)"
+  idempotency_key: "one advisory per PR (marker scan) for the event path; one run per mention (source_repo + item_number + comment_url) for the mention path"
+  concurrency_lane: "qa-lead-pr-advisory-<pr> (event path); persona-runner-qa-lead-<source_repo>-<item_number>-<comment_url> (mention path)"
   stop_markers:
     - qa-lead:hands-off
-  budget: none
+    - needs-human-review
+    - dev-lead:needs-human
+  budget: pr-automation-budget
