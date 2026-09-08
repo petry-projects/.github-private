@@ -39,6 +39,47 @@ with `notification_setting: notifications_disabled`: it exists to route a
 webhook, not to page anyone. See
 [§4.1](https://github.com/petry-projects/.github/blob/main/standards/persona-standards.md).
 
+## Served surface: pull_request advisory (event-driven)
+
+As of #1646 ([qa-lead S3]), qa-lead is served **without being summoned** on the
+PR surface. [`qa-lead-pr-advisory.yml`](../../.github/workflows/qa-lead-pr-advisory.yml)
+is a Class 1 (event-driven) caller that fires on
+`pull_request: [opened, ready_for_review]` — `synchronize` is deliberately not
+wired, so a PR gets one advisory as it enters review, not one per push.
+
+It reuses the **one** persona runtime
+([`persona-runner-reusable.yml`](../../.github/workflows/persona-runner-reusable.yml)) —
+there is no qa-lead-specific runner. Before invoking it, a pure gate
+([`scripts/qa-lead-advisory-gate.sh`](../../scripts/qa-lead-advisory-gate.sh),
+unit-tested by `tests/test_qa_lead_advisory_gate.bats` +
+`tests/test_qa_lead_test_surface.bats`) decides whether qa-lead has anything to
+say. It stays silent unless the PR carries **real test surface** and no
+suppressor applies:
+
+- **Test surface** (`scripts/lib/qa-lead-test-surface.sh`): a PR that touches
+  tests, or changes source with no accompanying test, fires; a docs-only or a
+  verbatim stub-sync (workflow/config yaml) PR does not.
+- **Opt-out**: the `qa-lead:hands-off` label suppresses the advisory.
+- **One per PR**: the gate scans for an existing `<!-- persona:qa-lead -->`
+  marker and the caller concurrency lane serializes `opened` + `ready_for_review`
+  so the two events never stack a second comment.
+- **Human / budget gates**: `needs-human-review` (the canonical
+  `pr_has_escalation_label` check), `dev-lead:needs-human`, or an exhausted
+  per-PR automation budget (#926) all suppress it.
+
+### Soak window & noise metrics
+
+This surface is on a **two-week soak** from first deploy. It is advisory-only and
+detect-shaped — the recursion guard is the workflow's read/write split, not the
+prompt (the #860 lesson). Watch for and report:
+
+- **advisories posted vs. PRs seen** (the fire rate),
+- **skip-reason histogram** — the gate logs `skip:<reason>`
+  (`no-test-surface` / `opt-out` / `human-gated` / `budget-exhausted` /
+  `already-advised`),
+- **duplicate or self-triggered comments** — expected to be **0**; any non-zero
+  is a soak failure.
+
 ## How a mention becomes an advisory
 
 Nothing about serving `qa-lead` is persona-specific — it rides the **one shared

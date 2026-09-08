@@ -1,0 +1,179 @@
+# qa-lead PR advisory — event-driven (Class 1) serving of the pull_request surface.
+# Issue #1646 — [qa-lead S3]. 2026-09-07 ruling: serve EXACTLY
+#   on: pull_request: types: [opened, ready_for_review]
+# `synchronize` is DELIBERATELY not wired — one advisory as a PR enters review,
+# not on every push (that is the #860 noise/runaway shape we are avoiding).
+#
+# Class 1 (event-driven, E and not S and not R): a GitHub event drives it, there
+# is no schedule, and it is not a reusable. See docs/agentic-interaction-model.md §4.
+#
+# Two jobs:
+#   gate   — pure policy. Gathers the PR's signals (changed files, labels, whether
+#            a qa-lead advisory already exists, whether the automation budget is
+#            exhausted) and calls scripts/qa-lead-advisory-gate.sh. Emits a single
+#            `decision` output. This is where AC #3–#6 live, unit-tested by
+#            tests/test_qa_lead_advisory_gate.bats + tests/test_qa_lead_test_surface.bats.
+#   advise — only when decision == run. Reuses the ONE persona runner
+#            (persona-runner-reusable.yml, AC #2) — no qa-lead-specific runner.
+#            The runner's read/write split mechanically stamps the
+#            `<!-- persona:qa-lead -->` recursion marker (AC #7); the prompt is not
+#            trusted to.
+#
+# Idempotency (AC #5): the gate scans the PR for an existing marker AND the caller
+# concurrency group serializes opened + ready_for_review for one PR, so the two
+# events cannot both clear the gate and double-post.
+#
+# Soak (AC #9): watch this workflow's runs for the first two weeks. Noise metrics
+# to report — advisories posted vs. PRs seen, skip-reason histogram (the gate
+# prints skip:<reason>), and any duplicate/self-triggered comment (should be 0).
+name: qa-lead PR advisory
+
+on:
+  pull_request:
+    types: [opened, ready_for_review]
+
+permissions: {}
+
+concurrency:
+  # Serialize opened + ready_for_review for the SAME PR so they cannot both pass
+  # the already-advised check and stack two advisories. Never cancel: a running
+  # advisory should finish and post before the next event is evaluated.
+  group: qa-lead-pr-advisory-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    # Fork PRs on `pull_request` cannot read the org secrets (only same-repo
+    # branches can), so the advise job's `secrets: inherit` would hand the persona
+    # runner empty secrets and fail. Skip the whole advisory for fork PRs —
+    # silence is the safe default (the mention surface still serves forks via the
+    # router). This also keeps the gate's `decision` output empty for forks, so the
+    # advise job's `if` never selects.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read        # checkout the gate script + libs
+      pull-requests: read    # read changed files, labels, comments
+    outputs:
+      decision: ${{ steps.decide.outputs.decision }}
+    steps:
+      - name: Checkout gate tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Decide whether qa-lead advises this PR
+        id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          # shellcheck source=scripts/qa-lead-advisory-gate.sh
+          source scripts/qa-lead-advisory-gate.sh
+
+          # Fail closed: qa-lead advises only when EVERY signal is available.
+          # Silence is the safe default, so any signal-gathering API failure must
+          # SKIP — never degrade to an empty value ([] labels, [] events, "no
+          # marker") that would bypass a suppressor or duplicate an advisory.
+          skip_closed() {
+            echo "gate: $1 — failing closed (skip) for ${REPO}#${PR}"
+            echo "decision=skip" >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+
+          # AC #3 — changed files. Fetch the raw JSON array of filenames so the
+          # list can be validated BEFORE it is flattened to the newline-delimited
+          # text qa_lead_test_surface consumes. An empty list on success is fine
+          # (an empty PR does not fire); only an API failure skips.
+          if ! files_json="$(gh api --paginate --slurp \
+            "repos/${REPO}/pulls/${PR}/files" --jq '[.[][].filename]')"; then
+            skip_closed "changed-file list unavailable"
+          fi
+
+          # Completeness: the /pulls/{n}/files endpoint caps at 3000 files, so a
+          # larger PR yields a truncated list that could omit a test/source path
+          # and mislabel the PR. Compare received vs. the declared changed_files
+          # count and fail closed (skip) on an incomplete list — never advise off
+          # partial data.
+          if ! declared_files="$(gh api "repos/${REPO}/pulls/${PR}" \
+            --jq '.changed_files')"; then
+            skip_closed "changed-file count unavailable"
+          fi
+          received_files="$(jq 'length' <<< "$files_json")"
+          if ! qa_lead_file_list_complete "$received_files" "$declared_files"; then
+            skip_closed "changed-file list incomplete (${received_files}/${declared_files})"
+          fi
+
+          # Control characters: a filename containing an LF would split into
+          # phantom records once flattened (a docs-only PR could forge a SOURCE
+          # path and trigger the advisory). Reject before flattening.
+          if qa_lead_paths_have_control_char "$files_json"; then
+            skip_closed "changed-file list contains control characters"
+          fi
+
+          changed_paths="$(jq -r '.[]' <<< "$files_json")"
+
+          # AC #4/#6 — label names as a JSON array. A labels API failure must NOT
+          # degrade to [] — that would bypass the opt-out and human-gating
+          # suppressors and advise a PR marked hands-off / needs-human-review.
+          if ! labels_json="$(gh api "repos/${REPO}/pulls/${PR}" \
+            --jq '[.labels[]?.name]')"; then
+            skip_closed "labels unavailable"
+          fi
+
+          # AC #5 — has a qa-lead advisory already been posted? Scan issue comments
+          # (the PR shares the issues comment stream) for the recursion marker. A
+          # comment API failure is indistinguishable from "no marker", so failing
+          # open here would risk a duplicate advisory — fail closed instead.
+          marker="<!-- persona:qa-lead -->"
+          if ! comment_bodies="$(gh api --paginate \
+            "repos/${REPO}/issues/${PR}/comments" --jq '.[].body')"; then
+            skip_closed "existing-advisory scan unavailable"
+          fi
+          if grep -qF "$marker" <<< "$comment_bodies"; then
+            existing_advisory=1
+          else
+            existing_advisory=0
+          fi
+
+          # AC #6 — is the per-PR automation budget exhausted? (#860/#926 breaker)
+          # gather_pr_automation_events returns non-zero when any API call fails;
+          # a failure must NOT degrade to an empty event list (an exhausted PR
+          # would then pass the budget gate during a transient outage), so skip.
+          budget_exhausted=0
+          if events_json="$(gather_pr_automation_events "$PR" "$REPO")"; then
+            if pr_budget_exhausted "$events_json"; then
+              budget_exhausted=1
+            fi
+          else
+            skip_closed "automation-budget events unavailable"
+          fi
+
+          decision="$(qa_lead_gate_decision \
+            "$changed_paths" "$labels_json" "$existing_advisory" "$budget_exhausted" || true)"
+          echo "gate decision for ${REPO}#${PR}: ${decision}"
+          # Normalize to run|skip for the downstream `if`; keep the reason in logs.
+          if [ "$decision" = "run" ]; then
+            echo "decision=run" >> "$GITHUB_OUTPUT"
+          else
+            echo "decision=skip" >> "$GITHUB_OUTPUT"
+          fi
+
+  advise:
+    needs: gate
+    if: needs.gate.outputs.decision == 'run'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/persona-runner-reusable.yml
+    with:
+      persona: qa-lead
+      source_repo: ${{ github.repository }}
+      item_number: ${{ github.event.pull_request.number }}
+      comment_url: ''
+      requested_by: ''
+      mode: advisory
+    secrets: inherit
