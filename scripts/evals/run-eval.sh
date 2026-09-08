@@ -30,18 +30,33 @@ set -euo pipefail
 # scorer.json schema (all fields optional unless noted):
 #   { "mode": "deterministic" | "llm-judge",
 #     "judge_prompt": "<path relative to EVALS_DIR>",   # required for llm-judge
-#     "pass_threshold": <number in [0,1]> }             # llm-judge only (default 0.7)
-# Absent file => deterministic mode (keeps existing skills unchanged).
+#     "pass_threshold": <number in [0,1]>,              # llm-judge only (default 0.7)
+#     "engine": "triage" | "persona" }                  # scoring tier (default triage)
+# Absent file => deterministic mode + triage tier (keeps existing skills unchanged).
+#
+# Engine parity tier (#1686): a persona advisory must be scored on the SAME model
+# tier + tool posture the persona runtime uses, or a promotion gate measures the
+# wrong artifact. The tier is declared PER SKILL via scorer.json's `engine` field:
+#   triage  (default) -> run_triage  : Haiku-tier, NO tools — today's behaviour.
+#   persona           -> run_persona : Opus-tier, Bash-only tool posture, matching
+#                                      persona-runner-reusable.yml (--allowedTools Bash).
+# Absent declaration keeps run_triage, so existing skills are never silently
+# upgraded into a costlier model. The report records `engine_tier`/`engine_model`
+# (the DECLARED parity target) plus `engine_model_observed` (the model the engine
+# reported actually serving the cases — a single model, or a `mixed:` marker when a
+# rate-limit fallback split the run across models) so a score is never ambiguous
+# about what produced it (#1686 AC #1).
 #
 # Engine abstraction (AC #3): every model invocation goes through the engine
-# layer, NOT a re-implemented model call. By default the skill command is
-# `run_triage` and the judge command is also `run_triage` (sourced from
-# scripts/engine.sh, Haiku-tier, no tools, stdout capture). Both are injectable
-# (EVAL_ENGINE_CMD / EVAL_JUDGE_CMD) exactly as engine.sh lets REVIEW_ENGINE be
-# overridden, so offline tests can drive stubs with no network.
+# layer, NOT a re-implemented model call. The skill command defaults to the tier's
+# run_* function (above) and the judge command to `run_triage` (sourced from
+# scripts/engine.sh; the judge grades output, it is not the shipped persona). Both
+# are injectable (EVAL_ENGINE_CMD / EVAL_JUDGE_CMD) exactly as engine.sh lets
+# REVIEW_ENGINE be overridden, so offline tests can drive stubs with no network.
 #
 # Env overrides:
-#   EVAL_ENGINE_CMD   skill-under-test command, invoked as `<cmd> <prompt_file>` (default: run_triage)
+#   EVAL_ENGINE_CMD   skill-under-test command, invoked as `<cmd> <prompt_file>`
+#                     (default: the declared tier's run_* function; wins when set)
 #   EVAL_JUDGE_CMD    llm-judge command, invoked as `<cmd> <prompt_file>` (default: run_triage)
 #   SKILL_PROMPT_FILE skill markdown to score. Default resolves the flat
 #                     prompts/<skill>.md, falling back to the persona advisory
@@ -84,7 +99,11 @@ EVALS_DIR="${EVALS_DIR:-$REPO_ROOT/evals}"
 # runtime for an unrelated path) overrides the prompt root, mirroring EVALS_DIR,
 # so offline tests can point it at a fixture tree.
 EVAL_PROMPTS_DIR="${EVAL_PROMPTS_DIR:-$REPO_ROOT/prompts}"
-EVAL_ENGINE_CMD="${EVAL_ENGINE_CMD:-run_triage}"
+# EVAL_ENGINE_CMD (skill-under-test command) is resolved AFTER the per-skill
+# scorer.json tier and engine.sh have loaded (see "engine parity tier" below):
+# an explicit env override still wins, otherwise the command is derived from the
+# skill's declared tier (default: run_triage). EVAL_JUDGE_CMD keeps its Haiku-tier
+# default — the judge grades output, it is not the shipped persona being scored.
 EVAL_JUDGE_CMD="${EVAL_JUDGE_CMD:-run_triage}"
 
 die() {
@@ -135,9 +154,20 @@ scorer_config="$EVALS_DIR/$skill/scorer.json"
 SCORER_MODE="deterministic"
 JUDGE_PROMPT_FILE=""
 PASS_THRESHOLD="0.7"
+# Engine parity tier (#1686): the model tier + tool posture the skill is scored on
+# is declared PER SKILL here, never hardcoded and never a silent upgrade. Absent
+# declaration => "triage" (today's Haiku-tier, tool-less run_triage), so existing
+# skills keep their cost profile. "persona" routes to run_persona (Opus + tools),
+# matching the live persona runtime so a promotion gate scores the shipped artifact.
+ENGINE_TIER="triage"
 if [ -f "$scorer_config" ]; then
   SCORER_MODE="$(jq -r '.mode // "deterministic"' "$scorer_config")"
+  ENGINE_TIER="$(jq -r '.engine // "triage"' "$scorer_config")"
 fi
+case "$ENGINE_TIER" in
+  triage|persona) ;;
+  *) die "unknown engine tier '$ENGINE_TIER' for skill '$skill' (expected: triage, persona)" ;;
+esac
 case "$SCORER_MODE" in
   deterministic) ;;
   llm-judge)
@@ -157,10 +187,32 @@ esac
 # shellcheck source=../engine.sh
 source "$REPO_ROOT/scripts/engine.sh" >&2
 
+# Resolve the skill-under-test engine command + its model from the declared tier,
+# now that engine.sh has defined the run_* functions and ENGINE_*_MODEL. An
+# explicit EVAL_ENGINE_CMD env override still wins (offline tests / the gate drive
+# a stub), but the RECORDED tier + model reflect the declaration so a score is
+# never ambiguous about the intended parity (#1686 AC #1). ENGINE_MODEL is the
+# DECLARED tier model — the parity target we intended to score on; the actual
+# chain/fallback lives in engine.sh and is captured separately as the OBSERVED
+# model per case (see ENGINE_MODEL_USED_FILE below), so a rate-limit fallback that
+# scores a case on a different model is visible in the report rather than silently
+# attributed to the declared model.
+case "$ENGINE_TIER" in
+  triage)  _tier_default_cmd="run_triage";  ENGINE_MODEL="$ENGINE_TRIAGE_MODEL" ;;
+  persona) _tier_default_cmd="run_persona"; ENGINE_MODEL="$ENGINE_DEEP_MODEL" ;;
+esac
+EVAL_ENGINE_CMD="${EVAL_ENGINE_CMD:-$_tier_default_cmd}"
+
 results="$(mktemp)"
 work_prompt="$(mktemp)"
 work_judge="$(mktemp)"
-trap 'rm -f "$results" "$work_prompt" "$work_judge"' EXIT
+# Per-case sidecar the engine writes the ACTUALLY-USED model to (via engine.sh's
+# _record_model_used); observed_models accumulates one line per case that reported
+# a model, so the aggregate can report the observed model — or an explicit
+# mixed-model marker — distinct from the declared ENGINE_MODEL (#1686 AC #1).
+model_used_file="$(mktemp)"
+observed_models="$(mktemp)"
+trap 'rm -f "$results" "$work_prompt" "$work_judge" "$model_used_file" "$observed_models"' EXIT
 
 # extract_json <raw> — strip markdown code-fence lines so a fenced (```json … ```)
 # or lightly wrapped JSON payload parses as bare JSON. Live Haiku-tier models
@@ -293,8 +345,17 @@ while IFS= read -r line; do
   # the engine's exit status (eng_rc): a NON-ZERO exit means the call failed for
   # infra reasons (e.g. every model in the fallback chain throttled) — the only
   # signal that distinguishes a throttle from a model that answered wrong (#920).
+  # ENGINE_MODEL_USED_FILE lets the engine report the model that actually served
+  # this case back across the command-substitution boundary (an exported var can't
+  # cross `$(...)`, a file can). Truncate per case so a fallback on one case never
+  # bleeds into the next; a stub override that ignores it leaves the file empty, so
+  # the observed model stays unknown rather than being mislabeled with a real name.
   raw=""; eng_rc=0
-  raw="$("$EVAL_ENGINE_CMD" "$work_prompt")" || eng_rc=$?
+  : >"$model_used_file"
+  raw="$(ENGINE_MODEL_USED_FILE="$model_used_file" "$EVAL_ENGINE_CMD" "$work_prompt")" || eng_rc=$?
+  if [ -s "$model_used_file" ]; then
+    head -n1 "$model_used_file" >>"$observed_models"
+  fi
 
   # Dispatch on the per-skill scorer mode — never on the skill name. eng_rc is
   # threaded through so each case result records whether the engine actually ran.
@@ -304,14 +365,35 @@ while IFS= read -r line; do
   esac
 done <"$cases_file"
 
+# Resolve the OBSERVED model the engine reported serving the cases, distinct from
+# the DECLARED engine_model above: a rate-limit fallback in engine.sh's chain
+# (e.g. opus -> sonnet) serves a case on a different model than the tier declares,
+# and a promotion gate must not silently attribute the score to the declared model
+# (#1686 AC #1). One model across all cases -> that model; more than one -> an
+# explicit `mixed:` marker so the ambiguity is loud; none reported (a stub override
+# that writes no sidecar) -> empty -> null, never a real model name.
+ENGINE_MODEL_OBSERVED=""
+_obs_unique="$(sort -u "$observed_models" | sed '/^[[:space:]]*$/d')"
+_obs_count="$(printf '%s' "$_obs_unique" | grep -c . || true)"
+if [ "$_obs_count" -eq 1 ]; then
+  ENGINE_MODEL_OBSERVED="$_obs_unique"
+elif [ "$_obs_count" -gt 1 ]; then
+  ENGINE_MODEL_OBSERVED="mixed:$(printf '%s' "$_obs_unique" | paste -sd, -)"
+fi
+
 # Assemble the aggregate report. score = passed/total (0 when there are no cases).
-jq -s --arg skill "$skill" '
+jq -s --arg skill "$skill" \
+     --arg engine_tier "$ENGINE_TIER" --arg engine_model "$ENGINE_MODEL" \
+     --arg engine_model_observed "$ENGINE_MODEL_OBSERVED" '
   {
     skill:  $skill,
     total:  length,
     passed: (map(select(.pass)) | length),
     failed: (map(select(.pass | not)) | length),
     score:  (if length == 0 then 0 else ((map(select(.pass)) | length) / length) end),
+    engine_tier:  $engine_tier,
+    engine_model: $engine_model,
+    engine_model_observed: (if $engine_model_observed == "" then null else $engine_model_observed end),
     cases:  .
   }' "$results"
 

@@ -53,6 +53,33 @@ It fails (non-zero) on malformed JSONL, a missing/empty `id`, a duplicate `id`
 within a split, an `id` shared across splits, or a skill missing either split.
 The validator is exercised by `tests/test_validate_cases.bats` in CI.
 
+## The advisory context contract (#1686)
+
+Persona advisory prompts (`prompts/<role>/advisory.md`) are written for the **live**
+runtime: they read `SOURCE_REPO` / `ITEM_NUMBER` / `COMMENT_URL` / `REQUESTED_BY`
+from the environment and shell out to `gh pr view` / `gh issue view` to gather the
+work item. The eval harness supplies **none** of that — it scores a fixed held-out
+case string, offline. Left unbridged, a persona given no item context wanders
+off-task (the first qa-lead baseline scored a case by discussing this repo's
+`CLAUDE.md` instead of the change under review).
+
+The contract that closes that gap:
+
+- **The harness inlines the case `input` under a `## Pre-fetched PR context`
+  section** appended to the end of the skill prompt (see
+  [`scripts/evals/run-eval.sh`](../scripts/evals/run-eval.sh)). This is the
+  documented fixture shape that stands in for the live `gh`-fetched context.
+- **The advisory prompt declares an offline / pre-fetched-context mode**: when that
+  section is present, the persona must **not** run any `gh`/fetch calls or explore
+  the harness repository — it assesses the pre-fetched item alone. `qa-lead`'s
+  advisory carries this mode; every persona advisory scored by the harness must.
+- **What a case author may assume:** the `input` is the *complete* item context the
+  persona will see (title/body/diff excerpt, de-identified). A case must never rely
+  on the persona fetching anything at score time — there is no network and no token.
+
+This is why a persona eval scores the shipped persona rather than a weaker model
+improvising against inputs its prompt was never written for.
+
 ## De-identification requirement (decision A3)
 
 All cases — in **both** splits — must be **de-identified** before they are
