@@ -25,3 +25,16 @@ REUSABLE=".github/workflows/dev-lead-reusable.yml"
   run grep -F "format('dev-lead-issue-{0}', github.event.issue.number)" "$REUSABLE"
   [ "$status" -eq 0 ]
 }
+
+@test "dev-lead reusable routes repository_dispatch relays to a survivable retry lane (#1741)" {
+  # A dropped-work re-dispatch must not land in the ordinary (cancellable) PR
+  # lane, or concurrent PR traffic can cancel it while pending — the exact
+  # defect that made the backstop unreliable (#1741 AC #3).
+  run grep -F "format('dev-lead-retry-pr-{0}', github.event.client_payload.pr_number)" "$REUSABLE"
+  [ "$status" -eq 0 ]
+}
+
+@test "dev-lead reusable routes repository_dispatch issue relays to a survivable retry lane (#1741)" {
+  run grep -F "format('dev-lead-retry-issue-{0}', github.event.client_payload.issue_number)" "$REUSABLE"
+  [ "$status" -eq 0 ]
+}
