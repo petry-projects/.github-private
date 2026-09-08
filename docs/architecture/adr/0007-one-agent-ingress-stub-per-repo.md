@@ -154,7 +154,7 @@ The checkable boundaries:
   when no usable range exists (e.g. `workflow_dispatch` or an initial push). The
   caller forwards only whatever base/diff context the reusable declares in its
   `workflow_call.inputs`. Matching changes run the job; unrelated union events
-  are skipped and cost no minutes but do cost log legibility.
+  still consume runner time while skipping role work, but they do cost log legibility.
 - **Branch-protection check names change** with the workflow and job names.
   Updating required status checks must land in the same change as the collapse,
   or protection blocks merges on a check that no longer exists.
