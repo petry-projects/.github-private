@@ -26,6 +26,14 @@ MAX_ATTEMPTS="${MAX_ATTEMPTS:-3}"
 # skips issues carrying it.
 NEEDS_HUMAN_LABEL="${NEEDS_HUMAN_LABEL:-dev-lead:needs-human}"
 
+# Distinct, unmistakable prefix marking a checkpoint commit as incomplete (#1660).
+# A stage timeout (exit 124) commits whatever the engine produced under this
+# prefix and pushes the branch, so the partial work survives the ephemeral runner.
+# The prefix must never collide with the normal "feat: implement issue" message so
+# a reader — and any resolution gate — can tell partial, unreviewed work apart
+# from a completed pass at a glance. It is deliberately never a completion claim.
+CHECKPOINT_COMMIT_PREFIX="${CHECKPOINT_COMMIT_PREFIX:-checkpoint(dev-lead): INCOMPLETE —}"
+
 # PR-limit admission gate (epic petry-projects/.github#505 Phase 3) config.
 # The shared guard + limits config live in the PUBLIC standards repo so every
 # automation caller enforces the same org-wide cap. PLG_STANDARDS_DIR lets tests
@@ -164,6 +172,57 @@ retract_prior_completion_claims() {
   done <<< "$comments"
 }
 
+# checkpoint_push_partial_work
+# On a stage timeout (exit 124), preserve whatever the engine produced before it
+# was killed instead of discarding it (#1660). Commits any uncommitted changes
+# under CHECKPOINT_COMMIT_PREFIX (so the commit is unmistakably incomplete) and
+# pushes the working branch. Echoes the pushed branch name on success (rc 0);
+# returns non-zero if there is nothing to preserve or the push could not happen
+# (the caller then falls back to the "not pushed" note).
+#
+# Why this runs here rather than via a trap or a fractional-budget checkpoint:
+# the per-tier budget is `timeout "$ACTION_TIMEOUT_SEC" claude …` in engine.sh,
+# which wraps ONLY the engine child — this orchestrating script is never itself
+# under `timeout`. So exit 124 is delivered synchronously to a fully-alive shell
+# and we push in ordinary control flow. A trap has no kill signal to catch here
+# (the run is not under `timeout`), and a fractional (~80%) checkpoint would have
+# to guess when the cap hits; exit 124 needs no guessing.
+#
+# It deliberately opens NO pull request and posts NO completion claim, so a
+# checkpoint can never satisfy the harness-only resolution gate (#1621/#1691) —
+# resolution stays gated on a complete pass.
+checkpoint_push_partial_work() {
+  local br="${branch:-}"
+  [ -n "$br" ] || return 1
+
+  # Anything to preserve? Uncommitted changes OR commits the engine made past the
+  # pre-engine SHA (it may have committed via Bash before the later phase timed out).
+  local has_uncommitted=false has_commits=false
+  [ -n "$(git status --porcelain 2>/dev/null)" ] && has_uncommitted=true
+  if [ -n "${pre_engine_sha:-}" ] && [ "$(git rev-parse HEAD 2>/dev/null)" != "$pre_engine_sha" ]; then
+    has_commits=true
+  fi
+  if ! $has_uncommitted && ! $has_commits; then
+    return 1
+  fi
+
+  # Commit any uncommitted work under the incomplete marker. We deliberately do
+  # NOT run the lint gate here: this is partial, unreviewed work by definition, and
+  # blocking the checkpoint on lint would defeat the point (preserve what exists).
+  # The marker + escalation comment make the incompleteness unmistakable.
+  if $has_uncommitted; then
+    git add -A >/dev/null 2>&1 || return 1
+    git commit -m "${CHECKPOINT_COMMIT_PREFIX} partial work for issue #${ISSUE_NUMBER} (stage timeout — unreviewed, do not merge)" \
+      >/dev/null 2>&1 || return 1
+  fi
+
+  # Push the branch so the work lands on the remote before the run exits.
+  git push --set-upstream origin "$br" >/dev/null 2>&1 || return 1
+
+  printf '%s\n' "$br"
+  return 0
+}
+
 # handle_engine_failure <engine_rc>
 # Replaces the previous silent `exit 1` (and unifies the rate-limit branch).
 # Classifies the cause via the /tmp/dev-lead-failure-reason sidecar written by
@@ -238,18 +297,23 @@ Set the missing engine credential (and confirm it is a supported token type), th
       deep)          raise_var="DEEP_TIMEOUT_SEC" ;;
     esac
 
-    # Surface completed-but-unpushed work (#1003): if the engine produced commits
-    # or staged/uncommitted changes before a later phase timed out, say so — so
-    # the timeout isn't a silent black hole. Be honest about the limitation: the
-    # branch is local to this ephemeral runner and was NOT pushed, so it is not
-    # recoverable from this run; the session snippet is context only, not
-    # restorable output.
-    local work_note=""
-    if [ -n "$(git status --porcelain 2>/dev/null)" ] || \
+    # Checkpoint-push partial work (#1660): if the engine produced commits or
+    # staged/uncommitted changes before the timeout, preserve them on the remote
+    # under an INCOMPLETE marker instead of discarding them. On success the
+    # escalation names the pushed branch and calls the work partial/unreviewed;
+    # only if the push genuinely could not happen do we fall back to the older
+    # "not recoverable from this run" note (#1003).
+    local work_note="" checkpoint_branch=""
+    checkpoint_branch=$(checkpoint_push_partial_work) || checkpoint_branch=""
+    if [ -n "$checkpoint_branch" ]; then
+      work_note="
+
+> **Partial work was checkpoint-pushed to \`${checkpoint_branch}\`.** The engine produced changes before the timeout; rather than lose them, they were committed with the \`${CHECKPOINT_COMMIT_PREFIX}\` marker and pushed to that branch. **This work is partial and unreviewed** — no pull request was opened and no review threads were resolved, so it must **not** be merged as-is. Use it as a salvage point: continue the branch by hand, or re-apply \`dev-lead\` after splitting the issue or raising the budget."
+    elif [ -n "$(git status --porcelain 2>/dev/null)" ] || \
        { [ -n "${pre_engine_sha:-}" ] && [ "$(git rev-parse HEAD 2>/dev/null)" != "$pre_engine_sha" ]; }; then
       work_note="
 
-> **Note: the engine had produced changes before the timeout.** They were on branch \`${branch:-unknown}\` on the runner and were **not pushed**, so they are **not recoverable** from this run (the runner is ephemeral). The redacted session snippet below shows what it attempted — treat it as context, not restorable output. Re-apply \`dev-lead\` after splitting the issue or raising the budget to regenerate the work."
+> **Note: the engine had produced changes before the timeout,** but they could not be pushed from this run, so they are **not recoverable** (the runner is ephemeral). The redacted session snippet below shows what it attempted — treat it as context, not restorable output. Re-apply \`dev-lead\` after splitting the issue or raising the budget to regenerate the work."
     fi
 
     escalate_needs_human "$reason" "$attempt" "$snippet" \
