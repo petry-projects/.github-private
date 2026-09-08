@@ -42,7 +42,10 @@ set -euo pipefail
 #                                      persona-runner-reusable.yml (--allowedTools Bash).
 # Absent declaration keeps run_triage, so existing skills are never silently
 # upgraded into a costlier model. The report records `engine_tier`/`engine_model`
-# so a score is never ambiguous about what produced it.
+# (the DECLARED parity target) plus `engine_model_observed` (the model the engine
+# reported actually serving the cases — a single model, or a `mixed:` marker when a
+# rate-limit fallback split the run across models) so a score is never ambiguous
+# about what produced it (#1686 AC #1).
 #
 # Engine abstraction (AC #3): every model invocation goes through the engine
 # layer, NOT a re-implemented model call. The skill command defaults to the tier's
@@ -188,8 +191,12 @@ source "$REPO_ROOT/scripts/engine.sh" >&2
 # now that engine.sh has defined the run_* functions and ENGINE_*_MODEL. An
 # explicit EVAL_ENGINE_CMD env override still wins (offline tests / the gate drive
 # a stub), but the RECORDED tier + model reflect the declaration so a score is
-# never ambiguous about the intended parity (#1686 AC #1). ENGINE_MODEL is
-# report-only metadata; the actual chain/fallback lives in engine.sh.
+# never ambiguous about the intended parity (#1686 AC #1). ENGINE_MODEL is the
+# DECLARED tier model — the parity target we intended to score on; the actual
+# chain/fallback lives in engine.sh and is captured separately as the OBSERVED
+# model per case (see ENGINE_MODEL_USED_FILE below), so a rate-limit fallback that
+# scores a case on a different model is visible in the report rather than silently
+# attributed to the declared model.
 case "$ENGINE_TIER" in
   triage)  _tier_default_cmd="run_triage";  ENGINE_MODEL="$ENGINE_TRIAGE_MODEL" ;;
   persona) _tier_default_cmd="run_persona"; ENGINE_MODEL="$ENGINE_DEEP_MODEL" ;;
@@ -199,7 +206,13 @@ EVAL_ENGINE_CMD="${EVAL_ENGINE_CMD:-$_tier_default_cmd}"
 results="$(mktemp)"
 work_prompt="$(mktemp)"
 work_judge="$(mktemp)"
-trap 'rm -f "$results" "$work_prompt" "$work_judge"' EXIT
+# Per-case sidecar the engine writes the ACTUALLY-USED model to (via engine.sh's
+# _record_model_used); observed_models accumulates one line per case that reported
+# a model, so the aggregate can report the observed model — or an explicit
+# mixed-model marker — distinct from the declared ENGINE_MODEL (#1686 AC #1).
+model_used_file="$(mktemp)"
+observed_models="$(mktemp)"
+trap 'rm -f "$results" "$work_prompt" "$work_judge" "$model_used_file" "$observed_models"' EXIT
 
 # extract_json <raw> — strip markdown code-fence lines so a fenced (```json … ```)
 # or lightly wrapped JSON payload parses as bare JSON. Live Haiku-tier models
@@ -332,8 +345,17 @@ while IFS= read -r line; do
   # the engine's exit status (eng_rc): a NON-ZERO exit means the call failed for
   # infra reasons (e.g. every model in the fallback chain throttled) — the only
   # signal that distinguishes a throttle from a model that answered wrong (#920).
+  # ENGINE_MODEL_USED_FILE lets the engine report the model that actually served
+  # this case back across the command-substitution boundary (an exported var can't
+  # cross `$(...)`, a file can). Truncate per case so a fallback on one case never
+  # bleeds into the next; a stub override that ignores it leaves the file empty, so
+  # the observed model stays unknown rather than being mislabeled with a real name.
   raw=""; eng_rc=0
-  raw="$("$EVAL_ENGINE_CMD" "$work_prompt")" || eng_rc=$?
+  : >"$model_used_file"
+  raw="$(ENGINE_MODEL_USED_FILE="$model_used_file" "$EVAL_ENGINE_CMD" "$work_prompt")" || eng_rc=$?
+  if [ -s "$model_used_file" ]; then
+    head -n1 "$model_used_file" >>"$observed_models"
+  fi
 
   # Dispatch on the per-skill scorer mode — never on the skill name. eng_rc is
   # threaded through so each case result records whether the engine actually ran.
@@ -343,9 +365,26 @@ while IFS= read -r line; do
   esac
 done <"$cases_file"
 
+# Resolve the OBSERVED model the engine reported serving the cases, distinct from
+# the DECLARED engine_model above: a rate-limit fallback in engine.sh's chain
+# (e.g. opus -> sonnet) serves a case on a different model than the tier declares,
+# and a promotion gate must not silently attribute the score to the declared model
+# (#1686 AC #1). One model across all cases -> that model; more than one -> an
+# explicit `mixed:` marker so the ambiguity is loud; none reported (a stub override
+# that writes no sidecar) -> empty -> null, never a real model name.
+ENGINE_MODEL_OBSERVED=""
+_obs_unique="$(sort -u "$observed_models" | sed '/^[[:space:]]*$/d')"
+_obs_count="$(printf '%s' "$_obs_unique" | grep -c . || true)"
+if [ "$_obs_count" -eq 1 ]; then
+  ENGINE_MODEL_OBSERVED="$_obs_unique"
+elif [ "$_obs_count" -gt 1 ]; then
+  ENGINE_MODEL_OBSERVED="mixed:$(printf '%s' "$_obs_unique" | paste -sd, -)"
+fi
+
 # Assemble the aggregate report. score = passed/total (0 when there are no cases).
 jq -s --arg skill "$skill" \
-     --arg engine_tier "$ENGINE_TIER" --arg engine_model "$ENGINE_MODEL" '
+     --arg engine_tier "$ENGINE_TIER" --arg engine_model "$ENGINE_MODEL" \
+     --arg engine_model_observed "$ENGINE_MODEL_OBSERVED" '
   {
     skill:  $skill,
     total:  length,
@@ -354,6 +393,7 @@ jq -s --arg skill "$skill" \
     score:  (if length == 0 then 0 else ((map(select(.pass)) | length) / length) end),
     engine_tier:  $engine_tier,
     engine_model: $engine_model,
+    engine_model_observed: (if $engine_model_observed == "" then null else $engine_model_observed end),
     cases:  .
   }' "$results"
 

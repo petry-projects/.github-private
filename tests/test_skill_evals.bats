@@ -103,6 +103,28 @@ else
 fi
 SH
   chmod +x "$STUB_FENCED"
+
+  # Stub engine that reports the model it "served" via ENGINE_MODEL_USED_FILE —
+  # exactly as engine.sh's _record_model_used does after a rate-limit fallback down
+  # the chain. Used to prove the scorer surfaces the OBSERVED model, distinct from
+  # the declared tier model, so a fallback is visible rather than mislabeled (#1686).
+  # A per-marker model lets one test drive a mixed-model run.
+  STUB_OBSERVED="$TMP/stub_observed.sh"
+  cat >"$STUB_OBSERVED" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+prompt="$1"
+if grep -q MARKER_APPROVE "$prompt"; then
+  [ -n "${ENGINE_MODEL_USED_FILE:-}" ] && printf 'claude-sonnet-5\n' >"$ENGINE_MODEL_USED_FILE"
+  echo '{"escalate": false, "risk": "LOW", "signals": [], "summary": "docs only"}'
+elif grep -q MARKER_ESCALATE "$prompt"; then
+  [ -n "${ENGINE_MODEL_USED_FILE:-}" ] && printf 'claude-opus-4-8\n' >"$ENGINE_MODEL_USED_FILE"
+  echo '{"escalate": true, "risk": "HIGH", "signals": ["auth"], "summary": "auth/secrets touched"}'
+else
+  echo 'no marker found'
+fi
+SH
+  chmod +x "$STUB_OBSERVED"
 }
 
 teardown() { rm -rf "$TMP"; }
@@ -349,6 +371,45 @@ JSONL
   [ "$status" -eq 0 ]
   [ "$(jq -r '.engine_tier' <<<"$output")" = "triage" ]
   [[ "$(jq -r '.engine_model' <<<"$output")" == *haiku* ]]
+}
+
+@test "observed model: a stub override that reports no model leaves engine_model_observed null (never mislabeled, #1686)" {
+  # STUB_OK writes no ENGINE_MODEL_USED_FILE, so the run has no observed model. The
+  # DECLARED engine_model stays the triage Haiku model, but engine_model_observed
+  # must be null — an offline stub must never be labeled with a real model name.
+  EVALS_DIR="$TMP/evals" EVAL_ENGINE_CMD="$STUB_OK" \
+    run --separate-stderr bash "$SCORER" triage
+  [ "$status" -eq 0 ]
+  [[ "$(jq -r '.engine_model' <<<"$output")" == *haiku* ]]
+  [ "$(jq -r '.engine_model_observed' <<<"$output")" = "null" ]
+}
+
+@test "observed model: engine-reported model surfaces as engine_model_observed distinct from declared (#1686)" {
+  # A single-case run whose engine reports serving on claude-sonnet-5 (a fallback)
+  # must record that as the OBSERVED model even though the declared tier model is
+  # different — the mismatch is now visible instead of silently attributed.
+  mkdir -p "$TMP/evals/one-case/holdout"
+  cat >"$TMP/evals/one-case/holdout/cases.jsonl" <<'JSONL'
+{"id": "c1", "input": "MARKER_APPROVE", "expected": {"escalate": false, "risk": "LOW"}}
+JSONL
+  mkdir -p "$TMP/prompts"
+  printf '# one-case\n' >"$TMP/prompts/one-case.md"
+  EVALS_DIR="$TMP/evals" EVAL_PROMPTS_DIR="$TMP/prompts" EVAL_ENGINE_CMD="$STUB_OBSERVED" \
+    run --separate-stderr bash "$SCORER" one-case
+  [ "$status" -eq 0 ]
+  [ "$(jq -r '.engine_model_observed' <<<"$output")" = "claude-sonnet-5" ]
+}
+
+@test "observed model: cases served by different models record a mixed: marker (#1686)" {
+  # The two fixture cases report two different models; the aggregate must flag the
+  # split loudly with a mixed: marker rather than picking one silently.
+  EVALS_DIR="$TMP/evals" EVAL_ENGINE_CMD="$STUB_OBSERVED" \
+    run --separate-stderr bash "$SCORER" triage
+  [ "$status" -eq 0 ]
+  observed="$(jq -r '.engine_model_observed' <<<"$output")"
+  [[ "$observed" == mixed:* ]]
+  [[ "$observed" == *claude-opus-4-8* ]]
+  [[ "$observed" == *claude-sonnet-5* ]]
 }
 
 @test "engine tier: an unknown 'engine' value is a hard error (#1686)" {

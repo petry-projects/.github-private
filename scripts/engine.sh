@@ -893,6 +893,19 @@ _record_engine_tokens() {
     "$input_tokens" "$cache_read_tokens" "$output_tokens" "$context" "$cache_write_tokens" || true
 }
 
+# _record_model_used <model>
+# Records the model that ACTUALLY produced the final output to ENGINE_MODEL_USED_FILE
+# when that path is set (no-op otherwise, so live review paths pay nothing). A caller
+# that runs the engine inside a command substitution — the eval scorer,
+# scripts/evals/run-eval.sh — cannot read an exported var back across the `$(...)`
+# subshell boundary, but it CAN read a file. So a rate-limit fallback down the chain
+# (e.g. opus -> sonnet) surfaces as the observed model in the eval report instead of
+# being silently attributed to the tier's declared model (#1686 AC #1).
+_record_model_used() {
+  [ -n "${ENGINE_MODEL_USED_FILE:-}" ] || return 0
+  printf '%s\n' "$1" >"$ENGINE_MODEL_USED_FILE" 2>/dev/null || true
+}
+
 # _mcp_review_flags <base_allowed_tools>
 # Threads the opt-in MCP config into the claude agentic/duck tiers. Populates two
 # globals for the caller to splice into the claude --print invocation:
@@ -996,6 +1009,7 @@ run_triage() {
         _triage_used="$ENGINE_TRIAGE_MODEL"
       fi
       _record_engine_tokens "triage" "$REVIEW_ENGINE" "$_triage_used" "$prompt_file" "$_tok_tmp"
+      _record_model_used "$_triage_used"
       [ -n "$_tok_tmp" ] && rm -f "$_tok_tmp"
       return 0
     fi
@@ -1138,6 +1152,7 @@ run_agentic() {
       _agentic_used="$_GEMINI_CHAIN_MODEL_USED"
     fi
     _record_engine_tokens "$tier" "$REVIEW_ENGINE" "$_agentic_used" "$prompt_file" "$_tok_tmp"
+    _record_model_used "$_agentic_used"
   fi
   [ -n "$_tok_tmp" ] && rm -f "$_tok_tmp"
   return "$rc"
