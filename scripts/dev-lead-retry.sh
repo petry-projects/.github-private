@@ -383,6 +383,148 @@ scan_pr_for_rate_limits() {
   echo "$dispatched"
 }
 
+# ── dropped-review recovery (#1741) ───────────────────────────────────────────
+# A run cancelled while still PENDING (GitHub keeps only the newest pending run
+# in a concurrency group and cancels the older ones) does its work-detection
+# NEVER — it leaves no marker at all. The rate-limited-only scan above cannot
+# recover it because there is no status=rate-limited marker to key on. This is
+# the PR #1696 case: trusted-reviewer findings sit unaddressed for hours while
+# the PR looks active (merge-churn commits, CI re-running), because the run that
+# would have addressed them was silently dropped.
+#
+# The signal for a dropped review-handling run is therefore the ABSENCE of a
+# dev-lead-fix-reviews marker for the current HEAD SHA while trusted-reviewer
+# findings exist on that same SHA. Once dev-lead processes a SHA it posts a
+# marker (any status), so this is idempotent: repeated merge-main churn cannot
+# re-trigger a recovery for a SHA already handled (#1741 AC #4).
+
+# resolve_trusted_reviewers: CSV of trusted reviewer logins (normalized, no
+# "[bot]" suffix). TRUSTED_REVIEWERS overrides; otherwise projected from the
+# single reviewer-source registry so this list can never drift from the gate
+# (#1425). Falls back to a minimal built-in set if the manifest is unreadable.
+resolve_trusted_reviewers() {
+  if [ -n "${TRUSTED_REVIEWERS:-}" ]; then
+    printf '%s' "$TRUSTED_REVIEWERS"
+    return 0
+  fi
+  local csv=""
+  if [ -f "$SCRIPT_DIR/lib/reviewer-sources.sh" ]; then
+    # shellcheck source=lib/reviewer-sources.sh
+    if source "$SCRIPT_DIR/lib/reviewer-sources.sh" 2>/dev/null; then
+      csv=$(reviewer_sources_trusted_logins 2>/dev/null | paste -sd, - || true)
+    fi
+  fi
+  printf '%s' "${csv:-coderabbitai,copilot-pull-request-reviewer,gemini-code-assist}"
+}
+
+# has_unaddressed_head_findings <pr_number> <head_sha> <trusted_csv>
+#                               <reviews_json> <review_comments_json>
+#                               <issue_comments_json>
+# Returns 0 (true) when a trusted reviewer left a finding pinned to head_sha — a
+# CHANGES_REQUESTED review at that commit, or an inline review comment at that
+# commit (isOutdated=false) — AND no dev-lead-fix-reviews marker exists for that
+# PR at that SHA (dev-lead never processed this HEAD's reviews).
+has_unaddressed_head_findings() {
+  local pr_number="$1" head_sha="$2" trusted_csv="$3"
+  local reviews_json="$4" review_comments_json="$5" issue_comments_json="$6"
+
+  local trusted_arr
+  trusted_arr=$(printf '%s' "$trusted_csv" \
+    | tr ', ' '\n\n' \
+    | sed 's/\[bot\]$//' \
+    | grep -v '^[[:space:]]*$' \
+    | jq -R . | jq -sc . 2>/dev/null || echo '[]')
+
+  local findings
+  findings=$(jq -n \
+    --arg sha "$head_sha" \
+    --argjson trusted "$trusted_arr" \
+    --argjson reviews "$reviews_json" \
+    --argjson comments "$review_comments_json" \
+    '
+    def norm: (. // "") | sub("\\[bot\\]$"; "");
+    def hit($l): ($trusted | index($l)) != null;
+    ([ $reviews[]?
+       | select((.commit_id // "") == $sha and .state == "CHANGES_REQUESTED")
+       | ((.user.login // "") | norm) as $l | select(hit($l)) ]
+     + [ $comments[]?
+       | select((.commit_id // "") == $sha)
+       | ((.user.login // "") | norm) as $l | select(hit($l)) ]) | length
+    ' 2>/dev/null || echo 0)
+
+  [ "${findings:-0}" -gt 0 ] || return 1
+
+  # Any dev-lead-fix-reviews marker for this SHA (any status) means the reviews
+  # were processed — nothing was dropped.
+  local marker_pat="${REVIEWS_MARKER_PREFIX}${pr_number} sha=${head_sha}"
+  if echo "$issue_comments_json" | jq -e --arg pat "$marker_pat" \
+      '[.[] | select(. | test($pat))] | length > 0' >/dev/null 2>&1; then
+    return 1
+  fi
+  return 0
+}
+
+# scan_pr_for_dropped_reviews <repo> <pr_number>
+# Recovers a PR whose review-handling run was dropped while pending. Prints only
+# a single integer (retries dispatched) to stdout; all other output goes to
+# stderr so callers can capture the count. Shares every stop-condition with the
+# rate-limited scan (open-state, pr_resume_suppressed budget/human gate, and the
+# dispatch-dedup guard) so it can never re-ignite the #860 amplifier.
+scan_pr_for_dropped_reviews() {
+  local repo="$1" pr_number="$2"
+
+  local pr_obj head_sha pr_state labels_json
+  pr_obj=$(gh api "repos/${repo}/pulls/${pr_number}" 2>/dev/null || echo '{}')
+  head_sha=$(jq -r '.head?.sha // empty' <<< "$pr_obj" 2>/dev/null || true)
+  if [ -z "$head_sha" ]; then
+    echo "  [warn] dropped-reviews: could not resolve HEAD SHA for PR ${pr_number} in ${repo}" >&2
+    echo "0"; return 0
+  fi
+
+  pr_state=$(jq -r '.state // empty' <<< "$pr_obj" 2>/dev/null || true)
+  if [ "$pr_state" != "open" ]; then
+    echo "  [skip] dropped-reviews: PR ${pr_number} in ${repo} is ${pr_state:-unknown}" >&2
+    echo "0"; return 0
+  fi
+
+  labels_json=$(jq -c '[.labels[]?.name]' <<< "$pr_obj" 2>/dev/null || echo '[]')
+  if pr_resume_suppressed "$pr_number" "$repo" "$labels_json"; then
+    echo "0"; return 0
+  fi
+
+  local reviews_json review_comments_json comments_json
+  reviews_json=$(gh api --paginate "repos/${repo}/pulls/${pr_number}/reviews?per_page=100" \
+    --jq '[.[] | {state, commit_id, user: {login: .user.login}}]' 2>/dev/null \
+    | jq -s 'add // []' || echo '[]')
+  review_comments_json=$(gh api --paginate "repos/${repo}/pulls/${pr_number}/comments?per_page=100" \
+    --jq '[.[] | {commit_id, user: {login: .user.login}}]' 2>/dev/null \
+    | jq -s 'add // []' || echo '[]')
+  comments_json=$(gh api --paginate "repos/${repo}/issues/${pr_number}/comments?per_page=100" \
+    --jq '[.[].body]' 2>/dev/null | jq -s 'add // []' || echo '[]')
+
+  # Deduplication guard: a concurrent resume/cron path may already have claimed
+  # dispatch for this SHA.
+  if has_dispatch_guard "$comments_json" "$head_sha"; then
+    echo "  [skip] dropped-reviews: PR ${pr_number} SHA ${head_sha:0:8} has a recent dispatch guard" >&2
+    echo "0"; return 0
+  fi
+
+  local trusted_csv
+  trusted_csv=$(resolve_trusted_reviewers)
+
+  if has_unaddressed_head_findings "$pr_number" "$head_sha" "$trusted_csv" \
+       "$reviews_json" "$review_comments_json" "$comments_json"; then
+    # Observable signal (#1741 AC #2): a ::warning:: distinguishes "a run was
+    # dropped and is being recovered" from "nothing to do" without a manual sweep.
+    echo "::warning::dev-lead dropped-review recovery: PR ${pr_number} in ${repo} has trusted-reviewer findings on HEAD ${head_sha:0:8} with no dev-lead-fix-reviews marker — a pending run was likely cancelled before it ran (#1741). Re-dispatching fix-reviews." >&2
+    post_dispatch_guard "$repo" "$pr_number" "$head_sha"
+    dispatch_reviews_retry "$repo" "$pr_number" "$head_sha" "fix-reviews"
+    echo "1"; return 0
+  fi
+
+  echo "0"
+}
+
 # scan_repo <repo>: scan all open PRs in a repo for rate-limited markers
 scan_repo() {
   local repo="$1"
@@ -402,9 +544,13 @@ scan_repo() {
     while IFS= read -r pr_entry; do
       local pr_number
       pr_number=$(echo "$pr_entry" | jq -r '.number')
-      local dispatched
+      local dispatched dropped
       dispatched=$(scan_pr_for_rate_limits "$repo" "$pr_number")
       total_dispatched=$(( total_dispatched + dispatched ))
+      # #1741: also recover a PR whose review-handling run was dropped while
+      # pending (no rate-limited marker to key on).
+      dropped=$(scan_pr_for_dropped_reviews "$repo" "$pr_number")
+      total_dispatched=$(( total_dispatched + dropped ))
     done < <(echo "$prs_json" | jq -sc 'add // [] | .[]')
     echo "  dispatched ${total_dispatched} PR retries from ${repo}"
   fi
