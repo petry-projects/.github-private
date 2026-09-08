@@ -80,7 +80,7 @@ fi
 
 for wf in "${WORKFLOWS[@]}"; do
   # Per-PR lane → serializes all runs touching one PR (PR, review, review
-  # comment, issue_comment-on-PR, and repository_dispatch all map here).
+  # comment, issue_comment-on-PR).
   check_concurrency_field "$wf" "dev-lead-pr-" "per-PR serialization lane"
   # Per-issue lane → serializes runs working a single issue.
   check_concurrency_field "$wf" "dev-lead-issue-" "per-issue serialization lane"
@@ -95,9 +95,19 @@ for wf in "${WORKFLOWS[@]}"; do
   # so the first match wins — reversing them would route PR comments to the
   # issue lane (dev-lead-issue-*) instead of the PR lane (dev-lead-pr-*).
   check_concurrency_order "$wf" "issue.pull_request" "dev-lead-issue-" "issue.pull_request before issue lane"
-  # client_payload.pr_number must precede the run-id fallback so
-  # repository_dispatch events land in the correct PR lane, not a unique slot.
-  check_concurrency_order "$wf" "client_payload.pr_number" "github.run_id" "client_payload.pr_number before run-id fallback"
+
+  # #1741 survivable retry lane. repository_dispatch events (dev-lead-ci-failure,
+  # dev-lead-reviews-retry, dev-lead-issue-retry) are agent-INTERNAL relays that
+  # recover dropped work; they must NOT share the ordinary PR/issue lane, or the
+  # very concurrent PR traffic they recover from can cancel them while pending
+  # (the backstop-cannot-be-relied-on defect, AC #3). They route to a dedicated
+  # per-PR / per-issue retry lane that ordinary traffic never touches.
+  check_concurrency_field "$wf" "dev-lead-retry-pr-" "survivable per-PR retry lane"
+  check_concurrency_field "$wf" "dev-lead-retry-issue-" "survivable per-issue retry lane"
+  # The repository_dispatch retry branch must precede the ordinary
+  # client_payload.pr_number branch, or every dispatch would fall into the
+  # ordinary (cancellable) PR lane before the retry lane could match.
+  check_concurrency_order "$wf" "dev-lead-retry-pr-" "dev-lead-run-" "retry lane before run-id fallback"
 done
 
 echo ""
