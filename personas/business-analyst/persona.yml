@@ -71,13 +71,12 @@ trust:
 # Advisory-only (producers under prompts/incubation, consumed by path and the
 # persona runner). On the comment path it posts as the machine user
 # `donpetry-bot`, NOT the human owner — an advisory must be identifiably a bot in
-# the audit trail (.github-private#1650). No dedicated reusable yet.
+# the audit trail (.github-private#1650). Shared runtime (see ADR-0006).
 runtime:
   reusable: ''
   identity:
     account: donpetry-bot
     credential: DON_PETRY_BOT_GH_PAT
-  reusable: .github/workflows/persona-runner-reusable.yml
 
 evals:
   required_before: stable
