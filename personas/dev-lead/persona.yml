@@ -91,6 +91,13 @@ trust:
 # git-identity.sh then attributes commits to it. Distinct from address.handle
 # (petry-projects/dev-lead, the mention team). This decoupling is the fix for
 # the donpetry-bot regression (.github-private#1316).
+#
+# NOTE (.github-private#1650): this single identity field serves BOTH paths —
+# the code-commit path (must be the owner) and the persona-runner advisory path
+# (should be a bot, like every other advisory persona). Those pull in opposite
+# directions, so unlike the other advisory personas this is NOT a mechanical flip
+# to donpetry-bot: it needs a commit-vs-advisory identity split. Filed as a
+# follow-up; dev-lead advisories keep posting via GH_PAT_DON_PETRY until then.
 runtime:
   # dev-lead ships its OWN reusable, so ADR-0002 applies in full: it is a
   # registered ring agent (agents.dev-lead in canary-rings.json) and therefore

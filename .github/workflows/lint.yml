@@ -163,6 +163,7 @@ jobs:
             tests/test_validate_interaction_model.bats \
             tests/verify_persona_teams.bats \
             tests/persona_runner.bats \
+            tests/resolve_persona_identity.bats \
             tests/persona_reach_check.bats \
             tests/test_dev_lead_concurrency_guard.bats \
             tests/test_validate_workflow_schedules.bats \
@@ -342,13 +343,12 @@ jobs:
           [ "$fail" -eq 0 ] || exit 1
 
   validate-personas:
-    # Validate every personas/<id>/persona.yml against the canonical persona
-    # manifest schema (owned by petry-projects/.github, read the same way any
-    # consumer reads a published standard) plus the cross-invariants the schema
-    # can't express (id==dir==canary.agent, layer paths exist, vendor_pin ↔
-    # VENDOR.md, evals splits present, non-draft ⇒ canary-rings entry).
-    # NOTE: the schema is fetched from petry-projects/.github @ main, so this job
-    # only goes green once that repo's persona schema is on main (PR #670).
+    # Validate every personas/<id>/persona.yml against the persona manifest
+    # schema plus the cross-invariants the schema can't express (id==dir==canary.agent,
+    # layer paths exist, vendor_pin ↔ VENDOR.md, evals splits present, non-draft ⇒
+    # canary-rings entry). Uses a local ADR-0006-conformant schema (standards/personas/
+    # persona.schema.json) that properly distinguishes shared-runtime personas (which
+    # MUST NOT have canary blocks per ADR-0006) from dedicated-reusable personas.
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -358,12 +358,11 @@ jobs:
         run: pip3 install --quiet 'jsonschema>=4' pyyaml
 
       - name: Validate persona manifests
-        # Read the canonical schema from petry-projects/.github. Prefer a
-        # same-named branch there (so companion PRs developed on a shared branch
-        # validate against each other before either merges); the validator falls
-        # back to main automatically, which is the steady state.
+        # Use local schema that implements ADR-0006: shared-runtime personas
+        # (runtime.reusable == .github/workflows/persona-runner-reusable.yml) MUST
+        # NOT have a canary block, while dedicated-reusable personas MUST have one.
         env:
-          PERSONA_SCHEMA_REF: ${{ github.head_ref || github.ref_name }}
+          PERSONA_SCHEMA_FILE: standards/personas/persona.schema.json
         run: python3 personas/validate-personas.py personas
 
   validate-eval-cases:
