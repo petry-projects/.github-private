@@ -106,6 +106,111 @@ _source_engine() {
   grep -q -- "--allowed-tools Bash,Read,Grep,Glob" "$ARGS_RECORD"
 }
 
+# ── run_persona: tool posture must mirror the live persona runtime ─────────────
+# persona-runner-reusable.yml grants `--allowedTools Bash` only. The eval-parity
+# tier (#1686) must score that SAME tool posture, not run_agentic's default
+# review set (Bash,Read,Grep,Glob), or the promotion gate measures a more
+# tool-capable artifact than the one that ships.
+
+@test "persona: run_persona restricts tools to Bash (matches --allowedTools Bash)" {
+  _source_engine "claude"
+  run run_persona "$TEST_PROMPT"
+  [ "$status" -eq 0 ]
+  grep -q -- "--allowed-tools Bash" "$ARGS_RECORD"
+  # Must NOT widen to the full review posture.
+  ! grep -q -- "--allowed-tools Bash,Read,Grep,Glob" "$ARGS_RECORD"
+}
+
+@test "agentic: explicit allowed_tools arg overrides the default review posture" {
+  _source_engine "claude"
+  run run_agentic "$TEST_PROMPT" "claude-opus-4-8" "deep" "Bash"
+  [ "$status" -eq 0 ]
+  grep -q -- "--allowed-tools Bash" "$ARGS_RECORD"
+  ! grep -q -- "--allowed-tools Bash,Read,Grep,Glob" "$ARGS_RECORD"
+}
+
+@test "persona: MCP knobs set → run_persona still passes EXACTLY --allowed-tools Bash (#1696)" {
+  # The live persona workflow grants no MCP tools. Even with the opt-in MCP knobs
+  # set, the parity tier must not widen the allowlist to Bash,<MCP tools> — else
+  # the gate scores a more tool-capable artifact than production runs.
+  _source_engine "claude"
+  export REVIEW_MCP_CONFIG="$MCP_CONFIG_FILE"
+  export REVIEW_MCP_ALLOWED_TOOLS="mcp__context7__*"
+  run run_persona "$TEST_PROMPT"
+  [ "$status" -eq 0 ]
+  # Exactly Bash: present, and NOT followed by a comma-appended MCP tool.
+  grep -q -- "--allowed-tools Bash" "$ARGS_RECORD"
+  ! grep -q -- "--allowed-tools Bash," "$ARGS_RECORD"
+  # And the MCP config flags themselves must not be threaded for persona parity.
+  ! grep -q -- "--mcp-config" "$ARGS_RECORD"
+  ! grep -q -- "--strict-mcp-config" "$ARGS_RECORD"
+}
+
+# ── run_persona: environment boundary is enforced outside the model prompt ─────
+# The eval feeds an UNTRUSTED held-out case into the prompt and the parity
+# posture grants the Bash tool. A prompt-injected shell command must not be able
+# to read a GitHub token or use it to write the repo / hit the API. run_persona
+# enforces this OUTSIDE the prompt by scrubbing every GitHub credential from the
+# environment the engine (and therefore any Bash command it runs) inherits. This
+# is the integration test that proves the boundary holds at the environment level,
+# not merely as an in-prompt instruction the model could ignore (#1696).
+
+@test "persona: GitHub credentials are scrubbed from the engine environment (#1696)" {
+  _source_engine "claude"
+  # Replace the recording claude stub with one that captures the GitHub-credential
+  # env vars it was actually invoked with — this is what an injected Bash command
+  # spawned by the model would see.
+  local envrec
+  envrec="$(mktemp)"
+  cat >"$STUB_BIN_DIR/claude" <<SH
+#!/usr/bin/env bash
+{
+  printf 'GH_TOKEN=[%s]\n' "\${GH_TOKEN:-}"
+  printf 'GITHUB_TOKEN=[%s]\n' "\${GITHUB_TOKEN:-}"
+  printf 'GH_ENTERPRISE_TOKEN=[%s]\n' "\${GH_ENTERPRISE_TOKEN:-}"
+  printf 'GITHUB_ENTERPRISE_TOKEN=[%s]\n' "\${GITHUB_ENTERPRISE_TOKEN:-}"
+} >"$envrec"
+printf '%s\n' "stub engine response"
+SH
+  chmod +x "$STUB_BIN_DIR/claude"
+
+  # A hostile environment: real-looking GitHub credentials are present in the
+  # parent shell, exactly as they would be on a CI runner.
+  export GH_TOKEN="ghp_shouldnotleak"
+  export GITHUB_TOKEN="ghs_shouldnotleak"
+  export GH_ENTERPRISE_TOKEN="ght_shouldnotleak"
+  export GITHUB_ENTERPRISE_TOKEN="ghe_shouldnotleak"
+
+  run run_persona "$TEST_PROMPT"
+  [ "$status" -eq 0 ]
+
+  # The engine (and any Bash command it spawns) saw NONE of the credentials.
+  grep -q '^GH_TOKEN=\[\]$' "$envrec"
+  grep -q '^GITHUB_TOKEN=\[\]$' "$envrec"
+  grep -q '^GH_ENTERPRISE_TOKEN=\[\]$' "$envrec"
+  grep -q '^GITHUB_ENTERPRISE_TOKEN=\[\]$' "$envrec"
+  ! grep -q 'shouldnotleak' "$envrec"
+
+  # The scrub is scoped to the subshell: the parent environment is untouched.
+  [ "$GH_TOKEN" = "ghp_shouldnotleak" ]
+  [ "$GITHUB_TOKEN" = "ghs_shouldnotleak" ]
+
+  unset GH_TOKEN GITHUB_TOKEN GH_ENTERPRISE_TOKEN GITHUB_ENTERPRISE_TOKEN
+}
+
+@test "persona: non-claude engine → run_persona fails fast, no engine call (#1696)" {
+  # Gemini ignores --allowed-tools and copilot runs --yolo, so neither reproduces
+  # the Claude Opus + Bash-only persona posture. run_persona must refuse rather
+  # than gate a differently-modelled, more tool-capable artifact.
+  _source_engine "gemini"
+  run run_persona "$TEST_PROMPT"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"::error::"* ]]
+  [[ "$output" == *"REVIEW_ENGINE=claude"* ]]
+  # It bailed before invoking any engine.
+  [ ! -s "$ARGS_RECORD" ]
+}
+
 # ── Knob set: MCP flags threaded into agentic ────────────────────────────────
 
 @test "agentic: REVIEW_MCP_CONFIG set → MCP flags appended to claude call" {
