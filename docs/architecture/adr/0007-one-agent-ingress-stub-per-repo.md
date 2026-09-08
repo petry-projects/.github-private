@@ -143,15 +143,18 @@ The checkable boundaries:
   to job level in the same change.
 - **Union subscription starts more runs.** Per-event `paths:` filters are
   per-file, so a role that relied on one (`dependency-advisory.yml`) must move
-  that filter down to the job's `if:` guard or into the reusable. The job-level
-  guard requires the caller stub to perform a `git diff` against the base branch
-  to determine changed paths, and must gracefully skip the job if the check
-  cannot determine paths (e.g., on a `workflow_dispatch` or initial push). Roles
-  that filter by path in the ingress job must declare the permission their
-  changed-path check requires (typically `contents: read`). If the filter is
-  moved into the reusable instead, the caller must forward the base branch or
-  diff context as declared inputs. Matching changes run the job; unrelated union
-  events are skipped and cost no minutes but do cost log legibility.
+  that filter into the reusable, not the caller. A job-level `if:` cannot
+  compute changed paths: it is a pure event predicate (see the job-level filter
+  rule above), and GitHub evaluates it on the Actions service before a runner is
+  assigned — so the thin caller, which forbids `steps:` and `run:`, has no place
+  to perform a `git diff`. The changed-path check therefore runs inside the
+  reusable, which must: run its diff as an explicit step; declare the permission
+  that step needs (typically `contents: read`); pick a diff range per trigger
+  (`pull_request` base…head, `push` before…after); and skip the role gracefully
+  when no usable range exists (e.g. `workflow_dispatch` or an initial push). The
+  caller forwards only whatever base/diff context the reusable declares in its
+  `workflow_call.inputs`. Matching changes run the job; unrelated union events
+  are skipped and cost no minutes but do cost log legibility.
 - **Branch-protection check names change** with the workflow and job names.
   Updating required status checks must land in the same change as the collapse,
   or protection blocks merges on a check that no longer exists.
