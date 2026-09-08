@@ -74,16 +74,26 @@ We will **collapse each consumer repo's per-role caller stubs into a single
 `.github/workflows/agent-ingress.yml`**, and we will **not** introduce an
 off-GitHub webhook receiver at the current fleet size.
 
-The ingress stub remains a thin caller under ADR-0001 — no `steps:`, no `run:`,
-only `on:`, `permissions:`, and `uses:` jobs forwarding declared inputs. This
-ADR does not supersede ADR-0001; it fills its ingress gap and adds one boundary
-to it.
+The ingress stub remains a thin caller under ADR-0001. The allowed schema is:
+`on:` (the union of triggers), `permissions:` (the role's required scopes),
+`jobs:` (one per role, each with `uses:` to the pinned reusable, `with:` to
+forward declared inputs, `secrets:` (if the reusable declares them), and an `if:`
+guarded by event predicates only — see the job-level filter rule below). Explicitly
+forbidden: `steps:`, `run:`, and any logic outside the `if:` guard. Each job
+must carry the role name to preserve traceability (per ADR-0001), and each `with:`
+must forward only inputs the pinned channel's `workflow_call.inputs` declares.
+This ADR does not supersede ADR-0001; it fills its ingress gap and adds one
+boundary to it.
 
 The checkable boundaries:
 
 - **One ingress per repo.** `agent-ingress.yml` is the only entrypoint for
-  event-driven (Class 1) agentic roles in a consumer repo. Its `on:` block is
-  the union of the collapsed roles' triggers.
+  eligible Class 1 agentic roles in a consumer repo — those that are not
+  `pull_request_target` triggered and are not carve-outs under repository-local
+  exceptions (see boundaries below). Its `on:` block is the union of the
+  collapsed roles' triggers. `pull_request_target`, Class 2, and Class 3 roles
+  keep their own per-role stubs; documented repository-local triggers keep
+  per-role stubs as well.
 - **A job-level `if:` may act as an event filter, and only as an event
   filter.** The ingress declares **one job per role**, each guarded by an
   expression referencing only `github.event_name`, `github.event.action`, and
@@ -132,9 +142,16 @@ The checkable boundaries:
   carry the role, and any monitor that keys on workflow name must be retargeted
   to job level in the same change.
 - **Union subscription starts more runs.** Per-event `paths:` filters are
-  per-file, so a role that relied on one (`dependency-advisory.yml`) moves that
-  filter down to its job or its reusable. Skipped jobs cost no minutes but do
-  cost log legibility.
+  per-file, so a role that relied on one (`dependency-advisory.yml`) must move
+  that filter down to the job's `if:` guard or into the reusable. The job-level
+  guard requires the caller stub to perform a `git diff` against the base branch
+  to determine changed paths, and must gracefully skip the job if the check
+  cannot determine paths (e.g., on a `workflow_dispatch` or initial push). Roles
+  that filter by path in the ingress job must declare the permission their
+  changed-path check requires (typically `contents: read`). If the filter is
+  moved into the reusable instead, the caller must forward the base branch or
+  diff context as declared inputs. Matching changes run the job; unrelated union
+  events are skipped and cost no minutes but do cost log legibility.
 - **Branch-protection check names change** with the workflow and job names.
   Updating required status checks must land in the same change as the collapse,
   or protection blocks merges on a check that no longer exists.
