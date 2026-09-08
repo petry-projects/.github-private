@@ -60,15 +60,29 @@ For each open review thread:
 
 #### Replying to a thread
 
-For every thread you fix, post a reply to that thread that states **specifically what you changed** — name the file(s)/function(s) you touched and how the change addresses the concern (one or two concrete sentences; never just "done" or "fixed"). End the reply with the addressed-marker `<!-- dev-lead:addressed -->` so the automation can safely resolve the thread even if the resolve step below is missed (#1547) — stamp it **only** on a genuine addressed reply, never on a skip note. This gives the reviewer a precise record before the thread is resolved. Pass the body as a GraphQL variable so quotes and newlines in your message are safe:
+For every thread you fix, post a reply to that thread that states **specifically what you changed** — name the file(s)/function(s) you touched and how the change addresses the concern (one or two concrete sentences; never just "done" or "fixed"). End the reply with **two** HTML comments: the addressed-marker `<!-- dev-lead:addressed -->` **and** a machine-readable claim `<!-- dev-lead:claim {…} -->` (#1692). The marker alone is no longer enough — the harness now verifies the claim against the pushed diff before it resolves the thread, so a marker **without** a claim (or with a claim it cannot verify) leaves the thread **unresolved**. Stamp both **only** on a genuine addressed reply, never on a skip note. Pass the body as a GraphQL variable so quotes and newlines are safe:
 
 ```bash
 # Replace THREAD_NODE_ID with the id value from the thread JSON.
+# Get the full 40-char head SHA the fix rides on with: git rev-parse HEAD
 gh api graphql \
   -f query='mutation($tid: ID!, $body: String!) { addPullRequestReviewThreadReply(input: {pullRequestReviewThreadId: $tid, body: $body}) { comment { id } } }' \
   -f tid="THREAD_NODE_ID" \
-  -f body="Fixed in scripts/lib/auto-merge.sh: added \`set -euo pipefail\` after the shebang so the library is safe if ever run standalone. <!-- dev-lead:addressed -->"
+  -f body="Fixed in scripts/lib/auto-merge.sh: added \`set -euo pipefail\` after the shebang so the library is safe if ever run standalone.
+
+<!-- dev-lead:addressed -->
+<!-- dev-lead:claim {\"v\":1,\"sha\":\"3cc4132fd4b4692aa20865f8b68ea8e21de604b8\",\"files\":[\"scripts/lib/auto-merge.sh\"]} -->"
 ```
+
+**The claim payload — schema `v1` (normative).** The single source of truth for the harness parser is `scripts/lib/addressed-claim-verify.sh`; emit exactly this shape:
+
+| Field | Type | Rule |
+|---|---|---|
+| `v` | integer | Schema version — `1` today. A payload with any other `v` is unverifiable → the thread stays open. |
+| `sha` | string | The **full 40-character** commit SHA your fix rides on (`git rev-parse HEAD`). Abbreviated SHAs are rejected. |
+| `files` | array of strings | The repo-relative POSIX path(s) your fix touches, **exactly as they appear in the diff** (no leading `./` or `/`, no quoting). Must be non-empty. It is a **JSON array** — never comma- or newline-separated. |
+
+Emit **exactly one** claim comment per reply — the harness treats zero or more-than-one as unverifiable and leaves the thread open. The harness then checks that the named commit is reachable from the PR head, its diff (or the cumulative `<sha>^..HEAD` range) is non-empty, and it touches at least one file in `files`. If any check fails, the thread stays unresolved — so name the real SHA and the real files.
 
 For a thread that is `isOutdated: true` with no code change, a reply is optional — a one-line note that the referenced code no longer exists is helpful but not required.
 
