@@ -85,6 +85,40 @@ FIRES_PATHS="$(printf 'scripts/lib/foo.sh\ntests/test_foo.bats\n')"
 }
 
 # ---------------------------------------------------------------------------
+# Suppressor precedence — the printed reason is deterministic, so a future
+# reorder that changes skip:<reason> (and the soak histogram) must fail a test.
+# Order: no-test-surface > opt-out > human-gated > budget-exhausted > already-advised.
+# ---------------------------------------------------------------------------
+
+@test "precedence: no-test-surface wins over every other suppressor" {
+  # Docs-only PR that is also opted-out, human-gated, over budget, and already
+  # advised — the no-test-surface reason must still be the one reported.
+  run qa_lead_gate_decision "$(printf 'README.md\n')" \
+    '["qa-lead:hands-off","needs-human-review","dev-lead:needs-human"]' 1 1
+  [ "$status" -ne 0 ]
+  [[ "$output" == skip:no-test-surface* ]]
+}
+
+@test "precedence: opt-out wins over the human gates, budget, and idempotency" {
+  run qa_lead_gate_decision "$FIRES_PATHS" \
+    '["qa-lead:hands-off","needs-human-review","dev-lead:needs-human"]' 1 1
+  [ "$status" -ne 0 ]
+  [[ "$output" == skip:opt-out* ]]
+}
+
+@test "precedence: human gates win over budget and idempotency" {
+  run qa_lead_gate_decision "$FIRES_PATHS" '["needs-human-review"]' 1 1
+  [ "$status" -ne 0 ]
+  [[ "$output" == skip:human-gated* ]]
+}
+
+@test "precedence: budget wins over an existing advisory" {
+  run qa_lead_gate_decision "$FIRES_PATHS" '[]' 1 1
+  [ "$status" -ne 0 ]
+  [[ "$output" == skip:budget-exhausted* ]]
+}
+
+# ---------------------------------------------------------------------------
 # The helper reused by the gate — pr_has_escalation_label must be in scope
 # ---------------------------------------------------------------------------
 

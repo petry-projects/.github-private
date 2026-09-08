@@ -85,12 +85,37 @@ jobs:
             exit 0
           }
 
-          # AC #3 — changed files (newline-separated paths). An empty list on
-          # success is fine (an empty PR does not fire); only an API failure skips.
-          if ! changed_paths="$(gh api --paginate \
-            "repos/${REPO}/pulls/${PR}/files" --jq '.[].filename')"; then
+          # AC #3 — changed files. Fetch the raw JSON array of filenames so the
+          # list can be validated BEFORE it is flattened to the newline-delimited
+          # text qa_lead_test_surface consumes. An empty list on success is fine
+          # (an empty PR does not fire); only an API failure skips.
+          if ! files_json="$(gh api --paginate --slurp \
+            "repos/${REPO}/pulls/${PR}/files" --jq '[.[][].filename]')"; then
             skip_closed "changed-file list unavailable"
           fi
+
+          # Completeness: the /pulls/{n}/files endpoint caps at 3000 files, so a
+          # larger PR yields a truncated list that could omit a test/source path
+          # and mislabel the PR. Compare received vs. the declared changed_files
+          # count and fail closed (skip) on an incomplete list — never advise off
+          # partial data.
+          if ! declared_files="$(gh api "repos/${REPO}/pulls/${PR}" \
+            --jq '.changed_files')"; then
+            skip_closed "changed-file count unavailable"
+          fi
+          received_files="$(jq 'length' <<< "$files_json")"
+          if ! qa_lead_file_list_complete "$received_files" "$declared_files"; then
+            skip_closed "changed-file list incomplete (${received_files}/${declared_files})"
+          fi
+
+          # Control characters: a filename containing an LF would split into
+          # phantom records once flattened (a docs-only PR could forge a SOURCE
+          # path and trigger the advisory). Reject before flattening.
+          if qa_lead_paths_have_control_char "$files_json"; then
+            skip_closed "changed-file list contains control characters"
+          fi
+
+          changed_paths="$(jq -r '.[]' <<< "$files_json")"
 
           # AC #4/#6 — label names as a JSON array. A labels API failure must NOT
           # degrade to [] — that would bypass the opt-out and human-gating

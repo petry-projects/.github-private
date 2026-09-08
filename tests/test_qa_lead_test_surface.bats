@@ -130,3 +130,38 @@ setup() {
   run qa_lead_test_surface "$(printf 'scripts/lib/foo.sh\ntests/test_foo.bats\ndocs/foo.md\n')"
   [ "$status" -eq 0 ]
 }
+
+# ---------------------------------------------------------------------------
+# qa_lead_paths_have_control_char — reject LF/control chars before flattening
+# ---------------------------------------------------------------------------
+
+@test "control-char guard: a clean path list is accepted" {
+  run qa_lead_paths_have_control_char '["docs/a.md","scripts/x.sh"]'
+  [ "$status" -ne 0 ]
+}
+
+@test "control-char guard: a filename containing LF is rejected (no phantom path)" {
+  # A single docs filename with an embedded LF would otherwise flatten into a
+  # separate scripts/x.sh record and fire the advisory on a docs-only PR.
+  run qa_lead_paths_have_control_char '["docs/a.md\nscripts/x.sh"]'
+  [ "$status" -eq 0 ]
+}
+
+@test "control-char guard: an empty list is accepted" {
+  run qa_lead_paths_have_control_char '[]'
+  [ "$status" -ne 0 ]
+}
+
+# ---------------------------------------------------------------------------
+# qa_lead_file_list_complete — fail closed on a truncated changed-file list
+# ---------------------------------------------------------------------------
+
+@test "completeness: exactly 3000 received of 3000 declared is complete" {
+  run qa_lead_file_list_complete 3000 3000
+  [ "$status" -eq 0 ]
+}
+
+@test "completeness: 3000 received of 3001 declared is incomplete (API cap hit)" {
+  run qa_lead_file_list_complete 3000 3001
+  [ "$status" -ne 0 ]
+}
