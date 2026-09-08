@@ -593,10 +593,10 @@ GHEOF
   # uncommitted changes) but the SHA moved → the already-committed work is
   # checkpoint-pushed (no new commit needed, just the push). rev-parse advances on
   # the 2nd call so pre_engine_sha (call 1) differs from the has_commits probe.
-  GIT_PUSH_FILE="$(mktemp)"; export GIT_PUSH_FILE
+  GIT_PUSH_FILE="$BATS_TEST_TMPDIR/git_push_file"; export GIT_PUSH_FILE
   cat > "$STUB_BIN_DIR/git" <<GITEOF
 #!/usr/bin/env bash
-STATE="/tmp/devlead-test-revparse-count"
+STATE="$BATS_TEST_TMPDIR/devlead-test-revparse-count"
 case "\$*" in
   "config"*)            exit 0 ;;
   "checkout -b"*)       exit 0 ;;
@@ -610,7 +610,6 @@ case "\$*" in
 esac
 GITEOF
   chmod +x "$STUB_BIN_DIR/git"
-  rm -f /tmp/devlead-test-revparse-count
 
   run bash "$FIX_ISSUE_SCRIPT"
 
@@ -625,7 +624,7 @@ GITEOF
   [[ "$posted" == *"partial"* ]]
   [[ "$posted" != *"not recoverable"* ]]
 
-  rm -f "$COMMENT_FILE" "$LABEL_FILE" "$GIT_PUSH_FILE" /tmp/devlead-test-revparse-count
+  rm -f "$COMMENT_FILE" "$LABEL_FILE"
 }
 
 @test "fix-issue: timeout where the checkpoint push fails → falls back to 'not recoverable' (#1660 fallback)" {
@@ -671,8 +670,8 @@ GITEOF
 # git stub that reports uncommitted work (dirty `status --porcelain`) and records
 # every commit message + push invocation for assertion.
 _setup_checkpoint_git_stub() {
-  GIT_COMMIT_FILE="$(mktemp)"; export GIT_COMMIT_FILE
-  GIT_PUSH_FILE="$(mktemp)"; export GIT_PUSH_FILE
+  GIT_COMMIT_FILE="$BATS_TEST_TMPDIR/git_commit_file"; export GIT_COMMIT_FILE
+  GIT_PUSH_FILE="$BATS_TEST_TMPDIR/git_push_file"; export GIT_PUSH_FILE
   cat > "$STUB_BIN_DIR/git" <<GITEOF
 #!/usr/bin/env bash
 case "\$*" in
@@ -716,7 +715,7 @@ GITEOF
   [[ "$posted" == *"unreviewed"* ]]
   [[ "$posted" != *"not recoverable"* ]]
 
-  rm -f "$COMMENT_FILE" "$LABEL_FILE" "$GIT_COMMIT_FILE" "$GIT_PUSH_FILE"
+  rm -f "$COMMENT_FILE" "$LABEL_FILE"
 }
 
 @test "fix-issue: checkpoint push on timeout posts NO completion claim — resolution gate stays closed (#1660 AC2/#1621)" {
@@ -737,7 +736,7 @@ GITEOF
   # It still escalates to a human.
   [[ "$posted" == *"needs human attention"* ]]
 
-  rm -f "$COMMENT_FILE" "$LABEL_FILE" "$GIT_COMMIT_FILE" "$GIT_PUSH_FILE"
+  rm -f "$COMMENT_FILE" "$LABEL_FILE"
 }
 
 @test "fix-issue: non-timeout success is unchanged — commits 'feat: implement', never the checkpoint marker (#1660 AC4)" {
@@ -747,7 +746,7 @@ exit 0
 LINTEOF
   chmod +x "$STUB_BIN_DIR/dev-lead-lint.sh"
 
-  GIT_COMMIT_FILE="$(mktemp)"; export GIT_COMMIT_FILE
+  GIT_COMMIT_FILE="$BATS_TEST_TMPDIR/git_commit_file"; export GIT_COMMIT_FILE
   cat > "$STUB_BIN_DIR/git" <<GITEOF
 #!/usr/bin/env bash
 case "\$*" in
@@ -759,7 +758,7 @@ esac
 GITEOF
   chmod +x "$STUB_BIN_DIR/git"
 
-  COMMENT_FILE="$(mktemp)"; export COMMENT_FILE
+  COMMENT_FILE="$BATS_TEST_TMPDIR/comment_file"; export COMMENT_FILE
   cat > "$STUB_BIN_DIR/gh" <<GHEOF
 #!/usr/bin/env bash
 cmd="\$1"; shift || true
@@ -804,7 +803,7 @@ GHEOF
   # Durable completion claim still posted (non-timeout path untouched).
   [[ "$(cat "$COMMENT_FILE")" == *"status=completed"* ]]
 
-  rm -f "$GIT_COMMIT_FILE" "$COMMENT_FILE"
+  # No manual cleanup needed with BATS_TEST_TMPDIR
 }
 
 @test "fix-issue: attempt ceiling (prior attempt=2) → escalates to needs-human" {
