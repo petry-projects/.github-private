@@ -582,44 +582,228 @@ GHEOF
   rm -f "$COMMENT_FILE" "$LABEL_FILE"
 }
 
-@test "fix-issue: late-phase timeout with completed work → surfaces branch, not silently discarded" {
+@test "fix-issue: late-phase timeout with committed work (clean tree) → checkpoint-pushed, not discarded (#1660 has_commits path)" {
   _setup_failure_stubs 124 "timed out during a late phase"
   unset GEMINI_API_KEY GOOGLE_API_KEY
   export COPILOT_GITHUB_TOKEN="ghp_stub"
   export ACTION_TIMEOUT_SEC=2100
 
   # Simulate the #1003 mode: the engine advanced HEAD (a commit) before the
-  # timeout, so pre_engine_sha != current HEAD. git status is clean but the SHA
-  # moved → completed-but-unpushed work must be surfaced.
-  # First rev-parse (pre_engine_sha) reads one value; make the failure-handler's
-  # rev-parse report a different SHA by flipping the env after branch creation is
-  # not possible across processes, so use a wrapper that advances on 2nd call.
-  cat > "$STUB_BIN_DIR/git" <<'GITEOF'
+  # timeout, so pre_engine_sha != current HEAD. git status is CLEAN (no
+  # uncommitted changes) but the SHA moved → the already-committed work is
+  # checkpoint-pushed (no new commit needed, just the push). rev-parse advances on
+  # the 2nd call so pre_engine_sha (call 1) differs from the has_commits probe.
+  GIT_PUSH_FILE="$BATS_TEST_TMPDIR/git_push_file"; export GIT_PUSH_FILE
+  cat > "$STUB_BIN_DIR/git" <<GITEOF
 #!/usr/bin/env bash
-STATE="/tmp/devlead-test-revparse-count"
-case "$*" in
+STATE="$BATS_TEST_TMPDIR/devlead-test-revparse-count"
+case "\$*" in
   "config"*)            exit 0 ;;
   "checkout -b"*)       exit 0 ;;
   "rev-parse HEAD")
-    n=0; [ -f "$STATE" ] && n=$(cat "$STATE")
-    n=$((n+1)); echo "$n" > "$STATE"
-    if [ "$n" -le 1 ]; then echo "sha_before"; else echo "sha_after_commit"; fi ;;
+    n=0; [ -f "\$STATE" ] && n=\$(cat "\$STATE")
+    n=\$((n+1)); echo "\$n" > "\$STATE"
+    if [ "\$n" -le 1 ]; then echo "sha_before"; else echo "sha_after_commit"; fi ;;
   "status --porcelain") exit 0 ;;
+  "push"*)              printf '%s\n' "\$*" >> "${GIT_PUSH_FILE}"; exit 0 ;;
   *)                    exit 0 ;;
 esac
 GITEOF
   chmod +x "$STUB_BIN_DIR/git"
-  rm -f /tmp/devlead-test-revparse-count
+
+  run bash "$FIX_ISSUE_SCRIPT"
+
+  [ "$status" -eq 1 ]
+  # The committed-but-unpushed work is now pushed (no new checkpoint commit
+  # needed since the tree is clean — just the branch push).
+  [[ "$(cat "$GIT_PUSH_FILE")" == *"dev-lead/issue-100"* ]]
+  local posted; posted=$(cat "$COMMENT_FILE")
+  [[ "$posted" == *"reason=timeout"* ]]
+  # Surfaced as checkpoint-pushed partial work, no longer "not recoverable".
+  [[ "$posted" == *"dev-lead/issue-100"* ]]
+  [[ "$posted" == *"partial"* ]]
+  [[ "$posted" != *"not recoverable"* ]]
+
+  rm -f "$COMMENT_FILE" "$LABEL_FILE"
+}
+
+@test "fix-issue: timeout where the checkpoint push fails → falls back to 'not recoverable' (#1660 fallback)" {
+  _setup_failure_stubs 124 "timed out, and the remote is unreachable"
+  unset GEMINI_API_KEY GOOGLE_API_KEY
+  export COPILOT_GITHUB_TOKEN="ghp_stub"
+  export ACTION_TIMEOUT_SEC=2100
+
+  # Uncommitted work exists, but the push fails (e.g. remote unreachable) → the
+  # work could not be preserved, so the escalation keeps the honest
+  # "not recoverable" note instead of falsely claiming a checkpoint branch.
+  cat > "$STUB_BIN_DIR/git" <<'GITEOF'
+#!/usr/bin/env bash
+case "$*" in
+  "config"*)            exit 0 ;;
+  "checkout -b"*)       exit 0 ;;
+  "rev-parse HEAD")     echo "abc123deadbeef" ;;
+  "status --porcelain") echo "M scripts/foo.sh" ;;
+  "add -A")             exit 0 ;;
+  "commit"*)            exit 0 ;;
+  "push"*)              echo "fatal: unable to access remote" >&2; exit 1 ;;
+  *)                    exit 0 ;;
+esac
+GITEOF
+  chmod +x "$STUB_BIN_DIR/git"
 
   run bash "$FIX_ISSUE_SCRIPT"
 
   [ "$status" -eq 1 ]
   local posted; posted=$(cat "$COMMENT_FILE")
   [[ "$posted" == *"reason=timeout"* ]]
-  # Completed-but-unpushed work is surfaced (branch mentioned), not discarded.
-  [[ "$posted" == *"not pushed"* ]] || [[ "$posted" == *"not discarded"* ]]
+  [[ "$posted" == *"not recoverable"* ]]
 
-  rm -f "$COMMENT_FILE" "$LABEL_FILE" /tmp/devlead-test-revparse-count
+  rm -f "$COMMENT_FILE" "$LABEL_FILE"
+}
+
+# ── checkpoint-push on stage timeout (#1660) ──────────────────────────────────
+# On exit 124 the orchestrating shell survives (GNU `timeout` wraps only the
+# engine child, never this script), so partial work is committed under a distinct
+# INCOMPLETE marker and the working branch is pushed — a timeout leaves
+# salvageable work on the remote instead of nothing.
+
+# git stub that reports uncommitted work (dirty `status --porcelain`) and records
+# every commit message + push invocation for assertion.
+_setup_checkpoint_git_stub() {
+  GIT_COMMIT_FILE="$BATS_TEST_TMPDIR/git_commit_file"; export GIT_COMMIT_FILE
+  GIT_PUSH_FILE="$BATS_TEST_TMPDIR/git_push_file"; export GIT_PUSH_FILE
+  cat > "$STUB_BIN_DIR/git" <<GITEOF
+#!/usr/bin/env bash
+case "\$*" in
+  "config"*)            exit 0 ;;
+  "checkout -b"*)       exit 0 ;;
+  "rev-parse HEAD")     echo "abc123deadbeef" ;;
+  "status --porcelain") echo "M scripts/foo.sh" ;;
+  "add -A")             exit 0 ;;
+  "commit"*)            printf '%s\n' "\$*" >> "${GIT_COMMIT_FILE}"; exit 0 ;;
+  "push"*)              printf '%s\n' "\$*" >> "${GIT_PUSH_FILE}"; exit 0 ;;
+  *)                    exit 0 ;;
+esac
+GITEOF
+  chmod +x "$STUB_BIN_DIR/git"
+}
+
+@test "fix-issue: timeout with partial work → checkpoint-pushed under INCOMPLETE marker, branch named, not 'not recoverable' (#1660 AC1/AC3)" {
+  _setup_failure_stubs 124 "operation timed out after 2100s"
+  unset GEMINI_API_KEY GOOGLE_API_KEY
+  export COPILOT_GITHUB_TOKEN="ghp_stub"
+  export ACTION_TIMEOUT_SEC=2100
+  _setup_checkpoint_git_stub
+
+  run bash "$FIX_ISSUE_SCRIPT"
+
+  [ "$status" -eq 1 ]
+  # A checkpoint commit was made with the distinct INCOMPLETE marker prefix...
+  [[ "$(cat "$GIT_COMMIT_FILE")" == *"checkpoint(dev-lead):"* ]]
+  [[ "$(cat "$GIT_COMMIT_FILE")" == *"INCOMPLETE"* ]]
+  # ...and the working branch was pushed.
+  [[ "$(cat "$GIT_PUSH_FILE")" == *"dev-lead/issue-100"* ]]
+
+  local posted; posted=$(cat "$COMMENT_FILE")
+  # Still escalates to a human with reason=timeout...
+  [[ "$posted" == *"needs human attention"* ]]
+  [[ "$posted" == *"reason=timeout"* ]]
+  # ...but now names the pushed branch and calls the work partial/unreviewed
+  # instead of today's "not recoverable from this run".
+  [[ "$posted" == *"dev-lead/issue-100"* ]]
+  [[ "$posted" == *"partial"* ]]
+  [[ "$posted" == *"unreviewed"* ]]
+  [[ "$posted" != *"not recoverable"* ]]
+
+  rm -f "$COMMENT_FILE" "$LABEL_FILE"
+}
+
+@test "fix-issue: checkpoint push on timeout posts NO completion claim — resolution gate stays closed (#1660 AC2/#1621)" {
+  _setup_failure_stubs 124 "operation timed out after 2100s"
+  unset GEMINI_API_KEY GOOGLE_API_KEY
+  export COPILOT_GITHUB_TOKEN="ghp_stub"
+  export ACTION_TIMEOUT_SEC=2100
+  _setup_checkpoint_git_stub
+
+  run bash "$FIX_ISSUE_SCRIPT"
+
+  [ "$status" -eq 1 ]
+  local posted; posted=$(cat "$COMMENT_FILE")
+  # A checkpoint is unmistakably incomplete: it must never read as a completed,
+  # reviewable pass — no durable completion marker, no "Implementation Complete".
+  [[ "$posted" != *"status=completed"* ]]
+  [[ "$posted" != *"Implementation Complete"* ]]
+  # It still escalates to a human.
+  [[ "$posted" == *"needs human attention"* ]]
+
+  rm -f "$COMMENT_FILE" "$LABEL_FILE"
+}
+
+@test "fix-issue: non-timeout success is unchanged — commits 'feat: implement', never the checkpoint marker (#1660 AC4)" {
+  cat > "$STUB_BIN_DIR/dev-lead-lint.sh" <<'LINTEOF'
+#!/usr/bin/env bash
+exit 0
+LINTEOF
+  chmod +x "$STUB_BIN_DIR/dev-lead-lint.sh"
+
+  GIT_COMMIT_FILE="$BATS_TEST_TMPDIR/git_commit_file"; export GIT_COMMIT_FILE
+  cat > "$STUB_BIN_DIR/git" <<GITEOF
+#!/usr/bin/env bash
+case "\$*" in
+  "status --porcelain") echo "M scripts/foo.sh" ;;
+  "rev-parse HEAD")     echo "deadbeef1234" ;;
+  "commit"*)            printf '%s\n' "\$*" >> "${GIT_COMMIT_FILE}"; exit 0 ;;
+  *)                    exit 0 ;;
+esac
+GITEOF
+  chmod +x "$STUB_BIN_DIR/git"
+
+  COMMENT_FILE="$BATS_TEST_TMPDIR/comment_file"; export COMMENT_FILE
+  cat > "$STUB_BIN_DIR/gh" <<GHEOF
+#!/usr/bin/env bash
+cmd="\$1"; shift || true
+case "\$cmd" in
+  pr) case "\$*" in create*) echo "https://github.com/petry-projects/.github-private/pull/42" ;; *) exit 0 ;; esac ;;
+  label) exit 0 ;;
+  api)
+    case "\$*" in
+      *"pulls?state=open"*) echo "0" ;;
+      *comments*)           echo "[]" ;;
+      *"issues/"*)          echo '{"title":"Test","body":"body"}' ;;
+      *)                    echo "{}" ;;
+    esac ;;
+  issue)
+    sub="\$1"; shift || true
+    case "\$sub" in
+      comment)
+        body=""
+        while [ \$# -gt 0 ]; do
+          if [ "\$1" = "--body" ]; then body="\$2"; shift 2; continue; fi
+          shift
+        done
+        printf '%s\n----8<----\n' "\$body" >> "${COMMENT_FILE}"
+        exit 0 ;;
+      *) exit 0 ;;
+    esac ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+
+  export DEV_LEAD_DRY_RUN="false"
+  export LINT_SCRIPT="$STUB_BIN_DIR/dev-lead-lint.sh"
+  export GITHUB_RUN_ID="99"
+
+  run bash "$FIX_ISSUE_SCRIPT"
+
+  [ "$status" -eq 0 ]
+  # Normal commit message, never the checkpoint marker.
+  [[ "$(cat "$GIT_COMMIT_FILE")" == *"feat: implement issue #100"* ]]
+  [[ "$(cat "$GIT_COMMIT_FILE")" != *"checkpoint(dev-lead):"* ]]
+  # Durable completion claim still posted (non-timeout path untouched).
+  [[ "$(cat "$COMMENT_FILE")" == *"status=completed"* ]]
+
+  # No manual cleanup needed with BATS_TEST_TMPDIR
 }
 
 @test "fix-issue: attempt ceiling (prior attempt=2) → escalates to needs-human" {
