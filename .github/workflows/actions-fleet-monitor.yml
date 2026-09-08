@@ -567,6 +567,24 @@ jobs:
           {"event_type":"dev-lead-ci-failure","client_payload":{"source":"fleet-monitor-stub-drift","count":"${{ env.STUB_DRIFT_COUNT }}"}}
           EOF
 
+      - name: Dispatch dev-lead for persona opt-out drift
+        # #1644 — consume HAS_PERSONA_OPTOUT_DRIFT so incomplete <id>:hands-off
+        # opt-out coverage is automatically alerted, mirroring the stub-drift and
+        # high-failure dispatch paths above. Without this the fleet_persona_optout.json
+        # artifact is written but never tracked or alerted.
+        if: env.HAS_PERSONA_OPTOUT_DRIFT == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS }}
+        run: |
+          # github.token events do not trigger issues:labeled workflows; use the
+          # PAT to fire repository_dispatch so Dev-Lead Agent is explicitly woken.
+          # Use --input so client_payload is sent as a JSON object, not a string.
+          gh api "repos/${{ github.repository }}/dispatches" \
+            -X POST \
+            --input - <<EOF
+          {"event_type":"dev-lead-ci-failure","client_payload":{"source":"fleet-monitor-persona-optout","count":"${{ env.PERSONA_OPTOUT_INCOMPLETE_COUNT }}"}}
+          EOF
+
       - name: Remediate drifted stubs (opt-in, dry-run by default)
         # #1152 (epic #1148, Phase 4) — wire the stub-drift remediation loop onto
         # the SAME cadence as detection: run scripts/fleet_stub_remediate.sh here,
