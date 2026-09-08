@@ -71,12 +71,14 @@ trust:
 
 # --- Runtime identity (§5.1) ------------------------------------------------
 # Advisory-only (consumed by the initiative-planner and the persona runner). On
-# the comment path it posts as `don-petry` (the runner authenticates with that
-# account's PAT). No dedicated reusable yet.
+# the comment path it posts as the machine user `donpetry-bot`, NOT the human
+# owner — an advisory must be identifiably a bot in the audit trail
+# (.github-private#1650). No dedicated reusable yet.
 runtime:
   identity:
-    account: don-petry
-    credential: GH_PAT_DON_PETRY
+    account: donpetry-bot
+    credential: DON_PETRY_BOT_GH_PAT
+  reusable: .github/workflows/persona-runner-reusable.yml
 
 evals:
   required_before: stable
