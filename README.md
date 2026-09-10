@@ -66,8 +66,8 @@ Scheduled workflows post reports and dashboards as issues or run summaries for m
 | [`auto-rebase-health.yml`](.github/workflows/auto-rebase-health.yml) | Daily auto-rebase health report (issue) — rebase success/failure trends |
 | [`daily-pr-review-health.yml`](.github/workflows/daily-pr-review-health.yml) | Daily PR-review health check — flags PR-review agent failures as an issue |
 | [`docs-health-check.yml`](.github/workflows/docs-health-check.yml) | Docs health check — flags stale/broken docs as an issue |
-| [`engine-token-liveness.yml`](.github/workflows/engine-token-liveness.yml) | Engine-token liveness monitor — asserts dev-lead/pr-review caller stubs are not failing at the "Engine token preflight" step, and escalates a sustained fleet-wide outage that would otherwise go unalerted |
-| [`premature-closure-audit.yml`](.github/workflows/premature-closure-audit.yml) | Premature-closure audit — flags issues closed as completed with no merged closing PR, and OPEN issues carrying an unbacked completion claim |
+| [`engine-token-liveness.yml`](.github/workflows/engine-token-liveness.yml) | Engine-token liveness monitor — asserts dev-lead/pr-review caller stubs are not failing at the "Engine token preflight" step, and escalates a sustained fleet-wide outage that would otherwise go unalerted (#1587) |
+| [`premature-closure-audit.yml`](.github/workflows/premature-closure-audit.yml) | Premature-closure audit — flags issues closed as completed with no merged closing PR, and OPEN issues carrying an unbacked completion claim (#1445) |
 | [`reviewer-report.yml`](.github/workflows/reviewer-report.yml) | Reviewer scorecard (per workflow-run summary) — per-reviewer PR-review activity |
 | [`skill-eval-report.yml`](.github/workflows/skill-eval-report.yml) | Skill-eval results report — agent skill pass/fail trends (self-improving-skills pipeline) |
 | [`token-report.yml`](.github/workflows/token-report.yml) | LLM token-cost report (per workflow-run summary) for maintainers |
@@ -89,7 +89,7 @@ Notable subtopics are listed below to aid discoverability; see the standards dir
 | Standard | Notable subtopics |
 |----------|-------------------|
 | [`advanced-security`](https://github.com/petry-projects/.github/blob/main/standards/advanced-security.md) | Code Security Configurations, push-protection live-fire (canary), licensing & billing, compliance audit checks |
-| [`agent-rate-limits`](https://github.com/petry-projects/.github/blob/main/standards/agent-rate-limits.md) | Token-budget breaker, daily budget as per-agent cost bound, exempt actors, operator runbook, status (inert pending human sign-off) |
+| [`agent-rate-limits`](https://github.com/petry-projects/.github/blob/main/standards/agent-rate-limits.md) | Token-budget breaker, canary scope (enforcing vs log-only), daily budget as per-agent cost bound, exempt actors, operator runbook |
 | [`agent-standards`](https://github.com/petry-projects/.github/blob/main/standards/agent-standards.md) | Required files, compliance exemptions, AgentShield CI workflow, decision-making reusables, BMAD Method Workflows |
 | [`ci-standards`](https://github.com/petry-projects/.github/blob/main/standards/ci-standards.md) | Staged promotion through concentric rings, reusable workflow versioning (`stable` channel), action pinning policy, permissions policy, Dev-Lead Agent |
 | [`codeowners-standard`](https://github.com/petry-projects/.github/blob/main/standards/codeowners-standard.md) | Team composition, required setup for new bots, branch protection, verified end-to-end |
