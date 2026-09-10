@@ -63,6 +63,18 @@ readonly _ACV_CLAIM_SUFFIX=' -->'
 # merge" shape) rather than any human chatter, so a neutral "thanks" never blocks.
 readonly _ACV_DISPOSITION_RE_UPPER='(REQUIRED|MUST BE (FIXED|ADDRESSED|RESOLVED|CHANGED)|CHANGES REQUIRED|BLOCKING|REQUEST(ING|ED)? CHANGES)'
 
+# Post-marker BOT-comment classification (#1735 AC2/AC4). A review bot that replies
+# AFTER our addressed-marker either ACKNOWLEDGES (accepts our refutation / records a
+# custom rule — the codeant-ai "✅ Customized review instruction saved!" shape) or
+# raises a NEW finding. An acknowledgement must not keep the thread open; a new
+# finding must. Both regexes are matched case-insensitively (against the upper-cased
+# body). They are deliberately NARROW and the finding signal is checked FIRST, so a
+# comment that is neither a clear ack nor a clear finding — or that mixes ack phrasing
+# with a new point — resolves toward "undeterminable" / "finding" (fail closed): a
+# stuck thread is a nuisance, a wrongly-resolved one clears a merge gate.
+readonly _ACV_BOT_ACK_RE_UPPER='(CUSTOMIZED REVIEW INSTRUCTION SAVED|REVIEW INSTRUCTION SAVED|INSTRUCTION (SAVED|RECORDED)|ACKNOWLEDG|WILL NOT (FLAG|REPORT|RAISE)|NO (FURTHER|MORE) (ACTION|CONCERNS?)|MARKING (THIS )?(AS )?RESOLVED|DISMISS(ED|ING)?)'
+readonly _ACV_BOT_FINDING_RE_UPPER='(POTENTIAL ISSUE|REFACTOR SUGGESTION|SUGGESTION:|NEW (ISSUE|FINDING|PROBLEM|CONCERN)|SECURITY|VULNERABILIT|BUG|MUST (FIX|BE FIXED)|SHOULD (FIX|BE FIXED)|NITPICK|CRITICAL|BLOCKER|CHANGES REQUIRED)'
+
 # acv_parse_claim <reply_body>
 #   Extract and validate the single claim payload from a reply body. On success,
 #   echoes the canonical compact JSON and returns 0. On any failure, echoes a reason
@@ -121,6 +133,119 @@ acv_parse_claim() {
     echo "malformed-json"
     return 1
   }
+  return 0
+}
+
+# acv_latest_marker_index <comments_json> <bot_user>
+#   Full-thread scan for OUR addressed-marker reply (#1735 AC1). <comments_json> is a
+#   JSON array of {author:{login,__typename}, body, createdAt} in thread order. Echoes
+#   the 0-based index of the LATEST comment authored by our account (bot_user or its
+#   [bot]-stripped form) that carries the dev-lead addressed-marker, and returns 0.
+#   Returns 1 (echoing nothing) when no such reply exists — the unchanged no-marker
+#   case. The marker need NOT be the thread's last comment: a bot acknowledgement (or
+#   our own later note) landing after it no longer hides the marker (the pre-#1735
+#   comments(last:1) hole). Pure — no gh/git/network.
+acv_latest_marker_index() {
+  local comments_json="${1:-}" bot_user="${2:-}"
+  local bot_user_stripped="${bot_user%\[bot\]}"
+
+  local rows
+  rows=$(printf '%s' "$comments_json" | jq -c '
+      if type == "array" then to_entries[] else empty end
+    ' 2>/dev/null) || return 1
+  [[ -z "$rows" ]] && return 1
+
+  local found="" obj idx login body
+  while IFS= read -r obj; do
+    [[ -z "$obj" ]] && continue
+    idx=$(printf '%s' "$obj" | jq -r '.key' 2>/dev/null || printf '')
+    login=$(printf '%s' "$obj" | jq -r '.value.author.login // ""' 2>/dev/null || printf '')
+    body=$(printf '%s' "$obj" | jq -r '.value.body // ""' 2>/dev/null || printf '')
+    # Only OUR account's marker authorizes resolution (a foreign marker does not).
+    [[ "$login" == "$bot_user" || "$login" == "$bot_user_stripped" ]] || continue
+    review_reply_is_addressed_marker "$body" || continue
+    found="$idx"
+  done <<<"$rows"
+
+  if [[ -n "$found" ]]; then
+    echo "$found"
+    return 0
+  fi
+  return 1
+}
+
+# acv_bot_comment_is_acknowledgement <body>
+#   Classify a post-marker BOT comment (#1735 AC2/AC4). Returns:
+#     0 = acknowledgement / no new finding  (does not block resolution)
+#     1 = a new finding                      (blocks — thread stays open)
+#     2 = undeterminable                     (fail closed — thread stays open, AC4)
+#   The finding signal is checked FIRST so a comment that both acknowledges and raises
+#   a new point fails toward blocking. Pure — no gh/git/network.
+acv_bot_comment_is_acknowledgement() {
+  local body="${1:-}"
+  [[ -z "$body" ]] && return 2
+  local up="${body^^}"
+  if [[ "$up" =~ $_ACV_BOT_FINDING_RE_UPPER ]]; then
+    return 1
+  fi
+  if [[ "$up" =~ $_ACV_BOT_ACK_RE_UPPER ]]; then
+    return 0
+  fi
+  return 2
+}
+
+# acv_post_marker_clear <comments_json> <marker_index> <bot_user>
+#   Assert nothing UNADDRESSED has landed since our marker reply (#1735 AC2/AC3/AC4).
+#   Scans every comment AFTER <marker_index> and classifies it, reusing the SAME
+#   discriminators the rest of the gate uses (no second classifier, #1735 AC3):
+#     - our own account (login == bot_user / stripped)         -> ours, ignored;
+#     - an agent-marker-bearing comment (review_thread_is_agent_authored) -> ours;
+#     - a bot comment (author __typename Bot, or login endswith [bot]) -> classified
+#       by acv_bot_comment_is_acknowledgement: ack clears, finding blocks (rc1),
+#       undeterminable fails closed (rc2);
+#     - any other marker-less User comment ALWAYS blocks (rc1), regardless of content
+#       — this preserves the #1415 maintainer guard exactly;
+#     - any other undeterminable author type -> fail closed (rc2).
+#   Echoes a short reason token ("clear" | "bot-finding" | "bot-ambiguous" | "human" |
+#   "unknown-author" | "unparseable"). Returns 0 only when clear. Pure.
+acv_post_marker_clear() {
+  local comments_json="${1:-}" marker_index="${2:-0}" bot_user="${3:-}"
+  local bot_user_stripped="${bot_user%\[bot\]}"
+
+  local rows
+  rows=$(printf '%s' "$comments_json" | jq -c --argjson mi "$marker_index" '
+      if type == "array" then (to_entries[] | select(.key > $mi)) else empty end
+    ' 2>/dev/null) || { echo "unparseable"; return 2; }
+  [[ -z "$rows" ]] && { echo "clear"; return 0; }
+
+  local obj login typename body ack_rc
+  while IFS= read -r obj; do
+    [[ -z "$obj" ]] && continue
+    login=$(printf '%s' "$obj" | jq -r '.value.author.login // ""' 2>/dev/null || printf '')
+    typename=$(printf '%s' "$obj" | jq -r '.value.author.__typename // ""' 2>/dev/null || printf '')
+    body=$(printf '%s' "$obj" | jq -r '.value.body // ""' 2>/dev/null || printf '')
+    # Our own account is never an unaddressed comment.
+    [[ "$login" == "$bot_user" || "$login" == "$bot_user_stripped" ]] && continue
+    # An agent-marker-bearing comment is ours by the shared discriminator.
+    review_thread_is_agent_authored "$body" && continue
+    if [[ "$typename" == "Bot" || "$login" == *"[bot]" ]]; then
+      acv_bot_comment_is_acknowledgement "$body" && ack_rc=0 || ack_rc=$?
+      if [[ "$ack_rc" -eq 0 ]]; then
+        continue
+      elif [[ "$ack_rc" -eq 1 ]]; then
+        echo "bot-finding"; return 1
+      else
+        echo "bot-ambiguous"; return 2
+      fi
+    fi
+    if [[ "$typename" == "User" ]]; then
+      echo "human"; return 1
+    fi
+    # Undeterminable author type -> fail closed.
+    echo "unknown-author"; return 2
+  done <<<"$rows"
+
+  echo "clear"
   return 0
 }
 

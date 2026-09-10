@@ -635,11 +635,10 @@ resolve_addressed_bot_threads() {
   fi
 
   # Our own account: the addressed-marker reply must have been posted by us before
-  # it can authorize resolution. GraphQL author.login omits the "[bot]" suffix, so
-  # match both the raw BOT_USER and its [bot]-stripped form (same pattern as
-  # resolve_actor_outdated_threads).
+  # it can authorize resolution. The acv_* thread helpers below derive the
+  # [bot]-stripped form internally (GraphQL author.login omits the "[bot]" suffix),
+  # so they match both the raw BOT_USER and its stripped form.
   local bot_user="${BOT_USER:-donpetry-bot}"
-  local bot_user_stripped="${bot_user%\[bot\]}"
 
   # The enumeration pass ONLY collects candidate thread ids (unresolved,
   # bot-originated). It deliberately does NOT capture the last reply's body or
@@ -705,7 +704,7 @@ resolve_addressed_bot_threads() {
   }'
 
   local resolved_count=0
-  local id node_json cur_resolved reply_author reply_body
+  local id node_json cur_resolved comments_json marker_idx marker_body
   while IFS= read -r id; do
     [ -z "$id" ] && continue
     # Re-read the thread's CURRENT state immediately before resolving so a reply
@@ -721,25 +720,36 @@ resolve_addressed_bot_threads() {
       echo "::notice::skipping thread ${id} — already resolved or state unknown at re-check (${cur_resolved})"
       continue
     fi
-    # The latest reply is the last node of the full-thread fetch.
-    reply_author=$(printf '%s' "$node_json" | jq -r '.data.node.comments.nodes[-1]?.author?.login // ""' 2>/dev/null || echo "")
-    reply_body=$(printf '%s' "$node_json" | jq -r '.data.node.comments.nodes[-1]?.body // ""' 2>/dev/null || echo "")
-    # The addressed-marker only authorizes resolution when OUR account posted it.
-    # A marker-bearing reply from any other human or bot is not our confirmation.
-    if [ "$reply_author" != "$bot_user" ] && [ "$reply_author" != "$bot_user_stripped" ]; then
-      echo "::notice::skipping thread ${id} — latest reply author '${reply_author}' is not our account; a marker from another account does not authorize resolution"
+    # ── #1735: full-thread scan, not comments(last:1) ─────────────────────────
+    # Our addressed-marker reply need NOT be the thread's LATEST comment. Find the
+    # latest comment OUR account posted carrying the marker; a bot acknowledgement
+    # (or our own later note) landing after it must not lock the thread unresolvable
+    # forever (the regression #1691 exposed). A marker from any other account still
+    # does not authorize resolution (acv_latest_marker_index checks the author).
+    comments_json=$(printf '%s' "$node_json" | jq -c '.data.node.comments.nodes // []' 2>/dev/null || echo "[]")
+    if ! marker_idx=$(acv_latest_marker_index "$comments_json" "$bot_user"); then
+      echo "::notice::skipping thread ${id} — no addressed-marker reply from our account in the thread; leaving unresolved (#1735)"
       continue
     fi
-    # And the reply must actually carry the addressed-marker — a skip note or any
-    # other reply leaves the thread open.
-    review_reply_is_addressed_marker "$reply_body" || continue
+    marker_body=$(printf '%s' "$comments_json" | jq -r --argjson i "$marker_idx" '.[$i]?.body // ""' 2>/dev/null || echo "")
+
+    # Nothing UNADDRESSED may have landed since our marker (#1735 AC2/AC3/AC4): a bot
+    # acknowledgement is fine, but a bot NEW finding or ANY human comment (regardless
+    # of content, preserving #1415) blocks, and an undeterminable post-marker comment
+    # fails closed. This composes with the #1692 claim gate below (AC5) — both must pass.
+    local post_reason post_rc
+    post_reason=$(acv_post_marker_clear "$comments_json" "$marker_idx" "$bot_user") && post_rc=0 || post_rc=$?
+    if [ "${post_rc:-0}" -ne 0 ]; then
+      echo "::notice::skipping thread ${id} — an unaddressed comment landed after our marker (${post_reason}); leaving unresolved (#1735)"
+      continue
+    fi
 
     # ── #1692: the marker is now a VERIFIABLE CLAIM, not an assertion ──────────
     # A marker with no claim payload (pre-migration replies) is unverifiable — do
     # NOT resolve (the safe direction; may leave some existing threads open until
     # re-run). A malformed/contract-violating claim is likewise unverifiable.
     local claim_json parse_reason
-    if ! claim_json=$(acv_parse_claim "$reply_body"); then
+    if ! claim_json=$(acv_parse_claim "$marker_body"); then
       parse_reason="$claim_json"
       echo "::notice::skipping thread ${id} — addressed-marker claim not verifiable (${parse_reason:-unparseable}); leaving unresolved (#1692)"
       continue
@@ -785,11 +795,11 @@ resolve_addressed_bot_threads() {
       fi
     fi
 
-    # AC4: honour a standing maintainer disposition. Scan ALL comments; if a
-    # marker-less human maintainer asserted a required disposition, resolve only if
-    # the verified commit postdates it. Unparseable disposition -> fail closed.
-    local comments_json disposition disp_rc
-    comments_json=$(printf '%s' "$node_json" | jq -c '.data.node.comments.nodes // []' 2>/dev/null || echo "[]")
+    # AC4: honour a standing maintainer disposition. Scan ALL comments (reusing the
+    # comments_json captured above); if a marker-less human maintainer asserted a
+    # required disposition, resolve only if the verified commit postdates it.
+    # Unparseable disposition -> fail closed.
+    local disposition disp_rc
     disposition=$(acv_latest_maintainer_disposition "$comments_json" "$bot_user") && disp_rc=0 || disp_rc=$?
     if [ "${disp_rc:-0}" -eq 2 ]; then
       echo "::notice::skipping thread ${id} — a maintainer disposition could not be parsed; leaving unresolved (fail closed) (#1692 AC4)"
