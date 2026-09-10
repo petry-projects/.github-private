@@ -147,3 +147,24 @@ _steps_section() {
       || { echo "gate_threshold moved off 0.7: $role"; return 1; }
   done
 }
+
+# --- scorer mode must match the persona engine (api-mismatch guard) ----------
+# The persona engine emits a PROSE advisory, but run-eval.sh defaults a missing
+# `mode` to `deterministic`, whose scorer expects escalate/risk JSON fields and
+# scores every prose case 0. A persona scorer must therefore declare the
+# llm-judge mode and ship a non-empty, existing judge prompt (as
+# solution-architect/qa-lead already do). Guard every in-scope role so a future
+# scorer cannot silently regress to deterministic prose-scoring.
+@test "every in-scope persona scorer declares the llm-judge mode + an existing judge prompt" {
+  for role in "${ROLES[@]}"; do
+    f="$EVALS/$role/scorer.json"
+    [ -f "$f" ] || { echo "missing scorer.json: $role"; return 1; }
+    [ "$(jq -r '.mode' "$f")" = "llm-judge" ] \
+      || { echo "scorer mode is not llm-judge (would score prose deterministically): $role"; return 1; }
+    jp="$(jq -r '.judge_prompt // ""' "$f")"
+    [ -n "$jp" ] \
+      || { echo "llm-judge scorer sets no judge_prompt: $role"; return 1; }
+    [ -f "$EVALS/$jp" ] \
+      || { echo "judge_prompt references a missing file: $role -> $jp"; return 1; }
+  done
+}
