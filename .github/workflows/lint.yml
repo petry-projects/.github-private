@@ -179,7 +179,8 @@ jobs:
             tests/dev-lead/unit/test_addressed_claim_verify.bats \
             tests/dev-lead/unit/test_fewshot_assemble.bats \
             tests/test_qa_lead_test_surface.bats \
-            tests/test_qa_lead_advisory_gate.bats
+            tests/test_qa_lead_advisory_gate.bats \
+            tests/test_advisory_offline_mode.bats
 
   actionlint:
     # General workflow linting (#1256, epic #1052 Part D): actionlint validates
