@@ -1,6 +1,6 @@
 {
   "mode": "llm-judge",
-  "judge_prompt": "solution-architect/judge.md",
+  "judge_prompt": "scrum-master/judge.md",
   "pass_threshold": 0.7,
   "gate_threshold": 0.7,
   "engine": "persona"
