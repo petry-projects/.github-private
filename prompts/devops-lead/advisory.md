@@ -65,7 +65,7 @@ GitHub item. In that mode:
   itself. Going off to improve a `CLAUDE.md` or any repo file is off-task and wrong.
 
 Everything else below — the assessment and the sentinel-wrapped output shape — is
-unchanged. Skip step 2's fetches; do steps 1 and 3 from the pre-fetched block.
+unchanged. Skip step 2's fetches; do step 3 from the pre-fetched block.
 
 ## Steps
 

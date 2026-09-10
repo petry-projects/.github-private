@@ -25,7 +25,7 @@ setup() {
 
 # The eight in-scope personas (qa-lead already shipped in #1696 and is asserted
 # separately as the reference).
-ROLES=(business-analyst dev-lead pr-review scrum-master \
+ROLES=(business-analyst dev-lead pr-review scrum-master
        security-lead devops-lead sre-lead solution-architect)
 
 # Extract the body of the "## Offline / pre-fetched-context mode" section (from

@@ -65,7 +65,7 @@ GitHub item. In that mode:
   any other repo file is off-task and wrong.
 
 Everything else below — the assessment and the sentinel-wrapped output shape — is
-unchanged. Skip step 3's fetches; do steps 1, 2, and 4 from the pre-fetched block.
+unchanged. Skip step 3's fetches; do step 4 from the pre-fetched block.
 
 ## Steps
 
