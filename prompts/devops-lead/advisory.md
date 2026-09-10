@@ -72,7 +72,7 @@ unchanged. Skip step 2's fetches; do step 3 from the pre-fetched block.
 1. **Read the skill** (above) so the advice reflects `bgr-agent-riley-devops`,
    not generic devops folklore.
 
-2. **Gather the item's context**, read-only:
+2. **Gather the item's context**, read-only (skip this entirely in offline mode above — use the pre-fetched block instead):
    - PR: `gh pr view "$ITEM_NUMBER" --repo "$SOURCE_REPO" --json title,body,files`
      and `gh pr diff "$ITEM_NUMBER" --repo "$SOURCE_REPO" | head -n 400 || true`
    - Issue: `gh issue view "$ITEM_NUMBER" --repo "$SOURCE_REPO" --json title,body,labels`

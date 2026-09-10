@@ -83,7 +83,7 @@ unchanged. Skip step 3's fetches; do step 4 from the pre-fetched block.
    ```
    Identify which ADR (by number, e.g. ADR-0002) governs the change under review.
 
-3. **Gather the item's context**, read-only:
+3. **Gather the item's context**, read-only (skip this entirely in offline mode above — use the pre-fetched block instead):
    - PR: `gh pr view "$ITEM_NUMBER" --repo "$SOURCE_REPO" --json title,body,files`
      and `gh pr diff "$ITEM_NUMBER" --repo "$SOURCE_REPO" | head -n 400 || true`
    - Issue: `gh issue view "$ITEM_NUMBER" --repo "$SOURCE_REPO" --json title,body,labels`

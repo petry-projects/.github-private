@@ -39,7 +39,7 @@ Everything else below — the assessment and the sentinel-wrapped output shape �
 unchanged. Skip step 1's fetch; do step 2 from the pre-fetched block.
 
 ## Steps
-1. **Gather context** read-only: `gh pr view "$ITEM_NUMBER" --repo "$SOURCE_REPO" --json title,body,files`, `gh pr diff "$ITEM_NUMBER" --repo "$SOURCE_REPO" | head -n 400 || true`. Read the summoning comment for the specific ask.
+1. **Gather context** read-only (skip this entirely in offline mode above — use the pre-fetched block instead): `gh pr view "$ITEM_NUMBER" --repo "$SOURCE_REPO" --json title,body,files`, `gh pr diff "$ITEM_NUMBER" --repo "$SOURCE_REPO" | head -n 400 || true`. Read the summoning comment for the specific ask.
 2. **Assess risk tier** (LOW/MEDIUM/HIGH) and name the highest-leverage review focus: correctness hotspots, security/secret surface, missing tests, blast radius, and anything that should block. Do not restate the diff — point at where a reviewer's attention pays off.
 
 ## Advisory shape

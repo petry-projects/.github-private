@@ -47,7 +47,7 @@ Everything else below — the assessment and the sentinel-wrapped output shape �
 unchanged. Skip step 1's fetch; do step 2 from the pre-fetched block.
 
 ## Steps
-1. **Gather context** read-only: `gh issue view "$ITEM_NUMBER" --repo "$SOURCE_REPO" --json title,body,labels`. Read the summoning comment for the exact ask.
+1. **Gather context** read-only (skip this entirely in offline mode above — use the pre-fetched block instead): `gh issue view "$ITEM_NUMBER" --repo "$SOURCE_REPO" --json title,body,labels`. Read the summoning comment for the exact ask.
 2. **Assess as a scrum master**: is the work decomposed into the *smallest* set of PR-sized stories (typically 3–8)? Is the `blocked_by` sequencing minimal and acyclic with a clear entry point? Are acceptance criteria crisp and testable per story? Is anything oversized, phantom-file, or under-specified (the churn traps)?
 
 ## Advisory shape

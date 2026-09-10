@@ -39,7 +39,7 @@ Everything else below — the assessment and the sentinel-wrapped output shape �
 unchanged. Skip step 1's fetch; do step 2 from the pre-fetched block.
 
 ## Steps
-1. **Gather context** read-only: for a PR, `gh pr view "$ITEM_NUMBER" --repo "$SOURCE_REPO" --json title,body,files` and `gh pr diff "$ITEM_NUMBER" --repo "$SOURCE_REPO" | head -n 400 || true`; for an issue, `gh issue view "$ITEM_NUMBER" --repo "$SOURCE_REPO" --json title,body,labels`. Read the summoning comment for the exact question.
+1. **Gather context** read-only (skip this entirely in offline mode above — use the pre-fetched block instead): for a PR, `gh pr view "$ITEM_NUMBER" --repo "$SOURCE_REPO" --json title,body,files` and `gh pr diff "$ITEM_NUMBER" --repo "$SOURCE_REPO" | head -n 400 || true`; for an issue, `gh issue view "$ITEM_NUMBER" --repo "$SOURCE_REPO" --json title,body,labels`. Read the summoning comment for the exact question.
 2. **Assess as a dev lead**: implementation approach and its risk; whether the change is well-scoped (a single PR-sized unit) or should be split; missing edge cases or error handling; dependency/sequencing concerns; and whether the described work is ready to implement or under-specified. Be concrete about the *next action*, not generic.
 
 ## Advisory shape
