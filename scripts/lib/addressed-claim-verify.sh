@@ -74,6 +74,13 @@ readonly _ACV_DISPOSITION_RE_UPPER='(REQUIRED|MUST BE (FIXED|ADDRESSED|RESOLVED|
 # stuck thread is a nuisance, a wrongly-resolved one clears a merge gate.
 readonly _ACV_BOT_ACK_RE_UPPER='(CUSTOMIZED REVIEW INSTRUCTION SAVED|REVIEW INSTRUCTION SAVED|INSTRUCTION (SAVED|RECORDED)|ACKNOWLEDG|WILL NOT (FLAG|REPORT|RAISE)|NO (FURTHER|MORE) (ACTION|CONCERNS?)|MARKING (THIS )?(AS )?RESOLVED|DISMISS(ED|ING)?)'
 readonly _ACV_BOT_FINDING_RE_UPPER='(POTENTIAL ISSUE|REFACTOR SUGGESTION|SUGGESTION:|NEW (ISSUE|FINDING|PROBLEM|CONCERN)|SECURITY|VULNERABILIT|BUG|MUST (FIX|BE FIXED)|SHOULD (FIX|BE FIXED)|NITPICK|CRITICAL|BLOCKER|CHANGES REQUIRED)'
+# A NEGATED acknowledgement ("cannot acknowledge this", "won't acknowledge", "unable to
+# acknowledge") is not an ack — the bare ACKNOWLEDG alternative above would otherwise
+# clear a thread the bot explicitly refused to accept. Detected before the ack match so
+# such comments fall through to "undeterminable" (fail closed → thread stays open). The
+# negator may be separated from ACKNOWLEDG by up to three words (e.g. "unable to fully
+# acknowledge") so it survives light hedging.
+readonly _ACV_BOT_ACK_NEGATION_RE_UPPER='(CANNOT|CAN.?T|COULD ?NOT|COULDN.?T|WILL NOT|WON.?T|DO(ES)? NOT|DON.?T|DOESN.?T|DID ?NOT|DIDN.?T|UNABLE|NOT ABLE|NEVER|NOT)[[:space:]]+([A-Z]+[[:space:]]+){0,3}ACKNOWLEDG'
 
 # acv_parse_claim <reply_body>
 #   Extract and validate the single claim payload from a reply body. On success,
@@ -149,26 +156,29 @@ acv_latest_marker_index() {
   local comments_json="${1:-}" bot_user="${2:-}"
   local bot_user_stripped="${bot_user%\[bot\]}"
 
-  local rows
-  rows=$(printf '%s' "$comments_json" | jq -c '
-      if type == "array" then to_entries[] else empty end
-    ' 2>/dev/null) || return 1
-  [[ -z "$rows" ]] && return 1
+  # Single jq pass (no per-comment subprocess loop): select our-account comments whose
+  # body carries the addressed-marker and echo the LAST such index. The marker regex is
+  # the SAME _DEV_LEAD_ADDRESSED_MARKER constant review_reply_is_addressed_marker uses,
+  # so the pattern still has a single source of truth. Only OUR account's marker
+  # authorizes resolution (a foreign marker does not).
+  local idx
+  idx=$(jq -r \
+    --arg bot_user "$bot_user" \
+    --arg bot_user_stripped "$bot_user_stripped" \
+    --arg pattern "$_DEV_LEAD_ADDRESSED_MARKER" \
+      'if type == "array" then
+        to_entries
+        | map(select(
+            (.value.author.login == $bot_user or .value.author.login == $bot_user_stripped) and
+            ((.value.body // "") | test($pattern))
+          ))
+        | last | .key // ""
+      else
+        ""
+      end' <<<"$comments_json" 2>/dev/null) || return 1
 
-  local found="" obj idx login body
-  while IFS= read -r obj; do
-    [[ -z "$obj" ]] && continue
-    idx=$(printf '%s' "$obj" | jq -r '.key' 2>/dev/null || printf '')
-    login=$(printf '%s' "$obj" | jq -r '.value.author.login // ""' 2>/dev/null || printf '')
-    body=$(printf '%s' "$obj" | jq -r '.value.body // ""' 2>/dev/null || printf '')
-    # Only OUR account's marker authorizes resolution (a foreign marker does not).
-    [[ "$login" == "$bot_user" || "$login" == "$bot_user_stripped" ]] || continue
-    review_reply_is_addressed_marker "$body" || continue
-    found="$idx"
-  done <<<"$rows"
-
-  if [[ -n "$found" ]]; then
-    echo "$found"
+  if [[ -n "$idx" ]]; then
+    echo "$idx"
     return 0
   fi
   return 1
@@ -187,6 +197,10 @@ acv_bot_comment_is_acknowledgement() {
   local up="${body^^}"
   if [[ "$up" =~ $_ACV_BOT_FINDING_RE_UPPER ]]; then
     return 1
+  fi
+  # A negated acknowledgement is not an ack — fail closed rather than clearing.
+  if [[ "$up" =~ $_ACV_BOT_ACK_NEGATION_RE_UPPER ]]; then
+    return 2
   fi
   if [[ "$up" =~ $_ACV_BOT_ACK_RE_UPPER ]]; then
     return 0
@@ -212,18 +226,25 @@ acv_post_marker_clear() {
   local comments_json="${1:-}" marker_index="${2:-0}" bot_user="${3:-}"
   local bot_user_stripped="${bot_user%\[bot\]}"
 
+  # Single jq pass extracts the three fields of every post-marker comment as one TSV
+  # row (login, typename, base64(body)). Body is base64-encoded so embedded tabs and
+  # newlines survive the row split; the loop then decodes it and runs the SAME shared
+  # discriminators (review_thread_is_agent_authored, acv_bot_comment_is_acknowledgement)
+  # — no jq is spawned inside the loop and no second classifier is introduced (#1735 AC3).
   local rows
-  rows=$(printf '%s' "$comments_json" | jq -c --argjson mi "$marker_index" '
-      if type == "array" then (to_entries[] | select(.key > $mi)) else empty end
-    ' 2>/dev/null) || { echo "unparseable"; return 2; }
+  rows=$(jq -r --argjson mi "$marker_index" '
+      if type == "array" then
+        to_entries[]
+        | select(.key > $mi)
+        | [ (.value.author.login // ""), (.value.author.__typename // ""), ((.value.body // "") | @base64) ]
+        | @tsv
+      else empty end
+    ' <<<"$comments_json" 2>/dev/null) || { echo "unparseable"; return 2; }
   [[ -z "$rows" ]] && { echo "clear"; return 0; }
 
-  local obj login typename body ack_rc
-  while IFS= read -r obj; do
-    [[ -z "$obj" ]] && continue
-    login=$(printf '%s' "$obj" | jq -r '.value.author.login // ""' 2>/dev/null || printf '')
-    typename=$(printf '%s' "$obj" | jq -r '.value.author.__typename // ""' 2>/dev/null || printf '')
-    body=$(printf '%s' "$obj" | jq -r '.value.body // ""' 2>/dev/null || printf '')
+  local login typename body_b64 body ack_rc
+  while IFS=$'\t' read -r login typename body_b64; do
+    body=$(base64 --decode <<<"$body_b64" 2>/dev/null || printf '')
     # Our own account is never an unaddressed comment.
     [[ "$login" == "$bot_user" || "$login" == "$bot_user_stripped" ]] && continue
     # An agent-marker-bearing comment is ours by the shared discriminator.

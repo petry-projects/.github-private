@@ -276,6 +276,16 @@ setup() {
   [[ "$status" -eq 2 ]]
 }
 
+@test "acv_bot_comment_is_acknowledgement: negated 'cannot acknowledge this' -> rc2 (not an ack, fail closed)" {
+  run acv_bot_comment_is_acknowledgement "I cannot acknowledge this refutation as valid."
+  [[ "$status" -eq 2 ]]
+}
+
+@test "acv_bot_comment_is_acknowledgement: negated 'unable to fully acknowledge' -> rc2 (not an ack, fail closed)" {
+  run acv_bot_comment_is_acknowledgement "We are unable to fully acknowledge the change."
+  [[ "$status" -eq 2 ]]
+}
+
 # ---------------------------------------------------------------------------
 # acv_post_marker_clear — nothing unaddressed since our marker (#1735 AC2/AC3/AC4)
 # ---------------------------------------------------------------------------

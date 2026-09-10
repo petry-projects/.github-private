@@ -1388,18 +1388,24 @@ GITEOF
     bash '$FIX_REVIEWS_SCRIPT'
   " 2>&1
 
+  # Expose the harness exit status so each case can assert the run completed instead of
+  # crashing before it ever reached the resolve step — otherwise a "stays open" grep
+  # (expecting no mutation) would pass even when the harness died early writing nothing.
+  _HARNESS_STATUS="$status"
   _MUTATIONS_FILE="$mutations_file"
 }
 
 @test "resolve_addressed_bot_threads (#1735): marker then a bot acknowledgement -> resolves" {
   export POST_MARKER_NODE='{"author":{"login":"codeant-ai[bot]","__typename":"Bot"},"body":"✅ Customized review instruction saved!","createdAt":"2026-09-01T11:00:00Z"}'
   _1735_run_case
+  [ "$_HARNESS_STATUS" -eq 0 ]
   grep -q "PRRT_1735" "$_MUTATIONS_FILE"
 }
 
 @test "resolve_addressed_bot_threads (#1735): marker then a bot NEW finding -> stays open" {
   export POST_MARKER_NODE='{"author":{"login":"codeant-ai[bot]","__typename":"Bot"},"body":"Potential issue: this still leaks a file descriptor.","createdAt":"2026-09-01T11:00:00Z"}'
   _1735_run_case
+  [ "$_HARNESS_STATUS" -eq 0 ]
   run grep -q "PRRT_1735" "$_MUTATIONS_FILE"
   [ "$status" -eq 1 ]
 }
@@ -1407,6 +1413,7 @@ GITEOF
 @test "resolve_addressed_bot_threads (#1735): marker then a human comment -> stays open (AC3)" {
   export POST_MARKER_NODE='{"author":{"login":"a-maintainer","__typename":"User"},"body":"Looks fine to me, thanks.","createdAt":"2026-09-01T11:00:00Z"}'
   _1735_run_case
+  [ "$_HARNESS_STATUS" -eq 0 ]
   run grep -q "PRRT_1735" "$_MUTATIONS_FILE"
   [ "$status" -eq 1 ]
 }
@@ -1414,6 +1421,7 @@ GITEOF
 @test "resolve_addressed_bot_threads (#1735): marker then an ambiguous bot comment -> stays open (AC4)" {
   export POST_MARKER_NODE='{"author":{"login":"codeant-ai[bot]","__typename":"Bot"},"body":"Interesting.","createdAt":"2026-09-01T11:00:00Z"}'
   _1735_run_case
+  [ "$_HARNESS_STATUS" -eq 0 ]
   run grep -q "PRRT_1735" "$_MUTATIONS_FILE"
   [ "$status" -eq 1 ]
 }
