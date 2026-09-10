@@ -97,7 +97,6 @@ trust:
 # owner — an advisory must be identifiably a bot in the audit trail
 # (.github-private#1650).
 runtime:
-  reusable: ''
   identity:
     account: donpetry-bot
     credential: DON_PETRY_BOT_GH_PAT
@@ -107,10 +106,6 @@ evals:
   path: evals/solution-architect    # under the repo eval tree so validate-cases.py + holdout-guard.yml cover it
   judge: evals/judge.md
   min_cases: 5                      # seed cases are placeholders; reach 5 held-out before stable
-
-canary:
-  registry: petry-projects/.github/standards/canary-rings.json
-  agent: solution-architect
 
 references:
   - "frameworks/bmad-method/VENDOR.md"

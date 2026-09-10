@@ -42,11 +42,13 @@ fi
 
 declared=$(sync_extract_declared_paths <<< "$body")
 if [ -z "$declared" ]; then
-  # Identified as a sync PR (label) but it declared no path set — e.g. a legacy
-  # PR opened before the generator emitted the manifest. Cannot enforce a scope
-  # that was never declared; surface it loudly rather than false-failing.
-  echo "::warning::sync-scope-guard: PR #${PR_NUMBER} is a sync PR but declares no path manifest — cannot enforce scope. Regenerate it so the manifest is present."
-  exit 0
+  # Identified as a generated sync PR (label) but it declared no path set. With no
+  # manifest there is nothing to bound the diff against, so the PR could touch any
+  # path without tripping a violation — the exact #1523 hole this guard closes.
+  # Fail closed: an unenforceable sync PR must not pass. Regenerate it so the
+  # manifest is present (the generator emits it on every current run).
+  echo "::error::sync-scope-guard: PR #${PR_NUMBER} is a sync PR but declares no path manifest. Regenerate it so the manifest is present."
+  exit 1
 fi
 
 echo "Declared sync paths:"

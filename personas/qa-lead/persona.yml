@@ -157,7 +157,6 @@ trust:
 # Add the rest of `runtime` + a canary-rings.json entry when a dedicated advisory
 # workflow is wired.
 runtime:
-  reusable: ''
   identity:
     account: donpetry-bot
     credential: DON_PETRY_BOT_GH_PAT
@@ -167,10 +166,6 @@ evals:
   path: evals/qa-lead/    # under the repo eval tree so validate-cases.py + holdout-guard.yml cover it
   judge: evals/judge.md
   min_cases: 5            # seed cases are placeholders; reach 5 held-out before stable
-
-canary:
-  registry: petry-projects/.github/standards/canary-rings.json
-  agent: qa-lead
 
 references:
   - "frameworks/bmad-test-architecture/VENDOR.md"

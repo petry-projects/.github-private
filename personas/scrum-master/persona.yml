@@ -75,7 +75,6 @@ trust:
 # owner — an advisory must be identifiably a bot in the audit trail
 # (.github-private#1650). No dedicated reusable yet.
 runtime:
-  reusable: ''
   identity:
     account: donpetry-bot
     credential: DON_PETRY_BOT_GH_PAT
@@ -84,10 +83,6 @@ evals:
   required_before: stable
   path: evals/scrum-master/
   min_cases: 4
-
-canary:
-  registry: petry-projects/.github/standards/canary-rings.json
-  agent: scrum-master
 
 references:
   - "prompts/bmad/scrum-master.md (org orchestration wrapper, consumed by initiative-planner)"
