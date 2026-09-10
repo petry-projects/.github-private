@@ -1,6 +1,4 @@
 {
-  "mode": "llm-judge",
-  "judge_prompt": "solution-architect/judge.md",
   "pass_threshold": 0.7,
   "gate_threshold": 0.7,
   "engine": "persona"
