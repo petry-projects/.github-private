@@ -68,3 +68,44 @@ GHEOF
   [ "$(_get_env INTENT_TYPE)" = "skip" ]
   [ "$(_get_env INTENT_REASON)" = "hold-label:needs-human-review" ]
 }
+
+# ── #1767: the hold skip must carry enough context for the workflow to post the
+# one-time "held" notice — the specific blocking label and the subject number.
+
+_get_ctx_field() {
+  # Extract a field from the INTENT_CONTEXT heredoc block in $GITHUB_OUTPUT.
+  local field="$1"
+  local ctx
+  ctx="$(grep -A2 '^intent_context<<' "$GITHUB_OUTPUT" | sed -n '2p' || true)"
+  printf '%s' "$ctx" | jq -r --arg f "$field" '.[$f] // ""'
+}
+
+@test "hold: labeled-issue skip carries hold_label + subject_number in context (#1767)" {
+  export GITHUB_EVENT_NAME="issues"
+  export GITHUB_EVENT_PATH="$FIXTURES_DIR/issues_labeled_dev_lead_needs_human_review.json"
+
+  run bash "$INTENT_SCRIPT"
+
+  [ "$status" -eq 0 ]
+  [ "$(_get_env INTENT_TYPE)" = "skip" ]
+  [ "$(_get_ctx_field hold_label)" = "needs-human-review" ]
+  [ "$(_get_ctx_field subject_number)" = "1532" ]
+}
+
+@test "hold: repository_dispatch skip carries hold_label + subject_number in context (#1767)" {
+  cat > "$MOCK_BIN/gh" << 'GHEOF'
+#!/usr/bin/env bash
+echo "needs-human-review"
+GHEOF
+  chmod +x "$MOCK_BIN/gh"
+
+  export GITHUB_EVENT_NAME="repository_dispatch"
+  export GITHUB_EVENT_PATH="$FIXTURES_DIR/repository_dispatch_ci_failure.json"
+
+  run bash "$INTENT_SCRIPT"
+
+  [ "$status" -eq 0 ]
+  [ "$(_get_env INTENT_TYPE)" = "skip" ]
+  [ "$(_get_ctx_field hold_label)" = "needs-human-review" ]
+  [ "$(_get_ctx_field subject_number)" = "42" ]
+}
