@@ -13,6 +13,7 @@ jobs:
   dev-lead:
     if: >-
       (github.event_name == 'pull_request'
+        && contains(fromJSON('["opened","reopened","synchronize"]'), github.event.action)
         && github.event.pull_request.base.ref == 'main')
       || github.event_name == 'issue_comment'
     uses: petry-projects/.github-private/.github/workflows/dev-lead-reusable.yml@dev-lead/v99-stable

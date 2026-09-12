@@ -60,6 +60,33 @@ STUB_REGISTRY=(
   $'initiative-driver\tInitiative-driver\t.github/workflows/initiative-driver.yml\tstandards/workflows/initiative-driver.yml\t\t\t'
 )
 
+# fetch_raw_content <repo> <path> — emit a file's raw contents on stdout. Returns
+# 0 on success, 2 when the file is genuinely absent (HTTP 404), and 1 on ANY other
+# failure (auth, rate-limit, network) after logging the API error to stderr.
+# Callers MUST treat a 1 as fatal: a masked read failure must never be misread as
+# "file absent" and silently skip drift detection or fall back to the legacy path
+# (review on #1726). HTTP 404 is the ONE tolerated non-success — the canonical
+# template not yet merged (#886 AC#5) or a consumer repo carrying no
+# agent-ingress.yml (legacy fallback).
+fetch_raw_content() {
+  local repo="$1" path="$2" errf rc
+  errf="$(mktemp)"
+  if gh api -H "Accept: application/vnd.github.raw" \
+      "repos/${repo}/contents/${path}" 2>"$errf"; then
+    rm -f "$errf"
+    return 0
+  fi
+  rc=$?
+  if grep -q 'HTTP 404' "$errf"; then
+    rm -f "$errf"
+    return 2
+  fi
+  echo "::error::GitHub API read failed for ${repo}/${path} (exit ${rc}):" >&2
+  cat "$errf" >&2
+  rm -f "$errf"
+  return 1
+}
+
 echo "=== Actions Fleet Monitor ==="
 echo "  Org:      $ORG"
 echo "  Lookback: ${LOOKBACK_DAYS} day(s)"
@@ -309,10 +336,16 @@ for entry in "${STUB_REGISTRY[@]}"; do
   # is present: present ⇒ compare block SHAs (absent block ⇒ MISSING, never
   # resurrected from a legacy file); absent ⇒ fall back to the legacy per-role
   # whole-file SHAs so a not-yet-collapsed repo is still classified (AC #4).
-  canonical_ingress=$(gh api -H "Accept: application/vnd.github.raw" \
-    "repos/${CANONICAL_STUB_REPO}/contents/${canonical_path}" 2>/dev/null || true)
+  canonical_ingress="$(fetch_raw_content "$CANONICAL_STUB_REPO" "$canonical_path")" && canon_rc=0 || canon_rc=$?
+  case "$canon_rc" in
+    0) ;;
+    2) echo "::warning::Canonical agent-ingress not found (${CANONICAL_STUB_REPO}/${canonical_path}) — skipping ${stub_name} (${role}) stub drift detection."
+       continue ;;
+    *) echo "::error::Aborting: cannot read canonical agent-ingress (${CANONICAL_STUB_REPO}/${canonical_path}) — API failure must not be masked as absent (see error above)." >&2
+       exit 1 ;;
+  esac
   if [ -z "$canonical_ingress" ]; then
-    echo "::warning::Could not read canonical agent-ingress (${CANONICAL_STUB_REPO}/${canonical_path}) — skipping ${stub_name} (${role}) stub drift detection."
+    echo "::warning::Canonical agent-ingress is empty (${CANONICAL_STUB_REPO}/${canonical_path}) — skipping ${stub_name} (${role}) stub drift detection."
     continue
   fi
   canon_block_sha=$(printf '%s' "$canonical_ingress" | job_block_sha "$role")
@@ -333,16 +366,22 @@ for entry in "${STUB_REGISTRY[@]}"; do
   echo "Canonical ${stub_name} (${role}) block SHA: ${canon_block_sha} (${CANONICAL_STUB_REPO}/${canonical_path}#${role})"
   stub_drift_file=$(mktemp)
   for repo in "${repos[@]}"; do
-    repo_ingress=$(gh api -H "Accept: application/vnd.github.raw" \
-      "repos/${repo}/contents/${stub_path}" 2>/dev/null || true)
-    if [ -n "$repo_ingress" ]; then
+    repo_ingress="$(fetch_raw_content "$repo" "$stub_path")" && ingress_rc=0 || ingress_rc=$?
+    # A hard failure (rc 1) must abort — treating it as "absent" would wrongly
+    # trigger the legacy fallback for a repo that actually has an agent-ingress.yml.
+    if [ "$ingress_rc" -eq 1 ]; then
+      echo "::error::Aborting: cannot read ${repo}/${stub_path} — API failure must not be masked as a missing ingress (see error above)." >&2
+      exit 1
+    fi
+    if [ "$ingress_rc" -eq 0 ] && [ -n "$repo_ingress" ]; then
       ingress_present="yes"
       repo_block_sha=$(printf '%s' "$repo_ingress" | job_block_sha "$role")
       legacy_repo_sha=""
     else
+      # True 404 (rc 2) or present-but-empty — no usable agent-ingress.yml, so
+      # consult the legacy per-role stub (if any).
       ingress_present="no"
       repo_block_sha=""
-      # No agent-ingress.yml — consult the legacy per-role stub (if any).
       legacy_repo_sha=""
       if [ -n "$legacy_path" ]; then
         legacy_repo_sha=$(gh api "repos/${repo}/contents/${legacy_path}" \

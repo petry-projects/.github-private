@@ -302,11 +302,13 @@ _emit_verification_summary() {
   fi
 }
 
-# _canonical_bytes <canonical_repo> <canonical_path> — echo the decoded bytes of
-# the canonical stub (the source of record the SHA drift was measured against).
-# Mirrors fleet_monitor.sh's canonical read: contents API .content, base64 -d.
+# _canonical_bytes <canonical_repo> <canonical_path> — echo the raw bytes of the
+# canonical stub (the source of record the SHA drift was measured against).
+# Mirrors fleet_monitor.sh's canonical read: request the raw media type rather
+# than decoding base64 locally, which avoids the macOS/BSD (`base64 -D`) vs Linux
+# (`base64 -d`) portability split.
 _canonical_bytes() {
-  gh api "repos/${1}/contents/${2}" --jq '.content' 2>/dev/null | base64 -d 2>/dev/null || true
+  gh api -H "Accept: application/vnd.github.raw" "repos/${1}/contents/${2}" 2>/dev/null || true
 }
 
 # _canonical_sha <canonical_repo> <canonical_path> — echo the canonical git blob
@@ -320,20 +322,32 @@ _blob_sha() {
   gh api "repos/${1}/contents/${2}?ref=${3}" --jq '.sha' 2>/dev/null || true
 }
 
-# _repo_bytes <repo> <path> <ref> — echo the decoded bytes of <path> on <ref>.
-# Used by role-scoped remediation to read the CURRENT agent-ingress.yml before
-# patching a single job block into it (read-modify-write).
+# _repo_bytes <repo> <path> <ref> — echo the raw bytes of <path> on <ref>. Used by
+# role-scoped remediation to read the CURRENT agent-ingress.yml before patching a
+# single job block into it (read-modify-write). Requests the raw media type rather
+# than decoding base64 locally, avoiding the macOS/BSD (`base64 -D`) vs Linux
+# (`base64 -d`) portability split.
 _repo_bytes() {
-  gh api "repos/${1}/contents/${2}?ref=${3}" --jq '.content' 2>/dev/null | base64 -d 2>/dev/null || true
+  gh api -H "Accept: application/vnd.github.raw" "repos/${1}/contents/${2}?ref=${3}" 2>/dev/null || true
 }
 
-# _put_file <repo> <path> <content> <branch> <message> — write <content> to
-# <path> on <branch> via the contents PUT, passing the existing file SHA when
-# overwriting. Mirrors seed-repo-template.sh's _put_file.
+# _put_file <repo> <path> <content> <branch> <message> [expected_sha] — write
+# <content> to <path> on <branch> via the contents PUT, passing the existing file
+# SHA when overwriting. Mirrors seed-repo-template.sh's _put_file. When a sixth
+# argument is supplied it is used as the PUT's `sha` VERBATIM (optimistic lock):
+# the caller passes the blob SHA of the exact version it read, so a concurrent
+# write between that read and this PUT is rejected by the API (409) instead of
+# silently clobbered (#1726 race). Without it, the SHA is re-fetched here — the
+# legacy whole-file behavior, where re-fetching is acceptable because the write is
+# a verbatim canonical overwrite.
 _put_file() {
   local repo="$1" path="$2" content="$3" branch="$4" msg="$5" sha encoded
   local -a sha_arg=()
-  sha="$(_blob_sha "$repo" "$path" "$branch")"
+  if [ "$#" -ge 6 ]; then
+    sha="$6"
+  else
+    sha="$(_blob_sha "$repo" "$path" "$branch")"
+  fi
   [ -n "$sha" ] && [ "$sha" != "null" ] && sha_arg=(--field "sha=${sha}")
   encoded="$(printf '%s' "$content" | base64 -w 0 2>/dev/null || printf '%s' "$content" | base64)"
   gh api "repos/${repo}/contents/${path}" --method PUT \
@@ -354,7 +368,7 @@ _put_file() {
 # or a post-push per-block verify mismatch) so the caller fails the repo.
 _remediate_role_block() {
   local repo="$1" sf="$2" cr="$3" cp="$4" role="$5" branch="$6"
-  local canon_bytes block_tmp canon_block_sha repo_bytes patched patched_tmp written_block_sha rc
+  local canon_bytes block_tmp canon_block_sha repo_bytes repo_read_sha patched patched_tmp written_block_sha rc
 
   canon_bytes="$(_canonical_bytes "$cr" "$cp")"
   if [ -z "$canon_bytes" ]; then
@@ -370,6 +384,13 @@ _remediate_role_block() {
   fi
   canon_block_sha="$(printf '%s' "$canon_bytes" | job_block_sha "$role")"
 
+  # Optimistic lock (#1726 race): capture the blob SHA of the version we base the
+  # patch on BEFORE reading its bytes, then PUT conditioned on it. SHA-first
+  # ordering fails closed — any concurrent write to agent-ingress.yml after this
+  # point (during the read, patch, or PUT) makes the SHA stale, so the PUT is
+  # rejected (409) rather than overwriting the concurrent change with stale
+  # sibling-job content.
+  repo_read_sha="$(_blob_sha "$repo" "$sf" "$branch")"
   repo_bytes="$(_repo_bytes "$repo" "$sf" "$branch")"
   if [ -z "$repo_bytes" ]; then
     rm -f "$block_tmp"
@@ -393,7 +414,8 @@ _remediate_role_block() {
   IFS= read -r -d '' patched < "$patched_tmp" || true
   rm -f "$patched_tmp"
   _put_file "$repo" "$sf" "$patched" "$branch" \
-    "chore: remediate drifted ${role} job block in ${sf} from ${cr}/${cp}" || return 1
+    "chore: remediate drifted ${role} job block in ${sf} from ${cr}/${cp}" \
+    "$repo_read_sha" || return 1
 
   # Per-block verify (AC #3/#5): re-extract the role block from the PUSHED file and
   # confirm its SHA equals canon. A whole-file compare would wrongly fail here,

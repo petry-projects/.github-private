@@ -466,7 +466,7 @@ INGRESS_STUB=".github/workflows/agent-ingress.yml"
   [ "$status" -eq 0 ]
   # ... but a sibling role in the SAME file is NOT protected.
   run remediation_allowlisted "petry-projects/foxtrot" "$INGRESS_STUB" "pr-review-mention"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
 }
 
 @test "resolve_canonical_path: (stub_file, role) disambiguates collapsed roles that share a file (AC #1)" {
@@ -478,7 +478,7 @@ INGRESS_STUB=".github/workflows/agent-ingress.yml"
   [ "$output" = "standards/workflows/agent-ingress.yml" ]
   # A wrong/absent role for the same file does NOT resolve (would be ambiguous).
   run resolve_canonical_path "$INGRESS_STUB" "no-such-role"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
   # The whole-file resolver (empty role) is unaffected by the added role entry.
   run resolve_canonical_path "$PLANNER_STUB"
   [ "$status" -eq 0 ]
