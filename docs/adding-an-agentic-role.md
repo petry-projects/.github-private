@@ -179,7 +179,8 @@ place ADR-0007 loosens ADR-0001. It may reference **only** `github.event_name`,
 reach repo state**: the frozen ALLOW/FORBID rulings for every contested construct live as
 machine-readable fixtures at
 [`tests/fixtures/agent-ingress/if-filter-rulings.tsv`](../tests/fixtures/agent-ingress/if-filter-rulings.tsv)
-(consumed directly by the ingress guards, not restated in prose). In summary:
+(the frozen source of truth, exercised by the `tests/agent_ingress_if_filter.bats`
+suite, not restated in prose). In summary:
 
 - **ALLOWED** (the delivered event): `github.event_name`, `github.event.action`, a payload
   predicate such as `github.event.pull_request.base.ref` (the branch the event is about), and

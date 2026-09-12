@@ -27,7 +27,10 @@ REF="$SCRIPT_DIR/docs/architecture/reference/agent-ingress.yml"
 
 @test "emit-workflow: unknown reference/stub name still fails loud" {
   run bash "$SEED" --emit-workflow no-such-ingress.yml
-  [ "$status" -ne 0 ]
+  # An unknown reference/stub name is a usage error → exit 2 specifically (the
+  # `_emit_workflow` unknown-stub path), not just any non-zero, so a syntax or
+  # command-not-found regression can't masquerade as the expected failure.
+  [ "$status" -eq 2 ]
 }
 
 @test "reference: on: is the UNION of the collapsed roles' triggers (AC #1)" {
