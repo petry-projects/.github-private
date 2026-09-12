@@ -59,6 +59,8 @@ set -euo pipefail
 #                    backend-rust, fullstack, infra-terraform).
 #   GH_TOKEN         PAT with repo scope (create a branch + PR on TEMPLATE_REPO).
 
+SEED_REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)"
+
 DRY_RUN="${DRY_RUN:-false}"
 TEMPLATE_REPO="${TEMPLATE_REPO:-petry-projects/repo-template}"
 STANDARDS_REPO="${STANDARDS_REPO:-petry-projects/.github}"
@@ -88,6 +90,38 @@ readonly -a WORKFLOW_MANIFEST=(
   "pr-review-mention|caller|petry-projects/.github"
   "sonarcloud|inline|-"
 )
+
+# ── Reference manifest (ADR-0007, #1724) ──────────────────────────────────────
+# NON-executing canonical references emittable by name via --emit-workflow but
+# DELIBERATELY NOT in WORKFLOW_MANIFEST: they are byte-identity baselines authored
+# under docs/, NOT stubs seeded into repo-template (that would double-dispatch the
+# per-role callers — a behavior change forbidden by #1724 AC #5). So --list-workflows
+# and _seed_repo never include them; only --emit-workflow reaches them, reading the
+# local file verbatim (no standards fetch, no repin). One row: "name|repo-relative-path".
+readonly -a REFERENCE_MANIFEST=(
+  "agent-ingress|docs/architecture/reference/agent-ingress.yml"
+)
+
+# _reference_row <name-with-or-without-.yml> — echo the matching REFERENCE_MANIFEST
+# row, or return 1 if the name is not a known reference.
+_reference_row() {
+  local key="${1%.yml}" row
+  for row in "${REFERENCE_MANIFEST[@]}"; do
+    [ "${row%%|*}" = "$key" ] && { printf '%s\n' "$row"; return 0; }
+  done
+  return 1
+}
+
+# _emit_reference <row> — print a reference artifact verbatim from its local path.
+_emit_reference() {
+  local path="${1#*|}" file
+  file="${SEED_REPO_ROOT}/${path}"
+  if [ ! -f "$file" ]; then
+    echo "::error::reference artifact not found: ${path}" >&2
+    return 1
+  fi
+  cat "$file"
+}
 
 # Baseline files (AC #3). One row per file: "path|source".
 #   source=gen → generated inline by _gen_baseline.
@@ -228,6 +262,12 @@ _repin_stub_content() {
 # repin it; print the shipped content.
 _emit_workflow() {
   local row name kind host content
+  # NON-executing canonical references (ADR-0007) are emittable by name but read
+  # from their local docs/ path verbatim — no standards fetch, no repin.
+  if row="$(_reference_row "$1")"; then
+    _emit_reference "$row"
+    return $?
+  fi
   row="$(_manifest_row "$1")" || { echo "::error::unknown workflow stub: $1" >&2; return 2; }
   IFS='|' read -r name kind host <<<"$row"
   content="$(_fetch_standard "standards/workflows/${name}.yml")" || content=""

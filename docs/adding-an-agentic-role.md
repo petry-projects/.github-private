@@ -143,6 +143,82 @@ contract's `interaction.triggers.timers`:
   **never re-arm a runaway** — its reset path is human-gated. Also obey the off-peak
   scheduling standard (non-zero, staggered minute; AGENTS.md "Scheduled workflows").
 
+## Step 5 — Wire the role's ingress (Class 1: the shared `agent-ingress.yml`)
+
+Once the role is classified and its contract is authored, decide **how the role is woken in a
+consumer repo**. Under [ADR-0007](./architecture/adr/0007-one-agent-ingress-stub-per-repo.md)
+a repo's per-role Class 1 caller stubs **collapse into a single
+`.github/workflows/agent-ingress.yml`** instead of one stub per role. The canonical shape is
+authored as a non-executing reference at
+[`docs/architecture/reference/agent-ingress.yml`](./architecture/reference/agent-ingress.yml)
+and is emittable as a machine artifact:
+
+```
+bash scripts/seed-repo-template.sh --emit-workflow agent-ingress.yml
+```
+
+### The ingress shape
+
+- **One ingress per repo.** `on:` is the **union** of the collapsed roles' triggers. The file
+  declares **exactly one job per role**, and each **job key carries the role token** so runs
+  stay attributable by role (run attribution coarsens to job level under ADR-0007 — a monitor
+  that keyed on workflow name must be retargeted to job name in the same change).
+- **Per-job everything.** Each job keeps **its own `permissions:` block**, **its own pinned
+  first-party channel `uses:` ref**, its **matching `agent_ref`** (where the reusable declares
+  one), and **its own `secrets:`**. Top-level `permissions:` is `{}`. A single dispatching job
+  is **forbidden** — it would have to be granted the union of every role's permissions.
+- **Still a thin caller.** No `steps:`, no `run:`, no logic outside the `if:` guard (ADR-0001,
+  unchanged). Each `with:` forwards only inputs the pinned channel's `workflow_call.inputs`
+  declares.
+
+### The `if:`-as-event-filter boundary
+
+A job-level `if:` **may act as an event filter, and only as an event filter** — this is the one
+place ADR-0007 loosens ADR-0001. It may reference **only** `github.event_name`,
+`github.event.action`, and event-payload fields read as a **pure predicate**. It must **never
+reach repo state**: the frozen ALLOW/FORBID rulings for every contested construct live as
+machine-readable fixtures at
+[`tests/fixtures/agent-ingress/if-filter-rulings.tsv`](../tests/fixtures/agent-ingress/if-filter-rulings.tsv)
+(consumed directly by the ingress guards, not restated in prose). In summary:
+
+- **ALLOWED** (the delivered event): `github.event_name`, `github.event.action`, a payload
+  predicate such as `github.event.pull_request.base.ref` (the branch the event is about), and
+  `github.event.label.name` (the single label whose change triggered the event).
+- **FORBIDDEN** (repo state, belongs in the reusable as a permissioned step): org/repo
+  configuration variables, secrets, another job's computed outputs, a repo-tree hash, repo
+  identity, the payload's standing default-branch field, and a scan of the standing labels
+  array. An `if:` that reaches for any of these — or any expression that is a script in
+  disguise — is logic, not a filter.
+
+A role's on-level `branches:`/`paths:` filter is **per-file** and cannot be expressed per-job at
+the `on:` level. Move a branch filter into the job's `if:` as a payload predicate (e.g.
+`github.event.pull_request.base.ref == 'main'`); move a `paths:` filter **into the reusable** as
+an explicit diff step (it cannot live in the `if:`, which the Actions service evaluates before a
+runner exists).
+
+### The pin migration: per-file channel tag → per-job pin
+
+The ADR-0002 ring pin **moves one tier down, it does not disappear**. Where each per-role stub
+formerly carried the channel tag on its own file (`dev-lead.yml` pinned `@dev-lead/v139-stable`),
+the ingress carries that **same** tag as a **per-job pin** on each job's `uses:` (and matching
+`agent_ref`). **No new tag namespace is introduced** — the existing per-role channel tags are
+reused verbatim; only their location moves from a per-file pin to a per-job pin. Promotion stays
+a central tag move, never a per-repo caller edit.
+
+### Carve-outs — roles that keep their own per-role stub
+
+Not every role folds into the ingress. Keep a **separate per-role stub** for:
+
+- **`pull_request_target` roles** — mixing a privileged-context trigger into the shared ingress
+  would make the whole file's privileged surface the union of every role in it. Non-negotiable.
+- **Class 2 backstop timers and Class 3 scheduled roles** — a clock has no webhook; §5 Bridge B
+  backstops remain required regardless.
+- **Documented repo-local trigger stubs** — a repo needing genuinely repo-local trigger
+  behavior keeps its stub on the same documented-exception terms ADR-0001 already allows.
+
+**Non-agentic CI and gate workflows** (`ci.yml`, `lint.yml`, `holdout-guard.yml`, …) are **out
+of scope** — they are required checks, not agentic roles, and never belong in the ingress.
+
 ## Enforcement
 
 The per-role contracts are **CI-validated today** by `validate-interaction-contracts` (the
