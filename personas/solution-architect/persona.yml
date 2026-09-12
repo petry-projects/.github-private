@@ -20,18 +20,10 @@ summary: >-
   number, so structural drift is noticed rather than ratified. Favors boring
   technology, trade-offs over verdicts, and says so plainly when no ADR governs.
 
-# Promoted past draft to `canary` (ADR-0006). Deliberately NOT in
-# canary-rings.json and carrying no `canary:` block: this persona rides the
-# shared persona runtime, so no caller pins a per-persona channel tag and a
-# registry entry would be a defect, not a promotion. Promotion evidence is
-# scripts/persona_reach_check.sh plus an observed live mention (soak #1640),
-# never a ring label. `stable` still requires the scored eval gate below.
-#
-# The value is `canary`, not `next`: persona.schema.json's status enum is
-# draft|canary|ring0|ring1|stable|retired and contains no `next`, even though the
-# registry channel and PRC_RING_ORDER both use that word. #1631's AC said
-# "draft -> next"; that literal value fails schema validation.
-status: canary
+# Draft: rides the shared persona runtime (no dedicated reusable), so no
+# registry entry needed. A held-out eval set and the addressing team must land
+# before promotion.
+status: draft
 
 owner: petry-projects/org-leads
 

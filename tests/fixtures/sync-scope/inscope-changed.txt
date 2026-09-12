@@ -1,0 +1,3 @@
+.github/workflows/claude.yml
+.github/workflows/agent-shield.yml
+.github/workflows/dependabot-automerge.yml
