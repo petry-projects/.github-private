@@ -30,19 +30,34 @@ LOOKBACK_DAYS="${LOOKBACK_DAYS:-1}"
 REPORT_FILE="fleet_monitor_report.md"
 TODAY=$(date -u +%Y-%m-%d)
 
-# Per-repo thin-caller stub coverage & drift (#822 planner, #886 driver). Each
-# stub is deployed verbatim from a canonical org template; we compare blob SHAs.
-# The registry generalizes the original single-stub path (#822) so the same pure
-# helpers run per stub kind. Each entry is TAB-separated:
-#   name <TAB> label <TAB> stub_path <TAB> canonical_path
+# Per-repo thin-caller stub coverage & drift (#822 planner, #886 driver, #1726
+# per-job). Each stub is deployed verbatim from a canonical org template; we
+# compare blob SHAs. The registry generalizes the original single-stub path (#822)
+# so the same pure helpers run per stub kind. Each entry is TAB-separated:
+#   name <TAB> label <TAB> stub_path <TAB> canonical_path <TAB> role <TAB> legacy_path <TAB> legacy_canonical_path
 #     name            — slug used in log lines
 #     label           — section heading / alert grouping ("Initiative-planner")
 #     stub_path       — per-repo thin-caller path under each enrolled repo
 #     canonical_path  — org-template path under $CANONICAL_STUB_REPO
+#     role            — OPTIONAL job/role selector (#1726). Empty ⇒ whole-file blob
+#                       SHA comparison (the #822/#886 behavior, kept for stubs that
+#                       are NOT collapsing — initiative-planner/driver are separate
+#                       per-repo files, not agent-ingress.yml jobs). Non-empty ⇒
+#                       stub_path is the collapsed agent-ingress.yml and the
+#                       comparison unit is the EXTRACTED `<role>` job block, so a
+#                       per-role Class-1 stub that has collapsed into an
+#                       agent-ingress.yml job is understood rather than read as
+#                       MISSING once its standalone file 404s.
+#     legacy_path     — OPTIONAL per-role stub path for a mixed-fleet repo that has
+#                       NOT yet collapsed (no agent-ingress.yml). Only consulted when
+#                       role is set AND the repo carries no agent-ingress.yml; a
+#                       collapsed repo IGNORES it so a deleted per-role stub is never
+#                       resurrected (AC #4). Whole-file compared against ...
+#     legacy_canonical_path — ... this org-template per-role canonical path.
 CANONICAL_STUB_REPO="${CANONICAL_STUB_REPO:-petry-projects/.github}"
 STUB_REGISTRY=(
-  $'initiative-planner\tInitiative-planner\t.github/workflows/initiative-planner.yml\tstandards/workflows/initiative-planner.yml'
-  $'initiative-driver\tInitiative-driver\t.github/workflows/initiative-driver.yml\tstandards/workflows/initiative-driver.yml'
+  $'initiative-planner\tInitiative-planner\t.github/workflows/initiative-planner.yml\tstandards/workflows/initiative-planner.yml\t\t\t'
+  $'initiative-driver\tInitiative-driver\t.github/workflows/initiative-driver.yml\tstandards/workflows/initiative-driver.yml\t\t\t'
 )
 
 echo "=== Actions Fleet Monitor ==="
@@ -251,32 +266,98 @@ stub_drift_files=()
 stub_drift_labels=()
 stub_drift_paths=()
 stub_drift_canon=()
+stub_drift_roles=()
 
 for entry in "${STUB_REGISTRY[@]}"; do
-  IFS=$'\t' read -r stub_name stub_label stub_path canonical_path <<< "$entry"
+  IFS=$'\t' read -r stub_name stub_label stub_path canonical_path \
+    role legacy_path legacy_canonical_path <<< "$entry"
 
-  canonical_stub_sha=$(gh api \
-    "repos/${CANONICAL_STUB_REPO}/contents/${canonical_path}" \
-    --jq '.sha' 2>/dev/null || true)
+  if [ -z "$role" ]; then
+    # ── Whole-file path (#822 planner, #886 driver) ──────────────────────────
+    # role empty ⇒ stub_path is a standalone per-repo file compared byte-for-byte
+    # against its canonical template. Unchanged from the pre-#1726 behavior.
+    canonical_stub_sha=$(gh api \
+      "repos/${CANONICAL_STUB_REPO}/contents/${canonical_path}" \
+      --jq '.sha' 2>/dev/null || true)
 
-  if [ -z "$canonical_stub_sha" ]; then
-    echo "::warning::Could not read canonical stub SHA (${CANONICAL_STUB_REPO}/${canonical_path}) — skipping ${stub_name} stub drift detection."
+    if [ -z "$canonical_stub_sha" ]; then
+      echo "::warning::Could not read canonical stub SHA (${CANONICAL_STUB_REPO}/${canonical_path}) — skipping ${stub_name} stub drift detection."
+      continue
+    fi
+
+    echo "Canonical ${stub_name} stub SHA: ${canonical_stub_sha} (${CANONICAL_STUB_REPO}/${canonical_path})"
+    stub_drift_file=$(mktemp)
+    for repo in "${repos[@]}"; do
+      # 404 (no stub) => empty SHA => MISSING (not enrolled); non-fatal.
+      repo_stub_sha=$(gh api "repos/${repo}/contents/${stub_path}" \
+        --jq '.sha' 2>/dev/null || true)
+      stub_drift_row "$repo" "$canonical_stub_sha" "$repo_stub_sha" >> "$stub_drift_file"
+    done
+
+    stub_drift_files+=("$stub_drift_file")
+    stub_drift_labels+=("$stub_label")
+    stub_drift_paths+=("$stub_path")
+    stub_drift_canon+=("$canonical_stub_sha")
+    stub_drift_roles+=("")
     continue
   fi
 
-  echo "Canonical ${stub_name} stub SHA: ${canonical_stub_sha} (${CANONICAL_STUB_REPO}/${canonical_path})"
+  # ── Per-job (role-selector) path (#1726) ───────────────────────────────────
+  # role set ⇒ stub_path is the collapsed agent-ingress.yml and the comparison
+  # unit is the extracted `<role>` job BLOCK. We fetch canonical CONTENT (not just
+  # `.sha`) to hash the block, and for each repo detect whether an agent-ingress.yml
+  # is present: present ⇒ compare block SHAs (absent block ⇒ MISSING, never
+  # resurrected from a legacy file); absent ⇒ fall back to the legacy per-role
+  # whole-file SHAs so a not-yet-collapsed repo is still classified (AC #4).
+  canonical_ingress=$(gh api -H "Accept: application/vnd.github.raw" \
+    "repos/${CANONICAL_STUB_REPO}/contents/${canonical_path}" 2>/dev/null || true)
+  if [ -z "$canonical_ingress" ]; then
+    echo "::warning::Could not read canonical agent-ingress (${CANONICAL_STUB_REPO}/${canonical_path}) — skipping ${stub_name} (${role}) stub drift detection."
+    continue
+  fi
+  canon_block_sha=$(printf '%s' "$canonical_ingress" | job_block_sha "$role")
+  if [ -z "$canon_block_sha" ]; then
+    echo "::warning::Canonical agent-ingress has no '${role}' job block — skipping ${stub_name} (${role}) stub drift detection."
+    continue
+  fi
+
+  # Legacy per-role canonical whole-file SHA (for mixed-fleet, pre-collapse repos).
+  # Optional: absence only means legacy repos for this role cannot be classified.
+  legacy_canon_sha=""
+  if [ -n "$legacy_canonical_path" ]; then
+    legacy_canon_sha=$(gh api \
+      "repos/${CANONICAL_STUB_REPO}/contents/${legacy_canonical_path}" \
+      --jq '.sha' 2>/dev/null || true)
+  fi
+
+  echo "Canonical ${stub_name} (${role}) block SHA: ${canon_block_sha} (${CANONICAL_STUB_REPO}/${canonical_path}#${role})"
   stub_drift_file=$(mktemp)
   for repo in "${repos[@]}"; do
-    # 404 (no stub) => empty SHA => MISSING (not enrolled); non-fatal.
-    repo_stub_sha=$(gh api "repos/${repo}/contents/${stub_path}" \
-      --jq '.sha' 2>/dev/null || true)
-    stub_drift_row "$repo" "$canonical_stub_sha" "$repo_stub_sha" >> "$stub_drift_file"
+    repo_ingress=$(gh api -H "Accept: application/vnd.github.raw" \
+      "repos/${repo}/contents/${stub_path}" 2>/dev/null || true)
+    if [ -n "$repo_ingress" ]; then
+      ingress_present="yes"
+      repo_block_sha=$(printf '%s' "$repo_ingress" | job_block_sha "$role")
+      legacy_repo_sha=""
+    else
+      ingress_present="no"
+      repo_block_sha=""
+      # No agent-ingress.yml — consult the legacy per-role stub (if any).
+      legacy_repo_sha=""
+      if [ -n "$legacy_path" ]; then
+        legacy_repo_sha=$(gh api "repos/${repo}/contents/${legacy_path}" \
+          --jq '.sha' 2>/dev/null || true)
+      fi
+    fi
+    stub_drift_row_role "$repo" "$ingress_present" "$canon_block_sha" \
+      "$repo_block_sha" "$legacy_canon_sha" "$legacy_repo_sha" >> "$stub_drift_file"
   done
 
   stub_drift_files+=("$stub_drift_file")
   stub_drift_labels+=("$stub_label")
   stub_drift_paths+=("$stub_path")
-  stub_drift_canon+=("$canonical_stub_sha")
+  stub_drift_canon+=("$canon_block_sha")
+  stub_drift_roles+=("$role")
 done
 
 # ---------------------------------------------------------------------------
@@ -470,7 +551,7 @@ STUB_DRIFT_JSON="fleet_stub_drift.json"
 if [ ${#stub_drift_files[@]} -gt 0 ]; then
   stub_alert_tmp=$(mktemp)
   for i in "${!stub_drift_files[@]}"; do
-    stub_drift_alert_json "${stub_drift_files[$i]}" "${stub_drift_labels[$i]}" "${stub_drift_paths[$i]}" \
+    stub_drift_alert_json "${stub_drift_files[$i]}" "${stub_drift_labels[$i]}" "${stub_drift_paths[$i]}" "${stub_drift_roles[$i]}" \
       >> "$stub_alert_tmp"
   done
   # Merge the per-stub JSON arrays into one (empty → []).

@@ -32,6 +32,7 @@ CANONICAL_STUBS=(
   feature-ideation.yml
   add-to-project.yml
   dev-lead.yml
+  agent-ingress.yml
 )
 
 # Blanket resourceKeys that would over-suppress S7637 onto non-stub workflows.

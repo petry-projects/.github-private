@@ -55,6 +55,13 @@ readonly -a TEMPLATE_DRIFT_FILES=(
   ".github/workflows/dependency-audit.yml|--emit-workflow|dependency-audit.yml"
   ".github/workflows/dev-lead.yml|--emit-workflow|dev-lead.yml"
   ".github/workflows/pr-review-mention.yml|--emit-workflow|pr-review-mention.yml"
+  # Collapsed Class-1 caller (ADR-0007, #1726): once repo-template collapses the
+  # per-role dev-lead.yml/pr-review-mention.yml stubs into one agent-ingress.yml,
+  # this row gives it byte-identity coverage. Until then the template has no such
+  # file and it reports the non-fatal MISSING every not-yet-seeded row does, so the
+  # per-role rows above still guard the un-collapsed template — no coverage hole in
+  # either state, and no false failure during the rollout.
+  ".github/workflows/agent-ingress.yml|--emit-workflow|agent-ingress.yml"
   ".github/workflows/sonarcloud.yml|--emit-workflow|sonarcloud.yml"
   ".github/dependabot.yml|--emit-baseline|.github/dependabot.yml"
   ".github/CODEOWNERS|--emit-baseline|.github/CODEOWNERS"

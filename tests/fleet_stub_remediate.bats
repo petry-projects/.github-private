@@ -415,3 +415,115 @@ JSON
   run _in_pilot "petry-projects/bravo"
   [ "$status" -ne 0 ]
 }
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Per-job (role-selector) remediation over a collapsed agent-ingress.yml (#1726).
+# Remediation must PATCH a single job block (read-modify-write) — never overwrite
+# the whole file and never touch a sibling job — and must NEVER recreate a
+# deliberately-removed block. These are PURE (no network): they exercise
+# patch_job_block over the agent-ingress fixtures plus the role-aware resolver,
+# allowlist, and plan builder with a synthetic role registry entry.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+INGRESS_CANON="${BATS_TEST_DIRNAME}/fixtures/agent-ingress/canonical.yml"
+INGRESS_DRIFTED="${BATS_TEST_DIRNAME}/fixtures/agent-ingress/drifted-dev-lead.yml"
+INGRESS_NO_DEVLEAD="${BATS_TEST_DIRNAME}/fixtures/agent-ingress/collapsed-no-dev-lead.yml"
+INGRESS_STUB=".github/workflows/agent-ingress.yml"
+
+# QA input #6: remediation of a drift in EXACTLY ONE job must patch ONLY that job
+# and leave the sibling job byte-identical.
+@test "patch_job_block: patching one role block re-aligns it to canon and leaves the sibling untouched (AC #3, QA #6)" {
+  block_tmp="$(mktemp)"
+  extract_job_block "dev-lead" < "$INGRESS_CANON" > "$block_tmp"
+
+  patched="$(patch_job_block "dev-lead" "$block_tmp" < "$INGRESS_DRIFTED")"
+  # The dev-lead block now equals canon ...
+  canon_dl="$(job_block_sha "dev-lead" < "$INGRESS_CANON")"
+  patched_dl="$(printf '%s' "$patched" | job_block_sha "dev-lead")"
+  [ "$patched_dl" = "$canon_dl" ]
+  # ... while the sibling pr-review-mention block is byte-identical to the pre-patch file.
+  before_prm="$(job_block_sha "pr-review-mention" < "$INGRESS_DRIFTED")"
+  after_prm="$(printf '%s' "$patched" | job_block_sha "pr-review-mention")"
+  [ "$before_prm" = "$after_prm" ]
+  rm -f "$block_tmp"
+}
+
+@test "patch_job_block: a removed block is NEVER recreated (refuses with exit 3, AC #3)" {
+  block_tmp="$(mktemp)"
+  extract_job_block "dev-lead" < "$INGRESS_CANON" > "$block_tmp"
+  # The repo deliberately dropped its dev-lead job — patching must refuse, not insert.
+  run patch_job_block "dev-lead" "$block_tmp" < "$INGRESS_NO_DEVLEAD"
+  [ "$status" -eq 3 ]
+  # The output must not contain a resurrected dev-lead job.
+  [[ "$output" != *"dev-lead-reusable.yml"* ]]
+  rm -f "$block_tmp"
+}
+
+@test "remediation_allowlisted: a role-granular entry protects only that job block (AC #3)" {
+  REMEDIATION_ALLOWLIST=("petry-projects/foxtrot|${INGRESS_STUB}|dev-lead")
+  # The allowlisted role is protected ...
+  run remediation_allowlisted "petry-projects/foxtrot" "$INGRESS_STUB" "dev-lead"
+  [ "$status" -eq 0 ]
+  # ... but a sibling role in the SAME file is NOT protected.
+  run remediation_allowlisted "petry-projects/foxtrot" "$INGRESS_STUB" "pr-review-mention"
+  [ "$status" -ne 0 ]
+}
+
+@test "resolve_canonical_path: (stub_file, role) disambiguates collapsed roles that share a file (AC #1)" {
+  STUB_REGISTRY+=(
+    $'dev-lead\tDev-lead\t.github/workflows/agent-ingress.yml\tstandards/workflows/agent-ingress.yml\tdev-lead\t\t'
+  )
+  run resolve_canonical_path "$INGRESS_STUB" "dev-lead"
+  [ "$status" -eq 0 ]
+  [ "$output" = "standards/workflows/agent-ingress.yml" ]
+  # A wrong/absent role for the same file does NOT resolve (would be ambiguous).
+  run resolve_canonical_path "$INGRESS_STUB" "no-such-role"
+  [ "$status" -ne 0 ]
+  # The whole-file resolver (empty role) is unaffected by the added role entry.
+  run resolve_canonical_path "$PLANNER_STUB"
+  [ "$status" -eq 0 ]
+  [ "$output" = "standards/workflows/initiative-planner.yml" ]
+}
+
+@test "build_remediation_plan: carries role and resolves the collapsed canonical (AC #1, #3)" {
+  STUB_REGISTRY+=(
+    $'dev-lead\tDev-lead\t.github/workflows/agent-ingress.yml\tstandards/workflows/agent-ingress.yml\tdev-lead\t\t'
+    $'pr-review-mention\tPr-review-mention\t.github/workflows/agent-ingress.yml\tstandards/workflows/agent-ingress.yml\tpr-review-mention\t\t'
+  )
+  role_json="$(mktemp)"
+  cat > "$role_json" <<JSON
+[
+  { "repo": "petry-projects/foxtrot", "status": "DRIFTED", "repo_sha": "1", "canonical_sha": "2", "stub": "Dev-lead", "stub_file": "${INGRESS_STUB}", "role": "dev-lead" },
+  { "repo": "petry-projects/foxtrot", "status": "DRIFTED", "repo_sha": "3", "canonical_sha": "4", "stub": "Pr-review-mention", "stub_file": "${INGRESS_STUB}", "role": "pr-review-mention" }
+]
+JSON
+  REMEDIATION_ALLOWLIST=()
+  run build_remediation_plan "$role_json"
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s' "$output" | jq 'length')" -eq 2 ]
+  dl="$(printf '%s' "$output" | jq -c '.[] | select(.role == "dev-lead")')"
+  [ "$(printf '%s' "$dl" | jq -r '.canonical_path')" = "standards/workflows/agent-ingress.yml" ]
+  [ "$(printf '%s' "$dl" | jq -r '.stub_file')" = "$INGRESS_STUB" ]
+  rm -f "$role_json"
+}
+
+@test "build_remediation_plan: a role-granular allowlist excludes only that block, sibling remains (AC #3)" {
+  STUB_REGISTRY+=(
+    $'dev-lead\tDev-lead\t.github/workflows/agent-ingress.yml\tstandards/workflows/agent-ingress.yml\tdev-lead\t\t'
+    $'pr-review-mention\tPr-review-mention\t.github/workflows/agent-ingress.yml\tstandards/workflows/agent-ingress.yml\tpr-review-mention\t\t'
+  )
+  role_json="$(mktemp)"
+  cat > "$role_json" <<JSON
+[
+  { "repo": "petry-projects/foxtrot", "status": "DRIFTED", "repo_sha": "1", "canonical_sha": "2", "stub": "Dev-lead", "stub_file": "${INGRESS_STUB}", "role": "dev-lead" },
+  { "repo": "petry-projects/foxtrot", "status": "DRIFTED", "repo_sha": "3", "canonical_sha": "4", "stub": "Pr-review-mention", "stub_file": "${INGRESS_STUB}", "role": "pr-review-mention" }
+]
+JSON
+  REMEDIATION_ALLOWLIST=("petry-projects/foxtrot|${INGRESS_STUB}|dev-lead")
+  run build_remediation_plan "$role_json"
+  [ "$status" -eq 0 ]
+  # Only the sibling (pr-review-mention) block survives; the allowlisted dev-lead is gone.
+  [ "$(printf '%s' "$output" | jq 'length')" -eq 1 ]
+  [ "$(printf '%s' "$output" | jq -r '.[0].role')" = "pr-review-mention" ]
+  rm -f "$role_json"
+}
