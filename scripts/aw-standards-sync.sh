@@ -223,6 +223,10 @@ while IFS= read -r repo; do
 
   # Create each missing file via the Contents API
   missing_labels=""
+  # Machine-readable manifest of the exact paths this PR intends to sync (#1700
+  # AC1). Emitted into the PR body so the sync-scope guard can fail the PR if its
+  # diff ever strays outside this set (the #1523 failure mode).
+  declared_manifest=""
   for entry in "${missing_files[@]}"; do
     required_path="${entry%%|*}"
     template_key="${entry#*|}"
@@ -243,7 +247,12 @@ while IFS= read -r repo; do
       echo "  [warn] ${repo} — could not create ${required_path}"
 
     missing_labels="${missing_labels} \`${required_path}\`"
+    declared_manifest="${declared_manifest}${required_path}"$'\n'
   done
+
+  # HTML-comment block: invisible in the rendered PR, machine-readable for the
+  # scope guard (scripts/lib/sync-scope-check.sh recognises this exact marker).
+  declared_block=$(printf '<!-- standards-sync:declared-paths\n%s-->' "$declared_manifest")
 
   # Open PR
   pr_url=$(gh pr create \
@@ -251,7 +260,7 @@ while IFS= read -r repo; do
     --head "$BRANCH_NAME" \
     --base "$default_branch" \
     --title "chore: add missing org standard files (standards-sync)" \
-    --body "$(printf 'This PR adds files required by the \`petry-projects\` org standards.\n\n**Missing files added:**%s\n\nOpened by the [standards-sync](%s) workflow.\n' "$missing_labels" "https://github.com/${REPORT_REPO}/actions")" \
+    --body "$(printf 'This PR adds files required by the \`petry-projects\` org standards.\n\n**Missing files added:**%s\n\n%s\n\nOpened by the [standards-sync](%s) workflow.\n' "$missing_labels" "$declared_block" "https://github.com/${REPORT_REPO}/actions")" \
     --label "$SYNC_LABEL" \
     2>/dev/null || true)
 

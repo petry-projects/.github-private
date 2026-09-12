@@ -72,6 +72,7 @@ trust:
 # for addPullRequestReview); the base secret name is grandfathered (pre-dates
 # the GH_PAT_<ACCOUNT> convention). See docs/pr-review-agent/machine-user-setup.md.
 runtime:
+  reusable: .github/workflows/pr-review.yml
   identity:
     account: donpetry-bot
     credential: DON_PETRY_BOT_GH_PAT
@@ -82,6 +83,10 @@ evals:
   required_before: stable
   path: evals/pr-review/
   min_cases: 5
+
+canary:
+  registry: petry-projects/.github/standards/canary-rings.json
+  agent: pr-review
 
 references:
   - "agents/pr-reviewer.md (Copilot profile)"

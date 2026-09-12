@@ -224,6 +224,7 @@ backtick spans (e.g. `` `path/to/file.yml` ``) are allowed; the separator row us
 > | `.github/workflows/duplicate-decl-gate.yml` | CI gate guard — enforces duplicate declaration check, not an agentic role |
 > | `.github/workflows/holdout-guard.yml` | Gate guard — enforces merge conditions, not an agentic role |
 > | `.github/workflows/test-deletion-guard.yml` | Gate guard — enforces test retention, not an agentic role |
+> | `.github/workflows/sync-scope-guard.yml` | Gate guard — enforces sync-PR scope, not an agentic role |
 > | `.github/workflows/dependabot-automerge.yml` | Dependabot plumbing — thin caller stub |
 > | `.github/workflows/dependabot-rebase.yml` | Dependabot plumbing — thin caller stub |
 > | `.github/workflows/auto-rebase.yml` | Thin caller stub — all logic in org-level reusable |
