@@ -184,6 +184,182 @@ setup() {
 }
 
 # ---------------------------------------------------------------------------
+# acv_latest_marker_index — find our addressed-marker reply anywhere in the thread (#1735 AC1)
+# ---------------------------------------------------------------------------
+
+@test "acv_latest_marker_index: our marker reply as the only comment -> index 0" {
+  local comments='[{"author":{"login":"donpetry-bot","__typename":"User"},"body":"Applied. <!-- dev-lead:addressed -->","createdAt":"2026-09-01T10:00:00Z"}]'
+  run acv_latest_marker_index "$comments" "donpetry-bot"
+  [[ "$status" -eq 0 ]]
+  [[ "$output" == "0" ]]
+}
+
+@test "acv_latest_marker_index: marker reply after a bot finding -> its index (not comments(last:1))" {
+  local comments='[
+    {"author":{"login":"codeant-ai[bot]","__typename":"Bot"},"body":"Potential issue here.","createdAt":"2026-09-01T09:00:00Z"},
+    {"author":{"login":"donpetry-bot","__typename":"User"},"body":"Refuted. <!-- dev-lead:addressed -->","createdAt":"2026-09-01T10:00:00Z"}
+  ]'
+  run acv_latest_marker_index "$comments" "donpetry-bot"
+  [[ "$status" -eq 0 ]]
+  [[ "$output" == "1" ]]
+}
+
+@test "acv_latest_marker_index: marker NOT the latest comment (bot ack follows) -> still found" {
+  local comments='[
+    {"author":{"login":"donpetry-bot","__typename":"User"},"body":"Refuted. <!-- dev-lead:addressed -->","createdAt":"2026-09-01T10:00:00Z"},
+    {"author":{"login":"codeant-ai[bot]","__typename":"Bot"},"body":"Customized review instruction saved!","createdAt":"2026-09-01T11:00:00Z"}
+  ]'
+  run acv_latest_marker_index "$comments" "donpetry-bot"
+  [[ "$status" -eq 0 ]]
+  [[ "$output" == "0" ]]
+}
+
+@test "acv_latest_marker_index: multiple of our markers -> latest index wins" {
+  local comments='[
+    {"author":{"login":"donpetry-bot","__typename":"User"},"body":"First. <!-- dev-lead:addressed -->","createdAt":"2026-09-01T10:00:00Z"},
+    {"author":{"login":"codeant-ai[bot]","__typename":"Bot"},"body":"still an issue","createdAt":"2026-09-01T11:00:00Z"},
+    {"author":{"login":"donpetry-bot","__typename":"User"},"body":"Second. <!-- dev-lead:addressed -->","createdAt":"2026-09-01T12:00:00Z"}
+  ]'
+  run acv_latest_marker_index "$comments" "donpetry-bot"
+  [[ "$status" -eq 0 ]]
+  [[ "$output" == "2" ]]
+}
+
+@test "acv_latest_marker_index: no marker anywhere -> rc1 (unchanged no-marker behavior)" {
+  local comments='[{"author":{"login":"donpetry-bot","__typename":"User"},"body":"Looked into it, no change.","createdAt":"2026-09-01T10:00:00Z"}]'
+  run acv_latest_marker_index "$comments" "donpetry-bot"
+  [[ "$status" -eq 1 ]]
+}
+
+@test "acv_latest_marker_index: marker from another account -> rc1 (not ours)" {
+  local comments='[{"author":{"login":"someone-else","__typename":"User"},"body":"Applied. <!-- dev-lead:addressed -->","createdAt":"2026-09-01T10:00:00Z"}]'
+  run acv_latest_marker_index "$comments" "donpetry-bot"
+  [[ "$status" -eq 1 ]]
+}
+
+@test "acv_latest_marker_index: empty array -> rc1" {
+  run acv_latest_marker_index '[]' "donpetry-bot"
+  [[ "$status" -eq 1 ]]
+}
+
+# ---------------------------------------------------------------------------
+# acv_bot_comment_is_acknowledgement — ack / finding / undeterminable (#1735 AC2/AC4)
+# ---------------------------------------------------------------------------
+
+@test "acv_bot_comment_is_acknowledgement: codeant 'Customized review instruction saved' -> rc0 (ack)" {
+  run acv_bot_comment_is_acknowledgement "✅ Customized review instruction saved!"
+  [[ "$status" -eq 0 ]]
+}
+
+@test "acv_bot_comment_is_acknowledgement: 'Acknowledged, will not flag this again' -> rc0 (ack)" {
+  run acv_bot_comment_is_acknowledgement "Acknowledged. We will not flag this pattern again."
+  [[ "$status" -eq 0 ]]
+}
+
+@test "acv_bot_comment_is_acknowledgement: a new finding -> rc1 (blocks)" {
+  run acv_bot_comment_is_acknowledgement "Potential issue: this introduces a race condition on shutdown."
+  [[ "$status" -eq 1 ]]
+}
+
+@test "acv_bot_comment_is_acknowledgement: ack phrasing mixed with a new finding -> rc1 (finding wins, fail toward blocking)" {
+  run acv_bot_comment_is_acknowledgement "Instruction saved, but there is a new issue: unhandled null."
+  [[ "$status" -eq 1 ]]
+}
+
+@test "acv_bot_comment_is_acknowledgement: undeterminable chatter -> rc2 (fail closed)" {
+  run acv_bot_comment_is_acknowledgement "Interesting perspective on the tradeoffs here."
+  [[ "$status" -eq 2 ]]
+}
+
+@test "acv_bot_comment_is_acknowledgement: empty body -> rc2 (fail closed)" {
+  run acv_bot_comment_is_acknowledgement ""
+  [[ "$status" -eq 2 ]]
+}
+
+@test "acv_bot_comment_is_acknowledgement: negated 'cannot acknowledge this' -> rc2 (not an ack, fail closed)" {
+  run acv_bot_comment_is_acknowledgement "I cannot acknowledge this refutation as valid."
+  [[ "$status" -eq 2 ]]
+}
+
+@test "acv_bot_comment_is_acknowledgement: negated 'unable to fully acknowledge' -> rc2 (not an ack, fail closed)" {
+  run acv_bot_comment_is_acknowledgement "We are unable to fully acknowledge the change."
+  [[ "$status" -eq 2 ]]
+}
+
+# ---------------------------------------------------------------------------
+# acv_post_marker_clear — nothing unaddressed since our marker (#1735 AC2/AC3/AC4)
+# ---------------------------------------------------------------------------
+
+@test "acv_post_marker_clear: nothing after the marker -> clear rc0" {
+  local comments='[{"author":{"login":"donpetry-bot","__typename":"User"},"body":"Refuted. <!-- dev-lead:addressed -->","createdAt":"2026-09-01T10:00:00Z"}]'
+  run acv_post_marker_clear "$comments" 0 "donpetry-bot"
+  [[ "$status" -eq 0 ]]
+  [[ "$output" == "clear" ]]
+}
+
+@test "acv_post_marker_clear: bot acknowledgement after our marker -> clear rc0 (AC2)" {
+  local comments='[
+    {"author":{"login":"donpetry-bot","__typename":"User"},"body":"Refuted. <!-- dev-lead:addressed -->","createdAt":"2026-09-01T10:00:00Z"},
+    {"author":{"login":"codeant-ai[bot]","__typename":"Bot"},"body":"✅ Customized review instruction saved!","createdAt":"2026-09-01T11:00:00Z"}
+  ]'
+  run acv_post_marker_clear "$comments" 0 "donpetry-bot"
+  [[ "$status" -eq 0 ]]
+  [[ "$output" == "clear" ]]
+}
+
+@test "acv_post_marker_clear: bot NEW finding after our marker -> blocks rc1 (AC2)" {
+  local comments='[
+    {"author":{"login":"donpetry-bot","__typename":"User"},"body":"Refuted. <!-- dev-lead:addressed -->","createdAt":"2026-09-01T10:00:00Z"},
+    {"author":{"login":"codeant-ai[bot]","__typename":"Bot"},"body":"Potential issue: new race condition on shutdown.","createdAt":"2026-09-01T11:00:00Z"}
+  ]'
+  run acv_post_marker_clear "$comments" 0 "donpetry-bot"
+  [[ "$status" -eq 1 ]]
+  [[ "$output" == "bot-finding" ]]
+}
+
+@test "acv_post_marker_clear: human comment after our marker ALWAYS blocks regardless of content -> rc1 (AC3, preserves #1415)" {
+  local comments='[
+    {"author":{"login":"donpetry-bot","__typename":"User"},"body":"Refuted. <!-- dev-lead:addressed -->","createdAt":"2026-09-01T10:00:00Z"},
+    {"author":{"login":"a-maintainer","__typename":"User"},"body":"Looks fine to me, thanks.","createdAt":"2026-09-01T11:00:00Z"}
+  ]'
+  run acv_post_marker_clear "$comments" 0 "donpetry-bot"
+  [[ "$status" -eq 1 ]]
+  [[ "$output" == "human" ]]
+}
+
+@test "acv_post_marker_clear: undeterminable bot comment after our marker -> fail closed rc2 (AC4)" {
+  local comments='[
+    {"author":{"login":"donpetry-bot","__typename":"User"},"body":"Refuted. <!-- dev-lead:addressed -->","createdAt":"2026-09-01T10:00:00Z"},
+    {"author":{"login":"codeant-ai[bot]","__typename":"Bot"},"body":"Interesting.","createdAt":"2026-09-01T11:00:00Z"}
+  ]'
+  run acv_post_marker_clear "$comments" 0 "donpetry-bot"
+  [[ "$status" -eq 2 ]]
+  [[ "$output" == "bot-ambiguous" ]]
+}
+
+@test "acv_post_marker_clear: our own later note after the marker is ours -> clear rc0" {
+  local comments='[
+    {"author":{"login":"donpetry-bot","__typename":"User"},"body":"Refuted. <!-- dev-lead:addressed -->","createdAt":"2026-09-01T10:00:00Z"},
+    {"author":{"login":"donpetry-bot","__typename":"User"},"body":"Rebased onto latest main.","createdAt":"2026-09-01T11:00:00Z"}
+  ]'
+  run acv_post_marker_clear "$comments" 0 "donpetry-bot"
+  [[ "$status" -eq 0 ]]
+  [[ "$output" == "clear" ]]
+}
+
+@test "acv_post_marker_clear: a post-marker comment carrying our marker is ours by the shared discriminator -> clear rc0" {
+  # A User comment that carries one of our automation markers is agent-authored per
+  # review_thread_is_agent_authored, so it is never treated as a human finding (#1735 AC3).
+  local comments='[
+    {"author":{"login":"donpetry-bot","__typename":"User"},"body":"Refuted. <!-- dev-lead:addressed -->","createdAt":"2026-09-01T10:00:00Z"},
+    {"author":{"login":"don-petry","__typename":"User"},"body":"Follow-up note. <!-- dev-lead -->","createdAt":"2026-09-01T11:00:00Z"}
+  ]'
+  run acv_post_marker_clear "$comments" 0 "donpetry-bot"
+  [[ "$status" -eq 0 ]]
+  [[ "$output" == "clear" ]]
+}
+
+# ---------------------------------------------------------------------------
 # acv_gather_commit_facts — the impure gatherer, against a real git repo
 # ---------------------------------------------------------------------------
 
