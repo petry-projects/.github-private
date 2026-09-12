@@ -150,6 +150,31 @@ setup() {
   [[ "$output" != *"dev-lead-reusable.yml"* ]]
 }
 
+@test "extract: a YAML-quoted \"on\": trigger key is still captured (drift can't hide behind quoting)" {
+  # The trigger key may be written quoted (\"on\":/'on':) to dodge YAML 1.1's
+  # on->true coercion. If the extractor only matched an unquoted, column-0 on:,
+  # the whole trigger block would drop out of the frozen region and a trigger
+  # change could slip past the freeze. It must be captured either way.
+  work="$(mktemp -d "${BATS_TEST_TMPDIR:-/tmp}/quoted.XXXXXX")"
+  cat > "$work/stub.yml" <<'YAML'
+"on":
+  pull_request_review:
+    types: [submitted]
+
+jobs:
+  dev-lead:
+    uses: petry-projects/.github-private/.github/workflows/dev-lead-reusable.yml@dev-lead/v1-stable
+    with:
+      agent_ref: dev-lead/v1-stable
+YAML
+  run extract_forwarding_block "$work/stub.yml" "dev-lead"
+  rm -rf "$work"
+  [ "$status" -eq 0 ]
+  [[ "$output" == '"on":'* ]]
+  [[ "$output" == *"pull_request_review:"* ]]
+  [[ "$output" == *"dev-lead-reusable.yml@dev-lead/v1-stable"* ]]
+}
+
 # ---------------------------------------------------------------------------
 # Parameterised (form, file, job) table — a byte-identical block is ALIGNED and
 # repointing the channel flips DRIFTED, for BOTH the legacy stub and each ingress

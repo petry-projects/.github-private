@@ -84,7 +84,8 @@ caller_freeze_covered() {
 # the invisible-to-PR-CI change (#1034 class) this backstop exists to catch.
 #
 # Boundaries (deterministic, byte-identity friendly):
-#   - `on:` block: the `on:` line plus every following indented line, blank line,
+#   - `on:` block: the top-level trigger key (`on:`, or its YAML-quoted spellings
+#     `"on":`/`'on':`) plus every following indented line, blank line,
 #     or column-0 comment; it ends at the next non-blank, non-comment, column-0
 #     line (the next top-level YAML key). Blanks and column-0 comments are kept so
 #     a new trigger cannot hide after a blank line or comment (#1268).
@@ -98,7 +99,7 @@ extract_forwarding_block() {
 
   # 1) The shared top-level `on:` trigger block.
   awk '
-    /^on:/ { insec="on"; print; next }
+    /^("on"|'\''on'\''|on):/ { insec="on"; print; next }
     insec=="on" {
       if (/^[[:space:]]/ || /^$/ || /^#/) { print; next }
       insec=""

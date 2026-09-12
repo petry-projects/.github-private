@@ -62,6 +62,24 @@ setup() {
   [[ "$output" == *"default-branch"* ]]
 }
 
+@test "viif_forbidden: repo identity reached via the event payload is forbidden too" {
+  # github.repository is not the only path to repo identity — the same identity
+  # rides in the delivered payload as github.event.repository.{name,full_name,
+  # owner.login,...}. Gating a role on WHICH repo it is is enrollment/config
+  # regardless of the spelling, so repo-identity must catch these too.
+  run viif_forbidden "github.event.repository.name == 'some-repo'"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"repo-identity"* ]]
+
+  run viif_forbidden "github.event.repository.full_name == 'petry-projects/some-repo'"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"repo-identity"* ]]
+
+  run viif_forbidden "github.event.repository.owner.login == 'petry-projects'"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"repo-identity"* ]]
+}
+
 # ---------------------------------------------------------------------------
 # Parameterised over the FROZEN rulings table: every ALLOW row's representative
 # expression must be permitted; every FORBID row's must be rejected AND name the

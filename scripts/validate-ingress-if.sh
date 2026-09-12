@@ -64,7 +64,8 @@ viif_expr_matches_construct() {
     secrets)               [[ "$expr" =~ (^|[^._[:alnum:]])secrets\. ]] ;;
     needs-outputs)         [[ "$expr" =~ (^|[^._[:alnum:]])needs\. ]] ;;
     hashfiles)             [[ "$lc" == *hashfiles* ]] ;;
-    repo-identity)         [[ "$expr" == *"github.repository"* ]] ;;
+    repo-identity)         [[ "$expr" == *"github.repository"* ]] || \
+                           [[ "$expr" =~ github\.event\.repository\.(full_name|name|id|node_id|owner) ]] ;;
     default-branch)        [[ "$expr" == *default_branch* ]] ;;
     labels-array-contains) [[ "$expr" == *".labels"* ]] ;;
     *)                     return 1 ;;
