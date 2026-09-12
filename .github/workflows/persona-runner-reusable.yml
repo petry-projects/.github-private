@@ -23,18 +23,29 @@
 # Posting identity (per persona, from the manifest — NOT a repo-wide default):
 #   Which account a persona's advisory posts as is read from that persona's
 #   personas/<id>/persona.yml runtime.identity (account + credential), the
-#   #1316/#1317 pattern. Advisory personas post as the machine user donpetry-bot
-#   (DON_PETRY_BOT_GH_PAT), never a human maintainer — a human byline halves the
-#   router's recursion guard and carries owner author_association
-#   (.github-private#1650). The runner holds only the PATs for the sanctioned
-#   posting identities and fails loudly on any other declared credential.
+#   #1316/#1317 pattern. Advisory personas post as the OWNER account don-petry
+#   (GH_PAT_DON_PETRY) — the identity ADR-0005 already sanctioned and
+#   docs/architecture/adr/0008-personas-post-as-the-owner-account.md restores
+#   fleet-wide, reversing #1650. GH_PAT_DON_PETRY is known-good (dev-lead posts
+#   with it continuously); donpetry-bot's PAT lacked comment-write here and
+#   silently discarded advisories (#1734). Trade-off ADR-0008 records honestly: a
+#   don-petry byline is a human account the router's ACTOR axis cannot exclude
+#   (it must stay invocable by the maintainer who invokes it most), so the
+#   `<!-- persona: -->` MARKER axis becomes the SOLE mechanical recursion guard —
+#   acceptable because that marker is workflow-enforced in the post step below
+#   (pr_ensure_marker), not prompt-enforced (the #860 failure mode). The runner
+#   holds only the PATs for the sanctioned posting identities and fails loudly on
+#   any other declared credential.
 #
 # Requires:
 #   CLAUDE_CODE_OAUTH_TOKEN — org secret, the engine credential
-#   DON_PETRY_BOT_GH_PAT    — org PAT: the WORKFLOW uses it to post the comment as
-#                             donpetry-bot on the cross-repo item. The agent never
-#                             sees it. (dev-lead advisories still post via
-#                             GH_PAT_DON_PETRY pending its identity split.)
+#   GH_PAT_DON_PETRY        — org PAT: the WORKFLOW uses it to post the comment as
+#                             the owner don-petry on the cross-repo item. The
+#                             agent never sees it. (ADR-0008)
+#   DON_PETRY_BOT_GH_PAT    — org PAT for donpetry-bot, retained: other paths
+#                             still post as the bot (pr-review's approver identity),
+#                             and the resolution logic accepting both is what makes
+#                             the ADR-0008 change a one-line manifest edit.
 name: Persona Runtime — Reusable
 
 on:
@@ -66,14 +77,17 @@ on:
       CLAUDE_CODE_OAUTH_TOKEN:
         required: true
       DON_PETRY_BOT_GH_PAT:
-        # donpetry-bot's PAT — the machine account advisory personas post as. Which
-        # PAT is used is chosen per persona from runtime.identity.credential, not a
-        # repo-wide default (.github-private#1650). Grandfathered credential name.
+        # donpetry-bot's PAT — retained though advisory personas no longer post as
+        # the bot (ADR-0008). Still referenced by other paths (pr-review's approver
+        # identity), and keeping the resolution logic accepting both credentials is
+        # what makes the ADR-0008 change a one-line manifest edit. Which PAT is used
+        # is chosen per persona from runtime.identity.credential, not a repo-wide
+        # default (.github-private#1650). Grandfathered credential name.
         required: false
       GH_PAT_DON_PETRY:
-        # don-petry's PAT — used only by a persona that still declares it as its
-        # posting identity (currently dev-lead, whose commit-vs-advisory identity
-        # split is tracked separately). Advisory-only personas post as donpetry-bot.
+        # don-petry's PAT — the owner account advisory personas post as (ADR-0008,
+        # restoring the ADR-0005 position; reverses #1650, fixes #1734). Chosen per
+        # persona from runtime.identity.credential, never a repo-wide default.
         required: false
       # GH_PAT_WORKFLOWS removed (#1650): the broadly-scoped workflows PAT is no
       # longer a posting fallback here — least privilege, and posting under it
@@ -280,6 +294,14 @@ jobs:
 
           # Mechanically guarantee the recursion marker — the agent could not post
           # unmarked (no write token), and now cannot post unmarked via us either.
+          # LOAD-BEARING under ADR-0008: personas now post as the owner account
+          # don-petry, which the router's actor axis cannot exclude, so THIS marker
+          # is the SOLE mechanical recursion guard for persona output. Enforcing it
+          # here in the post step — the only writer — is what keeps it workflow-
+          # enforced, not prompt-enforced (the #860 runaway failure mode). The
+          # forgot-the-marker path is covered by tests/persona_runner.bats
+          # ("pr_ensure_marker PREPENDS the marker when the agent forgot it"); keep
+          # that coverage green — do not weaken this call.
           body="$(pr_ensure_marker "$PERSONA" "$body")"
 
           if [ -z "${ITEM_NUMBER}" ]; then
