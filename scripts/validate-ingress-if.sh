@@ -81,7 +81,7 @@ viif_forbidden() {
   [ -f "$rulings" ] || { echo "::error::rulings table not found: $rulings" >&2; return 2; }
 
   # shellcheck disable=SC2034  # row_expr/row_rationale columns are consumed by the test, not here
-  while IFS=$'\t' read -r name verdict row_expr row_rationale; do
+  while IFS=$'\t' read -r name verdict row_expr row_rationale || [ -n "$name" ]; do
     case "$name" in ''|'#'*) continue ;; esac
     [ "$verdict" = "FORBID" ] || continue
     if viif_expr_matches_construct "$expr" "$name"; then
@@ -156,6 +156,7 @@ viif_scan() {
 }
 
 main() {
+  command -v yq >/dev/null 2>&1 || { echo "::error::yq is required but not installed." >&2; return 1; }
   local root="${VIIF_ROOT:-}"
   [ -n "$root" ] || root="$(viif_repo_root)"
   viif_scan "$root"

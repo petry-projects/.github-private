@@ -255,7 +255,7 @@ EOF
   printf '%s\t%s\t%s\t%s\t%s\n' ".github/workflows/agent-ingress.yml" "ALIGNED" "$EXPECTED" "$EXPECTED" "dev-lead" >> "$tsv"
   printf '%s\t%s\t%s\t%s\t%s\n' ".github/workflows/agent-ingress.yml" "DRIFTED" "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" "$EXPECTED" "pr-review-mention" >> "$tsv"
   run caller_freeze_annotate "$tsv"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
   [[ "$output" == *"::error"* ]]
   [[ "$output" == *"agent-ingress.yml"* ]]
   [[ "$output" == *"pr-review-mention"* ]]
@@ -283,7 +283,7 @@ EOF
   tsv="$(mktemp "${BATS_TEST_TMPDIR}/freeze_tsv.XXXXXX")"
   printf '%s\t%s\t%s\t%s\t%s\n' ".github/workflows/dev-lead.yml" "MISSING" "" "$EXPECTED" "dev-lead" >> "$tsv"
   run caller_freeze_annotate "$tsv"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
   [[ "$output" == *"::error"* ]]
   rm -f "$tsv"
 }

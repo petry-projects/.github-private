@@ -38,7 +38,7 @@ setup() {
 
 @test "viif_forbidden: an org/repo config variable is forbidden" {
   run viif_forbidden "github.event_name == 'pull_request' && vars.DEV_LEAD_ENGINE == 'claude'"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
   [[ "$output" == *"vars"* ]]
 }
 
@@ -48,7 +48,7 @@ setup() {
   [ -z "$output" ]
 
   run viif_forbidden "contains(github.event.pull_request.labels.*.name, 'agent-ready')"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
   [[ "$output" == *"labels-array-contains"* ]]
 }
 
@@ -58,7 +58,7 @@ setup() {
   [ -z "$output" ]
 
   run viif_forbidden "github.event.repository.default_branch == 'main'"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
   [[ "$output" == *"default-branch"* ]]
 }
 
@@ -130,7 +130,7 @@ setup() {
 @test "file: an ingress whose job if: reaches for repo state FAILS with a named message" {
   run viif_validate_ingress "${SAMPLES}/repo-state.yml"
   echo "$output"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
   [[ "$output" == *"::error"* ]]
   [[ "$output" == *"dev-lead"* ]]
   [[ "$output" == *"vars"* ]]
@@ -139,7 +139,7 @@ setup() {
 @test "file: a malformed/schema-invalid ingress FAILS (job with no reusable uses:)" {
   run viif_validate_ingress "${SAMPLES}/malformed.yml"
   echo "$output"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
   [[ "$output" == *"::error"* ]]
   [[ "$output" == *"dev-lead"* ]]
 }
@@ -164,6 +164,6 @@ setup() {
   cp "${SAMPLES}/repo-state.yml" "$root/.github/workflows/agent-ingress.yml"
   run env VIIF_ROOT="$root" bash "$SCRIPT"
   rm -rf "$root"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
   [[ "$output" == *"vars"* ]]
 }

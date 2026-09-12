@@ -177,7 +177,7 @@ YML
 @test "ingress: a single drifted job in an otherwise-valid ingress FAILS naming the bad input" {
   run env VCI_ROOT="$FIX/ingress-drift" VCI_RESOLVE_DIR="$FIX/ingress-reusable" bash "$SCRIPT"
   echo "$output"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
   [[ "$output" == *"bogus_input"* ]]
   [[ "$output" == *"not a declared"* ]]
   # The valid dev-lead job's inputs (mode/agent_ref) must NOT be reported.
