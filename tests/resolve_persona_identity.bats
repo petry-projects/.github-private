@@ -65,18 +65,51 @@ YAML
   [[ "$output" == *"runtime.identity"* ]]
 }
 
-# --- the live qa-lead manifest must post as a bot, not a human (AC #1) -------
+# --- the live qa-lead manifest posts as the owner account (ADR-0008) ---------
+# Advisory personas post as the owner account don-petry (GH_PAT_DON_PETRY), the
+# identity ADR-0005 already sanctioned and ADR-0008 restores fleet-wide — reversing
+# the #1650 switch to donpetry-bot, whose PAT lacked comment-write here and silently
+# discarded advisories (#1734). GH_PAT_DON_PETRY is known-good (dev-lead posts with
+# it continuously). These still prove identity is READ FROM THE MANIFEST, never a
+# shared default (#1317) — only the expected value changed.
 
-@test "qa-lead posts as the bot identity donpetry-bot, not a human maintainer" {
+@test "qa-lead posts as the owner account don-petry (ADR-0008)" {
   run RESOLVE qa-lead "$SCRIPT_DIR/personas" account
   [ "$status" -eq 0 ]
-  [ "$output" = "donpetry-bot" ]
+  [ "$output" = "don-petry" ]
 }
 
-@test "qa-lead's credential follows the GH_PAT/grandfathered schema for the bot" {
+@test "qa-lead's credential follows the GH_PAT/<ACCOUNT> schema for the owner" {
   run RESOLVE qa-lead "$SCRIPT_DIR/personas" credential
   [ "$status" -eq 0 ]
-  [ "$output" = "DON_PETRY_BOT_GH_PAT" ]
+  [ "$output" = "GH_PAT_DON_PETRY" ]
+}
+
+# The qa-lead cases above pin the canonical example, but ADR-0008 applies
+# fleet-wide: EVERY advisory persona posts as the owner account. Without this
+# sweep, a change to business-analyst, solution-architect, or any other advisory
+# manifest could silently flip its posting account and no test would catch it.
+# pr-review is the sole carve-out — it is the PR-review approver and must stay
+# donpetry-bot, a distinct account from the code author (ADR-0008, "pr-review is
+# deliberately out of scope").
+@test "every advisory persona (all but pr-review) posts as the owner account don-petry (ADR-0008)" {
+  local manifest id account credential
+  for manifest in "$SCRIPT_DIR"/personas/*/persona.yml; do
+    id="$(basename "$(dirname "$manifest")")"
+    [ "$id" = "pr-review" ] && continue
+    # Personas without a runtime.identity don't post; skip them (resolver exits
+    # non-zero, the fail-loud path the earlier tests already pin).
+    account="$(RESOLVE "$id" "$SCRIPT_DIR/personas" account)" || continue
+    credential="$(RESOLVE "$id" "$SCRIPT_DIR/personas" credential)"
+    if [ "$account" != "don-petry" ]; then
+      echo "persona '$id' posts as '$account', expected 'don-petry' (ADR-0008)" >&2
+      return 1
+    fi
+    if [ "$credential" != "GH_PAT_DON_PETRY" ]; then
+      echo "persona '$id' uses credential '$credential', expected 'GH_PAT_DON_PETRY' (ADR-0008)" >&2
+      return 1
+    fi
+  done
 }
 
 # --- every shipped credential is one the runner actually holds a PAT for ------
