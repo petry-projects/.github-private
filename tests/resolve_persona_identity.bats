@@ -65,18 +65,24 @@ YAML
   [[ "$output" == *"runtime.identity"* ]]
 }
 
-# --- the live qa-lead manifest must post as a bot, not a human (AC #1) -------
+# --- the live qa-lead manifest posts as the owner account (ADR-0008) ---------
+# Advisory personas post as the owner account don-petry (GH_PAT_DON_PETRY), the
+# identity ADR-0005 already sanctioned and ADR-0008 restores fleet-wide — reversing
+# the #1650 switch to donpetry-bot, whose PAT lacked comment-write here and silently
+# discarded advisories (#1734). GH_PAT_DON_PETRY is known-good (dev-lead posts with
+# it continuously). These still prove identity is READ FROM THE MANIFEST, never a
+# shared default (#1317) — only the expected value changed.
 
-@test "qa-lead posts as the bot identity donpetry-bot, not a human maintainer" {
+@test "qa-lead posts as the owner account don-petry (ADR-0008)" {
   run RESOLVE qa-lead "$SCRIPT_DIR/personas" account
   [ "$status" -eq 0 ]
-  [ "$output" = "donpetry-bot" ]
+  [ "$output" = "don-petry" ]
 }
 
-@test "qa-lead's credential follows the GH_PAT/grandfathered schema for the bot" {
+@test "qa-lead's credential follows the GH_PAT/<ACCOUNT> schema for the owner" {
   run RESOLVE qa-lead "$SCRIPT_DIR/personas" credential
   [ "$status" -eq 0 ]
-  [ "$output" = "DON_PETRY_BOT_GH_PAT" ]
+  [ "$output" = "GH_PAT_DON_PETRY" ]
 }
 
 # --- every shipped credential is one the runner actually holds a PAT for ------
