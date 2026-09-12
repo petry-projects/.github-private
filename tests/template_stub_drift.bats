@@ -69,6 +69,35 @@ setup() {
   [[ "$output" != *".github/workflows/ci.yml"* ]]
 }
 
+# ---------------------------------------------------------------------------
+# #1726 — the collapsed Class-1 caller agent-ingress.yml gets whole-file
+# byte-identity coverage, WITHOUT dropping the per-role stubs so the template
+# is guarded in both the pre-collapse and post-collapse states (no hole).
+# ---------------------------------------------------------------------------
+
+@test "covered set: includes the collapsed agent-ingress.yml (#1726)" {
+  run template_drift_covered
+  [ "$status" -eq 0 ]
+  [[ "$output" == *".github/workflows/agent-ingress.yml"* ]]
+}
+
+@test "covered set: keeps the per-role dev-lead.yml/pr-review-mention.yml rows (backward-compat, #1726)" {
+  run template_drift_covered
+  [ "$status" -eq 0 ]
+  [[ "$output" == *".github/workflows/dev-lead.yml"* ]]
+  [[ "$output" == *".github/workflows/pr-review-mention.yml"* ]]
+}
+
+@test "agent-ingress.yml is emitted via --emit-workflow (whole-file, offline reference)" {
+  local row hit=""
+  for row in "${TEMPLATE_DRIFT_FILES[@]}"; do
+    case "$row" in
+      ".github/workflows/agent-ingress.yml|"*) hit="$row" ;;
+    esac
+  done
+  [ "$hit" = ".github/workflows/agent-ingress.yml|--emit-workflow|agent-ingress.yml" ]
+}
+
 @test "template_drift_allowlisted: ci.yml is allowlisted" {
   run template_drift_allowlisted ".github/workflows/ci.yml"
   [ "$status" -eq 0 ]

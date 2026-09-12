@@ -1,0 +1,37 @@
+name: Agent Ingress
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, review_requested]
+  issue_comment:
+    types: [created]
+
+permissions: {}
+
+jobs:
+  # ── dev-lead ────────────────────────────────────────────────────────────────
+  dev-lead:
+    if: >-
+      (github.event_name == 'pull_request'
+        && contains(fromJSON('["opened","reopened","synchronize"]'), github.event.action)
+        && github.event.pull_request.base.ref == 'main')
+      || github.event_name == 'issue_comment'
+    uses: petry-projects/.github-private/.github/workflows/dev-lead-reusable.yml@dev-lead/v99-stable
+    with:
+      agent_ref: dev-lead/v99-stable
+    secrets: inherit
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+
+  # ── pr-review-mention ─────────────────────────────────────────────────────────
+  pr-review-mention:
+    if: >-
+      (github.event_name == 'pull_request' && github.event.action == 'review_requested')
+      || github.event_name == 'issue_comment'
+    permissions:
+      pull-requests: write
+    uses: petry-projects/.github/.github/workflows/pr-review-mention-reusable.yml@pr-review-mention/v2-next
+    secrets:
+      GH_PAT_WORKFLOWS: ${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS }}
