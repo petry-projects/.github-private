@@ -1,0 +1,32 @@
+name: Agent Ingress
+# FIXTURE — every job if: is a PURE event filter (github.event_name /
+# github.event.action / plain payload predicates). The if:-filter guard must PASS.
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, review_requested]
+  issue_comment:
+    types: [created]
+  issues:
+    types: [labeled]
+
+permissions: {}
+
+jobs:
+  dev-lead:
+    if: >-
+      (github.event_name == 'pull_request'
+        && contains(fromJSON('["opened","reopened","synchronize"]'), github.event.action)
+        && github.event.pull_request.base.ref == 'main')
+      || github.event_name == 'issue_comment'
+      || (github.event_name == 'issues' && github.event.label.name == 'agent-ready')
+    uses: petry-projects/.github-private/.github/workflows/dev-lead-reusable.yml@dev-lead/v139-stable
+    with:
+      agent_ref: dev-lead/v139-stable
+    permissions:
+      contents: write
+
+  pr-review-mention:
+    if: github.event_name == 'pull_request' && github.event.action == 'review_requested'
+    uses: petry-projects/.github/.github/workflows/pr-review-mention-reusable.yml@pr-review-mention/v2-next
+    permissions:
+      pull-requests: write

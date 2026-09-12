@@ -27,8 +27,10 @@ set -euo pipefail
 # All functions here are PURE (no network): they read in-repo files / SHAs and
 # write to stdout, exactly like fleet_stub_drift.sh / template_stub_drift.sh.
 #
-# Drift TSV format (4 fields, tab-separated), shared with fleet_stub_drift.sh:
-#   1:file  2:status  3:current_sha  4:baseline_sha
+# Drift TSV format: fleet_stub_drift.sh's 4 fields plus a 5th job column added
+# here so a multi-job agent-ingress.yml (ADR-0007) yields one row per collapsed
+# role (#1725):
+#   1:file  2:status  3:current_sha  4:baseline_sha  5:job
 
 CALLER_FREEZE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 CALLER_FREEZE_ROOT="${CALLER_FREEZE_ROOT:-$(cd "${CALLER_FREEZE_DIR}/.." && pwd)}"
@@ -38,15 +40,21 @@ CALLER_FREEZE_FIXTURE_DIR="${CALLER_FREEZE_ROOT}/tests/fixtures/caller-stub-free
 source "${CALLER_FREEZE_DIR}/fleet_stub_drift.sh"
 
 # ── Covered-stub manifest ─────────────────────────────────────────────────────
-# Each row: "stub_path|baseline_name" — the ring-0 / self-host caller stubs whose
-# reusable lives in petry-projects/.github-private and is pinned to a canary
+# Each row: "stub_path|job|baseline_name" — the ring-0 / self-host caller stubs
+# whose reusable lives in petry-projects/.github-private and is pinned to a canary
 # channel tag (docs/initiatives/agentic-release-strategy.md §5). These are the
 # stubs Part A can least afford to get wrong (a broken forwarding change here
 # breaks the source repo's own automation post-merge), so they are frozen.
+#
+# The manifest is per-role/per-JOB (#1725): the middle field names the job whose
+# forwarding block is frozen. Today these are three single-job per-role stubs; on
+# the collapse (epic #1723) each collapsed role becomes a job row against the one
+# agent-ingress.yml — the same job-scoped extractor covers both shapes, so this
+# guard lands BEFORE the collapse without breaking current CI.
 readonly -a CALLER_FREEZE_STUBS=(
-  ".github/workflows/dev-lead.yml|dev-lead.block"
-  ".github/workflows/pr-review-trigger.yml|pr-review-trigger.block"
-  ".github/workflows/ci-failure-analyst.lock.yml|ci-failure-analyst.block"
+  ".github/workflows/dev-lead.yml|dev-lead|dev-lead.block"
+  ".github/workflows/pr-review-trigger.yml|review|pr-review-trigger.block"
+  ".github/workflows/ci-failure-analyst.lock.yml|analyze|ci-failure-analyst.block"
 )
 
 # caller_freeze_covered — print the covered stub paths, one per line. Pure.
@@ -57,32 +65,77 @@ caller_freeze_covered() {
   done
 }
 
-# extract_forwarding_block <stub_file> — emit the frozen region of a caller stub:
-# the top-level `on:` trigger block, followed by the job's channel-pinned `uses:`
-# line and its `with:` forwarding block. Nothing else (permissions/secrets blocks
-# and their header comments are excluded). Pure: reads the file, writes stdout.
+# extract_forwarding_block <stub_file> <job> — emit the frozen region of a caller
+# stub for a NAMED job (#1725, job-scoped): the top-level `on:` trigger block,
+# followed by that job's channel-pinned `uses:` line, its `with:` forwarding
+# block, and its `permissions:` block. `if:`, `secrets:`, `name:`, and job-body
+# comments before the first captured child are excluded. Pure: reads the file,
+# writes stdout.
+#
+# WHY job-scoped: the pre-#1725 extractor assumed ONE top-level `on:` and the
+# FIRST job-indented `uses:` — it collapses on a multi-job agent-ingress.yml (one
+# shared `on:`, many `uses:`), forwarding the wrong job's block. Selecting by job
+# name lets one guard freeze both a single-job per-role stub and one job of the
+# collapsed ingress, so the guard survives the collapse (epic #1723).
+#
+# WHY permissions is now frozen: in the ingress each job re-grants its own
+# least-privilege `permissions:` (a reusable can be granted no more than its
+# calling job). A silent permission escalation on a channel-pinned job is exactly
+# the invisible-to-PR-CI change (#1034 class) this backstop exists to catch.
 #
 # Boundaries (deterministic, byte-identity friendly):
-#   - `on:` block: the `on:` line plus every following indented line, blank
-#     line, or column-0 comment; it ends at the next non-blank, non-comment,
-#     column-0 line (i.e. the next top-level YAML key). Blank lines and
-#     column-0 comments are included so an attacker cannot hide new triggers
-#     after a blank line or comment within the `on:` mapping.
-#   - forwarding block: the first job-indented `uses:` line plus every following
-#     line, until a job-indented `secrets:` or `permissions:` key ends it.
+#   - `on:` block: the top-level trigger key (`on:`, or its YAML-quoted spellings
+#     `"on":`/`'on':`) plus every following indented line, blank line,
+#     or column-0 comment; it ends at the next non-blank, non-comment, column-0
+#     line (the next top-level YAML key). Blanks and column-0 comments are kept so
+#     a new trigger cannot hide after a blank line or comment (#1268).
+#   - job block: within `jobs:`, the named job's `uses:`/`with:`/`permissions:`
+#     direct children and their nested lines, in document order, until the next
+#     job key (or a dedent to the job-key indent) ends it. Trailing blank lines
+#     are dropped; blanks/comments interior to a captured sub-block are kept.
 extract_forwarding_block() {
-  local file="${1:-}"
+  local file="${1:-}" job="${2:-}"
   [ -n "$file" ] && [ -f "$file" ] || return 0
+
+  # 1) The shared top-level `on:` trigger block.
   awk '
-    /^on:/ { insec="on"; print; next }
+    /^("on"|'\''on'\''|on):/ { insec="on"; print; next }
     insec=="on" {
       if (/^[[:space:]]/ || /^$/ || /^#/) { print; next }
       insec=""
     }
-    insec=="" && /^[[:space:]]+uses:[[:space:]]/ { insec="fwd"; print; next }
-    insec=="fwd" {
-      if (/^[[:space:]]+(secrets|permissions):/) { insec="done"; next }
-      print; next
+  ' "$file"
+
+  # 2) The named job's uses:/with:/permissions: block. No job ⇒ nothing (⇒ the
+  #    caller sees an empty block ⇒ MISSING, a hard failure for ring-0 roles).
+  [ -n "$job" ] || return 0
+  awk -v jobre="$job" '
+    function indent_of(line) { match(line, /^[[:space:]]*/); return RLENGTH }
+    BEGIN { found_jobs=0; in_job=0; job_key_indent=-1; child_indent=-1; keep=0; pending=0 }
+    !found_jobs {
+      if ($0 ~ /^jobs:[[:space:]]*(#.*)?$/) found_jobs=1
+      next
+    }
+    found_jobs && !in_job {
+      if ($0 ~ /^[[:space:]]*$/) next
+      ind=indent_of($0); body=substr($0, ind+1)
+      if (ind > 0 && body ~ ("^" jobre ":[[:space:]]*(#.*)?$")) {
+        in_job=1; job_key_indent=ind; child_indent=-1; keep=0; pending=0
+      }
+      next
+    }
+    in_job {
+      if ($0 ~ /^[[:space:]]*$/) { if (keep) pending++; next }
+      ind=indent_of($0); body=substr($0, ind+1)
+      if (ind <= job_key_indent) { in_job=0; found_jobs=0; next }   # left the job
+      if (body ~ /^#/) { if (keep) { while (pending>0) { print ""; pending-- } print } next }
+      if (child_indent < 0) child_indent=ind
+      if (ind == child_indent) {
+        key=body; sub(/:.*/, "", key)
+        keep = (key=="uses" || key=="with" || key=="permissions") ? 1 : 0
+      }
+      if (keep) { while (pending>0) { print ""; pending-- } print }
+      next
     }
   ' "$file"
 }
@@ -91,10 +144,10 @@ extract_forwarding_block() {
 # extracted from the live stub. Empty if the stub is absent or has no block
 # (⇒ classify_stub_drift yields MISSING). Pure (git hash-object is local).
 caller_freeze_current_sha() {
-  local file="${1:-}" block
-  block="$(extract_forwarding_block "$file")"
+  local file="${1:-}" job="${2:-}" block
+  block="$(extract_forwarding_block "$file" "$job")"
   [ -n "$block" ] || return 0
-  extract_forwarding_block "$file" | git hash-object --stdin
+  extract_forwarding_block "$file" "$job" | git hash-object --stdin
 }
 
 # caller_freeze_baseline_sha <baseline_file> — git blob SHA of the committed
@@ -112,20 +165,20 @@ caller_freeze_baseline_sha() {
 # the guard is broken and cannot protect the stub. Pure: reads the TSV, writes
 # stdout. An absent/empty file is a clean pass.
 caller_freeze_annotate() {
-  local f="${1:-}" file status current baseline drifted=0
+  local f="${1:-}" file status current baseline job drifted=0
   [ -n "$f" ] && [ -f "$f" ] || return 0
-  while IFS=$'\t' read -r file status current baseline; do
+  while IFS=$'\t' read -r file status current baseline job; do
     [ -n "$file" ] || continue
     case "$status" in
       DRIFTED)
         drifted=1
-        printf '::error file=%s::Caller stub %s forwarding block has DRIFTED from its frozen baseline (current block %s != baseline %s). A channel-pinned self-host stub change is invisible to PR CI and only breaks post-merge (#1034). If this change is intentional, regenerate the baseline: bash scripts/caller_stub_freeze.sh --update, and commit tests/fixtures/caller-stub-freeze/*.block\n' \
-          "$file" "$file" "${current:0:12}" "${baseline:0:12}"
+        printf '::error file=%s::Caller stub %s job '"'"'%s'"'"' forwarding block has DRIFTED from its frozen baseline (current block %s != baseline %s). A channel-pinned self-host stub change is invisible to PR CI and only breaks post-merge (#1034). If this change is intentional, regenerate the baseline: bash scripts/caller_stub_freeze.sh --update, and commit tests/fixtures/caller-stub-freeze/*.block\n' \
+          "$file" "$file" "$job" "${current:0:12}" "${baseline:0:12}"
         ;;
       MISSING)
         drifted=1
-        printf '::error file=%s::Caller stub %s has no extractable forwarding block or its baseline is absent (current %s, baseline %s). For ring-0 stubs, MISSING means the guard cannot protect this stub — regenerate via bash scripts/caller_stub_freeze.sh --update, and commit tests/fixtures/caller-stub-freeze/*.block\n' \
-          "$file" "$file" "${current:0:12}" "${baseline:0:12}"
+        printf '::error file=%s::Caller stub %s job '"'"'%s'"'"' has no extractable forwarding block or its baseline is absent (current %s, baseline %s). For ring-0 stubs, MISSING means the guard cannot protect this stub — regenerate via bash scripts/caller_stub_freeze.sh --update, and commit tests/fixtures/caller-stub-freeze/*.block\n' \
+          "$file" "$file" "$job" "${current:0:12}" "${baseline:0:12}"
         ;;
     esac
   done < "$f"
@@ -135,14 +188,14 @@ caller_freeze_annotate() {
 # caller_freeze_build_tsv — classify every covered stub against its committed
 # baseline and print the drift TSV to stdout. Pure (all local).
 caller_freeze_build_tsv() {
-  local row path baseline stub_abs base_abs cur base
+  local row path job baseline stub_abs base_abs cur base
   for row in "${CALLER_FREEZE_STUBS[@]}"; do
-    IFS='|' read -r path baseline <<< "$row"
+    IFS='|' read -r path job baseline <<< "$row"
     stub_abs="${CALLER_FREEZE_ROOT}/${path}"
     base_abs="${CALLER_FREEZE_FIXTURE_DIR}/${baseline}"
-    cur="$(caller_freeze_current_sha "$stub_abs")"
+    cur="$(caller_freeze_current_sha "$stub_abs" "$job")"
     base="$(caller_freeze_baseline_sha "$base_abs")"
-    stub_drift_row "$path" "$base" "$cur"
+    printf '%s\t%s\n' "$(stub_drift_row "$path" "$base" "$cur")" "$job"
   done
 }
 
@@ -163,18 +216,18 @@ caller_freeze_check() {
 # how an intentional, reviewed channel change is recorded: the diff to
 # tests/fixtures/caller-stub-freeze/*.block is what a reviewer signs off on.
 caller_freeze_update() {
-  local row path baseline stub_abs base_abs
+  local row path job baseline stub_abs base_abs
   mkdir -p "$CALLER_FREEZE_FIXTURE_DIR"
   for row in "${CALLER_FREEZE_STUBS[@]}"; do
-    IFS='|' read -r path baseline <<< "$row"
+    IFS='|' read -r path job baseline <<< "$row"
     stub_abs="${CALLER_FREEZE_ROOT}/${path}"
     base_abs="${CALLER_FREEZE_FIXTURE_DIR}/${baseline}"
     if [ ! -f "$stub_abs" ]; then
       echo "::warning::caller stub ${path} not found — skipping baseline update." >&2
       continue
     fi
-    extract_forwarding_block "$stub_abs" > "$base_abs"
-    echo "updated ${baseline} from ${path}"
+    extract_forwarding_block "$stub_abs" "$job" > "$base_abs"
+    echo "updated ${baseline} from ${path} (job ${job})"
   done
 }
 

@@ -137,6 +137,54 @@ YML
 }
 
 # ---------------------------------------------------------------------------
+# Multi-pin per file (ADR-0007 agent-ingress): one file, MULTIPLE distinct
+# per-job pins. Each job must be resolved+validated at its OWN ref, not under a
+# single whole-file assumption (guards the #1034/#1052 channel-skew defect from
+# recurring per-surface). The vci_with_keys_for_job indentation contract must
+# hold even when if:/permissions: precede uses: and a job has no with: block.
+# ---------------------------------------------------------------------------
+
+@test "ingress: vci_with_keys_for_job scopes each job's with: keys independently" {
+  local ingress="$FIX/ingress/.github/workflows/agent-ingress.yml"
+  # dev-lead job: if: precedes uses:, then with: {agent_ref, mode}.
+  local dl
+  dl="$(grep -n 'dev-lead-reusable.yml' "$ingress" | head -1 | cut -d: -f1)"
+  run vci_with_keys_for_job "$ingress" "$dl"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"agent_ref"* ]]
+  [[ "$output" == *"mode"* ]]
+  # It must NOT bleed the sibling pr-review-mention job's forwarded keys.
+  [[ "$output" != *"force_review"* ]]
+
+  # pr-review-mention job: if:/permissions: precede uses:, then with:.
+  local prm
+  prm="$(grep -n 'pr-review-mention-reusable.yml' "$ingress" | head -1 | cut -d: -f1)"
+  run vci_with_keys_for_job "$ingress" "$prm"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"agent_ref"* ]]
+  [[ "$output" == *"force_review"* ]]
+  [[ "$output" != *"mode"* ]]
+}
+
+@test "ingress: multi-pin file passes when each job forwards its own declared inputs" {
+  run env VCI_ROOT="$FIX/ingress" VCI_RESOLVE_DIR="$FIX/ingress-reusable" bash "$SCRIPT"
+  echo "$output"
+  [ "$status" -eq 0 ]
+  # Both distinct pins were resolved and checked.
+  [[ "$output" == *"checked=2"* ]]
+}
+
+@test "ingress: a single drifted job in an otherwise-valid ingress FAILS naming the bad input" {
+  run env VCI_ROOT="$FIX/ingress-drift" VCI_RESOLVE_DIR="$FIX/ingress-reusable" bash "$SCRIPT"
+  echo "$output"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"bogus_input"* ]]
+  [[ "$output" == *"not a declared"* ]]
+  # The valid dev-lead job's inputs (mode/agent_ref) must NOT be reported.
+  [[ "$output" != *"'mode' is not a declared"* ]]
+}
+
+# ---------------------------------------------------------------------------
 # --pair mode: validate a single caller against an explicit reusable file
 # ---------------------------------------------------------------------------
 
