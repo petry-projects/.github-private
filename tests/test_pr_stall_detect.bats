@@ -203,23 +203,18 @@ teardown() {
 # ---------------------------------------------------------------------------
 
 @test "generate_stall_report renders each candidate with its link and reason" {
-  local f
-  f=$(mktemp "$STUB_DIR/tsv.XXXXXX")
-  printf '%s\t%s\t%s\t%s\n' \
-    "742" "https://github.com/o/r/pull/742" "Green but never re-reviewed" "stalled 90m: CI-green + REVIEW_REQUIRED, no agent activity or pending event (>30m)" \
-    > "$f"
-  run generate_stall_report "$f"
+  local rows
+  rows=$(printf '%s\t%s\t%s\t%s' \
+    "742" "https://github.com/o/r/pull/742" "Green but never re-reviewed" "stalled 90m: CI-green + REVIEW_REQUIRED, no agent activity or pending event (>30m)")
+  run generate_stall_report "$rows"
   [ "$status" -eq 0 ]
   [[ "$output" == *"#742"* ]]
   [[ "$output" == *"https://github.com/o/r/pull/742"* ]]
   [[ "$output" == *"stalled 90m"* ]]
 }
 
-@test "generate_stall_report on an empty file prints an all-clear line, not a table" {
-  local f
-  f=$(mktemp "$STUB_DIR/tsv.XXXXXX")
-  : > "$f"
-  run generate_stall_report "$f"
+@test "generate_stall_report on empty input prints an all-clear line, not a table" {
+  run generate_stall_report ""
   [ "$status" -eq 0 ]
   [[ "$output" != *"| PR |"* ]]
   [[ "$output" == *"No open PR"* ]]
@@ -283,7 +278,7 @@ teardown() {
   run is_pr_stranded_approval passing true 0 6 false
   [ "$status" -eq 0 ]
   run is_pr_stranded_approval passing true 0 1 false
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
 }
 
 @test "STRANDED_APPROVAL_MIN_HOURS override is respected" {
@@ -305,23 +300,18 @@ teardown() {
 }
 
 @test "generate_stranded_approval_report renders each candidate with its link and reason" {
-  local f
-  f=$(mktemp "$STUB_DIR/tsv.XXXXXX")
-  printf '%s\t%s\t%s\t%s\n' \
-    "808" "https://github.com/o/r/pull/808" "Green + armed but never approved" "stranded 6h: CI-green + auto-merge armed, no standing approval (>4h)" \
-    > "$f"
-  run generate_stranded_approval_report "$f"
+  local rows
+  rows=$(printf '%s\t%s\t%s\t%s' \
+    "808" "https://github.com/o/r/pull/808" "Green + armed but never approved" "stranded 6h: CI-green + auto-merge armed, no standing approval (>4h)")
+  run generate_stranded_approval_report "$rows"
   [ "$status" -eq 0 ]
   [[ "$output" == *"#808"* ]]
   [[ "$output" == *"https://github.com/o/r/pull/808"* ]]
   [[ "$output" == *"stranded 6h"* ]]
 }
 
-@test "generate_stranded_approval_report on an empty file prints an all-clear line, not a table" {
-  local f
-  f=$(mktemp "$STUB_DIR/tsv.XXXXXX")
-  : > "$f"
-  run generate_stranded_approval_report "$f"
+@test "generate_stranded_approval_report on empty input prints an all-clear line, not a table" {
+  run generate_stranded_approval_report ""
   [ "$status" -eq 0 ]
   [[ "$output" != *"| PR |"* ]]
   [[ "$output" == *"No open PR"* ]]

@@ -173,13 +173,13 @@ pr_minutes_since() {
   echo $(( diff / 60 ))
 }
 
-# generate_stall_report <candidates_tsv_file>
+# generate_stall_report <candidates_tsv>
 #   Render the "Stalled PR Candidates" markdown section for the health report.
-#   Input TSV rows: pr_number <TAB> html_url <TAB> title <TAB> reason.
-#   An empty/missing file prints an all-clear line and no table, so a clean fleet
-#   still gets an explicit signal.
+#   Input: TSV rows (one per line) pr_number <TAB> html_url <TAB> title <TAB> reason,
+#   passed as a single string (no temp file). Empty/blank input prints an all-clear
+#   line and no table, so a clean fleet still gets an explicit signal.
 generate_stall_report() {
-  local f="${1:-}"
+  local content="${1:-}"
   local min_age
   min_age=$(_stall_threshold "${STALL_MIN_AGE_MINUTES}" 30)
 
@@ -190,7 +190,7 @@ generate_stall_report() {
   printf 'Human-gated halts (needs-human-review, dev-lead:hands-off, initiative:hold) are excluded. '
   printf 'Detection only — no PR is mutated. See #1410 / the #860 post-mortem (detection must be pushed).\n\n'
 
-  if [ -z "$f" ] || [ ! -s "$f" ]; then
+  if [ -z "$content" ]; then
     printf '✅ No open PR is stalled.\n'
     return 0
   fi
@@ -201,7 +201,7 @@ generate_stall_report() {
   while IFS=$'\t' read -r num url title reason; do
     [ -n "$num" ] || continue
     printf '| [#%s](%s) | %s | %s |\n' "$num" "$url" "$title" "$reason"
-  done < "$f"
+  done <<< "$content"
 }
 
 # ---------------------------------------------------------------------------
@@ -256,24 +256,26 @@ is_pr_stranded_approval() {
   [ -n "$reasons" ]
 }
 
-# generate_stranded_approval_report <candidates_tsv_file>
+# generate_stranded_approval_report <candidates_tsv>
 #   Render the "Stranded-Approval PR Candidates" markdown section for the health
-#   report. Input TSV rows: pr_number <TAB> html_url <TAB> title <TAB> reason.
-#   An empty/missing file prints an all-clear line and no table.
+#   report. Input: TSV rows (one per line) pr_number <TAB> html_url <TAB> title
+#   <TAB> reason, passed as a single string (no temp file). Empty/blank input
+#   prints an all-clear line and no table.
 generate_stranded_approval_report() {
-  local f="${1:-}"
+  local content="${1:-}"
   local min_hours
   min_hours=$(_stall_threshold "${STRANDED_APPROVAL_MIN_HOURS}" 4)
 
   printf '## Stranded-Approval PR Candidates\n\n'
   printf 'Open PRs stuck **CI-green + auto-merge armed** with **no standing approval** '
-  printf '(the only approval marker is a dismissed review or an issue comment) and no '
+  printf '(no approving review stands at head — whether never approved, dismissed, or '
+  printf 'approved only via a non-standing marker such as an issue comment) and no '
   printf 'sweep re-dispatch for over %sh — the marker-vs-standing-approval strand #1665 ' "$min_hours"
   printf 'fixes in the sweep, surfaced here as a backstop. '
   printf 'Human-gated halts (needs-human-review, dev-lead:hands-off, initiative:hold) are excluded. '
   printf 'Detection only — no PR is mutated.\n\n'
 
-  if [ -z "$f" ] || [ ! -s "$f" ]; then
+  if [ -z "$content" ]; then
     printf '✅ No open PR has a stranded approval.\n'
     return 0
   fi
@@ -284,5 +286,5 @@ generate_stranded_approval_report() {
   while IFS=$'\t' read -r num url title reason; do
     [ -n "$num" ] || continue
     printf '| [#%s](%s) | %s | %s |\n' "$num" "$url" "$title" "$reason"
-  done < "$f"
+  done <<< "$content"
 }

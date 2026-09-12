@@ -83,17 +83,13 @@ fi
 # ---------------------------------------------------------------------------
 # 2. Per-PR state -> detection (detection only, no mutation)
 # ---------------------------------------------------------------------------
-candidates_file=$(mktemp) || {
-  echo "Failed to create temp file" >&2
-  exit 1
-}
-# Second, independent candidates file for the #1665 stranded-approval backstop
-# (AC8): green + auto-merge armed + no standing approval + idle > threshold.
-stranded_file=$(mktemp) || {
-  echo "Failed to create temp file" >&2
-  exit 1
-}
-trap 'rm -f "$candidates_file" "$stranded_file"' EXIT
+# Accumulate candidate TSV rows in plain variables (no temp files, so nothing can
+# be orphaned on an early exit). candidates_rows is the stall net; stranded_rows is
+# the independent #1665 stranded-approval backstop (AC8): green + auto-merge armed +
+# no standing approval + idle > threshold. Each row: pr <TAB> url <TAB> title <TAB>
+# reason, newline-separated.
+candidates_rows=""
+stranded_rows=""
 now_epoch=$(date -u +%s)
 scanned=0
 scan_incomplete=false
@@ -162,8 +158,7 @@ while IFS= read -r pr; do
 
   reason=$(pr_stall_reasons "$ci_status" "$review_decision" "$reviewed_at_head" "$mins_idle" "$gated")
   if [ -n "$reason" ]; then
-    printf '%s\t%s\t%s\t%s\n' "$pr" "$html_url" "$safe_title" "$reason" \
-      >> "$candidates_file"
+    candidates_rows+=$(printf '%s\t%s\t%s\t%s' "$pr" "$html_url" "$safe_title" "$reason")$'\n'
     echo "::warning::Stalled PR #${pr} — ${reason}"
   fi
 
@@ -177,20 +172,23 @@ while IFS= read -r pr; do
   if jq -e '.autoMergeRequest != null' <<< "$snapshot" >/dev/null 2>&1; then
     auto_merge_armed=true
   fi
-  hours_idle=$(( mins_idle / 60 ))
+  # Round UP to whole hours: floor division would truncate a PR idle 4h30m to 4,
+  # which (with the strict > threshold) delays reporting until 5h. Ceiling keeps
+  # "idle past N hours" honest — any idle strictly beyond the whole-hour boundary
+  # fires on time.
+  hours_idle=$(( (mins_idle + 59) / 60 ))
   stranded_reason=$(pr_stranded_approval_reasons "$ci_status" "$auto_merge_armed" "$standing_approval" "$hours_idle" "$gated")
   if [ -n "$stranded_reason" ]; then
-    printf '%s\t%s\t%s\t%s\n' "$pr" "$html_url" "$safe_title" "$stranded_reason" \
-      >> "$stranded_file"
+    stranded_rows+=$(printf '%s\t%s\t%s\t%s' "$pr" "$html_url" "$safe_title" "$stranded_reason")$'\n'
     echo "::warning::Stranded-approval PR #${pr} — ${stranded_reason}"
   fi
 done <<< "$open_prs"
 
 # grep -c prints the count even at zero matches (exiting 1), so `|| true` swallows
-# that exit without appending a second "0".
-stall_count=$(grep -c . "$candidates_file" 2>/dev/null || true)
+# that exit without appending a second "0". `grep .` on empty input counts 0 rows.
+stall_count=$(grep -c . <<< "$candidates_rows" 2>/dev/null || true)
 stall_count=${stall_count:-0}
-stranded_count=$(grep -c . "$stranded_file" 2>/dev/null || true)
+stranded_count=$(grep -c . <<< "$stranded_rows" 2>/dev/null || true)
 stranded_count=${stranded_count:-0}
 echo "Scanned ${scanned} open PR(s); ${stall_count} stall candidate(s), ${stranded_count} stranded-approval candidate(s)."
 
@@ -204,9 +202,9 @@ echo "Scanned ${scanned} open PR(s); ${stall_count} stall candidate(s), ${strand
   if [ "$scan_incomplete" = "true" ]; then
     printf '> ⚠️ **Scan incomplete**: one or more PRs were skipped due to API errors or rate limits. The candidate count above may understate actual stalls.\n\n'
   fi
-  generate_stall_report "$candidates_file"
+  generate_stall_report "$candidates_rows"
   printf '\n'
-  generate_stranded_approval_report "$stranded_file"
+  generate_stranded_approval_report "$stranded_rows"
 } > "$REPORT_FILE"
 
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
