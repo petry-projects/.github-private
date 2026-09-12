@@ -24,7 +24,7 @@ setup() {
 # assert_case <id> <escalate true|false> <risk LOW|MEDIUM|HIGH>
 assert_case() {
   local id="$1" escalate="$2" risk="$3"
-  run python3 - "$HOLDOUT" "$id" "$escalate" "$risk" <<'PY'
+  run python3 -c '
 import json, sys
 path, cid, want_esc, want_risk = sys.argv[1:5]
 want_esc = want_esc == "true"
@@ -41,17 +41,20 @@ if found is None:
     print(f"missing case id: {cid}")
     sys.exit(1)
 exp = found.get("expected", {})
-if exp.get("escalate") is not want_esc:
-    print(f"{cid}: escalate={exp.get('escalate')} want {want_esc}")
+esc_val = exp.get("escalate")
+if esc_val is not want_esc:
+    print(f"{cid}: escalate={esc_val} want {want_esc}")
     sys.exit(1)
-if exp.get("risk") != want_risk:
-    print(f"{cid}: risk={exp.get('risk')} want {want_risk}")
+risk_val = exp.get("risk")
+if risk_val != want_risk:
+    print(f"{cid}: risk={risk_val} want {want_risk}")
     sys.exit(1)
-if not str(exp.get("recommend", "")).strip():
+rec_val = str(exp.get("recommend", "")).strip()
+if not rec_val:
     print(f"{cid}: missing non-empty recommend")
     sys.exit(1)
 print("ok")
-PY
+' "$HOLDOUT" "$id" "$escalate" "$risk"
   [ "$status" -eq 0 ] || { echo "$output"; return 1; }
 }
 
