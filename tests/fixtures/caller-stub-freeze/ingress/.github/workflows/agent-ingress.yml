@@ -1,0 +1,53 @@
+# FIXTURE — a collapsed multi-job agent-ingress.yml (ADR-0007, epic #1723).
+# Used by tests/caller_stub_freeze.bats to exercise the JOB-SCOPED extractor:
+# one shared on: union, one job per collapsed role, each with its own pinned
+# first-party channel uses: + matching agent_ref + per-job permissions:. This is
+# the shape the per-role stubs collapse into; the freeze guard must extract each
+# job's forwarding block independently.
+name: Agent Ingress
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, review_requested]
+  pull_request_review:
+    types: [submitted]
+  issue_comment:
+    types: [created]
+  check_run:
+    types: [completed]
+  repository_dispatch:
+    types: [dev-lead-ci-failure, dev-lead-reviews-retry, dev-lead-issue-retry]
+
+permissions: {}
+
+jobs:
+  dev-lead:
+    if: >-
+      (github.event_name == 'pull_request'
+        && contains(fromJSON('["opened","reopened","synchronize"]'), github.event.action)
+        && github.event.pull_request.base.ref == 'main')
+      || github.event_name == 'pull_request_review'
+      || github.event_name == 'issue_comment'
+      || github.event_name == 'check_run'
+      || github.event_name == 'repository_dispatch'
+    uses: petry-projects/.github-private/.github/workflows/dev-lead-reusable.yml@dev-lead/v139-stable  # NOSONAR(githubactions:S7637) first-party channel ref
+    with:
+      agent_ref: dev-lead/v139-stable
+    secrets: inherit  # NOSONAR(githubactions:S7635) first-party trusted reusable
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      actions: read
+      checks: read
+      statuses: read
+
+  pr-review-mention:
+    if: >-
+      (github.event_name == 'pull_request' && github.event.action == 'review_requested')
+      || github.event_name == 'issue_comment'
+    permissions:
+      pull-requests: write
+    uses: petry-projects/.github/.github/workflows/pr-review-mention-reusable.yml@pr-review-mention/v2-next  # NOSONAR(githubactions:S7637) first-party channel ref
+    secrets:
+      GH_PAT_WORKFLOWS: ${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS }}

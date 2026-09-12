@@ -1,0 +1,28 @@
+name: Fixture Reusable — pr-review-mention
+# Declares the pr-review-mention ingress job's inputs: an optional agent_ref and
+# an optional force_review. Distinct from the dev-lead reusable so the ingress
+# exercises MULTIPLE per-job pins, each resolved at its own ref.
+on:
+  workflow_call:
+    inputs:
+      agent_ref:
+        description: "Optional pinned ref"
+        type: string
+        required: false
+        default: ""
+      force_review:
+        description: "Optional force flag"
+        type: string
+        required: false
+        default: ""
+    secrets:
+      GH_PAT_WORKFLOWS:
+        required: false
+
+permissions: {}
+
+jobs:
+  noop:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "fixture pr-review-mention"

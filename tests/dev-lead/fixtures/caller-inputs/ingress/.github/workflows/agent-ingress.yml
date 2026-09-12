@@ -1,0 +1,33 @@
+name: Agent Ingress
+# FIXTURE — a collapsed multi-job ingress with TWO distinct per-job pins. Each
+# job forwards only inputs its OWN pinned reusable declares, so the guard must
+# resolve+validate each job at its own ref (not assume one ref for the file).
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, review_requested]
+  issue_comment:
+    types: [created]
+
+permissions: {}
+
+jobs:
+  dev-lead:
+    if: github.event_name != 'issue_comment'
+    uses: petry-projects/.github-private/.github/workflows/dev-lead-reusable.yml@dev-lead/v1-test
+    with:
+      agent_ref: dev-lead/v1-test
+      mode: apply
+    secrets: inherit
+    permissions:
+      contents: write
+
+  pr-review-mention:
+    if: github.event.action == 'review_requested'
+    permissions:
+      pull-requests: write
+    uses: petry-projects/.github/.github/workflows/pr-review-mention-reusable.yml@pr-review-mention/v1-test
+    with:
+      agent_ref: pr-review-mention/v1-test
+      force_review: "true"
+    secrets:
+      GH_PAT_WORKFLOWS: ${{ secrets.GH_PAT_DON_PETRY }}

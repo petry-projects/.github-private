@@ -180,7 +180,8 @@ jobs:
             tests/test_qa_lead_advisory_gate.bats \
             tests/test_advisory_offline_mode.bats \
             tests/agent_ingress_reference.bats \
-            tests/agent_ingress_if_filter.bats
+            tests/agent_ingress_if_filter.bats \
+            tests/test_validate_ingress_if.bats
 
   actionlint:
     # General workflow linting (#1256, epic #1052 Part D): actionlint validates
@@ -278,6 +279,30 @@ jobs:
 
       - name: Check ring-0 caller stubs match their frozen forwarding baselines
         run: bash scripts/caller_stub_freeze.sh
+
+  validate-ingress-if:
+    # if:-as-event-filter-only guard for ADR-0007 agent-ingress jobs (#1725 AC #3,
+    # epic #1723). The ingress collapses the per-role Class-1 caller stubs into one
+    # workflow with a thin-caller job per role; the one place it loosens ADR-0001 is
+    # each job's `if:`, which may reference ONLY the delivered event
+    # (github.event_name / github.event.action / plain payload predicates). This job
+    # fails an agent-ingress.yml whose job `if:` reaches for repo state (config
+    # vars/secrets, another job's outputs, hashFiles, repo identity, the payload's
+    # standing default_branch, or the standing labels array) or whose job is not a
+    # thin caller. The ALLOW/FORBID rulings are the frozen, machine-readable table at
+    # tests/fixtures/agent-ingress/if-filter-rulings.tsv, which the guard consumes
+    # directly. A tree with no agent-ingress.yml is a clean pass (it is a docs
+    # reference until the collapse story lands) — never a silent skip. Fully hermetic
+    # (local file read + yq, no network). PR-triggered on the existing Lint workflow.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: "Check agent-ingress job if: expressions are pure event filters"
+        run: bash scripts/validate-ingress-if.sh
 
   template-drift:
     # Drift guard (#969): fail when a file committed in petry-projects/repo-template

@@ -18,3 +18,10 @@ on:
     uses: petry-projects/.github-private/.github/workflows/dev-lead-reusable.yml@dev-lead/v139-stable  # NOSONAR(githubactions:S7637) first-party channel ref
     with:
       agent_ref: dev-lead/v139-stable
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      actions: read
+      checks: read
+      statuses: read

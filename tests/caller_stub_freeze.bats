@@ -1,27 +1,35 @@
 #!/usr/bin/env bats
 # Tests for scripts/caller_stub_freeze.sh — the ring-0 / self-host caller-stub
-# freeze guard (#1255, epic #1052 Part B). It backstops the #1253
-# validate-caller-inputs check for the specific self-host caller stubs
-# (dev-lead.yml, pr-review-trigger.yml, ci-failure-analyst.lock.yml) whose
-# reusable lives in this repo and is pinned to a canary channel tag.
+# freeze guard (#1255, epic #1052 Part B; taught the ingress form in #1725).
 #
-# The guard reuses fleet_stub_drift.sh's byte-identity (blob-SHA equality)
-# ALIGNED/DRIFTED/MISSING model: each stub's trigger (`on:`) + `uses:`/`with:`
-# forwarding block must stay byte-identical to a committed baseline under
-# tests/fixtures/caller-stub-freeze/*.block. Any edit flips it DRIFTED and fails
-# CI unless the baseline is intentionally regenerated (a reviewed channel change).
+# It backstops the #1253 validate-caller-inputs check for the self-host caller
+# stubs whose reusable lives in this repo and is pinned to a canary channel tag.
+# The guard reuses fleet_stub_drift.sh's byte-identity ALIGNED/DRIFTED/MISSING
+# model: each frozen block must stay byte-identical to a committed baseline under
+# tests/fixtures/caller-stub-freeze/*.block.
 #
-# Most assertions are PURE (synthetic SHAs / in-repo files, no network). Run:
-#   bats tests/caller_stub_freeze.bats
+# #1725 makes the extractor JOB-SCOPED so the guard survives the collapse of the
+# per-role stubs into a single multi-job agent-ingress.yml: extract_forwarding_block
+# now takes a JOB NAME and captures the shared `on:` block plus THAT job's
+# `uses:`/`with:`/`permissions:` sub-blocks (`if:`/`secrets:`/`name:` excluded).
 #
-# Drift TSV format (4 fields, tab-separated), shared with fleet_stub_drift.sh:
-#   1:file  2:status  3:current_sha  4:baseline_sha
+# QA test-risk #8: a single parameterised (form, file, job) table drives BOTH the
+# legacy per-role stub and the collapsed ingress form, so a new case is answered
+# for both or fails to run. Backward-compat (AC #4) is proven by FAILURE, not just
+# passing (QA #6): a drifted job flips DRIFTED and the annotation message + job
+# name are asserted, so a silent no-op cannot pass.
+#
+# Run: bats tests/caller_stub_freeze.bats
+#
+# Drift TSV format is fleet_stub_drift.sh's 4 fields plus a 5th job column added
+# here: 1:file  2:status  3:current_sha  4:baseline_sha  5:job
 # status ∈ { ALIGNED, DRIFTED, MISSING }
 
 EXPECTED="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
 setup() {
   REPO_ROOT="$(cd "${BATS_TEST_DIRNAME}/.." && pwd)"
+  INGRESS="${REPO_ROOT}/tests/fixtures/caller-stub-freeze/ingress/.github/workflows/agent-ingress.yml"
   # shellcheck source=scripts/caller_stub_freeze.sh
   source "${REPO_ROOT}/scripts/caller_stub_freeze.sh"
 }
@@ -52,7 +60,8 @@ setup() {
 }
 
 # ---------------------------------------------------------------------------
-# Covered-stub manifest — the three ring-0 self-host caller stubs.
+# Covered-stub manifest — the three ring-0 self-host caller stubs, now with a
+# per-role/per-job granularity (path|job|baseline).
 # ---------------------------------------------------------------------------
 
 @test "covered set: lists the three ring-0 self-host caller stubs" {
@@ -64,81 +73,176 @@ setup() {
 }
 
 # ---------------------------------------------------------------------------
-# extract_forwarding_block — the frozen region is the `on:` trigger block
-# (including blank lines and column-0 comments before the next top-level key)
-# plus the job's `uses:`/`with:` forwarding. Secrets/permissions blocks and
-# their values are excluded, but blank/comment separators within the on: zone
-# are included to prevent hidden-trigger bypass (#1268).
+# extract_forwarding_block <file> <job> — JOB-SCOPED. The frozen region is the
+# shared `on:` block (including blank lines / column-0 comments before the next
+# top-level key, anti-hidden-trigger #1268) plus the NAMED job's `uses:`/`with:`/
+# `permissions:` sub-blocks. `if:`/`secrets:`/`name:` are excluded.
 # ---------------------------------------------------------------------------
 
-@test "extract: dev-lead block has the on trigger, the channel-pinned uses, and with" {
-  run extract_forwarding_block "${REPO_ROOT}/.github/workflows/dev-lead.yml"
+@test "extract (legacy): dev-lead job has the on-trigger, the channel-pinned uses, with, and its permissions" {
+  run extract_forwarding_block "${REPO_ROOT}/.github/workflows/dev-lead.yml" "dev-lead"
   [ "$status" -eq 0 ]
   [[ "$output" == on:* ]]
   [[ "$output" == *"pull_request_review:"* ]]
   # Version-agnostic: assert the SHAPE (a dev-lead channel pin forwarded into
-  # agent_ref), not a literal version, so cutting a release or moving the stub to
-  # a new major's channel family does not break this test. Same reasoning as
-  # tests/test_sc2_self_review_channel.bats, which parses the tier from the pin
-  # "never a hardcoded version".
+  # agent_ref), not a literal version.
   [[ "$output" =~ uses:\ petry-projects/\.github-private/\.github/workflows/dev-lead-reusable\.yml@dev-lead/[A-Za-z0-9._-]+ ]]
   [[ "$output" == *"with:"* ]]
   [[ "$output" =~ agent_ref:\ dev-lead/[A-Za-z0-9._-]+ ]]
-  # The forwarded agent_ref MUST equal the uses: pin — a mismatch means the
-  # reusable and the scripts it checks out come from different channels.
   _uses_ref="$(printf '%s\n' "$output" | sed -n 's#.*dev-lead-reusable\.yml@\([^[:space:]]*\).*#\1#p' | head -1)"
   _aref="$(printf '%s\n' "$output" | sed -n 's#.*agent_ref:[[:space:]]*\([^[:space:]]*\).*#\1#p' | head -1)"
   [ -n "$_uses_ref" ] && [ "$_uses_ref" = "$_aref" ]
-  # The secrets/permissions blocks are NOT part of the frozen forwarding region.
+  # The per-job permissions: block IS now part of the frozen region (#1725) — a
+  # silent permission escalation on a channel-pinned job must be caught.
+  [[ "$output" == *"contents: write"* ]]
+  # secrets: is NOT part of the frozen forwarding region.
   [[ "$output" != *"secrets: inherit"* ]]
-  [[ "$output" != *"contents: write"* ]]
 }
 
-@test "extract: pr-review-trigger keeps the with-forwarding and the on-block separator comment" {
-  run extract_forwarding_block "${REPO_ROOT}/.github/workflows/pr-review-trigger.yml"
+@test "extract (legacy): pr-review-trigger review job keeps with-forwarding and the on-block separator comment" {
+  run extract_forwarding_block "${REPO_ROOT}/.github/workflows/pr-review-trigger.yml" "review"
   [ "$status" -eq 0 ]
   [[ "$output" == *"uses: petry-projects/.github-private/.github/workflows/pr-review.yml@pr-review/v1-next"* ]]
   [[ "$output" == *"force_review: \${{ inputs.force_review || '' }}"* ]]
-  # Column-0 comments before the top-level permissions: key are now included in
-  # the frozen block (security fix: prevents hidden-trigger bypass via blank/comment).
+  # Column-0 comments before the top-level permissions: key stay in the on: block
+  # (anti-hidden-trigger). The permissions VALUES are top-level here (not job-level)
+  # so they are not part of this job's frozen region.
   [[ "$output" == *"Granted to the called reusable"* ]]
-  # The permissions values themselves are NOT part of the frozen forwarding region.
-  [[ "$output" != *"contents: read"* ]]
   [[ "$output" != *"secrets: inherit"* ]]
 }
 
-@test "extract: ci-failure-analyst (no with) yields just the on block and the channel-pinned uses" {
-  run extract_forwarding_block "${REPO_ROOT}/.github/workflows/ci-failure-analyst.lock.yml"
+@test "extract (legacy): ci-failure-analyst analyze job yields the on block and the channel-pinned uses only" {
+  run extract_forwarding_block "${REPO_ROOT}/.github/workflows/ci-failure-analyst.lock.yml" "analyze"
   [ "$status" -eq 0 ]
   [[ "$output" == on:* ]]
   [[ "$output" == *"uses: petry-projects/.github-private/.github/workflows/ci-failure-analyst-reusable.yml@ci-failure-analyst/v1-stable"* ]]
   [[ "$output" != *"with:"* ]]
+  # if: and secrets: are excluded from the frozen region.
   [[ "$output" != *"CLAUDE_CODE_OAUTH_TOKEN"* ]]
+  [[ "$output" != *"conclusion == 'failure'"* ]]
 }
 
 # ---------------------------------------------------------------------------
-# caller_freeze_annotate — emits an annotation per DRIFTED stub naming both SHAs
-# and fails the job on any drift; MISSING warns only; all-ALIGNED passes.
+# Ingress form: one shared on:, one job per role. The extractor must select each
+# job independently — this is the collapse the guard has to survive (AC #1).
 # ---------------------------------------------------------------------------
 
-@test "annotate: a DRIFTED row emits a ::error:: naming the stub and both SHAs, and fails" {
+@test "extract (ingress): dev-lead job selects its own pin/with/permissions from the multi-job file" {
+  run extract_forwarding_block "$INGRESS" "dev-lead"
+  [ "$status" -eq 0 ]
+  [[ "$output" == on:* ]]
+  [[ "$output" == *"uses: petry-projects/.github-private/.github/workflows/dev-lead-reusable.yml@dev-lead/v139-stable"* ]]
+  [[ "$output" == *"agent_ref: dev-lead/v139-stable"* ]]
+  [[ "$output" == *"contents: write"* ]]
+  # It must NOT bleed into the sibling job's pin.
+  [[ "$output" != *"pr-review-mention-reusable.yml"* ]]
+  [[ "$output" != *"secrets:"* ]]
+}
+
+@test "extract (ingress): pr-review-mention job (no with) selects its own pin/permissions" {
+  run extract_forwarding_block "$INGRESS" "pr-review-mention"
+  [ "$status" -eq 0 ]
+  [[ "$output" == on:* ]]
+  [[ "$output" == *"uses: petry-projects/.github/.github/workflows/pr-review-mention-reusable.yml@pr-review-mention/v2-next"* ]]
+  [[ "$output" == *"pull-requests: write"* ]]
+  [[ "$output" != *"with:"* ]]
+  # It must NOT bleed into the sibling dev-lead pin.
+  [[ "$output" != *"dev-lead-reusable.yml"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# Parameterised (form, file, job) table — a byte-identical block is ALIGNED and
+# repointing the channel flips DRIFTED, for BOTH the legacy stub and each ingress
+# job. One table so a new case is answered for both forms.
+# ---------------------------------------------------------------------------
+
+freeze_table() {
+  # form|file|job|reusable-basename
+  cat <<EOF
+legacy|${REPO_ROOT}/.github/workflows/dev-lead.yml|dev-lead|dev-lead-reusable.yml
+ingress|${INGRESS}|dev-lead|dev-lead-reusable.yml
+ingress|${INGRESS}|pr-review-mention|pr-review-mention-reusable.yml
+EOF
+}
+
+@test "table: each (form, file, job) is ALIGNED with a fresh baseline and DRIFTS when its channel is repointed" {
+  local form file job reusable
+  while IFS='|' read -r form file job reusable; do
+    [ -n "$form" ] || continue
+    work="$(mktemp -d "${BATS_TEST_TMPDIR}/tbl.XXXXXX")"
+    cp "$file" "$work/stub.yml"
+
+    # Fresh baseline from the pristine block → ALIGNED.
+    extract_forwarding_block "$work/stub.yml" "$job" > "$work/base.block"
+    [ -s "$work/base.block" ] || { echo "[$form/$job] empty block"; return 1; }
+    cur="$(caller_freeze_current_sha "$work/stub.yml" "$job")"
+    base="$(caller_freeze_baseline_sha "$work/base.block")"
+    if [ "$(classify_stub_drift "$base" "$cur")" != "ALIGNED" ]; then
+      echo "[$form/$job] expected ALIGNED"; return 1
+    fi
+
+    # Repoint just THIS job's reusable ref → DRIFTED. Derive the current ref so a
+    # channel move can't turn the edit into a silent no-op.
+    _ref="$(sed -n "s#.*${reusable}@\([^[:space:]]*\).*#\1#p" "$work/stub.yml" | head -1)"
+    [ -n "$_ref" ] || { echo "[$form/$job] no ref found"; return 1; }
+    sed "s#@${_ref}#@some/other-channel#" "$work/stub.yml" > "$work/stub.yml.tmp"
+    mv "$work/stub.yml.tmp" "$work/stub.yml"
+    cur2="$(caller_freeze_current_sha "$work/stub.yml" "$job")"
+    if [ "$(classify_stub_drift "$base" "$cur2")" != "DRIFTED" ]; then
+      echo "[$form/$job] expected DRIFTED after repoint"; return 1
+    fi
+  done < <(freeze_table)
+}
+
+# ---------------------------------------------------------------------------
+# A drifted single job in an otherwise-valid multi-job ingress is caught, while
+# its sibling stays ALIGNED (AC #5: "a drifted single job is caught").
+# ---------------------------------------------------------------------------
+
+@test "ingress: repointing one job drifts only that job; the sibling stays ALIGNED" {
+  work="$(mktemp -d "${BATS_TEST_TMPDIR}/one.XXXXXX")"
+  cp "$INGRESS" "$work/agent-ingress.yml"
+
+  # Baselines for both jobs from the pristine file.
+  extract_forwarding_block "$work/agent-ingress.yml" "dev-lead" > "$work/dev-lead.block"
+  extract_forwarding_block "$work/agent-ingress.yml" "pr-review-mention" > "$work/prm.block"
+  base_dl="$(caller_freeze_baseline_sha "$work/dev-lead.block")"
+  base_prm="$(caller_freeze_baseline_sha "$work/prm.block")"
+
+  # Drift ONLY the dev-lead job's pin.
+  sed 's#@dev-lead/v139-stable#@dev-lead/drifted#' "$work/agent-ingress.yml" > "$work/agent-ingress.yml.tmp"
+  mv "$work/agent-ingress.yml.tmp" "$work/agent-ingress.yml"
+
+  cur_dl="$(caller_freeze_current_sha "$work/agent-ingress.yml" "dev-lead")"
+  cur_prm="$(caller_freeze_current_sha "$work/agent-ingress.yml" "pr-review-mention")"
+  [ "$(classify_stub_drift "$base_dl" "$cur_dl")" = "DRIFTED" ]
+  [ "$(classify_stub_drift "$base_prm" "$cur_prm")" = "ALIGNED" ]
+}
+
+# ---------------------------------------------------------------------------
+# caller_freeze_annotate — emits an annotation per DRIFTED/MISSING row naming the
+# stub, the JOB, and both SHAs; fails the job on any drift; all-ALIGNED passes.
+# Rows carry the 5th job column (#1725).
+# ---------------------------------------------------------------------------
+
+@test "annotate: a DRIFTED row emits an ::error:: naming the stub, the job, and both SHAs, and fails" {
   tsv="$(mktemp "${BATS_TEST_TMPDIR}/freeze_tsv.XXXXXX")"
-  printf '%s\t%s\t%s\t%s\n' ".github/workflows/dev-lead.yml" "ALIGNED" "$EXPECTED" "$EXPECTED" >> "$tsv"
-  printf '%s\t%s\t%s\t%s\n' ".github/workflows/pr-review-trigger.yml" "DRIFTED" "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" "$EXPECTED" >> "$tsv"
+  printf '%s\t%s\t%s\t%s\t%s\n' ".github/workflows/agent-ingress.yml" "ALIGNED" "$EXPECTED" "$EXPECTED" "dev-lead" >> "$tsv"
+  printf '%s\t%s\t%s\t%s\t%s\n' ".github/workflows/agent-ingress.yml" "DRIFTED" "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" "$EXPECTED" "pr-review-mention" >> "$tsv"
   run caller_freeze_annotate "$tsv"
   [ "$status" -ne 0 ]
   [[ "$output" == *"::error"* ]]
-  [[ "$output" == *"pr-review-trigger.yml"* ]]
+  [[ "$output" == *"agent-ingress.yml"* ]]
+  [[ "$output" == *"pr-review-mention"* ]]
   [[ "$output" == *"bbbbbbb"* ]]
   [[ "$output" == *"aaaaaaa"* ]]
-  [[ "$output" != *"::error"*"dev-lead.yml"* ]]
   rm -f "$tsv"
 }
 
 @test "annotate: an all-ALIGNED set passes (exit 0, no error annotation)" {
   tsv="$(mktemp "${BATS_TEST_TMPDIR}/freeze_tsv.XXXXXX")"
-  printf '%s\t%s\t%s\t%s\n' ".github/workflows/dev-lead.yml" "ALIGNED" "$EXPECTED" "$EXPECTED" >> "$tsv"
-  printf '%s\t%s\t%s\t%s\n' ".github/workflows/pr-review-trigger.yml" "ALIGNED" "$EXPECTED" "$EXPECTED" >> "$tsv"
+  printf '%s\t%s\t%s\t%s\t%s\n' ".github/workflows/dev-lead.yml" "ALIGNED" "$EXPECTED" "$EXPECTED" "dev-lead" >> "$tsv"
+  printf '%s\t%s\t%s\t%s\t%s\n' ".github/workflows/pr-review-trigger.yml" "ALIGNED" "$EXPECTED" "$EXPECTED" "review" >> "$tsv"
   run caller_freeze_annotate "$tsv"
   [ "$status" -eq 0 ]
   [[ "$output" != *"::error"* ]]
@@ -152,7 +256,7 @@ setup() {
 
 @test "annotate: a MISSING row fails the job (ring-0 stubs must have an extractable block)" {
   tsv="$(mktemp "${BATS_TEST_TMPDIR}/freeze_tsv.XXXXXX")"
-  printf '%s\t%s\t%s\t%s\n' ".github/workflows/dev-lead.yml" "MISSING" "" "$EXPECTED" >> "$tsv"
+  printf '%s\t%s\t%s\t%s\t%s\n' ".github/workflows/dev-lead.yml" "MISSING" "" "$EXPECTED" "dev-lead" >> "$tsv"
   run caller_freeze_annotate "$tsv"
   [ "$status" -ne 0 ]
   [[ "$output" == *"::error"* ]]
@@ -160,19 +264,9 @@ setup() {
 }
 
 # ---------------------------------------------------------------------------
-# stub_drift_row (reused) classifies a caller stub end-to-end into a TSV row.
-# ---------------------------------------------------------------------------
-
-@test "stub_drift_row: classifies a drifted caller stub into a 4-field TSV row" {
-  run stub_drift_row ".github/workflows/dev-lead.yml" "$EXPECTED" "cccccccccccccccccccccccccccccccccccccccc"
-  [ "$status" -eq 0 ]
-  [ "$output" = "$(printf '.github/workflows/dev-lead.yml\tDRIFTED\tcccccccccccccccccccccccccccccccccccccccc\t%s' "$EXPECTED")" ]
-}
-
-# ---------------------------------------------------------------------------
 # Live regression: every committed stub's extracted block is byte-identical to
 # its committed baseline (ALIGNED). This is the guard's real steady state and
-# also proves the baselines were generated from the current stubs.
+# proves the baselines were regenerated from the current stubs (backward-compat).
 # ---------------------------------------------------------------------------
 
 @test "live: every ring-0 caller stub is ALIGNED with its committed baseline" {
@@ -180,42 +274,4 @@ setup() {
   echo "$output"
   [ "$status" -eq 0 ]
   [[ "$output" != *"DRIFTED"* ]]
-}
-
-# ---------------------------------------------------------------------------
-# Acceptance (#1255): editing a frozen block fails; a regenerated baseline
-# passes. Exercised against a scratch copy so the repo's real stubs/baselines
-# are untouched.
-# ---------------------------------------------------------------------------
-
-@test "acceptance: editing a frozen block fails, regenerating the baseline passes" {
-  work="$(mktemp -d "${BATS_TEST_TMPDIR}/work.XXXXXX")"
-  mkdir -p "$work/.github/workflows" "$work/tests/fixtures/caller-stub-freeze"
-  cp "${REPO_ROOT}/.github/workflows/dev-lead.yml" "$work/.github/workflows/dev-lead.yml"
-
-  # Seed a baseline from the pristine stub, then confirm it is ALIGNED.
-  extract_forwarding_block "$work/.github/workflows/dev-lead.yml" \
-    > "$work/tests/fixtures/caller-stub-freeze/dev-lead.block"
-  cur="$(caller_freeze_current_sha "$work/.github/workflows/dev-lead.yml")"
-  base="$(caller_freeze_baseline_sha "$work/tests/fixtures/caller-stub-freeze/dev-lead.block")"
-  [ "$(classify_stub_drift "$base" "$cur")" = "ALIGNED" ]
-
-  # Edit the frozen forwarding block (repoint the channel) → DRIFTED.
-  # Derive the CURRENT pin rather than hardcoding one: a literal sed silently
-  # matches nothing after a channel move, making the "edit" a no-op and the
-  # assertion below vacuously wrong (it would report ALIGNED, not DRIFTED).
-  _cur_ref="$(sed -n 's#.*dev-lead-reusable\.yml@\([^[:space:]]*\).*#\1#p' \
-    "$work/.github/workflows/dev-lead.yml" | head -1)"
-  [ -n "$_cur_ref" ]
-  sed "s#@${_cur_ref}#@dev-lead/some-other-channel#" "$work/.github/workflows/dev-lead.yml" \
-    > "$work/.github/workflows/dev-lead.yml.tmp"
-  mv "$work/.github/workflows/dev-lead.yml.tmp" "$work/.github/workflows/dev-lead.yml"
-  cur2="$(caller_freeze_current_sha "$work/.github/workflows/dev-lead.yml")"
-  [ "$(classify_stub_drift "$base" "$cur2")" = "DRIFTED" ]
-
-  # Intentional, reviewed baseline update → ALIGNED again.
-  extract_forwarding_block "$work/.github/workflows/dev-lead.yml" \
-    > "$work/tests/fixtures/caller-stub-freeze/dev-lead.block"
-  base2="$(caller_freeze_baseline_sha "$work/tests/fixtures/caller-stub-freeze/dev-lead.block")"
-  [ "$(classify_stub_drift "$base2" "$cur2")" = "ALIGNED" ]
 }
