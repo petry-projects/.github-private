@@ -59,6 +59,8 @@ set -euo pipefail
 #                    backend-rust, fullstack, infra-terraform).
 #   GH_TOKEN         PAT with repo scope (create a branch + PR on TEMPLATE_REPO).
 
+SEED_REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)"
+
 DRY_RUN="${DRY_RUN:-false}"
 TEMPLATE_REPO="${TEMPLATE_REPO:-petry-projects/repo-template}"
 STANDARDS_REPO="${STANDARDS_REPO:-petry-projects/.github}"
@@ -67,6 +69,18 @@ STANDARDS_CHANNEL="${STANDARDS_CHANNEL:-standards/v1-stable}"
 DEPENDABOT_STACK="${DEPENDABOT_STACK:-frontend}"
 
 _is_dry() { [ "$DRY_RUN" = "true" ]; }
+
+# _require <cmd>... — fail loud if any listed command is missing. Checked at the
+# point of use (not unconditionally up front) so the local-only emit seams — e.g.
+# --emit-workflow of a docs/ reference, which only cats a file — stay reachable
+# without gh/base64, which they never invoke (#1724).
+_require() {
+  local cmd rc=0
+  for cmd in "$@"; do
+    command -v "$cmd" > /dev/null 2>&1 || { echo "::error::${cmd} is required but not installed." >&2; rc=1; }
+  done
+  return "$rc"
+}
 
 # ── Workflow manifest ─────────────────────────────────────────────────────────
 # One row per shipped stub: "name|kind|host".
@@ -88,6 +102,38 @@ readonly -a WORKFLOW_MANIFEST=(
   "pr-review-mention|caller|petry-projects/.github"
   "sonarcloud|inline|-"
 )
+
+# ── Reference manifest (ADR-0007, #1724) ──────────────────────────────────────
+# NON-executing canonical references emittable by name via --emit-workflow but
+# DELIBERATELY NOT in WORKFLOW_MANIFEST: they are byte-identity baselines authored
+# under docs/, NOT stubs seeded into repo-template (that would double-dispatch the
+# per-role callers — a behavior change forbidden by #1724 AC #5). So --list-workflows
+# and _seed_repo never include them; only --emit-workflow reaches them, reading the
+# local file verbatim (no standards fetch, no repin). One row: "name|repo-relative-path".
+readonly -a REFERENCE_MANIFEST=(
+  "agent-ingress|docs/architecture/reference/agent-ingress.yml"
+)
+
+# _reference_row <name-with-or-without-.yml> — echo the matching REFERENCE_MANIFEST
+# row, or return 1 if the name is not a known reference.
+_reference_row() {
+  local key="${1%.yml}" row
+  for row in "${REFERENCE_MANIFEST[@]}"; do
+    [ "${row%%|*}" = "$key" ] && { printf '%s\n' "$row"; return 0; }
+  done
+  return 1
+}
+
+# _emit_reference <row> — print a reference artifact verbatim from its local path.
+_emit_reference() {
+  local path="${1#*|}" file
+  file="${SEED_REPO_ROOT}/${path}"
+  if [ ! -f "$file" ]; then
+    echo "::error::reference artifact not found: ${path}" >&2
+    return 1
+  fi
+  cat "$file"
+}
 
 # Baseline files (AC #3). One row per file: "path|source".
 #   source=gen → generated inline by _gen_baseline.
@@ -148,6 +194,7 @@ _resolve_standards_ref() {
   elif [ -n "${STANDARDS_REF:-}" ]; then
     ref="$STANDARDS_REF"; sha=""; src="explicit"
   else
+    _require gh || return 1
     sha="$(_ref_commit_sha "$STANDARDS_CHANNEL")"
     if [ -n "$sha" ]; then
       ref="$STANDARDS_CHANNEL"; src="channel"
@@ -177,6 +224,7 @@ _fetch_standard() {
     cat "${STANDARDS_DIR}/${path}"
     return 0
   fi
+  _require gh || return 1
   ref="$(_resolve_standards_ref)"
   local -a ref_q=()
   case "$ref" in
@@ -228,6 +276,12 @@ _repin_stub_content() {
 # repin it; print the shipped content.
 _emit_workflow() {
   local row name kind host content
+  # NON-executing canonical references (ADR-0007) are emittable by name but read
+  # from their local docs/ path verbatim — no standards fetch, no repin.
+  if row="$(_reference_row "$1")"; then
+    _emit_reference "$row"
+    return $?
+  fi
   row="$(_manifest_row "$1")" || { echo "::error::unknown workflow stub: $1" >&2; return 2; }
   IFS='|' read -r name kind host <<<"$row"
   content="$(_fetch_standard "standards/workflows/${name}.yml")" || content=""
@@ -563,6 +617,7 @@ _seed_repo() {
 # _put_file <repo> <path> <content> <branch> <message>
 _put_file() {
   local repo="$1" path="$2" content="$3" branch="$4" msg="$5" sha encoded
+  _require base64 || return 1
   local -a sha_arg=()
   sha="$(gh api "repos/${repo}/contents/${path}?ref=${branch}" --jq '.sha' 2>/dev/null || true)"
   [ -n "$sha" ] && [ "$sha" != "null" ] && sha_arg=(--field "sha=${sha}")
@@ -579,14 +634,9 @@ _list_workflows() { local r; for r in "${WORKFLOW_MANIFEST[@]}"; do printf '%s.y
 _list_baseline()  { local r; for r in "${BASELINE_MANIFEST[@]}"; do printf '%s\n' "${r%%|*}"; done; }
 
 main() {
-  local cmd
-  for cmd in gh base64; do
-    if ! command -v "$cmd" > /dev/null 2>&1; then
-      echo "::error::${cmd} is required but not installed." >&2
-      return 1
-    fi
-  done
-
+  # gh/base64 are required lazily at their points of use (_fetch_standard,
+  # _resolve_standards_ref network path, _put_file) so local-only seams such as
+  # --emit-workflow of a docs/ reference stay reachable without them (#1724).
   local repo="$TEMPLATE_REPO"
   while [ $# -gt 0 ]; do
     case "$1" in

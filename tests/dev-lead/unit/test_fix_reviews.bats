@@ -1307,6 +1307,125 @@ STUB
   [ "$status" -eq 1 ]
 }
 
+# ── #1735: full-thread scan — a bot ack after our marker must not lock the thread ──
+# After #1691 (harness-only resolution) a thread we refuted (our addressed-marker
+# reply) and a review bot then ACCEPTED ("✅ Customized review instruction saved!")
+# became permanently unresolvable: the bot ack is the LATEST reply, so the old
+# comments(last:1) gate saw a non-us author and skipped the thread forever. These
+# cases assert the full-thread scan: our marker need not be the latest comment, a
+# bot ack clears, a bot new-finding / any human / an ambiguous comment keeps it open.
+
+# Shared gh stub body for the #1735 harness cases: bot-originated candidate thread,
+# claim verifies from the cumulative range (base_sha is a root commit, so
+# base_sha..HEAD == the engine's new fix.txt). The node's comment set is injected
+# per-case via $POST_MARKER_NODE.
+_1735_run_case() {
+  local tmpdir="$BATS_TEST_TMPDIR/workdir"
+  mkdir -p "$tmpdir"
+  local mutations_file="$BATS_TEST_TMPDIR/mutations"
+  : > "$mutations_file"
+  local base_sha
+  rm -f /tmp/dev-lead-session-output.txt
+
+  git -C "$tmpdir" init -q
+  echo "initial" > "$tmpdir/file.txt"
+  git -C "$tmpdir" add .
+  git -C "$tmpdir" -c user.email="t@test" -c user.name="T" commit -q -m "init"
+  git -C "$tmpdir" update-ref refs/remotes/origin/main "$(git -C "$tmpdir" rev-parse HEAD)"
+  base_sha="$(git -C "$tmpdir" rev-parse HEAD)"
+
+  local marker_reply
+  marker_reply="Refuted — the pattern is intentional. <!-- dev-lead:addressed -->\n<!-- dev-lead:claim {\\\"v\\\":1,\\\"sha\\\":\\\"${base_sha}\\\",\\\"files\\\":[\\\"fix.txt\\\"]} -->"
+
+  cat > "$STUB_BIN_DIR/gh" << GHEOF
+#!/usr/bin/env bash
+ARGS="\$*"
+case "\$ARGS" in
+  *"resolveReviewThread"*)
+    echo "\$*" >> "$mutations_file"
+    echo '{"data":{"resolveReviewThread":{"thread":{"isResolved":true}}}}'
+    ;;
+  *"PullRequestReviewThread"*)
+    echo '{"data":{"node":{"isResolved":false,"path":"fix.txt","comments":{"nodes":[{"author":{"login":"donpetry-bot","__typename":"User"},"body":"${marker_reply}","createdAt":"2026-09-01T10:00:00Z"},${POST_MARKER_NODE}]}}}}'
+    ;;
+  *"reviewThreads"*)
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":""},"nodes":[{"id":"PRRT_1735","isResolved":false,"isOutdated":false,"origin":{"nodes":[{"author":{"login":"codeant-ai[bot]","__typename":"Bot"}}]}}]}}}}}'
+    ;;
+  *"check-runs"*) echo '{"check_runs":[]}' ;;
+  *"statuses"*) echo '[]' ;;
+  *"pulls/"*"reviews"*) echo '[]' ;;
+  *"pulls/"*) echo '{"head":{"sha":"${base_sha}"},"auto_merge":null}' ;;
+  *"pr checkout"*) exit 0 ;;
+  *"pr comment"*) exit 0 ;;
+  *"pr merge"*) exit 0 ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+
+  cat > "$STUB_BIN_DIR/claude" << 'STUB'
+#!/usr/bin/env bash
+echo "Addressed feedback."
+printf 'fixed\n' > fix.txt
+STUB
+  chmod +x "$STUB_BIN_DIR/claude"
+
+  cat > "$STUB_BIN_DIR/git" << 'GITEOF'
+#!/usr/bin/env bash
+if [ "$1" = "push" ]; then exit 0; fi
+exec /usr/bin/git "$@"
+GITEOF
+  chmod +x "$STUB_BIN_DIR/git"
+
+  run bash -c "
+    cd '$tmpdir'
+    export INTENT_TYPE=fix-reviews DEV_LEAD_DRY_RUN=false
+    export PR_NUMBER=54 HEAD_SHA=$base_sha REPO='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export ACTOR='codeant-ai[bot]'
+    export BOT_USER='donpetry-bot'
+    export PATH='$STUB_BIN_DIR:$PATH'
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+
+  # Expose the harness exit status so each case can assert the run completed instead of
+  # crashing before it ever reached the resolve step — otherwise a "stays open" grep
+  # (expecting no mutation) would pass even when the harness died early writing nothing.
+  _HARNESS_STATUS="$status"
+  _MUTATIONS_FILE="$mutations_file"
+}
+
+@test "resolve_addressed_bot_threads (#1735): marker then a bot acknowledgement -> resolves" {
+  export POST_MARKER_NODE='{"author":{"login":"codeant-ai[bot]","__typename":"Bot"},"body":"✅ Customized review instruction saved!","createdAt":"2026-09-01T11:00:00Z"}'
+  _1735_run_case
+  [ "$_HARNESS_STATUS" -eq 0 ]
+  grep -q "PRRT_1735" "$_MUTATIONS_FILE"
+}
+
+@test "resolve_addressed_bot_threads (#1735): marker then a bot NEW finding -> stays open" {
+  export POST_MARKER_NODE='{"author":{"login":"codeant-ai[bot]","__typename":"Bot"},"body":"Potential issue: this still leaks a file descriptor.","createdAt":"2026-09-01T11:00:00Z"}'
+  _1735_run_case
+  [ "$_HARNESS_STATUS" -eq 0 ]
+  run grep -q "PRRT_1735" "$_MUTATIONS_FILE"
+  [ "$status" -eq 1 ]
+}
+
+@test "resolve_addressed_bot_threads (#1735): marker then a human comment -> stays open (AC3)" {
+  export POST_MARKER_NODE='{"author":{"login":"a-maintainer","__typename":"User"},"body":"Looks fine to me, thanks.","createdAt":"2026-09-01T11:00:00Z"}'
+  _1735_run_case
+  [ "$_HARNESS_STATUS" -eq 0 ]
+  run grep -q "PRRT_1735" "$_MUTATIONS_FILE"
+  [ "$status" -eq 1 ]
+}
+
+@test "resolve_addressed_bot_threads (#1735): marker then an ambiguous bot comment -> stays open (AC4)" {
+  export POST_MARKER_NODE='{"author":{"login":"codeant-ai[bot]","__typename":"Bot"},"body":"Interesting.","createdAt":"2026-09-01T11:00:00Z"}'
+  _1735_run_case
+  [ "$_HARNESS_STATUS" -eq 0 ]
+  run grep -q "PRRT_1735" "$_MUTATIONS_FILE"
+  [ "$status" -eq 1 ]
+}
+
 # ── Harness-only resolution (#1691, epic #1621) ──────────────────────────────
 # Story 1 removes the model's resolveReviewThread path from the prompts, leaving
 # the harness as the ONLY resolver. This asserts the guarantee at the harness
