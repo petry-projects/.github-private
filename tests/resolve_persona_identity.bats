@@ -85,6 +85,33 @@ YAML
   [ "$output" = "GH_PAT_DON_PETRY" ]
 }
 
+# The qa-lead cases above pin the canonical example, but ADR-0008 applies
+# fleet-wide: EVERY advisory persona posts as the owner account. Without this
+# sweep, a change to business-analyst, solution-architect, or any other advisory
+# manifest could silently flip its posting account and no test would catch it.
+# pr-review is the sole carve-out — it is the PR-review approver and must stay
+# donpetry-bot, a distinct account from the code author (ADR-0008, "pr-review is
+# deliberately out of scope").
+@test "every advisory persona (all but pr-review) posts as the owner account don-petry (ADR-0008)" {
+  local manifest id account credential
+  for manifest in "$SCRIPT_DIR"/personas/*/persona.yml; do
+    id="$(basename "$(dirname "$manifest")")"
+    [ "$id" = "pr-review" ] && continue
+    # Personas without a runtime.identity don't post; skip them (resolver exits
+    # non-zero, the fail-loud path the earlier tests already pin).
+    account="$(RESOLVE "$id" "$SCRIPT_DIR/personas" account)" || continue
+    credential="$(RESOLVE "$id" "$SCRIPT_DIR/personas" credential)"
+    if [ "$account" != "don-petry" ]; then
+      echo "persona '$id' posts as '$account', expected 'don-petry' (ADR-0008)" >&2
+      return 1
+    fi
+    if [ "$credential" != "GH_PAT_DON_PETRY" ]; then
+      echo "persona '$id' uses credential '$credential', expected 'GH_PAT_DON_PETRY' (ADR-0008)" >&2
+      return 1
+    fi
+  done
+}
+
 # --- every shipped credential is one the runner actually holds a PAT for ------
 # The resolver prints whatever a manifest declares, but the runner only accepts
 # and maps two credentials to a PAT (persona-runner-reusable.yml: the identity

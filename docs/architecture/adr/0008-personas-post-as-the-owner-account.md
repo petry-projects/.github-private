@@ -14,7 +14,7 @@ default.
 
 Three facts, all verifiable on `main`, decide this record:
 
-1. **ADR-0005 already sanctions posting as a real account.** Its §on
+1. **ADR-0005 already sanctions posting as a real account.** Its § on
    write-identity says: *"'Write runtime identity' here means code/branch write
    capability (commit, push, label, close), **not** the account a persona posts
    advisory comments as: an advisory-only persona may still run under a real
