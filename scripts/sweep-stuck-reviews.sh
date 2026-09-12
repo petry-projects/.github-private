@@ -13,10 +13,14 @@
 #   • reviewDecision == REVIEW_REQUIRED   (GitHub still wants a review), AND
 #   • CI status == passing                (own pr-review checks filtered out via
 #                                          lib/ci-status.sh, same as the cascade), AND
-#   • NOT already reviewed at the current head with a VERDICT
-#                                         (no `<!-- pr-review-agent v1 sha=<head> -->`
-#                                          marker carrying a decision=... token), so
-#                                          genuine no-ops aren't re-fired.
+#   • NOT already resolved at the current head by a STANDING verdict — either a
+#                                          standing approval (a non-dismissed
+#                                          state==APPROVED review carrying the
+#                                          approval marker, #1665) or a terminal
+#                                          escalated/fix-requested verdict — so
+#                                          genuine no-ops aren't re-fired. A bare
+#                                          `decision=approved` MARKER in a dismissed
+#                                          review or an issue comment does NOT count.
 # A marker present at head but WITHOUT a verdict is an orphan (issue #1548): the
 # review crashed after stamping the head and before posting any decision. That PR
 # is re-dispatched WITH force_review to bypass review-one-pr.sh's idempotency
@@ -55,6 +59,12 @@ source "$SCRIPT_DIR/lib/ci-status.sh"
 # Escalation gate (#946): pr_has_escalation_label / NEEDS_HUMAN_REVIEW_LABEL.
 # shellcheck source=lib/pr-automation-budget.sh
 source "$SCRIPT_DIR/lib/pr-automation-budget.sh"
+# Standing-approval primitive (#1665): pr_standing_approval_count — the
+# authoritative "does an approving review STAND at head?" check. A `decision=
+# approved` marker in a DISMISSED review or an issue comment is NOT a standing
+# approval, so it must never satisfy the stop condition.
+# shellcheck source=lib/standing-approval.sh
+source "$SCRIPT_DIR/lib/standing-approval.sh"
 
 AGENT_REPO="${AGENT_REPO:-petry-projects/.github-private}"
 TRIGGER_WORKFLOW="${TRIGGER_WORKFLOW:-pr-review-trigger.yml}"
@@ -236,40 +246,50 @@ while IFS= read -r pr_url; do
     echo "  skip $pr_url — reviewDecision='$review_decision' (not REVIEW_REQUIRED)"
     continue
   fi
-  # Marker vs. verdict at this exact head (#1548). The cascade stamps each review
-  # with `<!-- pr-review-agent v1 sha=<HEAD> -->`, but a review can CRASH (Claude
-  # 429 usage-limit, or a 429 between the escalation review and its follow-through)
-  # after stamping that marker and before posting any VERDICT. A genuine verdict
-  # additionally carries a `decision=` token in the same body (see
-  # scripts/lib/review-cycle.sh):
+  # Marker vs. STANDING verdict at this exact head (#1548, #1665). The cascade
+  # stamps each review with `<!-- pr-review-agent v1 sha=<HEAD> -->`, but a review
+  # can CRASH (Claude 429 usage-limit, or a 429 between the escalation review and
+  # its follow-through) after stamping that marker and before posting any VERDICT.
+  # A genuine verdict additionally carries a `decision=` token in the same body
+  # (see scripts/lib/review-cycle.sh):
   #   approval:    <!-- pr-review-agent v1 sha=<SHA> decision=approved  risk=... -->
   #   escalated:   <!-- pr-review-agent v1 sha=<SHA> decision=escalated risk=... -->
   #   fix-request: <!-- pr-review-agent v1 sha=<SHA> --> <!-- decision=fix-requested risk=... -->
   # Match the sha followed by a space so one sha is never a prefix of another.
-  # marker_at_head  — any v1 marker at head (crashed or complete).
-  # verdict_at_head — a marker at head that also posted a decision.
-  # An orphan (marker present, verdict absent) is the silent strand this fixes.
-  #
-  # The verdict test binds the decision token to the CANONICAL marker relationship
-  # the writers emit (see above), not to a `decision=…` string anywhere in the
-  # body — otherwise a marker followed by quoted/unrelated `decision=approved`
-  # prose would masquerade as a completed review and permanently suppress the
-  # orphan's rescue. Two canonical shapes:
-  #   • approved|escalated — the token sits INSIDE the head marker: `sha=<SHA> decision=…`
-  #   • fix-requested      — the bare head marker plus its companion `<!-- decision=fix-requested … -->`
+  # marker_at_head           — any v1 marker at head (crashed or complete).
+  # standing_verdict_at_head — a verdict that ACTUALLY STANDS at head, i.e. one of:
+  #   • a STANDING APPROVAL — a non-dismissed state==APPROVED REVIEW carrying the
+  #     approval marker (pr_standing_approval_count, #1665). A `decision=approved`
+  #     MARKER in a DISMISSED review or an issue COMMENT is NOT a standing approval
+  #     — GitHub still wants a review — so it must never satisfy the stop
+  #     condition. This is the #1665 fix: the old code counted the marker string,
+  #     stranding a green auto-merge-armed PR when its approval was dismissed or
+  #     the marker was posted as a comment.
+  #   • a terminal escalated / fix-requested verdict — a genuine dead-end that
+  #     legitimately suppresses re-review (the PR needs a human / fixes, not a
+  #     re-run). These stay MARKER-based: they are not "approvals" and the marker
+  #     is their canonical record. Bound to the CANONICAL marker relationship the
+  #     writers emit (not a `decision=…` string anywhere in the body) so quoted/
+  #     unrelated prose can't masquerade as a verdict and suppress an orphan's
+  #     rescue. Two canonical shapes:
+  #       escalated     — the token sits INSIDE the head marker: `sha=<SHA> decision=escalated`
+  #       fix-requested — the bare head marker plus its companion `<!-- decision=fix-requested … -->`
+  # An orphan (marker present, no STANDING verdict) is the silent strand this fixes.
   marker_at_head=$(jq -r --arg sha "$head_sha" '
     [ ((.reviews // []) + (.comments // []))[]
       | (.body // "")
       | select(test("<!-- pr-review-agent v1 sha=" + $sha + " ")) ]
     | length' <<< "$snapshot" 2>/dev/null || echo 0)
-  verdict_at_head=$(jq -r --arg sha "$head_sha" '
-    def is_verdict($sha):
+  standing_approval_at_head=$(pr_standing_approval_count "$snapshot" "$head_sha")
+  other_verdict_at_head=$(jq -r --arg sha "$head_sha" '
+    def is_terminal_verdict($sha):
       (.body // "") as $b
-      | ($b | test("<!-- pr-review-agent v1 sha=" + $sha + "\\s+decision=(approved|escalated)\\b"))
+      | ($b | test("<!-- pr-review-agent v1 sha=" + $sha + "\\s+decision=escalated\\b"))
         or (($b | test("<!-- pr-review-agent v1 sha=" + $sha + " -->"))
             and ($b | test("<!-- decision=fix-requested\\b")));
-    [ ((.reviews // []) + (.comments // []))[] | select(is_verdict($sha)) ]
+    [ ((.reviews // []) + (.comments // []))[] | select(is_terminal_verdict($sha)) ]
     | length' <<< "$snapshot" 2>/dev/null || echo 0)
+  standing_verdict_at_head=$(( ${standing_approval_at_head:-0} + ${other_verdict_at_head:-0} ))
 
   # Rate-limited withhold retry (issue #711). A pr-review run that withheld
   # approval because advisory bots were rate-limited stamps a distinct marker:
@@ -284,10 +304,13 @@ while IFS= read -r pr_url; do
       | capture("reset=(?<r>[^ ]+)") | .r ]
     | last // ""' <<< "$snapshot" 2>/dev/null || echo "")
   if [ -n "$rl_reset" ]; then
-    if [ "${verdict_at_head:-0}" -gt 0 ]; then
-      # A real VERDICT already landed at this head — rate-limit state is resolved.
-      # (A bare orphan marker must NOT resolve it: the retry still needs to fire.)
-      echo "  skip $pr_url — rate-limited marker present but already reviewed at head ${head_sha:0:8}"
+    if [ "${standing_verdict_at_head:-0}" -gt 0 ]; then
+      # A verdict that STANDS at head resolves the rate-limit state — a standing
+      # approval (non-dismissed APPROVED review) or a terminal escalated/fix-
+      # requested verdict. A bare orphan marker, a DISMISSED approval, or an
+      # approval marker posted as a comment (#1665) do NOT resolve it: the retry
+      # still needs to fire.
+      echo "  skip $pr_url — rate-limited marker present but standing verdict at head ${head_sha:0:8}"
       continue
     fi
     reset_epoch=$(date -u -d "$rl_reset" +%s 2>/dev/null \
@@ -317,8 +340,8 @@ while IFS= read -r pr_url; do
     continue
   fi
 
-  if [ "${verdict_at_head:-0}" -gt 0 ]; then
-    echo "  skip $pr_url — already reviewed at head ${head_sha:0:8} (verdict posted)"
+  if [ "${standing_verdict_at_head:-0}" -gt 0 ]; then
+    echo "  skip $pr_url — already reviewed at head ${head_sha:0:8} (standing approval or terminal verdict)"
     continue
   fi
 

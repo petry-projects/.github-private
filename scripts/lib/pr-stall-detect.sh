@@ -56,6 +56,15 @@ source "${SCRIPT_DIR}/pr-automation-budget.sh"
 # initiative-driver.sh honours (dev-lead:hands-off / initiative:hold).
 : "${STALL_HOLD_LABELS:=dev-lead:hands-off initiative:hold}"
 
+# Stranded-approval idle threshold in HOURS (#1665 AC8). A PR that is CI-green
+# with auto-merge ARMED but carries NO standing approval will never merge; if it
+# also sits idle (no sweep re-dispatch, no review activity) longer than this, it
+# is the silent strand #1665 fixes in the sweep — surfaced here as a pushed
+# backstop signal. Default 4h: well past the sweep's sub-15-min backstop cadence,
+# so a candidate has outlived many re-dispatch windows and is a genuine strand,
+# not a PR merely between review runs. Env-overridable.
+: "${STRANDED_APPROVAL_MIN_HOURS:=4}"
+
 # _stall_int <value>
 #   Echo <value> as a non-negative integer, or 0 for empty/non-numeric input.
 #   Mirrors pr-runaway-detect.sh so a bad metric can never break the integer
@@ -187,6 +196,89 @@ generate_stall_report() {
   fi
 
   printf '| PR | Title | Stall signal |\n'
+  printf '|---|---|---|\n'
+  local num url title reason
+  while IFS=$'\t' read -r num url title reason; do
+    [ -n "$num" ] || continue
+    printf '| [#%s](%s) | %s | %s |\n' "$num" "$url" "$title" "$reason"
+  done < "$f"
+}
+
+# ---------------------------------------------------------------------------
+# Stranded-approval backstop (issue #1665 AC8) — detect-only observability.
+#
+# The dual of the stall net for the marker-vs-standing-approval bug. A PR that is
+# CI-green with auto-merge ARMED but NO standing approval (its only "approval" is
+# a non-standing marker: a dismissed review or an issue comment) will never merge
+# — nothing stands to satisfy the gate. If it also sits idle past
+# STRANDED_APPROVAL_MIN_HOURS (no sweep re-dispatch, no review activity), that is
+# exactly the silent strand #1665 fixes in the sweep, surfaced as a pushed signal
+# in case a residual path still strands such a PR. Pure functions; never mutate.
+# ---------------------------------------------------------------------------
+
+# pr_stranded_approval_reasons <ci_status> <auto_merge_armed> <standing_approval> <hours_idle> <gated>
+#   Print a single reason line when the PR is a stranded-approval candidate, empty
+#   otherwise: CI green, auto-merge armed, zero standing approvals, idle past
+#   STRANDED_APPROVAL_MIN_HOURS — AND not human-gated (fail-quiet on intentional
+#   stops, same clause as the stall net). Non-numeric metrics degrade to 0.
+pr_stranded_approval_reasons() {
+  local ci="${1:-}" armed="${2:-false}" standing hours gated="${5:-false}"
+  standing=$(_stall_int "${3:-0}")
+  hours=$(_stall_int "${4:-0}")
+
+  local min_hours
+  min_hours=$(_stall_threshold "${STRANDED_APPROVAL_MIN_HOURS}" 4)
+
+  # Fail-quiet on intentional stops: a human-gated PR is never reported.
+  case "$gated" in
+    true|TRUE|1) return 0 ;;
+  esac
+
+  # Only a green, auto-merge-armed PR with no standing approval can strand.
+  [ "$ci" = "passing" ] || return 0
+  case "$armed" in
+    true|TRUE|1) ;;
+    *) return 0 ;;
+  esac
+  [ "$standing" -eq 0 ] || return 0
+  [ "$hours" -gt "$min_hours" ] || return 0
+
+  printf 'stranded %sh: CI-green + auto-merge armed, no standing approval (>%sh)\n' \
+    "$hours" "$min_hours"
+  return 0
+}
+
+# is_pr_stranded_approval <...same args as pr_stranded_approval_reasons...>
+#   Exit 0 when the PR is a stranded-approval candidate, 1 otherwise.
+is_pr_stranded_approval() {
+  local reasons
+  reasons=$(pr_stranded_approval_reasons "$@")
+  [ -n "$reasons" ]
+}
+
+# generate_stranded_approval_report <candidates_tsv_file>
+#   Render the "Stranded-Approval PR Candidates" markdown section for the health
+#   report. Input TSV rows: pr_number <TAB> html_url <TAB> title <TAB> reason.
+#   An empty/missing file prints an all-clear line and no table.
+generate_stranded_approval_report() {
+  local f="${1:-}"
+  local min_hours
+  min_hours=$(_stall_threshold "${STRANDED_APPROVAL_MIN_HOURS}" 4)
+
+  printf '## Stranded-Approval PR Candidates\n\n'
+  printf 'Open PRs stuck **CI-green + auto-merge armed** with **no standing approval** '
+  printf '(the only approval marker is a dismissed review or an issue comment) and no '
+  printf 'sweep re-dispatch for over %sh — the marker-vs-standing-approval strand #1665 ' "$min_hours"
+  printf 'fixes in the sweep, surfaced here as a backstop. '
+  printf 'Human-gated halts (needs-human-review, dev-lead:hands-off, initiative:hold) are excluded. '
+  printf 'Detection only — no PR is mutated.\n\n'
+
+  if [ -z "$f" ] || [ ! -s "$f" ]; then
+    printf '✅ No open PR has a stranded approval.\n'
+    return 0
+  fi
+
+  printf '| PR | Title | Stranded-approval signal |\n'
   printf '|---|---|---|\n'
   local num url title reason
   while IFS=$'\t' read -r num url title reason; do
