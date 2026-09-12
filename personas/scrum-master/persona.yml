@@ -71,13 +71,15 @@ trust:
 
 # --- Runtime identity (§5.1) ------------------------------------------------
 # Advisory-only (consumed by the initiative-planner and the persona runner). On
-# the comment path it posts as the machine user `donpetry-bot`, NOT the human
-# owner — an advisory must be identifiably a bot in the audit trail
-# (.github-private#1650). No dedicated reusable yet.
+# the comment path it posts as the owner account `don-petry` (GH_PAT_DON_PETRY) —
+# the identity ADR-0005 already sanctioned and ADR-0008 restores fleet-wide,
+# reversing #1650. GH_PAT_DON_PETRY is known-good; the bot PAT lacked
+# comment-write here and silently discarded advisories (#1734). No dedicated
+# reusable yet.
 runtime:
   identity:
-    account: donpetry-bot
-    credential: DON_PETRY_BOT_GH_PAT
+    account: don-petry
+    credential: GH_PAT_DON_PETRY
 
 evals:
   required_before: stable
