@@ -1,0 +1,7 @@
+.github/workflows/claude.yml
+.github/workflows/agent-shield.yml
+.github/workflows/dependabot-automerge.yml
+package.json
+prompts/aw/readme-refresh.md
+evals/skills/proposer.yaml
+scripts/aw-standards-sync.sh
