@@ -70,6 +70,18 @@ DEPENDABOT_STACK="${DEPENDABOT_STACK:-frontend}"
 
 _is_dry() { [ "$DRY_RUN" = "true" ]; }
 
+# _require <cmd>... — fail loud if any listed command is missing. Checked at the
+# point of use (not unconditionally up front) so the local-only emit seams — e.g.
+# --emit-workflow of a docs/ reference, which only cats a file — stay reachable
+# without gh/base64, which they never invoke (#1724).
+_require() {
+  local cmd rc=0
+  for cmd in "$@"; do
+    command -v "$cmd" > /dev/null 2>&1 || { echo "::error::${cmd} is required but not installed." >&2; rc=1; }
+  done
+  return "$rc"
+}
+
 # ── Workflow manifest ─────────────────────────────────────────────────────────
 # One row per shipped stub: "name|kind|host".
 #   kind=caller → wraps <name>-reusable.yml; repinned to <host>@<channel>, where
@@ -182,6 +194,7 @@ _resolve_standards_ref() {
   elif [ -n "${STANDARDS_REF:-}" ]; then
     ref="$STANDARDS_REF"; sha=""; src="explicit"
   else
+    _require gh || return 1
     sha="$(_ref_commit_sha "$STANDARDS_CHANNEL")"
     if [ -n "$sha" ]; then
       ref="$STANDARDS_CHANNEL"; src="channel"
@@ -211,6 +224,7 @@ _fetch_standard() {
     cat "${STANDARDS_DIR}/${path}"
     return 0
   fi
+  _require gh || return 1
   ref="$(_resolve_standards_ref)"
   local -a ref_q=()
   case "$ref" in
@@ -603,6 +617,7 @@ _seed_repo() {
 # _put_file <repo> <path> <content> <branch> <message>
 _put_file() {
   local repo="$1" path="$2" content="$3" branch="$4" msg="$5" sha encoded
+  _require base64 || return 1
   local -a sha_arg=()
   sha="$(gh api "repos/${repo}/contents/${path}?ref=${branch}" --jq '.sha' 2>/dev/null || true)"
   [ -n "$sha" ] && [ "$sha" != "null" ] && sha_arg=(--field "sha=${sha}")
@@ -619,14 +634,9 @@ _list_workflows() { local r; for r in "${WORKFLOW_MANIFEST[@]}"; do printf '%s.y
 _list_baseline()  { local r; for r in "${BASELINE_MANIFEST[@]}"; do printf '%s\n' "${r%%|*}"; done; }
 
 main() {
-  local cmd
-  for cmd in gh base64; do
-    if ! command -v "$cmd" > /dev/null 2>&1; then
-      echo "::error::${cmd} is required but not installed." >&2
-      return 1
-    fi
-  done
-
+  # gh/base64 are required lazily at their points of use (_fetch_standard,
+  # _resolve_standards_ref network path, _put_file) so local-only seams such as
+  # --emit-workflow of a docs/ reference stay reachable without them (#1724).
   local repo="$TEMPLATE_REPO"
   while [ $# -gt 0 ]; do
     case "$1" in
