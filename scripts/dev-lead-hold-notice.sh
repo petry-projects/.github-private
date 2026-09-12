@@ -24,6 +24,12 @@ set -euo pipefail
 #   SUBJECT_NUMBER  issue or PR number (issues + PRs share the issues comments API)
 #   HOLD_LABEL      the blocking label (required for MODE=notice)
 #   MODE            notice | supersede (default: notice)
+#   NOTICE_AUTHOR   dev-lead's own account login (BOT_USER). Only comments
+#                   authored by this account are treated as hold notices, so a
+#                   user-authored comment that copies a notice marker can neither
+#                   suppress a real notice nor be collapsed as if it were one. If
+#                   empty, no comment is trusted as a notice (fail-closed: we may
+#                   re-post but never act on a forged marker).
 #   DEV_LEAD_DRY_RUN / DRY_RUN   "true" → log intent, make no write calls
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -34,6 +40,7 @@ REPO="${REPO:-${GITHUB_REPOSITORY:-}}"
 SUBJECT_NUMBER="${SUBJECT_NUMBER:-}"
 HOLD_LABEL="${HOLD_LABEL:-}"
 MODE="${MODE:-notice}"
+NOTICE_AUTHOR="${NOTICE_AUTHOR:-${BOT_USER:-}}"
 DRY_RUN="${DEV_LEAD_DRY_RUN:-${DRY_RUN:-false}}"
 
 if [ -z "$REPO" ]; then
@@ -60,13 +67,16 @@ fi
 #   form, EXCEPT the notice for <keep-label> (pass an empty string to collapse
 #   all). Best-effort per comment. Bodies are re-fetched individually so raw
 #   control chars in a comment never break the shell pipeline (same guard as
-#   post-pr-review.sh mark_prior_agent_items_obsolete).
+#   post-pr-review.sh mark_prior_agent_items_obsolete). Only comments authored by
+#   NOTICE_AUTHOR (dev-lead itself) are considered, so a user comment that copies
+#   a notice marker is never rewritten as though it were our own notice.
 collapse_stale_notices() {
   local keep_label="$1"
   local ids cid old_body cur_label new_body
-  ids=$(jq -r '
+  ids=$(jq -r --arg author "$NOTICE_AUTHOR" '
     .[]
     | select(.body != null
+        and ($author != "" and (.user.login // "") == $author)
         and (.body | contains("<!-- dev-lead-hold-notice label="))
         and (.body | contains("<!-- dev-lead-hold-notice superseded") | not))
     | .id
@@ -107,7 +117,12 @@ case "$MODE" in
       echo "::warning::dev-lead-hold-notice: HOLD_LABEL not set in notice mode — skipping"
       exit 0
     fi
-    existing=$(jq -r '.[].body // empty' "$COMMENTS_FILE" 2>/dev/null || true)
+    # Only our own comments can suppress a re-post — a user comment that copies
+    # the marker must not silence a real notice (fail-closed: empty author → no
+    # existing notice is trusted, so we post rather than stay silent).
+    existing=$(jq -r --arg author "$NOTICE_AUTHOR" \
+      '.[] | select($author != "" and (.user.login // "") == $author) | .body // empty' \
+      "$COMMENTS_FILE" 2>/dev/null || true)
     if ! hold_notice_should_post "$HOLD_LABEL" "$existing"; then
       echo "hold notice for '$HOLD_LABEL' already present on $REPO#$SUBJECT_NUMBER — no-op (idempotent)"
       exit 0

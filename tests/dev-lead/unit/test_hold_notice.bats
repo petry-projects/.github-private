@@ -45,8 +45,9 @@ setup() {
   run hold_notice_body "needs-human-review"
   [ "$status" -eq 0 ]
   [[ "$output" == *"needs-human-review"* ]]
-  # first line is the idempotency marker
-  first="$(printf '%s\n' "$output" | head -1)"
+  # first line is the idempotency marker — extract via parameter expansion, not
+  # a `head -1` pipe, which can raise SIGPIPE (exit 141) under set -o pipefail.
+  first="${output%%$'\n'*}"
   [ "$first" = "<!-- dev-lead-hold-notice label=needs-human-review -->" ]
   # names how to re-enable
   [[ "$output" == *"remove"* || "$output" == *"Remove"* ]]

@@ -262,24 +262,29 @@ jobs:
           SUBJECT_NUMBER: ${{ env.INTENT_SUBJECT_NUMBER }}
           HOLD_LABEL: ${{ env.INTENT_HOLD_LABEL }}
           MODE: notice
+          NOTICE_AUTHOR: ${{ env.BOT_USER }}
         run: bash .dev-lead/scripts/dev-lead-hold-notice.sh
 
       # ── pickup re-arm: collapse a stale hold notice (#1767 AC4) ────────────
       # When dev-lead acts on an item (any non-skip intent) the hold has been
       # lifted, so any prior "held" notice must not keep reading as still-held.
-      # Runs before the handlers so the collapse lands even if a handler later
-      # no-ops. Best-effort; the caller stub carries no `unlabeled` trigger, so
-      # this fires on the next event that picks the item up rather than on the
-      # label removal itself.
+      # enable-auto-merge is included: a trusted-bot approval means the hold was
+      # removed and dev-lead is now acting, so a prior live hold notice must be
+      # collapsed too (leaving it up is the #1769 stale-reference defect). This is
+      # a lightweight `gh api` step, so — unlike the engine/pre-flight steps — it
+      # runs on that path. Runs before the handlers so the collapse lands even if
+      # a handler later no-ops. Best-effort; the caller stub carries no
+      # `unlabeled` trigger, so this fires on the next event that picks the item
+      # up rather than on the label removal itself.
       - name: Collapse stale hold notice on pickup
         if: >-
           env.INTENT_TYPE != 'skip' &&
-          env.INTENT_TYPE != 'enable-auto-merge' &&
           (env.INTENT_PR_NUMBER != '' || env.INTENT_ISSUE_NUMBER != '')
         env:
           REPO: ${{ github.repository }}
           SUBJECT_NUMBER: ${{ env.INTENT_PR_NUMBER != '' && env.INTENT_PR_NUMBER || env.INTENT_ISSUE_NUMBER }}
           MODE: supersede
+          NOTICE_AUTHOR: ${{ env.BOT_USER }}
         run: bash .dev-lead/scripts/dev-lead-hold-notice.sh
 
       - name: Pre-flight checks
