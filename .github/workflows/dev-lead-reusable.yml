@@ -234,6 +234,10 @@ jobs:
           echo "INTENT_CHECKS=$(echo "$ctx"       | jq -c '.checks // []')"       >> "$GITHUB_ENV"
           echo "INTENT_ISSUE_NUMBER=$(echo "$ctx" | jq -r '.issue_number // ""')" >> "$GITHUB_ENV"
           echo "INTENT_ACTOR=$(echo "$ctx"        | jq -r '.actor // ""')"        >> "$GITHUB_ENV"
+          # #1767: a hold-label skip carries the blocking label + subject number so
+          # the workflow can post the one-time "held" notice (empty for non-holds).
+          echo "INTENT_HOLD_LABEL=$(echo "$ctx"      | jq -r '.hold_label // ""')"     >> "$GITHUB_ENV"
+          echo "INTENT_SUBJECT_NUMBER=$(echo "$ctx"  | jq -r '.subject_number // ""')" >> "$GITHUB_ENV"
           # INTENT_BODY is free text (review/comment bodies) and is frequently
           # multiline — e.g. CodeRabbit reviews. A plain `KEY=value` write spills
           # the 2nd+ lines into $GITHUB_ENV as invalid entries and fails the step
@@ -251,6 +255,49 @@ jobs:
         if: env.INTENT_TYPE == 'skip'
         run: |
           echo "::notice::Skipping event: $INTENT_REASON"
+
+      # ── hold-label skip: make the withhold visible (#1767) ─────────────────
+      # A skip on a held item (needs-human-review / dev-lead:needs-human /
+      # dev-lead:hands-off) says nothing on the item, so the agent looks stalled
+      # (PR #1742 sat four days looking dead while correctly withholding). Post
+      # ONE idempotent comment naming the blocking label and how to re-enable.
+      # Best-effort: the script never fails the job. Subject "0" means the skip
+      # path could not resolve a number — nothing to comment on.
+      - name: Skip — post hold notice
+        if: >-
+          env.INTENT_TYPE == 'skip' &&
+          env.INTENT_HOLD_LABEL != '' &&
+          env.INTENT_SUBJECT_NUMBER != '' &&
+          env.INTENT_SUBJECT_NUMBER != '0'
+        env:
+          REPO: ${{ github.repository }}
+          SUBJECT_NUMBER: ${{ env.INTENT_SUBJECT_NUMBER }}
+          HOLD_LABEL: ${{ env.INTENT_HOLD_LABEL }}
+          MODE: notice
+          NOTICE_AUTHOR: ${{ env.BOT_USER }}
+        run: bash .dev-lead/scripts/dev-lead-hold-notice.sh
+
+      # ── pickup re-arm: collapse a stale hold notice (#1767 AC4) ────────────
+      # When dev-lead acts on an item (any non-skip intent) the hold has been
+      # lifted, so any prior "held" notice must not keep reading as still-held.
+      # enable-auto-merge is included: a trusted-bot approval means the hold was
+      # removed and dev-lead is now acting, so a prior live hold notice must be
+      # collapsed too (leaving it up is the #1769 stale-reference defect). This is
+      # a lightweight `gh api` step, so — unlike the engine/pre-flight steps — it
+      # runs on that path. Runs before the handlers so the collapse lands even if
+      # a handler later no-ops. Best-effort; the caller stub carries no
+      # `unlabeled` trigger, so this fires on the next event that picks the item
+      # up rather than on the label removal itself.
+      - name: Collapse stale hold notice on pickup
+        if: >-
+          env.INTENT_TYPE != 'skip' &&
+          (env.INTENT_PR_NUMBER != '' || env.INTENT_ISSUE_NUMBER != '')
+        env:
+          REPO: ${{ github.repository }}
+          SUBJECT_NUMBER: ${{ env.INTENT_PR_NUMBER != '' && env.INTENT_PR_NUMBER || env.INTENT_ISSUE_NUMBER }}
+          MODE: supersede
+          NOTICE_AUTHOR: ${{ env.BOT_USER }}
+        run: bash .dev-lead/scripts/dev-lead-hold-notice.sh
 
       - name: Pre-flight checks
         if: env.INTENT_TYPE != 'skip' && env.INTENT_TYPE != 'enable-auto-merge'

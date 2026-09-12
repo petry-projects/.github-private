@@ -30,14 +30,24 @@ GITHUB_OUTPUT="${GITHUB_OUTPUT:-/dev/null}"
 # shellcheck source=scripts/lib/hold-gate.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/hold-gate.sh"
 
-# emit_hold_skip <blocking-label> — skip a held work item. The hands-off label
-# keeps its historical `hands-off-label` reason; every other hold label reports
-# `hold-label:<label>` so the specific hold is visible in the skip reason.
+# emit_hold_skip <blocking-label> [subject-number] — skip a held work item. The
+# hands-off label keeps its historical `hands-off-label` reason; every other hold
+# label reports `hold-label:<label>` so the specific hold is visible in the skip
+# reason. The skip context also carries the blocking label and the subject number
+# (#1767) so the workflow can post the one-time "held" notice — the specific
+# blocking label is already known here at skip time and must be surfaced outside
+# the run log. The reason strings are UNCHANGED (callers/tests depend on them).
 emit_hold_skip() {
-  case "$1" in
-    dev-lead:hands-off) emit_skip "hands-off-label" ;;
-    *) emit_skip "hold-label:$1" ;;
+  local label="$1" subject="${2:-}" reason context
+  case "$label" in
+    dev-lead:hands-off) reason="hands-off-label" ;;
+    *) reason="hold-label:$label" ;;
   esac
+  context=$(jq -nc \
+    --arg label "$label" \
+    --argjson subject "${subject:-0}" \
+    '{"hold_label":$label,"subject_number":$subject}')
+  emit_intent "skip" "$reason" "$context"
 }
 
 emit_intent() {
@@ -208,10 +218,15 @@ if [ -n "$EVENT_PATH" ] && [ -f "$EVENT_PATH" ]; then
   _event_labels="$(jq -r '[.pull_request.labels[]?, .issue.labels[]?] | .[].name' "$EVENT_PATH" 2>/dev/null || true)"
 fi
 if _hold_label="$(hold_gate_first_match "$_event_labels")"; then
-  emit_hold_skip "$_hold_label"
+  # The subject number lets the workflow post the one-time hold notice (#1767).
+  _hold_subject=""
+  if [ -n "$EVENT_PATH" ] && [ -f "$EVENT_PATH" ]; then
+    _hold_subject="$(jq -r '.pull_request.number // .issue.number // empty' "$EVENT_PATH" 2>/dev/null || true)"
+  fi
+  emit_hold_skip "$_hold_label" "$_hold_subject"
   exit 0
 fi
-unset _event_labels _hold_label
+unset _event_labels _hold_label _hold_subject
 
 # ── anti-loop guard: pull_request synchronize ────────────────────────────────
 # If the synchronize event was triggered by BOT_USER's own commit, skip to
@@ -509,7 +524,7 @@ case "$EVENT_NAME" in
       exit 0
     fi
     if _hold_label="$(hold_gate_first_match "$_dispatch_labels")"; then
-      emit_hold_skip "$_hold_label"
+      emit_hold_skip "$_hold_label" "$subject_number"
       exit 0
     fi
     unset _dispatch_labels _hold_label
