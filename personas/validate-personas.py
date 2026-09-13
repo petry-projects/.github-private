@@ -45,14 +45,28 @@ schema cannot express on its own:
     registration); a persona WITHOUT one rides the shared persona runtime, is
     never ring-registered, and must NOT appear in the registry at all
 
-Schema resolution order:
+Schema resolution order (#1707):
   1. --schema PATH                     (explicit local file; used by tests)
   2. $PERSONA_SCHEMA_FILE              (local file)
-  3. fetch from petry-projects/.github at $PERSONA_SCHEMA_REF (default: main)
+  3. $PERSONA_SCHEMA_REF               (explicit ref; exactly this, no widening)
+  4. the standards channel             (STANDARDS_CHANNEL, default standards/v1-stable)
+     PLUS its N-1 immutable release    (a manifest valid under EITHER passes)
 
 The schema lives in the org standards repo, not here — this validator reads it
 the same way any consumer repo reads a published standard. When run against the
 canary registry check, the registry is read the same way.
+
+Why the channel, not `main`: the standard is versioned but the fetch used to be
+pinned to the org repo's DEFAULT BRANCH, so a merge there changed the pass/fail
+verdict of every open PR here with no coordinating change on this side (the
+2026-09-07 outage: an org-repo schema tightening red-lined the whole fleet 21
+seconds after it merged). Pinning to a moving channel tag — the same model
+scripts/seed-repo-template.sh already uses (STANDARDS_CHANNEL, #1448) — decouples
+this repo's verdict from unpublished org-repo commits. Accepting N-1 for the
+schema means promoting a standards version does not fail every consumer at once
+mid-propagation. A pinned-channel MISS is a LOUD, named fallback (a ::warning::
+naming the ref wanted and the ref used) — never a silent widening back to `main`,
+which is exactly the coupling this removes.
 
 Usage:
   validate-personas.py [personas_root] [--schema PATH] [--registry PATH]
@@ -62,6 +76,7 @@ Exit 0 on success; non-zero with a diagnostic on the first failure class found.
 import argparse
 import json
 import os
+import re
 import sys
 import urllib.request
 from pathlib import Path
@@ -71,6 +86,22 @@ SCHEMA_REPO = "petry-projects/.github"
 SCHEMA_PATH_IN_REPO = "standards/personas/persona.schema.json"
 REGISTRY_PATH_IN_REPO = "standards/canary-rings.json"
 MANIFEST_NAME = "persona.yml"
+
+# The standards are versioned; the fetch must be too (#1707). Consumers pin to a
+# moving channel tag, not the org repo's default branch — the same channel model
+# scripts/seed-repo-template.sh already uses (STANDARDS_CHANNEL, #1448).
+STANDARDS_CHANNEL = os.environ.get("PERSONA_SCHEMA_CHANNEL", "standards/v1-stable")
+
+# A pinned-channel miss falls back here — but LOUDLY (a named ::warning::), never
+# silently. Silent widening to the default branch is exactly the coupling #1707
+# removes, so the fallback exists only to keep the validator alive during an org-repo
+# tag outage, and it announces itself so a run is never mysteriously back on `main`.
+FALLBACK_REF = "main"
+
+# An immutable standards release tag: standards/vMAJOR.MINOR.PATCH (the channel tag
+# standards/v<MAJOR>-stable is deliberately NOT matched — it is a moving pointer, not
+# a release the N-1 window steps back to).
+_SEMVER_TAG = re.compile(r"^standards/v(\d+)\.(\d+)\.(\d+)$")
 
 
 def fail(msg: str) -> NoReturn:
@@ -82,41 +113,165 @@ def _raw_url(ref: str, path: str) -> str:
     return f"https://raw.githubusercontent.com/{SCHEMA_REPO}/{ref}/{path}"
 
 
-def _fetch_json(path: str, what: str) -> dict:
-    """Fetch a JSON file from the standards repo, trying the configured ref then
-    falling back to main (self-healing once a feature branch merges/deletes)."""
-    ref = os.environ.get("PERSONA_SCHEMA_REF", "main")
-    refs = [ref] if ref == "main" else [ref, "main"]
-    last = None
-    for r in refs:
-        url = _raw_url(r, path)
-        try:
-            with urllib.request.urlopen(url, timeout=20) as resp:  # noqa: S310 (fixed host)
-                return json.loads(resp.read().decode("utf-8"))
-        except Exception as exc:  # noqa: BLE001
-            last = f"{url}: {exc}"
-    fail(f"could not fetch {what} from {SCHEMA_REPO} (tried {', '.join(refs)}): {last}. "
-         f"Ensure {SCHEMA_REPO} carries {path}, or pass a local override.")
+# ── Pure resolution logic (no I/O — ADR-0004) ─────────────────────────────────
+
+def _semver(tag: str) -> tuple[int, int, int] | None:
+    m = _SEMVER_TAG.match(tag)
+    return (int(m[1]), int(m[2]), int(m[3])) if m else None
 
 
-def load_schema(explicit: str | None) -> dict:
+def current_and_previous(version_tags: list[str]) -> tuple[str | None, str | None]:
+    """(current, previous) standards immutable-release tags, highest semver first.
+
+    `previous` — the N-1 target — is None when fewer than two releases exist.
+    Ordering is numeric (v1.10.0 > v1.2.0), not lexical. Pure: the caller supplies
+    the tag list (an I/O concern), so this stays deterministic and unit-testable."""
+    ranked = sorted(
+        ((v, t) for t in version_tags if (v := _semver(t)) is not None),
+        reverse=True,
+    )
+    current = ranked[0][1] if ranked else None
+    previous = ranked[1][1] if len(ranked) > 1 else None
+    return current, previous
+
+
+def schema_ref_plan(env_ref: str | None, channel: str,
+                    previous: str | None) -> list[tuple[str, str]]:
+    """Ordered [(ref, label)] the schema is ACCEPTED against, highest precedence
+    first. Pure — the caller does the fetching.
+
+      * env_ref (PERSONA_SCHEMA_REF) set → exactly that ref, nothing else. An
+        explicit pin is explicit: no channel, no N-1 widening.
+      * otherwise                        → the channel (N), then the N-1 immutable
+        release if one exists, so promoting a standards version does not fail every
+        consumer mid-propagation (#1707 AC #3, per #1448's N-1 clause)."""
+    if env_ref:
+        return [(env_ref, "PERSONA_SCHEMA_REF")]
+    plan = [(channel, "channel")]
+    if previous:
+        plan.append((previous, "N-1"))
+    return plan
+
+
+def first_schema_error(manifest: dict, validators: list[tuple[str, object]]):
+    """(label, error) for the FIRST accepted-schema version the manifest FAILS — or
+    None if it satisfies ANY of them (the N-1 tolerance window, #1707 AC #3). The
+    reported failure is against the FIRST (current) version, the one to conform to.
+    Pure over the supplied validators."""
+    first = None
+    for label, validator in validators:
+        error = next(validator.iter_errors(manifest), None)
+        if error is None:
+            return None
+        if first is None:
+            first = (label, error)
+    return first
+
+
+def fallback_warning(what: str, wanted: str, used: str) -> str:
+    """The loud, named condition emitted when a pinned ref is unreachable (#1707
+    AC #4). Names the ref it WANTED and the ref it USED so a run is never silently
+    widened back to the default branch — the exact coupling #1707 removes."""
+    return (f"::warning::{what} unreachable at pinned ref '{wanted}' — falling back "
+            f"to '{used}'. This widens to {SCHEMA_REPO}'s default branch, the #1707 "
+            f"coupling; fix the pin, do not rely on this fallback.")
+
+
+# ── I/O ───────────────────────────────────────────────────────────────────────
+
+def _read_json_file(path: str, what: str) -> dict:
+    try:
+        return json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        fail(f"could not read/parse {what} {path}: {exc}")
+
+
+def _fetch_json_at(path: str, ref: str) -> dict | None:
+    """Fetch a JSON file from the standards repo at a specific ref, or None if it is
+    unreachable/unparseable — the caller decides whether to fall back (so the
+    fallback stays loud and centralized rather than hidden in here)."""
+    url = _raw_url(ref, path)
+    try:
+        with urllib.request.urlopen(url, timeout=20) as resp:  # noqa: S310 (fixed host)
+            return json.loads(resp.read().decode("utf-8"))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _discover_previous_version(channel: str) -> str | None:
+    """The N-1 immutable release tag (standards/vX.Y.Z one below the newest), or None
+    if it can't be determined. Best-effort network read: N-1 is a tolerance widening,
+    not a requirement, so any failure degrades to channel-only rather than erroring."""
+    try:
+        url = (f"https://api.github.com/repos/{SCHEMA_REPO}"
+               f"/git/matching-refs/tags/standards/v")
+        req = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json"})
+        token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+        if token:
+            req.add_header("Authorization", f"Bearer {token}")
+        with urllib.request.urlopen(req, timeout=20) as resp:  # noqa: S310 (fixed host)
+            refs = json.loads(resp.read().decode("utf-8"))
+        tags = [r["ref"].split("refs/tags/", 1)[1] for r in refs
+                if isinstance(r, dict) and "refs/tags/" in r.get("ref", "")]
+    except Exception:  # noqa: BLE001
+        return None
+    _, previous = current_and_previous(tags)
+    return previous
+
+
+def load_schemas(explicit: str | None) -> list[tuple[str, dict]]:
+    """Ordered [(label, schema)] to validate each manifest against; a manifest is
+    accepted if it satisfies ANY of them. Normally one entry; two during a standards
+    promotion window (current + N-1, #1707 AC #3). See the module docstring for the
+    full resolution order."""
     candidate = explicit or os.environ.get("PERSONA_SCHEMA_FILE")
     if candidate:
-        try:
-            return json.loads(Path(candidate).read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            fail(f"could not read/parse schema {candidate}: {exc}")
-    return _fetch_json(SCHEMA_PATH_IN_REPO, "persona schema")
+        return [("local", _read_json_file(candidate, "schema"))]
+
+    env_ref = os.environ.get("PERSONA_SCHEMA_REF")
+    previous = None if env_ref else _discover_previous_version(STANDARDS_CHANNEL)
+    plan = schema_ref_plan(env_ref, STANDARDS_CHANNEL, previous)
+
+    schemas: list[tuple[str, dict]] = []
+    for ref, label in plan:
+        doc = _fetch_json_at(SCHEMA_PATH_IN_REPO, ref)
+        if doc is not None:
+            schemas.append((f"{label} ({ref})", doc))
+    if schemas:
+        return schemas
+
+    # Loud fallback (AC #4): the pinned channel is unreachable — announce, never widen silently.
+    wanted = plan[0][0]
+    print(fallback_warning("persona schema", wanted, FALLBACK_REF), file=sys.stderr)
+    doc = _fetch_json_at(SCHEMA_PATH_IN_REPO, FALLBACK_REF)
+    if doc is None:
+        fail(f"could not fetch persona schema from {SCHEMA_REPO} at '{wanted}' or "
+             f"fallback '{FALLBACK_REF}'. Ensure {SCHEMA_REPO} carries "
+             f"{SCHEMA_PATH_IN_REPO}, or pass --schema / $PERSONA_SCHEMA_FILE.")
+    return [(f"fallback ({FALLBACK_REF})", doc)]
 
 
 def load_registry(explicit: str | None) -> dict:
+    """The canary-rings registry, read the way any consumer reads a published
+    standard. UNLIKE the schema it is pinned to the channel ONLY, not N-1: a ring
+    registry is volatile (it moves as agents promote ring-to-ring) and the
+    registration invariants below assert against CURRENT registration, so accepting a
+    stale N-1 registry would mask a real 'status outran its registration' defect. Same
+    loud fallback as the schema (#1707 AC #4)."""
     candidate = explicit or os.environ.get("PERSONA_REGISTRY_FILE")
     if candidate:
-        try:
-            return json.loads(Path(candidate).read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            fail(f"could not read/parse registry {candidate}: {exc}")
-    return _fetch_json(REGISTRY_PATH_IN_REPO, "canary registry")
+        return _read_json_file(candidate, "registry")
+    ref = os.environ.get("PERSONA_SCHEMA_REF") or STANDARDS_CHANNEL
+    doc = _fetch_json_at(REGISTRY_PATH_IN_REPO, ref)
+    if doc is not None:
+        return doc
+    print(fallback_warning("canary registry", ref, FALLBACK_REF), file=sys.stderr)
+    doc = _fetch_json_at(REGISTRY_PATH_IN_REPO, FALLBACK_REF)
+    if doc is None:
+        fail(f"could not fetch canary registry from {SCHEMA_REPO} at '{ref}' or "
+             f"fallback '{FALLBACK_REF}'. Ensure {SCHEMA_REPO} carries "
+             f"{REGISTRY_PATH_IN_REPO}, or pass --registry / $PERSONA_REGISTRY_FILE.")
+    return doc
 
 
 def registry_has_agent(registry: dict, persona_id: str) -> bool:
@@ -492,17 +647,21 @@ def main() -> None:
         print(f"no persona manifests found under {root} — nothing to validate.")
         return
 
-    schema = load_schema(args.schema)
-    jsonschema.Draft202012Validator.check_schema(schema)
-    validator = jsonschema.Draft202012Validator(schema)
+    validators = []
+    for label, schema in load_schemas(args.schema):
+        jsonschema.Draft202012Validator.check_schema(schema)
+        validators.append((label, jsonschema.Draft202012Validator(schema)))
 
     for manifest_path in manifests:
         try:
             manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
         except (OSError, yaml.YAMLError) as exc:
             fail(f"could not read/parse {manifest_path}: {exc}")
-        error = next(validator.iter_errors(manifest), None)
-        if error is not None:
+        # Accept the manifest if it satisfies ANY accepted schema version (current
+        # or N-1) — the propagation-tolerance window (#1707 AC #3).
+        failure = first_schema_error(manifest, validators)
+        if failure is not None:
+            _, error = failure
             loc = "/".join(str(p) for p in error.absolute_path) or "<root>"
             fail(f"{manifest_path}: schema violation at {loc}: {error.message}")
         check_invariants(manifest, manifest_path, repo_root, args.registry)

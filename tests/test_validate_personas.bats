@@ -680,3 +680,116 @@ YAML
   [[ "$output" == *"'interaction.triggers' must be a mapping"* ]]
   [[ "$output" != *"Traceback"* ]]
 }
+
+# --- Standards pinning: channel default, N-1 acceptance, loud fallback (#1707) ---
+#
+# The schema + registry are read from the org standards repo the way any consumer
+# reads a published standard. #1707: that read was pinned to the org repo's DEFAULT
+# BRANCH, so a merge there flipped the pass/fail verdict of every open PR here (the
+# 2026-09-07 outage red-lined the fleet 21 seconds after an org-repo schema tighten).
+# The fix pins to a versioned moving channel, accepts N-1 for the schema during a
+# promotion window, and makes an unreachable-ref fallback LOUD instead of silently
+# widening back to the default branch. These cases exercise the pure resolution
+# logic hermetically (ADR-0004) — no network.
+
+@test "validate-personas default schema ref is the channel, not main (#1707 AC #2)" {
+  VP="$VALIDATOR" run python3 - <<'PY'
+import importlib.util, os
+spec = importlib.util.spec_from_file_location("vp", os.environ["VP"])
+vp = importlib.util.module_from_spec(spec); spec.loader.exec_module(vp)
+assert vp.STANDARDS_CHANNEL == "standards/v1-stable", vp.STANDARDS_CHANNEL
+# The default plan must not reintroduce the default-branch coupling.
+plan = vp.schema_ref_plan(None, vp.STANDARDS_CHANNEL, None)
+assert plan == [("standards/v1-stable", "channel")], plan
+assert all(ref != "main" for ref, _ in plan), plan
+print("OK")
+PY
+  [ "$status" -eq 0 ]
+  [[ "$output" == *OK* ]]
+}
+
+@test "validate-personas schema_ref_plan: env override short-circuits channel + N-1 (#1707 AC #5)" {
+  VP="$VALIDATOR" run python3 - <<'PY'
+import importlib.util, os
+spec = importlib.util.spec_from_file_location("vp", os.environ["VP"])
+vp = importlib.util.module_from_spec(spec); spec.loader.exec_module(vp)
+# An explicit PERSONA_SCHEMA_REF is explicit: exactly that ref, no channel/N-1 widening.
+plan = vp.schema_ref_plan("feature/x", "standards/v1-stable", "standards/v1.0.0")
+assert plan == [("feature/x", "PERSONA_SCHEMA_REF")], plan
+print("OK")
+PY
+  [ "$status" -eq 0 ]
+  [[ "$output" == *OK* ]]
+}
+
+@test "validate-personas schema_ref_plan: channel then N-1, in that order (#1707 AC #3/#5)" {
+  VP="$VALIDATOR" run python3 - <<'PY'
+import importlib.util, os
+spec = importlib.util.spec_from_file_location("vp", os.environ["VP"])
+vp = importlib.util.module_from_spec(spec); spec.loader.exec_module(vp)
+plan = vp.schema_ref_plan(None, "standards/v1-stable", "standards/v1.0.0")
+assert plan == [("standards/v1-stable", "channel"),
+                ("standards/v1.0.0", "N-1")], plan
+print("OK")
+PY
+  [ "$status" -eq 0 ]
+  [[ "$output" == *OK* ]]
+}
+
+@test "validate-personas current_and_previous picks the two highest semver releases (#1707 AC #3)" {
+  VP="$VALIDATOR" run python3 - <<'PY'
+import importlib.util, os
+spec = importlib.util.spec_from_file_location("vp", os.environ["VP"])
+vp = importlib.util.module_from_spec(spec); spec.loader.exec_module(vp)
+tags = ["standards/v1-stable", "standards/v1.0.0", "standards/v1.2.0", "standards/v1.10.0"]
+cur, prev = vp.current_and_previous(tags)
+assert cur == "standards/v1.10.0", cur   # numeric, not lexical (10 > 2)
+assert prev == "standards/v1.2.0", prev
+# With a single release there is no N-1.
+cur1, prev1 = vp.current_and_previous(["standards/v1.0.0", "standards/v1-stable"])
+assert cur1 == "standards/v1.0.0" and prev1 is None, (cur1, prev1)
+# No releases at all -> (None, None), never raising.
+assert vp.current_and_previous([]) == (None, None)
+print("OK")
+PY
+  [ "$status" -eq 0 ]
+  [[ "$output" == *OK* ]]
+}
+
+@test "validate-personas first_schema_error accepts a manifest valid under N-1 though it fails N (#1707 AC #3)" {
+  VP="$VALIDATOR" run python3 - <<'PY'
+import importlib.util, os
+import jsonschema
+spec = importlib.util.spec_from_file_location("vp", os.environ["VP"])
+vp = importlib.util.module_from_spec(spec); spec.loader.exec_module(vp)
+# N (current) tightened to require 'reusable'; N-1 (previous) did not.
+schema_new = {"type": "object", "required": ["id", "reusable"]}
+schema_old = {"type": "object", "required": ["id"]}
+v_new = jsonschema.Draft202012Validator(schema_new)
+v_old = jsonschema.Draft202012Validator(schema_old)
+manifest = {"id": "demo"}  # lacks 'reusable' — the 2026-09-07 shape
+# Accepted because it validates under N-1 (the propagation window).
+assert vp.first_schema_error(manifest, [("channel", v_new), ("N-1", v_old)]) is None
+# Without the N-1 tolerance it fails, and the reported failure is the FIRST (current) version.
+res = vp.first_schema_error(manifest, [("channel", v_new)])
+assert res is not None and res[0] == "channel", res
+print("OK")
+PY
+  [ "$status" -eq 0 ]
+  [[ "$output" == *OK* ]]
+}
+
+@test "validate-personas fallback warning is loud and names both refs, never a silent widen (#1707 AC #4)" {
+  VP="$VALIDATOR" run python3 - <<'PY'
+import importlib.util, os
+spec = importlib.util.spec_from_file_location("vp", os.environ["VP"])
+vp = importlib.util.module_from_spec(spec); spec.loader.exec_module(vp)
+msg = vp.fallback_warning("persona schema", "standards/v1-stable", "main")
+assert msg.startswith("::warning::"), msg           # a visible annotation
+assert "standards/v1-stable" in msg, msg            # the ref it WANTED
+assert "main" in msg, msg                           # the ref it USED
+print("OK")
+PY
+  [ "$status" -eq 0 ]
+  [[ "$output" == *OK* ]]
+}
