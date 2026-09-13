@@ -15,7 +15,9 @@ SCRIPT_DIR="$(cd "$(dirname "$BATS_TEST_FILENAME")/../../.." && pwd)"
 RETRY_SCRIPT="$SCRIPT_DIR/scripts/dev-lead-retry.sh"
 
 setup() {
-  MOCK_BIN="$(mktemp -d)"
+  # $BATS_TEST_TMPDIR is per-test and auto-cleaned, so no manual teardown needed.
+  MOCK_BIN="$BATS_TEST_TMPDIR/bin"
+  mkdir -p "$MOCK_BIN"
   export PATH="$MOCK_BIN:$PATH"
 
   export DRY_RUN="true"
@@ -44,10 +46,6 @@ GHEOF
   chmod +x "$MOCK_BIN/gh"
 
   source "$RETRY_SCRIPT"
-}
-
-teardown() {
-  rm -rf "$MOCK_BIN"
 }
 
 _review() {
@@ -112,6 +110,22 @@ _marker() {
   [ "$status" -eq 1 ]
 }
 
+@test "findings: CHANGES_REQUESTED then a later APPROVED on the same SHA → superseded, not a finding" {
+  # Reviews arrive in submission order; the later APPROVED is the reviewer's
+  # latest word, so the stale CHANGES_REQUESTED must not trigger recovery.
+  local reviews
+  reviews="[$(_review coderabbitai CHANGES_REQUESTED deadbeef),$(_review coderabbitai APPROVED deadbeef)]"
+  run has_unaddressed_head_findings 42 deadbeef "$TRUSTED_REVIEWERS" "$reviews" "[]" "[]"
+  [ "$status" -eq 1 ]
+}
+
+@test "findings: inline comment on HEAD but the author later APPROVED it → not a finding" {
+  local reviews; reviews="[$(_review coderabbitai APPROVED deadbeef)]"
+  local comments; comments="[$(_inline_comment "coderabbitai[bot]" deadbeef)]"
+  run has_unaddressed_head_findings 42 deadbeef "$TRUSTED_REVIEWERS" "$reviews" "$comments" "[]"
+  [ "$status" -eq 1 ]
+}
+
 # ── scan_pr_for_dropped_reviews (fetch + dispatch) ────────────────────────────
 
 @test "scan: unaddressed HEAD findings → dispatches reviews-retry and warns" {
@@ -122,10 +136,11 @@ _marker() {
   [ "$status" -eq 0 ]
   [[ "$output" == *"dropped-review recovery"* ]]
   [[ "$output" == *"would dispatch dev-lead-reviews-retry"* ]]
-  [ "$(printf '%s\n' "$output" | tail -1)" = "1" ] || {
-    # the integer count is the only stdout line; stderr carries the logs
-    true
-  }
+  # The integer count must be the only stdout line; stderr carries the logs.
+  # Capture stdout alone (Bats `run` merges stderr into $output) and assert it.
+  local count
+  count=$(scan_pr_for_dropped_reviews "petry-projects/.github-private" 42 2>/dev/null)
+  [ "$count" = "1" ]
 }
 
 @test "scan: dispatch payload is intent=fix-reviews on HEAD SHA" {
