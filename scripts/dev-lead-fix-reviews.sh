@@ -14,6 +14,7 @@ source "$(dirname "$0")/lib/conflict-integrity.sh"
 source "$(dirname "$0")/lib/review-change-evidence.sh"
 source "$(dirname "$0")/lib/resolution-integrity.sh"
 source "$(dirname "$0")/lib/addressed-claim-verify.sh"
+source "$(dirname "$0")/lib/redact.sh"
 
 INTENT_TYPE="${INTENT_TYPE:-fix-reviews}"
 PR_NUMBER="${PR_NUMBER:-}"
@@ -136,26 +137,8 @@ ${summary}"
   gh pr comment "$PR_NUMBER" --repo "$REPO" --body "$body" 2>/dev/null || true
 }
 
-# redact_secrets: scrub common credential token formats from stdin → stdout.
-# Defense-in-depth before publishing agent session output to a PR comment —
-# Claude Code's session log can include curl/gh invocations whose stderr leaks
-# tokens, or echoed environment variables. Patterns cover GitHub, OpenAI/
-# Anthropic, AWS, Google OAuth, generic bearer tokens, and PEM private keys.
-redact_secrets() {
-  # The PEM range (-----BEGIN ... -----END ...) uses sed's c\ range-change
-  # so the *entire* multiline block is replaced — header line alone leaves
-  # the key body lines intact and still leakable.
-  sed -E \
-    -e 's/(gh[opsu]|ghr)_[A-Za-z0-9_]{20,}/***REDACTED-GH-TOKEN***/g' \
-    -e 's/github_pat_[A-Za-z0-9_]{20,}/***REDACTED-GH-PAT***/g' \
-    -e 's/sk-(ant-)?[A-Za-z0-9_-]{20,}/***REDACTED-API-KEY***/g' \
-    -e 's/AKIA[A-Z0-9]{16}/***REDACTED-AWS-KEY***/g' \
-    -e 's/AIza[A-Za-z0-9_-]{35}/***REDACTED-GOOGLE-KEY***/g' \
-    -e 's|ya29\.[A-Za-z0-9_-]+|***REDACTED-GOOGLE-OAUTH***|g' \
-    -e 's/[Bb]earer [A-Za-z0-9._-]{20,}/Bearer ***REDACTED***/g' \
-    -e '/-----BEGIN [A-Z ]*PRIVATE KEY-----/,/-----END [A-Z ]*PRIVATE KEY-----/c\
-***REDACTED-PRIVATE-KEY***'
-}
+# redact_secrets lives in scripts/lib/redact.sh (sourced above) so this script
+# and the persona runtime share one definition (#1775 AC #4).
 
 # read_session_summary: extracts the agent's structured summary from the session
 # log and redacts any embedded credentials. Empty output if the file is missing
