@@ -195,6 +195,7 @@ print(d.get('choices', [{}])[0].get('message', {}).get('content', '(empty)'))
 fi
 
 actual=0
+escalated=0
 skipped_noops=0
 carried_forward=0
 deferred=0
@@ -281,6 +282,14 @@ while IFS= read -r pr_url; do
       actual=$((actual + 1))
       echo "::notice::Review posted ($actual/$MAX_PRS)"
       ;;
+    101)
+      # Human-escalation (issue #1754). A decision WAS made and an artifact
+      # (comment + label + CODEOWNERS request) was left on the PR, but no review
+      # was posted. Count it as `escalated` — never as a posted review, and never
+      # as a failure (it is a clean, expected terminal outcome).
+      escalated=$((escalated + 1))
+      echo "::notice::Escalated to human review ($pr_url)"
+      ;;
     100)
       # Report the real skip reason instead of a blanket "already reviewed".
       # Reasons that mean "a review is still owed once checks settle" bump the
@@ -343,7 +352,7 @@ while IFS= read -r pr_url; do
 done < "$PRS_FILE"
 
 remaining=$((total_candidates - processed))
-summary="Summary: $actual reviews posted, $skipped_noops no-ops skipped, $failed failures"
+summary="Summary: $actual reviews posted, $escalated escalated to human, $skipped_noops no-ops skipped, $failed failures"
 # Deterministic carry-forward observability (issue #1865 AC #6): always emit both
 # counters, even when zero, so a run's full-vs-carried split is machine-parseable.
 # reviews_full is the count of full (model-tier) reviews posted (= $actual).
