@@ -1,0 +1,111 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# CANONICAL REFERENCE — agent-ingress.yml (ADR-0007, epic #1723, issue #1724)
+#
+# THIS IS A NON-EXECUTING REFERENCE. It lives under docs/architecture/reference/
+# ON PURPOSE and MUST NOT be copied to .github/workflows/ in this repo: a live
+# agent-ingress.yml here would double-dispatch dev-lead and pr-review-mention
+# alongside their existing per-role stubs — a behavior change ADR-0007 forbids at
+# this phase (issue #1724 AC #5). It is the byte-identity baseline that Phase-1
+# stories hash and consume; it is made emittable via
+#   scripts/seed-repo-template.sh --emit-workflow agent-ingress.yml
+# so downstream stories consume it as a machine artifact, not as prose (AC #3).
+#
+# WHAT THIS SHOWS (AC #1, #2): the shape a consumer repo's per-role Class-1 caller
+# stubs collapse into — a SINGLE ingress with the UNION of the collapsed roles'
+# triggers, then EXACTLY ONE job per collapsed role. Each job keeps its own
+# permissions: block, its own pinned first-party channel `uses:` ref + matching
+# agent_ref (the ADR-0002 pin moves from a per-FILE tag to a per-JOB pin — no new
+# tag namespace), its own secrets:, and a role-bearing job key so runs stay
+# attributable by role (ADR-0007 "run attribution" consequence).
+#
+# THE if: BOUNDARY (AC #2, #6): every job's `if:` is a PURE EVENT FILTER. It may
+# reference ONLY github.event_name, github.event.action, and event-payload fields
+# used as a predicate — never repo state: not org/repo configuration variables,
+# not secrets, not another job's computed outputs, not a repo-tree hash, not repo
+# identity, not the payload's standing default-branch field, and not a scan of the
+# standing labels array. The frozen ALLOW/FORBID rulings for every such construct
+# live as machine-readable fixtures at
+# tests/fixtures/agent-ingress/if-filter-rulings.tsv. The `if:` is the ONE place
+# ADR-0007 loosens ADR-0001; anything a script-in-disguise would need belongs in
+# the reusable.
+#
+# COLLAPSED HERE: the two Class-1, event-driven, non-pull_request_target roles this
+# repo runs — dev-lead and pr-review-mention. CARVE-OUTS keep their own per-role
+# stubs (ADR-0007): pull_request_target roles, Class-2 backstop timers, Class-3
+# scheduled roles, and documented repo-local trigger stubs. Non-agentic CI/gate
+# workflows (ci.yml, lint.yml, …) are out of scope entirely.
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: Agent Ingress
+
+# on: is the UNION of the collapsed roles' triggers (AC #1). dev-lead's on-level
+# `branches: [main]` PR filter is NOT expressible per-job at the on: level, so it
+# moves into the dev-lead job's if: as the payload predicate
+# `github.event.pull_request.base.ref == 'main'` (an allowed event predicate).
+on:
+  pull_request:
+    # opened/reopened/synchronize ← dev-lead; review_requested ← pr-review-mention.
+    types: [opened, reopened, synchronize, review_requested]
+  pull_request_review:
+    types: [submitted]
+  pull_request_review_comment:
+    types: [created]
+  issue_comment:
+    types: [created]
+  issues:
+    types: [labeled]
+  check_run:
+    types: [completed]
+  repository_dispatch:
+    types: [dev-lead-ci-failure, dev-lead-reviews-retry, dev-lead-issue-retry]
+
+# Top-level least privilege; each job re-grants only the scopes its role needs. A
+# single dispatching job is forbidden — it would need the UNION of every role's
+# permissions (ADR-0007).
+permissions: {}
+
+jobs:
+  # ── dev-lead ────────────────────────────────────────────────────────────────
+  # Pinned to the moving dev-lead/v139-stable channel tag (ADR-0002); the pin and
+  # its matching agent_ref move here per-job from the former dev-lead.yml stub.
+  dev-lead:
+    # PURE event filter (AC #2): dev-lead's own subscriptions. The pull_request arm
+    # excludes review_requested (that action belongs to pr-review-mention) and
+    # re-applies dev-lead's base=main filter as a payload predicate.
+    if: >-
+      (github.event_name == 'pull_request'
+        && contains(fromJSON('["opened","reopened","synchronize"]'), github.event.action)
+        && github.event.pull_request.base.ref == 'main')
+      || github.event_name == 'pull_request_review'
+      || github.event_name == 'pull_request_review_comment'
+      || github.event_name == 'issue_comment'
+      || github.event_name == 'issues'
+      || github.event_name == 'check_run'
+      || github.event_name == 'repository_dispatch'
+    uses: petry-projects/.github-private/.github/workflows/dev-lead-reusable.yml@dev-lead/v139-stable  # NOSONAR(githubactions:S7637) first-party channel ref
+    with:
+      agent_ref: dev-lead/v139-stable
+    secrets: inherit  # NOSONAR(githubactions:S7635) first-party trusted reusable
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      actions: read
+      checks: read
+      statuses: read
+
+  # ── pr-review-mention ─────────────────────────────────────────────────────────
+  # Pinned to the pr-review-mention/v2-next channel tag on the public first-party
+  # host; scoped secrets forwarded explicitly (the reusable declares them).
+  pr-review-mention:
+    # PURE event filter (AC #2): pr-review-mention's own subscriptions.
+    if: >-
+      (github.event_name == 'pull_request' && github.event.action == 'review_requested')
+      || github.event_name == 'issue_comment'
+      || github.event_name == 'pull_request_review_comment'
+    permissions:
+      pull-requests: write
+    uses: petry-projects/.github/.github/workflows/pr-review-mention-reusable.yml@pr-review-mention/v2-next  # NOSONAR(githubactions:S7637) first-party channel ref
+    secrets:
+      GH_PAT_WORKFLOWS: ${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS }}
+      DON_PETRY_BOT_GH_PAT: ${{ secrets.DON_PETRY_BOT_GH_PAT }}
