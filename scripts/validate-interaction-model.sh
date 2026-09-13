@@ -416,7 +416,7 @@ imv_v_completeness() {
 imv_v_completeness_ingress() {
   local file="$1" rel="$2" rows="$3" jobs roles job role
   jobs="$(imv_wf_jobs "$file" | sort -u)"
-  roles="$(printf '%s\n' "$rows" | awk -F'\t' -v p="$rel" '$1==p {print $4}' | grep -v '^$' | sort -u)"
+  roles="$(printf '%s\n' "$rows" | awk -F'\t' -v p="$rel" '$1==p && $4!~/^[[:space:]]*$/ {print $4}' | sort -u)"
   while IFS= read -r job; do
     [ -n "$job" ] || continue
     if ! printf '%s\n' "$roles" | grep -qxF "$job"; then
