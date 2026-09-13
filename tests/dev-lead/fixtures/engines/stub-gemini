@@ -8,6 +8,15 @@
 #                                    same lookup as EXIT_BY_MODEL.
 #   STUB_ENGINE_RECORD_MODELS  — if set to a writable path, every --model value
 #                                seen is appended as a new line for inspection.
+#   STUB_ENGINE_EXIT_BY_KEY    — pipe-delimited "apikey=exit_code" pairs, matched
+#                                against the effective Gemini API key in the env
+#                                (GEMINI_API_KEY, else GOOGLE_API_KEY). Takes
+#                                precedence over STUB_ENGINE_EXIT_BY_MODEL — used
+#                                to exercise multi-key rotation (#1777).
+#   STUB_ENGINE_RESPONSE_BY_KEY  — pipe-delimited "apikey=response" pairs, same
+#                                  lookup and precedence as EXIT_BY_KEY.
+#   STUB_ENGINE_RECORD_KEYS    — if set to a writable path, the effective API key
+#                                seen on each call is appended as a new line.
 #   STUB_GEMINI_USAGE    — "prompt cached candidates" emitted under
 #                          .stats.models.<model>.tokens when --output-format json
 #                          is requested. Default "120 20 40".
@@ -31,6 +40,13 @@ if [ -n "${STUB_ENGINE_RECORD_MODELS:-}" ]; then
   printf '%s\n' "$model" >> "$STUB_ENGINE_RECORD_MODELS" 2>/dev/null || true
 fi
 
+# Effective Gemini API key the CLI would authenticate with (GEMINI_API_KEY wins,
+# else GOOGLE_API_KEY) — used for per-key rotation behavior and recording (#1777).
+api_key="${GEMINI_API_KEY:-${GOOGLE_API_KEY:-}}"
+if [ -n "${STUB_ENGINE_RECORD_KEYS:-}" ]; then
+  printf '%s\n' "$api_key" >> "$STUB_ENGINE_RECORD_KEYS" 2>/dev/null || true
+fi
+
 sleep "${STUB_ENGINE_DELAY:-0}"
 
 # Resolve response: per-model override → default.
@@ -40,6 +56,15 @@ if [ -n "${STUB_ENGINE_RESPONSE_BY_MODEL:-}" ] && [ -n "$model" ]; then
   for _p in "${_pairs[@]}"; do
     case "$_p" in
       "$model="*) response="${_p#"$model="}"; break ;;
+    esac
+  done
+fi
+# Per-key override takes precedence over the per-model / default response.
+if [ -n "${STUB_ENGINE_RESPONSE_BY_KEY:-}" ] && [ -n "$api_key" ]; then
+  IFS='|' read -ra _kpairs <<< "$STUB_ENGINE_RESPONSE_BY_KEY"
+  for _kp in "${_kpairs[@]}"; do
+    case "$_kp" in
+      "$api_key="*) response="${_kp#"$api_key="}"; break ;;
     esac
   done
 fi
@@ -71,6 +96,15 @@ if [ -n "${STUB_ENGINE_EXIT_BY_MODEL:-}" ] && [ -n "$model" ]; then
   for _ep in "${_epairs[@]}"; do
     case "$_ep" in
       "$model="*) exit_code="${_ep#"$model="}"; break ;;
+    esac
+  done
+fi
+# Per-key override takes precedence over the per-model / default exit code.
+if [ -n "${STUB_ENGINE_EXIT_BY_KEY:-}" ] && [ -n "$api_key" ]; then
+  IFS='|' read -ra _ekpairs <<< "$STUB_ENGINE_EXIT_BY_KEY"
+  for _ekp in "${_ekpairs[@]}"; do
+    case "$_ekp" in
+      "$api_key="*) exit_code="${_ekp#"$api_key="}"; break ;;
     esac
   done
 fi
