@@ -367,7 +367,7 @@ setup() {
 # an under-documented ingress is not a completeness rule).
 @test "AC6: an ingress with N role-jobs but N-1 rows fails completeness (FAIL[a])" {
   run env INTERACTION_MODEL_ROOT="$FIXTURES/ingress-underdoc" bash "$SCRIPT"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
   [[ "$output" == *"FAIL[a]"* ]]
   [[ "$output" == *"pr-review-mention"* ]]
 }
@@ -376,7 +376,7 @@ setup() {
 # must FAIL the §3 discriminator check.
 @test "AC6: an ingress row whose Class contradicts the shared on: block fails (FAIL[class])" {
   run env INTERACTION_MODEL_ROOT="$FIXTURES/ingress-misclass" bash "$SCRIPT"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
   [[ "$output" == *"FAIL[class]"* ]]
   [[ "$output" == *"Class 3"* ]]
 }
