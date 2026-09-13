@@ -138,6 +138,30 @@ EOF
   [[ "$output" != *"# Phase 2 — Fix"* ]]
 }
 
+@test "extract_markdown_headings: recognizes valid ATX headings with 0-3 leading spaces" {
+  source "$REPO_ROOT/scripts/lib/conflict-integrity.sh"
+  run extract_markdown_headings "$SCOPE_FIXTURES/prompts-prefix/indented-headings.md"
+  [ "$status" -eq 0 ]
+  # Should detect both indented duplicate headings
+  [[ "$output" == *"## Section A"* ]]
+  [[ "$output" == *"## Section B"* ]]
+  # Count occurrences of each heading (should be exactly 2 of each)
+  count_a=$(printf '%s\n' "$output" | grep -c "## Section A")
+  count_b=$(printf '%s\n' "$output" | grep -c "## Section B")
+  [ "$count_a" -eq 2 ]
+  [ "$count_b" -eq 2 ]
+}
+
+@test "gate: detects indented heading duplicates" {
+  mkdir -p "$WORKDIR/empty-scripts"
+  DUPLICATE_DECL_PROMPTS_DIR="$SCOPE_FIXTURES/prompts-prefix" \
+    run bash "$GATE" "$WORKDIR/empty-scripts"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"## Section A"* ]]
+  [[ "$output" == *"## Section B"* ]]
+  [[ "$output" == *"indented-headings.md"* ]]
+}
+
 @test "extract_yaml_mapping_keys: flags same-mapping dup, not cross-list-item repeats" {
   source "$REPO_ROOT/scripts/lib/conflict-integrity.sh"
   dup="$(extract_yaml_mapping_keys "$SCOPE_FIXTURES/personas-prefix/persona.yml" \

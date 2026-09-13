@@ -119,16 +119,35 @@ extract_markdown_headings() {
   local file="$1"
   [ -f "$file" ] || return 0
   awk '
-    # Toggle in/out of a fenced code block. Kept intentionally simple: any line
-    # whose first non-space run is ``` or ~~~ flips the state.
-    /^[[:space:]]*(```|~~~)/ { infence = !infence; next }
+    BEGIN { infence = 0; infence_char = ""; infence_count = 0 }
+    # Track in/out of fenced code blocks. Store the opening delimiter character
+    # and length, then only close when seeing a matching delimiter of at least
+    # the same length. Nested shorter fences do not toggle state.
+    /^[[:space:]]*(```|~~~)/ {
+      fence_line = $0
+      sub(/^[[:space:]]*/, "", fence_line)
+      fence_char = substr(fence_line, 1, 1)
+      fence_count = 0
+      while (substr(fence_line, fence_count + 1, 1) == fence_char) {
+        fence_count++
+      }
+      if (!infence) {
+        infence = 1
+        infence_char = fence_char
+        infence_count = fence_count
+      } else if (fence_char == infence_char && fence_count >= infence_count) {
+        infence = 0
+      }
+      next
+    }
     infence { next }
-    # ATX heading: a column-0 run of 1..6 "#" then whitespace then text.
-    /^#+[[:space:]]/ {
+    # ATX heading: 0-3 leading spaces, then 1..6 "#" then whitespace then text.
+    /^[[:space:]]{0,3}#+[[:space:]]/ {
       n = 0
-      while (substr($0, n + 1, 1) == "#") n++
+      line = $0
+      sub(/^[[:space:]]*/, "", line)
+      while (substr(line, n + 1, 1) == "#") n++
       if (n >= 1 && n <= 6) {
-        line = $0
         sub(/[[:space:]]+$/, "", line)
         print line
       }
@@ -203,11 +222,24 @@ extract_yaml_mapping_keys() {
           || content ~ /^"[^"]*"[[:space:]]*:([[:space:]]|$)/ \
           || content ~ /^'"'"'[^'"'"']*'"'"'[[:space:]]*:([[:space:]]|$)/) {
         key = content
-        sub(/:.*$/, "", key)
+        # Extract key: for quoted keys, retain the quotes and embedded colons
+        if (key ~ /^"/) {
+          n = 2
+          while (n <= length(key) && substr(key, n, 1) != "\"") n++
+          if (n <= length(key)) key = substr(key, 1, n)
+        } else if (key ~ /^'"'"'/) {
+          n = 2
+          while (n <= length(key) && substr(key, n, 1) != "'"'"'") n++
+          if (n <= length(key)) key = substr(key, 1, n)
+        } else {
+          sub(/:.*$/, "", key)
+        }
         sub(/[[:space:]]+$/, "", key)
         print scope_path() "\t" key
         val = content
-        sub(/^[^:]*:[[:space:]]*/, "", val)
+        # Skip the key part and remove the separator colon and spaces
+        val = substr(val, length(key) + 1)
+        sub(/^[[:space:]]*:[[:space:]]*/, "", val)
         top++
         findent[top] = ind
         flabel[top] = key
