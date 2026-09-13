@@ -52,7 +52,10 @@ rebase_count_failures() {
 #   the guard (never true).
 rebase_conflict_too_large() {
   local count="${1:-0}" max="${2:-0}"
-  [ "$max" -gt 0 ] && [ "$count" -gt "$max" ]
+  if [ "$max" -gt 0 ] && [ "$count" -gt "$max" ]; then
+    return 0
+  fi
+  return 1
 }
 
 # rebase_should_exhaust <fail_count> <threshold>
@@ -60,7 +63,10 @@ rebase_conflict_too_large() {
 #   exhaustion threshold. A threshold of 0 disables exhaustion (never true).
 rebase_should_exhaust() {
   local fails="${1:-0}" threshold="${2:-0}"
-  [ "$threshold" -gt 0 ] && [ "$fails" -ge "$threshold" ]
+  if [ "$threshold" -gt 0 ] && [ "$fails" -ge "$threshold" ]; then
+    return 0
+  fi
+  return 1
 }
 
 # rebase_failure_reason <exit_code>
