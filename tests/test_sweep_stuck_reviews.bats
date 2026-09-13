@@ -732,3 +732,90 @@ rl_and_escalation() {
   run grep -qF -- "force_review" "$GH_LOG"
   [ "$status" -eq 1 ]
 }
+
+# ───────────────────────────────────────────────────────────────────────────
+# Marker ≠ standing approval (issue #1665)
+#
+# The stop condition must be true ONLY when an approving review actually STANDS
+# at head — a non-dismissed state==APPROVED review carrying the approval marker.
+# A `decision=approved` MARKER STRING is not, by itself, proof of a standing
+# approval: it can survive in a DISMISSED review or be posted as a plain issue
+# COMMENT. Either way GitHub still wants a review (reviewDecision stays
+# REVIEW_REQUIRED), the PR is green + auto-merge-armed, and no event re-fires —
+# so the sweep MUST re-dispatch instead of stranding it. Terminal escalated /
+# fix-requested verdicts are unaffected (they still suppress). Fail open: an
+# indeterminate review state must never masquerade as a standing approval.
+# ───────────────────────────────────────────────────────────────────────────
+
+@test "dismissed approval marker at head does NOT stop the sweep — PR is re-dispatched (#1665 AC2)" {
+  local reviews='[{"state":"DISMISSED","body":"<!-- pr-review-agent v1 sha=h1665a decision=approved risk=LOW -->"}]'
+  write_pr 16651 "REVIEW_REQUIRED" "$ROLLUP_PASS" "h1665a" "$reviews"
+  url_for 16651 > "$SWEEP_PRS_FILE"
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  grep -qF -- "-f pr_url=$(url_for 16651)" "$GH_LOG"
+}
+
+@test "approval marker in an ISSUE COMMENT does NOT stop the sweep — PR is re-dispatched (#1665 AC3)" {
+  local comments='[{"body":"<!-- pr-review-agent v1 sha=h1665b decision=approved risk=LOW -->"}]'
+  write_pr 16652 "REVIEW_REQUIRED" "$ROLLUP_PASS" "h1665b" "[]" "$comments"
+  url_for 16652 > "$SWEEP_PRS_FILE"
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  grep -qF -- "-f pr_url=$(url_for 16652)" "$GH_LOG"
+}
+
+@test "indeterminate review state carrying the approval marker fails open — PR is re-dispatched (#1665 AC5)" {
+  # A review with a MISSING state must never be treated as a standing approval.
+  local reviews='[{"body":"<!-- pr-review-agent v1 sha=h1665c decision=approved risk=LOW -->"}]'
+  write_pr 16653 "REVIEW_REQUIRED" "$ROLLUP_PASS" "h1665c" "$reviews"
+  url_for 16653 > "$SWEEP_PRS_FILE"
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  grep -qF -- "-f pr_url=$(url_for 16653)" "$GH_LOG"
+}
+
+@test "a STANDING approved review at head is NOT re-dispatched (idempotency preserved, #1665 AC6)" {
+  local reviews='[{"state":"APPROVED","body":"<!-- pr-review-agent v1 sha=h1665d decision=approved risk=LOW -->"}]'
+  write_pr 16654 "REVIEW_REQUIRED" "$ROLLUP_PASS" "h1665d" "$reviews"
+  url_for 16654 > "$SWEEP_PRS_FILE"
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ ! -s "$GH_LOG" ]
+}
+
+@test "a terminal escalated verdict at head still stops the sweep (#1665 — no regression to #1548)" {
+  local reviews='[{"state":"COMMENTED","body":"<!-- pr-review-agent v1 sha=h1665e decision=escalated risk=HIGH -->"}]'
+  write_pr 16655 "REVIEW_REQUIRED" "$ROLLUP_PASS" "h1665e" "$reviews"
+  url_for 16655 > "$SWEEP_PRS_FILE"
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ ! -s "$GH_LOG" ]
+}
+
+@test "rate-limited branch: a DISMISSED approval does not resolve the retry — it still fires (#1665 AC4)" {
+  # Both call sites must key on a STANDING approval, not the marker. Here the
+  # rate-limited retry must not be suppressed by a dismissed approval marker.
+  local reviews='[{"state":"DISMISSED","body":"<!-- pr-review-agent v1 sha=h1665f decision=approved risk=LOW -->"}]'
+  write_pr 16656 "REVIEW_REQUIRED" "$ROLLUP_PASS" "h1665f" "$reviews" "$(rl_comment h1665f "$PAST_RESET")"
+  url_for 16656 > "$SWEEP_PRS_FILE"
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  grep -qF -- "-f pr_url=$(url_for 16656)" "$GH_LOG"
+}
+
+@test "rate-limited branch: a STANDING approval at head DOES resolve the retry — it does not fire (#1665 AC4)" {
+  local reviews='[{"state":"APPROVED","body":"<!-- pr-review-agent v1 sha=h1665g decision=approved risk=LOW -->"}]'
+  write_pr 16657 "REVIEW_REQUIRED" "$ROLLUP_PASS" "h1665g" "$reviews" "$(rl_comment h1665g "$PAST_RESET")"
+  url_for 16657 > "$SWEEP_PRS_FILE"
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ ! -s "$GH_LOG" ]
+}
