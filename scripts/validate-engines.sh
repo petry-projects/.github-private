@@ -28,19 +28,22 @@
 # Returns 0 — billing OK or status undetermined (fail-open: Gemini proceeds).
 # Returns 1 — billing explicitly depleted (RESOURCE_EXHAUSTED detected).
 #
-# Requires: GOOGLE_API_KEY, curl (skips probe if curl is absent).
+# Requires: A Gemini API key (GOOGLE_API_KEY or secondary keys), curl (skips probe if curl is absent).
 _gemini_billing_probe() {
   if ! command -v curl >/dev/null 2>&1; then
     return 0
   fi
+
+  local _key="${GOOGLE_API_KEY:-${GEMINI_API_KEY:-${GOOGLE_API_KEY_2:-${GOOGLE_API_KEY_3}}}}"
+  [ -z "$_key" ] && return 0
 
   local _raw _body
   _raw=$(
     timeout 15 curl -sS --max-time 10 \
       -X POST \
       -H "Content-Type: application/json" \
-      -H "X-Goog-Api-Key: ${GOOGLE_API_KEY}" \
-      "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent" \
+      -H "X-Goog-Api-Key: ${_key}" \
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent" \
       -d '{"contents":[{"parts":[{"text":"Hi"}]}],"generationConfig":{"maxOutputTokens":1}}' \
       -w '\n%{http_code}' 2>/dev/null
   ) || true
@@ -92,14 +95,11 @@ validate_engines() {
   if ! command -v gemini >/dev/null 2>&1; then
     append_gemini_reason "Gemini CLI not installed (fix: npm install -g @google/gemini-cli)"
   fi
-  if [ -z "${GOOGLE_API_KEY:-}" ]; then
-    append_gemini_reason "GOOGLE_API_KEY secret not set"
-  fi
-  if [ "${GEMINI_CLI_TRUST_WORKSPACE:-false}" != "true" ]; then
-    append_gemini_reason "GEMINI_CLI_TRUST_WORKSPACE is not true (fix: set in env or pass --skip-trust)"
-  fi
-  if [ "${GEMINI_CLI_TRUST_WORKSPACE:-false}" != "true" ]; then
-    append_gemini_reason "GEMINI_CLI_TRUST_WORKSPACE is not true (fix: set in env or pass --skip-trust)"
+  # Check for any available Gemini API key: primary (GEMINI_API_KEY or GOOGLE_API_KEY)
+  # or secondary rotation keys (GOOGLE_API_KEY_2, GOOGLE_API_KEY_3) per issue #1777.
+  if [ -z "${GEMINI_API_KEY:-}" ] && [ -z "${GOOGLE_API_KEY:-}" ] && \
+     [ -z "${GOOGLE_API_KEY_2:-}" ] && [ -z "${GOOGLE_API_KEY_3:-}" ]; then
+    append_gemini_reason "No Gemini API key configured (set GOOGLE_API_KEY, GOOGLE_API_KEY_2, or GOOGLE_API_KEY_3)"
   fi
   if [ "${GEMINI_CLI_TRUST_WORKSPACE:-false}" != "true" ]; then
     append_gemini_reason "GEMINI_CLI_TRUST_WORKSPACE is not true (fix: set in env or pass --skip-trust)"

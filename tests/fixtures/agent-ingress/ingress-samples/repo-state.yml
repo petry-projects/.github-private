@@ -1,0 +1,29 @@
+name: Agent Ingress
+# FIXTURE — the dev-lead job's if: reaches for repo state (an org/repo config
+# variable, vars.*). That is a script-in-disguise gate that belongs in the
+# reusable, not the thin caller's if:. The if:-filter guard must FAIL and name
+# the forbidden `vars` construct (rulings key: vars → FORBID).
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+  issue_comment:
+    types: [created]
+
+permissions: {}
+
+jobs:
+  dev-lead:
+    if: >-
+      github.event_name == 'pull_request'
+      && vars.DEV_LEAD_ENGINE == 'claude'
+    uses: petry-projects/.github-private/.github/workflows/dev-lead-reusable.yml@dev-lead/v139-stable
+    with:
+      agent_ref: dev-lead/v139-stable
+    permissions:
+      contents: write
+
+  pr-review-mention:
+    if: github.event.action == 'review_requested'
+    uses: petry-projects/.github/.github/workflows/pr-review-mention-reusable.yml@pr-review-mention/v2-next
+    permissions:
+      pull-requests: write
