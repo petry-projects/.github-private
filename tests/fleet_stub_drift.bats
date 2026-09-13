@@ -167,3 +167,124 @@ teardown() {
   [[ "$output" == *"ALIGNED"* || "$output" == *"aligned"* || "$output" == *"No drift"* ]]
   rm -f "$aligned"
 }
+
+# ---------------------------------------------------------------------------
+# Per-job (role-selector) extraction over an agent-ingress.yml fixture (#1726).
+# The per-role Class-1 stubs collapse into ONE agent-ingress.yml with one job per
+# role; detection moves from whole-file blob SHA to extracted-per-job-block SHA.
+# Fixtures live under tests/fixtures/agent-ingress/.
+# ---------------------------------------------------------------------------
+
+INGRESS="${BATS_TEST_DIRNAME}/fixtures/agent-ingress/canonical.yml"
+INGRESS_DRIFTED="${BATS_TEST_DIRNAME}/fixtures/agent-ingress/drifted-dev-lead.yml"
+INGRESS_NO_DEVLEAD="${BATS_TEST_DIRNAME}/fixtures/agent-ingress/collapsed-no-dev-lead.yml"
+
+@test "extract_job_block: extracts ONLY the named job's block" {
+  run extract_job_block "dev-lead" < "$INGRESS"
+  [ "$status" -eq 0 ]
+  # The dev-lead block carries its own reusable pin ...
+  [[ "$output" == *"dev-lead-reusable.yml"* ]]
+  [[ "$output" == *"  dev-lead:"* ]]
+  # ... and NOT the sibling job's key or reusable (block isolation).
+  [[ "$output" != *"pr-review-mention-reusable.yml"* ]]
+  [[ "$output" != *"pr-review-mention:"* ]]
+}
+
+@test "extract_job_block: an absent job yields empty output" {
+  run extract_job_block "does-not-exist" < "$INGRESS"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "job_block_sha: distinct job blocks hash differently; identical file hashes equal" {
+  dl="$(job_block_sha "dev-lead" < "$INGRESS")"
+  prm="$(job_block_sha "pr-review-mention" < "$INGRESS")"
+  [ -n "$dl" ]
+  [ -n "$prm" ]
+  [ "$dl" != "$prm" ]
+  # Same file, same job ⇒ same block SHA (deterministic).
+  dl2="$(job_block_sha "dev-lead" < "$INGRESS")"
+  [ "$dl" = "$dl2" ]
+}
+
+@test "job_block_sha: an absent job block is empty (classifies MISSING, not resurrected)" {
+  run job_block_sha "dev-lead" < "$INGRESS_NO_DEVLEAD"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+# QA input #6: drift introduced in EXACTLY ONE job block must be DETECTED and the
+# SPECIFIC job identified — while the sibling job is proven NOT to have drifted.
+@test "classify_role_drift: drift in one job is DETECTED on that job, sibling stays ALIGNED (AC #1, QA #6)" {
+  canon_dl="$(job_block_sha "dev-lead" < "$INGRESS")"
+  repo_dl="$(job_block_sha "dev-lead" < "$INGRESS_DRIFTED")"
+  # The dev-lead block genuinely differs between canon and the drifted fixture.
+  [ "$canon_dl" != "$repo_dl" ]
+  run classify_role_drift "yes" "$canon_dl" "$repo_dl" "" ""
+  [ "$output" = "DRIFTED" ]
+
+  # The sibling pr-review-mention block is byte-identical ⇒ ALIGNED (not drifted).
+  canon_prm="$(job_block_sha "pr-review-mention" < "$INGRESS")"
+  repo_prm="$(job_block_sha "pr-review-mention" < "$INGRESS_DRIFTED")"
+  [ "$canon_prm" = "$repo_prm" ]
+  run classify_role_drift "yes" "$canon_prm" "$repo_prm" "" ""
+  [ "$output" = "ALIGNED" ]
+}
+
+@test "classify_role_drift: an aligned ingress block is ALIGNED" {
+  canon_dl="$(job_block_sha "dev-lead" < "$INGRESS")"
+  run classify_role_drift "yes" "$canon_dl" "$canon_dl" "" ""
+  [ "$output" = "ALIGNED" ]
+}
+
+# Never-resurrect: a collapsed repo (ingress present) with the role block removed
+# is MISSING — even when a legacy per-role blob SHA is supplied, the legacy file
+# is IGNORED so remediation can never recreate the deleted stub.
+@test "classify_role_drift: ingress present + absent block is MISSING, legacy ignored (never resurrect)" {
+  canon_dl="$(job_block_sha "dev-lead" < "$INGRESS")"
+  absent_block="$(job_block_sha "dev-lead" < "$INGRESS_NO_DEVLEAD")"   # empty
+  [ -z "$absent_block" ]
+  run classify_role_drift "yes" "$canon_dl" "$absent_block" "legacycanon00000000000000000000000000000" "legacyrepo000000000000000000000000000000"
+  [ "$output" = "MISSING" ]
+}
+
+# Backward compatibility (AC #4): a legacy repo with NO agent-ingress.yml still
+# classifies on the whole-file per-role SHAs, exactly as before.
+@test "classify_role_drift: no ingress (legacy repo) classifies on whole-file per-role SHAs (AC #4)" {
+  local canon="cafecafecafecafecafecafecafecafecafecafe"
+  run classify_role_drift "no" "irrelevant-block-sha" "" "$canon" "$canon"
+  [ "$output" = "ALIGNED" ]
+  run classify_role_drift "no" "irrelevant-block-sha" "" "$canon" "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+  [ "$output" = "DRIFTED" ]
+  run classify_role_drift "no" "irrelevant-block-sha" "" "$canon" ""
+  [ "$output" = "MISSING" ]
+}
+
+# ---------------------------------------------------------------------------
+# stub_drift_row_role — role rows flow through the SAME 4-field TSV shape as
+# whole-file rows, so the report/alert path is shared. The emitted SHAs are the
+# pair actually compared (block SHAs when ingress present, else legacy SHAs).
+# ---------------------------------------------------------------------------
+
+@test "stub_drift_row_role: ingress present emits the BLOCK SHAs and its status" {
+  canon_dl="$(job_block_sha "dev-lead" < "$INGRESS")"
+  repo_dl="$(job_block_sha "dev-lead" < "$INGRESS_DRIFTED")"
+  run stub_drift_row_role "petry-projects/alpha" "yes" "$canon_dl" "$repo_dl" "" ""
+  [ "$status" -eq 0 ]
+  [ "$output" = "$(printf 'petry-projects/alpha\tDRIFTED\t%s\t%s' "$repo_dl" "$canon_dl")" ]
+}
+
+@test "stub_drift_row_role: ingress present + removed block is MISSING with an empty repo SHA (never resurrect)" {
+  canon_dl="$(job_block_sha "dev-lead" < "$INGRESS")"
+  run stub_drift_row_role "petry-projects/charlie" "yes" "$canon_dl" "" "legacycanon00000000000000000000000000000" "legacyrepo000000000000000000000000000000"
+  [ "$status" -eq 0 ]
+  # Legacy SHAs are IGNORED: the emitted row carries the (empty) block SHA + canon block.
+  [ "$output" = "$(printf 'petry-projects/charlie\tMISSING\t\t%s' "$canon_dl")" ]
+}
+
+@test "stub_drift_row_role: no ingress (legacy repo) emits the legacy whole-file SHAs (AC #4)" {
+  local canon="cafecafecafecafecafecafecafecafecafecafe"
+  run stub_drift_row_role "petry-projects/delta" "no" "block-sha-ignored" "" "$canon" "$canon"
+  [ "$status" -eq 0 ]
+  [ "$output" = "$(printf 'petry-projects/delta\tALIGNED\t%s\t%s' "$canon" "$canon")" ]
+}
