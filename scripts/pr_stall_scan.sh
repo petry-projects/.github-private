@@ -28,6 +28,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # classifying, exactly as review-one-pr.sh / sweep-stuck-reviews.sh do (#469).
 # shellcheck source=scripts/lib/ci-status.sh
 source "${SCRIPT_DIR}/lib/ci-status.sh"
+# standing-approval.sh (#1665): pr_standing_approval_count — the authoritative
+# "does an approving review STAND at head?" primitive for the stranded-approval
+# backstop section (AC8). Shared with sweep-stuck-reviews.sh. Sourced BEFORE
+# pr-stall-detect.sh, which reassigns SCRIPT_DIR to its own lib dir.
+# shellcheck source=scripts/lib/standing-approval.sh
+source "${SCRIPT_DIR}/lib/standing-approval.sh"
 # pr-stall-detect.sh sources pr-automation-budget.sh, giving us the canonical
 # human-gate check (pr_has_escalation_label), the exhaustion marker constant, and
 # gather_pr_automation_events for the last-activity (idle) computation.
@@ -77,11 +83,13 @@ fi
 # ---------------------------------------------------------------------------
 # 2. Per-PR state -> detection (detection only, no mutation)
 # ---------------------------------------------------------------------------
-candidates_file=$(mktemp) || {
-  echo "Failed to create temp file" >&2
-  exit 1
-}
-trap 'rm -f "$candidates_file"' EXIT
+# Accumulate candidate TSV rows in plain variables (no temp files, so nothing can
+# be orphaned on an early exit). candidates_rows is the stall net; stranded_rows is
+# the independent #1665 stranded-approval backstop (AC8): green + auto-merge armed +
+# no standing approval + idle > threshold. Each row: pr <TAB> url <TAB> title <TAB>
+# reason, newline-separated.
+candidates_rows=""
+stranded_rows=""
 now_epoch=$(date -u +%s)
 scanned=0
 scan_incomplete=false
@@ -93,7 +101,7 @@ while IFS= read -r pr; do
   # One snapshot gives CI rollup, review decision, head, review/comment bodies,
   # labels, title, and url — the same shape sweep-stuck-reviews.sh consumes.
   if ! snapshot=$(gh pr view "$pr" --repo "$REPO" \
-        --json headRefOid,statusCheckRollup,reviewDecision,reviews,comments,labels,title,url,updatedAt 2>/dev/null); then
+        --json headRefOid,statusCheckRollup,reviewDecision,reviews,comments,labels,title,url,updatedAt,autoMergeRequest 2>/dev/null); then
     echo "  skip PR #${pr} — could not fetch (deleted, no access, or rate-limited)"
     scan_incomplete=true
     continue
@@ -144,34 +152,59 @@ while IFS= read -r pr; do
   [ -n "$last_activity" ] || last_activity="$updated_at"
   mins_idle=$(pr_minutes_since "$last_activity" "$now_epoch")
 
+  # Sanitize the title once for a single markdown table cell: strip newlines/tabs
+  # (the TSV delimiter) and pipes (the markdown column delimiter).
+  safe_title=$(printf '%s' "$title" | tr '\n\t|' '   ')
+
   reason=$(pr_stall_reasons "$ci_status" "$review_decision" "$reviewed_at_head" "$mins_idle" "$gated")
   if [ -n "$reason" ]; then
-    # Sanitize the title for a single markdown table cell: strip newlines/tabs
-    # (the TSV delimiter) and pipes (the markdown column delimiter).
-    safe_title=$(printf '%s' "$title" | tr '\n\t|' '   ')
-    printf '%s\t%s\t%s\t%s\n' "$pr" "$html_url" "$safe_title" "$reason" \
-      >> "$candidates_file"
+    candidates_rows+=$(printf '%s\t%s\t%s\t%s' "$pr" "$html_url" "$safe_title" "$reason")$'\n'
     echo "::warning::Stalled PR #${pr} — ${reason}"
+  fi
+
+  # Stranded-approval backstop (#1665 AC8). A standing approval is a non-dismissed
+  # state==APPROVED review carrying the approval marker at head — NOT a bare
+  # `decision=approved` marker in a dismissed review or an issue comment. When the
+  # PR is green with auto-merge armed but no approval STANDS, and it has been idle
+  # (no sweep re-dispatch) past the hours threshold, surface it.
+  standing_approval=$(pr_standing_approval_count "$snapshot" "$head_sha")
+  auto_merge_armed=false
+  if jq -e '.autoMergeRequest != null' <<< "$snapshot" >/dev/null 2>&1; then
+    auto_merge_armed=true
+  fi
+  # Round UP to whole hours: floor division would truncate a PR idle 4h30m to 4,
+  # which (with the strict > threshold) delays reporting until 5h. Ceiling keeps
+  # "idle past N hours" honest — any idle strictly beyond the whole-hour boundary
+  # fires on time.
+  hours_idle=$(( (mins_idle + 59) / 60 ))
+  stranded_reason=$(pr_stranded_approval_reasons "$ci_status" "$auto_merge_armed" "$standing_approval" "$hours_idle" "$gated")
+  if [ -n "$stranded_reason" ]; then
+    stranded_rows+=$(printf '%s\t%s\t%s\t%s' "$pr" "$html_url" "$safe_title" "$stranded_reason")$'\n'
+    echo "::warning::Stranded-approval PR #${pr} — ${stranded_reason}"
   fi
 done <<< "$open_prs"
 
 # grep -c prints the count even at zero matches (exiting 1), so `|| true` swallows
-# that exit without appending a second "0".
-stall_count=$(grep -c . "$candidates_file" 2>/dev/null || true)
+# that exit without appending a second "0". `grep .` on empty input counts 0 rows.
+stall_count=$(grep -c . <<< "$candidates_rows" 2>/dev/null || true)
 stall_count=${stall_count:-0}
-echo "Scanned ${scanned} open PR(s); ${stall_count} stall candidate(s)."
+stranded_count=$(grep -c . <<< "$stranded_rows" 2>/dev/null || true)
+stranded_count=${stranded_count:-0}
+echo "Scanned ${scanned} open PR(s); ${stall_count} stall candidate(s), ${stranded_count} stranded-approval candidate(s)."
 
 # ---------------------------------------------------------------------------
 # 3. Render report + export env flags
 # ---------------------------------------------------------------------------
 {
   printf '# Stalled PR Detection — %s\n\n' "$TODAY"
-  printf '**Repo:** `%s` | **Open PRs scanned:** %s | **Candidates:** %s\n\n' \
-    "$REPO" "$scanned" "$stall_count"
+  printf '**Repo:** `%s` | **Open PRs scanned:** %s | **Stall candidates:** %s | **Stranded-approval candidates:** %s\n\n' \
+    "$REPO" "$scanned" "$stall_count" "$stranded_count"
   if [ "$scan_incomplete" = "true" ]; then
     printf '> ⚠️ **Scan incomplete**: one or more PRs were skipped due to API errors or rate limits. The candidate count above may understate actual stalls.\n\n'
   fi
-  generate_stall_report "$candidates_file"
+  generate_stall_report "$candidates_rows"
+  printf '\n'
+  generate_stranded_approval_report "$stranded_rows"
 } > "$REPORT_FILE"
 
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
@@ -180,7 +213,10 @@ fi
 
 if [ -n "${GITHUB_ENV:-}" ]; then
   echo "STALL_COUNT=${stall_count}" >> "$GITHUB_ENV"
-  if [ "$stall_count" -gt 0 ]; then
+  echo "STRANDED_APPROVAL_COUNT=${stranded_count}" >> "$GITHUB_ENV"
+  # Fold both nets into the single HAS_STALL flag the daily health-check workflow
+  # already gates the report post on — no new workflow wiring (#1665 AC8).
+  if [ "$stall_count" -gt 0 ] || [ "$stranded_count" -gt 0 ]; then
     echo "HAS_STALL=true" >> "$GITHUB_ENV"
   elif [ "$scan_incomplete" = "true" ]; then
     echo "::warning::Stall scan incomplete (PRs skipped due to API errors) — not emitting HAS_STALL=false to avoid a false all-clear"
