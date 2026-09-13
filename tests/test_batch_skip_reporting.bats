@@ -125,3 +125,37 @@ EOF
   # An already-reviewed no-op is genuinely done — it is NOT a CI deferral.
   [[ "$output" != *"deferred"* ]]
 }
+
+# ── AC #4 (issue #1744): "0 reviews posted" must not mean two different things ──
+# An empty queue (no candidates found) and a full queue where every candidate was
+# a no-op both yield "0 reviews posted". The summary line must distinguish them so
+# a silent-success omission (an eligible PR missing from the pool) can't hide as an
+# ordinary all-no-ops run.
+
+@test "batch: empty queue reports a distinct 'no candidates found' summary" {
+  : > "$PRS_FILE"   # empty candidate list — nothing enumerated
+
+  run bash scripts/review-batch.sh
+  echo "$output" >&2
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Summary:"* ]]
+  # Names the empty-queue state explicitly...
+  [[ "$output" == *"empty queue"* ]]
+  # ...and is NOT phrased like a run that processed candidates.
+  [[ "$output" != *"processed"* ]]
+}
+
+@test "batch: candidates-all-no-ops summary is distinct from an empty queue" {
+  _stub_already_reviewed   # one candidate, reviewed as a no-op
+
+  run bash scripts/review-batch.sh
+  echo "$output" >&2
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Summary:"* ]]
+  # This run DID find candidates — it must say so, and must not read as empty.
+  [[ "$output" == *"candidate"* ]]
+  [[ "$output" != *"empty queue"* ]]
+  [[ "$output" == *"no-op"* ]]
+}
