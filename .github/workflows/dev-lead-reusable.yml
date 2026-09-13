@@ -41,6 +41,12 @@ on:
         required: false
       GOOGLE_API_KEY:
         required: false
+      GOOGLE_API_KEY_2:
+        # Extra Gemini API key for per-key rotation on rate-limit (#1777).
+        required: false
+      GOOGLE_API_KEY_3:
+        # Extra Gemini API key for per-key rotation on rate-limit (#1777).
+        required: false
 
 permissions: {}
 
@@ -207,6 +213,8 @@ jobs:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          GOOGLE_API_KEY_2: ${{ secrets.GOOGLE_API_KEY_2 }}
+          GOOGLE_API_KEY_3: ${{ secrets.GOOGLE_API_KEY_3 }}
           COPILOT_GITHUB_TOKEN: ${{ secrets.GH_PAT_DON_PETRY }}
         run: bash .dev-lead/scripts/dev-lead-intent.sh
 
@@ -294,6 +302,8 @@ jobs:
           GH_PAT_WORKFLOWS: ${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          GOOGLE_API_KEY_2: ${{ secrets.GOOGLE_API_KEY_2 }}
+          GOOGLE_API_KEY_3: ${{ secrets.GOOGLE_API_KEY_3 }}
           GH_PAT: ${{ secrets.GH_PAT_DON_PETRY }}
         run: bash .dev-lead/scripts/dev-lead-preflight.sh
 
@@ -350,6 +360,8 @@ jobs:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          GOOGLE_API_KEY_2: ${{ secrets.GOOGLE_API_KEY_2 }}
+          GOOGLE_API_KEY_3: ${{ secrets.GOOGLE_API_KEY_3 }}
           COPILOT_GITHUB_TOKEN: ${{ secrets.GH_PAT_DON_PETRY }}
           PROMPTS_DIR: .dev-lead/prompts/dev-lead
         run: |
@@ -369,6 +381,8 @@ jobs:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          GOOGLE_API_KEY_2: ${{ secrets.GOOGLE_API_KEY_2 }}
+          GOOGLE_API_KEY_3: ${{ secrets.GOOGLE_API_KEY_3 }}
           COPILOT_GITHUB_TOKEN: ${{ secrets.GH_PAT_DON_PETRY }}
           PROMPTS_DIR: .dev-lead/prompts/dev-lead
         run: |
@@ -388,6 +402,8 @@ jobs:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          GOOGLE_API_KEY_2: ${{ secrets.GOOGLE_API_KEY_2 }}
+          GOOGLE_API_KEY_3: ${{ secrets.GOOGLE_API_KEY_3 }}
           COPILOT_GITHUB_TOKEN: ${{ secrets.GH_PAT_DON_PETRY }}
           PROMPTS_DIR: .dev-lead/prompts/dev-lead
         run: |
@@ -407,6 +423,8 @@ jobs:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          GOOGLE_API_KEY_2: ${{ secrets.GOOGLE_API_KEY_2 }}
+          GOOGLE_API_KEY_3: ${{ secrets.GOOGLE_API_KEY_3 }}
           COPILOT_GITHUB_TOKEN: ${{ secrets.GH_PAT_DON_PETRY }}
           PROMPTS_DIR: .dev-lead/prompts/dev-lead
         run: |
@@ -426,6 +444,8 @@ jobs:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          GOOGLE_API_KEY_2: ${{ secrets.GOOGLE_API_KEY_2 }}
+          GOOGLE_API_KEY_3: ${{ secrets.GOOGLE_API_KEY_3 }}
           COPILOT_GITHUB_TOKEN: ${{ secrets.GH_PAT_DON_PETRY }}
           PROMPTS_DIR: .dev-lead/prompts/dev-lead
         run: |
@@ -443,6 +463,8 @@ jobs:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          GOOGLE_API_KEY_2: ${{ secrets.GOOGLE_API_KEY_2 }}
+          GOOGLE_API_KEY_3: ${{ secrets.GOOGLE_API_KEY_3 }}
           COPILOT_GITHUB_TOKEN: ${{ secrets.GH_PAT_DON_PETRY }}
           PROMPTS_DIR: .dev-lead/prompts/dev-lead
         run: |
@@ -460,6 +482,8 @@ jobs:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          GOOGLE_API_KEY_2: ${{ secrets.GOOGLE_API_KEY_2 }}
+          GOOGLE_API_KEY_3: ${{ secrets.GOOGLE_API_KEY_3 }}
           COPILOT_GITHUB_TOKEN: ${{ secrets.GH_PAT_DON_PETRY }}
           PROMPTS_DIR: .dev-lead/prompts/dev-lead
         run: |
