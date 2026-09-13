@@ -1048,17 +1048,21 @@ expire_stale_rate_limited_marker() {
   done
 }
 
-# has_reviews_rate_limited_marker: returns 0 if a hold marker (status=rate-limited
-# OR status=blocked, #1568) for this intent+SHA already exists on the PR (dedup
-# check — suppresses repeat visible acks across either hold reason).
+# has_reviews_rate_limited_marker: returns 0 if a hold marker with the same reason
+# (status=rate-limited for rate-limit reason, status=blocked for blocked reason, #1568)
+# for this intent+SHA already exists on the PR (dedup check — suppresses repeat
+# visible acks for the SAME hold reason, not across reason changes).
 has_reviews_rate_limited_marker() {
   local intent="$1"
+  local reason="${2:-rate-limit}"
   local sha="${HEAD_SHA:-}"
   [ -z "$sha" ] && return 1  # no SHA means no dedup possible
-  local pattern="${REVIEWS_MARKER_PREFIX}${PR_NUMBER} sha=${sha} intent=${intent} status=(rate-limited|blocked)"
+  local status_token="rate-limited"
+  [ "$reason" = "blocked" ] && status_token="blocked"
+  local pattern="${REVIEWS_MARKER_PREFIX}${PR_NUMBER} sha=${sha} intent=${intent} status=${status_token}"
   local count
   count=$(gh api --paginate "repos/${REPO}/issues/${PR_NUMBER}/comments?per_page=100" 2>/dev/null \
-    | jq "[.[] | select(.body | test(\"${pattern}\"))] | length" 2>/dev/null \
+    | jq -c --arg pat "$pattern" '[.[] | select(.body | test($pat))] | length' 2>/dev/null \
     || echo "0")
   [ "${count:-0}" -gt 0 ]
 }
@@ -1099,12 +1103,14 @@ post_reviews_rate_limited() {
   # cause the cron to skip dispatch even though a new rate-limited marker was just posted.
   expire_stale_terminal_markers "$intent"
 
-  # Detect whether a prior rate-limited marker exists BEFORE posting the new one.
+  # Detect whether a prior marker with the same reason exists BEFORE posting the new one.
   # Used to suppress duplicate visible ack comments when a persistent blocker keeps
   # triggering retries — the user-facing ack is only shown on the first cycle.
+  # Only suppress if the reason is the same (issue #1568 logic error: suppress on
+  # reason change would hide the shift from blocked→rate-limited or vice versa).
   local had_prior_rl_marker=false
   if [ "${DEV_LEAD_DRY_RUN:-false}" = "false" ]; then
-    has_reviews_rate_limited_marker "$intent" && had_prior_rl_marker=true
+    has_reviews_rate_limited_marker "$intent" "$reason" && had_prior_rl_marker=true
   fi
 
   # Collect IDs of existing rate-limited markers BEFORE posting the new one. The new
