@@ -131,11 +131,16 @@ extract_markdown_headings() {
       while (substr(fence_line, fence_count + 1, 1) == fence_char) {
         fence_count++
       }
+      # Text after the run of delimiters. An opening fence may carry an info
+      # string (```bash), but a *closing* fence must be the delimiter alone —
+      # ``` followed by non-whitespace is code content, not a close.
+      fence_tail = substr(fence_line, fence_count + 1)
       if (!infence) {
         infence = 1
         infence_char = fence_char
         infence_count = fence_count
-      } else if (fence_char == infence_char && fence_count >= infence_count) {
+      } else if (fence_char == infence_char && fence_count >= infence_count \
+                 && fence_tail ~ /^[[:space:]]*$/) {
         infence = 0
       }
       next
@@ -148,6 +153,9 @@ extract_markdown_headings() {
       sub(/^[[:space:]]*/, "", line)
       while (substr(line, n + 1, 1) == "#") n++
       if (n >= 1 && n <= 6) {
+        # Drop an optional ATX closing marker (`### Phase 2 ###`) so it compares
+        # equal to the bare form (`### Phase 2`); then trim trailing whitespace.
+        sub(/[[:space:]]+#+[[:space:]]*$/, "", line)
         sub(/[[:space:]]+$/, "", line)
         print line
       }
@@ -222,27 +230,36 @@ extract_yaml_mapping_keys() {
           || content ~ /^"[^"]*"[[:space:]]*:([[:space:]]|$)/ \
           || content ~ /^'"'"'[^'"'"']*'"'"'[[:space:]]*:([[:space:]]|$)/) {
         key = content
-        # Extract key: for quoted keys, retain the quotes and embedded colons
+        # Two forms of the key: rawkey is the exact source span (incl. quotes),
+        # used to advance past the key when extracting val; canon is the decoded
+        # key used for duplicate comparison. YAML treats reusable, "reusable" and
+        # '"'"'reusable'"'"' as the same scalar key, so stripping the surrounding
+        # quotes makes a bare+quoted pair collide under `uniq -d` (#1782).
         if (key ~ /^"/) {
           n = 2
           while (n <= length(key) && substr(key, n, 1) != "\"") n++
-          if (n <= length(key)) key = substr(key, 1, n)
+          rawkey = substr(key, 1, n)
+          canon  = substr(key, 2, n - 2)
         } else if (key ~ /^'"'"'/) {
           n = 2
           while (n <= length(key) && substr(key, n, 1) != "'"'"'") n++
-          if (n <= length(key)) key = substr(key, 1, n)
+          rawkey = substr(key, 1, n)
+          canon  = substr(key, 2, n - 2)
         } else {
-          sub(/:.*$/, "", key)
+          rawkey = key
+          sub(/:.*$/, "", rawkey)
+          canon = rawkey
         }
-        sub(/[[:space:]]+$/, "", key)
-        print scope_path() "\t" key
+        sub(/[[:space:]]+$/, "", rawkey)
+        sub(/[[:space:]]+$/, "", canon)
+        print scope_path() "\t" canon
         val = content
-        # Skip the key part and remove the separator colon and spaces
-        val = substr(val, length(key) + 1)
+        # Skip the raw key span and remove the separator colon and spaces
+        val = substr(val, length(rawkey) + 1)
         sub(/^[[:space:]]*:[[:space:]]*/, "", val)
         top++
         findent[top] = ind
-        flabel[top] = key
+        flabel[top] = canon
         if (val ~ /^[|>]/) { in_block = 1; block_indent = ind }
         next
       }

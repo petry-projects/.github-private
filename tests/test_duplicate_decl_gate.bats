@@ -171,3 +171,40 @@ EOF
     | LC_ALL=C sort | uniq -d)"
   [ -z "$ok" ]
 }
+
+@test "extract_yaml_mapping_keys: canonicalizes bare and quoted spellings of one key" {
+  source "$REPO_ROOT/scripts/lib/conflict-integrity.sh"
+  cat > "$WORKDIR/quoted-key.yml" <<'EOF'
+runtime:
+  reusable: true
+  "reusable": false
+EOF
+  dup="$(extract_yaml_mapping_keys "$WORKDIR/quoted-key.yml" | LC_ALL=C sort | uniq -d)"
+  [[ "$dup" == *"reusable"* ]]
+}
+
+@test "extract_markdown_headings: a matching delimiter with non-whitespace tail stays inside the fence" {
+  source "$REPO_ROOT/scripts/lib/conflict-integrity.sh"
+  cat > "$WORKDIR/fence-tail.md" <<'EOF'
+# Real Heading
+
+```
+```bash
+## Not a heading (still inside the fence)
+```
+EOF
+  run extract_markdown_headings "$WORKDIR/fence-tail.md"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"# Real Heading"* ]]
+  [[ "$output" != *"Not a heading"* ]]
+}
+
+@test "extract_markdown_headings: optional ATX closing marker compares equal to bare form" {
+  source "$REPO_ROOT/scripts/lib/conflict-integrity.sh"
+  cat > "$WORKDIR/atx-close.md" <<'EOF'
+## Phase 2 ##
+## Phase 2
+EOF
+  dup="$(extract_markdown_headings "$WORKDIR/atx-close.md" | LC_ALL=C sort | uniq -d)"
+  [[ "$dup" == *"## Phase 2"* ]]
+}

@@ -72,8 +72,18 @@ MD_HEADING_ALLOWLIST=(
 fail=0
 report=""
 
+# Enumerate each scan's files up front. A `done < <(find …)` process substitution
+# does not propagate `find`'s exit status to the consuming loop under
+# `set -o pipefail`, so an unreadable directory could emit a partial list, exit
+# nonzero, and still leave the gate green. Capturing via command substitution
+# (which pipefail *does* honor) lets us fail closed instead (#1782).
 # --- scripts/ : duplicate top-level shell functions --------------------------
+if ! sh_files="$(find "$SCAN_DIR" -name '*.sh' -type f | LC_ALL=C sort)"; then
+  echo "::error::check-duplicate-decls: failed to enumerate .sh files under ${SCAN_DIR}" >&2
+  exit 2
+fi
 while IFS= read -r f; do
+  [ -n "$f" ] || continue
   # `grep` exits 1 on a file with no functions at all — that is a clean result,
   # not an error, so neutralize the pipeline status under `set -o pipefail`.
   findings="$(extract_top_level_symbols "$f" \
@@ -86,11 +96,16 @@ while IFS= read -r f; do
     report="${report}$(format_integrity_findings "$f" "$findings")
 "
   fi
-done < <(find "$SCAN_DIR" -name '*.sh' -type f | LC_ALL=C sort)
+done <<< "$sh_files"
 
 # --- prompts/ : duplicate markdown headings ----------------------------------
 if [ -n "$PROMPTS_DIR" ] && [ -d "$PROMPTS_DIR" ]; then
+  if ! md_files="$(find "$PROMPTS_DIR" -name '*.md' -type f | LC_ALL=C sort)"; then
+    echo "::error::check-duplicate-decls: failed to enumerate .md files under ${PROMPTS_DIR}" >&2
+    exit 2
+  fi
   while IFS= read -r f; do
+    [ -n "$f" ] || continue
     rel="${f#"$REPO_ROOT"/}"
     while IFS= read -r heading; do
       [ -n "$heading" ] || continue
@@ -103,12 +118,17 @@ if [ -n "$PROMPTS_DIR" ] && [ -d "$PROMPTS_DIR" ]; then
       report="${report}- \`${rel}\` — duplicate markdown heading: \`${heading}\`
 "
     done < <(extract_markdown_headings "$f" | LC_ALL=C sort | uniq -d)
-  done < <(find "$PROMPTS_DIR" -name '*.md' -type f | LC_ALL=C sort)
+  done <<< "$md_files"
 fi
 
 # --- personas/ : duplicate keys in the same mapping --------------------------
 if [ -n "$PERSONAS_DIR" ] && [ -d "$PERSONAS_DIR" ]; then
+  if ! yml_files="$(find "$PERSONAS_DIR" \( -name '*.yml' -o -name '*.yaml' \) -type f | LC_ALL=C sort)"; then
+    echo "::error::check-duplicate-decls: failed to enumerate persona YAML files under ${PERSONAS_DIR}" >&2
+    exit 2
+  fi
   while IFS= read -r f; do
+    [ -n "$f" ] || continue
     rel="${f#"$REPO_ROOT"/}"
     while IFS= read -r dupline; do
       [ -n "$dupline" ] || continue
@@ -119,7 +139,7 @@ if [ -n "$PERSONAS_DIR" ] && [ -d "$PERSONAS_DIR" ]; then
       report="${report}- \`${rel}\` — duplicate key \`${key}\` in mapping \`${scope}\`
 "
     done < <(extract_yaml_mapping_keys "$f" | LC_ALL=C sort | uniq -d)
-  done < <(find "$PERSONAS_DIR" \( -name '*.yml' -o -name '*.yaml' \) -type f | LC_ALL=C sort)
+  done <<< "$yml_files"
 fi
 
 if [ "$fail" -ne 0 ]; then
