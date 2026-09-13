@@ -902,11 +902,11 @@ resolve_dispositioned_comments() {
       }
     }
   }'
-  pages_file=$(mktemp)
+  pages_file=$(mktemp) || { echo "::error::failed to create temporary file" >&2; exit 1; }
   while [ "$has_next_page" = "true" ]; do
     page_response=$(gh api graphql -f query="$comments_query" \
       -F owner="${REPO%%/*}" -F repo="${REPO##*/}" -F pr="$PR_NUMBER" \
-      "${cursor_args[@]}" 2>/dev/null || echo "{}")
+      "${cursor_args[@]}" 2>/dev/null)
     page_nodes=$(printf '%s' "$page_response" | jq -c \
       '.data?.repository?.pullRequest?.comments?.nodes // []' 2>/dev/null || echo "[]")
     printf '%s\n' "$page_nodes" >> "$pages_file"
@@ -950,7 +950,7 @@ resolve_dispositioned_comments() {
 
   local resolved_count=0
   local cid is_human cur_minimized reply_body disp_json disposition sha ref verified
-  while IFS= read -r cid; do
+  while IFS= read -r cid || [ -n "$cid" ]; do
     [ -z "$cid" ] && continue
 
     # Re-read the ORIGINAL comment's CURRENT minimize state so a comment minimized
@@ -975,7 +975,7 @@ resolve_dispositioned_comments() {
     # unverifiable reply never matches. Bodies are base64-framed to survive newlines.
     reply_body=""
     local c_body_b64 c_body parsed pid
-    while IFS= read -r c_body_b64; do
+    while IFS= read -r c_body_b64 || [ -n "$c_body_b64" ]; do
       [ -z "$c_body_b64" ] && continue
       c_body=$(printf '%s' "$c_body_b64" | base64 -d 2>/dev/null || true)
       parsed=$(cdv_parse_disposition "$c_body" 2>/dev/null) || continue
