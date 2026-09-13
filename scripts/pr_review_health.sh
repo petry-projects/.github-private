@@ -26,10 +26,21 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/pr-review-outcomes.sh"
 # shellcheck source=scripts/lib/pr-review-sweep-metrics.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/pr-review-sweep-metrics.sh"
 
+# Pure run→role attribution for the collapsed agent-ingress (#1727, ADR-0007).
+# Sourced so the pr-review health scan can re-sample post-collapse runs keyed on
+# the role-bearing JOB name instead of the (soon shared) workflow name, keeping
+# the pr-review signal intact once pr-review-mention collapses into agent-ingress.
+# shellcheck source=scripts/lib/run-attribution.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/run-attribution.sh"
+
 LOOKBACK_DAYS="${LOOKBACK_DAYS:-1}"
 WORKFLOW_REPO="${AGENT_REPO:-petry-projects/.github-private}"
 WORKFLOW_FILE="pr-review-trigger.yml"
 SWEEP_WORKFLOW_FILE="pr-review-sweep.yml"
+# The role-bearing agent-ingress job that carries the pr-review signal post-collapse
+# (ADR-0007). Env-overridable so a repo that names the role differently can retarget
+# without a code change.
+PR_REVIEW_INGRESS_ROLE="${PR_REVIEW_INGRESS_ROLE:-pr-review-mention}"
 REPORT_FILE="pr_review_health_report.md"
 TODAY=$(date -u +%Y-%m-%d)
 
@@ -119,6 +130,48 @@ if [ "${#sweep_dispatched[@]}" -gt 0 ]; then
   sweep_telemetry=$(jq -n '$ARGS.positional | map({event: "schedule", dispatched: (. | tonumber)})' --args "${sweep_dispatched[@]}")
 else
   sweep_telemetry='[]'
+fi
+
+# ---------------------------------------------------------------------------
+# 1c. Agent Ingress per-role attribution for the pr-review signal (#1727)
+#
+# Once the pr-review-mention Class-1 caller collapses into agent-ingress.yml
+# (ADR-0007), sampling BY WORKFLOW NAME (Section 1, legacy pr-review-trigger.yml)
+# no longer sees those runs, and a name-keyed scan would lump the pr-review role
+# in with every other collapsed role. Here we re-sample the agent-ingress runs
+# keyed on the role-bearing JOB name (jobs API) and keep only the pr-review role
+# bucket, so the pr-review signal survives the collapse. Additive and a complete
+# no-op when the repo carries no agent-ingress.yml (current reality) — the legacy
+# pr-review-trigger.yml sampling above is untouched (AC #3). A run whose role
+# cannot be named is bucketed UNATTRIBUTED, never dropped (AC #5).
+# ---------------------------------------------------------------------------
+ingress_attr_jsonl=$(mktemp)
+if ingress_wf_id=$(gh api "repos/${WORKFLOW_REPO}/actions/workflows?per_page=100" --paginate \
+  --jq ".workflows[] | select((.path | split(\"/\") | last) == \"${INGRESS_WORKFLOW_BASENAME}\") | (.id | tostring)" \
+  2>/dev/null | head -1) && [ -n "$ingress_wf_id" ]; then
+  ingress_run_ids=$(gh api \
+    "repos/${WORKFLOW_REPO}/actions/workflows/${ingress_wf_id}/runs?per_page=100&created=>=${CUTOFF}" \
+    --paginate \
+    --jq '.workflow_runs[] | select(.conclusion != null) | (.id | tostring)' \
+    2>/dev/null || true)
+  per_run_tmp=$(mktemp)
+  while IFS= read -r run_id; do
+    [ -n "$run_id" ] || continue
+    if ! jobs_raw=$(gh api "repos/${WORKFLOW_REPO}/actions/runs/${run_id}/jobs?per_page=100" --paginate \
+      --jq '[.jobs[] | {name, conclusion}]' 2>/dev/null); then
+      echo "::warning::Cannot read jobs for run ${run_id} — pr-review ingress attribution may undercount"
+      continue
+    fi
+    jobs_json=$(printf '%s' "$jobs_raw" | jq -s 'add // []')
+    jq -n --argjson rid "$run_id" --argjson jobs "$jobs_json" \
+      '{run_id: $rid, jobs: $jobs}' >> "$per_run_tmp"
+  done <<< "$ingress_run_ids"
+  # Normalize per-run jobs → one {role,conclusion} per role, then keep ONLY the
+  # pr-review role (this scan is the pr-review signal, not the whole fleet).
+  jq -s '.' "$per_run_tmp" | normalize_ingress_runs \
+    | jq -c --arg role "$PR_REVIEW_INGRESS_ROLE" '.[] | select(.role == $role)' \
+    >> "$ingress_attr_jsonl"
+  rm -f "$per_run_tmp"
 fi
 
 # ---------------------------------------------------------------------------
@@ -244,7 +297,17 @@ workflow_source=$(gh api "repos/${WORKFLOW_REPO}/contents/.github/workflows/${WO
   # actually re-reviewed a PR the event fast path did not cover. Same truncation
   # guarantee: written before the model-generated body.
   pr_review_render_sweep_hit_rate "$sweep_telemetry" "$total_sweep_ticks"
+  # Per-role attribution for the post-collapse pr-review signal (#1727).
+  # Deterministic — same truncation guarantee. Omitted when the repo carries no
+  # agent-ingress.yml (current reality), so legacy repos see no empty section.
+  if [ -s "$ingress_attr_jsonl" ]; then
+    attr_tsv=$(mktemp)
+    jq -s '.' "$ingress_attr_jsonl" | attribution_buckets > "$attr_tsv"
+    generate_attribution_report "$attr_tsv" "PR-review run attribution (by role, post-collapse)"
+    rm -f "$attr_tsv"
+  fi
 } > "$REPORT_FILE"
+rm -f "$ingress_attr_jsonl"
 
 echo "Duration percentiles — p50 $(fmt_dur "$dur_p50") / p95 $(fmt_dur "$dur_p95") across $dur_n run(s)"
 echo "Outcome mix (by event):"
