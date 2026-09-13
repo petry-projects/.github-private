@@ -169,6 +169,19 @@ triggers change, its row here must change in the same PR or the validator fails.
 backtick spans (e.g. `` `path/to/file.yml` ``) are allowed; the separator row uses
 `---|---|---|---` with no padding.
 
+**Multi-role ingress convention (ADR-0007).** Normally one workflow file is one classified
+role and contributes **exactly one** row. The one exception is a collapsed
+`agent-ingress.yml`: it holds **one job per collapsed role**, all sharing a single `on:`
+union (ADR-0007), so it contributes **one row per role-job** instead of one row for the file.
+Each such row's first cell names the shared path **and** its job, shaped `` `path` (job-name) ``
+— e.g. `` `.github/workflows/agent-ingress.yml` (dev-lead) ``. The set of role-qualifiers for
+the ingress path must equal the file's set of `jobs:` names (an under-documented job, or a row
+naming a job that does not exist, fails — see §10). Every per-role row is classified against
+the **same** shared `on:` union via the §3 discriminator: since the collapsed roles are Class 1
+(the ingress carries no `schedule`), each row must be Class 1 with no `timer_role`. A legacy
+single-role stub (pre-collapse, or a `pull_request_target` / Class-2 / Class-3 carve-out that
+keeps its own file) carries **no** job qualifier and remains exactly one row.
+
 | Workflow (path) | Class | timer_role | Justification (cite the `on:` triggers) |
 |---|---|---|---|
 | `.github/workflows/dev-lead.yml` | 1 | — | `pull_request`, `pull_request_review`, `pull_request_review_comment`, `issue_comment`, `issues:labeled`, `check_run`, `repository_dispatch` — pure webhook reactions; no `schedule`. |
@@ -526,11 +539,15 @@ update the table (and the role's §8 contract) in the same PR, or CI fails.
   is checked against that workflow's actual `on:` triggers via the §3 discriminator. A row
   whose class no longer matches the workflow fails.
 - **Completeness (bidirectional).** Every `.github/workflows/*.yml` file not in the §4
-  exclusion list must have exactly one row. A workflow absent from both the §4 table and the
-  §4 exclusion list fails the check. This prevents a new agentic role from being added with
-  no classification row — the enforcement is bidirectional, not row-to-reality only. The
-  matching AC for #1406: *every in-scope workflow has exactly one row; any in-scope workflow
-  with no row fails CI*.
+  exclusion list must be classified. A regular single-role workflow must have **exactly one**
+  row; a collapsed `agent-ingress.yml` must have **one row per role-job** — the set of its rows'
+  job qualifiers must equal the file's set of `jobs:` names, so an ingress with N role-jobs but
+  fewer than N rows (an under-documented job) fails, and a row naming a job the file no longer
+  defines fails as a stale row. A workflow absent from both the §4 table and the §4 exclusion
+  list fails the check. This prevents a new agentic role — or a newly collapsed ingress
+  role-job — from being added with no classification row; the enforcement is bidirectional, not
+  row-to-reality only. The matching AC for #1406: *every in-scope role is classified by exactly
+  one row (per file, or per role-job for an ingress); any in-scope role with no row fails CI*.
 - **Per-role contracts vs. workflows** (once Story 2 lands): each contract's
   `triggers.events` / `triggers.timers` match the workflow's `on:` block, `emits` does not
   intersect subscribed `events` (§7 rule 1), and every Class 2 timer declares a
