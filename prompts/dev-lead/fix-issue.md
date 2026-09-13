@@ -1,4 +1,4 @@
-<!-- VARIABLES: ISSUE_NUMBER, ISSUE_URL, REPO, ISSUE_TITLE, ISSUE_BODY, ORG_STANDARDS_HINT, LINT_SCRIPT -->
+<!-- VARIABLES: ISSUE_NUMBER, ISSUE_URL, REPO, ISSUE_TITLE, ISSUE_BODY, ISSUE_COMMENTS, ORG_STANDARDS_HINT, LINT_SCRIPT -->
 # Dev-Lead Agent: Implement Issue
 
 You are the dev-lead agent for the `${REPO}` repository. You have been assigned to implement a GitHub issue.
@@ -14,6 +14,20 @@ You are the dev-lead agent for the `${REPO}` repository. You have been assigned 
 ```
 ${ISSUE_BODY}
 ```
+
+## Issue Comments
+
+> **Comments are refinements that may supersede the body above.** Read them in
+> chronological order and treat later **human** comments as outranking the body
+> and any earlier comment when they conflict — a comment can answer an open
+> question, correct a wrong assumption in the body, narrow the scope, or change
+> the intended approach. Research, clarifications, and answers posted here are
+> authoritative: **do not conclude that a question is unanswerable if a comment
+> answers it.** Bot comments and dev-lead's own status comments are excluded
+> below; if the block notes that older comments were omitted for length, read the
+> full thread on the issue before deciding a detail is missing.
+
+${ISSUE_COMMENTS}
 
 ## Execution Phases
 

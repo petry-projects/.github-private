@@ -12,6 +12,9 @@ source "$(dirname "$0")/lib/premature-closure-detect.sh"
 # required description sections so the PR is not escalated by triage for a
 # description gap.
 source "$(dirname "$0")/lib/dev-lead-pr-body.sh"
+# Pure comment renderer (#1566): render_issue_comments filters + size-bounds the
+# issue's comments into the ISSUE_COMMENTS prompt variable.
+source "$(dirname "$0")/lib/issue-comments.sh"
 
 ISSUE_NUMBER="${ISSUE_NUMBER:-}"
 REPO="${REPO:-${GITHUB_REPOSITORY:-}}"
@@ -521,8 +524,14 @@ main() {
   export REPO
   ISSUE_TITLE=$(gh api "repos/${REPO}/issues/${ISSUE_NUMBER}" --jq '.title' 2>/dev/null || echo "Unknown")
   ISSUE_BODY=$(gh api "repos/${REPO}/issues/${ISSUE_NUMBER}" --jq '.body // ""' 2>/dev/null || echo "")
+  # Issue comments (#1566): human clarifications/answers posted after filing must
+  # reach the prompt. render_issue_comments filters bot/dev-lead noise, keeps the
+  # rest chronological, and size-bounds them. `|| ISSUE_COMMENTS=""` keeps a gh or
+  # jq failure from aborting under set -e/pipefail — a missing comment block just
+  # degrades to the body-only prompt.
+  ISSUE_COMMENTS=$(gh api --paginate "repos/${REPO}/issues/${ISSUE_NUMBER}/comments?per_page=100" 2>/dev/null | render_issue_comments) || ISSUE_COMMENTS=""
   ORG_STANDARDS_HINT="See AGENTS.md and docs/ for coding standards."
-  export ISSUE_TITLE ISSUE_BODY ORG_STANDARDS_HINT
+  export ISSUE_TITLE ISSUE_BODY ISSUE_COMMENTS ORG_STANDARDS_HINT
   # Export lint script path so it is substituted into the rendered prompt.
   # dirname "$0" resolves correctly in both direct (scripts/) and reusable (.dev-lead/scripts/) runs.
   export LINT_SCRIPT="${LINT_SCRIPT:-"$(dirname "$0")/dev-lead-lint.sh"}"
