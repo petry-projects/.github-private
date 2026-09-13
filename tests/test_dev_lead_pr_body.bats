@@ -131,7 +131,7 @@ tests/test_dev_lead_pr_body.bats'
   local full
   full=$(dlpb_build_body "10" "T" "B" "scripts/x.sh")
   run dlpb_needs_backfill "$full"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
 }
 
 @test "backfill: appends sections so body passes sc_description_missing 0|" {
@@ -155,7 +155,25 @@ tests/test_dev_lead_pr_body.bats'
   sections=$(dlpb_sections "P" "R" "TP" "RB" "M")
   out=$(dlpb_backfill_body "Closes #10" "$sections")
   run dlpb_needs_backfill "$out"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
+}
+
+@test "needs_backfill: stray marker in body missing sections still needs backfill" {
+  # A body that merely contains the marker literal (e.g. copied/user text) but is
+  # still missing 3+ sections must remain repairable — the count is authoritative,
+  # not the marker string (#1806).
+  local body
+  body=$(printf 'Closes #10\n\n%s\n' "$DLPB_BACKFILL_MARKER")
+  run dlpb_needs_backfill "$body"
+  [ "$status" -eq 0 ]
+}
+
+@test "backfill: repairs a body carrying only a stray marker" {
+  local sections out
+  sections=$(dlpb_sections "P" "R" "TP" "RB" "M")
+  out=$(dlpb_backfill_body "$(printf 'Closes #10\n\n%s' "$DLPB_BACKFILL_MARKER")" "$sections")
+  run _missing "$out"
+  [ "$output" = "0|" ]
 }
 
 @test "backfill: preserves the original body content" {

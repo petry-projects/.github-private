@@ -636,7 +636,7 @@ ${lint_output}
   local changed_files pr_body pr_body_file
   changed_files=$(git diff --name-only "$pre_engine_sha" HEAD 2>/dev/null || true)
   pr_body=$(dlpb_build_body "$ISSUE_NUMBER" "$ISSUE_TITLE" "$ISSUE_BODY" "$changed_files")
-  pr_body_file="/tmp/dev-lead-pr-body-$$.md"
+  pr_body_file=$(mktemp "/tmp/dev-lead-pr-body-XXXXXX.md") || { echo "Failed to create temp file" >&2; exit 1; }
   printf '%s\n' "$pr_body" > "$pr_body_file"
 
   local pr_url

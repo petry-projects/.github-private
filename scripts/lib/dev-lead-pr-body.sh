@@ -117,7 +117,7 @@ dlpb_problem_line() {
   # Skip leading markdown headings (e.g. "## Summary") and blank lines, then
   # capture the first prose paragraph up to the next blank line.
   summary=$(printf '%s\n' "$body" \
-    | sed 's/<!--.*-->//g' \
+    | sed 's/<!--[^>]*-->//g' \
     | awk '/^[[:space:]]*#/{next} NF==0{if(seen)exit; else next} {seen=1; print}' \
     | tr '\n' ' ' \
     | sed 's/  */ /g; s/^ //; s/ $//')
@@ -186,11 +186,15 @@ dlpb_missing_count() {
   printf '%s' "${out%%|*}"
 }
 
-# dlpb_needs_backfill <body> — exit 0 when <body> is missing 3+ sections AND has
-# not already been backfilled (marker absent). Mirrors the triage escalate rule.
+# dlpb_needs_backfill <body> — exit 0 when <body> is missing 3+ sections. Keyed
+# purely on the authoritative missing-section count (sc_description_missing), so it
+# mirrors the triage escalate rule exactly. It deliberately does NOT short-circuit
+# on the presence of DLPB_BACKFILL_MARKER: a body that merely contains that literal
+# string (copied or user-written text) but is still missing 3+ sections must remain
+# repairable, and a genuinely-backfilled body already carries all five sections, so
+# the count alone yields "no backfill needed" without churn.
 dlpb_needs_backfill() {
   local body="${1:-}"
-  printf '%s' "$body" | grep -qF "$DLPB_BACKFILL_MARKER" && return 1
   local n
   n=$(dlpb_missing_count "$body")
   [[ "$n" =~ ^[0-9]+$ ]] || n=0
@@ -199,11 +203,14 @@ dlpb_needs_backfill() {
 
 # dlpb_backfill_body <existing_body> <sections_block>
 #   Append the marker + the five sections to <existing_body>, preserving it.
-#   Idempotent: if the marker is already present, the body is returned unchanged
-#   so a second dev-lead pass makes no edit (no churn).
+#   Idempotent on the authoritative signal (the missing-section count via
+#   dlpb_needs_backfill), NOT on the bare marker string: a body that already has
+#   the required sections is returned unchanged so a second pass makes no edit (no
+#   churn), while a body still missing 3+ sections is always repaired even if it
+#   happens to contain the marker literal.
 dlpb_backfill_body() {
   local existing="${1:-}" sections="${2:-}"
-  if printf '%s' "$existing" | grep -qF "$DLPB_BACKFILL_MARKER"; then
+  if ! dlpb_needs_backfill "$existing"; then
     printf '%s' "$existing"
     return 0
   fi
@@ -239,6 +246,20 @@ dlpb_backfill_pr_body() {
 
   tmp=$(mktemp) || return 0
   printf '%s' "$new_body" > "$tmp"
+
+  # Guard against clobbering a concurrent update (#1806): the body we built
+  # new_body from was a snapshot; re-read it immediately before writing and skip
+  # the edit if it changed in the meantime, so a user/automation edit landing in
+  # the read→write window is never silently overwritten. This shrinks — but by
+  # gh's nature cannot fully close — the TOCTOU window; the backfill is best-effort.
+  local current
+  current=$(gh pr view "$pr" --repo "$repo" --json body --jq '.body // ""' 2>/dev/null) || { rm -f "$tmp"; return 0; }
+  if [ "$current" != "$body" ]; then
+    echo "::notice::PR #${pr} body changed since it was read — skipping backfill to avoid overwriting a concurrent update."
+    rm -f "$tmp"
+    return 0
+  fi
+
   if gh pr edit "$pr" --repo "$repo" --body-file "$tmp" >/dev/null 2>&1; then
     echo "::notice::Backfilled required description sections into PR #${pr} body (idempotent, marker-keyed)."
   fi

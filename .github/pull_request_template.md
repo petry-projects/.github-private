@@ -1,6 +1,9 @@
 <!--
 Thanks for the contribution. Fill in the summary, then complete the checklist.
-Delete sections that do not apply to this PR.
+Keep the required sections — Problem, Risk, Test plan, Rollback, and Monitoring —
+even when brief (use an explicit "none" / "n/a"): PR triage escalates any PR that is
+missing 3+ of them. Delete only optional sections (e.g. Interaction contract) that do
+not apply.
 -->
 
 ## Summary
