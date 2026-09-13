@@ -1,11 +1,34 @@
 <!--
 Thanks for the contribution. Fill in the summary, then complete the checklist.
-Delete sections that do not apply to this PR.
+Keep the required sections — Problem, Risk, Test plan, Rollback, and Monitoring —
+even when brief (use an explicit "none" / "n/a"): PR triage escalates any PR that is
+missing 3+ of them. Delete only optional sections (e.g. Interaction contract) that do
+not apply.
 -->
 
 ## Summary
 
 <!-- What does this PR change, and why? -->
+
+## Problem
+
+<!-- What problem does this solve? Link the issue and summarize it. -->
+
+## Risk
+
+<!-- Risk category (Low / Medium / High) plus a one-line rationale for what changed. -->
+
+## Test plan
+
+<!-- Tests added/updated and the commands run (e.g. shellcheck, bats). Never claim tests you did not run. -->
+
+## Rollback
+
+<!-- How to undo this change (usually "revert this PR"), plus any non-revertible side effects, or an explicit "none". -->
+
+## Monitoring
+
+<!-- Which workflow, check, or signal shows success or a regression, or an explicit "n/a — no runtime effect". -->
 
 ## Interaction contract
 
