@@ -421,15 +421,18 @@ resolve_trusted_reviewers() {
 #                               <reviews_json> <review_comments_json>
 #                               <issue_comments_json>
 # Returns 0 (true) when a trusted reviewer has an UNADDRESSED finding pinned to
-# head_sha — either their LATEST review at that commit is CHANGES_REQUESTED, or
-# they left an inline review comment at that commit and have NOT since approved
-# it at that same commit — AND no dev-lead-fix-reviews marker exists for that PR
-# at that SHA (dev-lead never processed this HEAD's reviews). A reviewer whose
-# latest review at head_sha is APPROVED is treated as satisfied, so an earlier
-# CHANGES_REQUESTED (or inline comment) they later cleared no longer triggers
-# recovery (#1742 review). The REST review-comment payload carries no
-# resolution/outdated flag, so the selector filters purely on commit_id ==
-# head_sha plus this approval check; the marker gate below is the idempotency
+# head_sha — a CHANGES_REQUESTED review at that commit, or an inline review
+# comment at that commit — that the SAME reviewer has NOT resolved with a later
+# APPROVED at that commit, AND no dev-lead-fix-reviews marker exists for that PR
+# at that SHA (dev-lead never processed this HEAD's reviews). Ordering is decided
+# by submitted_at / created_at, NOT by the reviewer's latest STATE: a
+# CHANGES_REQUESTED followed by a COMMENTED (no APPROVED) is still an open finding
+# (the prior "latest state" collapse dropped it), and an inline comment left AFTER
+# an APPROVED is still a finding (the prior collapse wrongly treated it as
+# resolved) — #1742 review. Only an APPROVED whose submit time is at or after the
+# finding resolves it. The REST review-comment payload carries no
+# resolution/outdated flag, so the selector filters on commit_id == head_sha plus
+# this timestamp-ordered approval check; the marker gate below is the idempotency
 # guard.
 has_unaddressed_head_findings() {
   local pr_number="$1" head_sha="$2" trusted_csv="$3"
@@ -444,22 +447,32 @@ has_unaddressed_head_findings() {
     '
     def norm: (. // "") | sub("\\[bot\\]$"; "");
     ($csv | [splits("[, ]+")] | map(norm) | map(select(. != ""))) as $trusted
-    # Latest review state per trusted reviewer at this exact commit. Reviews
-    # arrive in submission order, so the last entry in a reviewer group is their
-    # most recent stance — a later APPROVED supersedes an earlier CHANGES_REQUESTED.
+    # Trusted reviews at this exact commit, each tagged with reviewer + submit
+    # time. Ordering is decided by submitted_at, NOT array position, so a
+    # CHANGES_REQUESTED followed by a COMMENTED is not silently swallowed (#1742).
     | ([ $reviews[]?
          | select((.commit_id // "") == $sha)
-         | { login: ((.user?.login // "") | norm), state: .state }
-         | select(.login as $l | ($trusted | index($l)) != null) ]
-       | group_by(.login) | map({ (.[0].login): (.[-1].state) }) | add // {}) as $latest
-    # A CHANGES_REQUESTED that is still the latest word from that reviewer here.
-    | ([ $latest | to_entries[] | select(.value == "CHANGES_REQUESTED") ] | length) as $review_findings
-    # Inline comments at this commit whose author has not since approved it.
+         | { login: ((.user?.login // "") | norm), state: .state, ts: (.submitted_at // "") }
+         | .login as $l | select(($trusted | index($l)) != null) ]) as $rev
+    # Latest APPROVED submit time per trusted reviewer at this commit ("" = none).
+    # An APPROVED only resolves findings at or before it (finding ts <= approval).
+    | ($rev | map(select(.state == "APPROVED"))
+            | group_by(.login) | map({ (.[0].login): (map(.ts) | max) }) | add // {}) as $approved_ts
+    # A CHANGES_REQUESTED counts unless the same reviewer APPROVED at or after it.
+    | ([ $rev[]
+         | select(.state == "CHANGES_REQUESTED")
+         | .login as $l
+         | select((($approved_ts[$l]) // "") == "" or ($approved_ts[$l] < .ts)) ]
+       | length) as $review_findings
+    # Inline comments at this commit count unless the author APPROVED at or after
+    # the comment — an APPROVED that PREDATES the comment does NOT resolve it.
     | ([ $comments[]?
          | select((.commit_id // "") == $sha)
-         | ((.user?.login // "") | norm) as $l
+         | { login: ((.user?.login // "") | norm), ts: (.created_at // "") }
+         | .login as $l
          | select(($trusted | index($l)) != null)
-         | select(($latest[$l] // "") != "APPROVED") ] | length) as $comment_findings
+         | select((($approved_ts[$l]) // "") == "" or ($approved_ts[$l] < .ts)) ]
+       | length) as $comment_findings
     | $review_findings + $comment_findings
     ' 2>/dev/null || echo 0)
 
@@ -516,12 +529,12 @@ scan_pr_for_dropped_reviews() {
   # amplifier. `add // []` still yields [] when the API succeeds with no results.
   local reviews_json review_comments_json comments_json
   if ! reviews_json=$(gh api --paginate "repos/${repo}/pulls/${pr_number}/reviews?per_page=100" \
-      --jq '[.[] | {state, commit_id, user: {login: .user?.login}}]' | jq -s 'add // []'); then
+      --jq '[.[] | {state, commit_id, submitted_at, user: {login: .user?.login}}]' | jq -s 'add // []'); then
     echo "  [warn] dropped-reviews: reviews fetch failed for PR ${pr_number} in ${repo} — skipping (no dispatch)" >&2
     echo "0"; return 0
   fi
   if ! review_comments_json=$(gh api --paginate "repos/${repo}/pulls/${pr_number}/comments?per_page=100" \
-      --jq '[.[] | {commit_id, user: {login: .user?.login}}]' | jq -s 'add // []'); then
+      --jq '[.[] | {commit_id, created_at, user: {login: .user?.login}}]' | jq -s 'add // []'); then
     echo "  [warn] dropped-reviews: review-comments fetch failed for PR ${pr_number} in ${repo} — skipping (no dispatch)" >&2
     echo "0"; return 0
   fi
