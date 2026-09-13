@@ -117,6 +117,7 @@ jobs:
             tests/test_bootstrap_new_repo.bats \
             tests/test_seed_repo_template.bats \
             tests/test_sweep_stuck_reviews.bats \
+            tests/test_standing_approval.bats \
             tests/test_validate_cases.bats \
             tests/test_review_registry.bats \
             tests/test_reviewer_sources.bats \
