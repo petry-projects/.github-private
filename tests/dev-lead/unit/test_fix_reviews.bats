@@ -113,6 +113,39 @@ teardown() {
   [[ "$output" == *"[dry-run]"* ]]
 }
 
+@test "fix-reviews: rebase skips cleanly when the PR is exhausted (#865 sentinel re-fire guard)" {
+  export INTENT_TYPE="rebase"
+  export DEV_LEAD_DRY_RUN="false"
+
+  # Remove the engine so a regression that failed to short-circuit would be caught
+  # (the engine must never be invoked once the PR is rebase-exhausted).
+  rm -f "$STUB_BIN_DIR/claude" "$STUB_BIN_DIR/gemini"
+
+  # gh stub: PR is OPEN (so checkout proceeds); its comments carry the PR-level
+  # rebase exhaustion marker so rebase_pr_is_exhausted returns true.
+  cat > "$STUB_BIN_DIR/gh" <<'GHEOF'
+#!/usr/bin/env bash
+ARGS="$*"
+case "$ARGS" in
+  *"pr view"*)
+    echo '{"state":"OPEN","headRefName":"feature-branch"}' ;;
+  *"pr checkout"*)
+    exit 0 ;;
+  *"api"*"repos/"*"issues/"*"comments"*)
+    echo '[{"body":"<!-- dev-lead-fix-reviews pr=54 intent=rebase status=exhausted -->","user":{"login":"donpetry-bot"},"created_at":"2026-01-01T00:00:00Z"}]' ;;
+  *"api"*"pulls/"*)
+    echo '{"head":{"sha":"ddd444eee555"},"auto_merge":null}' ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+
+  run bash "$FIX_REVIEWS_SCRIPT"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"rebase is exhausted"* ]]
+}
+
 @test "fix-reviews: unknown INTENT_TYPE → exits 1" {
   export INTENT_TYPE="totally-unknown-intent"
   export DEV_LEAD_DRY_RUN="true"
