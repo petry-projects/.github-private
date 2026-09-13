@@ -1,0 +1,26 @@
+# Benign persona fixture — repeated keys across DIFFERENT list items are not
+# duplicates of the same mapping and must not be flagged (the surfaces[] case).
+runtime:
+  reusable: .github/workflows/example-reusable.yml
+  identity:
+    account: don-petry
+    credential: GH_PAT_DON_PETRY
+
+triggers:
+  surfaces:
+    - surface: mention
+      enabled: true
+      mode: advisory
+      notes: "one"
+    - surface: issues
+      enabled: true
+      mode: write
+      notes: "two"
+    - surface: check_run
+      enabled: true
+      mode: advisory
+      notes: "three"
+
+references:
+  - "a"
+  - "b"
