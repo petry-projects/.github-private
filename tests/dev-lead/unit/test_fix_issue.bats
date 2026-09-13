@@ -33,6 +33,10 @@ esac
 GHEOF
   chmod +x "$STUB_BIN_DIR/gh"
 
+  # Pin the prompt template to the in-repo source so an ambient PROMPTS_DIR
+  # (e.g. a vendored .dev-lead/ runtime copy) cannot shadow it (#1566).
+  export PROMPTS_DIR="$SCRIPT_DIR/prompts/dev-lead"
+
   # Default env
   export ISSUE_NUMBER="100"
   export REPO="petry-projects/.github-private"
@@ -1132,6 +1136,71 @@ GHEOF
   [ "$status" -ne 0 ]
   # No retraction on a non-terminal failure
   [ ! -f "$RETRACT_FILE" ]
+}
+
+# ── issue comments reach the prompt (#1566) ───────────────────────────────────
+
+@test "fix-issue: a comment answering the body question reaches the rendered prompt (#1566 AC1/AC5)" {
+  # The engine receives the rendered prompt on stdin; capture it to a file.
+  PROMPT_CAPTURE="$STUB_BIN_DIR/prompt_capture"
+  cat > "$STUB_BIN_DIR/claude" <<CLAUDEEOF
+#!/usr/bin/env bash
+cat > "$PROMPT_CAPTURE"
+echo "stub engine response"
+exit 0
+CLAUDEEOF
+  chmod +x "$STUB_BIN_DIR/claude"
+
+  cat > "$STUB_BIN_DIR/dev-lead-lint.sh" <<'LINTEOF'
+#!/usr/bin/env bash
+exit 0
+LINTEOF
+  chmod +x "$STUB_BIN_DIR/dev-lead-lint.sh"
+
+  cat > "$STUB_BIN_DIR/git" <<'GITEOF'
+#!/usr/bin/env bash
+case "$*" in
+  "status --porcelain") echo "M scripts/foo.sh" ;;
+  "rev-parse HEAD")     echo "deadbeef1234" ;;
+  *)                    exit 0 ;;
+esac
+GITEOF
+  chmod +x "$STUB_BIN_DIR/git"
+
+  # gh stub: issue body poses a question; a human comment answers it.
+  cat > "$STUB_BIN_DIR/gh" <<'GHEOF'
+#!/usr/bin/env bash
+cmd="$1"; shift || true
+case "$cmd" in
+  pr) case "$*" in create*) echo "https://github.com/petry-projects/.github-private/pull/42" ;; *) exit 0 ;; esac ;;
+  label) exit 0 ;;
+  api)
+    case "$*" in
+      *"pulls?state=open"*) echo "0" ;;
+      *comments*)           echo '[{"user":{"login":"alice","type":"User"},"created_at":"2026-08-21T01:14:00Z","body":"ANSWER: the telemetry source is the oauth/usage endpoint."}]' ;;
+      *"users/"*)           echo '{"id":12345}' ;;
+      *"issues/"*)          echo '{"title":"Test","body":"QUESTION: what is the telemetry source?"}' ;;
+      *)                    echo "{}" ;;
+    esac ;;
+  issue) exit 0 ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+
+  export DEV_LEAD_DRY_RUN="false"
+  export LINT_SCRIPT="$STUB_BIN_DIR/dev-lead-lint.sh"
+  export GITHUB_RUN_ID="99"
+
+  run bash "$FIX_ISSUE_SCRIPT"
+
+  [ "$status" -eq 0 ]
+  [ -f "$PROMPT_CAPTURE" ]
+  local prompt; prompt=$(cat "$PROMPT_CAPTURE")
+  # The comment's answer must be present in the prompt the engine received.
+  [[ "$prompt" == *"ANSWER: the telemetry source is the oauth/usage endpoint."* ]]
+  # And it must be framed as a refinement that can supersede the body.
+  [[ "$prompt" == *"supersede"* ]]
 }
 
 @test "fix-issue: opened PR is labeled auto-rebase:ready (breaks #711 review-ready deadlock)" {
