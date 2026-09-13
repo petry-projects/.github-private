@@ -29,11 +29,12 @@
 SCRIPT="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)/scripts/list-prs.sh"
 
 setup() {
-  MOCK_BIN="$(mktemp -d)"
-  REPO_LIST_DIR="$(mktemp -d)"
-  PR_LIST_DIR="$(mktemp -d)"
-  OUT="$(mktemp)"
-  ERR="$(mktemp)"
+  MOCK_BIN="$BATS_TEST_TMPDIR/mock_bin"
+  REPO_LIST_DIR="$BATS_TEST_TMPDIR/repo_list"
+  PR_LIST_DIR="$BATS_TEST_TMPDIR/pr_list"
+  OUT="$BATS_TEST_TMPDIR/out"
+  ERR="$BATS_TEST_TMPDIR/err"
+  mkdir -p "$MOCK_BIN" "$REPO_LIST_DIR" "$PR_LIST_DIR"
   export MOCK_BIN REPO_LIST_DIR PR_LIST_DIR
   export PATH="$MOCK_BIN:$PATH"
 
@@ -72,11 +73,6 @@ EOF
 
   # Default: only the org owns repos; the bot account owns none.
   printf 'petry-projects/.github-private\n' > "$REPO_LIST_DIR/petry-projects.txt"
-}
-
-teardown() {
-  rm -rf "${MOCK_BIN:-}" "${REPO_LIST_DIR:-}" "${PR_LIST_DIR:-}"
-  rm -f "${OUT:-}" "${ERR:-}"
 }
 
 # write_prs <repo> <json-array>

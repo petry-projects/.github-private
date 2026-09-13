@@ -43,7 +43,7 @@ classify() {
   echo "$json" | jq -r --arg bot "$bot" '.[] |
     if .isDraft == true then
       "DROP\tdraft\t" + .url
-    elif .author.login == $bot then
+    elif .author?.login == $bot then
       "DROP\tself-authored\t" + .url
     else
       "KEEP\t"
@@ -215,6 +215,18 @@ else
     ok "jq: draft PR classified as DROP draft"
   else
     fail "jq: draft PR classified as DROP draft" "got '$ENTRY'"
+  fi
+
+  # Test 11b: A PR whose author is null (deleted / ghost GitHub account) must
+  # not crash the classifier — with `.author?.login` the null-author branch
+  # falls through to KEEP rather than throwing "Cannot index null" and, because
+  # stderr is discarded, silently dropping every PR in that repo.
+  JSON='[{"url":"https://github.com/org/app/pull/13","author":null,"createdAt":"2026-01-01T00:00:00Z","isDraft":false}]'
+  if ENTRY=$(classify "donpetry-bot" "$JSON" 2>/dev/null) && \
+     printf '%s' "$ENTRY" | grep -q $'^KEEP\t'; then
+    ok "jq: null-author PR classified as KEEP (no crash, not dropped)"
+  else
+    fail "jq: null-author PR classified as KEEP (no crash, not dropped)" "got '$ENTRY'"
   fi
 
   # Test 12: createdAt is preserved in a KEEP record's payload (field 2).

@@ -75,7 +75,7 @@ excluded=0
 JQ_CLASSIFY='.[] |
   if .isDraft == true then
     "DROP\tdraft\t" + .url
-  elif .author.login == $bot then
+  elif .author?.login == $bot then
     "DROP\tself-authored\t" + .url
   else
     "KEEP\t"
@@ -88,7 +88,7 @@ JQ_CLASSIFY='.[] |
 # all_entries accumulate across repos.
 process_repo_prs() {
   local raw="$1" line tag rest reason url
-  while IFS= read -r line; do
+  while IFS= read -r line || [ -n "$line" ]; do
     [ -z "$line" ] && continue
     tag="${line%%$'\t'*}"
     rest="${line#*$'\t'}"
@@ -106,24 +106,26 @@ process_repo_prs() {
         seen=$((seen + 1))
         ;;
     esac
-  done < <(printf '%s' "$raw" | jq -r --arg bot "$BOT_USER" "$JQ_CLASSIFY" 2>/dev/null || true)
+  done < <(jq -r --arg bot "$BOT_USER" "$JQ_CLASSIFY" <<< "$raw" 2>/dev/null)
 }
 
 # List all open PRs across every repo owned by $owner via the List API.
-# --limit 200 on repo list handles orgs that grow beyond gh's default 30;
-# --limit 100 on pr list caps per-repo pulls.
+# Both --limit values are set high enough that neither repos nor per-repo PRs
+# are silently truncated: a hard cap would omit eligible open PRs beyond it,
+# reintroducing the very silent-omission defect this script exists to prevent
+# (issue #1744). gh paginates internally up to the requested limit.
 search_namespace() {
   local owner="$1" raw
-  while IFS= read -r repo; do
+  while IFS= read -r repo || [ -n "$repo" ]; do
     [ -z "$repo" ] && continue
     raw=$(gh pr list \
       --repo "$repo" \
       --state open \
-      --limit 100 \
+      --limit 1000 \
       --json url,author,createdAt,isDraft 2>/dev/null || echo '[]')
     [ -z "$raw" ] && raw='[]'
     process_repo_prs "$raw"
-  done < <(gh repo list "$owner" --limit 200 --json nameWithOwner --jq '.[].nameWithOwner' 2>/dev/null || true)
+  done < <(gh repo list "$owner" --limit 1000 --json nameWithOwner --jq '.[].nameWithOwner' 2>/dev/null || true)
 }
 
 # Bot's personal account
