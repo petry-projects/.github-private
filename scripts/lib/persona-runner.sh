@@ -163,7 +163,7 @@ pr_summary_mirror() {
   if [ "$size" -le "$budget" ]; then
     printf '%s' "$body"
   else
-    printf '%s' "$body" | head -c "$budget"
+    printf '%s' "${body:0:budget}"
     printf '\n\n_Truncated at 8 KB — full advisory in the "%s" run artifact._' "$artifact"
   fi
 }
@@ -175,7 +175,11 @@ pr_summary_mirror() {
 # next occurrence is diagnosable from the run alone (#1775 AC #3).
 pr_post_failure_message() {
   local err="$1" account="$2" credential="$3" code kind
-  code="$(printf '%s' "$err" | grep -oiE 'HTTP [0-9]{3}' | grep -oE '[0-9]{3}' | head -1)"
+  if [[ "$err" =~ [Hh][Tt][Tt][Pp][[:space:]]+([0-9]{3}) ]]; then
+    code="${BASH_REMATCH[1]}"
+  else
+    code=""
+  fi
   case "$code" in
     401) kind="authentication failed (HTTP 401) — the token in '${credential}' is missing, expired, or malformed" ;;
     403) kind="authorization failed (HTTP 403) — the token is valid but '${account}' lacks permission to comment (a valid token is not a missing secret)" ;;
@@ -196,15 +200,18 @@ pr_post_failure_message() {
 pr_post_advisory_or_preserve() {
   local persona="$1" source_repo="$2" item_number="$3" account="$4" credential="$5"
   local body="$6" body_file="$7" summary_file="$8"
-  local err rc=0
-  err="$(gh api "repos/${source_repo}/issues/${item_number}/comments" -f body="$body" 2>&1 >/dev/null)" || rc=$?
+  local redacted err rc=0
+  # Redact BEFORE posting, not only on the failure path: a successful post
+  # publishes the body to a PR comment, so credential-like text in agent output
+  # must be scrubbed there too (redact.sh is defense-in-depth before publishing).
+  redacted="$(printf '%s' "$body" | redact_secrets)"
+  err="$(gh api "repos/${source_repo}/issues/${item_number}/comments" -f body="$redacted" 2>&1 >/dev/null)" || rc=$?
   if [ "$rc" -eq 0 ]; then
     printf 'Posted %s advisory on %s#%s.\n' "$persona" "$source_repo" "$item_number"
     return 0
   fi
 
-  local redacted artifact diag
-  redacted="$(printf '%s' "$body" | redact_secrets)"
+  local artifact diag
   artifact="$(pr_artifact_name "$persona" "$source_repo" "$item_number")"
   diag="$(pr_post_failure_message "$err" "$account" "$credential")"
 

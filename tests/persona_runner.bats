@@ -239,7 +239,7 @@ STUB
     pr_post_advisory_or_preserve qa-lead petry-projects/.github-private 1723 \
       don-petry GH_PAT_DON_PETRY "'"$body"'" "'"$body_file"'" "'"$summary_file"'"
   '
-  [ "$status" -ne 0 ]                              # AC #2: still a failure
+  [ "$status" -eq 1 ]                              # AC #2: still a failure
   [ -f "$body_file" ]                              # AC #1: artifact copy preserved
   run cat "$body_file"
   [ "${lines[0]}" = "<!-- persona:qa-lead -->" ]   # marker included, re-postable
@@ -268,7 +268,7 @@ STUB
     source "'"$LIB"'"
     pr_post_advisory_or_preserve qa-lead repo/x 5 acct CRED "'"$body"'" "'"$body_file"'" "'"$summary_file"'"
   '
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
   run cat "$body_file"
   [[ "$output" == *"***REDACTED-GH-TOKEN***"* ]]   # AC #4
   [[ "$output" != *"$fake"* ]]
@@ -292,4 +292,34 @@ STUB
   '
   [ "$status" -eq 0 ]                              # AC #5: success unchanged
   [ ! -f "$body_file" ]                            # no artifact copy on success
+}
+
+@test "pr_post_advisory_or_preserve: a successful post publishes a redacted body" {
+  stub="$BATS_TEST_TMPDIR/bin"
+  mkdir -p "$stub"
+  posted="$BATS_TEST_TMPDIR/posted.txt"
+  # Record the body gh was asked to publish so we can assert it was scrubbed.
+  cat > "$stub/gh" <<STUB
+#!/usr/bin/env bash
+for a in "\$@"; do
+  case "\$a" in body=*) printf '%s' "\${a#body=}" > "$posted" ;; esac
+done
+exit 0
+STUB
+  chmod +x "$stub/gh"
+
+  body_file="$BATS_TEST_TMPDIR/body.md"
+  summary_file="$BATS_TEST_TMPDIR/summary.md"
+  fake="ghp_$(printf 'abcdefghij1234567890ABCDEFGHIJ')"
+  body="$(printf '<!-- persona:qa-lead -->\ntoken leaked: %s\n' "$fake")"
+
+  run env PATH="$stub:$PATH" bash -c '
+    source "'"$LIB"'"
+    pr_post_advisory_or_preserve qa-lead repo/x 5 acct CRED "'"$body"'" "'"$body_file"'" "'"$summary_file"'"
+  '
+  [ "$status" -eq 0 ]
+  run cat "$posted"
+  [[ "$output" == *"***REDACTED-GH-TOKEN***"* ]]   # secrets scrubbed before publishing
+  [[ "$output" != *"$fake"* ]]
+  [[ "$output" == *"<!-- persona:qa-lead -->"* ]]  # marker survives redaction
 }
