@@ -95,6 +95,15 @@ skills:
 
 # qa-lead is a quality ADVISOR — advisory on every surface, write nowhere.
 # (Test authoring, a future `write` opt-in, would add its own gate_label.)
+#
+# ENABLED must mean SERVED. A surface is `enabled: true` only when a deployed
+# workflow actually serves it (persona-standards §1.1: the manifest is the
+# index-of-record). The truth is recorded in personas/qa-lead/interaction.yml and
+# enforced by validate-personas.py's surface-liveness invariant (#1647). Only two
+# surfaces are wired today: `mention` (the shared persona-mention.yml router) and
+# `pull_request` (qa-lead-pr-advisory.yml, #1646). The rest are KEPT as
+# `enabled: false` with the design intent intact — deleting them would lose it,
+# leaving them `true` would be the lie the standard forbids.
 triggers:
   default_mode: advisory
   opt_out_label: qa-lead:hands-off
@@ -103,38 +112,38 @@ triggers:
       events: [opened, ready_for_review, synchronize]
       enabled: true
       mode: advisory
-      notes: "Risk assessment + test-coverage review comments on PRs with test surface."
+      notes: "Risk assessment + test-coverage review comments on PRs with test surface. SERVED by qa-lead-pr-advisory.yml (#1646) on [opened, ready_for_review]; `synchronize` is declared here but deliberately NOT wired (one advisory as a PR enters review, not on every push)."
 
     - surface: pull_request_review
       events: [submitted, created]
-      enabled: true
+      enabled: false
       mode: advisory
-      notes: "Weighs in on review threads about test quality / flakiness."
+      notes: "Intended future surface (weigh in on review threads about test quality / flakiness). NOT served: no workflow fires on pull_request_review. To serve: add a pull_request_review-triggered advisory workflow (the shape qa-lead-pr-advisory.yml already gives pull_request) and record the event in interaction.yml."
 
     - surface: issues
       events: [labeled, commented]
-      enabled: true
+      enabled: false
       mode: advisory
-      notes: "Test-design and NFR strategy input on issues/epics."
+      notes: "Intended future surface (test-design and NFR strategy input on issues/epics). NOT served: no workflow fires on the `issues` event — only @mention comments are routed, which is the separate `mention` surface. To serve: add an issues-triggered advisory workflow and record the `issues` event in interaction.yml."
 
     - surface: discussion
       events: [labeled, commented]
-      enabled: true
+      enabled: false
       mode: advisory
       bridge: repository_dispatch
-      notes: "Discussions can't run the agent inline — must bridge (issue #571)."
+      notes: "Intended future surface (test-strategy input on discussions), encoding a real design decision: the repository_dispatch bridge of issue #571. NOT served: nothing sends that dispatch, and the discussion mention surface has no labels API (#1318), so qa-lead:hands-off cannot opt out a discussion. To serve: build the #571 bridge AND a labels-API workaround for the opt-out, then record the repository_dispatch event in interaction.yml."
 
     - surface: mention
       events: [created]
       enabled: true
       mode: advisory
-      notes: "Direct invocation: '@petry-projects/qa-lead design tests for this epic'."
+      notes: "Direct invocation: '@petry-projects/qa-lead design tests for this epic'. SERVED by the shared persona-mention.yml router (issue_comment / pull_request_review_comment / discussion_comment)."
 
     - surface: check_run
       events: [completed]
-      enabled: true
+      enabled: false
       mode: advisory
-      notes: "On CI failure, flags flakiness / weak coverage as test tech-debt (advisory only)."
+      notes: "Intended future surface (on CI failure, flag flakiness / weak coverage as test tech-debt, advisory only). NOT served: no workflow fires on check_run. To serve: add a check_run-triggered advisory workflow and record the event in interaction.yml."
 
     - surface: schedule
       events: []

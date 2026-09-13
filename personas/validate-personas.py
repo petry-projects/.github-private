@@ -25,6 +25,16 @@ schema cannot express on its own:
     the directory name equals the entry `name` (name<->path agreement)
   * a `framework-agent` layer's `framework.vendor_pin` actually appears in the
     referenced `frameworks/<name>/VENDOR.md` (pin ↔ vendored version agree)
+  * every surface a manifest declares `enabled: true` is actually served by a
+    deployed workflow — derived, not hand-maintained: the serving signal comes
+    from `personas/<id>/interaction.yml`'s `interaction.triggers.events[]` (the
+    union of the deployed `on:` blocks, #1404/#1418). A declared-but-unserved
+    surface fails closed (the #1279 handle-collision precedent): an advertised
+    interaction contract nothing honors is the same category of silent wrongness.
+    A persona with NO `interaction.yml` is SKIPPED with a `::notice::` (not failed)
+    — interaction.yml is the derivation source, so its absence is a different
+    defect (a missing contract file) with its own issue, not an over-declared
+    surface. This is the AC #2/#5 invariant of petry-projects/.github-private#1647.
   * each eval set (`evals.path`, or every entry of `evals.paths`) carries both
     `dev/cases.jsonl` and `holdout/cases.jsonl`; and once the persona has reached
     its `evals.required_before` ring, each held-out set has >= `min_cases`
@@ -272,6 +282,85 @@ def check_skills(manifest: dict, manifest_path: Path, repo_root: Path) -> None:
                  f"skill directory '{p.parent.name}' (path '{skill['path']}')")
 
 
+# Surface -> the set of GitHub webhook event names that, when present in a
+# persona's interaction.yml triggers.events[], serve that surface. A surface is
+# matched on the BASE event name (the part before any ':qualifier', so
+# `repository_dispatch:foo` counts as `repository_dispatch`). The `mention`
+# surface is special: a human @mention is delivered through the comment webhooks
+# by the shared persona-mention router, OR bridged to a persona's own reusable
+# via a `repository_dispatch:*` the router sends — either form serves it (the
+# latter is how pr-review's mention surface is wired). This mapping is the one
+# piece of surface-routing knowledge that is not itself in a manifest; it
+# encodes the fixed GitHub-event semantics, not any per-persona decision.
+_COMMENT_EVENTS = frozenset({"issue_comment", "pull_request_review_comment",
+                             "discussion_comment"})
+SURFACE_SERVING_EVENTS: dict[str, frozenset[str]] = {
+    "pull_request": frozenset({"pull_request"}),
+    "pull_request_review": frozenset({"pull_request_review"}),
+    "issues": frozenset({"issues"}),
+    "check_run": frozenset({"check_run", "check_suite"}),
+    "discussion": frozenset({"discussion"}),
+    "mention": _COMMENT_EVENTS,
+    "schedule": frozenset({"schedule"}),
+}
+
+
+def _interaction_base_events(interaction_path: Path) -> set[str]:
+    """The base event names an interaction.yml records under
+    interaction.triggers.events[], each stripped of any ':qualifier' suffix."""
+    import yaml
+    try:
+        contract = yaml.safe_load(interaction_path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as exc:
+        fail(f"{interaction_path}: could not read/parse interaction contract: {exc}")
+    if not isinstance(contract, dict):
+        fail(f"{interaction_path}: interaction contract must be a mapping")
+    events = (((contract.get("interaction") or {}).get("triggers") or {})
+              .get("events") or [])
+    if not isinstance(events, list):
+        fail(f"{interaction_path}: interaction.triggers.events must be a list")
+    return {str(e).split(":", 1)[0] for e in events}
+
+
+def _surface_served(surface: str, base_events: set[str]) -> bool:
+    """Derive whether `surface` is served by the recorded interaction events."""
+    serving = SURFACE_SERVING_EVENTS.get(surface, frozenset())
+    if serving & base_events:
+        return True
+    # A mention may be bridged to a persona's own reusable via repository_dispatch.
+    if surface == "mention" and "repository_dispatch" in base_events:
+        return True
+    return False
+
+
+def check_surface_liveness(manifest: dict, manifest_path: Path) -> None:
+    """Every `enabled: true` surface must be served by a deployed workflow, as
+    recorded in the persona's interaction.yml triggers.events[] (derived, not
+    hand-maintained). Fails closed on an enabled-but-unserved surface. A persona
+    with no interaction.yml is skipped with a ::notice:: (see module docstring)."""
+    surfaces = (manifest.get("triggers") or {}).get("surfaces") or []
+    enabled = [s for s in surfaces
+               if isinstance(s, dict) and s.get("enabled") is True and "surface" in s]
+    if not enabled:
+        return
+    pid = manifest.get("id", manifest_path.parent.name)
+    interaction_path = manifest_path.parent / "interaction.yml"
+    if not interaction_path.is_file():
+        print(f"::notice::persona '{pid}': no interaction.yml — skipping surface-liveness "
+              f"check (the derivation source is absent; a missing contract file is a "
+              f"distinct defect, not an over-declared surface)")
+        return
+    base_events = _interaction_base_events(interaction_path)
+    for s in enabled:
+        surface = s["surface"]
+        if not _surface_served(surface, base_events):
+            fail(f"{manifest_path}: surface '{surface}' is enabled: true but no deployed "
+                 f"workflow serves it — {interaction_path.name} records events "
+                 f"{sorted(base_events)}, none of which serve '{surface}'. Either wire a "
+                 f"workflow (and record its event in interaction.yml) or set the surface "
+                 f"enabled: false with a note (persona-standards §1.1; .github-private#1647).")
+
+
 def check_invariants(manifest: dict, manifest_path: Path, repo_root: Path,
                      registry_arg: str | None) -> None:
     persona_dir = manifest_path.parent
@@ -320,6 +409,8 @@ def check_invariants(manifest: dict, manifest_path: Path, repo_root: Path,
                      f"(manifest pin and vendored version disagree)")
 
     check_skills(manifest, manifest_path, repo_root)
+
+    check_surface_liveness(manifest, manifest_path)
 
     check_identity(manifest, manifest_path)
 

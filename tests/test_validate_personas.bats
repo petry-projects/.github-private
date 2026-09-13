@@ -459,3 +459,144 @@ add_skill() {
   [[ "$output" == *"string 'name' and 'path'"* ]]
   [[ "$output" != *"Traceback"* ]]
 }
+
+# --- surface liveness: every enabled surface is served by a deployed workflow (#1647) ---
+#
+# The derived surface<->workflow invariant (AC #2/#5): a persona may declare a
+# surface `enabled: true` ONLY if its `interaction.yml` records an event that
+# actually serves it. The mapping is derived from interaction.yml's
+# `interaction.triggers.events[]`, never hand-maintained. A persona with no
+# interaction.yml is SKIPPED (logged ::notice::, not failed) — interaction.yml is
+# the derivation SOURCE, so its absence is a different defect with its own issue.
+# These cases are hermetic (no network), like the rest of this suite.
+
+# set_surfaces <persona-dir> — replace triggers.surfaces from a YAML snippet on stdin.
+set_surfaces() {
+  local dir="$1"
+  # Use `-c` (not `python3 -`) so the heredoc YAML stays on stdin for the script
+  # to read, rather than being consumed as the script source itself.
+  python3 -c '
+import sys, yaml
+path = sys.argv[1]
+m = yaml.safe_load(open(path))
+m["triggers"]["surfaces"] = yaml.safe_load(sys.stdin.read())
+yaml.safe_dump(m, open(path, "w"), sort_keys=False)
+' "$TMP/personas/$dir/persona.yml"
+}
+
+# write_interaction <persona-dir> <event> [<event> ...] — write an interaction.yml
+# declaring the given triggers.events.
+write_interaction() {
+  local dir="$1"; shift
+  {
+    printf 'schema_version: 1\nrole: %s\nkind: persona\n' "$dir"
+    printf 'workflows:\n  - .github/workflows/persona-mention.yml\n'
+    printf 'interaction:\n  triggers:\n    events:\n'
+    local e
+    for e in "$@"; do printf '      - %s\n' "$e"; done
+    printf '    timers: []\n'
+  } >"$TMP/personas/$dir/interaction.yml"
+}
+
+@test "validate-personas accepts an enabled surface served by interaction.yml events" {
+  set_surfaces demo <<'YAML'
+- surface: pull_request
+  events: [opened]
+  enabled: true
+  mode: advisory
+YAML
+  write_interaction demo pull_request
+  run python3 "$VALIDATOR" "$TMP/personas" --schema "$TMP/schema.json"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"OK"* ]]
+}
+
+@test "validate-personas rejects an enabled surface that no deployed workflow serves" {
+  set_surfaces demo <<'YAML'
+- surface: check_run
+  events: [completed]
+  enabled: true
+  mode: advisory
+YAML
+  write_interaction demo issue_comment pull_request_review_comment
+  run python3 "$VALIDATOR" "$TMP/personas" --schema "$TMP/schema.json"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"check_run"* ]]
+  [[ "$output" == *"no deployed workflow serves"* ]]
+  [[ "$output" != *"Traceback"* ]]
+}
+
+@test "validate-personas does NOT check a disabled unserved surface" {
+  set_surfaces demo <<'YAML'
+- surface: check_run
+  events: [completed]
+  enabled: false
+  mode: advisory
+YAML
+  write_interaction demo issue_comment
+  run python3 "$VALIDATOR" "$TMP/personas" --schema "$TMP/schema.json"
+  [ "$status" -eq 0 ]
+}
+
+@test "validate-personas SKIPS surface liveness when a persona has no interaction.yml" {
+  set_surfaces demo <<'YAML'
+- surface: check_run
+  events: [completed]
+  enabled: true
+  mode: advisory
+YAML
+  # no interaction.yml written -> skip (notice), do NOT fail
+  run python3 "$VALIDATOR" "$TMP/personas" --schema "$TMP/schema.json"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"::notice::"* ]]
+  [[ "$output" == *"no interaction.yml"* ]]
+  [[ "$output" == *"demo"* ]]
+}
+
+@test "validate-personas serves the mention surface via comment events" {
+  set_surfaces demo <<'YAML'
+- surface: mention
+  events: [created]
+  enabled: true
+  mode: advisory
+YAML
+  write_interaction demo issue_comment pull_request_review_comment discussion_comment
+  run python3 "$VALIDATOR" "$TMP/personas" --schema "$TMP/schema.json"
+  [ "$status" -eq 0 ]
+}
+
+@test "validate-personas serves the mention surface via a repository_dispatch bridge" {
+  set_surfaces demo <<'YAML'
+- surface: mention
+  events: [created]
+  enabled: true
+  mode: advisory
+YAML
+  write_interaction demo check_suite pull_request repository_dispatch:demo-mention
+  run python3 "$VALIDATOR" "$TMP/personas" --schema "$TMP/schema.json"
+  [ "$status" -eq 0 ]
+}
+
+# AC #5 — manifest/contract agreement cannot silently diverge: re-enabling a
+# surface the contract does not serve fails, even when other surfaces are served.
+@test "validate-personas catches a manifest/contract divergence (one served, one not)" {
+  set_surfaces demo <<'YAML'
+- surface: mention
+  events: [created]
+  enabled: true
+  mode: advisory
+- surface: discussion
+  events: [labeled, commented]
+  enabled: true
+  mode: advisory
+  bridge: repository_dispatch
+YAML
+  # mention is served (issue_comment); discussion is NOT (no `discussion` event,
+  # and the repository_dispatch bridge nothing sends).
+  write_interaction demo issue_comment pull_request_review_comment discussion_comment
+  run python3 "$VALIDATOR" "$TMP/personas" --schema "$TMP/schema.json"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"discussion"* ]]
+  [[ "$output" == *"no deployed workflow serves"* ]]
+  [[ "$output" != *"Traceback"* ]]
+}
