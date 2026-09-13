@@ -18,7 +18,7 @@ set -euo pipefail
 #      the daily subscription cap is exhausted (cap is shared across all Claude
 #      models — see issue #206 for the proactive headroom guard).
 #   2. Cross-provider fallback — run_writer_with_fallback / review-batch.sh
-#      walk claude → copilot → gemini only after the in-engine chain is fully
+#      walk claude → gemini → copilot only after the in-engine chain is fully
 #      rate-limited (exit code 2 from the engine-layer call).
 # Sonnet 5 rate-limit equalization (#1099): equalization makes each model's
 # RPM/TPM bucket the same SIZE across tiers, but does NOT merge them into one
@@ -128,7 +128,7 @@ set_engine_config() {
       DUCK_MODEL="o4-mini"
       # Per-tier in-Claude model fallback chains (comma-separated).
       # On rate-limit, the chain is walked left-to-right before the cross-provider
-      # fallback (claude → copilot → gemini) kicks in. Per-model TPM/RPM buckets
+      # fallback (claude → gemini → copilot) kicks in. Per-model TPM/RPM buckets
       # are independent, so swapping models within Claude often recovers without
       # leaving the provider. (Daily subscription cap is shared — see issue #206.)
       # Override per workflow via env to tune cost/capability trade-offs.
@@ -154,7 +154,7 @@ set_engine_config() {
       # Per-engine model overrides via env (env → default).
       # GEMINI_FLASH_MODEL controls the speed/cost tier (triage + action).
       # GEMINI_PRO_MODEL controls the quality tier (deep + audit + single).
-      local _gflash="${GEMINI_FLASH_MODEL:-gemini-3.5-flash}"
+      local _gflash="${GEMINI_FLASH_MODEL:-gemini-3.8-flash}"
       local _gpro="${GEMINI_PRO_MODEL:-gemini-2.5-pro}"
       ENGINE_TRIAGE_MODEL="$_gflash"
       ENGINE_DEEP_MODEL="$_gpro"
@@ -167,7 +167,7 @@ set_engine_config() {
       DUCK_ENGINE="claude"
       DUCK_MODEL="claude-sonnet-4-6"
       # In-Gemini model fallback chains (comma-separated, walked left-to-right on rate-limit).
-      # Flash chain: 3.5-flash (speed/cost) → 2.5-pro (quality fallback on exhaustion).
+      # Flash chain: 3.8-flash (speed/cost) → 2.5-pro (quality fallback on exhaustion).
       # Pro chain: 2.5-pro (quality) → 2.0-flash (graceful degradation on exhaustion).
       # Override per workflow via env to tune cost/capability trade-offs.
       GEMINI_FLASH_MODEL_CHAIN="${GEMINI_FLASH_MODEL_CHAIN:-${_gflash},gemini-2.5-pro}"
@@ -186,11 +186,11 @@ set_engine_config() {
       ENGINE_AUDIT_MODEL="o4-mini"
       ENGINE_ACTION_MODEL="o4-mini"
       ENGINE_SINGLE_MODEL="o4-mini"
-      ENGINE_LABEL="triage: o4-mini → deep: o4-mini + duck: gemini-3.5-flash → audit: o4-mini (GitHub Models API)"
+      ENGINE_LABEL="triage: o4-mini → deep: o4-mini + duck: gemini-3.8-flash → audit: o4-mini (GitHub Models API)"
       ENGINE_SINGLE_LABEL="single-reviewer mode: o4-mini (GitHub Models API)"
       # Cross-engine rubber duck: use Gemini when Copilot is primary
       DUCK_ENGINE="gemini"
-      DUCK_MODEL="gemini-3.5-flash"
+      DUCK_MODEL="gemini-3.8-flash"
       # No in-engine chain for Copilot — single GitHub Models endpoint.
       CLAUDE_TRIAGE_MODEL_CHAIN=""
       CLAUDE_DEEP_MODEL_CHAIN=""
@@ -546,6 +546,26 @@ copilot_chat() {
     -s "$@" < /dev/null
 }
 
+# _gemini_api_keys
+# Prints the ordered, de-duplicated list of configured Gemini API keys, one per
+# line: the primary (GEMINI_API_KEY, then GOOGLE_API_KEY) followed by the extra
+# resilience keys GOOGLE_API_KEY_2 and GOOGLE_API_KEY_3 (#1777). Empty vars are
+# skipped; duplicate values (the common case where GEMINI_API_KEY == GOOGLE_API_KEY,
+# both wired to the same secret) collapse to one entry. Emits nothing when no key
+# is configured, so callers can distinguish "no keys" from "one or more keys".
+_gemini_api_keys() {
+  local k seen=""
+  for k in "${GEMINI_API_KEY:-}" "${GOOGLE_API_KEY:-}" \
+           "${GOOGLE_API_KEY_2:-}" "${GOOGLE_API_KEY_3:-}"; do
+    [ -z "$k" ] && continue
+    case "$seen" in
+      *"|${k}|"*) continue ;;
+    esac
+    seen="${seen}|${k}|"
+    printf '%s\n' "$k"
+  done
+}
+
 # _gemini_invoke <prompt_file> <timeout_sec> <model> [extra_args...]
 # Runs the gemini CLI and emits the model's text to stdout (stderr passes through
 # so callers that merge it for rate-limit detection still work). When token
@@ -635,9 +655,36 @@ _gemini_chain_invoke() {
     rc=0
 
     if [ -n "$stdout_tmp" ] && [ -n "$stderr_tmp" ]; then
+      # Per-key rotation (#1777): try each configured API key in turn for THIS
+      # model. A rate-limited key rotates to the next key before the model is
+      # downgraded, so a per-key quota exhaustion no longer forces an immediate
+      # model/provider hop while another key still has headroom. A non-rate-limit
+      # failure stops rotation and propagates (a bad prompt fails on every key).
       # stderr intentionally passed through from _gemini_invoke (rate-limit msgs live there).
-      _gemini_invoke "$prompt_file" "$timeout_sec" "$model" "${extra_args[@]}" \
-        > "$stdout_tmp" 2> "$stderr_tmp" || rc=$?
+      local -a _api_keys=()
+      local _ak
+      while IFS= read -r _ak; do _api_keys+=("$_ak"); done < <(_gemini_api_keys)
+      if [ "${#_api_keys[@]}" -eq 0 ]; then
+        # No key configured (e.g. env-inherited auth in tests) — single call.
+        _gemini_invoke "$prompt_file" "$timeout_sec" "$model" "${extra_args[@]}" \
+          > "$stdout_tmp" 2> "$stderr_tmp" || rc=$?
+      else
+        local _had_gk="${GOOGLE_API_KEY+x}" _had_gmk="${GEMINI_API_KEY+x}"
+        local _saved_gk="${GOOGLE_API_KEY:-}" _saved_gmk="${GEMINI_API_KEY:-}"
+        local _key
+        for _key in "${_api_keys[@]}"; do
+          export GOOGLE_API_KEY="$_key" GEMINI_API_KEY="$_key"
+          rc=0
+          _gemini_invoke "$prompt_file" "$timeout_sec" "$model" "${extra_args[@]}" \
+            > "$stdout_tmp" 2> "$stderr_tmp" || rc=$?
+          [ "$rc" -eq 0 ] && break
+          # Only a rate-limit rotates to the next key; a hard failure stops here.
+          is_rate_limited_files "$stdout_tmp" "$stderr_tmp" || break
+        done
+        # Restore the caller's original key env for subsequent models/engines.
+        if [ -n "$_had_gk" ]; then export GOOGLE_API_KEY="$_saved_gk"; else unset GOOGLE_API_KEY; fi
+        if [ -n "$_had_gmk" ]; then export GEMINI_API_KEY="$_saved_gmk"; else unset GEMINI_API_KEY; fi
+      fi
     else
       # mktemp failure — clean up partial allocations and fall through without capture.
       [ -n "$stdout_tmp" ] && rm -f "$stdout_tmp"
@@ -1360,7 +1407,7 @@ run_writer() {
 # ── Run-scoped engine-exhaustion registry (issue #947) ────────────────────────
 # Once an engine is found rate-limited / unavailable during this run (process),
 # it is recorded here so later run_writer_with_fallback calls in the SAME run do
-# NOT re-invoke it. The #860 runaway re-walked claude → copilot → gemini on every
+# NOT re-invoke it. The #860 runaway re-walked claude → gemini → copilot on every
 # dev-lead-fix-ci cycle, re-burning quota on an already-exhausted engine and
 # re-posting the same usage-limit notice. Keyed by engine name → reason
 # (rate-limited | missing-binary). Guarded so a re-source of engine.sh in the
@@ -1393,7 +1440,7 @@ _mark_engine_exhausted() {
 }
 
 # run_writer_with_fallback <prompt_file> [intent_type]
-# Tries primary engine, falls back through claude → copilot → gemini on rate-limit.
+# Tries primary engine, falls back through claude → gemini → copilot on rate-limit.
 # intent_type is passed to model_for_intent() so each engine uses the appropriate
 # tier model for the given task complexity (e.g. haiku for triage, sonnet for writes).
 # Only rate-limit (exit 2) and missing-binary (exit 127) trigger fallback;
@@ -1421,10 +1468,10 @@ run_writer_with_fallback() {
   # Engine chain (#1546): DEV_LEAD_ENGINES is an optional org-wide kill-switch to
   # drop an engine (e.g. an unlicensed Copilot) from the fallback chain without a
   # code change. Comma- or space-separated; unrecognized/empty specs fall back to
-  # the full claude,copilot,gemini chain. The primary REVIEW_ENGINE is tried
-  # first when it is enabled; the remaining enabled engines follow in default
-  # order.
-  local _chain_spec="${DEV_LEAD_ENGINES:-claude copilot gemini}"
+  # the full claude,gemini,copilot chain. Gemini is the preferred 2nd engine after
+  # Claude, with Copilot last (#1777). The primary REVIEW_ENGINE is tried first
+  # when it is enabled; the remaining enabled engines follow in default order.
+  local _chain_spec="${DEV_LEAD_ENGINES:-claude gemini copilot}"
   _chain_spec="${_chain_spec//,/ }"
   # Split with `read -r -a` (IFS scoped to this one command) so a spec containing
   # glob metacharacters (e.g. "*") is never pathname-expanded, unlike an unquoted
@@ -1448,7 +1495,7 @@ run_writer_with_fallback() {
   # claude-only). Matches the documented "unrecognized/empty specs fall back to
   # the full chain" contract.
   if [ "$_spec_invalid" -eq 1 ] || [ "${#_enabled[@]}" -eq 0 ]; then
-    _enabled=(claude copilot gemini)
+    _enabled=(claude gemini copilot)
   fi
 
   local engines=()
@@ -1489,9 +1536,11 @@ run_writer_with_fallback() {
     # A missing Gemini API key is the same deterministic credential config-gap as a
     # missing/placeholder Copilot token (#1591): record it so a Gemini-only run
     # with no key yields the distinct non-retryable `unconfigured` reason rather
-    # than the retryable `engine-error`. Retrying cannot conjure an API key.
-    if [ "$engine" = "gemini" ] && [ -z "${GEMINI_API_KEY:-}${GOOGLE_API_KEY:-}" ]; then
-      echo "::warning::Skipping gemini fallback: GEMINI_API_KEY or GOOGLE_API_KEY not configured (configuration gap, not a rate limit)" >&2
+    # than the retryable `engine-error`. Retrying cannot conjure an API key. The
+    # extra resilience keys (GOOGLE_API_KEY_2/_3, #1777) also count as configured,
+    # so a run authenticated only by a secondary key is NOT treated as a config-gap.
+    if [ "$engine" = "gemini" ] && [ -z "$(_gemini_api_keys)" ]; then
+      echo "::warning::Skipping gemini fallback: no Gemini API key configured (GEMINI_API_KEY / GOOGLE_API_KEY / GOOGLE_API_KEY_2 / GOOGLE_API_KEY_3) — configuration gap, not a rate limit" >&2
       any_unconfigured=1
       continue
     fi
