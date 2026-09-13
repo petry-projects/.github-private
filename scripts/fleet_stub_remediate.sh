@@ -1,5 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
+# shellcheck source=scripts/fleet_stub_drift.sh
+# Pull in the pure per-job extraction/patch helpers (extract_job_block,
+# job_block_sha, patch_job_block) so role-scoped remediation can read-modify-write
+# a single agent-ingress.yml job block (#1726). Guarded so a missing sibling in an
+# unusual layout does not hard-fail sourcing (the whole-file path still works).
+if ! declare -F patch_job_block > /dev/null 2>&1; then
+  _fsr_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  # shellcheck disable=SC1091
+  [ -f "${_fsr_dir}/fleet_stub_drift.sh" ] && source "${_fsr_dir}/fleet_stub_drift.sh"
+fi
 # fleet_stub_remediate.sh — pure remediation-plan builder for the Actions Fleet
 # Monitor stub-drift remediation (#1149, epic #1148). Sourced (not executed) so
 # bats can exercise the pure helpers, mirroring fleet_stub_drift.sh.
@@ -29,30 +39,48 @@ set -euo pipefail
 # pure helpers with a network main().
 #
 # Remediation plan format — a JSON array of objects:
-#   { repo, stub, stub_file, canonical_repo, canonical_path }
+#   { repo, stub, stub_file, canonical_repo, canonical_path, role }
+# `role` is "" for a whole-file stub (overwrite verbatim) and a job name for a
+# collapsed agent-ingress.yml stub (patch only that job block, #1726).
 
 # Canonical source of record for the tracked fleet stubs, mirroring
-# fleet_monitor.sh. Kept here (rather than sourced from fleet_monitor.sh) because
-# fleet_monitor.sh is the network driver — it executes on source and cannot be
-# sourced purely. Each STUB_REGISTRY entry is TAB-separated:
-#   name <TAB> label <TAB> stub_path <TAB> canonical_path
+# fleet_monitor.sh (kept in lockstep with its STUB_REGISTRY). Kept here (rather
+# than sourced from fleet_monitor.sh) because fleet_monitor.sh is the network
+# driver — it executes on source and cannot be sourced purely. Each STUB_REGISTRY
+# entry is TAB-separated:
+#   name <TAB> label <TAB> stub_path <TAB> canonical_path <TAB> role <TAB> legacy_path <TAB> legacy_canonical_path
 #     name           — slug used in log lines
 #     label          — the `stub` value carried in fleet_stub_drift.json
 #     stub_path      — the `stub_file` value carried in fleet_stub_drift.json
 #     canonical_path — org-template path under $CANONICAL_STUB_REPO
+#     role           — OPTIONAL job/role selector (#1726). Empty ⇒ stub_path is a
+#                      standalone file remediated by overwriting it VERBATIM with
+#                      the canonical bytes (the #822/#886 behavior). Non-empty ⇒
+#                      stub_path is the collapsed agent-ingress.yml and remediation
+#                      PATCHES only the `<role>` job block (read-modify-write) so
+#                      sibling jobs are never touched and a deliberately-removed
+#                      block is never resurrected.
+#     legacy_path / legacy_canonical_path — OPTIONAL pre-collapse per-role paths,
+#                      carried for parity with fleet_monitor.sh; unused by
+#                      remediation (only DRIFTED entries — a present, differing
+#                      block — are remediable; MISSING/legacy repos are not).
 CANONICAL_STUB_REPO="${CANONICAL_STUB_REPO:-petry-projects/.github}"
 STUB_REGISTRY=(
-  $'initiative-planner\tInitiative-planner\t.github/workflows/initiative-planner.yml\tstandards/workflows/initiative-planner.yml'
-  $'initiative-driver\tInitiative-driver\t.github/workflows/initiative-driver.yml\tstandards/workflows/initiative-driver.yml'
+  $'initiative-planner\tInitiative-planner\t.github/workflows/initiative-planner.yml\tstandards/workflows/initiative-planner.yml\t\t\t'
+  $'initiative-driver\tInitiative-driver\t.github/workflows/initiative-driver.yml\tstandards/workflows/initiative-driver.yml\t\t\t'
 )
 
 # ── Never-overwrite allowlist (AC #3) ─────────────────────────────────────────
 # Files that the remediation step must NEVER re-sync, because a consumer repo has
 # intentionally customized them. An allowlisted entry never appears in the plan
 # output, so the remediation can never touch it — mirroring template_stub_drift.sh's
-# TEMPLATE_DRIFT_ALLOWLIST. Each entry is either:
-#   "owner/repo"            — never remediate ANY tracked stub in that repo, or
-#   "owner/repo|stub_file"  — never remediate that one stub_file in that repo.
+# TEMPLATE_DRIFT_ALLOWLIST. Each entry is one of:
+#   "owner/repo"                 — never remediate ANY tracked stub in that repo,
+#   "owner/repo|stub_file"       — never remediate that one stub_file in that repo,
+#   "owner/repo|stub_file|role"  — never remediate that one collapsed job block
+#                                  (role-granular, #1726): a repo can deliberately
+#                                  customize ONE agent-ingress.yml job while its
+#                                  sibling jobs stay auto-remediated.
 # Add an entry ONLY with a recorded rationale (the same recorded-rationale rule
 # AGENTS.md applies to the template ci.yml exception): name the repo/file and why
 # the customization is deliberate, so the never-overwrite decision stays auditable.
@@ -60,28 +88,36 @@ STUB_REGISTRY=(
 # by default every DRIFTED fleet stub is a verbatim deployment and IS remediable.
 REMEDIATION_ALLOWLIST=()
 
-# remediation_allowlisted <repo> <stub_file> — return 0 if the repo (whole-repo
-# entry) or the specific repo+stub_file is on the never-overwrite allowlist.
+# remediation_allowlisted <repo> <stub_file> [role] — return 0 if the repo
+# (whole-repo entry), the specific repo+stub_file, or (when <role> is given) the
+# repo+stub_file+role is on the never-overwrite allowlist. The role-granular form
+# lets one collapsed job block be protected without exempting its siblings.
 remediation_allowlisted() {
-  local repo="${1:-}" stub_file="${2:-}" a
+  local repo="${1:-}" stub_file="${2:-}" role="${3:-}" a
   for a in "${REMEDIATION_ALLOWLIST[@]}"; do
     if [ "$a" = "$repo" ] || [ "$a" = "${repo}|${stub_file}" ]; then
+      return 0
+    fi
+    if [ -n "$role" ] && [ "$a" = "${repo}|${stub_file}|${role}" ]; then
       return 0
     fi
   done
   return 1
 }
 
-# resolve_canonical_path <stub_file> — echo the canonical_path from STUB_REGISTRY
-# for the registered stub whose per-repo stub_path equals <stub_file>. Returns 1
-# (no output) for an unrecognized stub_file, so the plan builder can skip an
-# entry it cannot map to a canonical source.
+# resolve_canonical_path <stub_file> [role] — echo the canonical_path from
+# STUB_REGISTRY for the registered stub whose per-repo stub_path equals <stub_file>
+# AND whose role equals <role>. The role is part of the key because once several
+# roles collapse into one agent-ingress.yml they SHARE a stub_file, so stub_file
+# alone is ambiguous (#1726); an empty <role> matches the whole-file entries.
+# Returns 1 (no output) for an unrecognized (stub_file, role) pair, so the plan
+# builder can skip an entry it cannot map to a canonical source.
 resolve_canonical_path() {
-  local stub_file="${1:-}" entry stub_path canonical_path
+  local stub_file="${1:-}" want_role="${2:-}" entry stub_path canonical_path reg_role
   for entry in "${STUB_REGISTRY[@]}"; do
     # Fields 1-2 (name, label) are unused by the resolver — discard them.
-    IFS=$'\t' read -r _ _ stub_path canonical_path <<< "$entry"
-    if [ "$stub_path" = "$stub_file" ]; then
+    IFS=$'\t' read -r _ _ stub_path canonical_path reg_role _ _ <<< "$entry"
+    if [ "$stub_path" = "$stub_file" ] && [ "$reg_role" = "$want_role" ]; then
       printf '%s\n' "$canonical_path"
       return 0
     fi
@@ -110,30 +146,31 @@ build_remediation_plan() {
     return 1
   fi
 
-  local tmp repo stub stub_file canonical_path
+  local tmp repo stub stub_file role canonical_path
   tmp="$(mktemp)"
-  while IFS=$'\t' read -r repo stub stub_file; do
+  while IFS=$'\t' read -r repo stub stub_file role; do
     [ -n "$repo" ] || continue
-    remediation_allowlisted "$repo" "$stub_file" && continue
-    if ! canonical_path="$(resolve_canonical_path "$stub_file")"; then
-      # Unrecognized stub_file: intentionally skipped (only registered stubs are
-      # remediable), but warn so a registry gap is auditable rather than silent.
-      echo "::warning::fleet_stub_remediate: no canonical source for stub_file '$stub_file' in $repo — skipping" >&2
+    remediation_allowlisted "$repo" "$stub_file" "$role" && continue
+    if ! canonical_path="$(resolve_canonical_path "$stub_file" "$role")"; then
+      # Unrecognized (stub_file, role): intentionally skipped (only registered
+      # stubs are remediable), but warn so a registry gap is auditable, not silent.
+      echo "::warning::fleet_stub_remediate: no canonical source for stub_file '$stub_file'${role:+ role '$role'} in $repo — skipping" >&2
       continue
     fi
     jq -n \
       --arg repo "$repo" \
       --arg stub "$stub" \
       --arg stub_file "$stub_file" \
+      --arg role "$role" \
       --arg canonical_repo "$CANONICAL_STUB_REPO" \
       --arg canonical_path "$canonical_path" \
-      '{repo: $repo, stub: $stub, stub_file: $stub_file,
+      '{repo: $repo, stub: $stub, stub_file: $stub_file, role: $role,
         canonical_repo: $canonical_repo, canonical_path: $canonical_path}' \
       >> "$tmp"
   done < <(jq -r '
     .[]
     | select(.status == "DRIFTED")
-    | [.repo, (.stub // ""), (.stub_file // "")]
+    | [.repo, (.stub // ""), (.stub_file // ""), (.role // "")]
     | @tsv' "$json")
 
   # Guarantee temp cleanup regardless of the final jq's exit, and propagate its
@@ -265,11 +302,13 @@ _emit_verification_summary() {
   fi
 }
 
-# _canonical_bytes <canonical_repo> <canonical_path> — echo the decoded bytes of
-# the canonical stub (the source of record the SHA drift was measured against).
-# Mirrors fleet_monitor.sh's canonical read: contents API .content, base64 -d.
+# _canonical_bytes <canonical_repo> <canonical_path> — echo the raw bytes of the
+# canonical stub (the source of record the SHA drift was measured against).
+# Mirrors fleet_monitor.sh's canonical read: request the raw media type rather
+# than decoding base64 locally, which avoids the macOS/BSD (`base64 -D`) vs Linux
+# (`base64 -d`) portability split.
 _canonical_bytes() {
-  gh api "repos/${1}/contents/${2}" --jq '.content' 2>/dev/null | base64 -d 2>/dev/null || true
+  gh api -H "Accept: application/vnd.github.raw" "repos/${1}/contents/${2}" 2>/dev/null || true
 }
 
 # _canonical_sha <canonical_repo> <canonical_path> — echo the canonical git blob
@@ -283,13 +322,32 @@ _blob_sha() {
   gh api "repos/${1}/contents/${2}?ref=${3}" --jq '.sha' 2>/dev/null || true
 }
 
-# _put_file <repo> <path> <content> <branch> <message> — write <content> to
-# <path> on <branch> via the contents PUT, passing the existing file SHA when
-# overwriting. Mirrors seed-repo-template.sh's _put_file.
+# _repo_bytes <repo> <path> <ref> — echo the raw bytes of <path> on <ref>. Used by
+# role-scoped remediation to read the CURRENT agent-ingress.yml before patching a
+# single job block into it (read-modify-write). Requests the raw media type rather
+# than decoding base64 locally, avoiding the macOS/BSD (`base64 -D`) vs Linux
+# (`base64 -d`) portability split.
+_repo_bytes() {
+  gh api -H "Accept: application/vnd.github.raw" "repos/${1}/contents/${2}?ref=${3}" 2>/dev/null || true
+}
+
+# _put_file <repo> <path> <content> <branch> <message> [expected_sha] — write
+# <content> to <path> on <branch> via the contents PUT, passing the existing file
+# SHA when overwriting. Mirrors seed-repo-template.sh's _put_file. When a sixth
+# argument is supplied it is used as the PUT's `sha` VERBATIM (optimistic lock):
+# the caller passes the blob SHA of the exact version it read, so a concurrent
+# write between that read and this PUT is rejected by the API (409) instead of
+# silently clobbered (#1726 race). Without it, the SHA is re-fetched here — the
+# legacy whole-file behavior, where re-fetching is acceptable because the write is
+# a verbatim canonical overwrite.
 _put_file() {
   local repo="$1" path="$2" content="$3" branch="$4" msg="$5" sha encoded
   local -a sha_arg=()
-  sha="$(_blob_sha "$repo" "$path" "$branch")"
+  if [ "$#" -ge 6 ]; then
+    sha="$6"
+  else
+    sha="$(_blob_sha "$repo" "$path" "$branch")"
+  fi
   [ -n "$sha" ] && [ "$sha" != "null" ] && sha_arg=(--field "sha=${sha}")
   encoded="$(printf '%s' "$content" | base64 -w 0 2>/dev/null || printf '%s' "$content" | base64)"
   gh api "repos/${repo}/contents/${path}" --method PUT \
@@ -299,10 +357,83 @@ _put_file() {
   echo "  [remediate] wrote ${path}"
 }
 
+# _remediate_role_block <repo> <stub_file> <canonical_repo> <canonical_path> \
+#                       <role> <branch> — remediate ONE collapsed job block in a
+# consumer repo's agent-ingress.yml via read-modify-write (#1726 AC #3). Extracts
+# the canonical <role> block, patches ONLY that block into the repo's current file
+# (siblings untouched), PUTs the modified whole file, and verifies the pushed
+# block's SHA == canon. A deliberately-removed block is NEVER resurrected: when the
+# repo file has no <role> block, patch_job_block refuses (exit 3) and we skip
+# without writing. Returns 1 on a hard failure (unreadable canon/repo, patch error,
+# or a post-push per-block verify mismatch) so the caller fails the repo.
+_remediate_role_block() {
+  local repo="$1" sf="$2" cr="$3" cp="$4" role="$5" branch="$6"
+  local canon_bytes block_tmp canon_block_sha repo_bytes repo_read_sha patched patched_tmp written_block_sha rc
+
+  canon_bytes="$(_canonical_bytes "$cr" "$cp")"
+  if [ -z "$canon_bytes" ]; then
+    echo "::error::could not fetch canonical agent-ingress ${cr}/${cp} for ${repo} — failing repo" >&2
+    return 1
+  fi
+  block_tmp="$(mktemp)"
+  printf '%s' "$canon_bytes" | extract_job_block "$role" > "$block_tmp"
+  if [ ! -s "$block_tmp" ]; then
+    rm -f "$block_tmp"
+    echo "::error::canonical ${cr}/${cp} has no '${role}' job block — cannot remediate ${repo}:${sf}#${role}" >&2
+    return 1
+  fi
+  canon_block_sha="$(printf '%s' "$canon_bytes" | job_block_sha "$role")"
+
+  # Optimistic lock (#1726 race): capture the blob SHA of the version we base the
+  # patch on BEFORE reading its bytes, then PUT conditioned on it. SHA-first
+  # ordering fails closed — any concurrent write to agent-ingress.yml after this
+  # point (during the read, patch, or PUT) makes the SHA stale, so the PUT is
+  # rejected (409) rather than overwriting the concurrent change with stale
+  # sibling-job content.
+  repo_read_sha="$(_blob_sha "$repo" "$sf" "$branch")"
+  repo_bytes="$(_repo_bytes "$repo" "$sf" "$branch")"
+  if [ -z "$repo_bytes" ]; then
+    rm -f "$block_tmp"
+    echo "::error::could not read ${repo}:${sf} on ${branch} — cannot patch '${role}' block; failing repo" >&2
+    return 1
+  fi
+
+  patched_tmp="$(mktemp)"
+  if printf '%s' "$repo_bytes" | patch_job_block "$role" "$block_tmp" > "$patched_tmp"; then rc=0; else rc=$?; fi
+  rm -f "$block_tmp"
+  if [ "$rc" -eq 3 ]; then
+    rm -f "$patched_tmp"
+    echo "::warning::${repo}:${sf} has no '${role}' job block — refusing to recreate a removed stub (never resurrect); skipping" >&2
+    return 0
+  elif [ "$rc" -ne 0 ]; then
+    rm -f "$patched_tmp"
+    echo "::error::failed to patch '${role}' block in ${repo}:${sf}; failing repo" >&2
+    return 1
+  fi
+
+  IFS= read -r -d '' patched < "$patched_tmp" || true
+  rm -f "$patched_tmp"
+  _put_file "$repo" "$sf" "$patched" "$branch" \
+    "chore: remediate drifted ${role} job block in ${sf} from ${cr}/${cp}" \
+    "$repo_read_sha" || return 1
+
+  # Per-block verify (AC #3/#5): re-extract the role block from the PUSHED file and
+  # confirm its SHA equals canon. A whole-file compare would wrongly fail here,
+  # because sibling jobs (correctly) differ from the single-role canonical block.
+  written_block_sha="$(_repo_bytes "$repo" "$sf" "$branch" | job_block_sha "$role")"
+  if [ "$written_block_sha" != "$canon_block_sha" ]; then
+    echo "::error::per-block verify failed on ${repo}:${sf}#${role} — wrote ${written_block_sha}, canonical ${canon_block_sha}; not opening a PR" >&2
+    return 1
+  fi
+  echo "  [remediate] verified ${sf}#${role} block == canonical (${canon_block_sha})"
+}
+
 # _remediate_repo <repo> <entries_tsv> — remediate one consumer repo. <entries_tsv>
-# is newline-separated "stub_file<TAB>canonical_repo<TAB>canonical_path<TAB>stub"
-# lines (all of this repo's DRIFTED, non-allowlisted stubs). Creates one branch,
-# PUTs each stub's canonical bytes, verifies byte-identity, and opens one PR.
+# is newline-separated "stub_file<TAB>canonical_repo<TAB>canonical_path<TAB>stub<TAB>role"
+# lines (all of this repo's DRIFTED, non-allowlisted stubs). Creates one branch;
+# for each entry either overwrites the whole file (role empty) or patches only the
+# <role> job block (read-modify-write); verifies (whole-file or per-block) identity,
+# and opens one PR.
 _remediate_repo() {
   local repo="$1" entries="$2"
   local branch default_branch base_sha
@@ -349,9 +480,14 @@ _remediate_repo() {
     || gh api "repos/${repo}/git/ref/heads/${branch}" --silent 2>/dev/null \
     || { echo "::error::cannot create branch ${branch} on ${repo}" >&2; return 1; }
 
-  local sf cr cp stub content canon_sha written_sha bytes_tmp
-  while IFS=$'\t' read -r sf cr cp stub; do
+  local sf cr cp stub role content canon_sha written_sha bytes_tmp
+  while IFS=$'\t' read -r sf cr cp stub role; do
     [ -n "$sf" ] || continue
+    if [ -n "$role" ]; then
+      _remediate_role_block "$repo" "$sf" "$cr" "$cp" "$role" "$branch" || return 1
+      continue
+    fi
+    # ── Whole-file overwrite (#822/#886) ─────────────────────────────────────
     bytes_tmp="$(mktemp)"
     _canonical_bytes "$cr" "$cp" > "$bytes_tmp" 2>/dev/null || true
     if [ ! -s "$bytes_tmp" ]; then
@@ -446,7 +582,7 @@ run_remediation() {
     fi
 
     entries="$(printf '%s' "$plan" | jq -r --arg r "$repo" \
-      '.[] | select(.repo == $r) | [.stub_file, .canonical_repo, .canonical_path, .stub] | @tsv')"
+      '.[] | select(.repo == $r) | [.stub_file, .canonical_repo, .canonical_path, .stub, (.role // "")] | @tsv')"
     # Capture the exact exit code without tripping set -e: 0 = opened+verified,
     # 3 = idempotent skip (PR already open, nothing verified), other = failed.
     if _remediate_repo "$repo" "$entries"; then rc=0; else rc=$?; fi
