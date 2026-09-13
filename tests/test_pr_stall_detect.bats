@@ -203,23 +203,115 @@ teardown() {
 # ---------------------------------------------------------------------------
 
 @test "generate_stall_report renders each candidate with its link and reason" {
-  local f
-  f=$(mktemp "$STUB_DIR/tsv.XXXXXX")
-  printf '%s\t%s\t%s\t%s\n' \
-    "742" "https://github.com/o/r/pull/742" "Green but never re-reviewed" "stalled 90m: CI-green + REVIEW_REQUIRED, no agent activity or pending event (>30m)" \
-    > "$f"
-  run generate_stall_report "$f"
+  local rows
+  rows=$(printf '%s\t%s\t%s\t%s' \
+    "742" "https://github.com/o/r/pull/742" "Green but never re-reviewed" "stalled 90m: CI-green + REVIEW_REQUIRED, no agent activity or pending event (>30m)")
+  run generate_stall_report "$rows"
   [ "$status" -eq 0 ]
   [[ "$output" == *"#742"* ]]
   [[ "$output" == *"https://github.com/o/r/pull/742"* ]]
   [[ "$output" == *"stalled 90m"* ]]
 }
 
-@test "generate_stall_report on an empty file prints an all-clear line, not a table" {
-  local f
-  f=$(mktemp "$STUB_DIR/tsv.XXXXXX")
-  : > "$f"
-  run generate_stall_report "$f"
+@test "generate_stall_report on empty input prints an all-clear line, not a table" {
+  run generate_stall_report ""
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"| PR |"* ]]
+  [[ "$output" == *"No open PR"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# pr_stranded_approval_reasons — the #1665 observability backstop (AC8).
+#
+# The dual of the stall net for the marker-vs-standing-approval bug: an open PR
+# that is CI-green, has auto-merge ARMED, but carries NO standing approval (the
+# only "approval" is a non-standing marker — dismissed review or issue comment),
+# left idle with no sweep re-dispatch for over STRANDED_APPROVAL_MIN_HOURS. That
+# is a green, auto-merge-armed PR that will never merge because nothing stands to
+# satisfy the gate — the exact silent strand #1665 fixes in the sweep, surfaced
+# here as a pushed signal in case a residual path still strands it.
+# Detection only; fail-quiet on human-gated PRs.
+#   args: <ci_status> <auto_merge_armed> <standing_approval> <hours_idle> <gated>
+# ---------------------------------------------------------------------------
+
+@test "green + auto-merge armed + no standing approval idle past the threshold fires and names it" {
+  run pr_stranded_approval_reasons passing true 0 6 false
+  [ "$status" -eq 0 ]
+  [[ "$output" == *stranded* ]]
+  [[ "$output" == *6* ]]
+}
+
+@test "stranded: idle exactly at the threshold does NOT fire (strict >)" {
+  # default STRANDED_APPROVAL_MIN_HOURS=4
+  run pr_stranded_approval_reasons passing true 0 4 false
+  [ -z "$output" ]
+}
+
+@test "stranded: idle below the threshold does NOT fire (in-flight guard)" {
+  run pr_stranded_approval_reasons passing true 0 2 false
+  [ -z "$output" ]
+}
+
+@test "CI not passing does NOT fire (not yet a merge-ready strand)" {
+  run pr_stranded_approval_reasons pending true 0 24 false
+  [ -z "$output" ]
+  run pr_stranded_approval_reasons failing true 0 24 false
+  [ -z "$output" ]
+}
+
+@test "auto-merge NOT armed does NOT fire (no pending merge to strand)" {
+  run pr_stranded_approval_reasons passing false 0 24 false
+  [ -z "$output" ]
+}
+
+@test "a STANDING approval present does NOT fire (the merge can proceed)" {
+  run pr_stranded_approval_reasons passing true 1 24 false
+  [ -z "$output" ]
+}
+
+@test "a human-gated PR does NOT fire even when otherwise stranded (fail-quiet)" {
+  run pr_stranded_approval_reasons passing true 0 999 true
+  [ -z "$output" ]
+}
+
+@test "is_pr_stranded_approval exit 0 when stranded, 1 when healthy" {
+  run is_pr_stranded_approval passing true 0 6 false
+  [ "$status" -eq 0 ]
+  run is_pr_stranded_approval passing true 0 1 false
+  [ "$status" -eq 1 ]
+}
+
+@test "STRANDED_APPROVAL_MIN_HOURS override is respected" {
+  STRANDED_APPROVAL_MIN_HOURS=12 run pr_stranded_approval_reasons passing true 0 8 false
+  [ -z "$output" ]
+  STRANDED_APPROVAL_MIN_HOURS=12 run pr_stranded_approval_reasons passing true 0 13 false
+  [[ "$output" == *stranded* ]]
+}
+
+@test "a non-numeric STRANDED_APPROVAL_MIN_HOURS override falls back to the default (never 0)" {
+  STRANDED_APPROVAL_MIN_HOURS=abc run pr_stranded_approval_reasons passing true 0 1 false
+  [ -z "$output" ]
+}
+
+@test "non-numeric idle/standing inputs degrade to no-fire, never error" {
+  run pr_stranded_approval_reasons passing true "xyz" "abc" false
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "generate_stranded_approval_report renders each candidate with its link and reason" {
+  local rows
+  rows=$(printf '%s\t%s\t%s\t%s' \
+    "808" "https://github.com/o/r/pull/808" "Green + armed but never approved" "stranded 6h: CI-green + auto-merge armed, no standing approval (>4h)")
+  run generate_stranded_approval_report "$rows"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"#808"* ]]
+  [[ "$output" == *"https://github.com/o/r/pull/808"* ]]
+  [[ "$output" == *"stranded 6h"* ]]
+}
+
+@test "generate_stranded_approval_report on empty input prints an all-clear line, not a table" {
+  run generate_stranded_approval_report ""
   [ "$status" -eq 0 ]
   [[ "$output" != *"| PR |"* ]]
   [[ "$output" == *"No open PR"* ]]
