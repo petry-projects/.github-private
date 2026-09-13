@@ -15,6 +15,9 @@ source "$(dirname "$0")/lib/review-change-evidence.sh"
 source "$(dirname "$0")/lib/resolution-integrity.sh"
 source "$(dirname "$0")/lib/addressed-claim-verify.sh"
 source "$(dirname "$0")/lib/redact.sh"
+# Structured PR-body backfill (#1805): heal an existing PR whose body is still
+# missing 3+ required description sections, once, marker-keyed.
+source "$(dirname "$0")/lib/dev-lead-pr-body.sh"
 
 INTENT_TYPE="${INTENT_TYPE:-fix-reviews}"
 PR_NUMBER="${PR_NUMBER:-}"
@@ -80,6 +83,10 @@ if [ "${DEV_LEAD_DRY_RUN:-false}" = "false" ] && [ -n "${PR_NUMBER:-}" ]; then
   # reassigned, so the gate measures only whether THIS pass advanced the head.
   RESOLUTION_BASE_SHA="$(git rev-parse HEAD 2>/dev/null || true)"
   setup_git_identity
+  # Backfill the five required description sections into a pre-existing PR whose
+  # body still lacks them (#1805). Idempotent + marker-keyed, so open PRs heal on
+  # their next dev-lead pass without churning on every run.
+  dlpb_backfill_pr_body "$PR_NUMBER" "$REPO" || true
 fi
 
 build_and_run() {
