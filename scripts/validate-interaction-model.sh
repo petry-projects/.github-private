@@ -165,20 +165,44 @@ imv_on_crons() {
 
 # ── §4 classification table parsing ──────────────────────────────────────────
 
-# imv_table_rows <md> — print `path<TAB>class<TAB>timer_role` for each §4 data row
-# (a table row whose first cell is a `.github/workflows/...` path). The header,
-# separator, and the blockquoted exclusion table are ignored. Pure.
+# imv_table_rows <md> — print `path<TAB>class<TAB>timer_role<TAB>role` for each §4
+# data row (a table row whose first cell is a `.github/workflows/...` path). The
+# path is the first backtick-delimited span of the first cell; the optional role
+# is the trailing text after it — the ADR-0007 ingress convention, where one
+# agent-ingress.yml contributes one row per collapsed role-job, each first cell
+# shaped `` `path` (job-name) ``. A legacy single-role stub carries no qualifier,
+# so its role field is empty. The header, separator, and the blockquoted
+# exclusion table are ignored. Pure.
 imv_table_rows() {
   local md="${1:-}"
   [ -n "$md" ] && [ -f "$md" ] || return 0
   awk -F'|' '
     $0 ~ "^\\|[[:space:]]*`\\.github/workflows/" {
-      path=$2; gsub(/[[:space:]`]/,"",path);
+      # first cell ($2): `path` optionally followed by a (role) qualifier
+      path=$2; sub(/^[^`]*`/,"",path); sub(/`.*/,"",path); gsub(/[[:space:]]/,"",path);
+      role=$2; sub(/^[^`]*`[^`]*`/,"",role); gsub(/[()`]/,"",role);
+      gsub(/^[[:space:]]+|[[:space:]]+$/,"",role);
       cls=$3;  gsub(/[[:space:]]/,"",cls);
       tr=$4;   gsub(/^[[:space:]]+|[[:space:]]+$/,"",tr);
-      print path "\t" cls "\t" tr
+      print path "\t" cls "\t" tr "\t" role
     }
   ' "$md"
+}
+
+# imv_wf_jobs <file> — print each top-level job name (a 2-space-indented key under
+# the `jobs:` block). For an ADR-0007 agent-ingress.yml this is one name per
+# collapsed role-job, the unit the §4 completeness check counts rows against.
+# Pure: reads the file, writes stdout.
+imv_wf_jobs() {
+  local file="${1:-}"
+  [ -n "$file" ] && [ -f "$file" ] || return 0
+  awk '
+    /^jobs:[[:space:]]*(#.*)?$/ { inj=1; next }
+    inj && /^[A-Za-z_]/ { inj=0 }
+    inj && /^  [A-Za-z0-9_-]+:[[:space:]]*(#.*)?$/ {
+      k=$0; sub(/^  /,"",k); sub(/:.*/,"",k); print k
+    }
+  ' "$file"
 }
 
 # imv_table_exclusions <md> — print each `.github/workflows/...` path listed in
@@ -262,28 +286,58 @@ imv_c_field() {
 
 # ── detectors (each prints tagged FAIL lines; none aborts on first finding) ───
 
-# imv_v_completeness <root> <md> — FAIL[a] for every in-scope workflow that has no
-# §4 row (bidirectional completeness, §10). An in-scope workflow is a
-# .github/workflows/*.yml not on the §4 exclusion list.
+# imv_v_completeness <root> <md> — bidirectional §4 completeness (§10). Every
+# in-scope .github/workflows/*.yml (not on the exclusion list) must be classified:
+#   - a regular single-role workflow: exactly one §4 row (FAIL[a] if it has none);
+#   - an ADR-0007 agent-ingress.yml: one row per collapsed role-job — the set of
+#     row role-qualifiers must equal the file's set of job names, so an
+#     under-documented ingress (a job with no row) FAIL[a]s and a stale row naming
+#     a job that no longer exists FAIL[table]s. Each per-role row is still
+#     classified against the shared on: block by imv_v_class.
 imv_v_completeness() {
-  local root="$1" md="$2" f rel
+  local root="$1" md="$2" f rel base
   local rows exclusions
-  rows="$(imv_table_rows "$md" | cut -f1)"
+  rows="$(imv_table_rows "$md")"
   exclusions="$(imv_table_exclusions "$md")"
   while IFS= read -r f; do
     [ -n "$f" ] || continue
     rel="${f#"$root/"}"
     if printf '%s\n' "$exclusions" | grep -qxF "$rel"; then continue; fi
-    if ! printf '%s\n' "$rows" | grep -qxF "$rel"; then
+    base="$(basename "$rel")"
+    if [ "$base" = "agent-ingress.yml" ]; then
+      imv_v_completeness_ingress "$f" "$rel" "$rows"
+    elif ! printf '%s\n' "$rows" | cut -f1 | grep -qxF "$rel"; then
       printf 'FAIL[a]: %s is an in-scope workflow with no §4 classification row (declare it in docs/agentic-interaction-model.md §4, or add it to the exclusion list).\n' "$rel"
     fi
   done < <(find "$root/.github/workflows" -maxdepth 1 -type f -name '*.yml' 2>/dev/null | sort)
 }
 
+# imv_v_completeness_ingress <file> <rel> <rows> — per-job completeness for a
+# collapsed ADR-0007 ingress: the set of §4 row role-qualifiers naming <rel> must
+# equal <file>'s job names. FAIL[a] a job with no row; FAIL[table] a row-role that
+# names no job. Called by imv_v_completeness; <rows> is imv_table_rows output.
+imv_v_completeness_ingress() {
+  local file="$1" rel="$2" rows="$3" jobs roles job role
+  jobs="$(imv_wf_jobs "$file" | sort -u)"
+  roles="$(printf '%s\n' "$rows" | awk -F'\t' -v p="$rel" '$1==p {print $4}' | grep -v '^$' | sort -u)"
+  while IFS= read -r job; do
+    [ -n "$job" ] || continue
+    if ! printf '%s\n' "$roles" | grep -qxF "$job"; then
+      printf 'FAIL[a]: %s job %s is a collapsed ingress role with no §4 classification row — add one row per role-job (see the §4 ingress convention).\n' "$rel" "$job"
+    fi
+  done <<< "$jobs"
+  while IFS= read -r role; do
+    [ -n "$role" ] || continue
+    if ! printf '%s\n' "$jobs" | grep -qxF "$role"; then
+      printf 'FAIL[table]: §4 row %s (%s) names an ingress role that is not a job in the file — remove the stale row (§10).\n' "$rel" "$role"
+    fi
+  done <<< "$roles"
+}
+
 # imv_v_timer_roles <md> — FAIL[b] for every Class-2 row lacking a valid timer_role.
 imv_v_timer_roles() {
-  local md="$1" path cls tr trn
-  while IFS=$'\t' read -r path cls tr; do
+  local md="$1" path cls tr role trn
+  while IFS=$'\t' read -r path cls tr role; do
     [ -n "$path" ] || continue
     [ "$cls" = "2" ] || continue
     trn="$(imv_norm_timer_role "$tr")"
@@ -298,8 +352,8 @@ imv_v_timer_roles() {
 # FAIL[class] when a row's asserted Class contradicts the workflow's real on:
 # block via the §3 discriminator.
 imv_v_class() {
-  local root="$1" md="$2" path cls tr trn wf S
-  while IFS=$'\t' read -r path cls tr; do
+  local root="$1" md="$2" path cls tr role trn wf S
+  while IFS=$'\t' read -r path cls tr role; do
     [ -n "$path" ] || continue
     wf="$root/$path"
     if [ ! -f "$wf" ]; then

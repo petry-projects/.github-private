@@ -1,0 +1,24 @@
+name: Agent Ingress
+# FIXTURE — a MISCLASSIFIED ingress row: two role-jobs, both documented, but one
+# row asserts Class 3 while the shared on: union carries NO schedule. The §3
+# discriminator must FAIL[class] that row (a Class-3 origin is defined by its
+# cadence), proving a row whose asserted Class contradicts the ingress on: block
+# is rejected (QA AC #6).
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, review_requested]
+  issue_comment:
+    types: [created]
+
+permissions: {}
+
+jobs:
+  dev-lead:
+    if: github.event_name == 'pull_request'
+    uses: petry-projects/.github-private/.github/workflows/dev-lead-reusable.yml@dev-lead/v1-stable
+    secrets: inherit
+
+  pr-review-mention:
+    if: github.event_name == 'issue_comment'
+    uses: petry-projects/.github/.github/workflows/pr-review-mention-reusable.yml@pr-review-mention/v2-stable
+    secrets: inherit
