@@ -61,6 +61,17 @@ _run() {
   [ "$(jq -r '.never_ran' <<<"$output")" -eq 0 ]
 }
 
+@test "metrics: a short-lived cancelled run with run_started_at set is NOT never-ran" {
+  # A run that actually started (run_started_at populated) did run, so even a
+  # 30-second lifetime must not be counted as never-ran.
+  local runs
+  runs="[$(jq -nc '{conclusion:"cancelled", created_at:"2026-09-08T11:00:00Z", updated_at:"2026-09-08T11:00:30Z", run_started_at:"2026-09-08T11:00:05Z"}')]"
+  run compute_cancellation_metrics "$runs" 60
+  [ "$status" -eq 0 ]
+  [ "$(jq -r '.cancelled' <<<"$output")" -eq 1 ]
+  [ "$(jq -r '.never_ran' <<<"$output")" -eq 0 ]
+}
+
 @test "metrics: window filter keeps only runs created in [since, until]" {
   local runs; runs="[$(_run cancelled 2026-09-08T10:00:00Z 2026-09-08T10:00:10Z),$(_run cancelled 2026-09-08T11:30:00Z 2026-09-08T11:30:10Z)]"
   run filter_runs_in_window "$runs" 2026-09-08T11:00:00Z 2026-09-08T12:00:00Z
