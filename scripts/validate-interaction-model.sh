@@ -189,18 +189,27 @@ imv_table_rows() {
   ' "$md"
 }
 
-# imv_wf_jobs <file> — print each top-level job name (a 2-space-indented key under
-# the `jobs:` block). For an ADR-0007 agent-ingress.yml this is one name per
-# collapsed role-job, the unit the §4 completeness check counts rows against.
-# Pure: reads the file, writes stdout.
+# imv_wf_jobs <file> — print each top-level job name (a key indented under
+# the `jobs:` block, at the same indentation as the first job). For an ADR-0007
+# agent-ingress.yml this is one name per collapsed role-job, the unit the §4
+# completeness check counts rows against. Pure: reads the file, writes stdout.
 imv_wf_jobs() {
   local file="${1:-}"
   [ -n "$file" ] && [ -f "$file" ] || return 0
   awk '
-    /^jobs:[[:space:]]*(#.*)?$/ { inj=1; next }
+    /^jobs:[[:space:]]*(#.*)?$/ { inj=1; job_indent=""; next }
     inj && /^[A-Za-z_]/ { inj=0 }
-    inj && /^  [A-Za-z0-9_-]+:[[:space:]]*(#.*)?$/ {
-      k=$0; sub(/^  /,"",k); sub(/:.*/,"",k); print k
+    inj && job_indent == "" && /^[[:space:]]+[A-Za-z0-9_-]+:[[:space:]]*(#.*)?$/ {
+      match($0, /^[[:space:]]+/);
+      job_indent = substr($0, RSTART, RLENGTH);
+      k=$0; sub(/^[[:space:]]+/,"",k); sub(/:.*/,"",k); print k;
+      next
+    }
+    inj && job_indent != "" && $0 ~ /^[[:space:]]+[A-Za-z0-9_-]+:[[:space:]]*(#.*)?$/ {
+      indent = ""; match($0, /^[[:space:]]+/); indent = substr($0, RSTART, RLENGTH);
+      if (indent == job_indent) {
+        k=$0; sub(/^[[:space:]]+/,"",k); sub(/:.*/,"",k); print k
+      }
     }
   ' "$file"
 }
@@ -296,7 +305,7 @@ imv_c_field() {
 #     classified against the shared on: block by imv_v_class.
 imv_v_completeness() {
   local root="$1" md="$2" f rel base
-  local rows exclusions
+  local rows exclusions matching_rows count
   rows="$(imv_table_rows "$md")"
   exclusions="$(imv_table_exclusions "$md")"
   while IFS= read -r f; do
@@ -306,8 +315,15 @@ imv_v_completeness() {
     base="$(basename "$rel")"
     if [ "$base" = "agent-ingress.yml" ]; then
       imv_v_completeness_ingress "$f" "$rel" "$rows"
-    elif ! printf '%s\n' "$rows" | cut -f1 | grep -qxF "$rel"; then
-      printf 'FAIL[a]: %s is an in-scope workflow with no §4 classification row (declare it in docs/agentic-interaction-model.md §4, or add it to the exclusion list).\n' "$rel"
+    else
+      # For regular workflows: count rows with this path and no role qualifier
+      matching_rows="$(printf '%s\n' "$rows" | awk -F'\t' -v p="$rel" '$1==p && $4~/^[[:space:]]*$/ {print}')"
+      count=$(printf '%s' "$matching_rows" | grep -c . || true)
+      if [ "$count" -eq 0 ]; then
+        printf 'FAIL[a]: %s is an in-scope workflow with no §4 classification row (declare it in docs/agentic-interaction-model.md §4, or add it to the exclusion list).\n' "$rel"
+      elif [ "$count" -gt 1 ]; then
+        printf 'FAIL[a]: %s is a regular workflow with multiple §4 classification rows — each workflow must have exactly one row (§10).\n' "$rel"
+      fi
     fi
   done < <(find "$root/.github/workflows" -maxdepth 1 -type f -name '*.yml' 2>/dev/null | sort)
 }
@@ -317,9 +333,21 @@ imv_v_completeness() {
 # equal <file>'s job names. FAIL[a] a job with no row; FAIL[table] a row-role that
 # names no job. Called by imv_v_completeness; <rows> is imv_table_rows output.
 imv_v_completeness_ingress() {
-  local file="$1" rel="$2" rows="$3" jobs roles job role
+  local file="$1" rel="$2" rows="$3" jobs roles job role roles_raw roles_dedup
   jobs="$(imv_wf_jobs "$file" | sort -u)"
-  roles="$(printf '%s\n' "$rows" | awk -F'\t' -v p="$rel" '$1==p && $4!~/^[[:space:]]*$/ {print $4}' | sort -u)"
+  roles_raw="$(printf '%s\n' "$rows" | awk -F'\t' -v p="$rel" '$1==p && $4!~/^[[:space:]]*$/ {print $4}')"
+  roles_dedup="$(printf '%s' "$roles_raw" | sort -u)"
+  # Check for duplicate role qualifiers (same role appearing more than once)
+  if [ -n "$roles_raw" ] && [ "$(printf '%s' "$roles_raw" | grep -c . || true)" -gt "$(printf '%s' "$roles_dedup" | grep -c . || true)" ]; then
+    while IFS= read -r role; do
+      [ -n "$role" ] || continue
+      count=$(printf '%s' "$roles_raw" | grep -c "^${role}$" || true)
+      if [ "$count" -gt 1 ]; then
+        printf 'FAIL[a]: %s has multiple §4 rows for role %s — each role-job must have exactly one row (§10).\n' "$rel" "$role"
+      fi
+    done <<< "$roles_dedup"
+  fi
+  roles="$roles_dedup"
   while IFS= read -r job; do
     [ -n "$job" ] || continue
     if ! printf '%s\n' "$roles" | grep -qxF "$job"; then
