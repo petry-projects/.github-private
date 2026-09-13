@@ -149,7 +149,7 @@ upsert_escalation_comment() {
   existing_id=""
   if gh api --paginate "repos/$owner_repo/issues/$pr_num/comments" >"$comments_file" 2>/dev/null; then
     existing_id=$(jq -s -r --arg m "$ESCALATION_COMMENT_MARKER" '
-      map(select(.body != null and (.body | contains($m)))) | (.[0].id // "")
+      flatten | map(select(.body != null and (.body | contains($m)))) | (.[0].id // "")
     ' "$comments_file" 2>/dev/null || true)
   else
     echo "::warning::escalation: could not list comments on $pr_url — posting a fresh escalation note"
@@ -321,6 +321,13 @@ if [ "$DECISION" = "approve" ]; then
   # carries its marker AND a body, or it is not submitted.
   if [ -z "${BODY//[[:space:]]/}" ] || [[ "$BODY" != *"pr-review-agent v1 sha="* ]]; then
     echo "::error::approve verdict has an empty or marker-less body — refusing to submit a bodyless review (fail closed, #1754 AC4)"
+    exit 1
+  fi
+
+  # Verify the SHA in the approval marker matches the current PR_HEAD_SHA
+  MARKER_SHA=$(printf '%s' "$BODY" | grep -oP 'pr-review-agent v1 sha=\K[a-f0-9]+' | head -1)
+  if [ -z "$MARKER_SHA" ] || [ "$MARKER_SHA" != "$PR_HEAD_SHA" ]; then
+    echo "::error::approve verdict marker SHA ($MARKER_SHA) does not match PR_HEAD_SHA ($PR_HEAD_SHA) — refusing to submit (fail closed)"
     exit 1
   fi
 
