@@ -92,8 +92,8 @@ STUBEOF
 }
 
 @test "fallback: primary exits 2 → tries next engine" {
-  # claude exits 2 (rate-limited), gemini exits 0. Copilot (now the 1st fallback)
-  # is forced to skip via a classic-PAT token so gemini remains the tested fallback.
+  # claude exits 2 (rate-limited), gemini exits 0. Copilot is forced to skip via a
+  # classic-PAT token so gemini remains the tested fallback.
   _make_stub "claude" 2
   _make_stub "gemini" 0
   export COPILOT_GITHUB_TOKEN="ghp_stub"  # ghp_* → copilot fallback is skipped
@@ -194,7 +194,7 @@ GHEOF
 }
 
 
-@test "fallback: fallback engine order is claude → copilot → gemini" {
+@test "fallback: fallback engine order is claude → gemini → copilot" {
   # Primary = gemini (exits 2), then fallback order should try claude first
   _make_stub "gemini" 2
   local record_file
@@ -208,6 +208,38 @@ GHEOF
   # claude should have been called (recorded in record_file)
   [ -s "$record_file" ]
   rm -f "$record_file"
+}
+
+@test "order: default chain tries gemini before copilot (#1777)" {
+  # claude rate-limited; both gemini and copilot would succeed. The default order
+  # is now claude → gemini → copilot, so gemini must be reached first and copilot
+  # must never be invoked.
+  _make_stub "claude" 2
+  local gemini_record copilot_record
+  gemini_record="$(mktemp)"
+  copilot_record="$BATS_TEST_TMPDIR/copilot_record"
+  _make_recording_stub "gemini" 0 "$gemini_record"
+  export GEMINI_API_KEY="test-key"
+  export COPILOT_GITHUB_TOKEN="github_pat_testdummyvalue123"
+  cat > "$STUB_BIN_DIR/gh" <<GHEOF
+#!/usr/bin/env bash
+case "\$*" in
+  *"copilot"*) echo "\$*" >> "$copilot_record"; echo "success output"; exit 0 ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+  _source_engine "claude"
+
+  run run_writer_with_fallback "$TEST_PROMPT"
+
+  [ "$status" -eq 0 ]
+  # gemini was reached (2nd in the chain) …
+  [ -s "$gemini_record" ]
+  # … and copilot (now 3rd) was never invoked because gemini already succeeded.
+  [ ! -s "$copilot_record" ]
+  rm -f "$gemini_record"
+  unset GEMINI_API_KEY
 }
 
 @test "fallback: gemini skipped when no auth env vars set → falls through to copilot" {
@@ -246,7 +278,7 @@ GHEOF
 
 @test "fallback: gemini used normally when GEMINI_API_KEY is set" {
   # claude exits 2 (rate-limited), GEMINI_API_KEY is set → gemini should be tried and succeed.
-  # Copilot (now the 1st fallback) is forced to skip so gemini is the one reached.
+  # Copilot is forced to skip so gemini is the one reached.
   _make_stub "claude" 2
   _make_stub "gemini" 0
   export GEMINI_API_KEY="test-api-key"
