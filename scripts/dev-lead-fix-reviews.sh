@@ -1230,8 +1230,9 @@ REBASE_MAX_CONFLICT_FILES="${REBASE_MAX_CONFLICT_FILES:-40}"
 # _rebase_comment_bodies: newline-delimited bodies of all PR comments (paginated
 # so markers on busy PRs are not missed).
 _rebase_comment_bodies() {
-  gh api --paginate "repos/${REPO}/issues/${PR_NUMBER}/comments?per_page=100" 2>/dev/null \
-    | jq -r '.[].body' 2>/dev/null || true
+  local output
+  output=$(gh api --paginate "repos/${REPO}/issues/${PR_NUMBER}/comments?per_page=100" 2>/dev/null) || return 1
+  printf '%s\n' "$output" | jq -r '.[].body' 2>/dev/null || return 1
 }
 
 # rebase_pr_is_exhausted: 0 (skip) if a PR-level rebase exhaustion marker exists.

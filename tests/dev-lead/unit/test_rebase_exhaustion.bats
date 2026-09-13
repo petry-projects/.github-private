@@ -42,7 +42,7 @@ ${marker}
   local marker
   marker="$(rebase_exhaustion_marker "$PREFIX" "54")"
   run rebase_is_exhausted "$marker" "just a normal comment"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
 }
 
 @test "rebase_is_exhausted: does not match another PR's exhaustion marker" {
@@ -50,7 +50,7 @@ ${marker}
   marker="$(rebase_exhaustion_marker "$PREFIX" "54")"
   other="$(rebase_exhaustion_marker "$PREFIX" "540")"
   run rebase_is_exhausted "$marker" "$other"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
 }
 
 # ── rebase_count_failures ─────────────────────────────────────────────────────
@@ -108,17 +108,17 @@ ${marker}
 
 @test "rebase_conflict_too_large: false when count equals the limit" {
   run rebase_conflict_too_large 40 40
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
 }
 
 @test "rebase_conflict_too_large: false when count is below the limit" {
   run rebase_conflict_too_large 5 40
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
 }
 
 @test "rebase_conflict_too_large: disabled (never true) when the limit is 0" {
   run rebase_conflict_too_large 999 0
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
 }
 
 # ── rebase_should_exhaust ─────────────────────────────────────────────────────
@@ -135,12 +135,12 @@ ${marker}
 
 @test "rebase_should_exhaust: false below the threshold" {
   run rebase_should_exhaust 1 2
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
 }
 
 @test "rebase_should_exhaust: disabled (never true) when the threshold is 0" {
   run rebase_should_exhaust 5 0
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
 }
 
 # ── rebase_failure_reason ─────────────────────────────────────────────────────
