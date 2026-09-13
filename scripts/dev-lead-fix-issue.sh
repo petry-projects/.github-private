@@ -8,6 +8,10 @@ source "$(dirname "$0")/lib/git-identity.sh"
 # Pure completion-claim helpers (#1445): body_has_completion_claim /
 # claim_is_retracted / supersede_claim_body + the PC_CLAIM_RETRACTED_MARKER.
 source "$(dirname "$0")/lib/premature-closure-detect.sh"
+# Structured PR-body builders (#1805): dlpb_build_body produces the five
+# required description sections so the PR is not escalated by triage for a
+# description gap.
+source "$(dirname "$0")/lib/dev-lead-pr-body.sh"
 
 ISSUE_NUMBER="${ISSUE_NUMBER:-}"
 REPO="${REPO:-${GITHUB_REPOSITORY:-}}"
@@ -624,14 +628,24 @@ ${lint_output}
   local head_sha
   head_sha=$(git rev-parse HEAD)
 
+  # Structured PR body (#1805): fill all five required description sections
+  # (Problem / Risk / Test plan / Rollback / Monitoring) followed by Closes #N,
+  # derived from the issue and the files this branch changed, so triage does not
+  # escalate the PR for a missing description. Section content stays truthful —
+  # the test plan reflects only the checks this run actually performed.
+  local changed_files pr_body pr_body_file
+  changed_files=$(git diff --name-only "$pre_engine_sha" HEAD 2>/dev/null || true)
+  pr_body=$(dlpb_build_body "$ISSUE_NUMBER" "$ISSUE_TITLE" "$ISSUE_BODY" "$changed_files")
+  pr_body_file=$(mktemp "/tmp/dev-lead-pr-body-XXXXXX.md") || { echo "Failed to create temp file" >&2; exit 1; }
+  printf '%s\n' "$pr_body" > "$pr_body_file"
+
   local pr_url
   pr_url=$(gh pr create \
     --repo "$REPO" \
     --title "feat: implement issue #${ISSUE_NUMBER} — ${ISSUE_TITLE}" \
-    --body "Closes #${ISSUE_NUMBER}
-
-Implemented by dev-lead agent. Please review." \
+    --body-file "$pr_body_file" \
     --head "$branch")
+  rm -f "$pr_body_file"
   echo "$pr_url"
 
   # Mark the PR auto-rebase-eligible from creation (petry-projects/.github#711).
