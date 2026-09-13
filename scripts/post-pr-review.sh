@@ -46,6 +46,48 @@ BODY=$(jq -r '.body // ""' "$VERDICT_JSON")
 # body edit (AC3).
 METADATA_ONLY=$(jq -r '.metadata_only // false' "$VERDICT_JSON")
 
+# Marker keying the single human-escalation artifact (issue #1754 AC2). An
+# escalation must leave a visible, updatable comment on the PR — not just a
+# label. The comment is upserted (created once, then patched in place) so a
+# repeated escalation at an unchanged head does not append a fresh copy.
+ESCALATION_COMMENT_MARKER='<!-- pr-review-agent human-escalation v1 -->'
+
+# upsert_escalation_comment <pr_url> <body>
+# Post the escalation artifact if the marker is not yet present, otherwise edit
+# the existing marker-keyed comment in place. Best-effort: an API failure emits a
+# ::warning:: (so a silently-dropped artifact is visible) but never aborts the
+# escalation — the label + CODEOWNERS request still stand.
+upsert_escalation_comment() {
+  local pr_url="$1" body="$2"
+  local owner_repo pr_num comments_file existing_id
+  owner_repo=$(echo "$pr_url" | sed -E 's|.*/([^/]+)/([^/]+)/pull/.*|\1/\2|')
+  pr_num=$(echo "$pr_url" | sed -E 's|.*/([0-9]+)$|\1|')
+
+  comments_file=$(mktemp)
+  existing_id=""
+  if gh api --paginate "repos/$owner_repo/issues/$pr_num/comments" >"$comments_file" 2>/dev/null; then
+    existing_id=$(jq -r --arg m "$ESCALATION_COMMENT_MARKER" '
+      map(select(.body != null and (.body | contains($m)))) | (.[0].id // "")
+    ' "$comments_file" 2>/dev/null || true)
+  else
+    echo "::warning::escalation: could not list comments on $pr_url — posting a fresh escalation note"
+  fi
+  rm -f "$comments_file"
+
+  if [ -n "${existing_id:-}" ]; then
+    echo "  updating human-escalation comment $existing_id in place"
+    if ! jq -n --arg b "$body" '{body: $b}' \
+         | gh api -X PATCH "repos/$owner_repo/issues/comments/$existing_id" --input - >/dev/null 2>&1; then
+      echo "::warning::escalation: failed to update human-escalation comment $existing_id on $pr_url"
+    fi
+  else
+    echo "  posting human-escalation comment"
+    if ! gh pr comment "$pr_url" --body "$body" >/dev/null 2>&1; then
+      echo "::warning::escalation: failed to post human-escalation comment on $pr_url — the PR carries only the label"
+    fi
+  fi
+}
+
 # mark_prior_agent_items_obsolete <pr_url>
 # After successfully posting a new review/comment, dismiss prior agent reviews
 # (state != DISMISSED) and collapse prior agent comments. Identifies agent
@@ -190,6 +232,16 @@ fi
 
 # Post the review/comment based on decision
 if [ "$DECISION" = "approve" ]; then
+  # Fail closed on an empty or marker-less body (issue #1754 AC4). A review with
+  # `body=0chars`, or one lacking the `<!-- pr-review-agent v1 sha=… -->` marker,
+  # is discarded on the next cycle ("prior review body missing valid marker") —
+  # the PR looks unreviewed while the run claims success. Either the review
+  # carries its marker AND a body, or it is not submitted.
+  if [ -z "${BODY//[[:space:]]/}" ] || ! printf '%s' "$BODY" | grep -q '<!-- pr-review-agent v1 sha='; then
+    echo "::error::approve verdict has an empty or marker-less body — refusing to submit a bodyless review (fail closed, #1754 AC4)"
+    exit 1
+  fi
+
   # Post an APPROVED review
   BODY_FILE="/tmp/pr-review-body-$$.txt"
   echo "$BODY" > "$BODY_FILE"
@@ -327,12 +379,54 @@ COMMENT_END
     # Supersede prior agent reviews/comments now that the newest fix-request
     # has landed. A new fix-request also invalidates any prior approval.
     mark_prior_agent_items_obsolete "$PR_URL"
+
+    # A fix-request re-engages the cascade, so clear any prior human hold — a PR
+    # left carrying needs-human-review while the author works is a stale hold
+    # that also exempts it from the stuck-review sweep. Best-effort; a no-op when
+    # the label is absent (no unlabeled event is emitted).
+    gh pr edit "$PR_URL" --remove-label needs-human-review 2>/dev/null || true
   else
     # Escalate to human via CODEOWNERS — avoid hard-coding a single reviewer.
     echo "Escalating to human review..."
-    gh pr edit "$PR_URL" --add-label needs-human-review 2>/dev/null || true
+
+    # AC3 (#1754): add the hold label only when it is absent. Re-escalating an
+    # already-held PR at an unchanged head must not unlabel-then-relabel — four
+    # such toggles in one day on an unchanged PR was the reported symptom.
+    HAS_HOLD_LABEL=$(gh pr view "$PR_URL" --json labels \
+      --jq '[.labels[].name] | any(. == "needs-human-review")' 2>/dev/null || echo "false")
+    if [ "$HAS_HOLD_LABEL" = "true" ]; then
+      echo "  needs-human-review already present — leaving label unchanged (idempotent, #1754 AC3)"
+    else
+      gh pr edit "$PR_URL" --add-label needs-human-review 2>/dev/null || true
+    fi
+
+    # AC2 (#1754): leave a visible artifact, not just a label. Upsert a single
+    # marker-keyed comment stating the escalation, the cycle it happened at, and
+    # why. Updated in place on re-escalation so it never becomes sweep noise.
+    ESC_SUMMARY=$(jq -r '.summary // ""' "$VERDICT_JSON")
+    ESC_BODY=$(cat <<ESC_END
+$ESCALATION_COMMENT_MARKER
+## Automated review — escalated to human
+
+The automated review cascade escalated this PR to a human reviewer at review cycle ${REVIEW_CYCLE:-0}/${MAX_REVIEW_CYCLES:-3} (risk: $RISK, reviewed commit \`$PR_HEAD_SHA\`).
+
+Why: the cascade could neither approve the PR nor auto-request fixes, so it requested human review via CODEOWNERS and set the \`needs-human-review\` label. A human should review the PR, or remove the \`needs-human-review\` label to re-engage the automated cascade.${ESC_SUMMARY:+
+
+**Reviewer summary:** $ESC_SUMMARY}
+
+_This note is updated in place on re-escalation; it is not re-posted._
+ESC_END
+)
+    upsert_escalation_comment "$PR_URL" "$ESC_BODY"
+
     SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     bash "$SCRIPT_DIR/request-codeowners-review.sh" "$PR_URL" || true
+
+    # Escalation has its own exit status (issue #1754 AC1): distinct from 0
+    # (review posted) and 100 (no-op). review-one-pr.sh propagates it and
+    # review-batch.sh counts it as `escalated`, never as a posted review.
+    echo "Escalated to human review"
+    exit 101
   fi
 fi
 

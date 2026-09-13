@@ -125,3 +125,40 @@ EOF
   # An already-reviewed no-op is genuinely done — it is NOT a CI deferral.
   [[ "$output" != *"deferred"* ]]
 }
+
+# review-one-pr.sh stub that emits the human-escalation exit code (101, #1754):
+# a decision was made and an artifact left on the PR, but no review was posted.
+_stub_escalated() {
+  cat > "scripts/review-one-pr.sh" <<'EOF'
+#!/bin/bash
+echo "Escalating to human review..."
+echo '{"pr":"'"$1"'","decision":"escalate","reason":"human-escalated"}'
+exit 101
+EOF
+  chmod +x "scripts/review-one-pr.sh"
+}
+
+@test "batch: escalation (exit 101) is counted as escalated, not posted (#1754 AC1)" {
+  _stub_escalated
+
+  run bash scripts/review-batch.sh
+  echo "$output" >&2
+
+  [ "$status" -eq 0 ]
+  # It must NOT be reported as a posted review — that is the defect.
+  [[ "$output" != *"reviews posted ("* ]]
+  [[ "$output" != *"Review posted"* ]]
+  # It must be surfaced as an escalation in the summary line.
+  [[ "$output" == *"escalated to human"* ]]
+}
+
+@test "batch: escalation does not fail the session and reports 0 posted" {
+  _stub_escalated
+
+  run bash scripts/review-batch.sh
+  echo "$output" >&2
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"0 reviews posted"* ]]
+  [[ "$output" == *"1 escalated to human"* ]]
+}
