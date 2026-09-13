@@ -140,7 +140,7 @@ JSONL
   printf '%s\n' '{"id":"tri-dev-bad","expected":{"unexpected":"shape"}}' \
     >"$TMP/triage/dev/cases.jsonl"
   run python3 "$VALIDATOR" --schema-tree "$TMP"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
   [[ "$output" == *"triage"* ]]
 }
 
@@ -192,7 +192,7 @@ JSON
   printf '%s\n' '{"id":"sa-ho-1","input":"y","expected":{"risk_tier":"HIGH","escalate":true}}' \
     >"$TMP/solution-architect/holdout/cases.jsonl"
   run python3 "$VALIDATOR" --schema-tree "$TMP"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
   [[ "$output" == *"solution-architect"* ]]
 }
 
