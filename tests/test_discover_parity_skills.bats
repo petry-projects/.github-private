@@ -99,6 +99,10 @@ JSON
     fi
   done
 
-  expected_json=$(printf '%s\n' "${expected_skills[@]}" | sort -u | jq -R . | jq -cs .)
+  if [ "${#expected_skills[@]}" -eq 0 ]; then
+    expected_json='[]'
+  else
+    expected_json=$(printf '%s\n' "${expected_skills[@]}" | sort -u | jq -R . | jq -cs .)
+  fi
   [ "$output" = "$expected_json" ]
 }
