@@ -146,32 +146,43 @@ fi
 # cannot be named is bucketed UNATTRIBUTED, never dropped (AC #5).
 # ---------------------------------------------------------------------------
 ingress_attr_jsonl=$(mktemp)
-if ingress_wf_id=$(gh api "repos/${WORKFLOW_REPO}/actions/workflows?per_page=100" --paginate \
-  --jq ".workflows[] | select((.path | split(\"/\") | last) == \"${INGRESS_WORKFLOW_BASENAME}\") | (.id | tostring)" \
-  2>/dev/null | head -1) && [ -n "$ingress_wf_id" ]; then
-  ingress_run_ids=$(gh api \
+# A failed workflow-discovery read must NOT look like a repo without ingress:
+# distinguish the API/authz failure (warn) from a genuinely absent ingress
+# workflow (empty id -> silent no-op, the current reality). `first(...) // empty`
+# avoids piping to `head -1`, which can SIGPIPE (141) under `set -o pipefail`.
+if ! ingress_wf_id=$(gh api "repos/${WORKFLOW_REPO}/actions/workflows?per_page=100" --paginate \
+  --jq "first(.workflows[] | select((.path | split(\"/\") | last) == \"${INGRESS_WORKFLOW_BASENAME}\") | .id | tostring) // empty" \
+  2>/dev/null); then
+  echo "::warning::Cannot read workflows for ${WORKFLOW_REPO} — pr-review ingress attribution skipped"
+elif [ -n "$ingress_wf_id" ]; then
+  # A failed run-list read must not silently collapse to "no runs" — that would
+  # hide the post-collapse signal. Warn and skip rather than report an empty set.
+  if ! ingress_run_ids=$(gh api \
     "repos/${WORKFLOW_REPO}/actions/workflows/${ingress_wf_id}/runs?per_page=100&created=>=${CUTOFF}" \
     --paginate \
     --jq '.workflow_runs[] | select(.conclusion != null) | (.id | tostring)' \
-    2>/dev/null || true)
-  per_run_tmp=$(mktemp)
-  while IFS= read -r run_id; do
-    [ -n "$run_id" ] || continue
-    if ! jobs_raw=$(gh api "repos/${WORKFLOW_REPO}/actions/runs/${run_id}/jobs?per_page=100" --paginate \
-      --jq '[.jobs[] | {name, conclusion}]' 2>/dev/null); then
-      echo "::warning::Cannot read jobs for run ${run_id} — pr-review ingress attribution may undercount"
-      continue
-    fi
-    jobs_json=$(printf '%s' "$jobs_raw" | jq -s 'add // []')
-    jq -n --argjson rid "$run_id" --argjson jobs "$jobs_json" \
-      '{run_id: $rid, jobs: $jobs}' >> "$per_run_tmp"
-  done <<< "$ingress_run_ids"
-  # Normalize per-run jobs → one {role,conclusion} per role, then keep ONLY the
-  # pr-review role (this scan is the pr-review signal, not the whole fleet).
-  jq -s '.' "$per_run_tmp" | normalize_ingress_runs \
-    | jq -c --arg role "$PR_REVIEW_INGRESS_ROLE" '.[] | select(.role == $role)' \
-    >> "$ingress_attr_jsonl"
-  rm -f "$per_run_tmp"
+    2>/dev/null); then
+    echo "::warning::Cannot read ingress runs for ${WORKFLOW_REPO} — pr-review ingress attribution skipped"
+  else
+    per_run_tmp=$(mktemp)
+    while IFS= read -r run_id; do
+      [ -n "$run_id" ] || continue
+      if ! jobs_raw=$(gh api "repos/${WORKFLOW_REPO}/actions/runs/${run_id}/jobs?per_page=100" --paginate \
+        --jq '[.jobs[] | {name, conclusion}]' 2>/dev/null); then
+        echo "::warning::Cannot read jobs for run ${run_id} — pr-review ingress attribution may undercount"
+        continue
+      fi
+      jobs_json=$(printf '%s' "$jobs_raw" | jq -s 'add // []')
+      jq -n --argjson rid "$run_id" --argjson jobs "$jobs_json" \
+        '{run_id: $rid, jobs: $jobs}' >> "$per_run_tmp"
+    done <<< "$ingress_run_ids"
+    # Normalize per-run jobs → one {role,conclusion} per role, then keep ONLY the
+    # pr-review role (this scan is the pr-review signal, not the whole fleet).
+    jq -s '.' "$per_run_tmp" | normalize_ingress_runs \
+      | jq -c --arg role "$PR_REVIEW_INGRESS_ROLE" '.[] | select(.role == $role)' \
+      >> "$ingress_attr_jsonl"
+    rm -f "$per_run_tmp"
+  fi
 fi
 
 # ---------------------------------------------------------------------------

@@ -31,12 +31,12 @@ setup() {
 
 @test "attribution_is_ingress: a legacy per-role workflow is NOT ingress" {
   run attribution_is_ingress ".github/workflows/dev-lead.yml"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
 }
 
 @test "attribution_is_ingress: an empty path is not ingress" {
   run attribution_is_ingress ""
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
 }
 
 # ---------------------------------------------------------------------------
@@ -137,6 +137,19 @@ setup() {
   [ "$(printf '%s' "$output" | jq -r '.[0].role')" = "$UNATTRIBUTED_ROLE" ]
 }
 
+@test "normalize_ingress_runs: completed non-standard conclusions are retained, not dropped (parity with legacy)" {
+  # Legacy attribution keeps every non-null run; the ingress path must likewise
+  # keep completed conclusions like neutral/stale/startup_failure, or ingress
+  # totals undercount runs legacy retains. Only skipped/null (did-not-run) drop.
+  jobs='[{"run_id":1,"jobs":[{"name":"dev-lead / dispatch","conclusion":"neutral"}]},
+         {"run_id":2,"jobs":[{"name":"dev-lead / dispatch","conclusion":"startup_failure"}]},
+         {"run_id":3,"jobs":[{"name":"dev-lead / dispatch","conclusion":"stale"}]}]'
+  run bash -c "source '${BATS_TEST_DIRNAME}/../scripts/lib/run-attribution.sh'; printf '%s' '$jobs' | normalize_ingress_runs"
+  [ "$status" -eq 0 ]
+  [ "$(printf '%s' "$output" | jq 'length')" -eq 3 ]
+  [ "$(printf '%s' "$output" | jq -r '[.[]|.conclusion]|sort|join(",")')" = "neutral,stale,startup_failure" ]
+}
+
 @test "normalize_ingress_runs: a completed run with NO jobs is UNATTRIBUTED, never silently vanishing (AC #5)" {
   jobs='[{"run_id":1,"jobs":[]}]'
   run bash -c "source '${BATS_TEST_DIRNAME}/../scripts/lib/run-attribution.sh'; printf '%s' '$jobs' | normalize_ingress_runs"
@@ -173,7 +186,7 @@ setup() {
   run attribution_role_present "$tsv" "dev-lead"
   [ "$status" -eq 0 ]
   run attribution_role_present "$tsv" "pr-review-mention"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
   rm -f "$tsv"
 }
 
@@ -226,7 +239,7 @@ setup() {
   [ "$status" -eq 0 ]
   # ... and the workflow-name bucket is NOT how it is keyed (regression would).
   run bash -c "source '$src'; attribution_role_present '$tsvf' 'agent-ingress'"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
   rm -f "$tsvf"
 }
 

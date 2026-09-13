@@ -89,17 +89,17 @@ normalize_legacy_runs() {
 #       silently (AC #5).
 normalize_ingress_runs() {
   jq -c --arg unattr "$UNATTRIBUTED_ROLE" '
-    # rank: worst-outcome precedence. 0 == skipped/did-not-run (dropped later).
+    # rank: precedence for the ONE conclusion that represents a role within a run.
+    # 0 == did-not-run (null/skipped), dropped later. Every OTHER completed
+    # conclusion ranks > 0 so it is retained — legacy attribution keeps every
+    # non-null run, so ingress must likewise keep neutral/stale/startup_failure
+    # /unknown conclusions or its totals undercount runs legacy retains.
     def rank(c):
-      if   c == "failure" or c == "timed_out" or c == "action_required" then 3
-      elif c == "success"                                               then 2
-      elif c == "cancelled"                                             then 1
-      else 0 end;
-    def canon(r):
-      if   r == 3 then "failure"
-      elif r == 2 then "success"
-      elif r == 1 then "cancelled"
-      else "skipped" end;
+      if   c == "failure" or c == "timed_out" or c == "action_required" or c == "startup_failure" then 5
+      elif c == "success"                                                                          then 4
+      elif c == "cancelled"                                                                        then 3
+      elif c == null or c == "skipped"                                                             then 0
+      else 2 end;   # neutral/stale/other completed conclusion: retained, not dropped
     def role_of(name):
       if (name // "") == "" then $unattr
       else (name | split(" / ")[0]) end;
@@ -112,11 +112,11 @@ normalize_ingress_runs() {
             [{role: $unattr, conclusion: "unknown"}]
           else
             $jobs
-            | map({role: role_of(.name), rank: rank(.conclusion)})
+            | map({role: role_of(.name), conclusion: .conclusion, rank: rank(.conclusion)})
             | group_by(.role)
-            | map(max_by(.rank))
+            | map(max_by(.rank))              # worst-outcome precedence per role
             | map(select(.rank > 0))          # all-skipped role did not run
-            | map({role: .role, conclusion: canon(.rank)})
+            | map({role: .role, conclusion: .conclusion})
           end
       )
     | add // []
