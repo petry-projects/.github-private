@@ -37,6 +37,12 @@ on:
         required: false
       GOOGLE_API_KEY:
         required: false
+      GOOGLE_API_KEY_2:
+        # Extra Gemini API key for per-key rotation on rate-limit (#1777).
+        required: false
+      GOOGLE_API_KEY_3:
+        # Extra Gemini API key for per-key rotation on rate-limit (#1777).
+        required: false
       GH_PAT_DON_PETRY:
         # don-petry's write/workflows PAT, also exposed as COPILOT_GITHUB_TOKEN for
         # the Copilot review engine (Copilot access is an account-subscription
@@ -187,6 +193,8 @@ jobs:
       # versions expect GEMINI_API_KEY so we expose the same value under both names.
       GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
       GEMINI_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+      GOOGLE_API_KEY_2: ${{ secrets.GOOGLE_API_KEY_2 }}
+      GOOGLE_API_KEY_3: ${{ secrets.GOOGLE_API_KEY_3 }}
       GEMINI_CLI_TRUST_WORKSPACE: "true"
       # Event-triggered runs respect LIVE_MODE (same semantics as the former schedule).
       # repository_dispatch (mention) always runs live.
