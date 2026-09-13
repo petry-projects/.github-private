@@ -149,6 +149,7 @@
       "prompts/dev-lead/review-changes.md",
       "scripts/lib/auto-merge.sh",
       "scripts/lib/git-identity.sh",
+      "scripts/lib/maintainer-comment-gate.sh",
       "scripts/lib/maintainer-review-thread-gate.sh",
       "scripts/lib/pr-worktree.sh"
     ],
