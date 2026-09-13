@@ -9,13 +9,16 @@ setup() {
   TMP="$(mktemp -d)"
   # A well-formed skill: disjoint dev/holdout ids.
   mkdir -p "$TMP/example-skill/dev" "$TMP/example-skill/holdout"
+  # Root-schema-conforming so the fixture also passes --schema-tree (which, with
+  # the #1651 allowlist emptied, schema-validates every skill against the root
+  # schema when no per-skill case.schema.json is present).
   cat >"$TMP/example-skill/dev/cases.jsonl" <<'JSONL'
-{"id": "dev-001", "prompt": "redacted input A", "expected": "redacted output A"}
-{"id": "dev-002", "prompt": "redacted input B", "expected": "redacted output B"}
+{"id": "dev-001", "input": "redacted input A", "expected": {"escalate": false, "risk": "LOW"}}
+{"id": "dev-002", "input": "redacted input B", "expected": {"escalate": true, "risk": "HIGH"}}
 JSONL
   cat >"$TMP/example-skill/holdout/cases.jsonl" <<'JSONL'
-{"id": "ho-001", "prompt": "redacted input C", "expected": "redacted output C"}
-{"id": "ho-002", "prompt": "redacted input D", "expected": "redacted output D"}
+{"id": "ho-001", "input": "redacted input C", "expected": {"escalate": false, "risk": "LOW"}}
+{"id": "ho-002", "input": "redacted input D", "expected": {"escalate": true, "risk": "HIGH"}}
 JSONL
 }
 
@@ -95,14 +98,15 @@ JSONL
   [[ "$output" == *"OK"* ]]
 }
 
-# --- tree-wide per-case schema validation (--schema-tree, #1645 AC #6) ---------
+# --- tree-wide per-case schema validation (--schema-tree, #1645/#1651) ---------
 #
-# `--schema-tree` validates EVERY case in every split against case.schema.json,
-# not just the split hygiene the default tree mode checks. A documented allowlist
-# (SCHEMA_TREE_ALLOWLIST) exempts the skills whose cases do not yet conform,
-# pending the fleet-wide reconciliation (#1651), so the gate can protect qa-lead
-# now without blocking every unrelated PR. The schema resolved is always the
-# validator's sibling case.schema.json regardless of the eval_root argument.
+# `--schema-tree` validates EVERY case in every split against a schema, not just
+# the split hygiene the default tree mode checks. Since #1651 the allowlist is
+# empty: every skill is schema-validated, and each skill is validated against its
+# OWN evals/<skill>/case.schema.json when present, else the root case.schema.json
+# (per-skill schema resolution). This lets a skill whose case shape legitimately
+# differs from triage's {escalate, risk} govern that shape explicitly rather than
+# be skipped.
 
 @test "schema-tree fails a non-conforming gated (qa-lead) case" {
   # qa-lead is NOT allowlisted -> its cases ARE schema-validated.
@@ -127,16 +131,90 @@ JSONL
   [[ "$output" == *"OK"* ]]
 }
 
-@test "schema-tree skips allowlisted skills (the rest, pending #1651)" {
-  # triage is allowlisted -> a non-conforming case must NOT fail the gate yet.
+@test "schema-tree now enforces every skill (allowlist emptied, #1651)" {
+  # triage was allowlisted pre-#1651; with the allowlist empty its cases ARE now
+  # schema-validated, so a non-conforming triage case must FAIL rather than skip.
   mkdir -p "$TMP/triage/dev" "$TMP/triage/holdout"
   printf '%s\n' '{"id":"tri-ho-bad","expected":{"unexpected":"shape"}}' \
     >"$TMP/triage/holdout/cases.jsonl"
   printf '%s\n' '{"id":"tri-dev-bad","expected":{"unexpected":"shape"}}' \
     >"$TMP/triage/dev/cases.jsonl"
   run python3 "$VALIDATOR" --schema-tree "$TMP"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"triage"* ]]
+}
+
+@test "schema-tree validates a skill against its own case.schema.json when present" {
+  # A skill whose cases carry a shape the ROOT schema forbids (expected.risk_tier,
+  # no {escalate,risk}) must VALIDATE when it ships its own per-skill schema — the
+  # previously-failing solution-architect shape (#1651 AC #1/#7).
+  mkdir -p "$TMP/solution-architect/dev" "$TMP/solution-architect/holdout"
+  cat >"$TMP/solution-architect/case.schema.json" <<'JSON'
+{ "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object", "additionalProperties": false,
+  "required": ["id", "input", "expected"],
+  "properties": {
+    "id": {"type": "string", "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$", "minLength": 3},
+    "input": {"type": "string", "minLength": 1},
+    "expected": {"type": "object", "additionalProperties": false,
+      "required": ["risk_tier", "escalate"],
+      "properties": {"risk_tier": {"enum": ["LOW", "MEDIUM", "HIGH"]},
+                     "escalate": {"type": "boolean"}}}}}
+JSON
+  printf '%s\n' '{"id":"sa-dev-1","input":"x","expected":{"risk_tier":"LOW","escalate":false}}' \
+    >"$TMP/solution-architect/dev/cases.jsonl"
+  printf '%s\n' '{"id":"sa-ho-1","input":"y","expected":{"risk_tier":"HIGH","escalate":true}}' \
+    >"$TMP/solution-architect/holdout/cases.jsonl"
+  run python3 "$VALIDATOR" --schema-tree "$TMP"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"skip"* ]]
+  [[ "$output" == *"OK"* ]]
+}
+
+@test "schema-tree applies the per-skill schema, not the root, when one is present" {
+  # A case that is VALID under the root schema ({escalate,risk}) but INVALID under
+  # the skill's own schema must fail — proving per-skill resolution, not the root,
+  # governs a skill that ships its own case.schema.json.
+  mkdir -p "$TMP/solution-architect/dev" "$TMP/solution-architect/holdout"
+  cat >"$TMP/solution-architect/case.schema.json" <<'JSON'
+{ "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object", "additionalProperties": false,
+  "required": ["id", "input", "expected"],
+  "properties": {
+    "id": {"type": "string", "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$", "minLength": 3},
+    "input": {"type": "string", "minLength": 1},
+    "expected": {"type": "object", "additionalProperties": false,
+      "required": ["risk_tier", "escalate"],
+      "properties": {"risk_tier": {"enum": ["LOW", "MEDIUM", "HIGH"]},
+                     "escalate": {"type": "boolean"}}}}}
+JSON
+  printf '%s\n' '{"id":"sa-dev-1","input":"x","expected":{"escalate":false,"risk":"LOW"}}' \
+    >"$TMP/solution-architect/dev/cases.jsonl"
+  printf '%s\n' '{"id":"sa-ho-1","input":"y","expected":{"risk_tier":"HIGH","escalate":true}}' \
+    >"$TMP/solution-architect/holdout/cases.jsonl"
+  run python3 "$VALIDATOR" --schema-tree "$TMP"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"solution-architect"* ]]
+}
+
+@test "every committed per-skill case.schema.json keeps the root envelope" {
+  # The per-skill override may only diverge on the payload (expected); the case
+  # ENVELOPE (id pattern/minLength, description/tags constraints, root
+  # additionalProperties:false, required id) must not drift per skill (#1651).
+  root="$ROOT/evals/case.schema.json"
+  rid_pat="$(jq -r '.properties.id.pattern' "$root")"
+  rid_min="$(jq -r '.properties.id.minLength' "$root")"
+  rdesc_min="$(jq -r '.properties.description.minLength' "$root")"
+  rtag_min="$(jq -r '.properties.tags.items.minLength' "$root")"
+  for schema in "$ROOT"/evals/*/case.schema.json; do
+    [ -f "$schema" ] || continue
+    [ "$(jq -r '.additionalProperties' "$schema")" = "false" ]
+    [ "$(jq -r '.properties.id.pattern' "$schema")" = "$rid_pat" ]
+    [ "$(jq -r '.properties.id.minLength' "$schema")" = "$rid_min" ]
+    [ "$(jq -r '.properties.description.minLength' "$schema")" = "$rdesc_min" ]
+    [ "$(jq -r '.properties.tags.items.minLength' "$schema")" = "$rtag_min" ]
+    [ "$(jq -r '.properties.tags.uniqueItems' "$schema")" = "true" ]
+    jq -e '.required | index("id")' "$schema" >/dev/null
+  done
 }
 
 @test "schema-tree fails a gated skill missing its holdout split" {

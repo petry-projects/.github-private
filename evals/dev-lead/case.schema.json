@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Dev-Lead Eval Case",
+  "description": "One held-out eval case for the dev-lead advisory persona: an issue/PR-readiness input paired with its expected readiness judgment. Each line of evals/dev-lead/<split>/cases.jsonl is one object of this shape. The persona judges whether work is ready to implement and lands a concrete recommendation, so the expected decision is readiness-shaped (readiness / recommend) — NOT the triage {escalate, risk} shape of evals/case.schema.json. This is the trust anchor for the persona's skill-quality measurement and is CODEOWNER-gated separately from any scorer/proposer.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "input", "expected"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+      "minLength": 3,
+      "description": "Stable, unique kebab-case identifier for the case. Unique within a split and disjoint across dev/holdout (enforced by evals/validate-cases.py)."
+    },
+    "description": {
+      "type": "string",
+      "minLength": 5,
+      "description": "Human-readable note on what this case exercises and what grounds the expected readiness judgment."
+    },
+    "tags": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 2 },
+      "uniqueItems": true,
+      "description": "Optional labels for coverage tracking, e.g. the readiness concern a case exercises ('scoping', 'risk', 'readiness', 'negative')."
+    },
+    "input": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The pre-fetched review context exactly as the advisory consumes it: a self-contained description of the issue or PR whose readiness is under review."
+    },
+    "expected": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["readiness", "recommend"],
+      "description": "The fixed, reward-hack-resistant expected readiness judgment the persona must produce for this work item.",
+      "properties": {
+        "readiness": {
+          "type": "string",
+          "enum": ["ready", "needs-scoping"],
+          "description": "Whether the work is ready to implement as-is ('ready') or must be scoped/specified first ('needs-scoping')."
+        },
+        "recommend": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The concrete recommendation the advisory must land (what to do before or during implementation)."
+        }
+      }
+    }
+  }
+}
