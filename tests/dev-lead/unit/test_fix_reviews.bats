@@ -198,6 +198,9 @@ GHEOF
   # Genuine rate limit keeps the rate-limited wording and tags the marker reason
   [[ "$output" == *"reason=rate-limit"* ]]
   [[ "$output" == *"Dev-Lead — rate-limited"* ]]
+  # A genuine quota hold is the ONLY case that emits status=rate-limited (issue #1568)
+  [[ "$output" == *"status=rate-limited"* ]]
+  [[ "$output" != *"status=blocked"* ]]
 }
 
 @test "fix-reviews: rate-limited: on-mention intent posts re-trigger ack (not auto-retry)" {
@@ -2861,9 +2864,10 @@ GHEOF
   [[ "$output" != *"status=no-changes"* ]]
   # Must include a future reset time so the retry cron backs off instead of re-dispatching immediately
   [[ "$output" == *"reset="* ]]
-  # Honest wording (issue #461): blocked-path marker keeps the machine-readable
-  # status token but must not claim the engines are rate-limited
-  [[ "$output" == *"status=rate-limited"* ]]
+  # Honest token (issue #1568): a non-quota hold emits status=blocked, never
+  # status=rate-limited, and must not claim the engines are rate-limited.
+  [[ "$output" == *"status=blocked"* ]]
+  [[ "$output" != *"status=rate-limited"* ]]
   [[ "$output" == *"reason=blocked"* ]]
   [[ "$output" == *"waiting on PR blockers"* ]]
   [[ "$output" != *"all AI engines are currently rate-limited"* ]]
@@ -2911,9 +2915,10 @@ GHEOF
   [[ "$output" != *"status=no-changes"* ]]
   # Must include a future reset time so the retry cron backs off instead of re-dispatching immediately
   [[ "$output" == *"reset="* ]]
-  # Honest wording (issue #461): blocked-path marker keeps the machine-readable
-  # status token but must not claim the engines are rate-limited
-  [[ "$output" == *"status=rate-limited"* ]]
+  # Honest token (issue #1568): a non-quota hold emits status=blocked, never
+  # status=rate-limited, and must not claim the engines are rate-limited.
+  [[ "$output" == *"status=blocked"* ]]
+  [[ "$output" != *"status=rate-limited"* ]]
   [[ "$output" == *"reason=blocked"* ]]
   [[ "$output" == *"waiting on PR blockers"* ]]
   [[ "$output" != *"all AI engines are currently rate-limited"* ]]

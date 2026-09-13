@@ -1015,11 +1015,13 @@ expire_stale_terminal_markers() {
   done
 }
 
-# expire_stale_rate_limited_marker: deletes any existing rate-limited marker for this
-# SHA+intent before a new one is posted. Without this, when a hard blocker persists
-# past the initial backoff window the dedup check in post_reviews_rate_limited skips
-# posting, leaving a marker whose reset_time is already in the past. The retry cron
-# then dispatches on every scan indefinitely instead of extending the backoff.
+# expire_stale_rate_limited_marker: deletes any existing hold marker
+# (status=rate-limited OR status=blocked, #1568) for this SHA+intent before a new
+# one is posted. Without this, when a hard blocker persists past the initial backoff
+# window the dedup check in post_reviews_rate_limited skips posting, leaving a marker
+# whose reset_time is already in the past. The retry cron then dispatches on every
+# scan indefinitely instead of extending the backoff. Both tokens are matched so a
+# reason switch (or a pre-#1568 marker) is still cleaned up.
 expire_stale_rate_limited_marker() {
   local intent="$1"
   local sha="${HEAD_SHA:-}"
@@ -1028,7 +1030,7 @@ expire_stale_rate_limited_marker() {
     echo "[dry-run] would expire stale rate-limited marker for intent=${intent} sha=${sha}"
     return 0
   fi
-  local pattern="${REVIEWS_MARKER_PREFIX}${PR_NUMBER} sha=${sha} intent=${intent} status=rate-limited"
+  local pattern="${REVIEWS_MARKER_PREFIX}${PR_NUMBER} sha=${sha} intent=${intent} status=(rate-limited|blocked)"
   local stale_ids
   stale_ids=$(gh api --paginate "repos/${REPO}/issues/${PR_NUMBER}/comments?per_page=100" 2>/dev/null \
     | jq -r --arg pat "$pattern" '[.[] | select(.body | test($pat))] | .[].id' 2>/dev/null || true)
@@ -1039,13 +1041,14 @@ expire_stale_rate_limited_marker() {
   done
 }
 
-# has_reviews_rate_limited_marker: returns 0 if a rate-limited marker for this
-# intent+SHA already exists on the PR (dedup check).
+# has_reviews_rate_limited_marker: returns 0 if a hold marker (status=rate-limited
+# OR status=blocked, #1568) for this intent+SHA already exists on the PR (dedup
+# check — suppresses repeat visible acks across either hold reason).
 has_reviews_rate_limited_marker() {
   local intent="$1"
   local sha="${HEAD_SHA:-}"
   [ -z "$sha" ] && return 1  # no SHA means no dedup possible
-  local pattern="${REVIEWS_MARKER_PREFIX}${PR_NUMBER} sha=${sha} intent=${intent} status=rate-limited"
+  local pattern="${REVIEWS_MARKER_PREFIX}${PR_NUMBER} sha=${sha} intent=${intent} status=(rate-limited|blocked)"
   local count
   count=$(gh api --paginate "repos/${REPO}/issues/${PR_NUMBER}/comments?per_page=100" 2>/dev/null \
     | jq "[.[] | select(.body | test(\"${pattern}\"))] | length" 2>/dev/null \
@@ -1058,15 +1061,20 @@ has_reviews_rate_limited_marker() {
 # For non-retryable intents (on-mention, fix-bot-comment), asks the user to re-trigger
 # since USER_INSTRUCTION/COMMENT_BODY cannot be reconstructed at retry time.
 #
-# $2 (reason) selects the user-facing wording:
-#   rate-limit (default) — all AI engines genuinely rate-limited (engine exit 2)
+# $2 (reason) selects both the machine-readable status token and the user-facing
+# wording:
+#   rate-limit (default) — all AI engines genuinely rate-limited (engine exit 2);
+#                          emits `status=rate-limited`
 #   blocked              — engine ran fine but the PR still has hard blockers
 #                          (failing/cancelled checks or CHANGES_REQUESTED reviews);
-#                          schedules a 30-minute backoff retry (issue #461)
-# Both reasons post the same machine-readable `status=rate-limited` marker token —
-# dev-lead-retry.sh keys its re-dispatch scan on that string — only the visible
-# text differs, so users are no longer told "rate-limited" when the real cause
-# is PR blockers.
+#                          emits `status=blocked` and schedules a 30-minute backoff
+#                          retry (issues #461, #1568)
+# The status token is now honest per reason (#1568): a non-quota hold is
+# `status=blocked`, not `status=rate-limited`, so quota signal is never polluted by
+# a hold that has nothing to do with provider quota. dev-lead-retry.sh recognizes
+# both tokens (`status=(rate-limited|blocked)`) so re-dispatch behaviour is
+# unchanged and pre-#1568 `status=rate-limited` blocked markers still in the wild
+# remain retriable.
 post_reviews_rate_limited() {
   local intent="$1"
   local reason="${2:-rate-limit}"
@@ -1100,7 +1108,7 @@ post_reviews_rate_limited() {
     if [ "${DEV_LEAD_DRY_RUN:-false}" = "true" ]; then
       echo "[dry-run] would expire stale rate-limited marker for intent=${intent} sha=${HEAD_SHA}"
     else
-      local rl_pattern="${REVIEWS_MARKER_PREFIX}${PR_NUMBER} sha=${HEAD_SHA} intent=${intent} status=rate-limited"
+      local rl_pattern="${REVIEWS_MARKER_PREFIX}${PR_NUMBER} sha=${HEAD_SHA} intent=${intent} status=(rate-limited|blocked)"
       stale_rl_ids=$(gh api --paginate "repos/${REPO}/issues/${PR_NUMBER}/comments?per_page=100" 2>/dev/null \
         | jq -r --arg pat "$rl_pattern" '[.[] | select(.body | test($pat))] | .[].id' 2>/dev/null || true)
     fi
@@ -1118,10 +1126,13 @@ post_reviews_rate_limited() {
     sha_detail=" sha=${HEAD_SHA}"
   fi
 
-  # `reason=` is informational (visible-text selection + marker forensics); the
-  # retry cron and marker dedup patterns match on `status=rate-limited` and are
-  # unaffected by the extra field.
-  local marker="${REVIEWS_MARKER_PREFIX}${PR_NUMBER}${sha_detail} intent=${intent} status=rate-limited reason=${reason}${reset_detail} -->"
+  # The status token is honest per reason (#1568): a non-quota hold is
+  # `status=blocked`; a genuine quota hold is `status=rate-limited`. `reason=` stays
+  # for visible-text selection + marker forensics. The retry cron and marker dedup
+  # patterns match `status=(rate-limited|blocked)`, so both tokens re-dispatch.
+  local status_token="rate-limited"
+  [ "$reason" = "blocked" ] && status_token="blocked"
+  local marker="${REVIEWS_MARKER_PREFIX}${PR_NUMBER}${sha_detail} intent=${intent} status=${status_token} reason=${reason}${reset_detail} -->"
 
   # Retry message depends on the reason and on whether the intent can be
   # re-dispatched automatically.
