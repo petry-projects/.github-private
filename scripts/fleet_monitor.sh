@@ -192,6 +192,12 @@ for repo in "${repos[@]}"; do
     # Exclude queued/in_progress runs — only completed conclusions give valid metrics.
     runs_json=$(echo "$runs_raw" | jq -s 'add // [] | [.[] | select(.conclusion != null)]')
 
+    # Accumulate legacy (non-ingress) runs normalized to {role,conclusion} for
+    # parity combining with post-collapse ingress runs (#1727 AC #4).
+    if ! attribution_is_ingress "$wf_file"; then
+      printf '%s' "$runs_json" | normalize_legacy_runs "$wf_file" | jq -c '.[]' >> "$legacy_attr_file"
+    fi
+
     total=$(echo "$runs_json" | jq 'length')
     failed=$(echo "$runs_json" | jq '[.[] | select(.conclusion == "failure" or .conclusion == "timed_out" or .conclusion == "action_required")] | length')
     success=$(echo "$runs_json" | jq '[.[] | select(.conclusion == "success")] | length')
@@ -521,6 +527,7 @@ fi
 # per-repo API read failure is a `::warning::`, never fatal (mirrors 2a–2d).
 # ---------------------------------------------------------------------------
 ingress_attr_file=$(mktemp)   # accumulates normalized {role,conclusion} JSONL
+legacy_attr_file=$(mktemp)    # accumulates normalized legacy runs for parity
 for repo in "${repos[@]}"; do
   # The collapsed ingress workflow id for this repo (basename match), if present.
   if ! ingress_wf_id=$(gh api "repos/${repo}/actions/workflows?per_page=100" --paginate \
@@ -615,13 +622,19 @@ persona_optout_section() {
 # accumulated normalized {role,conclusion} records by role. Omitted entirely when
 # no ingress runs were seen (the current no-op reality).
 ingress_attribution_section() {
-  [ -s "$ingress_attr_file" ] || return 0
-  local tsv
-  tsv=$(mktemp)
-  jq -s '.' "$ingress_attr_file" | attribution_buckets > "$tsv"
+  # Combine legacy (pre-collapse) and ingress (post-collapse) runs so a role that
+  # ran on both sides of the collapse shares the required bucket (#1727 AC #4).
+  local combined_attr_file attr_tsv
+  combined_attr_file=$(mktemp)
+  if [ -s "$legacy_attr_file" ] || [ -s "$ingress_attr_file" ]; then
+    jq -s 'add // []' "$legacy_attr_file" "$ingress_attr_file" > "$combined_attr_file"
+  fi
+  [ -s "$combined_attr_file" ] || { rm -f "$combined_attr_file"; return 0; }
+  attr_tsv=$(mktemp)
+  jq -s '.' "$combined_attr_file" | attribution_buckets > "$attr_tsv"
   printf '\n'
-  generate_attribution_report "$tsv" "Agent Ingress run attribution (by role)"
-  rm -f "$tsv"
+  generate_attribution_report "$attr_tsv" "Run attribution (by role, across collapse)"
+  rm -f "$attr_tsv" "$combined_attr_file"
 }
 
 # Step Summary — Tier 1 visualizations only (Mermaid not rendered there)
@@ -703,7 +716,7 @@ if [ -n "${GITHUB_ENV:-}" ]; then
   [ "$persona_optout_incomplete_count" -gt 0 ] && echo "HAS_PERSONA_OPTOUT_DRIFT=true" >> "$GITHUB_ENV"
 fi
 
-rm -f "$metrics_file" "$failed_file" "$issues_lookup_file" "$dev_lead_reason_file" "$schedule_metrics_file" "$persona_optout_file" "$ingress_attr_file"
+rm -f "$metrics_file" "$failed_file" "$issues_lookup_file" "$dev_lead_reason_file" "$schedule_metrics_file" "$persona_optout_file" "$ingress_attr_file" "$legacy_attr_file"
 [ ${#stub_drift_files[@]} -gt 0 ] && rm -f "${stub_drift_files[@]}"
 
 # ---------------------------------------------------------------------------
