@@ -63,6 +63,18 @@ readonly _ACV_CLAIM_SUFFIX=' -->'
 # merge" shape) rather than any human chatter, so a neutral "thanks" never blocks.
 readonly _ACV_DISPOSITION_RE_UPPER='(REQUIRED|MUST BE (FIXED|ADDRESSED|RESOLVED|CHANGED)|CHANGES REQUIRED|BLOCKING|REQUEST(ING|ED)? CHANGES)'
 
+# A maintainer "no change needed" disposition (#1743) — the mirror image of the
+# blocking disposition above. Matched case-insensitively against a marker-less human
+# comment. It PERMITS resolution of a false-positive bot thread on a no-commit pass,
+# the missing half of the #1692 REQUIRED gate (which WITHHOLDS resolution). Kept as
+# conservative as the blocking regex: it recognises an explicit false-positive /
+# wontfix / working-as-intended assertion, not any human chatter, so a neutral
+# "thanks" never clears a thread. Note "no change required" contains the substring
+# REQUIRED and so also matches _ACV_DISPOSITION_RE_UPPER; the harness net resolves
+# that collision in favour of the no-change intent (a later, strictly-newer REQUIRED
+# disposition still supersedes).
+readonly _ACV_NOCHANGE_RE_UPPER='(NO (CODE )?CHANGES? (NEEDED|REQUIRED|NECESSARY|WARRANTED|IS NEEDED|ARE NEEDED)|FALSE[ -]?POSITIVE|WON.?T ?FIX|WONTFIX|WORKING AS INTENDED|NOT A (REAL )?(BUG|ISSUE|PROBLEM|CONCERN|DEFECT)|BY DESIGN|INTENDED BEHAVIOU?R)'
+
 # Post-marker BOT-comment classification (#1735 AC2/AC4). A review bot that replies
 # AFTER our addressed-marker either ACKNOWLEDGES (accepts our refutation / records a
 # custom rule — the codeant-ai "✅ Customized review instruction saved!" shape) or
@@ -365,6 +377,73 @@ acv_latest_maintainer_disposition() {
     [[ "${body^^}" =~ $_ACV_DISPOSITION_RE_UPPER ]] || continue
     # A disposition with no parseable timestamp cannot be ordered against the fix ->
     # fail closed.
+    if [[ -z "$created" ]] || ! _acv_is_iso8601 "$created"; then
+      saw_unparseable=1
+      continue
+    fi
+    if [[ -z "$latest" || "$created" > "$latest" ]]; then
+      latest="$created"
+    fi
+  done <<<"$rows"
+
+  if [[ -n "$latest" ]]; then
+    echo "$latest"
+    return 0
+  fi
+  if [[ "$saw_unparseable" -eq 1 ]]; then
+    echo "unparseable"
+    return 2
+  fi
+  echo ""
+  return 1
+}
+
+# acv_latest_nochange_disposition <comments_json> <bot_user>
+#   Scan ALL comments in a thread (#1743) for a standing maintainer "no change
+#   needed" disposition — the mirror of acv_latest_maintainer_disposition.
+#   <comments_json> is a JSON array of {author:{login,__typename}, body, createdAt}.
+#   A comment counts as a no-change disposition when it is: not our account, a User
+#   (not a Bot), MARKER-LESS per review_thread_is_agent_authored (so the agent cannot
+#   manufacture its own resolution authorization — #1743 AC4), and asserts a
+#   no-change disposition (_ACV_NOCHANGE_RE_UPPER).
+#   Returns:
+#     0 + echoes the latest such comment's ISO createdAt  (a no-change disposition applies)
+#     1 + echoes ""                                        (no no-change disposition found)
+#     2 + echoes "unparseable"                             (a no-change disposition was
+#                                                           found but its createdAt is
+#                                                           missing/unparseable ->
+#                                                           fail closed, leave open)
+#   Pure — no gh/git/network. Structurally identical to acv_latest_maintainer_disposition
+#   so the two dispositions are governed by the same standard (attributable, marker-less
+#   human, timestamped), differing only in the recognised phrase.
+acv_latest_nochange_disposition() {
+  local comments_json="${1:-}" bot_user="${2:-}"
+  local bot_user_stripped="${bot_user%\[bot\]}"
+
+  local rows
+  rows=$(printf '%s' "$comments_json" | jq -c '
+      if type == "array" then .[] else empty end
+    ' 2>/dev/null) || return 1
+  [[ -z "$rows" ]] && return 1
+
+  local latest="" saw_unparseable=0
+  local obj login typename created body
+  while IFS= read -r obj; do
+    [[ -z "$obj" ]] && continue
+    login=$(printf '%s' "$obj" | jq -r '.author.login // ""' 2>/dev/null || printf '')
+    typename=$(printf '%s' "$obj" | jq -r '.author.__typename // ""' 2>/dev/null || printf '')
+    created=$(printf '%s' "$obj" | jq -r '.createdAt // ""' 2>/dev/null || printf '')
+    body=$(printf '%s' "$obj" | jq -r '.body // ""' 2>/dev/null || printf '')
+    # Our own account / non-User authors are never maintainer dispositions.
+    [[ "$login" == "$bot_user" || "$login" == "$bot_user_stripped" ]] && continue
+    [[ "$typename" != "User" ]] && continue
+    # Marker-less is the discriminator: an agent-authored comment (carrying one of
+    # our markers) is ours, never a maintainer disposition.
+    review_thread_is_agent_authored "$body" && continue
+    # Does the marker-less human comment assert a no-change disposition?
+    [[ "${body^^}" =~ $_ACV_NOCHANGE_RE_UPPER ]] || continue
+    # A disposition with no parseable timestamp cannot be ordered against a
+    # competing REQUIRED disposition -> fail closed.
     if [[ -z "$created" ]] || ! _acv_is_iso8601 "$created"; then
       saw_unparseable=1
       continue
