@@ -42,7 +42,9 @@ filter_runs_in_window() {
 
 # compute_cancellation_metrics <runs_json> [never_ran_sec]
 # Emits a compact JSON summary: total, cancelled, cancelled_pct (rounded int),
-# never_ran (cancelled with lifetime < threshold), never_ran_pct.
+# never_ran (cancelled with run_started_at == null AND lifetime < threshold),
+# never_ran_pct. A populated run_started_at means a job actually started, so the
+# run did run and is excluded even if its lifetime is short.
 compute_cancellation_metrics() {
   local runs_json="$1" thr="${2:-$NEVER_RAN_SEC}"
   jq -n \
@@ -54,6 +56,7 @@ compute_cancellation_metrics() {
     | ($canc | length) as $cancelled
     | [ $canc[]
         | select(
+            (.run_started_at == null) and
             (((.updated_at // .created_at) | fromdateiso8601)
              - (.created_at | fromdateiso8601)) < $thr
           ) ] as $never
@@ -82,7 +85,9 @@ main() {
   local until_iso="${UNTIL_ISO:-$now_iso}"
   local since_iso="${SINCE_ISO:-}"
   if [ -z "$since_iso" ]; then
-    since_iso=$(date -u -d "$until_iso - 1 hour" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$until_iso")
+    # Portable date arithmetic via jq (fromdateiso8601/todateiso8601) — avoids the
+    # GNU-only `date -d`, which is absent on BSD/macOS.
+    since_iso=$(jq -rn --arg t "$until_iso" '($t | fromdateiso8601) - 3600 | todateiso8601' 2>/dev/null || echo "$until_iso")
   fi
 
   echo "[metrics] dev-lead cancellation share for ${repo} (${wf})"

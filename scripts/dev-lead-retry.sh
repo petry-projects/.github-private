@@ -420,36 +420,47 @@ resolve_trusted_reviewers() {
 # has_unaddressed_head_findings <pr_number> <head_sha> <trusted_csv>
 #                               <reviews_json> <review_comments_json>
 #                               <issue_comments_json>
-# Returns 0 (true) when a trusted reviewer left a finding pinned to head_sha — a
-# CHANGES_REQUESTED review at that commit, or an inline review comment at that
-# commit (isOutdated=false) — AND no dev-lead-fix-reviews marker exists for that
-# PR at that SHA (dev-lead never processed this HEAD's reviews).
+# Returns 0 (true) when a trusted reviewer has an UNADDRESSED finding pinned to
+# head_sha — either their LATEST review at that commit is CHANGES_REQUESTED, or
+# they left an inline review comment at that commit and have NOT since approved
+# it at that same commit — AND no dev-lead-fix-reviews marker exists for that PR
+# at that SHA (dev-lead never processed this HEAD's reviews). A reviewer whose
+# latest review at head_sha is APPROVED is treated as satisfied, so an earlier
+# CHANGES_REQUESTED (or inline comment) they later cleared no longer triggers
+# recovery (#1742 review). The REST review-comment payload carries no
+# resolution/outdated flag, so the selector filters purely on commit_id ==
+# head_sha plus this approval check; the marker gate below is the idempotency
+# guard.
 has_unaddressed_head_findings() {
   local pr_number="$1" head_sha="$2" trusted_csv="$3"
   local reviews_json="$4" review_comments_json="$5" issue_comments_json="$6"
 
-  local trusted_arr
-  trusted_arr=$(printf '%s' "$trusted_csv" \
-    | tr ', ' '\n\n' \
-    | sed 's/\[bot\]$//' \
-    | grep -v '^[[:space:]]*$' \
-    | jq -R . | jq -sc . 2>/dev/null || echo '[]')
-
   local findings
   findings=$(jq -n \
     --arg sha "$head_sha" \
-    --argjson trusted "$trusted_arr" \
+    --arg csv "$trusted_csv" \
     --argjson reviews "$reviews_json" \
     --argjson comments "$review_comments_json" \
     '
     def norm: (. // "") | sub("\\[bot\\]$"; "");
-    def hit($l): ($trusted | index($l)) != null;
-    ([ $reviews[]?
-       | select((.commit_id // "") == $sha and .state == "CHANGES_REQUESTED")
-       | ((.user.login // "") | norm) as $l | select(hit($l)) ]
-     + [ $comments[]?
-       | select((.commit_id // "") == $sha)
-       | ((.user.login // "") | norm) as $l | select(hit($l)) ]) | length
+    ($csv | [splits("[, ]+")] | map(norm) | map(select(. != ""))) as $trusted
+    # Latest review state per trusted reviewer at this exact commit. Reviews
+    # arrive in submission order, so the last entry in a reviewer group is their
+    # most recent stance — a later APPROVED supersedes an earlier CHANGES_REQUESTED.
+    | ([ $reviews[]?
+         | select((.commit_id // "") == $sha)
+         | { login: ((.user?.login // "") | norm), state: .state }
+         | select(.login as $l | ($trusted | index($l)) != null) ]
+       | group_by(.login) | map({ (.[0].login): (.[-1].state) }) | add // {}) as $latest
+    # A CHANGES_REQUESTED that is still the latest word from that reviewer here.
+    | ([ $latest | to_entries[] | select(.value == "CHANGES_REQUESTED") ] | length) as $review_findings
+    # Inline comments at this commit whose author has not since approved it.
+    | ([ $comments[]?
+         | select((.commit_id // "") == $sha)
+         | ((.user?.login // "") | norm) as $l
+         | select(($trusted | index($l)) != null)
+         | select(($latest[$l] // "") != "APPROVED") ] | length) as $comment_findings
+    | $review_findings + $comment_findings
     ' 2>/dev/null || echo 0)
 
   [ "${findings:-0}" -gt 0 ] || return 1
@@ -474,7 +485,13 @@ scan_pr_for_dropped_reviews() {
   local repo="$1" pr_number="$2"
 
   local pr_obj head_sha pr_state labels_json
-  pr_obj=$(gh api "repos/${repo}/pulls/${pr_number}" 2>/dev/null || echo '{}')
+  # Fail safe, not silent: a failed metadata fetch must SKIP (return 0 retries),
+  # never mask into an empty object that could be misread. `if !` keeps the
+  # failure out of set -e so one PR's API blip cannot abort the scan_repo loop.
+  if ! pr_obj=$(gh api "repos/${repo}/pulls/${pr_number}"); then
+    echo "  [warn] dropped-reviews: metadata fetch failed for PR ${pr_number} in ${repo} — skipping (no dispatch)" >&2
+    echo "0"; return 0
+  fi
   head_sha=$(jq -r '.head?.sha // empty' <<< "$pr_obj" 2>/dev/null || true)
   if [ -z "$head_sha" ]; then
     echo "  [warn] dropped-reviews: could not resolve HEAD SHA for PR ${pr_number} in ${repo}" >&2
@@ -492,15 +509,27 @@ scan_pr_for_dropped_reviews() {
     echo "0"; return 0
   fi
 
+  # A failed reviews/comments fetch must NOT masquerade as an empty result: an
+  # empty issue-comments list would miss an existing dispatch/marker and let the
+  # script dispatch duplicate recovery work. On any fetch failure, skip this PR
+  # (return 0) — errs toward NOT dispatching, the safe direction for the #860
+  # amplifier. `add // []` still yields [] when the API succeeds with no results.
   local reviews_json review_comments_json comments_json
-  reviews_json=$(gh api --paginate "repos/${repo}/pulls/${pr_number}/reviews?per_page=100" \
-    --jq '[.[] | {state, commit_id, user: {login: .user.login}}]' 2>/dev/null \
-    | jq -s 'add // []' || echo '[]')
-  review_comments_json=$(gh api --paginate "repos/${repo}/pulls/${pr_number}/comments?per_page=100" \
-    --jq '[.[] | {commit_id, user: {login: .user.login}}]' 2>/dev/null \
-    | jq -s 'add // []' || echo '[]')
-  comments_json=$(gh api --paginate "repos/${repo}/issues/${pr_number}/comments?per_page=100" \
-    --jq '[.[].body]' 2>/dev/null | jq -s 'add // []' || echo '[]')
+  if ! reviews_json=$(gh api --paginate "repos/${repo}/pulls/${pr_number}/reviews?per_page=100" \
+      --jq '[.[] | {state, commit_id, user: {login: .user?.login}}]' | jq -s 'add // []'); then
+    echo "  [warn] dropped-reviews: reviews fetch failed for PR ${pr_number} in ${repo} — skipping (no dispatch)" >&2
+    echo "0"; return 0
+  fi
+  if ! review_comments_json=$(gh api --paginate "repos/${repo}/pulls/${pr_number}/comments?per_page=100" \
+      --jq '[.[] | {commit_id, user: {login: .user?.login}}]' | jq -s 'add // []'); then
+    echo "  [warn] dropped-reviews: review-comments fetch failed for PR ${pr_number} in ${repo} — skipping (no dispatch)" >&2
+    echo "0"; return 0
+  fi
+  if ! comments_json=$(gh api --paginate "repos/${repo}/issues/${pr_number}/comments?per_page=100" \
+      --jq '[.[].body]' | jq -s 'add // []'); then
+    echo "  [warn] dropped-reviews: issue-comments fetch failed for PR ${pr_number} in ${repo} — skipping (no dispatch)" >&2
+    echo "0"; return 0
+  fi
 
   # Deduplication guard: a concurrent resume/cron path may already have claimed
   # dispatch for this SHA.
