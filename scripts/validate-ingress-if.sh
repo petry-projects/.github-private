@@ -52,11 +52,23 @@ viif_rulings_path() {
 
 # ── pure event-filter boundary detector ──────────────────────────────────────
 
+# viif_normalize_expr <expr> — rewrite bracket/indexed context access to dot
+# access so `x['y']` / `x["y"]` and `x.y` are ONE construct for matching. The
+# detectors below (and the allowlist gate) match dot notation only; without this
+# an indexed reach such as vars['DEV_LEAD_ENGINE'] or github['repository'] would
+# slip past every dot-notation check (#1772). Applied globally so chained indices
+# (needs['detect'].outputs['should_run']) collapse to a single dotted path.
+viif_normalize_expr() {
+  printf '%s' "$1" | sed -E "s/\[[[:space:]]*'([^']*)'[[:space:]]*\]/.\1/g; s/\[[[:space:]]*\"([^\"]*)\"[[:space:]]*\]/.\1/g"
+}
+
 # viif_expr_matches_construct <expr> <construct-name> — return 0 if <expr>
 # reaches for the FORBID construct <construct-name> (a rulings key). This is the
 # ONLY place a construct name is mapped to its detection; the set of names comes
 # from the frozen rulings table, so an unmapped new FORBID row is caught by the
 # test (its expr would be wrongly permitted) rather than silently under-enforced.
+# Expects a NORMALIZED expr (see viif_normalize_expr) so indexed and dot forms
+# are treated identically.
 viif_expr_matches_construct() {
   local expr="$1" name="$2" lc="${1,,}"
   case "$name" in
@@ -72,11 +84,46 @@ viif_expr_matches_construct() {
   esac
 }
 
+# viif_reaches_unlisted_context <expr> — the ALLOWLIST backstop. ADR-0007 permits
+# an ingress if: to reference ONLY the delivered event: github.event_name,
+# github.event.action, and github.event.<payload>. The named FORBID rows above
+# are a DENYLIST of known repo-state reaches, which passes anything unlisted by
+# default — env.*, inputs.*, steps.*, job.*, runner.*, matrix.*, strategy.*, and
+# non-event github.* (github.actor/ref/sha/token/…) all validate today. This gate
+# closes that default: it returns 0 (reaches unlisted context) for any context
+# root outside the event-only allowlist, so an unenumerated reach cannot pass
+# silently (#1772). Expects a NORMALIZED expr. vars/secrets/needs and bare
+# github.repository are owned by the named rows above and excluded here to avoid
+# double-reporting them.
+viif_reaches_unlisted_context() {
+  local expr="$1" stripped sub
+  # Drop string literals so identifiers inside quotes don't count as contexts.
+  stripped="$(printf '%s' "$expr" | sed -E "s/'[^']*'//g; s/\"[^\"]*\"//g")"
+
+  # (a) a github.<x> reference outside the event allowlist (event_name / event.*).
+  #     bare github.repository is the repo-identity construct's own concern.
+  while IFS= read -r sub; do
+    [ -n "$sub" ] || continue
+    case "$sub" in
+      event_name|event|repository) continue ;;
+      *) return 0 ;;
+    esac
+  done < <(printf '%s\n' "$stripped" | grep -oE '(^|[^._[:alnum:]])github\.[A-Za-z_][A-Za-z0-9_-]*' | sed -E 's/.*github\.//')
+
+  # (b) any other policed context root that is never the delivered event.
+  if [[ "$stripped" =~ (^|[^._[:alnum:]])(env|inputs|steps|job|jobs|runner|matrix|strategy)\. ]]; then
+    return 0
+  fi
+  return 1
+}
+
 # viif_forbidden <if-expr> — print the FORBID construct name(s) <if-expr> reaches
 # for (space-separated) and return 1; print nothing and return 0 if it is a pure
-# event filter. Enumerates the FORBID rows straight from the frozen rulings table.
+# event filter. Enumerates the FORBID rows straight from the frozen rulings table,
+# then applies the event-only allowlist backstop for any unlisted context root.
 viif_forbidden() {
-  local expr="$1" rulings hits="" name verdict row_expr row_rationale
+  local expr="$1" nexpr rulings hits="" name verdict row_expr row_rationale
+  nexpr="$(viif_normalize_expr "$expr")"
   rulings="$(viif_rulings_path)"
   [ -f "$rulings" ] || { echo "::error::rulings table not found: $rulings" >&2; return 2; }
 
@@ -84,10 +131,15 @@ viif_forbidden() {
   while IFS=$'\t' read -r name verdict row_expr row_rationale || [ -n "$name" ]; do
     case "$name" in ''|'#'*) continue ;; esac
     [ "$verdict" = "FORBID" ] || continue
-    if viif_expr_matches_construct "$expr" "$name"; then
-      hits+="${hits:+ }$name"
+    if viif_expr_matches_construct "$nexpr" "$name"; then
+      case " $hits " in *" $name "*) : ;; *) hits+="${hits:+ }$name" ;; esac
     fi
   done < "$rulings"
+
+  # Allowlist backstop: fail any context root the denylist above does not name.
+  if viif_reaches_unlisted_context "$nexpr"; then
+    case " $hits " in *" unlisted-context "*) : ;; *) hits+="${hits:+ }unlisted-context" ;; esac
+  fi
 
   [ -z "$hits" ] && return 0
   printf '%s\n' "$hits"

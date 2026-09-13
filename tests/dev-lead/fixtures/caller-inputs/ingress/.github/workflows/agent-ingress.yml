@@ -7,6 +7,9 @@ on:
     types: [opened, reopened, synchronize, review_requested]
   issue_comment:
     types: [created]
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
 
 permissions: {}
 
@@ -31,3 +34,13 @@ jobs:
       force_review: "true"
     secrets:
       GH_PAT_WORKFLOWS: ${{ secrets.GH_PAT_DON_PETRY }}
+
+  # A reusable-workflow job with NO with: block, and if:/permissions: preceding
+  # uses: — vci_with_keys_for_job must scope to THIS job, return status 0, and
+  # emit NOTHING (no sibling-key leakage from dev-lead/pr-review-mention).
+  ci-failure-analyst:
+    if: github.event_name == 'workflow_run'
+    permissions:
+      contents: read
+    uses: petry-projects/.github-private/.github/workflows/ci-failure-analyst-reusable.yml@ci-failure-analyst/v1-test
+    secrets: inherit

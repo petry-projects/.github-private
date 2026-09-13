@@ -97,19 +97,19 @@ extract_forwarding_block() {
   local file="${1:-}" job="${2:-}"
   [ -n "$file" ] && [ -f "$file" ] || return 0
 
-  # 1) The shared top-level `on:` trigger block.
-  awk '
-    /^("on"|'\''on'\''|on):/ { insec="on"; print; next }
-    insec=="on" {
-      if (/^[[:space:]]/ || /^$/ || /^#/) { print; next }
-      insec=""
-    }
-  ' "$file"
-
-  # 2) The named job's uses:/with:/permissions: block. No job ⇒ nothing (⇒ the
-  #    caller sees an empty block ⇒ MISSING, a hard failure for ring-0 roles).
+  # No job name ⇒ empty extraction ⇒ MISSING (a hard failure for ring-0 roles).
   [ -n "$job" ] || return 0
-  awk -v jobre="$job" '
+
+  # 1) Buffer the NAMED job's uses:/with:/permissions: block FIRST. When the job
+  #    name is supplied but absent from the file, this awk emits nothing — and we
+  #    then emit NOTHING at all (below), so an unknown/deleted job yields an EMPTY
+  #    extraction (⇒ classify_stub_drift = MISSING, the hard error ring-0 roles
+  #    require). Emitting the shared `on:` block up-front (as the pre-#1772 order
+  #    did) would make an absent job hash a non-empty on:-only block, which
+  #    `caller_freeze_update` could freeze and `classify_stub_drift` then report
+  #    ALIGNED — a ring-0 guard passing while checking nothing (#1772).
+  local job_block
+  job_block="$(awk -v jobre="$job" '
     function indent_of(line) { match(line, /^[[:space:]]*/); return RLENGTH }
     BEGIN { found_jobs=0; in_job=0; job_key_indent=-1; child_indent=-1; keep=0; pending=0 }
     !found_jobs {
@@ -137,7 +137,21 @@ extract_forwarding_block() {
       if (keep) { while (pending>0) { print ""; pending-- } print }
       next
     }
+  ' "$file")"
+
+  # An absent job ⇒ empty job block ⇒ emit nothing (MISSING); the shared `on:`
+  # block is never emitted on its own.
+  [ -n "$job_block" ] || return 0
+
+  # 2) The shared top-level `on:` trigger block, then the buffered job block.
+  awk '
+    /^("on"|'\''on'\''|on):/ { insec="on"; print; next }
+    insec=="on" {
+      if (/^[[:space:]]/ || /^$/ || /^#/) { print; next }
+      insec=""
+    }
   ' "$file"
+  printf '%s\n' "$job_block"
 }
 
 # caller_freeze_current_sha <stub_file> — git blob SHA of the forwarding block
@@ -216,7 +230,7 @@ caller_freeze_check() {
 # how an intentional, reviewed channel change is recorded: the diff to
 # tests/fixtures/caller-stub-freeze/*.block is what a reviewer signs off on.
 caller_freeze_update() {
-  local row path job baseline stub_abs base_abs
+  local row path job baseline stub_abs base_abs block
   mkdir -p "$CALLER_FREEZE_FIXTURE_DIR"
   for row in "${CALLER_FREEZE_STUBS[@]}"; do
     IFS='|' read -r path job baseline <<< "$row"
@@ -226,7 +240,12 @@ caller_freeze_update() {
       echo "::warning::caller stub ${path} not found — skipping baseline update." >&2
       continue
     fi
-    extract_forwarding_block "$stub_abs" "$job" > "$base_abs"
+    block="$(extract_forwarding_block "$stub_abs" "$job")"
+    if [ -z "$block" ]; then
+      echo "::warning::caller stub ${path} job '${job}' has no extractable forwarding block — skipping baseline update (refusing to freeze an empty block, which would classify ALIGNED for an absent job)." >&2
+      continue
+    fi
+    printf '%s\n' "$block" > "$base_abs"
     echo "updated ${baseline} from ${path} (job ${job})"
   done
 }

@@ -175,6 +175,39 @@ YAML
   [[ "$output" == *"dev-lead-reusable.yml@dev-lead/v1-stable"* ]]
 }
 
+@test "extract: a named-but-ABSENT job yields an EMPTY block and classifies MISSING, never ALIGNED (#1772)" {
+  # Regression for the pre-#1772 bug: the extractor emitted the shared on: block
+  # BEFORE checking the job, so an unknown/deleted job produced a non-empty
+  # on:-only block that could hash and be frozen ALIGNED — a ring-0 guard passing
+  # while checking nothing. An absent job must now yield an EMPTY extraction.
+  work="$(mktemp -d "${BATS_TEST_TMPDIR:-/tmp}/absent.XXXXXX")"
+  cat > "$work/stub.yml" <<'YAML'
+"on":
+  pull_request_review:
+    types: [submitted]
+
+jobs:
+  dev-lead:
+    uses: petry-projects/.github-private/.github/workflows/dev-lead-reusable.yml@dev-lead/v1-stable
+    with:
+      agent_ref: dev-lead/v1-stable
+YAML
+  # A real baseline frozen from the present job.
+  extract_forwarding_block "$work/stub.yml" "dev-lead" > "$work/base.block"
+  base="$(caller_freeze_baseline_sha "$work/base.block")"
+
+  # A job that does not exist in the file must extract to EMPTY (not a bare on:).
+  run extract_forwarding_block "$work/stub.yml" "no-such-job"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+
+  # The empty extraction must classify MISSING against a baseline, not ALIGNED.
+  cur="$(caller_freeze_current_sha "$work/stub.yml" "no-such-job")"
+  [ -z "$cur" ]
+  [ "$(classify_stub_drift "$base" "$cur")" = "MISSING" ]
+  rm -rf "$work"
+}
+
 # ---------------------------------------------------------------------------
 # Parameterised (form, file, job) table — a byte-identical block is ALIGNED and
 # repointing the channel flips DRIFTED, for BOTH the legacy stub and each ingress

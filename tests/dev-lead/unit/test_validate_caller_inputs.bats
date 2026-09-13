@@ -164,6 +164,16 @@ YML
   [[ "$output" == *"agent_ref"* ]]
   [[ "$output" == *"force_review"* ]]
   [[ "$output" != *"mode"* ]]
+
+  # ci-failure-analyst job: if:/permissions: precede uses:, and there is NO with:
+  # block. vci_with_keys_for_job must return 0 with EMPTY output — proving the
+  # indentation contract holds for a no-with reusable job and does not bleed the
+  # sibling jobs' forwarded keys into this layout.
+  local cfa
+  cfa="$(grep -n 'ci-failure-analyst-reusable.yml' "$ingress" | head -1 | cut -d: -f1)"
+  run vci_with_keys_for_job "$ingress" "$cfa"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
 }
 
 @test "ingress: multi-pin file passes when each job forwards its own declared inputs" {

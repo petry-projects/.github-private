@@ -80,6 +80,73 @@ setup() {
   [[ "$output" == *"repo-identity"* ]]
 }
 
+@test "viif_forbidden: indexed context access reaches the same repo state as dot access (#1772)" {
+  # A denylist that matches dot notation only lets x['y'] bypass it. The guard
+  # normalizes bracket access first, so each indexed form must be rejected AND
+  # name the same construct as its dot twin.
+  run viif_forbidden "vars['DEV_LEAD_ENGINE'] == 'claude'"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"vars"* ]]
+
+  run viif_forbidden "secrets['CLAUDE_CODE_OAUTH_TOKEN'] != ''"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"secrets"* ]]
+
+  run viif_forbidden "needs['detect'].outputs['should_run'] == 'true'"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"needs-outputs"* ]]
+
+  run viif_forbidden "github['repository'] == 'petry-projects/some-repo'"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"repo-identity"* ]]
+
+  run viif_forbidden "contains(github.event.pull_request['labels'].*.name, 'agent-ready')"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"labels-array-contains"* ]]
+}
+
+@test "viif_forbidden: an unlisted context root is forbidden by the event-only allowlist (#1772)" {
+  # The rulings are event-only: only github.event_name / github.event.* may
+  # appear. A context root no FORBID row enumerates must still fail — a denylist
+  # cannot enforce an "only" rule, so the allowlist backstop names it.
+  run viif_forbidden "env.FOO == 'bar'"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"unlisted-context"* ]]
+
+  run viif_forbidden "inputs.mode == 'apply'"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"unlisted-context"* ]]
+
+  run viif_forbidden "steps.detect.outputs.run == 'true'"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"unlisted-context"* ]]
+
+  # A non-event github.* reference (repo/runtime identity) is not the event.
+  run viif_forbidden "github.actor == 'octocat'"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"unlisted-context"* ]]
+
+  run viif_forbidden "github.ref == 'refs/heads/main'"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"unlisted-context"* ]]
+}
+
+@test "viif_forbidden: the event-only allowlist still permits the pure event predicates" {
+  # Guard against the allowlist backstop over-blocking: the canonical event
+  # references must remain clean passes.
+  for ok in \
+    "github.event_name == 'issue_comment'" \
+    "github.event.action == 'review_requested'" \
+    "github.event.label.name == 'agent-ready'" \
+    "github.event.pull_request.base.ref == 'main'"; do
+    run viif_forbidden "$ok"
+    if [ "$status" -ne 0 ]; then
+      echo "event predicate wrongly rejected: [$ok] output=[$output]"
+      return 1
+    fi
+  done
+}
+
 # ---------------------------------------------------------------------------
 # Parameterised over the FROZEN rulings table: every ALLOW row's representative
 # expression must be permitted; every FORBID row's must be rejected AND name the
