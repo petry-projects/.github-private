@@ -103,6 +103,9 @@ FALLBACK_REF = "main"
 # a release the N-1 window steps back to).
 _SEMVER_TAG = re.compile(r"^standards/v(\d+)\.(\d+)\.(\d+)$")
 
+# The MAJOR a moving channel tag pins: standards/v1-stable → 1 (also -next, -ring<N>).
+_CHANNEL_MAJOR = re.compile(r"/v(\d+)-")
+
 
 def fail(msg: str) -> NoReturn:
     print(f"::error::persona manifest invalid: {msg}", file=sys.stderr)
@@ -133,6 +136,27 @@ def current_and_previous(version_tags: list[str]) -> tuple[str | None, str | Non
     current = ranked[0][1] if ranked else None
     previous = ranked[1][1] if len(ranked) > 1 else None
     return current, previous
+
+
+def _channel_major(channel: str) -> int | None:
+    """The MAJOR a moving channel tag pins (standards/v1-stable → 1), or None when
+    the channel is not the v<MAJOR>-<tier> shape. Pure."""
+    m = _CHANNEL_MAJOR.search(channel)
+    return int(m[1]) if m else None
+
+
+def previous_in_channel(version_tags: list[str], channel: str) -> str | None:
+    """The N-1 immutable release for `channel`'s major LINE. Filters the tag list to
+    the channel's major (standards/v1-stable → v1.x only) BEFORE ranking, so the N-1
+    tolerance window never pairs the channel with an unrelated release line — e.g. a
+    v2.x release accepted as N-1 while the validator is pinned to v1-stable. A channel
+    with no v<MAJOR>- shape imposes no filter (falls back to the global newest-below).
+    Pure: the caller supplies the tag list (an I/O concern)."""
+    major = _channel_major(channel)
+    tags = ([t for t in version_tags if (v := _semver(t)) is not None and v[0] == major]
+            if major is not None else version_tags)
+    _, previous = current_and_previous(tags)
+    return previous
 
 
 def schema_ref_plan(env_ref: str | None, channel: str,
@@ -212,11 +236,12 @@ def _discover_previous_version(channel: str) -> str | None:
         with urllib.request.urlopen(req, timeout=20) as resp:  # noqa: S310 (fixed host)
             refs = json.loads(resp.read().decode("utf-8"))
         tags = [r["ref"].split("refs/tags/", 1)[1] for r in refs
-                if isinstance(r, dict) and "refs/tags/" in r.get("ref", "")]
+                if isinstance(r, dict) and isinstance(r.get("ref"), str)
+                and "refs/tags/" in r["ref"]]
     except Exception:  # noqa: BLE001
         return None
-    _, previous = current_and_previous(tags)
-    return previous
+    # N-1 is scoped to the channel's own major line — never an unrelated release line.
+    return previous_in_channel(tags, channel)
 
 
 def load_schemas(explicit: str | None) -> list[tuple[str, dict]]:
@@ -239,6 +264,16 @@ def load_schemas(explicit: str | None) -> list[tuple[str, dict]]:
             schemas.append((f"{label} ({ref})", doc))
     if schemas:
         return schemas
+
+    # An explicit PERSONA_SCHEMA_REF is an EXACT pin (docstring resolution order #3):
+    # if it is unreachable, FAIL — never widen to the default branch, which would
+    # validate against a different schema than the one explicitly requested. The loud
+    # fallback below is only for the channel default, to survive a channel-tag outage.
+    if env_ref:
+        fail(f"PERSONA_SCHEMA_REF='{env_ref}' is unreachable: could not fetch "
+             f"{SCHEMA_PATH_IN_REPO} from {SCHEMA_REPO} at that ref. An explicit pin "
+             f"is exact — refusing to widen to '{FALLBACK_REF}'. Fix the ref, or pass "
+             f"--schema / $PERSONA_SCHEMA_FILE.")
 
     # Loud fallback (AC #4): the pinned channel is unreachable — announce, never widen silently.
     wanted = plan[0][0]
@@ -649,8 +684,21 @@ def main() -> None:
 
     validators = []
     for label, schema in load_schemas(args.schema):
-        jsonschema.Draft202012Validator.check_schema(schema)
+        # A fetched schema document may itself be malformed (not a valid JSON Schema).
+        # Skip it with a diagnostic and try the next resolved ref rather than letting
+        # check_schema's SchemaError escape as a traceback — the module's contract is a
+        # diagnostic on failure, and N-1 may still be usable when the channel is not.
+        try:
+            jsonschema.Draft202012Validator.check_schema(schema)
+        except jsonschema.exceptions.SchemaError as exc:
+            print(f"::warning::skipping unusable persona schema {label}: {exc.message}",
+                  file=sys.stderr)
+            continue
         validators.append((label, jsonschema.Draft202012Validator(schema)))
+    if not validators:
+        fail("no usable persona schema: every resolved schema document failed "
+             "JSON-Schema validation. Fix the standards schema, or pass a valid "
+             "--schema / $PERSONA_SCHEMA_FILE.")
 
     for manifest_path in manifests:
         try:
