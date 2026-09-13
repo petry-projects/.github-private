@@ -76,9 +76,9 @@ setup() {
   run bash -c "printf '%s' '$json' | { source '$LIB'; render_issue_comments; }"
   [ "$status" -eq 0 ]
   local first second third
-  first=$(printf '%s\n' "$output" | grep -n "FIRST_MARK"  | awk -F: 'NR==1 {print $1}')
-  second=$(printf '%s\n' "$output" | grep -n "SECOND_MARK" | awk -F: 'NR==1 {print $1}')
-  third=$(printf '%s\n' "$output" | grep -n "THIRD_MARK"  | awk -F: 'NR==1 {print $1}')
+  first=$(printf '%s\n' "$output" | awk '/FIRST_MARK/ {print NR; exit}')
+  second=$(printf '%s\n' "$output" | awk '/SECOND_MARK/ {print NR; exit}')
+  third=$(printf '%s\n' "$output" | awk '/THIRD_MARK/ {print NR; exit}')
   [ "$first" -lt "$second" ]
   [ "$second" -lt "$third" ]
 }

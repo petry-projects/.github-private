@@ -49,7 +49,7 @@ _ic_filter_human() {
     | map(select(((.user.type?) // "") != "Bot"))
     | map(select((.body // "") | test($noise) | not))
     | .[]
-    | { login: (.user.login // "unknown"),
+    | { login: (.user.login? // "unknown"),
         created_at: (.created_at // ""),
         body: (.body // "") }
     | @base64
@@ -64,7 +64,7 @@ _ic_filter_human() {
 render_issue_comments() {
   local -a rows=()
   local line
-  while IFS= read -r line; do
+  while IFS= read -r line || [ -n "$line" ]; do
     [ -n "$line" ] && rows+=( "$line" )
   done < <(_ic_filter_human)
 
