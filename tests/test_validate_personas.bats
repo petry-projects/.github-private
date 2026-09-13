@@ -535,6 +535,35 @@ PY
   [[ "$output" == *OK* ]]
 }
 
+@test "validate-personas previous_in_channel scopes N-1 to the channel's major line (#1707 review)" {
+  VP="$VALIDATOR" run python3 - <<'PY'
+import importlib.util, os
+spec = importlib.util.spec_from_file_location("vp", os.environ["VP"])
+vp = importlib.util.module_from_spec(spec); spec.loader.exec_module(vp)
+# A repo carrying both a v1 and a v2 release line. Pinned to v1-stable, N-1 must be
+# the v1 release below the newest v1 — NEVER a v2 release from an unrelated line.
+tags = ["standards/v1.0.0", "standards/v1.2.0", "standards/v2.0.0", "standards/v2.1.0"]
+assert vp.previous_in_channel(tags, "standards/v1-stable") == "standards/v1.0.0", \
+    vp.previous_in_channel(tags, "standards/v1-stable")
+# Pinned to v2-stable, N-1 is the v2 release below the newest v2.
+assert vp.previous_in_channel(tags, "standards/v2-stable") == "standards/v2.0.0", \
+    vp.previous_in_channel(tags, "standards/v2-stable")
+# Only one release in the channel's line -> no N-1 (never crosses into v1's line).
+assert vp.previous_in_channel(["standards/v1.0.0", "standards/v2.0.0"],
+                              "standards/v2-stable") is None
+# A channel with no v<MAJOR>- shape imposes no filter (global newest-below: v2.0.0).
+assert vp.previous_in_channel(tags, "some-branch") == "standards/v2.0.0", \
+    vp.previous_in_channel(tags, "some-branch")
+# The major parser: standards/v1-stable -> 1, v2-next -> 2, non-channel -> None.
+assert vp._channel_major("standards/v1-stable") == 1
+assert vp._channel_major("standards/v2-next") == 2
+assert vp._channel_major("main") is None
+print("OK")
+PY
+  [ "$status" -eq 0 ]
+  [[ "$output" == *OK* ]]
+}
+
 @test "validate-personas first_schema_error accepts a manifest valid under N-1 though it fails N (#1707 AC #3)" {
   VP="$VALIDATOR" run python3 - <<'PY'
 import importlib.util, os
@@ -571,4 +600,40 @@ print("OK")
 PY
   [ "$status" -eq 0 ]
   [[ "$output" == *OK* ]]
+}
+
+@test "validate-personas an unreachable explicit PERSONA_SCHEMA_REF fails, never widens to main (#1707 review)" {
+  VP="$VALIDATOR" run python3 - <<'PY'
+import importlib.util, os
+os.environ["PERSONA_SCHEMA_REF"] = "feature/does-not-exist"
+spec = importlib.util.spec_from_file_location("vp", os.environ["VP"])
+vp = importlib.util.module_from_spec(spec); spec.loader.exec_module(vp)
+# Every ref unreachable — record which refs were attempted so we can prove no widen.
+attempts = []
+def fake_fetch(path, ref):
+    attempts.append(ref)
+    return None
+vp._fetch_json_at = fake_fetch
+failed = False
+try:
+    vp.load_schemas(None)
+except SystemExit as e:                # fail() exits non-zero, never returns a schema
+    failed = (e.code == 1)
+assert failed, "an unreachable explicit pin must fail, not return a schema"
+# The exact pin is honoured: only that ref is tried, never a widen to the 'main' fallback.
+assert attempts == ["feature/does-not-exist"], attempts
+assert "main" not in attempts, attempts
+print("OK")
+PY
+  [ "$status" -eq 0 ]
+  [[ "$output" == *OK* ]]
+}
+
+@test "validate-personas reports a malformed schema document as a diagnostic, not a traceback (#1707 review)" {
+  # 'type' must be a string or array of strings — 12345 is not a valid JSON Schema.
+  printf '{"type": 12345}\n' >"$TMP/bad-schema.json"
+  run python3 "$VALIDATOR" "$TMP/personas" --schema "$TMP/bad-schema.json"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"schema"* ]]
+  [[ "$output" != *"Traceback"* ]]
 }
