@@ -49,14 +49,17 @@ GHEOF
 }
 
 _review() {
-  # _review <login> <state> <commit_id>
-  jq -nc --arg l "$1" --arg s "$2" --arg c "$3" \
-    '{state:$s, commit_id:$c, user:{login:$l}}'
+  # _review <login> <state> <commit_id> [submitted_at]
+  # Real reviews always carry submitted_at; the default keeps ordering-agnostic
+  # tests concise while ordering-sensitive tests pass an explicit timestamp.
+  jq -nc --arg l "$1" --arg s "$2" --arg c "$3" --arg t "${4:-2026-09-08T10:00:00Z}" \
+    '{state:$s, commit_id:$c, submitted_at:$t, user:{login:$l}}'
 }
 
 _inline_comment() {
-  # _inline_comment <login> <commit_id>
-  jq -nc --arg l "$1" --arg c "$2" '{commit_id:$c, user:{login:$l}}'
+  # _inline_comment <login> <commit_id> [created_at]
+  jq -nc --arg l "$1" --arg c "$2" --arg t "${3:-2026-09-08T10:00:00Z}" \
+    '{commit_id:$c, created_at:$t, user:{login:$l}}'
 }
 
 _marker() {
@@ -111,19 +114,39 @@ _marker() {
 }
 
 @test "findings: CHANGES_REQUESTED then a later APPROVED on the same SHA → superseded, not a finding" {
-  # Reviews arrive in submission order; the later APPROVED is the reviewer's
-  # latest word, so the stale CHANGES_REQUESTED must not trigger recovery.
+  # A later APPROVED (by submitted_at) resolves the earlier CHANGES_REQUESTED,
+  # so the stale finding must not trigger recovery.
   local reviews
-  reviews="[$(_review coderabbitai CHANGES_REQUESTED deadbeef),$(_review coderabbitai APPROVED deadbeef)]"
+  reviews="[$(_review coderabbitai CHANGES_REQUESTED deadbeef 2026-09-08T10:00:00Z),$(_review coderabbitai APPROVED deadbeef 2026-09-08T11:00:00Z)]"
   run has_unaddressed_head_findings 42 deadbeef "$TRUSTED_REVIEWERS" "$reviews" "[]" "[]"
   [ "$status" -eq 1 ]
 }
 
+@test "findings: CHANGES_REQUESTED then a later COMMENTED (no APPROVED) → still a finding (#1742)" {
+  # The reviewer downgraded to COMMENTED but never APPROVED — the change request
+  # is still open. The old latest-state collapse dropped it; ordering keeps it.
+  local reviews
+  reviews="[$(_review coderabbitai CHANGES_REQUESTED deadbeef 2026-09-08T10:00:00Z),$(_review coderabbitai COMMENTED deadbeef 2026-09-08T11:00:00Z)]"
+  run has_unaddressed_head_findings 42 deadbeef "$TRUSTED_REVIEWERS" "$reviews" "[]" "[]"
+  [ "$status" -eq 0 ]
+}
+
 @test "findings: inline comment on HEAD but the author later APPROVED it → not a finding" {
-  local reviews; reviews="[$(_review coderabbitai APPROVED deadbeef)]"
-  local comments; comments="[$(_inline_comment "coderabbitai[bot]" deadbeef)]"
+  # APPROVED at 11:00 resolves the inline comment created at 10:00.
+  local reviews; reviews="[$(_review coderabbitai APPROVED deadbeef 2026-09-08T11:00:00Z)]"
+  local comments; comments="[$(_inline_comment "coderabbitai[bot]" deadbeef 2026-09-08T10:00:00Z)]"
   run has_unaddressed_head_findings 42 deadbeef "$TRUSTED_REVIEWERS" "$reviews" "$comments" "[]"
   [ "$status" -eq 1 ]
+}
+
+@test "findings: inline comment left AFTER an APPROVED on the same SHA → still a finding (#1742)" {
+  # The reviewer approved at 10:00, then posted a new inline concern at 11:00.
+  # The old latest-state collapse treated any post-APPROVED comment as resolved;
+  # timestamp ordering correctly counts the later comment as unaddressed.
+  local reviews; reviews="[$(_review coderabbitai APPROVED deadbeef 2026-09-08T10:00:00Z)]"
+  local comments; comments="[$(_inline_comment "coderabbitai[bot]" deadbeef 2026-09-08T11:00:00Z)]"
+  run has_unaddressed_head_findings 42 deadbeef "$TRUSTED_REVIEWERS" "$reviews" "$comments" "[]"
+  [ "$status" -eq 0 ]
 }
 
 # ── scan_pr_for_dropped_reviews (fetch + dispatch) ────────────────────────────
