@@ -102,6 +102,10 @@ validate_engines
 # absent or invalid on a scheduled run with zero candidate PRs.
 if [ ! -s "$PRS_FILE" ]; then
   echo "::notice::No candidate PRs to review."
+  # Emit a summary line even for an empty queue so "0 reviews posted" can never
+  # be confused with a run that found candidates and no-op'd every one of them
+  # (issue #1744 AC #4). "empty queue" is the distinguishing marker.
+  echo "Summary: no candidate PRs found (empty queue) — 0 reviews posted, 0 no-ops skipped, 0 failures"
   exit 0
 fi
 

@@ -30,17 +30,31 @@ sort_entries() {
 }
 
 # ---------------------------------------------------------------------------
-# The jq priority classifier — matches JQ_WITH_SORT in list-prs.sh.
-# Input: a JSON array of {url, author, createdAt} objects
-# Output:  priority|createdAt|url  lines
+# The jq classifier — matches JQ_CLASSIFY in list-prs.sh.
+# Input: a JSON array of {url, author, createdAt, isDraft} objects
+# Output: one tab-delimited record per line —
+#   KEEP<TAB><priority>|<createdAt>|<url>   (an eligible candidate)
+#   DROP<TAB><reason><TAB><url>             (a seen-but-excluded PR)
+# Every PR is classified (never silently dropped), so an exclusion is observable.
 # ---------------------------------------------------------------------------
 classify() {
   local bot="${1:-donpetry-bot}"
   local json="$2"
-  echo "$json" | jq -r ".[] | select(.author.login != \"$bot\") |
-    (if (.url | test(\"/[.]github(-private)?/pull/\")) then \"0\" else \"1\" end)
-      + \"|\" + .createdAt + \"|\" + .url"
+  echo "$json" | jq -r --arg bot "$bot" '.[] |
+    if .isDraft == true then
+      "DROP\tdraft\t" + .url
+    elif .author.login == $bot then
+      "DROP\tself-authored\t" + .url
+    else
+      "KEEP\t"
+        + (if (.url | test("/[.]github(-private)?/pull/")) then "0" else "1" end)
+        + "|" + .createdAt + "|" + .url
+    end'
 }
+
+# Extract the priority|createdAt|url payload from a KEEP record (drops the
+# leading "KEEP<TAB>" tag) so the existing field assertions below still apply.
+keep_payload() { printf '%s' "$1" | sed -E 's/^KEEP\t//'; }
 
 # ===========================================================================
 # Sort pipeline tests (network-free)
@@ -154,8 +168,8 @@ if ! command -v jq >/dev/null 2>&1; then
   echo "SKIP  jq not available — skipping classifier tests"
 else
   # Test 7: .github URL gets priority 0
-  JSON='[{"url":"https://github.com/org/.github/pull/1","author":{"login":"alice"},"createdAt":"2026-01-01T00:00:00Z"}]'
-  ENTRY=$(classify "donpetry-bot" "$JSON")
+  JSON='[{"url":"https://github.com/org/.github/pull/1","author":{"login":"alice"},"createdAt":"2026-01-01T00:00:00Z","isDraft":false}]'
+  ENTRY=$(keep_payload "$(classify "donpetry-bot" "$JSON")")
   PRIORITY=$(printf '%s' "$ENTRY" | cut -d'|' -f1)
   if [ "$PRIORITY" = "0" ]; then
     ok "jq: .github URL classified as priority 0"
@@ -164,8 +178,8 @@ else
   fi
 
   # Test 8: .github-private URL gets priority 0
-  JSON='[{"url":"https://github.com/org/.github-private/pull/1","author":{"login":"alice"},"createdAt":"2026-01-01T00:00:00Z"}]'
-  ENTRY=$(classify "donpetry-bot" "$JSON")
+  JSON='[{"url":"https://github.com/org/.github-private/pull/1","author":{"login":"alice"},"createdAt":"2026-01-01T00:00:00Z","isDraft":false}]'
+  ENTRY=$(keep_payload "$(classify "donpetry-bot" "$JSON")")
   PRIORITY=$(printf '%s' "$ENTRY" | cut -d'|' -f1)
   if [ "$PRIORITY" = "0" ]; then
     ok "jq: .github-private URL classified as priority 0"
@@ -174,8 +188,8 @@ else
   fi
 
   # Test 9: Regular repo URL gets priority 1
-  JSON='[{"url":"https://github.com/org/myapp/pull/1","author":{"login":"alice"},"createdAt":"2026-01-01T00:00:00Z"}]'
-  ENTRY=$(classify "donpetry-bot" "$JSON")
+  JSON='[{"url":"https://github.com/org/myapp/pull/1","author":{"login":"alice"},"createdAt":"2026-01-01T00:00:00Z","isDraft":false}]'
+  ENTRY=$(keep_payload "$(classify "donpetry-bot" "$JSON")")
   PRIORITY=$(printf '%s' "$ENTRY" | cut -d'|' -f1)
   if [ "$PRIORITY" = "1" ]; then
     ok "jq: regular repo URL classified as priority 1"
@@ -183,23 +197,34 @@ else
     fail "jq: regular repo URL classified as priority 1" "got '$PRIORITY'"
   fi
 
-  # Test 10: Bot-authored PRs are filtered out
-  JSON='[{"url":"https://github.com/org/app/pull/1","author":{"login":"donpetry-bot"},"createdAt":"2026-01-01T00:00:00Z"}]'
+  # Test 10: Bot-authored PRs are excluded — as an observable DROP, not silently
+  # (issue #1744: an exclusion must be visible, never indistinguishable from
+  # absence).
+  JSON='[{"url":"https://github.com/org/app/pull/1","author":{"login":"donpetry-bot"},"createdAt":"2026-01-01T00:00:00Z","isDraft":false}]'
   ENTRY=$(classify "donpetry-bot" "$JSON")
-  if [ -z "$ENTRY" ]; then
-    ok "jq: bot-authored PR filtered out"
+  if printf '%s' "$ENTRY" | grep -q $'^DROP\tself-authored\thttps://github.com/org/app/pull/1$'; then
+    ok "jq: bot-authored PR classified as DROP self-authored"
   else
-    fail "jq: bot-authored PR filtered out" "got '$ENTRY'"
+    fail "jq: bot-authored PR classified as DROP self-authored" "got '$ENTRY'"
   fi
 
-  # Test 11: createdAt is preserved in output
-  JSON='[{"url":"https://github.com/org/app/pull/42","author":{"login":"alice"},"createdAt":"2026-05-01T12:34:56Z"}]'
+  # Test 11: Draft PRs are excluded as an observable DROP with reason 'draft'.
+  JSON='[{"url":"https://github.com/org/app/pull/7","author":{"login":"alice"},"createdAt":"2026-01-01T00:00:00Z","isDraft":true}]'
   ENTRY=$(classify "donpetry-bot" "$JSON")
+  if printf '%s' "$ENTRY" | grep -q $'^DROP\tdraft\thttps://github.com/org/app/pull/7$'; then
+    ok "jq: draft PR classified as DROP draft"
+  else
+    fail "jq: draft PR classified as DROP draft" "got '$ENTRY'"
+  fi
+
+  # Test 12: createdAt is preserved in a KEEP record's payload (field 2).
+  JSON='[{"url":"https://github.com/org/app/pull/42","author":{"login":"alice"},"createdAt":"2026-05-01T12:34:56Z","isDraft":false}]'
+  ENTRY=$(keep_payload "$(classify "donpetry-bot" "$JSON")")
   DATE=$(printf '%s' "$ENTRY" | cut -d'|' -f2)
   if [ "$DATE" = "2026-05-01T12:34:56Z" ]; then
-    ok "jq: createdAt preserved in output field 2"
+    ok "jq: createdAt preserved in KEEP payload field 2"
   else
-    fail "jq: createdAt preserved in output field 2" "got '$DATE'"
+    fail "jq: createdAt preserved in KEEP payload field 2" "got '$DATE'"
   fi
 fi
 

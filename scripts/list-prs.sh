@@ -6,18 +6,33 @@
 #   2. All open PRs in repos owned by $TARGET_ORG (organization)
 #   3. All open PRs in additional orgs listed in $DELEGATION_ORGS
 #
-# Filters:
-#   --draft=false       — skip work-in-progress PRs
+# Enumeration source — the List API, not the Search API (issue #1744):
+#   PRs are listed per-repo with `gh pr list`, which reads the strongly-
+#   consistent pull-request endpoint. The prior implementation used
+#   `gh search prs` — the *eventually consistent* Search API — which silently
+#   omitted a PR (#1710) that had just been pushed (its approval dismissed): the
+#   Search index had not yet re-indexed the mutation, so the PR was absent from
+#   results even though it was open, green, and owed a review. The List API has
+#   no such re-index lag, so a just-mutated PR enters the pool immediately (which
+#   is also why targeting the same PR directly always reviewed it fine).
+#
+# Filters (every exclusion is logged — see "Observability" below):
+#   - drafts (isDraft == true)          — work in progress
+#   - self-authored (author == BOT_USER) — GitHub rejects self-approval
+#     unconditionally; queuing such a PR previously aborted the whole session
+#     and starved every later candidate (issue #96).
 #
 # CI filtering is intentionally omitted here — review-one-pr.sh enforces it
-# per-PR as a second layer. Filtering by --checks success would exclude repos
-# with no CI configured (GitHub treats "no checks" as not matching --checks
-# success), causing their PRs to never enter the candidate pool.
+# per-PR as a second layer. Filtering by CI status would exclude repos with no
+# CI configured, causing their PRs to never enter the candidate pool.
 #
-# Self-authored PRs (PRs whose author is $BOT_USER) are excluded here, because
-# GitHub's GraphQL API rejects self-approval unconditionally — including such a
-# PR in the queue previously triggered a fatal session abort that starved every
-# subsequent candidate (see issue #96).
+# Observability (issue #1744, AC #3):
+#   A candidate that is *seen but excluded* is never dropped silently — each
+#   exclusion is logged to stderr as a `::notice::` naming the PR and the reason,
+#   and a per-run summary reports how many PRs were seen / kept / excluded. An
+#   omission must never be indistinguishable from an empty queue. Notices go to
+#   stderr because stdout is the candidate list (the caller redirects it to a
+#   file); GitHub Actions still surfaces `::notice::` annotations from stderr.
 #
 # Output ordering (stable, deterministic):
 #   1. .github and .github-private PRs first (priority 0)
@@ -46,29 +61,68 @@ if ! [[ "$BOT_USER" =~ ^[A-Za-z0-9](-?[A-Za-z0-9]){0,38}$ ]]; then
 fi
 
 all_entries=""
+seen=0
+kept=0
+excluded=0
 
-# JQ filter: emit  <priority>|<createdAt>|<url>  for non-bot-authored PRs.
-#   Priority 0 — .github / .github-private repos (infra PRs reviewed first)
-#   Priority 1 — all other repos
-# ISO-8601 createdAt sorts lexicographically, so oldest-first within each
-# tier is achieved with a plain string sort on field 2.
-JQ_WITH_SORT=".[] | select(.author.login != \"$BOT_USER\") |
-  (if (.url | test(\"/[.]github(-private)?/pull/\")) then \"0\" else \"1\" end)
-    + \"|\" + .createdAt + \"|\" + .url"
+# JQ filter: classify each PR from a `gh pr list --json url,author,createdAt,isDraft`
+# array into one tab-delimited record per line:
+#   KEEP<TAB><priority>|<createdAt>|<url>   — an eligible candidate
+#   DROP<TAB><reason><TAB><url>             — a seen-but-excluded PR
+# Priority 0 — .github / .github-private repos (infra PRs reviewed first);
+# priority 1 — all other repos. ISO-8601 createdAt sorts lexicographically, so
+# oldest-first within each tier is a plain string sort on the createdAt field.
+JQ_CLASSIFY='.[] |
+  if .isDraft == true then
+    "DROP\tdraft\t" + .url
+  elif .author.login == $bot then
+    "DROP\tself-authored\t" + .url
+  else
+    "KEEP\t"
+      + (if (.url | test("/[.]github(-private)?/pull/")) then "0" else "1" end)
+      + "|" + .createdAt + "|" + .url
+  end'
 
-# Search all open, non-draft PRs across every repo owned by $owner.
-# --limit 200 on repo list handles orgs that grow beyond gh's default 30.
+# Route one repo's classified PRs into the candidate buffer, logging every
+# exclusion. Runs in the current shell (no subshell) so the counters and
+# all_entries accumulate across repos.
+process_repo_prs() {
+  local raw="$1" line tag rest reason url
+  while IFS= read -r line; do
+    [ -z "$line" ] && continue
+    tag="${line%%$'\t'*}"
+    rest="${line#*$'\t'}"
+    case "$tag" in
+      KEEP)
+        all_entries="${all_entries}${rest}"$'\n'
+        kept=$((kept + 1))
+        seen=$((seen + 1))
+        ;;
+      DROP)
+        reason="${rest%%$'\t'*}"
+        url="${rest#*$'\t'}"
+        echo "::notice::list-prs: excluded $url from candidate pool (reason: $reason)" >&2
+        excluded=$((excluded + 1))
+        seen=$((seen + 1))
+        ;;
+    esac
+  done < <(printf '%s' "$raw" | jq -r --arg bot "$BOT_USER" "$JQ_CLASSIFY" 2>/dev/null || true)
+}
+
+# List all open PRs across every repo owned by $owner via the List API.
+# --limit 200 on repo list handles orgs that grow beyond gh's default 30;
+# --limit 100 on pr list caps per-repo pulls.
 search_namespace() {
-  local owner="$1"
+  local owner="$1" raw
   while IFS= read -r repo; do
-    entries=$(gh search prs \
-      --state open \
+    [ -z "$repo" ] && continue
+    raw=$(gh pr list \
       --repo "$repo" \
-      --draft=false \
+      --state open \
       --limit 100 \
-      --json url,author,createdAt \
-      --jq "$JQ_WITH_SORT" 2>/dev/null || true)
-    all_entries="${all_entries}${entries}"$'\n'
+      --json url,author,createdAt,isDraft 2>/dev/null || echo '[]')
+    [ -z "$raw" ] && raw='[]'
+    process_repo_prs "$raw"
   done < <(gh repo list "$owner" --limit 200 --json nameWithOwner --jq '.[].nameWithOwner' 2>/dev/null || true)
 }
 
@@ -87,6 +141,10 @@ if [ -n "$DELEGATION_ORGS" ]; then
     fi
   done
 fi
+
+# Per-run enumeration summary — makes the pool composition observable so an
+# excluded candidate can never be mistaken for an empty queue (issue #1744).
+echo "::notice::list-prs: enumeration complete — ${seen} open PR(s) seen, ${kept} kept as candidates, ${excluded} excluded (drafts + self-authored, logged above)" >&2
 
 # 1. Drop blank lines
 # 2. Deduplicate by URL (field 3) keeping first occurrence
