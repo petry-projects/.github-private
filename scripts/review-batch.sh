@@ -191,6 +191,7 @@ print(d.get('choices', [{}])[0].get('message', {}).get('content', '(empty)'))
 fi
 
 actual=0
+escalated=0
 skipped_noops=0
 deferred=0
 failed=0
@@ -276,6 +277,14 @@ while IFS= read -r pr_url; do
       actual=$((actual + 1))
       echo "::notice::Review posted ($actual/$MAX_PRS)"
       ;;
+    101)
+      # Human-escalation (issue #1754). A decision WAS made and an artifact
+      # (comment + label + CODEOWNERS request) was left on the PR, but no review
+      # was posted. Count it as `escalated` — never as a posted review, and never
+      # as a failure (it is a clean, expected terminal outcome).
+      escalated=$((escalated + 1))
+      echo "::notice::Escalated to human review ($pr_url)"
+      ;;
     100)
       skipped_noops=$((skipped_noops + 1))
       # Report the real skip reason instead of a blanket "already reviewed".
@@ -328,7 +337,7 @@ while IFS= read -r pr_url; do
 done < "$PRS_FILE"
 
 remaining=$((total_candidates - processed))
-summary="Summary: $actual reviews posted, $skipped_noops no-ops skipped, $failed failures"
+summary="Summary: $actual reviews posted, $escalated escalated to human, $skipped_noops no-ops skipped, $failed failures"
 [ "$engine_fallbacks" -gt 0 ] && summary="$summary, $engine_fallbacks engine fallback(s) to $fallback_engines"
 [ "$deferred" -gt 0 ] && summary="$summary ($deferred deferred pending CI/checks — owed a review once green)"
 summary="$summary (processed $processed/$total_candidates candidates)"
