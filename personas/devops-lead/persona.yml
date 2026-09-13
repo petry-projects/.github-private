@@ -58,16 +58,16 @@ triggers:
 
     - surface: issues
       events: [labeled, commented]
-      enabled: true
+      enabled: false
       mode: advisory
-      notes: "Infrastructure, pipeline, and deployment-strategy input on issues/epics."
+      notes: "Intended future surface (infrastructure, pipeline, and deployment-strategy input on issues/epics). NOT served: no workflow fires on the `issues` event — only @mention comments are routed (the separate `mention` surface). To serve: add an issues-triggered advisory workflow and record the `issues` event in interaction.yml."
 
     - surface: discussion
       events: [labeled, commented]
-      enabled: true
+      enabled: false
       mode: advisory
       bridge: repository_dispatch
-      notes: "Discussions can't run the agent inline — must bridge (issue #571)."
+      notes: "Intended future surface, encoding the repository_dispatch bridge design of issue #571 (discussions can't run the agent inline). NOT served: nothing sends that dispatch, and the discussion mention surface has no labels API (#1318), so the persona's :hands-off label cannot opt out a discussion. To serve: build the #571 bridge and a labels-API opt-out workaround, then record the repository_dispatch event in interaction.yml."
 
 trust:
   author_association_floor: [OWNER, MEMBER, COLLABORATOR]
