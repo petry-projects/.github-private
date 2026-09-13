@@ -14,6 +14,16 @@ source "$(dirname "$0")/lib/conflict-integrity.sh"
 source "$(dirname "$0")/lib/review-change-evidence.sh"
 source "$(dirname "$0")/lib/resolution-integrity.sh"
 source "$(dirname "$0")/lib/addressed-claim-verify.sh"
+# PR issue-comment disposition verifier (#1813): the issue-comment sibling of
+# addressed-claim-verify.sh. Turns a dev-lead comment-disposition reply into a
+# machine-checkable claim the harness verifies before minimizing the original
+# comment RESOLVED.
+source "$(dirname "$0")/lib/comment-disposition-verify.sh"
+# The issue-comment gate — sourced for its agent-marker regex
+# ($_MAINTAINER_GATE_AGENT_MARKERS), so resolve_dispositioned_comments excludes
+# our own disposition/ack/note replies with the SAME discriminator the gate uses
+# (single source of truth; #1813 loop safety AC7).
+source "$(dirname "$0")/lib/maintainer-comment-gate.sh"
 # Structured PR-body backfill (#1805): heal an existing PR whose body is still
 # missing 3+ required description sections, once, marker-keyed.
 source "$(dirname "$0")/lib/dev-lead-pr-body.sh"
@@ -839,6 +849,229 @@ resolve_addressed_bot_threads() {
   echo "::notice::resolve_addressed_bot_threads: resolved ${resolved_count} addressed bot thread(s) on PR #${PR_NUMBER}"
 }
 
+# resolve_dispositioned_comments: the issue-comment sibling of
+# resolve_addressed_bot_threads (#1813). A PR *issue comment* (from `gh pr comment`
+# or the GitHub main comment box) creates no review thread, so it is invisible to
+# the thread-resolution path above. The maintainer-comment gate withholds
+# pr-review's approval while ANY non-agent issue comment lacks a VERIFIED
+# DISPOSITION, surfaced server-side as the comment being minimized RESOLVED. This
+# net supplies that signal: for each undispositioned non-agent comment it locates
+# dev-lead's single disposition reply, VERIFIES the disposition against ground
+# truth (the pushed diff for `fixed`, the tracking issue for `out-of-scope`, a
+# non-empty evidence reply for invalid/answered/informational), and — when
+# cdv_authorize permits — minimizes the ORIGINAL comment RESOLVED (never the
+# model; the harness alone resolves, #1813 AC4).
+#
+# Authorship (#1813 AC5): is_human is the server's own classification
+# (author.__typename == "User"). A human maintainer's comment is auto-resolved
+# ONLY on a verified `fixed` (an agent can never dismiss a person's finding by
+# arguing it away); a bot's comment resolves on any verified disposition.
+#
+# Loop safety (#860 / AC7): candidate enumeration excludes our own account and any
+# comment carrying an agent marker (which includes the `dev-lead:comment-disposition`
+# reply itself), so our replies are never themselves treated as findings. The pass
+# is idempotent — an already-minimized comment is filtered out — and every decision
+# is delegated to the pure cdv_*/acv_* verifiers so it fails closed on any ambiguity.
+resolve_dispositioned_comments() {
+  local intent="$1"
+  if [ "${DEV_LEAD_DRY_RUN:-false}" = "true" ]; then
+    echo "[dry-run] would resolve dispositioned PR issue comments on PR #${PR_NUMBER}"
+    return 0
+  fi
+  if [ -z "${PR_NUMBER:-}" ]; then
+    echo "::notice::resolve_dispositioned_comments: PR_NUMBER not set for intent=${intent} — skipping"
+    return 0
+  fi
+
+  local bot_user="${BOT_USER:-donpetry-bot}"
+
+  # Fetch ALL PR issue comments (author login + __typename, body, minimize state,
+  # createdAt, and the node id used both to match a disposition reply's `id=` and
+  # as minimizeComment's subjectId). The full set is needed twice: to find
+  # candidates AND to locate their disposition replies (a flat comment list, not a
+  # thread). Paginated 100/page.
+  local pages_file cursor="" has_next_page="true" page_response page_nodes
+  local cursor_args=()
+  local comments_query='query($owner:String!,$repo:String!,$pr:Int!,$cursor:String){
+    repository(owner:$owner,name:$repo){
+      pullRequest(number:$pr){
+        comments(first:100,after:$cursor){
+          pageInfo{hasNextPage endCursor}
+          nodes{ id author{login __typename} body isMinimized minimizedReason createdAt }
+        }
+      }
+    }
+  }'
+  pages_file=$(mktemp) || { echo "::error::failed to create temporary file" >&2; exit 1; }
+  while [ "$has_next_page" = "true" ]; do
+    page_response=$(gh api graphql -f query="$comments_query" \
+      -F owner="${REPO%%/*}" -F repo="${REPO##*/}" -F pr="$PR_NUMBER" \
+      "${cursor_args[@]}" 2>/dev/null)
+    page_nodes=$(printf '%s' "$page_response" | jq -c \
+      '.data?.repository?.pullRequest?.comments?.nodes // []' 2>/dev/null || echo "[]")
+    printf '%s\n' "$page_nodes" >> "$pages_file"
+    has_next_page=$(printf '%s' "$page_response" | jq -r \
+      '.data?.repository?.pullRequest?.comments?.pageInfo?.hasNextPage // false' \
+      2>/dev/null || echo "false")
+    cursor=$(printf '%s' "$page_response" | jq -r \
+      '.data?.repository?.pullRequest?.comments?.pageInfo?.endCursor // ""' \
+      2>/dev/null || echo "")
+    [ -z "$cursor" ] && has_next_page="false"
+    cursor_args=("-f" "cursor=${cursor}")
+  done
+  local all_comments
+  all_comments=$(jq -s 'add // []' "$pages_file" 2>/dev/null || echo "[]")
+  rm -f "$pages_file"
+
+  # Candidate ids: non-agent comments not already minimized RESOLVED. Same filter
+  # as the gate (login != our account, body not agent-marked, not resolved-minimized)
+  # so what the harness resolves is exactly what the gate blocks on.
+  local candidate_ids
+  candidate_ids=$(printf '%s' "$all_comments" | jq -r \
+    --arg botuser "$bot_user" \
+    --arg markers "$_MAINTAINER_GATE_AGENT_MARKERS" '
+      def bot_stripped: ($botuser | if endswith("[bot]") then .[0:-5] else . end);
+      .[] | objects
+      | (.author?.login // "" | tostring) as $l
+      | select($l != $botuser and $l != bot_stripped)
+      | select(((.body // "") | test($markers)) | not)
+      | select(
+          ((.isMinimized // false) == true)
+          and (((.minimizedReason // "") | ascii_downcase) == "resolved")
+          | not
+        )
+      | .id
+    ' 2>/dev/null || true)
+
+  if [ -z "$(printf '%s' "$candidate_ids" | sed '/^[[:space:]]*$/d')" ]; then
+    echo "::notice::no undispositioned PR issue comments on PR #${PR_NUMBER}"
+    return 0
+  fi
+
+  local resolved_count=0
+  local cid is_human cur_minimized reply_body disp_json disposition sha ref verified
+  while IFS= read -r cid || [ -n "$cid" ]; do
+    [ -z "$cid" ] && continue
+
+    # Re-read the ORIGINAL comment's CURRENT minimize state so a comment minimized
+    # since enumeration is not double-processed; a fetch that can't confirm state
+    # fails closed (skip).
+    cur_minimized=$(gh api graphql -f query='query($id:ID!){node(id:$id){... on IssueComment{isMinimized minimizedReason}}}' \
+      -f id="$cid" 2>/dev/null \
+      | jq -r 'if .data.node.isMinimized == null then "unknown"
+               elif .data.node.isMinimized then "true" else "false" end' 2>/dev/null || echo "unknown")
+    if [ "$cur_minimized" != "false" ]; then
+      echo "::notice::skipping comment ${cid} — already minimized or state unknown at re-check (${cur_minimized})"
+      continue
+    fi
+
+    is_human=$(printf '%s' "$all_comments" | jq -r --arg id "$cid" \
+      'first(.[] | select(.id == $id)) | if (.author?.__typename // "") == "User" then "true" else "false" end' 2>/dev/null || echo "false")
+
+    # Locate OUR disposition reply for this comment id: a comment AUTHORED BY OUR
+    # BOT ACCOUNT (BOT_USER, or its GraphQL-stripped login) whose parseable
+    # disposition marker cites id=<cid>. Restricting to our account is an
+    # authorization gate (CWE-863): without it, an EXTERNAL commenter could post a
+    # marker citing a candidate id plus a real PR SHA and trick the harness into
+    # minimizing the original comment as RESOLVED. cdv_parse_disposition rejects
+    # malformed/ambiguous markers, so an unverifiable reply never matches. Require
+    # EXACTLY ONE authorized disposition (AC7) — zero or many fail closed. Bodies
+    # are base64-framed to survive newlines.
+    reply_body=""
+    local c_body_b64 c_body parsed pid auth_count=0
+    while IFS= read -r c_body_b64 || [ -n "$c_body_b64" ]; do
+      [ -z "$c_body_b64" ] && continue
+      c_body=$(printf '%s' "$c_body_b64" | base64 -d 2>/dev/null || true)
+      parsed=$(cdv_parse_disposition "$c_body" 2>/dev/null) || continue
+      pid=$(printf '%s' "$parsed" | jq -r '.id // ""' 2>/dev/null || echo "")
+      [ "$pid" = "$cid" ] || continue
+      auth_count=$((auth_count + 1))
+      reply_body="$c_body"
+      disp_json="$parsed"
+    done < <(printf '%s' "$all_comments" | jq -r \
+      --arg botuser "$bot_user" '
+        def bot_stripped: ($botuser | if endswith("[bot]") then .[0:-5] else . end);
+        .[] | objects
+        | (.author?.login // "" | tostring) as $l
+        | select($l == $botuser or $l == bot_stripped)
+        | (.body // "") | @base64' 2>/dev/null)
+
+    if [ -z "$reply_body" ]; then
+      echo "::notice::skipping comment ${cid} — no authorized dev-lead disposition reply from ${bot_user} found; leaving open (#1813)"
+      continue
+    fi
+    if [ "$auth_count" -ne 1 ]; then
+      echo "::notice::skipping comment ${cid} — expected exactly one authorized disposition reply, found ${auth_count}; leaving open (#1813)"
+      continue
+    fi
+
+    disposition=$(printf '%s' "$disp_json" | jq -r '.disposition // ""' 2>/dev/null || echo "")
+    sha=$(printf '%s' "$disp_json" | jq -r '.sha // ""' 2>/dev/null || echo "")
+    ref=$(printf '%s' "$disp_json" | jq -r '.ref // ""' 2>/dev/null || echo "")
+
+    # Verify the disposition against ground truth. Fail closed: unknown → false.
+    verified="false"
+    case "$disposition" in
+      fixed)
+        # Bind the `fixed` evidence to THIS pass's commit — not merely any ancestor
+        # already on the PR head. Without this, a prior pass's commit (or any
+        # existing ancestor) satisfies the on-head + non-empty-diff check even when
+        # the current pass produced no fix. Require: this pass advanced the head
+        # (RESOLUTION_BASE_SHA → current HEAD via ri_may_resolve), the cited sha was
+        # produced by this pass (reachable from HEAD but NOT from the pre-pass base),
+        # and its diff is non-empty. Fail closed when the pre-pass base or HEAD is
+        # unknowable, or the sha predates this pass.
+        local facts on_head own_files cumulative_files pass_base pass_head
+        pass_base="${RESOLUTION_BASE_SHA:-}"
+        pass_head="$(git rev-parse HEAD 2>/dev/null || true)"
+        if ri_may_resolve "$pass_base" "$pass_head" \
+             && git merge-base --is-ancestor "$sha" "$pass_head" 2>/dev/null \
+             && ! git merge-base --is-ancestor "$sha" "$pass_base" 2>/dev/null; then
+          facts=$(acv_gather_commit_facts "$sha")
+          on_head=$(printf '%s' "$facts" | jq -r '.on_head // false' 2>/dev/null || echo "false")
+          own_files=$(printf '%s' "$facts" | jq -r '(.own_files // []) | length' 2>/dev/null || echo "0")
+          cumulative_files=$(printf '%s' "$facts" | jq -r '(.cumulative_files // []) | length' 2>/dev/null || echo "0")
+          if [ "$on_head" = "true" ] && { [ "${own_files:-0}" -gt 0 ] || [ "${cumulative_files:-0}" -gt 0 ]; }; then
+            verified="true"
+          fi
+        else
+          echo "::notice::skipping comment ${cid} — cited sha ${sha} was not produced by this pass (base=${pass_base:-<unset>} head=${pass_head:-<unset>}); leaving open (#1813)"
+        fi
+        ;;
+      out-of-scope)
+        # The referenced tracking issue must exist.
+        local ref_num="${ref#\#}"
+        if [ -n "$ref_num" ] && gh issue view "$ref_num" --repo "$REPO" --json number >/dev/null 2>&1; then
+          verified="true"
+        fi
+        ;;
+      invalid|answered|informational)
+        # The disposition reply must carry non-empty evidence beyond the marker itself.
+        local evidence
+        evidence=$(printf '%s' "$reply_body" | jq -Rsr 'gsub("<!--.*?-->";"";"s") | gsub("\\s";"";"g")' 2>/dev/null || echo "")
+        [ -n "$evidence" ] && verified="true"
+        ;;
+      *)
+        verified="false"
+        ;;
+    esac
+
+    if ! cdv_authorize "$disposition" "$is_human" "$verified"; then
+      echo "::notice::skipping comment ${cid} — disposition '${disposition}' not authorized to resolve (is_human=${is_human} verified=${verified}); leaving open (#1813)"
+      continue
+    fi
+
+    if gh api graphql -f query='mutation($id:ID!){minimizeComment(input:{subjectId:$id,classifier:RESOLVED}){minimizedComment{isMinimized}}}' \
+        -f id="$cid" >/dev/null 2>&1; then
+      resolved_count=$((resolved_count + 1))
+      echo "::notice::minimized comment ${cid} RESOLVED (disposition=${disposition} is_human=${is_human})"
+    else
+      echo "::warning::failed to minimize comment ${cid} RESOLVED"
+    fi
+  done <<< "$candidate_ids"
+  echo "::notice::resolve_dispositioned_comments: minimized ${resolved_count} dispositioned comment(s) on PR #${PR_NUMBER}"
+}
+
 # has_hard_blockers: returns 0 (true) if CI_STATUS_JSON or ALL_REVIEWS_JSON contain
 # hard Tier-1 blockers (failing CI checks or CHANGES_REQUESTED reviews).
 # Unlike has_tier1_blockers, does NOT check for unresolved bot threads — used to
@@ -1642,6 +1875,13 @@ case "$INTENT_TYPE" in
           post_no_changes "fix-reviews"
         fi
       fi
+      # Minimize PR issue comments dev-lead has dispositioned + verified (#1813).
+      # Deliberately OUTSIDE the review-thread resolution gate: each disposition is
+      # verified on its own terms (a `fixed` sha must be on head; out-of-scope needs
+      # a tracking issue; invalid/answered/informational need a non-empty evidence
+      # reply), so an answered/invalid disposition requires no head advance. Runs on
+      # every successful pass, including a net-zero one where the model only replied.
+      resolve_dispositioned_comments "fix-reviews"
       if [ "$cp_rc" -ne 3 ]; then
         # Resolution gate (#1617): auto-resolve threads only when this pass advanced
         # the PR head. A no-commit pass resolves zero threads (#1609/#1024).
@@ -1692,6 +1932,11 @@ case "$INTENT_TYPE" in
           post_no_changes "fix-bot-comment"
         fi
       fi
+      # Minimize PR issue comments dev-lead has dispositioned + verified (#1813).
+      # Outside the review-thread resolution gate for the same reason as fix-reviews:
+      # each disposition is independently verified, so a non-`fixed` disposition
+      # needs no head advance. Runs on every successful pass, net-zero included.
+      resolve_dispositioned_comments "fix-bot-comment"
       if [ "$cp_rc" -ne 3 ]; then
         # Resolution gate (#1617): auto-resolve threads only when this pass advanced
         # the PR head. A no-commit pass resolves zero threads (#1609/#1024).
@@ -1771,6 +2016,9 @@ case "$INTENT_TYPE" in
           post_reviews_terminal "review-changes" "no-changes" "No changes were needed for this PR."
         fi
       fi
+      # Minimize PR issue comments dev-lead has dispositioned + verified (#1813) —
+      # independently verified, so outside the head-movement resolution gate.
+      resolve_dispositioned_comments "review-changes"
       # Resolution gate (#1617): auto-resolve threads only when this pass advanced
       # the PR head. A no-commit pass resolves zero threads (#1609/#1024).
       if resolution_gate_open "$cp_rc"; then
