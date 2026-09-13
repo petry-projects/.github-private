@@ -21,12 +21,18 @@ setup() {
   HOLDOUT="$ROOT/evals/qa-lead/holdout/cases.jsonl"
 }
 
-# assert_case <id> <escalate true|false> <risk LOW|MEDIUM|HIGH>
+# assert_case <id> <escalate true|false> <risk LOW|MEDIUM|HIGH> [expected_recommend]
+#
+# When a fourth argument is given, the case's `recommend` must match it exactly —
+# used to pin the six pre-existing references (AC #2's byte-stable requirement)
+# so an unrelated recommendation cannot silently pass. When omitted, `recommend`
+# only has to be non-empty — used for the three new additions (AC #1).
 assert_case() {
-  local id="$1" escalate="$2" risk="$3"
+  local id="$1" escalate="$2" risk="$3" want_rec="${4-}"
   run python3 -c '
 import json, sys
 path, cid, want_esc, want_risk = sys.argv[1:5]
+want_rec = sys.argv[5] if len(sys.argv) > 5 else None
 want_esc = want_esc == "true"
 found = None
 for line in open(path, encoding="utf-8"):
@@ -53,8 +59,11 @@ rec_val = str(exp.get("recommend", "")).strip()
 if not rec_val:
     print(f"{cid}: missing non-empty recommend")
     sys.exit(1)
+if want_rec is not None and rec_val != want_rec:
+    print(f"{cid}: recommend mismatch\n  got:  {rec_val}\n  want: {want_rec}")
+    sys.exit(1)
 print("ok")
-' "$HOLDOUT" "$id" "$escalate" "$risk"
+' "$HOLDOUT" "$id" "$escalate" "$risk" ${want_rec:+"$want_rec"}
   [ "$status" -eq 0 ] || { echo "$output"; return 1; }
 }
 
@@ -75,27 +84,33 @@ print("ok")
 # --- AC #2: the six pre-existing references are unchanged ----------------------
 
 @test "flaky-network-e2e reference stays MEDIUM / no-escalate" {
-  assert_case "qa-lead-hold-flaky-network-e2e" false MEDIUM
+  assert_case "qa-lead-hold-flaky-network-e2e" false MEDIUM \
+    "stub/mock the external dependency at the boundary (or contract-test it) so CI is deterministic"
 }
 
 @test "payment-happy-only reference stays HIGH / escalate" {
-  assert_case "qa-lead-hold-payment-happy-only" true HIGH
+  assert_case "qa-lead-hold-payment-happy-only" true HIGH \
+    "add declined, duplicate-submit (idempotency), and refund cases before merge — money paths are high-impact"
 }
 
 @test "auth-no-contract reference stays HIGH / escalate" {
-  assert_case "qa-lead-hold-auth-no-contract" true HIGH
+  assert_case "qa-lead-hold-auth-no-contract" true HIGH \
+    "add negative-path API tests (expired/invalid/replay) and a Pact contract test before merge"
 }
 
 @test "migration-no-rollback-test reference stays HIGH / escalate" {
-  assert_case "qa-lead-hold-migration-no-rollback-test" true HIGH
+  assert_case "qa-lead-hold-migration-no-rollback-test" true HIGH \
+    "add rollback + idempotency tests and capture a migration-duration NFR estimate"
 }
 
 @test "coverage-gaming reference stays MEDIUM / escalate" {
-  assert_case "qa-lead-hold-coverage-gaming" true MEDIUM
+  assert_case "qa-lead-hold-coverage-gaming" true MEDIUM \
+    "coverage is gamed; require behavioral assertions on outputs/side-effects, not exception-free execution"
 }
 
 @test "well-tested-refactor reference stays LOW / no-escalate" {
-  assert_case "qa-lead-hold-well-tested-refactor" false LOW
+  assert_case "qa-lead-hold-well-tested-refactor" false LOW \
+    "no additional tests required; existing coverage is sufficient"
 }
 
 # --- The committed holdout stays schema-valid with the additions --------------

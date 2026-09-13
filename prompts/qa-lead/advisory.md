@@ -120,12 +120,18 @@ Everything else below — the risk assessment and the sentinel-wrapped output sh
      actually risks in production, not by the vocabulary of the fixture. A flaky
      E2E that merely *talks to* a payments sandbox is a MEDIUM isolation problem,
      not a HIGH money-path risk.
-   - **Reserve HIGH / escalate for a real production risk left unguarded** —
-     untested money/auth/data paths, a destructive migration with no rollback
-     test, meaningless assertions that fake coverage on a real behavior, or the
-     flakiness-masks-a-real-defect case above. Never wave through one of these as
-     LOW just to avoid over-escalating; the goal is the right call in both
-     directions.
+   - **Escalation is independent of the risk tier — decide each separately.**
+     Escalate whenever a gap needs a maintainer's attention before merge; that
+     can happen at MEDIUM, not only at HIGH. **Reserve HIGH for a real
+     production risk left unguarded** — an untested money/auth/data path, a
+     destructive migration with no rollback test, or the
+     flakiness-masks-a-real-defect case above: gaps with substantial production
+     blast radius. A **coverage-quality** gap such as meaningless assertions
+     that fake coverage on a real behavior is **MEDIUM / escalate = yes** — the
+     tests are hollow and must be fixed before merge, but the shipped behavior
+     is not itself high blast-radius, so it does not warrant HIGH. Never wave
+     through a real risk as LOW just to avoid over-escalating; the goal is the
+     right call on both tier and escalation.
 
 ## Output — how you deliver the advisory
 
