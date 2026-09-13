@@ -28,7 +28,12 @@ command -v jq >/dev/null 2>&1 || { echo "::error::discover-parity-skills: jq is 
 skills=()
 for cfg in "$EVALS_DIR"/*/scorer.json; do
   [ -f "$cfg" ] || continue   # no scorer.json (or glob matched nothing) => triage default, skip
-  [ "$(jq -r '.engine // "triage"' "$cfg")" = "persona" ] || continue
+  # Assign in its own statement, not inside the `|| continue` list: a `$(jq …)`
+  # substitution whose failure is swallowed by `||` would let a malformed
+  # scorer.json be silently skipped under `set -e`. A bare assignment lets a jq
+  # parse error abort the script loudly instead.
+  engine="$(jq -r '.engine // "triage"' "$cfg")"
+  [ "$engine" = "persona" ] || continue
   skills+=("$(basename "$(dirname "$cfg")")")
 done
 

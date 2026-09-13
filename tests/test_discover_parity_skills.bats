@@ -84,13 +84,21 @@ JSON
   [ "$(jq -r 'index("echo-lead") | . != null' <<<"$output")" = "true" ]
 }
 
-@test "against the real repo evals tree, discovers the nine live personas" {
+@test "against the real repo evals tree, discovers the live personas dynamically" {
   run bash "$DISCOVER"
   [ "$status" -eq 0 ]
-  # deep-review declares no engine -> must be absent; the nine parity personas present.
-  [ "$(jq -r 'index("deep-review")' <<<"$output")" = "null" ]
-  for s in business-analyst dev-lead devops-lead pr-review qa-lead \
-           scrum-master security-lead solution-architect sre-lead; do
-    [ "$(jq -r --arg s "$s" 'index($s) | . != null' <<<"$output")" = "true" ]
+
+  # Derive the expected set the same way the script does — never a hardcoded
+  # persona list — so adding or removing a persona needs no edit here (the
+  # derive-don't-enumerate rule this PR exists to enforce, #1702 / #756).
+  expected_skills=()
+  for cfg in "$ROOT/evals"/*/scorer.json; do
+    [ -f "$cfg" ] || continue
+    if [ "$(jq -r '.engine // "triage"' "$cfg")" = "persona" ]; then
+      expected_skills+=("$(basename "$(dirname "$cfg")")")
+    fi
   done
+
+  expected_json=$(printf '%s\n' "${expected_skills[@]}" | sort -u | jq -R . | jq -cs .)
+  [ "$output" = "$expected_json" ]
 }
