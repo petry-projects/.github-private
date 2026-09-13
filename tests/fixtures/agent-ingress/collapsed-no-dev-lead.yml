@@ -1,0 +1,21 @@
+name: Agent Ingress
+
+on:
+  pull_request:
+    types: [review_requested]
+  issue_comment:
+    types: [created]
+
+permissions: {}
+
+jobs:
+  # ── pr-review-mention ─────────────────────────────────────────────────────────
+  pr-review-mention:
+    if: >-
+      (github.event_name == 'pull_request' && github.event.action == 'review_requested')
+      || github.event_name == 'issue_comment'
+    permissions:
+      pull-requests: write
+    uses: petry-projects/.github/.github/workflows/pr-review-mention-reusable.yml@pr-review-mention/v2-next
+    secrets:
+      GH_PAT_WORKFLOWS: ${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS }}
