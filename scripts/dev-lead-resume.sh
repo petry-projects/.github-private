@@ -45,9 +45,14 @@ resume_main() {
   fi
 
   echo "[resume] event-first resume check for ${repo}#${pr} (dry_run=${DRY_RUN})"
-  local dispatched
+  local dispatched dropped
   dispatched=$(scan_pr_for_rate_limits "$repo" "$pr")
-  echo "[resume] dispatched ${dispatched} resume(s) for ${repo}#${pr}"
+  # #1741: the same clearing event should also recover a run that was DROPPED
+  # while pending (cancelled before it could post any marker) — the rate-limited
+  # scan cannot see it, so scan for unaddressed HEAD findings too. Shares the
+  # dispatch-dedup guard, so it cannot double-dispatch alongside the scan above.
+  dropped=$(scan_pr_for_dropped_reviews "$repo" "$pr")
+  echo "[resume] dispatched $(( dispatched + dropped )) resume(s) for ${repo}#${pr}"
 }
 
 # Run main only when executed directly, not when sourced by unit tests.
