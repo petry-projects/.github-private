@@ -29,11 +29,6 @@ source "${SCRIPT_DIR}/lib/run-attribution.sh"
 
 ORG="${ORG:-petry-projects}"
 LOOKBACK_DAYS="${LOOKBACK_DAYS:-1}"
-# Cap on the per-run jobs-API fan-out for ingress attribution (#1789): the jobs
-# endpoint is hit once per completed ingress run, so a busy repo or long lookback
-# could exhaust the rate limit before later metrics are collected. Runs come back
-# newest-first, so the cap keeps the most recent runs; overridable for tools/tests.
-INGRESS_ATTR_MAX_RUNS="${INGRESS_ATTR_MAX_RUNS:-200}"
 REPORT_FILE="fleet_monitor_report.md"
 TODAY=$(date -u +%Y-%m-%d)
 
@@ -550,14 +545,8 @@ for repo in "${repos[@]}"; do
 
   # Build the per-run jobs JSON the lib expects: [{run_id, jobs:[{name,conclusion}]}].
   per_run_tmp=$(mktemp)
-  runs_sampled=0
   while IFS= read -r run_id; do
     [ -n "$run_id" ] || continue
-    if [ "$runs_sampled" -ge "$INGRESS_ATTR_MAX_RUNS" ]; then
-      echo "::warning::${repo}: ingress runs exceed INGRESS_ATTR_MAX_RUNS=${INGRESS_ATTR_MAX_RUNS} — attribution sampled the newest ${INGRESS_ATTR_MAX_RUNS} runs (may undercount)"
-      break
-    fi
-    runs_sampled=$((runs_sampled + 1))
     if ! jobs_raw=$(gh api "repos/${repo}/actions/runs/${run_id}/jobs?per_page=100" --paginate \
       --jq '[.jobs[] | {name, conclusion}]' 2>/dev/null); then
       echo "::warning::Cannot read jobs for ${repo} run ${run_id} — ingress attribution may undercount"

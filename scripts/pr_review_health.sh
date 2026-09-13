@@ -176,10 +176,13 @@ elif [ -n "$ingress_wf_id" ]; then
       jq -n --argjson rid "$run_id" --argjson jobs "$jobs_json" \
         '{run_id: $rid, jobs: $jobs}' >> "$per_run_tmp"
     done <<< "$ingress_run_ids"
-    # Normalize per-run jobs → one {role,conclusion} per role, then keep ONLY the
-    # pr-review role (this scan is the pr-review signal, not the whole fleet).
+    # Normalize per-run jobs → one {role,conclusion} per role, then keep the
+    # pr-review role AND the loud UNATTRIBUTED sentinel (this scan is the pr-review
+    # signal, not the whole fleet, but a completed run whose role could not be
+    # named must stay visible rather than silently vanish — AC #5).
     jq -s '.' "$per_run_tmp" | normalize_ingress_runs \
-      | jq -c --arg role "$PR_REVIEW_INGRESS_ROLE" '.[] | select(.role == $role)' \
+      | jq -c --arg role "$PR_REVIEW_INGRESS_ROLE" --arg unattr "$UNATTRIBUTED_ROLE" \
+          '.[] | select(.role == $role or .role == $unattr)' \
       >> "$ingress_attr_jsonl"
     rm -f "$per_run_tmp"
   fi
@@ -313,9 +316,18 @@ workflow_source=$(gh api "repos/${WORKFLOW_REPO}/contents/.github/workflows/${WO
   # agent-ingress.yml (current reality), so legacy repos see no empty section.
   if [ -s "$ingress_attr_jsonl" ]; then
     attr_tsv=$(mktemp)
-    jq -s '.' "$ingress_attr_jsonl" | attribution_buckets > "$attr_tsv"
-    generate_attribution_report "$attr_tsv" "PR-review run attribution (by role, post-collapse)"
-    rm -f "$attr_tsv"
+    # Fold the PRE-collapse legacy pr-review runs (Section 1's runs_json) into the
+    # SAME per-role bucket as the POST-collapse ingress records so a role that ran
+    # on both sides of the collapse is counted once across the window (parity, AC
+    # #4) instead of the bucket reflecting only post-collapse runs. The legacy runs
+    # are keyed to PR_REVIEW_INGRESS_ROLE (via a synthetic workflow basename) so
+    # they share the ingress role's key rather than the legacy workflow's name.
+    legacy_attr_jsonl=$(mktemp)
+    printf '%s' "$runs_json" | normalize_legacy_runs "${PR_REVIEW_INGRESS_ROLE}.yml" \
+      | jq -c '.[]' > "$legacy_attr_jsonl"
+    jq -s '.' "$ingress_attr_jsonl" "$legacy_attr_jsonl" | attribution_buckets > "$attr_tsv"
+    generate_attribution_report "$attr_tsv" "PR-review run attribution (by role, across collapse)"
+    rm -f "$attr_tsv" "$legacy_attr_jsonl"
   fi
 } > "$REPORT_FILE"
 rm -f "$ingress_attr_jsonl"
