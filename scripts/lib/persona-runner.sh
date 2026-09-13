@@ -30,6 +30,12 @@
 # .github-private#860 burned 1,481 acks in 4.5h without it.
 PR_MARKER_PREFIX='<!-- persona:'
 
+# Reuse the one credential-redaction helper rather than defining a second
+# (#1775 AC #4). Sourced relative to this file so it resolves whether the
+# workflow sources us from the repo root or a test sources us by absolute path.
+# shellcheck source=scripts/lib/redact.sh
+source "$(dirname "${BASH_SOURCE[0]}")/redact.sh"
+
 # pr_agent_marker <persona-id> — the exact first line every advisory must carry.
 pr_agent_marker() {
   printf '%s%s -->' "$PR_MARKER_PREFIX" "$1"
@@ -121,4 +127,96 @@ pr_ensure_marker() {
   else
     printf '%s\n%s' "$marker" "$body"
   fi
+}
+
+# ----------------------------------------------------------------------------
+# Post-failure preservation (#1775)
+# ----------------------------------------------------------------------------
+# The advisory is produced once, at a cost, and is correct. Before #1775 a
+# failing `gh api` post (a 403 on 2026-09-08, #1734) destroyed it: it lived only
+# in $RUNNER_TEMP and the failed step's log. These helpers preserve the redacted,
+# marker-complete body on failure — as an untruncated artifact-bound file AND a
+# truncated job-summary mirror — while still failing the run (a green run would
+# be worse than the loss). The read/write split is untouched: only the post step
+# calls these.
+
+# pr_artifact_name <persona> <source_repo> <item_number> — a deterministic
+# artifact name so the right advisory is findable when several runs have failed.
+# source_repo is owner/repo; any character an artifact name cannot carry (slash,
+# space, and the reserved set) collapses to '-'.
+pr_artifact_name() {
+  local persona="$1" source_repo="$2" item_number="$3" slug
+  slug="$(printf '%s' "$source_repo" | tr -c 'A-Za-z0-9._-' '-')"
+  printf 'persona-advisory-%s-%s-%s' "$persona" "$slug" "$item_number"
+}
+
+# pr_summary_mirror <body> <artifact_name> [budget_bytes] — emit the body for
+# the job summary. The summary is a convenience copy and may be truncated; the
+# artifact holds the untruncated copy of record. A body within budget passes
+# through verbatim; an oversized body is cut to the budget and gains an explicit
+# notice naming the artifact that holds the full text. Default budget 8 KB (the
+# summary cap is 1 MB, but the failure notice must stay readable).
+PR_SUMMARY_BUDGET_BYTES=8192
+pr_summary_mirror() {
+  local body="$1" artifact="$2" budget="${3:-$PR_SUMMARY_BUDGET_BYTES}" size
+  size="$(printf '%s' "$body" | wc -c)"
+  if [ "$size" -le "$budget" ]; then
+    printf '%s' "$body"
+  else
+    printf '%s' "$body" | head -c "$budget"
+    printf '\n\n_Truncated at 8 KB — full advisory in the "%s" run artifact._' "$artifact"
+  fi
+}
+
+# pr_post_failure_message <gh_stderr> <account> <credential> — a diagnostic that
+# names the account and credential in play and distinguishes authentication
+# (401 — the token is missing/expired/malformed) from authorization (403 — the
+# token is valid but the account lacks permission; NOT a missing secret), so the
+# next occurrence is diagnosable from the run alone (#1775 AC #3).
+pr_post_failure_message() {
+  local err="$1" account="$2" credential="$3" code kind
+  code="$(printf '%s' "$err" | grep -oiE 'HTTP [0-9]{3}' | grep -oE '[0-9]{3}' | head -1)"
+  case "$code" in
+    401) kind="authentication failed (HTTP 401) — the token in '${credential}' is missing, expired, or malformed" ;;
+    403) kind="authorization failed (HTTP 403) — the token is valid but '${account}' lacks permission to comment (a valid token is not a missing secret)" ;;
+    "")  kind="post failed (no HTTP status in the error)" ;;
+    *)   kind="post failed (HTTP ${code})" ;;
+  esac
+  printf 'posting as %s (credential %s): %s' "$account" "$credential" "$kind"
+}
+
+# pr_post_advisory_or_preserve <persona> <source_repo> <item_number> <account>
+#     <credential> <marked_body> <body_file> <summary_file>
+# Post the marker-complete body via `gh api`. On success: print a confirmation
+# and return 0 — nothing is preserved (AC #5). On failure: write the REDACTED
+# body to <body_file> (the untruncated, byte-for-byte re-postable artifact copy,
+# AC #1/#4), mirror a truncated copy plus a naming notice into <summary_file>
+# (AC #1), emit the auth-vs-authz diagnostic (AC #3), and return the post's
+# non-zero status so the run still fails (AC #2).
+pr_post_advisory_or_preserve() {
+  local persona="$1" source_repo="$2" item_number="$3" account="$4" credential="$5"
+  local body="$6" body_file="$7" summary_file="$8"
+  local err rc=0
+  err="$(gh api "repos/${source_repo}/issues/${item_number}/comments" -f body="$body" 2>&1 >/dev/null)" || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    printf 'Posted %s advisory on %s#%s.\n' "$persona" "$source_repo" "$item_number"
+    return 0
+  fi
+
+  local redacted artifact diag
+  redacted="$(printf '%s' "$body" | redact_secrets)"
+  artifact="$(pr_artifact_name "$persona" "$source_repo" "$item_number")"
+  diag="$(pr_post_failure_message "$err" "$account" "$credential")"
+
+  printf '%s' "$redacted" > "$body_file"
+  {
+    printf '### Persona advisory not posted — preserved for retry\n\n'
+    printf '**%s#%s** — %s\n\n' "$source_repo" "$item_number" "$diag"
+    pr_summary_mirror "$redacted" "$artifact"
+    printf '\n'
+  } >> "$summary_file"
+
+  printf '%s\n' "$err" >&2
+  printf '::error::%s\n' "$diag" >&2
+  return "$rc"
 }
