@@ -109,10 +109,10 @@ triggers:
   opt_out_label: qa-lead:hands-off
   surfaces:
     - surface: pull_request
-      events: [opened, ready_for_review, synchronize]
+      events: [opened, ready_for_review]
       enabled: true
       mode: advisory
-      notes: "Risk assessment + test-coverage review comments on PRs with test surface. SERVED by qa-lead-pr-advisory.yml (#1646) on [opened, ready_for_review]; `synchronize` is declared here but deliberately NOT wired (one advisory as a PR enters review, not on every push)."
+      notes: "Risk assessment + test-coverage review comments on PRs with test surface. SERVED by qa-lead-pr-advisory.yml (#1646) on [opened, ready_for_review]. `synchronize` is deliberately EXCLUDED (one advisory as a PR enters review, not on every push) — so the declared events match what is deployed."
 
     - surface: pull_request_review
       events: [submitted, created]

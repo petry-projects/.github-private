@@ -284,30 +284,40 @@ def check_skills(manifest: dict, manifest_path: Path, repo_root: Path) -> None:
 
 # Surface -> the set of GitHub webhook event names that, when present in a
 # persona's interaction.yml triggers.events[], serve that surface. A surface is
-# matched on the BASE event name (the part before any ':qualifier', so
-# `repository_dispatch:foo` counts as `repository_dispatch`). The `mention`
-# surface is special: a human @mention is delivered through the comment webhooks
-# by the shared persona-mention router, OR bridged to a persona's own reusable
-# via a `repository_dispatch:*` the router sends — either form serves it (the
-# latter is how pr-review's mention surface is wired). This mapping is the one
-# piece of surface-routing knowledge that is not itself in a manifest; it
-# encodes the fixed GitHub-event semantics, not any per-persona decision.
+# matched on the BASE event name (the part before any ':qualifier'). The event
+# names here are DISTINCT GitHub webhooks — `check_run` and `check_suite` are
+# separate events, so a `check_suite`-only workflow does NOT serve a `check_run`
+# surface and is deliberately not listed under it. The `mention` surface is
+# special: a human @mention is delivered through the comment webhooks by the
+# shared persona-mention router, OR bridged to a persona's own reusable via the
+# router's `repository_dispatch:<role>-mention` dispatch — either form serves it
+# (the latter is how pr-review's mention surface is wired). Only that
+# mention-bridge dispatch counts; an unrelated `repository_dispatch:<other>` (e.g.
+# dev-lead's ci-failure/issue-retry bridges) does not serve the mention surface.
+# This mapping is the one piece of surface-routing knowledge that is not itself in
+# a manifest; it encodes the fixed GitHub-event semantics, not any per-persona
+# decision.
 _COMMENT_EVENTS = frozenset({"issue_comment", "pull_request_review_comment",
                              "discussion_comment"})
 SURFACE_SERVING_EVENTS: dict[str, frozenset[str]] = {
     "pull_request": frozenset({"pull_request"}),
     "pull_request_review": frozenset({"pull_request_review"}),
     "issues": frozenset({"issues"}),
-    "check_run": frozenset({"check_run", "check_suite"}),
+    "check_run": frozenset({"check_run"}),
     "discussion": frozenset({"discussion"}),
     "mention": _COMMENT_EVENTS,
     "schedule": frozenset({"schedule"}),
 }
 
+# The router bridges a mention to a persona's own reusable via a
+# repository_dispatch whose type is '<role>-mention' (persona-mention,
+# pr-review-mention, …). Only such a qualified dispatch serves the mention surface.
+_MENTION_BRIDGE_SUFFIX = "-mention"
 
-def _interaction_base_events(interaction_path: Path) -> set[str]:
-    """The base event names an interaction.yml records under
-    interaction.triggers.events[], each stripped of any ':qualifier' suffix."""
+
+def _interaction_events(interaction_path: Path) -> set[str]:
+    """The event names an interaction.yml records under
+    interaction.triggers.events[] (full names, any ':qualifier' preserved)."""
     import yaml
     try:
         contract = yaml.safe_load(interaction_path.read_text(encoding="utf-8"))
@@ -315,20 +325,34 @@ def _interaction_base_events(interaction_path: Path) -> set[str]:
         fail(f"{interaction_path}: could not read/parse interaction contract: {exc}")
     if not isinstance(contract, dict):
         fail(f"{interaction_path}: interaction contract must be a mapping")
-    events = (((contract.get("interaction") or {}).get("triggers") or {})
-              .get("events") or [])
+    # interaction.yml is not schema-validated before this read, so check each
+    # nested container is a mapping before descending — the module's contract is a
+    # clean diagnostic on a malformed contract, not an AttributeError traceback.
+    interaction = contract.get("interaction") or {}
+    if not isinstance(interaction, dict):
+        fail(f"{interaction_path}: 'interaction' must be a mapping")
+    triggers = interaction.get("triggers") or {}
+    if not isinstance(triggers, dict):
+        fail(f"{interaction_path}: 'interaction.triggers' must be a mapping")
+    events = triggers.get("events") or []
     if not isinstance(events, list):
         fail(f"{interaction_path}: interaction.triggers.events must be a list")
-    return {str(e).split(":", 1)[0] for e in events}
+    return {str(e) for e in events}
 
 
-def _surface_served(surface: str, base_events: set[str]) -> bool:
+def _surface_served(surface: str, events: set[str]) -> bool:
     """Derive whether `surface` is served by the recorded interaction events."""
+    base_events = {e.split(":", 1)[0] for e in events}
     serving = SURFACE_SERVING_EVENTS.get(surface, frozenset())
     if serving & base_events:
         return True
-    # A mention may be bridged to a persona's own reusable via repository_dispatch.
-    if surface == "mention" and "repository_dispatch" in base_events:
+    # A mention may be bridged to a persona's own reusable via the router's
+    # repository_dispatch:<role>-mention. Only that mention-bridge dispatch serves
+    # it — an unrelated repository_dispatch:<other> does not.
+    if surface == "mention" and any(
+            e.startswith("repository_dispatch:")
+            and e.split(":", 1)[1].endswith(_MENTION_BRIDGE_SUFFIX)
+            for e in events):
         return True
     return False
 
@@ -350,13 +374,13 @@ def check_surface_liveness(manifest: dict, manifest_path: Path) -> None:
               f"check (the derivation source is absent; a missing contract file is a "
               f"distinct defect, not an over-declared surface)")
         return
-    base_events = _interaction_base_events(interaction_path)
+    events = _interaction_events(interaction_path)
     for s in enabled:
         surface = s["surface"]
-        if not _surface_served(surface, base_events):
+        if not _surface_served(surface, events):
             fail(f"{manifest_path}: surface '{surface}' is enabled: true but no deployed "
                  f"workflow serves it — {interaction_path.name} records events "
-                 f"{sorted(base_events)}, none of which serve '{surface}'. Either wire a "
+                 f"{sorted(events)}, none of which serve '{surface}'. Either wire a "
                  f"workflow (and record its event in interaction.yml) or set the surface "
                  f"enabled: false with a note (persona-standards §1.1; .github-private#1647).")
 

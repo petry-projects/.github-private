@@ -520,7 +520,7 @@ YAML
 YAML
   write_interaction demo issue_comment pull_request_review_comment
   run python3 "$VALIDATOR" "$TMP/personas" --schema "$TMP/schema.json"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
   [[ "$output" == *"check_run"* ]]
   [[ "$output" == *"no deployed workflow serves"* ]]
   [[ "$output" != *"Traceback"* ]]
@@ -595,8 +595,88 @@ YAML
   # and the repository_dispatch bridge nothing sends).
   write_interaction demo issue_comment pull_request_review_comment discussion_comment
   run python3 "$VALIDATOR" "$TMP/personas" --schema "$TMP/schema.json"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
   [[ "$output" == *"discussion"* ]]
   [[ "$output" == *"no deployed workflow serves"* ]]
+  [[ "$output" != *"Traceback"* ]]
+}
+
+# check_run and check_suite are DISTINCT GitHub webhooks — a check_suite-only
+# workflow does not serve a check_run surface (regression: they were once
+# conflated, letting a check-suite-only persona pass a check_run surface).
+@test "validate-personas rejects a check_run surface served only by check_suite" {
+  set_surfaces demo <<'YAML'
+- surface: check_run
+  events: [completed]
+  enabled: true
+  mode: advisory
+YAML
+  write_interaction demo check_suite
+  run python3 "$VALIDATOR" "$TMP/personas" --schema "$TMP/schema.json"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"check_run"* ]]
+  [[ "$output" == *"no deployed workflow serves"* ]]
+  [[ "$output" != *"Traceback"* ]]
+}
+
+@test "validate-personas accepts a check_run surface served by check_run" {
+  set_surfaces demo <<'YAML'
+- surface: check_run
+  events: [completed]
+  enabled: true
+  mode: advisory
+YAML
+  write_interaction demo check_run
+  run python3 "$VALIDATOR" "$TMP/personas" --schema "$TMP/schema.json"
+  [ "$status" -eq 0 ]
+}
+
+# Only the router's mention-bridge dispatch (repository_dispatch:<role>-mention)
+# serves the mention surface — an unrelated repository_dispatch (e.g. a persona's
+# ci-failure/issue-retry bridge) must NOT falsely validate it.
+@test "validate-personas rejects a mention surface served only by an unrelated repository_dispatch" {
+  set_surfaces demo <<'YAML'
+- surface: mention
+  events: [created]
+  enabled: true
+  mode: advisory
+YAML
+  write_interaction demo repository_dispatch:demo-ci-failure
+  run python3 "$VALIDATOR" "$TMP/personas" --schema "$TMP/schema.json"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"mention"* ]]
+  [[ "$output" == *"no deployed workflow serves"* ]]
+  [[ "$output" != *"Traceback"* ]]
+}
+
+# A malformed interaction.yml must fail with a clean diagnostic, never an
+# AttributeError traceback (interaction.yml is not schema-validated before parsing).
+@test "validate-personas fails cleanly when interaction.interaction is not a mapping" {
+  set_surfaces demo <<'YAML'
+- surface: mention
+  events: [created]
+  enabled: true
+  mode: advisory
+YAML
+  printf 'schema_version: 1\ninteraction: "not a mapping"\n' \
+    >"$TMP/personas/demo/interaction.yml"
+  run python3 "$VALIDATOR" "$TMP/personas" --schema "$TMP/schema.json"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"'interaction' must be a mapping"* ]]
+  [[ "$output" != *"Traceback"* ]]
+}
+
+@test "validate-personas fails cleanly when interaction.triggers is not a mapping" {
+  set_surfaces demo <<'YAML'
+- surface: mention
+  events: [created]
+  enabled: true
+  mode: advisory
+YAML
+  printf 'schema_version: 1\ninteraction:\n  triggers: "not a mapping"\n' \
+    >"$TMP/personas/demo/interaction.yml"
+  run python3 "$VALIDATOR" "$TMP/personas" --schema "$TMP/schema.json"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"'interaction.triggers' must be a mapping"* ]]
   [[ "$output" != *"Traceback"* ]]
 }
