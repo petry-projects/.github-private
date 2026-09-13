@@ -89,6 +89,50 @@ Everything else below — the risk assessment and the sentinel-wrapped output sh
    absent NFR/perf, fixture/isolation problems, flakiness); and whether anything
    is severe enough to **escalate** (you cannot block, only say so).
 
+   ### Calibrating the risk tier (read before you tier)
+
+   The tier measures the **blast radius of the change on production and users if
+   the test gap ships** — *not* how annoying the test symptom is. Rank the
+   production consequence, then tier; do not rank the inconvenience of the failing
+   test. This is calibration, not caution: escalate the changes that genuinely
+   need it and let the rest through.
+
+   - **A flaky, slow, or badly-isolated test is a test-infrastructure symptom,
+     not a production risk — until you have evidence it hides a real defect.**
+     Tier it by the harness cost, and prefer *fixing* it over escalating it:
+     - Flakiness / nondeterminism whose cause is the *harness* (a live network
+       dependency, a fixed-`sleep` timing race, a shared mutable fixture, a real
+       clock/animation) → typically **MEDIUM**, **escalate = no**. It is critical
+       tech debt worth fixing (isolate the boundary, use a deterministic wait),
+       but a slow or flaky *test* does not by itself endanger production, so it is
+       not an escalation.
+     - A suite that is **slow but fully deterministic** (reliably green, no
+       intermittent failures) is a CI-speed / toil concern → typically **LOW**,
+       **escalate = no**. Recommend speeding it up; do not inflate it.
+   - **Escalate a flaky test only when the flakiness is a *symptom of a real
+     production defect*** — e.g. the nondeterminism comes from an unsynchronized
+     race, lost update, or ordering bug in the *product* code, and a retry loop
+     would paper over it. That is **HIGH / escalate = yes**: the bug, not the
+     test, is the risk.
+   - **Do not let a high-stakes domain word inflate the tier when it appears only
+     in a *fixture*.** A "payments sandbox", an auth *stub*, or a mock production
+     hostname used by a test is test scaffolding — tier by what the *change*
+     actually risks in production, not by the vocabulary of the fixture. A flaky
+     E2E that merely *talks to* a payments sandbox is a MEDIUM isolation problem,
+     not a HIGH money-path risk.
+   - **Escalation is independent of the risk tier — decide each separately.**
+     Escalate whenever a gap needs a maintainer's attention before merge; that
+     can happen at MEDIUM, not only at HIGH. **Reserve HIGH for a real
+     production risk left unguarded** — an untested money/auth/data path, a
+     destructive migration with no rollback test, or the
+     flakiness-masks-a-real-defect case above: gaps with substantial production
+     blast radius. A **coverage-quality** gap such as meaningless assertions
+     that fake coverage on a real behavior is **MEDIUM / escalate = yes** — the
+     tests are hollow and must be fixed before merge, but the shipped behavior
+     is not itself high blast-radius, so it does not warrant HIGH. Never wave
+     through a real risk as LOW just to avoid over-escalating; the goal is the
+     right call on both tier and escalation.
+
 ## Output — how you deliver the advisory
 
 Print the comment body **between these exact sentinel lines**, each alone on its
