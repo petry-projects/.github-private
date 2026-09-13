@@ -40,10 +40,14 @@ _ndg_resolve_base_sha() {
       || true
   fi
 
+  # Always fetch the base ref to ensure we have the latest version, not a stale
+  # cached copy. Use FETCH_HEAD to get the exact commit that was just fetched,
+  # which is more robust than relying on the remote-tracking branch.
+  git fetch --quiet origin "$base" 2>/dev/null || true
   local sha
-  sha=$(git rev-parse --verify --quiet "${baseref}^{commit}" 2>/dev/null || true)
+  sha=$(git rev-parse --verify --quiet "FETCH_HEAD^{commit}" 2>/dev/null || true)
   if [ -z "$sha" ]; then
-    git fetch --quiet origin "$base" 2>/dev/null || true
+    # Fall back to the remote-tracking branch if FETCH_HEAD is not available.
     sha=$(git rev-parse --verify --quiet "${baseref}^{commit}" 2>/dev/null || true)
   fi
   printf '%s' "$sha"
@@ -95,15 +99,23 @@ net_diff_summary() {
     return 0
   fi
 
-  local numstat files added deleted
+  local numstat
   numstat=$(git diff --numstat "${base_sha}...HEAD" 2>/dev/null || true)
   if [ -z "$numstat" ]; then
     printf '0 files, +0/-0 lines'
     return 0
   fi
-  files=$(printf '%s\n' "$numstat" | grep -c .)
   # Binary files show "-\t-\t<path>"; treat their non-numeric counts as 0.
-  added=$(printf '%s\n' "$numstat" | awk '{ if ($1 ~ /^[0-9]+$/) s += $1 } END { print s + 0 }')
-  deleted=$(printf '%s\n' "$numstat" | awk '{ if ($2 ~ /^[0-9]+$/) s += $2 } END { print s + 0 }')
+  local files added deleted
+  read -r files added deleted < <(printf '%s\n' "$numstat" | awk '
+    {
+      files++
+      if ($1 ~ /^[0-9]+$/) added += $1
+      if ($2 ~ /^[0-9]+$/) deleted += $2
+    }
+    END {
+      print files, added + 0, deleted + 0
+    }
+  ')
   printf '%s file(s), +%s/-%s lines' "$files" "$added" "$deleted"
 }

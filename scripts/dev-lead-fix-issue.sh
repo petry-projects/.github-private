@@ -238,7 +238,7 @@ checkpoint_push_partial_work() {
 # returns — exits 2 for rate-limit, 1 otherwise (exit semantics unchanged).
 handle_engine_failure() {
   local engine_rc="$1"
-  rm -f "$prompt_file"
+  rm -f "${prompt_file:-}"
 
   # Cause class from the engine layer; default to engine-error if the sidecar is
   # absent (e.g. an older engine.sh). exit 2 always means rate-limited.
@@ -502,7 +502,7 @@ The implementation pass produced **no net difference** against \`${base_ref}\`: 
 **No branch was pushed, no pull request was opened, and no completion claim was posted.** This issue is labeled \`${NEEDS_HUMAN_LABEL}\` for human attention.
 
 - **Run:** ${run_url}" 2>/dev/null || true
-  rm -f "$prompt_file"
+  rm -f "${prompt_file:-}"
   exit 1
 }
 
@@ -582,7 +582,7 @@ main() {
 
   if [ "$DEV_LEAD_DRY_RUN" = "true" ]; then
     echo "[dry-run] fix-issue: would implement issue #${ISSUE_NUMBER} using prompt: $prompt_file"
-    rm -f "$prompt_file"
+    rm -f "${prompt_file:-}"
     exit 0
   fi
 
@@ -594,7 +594,7 @@ main() {
   if ! admission_gate_allows; then
     echo "::notice::PR-limit gate: deferring issue #${ISSUE_NUMBER} — org-wide automation PR cap reached; left labeled dev-lead for retry"
     post_deferral_comment
-    rm -f "$prompt_file"
+    rm -f "${prompt_file:-}"
     exit 0
   fi
 
@@ -626,7 +626,7 @@ main() {
 
   if ! $has_uncommitted && ! $has_unpushed; then
     echo "::notice::No changes made for issue #${ISSUE_NUMBER}"
-    rm -f "$prompt_file"
+    rm -f "${prompt_file:-}"
     exit 0
   fi
 
@@ -653,7 +653,7 @@ ${lint_output}
 
 **To retry:** fix the lint errors locally (or re-apply the \`dev-lead\` label — the agent will try again)."
     gh issue comment "$ISSUE_NUMBER" --repo "$REPO" --body "$_lint_body" 2>/dev/null || true
-    rm -f "$prompt_file"
+    rm -f "${prompt_file:-}"
     exit 1
   fi
 
@@ -720,7 +720,7 @@ ${lint_output}
   # claim was published before the work was durable and then lost to a timeout.
   post_completion_claim "$pr_url" "$head_sha" "$base_ref"
 
-  rm -f "$prompt_file"
+  rm -f "${prompt_file:-}"
 }
 
 main "$@"

@@ -108,13 +108,13 @@ build_and_run() {
 
   if [ "$DEV_LEAD_DRY_RUN" = "true" ]; then
     echo "[dry-run] would run engine with prompt: $prompt_file ($(wc -l < "$prompt_file") lines)"
-    rm -f "$prompt_file"
+    rm -f "${prompt_file:-}"
     return 0
   fi
 
   local rc=0
   run_writer_with_fallback "$prompt_file" "${INTENT_TYPE:-}" || rc=$?
-  rm -f "$prompt_file"
+  rm -f "${prompt_file:-}"
   return "$rc"
 }
 
