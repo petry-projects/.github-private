@@ -117,7 +117,7 @@ dlpb_problem_line() {
   # Skip leading markdown headings (e.g. "## Summary") and blank lines, then
   # capture the first prose paragraph up to the next blank line.
   summary=$(printf '%s\n' "$body" \
-    | sed 's/<!--[^>]*-->//g' \
+    | sed 's/<!--[^-]*-->//g' \
     | awk '/^[[:space:]]*#/{next} NF==0{if(seen)exit; else next} {seen=1; print}' \
     | tr '\n' ' ' \
     | sed 's/  */ /g; s/^ //; s/ $//')
