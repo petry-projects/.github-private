@@ -564,6 +564,31 @@ PY
   [[ "$output" == *OK* ]]
 }
 
+@test "validate-personas previous_relative_to_target takes N-1 below the channel's CURRENT target, not the newest tag (#1707 review)" {
+  VP="$VALIDATOR" run python3 - <<'PY'
+import importlib.util, os
+spec = importlib.util.spec_from_file_location("vp", os.environ["VP"])
+vp = importlib.util.module_from_spec(spec); spec.loader.exec_module(vp)
+tags = ["standards/v1.0.0", "standards/v1.1.0", "standards/v1.2.0"]
+prt = vp.previous_relative_to_target
+# v1.2.0 is cut but the channel still targets v1.1.0 -> N-1 is v1.0.0, NOT v1.1.0
+# (the channel's own target must never masquerade as its N-1).
+assert prt(tags, "standards/v1-stable", "standards/v1.1.0") == "standards/v1.0.0", \
+    prt(tags, "standards/v1-stable", "standards/v1.1.0")
+# Channel at the newest release -> N-1 is the one below it.
+assert prt(tags, "standards/v1-stable", "standards/v1.2.0") == "standards/v1.1.0"
+# Channel at the oldest release -> nothing below it.
+assert prt(tags, "standards/v1-stable", "standards/v1.0.0") is None
+# Unresolvable target -> degrade to newest-below (previous_in_channel semantics).
+assert prt(tags, "standards/v1-stable", None) == "standards/v1.1.0"
+# A target from an unrelated major is not in the channel's line -> degrade, never cross.
+assert prt(tags, "standards/v1-stable", "standards/v2.0.0") == "standards/v1.1.0"
+print("OK")
+PY
+  [ "$status" -eq 0 ]
+  [[ "$output" == *OK* ]]
+}
+
 @test "validate-personas first_schema_error accepts a manifest valid under N-1 though it fails N (#1707 AC #3)" {
   VP="$VALIDATOR" run python3 - <<'PY'
 import importlib.util, os
