@@ -6,10 +6,13 @@ ENGINE_SCRIPT="$SCRIPT_DIR/scripts/engine.sh"
 STUB_ENGINES_DIR="$SCRIPT_DIR/tests/dev-lead/fixtures/engines"
 
 setup() {
-  export GITHUB_ENV="$(mktemp)"
-  export GITHUB_OUTPUT="$(mktemp)"
+  export GITHUB_ENV="$BATS_TEST_TMPDIR/github_env"
+  export GITHUB_OUTPUT="$BATS_TEST_TMPDIR/github_output"
+  : > "$GITHUB_ENV"
+  : > "$GITHUB_OUTPUT"
 
-  STUB_BIN_DIR="$(mktemp -d)"
+  STUB_BIN_DIR="$BATS_TEST_TMPDIR/bin"
+  mkdir -p "$STUB_BIN_DIR"
   cp "$STUB_ENGINES_DIR/stub-claude" "$STUB_BIN_DIR/claude"
   cp "$STUB_ENGINES_DIR/stub-gemini" "$STUB_BIN_DIR/gemini"
   chmod +x "$STUB_BIN_DIR/claude" "$STUB_BIN_DIR/gemini"
@@ -17,7 +20,7 @@ setup() {
   export STUB_BIN_DIR
 
   # Create a test prompt file
-  TEST_PROMPT="$(mktemp)"
+  TEST_PROMPT="$BATS_TEST_TMPDIR/test_prompt"
   echo "test prompt content" > "$TEST_PROMPT"
   export TEST_PROMPT
 
@@ -34,10 +37,8 @@ setup() {
 }
 
 teardown() {
-  rm -f "$GITHUB_ENV" "$GITHUB_OUTPUT" "$TEST_PROMPT"
   rm -f /tmp/dev-lead-failure-reason /tmp/dev-lead-session-output.txt /tmp/dev-lead-rate-limit-reset
   rm -f /tmp/dev-lead-timeout-tier /tmp/dev-lead-timeout-budget /tmp/dev-lead-timeout-elapsed
-  rm -rf "$STUB_BIN_DIR"
 }
 
 # Helper: source engine with a given engine type (suppresses info line)
@@ -246,7 +247,7 @@ GHEOF
   # gemini should be skipped entirely (not called); copilot should succeed.
   _make_stub "claude" 2
   local gemini_record
-  gemini_record="$(mktemp)"
+  gemini_record="$BATS_TEST_TMPDIR/gemini_record"
   _make_recording_stub "gemini" 1 "$gemini_record"
   unset GEMINI_API_KEY GOOGLE_API_KEY 2>/dev/null || true
   # Valid Copilot token so the headroom probe proceeds (an invalid/placeholder
@@ -598,7 +599,7 @@ GHEOF
   # wrongly invoked, so record both and assert neither ran.
   _make_stub "claude" 124
   local gemini_record copilot_record
-  gemini_record="$(mktemp)"; copilot_record="$(mktemp)"
+  gemini_record="$BATS_TEST_TMPDIR/gemini_record"; copilot_record="$BATS_TEST_TMPDIR/copilot_record"
   _make_recording_stub "gemini" 0 "$gemini_record"
   # Enable copilot (non-ghp token) and record any `gh copilot` invocation.
   export COPILOT_GITHUB_TOKEN="stub-token"
@@ -730,8 +731,8 @@ STUB
 
 @test "exhaustion: rate-limited engine is not re-invoked on a later call in the same run" {
   local claude_record gemini_record
-  claude_record="$(mktemp "$STUB_BIN_DIR/claude_record.XXXXXX")"
-  gemini_record="$(mktemp "$STUB_BIN_DIR/gemini_record.XXXXXX")"
+  claude_record="$BATS_TEST_TMPDIR/claude_record"
+  gemini_record="$BATS_TEST_TMPDIR/gemini_record"
   _make_recording_stub "claude" 2 "$claude_record"   # rate-limited (exit 2)
   _make_recording_stub "gemini" 0 "$gemini_record"   # succeeds
   export GEMINI_API_KEY="test-key"
@@ -758,7 +759,7 @@ STUB
   _source_engine "claude"
 
   local errlog
-  errlog="$(mktemp "$STUB_BIN_DIR/errlog.XXXXXX")"
+  errlog="$BATS_TEST_TMPDIR/errlog"
   run_writer_with_fallback "$TEST_PROMPT" 2>>"$errlog" || true
   run_writer_with_fallback "$TEST_PROMPT" 2>>"$errlog" || true
   run_writer_with_fallback "$TEST_PROMPT" 2>>"$errlog" || true
