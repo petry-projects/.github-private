@@ -12,6 +12,9 @@ source "$(dirname "$0")/lib/git-identity.sh"
 source "$(dirname "$0")/lib/pr-worktree.sh"
 source "$(dirname "$0")/lib/auto-merge.sh"
 source "$(dirname "$0")/lib/pr-automation-budget.sh"
+# Structured PR-body backfill (#1805): heal an existing PR whose body is still
+# missing 3+ required description sections, once, marker-keyed.
+source "$(dirname "$0")/lib/dev-lead-pr-body.sh"
 
 PR_NUMBER="${PR_NUMBER:-}"
 HEAD_SHA="${HEAD_SHA:-}"
@@ -231,6 +234,11 @@ main() {
   # Checkout the PR branch for modification, in an isolated worktree so the
   # branch switch never overwrites the agent's own prompts/scripts (issue #448).
   checkout_pr_in_worktree "$PR_NUMBER" "$REPO"
+
+  # Backfill the five required description sections into a pre-existing PR whose
+  # body still lacks them (#1805). Idempotent + marker-keyed, so open PRs heal on
+  # their next dev-lead pass without churning on every run.
+  dlpb_backfill_pr_body "$PR_NUMBER" "$REPO" || true
 
   local cycle=1
   while [ "$cycle" -le "$MAX_CI_CYCLES" ]; do
