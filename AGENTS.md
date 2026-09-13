@@ -29,6 +29,20 @@ This is the `.github-private` org infrastructure repo for `petry-projects`. It c
   sequencing in "Release channel tags & the mutable-ref exception" →
   ["Caller-stub input forwarding across channel pins"](#caller-stub-input-forwarding-across-channel-pins):
   never forward an input the pinned channel does not yet declare.
+- **dev-lead ingests the issue's human comments, not just its title/body (#1566).**
+  `dev-lead-fix-issue.sh` fetches `issues/<n>/comments` and renders them into the
+  `ISSUE_COMMENTS` prompt variable via the pure renderer `scripts/lib/issue-comments.sh`
+  (tests: `tests/dev-lead/unit/test_issue_comments.bats`). The prompt template treats
+  comments as **refinements that may supersede the body**, read in chronological order,
+  with later **human** comments outranking the body and earlier comments. This is how a
+  maintainer steers an in-flight issue: post a comment answering an open question or
+  correcting a wrong assumption, and it reaches the engine. **Deliberately excluded from
+  the rendered block:** `Bot`-type authors (CI bots, third-party reviewers) and dev-lead's
+  own automation comments (HTML markers `<!-- dev-lead…` and `## Dev-Lead …` plan/progress/
+  completion headings), so automation chatter never crowds out human steering. The block is
+  **size-bounded** (`ISSUE_COMMENTS_MAX`, `ISSUE_COMMENTS_CHAR_BUDGET`) applied newest-first
+  so the freshest steering always survives; any comments dropped by either bound are
+  **counted and stated** in the block, never silently discarded.
 - All other workflow changes must use templates from
   [`standards/workflows/`](https://github.com/petry-projects/.github/tree/main/standards/workflows) verbatim.
 - **Note:** `.github/workflows/auto-rebase.yml` pins the reusable workflow at the `@auto-rebase/v2-next`
