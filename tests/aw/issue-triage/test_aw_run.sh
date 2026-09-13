@@ -205,13 +205,14 @@ printf '{"labels":["needs-human-review"],"comment":"Thank you for the report!"}'
 mock_dir=$(mktemp -d)
 printf '#!/bin/sh\nexit 0\n' > "$mock_dir/gh"
 chmod +x "$mock_dir/gh"
+status=0
 output=$(PATH="$mock_dir:$PATH" ISSUE_NUMBER=1 GITHUB_REPOSITORY=example/repo \
-  bash "$REPO_ROOT/scripts/aw.sh" safe-output apply issue-triage "$tmp" 2>&1 || true)
+  bash "$REPO_ROOT/scripts/aw.sh" safe-output apply issue-triage "$tmp" 2>&1) || status=$?
 rm -rf "$mock_dir"
-if echo "$output" | grep -q "rejected"; then
+if [[ $status -eq 1 ]] && echo "$output" | grep -q "rejected"; then
   ok "safe-output: triage result with 'needs-human-review' is rejected (#1778)"
 else
-  fail "safe-output: triage must not be able to apply the 'needs-human-review' hold (#1778)" "got: $output"
+  fail "safe-output: triage must not be able to apply the 'needs-human-review' hold (#1778)" "got (status=$status): $output"
 fi
 rm -f "$tmp"
 
