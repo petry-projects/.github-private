@@ -76,6 +76,12 @@ cdv_parse_disposition() {
   # Extract the attribute string between the literal prefix and the trailing ` -->`.
   local rest attrs
   rest="${body#*"$_CDV_MARKER_PREFIX"}"
+  # An unclosed marker (no trailing ` -->`) is malformed — reject it rather than
+  # letting `attrs` absorb the entire remaining body and parse valid-looking keys.
+  if [[ "$rest" != *"$_CDV_MARKER_SUFFIX"* ]]; then
+    echo "bad-disposition"
+    return 1
+  fi
   attrs="${rest%%"$_CDV_MARKER_SUFFIX"*}"
 
   # Pull each key=value token. Keys are matched anchored so `id=` cannot capture

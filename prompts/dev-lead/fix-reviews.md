@@ -106,10 +106,21 @@ Review threads are only half the surface. A finding posted as a PR **issue comme
 **Enumerate the PR's issue comments** (not review threads):
 
 ```bash
-gh api graphql -f query='query($owner:String!,$repo:String!,$pr:Int!){
-  repository(owner:$owner,name:$repo){ pullRequest(number:$pr){
-    comments(first:100){ nodes{ id author{login __typename} body isMinimized minimizedReason } } } } }' \
-  -F owner="${REPO%%/*}" -F repo="${REPO##*/}" -F pr="${PR_NUMBER}"
+# Paginate through EVERY issue comment — a PR with more than 100 comments would
+# otherwise strand every finding past the first page (the maintainer gate stays
+# blocked on them). Loop on pageInfo.hasNextPage / endCursor until exhausted.
+cursor=null
+while :; do
+  page=$(gh api graphql -f query='query($owner:String!,$repo:String!,$pr:Int!,$cursor:String){
+    repository(owner:$owner,name:$repo){ pullRequest(number:$pr){
+      comments(first:100, after:$cursor){
+        nodes{ id author{login __typename} body isMinimized minimizedReason }
+        pageInfo{ hasNextPage endCursor } } } } }' \
+    -F owner="${REPO%%/*}" -F repo="${REPO##*/}" -F pr="${PR_NUMBER}" -F cursor="${cursor}")
+  echo "$page" | jq -c '.data.repository.pullRequest.comments.nodes[]'   # process this page
+  [ "$(echo "$page" | jq -r '.data.repository.pullRequest.comments.pageInfo.hasNextPage')" = "true" ] || break
+  cursor=$(echo "$page" | jq -r '.data.repository.pullRequest.comments.pageInfo.endCursor')
+done
 ```
 
 **Skip** (do not disposition, never reply to):

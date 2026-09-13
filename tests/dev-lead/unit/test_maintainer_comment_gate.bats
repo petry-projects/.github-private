@@ -68,7 +68,7 @@ _run_check() {
 
 # AC1 — the head-time helper (still used by the review-thread gate) uses committer.date.
 @test "AC1: head-time helper uses committer.date, not pushedDate" {
-  grep -q "committer" "$GATE"
+  grep -q 'commit{committer{date}}' "$GATE"
   ! grep -q "pushedDate" "$GATE"
 }
 

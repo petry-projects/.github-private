@@ -968,25 +968,40 @@ resolve_dispositioned_comments() {
     is_human=$(printf '%s' "$all_comments" | jq -r --arg id "$cid" \
       'first(.[] | select(.id == $id)) | if (.author?.__typename // "") == "User" then "true" else "false" end' 2>/dev/null || echo "false")
 
-    # Locate OUR disposition reply for this comment id: the comment whose parseable
-    # disposition marker cites id=<cid>. GitHub returns comments in chronological
-    # order, so the last match in the stream is the latest reply (AC7 expects exactly
-    # one). cdv_parse_disposition rejects malformed/ambiguous markers, so an
-    # unverifiable reply never matches. Bodies are base64-framed to survive newlines.
+    # Locate OUR disposition reply for this comment id: a comment AUTHORED BY OUR
+    # BOT ACCOUNT (BOT_USER, or its GraphQL-stripped login) whose parseable
+    # disposition marker cites id=<cid>. Restricting to our account is an
+    # authorization gate (CWE-863): without it, an EXTERNAL commenter could post a
+    # marker citing a candidate id plus a real PR SHA and trick the harness into
+    # minimizing the original comment as RESOLVED. cdv_parse_disposition rejects
+    # malformed/ambiguous markers, so an unverifiable reply never matches. Require
+    # EXACTLY ONE authorized disposition (AC7) — zero or many fail closed. Bodies
+    # are base64-framed to survive newlines.
     reply_body=""
-    local c_body_b64 c_body parsed pid
+    local c_body_b64 c_body parsed pid auth_count=0
     while IFS= read -r c_body_b64 || [ -n "$c_body_b64" ]; do
       [ -z "$c_body_b64" ] && continue
       c_body=$(printf '%s' "$c_body_b64" | base64 -d 2>/dev/null || true)
       parsed=$(cdv_parse_disposition "$c_body" 2>/dev/null) || continue
       pid=$(printf '%s' "$parsed" | jq -r '.id // ""' 2>/dev/null || echo "")
       [ "$pid" = "$cid" ] || continue
+      auth_count=$((auth_count + 1))
       reply_body="$c_body"
       disp_json="$parsed"
-    done < <(printf '%s' "$all_comments" | jq -r '.[] | (.body // "") | @base64' 2>/dev/null)
+    done < <(printf '%s' "$all_comments" | jq -r \
+      --arg botuser "$bot_user" '
+        def bot_stripped: ($botuser | if endswith("[bot]") then .[0:-5] else . end);
+        .[] | objects
+        | (.author?.login // "" | tostring) as $l
+        | select($l == $botuser or $l == bot_stripped)
+        | (.body // "") | @base64' 2>/dev/null)
 
     if [ -z "$reply_body" ]; then
-      echo "::notice::skipping comment ${cid} — no verified dev-lead disposition reply found; leaving open (#1813)"
+      echo "::notice::skipping comment ${cid} — no authorized dev-lead disposition reply from ${bot_user} found; leaving open (#1813)"
+      continue
+    fi
+    if [ "$auth_count" -ne 1 ]; then
+      echo "::notice::skipping comment ${cid} — expected exactly one authorized disposition reply, found ${auth_count}; leaving open (#1813)"
       continue
     fi
 
@@ -998,14 +1013,29 @@ resolve_dispositioned_comments() {
     verified="false"
     case "$disposition" in
       fixed)
-        # The cited sha must be on the PR head with a non-empty diff.
-        local facts on_head own_files cumulative_files
-        facts=$(acv_gather_commit_facts "$sha")
-        on_head=$(printf '%s' "$facts" | jq -r '.on_head // false' 2>/dev/null || echo "false")
-        own_files=$(printf '%s' "$facts" | jq -r '(.own_files // []) | length' 2>/dev/null || echo "0")
-        cumulative_files=$(printf '%s' "$facts" | jq -r '(.cumulative_files // []) | length' 2>/dev/null || echo "0")
-        if [ "$on_head" = "true" ] && { [ "${own_files:-0}" -gt 0 ] || [ "${cumulative_files:-0}" -gt 0 ]; }; then
-          verified="true"
+        # Bind the `fixed` evidence to THIS pass's commit — not merely any ancestor
+        # already on the PR head. Without this, a prior pass's commit (or any
+        # existing ancestor) satisfies the on-head + non-empty-diff check even when
+        # the current pass produced no fix. Require: this pass advanced the head
+        # (RESOLUTION_BASE_SHA → current HEAD via ri_may_resolve), the cited sha was
+        # produced by this pass (reachable from HEAD but NOT from the pre-pass base),
+        # and its diff is non-empty. Fail closed when the pre-pass base or HEAD is
+        # unknowable, or the sha predates this pass.
+        local facts on_head own_files cumulative_files pass_base pass_head
+        pass_base="${RESOLUTION_BASE_SHA:-}"
+        pass_head="$(git rev-parse HEAD 2>/dev/null || true)"
+        if ri_may_resolve "$pass_base" "$pass_head" \
+             && git merge-base --is-ancestor "$sha" "$pass_head" 2>/dev/null \
+             && ! git merge-base --is-ancestor "$sha" "$pass_base" 2>/dev/null; then
+          facts=$(acv_gather_commit_facts "$sha")
+          on_head=$(printf '%s' "$facts" | jq -r '.on_head // false' 2>/dev/null || echo "false")
+          own_files=$(printf '%s' "$facts" | jq -r '(.own_files // []) | length' 2>/dev/null || echo "0")
+          cumulative_files=$(printf '%s' "$facts" | jq -r '(.cumulative_files // []) | length' 2>/dev/null || echo "0")
+          if [ "$on_head" = "true" ] && { [ "${own_files:-0}" -gt 0 ] || [ "${cumulative_files:-0}" -gt 0 ]; }; then
+            verified="true"
+          fi
+        else
+          echo "::notice::skipping comment ${cid} — cited sha ${sha} was not produced by this pass (base=${pass_base:-<unset>} head=${pass_head:-<unset>}); leaving open (#1813)"
         fi
         ;;
       out-of-scope)
