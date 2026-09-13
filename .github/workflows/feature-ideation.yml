@@ -118,7 +118,10 @@ jobs:
       github.event.discussion.user.type != 'Bot'
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    permissions: {}
+    permissions:
+      # Post the dispatched-run link back onto the Idea Discussion so a failed
+      # ideate run is a visible red link, not a silent green bridge (#1733 AC#4).
+      discussions: write
     steps:
       - name: Guard — PAT present
         # PAT required: a workflow_dispatch fired with GITHUB_TOKEN is accepted but
@@ -132,17 +135,57 @@ jobs:
             exit 1
           fi
 
-      - name: Re-dispatch under workflow_dispatch
+      - name: Re-dispatch under workflow_dispatch and surface the run on the Idea
         env:
           GH_TOKEN: ${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS }}
           REPO: ${{ github.repository }}
           # Discussion numbers are always positive integers, so this is safe to
           # forward directly to the dispatch input.
           DISCUSSION_NUMBER: ${{ github.event.discussion.number }}
+          # GraphQL node id of the Idea — the target for addDiscussionComment.
+          DISCUSSION_NODE_ID: ${{ github.event.discussion.node_id }}
+          SERVER_URL: ${{ github.server_url }}
         run: |
+          set -euo pipefail
           echo "Discussion #${DISCUSSION_NUMBER} created → re-dispatching feature-ideation.yml for single-idea enhancement."
+          # Record the dispatch boundary (ISO-8601 UTC, lexicographically comparable
+          # to gh run list createdAt) so we can identify the run WE just fired.
+          before="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           gh workflow run feature-ideation.yml --repo "${REPO}" \
             -f target_discussion="${DISCUSSION_NUMBER}"
+
+          # Resolve the dispatched run so the Idea carries a visible link to it.
+          # concurrency: feature-ideation (cancel-in-progress: false) means that run
+          # may sit QUEUED behind THIS bridge run — but a queued run still has a URL,
+          # so we can link it without waiting. We deliberately do NOT wait for it to
+          # finish: a bridge-watch would deadlock (the run can't start until this job,
+          # holding the concurrency group, ends).
+          run_url=""
+          for _ in 1 2 3 4 5 6; do
+            run_url="$(gh run list --repo "${REPO}" \
+              --workflow feature-ideation.yml --event workflow_dispatch \
+              --json databaseId,url,createdAt \
+              --jq "[.[] | select(.createdAt >= \"${before}\")] | sort_by(.createdAt) | last | .url // empty" \
+              2>/dev/null || true)"
+            [ -n "${run_url}" ] && break
+            sleep 5
+          done
+          # Fall back to the workflow's runs page if the specific run isn't listed yet.
+          [ -n "${run_url}" ] || run_url="${SERVER_URL}/${REPO}/actions/workflows/feature-ideation.yml"
+          echo "Dispatched ideation run: ${run_url}"
+
+          # Post the link back onto the Idea so a FAILED ideate run is a visible red
+          # link rather than a silent green bridge (#1733 AC#4). Best-effort: a
+          # posting hiccup must not fail the bridge — the dispatch already succeeded
+          # and the run is discoverable from the logged link above.
+          body="$(printf '%s\n\n%s' \
+            "🔎 **Feature ideation dispatched.** The BMAD Analyst runs in a separate workflow run: ${run_url}" \
+            "This Idea is only enhanced if that run succeeds — a failed run means it was **not** handed off. (claude-code-action cannot run on a \`discussion\` event, so it is bridged to \`workflow_dispatch\`.)")"
+          gh api graphql \
+            -f discussionId="${DISCUSSION_NODE_ID}" \
+            -f body="${body}" \
+            -f query="mutation(\$discussionId: ID!, \$body: String!) { addDiscussionComment(input: {discussionId: \$discussionId, body: \$body}) { comment { id } } }" \
+            || echo "::warning::Could not post the dispatched-run link to discussion #${DISCUSSION_NUMBER} (non-fatal); run: ${run_url}"
 
   # ── #571 input resolution — keep `inputs` out of the reusable `with:` ────────
   # A reusable-workflow call graph (its `uses:` + `with:`) is validated at
@@ -218,6 +261,18 @@ jobs:
     # Precedent: auto-rebase.yml intentionally pins its reusable @v2 ahead of canon.
     uses: petry-projects/.github/.github/workflows/feature-ideation-reusable.yml@feature-ideation/v1-next
     with:
+      # SANCTIONED TOOLING LOCKSTEP (#1733) — pin the tooling checkout to the SAME
+      # channel this stub pins the reusable FILE to. The reusable checks out
+      # petry-projects/.github at `tooling_ref` (default `v1`) and installs
+      # `.feature-ideation-tooling/scripts/feature-ideation-requirements.txt`. That
+      # file was added AFTER the frozen `v1` tag, so the default resolves to a tree
+      # without it → every run died at "Install Python jsonschema" (the requirements
+      # file 404). Sourcing the tooling from feature-ideation/v1-next keeps the
+      # workflow file and its scripts in lockstep. Guardrail-safe: `tooling_ref` IS
+      # declared as a workflow_call input at the pinned channel commit, so this is
+      # not the #1052 channel-skew case. The canonical fix (advancing the `v1`
+      # tooling tag) belongs in petry-projects/.github and is not editable here.
+      tooling_ref: feature-ideation/v1-next
       # All values below come from `needs.prep.outputs.*` (resolved in the `prep`
       # job) — NOT the `inputs` context — so this reusable `with:` compiles on the
       # `discussion` event without a zero-job startup failure (#571).
