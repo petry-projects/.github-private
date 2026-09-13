@@ -46,7 +46,7 @@ _ic_filter_human() {
     [ .[] | .[]? ]
     | map(select(type == "object"))
     | map(select((.body // "") != ""))
-    | map(select(((.user.type) // "") != "Bot"))
+    | map(select(((.user.type?) // "") != "Bot"))
     | map(select((.body // "") | test($noise) | not))
     | .[]
     | { login: (.user.login // "unknown"),
