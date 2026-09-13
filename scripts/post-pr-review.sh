@@ -66,7 +66,7 @@ upsert_escalation_comment() {
   comments_file=$(mktemp)
   existing_id=""
   if gh api --paginate "repos/$owner_repo/issues/$pr_num/comments" >"$comments_file" 2>/dev/null; then
-    existing_id=$(jq -r --arg m "$ESCALATION_COMMENT_MARKER" '
+    existing_id=$(jq -s -r --arg m "$ESCALATION_COMMENT_MARKER" '
       map(select(.body != null and (.body | contains($m)))) | (.[0].id // "")
     ' "$comments_file" 2>/dev/null || true)
   else
@@ -237,7 +237,7 @@ if [ "$DECISION" = "approve" ]; then
   # is discarded on the next cycle ("prior review body missing valid marker") —
   # the PR looks unreviewed while the run claims success. Either the review
   # carries its marker AND a body, or it is not submitted.
-  if [ -z "${BODY//[[:space:]]/}" ] || ! printf '%s' "$BODY" | grep -q '<!-- pr-review-agent v1 sha='; then
+  if [ -z "${BODY//[[:space:]]/}" ] || [[ "$BODY" != *"pr-review-agent v1 sha="* ]]; then
     echo "::error::approve verdict has an empty or marker-less body — refusing to submit a bodyless review (fail closed, #1754 AC4)"
     exit 1
   fi
@@ -258,7 +258,7 @@ if [ "$DECISION" = "approve" ]; then
     # workflow loop skips this PR without aborting the rest of the session.
     # See issue #96: a single self-authored PR at the top of the queue
     # previously starved every batch.
-    if echo "$review_err" | grep -qiE 'Can not approve your own pull request'; then
+    if [[ "$review_err" =~ [Cc]an\ not\ approve\ your\ own\ pull\ request ]]; then
       echo "::warning::Cannot self-approve $PR_URL — skipping (exit 100)"
       exit 100
     fi

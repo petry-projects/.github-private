@@ -541,12 +541,10 @@ if [ -n "${EXISTING_MARKER_SHA:-}" ] && [ "$EXISTING_MARKER_SHA" = "$PR_HEAD_SHA
   #   fix-request        — `<!-- pr-review-agent v1 sha=<HEAD> -->` + `<!-- decision=fix-requested …`
   # FORCE_REVIEW (human break-glass) still bypasses unconditionally, verdict or not.
   VERDICT_AT_HEAD=false
-  if printf '%s' "$LATEST_MARKER_BODY" \
-       | grep -qE "<!-- pr-review-agent v1 sha=${PR_HEAD_SHA}[[:space:]]+decision=(approved|escalated)\b"; then
+  if [[ "$LATEST_MARKER_BODY" =~ pr-review-agent\ v1\ sha=${PR_HEAD_SHA}[[:space:]]+decision=(approved|escalated) ]]; then
     VERDICT_AT_HEAD=true
-  elif printf '%s' "$LATEST_MARKER_BODY" \
-         | grep -qE "<!-- pr-review-agent v1 sha=${PR_HEAD_SHA} -->" \
-       && printf '%s' "$LATEST_MARKER_BODY" | grep -qE "<!-- decision=fix-requested\b"; then
+  elif [[ "$LATEST_MARKER_BODY" =~ pr-review-agent\ v1\ sha=${PR_HEAD_SHA}\ --\> ]] \
+       && [[ "$LATEST_MARKER_BODY" =~ decision=fix-requested ]]; then
     VERDICT_AT_HEAD=true
   fi
   if [ "${FORCE_REVIEW:-false}" = "true" ] \
@@ -740,7 +738,7 @@ if [ -n "${EXISTING_MARKER_SHA:-}" ]; then
   )
   # Validate that the matched body actually contains our marker to reduce
   # prompt-injection surface area.
-  if [ -n "$PRIOR_REVIEW_BODY" ] && ! echo "$PRIOR_REVIEW_BODY" | grep -qE '<!-- pr-review-agent v1 sha=[a-f0-9]+ -->'; then
+  if [ -n "$PRIOR_REVIEW_BODY" ] && ! [[ "$PRIOR_REVIEW_BODY" =~ pr-review-agent\ v1\ sha=[a-f0-9]+\ --\> ]]; then
     echo "    prior review body missing valid marker, discarding"
     PRIOR_REVIEW_BODY=""
   fi
