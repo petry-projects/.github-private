@@ -7,7 +7,7 @@
 #   MAX_PRS           — stop after this many actual reviews (no-ops don't count)
 #   CANDIDATE_LIMIT   — hard cap on candidates inspected (timeout backstop)
 #   REVIEW_ENGINE     — primary engine (claude|gemini|copilot); may follow
-#                       fallback chain claude -> copilot -> gemini
+#                       fallback chain claude -> gemini -> copilot
 #   GH_TOKEN          — workflow auth (set at job level)
 #
 # Exit:
@@ -234,47 +234,43 @@ while IFS= read -r pr_url; do
   fi
 
   # Exit code 2 = engine rate-limited.
-  # Fallback chain: claude -> copilot -> gemini (Gemini is the last resort).
+  # Fallback chain: claude -> gemini -> copilot (issue #1777 deprioritizes Copilot).
   if [ "$rc" -eq 2 ] && [ "${REVIEW_ENGINE:-claude}" = "claude" ]; then
-    # Prefer Copilot as the first cross-provider fallback.
-    if [ "${COPILOT_AVAILABLE:-false}" = "true" ] && [[ "${COPILOT_GITHUB_TOKEN:-}" != ghp_* ]]; then
-      echo "::warning::Claude rate limit hit — switching to Copilot engine for remaining PRs"
-      export REVIEW_ENGINE=copilot
+    # Prefer Gemini as the first cross-provider fallback.
+    if [ "${GEMINI_AVAILABLE:-false}" = "true" ]; then
+      echo "::warning::Claude rate limit hit — switching to Gemini engine for remaining PRs"
+      export REVIEW_ENGINE=gemini
       engine_fallbacks=$((engine_fallbacks + 1))
-      fallback_engines="${fallback_engines:+$fallback_engines, }copilot"
+      fallback_engines="${fallback_engines:+$fallback_engines, }gemini"
       rc=0
       run_review_capture "$pr_url" || rc=$?
 
-      # Handle Copilot engine-unavailable setup/runtime errors post-fallback
+      # Handle Gemini engine-unavailable setup/runtime errors post-fallback
       if [ "$rc" -eq 55 ] || [ "$rc" -eq 127 ]; then
-        echo "::warning::Copilot engine unavailable at runtime (exit $rc) — falling through to Gemini"
+        echo "::warning::Gemini engine unavailable at runtime (exit $rc) — falling through to Copilot"
         rc=2
-        export REVIEW_ENGINE=copilot # ensure the next block catches it
+        export REVIEW_ENGINE=gemini # ensure the next block catches it
       fi
     else
-      echo "::warning::Claude rate limit hit but Copilot fallback unavailable — falling through to Gemini"
+      echo "::warning::Claude rate limit hit but Gemini fallback unavailable — falling through to Copilot"
       rc=2
-      export REVIEW_ENGINE=copilot # Set to copilot so the next block catches it
+      export REVIEW_ENGINE=gemini # Set to gemini so the next block catches it
     fi
   fi
 
-  if [[ "$rc" -eq 2 && "${REVIEW_ENGINE}" = "copilot" ]]; then
+  if [[ "$rc" -eq 2 && "${REVIEW_ENGINE}" = "gemini" ]]; then
     # Use the availability flag set by validate_engines() at startup.
-    if [[ "${GEMINI_AVAILABLE:-false}" != "true" ]]; then
-      # Derive the specific reason so the warning is actionable without docs.
-      _gemini_miss=""
-      command -v gemini >/dev/null 2>&1 || _gemini_miss="Gemini CLI not installed (fix: npm install -g @google/gemini-cli)"
-      [ -n "${GOOGLE_API_KEY:-}" ] || _gemini_miss="${_gemini_miss:+$_gemini_miss; }GOOGLE_API_KEY secret not set"
-      echo "::warning::Gemini fallback unavailable (${_gemini_miss}) — skipping $pr_url and continuing batch"
+    if [[ "${COPILOT_AVAILABLE:-false}" != "true" ]]; then
+      echo "::warning::Copilot fallback unavailable — skipping $pr_url and continuing batch"
       post_engine_unavailable_notice "$pr_url" "$REVIEW_ENGINE"
       failed=$((failed + 1))
       echo "::endgroup::"
       continue
     fi
-    echo "::warning::Copilot rate limit hit — switching to Gemini engine for remaining PRs"
-    export REVIEW_ENGINE=gemini
+    echo "::warning::Gemini rate limit hit — switching to Copilot engine for remaining PRs"
+    export REVIEW_ENGINE=copilot
     engine_fallbacks=$((engine_fallbacks + 1))
-    fallback_engines="${fallback_engines:+$fallback_engines, }gemini"
+    fallback_engines="${fallback_engines:+$fallback_engines, }copilot"
     rc=0
     run_review_capture "$pr_url" || rc=$?
   fi
