@@ -1,0 +1,18 @@
+name: Agent Ingress
+# FIXTURE — schema-invalid ingress: the dev-lead job has NO reusable `uses:` pin
+# (an ingress job MUST be a thin caller). The guard must FAIL before merge rather
+# than silently pass (QA test-risk #7: the ADR's worst-stated failure mode —
+# a malformed ingress — must not be the one with no test).
+on:
+  pull_request:
+    types: [opened]
+
+permissions: {}
+
+jobs:
+  dev-lead:
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: write
+    steps:
+      - run: echo "not a thin caller — no uses:"
