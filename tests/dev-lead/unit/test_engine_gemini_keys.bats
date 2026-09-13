@@ -11,26 +11,29 @@ ENGINE_SCRIPT="$SCRIPT_DIR/scripts/engine.sh"
 STUB_ENGINES_DIR="$SCRIPT_DIR/tests/dev-lead/fixtures/engines"
 
 setup() {
-  export GITHUB_ENV="$(mktemp)"
-  export GITHUB_OUTPUT="$(mktemp)"
+  export GITHUB_ENV="$BATS_TEST_TMPDIR/github_env"
+  export GITHUB_OUTPUT="$BATS_TEST_TMPDIR/github_output"
+  : > "$GITHUB_ENV"
+  : > "$GITHUB_OUTPUT"
 
   unset GEMINI_FLASH_MODEL GEMINI_PRO_MODEL
   unset GEMINI_FLASH_MODEL_CHAIN GEMINI_PRO_MODEL_CHAIN
   unset GEMINI_API_KEY GOOGLE_API_KEY GOOGLE_API_KEY_2 GOOGLE_API_KEY_3
 
-  STUB_BIN_DIR="$(mktemp -d)"
+  STUB_BIN_DIR="$BATS_TEST_TMPDIR/bin"
+  mkdir -p "$STUB_BIN_DIR"
   cp "$STUB_ENGINES_DIR/stub-gemini" "$STUB_BIN_DIR/gemini"
   chmod +x "$STUB_BIN_DIR/gemini"
   export PATH="$STUB_BIN_DIR:$PATH"
   export STUB_BIN_DIR
 
-  TEST_PROMPT="$(mktemp)"
+  TEST_PROMPT="$BATS_TEST_TMPDIR/test_prompt"
   echo "test prompt content" > "$TEST_PROMPT"
   export TEST_PROMPT
 
-  MODEL_RECORD="$(mktemp)"
+  MODEL_RECORD="$BATS_TEST_TMPDIR/model_record"
   export STUB_ENGINE_RECORD_MODELS="$MODEL_RECORD"
-  KEY_RECORD="$(mktemp)"
+  KEY_RECORD="$BATS_TEST_TMPDIR/key_record"
   export STUB_ENGINE_RECORD_KEYS="$KEY_RECORD"
 
   export DEV_LEAD_DRY_RUN="false"
@@ -40,8 +43,6 @@ setup() {
 }
 
 teardown() {
-  rm -f "$GITHUB_ENV" "$GITHUB_OUTPUT" "$TEST_PROMPT" "$MODEL_RECORD" "$KEY_RECORD"
-  rm -rf "$STUB_BIN_DIR"
   rm -f /tmp/dev-lead-failure-reason
   unset GEMINI_API_KEY GOOGLE_API_KEY GOOGLE_API_KEY_2 GOOGLE_API_KEY_3
   unset STUB_ENGINE_EXIT_BY_MODEL STUB_ENGINE_RESPONSE_BY_MODEL

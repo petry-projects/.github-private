@@ -216,7 +216,7 @@ GHEOF
   # must never be invoked.
   _make_stub "claude" 2
   local gemini_record copilot_record
-  gemini_record="$(mktemp)"
+  gemini_record="$BATS_TEST_TMPDIR/gemini_record"
   copilot_record="$BATS_TEST_TMPDIR/copilot_record"
   _make_recording_stub "gemini" 0 "$gemini_record"
   export GEMINI_API_KEY="test-key"
@@ -238,7 +238,6 @@ GHEOF
   [ -s "$gemini_record" ]
   # … and copilot (now 3rd) was never invoked because gemini already succeeded.
   [ ! -s "$copilot_record" ]
-  rm -f "$gemini_record"
   unset GEMINI_API_KEY
 }
 
