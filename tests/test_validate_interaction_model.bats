@@ -128,6 +128,26 @@ setup() {
 }
 
 # ---------------------------------------------------------------------------
+# ADR-0007 multi-role ingress — the §4 shape now carries one row per role-job
+# ---------------------------------------------------------------------------
+
+@test "imv_table_rows parses the ingress role qualifier into a 4th field" {
+  run imv_table_rows "$FIXTURES/ingress-pass/docs/agentic-interaction-model.md"
+  [ "$status" -eq 0 ]
+  # the two ingress rows share the path but carry distinct role qualifiers
+  [[ "$output" == *".github/workflows/agent-ingress.yml	1	—	dev-lead"* ]]
+  [[ "$output" == *".github/workflows/agent-ingress.yml	1	—	pr-review-mention"* ]]
+  # a legacy single-role stub row has an empty (trailing) role field
+  [[ "$output" == *".github/workflows/legacy-stub.yml	1	—	"* ]]
+}
+
+@test "imv_wf_jobs lists the top-level job names of a workflow" {
+  run imv_wf_jobs "$FIXTURES/ingress-pass/.github/workflows/agent-ingress.yml"
+  [ "$status" -eq 0 ]
+  [ "$output" = "$(printf 'dev-lead\npr-review-mention')" ]
+}
+
+# ---------------------------------------------------------------------------
 # interaction-contract parsing
 # ---------------------------------------------------------------------------
 
@@ -304,6 +324,18 @@ setup() {
   [[ "$output" == *"OK"* ]]
 }
 
+# ---------------------------------------------------------------------------
+# AC5: a multi-role ingress classifies each role-job against the shared on:
+# block; completeness passes with N rows (one per role-job) alongside a legacy
+# single-role stub (backward-compat).
+# ---------------------------------------------------------------------------
+
+@test "AC5: a multi-role ingress tree passes (N rows for N role-jobs + a legacy single-role stub)" {
+  run env INTERACTION_MODEL_ROOT="$FIXTURES/ingress-pass" bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"OK"* ]]
+}
+
 @test "AC5: a persona omitting needs-human-review is flagged (FAIL[stop])" {
   run env INTERACTION_MODEL_ROOT="$FIXTURES/stop-missing" bash "$SCRIPT"
   [ "$status" -eq 1 ]
@@ -328,6 +360,25 @@ setup() {
   [ "$status" -eq 1 ]
   [[ "$output" == *"FAIL[stop]"* ]]
   [[ "$output" == *"could not derive the canonical escalation markers"* ]]
+}
+
+# QA AC #6: backward-compat proven by FAILURE — an ingress with N role-jobs but
+# only N-1 rows must FAIL completeness (a completeness rule that cannot fail on
+# an under-documented ingress is not a completeness rule).
+@test "AC6: an ingress with N role-jobs but N-1 rows fails completeness (FAIL[a])" {
+  run env INTERACTION_MODEL_ROOT="$FIXTURES/ingress-underdoc" bash "$SCRIPT"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"FAIL[a]"* ]]
+  [[ "$output" == *"pr-review-mention"* ]]
+}
+
+# QA AC #6: an ingress row whose asserted Class contradicts the shared on: block
+# must FAIL the §3 discriminator check.
+@test "AC6: an ingress row whose Class contradicts the shared on: block fails (FAIL[class])" {
+  run env INTERACTION_MODEL_ROOT="$FIXTURES/ingress-misclass" bash "$SCRIPT"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"FAIL[class]"* ]]
+  [[ "$output" == *"Class 3"* ]]
 }
 
 # ---------------------------------------------------------------------------
