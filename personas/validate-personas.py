@@ -145,18 +145,49 @@ def _channel_major(channel: str) -> int | None:
     return int(m[1]) if m else None
 
 
-def previous_in_channel(version_tags: list[str], channel: str) -> str | None:
-    """The N-1 immutable release for `channel`'s major LINE. Filters the tag list to
-    the channel's major (standards/v1-stable → v1.x only) BEFORE ranking, so the N-1
-    tolerance window never pairs the channel with an unrelated release line — e.g. a
-    v2.x release accepted as N-1 while the validator is pinned to v1-stable. A channel
-    with no v<MAJOR>- shape imposes no filter (falls back to the global newest-below).
-    Pure: the caller supplies the tag list (an I/O concern)."""
+def _rank_channel_releases(version_tags: list[str], channel: str) -> list[str]:
+    """Immutable release tags in `channel`'s major LINE, highest semver first
+    (standards/v1-stable → v1.x only; numeric, so v1.10.0 > v1.2.0). Filtering to the
+    channel's major keeps the N-1 window from pairing the channel with an unrelated
+    release line — a v2.x release while the validator is pinned to v1-stable. A channel
+    with no v<MAJOR>- shape imposes no filter. Pure: the caller supplies the tag list."""
     major = _channel_major(channel)
-    tags = ([t for t in version_tags if (v := _semver(t)) is not None and v[0] == major]
-            if major is not None else version_tags)
-    _, previous = current_and_previous(tags)
-    return previous
+    ranked = sorted(
+        ((v, t) for t in version_tags
+         if (v := _semver(t)) is not None and (major is None or v[0] == major)),
+        reverse=True,
+    )
+    return [t for _, t in ranked]
+
+
+def previous_in_channel(version_tags: list[str], channel: str) -> str | None:
+    """N-1 of the NEWEST release in `channel`'s major line — the degrade path used when
+    the channel's current target release cannot be resolved (see
+    previous_relative_to_target for the target-aware selection the live discovery uses).
+    Pure: the caller supplies the tag list (an I/O concern)."""
+    ranked = _rank_channel_releases(version_tags, channel)
+    return ranked[1] if len(ranked) > 1 else None
+
+
+def previous_relative_to_target(version_tags: list[str], channel: str,
+                                target: str | None) -> str | None:
+    """The greatest immutable release STRICTLY BELOW the channel's current `target`
+    release, within the channel's major line — the true N-1 (#1707 review).
+
+    Cutting a release does not move the channel (the runbook: cutting is not gated), so
+    the newest release tag can be AHEAD of what the channel serves: with v1.2.0 cut but
+    the channel still at v1.1.0, plain newest-below returns v1.1.0 — the channel's OWN
+    target — as 'N-1' and never steps back to v1.0.0. Taking N-1 relative to the resolved
+    target fixes that. A `target` that is None (unresolvable) or absent from the release
+    set degrades to previous_in_channel (newest-below). Pure: the caller resolves the
+    target (an I/O concern)."""
+    if target is None:
+        return previous_in_channel(version_tags, channel)
+    ranked = _rank_channel_releases(version_tags, channel)
+    if target not in ranked:
+        return previous_in_channel(version_tags, channel)
+    i = ranked.index(target)
+    return ranked[i + 1] if i + 1 < len(ranked) else None
 
 
 def schema_ref_plan(env_ref: str | None, channel: str,
@@ -222,10 +253,48 @@ def _fetch_json_at(path: str, ref: str) -> dict | None:
         return None
 
 
+def _ref_commit(ref: str) -> str | None:
+    """The commit SHA `ref` resolves to on the standards repo, dereferencing an
+    annotated tag (release tags are annotated; channel tags are lightweight pointers).
+    None if unreachable — best-effort, used only to resolve the channel's current target
+    so N-1 is taken relative to it (#1707 review)."""
+    url = f"https://api.github.com/repos/{SCHEMA_REPO}/commits/{ref}"
+    try:
+        req = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json"})
+        token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+        if token:
+            req.add_header("Authorization", f"Bearer {token}")
+        with urllib.request.urlopen(req, timeout=20) as resp:  # noqa: S310 (fixed host)
+            return json.loads(resp.read().decode("utf-8")).get("sha")
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _resolve_channel_target(channel: str, ranked_releases: list[str]) -> str | None:
+    """Which ranked release the channel currently points at, matched by COMMIT identity
+    (a channel is a lightweight pointer at some release's commit). Walks releases
+    newest-first and returns the first whose commit equals the channel's — usually the
+    newest, so the common case costs two API calls. None if the channel or no release
+    resolves, so the caller degrades to newest-below rather than erroring (N-1 is a
+    tolerance, not a requirement, #1707)."""
+    channel_commit = _ref_commit(channel)
+    if channel_commit is None:
+        return None
+    for tag in ranked_releases:
+        if _ref_commit(tag) == channel_commit:
+            return tag
+    return None
+
+
 def _discover_previous_version(channel: str) -> str | None:
-    """The N-1 immutable release tag (standards/vX.Y.Z one below the newest), or None
-    if it can't be determined. Best-effort network read: N-1 is a tolerance widening,
-    not a requirement, so any failure degrades to channel-only rather than erroring."""
+    """The N-1 immutable release tag, or None if it can't be determined. Best-effort
+    network read: N-1 is a tolerance widening, not a requirement, so any failure degrades
+    to channel-only rather than erroring.
+
+    N-1 is taken relative to the release the channel CURRENTLY serves — not merely the
+    newest release tag. Cutting a release does not move the channel, so a release cut but
+    not yet promoted (v1.2.0 while the channel is still at v1.1.0) must not shadow the
+    true N-1 (v1.0.0) — see previous_relative_to_target (#1707 review)."""
     try:
         url = (f"https://api.github.com/repos/{SCHEMA_REPO}"
                f"/git/matching-refs/tags/standards/v")
@@ -240,8 +309,12 @@ def _discover_previous_version(channel: str) -> str | None:
                 and "refs/tags/" in r["ref"]]
     except Exception:  # noqa: BLE001
         return None
-    # N-1 is scoped to the channel's own major line — never an unrelated release line.
-    return previous_in_channel(tags, channel)
+    # Rank the channel's own major line, resolve the release it currently targets, then
+    # take the greatest release below that target. An unresolvable target degrades to
+    # newest-below (previous_in_channel).
+    ranked = _rank_channel_releases(tags, channel)
+    target = _resolve_channel_target(channel, ranked)
+    return previous_relative_to_target(tags, channel, target)
 
 
 def load_schemas(explicit: str | None) -> list[tuple[str, dict]]:
@@ -258,11 +331,24 @@ def load_schemas(explicit: str | None) -> list[tuple[str, dict]]:
     plan = schema_ref_plan(env_ref, STANDARDS_CHANNEL, previous)
 
     schemas: list[tuple[str, dict]] = []
+    channel_ok = False
     for ref, label in plan:
         doc = _fetch_json_at(SCHEMA_PATH_IN_REPO, ref)
         if doc is not None:
             schemas.append((f"{label} ({ref})", doc))
+            if label == "channel":
+                channel_ok = True
     if schemas:
+        # A pinned-channel miss must be LOUD even when N-1 keeps the run alive: if the
+        # channel was unreachable but an N-1 release still validated, name the failed
+        # channel and the N-1 ref we fell through to (#1707 AC #4). This is NOT the
+        # widen-to-main fallback (N-1 is a legitimate promotion-window tolerance), so it
+        # is a distinct warning. An explicit env_ref plan has no channel entry — skip it.
+        if not env_ref and not channel_ok:
+            print(f"::warning::persona schema channel unreachable at pinned ref "
+                  f"'{plan[0][0]}' — falling through to {schemas[0][0]} only. N-1 is a "
+                  f"promotion-window tolerance, not a substitute for the channel; "
+                  f"restore the channel pin.", file=sys.stderr)
         return schemas
 
     # An explicit PERSONA_SCHEMA_REF is an EXACT pin (docstring resolution order #3):
@@ -296,10 +382,21 @@ def load_registry(explicit: str | None) -> dict:
     candidate = explicit or os.environ.get("PERSONA_REGISTRY_FILE")
     if candidate:
         return _read_json_file(candidate, "registry")
-    ref = os.environ.get("PERSONA_SCHEMA_REF") or STANDARDS_CHANNEL
+    env_ref = os.environ.get("PERSONA_SCHEMA_REF")
+    ref = env_ref or STANDARDS_CHANNEL
     doc = _fetch_json_at(REGISTRY_PATH_IN_REPO, ref)
     if doc is not None:
         return doc
+    # An explicit PERSONA_SCHEMA_REF is an EXACT pin (mirroring load_schemas): if its
+    # registry is unreachable, FAIL — never widen to the default branch, which would
+    # validate a schema from the explicit ref against registry data from a DIFFERENT
+    # tree. The loud fallback below is only for the channel default, to survive a
+    # channel-tag outage.
+    if env_ref:
+        fail(f"PERSONA_SCHEMA_REF='{env_ref}' registry is unreachable: could not fetch "
+             f"{REGISTRY_PATH_IN_REPO} from {SCHEMA_REPO} at that ref. An explicit pin "
+             f"is exact — refusing to widen to '{FALLBACK_REF}'. Fix the ref, or pass "
+             f"--registry / $PERSONA_REGISTRY_FILE.")
     print(fallback_warning("canary registry", ref, FALLBACK_REF), file=sys.stderr)
     doc = _fetch_json_at(REGISTRY_PATH_IN_REPO, FALLBACK_REF)
     if doc is None:
