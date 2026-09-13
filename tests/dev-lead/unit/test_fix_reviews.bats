@@ -2038,6 +2038,124 @@ GHEOF
   [[ "$output" == *"resolution gate closed (#1609)"* ]]
 }
 
+# ── No-change disposition net (#1743): a false-positive bot thread reaches ────
+# resolution on a NO-COMMIT pass when an attributable human maintainer has posted
+# an explicit "no change needed" disposition — the missing counterpart to the
+# #1692 REQUIRED withholding gate. The engine makes no change (resolution gate
+# CLOSED, as for a genuine false positive), yet the thread must still resolve —
+# authorized by the human disposition, not by head movement, and never by the
+# agent calling resolveReviewThread itself. Rules 1 & 2 are preserved: a bot
+# thread with only a REQUIRED disposition (or a maintainer-originated thread)
+# still blocks (#1415 / #1692 AC4).
+#
+# $ORIGIN_AUTHOR_JSON  — the enumerated thread's originating comment author.
+# $DISPOSITION_NODE    — the maintainer disposition comment injected into the node.
+_nochange_run_case() {
+  local tmpdir="$BATS_TEST_TMPDIR/nc-workdir"
+  mkdir -p "$tmpdir"
+  local mutations_file="$BATS_TEST_TMPDIR/nc-mutations"
+  : > "$mutations_file"
+  rm -f /tmp/dev-lead-session-output.txt
+
+  git -C "$tmpdir" init -q
+  echo "initial" > "$tmpdir/file.txt"
+  git -C "$tmpdir" add .
+  git -C "$tmpdir" -c user.email="t@test" -c user.name="T" commit -q -m "init"
+  git -C "$tmpdir" update-ref refs/remotes/origin/main "$(git -C "$tmpdir" rev-parse HEAD)"
+  local base_sha
+  base_sha="$(git -C "$tmpdir" rev-parse HEAD)"
+
+  # Engine makes NO change -> commit_and_push returns 1 -> resolution gate closed.
+  cat > "$STUB_BIN_DIR/claude" << 'STUB'
+#!/usr/bin/env bash
+echo "Assessed the finding — it is a false positive; no change needed."
+STUB
+  chmod +x "$STUB_BIN_DIR/claude"
+
+  cat > "$STUB_BIN_DIR/gh" << GHEOF
+#!/usr/bin/env bash
+ARGS="\$*"
+case "\$ARGS" in
+  *"resolveReviewThread"*)
+    echo "\$*" >> "$mutations_file"
+    echo '{"data":{"resolveReviewThread":{"thread":{"isResolved":true}}}}'
+    ;;
+  *"PullRequestReviewThread"*)
+    echo '{"data":{"node":{"isResolved":false,"path":"docs/adr/0007.md","comments":{"nodes":[{"author":${ORIGIN_AUTHOR_JSON},"body":"Missing closing backtick on line 13.","createdAt":"2026-09-01T09:00:00Z"},${DISPOSITION_NODE}]}}}}'
+    ;;
+  *"reviewThreads"*)
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":""},"nodes":[{"id":"PRRT_nochange","isResolved":false,"isOutdated":false,"comments":{"nodes":[{"author":${ORIGIN_AUTHOR_JSON}}]},"origin":{"nodes":[{"author":${ORIGIN_AUTHOR_JSON}}]}}]}}}}}'
+    ;;
+  *"check-runs"*) echo '{"check_runs":[]}' ;;
+  *"statuses"*) echo '[]' ;;
+  *"pulls/"*"reviews"*) echo '[]' ;;
+  *"pulls/"*) echo '{"head":{"sha":"${base_sha}"},"auto_merge":null}' ;;
+  *"pr checkout"*) exit 0 ;;
+  *"pr comment"*) exit 0 ;;
+  *"pr merge"*) exit 0 ;;
+  *"issues/"*"comments"*) echo '[]' ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+
+  run bash -c "
+    cd '$tmpdir'
+    export INTENT_TYPE=fix-reviews DEV_LEAD_DRY_RUN=false
+    export PR_NUMBER=54 HEAD_SHA=$base_sha REPO='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export ACTOR='gemini-code-assist[bot]' BOT_USER='donpetry-bot'
+    export PATH='$STUB_BIN_DIR:$PATH'
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+
+  _HARNESS_STATUS="$status"
+  _MUTATIONS_FILE="$mutations_file"
+}
+
+@test "no-change net (#1743): false-positive bot thread with a maintainer no-change disposition resolves on a no-commit pass" {
+  export ORIGIN_AUTHOR_JSON='{"login":"gemini-code-assist[bot]","__typename":"Bot"}'
+  export DISPOSITION_NODE='{"author":{"login":"a-maintainer","__typename":"User"},"body":"Confirmed false positive — the backticks are balanced. No change needed.","createdAt":"2026-09-02T12:00:00Z"}'
+  _nochange_run_case
+  [ "$_HARNESS_STATUS" -eq 0 ]
+  # The pass produced no commit, so the #1617 resolution gate was CLOSED...
+  [[ "$output" == *"resolution gate closed (#1609)"* ]]
+  # ...yet the thread still reaches resolution, authorized by the human disposition.
+  grep -q "PRRT_nochange" "$_MUTATIONS_FILE"
+}
+
+@test "no-change net (#1743): a bot thread with a REQUIRED disposition (no no-change) still blocks on a no-commit pass" {
+  export ORIGIN_AUTHOR_JSON='{"login":"gemini-code-assist[bot]","__typename":"Bot"}'
+  export DISPOSITION_NODE='{"author":{"login":"a-maintainer","__typename":"User"},"body":"This MUST BE FIXED before merge — required.","createdAt":"2026-09-02T12:00:00Z"}'
+  _nochange_run_case
+  [ "$_HARNESS_STATUS" -eq 0 ]
+  [[ "$output" == *"resolution gate closed (#1609)"* ]]
+  # No no-change disposition exists -> the net must not resolve (#1692 AC4).
+  run grep -q "PRRT_nochange" "$_MUTATIONS_FILE"
+  [ "$status" -eq 1 ]
+}
+
+@test "no-change net (#1743): a maintainer-originated thread is never resolved by the net, even with a no-change comment" {
+  # The thread's originating comment is a human maintainer, not a bot. The net
+  # targets only bot-originated threads (#1415), so it never touches this one.
+  export ORIGIN_AUTHOR_JSON='{"login":"a-maintainer","__typename":"User"}'
+  export DISPOSITION_NODE='{"author":{"login":"another-maintainer","__typename":"User"},"body":"No change needed here.","createdAt":"2026-09-02T12:00:00Z"}'
+  _nochange_run_case
+  [ "$_HARNESS_STATUS" -eq 0 ]
+  run grep -q "PRRT_nochange" "$_MUTATIONS_FILE"
+  [ "$status" -eq 1 ]
+}
+
+@test "no-change net (#1743): a REQUIRED disposition postdating a no-change one supersedes it and still blocks" {
+  export ORIGIN_AUTHOR_JSON='{"login":"gemini-code-assist[bot]","__typename":"Bot"}'
+  export DISPOSITION_NODE='{"author":{"login":"m1","__typename":"User"},"body":"Looks like a false positive, no change needed.","createdAt":"2026-09-02T12:00:00Z"},{"author":{"login":"m2","__typename":"User"},"body":"On reflection this is REQUIRED — please fix.","createdAt":"2026-09-03T12:00:00Z"}'
+  _nochange_run_case
+  [ "$_HARNESS_STATUS" -eq 0 ]
+  # A strictly-newer REQUIRED disposition supersedes the earlier no-change one.
+  run grep -q "PRRT_nochange" "$_MUTATIONS_FILE"
+  [ "$status" -eq 1 ]
+}
+
 # ── ALL_REVIEWS_JSON deduplication: latest review per user ───────────────────
 # The GitHub Reviews API returns the full history of all reviews. If a reviewer
 # previously requested changes but later approved, both entries are present.
