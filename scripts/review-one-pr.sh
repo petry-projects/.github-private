@@ -379,41 +379,43 @@ fi
   fi
 }
 
-# Maintainer issue-comment gate (issue #1290). A maintainer finding posted as a
-# PR *issue comment* (`gh pr comment` / the GitHub main comment box) creates no
-# review thread, so it neither trips `required_review_thread_resolution` nor is
-# read by dev-lead's fix-reviews prompt — pr-review approves and the PR
-# auto-merges with the defect. Withhold approval while the latest maintainer
-# issue comment postdates the last push. It FAILS CLOSED: an undeterminable
-# snapshot/push-time blocks rather than reading as "no findings".
+# Maintainer issue-comment gate (issues #1290, #1813). A maintainer finding
+# posted as a PR *issue comment* (`gh pr comment` / the GitHub main comment box)
+# creates no review thread, so it neither trips `required_review_thread_resolution`
+# nor is read by dev-lead's fix-reviews prompt — pr-review approves and the PR
+# auto-merges with the defect. #1813 redesign: "addressed" is no longer a
+# timestamp proxy (pushedDate is always null and a push says nothing about
+# whether the finding was answered). Withhold approval while ANY non-agent PR
+# issue comment lacks a VERIFIED DISPOSITION — surfaced server-side as the
+# comment being minimized RESOLVED after dev-lead's disposition reply is
+# verified. It FAILS CLOSED: an undeterminable snapshot blocks distinctly.
 #   • FORCE_REVIEW bypasses (a human @mention IS the human-in-the-loop, and the
 #     same comment that triggers a re-review would otherwise deadlock the gate).
-#   • rc=1 → skip (exit 100); a later reply/push re-triggers pr-review.
+#   • rc=1 → skip (exit 100); a later disposition+minimize re-triggers pr-review.
 #   • rc=2 → fail the PR (exit 1) so a scheduled run retries, never approve blind.
 if [ "${FORCE_REVIEW:-false}" != "true" ]; then
   (
     # Subshell isolation so the gate's helpers/vars don't leak into the caller.
     # shellcheck source=lib/maintainer-comment-gate.sh
     source "$SCRIPT_DIR/lib/maintainer-comment-gate.sh"
-    _mc_head_date=$(maintainer_gate_head_committer_date "$PR_URL")
-    check_maintainer_comments "$PR_SNAPSHOT" "$_mc_head_date" "${BOT_USER:-donpetry-bot}"
+    check_maintainer_comments "$PR_SNAPSHOT" "${BOT_USER:-donpetry-bot}"
   ) || {
     mc_gate_rc=$?
     if [ "$mc_gate_rc" -eq 1 ]; then
-      echo "    skip: unaddressed maintainer issue comment postdates last push — withholding approval (#1290)"
+      echo "    skip: a PR issue comment lacks a verified disposition — withholding approval (#1813)"
       # Dismiss any existing pr-review-agent APPROVED review so the PR remains blocked
       # until the maintainer comment is addressed (best-effort).
       if [ "${DRY_RUN:-false}" != "true" ]; then
         _agent_approval=$(echo "$PR_SNAPSHOT" | jq -r --arg bot "${BOT_USER:-donpetry-bot}" --arg sha "$PR_HEAD_SHA" 'first((.reviews // [])[] | select(.author?.login == $bot and .state == "APPROVED" and .commit?.oid == $sha) | .id) // empty' 2>/dev/null || true)
         if [ -n "$_agent_approval" ]; then
-          gh api graphql -f query='mutation($id:ID!,$msg:String!){dismissPullRequestReview(input:{pullRequestReviewId:$id,message:$msg}){clientMutationId}}' -f id="$_agent_approval" -f msg="Dismissing approval due to unaddressed maintainer issue comment (#1290)" 2>/dev/null || echo "    warn: could not dismiss prior approval"
+          gh api graphql -f query='mutation($id:ID!,$msg:String!){dismissPullRequestReview(input:{pullRequestReviewId:$id,message:$msg}){clientMutationId}}' -f id="$_agent_approval" -f msg="Dismissing approval due to a PR issue comment lacking a verified disposition (#1813)" 2>/dev/null || echo "    warn: could not dismiss prior approval"
         fi
       fi
-      emit_verdict skip unaddressed-maintainer-comment "the maintainer comment is addressed by a new push, or an @mention (FORCE_REVIEW) overrides the gate"
+      emit_verdict skip undispositioned-pr-comment "dev-lead posts a verified disposition reply and the harness minimizes the comment RESOLVED, or an @mention (FORCE_REVIEW) overrides the gate"
       exit 100
     elif [ "$mc_gate_rc" -eq 2 ]; then
       echo "    error: maintainer-comment gate could not evaluate the PR snapshot — failing closed to avoid uninformed approval"
-      emit_verdict error maintainer-comment-gate-error "the gate can determine head push-time and comment authorship; the next scheduled pr-review sweep retries this PR"
+      emit_verdict error maintainer-comment-gate-error "the gate can parse the PR snapshot and each comment's disposition state; the next scheduled pr-review sweep retries this PR"
       exit 1
     else
       exit "$mc_gate_rc"
