@@ -55,6 +55,23 @@ setup() {
   grep -qE 'enhance_backlog:[[:space:]]*\$\{\{[[:space:]]*fromJSON\(needs\.prep\.outputs\.enhance_backlog\)[[:space:]]*\}\}' "$FEATURE_IDEATION_YML"
 }
 
+# ── #1827: tooling_ref must ride the same ring as the reusable ────────────────
+# The reusable checks out its Python tooling (requirements file, collect/validate
+# scripts) from petry-projects/.github at inputs.tooling_ref, which DEFAULTS to
+# the `v1` release tag. This repo rides the `next` ring (the reusable is pinned at
+# @feature-ideation/v1-next), but the stale `v1` tag predates
+# scripts/feature-ideation-requirements.txt — so "Install Python jsonschema" dies
+# with "Could not open requirements file", failing every schedule/dispatch run.
+# The stub must forward tooling_ref pinned to the same channel as the reusable so
+# workflow + tooling stay in lockstep. tooling_ref IS declared in the pinned
+# channel's workflow_call.inputs, so this forward is not a channel-skew defect.
+
+@test "feature-ideation.yml forwards tooling_ref pinned to the same ring as the reusable" {
+  # Sourced as a static literal (not a dispatch input) so it stays in lockstep
+  # with the reusable pin and does not need routing through the prep job.
+  grep -qE "^[[:space:]]+tooling_ref:[[:space:]]*${CHANNEL}[[:space:]]*\$" "$FEATURE_IDEATION_YML"
+}
+
 # ── #963: discussion→dispatch redispatch bridge ──────────────────────────────
 # claude-code-action aborts on `discussion` event contexts ("Unsupported event
 # type: discussion"). So on `discussion: created` we must NOT call the reusable
