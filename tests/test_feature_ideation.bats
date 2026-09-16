@@ -55,6 +55,28 @@ setup() {
   grep -qE 'enhance_backlog:[[:space:]]*\$\{\{[[:space:]]*fromJSON\(needs\.prep\.outputs\.enhance_backlog\)[[:space:]]*\}\}' "$FEATURE_IDEATION_YML"
 }
 
+# ── #1827: tooling_ref must ride the same ring as the reusable ────────────────
+# The reusable checks out its Python tooling (requirements file, collect/validate
+# scripts) from petry-projects/.github at inputs.tooling_ref, which DEFAULTS to
+# the `v1` release tag. This repo rides the `next` ring (the reusable is pinned at
+# @feature-ideation/v1-next), but the stale `v1` tag predates
+# scripts/feature-ideation-requirements.txt — so "Install Python jsonschema" dies
+# with "Could not open requirements file", failing every schedule/dispatch run.
+# The stub must forward tooling_ref pinned to the same channel as the reusable so
+# workflow + tooling stay in lockstep. tooling_ref IS declared in the pinned
+# channel's workflow_call.inputs, so this forward is not a channel-skew defect.
+
+@test "feature-ideation.yml forwards tooling_ref pinned to the same ring as the reusable" {
+  # Assert on the REACHABLE reusable invocation (jobs.ideate.with) — not a
+  # grep-anywhere scan. A whole-file grep would still pass if tooling_ref were
+  # moved out of ideate.with into some other mapping, silently letting the ideate
+  # job fall back to the reusable's default `v1` tooling ref (which predates
+  # scripts/feature-ideation-requirements.txt) and resurrecting the #1827 install
+  # failure. Sourcing it structurally also makes the check robust to any YAML
+  # quoting style around the value, since yq parses the document.
+  yq -e ".jobs.ideate.with.tooling_ref == \"${CHANNEL}\"" "$FEATURE_IDEATION_YML" >/dev/null
+}
+
 # ── #963: discussion→dispatch redispatch bridge ──────────────────────────────
 # claude-code-action aborts on `discussion` event contexts ("Unsupported event
 # type: discussion"). So on `discussion: created` we must NOT call the reusable
