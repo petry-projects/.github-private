@@ -67,9 +67,14 @@ setup() {
 # channel's workflow_call.inputs, so this forward is not a channel-skew defect.
 
 @test "feature-ideation.yml forwards tooling_ref pinned to the same ring as the reusable" {
-  # Sourced as a static literal (not a dispatch input) so it stays in lockstep
-  # with the reusable pin and does not need routing through the prep job.
-  grep -qE "^[[:space:]]+tooling_ref:[[:space:]]*${CHANNEL}[[:space:]]*\$" "$FEATURE_IDEATION_YML"
+  # Assert on the REACHABLE reusable invocation (jobs.ideate.with) — not a
+  # grep-anywhere scan. A whole-file grep would still pass if tooling_ref were
+  # moved out of ideate.with into some other mapping, silently letting the ideate
+  # job fall back to the reusable's default `v1` tooling ref (which predates
+  # scripts/feature-ideation-requirements.txt) and resurrecting the #1827 install
+  # failure. Sourcing it structurally also makes the check robust to any YAML
+  # quoting style around the value, since yq parses the document.
+  yq -e ".jobs.ideate.with.tooling_ref == \"${CHANNEL}\"" "$FEATURE_IDEATION_YML" >/dev/null
 }
 
 # ── #963: discussion→dispatch redispatch bridge ──────────────────────────────
