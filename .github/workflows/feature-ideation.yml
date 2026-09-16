@@ -218,6 +218,16 @@ jobs:
     # Precedent: auto-rebase.yml intentionally pins its reusable @v2 ahead of canon.
     uses: petry-projects/.github/.github/workflows/feature-ideation-reusable.yml@feature-ideation/v1-next
     with:
+      # Source the reusable's Python tooling (requirements file + collect/validate
+      # scripts) from the SAME ring this repo pins the reusable to. The reusable's
+      # `tooling_ref` defaults to the `v1` release tag, which lags behind the
+      # `next` ring and predates scripts/feature-ideation-requirements.txt — so the
+      # default resolves to a commit missing that file and "Install Python
+      # jsonschema" fails (#1827). Pinning tooling to feature-ideation/v1-next keeps
+      # workflow + tooling in lockstep. Safe forward: `tooling_ref` is declared in
+      # workflow_call.inputs at the pinned channel commit (not a channel-skew #1052
+      # defect), and it is a static literal so it needs no prep-job routing (#571).
+      tooling_ref: feature-ideation/v1-next
       # All values below come from `needs.prep.outputs.*` (resolved in the `prep`
       # job) — NOT the `inputs` context — so this reusable `with:` compiles on the
       # `discussion` event without a zero-job startup failure (#571).
