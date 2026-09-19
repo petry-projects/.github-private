@@ -153,7 +153,7 @@ while IFS= read -r pr; do
   # One snapshot gives review decision, mergeability, CI rollup (with check-run
   # timestamps), labels, title, url, and updatedAt.
   if ! snapshot=$(gh pr view "$pr" --repo "$REPO" \
-        --json mergeable,reviewDecision,statusCheckRollup,labels,title,url,updatedAt 2>/dev/null); then
+        --json mergeable,reviewDecision,statusCheckRollup,baseRefName,labels,title,url,updatedAt 2>/dev/null); then
     echo "  skip PR #${pr} — could not fetch (deleted, no access, or rate-limited)"
     scan_incomplete=true
     continue
@@ -165,13 +165,17 @@ while IFS= read -r pr; do
   html_url=$(jq -r '.url // ""' <<< "$snapshot")
   updated_at=$(jq -r '.updatedAt // ""' <<< "$snapshot")
 
-  # Pass the COMPLETE rollup: compute_ci_status now does the #1549 required-check
-  # gating internally (and its fail-safe fallback to all external checks when the
-  # rollup flags nothing required). Prefiltering to isRequired==true here would
-  # hand it an empty set whenever required metadata is absent (older gh CLI, or
-  # not yet propagated), which classifies as passing and silently bypasses the
-  # fallback — misreading a genuinely-failing PR as green.
-  ci_status=$(compute_ci_status "$(jq '.statusCheckRollup // []' <<< "$snapshot")")
+  # Pass the COMPLETE rollup PLUS the branch ruleset's REQUIRED-check set (#1795):
+  # this repo protects `main` with a ruleset, so the rollup's `.isRequired` field is
+  # frequently absent and gating on the rollup alone reverts to blocking on every red
+  # external check — a non-required `template-drift` failure would then hide an
+  # otherwise merge-ready PR from this scan. The ruleset set is the authoritative
+  # required signal (union'd with `.isRequired` inside compute_ci_status). Fail closed:
+  # an unreadable set leaves it empty and compute_ci_status gates on all failing
+  # checks (never misreading a genuinely-failing PR as green).
+  base_ref=$(jq -r '.baseRefName // ""' <<< "$snapshot")
+  required_checks=$(ruleset_required_checks "$REPO" "$base_ref" || true)
+  ci_status=$(compute_ci_status "$(jq '.statusCheckRollup // []' <<< "$snapshot")" "$required_checks")
 
   # Human-gate exclusions (AC#2). Only the current label state is consulted.
   labels_json=$(jq -c '[.labels[]?.name]' <<< "$snapshot" 2>/dev/null || echo '[]')
