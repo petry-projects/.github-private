@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Scrum-Master Eval Case",
+  "description": "One held-out eval case for the scrum-master advisory persona: an epic/story-decomposition input paired with its expected decomposition judgment. Each line of evals/scrum-master/<split>/cases.jsonl is one object of this shape. The persona judges whether a plan is well decomposed/sequenced and lands a concrete recommendation, so the expected decision is decomposition-shaped (decomposition / recommend) — NOT the triage {escalate, risk} shape of evals/case.schema.json. This is the trust anchor for the persona's skill-quality measurement and is CODEOWNER-gated separately from any scorer/proposer.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "input", "expected"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+      "minLength": 3,
+      "description": "Stable, unique kebab-case identifier for the case. Unique within a split and disjoint across dev/holdout (enforced by evals/validate-cases.py)."
+    },
+    "description": {
+      "type": "string",
+      "minLength": 5,
+      "description": "Human-readable note on what this case exercises and what grounds the expected decomposition judgment."
+    },
+    "tags": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 2 },
+      "uniqueItems": true,
+      "description": "Optional labels for coverage tracking, e.g. the planning concern a case exercises ('decomposition', 'acceptance-criteria', 'sequencing', 'negative')."
+    },
+    "input": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The pre-fetched review context exactly as the advisory consumes it: a self-contained description of the epic/story plan under review."
+    },
+    "expected": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["decomposition", "recommend"],
+      "description": "The fixed, reward-hack-resistant expected decomposition judgment the persona must produce for this plan.",
+      "properties": {
+        "decomposition": {
+          "type": "string",
+          "enum": ["good", "too-coarse"],
+          "description": "Whether the plan is adequately decomposed ('good') or must be split into smaller PR-sized units ('too-coarse'). A well-decomposed plan with a different flaw (e.g. a missing AC or a DAG cycle) is still 'good' on decomposition; the flaw lands in `recommend`."
+        },
+        "recommend": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The concrete recommendation the advisory must land (how to decompose, sequence, or specify the plan)."
+        }
+      }
+    }
+  }
+}
