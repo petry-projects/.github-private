@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Example-Skill Eval Case",
+  "description": "One held-out eval case for the example-skill TEMPLATE. example-skill is the layout other skills are copied from, so it demonstrates BOTH the shared case envelope (id / description / tags / input) and a per-skill payload override: here `expected` is a free-text reference answer (a non-empty string), NOT the triage {escalate, risk} object. It has no runnable scorer path and is never scored; it exists so a new skill can copy a conforming starting point. Each line of evals/example-skill/<split>/cases.jsonl is one object of this shape.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "input", "expected"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+      "minLength": 3,
+      "description": "Stable, unique kebab-case identifier for the case. Unique within a split and disjoint across dev/holdout (enforced by evals/validate-cases.py)."
+    },
+    "description": {
+      "type": "string",
+      "minLength": 5,
+      "description": "Human-readable note on what this case exercises."
+    },
+    "tags": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 2 },
+      "uniqueItems": true,
+      "description": "Optional labels for coverage tracking."
+    },
+    "input": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The pre-fetched context exactly as the skill would consume it under '## Pre-fetched PR context' (#1686). A self-contained string."
+    },
+    "expected": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The reference answer for this case: a non-empty free-text string, illustrating a per-skill payload override of the object-shaped root `expected`."
+    }
+  }
+}
