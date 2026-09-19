@@ -159,41 +159,9 @@ echo "    artifact_type=$ARTIFACT_TYPE content_ref=$CONTENT_REF"
 echo "    rubric=$REVIEW_RUBRIC"
 echo "    output_channel=$REVIEW_OUTPUT_CHANNEL"
 
-# ruleset_required_checks <owner/repo> <branch>
-#
-# Emit a JSON array of the branch's REQUIRED status-check contexts (#1795), read
-# from the ruleset API — the authoritative source compute_ci_status gates on so a
-# red NON-required check (e.g. `template-drift`) never yields `ci-failing`. Names
-# are NEVER hardcoded (a literal list would drift the same way the template
-# baseline did — that is the bug, not the fix).
-#
-# This repo protects `main` with a **ruleset**, so `GET /repos/{o}/{r}/rules/
-# branches/{branch}` is the source; the classic `/branches/{branch}/protection`
-# endpoint returns 404 here but is queried as a fallback for branches that still
-# use classic protection ("read the ruleset, or handle both").
-#
-# On ANY failure (both endpoints error or return nothing) it emits an EMPTY string.
-# The caller treats that as FAIL CLOSED: compute_ci_status then reverts to gating
-# on every failing check (today's behaviour), so an API hiccup can never silently
-# widen what gets approved — same posture as the router's unreadable-label guard.
-ruleset_required_checks() {
-  local repo="$1" branch="$2" out=""
-  [ -n "$repo" ] && [ -n "$branch" ] || return 0
-  # Ruleset API (primary): collect every required_status_checks rule's contexts.
-  out=$(gh api "repos/$repo/rules/branches/$branch" \
-          --jq '[.[] | select(.type == "required_status_checks")
-                      | .parameters.required_status_checks[]?.context]' 2>/dev/null) || out=""
-  if [ -z "$out" ] || [ "$out" = "[]" ]; then
-    # Classic branch-protection fallback (404 on ruleset-only branches like main).
-    local classic
-    classic=$(gh api "repos/$repo/branches/$branch/protection/required_status_checks" \
-                --jq '[.checks[]?.context] // []' 2>/dev/null) || classic=""
-    if [ -n "$classic" ] && [ "$classic" != "[]" ]; then
-      out="$classic"
-    fi
-  fi
-  printf '%s' "$out"
-}
+# ruleset_required_checks now lives in lib/ci-status.sh (sourced above) so every
+# compute_ci_status caller — this script, the stuck-review sweep, and the
+# stall/merge-ready scans — gates on the same authoritative required set (#1795).
 
 # 1. Current head SHA + CI gate — single API call for both fields.
 #    Strict CI classification:
@@ -209,21 +177,32 @@ PR_HEAD_SHA=$(echo "$PR_SNAPSHOT" | jq -r '.headRefOid')
 export PR_HEAD_SHA
 echo "    head SHA: $PR_HEAD_SHA"
 
-# Read the branch ruleset's required-check set once (base branch is stable for the
-# life of the PR). Passed into every compute_ci_status call so a failing check the
-# ruleset does not require cannot by itself produce `ci-failing` (#1795 AC #2).
-# Fail closed: an unreadable/empty set leaves REQUIRED_CHECKS_JSON empty and
-# compute_ci_status reverts to gating on all failing checks (#1795 AC #3).
-PR_BASE_REF=$(jq -r '.baseRefName // ""' <<< "$PR_SNAPSHOT")
-_OWNER_REPO=$(printf '%s' "$PR_URL" | sed -E 's#^https?://[^/]+/([^/]+/[^/]+)/pull/[0-9]+.*#\1#')
-REQUIRED_CHECKS_JSON=$(ruleset_required_checks "$_OWNER_REPO" "$PR_BASE_REF" || true)
-if [ -n "$REQUIRED_CHECKS_JSON" ] && [ "$REQUIRED_CHECKS_JSON" != "[]" ]; then
-  echo "    required checks (branch ruleset): $REQUIRED_CHECKS_JSON"
-else
-  echo "    required checks: none readable — failing closed (every failing check blocks)"
-  REQUIRED_CHECKS_JSON=""
+# owner/repo from the PR URL — pure Bash regex, no printf|sed subprocess.
+_OWNER_REPO=""
+if [[ "$PR_URL" =~ ^https?://[^/]+/([^/]+/[^/]+)/pull/[0-9]+ ]]; then
+  _OWNER_REPO="${BASH_REMATCH[1]}"
 fi
-unset _OWNER_REPO
+
+# resolve_required_checks <base_ref> — set REQUIRED_CHECKS_JSON from the branch
+# ruleset for <base_ref>. Passed into every compute_ci_status call so a failing check
+# the ruleset does not require cannot by itself produce `ci-failing` (#1795 AC #2).
+# Fail closed: an unreadable/empty set leaves REQUIRED_CHECKS_JSON empty and
+# compute_ci_status reverts to gating on all failing checks (#1795 AC #3). Re-callable
+# so the poll loop can refresh it if the PR is retargeted to a different base branch
+# (the required set is base-branch-specific — a stale set would gate on the old
+# ruleset). Only re-invoked when the base actually changes, so no redundant API read.
+resolve_required_checks() {
+  local _base_ref="$1"
+  REQUIRED_CHECKS_JSON=$(ruleset_required_checks "$_OWNER_REPO" "$_base_ref" || true)
+  if [ -n "$REQUIRED_CHECKS_JSON" ] && [ "$REQUIRED_CHECKS_JSON" != "[]" ]; then
+    echo "    required checks (branch ruleset for $_base_ref): $REQUIRED_CHECKS_JSON"
+  else
+    echo "    required checks ($_base_ref): none readable — failing closed (every failing check blocks)"
+    REQUIRED_CHECKS_JSON=""
+  fi
+}
+PR_BASE_REF=$(jq -r '.baseRefName // ""' <<< "$PR_SNAPSHOT")
+resolve_required_checks "$PR_BASE_REF"
 
 CI_STATUS=$(compute_ci_status "$(jq '.statusCheckRollup' <<< "$PR_SNAPSHOT")" "$REQUIRED_CHECKS_JSON")
 echo "    CI status: $CI_STATUS"
@@ -324,10 +303,21 @@ if [ "$CI_STATUS" = "pending" ]; then
       rm -f "$_gh_poll_err"
       PR_HEAD_SHA=$(jq -r '.headRefOid' <<< "$PR_SNAPSHOT")
       export PR_HEAD_SHA
+      # If the PR was retargeted mid-poll, the required-check set is base-branch-
+      # specific, so refresh it against the new base before classifying — otherwise
+      # CI is evaluated with the old base's ruleset. Only refetched when the base
+      # actually changes, so an unchanged base costs no extra API read.
+      _poll_base_ref=$(jq -r '.baseRefName // ""' <<< "$PR_SNAPSHOT")
+      if [ "$_poll_base_ref" != "$PR_BASE_REF" ]; then
+        echo "    force-review: PR retargeted $PR_BASE_REF → $_poll_base_ref — refreshing required checks"
+        PR_BASE_REF="$_poll_base_ref"
+        resolve_required_checks "$PR_BASE_REF"
+      fi
       CI_STATUS=$(compute_ci_status "$(jq '.statusCheckRollup' <<< "$PR_SNAPSHOT")" "$REQUIRED_CHECKS_JSON")
       echo "    CI status (poll ${_poll}): $CI_STATUS"
       _poll=$((_poll + 1))
     done
+    unset _poll_base_ref
     unset _poll _FORCE_POLL_MAX _FORCE_POLL_SEC _gh_poll_err _gh_poll_err_content
 
     if [ "$CI_STATUS" = "failing" ]; then

@@ -146,6 +146,47 @@ _ci_status_agent_roles_json() {
   printf '%s' "$roles_json"
 }
 
+# ruleset_required_checks <owner/repo> <branch>
+#
+# Emit a JSON array of the branch's REQUIRED status-check contexts (#1795), read
+# from the ruleset API — the authoritative source compute_ci_status gates on so a
+# red NON-required check (e.g. `template-drift`) never yields `ci-failing`. Names
+# are NEVER hardcoded (a literal list would drift the same way the template
+# baseline did — that is the bug, not the fix).
+#
+# This repo protects `main` with a **ruleset**, so `GET /repos/{o}/{r}/rules/
+# branches/{branch}` is the source; the classic `/branches/{branch}/protection`
+# endpoint returns 404 here but is queried as a fallback for branches that still
+# use classic protection ("read the ruleset, or handle both").
+#
+# On ANY failure (both endpoints error or return nothing) it emits an EMPTY string.
+# The caller treats that as FAIL CLOSED: compute_ci_status then reverts to gating
+# on every failing check (today's behaviour), so an API hiccup can never silently
+# widen what gets approved — same posture as the router's unreadable-label guard.
+#
+# Lives here (not in review-one-pr.sh) so every compute_ci_status caller — the
+# stuck-review sweep, the stall/merge-ready scans — gates on the same authoritative
+# required set, closing the #1795 deadlock on those paths too (they previously
+# passed only the rollup and so reverted to blocking on red non-required checks).
+ruleset_required_checks() {
+  local repo="$1" branch="$2" out=""
+  [ -n "$repo" ] && [ -n "$branch" ] || return 0
+  # Ruleset API (primary): collect every required_status_checks rule's contexts.
+  out=$(gh api "repos/$repo/rules/branches/$branch" \
+          --jq '[.[] | select(.type == "required_status_checks")
+                      | .parameters.required_status_checks[]?.context]' 2>/dev/null) || out=""
+  if [ -z "$out" ] || [ "$out" = "[]" ]; then
+    # Classic branch-protection fallback (404 on ruleset-only branches like main).
+    local classic
+    classic=$(gh api "repos/$repo/branches/$branch/protection/required_status_checks" \
+                --jq '[.checks[]?.context] // []' 2>/dev/null) || classic=""
+    if [ -n "$classic" ] && [ "$classic" != "[]" ]; then
+      out="$classic"
+    fi
+  fi
+  printf '%s' "$out"
+}
+
 compute_ci_status() {
   local rollup_json="${1:-[]}"
   local required_names="${2:-[]}"
@@ -153,8 +194,14 @@ compute_ci_status() {
   agent_roles="$(_ci_status_agent_roles_json)"
   # Normalise the ruleset required-name set: anything that is not a JSON array
   # (empty string, malformed) becomes [] so the union degrades to the .isRequired
-  # fallback (fail closed) rather than erroring.
-  required_names="$(jq -c 'if type == "array" then . else [] end' <<< "$required_names" 2>/dev/null || echo '[]')"
+  # fallback (fail closed) rather than erroring. Skip the jq subprocess for the
+  # common empty/[] case (rulesets unconfigured or the API read empty) — this runs
+  # inside the caller's polling loop.
+  if [ -z "$required_names" ] || [ "$required_names" = "[]" ]; then
+    required_names="[]"
+  else
+    required_names="$(jq -c 'if type == "array" then . else [] end' <<< "$required_names" 2>/dev/null || echo '[]')"
+  fi
   jq -r --argjson agent_roles "$agent_roles" --argjson required_names "$required_names" "
     # A check carrying a non-empty conclusion is terminal, whatever its status
     # says (#1427, AC #3): GitHub can report a zombie check as IN_PROGRESS while
@@ -226,7 +273,11 @@ ci_nonrequired_failures() {
   local required_names="${2:-[]}"
   local agent_roles
   agent_roles="$(_ci_status_agent_roles_json)"
-  required_names="$(jq -c 'if type == "array" then . else [] end' <<< "$required_names" 2>/dev/null || echo '[]')"
+  if [ -z "$required_names" ] || [ "$required_names" = "[]" ]; then
+    required_names="[]"
+  else
+    required_names="$(jq -c 'if type == "array" then . else [] end' <<< "$required_names" 2>/dev/null || echo '[]')"
+  fi
   jq -r --argjson agent_roles "$agent_roles" --argjson required_names "$required_names" "
     def is_terminal:
       (.conclusion != null and .conclusion != \"\");

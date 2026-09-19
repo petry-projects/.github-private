@@ -1057,3 +1057,60 @@ REQUIRED_SET='["SonarCloud","CodeQL","agent-shield / AgentShield","dependency-au
   run ci_nonrequired_failures "$r" "$REQUIRED_SET"
   [ "$output" = "template-drift" ]
 }
+
+# ---------------------------------------------------------------------------
+# ruleset_required_checks (#1795): the required set now lives in this lib so every
+# compute_ci_status caller (review-one-pr.sh, the stuck-review sweep, the
+# stall/merge-ready scans) reads the SAME authoritative set — closing the deadlock
+# on the callers that previously passed only the rollup and so reverted to blocking
+# on red non-required checks.
+# ---------------------------------------------------------------------------
+
+# Install a gh stub on PATH that returns a required-context array from the ruleset
+# endpoint (and 404s the classic-protection fallback) and records each invocation.
+_install_gh_ruleset_stub() {
+  GH_CALL_LOG="$BATS_TEST_TMPDIR/gh_calls.log"; : > "$GH_CALL_LOG"
+  mkdir -p "$BATS_TEST_TMPDIR/bin"
+  cat > "$BATS_TEST_TMPDIR/bin/gh" <<EOF
+#!/bin/bash
+printf '%s\n' "\$*" >> "$GH_CALL_LOG"
+if [ "\$1" = "api" ]; then
+  case "\$2" in
+    *rules/branches*) printf '%s' '["SonarCloud","CodeQL"]'; exit 0 ;;
+    *protection*) exit 1 ;;
+  esac
+fi
+exit 0
+EOF
+  chmod +x "$BATS_TEST_TMPDIR/bin/gh"
+  export PATH="$BATS_TEST_TMPDIR/bin:$PATH"
+}
+
+@test "ruleset_required_checks: reads the ruleset API and returns its contexts" {
+  _install_gh_ruleset_stub
+  run ruleset_required_checks "petry-projects/.github-private" "main"
+  [ "$output" = '["SonarCloud","CodeQL"]' ]
+  grep -q 'api repos/petry-projects/.github-private/rules/branches/main' "$GH_CALL_LOG"
+}
+
+@test "ruleset_required_checks: empty repo or branch returns empty (no API call)" {
+  _install_gh_ruleset_stub
+  run ruleset_required_checks "" "main"
+  [ -z "$output" ]
+  [ ! -s "$GH_CALL_LOG" ]
+}
+
+# End-to-end #1795 for a loop caller: its required set (from ruleset_required_checks)
+# fed into compute_ci_status lets a green-required PR pass even with a red
+# non-required template-drift — the deadlock closed on the sweep/scan paths.
+@test "ruleset_required_checks + compute_ci_status: red non-required check does not block" {
+  _install_gh_ruleset_stub
+  local req r
+  req=$(ruleset_required_checks "petry-projects/.github-private" "main")
+  r=$(rollup \
+    "$(check_run "SonarCloud" "COMPLETED" "SUCCESS")" \
+    "$(check_run "CodeQL" "COMPLETED" "SUCCESS")" \
+    "$(check_run "template-drift" "COMPLETED" "FAILURE")")
+  run compute_ci_status "$r" "$req"
+  [ "$output" = "passing" ]
+}
