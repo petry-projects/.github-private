@@ -7,12 +7,18 @@ permissions:
   issues: read
 safe-outputs:
   add-labels:
+    # needs-human-review is intentionally NOT here (#1778). It is a *hold* label
+    # (scripts/lib/hold-gate.sh) owned by the PR-review escalation path
+    # (scripts/lib/pr-automation-budget.sh); its GitHub description is "Flagged by
+    # automated PR review agent". Triage classifies an issue but must never apply a
+    # hold — a fresh, well-specified report has nothing awaiting a human decision.
+    # Keeping it out of this set makes the rule code-enforced (safe-output rejects
+    # it) rather than prompt-only, which drifts.
     allowed:
       - bug
       - enhancement
       - documentation
       - question
-      - needs-human-review
       - good first issue
       - security
     max: 3
@@ -43,9 +49,15 @@ ${ISSUE_BODY}
    - `good first issue` — simple enough for a first-time contributor
 
 2. **Select ≤ 3 labels** from the allowed set:
-   `bug`, `enhancement`, `documentation`, `question`, `needs-human-review`,
+   `bug`, `enhancement`, `documentation`, `question`,
    `good first issue`, `security`.
-   - Add `needs-human-review` for bugs and ambiguous reports that need human review.
+   - These are **classification** labels only. Do **not** apply any hold label
+     (`needs-human-review`) — it is not in the allowed set. Triage's job is to
+     classify and ask a clarifying question, not to park the issue; a fresh
+     report has nothing awaiting a human decision yet. If a report is too vague
+     to classify, still classify it as best you can and let the clarifying
+     comment below solicit the missing detail — the reporter's answer is what
+     should gate later work, not the act of filing (#1778).
    - Add `good first issue` only when the scope is clearly small and
      self-contained.
 

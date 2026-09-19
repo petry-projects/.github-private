@@ -18,11 +18,13 @@
 #
 # triggers.events mirror the DEPLOYED on: blocks (AC #3/#8) — the union across
 # both workflows: persona-mention.yml's issue_comment / pull_request_review_comment
-# / discussion_comment PLUS qa-lead-pr-advisory.yml's pull_request. Note
-# personas/qa-lead/persona.yml declares broader advisory surfaces (issues:labeled,
-# discussion:labeled, reviewer-assignment) that are not yet wired — the contract
-# records what is actually deployed, not the aspiration (persona-standards
-# finding 10 / petry-projects/.github#755).
+# / discussion_comment PLUS qa-lead-pr-advisory.yml's pull_request. As of #1647
+# persona.yml now AGREES with this contract: the surfaces nothing here serves
+# (pull_request_review, issues, discussion, check_run) are `enabled: false` there,
+# kept with notes as intended-future surfaces. The contract records what is
+# actually deployed, not the aspiration (persona-standards finding 10 /
+# petry-projects/.github#755); the validator's surface-liveness invariant (#1647)
+# now makes the two files unable to silently diverge again.
 schema_version: 1
 role: qa-lead
 kind: persona

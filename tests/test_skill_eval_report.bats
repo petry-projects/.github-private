@@ -177,6 +177,81 @@ PY
   [ "$output" = "True" ]
 }
 
+@test "#1702 AC#2: the daily triage cron (51 7 * * *) is preserved" {
+  run q "'51 7 * * *' in [c.get('cron') for c in (on_block.get('schedule') or [])]"
+  [ "$status" -eq 0 ]
+  [ "$output" = "True" ]
+}
+
+@test "#1702 AC#4: a weekly persona-parity cron (23 9 * * 0) is added" {
+  run q "'23 9 * * 0' in [c.get('cron') for c in (on_block.get('schedule') or [])]"
+  [ "$status" -eq 0 ]
+  [ "$output" = "True" ]
+}
+
+@test "#1702 AC#3: the workflow discovers the skill list from scorer.json" {
+  grep -q 'discover-parity-skills.sh' "$WF"
+}
+
+@test "#1702 AC#1: the eval job scores a matrix of skills" {
+  run python3 - "$WF" <<'PY'
+import sys, yaml
+with open(sys.argv[1], encoding="utf-8") as fh:
+    doc = yaml.safe_load(fh)
+ok = False
+for job in (doc.get("jobs") or {}).values():
+    strat = job.get("strategy") or {}
+    matrix = strat.get("matrix") or {}
+    if "skill" in matrix:
+        ok = True
+print(ok)
+PY
+  [ "$status" -eq 0 ]
+  [ "$output" = "True" ]
+}
+
+@test "#1702: one skill erroring must not abort the rest (fail-fast: false)" {
+  run python3 - "$WF" <<'PY'
+import sys, yaml
+with open(sys.argv[1], encoding="utf-8") as fh:
+    doc = yaml.safe_load(fh)
+ok = False
+for job in (doc.get("jobs") or {}).values():
+    strat = job.get("strategy") or {}
+    if "skill" in (strat.get("matrix") or {}) and strat.get("fail-fast") is False:
+        ok = True
+print(ok)
+PY
+  [ "$status" -eq 0 ]
+  [ "$output" = "True" ]
+}
+
+@test "#1702 AC#2: concurrency is keyed by event AND skill (daily/weekly don't cancel)" {
+  # The group must reference both the event name and the matrix skill so the
+  # daily triage run and the weekly per-skill runs never cancel each other.
+  run python3 - "$WF" <<'PY'
+import sys, yaml
+with open(sys.argv[1], encoding="utf-8") as fh:
+    doc = yaml.safe_load(fh)
+groups = []
+top = doc.get("concurrency")
+if isinstance(top, dict):
+    groups.append(str(top.get("group", "")))
+for job in (doc.get("jobs") or {}).values():
+    c = job.get("concurrency")
+    if isinstance(c, dict):
+        groups.append(str(c.get("group", "")))
+ok = any(("event_name" in g and "matrix.skill" in g) for g in groups)
+print(ok)
+PY
+  [ "$status" -eq 0 ]
+  [ "$output" = "True" ]
+}
+
+@test "#1702 AC#6: the step summary records the scored tier" {
+  grep -q 'engine_tier' "$WF"
+}
+
 @test "AC#4: every third-party action is SHA-pinned (40-hex)" {
   run python3 - "$WF" <<'PY'
 import re, sys
