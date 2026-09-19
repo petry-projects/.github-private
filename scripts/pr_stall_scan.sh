@@ -101,7 +101,7 @@ while IFS= read -r pr; do
   # One snapshot gives CI rollup, review decision, head, review/comment bodies,
   # labels, title, and url — the same shape sweep-stuck-reviews.sh consumes.
   if ! snapshot=$(gh pr view "$pr" --repo "$REPO" \
-        --json headRefOid,statusCheckRollup,reviewDecision,reviews,comments,labels,title,url,updatedAt,autoMergeRequest 2>/dev/null); then
+        --json headRefOid,baseRefName,statusCheckRollup,reviewDecision,reviews,comments,labels,title,url,updatedAt,autoMergeRequest 2>/dev/null); then
     echo "  skip PR #${pr} — could not fetch (deleted, no access, or rate-limited)"
     scan_incomplete=true
     continue
@@ -113,7 +113,12 @@ while IFS= read -r pr; do
   html_url=$(jq -r '.url // ""' <<< "$snapshot")
   updated_at=$(jq -r '.updatedAt // ""' <<< "$snapshot")
 
-  ci_status=$(compute_ci_status "$(jq '.statusCheckRollup' <<< "$snapshot")")
+  # Gate on the branch ruleset's REQUIRED checks (#1795) so a red non-required check
+  # (e.g. template-drift) is not mistaken for a genuine stall signal. Fail closed:
+  # an unreadable set gates on all failing checks.
+  base_ref=$(jq -r '.baseRefName // ""' <<< "$snapshot")
+  required_checks=$(ruleset_required_checks "$REPO" "$base_ref" || true)
+  ci_status=$(compute_ci_status "$(jq '.statusCheckRollup' <<< "$snapshot")" "$required_checks")
 
   # Already reviewed at this exact head? The cascade stamps each review with
   # `<!-- pr-review-agent v1 sha=<HEAD> -->`; a marker at the current head means

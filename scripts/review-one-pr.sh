@@ -159,6 +159,10 @@ echo "    artifact_type=$ARTIFACT_TYPE content_ref=$CONTENT_REF"
 echo "    rubric=$REVIEW_RUBRIC"
 echo "    output_channel=$REVIEW_OUTPUT_CHANNEL"
 
+# ruleset_required_checks now lives in lib/ci-status.sh (sourced above) so every
+# compute_ci_status caller — this script, the stuck-review sweep, and the
+# stall/merge-ready scans — gates on the same authoritative required set (#1795).
+
 # 1. Current head SHA + CI gate — single API call for both fields.
 #    Strict CI classification:
 #      pending — any item still running (IN_PROGRESS/QUEUED/WAITING/PENDING/EXPECTED
@@ -168,12 +172,39 @@ echo "    output_channel=$REVIEW_OUTPUT_CHANNEL"
 #                NEUTRAL covers informational checks that don't gate merging.
 #      failing — anything else (FAILURE, ACTION_REQUIRED, TIMED_OUT, CANCELLED,
 #                STALE, STARTUP_FAILURE, or unknown conclusions)
-PR_SNAPSHOT=$(gh pr view "$PR_URL" --json headRefOid,statusCheckRollup,reviewDecision,reviews,labels,comments,body,closingIssuesReferences)
+PR_SNAPSHOT=$(gh pr view "$PR_URL" --json headRefOid,baseRefName,statusCheckRollup,reviewDecision,reviews,labels,comments,body,closingIssuesReferences)
 PR_HEAD_SHA=$(echo "$PR_SNAPSHOT" | jq -r '.headRefOid')
 export PR_HEAD_SHA
 echo "    head SHA: $PR_HEAD_SHA"
 
-CI_STATUS=$(compute_ci_status "$(jq '.statusCheckRollup' <<< "$PR_SNAPSHOT")")
+# owner/repo from the PR URL — pure Bash regex, no printf|sed subprocess.
+_OWNER_REPO=""
+if [[ "$PR_URL" =~ ^https?://[^/]+/([^/]+/[^/]+)/pull/[0-9]+ ]]; then
+  _OWNER_REPO="${BASH_REMATCH[1]}"
+fi
+
+# resolve_required_checks <base_ref> — set REQUIRED_CHECKS_JSON from the branch
+# ruleset for <base_ref>. Passed into every compute_ci_status call so a failing check
+# the ruleset does not require cannot by itself produce `ci-failing` (#1795 AC #2).
+# Fail closed: an unreadable/empty set leaves REQUIRED_CHECKS_JSON empty and
+# compute_ci_status reverts to gating on all failing checks (#1795 AC #3). Re-callable
+# so the poll loop can refresh it if the PR is retargeted to a different base branch
+# (the required set is base-branch-specific — a stale set would gate on the old
+# ruleset). Only re-invoked when the base actually changes, so no redundant API read.
+resolve_required_checks() {
+  local _base_ref="$1"
+  REQUIRED_CHECKS_JSON=$(ruleset_required_checks "$_OWNER_REPO" "$_base_ref" || true)
+  if [ -n "$REQUIRED_CHECKS_JSON" ] && [ "$REQUIRED_CHECKS_JSON" != "[]" ]; then
+    echo "    required checks (branch ruleset for $_base_ref): $REQUIRED_CHECKS_JSON"
+  else
+    echo "    required checks ($_base_ref): none readable — failing closed (every failing check blocks)"
+    REQUIRED_CHECKS_JSON=""
+  fi
+}
+PR_BASE_REF=$(jq -r '.baseRefName // ""' <<< "$PR_SNAPSHOT")
+resolve_required_checks "$PR_BASE_REF"
+
+CI_STATUS=$(compute_ci_status "$(jq '.statusCheckRollup' <<< "$PR_SNAPSHOT")" "$REQUIRED_CHECKS_JSON")
 echo "    CI status: $CI_STATUS"
 
 REVIEW_DECISION=$(echo "$PR_SNAPSHOT" | jq -r '.reviewDecision // ""')
@@ -258,7 +289,7 @@ if [ "$CI_STATUS" = "pending" ]; then
       echo "    force-review: CI pending, waiting ${_FORCE_POLL_SEC}s for checks to settle (attempt ${_poll}/${_FORCE_POLL_MAX})"
       sleep "$_FORCE_POLL_SEC"
       _gh_poll_err=$(mktemp 2>/dev/null || echo "/tmp/cascade/gh-poll-$$.err")
-      if ! PR_SNAPSHOT=$(gh pr view "$PR_URL" --json headRefOid,statusCheckRollup,reviewDecision,reviews,labels,comments,body,closingIssuesReferences 2>"$_gh_poll_err"); then
+      if ! PR_SNAPSHOT=$(gh pr view "$PR_URL" --json headRefOid,baseRefName,statusCheckRollup,reviewDecision,reviews,labels,comments,body,closingIssuesReferences 2>"$_gh_poll_err"); then
         _gh_poll_err_content=$(cat "$_gh_poll_err" 2>/dev/null || true)
         rm -f "$_gh_poll_err"
         if is_rate_limited "$_gh_poll_err_content"; then
@@ -272,10 +303,21 @@ if [ "$CI_STATUS" = "pending" ]; then
       rm -f "$_gh_poll_err"
       PR_HEAD_SHA=$(jq -r '.headRefOid' <<< "$PR_SNAPSHOT")
       export PR_HEAD_SHA
-      CI_STATUS=$(compute_ci_status "$(jq '.statusCheckRollup' <<< "$PR_SNAPSHOT")")
+      # If the PR was retargeted mid-poll, the required-check set is base-branch-
+      # specific, so refresh it against the new base before classifying — otherwise
+      # CI is evaluated with the old base's ruleset. Only refetched when the base
+      # actually changes, so an unchanged base costs no extra API read.
+      _poll_base_ref=$(jq -r '.baseRefName // ""' <<< "$PR_SNAPSHOT")
+      if [ "$_poll_base_ref" != "$PR_BASE_REF" ]; then
+        echo "    force-review: PR retargeted $PR_BASE_REF → $_poll_base_ref — refreshing required checks"
+        PR_BASE_REF="$_poll_base_ref"
+        resolve_required_checks "$PR_BASE_REF"
+      fi
+      CI_STATUS=$(compute_ci_status "$(jq '.statusCheckRollup' <<< "$PR_SNAPSHOT")" "$REQUIRED_CHECKS_JSON")
       echo "    CI status (poll ${_poll}): $CI_STATUS"
       _poll=$((_poll + 1))
     done
+    unset _poll_base_ref
     unset _poll _FORCE_POLL_MAX _FORCE_POLL_SEC _gh_poll_err _gh_poll_err_content
 
     if [ "$CI_STATUS" = "failing" ]; then
@@ -313,6 +355,20 @@ if [ "$CI_STATUS" = "pending" ]; then
     emit_verdict skip ci-pending "the pending checks finish green; the pr-review sweep re-reviews automatically once they complete"
     exit 100
   fi
+fi
+
+# CI gate cleared. If any NON-required check is red, the gate deliberately let the
+# review proceed past it (#1795 AC #2) — but downgrading a signal must not delete
+# it (AC #4). Name each such advisory failure here (log) and export it so the
+# review prompt surfaces it in the review body: "reviewed despite a red advisory
+# check" stays visible rather than silent. Empty when nothing non-required is red.
+NON_REQUIRED_CI_FAILURES=$(
+  ci_nonrequired_failures "$(jq '.statusCheckRollup' <<< "$PR_SNAPSHOT")" "$REQUIRED_CHECKS_JSON" \
+    | paste -sd ',' - 2>/dev/null || true
+)
+if [ -n "$NON_REQUIRED_CI_FAILURES" ]; then
+  echo "::notice::proceeding past non-required failing check(s) the branch ruleset does not require: ${NON_REQUIRED_CI_FAILURES} — the merge gate still blocks on any failing REQUIRED check (#1795)"
+  export NON_REQUIRED_CI_FAILURES
 fi
 
 # Advisory bot review gate — instant check for advisory bot reviews (Gemini, Copilot, SonarCloud, Codex)
@@ -978,6 +1034,13 @@ TRIAGE_PROMPT_FILE="/tmp/cascade/triage-prompt.md"
     printf '\nADVISORY_BOT_FEEDBACK (latest advisory bot reviews and inline comments — weigh these findings):\n%s\n' "$ADVISORY_BOT_FEEDBACK"
   else
     printf '\nADVISORY_BOT_FEEDBACK: (none)\n'
+  fi
+  # #1795 AC #4: name any red NON-required check the CI gate proceeded past, so the
+  # review body records "reviewed despite a red advisory check" rather than hiding
+  # it. These do NOT gate merge (the ruleset does not require them); do not escalate
+  # or withhold approval solely because one is red — just name it.
+  if [ -n "${NON_REQUIRED_CI_FAILURES:-}" ]; then
+    printf '\nNON_REQUIRED_CI_FAILURES (advisory checks that are RED but NOT required by the branch ruleset — name these in your review body; they do NOT block merge and are not a reason to withhold approval or escalate):\n%s\n' "$NON_REQUIRED_CI_FAILURES"
   fi
   # Inline the DOWNSTREAM_IMPACT block (no-op when the Story 5 flag is off, so
   # the triage prompt stays byte-identical to pre-feature behavior).
