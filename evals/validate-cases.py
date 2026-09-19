@@ -24,31 +24,6 @@ from typing import NoReturn
 SPLITS = ("dev", "holdout")
 CASES_FILENAME = "cases.jsonl"
 
-# Skills whose held-out cases do NOT yet conform to case.schema.json. The
-# tree-wide per-case schema gate (--schema-tree, #1645 AC #6) SKIPS these so it
-# can protect qa-lead now without failing every unrelated PR on the pre-existing
-# fleet-wide non-conformance. Bringing each skill into conformance — and removing
-# it from this list — is the scope of #1651. When #1651 closes, this set must be
-# empty (every skill schema-validated). Do NOT add a skill here to silence a
-# freshly-broken case set; the allowlist is a migration bridge, not an escape
-# hatch. (spec-drift and solution-architect additionally ship their own
-# case.schema.json and are validated by their own tooling until #1651 unifies.)
-SCHEMA_TREE_ALLOWLIST = frozenset({
-    "business-analyst",
-    "deep-review",
-    "dev-lead",
-    "devops-lead",
-    "example-skill",
-    "pr-review",
-    "scrum-master",
-    "security-lead",
-    "solution-architect",
-    "spec-drift",
-    "sre-lead",
-    "triage",
-})
-
-
 def fail(msg: str) -> NoReturn:
     print(f"::error::eval cases invalid: {msg}", file=sys.stderr)
     sys.exit(1)
@@ -260,8 +235,23 @@ def validate_directory(eval_root: Path) -> None:
 # The default directory mode checks only split hygiene (structure + id
 # discipline); per-case schema conformance was only ever checked in file mode,
 # which nothing in CI invoked — so a non-conforming case set could sit green for
-# weeks (#1645). This mode validates EVERY case in EVERY split against the shared
-# case.schema.json, skipping the SCHEMA_TREE_ALLOWLIST skills that #1651 owns.
+# weeks (#1645). This mode validates EVERY case in EVERY split against a schema.
+#
+# Per-skill schema resolution (#1651): a skill whose case shape legitimately
+# differs from triage's {escalate, risk} ships its own evals/<skill>/case.schema.json
+# and is validated against it; every other skill falls back to the root
+# case.schema.json. This governs the payload shape deliberately (the AC #1
+# contract) instead of widening the root schema until it asserts nothing.
+#
+# There is NO allowlist: every skill is schema-checked (the #1645 migration
+# bridge is discharged). Govern a legitimately different shape with a per-skill
+# schema — never by exempting the skill.
+
+def resolve_schema_path(skill_dir: Path, root_schema_path: Path) -> Path:
+    """The skill's own case.schema.json when present, else the root schema."""
+    per_skill = skill_dir / "case.schema.json"
+    return per_skill if per_skill.is_file() else root_schema_path
+
 
 def validate_schema_tree(eval_root: Path, schema_path: Path) -> None:
     try:
@@ -269,30 +259,39 @@ def validate_schema_tree(eval_root: Path, schema_path: Path) -> None:
     except ImportError:
         fail("jsonschema not installed (pip install 'jsonschema>=4')")
 
-    try:
-        schema = json.loads(schema_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        fail(f"could not read/parse schema {schema_path}: {exc}")
+    validators: dict[Path, "jsonschema.Draft202012Validator"] = {}
 
-    validator = jsonschema.Draft202012Validator(schema)
+    def validator_for(path: Path) -> "jsonschema.Draft202012Validator":
+        cached = validators.get(path)
+        if cached is not None:
+            return cached
+        try:
+            schema = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            fail(f"could not read/parse schema {path}: {exc}")
+        v = jsonschema.Draft202012Validator(schema)
+        validators[path] = v
+        return v
+
     skills = discover_skills(eval_root)
     if not skills:
         fail(f"no skills found under {eval_root} "
              f"(expected <skill>/dev/ and <skill>/holdout/ subdirectories)")
 
     validated = 0
-    skipped: list[str] = []
     total_cases = 0
+    per_skill_schemas = 0
     for skill_dir in skills:
-        if skill_dir.name in SCHEMA_TREE_ALLOWLIST:
-            skipped.append(skill_dir.name)
-            continue
         validated += 1
-        # Enforce the split contract for every gated skill before schema-checking
-        # its cases: both dev/ and holdout/ must exist, ids must be unique within
-        # each split, and disjoint across splits. Reuses directory-mode logic so a
-        # gated skill cannot report schema-valid while violating the split
-        # contract (#1645 AC #9).
+        resolved = resolve_schema_path(skill_dir, schema_path)
+        if resolved != schema_path:
+            per_skill_schemas += 1
+        validator = validator_for(resolved)
+        # Enforce the split contract for every skill before schema-checking its
+        # cases: both dev/ and holdout/ must exist, ids must be unique within each
+        # split, and disjoint across splits. Reuses directory-mode logic so a
+        # skill cannot report schema-valid while violating the split contract
+        # (#1645 AC #9).
         validate_skill(skill_dir)
         for split in SPLITS:
             cases_path = skill_dir / split / CASES_FILENAME
@@ -318,10 +317,10 @@ def validate_schema_tree(eval_root: Path, schema_path: Path) -> None:
             if split_cases == 0:
                 fail(f"{skill_dir.name}/{split}: contains no cases")
 
-    skip_note = (f" (skipped {len(skipped)}, pending #1651: "
-                 f"{', '.join(sorted(skipped))})" if skipped else "")
-    print(f"OK: schema-valid across {validated} gated skill(s), "
-          f"{total_cases} case(s){skip_note}.")
+    schema_note = (f" ({per_skill_schemas} with a per-skill schema)"
+                   if per_skill_schemas else "")
+    print(f"OK: schema-valid across {validated} skill(s), "
+          f"{total_cases} case(s){schema_note}.")
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────

@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Deep-Review Eval Case",
+  "description": "One held-out eval case for the deep-review skill: a PR-context input paired with its expected deep-tier verdict. Each line of evals/deep-review/<split>/cases.jsonl is one object of this shape. Deep review emits a structured verdict — a decision, a risk classification, whether to escalate to the Opus security-audit tier, and grounded key findings — so the expected decision is verdict-shaped (decision / risk / escalate_to_opus / key_findings) — NOT the triage {escalate, risk} shape of evals/case.schema.json. This is the trust anchor for the skill's quality measurement and is CODEOWNER-gated separately from any scorer/proposer.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "input", "expected"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+      "minLength": 3,
+      "description": "Stable, unique kebab-case identifier for the case. Unique within a split and disjoint across dev/holdout (enforced by evals/validate-cases.py)."
+    },
+    "description": {
+      "type": "string",
+      "minLength": 5,
+      "description": "Human-readable note on what this case exercises and which shared.md/deep-review.md decision gate grounds the expected verdict."
+    },
+    "tags": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 2 },
+      "uniqueItems": true,
+      "description": "Optional labels for coverage tracking, e.g. the high-risk trigger a case exercises ('auth-secrets', 'db-migration', 'security-anti-pattern', 'unresolved-threads')."
+    },
+    "input": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The pre-fetched PR context exactly as deep-review consumes it: title, files changed, diff excerpt, gate signals, and the upstream triage result."
+    },
+    "expected": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["decision", "risk", "escalate_to_opus", "key_findings"],
+      "description": "The fixed, reward-hack-resistant expected deep-tier verdict the skill must produce for this PR.",
+      "properties": {
+        "decision": {
+          "type": "string",
+          "enum": ["approve", "escalate"],
+          "description": "Whether deep review approves the change or escalates it."
+        },
+        "risk": {
+          "type": "string",
+          "enum": ["LOW", "MEDIUM", "HIGH"],
+          "description": "Expected risk classification. Any HIGH signal must both escalate and escalate to the Opus security-audit tier."
+        },
+        "escalate_to_opus": {
+          "type": "boolean",
+          "description": "Whether the change must escalate to the Opus security-audit tier. HIGH-risk changes always do; a MEDIUM-risk gate failure escalates on deep review's own findings without the security-audit tier."
+        },
+        "key_findings": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "minItems": 1,
+          "uniqueItems": true,
+          "description": "The grounded findings the verdict rests on. At least one, each a non-empty statement tied to a decision gate or high-risk area."
+        }
+      },
+      "if": {
+        "properties": {
+          "risk": { "const": "HIGH" }
+        }
+      },
+      "then": {
+        "properties": {
+          "decision": { "const": "escalate" },
+          "escalate_to_opus": { "const": true }
+        }
+      }
+    }
+  }
+}
