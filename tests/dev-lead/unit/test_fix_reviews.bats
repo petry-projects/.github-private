@@ -146,6 +146,127 @@ GHEOF
   [[ "$output" == *"rebase is exhausted"* ]]
 }
 
+# _setup_rebase_failure_stubs <num_conflicts> <claude_exit>: installs a git stub
+# whose conflict-detection reports <num_conflicts> unmerged paths, a recording
+# engine stub that logs each invocation to $ENGINE_CALLED_FILE and exits
+# <claude_exit>, and a gh stub that reports no exhaustion marker (so the engine
+# path is reached) and echoes any posted comment body (so terminal markers are
+# assertable). Shared by the #865 rebase-failure tests below.
+_setup_rebase_failure_stubs() {
+  export STUB_NUM_CONFLICTS="$1"
+  export STUB_CLAUDE_EXIT="$2"
+  export ENGINE_CALLED_FILE
+  ENGINE_CALLED_FILE="$(mktemp)"
+
+  # Delegate to real git for the worktree setup the rebase intent performs before
+  # dispatch (worktree add/checkout/rev-parse/merge --abort), but intercept the two
+  # commands a hermetic test cannot satisfy: the network `fetch`, and the unmerged-
+  # path listing that drives the large-conflict guard (emit STUB_NUM_CONFLICTS
+  # synthetic paths).
+  export REAL_GIT
+  REAL_GIT="$(command -v git)"
+  cat > "$STUB_BIN_DIR/git" <<'GITEOF'
+#!/usr/bin/env bash
+ARGS="$*"
+case "$ARGS" in
+  "fetch"*)
+    exit 0 ;;
+  *"diff --name-only --diff-filter=U"*)
+    i=1
+    while [ "$i" -le "${STUB_NUM_CONFLICTS:-0}" ]; do
+      echo "path/conflict-${i}.txt"
+      i=$((i + 1))
+    done
+    exit 0 ;;
+  *)
+    exec "$REAL_GIT" "$@" ;;
+esac
+GITEOF
+  chmod +x "$STUB_BIN_DIR/git"
+
+  for engine in claude gemini; do
+    cat > "$STUB_BIN_DIR/$engine" <<'STUB'
+#!/usr/bin/env bash
+[ -n "${ENGINE_CALLED_FILE:-}" ] && echo "invoked" >> "$ENGINE_CALLED_FILE"
+exit "${STUB_CLAUDE_EXIT:-1}"
+STUB
+    chmod +x "$STUB_BIN_DIR/$engine"
+  done
+
+  cat > "$STUB_BIN_DIR/gh" <<'GHEOF'
+#!/usr/bin/env bash
+ARGS="$*"
+case "$ARGS" in
+  *"api"*"repos/"*"issues/"*"comments"*)
+    echo "[]" ;;
+  *"pr comment"*)
+    echo "COMMENT_POSTED: $ARGS"; exit 0 ;;
+  *"api"*"pulls/"*)
+    echo '{"head":{"sha":"ddd444eee555"},"auto_merge":null}' ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+}
+
+@test "fix-reviews: rebase aborts an oversized conflict without invoking the engine (#865)" {
+  export INTENT_TYPE="rebase"
+  export DEV_LEAD_DRY_RUN="false"
+  export REBASE_MAX_CONFLICT_FILES="40"
+
+  # 41 conflicting files > the 40-file ceiling → aborted up front.
+  _setup_rebase_failure_stubs 41 1
+
+  run bash "$FIX_REVIEWS_SCRIPT"
+
+  # The engine must never be invoked for an oversized conflict.
+  [ ! -s "$ENGINE_CALLED_FILE" ]
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"too large for automated resolution"* ]]
+  # A terminal status=failed marker is recorded so the retry cron stops re-dispatching.
+  [[ "$output" == *"intent=rebase status=failed"* ]]
+
+  rm -f "$ENGINE_CALLED_FILE"
+}
+
+@test "fix-reviews: rebase engine timeout (exit 124) → clean failed abort, exit 1 (#865)" {
+  export INTENT_TYPE="rebase"
+  export DEV_LEAD_DRY_RUN="false"
+  export REBASE_MAX_CONFLICT_FILES="40"
+
+  # A resolvable-sized conflict (1 file) reaches the engine; the engine times out.
+  _setup_rebase_failure_stubs 1 124
+
+  run bash "$FIX_REVIEWS_SCRIPT"
+
+  # The engine was invoked, then the timeout was converted to a clean abort.
+  [ -s "$ENGINE_CALLED_FILE" ]
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"exit 124"* ]]
+  [[ "$output" == *"recorded failures on this PR"* ]]
+  [[ "$output" == *"intent=rebase status=failed"* ]]
+
+  rm -f "$ENGINE_CALLED_FILE"
+}
+
+@test "fix-reviews: rebase engine generic failure (exit 3) → clean failed abort, exit 1 (#865)" {
+  export INTENT_TYPE="rebase"
+  export DEV_LEAD_DRY_RUN="false"
+  export REBASE_MAX_CONFLICT_FILES="40"
+
+  _setup_rebase_failure_stubs 1 3
+
+  run bash "$FIX_REVIEWS_SCRIPT"
+
+  [ -s "$ENGINE_CALLED_FILE" ]
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"exit 3"* ]]
+  [[ "$output" == *"recorded failures on this PR"* ]]
+  [[ "$output" == *"intent=rebase status=failed"* ]]
+
+  rm -f "$ENGINE_CALLED_FILE"
+}
+
 @test "fix-reviews: unknown INTENT_TYPE → exits 1" {
   export INTENT_TYPE="totally-unknown-intent"
   export DEV_LEAD_DRY_RUN="true"

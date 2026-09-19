@@ -1252,11 +1252,18 @@ _rebase_comment_bodies() {
   printf '%s\n' "$output" | jq -r '.[].body' 2>/dev/null || return 1
 }
 
-# rebase_pr_is_exhausted: 0 (skip) if a PR-level rebase exhaustion marker exists.
+# rebase_pr_is_exhausted: exit status distinguishes three states so the caller
+# can fail closed on a retrieval fault instead of treating it as "not exhausted":
+#   0 → exhaustion marker present (skip the engine)
+#   1 → comments retrieved, no marker (safe to proceed)
+#   2 → comment retrieval failed (unknown — caller must not invoke the engine)
 rebase_pr_is_exhausted() {
-  local marker
+  local marker bodies
   marker="$(rebase_exhaustion_marker "$REVIEWS_MARKER_PREFIX" "$PR_NUMBER")"
-  rebase_is_exhausted "$marker" "$(_rebase_comment_bodies)"
+  if ! bodies="$(_rebase_comment_bodies)"; then
+    return 2
+  fi
+  rebase_is_exhausted "$marker" "$bodies"
 }
 
 # post_rebase_exhaustion <reason>: posts the PR-level block so a stuck conflict
@@ -1271,7 +1278,7 @@ This PR's rebase conflict failed automated resolution **${REBASE_MAX_FAIL_ATTEMP
 
 **Reason for last failure:** ${reason}
 
-Resolve the conflict manually, then delete this comment (or push a new commit) to re-enable automated rebasing."
+Resolve the conflict manually, then delete this comment to re-enable automated rebasing."
   if [ "$DEV_LEAD_DRY_RUN" = "true" ]; then
     echo "[dry-run] would post rebase exhaustion marker"
     return 0
@@ -1285,16 +1292,27 @@ Resolve the conflict manually, then delete this comment (or push a new commit) t
 # `status=failed` marker (so the retry cron stops re-dispatching this SHA), then
 # posts the PR-level exhaustion marker once failures reach the threshold.
 handle_rebase_failure() {
-  local reason="$1" fail_count
+  local reason="$1" fail_count bodies
   # Leave the worktree clean so a lingering half-applied merge can't poison a
   # later attempt.
   git merge --abort >/dev/null 2>&1 || true
   git rebase --abort >/dev/null 2>&1 || true
   post_reviews_terminal "rebase" "failed" "$reason"
-  fail_count="$(rebase_count_failures "$REVIEWS_MARKER_PREFIX" "$PR_NUMBER" "$(_rebase_comment_bodies)")"
-  echo "  [rebase] recorded failures on this PR: ${fail_count} (threshold: ${REBASE_MAX_FAIL_ATTEMPTS})"
-  if rebase_should_exhaust "${fail_count:-0}" "$REBASE_MAX_FAIL_ATTEMPTS"; then
-    echo "::warning::rebase exhaustion threshold reached — posting PR-level block to stop sentinel re-fires (#865)"
+  # Capture bodies and retrieval status separately: a failed retrieval must not be
+  # passed to rebase_count_failures as valid empty data (it would count 0 and
+  # suppress the exhaustion marker even when the threshold was reached). On a
+  # retrieval fault, fail closed by posting the PR-level block — a stuck conflict
+  # must not keep generating full-timeout sentinel re-fires just because we could
+  # not read the comment history this run.
+  if bodies="$(_rebase_comment_bodies)"; then
+    fail_count="$(rebase_count_failures "$REVIEWS_MARKER_PREFIX" "$PR_NUMBER" "$bodies")"
+    echo "  [rebase] recorded failures on this PR: ${fail_count} (threshold: ${REBASE_MAX_FAIL_ATTEMPTS})"
+    if rebase_should_exhaust "${fail_count:-0}" "$REBASE_MAX_FAIL_ATTEMPTS"; then
+      echo "::warning::rebase exhaustion threshold reached — posting PR-level block to stop sentinel re-fires (#865)"
+      post_rebase_exhaustion "$reason"
+    fi
+  else
+    echo "::warning::could not retrieve PR comments to count rebase failures — failing closed and posting PR-level block to stop sentinel re-fires (#865)"
     post_rebase_exhaustion "$reason"
   fi
 }
@@ -2103,9 +2121,17 @@ case "$INTENT_TYPE" in
     # Per-PR exhaustion guard (#865): a stuck conflict must not generate repeated
     # full-timeout runs from auto-rebase-conflict sentinel re-fires. If this PR's
     # rebase is already exhausted, skip cleanly before invoking the engine.
-    if rebase_pr_is_exhausted; then
+    rebase_exhausted_rc=0
+    rebase_pr_is_exhausted || rebase_exhausted_rc=$?
+    if [ "$rebase_exhausted_rc" -eq 0 ]; then
       echo "::notice::PR #${PR_NUMBER} rebase is exhausted — skipping (sentinel re-fire guard, #865)"
       exit 0
+    elif [ "$rebase_exhausted_rc" -eq 2 ]; then
+      # Retrieval fault: we cannot confirm the exhaustion marker is absent, so fail
+      # closed — do not invoke the engine on unknown state. Exit nonzero so the
+      # retry cron re-dispatches once the transient gh-api/jq fault clears.
+      echo "::error::could not retrieve PR #${PR_NUMBER} comments to check rebase exhaustion — failing closed, not invoking engine (#865)"
+      exit 1
     fi
     git fetch origin "$BASE_REF"
     CONFLICTING_FILES=$(detect_conflicting_paths "$BASE_REF")
