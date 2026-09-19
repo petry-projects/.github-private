@@ -26,13 +26,67 @@ evals/
   proposer must never tune a skill to these specific cases.
 
 `cases.jsonl` is [JSON Lines](https://jsonlines.org/): one JSON object per line.
-Blank lines are ignored. Every case **must** carry a non-empty string `id`. The
-rest of the case payload (e.g. `prompt`, `expected`, rubric fields) is owned by
-the scorer story (#583); this directory's validator is deliberately agnostic to
-it and only governs the split structure and `id` discipline.
+Blank lines are ignored. Every case **must** carry a non-empty string `id`.
 
-`example-skill/` is a template: copy its `dev/` and `holdout/` layout when adding
-a new skill's eval set.
+## The case-shape contract (per-skill schema, #1651)
+
+The case payload shape **is** governed — deliberately, per skill, not left
+agnostic. Two layers:
+
+- **The root schema, [`case.schema.json`](./case.schema.json), is the default
+  contract.** It fixes the shared *envelope* — `id` (kebab-case, unique), the
+  optional `description`/`tags`, and the pre-fetched `input` — and the triage
+  `{escalate, risk}` decision shape. `triage` and `qa-lead` are governed by it
+  directly.
+- **A skill whose decision shape legitimately differs ships its own
+  `evals/<skill>/case.schema.json`.** A persona that emits an ADR citation
+  (`solution-architect`), a risk tier (`devops-lead`/`security-lead`/`sre-lead`),
+  a readiness/decomposition/framing judgment (`dev-lead`/`scrum-master`/
+  `business-analyst`), or a structured deep-review verdict
+  (`deep-review`; `pr-review` carries both the triage and deep shapes) declares
+  that shape explicitly. Every per-skill schema keeps the root envelope (same
+  `id` pattern, `description`/`tags` constraints, `additionalProperties: false`
+  at the root **and** on `expected`) and names its `expected` fields explicitly —
+  it never merely widens `additionalProperties`, which would assert nothing.
+
+`validate-cases.py --schema-tree` resolves each skill against its own
+`case.schema.json` when present, else the root schema, and validates **every**
+case in **every** split. There is no allowlist: per-case conformance is enforced
+fleet-wide. This is the resolution of the earlier schema-vs-README contradiction,
+where the schema hardcoded triage's shape while this file claimed payload shape
+was ungoverned.
+
+`spec-drift` is a special case: it is an offline structured detector, not an
+advisory prompt, so its case carries a `(diff, acceptance_criteria, analysis,
+expected.verdict)` shape and is **exempt from the `input` pre-fetched-context
+contract** below. It is governed by its own `evals/spec-drift/case.schema.json`.
+
+`example-skill/` is a template: copy its `dev/` and `holdout/` layout — and, when
+a new skill's decision shape differs from the root, its `case.schema.json` — when
+adding a new skill's eval set.
+
+## Scorer mode and judge conventions (#1651 AC #5/#6)
+
+Every skill with a runnable scorer path declares its scorer mode explicitly in
+`evals/<skill>/scorer.json`, rather than silently inheriting the `deterministic`
+default (correct only for triage-shaped boolean decisions, wrong for prose
+skills). See [`scripts/evals/run-eval.sh`](../scripts/evals/run-eval.sh) for the
+`scorer.json` contract.
+
+- `triage` declares `deterministic` explicitly; every prose-output persona
+  declares `llm-judge`.
+- **Judge convention: per-skill.** A prose-output persona ships its own
+  `evals/<skill>/judge.md` (pointed at by `scorer.json`'s `judge_prompt`), because
+  the shared `evals/judge.md` is written for deep-review's structured
+  `decision`/`risk`/`key_findings` verdict and scores a prose advisory poorly.
+  `deep-review` legitimately points at the shared `evals/judge.md` because it
+  emits exactly that shape.
+- `spec-drift` is scored by its **own** offline tooling
+  (`evals/spec-drift/run-eval.sh`), not the shared `scripts/evals/run-eval.sh`
+  deterministic comparator (which compares `escalate`/`risk`, a shape spec-drift
+  does not use); it therefore carries no shared `scorer.json`.
+- `example-skill` has **no runnable scorer path** — it is a copy-me template and
+  is never scored.
 
 ## The no-overlap rule
 
@@ -45,13 +99,17 @@ test").
 `validate-cases.py` enforces this. Run it over the whole tree:
 
 ```bash
-python3 evals/validate-cases.py            # validates evals/ (this dir)
-python3 evals/validate-cases.py <root>     # validates an alternate root
+python3 evals/validate-cases.py                 # split hygiene over evals/ (this dir)
+python3 evals/validate-cases.py <root>          # split hygiene over an alternate root
+python3 evals/validate-cases.py --schema-tree evals  # + per-case schema conformance
 ```
 
 It fails (non-zero) on malformed JSONL, a missing/empty `id`, a duplicate `id`
 within a split, an `id` shared across splits, or a skill missing either split.
-The validator is exercised by `tests/test_validate_cases.bats` in CI.
+`--schema-tree` additionally validates every case against its resolved schema
+(per-skill `case.schema.json` when present, else the root). The validator is
+exercised by `tests/test_validate_cases.bats` and the `validate-eval-cases` job
+in `.github/workflows/lint.yml`.
 
 ## The advisory context contract (#1686)
 

@@ -13,7 +13,9 @@ scenarios must be validated before the workflow is promoted to live.
 - Existing labels: _(none)_
 
 **Expected output:**
-- Labels applied: `bug`, `needs-human-review`
+- Labels applied: `bug` — classification only. Triage must **not** apply the
+  `needs-human-review` hold (#1778); a fresh bug report is not parked pending a
+  human decision.
 - Comment posted: yes — asks for steps to reproduce and expected vs actual
   behaviour (e.g. "Could you share the steps to reproduce this? What did you
   expect to happen, and what actually happened instead?")
@@ -67,7 +69,8 @@ scenarios must be validated before the workflow is promoted to live.
 ## Validation notes
 
 - The allowed label set is: `bug`, `enhancement`, `documentation`, `question`,
-  `needs-human-review`, `good first issue`, `security`.
+  `good first issue`, `security`. `needs-human-review` is a **hold** label and is
+  deliberately excluded (#1778) — triage classifies but never parks an issue.
 - At most **3 labels** may be applied in a single run.
 - The comment must be a **single** welcoming message; it must not ask multiple
   unrelated questions.
