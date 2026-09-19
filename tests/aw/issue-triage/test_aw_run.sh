@@ -91,9 +91,11 @@ rm -f "$tmp"
 
 # ---------------------------------------------------------------------------
 # Test 6: safe-output accepts valid labels + comment → validation passed
+# Uses a classification-only label set (no hold). Per #1778 triage no longer
+# applies the needs-human-review hold, so the valid-case fixture is `bug` alone.
 # ---------------------------------------------------------------------------
 tmp=$(mktemp)
-printf '{"labels":["bug","needs-human-review"],"comment":"Thank you for the report!"}' > "$tmp"
+printf '{"labels":["bug"],"comment":"Thank you for the report!"}' > "$tmp"
 mock_dir=$(mktemp -d)
 printf '#!/bin/sh\nexit 0\n' > "$mock_dir/gh"
 chmod +x "$mock_dir/gh"
@@ -130,15 +132,19 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Test 8: issue-triage.md allowed list DOES contain 'needs-human-review'
-# The repo has 'needs-human-review' (not 'needs-triage'). The triage prompt
-# must use the label that actually exists.
+# Test 8: issue-triage.md allowed list does NOT contain 'needs-human-review'
+# Regression guard for #1778: needs-human-review is a *hold* label (hold-gate.sh)
+# owned by the PR-review escalation path (pr-automation-budget.sh). Triage must
+# classify without applying a hold, so the label is removed from triage's allowed
+# set — this is the code-enforced half of the fix (safe-output rejects it even if
+# the prompt drifts). If triage genuinely needs a hold again, that is a deliberate
+# taxonomy decision, not a silent re-add here.
 # ---------------------------------------------------------------------------
-if printf '%s\n' "$WF_ALLOWED" | python3 -c "import json,sys; sys.exit(0 if 'needs-human-review' in json.load(sys.stdin) else 1)"; then
-  ok "issue-triage.md: allowed list contains 'needs-human-review'"
+if printf '%s\n' "$WF_ALLOWED" | python3 -c "import json,sys; sys.exit(0 if 'needs-human-review' not in json.load(sys.stdin) else 1)"; then
+  ok "issue-triage.md: allowed list does not contain 'needs-human-review' (#1778)"
 else
-  fail "issue-triage.md: allowed list must contain 'needs-human-review'" \
-    "got: $WF_ALLOWED"
+  fail "issue-triage.md: allowed list must not contain 'needs-human-review' (#1778)" \
+    "triage must not apply the needs-human-review hold; got: $WF_ALLOWED"
 fi
 
 # ---------------------------------------------------------------------------
@@ -188,21 +194,25 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Test 11: safe-output accepts 'needs-human-review' as a valid label
-# Ensures the fix from test 8 is end-to-end valid through safe-output apply.
+# Test 11: safe-output REJECTS 'needs-human-review' from a triage result (#1778)
+# This is the drift-proof half of the fix (AC #2): even if the triage prompt is
+# later edited to emit the hold label, safe-output apply must reject it because
+# it is not in issue-triage's allowed set. A prompt-only rule would drift; this
+# makes the guarantee code-level.
 # ---------------------------------------------------------------------------
 tmp=$(mktemp)
 printf '{"labels":["needs-human-review"],"comment":"Thank you for the report!"}' > "$tmp"
 mock_dir=$(mktemp -d)
 printf '#!/bin/sh\nexit 0\n' > "$mock_dir/gh"
 chmod +x "$mock_dir/gh"
+status=0
 output=$(PATH="$mock_dir:$PATH" ISSUE_NUMBER=1 GITHUB_REPOSITORY=example/repo \
-  bash "$REPO_ROOT/scripts/aw.sh" safe-output apply issue-triage "$tmp" 2>&1 || true)
+  bash "$REPO_ROOT/scripts/aw.sh" safe-output apply issue-triage "$tmp" 2>&1) || status=$?
 rm -rf "$mock_dir"
-if echo "$output" | grep -q "validation passed"; then
-  ok "safe-output: 'needs-human-review' is a valid allowed label"
+if [[ $status -eq 1 ]] && echo "$output" | grep -q "rejected"; then
+  ok "safe-output: triage result with 'needs-human-review' is rejected (#1778)"
 else
-  fail "safe-output: 'needs-human-review' should be accepted as a valid label" "got: $output"
+  fail "safe-output: triage must not be able to apply the 'needs-human-review' hold (#1778)" "got (status=$status): $output"
 fi
 rm -f "$tmp"
 
