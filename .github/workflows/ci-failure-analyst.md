@@ -8,10 +8,7 @@ permissions:
   checks: read
   contents: read
 
-engine: claude
-
-models:
-  claude: [claude-sonnet-4-6]
+engine: claude-sonnet-4-6
 
 tools:
   github:
