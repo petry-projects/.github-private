@@ -915,3 +915,202 @@ status_ctx_req() {
   run compute_ci_status "$r"
   [ "$output" = "passing" ]
 }
+
+# ---------------------------------------------------------------------------
+# Ruleset-derived required-set gating (#1795). The rollup's own .isRequired field
+# is not reliably populated for ruleset-protected branches (a ruleset, not classic
+# protection, so the field is often absent — the #1795 deadlock: the fallback then
+# reverts to all-external and template-drift blocks every PR again). The authoritative
+# signal is the branch ruleset's required-status-check contexts, read from the API
+# and passed to compute_ci_status as a second arg. When that set is NON-EMPTY the
+# gate is the UNION of (name ∈ ruleset set) OR (.isRequired == true) — never narrower
+# than either source, so a genuinely-required check can never slip the gate. When the
+# set is empty/absent (API unreadable — fail closed), the existing .isRequired-then-all
+# fallback applies (today's behaviour).
+# ---------------------------------------------------------------------------
+
+# The five contexts the main ruleset requires today (issue #1795). Passed as the
+# required-name set; template-drift is deliberately NOT among them.
+REQUIRED_SET='["SonarCloud","CodeQL","agent-shield / AgentShield","dependency-audit / Detect ecosystems","duplicate-decl-gate"]'
+
+@test "#1795 ruleset gating: all required green + non-required 'template-drift' FAILURE → passing" {
+  local r
+  r=$(rollup \
+    "$(check_run "SonarCloud" "COMPLETED" "SUCCESS")" \
+    "$(check_run "CodeQL" "COMPLETED" "SUCCESS")" \
+    "$(check_run "agent-shield / AgentShield" "COMPLETED" "SUCCESS")" \
+    "$(check_run "dependency-audit / Detect ecosystems" "COMPLETED" "SUCCESS")" \
+    "$(check_run "duplicate-decl-gate" "COMPLETED" "SUCCESS")" \
+    "$(check_run "template-drift" "COMPLETED" "FAILURE")")
+  run compute_ci_status "$r" "$REQUIRED_SET"
+  [ "$output" = "passing" ]
+}
+
+@test "#1795 ruleset gating: a red REQUIRED check (name in ruleset set) → failing" {
+  local r
+  r=$(rollup \
+    "$(check_run "SonarCloud" "COMPLETED" "FAILURE")" \
+    "$(check_run "CodeQL" "COMPLETED" "SUCCESS")" \
+    "$(check_run "template-drift" "COMPLETED" "FAILURE")")
+  run compute_ci_status "$r" "$REQUIRED_SET"
+  [ "$output" = "failing" ]
+}
+
+@test "#1795 ruleset gating: a pending REQUIRED check → pending (non-required red ignored)" {
+  local r
+  r=$(rollup \
+    "$(check_run "CodeQL" "IN_PROGRESS")" \
+    "$(check_run "template-drift" "COMPLETED" "FAILURE")")
+  run compute_ci_status "$r" "$REQUIRED_SET"
+  [ "$output" = "pending" ]
+}
+
+# The rollup does NOT carry .isRequired (the real ruleset-branch shape), yet the
+# ruleset set still correctly gates only on the required contexts. This is the exact
+# case #1549's .isRequired fallback could not clear.
+@test "#1795 ruleset gating: no .isRequired anywhere, ruleset set supplied, only non-required red → passing" {
+  local r
+  r=$(rollup \
+    "$(check_run "SonarCloud" "COMPLETED" "SUCCESS")" \
+    "$(check_run "duplicate-decl-gate" "COMPLETED" "SUCCESS")" \
+    "$(check_run "template-drift" "COMPLETED" "FAILURE")")
+  run compute_ci_status "$r" "$REQUIRED_SET"
+  [ "$output" = "passing" ]
+}
+
+# Fail closed: an empty required set (API unreadable) must NOT pass a genuine failure —
+# it reverts to today's all-external behaviour.
+@test "#1795 ruleset gating: empty required set (fail closed) + red non-required → failing" {
+  local r
+  r=$(rollup \
+    "$(check_run "SonarCloud" "COMPLETED" "SUCCESS")" \
+    "$(check_run "template-drift" "COMPLETED" "FAILURE")")
+  run compute_ci_status "$r" '[]'
+  [ "$output" = "failing" ]
+}
+
+# Union safety: even if the ruleset name set is stale/misses a context, a rollup
+# entry GitHub flagged .isRequired:true is still gated (never weakens what blocks).
+@test "#1795 ruleset gating: union honours .isRequired even when name not in ruleset set → failing" {
+  local r
+  r=$(rollup \
+    "$(check_run_req "some-new-required-check" "COMPLETED" "FAILURE" true)" \
+    "$(check_run "template-drift" "COMPLETED" "FAILURE")")
+  run compute_ci_status "$r" "$REQUIRED_SET"
+  [ "$output" = "failing" ]
+}
+
+@test "#1795 ruleset gating: own/agent checks still filtered when ruleset set supplied" {
+  local r
+  r=$(rollup \
+    "$(check_run "review / review" "COMPLETED" "FAILURE")" \
+    "$(check_run "dev-lead / dispatch" "COMPLETED" "FAILURE")" \
+    "$(check_run "SonarCloud" "COMPLETED" "SUCCESS")" \
+    "$(check_run "CodeQL" "COMPLETED" "SUCCESS")" \
+    "$(check_run "agent-shield / AgentShield" "COMPLETED" "SUCCESS")" \
+    "$(check_run "dependency-audit / Detect ecosystems" "COMPLETED" "SUCCESS")" \
+    "$(check_run "duplicate-decl-gate" "COMPLETED" "SUCCESS")" \
+    "$(check_run "template-drift" "COMPLETED" "FAILURE")")
+  run compute_ci_status "$r" "$REQUIRED_SET"
+  [ "$output" = "passing" ]
+}
+
+# ---------------------------------------------------------------------------
+# ci_nonrequired_failures (#1795 AC #4) — names the failing external checks that
+# are neither in the ruleset required set nor flagged .isRequired, so a review that
+# proceeds past a red advisory check can name it (never silently ignore it).
+# ---------------------------------------------------------------------------
+
+@test "ci_nonrequired_failures: names a red non-required check" {
+  local r
+  r=$(rollup \
+    "$(check_run "SonarCloud" "COMPLETED" "SUCCESS")" \
+    "$(check_run "template-drift" "COMPLETED" "FAILURE")")
+  run ci_nonrequired_failures "$r" "$REQUIRED_SET"
+  [ "$output" = "template-drift" ]
+}
+
+@test "ci_nonrequired_failures: a red REQUIRED check is NOT named (it blocks, not ignored)" {
+  local r
+  r=$(rollup \
+    "$(check_run "SonarCloud" "COMPLETED" "FAILURE")" \
+    "$(check_run "template-drift" "COMPLETED" "FAILURE")")
+  run ci_nonrequired_failures "$r" "$REQUIRED_SET"
+  [ "$output" = "template-drift" ]
+}
+
+@test "ci_nonrequired_failures: nothing failing → empty" {
+  local r
+  r=$(rollup \
+    "$(check_run "SonarCloud" "COMPLETED" "SUCCESS")" \
+    "$(check_run "template-drift" "COMPLETED" "SUCCESS")")
+  run ci_nonrequired_failures "$r" "$REQUIRED_SET"
+  [ -z "$output" ]
+}
+
+@test "ci_nonrequired_failures: own/agent red checks are not named" {
+  local r
+  r=$(rollup \
+    "$(check_run "review / review" "COMPLETED" "FAILURE")" \
+    "$(check_run "dev-lead / dispatch" "COMPLETED" "FAILURE")" \
+    "$(check_run "template-drift" "COMPLETED" "FAILURE")")
+  run ci_nonrequired_failures "$r" "$REQUIRED_SET"
+  [ "$output" = "template-drift" ]
+}
+
+# ---------------------------------------------------------------------------
+# ruleset_required_checks (#1795): the required set now lives in this lib so every
+# compute_ci_status caller (review-one-pr.sh, the stuck-review sweep, the
+# stall/merge-ready scans) reads the SAME authoritative set — closing the deadlock
+# on the callers that previously passed only the rollup and so reverted to blocking
+# on red non-required checks.
+# ---------------------------------------------------------------------------
+
+# Install a gh stub on PATH that returns a required-context array from the ruleset
+# endpoint (and 404s the classic-protection fallback) and records each invocation.
+_install_gh_ruleset_stub() {
+  GH_CALL_LOG="$BATS_TEST_TMPDIR/gh_calls.log"; : > "$GH_CALL_LOG"
+  mkdir -p "$BATS_TEST_TMPDIR/bin"
+  cat > "$BATS_TEST_TMPDIR/bin/gh" <<EOF
+#!/bin/bash
+printf '%s\n' "\$*" >> "$GH_CALL_LOG"
+if [ "\$1" = "api" ]; then
+  case "\$2" in
+    *rules/branches*) printf '%s' '["SonarCloud","CodeQL"]'; exit 0 ;;
+    *protection*) exit 1 ;;
+  esac
+fi
+exit 0
+EOF
+  chmod +x "$BATS_TEST_TMPDIR/bin/gh"
+  export PATH="$BATS_TEST_TMPDIR/bin:$PATH"
+}
+
+@test "ruleset_required_checks: reads the ruleset API and returns its contexts" {
+  _install_gh_ruleset_stub
+  run ruleset_required_checks "petry-projects/.github-private" "main"
+  [ "$output" = '["SonarCloud","CodeQL"]' ]
+  grep -q 'api repos/petry-projects/.github-private/rules/branches/main' "$GH_CALL_LOG"
+}
+
+@test "ruleset_required_checks: empty repo or branch returns empty (no API call)" {
+  _install_gh_ruleset_stub
+  run ruleset_required_checks "" "main"
+  [ -z "$output" ]
+  [ ! -s "$GH_CALL_LOG" ]
+}
+
+# End-to-end #1795 for a loop caller: its required set (from ruleset_required_checks)
+# fed into compute_ci_status lets a green-required PR pass even with a red
+# non-required template-drift — the deadlock closed on the sweep/scan paths.
+@test "ruleset_required_checks + compute_ci_status: red non-required check does not block" {
+  _install_gh_ruleset_stub
+  local req r
+  req=$(ruleset_required_checks "petry-projects/.github-private" "main")
+  r=$(rollup \
+    "$(check_run "SonarCloud" "COMPLETED" "SUCCESS")" \
+    "$(check_run "CodeQL" "COMPLETED" "SUCCESS")" \
+    "$(check_run "template-drift" "COMPLETED" "FAILURE")")
+  run compute_ci_status "$r" "$req"
+  [ "$output" = "passing" ]
+}
