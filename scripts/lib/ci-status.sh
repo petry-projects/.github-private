@@ -10,21 +10,34 @@
 # (../../interaction-contracts) relative to the script, independent of CWD.
 _CI_STATUS_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# compute_ci_status <rollup_json>
+# compute_ci_status <rollup_json> [required_names_json]
 #
 # Inputs:
 #   $1 — JSON array (the .statusCheckRollup field from `gh pr view`)
+#   $2 — (optional) JSON array of the branch ruleset's required status-check
+#        contexts, read from GET /repos/{owner}/{repo}/rules/branches/{branch}
+#        (#1795). When non-empty this is the AUTHORITATIVE required set.
 #
 # Outputs (stdout): one of "passing", "pending", "failing"
 #
-# Required-check gating (#1549): after own/agent filtering, if the rollup marks
-# any remaining check required (its .isRequired field, which GitHub computes from
-# the branch's rulesets AND classic protection), classification gates ONLY on
-# those required checks — a red NON-required check (a superseded
-# 'dev-lead / dispatch', or 'template-drift' from a repo-template Dependabot bump)
-# no longer blocks the review that would approve an otherwise-green PR. When no
-# remaining check is flagged required (isRequired absent, or no protection), the
-# gate falls back to evaluating every external check (fail-safe, unchanged).
+# Required-check gating (#1549, #1795): after own/agent filtering, classification
+# gates ONLY on the REQUIRED checks — a red NON-required check (a superseded
+# 'dev-lead / dispatch', or 'template-drift' from a repo-template Dependabot bump /
+# a standards baseline move) no longer blocks the review that would approve an
+# otherwise-green PR.
+#
+# The required set is the UNION of two signals, so it is never narrower than either:
+#   • ruleset names ($2) — the authoritative source read from the branch ruleset
+#     API by the caller (review-one-pr.sh). This repo protects `main` with a
+#     ruleset, not classic protection, so the rollup's own .isRequired field is
+#     frequently ABSENT (the #1795 deadlock: with nothing flagged required the
+#     #1549 fallback reverts to all-external and template-drift blocks every PR).
+#   • .isRequired == true — GitHub's per-entry verdict, honoured whenever present
+#     so a genuinely-required check can never slip the gate even if the ruleset
+#     name set is stale or a context string does not match.
+# When BOTH are empty (caller passed nothing / the ruleset API was unreadable —
+# fail closed), the gate falls back to evaluating EVERY external check (today's
+# behaviour, fail-safe): a genuine failure is never silently passed.
 #
 # Classification rules (after filtering own checks, over the gated set):
 #   passing — empty rollup, or every item is SUCCESS/SKIPPED/NEUTRAL/CANCELLED
@@ -135,9 +148,14 @@ _ci_status_agent_roles_json() {
 
 compute_ci_status() {
   local rollup_json="${1:-[]}"
+  local required_names="${2:-[]}"
   local agent_roles
   agent_roles="$(_ci_status_agent_roles_json)"
-  jq -r --argjson agent_roles "$agent_roles" "
+  # Normalise the ruleset required-name set: anything that is not a JSON array
+  # (empty string, malformed) becomes [] so the union degrades to the .isRequired
+  # fallback (fail closed) rather than erroring.
+  required_names="$(jq -c 'if type == "array" then . else [] end' <<< "$required_names" 2>/dev/null || echo '[]')"
+  jq -r --argjson agent_roles "$agent_roles" --argjson required_names "$required_names" "
     # A check carrying a non-empty conclusion is terminal, whatever its status
     # says (#1427, AC #3): GitHub can report a zombie check as IN_PROGRESS while
     # already carrying a terminal conclusion (observed on PR #1426:
@@ -159,14 +177,16 @@ compute_ci_status() {
     # not a real merge-readiness signal.
     def is_cancelled:
       .conclusion == \"CANCELLED\";
-    # A rollup entry is required iff GitHub marks it required for THIS PR — the
-    # .isRequired field on the statusCheckRollup entry, which reflects the target
-    # branch's rulesets AND classic branch protection combined (#1549). Gating on
-    # it means a red NON-required check (a superseded 'dev-lead / dispatch', or
-    # 'template-drift' from a repo-template Dependabot bump) no longer blocks the
-    # review that would post the approval — the circular skip in #1549.
+    # A rollup entry is required iff EITHER the branch ruleset names it (its
+    # .name/.context is in \$required_names, read from the ruleset API — #1795) OR
+    # GitHub flags the entry .isRequired == true (#1549). The union is never
+    # narrower than either signal, so a genuinely-required check can never slip the
+    # gate; a red NON-required check ('dev-lead / dispatch', or 'template-drift'
+    # from a baseline move / repo-template Dependabot bump) no longer blocks the
+    # review that would post the approval — the circular skip in #1549/#1795.
     def is_required:
-      (.isRequired == true);
+      (.isRequired == true) or
+      (((.name // .context // \"\") as \$n | (\$required_names | index(\$n)) != null));
     # Classify a list of checks: pending dominates, then all-green/cancelled,
     # else failing. An empty set is passing (nothing left to gate on).
     def classify(\$set):
@@ -190,6 +210,52 @@ compute_ci_status() {
       classify(\$gate)
     end
   " <<< "$rollup_json" 2>/dev/null || echo "passing"
+}
+
+# ci_nonrequired_failures <rollup_json> [required_names_json]
+#
+# Surfacing helper for #1795 AC #4: emit (one per line) the names of external
+# (non-own, non-agent) checks that are FAILING but NOT required — i.e. neither in
+# the ruleset required-name set ($2) nor flagged .isRequired. These are the red
+# advisory checks a review proceeds PAST; the caller logs them and names them in
+# the review body so "ignored" never means "unmentioned". A failing check is any
+# terminal/non-success entry that is not pending, success/skipped/neutral, or
+# cancelled — mirroring compute_ci_status's classification so the two never drift.
+ci_nonrequired_failures() {
+  local rollup_json="${1:-[]}"
+  local required_names="${2:-[]}"
+  local agent_roles
+  agent_roles="$(_ci_status_agent_roles_json)"
+  required_names="$(jq -c 'if type == "array" then . else [] end' <<< "$required_names" 2>/dev/null || echo '[]')"
+  jq -r --argjson agent_roles "$agent_roles" --argjson required_names "$required_names" "
+    def is_terminal:
+      (.conclusion != null and .conclusion != \"\");
+    def is_pending:
+      (is_terminal | not) and (
+        .status == \"IN_PROGRESS\" or .status == \"QUEUED\" or .status == \"WAITING\" or
+        .status == \"COMPLETED\"  or
+        .state  == \"PENDING\"     or .state  == \"EXPECTED\"
+      );
+    def is_success:
+      .conclusion == \"SUCCESS\" or .conclusion == \"SKIPPED\" or .conclusion == \"NEUTRAL\" or
+      .state == \"SUCCESS\";
+    def is_cancelled:
+      .conclusion == \"CANCELLED\";
+    def is_required:
+      (.isRequired == true) or
+      (((.name // .context // \"\") as \$n | (\$required_names | index(\$n)) != null));
+    $_CI_STATUS_JQ_IS_OWN_CHECK
+    $_CI_STATUS_JQ_IS_AGENT_CHECK
+    if (. == null or (type != \"array\")) then empty
+    else
+      .[]
+      | select((is_own_check or is_agent_check) | not)
+      | select(is_required | not)
+      | select((is_pending or is_success or is_cancelled) | not)
+      | (.name // .context // \"\")
+      | select(length > 0)
+    end
+  " <<< "$rollup_json" 2>/dev/null || true
 }
 
 # ci_pending_age_exceeded <rollup_json> <max_age_sec> [now_epoch]
