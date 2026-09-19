@@ -14,7 +14,7 @@ All of this happens within 60 seconds of the issue being opened.
 
 ## Allowed labels
 
-`bug`, `enhancement`, `documentation`, `question`, `needs-triage`, `good-first-issue`, `security`
+`bug`, `enhancement`, `documentation`, `question`, `good-first-issue`, `security`
 
 ## Files
 

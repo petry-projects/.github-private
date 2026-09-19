@@ -135,6 +135,7 @@ jobs:
             tests/test_holdout_guard.bats \
             tests/test_shadow_compare.bats \
             tests/test_skill_eval_report.bats \
+            tests/test_discover_parity_skills.bats \
             tests/test_eval_health_notify.bats \
             tests/test_consumer_manifest.bats \
             tests/test_downstream_impact_map.bats \
@@ -404,17 +405,16 @@ jobs:
         run: python3 personas/validate-personas.py personas
 
   validate-eval-cases:
-    # Tree-wide per-case eval schema gate (#1645 AC #6). Per-case schema
-    # conformance was only ever checked in the validator's FILE mode, which
-    # nothing in CI invoked — so a non-conforming held-out set (qa-lead's) sat
-    # green for six weeks. This runs `validate-cases.py --schema-tree`, which
-    # validates every case in every split against evals/case.schema.json. It is
-    # deliberately SCOPED: SCHEMA_TREE_ALLOWLIST in the validator exempts the
-    # other 11 skills whose cases do not yet conform (that reconciliation is
-    # #1651's job), so the gate protects qa-lead now without failing every
-    # unrelated PR. When #1651 empties the allowlist, this gate covers the whole
-    # fleet unchanged. Fully HERMETIC (in-repo files + case.schema.json, no
-    # network). PR-triggered on the existing Lint workflow — no new cron.
+    # Tree-wide per-case eval schema gate (#1645 AC #6; fleet-wide since #1651).
+    # Per-case schema conformance was only ever checked in the validator's FILE
+    # mode, which nothing in CI invoked — so a non-conforming held-out set
+    # (qa-lead's) sat green for six weeks. This runs `validate-cases.py
+    # --schema-tree`, which validates every case in every split against its
+    # resolved schema: the per-skill evals/<skill>/case.schema.json when present,
+    # else the root evals/case.schema.json. #1651 removed the schema-tree allowlist,
+    # so the gate now covers the whole fleet with no exemptions. Fully HERMETIC
+    # (in-repo files + schemas, no network). PR-triggered on the existing Lint
+    # workflow — no new cron.
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
