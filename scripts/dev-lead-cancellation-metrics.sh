@@ -70,10 +70,12 @@ compute_cancellation_metrics() {
       }'
 }
 
-# fetch_dev_lead_runs <repo> <workflow_file> — all runs for the workflow (paged).
+# fetch_dev_lead_runs <repo> <workflow_file> [since_iso] [until_iso] — runs for the workflow (paged, filtered by created time).
 fetch_dev_lead_runs() {
-  local repo="$1" wf="$2"
-  gh api --paginate "repos/${repo}/actions/workflows/${wf}/runs?per_page=100" \
+  local repo="$1" wf="$2" since="${3:-}" until="${4:-}"
+  gh api --paginate "repos/${repo}/actions/workflows/${wf}/runs" \
+    ${since:+--field "created=>=${since}"} ${until:+--field "created:<=${until}"} \
+    --field per_page=100 \
     --jq '[.workflow_runs[] | {conclusion, status, created_at, updated_at, run_started_at, event}]' \
     2>/dev/null | jq -s 'add // []'
 }
@@ -94,7 +96,7 @@ main() {
   echo "[metrics] window ${since_iso} .. ${until_iso}  never_ran_threshold=${NEVER_RAN_SEC}s"
 
   local runs windowed metrics
-  runs=$(fetch_dev_lead_runs "$repo" "$wf")
+  runs=$(fetch_dev_lead_runs "$repo" "$wf" "$since_iso" "$until_iso")
   windowed=$(filter_runs_in_window "$runs" "$since_iso" "$until_iso")
   metrics=$(compute_cancellation_metrics "$windowed" "$NEVER_RAN_SEC")
 
