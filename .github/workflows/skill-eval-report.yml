@@ -22,8 +22,16 @@ name: Skill Eval Report
 on:
   schedule:
     # Daily at 07:51 UTC — offset from daily-pr-review-health (06:13) so the two
-    # scheduled health reports do not contend for the same runner window.
+    # scheduled health reports do not contend for the same runner window. This
+    # cron scores the Haiku-tier `triage` holdout ONLY (see the `discover` job):
+    # cheap, unattended, and unchanged by #1702.
     - cron: '51 7 * * *'
+    # Weekly persona-parity tripwire (#1702) — Sunday 09:23 UTC. Off-peak and
+    # distinct from the daily 07:51 run and from apply-repo-settings (Mon 06:17),
+    # so the schedules do not contend (AGENTS.md "Scheduled workflows"). This
+    # cron scores every skill whose evals/<skill>/scorer.json declares
+    # `"engine": "persona"` — DISCOVERED, not hardcoded — at the parity tier.
+    - cron: '23 9 * * 0'
   workflow_dispatch:
     inputs:
       skill:
@@ -33,23 +41,67 @@ on:
         type: string
 
 # Least-privilege: reset the default write-all grant to nothing at the top
-# level; the single job re-grants only the read scope it needs.
+# level; each job re-grants only the scope it needs.
 permissions: {}
 
-concurrency:
-  group: skill-eval-report
-  cancel-in-progress: true
-
 jobs:
-  eval-report:
+  # Resolve the matrix of skills to score for THIS trigger (AC #3). The weekly
+  # persona-parity cron discovers the parity set from scorer.json; every other
+  # trigger (the daily triage cron and manual dispatch) scores exactly one skill
+  # — the dispatched `skill` input, or `triage` by default — so the daily path
+  # is behaviourally unchanged (AC #2).
+  discover:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    permissions:
+      contents: read  # actions/checkout
+    outputs:
+      skills: ${{ steps.pick.outputs.skills }}
+    steps:
+      - name: Checkout agent repo
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Resolve skill matrix
+        id: pick
+        env:
+          # inputs.skill is set only on workflow_dispatch; 'triage' otherwise.
+          SKILL_DEFAULT: ${{ inputs.skill || 'triage' }}
+        run: |
+          set -o pipefail
+          if [ "${{ github.event.schedule }}" = '23 9 * * 0' ]; then
+            # Weekly parity cadence: derive the persona set from scorer.json.
+            skills="$(bash scripts/evals/discover-parity-skills.sh)"
+          else
+            # Daily cron / dispatch: a single skill, JSON-encoded for the matrix.
+            skills="$(jq -cn --arg s "$SKILL_DEFAULT" '[$s]')"
+          fi
+          echo "skills=$skills" >> "$GITHUB_OUTPUT"
+          echo "resolved skill matrix: $skills"
+
+  eval-report:
+    needs: discover
+    runs-on: ubuntu-latest
+    timeout-minutes: 20  # per-job: with the matrix this applies per skill
+    strategy:
+      # One skill's infra error or regression must NOT abort scoring of the
+      # others — each skill is an independent report row (AC #5, #1702 hazard 2).
+      fail-fast: false
+      matrix:
+        skill: ${{ fromJson(needs.discover.outputs.skills) }}
+    # Key the concurrency group by event AND skill so the daily triage run and
+    # the weekly per-skill runs never cancel each other, and matrix siblings do
+    # not cancel themselves (#1702 hazard 1; AC #2). Job-level because the group
+    # references matrix.skill, which is unavailable at workflow level.
+    concurrency:
+      group: skill-eval-report-${{ github.event_name }}-${{ matrix.skill }}
+      cancel-in-progress: true
     permissions:
       contents: read  # actions/checkout
       issues: write   # notify step opens/updates/closes the single eval-health tracking issue (#747)
     env:
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-      SKILL: ${{ inputs.skill || 'triage' }}
+      SKILL: ${{ matrix.skill }}
       # Pin via vars.CLAUDE_CODE_VERSION for reproducible caching; default
       # 'latest' caches an install indefinitely — flush via the Actions cache
       # UI or bump the variable to pick up new releases. Mirrors pr-review.yml.
@@ -137,9 +189,13 @@ jobs:
               passed=$(jq -r '.passed' eval-report.json)
               total=$(jq -r '.total'  eval-report.json)
               failed=$(jq -r '.failed' eval-report.json)
-              echo "| skill | score | passed | failed | total |"
-              echo "|-------|-------|--------|--------|-------|"
-              echo "| \`${SKILL}\` | ${score} | ${passed} | ${failed} | ${total} |"
+              # Record WHICH tier scored this skill so a number is never
+              # ambiguous about what produced it (#1702 AC #6, #1686 AC #1).
+              tier=$(jq -r '.engine_tier // "triage"' eval-report.json)
+              model=$(jq -r '.engine_model_observed // .engine_model // "unknown"' eval-report.json)
+              echo "| skill | tier | model | score | passed | failed | total |"
+              echo "|-------|------|-------|-------|--------|--------|-------|"
+              echo "| \`${SKILL}\` | \`${tier}\` | \`${model}\` | ${score} | ${passed} | ${failed} | ${total} |"
               if [ "${failed}" != "0" ]; then
                 echo ""
                 echo "### Regressed cases"
