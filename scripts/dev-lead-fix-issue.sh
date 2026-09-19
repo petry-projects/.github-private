@@ -12,6 +12,9 @@ source "$(dirname "$0")/lib/premature-closure-detect.sh"
 # required description sections so the PR is not escalated by triage for a
 # description gap.
 source "$(dirname "$0")/lib/dev-lead-pr-body.sh"
+# net_diff_is_empty / net_diff_summary (#1786): refuse to open/claim a PR whose
+# three-dot net diff against base is empty.
+source "$(dirname "$0")/lib/net-diff-guard.sh"
 
 ISSUE_NUMBER="${ISSUE_NUMBER:-}"
 REPO="${REPO:-${GITHUB_REPOSITORY:-}}"
@@ -235,7 +238,7 @@ checkpoint_push_partial_work() {
 # returns — exits 2 for rate-limit, 1 otherwise (exit semantics unchanged).
 handle_engine_failure() {
   local engine_rc="$1"
-  rm -f "$prompt_file"
+  rm -f "${prompt_file:-}"
 
   # Cause class from the engine layer; default to engine-error if the sidecar is
   # absent (e.g. an older engine.sh). exit 2 always means rate-limited.
@@ -479,18 +482,54 @@ This issue stays labeled \`dev-lead\` and will be re-attempted automatically onc
 the queue drains — no action is required." 2>/dev/null || true
 }
 
-# post_completion_claim <pr_url> <head_sha>
+# abort_empty_net_diff <base_ref>
+# The implementation pass produced NO net change against the base (the three-dot
+# `origin/<base>...HEAD` diff is empty), so opening a PR now would either be empty
+# or — if it carried self-cancelling commits — auto-close this issue via
+# `Closes #N` while nothing is actually fixed (#1786, slice 1 of #1620). Refuse:
+# push nothing, open no PR, post no completion claim; label the issue for a human
+# and explain why. Never returns — exits 1.
+abort_empty_net_diff() {
+  local base_ref="$1"
+  echo "::error::Empty net diff: issue #${ISSUE_NUMBER}'s branch has no net change against origin/${base_ref} — refusing to open an empty/self-cancelling PR (#1786)"
+  ensure_needs_human_label
+  local run_url="${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-$REPO}/actions/runs/${GITHUB_RUN_ID:-}"
+  gh issue comment "$ISSUE_NUMBER" --repo "$REPO" --body "<!-- dev-lead-issue ${ISSUE_NUMBER} status=needs-human reason=empty-net-diff run=${GITHUB_RUN_ID:-} -->
+## Dev-Lead: no net change — not opening a PR for issue #${ISSUE_NUMBER}
+
+The implementation pass produced **no net difference** against \`${base_ref}\`: the three-dot \`origin/${base_ref}...HEAD\` diff is empty (zero changed files). This happens when a change is made and then reverted in the same branch. Opening a PR now would either be empty or, if it carried self-cancelling commits, auto-close this issue via \`Closes #${ISSUE_NUMBER}\` while the work remains undone (#1786).
+
+**No branch was pushed, no pull request was opened, and no completion claim was posted.** This issue is labeled \`${NEEDS_HUMAN_LABEL}\` for human attention.
+
+- **Run:** ${run_url}" 2>/dev/null || true
+  rm -f "${prompt_file:-}"
+  exit 1
+}
+
+# post_completion_claim <pr_url> <head_sha> [base_ref]
 # Post the DURABLE completion record (#1445, AC #1/#2) — only ever called AFTER
 # the work is durable (commits pushed + PR opened). It carries a machine-readable
 # marker plus the two verifiable artifacts (PR number + head SHA) so a reader can
 # confirm it in one click and the #1445 audit can check it mechanically. This is
 # the ONLY completion claim the pipeline posts; the engine's own Phase-6 note is
 # explicitly provisional (see prompts/dev-lead/fix-issue.md).
+#
+# #1786: the claim must NEVER post when the net diff against base is empty, and
+# must state the net change (file count + line delta) so the record is falsifiable
+# rather than an unqualified "complete".
 post_completion_claim() {
-  local pr_url="$1" head_sha="$2" pr_number run_url
+  local pr_url="$1" head_sha="$2" base_ref="${3:-${BASE_REF:-main}}" pr_number run_url
+  # Belt-and-suspenders (#1786): the PR-open guard already aborts on an empty net
+  # diff before this is reached, but never assert completion for a net-zero PR.
+  if net_diff_is_empty "$base_ref"; then
+    echo "::warning::Skipping completion claim for issue #${ISSUE_NUMBER}: net diff against origin/${base_ref} is empty (#1786)"
+    return 0
+  fi
   pr_number=$(printf '%s' "$pr_url" | sed -nE 's#.*/pull/([0-9]+).*#\1#p')
   [ -n "$pr_number" ] || pr_number="unknown"
   run_url="${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-$REPO}/actions/runs/${GITHUB_RUN_ID:-}"
+  local net_change
+  net_change=$(net_diff_summary "$base_ref")
   gh issue comment "$ISSUE_NUMBER" --repo "$REPO" --body "<!-- dev-lead-issue ${ISSUE_NUMBER} status=completed pr=${pr_number} sha=${head_sha} run=${GITHUB_RUN_ID:-} -->
 ## Dev-Lead: Implementation Complete — PR #${pr_number}
 
@@ -498,6 +537,7 @@ The implementation for issue #${ISSUE_NUMBER} is **durable**: commits are pushed
 
 - **Pull request:** ${pr_url}
 - **Head commit:** \`${head_sha}\`
+- **Net change against \`${base_ref}\`:** ${net_change}
 - **Run:** ${run_url}
 
 Review happens on the PR. Acceptance criteria and test results are evidenced by the PR's diff and CI checks — not asserted here. If a later stage fails, this claim is retracted in place." 2>/dev/null || true
@@ -542,7 +582,7 @@ main() {
 
   if [ "$DEV_LEAD_DRY_RUN" = "true" ]; then
     echo "[dry-run] fix-issue: would implement issue #${ISSUE_NUMBER} using prompt: $prompt_file"
-    rm -f "$prompt_file"
+    rm -f "${prompt_file:-}"
     exit 0
   fi
 
@@ -554,7 +594,7 @@ main() {
   if ! admission_gate_allows; then
     echo "::notice::PR-limit gate: deferring issue #${ISSUE_NUMBER} — org-wide automation PR cap reached; left labeled dev-lead for retry"
     post_deferral_comment
-    rm -f "$prompt_file"
+    rm -f "${prompt_file:-}"
     exit 0
   fi
 
@@ -586,7 +626,7 @@ main() {
 
   if ! $has_uncommitted && ! $has_unpushed; then
     echo "::notice::No changes made for issue #${ISSUE_NUMBER}"
-    rm -f "$prompt_file"
+    rm -f "${prompt_file:-}"
     exit 0
   fi
 
@@ -613,7 +653,7 @@ ${lint_output}
 
 **To retry:** fix the lint errors locally (or re-apply the \`dev-lead\` label — the agent will try again)."
     gh issue comment "$ISSUE_NUMBER" --repo "$REPO" --body "$_lint_body" 2>/dev/null || true
-    rm -f "$prompt_file"
+    rm -f "${prompt_file:-}"
     exit 1
   fi
 
@@ -621,6 +661,17 @@ ${lint_output}
     git add -A
     git commit -m "feat: implement issue #${ISSUE_NUMBER} — ${ISSUE_TITLE}"
   fi
+
+  # Empty net-diff guard (#1786, slice 1 of #1620): before pushing or opening a
+  # PR, verify the branch introduces a real net change against base. Use the
+  # three-dot compare (origin/<base>...HEAD) — NOT the file list — so a change
+  # made and then reverted (net-zero) is caught. On an empty net diff, push
+  # nothing, open no PR, and escalate to a human (never a self-cancelling PR).
+  local base_ref="${BASE_REF:-main}"
+  if net_diff_is_empty "$base_ref"; then
+    abort_empty_net_diff "$base_ref"
+  fi
+
   git push --set-upstream origin "$branch"
 
   # Head SHA of the durable, pushed work — the verifiable artifact the completion
@@ -667,9 +718,9 @@ ${lint_output}
   # and the PR is open — and referencing the PR number + head SHA. Ordering this
   # after the push/PR is the fix for the #1407 defect where a detailed "Completed"
   # claim was published before the work was durable and then lost to a timeout.
-  post_completion_claim "$pr_url" "$head_sha"
+  post_completion_claim "$pr_url" "$head_sha" "$base_ref"
 
-  rm -f "$prompt_file"
+  rm -f "${prompt_file:-}"
 }
 
 main "$@"
