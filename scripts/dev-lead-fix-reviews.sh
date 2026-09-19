@@ -27,6 +27,9 @@ source "$(dirname "$0")/lib/maintainer-comment-gate.sh"
 # Structured PR-body backfill (#1805): heal an existing PR whose body is still
 # missing 3+ required description sections, once, marker-keyed.
 source "$(dirname "$0")/lib/dev-lead-pr-body.sh"
+# Rebase exhaustion handling (#865): abort cleanly on hard conflicts instead of
+# timing out (exit 124), and dampen sentinel bursts.
+source "$(dirname "$0")/lib/rebase-exhaustion.sh"
 
 INTENT_TYPE="${INTENT_TYPE:-fix-reviews}"
 PR_NUMBER="${PR_NUMBER:-}"
@@ -1231,6 +1234,89 @@ detect_conflicting_paths() {
   git merge --abort >/dev/null 2>&1 || true
 }
 
+# ── rebase exhaustion / large-conflict guard (#865) ───────────────────────────
+# A hard/unresolvable rebase conflict used to run the engine to the per-tier
+# timeout (exit 124) instead of aborting, and the auto-rebase-conflict sentinel
+# could re-fire repeatedly — a burst of full-timeout runs. These wrappers pair
+# the gh-api reads/writes with the pure decision helpers in
+# lib/rebase-exhaustion.sh to abort cleanly and cap repeated attempts, mirroring
+# the fix-ci per-PR exhaustion marker.
+REBASE_MAX_FAIL_ATTEMPTS="${REBASE_MAX_FAIL_ATTEMPTS:-2}"
+REBASE_MAX_CONFLICT_FILES="${REBASE_MAX_CONFLICT_FILES:-40}"
+
+# _rebase_comment_bodies: newline-delimited bodies of all PR comments (paginated
+# so markers on busy PRs are not missed).
+_rebase_comment_bodies() {
+  local output
+  output=$(gh api --paginate "repos/${REPO}/issues/${PR_NUMBER}/comments?per_page=100" 2>/dev/null) || return 1
+  printf '%s\n' "$output" | jq -r '.[].body' 2>/dev/null || return 1
+}
+
+# rebase_pr_is_exhausted: exit status distinguishes three states so the caller
+# can fail closed on a retrieval fault instead of treating it as "not exhausted":
+#   0 → exhaustion marker present (skip the engine)
+#   1 → comments retrieved, no marker (safe to proceed)
+#   2 → comment retrieval failed (unknown — caller must not invoke the engine)
+rebase_pr_is_exhausted() {
+  local marker bodies
+  marker="$(rebase_exhaustion_marker "$REVIEWS_MARKER_PREFIX" "$PR_NUMBER")"
+  if ! bodies="$(_rebase_comment_bodies)"; then
+    return 2
+  fi
+  rebase_is_exhausted "$marker" "$bodies"
+}
+
+# post_rebase_exhaustion <reason>: posts the PR-level block so a stuck conflict
+# cannot generate repeated timing-out runs from sentinel re-fires.
+post_rebase_exhaustion() {
+  local reason="$1" marker body
+  marker="$(rebase_exhaustion_marker "$REVIEWS_MARKER_PREFIX" "$PR_NUMBER")"
+  body="${marker}
+## Dev-Lead — rebase (exhausted)
+
+This PR's rebase conflict failed automated resolution **${REBASE_MAX_FAIL_ATTEMPTS}** time(s) (timeouts or unresolvable conflicts). Automated rebasing is paused to stop repeated full-timeout runs from the auto-rebase-conflict sentinel.
+
+**Reason for last failure:** ${reason}
+
+Resolve the conflict manually, then delete this comment to re-enable automated rebasing."
+  if [ "$DEV_LEAD_DRY_RUN" = "true" ]; then
+    echo "[dry-run] would post rebase exhaustion marker"
+    return 0
+  fi
+  gh pr comment "$PR_NUMBER" --repo "$REPO" --body "$body" 2>/dev/null || true
+}
+
+# handle_rebase_failure <reason>: converts a rebase engine failure — a per-tier
+# timeout (exit 124, the #865 defect) or a hard engine error — into a clean
+# terminal abort. It leaves the worktree clean, records a terminal
+# `status=failed` marker (so the retry cron stops re-dispatching this SHA), then
+# posts the PR-level exhaustion marker once failures reach the threshold.
+handle_rebase_failure() {
+  local reason="$1" fail_count bodies
+  # Leave the worktree clean so a lingering half-applied merge can't poison a
+  # later attempt.
+  git merge --abort >/dev/null 2>&1 || true
+  git rebase --abort >/dev/null 2>&1 || true
+  post_reviews_terminal "rebase" "failed" "$reason"
+  # Capture bodies and retrieval status separately: a failed retrieval must not be
+  # passed to rebase_count_failures as valid empty data (it would count 0 and
+  # suppress the exhaustion marker even when the threshold was reached). On a
+  # retrieval fault, fail closed by posting the PR-level block — a stuck conflict
+  # must not keep generating full-timeout sentinel re-fires just because we could
+  # not read the comment history this run.
+  if bodies="$(_rebase_comment_bodies)"; then
+    fail_count="$(rebase_count_failures "$REVIEWS_MARKER_PREFIX" "$PR_NUMBER" "$bodies")"
+    echo "  [rebase] recorded failures on this PR: ${fail_count} (threshold: ${REBASE_MAX_FAIL_ATTEMPTS})"
+    if rebase_should_exhaust "${fail_count:-0}" "$REBASE_MAX_FAIL_ATTEMPTS"; then
+      echo "::warning::rebase exhaustion threshold reached — posting PR-level block to stop sentinel re-fires (#865)"
+      post_rebase_exhaustion "$reason"
+    fi
+  else
+    echo "::warning::could not retrieve PR comments to count rebase failures — failing closed and posting PR-level block to stop sentinel re-fires (#865)"
+    post_rebase_exhaustion "$reason"
+  fi
+}
+
 # expire_stale_terminal_markers: deletes any existing terminal comments (applied,
 # no-changes, or failed) for this SHA+intent before a hard-blocker retry marker is
 # posted. Without this, the retry cron sees a stale terminal and skips re-dispatch
@@ -2032,9 +2118,34 @@ case "$INTENT_TYPE" in
       echo "::error::PR_NUMBER is required for rebase"
       exit 1
     fi
+    # Per-PR exhaustion guard (#865): a stuck conflict must not generate repeated
+    # full-timeout runs from auto-rebase-conflict sentinel re-fires. If this PR's
+    # rebase is already exhausted, skip cleanly before invoking the engine.
+    rebase_exhausted_rc=0
+    rebase_pr_is_exhausted || rebase_exhausted_rc=$?
+    if [ "$rebase_exhausted_rc" -eq 0 ]; then
+      echo "::notice::PR #${PR_NUMBER} rebase is exhausted — skipping (sentinel re-fire guard, #865)"
+      exit 0
+    elif [ "$rebase_exhausted_rc" -eq 2 ]; then
+      # Retrieval fault: we cannot confirm the exhaustion marker is absent, so fail
+      # closed — do not invoke the engine on unknown state. Exit nonzero so the
+      # retry cron re-dispatches once the transient gh-api/jq fault clears.
+      echo "::error::could not retrieve PR #${PR_NUMBER} comments to check rebase exhaustion — failing closed, not invoking engine (#865)"
+      exit 1
+    fi
     git fetch origin "$BASE_REF"
     CONFLICTING_FILES=$(detect_conflicting_paths "$BASE_REF")
     export CONFLICTING_FILES
+    # Up-front large-conflict guard (#865): a conflict spanning more files than
+    # the engine can resolve within the writer-tier timeout is aborted cleanly
+    # here, rather than handed to the engine and left to run to the per-tier
+    # timeout (surfacing as exit 124).
+    rebase_conflict_file_count=$(printf '%s\n' "$CONFLICTING_FILES" | grep -c . || true)
+    if rebase_conflict_too_large "${rebase_conflict_file_count:-0}" "$REBASE_MAX_CONFLICT_FILES"; then
+      echo "::warning::rebase conflict spans ${rebase_conflict_file_count} files (> ${REBASE_MAX_CONFLICT_FILES}) — too large for automated resolution; aborting cleanly (#865)"
+      handle_rebase_failure "Conflict too large for automated resolution: ${rebase_conflict_file_count} files conflict against \`${BASE_REF}\` (limit ${REBASE_MAX_CONFLICT_FILES}). Please rebase manually."
+      exit 1
+    fi
     # Capture the branch tip *before* the resolution so the integrity check can
     # use it as one parent (the base ref is the other) when scanning the resolved
     # tree for introduced duplicate declarations (#1482).
@@ -2042,6 +2153,14 @@ case "$INTENT_TYPE" in
     rc=0
     build_and_run "rebase" || rc=$?
     [ "$rc" -eq 2 ] && handle_rate_limit "rebase"
+    # A per-tier timeout (exit 124) or a hard engine failure means the conflict
+    # was not resolved. Convert it into a clean terminal abort with a comment —
+    # never a bare process-killed exit 124 (#865) — and count it toward the
+    # per-PR exhaustion threshold. (rc==2 already exited via handle_rate_limit.)
+    if [ "$rc" -ne 0 ]; then
+      handle_rebase_failure "$(rebase_failure_reason "$rc")"
+      exit 1
+    fi
     if [ "$rc" -eq 0 ]; then
       # Advisory post-resolution integrity check (#1482): flag, do not block.
       # `|| true` guarantees a detector fault can never fail a real resolution.
