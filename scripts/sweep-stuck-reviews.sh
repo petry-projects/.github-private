@@ -199,7 +199,7 @@ while IFS= read -r pr_url; do
   inspected=$((inspected + 1))
 
   if ! snapshot=$(gh pr view "$pr_url" \
-        --json headRefOid,statusCheckRollup,reviewDecision,reviews,comments,labels 2>/dev/null); then
+        --json headRefOid,baseRefName,statusCheckRollup,reviewDecision,reviews,comments,labels 2>/dev/null); then
     echo "  skip $pr_url — could not fetch PR (deleted, no access, or rate-limited)"
     continue
   fi
@@ -334,7 +334,19 @@ while IFS= read -r pr_url; do
     continue
   fi
 
-  ci_status=$(compute_ci_status "$(jq '.statusCheckRollup' <<< "$snapshot")")
+  # Gate on the branch ruleset's REQUIRED checks (#1795) — same authoritative set
+  # review-one-pr.sh uses. Without it this sweep reverts to blocking on every red
+  # external check, so a non-required `template-drift` failure would keep a green PR
+  # stuck and never re-dispatched (the deadlock #1795 fixes, on the sweep path too).
+  # Fail closed: an unreadable set leaves it empty and compute_ci_status gates on all
+  # failing checks.
+  base_ref=$(jq -r '.baseRefName // ""' <<< "$snapshot")
+  owner_repo=""
+  if [[ "$pr_url" =~ ^https?://[^/]+/([^/]+/[^/]+)/pull/[0-9]+ ]]; then
+    owner_repo="${BASH_REMATCH[1]}"
+  fi
+  required_checks=$(ruleset_required_checks "$owner_repo" "$base_ref" || true)
+  ci_status=$(compute_ci_status "$(jq '.statusCheckRollup' <<< "$snapshot")" "$required_checks")
   if [ "$ci_status" != "passing" ]; then
     echo "  skip $pr_url — CI '$ci_status' (not green yet)"
     continue

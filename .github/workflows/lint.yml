@@ -156,6 +156,7 @@ jobs:
             tests/test_review_one_pr_ci_pending.bats \
             tests/test_review_one_pr_decline_verdict.bats \
             tests/test_review_one_pr_force_ci_failing.bats \
+            tests/test_review_one_pr_nonrequired_gate.bats \
             tests/test_review_one_pr_force_re_review.bats \
             tests/test_review_one_pr_metadata_rearm.bats \
             tests/test_review_one_pr_claim_observe.bats \
