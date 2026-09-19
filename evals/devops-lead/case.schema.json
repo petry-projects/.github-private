@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DevOps-Lead Eval Case",
+  "description": "One held-out eval case for the devops-lead advisory persona: an infrastructure/pipeline-review input paired with its expected risk-tiered advisory. Each line of evals/devops-lead/<split>/cases.jsonl is one object of this shape. The persona classifies a change's operational risk and lands a concrete recommendation, so the expected decision is risk-tiered (risk_tier / escalate / recommend) — NOT the triage {escalate, risk} shape of evals/case.schema.json. This is the trust anchor for the persona's skill-quality measurement and is CODEOWNER-gated separately from any scorer/proposer.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "input", "expected"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+      "minLength": 3,
+      "description": "Stable, unique kebab-case identifier for the case. Unique within a split and disjoint across dev/holdout (enforced by evals/validate-cases.py)."
+    },
+    "description": {
+      "type": "string",
+      "minLength": 5,
+      "description": "Human-readable note on what this case exercises and which devops principle grounds the expected decision."
+    },
+    "tags": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 2 },
+      "uniqueItems": true,
+      "description": "Optional labels for coverage tracking, e.g. the anti-pattern a case exercises ('pipeline-bypass', 'environment-isolation', 'negative')."
+    },
+    "input": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The pre-fetched review context exactly as the advisory consumes it: a self-contained description of the proposed infrastructure/pipeline change under review."
+    },
+    "expected": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["risk_tier", "escalate", "recommend"],
+      "description": "The fixed, reward-hack-resistant expected operational advisory the persona must produce for this change.",
+      "properties": {
+        "risk_tier": {
+          "type": "string",
+          "enum": ["LOW", "MEDIUM", "HIGH"],
+          "description": "Expected operational risk classification. Any HIGH signal must pair with escalate=true."
+        },
+        "escalate": {
+          "type": "boolean",
+          "description": "Whether the advisory must flag the change for escalation (true) or may say no escalation is warranted (false)."
+        },
+        "recommend": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The operational recommendation the advisory must land, grounded in the devops principle the case exercises."
+        }
+      },
+      "if": {
+        "properties": {
+          "risk_tier": { "const": "HIGH" }
+        }
+      },
+      "then": {
+        "properties": {
+          "escalate": { "const": true }
+        }
+      }
+    }
+  }
+}
