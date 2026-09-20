@@ -177,6 +177,47 @@ jobs:
           echo "credential=${credential}" >> "$GITHUB_OUTPUT"
           echo "resolved posting identity for '${PERSONA}': ${account} (${credential})"
 
+      - name: Authorization preflight — fail before paying for the engine
+        # #1776 (split from #1734 AC #5). The identity step above proved the
+        # credential is one we hold a PAT for and RESOLVED which account it acts
+        # as; it did NOT prove that account can WRITE. A credential can
+        # authenticate correctly and still lack authorization to comment — the
+        # exact break that reached `gh api .../comments`, returned 403, and
+        # discarded a paid advisory (#1734), and that silently dropped a
+        # pr-review approval on PR #1788. This step catches that class HERE,
+        # before the engine call below, so paid model work is never produced and
+        # then lost (AC #3, option a — the strongest position).
+        #
+        # The probe is NON-DESTRUCTIVE (AC #2): a single `GET /repos/{owner}/{repo}`
+        # read of `.permissions` for the posting identity — no throwaway content is
+        # ever written. It fails CLOSED only on a definite negative (readable
+        # surface, no write bit) and fails OPEN (warn + proceed) on any
+        # indeterminate result — a 5xx, rate limit, or unreadable surface must not
+        # gate a legitimate advisory (AC #4). Missing/invalid secret is NOT handled
+        # here — it takes the existing early-exit path (the wrapper skips when no
+        # PAT is present; the post step fails closed on it). The credential is
+        # derived per-persona from the manifest (via the identity step), so every
+        # persona is covered without an enumerated list (AC #6).
+        id: authz_preflight
+        if: steps.resolve.outputs.skip == 'false'
+        env:
+          # Same manifest-driven PAT selection as the post step — the token that
+          # WILL post is the token we probe. The agent step never sees these.
+          BOT_PAT: ${{ secrets.DON_PETRY_BOT_GH_PAT }}
+          OWNER_PAT: ${{ secrets.GH_PAT_DON_PETRY }}
+          POSTING_ACCOUNT: ${{ steps.identity.outputs.account }}
+          POSTING_CREDENTIAL: ${{ steps.identity.outputs.credential }}
+          SOURCE_REPO: ${{ inputs.source_repo }}
+        run: |
+          set -euo pipefail
+          if [ "$POSTING_CREDENTIAL" = "DON_PETRY_BOT_GH_PAT" ]; then
+            GH_TOKEN="${BOT_PAT}"
+          else
+            GH_TOKEN="${OWNER_PAT}"
+          fi
+          export GH_TOKEN
+          bash scripts/persona-authz-preflight.sh
+
       - name: Install Claude Code
         if: steps.resolve.outputs.skip == 'false'
         env:
