@@ -44,8 +44,13 @@ setup() {
   [ "$output" = "yes" ]
 }
 
+@test "write capability is 'yes' when triage is true (triage grants comment access)" {
+  run authz_write_capability false false false true
+  [ "$output" = "yes" ]
+}
+
 @test "write capability is 'no' when the surface is present but every write bit is false" {
-  run authz_write_capability false false false
+  run authz_write_capability false false false false
   [ "$output" = "no" ]
 }
 
@@ -101,12 +106,12 @@ setup() {
 
 @test "should_fail is false for AUTHORIZED" {
   run authz_preflight_should_fail AUTHORIZED
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
 }
 
 @test "should_fail is false for INDETERMINATE (fail open)" {
   run authz_preflight_should_fail INDETERMINATE
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
 }
 
 # ---------------------------------------------------------------------------

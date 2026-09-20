@@ -53,7 +53,7 @@ fi
 
 # --- Non-destructive capability probe --------------------------------------
 # A single read of the repo's permission surface for the authenticated identity.
-errfile="$(mktemp)"
+errfile="$(mktemp)" || { echo "::error::authz-preflight: failed to create temporary file" >&2; exit 1; }
 trap 'rm -f "$errfile"' EXIT
 probe_ok="yes"
 resp=""
@@ -61,23 +61,23 @@ if ! resp="$(gh api "repos/${SOURCE_REPO}" 2>"$errfile")"; then
   probe_ok="no"   # 4xx/5xx/rate-limit/network — an unreadable surface (fail open)
 fi
 
-admin="" ; maintain="" ; push=""
+admin="" ; maintain="" ; push="" ; triage=""
 if [ "$probe_ok" = "yes" ]; then
   # `.permissions` may be absent for some token/endpoint combinations; default it
   # to {} so a missing object yields empty fields (capability "unknown"), never a
   # jq error. A jq failure (malformed JSON) also degrades to an unreadable surface.
   if perms_tsv="$(printf '%s' "$resp" | jq -r '
         (.permissions // {}) as $p
-        | [$p.admin, $p.maintain, $p.push]
+        | [$p.admin, $p.maintain, $p.push, $p.triage]
         | map(if . == null then "" else tostring end)
         | @tsv' 2>/dev/null)"; then
-    IFS=$'\t' read -r admin maintain push <<< "$perms_tsv"
+    IFS=$'\t' read -r admin maintain push triage <<< "$perms_tsv"
   else
     probe_ok="no"
   fi
 fi
 
-capability="$(authz_write_capability "$admin" "$maintain" "$push")"
+capability="$(authz_write_capability "$admin" "$maintain" "$push" "$triage")"
 decision="$(authz_preflight_decision "$probe_ok" "$capability")"
 diag="$(authz_preflight_diagnostic "$decision" "$POSTING_ACCOUNT" "$POSTING_CREDENTIAL" "$SOURCE_REPO")"
 

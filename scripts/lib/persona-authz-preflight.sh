@@ -49,20 +49,24 @@
 #           comment-write; the post step's own failure handling (#1775) remains the
 #           backstop for anything the proxy cannot see.
 
-# authz_write_capability <admin> <maintain> <push>
-#   Map the three write-implying booleans from a repo's `.permissions` object to a
+# authz_write_capability <admin> <maintain> <push> [triage]
+#   Map the comment-implying booleans from a repo's `.permissions` object to a
 #   capability signal. Each argument is the string GitHub returns ("true"/"false")
 #   or empty when the object was absent/unreadable.
-#     yes     — at least one of admin/maintain/push is "true" (can write/comment)
-#     no      — the object was present (>=1 arg non-empty) and no write bit is set
+#     yes     — at least one of admin/maintain/push/triage is "true". triage is
+#               included because the triage role grants issue/PR comment access —
+#               exactly what posting the advisory needs — so a triage-only identity
+#               must not be rejected as a false negative (it can produce and post
+#               its advisory).
+#     no      — the object was present (>=1 arg non-empty) and no such bit is set
 #     unknown — every argument is empty (no `.permissions` object to read)
 #   Only a literal "true" counts as a capability; any other value is not-write, so
 #   a garbled field can never be mistaken for a grant.
 authz_write_capability() {
-  local admin="${1:-}" maintain="${2:-}" push="${3:-}"
-  if [ "$admin" = "true" ] || [ "$maintain" = "true" ] || [ "$push" = "true" ]; then
+  local admin="${1:-}" maintain="${2:-}" push="${3:-}" triage="${4:-}"
+  if [ "$admin" = "true" ] || [ "$maintain" = "true" ] || [ "$push" = "true" ] || [ "$triage" = "true" ]; then
     echo "yes"
-  elif [ -n "$admin" ] || [ -n "$maintain" ] || [ -n "$push" ]; then
+  elif [ -n "$admin" ] || [ -n "$maintain" ] || [ -n "$push" ] || [ -n "$triage" ]; then
     echo "no"
   else
     echo "unknown"

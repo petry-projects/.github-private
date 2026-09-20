@@ -216,6 +216,22 @@ jobs:
             GH_TOKEN="${OWNER_PAT}"
           fi
           export GH_TOKEN
+
+          # Verify the token authenticates as the manifest identity BEFORE probing
+          # write access — otherwise a writable token for the WRONG account passes
+          # the capability probe and triggers the paid engine, only to be rejected
+          # by the post step's identity check afterward (the engine work is already
+          # spent). A definitely-wrong login fails closed here; an unreadable login
+          # (transient/rate-limit) is left to the post step's fail-closed check,
+          # matching this preflight's fail-open-on-indeterminate contract.
+          if [ -n "${GH_TOKEN}" ]; then
+            actual_login="$(gh api user -q .login 2>/dev/null || true)"
+            if [ -n "$actual_login" ] && [ "$actual_login" != "$POSTING_ACCOUNT" ]; then
+              echo "::error::authz-preflight: posting token authenticates as '${actual_login}', not the manifest identity '${POSTING_ACCOUNT}' (credential '${POSTING_CREDENTIAL}') — refusing to run the engine under the wrong identity"
+              exit 1
+            fi
+          fi
+
           bash scripts/persona-authz-preflight.sh
 
       - name: Install Claude Code
