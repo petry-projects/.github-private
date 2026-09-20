@@ -239,6 +239,7 @@ jobs:
           echo "skip_post=false" >> "$GITHUB_OUTPUT"
 
       - name: Enforce marker and post the comment (workflow — the only writer)
+        id: post
         if: steps.resolve.outputs.skip == 'false' && steps.advise.outputs.skip_post == 'false'
         env:
           # The PAT lives ONLY here. The agent step above never had it. WHICH
@@ -257,6 +258,18 @@ jobs:
           set -euo pipefail
           # shellcheck source=scripts/lib/persona-runner.sh
           source scripts/lib/persona-runner.sh
+
+          # Compute the artifact name and the preserved-body path up front and
+          # publish them as step outputs NOW, before anything below can fail:
+          # $GITHUB_OUTPUT is read at step completion regardless of exit code, so
+          # the failure-only upload step can find the right artifact even when
+          # this step exits non-zero (#1775 AC #1).
+          artifact_name="$(pr_artifact_name "$PERSONA" "$SOURCE_REPO" "$ITEM_NUMBER")"
+          body_file="$RUNNER_TEMP/persona-advisory-body.md"
+          {
+            echo "artifact_name=${artifact_name}"
+            echo "body_file=${body_file}"
+          } >> "$GITHUB_OUTPUT"
 
           # Select the appropriate PAT based on the persona's manifest identity
           if [ "$POSTING_CREDENTIAL" = "DON_PETRY_BOT_GH_PAT" ]; then
@@ -309,6 +322,26 @@ jobs:
             exit 0
           fi
 
+          # Post via the orchestrator so a failing gh api cannot take the advisory
+          # with it: on failure it preserves the redacted, marker-complete body to
+          # $body_file (uploaded by the next step) and mirrors a truncated copy to
+          # the job summary, then returns non-zero so the run STILL fails (#1775).
           # Issue-comments endpoint serves PRs too.
-          gh api "repos/${SOURCE_REPO}/issues/${ITEM_NUMBER}/comments" -f body="$body" >/dev/null
-          echo "Posted ${PERSONA} advisory on ${SOURCE_REPO}#${ITEM_NUMBER}."
+          pr_post_advisory_or_preserve \
+            "$PERSONA" "$SOURCE_REPO" "$ITEM_NUMBER" \
+            "$POSTING_ACCOUNT" "$POSTING_CREDENTIAL" \
+            "$body" "$body_file" "$GITHUB_STEP_SUMMARY"
+
+      - name: Preserve the advisory as a run artifact (post failed)
+        # Failure-only, byte-for-byte re-postable copy of record. Named
+        # deterministically from the item so the right one is findable when
+        # several runs have failed. The step above wrote $body_file only on a
+        # post failure; on any other failure (or if it never got that far)
+        # if-no-files-found:ignore keeps this a clean no-op (#1775 AC #1/#2).
+        if: failure() && steps.post.outputs.artifact_name != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ steps.post.outputs.artifact_name }}
+          path: ${{ steps.post.outputs.body_file }}
+          if-no-files-found: ignore
+          retention-days: 30
