@@ -172,6 +172,7 @@ jobs:
             tests/verify_persona_teams.bats \
             tests/persona_runner.bats \
             tests/resolve_persona_identity.bats \
+            tests/test_persona_authz_preflight.sh \
             tests/persona_reach_check.bats \
             tests/test_dev_lead_concurrency_guard.bats \
             tests/test_validate_workflow_schedules.bats \
