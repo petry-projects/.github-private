@@ -156,3 +156,170 @@ setup() {
   run pr_comment_has_marker qa-lead "$ensured"
   [ "$status" -eq 0 ]
 }
+
+# --- post-failure preservation (#1775) --------------------------------------
+# A failed post must not take the advisory with it: preserve the redacted,
+# marker-complete body as an artifact-bound file AND a truncated summary mirror,
+# name the auth-vs-authz cause, and still fail. All offline, no network.
+
+@test "pr_artifact_name slugs owner/repo deterministically" {
+  run pr_artifact_name qa-lead petry-projects/.github-private 1723
+  [ "$output" = "persona-advisory-qa-lead-petry-projects-.github-private-1723" ]
+}
+
+@test "pr_artifact_name strips characters an artifact name cannot carry" {
+  # A hostile/odd source_repo must not smuggle a slash or space into the name.
+  run pr_artifact_name dev-lead "a b/c:d" 9
+  [ "$output" = "persona-advisory-dev-lead-a-b-c-d-9" ]
+}
+
+@test "pr_summary_mirror passes a short body through untruncated with no notice" {
+  body="$(printf '<!-- persona:qa-lead -->\nrisk: low\ntwo short lines')"
+  run pr_summary_mirror "$body" persona-advisory-qa-lead-repo-1
+  [ "$output" = "$body" ]
+  [[ "$output" != *"Truncated"* ]]
+}
+
+@test "pr_summary_mirror truncates an oversized body and names the artifact" {
+  # 10 KB of body against the default 8 KB budget must truncate and point at the
+  # artifact that holds the untruncated copy.
+  big="$(head -c 10240 /dev/zero | tr '\0' 'x')"
+  run pr_summary_mirror "$big" persona-advisory-qa-lead-repo-1
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'Truncated at 8 KB'* ]]
+  [[ "$output" == *'persona-advisory-qa-lead-repo-1'* ]]
+  # The mirrored copy is smaller than the original (budget + a short notice).
+  [ "${#output}" -lt 10240 ]
+}
+
+@test "pr_post_failure_message distinguishes authentication (401)" {
+  run pr_post_failure_message "gh: Bad credentials (HTTP 401)" don-petry GH_PAT_DON_PETRY
+  [[ "$output" == *"401"* ]]
+  [[ "$output" == *"authentication"* ]]
+  [[ "$output" == *"don-petry"* ]]
+  [[ "$output" == *"GH_PAT_DON_PETRY"* ]]
+}
+
+@test "pr_post_failure_message distinguishes authorization (403)" {
+  # A 403 with a valid token is NOT a missing secret — the message must say so.
+  run pr_post_failure_message "gh: Resource not accessible (HTTP 403)" don-petry GH_PAT_DON_PETRY
+  [[ "$output" == *"403"* ]]
+  [[ "$output" == *"authorization"* ]]
+  [[ "$output" == *"valid"* ]]                    # says the token IS valid...
+  [[ "$output" == *"not a missing secret"* ]]     # ...so it is not a missing-secret case
+  [[ "$output" == *"don-petry"* ]]
+  [[ "$output" == *"GH_PAT_DON_PETRY"* ]]
+}
+
+@test "pr_post_failure_message stays diagnostic when no HTTP status is present" {
+  run pr_post_failure_message "some non-HTTP failure" don-petry GH_PAT_DON_PETRY
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"don-petry"* ]]
+  [[ "$output" == *"GH_PAT_DON_PETRY"* ]]
+}
+
+@test "pr_post_advisory_or_preserve: a failing post preserves the body and exits non-zero" {
+  # Stub gh to fail with a 403 like the #1734 loss.
+  stub="$BATS_TEST_TMPDIR/bin"
+  mkdir -p "$stub"
+  cat > "$stub/gh" <<'STUB'
+#!/usr/bin/env bash
+echo "gh: Resource not accessible by integration (HTTP 403)" >&2
+exit 1
+STUB
+  chmod +x "$stub/gh"
+  PATH="$stub:$PATH"
+
+  body_file="$BATS_TEST_TMPDIR/body.md"
+  summary_file="$BATS_TEST_TMPDIR/summary.md"
+  body="$(printf '<!-- persona:qa-lead -->\n## advisory\nrisk assessment')"
+
+  run env PATH="$stub:$PATH" bash -c '
+    source "'"$LIB"'"
+    pr_post_advisory_or_preserve qa-lead petry-projects/.github-private 1723 \
+      don-petry GH_PAT_DON_PETRY "'"$body"'" "'"$body_file"'" "'"$summary_file"'"
+  '
+  [ "$status" -eq 1 ]                              # AC #2: still a failure
+  [ -f "$body_file" ]                              # AC #1: artifact copy preserved
+  run cat "$body_file"
+  [ "${lines[0]}" = "<!-- persona:qa-lead -->" ]   # marker included, re-postable
+  [[ "$output" == *"risk assessment"* ]]
+  run cat "$summary_file"
+  [[ "$output" == *"403"* ]]                       # AC #3: cause named in summary
+  [[ "$output" == *"authorization"* ]]
+}
+
+@test "pr_post_advisory_or_preserve: redacts secrets from the preserved copy" {
+  stub="$BATS_TEST_TMPDIR/bin"
+  mkdir -p "$stub"
+  cat > "$stub/gh" <<'STUB'
+#!/usr/bin/env bash
+exit 1
+STUB
+  chmod +x "$stub/gh"
+
+  body_file="$BATS_TEST_TMPDIR/body.md"
+  summary_file="$BATS_TEST_TMPDIR/summary.md"
+  # Build a fake token at runtime so the literal never sits in this source file.
+  fake="ghp_$(printf 'abcdefghij1234567890ABCDEFGHIJ')"
+  body="$(printf '<!-- persona:qa-lead -->\ntoken leaked: %s\n' "$fake")"
+
+  run env PATH="$stub:$PATH" bash -c '
+    source "'"$LIB"'"
+    pr_post_advisory_or_preserve qa-lead repo/x 5 acct CRED "'"$body"'" "'"$body_file"'" "'"$summary_file"'"
+  '
+  [ "$status" -eq 1 ]
+  run cat "$body_file"
+  [[ "$output" == *"***REDACTED-GH-TOKEN***"* ]]   # AC #4
+  [[ "$output" != *"$fake"* ]]
+}
+
+@test "pr_post_advisory_or_preserve: a successful post writes no artifact file" {
+  stub="$BATS_TEST_TMPDIR/bin"
+  mkdir -p "$stub"
+  cat > "$stub/gh" <<'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+  chmod +x "$stub/gh"
+
+  body_file="$BATS_TEST_TMPDIR/body.md"
+  summary_file="$BATS_TEST_TMPDIR/summary.md"
+
+  run env PATH="$stub:$PATH" bash -c '
+    source "'"$LIB"'"
+    pr_post_advisory_or_preserve qa-lead repo/x 5 acct CRED "body" "'"$body_file"'" "'"$summary_file"'"
+  '
+  [ "$status" -eq 0 ]                              # AC #5: success unchanged
+  [ ! -f "$body_file" ]                            # no artifact copy on success
+}
+
+@test "pr_post_advisory_or_preserve: a successful post publishes a redacted body" {
+  stub="$BATS_TEST_TMPDIR/bin"
+  mkdir -p "$stub"
+  posted="$BATS_TEST_TMPDIR/posted.txt"
+  # Record the body gh was asked to publish so we can assert it was scrubbed.
+  cat > "$stub/gh" <<STUB
+#!/usr/bin/env bash
+for a in "\$@"; do
+  case "\$a" in body=*) printf '%s' "\${a#body=}" > "$posted" ;; esac
+done
+exit 0
+STUB
+  chmod +x "$stub/gh"
+
+  body_file="$BATS_TEST_TMPDIR/body.md"
+  summary_file="$BATS_TEST_TMPDIR/summary.md"
+  fake="ghp_$(printf 'abcdefghij1234567890ABCDEFGHIJ')"
+  body="$(printf '<!-- persona:qa-lead -->\ntoken leaked: %s\n' "$fake")"
+
+  run env PATH="$stub:$PATH" bash -c '
+    source "'"$LIB"'"
+    pr_post_advisory_or_preserve qa-lead repo/x 5 acct CRED "'"$body"'" "'"$body_file"'" "'"$summary_file"'"
+  '
+  [ "$status" -eq 0 ]
+  run cat "$posted"
+  [[ "$output" == *"***REDACTED-GH-TOKEN***"* ]]   # secrets scrubbed before publishing
+  [[ "$output" != *"$fake"* ]]
+  [[ "$output" == *"<!-- persona:qa-lead -->"* ]]  # marker survives redaction
+}
