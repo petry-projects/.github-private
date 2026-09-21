@@ -148,6 +148,7 @@
       "prompts/dev-lead/rebase.md",
       "prompts/dev-lead/review-changes.md",
       "scripts/lib/auto-merge.sh",
+      "scripts/lib/ci-status.sh",
       "scripts/lib/git-identity.sh",
       "scripts/lib/maintainer-comment-gate.sh",
       "scripts/lib/maintainer-review-thread-gate.sh",
