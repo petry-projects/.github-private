@@ -7,6 +7,7 @@ permissions:
   actions: read
   checks: read
   contents: read
+  pull-requests: read
 
 engine: claude-sonnet-4-6
 
