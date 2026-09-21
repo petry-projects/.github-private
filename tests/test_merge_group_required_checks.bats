@@ -104,11 +104,23 @@ PY
 }
 
 @test "codeql.yml covers the actions and python languages (AC2)" {
-  run bash -c "grep -qw actions '$WORKFLOWS/codeql.yml' && grep -qw python '$WORKFLOWS/codeql.yml'"
+  run _wf "$WORKFLOWS/codeql.yml" "'actions' in jobs.get('analyze', {}).get('strategy', {}).get('matrix', {}).get('language', []) and 'python' in jobs.get('analyze', {}).get('strategy', {}).get('matrix', {}).get('language', [])"
   [ "$status" -eq 0 ]
+  [ "$output" = "True" ]
 }
 
 @test "codeql.yml uses the extended query suite (AC2)" {
-  run bash -c "grep -q 'security-extended' '$WORKFLOWS/codeql.yml'"
+  run _wf "$WORKFLOWS/codeql.yml" "any('security-extended' in str(step.get('with', {}).get('queries', '')) for step in jobs.get('analyze', {}).get('steps', []))"
   [ "$status" -eq 0 ]
+  [ "$output" = "True" ]
+}
+
+# The required-check context for code scanning is `CodeQL` (the code-scanning
+# results check the analyze step uploads via SARIF), NOT the per-language job
+# runs `Analyze (actions)` / `Analyze (python)`. Pin the analyze job name so a
+# silent rename of the matrix job is caught structurally (AC4).
+@test "codeql.yml analyze job name template is unchanged (AC4)" {
+  run _wf "$WORKFLOWS/codeql.yml" "jobs.get('analyze', {}).get('name')"
+  [ "$status" -eq 0 ]
+  [ "$output" = 'Analyze (${{ matrix.language }})' ]
 }
