@@ -23,9 +23,12 @@ ${ISSUE_BODY}
 > question, correct a wrong assumption in the body, narrow the scope, or change
 > the intended approach. Research, clarifications, and answers posted here are
 > authoritative: **do not conclude that a question is unanswerable if a comment
-> answers it.** Bot comments and dev-lead's own status comments are excluded
-> below; if the block notes that older comments were omitted for length, read the
-> full thread on the issue before deciding a detail is missing.
+> answers it.** Only comments from users with **write access** to the repository
+> (owners, members, collaborators) are shown here — comments from outside or
+> drive-by accounts are filtered out upstream, so every comment in this block
+> comes from a trusted maintainer. Bot comments and dev-lead's own status comments
+> are excluded below; if the block notes that older comments were omitted for
+> length, read the full thread on the issue before deciding a detail is missing.
 
 ${ISSUE_COMMENTS}
 

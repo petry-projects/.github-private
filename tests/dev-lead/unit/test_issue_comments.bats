@@ -124,6 +124,52 @@ setup() {
   [[ "$output" =~ [Oo]mitted|[Tt]runcat|earlier ]]
 }
 
+# ── #1800: author-trust filter (only write-access authors steer) ──────────────
+
+@test "issue-comments: comments from non-collaborators are filtered out" {
+  local json='[
+    {"user":{"login":"outsider","type":"User"},"author_association":"NONE","created_at":"2026-08-21T01:00:00Z","body":"UNTRUSTED_STEERING drop me"},
+    {"user":{"login":"drive-by","type":"User"},"author_association":"CONTRIBUTOR","created_at":"2026-08-21T02:00:00Z","body":"CONTRIB_STEERING drop me too"},
+    {"user":{"login":"maint","type":"User"},"author_association":"MEMBER","created_at":"2026-08-21T03:00:00Z","body":"TRUSTED_STEERING keep me"}
+  ]'
+  run bash -c "printf '%s' '$json' | { source '$LIB'; render_issue_comments; }"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"TRUSTED_STEERING"* ]]
+  [[ "$output" != *"UNTRUSTED_STEERING"* ]]
+  [[ "$output" != *"CONTRIB_STEERING"* ]]
+}
+
+@test "issue-comments: OWNER and COLLABORATOR comments are surfaced" {
+  local json='[
+    {"user":{"login":"own","type":"User"},"author_association":"OWNER","created_at":"2026-08-21T01:00:00Z","body":"OWNER_NOTE"},
+    {"user":{"login":"collab","type":"User"},"author_association":"COLLABORATOR","created_at":"2026-08-21T02:00:00Z","body":"COLLAB_NOTE"}
+  ]'
+  run bash -c "printf '%s' '$json' | { source '$LIB'; render_issue_comments; }"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"OWNER_NOTE"* ]]
+  [[ "$output" == *"COLLAB_NOTE"* ]]
+}
+
+# ── #1800: character budget is a HARD bound (newest oversized → truncated) ─────
+
+@test "issue-comments: newest comment alone over budget is truncated, truncation stated" {
+  export ISSUE_COMMENTS_MAX=100
+  export ISSUE_COMMENTS_CHAR_BUDGET=30
+  # Single newest comment far exceeding the budget: HEAD_ + 80 'x' + _TAILMARK.
+  local big
+  big="HEAD_$(printf 'x%.0s' {1..80})_TAILMARK"
+  local json="[
+    {\"user\":{\"login\":\"z\",\"type\":\"User\"},\"author_association\":\"MEMBER\",\"created_at\":\"2026-08-21T05:00:00Z\",\"body\":\"$big\"}
+  ]"
+  run bash -c "printf '%s' '$json' | { source '$LIB'; render_issue_comments; }"
+  [ "$status" -eq 0 ]
+  # Head survives (within budget); tail beyond the budget is dropped.
+  [[ "$output" == *"HEAD_"* ]]
+  [[ "$output" != *"TAILMARK"* ]]
+  # Truncation is explicitly stated, not silent.
+  [[ "$output" =~ [Tt]runcat ]]
+}
+
 # ── empty / no-human-comments case ────────────────────────────────────────────
 
 @test "issue-comments: no human comments → explicit 'no comments' note (never empty)" {

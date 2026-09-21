@@ -36,13 +36,20 @@ This is the `.github-private` org infrastructure repo for `petry-projects`. It c
   comments as **refinements that may supersede the body**, read in chronological order,
   with later **human** comments outranking the body and earlier comments. This is how a
   maintainer steers an in-flight issue: post a comment answering an open question or
-  correcting a wrong assumption, and it reaches the engine. **Deliberately excluded from
-  the rendered block:** `Bot`-type authors (CI bots, third-party reviewers) and dev-lead's
-  own automation comments (HTML markers `<!-- dev-lead…` and `## Dev-Lead …` plan/progress/
-  completion headings), so automation chatter never crowds out human steering. The block is
+  correcting a wrong assumption, and it reaches the engine. **Only comments from users with
+  repository write access are surfaced** — the renderer keeps `author_association` of
+  `OWNER`, `MEMBER`, or `COLLABORATOR` and drops everyone else (`CONTRIBUTOR`, `NONE`, …),
+  so a drive-by outside commenter cannot redirect an implementation. **Also deliberately
+  excluded from the rendered block:** `Bot`-type authors (CI bots, third-party reviewers)
+  and dev-lead's own automation comments — any comment whose body *begins* with an
+  `<!-- dev-lead…` HTML marker or a `## Dev-Lead …` plan/progress/completion heading is
+  treated as automation and dropped (the match is anchored to the start of the body,
+  regardless of author), so automation chatter never crowds out human steering. The block is
   **size-bounded** (`ISSUE_COMMENTS_MAX`, `ISSUE_COMMENTS_CHAR_BUDGET`) applied newest-first
-  so the freshest steering always survives; any comments dropped by either bound are
-  **counted and stated** in the block, never silently discarded.
+  so the freshest steering always survives; the character budget is a **hard bound** — if
+  the single newest comment alone exceeds it, that comment is **truncated** to the budget
+  rather than emitted in full. Any comments dropped, and any truncation, are **counted and
+  stated** in the block, never silently discarded.
 - All other workflow changes must use templates from
   [`standards/workflows/`](https://github.com/petry-projects/.github/tree/main/standards/workflows) verbatim.
 - **Note:** `.github/workflows/auto-rebase.yml` pins the reusable workflow at the `@auto-rebase/v2-next`

@@ -37,16 +37,25 @@ ic_noise_pattern() {
 
 # _ic_filter_human: read the paginated comments JSON on stdin; emit one
 # base64-encoded {login,created_at,body} object per SURVIVING comment, in
-# chronological (API) order. Drops Bot-type authors, dev-lead automation
-# comments (ic_noise_pattern), and empty bodies. jq's `-s` slurps every page
-# into one array; `[.[] | .[]?]` flattens both the single-array and paginated
-# (array-per-page) shapes, mirroring count_prior_attempts in the driver.
+# chronological (API) order. Drops Bot-type authors, comments from users WITHOUT
+# repository write access (#1800: only author_association OWNER/MEMBER/COLLABORATOR
+# is trusted — a drive-by CONTRIBUTOR/NONE commenter must not redirect the
+# implementation), dev-lead automation comments (ic_noise_pattern), and empty
+# bodies. author_association comes from the GitHub API (not attacker-controlled)
+# and is always present on real comments; it is absent only in synthetic test
+# input, where it defaults to OWNER so the body-only degradation path is
+# unaffected. jq's `-s` slurps every page into one array; `[.[] | .[]?]` flattens
+# both the single-array and paginated (array-per-page) shapes, mirroring
+# count_prior_attempts in the driver.
 _ic_filter_human() {
   jq -s -r --arg noise "$(ic_noise_pattern)" '
     [ .[] | .[]? ]
     | map(select(type == "object"))
     | map(select((.body // "") != ""))
     | map(select(((.user.type?) // "") != "Bot"))
+    | map(select(
+        (((.author_association?) // "OWNER") | ascii_upcase) as $aa
+        | ($aa == "OWNER" or $aa == "MEMBER" or $aa == "COLLABORATOR")))
     | map(select((.body // "") | test($noise) | not))
     | .[]
     | { login: (.user.login? // "unknown"),
@@ -81,14 +90,31 @@ render_issue_comments() {
   fi
 
   # 2) Character budget over that window, applied newest→oldest so the latest
-  #    (highest-priority) steering is never the comment that gets dropped.
+  #    (highest-priority) steering is never the comment that gets dropped. The
+  #    budget is a HARD bound (#1800): if the single newest comment alone exceeds
+  #    it, that comment's body is TRUNCATED to the budget (and the truncation is
+  #    stated) rather than emitted in full, so the rendered block can never blow
+  #    the documented prompt-size limit.
   local -a keep_idx=()
   local used=0 i obj body blen
+  local newest_trunc=0   # chars the newest comment's body was truncated to (0 = untruncated)
   for (( i = total - 1; i >= start; i-- )); do
     obj=$(printf '%s' "${rows[$i]}" | base64 -d 2>/dev/null) || continue
     body=$(printf '%s' "$obj" | jq -r '.body' 2>/dev/null) || continue
     blen=${#body}
-    if [ "${#keep_idx[@]}" -gt 0 ] && [ $(( used + blen )) -gt "$ISSUE_COMMENTS_CHAR_BUDGET" ]; then
+    if [ "${#keep_idx[@]}" -eq 0 ]; then
+      # Newest comment always survives, but is truncated to the budget if it
+      # alone is oversized — otherwise the budget would not be a hard bound.
+      if [ "$blen" -gt "$ISSUE_COMMENTS_CHAR_BUDGET" ]; then
+        newest_trunc=$ISSUE_COMMENTS_CHAR_BUDGET
+        used=$ISSUE_COMMENTS_CHAR_BUDGET
+      else
+        used=$blen
+      fi
+      keep_idx+=( "$i" )
+      continue
+    fi
+    if [ $(( used + blen )) -gt "$ISSUE_COMMENTS_CHAR_BUDGET" ]; then
       break
     fi
     used=$(( used + blen ))
@@ -97,12 +123,17 @@ render_issue_comments() {
 
   local kept=${#keep_idx[@]}
   local omitted=$(( total - kept ))
+  local newest_idx=${keep_idx[0]}
 
-  # Header +, when anything was dropped, an explicit truncation note.
+  # Header +, when anything was dropped or truncated, an explicit note.
   printf '### Issue comments (%d shown, chronological — later human comments take precedence)\n\n' "$kept"
   if [ "$omitted" -gt 0 ]; then
     printf '> _Note: this issue has %d human comment(s); showing only the most recent %d to fit the prompt budget. %d earlier human comment(s) were omitted — read them on the issue if needed. Bot and dev-lead status comments are excluded from this list._\n\n' \
       "$total" "$kept" "$omitted"
+  fi
+  if [ "$newest_trunc" -gt 0 ]; then
+    printf '> _Note: the most recent comment exceeded the %d-character budget and was truncated to fit — read the full comment on the issue._\n\n' \
+      "$ISSUE_COMMENTS_CHAR_BUDGET"
   fi
 
   # Emit kept comments in chronological order (keep_idx is newest-first).
@@ -113,6 +144,9 @@ render_issue_comments() {
     login=$(printf '%s' "$obj" | jq -r '.login' 2>/dev/null) || login="unknown"
     created=$(printf '%s' "$obj" | jq -r '.created_at' 2>/dev/null) || created=""
     body=$(printf '%s' "$obj" | jq -r '.body' 2>/dev/null) || body=""
+    if [ "$newest_trunc" -gt 0 ] && [ "$idx" -eq "$newest_idx" ]; then
+      body="${body:0:$newest_trunc}"$'\n\n_[Comment truncated to fit the prompt budget — read the full comment on the issue.]_'
+    fi
     printf '#### @%s — %s\n\n%s\n\n' "$login" "$created" "$body"
   done
 }
