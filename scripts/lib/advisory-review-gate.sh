@@ -336,12 +336,17 @@ Advisory bots were rate-limited; auto-approval is withheld until they recover. p
 #   0 = All detected participating bots have submitted (ready to approve)
 #   1 = Waiting for bots (skip, will re-check on next review event)
 #
-# _record_partial_evidence <submitted> <required> <reason> — record that approval
-# is proceeding on PARTIAL advisory evidence (a timeout fallback where fewer than
-# all registered bots reported) so the miss-rate metric can count it (#1596).
-# Liveness wins: a failed post must not block the fallback, but is not swallowed
-# silently. No-op when the marker helper is not composed alongside the gate.
+# _record_partial_evidence <submitted> <required> <reason> — record approval on
+# PARTIAL advisory evidence so the miss-rate metric counts it (#1596). Gate runs
+# BEFORE the write, so with PARTIAL_EVIDENCE_STATE_FILE set we DEFER (record facts,
+# post NOTHING); post-pr-review.sh announces only after verifying the review (#1874).
 _record_partial_evidence() {
+  if [ -n "${PARTIAL_EVIDENCE_STATE_FILE:-}" ]; then
+    printf '%s %s %s\n' "$1" "$2" "$3" > "$PARTIAL_EVIDENCE_STATE_FILE" 2>/dev/null \
+      || echo "::warning::could not record deferred partial-evidence facts (#1874)"
+    log_info "partial-evidence deferred ($1/$2 reason=$3) — announced after write verified (#1874)"
+    return 0
+  fi
   command -v maybe_post_partial_evidence_marker >/dev/null 2>&1 || return 0
   maybe_post_partial_evidence_marker "$PR_URL" "${PR_HEAD_SHA:-}" "$1" "$2" "$3" "${PR_SNAPSHOT:-}" \
     || echo "::warning::partial-evidence marker post failed on ${PR_URL} — approval may be uncounted by the miss-rate metric (#1596)"
