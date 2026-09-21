@@ -34,6 +34,76 @@ fi
 POST_PR_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/pr-metadata-digest.sh
 source "$POST_PR_SCRIPT_DIR/lib/pr-metadata-digest.sh"
+# shellcheck source=lib/verify-approval-review.sh
+source "$POST_PR_SCRIPT_DIR/lib/verify-approval-review.sh"
+
+# The account this run acts as and the secret holding its PAT — named in the
+# #1874 loud-failure diagnostic so a stranded approval points straight at the
+# credential. BOT_USER is set by the workflow; POSTING_CREDENTIAL defaults to the
+# pr-review posting secret and encodes the known classic-vs-fine-grained hazard.
+BOT_USER="${BOT_USER:-donpetry-bot}"
+POSTING_CREDENTIAL="${POSTING_CREDENTIAL:-DON_PETRY_BOT_GH_PAT_CLASSIC (classic PAT required for addPullRequestReview; the fine-grained DON_PETRY_BOT_GH_PAT fallback cannot create reviews)}"
+
+# verify_approval_landed <pr_url>
+#   Read back GET /pulls/<n>/reviews and decide whether the approval WRITE we just
+#   issued actually produced a review object (issue #1874). Echoes one verdict:
+#     PRESENT       — an APPROVED review by BOT_USER at PR_HEAD_SHA exists.
+#     ABSENT        — the reviews list was read AND no such review exists: a
+#                     DEFINITE negative (the write silently failed). Fail loud.
+#     INDETERMINATE — the reviews API could not be read: fail OPEN (a transient
+#                     blip must not turn a genuine approval into a red run — the
+#                     same posture as the #1776 authorization preflight).
+#   A short retry absorbs read-your-writes eventual consistency before concluding
+#   ABSENT.
+verify_approval_landed() {
+  local pr_url="$1" owner_repo pr_num reviews rc
+  owner_repo=$(echo "$pr_url" | sed -E 's|.*/([^/]+)/([^/]+)/pull/.*|\1/\2|')
+  pr_num=$(echo "$pr_url" | sed -E 's|.*/([0-9]+)$|\1|')
+
+  local attempt
+  for attempt in 1 2 3; do
+    rc=0
+    reviews=$(gh api --paginate "repos/$owner_repo/pulls/$pr_num/reviews" 2>/dev/null) || rc=$?
+    if [ "$rc" -eq 0 ] && [ -n "$reviews" ]; then
+      if approval_review_present "$reviews" "$BOT_USER" "$PR_HEAD_SHA"; then
+        echo "PRESENT"; return 0
+      fi
+      # Read succeeded but the review is not there yet — retry briefly for
+      # eventual consistency, then conclude ABSENT.
+      [ "$attempt" -lt 3 ] && sleep 2 && continue
+      echo "ABSENT"; return 0
+    fi
+    [ "$attempt" -lt 3 ] && sleep 2
+  done
+  echo "INDETERMINATE"
+}
+
+# maybe_post_deferred_partial_evidence <pr_url>
+#   Post the partial-evidence announcement (#1596) that the advisory gate DEFERRED
+#   into PARTIAL_EVIDENCE_STATE_FILE — but only now, AFTER the approval has been
+#   verified to exist (issue #1874 AC3). If the gate did not defer anything, this
+#   is a no-op. The gate no longer posts this comment itself precisely so a
+#   never-landed approval can never be announced.
+maybe_post_deferred_partial_evidence() {
+  local pr_url="$1"
+  local statefile="${PARTIAL_EVIDENCE_STATE_FILE:-}"
+  [ -n "$statefile" ] && [ -s "$statefile" ] || return 0
+
+  local submitted required reason
+  read -r submitted required reason < "$statefile" || return 0
+  [ -n "$submitted" ] || return 0
+
+  # Compose the marker + gate log helpers, then dedup against existing comments.
+  # shellcheck source=lib/advisory-review-gate.sh
+  source "$POST_PR_SCRIPT_DIR/lib/advisory-review-gate.sh" 2>/dev/null || true
+  # shellcheck source=lib/partial-evidence-marker.sh
+  source "$POST_PR_SCRIPT_DIR/lib/partial-evidence-marker.sh"
+  local comments_json
+  comments_json=$(gh pr view "$pr_url" --json comments 2>/dev/null || echo '{}')
+  maybe_post_partial_evidence_marker "$pr_url" "$PR_HEAD_SHA" "$submitted" "$required" "$reason" "$comments_json" \
+    || echo "::warning::partial-evidence marker post failed on ${pr_url} — approval may be uncounted by the miss-rate metric (#1596)"
+  rm -f "$statefile"
+}
 
 # Extract fields from verdict
 DECISION=$(jq -r '.decision' "$VERDICT_JSON")
@@ -196,7 +266,8 @@ if [ "$DECISION" = "approve" ]; then
 
   echo "Posting APPROVED review..."
   REVIEW_ERR_FILE="/tmp/pr-review-err-$$.txt"
-  gh pr review "$PR_URL" --approve --body "$(cat "$BODY_FILE")" 2>"$REVIEW_ERR_FILE" || {
+  review_err=""
+  if ! gh pr review "$PR_URL" --approve --body "$(cat "$BODY_FILE")" 2>"$REVIEW_ERR_FILE"; then
     rc=$?
     review_err=$(cat "$REVIEW_ERR_FILE" 2>/dev/null || true)
     cat "$REVIEW_ERR_FILE" >&2 2>/dev/null || true
@@ -210,14 +281,43 @@ if [ "$DECISION" = "approve" ]; then
       echo "::warning::Cannot self-approve $PR_URL — skipping (exit 100)"
       exit 100
     fi
-    echo "ERROR: gh pr review failed with exit code $rc"
+    # The approval write FAILED (issue #1874). Fail loud and name every fact a
+    # human needs — the PR, the account we acted as, the credential secret, and
+    # the raw API error — then exit non-zero. Never treat a failed write as
+    # success: doing so is exactly how a PR stranded behind an approval that
+    # existed only in a comment (PRs #1788/#1858/#1860).
+    echo "::error::pr-review approval WRITE FAILED on $PR_URL as '$BOT_USER' (credential $POSTING_CREDENTIAL): gh pr review --approve exited $rc and created NO review object. API said: $(echo "$review_err" | head -3 | tr '\n' ' '). The PR is stranded at REVIEW_REQUIRED — do NOT announce an approval that did not land (#1874)."
     exit 1
-  }
+  fi
   rm -f "$BODY_FILE" "$REVIEW_ERR_FILE"
+
+  # #1874: `gh pr review --approve` can exit 0 while NO review object is created
+  # (a fine-grained PAT authenticates and returns success but cannot
+  # addPullRequestReview). Trusting the exit code is what let the strand go
+  # unreported. Verify the post-condition by reading the reviews back.
+  APPROVAL_STATE=$(verify_approval_landed "$PR_URL")
+  case "$APPROVAL_STATE" in
+    PRESENT)
+      : # verified — the review object exists at head
+      ;;
+    ABSENT)
+      echo "::error::pr-review approval WRITE reported success but NO review object exists on $PR_URL for '$BOT_USER' (credential $POSTING_CREDENTIAL). GET /pulls/.../reviews contains no APPROVED review by that account at $PR_HEAD_SHA — the write silently failed (a fine-grained PAT can comment but cannot addPullRequestReview). The PR is stranded at REVIEW_REQUIRED; failing the run rather than announcing a phantom approval (#1874)."
+      exit 1
+      ;;
+    *)
+      # INDETERMINATE — the reviews API could not be read. Fail OPEN: a transient
+      # blip must not turn a genuine approval into a red run (#1776 posture).
+      echo "::warning::could not read back reviews on $PR_URL to confirm the approval landed (transient API error) — proceeding without gating; a later sweep re-verifies (#1874)"
+      ;;
+  esac
 
   # Dismiss prior agent reviews / collapse prior agent comments now that the
   # newest review has landed. Best-effort: failures here don't break the run.
   mark_prior_agent_items_obsolete "$PR_URL"
+
+  # The approval is verified to exist — only now may we post the partial-evidence
+  # announcement the advisory gate deferred (#1874 AC3 / #1596).
+  maybe_post_deferred_partial_evidence "$PR_URL"
 
   # Check merge state and rebase if needed.
   # This entire section is best-effort — the review is already posted, so a

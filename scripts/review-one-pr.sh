@@ -382,6 +382,16 @@ fi
 #
 # COST: ~75% savings vs blocking (2-3 min runs vs 10-60 min blocks)
 #
+# The gate proceeds BEFORE the approval is written, so it must NOT announce the
+# partial-evidence approval itself (that stranded PRs behind a comment claiming an
+# approval that never landed, #1874). Point the gate at a state file: it records
+# the partial-evidence facts there, and post-pr-review.sh posts the announcement
+# only after it verifies the review object exists. Exported so the later
+# post-pr-review.sh child process inherits the path; cleared first to drop any
+# stale state from a previous PR handled in the same batch process.
+mkdir -p /tmp/cascade
+export PARTIAL_EVIDENCE_STATE_FILE="/tmp/cascade/partial-evidence.state"
+rm -f "$PARTIAL_EVIDENCE_STATE_FILE"
 (
   # Subshell: true environment isolation so functions and variables defined
   # by the gate (ADVISORY_BOTS, color codes, log helpers) do not persist in
