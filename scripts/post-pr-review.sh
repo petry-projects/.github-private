@@ -63,7 +63,14 @@ verify_approval_landed() {
   local attempt
   for attempt in 1 2 3; do
     rc=0
-    reviews=$(gh api --paginate "repos/$owner_repo/pulls/$pr_num/reviews" 2>/dev/null) || rc=$?
+    # `gh api --paginate` streams one JSON array per page (`[...][...]`); `--slurp`
+    # wraps the pages into a single array and `jq 'add'` concatenates them into one
+    # flat reviews array, so an approval that landed on a later page is not missed
+    # (#1875).
+    reviews=$(
+      gh api --paginate --slurp "repos/$owner_repo/pulls/$pr_num/reviews" 2>/dev/null |
+        jq 'add'
+    ) || rc=$?
     if [ "$rc" -eq 0 ] && [ -n "$reviews" ]; then
       if approval_review_present "$reviews" "$BOT_USER" "$PR_HEAD_SHA"; then
         echo "PRESENT"; return 0
@@ -273,7 +280,12 @@ if [ "$DECISION" = "approve" ]; then
   REVIEW_ERR_FILE="/tmp/pr-review-err-$$.txt"
   review_err=""
   body_content=$(cat "$BODY_FILE")
-  if ! gh pr review "$PR_URL" --approve --body "$body_content" 2>"$REVIEW_ERR_FILE"; then
+  # Use an explicit else branch (no `!`) so `rc=$?` captures the REAL exit code of
+  # `gh pr review`. With `if ! gh …; then rc=$?` the `!` inverts the status, so the
+  # failure branch always saw rc=0 and the #1874 diagnostic misreported a success.
+  if gh pr review "$PR_URL" --approve --body "$body_content" 2>"$REVIEW_ERR_FILE"; then
+    rm -f "$BODY_FILE" "$REVIEW_ERR_FILE"
+  else
     rc=$?
     review_err=$(cat "$REVIEW_ERR_FILE" 2>/dev/null || true)
     cat "$REVIEW_ERR_FILE" >&2 2>/dev/null || true
@@ -295,7 +307,6 @@ if [ "$DECISION" = "approve" ]; then
     echo "::error::pr-review approval WRITE FAILED on $PR_URL as '$BOT_USER' (credential $POSTING_CREDENTIAL): gh pr review --approve exited $rc and created NO review object. API said: $(echo "$review_err" | head -3 | tr '\n' ' '). The PR is stranded at REVIEW_REQUIRED — do NOT announce an approval that did not land (#1874)."
     exit 1
   fi
-  rm -f "$BODY_FILE" "$REVIEW_ERR_FILE"
 
   # #1874: `gh pr review --approve` can exit 0 while NO review object is created
   # (a fine-grained PAT authenticates and returns success but cannot
