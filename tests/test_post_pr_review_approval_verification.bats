@@ -81,7 +81,7 @@ approve_verdict() {
   local vf; vf=$(approve_verdict)
   run bash "$POST_SCRIPT" "$PR_URL" "$vf" "false"
   echo "$output" >&2
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
   [[ "$output" == *"$PR_URL"* ]]
   [[ "$output" == *"donpetry-bot"* ]]
   [[ "$output" == *"Resource not accessible"* ]]
@@ -93,7 +93,7 @@ approve_verdict() {
   local vf; vf=$(approve_verdict)
   run bash "$POST_SCRIPT" "$PR_URL" "$vf" "false"
   echo "$output" >&2
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
   [[ "$output" == *"$PR_URL"* ]]
   [[ "$output" == *"donpetry-bot"* ]]
 }
@@ -150,7 +150,25 @@ approve_verdict() {
   local vf; vf=$(approve_verdict)
   run bash "$POST_SCRIPT" "$PR_URL" "$vf" "false"
   echo "$output" >&2
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
   run grep -q "partial-evidence" "$COMMENT_OUT"
   [ "$status" -eq 1 ]
+}
+
+# ── #1875: an INDETERMINATE read-back must NOT announce partial-evidence ──────
+
+@test "indeterminate read-back does NOT post deferred partial-evidence and retains state" {
+  export REVIEW_APPROVE_RC=0
+  export READBACK_RC=1
+  export READBACK_REVIEWS=""
+  export PARTIAL_EVIDENCE_STATE_FILE="$TEST_DIR/partial-evidence.state"
+  printf '%s %s %s\n' 4 6 "head-age-timeout" > "$PARTIAL_EVIDENCE_STATE_FILE"
+  local vf; vf=$(approve_verdict)
+  run bash "$POST_SCRIPT" "$PR_URL" "$vf" "false"
+  echo "$output" >&2
+  [ "$status" -eq 0 ]
+  # No announcement was posted, and the deferred state survives for a later sweep.
+  run grep -q "partial-evidence" "$COMMENT_OUT"
+  [ "$status" -eq 1 ]
+  [ -s "$PARTIAL_EVIDENCE_STATE_FILE" ]
 }

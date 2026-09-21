@@ -387,11 +387,11 @@ fi
 # approval that never landed, #1874). Point the gate at a state file: it records
 # the partial-evidence facts there, and post-pr-review.sh posts the announcement
 # only after it verifies the review object exists. Exported so the later
-# post-pr-review.sh child process inherits the path; cleared first to drop any
-# stale state from a previous PR handled in the same batch process.
-mkdir -p /tmp/cascade
-export PARTIAL_EVIDENCE_STATE_FILE="/tmp/cascade/partial-evidence.state"
-rm -f "$PARTIAL_EVIDENCE_STATE_FILE"
+# post-pr-review.sh child process inherits the path. Use mktemp for a unique,
+# non-predictable path (avoids the /tmp symlink/predictability hazard and any
+# stale state from a previous PR handled in the same batch process).
+export PARTIAL_EVIDENCE_STATE_FILE
+PARTIAL_EVIDENCE_STATE_FILE=$(mktemp) || { echo "::error::failed to create temporary state file" >&2; exit 1; }
 (
   # Subshell: true environment isolation so functions and variables defined
   # by the gate (ADVISORY_BOTS, color codes, log helpers) do not persist in

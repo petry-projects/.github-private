@@ -100,9 +100,14 @@ maybe_post_deferred_partial_evidence() {
   source "$POST_PR_SCRIPT_DIR/lib/partial-evidence-marker.sh"
   local comments_json
   comments_json=$(gh pr view "$pr_url" --json comments 2>/dev/null || echo '{}')
-  maybe_post_partial_evidence_marker "$pr_url" "$PR_HEAD_SHA" "$submitted" "$required" "$reason" "$comments_json" \
-    || echo "::warning::partial-evidence marker post failed on ${pr_url} — approval may be uncounted by the miss-rate metric (#1596)"
-  rm -f "$statefile"
+  # Only discard the deferred facts once the marker has actually landed. If the
+  # post fails, keep the state file so a later sweep can retry — deleting it here
+  # would permanently lose the partial-evidence facts (#1875).
+  if maybe_post_partial_evidence_marker "$pr_url" "$PR_HEAD_SHA" "$submitted" "$required" "$reason" "$comments_json"; then
+    rm -f "$statefile"
+  else
+    echo "::warning::partial-evidence marker post failed on ${pr_url} — approval may be uncounted by the miss-rate metric (#1596); retaining $statefile for a later sweep"
+  fi
 }
 
 # Extract fields from verdict
@@ -267,7 +272,8 @@ if [ "$DECISION" = "approve" ]; then
   echo "Posting APPROVED review..."
   REVIEW_ERR_FILE="/tmp/pr-review-err-$$.txt"
   review_err=""
-  if ! gh pr review "$PR_URL" --approve --body "$(cat "$BODY_FILE")" 2>"$REVIEW_ERR_FILE"; then
+  body_content=$(cat "$BODY_FILE")
+  if ! gh pr review "$PR_URL" --approve --body "$body_content" 2>"$REVIEW_ERR_FILE"; then
     rc=$?
     review_err=$(cat "$REVIEW_ERR_FILE" 2>/dev/null || true)
     cat "$REVIEW_ERR_FILE" >&2 2>/dev/null || true
@@ -296,9 +302,10 @@ if [ "$DECISION" = "approve" ]; then
   # addPullRequestReview). Trusting the exit code is what let the strand go
   # unreported. Verify the post-condition by reading the reviews back.
   APPROVAL_STATE=$(verify_approval_landed "$PR_URL")
+  APPROVAL_VERIFIED=false
   case "$APPROVAL_STATE" in
     PRESENT)
-      : # verified — the review object exists at head
+      APPROVAL_VERIFIED=true # verified — the review object exists at head
       ;;
     ABSENT)
       echo "::error::pr-review approval WRITE reported success but NO review object exists on $PR_URL for '$BOT_USER' (credential $POSTING_CREDENTIAL). GET /pulls/.../reviews contains no APPROVED review by that account at $PR_HEAD_SHA — the write silently failed (a fine-grained PAT can comment but cannot addPullRequestReview). The PR is stranded at REVIEW_REQUIRED; failing the run rather than announcing a phantom approval (#1874)."
@@ -315,9 +322,15 @@ if [ "$DECISION" = "approve" ]; then
   # newest review has landed. Best-effort: failures here don't break the run.
   mark_prior_agent_items_obsolete "$PR_URL"
 
-  # The approval is verified to exist — only now may we post the partial-evidence
-  # announcement the advisory gate deferred (#1874 AC3 / #1596).
-  maybe_post_deferred_partial_evidence "$PR_URL"
+  # Only a VERIFIED-present approval may trigger the deferred partial-evidence
+  # announcement (#1874 AC3). On INDETERMINATE we could not confirm the review
+  # object exists, so announcing would claim approval evidence that was never
+  # verified — leave the deferred state intact for a later sweep to re-verify (#1875).
+  if [ "$APPROVAL_VERIFIED" = "true" ]; then
+    maybe_post_deferred_partial_evidence "$PR_URL"
+  else
+    echo "::warning::approval unverified on $PR_URL — NOT posting the deferred partial-evidence announcement; the state file is retained for a later sweep to re-verify (#1874 AC3 / #1875)"
+  fi
 
   # Check merge state and rebase if needed.
   # This entire section is best-effort — the review is already posted, so a

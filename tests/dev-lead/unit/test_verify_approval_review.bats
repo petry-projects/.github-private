@@ -32,29 +32,29 @@ setup() {
     {"user":{"login":"gemini-code-assist"},"state":"COMMENTED","commit_id":"deadbeef"}
   ]'
   run approval_review_present "$reviews" "donpetry-bot" "deadbeef"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
 }
 
 @test "approval absent: empty reviews array" {
   run approval_review_present "[]" "donpetry-bot" "deadbeef"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
 }
 
 @test "approval absent: empty json argument" {
   run approval_review_present "" "donpetry-bot" "deadbeef"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
 }
 
 @test "approval absent: APPROVED but by a different account" {
   local reviews='[{"user":{"login":"someone-else"},"state":"APPROVED","commit_id":"deadbeef"}]'
   run approval_review_present "$reviews" "donpetry-bot" "deadbeef"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
 }
 
 @test "approval absent: bot APPROVED but at a stale (non-head) commit" {
   local reviews='[{"user":{"login":"donpetry-bot"},"state":"APPROVED","commit_id":"cafef00d"}]'
   run approval_review_present "$reviews" "donpetry-bot" "deadbeef"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
 }
 
 @test "approval present: sha empty (unspecified) accepts any commit for the bot's APPROVED review" {
@@ -66,10 +66,24 @@ setup() {
 @test "approval absent: DISMISSED review by the bot at head does not count" {
   local reviews='[{"user":{"login":"donpetry-bot"},"state":"DISMISSED","commit_id":"deadbeef"}]'
   run approval_review_present "$reviews" "donpetry-bot" "deadbeef"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
 }
 
 @test "malformed json is treated as absent, not an error abort" {
   run approval_review_present "not json" "donpetry-bot" "deadbeef"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
+}
+
+# #1875: `gh api --paginate` can emit one JSON array per page as a concatenated
+# stream. The count must span all pages so an approval on a later page is found.
+@test "approval present: split across paginated arrays (approval on the 2nd page)" {
+  local reviews='[{"user":{"login":"coderabbitai"},"state":"COMMENTED","commit_id":"deadbeef"}][{"user":{"login":"donpetry-bot"},"state":"APPROVED","commit_id":"deadbeef"}]'
+  run approval_review_present "$reviews" "donpetry-bot" "deadbeef"
+  [ "$status" -eq 0 ]
+}
+
+@test "approval absent: multiple paginated arrays with no bot approval stay absent" {
+  local reviews='[{"user":{"login":"coderabbitai"},"state":"COMMENTED","commit_id":"deadbeef"}][{"user":{"login":"gemini-code-assist"},"state":"COMMENTED","commit_id":"deadbeef"}]'
+  run approval_review_present "$reviews" "donpetry-bot" "deadbeef"
+  [ "$status" -eq 1 ]
 }

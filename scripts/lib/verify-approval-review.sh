@@ -30,12 +30,23 @@
 approval_review_present() {
   local reviews_json="${1:-}" bot="${2:-}" sha="${3:-}"
   [ -z "$reviews_json" ] && return 1
+  # `gh api --paginate` can emit one JSON array per page as a concatenated stream
+  # (`[...][...]`). Feeding that raw to a single array comprehension counts each
+  # page separately, producing a multi-line count and hiding an approval that
+  # landed on a later page (#1875). Read every input value and flatten to one array
+  # before counting.
   local n
-  n=$(jq -r --arg bot "$bot" --arg sha "$sha" '
-    [ (. // [])[]
-      | select(((.user.login // .author.login) // "") == $bot)
-      | select((.state // "") == "APPROVED")
-      | select($sha == "" or ((.commit_id // .commit.oid) // "") == $sha)
-    ] | length' <<< "$reviews_json" 2>/dev/null) || return 1
-  [ "${n:-0}" -gt 0 ]
+  n=$(jq -rn --arg bot "$bot" --arg sha "$sha" '
+    [ inputs ] | flatten
+    | map(
+        select(((.user.login // .author.login) // "") == $bot)
+        | select((.state // "") == "APPROVED")
+        | select($sha == "" or ((.commit_id // .commit.oid) // "") == $sha)
+      )
+    | length' <<< "$reviews_json" 2>/dev/null) || return 1
+  # Under `set -e`, return the status explicitly rather than letting a standalone
+  # `[ ... ]` be the function's last command (a false test would abort the caller).
+  local status=1
+  [ "${n:-0}" -gt 0 ] && status=0
+  return "$status"
 }
