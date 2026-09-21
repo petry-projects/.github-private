@@ -163,6 +163,7 @@ jobs:
             tests/test_pr_metadata_digest.bats \
             tests/test_pr_review_claim.bats \
             tests/test_post_pr_review_meta_stamp.bats \
+            tests/test_post_pr_review_approval_verification.bats \
             tests/test_release_registry.bats \
             tests/test_readme_refresh_helpers.bats \
             tests/test_readme_refresh_push.bats \
@@ -187,6 +188,7 @@ jobs:
             tests/dev-lead/unit/test_addressed_claim_verify.bats \
             tests/dev-lead/unit/test_fewshot_assemble.bats \
             tests/dev-lead/unit/test_net_diff_guard.bats \
+            tests/dev-lead/unit/test_verify_approval_review.bats \
             tests/test_qa_lead_test_surface.bats \
             tests/test_qa_lead_advisory_gate.bats \
             tests/test_qa_lead_holdout_calibration.bats \
