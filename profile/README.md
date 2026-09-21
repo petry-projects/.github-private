@@ -41,6 +41,7 @@ Engineering standards live in
 | [`pr-limits`](https://github.com/petry-projects/.github/blob/main/standards/pr-limits.md) | Pull request size and scope limits | What is limited · Exempt actors · Reconciliation with the Dependabot cap · Operator runbook |
 | [`push-protection`](https://github.com/petry-projects/.github/blob/main/standards/push-protection.md) | Secret push protection configuration | Layer 1 — GitHub Push Protection · Layer 2 — Local Pre-Commit Prevention · Layer 3 — CI Secret Scanning · Incident Response |
 | [`ruleset-remediation-runbook`](https://github.com/petry-projects/.github/blob/main/standards/ruleset-remediation-runbook.md) | Steps to remediate ruleset violations | Bypass actors · Legacy rulesets — migrate checks first, then delete · Rollback |
+| [`standards-versioning`](https://github.com/petry-projects/.github/blob/main/standards/standards-versioning.md) | Versioning and tagging of standards documents | The two tag forms · Who / what moves it · Cutting a release · N-1 resolvability |
 
 ## @-Mention Agents
 
