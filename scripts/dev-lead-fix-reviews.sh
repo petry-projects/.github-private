@@ -31,6 +31,10 @@ source "$(dirname "$0")/lib/redact.sh"
 # Rebase exhaustion handling (#865): abort cleanly on hard conflicts instead of
 # timing out (exit 124), and dampen sentinel bursts.
 source "$(dirname "$0")/lib/rebase-exhaustion.sh"
+# CI gate status (#1859, completes #1795): the blocker check delegates to
+# compute_ci_status so a failing NON-required check never stops the
+# fix/disposition pass — the same library review-one-pr.sh and the sweeps use.
+source "$(dirname "$0")/lib/ci-status.sh"
 
 INTENT_TYPE="${INTENT_TYPE:-fix-reviews}"
 PR_NUMBER="${PR_NUMBER:-}"
@@ -430,6 +434,17 @@ resolve_actor_outdated_threads() {
 # so the agent can identify Tier-1 blockers (failing CI + CHANGES_REQUESTED reviews)
 # and never wrongly declare "no-changes" while the PR is still blocked.
 fetch_pr_context() {
+  # Base branch: _ci_required_checks reads the ruleset for the PR's ACTUAL target
+  # branch. Some intents (fix-bot-comment, review-changes) do not receive BASE_REF
+  # from the workflow, so derive it from the PR here rather than falling back to
+  # `main` — otherwise the ruleset lookup applies the wrong required-check rules to
+  # a PR targeting another branch. Intents that already export BASE_REF are left
+  # untouched (guarded on empty), and `main` remains the final fallback.
+  if [ -z "${BASE_REF:-}" ] && [ -n "${PR_NUMBER:-}" ] && [ -n "${REPO:-}" ]; then
+    BASE_REF="$(gh api "repos/${REPO}/pulls/${PR_NUMBER}" --jq '.base.ref // empty' 2>/dev/null || true)"
+    export BASE_REF="${BASE_REF:-main}"
+  fi
+
   # CI check results: requires HEAD_SHA. Gracefully degrade to empty array when not set
   # (e.g., review-changes in dry-run where the PR API call is skipped).
   CI_STATUS_JSON="[]"
@@ -1058,46 +1073,174 @@ resolve_dispositioned_comments() {
   echo "::notice::resolve_dispositioned_comments: minimized ${resolved_count} dispositioned comment(s) on PR #${PR_NUMBER}"
 }
 
-# has_hard_blockers: returns 0 (true) if CI_STATUS_JSON or ALL_REVIEWS_JSON contain
-# hard Tier-1 blockers (failing CI checks or CHANGES_REQUESTED reviews).
+# ── CI blocking gate (#1859, completes #1795) ─────────────────────────────────
+# has_hard_blockers / has_tier1_blockers determine whether CI is blocking via
+# lib/ci-status.sh (compute_ci_status), NOT their own all-or-nothing logic. A
+# failing NON-required check (e.g. `template-drift`, or a superseded/cancelled
+# `dev-lead / *` orchestration job — all non-required) no longer blocks; a failing
+# REQUIRED check and a genuine CHANGES_REQUESTED review still do. Fails closed: if
+# the branch ruleset is unreadable, compute_ci_status gates on every failing check.
+
+# _ci_required_checks: the branch ruleset's required status-check contexts, read
+# once per run via ruleset_required_checks (lib/ci-status.sh) and cached. Names are
+# NEVER hardcoded here — they are the authoritative required set for this branch.
+# Empty when the ruleset API is unreadable → compute_ci_status fails closed.
+_ci_required_checks() {
+  if [ -z "${_CI_REQUIRED_CHECKS_CACHE+x}" ]; then
+    _CI_REQUIRED_CHECKS_CACHE="$(ruleset_required_checks "${REPO:-}" "${BASE_REF:-main}" 2>/dev/null || true)"
+  fi
+  printf '%s' "$_CI_REQUIRED_CHECKS_CACHE"
+}
+
+# _ci_rollup_from_status_json: reshape CI_STATUS_JSON (built by fetch_pr_context
+# from the check-runs + legacy-statuses APIs, lowercase conclusions) into the
+# statusCheckRollup shape compute_ci_status consumes — uppercase status/conclusion,
+# with the synthetic "pending" conclusion (fetch_pr_context maps a pending legacy
+# status to it) normalised back to a null (non-terminal) conclusion so it
+# classifies as pending, not failing.
+_ci_rollup_from_status_json() {
+  printf '%s' "${CI_STATUS_JSON:-[]}" | jq -c '
+    (if type == "array" then . else [] end)
+    | map({
+        name: (.name // ""),
+        status: ((.status // "") | ascii_upcase),
+        conclusion: (if (.conclusion == null or .conclusion == "" or .conclusion == "pending")
+                     then null else (.conclusion | ascii_upcase) end)
+      })' 2>/dev/null || echo '[]'
+}
+
+# ci_blocking_status: the compute_ci_status verdict ("passing"/"pending"/"failing")
+# for this PR, gated on required checks only.
+ci_blocking_status() {
+  compute_ci_status "$(_ci_rollup_from_status_json)" "$(_ci_required_checks)"
+}
+
+# ci_is_blocking: returns 0 (true) when CI is a hard blocker — a REQUIRED check is
+# failing or still pending. A red NON-required check yields "passing" and is not a
+# blocker (the #1795/#1859 deadlock).
+ci_is_blocking() {
+  local st
+  st="$(ci_blocking_status)"
+  [ "$st" = "failing" ] || [ "$st" = "pending" ]
+}
+
+# ci_blocking_reason: a human phrase naming the specific check(s) that make CI a
+# blocker and whether they are required — AC #5. Mirrors compute_ci_status's gate
+# so the two never drift: it reports the checks in the SAME gate set (the required
+# subset when the ruleset named any, otherwise every external check — fail closed)
+# that are pending or failing. Empty when CI is not blocking. Examples:
+#   "required check `Lint` is failing"
+#   "required checks `Lint`, `Build` are still pending"
+#   "check `template-drift` is failing (required set unreadable — failing closed)"
+ci_blocking_reason() {
+  local agent_roles required_names is_unreadable="false"
+  agent_roles="$(_ci_status_agent_roles_json)"
+  # Normalise the required set to a JSON array. An empty/unreadable ruleset must
+  # become [] (not the empty string), or --argjson would reject it and the whole
+  # filter would silently fail — dropping us onto the generic fallback (#1859 AC5).
+  # Distinguish an UNREADABLE ruleset (empty string from _ci_required_checks →
+  # fail closed) from a readable-but-EMPTY one ("[]" → no required checks
+  # configured): only the former warrants the "failing closed" note, or it
+  # misleadingly claims the ruleset was unreadable when it was merely empty.
+  required_names="$(_ci_required_checks)"
+  if [ -z "$required_names" ]; then
+    is_unreadable="true"
+    required_names="[]"
+  elif [ "$required_names" = "[]" ]; then
+    required_names="[]"
+  else
+    required_names="$(jq -c 'if type == "array" then . else [] end' <<< "$required_names" 2>/dev/null || echo '[]')"
+  fi
+  _ci_rollup_from_status_json | jq -r \
+    --argjson agent_roles "$agent_roles" \
+    --argjson required_names "$required_names" \
+    --arg unreadable "$is_unreadable" "
+    def is_terminal: (.conclusion != null and .conclusion != \"\");
+    def is_pending:
+      (is_terminal | not) and (
+        .status == \"IN_PROGRESS\" or .status == \"QUEUED\" or .status == \"WAITING\" or
+        .status == \"COMPLETED\"  or .state == \"PENDING\" or .state == \"EXPECTED\"
+      );
+    def is_success:
+      .conclusion == \"SUCCESS\" or .conclusion == \"SKIPPED\" or .conclusion == \"NEUTRAL\" or
+      .state == \"SUCCESS\";
+    def is_cancelled: .conclusion == \"CANCELLED\";
+    def is_required:
+      (.isRequired == true) or
+      (((.name // .context // \"\") as \$n | (\$required_names | index(\$n)) != null));
+    def chk_word(\$n): if \$n == 1 then \"check\" else \"checks\" end;
+    def names(\$a): (\$a | map(\"\`\" + . + \"\`\") | join(\", \"));
+    $_CI_STATUS_JQ_IS_OWN_CHECK
+    $_CI_STATUS_JQ_IS_AGENT_CHECK
+    if (. == null or (type != \"array\")) then \"\"
+    else
+      (map(select((is_own_check or is_agent_check) | not))) as \$ext |
+      (\$ext | map(select(is_required))) as \$req |
+      (\$req | length > 0) as \$gate_required |
+      (if \$gate_required then \$req else \$ext end) as \$gate |
+      (if \$gate_required then \"required \" else \"\" end) as \$qual |
+      (if \$gate_required then \"\" elif \$unreadable == \"true\" then \" (required set unreadable — failing closed)\" else \"\" end) as \$closed |
+      (\$gate | map(select((is_success or is_cancelled) | not))) as \$bad |
+      (\$bad | map(select(is_pending))  | map(.name // .context // \"\") | map(select(length > 0))) as \$pending |
+      (\$bad | map(select(is_pending | not)) | map(.name // .context // \"\") | map(select(length > 0))) as \$failing |
+      ([ (if (\$failing | length) > 0
+            then \$qual + chk_word(\$failing|length) + \" \" + names(\$failing) + \" \" + (if (\$failing|length)==1 then \"is\" else \"are\" end) + \" failing\" + \$closed
+            else empty end),
+         (if (\$pending | length) > 0
+            then \$qual + chk_word(\$pending|length) + \" \" + names(\$pending) + \" \" + (if (\$pending|length)==1 then \"is\" else \"are\" end) + \" still pending\" + \$closed
+            else empty end)
+       ] | join(\"; \"))
+    end
+  " 2>/dev/null || true
+}
+
+# blocking_reason_phrase: the full "why this PR still can't be marked done" phrase
+# for retry/hold messages — the named CI blocker(s) from ci_blocking_reason plus a
+# changes-requested-review clause when applicable (AC #5). Falls back to a generic
+# phrase only if nothing specific could be derived.
+blocking_reason_phrase() {
+  local reasons=() ci_reason changes_requested
+  ci_reason="$(ci_blocking_reason)"
+  [ -n "$ci_reason" ] && reasons+=("$ci_reason")
+  changes_requested=$(printf '%s' "${ALL_REVIEWS_JSON:-[]}" | \
+    jq '[.[] | select(.state == "CHANGES_REQUESTED")] | length' 2>/dev/null || echo "0")
+  [ "${changes_requested:-0}" -gt 0 ] && reasons+=("a reviewer requested changes")
+  if [ "${#reasons[@]}" -eq 0 ]; then
+    printf 'a required check is failing or pending, or a reviewer requested changes'
+  else
+    local out="" r
+    for r in "${reasons[@]}"; do
+      if [ -z "$out" ]; then out="$r"; else out="${out}; ${r}"; fi
+    done
+    printf '%s' "$out"
+  fi
+}
+
+# has_hard_blockers: returns 0 (true) if CI is blocking (per ci-status.sh) or
+# ALL_REVIEWS_JSON contains a CHANGES_REQUESTED review.
 # Unlike has_tier1_blockers, does NOT check for unresolved bot threads — used to
 # distinguish "bot threads are the sole blocker" from "hard blockers present", so
 # callers can post a retry marker instead of silently stalling on bot feedback.
 has_hard_blockers() {
-  local failing_checks changes_requested
-
-  failing_checks=$(printf '%s' "${CI_STATUS_JSON:-[]}" | \
-    jq '[.[] | select(.conclusion != null and (
-          .conclusion == "failure" or .conclusion == "timed_out" or
-          .conclusion == "cancelled" or .conclusion == "action_required" or
-          .conclusion == "stale" or .conclusion == "startup_failure" or
-          .conclusion == "pending"
-        ))] | length' 2>/dev/null || echo "0")
+  local changes_requested
 
   changes_requested=$(printf '%s' "${ALL_REVIEWS_JSON:-[]}" | \
     jq '[.[] | select(.state == "CHANGES_REQUESTED")] | length' \
     2>/dev/null || echo "0")
 
-  [ "${failing_checks:-0}" -gt 0 ] || [ "${changes_requested:-0}" -gt 0 ]
+  ci_is_blocking || [ "${changes_requested:-0}" -gt 0 ]
 }
 
-# has_tier1_blockers: returns 0 (true) if CI_STATUS_JSON, ALL_REVIEWS_JSON, or unresolved
-# bot reviewer threads contain Tier-1 blockers:
-# - CI checks with non-success conclusion (failure, timed_out, cancelled, action_required, stale, startup_failure)
+# has_tier1_blockers: returns 0 (true) if CI is blocking (per ci-status.sh),
+# ALL_REVIEWS_JSON, or unresolved bot reviewer threads contain Tier-1 blockers:
+# - A REQUIRED CI check failing or pending (via compute_ci_status; a red
+#   NON-required check does not block — #1859)
 # - Any reviewer with state = CHANGES_REQUESTED
 # - Unresolved review threads from bot reviewers (prevents review-changes from ignoring bot feedback)
 # Used to gate post_no_changes — never post a terminal no-changes marker while blockers
 # exist, so the retry cron can re-attempt on the same SHA.
 has_tier1_blockers() {
-  local failing_checks changes_requested unresolved_bot_threads
-
-  failing_checks=$(printf '%s' "${CI_STATUS_JSON:-[]}" | \
-    jq '[.[] | select(.conclusion != null and (
-          .conclusion == "failure" or .conclusion == "timed_out" or
-          .conclusion == "cancelled" or .conclusion == "action_required" or
-          .conclusion == "stale" or .conclusion == "startup_failure" or
-          .conclusion == "pending"
-        ))] | length' 2>/dev/null || echo "0")
+  local changes_requested unresolved_bot_threads
 
   changes_requested=$(printf '%s' "${ALL_REVIEWS_JSON:-[]}" | \
     jq '[.[] | select(.state == "CHANGES_REQUESTED")] | length' \
@@ -1145,7 +1288,7 @@ has_tier1_blockers() {
     done
   fi
 
-  [ "${failing_checks:-0}" -gt 0 ] || [ "${changes_requested:-0}" -gt 0 ] || [ "${unresolved_bot_threads:-0}" -gt 0 ]
+  ci_is_blocking || [ "${changes_requested:-0}" -gt 0 ] || [ "${unresolved_bot_threads:-0}" -gt 0 ]
 }
 
 # try_enable_auto_merge: enables auto-merge (squash) on the PR when the engine run
@@ -1324,11 +1467,13 @@ expire_stale_terminal_markers() {
   done
 }
 
-# expire_stale_rate_limited_marker: deletes any existing rate-limited marker for this
-# SHA+intent before a new one is posted. Without this, when a hard blocker persists
-# past the initial backoff window the dedup check in post_reviews_rate_limited skips
-# posting, leaving a marker whose reset_time is already in the past. The retry cron
-# then dispatches on every scan indefinitely instead of extending the backoff.
+# expire_stale_rate_limited_marker: deletes any existing hold marker
+# (status=rate-limited OR status=blocked, #1568) for this SHA+intent before a new
+# one is posted. Without this, when a hard blocker persists past the initial backoff
+# window the dedup check in post_reviews_rate_limited skips posting, leaving a marker
+# whose reset_time is already in the past. The retry cron then dispatches on every
+# scan indefinitely instead of extending the backoff. Both tokens are matched so a
+# reason switch (or a pre-#1568 marker) is still cleaned up.
 expire_stale_rate_limited_marker() {
   local intent="$1"
   local sha="${HEAD_SHA:-}"
@@ -1337,7 +1482,7 @@ expire_stale_rate_limited_marker() {
     echo "[dry-run] would expire stale rate-limited marker for intent=${intent} sha=${sha}"
     return 0
   fi
-  local pattern="${REVIEWS_MARKER_PREFIX}${PR_NUMBER} sha=${sha} intent=${intent} status=rate-limited"
+  local pattern="${REVIEWS_MARKER_PREFIX}${PR_NUMBER} sha=${sha} intent=${intent} status=(rate-limited|blocked)"
   local stale_ids
   stale_ids=$(gh api --paginate "repos/${REPO}/issues/${PR_NUMBER}/comments?per_page=100" 2>/dev/null \
     | jq -r --arg pat "$pattern" '[.[] | select(.body | test($pat))] | .[].id' 2>/dev/null || true)
@@ -1348,16 +1493,21 @@ expire_stale_rate_limited_marker() {
   done
 }
 
-# has_reviews_rate_limited_marker: returns 0 if a rate-limited marker for this
-# intent+SHA already exists on the PR (dedup check).
+# has_reviews_rate_limited_marker: returns 0 if a hold marker with the same reason
+# (status=rate-limited for rate-limit reason, status=blocked for blocked reason, #1568)
+# for this intent+SHA already exists on the PR (dedup check — suppresses repeat
+# visible acks for the SAME hold reason, not across reason changes).
 has_reviews_rate_limited_marker() {
   local intent="$1"
+  local reason="${2:-rate-limit}"
   local sha="${HEAD_SHA:-}"
   [ -z "$sha" ] && return 1  # no SHA means no dedup possible
-  local pattern="${REVIEWS_MARKER_PREFIX}${PR_NUMBER} sha=${sha} intent=${intent} status=rate-limited"
+  local status_token="rate-limited"
+  [ "$reason" = "blocked" ] && status_token="blocked"
+  local pattern="${REVIEWS_MARKER_PREFIX}${PR_NUMBER} sha=${sha} intent=${intent} status=${status_token}"
   local count
   count=$(gh api --paginate "repos/${REPO}/issues/${PR_NUMBER}/comments?per_page=100" 2>/dev/null \
-    | jq "[.[] | select(.body | test(\"${pattern}\"))] | length" 2>/dev/null \
+    | jq -c --arg pat "$pattern" '[.[] | select(.body | test($pat))] | length' 2>/dev/null \
     || echo "0")
   [ "${count:-0}" -gt 0 ]
 }
@@ -1367,15 +1517,20 @@ has_reviews_rate_limited_marker() {
 # For non-retryable intents (on-mention, fix-bot-comment), asks the user to re-trigger
 # since USER_INSTRUCTION/COMMENT_BODY cannot be reconstructed at retry time.
 #
-# $2 (reason) selects the user-facing wording:
-#   rate-limit (default) — all AI engines genuinely rate-limited (engine exit 2)
+# $2 (reason) selects both the machine-readable status token and the user-facing
+# wording:
+#   rate-limit (default) — all AI engines genuinely rate-limited (engine exit 2);
+#                          emits `status=rate-limited`
 #   blocked              — engine ran fine but the PR still has hard blockers
 #                          (failing/cancelled checks or CHANGES_REQUESTED reviews);
-#                          schedules a 30-minute backoff retry (issue #461)
-# Both reasons post the same machine-readable `status=rate-limited` marker token —
-# dev-lead-retry.sh keys its re-dispatch scan on that string — only the visible
-# text differs, so users are no longer told "rate-limited" when the real cause
-# is PR blockers.
+#                          emits `status=blocked` and schedules a 30-minute backoff
+#                          retry (issues #461, #1568)
+# The status token is now honest per reason (#1568): a non-quota hold is
+# `status=blocked`, not `status=rate-limited`, so quota signal is never polluted by
+# a hold that has nothing to do with provider quota. dev-lead-retry.sh recognizes
+# both tokens (`status=(rate-limited|blocked)`) so re-dispatch behaviour is
+# unchanged and pre-#1568 `status=rate-limited` blocked markers still in the wild
+# remain retriable.
 post_reviews_rate_limited() {
   local intent="$1"
   local reason="${2:-rate-limit}"
@@ -1393,12 +1548,14 @@ post_reviews_rate_limited() {
   # cause the cron to skip dispatch even though a new rate-limited marker was just posted.
   expire_stale_terminal_markers "$intent"
 
-  # Detect whether a prior rate-limited marker exists BEFORE posting the new one.
+  # Detect whether a prior marker with the same reason exists BEFORE posting the new one.
   # Used to suppress duplicate visible ack comments when a persistent blocker keeps
   # triggering retries — the user-facing ack is only shown on the first cycle.
+  # Only suppress if the reason is the same (issue #1568 logic error: suppress on
+  # reason change would hide the shift from blocked→rate-limited or vice versa).
   local had_prior_rl_marker=false
   if [ "${DEV_LEAD_DRY_RUN:-false}" = "false" ]; then
-    has_reviews_rate_limited_marker "$intent" && had_prior_rl_marker=true
+    has_reviews_rate_limited_marker "$intent" "$reason" && had_prior_rl_marker=true
   fi
 
   # Collect IDs of existing rate-limited markers BEFORE posting the new one. The new
@@ -1409,7 +1566,7 @@ post_reviews_rate_limited() {
     if [ "${DEV_LEAD_DRY_RUN:-false}" = "true" ]; then
       echo "[dry-run] would expire stale rate-limited marker for intent=${intent} sha=${HEAD_SHA}"
     else
-      local rl_pattern="${REVIEWS_MARKER_PREFIX}${PR_NUMBER} sha=${HEAD_SHA} intent=${intent} status=rate-limited"
+      local rl_pattern="${REVIEWS_MARKER_PREFIX}${PR_NUMBER} sha=${HEAD_SHA} intent=${intent} status=(rate-limited|blocked)"
       stale_rl_ids=$(gh api --paginate "repos/${REPO}/issues/${PR_NUMBER}/comments?per_page=100" 2>/dev/null \
         | jq -r --arg pat "$rl_pattern" '[.[] | select(.body | test($pat))] | .[].id' 2>/dev/null || true)
     fi
@@ -1427,17 +1584,20 @@ post_reviews_rate_limited() {
     sha_detail=" sha=${HEAD_SHA}"
   fi
 
-  # `reason=` is informational (visible-text selection + marker forensics); the
-  # retry cron and marker dedup patterns match on `status=rate-limited` and are
-  # unaffected by the extra field.
-  local marker="${REVIEWS_MARKER_PREFIX}${PR_NUMBER}${sha_detail} intent=${intent} status=rate-limited reason=${reason}${reset_detail} -->"
+  # The status token is honest per reason (#1568): a non-quota hold is
+  # `status=blocked`; a genuine quota hold is `status=rate-limited`. `reason=` stays
+  # for visible-text selection + marker forensics. The retry cron and marker dedup
+  # patterns match `status=(rate-limited|blocked)`, so both tokens re-dispatch.
+  local status_token="rate-limited"
+  [ "$reason" = "blocked" ] && status_token="blocked"
+  local marker="${REVIEWS_MARKER_PREFIX}${PR_NUMBER}${sha_detail} intent=${intent} status=${status_token} reason=${reason}${reset_detail} -->"
 
   # Retry message depends on the reason and on whether the intent can be
   # re-dispatched automatically.
   local heading retry_msg
   if [ "$reason" = "blocked" ]; then
     heading="## Dev-Lead — waiting on PR blockers (intent: ${intent})"
-    retry_msg="No changes were committed, but the PR still has blocking checks or reviews (failing or cancelled checks, or changes-requested reviews). The retry cron will re-attempt automatically."
+    retry_msg="No changes were committed, but the PR still can't be marked done: $(blocking_reason_phrase). The retry cron will re-attempt automatically."
     if [ -n "$reset_time" ]; then
       retry_msg="${retry_msg} Next attempt after: \`${reset_time}\`"
     fi
@@ -1493,7 +1653,7 @@ ${retry_msg}"
         if [ "$reason" = "blocked" ]; then
           ack_body="<!-- dev-lead rate-limit-ack -->
 > [!NOTE]
-> ${actor_mention}I reviewed this PR and no code changes were needed, but it still has blocking checks or reviews (failing or cancelled checks, or changes-requested reviews), so I cannot mark it done yet. I'll re-check automatically.
+> ${actor_mention}I reviewed this PR and no code changes were needed, but I can't mark it done yet: $(blocking_reason_phrase). I'll re-check automatically.
 > Next attempt after: \`${reset_display}\`"
         else
           ack_body="<!-- dev-lead rate-limit-ack -->
@@ -1922,7 +2082,7 @@ case "$INTENT_TYPE" in
       else
         notify_coderabbit_resolve
         if has_hard_blockers; then
-          echo "::warning::Tier-1 blockers still present (failing CI or CHANGES_REQUESTED reviews) — posting retry marker with backoff"
+          echo "::warning::Tier-1 blockers still present ($(blocking_reason_phrase)) — posting retry marker with backoff"
           post_reviews_rate_limited "fix-reviews" "blocked"
         elif has_tier1_blockers; then
           echo "::notice::Unresolved bot review threads remain — not posting no-changes terminal to allow future retries"
@@ -1978,7 +2138,7 @@ case "$INTENT_TYPE" in
       else
         notify_coderabbit_resolve
         if has_hard_blockers; then
-          echo "::warning::Tier-1 blockers still present (failing CI or CHANGES_REQUESTED reviews) — fix-bot-comment is not retried automatically; posting terminal marker"
+          echo "::warning::Tier-1 blockers still present ($(blocking_reason_phrase)) — fix-bot-comment is not retried automatically; posting terminal marker"
           post_no_changes "fix-bot-comment"
         elif has_tier1_blockers; then
           echo "::warning::Unresolved bot review threads remain — fix-bot-comment is not automatically retried; posting no-changes terminal marker"
@@ -2079,7 +2239,7 @@ case "$INTENT_TYPE" in
       else
         notify_coderabbit_resolve
         if has_hard_blockers; then
-          echo "::warning::Tier-1 blockers still present (failing CI or CHANGES_REQUESTED reviews) — posting retry marker with backoff"
+          echo "::warning::Tier-1 blockers still present ($(blocking_reason_phrase)) — posting retry marker with backoff"
           post_reviews_rate_limited "review-changes" "blocked"
         elif has_tier1_blockers; then
           echo "::notice::Unresolved bot review threads remain — not posting no-changes terminal to allow future retries"

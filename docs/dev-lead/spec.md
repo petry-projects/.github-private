@@ -453,6 +453,37 @@ Follows the existing `claude-rebase` logic: `git fetch origin`, `git rebase orig
 
 Reads the specific comment body as the user's instruction. Executes it as an agentic task using `run_writer()` with the full PR context prepended to the instruction prompt.
 
+#### Marker status vocabulary (`dev-lead-fix-reviews`)
+
+Every `dev-lead-fix-reviews.sh` run records its outcome in a machine-readable HTML-comment
+marker on the PR:
+
+```
+<!-- dev-lead-fix-reviews pr=<N> sha=<HEAD_SHA> intent=<intent> status=<status> [reason=<reason>] [reset=<ISO>] -->
+```
+
+This table is the **single source of truth** for the `status=` token — pick an existing
+accurate token for any new hold rather than reusing a convenient one (issue #1568).
+
+| `status=` | Meaning | Terminal? | Retriable by `dev-lead-retry.sh`? |
+|---|---|---|---|
+| `applied` | Fix(es) committed and pushed this cycle. | yes | no |
+| `no-changes` | Ran cleanly; nothing needed changing. | yes | no |
+| `failed` | Handler failed for a non-hold reason. | yes | no |
+| `rate-limited` | **Genuine provider quota / rate-limit hold** — all AI engines returned a rate-limit signal (engine exit 2). `reason=rate-limit`. Carries the provider `reset=` when parseable. | no (hold) | yes |
+| `blocked` | **Non-quota hold** — the engine ran fine but the PR still has hard blockers (failing/cancelled checks or `CHANGES_REQUESTED` reviews). `reason=blocked`. Carries a fixed +30-minute `reset=` backoff. | no (hold) | yes |
+
+- **`rate-limited` is emitted only for genuine quota** (issue #1568). A non-quota hold uses
+  `status=blocked`, so quota dashboards/reports/breakers that count rate-limit markers are not
+  polluted by holds that have nothing to do with provider quota, and a maintainer seeing the
+  marker is pointed at the real cause (PR blockers) instead of investigating quota.
+- Prior to #1568 the blocked path reused `status=rate-limited reason=blocked` (a deliberate
+  #461 deferral); the honest `reason=` field was already present, only the token was wrong.
+- **Back-compat / transition.** `dev-lead-retry.sh` matches both hold tokens
+  (`status=(rate-limited|blocked)`), so re-dispatch behaviour is unchanged and any pre-#1568
+  `status=rate-limited reason=blocked` markers still in the wild remain retriable. The
+  in-script dedup/expire helpers likewise match both tokens for the same reason.
+
 ---
 
 ### 7.5 `dev-lead-fix-issue.sh` — Issue implementation handler
