@@ -54,7 +54,6 @@ source "${CALLER_FREEZE_DIR}/fleet_stub_drift.sh"
 readonly -a CALLER_FREEZE_STUBS=(
   ".github/workflows/dev-lead.yml|dev-lead|dev-lead.block"
   ".github/workflows/pr-review-trigger.yml|review|pr-review-trigger.block"
-  ".github/workflows/ci-failure-analyst.lock.yml|analyze|ci-failure-analyst.block"
 )
 
 # caller_freeze_covered — print the covered stub paths, one per line. Pure.
