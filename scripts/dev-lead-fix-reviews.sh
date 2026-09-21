@@ -1143,35 +1143,62 @@ resolve_nochange_disposition_threads() {
     cursor_args=("-f" "cursor=${cursor}")
   done
 
-  if [ -z "$(printf '%s' "$ids" | sed '/^[[:space:]]*$/d')" ]; then
+  if [ -z "${ids//[[:space:]]/}" ]; then
     echo "::notice::no unresolved bot threads to check for a no-change disposition on PR #${PR_NUMBER}"
     return 0
   fi
 
   # Re-fetch ALL comments per candidate (author login + __typename + body + createdAt)
   # so both dispositions are decided on the current full thread, never a stale snapshot.
-  local node_query='query($id:ID!){
+  # Comments are paginated: a thread with >100 comments could otherwise hide a newer
+  # REQUIRED disposition on a later page, letting an outdated no-change disposition
+  # resolve a thread the maintainer has since re-blocked (#1799).
+  local node_query='query($id:ID!,$cursor:String){
     node(id:$id){
       ... on PullRequestReviewThread {
         isResolved
-        comments(first:100){nodes{author{login __typename} body createdAt}}
+        comments(first:100,after:$cursor){
+          pageInfo{hasNextPage endCursor}
+          nodes{author{login __typename} body createdAt}
+        }
       }
     }
   }'
 
   local resolved_count=0
-  local id node_json cur_resolved comments_json
+  local id cur_resolved comments_json
   while IFS= read -r id; do
     [ -z "$id" ] && continue
-    node_json=$(gh api graphql -f query="$node_query" -f id="$id" 2>/dev/null || echo "{}")
-    cur_resolved=$(printf '%s' "$node_json" | jq -r \
-      'if .data.node.isResolved == null then "unknown"
-       elif .data.node.isResolved then "true" else "false" end' 2>/dev/null || echo "unknown")
+
+    # Page through every comment in the thread; capture isResolved from the first page.
+    local c_cursor="" c_has_next="true" c_page c_pages_file first_page=1
+    local c_cursor_args=()
+    cur_resolved="unknown"
+    c_pages_file=$(mktemp) || { echo "::error::failed to create temporary file" >&2; return 1; }
+    while [ "$c_has_next" = "true" ]; do
+      c_page=$(gh api graphql -f query="$node_query" -f id="$id" \
+        "${c_cursor_args[@]}" 2>/dev/null || echo "{}")
+      if [ "$first_page" -eq 1 ]; then
+        cur_resolved=$(printf '%s' "$c_page" | jq -r \
+          'if .data.node.isResolved == null then "unknown"
+           elif .data.node.isResolved then "true" else "false" end' 2>/dev/null || echo "unknown")
+        first_page=0
+      fi
+      printf '%s' "$c_page" | jq -c '.data?.node?.comments?.nodes // []' 2>/dev/null >> "$c_pages_file" || echo "[]" >> "$c_pages_file"
+      c_has_next=$(printf '%s' "$c_page" | jq -r \
+        '.data?.node?.comments?.pageInfo?.hasNextPage // false' 2>/dev/null || echo "false")
+      c_cursor=$(printf '%s' "$c_page" | jq -r \
+        '.data?.node?.comments?.pageInfo?.endCursor // ""' 2>/dev/null || echo "")
+      [ -z "$c_cursor" ] && c_has_next="false"
+      c_cursor_args=("-f" "cursor=${c_cursor}")
+    done
+    comments_json=$(jq -s 'add // []' "$c_pages_file" 2>/dev/null || echo "[]")
+    rm -f "$c_pages_file"
+
     if [ "$cur_resolved" != "false" ]; then
       echo "::notice::skipping thread ${id} — already resolved or state unknown at re-check (${cur_resolved})"
       continue
     fi
-    comments_json=$(printf '%s' "$node_json" | jq -c '.data.node.comments.nodes // []' 2>/dev/null || echo "[]")
 
     # A standing no-change disposition is REQUIRED to touch the thread at all. rc1 (none)
     # leaves it unresolved; rc2 (found but its createdAt is unparseable) fails closed.

@@ -264,6 +264,40 @@ setup() {
   [[ -z "$output" ]]
 }
 
+@test "acv_latest_nochange_disposition: negated 'this is not a false positive' does NOT authorize -> rc1" {
+  # The broad phrase match would see FALSE POSITIVE; the negation guard must win so a
+  # maintainer explicitly rejecting the false-positive verdict never clears the thread (#1799).
+  local comments='[{"author":{"login":"a-maintainer","__typename":"User"},"body":"This is not a false positive, please fix it.","createdAt":"2026-09-02T12:00:00Z"}]'
+  run acv_latest_nochange_disposition "$comments" "donpetry-bot"
+  [[ "$status" -eq 1 ]]
+  [[ -z "$output" ]]
+}
+
+@test "acv_latest_nochange_disposition: negated 'isn't working as intended' does NOT authorize -> rc1" {
+  local comments='[{"author":{"login":"a-maintainer","__typename":"User"},"body":"This isn'"'"'t working as intended.","createdAt":"2026-09-02T12:00:00Z"}]'
+  run acv_latest_nochange_disposition "$comments" "donpetry-bot"
+  [[ "$status" -eq 1 ]]
+  [[ -z "$output" ]]
+}
+
+@test "acv_latest_nochange_disposition: 'won'\''t fix' (affirmative) is still a no-change disposition -> rc0" {
+  # The negator-lookalike WON'T is part of the affirmative phrase itself; it must not be
+  # clobbered by the negation guard, which only fires when a negator precedes a phrase.
+  local comments='[{"author":{"login":"a-maintainer","__typename":"User"},"body":"Won'"'"'t fix — intentional.","createdAt":"2026-09-02T12:00:00Z"}]'
+  run acv_latest_nochange_disposition "$comments" "donpetry-bot"
+  [[ "$status" -eq 0 ]]
+  [[ "$output" == "2026-09-02T12:00:00Z" ]]
+}
+
+@test "acv_latest_nochange_disposition: 'not a bug' (affirmative) is still a no-change disposition -> rc0" {
+  # NOT A BUG begins with a negator but is an affirmative no-change phrase; it is excluded
+  # from the negation guard's target set so it is never misread as a negated phrase.
+  local comments='[{"author":{"login":"a-maintainer","__typename":"User"},"body":"Not a bug.","createdAt":"2026-09-02T12:00:00Z"}]'
+  run acv_latest_nochange_disposition "$comments" "donpetry-bot"
+  [[ "$status" -eq 0 ]]
+  [[ "$output" == "2026-09-02T12:00:00Z" ]]
+}
+
 # ---------------------------------------------------------------------------
 # acv_latest_marker_index — find our addressed-marker reply anywhere in the thread (#1735 AC1)
 # ---------------------------------------------------------------------------
