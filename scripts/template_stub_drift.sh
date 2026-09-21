@@ -79,6 +79,14 @@ readonly -a TEMPLATE_DRIFT_FILES=(
 # Add a path here ONLY with a recorded rationale.
 readonly -a TEMPLATE_DRIFT_ALLOWLIST=(
   ".github/workflows/ci.yml"
+  # sonarcloud.yml and dependabot.yml diverge intentionally from standards because
+  # repo-template uses npm-based tooling (dependabot for npm packages, sonarcloud
+  # with standard action versions) while .github-private uses GitHub Actions
+  # orchestration (dependabot for GitHub Actions, sonarcloud with custom Java
+  # provisioning args). These divergences are legitimate per-consumer customization
+  # and should not block the drift guard (#1448).
+  ".github/workflows/sonarcloud.yml"
+  ".github/dependabot.yml"
 )
 
 # template_drift_allowlisted <path> — return 0 if the path is an allowlisted,
