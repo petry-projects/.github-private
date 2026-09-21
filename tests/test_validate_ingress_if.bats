@@ -157,40 +157,40 @@ setup() {
 
 @test "viif_forbidden: a bare policed root serialized via toJSON is forbidden and names its construct (#1781)" {
   run viif_forbidden "toJSON(env) != ''"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
   [[ "$output" == *"unlisted-context"* ]]
 
   run viif_forbidden "contains(toJSON(vars), 'claude')"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
   [[ "$output" == *"vars"* ]]
 
   run viif_forbidden "contains(toJSON(secrets), 'x')"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
   [[ "$output" == *"secrets"* ]]
 
   run viif_forbidden "contains(toJSON(needs), 'true')"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
   [[ "$output" == *"needs-outputs"* ]]
 
   run viif_forbidden "contains(toJSON(inputs), 'x')"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
   [[ "$output" == *"unlisted-context"* ]]
 
   # Bare github serialized whole is the most severe reach — everything, not the
   # event. It is not the delivered event, so the allowlist backstop names it.
   run viif_forbidden "contains(toJSON(github), 'petry-projects/x')"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
   [[ "$output" == *"unlisted-context"* ]]
 }
 
 @test "viif_forbidden: a bare root nested and passed as a function argument is still caught (#1781)" {
   run viif_forbidden "fromJSON(toJSON(secrets))"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
   [[ "$output" == *"secrets"* ]]
 
   # The root as a plain right-hand value, no wrapping function at all.
   run viif_forbidden "steps != ''"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
   [[ "$output" == *"unlisted-context"* ]]
 }
 
@@ -209,17 +209,47 @@ setup() {
   [ -z "$output" ]
 }
 
+@test "viif_forbidden: context names are case-insensitive, so mixed/upper case roots stay FORBIDDEN" {
+  # Actions expressions are case-insensitive, so VARS.X / Secrets.Y / GitHub.actor
+  # reach the same repo state as their lowercase twins. A lowercase-only match
+  # would let them bypass the guard — each must still be rejected and name its
+  # construct.
+  run viif_forbidden "VARS.DEV_LEAD_ENGINE == 'claude'"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"vars"* ]]
+
+  run viif_forbidden "Secrets.CLAUDE_CODE_OAUTH_TOKEN != ''"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"secrets"* ]]
+
+  run viif_forbidden "NEEDS.detect.outputs.should_run == 'true'"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"needs-outputs"* ]]
+
+  run viif_forbidden "contains(toJSON(Secrets), 'x')"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"secrets"* ]]
+
+  run viif_forbidden "GitHub.actor == 'octocat'"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"unlisted-context"* ]]
+
+  run viif_forbidden "ENV.FOO == 'bar'"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"unlisted-context"* ]]
+}
+
 @test "viif_forbidden: #1725 dotted and bracket-indexed forms stay FORBIDDEN (#1781 AC #5)" {
   run viif_forbidden "github.event_name == 'pull_request' && vars.DEV_LEAD_ENGINE == 'claude'"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
   [[ "$output" == *"vars"* ]]
 
   run viif_forbidden "secrets['CLAUDE_CODE_OAUTH_TOKEN'] != ''"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
   [[ "$output" == *"secrets"* ]]
 
   run viif_forbidden "needs['detect'].outputs['should_run'] == 'true'"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
   [[ "$output" == *"needs-outputs"* ]]
 }
 

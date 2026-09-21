@@ -70,22 +70,25 @@ viif_normalize_expr() {
 # Expects a NORMALIZED and LITERAL-STRIPPED expr (see viif_normalize_expr and the
 # stripping in viif_forbidden) so indexed and dot forms are treated identically
 # and a policed name inside a quoted literal is not mistaken for a reference.
+# Matches against a LOWERCASED copy of the expr because Actions expression context
+# names are case-insensitive (vars.X == VARS.X == Vars.X); a case-sensitive match
+# would let VARS.SECRET / Secrets.TOKEN bypass the check (#1867).
 viif_expr_matches_construct() {
-  local expr="$1" name="$2" lc="${1,,}"
+  local name="$2" lc="${1,,}"
   case "$name" in
     # vars/secrets/needs are ALWAYS a repo-state reach, whether accessed with a
     # property (vars.X, normalized from vars['X']) or used BARE as a whole value
     # (toJSON(vars), or the root passed as any function argument). Match the root
     # as an identifier TOKEN — bounded left and right, not requiring a trailing
     # dot — so the bare form no longer slips past the dotted-only pattern (#1781).
-    vars)                  [[ "$expr" =~ (^|[^._[:alnum:]-])vars([^_[:alnum:]-]|$) ]] ;;
-    secrets)               [[ "$expr" =~ (^|[^._[:alnum:]-])secrets([^_[:alnum:]-]|$) ]] ;;
-    needs-outputs)         [[ "$expr" =~ (^|[^._[:alnum:]-])needs([^_[:alnum:]-]|$) ]] ;;
+    vars)                  [[ "$lc" =~ (^|[^._[:alnum:]-])vars([^_[:alnum:]-]|$) ]] ;;
+    secrets)               [[ "$lc" =~ (^|[^._[:alnum:]-])secrets([^_[:alnum:]-]|$) ]] ;;
+    needs-outputs)         [[ "$lc" =~ (^|[^._[:alnum:]-])needs([^_[:alnum:]-]|$) ]] ;;
     hashfiles)             [[ "$lc" == *hashfiles* ]] ;;
-    repo-identity)         [[ "$expr" == *"github.repository"* ]] || \
-                           [[ "$expr" =~ github\.event\.repository\.(full_name|name|id|node_id|owner) ]] ;;
-    default-branch)        [[ "$expr" == *default_branch* ]] ;;
-    labels-array-contains) [[ "$expr" == *".labels"* ]] ;;
+    repo-identity)         [[ "$lc" == *"github.repository"* ]] || \
+                           [[ "$lc" =~ github\.event\.repository\.(full_name|name|id|node_id|owner) ]] ;;
+    default-branch)        [[ "$lc" == *default_branch* ]] ;;
+    labels-array-contains) [[ "$lc" == *".labels"* ]] ;;
     *)                     return 1 ;;
   esac
 }
@@ -102,7 +105,9 @@ viif_expr_matches_construct() {
 # viif_forbidden). vars/secrets/needs and bare github.repository are owned by the
 # named rows above and excluded here to avoid double-reporting them.
 viif_reaches_unlisted_context() {
-  local stripped="$1" sub
+  # Lowercase the expr: Actions context names are case-insensitive, so GitHub.actor
+  # / ENV.FOO must be judged the same as their lowercase twins (#1867).
+  local stripped="${1,,}" sub
 
   # (a) a github.<x> reference outside the event allowlist (event_name / event.*).
   #     bare github.repository is the repo-identity construct's own concern.
