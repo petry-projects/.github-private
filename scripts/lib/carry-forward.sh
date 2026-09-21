@@ -55,7 +55,11 @@ cf_prior_decision() {
 #   Echo the risk (LOW/MEDIUM/HIGH) recorded in the marker, or "LOW" if absent.
 cf_prior_risk() {
   local body="${1:-}" risk
-  risk=$(printf '%s' "$body" | grep -oE 'risk=(LOW|MEDIUM|HIGH)' | head -n1 | cut -d= -f2)
+  # Single sed (exit after first match) fed by a here-string: avoids the SIGPIPE
+  # (exit 141) that piping to `head -n1` can raise under `set -o pipefail`, and the
+  # extra subshell a `printf | …` pipe spawns. `|| true` keeps a no-match from
+  # aborting the caller under `set -e`.
+  risk=$(sed -nE '/risk=(LOW|MEDIUM|HIGH)/{s/.*risk=(LOW|MEDIUM|HIGH).*/\1/;p;q;}' <<< "$body" || true)
   echo "${risk:-LOW}"
 }
 
@@ -162,17 +166,30 @@ evaluate_carry_forward() {
   fi
 
   # 1. Intervening commits: every one must be a merge commit (no author content).
-  local compare_json commits_json reason
-  compare_json=$(gh api "repos/$repo/compare/$prior_sha...$head_sha" 2>/dev/null) || compare_json=""
+  #    --paginate follows the compare endpoint's Link headers so a long base-merge
+  #    treadmill is not silently truncated into a false carry; each page is a JSON
+  #    object, slurped into an array and flattened to the full commit list.
+  local compare_json commits_json reason total_commits collected
+  compare_json=$(gh api --paginate "repos/$repo/compare/$prior_sha...$head_sha?per_page=100" 2>/dev/null) || compare_json=""
   if [ -z "$compare_json" ]; then
     rm -rf "$tmp"
     echo "full:compare-api-error"
     return 0
   fi
-  commits_json=$(jq -c '.commits // []' <<<"$compare_json" 2>/dev/null) || commits_json=""
+  commits_json=$(jq -sc '[.[].commits[]?]' <<<"$compare_json" 2>/dev/null) || commits_json=""
   if [ -z "$commits_json" ]; then
     rm -rf "$tmp"
     echo "full:compare-unparseable"
+    return 0
+  fi
+  # The compare API caps at 250 commits even under pagination (`total_commits` reports
+  # the true count). If it exceeds what we actually collected, commits were omitted —
+  # fail toward reviewing rather than carry an approval over an unverified commit.
+  total_commits=$(jq -s '.[0].total_commits // 0' <<<"$compare_json" 2>/dev/null) || total_commits=0
+  collected=$(jq 'length' <<<"$commits_json" 2>/dev/null) || collected=0
+  if [ "${total_commits:-0}" -gt "${collected:-0}" ]; then
+    rm -rf "$tmp"
+    echo "full:compare-truncated"
     return 0
   fi
   if ! reason=$(cf_all_intervening_are_base_merges "$commits_json"); then
@@ -204,10 +221,13 @@ evaluate_carry_forward() {
   count=$(jq 'length' <<<"$commits_json" 2>/dev/null) || count=0
   i=0
   while [ "$i" -lt "$count" ]; do
-    m_sha=$(jq -r ".[$i].sha // \"\"" <<<"$commits_json" 2>/dev/null)
-    parents=$(jq -c ".[$i].parents // []" <<<"$commits_json" 2>/dev/null)
-    p1=$(jq -r '.[0].sha // ""' <<<"$parents" 2>/dev/null)
-    p2=$(jq -r '.[1].sha // ""' <<<"$parents" 2>/dev/null)
+    # Guard every jq substitution with `|| var=""`: under `set -e` an unguarded jq
+    # failure (unparseable/unexpected JSON) would abort mid-loop and leak $tmp. An
+    # empty result is caught by the emptiness check below and fails toward reviewing.
+    m_sha=$(jq -r ".[$i].sha // \"\"" <<<"$commits_json" 2>/dev/null) || m_sha=""
+    parents=$(jq -c ".[$i].parents // []" <<<"$commits_json" 2>/dev/null) || parents=""
+    p1=$(jq -r '.[0].sha // ""' <<<"$parents" 2>/dev/null) || p1=""
+    p2=$(jq -r '.[1].sha // ""' <<<"$parents" 2>/dev/null) || p2=""
     if [ -z "$m_sha" ] || [ -z "$p1" ] || [ -z "$p2" ]; then
       rm -rf "$tmp"; echo "full:merge-parents-unresolved"; return 0
     fi
@@ -226,8 +246,11 @@ evaluate_carry_forward() {
     fi
 
     # The merge must introduce ONLY the base's blobs (no resolved-conflict content).
-    merge_files=$(gh api "repos/$repo/commits/$m_sha" --jq '[.files[]? | {filename, sha}]' 2>/dev/null) || merge_files=""
-    base_delta=$(gh api "repos/$repo/compare/$p1...$p2" --jq '[.files[]? | {filename, sha}]' 2>/dev/null) || base_delta=""
+    # --paginate follows the Link headers so a merge/compare with >300 changed files
+    # is fully enumerated; each page emits a `[{filename,sha}]` array which `jq -s add`
+    # concatenates, so a truncated page can't hide a non-base blob and mint a false carry.
+    merge_files=$(gh api --paginate "repos/$repo/commits/$m_sha?per_page=100" --jq '[.files[]? | {filename, sha}]' 2>/dev/null | jq -sc 'add // []' 2>/dev/null) || merge_files=""
+    base_delta=$(gh api --paginate "repos/$repo/compare/$p1...$p2?per_page=100" --jq '[.files[]? | {filename, sha}]' 2>/dev/null | jq -sc 'add // []' 2>/dev/null) || base_delta=""
     if [ -z "$merge_files" ] || [ -z "$base_delta" ]; then
       rm -rf "$tmp"; echo "full:merge-files-error"; return 0
     fi

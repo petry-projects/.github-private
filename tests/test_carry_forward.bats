@@ -85,6 +85,18 @@ run_eval() { run evaluate_carry_forward "$REPO" "$BASE_REF" "$PRIOR_SHA" "$HEAD_
   [ "$output" = "" ]
 }
 
+@test "cf_prior_risk extracts LOW/MEDIUM/HIGH and defaults to LOW" {
+  run cf_prior_risk '<!-- pr-review-agent v1 sha=abc123 decision=approved risk=HIGH -->'
+  [ "$output" = "HIGH" ]
+  run cf_prior_risk '<!-- pr-review-agent v1 sha=abc123 decision=approved risk=MEDIUM -->'
+  [ "$output" = "MEDIUM" ]
+  run cf_prior_risk '<!-- pr-review-agent v1 sha=abc123 decision=approved risk=LOW -->'
+  [ "$output" = "LOW" ]
+  # No risk token -> LOW default (and no SIGPIPE/abort under set -e -o pipefail).
+  run cf_prior_risk 'no marker here'
+  [ "$output" = "LOW" ]
+}
+
 @test "cf_all_intervening_are_base_merges: all merges pass, content commit fails, empty fails" {
   run cf_all_intervening_are_base_merges '[{"sha":"m1","parents":[{"sha":"a"},{"sha":"b"}]}]'
   [ "$status" -eq 0 ]
@@ -174,6 +186,18 @@ run_eval() { run evaluate_carry_forward "$REPO" "$BASE_REF" "$PRIOR_SHA" "$HEAD_
   run_eval
   [ "$status" -eq 0 ]
   [ "$output" = "full:diff-changed" ]
+}
+
+@test "compare truncated (total_commits exceeds the returned commits) -> full" {
+  # The compare API caps at 250 commits even under --paginate and reports the true
+  # count in total_commits. A larger total means commits were omitted, so the guard
+  # must fail toward reviewing rather than carry over an unverified commit (#1870).
+  jq -n --arg m "$MERGE_SHA" --arg p1 "$PRIOR_SHA" --arg p2 "$BASE_COMMIT" \
+    '{commits:[{sha:$m, parents:[{sha:$p1},{sha:$p2}]}], total_commits:2}' \
+    > "$TEST_DIR/compare_commits.json"
+  run_eval
+  [ "$status" -eq 0 ]
+  [ "$output" = "full:compare-truncated" ]
 }
 
 @test "foreign merge (base-side parent not on base branch) -> full" {
