@@ -148,6 +148,82 @@ setup() {
 }
 
 # ---------------------------------------------------------------------------
+# Bare context roots (#1781). A context referenced with no trailing dot —
+# toJSON(secrets), fromJSON(toJSON(env)), or the root passed as any function
+# argument — has no `.` for the dot-notation denylist or the allowlist backstop
+# to bite, so it was ALLOWED. Detection must work on identifier TOKENS, and each
+# bare root must fail AND name its construct in the message (AC #1, #4).
+# ---------------------------------------------------------------------------
+
+@test "viif_forbidden: a bare policed root serialized via toJSON is forbidden and names its construct (#1781)" {
+  run viif_forbidden "toJSON(env) != ''"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"unlisted-context"* ]]
+
+  run viif_forbidden "contains(toJSON(vars), 'claude')"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"vars"* ]]
+
+  run viif_forbidden "contains(toJSON(secrets), 'x')"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"secrets"* ]]
+
+  run viif_forbidden "contains(toJSON(needs), 'true')"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"needs-outputs"* ]]
+
+  run viif_forbidden "contains(toJSON(inputs), 'x')"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"unlisted-context"* ]]
+
+  # Bare github serialized whole is the most severe reach — everything, not the
+  # event. It is not the delivered event, so the allowlist backstop names it.
+  run viif_forbidden "contains(toJSON(github), 'petry-projects/x')"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"unlisted-context"* ]]
+}
+
+@test "viif_forbidden: a bare root nested and passed as a function argument is still caught (#1781)" {
+  run viif_forbidden "fromJSON(toJSON(secrets))"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"secrets"* ]]
+
+  # The root as a plain right-hand value, no wrapping function at all.
+  run viif_forbidden "steps != ''"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"unlisted-context"* ]]
+}
+
+@test "viif_forbidden: named FORBID matching ignores policed names inside string literals (#1781, AC #2)" {
+  # A quoted literal that merely mentions vars.X is NOT a repo-state reach — the
+  # if: reads github.event.comment.body, an event field. Named matching runs on
+  # the literal-stripped expression, the same way the allowlist backstop does.
+  run viif_forbidden "contains(github.event.comment.body, 'set vars.X please')"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+
+  # A bare policed name inside a literal must likewise not trip bare-root
+  # detection (the whole point of stripping literals first).
+  run viif_forbidden "contains(github.event.comment.body, 'please set env for me')"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "viif_forbidden: #1725 dotted and bracket-indexed forms stay FORBIDDEN (#1781 AC #5)" {
+  run viif_forbidden "github.event_name == 'pull_request' && vars.DEV_LEAD_ENGINE == 'claude'"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"vars"* ]]
+
+  run viif_forbidden "secrets['CLAUDE_CODE_OAUTH_TOKEN'] != ''"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"secrets"* ]]
+
+  run viif_forbidden "needs['detect'].outputs['should_run'] == 'true'"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"needs-outputs"* ]]
+}
+
+# ---------------------------------------------------------------------------
 # Parameterised over the FROZEN rulings table: every ALLOW row's representative
 # expression must be permitted; every FORBID row's must be rejected AND name the
 # construct. A newly added row is thereby answered for free, and the guard cannot
