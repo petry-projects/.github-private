@@ -99,58 +99,25 @@ Your reply and its marker are the *only* lever you have on resolution — which 
 
 Never stamp the addressed-marker on a thread you did not fix, and never on a marker-less human thread — even when you fixed it, and even when it is `isOutdated: true`. Reply and leave it for the maintainer. Resolution — signalling the issue is handled and giving the reviewer a clean slate — is the harness's job, not yours.
 
-### Phase 1b — Disposition PR Issue Comments (#1813)
+### Phase 2 — Test Verification
 
-Review threads are only half the surface. A finding posted as a PR **issue comment** — what `gh pr comment` and the GitHub main comment box produce, and what bots like `codeant-ai`, `qodo-code-review`, and the `auto-rebase-conflict` notice use — creates **no** review thread, so it is invisible to Phase 1 above. The pr-review gate now **withholds approval** while any such comment lacks a **verified disposition**, so you must disposition every one or the PR cannot merge.
+After addressing all threads, run the test suite to ensure no regressions were introduced:
 
-**Enumerate the PR's issue comments** (not review threads):
+1. Identify the test command this repo uses (check AGENTS.md, `package.json`, `Makefile`, etc.)
+2. Run the full test suite — all tests must pass
+3. If a thread fix required adding new behavior, add or update tests to cover it
+4. **Do not suppress or delete tests to force a pass — fix the code instead**
 
-```bash
-# Paginate through EVERY issue comment — a PR with more than 100 comments would
-# otherwise strand every finding past the first page (the maintainer gate stays
-# blocked on them). Loop on pageInfo.hasNextPage / endCursor until exhausted.
-cursor=null
-while :; do
-  page=$(gh api graphql -f query='query($owner:String!,$repo:String!,$pr:Int!,$cursor:String){
-    repository(owner:$owner,name:$repo){ pullRequest(number:$pr){
-      comments(first:100, after:$cursor){
-        nodes{ id author{login __typename} body isMinimized minimizedReason }
-        pageInfo{ hasNextPage endCursor } } } } }' \
-    -F owner="${REPO%%/*}" -F repo="${REPO##*/}" -F pr="${PR_NUMBER}" -F cursor="${cursor}")
-  echo "$page" | jq -c '.data.repository.pullRequest.comments.nodes[]'   # process this page
-  [ "$(echo "$page" | jq -r '.data.repository.pullRequest.comments.pageInfo.hasNextPage')" = "true" ] || break
-  cursor=$(echo "$page" | jq -r '.data.repository.pullRequest.comments.pageInfo.endCursor')
-done
-```
+### Phase 3 — Rubber Duck Review
 
-**Skip** (do not disposition, never reply to):
+Read every changed line as if you are the reviewer seeing the response:
 
-- any comment already `isMinimized: true` with `minimizedReason` = `RESOLVED` — it is done;
-- **our own** automation comments — those authored by our bot account or carrying one of our markers (`<!-- pr-review-agent … -->`, `<!-- persona:… -->`, `<!-- dev-lead … -->` including your own `<!-- dev-lead:comment-disposition … -->` replies, `<!-- dependency-advisory -->`). **Never answer your own disposition reply** — doing so would loop forever (#860 / #1813 AC7).
-
-For **every other** comment (bot or human alike — a bot conflict report or trial-ended notice is still a finding), research it, then post **exactly one** reply comment that states specifically what you found/did (never just "done"), ending with **one** disposition marker. Post the reply with `gh pr comment ${PR_NUMBER} --body "…"`; pass the `id` node id from the query above verbatim:
-
-```
-<!-- dev-lead:comment-disposition id=<comment_node_id> disposition=<fixed|invalid|out-of-scope|answered|informational> [sha=<40-hex>] [ref=#<n>] -->
-```
-
-**Choose the disposition and satisfy its evidence rule** (the harness verifies each before it minimizes the original comment — an unverifiable disposition leaves the comment open and the PR blocked):
-
-| Disposition | Use when | Required evidence (harness-verified) |
-|---|---|---|
-| `fixed` | you changed code to address the finding | `sha=` the **full 40-char** commit (`git rev-parse HEAD`) your fix rides on; the harness checks it is on the PR head with a non-empty diff |
-| `out-of-scope` | the finding is real but belongs elsewhere | `ref=#<n>` a tracking issue that **exists**; open one first if needed |
-| `invalid` | the finding is wrong / a false positive | a reply body with concrete reasoning (non-empty beyond the marker) |
-| `answered` | the comment asked a question you answer in the reply | a reply body that actually answers it |
-| `informational` | a notice with no action needed (e.g. a trial-ended notice) | a reply body noting the acknowledgement; route any follow-up to **one** tracking issue per repo (see below) |
-
-**Emit exactly one marker per reply.** A reply with zero or more-than-one marker, an unknown disposition word, a `fixed` without a 40-hex `sha`, or an `out-of-scope` without `ref` is **unverifiable** — the harness leaves the comment open. Cite the real SHA / real issue.
-
-**AC5 — human maintainer comments.** A comment whose `author.__typename` is `"User"` (a person, using an account like a human maintainer) is auto-resolved by the harness **only** on a verified `fixed`. For any other disposition you still post your reply, but the comment stays open for the human to resolve — you can never dismiss a person's finding by arguing it away. Bot comments (`__typename` = `"Bot"`) resolve on any verified disposition.
-
-**AC6 — one tracking issue per repo.** When you defer findings (`out-of-scope`) or route `informational` follow-ups, funnel them into a **single** tracking issue per repository rather than opening one per comment; reference that issue's number in `ref=`.
-
-**Never minimize a comment yourself** (no `minimizeComment` mutation). As with review threads, resolution is the harness's job: it verifies your disposition reply and minimizes the original comment RESOLVED. Your reply + its marker are your only lever.
+1. Run `git diff HEAD` (or equivalent) to see all changes made this session
+2. Ask: does each change directly and completely address its thread?
+3. Ask: are there related threads whose fixes interact — did fixing one break another?
+4. Ask: would the reviewer be satisfied, or is there still an issue?
+5. Ask: does every thread I fixed have a reply describing the fix, ending with the addressed-marker where appropriate? Reply to any I missed — the harness resolves the thread; do not resolve it yourself.
+6. Fix anything found, then re-run Phase 2
 
 ### Phase 2 — Test Verification
 
