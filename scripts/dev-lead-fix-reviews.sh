@@ -31,6 +31,10 @@ source "$(dirname "$0")/lib/redact.sh"
 # Rebase exhaustion handling (#865): abort cleanly on hard conflicts instead of
 # timing out (exit 124), and dampen sentinel bursts.
 source "$(dirname "$0")/lib/rebase-exhaustion.sh"
+# CI gate status (#1859, completes #1795): the blocker check delegates to
+# compute_ci_status so a failing NON-required check never stops the
+# fix/disposition pass — the same library review-one-pr.sh and the sweeps use.
+source "$(dirname "$0")/lib/ci-status.sh"
 
 INTENT_TYPE="${INTENT_TYPE:-fix-reviews}"
 PR_NUMBER="${PR_NUMBER:-}"
@@ -1058,46 +1062,166 @@ resolve_dispositioned_comments() {
   echo "::notice::resolve_dispositioned_comments: minimized ${resolved_count} dispositioned comment(s) on PR #${PR_NUMBER}"
 }
 
-# has_hard_blockers: returns 0 (true) if CI_STATUS_JSON or ALL_REVIEWS_JSON contain
-# hard Tier-1 blockers (failing CI checks or CHANGES_REQUESTED reviews).
+# ── CI blocking gate (#1859, completes #1795) ─────────────────────────────────
+# has_hard_blockers / has_tier1_blockers determine whether CI is blocking via
+# lib/ci-status.sh (compute_ci_status), NOT their own all-or-nothing logic. A
+# failing NON-required check (e.g. `template-drift`, or a superseded/cancelled
+# `dev-lead / *` orchestration job — all non-required) no longer blocks; a failing
+# REQUIRED check and a genuine CHANGES_REQUESTED review still do. Fails closed: if
+# the branch ruleset is unreadable, compute_ci_status gates on every failing check.
+
+# _ci_required_checks: the branch ruleset's required status-check contexts, read
+# once per run via ruleset_required_checks (lib/ci-status.sh) and cached. Names are
+# NEVER hardcoded here — they are the authoritative required set for this branch.
+# Empty when the ruleset API is unreadable → compute_ci_status fails closed.
+_ci_required_checks() {
+  if [ -z "${_CI_REQUIRED_CHECKS_CACHE+x}" ]; then
+    _CI_REQUIRED_CHECKS_CACHE="$(ruleset_required_checks "${REPO:-}" "${BASE_REF:-main}" 2>/dev/null || true)"
+  fi
+  printf '%s' "$_CI_REQUIRED_CHECKS_CACHE"
+}
+
+# _ci_rollup_from_status_json: reshape CI_STATUS_JSON (built by fetch_pr_context
+# from the check-runs + legacy-statuses APIs, lowercase conclusions) into the
+# statusCheckRollup shape compute_ci_status consumes — uppercase status/conclusion,
+# with the synthetic "pending" conclusion (fetch_pr_context maps a pending legacy
+# status to it) normalised back to a null (non-terminal) conclusion so it
+# classifies as pending, not failing.
+_ci_rollup_from_status_json() {
+  printf '%s' "${CI_STATUS_JSON:-[]}" | jq -c '
+    (if type == "array" then . else [] end)
+    | map({
+        name: (.name // ""),
+        status: ((.status // "") | ascii_upcase),
+        conclusion: (if (.conclusion == null or .conclusion == "" or .conclusion == "pending")
+                     then null else (.conclusion | ascii_upcase) end)
+      })' 2>/dev/null || echo '[]'
+}
+
+# ci_blocking_status: the compute_ci_status verdict ("passing"/"pending"/"failing")
+# for this PR, gated on required checks only.
+ci_blocking_status() {
+  compute_ci_status "$(_ci_rollup_from_status_json)" "$(_ci_required_checks)"
+}
+
+# ci_is_blocking: returns 0 (true) when CI is a hard blocker — a REQUIRED check is
+# failing or still pending. A red NON-required check yields "passing" and is not a
+# blocker (the #1795/#1859 deadlock).
+ci_is_blocking() {
+  local st
+  st="$(ci_blocking_status)"
+  [ "$st" = "failing" ] || [ "$st" = "pending" ]
+}
+
+# ci_blocking_reason: a human phrase naming the specific check(s) that make CI a
+# blocker and whether they are required — AC #5. Mirrors compute_ci_status's gate
+# so the two never drift: it reports the checks in the SAME gate set (the required
+# subset when the ruleset named any, otherwise every external check — fail closed)
+# that are pending or failing. Empty when CI is not blocking. Examples:
+#   "required check `Lint` is failing"
+#   "required checks `Lint`, `Build` are still pending"
+#   "check `template-drift` is failing (required set unreadable — failing closed)"
+ci_blocking_reason() {
+  local agent_roles required_names
+  agent_roles="$(_ci_status_agent_roles_json)"
+  # Normalise the required set to a JSON array. An empty/unreadable ruleset must
+  # become [] (not the empty string), or --argjson would reject it and the whole
+  # filter would silently fail — dropping us onto the generic fallback (#1859 AC5).
+  required_names="$(_ci_required_checks)"
+  if [ -z "$required_names" ] || [ "$required_names" = "[]" ]; then
+    required_names="[]"
+  else
+    required_names="$(jq -c 'if type == "array" then . else [] end' <<< "$required_names" 2>/dev/null || echo '[]')"
+  fi
+  _ci_rollup_from_status_json | jq -r \
+    --argjson agent_roles "$agent_roles" \
+    --argjson required_names "$required_names" "
+    def is_terminal: (.conclusion != null and .conclusion != \"\");
+    def is_pending:
+      (is_terminal | not) and (
+        .status == \"IN_PROGRESS\" or .status == \"QUEUED\" or .status == \"WAITING\" or
+        .status == \"COMPLETED\"  or .state == \"PENDING\" or .state == \"EXPECTED\"
+      );
+    def is_success:
+      .conclusion == \"SUCCESS\" or .conclusion == \"SKIPPED\" or .conclusion == \"NEUTRAL\" or
+      .state == \"SUCCESS\";
+    def is_cancelled: .conclusion == \"CANCELLED\";
+    def is_required:
+      (.isRequired == true) or
+      (((.name // .context // \"\") as \$n | (\$required_names | index(\$n)) != null));
+    def chk_word(\$n): if \$n == 1 then \"check\" else \"checks\" end;
+    def names(\$a): (\$a | map(\"\`\" + . + \"\`\") | join(\", \"));
+    $_CI_STATUS_JQ_IS_OWN_CHECK
+    $_CI_STATUS_JQ_IS_AGENT_CHECK
+    if (. == null or (type != \"array\")) then \"\"
+    else
+      (map(select((is_own_check or is_agent_check) | not))) as \$ext |
+      (\$ext | map(select(is_required))) as \$req |
+      (\$req | length > 0) as \$gate_required |
+      (if \$gate_required then \$req else \$ext end) as \$gate |
+      (if \$gate_required then \"required \" else \"\" end) as \$qual |
+      (if \$gate_required then \"\" else \" (required set unreadable — failing closed)\" end) as \$closed |
+      (\$gate | map(select((is_success or is_cancelled) | not))) as \$bad |
+      (\$bad | map(select(is_pending))  | map(.name // .context // \"\") | map(select(length > 0))) as \$pending |
+      (\$bad | map(select(is_pending | not)) | map(.name // .context // \"\") | map(select(length > 0))) as \$failing |
+      ([ (if (\$failing | length) > 0
+            then \$qual + chk_word(\$failing|length) + \" \" + names(\$failing) + \" \" + (if (\$failing|length)==1 then \"is\" else \"are\" end) + \" failing\" + \$closed
+            else empty end),
+         (if (\$pending | length) > 0
+            then \$qual + chk_word(\$pending|length) + \" \" + names(\$pending) + \" \" + (if (\$pending|length)==1 then \"is\" else \"are\" end) + \" still pending\" + \$closed
+            else empty end)
+       ] | join(\"; \"))
+    end
+  " 2>/dev/null || true
+}
+
+# blocking_reason_phrase: the full "why this PR still can't be marked done" phrase
+# for retry/hold messages — the named CI blocker(s) from ci_blocking_reason plus a
+# changes-requested-review clause when applicable (AC #5). Falls back to a generic
+# phrase only if nothing specific could be derived.
+blocking_reason_phrase() {
+  local reasons=() ci_reason changes_requested
+  ci_reason="$(ci_blocking_reason)"
+  [ -n "$ci_reason" ] && reasons+=("$ci_reason")
+  changes_requested=$(printf '%s' "${ALL_REVIEWS_JSON:-[]}" | \
+    jq '[.[] | select(.state == "CHANGES_REQUESTED")] | length' 2>/dev/null || echo "0")
+  [ "${changes_requested:-0}" -gt 0 ] && reasons+=("a reviewer requested changes")
+  if [ "${#reasons[@]}" -eq 0 ]; then
+    printf 'a required check is failing or pending, or a reviewer requested changes'
+  else
+    local out="" r
+    for r in "${reasons[@]}"; do
+      if [ -z "$out" ]; then out="$r"; else out="${out}; ${r}"; fi
+    done
+    printf '%s' "$out"
+  fi
+}
+
+# has_hard_blockers: returns 0 (true) if CI is blocking (per ci-status.sh) or
+# ALL_REVIEWS_JSON contains a CHANGES_REQUESTED review.
 # Unlike has_tier1_blockers, does NOT check for unresolved bot threads — used to
 # distinguish "bot threads are the sole blocker" from "hard blockers present", so
 # callers can post a retry marker instead of silently stalling on bot feedback.
 has_hard_blockers() {
-  local failing_checks changes_requested
-
-  failing_checks=$(printf '%s' "${CI_STATUS_JSON:-[]}" | \
-    jq '[.[] | select(.conclusion != null and (
-          .conclusion == "failure" or .conclusion == "timed_out" or
-          .conclusion == "cancelled" or .conclusion == "action_required" or
-          .conclusion == "stale" or .conclusion == "startup_failure" or
-          .conclusion == "pending"
-        ))] | length' 2>/dev/null || echo "0")
+  local changes_requested
 
   changes_requested=$(printf '%s' "${ALL_REVIEWS_JSON:-[]}" | \
     jq '[.[] | select(.state == "CHANGES_REQUESTED")] | length' \
     2>/dev/null || echo "0")
 
-  [ "${failing_checks:-0}" -gt 0 ] || [ "${changes_requested:-0}" -gt 0 ]
+  ci_is_blocking || [ "${changes_requested:-0}" -gt 0 ]
 }
 
-# has_tier1_blockers: returns 0 (true) if CI_STATUS_JSON, ALL_REVIEWS_JSON, or unresolved
-# bot reviewer threads contain Tier-1 blockers:
-# - CI checks with non-success conclusion (failure, timed_out, cancelled, action_required, stale, startup_failure)
+# has_tier1_blockers: returns 0 (true) if CI is blocking (per ci-status.sh),
+# ALL_REVIEWS_JSON, or unresolved bot reviewer threads contain Tier-1 blockers:
+# - A REQUIRED CI check failing or pending (via compute_ci_status; a red
+#   NON-required check does not block — #1859)
 # - Any reviewer with state = CHANGES_REQUESTED
 # - Unresolved review threads from bot reviewers (prevents review-changes from ignoring bot feedback)
 # Used to gate post_no_changes — never post a terminal no-changes marker while blockers
 # exist, so the retry cron can re-attempt on the same SHA.
 has_tier1_blockers() {
-  local failing_checks changes_requested unresolved_bot_threads
-
-  failing_checks=$(printf '%s' "${CI_STATUS_JSON:-[]}" | \
-    jq '[.[] | select(.conclusion != null and (
-          .conclusion == "failure" or .conclusion == "timed_out" or
-          .conclusion == "cancelled" or .conclusion == "action_required" or
-          .conclusion == "stale" or .conclusion == "startup_failure" or
-          .conclusion == "pending"
-        ))] | length' 2>/dev/null || echo "0")
+  local changes_requested unresolved_bot_threads
 
   changes_requested=$(printf '%s' "${ALL_REVIEWS_JSON:-[]}" | \
     jq '[.[] | select(.state == "CHANGES_REQUESTED")] | length' \
@@ -1145,7 +1269,7 @@ has_tier1_blockers() {
     done
   fi
 
-  [ "${failing_checks:-0}" -gt 0 ] || [ "${changes_requested:-0}" -gt 0 ] || [ "${unresolved_bot_threads:-0}" -gt 0 ]
+  ci_is_blocking || [ "${changes_requested:-0}" -gt 0 ] || [ "${unresolved_bot_threads:-0}" -gt 0 ]
 }
 
 # try_enable_auto_merge: enables auto-merge (squash) on the PR when the engine run
@@ -1437,7 +1561,7 @@ post_reviews_rate_limited() {
   local heading retry_msg
   if [ "$reason" = "blocked" ]; then
     heading="## Dev-Lead — waiting on PR blockers (intent: ${intent})"
-    retry_msg="No changes were committed, but the PR still has blocking checks or reviews (failing or cancelled checks, or changes-requested reviews). The retry cron will re-attempt automatically."
+    retry_msg="No changes were committed, but the PR still can't be marked done: $(blocking_reason_phrase). The retry cron will re-attempt automatically."
     if [ -n "$reset_time" ]; then
       retry_msg="${retry_msg} Next attempt after: \`${reset_time}\`"
     fi
@@ -1493,7 +1617,7 @@ ${retry_msg}"
         if [ "$reason" = "blocked" ]; then
           ack_body="<!-- dev-lead rate-limit-ack -->
 > [!NOTE]
-> ${actor_mention}I reviewed this PR and no code changes were needed, but it still has blocking checks or reviews (failing or cancelled checks, or changes-requested reviews), so I cannot mark it done yet. I'll re-check automatically.
+> ${actor_mention}I reviewed this PR and no code changes were needed, but I can't mark it done yet: $(blocking_reason_phrase). I'll re-check automatically.
 > Next attempt after: \`${reset_display}\`"
         else
           ack_body="<!-- dev-lead rate-limit-ack -->
@@ -1919,7 +2043,7 @@ case "$INTENT_TYPE" in
       else
         notify_coderabbit_resolve
         if has_hard_blockers; then
-          echo "::warning::Tier-1 blockers still present (failing CI or CHANGES_REQUESTED reviews) — posting retry marker with backoff"
+          echo "::warning::Tier-1 blockers still present ($(blocking_reason_phrase)) — posting retry marker with backoff"
           post_reviews_rate_limited "fix-reviews" "blocked"
         elif has_tier1_blockers; then
           echo "::notice::Unresolved bot review threads remain — not posting no-changes terminal to allow future retries"
@@ -1975,7 +2099,7 @@ case "$INTENT_TYPE" in
       else
         notify_coderabbit_resolve
         if has_hard_blockers; then
-          echo "::warning::Tier-1 blockers still present (failing CI or CHANGES_REQUESTED reviews) — fix-bot-comment is not retried automatically; posting terminal marker"
+          echo "::warning::Tier-1 blockers still present ($(blocking_reason_phrase)) — fix-bot-comment is not retried automatically; posting terminal marker"
           post_no_changes "fix-bot-comment"
         elif has_tier1_blockers; then
           echo "::warning::Unresolved bot review threads remain — fix-bot-comment is not automatically retried; posting no-changes terminal marker"
@@ -2060,7 +2184,7 @@ case "$INTENT_TYPE" in
       else
         notify_coderabbit_resolve
         if has_hard_blockers; then
-          echo "::warning::Tier-1 blockers still present (failing CI or CHANGES_REQUESTED reviews) — posting retry marker with backoff"
+          echo "::warning::Tier-1 blockers still present ($(blocking_reason_phrase)) — posting retry marker with backoff"
           post_reviews_rate_limited "review-changes" "blocked"
         elif has_tier1_blockers; then
           echo "::notice::Unresolved bot review threads remain — not posting no-changes terminal to allow future retries"
