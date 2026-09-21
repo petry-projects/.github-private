@@ -190,6 +190,37 @@ items() {  # items <item-json>...
   [ "$output" = "1" ]
 }
 
+@test "in-place re-escalation resets the cap via the embedded reset= timestamp (#1754)" {
+  # The verdict-path escalation comment is PATCHed in place, so createdAt is
+  # frozen at the FIRST escalation (T1) even after a later re-escalation. The
+  # body carries a reset= timestamp regenerated on each re-escalation (T4 here).
+  # Sequence: escalate(T1) → re-engage → fix(T2), fix(T3) → re-escalate in place
+  # (createdAt still T1, reset=T4) → fix(T5). Only the fix AFTER the latest reset
+  # (T5) counts; the pre-re-escalation fixes (T2, T3) must not.
+  local esc j
+  esc=$(jq -n '{when:"2026-06-07T01:00:00Z", body:"<!-- pr-review-agent human-escalation v1 -->\n<!-- pr-review-agent human-escalation reset=2026-06-07T04:00:00Z -->\n\n## Automated review — escalated to human"}')
+  j=$(items \
+    "$esc" \
+    "$(fix_request 2026-06-07T02:00:00Z aaa111)" \
+    "$(fix_request 2026-06-07T03:00:00Z bbb222)" \
+    "$(fix_request 2026-06-07T05:00:00Z ccc333)")
+  run compute_review_cycle "$j"
+  [ "$output" = "1" ]
+}
+
+@test "an escalation comment without a reset= stamp falls back to createdAt (#1754)" {
+  # Backward compatibility: a pre-reset escalation comment (no reset= marker)
+  # still resets the cap by its createdAt, as before.
+  local j
+  j=$(items \
+    "$(fix_request 2026-06-07T01:00:00Z aaa111)" \
+    "$(human_escalation_comment 2026-06-07T03:00:00Z)" \
+    "$(fix_request 2026-06-07T04:00:00Z bbb222)" \
+    "$(fix_request 2026-06-07T05:00:00Z ccc333)")
+  run compute_review_cycle "$j"
+  [ "$output" = "2" ]
+}
+
 @test "newest reset event wins: HUMAN approval after escalation resets again" {
   local j
   j=$(items \
