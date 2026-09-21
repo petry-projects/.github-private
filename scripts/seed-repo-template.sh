@@ -82,6 +82,18 @@ _require() {
   return "$rc"
 }
 
+# ── Ownership boundary: the drift allowlist is the single source of truth ──────
+# scripts/template_stub_drift.sh owns TEMPLATE_DRIFT_ALLOWLIST — the files the
+# drift checker treats as intentionally per-consumer (currently ci.yml). The
+# seeder must not overwrite those on an already-seeded repo (#1812 AC #2), so we
+# DERIVE the list by sourcing that one file rather than copying the paths here —
+# copying is the exact drift this script pair already demonstrates. Include-guarded
+# so a caller that already sourced it does not hit a readonly re-declaration.
+if ! declare -p TEMPLATE_DRIFT_ALLOWLIST > /dev/null 2>&1; then
+  # shellcheck source=scripts/template_stub_drift.sh
+  source "${SEED_REPO_ROOT}/scripts/template_stub_drift.sh"
+fi
+
 # ── Workflow manifest ─────────────────────────────────────────────────────────
 # One row per shipped stub: "name|kind|host".
 #   kind=caller → wraps <name>-reusable.yml; repinned to <host>@<channel>, where
@@ -553,6 +565,106 @@ _emit_baseline() {
   fi
 }
 
+# ── Managed-block ownership (AC #1) ────────────────────────────────────────────
+# A file may carry a block owned by a DIFFERENT managed process, delimited by a
+# marker of the form `>>> BEGIN … (managed by <owner> — do not edit) >>>`. The
+# live case is the org secrets baseline synced into .gitignore from the
+# gitignore-standard (petry-projects/.github): a 420-line L1 block the seeder does
+# not own. Detection is GENERIC — any content carrying a "managed by … do not
+# edit" marker is treated as owned elsewhere and preserved, regardless of path —
+# so the next managed file is not discovered by losing it (#1812).
+_content_has_managed_marker() {
+  printf '%s' "${1:-}" | grep -qiE 'managed by .*do not edit'
+}
+
+# _existing_file_content <repo> <path> <ref> — decoded content of the file as it
+# currently exists in <repo> at <ref>, or empty if it is absent (404). Mirrors the
+# decode path in template_stub_drift.sh (gh api → jq .content → base64 -d), kept
+# separate from the jq call so a 404 JSON body yields "" rather than a spurious
+# blob. Trailing newlines are stripped by the caller's $()-capture, symmetrically
+# with the emitted content, so a trailing-newline-only difference is not "drift".
+_existing_file_content() {
+  local repo="$1" path="$2" ref="$3" out
+  _require gh jq base64 || return 1
+  out="$(gh api "repos/${repo}/contents/${path}?ref=${ref}" 2>/dev/null)" || true
+  printf '%s' "$out" | jq -r '.content // empty' 2>/dev/null | base64 -d 2>/dev/null || true
+}
+
+# _seed_report_dry <path> <action> <reason> <existing> <new> — under DRY_RUN,
+# report the per-file decision, naming any content that would be REPLACED and its
+# magnitude, so a destructive write is visible before it happens (#1812 AC #4).
+_seed_report_dry() {
+  local path="$1" action="$2" reason="$3" existing="$4" content="$5" old_lines new_lines
+  old_lines="$(printf '%s' "$existing" | grep -c '' 2>/dev/null || printf 0)"
+  new_lines="$(printf '%s' "$content" | grep -c '' 2>/dev/null || printf 0)"
+  case "$action" in
+    create) echo "  [dry-run] would CREATE ${path} (${new_lines} lines) — ${reason}" ;;
+    write)
+      if [ "$new_lines" -lt "$old_lines" ]; then
+        echo "  [dry-run] would REPLACE ${path}: ${old_lines}-line file → ${new_lines}-line content (DESTRUCTIVE — ${reason})"
+      else
+        echo "  [dry-run] would UPDATE ${path}: ${old_lines} → ${new_lines} lines (${reason})"
+      fi ;;
+    preserve) echo "  [dry-run] would PRESERVE ${path} (${old_lines} lines) — ${reason}; NOT overwriting" ;;
+    skip)     echo "  [dry-run] would SKIP ${path} — ${reason} (no change)" ;;
+  esac
+}
+
+# _seed_file <repo> <path> <new_content> <branch> <base_ref>
+# Ownership-aware write of ONE seeded file. Decides, from the file's CURRENT
+# committed content at <base_ref> (the branch is cut from it), whether to write:
+#   • absent            → CREATE  (a fresh repo still needs the file).
+#   • drift-allowlisted → PRESERVE (intentionally customized per consumer, AC #2).
+#   • managed marker    → PRESERVE (owned by another managed process, AC #1).
+#   • byte-identical    → SKIP     (a re-seed writes nothing, AC #3).
+#   • otherwise         → WRITE    (genuine update).
+# Under DRY_RUN it REPORTS the action (including destructive magnitude) and makes
+# no write API call (AC #4); otherwise writes go through _put_file.
+_seed_file() {
+  local repo="$1" path="$2" content="$3" branch="$4" base_ref="$5" existing action reason
+  existing="$(_existing_file_content "$repo" "$path" "$base_ref")" || existing=""
+
+  if [ -z "$existing" ]; then
+    action="create"; reason="new file"
+  elif template_drift_allowlisted "$path"; then
+    action="preserve"; reason="drift-allowlisted, customized per consumer (AC #2)"
+  elif _content_has_managed_marker "$existing"; then
+    action="preserve"; reason="carries a managed-block marker owned by another process (AC #1)"
+  elif [ "$existing" = "$content" ]; then
+    action="skip"; reason="unchanged (AC #3)"
+  else
+    action="write"; reason="content differs from the standards-derived baseline"
+  fi
+
+  if _is_dry; then
+    _seed_report_dry "$path" "$action" "$reason" "$existing" "$content"
+    return 0
+  fi
+
+  case "$action" in
+    create|write) _put_file "$repo" "$path" "$content" "$branch" "seed ${path}" ;;
+    preserve|skip) echo "  [seed] preserved ${path} — ${reason}" ;;
+  esac
+}
+
+# _seed_all_files <repo> <branch> <base_ref> — emit every workflow stub + baseline
+# file and apply it ownership-aware via _seed_file. Shared by the live and dry-run
+# paths so both make the SAME per-file decisions (#1812).
+_seed_all_files() {
+  local repo="$1" branch="$2" base_ref="$3" row name path content
+  for row in "${WORKFLOW_MANIFEST[@]}"; do
+    name="${row%%|*}"
+    path=".github/workflows/${name}.yml"
+    content="$(_emit_workflow "${name}.yml")" || return 1
+    _seed_file "$repo" "$path" "$content" "$branch" "$base_ref" || return 1
+  done
+  for row in "${BASELINE_MANIFEST[@]}"; do
+    path="${row%%|*}"
+    content="$(_emit_baseline "$path")" || return 1
+    _seed_file "$repo" "$path" "$content" "$branch" "$base_ref" || return 1
+  done
+}
+
 # ── Cross-repo seeding (branch + contents PUT + one PR) ────────────────────────
 _seed_repo() {
   local repo="$1" branch default_branch base_sha
@@ -569,14 +681,20 @@ _seed_repo() {
   echo "[seed] workflow stubs: $(printf '%s ' "${WORKFLOW_MANIFEST[@]%%|*}")"
   echo "[seed] baseline files: $(printf '%s ' "${BASELINE_MANIFEST[@]%%|*}")"
 
+  # Ownership decisions compare against the file's CURRENT content on the target's
+  # default branch (the seed branch is cut from it), so a re-seed can tell CREATE
+  # from PRESERVE from WRITE (#1812). Resolved for both live and dry-run; the
+  # dry-run reads only and reports, making no write API call (AC #4).
+  default_branch="$(gh api "repos/${repo}" --jq '.default_branch' 2>/dev/null || echo main)"
+  [ -n "$default_branch" ] || default_branch="main"
+
   if _is_dry; then
-    echo "[seed] [dry-run] would create branch ${branch} on ${repo}, write the"
-    echo "       scaffold via the contents API, and open one PR. No writes made."
+    echo "[seed] [dry-run] planning per-file writes against ${default_branch} on ${repo} (no writes will be made):"
+    _seed_all_files "$repo" "$branch" "$default_branch"
     echo "[seed] PASS (dry-run) — ${repo}"
     return 0
   fi
 
-  default_branch="$(gh api "repos/${repo}" --jq '.default_branch' 2>/dev/null || echo main)"
   base_sha="$(gh api "repos/${repo}/git/ref/heads/${default_branch}" --jq '.object.sha' 2>/dev/null || true)"
   if [ -z "$base_sha" ]; then
     echo "::error::cannot read ${default_branch} head on ${repo}" >&2
@@ -587,18 +705,7 @@ _seed_repo() {
     || gh api "repos/${repo}/git/ref/heads/${branch}" --silent 2>/dev/null \
     || { echo "::error::cannot create branch ${branch} on ${repo}" >&2; return 1; }
 
-  local row name path content
-  for row in "${WORKFLOW_MANIFEST[@]}"; do
-    name="${row%%|*}"
-    path=".github/workflows/${name}.yml"
-    content="$(_emit_workflow "${name}.yml")" || return 1
-    _put_file "$repo" "$path" "$content" "$branch" "seed ${path}" || return 1
-  done
-  for row in "${BASELINE_MANIFEST[@]}"; do
-    path="${row%%|*}"
-    content="$(_emit_baseline "$path")" || return 1
-    _put_file "$repo" "$path" "$content" "$branch" "seed ${path}" || return 1
-  done
+  _seed_all_files "$repo" "$branch" "$default_branch" || return 1
 
   local existing_pr
   existing_pr="$(gh pr list --repo "$repo" --head "$branch" --state open --json number --jq '.[0].number' 2>/dev/null || true)"
