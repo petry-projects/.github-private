@@ -141,15 +141,22 @@ ESCALATION_COMMENT_MARKER='<!-- pr-review-agent human-escalation v1 -->'
 # escalation — the label + CODEOWNERS request still stand.
 upsert_escalation_comment() {
   local pr_url="$1" body="$2"
-  local owner_repo pr_num comments_file existing_id
+  local owner_repo pr_num comments_file existing_id bot_user
   owner_repo=$(echo "$pr_url" | sed -E 's|.*/([^/]+)/([^/]+)/pull/.*|\1/\2|')
   pr_num=$(echo "$pr_url" | sed -E 's|.*/([0-9]+)$|\1|')
+  # The escalation artifact is authored by BOT_USER (gh posts as the
+  # authenticated account). Selecting the comment to patch requires BOTH the
+  # marker AND a matching author: a human (or another bot) who happens to quote
+  # the marker must never be selected and PATCHed over (#1754).
+  bot_user="${BOT_USER:-donpetry-bot}"
 
   comments_file=$(mktemp)
   existing_id=""
   if gh api --paginate "repos/$owner_repo/issues/$pr_num/comments" >"$comments_file" 2>/dev/null; then
-    existing_id=$(jq -s -r --arg m "$ESCALATION_COMMENT_MARKER" '
-      flatten | map(select(.body != null and (.body | contains($m)))) | (.[0].id // "")
+    existing_id=$(jq -s -r --arg m "$ESCALATION_COMMENT_MARKER" --arg bot "$bot_user" '
+      flatten
+      | map(select(.body != null and (.body | contains($m)) and ((.user.login // "") == $bot)))
+      | (.[0].id // "")
     ' "$comments_file" 2>/dev/null || true)
   else
     echo "::warning::escalation: could not list comments on $pr_url — posting a fresh escalation note"
@@ -160,7 +167,13 @@ upsert_escalation_comment() {
     echo "  updating human-escalation comment $existing_id in place"
     if ! jq -n --arg b "$body" '{body: $b}' \
          | gh api -X PATCH "repos/$owner_repo/issues/comments/$existing_id" --input - >/dev/null 2>&1; then
-      echo "::warning::escalation: failed to update human-escalation comment $existing_id on $pr_url"
+      # The in-place update failed — fall back to posting a fresh agent comment
+      # so the escalation still leaves a visible artifact rather than only a
+      # ::warning:: and a bare label (#1754 AC2).
+      echo "::warning::escalation: failed to update human-escalation comment $existing_id on $pr_url — posting a fresh escalation note instead"
+      if ! gh pr comment "$pr_url" --body "$body" >/dev/null 2>&1; then
+        echo "::warning::escalation: also failed to post a fresh human-escalation comment on $pr_url — the PR carries only the label"
+      fi
     fi
   else
     echo "  posting human-escalation comment"
@@ -293,6 +306,65 @@ mark_prior_agent_items_obsolete() {
   rm -f "$reviews_file" "$comments_file"
 }
 
+# ── needs-human-review label state helpers (#1754) ──────────────────────────
+# A dropped label mutation is a correctness bug, not a cosmetic one: a stale
+# needs-human-review left after a fix-request keeps review-one-pr.sh on hold
+# while this script reports success; a missing label after an escalation lets
+# review-one-pr.sh re-engage the cascade even though this branch returned 101.
+# So label reads and mutations are retried, and the required state is CONFIRMED
+# by a follow-up read before the caller reports success.
+LABEL_MAX_ATTEMPTS="${LABEL_MAX_ATTEMPTS:-3}"
+LABEL_RETRY_DELAY="${LABEL_RETRY_DELAY:-2}"
+
+# read_hold_label <pr_url> — prints "true"/"false"; returns non-zero if the read
+# itself failed (so a failed read is distinguishable from a confirmed absence).
+read_hold_label() {
+  local pr_url="$1" out
+  out=$(gh pr view "$pr_url" --json labels \
+    --jq '[.labels[].name] | any(. == "needs-human-review")' 2>/dev/null) || return 1
+  [ -n "$out" ] || return 1
+  printf '%s' "$out"
+}
+
+# ensure_hold_label_present <pr_url> — add needs-human-review and CONFIRM it is
+# present, retrying read+mutation. Idempotent: an already-present label short-
+# circuits with no redundant add (#1754 AC3 — no unlabel/relabel churn). Returns
+# 0 once presence is confirmed, non-zero if it cannot be established.
+ensure_hold_label_present() {
+  local pr_url="$1" attempt present
+  for attempt in $(seq 1 "$LABEL_MAX_ATTEMPTS"); do
+    present=$(read_hold_label "$pr_url") || present="unknown"
+    if [ "$present" = "true" ]; then
+      [ "$attempt" -eq 1 ] && echo "  needs-human-review already present — leaving label unchanged (idempotent, #1754 AC3)"
+      return 0
+    fi
+    gh pr edit "$pr_url" --add-label needs-human-review >/dev/null 2>&1 || true
+    present=$(read_hold_label "$pr_url") || present="unknown"
+    [ "$present" = "true" ] && return 0
+    [ "$attempt" -lt "$LABEL_MAX_ATTEMPTS" ] && sleep "$LABEL_RETRY_DELAY"
+  done
+  return 1
+}
+
+# ensure_hold_label_absent <pr_url> — remove needs-human-review and CONFIRM it is
+# gone, retrying read+mutation. A label already absent short-circuits with no
+# mutation. Returns 0 once absence is confirmed, non-zero if it cannot be
+# established.
+ensure_hold_label_absent() {
+  local pr_url="$1" attempt present
+  for attempt in $(seq 1 "$LABEL_MAX_ATTEMPTS"); do
+    present=$(read_hold_label "$pr_url") || present="unknown"
+    if [ "$present" = "false" ]; then
+      return 0
+    fi
+    gh pr edit "$pr_url" --remove-label needs-human-review >/dev/null 2>&1 || true
+    present=$(read_hold_label "$pr_url") || present="unknown"
+    [ "$present" = "false" ] && return 0
+    [ "$attempt" -lt "$LABEL_MAX_ATTEMPTS" ] && sleep "$LABEL_RETRY_DELAY"
+  done
+  return 1
+}
+
 if [ "$DRY_RUN" = "true" ]; then
   echo "=== DRY RUN: Would post review ==="
   echo "Decision: $DECISION"
@@ -328,6 +400,19 @@ if [ "$DECISION" = "approve" ]; then
   MARKER_SHA=$(printf '%s' "$BODY" | grep -oP 'pr-review-agent v1 sha=\K[a-f0-9]+' | head -1)
   if [ -z "$MARKER_SHA" ] || [ "$MARKER_SHA" != "$PR_HEAD_SHA" ]; then
     echo "::error::approve verdict marker SHA ($MARKER_SHA) does not match PR_HEAD_SHA ($PR_HEAD_SHA) — refusing to submit (fail closed)"
+    exit 1
+  fi
+
+  # Require one COMPLETE approval marker for PR_HEAD_SHA — sha= and
+  # decision=approved in the SAME marker comment (issue #1754). An approval
+  # marker is `<!-- pr-review-agent v1 sha=<SHA> decision=approved risk=... -->`
+  # (sha and decision together), whereas a fix-request keeps them in SEPARATE
+  # markers (`… sha=<SHA> --> <!-- decision=fix-requested …>`). Matching sha and
+  # decision within one marker (no `>` between them) therefore accepts only a
+  # genuine approval and rejects a current-SHA fix-request or a decision-less
+  # body from reaching `gh pr review --approve`.
+  if ! printf '%s' "$BODY" | grep -qP "pr-review-agent v1 sha=${PR_HEAD_SHA}\s[^>]*decision=approved"; then
+    echo "::error::approve verdict body lacks a complete approval marker (sha=$PR_HEAD_SHA with decision=approved in one marker) — refusing to submit (fail closed, #1754)"
     exit 1
   fi
 
@@ -513,30 +598,46 @@ COMMENT_END
 
     # A fix-request re-engages the cascade, so clear any prior human hold — a PR
     # left carrying needs-human-review while the author works is a stale hold
-    # that also exempts it from the stuck-review sweep. Best-effort; a no-op when
-    # the label is absent (no unlabeled event is emitted).
-    gh pr edit "$PR_URL" --remove-label needs-human-review 2>/dev/null || true
+    # that also exempts it from the stuck-review sweep. CONFIRM the removal
+    # (retrying reads+mutations): a stale label left behind would keep
+    # review-one-pr.sh on hold while this branch reports success (#1754). Fail
+    # rather than report a false success so the run is retried.
+    if ! ensure_hold_label_absent "$PR_URL"; then
+      echo "::error::fix-request: could not confirm needs-human-review removed from $PR_URL after $LABEL_MAX_ATTEMPTS attempts — failing rather than reporting a false success (#1754)"
+      exit 1
+    fi
   else
     # Escalate to human via CODEOWNERS — avoid hard-coding a single reviewer.
     echo "Escalating to human review..."
 
-    # AC3 (#1754): add the hold label only when it is absent. Re-escalating an
-    # already-held PR at an unchanged head must not unlabel-then-relabel — four
-    # such toggles in one day on an unchanged PR was the reported symptom.
-    HAS_HOLD_LABEL=$(gh pr view "$PR_URL" --json labels \
-      --jq '[.labels[].name] | any(. == "needs-human-review")' 2>/dev/null || echo "false")
-    if [ "$HAS_HOLD_LABEL" = "true" ]; then
-      echo "  needs-human-review already present — leaving label unchanged (idempotent, #1754 AC3)"
-    else
-      gh pr edit "$PR_URL" --add-label needs-human-review 2>/dev/null || true
+    # AC3 (#1754): add the hold label only when it is absent, and CONFIRM it is
+    # present before returning 101. Re-escalating an already-held PR must not
+    # unlabel-then-relabel (four toggles in one day on an unchanged PR was the
+    # reported symptom) — ensure_hold_label_present short-circuits on an
+    # already-present label with no mutation. A failed add must not be reported
+    # as an escalation: without the label, review-one-pr.sh re-engages the
+    # cascade on the next sweep even though this branch returned 101.
+    if ! ensure_hold_label_present "$PR_URL"; then
+      echo "::error::escalation: could not confirm needs-human-review present on $PR_URL after $LABEL_MAX_ATTEMPTS attempts — failing so the escalation is retried rather than under-reported (#1754)"
+      exit 1
     fi
 
     # AC2 (#1754): leave a visible artifact, not just a label. Upsert a single
     # marker-keyed comment stating the escalation, the cycle it happened at, and
     # why. Updated in place on re-escalation so it never becomes sweep noise.
     ESC_SUMMARY=$(jq -r '.summary // ""' "$VERDICT_JSON")
+    # Stamp a fresh reset timestamp on every (re-)escalation. The comment is
+    # PATCHed in place, so its createdAt is frozen at the FIRST escalation; a
+    # later in-place re-escalation would otherwise keep the original reset time
+    # and let fix requests from before the re-escalation count toward the next
+    # cycle cap (#1754). compute_review_cycle prefers this embedded `reset=<ts>`
+    # over the comment's createdAt, so re-escalation resets the budget. Regenerated
+    # here (not derived from the API) because gh's issue-comment view exposes no
+    # updatedAt field.
+    ESC_RESET_TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     ESC_BODY=$(cat <<ESC_END
 $ESCALATION_COMMENT_MARKER
+<!-- pr-review-agent human-escalation reset=$ESC_RESET_TS -->
 ## Automated review — escalated to human
 
 The automated review cascade escalated this PR to a human reviewer at review cycle ${REVIEW_CYCLE:-0}/${MAX_REVIEW_CYCLES:-3} (risk: $RISK, reviewed commit \`$PR_HEAD_SHA\`).

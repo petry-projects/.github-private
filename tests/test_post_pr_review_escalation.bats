@@ -33,9 +33,22 @@ setup() {
   echo '[]' > "$EXISTING_COMMENTS_FILE"
   export LABELS_JSON='{"labels":[]}'
 
+  export LABELS_FILE="$TEST_DIR/labels.json"
+
   cat > "$TEST_DIR/bin/gh" <<'GHEOF'
 #!/bin/bash
 sub1="${1:-}"; sub2="${2:-}"
+
+# Model the PR's label set as a mutable file so add/remove-label are reflected
+# by a subsequent read — post-pr-review.sh now confirms label state after a
+# mutation (#1754). Lazily seed it from LABELS_JSON on first touch.
+_labels_init() {
+  if [ ! -f "${LABELS_FILE:-/dev/null}" ]; then
+    local seed="${LABELS_JSON:-}"
+    [ -n "$seed" ] || seed='{"labels":[]}'
+    printf '%s' "$seed" > "${LABELS_FILE:-/dev/null}"
+  fi
+}
 
 if [ "$sub1" = "api" ]; then
   method="GET"; path=""; jqf=""; prev=""
@@ -56,7 +69,9 @@ if [ "$sub1" = "api" ]; then
   esac
   if [ "$method" = "PATCH" ]; then
     case "$path" in
-      */issues/comments/*) cat > "${PATCH_OUT:-/dev/null}"; exit 0 ;;
+      */issues/comments/*)
+        if [ -n "${PATCH_FAILS:-}" ]; then cat >/dev/null; exit 1; fi
+        cat > "${PATCH_OUT:-/dev/null}"; exit 0 ;;
     esac
   fi
   exit 0
@@ -86,7 +101,7 @@ if [ "$sub1" = "pr" ] && [ "$sub2" = "view" ]; then
     prev="$a"
   done
   case "$json" in
-    *labels*)          data="${LABELS_JSON:-}"; [ -z "$data" ] && data='{"labels":[]}' ;;
+    *labels*)          _labels_init; data="$(cat "${LABELS_FILE:-/dev/null}")" ;;
     *mergeStateStatus*) data='{"mergeStateStatus":"UNKNOWN"}' ;;
     *)                 data='{}' ;;
   esac
@@ -96,9 +111,16 @@ fi
 
 if [ "$sub1" = "pr" ] && [ "$sub2" = "edit" ]; then
   args="$*"
+  _labels_init
   case "$args" in
-    *"--add-label needs-human-review"*)    echo "ADD_LABEL"    >> "${EVENTS:-/dev/null}" ;;
-    *"--remove-label needs-human-review"*) echo "REMOVE_LABEL" >> "${EVENTS:-/dev/null}" ;;
+    *"--add-label needs-human-review"*)
+      echo "ADD_LABEL" >> "${EVENTS:-/dev/null}"
+      jq '.labels |= (map(.name) + ["needs-human-review"] | unique | map({name: .}))' \
+        "$LABELS_FILE" > "$LABELS_FILE.tmp" && mv "$LABELS_FILE.tmp" "$LABELS_FILE" ;;
+    *"--remove-label needs-human-review"*)
+      echo "REMOVE_LABEL" >> "${EVENTS:-/dev/null}"
+      jq '.labels |= map(select(.name != "needs-human-review"))' \
+        "$LABELS_FILE" > "$LABELS_FILE.tmp" && mv "$LABELS_FILE.tmp" "$LABELS_FILE" ;;
   esac
   exit 0
 fi
@@ -113,6 +135,8 @@ GHEOF
   export AI_DELEGATION_ENABLED="false"   # force the human-escalation branch
   export REVIEW_CYCLE="3"
   export MAX_REVIEW_CYCLES="3"
+  export BOT_USER="donpetry-bot"         # the escalation-comment author (#1754)
+  export LABEL_RETRY_DELAY="0"           # no real sleeps between confirm retries
 }
 
 teardown() { rm -rf "$TEST_DIR"; }
@@ -151,8 +175,8 @@ write_approve_verdict() {
 }
 
 @test "AC2: re-escalation updates the existing comment in place (no new comment)" {
-  # Existing marker-keyed comment already on the PR (id 555).
-  jq -n '[{"id":555,"body":"<!-- pr-review-agent human-escalation v1 -->\nold escalation note"}]' \
+  # Existing marker-keyed comment already on the PR (id 555), authored by the bot.
+  jq -n '[{"id":555,"user":{"login":"donpetry-bot"},"body":"<!-- pr-review-agent human-escalation v1 -->\nold escalation note"}]' \
     > "$EXISTING_COMMENTS_FILE"
 
   local vf; vf=$(write_escalate_verdict)
@@ -164,6 +188,37 @@ write_approve_verdict() {
   grep -q '<!-- pr-review-agent human-escalation v1 -->' "$PATCH_OUT"
   # And NO brand-new comment was appended.
   [ ! -s "$COMMENT_OUT" ]
+}
+
+@test "AC2: a human-authored comment quoting the marker is NOT patched over (#1754)" {
+  # A maintainer pasted the marker into their own comment (id 777). It must not
+  # be selected for the in-place PATCH; a fresh agent comment is posted instead.
+  jq -n '[{"id":777,"user":{"login":"a-maintainer"},"body":"<!-- pr-review-agent human-escalation v1 -->\nquoting this in my note"}]' \
+    > "$EXISTING_COMMENTS_FILE"
+
+  local vf; vf=$(write_escalate_verdict)
+  run bash "$POST_SCRIPT" "$PR_URL" "$vf" "false"
+  echo "$output" >&2
+
+  [ "$status" -eq 101 ]
+  # No PATCH of the human's comment; a brand-new agent comment was posted.
+  [ ! -s "$PATCH_OUT" ]
+  grep -q '<!-- pr-review-agent human-escalation v1 -->' "$COMMENT_OUT"
+}
+
+@test "AC2: a failed in-place PATCH falls back to posting a fresh comment (#1754)" {
+  # Existing bot-authored marker comment (id 555), but PATCH fails. The
+  # escalation must still leave a visible artifact via a fresh comment.
+  jq -n '[{"id":555,"user":{"login":"donpetry-bot"},"body":"<!-- pr-review-agent human-escalation v1 -->\nold note"}]' \
+    > "$EXISTING_COMMENTS_FILE"
+  export PATCH_FAILS=1
+
+  local vf; vf=$(write_escalate_verdict)
+  run bash "$POST_SCRIPT" "$PR_URL" "$vf" "false"
+  echo "$output" >&2
+
+  [ "$status" -eq 101 ]
+  grep -q '<!-- pr-review-agent human-escalation v1 -->' "$COMMENT_OUT"
 }
 
 # ── AC3 ─────────────────────────────────────────────────────────────────────
@@ -213,4 +268,29 @@ write_approve_verdict() {
   echo "$output" >&2
   [ "$status" -eq 0 ]
   grep -q '<!-- pr-review-agent v1 sha=' "$REVIEW_OUT"
+}
+
+@test "AC4: approve with a current-SHA fix-request marker fails closed (#1754)" {
+  # sha matches head, but the decision is fix-requested (sha and decision in
+  # SEPARATE markers) — this must NOT reach gh pr review --approve.
+  local body="<!-- pr-review-agent v1 sha=${SHA} --> <!-- decision=fix-requested risk=LOW -->
+
+## Review — fix requested"
+  local vf; vf=$(write_approve_verdict "$body")
+  run bash "$POST_SCRIPT" "$PR_URL" "$vf" "false"
+  echo "$output" >&2
+  [ "$status" -eq 1 ]
+  [ ! -s "$REVIEW_OUT" ]
+}
+
+@test "AC4: approve with a current-SHA but decision-less marker fails closed (#1754)" {
+  # Right SHA, valid v1 marker, but no decision=approved anywhere → fail closed.
+  local body="<!-- pr-review-agent v1 sha=${SHA} risk=LOW -->
+
+## Some review with no decision"
+  local vf; vf=$(write_approve_verdict "$body")
+  run bash "$POST_SCRIPT" "$PR_URL" "$vf" "false"
+  echo "$output" >&2
+  [ "$status" -eq 1 ]
+  [ ! -s "$REVIEW_OUT" ]
 }
