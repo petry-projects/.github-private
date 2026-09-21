@@ -24,6 +24,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/fleet_report.sh"
 # shellcheck source=scripts/fleet_stub_drift.sh
 source "${SCRIPT_DIR}/fleet_stub_drift.sh"
+# shellcheck source=scripts/lib/run-attribution.sh
+source "${SCRIPT_DIR}/lib/run-attribution.sh"
 
 ORG="${ORG:-petry-projects}"
 LOOKBACK_DAYS="${LOOKBACK_DAYS:-1}"
@@ -189,6 +191,12 @@ for repo in "${repos[@]}"; do
     fi
     # Exclude queued/in_progress runs — only completed conclusions give valid metrics.
     runs_json=$(echo "$runs_raw" | jq -s 'add // [] | [.[] | select(.conclusion != null)]')
+
+    # Accumulate legacy (non-ingress) runs normalized to {role,conclusion} for
+    # parity combining with post-collapse ingress runs (#1727 AC #4).
+    if ! attribution_is_ingress "$wf_file"; then
+      printf '%s' "$runs_json" | normalize_legacy_runs "$wf_file" | jq -c '.[]' >> "$legacy_attr_file"
+    fi
 
     total=$(echo "$runs_json" | jq 'length')
     failed=$(echo "$runs_json" | jq '[.[] | select(.conclusion == "failure" or .conclusion == "timed_out" or .conclusion == "action_required")] | length')
@@ -504,6 +512,67 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 2e. Agent Ingress run attribution by role (#1727, ADR-0007, epic #1723)
+# The Class-1 caller collapse folds many per-role workflows into ONE
+# agent-ingress.yml with one job per role. Section 2 samples runs BY WORKFLOW
+# NAME, which would lump every collapsed role into a single "agent-ingress"
+# bucket — the ADR-0006-fact-3 attribution regression. Here we RE-sample the
+# agent-ingress runs keyed on the role-bearing JOB name (jobs API), so each role
+# gets its own bucket that lands in the SAME key as its legacy per-role workflow
+# bucket (parity, AC #4). A run whose role cannot be named is bucketed under the
+# loud UNATTRIBUTED sentinel, never silently dropped (AC #5). Additive and a
+# complete no-op when no repo carries an agent-ingress.yml (current reality — it
+# is a reference template, not yet deployed to any live repo), preserving legacy
+# per-workflow sampling for not-yet-collapsed roles (AC #3). Best-effort: a
+# per-repo API read failure is a `::warning::`, never fatal (mirrors 2a–2d).
+# ---------------------------------------------------------------------------
+ingress_attr_file=$(mktemp)   # accumulates normalized {role,conclusion} JSONL
+legacy_attr_file=$(mktemp)    # accumulates normalized legacy runs for parity
+for repo in "${repos[@]}"; do
+  # The collapsed ingress workflow id for this repo (basename match), if present.
+  if ! ingress_wf_id=$(gh api "repos/${repo}/actions/workflows?per_page=100" --paginate \
+    --jq "first(.workflows[] | select((.path | split(\"/\") | last) == \"${INGRESS_WORKFLOW_BASENAME}\") | .id | tostring) // empty" \
+    2>/dev/null); then
+    echo "::warning::Cannot read workflows for ${repo} — ingress attribution skipped for this repo"
+    continue
+  fi
+  [ -n "$ingress_wf_id" ] || continue   # no agent-ingress.yml here — legacy repo
+
+  # Completed run ids for the ingress workflow over the window (the jobs API keys
+  # on run id, so unlike Section 2 we must keep the id, not just run_number).
+  if ! ingress_run_ids=$(gh api \
+    "repos/${repo}/actions/workflows/${ingress_wf_id}/runs?per_page=100&created=>=${CUTOFF}" \
+    --paginate \
+    --jq '.workflow_runs[] | select(.conclusion != null) | (.id | tostring)' \
+    2>/dev/null); then
+    echo "::warning::Cannot read ingress runs for ${repo} — ingress attribution skipped for this repo"
+    continue
+  fi
+  [ -n "$ingress_run_ids" ] || continue
+
+  # Build the per-run jobs JSON the lib expects: [{run_id, jobs:[{name,conclusion}]}].
+  per_run_tmp=$(mktemp)
+  while IFS= read -r run_id; do
+    [ -n "$run_id" ] || continue
+    if ! jobs_raw=$(gh api "repos/${repo}/actions/runs/${run_id}/jobs?per_page=100" --paginate \
+      --jq '[.jobs[] | {name, conclusion}]' 2>/dev/null); then
+      echo "::warning::Cannot read jobs for ${repo} run ${run_id} — ingress attribution may undercount"
+      continue
+    fi
+    jobs_json=$(printf '%s' "$jobs_raw" | jq -s 'add // []')
+    jq -n --argjson rid "$run_id" --argjson jobs "$jobs_json" \
+      '{run_id: $rid, jobs: $jobs}' >> "$per_run_tmp"
+  done <<< "$ingress_run_ids"
+
+  # Normalize per-run jobs → one {role,conclusion} per role (failure precedence,
+  # skipped roles dropped, unnamed/empty → UNATTRIBUTED), then append as JSONL to
+  # the fleet accumulator. The repo dimension collapses into the fleet-wide
+  # per-role bucket, exactly as legacy per-workflow buckets sum across repos.
+  jq -s '.' "$per_run_tmp" | normalize_ingress_runs | jq -c '.[]' >> "$ingress_attr_file"
+  rm -f "$per_run_tmp"
+done
+
+# ---------------------------------------------------------------------------
 # 3. Generate reports
 # ---------------------------------------------------------------------------
 report_header() {
@@ -548,16 +617,36 @@ persona_optout_section() {
   generate_persona_optout_report "$persona_optout_file" "${persona_optout_total:-0}"
 }
 
+# ingress_attribution_section — appends the Agent Ingress per-role run
+# attribution block (#1727) when any repo carried agent-ingress runs. Buckets the
+# accumulated normalized {role,conclusion} records by role. Omitted entirely when
+# no ingress runs were seen (the current no-op reality).
+ingress_attribution_section() {
+  # Combine legacy (pre-collapse) and ingress (post-collapse) runs so a role that
+  # ran on both sides of the collapse shares the required bucket (#1727 AC #4).
+  local combined_attr_file attr_tsv
+  combined_attr_file=$(mktemp)
+  if [ -s "$legacy_attr_file" ] || [ -s "$ingress_attr_file" ]; then
+    jq -s 'add // []' "$legacy_attr_file" "$ingress_attr_file" > "$combined_attr_file"
+  fi
+  [ -s "$combined_attr_file" ] || { rm -f "$combined_attr_file"; return 0; }
+  attr_tsv=$(mktemp)
+  jq -s '.' "$combined_attr_file" | attribution_buckets > "$attr_tsv"
+  printf '\n'
+  generate_attribution_report "$attr_tsv" "Run attribution (by role, across collapse)"
+  rm -f "$attr_tsv" "$combined_attr_file"
+}
+
 # Step Summary — Tier 1 visualizations only (Mermaid not rendered there)
 # GitHub Step Summary has a 1 MB hard limit per job. At ~200 bytes per row
 # this supports ~5 000 workflows before truncation.
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
-  { report_header; generate_report "$metrics_file" "$failed_file" "false" "$issues_lookup_file"; dev_lead_timeout_section; schedule_reliability_section; persona_optout_section; stub_drift_section; } \
+  { report_header; generate_report "$metrics_file" "$failed_file" "false" "$issues_lookup_file"; dev_lead_timeout_section; schedule_reliability_section; persona_optout_section; ingress_attribution_section; stub_drift_section; } \
     >> "$GITHUB_STEP_SUMMARY"
 fi
 
 # Report file — full report with Mermaid charts (used as Issue body)
-{ report_header; generate_report "$metrics_file" "$failed_file" "true" "$issues_lookup_file"; dev_lead_timeout_section; schedule_reliability_section; persona_optout_section; stub_drift_section; } \
+{ report_header; generate_report "$metrics_file" "$failed_file" "true" "$issues_lookup_file"; dev_lead_timeout_section; schedule_reliability_section; persona_optout_section; ingress_attribution_section; stub_drift_section; } \
   > "$REPORT_FILE"
 
 # ---------------------------------------------------------------------------
@@ -627,7 +716,7 @@ if [ -n "${GITHUB_ENV:-}" ]; then
   [ "$persona_optout_incomplete_count" -gt 0 ] && echo "HAS_PERSONA_OPTOUT_DRIFT=true" >> "$GITHUB_ENV"
 fi
 
-rm -f "$metrics_file" "$failed_file" "$issues_lookup_file" "$dev_lead_reason_file" "$schedule_metrics_file" "$persona_optout_file"
+rm -f "$metrics_file" "$failed_file" "$issues_lookup_file" "$dev_lead_reason_file" "$schedule_metrics_file" "$persona_optout_file" "$ingress_attr_file" "$legacy_attr_file"
 [ ${#stub_drift_files[@]} -gt 0 ] && rm -f "${stub_drift_files[@]}"
 
 # ---------------------------------------------------------------------------
