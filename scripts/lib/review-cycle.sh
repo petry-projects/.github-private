@@ -17,7 +17,8 @@
 #   approval review:   <!-- pr-review-agent v1 sha=<SHA> decision=approved risk=... -->
 #   escalated review:  <!-- pr-review-agent v1 sha=<SHA> decision=escalated risk=... -->
 #   fix-request:       <!-- pr-review-agent v1 sha=<SHA> --> <!-- decision=fix-requested risk=... -->
-#   human escalation:  <!-- pr-review-agent escalation -->
+#   human escalation:  <!-- pr-review-agent escalation -->               (cycle-cap path, review-one-pr.sh)
+#   human escalation:  <!-- pr-review-agent human-escalation v1 -->      (verdict path, post-pr-review.sh #1754)
 #
 # Superseded comments are edited in place (createdAt preserved) and keep the
 # original markers inside a <details> block, so markers and timestamps remain
@@ -31,7 +32,7 @@
 _REVIEW_CYCLE_JQ_DEFS='
   def has_marker: (.body // "") | test("<!-- pr-review-agent v1 sha=[a-f0-9]+");
   def is_approval: (.body // "") | test("<!-- pr-review-agent v1 sha=[a-f0-9]+\\s+decision=approved");
-  def is_escalation: (.body // "") | test("<!-- pr-review-agent escalation -->");
+  def is_escalation: (.body // "") | test("<!-- pr-review-agent (escalation|human-escalation v1) -->");
   def is_bot_author($bots):
     (.author // "") as $login
     | ($login == "") or ($login | endswith("[bot]")) or (($bots | index($login)) != null);

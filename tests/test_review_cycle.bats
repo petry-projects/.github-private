@@ -27,6 +27,13 @@ escalation_comment() {  # escalation_comment <when>
   jq -n --arg when "$1" \
     '{when: $when, body: "<!-- pr-review-agent escalation -->\n\n## Automated review — human attention needed"}'
 }
+# The verdict-path human-escalation artifact (post-pr-review.sh, #1754). A
+# distinct marker from the cycle-cap one, but is_escalation must recognize both
+# so has_escalation_marker holds the PR and compute_review_cycle resets the cap.
+human_escalation_comment() {  # human_escalation_comment <when>
+  jq -n --arg when "$1" \
+    '{when: $when, body: "<!-- pr-review-agent human-escalation v1 -->\n\n## Automated review — escalated to human"}'
+}
 # A human clicking "Approve" in the GitHub UI: a review with state=APPROVED and a
 # non-bot author, carrying NO agent marker. Only this resets the cap (#926).
 human_approval() {  # human_approval <when>
@@ -172,6 +179,17 @@ items() {  # items <item-json>...
   [ "$output" = "2" ]
 }
 
+@test "the verdict-path human-escalation comment also resets the count (#1754)" {
+  local j
+  j=$(items \
+    "$(fix_request 2026-06-07T01:00:00Z aaa111)" \
+    "$(fix_request 2026-06-07T02:00:00Z bbb222)" \
+    "$(human_escalation_comment 2026-06-07T03:00:00Z)" \
+    "$(fix_request 2026-06-07T04:00:00Z ccc333)")
+  run compute_review_cycle "$j"
+  [ "$output" = "1" ]
+}
+
 @test "newest reset event wins: HUMAN approval after escalation resets again" {
   local j
   j=$(items \
@@ -198,6 +216,11 @@ items() {  # items <item-json>...
 
 @test "has_escalation_marker: true when an escalation comment exists" {
   run has_escalation_marker "$(items "$(escalation_comment 2026-06-07T01:00:00Z)")"
+  [ "$status" -eq 0 ]
+}
+
+@test "has_escalation_marker: true for the verdict-path human-escalation marker (#1754)" {
+  run has_escalation_marker "$(items "$(human_escalation_comment 2026-06-07T01:00:00Z)")"
   [ "$status" -eq 0 ]
 }
 
