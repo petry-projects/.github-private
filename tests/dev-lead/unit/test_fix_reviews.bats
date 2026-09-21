@@ -4308,3 +4308,101 @@ GITEOF
   grep -q "disable-auto" "$merge_file"
   ! grep -q -- "--auto" "$merge_file"
 }
+
+# ── empty net-diff guard extended to review-changes + rebase (#1786, #1620) ────
+#
+# #1340 shipped the net-zero guard for fix-reviews/fix-bot-comment only. #1786
+# extends "never push/report a self-cancelling PR" to the review-changes and
+# rebase (merge-from-main) intents. Reuses the #1340 real-repo helpers.
+
+@test "no-op guard: review-changes net-zero diff flags PR and does not push (#1786)" {
+  local git_repo="$BATS_TEST_TMPDIR/git_repo"
+  local comment_file="$BATS_TEST_TMPDIR/comment_file"
+  local merge_file="$BATS_TEST_TMPDIR/merge_file"
+  local push_file="$BATS_TEST_TMPDIR/push_file"
+  mkdir -p "$git_repo"
+  touch "$comment_file" "$merge_file" "$push_file"
+
+  # Engine reverts the feature line → net base…head diff becomes empty.
+  _noop_setup_repo "$git_repo" 'base\n'
+  _noop_gh_stub "$comment_file" "$merge_file" "$NOOP_HEAD_SHA"
+  _noop_git_stub "$push_file"
+
+  cd "$git_repo"
+  run bash -c "
+    export INTENT_TYPE=review-changes DEV_LEAD_DRY_RUN=false
+    export PR_NUMBER=54 HEAD_SHA=$NOOP_HEAD_SHA REPO='petry-projects/.github-private'
+    export ACTOR='humanreviewer'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export PATH=\"$STUB_BIN_DIR:\$PATH\"
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+
+  [ "$status" -eq 0 ]
+  # Guard fired and announced the net-zero refusal
+  [[ "$output" == *"No-op guard"* ]]
+  # The self-cancelling fix was NOT pushed
+  [ ! -s "$push_file" ]
+  # A needs-human flag comment was posted
+  grep -q "No-op fix detected" "$comment_file"
+  # Auto-merge was disabled and never re-enabled on the net-zero path
+  grep -q "disable-auto" "$merge_file"
+  run grep -q -- "--auto" "$merge_file"
+  [ "$status" -eq 1 ]
+  # No false "applied" terminal marker
+  run grep -q "status=applied" "$comment_file"
+  [ "$status" -eq 1 ]
+}
+
+@test "no-op guard: rebase that nets to zero after merge-from-main is flagged, never reported applied (#1786)" {
+  local git_repo="$BATS_TEST_TMPDIR/git_repo"
+  local comment_file="$BATS_TEST_TMPDIR/comment_file"
+  local merge_file="$BATS_TEST_TMPDIR/merge_file"
+  local push_file="$BATS_TEST_TMPDIR/push_file"
+  mkdir -p "$git_repo"
+  touch "$comment_file" "$merge_file" "$push_file"
+
+  _noop_setup_repo "$git_repo" 'base\n'
+  _noop_gh_stub "$comment_file" "$merge_file" "$NOOP_HEAD_SHA"
+
+  # Rebase engine: resolve by reverting the PR's own change and COMMIT it, mimicking
+  # the engine's self-commit + force-push in rebase.md — so HEAD nets to zero.
+  cat > "$STUB_BIN_DIR/claude" <<CSTUB
+#!/usr/bin/env bash
+echo "Rebased."
+printf 'base\n' > file.txt
+git -c user.email=t@test -c user.name=T commit -aqm "rebase resolve"
+CSTUB
+  chmod +x "$STUB_BIN_DIR/claude"
+
+  # git stub: intercept push AND no-op fetch (the _noop repo has no real 'origin'
+  # remote; origin/main is a bare update-ref), exec real git otherwise.
+  cat > "$STUB_BIN_DIR/git" <<GITEOF
+#!/usr/bin/env bash
+case "\$1" in
+  push)  echo "\$*" >> "${push_file}"; exit 0 ;;
+  fetch) exit 0 ;;
+  *)     exec /usr/bin/git "\$@" ;;
+esac
+GITEOF
+  chmod +x "$STUB_BIN_DIR/git"
+
+  cd "$git_repo"
+  run bash -c "
+    export INTENT_TYPE=rebase DEV_LEAD_DRY_RUN=false
+    export PR_NUMBER=54 HEAD_SHA=$NOOP_HEAD_SHA HEAD_REF=feat REPO='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export PATH=\"$STUB_BIN_DIR:\$PATH\"
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+
+  [ "$status" -eq 0 ]
+  # Guard fired
+  [[ "$output" == *"No-op guard"* ]]
+  # A needs-human flag comment was posted, auto-merge disabled
+  grep -q "No-op fix detected" "$comment_file"
+  grep -q "disable-auto" "$merge_file"
+  # A self-cancelling rebase must NEVER be reported applied.
+  run grep -q "status=applied" "$comment_file"
+  [ "$status" -eq 1 ]
+}

@@ -122,13 +122,13 @@ build_and_run() {
 
   if [ "$DEV_LEAD_DRY_RUN" = "true" ]; then
     echo "[dry-run] would run engine with prompt: $prompt_file ($(wc -l < "$prompt_file") lines)"
-    rm -f "$prompt_file"
+    rm -f "${prompt_file:-}"
     return 0
   fi
 
   local rc=0
   run_writer_with_fallback "$prompt_file" "${INTENT_TYPE:-}" || rc=$?
-  rm -f "$prompt_file"
+  rm -f "${prompt_file:-}"
   return "$rc"
 }
 
@@ -1664,14 +1664,17 @@ commit_and_push() {
       # false "Changes committed and pushed" comment.
       git commit -m "$commit_msg" || { echo "::error::git commit failed — check git identity configuration on the runner" >&2; exit 1; }
     fi
-    # No-op guard (#1340): a fix pass that reverts the PR's own changes nets the
-    # base…head diff to zero. Pushing it would let a `Closes #N` PR auto-close its
-    # compliance issue while the finding remains unfixed. Abort the push and flag
-    # for a human instead of self-cancelling the fix.
+    # No-op guard (#1340, extended #1786): a fix/review/rebase pass that reverts
+    # the PR's own changes nets the base…head diff to zero. Pushing it would let a
+    # `Closes #N` PR auto-close its compliance issue while the finding remains
+    # unfixed. Abort the push and flag for a human instead of self-cancelling.
+    # #1786 broadens the covered intents from fix-reviews/fix-bot-comment to every
+    # intent that pushes to a PR branch (review-changes, human, rebase, …).
     case "$intent" in
-      fix-reviews|fix-bot-comment)
+      enable-auto-merge) ;;  # never pushes; nothing to guard
+      *)
         if pr_nets_to_zero "${BASE_REF:-main}"; then
-          echo "::error::No-op guard: PR #${PR_NUMBER} nets to zero changed files against ${BASE_REF:-main} after ${intent} — refusing to push a self-cancelling fix (#1340)"
+          echo "::error::No-op guard: PR #${PR_NUMBER} nets to zero changed files against ${BASE_REF:-main} after ${intent} — refusing to push a self-cancelling fix (#1340/#1786)"
           flag_noop_pr "$intent"
           return 3
         fi
@@ -2015,7 +2018,15 @@ case "$INTENT_TYPE" in
     build_and_run "on-mention" || rc=$?
     [ "$rc" -eq 2 ] && handle_rate_limit "on-mention"
     if [ "$rc" -eq 0 ]; then
-      if commit_and_push "on-mention"; then
+      cp_rc=0
+      commit_and_push "on-mention" || cp_rc=$?
+      if [ "$cp_rc" -eq 3 ]; then
+        # Net-zero abort: flag_noop_pr already flagged for human and disabled
+        # auto-merge. Do not re-enable it or claim changes were applied (#1786).
+        echo "::notice::on-mention: no-op guard aborted the push for PR #${PR_NUMBER} — flagged for human, not merged (#1786)"
+        exit "$rc"
+      fi
+      if [ "$cp_rc" -eq 0 ]; then
         post_reviews_terminal "on-mention" "applied" "Changes committed and pushed."
       else
         post_reviews_terminal "on-mention" "no-changes" "Engine ran but made no changes."
@@ -2054,6 +2065,14 @@ case "$INTENT_TYPE" in
     if [ "$rc" -eq 0 ]; then
       cp_rc=0
       commit_and_push "review-changes" || cp_rc=$?
+      # No-op guard (#1786): a review-changes pass whose net diff to base is empty
+      # was already flagged by flag_noop_pr (needs-human label + auto-merge
+      # disabled + suppressed EXIT-trap restore). Stop here — never resolve threads
+      # or re-enable auto-merge on a self-cancelling PR.
+      if [ "$cp_rc" -eq 3 ]; then
+        echo "::notice::review-changes: no-op guard aborted the push for PR #${PR_NUMBER} — flagged for human, not merged (#1786)"
+        exit "$rc"
+      fi
       if [ "$cp_rc" -eq 0 ]; then
         notify_coderabbit_resolve
         finalize_review_application "review-changes"
@@ -2148,7 +2167,27 @@ case "$INTENT_TYPE" in
       # Advisory post-resolution integrity check (#1482): flag, do not block.
       # `|| true` guarantees a detector fault can never fail a real resolution.
       run_post_resolution_integrity_check "$BASE_REF" "${PRE_RESOLVE_SHA:-}" || true
-      if commit_and_push "rebase"; then
+      # No-op guard (#1786): a rebase / merge-from-main can ERASE the PR's own
+      # changes, netting the base…head diff to zero. The rebase prompt has the
+      # engine force-push the rebased branch itself, so we cannot un-push — but we
+      # must never report it "applied" (which would let it merge and auto-close its
+      # Closes #N issue with nothing fixed). Re-check the already-rebased HEAD and,
+      # if it nets to zero, flag for a human instead of reporting success.
+      git fetch origin "$BASE_REF" >/dev/null 2>&1 || true
+      if pr_nets_to_zero "$BASE_REF"; then
+        echo "::error::No-op guard: PR #${PR_NUMBER} nets to zero changed files against ${BASE_REF} after rebase — flagging for human, not reporting applied (#1786)"
+        flag_noop_pr "rebase"
+        exit "$rc"
+      fi
+      cp_rc=0
+      commit_and_push "rebase" || cp_rc=$?
+      if [ "$cp_rc" -eq 3 ]; then
+        # commit_and_push committed a script-side change that nets to zero and
+        # already flagged it. Stop — never report a self-cancelling rebase applied.
+        echo "::notice::rebase: no-op guard aborted the push for PR #${PR_NUMBER} — flagged for human, not merged (#1786)"
+        exit "$rc"
+      fi
+      if [ "$cp_rc" -eq 0 ]; then
         # Engine left commits/changes for the script to push — resolution applied.
         post_reviews_terminal "rebase" "applied" "Rebase completed and pushed."
       else
