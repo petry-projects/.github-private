@@ -50,3 +50,33 @@ teardown() {
   [ "$status" -eq 0 ]
   [[ "$output" == *"already present"* ]]
 }
+
+# ── #1874: defer the announcement until the approval is verified ─────────────
+# The gate proceeds on a timeout fallback BEFORE the approval write happens, so
+# posting the announcement inside the gate claims an approval that may never land
+# (the #1874 strand). When the caller sets PARTIAL_EVIDENCE_STATE_FILE, the gate
+# must RECORD the facts to that file and post NOTHING — post-pr-review.sh posts
+# the marker only after it verifies the review object exists.
+
+@test "Partial-evidence: _record_partial_evidence defers to the state file (no gh call) when opted in" {
+  local statefile; statefile="$(mktemp)"
+  # A gh stub that fails loudly if invoked — proves the deferral makes no network call.
+  local ghdir; ghdir="$(mktemp -d)"
+  cat > "$ghdir/gh" <<'GH'
+#!/usr/bin/env bash
+echo "UNEXPECTED gh call: $*" >&2
+exit 77
+GH
+  chmod +x "$ghdir/gh"
+  PATH="$ghdir:$PATH" \
+    PARTIAL_EVIDENCE_STATE_FILE="$statefile" \
+    PR_URL="https://github.com/o/r/pull/1" PR_HEAD_SHA="deadbeef" PR_SNAPSHOT='{}' \
+    run _record_partial_evidence 4 6 "head-age-timeout"
+  [ "$status" -eq 0 ]
+  # The facts are recorded for the deferred post.
+  run cat "$statefile"
+  [[ "$output" == *"4"* ]]
+  [[ "$output" == *"6"* ]]
+  [[ "$output" == *"head-age-timeout"* ]]
+  rm -rf "$ghdir" "$statefile"
+}
