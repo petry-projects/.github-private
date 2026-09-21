@@ -152,6 +152,7 @@ jobs:
             tests/test_prefetch_freshness.bats \
             tests/test_engine_unavailable_notice.bats \
             tests/test_batch_skip_reporting.bats \
+            tests/test_list_prs_enumeration.bats \
             tests/test_review_one_pr_ci_pending.bats \
             tests/test_review_one_pr_decline_verdict.bats \
             tests/test_review_one_pr_force_ci_failing.bats \
@@ -191,7 +192,8 @@ jobs:
             tests/test_advisory_offline_mode.bats \
             tests/agent_ingress_reference.bats \
             tests/agent_ingress_if_filter.bats \
-            tests/test_validate_ingress_if.bats
+            tests/test_validate_ingress_if.bats \
+            tests/run_attribution.bats
 
   actionlint:
     # General workflow linting (#1256, epic #1052 Part D): actionlint validates
