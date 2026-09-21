@@ -31,6 +31,11 @@
 #                 concurrency_lane.
 #   FAIL[e]     — an agent->agent chain crosses the GITHUB_TOKEN boundary via a
 #                 suppressed event without a declared repository_dispatch bridge.
+#   FAIL[stop]  — a persona interaction contract's stop_markers over- or
+#                 under-claim what a serving surface honours (#1745): it omits the
+#                 canonical human brake (needs-human-review), or it declares a
+#                 marker no serving workflow checks. Markers are derived from the
+#                 serving scripts, never re-listed as literals here.
 #   FAIL[class] — a §4 row's asserted Class contradicts the workflow's real on:
 #                 block via the §3 discriminator (both misclassification
 #                 directions).
@@ -248,6 +253,23 @@ imv_c_emits() {
   ' "$1"
 }
 
+# imv_c_kind <file> — the contract's top-level kind value (persona | runtime).
+imv_c_kind() {
+  awk '/^kind:/ { sub(/^kind:[[:space:]]*/,""); gsub(/[\047"]/,""); print; exit }' "$1"
+}
+
+# imv_c_stop_markers <file> — the contract's declared interaction.stop_markers,
+# one per line. Handles the block-list form; an inline empty list (`[]`) yields
+# nothing.
+imv_c_stop_markers() {
+  awk '
+    /^  stop_markers:/ { f=1; next }
+    f && /^    - / { v=$0; sub(/^    - /,"",v); gsub(/[\047"]/,"",v); gsub(/^[[:space:]]+|[[:space:]]+$/,"",v); print v; next }
+    f && /^  [A-Za-z]/ { f=0 }
+    f && /^[A-Za-z]/ { f=0 }
+  ' "$1"
+}
+
 # imv_c_field <file> <key> — the trimmed (quote-stripped) value of a 2-space
 # indented interaction.<key> scalar (e.g. idempotency_key, concurrency_lane).
 imv_c_field() {
@@ -258,6 +280,72 @@ imv_c_field() {
       print v; exit
     }
   ' "$1"
+}
+
+# ── serving-side stop-marker derivation (§6.2.3, #1745) ──────────────────────
+#
+# The stop-marker checks must reuse the CANONICAL definition of the escalation
+# markers rather than re-listing literals (issue #1745 AC #2). The two sources of
+# truth live in the serving scripts:
+#   - needs-human-review  ← NEEDS_HUMAN_REVIEW_LABEL in scripts/lib/pr-automation-budget.sh
+#                           (the label pr_has_escalation_label checks — the event
+#                           surface's canonical human brake)
+#   - dev-lead:needs-human ← DEV_LEAD_NEEDS_HUMAN_LABEL in scripts/qa-lead-advisory-gate.sh
+# They are parsed from the scripts' `: "${VAR:=default}"` declarations so a rename
+# there propagates here — never duplicated as literals in this validator.
+
+# imv_serving_scripts_dir — the directory holding the serving scripts this
+# validator derives markers from. Resolves to this script's own dir (scripts/),
+# independent of INTERACTION_MODEL_ROOT, so fixture trees need not ship the
+# scripts. Overridable via INTERACTION_MODEL_SCRIPTS_DIR for isolated tests.
+imv_serving_scripts_dir() {
+  if [ -n "${INTERACTION_MODEL_SCRIPTS_DIR:-}" ]; then
+    printf '%s' "$INTERACTION_MODEL_SCRIPTS_DIR"
+  else
+    (cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+  fi
+}
+
+# imv_escalation_label_from <file> <VARNAME> — echo the default value of a
+# `: "${VARNAME:=default}"` shell assignment in <file>. Empty if absent.
+imv_escalation_label_from() {
+  local file="${1:-}" var="${2:-}"
+  [ -n "$file" ] && [ -f "$file" ] || return 0
+  awk -v v="$var" '
+    index($0, v ":=") > 0 {
+      s=$0; sub(/.*:=/,"",s); sub(/}.*/,"",s); gsub(/[\047"]/,"",s);
+      gsub(/^[[:space:]]+|[[:space:]]+$/,"",s);
+      if (s!="") { print s; exit }
+    }
+  ' "$file"
+}
+
+# imv_needs_human_review_label — the canonical universal human brake.
+imv_needs_human_review_label() {
+  imv_escalation_label_from "$(imv_serving_scripts_dir)/lib/pr-automation-budget.sh" NEEDS_HUMAN_REVIEW_LABEL
+}
+
+# imv_canonical_escalation_markers — the persona-agnostic human-brake set the
+# serving side honours, one per line (needs-human-review, dev-lead:needs-human).
+imv_canonical_escalation_markers() {
+  local dir; dir="$(imv_serving_scripts_dir)"
+  imv_escalation_label_from "$dir/lib/pr-automation-budget.sh" NEEDS_HUMAN_REVIEW_LABEL
+  imv_escalation_label_from "$dir/qa-lead-advisory-gate.sh" DEV_LEAD_NEEDS_HUMAN_LABEL
+}
+
+# imv_persona_opt_out <root> <role> — the opt_out_label declared in the persona's
+# manifest (personas/<role>/persona.yml); the router's opt-out check honours it.
+# Empty if the manifest or the field is absent.
+imv_persona_opt_out() {
+  local root="${1:-}" role="${2:-}" pf
+  pf="$root/personas/$role/persona.yml"
+  [ -f "$pf" ] || return 0
+  awk '
+    /^[[:space:]]*opt_out_label:/ {
+      v=$0; sub(/.*opt_out_label:[[:space:]]*/,"",v); gsub(/[\047"]/,"",v);
+      gsub(/^[[:space:]]+|[[:space:]]+$/,"",v); print v; exit
+    }
+  ' "$pf"
 }
 
 # ── detectors (each prints tagged FAIL lines; none aborts on first finding) ───
@@ -409,6 +497,56 @@ imv_v_boundary() {
   done < <(imv_contract_files "$root")
 }
 
+# imv_v_stop_markers <root> — FAIL[stop] for a persona interaction contract whose
+# stop_markers over- or under-claim what a serving surface actually honours (#1745).
+#
+# The serving side honours, for a persona:
+#   - its own opt_out_label (personas/<id>/persona.yml) — the router's opt-out check;
+#   - the canonical escalation markers (needs-human-review, dev-lead:needs-human).
+# The mention router now reads a persona's stop_markers straight from this contract
+# (petry-projects/.github#1133), so a marker declared here is what actually gates the
+# mention surface — which is exactly why a claim that no serving workflow can honour,
+# or a missing universal brake, is a real behavioural defect, not just tidiness.
+#
+# Two directions, both tagged FAIL[stop]:
+#   under-claim — a persona whose stop_markers omit the universal human brake
+#                 (needs-human-review) is routed on a mention even after a human
+#                 applies it (the #1745 fail-open asymmetry).
+#   over-claim  — a declared marker outside the honoured set is a contract that
+#                 over-declares a stop marker no serving workflow checks (the
+#                 mirror of #1647's over-declared surfaces).
+# Only kind: persona contracts are in scope; runtime-lens contracts
+# (interaction-contracts/*.yml) are the deployment view and declare their own
+# stop sets tied to their own gate code.
+imv_v_stop_markers() {
+  local root="$1" c rel kind role brake canon opt_out honoured markers m
+  brake="$(imv_needs_human_review_label)"
+  canon="$(imv_canonical_escalation_markers)"
+  while IFS= read -r c; do
+    [ -n "$c" ] || continue
+    kind="$(imv_c_kind "$c")"
+    [ "$kind" = "persona" ] || continue
+    rel="${c#"$root/"}"
+    role="$(imv_c_role "$c")"
+    opt_out="$(imv_persona_opt_out "$root" "$role")"
+    honoured="$(printf '%s\n%s\n' "$opt_out" "$canon" | grep -v '^$' | sort -u)"
+    markers="$(imv_c_stop_markers "$c")"
+
+    if [ -n "$brake" ] && ! printf '%s\n' "$markers" | grep -qxF "$brake"; then
+      printf 'FAIL[stop]: %s omits the canonical human brake %q from stop_markers — the mention router reads this contract, so a human applying %q would not stop this persona there (§6.2.3; pr_has_escalation_label). Declare it.\n' \
+        "$rel" "$brake" "$brake"
+    fi
+
+    while IFS= read -r m; do
+      [ -n "$m" ] || continue
+      if ! printf '%s\n' "$honoured" | grep -qxF "$m"; then
+        printf 'FAIL[stop]: %s declares stop_marker %q that no serving workflow honours — a persona honours only its opt_out_label (%s) and the canonical escalation markers {%s} (§6.2.3/§8.1). Remove it or wire a surface that checks it.\n' \
+          "$rel" "$m" "${opt_out:-<none>}" "$(printf '%s' "$canon" | paste -sd, -)"
+      fi
+    done <<< "$markers"
+  done < <(imv_contract_files "$root")
+}
+
 # ── main ─────────────────────────────────────────────────────────────────────
 
 imv_repo_root() {
@@ -435,6 +573,7 @@ main() {
     imv_v_class "$root" "$md"
     imv_v_contracts "$root"
     imv_v_boundary "$root"
+    imv_v_stop_markers "$root"
   )"
 
   if [ -n "$violations" ]; then
