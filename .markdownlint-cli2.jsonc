@@ -61,6 +61,14 @@
   //     otherwise fail Lint on third-party package READMEs the repo never wrote
   //     (#1450). These mirror the build/dependency dirs the org repo-template
   //     ignores (scripts/seed-repo-template.sh).
+  //
+  // Test fixtures under tests/**/fixtures/ are also excluded: they are input
+  // data, not authored docs. Many reproduce intentionally malformed or
+  // duplicated content to exercise a gate — e.g.
+  // tests/dev-lead/fixtures/duplicate-scope/prompts-prefix/*.md are byte copies
+  // of the already-ignored prompts/dev-lead/*.md, carrying the duplicate Phase
+  // headings the duplicate-decl-gate must detect. Linting them would demand
+  // edits that defeat the fixture's purpose.
   "ignores": [
     ".claude/**",
     "frameworks/**",
@@ -69,6 +77,7 @@
     "vendor/**",
     "dist/**",
     "build/**",
-    "coverage/**"
+    "coverage/**",
+    "tests/**/fixtures/**"
   ]
 }
