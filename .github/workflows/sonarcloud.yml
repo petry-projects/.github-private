@@ -24,6 +24,9 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Required status check: must report on the merge queue's gh-readonly-queue/*
+  # ref, or the queue wedges (#1871, prerequisite for #1864).
+  merge_group:
 
 permissions: {}
 

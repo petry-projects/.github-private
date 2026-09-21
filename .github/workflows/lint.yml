@@ -177,6 +177,7 @@ jobs:
             tests/test_dev_lead_concurrency_guard.bats \
             tests/test_validate_workflow_schedules.bats \
             tests/test_lint_main_push_trigger.bats \
+            tests/test_merge_group_required_checks.bats \
             tests/caller_stub_freeze.bats \
             tests/test_sc2_self_review_channel.bats \
             tests/pr_review_canary.bats \

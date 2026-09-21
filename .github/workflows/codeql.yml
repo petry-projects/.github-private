@@ -1,0 +1,70 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# CodeQL — advanced setup (#1871, merge-queue prerequisite for #1864)
+#
+# WHY THIS EXISTS: code scanning was previously GitHub **default setup**, which
+# analyzes `push` and `pull_request` only and can never post a result to the
+# merge queue's `gh-readonly-queue/*` ref — default setup cannot be given extra
+# triggers. So the required `CodeQL` check and a working merge queue were
+# mutually exclusive (github/codeql-action#1537). This advanced-setup workflow
+# adds the `merge_group` trigger so the `CodeQL` status check reports on the
+# queue ref, while preserving the prior default-setup coverage: languages
+# `actions` + `python`, `extended` (security-extended) query suite.
+#
+# ⚠️ REQUIRED MANUAL CUTOVER (repository setting, not a file change): when this
+# lands, **disable code-scanning default setup** in
+# Settings → Code security → Code scanning (set "CodeQL analysis" to advanced /
+# disable default setup). Otherwise default and advanced setup both run.
+#
+# The required-check context produced here is `CodeQL` (the code-scanning
+# results check the analyze step uploads) — do NOT rename it; the branch/merge-
+# queue ruleset matches the required check by context name.
+# ─────────────────────────────────────────────────────────────────────────────
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  # Required status check: must report on the merge queue's gh-readonly-queue/*
+  # ref, or the queue wedges (#1871, prerequisite for #1864).
+  merge_group:
+
+permissions: {}
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write
+      # Needed to fetch internal/private CodeQL packs when applicable.
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        # Preserve the language set from the prior default setup.
+        language: [actions, python]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@977e6ceaea7361825998245d787fa3b4d6b9e5df # codeql-bundle-v2.27.0
+        with:
+          languages: ${{ matrix.language }}
+          # `actions` and `python` are interpreted — no compilation step.
+          build-mode: none
+          # Matches the prior default-setup "extended" suite.
+          queries: security-extended
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@977e6ceaea7361825998245d787fa3b4d6b9e5df # codeql-bundle-v2.27.0
+        with:
+          category: /language:${{ matrix.language }}
