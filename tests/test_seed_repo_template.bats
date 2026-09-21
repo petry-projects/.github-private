@@ -779,7 +779,7 @@ _managed_gitignore_fixture() { # -> path of a fixture file on stdout
   grep -qF "contents/.github/CODEOWNERS" "$CALLS"
   # The managed .gitignore is NEVER written — no contents PUT touches it.
   run grep -qF "contents/.gitignore" "$CALLS"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
 }
 
 @test "AC#2: seeding a repo whose ci.yml already exists (drift-allowlisted) leaves it UNTOUCHED" {
@@ -796,7 +796,7 @@ _managed_gitignore_fixture() { # -> path of a fixture file on stdout
   grep -qF "contents/.github/workflows/auto-rebase.yml" "$CALLS"
   # ci.yml is on TEMPLATE_DRIFT_ALLOWLIST → the seeder must not overwrite it.
   run grep -qF "contents/.github/workflows/ci.yml" "$CALLS"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
 }
 
 @test "AC#2: the allowlist is DERIVED from template_stub_drift.sh, not a second literal" {
@@ -809,7 +809,7 @@ _managed_gitignore_fixture() { # -> path of a fixture file on stdout
   # And the seeder must NOT declare its own copy of the list (the exact drift this
   # script pair already demonstrates).
   run grep -q 'TEMPLATE_DRIFT_ALLOWLIST=(' "$SEED"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
 }
 
 @test "AC#1: fresh repo (files absent) STILL creates .gitignore and ci.yml" {
@@ -835,7 +835,7 @@ _managed_gitignore_fixture() { # -> path of a fixture file on stdout
   [[ "$output" == *"unchanged"* || "$output" == *"preserv"* ]]
   if [ -f "$CALLS" ]; then
     run grep -qF "docs/x.txt" "$CALLS"
-    [ "$status" -ne 0 ]
+    [ "$status" -eq 1 ]
   fi
   # Differing: existing != new content → a write happens.
   run _seed_file petry-projects/repo-template "docs/x.txt" "$(printf 'new-bytes\n')" seed-branch main
@@ -856,6 +856,51 @@ _managed_gitignore_fixture() { # -> path of a fixture file on stdout
   [[ "$output" == *"PRESERV"* || "$output" == *"NOT overwrit"* ]]
   # No writes under dry-run.
   [ ! -f "$CALLS" ]
+}
+
+@test "AC#1: a non-404 gh api failure on the contents read ABORTS, never CREATEs over an unreadable file" {
+  set -e
+  source "$SEED"
+  # gh api writes a rate-limit/5xx body to stdout AND exits non-zero. Decoding that
+  # as empty content would let _seed_file treat the file as absent and CREATE over
+  # it; instead the read helper must fail loud and _seed_file must abort (#1812;
+  # codeant/gemini review of #1868). Only a 404 body is a benign "absent".
+  cat > "$STUB_BIN/gh" <<'GHEOF'
+#!/usr/bin/env bash
+args="$*"
+case "$args" in
+  *"--method PUT"*|*"--method POST"*|*"PATCH"*|*"pr create"*) echo "$args" >> "$CALLS"; echo '{}' ;;
+  *"contents/"*) printf '{"message":"API rate limit exceeded","status":"403"}'; exit 1 ;;
+  *) echo '{}' ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN/gh"
+  run _existing_file_content petry-projects/repo-template docs/x.txt main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"gh api failed"* ]]
+  # _seed_file propagates the failure — no CREATE PUT for the unreadable file.
+  run _seed_file petry-projects/repo-template docs/x.txt "$(printf 'new\n')" seed-branch main
+  [ "$status" -ne 0 ]
+  if [ -f "$CALLS" ]; then
+    run grep -qF "contents/docs/x.txt" "$CALLS"
+    [ "$status" -eq 1 ]
+  fi
+}
+
+@test "AC#1: a genuine 404 on the contents read is treated as absent (empty content)" {
+  set -e
+  source "$SEED"
+  # The one benign failure: a 404 body means the file is truly absent → empty content
+  # (so a fresh repo still gets a CREATE), distinct from a masked hard failure.
+  cat > "$STUB_BIN/gh" <<'GHEOF'
+#!/usr/bin/env bash
+printf '{"message":"Not Found","documentation_url":"https://docs.github.com/rest","status":"404"}'
+exit 1
+GHEOF
+  chmod +x "$STUB_BIN/gh"
+  run _existing_file_content petry-projects/repo-template docs/x.txt main
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
 }
 
 # ── argument handling ─────────────────────────────────────────────────────────

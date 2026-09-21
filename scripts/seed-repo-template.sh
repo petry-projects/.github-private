@@ -584,10 +584,21 @@ _content_has_managed_marker() {
 # blob. Trailing newlines are stripped by the caller's $()-capture, symmetrically
 # with the emitted content, so a trailing-newline-only difference is not "drift".
 _existing_file_content() {
-  local repo="$1" path="$2" ref="$3" out
+  local repo="$1" path="$2" ref="$3" out rc=0
   _require gh jq base64 || return 1
-  out="$(gh api "repos/${repo}/contents/${path}?ref=${ref}" 2>/dev/null)" || true
-  printf '%s' "$out" | jq -r '.content // empty' 2>/dev/null | base64 -d 2>/dev/null || true
+  out="$(gh api "repos/${repo}/contents/${path}?ref=${ref}" 2>/dev/null)" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    # A 404 is the ONE benign failure: the file is genuinely absent → empty content.
+    # Any other failure (auth, rate-limit, 5xx, network) must abort loudly rather
+    # than masquerade as "absent", which would let _seed_file CREATE over a file it
+    # simply could not read (#1812; codeant/gemini review of #1868).
+    if grep -q '"message":[[:space:]]*"Not Found"' <<< "$out"; then
+      return 0
+    fi
+    echo "::error::gh api failed (exit ${rc}) reading ${path} on ${repo}@${ref}: ${out}" >&2
+    return "$rc"
+  fi
+  jq -r '.content // empty' <<< "$out" 2>/dev/null | base64 -d 2>/dev/null || true
 }
 
 # _seed_report_dry <path> <action> <reason> <existing> <new> — under DRY_RUN,
@@ -595,8 +606,8 @@ _existing_file_content() {
 # magnitude, so a destructive write is visible before it happens (#1812 AC #4).
 _seed_report_dry() {
   local path="$1" action="$2" reason="$3" existing="$4" content="$5" old_lines new_lines
-  old_lines="$(printf '%s' "$existing" | grep -c '' 2>/dev/null || printf 0)"
-  new_lines="$(printf '%s' "$content" | grep -c '' 2>/dev/null || printf 0)"
+  old_lines="$(printf '%s' "$existing" | grep -c '' 2>/dev/null || true)"
+  new_lines="$(printf '%s' "$content" | grep -c '' 2>/dev/null || true)"
   case "$action" in
     create) echo "  [dry-run] would CREATE ${path} (${new_lines} lines) — ${reason}" ;;
     write)
@@ -622,7 +633,11 @@ _seed_report_dry() {
 # no write API call (AC #4); otherwise writes go through _put_file.
 _seed_file() {
   local repo="$1" path="$2" content="$3" branch="$4" base_ref="$5" existing action reason
-  existing="$(_existing_file_content "$repo" "$path" "$base_ref")" || existing=""
+  # Assign, THEN check status: a command substitution in a conditional list disables
+  # errexit inside its subshell, so an unreadable existing file (non-404) must fail
+  # the seed rather than be treated as absent and overwritten with a CREATE (#1812).
+  existing="$(_existing_file_content "$repo" "$path" "$base_ref")"
+  [ $? -eq 0 ] || return 1
 
   if [ -z "$existing" ]; then
     action="create"; reason="new file"
@@ -655,12 +670,17 @@ _seed_all_files() {
   for row in "${WORKFLOW_MANIFEST[@]}"; do
     name="${row%%|*}"
     path=".github/workflows/${name}.yml"
-    content="$(_emit_workflow "${name}.yml")" || return 1
+    # Assign first, then check $?: a command substitution in a conditional list
+    # (`content="$(…)" || return 1`) disables errexit inside its subshell, swallowing
+    # an internal failure of _emit_workflow instead of aborting the seed (#1868 review).
+    content="$(_emit_workflow "${name}.yml")"
+    [ $? -eq 0 ] || return 1
     _seed_file "$repo" "$path" "$content" "$branch" "$base_ref" || return 1
   done
   for row in "${BASELINE_MANIFEST[@]}"; do
     path="${row%%|*}"
-    content="$(_emit_baseline "$path")" || return 1
+    content="$(_emit_baseline "$path")"
+    [ $? -eq 0 ] || return 1
     _seed_file "$repo" "$path" "$content" "$branch" "$base_ref" || return 1
   done
 }
@@ -685,8 +705,15 @@ _seed_repo() {
   # default branch (the seed branch is cut from it), so a re-seed can tell CREATE
   # from PRESERVE from WRITE (#1812). Resolved for both live and dry-run; the
   # dry-run reads only and reports, making no write API call (AC #4).
-  default_branch="$(gh api "repos/${repo}" --jq '.default_branch' 2>/dev/null || echo main)"
-  [ -n "$default_branch" ] || default_branch="main"
+  # Resolve the target's real default branch. A failure here must abort loudly: a
+  # silent fallback to `main` would inspect and cut a PR against the WRONG branch on
+  # a repo whose default is not main, or let a dry-run falsely succeed (#1868 review).
+  local drc=0
+  default_branch="$(gh api "repos/${repo}" --jq '.default_branch' 2>/dev/null)" || drc=$?
+  if [ "$drc" -ne 0 ] || [ -z "$default_branch" ]; then
+    echo "::error::cannot resolve default branch on ${repo} (gh api exit ${drc})" >&2
+    return 1
+  fi
 
   if _is_dry; then
     echo "[seed] [dry-run] planning per-file writes against ${default_branch} on ${repo} (no writes will be made):"
