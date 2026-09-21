@@ -473,11 +473,14 @@ human has applied them. It is **CI-verified, not trusted** — `validate-interac
   entry outside that set is a contract over-declaring a brake no serving workflow checks — the
   mirror of the over-declared *surfaces* tracked in #1647 — and fails the check.
 
-**Per-surface truth.** `stop_markers` is a persona-wide list, so it must be true for **every**
-surface the persona is served on. If a marker is ever only honoured on some surfaces, it must
-not sit in the persona-wide list unqualified — a persona-wide list that is only true for some
-surfaces is exactly the defect #1745 records. Add a per-surface note (a YAML comment naming
-the surface and the reason) rather than leaving the asymmetry implicit.
+**Per-surface truth.** `stop_markers` is a persona-wide list, so a label marker must be true for
+**every label-capable serving surface that can perform write-mode actions** — the surfaces that can
+actually read a label and gate a write on it. If a marker is ever only honoured on some of those
+surfaces, it must not sit in the persona-wide list unqualified — a persona-wide list that is only
+true for some surfaces is exactly the defect #1745 records. Add a per-surface note (a YAML comment
+naming the surface and the reason) rather than leaving the asymmetry implicit. Surfaces that cannot
+evaluate labels at all (see discussions below) are out of scope for this rule and are handled
+separately by the router's fail-closed refusal.
 
 **Discussions have no labels API (#1318, petry-projects/.github#755 residual).** The
 discussion surface exposes no labels, so label-based `stop_markers` **cannot be evaluated

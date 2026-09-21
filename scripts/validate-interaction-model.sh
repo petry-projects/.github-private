@@ -259,10 +259,19 @@ imv_c_kind() {
 }
 
 # imv_c_stop_markers <file> — the contract's declared interaction.stop_markers,
-# one per line. Handles the block-list form; an inline empty list (`[]`) yields
-# nothing.
+# one per line. Handles the block-list form and the inline-list form
+# (`stop_markers: [a, b]`); an inline empty list (`[]`) yields nothing.
 imv_c_stop_markers() {
   awk '
+    /^  stop_markers:[[:space:]]*\[/ {
+      v=$0; sub(/^  stop_markers:[[:space:]]*\[/,"",v); sub(/\].*/,"",v);
+      n=split(v, a, ",");
+      for (i=1;i<=n;i++) {
+        s=a[i]; gsub(/[\047"]/,"",s); gsub(/^[[:space:]]+|[[:space:]]+$/,"",s);
+        if (s!="") print s;
+      }
+      next
+    }
     /^  stop_markers:/ { f=1; next }
     f && /^    - / { v=$0; sub(/^    - /,"",v); gsub(/[\047"]/,"",v); gsub(/^[[:space:]]+|[[:space:]]+$/,"",v); print v; next }
     f && /^  [A-Za-z]/ { f=0 }
@@ -522,7 +531,18 @@ imv_v_stop_markers() {
   local root="$1" c rel kind role brake canon opt_out honoured markers m
   brake="$(imv_needs_human_review_label)"
   canon="$(imv_canonical_escalation_markers)"
-  while IFS= read -r c; do
+
+  # Fail closed when the canonical markers cannot be derived (e.g.
+  # INTERACTION_MODEL_SCRIPTS_DIR points at a missing/incompatible serving-script
+  # directory). Without this guard an empty brake silently disables the required
+  # human-brake check, letting a persona pass without declaring it.
+  if [ -z "$brake" ] || [ -z "$canon" ]; then
+    printf 'FAIL[stop]: could not derive the canonical escalation markers from the serving scripts (%s) — the required human-brake check cannot run. Check INTERACTION_MODEL_SCRIPTS_DIR / scripts/lib/pr-automation-budget.sh and scripts/qa-lead-advisory-gate.sh (§6.2.3).\n' \
+      "$(imv_serving_scripts_dir)"
+    return 0
+  fi
+
+  while IFS= read -r c || [ -n "$c" ]; do
     [ -n "$c" ] || continue
     kind="$(imv_c_kind "$c")"
     [ "$kind" = "persona" ] || continue
@@ -537,7 +557,7 @@ imv_v_stop_markers() {
         "$rel" "$brake" "$brake"
     fi
 
-    while IFS= read -r m; do
+    while IFS= read -r m || [ -n "$m" ]; do
       [ -n "$m" ] || continue
       if ! printf '%s\n' "$honoured" | grep -qxF "$m"; then
         printf 'FAIL[stop]: %s declares stop_marker %q that no serving workflow honours — a persona honours only its opt_out_label (%s) and the canonical escalation markers {%s} (§6.2.3/§8.1). Remove it or wire a surface that checks it.\n' \

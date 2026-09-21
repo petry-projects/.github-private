@@ -261,6 +261,15 @@ setup() {
   [ -z "$output" ]
 }
 
+@test "imv_c_stop_markers reads a non-empty inline list" {
+  tmp="$(mktemp)"
+  printf 'interaction:\n  stop_markers: [needs-human-review, "dev-lead:needs-human"]\n  budget: none\n' > "$tmp"
+  run imv_c_stop_markers "$tmp"
+  rm -f "$tmp"
+  [ "$status" -eq 0 ]
+  [ "$output" = "$(printf 'needs-human-review\ndev-lead:needs-human')" ]
+}
+
 @test "imv_persona_opt_out reads opt_out_label from persona.yml" {
   run imv_persona_opt_out "$FIXTURES/stop-pass" alpha
   [ "$status" -eq 0 ]
@@ -297,16 +306,28 @@ setup() {
 
 @test "AC5: a persona omitting needs-human-review is flagged (FAIL[stop])" {
   run env INTERACTION_MODEL_ROOT="$FIXTURES/stop-missing" bash "$SCRIPT"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
   [[ "$output" == *"FAIL[stop]"* ]]
   [[ "$output" == *"needs-human-review"* ]]
 }
 
 @test "AC5: a persona declaring a marker no serving workflow honours is flagged (FAIL[stop])" {
   run env INTERACTION_MODEL_ROOT="$FIXTURES/stop-overclaim" bash "$SCRIPT"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
   [[ "$output" == *"FAIL[stop]"* ]]
   [[ "$output" == *"bogus:not-a-brake"* ]]
+}
+
+@test "AC5: an invalid INTERACTION_MODEL_SCRIPTS_DIR fails closed (FAIL[stop])" {
+  # A serving-script dir that cannot yield the canonical markers must not
+  # silently disable the required human-brake check — even for a tree that
+  # otherwise passes (stop-pass).
+  run env INTERACTION_MODEL_ROOT="$FIXTURES/stop-pass" \
+    INTERACTION_MODEL_SCRIPTS_DIR="$BATS_TEST_TMPDIR/no-such-scripts-dir" \
+    bash "$SCRIPT"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"FAIL[stop]"* ]]
+  [[ "$output" == *"could not derive the canonical escalation markers"* ]]
 }
 
 # ---------------------------------------------------------------------------
