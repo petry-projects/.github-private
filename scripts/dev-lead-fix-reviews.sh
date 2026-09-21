@@ -434,6 +434,17 @@ resolve_actor_outdated_threads() {
 # so the agent can identify Tier-1 blockers (failing CI + CHANGES_REQUESTED reviews)
 # and never wrongly declare "no-changes" while the PR is still blocked.
 fetch_pr_context() {
+  # Base branch: _ci_required_checks reads the ruleset for the PR's ACTUAL target
+  # branch. Some intents (fix-bot-comment, review-changes) do not receive BASE_REF
+  # from the workflow, so derive it from the PR here rather than falling back to
+  # `main` — otherwise the ruleset lookup applies the wrong required-check rules to
+  # a PR targeting another branch. Intents that already export BASE_REF are left
+  # untouched (guarded on empty), and `main` remains the final fallback.
+  if [ -z "${BASE_REF:-}" ] && [ -n "${PR_NUMBER:-}" ] && [ -n "${REPO:-}" ]; then
+    BASE_REF="$(gh api "repos/${REPO}/pulls/${PR_NUMBER}" --jq '.base.ref // empty' 2>/dev/null || true)"
+    export BASE_REF="${BASE_REF:-main}"
+  fi
+
   # CI check results: requires HEAD_SHA. Gracefully degrade to empty array when not set
   # (e.g., review-changes in dry-run where the PR API call is skipped).
   CI_STATUS_JSON="[]"
@@ -1122,20 +1133,28 @@ ci_is_blocking() {
 #   "required checks `Lint`, `Build` are still pending"
 #   "check `template-drift` is failing (required set unreadable — failing closed)"
 ci_blocking_reason() {
-  local agent_roles required_names
+  local agent_roles required_names is_unreadable="false"
   agent_roles="$(_ci_status_agent_roles_json)"
   # Normalise the required set to a JSON array. An empty/unreadable ruleset must
   # become [] (not the empty string), or --argjson would reject it and the whole
   # filter would silently fail — dropping us onto the generic fallback (#1859 AC5).
+  # Distinguish an UNREADABLE ruleset (empty string from _ci_required_checks →
+  # fail closed) from a readable-but-EMPTY one ("[]" → no required checks
+  # configured): only the former warrants the "failing closed" note, or it
+  # misleadingly claims the ruleset was unreadable when it was merely empty.
   required_names="$(_ci_required_checks)"
-  if [ -z "$required_names" ] || [ "$required_names" = "[]" ]; then
+  if [ -z "$required_names" ]; then
+    is_unreadable="true"
+    required_names="[]"
+  elif [ "$required_names" = "[]" ]; then
     required_names="[]"
   else
     required_names="$(jq -c 'if type == "array" then . else [] end' <<< "$required_names" 2>/dev/null || echo '[]')"
   fi
   _ci_rollup_from_status_json | jq -r \
     --argjson agent_roles "$agent_roles" \
-    --argjson required_names "$required_names" "
+    --argjson required_names "$required_names" \
+    --arg unreadable "$is_unreadable" "
     def is_terminal: (.conclusion != null and .conclusion != \"\");
     def is_pending:
       (is_terminal | not) and (
@@ -1160,7 +1179,7 @@ ci_blocking_reason() {
       (\$req | length > 0) as \$gate_required |
       (if \$gate_required then \$req else \$ext end) as \$gate |
       (if \$gate_required then \"required \" else \"\" end) as \$qual |
-      (if \$gate_required then \"\" else \" (required set unreadable — failing closed)\" end) as \$closed |
+      (if \$gate_required then \"\" elif \$unreadable == \"true\" then \" (required set unreadable — failing closed)\" else \"\" end) as \$closed |
       (\$gate | map(select((is_success or is_cancelled) | not))) as \$bad |
       (\$bad | map(select(is_pending))  | map(.name // .context // \"\") | map(select(length > 0))) as \$pending |
       (\$bad | map(select(is_pending | not)) | map(.name // .context // \"\") | map(select(length > 0))) as \$failing |

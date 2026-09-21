@@ -2774,6 +2774,60 @@ GHEOF
   [[ "$output" != *"status=no-changes"* ]]
 }
 
+@test "fix-reviews: readable-but-empty required set names the check WITHOUT the 'failing closed' note" {
+  local tmpdir
+  tmpdir="$(mktemp -d)"
+
+  # The ruleset API reads successfully but configures NO required checks (returns
+  # []). With no required set the gate falls back to every external check, so a red
+  # template-drift still blocks — but the message must NOT claim the ruleset was
+  # unreadable, because it was merely empty (distinct from the fail-closed case).
+  cat > "$STUB_BIN_DIR/gh" <<'GHEOF'
+#!/usr/bin/env bash
+ARGS="$*"
+case "$ARGS" in
+  *"rules/branches"*)
+    echo '[]' ;;
+  *"branches/"*"protection"*)
+    echo "API error: not accessible" >&2; exit 1 ;;
+  *"commits/"*"check-runs"*)
+    echo '{"check_runs":[{"name":"template-drift","status":"completed","conclusion":"failure","details_url":"https://example.com/2"}]}' ;;
+  *"commits/"*"statuses"*)
+    echo '[]' ;;
+  *"pulls/"*"reviews"*)
+    echo '[]' ;;
+  *"graphql"*)
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+  *"issues/"*"comments"*)
+    echo "[]" ;;
+  *"pr checkout"*) exit 0 ;;
+  *"pr comment"*) exit 0 ;;
+  *"pr merge"*) exit 0 ;;
+  *"pulls/"*) echo '{"head":{"sha":"ddd444eee555"},"auto_merge":null}' ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+
+  run bash -c "
+    cd '$tmpdir'
+    export INTENT_TYPE=fix-reviews DEV_LEAD_DRY_RUN=true
+    export PR_NUMBER=54 HEAD_SHA=ddd444eee555 REPO='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export PATH=\"$STUB_BIN_DIR:\$PATH\"
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+  rm -rf "$tmpdir"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Tier-1 blockers still present"* ]]
+  # The blocker is still named…
+  [[ "$output" == *'`template-drift`'* ]]
+  # …but a readable-but-empty ruleset must NOT be reported as unreadable.
+  [[ "$output" != *"failing closed"* ]]
+  [[ "$output" != *"status=no-changes"* ]]
+}
+
 # ── Legacy commit statuses dedup: latest state per context wins ────────────────
 # The /statuses API returns the full history per context (newest first). A stale
 # failure followed by a newer success for the same context must not suppress
