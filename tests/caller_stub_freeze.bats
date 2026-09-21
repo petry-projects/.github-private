@@ -64,12 +64,11 @@ setup() {
 # per-role/per-job granularity (path|job|baseline).
 # ---------------------------------------------------------------------------
 
-@test "covered set: lists the three ring-0 self-host caller stubs" {
+@test "covered set: lists the two ring-0 self-host caller stubs" {
   run caller_freeze_covered
   [ "$status" -eq 0 ]
   [[ "$output" == *".github/workflows/dev-lead.yml"* ]]
   [[ "$output" == *".github/workflows/pr-review-trigger.yml"* ]]
-  [[ "$output" == *".github/workflows/ci-failure-analyst.lock.yml"* ]]
 }
 
 # ---------------------------------------------------------------------------
@@ -111,16 +110,6 @@ setup() {
   [[ "$output" != *"secrets: inherit"* ]]
 }
 
-@test "extract (legacy): ci-failure-analyst analyze job yields the on block and the channel-pinned uses only" {
-  run extract_forwarding_block "${REPO_ROOT}/.github/workflows/ci-failure-analyst.lock.yml" "analyze"
-  [ "$status" -eq 0 ]
-  [[ "$output" == on:* ]]
-  [[ "$output" == *"uses: petry-projects/.github-private/.github/workflows/ci-failure-analyst-reusable.yml@ci-failure-analyst/v1-stable"* ]]
-  [[ "$output" != *"with:"* ]]
-  # if: and secrets: are excluded from the frozen region.
-  [[ "$output" != *"CLAUDE_CODE_OAUTH_TOKEN"* ]]
-  [[ "$output" != *"conclusion == 'failure'"* ]]
-}
 
 # ---------------------------------------------------------------------------
 # Ingress form: one shared on:, one job per role. The extractor must select each
