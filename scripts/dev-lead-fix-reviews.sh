@@ -1509,7 +1509,7 @@ verify_resolution_integrity() {
   local script_dir
   script_dir="$(dirname "$0")"
   changed="$(git diff --name-only "origin/${base_ref}...HEAD" -- '*.sh' 2>/dev/null || true)"
-  while IFS= read -r file; do
+  while IFS= read -r file || [ -n "$file" ]; do
     [ -n "$file" ] || continue
     [ -f "$file" ] || continue   # deleted by the resolution — nothing to check
     if ! bash -n "$file" 2>/dev/null; then
@@ -1526,7 +1526,16 @@ verify_resolution_integrity() {
 ${changed}
 EOF
   if [ -x "${script_dir}/check-duplicate-decls.sh" ]; then
-    if ! "${script_dir}/check-duplicate-decls.sh" >/dev/null 2>&1; then
+    # The gate's default no-arg mode scans its own directory ($SCRIPT_DIR = the
+    # checked-out dev-lead scripts repo), not the PR's resolved working tree. Point
+    # it at the resolved tree explicitly so it inspects the rebased files: pass the
+    # work tree's scripts/ as SCAN_DIR and name its prompts/ and personas/ dirs so
+    # all three scopes scan the PR tree. Nonexistent dirs are skipped by the gate.
+    local work_root
+    work_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+    if ! DUPLICATE_DECL_PROMPTS_DIR="${work_root}/prompts" \
+         DUPLICATE_DECL_PERSONAS_DIR="${work_root}/personas" \
+         "${script_dir}/check-duplicate-decls.sh" "${work_root}/scripts" >/dev/null 2>&1; then
       echo "::warning::integrity gate: check-duplicate-decls.sh failed after rebase resolution — possible #1485 corruption (#1890 AC #7)"
       rc=1
     fi

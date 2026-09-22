@@ -59,8 +59,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
-      actions: write   # gh run rerun --failed
-      contents: read   # fetch the retry script via the gh REST contents API (no actions/checkout)
+      actions: write    # gh run rerun --failed
+      contents: write   # POST repos/{repo}/dispatches (manual recovery) needs contents:write; also covers the gh REST contents read that self-fetches the retry script (no actions/checkout)
     steps:
       - name: Retry failed Auto-rebase run
         env:
@@ -80,6 +80,12 @@ jobs:
           # the branch, PR_NUMBER is the stuck PR to route into the rebase intent.
           GITHUB_EVENT_NAME: ${{ github.event_name }}
           PR_NUMBER: ${{ github.event.inputs.pr_number }}
+          # A repository_dispatch created with the default GITHUB_TOKEN does NOT
+          # trigger the downstream workflow (GitHub's recursion guard), so manual
+          # recovery only actually starts a rebase when a PAT is in use. Signal
+          # which token GH_TOKEN carries so the script reports honestly instead of
+          # claiming recovery on a dispatch that will never fire.
+          HAVE_DISPATCH_PAT: ${{ (secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS) != '' }}
         run: |
           set -euo pipefail
           # Self-fetch the retry script instead of checking out the repo: a

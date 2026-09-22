@@ -92,17 +92,24 @@ def main() -> int:
             f"  retry job fetches {RETRY_SCRIPT} but no step executes it via 'bash'."
         )
 
-    # 3. Permissions: actions:write to re-run, contents:read to fetch the script.
+    # 3. Permissions: actions:write to re-run; contents must be read or write.
+    #    The self-fetch of the retry script via the gh REST contents API needs
+    #    only 'read', but the manual workflow_dispatch recovery path additionally
+    #    POSTs a repository_dispatch, which requires 'contents: write' — a superset
+    #    that still permits the read-only self-fetch. Either value keeps the job
+    #    free of marketplace-action resolution (the actual outage-resilience
+    #    guarantee), so both are accepted.
     perms = retry.get("permissions")
     if not isinstance(perms, dict):
         failures.append("  retry job must declare an explicit permissions mapping")
     else:
         if perms.get("actions") != "write":
             failures.append("  retry job must keep 'actions: write' (gh run rerun --failed)")
-        if perms.get("contents") != "read":
+        if perms.get("contents") not in ("read", "write"):
             failures.append(
-                "  retry job must declare 'contents: read' to fetch the retry\n"
-                "  script via the gh REST contents API (no actions/checkout)."
+                "  retry job must declare 'contents: read' (script self-fetch) or\n"
+                "  'contents: write' (also POSTs repository_dispatch for manual\n"
+                "  recovery) — fetched via the gh REST contents API, no actions/checkout."
             )
 
     if failures:

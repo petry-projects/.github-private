@@ -47,6 +47,7 @@ MAX_ATTEMPTS="${MAX_ATTEMPTS:-3}"
 DRY_RUN="${DRY_RUN:-false}"
 GITHUB_EVENT_NAME="${GITHUB_EVENT_NAME:-}"
 PR_NUMBER="${PR_NUMBER:-}"
+HAVE_DISPATCH_PAT="${HAVE_DISPATCH_PAT:-false}"
 GITHUB_STEP_SUMMARY="${GITHUB_STEP_SUMMARY:-/dev/null}"
 
 summary() { echo "$1" >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true; }
@@ -60,10 +61,12 @@ summary() { echo "$1" >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true; }
 # PR number and intent=rebase, so the PR is routed straight into dev-lead's
 # rebase intent. A PAT is required for the dispatch to trigger the workflow.
 if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
-  if [ -z "$PR_NUMBER" ]; then
-    echo "::warning::workflow_dispatch invoked without a pr_number — nothing to route into the rebase intent"
-    exit 0
-  fi
+  case "${PR_NUMBER}" in
+    ''|*[!0-9]*)
+      echo "::warning::workflow_dispatch invoked with an invalid or missing pr_number '${PR_NUMBER}' — must be a positive integer"
+      exit 0
+      ;;
+  esac
   echo "::notice::Manual recovery: routing PR #${PR_NUMBER} into dev-lead's rebase intent via repository_dispatch"
   if [ "$DRY_RUN" = "true" ]; then
     echo "  [dry-run] would fire dev-lead-reviews-retry repository_dispatch for PR #${PR_NUMBER} (intent=rebase)"
@@ -75,9 +78,20 @@ if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
        -f "event_type=dev-lead-reviews-retry" \
        -f "client_payload[pr_number]=${PR_NUMBER}" \
        -f "client_payload[intent_type]=rebase"; then
-    echo "::notice::Dispatched dev-lead-reviews-retry for PR #${PR_NUMBER} (intent=rebase)"
-    summary "### Manual rebase recovery dispatched"
-    summary "Routed PR #${PR_NUMBER} into dev-lead's \`rebase\` intent."
+    # A 204 from the dispatches API only means the event was accepted — not that a
+    # rebase will run. A repository_dispatch created with the default GITHUB_TOKEN
+    # does not trigger the downstream workflow (GitHub's recursion guard), so
+    # without a PAT the accepted dispatch fires nothing. Only claim recovery when a
+    # PAT is in use; otherwise surface a warning so a human knows no rebase started.
+    if [ "$HAVE_DISPATCH_PAT" = "true" ]; then
+      echo "::notice::Dispatched dev-lead-reviews-retry for PR #${PR_NUMBER} (intent=rebase)"
+      summary "### Manual rebase recovery dispatched"
+      summary "Routed PR #${PR_NUMBER} into dev-lead's \`rebase\` intent."
+    else
+      echo "::warning::Accepted a dev-lead-reviews-retry dispatch for PR #${PR_NUMBER}, but no PAT is configured — a repository_dispatch created with the default GITHUB_TOKEN does not trigger the downstream workflow, so no rebase will run. Configure GH_PAT_DON_PETRY or GH_PAT_WORKFLOWS and retry."
+      summary "### Manual rebase recovery could not trigger a rebase"
+      summary "The dispatch for PR #${PR_NUMBER} was accepted, but the default \`GITHUB_TOKEN\` cannot trigger the downstream workflow — configure a PAT (GH_PAT_DON_PETRY / GH_PAT_WORKFLOWS) and retry."
+    fi
   else
     echo "::warning::Failed to dispatch dev-lead-reviews-retry for PR #${PR_NUMBER} — a maintainer should retry manually"
     summary "### Manual rebase recovery failed to dispatch"
