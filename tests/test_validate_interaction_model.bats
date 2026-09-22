@@ -147,6 +147,35 @@ setup() {
   [ "$output" = "$(printf 'dev-lead\npr-review-mention')" ]
 }
 
+@test "imv_wf_jobs accepts quoted YAML job keys, stripping the delimiters" {
+  tmp="$(mktemp)"
+  printf 'jobs:\n  "dev-lead":\n    runs-on: x\n  pr-review-mention:\n    runs-on: y\n' > "$tmp"
+  run imv_wf_jobs "$tmp"
+  rm -f "$tmp"
+  [ "$status" -eq 0 ]
+  [ "$output" = "$(printf 'dev-lead\npr-review-mention')" ]
+}
+
+@test "imv_table_rows tags a malformed (unparenthesized) role qualifier __invalid__" {
+  tmp="$(mktemp)"
+  printf '| `.github/workflows/agent-ingress.yml` dev-lead | 1 | — | bad |\n' > "$tmp"
+  run imv_table_rows "$tmp"
+  rm -f "$tmp"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *$'\t__invalid__dev-lead' ]]
+}
+
+@test "imv_v_completeness_ingress FAILs a blank role qualifier even with a complete qualified set" {
+  local ingress rel rows
+  ingress="$FIXTURES/ingress-pass/.github/workflows/agent-ingress.yml"
+  rel=".github/workflows/agent-ingress.yml"
+  # the two real role-jobs, fully qualified, PLUS one malformed blank-role row
+  rows="$(printf '%s\t1\t—\tdev-lead\n%s\t1\t—\tpr-review-mention\n%s\t1\t—\t\n' "$rel" "$rel" "$rel")"
+  run imv_v_completeness_ingress "$ingress" "$rel" "$rows"
+  [[ "$output" == *"FAIL[a]"* ]]
+  [[ "$output" == *"blank role qualifier"* ]]
+}
+
 # ---------------------------------------------------------------------------
 # interaction-contract parsing
 # ---------------------------------------------------------------------------

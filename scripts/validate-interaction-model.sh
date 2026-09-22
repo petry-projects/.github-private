@@ -185,8 +185,16 @@ imv_table_rows() {
     $0 ~ "^\\|[[:space:]]*`\\.github/workflows/" {
       # first cell ($2): `path` optionally followed by a (role) qualifier
       path=$2; sub(/^[^`]*`/,"",path); sub(/`.*/,"",path); gsub(/[[:space:]]/,"",path);
-      role=$2; sub(/^[^`]*`[^`]*`/,"",role); gsub(/[()`]/,"",role);
-      gsub(/^[[:space:]]+|[[:space:]]+$/,"",role);
+      # role qualifier: accept ONLY the documented ` (job-name) ` form, or no
+      # qualifier at all. Any other trailing text is malformed and is tagged
+      # __invalid__ so completeness reports it instead of silently accepting it.
+      role=$2; sub(/^[^`]*`[^`]*`/,"",role);
+      if (role ~ /^[[:space:]]*\([A-Za-z0-9_-]+\)[[:space:]]*$/) {
+        sub(/^[[:space:]]*\(/,"",role); sub(/\)[[:space:]]*$/,"",role);
+      } else {
+        gsub(/^[[:space:]]+|[[:space:]]+$/,"",role);
+        if (role != "") role="__invalid__" role;
+      }
       cls=$3;  gsub(/[[:space:]]/,"",cls);
       tr=$4;   gsub(/^[[:space:]]+|[[:space:]]+$/,"",tr);
       print path "\t" cls "\t" tr "\t" role
@@ -204,16 +212,20 @@ imv_wf_jobs() {
   awk '
     /^jobs:[[:space:]]*(#.*)?$/ { inj=1; job_indent=""; next }
     inj && /^[A-Za-z_]/ { inj=0 }
-    inj && job_indent == "" && /^[[:space:]]+[A-Za-z0-9_-]+:[[:space:]]*(#.*)?$/ {
+    # A job key may be an unquoted scalar or a quoted YAML scalar ("dev-lead":).
+    # Strip surrounding quote delimiters so a quoted key compares like a bare one.
+    inj && job_indent == "" && /^[[:space:]]+("[^"]+"|\047[^\047]+\047|[A-Za-z0-9_-]+):[[:space:]]*(#.*)?$/ {
       match($0, /^[[:space:]]+/);
       job_indent = substr($0, RSTART, RLENGTH);
-      k=$0; sub(/^[[:space:]]+/,"",k); sub(/:.*/,"",k); print k;
+      k=$0; sub(/^[[:space:]]+/,"",k); sub(/:[[:space:]]*(#.*)?$/,"",k);
+      gsub(/^["\047]|["\047]$/,"",k); print k;
       next
     }
-    inj && job_indent != "" && $0 ~ /^[[:space:]]+[A-Za-z0-9_-]+:[[:space:]]*(#.*)?$/ {
+    inj && job_indent != "" && $0 ~ /^[[:space:]]+("[^"]+"|\047[^\047]+\047|[A-Za-z0-9_-]+):[[:space:]]*(#.*)?$/ {
       indent = ""; match($0, /^[[:space:]]+/); indent = substr($0, RSTART, RLENGTH);
       if (indent == job_indent) {
-        k=$0; sub(/^[[:space:]]+/,"",k); sub(/:.*/,"",k); print k
+        k=$0; sub(/^[[:space:]]+/,"",k); sub(/:[[:space:]]*(#.*)?$/,"",k);
+        gsub(/^["\047]|["\047]$/,"",k); print k
       }
     }
   ' "$file"
@@ -430,8 +442,15 @@ imv_v_completeness() {
 # equal <file>'s job names. FAIL[a] a job with no row; FAIL[table] a row-role that
 # names no job. Called by imv_v_completeness; <rows> is imv_table_rows output.
 imv_v_completeness_ingress() {
-  local file="$1" rel="$2" rows="$3" jobs roles job role roles_raw roles_dedup
+  local file="$1" rel="$2" rows="$3" jobs roles job role roles_raw roles_dedup blank_count
   jobs="$(imv_wf_jobs "$file" | sort -u)"
+  # An ingress row must name its role-job. Inspect ALL rows for this path before
+  # filtering blanks — a blank/whitespace-only qualifier is malformed and must
+  # FAIL[a], else a complete set of qualified rows plus one blank row would pass.
+  blank_count="$(printf '%s\n' "$rows" | awk -F'\t' -v p="$rel" '$1==p && $4~/^[[:space:]]*$/ {c++} END{print c+0}')"
+  if [ "$blank_count" -gt 0 ]; then
+    printf 'FAIL[a]: %s has %s §4 row(s) with a blank role qualifier — every collapsed ingress row must name its role-job (see the §4 ingress convention).\n' "$rel" "$blank_count"
+  fi
   roles_raw="$(printf '%s\n' "$rows" | awk -F'\t' -v p="$rel" '$1==p && $4!~/^[[:space:]]*$/ {print $4}')"
   roles_dedup="$(printf '%s' "$roles_raw" | sort -u)"
   # Check for duplicate role qualifiers (same role appearing more than once)
