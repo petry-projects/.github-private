@@ -152,27 +152,35 @@ strict_from_branch_rules() {
   echo "$r"
 }
 
-# summarize_base_merges <prs_json> <strict_enabled> [request_label]
+# summarize_base_merges <prs_json> <strict_policy> [request_label]
 # Emits TSV: required<TAB>skippable — over the open non-draft, non-Dependabot,
 # mergeStateStatus==BEHIND PRs, the count whose base merge is genuinely REQUIRED vs
 # a no-op that should be SKIPPED (#1881 AC #4). A BEHIND PR's base merge is required
 # when being behind actually blocks it — ANY of:
-#   * strict_enabled == "true" (ruleset requires up-to-date branches), OR
-#   * the PR is queued to merge (autoMergeRequest non-null), OR
+#   * strict is on for THAT PR's base branch (ruleset requires up-to-date branches), OR
+#   * the PR is enqueued in the merge queue (mergeQueueEntry non-null — actual
+#     merge-queue membership, not auto-merge arming, which does not force an
+#     up-to-date branch), OR
 #   * the PR carries the explicit request label (default AUTO_REBASE_REQUEST_LABEL).
 # Otherwise the base merge is skippable churn. DIRTY PRs are deliberately NOT counted:
 # they take the conflict/rebase path unchanged (AC #3). Absent/empty JSON → "0\t0".
+#
+# <strict_policy> is either a scalar "true"/"false" applied to every base branch, OR
+# a JSON object mapping baseRefName → boolean so each PR is classified against its OWN
+# base's ruleset (#1887): a release branch with a different strict policy no longer
+# borrows the default branch's flag. A base absent from the map defaults to false.
 summarize_base_merges() {
   local json="${1:-}" strict="${2:-false}" label="${3:-$AUTO_REBASE_REQUEST_LABEL}"
   [ -n "$json" ] || json='[]'
   jq -r --arg strict "$strict" --arg label "$label" '
+    ($strict | (fromjson? // false)) as $sp |
     [ .[]
       | select((.isDraft // false) | not)
       | select(((.author?.login // "" | tostring) | test("dependabot"; "i")) | not)
       | select(.mergeStateStatus == "BEHIND")
     ] | map(
-      ($strict == "true")
-      or (.autoMergeRequest != null)
+      (if ($sp | type) == "object" then ($sp[(.baseRefName // "")] // false) else $sp end)
+      or (.mergeQueueEntry != null)
       or ([ (.labels // [])[] | (.name // "") ] | index($label) != null)
     ) as $flags |
     [
@@ -213,16 +221,20 @@ fmt_rate() {
   echo "$(( num * 100 / denom ))%"
 }
 
-# render_report <comments_json> <runs_json> <lookback_days> <behind_prs> [today] [prs_json] [pr_list_truncated] [pr_list_limit] [strict_enabled] [request_label]
+# render_report <comments_json> <runs_json> <lookback_days> <behind_prs> [today] [prs_json] [pr_list_truncated] [pr_list_limit] [strict_enabled] [request_label] [strict_policy]
 # Writes the full Markdown report to stdout. Pure: no network.
 # pr_list_truncated=true renders a warning that BEHIND/DIRTY counts may undercount.
-# strict_enabled ("true"/"false") is the config-derived up-to-date-branches policy;
-# it drives the base-merge-necessity section (#1881).
+# strict_enabled ("true"/"false") is the DEFAULT branch's config-derived
+# up-to-date-branches policy — shown as the report headline.
+# strict_policy is what actually drives the base-merge-necessity counter (#1881):
+# either the same scalar, or a JSON object mapping baseRefName → boolean so each PR
+# is classified against its own base's ruleset (#1887). Defaults to strict_enabled.
 render_report() {
   local comments_json="${1:-[]}" runs_json="${2:-[]}"
   local lookback="${3:-7}" behind="${4:-0}" today="${5:-}" prs_json="${6:-[]}"
   local pr_list_truncated="${7:-false}" pr_list_limit="${8:-1000}"
   local strict_enabled="${9:-false}" request_label="${10:-$AUTO_REBASE_REQUEST_LABEL}"
+  local strict_policy="${11:-$strict_enabled}"
   [ -n "$today" ] || today="$(date -u +%Y-%m-%d)"
 
   local sentinels responses applied
@@ -235,7 +247,7 @@ render_report() {
   IFS=$'\t' read -r ms_behind ms_dirty < <(summarize_merge_states "$prs_json")
 
   local bm_required bm_skippable
-  IFS=$'\t' read -r bm_required bm_skippable < <(summarize_base_merges "$prs_json" "$strict_enabled" "$request_label")
+  IFS=$'\t' read -r bm_required bm_skippable < <(summarize_base_merges "$prs_json" "$strict_policy" "$request_label")
 
   local fanout
   fanout="$(estimate_fanout "$total" "$behind")"
@@ -278,7 +290,7 @@ render_report() {
 
   printf '## Base-merge necessity (#1881)\n\n'
   printf -- '- **Up-to-date-branches policy** (ruleset `strict_required_status_checks_policy`): `%s`\n' "$strict_enabled"
-  printf -- '- **Base merges required** (behind actually blocks: strict on, queued to merge, or `%s` label): %s\n' \
+  printf -- '- **Base merges required** (behind actually blocks: strict on, enqueued in merge queue, or `%s` label): %s\n' \
     "$request_label" "$bm_required"
   printf -- '- **Base merges skippable** (BEHIND with no such requirement — a no-op churn): %s\n' "$bm_skippable"
   printf -- '- `base_merges_required=%s base_merges_skippable=%s`\n\n' "$bm_required" "$bm_skippable"
@@ -336,15 +348,36 @@ main() {
 
   # 3. Open-PR snapshot — pulled once with the fields the behind-PR multiplier, the
   #    AC7 merge-state (BEHIND/DIRTY) metric, and the #1881 base-merge-necessity
-  #    counter (labels + autoMergeRequest) all need. Best-effort; defaults to [] so
-  #    the report still renders when the query fails.
+  #    counter (labels + mergeQueueEntry + baseRefName) all need. Fetched over GraphQL
+  #    rather than `gh pr list --json` because `mergeQueueEntry` — actual merge-queue
+  #    membership, the queue-specific signal #1881 wants (not `autoMergeRequest`, which
+  #    only means auto-merge is armed) — is not a documented `gh pr list` field. The
+  #    node set is reshaped to the same object shape the pure helpers consume. Best
+  #    effort; defaults to [] so the report still renders when the query fails.
+  local owner="${WORKFLOW_REPO%%/*}" name="${WORKFLOW_REPO##*/}"
   local prs_json pr_list_truncated pr_count
-  prs_json="$(gh pr list --repo "$WORKFLOW_REPO" --state open --limit "$PR_LIST_LIMIT" \
-    --json author,isDraft,mergeStateStatus,labels,autoMergeRequest 2>/dev/null || echo '[]')"
+  # shellcheck disable=SC2016 # $owner/$name/$endCursor are GraphQL vars, not shell vars
+  prs_json="$(gh api graphql --paginate \
+    -f owner="$owner" -f name="$name" \
+    -f query='query($owner:String!, $name:String!, $endCursor:String) {
+      repository(owner:$owner, name:$name) {
+        pullRequests(states: OPEN, first: 100, after: $endCursor) {
+          nodes {
+            number isDraft mergeStateStatus baseRefName
+            author { login }
+            labels(first: 100) { nodes { name } }
+            mergeQueueEntry { id }
+          }
+          pageInfo { hasNextPage endCursor }
+        }
+      }
+    }' --jq '.data.repository.pullRequests.nodes[]' 2>/dev/null \
+    | jq -s 'map({number, isDraft, mergeStateStatus, baseRefName, author, labels: (.labels.nodes // []), mergeQueueEntry})' 2>/dev/null || echo '[]')"
   [ -n "$prs_json" ] || prs_json='[]'
   pr_count="$(printf '%s' "$prs_json" | jq 'length' 2>/dev/null || echo 0)"
   if [ "$pr_count" -ge "$PR_LIST_LIMIT" ]; then
     pr_list_truncated=true
+    prs_json="$(jq -c --argjson lim "$PR_LIST_LIMIT" '.[:$lim]' <<< "$prs_json" 2>/dev/null || printf '%s' "$prs_json")"
   else
     pr_list_truncated=false
   fi
@@ -383,8 +416,40 @@ main() {
   fi
   strict_enabled="$(strict_from_branch_rules "$rules_json")"
 
+  # Resolve the up-to-date policy PER base branch, not just the default (#1887). The
+  # open-PR snapshot has no default-branch filter and the auto-rebase workflow updates
+  # every behind PR, so a PR based on a release branch with a different strict policy
+  # would otherwise be classified against `main`'s ruleset. Build a baseRefName→bool
+  # map covering the distinct bases of the eligible (non-draft, non-Dependabot, BEHIND)
+  # PRs and hand it to the counter. Seed it with the already-resolved default branch so
+  # that base is not re-fetched.
+  local strict_policy
+  strict_policy="$(jq -cn --arg k "$default_branch" --argjson v "$strict_enabled" '{($k): $v}')"
+  local base_branches base
+  base_branches="$(printf '%s' "$prs_json" | jq -r '
+    [ .[]
+      | select((.isDraft // false) | not)
+      | select(((.author?.login // "" | tostring) | test("dependabot"; "i")) | not)
+      | select(.mergeStateStatus == "BEHIND")
+      | .baseRefName // empty
+    ] | unique[]' 2>/dev/null || true)"
+  while IFS= read -r base; do
+    [ -n "$base" ] || continue
+    [ "$base" = "$default_branch" ] && continue
+    local b_rules b_status=0 b_strict
+    b_rules="$(gh api "repos/${WORKFLOW_REPO}/rules/branches/${base}" 2>/dev/null)" || b_status=$?
+    if [ "$b_status" -eq 0 ]; then
+      [ -n "$b_rules" ] || b_rules='[]'
+    else
+      b_rules='[]'
+      echo "::warning::Could not read branch rules for ${WORKFLOW_REPO}@${base} — base-merge necessity assumes strict=false for PRs targeting it; skippable counts may be overstated." >&2
+    fi
+    b_strict="$(strict_from_branch_rules "$b_rules")"
+    strict_policy="$(jq -c --arg k "$base" --argjson v "$b_strict" '. + {($k): $v}' <<< "$strict_policy")"
+  done <<< "$base_branches"
+
   local report
-  report="$(render_report "$comments_json" "$runs_json" "$LOOKBACK_DAYS" "$behind" "$today" "$prs_json" "$pr_list_truncated" "$PR_LIST_LIMIT" "$strict_enabled" "$AUTO_REBASE_REQUEST_LABEL")"
+  report="$(render_report "$comments_json" "$runs_json" "$LOOKBACK_DAYS" "$behind" "$today" "$prs_json" "$pr_list_truncated" "$PR_LIST_LIMIT" "$strict_enabled" "$AUTO_REBASE_REQUEST_LABEL" "$strict_policy")"
 
   printf '%s\n' "$report"
   if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then

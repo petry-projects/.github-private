@@ -59,21 +59,31 @@ setup() {
   ]'
 
   # Base-merge-necessity PR set. Open non-draft non-Dependabot BEHIND PRs:
-  #   #1 plain BEHIND (no queue, no label)                 → skippable when strict off
-  #   #2 BEHIND + queued to merge (autoMergeRequest set)    → required always
-  #   #3 BEHIND + carries the explicit request label        → required always
+  #   #1 plain BEHIND (no queue, no label)                  → skippable when strict off
+  #   #2 BEHIND + enqueued in merge queue (mergeQueueEntry)  → required always
+  #   #3 BEHIND + carries the explicit request label         → required always
   #   #4 DIRTY (conflict path — never a base-merge candidate, AC #3)
-  #   #5 BEHIND but DRAFT                                    → excluded
-  #   #6 BEHIND but Dependabot-authored                     → excluded
-  #   #7 CLEAN                                              → excluded (not BEHIND)
+  #   #5 BEHIND but DRAFT                                     → excluded
+  #   #6 BEHIND but Dependabot-authored                      → excluded
+  #   #7 CLEAN                                               → excluded (not BEHIND)
+  # All target the default branch `main`.
   BASE_MERGE_PRS_JSON='[
-    {"number":1,"mergeStateStatus":"BEHIND","isDraft":false,"author":{"login":"alice"},"labels":[],"autoMergeRequest":null},
-    {"number":2,"mergeStateStatus":"BEHIND","isDraft":false,"author":{"login":"bob"},"labels":[],"autoMergeRequest":{"enabledAt":"2026-09-20T00:00:00Z"}},
-    {"number":3,"mergeStateStatus":"BEHIND","isDraft":false,"author":{"login":"carol"},"labels":[{"name":"auto-rebase:ready"}],"autoMergeRequest":null},
-    {"number":4,"mergeStateStatus":"DIRTY","isDraft":false,"author":{"login":"dan"},"labels":[],"autoMergeRequest":null},
-    {"number":5,"mergeStateStatus":"BEHIND","isDraft":true,"author":{"login":"eve"},"labels":[],"autoMergeRequest":null},
-    {"number":6,"mergeStateStatus":"BEHIND","isDraft":false,"author":{"login":"dependabot[bot]"},"labels":[],"autoMergeRequest":null},
-    {"number":7,"mergeStateStatus":"CLEAN","isDraft":false,"author":{"login":"frank"},"labels":[],"autoMergeRequest":null}
+    {"number":1,"mergeStateStatus":"BEHIND","isDraft":false,"baseRefName":"main","author":{"login":"alice"},"labels":[],"mergeQueueEntry":null},
+    {"number":2,"mergeStateStatus":"BEHIND","isDraft":false,"baseRefName":"main","author":{"login":"bob"},"labels":[],"mergeQueueEntry":{"id":"MQE_1"}},
+    {"number":3,"mergeStateStatus":"BEHIND","isDraft":false,"baseRefName":"main","author":{"login":"carol"},"labels":[{"name":"auto-rebase:ready"}],"mergeQueueEntry":null},
+    {"number":4,"mergeStateStatus":"DIRTY","isDraft":false,"baseRefName":"main","author":{"login":"dan"},"labels":[],"mergeQueueEntry":null},
+    {"number":5,"mergeStateStatus":"BEHIND","isDraft":true,"baseRefName":"main","author":{"login":"eve"},"labels":[],"mergeQueueEntry":null},
+    {"number":6,"mergeStateStatus":"BEHIND","isDraft":false,"baseRefName":"main","author":{"login":"dependabot[bot]"},"labels":[],"mergeQueueEntry":null},
+    {"number":7,"mergeStateStatus":"CLEAN","isDraft":false,"baseRefName":"main","author":{"login":"frank"},"labels":[],"mergeQueueEntry":null}
+  ]'
+
+  # Two eligible plain BEHIND PRs on DIFFERENT bases, neither queued nor labelled.
+  # Used to prove the per-base strict-policy map (#1887): a scalar policy applies to
+  # both, but a base→bool map can classify one required and the other skippable.
+  #   #1 base `main`               #2 base `release/1.x`
+  MIXED_BASE_PRS_JSON='[
+    {"number":1,"mergeStateStatus":"BEHIND","isDraft":false,"baseRefName":"main","author":{"login":"alice"},"labels":[],"mergeQueueEntry":null},
+    {"number":2,"mergeStateStatus":"BEHIND","isDraft":false,"baseRefName":"release/1.x","author":{"login":"bob"},"labels":[],"mergeQueueEntry":null}
   ]'
 }
 
@@ -205,7 +215,7 @@ setup() {
 @test "summarize_base_merges: strict off — only queued/labelled PRs are required" {
   run summarize_base_merges "$BASE_MERGE_PRS_JSON" false
   [ "$status" -eq 0 ]
-  # #2 queued + #3 labelled = 2 required; #1 plain BEHIND = 1 skippable.
+  # #2 enqueued + #3 labelled = 2 required; #1 plain BEHIND = 1 skippable.
   # DIRTY(#4), draft(#5), dependabot(#6), CLEAN(#7) all excluded.
   [ "$output" = "$(printf '2\t1')" ]
 }
@@ -219,37 +229,61 @@ setup() {
 
 @test "summarize_base_merges: strict off, plain BEHIND PRs are all skippable" {
   run summarize_base_merges '[
-    {"mergeStateStatus":"BEHIND","isDraft":false,"author":{"login":"a"},"labels":[],"autoMergeRequest":null},
-    {"mergeStateStatus":"BEHIND","isDraft":false,"author":{"login":"b"},"labels":[],"autoMergeRequest":null}
+    {"mergeStateStatus":"BEHIND","isDraft":false,"author":{"login":"a"},"labels":[],"mergeQueueEntry":null},
+    {"mergeStateStatus":"BEHIND","isDraft":false,"author":{"login":"b"},"labels":[],"mergeQueueEntry":null}
   ]' false
   [ "$output" = "$(printf '0\t2')" ]
 }
 
-@test "summarize_base_merges: queued-to-merge PR is required even when strict off" {
+@test "summarize_base_merges: enqueued (mergeQueueEntry) PR is required even when strict off" {
   run summarize_base_merges '[
-    {"mergeStateStatus":"BEHIND","isDraft":false,"author":{"login":"a"},"labels":[],"autoMergeRequest":{"enabledAt":"x"}}
+    {"mergeStateStatus":"BEHIND","isDraft":false,"author":{"login":"a"},"labels":[],"mergeQueueEntry":{"id":"MQE_x"}}
   ]' false
   [ "$output" = "$(printf '1\t0')" ]
+}
+
+@test "summarize_base_merges: armed auto-merge alone (no queue entry) is skippable when strict off" {
+  # autoMergeRequest is intentionally NOT consulted (#1887): auto-merge arming does
+  # not force an up-to-date branch, so a BEHIND PR with only auto-merge armed and no
+  # mergeQueueEntry is a skippable base merge.
+  run summarize_base_merges '[
+    {"mergeStateStatus":"BEHIND","isDraft":false,"author":{"login":"a"},"labels":[],"mergeQueueEntry":null,"autoMergeRequest":{"enabledAt":"x"}}
+  ]' false
+  [ "$output" = "$(printf '0\t1')" ]
 }
 
 @test "summarize_base_merges: explicit request label makes a PR required when strict off" {
   run summarize_base_merges '[
-    {"mergeStateStatus":"BEHIND","isDraft":false,"author":{"login":"a"},"labels":[{"name":"auto-rebase:ready"}],"autoMergeRequest":null}
+    {"mergeStateStatus":"BEHIND","isDraft":false,"author":{"login":"a"},"labels":[{"name":"auto-rebase:ready"}],"mergeQueueEntry":null}
   ]' false
   [ "$output" = "$(printf '1\t0')" ]
 }
 
+@test "summarize_base_merges: per-base strict map classifies each PR against its own base (#1887)" {
+  # release/1.x strict on, main strict off: #2 (release/1.x) required, #1 (main) skippable.
+  run summarize_base_merges "$MIXED_BASE_PRS_JSON" '{"main":false,"release/1.x":true}'
+  [ "$status" -eq 0 ]
+  [ "$output" = "$(printf '1\t1')" ]
+}
+
+@test "summarize_base_merges: base absent from the strict map defaults to false" {
+  # Only main is mapped (true); release/1.x is unmapped → treated as strict off → skippable.
+  run summarize_base_merges "$MIXED_BASE_PRS_JSON" '{"main":true}'
+  [ "$status" -eq 0 ]
+  [ "$output" = "$(printf '1\t1')" ]
+}
+
 @test "summarize_base_merges: DIRTY PRs are not counted (conflict path unchanged, AC #3)" {
   run summarize_base_merges '[
-    {"mergeStateStatus":"DIRTY","isDraft":false,"author":{"login":"a"},"labels":[],"autoMergeRequest":null}
+    {"mergeStateStatus":"DIRTY","isDraft":false,"author":{"login":"a"},"labels":[],"mergeQueueEntry":null}
   ]' false
   [ "$output" = "$(printf '0\t0')" ]
 }
 
 @test "summarize_base_merges: excludes draft and Dependabot BEHIND PRs" {
   run summarize_base_merges '[
-    {"mergeStateStatus":"BEHIND","isDraft":true,"author":{"login":"a"},"labels":[],"autoMergeRequest":null},
-    {"mergeStateStatus":"BEHIND","isDraft":false,"author":{"login":"dependabot[bot]"},"labels":[],"autoMergeRequest":null}
+    {"mergeStateStatus":"BEHIND","isDraft":true,"author":{"login":"a"},"labels":[],"mergeQueueEntry":null},
+    {"mergeStateStatus":"BEHIND","isDraft":false,"author":{"login":"dependabot[bot]"},"labels":[],"mergeQueueEntry":null}
   ]' false
   [ "$output" = "$(printf '0\t0')" ]
 }
@@ -369,4 +403,13 @@ setup() {
   [ "$status" -eq 0 ]
   [[ "$output" == *"base_merges_required=3"* ]]
   [[ "$output" == *"base_merges_skippable=0"* ]]
+}
+
+@test "render_report: per-base strict map (arg 11) drives the counter, scalar (arg 9) the headline" {
+  # Headline policy = default-branch scalar (false); the counter uses the per-base map
+  # where release/1.x is strict — so #2 (release/1.x) is required, #1 (main) skippable.
+  run render_report "$COMMENTS_JSON" "$RUNS_JSON" 7 3 2026-06-15 "$MIXED_BASE_PRS_JSON" false 1000 false auto-rebase:ready '{"main":false,"release/1.x":true}'
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"base_merges_required=1"* ]]
+  [[ "$output" == *"base_merges_skippable=1"* ]]
 }
