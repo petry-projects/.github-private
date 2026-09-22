@@ -105,7 +105,7 @@ if [ ! -s "$PRS_FILE" ]; then
   # Emit a summary line even for an empty queue so "0 reviews posted" can never
   # be confused with a run that found candidates and no-op'd every one of them
   # (issue #1744 AC #4). "empty queue" is the distinguishing marker.
-  echo "Summary: no candidate PRs found (empty queue) — 0 reviews posted, 0 no-ops skipped, 0 failures"
+  echo "Summary: no candidate PRs found (empty queue) — 0 reviews posted, 0 no-ops skipped, 0 failures [reviews_full=0 reviews_carried_forward=0]"
   exit 0
 fi
 
@@ -196,6 +196,7 @@ fi
 
 actual=0
 skipped_noops=0
+carried_forward=0
 deferred=0
 failed=0
 engine_fallbacks=0
@@ -281,11 +282,21 @@ while IFS= read -r pr_url; do
       echo "::notice::Review posted ($actual/$MAX_PRS)"
       ;;
     100)
-      skipped_noops=$((skipped_noops + 1))
       # Report the real skip reason instead of a blanket "already reviewed".
       # Reasons that mean "a review is still owed once checks settle" bump the
       # deferred counter so the run summary flags them (issue #898).
       reason=$(skip_reason_from "$REVIEW_OUT")
+      # A carry-forward (issue #1865) rides the exit-100 sentinel so it stays off
+      # the MAX_PRS budget of full reviews, but it is NOT a no-op — it re-issued
+      # the prior approval at the new head SHA. Count it in its own bucket so the
+      # summary reports carried-forward reviews distinctly from real no-ops (AC #6).
+      if [ "$reason" = "carried-forward" ]; then
+        carried_forward=$((carried_forward + 1))
+        echo "::notice::Carried forward — re-issued the prior approval for a conflict-free base merge (no model tier run)"
+        echo "::endgroup::"
+        continue
+      fi
+      skipped_noops=$((skipped_noops + 1))
       case "$reason" in
         already-reviewed-at-head)
           echo "::notice::No-op — already reviewed at current head" ;;
@@ -333,6 +344,11 @@ done < "$PRS_FILE"
 
 remaining=$((total_candidates - processed))
 summary="Summary: $actual reviews posted, $skipped_noops no-ops skipped, $failed failures"
+# Deterministic carry-forward observability (issue #1865 AC #6): always emit both
+# counters, even when zero, so a run's full-vs-carried split is machine-parseable.
+# reviews_full is the count of full (model-tier) reviews posted (= $actual).
+summary="$summary [reviews_full=$actual reviews_carried_forward=$carried_forward]"
+[ "$carried_forward" -gt 0 ] && summary="$summary, $carried_forward carried forward (conflict-free base merges, no tier run)"
 [ "$engine_fallbacks" -gt 0 ] && summary="$summary, $engine_fallbacks engine fallback(s) to $fallback_engines"
 [ "$deferred" -gt 0 ] && summary="$summary ($deferred deferred pending CI/checks — owed a review once green)"
 summary="$summary (processed $processed/$total_candidates candidates)"
