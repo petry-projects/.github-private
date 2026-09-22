@@ -24,7 +24,7 @@ export PROMPTS_DIR="${PROMPTS_DIR:-prompts/dev-lead}"
 # Machine-readable marker the retry cron (dev-lead-retry.sh) scans for to requeue
 # a failed initial issue implementation. Mirrors the PR-side conventions in
 # dev-lead-fix-ci.sh / dev-lead-fix-reviews.sh:
-#   <!-- dev-lead-issue <N> status=<failed|rate-limited> attempt=<K> reason=<r> run=<id> [reset=ISO] -->
+#   <!-- dev-lead-issue <N> status=<failed|rate-limited> attempt=<K> reason=<r> run=<id> [reset=ISO] [window=5h|weekly] -->
 ISSUE_MARKER_PREFIX="<!-- dev-lead-issue "
 # Total attempts (initial + retries) before escalating to a human. Matches the
 # MAX_ATTEMPTS=3 convention used by auto-rebase-retry.sh.
@@ -357,7 +357,16 @@ Please review the failures above. To retry anyway, remove the \`${NEEDS_HUMAN_LA
   [ "$reason" = "rate-limited" ] && status="rate-limited"
   local reset_attr=""
   [ -n "$reset" ] && reset_attr=" reset=${reset}"
-  local marker="${ISSUE_MARKER_PREFIX}${ISSUE_NUMBER} status=${status} attempt=${attempt} reason=${reason} run=${GITHUB_RUN_ID:-}${reset_attr} -->"
+  # Window kind (#1863): tag the exhausted provider window (5h|weekly) so the
+  # retry cron can apply the weekly fail-safe — an empty reset on a known-weekly
+  # window suppresses the retry rather than re-dispatching every 2h against a
+  # block that can last up to 7 days. Only rate-limited holds carry a window.
+  local window="" window_attr=""
+  if [ "$reason" = "rate-limited" ]; then
+    [ -f /tmp/dev-lead-rate-limit-window ] && window=$(cat /tmp/dev-lead-rate-limit-window)
+    [ -n "$window" ] && window_attr=" window=${window}"
+  fi
+  local marker="${ISSUE_MARKER_PREFIX}${ISSUE_NUMBER} status=${status} attempt=${attempt} reason=${reason} run=${GITHUB_RUN_ID:-}${reset_attr}${window_attr} -->"
 
   local cause_line reset_line=""
   if [ "$reason" = "rate-limited" ]; then

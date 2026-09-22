@@ -91,13 +91,37 @@ get_now_epoch() {
   fi
 }
 
-# is_reset_in_future <reset_iso>: returns 0 if reset time is still in the future
+# is_reset_in_future <reset_iso>: returns 0 if reset time is still in the future.
+# Fail-open by design (#1863 AC #4): a genuinely unknown (empty) reset returns 1
+# ("not in future") so an unparseable 5-hour block still retries. Do NOT invert
+# this — the weekly fail-safe lives in reset_suppresses_retry, not here.
 is_reset_in_future() {
   local reset_iso="$1"
   [ -z "$reset_iso" ] && return 1  # unknown reset = don't skip
   local reset_epoch
   reset_epoch=$(date -u -d "$reset_iso" +%s 2>/dev/null || echo 0)
   [ "$(get_now_epoch)" -lt "$reset_epoch" ]
+}
+
+# reset_suppresses_retry <reset_iso> <window>: returns 0 when the retry MUST be
+# held back for this marker. This is the single decision the scan paths consult:
+#   - a reset still in the future  → suppress (both windows)
+#   - an empty reset on a KNOWN weekly window → suppress (#1863 AC #4 fail-safe):
+#     a weekly cap can last up to 7 days, so treating "unknown reset" as "retry
+#     now" would re-dispatch every 2h against a block that provably cannot clear.
+#     The event-first resume path (dev-lead-resume.sh) recovers the moment the
+#     window clears, so holding here is correct, not a stall.
+#   - an empty reset on an unknown / 5-hour window → do NOT suppress (fail-open,
+#     preserving is_reset_in_future's default so a 5h block keeps retrying).
+reset_suppresses_retry() {
+  local reset_iso="$1" window="${2:-}"
+  if is_reset_in_future "$reset_iso"; then
+    return 0
+  fi
+  if [ -z "$reset_iso" ] && [ "$window" = "weekly" ]; then
+    return 0
+  fi
+  return 1
 }
 
 # has_dispatch_guard <comments_json> <sha>
@@ -307,15 +331,19 @@ scan_pr_for_rate_limits() {
   # ── Check for fix-ci rate-limited marker on current HEAD SHA ──────────────
   local ci_pattern="${CI_MARKER_PREFIX}${head_sha} status=rate-limited"
   if echo "$comments_json" | jq -e --arg pat "$ci_pattern" '[.[] | select(. | test($pat))] | length > 0' >/dev/null 2>&1; then
-    # Extract reset time from the marker (format: reset=<ISO>)
-    local reset_time
+    # Extract reset time + window from the marker (format: reset=<ISO> window=<kind>)
+    local reset_time reset_window
     reset_time=$(echo "$comments_json" | jq -r \
       --arg pat "$ci_pattern" \
       '[.[] | select(. | test($pat))] | .[0] | capture("reset=(?P<r>[0-9T:Z-]+)") | .r // ""' \
       2>/dev/null || true)
+    reset_window=$(echo "$comments_json" | jq -r \
+      --arg pat "$ci_pattern" \
+      '[.[] | select(. | test($pat))] | .[0] | capture("window=(?P<w>[a-z0-9]+)") | .w // ""' \
+      2>/dev/null || true)
 
-    if is_reset_in_future "$reset_time"; then
-      echo "  [skip] fix-ci rate-limit for PR ${pr_number} not yet cleared (resets ${reset_time})" >&2
+    if reset_suppresses_retry "$reset_time" "$reset_window"; then
+      echo "  [skip] fix-ci rate-limit for PR ${pr_number} not yet cleared (window=${reset_window:-unknown} resets ${reset_time:-unknown})" >&2
     else
       # Skip if a terminal marker was already posted for this SHA (prior retry succeeded)
       local terminal_pattern="${CI_MARKER_PREFIX}${head_sha} status=(applied|failed|no-changes)"
@@ -347,14 +375,18 @@ scan_pr_for_rate_limits() {
   for intent_type in $RETRYABLE_REVIEW_INTENTS; do
     local reviews_pattern="${REVIEWS_MARKER_PREFIX}${pr_number} sha=${head_sha} intent=${intent_type} status=(rate-limited|blocked)"
     if echo "$comments_json" | jq -e --arg pat "$reviews_pattern" '[.[] | select(. | test($pat))] | length > 0' >/dev/null 2>&1; then
-      local reset_time
+      local reset_time reset_window
       reset_time=$(echo "$comments_json" | jq -r \
         --arg pat "$reviews_pattern" \
         '[.[] | select(. | test($pat))] | .[0] | capture("reset=(?P<r>[0-9T:Z-]+)") | .r // ""' \
         2>/dev/null || true)
+      reset_window=$(echo "$comments_json" | jq -r \
+        --arg pat "$reviews_pattern" \
+        '[.[] | select(. | test($pat))] | .[0] | capture("window=(?P<w>[a-z0-9]+)") | .w // ""' \
+        2>/dev/null || true)
 
-      if is_reset_in_future "$reset_time"; then
-        echo "  [skip] ${intent_type} rate-limit for PR ${pr_number} not yet cleared (resets ${reset_time})" >&2
+      if reset_suppresses_retry "$reset_time" "$reset_window"; then
+        echo "  [skip] ${intent_type} rate-limit for PR ${pr_number} not yet cleared (window=${reset_window:-unknown} resets ${reset_time:-unknown})" >&2
         continue
       fi
 
@@ -453,11 +485,12 @@ scan_issue_for_retry() {
     return 0
   fi
 
-  local status attempt reason reset
+  local status attempt reason reset window
   status=$(printf '%s' "$marker"  | grep -oE 'status=[^ ]+'  | head -1 | cut -d= -f2)
   attempt=$(printf '%s' "$marker" | grep -oE 'attempt=[0-9]+' | head -1 | cut -d= -f2)
   reason=$(printf '%s' "$marker"  | grep -oE 'reason=[^ ]+'  | head -1 | cut -d= -f2)
   reset=$(printf '%s' "$marker"   | grep -oE 'reset=[0-9TZ:-]+' | head -1 | cut -d= -f2)
+  window=$(printf '%s' "$marker"  | grep -oE 'window=[^ ]+'  | head -1 | cut -d= -f2)
 
   # Only failed / rate-limited markers are retryable. A status=needs-human marker
   # (or any other) is terminal — skip (such issues also carry the needs-human
@@ -469,9 +502,12 @@ scan_issue_for_retry() {
       echo "0"; return 0 ;;
   esac
 
-  # Honour the rate-limit reset window for rate-limited markers.
-  if [ "$status" = "rate-limited" ] && is_reset_in_future "$reset"; then
-    echo "  [skip] issue #${issue_number} rate-limit not yet cleared (resets ${reset})" >&2
+  # Honour the rate-limit reset window for rate-limited markers. A known-weekly
+  # window with an empty reset is held (fail-safe, #1863 AC #4); the log names
+  # the window being honoured and until when (AC #5) so a deliberate multi-day
+  # wait reads as intentional rather than a stalled fleet.
+  if [ "$status" = "rate-limited" ] && reset_suppresses_retry "$reset" "$window"; then
+    echo "  [skip] issue #${issue_number} rate-limit not yet cleared (window=${window:-unknown} resets ${reset:-unknown})" >&2
     echo "0"; return 0
   fi
 

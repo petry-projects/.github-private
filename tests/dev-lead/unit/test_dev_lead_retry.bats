@@ -52,6 +52,15 @@ _marker() {
     "$status" "$attempt" "$r"
 }
 
+_wmarker() {
+  # _wmarker <status> <attempt> <window> [reset]
+  local status="$1" attempt="$2" window="$3" reset="${4:-}"
+  local r=""
+  [ -n "$reset" ] && r=" reset=${reset}"
+  printf '<!-- dev-lead-issue 478 status=%s attempt=%s reason=rate-limited run=99%s window=%s -->' \
+    "$status" "$attempt" "$r" "$window"
+}
+
 # ── scan_issue_for_retry decision matrix ──────────────────────────────────────
 
 @test "retry: failed marker, attempt 1, no PR → dispatches" {
@@ -133,6 +142,57 @@ _marker() {
 
   [ "$status" -eq 0 ]
   [[ "$output" != *"would dispatch"* ]]
+}
+
+# ── weekly-window fail-safe suppression (#1863) ───────────────────────────────
+
+@test "reset_suppresses_retry: reset in the future suppresses (any window)" {
+  run reset_suppresses_retry "2026-06-19T06:00:00Z" ""
+  [ "$status" -eq 0 ]
+}
+
+@test "reset_suppresses_retry: empty reset with unknown window does NOT suppress (fail-open preserved)" {
+  run reset_suppresses_retry "" ""
+  [ "$status" -ne 0 ]
+}
+
+@test "reset_suppresses_retry: empty reset with weekly window suppresses (fail-safe)" {
+  run reset_suppresses_retry "" "weekly"
+  [ "$status" -eq 0 ]
+}
+
+@test "reset_suppresses_retry: past reset with weekly window does NOT suppress" {
+  run reset_suppresses_retry "2026-06-18T00:00:00Z" "weekly"
+  [ "$status" -ne 0 ]
+}
+
+@test "retry: weekly rate-limit with reset in the future → skips and logs the weekly window" {
+  COMMENTS_JSON="$(jq -nc --arg m "$(_wmarker rate-limited 1 weekly 2026-06-25T11:00:00Z)" '[$m]')"
+
+  run scan_issue_for_retry "petry-projects/.github" 478
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"weekly"* ]]
+  [[ "$output" != *"would dispatch"* ]]
+}
+
+@test "retry: weekly rate-limit with EMPTY reset → suppresses (does not re-dispatch)" {
+  COMMENTS_JSON="$(jq -nc --arg m "$(_wmarker rate-limited 1 weekly)" '[$m]')"
+
+  run scan_issue_for_retry "petry-projects/.github" 478
+
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"would dispatch"* ]]
+  [[ "$output" == *"weekly"* ]]
+}
+
+@test "retry: rate-limit with EMPTY reset and no window → still dispatches (fail-open)" {
+  COMMENTS_JSON="$(jq -nc --arg m "$(_marker rate-limited 1)" '[$m]')"
+
+  run scan_issue_for_retry "petry-projects/.github" 478
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"would dispatch dev-lead-issue-retry"* ]]
 }
 
 # ── dispatch_issue_retry payload ──────────────────────────────────────────────

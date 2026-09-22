@@ -310,6 +310,73 @@ _source_engine() {
   [ ! -s /tmp/dev-lead-rate-limit-reset ]
 }
 
+# ── weekly / day-of-week reset parsing (#1863) ─────────────────────────────────
+
+@test "parse_reset_time_files: 5-hour H:MM form tags window=5h" {
+  _source_engine "claude"
+  local f; f="$(mktemp)"
+  echo "You've hit your limit · resets 11:20pm (UTC)" > "$f"
+  rm -f /tmp/dev-lead-rate-limit-reset /tmp/dev-lead-rate-limit-window
+  parse_reset_time_files "$f"
+  rm -f "$f"
+  grep -qE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$' /tmp/dev-lead-rate-limit-reset
+  [ "$(cat /tmp/dev-lead-rate-limit-window)" = "5h" ]
+}
+
+@test "parse_reset_time_files: weekly day-of-week form parses to a future ISO and tags window=weekly" {
+  _source_engine "claude"
+  local wd; wd="$(date -u -d '+2 days' +%A)"   # >24h away regardless of run time
+  local f; f="$(mktemp)"
+  echo "You've reached your weekly limit · resets ${wd} 11:00pm (UTC)" > "$f"
+  rm -f /tmp/dev-lead-rate-limit-reset /tmp/dev-lead-rate-limit-window
+  parse_reset_time_files "$f"
+  rm -f "$f"
+  local reset; reset=$(cat /tmp/dev-lead-rate-limit-reset)
+  # Valid ISO-8601 UTC
+  [[ "$reset" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]
+  # Falls on the requested weekday
+  [ "$(date -u -d "$reset" +%A)" = "$wd" ]
+  # Window tagged weekly
+  [ "$(cat /tmp/dev-lead-rate-limit-window)" = "weekly" ]
+}
+
+@test "parse_reset_time_files: weekly reset survives the today/tomorrow clamp (>24h ahead)" {
+  _source_engine "claude"
+  local wd; wd="$(date -u -d '+2 days' +%A)"
+  local f; f="$(mktemp)"
+  echo "weekly limit reached; resets ${wd} 11:00pm" > "$f"
+  rm -f /tmp/dev-lead-rate-limit-reset
+  parse_reset_time_files "$f"
+  rm -f "$f"
+  local reset now_epoch reset_epoch
+  reset=$(cat /tmp/dev-lead-rate-limit-reset)
+  now_epoch=$(date -u +%s)
+  reset_epoch=$(date -u -d "$reset" +%s)
+  # Strictly more than 24h in the future — the clamp did not collapse it to tomorrow.
+  [ "$(( reset_epoch - now_epoch ))" -gt 86400 ]
+}
+
+@test "parse_reset_time_files: authoritative envelope resets_at is preferred over prose" {
+  _source_engine "claude"
+  local env_file; env_file="$(mktemp)"
+  # A weekly window with an explicit resets_at 5 days out.
+  local authoritative; authoritative=$(date -u -d '+5 days 09:00' +%Y-%m-%dT%H:%M:%SZ)
+  cat > "$env_file" <<JSON
+{ "windows": { "weekly": { "resets_at": "${authoritative}", "remaining": 0 } } }
+JSON
+  export DEV_LEAD_USAGE_ENVELOPE="$env_file"
+  local wd; wd="$(date -u -d '+2 days' +%A)"
+  local f; f="$(mktemp)"
+  echo "You've reached your weekly limit · resets ${wd} 11:00pm" > "$f"
+  rm -f /tmp/dev-lead-rate-limit-reset /tmp/dev-lead-rate-limit-window
+  parse_reset_time_files "$f"
+  rm -f "$f" "$env_file"
+  unset DEV_LEAD_USAGE_ENVELOPE
+  # The envelope value wins over the parsed weekday prose.
+  [ "$(cat /tmp/dev-lead-rate-limit-reset)" = "$authoritative" ]
+  [ "$(cat /tmp/dev-lead-rate-limit-window)" = "weekly" ]
+}
+
 # ── Codex review findings: warning phrasing + config errors + model pin ─────
 
 @test "chain: throttled warning phrase does NOT match is_rate_limited" {

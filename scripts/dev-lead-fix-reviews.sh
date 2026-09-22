@@ -1579,6 +1579,20 @@ post_reviews_rate_limited() {
     reset_detail=" reset=${reset_time}"
   fi
 
+  # Window kind (#1863): the reset parser records whether the exhausted window is
+  # the 5-hour or the weekly cap. Carry it on the marker so the retry cron can
+  # apply the weekly fail-safe (an empty reset on a known-weekly window suppresses
+  # the retry instead of re-dispatching every 2h against a multi-day block). Only
+  # a genuine quota hold has a provider window; the `blocked` reason (#1568) is a
+  # non-quota hold with its own fixed backoff, so it carries no window tag.
+  local reset_window window_detail=""
+  if [ "$reason" != "blocked" ]; then
+    reset_window=$(cat /tmp/dev-lead-rate-limit-window 2>/dev/null || true)
+    if [ -n "$reset_window" ]; then
+      window_detail=" window=${reset_window}"
+    fi
+  fi
+
   local sha_detail=""
   if [ -n "${HEAD_SHA:-}" ]; then
     sha_detail=" sha=${HEAD_SHA}"
@@ -1590,7 +1604,7 @@ post_reviews_rate_limited() {
   # patterns match `status=(rate-limited|blocked)`, so both tokens re-dispatch.
   local status_token="rate-limited"
   [ "$reason" = "blocked" ] && status_token="blocked"
-  local marker="${REVIEWS_MARKER_PREFIX}${PR_NUMBER}${sha_detail} intent=${intent} status=${status_token} reason=${reason}${reset_detail} -->"
+  local marker="${REVIEWS_MARKER_PREFIX}${PR_NUMBER}${sha_detail} intent=${intent} status=${status_token} reason=${reason}${reset_detail}${window_detail} -->"
 
   # Retry message depends on the reason and on whether the intent can be
   # re-dispatched automatically.

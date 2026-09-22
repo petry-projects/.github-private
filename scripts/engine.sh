@@ -1759,14 +1759,77 @@ run_duck() {
   return "$rc"
 }
 
+# Regex (grep -E, case-insensitive at call site) matching a WEEKLY / day-of-week
+# reset clause, e.g. "resets Tuesday 11:00pm", "resets on Tue at 11pm". The
+# 5-hour window carries a bare time-of-day ("resets 11:20pm") and is matched
+# separately; a weekday token is what distinguishes the multi-day weekly cap.
+_WEEKLY_RESET_RE='resets?[[:space:]]+(on[[:space:]]+|at[[:space:]]+|by[[:space:]]+)?(mon|tue|wed|thu|fri|sat|sun)[a-z]*([[:space:],]+(at[[:space:]]+)?[0-9]{1,2}(:[0-9]{2})?[[:space:]]*(am|pm)?)?'
+
+# _reset_from_envelope <window_kind>
+# Authoritative reset source (#1565): reads the usage telemetry envelope, when
+# present, and echoes "<window> <resets_at>" (space-separated) for the relevant
+# window, or nothing. <window_kind> is the window inferred from prose (weekly|5h)
+# or "" when prose gave no hint — in which case the exhausted window
+# (remaining==0, weekly preferred) is chosen from the envelope itself.
+# The envelope path is silent (echoes nothing) when the file is absent/empty, so
+# callers transparently fall back to prose parsing.
+_reset_from_envelope() {
+  local want="$1"
+  local ef="${DEV_LEAD_USAGE_ENVELOPE:-/tmp/dev-lead-usage-envelope.json}"
+  [ -s "$ef" ] || return 0
+  local key=""
+  [ "$want" = "5h" ] && key="five_hour"
+  [ "$want" = "weekly" ] && key="weekly"
+  jq -r --arg key "$key" '
+    def winlabel(k): if k=="five_hour" then "5h" elif k=="weekly" then "weekly" else k end;
+    (.windows // {}) as $w
+    | if ($key != "" and (($w[$key].resets_at // "") != "")) then
+        winlabel($key) + " " + $w[$key].resets_at
+      else
+        ([ $w | to_entries[] | select((.value.resets_at // "") != "") ]) as $all
+        | ([ $all[] | select(.value.remaining == 0) ]) as $ex
+        | (($ex[] | select(.key == "weekly")) // $ex[0] // $all[0] // null) as $p
+        | if $p == null then "" else winlabel($p.key) + " " + $p.value.resets_at end
+      end
+  ' "$ef" 2>/dev/null || true
+}
+
+# _next_weekday_iso <weekday> <hhmm>
+# Resolves a day-of-week (+ optional time-of-day, defaulting to 00:00) to the
+# SOONEST future ISO-8601 UTC instant on that weekday — up to 7 days out. Unlike
+# _emit_reset_iso's 24h today/tomorrow clamp, this does NOT collapse a multi-day
+# reset, so a weekly cap that clears six days from now round-trips unchanged.
+# Echoes nothing (return 1) if the weekday cannot be resolved by `date`.
+_next_weekday_iso() {
+  local weekday="$1" hhmm="$2"
+  [ -n "$weekday" ] || return 1
+  local timepart="${hhmm:-00:00}" base cand now_epoch
+  now_epoch=$(date -u +%s)
+  base=$(date -u -d "$weekday" +%Y-%m-%d 2>/dev/null) || return 1
+  [ -n "$base" ] || return 1
+  cand=$(date -u -d "${base} ${timepart} UTC" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null) || return 1
+  [ -n "$cand" ] || return 1
+  # `date -d "<weekday>"` resolves to today when today IS that weekday; if the
+  # time-of-day has already passed, jump a full week so the reset stays future.
+  if [ "$(date -u -d "$cand" +%s 2>/dev/null || echo 0)" -le "$now_epoch" ]; then
+    base=$(date -u -d "${base} +7 days" +%Y-%m-%d 2>/dev/null) || return 1
+    cand=$(date -u -d "${base} ${timepart} UTC" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null) || return 1
+  fi
+  printf '%s' "$cand"
+}
+
 # _emit_reset_iso <hhmm_with_meridiem>
-# Shared helper: converts e.g. "11:20pm" into an ISO-8601 UTC timestamp
-# (writing to /tmp/dev-lead-rate-limit-reset), advancing to tomorrow if the
-# computed time is already in the past for today.
+# Shared helper for the 5-hour window: converts e.g. "11:20pm" into an ISO-8601
+# UTC timestamp (writing to /tmp/dev-lead-rate-limit-reset), advancing to
+# tomorrow if the computed time is already past for today. The today/tomorrow
+# clamp is CORRECT here — a 5-hour reset is always within ~24h — and is applied
+# ONLY to this bare time-of-day form, never to the weekly path (#1863). Also
+# records the window kind ("5h") to /tmp/dev-lead-rate-limit-window.
 _emit_reset_iso() {
   local hhmm="$1"
   if [ -z "$hhmm" ]; then
     printf '' > /tmp/dev-lead-rate-limit-reset
+    printf '' > /tmp/dev-lead-rate-limit-window
     return 0
   fi
   local today iso
@@ -1778,37 +1841,95 @@ _emit_reset_iso() {
     iso=$(date -u -d "${tomorrow} ${hhmm} UTC" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)
   fi
   printf '%s' "${iso:-}" > /tmp/dev-lead-rate-limit-reset
+  # Only tag the window when we actually resolved a timestamp.
+  if [ -n "${iso:-}" ]; then
+    printf '5h' > /tmp/dev-lead-rate-limit-window
+  else
+    printf '' > /tmp/dev-lead-rate-limit-window
+  fi
+}
+
+# _emit_reset <window_kind> <weekday> <hhmm>
+# Single sink for both parsers. Prefers the authoritative telemetry envelope
+# (#1565) over prose; falls back to computing from the prose-derived tokens.
+# Writes the reset ISO to /tmp/dev-lead-rate-limit-reset and the window kind
+# (weekly|5h|"") to /tmp/dev-lead-rate-limit-window.
+_emit_reset() {
+  local kind="$1" weekday="$2" hhmm="$3"
+  local env_line
+  env_line=$(_reset_from_envelope "$kind")
+  if [ -n "$env_line" ]; then
+    printf '%s' "${env_line#* }" > /tmp/dev-lead-rate-limit-reset
+    printf '%s' "${env_line%% *}" > /tmp/dev-lead-rate-limit-window
+    return 0
+  fi
+  case "$kind" in
+    weekly)
+      local iso
+      iso=$(_next_weekday_iso "$weekday" "$hhmm") || iso=""
+      printf '%s' "$iso" > /tmp/dev-lead-rate-limit-reset
+      # Tag weekly even when the timestamp could not be resolved: the retry cron
+      # treats a known-weekly window with an empty reset as a fail-safe hold
+      # (#1863 AC #4) rather than a fail-open "retry now".
+      printf 'weekly' > /tmp/dev-lead-rate-limit-window
+      ;;
+    5h)
+      _emit_reset_iso "$hhmm"
+      ;;
+    *)
+      printf '' > /tmp/dev-lead-rate-limit-reset
+      printf '' > /tmp/dev-lead-rate-limit-window
+      ;;
+  esac
+}
+
+# _emit_reset_from_matches <weekly_str> <fivehr_str>
+# Decides window kind from the two prose matches (weekly wins over 5-hour) and
+# extracts the weekday/time tokens before delegating to _emit_reset.
+_emit_reset_from_matches() {
+  local weekly_str="$1" time_str="$2"
+  if [ -n "$weekly_str" ]; then
+    local weekday wtime
+    weekday=$(printf '%s' "$weekly_str" | grep -oiE '(mon|tue|wed|thu|fri|sat|sun)[a-z]*' | head -1 || true)
+    wtime=$(printf '%s' "$weekly_str" \
+      | grep -oiE '[0-9]{1,2}:[0-9]{2}[[:space:]]*(am|pm)?|[0-9]{1,2}[[:space:]]*(am|pm)' \
+      | head -1 | tr -d '[:space:]' || true)
+    _emit_reset weekly "$weekday" "$wtime"
+    return 0
+  fi
+  if [ -n "$time_str" ]; then
+    local hhmm
+    hhmm=$(printf '%s' "$time_str" | grep -oiE '[0-9]{1,2}:[0-9]{2}(am|pm)$' || true)
+    _emit_reset 5h "" "$hhmm"
+    return 0
+  fi
+  _emit_reset "" "" ""
 }
 
 # parse_reset_time <text>
 # Extracts the rate-limit reset time from engine output and writes an ISO-8601
 # UTC timestamp to /tmp/dev-lead-rate-limit-reset for callers to embed in
-# status=rate-limited markers. Pattern: "resets H:MMam/pm (UTC)" or
-# "resets H:MM(am|pm) UTC".
+# status=rate-limited markers. Recognises two prose forms — the 5-hour window's
+# bare "resets H:MMam/pm" and the weekly cap's day-of-week form ("resets Tuesday
+# 11:00pm", #1863) — and prefers the authoritative #1565 envelope when present.
+# The window kind is written to /tmp/dev-lead-rate-limit-window.
 # Writes empty string if no reset time is found (caller treats as unknown).
 #
 # Prefer parse_reset_time_files for large captures — same OOM rationale as
 # is_rate_limited / is_rate_limited_files above.
 parse_reset_time() {
   local text="$1"
-  # Match "resets 11:20pm (UTC)" or "resets 11:20pm UTC"
-  local time_str
+  local weekly_str time_str
+  weekly_str=$(printf '%s\n' "$text" | grep -oiE "$_WEEKLY_RESET_RE" | head -1 || true)
   time_str=$(printf '%s\n' "$text" | grep -oiE 'resets [0-9]{1,2}:[0-9]{2}(am|pm)' | head -1 || true)
-  if [ -z "$time_str" ]; then
-    printf '' > /tmp/dev-lead-rate-limit-reset
-    return 0
-  fi
-  # Extract H:MM(am|pm) part
-  local hhmm
-  hhmm=$(printf '%s' "$time_str" | grep -oiE '[0-9]{1,2}:[0-9]{2}(am|pm)$' || true)
-  _emit_reset_iso "$hhmm"
+  _emit_reset_from_matches "$weekly_str" "$time_str"
 }
 
 # parse_reset_time_files <file>...
-# File-aware variant of parse_reset_time. Scans each non-empty existing file
-# for the first "resets H:MMam/pm" match and writes the ISO timestamp via
-# _emit_reset_iso. Uses grep directly on files to avoid loading large LLM
-# outputs into a shell variable.
+# File-aware variant of parse_reset_time. Scans each non-empty existing file for
+# the weekly day-of-week form first, then the 5-hour "resets H:MMam/pm" form,
+# and delegates to the shared sink. Uses grep directly on files to avoid loading
+# large LLM outputs into a shell variable.
 parse_reset_time_files() {
   local files=()
   local f
@@ -1816,16 +1937,11 @@ parse_reset_time_files() {
     [ -n "$f" ] && [ -f "$f" ] && files+=("$f")
   done
   if [ "${#files[@]}" -eq 0 ]; then
-    printf '' > /tmp/dev-lead-rate-limit-reset
+    _emit_reset "" "" ""
     return 0
   fi
-  local time_str
+  local weekly_str time_str
+  weekly_str=$(grep -hoiE "$_WEEKLY_RESET_RE" "${files[@]}" 2>/dev/null | head -1 || true)
   time_str=$(grep -hoiE 'resets [0-9]{1,2}:[0-9]{2}(am|pm)' "${files[@]}" 2>/dev/null | head -1 || true)
-  if [ -z "$time_str" ]; then
-    printf '' > /tmp/dev-lead-rate-limit-reset
-    return 0
-  fi
-  local hhmm
-  hhmm=$(printf '%s' "$time_str" | grep -oiE '[0-9]{1,2}:[0-9]{2}(am|pm)$' || true)
-  _emit_reset_iso "$hhmm"
+  _emit_reset_from_matches "$weekly_str" "$time_str"
 }
