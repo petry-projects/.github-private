@@ -92,6 +92,47 @@ EOF
   chmod +x "$STUB_BIN/gh"
 }
 
+# Drop every standards/ fixture the full seed loop needs (all 10 workflow stubs,
+# the frontend dependabot stack, gitleaks) so the ownership-aware seed can emit
+# each file. Mirrors the seeding-orchestration setup.
+_drop_all_standards_fixtures() {
+  local n
+  for n in "${EXPECTED_STUBS[@]}"; do
+    if printf '%s\n' "${INLINE_STUBS[@]}" | grep -qx "$n"; then
+      printf 'name: %s\n' "$n" | _fixture_workflow "$n.yml"
+    else
+      printf '  uses: ./.github/workflows/%s-reusable.yml@%s/v2-next\n' "$n" "$n" \
+        | _fixture_workflow "$n.yml"
+    fi
+  done
+  printf 'version: 2\n' > "$STANDARDS_DIR/standards/dependabot/frontend.yml"
+  printf 'title = "gitleaks config"\n' > "$STANDARDS_DIR/standards/gitleaks.toml"
+}
+
+# gh stub that serves pre-set "existing" file contents for the target repo's
+# contents READS (so the ownership-aware seeder can decide CREATE/PRESERVE/WRITE),
+# and logs every WRITE (PUT/POST/pr create) to $CALLS. Existing contents are given
+# as "path=contentfile" pairs; a read for a path with no fixture returns {} (the
+# absent shape → the seeder treats the file as new). The write cases are ordered
+# BEFORE the contents-read cases so a PUT to a served path is logged, not served.
+_stub_gh_existing() { # <path1> <file1> [<path2> <file2> ...]
+  {
+    echo '#!/usr/bin/env bash'
+    echo 'args="$*"'
+    echo 'case "$args" in'
+    echo "  *\"--method PUT\"*|*\"--method POST\"*|*\"PATCH\"*|*\"pr create\"*) echo \"\$args\" >> \"$CALLS\"; echo '{}' ;;"
+    echo '  *"pr list"*) ;;'
+    while [ $# -ge 2 ]; do
+      local p="$1" f="$2"; shift 2
+      local b64; b64="$(base64 -w0 < "$f" 2>/dev/null || base64 < "$f")"
+      echo "  *\"contents/${p}?\"*|*\"contents/${p} \"*|*\"contents/${p}\") echo '{\"sha\":\"feedface\",\"content\":\"${b64}\"}' ;;"
+    done
+    echo "  *) echo '{}' ;;"
+    echo 'esac'
+  } > "$STUB_BIN/gh"
+  chmod +x "$STUB_BIN/gh"
+}
+
 # ── #1448: standards content is fetched at an explicit, logged ref ─────────────
 @test "print-ref: STANDARDS_DIR local override short-circuits resolution (no network)" {
   # setup() exports STANDARDS_DIR → the local-checkout seam is used, resolution
@@ -648,11 +689,11 @@ EOF
 
 # ── seeding orchestration: DRY_RUN ────────────────────────────────────────────
 @test "DRY_RUN: exits 0, names the target repo, makes no write API calls" {
+  # Dry-run now PLANS each file (reads current content, reports intent) so it needs
+  # the same standards fixtures the live seed does — but still makes zero writes.
   _stub_gh
-  printf 'name: CI\n' | _fixture_workflow ci.yml
-  printf 'name: Auto\n  uses: ./.github/workflows/auto-rebase-reusable.yml@auto-rebase/next\n' \
-    | _fixture_workflow auto-rebase.yml
-  run env DRY_RUN=true bash "$SEED" --repo petry-projects/repo-template
+  _drop_all_standards_fixtures
+  run env DEPENDABOT_STACK=frontend DRY_RUN=true bash "$SEED" --repo petry-projects/repo-template
   [ "$status" -eq 0 ]
   [[ "$output" == *"petry-projects/repo-template"* ]]
   [ ! -f "$CALLS" ]
@@ -704,6 +745,162 @@ EOF
   [ "$status" -eq 0 ]
   [[ "$output" == *"PR #42 already open"* ]]
   [ ! -f "$CALLS" ] || ! grep -q "pr create" "$CALLS"
+}
+
+# ── #1812: ownership-aware seeding — never destroy files it does not own ───────
+
+# The org secrets baseline that a separate .github sync owns (gitignore-standard
+# L1). Its managed-block marker must make the seeder leave the file alone.
+_managed_gitignore_fixture() { # -> path of a fixture file on stdout
+  local f="$BATS_TEST_TMPDIR/existing_gitignore"
+  {
+    echo '# >>> BEGIN petry-projects secrets baseline (managed by .github — do not edit) >>>'
+    echo '# First layer of defense in the Push Protection Standard.'
+    echo '.env'
+    echo '*.pem'
+    echo 'id_rsa'
+    echo '# <<< END petry-projects secrets baseline <<<'
+  } > "$f"
+  printf '%s' "$f"
+}
+
+@test "AC#1: seeding a repo whose .gitignore carries the managed marker PRESERVES it (no PUT)" {
+  set -e
+  _drop_all_standards_fixtures
+  local gi; gi="$(_managed_gitignore_fixture)"
+  _stub_gh_existing ".gitignore" "$gi"
+  run env DEPENDABOT_STACK=frontend bash "$SEED" --repo petry-projects/repo-template
+  [ "$status" -eq 0 ]
+  # The preservation is reported by name + reason (check $output before `run grep`).
+  [[ "$output" == *".gitignore"* ]]
+  [[ "$output" == *"managed"* || "$output" == *"PRESERV"* ]]
+  [ -f "$CALLS" ]
+  # Files the seeder DOES own are still written.
+  grep -qF "contents/.github/CODEOWNERS" "$CALLS"
+  # The managed .gitignore is NEVER written — no contents PUT touches it.
+  run grep -qF "contents/.gitignore" "$CALLS"
+  [ "$status" -eq 1 ]
+}
+
+@test "AC#2: seeding a repo whose ci.yml already exists (drift-allowlisted) leaves it UNTOUCHED" {
+  set -e
+  _drop_all_standards_fixtures
+  local ci="$BATS_TEST_TMPDIR/existing_ci"
+  printf 'name: CI\n# customized per stack by the consumer\njobs:\n  build:\n    runs-on: ubuntu-latest\n' > "$ci"
+  _stub_gh_existing ".github/workflows/ci.yml" "$ci"
+  run env DEPENDABOT_STACK=frontend bash "$SEED" --repo petry-projects/repo-template
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"ci.yml"* ]]
+  [ -f "$CALLS" ]
+  # A non-allowlisted workflow is still seeded.
+  grep -qF "contents/.github/workflows/auto-rebase.yml" "$CALLS"
+  # ci.yml is on TEMPLATE_DRIFT_ALLOWLIST → the seeder must not overwrite it.
+  run grep -qF "contents/.github/workflows/ci.yml" "$CALLS"
+  [ "$status" -eq 1 ]
+}
+
+@test "AC#2: the allowlist is DERIVED from template_stub_drift.sh, not a second literal" {
+  set -e
+  # Sourcing the seeder must make the drift checker's allowlist helper available —
+  # proof the single source is consumed, not copied.
+  source "$SEED"
+  run template_drift_allowlisted ".github/workflows/ci.yml"
+  [ "$status" -eq 0 ]
+  # And the seeder must NOT declare its own copy of the list (the exact drift this
+  # script pair already demonstrates).
+  run grep -q 'TEMPLATE_DRIFT_ALLOWLIST=(' "$SEED"
+  [ "$status" -eq 1 ]
+}
+
+@test "AC#1: fresh repo (files absent) STILL creates .gitignore and ci.yml" {
+  set -e
+  # Ownership-awareness must not degrade to deletion — a brand-new repo needs both.
+  _drop_all_standards_fixtures
+  _stub_gh   # every contents read returns {} → absent → create
+  run env DEPENDABOT_STACK=frontend bash "$SEED" --repo petry-projects/repo-template
+  [ "$status" -eq 0 ]
+  [ -f "$CALLS" ]
+  grep -qF "contents/.gitignore" "$CALLS"
+  grep -qF "contents/.github/workflows/ci.yml" "$CALLS"
+}
+
+@test "AC#3: _seed_file is a NO-OP when unchanged and writes when content differs" {
+  set -e
+  source "$SEED"
+  local out="$BATS_TEST_TMPDIR/existing"; printf 'same-bytes\n' > "$out"
+  _stub_gh_existing "docs/x.txt" "$out"
+  # Unchanged: existing == new content → no write, reported as unchanged.
+  run _seed_file petry-projects/repo-template "docs/x.txt" "$(printf 'same-bytes\n')" seed-branch main
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"unchanged"* || "$output" == *"preserv"* ]]
+  if [ -f "$CALLS" ]; then
+    run grep -qF "docs/x.txt" "$CALLS"
+    [ "$status" -eq 1 ]
+  fi
+  # Differing: existing != new content → a write happens.
+  run _seed_file petry-projects/repo-template "docs/x.txt" "$(printf 'new-bytes\n')" seed-branch main
+  [ "$status" -eq 0 ]
+  grep -qF "contents/docs/x.txt" "$CALLS"
+}
+
+@test "AC#4: DRY_RUN reports the managed .gitignore would be PRESERVED, not silently replaced" {
+  set -e
+  _drop_all_standards_fixtures
+  local gi; gi="$(_managed_gitignore_fixture)"
+  _stub_gh_existing ".gitignore" "$gi"
+  run env DRY_RUN=true DEPENDABOT_STACK=frontend bash "$SEED" --repo petry-projects/repo-template
+  [ "$status" -eq 0 ]
+  # The destructive-avoidance is visible: named, with the managed reason.
+  [[ "$output" == *".gitignore"* ]]
+  [[ "$output" == *"managed"* ]]
+  [[ "$output" == *"PRESERV"* || "$output" == *"NOT overwrit"* ]]
+  # No writes under dry-run.
+  [ ! -f "$CALLS" ]
+}
+
+@test "AC#1: a non-404 gh api failure on the contents read ABORTS, never CREATEs over an unreadable file" {
+  set -e
+  source "$SEED"
+  # gh api writes a rate-limit/5xx body to stdout AND exits non-zero. Decoding that
+  # as empty content would let _seed_file treat the file as absent and CREATE over
+  # it; instead the read helper must fail loud and _seed_file must abort (#1812;
+  # codeant/gemini review of #1868). Only a 404 body is a benign "absent".
+  cat > "$STUB_BIN/gh" <<'GHEOF'
+#!/usr/bin/env bash
+args="$*"
+case "$args" in
+  *"--method PUT"*|*"--method POST"*|*"PATCH"*|*"pr create"*) echo "$args" >> "$CALLS"; echo '{}' ;;
+  *"contents/"*) printf '{"message":"API rate limit exceeded","status":"403"}'; exit 1 ;;
+  *) echo '{}' ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN/gh"
+  run _existing_file_content petry-projects/repo-template docs/x.txt main
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"gh api failed"* ]]
+  # _seed_file propagates the failure — no CREATE PUT for the unreadable file.
+  run _seed_file petry-projects/repo-template docs/x.txt "$(printf 'new\n')" seed-branch main
+  [ "$status" -ne 0 ]
+  if [ -f "$CALLS" ]; then
+    run grep -qF "contents/docs/x.txt" "$CALLS"
+    [ "$status" -eq 1 ]
+  fi
+}
+
+@test "AC#1: a genuine 404 on the contents read is treated as absent (empty content)" {
+  set -e
+  source "$SEED"
+  # The one benign failure: a 404 body means the file is truly absent → empty content
+  # (so a fresh repo still gets a CREATE), distinct from a masked hard failure.
+  cat > "$STUB_BIN/gh" <<'GHEOF'
+#!/usr/bin/env bash
+printf '{"message":"Not Found","documentation_url":"https://docs.github.com/rest","status":"404"}'
+exit 1
+GHEOF
+  chmod +x "$STUB_BIN/gh"
+  run _existing_file_content petry-projects/repo-template docs/x.txt main
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
 }
 
 # ── argument handling ─────────────────────────────────────────────────────────

@@ -67,19 +67,28 @@ viif_normalize_expr() {
 # ONLY place a construct name is mapped to its detection; the set of names comes
 # from the frozen rulings table, so an unmapped new FORBID row is caught by the
 # test (its expr would be wrongly permitted) rather than silently under-enforced.
-# Expects a NORMALIZED expr (see viif_normalize_expr) so indexed and dot forms
-# are treated identically.
+# Expects a NORMALIZED and LITERAL-STRIPPED expr (see viif_normalize_expr and the
+# stripping in viif_forbidden) so indexed and dot forms are treated identically
+# and a policed name inside a quoted literal is not mistaken for a reference.
+# Matches against a LOWERCASED copy of the expr because Actions expression context
+# names are case-insensitive (vars.X == VARS.X == Vars.X); a case-sensitive match
+# would let VARS.SECRET / Secrets.TOKEN bypass the check (#1867).
 viif_expr_matches_construct() {
-  local expr="$1" name="$2" lc="${1,,}"
+  local name="$2" lc="${1,,}"
   case "$name" in
-    vars)                  [[ "$expr" =~ (^|[^._[:alnum:]])vars\. ]] ;;
-    secrets)               [[ "$expr" =~ (^|[^._[:alnum:]])secrets\. ]] ;;
-    needs-outputs)         [[ "$expr" =~ (^|[^._[:alnum:]])needs\. ]] ;;
+    # vars/secrets/needs are ALWAYS a repo-state reach, whether accessed with a
+    # property (vars.X, normalized from vars['X']) or used BARE as a whole value
+    # (toJSON(vars), or the root passed as any function argument). Match the root
+    # as an identifier TOKEN — bounded left and right, not requiring a trailing
+    # dot — so the bare form no longer slips past the dotted-only pattern (#1781).
+    vars)                  [[ "$lc" =~ (^|[^._[:alnum:]-])vars([^_[:alnum:]-]|$) ]] ;;
+    secrets)               [[ "$lc" =~ (^|[^._[:alnum:]-])secrets([^_[:alnum:]-]|$) ]] ;;
+    needs-outputs)         [[ "$lc" =~ (^|[^._[:alnum:]-])needs([^_[:alnum:]-]|$) ]] ;;
     hashfiles)             [[ "$lc" == *hashfiles* ]] ;;
-    repo-identity)         [[ "$expr" == *"github.repository"* ]] || \
-                           [[ "$expr" =~ github\.event\.repository\.(full_name|name|id|node_id|owner) ]] ;;
-    default-branch)        [[ "$expr" == *default_branch* ]] ;;
-    labels-array-contains) [[ "$expr" == *".labels"* ]] ;;
+    repo-identity)         [[ "$lc" == *"github.repository"* ]] || \
+                           [[ "$lc" =~ github\.event\.repository\.(full_name|name|id|node_id|owner) ]] ;;
+    default-branch)        [[ "$lc" == *default_branch* ]] ;;
+    labels-array-contains) [[ "$lc" == *".labels"* ]] ;;
     *)                     return 1 ;;
   esac
 }
@@ -92,13 +101,13 @@ viif_expr_matches_construct() {
 # non-event github.* (github.actor/ref/sha/token/…) all validate today. This gate
 # closes that default: it returns 0 (reaches unlisted context) for any context
 # root outside the event-only allowlist, so an unenumerated reach cannot pass
-# silently (#1772). Expects a NORMALIZED expr. vars/secrets/needs and bare
-# github.repository are owned by the named rows above and excluded here to avoid
-# double-reporting them.
+# silently (#1772). Expects a NORMALIZED and LITERAL-STRIPPED expr (see
+# viif_forbidden). vars/secrets/needs and bare github.repository are owned by the
+# named rows above and excluded here to avoid double-reporting them.
 viif_reaches_unlisted_context() {
-  local expr="$1" stripped sub
-  # Drop string literals so identifiers inside quotes don't count as contexts.
-  stripped="$(printf '%s' "$expr" | sed -E "s/'[^']*'//g; s/\"[^\"]*\"//g")"
+  # Lowercase the expr: Actions context names are case-insensitive, so GitHub.actor
+  # / ENV.FOO must be judged the same as their lowercase twins (#1867).
+  local stripped="${1,,}" sub
 
   # (a) a github.<x> reference outside the event allowlist (event_name / event.*).
   #     bare github.repository is the repo-identity construct's own concern.
@@ -110,8 +119,20 @@ viif_reaches_unlisted_context() {
     esac
   done < <(printf '%s\n' "$stripped" | grep -oE '(^|[^._[:alnum:]])github\.[A-Za-z_][A-Za-z0-9_-]*' | sed -E 's/.*github\.//')
 
-  # (b) any other policed context root that is never the delivered event.
-  if [[ "$stripped" =~ (^|[^._[:alnum:]])(env|inputs|steps|job|jobs|runner|matrix|strategy)\. ]]; then
+  # (a2) BARE github used as a whole value (toJSON(github)) — no property to walk,
+  #      so part (a)'s dotted grep never sees it. Serializing the whole context is
+  #      the most severe reach: it is repo identity/actor/ref/… , not the event.
+  #      Match github as a token NOT followed by a dot (the dotted forms are (a)'s
+  #      concern; event.* stays allowed there) (#1781).
+  if [[ "$stripped" =~ (^|[^._[:alnum:]-])github([^._[:alnum:]-]|$) ]]; then
+    return 0
+  fi
+
+  # (b) any other policed context root that is never the delivered event, whether
+  #     accessed with a property (env.FOO) or used BARE as a whole value
+  #     (toJSON(env)). Match the root as an identifier TOKEN, not requiring a
+  #     trailing dot, so the bare form is caught too (#1781).
+  if [[ "$stripped" =~ (^|[^._[:alnum:]-])(env|inputs|steps|job|jobs|runner|matrix|strategy)([^_[:alnum:]-]|$) ]]; then
     return 0
   fi
   return 1
@@ -122,8 +143,14 @@ viif_reaches_unlisted_context() {
 # event filter. Enumerates the FORBID rows straight from the frozen rulings table,
 # then applies the event-only allowlist backstop for any unlisted context root.
 viif_forbidden() {
-  local expr="$1" nexpr rulings hits="" name verdict row_expr row_rationale
+  local expr="$1" nexpr sexpr rulings hits="" name verdict row_expr row_rationale
   nexpr="$(viif_normalize_expr "$expr")"
+  # Strip string literals AFTER normalizing (normalize rewrites x['y']→x.y using
+  # the quotes, so stripping first would erase the index). Both the named FORBID
+  # matching and the allowlist backstop then run on the literal-stripped expr, so
+  # a policed name that appears only inside a quoted literal (e.g. an issue-comment
+  # body 'set vars.X please') is not mistaken for a context reference (#1781 AC #2).
+  sexpr="$(printf '%s' "$nexpr" | sed -E "s/'[^']*'//g; s/\"[^\"]*\"//g")"
   rulings="$(viif_rulings_path)"
   [ -f "$rulings" ] || { echo "::error::rulings table not found: $rulings" >&2; return 2; }
 
@@ -131,13 +158,13 @@ viif_forbidden() {
   while IFS=$'\t' read -r name verdict row_expr row_rationale || [ -n "$name" ]; do
     case "$name" in ''|'#'*) continue ;; esac
     [ "$verdict" = "FORBID" ] || continue
-    if viif_expr_matches_construct "$nexpr" "$name"; then
+    if viif_expr_matches_construct "$sexpr" "$name"; then
       case " $hits " in *" $name "*) : ;; *) hits+="${hits:+ }$name" ;; esac
     fi
   done < "$rulings"
 
   # Allowlist backstop: fail any context root the denylist above does not name.
-  if viif_reaches_unlisted_context "$nexpr"; then
+  if viif_reaches_unlisted_context "$sexpr"; then
     case " $hits " in *" unlisted-context "*) : ;; *) hits+="${hits:+ }unlisted-context" ;; esac
   fi
 
