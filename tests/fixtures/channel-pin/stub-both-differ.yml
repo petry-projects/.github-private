@@ -1,0 +1,8 @@
+# Fixture (#1866 AC #6): the comment names a channel that differs from the `uses:`
+# pin in BOTH tier and major version — both must be caught, not just the tier.
+#   • It is pinned to the `demo/v1-stable` channel — the moving tag.
+name: Demo
+on: [pull_request]
+jobs:
+  demo:
+    uses: petry-projects/.github/.github/workflows/demo-reusable.yml@demo/v2-next  # NOSONAR(githubactions:S7637) first-party channel ref

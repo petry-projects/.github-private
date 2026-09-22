@@ -1,0 +1,12 @@
+# Fixture: `uses:` and `agent_ref:` name DIFFERENT channels in the same file — a
+# same-file pin desync the guard must catch even though the header comment agrees
+# with the `uses:` pin. (The reusable checks its own scripts out from agent_ref,
+# so a stable `uses:` driven by a `next` agent_ref runs unsafe logic.)
+#   • It is pinned to the `demo/v1-stable` channel.
+name: Demo
+on: [pull_request]
+jobs:
+  demo:
+    uses: petry-projects/.github/.github/workflows/demo-reusable.yml@demo/v1-stable  # NOSONAR(githubactions:S7637) first-party channel ref
+    with:
+      agent_ref: demo/v1-next

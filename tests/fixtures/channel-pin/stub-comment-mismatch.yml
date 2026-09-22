@@ -1,0 +1,10 @@
+# Fixture: the #1819 defect shape — the guard comment names one channel while
+# the `uses:` pin names another. The pin is canonical; the stale comment is the
+# inconsistency AC #3 must catch.
+#   • You MUST NOT change the `uses:` ref — it is pinned to the `demo/v2-stable`
+#     channel, a moving tag advanced centrally.
+name: Demo
+on: [pull_request]
+jobs:
+  demo:
+    uses: petry-projects/.github/.github/workflows/demo-reusable.yml@demo/v2-next  # NOSONAR(githubactions:S7637) first-party channel ref
