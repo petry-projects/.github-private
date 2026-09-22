@@ -191,11 +191,15 @@ calling it a regression, and treat CI as authoritative.**
   syncs. If the org template gains a held-out immutability equivalent, remove this exception and defer to the
   template instead.
 - **Exception:** `auto-rebase-retry.yml` is a documented repo-specific workflow with no corresponding org
-  template in `standards/workflows/`. It is a `workflow_run` handler that self-heals a *failed* Auto-rebase
-  run by re-running its failed jobs (bounded by `run_attempt`) — the gap left by the conflict-only sentinel
-  path, which the thin-caller `auto-rebase.yml` and central reusable cannot cover. It must not be removed by
-  template syncs. If the org template gains a retry equivalent, remove this exception and defer to the
-  template instead.
+  template in `standards/workflows/`. It covers two recovery paths: (1) a `workflow_run` handler that
+  self-heals a *failed* Auto-rebase run by re-running its failed jobs (bounded by `run_attempt`) — the gap
+  left by the conflict-only sentinel path, which the thin-caller `auto-rebase.yml` and central reusable
+  cannot cover; and (2) a `workflow_dispatch` trigger (#1890 AC #4/#5) taking a `pr_number`, the
+  manually-invocable surface for conflict recovery the conflict-only sentinel never had — it routes a PR
+  stuck in CONFLICTING/DIRTY straight into dev-lead's `rebase` intent via a `dev-lead-reviews-retry`
+  `repository_dispatch` (rather than widening the `workflow_run` scope to conflict sentinels). It must not
+  be removed by template syncs. If the org template gains a retry equivalent, remove this exception and
+  defer to the template instead.
 - **Exception:** `auto-rebase-health.yml` (#737, epic #736) is a documented repo-specific workflow with no
   corresponding org template in `standards/workflows/`. It is a daily (≤1/day) + `workflow_dispatch` report
   that quantifies the agentic-conflict-resolution rate (conflict-sentinel fires vs. dev-lead `rebase`

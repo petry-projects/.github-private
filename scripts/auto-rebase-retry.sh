@@ -28,6 +28,12 @@ set -euo pipefail
 #   DRY_RUN       — if "true", log intent but do not call gh (default: false)
 #   GITHUB_STEP_SUMMARY — path for the run summary (optional)
 #
+# Manual workflow_dispatch inputs (#1890 AC #4/#5):
+#   GITHUB_EVENT_NAME — "workflow_dispatch" selects the manual conflict-recovery
+#                       path instead of the automatic failed-run retry
+#   PR_NUMBER         — the PR stuck in CONFLICTING/DIRTY to route into the
+#                       dev-lead `rebase` intent
+#
 # Always exits 0: a handler failure would itself be noise. Outcomes are surfaced
 # via ::notice:: / ::warning:: annotations and the step summary instead.
 
@@ -39,9 +45,46 @@ HTML_URL="${HTML_URL:-}"
 REPO="${REPO:-${GITHUB_REPOSITORY:-}}"
 MAX_ATTEMPTS="${MAX_ATTEMPTS:-3}"
 DRY_RUN="${DRY_RUN:-false}"
+GITHUB_EVENT_NAME="${GITHUB_EVENT_NAME:-}"
+PR_NUMBER="${PR_NUMBER:-}"
 GITHUB_STEP_SUMMARY="${GITHUB_STEP_SUMMARY:-/dev/null}"
 
 summary() { echo "$1" >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true; }
+
+# ── manual conflict recovery (workflow_dispatch, #1890 AC #4/#5) ───────────────
+# The workflow_run path self-heals a *failed run*. This path is the hand-crank an
+# operator uses for a PR that is stuck CONFLICTING/DIRTY even though its
+# Auto-rebase run *succeeded* — the conflict-only sentinel never had a
+# manually-invocable surface. It fires a `dev-lead-reviews-retry`
+# repository_dispatch (the same bridge the conflict sentinel uses) carrying the
+# PR number and intent=rebase, so the PR is routed straight into dev-lead's
+# rebase intent. A PAT is required for the dispatch to trigger the workflow.
+if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+  if [ -z "$PR_NUMBER" ]; then
+    echo "::warning::workflow_dispatch invoked without a pr_number — nothing to route into the rebase intent"
+    exit 0
+  fi
+  echo "::notice::Manual recovery: routing PR #${PR_NUMBER} into dev-lead's rebase intent via repository_dispatch"
+  if [ "$DRY_RUN" = "true" ]; then
+    echo "  [dry-run] would fire dev-lead-reviews-retry repository_dispatch for PR #${PR_NUMBER} (intent=rebase)"
+    summary "### Manual rebase recovery (dry-run)"
+    summary "Would route PR #${PR_NUMBER} into dev-lead's \`rebase\` intent."
+    exit 0
+  fi
+  if gh api -X POST "repos/${REPO}/dispatches" \
+       -f "event_type=dev-lead-reviews-retry" \
+       -f "client_payload[pr_number]=${PR_NUMBER}" \
+       -f "client_payload[intent_type]=rebase"; then
+    echo "::notice::Dispatched dev-lead-reviews-retry for PR #${PR_NUMBER} (intent=rebase)"
+    summary "### Manual rebase recovery dispatched"
+    summary "Routed PR #${PR_NUMBER} into dev-lead's \`rebase\` intent."
+  else
+    echo "::warning::Failed to dispatch dev-lead-reviews-retry for PR #${PR_NUMBER} — a maintainer should retry manually"
+    summary "### Manual rebase recovery failed to dispatch"
+    summary "Could not route PR #${PR_NUMBER} into the rebase intent."
+  fi
+  exit 0
+fi
 
 # Default any non-integer attempt to 1 so a malformed payload still retries once
 # rather than silently skipping or crashing under `set -e`.

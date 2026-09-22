@@ -1406,10 +1406,34 @@ This PR's rebase conflict failed automated resolution **${REBASE_MAX_FAIL_ATTEMP
 
 Resolve the conflict manually, then delete this comment to re-enable automated rebasing."
   if [ "$DEV_LEAD_DRY_RUN" = "true" ]; then
-    echo "[dry-run] would post rebase exhaustion marker"
+    echo "[dry-run] would post rebase exhaustion marker and add ${NEEDS_HUMAN_REVIEW_LABEL:-needs-human-review} on PR #${PR_NUMBER}"
     return 0
   fi
   gh pr comment "$PR_NUMBER" --repo "$REPO" --body "$body" 2>/dev/null || true
+  # Escalate loudly (#1890 AC #3): applying needs-human-review makes the hold gate
+  # (dev-lead-intent.sh) skip every subsequent rebase sentinel for this PR, so the
+  # loop converges to a single escalation instead of re-firing indefinitely.
+  gh pr edit "$PR_NUMBER" --repo "$REPO" --add-label "${NEEDS_HUMAN_REVIEW_LABEL:-needs-human-review}" 2>/dev/null \
+    || echo "::warning::could not add ${NEEDS_HUMAN_REVIEW_LABEL:-needs-human-review} label on PR #${PR_NUMBER}"
+}
+
+# escalate_rebase_needs_human <reason>: hand a rebase off to a human immediately
+# (not retryable) — used by the post-resolution integrity gate (#1890 AC #7).
+# Records a terminal failed marker, adds needs-human-review so the hold gate stops
+# future sentinels, and disables auto-merge so a corrupted resolution cannot merge.
+escalate_rebase_needs_human() {
+  local reason="$1"
+  # Prevent the EXIT-trap auto-merge restore from re-enabling what we disable.
+  _AM_NEEDS_RESTORE=0
+  post_reviews_terminal "rebase" "failed" "$reason"
+  if [ "${DEV_LEAD_DRY_RUN:-false}" = "true" ]; then
+    echo "[dry-run] would add ${NEEDS_HUMAN_REVIEW_LABEL:-needs-human-review} and disable auto-merge on PR #${PR_NUMBER}"
+    return 0
+  fi
+  gh pr edit "$PR_NUMBER" --repo "$REPO" --add-label "${NEEDS_HUMAN_REVIEW_LABEL:-needs-human-review}" 2>/dev/null \
+    || echo "::warning::could not add ${NEEDS_HUMAN_REVIEW_LABEL:-needs-human-review} label on PR #${PR_NUMBER}"
+  gh pr merge "$PR_NUMBER" --repo "$REPO" --disable-auto 2>/dev/null \
+    || echo "::notice::auto-merge was not enabled on PR #${PR_NUMBER} (nothing to disable)"
 }
 
 # handle_rebase_failure <reason>: converts a rebase engine failure — a per-tier
@@ -1441,6 +1465,73 @@ handle_rebase_failure() {
     echo "::warning::could not retrieve PR comments to count rebase failures — failing closed and posting PR-level block to stop sentinel re-fires (#865)"
     post_rebase_exhaustion "$reason"
   fi
+}
+
+# Poll cadence for the authoritative mergeable-state check (#1890 AC #2). GitHub
+# marks `mergeable` UNKNOWN right after a push while it recomputes mergeability,
+# so we poll a few times before treating an UNKNOWN as indeterminate.
+REBASE_MERGE_STATE_POLLS="${REBASE_MERGE_STATE_POLLS:-6}"
+REBASE_MERGE_STATE_POLL_SLEEP="${REBASE_MERGE_STATE_POLL_SLEEP:-5}"
+
+# pr_mergeable_conflict_state: query GitHub's REAL mergeable/mergeStateStatus for
+# this PR and classify it via rebase_conflict_state (#1890 AC #2). The rebase
+# intent must assert this post-condition instead of trusting its exit code or a
+# local trial-merge — a locally-clean merge that GitHub still reports CONFLICTING
+# is exactly how a run reported success in seconds while resolving nothing. Polls
+# while GitHub is still computing (verdict `indeterminate`) so a transient UNKNOWN
+# right after the engine's force-push is not misread as resolved. Echoes
+# resolved|conflicting|indeterminate.
+pr_mergeable_conflict_state() {
+  local polls="$REBASE_MERGE_STATE_POLLS" verdict="indeterminate" json mergeable state i
+  for (( i=0; i<polls; i++ )); do
+    json="$(gh pr view "$PR_NUMBER" --repo "$REPO" --json mergeable,mergeStateStatus 2>/dev/null || true)"
+    mergeable="$(printf '%s' "$json" | jq -r '.mergeable // ""' 2>/dev/null || true)"
+    state="$(printf '%s' "$json" | jq -r '.mergeStateStatus // ""' 2>/dev/null || true)"
+    verdict="$(rebase_conflict_state "$mergeable" "$state")"
+    [ "$verdict" != "indeterminate" ] && break
+    if [ $(( i + 1 )) -lt "$polls" ]; then
+      sleep "$REBASE_MERGE_STATE_POLL_SLEEP"
+    fi
+  done
+  printf '%s' "$verdict"
+}
+
+# verify_resolution_integrity: post-resolution integrity gate (#1890 AC #7). A
+# botched conflict resolution has corrupted trunk before (#1482/#1485), so before
+# the rebase intent reports `applied` — which lets the PR auto-merge — the resolved
+# tree must pass three checks: `bash -n` (syntax) on every changed shell file,
+# `shellcheck --severity=warning -x` (matching ci.yml / dev-lead-lint) on the same,
+# and `check-duplicate-decls.sh` (the whole-block-duplication signature). Returns 0
+# when clean, 1 when any check fails (naming which). This is the merge-blocking
+# backstop to run_post_resolution_integrity_check's advisory introduced-diff scan.
+verify_resolution_integrity() {
+  local base_ref="${1:-${BASE_REF:-main}}" rc=0 changed file
+  local script_dir
+  script_dir="$(dirname "$0")"
+  changed="$(git diff --name-only "origin/${base_ref}...HEAD" -- '*.sh' 2>/dev/null || true)"
+  while IFS= read -r file; do
+    [ -n "$file" ] || continue
+    [ -f "$file" ] || continue   # deleted by the resolution — nothing to check
+    if ! bash -n "$file" 2>/dev/null; then
+      echo "::warning::integrity gate: bash -n failed on ${file} after rebase resolution (#1890 AC #7)"
+      rc=1
+    fi
+    if command -v shellcheck >/dev/null 2>&1; then
+      if ! shellcheck --severity=warning -x "$file" >/dev/null 2>&1; then
+        echo "::warning::integrity gate: shellcheck failed on ${file} after rebase resolution (#1890 AC #7)"
+        rc=1
+      fi
+    fi
+  done <<EOF
+${changed}
+EOF
+  if [ -x "${script_dir}/check-duplicate-decls.sh" ]; then
+    if ! "${script_dir}/check-duplicate-decls.sh" >/dev/null 2>&1; then
+      echo "::warning::integrity gate: check-duplicate-decls.sh failed after rebase resolution — possible #1485 corruption (#1890 AC #7)"
+      rc=1
+    fi
+  fi
+  return "$rc"
 }
 
 # expire_stale_terminal_markers: deletes any existing terminal comments (applied,
@@ -2347,23 +2438,38 @@ case "$INTENT_TYPE" in
         echo "::notice::rebase: no-op guard aborted the push for PR #${PR_NUMBER} — flagged for human, not merged (#1786)"
         exit "$rc"
       fi
-      if [ "$cp_rc" -eq 0 ]; then
-        # Engine left commits/changes for the script to push — resolution applied.
-        post_reviews_terminal "rebase" "applied" "Rebase completed and pushed."
-      else
-        # The rebase prompt has the engine force-push the rebased branch itself
-        # (rebase.md step 6), so commit_and_push finds nothing to push on success.
-        # Relying on it alone recorded EVERY successful rebase as "no-changes"
-        # (0% applied — discussion #735 telemetry). Distinguish a real resolution
-        # (no conflicts remain against the base) from an abort/no-op (conflicts
-        # persist) by re-checking the base conflict state after the run.
-        git fetch origin "$BASE_REF" >/dev/null 2>&1 || true
-        if [ -z "$(detect_conflicting_paths "$BASE_REF")" ]; then
-          post_reviews_terminal "rebase" "applied" "Rebase completed and pushed."
-        else
-          post_no_changes "rebase"
-        fi
+      # Post-resolution integrity gate (#1890 AC #7): a corrupted resolution
+      # (#1482/#1485) must never be reported applied and allowed to merge. Escalate
+      # to a human immediately — corruption is not something to retry.
+      if ! verify_resolution_integrity "$BASE_REF"; then
+        echo "::error::rebase: post-resolution integrity gate failed for PR #${PR_NUMBER} — not reporting applied; escalating to a human (#1890 AC #7)"
+        escalate_rebase_needs_human "Post-conflict-resolution integrity check failed (\`bash -n\` / \`shellcheck\` / \`check-duplicate-decls.sh\`). A bad conflict resolution has corrupted trunk before (#1485), so this branch is held for a human rather than reported resolved."
+        exit 1
       fi
+      # Assert the REAL post-condition (#1890 AC #2). The engine exit code and the
+      # local trial-merge both lied here: a locally-clean merge that GitHub still
+      # reports CONFLICTING let a run post `status=applied` in seconds while
+      # resolving nothing, so the #865 exhaustion counter never advanced and the
+      # sentinel re-fired ~15×. Trust only GitHub's computed mergeable state.
+      case "$(pr_mergeable_conflict_state)" in
+        resolved)
+          post_reviews_terminal "rebase" "applied" "Rebase completed and pushed; PR is no longer conflicting."
+          ;;
+        conflicting)
+          # A run that did not change the state reports FAILURE, which counts
+          # toward the #865 per-PR exhaustion threshold and eventually escalates.
+          echo "::error::rebase: engine run for PR #${PR_NUMBER} completed but GitHub still reports it CONFLICTING — recording a failure, not success (#1890 AC #2)"
+          handle_rebase_failure "The engine run completed but PR #${PR_NUMBER} is still CONFLICTING per GitHub's mergeable state — the rebase did not converge. Recorded as a failure so repeated no-op 'success' runs can no longer accumulate."
+          exit 1
+          ;;
+        *)
+          # Indeterminate: GitHub has not finished computing mergeability. Do not
+          # claim success (would let a still-conflicting PR merge) and do not record
+          # a failure (would be premature); exit non-zero so the retry path re-checks.
+          echo "::warning::rebase: GitHub has not finished computing PR #${PR_NUMBER} mergeability (indeterminate) — not claiming success; the retry path will re-check (#1890 AC #2)"
+          exit 1
+          ;;
+      esac
     fi
     exit "$rc"
     ;;
