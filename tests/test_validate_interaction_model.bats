@@ -235,6 +235,102 @@ setup() {
 }
 
 # ---------------------------------------------------------------------------
+# stop_marker enforcement (#1745, AC #4/#5) — a declared human-brake must be
+# honoured by a serving surface, and every persona must declare the canonical
+# needs-human-review brake so a human hold stops the mention surface too.
+# ---------------------------------------------------------------------------
+
+@test "imv_c_kind reads the contract kind" {
+  run imv_c_kind "$FIXTURES/stop-pass/personas/alpha/interaction.yml"
+  [ "$status" -eq 0 ]
+  [ "$output" = "persona" ]
+}
+
+@test "imv_c_stop_markers reads the declared stop_markers" {
+  run imv_c_stop_markers "$FIXTURES/stop-pass/personas/alpha/interaction.yml"
+  [ "$status" -eq 0 ]
+  [ "$output" = "$(printf 'alpha:hands-off\nneeds-human-review\ndev-lead:needs-human')" ]
+}
+
+@test "imv_c_stop_markers yields nothing for an inline empty list" {
+  tmp="$(mktemp)"
+  printf 'interaction:\n  stop_markers: []\n  budget: none\n' > "$tmp"
+  run imv_c_stop_markers "$tmp"
+  rm -f "$tmp"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "imv_c_stop_markers reads a non-empty inline list" {
+  tmp="$(mktemp)"
+  printf 'interaction:\n  stop_markers: [needs-human-review, "dev-lead:needs-human"]\n  budget: none\n' > "$tmp"
+  run imv_c_stop_markers "$tmp"
+  rm -f "$tmp"
+  [ "$status" -eq 0 ]
+  [ "$output" = "$(printf 'needs-human-review\ndev-lead:needs-human')" ]
+}
+
+@test "imv_persona_opt_out reads opt_out_label from persona.yml" {
+  run imv_persona_opt_out "$FIXTURES/stop-pass" alpha
+  [ "$status" -eq 0 ]
+  [ "$output" = "alpha:hands-off" ]
+}
+
+@test "imv_escalation_label_from parses a := default assignment" {
+  tmp="$(mktemp)"
+  printf ': "${NEEDS_HUMAN_REVIEW_LABEL:=needs-human-review}"\n' > "$tmp"
+  run imv_escalation_label_from "$tmp" NEEDS_HUMAN_REVIEW_LABEL
+  rm -f "$tmp"
+  [ "$status" -eq 0 ]
+  [ "$output" = "needs-human-review" ]
+}
+
+@test "imv_needs_human_review_label derives the brake from pr-automation-budget.sh" {
+  run imv_needs_human_review_label
+  [ "$status" -eq 0 ]
+  [ "$output" = "needs-human-review" ]
+}
+
+@test "imv_canonical_escalation_markers derives both markers from the serving scripts" {
+  run imv_canonical_escalation_markers
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"needs-human-review"* ]]
+  [[ "$output" == *"dev-lead:needs-human"* ]]
+}
+
+@test "a persona declaring the brake + honoured markers passes (stop-pass)" {
+  run env INTERACTION_MODEL_ROOT="$FIXTURES/stop-pass" bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"OK"* ]]
+}
+
+@test "AC5: a persona omitting needs-human-review is flagged (FAIL[stop])" {
+  run env INTERACTION_MODEL_ROOT="$FIXTURES/stop-missing" bash "$SCRIPT"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"FAIL[stop]"* ]]
+  [[ "$output" == *"needs-human-review"* ]]
+}
+
+@test "AC5: a persona declaring a marker no serving workflow honours is flagged (FAIL[stop])" {
+  run env INTERACTION_MODEL_ROOT="$FIXTURES/stop-overclaim" bash "$SCRIPT"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"FAIL[stop]"* ]]
+  [[ "$output" == *"bogus:not-a-brake"* ]]
+}
+
+@test "AC5: an invalid INTERACTION_MODEL_SCRIPTS_DIR fails closed (FAIL[stop])" {
+  # A serving-script dir that cannot yield the canonical markers must not
+  # silently disable the required human-brake check — even for a tree that
+  # otherwise passes (stop-pass).
+  run env INTERACTION_MODEL_ROOT="$FIXTURES/stop-pass" \
+    INTERACTION_MODEL_SCRIPTS_DIR="$BATS_TEST_TMPDIR/no-such-scripts-dir" \
+    bash "$SCRIPT"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"FAIL[stop]"* ]]
+  [[ "$output" == *"could not derive the canonical escalation markers"* ]]
+}
+
+# ---------------------------------------------------------------------------
 # The live repo tree must pass — Stories 1–3 already brought it into conformance
 # ---------------------------------------------------------------------------
 

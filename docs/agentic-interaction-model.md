@@ -451,7 +451,45 @@ interaction:
 The validator cross-checks `interaction.triggers.events` and `interaction.triggers.timers`
 against the workflow's real `on:` block (the §3 discriminator), and cross-checks `emits`
 against `triggers.events` to prove **no role subscribes to an event class it emits** (§7
-rule 1).
+rule 1). It also cross-checks `stop_markers` against what the serving side actually honours
+(§8.1.1).
+
+#### 8.1.1 `stop_markers` — the human brake must bind on every surface (#1745)
+
+`stop_markers` is the human-gate contract (§6.2.3): the markers a role MUST skip when a
+human has applied them. It is **CI-verified, not trusted** — `validate-interaction-model`
+(§10) fails a persona contract that over- or under-claims what its serving surfaces honour:
+
+- **Canonical human brakes must be declared.** Every `kind: persona` contract must list the
+  universal brake `needs-human-review` — the label `pr_has_escalation_label`
+  (`scripts/lib/pr-automation-budget.sh`) checks on the event-driven surface. The mention
+  router now reads a persona's `stop_markers` straight from this contract
+  (petry-projects/.github#1133), so a persona that omits the brake is **routed on a mention
+  even after a human applies it** — the fail-open asymmetry #1745 fixes. The validator
+  derives the marker from the serving script, never re-listing it as a literal (#1745 AC #2).
+- **A declared marker must be honoured somewhere.** The honoured set for a persona is its own
+  `opt_out_label` (from `persona.yml`, checked by the router's opt-out path) plus the
+  canonical escalation markers (`needs-human-review`, `dev-lead:needs-human`). A `stop_markers`
+  entry outside that set is a contract over-declaring a brake no serving workflow checks — the
+  mirror of the over-declared *surfaces* tracked in #1647 — and fails the check.
+
+**Per-surface truth.** `stop_markers` is a persona-wide list, so a label marker must be true for
+**every label-capable serving surface that can perform write-mode actions** — the surfaces that can
+actually read a label and gate a write on it. If a marker is ever only honoured on some of those
+surfaces, it must not sit in the persona-wide list unqualified — a persona-wide list that is only
+true for some surfaces is exactly the defect #1745 records. Add a per-surface note (a YAML comment
+naming the surface and the reason) rather than leaving the asymmetry implicit. Surfaces that cannot
+evaluate labels at all (see discussions below) are out of scope for this rule and are handled
+separately by the router's fail-closed refusal.
+
+**Discussions have no labels API (#1318, petry-projects/.github#755 residual).** The
+discussion surface exposes no labels, so label-based `stop_markers` **cannot be evaluated
+there** at all. The deployed router states this behaviour deliberately rather than leaving it
+implicit: on a discussion it **routes in read/advisory mode** (where there is no write to gate)
+and **refuses a write-mode action** because the human brake cannot be verified — fail-closed on
+the surface where the gate is unknowable. This is consistent with #1647's record that
+discussions currently produce no advisory at all. `stop_markers` therefore needs no
+discussion-specific entry: the surface is handled by the router's refusal, not by a label.
 
 ### 8.2 File location — decision: **standalone repo-local contract, not `persona.yml` (yet)**
 
@@ -535,6 +573,12 @@ update the table (and the role's §8 contract) in the same PR, or CI fails.
   `triggers.events` / `triggers.timers` match the workflow's `on:` block, `emits` does not
   intersect subscribed `events` (§7 rule 1), and every Class 2 timer declares a
   `timer_role` + `stop_condition` (§6).
+- **`stop_markers` vs. the serving side** (§8.1.1, #1745). Every `kind: persona` contract
+  must declare the canonical human brake `needs-human-review`, and every declared marker must
+  be one a serving surface honours (the persona's `opt_out_label` plus the canonical
+  escalation markers). A persona that omits the brake, or over-declares a marker no workflow
+  checks, fails — so a human hold binds on every surface and the contract cannot drift from
+  what is deployed.
 
 The table's exact shape is fixed **here** (this document is the normative source); #1406
 consumes it. If the shape must change, it changes here first and #1406's fixtures change with
