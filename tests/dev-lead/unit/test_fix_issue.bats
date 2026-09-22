@@ -1252,3 +1252,154 @@ GHEOF
   # The opened PR must be made auto-rebase-eligible from creation.
   grep -q "add-label auto-rebase:ready" "$LABEL_RECORD"
 }
+
+# ── empty net-diff guard (#1786, slice 1 of #1620) ────────────────────────────
+#
+# These run against a REAL git repo (origin/main is a real ref) so the three-dot
+# net-diff guard genuinely resolves the base — a PATH-stubbed git cannot exercise
+# the abort path, only its fail-open fallback.
+
+# Init a repo whose base commit is tracked by origin/main, a passing lint stub,
+# a git stub that intercepts push, and a gh stub that records the PR-create call,
+# every issue-comment body, and every issue label edit.
+_ndg_issue_setup() {
+  local engine_body="$1"
+  NDG_REPO="$BATS_TEST_TMPDIR/issue_repo"
+  NDG_COMMENT_FILE="$BATS_TEST_TMPDIR/comment_file"
+  NDG_LABEL_FILE="$BATS_TEST_TMPDIR/label_file"
+  NDG_PR_CREATE_FILE="$BATS_TEST_TMPDIR/pr_create_file"
+  NDG_PUSH_FILE="$BATS_TEST_TMPDIR/push_file"
+  NDG_SENTINEL="$BATS_TEST_TMPDIR/engine_ran"
+  mkdir -p "$NDG_REPO"
+  : > "$NDG_COMMENT_FILE"; : > "$NDG_LABEL_FILE"
+  : > "$NDG_PR_CREATE_FILE"; : > "$NDG_PUSH_FILE"
+
+  git -C "$NDG_REPO" init -q
+  printf 'base\n' > "$NDG_REPO/file.txt"
+  git -C "$NDG_REPO" add .
+  git -C "$NDG_REPO" -c user.email="t@test" -c user.name="T" commit -q -m "base"
+  git -C "$NDG_REPO" update-ref refs/remotes/origin/main "$(git -C "$NDG_REPO" rev-parse HEAD)"
+
+  cat > "$STUB_BIN_DIR/dev-lead-lint.sh" <<'LEOF'
+#!/usr/bin/env bash
+echo "  [lint] all checks passed (stub)"
+exit 0
+LEOF
+  chmod +x "$STUB_BIN_DIR/dev-lead-lint.sh"
+
+  # Engine stub: runs its body exactly once (sentinel guards against re-invocation
+  # by the fallback/headroom paths), in the repo working tree.
+  cat > "$STUB_BIN_DIR/claude" <<CEOF
+#!/usr/bin/env bash
+echo "Implemented issue."
+if [ ! -f "${NDG_SENTINEL}" ]; then
+  : > "${NDG_SENTINEL}"
+${engine_body}
+fi
+exit 0
+CEOF
+  chmod +x "$STUB_BIN_DIR/claude"
+
+  cat > "$STUB_BIN_DIR/git" <<GITEOF
+#!/usr/bin/env bash
+if [ "\$1" = "push" ]; then echo "\$*" >> "${NDG_PUSH_FILE}"; exit 0; fi
+exec /usr/bin/git "\$@"
+GITEOF
+  chmod +x "$STUB_BIN_DIR/git"
+
+  cat > "$STUB_BIN_DIR/gh" <<GHEOF
+#!/usr/bin/env bash
+cmd="\$1"; shift || true
+case "\$cmd" in
+  pr)
+    case "\$*" in
+      create*) echo "\$*" >> "${NDG_PR_CREATE_FILE}"; echo "https://github.com/petry-projects/.github-private/pull/77" ;;
+      *) exit 0 ;;
+    esac ;;
+  label) exit 0 ;;
+  issue)
+    sub="\$1"; shift || true
+    case "\$sub" in
+      comment)
+        body=""
+        while [ \$# -gt 0 ]; do
+          if [ "\$1" = "--body" ]; then body="\$2"; shift 2; continue; fi
+          shift
+        done
+        printf '%s\n----8<----\n' "\$body" >> "${NDG_COMMENT_FILE}"
+        exit 0 ;;
+      edit)
+        printf '%s\n' "\$*" >> "${NDG_LABEL_FILE}"; exit 0 ;;
+      *) exit 0 ;;
+    esac ;;
+  api)
+    case "\$*" in
+      *"pulls?state=open"*) echo "0" ;;
+      *"users/"*)           echo '{"id":12345}' ;;
+      *comments*)           echo "[]" ;;
+      *"issues/"*)          echo '{"title":"Test","body":"body"}' ;;
+      *)                    echo "{}" ;;
+    esac ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+}
+
+@test "fix-issue: empty net diff → aborts, labels needs-human, opens no PR, no completion claim (#1786 AC1/AC2)" {
+  # Engine self-commits a change and then reverts it: HEAD advances past the base
+  # but the three-dot net diff against origin/main is empty.
+  _ndg_issue_setup '  printf "temp\n" > extra.txt
+  git add -A
+  git -c user.email=t@test -c user.name=T commit -q -m "add extra"
+  git rm -q extra.txt
+  git -c user.email=t@test -c user.name=T commit -q -m "remove extra"'
+
+  cd "$NDG_REPO"
+  run bash -c "
+    export ISSUE_NUMBER=100 REPO='petry-projects/.github-private' GITHUB_REPOSITORY='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude DEV_LEAD_DRY_RUN=false
+    export PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export LINT_SCRIPT='$STUB_BIN_DIR/dev-lead-lint.sh'
+    export PLG_STANDARDS_DIR='/nonexistent-plg'
+    export PATH="$STUB_BIN_DIR:\$PATH"
+    bash '$FIX_ISSUE_SCRIPT'
+  " 2>&1
+
+  # Aborted (non-zero) and announced the empty-net-diff refusal.
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"net diff"* ]] || [[ "$output" == *"Empty net diff"* ]]
+  # No PR was opened.
+  [ ! -s "$NDG_PR_CREATE_FILE" ]
+  # The branch was NOT pushed (never open/publish an empty-net-diff branch).
+  [ ! -s "$NDG_PUSH_FILE" ]
+  # Issue labelled dev-lead:needs-human.
+  grep -q "add-label dev-lead:needs-human" "$NDG_LABEL_FILE"
+  # No durable completion claim was posted.
+  run grep -q "status=completed" "$NDG_COMMENT_FILE"
+  [ "$status" -eq 1 ]
+}
+
+@test "fix-issue: non-empty net diff → completion claim states file count and net line change (#1786 AC2)" {
+  # Engine leaves a real net change (one added line); the script commits it.
+  _ndg_issue_setup '  printf "base\nfeature\n" > file.txt'
+
+  cd "$NDG_REPO"
+  run bash -c "
+    export ISSUE_NUMBER=100 REPO='petry-projects/.github-private' GITHUB_REPOSITORY='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude DEV_LEAD_DRY_RUN=false GITHUB_RUN_ID=99
+    export PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export LINT_SCRIPT='$STUB_BIN_DIR/dev-lead-lint.sh'
+    export PLG_STANDARDS_DIR='/nonexistent-plg'
+    export PATH="$STUB_BIN_DIR:\$PATH"
+    bash '$FIX_ISSUE_SCRIPT'
+  " 2>&1
+
+  [ "$status" -eq 0 ]
+  # A PR was opened and the durable completion claim posted.
+  [ -s "$NDG_PR_CREATE_FILE" ]
+  grep -q "status=completed" "$NDG_COMMENT_FILE"
+  # The claim states the file count and net line change (AC2).
+  grep -q "1 file(s)" "$NDG_COMMENT_FILE"
+  grep -q "+1/-0 lines" "$NDG_COMMENT_FILE"
+}

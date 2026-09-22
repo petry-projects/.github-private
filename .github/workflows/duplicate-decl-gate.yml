@@ -1,11 +1,15 @@
 name: duplicate-decl-gate
 
-# Required CI gate against the #1485 corruption class (#1520): fails any PR (or
-# main push) whose scripts/ tree contains a top-level function declared more
-# than once. Runs on EVERY pull request — no paths filter — because a required
-# check that is path-skipped never reports and blocks the merge forever; the
-# scan itself costs seconds. Complements the advisory, parent-aware detector on
-# the rebase path (scripts/lib/conflict-integrity.sh, #1482/#1496).
+# Required CI gate against the #1485 corruption class (#1520, widened in #1779):
+# fails any PR (or main push) that ships the whole-block-duplication signature —
+# a top-level function declared twice in scripts/**/*.sh, a markdown heading
+# repeated in prompts/**/*.md, or a key declared twice in one mapping in
+# personas/**/*.yml. The md/yml scopes close the scan-scope gap filed as
+# petry-projects/.github#1041 (this gate widened, not a second gate). Runs on
+# EVERY pull request — no paths filter — because a required check that is
+# path-skipped never reports and blocks the merge forever; the scan itself costs
+# seconds. Complements the advisory, parent-aware detector on the rebase path
+# (scripts/lib/conflict-integrity.sh, #1482/#1496).
 #
 # Maintainer action after this lands: add the `duplicate-decl-gate` check to
 # branch protection's required status checks — the blocking property is the
@@ -32,5 +36,5 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Reject duplicate top-level function declarations in scripts/
+      - name: Reject duplicate declarations (scripts functions, prompt headings, persona keys)
         run: bash scripts/check-duplicate-decls.sh

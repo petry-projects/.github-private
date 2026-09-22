@@ -102,6 +102,16 @@ source "$SCRIPT_DIR/lib/pr-metadata-digest.sh"
 # shellcheck source=lib/pr-review-claim.sh
 source "$SCRIPT_DIR/lib/pr-review-claim.sh"
 
+# Carry-forward decision for base-merge-only re-reviews (issue #1865). When the
+# last recorded verdict was an approval at an EARLIER head SHA and every
+# intervening commit is a conflict-free base merge with a byte-identical
+# diff-vs-merge-base, evaluate_carry_forward returns `carry` so we re-issue the
+# prior approval instead of re-running any model tier. Every other delta (a
+# resolved conflict, a content commit, or any indeterminable state) returns
+# `full:<reason>` and falls through to the normal cascade — fail toward reviewing.
+# shellcheck source=lib/carry-forward.sh
+source "$SCRIPT_DIR/lib/carry-forward.sh"
+
 PR_URL="${1:?usage: review-one-pr.sh <pr-url>}"
 export PR_URL
 
@@ -382,6 +392,16 @@ fi
 #
 # COST: ~75% savings vs blocking (2-3 min runs vs 10-60 min blocks)
 #
+# The gate proceeds BEFORE the approval is written, so it must NOT announce the
+# partial-evidence approval itself (that stranded PRs behind a comment claiming an
+# approval that never landed, #1874). Point the gate at a state file: it records
+# the partial-evidence facts there, and post-pr-review.sh posts the announcement
+# only after it verifies the review object exists. Exported so the later
+# post-pr-review.sh child process inherits the path. Use mktemp for a unique,
+# non-predictable path (avoids the /tmp symlink/predictability hazard and any
+# stale state from a previous PR handled in the same batch process).
+export PARTIAL_EVIDENCE_STATE_FILE
+PARTIAL_EVIDENCE_STATE_FILE=$(mktemp) || { echo "::error::failed to create temporary state file" >&2; exit 1; }
 (
   # Subshell: true environment isolation so functions and variables defined
   # by the gate (ADVISORY_BOTS, color codes, log helpers) do not persist in
@@ -557,16 +577,24 @@ fi
 # we re-reviewed the same head SHA on every run.
 # Capture the latest marker's full body (not just its SHA) so the metadata-digest
 # re-arm (#1551) can inspect a `meta=<digest>` attribute if one is present.
+# Trust only markers authored by OUR bot (BOT_USER). The marker text is not a
+# capability — any user who can comment on the PR could paste a forged
+# `<!-- pr-review-agent v1 sha=<head> decision=approved -->` marker, and an
+# unauthenticated read of the "latest marker" would then treat it as a standing
+# verdict — enough to drive the carry-forward gate below into re-issuing a REAL
+# bot approval for code no tier ever reviewed. Filtering on .author.login binds
+# the verdict to the identity that actually posts it (#1870 security review).
+# Filter with a real jq (--arg) rather than gh's embedded --jq, which takes no args.
+_MARKER_SRC_JSON=$(gh pr view "$PR_URL" --json reviews,comments 2>/dev/null || echo '{}')
 LATEST_MARKER_BODY=$(
-  gh pr view "$PR_URL" --json reviews,comments \
-    --jq '
-      ((.reviews   // [] | map({when: .submittedAt, body: .body})) +
-       (.comments  // [] | map({when: .createdAt,   body: .body})))
+  jq -r --arg bot "${BOT_USER:-donpetry-bot}" '
+      ((.reviews   // [] | map(select((.author?.login // "") == $bot) | {when: .submittedAt, body: .body})) +
+       (.comments  // [] | map(select((.author?.login // "") == $bot) | {when: .createdAt,   body: .body})))
       | map(select(.body != null and (.body | test("<!-- pr-review-agent v1 sha=[a-f0-9]+"))))
       | sort_by(.when)
       | last
       | .body // ""
-    ' 2>/dev/null || true
+    ' <<<"$_MARKER_SRC_JSON" 2>/dev/null || true
 )
 EXISTING_MARKER_SHA=$(
   # Bash parameter expansion for the first line instead of a `head -1` pipe, which
@@ -662,6 +690,65 @@ fi
 
 if [ -n "${EXISTING_MARKER_SHA:-}" ]; then
   echo "    re-review: prior marker was $EXISTING_MARKER_SHA, head is $PR_HEAD_SHA"
+fi
+
+# Carry-forward for conflict-free base merges (issue #1865). When the last
+# recorded verdict was an APPROVAL at an earlier head SHA and every intervening
+# commit is a conflict-free base merge that leaves the diff-vs-merge-base
+# byte-identical, re-issue the prior approval at the new head SHA instead of
+# re-running the tier stack. This breaks the auto-rebase treadmill:
+# strict_required_status_checks_policy mints a new head SHA on every open PR
+# after each merge, and keying idempotency on the head SHA (#899) otherwise
+# forces a full re-review of every PR on every merge. evaluate_carry_forward is
+# fail-safe: any other delta (a resolved conflict — AC #2, a content commit —
+# AC #3, or any indeterminable comparison — AC #4) returns full:<reason> and
+# falls through to the normal cascade below. Scoped to prior==approved: an
+# escalation or fix-request is not a standing verdict to re-issue, and forced
+# re-reviews (human @mention or the orphan-rescue sweep) always run the cascade.
+if [ -n "${EXISTING_MARKER_SHA:-}" ] \
+   && [ "$EXISTING_MARKER_SHA" != "$PR_HEAD_SHA" ] \
+   && [ "${FORCE_REVIEW:-false}" != "true" ] \
+   && [ "${FORCE_RE_REVIEW:-false}" != "true" ] \
+   && [ "$(cf_prior_decision "$LATEST_MARKER_BODY")" = "approved" ]; then
+  CF_RESULT=$(evaluate_carry_forward "$_OWNER_REPO" "$PR_BASE_REF" "$EXISTING_MARKER_SHA" "$PR_HEAD_SHA")
+  # Race guard (#1870 review): evaluate_carry_forward made several network round-trips
+  # against $PR_HEAD_SHA. A content commit landing during that window advances the head,
+  # so posting now would stamp an approval on a SHA whose code no tier reviewed. Re-read
+  # the live head and only carry when it still equals the SHA we evaluated; if it moved
+  # (or can't be re-confirmed), decline and let the next trigger re-evaluate the new head.
+  CF_HEAD_NOW=""
+  [ "$CF_RESULT" = "carry" ] && CF_HEAD_NOW=$(gh pr view "$PR_URL" --json headRefOid --jq '.headRefOid' 2>/dev/null || echo "")
+  if [ "$CF_RESULT" = "carry" ] && [ "$CF_HEAD_NOW" != "$PR_HEAD_SHA" ]; then
+    echo "    carry-forward: declined (head is now '${CF_HEAD_NOW:-unknown}', evaluated '$PR_HEAD_SHA' — a commit landed mid-evaluation or the head could not be re-confirmed; running the full review cascade so no approval is stamped for unreviewed content) (#1870)"
+  elif [ "$CF_RESULT" = "carry" ]; then
+    echo "    carry-forward: every commit since $EXISTING_MARKER_SHA is a conflict-free base merge with a byte-identical diff-vs-merge-base — re-issuing the prior approval at $PR_HEAD_SHA without running any model tier (#1865)"
+    CF_RISK=$(cf_prior_risk "$LATEST_MARKER_BODY")
+    mkdir -p /tmp/cascade
+    CF_VERDICT_JSON="/tmp/cascade/carry-forward-verdict.json"
+    CF_BODY="<!-- pr-review-agent v1 sha=$PR_HEAD_SHA decision=approved risk=$CF_RISK -->
+<!-- pr-review-agent carry-forward from=$EXISTING_MARKER_SHA to=$PR_HEAD_SHA -->
+
+## Review — approved (carried forward)
+
+Re-issuing the prior approval from \`$EXISTING_MARKER_SHA\` unchanged. Every commit since then is a conflict-free merge of the base branch (\`$PR_BASE_REF\`) and the diff against the merge base is byte-identical, so no code authored by this PR has changed. No model review was run for this base-only update.
+
+_Carried forward automatically by the PR-review cascade (issue #1865)._"
+    jq -n --arg risk "$CF_RISK" --arg body "$CF_BODY" \
+      '{decision:"approve", risk:$risk, summary:"carried forward", findings:[], body:$body, metadata_only:false}' \
+      > "$CF_VERDICT_JSON"
+    bash "$REVIEW_OUTPUT_CHANNEL" "$PR_URL" "$CF_VERDICT_JSON" "${DRY_RUN:-false}"
+    # emit_verdict LAST so review-batch's reason parser reads carried-forward as
+    # the final verdict line. Exit 100 is the no-op sentinel: a carry-forward is
+    # cheap (no tier) and must NOT consume the MAX_PRS budget of full reviews, so
+    # a single batch can clear the whole treadmill of base-merged PRs in one run.
+    emit_verdict carried-forward carried-forward "a new commit that is not a conflict-free base merge, a resolved-conflict merge, or any change to the diff-vs-merge-base forces a full re-review"
+    exit 100
+  fi
+  # Reached only when evaluate_carry_forward itself returned full:<reason> (the race
+  # guard above prints its own decline line and also falls through to the cascade).
+  if [ "$CF_RESULT" != "carry" ]; then
+    echo "    carry-forward: declined ($CF_RESULT) — running the full review cascade (#1865)"
+  fi
 fi
 
 # Count how many NON-CONVERGING review cycles we've done on this PR.
