@@ -71,7 +71,11 @@ REBASE_APPLIED_MARKER='intent=rebase status=applied'
 # ruleset does not require it — the "or a human/label requests it" arm of #1881 AC #1.
 # Same label the central reusable's review-ready eligibility predicate already honours.
 AUTO_REBASE_REQUEST_LABEL="${AUTO_REBASE_REQUEST_LABEL:-auto-rebase:ready}"
-DEFAULT_BRANCH="${DEFAULT_BRANCH:-main}"
+# Branch whose ruleset drives the up-to-date policy. Left empty by default so
+# main() resolves the repo's ACTUAL default branch — an AGENT_REPO whose default
+# branch is not `main` would otherwise have its rules read from the wrong branch.
+# Set this env to pin a specific branch and skip the lookup.
+DEFAULT_BRANCH="${DEFAULT_BRANCH:-}"
 
 # ---------------------------------------------------------------------------
 # Pure helpers (unit-tested; no network)
@@ -145,7 +149,7 @@ strict_from_branch_rules() {
       | select(.type == "required_status_checks")
       | (.parameters.strict_required_status_checks_policy // false)
     ] | any' 2>/dev/null || echo false)"
-  [ "$r" = "true" ] && echo "true" || echo "false"
+  echo "$r"
 }
 
 # summarize_base_merges <prs_json> <strict_enabled> [request_label]
@@ -357,12 +361,25 @@ main() {
   #    Best-effort: if the ruleset cannot be read the report degrades to strict=false
   #    with a warning (so a silent read failure cannot masquerade as "no requirement"),
   #    matching the token-degradation posture above.
-  local rules_json strict_enabled
-  if rules_json="$(gh api "repos/${WORKFLOW_REPO}/rules/branches/${DEFAULT_BRANCH}" 2>/dev/null)"; then
+  #
+  #    Resolve the branch first: when DEFAULT_BRANCH is not pinned via env, query the
+  #    repo's ACTUAL default branch so an AGENT_REPO whose default is not `main` reads
+  #    its rules from the right branch (#1887). Fall back to `main` if the lookup fails.
+  local default_branch="${DEFAULT_BRANCH:-}"
+  if [ -z "$default_branch" ]; then
+    default_branch="$(gh api "repos/${WORKFLOW_REPO}" --jq '.default_branch' 2>/dev/null || echo main)"
+    [ -n "$default_branch" ] || default_branch=main
+  fi
+
+  # Capture the command-substitution exit status into a variable first (rather than
+  # running it directly inside `if`) so a failure is not swallowed under `set -e`.
+  local rules_json strict_enabled api_status=0
+  rules_json="$(gh api "repos/${WORKFLOW_REPO}/rules/branches/${default_branch}" 2>/dev/null)" || api_status=$?
+  if [ "$api_status" -eq 0 ]; then
     [ -n "$rules_json" ] || rules_json='[]'
   else
     rules_json='[]'
-    echo "::warning::Could not read branch rules for ${WORKFLOW_REPO}@${DEFAULT_BRANCH} — base-merge necessity assumes strict=false; skippable counts may be overstated." >&2
+    echo "::warning::Could not read branch rules for ${WORKFLOW_REPO}@${default_branch} — base-merge necessity assumes strict=false; skippable counts may be overstated." >&2
   fi
   strict_enabled="$(strict_from_branch_rules "$rules_json")"
 
