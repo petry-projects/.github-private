@@ -81,6 +81,19 @@ EOF
   chmod +x "scripts/review-one-pr.sh"
 }
 
+# review-one-pr.sh stub that emits a carry-forward exactly like the real
+# reviewer: it re-issued the prior approval (no tier) and rides the exit-100
+# sentinel with reason=carried-forward (issue #1865).
+_stub_carried_forward() {
+  cat > "scripts/review-one-pr.sh" <<'EOF'
+#!/bin/bash
+echo "    carry-forward: re-issuing the prior approval for $1"
+echo '{"pr":"'"$1"'","decision":"carried-forward","reason":"carried-forward"}'
+exit 100
+EOF
+  chmod +x "scripts/review-one-pr.sh"
+}
+
 @test "batch: ci-pending skip is not reported as 'already reviewed'" {
   _stub_ci_pending
 
@@ -144,6 +157,40 @@ EOF
   [[ "$output" == *"empty queue"* ]]
   # ...and is NOT phrased like a run that processed candidates.
   [[ "$output" != *"processed"* ]]
+}
+
+# ── AC #6 (issue #1865): deterministic carry-forward counters ────────────────
+# A carry-forward re-issues the prior approval without a model tier and rides the
+# exit-100 sentinel so it stays off the MAX_PRS full-review budget — but it is NOT
+# a no-op. The summary must count it in its own bucket and always emit both
+# machine-parseable counters (reviews_full / reviews_carried_forward).
+
+@test "batch: a carried-forward reviewer result is counted separately, not as a no-op" {
+  _stub_carried_forward
+
+  run bash scripts/review-batch.sh
+  echo "$output" >&2
+
+  [ "$status" -eq 0 ]
+  # It must be reported as a carry-forward, not collapsed into the no-op bucket.
+  [[ "$output" == *"Carried forward"* ]]
+  [[ "$output" == *"carried forward"* ]]
+  # Deterministic counters: one carry-forward, zero full reviews this run.
+  [[ "$output" == *"reviews_full=0 reviews_carried_forward=1"* ]]
+  # A carry-forward is NOT a no-op skip nor a full review posted.
+  [[ "$output" == *"0 no-ops skipped"* ]]
+  [[ "$output" == *"0 reviews posted"* ]]
+}
+
+@test "batch: counters are always emitted, even when nothing was carried forward" {
+  _stub_already_reviewed
+
+  run bash scripts/review-batch.sh
+  echo "$output" >&2
+
+  [ "$status" -eq 0 ]
+  # AC #6: both counters present and zeroed on a run with no carry-forward.
+  [[ "$output" == *"reviews_full=0 reviews_carried_forward=0"* ]]
 }
 
 @test "batch: candidates-all-no-ops summary is distinct from an empty queue" {
