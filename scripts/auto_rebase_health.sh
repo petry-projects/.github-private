@@ -28,6 +28,17 @@
 #      audit. Repo-scoped — fleet-wide would need a cross-repo PAT this report
 #      does not carry.
 #
+#   4. Base-merge necessity (#1881) — a deterministic counter that splits the open
+#      BEHIND queue into base merges that are genuinely REQUIRED (being behind
+#      blocks the PR: the ruleset requires up-to-date branches, or the PR is queued
+#      to merge, or it carries the explicit request label) vs SKIPPABLE no-ops. The
+#      required/skippable split is derived from repository configuration (the
+#      ruleset's `strict_required_status_checks_policy`), so if strict is re-armed
+#      the counter follows with no code change. `skippable` is the no-op base-merge
+#      volume #1881 removes at the source — the second input to #1864 AC #4 alongside
+#      #1865's `reviews_carried_forward`. The gate that acts on this lives in the
+#      central auto-rebase reusable; this report only measures it.
+#
 # Layout (mirrors scripts/token_report.sh):
 #   * The count_*/summarize_*/fmt_*/render_report functions are PURE — they take
 #     JSON / scalars and write to stdout. Unit-tested in tests/auto_rebase_health.bats.
@@ -55,6 +66,12 @@ AUTO_REBASE_WORKFLOW="auto-rebase.yml"
 SENTINEL_MARKER='<!-- auto-rebase-conflict:'
 REBASE_RESPONSE_MARKER='intent=rebase status='
 REBASE_APPLIED_MARKER='intent=rebase status=applied'
+
+# Label a human/PR can add to explicitly demand an up-to-date branch even when the
+# ruleset does not require it — the "or a human/label requests it" arm of #1881 AC #1.
+# Same label the central reusable's review-ready eligibility predicate already honours.
+AUTO_REBASE_REQUEST_LABEL="${AUTO_REBASE_REQUEST_LABEL:-auto-rebase:ready}"
+DEFAULT_BRANCH="${DEFAULT_BRANCH:-main}"
 
 # ---------------------------------------------------------------------------
 # Pure helpers (unit-tested; no network)
@@ -112,6 +129,54 @@ summarize_merge_states() {
     ] | @tsv' <<< "$json"
 }
 
+# strict_from_branch_rules <rules_json>
+# Reads whether the default branch's ruleset requires PRs to be up to date with
+# base — the `strict_required_status_checks_policy` flag (#1864). Input is the JSON
+# array from `gh api repos/{repo}/rules/branches/<branch>`. Echoes "true" iff some
+# active required_status_checks rule sets that policy true, else "false". This is
+# the config-derived condition of #1881 AC #2: if strict is re-armed later the flag
+# flips with no code change. Absent/empty/unparseable input → "false".
+strict_from_branch_rules() {
+  local json="${1:-}"
+  [ -n "$json" ] || json='[]'
+  local r
+  r="$(printf '%s' "$json" | jq -r '
+    [ .[]?
+      | select(.type == "required_status_checks")
+      | (.parameters.strict_required_status_checks_policy // false)
+    ] | any' 2>/dev/null || echo false)"
+  [ "$r" = "true" ] && echo "true" || echo "false"
+}
+
+# summarize_base_merges <prs_json> <strict_enabled> [request_label]
+# Emits TSV: required<TAB>skippable — over the open non-draft, non-Dependabot,
+# mergeStateStatus==BEHIND PRs, the count whose base merge is genuinely REQUIRED vs
+# a no-op that should be SKIPPED (#1881 AC #4). A BEHIND PR's base merge is required
+# when being behind actually blocks it — ANY of:
+#   * strict_enabled == "true" (ruleset requires up-to-date branches), OR
+#   * the PR is queued to merge (autoMergeRequest non-null), OR
+#   * the PR carries the explicit request label (default AUTO_REBASE_REQUEST_LABEL).
+# Otherwise the base merge is skippable churn. DIRTY PRs are deliberately NOT counted:
+# they take the conflict/rebase path unchanged (AC #3). Absent/empty JSON → "0\t0".
+summarize_base_merges() {
+  local json="${1:-}" strict="${2:-false}" label="${3:-$AUTO_REBASE_REQUEST_LABEL}"
+  [ -n "$json" ] || json='[]'
+  jq -r --arg strict "$strict" --arg label "$label" '
+    [ .[]
+      | select((.isDraft // false) | not)
+      | select(((.author?.login // "" | tostring) | test("dependabot"; "i")) | not)
+      | select(.mergeStateStatus == "BEHIND")
+      | ( ($strict == "true")
+          or (.autoMergeRequest != null)
+          or ([ (.labels // [])[] | (.name // "") ] | index($label) != null)
+        )
+    ] as $flags |
+    [
+      ([ $flags[] | select(.) ]       | length),
+      ([ $flags[] | select(. | not) ] | length)
+    ] | @tsv' <<< "$json" 2>/dev/null || printf '0\t0'
+}
+
 # summarize_runs <runs_json>
 # Emits TSV: total<TAB>success<TAB>failed over the auto-rebase run telemetry.
 summarize_runs() {
@@ -144,13 +209,16 @@ fmt_rate() {
   echo "$(( num * 100 / denom ))%"
 }
 
-# render_report <comments_json> <runs_json> <lookback_days> <behind_prs> [today] [prs_json] [pr_list_truncated] [pr_list_limit]
+# render_report <comments_json> <runs_json> <lookback_days> <behind_prs> [today] [prs_json] [pr_list_truncated] [pr_list_limit] [strict_enabled] [request_label]
 # Writes the full Markdown report to stdout. Pure: no network.
 # pr_list_truncated=true renders a warning that BEHIND/DIRTY counts may undercount.
+# strict_enabled ("true"/"false") is the config-derived up-to-date-branches policy;
+# it drives the base-merge-necessity section (#1881).
 render_report() {
   local comments_json="${1:-[]}" runs_json="${2:-[]}"
   local lookback="${3:-7}" behind="${4:-0}" today="${5:-}" prs_json="${6:-[]}"
   local pr_list_truncated="${7:-false}" pr_list_limit="${8:-1000}"
+  local strict_enabled="${9:-false}" request_label="${10:-$AUTO_REBASE_REQUEST_LABEL}"
   [ -n "$today" ] || today="$(date -u +%Y-%m-%d)"
 
   local sentinels responses applied
@@ -161,6 +229,9 @@ render_report() {
 
   local ms_behind ms_dirty
   IFS=$'\t' read -r ms_behind ms_dirty < <(summarize_merge_states "$prs_json")
+
+  local bm_required bm_skippable
+  IFS=$'\t' read -r bm_required bm_skippable < <(summarize_base_merges "$prs_json" "$strict_enabled" "$request_label")
 
   local fanout
   fanout="$(estimate_fanout "$total" "$behind")"
@@ -199,7 +270,19 @@ render_report() {
   fi
   printf '> Snapshot of the current open-PR queue, scoped to **`%s`** — fleet-wide counts would '  "$WORKFLOW_REPO"
   printf 'require a cross-repo PAT this report does not carry. Tracks the effectiveness of the '
-  printf 'AC1/AC2 auto-rebase fixes (petry-projects/.github#926) without a manual audit.\n'
+  printf 'AC1/AC2 auto-rebase fixes (petry-projects/.github#926) without a manual audit.\n\n'
+
+  printf '## Base-merge necessity (#1881)\n\n'
+  printf -- '- **Up-to-date-branches policy** (ruleset `strict_required_status_checks_policy`): `%s`\n' "$strict_enabled"
+  printf -- '- **Base merges required** (behind actually blocks: strict on, queued to merge, or `%s` label): %s\n' \
+    "$request_label" "$bm_required"
+  printf -- '- **Base merges skippable** (BEHIND with no such requirement — a no-op churn): %s\n' "$bm_skippable"
+  printf -- '- `base_merges_required=%s base_merges_skippable=%s`\n\n' "$bm_required" "$bm_skippable"
+  printf '> Deterministic counter over open non-draft non-Dependabot **BEHIND** PRs (DIRTY PRs keep the '
+  printf 'conflict/rebase path, so they are excluded). `skippable` is the no-op base-merge volume #1881 '
+  printf 'removes at the source; it is the second input to #1864 AC #4 alongside #1865 `reviews_carried_forward`. '
+  printf 'The policy flag is read from repository configuration — if `strict` is re-armed, every BEHIND PR '
+  printf 'becomes `required` with no code change.\n'
 }
 
 # ---------------------------------------------------------------------------
@@ -247,12 +330,13 @@ main() {
     --paginate --jq '.workflow_runs | map({conclusion, created_at})' 2>/dev/null \
     | jq -s 'add // []' 2>/dev/null || echo '[]')"
 
-  # 3. Open-PR snapshot — pulled once with the fields both the behind-PR
-  #    multiplier and the AC7 merge-state (BEHIND/DIRTY) metric need. Best-effort;
-  #    defaults to [] so the report still renders when the query fails.
+  # 3. Open-PR snapshot — pulled once with the fields the behind-PR multiplier, the
+  #    AC7 merge-state (BEHIND/DIRTY) metric, and the #1881 base-merge-necessity
+  #    counter (labels + autoMergeRequest) all need. Best-effort; defaults to [] so
+  #    the report still renders when the query fails.
   local prs_json pr_list_truncated pr_count
   prs_json="$(gh pr list --repo "$WORKFLOW_REPO" --state open --limit "$PR_LIST_LIMIT" \
-    --json author,isDraft,mergeStateStatus 2>/dev/null || echo '[]')"
+    --json author,isDraft,mergeStateStatus,labels,autoMergeRequest 2>/dev/null || echo '[]')"
   [ -n "$prs_json" ] || prs_json='[]'
   pr_count="$(printf '%s' "$prs_json" | jq 'length' 2>/dev/null || echo 0)"
   if [ "$pr_count" -ge "$PR_LIST_LIMIT" ]; then
@@ -268,8 +352,22 @@ main() {
     | jq '[.[] | select((.author?.login // "") | test("dependabot"; "i") | not)] | length' \
     2>/dev/null || echo 0)"
 
+  # 4. Up-to-date-branches policy — read from the default branch's ruleset so the
+  #    base-merge-necessity counter (#1881) is derived from config, not hardcoded.
+  #    Best-effort: if the ruleset cannot be read the report degrades to strict=false
+  #    with a warning (so a silent read failure cannot masquerade as "no requirement"),
+  #    matching the token-degradation posture above.
+  local rules_json strict_enabled
+  if rules_json="$(gh api "repos/${WORKFLOW_REPO}/rules/branches/${DEFAULT_BRANCH}" 2>/dev/null)"; then
+    [ -n "$rules_json" ] || rules_json='[]'
+  else
+    rules_json='[]'
+    echo "::warning::Could not read branch rules for ${WORKFLOW_REPO}@${DEFAULT_BRANCH} — base-merge necessity assumes strict=false; skippable counts may be overstated." >&2
+  fi
+  strict_enabled="$(strict_from_branch_rules "$rules_json")"
+
   local report
-  report="$(render_report "$comments_json" "$runs_json" "$LOOKBACK_DAYS" "$behind" "$today" "$prs_json" "$pr_list_truncated" "$PR_LIST_LIMIT")"
+  report="$(render_report "$comments_json" "$runs_json" "$LOOKBACK_DAYS" "$behind" "$today" "$prs_json" "$pr_list_truncated" "$PR_LIST_LIMIT" "$strict_enabled" "$AUTO_REBASE_REQUEST_LABEL")"
 
   printf '%s\n' "$report"
   if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
