@@ -197,7 +197,9 @@ jobs:
             tests/agent_ingress_reference.bats \
             tests/agent_ingress_if_filter.bats \
             tests/test_validate_ingress_if.bats \
-            tests/run_attribution.bats
+            tests/run_attribution.bats \
+            tests/test_carry_forward.bats \
+            tests/test_review_one_pr_carry_forward.bats
 
   actionlint:
     # General workflow linting (#1256, epic #1052 Part D): actionlint validates
