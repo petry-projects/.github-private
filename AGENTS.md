@@ -69,8 +69,10 @@ dev-lead on a PR indefinitely while pr-review keeps working. **Rule: check prove
 clearing.** `github-actions[bot]` or `donpetry-bot` shortly after creation is automated (an
 artifact — safe to clear); a human account within seconds is deliberate and must be left alone.
 `pr_hold_kind` (in `scripts/lib/pr-automation-budget.sh`) is the pure classifier, and it returns
-exactly three kinds: **budget-exhaustion** (a real limiter — leave it), **rate-limit-only** (the
-*only* auto-clearable artifact — safe to clear), and **manual** (held with none of those markers).
+exactly four kinds: **budget-exhaustion** (a real limiter — leave it), **cycle-cap** (a genuine
+review-cycle escalation — leave it), **rate-limit-only** (the *only* auto-clearable artifact — safe
+to clear), and **manual** (held with none of those markers). Only **rate-limit-only** is
+auto-clearable; **budget-exhaustion** and **cycle-cap** remain blocked.
 A failed-review hold carries no automation marker, so it classifies as **manual** — the same bucket
 as a deliberate human `/hold`, and an undeterminable hold degrades to it fail-closed — so **leave it
 alone**. Never treat "failed review" as auto-clearable: only `rate-limit-only` is. The hold-kind
