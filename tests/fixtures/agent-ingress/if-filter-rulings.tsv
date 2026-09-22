@@ -38,6 +38,22 @@ secrets	FORBID	secrets['CLAUDE_CODE_OAUTH_TOKEN'] != ''	Bracket-indexed secrets 
 needs-outputs	FORBID	needs['detect'].outputs['should_run'] == 'true'	Bracket-indexed needs/outputs access is another job's computed state, identical to needs.detect.outputs.should_run once normalized.
 repo-identity	FORBID	github['repository'] == 'petry-projects/some-repo'	Bracket-indexed repo identity (github['repository']) is the same enrollment/config reach as github.repository; normalized and forbidden identically.
 labels-array-contains	FORBID	contains(github.event.pull_request['labels'].*.name, 'agent-ready')	Bracket-indexed access to the standing labels array is the same human-mutated repo-state snapshot reach as the dot form.
+# Bare-context-root reaches (#1781): a context used as a WHOLE VALUE with no
+# trailing property (toJSON(env), contains(toJSON(secrets), …), or the root
+# passed as any function argument) has no dot for the dotted denylist or the
+# allowlist backstop to bite. Detection is on identifier TOKENS, so each bare
+# root is forbidden exactly like its dotted twin, reusing the twin's construct
+# key. Bare github serialized whole is not the event — it is the whole context —
+# so it is named by the event-only allowlist (unlisted-context), like env.
+vars	FORBID	contains(toJSON(vars), 'claude')	Serializing the whole vars context is the same repo/org-config reach as vars.X, just with no trailing property; forbidden as the bare-root twin of vars.X.
+secrets	FORBID	contains(toJSON(secrets), 'x')	Serializing the whole secrets context inside a thin caller's if: is the most severe repo/org-config reach ADR-0007 forbids; the bare-root twin of secrets.X.
+needs-outputs	FORBID	contains(toJSON(needs), 'true')	Serializing the whole needs context reaches other jobs' computed state, identical to needs.detect.outputs.X once you drop the property path; the bare-root twin.
+unlisted-context	FORBID	toJSON(env)	A bare context root used as a whole value (env, inputs, steps, job, runner, matrix, strategy) is event-only-allowlist state with no dot to match; forbidden as the bare-root twin of env.FOO.
+unlisted-context	FORBID	contains(toJSON(github), 'x')	Serializing the whole github context exposes repo identity, actor, ref and more — not the delivered event; a bare-root reach the event-only allowlist forbids.
+# Regression (#1781, AC #2): a policed name that appears only INSIDE a string
+# literal is not a reference — named matching and bare-root detection run on the
+# literal-stripped expression, so the if: is read as the pure event predicate it is.
+literal-mentions-policed-name	ALLOW	contains(github.event.comment.body, 'please set env for me')	A quoted literal that merely mentions a policed name (env) is not a repo-state reach; the if: reads github.event.comment.body, an event field, so string literals are stripped before matching.
 # Allowlist backstop (#1772): the if: may reference ONLY the delivered event
 # (github.event_name / github.event.*). ANY other context root is a repo-state
 # reach even when no row above enumerates it — a denylist cannot enforce an
