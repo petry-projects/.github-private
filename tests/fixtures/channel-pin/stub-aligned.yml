@@ -1,0 +1,11 @@
+# Fixture: a caller stub whose guard comment names the SAME channel as the pin,
+# with an `agent_ref` that also matches. Nothing to flag.
+#   • You MUST NOT change the `uses:` ref — it is pinned to the `demo/v2-next`
+#     channel, a moving tag advanced centrally.
+name: Demo
+on: [pull_request]
+jobs:
+  demo:
+    uses: petry-projects/.github/.github/workflows/demo-reusable.yml@demo/v2-next  # NOSONAR(githubactions:S7637) first-party channel ref
+    with:
+      agent_ref: demo/v2-next
