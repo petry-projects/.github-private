@@ -1,0 +1,10 @@
+# Fixture: a plain workflow with NO reusable channel pin. There is no `uses:`
+# channel ref to be inconsistent with, so the guard treats it as not-applicable
+# and passes cleanly (this mirrors non-caller workflows in the live loop).
+name: Plain
+on: [pull_request]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo hi
