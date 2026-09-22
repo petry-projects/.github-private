@@ -170,11 +170,11 @@ summarize_base_merges() {
       | select((.isDraft // false) | not)
       | select(((.author?.login // "" | tostring) | test("dependabot"; "i")) | not)
       | select(.mergeStateStatus == "BEHIND")
-      | ( ($strict == "true")
-          or (.autoMergeRequest != null)
-          or ([ (.labels // [])[] | (.name // "") ] | index($label) != null)
-        )
-    ] as $flags |
+    ] | map(
+      ($strict == "true")
+      or (.autoMergeRequest != null)
+      or ([ (.labels // [])[] | (.name // "") ] | index($label) != null)
+    ) as $flags |
     [
       ([ $flags[] | select(.) ]       | length),
       ([ $flags[] | select(. | not) ] | length)
