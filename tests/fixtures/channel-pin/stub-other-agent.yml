@@ -1,0 +1,12 @@
+# Fixture: a comment naming a DIFFERENT agent's channel (`other/v1-next`) is not
+# this file's own pin and must not be flagged — cross-agent duty notes are common.
+# The exclusion here is by AGENT mismatch alone (no contrast marker on the line).
+#   • It is pinned to the `demo/v1-stable` channel.
+#   • The related canary duty lives in `other/v1-next` (a different agent).
+name: Demo
+on: [pull_request]
+jobs:
+  demo:
+    uses: petry-projects/.github/.github/workflows/demo-reusable.yml@demo/v1-stable  # NOSONAR(githubactions:S7637) first-party channel ref
+    with:
+      agent_ref: demo/v1-stable
