@@ -68,17 +68,21 @@ rate-limit-only hold as exempt and keeps retrying (#1550), while dev-lead's hold
 dev-lead on a PR indefinitely while pr-review keeps working. **Rule: check provenance before
 clearing.** `github-actions[bot]` or `donpetry-bot` shortly after creation is automated (an
 artifact — safe to clear); a human account within seconds is deliberate and must be left alone.
-Distinguish **budget-exhaustion** holds (a real limiter — leave them) from **rate-limit /
-failed-review** holds (artifacts — safe to clear); the pure classifier is `pr_hold_kind` in
-`scripts/lib/pr-automation-budget.sh`. The hold-kind taxonomy and the rate-limit-only exemption are
-specified in [`docs/agentic-interaction-model.md` §6.2.3 / §6.4](./docs/agentic-interaction-model.md#64-the-rate-limit-only-exemption-to-623-1550).
+`pr_hold_kind` (in `scripts/lib/pr-automation-budget.sh`) is the pure classifier, and it returns
+exactly three kinds: **budget-exhaustion** (a real limiter — leave it), **rate-limit-only** (the
+*only* auto-clearable artifact — safe to clear), and **manual** (held with none of those markers).
+A failed-review hold carries no automation marker, so it classifies as **manual** — the same bucket
+as a deliberate human `/hold`, and an undeterminable hold degrades to it fail-closed — so **leave it
+alone**. Never treat "failed review" as auto-clearable: only `rate-limit-only` is. The hold-kind
+taxonomy and the rate-limit-only exemption are specified in
+[`docs/agentic-interaction-model.md` §6.2.3 / §6.4](./docs/agentic-interaction-model.md#64-the-rate-limit-only-exemption-to-623-1550).
 
 ### Steering dev-lead
 
 dev-lead reads **only the issue title and body** — comments never reach the prompt (`ISSUE_TITLE` /
 `ISSUE_BODY` are its only issue inputs; see `prompts/dev-lead/fix-issue.md`). An issue steered by
 comment sits idle. To re-steer: **amend the body**, then re-dispatch with
-`gh api -X POST repos/$R/dispatches -f event_type=dev-lead-issue-retry -F 'client_payload[issue_number]=<n>'`
+`gh api -X POST repos/{owner}/{repo}/dispatches -f event_type=dev-lead-issue-retry -F 'client_payload[issue_number]={issue_number}'`
 (the `dev-lead` label is the first dispatch). **Always include a budget guard** in a multi-part
 body: sequence the commits, say which one matters most, and give explicit permission to stop and
 file a follow-up. #1734 timed out attempting two ACs and lost the work; #1647, #1651 and #1795
