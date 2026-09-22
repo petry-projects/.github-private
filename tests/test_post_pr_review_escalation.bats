@@ -32,6 +32,8 @@ setup() {
   export EXISTING_COMMENTS_FILE="$TEST_DIR/existing_comments.json"
   echo '[]' > "$EXISTING_COMMENTS_FILE"
   export LABELS_JSON='{"labels":[]}'
+  export POSTED_REVIEWS_FILE="$TEST_DIR/posted_reviews.json"
+  echo '[]' > "$POSTED_REVIEWS_FILE"
 
   export LABELS_FILE="$TEST_DIR/labels.json"
 
@@ -51,21 +53,34 @@ _labels_init() {
 }
 
 if [ "$sub1" = "api" ]; then
-  method="GET"; path=""; jqf=""; prev=""
+  method="GET"; path=""; jqf=""; slurp="false"; prev=""
   for a in "$@"; do
     case "$prev" in
       -X) method="$a" ;;
       --jq) jqf="$a" ;;
     esac
     case "$a" in
+      --slurp) slurp="true" ;;
       repos/*) path="$a" ;;
     esac
     prev="$a"
   done
   case "$path" in
     *contents/*) exit 1 ;;                                   # no CODEOWNERS
-    */issues/*/comments) cat "${EXISTING_COMMENTS_FILE:-/dev/null}"; exit 0 ;;
-    */pulls/*/reviews)   echo '[]'; exit 0 ;;
+    */issues/*/comments)
+      if [ "$slurp" = "true" ]; then
+        jq -s '.' "${EXISTING_COMMENTS_FILE:-/dev/null}"
+      else
+        cat "${EXISTING_COMMENTS_FILE:-/dev/null}"
+      fi
+      exit 0 ;;
+    */pulls/*/reviews)
+      if [ "$slurp" = "true" ]; then
+        jq -s '.' "${POSTED_REVIEWS_FILE:-/dev/null}"
+      else
+        cat "${POSTED_REVIEWS_FILE:-/dev/null}"
+      fi
+      exit 0 ;;
   esac
   if [ "$method" = "PATCH" ]; then
     case "$path" in
@@ -80,6 +95,7 @@ fi
 if [ "$sub1" = "pr" ] && [ "$sub2" = "review" ]; then
   prev=""; for a in "$@"; do
     [ "$prev" = "--body" ] && printf '%s' "$a" > "${REVIEW_OUT:-/dev/null}"
+    [ "$a" = "--approve" ] && printf '[{"id":1,"state":"APPROVED","user":{"login":"%s"},"commit_id":"%s","submitted_at":"2026-09-21T03:25:39Z","body":""}]' "${BOT_USER:-donpetry-bot}" "$SHA" > "${POSTED_REVIEWS_FILE:-/dev/null}"
     prev="$a"
   done
   exit 0
