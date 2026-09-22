@@ -15,6 +15,102 @@ This is the `.github-private` org infrastructure repo for `petry-projects`. It c
 - **`scripts/`** — Shell orchestration for GitHub Actions
 - **`.github/workflows/`** — Scheduled automation (PR review, health checks)
 
+## Operating the fleet — delivery rules learned from epic #1643
+
+These are hard-won rules for **driving delivery** in this repo, recorded so each session stops
+re-deriving them by hitting the same walls. Every one cost real time or a stranded PR during the
+qa-lead epic (#1643, 2026-09-13 → 2026-09-21). They complement — and cross-link, rather than
+duplicate — the deeper standards in the sections below and in `docs/`.
+
+### Merging to `main` does not activate agent code — say whether a channel cut is required
+
+**This is the single most expensive omission on this list — do not skip it.** Agents run their
+scripts from a **channel tag**, not from `main`. `pr-review-trigger.yml` pins
+`@pr-review/v1-next`; `persona-mention.yml` pins `@persona-mention/v1-next`; each caller stub pins
+its reusable at a moving channel tag, never at `main`. A fix merged to `main` is **inert** until
+`scripts/cut-release.sh <agent> <ver> --channel <tier> --push` moves that channel tag onto the
+commit. This bit twice in one week: #1795's CI-gate fix (merged, yet still deadlocking every PR
+until `pr-review/v1.10.0` was cut) and #1875's approval read-back (merged, yet still announcing
+phantom approvals until the channel caught up to the new commit). **Rule: after merging any change
+under `scripts/` or a `*-reusable.yml`, state whether a channel cut is required** — see
+["Release channel tags & the mutable-ref exception"](#release-channel-tags--the-mutable-ref-exception)
+for the tag model, `docs/release/versioning.md` for the scheme, and `scripts/cut-release.sh` for the
+promotion command.
+
+### Verify by execution, never by run status or diff
+
+Agents report success for work they did not do. dev-lead once reported `completed/success` on a
+rebase while pushing **zero commits** (it had silently deferred at the automation-PR cap below);
+pr-review posted "approved on PARTIAL advisory evidence" on #1788 / #1858 / #1860 where the reviews
+API held **no review object at all**. **Rule: confirm the artifact — a new head SHA, a review
+object, a changed file — not the run conclusion.** Check out the branch and run the suite; run the
+counterfactual to prove a new validator actually fails when it should. This is the delivery-time
+face of the check-vs-intent failure mode ([`docs/agentic-interaction-model.md` §13](./docs/agentic-interaction-model.md#13-the-check-vs-intent-failure-mode--the-agent-optimizes-the-check-not-the-intent-1468))
+and is why dev-lead's own completion record is **post-push only** (Phase 6 of the dev-lead prompts
+is deliberately provisional, keyed to a pushed PR number + head SHA).
+
+### Required vs non-required checks
+
+This repo gates `main` with a **ruleset**, not classic branch protection — so
+`GET /repos/{owner}/{repo}/branches/{branch}/protection` **404s**; read the required contexts from
+`GET /repos/{owner}/{repo}/rules/branches/{branch}` instead. The required set is exactly:
+**SonarCloud, CodeQL, `agent-shield / AgentShield`, `dependency-audit / Detect ecosystems`,
+`duplicate-decl-gate`**. `template-drift` and superseded `dev-lead / *` jobs fail routinely and
+**do not block merge**. `compute_ci_status` (`scripts/lib/ci-status.sh`, #1795) already gates only
+on the ruleset's required contexts (unioned with any rollup entry whose `.isRequired == true`), so
+a red **non-required** check must never be read as `ci-failing`.
+
+### `needs-human-review` means different things to different agents
+
+The pr-review sweep and dev-lead's hold-gate read the same label differently: the sweep classifies a
+rate-limit-only hold as exempt and keeps retrying (#1550), while dev-lead's hold-gate stops
+**unconditionally** and posts a hold notice. So a transient bot-applied hold silently disables
+dev-lead on a PR indefinitely while pr-review keeps working. **Rule: check provenance before
+clearing.** `github-actions[bot]` or `donpetry-bot` shortly after creation is automated (an
+artifact — safe to clear); a human account within seconds is deliberate and must be left alone.
+Distinguish **budget-exhaustion** holds (a real limiter — leave them) from **rate-limit /
+failed-review** holds (artifacts — safe to clear); the pure classifier is `pr_hold_kind` in
+`scripts/lib/pr-automation-budget.sh`. The hold-kind taxonomy and the rate-limit-only exemption are
+specified in [`docs/agentic-interaction-model.md` §6.2.3 / §6.4](./docs/agentic-interaction-model.md#64-the-rate-limit-only-exemption-to-623-1550).
+
+### Steering dev-lead
+
+dev-lead reads **only the issue title and body** — comments never reach the prompt (`ISSUE_TITLE` /
+`ISSUE_BODY` are its only issue inputs; see `prompts/dev-lead/fix-issue.md`). An issue steered by
+comment sits idle. To re-steer: **amend the body**, then re-dispatch with
+`gh api -X POST repos/$R/dispatches -f event_type=dev-lead-issue-retry -F 'client_payload[issue_number]=<n>'`
+(the `dev-lead` label is the first dispatch). **Always include a budget guard** in a multi-part
+body: sequence the commits, say which one matters most, and give explicit permission to stop and
+file a follow-up. #1734 timed out attempting two ACs and lost the work; #1647, #1651 and #1795
+succeeded with a guard.
+
+### The org automation-PR cap is real and near-silent
+
+There is a hard ceiling of **50 concurrent open non-Dependabot automation PRs org-wide**
+(`petry-projects/.github` `standards/pr-limits.json`). At the cap dev-lead posts a
+`dev-lead-issue-deferred` marker and opens **nothing** — yet the run still reports success (the same
+"success while doing nothing" trap as the verify-by-execution rule above). Freeing slots and
+re-dispatching works immediately.
+
+### The recurring defect class: a failure read as "nothing to do"
+
+Four separate instances in one week: a non-required red check became `ci-failing`; an empty brake
+derivation **skipped** the brake check; a failed approval write announced success; an unreadable
+managed file was overwritten (#1812 / PR #1868). **Rule: when an input cannot be resolved, fail
+loudly and name which derivation failed — never let "cannot check" silently become "nothing to
+check."** Fail **closed** on gates; fail **open** (with a `::warning::`) only on genuinely
+indeterminate liveness probes (#1776, e.g. `scripts/persona-authz-preflight.sh`). This is the mirror
+of the check-vs-intent failure mode ([`docs/agentic-interaction-model.md` §13](./docs/agentic-interaction-model.md#13-the-check-vs-intent-failure-mode--the-agent-optimizes-the-check-not-the-intent-1468)).
+
+### Local environment caveats
+
+macOS ships **bash 3.2**: `mapfile`, `readarray` and `declare -A` all fail there, so scripts that
+use them (e.g. `scripts/fleet_monitor.sh`) and several bats suites cannot run locally
+(`tests/dev-lead/unit/test_fix_reviews.bats` fails ~103 tests on `main` for this reason alone).
+System `python3` is 3.9 and too old for the eval scripts — use `python3.12` or a venv. In zsh,
+`read -r path` clobbers `$PATH`. **Rule: when a local suite fails, diff it against `main` before
+calling it a regression, and treat CI as authoritative.**
+
 ## Project-Specific Standards
 
 ### Workflow Files
