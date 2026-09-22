@@ -181,6 +181,7 @@ jobs:
             tests/test_merge_group_required_checks.bats \
             tests/caller_stub_freeze.bats \
             tests/test_sc2_self_review_channel.bats \
+            tests/test_channel_pin_consistency.bats \
             tests/pr_review_canary.bats \
             tests/dev-lead/unit/test_maintainer_review_thread_gate.bats \
             tests/dev-lead/unit/test_maintainer_comment_gate.bats \
