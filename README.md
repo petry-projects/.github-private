@@ -103,6 +103,7 @@ Notable subtopics are listed below to aid discoverability; see the standards dir
 | [`pr-limits`](https://github.com/petry-projects/.github/blob/main/standards/pr-limits.md) | Exempt actors, operator runbook, reconciliation with the Dependabot cap |
 | [`push-protection`](https://github.com/petry-projects/.github/blob/main/standards/push-protection.md) | Layer 1 (GitHub push protection), Layer 2 (local pre-commit), Layer 3 (CI secret scanning), incident response |
 | [`ruleset-remediation-runbook`](https://github.com/petry-projects/.github/blob/main/standards/ruleset-remediation-runbook.md) | Bypass actors, migrate checks into `code-quality`, delete legacy rulesets, rollback procedure |
+| [`standards-versioning`](https://github.com/petry-projects/.github/blob/main/standards/standards-versioning.md) | Two tag forms, who/what moves it, cutting a release, N-1 resolvability, opting in |
 
 ## Documentation
 
