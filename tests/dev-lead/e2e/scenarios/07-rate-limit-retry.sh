@@ -348,7 +348,7 @@ case "$*" in
   *"pulls/99"*".head.sha"*)
     echo "fff666ggg777" ;;
   *"pulls/99"*)
-    echo '{"number":99,"head":{"sha":"fff666ggg777"}}' ;;
+    echo '{"number":99,"state":"open","head":{"sha":"fff666ggg777"}}' ;;
   *"issues/99/comments"*)
     printf '%s\n' \
       '["<!-- dev-lead-fix-reviews pr=99 sha=fff666ggg777 intent=human-pr status=rate-limited -->",' \
@@ -403,7 +403,7 @@ case "$*" in
   *"pulls/99"*".head.sha"*)
     echo "fff666ggg777" ;;
   *"pulls/99"*)
-    echo '{"number":99,"head":{"sha":"fff666ggg777"}}' ;;
+    echo '{"number":99,"state":"open","head":{"sha":"fff666ggg777"}}' ;;
   *"issues/99/comments"*)
     echo '["<!-- dev-lead-fix-reviews pr=99 sha=fff666ggg777 intent=human-pr status=rate-limited -->"]' ;;
   *) echo "{}" ;;
@@ -561,16 +561,125 @@ GHEOF
     all_pass=false
   fi
 
+  # ── Part J: retry re-dispatches a fix-reviews status=blocked marker (#1568) ──
+  log ""
+  log "Part J: retry recognizes the non-quota status=blocked token and re-dispatches"
+
+  # A non-quota hold now writes status=blocked (issue #1568), not status=rate-limited.
+  # The retry cron must recognize it and re-dispatch the fix-reviews intent. A past
+  # reset simulates the 30-minute backoff having elapsed.
+  cat > "${STUB_ENGINE_DIR}/gh" << 'GHEOF'
+#!/usr/bin/env bash
+case "$*" in
+  *"repo list"*)
+    echo '["petry-projects/test-repo"]' ;;
+  *"pulls?state=open"*)
+    echo '[{"number":88,"head":{"sha":"blk111blk222"}}]' ;;
+  *"pulls/88"*".head.sha"*)
+    echo "blk111blk222" ;;
+  *"pulls/88"*)
+    echo '{"number":88,"state":"open","head":{"sha":"blk111blk222"}}' ;;
+  *"issues/88/comments"*)
+    echo '["<!-- dev-lead-fix-reviews pr=88 sha=blk111blk222 intent=fix-reviews status=blocked reason=blocked reset=2020-01-01T00:00:00Z -->"]' ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "${STUB_ENGINE_DIR}/gh"
+
+  local output_j exit_j
+  set +e
+  output_j=$(
+    PATH="${STUB_ENGINE_DIR}:${PATH}" \
+    GITHUB_ENV="${GITHUB_ENV_FILE}" \
+    GITHUB_OUTPUT="/dev/null" \
+    TARGET_ORG="petry-projects" \
+    DRY_RUN="true" \
+    DISPATCH_DELAY_SEC="0" \
+    NOW_ISO="2026-05-16T20:00:00Z" \
+    bash "${RETRY_SCRIPT}" 2>&1
+  )
+  exit_j=$?
+  set -e
+
+  log "Part J exit code: ${exit_j}"
+  echo "${output_j}" | sed 's/^/  /'
+
+  if assert_eq "$exit_j" "0" "${SCENARIO_NAME}(J): retry script exits 0"; then
+    true
+  else
+    all_pass=false
+  fi
+
+  if echo "${output_j}" | grep -q "would dispatch dev-lead-reviews-retry for PR 88 .*intent=fix-reviews"; then
+    echo "[PASS] ${SCENARIO_NAME}(J): retry re-dispatched fix-reviews on status=blocked marker"
+  else
+    echo "[FAIL] ${SCENARIO_NAME}(J): retry did not re-dispatch on status=blocked marker"
+    all_pass=false
+  fi
+
+  # ── Part K: legacy status=rate-limited fix-reviews marker still dispatches ───
+  log ""
+  log "Part K: pre-#1568 status=rate-limited fix-reviews markers remain retriable (back-compat)"
+
+  cat > "${STUB_ENGINE_DIR}/gh" << 'GHEOF'
+#!/usr/bin/env bash
+case "$*" in
+  *"repo list"*)
+    echo '["petry-projects/test-repo"]' ;;
+  *"pulls?state=open"*)
+    echo '[{"number":77,"head":{"sha":"rl111rl222"}}]' ;;
+  *"pulls/77"*".head.sha"*)
+    echo "rl111rl222" ;;
+  *"pulls/77"*)
+    echo '{"number":77,"state":"open","head":{"sha":"rl111rl222"}}' ;;
+  *"issues/77/comments"*)
+    echo '["<!-- dev-lead-fix-reviews pr=77 sha=rl111rl222 intent=fix-reviews status=rate-limited reason=rate-limit reset=2020-01-01T00:00:00Z -->"]' ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "${STUB_ENGINE_DIR}/gh"
+
+  local output_k exit_k
+  set +e
+  output_k=$(
+    PATH="${STUB_ENGINE_DIR}:${PATH}" \
+    GITHUB_ENV="${GITHUB_ENV_FILE}" \
+    GITHUB_OUTPUT="/dev/null" \
+    TARGET_ORG="petry-projects" \
+    DRY_RUN="true" \
+    DISPATCH_DELAY_SEC="0" \
+    NOW_ISO="2026-05-16T20:00:00Z" \
+    bash "${RETRY_SCRIPT}" 2>&1
+  )
+  exit_k=$?
+  set -e
+
+  log "Part K exit code: ${exit_k}"
+  echo "${output_k}" | sed 's/^/  /'
+
+  if assert_eq "$exit_k" "0" "${SCENARIO_NAME}(K): retry script exits 0"; then
+    true
+  else
+    all_pass=false
+  fi
+
+  if echo "${output_k}" | grep -q "would dispatch dev-lead-reviews-retry for PR 77 .*intent=fix-reviews"; then
+    echo "[PASS] ${SCENARIO_NAME}(K): retry re-dispatched fix-reviews on legacy status=rate-limited marker"
+  else
+    echo "[FAIL] ${SCENARIO_NAME}(K): retry did not re-dispatch on legacy status=rate-limited marker"
+    all_pass=false
+  fi
+
   # ── Result ─────────────────────────────────────────────────────────────────
   if [ "${all_pass}" = "true" ]; then
     log "[PASS] ${SCENARIO_NAME}: rate-limit retry infrastructure works correctly"
     record_result "${SCENARIO_NAME}" "PASS" \
-      "rate-limited-exit2 no-exhaustion-count retriable-idempotency fix-reviews-marker on-mention-ack retry-scan human-pr-normalize issue-retry-scan"
+      "rate-limited-exit2 no-exhaustion-count retriable-idempotency fix-reviews-marker on-mention-ack retry-scan human-pr-normalize issue-retry-scan blocked-token-dispatch rate-limited-backcompat-dispatch"
     exit 0
   else
     err "[FAIL] ${SCENARIO_NAME}: one or more assertions failed"
     record_result "${SCENARIO_NAME}" "FAIL" \
-      "exitA=${exit_a} exitB=${exit_b} exitC=${exit_c} exitD=${exit_d} exitE=${exit_e} exitF=${exit_f} exitG=${exit_g} exitH=${exit_h} exitI=${exit_i}"
+      "exitA=${exit_a} exitB=${exit_b} exitC=${exit_c} exitD=${exit_d} exitE=${exit_e} exitF=${exit_f} exitG=${exit_g} exitH=${exit_h} exitI=${exit_i} exitJ=${exit_j} exitK=${exit_k}"
     exit 1
   fi
 }

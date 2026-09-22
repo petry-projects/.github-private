@@ -1,0 +1,11 @@
+# Fixture: an intentional CONTRAST reference must NOT be flagged. This stub pins
+# the `next` canary channel on purpose and its prose names the `stable` channel
+# only to describe the promotion target — a contrast marker ("promoted"/"fleet")
+# tells the guard this is deliberate.
+#   • This repo dogfoods `demo/v1-next`; it is promoted to `demo/v1-stable`
+#     (the fleet) only after the canary proves healthy.
+name: Demo
+on: [pull_request]
+jobs:
+  demo:
+    uses: petry-projects/.github/.github/workflows/demo-reusable.yml@demo/v1-next  # NOSONAR(githubactions:S7637) first-party channel ref

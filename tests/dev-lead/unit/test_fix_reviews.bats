@@ -352,6 +352,9 @@ GHEOF
   # Genuine rate limit keeps the rate-limited wording and tags the marker reason
   [[ "$output" == *"reason=rate-limit"* ]]
   [[ "$output" == *"Dev-Lead — rate-limited"* ]]
+  # A genuine quota hold is the ONLY case that emits status=rate-limited (issue #1568)
+  [[ "$output" == *"status=rate-limited"* ]]
+  [[ "$output" != *"status=blocked"* ]]
 }
 
 @test "fix-reviews: rate-limited: on-mention intent posts re-trigger ack (not auto-retry)" {
@@ -2684,6 +2687,268 @@ GHEOF
   [[ "$output" == *"status=no-changes"* ]]
 }
 
+# ── #1859: blocking checks gated via lib/ci-status.sh (required-only) ──────────
+# dev-lead must not refuse work over a failing NON-required check. The blocker
+# gate now delegates to compute_ci_status (lib/ci-status.sh): a red non-required
+# check is ignored, a red REQUIRED check still blocks, CHANGES_REQUESTED still
+# blocks, and an unreadable required set fails closed (every failing check blocks).
+
+@test "fix-reviews (#1859): red NON-required check + green required check → pass proceeds" {
+  local tmpdir
+  tmpdir="$(mktemp -d)"
+
+  # template-drift (NON-required) is failing; Lint (the required check) is green.
+  # The branch ruleset names only Lint as required, so template-drift must NOT block.
+  cat > "$STUB_BIN_DIR/gh" <<'GHEOF'
+#!/usr/bin/env bash
+ARGS="$*"
+case "$ARGS" in
+  *"rules/branches"*)
+    echo '["Lint"]' ;;
+  *"branches/"*"protection"*)
+    echo '{}' ;;
+  *"commits/"*"check-runs"*)
+    echo '{"check_runs":[{"name":"Lint","status":"completed","conclusion":"success","details_url":"https://example.com/1"},{"name":"template-drift","status":"completed","conclusion":"failure","details_url":"https://example.com/2"}]}' ;;
+  *"commits/"*"statuses"*)
+    echo '[]' ;;
+  *"pulls/"*"reviews"*)
+    echo '[]' ;;
+  *"graphql"*)
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+  *"issues/"*"comments"*)
+    echo "[]" ;;
+  *"pr checkout"*) exit 0 ;;
+  *"pr comment"*) exit 0 ;;
+  *"pr merge"*) exit 0 ;;
+  *"pulls/"*) echo '{"head":{"sha":"ddd444eee555"},"auto_merge":null}' ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+
+  run bash -c "
+    cd '$tmpdir'
+    export INTENT_TYPE=fix-reviews DEV_LEAD_DRY_RUN=true
+    export PR_NUMBER=54 HEAD_SHA=ddd444eee555 REPO='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export PATH=\"$STUB_BIN_DIR:\$PATH\"
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+  rm -rf "$tmpdir"
+
+  [ "$status" -eq 0 ]
+  # A red non-required check must not stop the pass: no retry marker, terminal posted.
+  [[ "$output" != *"Tier-1 blockers still present"* ]]
+  [[ "$output" != *"rate-limited marker"* ]]
+  [[ "$output" == *"status=no-changes"* ]]
+}
+
+@test "fix-reviews (#1859): red REQUIRED check still blocks" {
+  local tmpdir
+  tmpdir="$(mktemp -d)"
+
+  # Lint is both required (per the ruleset) and failing → must still block.
+  cat > "$STUB_BIN_DIR/gh" <<'GHEOF'
+#!/usr/bin/env bash
+ARGS="$*"
+case "$ARGS" in
+  *"rules/branches"*)
+    echo '["Lint"]' ;;
+  *"branches/"*"protection"*)
+    echo '{}' ;;
+  *"commits/"*"check-runs"*)
+    echo '{"check_runs":[{"name":"Lint","status":"completed","conclusion":"failure","details_url":"https://example.com/1"}]}' ;;
+  *"commits/"*"statuses"*)
+    echo '[]' ;;
+  *"pulls/"*"reviews"*)
+    echo '[]' ;;
+  *"graphql"*)
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+  *"issues/"*"comments"*)
+    echo "[]" ;;
+  *"pr checkout"*) exit 0 ;;
+  *"pr comment"*) exit 0 ;;
+  *"pr merge"*) exit 0 ;;
+  *"pulls/"*) echo '{"head":{"sha":"ddd444eee555"},"auto_merge":null}' ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+
+  run bash -c "
+    cd '$tmpdir'
+    export INTENT_TYPE=fix-reviews DEV_LEAD_DRY_RUN=true
+    export PR_NUMBER=54 HEAD_SHA=ddd444eee555 REPO='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export PATH=\"$STUB_BIN_DIR:\$PATH\"
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+  rm -rf "$tmpdir"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Tier-1 blockers still present"* ]]
+  # AC #5: the message names the specific blocking check and that it is required.
+  [[ "$output" == *"required check"* ]]
+  [[ "$output" == *'`Lint`'* ]]
+  [[ "$output" == *"failing"* ]]
+  [[ "$output" == *"rate-limited marker"* ]]
+  [[ "$output" == *"reason=blocked"* ]]
+  [[ "$output" != *"status=no-changes"* ]]
+}
+
+@test "fix-reviews (#1859): CHANGES_REQUESTED still blocks even with all-green required checks" {
+  local tmpdir
+  tmpdir="$(mktemp -d)"
+
+  # Every check (required + non-required) is green, but a reviewer requested changes.
+  cat > "$STUB_BIN_DIR/gh" <<'GHEOF'
+#!/usr/bin/env bash
+ARGS="$*"
+case "$ARGS" in
+  *"rules/branches"*)
+    echo '["Lint"]' ;;
+  *"branches/"*"protection"*)
+    echo '{}' ;;
+  *"commits/"*"check-runs"*)
+    echo '{"check_runs":[{"name":"Lint","status":"completed","conclusion":"success","details_url":"https://example.com/1"}]}' ;;
+  *"commits/"*"statuses"*)
+    echo '[]' ;;
+  *"pulls/"*"reviews"*)
+    echo '[{"id":7,"user":{"login":"a-human"},"state":"CHANGES_REQUESTED","submitted_at":"2026-01-01T00:00:00Z"}]' ;;
+  *"graphql"*)
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+  *"issues/"*"comments"*)
+    echo "[]" ;;
+  *"pr checkout"*) exit 0 ;;
+  *"pr comment"*) exit 0 ;;
+  *"pr merge"*) exit 0 ;;
+  *"pulls/"*) echo '{"head":{"sha":"ddd444eee555"},"auto_merge":null}' ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+
+  run bash -c "
+    cd '$tmpdir'
+    export INTENT_TYPE=fix-reviews DEV_LEAD_DRY_RUN=true
+    export PR_NUMBER=54 HEAD_SHA=ddd444eee555 REPO='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export PATH=\"$STUB_BIN_DIR:\$PATH\"
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+  rm -rf "$tmpdir"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Tier-1 blockers still present"* ]]
+  [[ "$output" == *"rate-limited marker"* ]]
+  [[ "$output" != *"status=no-changes"* ]]
+}
+
+@test "fix-reviews (#1859): unreadable required set fails closed — red non-required check blocks" {
+  local tmpdir
+  tmpdir="$(mktemp -d)"
+
+  # The ruleset API errors (unreadable). Per ci-status.sh's fail-closed contract,
+  # every failing check is then treated as blocking — so template-drift blocks.
+  cat > "$STUB_BIN_DIR/gh" <<'GHEOF'
+#!/usr/bin/env bash
+ARGS="$*"
+case "$ARGS" in
+  *"rules/branches"*)
+    echo "API error: not accessible" >&2; exit 1 ;;
+  *"branches/"*"protection"*)
+    echo "API error: not accessible" >&2; exit 1 ;;
+  *"commits/"*"check-runs"*)
+    echo '{"check_runs":[{"name":"template-drift","status":"completed","conclusion":"failure","details_url":"https://example.com/2"}]}' ;;
+  *"commits/"*"statuses"*)
+    echo '[]' ;;
+  *"pulls/"*"reviews"*)
+    echo '[]' ;;
+  *"graphql"*)
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+  *"issues/"*"comments"*)
+    echo "[]" ;;
+  *"pr checkout"*) exit 0 ;;
+  *"pr comment"*) exit 0 ;;
+  *"pr merge"*) exit 0 ;;
+  *"pulls/"*) echo '{"head":{"sha":"ddd444eee555"},"auto_merge":null}' ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+
+  run bash -c "
+    cd '$tmpdir'
+    export INTENT_TYPE=fix-reviews DEV_LEAD_DRY_RUN=true
+    export PR_NUMBER=54 HEAD_SHA=ddd444eee555 REPO='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export PATH=\"$STUB_BIN_DIR:\$PATH\"
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+  rm -rf "$tmpdir"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Tier-1 blockers still present"* ]]
+  # AC #5: fail-closed message names the check and flags the unreadable required set.
+  [[ "$output" == *'`template-drift`'* ]]
+  [[ "$output" == *"failing closed"* ]]
+  [[ "$output" != *"status=no-changes"* ]]
+}
+
+@test "fix-reviews: readable-but-empty required set names the check WITHOUT the 'failing closed' note" {
+  local tmpdir
+  tmpdir="$(mktemp -d)"
+
+  # The ruleset API reads successfully but configures NO required checks (returns
+  # []). With no required set the gate falls back to every external check, so a red
+  # template-drift still blocks — but the message must NOT claim the ruleset was
+  # unreadable, because it was merely empty (distinct from the fail-closed case).
+  cat > "$STUB_BIN_DIR/gh" <<'GHEOF'
+#!/usr/bin/env bash
+ARGS="$*"
+case "$ARGS" in
+  *"rules/branches"*)
+    echo '[]' ;;
+  *"branches/"*"protection"*)
+    echo "API error: not accessible" >&2; exit 1 ;;
+  *"commits/"*"check-runs"*)
+    echo '{"check_runs":[{"name":"template-drift","status":"completed","conclusion":"failure","details_url":"https://example.com/2"}]}' ;;
+  *"commits/"*"statuses"*)
+    echo '[]' ;;
+  *"pulls/"*"reviews"*)
+    echo '[]' ;;
+  *"graphql"*)
+    echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]},"reviewDecision":null}}}}' ;;
+  *"issues/"*"comments"*)
+    echo "[]" ;;
+  *"pr checkout"*) exit 0 ;;
+  *"pr comment"*) exit 0 ;;
+  *"pr merge"*) exit 0 ;;
+  *"pulls/"*) echo '{"head":{"sha":"ddd444eee555"},"auto_merge":null}' ;;
+  *) echo "{}" ;;
+esac
+GHEOF
+  chmod +x "$STUB_BIN_DIR/gh"
+
+  run bash -c "
+    cd '$tmpdir'
+    export INTENT_TYPE=fix-reviews DEV_LEAD_DRY_RUN=true
+    export PR_NUMBER=54 HEAD_SHA=ddd444eee555 REPO='petry-projects/.github-private'
+    export REVIEW_ENGINE=claude BASE_REF=main PROMPTS_DIR='$SCRIPT_DIR/prompts/dev-lead'
+    export PATH=\"$STUB_BIN_DIR:\$PATH\"
+    bash '$FIX_REVIEWS_SCRIPT'
+  " 2>&1
+  rm -rf "$tmpdir"
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Tier-1 blockers still present"* ]]
+  # The blocker is still named…
+  [[ "$output" == *'`template-drift`'* ]]
+  # …but a readable-but-empty ruleset must NOT be reported as unreadable.
+  [[ "$output" != *"failing closed"* ]]
+  [[ "$output" != *"status=no-changes"* ]]
+}
+
 # ── Legacy commit statuses dedup: latest state per context wins ────────────────
 # The /statuses API returns the full history per context (newest first). A stale
 # failure followed by a newer success for the same context must not suppress
@@ -3133,9 +3398,10 @@ GHEOF
   [[ "$output" != *"status=no-changes"* ]]
   # Must include a future reset time so the retry cron backs off instead of re-dispatching immediately
   [[ "$output" == *"reset="* ]]
-  # Honest wording (issue #461): blocked-path marker keeps the machine-readable
-  # status token but must not claim the engines are rate-limited
-  [[ "$output" == *"status=rate-limited"* ]]
+  # Honest token (issue #1568): a non-quota hold emits status=blocked, never
+  # status=rate-limited, and must not claim the engines are rate-limited.
+  [[ "$output" == *"status=blocked"* ]]
+  [[ "$output" != *"status=rate-limited"* ]]
   [[ "$output" == *"reason=blocked"* ]]
   [[ "$output" == *"waiting on PR blockers"* ]]
   [[ "$output" != *"all AI engines are currently rate-limited"* ]]
@@ -3183,9 +3449,10 @@ GHEOF
   [[ "$output" != *"status=no-changes"* ]]
   # Must include a future reset time so the retry cron backs off instead of re-dispatching immediately
   [[ "$output" == *"reset="* ]]
-  # Honest wording (issue #461): blocked-path marker keeps the machine-readable
-  # status token but must not claim the engines are rate-limited
-  [[ "$output" == *"status=rate-limited"* ]]
+  # Honest token (issue #1568): a non-quota hold emits status=blocked, never
+  # status=rate-limited, and must not claim the engines are rate-limited.
+  [[ "$output" == *"status=blocked"* ]]
+  [[ "$output" != *"status=rate-limited"* ]]
   [[ "$output" == *"reason=blocked"* ]]
   [[ "$output" == *"waiting on PR blockers"* ]]
   [[ "$output" != *"all AI engines are currently rate-limited"* ]]
@@ -3240,19 +3507,20 @@ GHEOF
   [[ "$output" == *"status=no-changes"* ]]
 }
 
-@test "review-changes: lone cancelled check run still counts as a hard blocker" {
+@test "review-changes: lone cancelled check run is not a hard blocker (#608/#1859)" {
   local tmpdir
   tmpdir="$(mktemp -d)"
 
-  # Stub: a single cancelled check run with no newer same-named replacement —
-  # genuinely the latest of its name, so it must still block (regression guard
-  # against over-eager dedup).
+  # Stub: a single cancelled check run (a superseded, non-required job). Since the
+  # blocker gate now delegates to lib/ci-status.sh, a CANCELLED check is
+  # non-blocking (#608) — it is not a failure. The pass proceeds to a no-changes
+  # terminal rather than posting a retry marker.
   cat > "$STUB_BIN_DIR/gh" <<'GHEOF'
 #!/usr/bin/env bash
 ARGS="$*"
 case "$ARGS" in
   *"check-runs"*)
-    echo '{"check_runs":[{"id":201,"name":"review","status":"completed","conclusion":"cancelled","started_at":"2026-06-07T13:08:53Z","details_url":"https://example.com/1"}]}' ;;
+    echo '{"check_runs":[{"id":201,"name":"some-check","status":"completed","conclusion":"cancelled","started_at":"2026-06-07T13:08:53Z","details_url":"https://example.com/1"}]}' ;;
   *"statuses"*)
     echo '[]' ;;
   *"pulls/"*"reviews"*)
@@ -3279,10 +3547,9 @@ GHEOF
   rm -rf "$tmpdir"
 
   [ "$status" -eq 0 ]
-  [[ "$output" == *"Tier-1 blockers still present"* ]]
-  [[ "$output" == *"rate-limited marker"* ]]
-  [[ "$output" == *"reason=blocked"* ]]
-  [[ "$output" != *"status=no-changes"* ]]
+  [[ "$output" != *"Tier-1 blockers still present"* ]]
+  [[ "$output" != *"rate-limited marker"* ]]
+  [[ "$output" == *"status=no-changes"* ]]
 }
 
 @test "review-changes: same-named check runs from different apps are not collapsed" {
@@ -3324,12 +3591,12 @@ GHEOF
   rm -rf "$tmpdir"
 
   [ "$status" -eq 0 ]
-  # The cancelled run from a different app must not be hidden by the same-named success.
-  # Both must remain distinct in CI_STATUS_JSON, so the cancelled one still blocks.
-  [[ "$output" == *"Tier-1 blockers still present"* ]]
-  [[ "$output" == *"rate-limited marker"* ]]
-  [[ "$output" == *"reason=blocked"* ]]
-  [[ "$output" != *"status=no-changes"* ]]
+  # The cancelled run from a different app stays distinct in CI_STATUS_JSON, but a
+  # cancelled check is not a blocker (#608/#1859) — with only a success and a
+  # cancelled run present, compute_ci_status is passing so the pass proceeds.
+  [[ "$output" != *"Tier-1 blockers still present"* ]]
+  [[ "$output" != *"rate-limited marker"* ]]
+  [[ "$output" == *"status=no-changes"* ]]
 }
 
 @test "review-changes: same app different workflow suites are not collapsed — failure survives" {
