@@ -52,8 +52,8 @@ is deliberately provisional, keyed to a pushed PR number + head SHA).
 ### Required vs non-required checks
 
 This repo gates `main` with a **ruleset**, not classic branch protection — so
-`GET /repos/{owner}/{repo}/branches/{branch}/protection` **404s**; read the required contexts from
-`GET /repos/{owner}/{repo}/rules/branches/{branch}` instead. The required set is exactly:
+`GET /repos/<owner>/<repo>/branches/<branch>/protection` **404s**; read the required contexts from
+`GET /repos/<owner>/<repo>/rules/branches/<branch>` instead. The required set is exactly:
 **SonarCloud, CodeQL, `agent-shield / AgentShield`, `dependency-audit / Detect ecosystems`,
 `duplicate-decl-gate`**. `template-drift` and superseded `dev-lead / *` jobs fail routinely and
 **do not block merge**. `compute_ci_status` (`scripts/lib/ci-status.sh`, #1795) already gates only
@@ -84,7 +84,7 @@ taxonomy and the rate-limit-only exemption are specified in
 dev-lead reads **only the issue title and body** — comments never reach the prompt (`ISSUE_TITLE` /
 `ISSUE_BODY` are its only issue inputs; see `prompts/dev-lead/fix-issue.md`). An issue steered by
 comment sits idle. To re-steer: **amend the body**, then re-dispatch with
-`gh api -X POST repos/{owner}/{repo}/dispatches -f event_type=dev-lead-issue-retry -F 'client_payload[issue_number]={issue_number}'`
+`gh api -X POST repos/<owner>/<repo>/dispatches -f event_type=dev-lead-issue-retry -F 'client_payload[issue_number]=<issue_number>'`
 (the `dev-lead` label is the first dispatch). **Always include a budget guard** in a multi-part
 body: sequence the commits, say which one matters most, and give explicit permission to stop and
 file a follow-up. #1734 timed out attempting two ACs and lost the work; #1647, #1651 and #1795
