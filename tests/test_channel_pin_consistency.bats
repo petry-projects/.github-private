@@ -66,7 +66,7 @@ setup() {
 
 @test "contrast: a plain pin-assertion line is NOT a contrast reference" {
   run cpc_line_is_contrast "it is pinned to the demo/v1-stable channel"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
 }
 
 # ---------------------------------------------------------------------------
@@ -81,14 +81,14 @@ setup() {
 
 @test "conflicts: a comment naming a different channel is a conflict" {
   run cpc_stub_conflicts "${FIXTURES}/stub-comment-mismatch.yml"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
   [[ "$output" == *"demo/v2-stable"* ]]
   [[ "$output" == *"demo/v2-next"* ]]
 }
 
 @test "conflicts: a comment differing in BOTH tier and version is a conflict" {
   run cpc_stub_conflicts "${FIXTURES}/stub-both-differ.yml"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
   [[ "$output" == *"demo/v1-stable"* ]]
   [[ "$output" == *"demo/v2-next"* ]]
 }
@@ -107,7 +107,7 @@ setup() {
 
 @test "conflicts: a desynced agent_ref is a conflict" {
   run cpc_stub_conflicts "${FIXTURES}/stub-agent-ref-desync.yml"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
   [[ "$output" == *"agent_ref"* ]]
   [[ "$output" == *"demo/v1-next"* ]]
   [[ "$output" == *"demo/v1-stable"* ]]
@@ -135,7 +135,7 @@ setup() {
 
 @test "assert: a comment/pin mismatch FAILS naming the issue and both refs" {
   run cpc_assert_consistent "${FIXTURES}/stub-comment-mismatch.yml" "stub-comment-mismatch.yml"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
   [[ "$output" == *"1866"* ]]
   [[ "$output" == *"1819"* ]]
   [[ "$output" == *"demo/v2-stable"* ]]
@@ -146,7 +146,7 @@ setup() {
 
 @test "assert: a desynced agent_ref FAILS" {
   run cpc_assert_consistent "${FIXTURES}/stub-agent-ref-desync.yml" "stub-agent-ref-desync.yml"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
   [[ "$output" == *"agent_ref"* ]]
 }
 
@@ -158,15 +158,16 @@ setup() {
 
 @test "LIVE: every .github/workflows/*.yml caller stub is comment/pin consistent" {
   shopt -s nullglob
-  local wf failed=0
+  local wf failed=0 tmpfile
+  tmpfile="$(mktemp)" || { echo "Failed to create temp file"; return 1; }
   for wf in "${REPO_ROOT}"/.github/workflows/*.yml; do
-    if ! cpc_assert_consistent "$wf" "$(basename "$wf")" >/tmp/cpc_live.$$ 2>&1; then
+    if ! cpc_assert_consistent "$wf" "$(basename "$wf")" >"$tmpfile" 2>&1; then
       echo "INCONSISTENT: $wf"
-      cat /tmp/cpc_live.$$
+      cat "$tmpfile"
       failed=1
     fi
   done
-  rm -f /tmp/cpc_live.$$
+  rm -f "$tmpfile"
   [ "$failed" -eq 0 ]
 }
 

@@ -95,7 +95,7 @@ cpc_stub_conflicts() {
     fi
   fi
 
-  [ "$found" -eq 0 ]
+  return "$found"
 }
 
 # cpc_assert_consistent <file> [<label>]
