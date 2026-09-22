@@ -1,0 +1,5 @@
+# Minimal persona manifest fixture — only opt_out_label is read by
+# scripts/validate-interaction-model.sh (imv_persona_opt_out).
+schema_version: 1
+name: alpha
+opt_out_label: alpha:hands-off
