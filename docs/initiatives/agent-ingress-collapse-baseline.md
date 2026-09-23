@@ -41,16 +41,18 @@ those become 149 ingress runs but still 447 role jobs. The post-collapse figure 
 **1356** is therefore the sum of role-bearing job executions, not the ingress run count.
 
 **Executed jobs, not workflow runs — measured on the same basis on both sides.** The table figures
-below are each workflow's `total_count`, i.e. *workflow-run* counts. For four of the five stubs the
-thin caller runs its single role job on every triggering run, so run count equals role-job executions
-1:1. The exception is `ci-failure-analyst`: its job-level `if:` executes the analyst job only for
-failed, non-self check runs (`templates/ci-failure-analyst.yml:41-43`), so some of its **35**
-`check_run` runs execute *no* billable role job. That 35 — and therefore the **1356** — is thus an
-**upper bound** on executed role jobs until each legacy run's jobs are queried and the skipped jobs
-excluded. This matters directionally: the post-collapse side already drops them —
-`scripts/lib/run-attribution.sh` discards all-skipped roles — so any re-capture (and the *after*
-number) must count executed (non-skipped) role jobs on **both** sides, or the before figure is
-inflated relative to the after and the comparison falsely favours the collapse.
+below are each workflow's `total_count`, i.e. *workflow-run* counts, not executed-job counts. Each of
+the five stubs carries job-level `if:` conditions that can skip role execution without preventing the
+workflow run: `pr-auto-review` skips Dependabot-authored events (`pr-auto-review.yml:60`), `pr-review`
+skips non-successful check_suites or non-approved/dismissed pull_request_review events
+(`pr-review.yml:162-169`), and `ci-failure-analyst` skips non-failed check runs
+(`templates/ci-failure-analyst.yml:41-43`). This means some workflow runs from each stub execute *no*
+billable role job. Therefore the **1356** is thus an **upper bound** on executed role jobs across all
+five stubs until each legacy run's jobs are queried and the skipped jobs excluded. This matters
+directionally: the post-collapse side already drops them — `scripts/lib/run-attribution.sh` discards
+all-skipped roles — so any re-capture (and the *after* number) must count executed (non-skipped) role
+jobs on **both** sides, or the before figure is inflated relative to the after and the comparison
+falsely favours the collapse.
 
 **Runner minutes are a separate, unmeasured cost question.** No minute baseline was captured here:
 every figure in this document is a run/invocation count from the Actions API `total_count`, not a
@@ -69,9 +71,11 @@ same window — rather than folding it into this bound.
 | `ci-failure-analyst` | `ci-failure-analyst.yml` | bare SHA `e37e9eb4` ⚠️ | **35** |
 | | | **Total** | **1356** |
 
-### Per-event breakdown
+### Per-event breakdown & job-execution baseline caveat
 
 Needed for the union `on:` block (AC2) and for the skip-kind analysis (AC10).
+
+**Caveat on executed vs. workflow-run counts:** The 1356 total is measured as workflow-run counts via each stub's `total_count`. However, all five stubs have job-level `if:` conditions that can skip role execution: (a) `pr-auto-review` skips Dependabot-authored events (`pr-auto-review.yml:60`), (b) `pr-review` skips non-successful check_suites and certain pull_request_review states (`pr-review.yml:162-169`), (c) `ci-failure-analyst` skips non-failed check runs. **Therefore 1356 is an upper bound on executed role jobs for all five stubs**, not just the three others only. Proper measurement for the post-collapse comparison requires querying each workflow run's job executions to exclude skipped (non-executed) jobs on **both** the before and after sides, so the comparison is valid directionally.
 
 | Role | Events (7d) |
 |---|---|
