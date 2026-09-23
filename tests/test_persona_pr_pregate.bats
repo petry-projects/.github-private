@@ -97,6 +97,18 @@ STUB
 }
 
 # ---------------------------------------------------------------------------
+# An unrecognized surface is malformed dispatch data -> fail closed (skip),
+# NOT treated as a mention (which would bypass every pull_request suppressor).
+# ---------------------------------------------------------------------------
+
+@test "fail-closed: an unrecognized surface skips with a ::error (not run as mention)" {
+  run persona_event_pregate qa-lead bogus-surface petry-projects/.github-private 5 opened
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"::error::"* ]]
+  [[ "$output" == *skip:unknown-surface* ]]
+}
+
+# ---------------------------------------------------------------------------
 # surface=pull_request, qa-lead -> the shared gather+decide
 # ---------------------------------------------------------------------------
 
@@ -109,21 +121,21 @@ STUB
 @test "skip: no-test-surface (docs-only PR)" {
   STUB_FILES='["README.md"]' \
     run persona_event_pregate qa-lead pull_request petry-projects/.github-private 5 opened
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
   [[ "$output" == skip:no-test-surface* ]]
 }
 
 @test "skip: opt-out (qa-lead:hands-off label)" {
   STUB_LABELS='["qa-lead:hands-off"]' \
     run persona_event_pregate qa-lead pull_request petry-projects/.github-private 5 opened
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
   [[ "$output" == skip:opt-out* ]]
 }
 
 @test "skip: human-gated (needs-human-review label)" {
   STUB_LABELS='["needs-human-review"]' \
     run persona_event_pregate qa-lead pull_request petry-projects/.github-private 5 opened
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
   [[ "$output" == skip:human-gated* ]]
 }
 
@@ -132,7 +144,7 @@ STUB
   bots="$(jq -n '[range(10) | {created_at: "2026-09-20T00:00:0\(.)Z", user: {login: "github-actions[bot]"}}]')"
   STUB_RAW_COMMENTS="$bots" \
     run persona_event_pregate qa-lead pull_request petry-projects/.github-private 5 opened
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
   [[ "$output" == skip:budget-exhausted* ]]
 }
 
@@ -140,7 +152,7 @@ STUB
   STUB_COMMENT_BODIES='<!-- persona:qa-lead -->
 prior advisory' \
     run persona_event_pregate qa-lead pull_request petry-projects/.github-private 5 opened
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
   [[ "$output" == skip:already-advised* ]]
 }
 
@@ -151,7 +163,7 @@ prior advisory' \
 @test "fail-closed: unreadable changed-file list skips with a ::error" {
   STUB_FILES_RC=1 \
     run persona_event_pregate qa-lead pull_request petry-projects/.github-private 5 opened
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
   [[ "$output" == *skip:* ]]
   [[ "$output" == *"::error::"* ]]
   [[ "$output" == *"changed-file list unavailable"* ]]
@@ -160,7 +172,7 @@ prior advisory' \
 @test "fail-closed: unreadable labels skips with a ::error" {
   STUB_LABELS_RC=1 \
     run persona_event_pregate qa-lead pull_request petry-projects/.github-private 5 opened
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
   [[ "$output" == *"::error::"* ]]
   [[ "$output" == *"labels unavailable"* ]]
 }
@@ -168,7 +180,7 @@ prior advisory' \
 @test "fail-closed: unreadable budget events skips with a ::error" {
   STUB_GATHER_RC=1 \
     run persona_event_pregate qa-lead pull_request petry-projects/.github-private 5 opened
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
   [[ "$output" == *"::error::"* ]]
   [[ "$output" == *"automation-budget events unavailable"* ]]
 }
@@ -177,7 +189,7 @@ prior advisory' \
   # Received 1 file, PR declares 5000 -> truncated -> never advise off partial data.
   STUB_CHANGED='5000' \
     run persona_event_pregate qa-lead pull_request petry-projects/.github-private 5 opened
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
   [[ "$output" == *"::error::"* ]]
   [[ "$output" == *"incomplete"* ]]
 }
@@ -199,14 +211,14 @@ prior advisory' \
   STUB_COMMENT_BODIES='<!-- persona:scrum-master -->
 prior advisory' \
     run persona_event_pregate scrum-master pull_request petry-projects/.github-private 5 opened
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
   [[ "$output" == *"skip:already-advised"* ]]
 }
 
 @test "no-registered-gate: unreadable comments fail closed" {
   STUB_COMMENTS_RC=1 \
     run persona_event_pregate scrum-master pull_request petry-projects/.github-private 5 opened
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
   [[ "$output" == *"::error::"* ]]
 }
 

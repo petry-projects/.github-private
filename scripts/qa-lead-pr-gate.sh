@@ -127,5 +127,11 @@ qa_lead_pr_gather_and_decide() {
   decision="$(qa_lead_gate_decision \
     "$changed_paths" "$labels_json" "$existing_advisory" "$budget_exhausted" || true)"
   printf '%s\n' "$decision"
-  [ "$decision" = "run" ]
+  # Return the status explicitly rather than leaving a bare `[ ... ]` as the
+  # function's last line: under `set -e`, a standalone conditional that evaluates
+  # false propagates as a failure that can terminate a sourcing caller.
+  if [ "$decision" = "run" ]; then
+    return 0
+  fi
+  return 1
 }

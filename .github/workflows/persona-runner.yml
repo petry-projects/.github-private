@@ -28,7 +28,14 @@ permissions: {}
 jobs:
   run:
     permissions:
+      # A reusable is granted no more than its calling job, so the read scopes the
+      # reusable's event pre-gate needs (#1905) must be granted HERE too. Without
+      # pull-requests/issues:read the shared qa-lead gate 403s on a private source
+      # repo's PR files/labels/reviews/comments and every routed pull_request
+      # advisory fails closed (skips).
       contents: read
+      pull-requests: read
+      issues: read
     uses: ./.github/workflows/persona-runner-reusable.yml
     with:
       persona: ${{ github.event.client_payload.persona }}

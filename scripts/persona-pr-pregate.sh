@@ -13,8 +13,10 @@ set -euo pipefail
 #
 # persona_event_pregate is what the runner calls after resolving the persona and
 # BEFORE the engine:
-#   * surface != pull_request (mention, or absent -> mention): "run", no gate.
-#     Existing mention dispatches are unchanged (AC #1).
+#   * surface == mention (or absent -> mention): "run", no gate. Existing mention
+#     dispatches are unchanged (AC #1).
+#   * an unrecognized surface: fail closed (skip) — malformed dispatch data must
+#     not be treated as a mention and bypass the pull_request suppressors.
 #   * surface == pull_request + a persona with a registered pre-gate (qa-lead):
 #     run that gate — the ONE shared gather+decide (AC #2).
 #   * surface == pull_request + a persona with NO registered pre-gate: the generic
@@ -59,12 +61,24 @@ persona_event_pregate() {
   # per-persona gates; the qa-lead decision does not consider it (the surface's
   # declared events are bound by the router, per ADR-0009).
 
-  # A non-pull_request surface (mention, or absent -> mention) is unchanged: the
-  # pre-gate is a pull_request-only concern (AC #1).
-  if [ "$surface" != "pull_request" ]; then
-    printf 'run\n'
-    return 0
-  fi
+  # Recognized surfaces ONLY. A mention (or absent -> mention, via the default
+  # above) is unchanged: the pre-gate is a pull_request-only concern (AC #1). A
+  # pull_request surface falls through to the persona gate below. Any OTHER value
+  # is malformed dispatch data — fail CLOSED (skip) rather than treat an
+  # unrecognized surface as a mention, which would bypass every pull_request
+  # suppressor.
+  case "$surface" in
+    mention)
+      printf 'run\n'
+      return 0
+      ;;
+    pull_request) ;;
+    *)
+      echo "::error::persona event pre-gate: unrecognized surface '${surface}' for ${repo}#${item} — failing closed (skip)" >&2
+      printf 'skip:unknown-surface\n'
+      return 1
+      ;;
+  esac
 
   case "$persona" in
     qa-lead)

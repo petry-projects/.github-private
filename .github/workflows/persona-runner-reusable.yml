@@ -74,10 +74,13 @@ on:
         type: string
         default: 'advisory'
       surface:
-        # Which surface the router dispatched from. Defaults to 'mention' so
-        # existing mention dispatches (and the local qa-lead-pr-advisory.yml
-        # advise job, which never sets it) are unchanged. When 'pull_request',
-        # the persona's event pre-gate runs before the engine (#1905).
+        # Which surface the dispatch came from. Defaults to 'mention' so existing
+        # mention dispatches are unchanged. When 'pull_request', the persona's
+        # event pre-gate runs before the engine (#1905). The local
+        # qa-lead-pr-advisory.yml advise job now sets 'pull_request' too, so both
+        # its run and the router-served run share this workflow's per-(persona,
+        # repo,PR) concurrency group and the same already-advised marker check —
+        # the serialization that prevents the two paths double-posting.
         required: false
         type: string
         default: 'mention'
@@ -123,9 +126,16 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
-      contents: read   # checkout THIS repo's tooling + prompts. The agent reads
-                       # the public source repo with github.token; the comment is
-                       # posted by the workflow with the persona's manifest PAT.
+      contents: read        # checkout THIS repo's tooling + prompts. The agent
+                            # reads the public source repo with github.token; the
+                            # comment is posted with the persona's manifest PAT.
+      pull-requests: read   # the event pre-gate (#1905) reads the PR's changed
+                            # files, labels, and reviews via github.token — with
+                            # only contents:read those reads 403 on a private
+                            # source repo and every routed pull_request advisory
+                            # fails closed (skips).
+      issues: read          # …and the shared issue-comment stream the gate scans
+                            # for the already-advised marker / automation budget.
     steps:
       - name: Checkout persona tooling + prompts
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

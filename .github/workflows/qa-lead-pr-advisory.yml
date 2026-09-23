@@ -21,7 +21,11 @@
 #
 # Idempotency (AC #5): the gate scans the PR for an existing marker AND the caller
 # concurrency group serializes opened + ready_for_review for one PR, so the two
-# events cannot both clear the gate and double-post.
+# events cannot both clear the gate and double-post. The advise job also forwards
+# surface=pull_request, so the reusable re-runs the same already-advised check and
+# both the local and router-served qa-lead advisories share ONE reusable
+# concurrency group (per persona+repo+PR) — serializing the two paths so they
+# cannot both observe "no marker" and post duplicate advisories.
 #
 # Soak (AC #9): watch this workflow's runs for the first two weeks. Noise metrics
 # to report — advisories posted vs. PRs seen, skip-reason histogram (the gate
@@ -95,6 +99,8 @@ jobs:
     if: needs.gate.outputs.decision == 'run'
     permissions:
       contents: read
+      pull-requests: read   # the reusable re-runs the shared pre-gate below with
+      issues: read          # surface=pull_request, so grant it the same reads.
     uses: ./.github/workflows/persona-runner-reusable.yml
     with:
       persona: qa-lead
@@ -103,4 +109,13 @@ jobs:
       comment_url: ''
       requested_by: ''
       mode: advisory
+      # Drive the reusable's pull_request pre-gate (#1905) so BOTH the local and
+      # the router-served qa-lead advisory run the SAME already-advised marker
+      # check AND share the reusable's per-(persona,repo,PR) concurrency group
+      # (comment_url is '' on both paths). That serialization is what closes the
+      # duplicate-advisory race: the local advise formerly left surface unset
+      # (-> 'mention'), so its reusable run skipped the marker recheck and could
+      # post a second advisory after the router already posted one.
+      surface: pull_request
+      event_action: ${{ github.event.action }}
     secrets: inherit
