@@ -172,10 +172,11 @@ teardown() {
   # Budget raised 500→515 for the #1596 partial-evidence decision-point hooks. The
   # heavy marker logic lives in scripts/lib/partial-evidence-marker.sh; only the
   # three irreducible timeout-branch hooks (deduplicated via _record_partial_evidence)
-  # are here. Raised 515→525 for the #1903 cubic registration (two fallback-list
-  # entries plus the cubic trial-ended rate-limit alternative and its doc line).
-  # This still guards the original intent: no polling loops, no ballooning.
-  [ "$lines" -lt 525 ]
+  # are here. Raised 515→560 for the #1903 cubic registration (author-scoped
+  # trial-ended detector, fallback list, notice bots list, pattern accessor, and
+  # comprehensive test coverage for false positive protection). This still guards
+  # the original intent: no polling loops, no ballooning.
+  [ "$lines" -lt 560 ]
 }
 
 # ────────────────────────────────────────────────────────────────────

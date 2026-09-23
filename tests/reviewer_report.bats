@@ -154,7 +154,8 @@ JSON
 }
 
 @test "normalize: a real review alongside a rate-limit comment still counts as reviewed" {
-  tmp="$(mktemp "$BATS_TEST_TMPDIR/tmp.XXXXXX")"
+  local tmp
+  tmp="$(mktemp "$BATS_TEST_TMPDIR/tmp.XXXXXX")" || { echo "Failed to create temp file" >&2; exit 1; }
   cat > "$tmp" <<'JSON'
 {"url":"u","createdAt":"2026-07-10T10:00:00Z","updatedAt":"2026-07-10T10:00:00Z","mergedAt":null,"isDraft":false,"author":{"login":"h"},
  "reviews":{"nodes":[{"author":{"login":"coderabbitai"},"state":"CHANGES_REQUESTED","submittedAt":"2026-07-10T10:05:00Z","bodyText":"real review: please fix X"}]},
@@ -173,7 +174,8 @@ JSON
 
 @test "normalize: Qodo real review counts as reviewed; CodeAnt quota notice is a refusal (issue #1349)" {
   local newbots='["qodo-code-review","codeant-ai"]'
-  tmp="$(mktemp "$BATS_TEST_TMPDIR/tmp.XXXXXX")"
+  local tmp
+  tmp="$(mktemp "$BATS_TEST_TMPDIR/tmp.XXXXXX")" || { echo "Failed to create temp file" >&2; exit 1; }
   cat > "$tmp" <<'JSON'
 {"url":"u","createdAt":"2026-07-10T10:00:00Z","updatedAt":"2026-07-10T10:00:00Z","mergedAt":null,"isDraft":false,"author":{"login":"h"},
  "reviews":{"nodes":[{"author":{"login":"qodo-code-review"},"state":"CHANGES_REQUESTED","submittedAt":"2026-07-10T10:05:00Z","bodyText":"Code Review by Qodo: please fix the null deref on line 42."}]},
@@ -186,7 +188,8 @@ JSON
 }
 
 @test "reviews: a comment-only responder (SonarCloud) has its comment counted as a review" {
-  tmp="$(mktemp "$BATS_TEST_TMPDIR/tmp.XXXXXX")"
+  local tmp
+  tmp="$(mktemp "$BATS_TEST_TMPDIR/tmp.XXXXXX")" || { echo "Failed to create temp file" >&2; exit 1; }
   cat > "$tmp" <<'JSON'
 {"url":"u","createdAt":"2026-07-10T10:00:00Z","updatedAt":"2026-07-10T10:00:00Z","mergedAt":null,"isDraft":false,"author":{"login":"h"},
  "reviews":{"nodes":[]},
@@ -198,7 +201,8 @@ JSON
 }
 
 @test "reviews: a bot with a formal review does NOT also count its summary comment (no double-count)" {
-  tmp="$(mktemp "$BATS_TEST_TMPDIR/tmp.XXXXXX")"
+  local tmp
+  tmp="$(mktemp "$BATS_TEST_TMPDIR/tmp.XXXXXX")" || { echo "Failed to create temp file" >&2; exit 1; }
   cat > "$tmp" <<'JSON'
 {"url":"u","createdAt":"2026-07-10T10:00:00Z","updatedAt":"2026-07-10T10:00:00Z","mergedAt":null,"isDraft":false,"author":{"login":"h"},
  "reviews":{"nodes":[{"author":{"login":"coderabbitai"},"state":"COMMENTED","submittedAt":"2026-07-10T10:05:00Z","bodyText":"formal review"}]},
@@ -410,7 +414,8 @@ JSON
 }
 
 @test "aggregate: a PR reviewed twice (2 commits) counts as 2 review events" {
-  tmp="$(mktemp -d "$BATS_TEST_TMPDIR/multi.XXXXXX")"
+  local tmp
+  tmp="$(mktemp -d "$BATS_TEST_TMPDIR/multi.XXXXXX")" || { echo "Failed to create temp directory" >&2; exit 1; }
   cat > "$tmp/r.jsonl" <<'JSON'
 {"kind":"pr","repo":"o/r","pr":"o/r/1","created":"2026-07-10T10:00:00Z","merged":null,"draft":false,"author":"h"}
 {"kind":"bot_pr","repo":"o/r","pr":"o/r/1","bot":"gemini-code-assist","created":"2026-07-10T10:00:00Z","real_responses":2,"refusals":0,"latency_s":60,"reviews":2,"approved":1,"changes_req":1,"inline_comments":0,"threads_total":0,"threads_resolved":0,"thumbs_up":0,"thumbs_down":0}
@@ -483,7 +488,8 @@ JSON
 }
 
 @test "render: week-over-week delta arrow appears when a prior snapshot is given" {
-  prev="$(mktemp "$BATS_TEST_TMPDIR/prev.XXXXXX")"
+  local prev
+  prev="$(mktemp "$BATS_TEST_TMPDIR/prev.XXXXXX")" || { echo "Failed to create temp file" >&2; exit 1; }
   cat > "$prev" <<'JSON'
 {"eligible_prs":3,"total_prs":4,"bots":{"copilot-pull-request-reviewer":{"reviews":5}}}
 JSON
@@ -493,7 +499,8 @@ JSON
 }
 
 @test "render: writes the snapshot artifact when REVIEWER_SNAPSHOT_OUT is set" {
-  out="$(mktemp "$BATS_TEST_TMPDIR/out.XXXXXX")"
+  local out
+  out="$(mktemp "$BATS_TEST_TMPDIR/out.XXXXXX")" || { echo "Failed to create temp file" >&2; exit 1; }
   REVIEWER_SNAPSHOT_OUT="$out" run render_reviewer_report "$FIXTURES" 7 12 2026-07-13
   run jq -e '.bots["copilot-pull-request-reviewer"].reviewed_prs == 2' "$out"
   [ "$status" -eq 0 ]
@@ -532,7 +539,8 @@ JSON
 }
 
 @test "render: agent-comment noise section is wired into the report (#1411)" {
-  dir="$(mktemp -d "$BATS_TEST_TMPDIR/noise.XXXXXX")"
+  local dir
+  dir="$(mktemp -d "$BATS_TEST_TMPDIR/noise.XXXXXX")" || { echo "Failed to create temp directory" >&2; exit 1; }
   cat > "$dir/r.jsonl" <<'JSON'
 {"kind":"pr","repo":"o/r","pr":"o/r/1","created":"2026-07-10T10:00:00Z","merged":null,"draft":false,"author":"h"}
 {"kind":"agent_comment","repo":"o/r","pr":"o/r/1","no_action":true}
