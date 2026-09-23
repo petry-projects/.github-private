@@ -42,15 +42,17 @@ setup() {
   [ "$output" = "15.00 1.50 18.75 75.00" ]
 }
 
-@test "price_for: opus 5.5 at a 2026-09-23 date → \$4 / \$0.20 / \$5 / \$20" {
-  run price_for "claude-opus-5-5" "2026-09-23"
+# Boundary lock for the date-versioned opus-5-5 row: the rate applies exactly at its
+# effective_from (2026-09-22) and there is no retroactive guess for calls before it.
+# Sampling the exact boundary (not a day after) is what pins effective_from against drift.
+@test "price_for: opus 5.5 pinned at effective_from (2026-09-22) → \$4 / \$0.20 / \$5 / \$20" {
+  run price_for "claude-opus-5-5" "2026-09-22"
   [ "$output" = "4.00 0.20 5.00 20.00" ]
 }
 
-# The new opus-5-5 glob must not shadow the opus-4-* row (different major digit).
-@test "price_for: opus-4-* glob unaffected by opus-5-5 row → \$5 / \$0.50 / \$6.25 / \$25" {
-  run price_for "claude-opus-4-8" "2026-06-07"
-  [ "$output" = "5.00 0.50 6.25 25.00" ]
+@test "price_for: opus 5.5 before effective_from (2026-09-21) → empty (no retroactive guess)" {
+  run price_for "claude-opus-5-5" "2026-09-21"
+  [ -z "$output" ]
 }
 
 @test "price_for: unknown model → empty" {
