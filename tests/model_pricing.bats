@@ -42,6 +42,17 @@ setup() {
   [ "$output" = "15.00 1.50 18.75 75.00" ]
 }
 
+@test "price_for: opus 5.5 at a 2026-09-23 date → \$4 / \$0.20 / \$5 / \$20" {
+  run price_for "claude-opus-5-5" "2026-09-23"
+  [ "$output" = "4.00 0.20 5.00 20.00" ]
+}
+
+# The new opus-5-5 glob must not shadow the opus-4-* row (different major digit).
+@test "price_for: opus-4-* glob unaffected by opus-5-5 row → \$5 / \$0.50 / \$6.25 / \$25" {
+  run price_for "claude-opus-4-8" "2026-06-07"
+  [ "$output" = "5.00 0.50 6.25 25.00" ]
+}
+
 @test "price_for: unknown model → empty" {
   run price_for "mystery-model-v9" "2026-06-07"
   [ -z "$output" ]
