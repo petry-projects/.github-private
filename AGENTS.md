@@ -131,6 +131,27 @@ calling it a regression, and treat CI as authoritative.**
   sequencing in "Release channel tags & the mutable-ref exception" →
   ["Caller-stub input forwarding across channel pins"](#caller-stub-input-forwarding-across-channel-pins):
   never forward an input the pinned channel does not yet declare.
+- **dev-lead ingests the issue's human comments, not just its title/body (#1566).**
+  `dev-lead-fix-issue.sh` fetches `issues/<n>/comments` and renders them into the
+  `ISSUE_COMMENTS` prompt variable via the pure renderer `scripts/lib/issue-comments.sh`
+  (tests: `tests/dev-lead/unit/test_issue_comments.bats`). The prompt template treats
+  comments as **refinements that may supersede the body**, read in chronological order,
+  with later **human** comments outranking the body and earlier comments. This is how a
+  maintainer steers an in-flight issue: post a comment answering an open question or
+  correcting a wrong assumption, and it reaches the engine. **Only comments from users with
+  repository write access are surfaced** — the renderer keeps `author_association` of
+  `OWNER`, `MEMBER`, or `COLLABORATOR` and drops everyone else (`CONTRIBUTOR`, `NONE`, …),
+  so a drive-by outside commenter cannot redirect an implementation. **Also deliberately
+  excluded from the rendered block:** `Bot`-type authors (CI bots, third-party reviewers)
+  and dev-lead's own automation comments — any comment whose body *begins* with an
+  `<!-- dev-lead…` HTML marker or a `## Dev-Lead …` plan/progress/completion heading is
+  treated as automation and dropped (the match is anchored to the start of the body,
+  regardless of author), so automation chatter never crowds out human steering. The block is
+  **size-bounded** (`ISSUE_COMMENTS_MAX`, `ISSUE_COMMENTS_CHAR_BUDGET`) applied newest-first
+  so the freshest steering always survives; the character budget is a **hard bound** — if
+  the single newest comment alone exceeds it, that comment is **truncated** to the budget
+  rather than emitted in full. Any comments dropped, and any truncation, are **counted and
+  stated** in the block, never silently discarded.
 - All other workflow changes must use templates from
   [`standards/workflows/`](https://github.com/petry-projects/.github/tree/main/standards/workflows) verbatim.
 - **Note:** `.github/workflows/auto-rebase.yml` pins the reusable workflow at the `@auto-rebase/v2-next`
