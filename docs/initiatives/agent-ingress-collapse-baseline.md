@@ -38,8 +38,27 @@ the collapse, one `agent-ingress.yml` run fans out to several billable role jobs
 top-level runs understates billed work. For example the 149 `pull_request_review` events are counted
 separately under `dev-lead`, `pr-auto-review`, and `pr-review` (447 role invocations); post-collapse
 those become 149 ingress runs but still 447 role jobs. The post-collapse figure that must not exceed
-**1356** is therefore the sum of role-bearing job executions (and their runner minutes), not the
-ingress run count.
+**1356** is therefore the sum of role-bearing job executions, not the ingress run count.
+
+**Executed jobs, not workflow runs — measured on the same basis on both sides.** The table figures
+below are each workflow's `total_count`, i.e. *workflow-run* counts. For four of the five stubs the
+thin caller runs its single role job on every triggering run, so run count equals role-job executions
+1:1. The exception is `ci-failure-analyst`: its job-level `if:` executes the analyst job only for
+failed, non-self check runs (`templates/ci-failure-analyst.yml:41-43`), so some of its **35**
+`check_run` runs execute *no* billable role job. That 35 — and therefore the **1356** — is thus an
+**upper bound** on executed role jobs until each legacy run's jobs are queried and the skipped jobs
+excluded. This matters directionally: the post-collapse side already drops them —
+`scripts/lib/run-attribution.sh` discards all-skipped roles — so any re-capture (and the *after*
+number) must count executed (non-skipped) role jobs on **both** sides, or the before figure is
+inflated relative to the after and the comparison falsely favours the collapse.
+
+**Runner minutes are a separate, unmeasured cost question.** No minute baseline was captured here:
+every figure in this document is a run/invocation count from the Actions API `total_count`, not a
+minute measurement. The 1356 bound is therefore a run-count / job-execution bound only (AC5) and must
+not be silently widened into a minutes bound. If a runner-minutes cost comparison is judged necessary
+for AC5, capture it as an explicitly **unmeasured** follow-up — summing each executed job's billable
+duration from `GET /repos/{repo}/actions/runs/{run_id}/timing` (or the per-run jobs listing) over the
+same window — rather than folding it into this bound.
 
 | Role | Stub | Pinned ref | Runs (7d) |
 |---|---|---|---|
@@ -72,11 +91,23 @@ Actions service and never assigned a runner (kind **a**).
 **No collapsible caller in `markets` uses `paths:` or `paths-ignore:`** — verified across all five
 stubs above; none uses a `paths:`/`paths-ignore:` event filter. Their non-path trigger constraints
 must still be recorded so the AC2 union `on:` block preserves each role's original subscription and
-does not run on unrelated branches or workflow completions: every stub filters on event `types:`
-only, with **no `branches:`/`branches-ignore:` narrowing** and **no `workflows:` list** on their
-`workflow_run`/`check_run`/`check_suite` triggers (they subscribe to all repo workflows). Because the
-only filters in play are `types:`, **every post-collapse skip is kind (a)** and no role incurs the
-kind (b) runner cost. AC10 is satisfiable here by measuring
+does not run on unrelated branches or workflow completions. Two stubs carry a non-`types:` narrowing
+that the union **must** preserve:
+
+- `dev-lead`'s `pull_request` trigger narrows to **`branches: [main]`** (`dev-lead.yml:35-37`). This
+  is not expressible per-job at the `on:` level, so it moves into the dev-lead job's `if:` as the
+  payload predicate **`github.event.pull_request.base.ref == 'main'`** — exactly as the canonical
+  ingress does (`docs/architecture/reference/agent-ingress.yml:74-78`). Dropping it would let a
+  write-capable role run for PRs targeting release or other branches, expanding its scope and
+  inflating the post-collapse count.
+- `pr-auto-review`'s `workflow_run` trigger narrows to a **`workflows:` list** (`["CI"]`, the repo's
+  CI workflow name; `pr-auto-review.yml`), so it does **not** subscribe to all repo workflows; the
+  union must carry that constraint into that job's `if:` likewise.
+
+The remaining stubs filter on event `types:` only. Crucially, **none of these narrowings is a
+`paths:`/`paths-ignore:` filter** — they all collapse into job-level `if:` payload predicates
+evaluated on the Actions service without assigning a runner. So **every post-collapse skip is kind
+(a)** and no role incurs the kind (b) runner cost. AC10 is satisfiable here by measuring
 kind (a) alone, and the finding should be re-verified per repo during fan-out rather than assumed —
 `.github-private`'s own `dependency-advisory` shape is the known kind (b) case.
 
