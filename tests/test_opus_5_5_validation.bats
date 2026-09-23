@@ -149,7 +149,7 @@ JSON
   cat >"$stub_bin/claude" <<'SH'
 #!/usr/bin/env bash
 cat <<'JSON'
-{"type":"result","subtype":"success","is_error":false,"result":"The final answer is 42.","content":[{"type":"thinking","thinking":"private reasoning that must not leak"},{"type":"text","text":"The final answer is 42."}],"usage":{"input_tokens":100,"cache_read_input_tokens":20,"cache_creation_input_tokens":30,"output_tokens":40}}
+{"type":"result","subtype":"success","is_error":false,"result":"The final answer is 42.","content":[{"type":"thinking","thinking":"private reasoning that must not leak"},{"type":"text","text":"text-block content that must NOT be returned"}],"usage":{"input_tokens":100,"cache_read_input_tokens":20,"cache_creation_input_tokens":30,"output_tokens":40}}
 JSON
 SH
   chmod +x "$stub_bin/claude"
@@ -177,6 +177,9 @@ SH
   [ "$rc" -eq 0 ]
   [ "$out" = "The final answer is 42." ]
   [[ "$out" != *"private reasoning"* ]]
+  # The text content block carries a DISTINCT value from .result, so a caller that
+  # emitted content[].text instead of .result would be caught here.
+  [[ "$out" != *"text-block content"* ]]
   # Usage was parsed off the JSON envelope by the same caller path.
   [ "$LAST_INPUT_TOKENS" = "100" ]
   [ "$LAST_CACHE_WRITE_TOKENS" = "30" ]
