@@ -227,7 +227,13 @@ _NORMALIZE_JQ='
     + [ (.["_checkRuns"] // [])[]
         | select(.bot as $a | is_bot($a))
         | (.status == "completed") as $done
-        | ($done and ((.conclusion // "") == "success"
+        | ((.conclusion // "") | ascii_downcase) as $concl
+        | (["failure","cancelled","timed_out","action_required","stale","startup_failure"] | index($concl)) as $failed
+        # The "review ran" summary substring only counts when the run did NOT fail — a
+        # failure/cancelled run whose summary happens to say "…review ran into an error…"
+        # is not a real review (#1913 review). A success conclusion always counts.
+        | ($done and ($failed == null)
+                 and ((.conclusion // "") == "success"
                       or ((.summary // "") | test("review ran"; "i")))) as $ran
         | ($done and ((.conclusion // "") == "skipped")
                  and ((.summary // "") | test("did not run|too large|declin|skip|rate.?limit|quota|usage limit"; "i"))) as $refused
@@ -357,7 +363,7 @@ _render_collection_health() {
     | if ($e | length) == 0 then empty
       else "## ⚠️ Collection health\n\n"
         + "**\($e | length) of \($m) repos could not be collected** after retries — "
-        + "their PRs are absent from every metric below, so all counts are a **floor, not a total**. "
+        + "their PRs are absent or incomplete in every metric below, so all counts are a **floor, not a total**. "
         + "This is the #1908 failure mode (silent page-1 GraphQL failure); investigate before trusting the numbers or the week-over-week deltas.\n\n"
         + ([ $e[] | "- `\(.repo)` — \(.reason // "collection failed")" ] | join("\n"))
         + "\n"
@@ -376,6 +382,18 @@ _render_collection_health() {
       end
   ' "${files[@]}" 2>/dev/null || true)"
   [ -n "$trunc" ] && printf '%s\n' "$trunc"
+
+  local crerr
+  crerr="$(jq -rs '
+    ([ .[] | select(.kind=="check_run_error") ] | unique_by([.repo, .pr])) as $c
+    | if ($c | length) == 0 then empty
+      else "### Check-run fetch failures\n\n"
+        + "A check-run REST fetch failed on these PRs, so a check-run reporter clean pass may be missed and miscounted as No response (surfaced here, never silent — #1908):\n\n"
+        + ([ $c[] | "- `\(.repo)` PR `\(.pr)` — check-run fetch failed" ] | join("\n"))
+        + "\n"
+      end
+  ' "${files[@]}" 2>/dev/null || true)"
+  [ -n "$crerr" ] && printf '%s\n' "$crerr"
   return 0
 }
 
@@ -415,14 +433,14 @@ render_reviewer_report() {
   printf 'Deterministic report — every figure is computed with `jq`/`awk` from GitHub review data; '
   printf 'no LLM is involved. Bots are identified by their GraphQL App login '
   printf '(`scripts/lib/advisory-review-gate.sh`); rate-limit/out-of-quota notices are detected by body text. '
-  printf '**Reviews** and **Rate-limited** count *every event*, not distinct PRs — a PR re-reviewed across N commits contributes N reviews. '
+  printf '**Reviews** and **Refused** count *every event*, not distinct PRs — a PR re-reviewed across N commits contributes N reviews. '
   printf '**No response** counts eligible PRs the reviewer never engaged with at all. '
   printf '_Latency_ = time from PR creation to the bot'"'"'s first **real** review (refusals excluded). '
   printf 'Deltas (▲/▼) are vs the prior week and directional only.\n\n'
 
   # ---- Scorecard table -----------------------------------------------------
   printf '## Scorecard\n\n'
-  printf '| Reviewer | Total PRs | Reviews | ✅ / 🔄 | Rate-limited | No response | Latency p50 | Latency p95 |\n'
+  printf '| Reviewer | Total PRs | Reviews | ✅ / 🔄 | Refused | No response | Latency p50 | Latency p95 |\n'
   printf '|---|---:|---:|:--:|---:|---:|---:|---:|\n'
 
   local bot label reviews refusal_events no_resp approved changes_req p50 p95
@@ -458,7 +476,7 @@ render_reviewer_report() {
   printf -- '- **Total PRs** — review-eligible (non-draft) PRs in the window; the denominator each row is measured against.\n'
   printf -- '- **Reviews** — count of reviews the bot submitted, **each occurrence** (a PR re-reviewed on 5 commits = 5). A bot that posts no formal review but delivers its verdict as a comment (e.g. SonarCloud'"'"'s quality-gate comment) has that comment counted as its review. Rate-limit notices are never counted.\n'
   printf -- '- **✅ / 🔄** — of those reviews, how many were APPROVED / CHANGES_REQUESTED (comment-only responses carry no verdict).\n'
-  printf -- '- **Rate-limited** — count of out-of-quota / rate-limit refusals, each occurrence.\n'
+  printf -- '- **Refused** — count of refusal events: out-of-quota / rate-limit notices AND a check-run reporter'"'"'s own decline (a "too large" / "did not run" skip), each occurrence.\n'
   printf -- '- **No response** — eligible PRs the bot never engaged with at all (no review, comment, or refusal).\n\n'
 
   # ---- Coverage / overlap --------------------------------------------------
@@ -558,15 +576,18 @@ query($owner:String!, $name:String!, $cursor:String, $prFirst:Int!) {
   }
 }'
 
-# _collect_check_runs_for_page <owner> <name> <graphql_resp> — echo a JSON object
-# mapping each in-window PR url → [ {bot,status,conclusion,summary,completed_at} ]
+# _collect_check_runs_for_page <owner> <name> <graphql_resp> [out_jsonl] — echo a
+# JSON object mapping each in-window PR url → [ {bot,status,conclusion,summary,completed_at} ]
 # for the CHECK-RUN reporters (#1908). One lightweight REST call per in-window PR
 # head commit (`/commits/{sha}/check-runs`), filtered to the configured names — a
 # separate, cheap fetch that does NOT add weight to the (resource-limited) PR page
 # query. Echoes `{}` when there are no reporters or no in-window PRs. Best-effort:
-# a failed per-PR fetch is skipped, never fatal.
+# a failed per-PR fetch is skipped, never fatal — but when <out_jsonl> is given a
+# {kind:"check_run_error"} diagnostic is appended so the miss is surfaced in
+# Collection health, never silent (#1908): a dropped fetch could turn a check-run
+# reporter's clean pass into a false "No response".
 _collect_check_runs_for_page() {
-  local owner="$1" name="$2" resp="$3"
+  local owner="$1" name="$2" resp="$3" out="${4:-}"
   local reporters_json="${REVIEWER_CHECK_RUN_JSON:-{}}"
   [ "$reporters_json" = "{}" ] && { printf '{}'; return 0; }
 
@@ -590,7 +611,14 @@ _collect_check_runs_for_page() {
     # when the configured run sorts after the 100th (#1908). Assign first, then test,
     # so a fetch failure under `set -e` is a clean skip, not a swallowed error.
     cr_resp="$(_gh_timeout api --paginate "repos/${owner}/${name}/commits/${sha}/check-runs?per_page=100" 2>/dev/null || true)"
-    [ -n "$cr_resp" ] || continue
+    if [ -z "$cr_resp" ]; then
+      # Fetch failed: without a record this PR's check-run reporters are silently absent,
+      # so a Graphite clean pass would miscount as "No response". Surface it (#1908).
+      [ -n "$out" ] && jq -cn --arg repo "${owner}/${name}" --arg pr "$url" \
+        '{kind:"check_run_error", repo:$repo, pr:$pr, reason:"check-run REST fetch failed"}' \
+        >> "$out" 2>/dev/null || true
+      continue
+    fi
     # `-s` slurps the (possibly multi-page) `--paginate` object stream into an array;
     # `.[].check_runs[]?` flattens runs across every page.
     matched="$(jq -c -s --argjson names "$reporters_json" '
@@ -622,7 +650,15 @@ _collect_one_repo() {
 
   while :; do
     page=$((page + 1))
-    [ "$page" -gt "${MAX_PR_PAGES}" ] && break
+    if [ "$page" -gt "${MAX_PR_PAGES}" ]; then
+      # The MAX_PR_PAGES cap stopped this repo before its in-window PRs were exhausted
+      # (the bottom-of-loop stop did not fire), so later PRs are dropped. Emit a
+      # truncation record so Collection health marks the scorecard a floor, never silent (#1908).
+      jq -cn --arg repo "$repo" --arg cap "$MAX_PR_PAGES" \
+        '{kind:"truncation", repo:$repo, pr:"(pagination)", connection:"pullRequests", reason:"MAX_PR_PAGES (\($cap)) reached"}' \
+        >> "$out" 2>/dev/null || true
+      break
+    fi
 
     # Fetch this page, retrying with a HALVED page size + backoff on a resource-limit
     # / timeout error before giving up (#1908). A GraphQL resource-limit error can
@@ -668,7 +704,7 @@ _collect_one_repo() {
     # count a clean pass (check run only, no PR review) as a real response.
     local crmap='{}'
     if [ "${REVIEWER_CHECK_RUN_JSON:-{}}" != "{}" ]; then
-      crmap="$(_collect_check_runs_for_page "$owner" "$name" "$resp")" || crmap='{}'
+      crmap="$(_collect_check_runs_for_page "$owner" "$name" "$resp" "$out")" || crmap='{}'
     fi
 
     jq -c --arg repo "$repo" --argjson bots "$bots_json" --arg rl "$RATE_LIMIT_RE" --arg cutoff "$CUTOFF" --argjson crmap "$crmap" \
@@ -684,7 +720,10 @@ _collect_one_repo() {
       .data?.repository?.pullRequests?.nodes[]? | select(.updatedAt >= $cutoff) | . as $pr
       | ( if ((.reviews?.nodes // []) | length) >= 50 then {kind:"truncation",repo:$repo,pr:($pr.url),connection:"reviews"} else empty end),
         ( if ((.comments?.nodes // []) | length) >= 50 then {kind:"truncation",repo:$repo,pr:($pr.url),connection:"comments"} else empty end),
-        ( if ((.reviewThreads?.nodes // []) | length) >= 50 then {kind:"truncation",repo:$repo,pr:($pr.url),connection:"reviewThreads"} else empty end)
+        ( if ((.reviewThreads?.nodes // []) | length) >= 50 then {kind:"truncation",repo:$repo,pr:($pr.url),connection:"reviewThreads"} else empty end),
+        # Each reviewThread'"'"'s comments are fetched only up to 20 (comments(first: 20)); a
+        # thread that exceeds that undercounts inline comments / thread metrics, so surface it too.
+        ( if any((.reviewThreads?.nodes // [])[]?; ((.comments?.nodes // []) | length) >= 20) then {kind:"truncation",repo:$repo,pr:($pr.url),connection:"reviewThreads.comments"} else empty end)
     ' <<<"$resp" >> "$out" 2>/dev/null || true
 
     # Additive no-action-noise pass (#1411): emit one agent_comment record per

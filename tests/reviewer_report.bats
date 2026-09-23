@@ -193,6 +193,24 @@ JSON
   echo "$output" | jq -e '.[] | select(.bot=="graphite-app") | .real_responses==0 and .refusals>=1 and .reviews==0'
 }
 
+@test "check-run: a FAILED run whose summary says 'review ran' is NOT a real review (#1913)" {
+  # Regression: the "review ran" summary substring must be gated on a non-failure
+  # conclusion, else "AI review ran into an error and did not complete" on a `failure`
+  # run would be misread as a real response (real_responses:1).
+  local gbots='["graphite-app"]'
+  tmp="$(mktemp "$BATS_TEST_TMPDIR/tmp.XXXXXX")"
+  cat > "$tmp" <<'JSON'
+{"url":"u","createdAt":"2026-09-23T10:00:00Z","updatedAt":"2026-09-23T10:00:00Z","mergedAt":null,"isDraft":false,"author":{"login":"h"},
+ "reviews":{"nodes":[]},
+ "reviewThreads":{"nodes":[]},
+ "comments":{"nodes":[]},
+ "_checkRuns":[{"bot":"graphite-app","status":"completed","conclusion":"failure","summary":"AI review ran into an error and did not complete.","completed_at":"2026-09-23T10:04:00Z"}]}
+JSON
+  run jq -c --arg repo "r" --argjson bots "$gbots" --arg rl "$RATE_LIMIT_RE" "[ $_NORMALIZE_JQ ]" "$tmp"
+  # A failed run is neither a real response nor a refusal → no bot_pr record at all.
+  echo "$output" | jq -e 'map(select(.kind=="bot_pr" and .bot=="graphite-app")) | length == 0'
+}
+
 @test "check-run: a skip with an unrelated/empty summary is NOT a refusal" {
   # A run skipped for an unrelated workflow reason (no decline summary) must not be
   # counted as a rate-limited refusal — it contributes nothing, like a queued run.
@@ -360,7 +378,7 @@ JSON
 
 @test "render: scorecard exposes the event-count columns" {
   run render_reviewer_report "$FIXTURES" 7 12 2026-07-13
-  echo "$output" | grep -q "| Reviewer | Total PRs | Reviews | ✅ / 🔄 | Rate-limited | No response |"
+  echo "$output" | grep -q "| Reviewer | Total PRs | Reviews | ✅ / 🔄 | Refused | No response |"
 }
 
 @test "render: empty dir yields a no-data message" {

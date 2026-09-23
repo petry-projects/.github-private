@@ -77,13 +77,16 @@ Each PR node is normalized (pure `jq`) into two record kinds:
   inline-comment count, thread resolution, and reactions. A check-run clean pass adds **0**
   to the review-event count but fills the `real_responses` / reviewed bucket.
 
-Two diagnostic record kinds keep collection gaps visible (never silent, [#1908](https://github.com/petry-projects/.github-private/issues/1908)):
+Three diagnostic record kinds keep collection gaps visible (never silent, [#1908](https://github.com/petry-projects/.github-private/issues/1908)):
 
 - `{kind:"collect_error", repo, reason}` — a repo that could not be collected after retries.
-- `{kind:"truncation", repo, pr, connection}` — a nested connection that hit its fetch cap
-  (≥50), so a bot's reviews/comments on that PR may be undercounted.
+- `{kind:"truncation", repo, pr, connection}` — a nested connection (≥50), a review thread's
+  comments (≥20), or the per-repo PR pagination (`MAX_PR_PAGES`) that hit its fetch cap, so a
+  bot's reviews/comments on that PR — or a repo's later in-window PRs — may be undercounted.
+- `{kind:"check_run_error", repo, pr}` — a per-PR check-run REST fetch that failed, so a
+  check-run reporter's clean pass on that PR may be missed and miscounted as *No response*.
 
-Both are rendered in a **Collection health** section at the top of the report. Human authors
+All are rendered in a **Collection health** section at the top of the report. Human authors
 and untracked bots are dropped at normalization time.
 
 ## Metrics
@@ -99,11 +102,11 @@ reviews on a single PR).
 | **Total PRs** | Review-eligible (non-draft) PRs active in the window; the denominator each row is measured against. |
 | **Reviews** | Count of reviews the bot submitted, **each occurrence** (multiple per PR from multiple commits all count). A bot that posts no formal review but delivers its verdict as a top-level comment (e.g. SonarCloud's quality-gate comment) has that comment counted as its review; bots that do submit formal reviews are unaffected, so their extra summary comments are never double-counted. Rate-limit notices are never counted. |
 | **✅ / 🔄** | Of those reviews, how many carried state APPROVED / CHANGES_REQUESTED. |
-| **Rate-limited** | Count of out-of-quota / rate-limit refusal events (detected by body text via the shared gate pattern), each occurrence. |
+| **Refused** | Count of refusal events — out-of-quota / rate-limit notices (detected by body text via the shared gate pattern) **and** a check-run reporter's own decline (a `too large` / `did not run` skip) — each occurrence. |
 | **No response** | Eligible PRs the bot never engaged with at all — no review, comment, refusal, **or completed check run**. For a check-run reporter (Graphite), a clean-pass check run counts as engagement, so it no longer lands here. |
 | **Latency p50 / p95** | Seconds from PR creation to the bot's first **real** review (refusals excluded, so quota notices don't pollute the percentiles). Targets the "review arrived after auto-approval" failure mode (PR #453). |
 | **Coverage overlap** | PRs reviewed by ≥2 bots — a redundancy vs specialization signal. |
-| **Trend** | Week-over-week Δ (▲/▼) on Reviews and Rate-limited (event counts) vs last week's snapshot. Arrows are directional only. |
+| **Trend** | Week-over-week Δ (▲/▼) on Reviews and Refused (event counts) vs last week's snapshot. Arrows are directional only. |
 
 Per-PR bucket counts (`reviewed_prs` / `refused_prs` / `no_response_prs`, which partition the
 eligible PRs), plus thread-resolution and reaction counts, are still computed and stored in the
@@ -208,7 +211,7 @@ ORG=petry-projects LOOKBACK_DAYS=7 GH_TOKEN="$(gh auth token)" \
 | `REVIEWER_SNAPSHOT_OUT` | Optional path to write this week's per-bot snapshot (uploaded as the WoW artifact). |
 | `REVIEWER_PREV_SNAPSHOT` | Optional path to last week's snapshot for deltas; `main()` fetches it automatically in CI. |
 | `GH_OP_TIMEOUT` / `COLLECT_CONCURRENCY` / `MAX_PR_PAGES` | Per-call timeout (s), concurrent per-repo sweeps, and PR-page cap per repo (default 50). |
-| `PR_PAGE_SIZE` / `PR_FETCH_MAX_ATTEMPTS` | PRs per GraphQL page (default 10 — kept light to stay under the resource limit) and how many times a failed page is retried with a halved page size before the repo is recorded as a `collect_error` (default 4). |
+| `PR_PAGE_SIZE` / `PR_FETCH_MAX_ATTEMPTS` | PRs per GraphQL page (default 10 — kept light to stay under the resource limit) and maximum fetch attempts, including the initial request, before the repo is recorded as a `collect_error` (default 4). |
 
 ## Known limitations
 
@@ -217,13 +220,16 @@ ORG=petry-projects LOOKBACK_DAYS=7 GH_TOKEN="$(gh auth token)" \
 - **Latency denominator**: PRs opened as drafts and later marked ready use creation time
   as the latency baseline in v1, which can overstate latency for long-draft PRs.
 - **Per-repo pagination**: bounded by `MAX_PR_PAGES` (default 50) × `PR_PAGE_SIZE` (default
-  10 PRs). A repo with more in-window PRs than that cap would be truncated; the cap is
-  generous for this org.
+  10 PRs). A repo with more in-window PRs than that cap is truncated; when the cap stops a
+  repo it emits a `{kind:"truncation", connection:"pullRequests"}` record surfaced in the
+  **Collection health** section, so the scorecard is marked as a floor rather than silently
+  dropping the overflow. The cap is generous for this org.
 - **Nested-connection cap**: a PR's `reviews` / `comments` / `reviewThreads` are fetched up
-  to 50 each. A PR that exceeds that on any connection emits a `{kind:"truncation"}` record
-  rendered in the **Collection health** section, so an undercount there is stated
-  explicitly rather than hidden. The scorecard counts every node it did fetch, including
-  bots beyond the 50th review.
+  to 50 each, and each review thread's `comments` up to 20. A PR that exceeds 50 on any of
+  those connections — or 20 comments on any single thread — emits a `{kind:"truncation"}`
+  record (the per-thread case as `connection:"reviewThreads.comments"`) rendered in the
+  **Collection health** section, so an undercount there is stated explicitly rather than
+  hidden. The scorecard counts every node it did fetch, including bots beyond the 50th review.
 - **Check-run summary text**: a completed check run is read as *review ran* when its
   conclusion is `success` or its summary matches `review ran`; a reporter that changes its
   summary wording would need the matcher updated. The reporter set and check-run name live

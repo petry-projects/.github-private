@@ -116,10 +116,16 @@ TSV
 @test "check-run: a review-only bot is NOT listed as a check-run reporter" {
   local reporters
   reporters="$(reviewer_sources_check_run_reporters)"
-  # copilot/gemini/coderabbit post PR reviews, not check runs — column 5 is "-".
+  # These seven post PR reviews / comments, not check runs — column 5 is "-", so none
+  # of them may appear as a check-run reporter (adding a check_run_name to any, or
+  # regressing the awk filter, must fail this test rather than pass silently).
   [[ "$reporters" != *"copilot-pull-request-reviewer"* ]]
   [[ "$reporters" != *"gemini-code-assist"* ]]
   [[ "$reporters" != *"coderabbitai"* ]]
+  [[ "$reporters" != *"chatgpt-codex-connector"* ]]
+  [[ "$reporters" != *"sonarqubecloud"* ]]
+  [[ "$reporters" != *"qodo-code-review"* ]]
+  [[ "$reporters" != *"codeant-ai"* ]]
 }
 
 @test "check-run: reporters helper propagates a missing-manifest failure" {
