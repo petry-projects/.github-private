@@ -124,3 +124,15 @@ PY
   [ "$status" -eq 0 ]
   [ "$output" = 'Analyze (${{ matrix.language }})' ]
 }
+
+@test "codeql.yml has aggregation job named 'CodeQL' (AC4)" {
+  run _wf "$WORKFLOWS/codeql.yml" "'CodeQL' in jobs"
+  [ "$status" -eq 0 ]
+  [ "$output" = "True" ]
+}
+
+@test "codeql.yml CodeQL aggregation job requires analyze and always runs (AC4)" {
+  run _wf "$WORKFLOWS/codeql.yml" "jobs.get('CodeQL', {}).get('needs') == 'analyze' and jobs.get('CodeQL', {}).get('if') == 'always()'"
+  [ "$status" -eq 0 ]
+  [ "$output" = "True" ]
+}
