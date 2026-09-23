@@ -20,7 +20,20 @@ The pr-review workflow triggers on `check_suite` (completed) event and approves 
 
 ## Participating Bots
 
-The gate waits for reviews from these bots:
+> **Authoritative count vs. the profiles below.** The authoritative set of gated
+> advisory bots is the `ADVISORY_BOTS` map in `scripts/lib/advisory-review-gate.sh`
+> (a projection of `scripts/lib/reviewer-sources.tsv`, `advisory_gate=yes`),
+> which currently holds **eight** entries. The four profiled below are the
+> original core set with published latency/participation data. **Qodo Merge**,
+> **CodeAnt**, **Graphite**, and **cubic** were registered later (issues #1349,
+> #1401, #1903) and are gated identically; latency/participation figures are not
+> yet published for them, so they are not re-profiled here. Consequently, the
+> "4 bots" wording in the scenarios, examples, and testing sections below is
+> **illustrative of the gate mechanism, not the current bot count** — do not read
+> those numbers as the number of gated bots.
+
+The gate waits for reviews from these bots (core-set profiles; see the note above
+for the full authoritative list):
 
 1. **Gemini Code Assist** (`gemini-code-assist`)
    - Latency: Median 50 seconds

@@ -41,7 +41,8 @@ setup() {
 
 @test "normalize: a cubic review normalizes into a bot_pr record (issue #1903)" {
   local newbots='["cubic-dev-ai"]'
-  tmp="$(mktemp "$BATS_TEST_TMPDIR/tmp.XXXXXX")"
+  local tmp
+  tmp="$(mktemp "$BATS_TEST_TMPDIR/tmp.XXXXXX")" || { echo "Failed to create temp file" >&2; exit 1; }
   cat > "$tmp" <<'JSON'
 {"url":"u","createdAt":"2026-07-10T10:00:00Z","updatedAt":"2026-07-10T10:00:00Z","mergedAt":null,"isDraft":false,"author":{"login":"h"},
  "reviews":{"nodes":[{"author":{"login":"cubic-dev-ai"},"state":"COMMENTED","submittedAt":"2026-07-10T10:05:00Z","bodyText":"cubic reviewed this PR and found 1 potential issue."}]},
@@ -50,6 +51,38 @@ setup() {
 JSON
   run jq -c --arg repo "r" --argjson bots "$newbots" --arg rl "$RATE_LIMIT_RE" "[ $_NORMALIZE_JQ ]" "$tmp"
   echo "$output" | jq -e '.[] | select(.kind=="bot_pr" and .bot=="cubic-dev-ai") | .real_responses>=1 and .reviews==1'
+}
+
+@test "normalize: a cubic trial-ended notice is a refusal, not a review (issue #1903)" {
+  local newbots='["cubic-dev-ai"]'
+  local tmp
+  tmp="$(mktemp "$BATS_TEST_TMPDIR/tmp.XXXXXX")" || { echo "Failed to create temp file" >&2; exit 1; }
+  cat > "$tmp" <<'JSON'
+{"url":"u","createdAt":"2026-07-10T10:00:00Z","updatedAt":"2026-07-10T10:00:00Z","mergedAt":null,"isDraft":false,"author":{"login":"h"},
+ "reviews":{"nodes":[]},
+ "reviewThreads":{"nodes":[]},
+ "comments":{"nodes":[{"author":{"login":"cubic-dev-ai"},"createdAt":"2026-07-10T10:01:00Z","bodyText":"cubic: your free trial ended. Upgrade to a paid plan to resume reviews."}]}}
+JSON
+  run jq -c --arg repo "r" --argjson bots "$newbots" --arg rl "$RATE_LIMIT_RE" "[ $_NORMALIZE_JQ ]" "$tmp"
+  # The trial-ended notice is cubic's SOLE action → a refusal, not a review.
+  echo "$output" | jq -e '.[] | select(.kind=="bot_pr" and .bot=="cubic-dev-ai") | .real_responses==0 and .refusals>=1'
+}
+
+@test "normalize: another reviewer discussing cubic's trial is NOT a refusal (author-scoped, issue #1903)" {
+  # The cubic clause is author-scoped: a genuine finding by a DIFFERENT tracked bot
+  # that merely mentions cubic's trial must count as a real response, not a refusal,
+  # or that reviewer would be dropped from the gate and miscounted (#1903 codex P2).
+  local newbots='["cubic-dev-ai","chatgpt-codex-connector"]'
+  local tmp
+  tmp="$(mktemp "$BATS_TEST_TMPDIR/tmp.XXXXXX")" || { echo "Failed to create temp file" >&2; exit 1; }
+  cat > "$tmp" <<'JSON'
+{"url":"u","createdAt":"2026-07-10T10:00:00Z","updatedAt":"2026-07-10T10:00:00Z","mergedAt":null,"isDraft":false,"author":{"login":"h"},
+ "reviews":{"nodes":[]},
+ "reviewThreads":{"nodes":[]},
+ "comments":{"nodes":[{"author":{"login":"chatgpt-codex-connector"},"createdAt":"2026-07-10T10:01:00Z","bodyText":"The cubic free trial ended handling is too broad."}]}}
+JSON
+  run jq -c --arg repo "r" --argjson bots "$newbots" --arg rl "$RATE_LIMIT_RE" "[ $_NORMALIZE_JQ ]" "$tmp"
+  echo "$output" | jq -e '.[] | select(.kind=="bot_pr" and .bot=="chatgpt-codex-connector") | .real_responses>=1 and .refusals==0'
 }
 
 @test "REVIEWER_LABELS: Graphite has display name (issue #1401)" {

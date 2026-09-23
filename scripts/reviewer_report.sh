@@ -113,7 +113,18 @@ declare -gA REVIEWER_LABELS=(
 if declare -F _advisory_rate_limit_pattern >/dev/null 2>&1; then
   RATE_LIMIT_RE="$(_advisory_rate_limit_pattern)"
 else
-  RATE_LIMIT_RE='usage limit|rate[-_ ]?limit|too many requests|quota (exceeded|reached|exhausted)|out of (quota|credits|tokens|requests)|limit (reached|exceeded|exhausted)|(reached|exceeded|hit) (the |your )?(usage |rate |daily |monthly )?limit|used up its prepaid credits|Qodo.{0,40}(monthly|usage|PR|review) limit|CodeAnt.{0,40}(monthly|trial|usage) limit|cubic.{0,40}(trial|subscription|plan|usage|review) (limit|ended|expired)'
+  RATE_LIMIT_RE='usage limit|rate[-_ ]?limit|too many requests|quota (exceeded|reached|exhausted)|out of (quota|credits|tokens|requests)|limit (reached|exceeded|exhausted)|(reached|exceeded|hit) (the |your )?(usage |rate |daily |monthly )?limit|used up its prepaid credits|Qodo.{0,40}(monthly|usage|PR|review) limit|CodeAnt.{0,40}(monthly|trial|usage) limit'
+fi
+
+# Author-scoped cubic rate-limit clause — reuse the gate's if present, else mirror
+# it. Matched ONLY against cubic'"'"'s own submissions (author == cubic-dev-ai) in
+# _NORMALIZE_JQ below, so a genuine finding by another reviewer that merely mentions
+# cubic'"'"'s trial is not miscounted as a cubic/other-bot refusal (#1903). The mirror
+# is kept in sync with the gate by tests/dev-lead/unit/test_advisory_review_gate.bats.
+if declare -F _advisory_cubic_rate_limit_pattern >/dev/null 2>&1; then
+  CUBIC_RATE_LIMIT_RE="$(_advisory_cubic_rate_limit_pattern)"
+else
+  CUBIC_RATE_LIMIT_RE='cubic.{0,40}(trial|free trial) (ended|expired)'
 fi
 
 # Check-run reporters (#1908): logins that deliver a review as a check run rather
@@ -254,10 +265,12 @@ _NORMALIZE_JQ='
       # bot'"'"'s SOLE action on the PR was to decline. This is the key correctness
       # fix over the old "any rate-limit text present" flag.
       # A check-run submission carries an explicit `refusal` boolean (a "too large"
-      # skip); every other submission derives refusal from its body matching the
-      # rate-limit/out-of-quota pattern. Preserve a pre-set flag, else body-match.
+      # skip); preserve that pre-set flag. Otherwise derive refusal from the body:
+      # generic rate-limit markers apply to any bot, and the cubic clause is
+      # author-scoped (.bot is the ascii_downcased author) so a comment by another
+      # reviewer that merely mentions cubic'"'"'s trial is not counted as a refusal (#1903).
       | ($grp | map(. + {refusal: (if (.refusal != null) then .refusal
-                                    else ((.body // "") | test($rl; "i")) end)})) as $mine
+                                    else (((.body // "") | test($rl; "i")) or (.bot == "cubic-dev-ai" and ((.body // "") | test("'"$CUBIC_RATE_LIMIT_RE"'"; "i")))) end)})) as $mine
       | ($mine | map(select(.refusal | not))) as $real
       | ($mine | map(select(.refusal)))       as $refd
       | ($real | map(.at) | min) as $first_real

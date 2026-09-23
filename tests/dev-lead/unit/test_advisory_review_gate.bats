@@ -934,14 +934,38 @@ _events_dir() {
   [[ "$output" == *"cubic-dev-ai"* ]]
 }
 
-@test "Advisory gate: a cubic trial-ended phrase matches the shared detector (issue #1903)" {
-  # The cubic trial-ended notice must be caught by _advisory_rate_limit_pattern,
+@test "Advisory gate: a cubic trial-ended phrase matches the author-scoped detector (issue #1903)" {
+  # The cubic trial-ended notice must be caught by the author-scoped cubic pattern,
   # or a refusal would arm the gate but never trigger a sweep retry / scorecard
   # refusal count. A genuine cubic review must NOT match.
   run bash -c "source '$SCRIPT_DIR/lib/advisory-review-gate.sh'
-    pat=\"\$(_advisory_rate_limit_pattern)\"
+    pat=\"\$(_advisory_cubic_rate_limit_pattern)\"
     printf '%s' 'cubic: your free trial ended. Upgrade to a paid plan.' | grep -qiE \"\$pat\" || { echo 'MISS-refusal'; exit 1; }
     printf '%s' 'cubic reviewed this PR and found 2 potential issues.' | grep -qiE \"\$pat\" && { echo 'FALSE-POSITIVE'; exit 1; }
+    echo OK"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"OK"* ]]
+}
+
+@test "Advisory gate: the cubic clause is author-scoped, NOT in the shared detector (issue #1903)" {
+  # The cubic clause must live ONLY in the author-scoped pattern. If it were in the
+  # shared, author-agnostic ADVISORY_RATE_LIMIT_RE, another reviewer merely
+  # discussing cubic's trial would be misclassified RATE_LIMITED (#1903 codex P2).
+  run bash -c "source '$SCRIPT_DIR/lib/advisory-review-gate.sh'
+    gen=\"\$(_advisory_rate_limit_pattern)\"
+    printf '%s' 'cubic: your free trial ended. Upgrade to a paid plan.' | grep -qiE \"\$gen\" && { echo 'LEAKED-INTO-GENERIC'; exit 1; }
+    printf '%s' 'The cubic free trial ended handling is too broad.' | grep -qiE \"\$gen\" && { echo 'GENERIC-FALSE-POSITIVE'; exit 1; }
+    echo OK"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"OK"* ]]
+}
+
+@test "Advisory gate: the tightened cubic clause ignores generic subscription/plan/usage text (issue #1903)" {
+  # cubic P3: the clause is scoped to the observed 'trial (ended|expired)' wording,
+  # so a genuine cubic finding that opens with the 'cubic' prefix is not swept up.
+  run bash -c "source '$SCRIPT_DIR/lib/advisory-review-gate.sh'
+    pat=\"\$(_advisory_cubic_rate_limit_pattern)\"
+    printf '%s' 'cubic: ensure the subscription limit is enforced.' | grep -qiE \"\$pat\" && { echo 'OVER-BROAD'; exit 1; }
     echo OK"
   [ "$status" -eq 0 ]
   [[ "$output" == *"OK"* ]]
@@ -973,4 +997,21 @@ _events_dir() {
   rm -rf "$tmpdir"
   [[ "$output" == *"RATE_LIMITED"* ]]
   [[ "$output" == *"cubic-dev-ai"* ]]
+}
+
+@test "Gate runtime: another reviewer discussing cubic's trial is NOT RATE_LIMITED (author-scoped, issue #1903)" {
+  # A codex comment that merely mentions cubic's trial must classify COMMENTED, not
+  # RATE_LIMITED — otherwise codex would be dropped from the required set on a real
+  # finding (#1903 codex P2). The cubic clause only applies to cubic's own author.
+  local json='{"reviews":[],"comments":[{"author":{"login":"chatgpt-codex-connector"},"createdAt":"2099-01-01T00:00:00Z","body":"The cubic free trial ended handling is too broad."}]}'
+  local tmpdir; tmpdir=$(_make_mock_gh_dir_recent "$json")
+  local gate_script="$SCRIPT_DIR/lib/advisory-review-gate.sh"
+  run env PATH="$tmpdir:$PATH" bash -c "
+    source '$gate_script'
+    check_advisory_reviews 'https://github.com/owner/repo/pull/123'
+  "
+  rm -rf "$tmpdir"
+  [[ "$output" == *"chatgpt-codex-connector"* ]]
+  [[ "$output" == *"COMMENTED"* ]]
+  [[ "$output" != *"RATE_LIMITED"* ]]
 }
