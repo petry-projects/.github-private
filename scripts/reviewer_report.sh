@@ -610,8 +610,8 @@ _collect_check_runs_for_page() {
     # runs is still seen — reading only page 1 would falsely report "No response"
     # when the configured run sorts after the 100th (#1908). Assign first, then test,
     # so a fetch failure under `set -e` is a clean skip, not a swallowed error.
-    cr_resp="$(_gh_timeout api --paginate "repos/${owner}/${name}/commits/${sha}/check-runs?per_page=100" 2>/dev/null || true)"
-    if [ -z "$cr_resp" ]; then
+    if ! cr_resp="$(_gh_timeout api --paginate "repos/${owner}/${name}/commits/${sha}/check-runs?per_page=100" 2>/dev/null)" \
+         || [ -z "$cr_resp" ]; then
       # Fetch failed: without a record this PR's check-run reporters are silently absent,
       # so a Graphite clean pass would miscount as "No response". Surface it (#1908).
       [ -n "$out" ] && jq -cn --arg repo "${owner}/${name}" --arg pr "$url" \

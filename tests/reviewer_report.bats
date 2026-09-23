@@ -277,11 +277,27 @@ JSON
 
 @test "check-run: collector short-circuits to {} when REVIEWER_CHECK_RUN_JSON is unset (#1913)" {
   unset REVIEWER_CHECK_RUN_JSON
-  _gh_timeout() { echo "should-not-be-called"; return 1; }
+  _gh_timeout() { : > "$BATS_TEST_TMPDIR/gh_called"; return 1; }
   local resp='{"data":{"repository":{"pullRequests":{"nodes":[{"url":"u","updatedAt":"2099-01-01T00:00:00Z","headRefOid":"abc"}]}}}}'
   run _collect_check_runs_for_page o r "$resp"
   [ "$status" -eq 0 ]
   [ "$output" = "{}" ]
+  [ ! -e "$BATS_TEST_TMPDIR/gh_called" ]
+}
+
+@test "check-run: collector records check_run_error when the REST fetch errors non-zero (#1913)" {
+  # An HTTP error (403 rate limit, 5xx) makes gh write an error body to stdout AND
+  # exit non-zero. Relying on empty output alone would miss it (cr_resp holds the
+  # non-empty error object), silently dropping the PR — the #1908 silent failure.
+  export CUTOFF="2026-09-16T00:00:00Z"
+  export REVIEWER_CHECK_RUN_JSON='{"graphite-app":"Graphite / AI Reviews"}'
+  _gh_timeout() { printf '%s' '{"message":"API rate limit exceeded"}'; return 1; }
+  local resp='{"data":{"repository":{"pullRequests":{"nodes":[{"url":"https://github.com/o/r/pull/1","updatedAt":"2026-09-23T10:00:00Z","headRefOid":"abc123"}]}}}}'
+  local out; out="$(mktemp "$BATS_TEST_TMPDIR/out.XXXXXX")"
+  run _collect_check_runs_for_page o r "$resp" "$out"
+  [ "$status" -eq 0 ]
+  [ "$output" = "{}" ]
+  jq -e 'select(.kind=="check_run_error" and .pr=="https://github.com/o/r/pull/1")' "$out"
 }
 
 @test "reviews: a PR with more than 50 reviews still counts a bot whose review is past the 50th" {

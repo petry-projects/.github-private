@@ -91,7 +91,7 @@ and untracked bots are dropped at normalization time.
 
 ## Metrics
 
-Everything is deterministic. **Reviews** and **Rate-limited** count *every event*, not
+Everything is deterministic. **Reviews** and **Refused** count *every event*, not
 distinct PRs — GitHub creates a new review submission each time a bot re-reviews after a new
 commit, so a PR reviewed across 5 commits contributes 5 reviews. This matters: on live data
 CodeRabbit produced ~2× more review events than the distinct-PR count would suggest (up to 11
