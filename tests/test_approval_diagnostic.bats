@@ -25,7 +25,10 @@ setup() {
 _registry_advisory_count() {
   # shellcheck source=scripts/lib/reviewer-sources.sh
   source "$REG_SH"
-  reviewer_sources_advisory_gate_logins | grep -c .
+  # grep -c already prints 0 and exits 1 when there are no matches; `|| true` keeps
+  # that clean under set -e without appending a duplicate 0 (which would break the
+  # integer comparison in the caller).
+  reviewer_sources_advisory_gate_logins | grep -c . || true
 }
 
 # ── Structure ────────────────────────────────────────────────────────────────
@@ -125,10 +128,10 @@ _registry_advisory_count() {
   [ "$(jq -r '.blocking_gate' <<<"$output")" = "changes-requested" ]
 }
 
-@test "diagnostic: clean PR with no approving review reports the terminal state" {
-  # Nothing blocks (no undispositioned comment, no changes requested) but there is
-  # no approving review at head yet — the diagnostic must say so explicitly rather
-  # than claim nothing is wrong.
+@test "diagnostic: incomplete advisory evidence reports waiting-for-advisory-bots, not timeout" {
+  # No advisory bot has participated yet (0/2). This is a fresh partial state, NOT a
+  # timeout fallback — the diagnostic must report the advisory gate as WAITING rather
+  # than claiming approval-would-issue-via-timeout (the b76 hQT distinction).
   local snap='{
     "reviewDecision": "REVIEW_REQUIRED",
     "headRefOid": "abc123",
@@ -139,7 +142,123 @@ _registry_advisory_count() {
   run diagnose_approval "$snap" '["copilot-pull-request-reviewer","gemini-code-assist"]' donpetry-bot
   [ "$status" -eq 0 ]
   [ "$(jq -r '.approved' <<<"$output")" = "false" ]
+  [ "$(jq -r '.blocking_gate' <<<"$output")" = "waiting-for-advisory-bots" ]
+  # via_timeout must be false while merely WAITING: no approval has issued, so no
+  # timeout fallback fired — the renderer must not annotate a timeout (codeant nitpick).
+  [ "$(jq -r '.advisory.via_timeout' <<<"$output")" = "false" ]
+}
+
+@test "diagnostic: an approval standing on incomplete advisory evidence is via_timeout=true" {
+  # An approving review from the bot stands at head, yet only 1 of 2 advisory bots
+  # participated — approval issued through the advisory gate timeout fallback. Only
+  # here is via_timeout true; the renderer may then annotate the partial-evidence path.
+  local snap='{
+    "reviewDecision": "APPROVED",
+    "headRefOid": "abc123",
+    "reviews": [
+      {"author": {"login": "gemini-code-assist"}, "state": "COMMENTED", "commit": {"oid": "abc123"}, "body": "advisory", "submittedAt": "2026-09-21T10:00:00Z"},
+      {"author": {"login": "donpetry-bot"}, "state": "APPROVED", "commit": {"oid": "abc123"}, "body": "approved", "submittedAt": "2026-09-21T10:05:00Z"}
+    ],
+    "labels": [],
+    "comments": []
+  }'
+  run diagnose_approval "$snap" '["copilot-pull-request-reviewer","gemini-code-assist"]' donpetry-bot
+  [ "$status" -eq 0 ]
+  [ "$(jq -r '.approved' <<<"$output")" = "true" ]
+  [ "$(jq -r '.advisory.submitted' <<<"$output")" = "1" ]
+  [ "$(jq -r '.advisory.required' <<<"$output")" = "2" ]
+  [ "$(jq -r '.advisory.via_timeout' <<<"$output")" = "true" ]
+}
+
+@test "diagnostic: complete advisory evidence but no approval reports approval-not-yet-issued" {
+  # Both advisory bots participated (2/2) but no approving review from the bot exists
+  # at head — the terminal state where approval would issue on the next pr-review run.
+  local snap='{
+    "reviewDecision": "REVIEW_REQUIRED",
+    "headRefOid": "abc123",
+    "reviews": [
+      {"author": {"login": "gemini-code-assist"}, "state": "COMMENTED", "commit": {"oid": "abc123"}, "body": "advisory", "submittedAt": "2026-09-21T10:00:00Z"},
+      {"author": {"login": "copilot-pull-request-reviewer"}, "state": "COMMENTED", "commit": {"oid": "abc123"}, "body": "advisory", "submittedAt": "2026-09-21T10:01:00Z"}
+    ],
+    "labels": [],
+    "comments": []
+  }'
+  run diagnose_approval "$snap" '["copilot-pull-request-reviewer","gemini-code-assist"]' donpetry-bot
+  [ "$status" -eq 0 ]
+  [ "$(jq -r '.approved' <<<"$output")" = "false" ]
+  [ "$(jq -r '.advisory.submitted' <<<"$output")" = "2" ]
   [ "$(jq -r '.blocking_gate' <<<"$output")" = "approval-not-yet-issued" ]
+}
+
+@test "diagnostic: a bot whose LATEST submission is a rate-limit notice is not counted (b76)" {
+  # The advisory gate keeps only each bot's latest submission and drops it when that
+  # latest is a rate-limit notice. gemini posted a real review, then a rate-limit
+  # comment — its newest signal is the rate-limit notice, so it must NOT count as
+  # participated and must appear in missing, matching get_advisory_bot_states().
+  local snap='{
+    "reviewDecision": "REVIEW_REQUIRED",
+    "headRefOid": "abc123",
+    "reviews": [
+      {"author": {"login": "gemini-code-assist"}, "state": "COMMENTED", "commit": {"oid": "abc123"}, "body": "advisory", "submittedAt": "2026-09-21T10:00:00Z"}
+    ],
+    "labels": [],
+    "comments": [
+      {"author": {"login": "gemini-code-assist"}, "body": "You have reached your usage limit. Please try again later.", "isMinimized": false, "minimizedReason": "", "createdAt": "2026-09-21T11:00:00Z"}
+    ]
+  }'
+  run diagnose_approval "$snap" '["copilot-pull-request-reviewer","gemini-code-assist"]' donpetry-bot
+  [ "$status" -eq 0 ]
+  [ "$(jq -r '.advisory.submitted' <<<"$output")" = "0" ]
+  [ "$(jq -r '.advisory.missing | index("gemini-code-assist") != null' <<<"$output")" = "true" ]
+}
+
+# ── b78: the maintainer review-thread gate is modelled when threads are supplied ──
+
+@test "diagnostic: an unresolved maintainer review thread is the blocking gate (#1415)" {
+  # reviewDecision=APPROVED with a standing approval at head, but an unresolved,
+  # marker-less maintainer review thread postdates the head push. The runtime
+  # maintainer-review-thread gate dismisses the approval — so the diagnostic must
+  # report that gate as blocking rather than approved:true (the b78 gap).
+  local snap='{
+    "reviewDecision": "APPROVED",
+    "headRefOid": "abc123",
+    "reviews": [
+      {"author": {"login": "donpetry-bot"}, "state": "APPROVED", "commit": {"oid": "abc123"}, "body": "ok", "submittedAt": "2026-09-21T10:00:00Z"}
+    ],
+    "labels": [],
+    "comments": []
+  }'
+  local threads='{"reviewThreads":[
+    {"isResolved": false, "comments": {"nodes": [
+      {"author": {"login": "some-maintainer"}, "body": "This needs a rethink.", "createdAt": "2026-09-22T10:00:00Z"}
+    ]}}
+  ]}'
+  # Head pushed BEFORE the thread was created → the thread postdates the push → blocks.
+  run diagnose_approval "$snap" '["copilot-pull-request-reviewer","gemini-code-assist"]' donpetry-bot "$threads" "2026-09-21T09:00:00Z"
+  [ "$status" -eq 0 ]
+  [ "$(jq -r '.approved' <<<"$output")" = "false" ]
+  [ "$(jq -r '.blocking_gate' <<<"$output")" = "maintainer-review-thread-gate" ]
+}
+
+@test "diagnostic: a resolved maintainer review thread does not block an approval" {
+  local snap='{
+    "reviewDecision": "APPROVED",
+    "headRefOid": "abc123",
+    "reviews": [
+      {"author": {"login": "donpetry-bot"}, "state": "APPROVED", "commit": {"oid": "abc123"}, "body": "ok", "submittedAt": "2026-09-21T10:00:00Z"}
+    ],
+    "labels": [],
+    "comments": []
+  }'
+  local threads='{"reviewThreads":[
+    {"isResolved": true, "comments": {"nodes": [
+      {"author": {"login": "some-maintainer"}, "body": "This needs a rethink.", "createdAt": "2026-09-22T10:00:00Z"}
+    ]}}
+  ]}'
+  run diagnose_approval "$snap" '["copilot-pull-request-reviewer","gemini-code-assist"]' donpetry-bot "$threads" "2026-09-21T09:00:00Z"
+  [ "$status" -eq 0 ]
+  [ "$(jq -r '.approved' <<<"$output")" = "true" ]
+  [ "$(jq -r '.blocking_gate' <<<"$output")" = "none" ]
 }
 
 # ── AC #2: advisory denominator reconciled with the registry ─────────────────
@@ -201,7 +320,9 @@ _registry_advisory_count() {
 
 @test "diagnostic: malformed snapshot fails closed (non-zero, does not claim approved)" {
   run diagnose_approval 'not json at all'
-  [ "$status" -ne 0 ]
+  # Assert the specific fail-closed code (2), not merely non-zero, so a syntax or
+  # command-not-found error can't masquerade as the expected fail-closed path.
+  [ "$status" -eq 2 ]
 }
 
 # ── Renderer ─────────────────────────────────────────────────────────────────
