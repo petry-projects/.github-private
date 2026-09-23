@@ -440,7 +440,8 @@ JSON
 }
 
 @test "aggregate: empty dir yields a zeroed snapshot" {
-  empty="$(mktemp -d "$BATS_TEST_TMPDIR/empty.XXXXXX")"
+  local empty
+  empty="$(mktemp -d "$BATS_TEST_TMPDIR/empty.XXXXXX")" || { echo "Failed to create temp directory" >&2; exit 1; }
   run aggregate_snapshot "$empty"
   echo "$output" | jq -e '.total_prs == 0 and (.bots | length == 0)'
 }
@@ -481,7 +482,8 @@ JSON
 }
 
 @test "render: empty dir yields a no-data message" {
-  empty="$(mktemp -d "$BATS_TEST_TMPDIR/empty.XXXXXX")"
+  local empty
+  empty="$(mktemp -d "$BATS_TEST_TMPDIR/empty.XXXXXX")" || { echo "Failed to create temp directory" >&2; exit 1; }
   run render_reviewer_report "$empty" 7 0 2026-07-13
   [ "$status" -eq 0 ]
   echo "$output" | grep -q "No pull-request activity found"
