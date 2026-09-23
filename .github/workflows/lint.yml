@@ -129,6 +129,7 @@ jobs:
             tests/test_skill_review.bats \
             tests/test_skill_evals.bats \
             tests/test_eval_cost_estimate.bats \
+            tests/test_opus_5_5_validation.bats \
             tests/test_score_gate.bats \
             tests/test_model_ab.bats \
             tests/test_triage_prompt.bats \
