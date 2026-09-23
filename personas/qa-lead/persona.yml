@@ -112,7 +112,7 @@ triggers:
       events: [opened, ready_for_review]
       enabled: true
       mode: advisory
-      notes: "Risk assessment + test-coverage review comments on PRs with test surface. SERVED by qa-lead-pr-advisory.yml (#1646) on [opened, ready_for_review]. `synchronize` is deliberately EXCLUDED (one advisory as a PR enters review, not on every push) — so the declared events match what is deployed."
+      notes: "Risk assessment + test-coverage review comments on PRs with test surface. Served LOCALLY in .github-private today by qa-lead-pr-advisory.yml (#1646) on [opened, ready_for_review]; this surface is NOT fleet-deployable via a caller stub because that workflow is self-contained, not a thin stub. ADR-0009 routes it through the shared persona-mention router so it reaches beyond .github-private (#1869); the local workflow is retired only after that router change lands on persona-mention/v1-next and the #1745 stop markers are verified on a pull_request-sourced dispatch. `synchronize` is deliberately EXCLUDED (one advisory as a PR enters review, not on every push) — so the declared events match what is deployed."
 
     - surface: pull_request_review
       events: [submitted, created]
