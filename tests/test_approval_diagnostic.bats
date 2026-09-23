@@ -3,10 +3,12 @@
 #
 # scripts/lib/approval-diagnostic.sh answers ONE deterministic question for a PR:
 # "why is this PR not approved?" — naming the blocking gate, the specific unmet
-# condition, and what would satisfy it. It evaluates the approval gate chain in
-# the SAME ORDER review-one-pr.sh applies it, so the diagnostic and the runtime
-# gate can never disagree. It is PURE (reads a PR snapshot JSON, writes JSON /
-# Markdown, no network) so it is unit-tested here.
+# condition, and what would satisfy it. It reports the DEEPEST ENDURING blocker,
+# not review-one-pr.sh's first-indicated skip reason (#1902): the advisory gate
+# never truly withholds (it times out and proceeds), so a maintainer comment/thread
+# that STILL blocks after that timeout is reported ahead of advisory-waiting. It is
+# PURE (reads a PR snapshot JSON, writes JSON / Markdown, no network) so it is
+# unit-tested here.
 #
 # AC #2: the advisory denominator is reconciled with the registry — `required`
 # equals the count of advisory_gate=yes logins in reviewer-sources.tsv and the
@@ -113,6 +115,27 @@ _registry_advisory_count() {
   [ "$(jq -r '.blocking_gate' <<<"$output")" = "none" ]
 }
 
+@test "diagnostic: an approving review at head with a lagging reviewDecision reports approved=true (appr_at_head fallback)" {
+  # reviewDecision is REVIEW_REQUIRED (lagging, or the ruleset needs more approvers)
+  # yet an approving review from the approver stands at headRefOid with no blocking
+  # comment/thread. This exercises the appr_at_head fallback branch — NOT the
+  # decision=="APPROVED" short-circuit that every other "approved" snapshot here hits
+  # (thread I / cubic P3, #1902) — so a regression in that fallback cannot ship silently.
+  local snap='{
+    "reviewDecision": "REVIEW_REQUIRED",
+    "headRefOid": "abc123",
+    "reviews": [
+      {"author": {"login": "donpetry-bot"}, "state": "APPROVED", "commit": {"oid": "abc123"}, "body": "ok", "submittedAt": "2026-09-21T10:00:00Z"}
+    ],
+    "labels": [],
+    "comments": []
+  }'
+  run diagnose_approval "$snap" '["copilot-pull-request-reviewer","gemini-code-assist"]' donpetry-bot
+  [ "$status" -eq 0 ]
+  [ "$(jq -r '.approved' <<<"$output")" = "true" ]
+  [ "$(jq -r '.blocking_gate' <<<"$output")" = "none" ]
+}
+
 @test "diagnostic: changes-requested at head is named as the blocking gate" {
   local snap='{
     "reviewDecision": "CHANGES_REQUESTED",
@@ -148,10 +171,12 @@ _registry_advisory_count() {
   [ "$(jq -r '.advisory.via_timeout' <<<"$output")" = "false" ]
 }
 
-@test "diagnostic: an approval standing on incomplete advisory evidence is via_timeout=true" {
+@test "diagnostic: a standing approval on incomplete advisory evidence is NOT annotated via_timeout (snapshot cannot prove it)" {
   # An approving review from the bot stands at head, yet only 1 of 2 advisory bots
-  # participated — approval issued through the advisory gate timeout fallback. Only
-  # here is via_timeout true; the renderer may then annotate the partial-evidence path.
+  # participated. The snapshot CANNOT prove the approval issued via a timeout fallback
+  # — it could equally have issued on the reduced effective denominator or manually —
+  # so via_timeout must be false rather than falsely claiming a timeout (thread H,
+  # #1902). via_timeout is reserved for the snapshot-provable head-age-timeout case.
   local snap='{
     "reviewDecision": "APPROVED",
     "headRefOid": "abc123",
@@ -167,7 +192,7 @@ _registry_advisory_count() {
   [ "$(jq -r '.approved' <<<"$output")" = "true" ]
   [ "$(jq -r '.advisory.submitted' <<<"$output")" = "1" ]
   [ "$(jq -r '.advisory.required' <<<"$output")" = "2" ]
-  [ "$(jq -r '.advisory.via_timeout' <<<"$output")" = "true" ]
+  [ "$(jq -r '.advisory.via_timeout' <<<"$output")" = "false" ]
 }
 
 @test "diagnostic: complete advisory evidence but no approval reports approval-not-yet-issued" {
@@ -210,6 +235,56 @@ _registry_advisory_count() {
   [ "$status" -eq 0 ]
   [ "$(jq -r '.advisory.submitted' <<<"$output")" = "0" ]
   [ "$(jq -r '.advisory.missing | index("gemini-code-assist") != null' <<<"$output")" = "true" ]
+}
+
+@test "diagnostic: when every AVAILABLE advisory bot submitted and one is unavailable, the gate is NOT waiting (effective denominator, #657)" {
+  # The runtime advisory gate decides against effective_total = required − unavailable,
+  # dropping RATE_LIMITED/UNSUPPORTED bots. gemini submitted a real review; copilot is
+  # UNSUPPORTED → effective = 2 − 1 = 1, submitted = 1. The diagnostic must NOT report
+  # waiting-for-advisory-bots (it would contradict the gate returning ready-to-approve).
+  # It falls through to approval-not-yet-issued (no standing approval), and the full
+  # registry count stays in advisory.required (thread H / cubic P2, #1902). copilot's
+  # unavailability is modelled as an UNSUPPORTED review rather than a rate-limit issue
+  # comment so the maintainer-comment gate (which counts any non-agent comment) is not
+  # tripped — isolating the effective-denominator behaviour under test.
+  local snap='{
+    "reviewDecision": "REVIEW_REQUIRED",
+    "headRefOid": "abc123",
+    "reviews": [
+      {"author": {"login": "gemini-code-assist"}, "state": "COMMENTED", "commit": {"oid": "abc123"}, "body": "advisory finding", "submittedAt": "2026-09-21T10:00:00Z"},
+      {"author": {"login": "copilot-pull-request-reviewer"}, "state": "UNSUPPORTED", "commit": {"oid": "abc123"}, "body": "n/a", "submittedAt": "2026-09-21T10:01:00Z"}
+    ],
+    "labels": [],
+    "comments": []
+  }'
+  run diagnose_approval "$snap" '["copilot-pull-request-reviewer","gemini-code-assist"]' donpetry-bot
+  [ "$status" -eq 0 ]
+  [ "$(jq -r '.advisory.submitted' <<<"$output")" = "1" ]
+  [ "$(jq -r '.advisory.required' <<<"$output")" = "2" ]
+  [ "$(jq -r '.blocking_gate' <<<"$output")" != "waiting-for-advisory-bots" ]
+  [ "$(jq -r '.blocking_gate' <<<"$output")" = "approval-not-yet-issued" ]
+}
+
+@test "diagnostic: incomplete advisory evidence past the head-age timeout reports the timeout fallback, not waiting (thread D)" {
+  # An old PR (head pushed well past the 1200s head-age timeout) with no advisory
+  # output. The runtime advisory gate would PROCEED on partial evidence via the
+  # head-age timeout, so the diagnostic must predict that — reporting the timeout
+  # fallback with via_timeout=true rather than "still waiting", so the step summary
+  # matches the run (thread D / cubic P2, #1902). Head date is supplied (the caller
+  # already fetches it for the review-thread gate).
+  local snap='{
+    "reviewDecision": "REVIEW_REQUIRED",
+    "headRefOid": "abc123",
+    "reviews": [],
+    "labels": [],
+    "comments": []
+  }'
+  # Head committer date far in the past → head-age >> 1200s.
+  run diagnose_approval "$snap" '["copilot-pull-request-reviewer","gemini-code-assist"]' donpetry-bot "" "2020-01-01T00:00:00Z"
+  [ "$status" -eq 0 ]
+  [ "$(jq -r '.approved' <<<"$output")" = "false" ]
+  [ "$(jq -r '.blocking_gate' <<<"$output")" != "waiting-for-advisory-bots" ]
+  [ "$(jq -r '.advisory.via_timeout' <<<"$output")" = "true" ]
 }
 
 # ── b78: the maintainer review-thread gate is modelled when threads are supplied ──

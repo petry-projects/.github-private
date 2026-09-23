@@ -8,11 +8,21 @@
 # diagnosing one PR meant reading three scripts and correlating timeline events by
 # hand. This library owns that question.
 #
-# diagnose_approval evaluates the approval gate chain in the SAME ORDER
-# review-one-pr.sh applies it and emits ONE structured verdict naming:
+# diagnose_approval evaluates the approval gate chain and emits ONE structured
+# verdict naming:
 #   * blocking_gate  — the gate that withholds approval (or "none" when approved),
 #   * condition      — the specific unmet condition, and
 #   * satisfied_by   — exactly what would satisfy it.
+# It reports the DEEPEST ENDURING blocker, NOT the runtime's first-indicated skip
+# reason (#1902). review-one-pr.sh consults the advisory gate FIRST, but that gate
+# never truly withholds — it always proceeds once its head-age/quiescence timeout
+# elapses. So when a PR simultaneously has incomplete advisory evidence AND an
+# undispositioned maintainer comment (or an unresolved maintainer thread), the
+# runtime may skip first with `waiting-for-advisory-bots`, yet the comment/thread
+# gate is the blocker that STILL stands after the advisory timeout fires. The
+# diagnostic names that enduring blocker (comment/thread gate ahead of
+# advisory-waiting) so the operator sees the condition they must actually clear,
+# not the transient one that will time out.
 # It also always reports the advisory denominator RECONCILED with the registry
 # (#1894 AC #2): `advisory.required` is the count of advisory_gate=yes logins in
 # reviewer-sources.tsv and `advisory.missing` names the bots that have not
@@ -49,6 +59,25 @@ readonly _APPROVAL_DIAG_AGENT_MARKERS='<!-- (pr-review-agent|pr-review-claim|per
 # over-report participation and diverge from the gate (the b76 defect).
 # shellcheck disable=SC2034
 readonly _APPROVAL_DIAG_RATE_LIMIT_RE='usage limit|rate[-_ ]?limit|too many requests|quota (exceeded|reached|exhausted)|out of (quota|credits|tokens|requests)|limit (reached|exceeded|exhausted)|(reached|exceeded|hit) (the |your )?(usage |rate |daily |monthly )?limit|used up its prepaid credits|Qodo.{0,40}(monthly|usage|PR|review) limit|CodeAnt.{0,40}(monthly|trial|usage) limit'
+
+# Sentinel the caller passes for [review_threads_json] when the review-thread FETCH
+# itself failed (mrtg_fetch_review_threads echoes an empty string only on an API
+# failure — a PR with no threads yields {"reviewThreads":[]}). The real
+# maintainer-review-thread gate (#1415) fails closed on that same failure, so the
+# diagnostic must too: a surface it could not read may hide an unresolved maintainer
+# thread that blocks approval. Distinct from "" (thread data not supplied), which
+# keeps the diagnostic pure and simply does not model that gate (#1902).
+readonly _APPROVAL_DIAG_THREADS_FETCH_FAILED='__MRT_FETCH_FAILED__'
+
+# Kept in sync with advisory-review-gate.sh's ADVISORY_HEAD_AGE_TIMEOUT_SEC (#1193):
+# the head-push age past which the advisory gate stops waiting and proceeds on
+# partial evidence. The diagnostic runs BEFORE the gate but holds the same head
+# committer date, so it predicts the same head-age timeout — an old PR reports
+# "approval issues via the head-age timeout" instead of "still waiting", matching
+# the run (#1902). The quiescence timeout stays gate-owned (it depends on live
+# submission timing) to avoid duplicating drift-prone logic here.
+# shellcheck disable=SC2034
+readonly _APPROVAL_DIAG_HEAD_AGE_TIMEOUT_SEC=1200
 
 # _approval_diag_default_advisory_json
 #   The advisory-gate denominator as a JSON array of logins, derived from the
@@ -113,7 +142,16 @@ diagnose_approval() {
     --arg markers "$_APPROVAL_DIAG_AGENT_MARKERS" \
     --arg ratelimit "$_APPROVAL_DIAG_RATE_LIMIT_RE" '
       def approver_logins: [$approver, ($approver | if endswith("[bot]") then .[0:-5] else . end)];
-      ($advisory | map(ascii_downcase)) as $adv
+      # Validate the snapshot BEFORE deriving a verdict (#1902). An incomplete
+      # snapshot (not an object, or missing the head SHA / reviews array) must NOT
+      # be read as "approved with no findings" — it is undeterminable, so error out
+      # and let the caller fail closed (return 2), mirroring the gates this
+      # diagnostic summarizes ("cannot check ≠ nothing to check").
+      ( if (type != "object") then error("snapshot is not a JSON object")
+        elif (has("headRefOid") | not) or ((.headRefOid // "") == "") then error("snapshot missing headRefOid (head data)")
+        elif (has("reviews") | not) or ((.reviews | type) != "array") then error("snapshot missing reviews array (review data)")
+        else . end )
+      | ($advisory | map(ascii_downcase)) as $adv
       | (.headRefOid // "") as $sha
       | (.reviewDecision // "") as $decision
       # Advisory participation, reconciled with advisory-review-gate.sh
@@ -136,6 +174,15 @@ diagnose_approval() {
           | map(sort_by(.time) | last)
         ) as $latest
       | ([ $latest[] | select(.state != "RATE_LIMITED" and .state != "UNSUPPORTED") | .bot ] | unique) as $participated
+      # Unavailable = advisory bots whose LATEST signal is a rate-limit/unsupported
+      # notice — IDENTICAL to num_unavailable in advisory-review-gate.sh (#657). The
+      # runtime gate decides against effective_total = required minus unavailable
+      # (clamped to >= 1), so the diagnostic must classify against the same effective
+      # denominator, or a PR where every AVAILABLE bot submitted (6/6 with one
+      # rate-limited of 7 registered) would be mislabelled waiting while the gate
+      # is ready to approve (#1902). The full registry count stays in advisory.required.
+      | ([ $latest[] | select(.state == "RATE_LIMITED" or .state == "UNSUPPORTED") | .bot ] | unique) as $unavailable_bots
+      | ([ [($adv | length) - ($unavailable_bots | length), 1] | max ]) as $eff_arr
       | ([ $adv[] | select(. as $b | ($participated | index($b)) | not) ] | sort) as $missing
       # Undispositioned non-agent issue comments (maintainer-comment-gate logic).
       | ([ (.comments // [])[] | objects
@@ -154,6 +201,8 @@ diagnose_approval() {
           decision: $decision,
           required: ($adv | length),
           submitted: ($participated | length),
+          unavailable: ($unavailable_bots | length),
+          effective: ($eff_arr[0]),
           missing: $missing,
           undispositioned: $undispositioned,
           cr_at_head: $cr_at_head,
@@ -172,9 +221,10 @@ diagnose_approval() {
   # unlike an IFS=$'\t' read, where tab is whitespace-class and adjacent empty
   # fields would collapse and shift every subsequent value.
   local _f=()
-  mapfile -t _f < <(jq -r '.head_sha, .decision, .required, .submitted, .cr_at_head, .appr_at_head, .undispositioned' <<<"$facts")
+  mapfile -t _f < <(jq -r '.head_sha, .decision, .required, .submitted, .cr_at_head, .appr_at_head, .undispositioned, .effective, .unavailable' <<<"$facts")
   local head_sha="${_f[0]}" decision="${_f[1]}" required="${_f[2]}" submitted="${_f[3]}"
   local cr_at_head="${_f[4]}" appr_at_head="${_f[5]}" undispositioned="${_f[6]}"
+  local effective="${_f[7]}" unavailable="${_f[8]}"
 
   # Maintainer review-thread gate (#1415), modelled only when the caller supplies
   # review-thread data. REUSE check_maintainer_review_threads so the diagnostic and
@@ -183,8 +233,15 @@ diagnose_approval() {
   # means the gate withholds approval, so it blocks here too. Guarded: source the
   # sibling gate once (re-sourcing would trip its readonly vars), and never let a
   # missing file or a gate error abort the diagnostic.
-  local mrt_block="no"
-  if [ -n "$review_threads" ]; then
+  local mrt_block="no" mrt_undeterminable="no"
+  if [ "$review_threads" = "$_APPROVAL_DIAG_THREADS_FETCH_FAILED" ]; then
+    # The review-thread fetch failed (thread F, #1902). The real gate fails closed on
+    # this same failure, so the diagnostic must too — an unread surface may hide an
+    # unresolved maintainer thread. Block, and mark it undeterminable so the condition
+    # names the fetch failure rather than falsely asserting a specific unresolved thread.
+    mrt_block="yes"
+    mrt_undeterminable="yes"
+  elif [ -n "$review_threads" ]; then
     if ! declare -f check_maintainer_review_threads >/dev/null 2>&1; then
       # shellcheck source=scripts/lib/maintainer-review-thread-gate.sh
       # shellcheck disable=SC1091
@@ -197,24 +254,49 @@ diagnose_approval() {
     fi
   fi
 
+  # Head-age timeout prediction (thread D, #1902). The advisory gate proceeds on
+  # partial evidence once the head push is older than the head-age timeout. The
+  # diagnostic runs BEFORE the gate, but it holds the same head committer date, so it
+  # predicts the same timeout: an old PR reports "approval issues via the head-age
+  # timeout" instead of "still waiting", so the summary matches the run. Best-effort:
+  # an absent/unparseable head_date leaves this "no" and the waiting branch is used.
+  local head_age_timeout="no"
+  if [ -n "$head_date" ]; then
+    local _head_epoch="" _now_epoch
+    _head_epoch=$(date -u -d "$head_date" +%s 2>/dev/null) \
+      || _head_epoch=$(date -u -jf "%Y-%m-%dT%H:%M:%SZ" "$head_date" +%s 2>/dev/null) \
+      || _head_epoch=""
+    if [ -n "$_head_epoch" ]; then
+      _now_epoch=$(date -u +%s)
+      [ $((_now_epoch - _head_epoch)) -gt "$_APPROVAL_DIAG_HEAD_AGE_TIMEOUT_SEC" ] && head_age_timeout="yes"
+    fi
+  fi
+
   local approved="false" gate condition satisfied_by via_timeout="false"
 
-  # Gate chain, in review-one-pr.sh order. The advisory gate itself never blocks
-  # (it always proceeds via a timeout fallback), so it is recorded for
-  # observability but is never the blocking_gate. The first gate that WITHHOLDS
-  # approval is reported. The blocking gates are checked BEFORE the "an approval
-  # already exists at head" fallback, because both the maintainer-comment gate and
-  # the maintainer-review-thread gate DISMISS a standing approval (the #1813/#1415
-  # revocations) — so an undispositioned comment or an unresolved maintainer thread
-  # must win over an approval that is about to be revoked.
+  # Gate chain — the DEEPEST ENDURING blocker, NOT review-one-pr.sh's first skip
+  # reason (#1902). The advisory gate never truly withholds (it always proceeds once
+  # its head-age/quiescence timeout elapses), so advisory-waiting is reported only
+  # when no maintainer gate outlasts it: an undispositioned comment or an unresolved
+  # maintainer thread STILL blocks after the advisory timeout fires, so it is checked
+  # first here even though the runtime consults the advisory gate first. The
+  # maintainer gates are also checked BEFORE the "an approval already exists at head"
+  # fallback, because both DISMISS a standing approval (the #1813/#1415 revocations) —
+  # so an undispositioned comment or an unresolved maintainer thread must win over an
+  # approval that is about to be revoked.
   if [ "$undispositioned" -gt 0 ]; then
     gate="maintainer-comment-gate"
     condition="${undispositioned} PR issue comment(s) lack a verified disposition (not minimized RESOLVED) — #1290/#1813"
     satisfied_by="each non-agent comment is minimized with classifier RESOLVED after a verified disposition, or an @mention (FORCE_REVIEW) bypasses the gate"
   elif [ "$mrt_block" = "yes" ]; then
     gate="maintainer-review-thread-gate"
-    condition="an unresolved maintainer review thread postdates the last push (or its authorship/push-time is undeterminable) — #1415"
-    satisfied_by="the maintainer resolves the thread and a new commit is pushed, or an @mention (FORCE_REVIEW) bypasses the gate"
+    if [ "$mrt_undeterminable" = "yes" ]; then
+      condition="the review-thread surface could not be fetched, so an unresolved maintainer thread cannot be ruled out — failing closed (#1415/#1902)"
+      satisfied_by="the review-thread fetch succeeds on a subsequent run and no unresolved maintainer thread postdates the last push"
+    else
+      condition="an unresolved maintainer review thread postdates the last push (or its authorship/push-time is undeterminable) — #1415"
+      satisfied_by="the maintainer resolves the thread and a new commit is pushed, or an @mention (FORCE_REVIEW) bypasses the gate"
+    fi
   elif [ "$decision" = "APPROVED" ]; then
     approved="true"
     gate="none"
@@ -231,29 +313,39 @@ diagnose_approval() {
     gate="none"
     condition="an approving review from ${approver} exists at head ${head_sha:0:8}"
     satisfied_by=""
-  elif [ "$submitted" -lt "$required" ]; then
-    # Advisory evidence is still incomplete and no timeout fallback has fired yet:
-    # the advisory gate is WAITING, not approving-via-timeout. Reserve
-    # approval-not-yet-issued for the terminal state where evidence is complete but
-    # no approval has issued (the b76 hQT distinction — do not label a fresh partial
-    # state as timeout-driven).
-    gate="waiting-for-advisory-bots"
-    condition="advisory evidence is incomplete (${submitted}/${required} registered advisory bots have participated); the advisory gate is still waiting and has not reached a timeout fallback"
-    satisfied_by="the missing advisory bots submit a review/comment, or the advisory gate's head-age/quiescence timeout elapses and pr-review issues its approving review on partial evidence"
+  elif [ "$submitted" -lt "$effective" ]; then
+    # Advisory evidence is incomplete — classified against the EFFECTIVE denominator
+    # (effective = required − unavailable), IDENTICAL to advisory-review-gate.sh, so a
+    # PR where every AVAILABLE bot submitted (rate-limited/unsupported bots dropped)
+    # is never mislabelled "waiting" while the gate is ready to approve (#1902). The
+    # full registry count stays in advisory.required for observability.
+    if [ "$head_age_timeout" = "yes" ]; then
+      # The head-age timeout has ALREADY elapsed (snapshot-provable from the head
+      # committer date): the advisory gate will proceed on partial evidence and
+      # pr-review issues its approving review on the next run. Report it as a proven
+      # timeout fallback, not "still waiting" — this is the case thread D describes.
+      gate="approval-not-yet-issued"
+      condition="advisory evidence is incomplete (${submitted}/${effective} effective advisory bots; ${required} registered, ${unavailable} unavailable) but the advisory head-age timeout has elapsed — approval issues on partial evidence on the next pr-review run"
+      satisfied_by="pr-review re-runs and issues its approving review on the elapsed head-age timeout (partial evidence)"
+      via_timeout="true"
+    else
+      # No timeout has fired yet: the advisory gate is WAITING inside its windows.
+      gate="waiting-for-advisory-bots"
+      condition="advisory evidence is incomplete (${submitted}/${effective} effective advisory bots have participated; ${required} registered, ${unavailable} unavailable); the advisory gate is still waiting and has not reached a timeout fallback"
+      satisfied_by="the missing advisory bots submit a review/comment, or the advisory gate's head-age/quiescence timeout elapses and pr-review issues its approving review on partial evidence"
+    fi
   else
     gate="approval-not-yet-issued"
-    condition="no approving review from ${approver} exists at head ${head_sha:0:8}; advisory evidence is complete (${submitted}/${required}) so approval would issue on the next pr-review run"
+    condition="no approving review from ${approver} exists at head ${head_sha:0:8}; advisory evidence is complete (${submitted}/${effective} effective; ${required} registered) so approval would issue on the next pr-review run"
     satisfied_by="pr-review re-runs and issues its approving review — an advisory bot's pull_request_review event or the scheduled pr-review sweep re-triggers it"
   fi
 
-  # via_timeout means approval ISSUED on partial evidence via the advisory gate
-  # timeout fallback. That is only true when an approval actually stands AND the
-  # advisory evidence is still incomplete. A not-yet-approved partial state is
-  # WAITING inside the advisory windows, not timed out — so via_timeout stays
-  # false there and the renderer does not falsely annotate a timeout fallback.
-  if [ "$approved" = "true" ] && [ "$submitted" -lt "$required" ]; then
-    via_timeout="true"
-  fi
+  # via_timeout means approval issues on partial evidence via the advisory gate
+  # timeout fallback. It is set ONLY where the snapshot can PROVE the timeout — the
+  # head-age branch above, where the head committer date shows the head-age window
+  # has elapsed. A STANDING approval on incomplete advisory evidence is NOT annotated
+  # via_timeout (thread H, #1902): the snapshot cannot prove the approval issued via a
+  # timeout rather than on the reduced effective denominator or manually.
 
   local pr_ref="${PR_URL:-}"
   jq -cn \
@@ -337,8 +429,9 @@ if [[ "${BASH_SOURCE[0]}" = "${0}" ]]; then
     exit 2
   fi
   # Fetch the review-thread surface + head push-time so the standalone run models the
-  # maintainer-review-thread gate (#1415) too, matching the runtime chain. Best-effort:
-  # a fetch failure leaves the args empty and that gate is simply not evaluated.
+  # maintainer-review-thread gate (#1415) too, matching the runtime chain. A FETCH
+  # FAILURE (empty output from a declared helper) passes the fail-closed sentinel so
+  # the diagnostic blocks rather than skipping the thread gate (thread F, #1902).
   _threads=""
   _head_date=""
   _lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -355,6 +448,9 @@ if [[ "${BASH_SOURCE[0]}" = "${0}" ]]; then
     source "$_mrt_lib" 2>/dev/null || true
     if declare -f mrtg_fetch_review_threads >/dev/null 2>&1; then
       _threads=$(mrtg_fetch_review_threads "$_pr_url" 2>/dev/null) || _threads=""
+      # An empty result from a declared helper is an API failure (a PR with no threads
+      # yields {"reviewThreads":[]}). Fail closed via the sentinel, matching the gate.
+      [ -z "$_threads" ] && _threads="$_APPROVAL_DIAG_THREADS_FETCH_FAILED"
     fi
     if declare -f maintainer_gate_head_committer_date >/dev/null 2>&1; then
       _head_date=$(maintainer_gate_head_committer_date "$_pr_url" 2>/dev/null) || _head_date=""
