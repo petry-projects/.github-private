@@ -397,7 +397,11 @@ if [ "$DECISION" = "approve" ]; then
   fi
 
   # Verify the SHA in the approval marker matches the current PR_HEAD_SHA
-  MARKER_SHA=$(printf '%s' "$BODY" | grep -oP 'pr-review-agent v1 sha=\K[a-f0-9]+' | head -1)
+  if [[ "$BODY" =~ pr-review-agent\ v1\ sha=([a-f0-9]+) ]]; then
+    MARKER_SHA="${BASH_REMATCH[1]}"
+  else
+    MARKER_SHA=""
+  fi
   if [ -z "$MARKER_SHA" ] || [ "$MARKER_SHA" != "$PR_HEAD_SHA" ]; then
     echo "::error::approve verdict marker SHA ($MARKER_SHA) does not match PR_HEAD_SHA ($PR_HEAD_SHA) — refusing to submit (fail closed)"
     exit 1
@@ -411,7 +415,8 @@ if [ "$DECISION" = "approve" ]; then
   # decision within one marker (no `>` between them) therefore accepts only a
   # genuine approval and rejects a current-SHA fix-request or a decision-less
   # body from reaching `gh pr review --approve`.
-  if ! printf '%s' "$BODY" | grep -qP "pr-review-agent v1 sha=${PR_HEAD_SHA}\s[^>]*decision=approved"; then
+  approval_pattern="pr-review-agent v1 sha=${PR_HEAD_SHA}[[:space:]][^>]*decision=approved"
+  if ! [[ "$BODY" =~ $approval_pattern ]]; then
     echo "::error::approve verdict body lacks a complete approval marker (sha=$PR_HEAD_SHA with decision=approved in one marker) — refusing to submit (fail closed, #1754)"
     exit 1
   fi
