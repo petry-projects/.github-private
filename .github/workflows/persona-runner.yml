@@ -4,8 +4,15 @@
 #
 # The mention router (in petry-projects/.github) fires `persona-mention` at this
 # repo with client_payload {persona, mode, source_repo, item_number, comment_url,
-# requested_by}. This stub hands that payload to the reusable, which runs the
-# addressed persona's advisory prompt.
+# requested_by, surface, event_action}. This stub hands that payload to the
+# reusable, which runs the addressed persona's advisory prompt.
+#
+# `surface` selects which suppressors the reusable applies before the engine:
+# it defaults to `mention` (existing mention dispatches unchanged), and a
+# router-served `pull_request` dispatch (surface=pull_request) triggers the
+# persona's event pre-gate — test-surface / budget / already-advised for qa-lead
+# (#1905). This reusable is referenced by a LOCAL `./` path (same commit), so the
+# new inputs are declared in the same change — no channel-skew concern.
 #
 # Thin caller: no logic here beyond mapping the payload to inputs. All behaviour
 # lives in the reusable. This repo is the `next` ring — the first, smallest
@@ -30,4 +37,7 @@ jobs:
       comment_url: ${{ github.event.client_payload.comment_url }}
       requested_by: ${{ github.event.client_payload.requested_by }}
       mode: ${{ github.event.client_payload.mode }}
+      # Absent surface -> 'mention' so existing dispatches are unchanged (#1905).
+      surface: ${{ github.event.client_payload.surface || 'mention' }}
+      event_action: ${{ github.event.client_payload.event_action || '' }}
     secrets: inherit

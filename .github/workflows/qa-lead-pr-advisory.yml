@@ -72,89 +72,16 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
-          # shellcheck source=scripts/qa-lead-advisory-gate.sh
-          source scripts/qa-lead-advisory-gate.sh
+          # shellcheck source=scripts/qa-lead-pr-gate.sh
+          source scripts/qa-lead-pr-gate.sh
 
-          # Fail closed: qa-lead advises only when EVERY signal is available.
-          # Silence is the safe default, so any signal-gathering API failure must
-          # SKIP — never degrade to an empty value ([] labels, [] events, "no
-          # marker") that would bypass a suppressor or duplicate an advisory.
-          skip_closed() {
-            echo "gate: $1 — failing closed (skip) for ${REPO}#${PR}"
-            echo "decision=skip" >> "$GITHUB_OUTPUT"
-            exit 0
-          }
-
-          # AC #3 — changed files. Fetch the raw JSON array of filenames so the
-          # list can be validated BEFORE it is flattened to the newline-delimited
-          # text qa_lead_test_surface consumes. An empty list on success is fine
-          # (an empty PR does not fire); only an API failure skips.
-          if ! files_json="$(gh api --paginate --slurp \
-            "repos/${REPO}/pulls/${PR}/files" --jq '[.[][].filename]')"; then
-            skip_closed "changed-file list unavailable"
-          fi
-
-          # Completeness: the /pulls/{n}/files endpoint caps at 3000 files, so a
-          # larger PR yields a truncated list that could omit a test/source path
-          # and mislabel the PR. Compare received vs. the declared changed_files
-          # count and fail closed (skip) on an incomplete list — never advise off
-          # partial data.
-          if ! declared_files="$(gh api "repos/${REPO}/pulls/${PR}" \
-            --jq '.changed_files')"; then
-            skip_closed "changed-file count unavailable"
-          fi
-          received_files="$(jq 'length' <<< "$files_json")"
-          if ! qa_lead_file_list_complete "$received_files" "$declared_files"; then
-            skip_closed "changed-file list incomplete (${received_files}/${declared_files})"
-          fi
-
-          # Control characters: a filename containing an LF would split into
-          # phantom records once flattened (a docs-only PR could forge a SOURCE
-          # path and trigger the advisory). Reject before flattening.
-          if qa_lead_paths_have_control_char "$files_json"; then
-            skip_closed "changed-file list contains control characters"
-          fi
-
-          changed_paths="$(jq -r '.[]' <<< "$files_json")"
-
-          # AC #4/#6 — label names as a JSON array. A labels API failure must NOT
-          # degrade to [] — that would bypass the opt-out and human-gating
-          # suppressors and advise a PR marked hands-off / needs-human-review.
-          if ! labels_json="$(gh api "repos/${REPO}/pulls/${PR}" \
-            --jq '[.labels[]?.name]')"; then
-            skip_closed "labels unavailable"
-          fi
-
-          # AC #5 — has a qa-lead advisory already been posted? Scan issue comments
-          # (the PR shares the issues comment stream) for the recursion marker. A
-          # comment API failure is indistinguishable from "no marker", so failing
-          # open here would risk a duplicate advisory — fail closed instead.
-          marker="<!-- persona:qa-lead -->"
-          if ! comment_bodies="$(gh api --paginate \
-            "repos/${REPO}/issues/${PR}/comments" --jq '.[].body')"; then
-            skip_closed "existing-advisory scan unavailable"
-          fi
-          if grep -qF "$marker" <<< "$comment_bodies"; then
-            existing_advisory=1
-          else
-            existing_advisory=0
-          fi
-
-          # AC #6 — is the per-PR automation budget exhausted? (#860/#926 breaker)
-          # gather_pr_automation_events returns non-zero when any API call fails;
-          # a failure must NOT degrade to an empty event list (an exhausted PR
-          # would then pass the budget gate during a transient outage), so skip.
-          budget_exhausted=0
-          if events_json="$(gather_pr_automation_events "$PR" "$REPO")"; then
-            if pr_budget_exhausted "$events_json"; then
-              budget_exhausted=1
-            fi
-          else
-            skip_closed "automation-budget events unavailable"
-          fi
-
-          decision="$(qa_lead_gate_decision \
-            "$changed_paths" "$labels_json" "$existing_advisory" "$budget_exhausted" || true)"
+          # The signal gathering + fire/skip decision lives in ONE shared script
+          # (#1905 AC #2/#4): the router-served pull_request surface calls the
+          # SAME qa_lead_pr_gather_and_decide via scripts/persona-pr-pregate.sh,
+          # so the suppressors are identical, not a copy. It fails closed — any
+          # unreadable signal yields a skip with a ::error naming it — so this
+          # workflow keeps advising only when EVERY signal is available.
+          decision="$(qa_lead_pr_gather_and_decide "$REPO" "$PR" || true)"
           echo "gate decision for ${REPO}#${PR}: ${decision}"
           # Normalize to run|skip for the downstream `if`; keep the reason in logs.
           if [ "$decision" = "run" ]; then
