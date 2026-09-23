@@ -258,6 +258,32 @@ JSON
   echo "$output" | jq -e '.[] | select(.bot=="graphite-app") | .reviews==1'
 }
 
+@test "check-run: collector returns the matched runs when REVIEWER_CHECK_RUN_JSON is set (#1913)" {
+  # Regression: "${REVIEWER_CHECK_RUN_JSON:-{}}" ends the expansion at the FIRST
+  # brace and appends a literal "}", so a SET map became invalid JSON, the jq
+  # --argjson failed, and every PR's check runs were silently dropped. The
+  # normalizer tests above inject _checkRuns directly and never exercised this.
+  export CUTOFF="2026-09-16T00:00:00Z"
+  export REVIEWER_CHECK_RUN_JSON='{"graphite-app":"Graphite / AI Reviews"}'
+  _gh_timeout() {
+    printf '%s' '{"total_count":2,"check_runs":[{"name":"CI","status":"completed","conclusion":"success","output":{"summary":"ok"},"completed_at":"2026-09-23T10:01:00Z"},{"name":"Graphite / AI Reviews","status":"completed","conclusion":"success","output":{"summary":"AI review ran and left 0 comments"},"completed_at":"2026-09-23T10:05:00Z"}]}'
+  }
+  local resp='{"data":{"repository":{"pullRequests":{"nodes":[{"url":"https://github.com/o/r/pull/1","updatedAt":"2026-09-23T10:00:00Z","headRefOid":"abc123"}]}}}}'
+  run _collect_check_runs_for_page o r "$resp"
+  [ "$status" -eq 0 ]
+  echo "$output" | jq -e '.["https://github.com/o/r/pull/1"] | length == 1'
+  echo "$output" | jq -e '.["https://github.com/o/r/pull/1"][0] | .bot == "graphite-app" and .conclusion == "success" and .completed_at == "2026-09-23T10:05:00Z"'
+}
+
+@test "check-run: collector short-circuits to {} when REVIEWER_CHECK_RUN_JSON is unset (#1913)" {
+  unset REVIEWER_CHECK_RUN_JSON
+  _gh_timeout() { echo "should-not-be-called"; return 1; }
+  local resp='{"data":{"repository":{"pullRequests":{"nodes":[{"url":"u","updatedAt":"2099-01-01T00:00:00Z","headRefOid":"abc"}]}}}}'
+  run _collect_check_runs_for_page o r "$resp"
+  [ "$status" -eq 0 ]
+  [ "$output" = "{}" ]
+}
+
 @test "reviews: a PR with more than 50 reviews still counts a bot whose review is past the 50th" {
   # The GraphQL 50-cap is a COLLECTION concern; normalization must count whatever
   # nodes it is handed. Feed 51 reviews with the tracked bot last (issue #1908 AC5).

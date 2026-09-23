@@ -588,7 +588,7 @@ query($owner:String!, $name:String!, $cursor:String, $prFirst:Int!) {
 # reporter's clean pass into a false "No response".
 _collect_check_runs_for_page() {
   local owner="$1" name="$2" resp="$3" out="${4:-}"
-  local reporters_json="${REVIEWER_CHECK_RUN_JSON:-{}}"
+  local reporters_json="${REVIEWER_CHECK_RUN_JSON:-"{}"}"
   [ "$reporters_json" = "{}" ] && { printf '{}'; return 0; }
 
   local prs
@@ -703,7 +703,7 @@ _collect_one_repo() {
     # the configured reporters and inject them as ._checkRuns so normalization can
     # count a clean pass (check run only, no PR review) as a real response.
     local crmap='{}'
-    if [ "${REVIEWER_CHECK_RUN_JSON:-{}}" != "{}" ]; then
+    if [ "${REVIEWER_CHECK_RUN_JSON:-"{}"}" != "{}" ]; then
       crmap="$(_collect_check_runs_for_page "$owner" "$name" "$resp" "$out")" || crmap='{}'
     fi
 
