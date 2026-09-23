@@ -230,6 +230,7 @@ declare -A ADVISORY_BOTS=(
   [qodo-code-review]="Qodo Merge (advisory)"
   [codeant-ai]="CodeAnt (advisory)"
   [graphite-app]="Graphite (advisory)"
+  [cubic-dev-ai]="cubic (advisory)"
   # Add new bots here
 )
 ```

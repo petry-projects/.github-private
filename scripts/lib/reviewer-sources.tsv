@@ -46,3 +46,4 @@ sonarqubecloud	no	yes	yes	-	Top-level quality-gate comment only — no inline re
 qodo-code-review	yes	yes	yes	-	Inline review comments (#1355 recognized it for gating/scorecard; trusted for acting per #1425).
 codeant-ai	yes	yes	yes	-	Inline review comments (#1355 recognized it for gating/scorecard; trusted for acting per #1425).
 graphite-app	yes	yes	yes	Graphite / AI Reviews	Inline review comments AND clean passes reported ONLY as the "Graphite / AI Reviews" check run (no PR review) — the scorecard must read that check run or every clean pass is miscounted as No response (#1908). Root cause of the 2026-08-02 unclearable-thread deadlock — trusted so dev-lead can act on its findings (#1425).
+cubic-dev-ai	yes	yes	yes	-	Inline review comments plus a review summary; added 2026-09-22 on a 7-day trial (#1903). Flip advisory_gate to no (or remove this row) if the trial is not converted to paid (~2026-09-29).

@@ -46,6 +46,7 @@ _advisory_gate_load_fallback_bots() {
     [qodo-code-review]="Qodo Merge (advisory)"
     [codeant-ai]="CodeAnt (advisory)"
     [graphite-app]="Graphite (advisory)"
+    [cubic-dev-ai]="cubic (advisory)"
   )
 }
 
@@ -85,10 +86,13 @@ unset _gate_reg_sh
 #   - Codex:      "reached your Codex usage limits"
 #   - Qodo Merge: "reached your monthly usage limit" / "monthly PR limit" (#1349)
 #   - CodeAnt:    "free trial limit reached" (capped free trial, #1349)
+#   - cubic:      "trial ended" / "trial expired" / "subscription limit" (7-day
+#                 trial added 2026-09-22 — a trial-ended notice is a refusal, not a
+#                 review or finding, #1903)
 # Kept reasonably specific so a genuine review that mentions "rate limit" in
 # passing does not arm a retry.
 # shellcheck disable=SC2034
-readonly ADVISORY_RATE_LIMIT_RE='usage limit|rate[-_ ]?limit|too many requests|quota (exceeded|reached|exhausted)|out of (quota|credits|tokens|requests)|limit (reached|exceeded|exhausted)|(reached|exceeded|hit) (the |your )?(usage |rate |daily |monthly )?limit|used up its prepaid credits|Qodo.{0,40}(monthly|usage|PR|review) limit|CodeAnt.{0,40}(monthly|trial|usage) limit'
+readonly ADVISORY_RATE_LIMIT_RE='usage limit|rate[-_ ]?limit|too many requests|quota (exceeded|reached|exhausted)|out of (quota|credits|tokens|requests)|limit (reached|exceeded|exhausted)|(reached|exceeded|hit) (the |your )?(usage |rate |daily |monthly )?limit|used up its prepaid credits|Qodo.{0,40}(monthly|usage|PR|review) limit|CodeAnt.{0,40}(monthly|trial|usage) limit|cubic.{0,40}(trial|subscription|plan|usage|review) (limit|ended|expired)'
 
 # Gate classification alias — same canonical regex, so get_advisory_bot_states()
 # can never diverge from the sweep/scorecard detector.
@@ -233,6 +237,7 @@ _advisory_gate_load_fallback_notice_bots() {
     qodo-code-review
     codeant-ai
     graphite-app
+    cubic-dev-ai
   )
 }
 

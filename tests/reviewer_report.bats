@@ -17,8 +17,8 @@ setup() {
 # Registry wiring — bots come from the shared advisory-review-gate list
 # ---------------------------------------------------------------------------
 
-@test "REVIEWER_BOTS: eight tracked reviewers, sourced from the gate registry" {
-  [ "${#REVIEWER_BOTS[@]}" -eq 8 ]
+@test "REVIEWER_BOTS: nine tracked reviewers, sourced from the gate registry" {
+  [ "${#REVIEWER_BOTS[@]}" -eq 9 ]
   [[ " ${REVIEWER_BOTS[*]} " == *" coderabbitai "* ]]
   [[ " ${REVIEWER_BOTS[*]} " == *" copilot-pull-request-reviewer "* ]]
   # Qodo Merge + CodeAnt registered via the shared gate registry (issue #1349).
@@ -26,11 +26,30 @@ setup() {
   [[ " ${REVIEWER_BOTS[*]} " == *" codeant-ai "* ]]
   # Graphite registered via advisory-review-gate (issue #1401).
   [[ " ${REVIEWER_BOTS[*]} " == *" graphite-app "* ]]
+  # cubic registered via the shared gate registry (issue #1903).
+  [[ " ${REVIEWER_BOTS[*]} " == *" cubic-dev-ai "* ]]
 }
 
 @test "REVIEWER_LABELS: Qodo Merge + CodeAnt have display names (issue #1349)" {
   [ "${REVIEWER_LABELS[qodo-code-review]}" = "Qodo Merge" ]
   [ "${REVIEWER_LABELS[codeant-ai]}" = "CodeAnt" ]
+}
+
+@test "REVIEWER_LABELS: cubic has display name (issue #1903)" {
+  [ "${REVIEWER_LABELS[cubic-dev-ai]}" = "cubic" ]
+}
+
+@test "normalize: a cubic review normalizes into a bot_pr record (issue #1903)" {
+  local newbots='["cubic-dev-ai"]'
+  tmp="$(mktemp "$BATS_TEST_TMPDIR/tmp.XXXXXX")"
+  cat > "$tmp" <<'JSON'
+{"url":"u","createdAt":"2026-07-10T10:00:00Z","updatedAt":"2026-07-10T10:00:00Z","mergedAt":null,"isDraft":false,"author":{"login":"h"},
+ "reviews":{"nodes":[{"author":{"login":"cubic-dev-ai"},"state":"COMMENTED","submittedAt":"2026-07-10T10:05:00Z","bodyText":"cubic reviewed this PR and found 1 potential issue."}]},
+ "reviewThreads":{"nodes":[]},
+ "comments":{"nodes":[]}}
+JSON
+  run jq -c --arg repo "r" --argjson bots "$newbots" --arg rl "$RATE_LIMIT_RE" "[ $_NORMALIZE_JQ ]" "$tmp"
+  echo "$output" | jq -e '.[] | select(.kind=="bot_pr" and .bot=="cubic-dev-ai") | .real_responses>=1 and .reviews==1'
 }
 
 @test "REVIEWER_LABELS: Graphite has display name (issue #1401)" {
