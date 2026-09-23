@@ -162,6 +162,12 @@ emit_approval_diagnostic() {
     source "$SCRIPT_DIR/lib/maintainer-review-thread-gate.sh" 2>/dev/null || true
     if declare -f mrtg_fetch_review_threads >/dev/null 2>&1; then
       _threads=$(mrtg_fetch_review_threads "$PR_URL" 2>/dev/null) || _threads=""
+      # mrtg_fetch_review_threads echoes empty ONLY on an API failure (a PR with no
+      # threads yields {"reviewThreads":[]}). The real maintainer-review-thread gate
+      # fails closed on that same failure, so pass the fail-closed sentinel — otherwise
+      # diagnose_approval would skip the thread gate and the summary could claim
+      # approval the run withholds (thread F, #1902).
+      [ -z "$_threads" ] && _threads="$_APPROVAL_DIAG_THREADS_FETCH_FAILED"
     fi
     if declare -f maintainer_gate_head_committer_date >/dev/null 2>&1; then
       _head_date=$(maintainer_gate_head_committer_date "$PR_URL" 2>/dev/null) || _head_date=""
