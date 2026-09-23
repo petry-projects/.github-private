@@ -12,7 +12,7 @@
 # invoking user's own comment (fail closed otherwise).
 
 setup() {
-  export SCRIPT_DIR="$(cd "$(dirname "${BATS_TEST_FILENAME%/*}")" && pwd)/../../scripts"
+  export SCRIPT_DIR="$(cd "$(dirname "$BATS_TEST_FILENAME")" && pwd)/../../../scripts"
   MRC="$SCRIPT_DIR/maintainer-resolve-comment.sh"
   GATE="$SCRIPT_DIR/lib/maintainer-comment-gate.sh"
 }
