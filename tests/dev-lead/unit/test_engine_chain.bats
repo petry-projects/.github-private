@@ -164,12 +164,12 @@ _source_engine() {
 
 # ── End-to-end: agentic respects per-tier chain selection ────────────────────
 
-@test "agentic: deep tier opus-4-8 rate-limited → sonnet tried (CLAUDE_DEEP_MODEL_CHAIN)" {
+@test "agentic: deep tier opus-5-5 rate-limited → sonnet tried (CLAUDE_DEEP_MODEL_CHAIN)" {
   _source_engine "claude"
-  export STUB_ENGINE_EXIT_BY_MODEL="claude-opus-4-8=1|claude-sonnet-5-0=0"
-  export STUB_ENGINE_RESPONSE_BY_MODEL="claude-opus-4-8=service overload|claude-sonnet-5-0=deep result"
+  export STUB_ENGINE_EXIT_BY_MODEL="claude-opus-5-5=1|claude-sonnet-5-0=0"
+  export STUB_ENGINE_RESPONSE_BY_MODEL="claude-opus-5-5=service overload|claude-sonnet-5-0=deep result"
 
-  run run_agentic "$TEST_PROMPT" "claude-opus-4-8" "deep"
+  run run_agentic "$TEST_PROMPT" "claude-opus-5-5" "deep"
 
   [ "$status" -eq 0 ]
   grep -q "claude-sonnet-5-0" "$MODEL_RECORD"
@@ -199,22 +199,22 @@ _source_engine() {
   [[ "$CLAUDE_TRIAGE_MODEL_CHAIN" != *"claude-sonnet-4-6"* ]]
 }
 
-@test "sonnet-5 default: deep chain default is opus-4-8 → claude-sonnet-5-0" {
+@test "sonnet-5 default: deep chain default is opus-5-5 → claude-sonnet-5-0" {
   _source_engine "claude"
-  [ "$CLAUDE_DEEP_MODEL_CHAIN" = "claude-opus-4-8,claude-sonnet-5-0" ]
+  [ "$CLAUDE_DEEP_MODEL_CHAIN" = "claude-opus-5-5,claude-sonnet-5-0" ]
   [[ "$CLAUDE_DEEP_MODEL_CHAIN" != *"claude-sonnet-4-6"* ]]
 }
 
-@test "sonnet-5 default: deep opus-4-8 rate-limited → claude-sonnet-5-0 reached" {
+@test "sonnet-5 default: deep opus-5-5 rate-limited → claude-sonnet-5-0 reached" {
   _source_engine "claude"
   # Deep primary throttles; the walk must reach the default sonnet fallback.
-  export STUB_ENGINE_EXIT_BY_MODEL="claude-opus-4-8=1|claude-sonnet-5-0=0"
-  export STUB_ENGINE_RESPONSE_BY_MODEL="claude-opus-4-8=429 too many requests|claude-sonnet-5-0=sonnet 5 did the work"
+  export STUB_ENGINE_EXIT_BY_MODEL="claude-opus-5-5=1|claude-sonnet-5-0=0"
+  export STUB_ENGINE_RESPONSE_BY_MODEL="claude-opus-5-5=429 too many requests|claude-sonnet-5-0=sonnet 5 did the work"
 
-  run run_agentic "$TEST_PROMPT" "claude-opus-4-8" "deep"
+  run run_agentic "$TEST_PROMPT" "claude-opus-5-5" "deep"
 
   [ "$status" -eq 0 ]
-  grep -q "claude-opus-4-8" "$MODEL_RECORD"
+  grep -q "claude-opus-5-5" "$MODEL_RECORD"
   grep -q "claude-sonnet-5-0" "$MODEL_RECORD"
   [[ "$output" == *"sonnet 5 did the work"* ]]
 }
@@ -346,18 +346,18 @@ _source_engine() {
 
 @test "agentic: explicit model arg differing from tier default is honored (no chain expansion)" {
   _source_engine "claude"
-  # Caller pins haiku for deep tier (overriding default opus-4-8 → sonnet chain).
-  # Chain expansion would record opus-4-8+sonnet; pinning must record ONLY haiku.
+  # Caller pins haiku for deep tier (overriding default opus-5-5 → sonnet chain).
+  # Chain expansion would record opus-5-5+sonnet; pinning must record ONLY haiku.
   export STUB_ENGINE_EXIT=0
 
   run run_agentic "$TEST_PROMPT" "claude-haiku-4-5-20251001" "deep"
 
   [ "$status" -eq 0 ]
-  # Only one invocation, and it's the pinned model — not opus-4-8 or sonnet.
+  # Only one invocation, and it's the pinned model — not opus-5-5 or sonnet.
   [ "$(wc -l < "$MODEL_RECORD")" -eq 1 ]
   grep -q "claude-haiku-4-5-20251001" "$MODEL_RECORD"
   ! grep -q "claude-sonnet-5-0" "$MODEL_RECORD"
-  ! grep -q "claude-opus-4-8" "$MODEL_RECORD"
+  ! grep -q "claude-opus-5-5" "$MODEL_RECORD"
 }
 
 @test "writer: explicit model arg differing from action default is honored (no chain expansion)" {
@@ -375,14 +375,14 @@ _source_engine() {
 
 @test "agentic: passing tier default model still expands to full chain on rate-limit" {
   # Regression guard for the pin-check above: when caller passes the tier
-  # default (opus-4-8), chain expansion still works (opus-4-8 → sonnet fallback).
+  # default (opus-5-5), chain expansion still works (opus-5-5 → sonnet fallback).
   _source_engine "claude"
-  export STUB_ENGINE_EXIT_BY_MODEL="claude-opus-4-8=1|claude-sonnet-5-0=0"
-  export STUB_ENGINE_RESPONSE_BY_MODEL="claude-opus-4-8=429 too many|claude-sonnet-5-0=ok"
+  export STUB_ENGINE_EXIT_BY_MODEL="claude-opus-5-5=1|claude-sonnet-5-0=0"
+  export STUB_ENGINE_RESPONSE_BY_MODEL="claude-opus-5-5=429 too many|claude-sonnet-5-0=ok"
 
-  run run_agentic "$TEST_PROMPT" "claude-opus-4-8" "deep"
+  run run_agentic "$TEST_PROMPT" "claude-opus-5-5" "deep"
 
   [ "$status" -eq 0 ]
-  grep -q "claude-opus-4-8" "$MODEL_RECORD"
+  grep -q "claude-opus-5-5" "$MODEL_RECORD"
   grep -q "claude-sonnet-5-0" "$MODEL_RECORD"
 }

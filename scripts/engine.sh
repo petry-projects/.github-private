@@ -117,11 +117,11 @@ set_engine_config() {
   case "$REVIEW_ENGINE" in
     claude)
       ENGINE_TRIAGE_MODEL="claude-haiku-4-5-20251001"
-      ENGINE_DEEP_MODEL="claude-opus-4-8"
+      ENGINE_DEEP_MODEL="claude-opus-5-5"
       ENGINE_AUDIT_MODEL="claude-fable-5"
       ENGINE_ACTION_MODEL="claude-sonnet-5-0"
       ENGINE_SINGLE_MODEL="claude-fable-5"
-      ENGINE_LABEL="triage: haiku 4.5 [sonnet 5] → deep: opus 4.8 [sonnet 5] + duck: o4-mini → audit: fable 5"
+      ENGINE_LABEL="triage: haiku 4.5 [sonnet 5] → deep: opus 5.5 [sonnet 5] + duck: o4-mini → audit: fable 5"
       ENGINE_SINGLE_LABEL="single-reviewer mode: fable 5"
       # Cross-engine rubber duck: use Copilot when Claude is primary
       DUCK_ENGINE="copilot"
@@ -145,7 +145,7 @@ set_engine_config() {
       # daily cap is shared across Claude models (#206), so per-tier fallback
       # only helps per-model RPM/TPM, not the subscription cap.
       CLAUDE_TRIAGE_MODEL_CHAIN="${CLAUDE_TRIAGE_MODEL_CHAIN:-claude-haiku-4-5-20251001,claude-sonnet-5-0}"
-      CLAUDE_DEEP_MODEL_CHAIN="${CLAUDE_DEEP_MODEL_CHAIN:-claude-opus-4-8,claude-sonnet-5-0}"
+      CLAUDE_DEEP_MODEL_CHAIN="${CLAUDE_DEEP_MODEL_CHAIN:-claude-opus-5-5,claude-sonnet-5-0}"
       CLAUDE_AUDIT_MODEL_CHAIN="${CLAUDE_AUDIT_MODEL_CHAIN:-claude-fable-5,claude-opus-4-8,claude-opus-4-7}"
       CLAUDE_ACTION_MODEL_CHAIN="${CLAUDE_ACTION_MODEL_CHAIN:-claude-sonnet-5-0,claude-opus-4-8}"
       CLAUDE_SINGLE_MODEL_CHAIN="${CLAUDE_SINGLE_MODEL_CHAIN:-claude-fable-5,claude-opus-4-8,claude-opus-4-7}"
@@ -1115,6 +1115,11 @@ run_agentic() {
       # applied when the caller used the default model for the tier.
       local _agentic_chain _tier_default=""
       case "$tier" in
+        # No --effort flag on the deep tier: the Phase-1 reasoning-effort probe
+        # (#1897 AC-4) recorded NO drop below the opus-4.8 high posture for
+        # claude-opus-5-5, so opus-5-5's CLI default effort is left as-is. If a
+        # later probe finds a drop, add `--effort high` here on the deep tier ONLY
+        # (audit/action/single must stay untouched) — see #1898 AC #3.
         deep)   _tier_default="${ENGINE_DEEP_MODEL:-}"
                 _agentic_chain="${CLAUDE_DEEP_MODEL_CHAIN:-$model}"   ;;
         audit)  _tier_default="${ENGINE_AUDIT_MODEL:-}"
