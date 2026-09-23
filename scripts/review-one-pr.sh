@@ -150,11 +150,31 @@ emit_approval_diagnostic() {
   (
     # shellcheck source=lib/approval-diagnostic.sh
     source "$SCRIPT_DIR/lib/approval-diagnostic.sh" || exit 0
-    local verdict
-    verdict=$(diagnose_approval "$snap" "" "${BOT_USER:-donpetry-bot}") || {
+    # Give the diagnostic the same review-thread surface the maintainer-review-thread
+    # gate (#1415) evaluates, so it can never report approval while an unresolved
+    # maintainer thread blocks (the b78 gap). Best-effort: a fetch failure leaves the
+    # args empty and that gate is simply not modelled. Sourced in this isolated
+    # subshell so the gate helpers never leak into the caller.
+    local _threads="" _head_date=""
+    # shellcheck source=lib/maintainer-comment-gate.sh
+    source "$SCRIPT_DIR/lib/maintainer-comment-gate.sh" 2>/dev/null || true
+    # shellcheck source=lib/maintainer-review-thread-gate.sh
+    source "$SCRIPT_DIR/lib/maintainer-review-thread-gate.sh" 2>/dev/null || true
+    if declare -f mrtg_fetch_review_threads >/dev/null 2>&1; then
+      _threads=$(mrtg_fetch_review_threads "$PR_URL" 2>/dev/null) || _threads=""
+    fi
+    if declare -f maintainer_gate_head_committer_date >/dev/null 2>&1; then
+      _head_date=$(maintainer_gate_head_committer_date "$PR_URL" 2>/dev/null) || _head_date=""
+    fi
+    local verdict diag_rc
+    set +e
+    verdict=$(diagnose_approval "$snap" "" "${BOT_USER:-donpetry-bot}" "$_threads" "$_head_date")
+    diag_rc=$?
+    set -e
+    if [ "$diag_rc" -ne 0 ] || [ -z "$verdict" ]; then
       echo "::warning::approval diagnostic could not evaluate the PR snapshot (#1894)"
       exit 0
-    }
+    fi
     echo "    approval-diagnostic: $verdict"
     if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
       render_approval_diagnostic "$verdict" >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
