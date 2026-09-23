@@ -83,7 +83,25 @@ teardown() {
 
 @test "ref-kind: garbage input is invalid (fail closed)" {
   run bash -c "source '$MRC'; mrc_ref_kind 'not-a-ref'"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
+}
+
+# PR-only: a bare /issues/ comment URL must NOT be accepted — this path may only
+# target a pull-request comment (#1910 self-scope hardening).
+@test "ref-kind: a non-PR /issues/ comment URL is rejected (fail closed)" {
+  run bash -c "source '$MRC'; mrc_ref_kind 'https://github.com/petry-projects/.github-private/issues/42#issuecomment-999'"
+  [ "$status" -eq 1 ]
+}
+
+@test "url-parse: PR number extracted from a /pull/ comment URL" {
+  run bash -c "source '$MRC'; mrc_pr_number_from_url 'https://github.com/o/r/pull/1234#issuecomment-987654'"
+  [ "$status" -eq 0 ]
+  [ "$output" = "1234" ]
+}
+
+@test "url-parse: PR number extraction rejects a non-PR /issues/ URL (fail closed)" {
+  run bash -c "source '$MRC'; mrc_pr_number_from_url 'https://github.com/o/r/issues/1234#issuecomment-987654'"
+  [ "$status" -eq 1 ]
 }
 
 @test "url-parse: database id extracted from #issuecomment anchor" {
@@ -106,14 +124,14 @@ teardown() {
 
 @test "authz: resolving someone else's comment is rejected (fail closed)" {
   run bash -c "source '$MRC'; mrc_authorize_self 'a-maintainer' 'someone-else'"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
 }
 
 @test "authz: empty author or empty viewer is rejected (fail closed)" {
   run bash -c "source '$MRC'; mrc_authorize_self '' 'a-maintainer'"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
   run bash -c "source '$MRC'; mrc_authorize_self 'a-maintainer' ''"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
 }
 
 # Idempotency — an already-RESOLVED-minimized comment needs no action.
@@ -126,20 +144,34 @@ teardown() {
 
 @test "idempotency: a non-minimized or non-RESOLVED comment is not treated as resolved" {
   run bash -c "source '$MRC'; mrc_is_resolved_minimized 'false' ''"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
   run bash -c "source '$MRC'; mrc_is_resolved_minimized 'true' 'outdated'"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
 }
 
 # ────────────────────────────────────────────────────────────────────
 # ROUND-TRIP: the signal this script produces is EXACTLY what the gate honours
 # ────────────────────────────────────────────────────────────────────
 
-# A comment this script has resolved (minimized RESOLVED) must clear the
-# maintainer-comment gate — proving the maintainer path satisfies the gate
-# without dev-lead executing, and does not invent a new/weaker signal.
-@test "round-trip: a RESOLVED-minimized maintainer comment clears the gate" {
-  local json='{"comments":[{"author":{"login":"a-maintainer"},"body":"Please double-check the null path.","isMinimized":true,"minimizedReason":"resolved"}]}'
+# The minimizedReason fed to the gate here is DERIVED from the classifier the
+# script's own mutation carries (mrc_minimize_mutation), not handcrafted — so if
+# that classifier is ever softened (e.g. RESOLVED → OUTDATED), this JSON follows
+# and the gate stops clearing, breaking the round-trip. This is what genuinely
+# ties "the signal this script produces" to "what the gate honours".
+_mrc_minimized_reason() {
+  # GraphQL enum surfaces as lowercase in the read shape the gate consumes.
+  source "$MRC"
+  mrc_minimize_mutation | grep -oE 'classifier:[A-Za-z]+' | cut -d: -f2 | tr '[:upper:]' '[:lower:]'
+}
+
+# A comment this script has resolved (minimized with the mutation's classifier)
+# must clear the maintainer-comment gate — proving the maintainer path satisfies
+# the gate without dev-lead executing, and does not invent a new/weaker signal.
+@test "round-trip: a maintainer comment minimized with the mutation's classifier clears the gate" {
+  local reason json
+  reason="$(_mrc_minimized_reason)"
+  [ "$reason" = "resolved" ]
+  json='{"comments":[{"author":{"login":"a-maintainer"},"body":"Please double-check the null path.","isMinimized":true,"minimizedReason":"'"$reason"'"}]}'
   run bash -c "source '$GATE'; check_maintainer_comments \"\$1\" donpetry-bot" _ "$json"
   [ "$status" -eq 0 ]
 }

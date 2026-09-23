@@ -59,7 +59,9 @@ mrc_ref_kind() {
     printf 'node'
     return 0
   fi
-  if [[ "$ref" =~ ^https?://github\.com/[^/]+/[^/]+/(pull|issues)/[0-9]+#issuecomment-[0-9]+$ ]]; then
+  # PR-only tool: accept ONLY a /pull/ comment URL, never a bare /issues/ one, so
+  # this path cannot be pointed at a non-PR issue comment.
+  if [[ "$ref" =~ ^https?://github\.com/[^/]+/[^/]+/pull/[0-9]+#issuecomment-[0-9]+$ ]]; then
     printf 'url'
     return 0
   fi
@@ -79,12 +81,26 @@ mrc_comment_dbid_from_url() {
 }
 
 # mrc_repo_from_url <url>
-#   Echo owner/repo from a github.com PR/issue comment URL. Returns 1 when the URL
-#   does not match. Pure.
+#   Echo owner/repo from a github.com PR comment URL. Returns 1 when the URL does
+#   not match. PR-only: a /issues/ URL is not accepted. Pure.
 mrc_repo_from_url() {
   local url="${1:-}"
-  if [[ "$url" =~ ^https?://github\.com/([^/]+)/([^/]+)/(pull|issues)/[0-9]+ ]]; then
+  if [[ "$url" =~ ^https?://github\.com/([^/]+)/([^/]+)/pull/[0-9]+ ]]; then
     printf '%s/%s' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
+    return 0
+  fi
+  return 1
+}
+
+# mrc_pr_number_from_url <url>
+#   Echo the pull-request number from a github.com PR comment URL. Returns 1 when
+#   absent. Used to verify the resolved comment actually belongs to that PR before
+#   minimizing it — the numeric path in the URL is untrusted until confirmed
+#   against the fetched comment's issue_url. Pure.
+mrc_pr_number_from_url() {
+  local url="${1:-}"
+  if [[ "$url" =~ ^https?://github\.com/[^/]+/[^/]+/pull/([0-9]+)#issuecomment-[0-9]+$ ]]; then
+    printf '%s' "${BASH_REMATCH[1]}"
     return 0
   fi
   return 1
@@ -149,14 +165,39 @@ USAGE
 #   For a url ref, resolves the numeric database id to a node id via REST. Echoes
 #   empty (return 1) on failure.
 _mrc_resolve_node_id() {
-  local ref="$1" kind="$2" repo dbid node
+  local ref="$1" kind="$2" repo dbid want_pr snap node issue_url got_pr status
   if [[ "$kind" == "node" ]]; then
     printf '%s' "$ref"
     return 0
   fi
-  repo=$(mrc_repo_from_url "$ref") || return 1
-  dbid=$(mrc_comment_dbid_from_url "$ref") || return 1
-  node=$(gh api "repos/${repo}/issues/comments/${dbid}" --jq '.node_id' 2>/dev/null) || return 1
+  # Assign each pure parse to a variable via an explicit success check first —
+  # a command substitution on the RHS of `||` runs with `set -e` disabled, which
+  # would swallow a failure inside the callee.
+  if ! mrc_repo_from_url "$ref" >/dev/null; then return 1; fi
+  repo=$(mrc_repo_from_url "$ref")
+  if ! mrc_comment_dbid_from_url "$ref" >/dev/null; then return 1; fi
+  dbid=$(mrc_comment_dbid_from_url "$ref")
+  if ! mrc_pr_number_from_url "$ref" >/dev/null; then return 1; fi
+  want_pr=$(mrc_pr_number_from_url "$ref")
+
+  set +e
+  snap=$(gh api "repos/${repo}/issues/comments/${dbid}" 2>/dev/null)
+  status=$?
+  set -e
+  [[ $status -eq 0 && -n "$snap" ]] || return 1
+
+  # The comment id must belong to the pull request named in the URL. A comment
+  # that resolves to a different issue/PR (or to a non-PR issue) is refused — the
+  # numeric path in the URL is untrusted until confirmed against issue_url.
+  issue_url=$(printf '%s' "$snap" | jq -r '.issue_url // ""' 2>/dev/null || echo "")
+  if [[ "$issue_url" =~ /pull/([0-9]+)$ || "$issue_url" =~ /issues/([0-9]+)$ ]]; then
+    got_pr="${BASH_REMATCH[1]}"
+  else
+    return 1
+  fi
+  [[ -n "$got_pr" && "$got_pr" == "$want_pr" ]] || return 1
+
+  node=$(printf '%s' "$snap" | jq -r '.node_id // ""' 2>/dev/null || echo "")
   [[ -n "$node" ]] || return 1
   printf '%s' "$node"
 }
@@ -171,34 +212,56 @@ if [[ "${BASH_SOURCE[0]}" = "${0}" ]]; then
     exit 0
   fi
 
-  _kind=$(mrc_ref_kind "$_ref") || {
+  # Assign after an explicit success check: a command substitution on the RHS of
+  # `||` runs with `set -e` disabled, so a failure inside mrc_ref_kind /
+  # _mrc_resolve_node_id / gh could otherwise be swallowed.
+  if ! mrc_ref_kind "$_ref" >/dev/null; then
     echo "[maintainer-resolve-comment] ERROR: unrecognised comment reference '$_ref'" >&2
     echo "  expected a PR comment URL (…/pull/N#issuecomment-M) or an IssueComment node id (IC_…)" >&2
     exit 2
-  }
+  fi
+  _kind=$(mrc_ref_kind "$_ref")
 
-  _node=$(_mrc_resolve_node_id "$_ref" "$_kind") || {
+  set +e
+  _node=$(_mrc_resolve_node_id "$_ref" "$_kind")
+  _status=$?
+  set -e
+  if [[ $_status -ne 0 || -z "$_node" ]]; then
     echo "[maintainer-resolve-comment] ERROR: could not resolve the comment node id for '$_ref'" >&2
     exit 2
-  }
+  fi
 
   # Read the comment's author + current minimize state, and the authenticated
   # viewer, in one GraphQL round-trip. Fail closed if either login is unreadable.
   _q='query($id:ID!){viewer{login} node(id:$id){... on IssueComment{author{login} isMinimized minimizedReason}}}'
-  _snap=$(gh api graphql -f query="$_q" -f id="$_node" 2>/dev/null) || {
+  set +e
+  _snap=$(gh api graphql -f query="$_q" -f id="$_node" 2>/dev/null)
+  _status=$?
+  set -e
+  if [[ $_status -ne 0 ]]; then
     echo "[maintainer-resolve-comment] ERROR: could not read comment $_node — failing closed" >&2
     exit 2
-  }
+  fi
+
+  # A GraphQL-level failure (insufficient scope, bad node id, or a node that is
+  # not an IssueComment) returns HTTP 200 with an `errors` payload and no `.data`.
+  # Detect that unreadable state HERE and exit 2 with a distinct message, so it is
+  # never misreported downstream as a self-scope authorization refusal.
+  _node_present=$(printf '%s' "$_snap" | jq -r 'if .data.node == null then "no" else "yes" end' 2>/dev/null || echo "no")
+  _viewer_present=$(printf '%s' "$_snap" | jq -r 'if .data.viewer == null then "no" else "yes" end' 2>/dev/null || echo "no")
+  if [[ "$_node_present" != "yes" || "$_viewer_present" != "yes" ]]; then
+    echo "[maintainer-resolve-comment] ERROR: could not read comment $_node (unreadable comment or viewer) — failing closed" >&2
+    exit 2
+  fi
+
   _viewer=$(printf '%s' "$_snap" | jq -r '.data.viewer.login // ""' 2>/dev/null || echo "")
   _author=$(printf '%s' "$_snap" | jq -r '.data.node.author.login // ""' 2>/dev/null || echo "")
   _is_min=$(printf '%s' "$_snap" | jq -r '.data.node.isMinimized // false | tostring' 2>/dev/null || echo "false")
   _reason=$(printf '%s' "$_snap" | jq -r '.data.node.minimizedReason // ""' 2>/dev/null || echo "")
 
-  if mrc_is_resolved_minimized "$_is_min" "$_reason"; then
-    echo "[maintainer-resolve-comment] comment $_node is already minimized RESOLVED — nothing to do."
-    exit 0
-  fi
-
+  # Authorize FIRST — before the idempotent early return — so a caller cannot pass
+  # someone else's already-RESOLVED comment and receive success while bypassing the
+  # fail-closed own-comment check.
   if ! mrc_authorize_self "$_viewer" "$_author"; then
     echo "[maintainer-resolve-comment] ERROR: refusing to resolve — this path only minimizes YOUR OWN comment." >&2
     echo "  authenticated as: '${_viewer:-<unreadable>}'; comment author: '${_author:-<unreadable>}'" >&2
@@ -206,10 +269,30 @@ if [[ "${BASH_SOURCE[0]}" = "${0}" ]]; then
     exit 3
   fi
 
-  if gh api graphql -f query="$(mrc_minimize_mutation)" -f id="$_node" >/dev/null 2>&1; then
+  if mrc_is_resolved_minimized "$_is_min" "$_reason"; then
+    echo "[maintainer-resolve-comment] comment $_node is already minimized RESOLVED — nothing to do."
+    exit 0
+  fi
+
+  # Verify the mutation actually left the comment minimized RESOLVED rather than
+  # trusting a zero exit — a partial or semantically-unsuccessful GraphQL response
+  # must fail closed (AGENTS.md: confirm the resulting artifact, not command exit).
+  _mutation=$(mrc_minimize_mutation)
+  set +e
+  _result=$(gh api graphql -f query="$_mutation" -f id="$_node" 2>/dev/null)
+  _status=$?
+  set -e
+  if [[ $_status -ne 0 ]]; then
+    echo "[maintainer-resolve-comment] ERROR: minimizeComment failed for $_node (check gh permissions)." >&2
+    exit 1
+  fi
+  if printf '%s' "$_result" | jq -e '
+      (.data.minimizeComment.minimizedComment.isMinimized == true)
+      and (((.data.minimizeComment.minimizedComment.minimizedReason // "") | ascii_downcase) == "resolved")
+    ' >/dev/null 2>&1; then
     echo "[maintainer-resolve-comment] minimized comment $_node RESOLVED — the maintainer-comment gate is now satisfied for it."
     exit 0
   fi
-  echo "[maintainer-resolve-comment] ERROR: minimizeComment failed for $_node (check gh permissions)." >&2
+  echo "[maintainer-resolve-comment] ERROR: minimizeComment did not confirm a RESOLVED minimized comment for $_node — failing closed." >&2
   exit 1
 fi
