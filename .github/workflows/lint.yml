@@ -121,6 +121,7 @@ jobs:
             tests/test_validate_cases.bats \
             tests/test_review_registry.bats \
             tests/test_reviewer_sources.bats \
+            tests/test_approval_diagnostic.bats \
             tests/test_deep_specialist.bats \
             tests/test_pr_diff_dispatch.bats \
             tests/test_plan_review.bats \

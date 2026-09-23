@@ -467,7 +467,11 @@ check_advisory_reviews() {
   effective_total=$((total_advisory_bots - num_unavailable))
   [[ "$effective_total" -lt 1 ]] && effective_total=1
   if [[ "$num_unavailable" -gt 0 ]]; then
-    log_info "${num_unavailable} advisory bot(s) rate-limited/unsupported — required set reduced to ${effective_total}/${total_advisory_bots}"
+    # Name WHICH bots dropped and why so the reduced denominator is observable — the
+    # registry total and effective total must never differ silently (#1894 AC #2).
+    local unavailable_named
+    unavailable_named=$(echo "$current_states" | jq -rs '[.[] | select(.state == "RATE_LIMITED" or .state == "UNSUPPORTED") | "\(.bot)=\(.state)"] | unique | join(", ")')
+    log_info "${num_unavailable} advisory bot(s) rate-limited/unsupported — required set reduced to ${effective_total}/${total_advisory_bots}; dropped: ${unavailable_named}"
   fi
 
   # Require the effective advisory set to submit before approving.
