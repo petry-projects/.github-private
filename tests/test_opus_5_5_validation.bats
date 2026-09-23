@@ -49,9 +49,13 @@ setup() {
   read -r c_in c_cr _c_cw c_out <<< "$(price_for "$CANDIDATE" "$PRICE_DATE")"
   read -r i_in i_cr _i_cw i_out <<< "$(price_for "$INCUMBENT" "$PRICE_DATE")"
 
-  # Both models must resolve to a priced row (opus-5-5 landed in #1896).
-  [ -n "$c_in" ]
-  [ -n "$i_in" ]
+  # Both models must resolve to a priced row (opus-5-5 landed in #1896). Every
+  # rate that feeds the reduction math must be a POSITIVE NUMBER for both models,
+  # not merely non-empty: a blank/non-numeric output or cache-read field would be
+  # silently coerced to 0 by awk below, letting a malformed row pass the bar.
+  for rate in "$c_in" "$c_cr" "$c_out" "$i_in" "$i_cr" "$i_out"; do
+    awk -v r="$rate" 'BEGIN { exit !(r ~ /^[0-9]+([.][0-9]+)?$/ && r+0 > 0) }'
+  done
 
   # AC-2 thresholds: >=20% input, >=20% output, >=50% cache-read reduction.
   # A reduction of exactly 20%/50% satisfies the ">=" bar.
@@ -63,10 +67,13 @@ setup() {
 @test "AC-2: a representative deep-tier run is cheaper on opus-5-5 (positive delta)" {
   # Same per-call assumptions eval-cost-estimate.sh defaults to, plus a cache-read
   # component so the cache-read reduction is reflected in the per-run figure.
-  local in_tok=12000 cache_tok=8000 out_tok=1200
+  # A positive cache-WRITE count (cost_usd's 6th arg) so a future rise in the
+  # candidate's cache-write rate is reflected here and cannot pass unnoticed; the
+  # same count is used for both models to keep the comparison apples-to-apples.
+  local in_tok=12000 cache_tok=8000 out_tok=1200 cache_write_tok=2000
   local c_cost i_cost
-  c_cost="$(cost_usd "$CANDIDATE" "$in_tok" "$cache_tok" "$out_tok" "$PRICE_DATE")"
-  i_cost="$(cost_usd "$INCUMBENT" "$in_tok" "$cache_tok" "$out_tok" "$PRICE_DATE")"
+  c_cost="$(cost_usd "$CANDIDATE" "$in_tok" "$cache_tok" "$out_tok" "$PRICE_DATE" "$cache_write_tok")"
+  i_cost="$(cost_usd "$INCUMBENT" "$in_tok" "$cache_tok" "$out_tok" "$PRICE_DATE" "$cache_write_tok")"
   [ -n "$c_cost" ]
   [ -n "$i_cost" ]
   # Candidate must be strictly cheaper — a non-regression on cost.
@@ -77,8 +84,11 @@ setup() {
   # With the price table absent, price_for must yield nothing rather than invent a
   # rate — proving the delta above comes from the frozen data, per AGENTS.md
   # "prices are data, not code".
-  PRICING_TABLE="$BATS_TEST_TMPDIR/nonexistent-pricing.tsv" \
-    run price_for "$CANDIDATE" "$PRICE_DATE"
+  # Scope the override with `local` rather than an inline VAR=val prefix: price_for
+  # is a shell function, so `run env VAR=val …` cannot reach it, and a bare prefix
+  # on `run` is unreliable across BATS versions. `local` cleanly confines it here.
+  local PRICING_TABLE="$BATS_TEST_TMPDIR/nonexistent-pricing.tsv"
+  run price_for "$CANDIDATE" "$PRICE_DATE"
   [ "$status" -eq 0 ]
   [ -z "$output" ]
 }
@@ -111,6 +121,50 @@ JSON
   [[ "$output" != *"reason step by step"* ]]
 }
 
+@test "AC-3: _claude_chain_invoke JSON branch emits only .result, not thinking text" {
+  # The direct extractor test above covers the pure helper. This exercises the
+  # CALLER wiring that AC-3 actually names: with TOKEN_LOG_FILE set and
+  # ENGINE_USAGE_JSON on, _claude_chain_invoke runs claude with --output-format
+  # json, parses usage, and emits extract_engine_text's .result — never the
+  # thinking blocks. A regression in that wiring would slip past the helper test.
+  # Fully offline: a local `claude` stub prints a fixed JSON envelope.
+  local stub_bin; stub_bin="$(mktemp -d)"
+  cat >"$stub_bin/claude" <<'SH'
+#!/usr/bin/env bash
+cat <<'JSON'
+{"type":"result","subtype":"success","is_error":false,"result":"The final answer is 42.","content":[{"type":"thinking","thinking":"private reasoning that must not leak"},{"type":"text","text":"The final answer is 42."}],"usage":{"input_tokens":100,"cache_read_input_tokens":20,"cache_creation_input_tokens":30,"output_tokens":40}}
+JSON
+SH
+  chmod +x "$stub_bin/claude"
+
+  local prompt; prompt="$(mktemp)"
+  echo "solve it" >"$prompt"
+
+  export GITHUB_ENV="$BATS_TEST_TMPDIR/github_env"; : >"$GITHUB_ENV"
+  export GITHUB_OUTPUT="$BATS_TEST_TMPDIR/github_output"; : >"$GITHUB_OUTPUT"
+  export TOKEN_LOG_FILE="$BATS_TEST_TMPDIR/tokens.jsonl"
+  export ENGINE_USAGE_JSON=1
+  export REVIEW_ENGINE="claude"
+  export PATH="$stub_bin:$PATH"
+
+  source "$ROOT/scripts/engine.sh"
+
+  # Call in the current shell (not `run`) and capture stdout to a file, so the
+  # LAST_* usage variables set by parse_engine_usage inside the caller survive
+  # for assertion — a subshell would discard them.
+  local outfile="$BATS_TEST_TMPDIR/chain-out.txt"
+  local rc=0
+  _claude_chain_invoke "$CANDIDATE" "$prompt" 30 >"$outfile" 2>/dev/null || rc=$?
+  local out; out="$(cat "$outfile")"
+
+  [ "$rc" -eq 0 ]
+  [ "$out" = "The final answer is 42." ]
+  [[ "$out" != *"private reasoning"* ]]
+  # Usage was parsed off the JSON envelope by the same caller path.
+  [ "$LAST_INPUT_TOKENS" = "100" ]
+  [ "$LAST_CACHE_WRITE_TOKENS" = "30" ]
+}
+
 @test "AC-3: usage still parses from an envelope carrying thinking content blocks" {
   # AC-3 also asserts the JSON result parses through the invoke path's usage
   # accounting; confirm parse_engine_usage reads the usage block regardless of the
@@ -128,5 +182,6 @@ JSON
   [ "$LAST_USAGE_OK" = "1" ]
   [ "$LAST_INPUT_TOKENS" = "1234" ]
   [ "$LAST_CACHE_READ_TOKENS" = "500" ]
+  [ "$LAST_CACHE_WRITE_TOKENS" = "300" ]
   [ "$LAST_OUTPUT_TOKENS" = "90" ]
 }
