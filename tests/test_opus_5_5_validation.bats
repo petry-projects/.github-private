@@ -43,6 +43,19 @@ setup() {
 
 # ── AC-2: deep-tier cost delta from the frozen pricing row ─────────────────────
 
+# Pin the opus-5-5 effective_from boundary directly here so AC-2's margin
+# arithmetic is self-contained against a future effective_from edit, rather than
+# relying on selection-drift surfacing indirectly as an empty candidate price.
+# Mirrors the convention in tests/model_pricing.bats: the frozen rate applies
+# exactly at effective_from (2026-09-22) and there is no retroactive guess before
+# it. price_for emits "input cache_read cache_write output".
+@test "AC-2: opus-5-5 price pinned at effective_from (2026-09-22), empty before it" {
+  run price_for "$CANDIDATE" "2026-09-22"
+  [ "$output" = "4.00 0.20 5.00 20.00" ]
+  run price_for "$CANDIDATE" "2026-09-21"
+  [ -z "$output" ]
+}
+
 @test "AC-2: opus-5-5 deep-tier per-token prices beat opus-4-8 by the required margins" {
   # price_for emits a space-joined line with no trailing newline; a here-string
   # terminates it so `read` returns 0 after assigning the fields.
@@ -108,7 +121,7 @@ setup() {
   "result": "The final answer is 42.",
   "content": [
     {"type": "thinking", "thinking": "Let me reason step by step about the value..."},
-    {"type": "text", "text": "The final answer is 42."}
+    {"type": "text", "text": "text-block content that must NOT be returned"}
   ],
   "usage": {"input_tokens": 100, "cache_read_input_tokens": 20, "cache_creation_input_tokens": 30, "output_tokens": 40}
 }
@@ -119,6 +132,10 @@ JSON
   [ "$output" = "The final answer is 42." ]
   # The thinking text must NOT leak into the extracted result.
   [[ "$output" != *"reason step by step"* ]]
+  # The text content block carries a DISTINCT value from .result, so a future
+  # change that pulls from content[].text instead of .result is caught here
+  # rather than silently passing an identical-value exact match.
+  [[ "$output" != *"text-block content"* ]]
 }
 
 @test "AC-3: _claude_chain_invoke JSON branch emits only .result, not thinking text" {
