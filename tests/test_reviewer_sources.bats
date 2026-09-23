@@ -105,6 +105,33 @@ TSV
   [[ "$csv" == *"chatgpt-codex-connector[bot]"* ]]
 }
 
+# ── Check-run reporters (issue #1908) ────────────────────────────────────────
+
+@test "check-run: graphite-app reports through the 'Graphite / AI Reviews' check run" {
+  local reporters
+  reporters="$(reviewer_sources_check_run_reporters)"
+  [[ "$reporters" == *"graphite-app	Graphite / AI Reviews"* ]]
+}
+
+@test "check-run: a review-only bot is NOT listed as a check-run reporter" {
+  local reporters
+  reporters="$(reviewer_sources_check_run_reporters)"
+  # copilot/gemini/coderabbit post PR reviews, not check runs — column 5 is "-".
+  [[ "$reporters" != *"copilot-pull-request-reviewer"* ]]
+  [[ "$reporters" != *"gemini-code-assist"* ]]
+  [[ "$reporters" != *"coderabbitai"* ]]
+}
+
+@test "check-run: reporters helper propagates a missing-manifest failure" {
+  REVIEWER_SOURCES_MANIFEST="/nonexistent/reviewer-sources.tsv" \
+    run reviewer_sources_check_run_reporters
+  [ "$status" -ne 0 ]
+}
+
+@test "check-run: manifest schema_version is 2 (check_run_name column added)" {
+  [ "$(reviewer_sources_version)" = "2" ]
+}
+
 # ── Consistency: the three consumer lists are registry projections ───────────
 
 @test "consistency: advisory gate ADVISORY_BOTS == registry advisory-gate projection" {

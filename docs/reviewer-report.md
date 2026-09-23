@@ -18,7 +18,8 @@ matching the delivery pattern of the [Token Cost Observatory](./token-report.md)
 ## Reviewers tracked
 
 Identity comes from each bot's GraphQL App **login** — the single source of truth is the
-advisory-review gate (`scripts/lib/advisory-review-gate.sh`), so this report can never
+reviewer-source registry (`scripts/lib/reviewer-sources.tsv`, [#1425](https://github.com/petry-projects/.github-private/issues/1425)),
+which the advisory-review gate and this report both project from, so the report can never
 drift from the approval gate's notion of who these bots are.
 
 | Reviewer | GraphQL login |
@@ -44,14 +45,46 @@ counts), and issue `comments`. Pagination stops as soon as a page's PRs predate 
 lookback window (PRs are ordered by `UPDATED_AT` descending), so we never walk a repo's
 entire history. This is far fewer API calls than per-PR REST fetches.
 
+Pages are deliberately **light** — `PR_PAGE_SIZE` PRs per page (default 10) with bounded
+nested connections — because a heavy page trips GitHub's GraphQL resource limit, which
+returns an HTTP-200 body carrying an `errors` array and **null `data`**. The old code read
+that as "no PRs" and silently dropped the whole repo (the ~8× Graphite undercount, [#1908](https://github.com/petry-projects/.github-private/issues/1908)).
+A failed page is now **retried with a halved page size and backoff** (`PR_FETCH_MAX_ATTEMPTS`,
+default 4); a repo that still fails is recorded as a `{kind:"collect_error"}` record and
+surfaced prominently in the report — never a silent drop.
+
+### Check-run reviews (Graphite)
+
+Some reviewers report a review **only as a check run**, not as a PR review or comment.
+Graphite's "Graphite / AI Reviews" check run is the canonical case: a clean pass posts the
+check run with **zero** PR comments, so the old scorecard read every clean pass as *No
+response* and undercounted its engagement. Which bots report this way — and the exact
+check-run name — is **data-driven** in the reviewer-source registry
+(`scripts/lib/reviewer-sources.tsv`, `check_run_name` column); nothing is hard-coded to
+`graphite-app`. For each in-window PR we make a **separate, lightweight REST call** for the
+head commit's check runs (`GET /repos/{o}/{r}/commits/{sha}/check-runs`) so the heavy PR
+page query stays under the resource limit. A completed check run whose summary says the
+review ran counts as a **real response** (latency measured to its `completed_at`); a
+`completed/skipped` "too large" run counts as a **refusal**; a queued suite with no runs is
+**no response**.
+
 Each PR node is normalized (pure `jq`) into two record kinds:
 
 - `{kind:"pr", …}` — one per PR (the eligible-PR **denominator**).
 - `{kind:"bot_pr", …}` — one per tracked bot that touched the PR, carrying its
-  `real_responses` / `refusals` split (a rate-limit-only touch is a refusal), latency to
-  first real response, verdict counts, inline-comment count, thread resolution, and reactions.
+  `real_responses` / `refusals` split (a rate-limit-only touch is a refusal, a check-run
+  "too large" skip is a refusal), latency to first real response, verdict counts,
+  inline-comment count, thread resolution, and reactions. A check-run clean pass adds **0**
+  to the review-event count but fills the `real_responses` / reviewed bucket.
 
-Human authors and untracked bots are dropped at normalization time.
+Two diagnostic record kinds keep collection gaps visible (never silent, [#1908](https://github.com/petry-projects/.github-private/issues/1908)):
+
+- `{kind:"collect_error", repo, reason}` — a repo that could not be collected after retries.
+- `{kind:"truncation", repo, pr, connection}` — a nested connection that hit its fetch cap
+  (≥50), so a bot's reviews/comments on that PR may be undercounted.
+
+Both are rendered in a **Collection health** section at the top of the report. Human authors
+and untracked bots are dropped at normalization time.
 
 ## Metrics
 
@@ -67,7 +100,7 @@ reviews on a single PR).
 | **Reviews** | Count of reviews the bot submitted, **each occurrence** (multiple per PR from multiple commits all count). A bot that posts no formal review but delivers its verdict as a top-level comment (e.g. SonarCloud's quality-gate comment) has that comment counted as its review; bots that do submit formal reviews are unaffected, so their extra summary comments are never double-counted. Rate-limit notices are never counted. |
 | **✅ / 🔄** | Of those reviews, how many carried state APPROVED / CHANGES_REQUESTED. |
 | **Rate-limited** | Count of out-of-quota / rate-limit refusal events (detected by body text via the shared gate pattern), each occurrence. |
-| **No response** | Eligible PRs the bot never engaged with at all — no review, comment, or refusal. |
+| **No response** | Eligible PRs the bot never engaged with at all — no review, comment, refusal, **or completed check run**. For a check-run reporter (Graphite), a clean-pass check run counts as engagement, so it no longer lands here. |
 | **Latency p50 / p95** | Seconds from PR creation to the bot's first **real** review (refusals excluded, so quota notices don't pollute the percentiles). Targets the "review arrived after auto-approval" failure mode (PR #453). |
 | **Coverage overlap** | PRs reviewed by ≥2 bots — a redundancy vs specialization signal. |
 | **Trend** | Week-over-week Δ (▲/▼) on Reviews and Rate-limited (event counts) vs last week's snapshot. Arrows are directional only. |
@@ -157,7 +190,8 @@ ORG=petry-projects LOOKBACK_DAYS=7 GH_TOKEN="$(gh auth token)" \
 
 | File | Role |
 |---|---|
-| `scripts/lib/advisory-review-gate.sh` | Single source of truth for bot logins + rate-limit body patterns (reused, not forked). |
+| `scripts/lib/reviewer-sources.tsv` + `scripts/lib/reviewer-sources.sh` | The reviewer-source registry ([#1425](https://github.com/petry-projects/.github-private/issues/1425)) + its sourced lookup helpers — the single source of truth for bot logins and the `check_run_name` map, projected by the gate and this report. |
+| `scripts/lib/advisory-review-gate.sh` | Advisory approval gate; rate-limit body patterns (reused, not forked). Its bot list is a registry projection. |
 | `scripts/lib/comment-noise.sh` | Pure no-action agent-comment classifier + `cn_render_noise_section` (the noise metric). Unit-tested in `tests/comment_noise.bats`. |
 | `scripts/reviewer_report.sh` | Org-wide GraphQL collection (`main` / `collect_org_reviews`) + pure normalization, aggregation, and rendering (`aggregate_snapshot`, `render_reviewer_report`). |
 | `tests/reviewer_report.bats` | Unit tests for the pure normalize / aggregate / render path (no network). |
@@ -173,7 +207,8 @@ ORG=petry-projects LOOKBACK_DAYS=7 GH_TOKEN="$(gh auth token)" \
 | `REVIEWER_REPORT_OUT` | Optional path to also write the report to (used by the workflow to post the issue comment). |
 | `REVIEWER_SNAPSHOT_OUT` | Optional path to write this week's per-bot snapshot (uploaded as the WoW artifact). |
 | `REVIEWER_PREV_SNAPSHOT` | Optional path to last week's snapshot for deltas; `main()` fetches it automatically in CI. |
-| `GH_OP_TIMEOUT` / `COLLECT_CONCURRENCY` / `MAX_PR_PAGES` | Per-call timeout (s), concurrent per-repo sweeps, and PR-page cap per repo. |
+| `GH_OP_TIMEOUT` / `COLLECT_CONCURRENCY` / `MAX_PR_PAGES` | Per-call timeout (s), concurrent per-repo sweeps, and PR-page cap per repo (default 50). |
+| `PR_PAGE_SIZE` / `PR_FETCH_MAX_ATTEMPTS` | PRs per GraphQL page (default 10 — kept light to stay under the resource limit) and how many times a failed page is retried with a halved page size before the repo is recorded as a `collect_error` (default 4). |
 
 ## Known limitations
 
@@ -181,5 +216,15 @@ ORG=petry-projects LOOKBACK_DAYS=7 GH_TOKEN="$(gh auth token)" \
   form). If a bot ever posts under a different identity, add it to the shared registry.
 - **Latency denominator**: PRs opened as drafts and later marked ready use creation time
   as the latency baseline in v1, which can overstate latency for long-draft PRs.
-- **Per-repo pagination**: bounded by `MAX_PR_PAGES` (default 20 × 25 PRs). A repo with
-  more in-window PRs than that cap would be truncated; the cap is generous for this org.
+- **Per-repo pagination**: bounded by `MAX_PR_PAGES` (default 50) × `PR_PAGE_SIZE` (default
+  10 PRs). A repo with more in-window PRs than that cap would be truncated; the cap is
+  generous for this org.
+- **Nested-connection cap**: a PR's `reviews` / `comments` / `reviewThreads` are fetched up
+  to 50 each. A PR that exceeds that on any connection emits a `{kind:"truncation"}` record
+  rendered in the **Collection health** section, so an undercount there is stated
+  explicitly rather than hidden. The scorecard counts every node it did fetch, including
+  bots beyond the 50th review.
+- **Check-run summary text**: a completed check run is read as *review ran* when its
+  conclusion is `success` or its summary matches `review ran`; a reporter that changes its
+  summary wording would need the matcher updated. The reporter set and check-run name live
+  in `scripts/lib/reviewer-sources.tsv`.

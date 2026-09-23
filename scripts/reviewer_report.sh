@@ -115,6 +115,20 @@ else
   RATE_LIMIT_RE='usage limit|rate[-_ ]?limit|too many requests|quota (exceeded|reached|exhausted)|out of (quota|credits|tokens|requests)|limit (reached|exceeded|exhausted)|(reached|exceeded|hit) (the |your )?(usage |rate |daily |monthly )?limit|used up its prepaid credits|Qodo.{0,40}(monthly|usage|PR|review) limit|CodeAnt.{0,40}(monthly|trial|usage) limit'
 fi
 
+# Check-run reporters (#1908): logins that deliver a review as a check run rather
+# than (or in addition to) a PR review — Graphite's clean pass posts ONLY a
+# "Graphite / AI Reviews" check run and no PR review, so it must be fetched
+# separately or every clean pass miscounts as "No response". Data-driven from
+# reviewer-sources.tsv (check_run_name column), never a hard-coded login here.
+# Map: login → exact check-run name. Empty when the registry is absent.
+declare -gA REVIEWER_CHECK_RUN_NAMES=()
+if declare -F reviewer_sources_check_run_reporters >/dev/null 2>&1; then
+  while IFS=$'\t' read -r _crr_login _crr_name; do
+    [ -n "$_crr_login" ] && REVIEWER_CHECK_RUN_NAMES["$_crr_login"]="$_crr_name"
+  done < <(reviewer_sources_check_run_reporters 2>/dev/null || true)
+  unset _crr_login _crr_name
+fi
+
 # ---------------------------------------------------------------------------
 # Pure rendering / aggregation helpers (unit-tested, no network)
 # ---------------------------------------------------------------------------
@@ -196,6 +210,27 @@ _NORMALIZE_JQ='
         | { bot: (.author.login|ascii_downcase), at: .createdAt,
             kind: "issue", state: "COMMENTED", body: (.bodyText // ""),
             reactions_up: 0, reactions_down: 0, resolved: false, outdated: false } ]
+    # Check-run reviews (#1908): a bot that reports through a check run (Graphite)
+    # posts each review as a `<name>` check run, not a PR review — a clean pass leaves
+    # NO PR review, only a completed check run. The collector attaches the matched
+    # check runs under ._checkRuns. Classify each:
+    #   * completed AND (success OR summary says the review ran) → a REAL response,
+    #     even with zero comments (refusal:false). It adds 0 to the review-event count
+    #     (kind:"check_run", not "review"); latency is measured to completed_at.
+    #   * completed/skipped ("too large") → a REFUSAL (refusal:true) — the bot declined.
+    #   * anything else (queued / in_progress / no run) contributes nothing → the bot
+    #     gets no submission here, so absent any PR review it buckets as no-response.
+    + [ (.["_checkRuns"] // [])[]
+        | select(.bot as $a | is_bot($a))
+        | (.status == "completed") as $done
+        | ($done and ((.conclusion // "") == "success"
+                      or ((.summary // "") | test("review ran"; "i")))) as $ran
+        | ($done and ((.conclusion // "") == "skipped")) as $refused
+        | select($ran or $refused)
+        | { bot: (.bot|ascii_downcase), at: (.completed_at // .completedAt),
+            kind: "check_run", state: (if $ran then "COMMENTED" else "SKIPPED" end),
+            body: (.summary // ""), refusal: $refused,
+            reactions_up: 0, reactions_down: 0, resolved: false, outdated: false } ]
     ) as $subs
   | ( { kind: "pr", repo: $repo, pr: ($pr.url),
         created: $pr.createdAt, merged: ($pr.mergedAt // null),
@@ -206,7 +241,11 @@ _NORMALIZE_JQ='
       # even alongside a rate-limit notice; it counts as "refused" only when the
       # bot'"'"'s SOLE action on the PR was to decline. This is the key correctness
       # fix over the old "any rate-limit text present" flag.
-      | ($grp | map(. + {refusal: ((.body // "") | test($rl; "i"))})) as $mine
+      # A check-run submission carries an explicit `refusal` boolean (a "too large"
+      # skip); every other submission derives refusal from its body matching the
+      # rate-limit/out-of-quota pattern. Preserve a pre-set flag, else body-match.
+      | ($grp | map(. + {refusal: (if (.refusal != null) then .refusal
+                                    else ((.body // "") | test($rl; "i")) end)})) as $mine
       | ($mine | map(select(.refusal | not))) as $real
       | ($mine | map(select(.refusal)))       as $refd
       | ($real | map(.at) | min) as $first_real
@@ -296,6 +335,45 @@ _prev() {
   jq -r --arg b "$bot" --arg k "$field" '.bots?[$b]?[$k]? // empty' "$f" 2>/dev/null || printf ''
 }
 
+# _render_collection_health <jsonl_dir> <repo_count> — PURE. Prints a PROMINENT
+# section for any repo the collector could not fetch (#1908) and for any per-PR
+# connection that hit the GraphQL fetch cap. Prints NOTHING when collection was
+# clean. This is the in-report surfacing the issue requires: a silent stderr WARN
+# is not enough, because a dropped repo makes every count below a floor, not a
+# total, and that must be visible to whoever reads the scorecard.
+_render_collection_health() {
+  local dir="$1" repo_count="$2"
+  local files=("$dir"/*.jsonl)
+  [ -e "${files[0]}" ] || return 0
+
+  local errs
+  errs="$(jq -rs --argjson m "${repo_count:-0}" '
+    ([ .[] | select(.kind=="collect_error") ] | unique_by(.repo)) as $e
+    | if ($e | length) == 0 then empty
+      else "## ⚠️ Collection health\n\n"
+        + "**\($e | length) of \($m) repos could not be collected** after retries — "
+        + "their PRs are absent from every metric below, so all counts are a **floor, not a total**. "
+        + "This is the #1908 failure mode (silent page-1 GraphQL failure); investigate before trusting the numbers or the week-over-week deltas.\n\n"
+        + ([ $e[] | "- `\(.repo)` — \(.reason // "collection failed")" ] | join("\n"))
+        + "\n"
+      end
+  ' "${files[@]}" 2>/dev/null || true)"
+  [ -n "$errs" ] && printf '%s\n' "$errs"
+
+  local trunc
+  trunc="$(jq -rs '
+    ([ .[] | select(.kind=="truncation") ] | unique_by([.repo, .pr, .connection])) as $t
+    | if ($t | length) == 0 then empty
+      else "### Truncated connections\n\n"
+        + "These per-PR connections hit the GraphQL fetch cap, so the affected reviewer counts may **undercount** on these PRs (truncation is reported here, never silent — #1908):\n\n"
+        + ([ $t[] | "- `\(.repo)` PR `\(.pr)` — `\(.connection)` truncated" ] | join("\n"))
+        + "\n"
+      end
+  ' "${files[@]}" 2>/dev/null || true)"
+  [ -n "$trunc" ] && printf '%s\n' "$trunc"
+  return 0
+}
+
 # render_reviewer_report <jsonl_dir> <lookback> <repo_count> [generated_at]
 # Writes the full Markdown report to stdout. PURE: no network. Optional prior
 # snapshot for WoW deltas via REVIEWER_PREV_SNAPSHOT.
@@ -316,6 +394,10 @@ render_reviewer_report() {
     printf '_org `%s` · %s repos scanned · %s PRs active (%s non-draft, review-eligible)_\n\n' \
       "$ORG" "$repo_count" "$(_fmt_int "$total")" "$(_fmt_int "$eligible")"
   fi
+
+  # Surface collection failures / truncation FIRST and unconditionally, so a run
+  # that dropped repos never presents its partial counts as complete (#1908).
+  _render_collection_health "$dir" "$repo_count"
 
   if [ "${total:-0}" -eq 0 ]; then
     printf 'No pull-request activity found in the last %s days.\n' "$lookback"
@@ -419,7 +501,17 @@ render_reviewer_report() {
 
 GH_OP_TIMEOUT="${GH_OP_TIMEOUT:-60}"
 COLLECT_CONCURRENCY="${COLLECT_CONCURRENCY:-8}"
-MAX_PR_PAGES="${MAX_PR_PAGES:-20}"
+# PR_PAGE_SIZE (#1908): PRs requested per GraphQL page. Kept deliberately SMALL
+# (10, was 25) because the verified undercount root cause was busy repos exceeding
+# GitHub's GraphQL resource limit on page 1 and being silently dropped entirely.
+# A lighter page is the fix; do NOT raise this or the nested connections back up.
+PR_PAGE_SIZE="${PR_PAGE_SIZE:-10}"
+# On a resource-limit/timeout error the fetch retries with a HALVED page size and
+# backoff up to this many attempts before the repo is recorded as un-collected.
+PR_FETCH_MAX_ATTEMPTS="${PR_FETCH_MAX_ATTEMPTS:-4}"
+# Safety cap on pages per repo. Raised (was 20) to keep total coverage steady now
+# that each page holds fewer PRs; the UPDATED_AT early-stop ends most repos sooner.
+MAX_PR_PAGES="${MAX_PR_PAGES:-50}"
 
 # _gh_timeout <gh-args...> — run `gh` under a per-call timeout so one hung request
 # cannot stall the run. gh is invoked via `bash -c` so an exported shell-function
@@ -433,13 +525,15 @@ _gh_timeout() {
 }
 
 # GraphQL query: one repo's PRs (newest first) with reviews, threads, comments.
+# $prFirst is the per-page PR count (small, and halved on retry, see PR_PAGE_SIZE).
+# headRefOid feeds the separate per-PR check-run fetch (#1908) for check-run reporters.
 _PR_QUERY='
-query($owner:String!, $name:String!, $cursor:String) {
+query($owner:String!, $name:String!, $cursor:String, $prFirst:Int!) {
   repository(owner:$owner, name:$name) {
-    pullRequests(first: 25, after: $cursor, orderBy: {field: UPDATED_AT, direction: DESC}) {
+    pullRequests(first: $prFirst, after: $cursor, orderBy: {field: UPDATED_AT, direction: DESC}) {
       pageInfo { hasNextPage endCursor }
       nodes {
-        url number createdAt updatedAt mergedAt isDraft
+        url number createdAt updatedAt mergedAt isDraft headRefOid
         author { login }
         reviews(first: 50) { nodes { author { login } state submittedAt bodyText } }
         reviewThreads(first: 50) {
@@ -459,10 +553,53 @@ query($owner:String!, $name:String!, $cursor:String) {
   }
 }'
 
+# _collect_check_runs_for_page <owner> <name> <graphql_resp> — echo a JSON object
+# mapping each in-window PR url → [ {bot,status,conclusion,summary,completed_at} ]
+# for the CHECK-RUN reporters (#1908). One lightweight REST call per in-window PR
+# head commit (`/commits/{sha}/check-runs`), filtered to the configured names — a
+# separate, cheap fetch that does NOT add weight to the (resource-limited) PR page
+# query. Echoes `{}` when there are no reporters or no in-window PRs. Best-effort:
+# a failed per-PR fetch is skipped, never fatal.
+_collect_check_runs_for_page() {
+  local owner="$1" name="$2" resp="$3"
+  local reporters_json="${REVIEWER_CHECK_RUN_JSON:-{}}"
+  [ "$reporters_json" = "{}" ] && { printf '{}'; return 0; }
+
+  local prs
+  prs="$(jq -c --arg cutoff "$CUTOFF" '
+    [ .data?.repository?.pullRequests?.nodes[]?
+      | select(.updatedAt >= $cutoff)
+      | {url, sha: (.headRefOid // "")} | select(.sha != "") ]' <<<"$resp" 2>/dev/null || printf '[]')"
+  { [ -z "$prs" ] || [ "$prs" = "[]" ]; } && { printf '{}'; return 0; }
+
+  local n i=0 acc='{}'
+  n="$(jq 'length' <<<"$prs" 2>/dev/null || echo 0)"
+  while [ "$i" -lt "$n" ]; do
+    local url sha
+    url="$(jq -r ".[$i].url" <<<"$prs")"
+    sha="$(jq -r ".[$i].sha" <<<"$prs")"
+    i=$((i + 1))
+    local cr_resp matched
+    cr_resp="$(_gh_timeout api "repos/${owner}/${name}/commits/${sha}/check-runs?per_page=100" 2>/dev/null)" || continue
+    matched="$(jq -c --argjson names "$reporters_json" '
+      ($names | to_entries | map({(.value): .key}) | add) as $byname
+      | [ (.check_runs // [])[]
+          | select(($byname[.name] // null) != null)
+          | { bot: $byname[.name], status: .status, conclusion: .conclusion,
+              summary: (.output.summary // ""), completed_at: .completed_at } ]' \
+      <<<"$cr_resp" 2>/dev/null || printf '[]')"
+    { [ -z "$matched" ] || [ "$matched" = "[]" ]; } && continue
+    acc="$(jq -c --arg url "$url" --argjson m "$matched" '. + {($url): $m}' <<<"$acc" 2>/dev/null || printf '%s' "$acc")"
+  done
+  printf '%s' "$acc"
+}
+
 # _collect_one_repo <repo> — GraphQL-paginate one repo's recently-updated PRs,
 # stopping once a page's PRs predate CUTOFF (PRs are ordered by UPDATED_AT desc),
 # and append normalized JSONL records to a unique file in COLLECT_JSONL_DIR.
-# Always exits 0: a failed repo degrades to a WARN + skip, never an aborted run.
+# Always exits 0: a repo that fails even after retries degrades to a {kind:
+# "collect_error"} record (surfaced prominently in the report, #1908), never an
+# aborted run.
 _collect_one_repo() {
   local repo="$1" owner name cursor="" page=0 out
   owner="${repo%%/*}"; name="${repo##*/}"
@@ -475,11 +612,31 @@ _collect_one_repo() {
     page=$((page + 1))
     [ "$page" -gt "${MAX_PR_PAGES}" ] && break
 
-    local resp gql_args
-    gql_args=(api graphql -f query="$_PR_QUERY" -F owner="$owner" -F name="$name")
-    [ -n "$cursor" ] && gql_args+=(-F cursor="$cursor")
-    if ! resp="$(_gh_timeout "${gql_args[@]}" 2>/dev/null)"; then
-      echo "WARN: GraphQL query for ${repo} (page ${page}) failed or timed out — partial data" >&2
+    # Fetch this page, retrying with a HALVED page size + backoff on a resource-limit
+    # / timeout error before giving up (#1908). A GraphQL resource-limit error can
+    # arrive as a non-zero exit OR as an HTTP-200 body carrying an `errors` array with
+    # null `data`; treat either as a failure to retry.
+    local resp="" this_first="${PR_PAGE_SIZE}" attempt=0 fetched=0
+    while :; do
+      attempt=$((attempt + 1))
+      local gql_args
+      gql_args=(api graphql -f query="$_PR_QUERY" -F owner="$owner" -F name="$name" -F prFirst="$this_first")
+      [ -n "$cursor" ] && gql_args+=(-F cursor="$cursor")
+      if resp="$(_gh_timeout "${gql_args[@]}" 2>/dev/null)" && [ -n "$resp" ] \
+           && jq -e '.data?.repository?.pullRequests != null' <<<"$resp" >/dev/null 2>&1; then
+        fetched=1; break
+      fi
+      if [ "$attempt" -ge "${PR_FETCH_MAX_ATTEMPTS}" ] || [ "$this_first" -le 1 ]; then
+        break
+      fi
+      this_first=$((this_first / 2)); [ "$this_first" -lt 1 ] && this_first=1
+      sleep "$(( attempt < 5 ? attempt : 5 ))"
+    done
+    if [ "$fetched" -ne 1 ]; then
+      echo "WARN: GraphQL query for ${repo} (page ${page}) failed after ${attempt} attempts — repo NOT collected (#1908)" >&2
+      jq -cn --arg repo "$repo" \
+        --arg reason "page-${page} GraphQL failure after ${attempt} attempts (resource-limit/timeout) — halved to first:${this_first}" \
+        '{kind:"collect_error", repo:$repo, reason:$reason}' >> "$out" 2>/dev/null || true
       break
     fi
 
@@ -490,9 +647,29 @@ _collect_one_repo() {
       [ .data?.repository?.pullRequests?.nodes[]? | select(.updatedAt >= $cutoff) ] | length
     ' <<<"$resp" 2>/dev/null || echo 0)"
 
-    jq -c --arg repo "$repo" --argjson bots "$bots_json" --arg rl "$RATE_LIMIT_RE" --arg cutoff "$CUTOFF" \
-      ".data?.repository?.pullRequests?.nodes[]? | select(.updatedAt >= \$cutoff) | ${_NORMALIZE_JQ}" \
+    # Check-run reviews (#1908): fetch each in-window PR's head-commit check runs for
+    # the configured reporters and inject them as ._checkRuns so normalization can
+    # count a clean pass (check run only, no PR review) as a real response.
+    local crmap='{}'
+    if [ "${REVIEWER_CHECK_RUN_JSON:-{}}" != "{}" ]; then
+      crmap="$(_collect_check_runs_for_page "$owner" "$name" "$resp")" || crmap='{}'
+    fi
+
+    jq -c --arg repo "$repo" --argjson bots "$bots_json" --arg rl "$RATE_LIMIT_RE" --arg cutoff "$CUTOFF" --argjson crmap "$crmap" \
+      ".data?.repository?.pullRequests?.nodes[]? | select(.updatedAt >= \$cutoff) | (. + {\"_checkRuns\": (\$crmap[.url] // [])}) | ${_NORMALIZE_JQ}" \
       <<<"$resp" >> "$out" 2>/dev/null || true
+
+    # Truncation surfacing (#1908): a nested connection that hit its GraphQL fetch
+    # cap (≥50) may undercount a bot's reviews/comments on that PR. Emit one
+    # {kind:"truncation"} record per capped connection so the report states it
+    # explicitly — truncation must NEVER be silent (the old code only WARNed to
+    # stderr, and only when the noise pass was enabled).
+    jq -c --arg repo "$repo" --arg cutoff "$CUTOFF" '
+      .data?.repository?.pullRequests?.nodes[]? | select(.updatedAt >= $cutoff) | . as $pr
+      | ( if ((.reviews?.nodes // []) | length) >= 50 then {kind:"truncation",repo:$repo,pr:($pr.url),connection:"reviews"} else empty end),
+        ( if ((.comments?.nodes // []) | length) >= 50 then {kind:"truncation",repo:$repo,pr:($pr.url),connection:"comments"} else empty end),
+        ( if ((.reviewThreads?.nodes // []) | length) >= 50 then {kind:"truncation",repo:$repo,pr:($pr.url),connection:"reviewThreads"} else empty end)
+    ' <<<"$resp" >> "$out" 2>/dev/null || true
 
     # Additive no-action-noise pass (#1411): emit one agent_comment record per
     # marker-bearing comment/review on each in-window PR, regardless of author
@@ -558,9 +735,19 @@ collect_org_reviews() {
 
   CUTOFF="$(date -u -d "${LOOKBACK_DAYS} days ago" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
     || date -u -v-"${LOOKBACK_DAYS}"d +%Y-%m-%dT%H:%M:%SZ)"
-  export CUTOFF COLLECT_JSONL_DIR="$jsonl_dir" GH_OP_TIMEOUT MAX_PR_PAGES
+  export CUTOFF COLLECT_JSONL_DIR="$jsonl_dir" GH_OP_TIMEOUT MAX_PR_PAGES PR_PAGE_SIZE PR_FETCH_MAX_ATTEMPTS
   # shellcheck disable=SC2090  # jq/GraphQL program strings: literal content is intended
   export _PR_QUERY _NORMALIZE_JQ RATE_LIMIT_RE
+  # Check-run reporters (#1908) — serialize the login→check-run-name map to JSON so
+  # each worker subshell (associative arrays cannot cross the process boundary) can
+  # fetch check runs for the configured reporters. `{}` when none are registered.
+  local _crk
+  REVIEWER_CHECK_RUN_JSON='{}'
+  for _crk in "${!REVIEWER_CHECK_RUN_NAMES[@]}"; do
+    REVIEWER_CHECK_RUN_JSON="$(jq -c --arg k "$_crk" --arg v "${REVIEWER_CHECK_RUN_NAMES[$_crk]}" \
+      '. + {($k): $v}' <<<"$REVIEWER_CHECK_RUN_JSON")"
+  done
+  export REVIEWER_CHECK_RUN_JSON
   # No-action noise classifier (#1411) — exported so each worker subshell can run
   # the second (agent_comment) collection pass. Absent in a stripped lib env.
   export CN_AGENT_COMMENT_JQ="${CN_AGENT_COMMENT_JQ:-}" CN_MARKER_RE="${CN_MARKER_RE:-}" CN_NOACTION_RE="${CN_NOACTION_RE:-}"
@@ -572,7 +759,7 @@ collect_org_reviews() {
   # REVIEWER_BOTS is a plain array; export as newline string the workers re-split.
   REVIEWER_BOTS_STR="$(printf '%s\n' "${REVIEWER_BOTS[@]}")"
   export REVIEWER_BOTS_STR
-  export -f _collect_one_repo _gh_timeout
+  export -f _collect_one_repo _collect_check_runs_for_page _gh_timeout
 
   printf '%s\n' "$repos_raw" \
     | xargs -P "$COLLECT_CONCURRENCY" -I {} \
