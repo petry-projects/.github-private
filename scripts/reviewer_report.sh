@@ -117,9 +117,9 @@ else
 fi
 
 # Author-scoped cubic rate-limit clause — reuse the gate's if present, else mirror
-# it. Matched ONLY against cubic'"'"'s own submissions (author == cubic-dev-ai) in
+# it. Matched ONLY against cubic's own submissions (author == cubic-dev-ai) in
 # _NORMALIZE_JQ below, so a genuine finding by another reviewer that merely mentions
-# cubic'"'"'s trial is not miscounted as a cubic/other-bot refusal (#1903). The mirror
+# cubic's trial is not miscounted as a cubic/other-bot refusal (#1903). The mirror
 # is kept in sync with the gate by tests/dev-lead/unit/test_advisory_review_gate.bats.
 if declare -F _advisory_cubic_rate_limit_pattern >/dev/null 2>&1; then
   CUBIC_RATE_LIMIT_RE="$(_advisory_cubic_rate_limit_pattern)"
@@ -139,6 +139,15 @@ if declare -F reviewer_sources_check_run_reporters >/dev/null 2>&1; then
     [ -n "$_crr_login" ] && REVIEWER_CHECK_RUN_NAMES["$_crr_login"]="$_crr_name"
   done < <(reviewer_sources_check_run_reporters 2>/dev/null || true)
   unset _crr_login _crr_name
+fi
+
+# cubic-dev-ai login — reuse the gate's if present, else mirror it. Used in the
+# refusal predicate of _NORMALIZE_JQ to scope the cubic clause to cubic's own
+# submissions only (#1903). The mirror is kept in sync with the gate by tests.
+if declare -F _advisory_cubic_login >/dev/null 2>&1; then
+  CUBIC_LOGIN="$(_advisory_cubic_login)"
+else
+  CUBIC_LOGIN='cubic-dev-ai'
 fi
 
 # ---------------------------------------------------------------------------
@@ -270,7 +279,7 @@ _NORMALIZE_JQ='
       # author-scoped (.bot is the ascii_downcased author) so a comment by another
       # reviewer that merely mentions cubic'"'"'s trial is not counted as a refusal (#1903).
       | ($grp | map(. + {refusal: (if (.refusal != null) then .refusal
-                                    else (((.body // "") | test($rl; "i")) or (.bot == "cubic-dev-ai" and ((.body // "") | test("'"$CUBIC_RATE_LIMIT_RE"'"; "i")))) end)})) as $mine
+                                    else (((.body // "") | test($rl; "i")) or (.bot == "'"$CUBIC_LOGIN"'" and ((.body // "") | test("'"$CUBIC_RATE_LIMIT_RE"'"; "i")))) end)})) as $mine
       | ($mine | map(select(.refusal | not))) as $real
       | ($mine | map(select(.refusal)))       as $refd
       | ($real | map(.at) | min) as $first_real

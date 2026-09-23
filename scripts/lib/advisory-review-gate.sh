@@ -285,6 +285,12 @@ _advisory_cubic_rate_limit_pattern() {
   printf '%s' "$ADVISORY_CUBIC_RATE_LIMIT_RE"
 }
 
+# cubic-dev-ai login constant — exposed as an accessor so scripts/reviewer_report.sh
+# reuses it in the scorecard refusal predicate (no divergence if the login ever changes).
+_advisory_cubic_login() {
+  printf '%s' "$ADVISORY_CUBIC_LOGIN"
+}
+
 # detect_advisory_rate_limit <reviews-comments-json>
 #   Returns 0 when a known advisory/review bot's LATEST submission body matches
 #   the rate-limit pattern; 1 otherwise. Only the latest submission per bot is
