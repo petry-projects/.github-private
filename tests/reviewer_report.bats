@@ -193,6 +193,23 @@ JSON
   echo "$output" | jq -e '.[] | select(.bot=="graphite-app") | .real_responses==0 and .refusals>=1 and .reviews==0'
 }
 
+@test "check-run: a skip with an unrelated/empty summary is NOT a refusal" {
+  # A run skipped for an unrelated workflow reason (no decline summary) must not be
+  # counted as a rate-limited refusal — it contributes nothing, like a queued run.
+  local gbots='["graphite-app"]'
+  tmp="$(mktemp "$BATS_TEST_TMPDIR/tmp.XXXXXX")"
+  cat > "$tmp" <<'JSON'
+{"url":"u","createdAt":"2026-09-23T10:00:00Z","updatedAt":"2026-09-23T10:00:00Z","mergedAt":null,"isDraft":false,"author":{"login":"h"},
+ "reviews":{"nodes":[]},
+ "reviewThreads":{"nodes":[]},
+ "comments":{"nodes":[]},
+ "_checkRuns":[{"bot":"graphite-app","status":"completed","conclusion":"skipped","summary":"","completed_at":"2026-09-23T10:04:00Z"}]}
+JSON
+  run jq -c --arg repo "r" --argjson bots "$gbots" --arg rl "$RATE_LIMIT_RE" "[ $_NORMALIZE_JQ ]" "$tmp"
+  # No bot_pr record → aggregator buckets it as no-response, not a refusal.
+  echo "$output" | jq -e 'map(select(.kind=="bot_pr" and .bot=="graphite-app")) | length == 0'
+}
+
 @test "check-run: a queued suite (no completed check run, no review) is no response" {
   local gbots='["graphite-app"]'
   tmp="$(mktemp "$BATS_TEST_TMPDIR/tmp.XXXXXX")"

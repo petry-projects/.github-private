@@ -125,7 +125,9 @@ TSV
 @test "check-run: reporters helper propagates a missing-manifest failure" {
   REVIEWER_SOURCES_MANIFEST="/nonexistent/reviewer-sources.tsv" \
     run reviewer_sources_check_run_reporters
-  [ "$status" -ne 0 ]
+  # Assert the specific expected exit code (1, from _reviewer_sources_manifest_or_die)
+  # so an unexpected failure (syntax / command-not-found) can't pass this test.
+  [ "$status" -eq 1 ]
 }
 
 @test "check-run: manifest schema_version is 2 (check_run_name column added)" {

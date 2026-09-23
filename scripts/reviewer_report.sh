@@ -123,7 +123,7 @@ fi
 # Map: login → exact check-run name. Empty when the registry is absent.
 declare -gA REVIEWER_CHECK_RUN_NAMES=()
 if declare -F reviewer_sources_check_run_reporters >/dev/null 2>&1; then
-  while IFS=$'\t' read -r _crr_login _crr_name; do
+  while IFS=$'\t' read -r _crr_login _crr_name || [ -n "$_crr_login" ]; do
     [ -n "$_crr_login" ] && REVIEWER_CHECK_RUN_NAMES["$_crr_login"]="$_crr_name"
   done < <(reviewer_sources_check_run_reporters 2>/dev/null || true)
   unset _crr_login _crr_name
@@ -217,7 +217,11 @@ _NORMALIZE_JQ='
     #   * completed AND (success OR summary says the review ran) → a REAL response,
     #     even with zero comments (refusal:false). It adds 0 to the review-event count
     #     (kind:"check_run", not "review"); latency is measured to completed_at.
-    #   * completed/skipped ("too large") → a REFUSAL (refusal:true) — the bot declined.
+    #   * completed/skipped WITH a decline summary ("too large" / "did not run") →
+    #     a REFUSAL (refusal:true) — the bot itself declined. A run skipped for an
+    #     unrelated workflow reason (empty/neutral summary, e.g. an `if:`-gated job)
+    #     is NOT the bot declining, so it must NOT be counted as a rate-limited
+    #     refusal — it contributes nothing, just like a queued run.
     #   * anything else (queued / in_progress / no run) contributes nothing → the bot
     #     gets no submission here, so absent any PR review it buckets as no-response.
     + [ (.["_checkRuns"] // [])[]
@@ -225,7 +229,8 @@ _NORMALIZE_JQ='
         | (.status == "completed") as $done
         | ($done and ((.conclusion // "") == "success"
                       or ((.summary // "") | test("review ran"; "i")))) as $ran
-        | ($done and ((.conclusion // "") == "skipped")) as $refused
+        | ($done and ((.conclusion // "") == "skipped")
+                 and ((.summary // "") | test("did not run|too large|declin|skip|rate.?limit|quota|usage limit"; "i"))) as $refused
         | select($ran or $refused)
         | { bot: (.bot|ascii_downcase), at: (.completed_at // .completedAt),
             kind: "check_run", state: (if $ran then "COMMENTED" else "SKIPPED" end),
@@ -572,25 +577,32 @@ _collect_check_runs_for_page() {
       | {url, sha: (.headRefOid // "")} | select(.sha != "") ]' <<<"$resp" 2>/dev/null || printf '[]')"
   { [ -z "$prs" ] || [ "$prs" = "[]" ]; } && { printf '{}'; return 0; }
 
-  local n i=0 acc='{}'
-  n="$(jq 'length' <<<"$prs" 2>/dev/null || echo 0)"
-  while [ "$i" -lt "$n" ]; do
-    local url sha
-    url="$(jq -r ".[$i].url" <<<"$prs")"
-    sha="$(jq -r ".[$i].sha" <<<"$prs")"
-    i=$((i + 1))
+  # Stream the (url, sha) pairs as TSV from a SINGLE jq, then loop — no per-row jq
+  # to read fields. @tsv also escapes embedded newlines, hardening against a
+  # crafted PR URL splitting a row. `|| [ -n "$url" ]` processes a final row with
+  # no trailing newline.
+  local acc='{}' url sha
+  while IFS=$'\t' read -r url sha || [ -n "$url" ]; do
+    [ -z "$url" ] && continue
     local cr_resp matched
-    cr_resp="$(_gh_timeout api "repos/${owner}/${name}/commits/${sha}/check-runs?per_page=100" 2>/dev/null)" || continue
-    matched="$(jq -c --argjson names "$reporters_json" '
+    # `--paginate` follows Link headers so a reporter's run past the first 100 check
+    # runs is still seen — reading only page 1 would falsely report "No response"
+    # when the configured run sorts after the 100th (#1908). Assign first, then test,
+    # so a fetch failure under `set -e` is a clean skip, not a swallowed error.
+    cr_resp="$(_gh_timeout api --paginate "repos/${owner}/${name}/commits/${sha}/check-runs?per_page=100" 2>/dev/null || true)"
+    [ -n "$cr_resp" ] || continue
+    # `-s` slurps the (possibly multi-page) `--paginate` object stream into an array;
+    # `.[].check_runs[]?` flattens runs across every page.
+    matched="$(jq -c -s --argjson names "$reporters_json" '
       ($names | to_entries | map({(.value): .key}) | add) as $byname
-      | [ (.check_runs // [])[]
+      | [ .[].check_runs[]?
           | select(($byname[.name] // null) != null)
           | { bot: $byname[.name], status: .status, conclusion: .conclusion,
               summary: (.output.summary // ""), completed_at: .completed_at } ]' \
       <<<"$cr_resp" 2>/dev/null || printf '[]')"
     { [ -z "$matched" ] || [ "$matched" = "[]" ]; } && continue
     acc="$(jq -c --arg url "$url" --argjson m "$matched" '. + {($url): $m}' <<<"$acc" 2>/dev/null || printf '%s' "$acc")"
-  done
+  done < <(jq -r '.[] | [.url, .sha] | @tsv' <<<"$prs" 2>/dev/null || true)
   printf '%s' "$acc"
 }
 
@@ -614,16 +626,20 @@ _collect_one_repo() {
 
     # Fetch this page, retrying with a HALVED page size + backoff on a resource-limit
     # / timeout error before giving up (#1908). A GraphQL resource-limit error can
-    # arrive as a non-zero exit OR as an HTTP-200 body carrying an `errors` array with
-    # null `data`; treat either as a failure to retry.
+    # arrive as a non-zero exit OR as an HTTP-200 body carrying an `errors` array —
+    # possibly ALONGSIDE partial `data`. Treat ANY of these as a failure to retry: a
+    # page is "fetched" only when it has non-null pullRequests AND no `errors`, so a
+    # partial page is never counted as complete. Assign the command substitution
+    # first, then test, so a non-zero exit under `set -e` is not swallowed.
     local resp="" this_first="${PR_PAGE_SIZE}" attempt=0 fetched=0
     while :; do
       attempt=$((attempt + 1))
       local gql_args
       gql_args=(api graphql -f query="$_PR_QUERY" -F owner="$owner" -F name="$name" -F prFirst="$this_first")
       [ -n "$cursor" ] && gql_args+=(-F cursor="$cursor")
-      if resp="$(_gh_timeout "${gql_args[@]}" 2>/dev/null)" && [ -n "$resp" ] \
-           && jq -e '.data?.repository?.pullRequests != null' <<<"$resp" >/dev/null 2>&1; then
+      resp="$(_gh_timeout "${gql_args[@]}" 2>/dev/null || true)"
+      if [ -n "$resp" ] \
+           && jq -e '((.errors // []) | length) == 0 and (.data?.repository?.pullRequests != null)' <<<"$resp" >/dev/null 2>&1; then
         fetched=1; break
       fi
       if [ "$attempt" -ge "${PR_FETCH_MAX_ATTEMPTS}" ] || [ "$this_first" -le 1 ]; then
