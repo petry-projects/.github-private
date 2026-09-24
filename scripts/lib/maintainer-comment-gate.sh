@@ -88,19 +88,29 @@ log_info() {
 #   verdict: an info comment we can't classify simply stays a blocker), never to
 #   clearing something it cannot classify.
 _maintainer_gate_info_patterns_json() {
-  local lib_dir patterns
+  local lib_dir patterns status
   lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   if [[ ! -f "$lib_dir/reviewer-sources.sh" ]]; then
     printf '%s' '{}'
     return 0
   fi
   # Source in a subshell so the registry helper's vars/functions never leak into
-  # the gate's caller; capture only the login\tpattern lines.
+  # the gate's caller; capture only the login\tpattern lines. Assign the command
+  # substitution and capture its status separately (with set -e disabled) rather
+  # than in a `|| { … }` list, so a failure inside the subshell cannot be swallowed
+  # by set -e in a conditional context.
+  set +e
   patterns="$(
     # shellcheck source=reviewer-sources.sh
     source "$lib_dir/reviewer-sources.sh" 2>/dev/null \
       && reviewer_sources_info_status_patterns 2>/dev/null
-  )" || { printf '%s' '{}'; return 0; }
+  )"
+  status=$?
+  set -e
+  if [[ $status -ne 0 ]]; then
+    printf '%s' '{}'
+    return 0
+  fi
   [[ -n "$patterns" ]] || { printf '%s' '{}'; return 0; }
   printf '%s\n' "$patterns" \
     | jq -R -s 'split("\n") | map(select(length > 0) | split("\t"))

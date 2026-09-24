@@ -108,8 +108,8 @@ viewer. An `@mention` (FORCE_REVIEW) is the alternative human-in-the-loop bypass
 
 The comments that actually strand the #1894 queue are posted by **bots** — chiefly SonarCloud's
 `Quality Gate passed` status comment, which SonarCloud **re-posts on every push**, so dispositioning
-the old one never helps. #1911's self-scope (above) meant a maintainer could not clear a bot's comment
-at all. Two changes close this:
+the old one never helps. #1910's self-scope (above) meant a maintainer could not clear a bot's comment
+at all (this was the deadlock reported in #1911). Two changes close this:
 
 - **A clean bot status comment is auto-cleared, deterministically, with no LLM and no dev-lead.**
   `maintainer-comment-gate.sh` reads a data-driven classifier keyed off the reviewer-source registry
@@ -123,14 +123,18 @@ at all. Two changes close this:
   carrying findings, any comment from a bot with no pattern, and every human comment. An unreadable
   registry degrades to `{}` — i.e. **nothing is auto-cleared** — never to clearing something it cannot
   classify.
-- **Maintainers can clear a *registered reviewer bot's* comment when needed.**
-  `scripts/maintainer-resolve-comment.sh` accepts a comment authored by a bot listed in
-  `reviewer-sources.tsv` (in addition to your own). The author must be a GitHub App actor
-  (`__typename == Bot`), so a *person* whose login matches a registered bot's is refused like any other human. This path **requires `--reason`**, which is posted
-  as a reply carrying a `<!-- maintainer-resolve … -->` marker (so the reply is not itself a new
-  blocker) **before** the original is minimized `RESOLVED`. It **still refuses another *human's*
-  comment** — that restriction is exactly why #1910 was self-scoped — and fails closed if it cannot
-  read the registry, the comment's author, or the invoking viewer.
+- **Maintainers can clear a *registered info-status bot's* comment when needed.**
+  `scripts/maintainer-resolve-comment.sh` accepts a comment authored by a bot that declares an
+  `info_status_pattern` in `reviewer-sources.tsv` — a clean-status re-poster like `sonarqubecloud`,
+  **not** a finding-producing reviewer such as `codeant-ai` or `graphite-app` (whose findings still
+  require dev-lead's verified-fix flow, so this path cannot `--reason` them away) — in addition to
+  your own. The author must be a GitHub App actor (`__typename == Bot`), so a *person* whose login
+  matches a registered bot's is refused like any other human. This path **requires `--reason`**, which
+  is posted as a reply carrying a `<!-- maintainer-resolve … -->` marker (pinned to the original
+  comment's node id, so the reply is not itself a new blocker and a retry does not post a duplicate)
+  **before** the original is minimized `RESOLVED`. It **still refuses another *human's* comment** —
+  that restriction is exactly why #1910 was self-scoped — and fails closed if it cannot read the
+  registry, the comment's author, or the invoking viewer.
 
 ### The org automation-PR cap is real and near-silent
 
