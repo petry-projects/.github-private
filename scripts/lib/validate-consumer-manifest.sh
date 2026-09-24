@@ -93,7 +93,8 @@ if [ "$schema_ok" != "true" ]; then
 fi
 
 # 3. surface_sources keys must be existing reusable-workflow paths in this repo;
-#    their values must be existing scripts/lib/*.sh or prompts/* paths in this repo.
+#    their values must be existing scripts/lib/*.sh, scripts/lib/*.tsv, or prompts/*
+#    paths in this repo.
 #    Paths are resolved via realpath to prevent traversal sequences from escaping
 #    their intended root directories.
 wf_root=$(realpath -m "$REPO_ROOT/.github/workflows")
