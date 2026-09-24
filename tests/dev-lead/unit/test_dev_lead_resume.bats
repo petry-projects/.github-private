@@ -37,12 +37,14 @@ args="$*"
 case "$args" in
   *dispatches*)          cat > "${PAYLOAD_FILE:-/dev/null}"; exit 0 ;;
   *pulls/*/commits*)     printf '%s' "${COMMITS_JSON}" ;;
-  *pulls/*/reviews*)     printf '%s' '[]' ;;
+  *pulls/*/reviews*)     printf '%s' "${DROPPED_REVIEWS_JSON:-[]}" ;;
+  *pulls/*/comments*)    printf '%s' "${DROPPED_REVIEW_COMMENTS_JSON:-[]}" ;;
   *issues/*/comments*)   printf '%s' "${COMMENTS_JSON}" ;;
   *check-runs*)          printf '%s' '{"id":"","details_url":""}' ;;
   *pulls/*)              jq -nc --arg s "${HEAD_SHA}" --argjson l "${LABELS_JSON}" \
                            --arg state "${PR_STATE:-open}" \
-                           '{head:{sha:$s}, labels:($l | map({name:.})), state:$state}' ;;
+                           --arg ref "${HEAD_REF:-}" --arg author "${PR_AUTHOR:-}" \
+                           '{head:{sha:$s, ref:$ref}, user:{login:$author}, labels:($l | map({name:.})), state:$state}' ;;
   *)                     echo "[]" ;;
 esac
 GHEOF
@@ -95,6 +97,26 @@ teardown() {
 
   [ "$status" -eq 0 ]
   [[ "$output" != *"would dispatch"* ]]
+}
+
+# ── (e2) clearing event recovers a DROPPED review-handling run (#1741) ────────
+@test "resume: unaddressed trusted-reviewer finding on HEAD with no fix-reviews marker dispatches a reviews-retry" {
+  # A run that was cancelled while pending posts no marker, so the rate-limited
+  # scan can't see it. The dropped-review scan keys on an unaddressed trusted
+  # CHANGES_REQUESTED pinned to HEAD with no dev-lead-fix-reviews marker.
+  export HEAD_REF="dev-lead/issue-99"
+  export TRUSTED_REVIEWERS="coderabbitai"
+  # A normal comment only → the rate-limited scan does NOT fire, isolating the
+  # dropped-review dispatch (and no dispatch guard / fix-reviews marker present).
+  COMMENTS_JSON='["a normal human comment"]'
+  export DROPPED_REVIEWS_JSON
+  DROPPED_REVIEWS_JSON="$(jq -nc --arg s "$HEAD_SHA" \
+    '[{state:"CHANGES_REQUESTED", commit_id:$s, submitted_at:"2026-08-08T00:00:00Z", user:{login:"coderabbitai"}}]')"
+
+  run resume_main
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"would dispatch dev-lead-reviews-retry"* ]]
 }
 
 # ── (e) clearing event for a closed PR → no dispatch ──────────────────────────

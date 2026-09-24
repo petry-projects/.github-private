@@ -417,7 +417,11 @@ resolve_trusted_reviewers() {
       csv=$(reviewer_sources_trusted_logins 2>/dev/null | paste -sd, - || true)
     fi
   fi
-  printf '%s' "${csv:-coderabbitai,copilot-pull-request-reviewer,gemini-code-assist}"
+  if [ -z "$csv" ]; then
+    echo "::warning::dev-lead: reviewer-sources registry unreadable — falling back to the built-in trusted-reviewer set (coderabbitai,copilot-pull-request-reviewer,gemini-code-assist); this may drift from the review gate (#1425)." >&2
+    csv="coderabbitai,copilot-pull-request-reviewer,gemini-code-assist"
+  fi
+  printf '%s' "$csv"
 }
 
 # has_unaddressed_head_findings <pr_number> <head_sha> <trusted_csv>

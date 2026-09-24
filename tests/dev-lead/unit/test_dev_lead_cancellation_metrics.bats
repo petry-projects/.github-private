@@ -72,10 +72,40 @@ _run() {
   [ "$(jq -r '.never_ran' <<<"$output")" -eq 0 ]
 }
 
-@test "metrics: window filter keeps only runs created in [since, until]" {
+@test "metrics: window filter keeps only runs created in [since, until)" {
   local runs; runs="[$(_run cancelled 2026-09-08T10:00:00Z 2026-09-08T10:00:10Z),$(_run cancelled 2026-09-08T11:30:00Z 2026-09-08T11:30:10Z)]"
   run filter_runs_in_window "$runs" 2026-09-08T11:00:00Z 2026-09-08T12:00:00Z
   [ "$status" -eq 0 ]
   [ "$(jq -r 'length' <<<"$output")" -eq 1 ]
   [ "$(jq -r '.[0].created_at' <<<"$output")" = "2026-09-08T11:30:00Z" ]
+}
+
+@test "metrics: window bounds are half-open — since is kept, until is dropped" {
+  # filter_runs_in_window is documented [since, until): created_at == since is
+  # retained, == until is excluded, and after until is excluded. Without these
+  # boundary cases a regression from >=/< to >/<= would silently shift edge
+  # counts. run_started_at is irrelevant to the filter (only created_at matters).
+  local at_since after_since at_until after_until
+  at_since="$(_run cancelled 2026-09-08T11:00:00Z 2026-09-08T11:00:05Z)"
+  after_since="$(_run cancelled 2026-09-08T11:30:00Z 2026-09-08T11:30:05Z)"
+  at_until="$(_run cancelled 2026-09-08T12:00:00Z 2026-09-08T12:00:05Z)"
+  after_until="$(_run cancelled 2026-09-08T12:30:00Z 2026-09-08T12:30:05Z)"
+  local runs; runs="[$at_since,$after_since,$at_until,$after_until]"
+  run filter_runs_in_window "$runs" 2026-09-08T11:00:00Z 2026-09-08T12:00:00Z
+  [ "$status" -eq 0 ]
+  [ "$(jq -r 'length' <<<"$output")" -eq 2 ]
+  [ "$(jq -r '[.[].created_at] | contains(["2026-09-08T11:00:00Z"])' <<<"$output")" = "true" ]
+  [ "$(jq -r '[.[].created_at] | contains(["2026-09-08T12:00:00Z"])' <<<"$output")" = "false" ]
+  [ "$(jq -r '[.[].created_at] | contains(["2026-09-08T12:30:00Z"])' <<<"$output")" = "false" ]
+}
+
+@test "metrics: never-ran threshold is strict — lifetime == threshold is NOT never-ran" {
+  # A cancelled run with run_started_at null and lifetime EXACTLY the threshold
+  # (60s) must not count as never-ran (the check is `< thr`, not `<=`). Locks the
+  # strict bound so a regression to <= does not inflate the never-ran headline.
+  local runs; runs="[$(_run cancelled 2026-09-08T11:00:00Z 2026-09-08T11:01:00Z)]"
+  run compute_cancellation_metrics "$runs" 60
+  [ "$status" -eq 0 ]
+  [ "$(jq -r '.cancelled' <<<"$output")" -eq 1 ]
+  [ "$(jq -r '.never_ran' <<<"$output")" -eq 0 ]
 }
