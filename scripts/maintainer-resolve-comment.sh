@@ -477,7 +477,7 @@ if [[ "${BASH_SOURCE[0]}" = "${0}" ]]; then
     _existing_reply=$(printf '%s' "$_comments_json" \
       | jq -r --arg id "$_node" --arg viewer "$_viewer" '.[]
           | select((.user.login // "") == $viewer)
-          | select((.body // "") | test("<!-- maintainer-resolve[^>]*id=" + $id + "[^>]*-->"))
+          | select((.body // "") | test("<!-- maintainer-resolve[^>]*id=" + $id + "([[:space:]]|-->)"))
           | .id') || {
       echo "[maintainer-resolve-comment] ERROR: could not parse PR #${_reply_pr} comments while checking for an existing reply — failing closed (no minimize)." >&2
       exit 1

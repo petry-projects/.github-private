@@ -370,6 +370,20 @@ SHIM
   [ -s "$BATS_TEST_TMPDIR/gh-min.log" ]
 }
 
+@test "dedup: a reply pinning a longer node id that starts with ours does NOT suppress the audit reply" {
+  # #1920 review: the marker's id= must match the FULL node id followed by a
+  # delimiter (whitespace or -->), not a prefix — a reply for IC_kwDOfake12 must
+  # not be mistaken for one addressing IC_kwDOfake1.
+  _mrc_gh_reply_shim
+  export COMMENTS_JSON='[{"user":{"login":"don-petry"},"body":"other <!-- maintainer-resolve id=IC_kwDOfake12 -->","id":77}]'
+  run bash "$MRC" "IC_kwDOfake1" --reason "status only"
+  unset COMMENTS_JSON
+  [ "$status" -eq 0 ]
+  ! echo "$output" | grep -qi "already exists"
+  [ -s "$BATS_TEST_TMPDIR/gh-reply.log" ]
+  [ -s "$BATS_TEST_TMPDIR/gh-min.log" ]
+}
+
 @test "fail closed: a failed comments-list lookup aborts before posting or minimizing" {
   _mrc_gh_reply_shim
   export FAIL_LIST=1
