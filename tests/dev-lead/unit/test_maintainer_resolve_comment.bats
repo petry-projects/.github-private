@@ -134,6 +134,80 @@ teardown() {
   [ "$status" -eq 1 ]
 }
 
+# ────────────────────────────────────────────────────────────────────
+# #1918 — maintainer path for a REGISTERED REVIEWER BOT's comment
+# ────────────────────────────────────────────────────────────────────
+
+# --help now documents the bot-comment escape hatch and the required --reason.
+@test "AC3: --help documents the registered-bot path and the --reason requirement" {
+  run bash "$MRC" --help
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -qi "reviewer bot"
+  echo "$output" | grep -q -- "--reason"
+}
+
+@test "AC3: normalize strips a trailing [bot] suffix" {
+  run bash -c "source '$MRC'; mrc_normalize_login 'sonarqubecloud[bot]'"
+  [ "$status" -eq 0 ]
+  [ "$output" = "sonarqubecloud" ]
+  run bash -c "source '$MRC'; mrc_normalize_login 'sonarqubecloud'"
+  [ "$output" = "sonarqubecloud" ]
+}
+
+@test "AC3: a registered reviewer bot author is recognised (with or without [bot])" {
+  local reg=$'sonarqubecloud\ncodeant-ai\ngraphite-app'
+  run bash -c "source '$MRC'; mrc_is_registered_bot 'sonarqubecloud[bot]' \"\$1\"" _ "$reg"
+  [ "$status" -eq 0 ]
+  run bash -c "source '$MRC'; mrc_is_registered_bot 'sonarqubecloud' \"\$1\"" _ "$reg"
+  [ "$status" -eq 0 ]
+}
+
+# A human (not in the registry) is refused — this is the #1910 restriction that
+# keeps another person's finding out of this path.
+@test "AC3: a human author (not in the registry) is refused" {
+  local reg=$'sonarqubecloud\ncodeant-ai'
+  run bash -c "source '$MRC'; mrc_is_registered_bot 'a-maintainer' \"\$1\"" _ "$reg"
+  [ "$status" -eq 1 ]
+}
+
+@test "AC3: an empty author is refused (fail closed)" {
+  local reg=$'sonarqubecloud'
+  run bash -c "source '$MRC'; mrc_is_registered_bot '' \"\$1\"" _ "$reg"
+  [ "$status" -eq 1 ]
+}
+
+# --reason is mandatory for the bot path (posted as a reply before minimizing).
+@test "AC3: reason validation requires a non-empty reason" {
+  run bash -c "source '$MRC'; mrc_reason_ok 'quality gate passed on head'"
+  [ "$status" -eq 0 ]
+  run bash -c "source '$MRC'; mrc_reason_ok ''"
+  [ "$status" -eq 1 ]
+  run bash -c "source '$MRC'; mrc_reason_ok '   '"
+  [ "$status" -eq 1 ]
+}
+
+# The reply carries the loop-safe marker + the author + reason, so the gate treats
+# it as one of our own comments (not a new blocker).
+@test "AC3: reply body carries the maintainer-resolve marker, author, and reason" {
+  run bash -c "source '$MRC'; mrc_build_reply_body 'sonarqubecloud' 'a-maintainer' 'quality gate passed'"
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "<!-- maintainer-resolve"
+  echo "$output" | grep -q "sonarqubecloud"
+  echo "$output" | grep -q "quality gate passed"
+}
+
+# Round-trip: the reply the bot path posts is IGNORED by the maintainer-comment
+# gate (it must not become a fresh undispositioned blocker).
+@test "AC3: the reply body the script posts is ignored by the gate → 0" {
+  local body reply json
+  body="$(bash -c "source '$MRC'; mrc_build_reply_body 'sonarqubecloud' 'a-maintainer' 'quality gate passed'")"
+  # Encode the reply body as a JSON string value for the snapshot.
+  reply="$(printf '%s' "$body" | jq -Rs .)"
+  json='{"comments":[{"author":{"login":"a-maintainer"},"body":'"$reply"',"isMinimized":false,"minimizedReason":""}]}'
+  run bash -c "source '$GATE'; check_maintainer_comments \"\$1\" donpetry-bot" _ "$json"
+  [ "$status" -eq 0 ]
+}
+
 # Idempotency — an already-RESOLVED-minimized comment needs no action.
 @test "idempotency: already-RESOLVED-minimized comment is detected" {
   run bash -c "source '$MRC'; mrc_is_resolved_minimized 'true' 'resolved'"

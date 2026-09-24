@@ -136,8 +136,31 @@ TSV
   [ "$status" -eq 1 ]
 }
 
-@test "check-run: manifest schema_version is 2 (check_run_name column added)" {
-  [ "$(reviewer_sources_version)" = "2" ]
+@test "check-run: manifest schema_version is 3 (info_status_pattern column added)" {
+  [ "$(reviewer_sources_version)" = "3" ]
+}
+
+# ── Info-status patterns (issue #1918) ───────────────────────────────────────
+
+@test "info-status: sonarqubecloud declares a 'Quality Gate passed' info-status pattern" {
+  local patterns
+  patterns="$(reviewer_sources_info_status_patterns)"
+  [[ "$patterns" == *"sonarqubecloud	Quality Gate passed"* ]]
+}
+
+@test "info-status: a source without an info-status pattern is not listed" {
+  local patterns
+  patterns="$(reviewer_sources_info_status_patterns)"
+  # These sources carry "-" in the info_status_pattern column, so none may appear.
+  [[ "$patterns" != *"codeant-ai"* ]]
+  [[ "$patterns" != *"graphite-app"* ]]
+  [[ "$patterns" != *"coderabbitai"* ]]
+}
+
+@test "info-status: helper propagates a missing-manifest failure" {
+  REVIEWER_SOURCES_MANIFEST="/nonexistent/reviewer-sources.tsv" \
+    run reviewer_sources_info_status_patterns
+  [ "$status" -eq 1 ]
 }
 
 # ── Consistency: the three consumer lists are registry projections ───────────

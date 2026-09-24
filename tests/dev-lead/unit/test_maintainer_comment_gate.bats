@@ -158,6 +158,67 @@ _run_check() {
 }
 
 # ────────────────────────────────────────────────────────────────────
+# #1918 — data-driven info-status classifier (SonarCloud clean passes)
+# ────────────────────────────────────────────────────────────────────
+
+# AC1: a clean SonarCloud "Quality Gate passed" status comment clears the gate
+# with NO dev-lead and NO human — the classifier is keyed off the reviewer-source
+# registry (sonarqubecloud + a "Quality Gate passed" body pattern).
+@test "AC1: SonarCloud 'Quality Gate passed' comment clears → 0" {
+  local json='{"comments":[{"author":{"login":"sonarqubecloud"},"body":"## Quality Gate passed\n\nNo new issues.","isMinimized":false,"minimizedReason":""}]}'
+  _run_check "$json"
+  [ "$status" -eq 0 ]
+}
+
+# AC1: the App login may surface with a [bot] suffix in some read shapes; it must
+# still match the bare registry login.
+@test "AC1: SonarCloud 'Quality Gate passed' with a [bot] suffix login clears → 0" {
+  local json='{"comments":[{"author":{"login":"sonarqubecloud[bot]"},"body":"Quality Gate passed","isMinimized":false,"minimizedReason":""}]}'
+  _run_check "$json"
+  [ "$status" -eq 0 ]
+}
+
+# AC2: a SonarCloud "Quality Gate failed" comment still blocks — it carries findings.
+@test "AC2: SonarCloud 'Quality Gate failed' comment blocks → 1" {
+  local json='{"comments":[{"author":{"login":"sonarqubecloud"},"body":"## Quality Gate failed\n\n2 new issues.","isMinimized":false,"minimizedReason":""}]}'
+  _run_check "$json"
+  [ "$status" -eq 1 ]
+}
+
+# AC2: an unclassifiable SonarCloud comment (author registered, body does NOT match
+# its info-status pattern) fails closed and blocks.
+@test "AC2: unclassifiable SonarCloud comment blocks (fail closed) → 1" {
+  local json='{"comments":[{"author":{"login":"sonarqubecloud"},"body":"Analysis in progress…","isMinimized":false,"minimizedReason":""}]}'
+  _run_check "$json"
+  [ "$status" -eq 1 ]
+}
+
+# AC2: the pattern is per-author — a DIFFERENT bot with no info-status pattern is
+# NOT cleared even if its body happens to contain "Quality Gate passed".
+@test "AC2: a bot with no info-status pattern is not cleared by matching text → 1" {
+  local json='{"comments":[{"author":{"login":"codeant-ai"},"body":"Quality Gate passed","isMinimized":false,"minimizedReason":""}]}'
+  _run_check "$json"
+  [ "$status" -eq 1 ]
+}
+
+# AC5 (regression, whole loop): a PR carrying an approving pr-review review AND a
+# later SonarCloud "Quality Gate passed" comment stays cleared — the gate returns
+# 0, so review-one-pr.sh never dismisses the approval and no review cycle is burned.
+@test "AC5: approving review + later SonarCloud 'Quality Gate passed' stays cleared → 0" {
+  local json='{"reviews":[{"author":{"login":"donpetry-bot"},"state":"APPROVED"}],"comments":[{"author":{"login":"sonarqubecloud"},"body":"## Quality Gate passed\n\nNo new issues.","isMinimized":false,"minimizedReason":""}]}'
+  _run_check "$json"
+  [ "$status" -eq 0 ]
+}
+
+# AC3 loop-safety: the maintainer escape-hatch reply carries a `maintainer-resolve`
+# marker, so it is one of our own automation comments and never a new blocker.
+@test "AC3: a maintainer-resolve marked reply is ignored → 0" {
+  local json='{"comments":[{"author":{"login":"don-petry"},"body":"<!-- maintainer-resolve author=sonarqubecloud by=don-petry -->\nCleared: quality gate passed on the current head.","isMinimized":false,"minimizedReason":""}]}'
+  _run_check "$json"
+  [ "$status" -eq 0 ]
+}
+
+# ────────────────────────────────────────────────────────────────────
 # INTEGRATION / WIRING TESTS (review-one-pr.sh)
 # ────────────────────────────────────────────────────────────────────
 

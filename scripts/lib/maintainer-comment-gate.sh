@@ -68,10 +68,44 @@ set -euo pipefail
 # login alone cannot separate the agent's comments from a person's. It is also
 # the loop-safety guard (#860 / #1813 AC7): our own disposition reply carries the
 # `dev-lead` marker, so it is never itself counted as a comment needing a response.
-readonly _MAINTAINER_GATE_AGENT_MARKERS='<!-- (pr-review-agent|pr-review-claim|persona:|dev-lead|dependency-advisory)[^>]*-->'
+# `maintainer-resolve` is the marker on the reply maintainer-resolve-comment.sh
+# posts when it dispositions a registered reviewer bot's comment (#1918) — that
+# reply must not itself become a fresh undispositioned blocker.
+readonly _MAINTAINER_GATE_AGENT_MARKERS='<!-- (pr-review-agent|pr-review-claim|persona:|dev-lead|dependency-advisory|maintainer-resolve)[^>]*-->'
 
 log_info() {
   echo "[maintainer-gate] $*" >&2
+}
+
+# _maintainer_gate_info_patterns_json
+#   Echo a JSON object mapping each reviewer-source login to its known clean
+#   *informational* status-comment pattern (#1918), read from the reviewer-source
+#   registry (scripts/lib/reviewer-sources.tsv, column info_status_pattern). A
+#   comment authored by such a login whose body matches the pattern is a clean
+#   status report (e.g. SonarCloud's "Quality Gate passed") that carries no finding.
+#   FAILS OPEN TO "{}" — an unreadable registry yields an empty map, so the gate
+#   degrades to blocking EVERY undispositioned bot comment (fail closed on the gate
+#   verdict: an info comment we can't classify simply stays a blocker), never to
+#   clearing something it cannot classify.
+_maintainer_gate_info_patterns_json() {
+  local lib_dir patterns
+  lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  if [[ ! -f "$lib_dir/reviewer-sources.sh" ]]; then
+    printf '%s' '{}'
+    return 0
+  fi
+  # Source in a subshell so the registry helper's vars/functions never leak into
+  # the gate's caller; capture only the login\tpattern lines.
+  patterns="$(
+    # shellcheck source=reviewer-sources.sh
+    source "$lib_dir/reviewer-sources.sh" 2>/dev/null \
+      && reviewer_sources_info_status_patterns 2>/dev/null
+  )" || { printf '%s' '{}'; return 0; }
+  [[ -n "$patterns" ]] || { printf '%s' '{}'; return 0; }
+  printf '%s\n' "$patterns" \
+    | jq -R -s 'split("\n") | map(select(length > 0) | split("\t"))
+                | map(select(length == 2) | {(.[0]): .[1]}) | add // {}' 2>/dev/null \
+    || printf '%s' '{}'
 }
 
 log_warn() {
@@ -108,15 +142,32 @@ check_maintainer_comments() {
   # A jq failure (malformed snapshot, or a value that can't be indexed with
   # .comments) exits non-zero → return 2 so undeterminable input fails closed
   # rather than silently reading as "no findings".
+  # Data-driven info-status classifier (#1918): {login: pattern} of KNOWN CLEAN
+  # informational status comments (e.g. sonarqubecloud → "Quality Gate passed"),
+  # read from the reviewer-source registry. A comment authored by a listed login
+  # whose body matches its pattern carries no finding and is treated as addressed.
+  # An unreadable registry yields "{}" → no comment is auto-cleared (fail closed).
+  local info_patterns
+  info_patterns="$(_maintainer_gate_info_patterns_json)"
+
   local blockers
   blockers=$(printf '%s' "$json" | jq -r \
     --arg markers "$_MAINTAINER_GATE_AGENT_MARKERS" \
-    --arg botuser "$bot_user" '
+    --arg botuser "$bot_user" \
+    --argjson infopatterns "$info_patterns" '
       def bot_stripped: ($botuser | if endswith("[bot]") then .[0:-5] else . end);
       [ (.comments // [])[] | objects
         | (.author?.login // "" | tostring) as $l
+        | ($l | if endswith("[bot]") then .[0:-5] else . end) as $lbare
         | select($l != $botuser and $l != bot_stripped)
         | select(((.body // "") | test($markers)) | not)
+        # Drop KNOWN CLEAN info-status comments: author is a registered source and
+        # its body matches that source pattern. Anything else — a failing status,
+        # an unrecognised body, a bot with no pattern, a human — is still evaluated.
+        | select(
+            ($infopatterns[$lbare] // null) as $p
+            | ($p == null) or (((.body // "") | test($p)) | not)
+          )
         | select(
             ((.isMinimized // false) == true)
             and (((.minimizedReason // "") | ascii_downcase) == "resolved")
