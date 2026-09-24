@@ -159,6 +159,166 @@ JSON
 }
 
 # ---------------------------------------------------------------------------
+# Check-run reviews (issue #1908) — Graphite reports clean passes as a check run
+# ---------------------------------------------------------------------------
+
+@test "check-run: a clean pass (check run only, no PR review) counts as reviewed" {
+  local gbots='["graphite-app","copilot-pull-request-reviewer"]'
+  tmp="$(mktemp "$BATS_TEST_TMPDIR/tmp.XXXXXX")"
+  cat > "$tmp" <<'JSON'
+{"url":"u","createdAt":"2026-09-23T10:00:00Z","updatedAt":"2026-09-23T10:00:00Z","mergedAt":null,"isDraft":false,"author":{"login":"h"},
+ "reviews":{"nodes":[]},
+ "reviewThreads":{"nodes":[]},
+ "comments":{"nodes":[]},
+ "_checkRuns":[{"bot":"graphite-app","status":"completed","conclusion":"success","summary":"AI review ran and left 0 comments","completed_at":"2026-09-23T10:05:00Z"}]}
+JSON
+  run jq -c --arg repo "r" --argjson bots "$gbots" --arg rl "$RATE_LIMIT_RE" "[ $_NORMALIZE_JQ ]" "$tmp"
+  # Reviewed: real_responses>=1, zero refusals, and (per AC1) 0 review events.
+  echo "$output" | jq -e '.[] | select(.bot=="graphite-app") | .real_responses>=1 and .refusals==0 and .reviews==0'
+  # Latency measured to the check run's completed_at (10:05:00 − 10:00:00 = 300s).
+  echo "$output" | jq -e '.[] | select(.bot=="graphite-app") | .latency_s==300'
+}
+
+@test "check-run: a 'too large' skip counts as a refusal, not a review" {
+  local gbots='["graphite-app"]'
+  tmp="$(mktemp "$BATS_TEST_TMPDIR/tmp.XXXXXX")"
+  cat > "$tmp" <<'JSON'
+{"url":"u","createdAt":"2026-09-23T10:00:00Z","updatedAt":"2026-09-23T10:00:00Z","mergedAt":null,"isDraft":false,"author":{"login":"h"},
+ "reviews":{"nodes":[]},
+ "reviewThreads":{"nodes":[]},
+ "comments":{"nodes":[]},
+ "_checkRuns":[{"bot":"graphite-app","status":"completed","conclusion":"skipped","summary":"AI code review did not run because this PR is too large.","completed_at":"2026-09-23T10:04:00Z"}]}
+JSON
+  run jq -c --arg repo "r" --argjson bots "$gbots" --arg rl "$RATE_LIMIT_RE" "[ $_NORMALIZE_JQ ]" "$tmp"
+  echo "$output" | jq -e '.[] | select(.bot=="graphite-app") | .real_responses==0 and .refusals>=1 and .reviews==0'
+}
+
+@test "check-run: a FAILED run whose summary says 'review ran' is NOT a real review (#1913)" {
+  # Regression: the "review ran" summary substring must be gated on a non-failure
+  # conclusion, else "AI review ran into an error and did not complete" on a `failure`
+  # run would be misread as a real response (real_responses:1).
+  local gbots='["graphite-app"]'
+  tmp="$(mktemp "$BATS_TEST_TMPDIR/tmp.XXXXXX")"
+  cat > "$tmp" <<'JSON'
+{"url":"u","createdAt":"2026-09-23T10:00:00Z","updatedAt":"2026-09-23T10:00:00Z","mergedAt":null,"isDraft":false,"author":{"login":"h"},
+ "reviews":{"nodes":[]},
+ "reviewThreads":{"nodes":[]},
+ "comments":{"nodes":[]},
+ "_checkRuns":[{"bot":"graphite-app","status":"completed","conclusion":"failure","summary":"AI review ran into an error and did not complete.","completed_at":"2026-09-23T10:04:00Z"}]}
+JSON
+  run jq -c --arg repo "r" --argjson bots "$gbots" --arg rl "$RATE_LIMIT_RE" "[ $_NORMALIZE_JQ ]" "$tmp"
+  # A failed run is neither a real response nor a refusal → no bot_pr record at all.
+  echo "$output" | jq -e 'map(select(.kind=="bot_pr" and .bot=="graphite-app")) | length == 0'
+}
+
+@test "check-run: a skip with an unrelated/empty summary is NOT a refusal" {
+  # A run skipped for an unrelated workflow reason (no decline summary) must not be
+  # counted as a rate-limited refusal — it contributes nothing, like a queued run.
+  local gbots='["graphite-app"]'
+  tmp="$(mktemp "$BATS_TEST_TMPDIR/tmp.XXXXXX")"
+  cat > "$tmp" <<'JSON'
+{"url":"u","createdAt":"2026-09-23T10:00:00Z","updatedAt":"2026-09-23T10:00:00Z","mergedAt":null,"isDraft":false,"author":{"login":"h"},
+ "reviews":{"nodes":[]},
+ "reviewThreads":{"nodes":[]},
+ "comments":{"nodes":[]},
+ "_checkRuns":[{"bot":"graphite-app","status":"completed","conclusion":"skipped","summary":"","completed_at":"2026-09-23T10:04:00Z"}]}
+JSON
+  run jq -c --arg repo "r" --argjson bots "$gbots" --arg rl "$RATE_LIMIT_RE" "[ $_NORMALIZE_JQ ]" "$tmp"
+  # No bot_pr record → aggregator buckets it as no-response, not a refusal.
+  echo "$output" | jq -e 'map(select(.kind=="bot_pr" and .bot=="graphite-app")) | length == 0'
+}
+
+@test "check-run: a queued suite (no completed check run, no review) is no response" {
+  local gbots='["graphite-app"]'
+  tmp="$(mktemp "$BATS_TEST_TMPDIR/tmp.XXXXXX")"
+  cat > "$tmp" <<'JSON'
+{"url":"u","createdAt":"2026-09-23T10:00:00Z","updatedAt":"2026-09-23T10:00:00Z","mergedAt":null,"isDraft":false,"author":{"login":"h"},
+ "reviews":{"nodes":[]},
+ "reviewThreads":{"nodes":[]},
+ "comments":{"nodes":[]},
+ "_checkRuns":[{"bot":"graphite-app","status":"queued","conclusion":null,"summary":null,"completed_at":null}]}
+JSON
+  run jq -c --arg repo "r" --argjson bots "$gbots" --arg rl "$RATE_LIMIT_RE" "[ $_NORMALIZE_JQ ]" "$tmp"
+  # No bot_pr record at all → the aggregator buckets it as no-response.
+  echo "$output" | jq -e 'map(select(.kind=="bot_pr" and .bot=="graphite-app")) | length == 0'
+}
+
+@test "check-run: an inline review AND a clean check run — review events unaffected" {
+  local gbots='["graphite-app"]'
+  tmp="$(mktemp "$BATS_TEST_TMPDIR/tmp.XXXXXX")"
+  cat > "$tmp" <<'JSON'
+{"url":"u","createdAt":"2026-09-23T10:00:00Z","updatedAt":"2026-09-23T10:00:00Z","mergedAt":null,"isDraft":false,"author":{"login":"h"},
+ "reviews":{"nodes":[{"author":{"login":"graphite-app"},"state":"COMMENTED","submittedAt":"2026-09-23T10:06:00Z","bodyText":"one finding"}]},
+ "reviewThreads":{"nodes":[]},
+ "comments":{"nodes":[]},
+ "_checkRuns":[{"bot":"graphite-app","status":"completed","conclusion":"success","summary":"AI review ran and left 1 comment","completed_at":"2026-09-23T10:05:00Z"}]}
+JSON
+  run jq -c --arg repo "r" --argjson bots "$gbots" --arg rl "$RATE_LIMIT_RE" "[ $_NORMALIZE_JQ ]" "$tmp"
+  # The real PR review is the 1 review event; the check run adds 0 more.
+  echo "$output" | jq -e '.[] | select(.bot=="graphite-app") | .reviews==1'
+}
+
+@test "check-run: collector returns the matched runs when REVIEWER_CHECK_RUN_JSON is set (#1913)" {
+  # Regression: "${REVIEWER_CHECK_RUN_JSON:-{}}" ends the expansion at the FIRST
+  # brace and appends a literal "}", so a SET map became invalid JSON, the jq
+  # --argjson failed, and every PR's check runs were silently dropped. The
+  # normalizer tests above inject _checkRuns directly and never exercised this.
+  export CUTOFF="2026-09-16T00:00:00Z"
+  export REVIEWER_CHECK_RUN_JSON='{"graphite-app":"Graphite / AI Reviews"}'
+  _gh_timeout() {
+    printf '%s' '{"total_count":2,"check_runs":[{"name":"CI","status":"completed","conclusion":"success","output":{"summary":"ok"},"completed_at":"2026-09-23T10:01:00Z"},{"name":"Graphite / AI Reviews","status":"completed","conclusion":"success","output":{"summary":"AI review ran and left 0 comments"},"completed_at":"2026-09-23T10:05:00Z"}]}'
+  }
+  local resp='{"data":{"repository":{"pullRequests":{"nodes":[{"url":"https://github.com/o/r/pull/1","updatedAt":"2026-09-23T10:00:00Z","headRefOid":"abc123"}]}}}}'
+  run _collect_check_runs_for_page o r "$resp"
+  [ "$status" -eq 0 ]
+  echo "$output" | jq -e '.["https://github.com/o/r/pull/1"] | length == 1'
+  echo "$output" | jq -e '.["https://github.com/o/r/pull/1"][0] | .bot == "graphite-app" and .conclusion == "success" and .completed_at == "2026-09-23T10:05:00Z"'
+}
+
+@test "check-run: collector short-circuits to {} when REVIEWER_CHECK_RUN_JSON is unset (#1913)" {
+  unset REVIEWER_CHECK_RUN_JSON
+  _gh_timeout() { : > "$BATS_TEST_TMPDIR/gh_called"; return 1; }
+  local resp='{"data":{"repository":{"pullRequests":{"nodes":[{"url":"u","updatedAt":"2099-01-01T00:00:00Z","headRefOid":"abc"}]}}}}'
+  run _collect_check_runs_for_page o r "$resp"
+  [ "$status" -eq 0 ]
+  [ "$output" = "{}" ]
+  [ ! -e "$BATS_TEST_TMPDIR/gh_called" ]
+}
+
+@test "check-run: collector records check_run_error when the REST fetch errors non-zero (#1913)" {
+  # An HTTP error (403 rate limit, 5xx) makes gh write an error body to stdout AND
+  # exit non-zero. Relying on empty output alone would miss it (cr_resp holds the
+  # non-empty error object), silently dropping the PR — the #1908 silent failure.
+  export CUTOFF="2026-09-16T00:00:00Z"
+  export REVIEWER_CHECK_RUN_JSON='{"graphite-app":"Graphite / AI Reviews"}'
+  _gh_timeout() { printf '%s' '{"message":"API rate limit exceeded"}'; return 1; }
+  local resp='{"data":{"repository":{"pullRequests":{"nodes":[{"url":"https://github.com/o/r/pull/1","updatedAt":"2026-09-23T10:00:00Z","headRefOid":"abc123"}]}}}}'
+  local out; out="$(mktemp "$BATS_TEST_TMPDIR/out.XXXXXX")"
+  run _collect_check_runs_for_page o r "$resp" "$out"
+  [ "$status" -eq 0 ]
+  [ "$output" = "{}" ]
+  jq -e 'select(.kind=="check_run_error" and .pr=="https://github.com/o/r/pull/1")' "$out"
+}
+
+@test "reviews: a PR with more than 50 reviews still counts a bot whose review is past the 50th" {
+  # The GraphQL 50-cap is a COLLECTION concern; normalization must count whatever
+  # nodes it is handed. Feed 51 reviews with the tracked bot last (issue #1908 AC5).
+  local latebots='["graphite-app"]'
+  tmp="$(mktemp "$BATS_TEST_TMPDIR/tmp.XXXXXX")"
+  {
+    printf '{"url":"u","createdAt":"2026-09-23T10:00:00Z","updatedAt":"2026-09-23T10:00:00Z","mergedAt":null,"isDraft":false,"author":{"login":"h"},'
+    printf '"reviews":{"nodes":['
+    for i in $(seq 1 50); do
+      printf '{"author":{"login":"human%d"},"state":"COMMENTED","submittedAt":"2026-09-23T10:0%d:00Z","bodyText":"x"},' "$i" $((i % 9))
+    done
+    printf '{"author":{"login":"graphite-app"},"state":"CHANGES_REQUESTED","submittedAt":"2026-09-23T10:59:00Z","bodyText":"51st review"}'
+    printf ']},"reviewThreads":{"nodes":[]},"comments":{"nodes":[]}}'
+  } > "$tmp"
+  run jq -c --arg repo "r" --argjson bots "$latebots" --arg rl "$RATE_LIMIT_RE" "[ $_NORMALIZE_JQ ]" "$tmp"
+  echo "$output" | jq -e '.[] | select(.bot=="graphite-app") | .reviews==1 and .changes_req==1'
+}
+
+# ---------------------------------------------------------------------------
 # aggregate_snapshot
 # ---------------------------------------------------------------------------
 
@@ -212,6 +372,16 @@ JSON
   echo "$output" | jq -e '.bots["gemini-code-assist"].latency_p50 == 50'
 }
 
+@test "aggregate: a check-run clean pass (0 review events) still fills the reviewed bucket" {
+  tmp="$(mktemp -d "$BATS_TEST_TMPDIR/cr.XXXXXX")"
+  cat > "$tmp/r.jsonl" <<'JSON'
+{"kind":"pr","repo":"o/r","pr":"o/r/1","created":"2026-09-23T10:00:00Z","merged":null,"draft":false,"author":"h"}
+{"kind":"bot_pr","repo":"o/r","pr":"o/r/1","bot":"graphite-app","created":"2026-09-23T10:00:00Z","real_responses":1,"refusals":0,"latency_s":300,"reviews":0,"approved":0,"changes_req":0,"inline_comments":0,"threads_total":0,"threads_resolved":0,"thumbs_up":0,"thumbs_down":0}
+JSON
+  run aggregate_snapshot "$tmp"
+  echo "$output" | jq -e '.bots["graphite-app"] | .reviewed_prs==1 and .reviews==0 and .no_response_prs==0'
+}
+
 @test "aggregate: empty dir yields a zeroed snapshot" {
   empty="$(mktemp -d "$BATS_TEST_TMPDIR/empty.XXXXXX")"
   run aggregate_snapshot "$empty"
@@ -250,7 +420,7 @@ JSON
 
 @test "render: scorecard exposes the event-count columns" {
   run render_reviewer_report "$FIXTURES" 7 12 2026-07-13
-  echo "$output" | grep -q "| Reviewer | Total PRs | Reviews | ✅ / 🔄 | Rate-limited | No response |"
+  echo "$output" | grep -q "| Reviewer | Total PRs | Reviews | ✅ / 🔄 | Refused | No response |"
 }
 
 @test "render: empty dir yields a no-data message" {
@@ -275,6 +445,38 @@ JSON
   REVIEWER_SNAPSHOT_OUT="$out" run render_reviewer_report "$FIXTURES" 7 12 2026-07-13
   run jq -e '.bots["copilot-pull-request-reviewer"].reviewed_prs == 2' "$out"
   [ "$status" -eq 0 ]
+}
+
+@test "render: a repo that could not be collected is surfaced prominently (#1908)" {
+  dir="$(mktemp -d "$BATS_TEST_TMPDIR/cerr.XXXXXX")"
+  cat > "$dir/r.jsonl" <<'JSON'
+{"kind":"pr","repo":"o/r","pr":"o/r/1","created":"2026-09-23T10:00:00Z","merged":null,"draft":false,"author":"h"}
+{"kind":"collect_error","repo":"petry-projects/markets","reason":"page-1 resource-limit after retries"}
+JSON
+  run render_reviewer_report "$dir" 7 3 2026-09-23
+  [ "$status" -eq 0 ]
+  # Prominent, in-report (not a stderr WARN): names the count and the repo.
+  echo "$output" | grep -q "could not be collected"
+  echo "$output" | grep -q "petry-projects/markets"
+}
+
+@test "render: a truncated connection is reported explicitly, never silently (#1908)" {
+  dir="$(mktemp -d "$BATS_TEST_TMPDIR/trunc.XXXXXX")"
+  cat > "$dir/r.jsonl" <<'JSON'
+{"kind":"pr","repo":"o/r","pr":"o/r/1","created":"2026-09-23T10:00:00Z","merged":null,"draft":false,"author":"h"}
+{"kind":"truncation","repo":"o/r","pr":"o/r/1","connection":"reviews"}
+JSON
+  run render_reviewer_report "$dir" 7 1 2026-09-23
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -qi "truncat"
+  echo "$output" | grep -q "o/r/1"
+}
+
+@test "render: no collection-failure section when every repo was collected" {
+  run render_reviewer_report "$FIXTURES" 7 12 2026-07-13
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -qv "could not be collected" || true
+  ! echo "$output" | grep -q "could not be collected"
 }
 
 @test "render: agent-comment noise section is wired into the report (#1411)" {
