@@ -17,7 +17,7 @@ When enabled, for each reviewed PR `scripts/review-one-pr.sh`:
    `scripts/lib/downstream-impact.sh`) — bash + jq over the consumer manifest,
    **no network**. Matching is single-hop and exact-path (issue #653):
    - a changed reusable-workflow path a consumer pins exactly → a **direct** surface;
-   - a changed `scripts/lib/*.sh` / `prompts/*` path listed in a reusable's
+   - a changed `scripts/lib/*.sh` / `scripts/lib/*.tsv` / `prompts/*` path listed in a reusable's
      `surface_sources` → that **reusable** surface → its consumers.
 2. **Fetches** each impacted consumer's referencing workflow file(s) via `gh`
    (`assemble_downstream_impact`) and writes a human-readable

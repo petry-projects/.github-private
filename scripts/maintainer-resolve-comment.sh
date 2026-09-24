@@ -30,6 +30,19 @@
 #       human-in-the-loop who has verified their own finding before running this;
 #       the RESOLVED classifier is required and hardcoded, never softened.
 #
+#   #1918 EXTENSION — a maintainer may ALSO disposition a comment authored by a
+#   REGISTERED INFO-STATUS BOT: a source in scripts/lib/reviewer-sources.tsv that
+#   declares an info_status_pattern (a clean-status re-poster, e.g. sonarqubecloud),
+#   NOT a finding-producing reviewer such as codeant-ai or graphite-app. SonarCloud
+#   re-posts its "Quality Gate passed" status on every push, and #1910's self-scope
+#   meant a maintainer could not clear a bot's comment at all, so the #1894 queue
+#   stayed deadlocked (the blocker reported in #1911). The bot-comment path REQUIRES
+#   --reason: it is posted as a reply (carrying the `maintainer-resolve` marker so
+#   the gate does not read it as a new blocker) BEFORE the original is minimized.
+#   Another HUMAN's comment — and a finding-producing bot's — is STILL refused, so a
+#   real finding cannot be --reason'd away; that still requires dev-lead's verified
+#   fix flow. This preserves the #1910 self-scope restriction.
+#
 #   The pure mrc_* helpers make no gh/git/network calls and are unit-tested; the
 #   network `main` (guarded by BASH_SOURCE) resolves the comment, authorizes the
 #   caller against its author, and performs the minimize. It FAILS CLOSED on any
@@ -115,6 +128,63 @@ mrc_authorize_self() {
   [[ -n "$viewer" && -n "$author" && "$viewer" == "$author" ]]
 }
 
+# mrc_normalize_login <login>
+#   Echo the login with any trailing "[bot]" suffix removed, so a GraphQL App login
+#   ("sonarqubecloud") and its REST/webhook form ("sonarqubecloud[bot]") both match
+#   the bare login stored in the reviewer-source registry. Pure.
+mrc_normalize_login() {
+  local l="${1:-}"
+  if [[ "$l" == *"[bot]" ]]; then
+    printf '%s' "${l%\[bot\]}"
+  else
+    printf '%s' "$l"
+  fi
+}
+
+# mrc_is_registered_bot <author_login> <registered_logins_newline>
+#   0 iff <author_login> (with any "[bot]" suffix stripped) matches a line in the
+#   newline-separated list of registered reviewer-bot logins (#1918 AC #3). This is
+#   what lets a maintainer disposition a REGISTERED reviewer bot's comment while a
+#   human's finding — never in the registry — is still refused (#1910 restriction).
+#   An empty author, or an author absent from the list, fails closed. Pure.
+mrc_is_registered_bot() {
+  local author="${1:-}" registered="${2:-}" norm
+  [[ -n "$author" ]] || return 1
+  norm="$(mrc_normalize_login "$author")"
+  [[ -n "$norm" ]] || return 1
+  # Pure-Bash boundary-delimited substring check: wrap both the list and the
+  # needle in newlines so a full-line match is a plain substring test, immune to
+  # trailing-newline quirks and without spawning a read loop.
+  local search=$'\n'"$registered"$'\n'
+  [[ "$search" == *$'\n'"$norm"$'\n'* ]]
+}
+
+# mrc_reason_ok <reason>
+#   0 iff <reason> is non-empty after trimming whitespace. The bot-comment path
+#   REQUIRES a reason (posted as a reply before minimizing, #1918 AC #3) so the
+#   disposition of someone else's comment always carries a recorded justification.
+#   Pure.
+mrc_reason_ok() {
+  local reason="${1:-}"
+  local trimmed="${reason//[[:space:]]/}"
+  [[ -n "$trimmed" ]]
+}
+
+# mrc_build_reply_body <bot_login> <viewer_login> <reason> [comment_node_id]
+#   Echo the reply body posted before minimizing a registered bot's comment. It
+#   carries the `maintainer-resolve` HTML marker so maintainer-comment-gate.sh
+#   treats the reply as our own automation and never as a fresh blocker (#1918),
+#   plus the disposing maintainer and their reason for the audit trail. The marker
+#   also pins the ORIGINAL comment's node id (`id=<node>`) so the audit reply is
+#   tied to the exact comment it dispositions and a retry can detect an existing
+#   reply and not post a duplicate (idempotency, #1918 review). Pure.
+mrc_build_reply_body() {
+  local bot="${1:-}" viewer="${2:-}" reason="${3:-}" node="${4:-}"
+  printf '<!-- maintainer-resolve author=%s by=%s id=%s -->\n' "$bot" "$viewer" "$node"
+  printf 'Maintainer disposition of @%s'"'"'s status comment by @%s:\n\n%s\n' \
+    "$bot" "$viewer" "$reason"
+}
+
 # mrc_is_resolved_minimized <isMinimized> <minimizedReason>
 #   0 when the comment is already minimized with classifier RESOLVED (idempotency:
 #   nothing to do). The reason match is case-insensitive because the GraphQL enum
@@ -126,29 +196,46 @@ mrc_is_resolved_minimized() {
 
 _mrc_usage() {
   cat <<'USAGE'
-maintainer-resolve-comment.sh — satisfy the undispositioned-comment gate on YOUR OWN
-PR issue comment without dev-lead running (issue #1910, epic #1894 AC #4).
+maintainer-resolve-comment.sh — satisfy the undispositioned-comment gate without
+dev-lead running: on YOUR OWN PR issue comment (issue #1910, epic #1894 AC #4), or
+on a comment authored by a REGISTERED REVIEWER BOT (issue #1918 AC #3).
 
 The pr-review maintainer-comment gate withholds approval while any non-agent PR
 issue comment lacks a verified disposition — surfaced as the comment being
 MINIMIZED with classifier RESOLVED. Normally only dev-lead performs that minimize,
-so a comment on a PR where dev-lead never ran stays a permanent blocker. Once YOU
-have verified your own finding is addressed, run this to minimize your OWN comment
-RESOLVED and clear the gate.
+so a comment on a PR where dev-lead never ran stays a permanent blocker. Two paths
+clear it without dev-lead:
+
+  • YOUR OWN comment — once you have verified your own finding is addressed, run
+    this to minimize your own comment RESOLVED.
+  • A REGISTERED INFO-STATUS BOT's comment (a source in
+    scripts/lib/reviewer-sources.tsv that declares an info_status_pattern, e.g.
+    sonarqubecloud) — pass --reason; it is posted as a reply (carrying the
+    `maintainer-resolve` marker so it is not itself a new blocker) BEFORE the
+    original comment is minimized RESOLVED. Another HUMAN's comment — and a
+    finding-producing bot's (e.g. codeant-ai, graphite-app) — is still refused;
+    that requires dev-lead's verified-fix flow or the author's action.
 
 USAGE:
-  maintainer-resolve-comment.sh <comment-url | comment-node-id>
+  maintainer-resolve-comment.sh <comment-url | comment-node-id> [--reason "<why>"]
   maintainer-resolve-comment.sh --help
 
 ARGUMENTS:
   <comment-url>       A PR comment URL, e.g.
                       https://github.com/OWNER/REPO/pull/123#issuecomment-456789
   <comment-node-id>   A GraphQL IssueComment node id, e.g. IC_kwDO...
+  --reason "<why>"    Required when dispositioning a registered info-status bot's
+                      comment; posted as a reply before minimizing. Ignored (not
+                      required) on your own comment.
 
 BEHAVIOUR / SAFETY:
-  • Acts ONLY on a comment YOU authored (the authenticated gh user must be the
-    comment's author). Resolving someone else's finding is rejected — that still
-    requires dev-lead's verified-fix flow or the other person's own action.
+  • Acts on a comment YOU authored, OR one authored by a registered info-status
+    bot (a clean-status re-poster like sonarqubecloud). Another human's finding —
+    or a finding-producing bot's — is rejected, and still requires dev-lead's
+    verified-fix flow or the other person's own action.
+  • The bot-comment path REQUIRES --reason and posts it as a reply before the
+    minimize, so dispositioning someone else's comment always leaves a recorded,
+    human-authored justification.
   • Minimizes with classifier RESOLVED and nothing weaker; this is the exact
     signal maintainer-comment-gate.sh already treats as addressed, so the gate's
     RESOLVED requirement is preserved, not weakened.
@@ -204,12 +291,38 @@ _mrc_resolve_node_id() {
 
 # main — network path (only when executed, not sourced).
 if [[ "${BASH_SOURCE[0]}" = "${0}" ]]; then
-  _ref="${1:-}"
-  if [[ -z "$_ref" || "$_ref" == "-h" || "$_ref" == "--help" ]]; then
+  # Parse a single positional comment ref plus an optional --reason (used only for
+  # the registered-bot path). --help / -h anywhere prints usage and exits 0.
+  _ref=""
+  _reason=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -h|--help)
+        _mrc_usage
+        exit 0
+        ;;
+      --reason)
+        _reason="${2:-}"
+        shift 2 || shift
+        ;;
+      --reason=*)
+        _reason="${1#--reason=}"
+        shift
+        ;;
+      *)
+        if [[ -z "$_ref" ]]; then
+          _ref="$1"
+        else
+          echo "[maintainer-resolve-comment] ERROR: unexpected extra argument '$1'" >&2
+          exit 2
+        fi
+        shift
+        ;;
+    esac
+  done
+  if [[ -z "$_ref" ]]; then
     _mrc_usage
-    # No argument at all is a usage error; --help is a success.
-    [[ -z "$_ref" ]] && exit 2
-    exit 0
+    exit 2
   fi
 
   # Assign after an explicit success check: a command substitution on the RHS of
@@ -231,9 +344,11 @@ if [[ "${BASH_SOURCE[0]}" = "${0}" ]]; then
     exit 2
   fi
 
-  # Read the comment's author + current minimize state, and the authenticated
+  # Read the comment's author + current minimize state + url, and the authenticated
   # viewer, in one GraphQL round-trip. Fail closed if either login is unreadable.
-  _q='query($id:ID!){viewer{login} node(id:$id){... on IssueComment{author{login} isMinimized minimizedReason}}}'
+  # `url` is the authoritative source for the repo + PR number when posting the
+  # bot-path reply (it is a /pull/…#issuecomment-… URL for a PR comment).
+  _q='query($id:ID!){viewer{login} node(id:$id){... on IssueComment{author{__typename login} isMinimized minimizedReason url}}}'
   set +e
   _snap=$(gh api graphql -f query="$_q" -f id="$_node" 2>/dev/null)
   _status=$?
@@ -256,22 +371,135 @@ if [[ "${BASH_SOURCE[0]}" = "${0}" ]]; then
 
   _viewer=$(printf '%s' "$_snap" | jq -r '.data.viewer.login // ""' 2>/dev/null || echo "")
   _author=$(printf '%s' "$_snap" | jq -r '.data.node.author.login // ""' 2>/dev/null || echo "")
+  # Actor type: the registered-bot path requires a GitHub App actor ("Bot"), so a
+  # person whose login happens to equal a registered bot's can never be treated as
+  # that bot (#1918 review). Unreadable → "" → the bot path is refused.
+  _author_type=$(printf '%s' "$_snap" | jq -r '.data.node.author.__typename // ""' 2>/dev/null || echo "")
   _is_min=$(printf '%s' "$_snap" | jq -r '.data.node.isMinimized // false | tostring' 2>/dev/null || echo "false")
-  _reason=$(printf '%s' "$_snap" | jq -r '.data.node.minimizedReason // ""' 2>/dev/null || echo "")
+  _min_reason=$(printf '%s' "$_snap" | jq -r '.data.node.minimizedReason // ""' 2>/dev/null || echo "")
+  _url=$(printf '%s' "$_snap" | jq -r '.data.node.url // ""' 2>/dev/null || echo "")
 
   # Authorize FIRST — before the idempotent early return — so a caller cannot pass
-  # someone else's already-RESOLVED comment and receive success while bypassing the
-  # fail-closed own-comment check.
-  if ! mrc_authorize_self "$_viewer" "$_author"; then
-    echo "[maintainer-resolve-comment] ERROR: refusing to resolve — this path only minimizes YOUR OWN comment." >&2
+  # an already-RESOLVED comment they are not entitled to and receive success while
+  # bypassing the fail-closed authorization check. Two authorized paths:
+  #   • SELF (#1910): the invoking user is the comment's author AND is not a bot —
+  #     a bot-authored comment must always take the bot path (its mandatory --reason
+  #     + audit reply), never the self path, even if gh is authenticated as that
+  #     same bot (#1918 review: keep bot authors out of self-authorization).
+  #   • REGISTERED INFO-STATUS BOT (#1918): the author is a bot that declares an
+  #     info-status pattern in the reviewer-source registry — i.e. a clean-status
+  #     re-poster like SonarCloud, NOT a finding-producing reviewer (codeant-ai,
+  #     graphite-app). The maintainer (a confirmed viewer) is the human-in-the-loop
+  #     and MUST supply --reason, posted as a reply before the minimize.
+  # Another human's comment, or a finding-producing bot's, matches neither and is
+  # refused — a finding still requires dev-lead's verified-fix flow or the author.
+  _authz_kind=""
+  if [[ "$_author_type" != "Bot" ]] && mrc_authorize_self "$_viewer" "$_author"; then
+    _authz_kind="self"
+  else
+    # Load the authorized bot logins from the reviewer-source registry, restricted
+    # to sources that declare an info-status pattern (the clean-status re-posters
+    # this escape hatch exists for). Pin the repo-local manifest so a
+    # REVIEWER_SOURCES_MANIFEST override cannot widen authorization (#1918 review).
+    # Fail closed if the registry cannot be read — never widen authorization on a
+    # registry we could not consult.
+    _lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
+    _registered=""
+    if [[ -f "$_lib_dir/reviewer-sources.sh" ]]; then
+      _registered="$(
+        REVIEWER_SOURCES_MANIFEST="$_lib_dir/reviewer-sources.tsv"
+        export REVIEWER_SOURCES_MANIFEST
+        # shellcheck source=lib/reviewer-sources.sh
+        source "$_lib_dir/reviewer-sources.sh" 2>/dev/null \
+          && reviewer_sources_info_status_patterns 2>/dev/null | cut -f1
+      )" || _registered=""
+    fi
+    if [[ -n "$_viewer" && "$_author_type" == "Bot" ]] && mrc_is_registered_bot "$_author" "$_registered"; then
+      _authz_kind="bot"
+    fi
+  fi
+
+  if [[ -z "$_authz_kind" ]]; then
+    echo "[maintainer-resolve-comment] ERROR: refusing to resolve — this path minimizes only YOUR OWN comment or a REGISTERED REVIEWER BOT's comment." >&2
     echo "  authenticated as: '${_viewer:-<unreadable>}'; comment author: '${_author:-<unreadable>}'" >&2
-    echo "  a finding you did not author must be dispositioned by dev-lead (verified fix) or by its author." >&2
+    echo "  a finding authored by another person must be dispositioned by dev-lead (verified fix) or by its author." >&2
     exit 3
   fi
 
-  if mrc_is_resolved_minimized "$_is_min" "$_reason"; then
+  # Idempotency: an already-RESOLVED-minimized comment needs no action — return the
+  # "nothing to do" success BEFORE demanding --reason, so a retry on a bot comment
+  # that is already cleared exits 0 like the self path rather than erroring for a
+  # reason no reply will ever use (#1918 review).
+  if mrc_is_resolved_minimized "$_is_min" "$_min_reason"; then
     echo "[maintainer-resolve-comment] comment $_node is already minimized RESOLVED — nothing to do."
     exit 0
+  fi
+
+  # The bot-comment path requires a reason — checked only now that a reply/minimize
+  # will actually be posted — so dispositioning someone else's comment always
+  # carries a recorded justification.
+  if [[ "$_authz_kind" == "bot" ]] && ! mrc_reason_ok "$_reason"; then
+    echo "[maintainer-resolve-comment] ERROR: --reason is required to resolve a reviewer bot's comment (author '$_author')." >&2
+    echo "  usage: maintainer-resolve-comment.sh <ref> --reason \"why this bot status needs no further action\"" >&2
+    exit 2
+  fi
+
+  # Bot-comment path: post the maintainer's reason as a MARKED reply BEFORE the
+  # minimize. The marker keeps it out of the maintainer-comment gate, and posting
+  # first means a failed reply fails the whole action closed (no silent minimize
+  # without the recorded justification).
+  if [[ "$_authz_kind" == "bot" ]]; then
+    if ! mrc_repo_from_url "$_url" >/dev/null || ! mrc_pr_number_from_url "$_url" >/dev/null; then
+      echo "[maintainer-resolve-comment] ERROR: could not derive the PR from the comment URL '$_url' — failing closed (no minimize)." >&2
+      exit 2
+    fi
+    _reply_repo=$(mrc_repo_from_url "$_url")
+    _reply_pr=$(mrc_pr_number_from_url "$_url")
+
+    # Reply idempotency: a prior run may have posted the reply then failed the
+    # minimize (which fails closed on transient errors). Before posting again, look
+    # for an existing maintainer-resolve reply pinned to THIS comment's node id and
+    # skip the post if one is present, so retries do not accumulate duplicate audit
+    # replies on the PR (#1918 review).
+    set +e
+    _comments_json=$(gh api "repos/${_reply_repo}/issues/${_reply_pr}/comments" --paginate 2>/dev/null)
+    _status=$?
+    set -e
+    if [[ $_status -ne 0 ]]; then
+      echo "[maintainer-resolve-comment] ERROR: could not list PR #${_reply_pr} comments to check for an existing reply — failing closed (no minimize)." >&2
+      exit 1
+    fi
+    # Match only a reply the invoking maintainer ($_viewer) authored: anyone can
+    # post a comment carrying the maintainer-resolve marker + this node id, and a
+    # login-agnostic match would let a forged marker suppress the real audit reply
+    # while the original comment is still minimized RESOLVED (CWE-345). A jq parse
+    # failure must fail closed too, not read as "no existing reply".
+    _existing_reply=$(printf '%s' "$_comments_json" \
+      | jq -r --arg id "$_node" --arg viewer "$_viewer" '.[]
+          | select((.user.login // "") == $viewer)
+          | select((.body // "") | test("<!-- maintainer-resolve[^>]*id=" + $id + "([[:space:]]|-->)"))
+          | .id') || {
+      echo "[maintainer-resolve-comment] ERROR: could not parse PR #${_reply_pr} comments while checking for an existing reply — failing closed (no minimize)." >&2
+      exit 1
+    }
+
+    if [[ -n "$_existing_reply" ]]; then
+      echo "[maintainer-resolve-comment] a maintainer-resolve reply for $_node already exists — not posting a duplicate."
+    else
+      _reply_file=$(mktemp) || { echo "[maintainer-resolve-comment] ERROR: could not create a temporary file for the reply — failing closed (no minimize)." >&2; exit 1; }
+      # shellcheck disable=SC2064  # expand _reply_file now so the trap removes this exact file
+      trap "rm -f '$_reply_file'" EXIT
+      mrc_build_reply_body "$(mrc_normalize_login "$_author")" "$_viewer" "$_reason" "$_node" > "$_reply_file"
+      set +e
+      gh api "repos/${_reply_repo}/issues/${_reply_pr}/comments" -F body=@"$_reply_file" >/dev/null 2>&1
+      _status=$?
+      set -e
+      if [[ $_status -ne 0 ]]; then
+        echo "[maintainer-resolve-comment] ERROR: could not post the reason reply on PR #${_reply_pr} — failing closed (no minimize)." >&2
+        exit 1
+      fi
+      echo "[maintainer-resolve-comment] posted disposition reason as a reply on PR #${_reply_pr}."
+    fi
   fi
 
   # Verify the mutation actually left the comment minimized RESOLVED rather than

@@ -88,6 +88,20 @@ reviewer_sources_check_run_reporters() {
     "$REVIEWER_SOURCES_MANIFEST"
 }
 
+# reviewer_sources_info_status_patterns
+#   Sources that declare a known clean *informational* status-comment pattern
+#   (column 6 != "-"), emitted as "<login>\t<pattern>" one per line. A comment
+#   authored by <login> whose body matches <pattern> is a clean status report
+#   (e.g. SonarCloud's "Quality Gate passed") that carries no finding and needs no
+#   disposition — maintainer-comment-gate.sh reads this to auto-clear it (#1918).
+#   Empty output means no registered source declares an info-status pattern.
+#   Data-driven: the gate reads this instead of hard-coding logins.
+reviewer_sources_info_status_patterns() {
+  _reviewer_sources_manifest_or_die reviewer_sources_info_status_patterns || return 1
+  awk -F'\t' '!/^[[:space:]]*#/ && $1 != "" && $6 != "" && $6 != "-" { print $1 "\t" $6 }' \
+    "$REVIEWER_SOURCES_MANIFEST"
+}
+
 # reviewer_sources_trusted_bots_csv
 #   dev-lead's webhook-facing trusted set: each trusted login with a "[bot]"
 #   suffix, joined by commas. This is exactly the TRUSTED_BOTS default.

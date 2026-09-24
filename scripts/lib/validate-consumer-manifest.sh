@@ -11,8 +11,8 @@ set -euo pipefail
 #   - invalid JSON or a violated top-level schema shape
 #   - a surface_sources KEY that is not an existing reusable-workflow path in
 #     this repo (a file under .github/workflows/ that declares `workflow_call`)
-#   - a surface_sources VALUE that is not an existing scripts/lib/*.sh or prompts/*
-#     path in this repo
+#   - a surface_sources VALUE that is not an existing scripts/lib/*.sh,
+#     scripts/lib/*.tsv, or prompts/* path in this repo
 #
 # Existence is always checked against --repo-root (the .github-private working
 # tree), independent of where the manifest file itself lives, so a fixture in a
@@ -93,7 +93,8 @@ if [ "$schema_ok" != "true" ]; then
 fi
 
 # 3. surface_sources keys must be existing reusable-workflow paths in this repo;
-#    their values must be existing scripts/lib/*.sh or prompts/* paths in this repo.
+#    their values must be existing scripts/lib/*.sh, scripts/lib/*.tsv, or prompts/*
+#    paths in this repo.
 #    Paths are resolved via realpath to prevent traversal sequences from escaping
 #    their intended root directories.
 wf_root=$(realpath -m "$REPO_ROOT/.github/workflows")
@@ -123,9 +124,9 @@ done < <(jq -r '.surface_sources | keys[]' "$MANIFEST")
 while IFS= read -r value; do
   [ -n "$value" ] || continue
   case "$value" in
-    scripts/lib/*.sh|prompts/*) : ;;
+    scripts/lib/*.sh|scripts/lib/*.tsv|prompts/*) : ;;
     *)
-      err "surface_sources value is not a scripts/lib/*.sh or prompts/* path: $value"
+      err "surface_sources value is not a scripts/lib/*.sh, scripts/lib/*.tsv, or prompts/* path: $value"
       continue ;;
   esac
   resolved=$(realpath -m "$REPO_ROOT/$value")
