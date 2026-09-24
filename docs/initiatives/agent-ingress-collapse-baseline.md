@@ -181,7 +181,7 @@ forward per-job.
 2. **`ci-failure-analyst.yml` pins a bare SHA** (`e37e9eb4`) rather than a channel tag, so it
    receives no promotions at all. ADR-0002 makes the channel tag the canonical caller pin. **The
    intended target is the major-scoped stable channel `ci-failure-analyst/v1-stable`**, which today
-   records at `cc0bc61f` (`docs/release/versioning.md`) — **not** the pinned `e37e9eb4`. Because the
+   records at `cc0bc61f` (resolved via `git ls-remote origin ci-failure-analyst/v1-stable`) — **not** the pinned `e37e9eb4`. Because the
    channel resolves to different code than the current pin, the pin correction is a code upgrade and
    must be sequenced **separately from the collapse**, not folded into it: either migrate the pin to
    `ci-failure-analyst/v1-stable` and **recapture this baseline before** the collapse experiment, or
