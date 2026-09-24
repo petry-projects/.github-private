@@ -23,9 +23,10 @@ setup() {
   export DRY_RUN="true"
   export NOW_ISO="2026-09-08T12:00:00Z"
   export TRUSTED_REVIEWERS="coderabbitai,copilot-pull-request-reviewer,gemini-code-assist"
+  export BOT_USER="don-petry"
 
   # Per-endpoint stub inputs (each test overrides as needed).
-  export PR_OBJ='{"state":"open","head":{"sha":"deadbeef"},"labels":[]}'
+  export PR_OBJ='{"state":"open","head":{"sha":"deadbeef","ref":"dev-lead/issue-42"},"user":{"login":"don-petry"},"labels":[]}'
   export REVIEWS_JSON='[]'
   export REVIEW_COMMENTS_JSON='[]'
   export ISSUE_COMMENTS_JSON='[]'
