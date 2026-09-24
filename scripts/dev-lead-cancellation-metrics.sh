@@ -28,7 +28,7 @@ set -euo pipefail
 NEVER_RAN_SEC="${NEVER_RAN_SEC:-60}"
 
 # filter_runs_in_window <runs_json> <since_iso> <until_iso>
-# Keeps runs whose created_at is within [since, until] inclusive.
+# Keeps runs whose created_at is within [since, until) — half-open interval.
 filter_runs_in_window() {
   local runs_json="$1" since="$2" until="$3"
   jq -c \
@@ -36,7 +36,7 @@ filter_runs_in_window() {
     --arg until "$until" \
     '[ .[] | select(
         (.created_at | fromdateiso8601) >= ($since | fromdateiso8601) and
-        (.created_at | fromdateiso8601) <= ($until | fromdateiso8601)
+        (.created_at | fromdateiso8601) < ($until | fromdateiso8601)
       ) ]' <<< "$runs_json"
 }
 
@@ -74,10 +74,10 @@ compute_cancellation_metrics() {
 fetch_dev_lead_runs() {
   local repo="$1" wf="$2" since="${3:-}" until="${4:-}"
   gh api --paginate "repos/${repo}/actions/workflows/${wf}/runs" \
-    ${since:+--field "created=>=${since}"} ${until:+--field "created:<=${until}"} \
+    ${since:+--field "created=>=${since}"} ${until:+--field "created:<${until}"} \
     --field per_page=100 \
     --jq '[.workflow_runs[] | {conclusion, status, created_at, updated_at, run_started_at, event}]' \
-    2>/dev/null | jq -s 'add // []'
+    | jq -s 'add // []'
 }
 
 main() {

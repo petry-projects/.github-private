@@ -520,6 +520,22 @@ scan_pr_for_dropped_reviews() {
     echo "0"; return 0
   fi
 
+  # Authorship gate: recovery is only allowed for dev-lead-authored PRs.
+  # The ordinary review flow checks this via is_dev_lead_authored(); this path
+  # must enforce the same invariant (#1741, P0).
+  local head_ref pr_author
+  head_ref=$(jq -r '.head?.ref // "" | tostring' <<< "$pr_obj" 2>/dev/null || true)
+  pr_author=$(jq -r '.user?.login // "" | tostring' <<< "$pr_obj" 2>/dev/null || true)
+  case "$head_ref" in
+    dev-lead/issue-*) ;;  # Issue pickup pattern recognized
+    *)
+      if [ -z "$pr_author" ] || [ "$pr_author" != "${BOT_USER:-}" ]; then
+        echo "  [skip] dropped-reviews: PR ${pr_number} in ${repo} is not dev-lead-authored (author: ${pr_author:-unknown})" >&2
+        echo "0"; return 0
+      fi
+      ;;
+  esac
+
   labels_json=$(jq -c '[.labels[]?.name]' <<< "$pr_obj" 2>/dev/null || echo '[]')
   if pr_resume_suppressed "$pr_number" "$repo" "$labels_json"; then
     echo "0"; return 0
