@@ -17,7 +17,15 @@
 #   approval review:   <!-- pr-review-agent v1 sha=<SHA> decision=approved risk=... -->
 #   escalated review:  <!-- pr-review-agent v1 sha=<SHA> decision=escalated risk=... -->
 #   fix-request:       <!-- pr-review-agent v1 sha=<SHA> --> <!-- decision=fix-requested risk=... -->
-#   human escalation:  <!-- pr-review-agent escalation -->
+#   human escalation:  <!-- pr-review-agent escalation -->               (cycle-cap path, review-one-pr.sh)
+#   human escalation:  <!-- pr-review-agent human-escalation v1 -->      (verdict path, post-pr-review.sh #1754)
+#   escalation reset:  <!-- pr-review-agent human-escalation reset=<ISO8601> --> (verdict path re-arm timestamp, #1754)
+#
+# The verdict-path escalation comment is PATCHed in place, so its createdAt is
+# frozen at the FIRST escalation. It therefore carries a `reset=<ts>` timestamp
+# that is regenerated on every re-escalation; compute_review_cycle prefers that
+# over the comment's createdAt so an in-place re-escalation grants a fresh cycle
+# budget instead of counting fix requests from before it (#1754).
 #
 # Superseded comments are edited in place (createdAt preserved) and keep the
 # original markers inside a <details> block, so markers and timestamps remain
@@ -31,7 +39,13 @@
 _REVIEW_CYCLE_JQ_DEFS='
   def has_marker: (.body // "") | test("<!-- pr-review-agent v1 sha=[a-f0-9]+");
   def is_approval: (.body // "") | test("<!-- pr-review-agent v1 sha=[a-f0-9]+\\s+decision=approved");
-  def is_escalation: (.body // "") | test("<!-- pr-review-agent escalation -->");
+  def is_escalation: (.body // "") | test("<!-- pr-review-agent (escalation|human-escalation v1) -->");
+  # The verdict-path escalation comment is edited in place (createdAt frozen), so
+  # it carries a `reset=<ts>` stamp regenerated on each re-escalation. Prefer that
+  # over .when so an in-place re-escalation resets the cap (#1754). Absent ⇒ null,
+  # so callers fall back to .when.
+  def escalation_reset_ts:
+    (((.body // "") | capture("human-escalation reset=(?<ts>[^ ]+)").ts) // null);
   def is_bot_author($bots):
     (.author // "") as $login
     | ($login == "") or ($login | endswith("[bot]")) or (($bots | index($login)) != null);
@@ -60,7 +74,7 @@ compute_review_cycle() {
   count=$(jq -r --argjson bots "$bots_json" "$_REVIEW_CYCLE_JQ_DEFS"'
     map(select(.when != null and .when != ""))
     | ([.[] | select(is_human_approval($bots)) | .when] | max // "") as $last_approval
-    | ([.[] | select(is_escalation) | .when] | max // "") as $last_escalation
+    | ([.[] | select(is_escalation) | (escalation_reset_ts // .when)] | max // "") as $last_escalation
     | (if $last_approval > $last_escalation then $last_approval else $last_escalation end) as $reset
     | [.[] | select(has_marker and (is_approval | not) and (.when > $reset))]
     | length

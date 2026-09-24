@@ -27,6 +27,13 @@ escalation_comment() {  # escalation_comment <when>
   jq -n --arg when "$1" \
     '{when: $when, body: "<!-- pr-review-agent escalation -->\n\n## Automated review — human attention needed"}'
 }
+# The verdict-path human-escalation artifact (post-pr-review.sh, #1754). A
+# distinct marker from the cycle-cap one, but is_escalation must recognize both
+# so has_escalation_marker holds the PR and compute_review_cycle resets the cap.
+human_escalation_comment() {  # human_escalation_comment <when>
+  jq -n --arg when "$1" \
+    '{when: $when, body: "<!-- pr-review-agent human-escalation v1 -->\n\n## Automated review — escalated to human"}'
+}
 # A human clicking "Approve" in the GitHub UI: a review with state=APPROVED and a
 # non-bot author, carrying NO agent marker. Only this resets the cap (#926).
 human_approval() {  # human_approval <when>
@@ -172,6 +179,48 @@ items() {  # items <item-json>...
   [ "$output" = "2" ]
 }
 
+@test "the verdict-path human-escalation comment also resets the count (#1754)" {
+  local j
+  j=$(items \
+    "$(fix_request 2026-06-07T01:00:00Z aaa111)" \
+    "$(fix_request 2026-06-07T02:00:00Z bbb222)" \
+    "$(human_escalation_comment 2026-06-07T03:00:00Z)" \
+    "$(fix_request 2026-06-07T04:00:00Z ccc333)")
+  run compute_review_cycle "$j"
+  [ "$output" = "1" ]
+}
+
+@test "in-place re-escalation resets the cap via the embedded reset= timestamp (#1754)" {
+  # The verdict-path escalation comment is PATCHed in place, so createdAt is
+  # frozen at the FIRST escalation (T1) even after a later re-escalation. The
+  # body carries a reset= timestamp regenerated on each re-escalation (T4 here).
+  # Sequence: escalate(T1) → re-engage → fix(T2), fix(T3) → re-escalate in place
+  # (createdAt still T1, reset=T4) → fix(T5). Only the fix AFTER the latest reset
+  # (T5) counts; the pre-re-escalation fixes (T2, T3) must not.
+  local esc j
+  esc=$(jq -n '{when:"2026-06-07T01:00:00Z", body:"<!-- pr-review-agent human-escalation v1 -->\n<!-- pr-review-agent human-escalation reset=2026-06-07T04:00:00Z -->\n\n## Automated review — escalated to human"}')
+  j=$(items \
+    "$esc" \
+    "$(fix_request 2026-06-07T02:00:00Z aaa111)" \
+    "$(fix_request 2026-06-07T03:00:00Z bbb222)" \
+    "$(fix_request 2026-06-07T05:00:00Z ccc333)")
+  run compute_review_cycle "$j"
+  [ "$output" = "1" ]
+}
+
+@test "an escalation comment without a reset= stamp falls back to createdAt (#1754)" {
+  # Backward compatibility: a pre-reset escalation comment (no reset= marker)
+  # still resets the cap by its createdAt, as before.
+  local j
+  j=$(items \
+    "$(fix_request 2026-06-07T01:00:00Z aaa111)" \
+    "$(human_escalation_comment 2026-06-07T03:00:00Z)" \
+    "$(fix_request 2026-06-07T04:00:00Z bbb222)" \
+    "$(fix_request 2026-06-07T05:00:00Z ccc333)")
+  run compute_review_cycle "$j"
+  [ "$output" = "2" ]
+}
+
 @test "newest reset event wins: HUMAN approval after escalation resets again" {
   local j
   j=$(items \
@@ -198,6 +247,11 @@ items() {  # items <item-json>...
 
 @test "has_escalation_marker: true when an escalation comment exists" {
   run has_escalation_marker "$(items "$(escalation_comment 2026-06-07T01:00:00Z)")"
+  [ "$status" -eq 0 ]
+}
+
+@test "has_escalation_marker: true for the verdict-path human-escalation marker (#1754)" {
+  run has_escalation_marker "$(items "$(human_escalation_comment 2026-06-07T01:00:00Z)")"
   [ "$status" -eq 0 ]
 }
 
