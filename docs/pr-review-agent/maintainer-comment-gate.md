@@ -1,4 +1,16 @@
-# Maintainer issue-comment gate (issue #1290)
+# Maintainer issue-comment gate (issues #1290, #1813, #1918)
+
+> **Redesigned in [#1813](https://github.com/petry-projects/.github-private/issues/1813)
+> and [#1918](https://github.com/petry-projects/.github-private/issues/1918).** The
+> original gate (#1290) judged a comment *addressed* by comparing timestamps — a push
+> at/after the comment cleared it. GitHub now always returns the head push timestamp as
+> `null`, so that model failed closed on every open PR (the #1813 outage), and a push
+> was only ever a proxy for whether the finding was actually read and acted on. The
+> gate no longer reads push time at all: "addressed" now means a **verified
+> disposition** (the comment minimized with classifier `RESOLVED`), and **every** issue
+> comment — human *and* bot — must carry one, with two narrow exceptions described
+> below. The push-timing paragraphs that follow describe the **superseded** model and
+> are retained only for the review-thread sibling gate, which still uses push time.
 
 This document explains why a maintainer finding posted two different ways can have
 opposite mechanical force, and how the pr-review **maintainer issue-comment gate**
@@ -32,58 +44,87 @@ deliberately modeled on the advisory-bot gate
 ([`advisory-review-gate.sh`](../../scripts/lib/advisory-review-gate.sh), #457/#458),
 which likewise defers approval until a signal is incorporated.
 
-> pr-review withholds its **automated approval** while the **latest maintainer
-> issue comment postdates the last push**.
+> pr-review withholds its **automated approval** while **any non-agent PR issue
+> comment lacks a verified disposition** (is not minimized with classifier `RESOLVED`).
 
 Because pr-review is the code-owner approver, withholding its approval means the PR
 does not satisfy the code-owner review requirement and therefore **does not
 auto-merge** — closing the "does not block" half at the approval boundary.
 
-### What counts as a "maintainer issue comment"
+### What counts as a comment that must be dispositioned
 
-An issue comment is treated as a maintainer finding **unless** it is clearly one of
-ours or an already-gated bot:
+Since #1813 the scope is **every** PR issue comment — from human maintainers **and**
+bots alike (`codeant-ai`, `qodo-code-review`, `auto-rebase-conflict`, and so on). No
+author is exempt for being a bot: a conflict report is a finding, a trial-ended notice
+has an operational consequence. A comment blocks approval until it is minimized
+`RESOLVED`, **unless** it is one of the two narrow exceptions:
 
-- Comments carrying one of our automation markers — `<!-- pr-review-agent … -->`,
-  `<!-- persona:… -->`, `<!-- dev-lead … -->`, `<!-- dependency-advisory -->` — are
-  ours, never a finding. (This marker-based exclusion matters because several of
-  these workflows — dev-lead and the dependency-advisory pass — post as the human
-  owner `don-petry`, the *same account* a human maintainer uses, so login alone
-  cannot separate the two. dev-lead's own rate-limit acknowledgments and its
-  `@coderabbitai resolve` nudge carry a `<!-- dev-lead … -->` marker for exactly
-  this reason.)
-- Comments from the agent's own login (`BOT_USER`, default `donpetry-bot`) are
-  excluded.
-- Comments from advisory/review bots and generic automation (Gemini, Copilot,
-  SonarCloud, Codex, CodeRabbit, `github-actions`, `dependabot`) are excluded —
-  advisory bots are handled by the advisory-bot gate.
+- **Our own automation's replies.** Comments carrying one of our automation markers —
+  `<!-- pr-review-agent … -->`, `<!-- pr-review-claim … -->`, `<!-- persona:… -->`,
+  `<!-- dev-lead … -->` (including the `<!-- dev-lead:comment-disposition … -->`
+  reply), `<!-- dependency-advisory -->`, and `<!-- maintainer-resolve … -->` — are
+  ours, never a finding, so the agent never has to answer itself. (This marker-based
+  exclusion matters because several of these workflows — dev-lead and the
+  dependency-advisory pass — post as the human owner `don-petry`, the *same account* a
+  human maintainer uses, so login alone cannot separate the two.) Comments from the
+  agent's own login (`BOT_USER`, default `donpetry-bot`) are likewise excluded.
+- **A registered clean *info-status* bot comment (#1918).** A comment authored by a
+  reviewer source that declares an `info_status_pattern` in the reviewer-source
+  registry (`scripts/lib/reviewer-sources.tsv`), and whose body matches that pattern,
+  is a clean status report carrying no finding and is treated as **addressed**. The
+  canonical case is SonarCloud's `Quality Gate passed` comment, which it **re-posts on
+  every push**; its pattern pins the `**Quality Gate passed**` headline **and** the
+  `[0 New issues]` and `[0 Security Hotspots]` lines, so a `Quality Gate failed`
+  comment, or one still reporting new issues or hotspots, does **not** match and still
+  blocks. An unreadable registry degrades to "clear nothing", never to clearing
+  something it cannot classify.
 
-Everything else is treated as a human maintainer finding. This is the fail-closed
-default: an *unknown* author blocks rather than slips through.
+Everything else — a bot comment with a finding, a bot with no registered pattern, an
+*unknown* author, or any human comment — blocks. This is the fail-closed default: an
+author or body the gate cannot positively clear blocks rather than slips through.
 
 ### When the block clears
 
-A maintainer issue comment is considered **addressed** — and the gate stops
-blocking — when a commit has been pushed at or after it. In practice:
+A comment is considered **addressed** — and the gate stops blocking — when it is
+minimized with classifier `RESOLVED`. In practice:
 
-- **dev-lead (or the author) pushes a fix.** The head commit's `committer.date`
-  advances past the comment, so the latest maintainer comment no longer postdates
-  the last push → the gate clears on the next review.
+- **dev-lead dispositions it.** dev-lead researches each undispositioned comment,
+  posts exactly one evidence-backed reply carrying
+  `<!-- dev-lead:comment-disposition id=<id> disposition=<…> -->`, and the harness
+  verifies that disposition and then minimizes the **original** comment `RESOLVED`
+  (GraphQL `minimizeComment`). A push alone no longer clears anything.
+- **A maintainer clears it without dev-lead (#1910/#1918).** When dev-lead is
+  suppressed, rate-limited, cancelled, or never dispatched, a maintainer can run
+  [`scripts/maintainer-resolve-comment.sh`](../../scripts/maintainer-resolve-comment.sh)
+  (see its `--help`). It minimizes **their own** comment `RESOLVED`, or — for a
+  *registered info-status bot* whose finding-free status stranded the queue (chiefly
+  SonarCloud, which re-posts `Quality Gate passed` on every push) — that bot's
+  comment, requiring a `--reason` posted as a `<!-- maintainer-resolve … -->` reply
+  before the minimize. It refuses another human's comment and a finding-producing bot
+  such as `codeant-ai` or `graphite-app` (whose findings still require dev-lead's
+  verified-fix flow), and fails closed if it cannot confirm the comment's author, its
+  actor type (`__typename == Bot`), or the invoking viewer.
+- **A registered clean info-status bot comment auto-clears (#1918)** — see the scope
+  section above; no disposition action is needed for it.
 - If you only want to *chat* (e.g. "LGTM") without requesting a change, leave an
-  **approving review** rather than a plain comment — a review is not a maintainer
-  finding, and it also positively signals "no changes needed".
+  **approving review** rather than a plain comment — a review is not an issue comment,
+  and it also positively signals "no changes needed".
 
 ### Fails closed
 
-The [#1290](https://github.com/petry-projects/.github-private/issues/1290)
-acceptance criterion is that an inability to determine whether a finding was
-addressed must **not** read as "no findings" — that is exactly the bug that shipped
-the regression. So:
+The [#1290](https://github.com/petry-projects/.github-private/issues/1290) /
+[#1813](https://github.com/petry-projects/.github-private/issues/1813) acceptance
+criterion is that an inability to determine whether a finding was addressed must
+**not** read as "no findings" — that is exactly the bug that shipped the regression.
+So:
 
-- A maintainer comment with an **undeterminable push time** (GraphQL unreachable) →
-  **blocks** (return 1).
-- A **malformed / unparseable** PR snapshot → **fails the PR** (return 2 → exit 1)
-  so a scheduled run retries, rather than approving blind.
+- Any non-agent comment **without** a verified `RESOLVED` disposition → **blocks**
+  (return 1).
+- A **malformed / unparseable** PR snapshot → **fails the PR** (return 2 → exit 1),
+  reported with a distinct verdict reason so an undeterminable gate state can never
+  recur disguised as a legitimate hold (#1813 AC8), so a scheduled run retries rather
+  than approving blind. The gate makes **no** `gh`/network calls — it reuses the
+  snapshot the caller already fetched — so there is no push-time lookup left to fail.
 
 ### Bypass
 
