@@ -104,9 +104,11 @@ for wf in "${WORKFLOWS[@]}"; do
   # per-PR / per-issue retry lane that ordinary traffic never touches.
   check_concurrency_field "$wf" "dev-lead-retry-pr-" "survivable per-PR retry lane"
   check_concurrency_field "$wf" "dev-lead-retry-issue-" "survivable per-issue retry lane"
-  # The repository_dispatch retry branch must precede the ordinary
-  # client_payload.pr_number branch, or every dispatch would fall into the
-  # ordinary (cancellable) PR lane before the retry lane could match.
+  # The repository_dispatch retry branch must precede the run-id fallback, or
+  # every relay would match format('dev-lead-run-{0}', github.run_id) first and
+  # never reach the retry lane (losing per-PR serialization among retries). The
+  # old ordinary client_payload.pr_number branch is gone — this PR routes
+  # repository_dispatch straight to the dedicated retry lane.
   check_concurrency_order "$wf" "dev-lead-retry-pr-" "dev-lead-run-" "retry lane before run-id fallback"
 done
 

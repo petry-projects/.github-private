@@ -40,6 +40,10 @@ case "$args" in
   *reviews*)                printf '%s' "${REVIEWS_JSON}" ;;
   *pulls*comments*)         printf '%s' "${REVIEW_COMMENTS_JSON}" ;;
   *issues*comments*)        printf '%s' "${ISSUE_COMMENTS_JSON}" ;;
+  # pr_resume_suppressed -> gather_pr_automation_events fetches
+  # repos/.../pulls/{n}/commits; without this arm it would fall through to the
+  # PR-object catch-all and feed a malformed commits payload to the budget check.
+  *commits*)                echo "[]" ;;
   *pulls/*)                 printf '%s' "${PR_OBJ}" ;;
   *)                        echo "[]" ;;
 esac
@@ -203,13 +207,41 @@ _marker() {
 }
 
 @test "scan: PR gated with needs-human-review → no dispatch" {
-  PR_OBJ='{"state":"open","head":{"sha":"deadbeef"},"labels":[{"name":"needs-human-review"}]}'
+  # Keep the dev-lead/issue-* head ref so the PR passes the authorship gate and
+  # execution actually reaches pr_resume_suppressed — otherwise the scan would
+  # bail at the authorship check and this test would pass even if the
+  # needs-human-review suppression were removed (it tested the wrong path).
+  PR_OBJ='{"state":"open","head":{"sha":"deadbeef","ref":"dev-lead/issue-42"},"user":{"login":"don-petry"},"labels":[{"name":"needs-human-review"}]}'
   REVIEWS_JSON="[$(_review coderabbitai CHANGES_REQUESTED deadbeef)]"
 
   run scan_pr_for_dropped_reviews "petry-projects/.github-private" 42
 
   [ "$status" -eq 0 ]
   [[ "$output" != *"would dispatch"* ]]
+}
+
+@test "scan: non-issue PR authored by BOT_USER passes the authorship gate → dispatches" {
+  # No dev-lead/issue-* head ref, so authorship is decided by the pr_author ==
+  # BOT_USER fallback branch. Exercises that branch (previously every test
+  # matched the issue-ref pattern, leaving the BOT_USER path uncovered).
+  PR_OBJ='{"state":"open","head":{"sha":"deadbeef","ref":"some-feature-branch"},"user":{"login":"don-petry"},"labels":[]}'
+  REVIEWS_JSON="[$(_review coderabbitai CHANGES_REQUESTED deadbeef)]"
+
+  run scan_pr_for_dropped_reviews "petry-projects/.github-private" 42
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"would dispatch dev-lead-reviews-retry"* ]]
+}
+
+@test "scan: non-issue PR authored by someone else → skipped as not dev-lead-authored" {
+  PR_OBJ='{"state":"open","head":{"sha":"deadbeef","ref":"some-feature-branch"},"user":{"login":"a-contributor"},"labels":[]}'
+  REVIEWS_JSON="[$(_review coderabbitai CHANGES_REQUESTED deadbeef)]"
+
+  run scan_pr_for_dropped_reviews "petry-projects/.github-private" 42
+
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"would dispatch"* ]]
+  [[ "$output" == *"not dev-lead-authored"* ]]
 }
 
 @test "scan: a recent dispatch guard for the SHA → skips to avoid duplicate" {

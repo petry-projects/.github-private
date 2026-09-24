@@ -88,12 +88,21 @@ main() {
   local since_iso="${SINCE_ISO:-}"
   if [ -z "$since_iso" ]; then
     # Portable date arithmetic via jq (fromdateiso8601/todateiso8601) — avoids the
-    # GNU-only `date -d`, which is absent on BSD/macOS.
-    since_iso=$(jq -rn --arg t "$until_iso" '($t | fromdateiso8601) - 3600 | todateiso8601' 2>/dev/null || echo "$until_iso")
+    # GNU-only `date -d`, which is absent on BSD/macOS. Fail LOUD on a parse
+    # failure rather than falling back to until_iso: a silent since==until would
+    # collapse the window to a zero-width instant and report 0 runs while the
+    # header still advertised the nominal 1 h window (masking the failure).
+    if ! since_iso=$(jq -rn --arg t "$until_iso" '($t | fromdateiso8601) - 3600 | todateiso8601' 2>/dev/null) \
+       || [ -z "$since_iso" ]; then
+      echo "[metrics] error: could not compute default since_iso from UNTIL_ISO=${until_iso} (unparseable ISO-8601?)" >&2
+      exit 1
+    fi
   fi
 
-  echo "[metrics] dev-lead cancellation share for ${repo} (${wf})"
-  echo "[metrics] window ${since_iso} .. ${until_iso}  never_ran_threshold=${NEVER_RAN_SEC}s"
+  # Status lines go to stderr so stdout carries ONLY the JSON object — consumers
+  # that pipe stdout into jq must not choke on these human-readable prefixes.
+  echo "[metrics] dev-lead cancellation share for ${repo} (${wf})" >&2
+  echo "[metrics] window ${since_iso} .. ${until_iso}  never_ran_threshold=${NEVER_RAN_SEC}s" >&2
 
   local runs windowed metrics
   runs=$(fetch_dev_lead_runs "$repo" "$wf" "$since_iso" "$until_iso")
