@@ -63,10 +63,18 @@ check-run name — is **data-driven** in the reviewer-source registry
 (`scripts/lib/reviewer-sources.tsv`, `check_run_name` column); nothing is hard-coded to
 `graphite-app`. For each in-window PR we make a **separate, lightweight REST call** for the
 head commit's check runs (`GET /repos/{o}/{r}/commits/{sha}/check-runs`) so the heavy PR
-page query stays under the resource limit. A completed check run whose summary says the
-review ran counts as a **real response** (latency measured to its `completed_at`); a
-`completed/skipped` "too large" run counts as a **refusal**; a queued suite with no runs is
-**no response**.
+page query stays under the resource limit. Each matched check run is classified:
+
+- **Real response.** The run is completed, did **not** fail, and either has a `success`
+  conclusion or a summary that says the review ran. Latency is measured to its
+  `completed_at`. A run that failed does not count, even if its summary mentions the
+  review. Failed conclusions are `failure`, `cancelled`, `timed_out`, `action_required`,
+  `stale` and `startup_failure`.
+- **Refusal.** The run is `completed/skipped` and its summary gives a decline reason, such
+  as "too large", "did not run" or a quota/rate-limit notice.
+- **Contributes nothing.** Everything else: queued or in-progress runs, failed runs, and
+  runs skipped with an empty or unrelated summary. Without a PR review or comment, the PR
+  stays in **No response**.
 
 Each PR node is normalized (pure `jq`) into two record kinds:
 
@@ -103,7 +111,7 @@ reviews on a single PR).
 | **Reviews** | Count of reviews the bot submitted, **each occurrence** (multiple per PR from multiple commits all count). A bot that posts no formal review but delivers its verdict as a top-level comment (e.g. SonarCloud's quality-gate comment) has that comment counted as its review; bots that do submit formal reviews are unaffected, so their extra summary comments are never double-counted. Rate-limit notices are never counted. |
 | **✅ / 🔄** | Of those reviews, how many carried state APPROVED / CHANGES_REQUESTED. |
 | **Refused** | Count of refusal events — out-of-quota / rate-limit notices (detected by body text via the shared gate pattern) **and** a check-run reporter's own decline (a `too large` / `did not run` skip) — each occurrence. |
-| **No response** | Eligible PRs the bot never engaged with at all — no review, comment, refusal, **or completed check run**. For a check-run reporter (Graphite), a clean-pass check run counts as engagement, so it no longer lands here. |
+| **No response** | Eligible PRs the bot never engaged with at all: no review, no comment, no refusal, and **no check run classified as a real response or a refusal**. For a check-run reporter (Graphite), a clean-pass check run counts as engagement, so it no longer lands here. A queued, failed or unexplained-skip run still leaves the PR in **No response**. |
 | **Latency p50 / p95** | Seconds from PR creation to the bot's first **real** review (refusals excluded, so quota notices don't pollute the percentiles). Targets the "review arrived after auto-approval" failure mode (PR #453). |
 | **Coverage overlap** | PRs reviewed by ≥2 bots — a redundancy vs specialization signal. |
 | **Trend** | Week-over-week Δ (▲/▼) on Reviews and Refused (event counts) vs last week's snapshot. Arrows are directional only. |
@@ -230,7 +238,7 @@ ORG=petry-projects LOOKBACK_DAYS=7 GH_TOKEN="$(gh auth token)" \
   record (the per-thread case as `connection:"reviewThreads.comments"`) rendered in the
   **Collection health** section, so an undercount there is stated explicitly rather than
   hidden. The scorecard counts every node it did fetch, including bots beyond the 50th review.
-- **Check-run summary text**: a completed check run is read as *review ran* when its
-  conclusion is `success` or its summary matches `review ran`; a reporter that changes its
+- **Check-run summary text**: a completed, non-failed check run is read as *review ran* when
+  its conclusion is `success` or its summary matches `review ran`. A reporter that changes its
   summary wording would need the matcher updated. The reporter set and check-run name live
   in `scripts/lib/reviewer-sources.tsv`.
