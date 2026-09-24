@@ -110,6 +110,17 @@ If `${ACTOR}` is `sonarqubecloud[bot]` and the comment reports security hotspots
 3. Fix each identified hotspot — for `curl | bash` patterns, replace with a safer alternative such as a pinned binary download with SHA verification, `gh extension install <owner>/<repo>`, or a package manager install
 4. If no hotspot is found in changed files, read any newly introduced shell scripts or workflow YAML steps for the patterns above
 
+## Non-actionable bot notices — do not post an unmarked acknowledgement (#1919)
+
+Some bot comments are pure **operational notices**, not code findings: a rate-limit / "review limit reached" notice, a trial-ended or usage-limit notice, or a clean status re-post (e.g. SonarCloud's `Quality Gate passed`). There is nothing to fix in the diff for these.
+
+**Do not "acknowledge" such a notice with a plain PR issue comment.** You run as the owner account `don-petry` — the *same* login a human maintainer uses — and the **maintainer-comment gate** (which withholds pr-review's approval while any PR issue comment lacks a verified disposition) discriminates your comments from a maintainer's by **marker, not author**. An unmarked "Acknowledged — this is a … notice, no action needed" comment is therefore counted as a fresh **undispositioned** finding and blocks the very approval it was posted to unblock — five such acks on one PR is exactly the #1919 loop. The acknowledgement is also noise on the PR regardless of the gate: a clean bot status comment is already auto-cleared by the gate (#1918), and a maintainer can clear a registered bot's notice with `scripts/maintainer-resolve-comment.sh`.
+
+So, for a non-actionable bot notice:
+
+- **Preferred: post no PR comment at all.** Record the acknowledgement in your **output summary** below (it lands in the run/step summary) — that is where "a third-party bot is rate-limited, no action needed" belongs, not on the PR conversation.
+- **If** a PR issue comment is genuinely warranted, it **must** end with the `<!-- dev-lead:ack -->` marker so the maintainer-comment gate recognises it as agent-authored and does not count it as an undispositioned finding. Never post the acknowledgement unmarked.
+
 ## Constraints
 
 - Only fix issues that are clearly actionable from the bot's output
