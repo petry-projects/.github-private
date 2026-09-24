@@ -153,7 +153,8 @@
       "scripts/lib/maintainer-comment-gate.sh",
       "scripts/lib/maintainer-review-thread-gate.sh",
       "scripts/lib/pr-worktree.sh",
-      "scripts/lib/reviewer-sources.sh"
+      "scripts/lib/reviewer-sources.sh",
+      "scripts/lib/reviewer-sources.tsv"
     ],
     ".github/workflows/pr-review.yml": [
       "prompts/cascade-action.md",
@@ -170,6 +171,7 @@
       "scripts/lib/review-cycle.sh",
       "scripts/lib/review-registry.sh",
       "scripts/lib/reviewer-sources.sh",
+      "scripts/lib/reviewer-sources.tsv",
       "scripts/lib/token-metrics.sh"
     ]
   }

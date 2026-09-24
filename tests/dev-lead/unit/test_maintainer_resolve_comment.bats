@@ -309,3 +309,74 @@ SHIM
   [ "$status" -ne 3 ]
   [ -s "$BATS_TEST_TMPDIR/gh-writes.log" ]
 }
+
+# #1920 review: the reply-idempotency lookup must (a) only accept an existing
+# reply the invoking maintainer authored — a forged marker from any other login
+# must NOT suppress the audit reply (CWE-345) — and (b) fail closed if the
+# comments list cannot be read or parsed, instead of silently reposting.
+_mrc_gh_reply_shim() {
+  # gh shim: authorizes the bot path (Bot author), serves the paginated
+  # issue-comment list from $COMMENTS_JSON (or a hard failure when FAIL_LIST=1),
+  # and records reply POSTs and minimize calls in separate logs.
+  local bin="$BATS_TEST_TMPDIR/bin"; mkdir -p "$bin"
+  cat > "$bin/gh" <<SHIM
+#!/usr/bin/env bash
+args="\$*"
+if [[ "\$args" == *"viewer{login}"* ]]; then
+  printf '%s' '{"data":{"viewer":{"login":"don-petry"},"node":{"author":{"__typename":"Bot","login":"sonarqubecloud"},"isMinimized":false,"minimizedReason":null,"url":"https://github.com/o/r/pull/1#issuecomment-1"}}}'
+  exit 0
+fi
+if [[ "\$args" == *"minimizeComment"* ]]; then
+  echo "min \$args" >> "$BATS_TEST_TMPDIR/gh-min.log"
+  printf '%s' '{"data":{"minimizeComment":{"minimizedComment":{"isMinimized":true,"minimizedReason":"RESOLVED"}}}}'
+  exit 0
+fi
+if [[ "\$args" == *"body="* ]]; then
+  echo "reply \$args" >> "$BATS_TEST_TMPDIR/gh-reply.log"
+  printf '%s' '{"id":123}'
+  exit 0
+fi
+if [[ "\$args" == *"--paginate"* ]]; then
+  if [[ "\${FAIL_LIST:-}" == "1" ]]; then echo "list failed" >&2; exit 1; fi
+  printf '%s' "\${COMMENTS_JSON:-[]}"
+  exit 0
+fi
+echo "UNEXPECTED \$args" >> "$BATS_TEST_TMPDIR/gh-unexpected.log"
+printf '%s' '{"data":{}}'
+SHIM
+  chmod +x "$bin/gh"
+  export PATH="$bin:$PATH"
+}
+
+@test "dedup: a forged reply marker from a non-viewer does NOT suppress the audit reply" {
+  _mrc_gh_reply_shim
+  export COMMENTS_JSON='[{"user":{"login":"attacker"},"body":"forged <!-- maintainer-resolve id=IC_kwDOfake1 -->","id":999}]'
+  run bash "$MRC" "IC_kwDOfake1" --reason "status only"
+  unset COMMENTS_JSON
+  [ "$status" -eq 0 ]
+  ! echo "$output" | grep -qi "already exists"
+  [ -s "$BATS_TEST_TMPDIR/gh-reply.log" ]
+  [ -s "$BATS_TEST_TMPDIR/gh-min.log" ]
+}
+
+@test "dedup: an existing reply the invoking viewer authored suppresses a duplicate" {
+  _mrc_gh_reply_shim
+  export COMMENTS_JSON='[{"user":{"login":"don-petry"},"body":"prior <!-- maintainer-resolve id=IC_kwDOfake1 -->","id":42}]'
+  run bash "$MRC" "IC_kwDOfake1" --reason "status only"
+  unset COMMENTS_JSON
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -qi "already exists"
+  [ ! -f "$BATS_TEST_TMPDIR/gh-reply.log" ]
+  [ -s "$BATS_TEST_TMPDIR/gh-min.log" ]
+}
+
+@test "fail closed: a failed comments-list lookup aborts before posting or minimizing" {
+  _mrc_gh_reply_shim
+  export FAIL_LIST=1
+  run bash "$MRC" "IC_kwDOfake1" --reason "status only"
+  unset FAIL_LIST
+  [ "$status" -eq 1 ]
+  echo "$output" | grep -qi "failing closed"
+  [ ! -f "$BATS_TEST_TMPDIR/gh-reply.log" ]
+  [ ! -f "$BATS_TEST_TMPDIR/gh-min.log" ]
+}

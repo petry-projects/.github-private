@@ -462,9 +462,26 @@ if [[ "${BASH_SOURCE[0]}" = "${0}" ]]; then
     # skip the post if one is present, so retries do not accumulate duplicate audit
     # replies on the PR (#1918 review).
     set +e
-    _existing_reply=$(gh api "repos/${_reply_repo}/issues/${_reply_pr}/comments" --paginate 2>/dev/null \
-      | jq -r --arg id "$_node" '.[] | select((.body // "") | test("<!-- maintainer-resolve[^>]*id=" + $id + "[^>]*-->")) | .id' 2>/dev/null)
+    _comments_json=$(gh api "repos/${_reply_repo}/issues/${_reply_pr}/comments" --paginate 2>/dev/null)
+    _status=$?
     set -e
+    if [[ $_status -ne 0 ]]; then
+      echo "[maintainer-resolve-comment] ERROR: could not list PR #${_reply_pr} comments to check for an existing reply — failing closed (no minimize)." >&2
+      exit 1
+    fi
+    # Match only a reply the invoking maintainer ($_viewer) authored: anyone can
+    # post a comment carrying the maintainer-resolve marker + this node id, and a
+    # login-agnostic match would let a forged marker suppress the real audit reply
+    # while the original comment is still minimized RESOLVED (CWE-345). A jq parse
+    # failure must fail closed too, not read as "no existing reply".
+    _existing_reply=$(printf '%s' "$_comments_json" \
+      | jq -r --arg id "$_node" --arg viewer "$_viewer" '.[]
+          | select((.user.login // "") == $viewer)
+          | select((.body // "") | test("<!-- maintainer-resolve[^>]*id=" + $id + "[^>]*-->"))
+          | .id') || {
+      echo "[maintainer-resolve-comment] ERROR: could not parse PR #${_reply_pr} comments while checking for an existing reply — failing closed (no minimize)." >&2
+      exit 1
+    }
 
     if [[ -n "$_existing_reply" ]]; then
       echo "[maintainer-resolve-comment] a maintainer-resolve reply for $_node already exists — not posting a duplicate."
