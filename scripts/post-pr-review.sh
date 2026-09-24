@@ -485,6 +485,11 @@ COMMENT_END
   else
     # Escalate to human via CODEOWNERS — avoid hard-coding a single reviewer.
     echo "Escalating to human review..."
+    # Post the gate blocker message if present (e.g., gate 4 downgrade reason) so
+    # the author knows why approval was withheld.
+    if [[ "$BODY" == *"blocker"* ]]; then
+      gh pr comment "$PR_URL" --body "$BODY" 2>/dev/null || true
+    fi
     gh pr edit "$PR_URL" --add-label needs-human-review 2>/dev/null || true
     SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     bash "$SCRIPT_DIR/request-codeowners-review.sh" "$PR_URL" || true
