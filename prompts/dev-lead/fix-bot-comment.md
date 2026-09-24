@@ -110,16 +110,34 @@ If `${ACTOR}` is `sonarqubecloud[bot]` and the comment reports security hotspots
 3. Fix each identified hotspot — for `curl | bash` patterns, replace with a safer alternative such as a pinned binary download with SHA verification, `gh extension install <owner>/<repo>`, or a package manager install
 4. If no hotspot is found in changed files, read any newly introduced shell scripts or workflow YAML steps for the patterns above
 
-## Non-actionable bot notices — do not post an unmarked acknowledgement (#1919)
+## Non-actionable bot notices — disposition the ORIGINAL comment, never leave it undispositioned (#1919)
 
-Some bot comments are pure **operational notices**, not code findings: a rate-limit / "review limit reached" notice, a trial-ended or usage-limit notice, or a clean status re-post (e.g. SonarCloud's `Quality Gate passed`). There is nothing to fix in the diff for these.
+Some bot comments are pure **operational notices**, not code findings: a rate-limit / "review limit reached" notice, a trial-ended or usage-limit notice, or a clean status re-post (e.g. SonarCloud's `Quality Gate passed`). There is nothing to fix in the diff for these — but the bot's **original PR issue comment** is still subject to the **maintainer-comment gate**, which withholds pr-review's approval while any PR issue comment lacks a **verified disposition**. You run as the owner account `don-petry` — the *same* login a human maintainer uses — and the gate discriminates by **marker, not author**. Two cases follow, and the difference matters:
 
-**Do not "acknowledge" such a notice with a plain PR issue comment.** You run as the owner account `don-petry` — the *same* login a human maintainer uses — and the **maintainer-comment gate** (which withholds pr-review's approval while any PR issue comment lacks a verified disposition) discriminates your comments from a maintainer's by **marker, not author**. An unmarked "Acknowledged — this is a … notice, no action needed" comment is therefore counted as a fresh **undispositioned** finding and blocks the very approval it was posted to unblock — five such acks on one PR is exactly the #1919 loop. The acknowledgement is also noise on the PR regardless of the gate: a clean bot status comment is already auto-cleared by the gate (#1918), and a maintainer can clear a registered bot's notice with `scripts/maintainer-resolve-comment.sh`.
+1. **Registered clean-status re-post → post nothing, it is auto-cleared.** If the notice is a *known clean-status pattern* from a registered reviewer source (e.g. SonarCloud's `Quality Gate passed`), the gate's info-status classifier already treats it as addressed (#1918). Do not reply; record the acknowledgement in your **output summary** below (it lands in the run/step summary), not on the PR conversation.
 
-So, for a non-actionable bot notice:
+2. **Every other notice → you MUST disposition the ORIGINAL comment.** A trial-ended, usage-limit, or rate-limit notice is **not** a registered clean-status pattern, so the gate still counts the bot's original comment as an **undispositioned** blocker. **Suppressing your reply does NOT clear it, and neither does a separate `<!-- dev-lead:ack -->` comment** — an ack only marks the *new* comment as agent-authored; the *original* bot comment stays undispositioned and keeps blocking the very approval it was posted to unblock (exactly the #1919 loop). Only a **verified disposition on the original comment** clears it. Post **exactly one** reply that names what the notice is and why no code change is needed, ending with a single disposition marker tied to the original comment's node id:
 
-- **Preferred: post no PR comment at all.** Record the acknowledgement in your **output summary** below (it lands in the run/step summary) — that is where "a third-party bot is rate-limited, no action needed" belongs, not on the PR conversation.
-- **If** a PR issue comment is genuinely warranted, it **must** end with the `<!-- dev-lead:ack -->` marker so the maintainer-comment gate recognises it as agent-authored and does not count it as an undispositioned finding. Never post the acknowledgement unmarked.
+   ```
+   <!-- dev-lead:comment-disposition id=<comment_node_id> disposition=informational -->
+   ```
+
+   The harness verifies the disposition and minimizes the original comment RESOLVED (#1813) — that is what actually clears the gate. Do **not** call `minimizeComment` yourself. This is the same issue-comment disposition flow documented in `fix-reviews.md` Phase 1b (`scripts/lib/comment-disposition-verify.sh` is the normative parser); `informational` requires only a non-empty reply body, so no `sha=` is needed.
+
+   Resolve `<comment_node_id>` by enumerating the PR's issue comments and matching the triggering notice (authored by `${ACTOR}`, body equal to the comment above):
+
+   ```bash
+   gh api graphql -f query='query($owner:String!,$repo:String!,$pr:Int!){
+     repository(owner:$owner,name:$repo){ pullRequest(number:$pr){
+       comments(first:100){ nodes{ id author{login} body isMinimized minimizedReason } } } } }' \
+     -F owner="${REPO%%/*}" -F repo="${REPO##*/}" -F pr="${PR_NUMBER}" \
+     | jq -r --arg actor "${ACTOR}" '.data.repository.pullRequest.comments.nodes[]
+         | select(.author.login == $actor
+                  or .author.login == ($actor | sub("\\[bot\\]$"; "")))
+         | .id'
+   # Post the disposition reply on the PR:
+   #   gh pr comment "${PR_NUMBER}" --repo "${REPO}" --body "…<!-- dev-lead:comment-disposition id=<node_id> disposition=informational -->"
+   ```
 
 ## Constraints
 

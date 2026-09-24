@@ -6,6 +6,7 @@ on:
       - 'scripts/**'
       - '.github/workflows/**'
       - 'tests/**'
+      - 'prompts/**'
       - 'agents/**'
       - 'personas/**'
       - 'interaction-contracts/**'
@@ -22,6 +23,7 @@ on:
     paths:
       - 'scripts/**'
       - 'tests/**'
+      - 'prompts/**'
       - '.github/workflows/**'
   workflow_dispatch:
 

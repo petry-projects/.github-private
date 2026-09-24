@@ -20,22 +20,24 @@ PROMPTS_DIR="$(cd "$BATS_TEST_DIRNAME"/../../.. && pwd)/prompts/dev-lead"
 @test "review-changes.md failing-check PR comment carries a dev-lead marker (#1919)" {
   # The failing-check fix note is posted as a PR issue comment; it must be marked.
   run grep -qF '<!-- dev-lead:check-fix -->' "$PROMPTS_DIR/review-changes.md"
-  [ "$status" -eq 0 ] || { echo "review-changes.md failing-check comment lacks the <!-- dev-lead:check-fix --> marker instruction"; return 1; }
+  [ "$status" -eq 0 ]
 }
 
-@test "fix-bot-comment.md marks or suppresses non-actionable bot-notice acks (#1919)" {
-  # A non-actionable bot issue-comment notice must NOT leak an unmarked ack:
-  # either it is not posted as a PR comment, or it carries a dev-lead marker.
-  run grep -qF '<!-- dev-lead:ack -->' "$PROMPTS_DIR/fix-bot-comment.md"
-  [ "$status" -eq 0 ] || { echo "fix-bot-comment.md does not instruct marking a bot-notice acknowledgement with <!-- dev-lead:ack -->"; return 1; }
+@test "fix-bot-comment.md dispositions non-actionable bot-notice comments (#1919)" {
+  # A non-actionable bot issue-comment notice (trial-ended, usage-limit, rate-limit)
+  # is NOT auto-cleared by the info-status classifier, so a plain ack or suppression
+  # leaves the ORIGINAL comment an undispositioned maintainer-gate blocker. The prompt
+  # must instead disposition the original via the verified comment-disposition marker.
+  run grep -qF '<!-- dev-lead:comment-disposition id=<comment_node_id> disposition=informational -->' "$PROMPTS_DIR/fix-bot-comment.md"
+  [ "$status" -eq 0 ]
 }
 
 @test "fix-bot-comment.md cites the maintainer-comment gate rationale (#1919)" {
   run grep -qiE "maintainer-comment gate|undispositioned|#1919" "$PROMPTS_DIR/fix-bot-comment.md"
-  [ "$status" -eq 0 ] || { echo "fix-bot-comment.md does not explain why the marker/suppression is required"; return 1; }
+  [ "$status" -eq 0 ]
 }
 
 @test "review-changes.md cites the maintainer-comment gate rationale (#1919)" {
   run grep -qiE "maintainer-comment gate|undispositioned|#1919" "$PROMPTS_DIR/review-changes.md"
-  [ "$status" -eq 0 ] || { echo "review-changes.md does not explain why the check-fix comment must be marked"; return 1; }
+  [ "$status" -eq 0 ]
 }
