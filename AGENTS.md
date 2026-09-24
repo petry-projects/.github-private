@@ -90,6 +90,20 @@ body: sequence the commits, say which one matters most, and give explicit permis
 file a follow-up. #1734 timed out attempting two ACs and lost the work; #1647, #1651 and #1795
 succeeded with a guard.
 
+### Satisfying the maintainer-comment gate without dev-lead (#1910)
+
+`maintainer-comment-gate.sh` withholds pr-review's approval while any non-agent PR issue comment
+lacks a verified disposition — surfaced server-side as the comment being **minimized with classifier
+`RESOLVED`**. Normally the *only* actor that performs that minimize is dev-lead, so a comment on a PR
+where dev-lead is **suppressed, rate-limited, cancelled, or never dispatched** stays a permanent
+blocker and no approval can stand. To unblock it yourself, once you have verified your own finding is
+addressed, run `scripts/maintainer-resolve-comment.sh <comment-url-or-node-id>` (see its `--help`). It
+minimizes **your own** comment `RESOLVED` — the exact signal the gate already honours, so the
+`RESOLVED`-minimized requirement is preserved, not weakened. It acts only on a comment you authored
+(a finding you did not author still requires dev-lead's verified-fix flow or the other person's own
+action), is idempotent, and fails closed if it cannot confirm the comment's author or the invoking
+viewer. An `@mention` (FORCE_REVIEW) is the alternative human-in-the-loop bypass.
+
 ### The org automation-PR cap is real and near-silent
 
 There is a hard ceiling of **50 concurrent open non-Dependabot automation PRs org-wide**
