@@ -114,8 +114,10 @@ at all. Two changes close this:
 - **A clean bot status comment is auto-cleared, deterministically, with no LLM and no dev-lead.**
   `maintainer-comment-gate.sh` reads a data-driven classifier keyed off the reviewer-source registry
   (`scripts/lib/reviewer-sources.tsv`, new `info_status_pattern` column). A comment authored by a
-  registered source whose body matches that source's pattern (e.g. `sonarqubecloud` +
-  `Quality Gate passed`) is treated as **addressed** and never blocks. The patterns live in **data,
+  registered source whose body matches that source's pattern is treated as **addressed** and never
+  blocks. For `sonarqubecloud` the pattern pins the `**Quality Gate passed**` headline **and** the
+  `[0 New issues]` and `[0 Security Hotspots]` lines. A gate can pass while still reporting new issues
+  or hotspots, and those are findings, so the headline alone never clears a comment. The patterns live in **data,
   not hard-coded logins** in the gate (`reviewer_sources_info_status_patterns`). It stays **fail
   closed**: a `Quality Gate failed` comment does not match and still blocks, as does any bot comment
   carrying findings, any comment from a bot with no pattern, and every human comment. An unreadable
@@ -123,7 +125,8 @@ at all. Two changes close this:
   classify.
 - **Maintainers can clear a *registered reviewer bot's* comment when needed.**
   `scripts/maintainer-resolve-comment.sh` accepts a comment authored by a bot listed in
-  `reviewer-sources.tsv` (in addition to your own). This path **requires `--reason`**, which is posted
+  `reviewer-sources.tsv` (in addition to your own). The author must be a GitHub App actor
+  (`__typename == Bot`), so a *person* whose login matches a registered bot's is refused like any other human. This path **requires `--reason`**, which is posted
   as a reply carrying a `<!-- maintainer-resolve … -->` marker (so the reply is not itself a new
   blocker) **before** the original is minimized `RESOLVED`. It **still refuses another *human's*
   comment** — that restriction is exactly why #1910 was self-scoped — and fails closed if it cannot

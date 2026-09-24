@@ -161,21 +161,60 @@ _run_check() {
 # #1918 — data-driven info-status classifier (SonarCloud clean passes)
 # ────────────────────────────────────────────────────────────────────
 
-# AC1: a clean SonarCloud "Quality Gate passed" status comment clears the gate
-# with NO dev-lead and NO human — the classifier is keyed off the reviewer-source
-# registry (sonarqubecloud + a "Quality Gate passed" body pattern).
-@test "AC1: SonarCloud 'Quality Gate passed' comment clears → 0" {
-  local json='{"comments":[{"author":{"login":"sonarqubecloud"},"body":"## Quality Gate passed\n\nNo new issues.","isMinimized":false,"minimizedReason":""}]}'
-  _run_check "$json"
+# SonarCloud's real "Quality Gate passed" comment shape (trimmed): the headline plus
+# per-metric lines. `_sonar_body <new_issues> <hotspots>` renders it with the given
+# counts; `_sonar_json <login> <body> [reviews_json]` wraps it in a gate snapshot.
+_sonar_body() {
+  printf '%s' "## [![Quality Gate Passed](https://sonarsource.github.io/qg-passed-20px.png 'Quality Gate Passed')](https://sonarcloud.io/dashboard) **Quality Gate passed**  
+Issues  
+![](https://sonarsource.github.io/passed-16px.png '') [$1 New issues](https://sonarcloud.io/project/issues)  
+![](https://sonarsource.github.io/accepted-16px.png '') [0 Accepted issues](https://sonarcloud.io/project/issues)
+
+Measures  
+![](https://sonarsource.github.io/passed-16px.png '') [$2 Security Hotspots](https://sonarcloud.io/project/security_hotspots)  
+![](https://sonarsource.github.io/passed-16px.png '') [0.0% Coverage on New Code](https://sonarcloud.io/component_measures)"
+}
+_sonar_json() {
+  jq -cn --arg l "$1" --arg b "$2" --argjson r "${3:-[]}" \
+    '{reviews:$r, comments:[{author:{login:$l}, body:$b, isMinimized:false, minimizedReason:""}]}'
+}
+
+# AC1: a clean SonarCloud "Quality Gate passed" status comment (0 new issues, 0
+# security hotspots) clears the gate with NO dev-lead and NO human — the classifier
+# is keyed off the reviewer-source registry (sonarqubecloud + its info_status_pattern).
+@test "AC1: SonarCloud 'Quality Gate passed' (0 new issues, 0 hotspots) clears → 0" {
+  _run_check "$(_sonar_json sonarqubecloud "$(_sonar_body 0 0)")"
   [ "$status" -eq 0 ]
 }
 
 # AC1: the App login may surface with a [bot] suffix in some read shapes; it must
 # still match the bare registry login.
-@test "AC1: SonarCloud 'Quality Gate passed' with a [bot] suffix login clears → 0" {
-  local json='{"comments":[{"author":{"login":"sonarqubecloud[bot]"},"body":"Quality Gate passed","isMinimized":false,"minimizedReason":""}]}'
-  _run_check "$json"
+@test "AC1: SonarCloud clean pass with a [bot] suffix login clears → 0" {
+  _run_check "$(_sonar_json 'sonarqubecloud[bot]' "$(_sonar_body 0 0)")"
   [ "$status" -eq 0 ]
+}
+
+# AC1 precision (#1918 review): a gate can PASS while still reporting new issues or
+# security hotspots (depends on the gate's conditions). Those are findings — the
+# headline alone must not clear them.
+@test "AC1: 'Quality Gate passed' but 2 New issues still blocks → 1" {
+  _run_check "$(_sonar_json sonarqubecloud "$(_sonar_body 2 0)")"
+  [ "$status" -eq 1 ]
+}
+
+@test "AC1: 'Quality Gate passed' but 1 Security Hotspot still blocks → 1" {
+  _run_check "$(_sonar_json sonarqubecloud "$(_sonar_body 0 1)")"
+  [ "$status" -eq 1 ]
+}
+
+@test "AC1: '10 New issues' is not mistaken for '0 New issues' → 1" {
+  _run_check "$(_sonar_json sonarqubecloud "$(_sonar_body 10 0)")"
+  [ "$status" -eq 1 ]
+}
+
+@test "AC1: bare 'Quality Gate passed' text without the zero-count lines blocks → 1" {
+  _run_check "$(_sonar_json sonarqubecloud "Quality Gate passed")"
+  [ "$status" -eq 1 ]
 }
 
 # AC2: a SonarCloud "Quality Gate failed" comment still blocks — it carries findings.
@@ -202,11 +241,10 @@ _run_check() {
 }
 
 # AC5 (regression, whole loop): a PR carrying an approving pr-review review AND a
-# later SonarCloud "Quality Gate passed" comment stays cleared — the gate returns
-# 0, so review-one-pr.sh never dismisses the approval and no review cycle is burned.
-@test "AC5: approving review + later SonarCloud 'Quality Gate passed' stays cleared → 0" {
-  local json='{"reviews":[{"author":{"login":"donpetry-bot"},"state":"APPROVED"}],"comments":[{"author":{"login":"sonarqubecloud"},"body":"## Quality Gate passed\n\nNo new issues.","isMinimized":false,"minimizedReason":""}]}'
-  _run_check "$json"
+# later clean SonarCloud "Quality Gate passed" comment stays cleared — the gate
+# returns 0, so review-one-pr.sh never dismisses the approval and no cycle is burned.
+@test "AC5: approving review + later clean SonarCloud pass stays cleared → 0" {
+  _run_check "$(_sonar_json sonarqubecloud "$(_sonar_body 0 0)" '[{"author":{"login":"donpetry-bot"},"state":"APPROVED"}]')"
   [ "$status" -eq 0 ]
 }
 

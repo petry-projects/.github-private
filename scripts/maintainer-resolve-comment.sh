@@ -340,7 +340,7 @@ if [[ "${BASH_SOURCE[0]}" = "${0}" ]]; then
   # viewer, in one GraphQL round-trip. Fail closed if either login is unreadable.
   # `url` is the authoritative source for the repo + PR number when posting the
   # bot-path reply (it is a /pull/…#issuecomment-… URL for a PR comment).
-  _q='query($id:ID!){viewer{login} node(id:$id){... on IssueComment{author{login} isMinimized minimizedReason url}}}'
+  _q='query($id:ID!){viewer{login} node(id:$id){... on IssueComment{author{__typename login} isMinimized minimizedReason url}}}'
   set +e
   _snap=$(gh api graphql -f query="$_q" -f id="$_node" 2>/dev/null)
   _status=$?
@@ -363,6 +363,10 @@ if [[ "${BASH_SOURCE[0]}" = "${0}" ]]; then
 
   _viewer=$(printf '%s' "$_snap" | jq -r '.data.viewer.login // ""' 2>/dev/null || echo "")
   _author=$(printf '%s' "$_snap" | jq -r '.data.node.author.login // ""' 2>/dev/null || echo "")
+  # Actor type: the registered-bot path requires a GitHub App actor ("Bot"), so a
+  # person whose login happens to equal a registered bot's can never be treated as
+  # that bot (#1918 review). Unreadable → "" → the bot path is refused.
+  _author_type=$(printf '%s' "$_snap" | jq -r '.data.node.author.__typename // ""' 2>/dev/null || echo "")
   _is_min=$(printf '%s' "$_snap" | jq -r '.data.node.isMinimized // false | tostring' 2>/dev/null || echo "false")
   _min_reason=$(printf '%s' "$_snap" | jq -r '.data.node.minimizedReason // ""' 2>/dev/null || echo "")
   _url=$(printf '%s' "$_snap" | jq -r '.data.node.url // ""' 2>/dev/null || echo "")
@@ -391,7 +395,7 @@ if [[ "${BASH_SOURCE[0]}" = "${0}" ]]; then
           && reviewer_sources_logins 2>/dev/null
       )" || _registered=""
     fi
-    if [[ -n "$_viewer" ]] && mrc_is_registered_bot "$_author" "$_registered"; then
+    if [[ -n "$_viewer" && "$_author_type" == "Bot" ]] && mrc_is_registered_bot "$_author" "$_registered"; then
       _authz_kind="bot"
     fi
   fi

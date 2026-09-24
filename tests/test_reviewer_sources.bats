@@ -145,7 +145,13 @@ TSV
 @test "info-status: sonarqubecloud declares a 'Quality Gate passed' info-status pattern" {
   local patterns
   patterns="$(reviewer_sources_info_status_patterns)"
-  [[ "$patterns" == *"sonarqubecloud	Quality Gate passed"* ]]
+  local sonar
+  sonar="$(printf '%s\n' "$patterns" | awk -F'\t' '$1=="sonarqubecloud"{print $2}')"
+  # The pattern must pin the headline AND both zero counts (#1918 review), not
+  # just the words "Quality Gate passed".
+  [[ "$sonar" == *"Quality Gate passed"* ]]
+  [[ "$sonar" == *"0 New issues"* ]]
+  [[ "$sonar" == *"0 Security Hotspots"* ]]
 }
 
 @test "info-status: a source without an info-status pattern is not listed" {

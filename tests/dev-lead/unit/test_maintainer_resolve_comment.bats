@@ -273,3 +273,39 @@ _mrc_minimized_reason() {
   [ "$status" -eq 2 ]
   echo "$output" | grep -qi "unrecognised comment reference"
 }
+
+# #1918 review: the registered-bot path must require a GitHub App actor. A PERSON
+# whose login happens to equal a registered bot login (e.g. a user account named
+# `sonarqubecloud`) must be refused like any other human — never minimized.
+_mrc_fake_gh() {
+  # $1 = author __typename. Writes a `gh` shim on PATH that answers the one GraphQL
+  # read and records any other call (a minimize or reply would be a failure).
+  local bin="$BATS_TEST_TMPDIR/bin"; mkdir -p "$bin"
+  cat > "$bin/gh" <<SHIM
+#!/usr/bin/env bash
+if [[ "\$*" == *"viewer{login}"* ]]; then
+  printf '%s' '{"data":{"viewer":{"login":"don-petry"},"node":{"author":{"__typename":"$1","login":"sonarqubecloud"},"isMinimized":false,"minimizedReason":null,"url":"https://github.com/o/r/pull/1#issuecomment-1"}}}'
+  exit 0
+fi
+echo "\$*" >> "$BATS_TEST_TMPDIR/gh-writes.log"
+printf '%s' '{"data":{}}'
+SHIM
+  chmod +x "$bin/gh"
+  export PATH="$bin:$PATH"
+}
+
+@test "AC3: a USER account whose login equals a registered bot is refused (exit 3, no write)" {
+  _mrc_fake_gh User
+  run bash "$MRC" "IC_kwDOfake1" --reason "status only"
+  [ "$status" -eq 3 ]
+  echo "$output" | grep -qi "refusing to resolve"
+  [ ! -s "$BATS_TEST_TMPDIR/gh-writes.log" ]
+}
+
+@test "AC3: the same registered login as a Bot actor is authorized for the bot path" {
+  _mrc_fake_gh Bot
+  run bash "$MRC" "IC_kwDOfake1" --reason "status only"
+  # Authorized: it proceeds past authz to the reply + minimize writes.
+  [ "$status" -ne 3 ]
+  [ -s "$BATS_TEST_TMPDIR/gh-writes.log" ]
+}
