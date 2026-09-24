@@ -99,9 +99,15 @@ gates that withhold approval until an external finding is accounted for:
   for advisory review bots (Gemini, Copilot, SonarCloud, Codex) to submit before
   approving.
 - **Maintainer issue-comment gate** (`scripts/lib/maintainer-comment-gate.sh`,
-  #1290) — withholds approval while the latest maintainer *issue comment*
-  (`gh pr comment` / the main comment box, which creates no review thread) postdates
-  the last push. It **fails closed**. See
+  #1290/#1813/#1918) — withholds approval while any PR *issue comment*
+  (`gh pr comment` / the main comment box, which creates no review thread) lacks a
+  **verified disposition**. The old push-timestamp model (a push postdating the
+  comment cleared it) was retired in #1813 because GitHub now returns the head push
+  timestamp as `null`; "addressed" now means the comment was minimized with
+  classifier `RESOLVED`. Every issue comment — human *and* bot — must carry one,
+  with two narrow exceptions: our own automation-marked comments, and clean
+  informational status comments from registered reviewer bots (e.g. SonarCloud's
+  "Quality Gate passed", #1918). It **fails closed**. See
   [maintainer-comment-gate.md](maintainer-comment-gate.md) for why a review thread
   blocks merge but a plain PR comment previously did not, and how the block clears.
 
