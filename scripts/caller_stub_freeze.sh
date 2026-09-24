@@ -47,7 +47,7 @@ source "${CALLER_FREEZE_DIR}/fleet_stub_drift.sh"
 # breaks the source repo's own automation post-merge), so they are frozen.
 #
 # The manifest is per-role/per-JOB (#1725): the middle field names the job whose
-# forwarding block is frozen. Today these are three single-job per-role stubs; on
+# forwarding block is frozen. Today these are two single-job per-role stubs; on
 # the collapse (epic #1723) each collapsed role becomes a job row against the one
 # agent-ingress.yml — the same job-scoped extractor covers both shapes, so this
 # guard lands BEFORE the collapse without breaking current CI.
