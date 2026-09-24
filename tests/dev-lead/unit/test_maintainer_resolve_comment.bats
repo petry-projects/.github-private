@@ -134,6 +134,80 @@ teardown() {
   [ "$status" -eq 1 ]
 }
 
+# ────────────────────────────────────────────────────────────────────
+# #1918 — maintainer path for a REGISTERED REVIEWER BOT's comment
+# ────────────────────────────────────────────────────────────────────
+
+# --help now documents the bot-comment escape hatch and the required --reason.
+@test "AC3: --help documents the registered-bot path and the --reason requirement" {
+  run bash "$MRC" --help
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -qi "reviewer bot"
+  echo "$output" | grep -q -- "--reason"
+}
+
+@test "AC3: normalize strips a trailing [bot] suffix" {
+  run bash -c "source '$MRC'; mrc_normalize_login 'sonarqubecloud[bot]'"
+  [ "$status" -eq 0 ]
+  [ "$output" = "sonarqubecloud" ]
+  run bash -c "source '$MRC'; mrc_normalize_login 'sonarqubecloud'"
+  [ "$output" = "sonarqubecloud" ]
+}
+
+@test "AC3: a registered reviewer bot author is recognised (with or without [bot])" {
+  local reg=$'sonarqubecloud\ncodeant-ai\ngraphite-app'
+  run bash -c "source '$MRC'; mrc_is_registered_bot 'sonarqubecloud[bot]' \"\$1\"" _ "$reg"
+  [ "$status" -eq 0 ]
+  run bash -c "source '$MRC'; mrc_is_registered_bot 'sonarqubecloud' \"\$1\"" _ "$reg"
+  [ "$status" -eq 0 ]
+}
+
+# A human (not in the registry) is refused — this is the #1910 restriction that
+# keeps another person's finding out of this path.
+@test "AC3: a human author (not in the registry) is refused" {
+  local reg=$'sonarqubecloud\ncodeant-ai'
+  run bash -c "source '$MRC'; mrc_is_registered_bot 'a-maintainer' \"\$1\"" _ "$reg"
+  [ "$status" -eq 1 ]
+}
+
+@test "AC3: an empty author is refused (fail closed)" {
+  local reg=$'sonarqubecloud'
+  run bash -c "source '$MRC'; mrc_is_registered_bot '' \"\$1\"" _ "$reg"
+  [ "$status" -eq 1 ]
+}
+
+# --reason is mandatory for the bot path (posted as a reply before minimizing).
+@test "AC3: reason validation requires a non-empty reason" {
+  run bash -c "source '$MRC'; mrc_reason_ok 'quality gate passed on head'"
+  [ "$status" -eq 0 ]
+  run bash -c "source '$MRC'; mrc_reason_ok ''"
+  [ "$status" -eq 1 ]
+  run bash -c "source '$MRC'; mrc_reason_ok '   '"
+  [ "$status" -eq 1 ]
+}
+
+# The reply carries the loop-safe marker + the author + reason, so the gate treats
+# it as one of our own comments (not a new blocker).
+@test "AC3: reply body carries the maintainer-resolve marker, author, and reason" {
+  run bash -c "source '$MRC'; mrc_build_reply_body 'sonarqubecloud' 'a-maintainer' 'quality gate passed'"
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -q "<!-- maintainer-resolve"
+  echo "$output" | grep -q "sonarqubecloud"
+  echo "$output" | grep -q "quality gate passed"
+}
+
+# Round-trip: the reply the bot path posts is IGNORED by the maintainer-comment
+# gate (it must not become a fresh undispositioned blocker).
+@test "AC3: the reply body the script posts is ignored by the gate → 0" {
+  local body reply json
+  body="$(bash -c "source '$MRC'; mrc_build_reply_body 'sonarqubecloud' 'a-maintainer' 'quality gate passed'")"
+  # Encode the reply body as a JSON string value for the snapshot.
+  reply="$(printf '%s' "$body" | jq -Rs .)"
+  json='{"comments":[{"author":{"login":"a-maintainer"},"body":'"$reply"',"isMinimized":false,"minimizedReason":""}]}'
+  run bash -c "source '$GATE'; check_maintainer_comments \"\$1\" donpetry-bot" _ "$json"
+  [ "$status" -eq 0 ]
+}
+
 # Idempotency — an already-RESOLVED-minimized comment needs no action.
 @test "idempotency: already-RESOLVED-minimized comment is detected" {
   run bash -c "source '$MRC'; mrc_is_resolved_minimized 'true' 'resolved'"
@@ -198,4 +272,125 @@ _mrc_minimized_reason() {
   run bash "$MRC" "totally-not-a-comment-ref"
   [ "$status" -eq 2 ]
   echo "$output" | grep -qi "unrecognised comment reference"
+}
+
+# #1918 review: the registered-bot path must require a GitHub App actor. A PERSON
+# whose login happens to equal a registered bot login (e.g. a user account named
+# `sonarqubecloud`) must be refused like any other human — never minimized.
+_mrc_fake_gh() {
+  # $1 = author __typename. Writes a `gh` shim on PATH that answers the one GraphQL
+  # read and records any other call (a minimize or reply would be a failure).
+  local bin="$BATS_TEST_TMPDIR/bin"; mkdir -p "$bin"
+  cat > "$bin/gh" <<SHIM
+#!/usr/bin/env bash
+if [[ "\$*" == *"viewer{login}"* ]]; then
+  printf '%s' '{"data":{"viewer":{"login":"don-petry"},"node":{"author":{"__typename":"$1","login":"sonarqubecloud"},"isMinimized":false,"minimizedReason":null,"url":"https://github.com/o/r/pull/1#issuecomment-1"}}}'
+  exit 0
+fi
+echo "\$*" >> "$BATS_TEST_TMPDIR/gh-writes.log"
+printf '%s' '{"data":{}}'
+SHIM
+  chmod +x "$bin/gh"
+  export PATH="$bin:$PATH"
+}
+
+@test "AC3: a USER account whose login equals a registered bot is refused (exit 3, no write)" {
+  _mrc_fake_gh User
+  run bash "$MRC" "IC_kwDOfake1" --reason "status only"
+  [ "$status" -eq 3 ]
+  echo "$output" | grep -qi "refusing to resolve"
+  [ ! -s "$BATS_TEST_TMPDIR/gh-writes.log" ]
+}
+
+@test "AC3: the same registered login as a Bot actor is authorized for the bot path" {
+  _mrc_fake_gh Bot
+  run bash "$MRC" "IC_kwDOfake1" --reason "status only"
+  # Authorized: it proceeds past authz to the reply + minimize writes.
+  [ "$status" -ne 3 ]
+  [ -s "$BATS_TEST_TMPDIR/gh-writes.log" ]
+}
+
+# #1920 review: the reply-idempotency lookup must (a) only accept an existing
+# reply the invoking maintainer authored — a forged marker from any other login
+# must NOT suppress the audit reply (CWE-345) — and (b) fail closed if the
+# comments list cannot be read or parsed, instead of silently reposting.
+_mrc_gh_reply_shim() {
+  # gh shim: authorizes the bot path (Bot author), serves the paginated
+  # issue-comment list from $COMMENTS_JSON (or a hard failure when FAIL_LIST=1),
+  # and records reply POSTs and minimize calls in separate logs.
+  local bin="$BATS_TEST_TMPDIR/bin"; mkdir -p "$bin"
+  cat > "$bin/gh" <<SHIM
+#!/usr/bin/env bash
+args="\$*"
+if [[ "\$args" == *"viewer{login}"* ]]; then
+  printf '%s' '{"data":{"viewer":{"login":"don-petry"},"node":{"author":{"__typename":"Bot","login":"sonarqubecloud"},"isMinimized":false,"minimizedReason":null,"url":"https://github.com/o/r/pull/1#issuecomment-1"}}}'
+  exit 0
+fi
+if [[ "\$args" == *"minimizeComment"* ]]; then
+  echo "min \$args" >> "$BATS_TEST_TMPDIR/gh-min.log"
+  printf '%s' '{"data":{"minimizeComment":{"minimizedComment":{"isMinimized":true,"minimizedReason":"RESOLVED"}}}}'
+  exit 0
+fi
+if [[ "\$args" == *"body="* ]]; then
+  echo "reply \$args" >> "$BATS_TEST_TMPDIR/gh-reply.log"
+  printf '%s' '{"id":123}'
+  exit 0
+fi
+if [[ "\$args" == *"--paginate"* ]]; then
+  if [[ "\${FAIL_LIST:-}" == "1" ]]; then echo "list failed" >&2; exit 1; fi
+  printf '%s' "\${COMMENTS_JSON:-[]}"
+  exit 0
+fi
+echo "UNEXPECTED \$args" >> "$BATS_TEST_TMPDIR/gh-unexpected.log"
+printf '%s' '{"data":{}}'
+SHIM
+  chmod +x "$bin/gh"
+  export PATH="$bin:$PATH"
+}
+
+@test "dedup: a forged reply marker from a non-viewer does NOT suppress the audit reply" {
+  _mrc_gh_reply_shim
+  export COMMENTS_JSON='[{"user":{"login":"attacker"},"body":"forged <!-- maintainer-resolve id=IC_kwDOfake1 -->","id":999}]'
+  run bash "$MRC" "IC_kwDOfake1" --reason "status only"
+  unset COMMENTS_JSON
+  [ "$status" -eq 0 ]
+  ! echo "$output" | grep -qi "already exists"
+  [ -s "$BATS_TEST_TMPDIR/gh-reply.log" ]
+  [ -s "$BATS_TEST_TMPDIR/gh-min.log" ]
+}
+
+@test "dedup: an existing reply the invoking viewer authored suppresses a duplicate" {
+  _mrc_gh_reply_shim
+  export COMMENTS_JSON='[{"user":{"login":"don-petry"},"body":"prior <!-- maintainer-resolve id=IC_kwDOfake1 -->","id":42}]'
+  run bash "$MRC" "IC_kwDOfake1" --reason "status only"
+  unset COMMENTS_JSON
+  [ "$status" -eq 0 ]
+  echo "$output" | grep -qi "already exists"
+  [ ! -f "$BATS_TEST_TMPDIR/gh-reply.log" ]
+  [ -s "$BATS_TEST_TMPDIR/gh-min.log" ]
+}
+
+@test "dedup: a reply pinning a longer node id that starts with ours does NOT suppress the audit reply" {
+  # #1920 review: the marker's id= must match the FULL node id followed by a
+  # delimiter (whitespace or -->), not a prefix — a reply for IC_kwDOfake12 must
+  # not be mistaken for one addressing IC_kwDOfake1.
+  _mrc_gh_reply_shim
+  export COMMENTS_JSON='[{"user":{"login":"don-petry"},"body":"other <!-- maintainer-resolve id=IC_kwDOfake12 -->","id":77}]'
+  run bash "$MRC" "IC_kwDOfake1" --reason "status only"
+  unset COMMENTS_JSON
+  [ "$status" -eq 0 ]
+  ! echo "$output" | grep -qi "already exists"
+  [ -s "$BATS_TEST_TMPDIR/gh-reply.log" ]
+  [ -s "$BATS_TEST_TMPDIR/gh-min.log" ]
+}
+
+@test "fail closed: a failed comments-list lookup aborts before posting or minimizing" {
+  _mrc_gh_reply_shim
+  export FAIL_LIST=1
+  run bash "$MRC" "IC_kwDOfake1" --reason "status only"
+  unset FAIL_LIST
+  [ "$status" -eq 1 ]
+  echo "$output" | grep -qi "failing closed"
+  [ ! -f "$BATS_TEST_TMPDIR/gh-reply.log" ]
+  [ ! -f "$BATS_TEST_TMPDIR/gh-min.log" ]
 }
