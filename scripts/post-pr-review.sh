@@ -500,6 +500,11 @@ COMMENT_END
       BODY_FOR_COMMENT="<!-- pr-review-agent v1 sha=$PR_HEAD_SHA decision=escalated risk=$RISK -->
 $BODY_WITHOUT_OLD_MARKER"
       gh pr comment "$PR_URL" --body "$BODY_FOR_COMMENT" 2>/dev/null || true
+      # A gate downgrade invalidates any prior agent approval at an earlier SHA.
+      # The just-posted escalation carries the newest marker so it is preserved;
+      # everything older (notably a stale APPROVED review) is superseded, closing
+      # the window where standing-approval/carry-forward could act on it.
+      mark_prior_agent_items_obsolete "$PR_URL"
     fi
     gh pr edit "$PR_URL" --add-label needs-human-review 2>/dev/null || true
     SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
