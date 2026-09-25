@@ -71,9 +71,13 @@ assert_each_pr_comment_marked() {
 }
 
 @test "fix-bot-comment: case 1 (post nothing) requires the FULL info-status pattern, not the headline" {
-  grep -qF '[0 New issues]' "$PROMPTS_DIR/fix-bot-comment.md"
-  grep -qF '[0 Security Hotspots]' "$PROMPTS_DIR/fix-bot-comment.md"
-  grep -qF 'is **not** clean' "$PROMPTS_DIR/fix-bot-comment.md"
+  # Bind all three requirements to the case-1 paragraph itself, not the whole file.
+  local case1
+  case1=$(grep -F '1. **Registered clean-status re-post' "$PROMPTS_DIR/fix-bot-comment.md")
+  [ "$(printf '%s\n' "$case1" | grep -c .)" -eq 1 ]
+  [[ "$case1" == *'[0 New issues]'* ]]
+  [[ "$case1" == *'[0 Security Hotspots]'* ]]
+  [[ "$case1" == *'is **not** clean'* ]]
 }
 
 @test "review-changes.md failing-check PR comment instruction carries a dev-lead marker (#1919)" {
@@ -119,6 +123,8 @@ assert_each_pr_comment_marked() {
 @test "fix-bot-comment: the reusable validates and forwards the comment node id" {
   local wf; wf="$(cd "$BATS_TEST_DIRNAME"/../../.. && pwd)/.github/workflows/dev-lead-reusable.yml"
   grep -qF 'INTENT_COMMENT_NODE_ID=' "$wf"
-  grep -qE '\[\[ "\$_cnid" =~ \^\[A-Za-z0-9_-\]\+\$ \]\]' "$wf"
+  grep -qF '[[ "$_cnid" =~ ^[-A-Za-z0-9_+/=]+$ ]]' "$wf"
+  # A fix-bot-comment without a usable id fails loudly instead of silently no-oping.
+  grep -qF 'refusing to run a fix-bot-comment that cannot disposition its notice' "$wf"
   grep -qF 'COMMENT_NODE_ID: ${{ env.INTENT_COMMENT_NODE_ID }}' "$wf"
 }
