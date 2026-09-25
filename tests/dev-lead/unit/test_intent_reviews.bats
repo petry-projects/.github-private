@@ -344,6 +344,22 @@ EOF
   [ "$(_get_env INTENT_TYPE)" = "fix-bot-comment" ]
 }
 
+@test "reviews: issue_comment trusted bot → fix-bot-comment context carries the comment node id (#1919)" {
+  # fix-bot-comment dispositions the triggering notice by its node id, so the id
+  # must travel in the intent context. It is never re-matched by raw body text.
+  local ev="$BATS_TEST_TMPDIR/ic_with_node.json"
+  jq '.comment.node_id = "IC_kwDOtestNode123"' "$FIXTURES_DIR/issue_comment_coderabbit.json" > "$ev"
+  export GITHUB_EVENT_NAME="issue_comment"
+  export GITHUB_EVENT_PATH="$ev"
+
+  run bash "$INTENT_SCRIPT"
+
+  [ "$status" -eq 0 ]
+  [ "$(_get_env INTENT_TYPE)" = "fix-bot-comment" ]
+  # INTENT_CONTEXT is written as a heredoc-delimited GITHUB_ENV value; the JSON is the next line.
+  [ "$(grep -A1 '^INTENT_CONTEXT<<' "$GITHUB_ENV" | tail -1 | jq -r '.comment_node_id')" = "IC_kwDOtestNode123" ]
+}
+
 @test "reviews: issue_comment human + @dev-lead → on-mention" {
   export GITHUB_EVENT_NAME="issue_comment"
   export GITHUB_EVENT_PATH="$FIXTURES_DIR/issue_comment_human_trigger.json"
