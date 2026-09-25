@@ -136,8 +136,44 @@ TSV
   [ "$status" -eq 1 ]
 }
 
-@test "check-run: manifest schema_version is 2 (check_run_name column added)" {
-  [ "$(reviewer_sources_version)" = "2" ]
+@test "check-run: manifest schema_version is 3 (info_status_pattern column added)" {
+  [ "$(reviewer_sources_version)" = "3" ]
+}
+
+# ── Info-status patterns (issue #1918) ───────────────────────────────────────
+
+@test "info-status: sonarqubecloud declares a 'Quality Gate passed' info-status pattern" {
+  local patterns
+  patterns="$(reviewer_sources_info_status_patterns)"
+  local sonar
+  sonar="$(printf '%s\n' "$patterns" | awk -F'\t' '$1=="sonarqubecloud"{print $2}')"
+  # The pattern must pin the headline AND both zero counts (#1918 review), not
+  # just the words "Quality Gate passed".
+  [[ "$sonar" == *"Quality Gate passed"* ]]
+  [[ "$sonar" == *"0 New issues"* ]]
+  [[ "$sonar" == *"0 Security Hotspots"* ]]
+}
+
+@test "info-status: a source without an info-status pattern is not listed" {
+  local patterns
+  patterns="$(reviewer_sources_info_status_patterns)"
+  # These seven sources carry "-" in the info_status_pattern column, so none may
+  # appear — enumerate every one (mirroring the check-run negative test) so giving
+  # any unlisted source a non-"-" pattern must fail this test rather than pass
+  # silently and weaken the gate's fail-closed guarantee.
+  [[ "$patterns" != *"copilot-pull-request-reviewer"* ]]
+  [[ "$patterns" != *"gemini-code-assist"* ]]
+  [[ "$patterns" != *"chatgpt-codex-connector"* ]]
+  [[ "$patterns" != *"coderabbitai"* ]]
+  [[ "$patterns" != *"qodo-code-review"* ]]
+  [[ "$patterns" != *"codeant-ai"* ]]
+  [[ "$patterns" != *"graphite-app"* ]]
+}
+
+@test "info-status: helper propagates a missing-manifest failure" {
+  REVIEWER_SOURCES_MANIFEST="/nonexistent/reviewer-sources.tsv" \
+    run reviewer_sources_info_status_patterns
+  [ "$status" -eq 1 ]
 }
 
 # ── cubic registration (issue #1903) ─────────────────────────────────────────

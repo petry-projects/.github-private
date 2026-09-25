@@ -20,7 +20,7 @@
 #   (creates_threads=no) MAY be advisory-only-and-non-blocking (dev_lead_trusted=no)
 #   with the reason recorded in the rationale column.
 #
-# schema_version: 2
+# schema_version: 3
 #
 # Columns (tab-separated):
 #   login            — the bot's GraphQL App login (no "[bot]" suffix). dev-lead's
@@ -35,15 +35,25 @@
 #                      review ran is a real response EVEN WITH ZERO comments and no PR
 #                      review, so the scorecard fetches it separately (#1908). Data, not
 #                      code: the scorecard reads this column instead of hard-coding logins.
+#   info_status_pattern — a case-sensitive regex (jq test()) matching a KNOWN CLEAN
+#                      *informational* status comment from this bot that carries no
+#                      finding and needs no disposition — e.g. SonarCloud's
+#                      "Quality Gate passed". "-" when the bot posts no such comment.
+#                      maintainer-comment-gate.sh (#1918) treats a comment authored by
+#                      this login whose body matches this pattern as ADDRESSED, so a
+#                      clean status re-posted on every push never deadlocks approval.
+#                      It must NOT match the bot's finding-bearing comments (SonarCloud's
+#                      "Quality Gate failed" must still block) — the gate fails closed on
+#                      anything this pattern does not match. Data, not hard-coded logins.
 #   rationale        — why this bot is classified as it is.
 #
-# login	creates_threads	dev_lead_trusted	advisory_gate	check_run_name	rationale
-copilot-pull-request-reviewer	yes	yes	yes	-	Inline review comments; dev-lead addresses the findings.
-gemini-code-assist	yes	yes	yes	-	Inline review comments; dev-lead addresses the findings.
-chatgpt-codex-connector	yes	yes	yes	-	Inline review comments (pull_request_review_comment); dev-lead addresses the findings.
-coderabbitai	yes	yes	no	-	Inline review comments; tracked by the scorecard and rate-limit detector but not part of the advisory approval-wait set.
-sonarqubecloud	no	yes	yes	-	Top-level quality-gate comment only — no inline review threads; trusted so dev-lead acts on the comment via the issue-comment path.
-qodo-code-review	yes	yes	yes	-	Inline review comments (#1355 recognized it for gating/scorecard; trusted for acting per #1425).
-codeant-ai	yes	yes	yes	-	Inline review comments (#1355 recognized it for gating/scorecard; trusted for acting per #1425).
-graphite-app	yes	yes	yes	Graphite / AI Reviews	Inline review comments AND clean passes reported ONLY as the "Graphite / AI Reviews" check run (no PR review) — the scorecard must read that check run or every clean pass is miscounted as No response (#1908). Root cause of the 2026-08-02 unclearable-thread deadlock — trusted so dev-lead can act on its findings (#1425).
-cubic-dev-ai	yes	yes	yes	-	Inline review comments plus a review summary; added 2026-09-22 on a 7-day trial (#1903). Flip advisory_gate to no (or remove this row) if the trial is not converted to paid (~2026-09-29).
+# login	creates_threads	dev_lead_trusted	advisory_gate	check_run_name	info_status_pattern	rationale
+copilot-pull-request-reviewer	yes	yes	yes	-	-	Inline review comments; dev-lead addresses the findings.
+gemini-code-assist	yes	yes	yes	-	-	Inline review comments; dev-lead addresses the findings.
+chatgpt-codex-connector	yes	yes	yes	-	-	Inline review comments (pull_request_review_comment); dev-lead addresses the findings.
+coderabbitai	yes	yes	no	-	-	Inline review comments; tracked by the scorecard and rate-limit detector but not part of the advisory approval-wait set.
+sonarqubecloud	no	yes	yes	-	\*\*Quality Gate passed\*\*[\s\S]*\[0 New issues\][\s\S]*\[0 Security Hotspots\]	Top-level quality-gate comment only — no inline review threads; trusted so dev-lead acts on the comment via the issue-comment path. Its "Quality Gate passed" status is re-posted on every push and carries no finding, so the gate auto-clears it (#1918); "Quality Gate failed" does not match and still blocks.
+qodo-code-review	yes	yes	yes	-	-	Inline review comments (#1355 recognized it for gating/scorecard; trusted for acting per #1425).
+codeant-ai	yes	yes	yes	-	-	Inline review comments (#1355 recognized it for gating/scorecard; trusted for acting per #1425).
+graphite-app	yes	yes	yes	Graphite / AI Reviews	-	Inline review comments AND clean passes reported ONLY as the "Graphite / AI Reviews" check run (no PR review) — the scorecard must read that check run or every clean pass is miscounted as No response (#1908). Root cause of the 2026-08-02 unclearable-thread deadlock — trusted so dev-lead can act on its findings (#1425).
+cubic-dev-ai	yes	yes	yes	-	-	Inline review comments plus a review summary; added 2026-09-22 on a 7-day trial (#1903). Flip advisory_gate to no (or remove this row) if the trial is not converted to paid (~2026-09-29).
