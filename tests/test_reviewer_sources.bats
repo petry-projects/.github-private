@@ -176,6 +176,26 @@ TSV
   [ "$status" -eq 1 ]
 }
 
+# ── cubic registration (issue #1903) ─────────────────────────────────────────
+
+@test "registry: cubic-dev-ai is a thread creator (issue #1903)" {
+  local creators
+  creators="$(reviewer_sources_thread_creator_logins)"
+  [[ "$creators" == *"cubic-dev-ai"* ]]
+}
+
+@test "registry: cubic-dev-ai is in the trusted-bots CSV as cubic-dev-ai[bot] (issue #1903)" {
+  local csv
+  csv="$(reviewer_sources_trusted_bots_csv)"
+  [[ "$csv" == *"cubic-dev-ai[bot]"* ]]
+}
+
+@test "registry: cubic-dev-ai is in the advisory-gate set (issue #1903)" {
+  local gate
+  gate="$(reviewer_sources_advisory_gate_logins)"
+  [[ "$gate" == *"cubic-dev-ai"* ]]
+}
+
 # ── Consistency: the three consumer lists are registry projections ───────────
 
 @test "consistency: advisory gate ADVISORY_BOTS == registry advisory-gate projection" {
