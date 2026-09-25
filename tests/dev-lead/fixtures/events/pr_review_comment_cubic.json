@@ -1,0 +1,40 @@
+{
+  "_test_expected_intent": "fix-reviews",
+  "action": "created",
+  "comment": {
+    "id": 2077,
+    "body": "This inline finding: the guard clause on line 31 can never be reached.",
+    "path": "scripts/lib/example.sh",
+    "line": 31,
+    "author_association": "NONE",
+    "user": {
+      "login": "cubic-dev-ai[bot]",
+      "type": "Bot"
+    }
+  },
+  "pull_request": {
+    "number": 291,
+    "title": "feat: implement issue #1903",
+    "state": "open",
+    "head": {
+      "sha": "ccc333ddd444",
+      "ref": "dev-lead/issue-1903-20260923-0247",
+      "repo": {
+        "full_name": "petry-projects/.github-private"
+      }
+    },
+    "base": {
+      "ref": "main",
+      "repo": {
+        "full_name": "petry-projects/.github-private"
+      }
+    }
+  },
+  "repository": {
+    "full_name": "petry-projects/.github-private"
+  },
+  "sender": {
+    "login": "cubic-dev-ai[bot]",
+    "type": "Bot"
+  }
+}

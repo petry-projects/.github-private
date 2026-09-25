@@ -180,6 +180,7 @@ sonarqubecloud[bot]
 qodo-code-review[bot]
 codeant-ai[bot]
 graphite-app[bot]
+cubic-dev-ai[bot]
 ```
 
 The registry enforces the invariant _(can create a review thread) ⇒ (dev-lead may

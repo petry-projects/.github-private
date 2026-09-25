@@ -183,7 +183,7 @@ if [ -z "${TRUSTED_BOTS:-}" ]; then
     fi
   fi
 fi
-TRUSTED_BOTS="${TRUSTED_BOTS:-copilot-pull-request-reviewer[bot],gemini-code-assist[bot],sonarqubecloud[bot],coderabbitai[bot],chatgpt-codex-connector[bot],qodo-code-review[bot],codeant-ai[bot],graphite-app[bot]}"
+TRUSTED_BOTS="${TRUSTED_BOTS:-copilot-pull-request-reviewer[bot],gemini-code-assist[bot],sonarqubecloud[bot],coderabbitai[bot],chatgpt-codex-connector[bot],qodo-code-review[bot],codeant-ai[bot],graphite-app[bot],cubic-dev-ai[bot]}"
 TRIGGER_PHRASES="${TRIGGER_PHRASES:-@dev-lead}"
 
 if [ -z "$EVENT_NAME" ]; then
