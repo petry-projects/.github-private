@@ -16,10 +16,17 @@ PROMPTS_DIR="$(cd "$BATS_TEST_DIRNAME"/../../.. && pwd)/prompts/dev-lead"
 # The gate's agent-marker regex only matches HTML markers of the form
 # `<!-- dev-lead … -->`. A prompt that tells the agent to `gh pr comment` must
 # therefore also tell it to stamp such a marker.
+#
+# These assertions tie the marker to the comment-emitting instruction (they scan
+# the context window around every `gh pr comment` line), rather than matching the
+# marker anywhere in the prompt. Otherwise a stray example could retain the marker
+# while the `gh pr comment` instruction that must carry it was dropped — the exact
+# regression #1919 guards against — and a file-wide grep would still pass.
 
-@test "review-changes.md failing-check PR comment carries a dev-lead marker (#1919)" {
-  # The failing-check fix note is posted as a PR issue comment; it must be marked.
-  run grep -qF '<!-- dev-lead:check-fix -->' "$PROMPTS_DIR/review-changes.md"
+@test "review-changes.md failing-check PR comment instruction carries a dev-lead marker (#1919)" {
+  # The failing-check fix note is posted as a PR issue comment; the gh pr comment
+  # instruction that emits it must be accompanied by the check-fix marker.
+  run bash -c "grep -B2 -A6 -F 'gh pr comment' \"$PROMPTS_DIR/review-changes.md\" | grep -qF '<!-- dev-lead:check-fix -->'"
   [ "$status" -eq 0 ]
 }
 
@@ -27,8 +34,9 @@ PROMPTS_DIR="$(cd "$BATS_TEST_DIRNAME"/../../.. && pwd)/prompts/dev-lead"
   # A non-actionable bot issue-comment notice (trial-ended, usage-limit, rate-limit)
   # is NOT auto-cleared by the info-status classifier, so a plain ack or suppression
   # leaves the ORIGINAL comment an undispositioned maintainer-gate blocker. The prompt
-  # must instead disposition the original via the verified comment-disposition marker.
-  run grep -qF '<!-- dev-lead:comment-disposition id=<comment_node_id> disposition=informational -->' "$PROMPTS_DIR/fix-bot-comment.md"
+  # must instead disposition the original via the verified comment-disposition marker,
+  # stamped on the gh pr comment instruction that emits the disposition reply.
+  run bash -c "grep -B2 -A6 -F 'gh pr comment' \"$PROMPTS_DIR/fix-bot-comment.md\" | grep -qF '<!-- dev-lead:comment-disposition'"
   [ "$status" -eq 0 ]
 }
 

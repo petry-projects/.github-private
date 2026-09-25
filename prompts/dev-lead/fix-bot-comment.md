@@ -124,17 +124,36 @@ Some bot comments are pure **operational notices**, not code findings: a rate-li
 
    The harness verifies the disposition and minimizes the original comment RESOLVED (#1813) — that is what actually clears the gate. Do **not** call `minimizeComment` yourself. This is the same issue-comment disposition flow documented in `fix-reviews.md` Phase 1b (`scripts/lib/comment-disposition-verify.sh` is the normative parser); `informational` requires only a non-empty reply body, so no `sha=` is needed.
 
-   Resolve `<comment_node_id>` by enumerating the PR's issue comments and matching the triggering notice (authored by `${ACTOR}`, body equal to the comment above):
+   Resolve `<comment_node_id>` by enumerating the PR's issue comments and matching the triggering notice **precisely** — authored by `${ACTOR}` **and** with a body equal to `${COMMENT_BODY}` (the comment above). Matching on author alone selects *every* comment that actor posted (an earlier finding plus this notice), so the disposition can target the wrong one and leave the real blocker undispositioned. Two more requirements: **paginate** past the first 100 comments (a notice on a busy PR can fall outside the first page, so no id is found and the gate stays stuck), and **skip** comments already minimized `RESOLVED` (they are done). Require **exactly one** surviving match before dispositioning — if zero or more than one remain, do not guess; re-check the body or dispose of the comment you can identify unambiguously:
 
    ```bash
-   gh api graphql -f query='query($owner:String!,$repo:String!,$pr:Int!){
-     repository(owner:$owner,name:$repo){ pullRequest(number:$pr){
-       comments(first:100){ nodes{ id author{login} body isMinimized minimizedReason } } } } }' \
-     -F owner="${REPO%%/*}" -F repo="${REPO##*/}" -F pr="${PR_NUMBER}" \
-     | jq -r --arg actor "${ACTOR}" '.data.repository.pullRequest.comments.nodes[]
-         | select(.author.login == $actor
-                  or .author.login == ($actor | sub("\\[bot\\]$"; "")))
-         | .id'
+   # Loop on pageInfo.hasNextPage / endCursor until the connection is exhausted,
+   # collecting the id(s) whose author is ${ACTOR} AND whose body equals the
+   # triggering notice, excluding any already minimized RESOLVED.
+   cursor=null
+   ids=""
+   while :; do
+     page=$(gh api graphql -f query='query($owner:String!,$repo:String!,$pr:Int!,$cursor:String){
+       repository(owner:$owner,name:$repo){ pullRequest(number:$pr){
+         comments(first:100, after:$cursor){
+           nodes{ id author{login} body isMinimized minimizedReason }
+           pageInfo{ hasNextPage endCursor } } } } }' \
+       -F owner="${REPO%%/*}" -F repo="${REPO##*/}" -F pr="${PR_NUMBER}" -F cursor="${cursor}")
+     ids="${ids}$(echo "$page" | jq -r --arg actor "${ACTOR}" --arg body "${COMMENT_BODY}" '
+       .data.repository.pullRequest.comments.nodes[]
+       | select((.author.login == $actor
+                 or .author.login == ($actor | sub("\\[bot\\]$"; "")))
+                and .body == $body
+                and (.isMinimized == false or .minimizedReason != "RESOLVED"))
+       | .id')
+"
+     [ "$(echo "$page" | jq -r '.data.repository.pullRequest.comments.pageInfo.hasNextPage')" = "true" ] || break
+     cursor=$(echo "$page" | jq -r '.data.repository.pullRequest.comments.pageInfo.endCursor')
+   done
+   # Require exactly one match — bail on an ambiguous (0 or >1) result rather than guess.
+   match_count=$(printf '%s\n' "$ids" | grep -c .)
+   [ "$match_count" -eq 1 ] || { echo "ambiguous match ($match_count) — re-check the body before dispositioning"; }
+   node_id=$(printf '%s\n' "$ids" | grep .)
    # Post the disposition reply on the PR:
    #   gh pr comment "${PR_NUMBER}" --repo "${REPO}" --body "…<!-- dev-lead:comment-disposition id=<node_id> disposition=informational -->"
    ```
