@@ -172,8 +172,11 @@ teardown() {
   # Budget raised 500→515 for the #1596 partial-evidence decision-point hooks. The
   # heavy marker logic lives in scripts/lib/partial-evidence-marker.sh; only the
   # three irreducible timeout-branch hooks (deduplicated via _record_partial_evidence)
-  # are here. This still guards the original intent: no polling loops, no ballooning.
-  [ "$lines" -lt 515 ]
+  # are here. Raised 515→560 for the #1903 cubic registration (author-scoped
+  # trial-ended detector, fallback list, notice bots list, pattern accessor, and
+  # comprehensive test coverage for false positive protection). This still guards
+  # the original intent: no polling loops, no ballooning.
+  [ "$lines" -lt 560 ]
 }
 
 # ────────────────────────────────────────────────────────────────────
@@ -486,8 +489,8 @@ MOCK_EOF
   "
   # Must NOT exit the sourcing shell; must expose the built-in fallback sets.
   [ "$status" -eq 0 ]
-  [[ "$output" == *"BOTS=7"* ]]
-  [[ "$output" == *"NOTICE=8"* ]]
+  [[ "$output" == *"BOTS=8"* ]]
+  [[ "$output" == *"NOTICE=9"* ]]
 }
 
 @test "Advisory gate: runtime check still runs when the registry is unreadable (#1538)" {
@@ -566,7 +569,7 @@ MOCK_EOF
   # Three real advisory reviews + Codex signalling it is out of quota, head + submissions
   # recent (timeout fallbacks disarmed). All available bots have submitted, so the gate approves.
   local json
-  json='{"reviews":[{"author":{"login":"gemini-code-assist"},"state":"COMMENTED","submittedAt":"2099-01-01T00:00:00Z"},{"author":{"login":"sonarqubecloud"},"state":"COMMENTED","submittedAt":"2099-01-01T00:00:00Z"},{"author":{"login":"copilot-pull-request-reviewer"},"state":"COMMENTED","submittedAt":"2099-01-01T00:00:00Z"},{"author":{"login":"qodo-code-review"},"state":"COMMENTED","submittedAt":"2099-01-01T00:00:00Z"},{"author":{"login":"codeant-ai"},"state":"COMMENTED","submittedAt":"2099-01-01T00:00:00Z"},{"author":{"login":"graphite-app"},"state":"COMMENTED","submittedAt":"2099-01-01T00:00:00Z"}],"comments":[{"author":{"login":"chatgpt-codex-connector"},"body":"You have reached your Codex usage limits for code reviews.","createdAt":"2099-01-01T00:00:00Z"}]}'
+  json='{"reviews":[{"author":{"login":"gemini-code-assist"},"state":"COMMENTED","submittedAt":"2099-01-01T00:00:00Z"},{"author":{"login":"sonarqubecloud"},"state":"COMMENTED","submittedAt":"2099-01-01T00:00:00Z"},{"author":{"login":"copilot-pull-request-reviewer"},"state":"COMMENTED","submittedAt":"2099-01-01T00:00:00Z"},{"author":{"login":"qodo-code-review"},"state":"COMMENTED","submittedAt":"2099-01-01T00:00:00Z"},{"author":{"login":"codeant-ai"},"state":"COMMENTED","submittedAt":"2099-01-01T00:00:00Z"},{"author":{"login":"graphite-app"},"state":"COMMENTED","submittedAt":"2099-01-01T00:00:00Z"},{"author":{"login":"cubic-dev-ai"},"state":"COMMENTED","submittedAt":"2099-01-01T00:00:00Z"}],"comments":[{"author":{"login":"chatgpt-codex-connector"},"body":"You have reached your Codex usage limits for code reviews.","createdAt":"2099-01-01T00:00:00Z"}]}'
   local tmpdir
   tmpdir=$(_make_mock_gh_dir_recent "$json")
   local gate_script="$SCRIPT_DIR/lib/advisory-review-gate.sh"
@@ -856,7 +859,7 @@ _events_dir() {
   # Qodo is out of quota; all other advisory bots have submitted real reviews.
   # The rate-limited Qodo must drop out of the required set so the gate approves.
   local json
-  json='{"reviews":[{"author":{"login":"gemini-code-assist"},"state":"COMMENTED","submittedAt":"2099-01-01T00:00:00Z"},{"author":{"login":"copilot-pull-request-reviewer"},"state":"COMMENTED","submittedAt":"2099-01-01T00:00:00Z"},{"author":{"login":"sonarqubecloud"},"state":"COMMENTED","submittedAt":"2099-01-01T00:00:00Z"},{"author":{"login":"chatgpt-codex-connector"},"state":"COMMENTED","submittedAt":"2099-01-01T00:00:00Z"},{"author":{"login":"codeant-ai"},"state":"COMMENTED","submittedAt":"2099-01-01T00:00:00Z"},{"author":{"login":"graphite-app"},"state":"COMMENTED","submittedAt":"2099-01-01T00:00:00Z"}],"comments":[{"author":{"login":"qodo-code-review"},"body":"Qodo Merge has reached your monthly usage limit for pull-request reviews.","createdAt":"2099-01-01T00:00:00Z"}]}'
+  json='{"reviews":[{"author":{"login":"gemini-code-assist"},"state":"COMMENTED","submittedAt":"2099-01-01T00:00:00Z"},{"author":{"login":"copilot-pull-request-reviewer"},"state":"COMMENTED","submittedAt":"2099-01-01T00:00:00Z"},{"author":{"login":"sonarqubecloud"},"state":"COMMENTED","submittedAt":"2099-01-01T00:00:00Z"},{"author":{"login":"chatgpt-codex-connector"},"state":"COMMENTED","submittedAt":"2099-01-01T00:00:00Z"},{"author":{"login":"codeant-ai"},"state":"COMMENTED","submittedAt":"2099-01-01T00:00:00Z"},{"author":{"login":"graphite-app"},"state":"COMMENTED","submittedAt":"2099-01-01T00:00:00Z"},{"author":{"login":"cubic-dev-ai"},"state":"COMMENTED","submittedAt":"2099-01-01T00:00:00Z"}],"comments":[{"author":{"login":"qodo-code-review"},"body":"Qodo Merge has reached your monthly usage limit for pull-request reviews.","createdAt":"2099-01-01T00:00:00Z"}]}'
   local tmpdir; tmpdir=$(_make_mock_gh_dir_recent "$json")
   local gate_script="$SCRIPT_DIR/lib/advisory-review-gate.sh"
   run env PATH="$tmpdir:$PATH" bash -c "
@@ -911,4 +914,105 @@ _events_dir() {
   rm -rf "$tmpdir"
   [[ "$output" == *"RATE_LIMITED"* ]]
   [[ "$output" == *"graphite-app"* ]]
+}
+
+# ────────────────────────────────────────────────────────────────────
+# CUBIC ADVISORY REVIEWER (issue #1903)
+#
+# cubic (app slug `cubic-dev-ai`, GraphQL login `cubic-dev-ai`) posts inline
+# review comments plus a review summary. Registered on a 7-day trial started
+# 2026-09-22. Its trial-ended notice must classify as RATE_LIMITED (a refusal),
+# never as a real review or a finding.
+# ────────────────────────────────────────────────────────────────────
+
+@test "Advisory gate: cubic is a registered advisory bot (issue #1903)" {
+  grep -q 'cubic-dev-ai' "$SCRIPT_DIR/lib/advisory-review-gate.sh"
+}
+
+@test "Advisory gate: cubic is in the rate-limit notice superset (issue #1903)" {
+  run bash -c "source '$SCRIPT_DIR/lib/advisory-review-gate.sh'
+    printf '%s\n' \"\${RATE_LIMIT_NOTICE_BOTS[@]}\""
+  [[ "$output" == *"cubic-dev-ai"* ]]
+}
+
+@test "Advisory gate: a cubic trial-ended phrase matches the author-scoped detector (issue #1903)" {
+  # The cubic trial-ended notice must be caught by the author-scoped cubic pattern,
+  # or a refusal would arm the gate but never trigger a sweep retry / scorecard
+  # refusal count. A genuine cubic review must NOT match.
+  run bash -c "source '$SCRIPT_DIR/lib/advisory-review-gate.sh'
+    pat=\"\$(_advisory_cubic_rate_limit_pattern)\"
+    printf '%s' 'cubic: your free trial ended. Upgrade to a paid plan.' | grep -qiE \"\$pat\" || { echo 'MISS-refusal'; exit 1; }
+    printf '%s' 'cubic reviewed this PR and found 2 potential issues.' | grep -qiE \"\$pat\" && { echo 'FALSE-POSITIVE'; exit 1; }
+    echo OK"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"OK"* ]]
+}
+
+@test "Advisory gate: the cubic clause is author-scoped, NOT in the shared detector (issue #1903)" {
+  # The cubic clause must live ONLY in the author-scoped pattern. If it were in the
+  # shared, author-agnostic ADVISORY_RATE_LIMIT_RE, another reviewer merely
+  # discussing cubic's trial would be misclassified RATE_LIMITED (#1903 codex P2).
+  run bash -c "source '$SCRIPT_DIR/lib/advisory-review-gate.sh'
+    gen=\"\$(_advisory_rate_limit_pattern)\"
+    printf '%s' 'cubic: your free trial ended. Upgrade to a paid plan.' | grep -qiE \"\$gen\" && { echo 'LEAKED-INTO-GENERIC'; exit 1; }
+    printf '%s' 'The cubic free trial ended handling is too broad.' | grep -qiE \"\$gen\" && { echo 'GENERIC-FALSE-POSITIVE'; exit 1; }
+    echo OK"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"OK"* ]]
+}
+
+@test "Advisory gate: the tightened cubic clause ignores generic subscription/plan/usage text (issue #1903)" {
+  # cubic P3: the clause is scoped to the observed 'trial (ended|expired)' wording,
+  # so a genuine cubic finding that opens with the 'cubic' prefix is not swept up.
+  run bash -c "source '$SCRIPT_DIR/lib/advisory-review-gate.sh'
+    pat=\"\$(_advisory_cubic_rate_limit_pattern)\"
+    printf '%s' 'cubic: ensure the subscription limit is enforced.' | grep -qiE \"\$pat\" && { echo 'OVER-BROAD'; exit 1; }
+    echo OK"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"OK"* ]]
+}
+
+@test "Gate runtime: a cubic review is detected as an advisory bot submission (issue #1903)" {
+  local json; json="$(cat "$(_events_dir)/advisory_cubic_reviewed.json")"
+  local tmpdir; tmpdir=$(_make_mock_gh_dir_recent "$json")
+  local gate_script="$SCRIPT_DIR/lib/advisory-review-gate.sh"
+  run env PATH="$tmpdir:$PATH" bash -c "
+    source '$gate_script'
+    check_advisory_reviews 'https://github.com/owner/repo/pull/123'
+  "
+  rm -rf "$tmpdir"
+  # If cubic were unregistered it would be filtered out and never appear in output.
+  [[ "$output" == *"cubic-dev-ai"* ]]
+  # A COMMENTED review counts as reported, not RATE_LIMITED.
+  [[ "$output" == *"COMMENTED"* ]]
+}
+
+@test "Gate runtime: a cubic trial-ended notice is classified RATE_LIMITED (issue #1903)" {
+  local json; json="$(cat "$(_events_dir)/advisory_cubic_rate_limited.json")"
+  local tmpdir; tmpdir=$(_make_mock_gh_dir_recent "$json")
+  local gate_script="$SCRIPT_DIR/lib/advisory-review-gate.sh"
+  run env PATH="$tmpdir:$PATH" bash -c "
+    source '$gate_script'
+    check_advisory_reviews 'https://github.com/owner/repo/pull/123'
+  "
+  rm -rf "$tmpdir"
+  [[ "$output" == *"RATE_LIMITED"* ]]
+  [[ "$output" == *"cubic-dev-ai"* ]]
+}
+
+@test "Gate runtime: another reviewer discussing cubic's trial is NOT RATE_LIMITED (author-scoped, issue #1903)" {
+  # A codex comment that merely mentions cubic's trial must classify COMMENTED, not
+  # RATE_LIMITED — otherwise codex would be dropped from the required set on a real
+  # finding (#1903 codex P2). The cubic clause only applies to cubic's own author.
+  local json='{"reviews":[],"comments":[{"author":{"login":"chatgpt-codex-connector"},"createdAt":"2099-01-01T00:00:00Z","body":"The cubic free trial ended handling is too broad."}]}'
+  local tmpdir; tmpdir=$(_make_mock_gh_dir_recent "$json")
+  local gate_script="$SCRIPT_DIR/lib/advisory-review-gate.sh"
+  run env PATH="$tmpdir:$PATH" bash -c "
+    source '$gate_script'
+    check_advisory_reviews 'https://github.com/owner/repo/pull/123'
+  "
+  rm -rf "$tmpdir"
+  [[ "$output" == *"chatgpt-codex-connector"* ]]
+  [[ "$output" == *"COMMENTED"* ]]
+  [[ "$output" != *"RATE_LIMITED"* ]]
 }
