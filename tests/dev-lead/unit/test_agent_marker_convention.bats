@@ -69,3 +69,23 @@ assert_each_pr_comment_marked() {
   run grep -qiE "maintainer-comment gate|undispositioned|#1919" "$PROMPTS_DIR/review-changes.md"
   [ "$status" -eq 0 ]
 }
+
+# #1919 (Codex P1 on PR #1920): the triggering bot comment's body is untrusted text.
+# It must never be interpolated into a shell command the agent is told to run,
+# because quotes, backticks or $(…) in it would break the command or execute. The
+# prompt targets the notice by COMMENT_NODE_ID instead.
+@test "fix-bot-comment: COMMENT_NODE_ID is a declared template variable" {
+  head -1 "$PROMPTS_DIR/fix-bot-comment.md" | grep -qF 'COMMENT_NODE_ID'
+}
+
+@test "fix-bot-comment: no fenced bash block interpolates COMMENT_BODY" {
+  run awk '/^[[:space:]]*```bash/{inb=1; next} /^[[:space:]]*```/{inb=0} inb && /COMMENT_BODY/{print NR": "$0; bad=1} END{exit bad}' "$PROMPTS_DIR/fix-bot-comment.md"
+  [ "$status" -eq 0 ] || { echo "COMMENT_BODY inside a bash block: $output"; return 1; }
+}
+
+@test "fix-bot-comment: the reusable validates and forwards the comment node id" {
+  local wf; wf="$(cd "$BATS_TEST_DIRNAME"/../../.. && pwd)/.github/workflows/dev-lead-reusable.yml"
+  grep -qF 'INTENT_COMMENT_NODE_ID=' "$wf"
+  grep -qE '\[\[ "\$_cnid" =~ \^\[A-Za-z0-9_-\]\+\$ \]\]' "$wf"
+  grep -qF 'COMMENT_NODE_ID: ${{ env.INTENT_COMMENT_NODE_ID }}' "$wf"
+}
