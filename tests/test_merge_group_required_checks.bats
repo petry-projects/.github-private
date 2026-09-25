@@ -4,11 +4,12 @@
 # queue would wedge — a queued PR stays BLOCKED on a required check that never
 # reports on the queue's `gh-readonly-queue/*` ref.
 #
-# These tests pin the `merge_group` trigger onto the two local required-check
-# workflows (SonarCloud, duplicate-decl-gate) and the advanced-setup CodeQL
-# workflow, and assert that the required-check context strings (job names) are
-# unchanged — a rename silently un-requires the check, because the ruleset
-# matches by context name (AC #4).
+# These tests pin the `merge_group` trigger onto three of the five required-check
+# workflows: the locally-owned `SonarCloud`, `duplicate-decl-gate`, and advanced-setup
+# `CodeQL` workflows. They assert that required-check context names are unchanged —
+# a rename silently un-requires the check, because the ruleset matches by context
+# name (AC #4). The two caller stubs (`agent-shield.yml`, `dependency-audit.yml`)
+# are out of scope here; their `merge_group` wiring is tracked in petry-projects/.github#1157.
 #
 # The two thin caller stubs (agent-shield.yml, dependency-audit.yml) are out of
 # scope here — they carry "You MUST NOT change: trigger events" and are tracked
@@ -24,13 +25,53 @@ setup() {
 # Helper: evaluate a python expression against a parsed workflow document.
 # $1 = workflow file path, $2 = python expression referencing `on` and `jobs`.
 # Prints the repr of the result so bats can assert on stdout.
+# Requires PyYAML or provides a basic fallback parser for simple workflows.
 _wf() {
   WF="$1" EXPR="$2" python3 - <<'PY'
 import os, sys
-import yaml
+
+try:
+    import yaml
+    def parse_yaml(text):
+        return yaml.safe_load(text)
+except ImportError:
+    def parse_yaml(text):
+        root = {}
+        stack = [(-1, root, None)]
+        for line in text.splitlines():
+            trimmed = line.strip()
+            if not trimmed or trimmed.startswith('#'):
+                continue
+            indent = len(line) - len(line.lstrip())
+            while stack[-1][0] >= indent:
+                stack.pop()
+            _, parent, parent_key = stack[-1]
+            if trimmed.startswith('-'):
+                val = trimmed[1:].strip().strip("'\"")
+                _, container, key = stack[-1]
+                if isinstance(container, dict) and not container:
+                    container = []
+                    _, grandparent, _ = stack[-2]
+                    grandparent[key] = container
+                    stack[-1] = (stack[-1][0], container, key)
+                if isinstance(container, list):
+                    container.append(val)
+            elif ':' in trimmed:
+                key, val = trimmed.split(':', 1)
+                key = key.strip().strip("'\"")
+                val = val.strip().strip("'\"")
+                if val:
+                    if val.lower() == 'true': val = True
+                    elif val.lower() == 'false': val = False
+                    parent[key] = val
+                else:
+                    new_dict = {}
+                    parent[key] = new_dict
+                    stack.append((indent, new_dict, key))
+        return root
 
 with open(os.environ["WF"], encoding="utf-8") as fh:
-    doc = yaml.safe_load(fh.read())
+    doc = parse_yaml(fh.read())
 
 if not isinstance(doc, dict):
     raise TypeError(f"Expected YAML root to be a dict, got {type(doc).__name__}")
@@ -147,7 +188,9 @@ PY
 }
 
 @test "codeql.yml has aggregation job named 'CodeQL' (AC4)" {
-  run _wf "$WORKFLOWS/codeql.yml" "'CodeQL' in jobs"
+  # The effective check name is jobs['CodeQL'].name when set, else the job id.
+  # Assert it resolves to 'CodeQL' so a future explicit rename is caught.
+  run _wf "$WORKFLOWS/codeql.yml" "'CodeQL' in jobs and jobs['CodeQL'].get('name', 'CodeQL') == 'CodeQL'"
   [ "$status" -eq 0 ]
   [ "$output" = "True" ]
 }
