@@ -55,10 +55,10 @@ jobs:
         if: env.SONAR_TOKEN != ''
         uses: SonarSource/sonarqube-scan-action@ba9859eae8dd6bd29e412f25ddbbef3d032000f4 # v8.2.2
         with:
-          args: -Dsonar.scanner.skipJreProvisioning=true -Dsonar.scanner.javaExePath=${{ steps.setup_java.outputs.path }}/bin/java
+          args: -Dsonar.scanner.skipJreProvisioning=true -Dsonar.scanner.javaExePath=${{ steps.setup_java.outputs.path }}/bin/java ${{ github.event_name == 'merge_group' && format('-Dsonar.branch.name={0}', github.event.merge_group.base_ref) || github.event_name == 'push' && format('-Dsonar.branch.name={0}', github.ref_name) || '' }}
         continue-on-error: true
       - name: SonarCloud Scan (retry)
         if: env.SONAR_TOKEN != '' && steps.sonar.outcome == 'failure'
         uses: SonarSource/sonarqube-scan-action@ba9859eae8dd6bd29e412f25ddbbef3d032000f4 # v8.2.2
         with:
-          args: -Dsonar.scanner.skipJreProvisioning=true -Dsonar.scanner.javaExePath=${{ steps.setup_java.outputs.path }}/bin/java
+          args: -Dsonar.scanner.skipJreProvisioning=true -Dsonar.scanner.javaExePath=${{ steps.setup_java.outputs.path }}/bin/java ${{ github.event_name == 'merge_group' && format('-Dsonar.branch.name={0}', github.event.merge_group.base_ref) || github.event_name == 'push' && format('-Dsonar.branch.name={0}', github.ref_name) || '' }}

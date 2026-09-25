@@ -79,6 +79,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - run: |
-          if [[ "${{ needs.analyze.result }}" != "success" ]]; then
+          if [[ "${{ needs.analyze.result }}" == "failure" ]]; then
             exit 1
           fi

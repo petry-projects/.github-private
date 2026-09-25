@@ -65,6 +65,12 @@ PY
   [ "$output" = "SonarCloud" ]
 }
 
+@test "sonarcloud.yml merge_group trigger is unfiltered (AC1)" {
+  run _wf "$WORKFLOWS/sonarcloud.yml" "on.get('merge_group') is None"
+  [ "$status" -eq 0 ]
+  [ "$output" = "True" ]
+}
+
 # ── duplicate-decl-gate (context: duplicate-decl-gate) ───────────────────────
 
 @test "duplicate-decl-gate.yml triggers on merge_group (AC1)" {
@@ -88,6 +94,12 @@ PY
   [ "$output" = "True" ]
 }
 
+@test "duplicate-decl-gate.yml merge_group trigger is unfiltered (AC1)" {
+  run _wf "$WORKFLOWS/duplicate-decl-gate.yml" "on.get('merge_group') is None"
+  [ "$status" -eq 0 ]
+  [ "$output" = "True" ]
+}
+
 # ── CodeQL advanced setup (context: CodeQL) ──────────────────────────────────
 
 @test "codeql.yml exists" {
@@ -96,6 +108,12 @@ PY
 
 @test "codeql.yml triggers on pull_request, push, and merge_group (AC2)" {
   run _wf "$WORKFLOWS/codeql.yml" "'pull_request' in on and 'push' in on and 'merge_group' in on"
+  [ "$status" -eq 0 ]
+  [ "$output" = "True" ]
+}
+
+@test "codeql.yml merge_group trigger is unfiltered (AC2)" {
+  run _wf "$WORKFLOWS/codeql.yml" "on.get('merge_group') is None"
   [ "$status" -eq 0 ]
   [ "$output" = "True" ]
 }
