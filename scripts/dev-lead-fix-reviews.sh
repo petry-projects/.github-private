@@ -2119,7 +2119,7 @@ case "$INTENT_TYPE" in
     ;;
   fix-bot-comment)
     export PR_NUMBER PR_URL="https://github.com/${REPO}/pull/${PR_NUMBER}"
-    export REPO ACTOR="${ACTOR:-}" COMMENT_BODY="${COMMENT_BODY:-}" HEAD_SHA
+    export REPO ACTOR="${ACTOR:-}" COMMENT_BODY="${COMMENT_BODY:-}" COMMENT_NODE_ID="${COMMENT_NODE_ID:-}" HEAD_SHA
     fetch_pr_context
     rc=0
     build_and_run "fix-bot-comment" || rc=$?
