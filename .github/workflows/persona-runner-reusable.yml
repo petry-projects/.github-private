@@ -272,8 +272,7 @@ jobs:
             cat "$PROMPT_PATH"
           } > /tmp/persona-prompt.txt
 
-          _out=$(mktemp)
-          [ $? -eq 0 ] || exit 1
+          _out=$(mktemp) || exit 1
           _rc=0
           # --effort high: claude-opus-5-5's default reasoning effort is `medium`.
           # The persona advisory runs on the deep (Opus) tier, which pins `--effort
