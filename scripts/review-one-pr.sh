@@ -883,7 +883,7 @@ if [ -n "${EXISTING_MARKER_SHA:-}" ]; then
   )
   # Validate that the matched body actually contains our marker to reduce
   # prompt-injection surface area.
-  if [ -n "$PRIOR_REVIEW_BODY" ] && ! echo "$PRIOR_REVIEW_BODY" | grep -qE '<!-- pr-review-agent v1 sha=[a-f0-9]+ -->'; then
+  if [ -n "$PRIOR_REVIEW_BODY" ] && ! echo "$PRIOR_REVIEW_BODY" | grep -qE '<!-- pr-review-agent v1 sha=[a-f0-9]+( [^>]*)? -->'; then
     echo "    prior review body missing valid marker, discarding"
     PRIOR_REVIEW_BODY=""
   fi
