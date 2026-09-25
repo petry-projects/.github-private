@@ -240,6 +240,12 @@ calling it a regression, and treat CI as authoritative.**
   updates one rolling PR (`chore/readme-refresh`, label `readme-refresh`) per repo for human review. It
   never direct-pushes. It must not be removed by template syncs. If the org template gains an equivalent,
   remove this exception and defer to the template instead.
+- **Exception:** The `pull_request`/`push` `paths:` filters in `lint.yml` are extended with `prompts/**`
+  beyond the org template baseline (#1919). The dev-lead prompt files under `prompts/dev-lead/` are now
+  guarded by bats tests in the lint suite (e.g. `tests/dev-lead/unit/test_agent_marker_convention.bats`),
+  so a prompt-only change must trigger this workflow or the guard never runs and the CI gap it closes
+  silently reopens. Template syncs must not drop `prompts/**` from these path filters. If the org template
+  adds `prompts/**` to its baseline, remove this exception and defer to the template instead.
 - **Exception:** The `bats` test list in `lint.yml` is extended with repo-specific test files (e.g.
   `tests/test_push_protection.bats`) beyond the org template baseline. When adding new test files to this
   repo, add them to this list. Template syncs must not reset it to the base template list. This includes
