@@ -78,6 +78,8 @@ assert_each_pr_comment_marked() {
   [[ "$case1" == *'[0 New issues]'* ]]
   [[ "$case1" == *'[0 Security Hotspots]'* ]]
   [[ "$case1" == *'is **not** clean'* ]]
+  # A pass-with-findings must never be dispositioned informational (case 2) (#1928 review).
+  [[ "$case1" == *'**Never** give it a case-2 `informational` disposition'* ]]
 }
 
 @test "review-changes.md failing-check PR comment instruction carries a dev-lead marker (#1919)" {
