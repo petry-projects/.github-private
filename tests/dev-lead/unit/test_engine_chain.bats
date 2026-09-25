@@ -408,7 +408,9 @@ _source_engine() {
 
 @test "effort (#1898): deep tier passes --effort high to claude" {
   _source_engine "claude"
-  local args_rec; args_rec="$(mktemp)"
+  local args_rec
+  args_rec="$(mktemp)"
+  [ $? -eq 0 ] || exit 1
   export STUB_ENGINE_RECORD_ARGS="$args_rec"
   export STUB_ENGINE_EXIT=0
 
@@ -421,7 +423,9 @@ _source_engine() {
 
 @test "effort (#1898): audit tier does NOT pass --effort (deep-tier only)" {
   _source_engine "claude"
-  local args_rec; args_rec="$(mktemp)"
+  local args_rec
+  args_rec="$(mktemp)"
+  [ $? -eq 0 ] || exit 1
   export STUB_ENGINE_RECORD_ARGS="$args_rec"
   export STUB_ENGINE_EXIT=0
 
@@ -434,7 +438,9 @@ _source_engine() {
 
 @test "effort (#1898): action tier (run_writer) does NOT pass --effort" {
   _source_engine "claude"
-  local args_rec; args_rec="$(mktemp)"
+  local args_rec
+  args_rec="$(mktemp)"
+  [ $? -eq 0 ] || exit 1
   export STUB_ENGINE_RECORD_ARGS="$args_rec"
   export STUB_ENGINE_EXIT=0
 
@@ -447,7 +453,9 @@ _source_engine() {
 
 @test "effort (#1898): triage tier does NOT pass --effort" {
   _source_engine "claude"
-  local args_rec; args_rec="$(mktemp)"
+  local args_rec
+  args_rec="$(mktemp)"
+  [ $? -eq 0 ] || exit 1
   export STUB_ENGINE_RECORD_ARGS="$args_rec"
   export STUB_ENGINE_EXIT=0
 
