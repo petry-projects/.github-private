@@ -46,6 +46,7 @@ _advisory_gate_load_fallback_bots() {
     [qodo-code-review]="Qodo Merge (advisory)"
     [codeant-ai]="CodeAnt (advisory)"
     [graphite-app]="Graphite (advisory)"
+    [cubic-dev-ai]="cubic (advisory)"
   )
 }
 
@@ -89,6 +90,23 @@ unset _gate_reg_sh
 # passing does not arm a retry.
 # shellcheck disable=SC2034
 readonly ADVISORY_RATE_LIMIT_RE='usage limit|rate[-_ ]?limit|too many requests|quota (exceeded|reached|exhausted)|out of (quota|credits|tokens|requests)|limit (reached|exceeded|exhausted)|(reached|exceeded|hit) (the |your )?(usage |rate |daily |monthly )?limit|used up its prepaid credits|Qodo.{0,40}(monthly|usage|PR|review) limit|CodeAnt.{0,40}(monthly|trial|usage) limit'
+
+# Author-scoped rate-limit clause for cubic (7-day trial added 2026-09-22 — a
+# trial-ended notice is a refusal, not a review or finding, #1903). This is kept
+# OUT of the shared ADVISORY_RATE_LIMIT_RE and matched ONLY against cubic's own
+# submissions (author == cubic-dev-ai), because the clause is anchored on the
+# literal "cubic" token: if it were in the shared, author-agnostic pattern, a
+# genuine finding by ANOTHER tracked reviewer that merely discusses cubic — e.g.
+# "The cubic free trial ended handling is too broad" — would be misclassified
+# RATE_LIMITED, dropping that reviewer from the gate's required set and corrupting
+# the scorecard (#1903 review: codex P2, cubic P3). The clause is also scoped to
+# the observed "trial (ended|expired)" wording only (no generic
+# subscription/plan/usage/review alternatives) so cubic's own genuine findings
+# that open with the "cubic" prefix are not swept up either.
+# shellcheck disable=SC2034
+readonly ADVISORY_CUBIC_LOGIN='cubic-dev-ai'
+# shellcheck disable=SC2034
+readonly ADVISORY_CUBIC_RATE_LIMIT_RE='cubic.{0,40}(trial|free trial) (ended|expired)'
 
 # Gate classification alias — same canonical regex, so get_advisory_bot_states()
 # can never diverge from the sweep/scorecard detector.
@@ -140,15 +158,20 @@ get_advisory_bot_states() {
     return 2  # API error — distinct from "no bots yet" (1) so caller can fail-fast
   }
 
-  echo "$gh_output" | jq -c --argjson bots "$bot_array" --arg markers "$RATE_LIMIT_MARKERS" '
+  echo "$gh_output" | jq -c --argjson bots "$bot_array" --arg markers "$RATE_LIMIT_MARKERS" \
+    --arg cubic "$ADVISORY_CUBIC_LOGIN" --arg cubicre "$ADVISORY_CUBIC_RATE_LIMIT_RE" '
     # Collect all bot submissions with their state. A comment whose body matches a
     # known rate-limit/usage-limit marker is classified RATE_LIMITED (the bot is out
     # of quota and cannot submit a real review); all other comments are COMMENTED.
+    # The author-scoped cubic clause is applied ONLY to cubic'"'"'s own comments so a
+    # different reviewer discussing cubic'"'"'s trial is never misclassified (#1903).
     (
       [(.reviews // [])[] | select([.author.login] | inside($bots)) | {bot: .author.login, state: .state, time: .submittedAt}] +
       [(.comments // [])[] | select([.author.login] | inside($bots)) | {
         bot: .author.login,
-        state: (if ((.body // "") | test($markers; "i")) then "RATE_LIMITED" else "COMMENTED" end),
+        state: (if (((.body // "") | test($markers; "i"))
+                    or (((.author.login // "") | ascii_downcase) == $cubic and ((.body // "") | test($cubicre; "i"))))
+                then "RATE_LIMITED" else "COMMENTED" end),
         time: .createdAt
       }]
     ) |
@@ -233,6 +256,7 @@ _advisory_gate_load_fallback_notice_bots() {
     qodo-code-review
     codeant-ai
     graphite-app
+    cubic-dev-ai
   )
 }
 
@@ -254,6 +278,19 @@ _advisory_rate_limit_pattern() {
   printf '%s' "$ADVISORY_RATE_LIMIT_RE"
 }
 
+# Author-scoped cubic rate-limit clause — matched ONLY against cubic's own
+# submissions (see ADVISORY_CUBIC_RATE_LIMIT_RE rationale, #1903). Exposed as an
+# accessor so scripts/reviewer_report.sh consumes the identical pattern (no drift).
+_advisory_cubic_rate_limit_pattern() {
+  printf '%s' "$ADVISORY_CUBIC_RATE_LIMIT_RE"
+}
+
+# cubic-dev-ai login constant — exposed as an accessor so scripts/reviewer_report.sh
+# reuses it in the scorecard refusal predicate (no divergence if the login ever changes).
+_advisory_cubic_login() {
+  printf '%s' "$ADVISORY_CUBIC_LOGIN"
+}
+
 # detect_advisory_rate_limit <reviews-comments-json>
 #   Returns 0 when a known advisory/review bot's LATEST submission body matches
 #   the rate-limit pattern; 1 otherwise. Only the latest submission per bot is
@@ -263,11 +300,13 @@ detect_advisory_rate_limit() {
   local json="${1:-}"
   [[ -z "$json" ]] && return 1
 
-  local bot_array pattern matched
+  local bot_array pattern cubic_pattern matched
   bot_array=$(printf '%s\n' "${RATE_LIMIT_NOTICE_BOTS[@]}" | jq -R . | jq -s .)
   pattern=$(_advisory_rate_limit_pattern)
+  cubic_pattern=$(_advisory_cubic_rate_limit_pattern)
 
-  matched=$(jq -r --argjson bots "$bot_array" --arg pat "$pattern" '
+  matched=$(jq -r --argjson bots "$bot_array" --arg pat "$pattern" \
+    --arg cubic "$ADVISORY_CUBIC_LOGIN" --arg cubicre "$cubic_pattern" '
     (
       [(.reviews // [])[]  | {bot: .author.login, time: .submittedAt, body: (.body // "")}] +
       [(.comments // [])[] | {bot: .author.login, time: .createdAt,   body: (.body // "")}]
@@ -275,7 +314,9 @@ detect_advisory_rate_limit() {
     | map(select(.bot as $b | $bots | any(. == $b)))
     | group_by(.bot)
     | map(sort_by(.time) | last)
-    | map(select(.body | test($pat; "i")))
+    # Generic markers match any bot; the cubic clause only cubic'"'"'s own notice (#1903).
+    | map(select((.body | test($pat; "i"))
+                 or (((.bot // "") | ascii_downcase) == $cubic and (.body | test($cubicre; "i")))))
     | length
   ' <<< "$json" 2>/dev/null) || return 1
 

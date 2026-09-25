@@ -17,8 +17,8 @@ setup() {
 # Registry wiring — bots come from the shared advisory-review-gate list
 # ---------------------------------------------------------------------------
 
-@test "REVIEWER_BOTS: eight tracked reviewers, sourced from the gate registry" {
-  [ "${#REVIEWER_BOTS[@]}" -eq 8 ]
+@test "REVIEWER_BOTS: nine tracked reviewers, sourced from the gate registry" {
+  [ "${#REVIEWER_BOTS[@]}" -eq 9 ]
   [[ " ${REVIEWER_BOTS[*]} " == *" coderabbitai "* ]]
   [[ " ${REVIEWER_BOTS[*]} " == *" copilot-pull-request-reviewer "* ]]
   # Qodo Merge + CodeAnt registered via the shared gate registry (issue #1349).
@@ -26,11 +26,63 @@ setup() {
   [[ " ${REVIEWER_BOTS[*]} " == *" codeant-ai "* ]]
   # Graphite registered via advisory-review-gate (issue #1401).
   [[ " ${REVIEWER_BOTS[*]} " == *" graphite-app "* ]]
+  # cubic registered via the shared gate registry (issue #1903).
+  [[ " ${REVIEWER_BOTS[*]} " == *" cubic-dev-ai "* ]]
 }
 
 @test "REVIEWER_LABELS: Qodo Merge + CodeAnt have display names (issue #1349)" {
   [ "${REVIEWER_LABELS[qodo-code-review]}" = "Qodo Merge" ]
   [ "${REVIEWER_LABELS[codeant-ai]}" = "CodeAnt" ]
+}
+
+@test "REVIEWER_LABELS: cubic has display name (issue #1903)" {
+  [ "${REVIEWER_LABELS[cubic-dev-ai]}" = "cubic" ]
+}
+
+@test "normalize: a cubic review normalizes into a bot_pr record (issue #1903)" {
+  local newbots='["cubic-dev-ai"]'
+  local tmp
+  tmp="$(mktemp "$BATS_TEST_TMPDIR/tmp.XXXXXX")" || { echo "Failed to create temp file" >&2; exit 1; }
+  cat > "$tmp" <<'JSON'
+{"url":"u","createdAt":"2026-07-10T10:00:00Z","updatedAt":"2026-07-10T10:00:00Z","mergedAt":null,"isDraft":false,"author":{"login":"h"},
+ "reviews":{"nodes":[{"author":{"login":"cubic-dev-ai"},"state":"COMMENTED","submittedAt":"2026-07-10T10:05:00Z","bodyText":"cubic reviewed this PR and found 1 potential issue."}]},
+ "reviewThreads":{"nodes":[]},
+ "comments":{"nodes":[]}}
+JSON
+  run jq -c --arg repo "r" --argjson bots "$newbots" --arg rl "$RATE_LIMIT_RE" "[ $_NORMALIZE_JQ ]" "$tmp"
+  echo "$output" | jq -e '.[] | select(.kind=="bot_pr" and .bot=="cubic-dev-ai") | .real_responses>=1 and .reviews==1'
+}
+
+@test "normalize: a cubic trial-ended notice is a refusal, not a review (issue #1903)" {
+  local newbots='["cubic-dev-ai"]'
+  local tmp
+  tmp="$(mktemp "$BATS_TEST_TMPDIR/tmp.XXXXXX")" || { echo "Failed to create temp file" >&2; exit 1; }
+  cat > "$tmp" <<'JSON'
+{"url":"u","createdAt":"2026-07-10T10:00:00Z","updatedAt":"2026-07-10T10:00:00Z","mergedAt":null,"isDraft":false,"author":{"login":"h"},
+ "reviews":{"nodes":[]},
+ "reviewThreads":{"nodes":[]},
+ "comments":{"nodes":[{"author":{"login":"cubic-dev-ai"},"createdAt":"2026-07-10T10:01:00Z","bodyText":"cubic: your free trial ended. Upgrade to a paid plan to resume reviews."}]}}
+JSON
+  run jq -c --arg repo "r" --argjson bots "$newbots" --arg rl "$RATE_LIMIT_RE" "[ $_NORMALIZE_JQ ]" "$tmp"
+  # The trial-ended notice is cubic's SOLE action → a refusal, not a review.
+  echo "$output" | jq -e '.[] | select(.kind=="bot_pr" and .bot=="cubic-dev-ai") | .real_responses==0 and .refusals>=1'
+}
+
+@test "normalize: another reviewer discussing cubic's trial is NOT a refusal (author-scoped, issue #1903)" {
+  # The cubic clause is author-scoped: a genuine finding by a DIFFERENT tracked bot
+  # that merely mentions cubic's trial must count as a real response, not a refusal,
+  # or that reviewer would be dropped from the gate and miscounted (#1903 codex P2).
+  local newbots='["cubic-dev-ai","chatgpt-codex-connector"]'
+  local tmp
+  tmp="$(mktemp "$BATS_TEST_TMPDIR/tmp.XXXXXX")" || { echo "Failed to create temp file" >&2; exit 1; }
+  cat > "$tmp" <<'JSON'
+{"url":"u","createdAt":"2026-07-10T10:00:00Z","updatedAt":"2026-07-10T10:00:00Z","mergedAt":null,"isDraft":false,"author":{"login":"h"},
+ "reviews":{"nodes":[]},
+ "reviewThreads":{"nodes":[]},
+ "comments":{"nodes":[{"author":{"login":"chatgpt-codex-connector"},"createdAt":"2026-07-10T10:01:00Z","bodyText":"The cubic free trial ended handling is too broad."}]}}
+JSON
+  run jq -c --arg repo "r" --argjson bots "$newbots" --arg rl "$RATE_LIMIT_RE" "[ $_NORMALIZE_JQ ]" "$tmp"
+  echo "$output" | jq -e '.[] | select(.kind=="bot_pr" and .bot=="chatgpt-codex-connector") | .real_responses>=1 and .refusals==0'
 }
 
 @test "REVIEWER_LABELS: Graphite has display name (issue #1401)" {
@@ -102,7 +154,8 @@ setup() {
 }
 
 @test "normalize: a real review alongside a rate-limit comment still counts as reviewed" {
-  tmp="$(mktemp "$BATS_TEST_TMPDIR/tmp.XXXXXX")"
+  local tmp
+  tmp="$(mktemp "$BATS_TEST_TMPDIR/tmp.XXXXXX")" || { echo "Failed to create temp file" >&2; exit 1; }
   cat > "$tmp" <<'JSON'
 {"url":"u","createdAt":"2026-07-10T10:00:00Z","updatedAt":"2026-07-10T10:00:00Z","mergedAt":null,"isDraft":false,"author":{"login":"h"},
  "reviews":{"nodes":[{"author":{"login":"coderabbitai"},"state":"CHANGES_REQUESTED","submittedAt":"2026-07-10T10:05:00Z","bodyText":"real review: please fix X"}]},
@@ -121,7 +174,8 @@ JSON
 
 @test "normalize: Qodo real review counts as reviewed; CodeAnt quota notice is a refusal (issue #1349)" {
   local newbots='["qodo-code-review","codeant-ai"]'
-  tmp="$(mktemp "$BATS_TEST_TMPDIR/tmp.XXXXXX")"
+  local tmp
+  tmp="$(mktemp "$BATS_TEST_TMPDIR/tmp.XXXXXX")" || { echo "Failed to create temp file" >&2; exit 1; }
   cat > "$tmp" <<'JSON'
 {"url":"u","createdAt":"2026-07-10T10:00:00Z","updatedAt":"2026-07-10T10:00:00Z","mergedAt":null,"isDraft":false,"author":{"login":"h"},
  "reviews":{"nodes":[{"author":{"login":"qodo-code-review"},"state":"CHANGES_REQUESTED","submittedAt":"2026-07-10T10:05:00Z","bodyText":"Code Review by Qodo: please fix the null deref on line 42."}]},
@@ -134,7 +188,8 @@ JSON
 }
 
 @test "reviews: a comment-only responder (SonarCloud) has its comment counted as a review" {
-  tmp="$(mktemp "$BATS_TEST_TMPDIR/tmp.XXXXXX")"
+  local tmp
+  tmp="$(mktemp "$BATS_TEST_TMPDIR/tmp.XXXXXX")" || { echo "Failed to create temp file" >&2; exit 1; }
   cat > "$tmp" <<'JSON'
 {"url":"u","createdAt":"2026-07-10T10:00:00Z","updatedAt":"2026-07-10T10:00:00Z","mergedAt":null,"isDraft":false,"author":{"login":"h"},
  "reviews":{"nodes":[]},
@@ -146,7 +201,8 @@ JSON
 }
 
 @test "reviews: a bot with a formal review does NOT also count its summary comment (no double-count)" {
-  tmp="$(mktemp "$BATS_TEST_TMPDIR/tmp.XXXXXX")"
+  local tmp
+  tmp="$(mktemp "$BATS_TEST_TMPDIR/tmp.XXXXXX")" || { echo "Failed to create temp file" >&2; exit 1; }
   cat > "$tmp" <<'JSON'
 {"url":"u","createdAt":"2026-07-10T10:00:00Z","updatedAt":"2026-07-10T10:00:00Z","mergedAt":null,"isDraft":false,"author":{"login":"h"},
  "reviews":{"nodes":[{"author":{"login":"coderabbitai"},"state":"COMMENTED","submittedAt":"2026-07-10T10:05:00Z","bodyText":"formal review"}]},
@@ -358,7 +414,8 @@ JSON
 }
 
 @test "aggregate: a PR reviewed twice (2 commits) counts as 2 review events" {
-  tmp="$(mktemp -d "$BATS_TEST_TMPDIR/multi.XXXXXX")"
+  local tmp
+  tmp="$(mktemp -d "$BATS_TEST_TMPDIR/multi.XXXXXX")" || { echo "Failed to create temp directory" >&2; exit 1; }
   cat > "$tmp/r.jsonl" <<'JSON'
 {"kind":"pr","repo":"o/r","pr":"o/r/1","created":"2026-07-10T10:00:00Z","merged":null,"draft":false,"author":"h"}
 {"kind":"bot_pr","repo":"o/r","pr":"o/r/1","bot":"gemini-code-assist","created":"2026-07-10T10:00:00Z","real_responses":2,"refusals":0,"latency_s":60,"reviews":2,"approved":1,"changes_req":1,"inline_comments":0,"threads_total":0,"threads_resolved":0,"thumbs_up":0,"thumbs_down":0}
@@ -383,7 +440,8 @@ JSON
 }
 
 @test "aggregate: empty dir yields a zeroed snapshot" {
-  empty="$(mktemp -d "$BATS_TEST_TMPDIR/empty.XXXXXX")"
+  local empty
+  empty="$(mktemp -d "$BATS_TEST_TMPDIR/empty.XXXXXX")" || { echo "Failed to create temp directory" >&2; exit 1; }
   run aggregate_snapshot "$empty"
   echo "$output" | jq -e '.total_prs == 0 and (.bots | length == 0)'
 }
@@ -424,14 +482,16 @@ JSON
 }
 
 @test "render: empty dir yields a no-data message" {
-  empty="$(mktemp -d "$BATS_TEST_TMPDIR/empty.XXXXXX")"
+  local empty
+  empty="$(mktemp -d "$BATS_TEST_TMPDIR/empty.XXXXXX")" || { echo "Failed to create temp directory" >&2; exit 1; }
   run render_reviewer_report "$empty" 7 0 2026-07-13
   [ "$status" -eq 0 ]
   echo "$output" | grep -q "No pull-request activity found"
 }
 
 @test "render: week-over-week delta arrow appears when a prior snapshot is given" {
-  prev="$(mktemp "$BATS_TEST_TMPDIR/prev.XXXXXX")"
+  local prev
+  prev="$(mktemp "$BATS_TEST_TMPDIR/prev.XXXXXX")" || { echo "Failed to create temp file" >&2; exit 1; }
   cat > "$prev" <<'JSON'
 {"eligible_prs":3,"total_prs":4,"bots":{"copilot-pull-request-reviewer":{"reviews":5}}}
 JSON
@@ -441,7 +501,8 @@ JSON
 }
 
 @test "render: writes the snapshot artifact when REVIEWER_SNAPSHOT_OUT is set" {
-  out="$(mktemp "$BATS_TEST_TMPDIR/out.XXXXXX")"
+  local out
+  out="$(mktemp "$BATS_TEST_TMPDIR/out.XXXXXX")" || { echo "Failed to create temp file" >&2; exit 1; }
   REVIEWER_SNAPSHOT_OUT="$out" run render_reviewer_report "$FIXTURES" 7 12 2026-07-13
   run jq -e '.bots["copilot-pull-request-reviewer"].reviewed_prs == 2' "$out"
   [ "$status" -eq 0 ]
@@ -480,7 +541,8 @@ JSON
 }
 
 @test "render: agent-comment noise section is wired into the report (#1411)" {
-  dir="$(mktemp -d "$BATS_TEST_TMPDIR/noise.XXXXXX")"
+  local dir
+  dir="$(mktemp -d "$BATS_TEST_TMPDIR/noise.XXXXXX")" || { echo "Failed to create temp directory" >&2; exit 1; }
   cat > "$dir/r.jsonl" <<'JSON'
 {"kind":"pr","repo":"o/r","pr":"o/r/1","created":"2026-07-10T10:00:00Z","merged":null,"draft":false,"author":"h"}
 {"kind":"agent_comment","repo":"o/r","pr":"o/r/1","no_action":true}

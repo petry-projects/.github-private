@@ -20,7 +20,20 @@ The pr-review workflow triggers on `check_suite` (completed) event and approves 
 
 ## Participating Bots
 
-The gate waits for reviews from these bots:
+> **Authoritative count vs. the profiles below.** The authoritative set of gated
+> advisory bots is the `ADVISORY_BOTS` map in `scripts/lib/advisory-review-gate.sh`
+> (a projection of `scripts/lib/reviewer-sources.tsv`, `advisory_gate=yes`),
+> which currently holds **eight** entries. The four profiled below are the
+> original core set with published latency/participation data. **Qodo Merge**,
+> **CodeAnt**, **Graphite**, and **cubic** were registered later (issues #1349,
+> #1401, #1903) and are gated identically; latency/participation figures are not
+> yet published for them, so they are not re-profiled here. Consequently, the
+> "4 bots" wording in the scenarios, examples, and testing sections below is
+> **illustrative of the gate mechanism, not the current bot count** — do not read
+> those numbers as the number of gated bots.
+
+The gate waits for reviews from these bots (core-set profiles; see the note above
+for the full authoritative list):
 
 1. **Gemini Code Assist** (`gemini-code-assist`)
    - Latency: Median 50 seconds
@@ -76,6 +89,12 @@ The gate requires **all** configured advisory bots (`ADVISORY_BOTS`) to submit b
 The latest submission per bot is used (not the first), so if a bot revises its review, the most recent state is evaluated.
 
 ### Examples
+
+> **These scenarios are illustrative.** They use a simplified four-bot gate (Gemini, Copilot,
+> SonarCloud, Codex) to show the timing logic. The real denominator is the number of
+> `advisory_gate=yes` rows in `scripts/lib/reviewer-sources.tsv`, currently larger, including
+> CodeAnt, Graphite and cubic. So read `3/4` as "all but one bot" and `4/4` as "every bot",
+> not as literal counts.
 
 **Scenario A: Codex not triggered (44% of PRs)**
 ```
@@ -230,6 +249,7 @@ declare -A ADVISORY_BOTS=(
   [qodo-code-review]="Qodo Merge (advisory)"
   [codeant-ai]="CodeAnt (advisory)"
   [graphite-app]="Graphite (advisory)"
+  [cubic-dev-ai]="cubic (advisory)"
   # Add new bots here
 )
 ```
