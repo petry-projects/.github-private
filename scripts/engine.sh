@@ -117,11 +117,11 @@ set_engine_config() {
   case "$REVIEW_ENGINE" in
     claude)
       ENGINE_TRIAGE_MODEL="claude-haiku-4-5-20251001"
-      ENGINE_DEEP_MODEL="claude-opus-4-8"
+      ENGINE_DEEP_MODEL="claude-opus-5-5"
       ENGINE_AUDIT_MODEL="claude-fable-5"
       ENGINE_ACTION_MODEL="claude-sonnet-5-0"
       ENGINE_SINGLE_MODEL="claude-fable-5"
-      ENGINE_LABEL="triage: haiku 4.5 [sonnet 5] → deep: opus 4.8 [sonnet 5] + duck: o4-mini → audit: fable 5"
+      ENGINE_LABEL="triage: haiku 4.5 [sonnet 5] → deep: opus 5.5 [sonnet 5] + duck: o4-mini → audit: fable 5"
       ENGINE_SINGLE_LABEL="single-reviewer mode: fable 5"
       # Cross-engine rubber duck: use Copilot when Claude is primary
       DUCK_ENGINE="copilot"
@@ -145,7 +145,10 @@ set_engine_config() {
       # daily cap is shared across Claude models (#206), so per-tier fallback
       # only helps per-model RPM/TPM, not the subscription cap.
       CLAUDE_TRIAGE_MODEL_CHAIN="${CLAUDE_TRIAGE_MODEL_CHAIN:-claude-haiku-4-5-20251001,claude-sonnet-5-0}"
-      CLAUDE_DEEP_MODEL_CHAIN="${CLAUDE_DEEP_MODEL_CHAIN:-claude-opus-4-8,claude-sonnet-5-0}"
+      # Deep tier swapped opus-4-8 → opus-5-5 (#1898, epic #1895 Phase 2): the
+      # highest-cost tier now rides the cheaper, higher-benchmark model. Sonnet
+      # 5.0 is kept as the 2nd hop so the rate-limit cascade shape is unchanged.
+      CLAUDE_DEEP_MODEL_CHAIN="${CLAUDE_DEEP_MODEL_CHAIN:-claude-opus-5-5,claude-sonnet-5-0}"
       CLAUDE_AUDIT_MODEL_CHAIN="${CLAUDE_AUDIT_MODEL_CHAIN:-claude-fable-5,claude-opus-4-8,claude-opus-4-7}"
       CLAUDE_ACTION_MODEL_CHAIN="${CLAUDE_ACTION_MODEL_CHAIN:-claude-sonnet-5-0,claude-opus-4-8}"
       CLAUDE_SINGLE_MODEL_CHAIN="${CLAUDE_SINGLE_MODEL_CHAIN:-claude-fable-5,claude-opus-4-8,claude-opus-4-7}"
@@ -1138,16 +1141,27 @@ run_agentic() {
       else
         _mcp_review_flags "$_allowed_tools"
       fi
+      # Deep-tier reasoning-effort pin (#1898 AC-3; Story-2/#1897 AC-4 finding):
+      # claude-opus-5-5's CLI/API default reasoning effort is `medium` (levels
+      # low/medium/high/xhigh/max) — below `high`. The deep tier is the
+      # highest-cost agentic tier (deep review, dev-lead fix-issue, persona
+      # advisory), so it explicitly pins `--effort high`. ONLY the deep tier does
+      # this: audit/action/single keep the CLI default (they run cheaper models
+      # where the extra thinking spend is not warranted).
+      local _effort_args=()
+      [ "$tier" = "deep" ] && _effort_args=(--effort high)
       if [ -n "$_tok_tmp" ]; then
         _claude_chain_invoke "$_agentic_chain" "$prompt_file" "$DEEP_TIMEOUT_SEC" \
           --permission-mode acceptEdits \
           --allowed-tools "$_MCP_ALLOWED_TOOLS" \
+          ${_effort_args[@]+"${_effort_args[@]}"} \
           ${_MCP_FLAGS[@]+"${_MCP_FLAGS[@]}"} \
           | tee "$_tok_tmp" || rc=${PIPESTATUS[0]}
       else
         _claude_chain_invoke "$_agentic_chain" "$prompt_file" "$DEEP_TIMEOUT_SEC" \
           --permission-mode acceptEdits \
           --allowed-tools "$_MCP_ALLOWED_TOOLS" \
+          ${_effort_args[@]+"${_effort_args[@]}"} \
           ${_MCP_FLAGS[@]+"${_MCP_FLAGS[@]}"} \
           || rc=$?
       fi
