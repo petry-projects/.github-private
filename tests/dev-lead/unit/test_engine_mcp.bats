@@ -67,7 +67,7 @@ _source_engine() {
 
 @test "agentic: no MCP knob → no MCP flags, default allowed-tools unchanged" {
   _source_engine "claude"
-  run run_agentic "$TEST_PROMPT" "claude-opus-4-8" "deep"
+  run run_agentic "$TEST_PROMPT" "claude-opus-5-5" "deep"
   [ "$status" -eq 0 ]
   ! grep -q -- "--mcp-config" "$ARGS_RECORD"
   ! grep -q -- "--strict-mcp-config" "$ARGS_RECORD"
@@ -77,7 +77,7 @@ _source_engine() {
 @test "agentic: empty REVIEW_MCP_CONFIG → no MCP flags" {
   _source_engine "claude"
   export REVIEW_MCP_CONFIG=""
-  run run_agentic "$TEST_PROMPT" "claude-opus-4-8" "deep"
+  run run_agentic "$TEST_PROMPT" "claude-opus-5-5" "deep"
   [ "$status" -eq 0 ]
   ! grep -q -- "--mcp-config" "$ARGS_RECORD"
 }
@@ -88,7 +88,7 @@ _source_engine() {
   unreadable_file="$(mktemp)"
   chmod 000 "$unreadable_file"
   export REVIEW_MCP_CONFIG="$unreadable_file"
-  run run_agentic "$TEST_PROMPT" "claude-opus-4-8" "deep"
+  run run_agentic "$TEST_PROMPT" "claude-opus-5-5" "deep"
   chmod 600 "$unreadable_file"
   rm -f "$unreadable_file"
   [ "$status" -eq 0 ]
@@ -99,7 +99,7 @@ _source_engine() {
 @test "agentic: REVIEW_MCP_CONFIG pointing to a directory → no MCP flags" {
   _source_engine "claude"
   export REVIEW_MCP_CONFIG="$(mktemp -d)"
-  run run_agentic "$TEST_PROMPT" "claude-opus-4-8" "deep"
+  run run_agentic "$TEST_PROMPT" "claude-opus-5-5" "deep"
   rmdir "$REVIEW_MCP_CONFIG"
   [ "$status" -eq 0 ]
   ! grep -q -- "--mcp-config" "$ARGS_RECORD"
@@ -123,7 +123,7 @@ _source_engine() {
 
 @test "agentic: explicit allowed_tools arg overrides the default review posture" {
   _source_engine "claude"
-  run run_agentic "$TEST_PROMPT" "claude-opus-4-8" "deep" "Bash"
+  run run_agentic "$TEST_PROMPT" "claude-opus-5-5" "deep" "Bash"
   [ "$status" -eq 0 ]
   grep -q -- "--allowed-tools Bash" "$ARGS_RECORD"
   ! grep -q -- "--allowed-tools Bash,Read,Grep,Glob" "$ARGS_RECORD"
@@ -216,7 +216,7 @@ SH
 @test "agentic: REVIEW_MCP_CONFIG set → MCP flags appended to claude call" {
   _source_engine "claude"
   export REVIEW_MCP_CONFIG="$MCP_CONFIG_FILE"
-  run run_agentic "$TEST_PROMPT" "claude-opus-4-8" "deep"
+  run run_agentic "$TEST_PROMPT" "claude-opus-5-5" "deep"
   [ "$status" -eq 0 ]
   grep -q -- "--mcp-config $MCP_CONFIG_FILE" "$ARGS_RECORD"
   grep -q -- "--strict-mcp-config" "$ARGS_RECORD"
@@ -226,7 +226,7 @@ SH
   _source_engine "claude"
   export REVIEW_MCP_CONFIG="$MCP_CONFIG_FILE"
   export REVIEW_MCP_ALLOWED_TOOLS="mcp__context7__*"
-  run run_agentic "$TEST_PROMPT" "claude-opus-4-8" "deep"
+  run run_agentic "$TEST_PROMPT" "claude-opus-5-5" "deep"
   [ "$status" -eq 0 ]
   grep -q -- "--allowed-tools Bash,Read,Grep,Glob,mcp__context7__\*" "$ARGS_RECORD"
 }
@@ -234,7 +234,7 @@ SH
 @test "agentic: MCP config set but no allowed-tools knob → base allowed-tools kept" {
   _source_engine "claude"
   export REVIEW_MCP_CONFIG="$MCP_CONFIG_FILE"
-  run run_agentic "$TEST_PROMPT" "claude-opus-4-8" "deep"
+  run run_agentic "$TEST_PROMPT" "claude-opus-5-5" "deep"
   [ "$status" -eq 0 ]
   grep -q -- "--allowed-tools Bash,Read,Grep,Glob" "$ARGS_RECORD"
   ! grep -q -- "--allowed-tools Bash,Read,Grep,Glob," "$ARGS_RECORD"
@@ -273,7 +273,7 @@ SH
   echo '{"mcpServers":{}}' > "$conv_file"
   export REVIEW_MCP_CONFIG_DEFAULT_PATH="$conv_file"
   _source_engine "claude"
-  run run_agentic "$TEST_PROMPT" "claude-opus-4-8" "deep"
+  run run_agentic "$TEST_PROMPT" "claude-opus-5-5" "deep"
   rm -f "$conv_file"
   [ "$status" -eq 0 ]
   grep -q -- "--mcp-config $conv_file" "$ARGS_RECORD"
@@ -283,7 +283,7 @@ SH
 @test "default path: no env + conventional file absent → no MCP flags (default unchanged)" {
   export REVIEW_MCP_CONFIG_DEFAULT_PATH="$(mktemp -u)"  # path that does not exist
   _source_engine "claude"
-  run run_agentic "$TEST_PROMPT" "claude-opus-4-8" "deep"
+  run run_agentic "$TEST_PROMPT" "claude-opus-5-5" "deep"
   [ "$status" -eq 0 ]
   ! grep -q -- "--mcp-config" "$ARGS_RECORD"
   grep -q -- "--allowed-tools Bash,Read,Grep,Glob" "$ARGS_RECORD"
@@ -296,7 +296,7 @@ SH
   export REVIEW_MCP_CONFIG_DEFAULT_PATH="$conv_file"
   export REVIEW_MCP_CONFIG="$MCP_CONFIG_FILE"
   _source_engine "claude"
-  run run_agentic "$TEST_PROMPT" "claude-opus-4-8" "deep"
+  run run_agentic "$TEST_PROMPT" "claude-opus-5-5" "deep"
   rm -f "$conv_file"
   [ "$status" -eq 0 ]
   grep -q -- "--mcp-config $MCP_CONFIG_FILE" "$ARGS_RECORD"
@@ -310,7 +310,7 @@ SH
   export REVIEW_MCP_CONFIG_DEFAULT_PATH="$conv_file"
   export REVIEW_MCP_CONFIG=""
   _source_engine "claude"
-  run run_agentic "$TEST_PROMPT" "claude-opus-4-8" "deep"
+  run run_agentic "$TEST_PROMPT" "claude-opus-5-5" "deep"
   rm -f "$conv_file"
   [ "$status" -eq 0 ]
   ! grep -q -- "--mcp-config" "$ARGS_RECORD"
@@ -381,7 +381,7 @@ SH
   _source_engine "claude"
   export REVIEW_MCP_CONFIG="$MCP_CONFIG_FILE"
   export STUB_ENGINE_RESPONSE=$'MCP server "context7" failed to connect after 3 attempts\n{"decision":"approve","summary":"looks good"}'
-  run run_agentic "$TEST_PROMPT" "claude-opus-4-8" "deep"
+  run run_agentic "$TEST_PROMPT" "claude-opus-5-5" "deep"
   # AC #2: never a fatal exit on MCP failure.
   [ "$status" -eq 0 ]
   # AC #1: a warning is emitted naming the affected server.
@@ -396,7 +396,7 @@ SH
   _source_engine "claude"
   unset REVIEW_MCP_CONFIG
   export STUB_ENGINE_RESPONSE=$'MCP server "context7" failed to connect after 3 attempts\n{"decision":"approve","summary":"looks good"}'
-  run run_agentic "$TEST_PROMPT" "claude-opus-4-8" "deep"
+  run run_agentic "$TEST_PROMPT" "claude-opus-5-5" "deep"
   [ "$status" -eq 0 ]
   # No MCP-related warning when MCP was never configured.
   ! [[ "$output" == *"::warning::[mcp]"* ]]
@@ -408,7 +408,7 @@ SH
   _source_engine "claude"
   export REVIEW_MCP_CONFIG="$MCP_CONFIG_FILE"
   export STUB_ENGINE_RESPONSE='{"decision":"approve","summary":"clean run, MCP healthy"}'
-  run run_agentic "$TEST_PROMPT" "claude-opus-4-8" "deep"
+  run run_agentic "$TEST_PROMPT" "claude-opus-5-5" "deep"
   [ "$status" -eq 0 ]
   ! [[ "$output" == *"::warning::[mcp]"* ]]
   [[ "$output" == *'"decision":"approve"'* ]]
@@ -418,7 +418,7 @@ SH
   _source_engine "claude"
   export REVIEW_MCP_CONFIG="$MCP_CONFIG_FILE"
   export STUB_ENGINE_RESPONSE=$'Failed to connect to MCP server\n{"decision":"comment","summary":"degraded"}'
-  run run_agentic "$TEST_PROMPT" "claude-opus-4-8" "deep"
+  run run_agentic "$TEST_PROMPT" "claude-opus-5-5" "deep"
   [ "$status" -eq 0 ]
   [[ "$output" == *"::warning::[mcp]"* ]]
   [[ "$output" == *'"decision":"comment"'* ]]
@@ -446,7 +446,7 @@ SH
   _source_engine "claude"
   export REVIEW_MCP_CONFIG="$MCP_CONFIG_FILE"
   export REVIEW_MCP_DEBUG=1
-  run run_agentic "$TEST_PROMPT" "claude-opus-4-8" "deep"
+  run run_agentic "$TEST_PROMPT" "claude-opus-5-5" "deep"
   [ "$status" -eq 0 ]
   grep -q -- "--debug mcp" "$ARGS_RECORD"
   grep -q -- "--mcp-config $MCP_CONFIG_FILE" "$ARGS_RECORD"
@@ -456,7 +456,7 @@ SH
   export REVIEW_MCP_CONFIG_DEFAULT_PATH="$(mktemp -u)"  # no conventional file
   _source_engine "claude"
   export REVIEW_MCP_DEBUG=1
-  run run_agentic "$TEST_PROMPT" "claude-opus-4-8" "deep"
+  run run_agentic "$TEST_PROMPT" "claude-opus-5-5" "deep"
   [ "$status" -eq 0 ]
   ! grep -q -- "--debug mcp" "$ARGS_RECORD"
   ! grep -q -- "--mcp-config" "$ARGS_RECORD"
@@ -465,7 +465,7 @@ SH
 @test "debug: MCP knob set but REVIEW_MCP_DEBUG unset → no --debug flag (default unchanged)" {
   _source_engine "claude"
   export REVIEW_MCP_CONFIG="$MCP_CONFIG_FILE"
-  run run_agentic "$TEST_PROMPT" "claude-opus-4-8" "deep"
+  run run_agentic "$TEST_PROMPT" "claude-opus-5-5" "deep"
   [ "$status" -eq 0 ]
   ! grep -q -- "--debug mcp" "$ARGS_RECORD"
 }
@@ -475,7 +475,7 @@ SH
   export REVIEW_MCP_CONFIG="$MCP_CONFIG_FILE"
   export REVIEW_MCP_DEBUG=1
   export STUB_ENGINE_RESPONSE=$'MCP server "context7": Successfully connected (transport: http) in 333ms\n{"decision":"approve","summary":"mcp healthy"}'
-  run run_agentic "$TEST_PROMPT" "claude-opus-4-8" "deep"
+  run run_agentic "$TEST_PROMPT" "claude-opus-5-5" "deep"
   [ "$status" -eq 0 ]
   [[ "$output" == *"::notice::[mcp]"* ]]
   [[ "$output" == *"context7"* ]]
@@ -488,7 +488,7 @@ SH
   _source_engine "claude"
   export REVIEW_MCP_CONFIG="$MCP_CONFIG_FILE"
   export STUB_ENGINE_RESPONSE=$'MCP server "context7": Successfully connected (transport: http) in 333ms\n{"decision":"approve","summary":"mcp healthy"}'
-  run run_agentic "$TEST_PROMPT" "claude-opus-4-8" "deep"
+  run run_agentic "$TEST_PROMPT" "claude-opus-5-5" "deep"
   [ "$status" -eq 0 ]
   ! [[ "$output" == *"::notice::[mcp]"* ]]
   [[ "$output" == *'"decision":"approve"'* ]]
