@@ -44,6 +44,9 @@ jobs:
     permissions:
       contents: read
       security-events: write
+      # Required for github/codeql-action/analyze to upload SARIF results in
+      # private/internal repositories; without it the CodeQL check fails.
+      actions: read
       # Needed to fetch internal/private CodeQL packs when applicable.
       packages: read
     strategy:

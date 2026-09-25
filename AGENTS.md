@@ -369,8 +369,11 @@ context**, because the ruleset matches by context string and a rename silently u
   setup**, not GitHub default setup — default setup analyzes `push`/`pull_request` only and cannot post
   to the `merge_group` ref (github/codeql-action#1537).
 - CI enforcement: `tests/test_merge_group_required_checks.bats` pins the `merge_group` trigger (and the
-  unchanged context names) on these workflows, so a future required-check workflow added without
-  `merge_group` — or a context rename — is caught before it reintroduces the merge-queue wall.
+  unchanged context names) on the three named workflows above (`SonarCloud`, `duplicate-decl-gate`,
+  `CodeQL`). This coverage is **not automatic** — the guard only knows about workflows it explicitly
+  names. When you add a new locally-owned required check, you **must** extend this test with its
+  workflow, or a required check missing the `merge_group` trigger will slip through and reintroduce the
+  merge-queue wall.
 - The two thin caller stubs `agent-shield.yml` and `dependency-audit.yml` also front required checks but
   carry "You MUST NOT change: trigger events"; their `merge_group` wiring is owned upstream and tracked in
   `petry-projects/.github#1157`, not here.

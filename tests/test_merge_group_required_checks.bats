@@ -80,7 +80,10 @@ PY
 }
 
 @test "duplicate-decl-gate.yml required-check job id 'duplicate-decl-gate' is unchanged (AC4)" {
-  run _wf "$WORKFLOWS/duplicate-decl-gate.yml" "'duplicate-decl-gate' in jobs"
+  # The effective check name is jobs['duplicate-decl-gate'].name when set, else
+  # the job id. Assert it resolves to 'duplicate-decl-gate' so a future explicit
+  # rename (which would silently un-require the check) is also caught.
+  run _wf "$WORKFLOWS/duplicate-decl-gate.yml" "'duplicate-decl-gate' in jobs and jobs['duplicate-decl-gate'].get('name', 'duplicate-decl-gate') == 'duplicate-decl-gate'"
   [ "$status" -eq 0 ]
   [ "$output" = "True" ]
 }
