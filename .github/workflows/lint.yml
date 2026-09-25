@@ -6,6 +6,7 @@ on:
       - 'scripts/**'
       - '.github/workflows/**'
       - 'tests/**'
+      - 'prompts/**'
       - 'agents/**'
       - 'personas/**'
       - 'interaction-contracts/**'
@@ -22,6 +23,7 @@ on:
     paths:
       - 'scripts/**'
       - 'tests/**'
+      - 'prompts/**'
       - '.github/workflows/**'
   workflow_dispatch:
 
@@ -186,6 +188,7 @@ jobs:
             tests/pr_review_canary.bats \
             tests/dev-lead/unit/test_maintainer_review_thread_gate.bats \
             tests/dev-lead/unit/test_maintainer_comment_gate.bats \
+            tests/dev-lead/unit/test_agent_marker_convention.bats \
             tests/dev-lead/unit/test_maintainer_resolve_comment.bats \
             tests/dev-lead/unit/test_comment_disposition_verify.bats \
             tests/dev-lead/unit/test_conflict_integrity.bats \

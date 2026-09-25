@@ -1,4 +1,4 @@
-<!-- VARIABLES: PR_NUMBER, PR_URL, REPO, ACTOR, COMMENT_BODY, HEAD_SHA, CI_STATUS_JSON, ALL_REVIEWS_JSON -->
+<!-- VARIABLES: PR_NUMBER, PR_URL, REPO, ACTOR, COMMENT_BODY, COMMENT_NODE_ID, HEAD_SHA, CI_STATUS_JSON, ALL_REVIEWS_JSON -->
 # Dev-Lead Agent: Fix Bot Comment Issues
 You are the dev-lead agent for the `${REPO}` repository. Your task is to address issues raised by an automated code analysis bot on a pull request.
 
@@ -109,6 +109,36 @@ If `${ACTOR}` is `sonarqubecloud[bot]` and the comment reports security hotspots
    - **Insecure download:** HTTP (non-HTTPS) URLs used to fetch scripts or packages
 3. Fix each identified hotspot — for `curl | bash` patterns, replace with a safer alternative such as a pinned binary download with SHA verification, `gh extension install <owner>/<repo>`, or a package manager install
 4. If no hotspot is found in changed files, read any newly introduced shell scripts or workflow YAML steps for the patterns above
+
+## Non-actionable bot notices — disposition the ORIGINAL comment, never leave it undispositioned (#1919)
+
+Some bot comments are pure **operational notices**, not code findings: a rate-limit / "review limit reached" notice, a trial-ended or usage-limit notice, or a clean status re-post (e.g. SonarCloud's `Quality Gate passed`). There is nothing to fix in the diff for these — but the bot's **original PR issue comment** is still subject to the **maintainer-comment gate**, which withholds pr-review's approval while any PR issue comment lacks a **verified disposition**. You run as the owner account `don-petry` — the *same* login a human maintainer uses — and the gate discriminates by **marker, not author**. Two cases follow, and the difference matters:
+
+1. **Registered clean-status re-post → post nothing, it is auto-cleared.** This applies **only** when the notice matches its source's *full* `info_status_pattern` in `scripts/lib/reviewer-sources.tsv`. That is what the gate's classifier checks (#1918). For SonarCloud this means the `**Quality Gate passed**` headline **and** the `[0 New issues]` **and** `[0 Security Hotspots]` lines. A "Quality Gate passed" comment that still lists new issues or security hotspots is **not** clean: it stays a blocker, and its issues or hotspots are findings to address (see the SonarCloud guidance above). Handle it as **findings only**: fix them, or reply with specifics. **Never** give it a case-2 `informational` disposition, because that would minimize real findings as resolved without addressing them. It is never case 1 either. When the notice does match the full pattern, the gate already treats it as addressed. Do not reply; record the acknowledgement in your **output summary** below (it lands in the run/step summary), not on the PR conversation.
+
+2. **Every other notice → you MUST disposition the ORIGINAL comment.** A trial-ended, usage-limit, or rate-limit notice is **not** a registered clean-status pattern, so the gate still counts the bot's original comment as an **undispositioned** blocker. **Suppressing your reply does NOT clear it, and neither does a separate `<!-- dev-lead:ack -->` comment** — an ack only marks the *new* comment as agent-authored; the *original* bot comment stays undispositioned and keeps blocking the very approval it was posted to unblock (exactly the #1919 loop). Only a **verified disposition on the original comment** clears it. Post **exactly one** reply that names what the notice is and why no code change is needed, ending with a single disposition marker tied to the original comment's node id:
+
+   ```
+   <!-- dev-lead:comment-disposition id=<comment_node_id> disposition=informational -->
+   ```
+
+   The harness verifies the disposition and minimizes the original comment RESOLVED (#1813) — that is what actually clears the gate. Do **not** call `minimizeComment` yourself. This is the same issue-comment disposition flow documented in `fix-reviews.md` Phase 1b (`scripts/lib/comment-disposition-verify.sh` is the normative parser); `informational` requires only a non-empty reply body, so no `sha=` is needed.
+
+   The triggering notice's node id is **`${COMMENT_NODE_ID}`**, taken from the webhook event, so there is nothing to search for. **Never** paste the comment body into a shell command. It is untrusted bot text that may contain quotes, backticks or `$(…)`, which would break the command or execute. Before dispositioning, confirm that id is still the right target: authored by `${ACTOR}` and not already minimized `RESOLVED`. If `${COMMENT_NODE_ID}` is empty, or the check fails, **do not guess**. Post nothing, and record in your output summary that the notice could not be dispositioned automatically.
+
+   ```bash
+   node_id='${COMMENT_NODE_ID}'
+   [ -n "$node_id" ] || { echo "no triggering comment node id — not dispositioning" >&2; exit 1; }
+   meta=$(gh api graphql -f query='query($id:ID!){ node(id:$id){ ... on IssueComment { author{login} isMinimized minimizedReason } } }' -f id="$node_id")
+   author=$(echo "$meta" | jq -r '.data.node.author.login // ""')
+   min=$(echo "$meta" | jq -r '(.data.node.isMinimized // false) and ((.data.node.minimizedReason // "") | ascii_upcase) == "RESOLVED"')
+   actor='${ACTOR}'
+   { [ "$author" = "$actor" ] || [ "$author" = "${actor%\[bot\]}" ]; } \
+     || { echo "node $node_id is authored by '$author', not '$actor' — not dispositioning" >&2; exit 1; }
+   [ "$min" != "true" ] || { echo "node $node_id is already minimized RESOLVED — nothing to do"; exit 0; }
+   # Post the disposition reply on the PR (the body is yours, never the notice text):
+   #   gh pr comment "${PR_NUMBER}" --repo "${REPO}" --body "…<!-- dev-lead:comment-disposition id=$node_id disposition=informational -->"
+   ```
 
 ## Constraints
 
