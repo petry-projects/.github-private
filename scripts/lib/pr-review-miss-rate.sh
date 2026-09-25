@@ -44,7 +44,7 @@
 # Trusted advisory bots whose accepted findings count. Kept as a JSON array string
 # so the pure functions need no external registry; reviewer_report.sh passes its
 # own REVIEWER_BOTS list in, which is the advisory-review-gate single source.
-: "${PR_REVIEW_DEFAULT_BOTS:=[\"gemini-code-assist\",\"copilot-pull-request-reviewer\",\"sonarqubecloud\",\"chatgpt-codex-connector\",\"coderabbitai\",\"qodo-code-review\",\"codeant-ai\",\"graphite-app\"]}"
+: "${PR_REVIEW_DEFAULT_BOTS:=[\"gemini-code-assist\",\"copilot-pull-request-reviewer\",\"sonarqubecloud\",\"chatgpt-codex-connector\",\"coderabbitai\",\"qodo-code-review\",\"codeant-ai\",\"graphite-app\",\"cubic-dev-ai\"]}"
 # The login pr-review acts as (see AGENTS.md "Agent identity"): its own findings
 # are threads it opens, and are the source of caught_findings.
 : "${PR_REVIEW_APPROVER:=donpetry-bot}"
