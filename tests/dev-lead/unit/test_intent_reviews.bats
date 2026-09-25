@@ -287,6 +287,21 @@ EOF
   [ "$(_get_env INTENT_TYPE)" = "fix-reviews" ]
 }
 
+@test "reviews: pull_request_review_comment cubic inline → fix-reviews (registry-derived default, #1903)" {
+  # cubic (cubic-dev-ai) posts inline review comments creating a blocking review
+  # thread, so per the #1425 invariant dev-lead must be trusted to act on it. With
+  # TRUSTED_BOTS unset the classifier derives its default from the reviewer-source
+  # registry, which trusts cubic-dev-ai — so the comment routes to fix-reviews.
+  unset TRUSTED_BOTS
+  export GITHUB_EVENT_NAME="pull_request_review_comment"
+  export GITHUB_EVENT_PATH="$FIXTURES_DIR/pr_review_comment_cubic.json"
+
+  run bash "$INTENT_SCRIPT"
+
+  [ "$status" -eq 0 ]
+  [ "$(_get_env INTENT_TYPE)" = "fix-reviews" ]
+}
+
 @test "reviews: pull_request_review_comment human + @dev-lead → on-mention" {
   export GITHUB_EVENT_NAME="pull_request_review_comment"
   export GITHUB_EVENT_PATH="$FIXTURES_DIR/pr_review_comment_human_trigger.json"
