@@ -225,11 +225,23 @@ jobs:
       - name: Parse intent context fields
         run: |
           ctx="${INTENT_CONTEXT:-{\}}"
+          # #1919: the triggering comment's node id, for fix-bot-comment's disposition.
+          # Only a well-formed GraphQL node id is exported: base64/base64url characters,
+          # including legacy padding (=, +, /). Never a newline or quote.
+          _cnid=$(echo "$ctx" | jq -r '.comment_node_id // ""')
+          [[ "$_cnid" =~ ^[-A-Za-z0-9_+/=]+$ ]] || _cnid=""
+          # fix-bot-comment dispositions the notice BY this id. Without it the run can only
+          # no-op and leave the notice blocking, so fail loudly instead (#1928 review).
+          if [ "${INTENT_TYPE:-}" = "fix-bot-comment" ] && [ -z "$_cnid" ]; then
+            echo "::error::fix-bot-comment: the triggering comment's node id is missing or malformed; refusing to run a fix-bot-comment that cannot disposition its notice"
+            exit 1
+          fi
           echo "INTENT_PR_NUMBER=$(echo "$ctx"    | jq -r '.pr_number // ""')"    >> "$GITHUB_ENV"
           echo "INTENT_HEAD_SHA=$(echo "$ctx"     | jq -r '.head_sha // ""')"     >> "$GITHUB_ENV"
           echo "INTENT_CHECKS=$(echo "$ctx"       | jq -c '.checks // []')"       >> "$GITHUB_ENV"
           echo "INTENT_ISSUE_NUMBER=$(echo "$ctx" | jq -r '.issue_number // ""')" >> "$GITHUB_ENV"
           echo "INTENT_ACTOR=$(echo "$ctx"        | jq -r '.actor // ""')"        >> "$GITHUB_ENV"
+          echo "INTENT_COMMENT_NODE_ID=${_cnid}" >> "$GITHUB_ENV"
           # #1767: a hold-label skip carries the blocking label + subject number so
           # the workflow can post the one-time "held" notice (empty for non-holds).
           echo "INTENT_HOLD_LABEL=$(echo "$ctx"      | jq -r '.hold_label // ""')"     >> "$GITHUB_ENV"
@@ -398,7 +410,9 @@ jobs:
           HEAD_SHA: ${{ env.INTENT_HEAD_SHA }}
           REPO: ${{ github.repository }}
           REVIEW_ENGINE: ${{ env.DEV_LEAD_ENGINE }}
+          ACTOR: ${{ env.INTENT_ACTOR }}
           COMMENT_BODY: ${{ env.INTENT_BODY }}
+          COMMENT_NODE_ID: ${{ env.INTENT_COMMENT_NODE_ID }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GOOGLE_API_KEY }}

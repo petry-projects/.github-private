@@ -152,6 +152,38 @@ _run_check() {
   [ "$status" -eq 0 ]
 }
 
+# ────────────────────────────────────────────────────────────────────
+# #1919 — dev-lead's OWN acknowledgement/note comments must carry a marker.
+# The gate discriminates by marker, not author (dev-lead posts as don-petry,
+# a human login), so an UNMARKED "Acknowledged — …" prose comment leaks
+# through as a fresh blocker while a marked one is correctly excluded.
+# ────────────────────────────────────────────────────────────────────
+
+# AC3: a dev-lead acknowledgement of a non-actionable bot notice, carrying the
+# <!-- dev-lead:ack --> marker, does NOT increment the undispositioned count → 0.
+@test "AC3: dev-lead :ack marked acknowledgement is ignored → 0" {
+  local json='{"comments":[{"author":{"login":"don-petry"},"body":"Acknowledged — this is a CodeRabbit rate-limit notice, not an actionable finding. No action needed.\n<!-- dev-lead:ack -->","isMinimized":false,"minimizedReason":""}]}'
+  _run_check "$json"
+  [ "$status" -eq 0 ]
+}
+
+# AC3: the failing-check fix note dev-lead posts as a PR comment (review-changes.md)
+# carries the <!-- dev-lead:check-fix --> marker and is excluded → 0.
+@test "AC3: dev-lead :check-fix marked comment is ignored → 0" {
+  local json='{"comments":[{"author":{"login":"don-petry"},"body":"`bats` verifies the test tooling is installed the documented way; this diff removes the vendored node_modules/bats.\n<!-- dev-lead:check-fix -->","isMinimized":false,"minimizedReason":""}]}'
+  _run_check "$json"
+  [ "$status" -eq 0 ]
+}
+
+# AC3 (the defect): the exact UNMARKED prose acknowledgement from the #1919
+# evidence still blocks — it is the MISSING marker, not the author, that let it
+# leak. This is what the marker convention on the emitting paths prevents.
+@test "AC3: an UNMARKED 'Acknowledged — …' prose comment still blocks → 1" {
+  local json='{"comments":[{"author":{"login":"don-petry"},"body":"Acknowledged — this is a Qodo trial-ended/billing notice, not a code finding. No action needed.","isMinimized":false,"minimizedReason":""}]}'
+  _run_check "$json"
+  [ "$status" -eq 1 ]
+}
+
 @test "Runtime: malformed snapshot → 2 (fail closed)" {
   _run_check 'not json at all {'
   [ "$status" -eq 2 ]
