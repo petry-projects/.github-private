@@ -17,16 +17,36 @@ PROMPTS_DIR="$(cd "$BATS_TEST_DIRNAME"/../../.. && pwd)/prompts/dev-lead"
 # `<!-- dev-lead … -->`. A prompt that tells the agent to `gh pr comment` must
 # therefore also tell it to stamp such a marker.
 #
-# These assertions tie the marker to the comment-emitting instruction (they scan
-# the context window around every `gh pr comment` line), rather than matching the
-# marker anywhere in the prompt. Otherwise a stray example could retain the marker
-# while the `gh pr comment` instruction that must carry it was dropped — the exact
-# regression #1919 guards against — and a file-wide grep would still pass.
+# These assertions tie the marker to the comment-emitting instruction by scanning
+# the context window around EACH `gh pr comment` line independently — every
+# occurrence must carry the marker within its own window. A whole-file grep (or one
+# that concatenates every window before matching) would let a single marked example
+# vouch for an unmarked sibling instruction: a later prompt change could add a new
+# unmarked `gh pr comment` and the assertion would stay green because some other
+# block still holds the marker — the exact regression #1919 guards against.
+
+# assert_each_pr_comment_marked FILE MARKER
+# Fails unless there is at least one `gh pr comment` occurrence AND every one has
+# MARKER within its surrounding context window (2 lines before, 6 after), checked
+# per occurrence so no single marked block can vouch for an unmarked sibling.
+assert_each_pr_comment_marked() {
+  local file="$1" marker="$2"
+  local found=0 lineno start end total
+  total=$(wc -l < "$file")
+  while IFS=: read -r lineno _; do
+    [ -n "$lineno" ] || continue
+    found=1
+    start=$(( lineno - 2 < 1 ? 1 : lineno - 2 ))
+    end=$(( lineno + 6 > total ? total : lineno + 6 ))
+    sed -n "${start},${end}p" "$file" | grep -qF "$marker" || return 1
+  done < <(grep -nF 'gh pr comment' "$file")
+  [ "$found" -eq 1 ]
+}
 
 @test "review-changes.md failing-check PR comment instruction carries a dev-lead marker (#1919)" {
-  # The failing-check fix note is posted as a PR issue comment; the gh pr comment
-  # instruction that emits it must be accompanied by the check-fix marker.
-  run bash -c "grep -B2 -A6 -F 'gh pr comment' \"$PROMPTS_DIR/review-changes.md\" | grep -qF '<!-- dev-lead:check-fix -->'"
+  # The failing-check fix note is posted as a PR issue comment; every gh pr comment
+  # instruction that emits it must carry the check-fix marker in its own window.
+  run assert_each_pr_comment_marked "$PROMPTS_DIR/review-changes.md" '<!-- dev-lead:check-fix -->'
   [ "$status" -eq 0 ]
 }
 
@@ -35,8 +55,8 @@ PROMPTS_DIR="$(cd "$BATS_TEST_DIRNAME"/../../.. && pwd)/prompts/dev-lead"
   # is NOT auto-cleared by the info-status classifier, so a plain ack or suppression
   # leaves the ORIGINAL comment an undispositioned maintainer-gate blocker. The prompt
   # must instead disposition the original via the verified comment-disposition marker,
-  # stamped on the gh pr comment instruction that emits the disposition reply.
-  run bash -c "grep -B2 -A6 -F 'gh pr comment' \"$PROMPTS_DIR/fix-bot-comment.md\" | grep -qF '<!-- dev-lead:comment-disposition'"
+  # stamped on each gh pr comment instruction that emits the disposition reply.
+  run assert_each_pr_comment_marked "$PROMPTS_DIR/fix-bot-comment.md" '<!-- dev-lead:comment-disposition'
   [ "$status" -eq 0 ]
 }
 

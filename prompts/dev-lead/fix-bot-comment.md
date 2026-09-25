@@ -150,9 +150,11 @@ Some bot comments are pure **operational notices**, not code findings: a rate-li
      [ "$(echo "$page" | jq -r '.data.repository.pullRequest.comments.pageInfo.hasNextPage')" = "true" ] || break
      cursor=$(echo "$page" | jq -r '.data.repository.pullRequest.comments.pageInfo.endCursor')
    done
-   # Require exactly one match — bail on an ambiguous (0 or >1) result rather than guess.
+   # Require exactly one match — bail on an ambiguous (0 or >1) result rather than
+   # guess. A bare echo would fall through to a multiline `node_id` and emit an
+   # invalid disposition marker, so exit nonzero to prevent the disposition post.
    match_count=$(printf '%s\n' "$ids" | grep -c .)
-   [ "$match_count" -eq 1 ] || { echo "ambiguous match ($match_count) — re-check the body before dispositioning"; }
+   [ "$match_count" -eq 1 ] || { echo "ambiguous match ($match_count) — re-check the body before dispositioning" >&2; exit 1; }
    node_id=$(printf '%s\n' "$ids" | grep .)
    # Post the disposition reply on the PR:
    #   gh pr comment "${PR_NUMBER}" --repo "${REPO}" --body "…<!-- dev-lead:comment-disposition id=<node_id> disposition=informational -->"
