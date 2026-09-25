@@ -30,17 +30,50 @@ PROMPTS_DIR="$(cd "$BATS_TEST_DIRNAME"/../../.. && pwd)/prompts/dev-lead"
 # MARKER within its surrounding context window (2 lines before, 6 after), checked
 # per occurrence so no single marked block can vouch for an unmarked sibling.
 assert_each_pr_comment_marked() {
+  # Each `gh pr comment` instruction must claim its OWN marker line inside its window
+  # (2 lines before, 6 after). A marker already claimed by an earlier instruction
+  # cannot vouch for a later one, so two adjacent instructions whose windows overlap
+  # still need two distinct markers (#1928 review).
   local file="$1" marker="$2"
-  local found=0 lineno start end total
+  local found=0 lineno start end total m pick claimed=" "
   total=$(wc -l < "$file")
+  local marker_lines
+  marker_lines=$(grep -nF "$marker" "$file" | cut -d: -f1)
   while IFS=: read -r lineno _; do
     [ -n "$lineno" ] || continue
     found=1
     start=$(( lineno - 2 < 1 ? 1 : lineno - 2 ))
     end=$(( lineno + 6 > total ? total : lineno + 6 ))
-    sed -n "${start},${end}p" "$file" | grep -qF "$marker" || return 1
+    pick=""
+    for m in $marker_lines; do
+      if [ "$m" -ge "$start" ] && [ "$m" -le "$end" ] && [[ "$claimed" != *" $m "* ]]; then
+        pick="$m"; break
+      fi
+    done
+    [ -n "$pick" ] || return 1
+    claimed="${claimed}${pick} "
   done < <(grep -nF 'gh pr comment' "$file")
   [ "$found" -eq 1 ]
+}
+
+@test "helper: two adjacent gh pr comment instructions sharing ONE marker fail" {
+  local f="$BATS_TEST_TMPDIR/two-one.md"
+  printf '%s\n' 'gh pr comment 1 --body "a <!-- dev-lead:ack -->"' 'gh pr comment 1 --body "b"' > "$f"
+  run assert_each_pr_comment_marked "$f" '<!-- dev-lead:ack -->'
+  [ "$status" -ne 0 ]
+}
+
+@test "helper: two adjacent gh pr comment instructions each with a marker pass" {
+  local f="$BATS_TEST_TMPDIR/two-two.md"
+  printf '%s\n' 'gh pr comment 1 --body "a <!-- dev-lead:ack -->"' 'gh pr comment 1 --body "b <!-- dev-lead:ack -->"' > "$f"
+  run assert_each_pr_comment_marked "$f" '<!-- dev-lead:ack -->'
+  [ "$status" -eq 0 ]
+}
+
+@test "fix-bot-comment: case 1 (post nothing) requires the FULL info-status pattern, not the headline" {
+  grep -qF '[0 New issues]' "$PROMPTS_DIR/fix-bot-comment.md"
+  grep -qF '[0 Security Hotspots]' "$PROMPTS_DIR/fix-bot-comment.md"
+  grep -qF 'is **not** clean' "$PROMPTS_DIR/fix-bot-comment.md"
 }
 
 @test "review-changes.md failing-check PR comment instruction carries a dev-lead marker (#1919)" {
