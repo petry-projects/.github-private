@@ -90,6 +90,12 @@ The latest submission per bot is used (not the first), so if a bot revises its r
 
 ### Examples
 
+> **These scenarios are illustrative.** They use a simplified four-bot gate (Gemini, Copilot,
+> SonarCloud, Codex) to show the timing logic. The real denominator is the number of
+> `advisory_gate=yes` rows in `scripts/lib/reviewer-sources.tsv`, currently larger, including
+> CodeAnt, Graphite and cubic. So read `3/4` as "all but one bot" and `4/4` as "every bot",
+> not as literal counts.
+
 **Scenario A: Codex not triggered (44% of PRs)**
 ```
 PR #450 created
