@@ -431,6 +431,9 @@ case "$EVENT_NAME" in
     comment_body=$(jq -r '.comment.body // empty' "$EVENT_PATH" 2>/dev/null || true)
     pr_number=$(jq -r '.issue.number // empty' "$EVENT_PATH" 2>/dev/null || true)
     author_assoc=$(jq -r '.comment.author_association // empty' "$EVENT_PATH" 2>/dev/null || true)
+    # The triggering comment's GraphQL node id — fix-bot-comment targets its
+    # disposition by id instead of re-matching the raw body in a shell command.
+    comment_node_id=$(jq -r '.comment.node_id // empty' "$EVENT_PATH" 2>/dev/null || true)
 
     # Rebase sentinel check (highest priority, before bot-skip)
     if echo "$comment_body" | grep -qF "<!-- auto-rebase-conflict:"; then
@@ -449,7 +452,8 @@ case "$EVENT_NAME" in
       --argjson pr_number "${pr_number:-0}" \
       --arg actor "${commenter:-}" \
       --arg body "${comment_body:-}" \
-      '{"pr_number":$pr_number,"actor":$actor,"body":$body}')
+      --arg comment_node_id "${comment_node_id:-}" \
+      '{"pr_number":$pr_number,"actor":$actor,"body":$body,"comment_node_id":$comment_node_id}')
 
     if is_trusted_bot "$commenter"; then
       # Authorship gate (#1311): a bot comment only drives dev-lead's auto-fix/
