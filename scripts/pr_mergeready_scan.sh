@@ -61,7 +61,7 @@ TODAY=$(date -u +%Y-%m-%d)
 if [ -z "${TRUSTED_BOTS:-}" ]; then
   TRUSTED_BOTS="$(reviewer_sources_trusted_bots_csv 2>/dev/null || true)"
 fi
-TRUSTED_BOTS="${TRUSTED_BOTS:-copilot-pull-request-reviewer[bot],gemini-code-assist[bot],sonarqubecloud[bot],coderabbitai[bot],chatgpt-codex-connector[bot],qodo-code-review[bot],codeant-ai[bot],graphite-app[bot]}"
+TRUSTED_BOTS="${TRUSTED_BOTS:-copilot-pull-request-reviewer[bot],gemini-code-assist[bot],sonarqubecloud[bot],coderabbitai[bot],chatgpt-codex-connector[bot],qodo-code-review[bot],codeant-ai[bot],graphite-app[bot],cubic-dev-ai[bot]}"
 
 echo "=== Merge-Ready-and-Idle PR Detection — Daily Scan ==="
 echo "  Repo:   $REPO"
