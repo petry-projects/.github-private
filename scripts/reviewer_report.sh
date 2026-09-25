@@ -89,7 +89,7 @@ fi
 if declare -p RATE_LIMIT_NOTICE_BOTS >/dev/null 2>&1 && [ "${#RATE_LIMIT_NOTICE_BOTS[@]}" -gt 0 ]; then
   REVIEWER_BOTS=("${RATE_LIMIT_NOTICE_BOTS[@]}")
 else
-  REVIEWER_BOTS=(gemini-code-assist copilot-pull-request-reviewer sonarqubecloud chatgpt-codex-connector coderabbitai qodo-code-review codeant-ai graphite-app)
+  REVIEWER_BOTS=(gemini-code-assist copilot-pull-request-reviewer sonarqubecloud chatgpt-codex-connector coderabbitai qodo-code-review codeant-ai graphite-app cubic-dev-ai)
 fi
 
 # Human-facing display names, keyed by GraphQL login (no "[bot]" suffix).
@@ -106,6 +106,7 @@ declare -gA REVIEWER_LABELS=(
   [qodo-code-review]="Qodo Merge"
   [codeant-ai]="CodeAnt"
   [graphite-app]="Graphite"
+  [cubic-dev-ai]="cubic"
 )
 
 # Rate-limit / out-of-quota body pattern — reuse the gate's if present.
@@ -113,6 +114,17 @@ if declare -F _advisory_rate_limit_pattern >/dev/null 2>&1; then
   RATE_LIMIT_RE="$(_advisory_rate_limit_pattern)"
 else
   RATE_LIMIT_RE='usage limit|rate[-_ ]?limit|too many requests|quota (exceeded|reached|exhausted)|out of (quota|credits|tokens|requests)|limit (reached|exceeded|exhausted)|(reached|exceeded|hit) (the |your )?(usage |rate |daily |monthly )?limit|used up its prepaid credits|Qodo.{0,40}(monthly|usage|PR|review) limit|CodeAnt.{0,40}(monthly|trial|usage) limit'
+fi
+
+# Author-scoped cubic rate-limit clause — reuse the gate's if present, else mirror
+# it. Matched ONLY against cubic's own submissions (author == cubic-dev-ai) in
+# _NORMALIZE_JQ below, so a genuine finding by another reviewer that merely mentions
+# cubic's trial is not miscounted as a cubic/other-bot refusal (#1903). The mirror
+# is kept in sync with the gate by tests/dev-lead/unit/test_advisory_review_gate.bats.
+if declare -F _advisory_cubic_rate_limit_pattern >/dev/null 2>&1; then
+  CUBIC_RATE_LIMIT_RE="$(_advisory_cubic_rate_limit_pattern)"
+else
+  CUBIC_RATE_LIMIT_RE='cubic.{0,40}(trial|free trial) (ended|expired)'
 fi
 
 # Check-run reporters (#1908): logins that deliver a review as a check run rather
@@ -127,6 +139,15 @@ if declare -F reviewer_sources_check_run_reporters >/dev/null 2>&1; then
     [ -n "$_crr_login" ] && REVIEWER_CHECK_RUN_NAMES["$_crr_login"]="$_crr_name"
   done < <(reviewer_sources_check_run_reporters 2>/dev/null || true)
   unset _crr_login _crr_name
+fi
+
+# cubic-dev-ai login — reuse the gate's if present, else mirror it. Used in the
+# refusal predicate of _NORMALIZE_JQ to scope the cubic clause to cubic's own
+# submissions only (#1903). The mirror is kept in sync with the gate by tests.
+if declare -F _advisory_cubic_login >/dev/null 2>&1; then
+  CUBIC_LOGIN="$(_advisory_cubic_login)"
+else
+  CUBIC_LOGIN='cubic-dev-ai'
 fi
 
 # ---------------------------------------------------------------------------
@@ -253,10 +274,12 @@ _NORMALIZE_JQ='
       # bot'"'"'s SOLE action on the PR was to decline. This is the key correctness
       # fix over the old "any rate-limit text present" flag.
       # A check-run submission carries an explicit `refusal` boolean (a "too large"
-      # skip); every other submission derives refusal from its body matching the
-      # rate-limit/out-of-quota pattern. Preserve a pre-set flag, else body-match.
+      # skip); preserve that pre-set flag. Otherwise derive refusal from the body:
+      # generic rate-limit markers apply to any bot, and the cubic clause is
+      # author-scoped (.bot is the ascii_downcased author) so a comment by another
+      # reviewer that merely mentions cubic'"'"'s trial is not counted as a refusal (#1903).
       | ($grp | map(. + {refusal: (if (.refusal != null) then .refusal
-                                    else ((.body // "") | test($rl; "i")) end)})) as $mine
+                                    else (((.body // "") | test($rl; "i")) or (.bot == "'"$CUBIC_LOGIN"'" and ((.body // "") | test("'"$CUBIC_RATE_LIMIT_RE"'"; "i")))) end)})) as $mine
       | ($mine | map(select(.refusal | not))) as $real
       | ($mine | map(select(.refusal)))       as $refd
       | ($real | map(.at) | min) as $first_real
