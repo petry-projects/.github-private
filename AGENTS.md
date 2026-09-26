@@ -695,9 +695,12 @@ GitHub may delay scheduled runs) runs `autocut` → `promote-all` → `sync-issu
 
 - **Do not hand-cut after a routine merge.** Autocut will do it. A manual
   `cut-release.sh <agent> <ver> --channel next --push` that races the sweep fails with
-  `release tag '<agent>/vX.Y.Z' already exists`. That is harmless: check
-  `git ls-remote --tags origin '<agent>/*'` and you will usually find `next` already moved. Always
-  check the current tags before cutting by hand.
+  `release tag '<agent>/vX.Y.Z' already exists`. That is harmless, but a release tag existing does
+  **not** prove `next` moved, because autocut creates the release first and moves the channel
+  second. Check that `<agent>/v<M>-next` resolves to the release's commit:
+  `git ls-remote --tags origin '<agent>/v<M>-next' '<agent>/vX.Y.Z^{}'`. If it doesn't, move it
+  with `cut-release.sh <agent> <X.Y.Z> --promote --channel next --push` rather than cutting a
+  new version. Always check the current tags before cutting by hand.
 - **Hand-run `cut-release.sh` (as an org admin or with the release-manager App token) only when:** the fix cannot wait
   for the next sweep; the change sits outside autocut's watched paths; autocut is disarmed; or you
   are promoting or rolling back deliberately. Use `--promote --channel <tier>` to move a channel to
@@ -747,8 +750,11 @@ even though every ref looks valid, because the stub is ahead of the channel it p
   2. **Promote the pinned channel** to a commit that declares it. For `next` this happens on the
      next autocut sweep; later rings follow by gated promotion. Wait until
      `git ls-remote --tags origin '<agent>/v<M>-<name>'` resolves to a commit that declares the
-     input. To force it, run `cut-release.sh <agent> <version> --channel <name>` as an org admin or
-     with the release-manager App token (see
+     input. To force it as an org admin or with the release-manager App token, run
+     `cut-release.sh <agent> <X.Y.Z> --promote --channel <name> --push` to move the channel to an
+     **existing** release that declares the input. Only when no such release exists yet, run
+     `cut-release.sh <agent> <new-version> --channel <name> --push`; without `--promote` it
+     always cuts a new tag and fails if that version exists (see
      ["Release automation — who cuts and moves tags"](#release-automation--who-cuts-and-moves-tags)).
   3. **Only then teach the stub to forward it** — add the `with:` line to the caller stub, now that the
      pinned channel resolves to a commit that declares the input.
