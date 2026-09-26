@@ -75,7 +75,7 @@ _fmt_usd() {
 # call), pricing each call at the rate in effect on its OWN timestamp. Columns:
 #   1 repo  2 workflow  3 tier  4 model  5 input  6 cache  7 output
 #   8 cost_usd (-1 when the model price is unknown)  9 et  10 known(1/0)  11 context
-#   12 cache_write  13 date (YYYY-MM-DD)
+#   12 cache_write  13 date (YYYY-MM-DD)  14 duration_ms (empty when null/absent, #1949)
 # ET is recomputed here from the table (m = input(model)/input(haiku)), so it can never
 # drift from the dollar figure.
 annotate_records() {
@@ -98,7 +98,10 @@ annotate_records() {
     | [
       (.repo // "unknown"), (.workflow // "unknown"), (.tier // "-"), (.model // "-"),
       (.input_tokens // 0), (.cache_read_tokens // 0), (.output_tokens // 0),
-      (.ts // "-"), (.context // ""), (.cache_creation_tokens // 0)
+      (.ts // "-"), (.context // ""), (.cache_creation_tokens // 0),
+      # Normalise to whole non-negative ms so the numeric filter in the report
+      # counts any JSON number (e.g. 12.5, 1e3) rather than silently dropping it.
+      (.duration_ms | if type == "number" and . >= 0 then floor else null end)
     ] | @tsv' "${files[@]}" 2>/dev/null \
   | awk -F'\t' -v table="${PRICING_TABLE:-}" -v baseline="${ET_BASELINE_MODEL:-claude-haiku-4-5}" '
       function glob2re(g,   re) {
@@ -127,7 +130,7 @@ annotate_records() {
       {
         repo = $1; wf = $2; tier = $3; model = $4
         inp = $5 + 0; ca = $6 + 0; out = $7 + 0; d = substr($8, 1, 10); ctx = $9
-        cw = $10 + 0
+        cw = $10 + 0; dur = $11
         mi = best_idx(model, d)
         bi = best_idx(baseline, d)
         bpin = (bi > 0) ? tin[bi] : 0
@@ -137,9 +140,10 @@ annotate_records() {
           m = (bpin > 0) ? tin[mi] / bpin : 1.0
         } else { known = 0; cost = -1; m = 1.0 }
         et = m * (1.0 * inp + 0.1 * ca + 4.0 * out)
-        # Enriched cols 1-11 unchanged for downstream; cache_write=12, date=13 appended.
-        printf "%s\t%s\t%s\t%s\t%d\t%d\t%d\t%.6f\t%.4f\t%d\t%s\t%d\t%s\n",
-          repo, wf, tier, model, inp, ca, out, cost, et, known, ctx, cw, d
+        # Enriched cols 1-11 unchanged for downstream; cache_write=12, date=13,
+        # duration_ms=14 (empty string when the record carries no duration, #1949).
+        printf "%s\t%s\t%s\t%s\t%d\t%d\t%d\t%.6f\t%.4f\t%d\t%s\t%d\t%s\t%s\n",
+          repo, wf, tier, model, inp, ca, out, cost, et, known, ctx, cw, d, dur
       }'
 }
 
@@ -264,21 +268,39 @@ render_token_report() {
   printf '\n'
 
   printf '## Top cost drivers (workflow / tier / model)\n\n'
-  printf '| Workflow | Tier | Model | Calls | Input | Cache | Output | Cost | %% of $ | ET |\n'
-  printf '|---|---|---|---:|---:|---:|---:|---:|---:|---:|\n'
+  printf '| Workflow | Tier | Model | Calls | Input | Cache | Output | Cost | %% of $ | ET | Mean ms | p50 ms |\n'
+  printf '|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n'
+  # Mean/p50 duration_ms (col 14) are computed only over records that carry a
+  # numeric duration; a null/absent duration is excluded, never counted as 0
+  # (#1949). A key with no measured durations renders "-" for both latency cells.
   awk -F'\t' '{ k = $2"\t"$3"\t"$4
       calls[k]++; inp[k] += $5; ca[k] += $6; out[k] += $7; et[k] += $9
-      if ($10 == 1) cost[k] += $8; else unk[k]++ }
-    END { for (k in calls)
-      printf "%.6f\t%.4f\t%d\t%d\t%d\t%d\t%d\t%s\n",
-        cost[k], et[k], calls[k], inp[k], ca[k], out[k], unk[k], k }' "$enriched" \
+      if ($10 == 1) cost[k] += $8; else unk[k]++
+      if ($14 ~ /^[0-9]+$/) { dsum[k] += $14; dn[k]++; dvals[k] = dvals[k] " " $14 } }
+    END { for (k in calls) {
+      mean = "-"; p50 = "-"
+      if (dn[k] > 0) {
+        mean = sprintf("%d", dsum[k] / dn[k] + 0.5)
+        n = split(dvals[k], arr, " ")
+        for (i = 2; i <= n; i++) { key = arr[i] + 0; j = i - 1;
+          while (j >= 1 && arr[j] + 0 > key) { arr[j+1] = arr[j]; j-- } arr[j+1] = key }
+        rank = int((n + 1) / 2); if (rank < 1) rank = 1
+        p50 = sprintf("%d", arr[rank] + 0)
+        delete arr
+      }
+      printf "%.6f\t%.4f\t%d\t%d\t%d\t%d\t%d\t%s\t%s\t%s\n",
+        cost[k], et[k], calls[k], inp[k], ca[k], out[k], unk[k], mean, p50, k } }' "$enriched" \
   | sort -t$'\t' -k1,1rn \
-  | while IFS=$'\t' read -r cost et calls input cache output unk wf tier model; do
+  | while IFS=$'\t' read -r cost et calls input cache output unk mean_ms p50_ms wf tier model; do
       local pct mark=""; [ "$unk" -gt 0 ] && mark="*"
+      local mean_disp p50_disp
+      [ "$mean_ms" = "-" ] && mean_disp="-" || mean_disp="$(_fmt_int "$mean_ms")"
+      [ "$p50_ms" = "-" ] && p50_disp="-" || p50_disp="$(_fmt_int "$p50_ms")"
       pct="$(awk -v c="$cost" -v t="$total_cost" 'BEGIN { printf "%d%%", (t > 0 ? c / t * 100 : 0) }')"
-      printf '| `%s` | %s | `%s` | %s | %s | %s | %s | %s%s | %s | %s |\n' \
+      printf '| `%s` | %s | `%s` | %s | %s | %s | %s | %s%s | %s | %s | %s | %s |\n' \
         "$wf" "$tier" "$model" "$(_fmt_int "$calls")" "$(_fmt_int "$input")" \
-        "$(_fmt_int "$cache")" "$(_fmt_int "$output")" "$(_fmt_usd "$cost")" "$mark" "$pct" "$(_fmt_int "$et")"
+        "$(_fmt_int "$cache")" "$(_fmt_int "$output")" "$(_fmt_usd "$cost")" "$mark" "$pct" "$(_fmt_int "$et")" \
+        "$mean_disp" "$p50_disp"
     done
   printf '\n'
 
