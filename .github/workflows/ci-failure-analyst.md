@@ -7,11 +7,9 @@ permissions:
   actions: read
   checks: read
   contents: read
+  pull-requests: read
 
-engine: claude
-
-models:
-  claude: [claude-sonnet-4-6]
+engine: claude-sonnet-4-6
 
 tools:
   github:

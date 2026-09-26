@@ -175,6 +175,7 @@ backtick spans (e.g. `` `path/to/file.yml` ``) are allowed; the separator row us
 | `.github/workflows/pr-review-trigger.yml` | 1 | — | `check_suite`, `pull_request_review`, `pull_request`, `repository_dispatch:[pr-review-mention]`, `workflow_dispatch` — webhook reactions; no `schedule`. |
 | `.github/workflows/ci-failure-analyst.lock.yml` | 1 | — | `check_run:[completed]` only — reacts to a completing check. |
 | `.github/workflows/dismiss-stale-bot-reviews.yml` | 1 | — | `pull_request:[synchronize]`, `pull_request_review:[submitted]` — reacts to a push/re-review. |
+| `.github/workflows/issue-triage.lock.yml` | 1 | — | `issues:[opened]` — agentic triage that classifies and labels newly opened issues. |
 | `.github/workflows/issue-triage-runner.yml` | 1 | — | `issues:[opened, reopened]` — reacts to a new/reopened issue. |
 | `.github/workflows/pr-review-mention.yml` | 1 | — | Mention router: `issue_comment`, `pull_request_review_comment`, `pull_request:[review_requested]`; parses + dispatches, no clock. |
 | `.github/workflows/persona-mention.yml` | 1 | — | Mention router: `issue_comment`, `pull_request_review_comment`, `discussion_comment` — dispatches to the persona runner, no clock. |
