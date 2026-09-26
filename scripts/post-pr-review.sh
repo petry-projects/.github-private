@@ -251,6 +251,37 @@ mark_prior_agent_items_obsolete() {
   rm -f "$reviews_file" "$comments_file"
 }
 
+# Mechanical enforcement of decision gate 4 (#1766). Gate 4 — "No unresolved
+# review threads requesting changes" (prompts/shared.md) — was prompt-advisory
+# only, and the cascade posted APPROVED on PR #1742 over 15 unresolved threads.
+# Here an APPROVE verdict is IMPOSSIBLE while any review thread is unresolved, or
+# while the thread set cannot be enumerated (API failure / pagination /
+# permissions) — an unknown count must never read as zero. In either case the
+# decision is rewritten to escalate BEFORE any approval is posted. This runs at
+# the single point both the tier-2 and tier-3 cascade paths funnel through, and
+# ahead of the DRY_RUN branch so the downgrade is visible in dry runs too.
+if [ "$DECISION" = "approve" ]; then
+  # shellcheck source=lib/unresolved-review-thread-gate.sh
+  source "$POST_PR_SCRIPT_DIR/lib/unresolved-review-thread-gate.sh"
+  URT_SNAPSHOT=$(urtg_fetch_review_threads "$PR_URL")
+  URT_RC=0
+  check_unresolved_review_threads "$URT_SNAPSHOT" || URT_RC=$?
+  if [ "$URT_RC" -eq 1 ]; then
+    URT_COUNT=$(printf '%s' "$URT_SNAPSHOT" | jq -r '[ (.reviewThreads // [])[] | select(.isResolved != true) ] | length' 2>/dev/null || echo "One or more")
+    echo "    gate4: $URT_COUNT unresolved review thread(s) — downgrading approve → escalate (#1766)"
+    DECISION="escalate"
+    # Prepend the gate blocker to the original review body so the escalation
+    # carries the full review summary and findings, not just the gate note.
+    BODY=$(printf -- '- **blocker (decision gate 4)**: %s unresolved review thread(s) request changes and must be resolved before this PR can be approved. Resolve each open thread (or push a commit that addresses it and mark the thread resolved); the cascade will then re-review.\n\n---\n\n%s' "$URT_COUNT" "$BODY")
+  elif [ "$URT_RC" -ne 0 ]; then
+    echo "    gate4: review threads could not be enumerated (rc=$URT_RC) — failing closed, downgrading approve → escalate (#1766)"
+    DECISION="escalate"
+    # Prepend the gate blocker to the original review body so the escalation
+    # carries the full review summary and findings, not just the gate note.
+    BODY=$(printf -- '- **blocker (decision gate 4)**: the PR review-thread state could not be enumerated (API failure, pagination beyond one page, or permissions), so approval is withheld (fail-closed). An unknown thread count must not be treated as zero. The cascade will re-review once the thread set is readable.\n\n---\n\n%s' "$BODY")
+  fi
+fi
+
 if [ "$DRY_RUN" = "true" ]; then
   echo "=== DRY RUN: Would post review ==="
   echo "Decision: $DECISION"
@@ -454,6 +485,28 @@ COMMENT_END
   else
     # Escalate to human via CODEOWNERS — avoid hard-coding a single reviewer.
     echo "Escalating to human review..."
+    # Post the gate blocker message if present (e.g., gate 4 downgrade reason) so
+    # the author knows why approval was withheld. Match the exact deterministic
+    # prefix the gate prepends (line 275/281) rather than substring matching
+    # natural-language text; "blocker" is common in review language.
+    if [[ "$BODY" == *"- **blocker (decision gate"* ]]; then
+      # Re-stamp as an escalation verdict instead of posting markerless: the
+      # same-SHA idempotency no-op in review-one-pr.sh keys on a bot marker at
+      # head (decision=(approved|escalated)), and a markerless comment lets the
+      # next trigger re-run the cascade and post a duplicate blocker at the
+      # same SHA. decision=escalated does not match standing-approval/
+      # carry-forward/miss-rate scans, which all require decision=approved.
+      BODY_WITHOUT_OLD_MARKER=$(printf '%s' "$BODY" | sed 's/<!-- pr-review-agent v1 sha=[a-f0-9][^>]*-->//g')
+      BODY_FOR_COMMENT="<!-- pr-review-agent v1 sha=$PR_HEAD_SHA decision=escalated risk=$RISK -->
+$BODY_WITHOUT_OLD_MARKER"
+      if gh pr comment "$PR_URL" --body "$BODY_FOR_COMMENT"; then
+        # A gate downgrade invalidates any prior agent approval at an earlier SHA.
+        # The just-posted escalation carries the newest marker so it is preserved;
+        # everything older (notably a stale APPROVED review) is superseded, closing
+        # the window where standing-approval/carry-forward could act on it.
+        mark_prior_agent_items_obsolete "$PR_URL"
+      fi
+    fi
     gh pr edit "$PR_URL" --add-label needs-human-review 2>/dev/null || true
     SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     bash "$SCRIPT_DIR/request-codeowners-review.sh" "$PR_URL" || true
