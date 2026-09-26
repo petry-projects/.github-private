@@ -201,6 +201,37 @@ teardown() {
   [ "$cw" = "0" ]
 }
 
+# ── emit_token_record: duration_ms (#1949) ────────────────────────────────────
+
+@test "emit_token_record: records numeric duration_ms from the 10th arg" {
+  emit_token_record "pr-review" "deep" "claude" "claude-sonnet-4-6" 1000 200 100 "" 350 1234
+  local dur
+  dur=$(jq '.duration_ms' < "$TOKEN_LOG_FILE")
+  [ "$dur" = "1234" ]
+}
+
+@test "emit_token_record: duration_ms is JSON null when omitted (never 0)" {
+  emit_token_record "pr-review" "triage" "claude" "claude-haiku-4-5-20251001" 1000 200 100 ""
+  local dur
+  dur=$(jq '.duration_ms' < "$TOKEN_LOG_FILE")
+  [ "$dur" = "null" ]
+}
+
+@test "emit_token_record: duration_ms is JSON null when passed empty (never 0)" {
+  emit_token_record "pr-review" "deep" "claude" "claude-sonnet-4-6" 1000 200 100 "" 350 ""
+  local dur
+  dur=$(jq '.duration_ms' < "$TOKEN_LOG_FILE")
+  [ "$dur" = "null" ]
+}
+
+@test "emit_token_record: duration_ms of 0 is preserved as 0, not null" {
+  # An explicit 0 is a measured value (edge case); only an absent/empty arg → null.
+  emit_token_record "pr-review" "deep" "claude" "claude-sonnet-4-6" 1000 200 100 "" 350 0
+  local dur
+  dur=$(jq '.duration_ms' < "$TOKEN_LOG_FILE")
+  [ "$dur" = "0" ]
+}
+
 # ── emit_token_record: empty model-less all-zero suppression (#1009) ───────────
 
 @test "emit_token_record: suppresses an empty model-less all-zero record" {
