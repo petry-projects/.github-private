@@ -1099,7 +1099,22 @@ run_triage() {
       elif [ "$REVIEW_ENGINE" = "gemini" ] && [ -n "${_GEMINI_CHAIN_MODEL_USED:-}" ]; then
         _triage_used="$_GEMINI_CHAIN_MODEL_USED"
       else
-        _triage_used="$ENGINE_TRIAGE_MODEL"
+        # In token-logging mode the invoke ran inside a `| tee` pipeline SUBSHELL,
+        # so _CLAUDE/_GEMINI_CHAIN_MODEL_USED were set there and never reached this
+        # shell. Falling back to ENGINE_TRIAGE_MODEL here mis-attributes a PINNED
+        # chain (e.g. the model-ab A/B's claude-opus-5-5 / -4-8 arms, which set
+        # CLAUDE_TRIAGE_MODEL_CHAIN) to the tier default — corrupting the per-model
+        # cost record. Record the HEAD of the pinned chain instead: the model that
+        # ran absent a fallback (for a single-id pin that IS the model used). #1952.
+        local _head_chain=""
+        case "$REVIEW_ENGINE" in
+          claude) _head_chain="${_triage_chain:-}" ;;
+          gemini) _head_chain="${_triage_gemini_chain:-}" ;;
+        esac
+        _head_chain="${_head_chain%%,*}"
+        _head_chain="${_head_chain#"${_head_chain%%[![:space:]]*}"}"
+        _head_chain="${_head_chain%"${_head_chain##*[![:space:]]}"}"
+        _triage_used="${_head_chain:-$ENGINE_TRIAGE_MODEL}"
       fi
       _record_engine_tokens "triage" "$REVIEW_ENGINE" "$_triage_used" "$prompt_file" "$_tok_tmp" "$_dur"
       _record_model_used "$_triage_used"

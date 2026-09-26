@@ -287,7 +287,7 @@ score_llm_judge() {
     die "score_llm_judge requires expected, candidate, and cid arguments"
   fi
   local expected="$1" candidate="$2" cid="$3" eng_rc="${4:-0}"
-  local judge_raw judge_obj score pass
+  local judge_raw judge_obj score pass judge_rc=0
 
   {
     cat "$JUDGE_PROMPT_FILE"
@@ -295,8 +295,14 @@ score_llm_judge() {
     printf '\n## Candidate output (to score)\n\n```\n%s\n```\n' "$candidate"
   } >"$work_judge"
 
+  # Capture the judge's EXIT STATUS, not just its output: a nonzero judge exit
+  # (throttle/timeout/outage — every model in the judge chain unavailable) means
+  # the candidate was never actually graded, exactly the infra signal the skill
+  # engine records via eng_rc. Discarding it (the old `|| judge_raw=""`) would let
+  # missing judge evidence masquerade as a scored 0 — two unavailable-judge arms
+  # then compare as 0>=0 and the A/B falsely ACCEPTS the candidate (#1952, codex P1).
   judge_raw=""
-  judge_raw="$("$EVAL_JUDGE_CMD" "$work_judge")" || judge_raw=""
+  judge_raw="$("$EVAL_JUDGE_CMD" "$work_judge")" || judge_rc=$?
 
   # Strip markdown code blocks if the model wrapped its JSON response in them,
   # then accept only a single JSON object with a numeric score. A number outside
@@ -310,7 +316,17 @@ score_llm_judge() {
       end
     ' <<<"$cleaned_raw" 2>/dev/null || true)"
 
-  if [ -z "$judge_obj" ]; then
+  if [ "$judge_rc" -ne 0 ]; then
+    # Judge INVOCATION failed — INFRA, not a quality miss. Fold the judge's nonzero
+    # status into this case's engine_rc (when the skill engine itself answered) so
+    # the aggregate classifies the set infra (exit 2), never a false regression or
+    # a false accept from an ungraded case. Distinct from unparseable-but-answered
+    # judge output below, which stays a scored quality failure.
+    judge_obj=null
+    score=0
+    pass=false
+    [ "$eng_rc" -eq 0 ] && eng_rc="$judge_rc"
+  elif [ -z "$judge_obj" ]; then
     judge_obj=null
     score=0
     pass=false

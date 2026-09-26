@@ -1,0 +1,268 @@
+name: Model A/B (non-regression)
+# readme-report: Manually dispatched Opus 5.5 vs 4.8 held-out A/B + liveness/effort probe.
+
+# Phase 2 of the deep-tier promotion epic (#1895, story #1950; unblocks #1899 and
+# #1901). #1897 was closed with OFFLINE evidence only — its live ACs (AC-1 A/B,
+# AC-3 liveness, AC-4 effort probe) were "recorded as requiring a live CI run",
+# but no workflow in this repo runs scripts/evals/model-ab.sh (skill-eval-report.yml
+# runs run-eval.sh for ONE skill at a fixed model). So the epic's non-regression
+# metric — `model-ab.sh claude-opus-5-5 claude-opus-4-8` exits 0 — had no execution
+# path. This workflow gives it one.
+#
+# workflow_dispatch ONLY (no schedule, no pull_request): every run spends tokens
+# (2 models x N held-out sets, plus a live probe), so it is a deliberate maintainer
+# action, never automatic. The maintainer's session dispatches it once after merge
+# with the defaults below (see #1950 maintainer decision) — do NOT dispatch it from
+# the PR.
+#
+# EVAL SAFEGUARD (unchanged from #1897): frozen held-out sets, judge held fixed at
+# the AB_JUDGE_MODEL default, and each skill markdown at its incumbent file. There
+# is deliberately NO prompt or corpus override input — the corpus and judge are not
+# tunable from the dispatch.
+#
+# Class: org-private-automation (like skill-eval-report.yml), NOT a thin caller
+# stub. Third-party actions are SHA-pinned (pins copied from skill-eval-report.yml
+# per AGENTS.md — never guessed).
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate:
+        description: "Candidate (new) model id to score against the incumbent"
+        required: false
+        default: "claude-opus-5-5"
+        type: string
+      incumbent:
+        description: "Incumbent (current) model id — the non-regression baseline"
+        required: false
+        default: "claude-opus-4-8"
+        type: string
+      sets:
+        description: "Space-separated held-out sets; each must have evals/<set>/holdout (frozen sets only)"
+        required: false
+        default: "triage deep-review"
+        type: string
+      runs:
+        description: "Max attempts per A/B (clamped 1..3, the epic cost cap); ONLY infra-classed runs are retried"
+        required: false
+        default: "1"
+        type: string
+
+# Least-privilege: reset the default write-all grant to nothing at the top level;
+# the single job re-grants only the read scope it needs (AC #5).
+permissions: {}
+
+# One A/B per ref at a time; never cancel a token-spending run mid-flight.
+concurrency:
+  group: model-ab-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  model-ab:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60  # 2 models x N held-out sets + a live probe (AC #5)
+    permissions:
+      contents: read  # actions/checkout only — this workflow writes nothing
+    env:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      # Pin via vars.CLAUDE_CODE_VERSION for reproducible caching; default 'latest'
+      # caches an install indefinitely — flush via the Actions cache UI or bump the
+      # variable. Mirrors skill-eval-report.yml / pr-review.yml.
+      CLAUDE_CODE_VERSION: ${{ vars.CLAUDE_CODE_VERSION || 'latest' }}
+      CANDIDATE: ${{ inputs.candidate }}
+      INCUMBENT: ${{ inputs.incumbent }}
+      SETS: ${{ inputs.sets }}
+      RUNS: ${{ inputs.runs }}
+      # Every arm (both models, both sets) logs per-call token records to this
+      # single JSONL, giving #1899 cost figures for both models on IDENTICAL inputs
+      # (AC #3). engine.sh honors TOKEN_LOG_FILE; unset would be a silent no-op.
+      TOKEN_LOG_FILE: ${{ github.workspace }}/model-ab-tokens.jsonl
+
+    steps:
+      - name: Reject non-main dispatch ref
+        # workflow_dispatch can target ANY branch or tag, but this A/B produces the
+        # official go/no-go evidence for the deep-tier promotion — it must score the
+        # MERGED main tree, never a stale or unreviewed branch's scripts/prompts/
+        # corpus. Fail closed (AGENTS.md #1776) on any ref other than main so branch
+        # state can never masquerade as post-merge evidence (#1952).
+        env:
+          GH_REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          if [ "$GH_REF" != "refs/heads/main" ]; then
+            echo "::error::model-ab must be dispatched from main (got '$GH_REF') — the A/B scores the merged tree, not branch state"
+            exit 1
+          fi
+
+      - name: Checkout agent repo
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          # Pin to main as well as rejecting non-main above: the checked-out tree
+          # that gets scored is the merged baseline, not the dispatched ref (#1952).
+          ref: refs/heads/main
+          persist-credentials: false
+
+      - name: Validate dispatch inputs (offline — spends no tokens)
+        # Run the wrapper's OFFLINE input validation (runs clamp + set existence /
+        # dedup / count-cap / engine-compat) BEFORE the paid liveness/effort probe,
+        # so a fat-fingered dispatch (unknown, duplicated, or persona-engine set) is
+        # rejected without spending a single model token (#1952). This reuses the
+        # exact logic the A/B step depends on — one source of truth, no drift.
+        run: |
+          set -euo pipefail
+          bash scripts/evals/model-ab-dispatch.sh --validate-only \
+            --candidate "$CANDIDATE" \
+            --incumbent "$INCUMBENT" \
+            --sets "$SETS" \
+            --runs "$RUNS"
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+        with:
+          node-version: '20'
+
+      - name: Cache claude-code CLI
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ~/.npm-global
+          key: claude-code-${{ env.CLAUDE_CODE_VERSION }}-${{ runner.os }}
+
+      - name: Install Claude Code CLI
+        run: |
+          mkdir -p "$HOME/.npm-global"
+          npm config set prefix "$HOME/.npm-global"
+          echo "$HOME/.npm-global/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.npm-global/bin:$PATH"
+          if command -v claude >/dev/null 2>&1; then
+            echo "claude-code cache hit: $(claude --version)"
+          else
+            npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" # NOSONAR — install scripts required for native binary setup; version intentionally uses CLAUDE_CODE_VERSION var (same pattern as skill-eval-report.yml)
+          fi
+
+      - name: Liveness & effort probe
+        id: probe
+        # AC #4: prove the candidate model actually ANSWERS in CI (closing #1897's
+        # AC-3), and record whether `--effort high` is accepted (AC-4). This is a
+        # LIVENESS probe, so it fails OPEN (continue-on-error) with a loud finding
+        # in the summary — it must never mask the A/B verdict, which is the run's
+        # exit status (AC #2). Per AGENTS.md #1776: liveness probes warn, gates fail.
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          # shellcheck source=scripts/lib/token-metrics.sh
+          source scripts/lib/token-metrics.sh
+          prompt="Reply with the single word: pong."
+
+          # Bound EACH probe so a stalled `claude` call cannot consume the whole
+          # 60-min job timeout and starve the A/B step: on job cancellation the A/B
+          # never runs, and continue-on-error (which applies only AFTER a step
+          # finishes) would NOT save it (#1952, codex P1). `timeout` exits 124 on
+          # expiry — a nonzero rc the liveness/effort checks below already treat as
+          # FAIL / rejected-or-unsupported, so the probe fails OPEN and the A/B
+          # still produces its verdict.
+          probe_timeout="${PROBE_TIMEOUT_SECS:-300}"
+
+          # 1) Liveness: does the candidate answer at all?
+          live_rc=0
+          timeout "$probe_timeout" claude --print --model "$CANDIDATE" --output-format json <<<"$prompt" > probe.json 2>probe.err || live_rc=$?
+          # extract_engine_text returns nonzero when jq cannot parse the probe file;
+          # sourcing token-metrics.sh enabled errexit, so an unguarded assignment
+          # would abort the step before it records the result or writes the summary.
+          # Capture the status and leave the text empty so the check records FAIL.
+          if ! result_txt="$(extract_engine_text claude probe.json)"; then
+            result_txt=""
+          fi
+          if [ "$live_rc" -eq 0 ] && [ -n "$result_txt" ]; then
+            liveness="PASS"
+          else
+            liveness="FAIL"
+          fi
+          echo "liveness=$liveness" >> "$GITHUB_OUTPUT"
+
+          # 2) Effort probe: is `--effort high` accepted by this model/CLI?
+          effort_rc=0
+          timeout "$probe_timeout" claude --print --model "$CANDIDATE" --effort high --output-format json <<<"$prompt" > effort.json 2>effort.err || effort_rc=$?
+          # Same errexit guard as the liveness assignment above (#1952 CodeRabbit).
+          if ! effort_txt="$(extract_engine_text claude effort.json)"; then
+            effort_txt=""
+          fi
+          if [ "$effort_rc" -eq 0 ] && [ -n "$effort_txt" ]; then
+            effort="accepted"
+          else
+            effort="rejected-or-unsupported"
+          fi
+          echo "effort=$effort" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "## Candidate liveness & effort probe — \`$CANDIDATE\`"
+            echo ""
+            echo "| check | result |"
+            echo "|-------|--------|"
+            echo "| liveness (\`--print\`, \`.result\` non-empty via extract_engine_text) | **$liveness** |"
+            echo "| \`--effort high\` accepted | **$effort** |"
+            echo ""
+            if [ "$liveness" != "PASS" ]; then
+              echo "> :warning: Liveness probe did NOT pass — the candidate produced no parseable \`.result\`. The A/B below will likely classify \`infra\`."
+              echo ""
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$liveness" != "PASS" ]; then
+            echo "::warning::model-ab probe: candidate '$CANDIDATE' liveness FAIL (rc=$live_rc, empty .result) — recorded, non-blocking"
+          fi
+
+      - name: Run model A/B (retry infra only)
+        id: ab
+        # AC #2: run model-ab.sh <candidate> <incumbent> <sets…> via the dispatch
+        # helper, which validates/clamps inputs (AC #1) and re-runs ONLY infra-classed
+        # attempts (exit 2), up to `runs`, never re-running a scored verdict. The
+        # workflow's exit status IS model-ab.sh's verdict (0 accept / 1 regression /
+        # 2 infra) — we render the summary first, then propagate it.
+        run: |
+          set -uo pipefail
+          rc=0
+          bash scripts/evals/model-ab-dispatch.sh \
+            --candidate "$CANDIDATE" \
+            --incumbent "$INCUMBENT" \
+            --sets "$SETS" \
+            --runs "$RUNS" \
+            --out model-ab-evidence.json || rc=$?
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "## Model A/B — \`$CANDIDATE\` (candidate) vs \`$INCUMBENT\` (incumbent)"
+            echo ""
+            if [ -f model-ab-evidence.json ] && jq -e . model-ab-evidence.json >/dev/null 2>&1; then
+              verdict=$(jq -r '.verdict'      model-ab-evidence.json)
+              judge=$(jq -r '.judge_model'    model-ab-evidence.json)
+              echo "- **Verdict:** \`$verdict\` (candidate must MATCH OR BEAT incumbent on every set; bar is \`>=\`, not a strict improvement gate)"
+              echo "- **Judge model (held fixed):** \`$judge\`"
+              echo "- **Attempts:** run budget \`$RUNS\` (clamped 1..3); only infra-classed attempts are retried, a scored arm is never re-run"
+              echo ""
+              echo "| set | candidate score | incumbent score | non-regression | outcome |"
+              echo "|-----|-----------------|-----------------|----------------|---------|"
+              jq -r '.sets[] | "| `\(.skill)` | \(.candidate_score) | \(.incumbent_score) | \(.non_regression) | \(.outcome) |"' model-ab-evidence.json
+              echo ""
+            else
+              echo "> :warning: model-ab.sh produced no parseable evidence JSON (rc=$rc) — likely a hard/usage error; see the step log."
+              echo ""
+            fi
+            echo "### Caveats"
+            echo "- **EVAL SAFEGUARD:** frozen held-out sets, judge held fixed (\`AB_JUDGE_MODEL\`), skill markdown at its incumbent file. No prompt/corpus override is accepted by this workflow."
+            echo -n "- **Effort NOT exercised in the A/B:** \`model-ab.sh\` drives the deep-review generator through \`run_triage\`, so it does **not** apply the deep tier's \`--effort high\` pin that #1898 added to \`run_agentic\`. "
+            echo "Do not over-read this A/B as covering the deep tier's effort setting — the effort finding above is a separate direct probe."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # Propagate model-ab.sh's verdict as the job's exit status (AC #2).
+          exit "$rc"
+
+      - name: Upload per-arm token log
+        # AC #3: the identical-inputs token JSONL for BOTH models — #1899's cost
+        # (and, once duration_ms lands, latency) evidence. always() so it uploads
+        # even when the A/B step exited non-zero (regression/infra).
+        if: always() && hashFiles('model-ab-tokens.jsonl') != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: model-ab-tokens-${{ github.run_id }}
+          path: model-ab-tokens.jsonl
+          if-no-files-found: warn
