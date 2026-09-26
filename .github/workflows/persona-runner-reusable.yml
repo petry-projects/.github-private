@@ -73,6 +73,25 @@ on:
         required: false
         type: string
         default: 'advisory'
+      surface:
+        # Which surface the dispatch came from. Defaults to 'mention' so existing
+        # mention dispatches are unchanged. When 'pull_request', the persona's
+        # event pre-gate runs before the engine (#1905). The local
+        # qa-lead-pr-advisory.yml advise job now sets 'pull_request' too, so both
+        # its run and the router-served run share this workflow's per-(persona,
+        # repo,PR) concurrency group and the same already-advised marker check —
+        # the serialization that prevents the two paths double-posting.
+        required: false
+        type: string
+        default: 'mention'
+      event_action:
+        # The underlying event action the router observed (e.g. opened,
+        # ready_for_review). Forwarded for parity with the router payload and
+        # future per-persona gates; the surface's declared events are bound by
+        # the router (ADR-0009), so the qa-lead decision does not consider it.
+        required: false
+        type: string
+        default: ''
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         required: true
@@ -107,9 +126,16 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
-      contents: read   # checkout THIS repo's tooling + prompts. The agent reads
-                       # the public source repo with github.token; the comment is
-                       # posted by the workflow with the persona's manifest PAT.
+      contents: read        # checkout THIS repo's tooling + prompts. The agent
+                            # reads the public source repo with github.token; the
+                            # comment is posted with the persona's manifest PAT.
+      pull-requests: read   # the event pre-gate (#1905) reads the PR's changed
+                            # files, labels, and reviews via github.token — with
+                            # only contents:read those reads 403 on a private
+                            # source repo and every routed pull_request advisory
+                            # fails closed (skips).
+      issues: read          # …and the shared issue-comment stream the gate scans
+                            # for the already-advised marker / automation budget.
     steps:
       - name: Checkout persona tooling + prompts
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -151,6 +177,42 @@ jobs:
               ;;
           esac
 
+      - name: Event pre-gate — suppress the pull_request surface before the engine
+        # #1905. The router serves qa-lead's pull_request advisory here with
+        # surface=pull_request, but binds only the GENERIC brakes — it does NOT
+        # carry the persona-specific suppressors (no-test-surface, budget-
+        # exhausted, already-advised) the local qa-lead gate enforces. Run the
+        # persona's event pre-gate BEFORE the engine so a router-served PR
+        # dispatch is suppressed with the SAME fidelity as the local surface;
+        # otherwise the engine runs and posts on every trusted PR. For a mention
+        # dispatch (surface defaults to 'mention') the gate is a no-op ('run'),
+        # so existing mention behaviour is unchanged. Fails CLOSED: an unreadable
+        # signal yields a skip (no engine, no post) with a ::error naming it.
+        id: pregate
+        if: steps.resolve.outputs.skip == 'false'
+        env:
+          # github.token reads the (public) source repo — the same read scope the
+          # agent step uses. The pre-gate only READS PR signals; it never posts.
+          GH_TOKEN: ${{ github.token }}
+          PERSONA: ${{ inputs.persona }}
+          SURFACE: ${{ inputs.surface }}
+          SOURCE_REPO: ${{ inputs.source_repo }}
+          ITEM_NUMBER: ${{ inputs.item_number }}
+          EVENT_ACTION: ${{ inputs.event_action }}
+        run: |
+          set -euo pipefail
+          # shellcheck source=scripts/persona-pr-pregate.sh
+          source scripts/persona-pr-pregate.sh
+
+          decision="$(persona_event_pregate \
+            "$PERSONA" "$SURFACE" "$SOURCE_REPO" "$ITEM_NUMBER" "$EVENT_ACTION" || true)"
+          echo "persona pre-gate for '${PERSONA}' (surface=${SURFACE}) on ${SOURCE_REPO}#${ITEM_NUMBER}: ${decision}"
+          if [ "$decision" = "run" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Resolve the persona's posting identity from its manifest
         # Source of truth for who a persona posts as: personas/<id>/persona.yml
         # runtime.identity (the #1316/#1317 pattern). The runner honors the
@@ -159,7 +221,7 @@ jobs:
         # PATs only for the sanctioned posting identities; any other declared
         # credential fails loudly rather than silently borrowing a default.
         id: identity
-        if: steps.resolve.outputs.skip == 'false'
+        if: steps.resolve.outputs.skip == 'false' && steps.pregate.outputs.run == 'true'
         env:
           PERSONA: ${{ inputs.persona }}
         run: |
@@ -199,7 +261,7 @@ jobs:
         # derived per-persona from the manifest (via the identity step), so every
         # persona is covered without an enumerated list (AC #6).
         id: authz_preflight
-        if: steps.resolve.outputs.skip == 'false'
+        if: steps.resolve.outputs.skip == 'false' && steps.pregate.outputs.run == 'true'
         env:
           # Same manifest-driven PAT selection as the post step — the token that
           # WILL post is the token we probe. The agent step never sees these.
@@ -235,7 +297,7 @@ jobs:
           bash scripts/persona-authz-preflight.sh
 
       - name: Install Claude Code
-        if: steps.resolve.outputs.skip == 'false'
+        if: steps.resolve.outputs.skip == 'false' && steps.pregate.outputs.run == 'true'
         env:
           CLAUDE_CODE_VERSION: ${{ vars.CLAUDE_CODE_VERSION || 'latest' }}
         run: |
@@ -246,7 +308,7 @@ jobs:
           npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
 
       - name: Produce the advisory (agent — read only, no post)
-        if: steps.resolve.outputs.skip == 'false'
+        if: steps.resolve.outputs.skip == 'false' && steps.pregate.outputs.run == 'true'
         id: advise
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -306,7 +368,7 @@ jobs:
 
       - name: Enforce marker and post the comment (workflow — the only writer)
         id: post
-        if: steps.resolve.outputs.skip == 'false' && steps.advise.outputs.skip_post == 'false'
+        if: steps.resolve.outputs.skip == 'false' && steps.pregate.outputs.run == 'true' && steps.advise.outputs.skip_post == 'false'
         env:
           # The PAT lives ONLY here. The agent step above never had it. WHICH
           # PAT is used is driven by the persona manifest
