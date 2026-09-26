@@ -897,15 +897,54 @@ _claude_chain_invoke() {
   return "$final_rc"
 }
 
-# _record_engine_tokens <tier> <engine> <model> <prompt_file> [output_file]
+# _now_ms
+# Prints wall-clock time in milliseconds, or nothing when no clock is readable.
+# Prefers bash 5's $EPOCHREALTIME (no subshell or `date` fork per call; the
+# fraction separator may be `.` or `,` depending on locale). Otherwise falls back
+# to `date +%s%3N` (GNU), then `date +%s` × 1000 where %3N is unsupported (macOS/
+# BSD). If even that fails it prints nothing, so _elapsed_ms records null rather
+# than a fake 0 ms. Never aborts the caller.
+_now_ms() {
+  if [ -n "${EPOCHREALTIME:-}" ]; then
+    local _sec="${EPOCHREALTIME%[.,]*}" _frac="${EPOCHREALTIME#*[.,]}000"
+    printf '%s%s' "$_sec" "${_frac:0:3}"
+    return 0
+  fi
+  local t
+  t="$(date +%s%3N 2>/dev/null || true)"
+  case "$t" in
+    ''|*[!0-9]*)
+      t="$(date +%s 2>/dev/null || true)"
+      case "$t" in
+        ''|*[!0-9]*) t="" ;;
+        *) t="$(( t * 1000 ))" ;;
+      esac
+      ;;
+  esac
+  printf '%s' "$t"
+}
+
+# _elapsed_ms <start_ms> <end_ms>
+# Prints end - start, or nothing when either stamp is missing/non-numeric or the
+# clock went backwards, so the token record carries null instead of a bogus value.
+_elapsed_ms() {
+  case "${1:-}" in ''|*[!0-9]*) return 0 ;; esac
+  case "${2:-}" in ''|*[!0-9]*) return 0 ;; esac
+  [ "$2" -ge "$1" ] || return 0
+  printf '%s' "$(( $2 - $1 ))"
+}
+
+# _record_engine_tokens <tier> <engine> <model> <prompt_file> [output_file] [duration_ms]
 # Writes one token record to TOKEN_LOG_FILE using estimate_tokens_from_file.
 # No-op when TOKEN_LOG_FILE is unset or the token-metrics library is not loaded.
 # Always succeeds (non-fatal): token logging must never abort a real workflow.
+# duration_ms (#1949) is the caller-measured wall-clock latency of the engine
+# call; when empty it is forwarded as such so emit_token_record writes null.
 _record_engine_tokens() {
   [ -n "${TOKEN_LOG_FILE:-}" ] || return 0
   declare -f emit_token_record >/dev/null 2>&1 || return 0
 
-  local tier="$1" engine="$2" model="$3" prompt_file="$4" output_file="${5:-}"
+  local tier="$1" engine="$2" model="$3" prompt_file="$4" output_file="${5:-}" duration_ms="${6:-}"
   local workflow="${TOKEN_WORKFLOW:-unknown}" context="${PR_URL:-}"
   local input_tokens cache_read_tokens cache_write_tokens output_tokens
   local _have_usage=0
@@ -940,7 +979,7 @@ _record_engine_tokens() {
   fi
 
   emit_token_record "$workflow" "$tier" "$engine" "$model" \
-    "$input_tokens" "$cache_read_tokens" "$output_tokens" "$context" "$cache_write_tokens" || true
+    "$input_tokens" "$cache_read_tokens" "$output_tokens" "$context" "$cache_write_tokens" "$duration_ms" || true
 }
 
 # _record_model_used <model>
@@ -1003,6 +1042,7 @@ _mcp_review_flags() {
 run_triage() {
   local prompt_file="$1"
   local attempt=1 rc=0
+  local _t_start _t_end _dur=""
   # Capture output for token estimation when logging is enabled (tee is a no-op otherwise).
   local _tok_tmp=""
   if [ -n "${TOKEN_LOG_FILE:-}" ]; then
@@ -1016,6 +1056,7 @@ run_triage() {
   while [ "$attempt" -le "$RETRY_MAX_ATTEMPTS" ]; do
     rc=0
     [ -n "$_tok_tmp" ] && : > "$_tok_tmp"
+    _t_start="$(_now_ms)"
     case "$REVIEW_ENGINE" in
       claude)
         local _triage_chain="${CLAUDE_TRIAGE_MODEL_CHAIN:-$ENGINE_TRIAGE_MODEL}"
@@ -1049,6 +1090,8 @@ run_triage() {
         fi
         ;;
     esac
+    _t_end="$(_now_ms)"
+    _dur="$(_elapsed_ms "$_t_start" "$_t_end")"
     if [ "$rc" -eq 0 ]; then
       local _triage_used
       if [ "$REVIEW_ENGINE" = "claude" ] && [ -n "${_CLAUDE_CHAIN_MODEL_USED:-}" ]; then
@@ -1073,7 +1116,7 @@ run_triage() {
         _head_chain="${_head_chain%"${_head_chain##*[![:space:]]}"}"
         _triage_used="${_head_chain:-$ENGINE_TRIAGE_MODEL}"
       fi
-      _record_engine_tokens "triage" "$REVIEW_ENGINE" "$_triage_used" "$prompt_file" "$_tok_tmp"
+      _record_engine_tokens "triage" "$REVIEW_ENGINE" "$_triage_used" "$prompt_file" "$_tok_tmp" "$_dur"
       _record_model_used "$_triage_used"
       [ -n "$_tok_tmp" ] && rm -f "$_tok_tmp"
       return 0
@@ -1114,6 +1157,7 @@ run_agentic() {
   local _allowed_tools="${4:-Bash,Read,Grep,Glob}"
   local _skip_mcp="${5:-}"
   local _tok_tmp="" rc=0
+  local _t_start _t_end _dur=""
   if [ -n "${TOKEN_LOG_FILE:-}" ]; then
     unset _ENGINE_USAGE_OUT
     _tok_tmp="$(mktemp 2>/dev/null || true)"
@@ -1122,6 +1166,7 @@ run_agentic() {
     # concurrent run_agentic/run_duck (review-one-pr.sh) never collide.
     [[ -n "$_tok_tmp" ]] && local -x _ENGINE_USAGE_OUT="${_tok_tmp}.usage"
   fi
+  _t_start="$(_now_ms)"
   case "$REVIEW_ENGINE" in
     claude)
       # Resolve the in-Claude model chain for this tier. The chain is the
@@ -1220,6 +1265,8 @@ run_agentic() {
       fi
       ;;
   esac
+  _t_end="$(_now_ms)"
+  _dur="$(_elapsed_ms "$_t_start" "$_t_end")"
   if [ "$rc" -eq 0 ]; then
     local _agentic_used="$model"
     if [ "$REVIEW_ENGINE" = "claude" ] && [ -n "${_CLAUDE_CHAIN_MODEL_USED:-}" ]; then
@@ -1227,7 +1274,7 @@ run_agentic() {
     elif [ "$REVIEW_ENGINE" = "gemini" ] && [ -n "${_GEMINI_CHAIN_MODEL_USED:-}" ]; then
       _agentic_used="$_GEMINI_CHAIN_MODEL_USED"
     fi
-    _record_engine_tokens "$tier" "$REVIEW_ENGINE" "$_agentic_used" "$prompt_file" "$_tok_tmp"
+    _record_engine_tokens "$tier" "$REVIEW_ENGINE" "$_agentic_used" "$prompt_file" "$_tok_tmp" "$_dur"
     _record_model_used "$_agentic_used"
   fi
   [ -n "$_tok_tmp" ] && rm -f "$_tok_tmp"
@@ -1304,12 +1351,14 @@ run_writer() {
   # to stdout, not stderr), so is_rate_limited never fired and fallback engines
   # were never tried.
   local _tmp rc=0
+  local _t_start _t_end _dur=""
   unset _ENGINE_USAGE_OUT
   _tmp="$(mktemp 2>/dev/null || true)"
   # Per-call usage-sidecar key (see run_triage); unique mktemp path shared with
   # the engine subshell via export.
   [[ -n "$_tmp" ]] && local -x _ENGINE_USAGE_OUT="${_tmp}.usage"
 
+  _t_start="$(_now_ms)"
   case "$REVIEW_ENGINE" in
     claude)
       # See run_agentic — honor caller's explicit model pin when it differs
@@ -1356,6 +1405,8 @@ run_writer() {
       ;;
   esac
 
+  _t_end="$(_now_ms)"
+  _dur="$(_elapsed_ms "$_t_start" "$_t_end")"
   if [ "$rc" -eq 0 ]; then
     local _writer_used="$model"
     if [ "$REVIEW_ENGINE" = "claude" ] && [ -n "${_CLAUDE_CHAIN_MODEL_USED:-}" ]; then
@@ -1363,7 +1414,7 @@ run_writer() {
     elif [ "$REVIEW_ENGINE" = "gemini" ] && [ -n "${_GEMINI_CHAIN_MODEL_USED:-}" ]; then
       _writer_used="$_GEMINI_CHAIN_MODEL_USED"
     fi
-    _record_engine_tokens "writer" "$REVIEW_ENGINE" "$_writer_used" "$prompt_file" "$_tmp"
+    _record_engine_tokens "writer" "$REVIEW_ENGINE" "$_writer_used" "$prompt_file" "$_tmp" "$_dur"
   fi
   if [ -n "$_tmp" ]; then
     # Redact once: write secret-scrubbed content to the persisted path, then
@@ -1717,6 +1768,7 @@ run_duck() {
   local prompt_file="$1"
   local model="$2"
   local _tok_tmp="" rc=0
+  local _t_start _t_end _dur=""
   if [ -n "${TOKEN_LOG_FILE:-}" ]; then
     unset _ENGINE_USAGE_OUT
     _tok_tmp="$(mktemp 2>/dev/null || true)"
@@ -1725,6 +1777,7 @@ run_duck() {
     # concurrent run_agentic/run_duck (review-one-pr.sh) never collide.
     [[ -n "$_tok_tmp" ]] && local -x _ENGINE_USAGE_OUT="${_tok_tmp}.usage"
   fi
+  _t_start="$(_now_ms)"
   case "$DUCK_ENGINE" in
     claude)
       unset COPILOT_GITHUB_TOKEN 2>/dev/null || true
@@ -1781,8 +1834,10 @@ run_duck() {
       return 1
       ;;
   esac
+  _t_end="$(_now_ms)"
+  _dur="$(_elapsed_ms "$_t_start" "$_t_end")"
   if [ "$rc" -eq 0 ]; then
-    _record_engine_tokens "duck" "$DUCK_ENGINE" "$model" "$prompt_file" "$_tok_tmp"
+    _record_engine_tokens "duck" "$DUCK_ENGINE" "$model" "$prompt_file" "$_tok_tmp" "$_dur"
   fi
   [ -n "$_tok_tmp" ] && rm -f "$_tok_tmp"
   return "$rc"
