@@ -99,7 +99,9 @@ annotate_records() {
       (.repo // "unknown"), (.workflow // "unknown"), (.tier // "-"), (.model // "-"),
       (.input_tokens // 0), (.cache_read_tokens // 0), (.output_tokens // 0),
       (.ts // "-"), (.context // ""), (.cache_creation_tokens // 0),
-      (.duration_ms // null)
+      # Normalise to whole non-negative ms so the numeric filter in the report
+      # counts any JSON number (e.g. 12.5, 1e3) rather than silently dropping it.
+      (.duration_ms | if type == "number" and . >= 0 then floor else null end)
     ] | @tsv' "${files[@]}" 2>/dev/null \
   | awk -F'\t' -v table="${PRICING_TABLE:-}" -v baseline="${ET_BASELINE_MODEL:-claude-haiku-4-5}" '
       function glob2re(g,   re) {

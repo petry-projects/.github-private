@@ -229,6 +229,20 @@ setup() {
   [[ "$output" == *"| 200 | 200 |"* ]]
 }
 
+@test "render_token_report: non-integer numeric durations (12.5, 1e3) are counted, not dropped" {
+  # emit_token_record accepts any JSON number; the report must normalise them to
+  # whole ms instead of excluding them. floor(12.5)=12 and 1e3=1000 → mean 506.
+  tmp="$(mktemp -d)"
+  printf '%s\n' \
+    '{"ts":"2026-06-01T00:00:00Z","workflow":"pr-review","tier":"deep","model":"claude-opus-4-7","input_tokens":100,"output_tokens":50,"duration_ms":12.5,"repo":"r","context":""}' \
+    '{"ts":"2026-06-01T00:00:01Z","workflow":"pr-review","tier":"deep","model":"claude-opus-4-7","input_tokens":100,"output_tokens":50,"duration_ms":1e3,"repo":"r","context":""}' \
+    > "$tmp/d.jsonl"
+  run render_token_report "$tmp" 7 1 1 2026-06-07
+  rm -rf "$tmp"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"| 506 | 12 |"* ]]
+}
+
 @test "render_token_report: a workflow/tier/model with no durations shows '-' for latency" {
   # The fixtures carry no duration_ms field, so every latency cell must be "-".
   run render_token_report "$FIXTURES" 7 2 2 2026-06-07
