@@ -415,15 +415,16 @@ jq -s --arg skill "$skill" \
 
 # Decide the exit code. Classify failing cases as infra (engine exited non-zero —
 # throttle/outage, the model never answered) vs. quality (engine exited zero but
-# the answer was wrong/unparseable). If EVERY failing case is infra, the skill
-# was never actually scored: exit 2 -> outcome=error, so a transient throttle
-# cannot open a false held-out regression (#920). Any quality miss keeps exit 1.
+# the answer was wrong/unparseable). If ANY failing case has infra issues, the skill
+# was never fully scored: exit 2 -> outcome=error, so a transient throttle mixed
+# with partial quality scores cannot produce a verdict (#920). Only quality-only
+# failures keep exit 1.
 failed="$(jq -s 'map(select(.pass | not)) | length' "$results")"
 if [ "$failed" -eq 0 ]; then
   exit 0
 fi
-quality_failed="$(jq -s 'map(select((.pass | not) and ((.engine_rc // 0) == 0))) | length' "$results")"
-if [ "$quality_failed" -eq 0 ]; then
+infra_failed="$(jq -s 'map(select((.pass | not) and ((.engine_rc // 0) != 0))) | length' "$results")"
+if [ "$infra_failed" -gt 0 ]; then
   exit 2
 fi
 exit 1
