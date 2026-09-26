@@ -164,6 +164,25 @@ main() {
   [ -n "$incumbent" ] || die "usage: model-ab-dispatch.sh --candidate M --incumbent M [--sets S] [--runs N]"
   [ -n "$evals_dir" ] || die "evals_dir is empty — would check root directory; set EVALS_DIR or use --evals-dir"
 
+  # Each arm must name EXACTLY ONE model. A value with a comma or whitespace is
+  # forwarded verbatim to model-ab.sh as CLAUDE_TRIAGE_MODEL_CHAIN, where
+  # _claude_chain_invoke reads it as a FALLBACK CHAIN — a throttled candidate would
+  # then be silently scored on a fallback model while the evidence still labels the
+  # arm with the requested string, so the "non-regression" verdict would compare the
+  # wrong models (#1952, codex P1). Reject multi-model values before any token is spent.
+  case "$candidate" in
+    *,* | *[[:space:]]*) die "candidate '$candidate' must name exactly one model — no commas or whitespace (a comma/space is read as a fallback chain, not a single model)" ;;
+  esac
+  case "$incumbent" in
+    *,* | *[[:space:]]*) die "incumbent '$incumbent' must name exactly one model — no commas or whitespace (a comma/space is read as a fallback chain, not a single model)" ;;
+  esac
+
+  # Candidate and incumbent must differ: comparing a model against itself spends
+  # both arms' tokens on two nondeterministic runs of ONE model, and the score delta
+  # is reported as accept OR regression despite providing no replacement evidence
+  # (#1952, codex P2). Fail offline before either paid probe.
+  [ "$candidate" != "$incumbent" ] || die "candidate and incumbent are identical ('$candidate') — an A/B must compare two different models"
+
   # Reject multiline input outright: `read -ra <<<"$sets_raw"` consumes only the
   # FIRST line, so a value like $'triage\ndeep-review' would silently validate and
   # score just `triage` yet return an accept verdict for the WHOLE request (#1952).
@@ -222,8 +241,16 @@ main() {
     return 0
   fi
 
-  # The A/B command. Default to the real model-ab.sh; tests override MODEL_AB_CMD.
-  local ab_cmd="${MODEL_AB_CMD:-bash $script_dir/model-ab.sh}"
+  # The A/B command as an ARRAY so a script_dir containing spaces is never
+  # word-split at invocation (#1952, Graphite). Default to the real model-ab.sh;
+  # tests override with MODEL_AB_CMD, a single string we intentionally split on
+  # whitespace into command+args.
+  local -a ab_cmd_array
+  if [ -n "${MODEL_AB_CMD:-}" ]; then
+    read -ra ab_cmd_array <<<"$MODEL_AB_CMD"
+  else
+    ab_cmd_array=(bash "$script_dir/model-ab.sh")
+  fi
 
   # Retry loop: re-run ONLY on infra (exit 2), up to `runs` attempts; a scored
   # verdict (0 accept / 1 regression) is final and is never re-run.
@@ -237,8 +264,7 @@ main() {
     # dispatch would validate one corpus but score another — the child would fall
     # back to its own default, so the accept/regression verdict would describe a
     # different held-out set than the one we checked (#1952, codeant nitpick).
-    # shellcheck disable=SC2086 # ab_cmd is an intentional command+args split
-    out="$(EVALS_DIR="$evals_dir" $ab_cmd "$candidate" "$incumbent" "${sets[@]}")"
+    out="$(EVALS_DIR="$evals_dir" "${ab_cmd_array[@]}" "$candidate" "$incumbent" "${sets[@]}")"
     rc=$?
     set -e
     if [ "$rc" -ne 2 ]; then

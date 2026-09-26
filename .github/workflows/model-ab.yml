@@ -153,9 +153,18 @@ jobs:
           source scripts/lib/token-metrics.sh
           prompt="Reply with the single word: pong."
 
+          # Bound EACH probe so a stalled `claude` call cannot consume the whole
+          # 60-min job timeout and starve the A/B step: on job cancellation the A/B
+          # never runs, and continue-on-error (which applies only AFTER a step
+          # finishes) would NOT save it (#1952, codex P1). `timeout` exits 124 on
+          # expiry — a nonzero rc the liveness/effort checks below already treat as
+          # FAIL / rejected-or-unsupported, so the probe fails OPEN and the A/B
+          # still produces its verdict.
+          probe_timeout="${PROBE_TIMEOUT_SECS:-300}"
+
           # 1) Liveness: does the candidate answer at all?
           live_rc=0
-          claude --print --model "$CANDIDATE" --output-format json <<<"$prompt" > probe.json 2>probe.err || live_rc=$?
+          timeout "$probe_timeout" claude --print --model "$CANDIDATE" --output-format json <<<"$prompt" > probe.json 2>probe.err || live_rc=$?
           # extract_engine_text returns nonzero when jq cannot parse the probe file;
           # sourcing token-metrics.sh enabled errexit, so an unguarded assignment
           # would abort the step before it records the result or writes the summary.
@@ -172,7 +181,7 @@ jobs:
 
           # 2) Effort probe: is `--effort high` accepted by this model/CLI?
           effort_rc=0
-          claude --print --model "$CANDIDATE" --effort high --output-format json <<<"$prompt" > effort.json 2>effort.err || effort_rc=$?
+          timeout "$probe_timeout" claude --print --model "$CANDIDATE" --effort high --output-format json <<<"$prompt" > effort.json 2>effort.err || effort_rc=$?
           # Same errexit guard as the liveness assignment above (#1952 CodeRabbit).
           if ! effort_txt="$(extract_engine_text claude effort.json)"; then
             effort_txt=""

@@ -192,6 +192,35 @@ _calls() { cat "$COUNTER"; }
   [[ "$output" == *"::error::"* ]]
 }
 
+# ── single-model arms: reject multi-model and identical inputs ────────────────
+
+@test "a candidate naming multiple models (comma) is a hard error BEFORE any arm runs" {
+  MODEL_AB_CMD="bash $STUB" SEQ="0" \
+    run bash "$DISPATCH" --candidate "claude-opus-5-5,claude-sonnet-5-0" --incumbent claude-opus-4-8 \
+      --sets "triage" --runs 1 --evals-dir "$TMP/evals"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"exactly one model"* ]]
+  [ "$(_calls)" = "" ] || [ "$(_calls)" = "0" ]
+}
+
+@test "an incumbent with whitespace (multi-model) is a hard error BEFORE any arm runs" {
+  MODEL_AB_CMD="bash $STUB" SEQ="0" \
+    run bash "$DISPATCH" --candidate claude-opus-5-5 --incumbent "claude-opus-4-8 claude-sonnet-5-0" \
+      --sets "triage" --runs 1 --evals-dir "$TMP/evals"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"exactly one model"* ]]
+  [ "$(_calls)" = "" ] || [ "$(_calls)" = "0" ]
+}
+
+@test "identical candidate and incumbent is a hard error BEFORE any arm runs" {
+  MODEL_AB_CMD="bash $STUB" SEQ="0" \
+    run bash "$DISPATCH" --candidate claude-opus-5-5 --incumbent claude-opus-5-5 \
+      --sets "triage" --runs 1 --evals-dir "$TMP/evals"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"identical"* ]]
+  [ "$(_calls)" = "" ] || [ "$(_calls)" = "0" ]
+}
+
 # ── set-matrix bounding: dedup, cap, multiline, engine-compat ─────────────────
 
 @test "a duplicate set is a hard error BEFORE any arm runs" {
