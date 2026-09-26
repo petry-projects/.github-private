@@ -199,7 +199,8 @@ jobs:
             fi
             echo "### Caveats"
             echo "- **EVAL SAFEGUARD:** frozen held-out sets, judge held fixed (\`AB_JUDGE_MODEL\`), skill markdown at its incumbent file. No prompt/corpus override is accepted by this workflow."
-            echo "- **Effort NOT exercised in the A/B:** \`model-ab.sh\` drives the deep-review generator through \`run_triage\`, so it does **not** apply the deep tier's \`--effort high\` pin that #1898 added to \`run_agentic\`. Do not over-read this A/B as covering the deep tier's effort setting — the effort finding above is a separate direct probe."
+            echo -n "- **Effort NOT exercised in the A/B:** \`model-ab.sh\` drives the deep-review generator through \`run_triage\`, so it does **not** apply the deep tier's \`--effort high\` pin that #1898 added to \`run_agentic\`. "
+            echo "Do not over-read this A/B as covering the deep tier's effort setting — the effort finding above is a separate direct probe."
           } >> "$GITHUB_STEP_SUMMARY"
 
           # Propagate model-ab.sh's verdict as the job's exit status (AC #2).
