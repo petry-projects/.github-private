@@ -184,6 +184,121 @@ setup() {
 }
 
 # ---------------------------------------------------------------------------
+# acv_latest_nochange_disposition — the "no change needed" counterpart (#1743)
+# The mirror of acv_latest_maintainer_disposition: a marker-less human maintainer
+# who asserts a false positive / no-change disposition PERMITS resolution of a
+# false-positive bot thread on a no-commit pass, the missing half of #1692's
+# REQUIRED withholding gate.
+# ---------------------------------------------------------------------------
+
+@test "acv_latest_nochange_disposition: no no-change disposition -> rc1, empty" {
+  local comments='[{"author":{"login":"donpetry-bot","__typename":"User"},"body":"Refuted. <!-- dev-lead:addressed -->","createdAt":"2026-09-01T10:00:00Z"}]'
+  run acv_latest_nochange_disposition "$comments" "donpetry-bot"
+  [[ "$status" -eq 1 ]]
+  [[ -z "$output" ]]
+}
+
+@test "acv_latest_nochange_disposition: marker-less human 'no change needed' -> rc0 with its date" {
+  local comments='[
+    {"author":{"login":"gemini-code-assist[bot]","__typename":"Bot"},"body":"Missing closing backtick.","createdAt":"2026-09-01T09:00:00Z"},
+    {"author":{"login":"a-maintainer","__typename":"User"},"body":"This is a false positive — no change needed.","createdAt":"2026-09-02T12:00:00Z"}
+  ]'
+  run acv_latest_nochange_disposition "$comments" "donpetry-bot"
+  [[ "$status" -eq 0 ]]
+  [[ "$output" == "2026-09-02T12:00:00Z" ]]
+}
+
+@test "acv_latest_nochange_disposition: 'working as intended' is a no-change disposition -> rc0" {
+  local comments='[{"author":{"login":"a-maintainer","__typename":"User"},"body":"Working as intended.","createdAt":"2026-09-02T12:00:00Z"}]'
+  run acv_latest_nochange_disposition "$comments" "donpetry-bot"
+  [[ "$status" -eq 0 ]]
+  [[ "$output" == "2026-09-02T12:00:00Z" ]]
+}
+
+@test "acv_latest_nochange_disposition: 'no change required' (collides with REQUIRED) -> classified as no-change rc0" {
+  # The blocking regex matches the substring REQUIRED; the no-change intent must win
+  # so a maintainer waving off a finding is not misread as a blocking demand.
+  local comments='[{"author":{"login":"a-maintainer","__typename":"User"},"body":"No change required here.","createdAt":"2026-09-02T12:00:00Z"}]'
+  run acv_latest_nochange_disposition "$comments" "donpetry-bot"
+  [[ "$status" -eq 0 ]]
+  [[ "$output" == "2026-09-02T12:00:00Z" ]]
+}
+
+@test "acv_latest_nochange_disposition: an agent-marker comment is never a no-change disposition" {
+  # Body says 'no change needed' but carries our marker -> agent-authored -> ignored,
+  # so the agent cannot manufacture its own resolution authorization (#1743 AC4).
+  local comments='[{"author":{"login":"don-petry","__typename":"User"},"body":"No change needed. <!-- dev-lead:addressed -->","createdAt":"2026-09-02T12:00:00Z"}]'
+  run acv_latest_nochange_disposition "$comments" "donpetry-bot"
+  [[ "$status" -eq 1 ]]
+  [[ -z "$output" ]]
+}
+
+@test "acv_latest_nochange_disposition: a bot comment is never a no-change disposition" {
+  local comments='[{"author":{"login":"gemini-code-assist[bot]","__typename":"Bot"},"body":"No change needed on our end.","createdAt":"2026-09-02T12:00:00Z"}]'
+  run acv_latest_nochange_disposition "$comments" "donpetry-bot"
+  [[ "$status" -eq 1 ]]
+  [[ -z "$output" ]]
+}
+
+@test "acv_latest_nochange_disposition: disposition with unparseable date -> rc2 (fail closed)" {
+  local comments='[{"author":{"login":"a-maintainer","__typename":"User"},"body":"false positive","createdAt":""}]'
+  run acv_latest_nochange_disposition "$comments" "donpetry-bot"
+  [[ "$status" -eq 2 ]]
+  [[ "$output" == "unparseable" ]]
+}
+
+@test "acv_latest_nochange_disposition: multiple dispositions -> latest date wins" {
+  local comments='[
+    {"author":{"login":"m1","__typename":"User"},"body":"false positive","createdAt":"2026-09-01T00:00:00Z"},
+    {"author":{"login":"m2","__typename":"User"},"body":"no change needed","createdAt":"2026-09-05T00:00:00Z"}
+  ]'
+  run acv_latest_nochange_disposition "$comments" "donpetry-bot"
+  [[ "$status" -eq 0 ]]
+  [[ "$output" == "2026-09-05T00:00:00Z" ]]
+}
+
+@test "acv_latest_nochange_disposition: neutral chatter is not a no-change disposition -> rc1" {
+  local comments='[{"author":{"login":"a-maintainer","__typename":"User"},"body":"Thanks for looking into this.","createdAt":"2026-09-02T12:00:00Z"}]'
+  run acv_latest_nochange_disposition "$comments" "donpetry-bot"
+  [[ "$status" -eq 1 ]]
+  [[ -z "$output" ]]
+}
+
+@test "acv_latest_nochange_disposition: negated 'this is not a false positive' does NOT authorize -> rc1" {
+  # The broad phrase match would see FALSE POSITIVE; the negation guard must win so a
+  # maintainer explicitly rejecting the false-positive verdict never clears the thread (#1799).
+  local comments='[{"author":{"login":"a-maintainer","__typename":"User"},"body":"This is not a false positive, please fix it.","createdAt":"2026-09-02T12:00:00Z"}]'
+  run acv_latest_nochange_disposition "$comments" "donpetry-bot"
+  [[ "$status" -eq 1 ]]
+  [[ -z "$output" ]]
+}
+
+@test "acv_latest_nochange_disposition: negated 'isn't working as intended' does NOT authorize -> rc1" {
+  local comments='[{"author":{"login":"a-maintainer","__typename":"User"},"body":"This isn'"'"'t working as intended.","createdAt":"2026-09-02T12:00:00Z"}]'
+  run acv_latest_nochange_disposition "$comments" "donpetry-bot"
+  [[ "$status" -eq 1 ]]
+  [[ -z "$output" ]]
+}
+
+@test "acv_latest_nochange_disposition: 'won'\''t fix' (affirmative) is still a no-change disposition -> rc0" {
+  # The negator-lookalike WON'T is part of the affirmative phrase itself; it must not be
+  # clobbered by the negation guard, which only fires when a negator precedes a phrase.
+  local comments='[{"author":{"login":"a-maintainer","__typename":"User"},"body":"Won'"'"'t fix — intentional.","createdAt":"2026-09-02T12:00:00Z"}]'
+  run acv_latest_nochange_disposition "$comments" "donpetry-bot"
+  [[ "$status" -eq 0 ]]
+  [[ "$output" == "2026-09-02T12:00:00Z" ]]
+}
+
+@test "acv_latest_nochange_disposition: 'not a bug' (affirmative) is still a no-change disposition -> rc0" {
+  # NOT A BUG begins with a negator but is an affirmative no-change phrase; it is excluded
+  # from the negation guard's target set so it is never misread as a negated phrase.
+  local comments='[{"author":{"login":"a-maintainer","__typename":"User"},"body":"Not a bug.","createdAt":"2026-09-02T12:00:00Z"}]'
+  run acv_latest_nochange_disposition "$comments" "donpetry-bot"
+  [[ "$status" -eq 0 ]]
+  [[ "$output" == "2026-09-02T12:00:00Z" ]]
+}
+
+# ---------------------------------------------------------------------------
 # acv_latest_marker_index — find our addressed-marker reply anywhere in the thread (#1735 AC1)
 # ---------------------------------------------------------------------------
 

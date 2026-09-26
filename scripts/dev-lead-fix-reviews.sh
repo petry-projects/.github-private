@@ -1073,6 +1073,190 @@ resolve_dispositioned_comments() {
   echo "::notice::resolve_dispositioned_comments: minimized ${resolved_count} dispositioned comment(s) on PR #${PR_NUMBER}"
 }
 
+# resolve_nochange_disposition_threads: resolves bot-originated review threads whose
+# correct outcome is "no change needed" — the missing counterpart to the #1692 AC4
+# REQUIRED withholding gate (#1743).
+#
+# The deadlock this closes: a bot finding that is a genuine false positive produces no
+# commit, so the #1617 resolution gate stays closed and none of the resolve_* nets above
+# fire; the agent is forbidden from calling resolveReviewThread itself; the thread
+# therefore never resolves and blocks merge forever under required_review_thread_resolution.
+# acv_latest_maintainer_disposition already WITHHOLDS resolution on a standing REQUIRED
+# disposition; this net adds its mirror — an explicit, attributable human "no change
+# needed" disposition that PERMITS resolution.
+#
+# Authorization is the human disposition, NOT head movement, so this net runs regardless
+# of the resolution gate (that is the whole point — a false positive is a no-commit pass).
+# It never manufactures its own authorization: the disposition must come from a marker-less
+# human maintainer (acv_latest_nochange_disposition applies review_thread_is_agent_authored
+# and the User/non-Bot filter), so an agent cannot resolve a thread it "merely disagrees
+# with" (rule 1 / #1743 AC4).
+#
+# Scope guard (#1415): only BOT-originated threads are touched. A maintainer-originated
+# thread is never resolved here, mirroring resolve_addressed_bot_threads.
+#
+# Supersession (#1743 AC5): a strictly-newer REQUIRED disposition (acv_latest_maintainer_
+# disposition) overrides an earlier no-change one, so a maintainer can retract a
+# false-positive verdict by asking for the fix again; an unparseable REQUIRED fails closed.
+#
+# Enumeration + per-thread re-fetch follow resolve_addressed_bot_threads exactly: the
+# enumeration pass yields only candidate ids, and the authorizing state (isResolved and
+# all comments) is re-read per candidate immediately before the mutation, so a reply that
+# landed after enumeration cannot be resolved against a stale snapshot and a failed fetch
+# fails closed.
+resolve_nochange_disposition_threads() {
+  local intent="$1"
+  if [ "${DEV_LEAD_DRY_RUN:-false}" = "true" ]; then
+    echo "[dry-run] would resolve false-positive bot threads carrying a maintainer no-change disposition on PR #${PR_NUMBER}"
+    return 0
+  fi
+
+  if [ -z "${PR_NUMBER:-}" ]; then
+    echo "::notice::resolve_nochange_disposition_threads: PR_NUMBER not set for intent=${intent} — skipping"
+    return 0
+  fi
+
+  local bot_user="${BOT_USER:-donpetry-bot}"
+
+  # Enumerate unresolved bot-originated thread ids (same query/predicate as
+  # resolve_addressed_bot_threads). The last reply's body/author is deliberately NOT
+  # captured here; it is re-read per candidate below.
+  local ids=""
+  local cursor="" has_next_page="true" page_response page_ids
+  local cursor_args=()
+  local enum_query='query($owner:String!,$repo:String!,$pr:Int!,$cursor:String){
+    repository(owner:$owner,name:$repo){
+      pullRequest(number:$pr){
+        reviewThreads(first:100,after:$cursor){
+          pageInfo{hasNextPage endCursor}
+          nodes{
+            id isResolved
+            origin: comments(first:1){nodes{author{login __typename}}}
+          }
+        }
+      }
+    }
+  }'
+  while [ "$has_next_page" = "true" ]; do
+    page_response=$(gh api graphql -f query="$enum_query" \
+      -F owner="${REPO%%/*}" -F repo="${REPO##*/}" -F pr="$PR_NUMBER" \
+      "${cursor_args[@]}" 2>/dev/null || echo "{}")
+    page_ids=$(printf '%s' "$page_response" | jq -r \
+      '.data?.repository?.pullRequest?.reviewThreads?.nodes // []
+       | map(select(.isResolved == false
+                    and (((.origin.nodes?[0]?.author?.login // "") | endswith("[bot]"))
+                         or ((.origin.nodes?[0]?.author?.__typename // "") == "Bot"))))
+       | .[] | .id' 2>/dev/null || true)
+    [ -n "$page_ids" ] && ids=$(printf '%s\n%s' "$ids" "$page_ids")
+    has_next_page=$(printf '%s' "$page_response" | jq -r \
+      '.data?.repository?.pullRequest?.reviewThreads?.pageInfo?.hasNextPage // false' \
+      2>/dev/null || echo "false")
+    cursor=$(printf '%s' "$page_response" | jq -r \
+      '.data?.repository?.pullRequest?.reviewThreads?.pageInfo?.endCursor // ""' \
+      2>/dev/null || echo "")
+    [ -z "$cursor" ] && has_next_page="false"
+    cursor_args=("-f" "cursor=${cursor}")
+  done
+
+  if [ -z "${ids//[[:space:]]/}" ]; then
+    echo "::notice::no unresolved bot threads to check for a no-change disposition on PR #${PR_NUMBER}"
+    return 0
+  fi
+
+  # Re-fetch ALL comments per candidate (author login + __typename + body + createdAt)
+  # so both dispositions are decided on the current full thread, never a stale snapshot.
+  # Comments are paginated: a thread with >100 comments could otherwise hide a newer
+  # REQUIRED disposition on a later page, letting an outdated no-change disposition
+  # resolve a thread the maintainer has since re-blocked (#1799).
+  local node_query='query($id:ID!,$cursor:String){
+    node(id:$id){
+      ... on PullRequestReviewThread {
+        isResolved
+        comments(first:100,after:$cursor){
+          pageInfo{hasNextPage endCursor}
+          nodes{author{login __typename} body createdAt}
+        }
+      }
+    }
+  }'
+
+  local resolved_count=0
+  local id cur_resolved comments_json
+  while IFS= read -r id; do
+    [ -z "$id" ] && continue
+
+    # Page through every comment in the thread; capture isResolved from the first page.
+    local c_cursor="" c_has_next="true" c_page c_pages_file first_page=1
+    local c_cursor_args=()
+    cur_resolved="unknown"
+    c_pages_file=$(mktemp) || { echo "::error::failed to create temporary file" >&2; return 1; }
+    while [ "$c_has_next" = "true" ]; do
+      c_page=$(gh api graphql -f query="$node_query" -f id="$id" \
+        "${c_cursor_args[@]}" 2>/dev/null || echo "{}")
+      if [ "$first_page" -eq 1 ]; then
+        cur_resolved=$(printf '%s' "$c_page" | jq -r \
+          'if .data.node.isResolved == null then "unknown"
+           elif .data.node.isResolved then "true" else "false" end' 2>/dev/null || echo "unknown")
+        first_page=0
+      fi
+      printf '%s' "$c_page" | jq -c '.data?.node?.comments?.nodes // []' 2>/dev/null >> "$c_pages_file" || echo "[]" >> "$c_pages_file"
+      c_has_next=$(printf '%s' "$c_page" | jq -r \
+        '.data?.node?.comments?.pageInfo?.hasNextPage // false' 2>/dev/null || echo "false")
+      c_cursor=$(printf '%s' "$c_page" | jq -r \
+        '.data?.node?.comments?.pageInfo?.endCursor // ""' 2>/dev/null || echo "")
+      [ -z "$c_cursor" ] && c_has_next="false"
+      c_cursor_args=("-f" "cursor=${c_cursor}")
+    done
+    comments_json=$(jq -s 'add // []' "$c_pages_file" 2>/dev/null || echo "[]")
+    rm -f "$c_pages_file"
+
+    if [ "$cur_resolved" != "false" ]; then
+      echo "::notice::skipping thread ${id} — already resolved or state unknown at re-check (${cur_resolved})"
+      continue
+    fi
+
+    # A standing no-change disposition is REQUIRED to touch the thread at all. rc1 (none)
+    # leaves it unresolved; rc2 (found but its createdAt is unparseable) fails closed.
+    local nochange_ts nochange_rc
+    nochange_ts=$(acv_latest_nochange_disposition "$comments_json" "$bot_user") && nochange_rc=0 || nochange_rc=$?
+    if [ "${nochange_rc:-1}" -eq 2 ]; then
+      echo "::notice::skipping thread ${id} — a no-change disposition was found but its timestamp is unparseable; leaving unresolved (fail closed) (#1743)"
+      continue
+    fi
+    if [ "${nochange_rc:-1}" -ne 0 ] || [ -z "$nochange_ts" ]; then
+      # No no-change disposition — this is not our thread to resolve (a plain bot
+      # finding with no maintainer verdict still blocks, exactly as before).
+      continue
+    fi
+
+    # Supersession (#1743 AC5): a strictly-newer REQUIRED disposition overrides the
+    # no-change one. Unparseable REQUIRED fails closed (leave unresolved).
+    local required_ts required_rc
+    required_ts=$(acv_latest_maintainer_disposition "$comments_json" "$bot_user") && required_rc=0 || required_rc=$?
+    if [ "${required_rc:-0}" -eq 2 ]; then
+      echo "::notice::skipping thread ${id} — a REQUIRED disposition could not be parsed; leaving unresolved (fail closed) (#1743 AC5)"
+      continue
+    fi
+    if [ "${required_rc:-0}" -eq 0 ] && [ -n "$required_ts" ]; then
+      # Both are Z-terminated UTC ISO-8601 instants of identical width (GitHub
+      # createdAt), so a Bash lexicographical compare orders them chronologically.
+      if [[ "$required_ts" > "$nochange_ts" ]]; then
+        echo "::notice::skipping thread ${id} — a REQUIRED disposition (${required_ts}) postdates the no-change one (${nochange_ts}); it supersedes and still blocks (#1743 AC5)"
+        continue
+      fi
+    fi
+
+    if gh api graphql -f query='mutation($id: ID!) { resolveReviewThread(input: {threadId: $id}) { thread { isResolved } } }' \
+        -f id="$id" >/dev/null 2>&1; then
+      resolved_count=$((resolved_count + 1))
+      echo "::notice::resolved false-positive bot thread ${id} — authorized by a maintainer no-change disposition at ${nochange_ts} (#1743)"
+    else
+      echo "::warning::failed to resolve no-change bot thread ${id}"
+    fi
+  done <<< "$ids"
+  echo "::notice::resolve_nochange_disposition_threads: resolved ${resolved_count} false-positive bot thread(s) on PR #${PR_NUMBER}"
+}
+
 # ── CI blocking gate (#1859, completes #1795) ─────────────────────────────────
 # has_hard_blockers / has_tier1_blockers determine whether CI is blocking via
 # lib/ci-status.sh (compute_ci_status), NOT their own all-or-nothing logic. A
@@ -2109,6 +2293,11 @@ case "$INTENT_TYPE" in
         else
           echo "::notice::resolution gate closed (#1609): the fix-reviews pass did not advance PR #${PR_NUMBER}'s head — zero review threads resolved"
         fi
+        # No-change net (#1743): resolve false-positive bot threads carrying a
+        # maintainer no-change disposition. Runs regardless of the resolution gate —
+        # its authorization is the human disposition, not head movement — so a genuine
+        # false positive (a no-commit pass) is not dead-ended into a permanent block.
+        resolve_nochange_disposition_threads "fix-reviews"
         # Never auto-merge an escalated or not-fully-applied review pass (#1567).
         if [ "${_REVIEW_ESCALATED:-0}" -ne 1 ] && [ "${_REVIEW_INCOMPLETE:-0}" -ne 1 ]; then
           try_enable_auto_merge
@@ -2164,6 +2353,9 @@ case "$INTENT_TYPE" in
         else
           echo "::notice::resolution gate closed (#1609): the fix-bot-comment pass did not advance PR #${PR_NUMBER}'s head — zero review threads resolved"
         fi
+        # No-change net (#1743): resolve false-positive bot threads carrying a
+        # maintainer no-change disposition, regardless of the resolution gate.
+        resolve_nochange_disposition_threads "fix-bot-comment"
         try_enable_auto_merge
       fi
       try_enable_auto_merge
@@ -2261,6 +2453,9 @@ case "$INTENT_TYPE" in
       else
         echo "::notice::resolution gate closed (#1609): the review-changes pass did not advance PR #${PR_NUMBER}'s head — zero review threads resolved"
       fi
+      # No-change net (#1743): resolve false-positive bot threads carrying a
+      # maintainer no-change disposition, regardless of the resolution gate.
+      resolve_nochange_disposition_threads "review-changes"
       # Never auto-merge an escalated or not-fully-applied review pass (#1567).
       if [ "${_REVIEW_ESCALATED:-0}" -ne 1 ] && [ "${_REVIEW_INCOMPLETE:-0}" -ne 1 ]; then
         try_enable_auto_merge
