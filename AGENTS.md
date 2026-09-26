@@ -354,6 +354,45 @@ calling it a regression, and treat CI as authoritative.**
   If the org template gains an equivalent stale-bot-review dismissal, remove this exception and
   defer to the template instead.
 
+### Required-check workflows must trigger on `merge_group`
+
+Every workflow that provides a **required status check** on `main` must include `merge_group` in its
+`on:` triggers (#1871). A merge queue only merges a PR once its required checks report on the queue's
+temporary `gh-readonly-queue/*` ref, and a check reports there only if its providing workflow triggers
+on `merge_group`. A required check that never runs on the queue ref leaves every queued PR permanently
+`BLOCKED` — strictly worse than no queue at all — which is why the queue approved in #1864 was gated on
+this. Adding `merge_group` is trigger-only: **never rename the job whose name is the required-check
+context**, because the ruleset matches by context string and a rename silently un-requires the check,
+leaving the old context name unsatisfied and the merge queue permanently blocked.
+
+- The locally-owned required checks are `SonarCloud` (`sonarcloud.yml`), `duplicate-decl-gate`
+  (`duplicate-decl-gate.yml`), and `CodeQL` (`codeql.yml`, advanced setup). CodeQL must use **advanced
+  setup**, not GitHub default setup — default setup analyzes `push`/`pull_request` only and cannot post
+  to the `merge_group` ref (github/codeql-action#1537).
+- CI enforcement: `tests/test_merge_group_required_checks.bats` pins the `merge_group` trigger and
+  asserts that required-check context names are unchanged on the three locally-owned workflows above
+  (`SonarCloud`, `duplicate-decl-gate`, `CodeQL`). For `SonarCloud` and `duplicate-decl-gate`, the
+  assertions pin the explicit job name; for `CodeQL`, the guard pins the aggregation job ID (which
+  resolves to the job name `CodeQL` if set) to catch any rename. This coverage is **not automatic** —
+  the guard only knows about workflows it explicitly names. When you add a new locally-owned required
+  check, you **must** extend this test with its workflow, or a required check missing the `merge_group`
+  trigger will slip through and reintroduce the merge-queue wall.
+- The two thin caller stubs `agent-shield.yml` and `dependency-audit.yml` also front required checks but
+  carry "You MUST NOT change: trigger events"; their `merge_group` wiring is owned upstream and tracked in
+  `petry-projects/.github#1157`, not here.
+
+**Cutover + verification before the queue is enabled (#1864 gate).** Enabling the merge queue is out of
+scope of #1871 and must not be switched on until this is confirmed:
+
+1. **Manual cutover (repository setting, not a file change):** disable code-scanning **default setup** in
+   Settings → Code security → Code scanning at the moment `codeql.yml` merges, so default and advanced
+   setup do not both run.
+2. **Verify all five required contexts report on a `merge_group` run** — `SonarCloud`,
+   `duplicate-decl-gate`, `CodeQL`, `agent-shield / AgentShield`, and
+   `dependency-audit / Detect ecosystems` — by inspecting an actual `gh-readonly-queue/*` run (e.g. a
+   throwaway PR routed through a test queue). Do **not** enable the queue on the assumption that it works;
+   a required check missing from the queue ref wedges every merge.
+
 ### Template drift guard (`repo-template`)
 
 `petry-projects/repo-template` is a **distribution artifact** of the canonical `standards/` in the public
