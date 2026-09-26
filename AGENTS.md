@@ -578,6 +578,24 @@ deleting the variable or setting it to anything other than `true`. If the
 secret is genuinely missing while unpaused, the reusable's "Engine token
 preflight" step fails with a single actionable error naming the secret.
 
+**Automatic budget pause (companion, #1565).** The same `AGENTS_PAUSED` switch can
+be flipped automatically from the Claude subscription usage budget. The transport
+half — `scripts/lib/usage-telemetry.sh` — reads the OAuth usage endpoint and emits
+the envelope the org token-budget breaker consumes; the scheduled poller that acts
+on it sets `AGENTS_PAUSED=true` **and** records `AGENTS_PAUSE_SOURCE` (e.g.
+`weekly-glide` / `five-hour`) so an automatic pause is legible rather than looking
+like a quiet fleet. **Auto-resume is scoped by that source:** after the window's
+`resets_at` passes the poller clears `AGENTS_PAUSED` **only** when
+`AGENTS_PAUSE_SOURCE` marks it automation-set — a pause a human set by hand (no
+`AGENTS_PAUSE_SOURCE`, per the manual path above) is never cleared by automation.
+- **Override / hard stop:** set `AGENTS_PAUSED=true` **without** `AGENTS_PAUSE_SOURCE`
+  (the manual path) to hold the fleet paused regardless of budget — the poller
+  leaves a human-set pause untouched. To force a resume, delete `AGENTS_PAUSED`
+  (and any `AGENTS_PAUSE_SOURCE`).
+- **Status:** the poller defaults to **dry-run** (logs the decision, writes no
+  variable) until the epic's human sign-off; on a telemetry error it fails **open**
+  (allow), so a budget-read outage never stops the fleet.
+
 ### Initiative Planner — blocking open-questions gate
 
 `scripts/initiative-planner/apply-plan.sh` will **not** materialize an epic + sub-issue
