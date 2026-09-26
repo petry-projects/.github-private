@@ -119,6 +119,7 @@ main() {
 
   [ -n "$candidate" ] || die "usage: model-ab-dispatch.sh --candidate M --incumbent M [--sets S] [--runs N]"
   [ -n "$incumbent" ] || die "usage: model-ab-dispatch.sh --candidate M --incumbent M [--sets S] [--runs N]"
+  [ -n "$evals_dir" ] || die "evals_dir is empty — would check root directory; set EVALS_DIR or use --evals-dir"
 
   # Split the whitespace-delimited sets input into an array (the workflow passes a
   # single string, e.g. "triage deep-review").

@@ -23,6 +23,7 @@ setup() {
   ROOT="$(cd "$BATS_TEST_DIRNAME/.." && pwd)"
   DISPATCH="$ROOT/scripts/evals/model-ab-dispatch.sh"
   TMP="$(mktemp -d "$BATS_TEST_TMPDIR/model_ab_dispatch.XXXXXX")"
+  [ -n "$TMP" ] && [ -d "$TMP" ] || return 1
 
   # Minimal held-out tree: only the holdout DIRECTORIES need exist for validation.
   mkdir -p "$TMP/evals/triage/holdout" "$TMP/evals/deep-review/holdout"
@@ -78,11 +79,11 @@ _calls() { cat "$COUNTER"; }
   run mad_validate_sets "$TMP/evals" triage deep-review
   [ "$status" -eq 0 ]
   run mad_validate_sets "$TMP/evals" triage nope
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
   [[ "$output" == *"nope"* ]]
   # an empty set list is rejected too
   run mad_validate_sets "$TMP/evals"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
 }
 
 # ── fail fast: an unknown set never spends a token ────────────────────────────
