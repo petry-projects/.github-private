@@ -68,17 +68,21 @@ estimate_tokens_from_file() {
 
 # emit_token_record <workflow> <tier> <engine> <model>
 #                   <input_tokens> <cache_read_tokens> <output_tokens> <context>
-#                   [cache_write_tokens]
+#                   [cache_write_tokens] [duration_ms]
 # Appends one JSONL record to TOKEN_LOG_FILE. No-op when TOKEN_LOG_FILE is unset.
 # Silently swallows I/O errors so token logging never aborts a workflow run.
 # cache_write_tokens (cache-creation) is optional and defaults to 0 for callers
 # that do not capture it (backward compatible).
+# duration_ms (per-call wall-clock latency, #1949) is optional: when omitted or
+# empty the field is JSON `null` (never 0), so latency aggregates can tell
+# "unknown" apart from "instant". Existing callers that pass no duration keep
+# working unchanged.
 emit_token_record() {
   [ -n "${TOKEN_LOG_FILE:-}" ] || return 0
 
   local workflow="$1" tier="$2" engine="$3" model="$4"
   local input="${5:-0}" cache="${6:-0}" output="${7:-0}" context="${8:-}"
-  local cache_write="${9:-0}"
+  local cache_write="${9:-0}" duration_ms="${10:-}"
 
   # Drop empty, model-less records: no model (empty or "-") AND zero usage across
   # every token count. These carry no signal — a dev-lead error/fallback branch can
@@ -113,6 +117,7 @@ emit_token_record() {
     --arg et "$et" \
     --arg run_id "$run_id" \
     --arg context "$context" \
+    --arg duration_ms "$duration_ms" \
     '{
       ts: $ts,
       workflow: $workflow,
@@ -125,7 +130,8 @@ emit_token_record() {
       output_tokens: ($output | tonumber? // 0),
       et: ($et | tonumber? // 0),
       run_id: $run_id,
-      context: $context
+      context: $context,
+      duration_ms: (if $duration_ms == "" then null else ($duration_ms | tonumber? // null) end)
     }' 2>/dev/null) || return 0
 
   printf '%s\n' "$record" >> "$TOKEN_LOG_FILE" 2>/dev/null || true
