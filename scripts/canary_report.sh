@@ -243,8 +243,17 @@ render_canary_report() {
        print
      }' "$enriched" > "$inc_file"
 
+  # Fallback = deep-tier calls in the CANDIDATE (canary) window that fell back to a
+  # non-candidate/non-incumbent model. Apply the candidate window so historical
+  # fallback records outside the canary period are not reported as part of the
+  # comparison (inert in controlled mode, where the window is empty).
   awk -F'\t' -v wf="$workflow" -v tier="$tier" -v c="$candidate" -v i="$incumbent" \
-    '$2 == wf && $3 == tier && $4 != c && $4 != i { print }' "$enriched" > "$fb_file"
+      -v s="$c_since" -v u="$c_until" \
+    '$2 == wf && $3 == tier && $4 != c && $4 != i {
+       if (s != "" && $1 < s) next
+       if (u != "" && $1 > u) next
+       print
+     }' "$enriched" > "$fb_file"
 
   # Candidate cap: keep only the first max_prs distinct PR contexts in time order
   # (earliest ts per context). Real mode only; a non-positive cap disables it.
@@ -277,8 +286,13 @@ render_canary_report() {
   [ "$c_prs" -lt "$min_prs" ] && base_insuff=1
   [ "$i_inv" -lt "$min_inv" ] && base_insuff=1
 
+  # Any unpriced candidate record has an UNKNOWN cost, so it is excluded from the
+  # mean-cost denominator — a candidate with costly unpriced calls could otherwise
+  # show a cheap mean over its priced subset and earn a misleading cost PASS. When
+  # the candidate arm has unpriced records we cannot certify a genuine cost/cache
+  # win, so both bars are INSUFFICIENT (never PASS on partial pricing).
   local cost_status cache_status latency_status
-  if [ "$base_insuff" -eq 1 ] || [ "$c_priced" -eq 0 ] || [ "$i_priced" -eq 0 ]; then
+  if [ "$base_insuff" -eq 1 ] || [ "$c_priced" -eq 0 ] || [ "$i_priced" -eq 0 ] || [ "$c_unpr" -gt 0 ]; then
     cost_status="INSUFFICIENT"; cache_status="INSUFFICIENT"
   else
     cost_status="$(_bar_status "$c_mcost" "$i_mcost" "$cost_bar")"
@@ -448,33 +462,57 @@ main() {
     esac
   done
 
+  # The canary window starts at the cut (== the baseline end). When --since is
+  # omitted, default the candidate lower bound to it so pre-canary candidate
+  # records never enter the candidate arm, even though collection still spans the
+  # full baseline window below (an empty lower bound would admit them — #1953).
+  [ -z "$since" ] && since="$b_until"
+
   export CANARY_CANDIDATE="$candidate" CANARY_INCUMBENT="$incumbent"
   export CANARY_WORKFLOW="$workflow" CANARY_TIER="$tier"
   export CANARY_SINCE="$since" CANARY_UNTIL="$until"
   export CANARY_BASELINE_SINCE="$b_since" CANARY_BASELINE_UNTIL="$b_until"
   export CANARY_MAX_PRS="$max_prs"
 
-  # Resolve the real-PR section's directory: a local snapshot (--dir) or a fresh
-  # windowed download. The download spans the union of the candidate and baseline
+  # Collection window: the download spans the union of the candidate and baseline
   # windows so a single collection feeds both arms.
-  local scored_dir="" own_tmp=""
+  local scored_dir="" own_tmp="" col_since col_until count
+  col_since="$b_since"; [ -n "$since" ] && [ "$since" \< "$b_since" ] && col_since="$since"
+  col_until="$until"
+
+  # --collect-only snapshots artifacts to a persistent directory and exits without
+  # scoring; it REQUIRES --dir. A temp dir would be wiped by the EXIT trap before
+  # the advertised snapshot could be reused, so refuse rather than silently lose it.
+  if [ "$collect_only" = "true" ]; then
+    if [ -z "$dir" ]; then
+      echo "ERROR: --collect-only requires --dir <path> to persist the snapshot." >&2
+      return 64
+    fi
+    echo "Collecting token-usage artifacts for ${repo} (${col_since} → ${col_until:-now})..." >&2
+    if ! count="$(collect_repo_jsonl "$repo" "$col_since" "$col_until" "$dir")"; then
+      echo "ERROR: artifact collection failed for ${repo}." >&2
+      return 3
+    fi
+    echo "Collected ${count} artifact(s) into ${dir}." >&2
+    echo "collect-only: score later with --dir ${dir}." >&2
+    return 0
+  fi
+
+  # Resolve the real-PR section's directory: a local snapshot (--dir) or a fresh
+  # windowed download into a temp dir cleaned up on EXIT.
   if [ -n "$dir" ]; then
     scored_dir="$dir"
   else
     own_tmp="$(mktemp -d)"
     # shellcheck disable=SC2064
     trap "rm -rf '$own_tmp'" EXIT
-    local col_since col_until count
-    col_since="$b_since"; [ -n "$since" ] && [ "$since" \< "$b_since" ] && col_since="$since"
-    col_until="$until"
     echo "Collecting token-usage artifacts for ${repo} (${col_since} → ${col_until:-now})..." >&2
-    count="$(collect_repo_jsonl "$repo" "$col_since" "$col_until" "$own_tmp")"
+    if ! count="$(collect_repo_jsonl "$repo" "$col_since" "$col_until" "$own_tmp")"; then
+      echo "ERROR: artifact collection failed for ${repo}." >&2
+      return 3
+    fi
     echo "Collected ${count} artifact(s)." >&2
     scored_dir="$own_tmp"
-    if [ "$collect_only" = "true" ]; then
-      echo "collect-only: artifacts extracted to ${own_tmp} (copy them out before EXIT)." >&2
-      return 0
-    fi
   fi
 
   local rc=0

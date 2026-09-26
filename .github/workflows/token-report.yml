@@ -195,6 +195,13 @@ jobs:
         run: |
           args=()
           [ -n "$CANARY_SINCE_INPUT" ] && args+=(--since "$CANARY_SINCE_INPUT")
-          # Exit 1 (FAIL) / 2 (INSUFFICIENT) are valid verdicts, not step failures —
-          # the rendered table already carries the go/no-go signal.
-          bash scripts/canary_report.sh "${args[@]}" >> "$GITHUB_STEP_SUMMARY" || true
+          # Exit 1 (FAIL) / 2 (INSUFFICIENT) are valid go/no-go verdicts, not step
+          # failures — the rendered table already carries the signal. Any OTHER
+          # non-zero exit (bad args, missing tool, failed artifact collection) is a
+          # real error and must fail the step rather than be masked by `|| true`.
+          rc=0
+          bash scripts/canary_report.sh "${args[@]}" >> "$GITHUB_STEP_SUMMARY" || rc=$?
+          if [ "$rc" -gt 2 ]; then
+            echo "canary_report.sh failed with exit ${rc}." >&2
+            exit "$rc"
+          fi
