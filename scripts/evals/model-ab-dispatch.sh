@@ -146,8 +146,11 @@ main() {
   while [ "$attempt" -lt "$runs" ]; do
     attempt=$((attempt + 1))
     rc=0
+    set +e
     # shellcheck disable=SC2086 # ab_cmd is an intentional command+args split
-    out="$($ab_cmd "$candidate" "$incumbent" "${sets[@]}")" || rc=$?
+    out="$($ab_cmd "$candidate" "$incumbent" "${sets[@]}")"
+    rc=$?
+    set -e
     if [ "$rc" -ne 2 ]; then
       break            # scored verdict (accept/regression) — final, do not retry
     fi
