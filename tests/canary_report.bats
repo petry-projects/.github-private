@@ -143,6 +143,32 @@ seed_pass() {
   [[ "$output" == *"**Overall verdict:** INSUFFICIENT"* ]]
 }
 
+@test "render_canary_report: fewer than 5 durations per arm → latency INSUFFICIENT (never a one-pair PASS), exit 2" {
+  # Five candidate PRs and five incumbent invocations clear cost/cache, but only
+  # ONE call per arm carries a duration_ms. A single fast pair must not score a
+  # latency PASS — the sample floor (min invocations) applies to durations too.
+  local i
+  for i in 1 2 3 4 5; do
+    local cdur="" idur=""
+    [ "$i" -eq 1 ] && { cdur=700; idur=1000; }
+    mkrec "$FILE" "2026-09-26T10:0${i}:00Z" pr-review deep claude-opus-5-5 \
+      1000 1000 0 100 "https://github.com/petry-projects/.github-private/pull/${i}" "$cdur"
+    mkrec "$FILE" "2026-09-20T10:0${i}:00Z" pr-review deep claude-opus-4-8 \
+      1000 1000 0 100 "https://github.com/petry-projects/.github-private/pull/10${i}" "$idur"
+  done
+  run render_canary_report "$DIR"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"- latency: INSUFFICIENT"* ]]
+  [[ "$output" == *"- cost: PASS"* ]]
+  [[ "$output" == *"**Overall verdict:** INSUFFICIENT"* ]]
+}
+
+@test "_fmt_pct: preserves the sign of a negative fraction (regression, not reduction)" {
+  run _fmt_pct 0.2;  [ "$output" = "20%" ]
+  run _fmt_pct -0.2; [ "$output" = "-20%" ]
+  run _fmt_pct 0.5;  [ "$output" = "50%" ]
+}
+
 @test "render_canary_report: no non-null duration on either arm → latency INSUFFICIENT (never PASS), exit 2" {
   local i
   for i in 1 2 3 4 5; do

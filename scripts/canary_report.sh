@@ -79,9 +79,11 @@ source "${_CANARY_DIR}/token_report.sh"
 # Pure helpers
 # ---------------------------------------------------------------------------
 
-# _fmt_pct <fraction>  → "NN%" (fraction 0.225 → "22%"). Negative allowed.
+# _fmt_pct <fraction>  → "NN%" (fraction 0.225 → "23%"). Negative preserved
+# (e.g. -0.2 → "-20%") so a regression is never rendered as a reduction. Uses
+# printf "%.0f" (not "%d") to avoid integer overflow/truncation on older awks.
 _fmt_pct() {
-  awk -v v="${1:-0}" 'BEGIN { printf "%d%%", (v < 0 ? -1 : 1) * int((v < 0 ? -v : v) * 100 + 0.5) * (v < 0 ? -1 : 1) }'
+  awk -v v="${1:-0}" 'BEGIN { printf "%.0f%%", int(v * 100 + (v < 0 ? -0.5 : 0.5)) }'
 }
 
 # _fmt_ms <ms>  → integer milliseconds, or "n/a" for the -1 sentinel.
@@ -89,10 +91,41 @@ _fmt_ms() {
   awk -v v="${1:-0}" 'BEGIN { if (v < 0) printf "n/a"; else printf "%d ms", int(v + 0.5) }'
 }
 
-# _fmt_usd6 <dollars>  → 6-decimal USD (per-invocation figures are sub-cent, so
-# the 2dp org formatter would collapse them to $0.00). Uses "n/a" for -1.
-_fmt_usd6() {
-  awk -v v="${1:-0}" 'BEGIN { if (v < 0) printf "n/a"; else printf "$%.6f", v }'
+# _norm_iso <iso8601>  → the same instant at seconds precision, so a minute-precision
+# window bound (…THH:MMZ) compares correctly (lexically) against seconds-precision
+# record timestamps (…THH:MM:SSZ). Without this, "…14:07:30Z" sorts BEFORE the
+# "…14:07Z" bound (':' < 'Z'), excluding candidate artifacts created in the cutoff
+# minute while including them in the baseline (#1953). Empty stays empty.
+_norm_iso() {
+  local t="${1-}"
+  case "$t" in
+    "")                            printf '' ;;
+    *T[0-9][0-9]:[0-9][0-9]Z)      printf '%s:00Z' "${t%Z}" ;;
+    *T[0-9][0-9]:[0-9][0-9])       printf '%s:00'  "$t" ;;
+    *)                             printf '%s' "$t" ;;
+  esac
+}
+
+# _combine_verdict <rc1> <rc2>  → the worse go/no-go exit code of the two report
+# sections: any FAIL (1) wins over any INSUFFICIENT (2), which wins over PASS (0).
+# So a controlled-comparison FAIL is never masked by a real-PR PASS (#1953).
+_combine_verdict() {
+  if [ "$1" = 1 ] || [ "$2" = 1 ]; then printf 1
+  elif [ "$1" = 2 ] || [ "$2" = 2 ]; then printf 2
+  else printf 0; fi
+}
+
+# _fmt_usd_or_na <dollars>  → the org 2-decimal USD formatter (_fmt_usd), or "n/a"
+# for the -1 sentinel. Surfaced USD must go through the shared cents formatter per
+# AGENTS.md "Cost reporting"; the reduction % column and the USD/1M-token row are
+# the fine-grained comparators when cent precision is too coarse.
+_fmt_usd_or_na() {
+  local v="${1:-0}"
+  if awk -v v="$v" 'BEGIN { exit !(v < 0) }'; then
+    printf 'n/a'
+  else
+    _fmt_usd "$v"
+  fi
 }
 
 # canary_annotate <jsonl_dir>
@@ -107,14 +140,19 @@ canary_annotate() {
   local files=("$dir"/*.jsonl)
   [ -e "${files[0]}" ] || return 0   # no JSONL files → no rows
 
+  # Join with the ASCII unit separator (0x1F), NOT a tab: bash `read` treats tab
+  # as IFS whitespace and collapses runs of it, so a record with an empty context
+  # and a populated duration_ms would shift duration into ctx and lose it. A
+  # non-whitespace delimiter preserves every field, empty ones included (#1953).
   jq -r 'select(type == "object")
     | select((.kind // "token_usage") == "token_usage")
     | [ (.ts // "-"), (.workflow // "-"), (.tier // "-"), (.model // "-"),
-        (.input_tokens // 0), (.cache_read_tokens // 0), (.cache_creation_tokens // 0),
-        (.output_tokens // 0), (.context // ""),
+        (.input_tokens // 0 | tostring), (.cache_read_tokens // 0 | tostring),
+        (.cache_creation_tokens // 0 | tostring), (.output_tokens // 0 | tostring),
+        (.context // ""),
         (if (.duration_ms == null) then "" else (.duration_ms | tostring) end)
-      ] | @tsv' "${files[@]}" 2>/dev/null \
-  | while IFS=$'\t' read -r ts wf tier model inp cr cw out ctx dur; do
+      ] | join("\u001f")' "${files[@]}" 2>/dev/null \
+  | while IFS=$'\037' read -r ts wf tier model inp cr cw out ctx dur; do
       local date price cost crcost known
       date="${ts:0:10}"
       price="$(price_for "$model" "$date")"
@@ -141,11 +179,24 @@ canary_annotate() {
 # -1 marks an undefined mean/median (no priced rows / no durations).
 _canary_arm_metrics() {
   awk -F'\t' '
-    function median(a, n,   i, j, t, b) {
+    function qsort(a, lo, hi,   i, j, p, t) {
+      # In-place quicksort — O(n log n) average, so the incumbent arm (which can
+      # collect thousands of records over the 14-day baseline) does not hit the
+      # O(n^2) wall the old bubble sort did.
+      if (lo >= hi) return
+      i = lo; j = hi; p = a[int((lo + hi) / 2)]
+      while (i <= j) {
+        while (a[i] < p) i++
+        while (a[j] > p) j--
+        if (i <= j) { t = a[i]; a[i] = a[j]; a[j] = t; i++; j-- }
+      }
+      qsort(a, lo, j)
+      qsort(a, i, hi)
+    }
+    function median(a, n,   i, b) {
       if (n <= 0) return -1
       for (i = 1; i <= n; i++) b[i] = a[i]
-      for (i = 1; i <= n; i++) for (j = i + 1; j <= n; j++)
-        if (b[j] < b[i]) { t = b[i]; b[i] = b[j]; b[j] = t }
+      qsort(b, 1, n)
       if (n % 2 == 1) return b[(n + 1) / 2]
       return (b[n / 2] + b[n / 2 + 1]) / 2
     }
@@ -214,14 +265,16 @@ render_canary_report() {
   label="${CANARY_LABEL-Canary go/no-go — real PRs}"
   mode="${CANARY_MODE-real}"
 
-  local enriched; enriched="$(mktemp)"
+  local enriched; enriched="$(mktemp)" || { echo "ERROR: failed to create temporary file" >&2; return 1; }
   canary_annotate "$dir" > "$enriched"
 
   # Split into candidate / incumbent / fallback arms, applying the sample windows.
   # In controlled mode both arms come from identical inputs, so windows + cap are
   # inert (empty windows) — the arms are split by model alone.
   local cand_file inc_file fb_file
-  cand_file="$(mktemp)"; inc_file="$(mktemp)"; fb_file="$(mktemp)"
+  cand_file="$(mktemp)" || { echo "ERROR: failed to create temporary file" >&2; return 1; }
+  inc_file="$(mktemp)"  || { echo "ERROR: failed to create temporary file" >&2; return 1; }
+  fb_file="$(mktemp)"   || { echo "ERROR: failed to create temporary file" >&2; return 1; }
 
   local c_since c_until
   if [ "$mode" = "real" ]; then c_since="$since"; c_until="$until"; else c_since=""; c_until=""; fi
@@ -262,10 +315,17 @@ render_canary_report() {
     allowed="$(awk -F'\t' '$9 != "" { if (!($9 in first) || $1 < first[$9]) first[$9] = $1 }
                  END { for (k in first) printf "%s\t%s\n", first[k], k }' "$cand_file" \
                | sort -t$'\t' -k1,1 | awk -F'\t' -v n="$max_prs" 'NR <= n { print $2 }')"
-    capped="$(mktemp)"
-    awk -F'\t' -v allow="$allowed" 'BEGIN { n = split(allow, a, "\n"); for (k = 1; k <= n; k++) keep[a[k]] = 1 }
-      $9 in keep { print }' "$cand_file" > "$capped"
-    mv "$capped" "$cand_file"
+    # Only apply the cap when at least one candidate record carries a context to
+    # cap on. If every candidate record has an empty context, "allowed" is empty
+    # and the awk filter would match nothing — mv'ing that empty file over
+    # cand_file would silently drop all candidate data (→ a bogus INSUFFICIENT).
+    # Leaving cand_file untouched lets the distinct-PR guard report the real state.
+    if [ -n "$allowed" ]; then
+      capped="$(mktemp)" || { echo "ERROR: failed to create temporary file" >&2; return 1; }
+      awk -F'\t' -v allow="$allowed" 'BEGIN { n = split(allow, a, "\n"); for (k = 1; k <= n; k++) keep[a[k]] = 1 }
+        $9 in keep { print }' "$cand_file" > "$capped"
+      mv "$capped" "$cand_file"
+    fi
   fi
 
   # Per-arm metrics.
@@ -282,9 +342,18 @@ render_canary_report() {
   IFS=$'\t' read -r i_inv i_prs i_priced i_unpr i_mcost i_pcost i_mcr _ i_mdur i_pdur i_durc _ i_perm <<< "$im"
 
   # Sample-size guard shared by every metric (never let a thin sample read as PASS).
+  # Real mode counts DISTINCT candidate PRs (min_prs) because each real PR is one
+  # independent observation. Controlled mode (model-ab) runs held-out cases without
+  # a PR_URL context, so it has zero distinct PRs by construction — there the guard
+  # is per-arm INVOCATIONS (min_inv), or every controlled run would be INSUFFICIENT.
   local base_insuff=0
-  [ "$c_prs" -lt "$min_prs" ] && base_insuff=1
-  [ "$i_inv" -lt "$min_inv" ] && base_insuff=1
+  if [ "$mode" = "controlled" ]; then
+    [ "$c_inv" -lt "$min_inv" ] && base_insuff=1
+    [ "$i_inv" -lt "$min_inv" ] && base_insuff=1
+  else
+    [ "$c_prs" -lt "$min_prs" ] && base_insuff=1
+    [ "$i_inv" -lt "$min_inv" ] && base_insuff=1
+  fi
 
   # Any unpriced candidate record has an UNKNOWN cost, so it is excluded from the
   # mean-cost denominator — a candidate with costly unpriced calls could otherwise
@@ -298,7 +367,11 @@ render_canary_report() {
     cost_status="$(_bar_status "$c_mcost" "$i_mcost" "$cost_bar")"
     cache_status="$(_bar_status "$c_mcr" "$i_mcr" "$cache_bar")"
   fi
-  if [ "$base_insuff" -eq 1 ] || [ "$c_durc" -eq 0 ] || [ "$i_durc" -eq 0 ]; then
+  # Latency needs the SAME sample floor as the other bars: it is not enough for each
+  # arm to carry a single non-null duration. Require at least min_inv durations per
+  # arm, so a five-invocation comparison with duration on only one call each stays
+  # INSUFFICIENT instead of scoring a bogus one-pair PASS.
+  if [ "$base_insuff" -eq 1 ] || [ "$c_durc" -lt "$min_inv" ] || [ "$i_durc" -lt "$min_inv" ]; then
     latency_status="INSUFFICIENT"
   else
     latency_status="$(_bar_status "$c_mdur" "$i_mdur" "$latency_bar")"
@@ -333,21 +406,21 @@ render_canary_report() {
   printf '| Invocations | %s | %s |\n' "$(_fmt_int "$c_inv")" "$(_fmt_int "$i_inv")"
   printf '| Distinct PRs | %s | %s |\n' "$(_fmt_int "$c_prs")" "$(_fmt_int "$i_prs")"
   printf '| Unpriced records | %s | %s |\n' "$(_fmt_int "$c_unpr")" "$(_fmt_int "$i_unpr")"
-  printf '| Mean USD / invocation | %s | %s |\n' "$(_fmt_usd6 "$c_mcost")" "$(_fmt_usd6 "$i_mcost")"
-  printf '| p50 USD / invocation | %s | %s |\n' "$(_fmt_usd6 "$c_pcost")" "$(_fmt_usd6 "$i_pcost")"
-  printf '| Mean cache-read USD / invocation | %s | %s |\n' "$(_fmt_usd6 "$c_mcr")" "$(_fmt_usd6 "$i_mcr")"
+  printf '| Mean USD / invocation | %s | %s |\n' "$(_fmt_usd_or_na "$c_mcost")" "$(_fmt_usd_or_na "$i_mcost")"
+  printf '| p50 USD / invocation | %s | %s |\n' "$(_fmt_usd_or_na "$c_pcost")" "$(_fmt_usd_or_na "$i_pcost")"
+  printf '| Mean cache-read USD / invocation | %s | %s |\n' "$(_fmt_usd_or_na "$c_mcr")" "$(_fmt_usd_or_na "$i_mcr")"
   printf '| Mean duration | %s | %s |\n' "$(_fmt_ms "$c_mdur")" "$(_fmt_ms "$i_mdur")"
   printf '| p50 duration | %s | %s |\n' "$(_fmt_ms "$c_pdur")" "$(_fmt_ms "$i_pdur")"
   printf '| USD / 1M input-equivalent tokens (context only) | %s | %s |\n\n' \
-    "$(_fmt_usd6 "$c_perm")" "$(_fmt_usd6 "$i_perm")"
+    "$(_fmt_usd_or_na "$c_perm")" "$(_fmt_usd_or_na "$i_perm")"
 
   printf '### Verdict per bar\n\n'
   printf '| Bar | Candidate | Incumbent | Reduction | Result |\n|---|---:|---:|---:|:--|\n'
   printf '| Cost per invocation (≥ %s lower) | %s | %s | %s | %s |\n' \
-    "$(_fmt_pct "$cost_bar")" "$(_fmt_usd6 "$c_mcost")" "$(_fmt_usd6 "$i_mcost")" \
+    "$(_fmt_pct "$cost_bar")" "$(_fmt_usd_or_na "$c_mcost")" "$(_fmt_usd_or_na "$i_mcost")" \
     "$( [ "$cost_red" = "-999" ] && printf 'n/a' || _fmt_pct "$cost_red" )" "$cost_status"
   printf '| Cache-read cost per invocation (≥ %s lower) | %s | %s | %s | %s |\n' \
-    "$(_fmt_pct "$cache_bar")" "$(_fmt_usd6 "$c_mcr")" "$(_fmt_usd6 "$i_mcr")" \
+    "$(_fmt_pct "$cache_bar")" "$(_fmt_usd_or_na "$c_mcr")" "$(_fmt_usd_or_na "$i_mcr")" \
     "$( [ "$cache_red" = "-999" ] && printf 'n/a' || _fmt_pct "$cache_red" )" "$cache_status"
   printf '| Latency / duration_ms (≥ %s better) | %s | %s | %s | %s |\n\n' \
     "$(_fmt_pct "$latency_bar")" "$(_fmt_ms "$c_mdur")" "$(_fmt_ms "$i_mdur")" \
@@ -395,7 +468,10 @@ ARTIFACT_OP_TIMEOUT="${ARTIFACT_OP_TIMEOUT:-60}"
 # Lists <repo>'s token-usage-* artifacts created within [since, until] and
 # downloads/extracts them into jsonl_dir, REUSING token_report.sh's per-artifact
 # helpers. A failed listing is fatal (returns 1) — a canary must never score a
-# silently-empty download as data.
+# silently-empty download as data. A PARTIAL download is fatal too (returns 1): if
+# any selected artifact yields no records (download/extract failure — the shared
+# helper only warns), the sample is incomplete and scoring it could report a PASS
+# on missing evidence, so we refuse rather than score partial data.
 collect_repo_jsonl() {
   local repo="$1" since="$2" until="$3" jsonl_dir="$4"
   mkdir -p "$jsonl_dir"
@@ -420,17 +496,28 @@ collect_repo_jsonl() {
     return 1
   fi
 
-  local id
+  local id requested=0
   while IFS= read -r id; do
     [ -n "$id" ] || continue
+    requested=$((requested + 1))
     _collect_one_artifact "$repo" "$id"
   done <<< "$ids"
 
-  find "$COLLECT_MARKER_DIR" -type f | wc -l | tr -d ' '
+  local collected
+  collected="$(find "$COLLECT_MARKER_DIR" -type f | wc -l | tr -d ' ')"
+  if [ "$collected" -lt "$requested" ]; then
+    echo "ERROR: only ${collected}/${requested} selected token-usage artifacts for ${repo} yielded records — download/extract failures make the sample partial; refusing to score incomplete evidence." >&2
+    return 1
+  fi
+  printf '%s\n' "$collected"
 }
 
 _usage() {
-  sed -n '2,60p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  # Print the leading comment block dynamically: drop the shebang (line 1), stop at
+  # the first non-comment line, and strip the leading "# ". Hardcoding a line range
+  # (e.g. 2,60p) truncates the header — the Usage examples live past line 60 — and
+  # rots whenever the comment length changes.
+  sed -e '1d' -e '/^[^#]/,$d' -e 's/^# \{0,1\}//' "${BASH_SOURCE[0]}"
 }
 
 main() {
@@ -462,11 +549,30 @@ main() {
     esac
   done
 
+  # Normalize every ISO bound to seconds precision up front so the collector (jq)
+  # and the renderer (awk) compare bounds and record timestamps consistently — a
+  # minute-precision bound would otherwise mis-window records in the cutoff minute.
+  since="$(_norm_iso "$since")"; until="$(_norm_iso "$until")"
+  b_since="$(_norm_iso "$b_since")"; b_until="$(_norm_iso "$b_until")"
+
   # The canary window starts at the cut (== the baseline end). When --since is
   # omitted, default the candidate lower bound to it so pre-canary candidate
   # records never enter the candidate arm, even though collection still spans the
   # full baseline window below (an empty lower bound would admit them — #1953).
   [ -z "$since" ] && since="$b_until"
+
+  # An explicitly supplied local input directory must exist and be readable. A
+  # misspelled/unreadable path would otherwise glob to zero rows and render an
+  # ordinary INSUFFICIENT, making a bad path indistinguishable from empty evidence.
+  # (--collect-only creates --dir, so this check is scoped to the scoring paths.)
+  if [ "$collect_only" != "true" ] && [ -n "$dir" ] && [ ! -d "$dir" ]; then
+    echo "ERROR: --dir path does not exist or is not a readable directory: $dir" >&2
+    return 66
+  fi
+  if [ -n "$model_ab_dir" ] && [ ! -d "$model_ab_dir" ]; then
+    echo "ERROR: --model-ab-dir path does not exist or is not a readable directory: $model_ab_dir" >&2
+    return 66
+  fi
 
   export CANARY_CANDIDATE="$candidate" CANARY_INCUMBENT="$incumbent"
   export CANARY_WORKFLOW="$workflow" CANARY_TIER="$tier"
@@ -527,8 +633,10 @@ main() {
     CANARY_MODE="controlled" \
     CANARY_LABEL="Controlled comparison — model-ab (identical inputs)" \
       render_canary_report "$model_ab_dir" || ab_rc="$?"
-    # When there is no real-PR section, the controlled verdict drives the exit code.
-    [ -z "$scored_dir" ] && rc="$ab_rc"
+    # Combine the two verdicts: a controlled FAIL is a no-go even when the real-PR
+    # section passes. (scored_dir is always set, so the exit code must reflect BOTH
+    # sections rather than the real-PR one alone.)
+    rc="$(_combine_verdict "$rc" "$ab_rc")"
   fi
 
   return "$rc"
