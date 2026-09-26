@@ -10,8 +10,10 @@ RETRY_SCRIPT="$SCRIPT_DIR/scripts/auto-rebase-retry.sh"
 setup() {
   STUB_BIN_DIR="$(mktemp -d)"
   RERUN_MARKER="$(mktemp -u)"
-  export RERUN_MARKER
-  # Mock gh: record any `run rerun` invocation to RERUN_MARKER.
+  DISPATCH_MARKER="$(mktemp -u)"
+  export RERUN_MARKER DISPATCH_MARKER
+  # Mock gh: record `run rerun` to RERUN_MARKER and repository_dispatch to
+  # DISPATCH_MARKER so tests can assert which recovery path the script took.
   cat > "$STUB_BIN_DIR/gh" <<'GHEOF'
 #!/usr/bin/env bash
 case "$*" in
@@ -20,6 +22,10 @@ case "$*" in
     [ "${GH_STUB_RERUN_FAILS:-0}" = "1" ] && exit 1
     echo "Requested rerun of run"
     ;;
+  *dispatches*)
+    echo "$*" > "$DISPATCH_MARKER"
+    [ "${GH_STUB_DISPATCH_FAILS:-0}" = "1" ] && exit 1
+    ;;
   *)
     echo "{}"
     ;;
@@ -27,6 +33,7 @@ esac
 GHEOF
   chmod +x "$STUB_BIN_DIR/gh"
   export PATH="$STUB_BIN_DIR:$PATH"
+  unset GITHUB_EVENT_NAME PR_NUMBER
 
   export GITHUB_STEP_SUMMARY
   GITHUB_STEP_SUMMARY="$(mktemp)"
@@ -44,10 +51,11 @@ GHEOF
 
 teardown() {
   rm -rf "$STUB_BIN_DIR"
-  rm -f "$RERUN_MARKER" "$GITHUB_STEP_SUMMARY"
+  rm -f "$RERUN_MARKER" "$DISPATCH_MARKER" "$GITHUB_STEP_SUMMARY"
 }
 
 _reran() { [ -f "$RERUN_MARKER" ]; }
+_dispatched() { [ -f "$DISPATCH_MARKER" ]; }
 
 @test "auto-rebase-retry: failure on first attempt → reruns failed jobs" {
   run bash "$RETRY_SCRIPT"
@@ -132,4 +140,48 @@ _reran() { [ -f "$RERUN_MARKER" ]; }
   [ "$status" -eq 0 ]
   _reran
   ! grep -q -- "--repo" "$RERUN_MARKER"
+}
+
+# ── manual workflow_dispatch: route a DIRTY PR into the rebase intent (#1890) ──
+
+@test "auto-rebase-retry: manual dispatch with a PR number → routes to rebase intent, no rerun" {
+  export GITHUB_EVENT_NAME="workflow_dispatch"
+  export PR_NUMBER="1799"
+  run bash "$RETRY_SCRIPT"
+  [ "$status" -eq 0 ]
+  ! _reran
+  _dispatched
+  grep -q "dev-lead-reviews-retry" "$DISPATCH_MARKER"
+  grep -q "1799" "$DISPATCH_MARKER"
+  grep -q "rebase" "$DISPATCH_MARKER"
+}
+
+@test "auto-rebase-retry: manual dispatch without a PR number → warns, no dispatch, no rerun" {
+  export GITHUB_EVENT_NAME="workflow_dispatch"
+  export PR_NUMBER=""
+  run bash "$RETRY_SCRIPT"
+  [ "$status" -eq 0 ]
+  ! _reran
+  ! _dispatched
+  [[ "$output" == *"::warning::"* ]]
+}
+
+@test "auto-rebase-retry: manual dispatch DRY_RUN → logs intent, no dispatch" {
+  export GITHUB_EVENT_NAME="workflow_dispatch"
+  export PR_NUMBER="1800"
+  export DRY_RUN="true"
+  run bash "$RETRY_SCRIPT"
+  [ "$status" -eq 0 ]
+  ! _dispatched
+  [[ "$output" == *"dry-run"* ]]
+}
+
+@test "auto-rebase-retry: manual dispatch dispatch-API failure → warns but exits 0" {
+  export GITHUB_EVENT_NAME="workflow_dispatch"
+  export PR_NUMBER="1799"
+  export GH_STUB_DISPATCH_FAILS="1"
+  run bash "$RETRY_SCRIPT"
+  [ "$status" -eq 0 ]
+  _dispatched
+  [[ "$output" == *"::warning::"* ]]
 }

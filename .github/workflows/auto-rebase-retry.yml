@@ -2,12 +2,20 @@
 # Auto-rebase retry — self-heals a FAILED Auto-rebase workflow run.
 #
 # REPO-SPECIFIC WORKFLOW (no central template). See AGENTS.md
-# §"Workflow Files" exception note. Documented gap: the Auto-rebase reusable
-# handles merge *conflicts* gracefully (sentinel comment → dev-lead `rebase`
-# intent), but a failed *run* (transient API error, rate-limit, infra hiccup)
-# posts no sentinel and nothing retries it. This handler re-runs the failed
-# jobs, bounded by the run's attempt counter (MAX_ATTEMPTS), and surfaces a
-# warning once retries are exhausted.
+# §"Workflow Files" exception note. This handler covers TWO recovery paths:
+#
+#   1. workflow_run (automatic): the Auto-rebase reusable handles merge
+#      *conflicts* gracefully (sentinel comment → dev-lead `rebase` intent), but a
+#      failed *run* (transient API error, rate-limit, infra hiccup) posts no
+#      sentinel and nothing retries it. On a failed run this re-runs the failed
+#      jobs, bounded by the run's attempt counter (MAX_ATTEMPTS), and surfaces a
+#      warning once retries are exhausted.
+#
+#   2. workflow_dispatch (manual, #1890 AC #4/#5): an operator watching a PR stuck
+#      in CONFLICTING/DIRTY can invoke recovery by hand with a `pr_number` input.
+#      This routes that PR straight into dev-lead's `rebase` intent via a
+#      `dev-lead-reviews-retry` repository_dispatch — the manually-invocable
+#      surface for conflict recovery the conflict-only sentinel path never had.
 #
 # workflow_run handlers run from the default branch only, so changes here take
 # effect after merge to main.
@@ -26,23 +34,33 @@ on:
   workflow_run:
     workflows: ["Auto-rebase non-Dependabot PRs"]
     types: [completed]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "PR number stuck in CONFLICTING/DIRTY to route into dev-lead's rebase intent"
+        required: true
+        type: string
 
 permissions: {}
 
 concurrency:
-  group: auto-rebase-retry-${{ github.event.workflow_run.id }}
+  # Keyed on whichever trigger fired: the workflow_run id (automatic) or the
+  # target PR number (manual), so concurrent manual dispatches for different PRs
+  # do not cancel or serialize against each other.
+  group: auto-rebase-retry-${{ github.event.workflow_run.id || github.event.inputs.pr_number }}
   cancel-in-progress: false
 
 jobs:
   retry:
-    # Only act on failed runs; the script re-checks but gating here avoids
-    # spinning up a runner for every successful/cancelled Auto-rebase run.
-    if: github.event.workflow_run.conclusion == 'failure'
+    # Act on a failed Auto-rebase run (automatic) or any manual dispatch. The
+    # script re-checks, but gating here avoids spinning up a runner for every
+    # successful/cancelled Auto-rebase run.
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'failure'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
-      actions: write   # gh run rerun --failed
-      contents: read   # fetch the retry script via the gh REST contents API (no actions/checkout)
+      actions: write    # gh run rerun --failed
+      contents: write   # POST repos/{repo}/dispatches (manual recovery) needs contents:write; also covers the gh REST contents read that self-fetches the retry script (no actions/checkout)
     steps:
       - name: Retry failed Auto-rebase run
         env:
@@ -58,6 +76,16 @@ jobs:
           WORKFLOW_NAME: ${{ github.event.workflow_run.name }}
           HTML_URL: ${{ github.event.workflow_run.html_url }}
           MAX_ATTEMPTS: "3"
+          # Manual conflict-recovery path (#1890 AC #4/#5): the event name selects
+          # the branch, PR_NUMBER is the stuck PR to route into the rebase intent.
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.inputs.pr_number }}
+          # A repository_dispatch created with the default GITHUB_TOKEN does NOT
+          # trigger the downstream workflow (GitHub's recursion guard), so manual
+          # recovery only actually starts a rebase when a PAT is in use. Signal
+          # which token GH_TOKEN carries so the script reports honestly instead of
+          # claiming recovery on a dispatch that will never fire.
+          HAVE_DISPATCH_PAT: ${{ (secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS) != '' }}
         run: |
           set -euo pipefail
           # Self-fetch the retry script instead of checking out the repo: a

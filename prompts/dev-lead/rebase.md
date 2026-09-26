@@ -29,6 +29,20 @@ Resolve the merge conflicts and rebase the branch onto `${BASE_REF}`:
 4. For each conflicting file:
    - Read both versions of the conflict using the Read tool
    - Resolve the conflict by keeping the correct logic from each side
+   - **Mechanical adjacency conflicts — resolve, do not escalate.** The most
+     common conflict here is both sides *independently adding* content at the
+     same place (a new function, a new `case` arm, a new list entry, a new
+     import) with no semantic overlap — git flags it only because the additions
+     land on adjacent lines. Keep **both** additions (union), pick a stable order
+     (usually base side first, then the PR's, or alphabetical where the file is
+     sorted), and delete the `<<<<<<<`/`=======`/`>>>>>>>` markers. This is a
+     resolution, not an unsafe merge — do not abort for it. Commits `f828bbe9`
+     and `e11169ce` were exactly this class and had to be hand-fixed; treat them
+     as the reference for what a mechanical adjacency resolution looks like.
+   - Only treat a conflict as unresolvable when the two sides make *contradictory*
+     changes to the **same** logic (e.g. both edit the same condition, value, or
+     statement in incompatible ways) — that is the genuinely-ambiguous case the
+     safety guard exists for.
    - Stage the resolved file: `git add <file>`
 5. Continue the rebase: `git rebase --continue`
 6. Force-push the rebased branch, pinning the lease so a concurrent steering

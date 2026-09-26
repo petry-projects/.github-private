@@ -28,6 +28,12 @@ set -euo pipefail
 #   DRY_RUN       — if "true", log intent but do not call gh (default: false)
 #   GITHUB_STEP_SUMMARY — path for the run summary (optional)
 #
+# Manual workflow_dispatch inputs (#1890 AC #4/#5):
+#   GITHUB_EVENT_NAME — "workflow_dispatch" selects the manual conflict-recovery
+#                       path instead of the automatic failed-run retry
+#   PR_NUMBER         — the PR stuck in CONFLICTING/DIRTY to route into the
+#                       dev-lead `rebase` intent
+#
 # Always exits 0: a handler failure would itself be noise. Outcomes are surfaced
 # via ::notice:: / ::warning:: annotations and the step summary instead.
 
@@ -39,9 +45,60 @@ HTML_URL="${HTML_URL:-}"
 REPO="${REPO:-${GITHUB_REPOSITORY:-}}"
 MAX_ATTEMPTS="${MAX_ATTEMPTS:-3}"
 DRY_RUN="${DRY_RUN:-false}"
+GITHUB_EVENT_NAME="${GITHUB_EVENT_NAME:-}"
+PR_NUMBER="${PR_NUMBER:-}"
+HAVE_DISPATCH_PAT="${HAVE_DISPATCH_PAT:-false}"
 GITHUB_STEP_SUMMARY="${GITHUB_STEP_SUMMARY:-/dev/null}"
 
 summary() { echo "$1" >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true; }
+
+# ── manual conflict recovery (workflow_dispatch, #1890 AC #4/#5) ───────────────
+# The workflow_run path self-heals a *failed run*. This path is the hand-crank an
+# operator uses for a PR that is stuck CONFLICTING/DIRTY even though its
+# Auto-rebase run *succeeded* — the conflict-only sentinel never had a
+# manually-invocable surface. It fires a `dev-lead-reviews-retry`
+# repository_dispatch (the same bridge the conflict sentinel uses) carrying the
+# PR number and intent=rebase, so the PR is routed straight into dev-lead's
+# rebase intent. A PAT is required for the dispatch to trigger the workflow.
+if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+  case "${PR_NUMBER}" in
+    ''|*[!0-9]*)
+      echo "::warning::workflow_dispatch invoked with an invalid or missing pr_number '${PR_NUMBER}' — must be a positive integer"
+      exit 0
+      ;;
+  esac
+  echo "::notice::Manual recovery: routing PR #${PR_NUMBER} into dev-lead's rebase intent via repository_dispatch"
+  if [ "$DRY_RUN" = "true" ]; then
+    echo "  [dry-run] would fire dev-lead-reviews-retry repository_dispatch for PR #${PR_NUMBER} (intent=rebase)"
+    summary "### Manual rebase recovery (dry-run)"
+    summary "Would route PR #${PR_NUMBER} into dev-lead's \`rebase\` intent."
+    exit 0
+  fi
+  if gh api -X POST "repos/${REPO}/dispatches" \
+       -f "event_type=dev-lead-reviews-retry" \
+       -f "client_payload[pr_number]=${PR_NUMBER}" \
+       -f "client_payload[intent_type]=rebase"; then
+    # A 204 from the dispatches API only means the event was accepted — not that a
+    # rebase will run. A repository_dispatch created with the default GITHUB_TOKEN
+    # does not trigger the downstream workflow (GitHub's recursion guard), so
+    # without a PAT the accepted dispatch fires nothing. Only claim recovery when a
+    # PAT is in use; otherwise surface a warning so a human knows no rebase started.
+    if [ "$HAVE_DISPATCH_PAT" = "true" ]; then
+      echo "::notice::Dispatched dev-lead-reviews-retry for PR #${PR_NUMBER} (intent=rebase)"
+      summary "### Manual rebase recovery dispatched"
+      summary "Routed PR #${PR_NUMBER} into dev-lead's \`rebase\` intent."
+    else
+      echo "::warning::Accepted a dev-lead-reviews-retry dispatch for PR #${PR_NUMBER}, but no PAT is configured — a repository_dispatch created with the default GITHUB_TOKEN does not trigger the downstream workflow, so no rebase will run. Configure GH_PAT_DON_PETRY or GH_PAT_WORKFLOWS and retry."
+      summary "### Manual rebase recovery could not trigger a rebase"
+      summary "The dispatch for PR #${PR_NUMBER} was accepted, but the default \`GITHUB_TOKEN\` cannot trigger the downstream workflow — configure a PAT (GH_PAT_DON_PETRY / GH_PAT_WORKFLOWS) and retry."
+    fi
+  else
+    echo "::warning::Failed to dispatch dev-lead-reviews-retry for PR #${PR_NUMBER} — a maintainer should retry manually"
+    summary "### Manual rebase recovery failed to dispatch"
+    summary "Could not route PR #${PR_NUMBER} into the rebase intent."
+  fi
+  exit 0
+fi
 
 # Default any non-integer attempt to 1 so a malformed payload still retries once
 # rather than silently skipping or crashing under `set -e`.

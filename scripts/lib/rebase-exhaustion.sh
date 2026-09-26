@@ -69,6 +69,36 @@ rebase_should_exhaust() {
   return 1
 }
 
+# rebase_conflict_state <mergeable> <merge_state_status>
+#   The authoritative post-condition decision for the rebase intent (#1890 AC #2).
+#   The handler must NOT infer success from the engine exit code or a local
+#   trial-merge — GitHub computes `mergeable` asynchronously and can disagree with
+#   a locally-clean merge, which is how a run reported `status=applied` in seconds
+#   while the PR stayed CONFLICTING. This pure helper maps the (mergeable,
+#   mergeStateStatus) pair `gh pr view` returns into one of three verdicts:
+#     conflicting   — mergeable == CONFLICTING OR mergeStateStatus == DIRTY.
+#                     The rebase did NOT converge → the handler treats it as a
+#                     failure (counts toward exhaustion), never as applied.
+#     resolved      — mergeable == MERGEABLE (a positive no-conflict signal),
+#                     and not otherwise conflicting. Safe to report applied.
+#     indeterminate — anything else (mergeable UNKNOWN/empty and not DIRTY):
+#                     GitHub has not finished computing mergeability. The handler
+#                     must neither claim success nor record a failure; it re-checks
+#                     later. Fail-safe default, so an unknown state is never read
+#                     as "resolved".
+rebase_conflict_state() {
+  local mergeable="${1:-}" state="${2:-}"
+  if [ "$mergeable" = "CONFLICTING" ] || [ "$state" = "DIRTY" ]; then
+    printf 'conflicting'
+    return 0
+  fi
+  if [ "$mergeable" = "MERGEABLE" ]; then
+    printf 'resolved'
+    return 0
+  fi
+  printf 'indeterminate'
+}
+
 # rebase_failure_reason <exit_code>
 #   Human-readable reason for a rebase engine failure. Exit 124 is the GNU
 #   `timeout` class (per-tier timeout) — the #865 defect — surfaced as its own
