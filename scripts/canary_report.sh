@@ -42,16 +42,22 @@
 #   --since; incumbent inside the baseline window), so pre-#1949 records with no
 #   duration_ms surface as INSUFFICIENT latency rather than a false PASS.
 #
-# ── Baseline expiry — snapshot before it is gone ──────────────────────────────
+# ── Baseline expiry — snapshot both arms before the baseline is gone ──────────
 #   token-usage artifacts are retained 30 days (pr-review.yml upload step). The
 #   last Opus 4.8 deep-tier records predate the 2026-09-25 14:07Z canary cut and
-#   EXPIRE around 2026-10-25. Snapshot a baseline directory BEFORE then:
+#   EXPIRE around 2026-10-25. Snapshot a directory holding BOTH arms BEFORE then:
 #
 #     GH_TOKEN=<pat> bash scripts/canary_report.sh \
-#       --collect-only --dir ./canary-baseline \
-#       --since 2026-09-11T14:07Z --until 2026-09-25T14:07Z
+#       --collect-only --dir ./canary-snapshot --since 2026-09-11T14:07Z
 #
-#   then score offline any time later with --dir ./canary-baseline.
+#   --collect-only has NO artifact upper bound, so one --since at the baseline start
+#   captures the expiring incumbent baseline AND every candidate record uploaded since
+#   — both arms land in one directory (a snapshot bounded at the cut would hold zero
+#   candidate records and could only score INSUFFICIENT, #1953). Re-run the same
+#   command any time to TOP UP the snapshot as more canary PRs accrue (collect-only
+#   appends into --dir; it never overwrites). Score offline with --dir ./canary-snapshot;
+#   the window cutoffs are applied at scoring time on each record's timestamp, so the
+#   snapshot may safely hold records on either side of them.
 #
 # ── Controlled comparison (model-ab, identical inputs, #1950) ─────────────────
 #   Point --model-ab-dir at a model-ab-tokens-* artifact directory to render a
@@ -63,7 +69,7 @@
 #
 # Usage:
 #   GH_TOKEN=<pat> bash scripts/canary_report.sh --since 2026-09-25T14:07Z
-#   bash scripts/canary_report.sh --dir ./canary-baseline
+#   bash scripts/canary_report.sh --dir ./canary-snapshot
 #   bash scripts/canary_report.sh --model-ab-dir ./model-ab-tokens
 
 set -euo pipefail
@@ -91,18 +97,29 @@ _fmt_ms() {
   awk -v v="${1:-0}" 'BEGIN { if (v < 0) printf "n/a"; else printf "%d ms", int(v + 0.5) }'
 }
 
-# _norm_iso <iso8601>  → the same instant at seconds precision, so a minute-precision
-# window bound (…THH:MMZ) compares correctly (lexically) against seconds-precision
-# record timestamps (…THH:MM:SSZ). Without this, "…14:07:30Z" sorts BEFORE the
-# "…14:07Z" bound (':' < 'Z'), excluding candidate artifacts created in the cutoff
-# minute while including them in the baseline (#1953). Empty stays empty.
+# _norm_iso <iso8601>  → the same instant as a canonical UTC seconds-precision
+# timestamp (…THH:MM:SSZ), so a window bound compares correctly (lexically) against
+# the seconds-precision UTC record timestamps token capture emits. A minute-precision
+# bound is padded to seconds; a bare (Zless) UTC bound gets its trailing Z. Without
+# canonicalization "…14:07:30Z" sorts BEFORE a "…14:07Z" bound (':' < 'Z'),
+# excluding records created in the cutoff minute (#1953). Empty stays empty.
+#
+# Bounds we CANNOT compare safely against UTC "…Z" timestamps are REJECTED (return
+# 1) rather than silently mis-windowed: a non-UTC offset (…+01:00 / …-05:00) or a
+# fractional-second form (…:00.123Z) is lexically incomparable with "…SSZ" — e.g.
+# 15:07:00+01:00 is the same instant as 14:07:00Z but sorts as a different string,
+# so it would drop or admit the wrong hour of records (#1953). Callers must convert
+# such inputs to UTC (…Z) first; we fail closed rather than score the wrong window.
 _norm_iso() {
   local t="${1-}"
   case "$t" in
-    "")                            printf '' ;;
-    *T[0-9][0-9]:[0-9][0-9]Z)      printf '%s:00Z' "${t%Z}" ;;
-    *T[0-9][0-9]:[0-9][0-9])       printf '%s:00'  "$t" ;;
-    *)                             printf '%s' "$t" ;;
+    "")                                     printf '' ;;
+    *T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z)    printf '%s'    "$t" ;;
+    *T[0-9][0-9]:[0-9][0-9]Z)               printf '%s:00Z' "${t%Z}" ;;
+    *T[0-9][0-9]:[0-9][0-9]:[0-9][0-9])     printf '%sZ'   "$t" ;;
+    *T[0-9][0-9]:[0-9][0-9])                printf '%s:00Z' "$t" ;;
+    *)  echo "ERROR: unsupported timestamp '${t}': use canonical UTC ISO-8601 (YYYY-MM-DDTHH:MM[:SS]Z). Numeric offsets and fractional seconds are not lexically comparable with UTC record timestamps and are rejected." >&2
+        return 1 ;;
   esac
 }
 
@@ -266,21 +283,40 @@ render_canary_report() {
   mode="${CANARY_MODE-real}"
 
   local enriched; enriched="$(mktemp)" || { echo "ERROR: failed to create temporary file" >&2; return 1; }
-  canary_annotate "$dir" > "$enriched"
+  # main() calls render_canary_report in an `||` list, which disables errexit for the
+  # whole function — so a failing canary_annotate (a malformed JSONL file, a jq error)
+  # would NOT abort on its own and rendering would score whatever partial rows landed
+  # in $enriched, possibly emitting a bogus PASS on corrupt evidence. Check it
+  # explicitly and fail closed (INSUFFICIENT) before any scoring (#1953).
+  if ! canary_annotate "$dir" > "$enriched"; then
+    echo "ERROR: failed to annotate token-usage records in ${dir} — a malformed JSONL file or jq failure makes the sample partial; refusing to score incomplete evidence." >&2
+    rm -f "$enriched"
+    return 2
+  fi
 
   # Split into candidate / incumbent / fallback arms, applying the sample windows.
   # In controlled mode both arms come from identical inputs, so windows + cap are
   # inert (empty windows) — the arms are split by model alone.
+  #
+  # Controlled mode ALSO wildcards the workflow/tier predicates. The model-ab
+  # producer (scripts/evals/model-ab.sh) drives each arm through run_triage without
+  # setting TOKEN_WORKFLOW, so its captured records carry workflow=unknown / tier=
+  # triage — NOT the real-PR pr-review/deep labels. Filtering controlled records by
+  # those real-PR labels dropped both arms and left --model-ab-dir permanently
+  # INSUFFICIENT; controlled mode selects its paired records by model alone (#1953).
   local cand_file inc_file fb_file
   cand_file="$(mktemp)" || { echo "ERROR: failed to create temporary file" >&2; return 1; }
   inc_file="$(mktemp)"  || { echo "ERROR: failed to create temporary file" >&2; return 1; }
   fb_file="$(mktemp)"   || { echo "ERROR: failed to create temporary file" >&2; return 1; }
 
+  local f_wf f_tier
+  if [ "$mode" = "real" ]; then f_wf="$workflow"; f_tier="$tier"; else f_wf=""; f_tier=""; fi
+
   local c_since c_until
   if [ "$mode" = "real" ]; then c_since="$since"; c_until="$until"; else c_since=""; c_until=""; fi
-  awk -F'\t' -v wf="$workflow" -v tier="$tier" -v m="$candidate" \
+  awk -F'\t' -v wf="$f_wf" -v tier="$f_tier" -v m="$candidate" \
       -v s="$c_since" -v u="$c_until" \
-    '$2 == wf && $3 == tier && $4 == m {
+    '(wf == "" || $2 == wf) && (tier == "" || $3 == tier) && $4 == m {
        if (s != "" && $1 < s) next
        if (u != "" && $1 > u) next
        print
@@ -288,9 +324,9 @@ render_canary_report() {
 
   local i_since i_until
   if [ "$mode" = "real" ]; then i_since="$b_since"; i_until="$b_until"; else i_since=""; i_until=""; fi
-  awk -F'\t' -v wf="$workflow" -v tier="$tier" -v m="$incumbent" \
+  awk -F'\t' -v wf="$f_wf" -v tier="$f_tier" -v m="$incumbent" \
       -v s="$i_since" -v u="$i_until" \
-    '$2 == wf && $3 == tier && $4 == m {
+    '(wf == "" || $2 == wf) && (tier == "" || $3 == tier) && $4 == m {
        if (s != "" && $1 < s) next
        if (u != "" && $1 > u) next
        print
@@ -300,9 +336,9 @@ render_canary_report() {
   # non-candidate/non-incumbent model. Apply the candidate window so historical
   # fallback records outside the canary period are not reported as part of the
   # comparison (inert in controlled mode, where the window is empty).
-  awk -F'\t' -v wf="$workflow" -v tier="$tier" -v c="$candidate" -v i="$incumbent" \
+  awk -F'\t' -v wf="$f_wf" -v tier="$f_tier" -v c="$candidate" -v i="$incumbent" \
       -v s="$c_since" -v u="$c_until" \
-    '$2 == wf && $3 == tier && $4 != c && $4 != i {
+    '(wf == "" || $2 == wf) && (tier == "" || $3 == tier) && $4 != c && $4 != i {
        if (s != "" && $1 < s) next
        if (u != "" && $1 > u) next
        print
@@ -355,13 +391,17 @@ render_canary_report() {
     [ "$i_inv" -lt "$min_inv" ] && base_insuff=1
   fi
 
-  # Any unpriced candidate record has an UNKNOWN cost, so it is excluded from the
-  # mean-cost denominator — a candidate with costly unpriced calls could otherwise
-  # show a cheap mean over its priced subset and earn a misleading cost PASS. When
-  # the candidate arm has unpriced records we cannot certify a genuine cost/cache
-  # win, so both bars are INSUFFICIENT (never PASS on partial pricing).
+  # Any unpriced record has an UNKNOWN cost, so it is excluded from its arm's
+  # mean-cost denominator — an arm with costly unpriced calls could otherwise show a
+  # cheap mean over its priced subset and skew the comparison. This applies to BOTH
+  # arms: unpriced INCUMBENT calls (e.g. a custom incumbent or a date window spanning
+  # that model's pricing-effective boundary) would otherwise count toward the sample
+  # while sitting outside the incumbent cost mean, letting the candidate earn a
+  # misleading cost/cache PASS against only the priced incumbent subset. When either
+  # arm carries unpriced records we cannot certify a genuine cost/cache win, so both
+  # bars are INSUFFICIENT (never PASS on partial pricing) (#1953).
   local cost_status cache_status latency_status
-  if [ "$base_insuff" -eq 1 ] || [ "$c_priced" -eq 0 ] || [ "$i_priced" -eq 0 ] || [ "$c_unpr" -gt 0 ]; then
+  if [ "$base_insuff" -eq 1 ] || [ "$c_priced" -eq 0 ] || [ "$i_priced" -eq 0 ] || [ "$c_unpr" -gt 0 ] || [ "$i_unpr" -gt 0 ]; then
     cost_status="INSUFFICIENT"; cache_status="INSUFFICIENT"
   else
     cost_status="$(_bar_status "$c_mcost" "$i_mcost" "$cost_bar")"
@@ -464,16 +504,27 @@ render_canary_report() {
 
 ARTIFACT_OP_TIMEOUT="${ARTIFACT_OP_TIMEOUT:-60}"
 
-# collect_repo_jsonl <repo> <since> <until> <jsonl_dir>  (stdout: artifact_count)
-# Lists <repo>'s token-usage-* artifacts created within [since, until] and
-# downloads/extracts them into jsonl_dir, REUSING token_report.sh's per-artifact
-# helpers. A failed listing is fatal (returns 1) — a canary must never score a
+# collect_repo_jsonl <repo> <since> <jsonl_dir>  (stdout: artifact_count)
+# Lists <repo>'s token-usage-* artifacts uploaded at/after <since> and downloads/
+# extracts them into jsonl_dir, REUSING token_report.sh's per-artifact helpers.
+#
+# There is deliberately NO artifact upper bound. An artifact's created_at is its
+# UPLOAD time (end of run), strictly LATER than the .ts of the calls it records, so
+# a review call made just before an --until cutoff uploads its artifact AFTER the
+# cutoff; bounding the download on created_at <= until would silently drop valid
+# in-window calls and could then PASS an incomplete sample. The exact upper cutoff
+# is enforced later, on each record's .ts, by the renderer's sample windows — never
+# on upload time (#1953). The lower bound is sound: an artifact uploaded before
+# <since> cannot hold a record with .ts >= <since> (a call's .ts always precedes its
+# upload), so excluding it drops nothing.
+#
+# A failed listing is fatal (returns 1) — a canary must never score a
 # silently-empty download as data. A PARTIAL download is fatal too (returns 1): if
 # any selected artifact yields no records (download/extract failure — the shared
 # helper only warns), the sample is incomplete and scoring it could report a PASS
 # on missing evidence, so we refuse rather than score partial data.
 collect_repo_jsonl() {
-  local repo="$1" since="$2" until="$3" jsonl_dir="$4"
+  local repo="$1" since="$2" jsonl_dir="$3"
   mkdir -p "$jsonl_dir"
 
   local workdir; workdir="$(mktemp -d)"
@@ -486,11 +537,11 @@ collect_repo_jsonl() {
 
   local ids
   if ! ids="$(_gh_timeout api "repos/${repo}/actions/artifacts" --paginate 2>/dev/null \
-      | jq -r --arg s "$since" --arg u "$until" \
+      | jq -r --arg s "$since" \
         '.artifacts[]
          | select(.name | startswith("token-usage-"))
          | select(.expired == false)
-         | select(.created_at >= $s and (($u == "") or (.created_at <= $u)))
+         | select(.created_at >= $s)
          | .id | tostring')"; then
     echo "ERROR: could not list token-usage artifacts for ${repo} — verify GH_TOKEN has actions:read." >&2
     return 1
@@ -549,11 +600,14 @@ main() {
     esac
   done
 
-  # Normalize every ISO bound to seconds precision up front so the collector (jq)
-  # and the renderer (awk) compare bounds and record timestamps consistently — a
-  # minute-precision bound would otherwise mis-window records in the cutoff minute.
-  since="$(_norm_iso "$since")"; until="$(_norm_iso "$until")"
-  b_since="$(_norm_iso "$b_since")"; b_until="$(_norm_iso "$b_until")"
+  # Canonicalize every ISO bound to UTC seconds precision up front so the collector
+  # (jq) and the renderer (awk) compare bounds and record timestamps consistently. A
+  # bound we cannot compare safely (numeric offset or fractional seconds) is rejected
+  # here rather than silently mis-windowed (#1953).
+  since="$(_norm_iso "$since")"     || return 64
+  until="$(_norm_iso "$until")"     || return 64
+  b_since="$(_norm_iso "$b_since")" || return 64
+  b_until="$(_norm_iso "$b_until")" || return 64
 
   # The canary window starts at the cut (== the baseline end). When --since is
   # omitted, default the candidate lower bound to it so pre-canary candidate
@@ -580,11 +634,13 @@ main() {
   export CANARY_BASELINE_SINCE="$b_since" CANARY_BASELINE_UNTIL="$b_until"
   export CANARY_MAX_PRS="$max_prs"
 
-  # Collection window: the download spans the union of the candidate and baseline
-  # windows so a single collection feeds both arms.
-  local scored_dir="" own_tmp="" col_since col_until count
+  # Collection lower bound: the download starts at the earlier of the candidate and
+  # baseline window starts so a single collection feeds both arms. There is no upper
+  # bound on the download — collection runs through "now" and the exact upper cutoff
+  # (--until) is applied later on each record's .ts by the renderer, so calls uploaded
+  # just after the cutoff are not lost (#1953).
+  local scored_dir="" own_tmp="" col_since count
   col_since="$b_since"; [ -n "$since" ] && [ "$since" \< "$b_since" ] && col_since="$since"
-  col_until="$until"
 
   # --collect-only snapshots artifacts to a persistent directory and exits without
   # scoring; it REQUIRES --dir. A temp dir would be wiped by the EXIT trap before
@@ -594,8 +650,8 @@ main() {
       echo "ERROR: --collect-only requires --dir <path> to persist the snapshot." >&2
       return 64
     fi
-    echo "Collecting token-usage artifacts for ${repo} (${col_since} → ${col_until:-now})..." >&2
-    if ! count="$(collect_repo_jsonl "$repo" "$col_since" "$col_until" "$dir")"; then
+    echo "Collecting token-usage artifacts for ${repo} (uploaded ≥ ${col_since} → now)..." >&2
+    if ! count="$(collect_repo_jsonl "$repo" "$col_since" "$dir")"; then
       echo "ERROR: artifact collection failed for ${repo}." >&2
       return 3
     fi
@@ -612,8 +668,8 @@ main() {
     own_tmp="$(mktemp -d)"
     # shellcheck disable=SC2064
     trap "rm -rf '$own_tmp'" EXIT
-    echo "Collecting token-usage artifacts for ${repo} (${col_since} → ${col_until:-now})..." >&2
-    if ! count="$(collect_repo_jsonl "$repo" "$col_since" "$col_until" "$own_tmp")"; then
+    echo "Collecting token-usage artifacts for ${repo} (uploaded ≥ ${col_since} → now)..." >&2
+    if ! count="$(collect_repo_jsonl "$repo" "$col_since" "$own_tmp")"; then
       echo "ERROR: artifact collection failed for ${repo}." >&2
       return 3
     fi

@@ -209,3 +209,101 @@ seed_pass() {
   [[ "$output" == *"- candidate invocations: 7"* ]]
   [[ "$output" == *"- candidate unpriced records: 2"* ]]
 }
+
+@test "render_canary_report: a partially unpriced INCUMBENT arm blocks a cost/cache PASS" {
+  # Both arms clear the bars on their priced records, but one incumbent call is
+  # unpriced (dated before opus-4-* pricing took effect). An unpriced incumbent must
+  # make cost/cache INSUFFICIENT — never a PASS against only the priced subset.
+  local i
+  for i in 1 2 3 4 5; do
+    mkrec "$FILE" "2026-09-26T10:0${i}:00Z" pr-review deep claude-opus-5-5 \
+      1000 1000 0 100 "https://github.com/petry-projects/.github-private/pull/${i}" 700
+    mkrec "$FILE" "2026-09-20T10:0${i}:00Z" pr-review deep claude-opus-4-8 \
+      1000 1000 0 100 "https://github.com/petry-projects/.github-private/pull/10${i}" 1000
+  done
+  # One unpriced incumbent call (opus-4-8 predates its 2025-11-01 pricing row).
+  mkrec "$FILE" "2025-10-01T10:00:00Z" pr-review deep claude-opus-4-8 \
+    1000 1000 0 100 "https://github.com/petry-projects/.github-private/pull/199" 1000
+  run render_canary_report "$DIR"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"- incumbent unpriced records: 1"* ]]
+  [[ "$output" == *"- cost: INSUFFICIENT"* ]]
+  [[ "$output" == *"- cache_read: INSUFFICIENT"* ]]
+  [[ "$output" == *"**Overall verdict:** INSUFFICIENT"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# Controlled (model-ab) mode — records carry the producer's own labels
+# ---------------------------------------------------------------------------
+
+@test "render_canary_report: controlled mode selects arms by model, ignoring workflow/tier labels" {
+  # The model-ab producer drives both arms through run_triage without setting
+  # TOKEN_WORKFLOW, so its records are labeled workflow=unknown / tier=triage, NOT
+  # the real-PR pr-review/deep labels. Controlled mode must still find both arms by
+  # model alone — otherwise --model-ab-dir is permanently INSUFFICIENT.
+  local i
+  for i in 1 2 3 4 5; do
+    mkrec "$FILE" "2026-09-26T10:0${i}:00Z" unknown triage claude-opus-5-5 \
+      1000 1000 0 100 "" 700
+    mkrec "$FILE" "2026-09-26T11:0${i}:00Z" unknown triage claude-opus-4-8 \
+      1000 1000 0 100 "" 1000
+  done
+  CANARY_MODE=controlled run render_canary_report "$DIR"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"- candidate invocations: 5"* ]]
+  [[ "$output" == *"- incumbent invocations: 5"* ]]
+  [[ "$output" == *"- cost: PASS"* ]]
+  [[ "$output" == *"- cache_read: PASS"* ]]
+  [[ "$output" == *"- latency: PASS"* ]]
+  [[ "$output" == *"**Overall verdict:** PASS"* ]]
+}
+
+@test "render_canary_report: real mode still filters out non-pr-review/deep records" {
+  # The same producer-labeled records must NOT enter the real-PR arms — real mode
+  # keeps the pr-review/deep predicates, so both arms are empty → INSUFFICIENT.
+  local i
+  for i in 1 2 3 4 5; do
+    mkrec "$FILE" "2026-09-26T10:0${i}:00Z" unknown triage claude-opus-5-5 \
+      1000 1000 0 100 "" 700
+    mkrec "$FILE" "2026-09-26T11:0${i}:00Z" unknown triage claude-opus-4-8 \
+      1000 1000 0 100 "" 1000
+  done
+  run render_canary_report "$DIR"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"- candidate invocations: 0"* ]]
+  [[ "$output" == *"**Overall verdict:** INSUFFICIENT"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# Corrupt evidence must never score
+# ---------------------------------------------------------------------------
+
+@test "render_canary_report: a malformed JSONL file aborts before scoring (never a bogus PASS)" {
+  seed_pass
+  # A second file with invalid JSON: annotation (jq) fails; scoring must abort with
+  # INSUFFICIENT rather than PASS on whatever partial rows were emitted.
+  printf '{not valid json\n' > "$DIR/corrupt.jsonl"
+  run render_canary_report "$DIR"
+  [ "$status" -eq 2 ]
+  [[ "$output" != *"**Overall verdict:** PASS"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# ISO-8601 bound canonicalization
+# ---------------------------------------------------------------------------
+
+@test "_norm_iso: canonicalizes UTC bounds to seconds precision" {
+  run _norm_iso "2026-09-25T14:07Z";    [ "$status" -eq 0 ]; [ "$output" = "2026-09-25T14:07:00Z" ]
+  run _norm_iso "2026-09-25T14:07:30Z"; [ "$status" -eq 0 ]; [ "$output" = "2026-09-25T14:07:30Z" ]
+  run _norm_iso "2026-09-25T14:07";     [ "$status" -eq 0 ]; [ "$output" = "2026-09-25T14:07:00Z" ]
+  run _norm_iso "2026-09-25T14:07:30";  [ "$status" -eq 0 ]; [ "$output" = "2026-09-25T14:07:30Z" ]
+  run _norm_iso "";                     [ "$status" -eq 0 ]; [ "$output" = "" ]
+}
+
+@test "_norm_iso: rejects bounds not lexically comparable with UTC timestamps" {
+  # A numeric offset is the same instant as a different UTC string — rejecting it
+  # fails closed instead of silently scoring the wrong window.
+  run _norm_iso "2026-09-25T15:07:00+01:00"; [ "$status" -ne 0 ]
+  run _norm_iso "2026-09-25T14:07:00.123Z";  [ "$status" -ne 0 ]
+  run _norm_iso "garbage";                   [ "$status" -ne 0 ]
+}
