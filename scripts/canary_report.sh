@@ -89,10 +89,11 @@ source "${_CANARY_DIR}/token_report.sh"
 # ---------------------------------------------------------------------------
 
 # _fmt_pct <fraction>  → "NN%" (fraction 0.225 → "23%"). Negative preserved
-# (e.g. -0.2 → "-20%") so a regression is never rendered as a reduction. Uses
-# printf "%.0f" (not "%d") to avoid integer overflow/truncation on older awks.
+# (e.g. -0.2 → "-20%") so a regression is never rendered as a reduction.
+# Uses proper rounding with int(x + (x >= 0 ? 0.5 : -0.5)), then ensures
+# result is never -0 (which would print as "-0%" and be misleading).
 _fmt_pct() {
-  awk -v v="${1:-0}" 'BEGIN { printf "%.0f%%", int(v * 100 + (v < 0 ? -0.5 : 0.5)) }'
+  awk -v v="${1:-0}" 'BEGIN { x = v * 100; rounded = int(x + (x >= 0 ? 0.5 : -0.5)); if (rounded == -0) rounded = 0; printf "%d%%", rounded }'
 }
 
 # _fmt_ms <ms>  → integer milliseconds, or "n/a" for the -1 sentinel.
@@ -590,7 +591,7 @@ collect_repo_jsonl() {
     return 1
   fi
 
-  local workdir; workdir="$(mktemp -d)"
+  local workdir; workdir="$(mktemp -d)" || { echo "ERROR: failed to create temporary directory" >&2; return 3; }
   # shellcheck disable=SC2064
   trap "rm -rf '$workdir'" RETURN
   export ARTIFACT_OP_TIMEOUT
@@ -715,7 +716,7 @@ main() {
   # (--until) is applied later on each record's .ts by the renderer, so calls uploaded
   # just after the cutoff are not lost (#1953).
   local scored_dir="" own_tmp="" col_since count
-  col_since="$b_since"; [ -n "$since" ] && [ "$since" \< "$b_since" ] && col_since="$since"
+  col_since="$b_since"; [[ -n "$since" && "$since" < "$b_since" ]] && col_since="$since"
 
   # --collect-only snapshots artifacts to a persistent directory and exits without
   # scoring; it REQUIRES --dir. A temp dir would be wiped by the EXIT trap before
@@ -740,7 +741,7 @@ main() {
   if [ -n "$dir" ]; then
     scored_dir="$dir"
   else
-    own_tmp="$(mktemp -d)"
+    own_tmp="$(mktemp -d)" || { echo "ERROR: failed to create temporary directory" >&2; return 3; }
     # shellcheck disable=SC2064
     trap "rm -rf '$own_tmp'" EXIT
     echo "Collecting token-usage artifacts for ${repo} (uploaded ≥ ${col_since} → now)..." >&2
@@ -753,13 +754,13 @@ main() {
   fi
 
   local rc=0
-  if [ -n "$scored_dir" ]; then
+  if [[ -n "$scored_dir" ]]; then
     CANARY_MODE="real" CANARY_LABEL="Canary go/no-go — real PRs" \
       render_canary_report "$scored_dir" || rc="$?"
   fi
 
   # Controlled model-ab section — a separate report, never merged with the above.
-  if [ -n "$model_ab_dir" ]; then
+  if [[ -n "$model_ab_dir" ]]; then
     local ab_rc=0
     CANARY_MODE="controlled" \
     CANARY_LABEL="Controlled comparison — model-ab (identical inputs)" \
@@ -774,6 +775,6 @@ main() {
 }
 
 # Only run main when executed directly (not when sourced by tests).
-if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
+if [[ "${BASH_SOURCE[0]}" = "${0}" ]]; then
   main "$@"
 fi
