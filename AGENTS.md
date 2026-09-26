@@ -22,20 +22,28 @@ re-deriving them by hitting the same walls. Every one cost real time or a strand
 qa-lead epic (#1643, 2026-09-13 → 2026-09-21). They complement — and cross-link, rather than
 duplicate — the deeper standards in the sections below and in `docs/`.
 
-### Merging to `main` does not activate agent code — say whether a channel cut is required
+### Merging to `main` does not activate agent code — say when it will reach each channel
 
 **This is the single most expensive omission on this list — do not skip it.** Agents run their
 scripts from a **channel tag**, not from `main`. `pr-review-trigger.yml` pins
 `@pr-review/v1-next`; `persona-mention.yml` pins `@persona-mention/v1-next`; each caller stub pins
-its reusable at a moving channel tag, never at `main`. A fix merged to `main` is **inert** until
-`scripts/cut-release.sh <agent> <ver> --channel <tier> --push` moves that channel tag onto the
-commit. This bit twice in one week: #1795's CI-gate fix (merged, yet still deadlocking every PR
-until `pr-review/v1.10.0` was cut) and #1875's approval read-back (merged, yet still announcing
-phantom approvals until the channel caught up to the new commit). **Rule: after merging any change
-under `scripts/` or a `*-reusable.yml`, state whether a channel cut is required** — see
+its reusable at a moving channel tag, never at `main`. A fix merged to `main` is **inert** until a
+channel tag moves onto the commit. This bit twice in one week: #1795's CI-gate fix (merged, yet
+still deadlocking every PR until `pr-review/v1.10.0` was cut) and #1875's approval read-back
+(merged, yet still announcing phantom approvals until the channel caught up to the new commit).
+
+**You normally do not cut that release yourself.** The Release Manager automation (see
+["Release automation — who cuts and moves tags"](#release-automation--who-cuts-and-moves-tags))
+**auto-cuts** a new `<agent>/vX.Y.Z` and moves `<agent>/v<MAJOR>-next` on its next 4-hourly sweep
+once the change is on `main`. **Every ring beyond `next` moves only by gated promotion.** So the
+lag is real but bounded: usually a few hours to reach `next`, and longer to reach `stable`.
+
+**Rule: after merging any change under `scripts/`, `prompts/`, `personas/` or a `*-reusable.yml`,
+state which channel(s) must carry it and when.** The normal answer is "rides the next autocut to
+`<agent>/v<M>-next`; reaches `stable` via ring promotion". Hand-run `scripts/cut-release.sh` only
+for the exceptions listed in that section. See
 ["Release channel tags & the mutable-ref exception"](#release-channel-tags--the-mutable-ref-exception)
-for the tag model, `docs/release/versioning.md` for the scheme, and `scripts/cut-release.sh` for the
-promotion command.
+for the tag model and `docs/release/versioning.md` for the scheme.
 
 ### Verify by execution, never by run status or diff
 
@@ -661,8 +669,54 @@ intentionally **mutable** and are an accepted, documented exception because they
   first-party channel tag regardless of whether its namespace has been added to the ruleset yet.
 - Immutable `vX.Y.Z` tags are the real rollback targets; `scripts/cut-release.sh` refuses to overwrite
   an existing release tag.
-- Channel-tag moves happen only via the (forthcoming) health-gated promotion workflow (#501); the
-  ruleset bypass will be tightened to that workflow's identity when it lands.
+- Routine channel-tag moves are made by the health-gated Release Manager automation (#501/#993,
+  below), which is a ruleset bypass actor through the `petry-projects-release-manager` GitHub App.
+  The only other sanctioned path is a maintainer running `cut-release.sh` as an org admin or with
+  that App's token.
+
+#### Release automation — who cuts and moves tags
+
+Release tags on this repo's agents (`pr-review`, `dev-lead`, `ci-failure-analyst`) and on the
+`petry-projects/.github`-hosted reusables are cut and moved by the **Release Manager**. That is the
+`Canary Rollout` workflow in **`petry-projects/.github`**
+(`.github/workflows/canary-rollout.yml` + `scripts/canary-rollout.sh`, relocated there from this
+repo under #613), acting as the **`petry-projects-release-manager[bot]`** GitHub App. Its registry
+(each agent's host, reusable path, rings and gate knobs) is **`standards/canary-rings.json` in
+`petry-projects/.github`**, not in this repo. Each sweep (cron `33 */4 * * *`, every 4 hours;
+GitHub may delay scheduled runs) runs `autocut` → `promote-all` → `sync-issues`:
+
+| Step | What it does | Armed by | Human control |
+|---|---|---|---|
+| **autocut** (#1069, #1019) | Cuts the immutable `<agent>/vX.Y.Z` at host `main` HEAD and moves `<agent>/v<MAJOR>-next` onto it. It fires when the reusable file **or** a watched path (`scripts/`, `prompts/`, `personas/` by default; overridable per agent via `agent_ref_paths`) differs from the current `next` candidate. The bump is detected from the change: breaking (`!`, `BREAKING CHANGE`, or a `workflow_call` interface break) → major, which seeds a new `v<M+1>-next`; `feat` → minor; anything else → patch. | org variable `CANARY_AUTO_CUT` | `autocut.bump` in `canary-rings.json` forces a level. Clearing the variable stops all auto-cuts. |
+| **promote-all** (#1045; gate: `.github#548`) | Advances each agent **one ring per sweep** (`next` → `ring0` → `ring1` → `stable`) when its graduated gate returns PROMOTE (per-transition dwell and sample floors, e.g. 4h / 8h / 12h). BLOCKED or REGRESSION agents are left in place. | org variable `CANARY_AUTO_PROMOTE` (unset = read-only `evaluate-all`) | `require_confirmation: true` on a transition holds it in AWAITING_CONFIRMATION until someone dispatches `promote <agent> --confirm`. **Today only `dev-lead`'s `ring1 → stable` sets it**; every other agent reaches `stable` with no human step once armed. |
+| **sync-issues** | Opens or updates one issue per blocked agent (`needs-human` on REGRESSION, `canary-confirm:<agent>` when awaiting confirmation) and auto-closes it once cleared. | runs every sweep | Read the issue; act with a dispatch. |
+
+**What this means when you work here:**
+
+- **Do not hand-cut after a routine merge.** Autocut will do it. A manual
+  `cut-release.sh <agent> <ver> --channel next --push` that races the sweep fails with
+  `release tag '<agent>/vX.Y.Z' already exists`. That is harmless, but a release tag existing does
+  **not** prove `next` moved, because autocut creates the release first and moves the channel
+  second. Check that `<agent>/v<M>-next` resolves to the release's commit:
+  `git ls-remote --tags origin '<agent>/v<M>-next' '<agent>/vX.Y.Z^{}'`. If it doesn't, move it
+  with `cut-release.sh <agent> <X.Y.Z> --promote --channel next --push` rather than cutting a
+  new version. Always check the current tags before cutting by hand.
+- **Hand-run `cut-release.sh` (as an org admin or with the release-manager App token) only when:** the fix cannot wait
+  for the next sweep; the change sits outside autocut's watched paths; autocut is disarmed; or you
+  are promoting or rolling back deliberately. Use `--promote --channel <tier>` to move a channel to
+  an **existing** release, and never cut a new version just to move a channel.
+- **Rollback** is a channel move back to an earlier immutable tag. Either dispatch the `Canary
+  Rollout` workflow in `petry-projects/.github` with `command=rollback agent=<agent> ring=<tier> to=vX.Y.Z`, or run
+  `cut-release.sh <agent> <X.Y.Z> --promote --channel <tier> --push`.
+- **A release that needs a human go/no-go must be configured *before* its candidate reaches the
+  ring.** Examples are a model swap such as epic #1895 / #1899, or a behaviour change that needs
+  canary metrics. Add `require_confirmation: true` to that agent's transition in
+  `petry-projects/.github` `standards/canary-rings.json`, or disarm `CANARY_AUTO_PROMOTE`, which is
+  fleet-wide. An issue label such as `dev-lead:hands-off` stops dev-lead from acting on the issue,
+  but **it does not stop the promotion gate**.
+- **Who did what:** releases tagged by `petry-projects-release-manager[bot]` came from the
+  automation, and releases tagged by a person were cut by hand. The `Canary Rollout` run's job
+  summary and the promotion Deployments record the gate evidence for every move.
 
 Compliance audits must therefore **not** flag any first-party reusable channel tag (e.g.
 `@pr-review/v1-stable`, `@dev-lead/v1-stable`, `@ci-failure-analyst/v0-stable`, or other `<name>/v<M>-<tier>`
@@ -693,9 +747,15 @@ even though every ref looks valid, because the stub is ahead of the channel it p
   what the channel currently resolves to, not against what `main` will eventually ship.
 - **Sequencing for a new `workflow_call` input (in order):**
   1. **Land it in the reusable** — add the input to `workflow_call.inputs` on `main` and merge.
-  2. **Promote the pinned channel** to a commit that declares it via
-     `cut-release.sh <agent> <version> --channel <name>` (cuts the immutable `vX.Y.Z` and moves the
-     `<name>` channel tag to it).
+  2. **Promote the pinned channel** to a commit that declares it. For `next` this happens on the
+     next autocut sweep; later rings follow by gated promotion. Wait until
+     `git ls-remote --tags origin '<agent>/v<M>-<name>'` resolves to a commit that declares the
+     input. To force it as an org admin or with the release-manager App token, run
+     `cut-release.sh <agent> <X.Y.Z> --promote --channel <name> --push` to move the channel to an
+     **existing** release that declares the input. Only when no such release exists yet, run
+     `cut-release.sh <agent> <new-version> --channel <name> --push`; without `--promote` it
+     always cuts a new tag and fails if that version exists (see
+     ["Release automation — who cuts and moves tags"](#release-automation--who-cuts-and-moves-tags)).
   3. **Only then teach the stub to forward it** — add the `with:` line to the caller stub, now that the
      pinned channel resolves to a commit that declares the input.
 
