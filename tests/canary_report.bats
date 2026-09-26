@@ -169,6 +169,36 @@ seed_pass() {
   run _fmt_pct 0.5;  [ "$output" = "50%" ]
 }
 
+@test "_combine_verdict: an operational error (>2) dominates every verdict" {
+  # A section that failed to render (exit 3) must never be collapsed into a verdict:
+  # it dominates PASS/FAIL/INSUFFICIENT so main() surfaces the failed run.
+  run _combine_verdict 0 3; [ "$output" = "3" ]
+  run _combine_verdict 3 0; [ "$output" = "3" ]
+  run _combine_verdict 1 3; [ "$output" = "3" ]
+  run _combine_verdict 3 2; [ "$output" = "3" ]
+  # Without an operational error the FAIL > INSUFFICIENT > PASS ordering still holds.
+  run _combine_verdict 0 1; [ "$output" = "1" ]
+  run _combine_verdict 0 2; [ "$output" = "2" ]
+  run _combine_verdict 0 0; [ "$output" = "0" ]
+}
+
+@test "render_canary_report: an incumbent call in the candidate window is a fallback, not hidden" {
+  # A deep-tier incumbent call AFTER the canary cut (rollout still partly on the old
+  # channel) is excluded from the candidate arm by model and from the incumbent arm
+  # by the baseline window — so it must surface in the fallback table rather than
+  # vanish, or candidate records could PASS while hiding a non-candidate rollout.
+  seed_pass
+  # An incumbent (opus-4-8) call inside the candidate window (at/after 2026-09-25).
+  export CANARY_SINCE="2026-09-25T00:00:00Z"
+  export CANARY_BASELINE_SINCE="2026-09-19T00:00:00Z"
+  export CANARY_BASELINE_UNTIL="2026-09-25T00:00:00Z"
+  mkrec "$FILE" "2026-09-26T12:00:00Z" pr-review deep claude-opus-4-8 \
+    1000 1000 0 100 "https://github.com/petry-projects/.github-private/pull/777" 900
+  run render_canary_report "$DIR"
+  [[ "$output" == *"Deep-tier fallback calls (excluded from both arms)"* ]]
+  [[ "$output" == *"claude-opus-4-8"* ]]
+}
+
 @test "render_canary_report: no non-null duration on either arm → latency INSUFFICIENT (never PASS), exit 2" {
   local i
   for i in 1 2 3 4 5; do
@@ -281,11 +311,44 @@ seed_pass() {
 @test "render_canary_report: a malformed JSONL file aborts before scoring (never a bogus PASS)" {
   seed_pass
   # A second file with invalid JSON: annotation (jq) fails; scoring must abort with
-  # INSUFFICIENT rather than PASS on whatever partial rows were emitted.
+  # the OPERATIONAL code (>2, distinct from any verdict) rather than PASS on whatever
+  # partial rows were emitted — a failed run must not read as a valid INSUFFICIENT.
   printf '{not valid json\n' > "$DIR/corrupt.jsonl"
   run render_canary_report "$DIR"
-  [ "$status" -eq 2 ]
+  [ "$status" -eq 3 ]
   [[ "$output" != *"**Overall verdict:** PASS"* ]]
+}
+
+@test "render_canary_report: a structurally invalid record aborts scoring (operational error, exit 3)" {
+  # Valid-JSON but structurally wrong evidence must not be silently discarded or
+  # coerced to placeholders/zeros: an incomplete token_usage object (missing
+  # output_tokens) makes the sample partial, so scoring aborts with the operational
+  # code rather than scoring only the surviving rows into a bogus verdict (#1953).
+  seed_pass
+  printf '{"ts":"2026-09-26T10:09:00Z","workflow":"pr-review","tier":"deep","model":"claude-opus-5-5","input_tokens":1000,"cache_read_tokens":1000,"cache_creation_tokens":0,"context":"https://github.com/petry-projects/.github-private/pull/9"}\n' > "$DIR/partial.jsonl"
+  run render_canary_report "$DIR"
+  [ "$status" -eq 3 ]
+  [[ "$output" != *"**Overall verdict:** PASS"* ]]
+}
+
+@test "render_canary_report: a non-object record aborts scoring (operational error, exit 3)" {
+  seed_pass
+  printf '[1,2,3]\n' > "$DIR/array.jsonl"
+  run render_canary_report "$DIR"
+  [ "$status" -eq 3 ]
+}
+
+@test "render_canary_report: recognized non-token audit kinds are skipped, not scored" {
+  # finding_verification / lsp_cold_start records share the token JSONL channel but
+  # are not token_usage — they must be skipped (never abort, never counted), so a
+  # clean PASS sample still scores PASS when audit records are interleaved.
+  seed_pass
+  printf '{"kind":"finding_verification","ts":"2026-09-26T10:00:00Z","workflow":"pr-review","tier":"deep","outcome":"confirmed"}\n' >> "$FILE"
+  printf '{"kind":"lsp_cold_start","ts":"2026-09-26T10:00:00Z","workflow":"pr-review"}\n' >> "$FILE"
+  run render_canary_report "$DIR"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"- candidate invocations: 5"* ]]
+  [[ "$output" == *"**Overall verdict:** PASS"* ]]
 }
 
 # ---------------------------------------------------------------------------

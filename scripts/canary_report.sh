@@ -12,7 +12,10 @@
 # The overall verdict is PASS only when all three PASS. Exit codes encode it so a
 # workflow can gate on it: 0 = PASS, 1 = FAIL, 2 = INSUFFICIENT. Missing data
 # never reads as PASS — a metric with too small a sample (or no latency signal)
-# is INSUFFICIENT, not PASS.
+# is INSUFFICIENT, not PASS. An OPERATIONAL error (corrupt/structurally-invalid
+# evidence, an unwritable temp/snapshot dir, a bad CLI value) exits >2 (3) — a code
+# distinct from every verdict, so a workflow never mistakes a failed run for a
+# valid INSUFFICIENT and leave the summary green-but-empty (#1953).
 #
 # Layout mirrors token_report.sh:
 #   * canary_annotate / render_canary_report are PURE — they read a directory of
@@ -124,9 +127,15 @@ _norm_iso() {
 }
 
 # _combine_verdict <rc1> <rc2>  → the worse go/no-go exit code of the two report
-# sections: any FAIL (1) wins over any INSUFFICIENT (2), which wins over PASS (0).
-# So a controlled-comparison FAIL is never masked by a real-PR PASS (#1953).
+# sections. An OPERATIONAL error (>2) from either section dominates and is passed
+# through unchanged — it must never be collapsed into a verdict (a section that
+# failed to render is not a PASS). Otherwise any FAIL (1) wins over any
+# INSUFFICIENT (2), which wins over PASS (0). So a controlled-comparison FAIL — or
+# a controlled-comparison operational error — is never masked by a real-PR PASS
+# (#1953).
 _combine_verdict() {
+  if [ "$1" -gt 2 ]; then printf '%s' "$1"; return; fi
+  if [ "$2" -gt 2 ]; then printf '%s' "$2"; return; fi
   if [ "$1" = 1 ] || [ "$2" = 1 ]; then printf 1
   elif [ "$1" = 2 ] || [ "$2" = 2 ]; then printf 2
   else printf 0; fi
@@ -157,10 +166,45 @@ canary_annotate() {
   local files=("$dir"/*.jsonl)
   [ -e "${files[0]}" ] || return 0   # no JSONL files → no rows
 
-  # Join with the ASCII unit separator (0x1F), NOT a tab: bash `read` treats tab
-  # as IFS whitespace and collapses runs of it, so a record with an empty context
-  # and a populated duration_ms would shift duration into ctx and lose it. A
-  # non-whitespace delimiter preserves every field, empty ones included (#1953).
+  # Reject structurally invalid evidence before scoring (#1953). A structurally
+  # invalid record — a non-object (array/scalar), a token_usage object missing a
+  # scoring-critical field, or an unrecognized record kind — must ABORT annotation
+  # (render_canary_report then fails closed with the operational exit code) rather
+  # than be silently discarded or coerced to placeholder labels / zero counts, which
+  # could let the surviving rows score a bogus PASS on partial evidence. Recognized
+  # non-token audit kinds (finding_verification, lsp_cold_start — see
+  # scripts/lib/token-metrics.sh; keep in sync) are legitimately skipped, not scored.
+  # duration_ms stays optional: real emit_token_record output carries none yet, so a
+  # missing/null duration is "", not invalid.
+  #
+  # Validation is a SEPARATE pass that emits an "invalid" marker per bad record: jq
+  # reports a runtime error() per input but STILL EXITS 0 over multiple file
+  # arguments, so we COUNT markers rather than rely on error(). A malformed-JSON parse
+  # error is a hard jq failure (non-zero exit) and aborts here too.
+  local _invalid
+  if ! _invalid="$(jq -r '
+        if type != "object" then "invalid"
+        else
+          (.kind // "token_usage") as $k
+          | if ($k == "finding_verification" or $k == "lsp_cold_start") then empty
+            elif $k == "token_usage" then
+              (if ((.ts | type) == "string" and (.workflow | type) == "string"
+                   and (.tier | type) == "string" and (.model | type) == "string"
+                   and (.input_tokens | type) == "number" and (.cache_read_tokens | type) == "number"
+                   and (.cache_creation_tokens | type) == "number" and (.output_tokens | type) == "number")
+               then empty else "invalid" end)
+            else "invalid" end
+        end' "${files[@]}" 2>/dev/null)"; then
+    return 1
+  fi
+  [ -z "$_invalid" ] || return 1
+
+  # Emit pass: one enriched TSV row per token_usage record; non-token audit kinds are
+  # skipped. Validation above guarantees every emitted record is complete.
+  # Join with the ASCII unit separator (0x1F), NOT a tab: bash `read` treats tab as
+  # IFS whitespace and collapses runs of it, so a record with an empty context and a
+  # populated duration_ms would shift duration into ctx and lose it. A non-whitespace
+  # delimiter preserves every field, empty ones included (#1953).
   jq -r 'select(type == "object")
     | select((.kind // "token_usage") == "token_usage")
     | [ (.ts // "-"), (.workflow // "-"), (.tier // "-"), (.model // "-"),
@@ -282,16 +326,19 @@ render_canary_report() {
   label="${CANARY_LABEL-Canary go/no-go — real PRs}"
   mode="${CANARY_MODE-real}"
 
-  local enriched; enriched="$(mktemp)" || { echo "ERROR: failed to create temporary file" >&2; return 1; }
+  local enriched; enriched="$(mktemp)" || { echo "ERROR: failed to create temporary file" >&2; return 3; }
   # main() calls render_canary_report in an `||` list, which disables errexit for the
   # whole function — so a failing canary_annotate (a malformed JSONL file, a jq error)
   # would NOT abort on its own and rendering would score whatever partial rows landed
   # in $enriched, possibly emitting a bogus PASS on corrupt evidence. Check it
-  # explicitly and fail closed (INSUFFICIENT) before any scoring (#1953).
+  # explicitly and fail closed before any scoring (#1953). This is an OPERATIONAL
+  # error (corrupt/structurally-invalid evidence), NOT a verdict — return the >2
+  # operational code so the workflow distinguishes a failed run from a valid
+  # INSUFFICIENT (which would leave the run green with an empty summary).
   if ! canary_annotate "$dir" > "$enriched"; then
-    echo "ERROR: failed to annotate token-usage records in ${dir} — a malformed JSONL file or jq failure makes the sample partial; refusing to score incomplete evidence." >&2
+    echo "ERROR: failed to annotate token-usage records in ${dir} — a malformed/structurally-invalid JSONL record or jq failure makes the sample partial; refusing to score incomplete evidence." >&2
     rm -f "$enriched"
-    return 2
+    return 3
   fi
 
   # Split into candidate / incumbent / fallback arms, applying the sample windows.
@@ -305,9 +352,9 @@ render_canary_report() {
   # those real-PR labels dropped both arms and left --model-ab-dir permanently
   # INSUFFICIENT; controlled mode selects its paired records by model alone (#1953).
   local cand_file inc_file fb_file
-  cand_file="$(mktemp)" || { echo "ERROR: failed to create temporary file" >&2; return 1; }
-  inc_file="$(mktemp)"  || { echo "ERROR: failed to create temporary file" >&2; return 1; }
-  fb_file="$(mktemp)"   || { echo "ERROR: failed to create temporary file" >&2; return 1; }
+  cand_file="$(mktemp)" || { echo "ERROR: failed to create temporary file" >&2; return 3; }
+  inc_file="$(mktemp)"  || { echo "ERROR: failed to create temporary file" >&2; return 3; }
+  fb_file="$(mktemp)"   || { echo "ERROR: failed to create temporary file" >&2; return 3; }
 
   local f_wf f_tier
   if [ "$mode" = "real" ]; then f_wf="$workflow"; f_tier="$tier"; else f_wf=""; f_tier=""; fi
@@ -332,13 +379,22 @@ render_canary_report() {
        print
      }' "$enriched" > "$inc_file"
 
-  # Fallback = deep-tier calls in the CANDIDATE (canary) window that fell back to a
-  # non-candidate/non-incumbent model. Apply the candidate window so historical
-  # fallback records outside the canary period are not reported as part of the
-  # comparison (inert in controlled mode, where the window is empty).
-  awk -F'\t' -v wf="$f_wf" -v tier="$f_tier" -v c="$candidate" -v i="$incumbent" \
+  # Fallback = deep-tier calls in the CANDIDATE (canary) window that are NOT the
+  # candidate model. In REAL mode this INCLUDES the incumbent: an incumbent call
+  # after the canary cut (e.g. part of the rollout still on the old channel) is
+  # excluded from the candidate arm by model AND from the incumbent arm by the
+  # baseline window, so unless it is captured here it would vanish from the report
+  # entirely — letting the remaining candidate records PASS while hiding evidence
+  # that the rollout did not actually use the candidate (#1953). The candidate
+  # window still bounds this, so pre-cut incumbent baseline records (before c_since)
+  # are not double-counted as fallbacks. In CONTROLLED mode the incumbent IS a scored
+  # arm (selected by model, no window), so it is excluded from the fallback list
+  # there to avoid reporting a scored arm as a fallback.
+  local fb_excl_inc=""
+  [ "$mode" = "controlled" ] && fb_excl_inc="$incumbent"
+  awk -F'\t' -v wf="$f_wf" -v tier="$f_tier" -v c="$candidate" -v xi="$fb_excl_inc" \
       -v s="$c_since" -v u="$c_until" \
-    '(wf == "" || $2 == wf) && (tier == "" || $3 == tier) && $4 != c && $4 != i {
+    '(wf == "" || $2 == wf) && (tier == "" || $3 == tier) && $4 != c && (xi == "" || $4 != xi) {
        if (s != "" && $1 < s) next
        if (u != "" && $1 > u) next
        print
@@ -357,7 +413,7 @@ render_canary_report() {
     # cand_file would silently drop all candidate data (→ a bogus INSUFFICIENT).
     # Leaving cand_file untouched lets the distinct-PR guard report the real state.
     if [ -n "$allowed" ]; then
-      capped="$(mktemp)" || { echo "ERROR: failed to create temporary file" >&2; return 1; }
+      capped="$(mktemp)" || { echo "ERROR: failed to create temporary file" >&2; return 3; }
       awk -F'\t' -v allow="$allowed" 'BEGIN { n = split(allow, a, "\n"); for (k = 1; k <= n; k++) keep[a[k]] = 1 }
         $9 in keep { print }' "$cand_file" > "$capped"
       mv "$capped" "$cand_file"
@@ -525,7 +581,14 @@ ARTIFACT_OP_TIMEOUT="${ARTIFACT_OP_TIMEOUT:-60}"
 # on missing evidence, so we refuse rather than score partial data.
 collect_repo_jsonl() {
   local repo="$1" since="$2" jsonl_dir="$3"
-  mkdir -p "$jsonl_dir"
+  # Fail loudly if the target directory cannot be created (e.g. --collect-only --dir
+  # pointing at an unwritable path). An ignored mkdir failure combined with a repo
+  # that currently has zero selected artifacts would count 0/0 and report a
+  # successful collection into a directory that does not exist (#1953).
+  if ! mkdir -p "$jsonl_dir"; then
+    echo "ERROR: could not create artifact directory: ${jsonl_dir}" >&2
+    return 1
+  fi
 
   local workdir; workdir="$(mktemp -d)"
   # shellcheck disable=SC2064
@@ -608,6 +671,18 @@ main() {
   until="$(_norm_iso "$until")"     || return 64
   b_since="$(_norm_iso "$b_since")" || return 64
   b_until="$(_norm_iso "$b_until")" || return 64
+
+  # Validate --candidate-max-prs is an integer BEFORE scoring. render_canary_report
+  # tests it with `[ "$max_prs" -gt 0 ]`, and because rendering runs from an `||`
+  # list (errexit disabled), a nonnumeric value would only print "integer expression
+  # expected", evaluate false, silently DISABLE the cap and continue — emitting a
+  # possible PASS over an unintended, uncapped sample. Fail loudly instead (#1953).
+  # A non-positive integer is allowed and intentionally disables the cap.
+  case "${max_prs#-}" in
+    ''|*[!0-9]*)
+      echo "ERROR: --candidate-max-prs must be an integer (got '${max_prs}')." >&2
+      return 64 ;;
+  esac
 
   # The canary window starts at the cut (== the baseline end). When --since is
   # omitted, default the candidate lower bound to it so pre-canary candidate
