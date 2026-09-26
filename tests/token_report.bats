@@ -180,6 +180,77 @@ setup() {
 }
 
 # ---------------------------------------------------------------------------
+# duration_ms latency columns (#1949)
+# ---------------------------------------------------------------------------
+
+@test "annotate_records: carries duration_ms as a trailing column (empty when null)" {
+  tmp="$(mktemp -d)"
+  printf '%s\n' \
+    '{"ts":"2026-06-01T00:00:00Z","workflow":"pr-review","tier":"deep","model":"claude-opus-4-7","input_tokens":100,"output_tokens":50,"duration_ms":1500,"repo":"r","context":""}' \
+    '{"ts":"2026-06-01T00:00:01Z","workflow":"pr-review","tier":"deep","model":"claude-opus-4-7","input_tokens":100,"output_tokens":50,"duration_ms":null,"repo":"r","context":""}' \
+    > "$tmp/d.jsonl"
+  # Column 14 is duration_ms: "1500" on the first row, empty on the null row.
+  result="$(annotate_records "$tmp" | awk -F'\t' '{print ($14 == "" ? "-" : $14)}' | tr '\n' ' ')"
+  rm -rf "$tmp"
+  [ "$result" = "1500 - " ]
+}
+
+@test "render_token_report: top cost drivers table has Mean ms and p50 ms columns" {
+  run render_token_report "$FIXTURES" 7 2 2 2026-06-07
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"| Mean ms | p50 ms |"* ]]
+}
+
+@test "render_token_report: mean duration_ms is averaged over records that carry a duration" {
+  tmp="$(mktemp -d)"
+  printf '%s\n' \
+    '{"ts":"2026-06-01T00:00:00Z","workflow":"pr-review","tier":"deep","model":"claude-opus-4-7","input_tokens":100,"output_tokens":50,"duration_ms":100,"repo":"r","context":""}' \
+    '{"ts":"2026-06-01T00:00:01Z","workflow":"pr-review","tier":"deep","model":"claude-opus-4-7","input_tokens":100,"output_tokens":50,"duration_ms":300,"repo":"r","context":""}' \
+    > "$tmp/d.jsonl"
+  run render_token_report "$tmp" 7 1 1 2026-06-07
+  rm -rf "$tmp"
+  [ "$status" -eq 0 ]
+  # Two deep opus calls at 100ms and 300ms → mean 200. p50 (nearest-rank, n=2) → 100.
+  [[ "$output" == *"| 200 | 100 |"* ]]
+}
+
+@test "render_token_report: null-duration records are excluded from the mean (not counted as 0)" {
+  # One 200ms call + one null-duration call for the same wf/tier/model. The mean
+  # must be 200 (average over the single measured record), NOT 100 (which would be
+  # the result of treating the null as 0).
+  tmp="$(mktemp -d)"
+  printf '%s\n' \
+    '{"ts":"2026-06-01T00:00:00Z","workflow":"pr-review","tier":"deep","model":"claude-opus-4-7","input_tokens":100,"output_tokens":50,"duration_ms":200,"repo":"r","context":""}' \
+    '{"ts":"2026-06-01T00:00:01Z","workflow":"pr-review","tier":"deep","model":"claude-opus-4-7","input_tokens":100,"output_tokens":50,"duration_ms":null,"repo":"r","context":""}' \
+    > "$tmp/d.jsonl"
+  run render_token_report "$tmp" 7 1 1 2026-06-07
+  rm -rf "$tmp"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"| 200 | 200 |"* ]]
+}
+
+@test "render_token_report: non-integer numeric durations (12.5, 1e3) are counted, not dropped" {
+  # emit_token_record accepts any JSON number; the report must normalise them to
+  # whole ms instead of excluding them. floor(12.5)=12 and 1e3=1000 → mean 506.
+  tmp="$(mktemp -d)"
+  printf '%s\n' \
+    '{"ts":"2026-06-01T00:00:00Z","workflow":"pr-review","tier":"deep","model":"claude-opus-4-7","input_tokens":100,"output_tokens":50,"duration_ms":12.5,"repo":"r","context":""}' \
+    '{"ts":"2026-06-01T00:00:01Z","workflow":"pr-review","tier":"deep","model":"claude-opus-4-7","input_tokens":100,"output_tokens":50,"duration_ms":1e3,"repo":"r","context":""}' \
+    > "$tmp/d.jsonl"
+  run render_token_report "$tmp" 7 1 1 2026-06-07
+  rm -rf "$tmp"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"| 506 | 12 |"* ]]
+}
+
+@test "render_token_report: a workflow/tier/model with no durations shows '-' for latency" {
+  # The fixtures carry no duration_ms field, so every latency cell must be "-".
+  run render_token_report "$FIXTURES" 7 2 2 2026-06-07
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"| - | - |"* ]]
+}
+
+# ---------------------------------------------------------------------------
 # cost-per-day stacked chart
 # ---------------------------------------------------------------------------
 
