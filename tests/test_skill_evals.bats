@@ -728,6 +728,29 @@ SH
   [ "$(jq '.cases[0].score' <<<"$output")" = "0" ]
 }
 
+@test "llm-judge mode: a FAILED judge invocation (nonzero exit) is infra -> exit 2, not a scored 0 (#1952)" {
+  _setup_judge_skill
+  # Judge stub that ALWAYS exits nonzero (throttle/timeout/outage): the candidate is
+  # never actually graded. This must classify infra (exit 2), NOT a scored quality
+  # miss (exit 1) — otherwise two unavailable-judge arms compare as 0>=0 and the A/B
+  # falsely accepts. Distinct from the unparseable-but-answered judge (exit 0) above.
+  JUDGE_STUB="$TMP/judge_fail.sh"
+  cat >"$JUDGE_STUB" <<'SH'
+#!/usr/bin/env bash
+echo "::error::judge throttled" >&2
+exit 2
+SH
+  chmod +x "$JUDGE_STUB"
+
+  EVALS_DIR="$TMP/evals" EVAL_ENGINE_CMD="$SKILL_STUB" EVAL_JUDGE_CMD="$JUDGE_STUB" \
+    run --separate-stderr bash "$SCORER" deep-review
+  [ "$status" -eq 2 ]              # infra/un-scored, NOT a quality regression
+  # Every failing case carries a nonzero engine_rc (the judge's status folded in),
+  # so the aggregate classifies infra rather than a scored 0.
+  [ "$(jq '[.cases[] | select(.engine_rc != 0)] | length' <<<"$output")" -eq 2 ]
+  [ "$(jq '[.cases[] | select(.pass)] | length' <<<"$output")" -eq 0 ]
+}
+
 @test "llm-judge mode: the judge prompt carries both the expected ref and the candidate" {
   _setup_judge_skill
   # Capturing judge stub: copies its assembled prompt out so we can assert the

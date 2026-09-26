@@ -274,6 +274,33 @@ _calls() { cat "$COUNTER"; }
   [ "$status" -eq 0 ]
 }
 
+@test "mad_incompatible_set rejects an unknown or malformed engine (not just persona) (#1952)" {
+  # shellcheck source=/dev/null
+  source "$DISPATCH"
+  # An unknown engine value is neither triage nor persona: run-eval.sh would reject
+  # it only AFTER both paid probes, so it must fail offline validation now.
+  printf '{"engine":"nope"}\n' >"$TMP/evals/triage/scorer.json"
+  run mad_incompatible_set "$TMP/evals" triage
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"triage"* ]]
+  # A malformed/unreadable scorer.json (jq parse failure) must NOT silently degrade
+  # to triage — it is rejected too.
+  printf 'this is not json\n' >"$TMP/evals/deep-review/scorer.json"
+  run mad_incompatible_set "$TMP/evals" deep-review
+  [ "$status" -eq 1 ]
+}
+
+@test "an unknown-engine set is rejected end-to-end BEFORE any arm runs (#1952)" {
+  mkdir -p "$TMP/evals/weird-set/holdout"
+  printf '{"mode":"deterministic","engine":"nope"}\n' >"$TMP/evals/weird-set/scorer.json"
+  MODEL_AB_CMD="bash $STUB" SEQ="0" \
+    run bash "$DISPATCH" --candidate c --incumbent i \
+      --sets "triage weird-set" --runs 1 --evals-dir "$TMP/evals"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"incompatible set 'weird-set'"* ]]
+  [ "$(_calls)" = "" ] || [ "$(_calls)" = "0" ]
+}
+
 # ── --validate-only: offline gate that spends no tokens ───────────────────────
 
 @test "--validate-only passes on a valid dispatch and runs NO arm" {
@@ -295,6 +322,41 @@ _calls() { cat "$COUNTER"; }
 }
 
 # ── retry policy: a deterministic hard error (exit 2, no JSON) is NOT retried ──
+
+# ── token-log rotation: the canonical artifact holds ONLY the final attempt ────
+
+@test "retried attempts write separate token logs; only the final attempt is promoted (#1952)" {
+  # Stub that appends a per-call token record tagged with the attempt number to
+  # whatever TOKEN_LOG_FILE the wrapper hands it — mimicking engine.sh's appends —
+  # then exits infra (attempt 1) then accept (attempt 2).
+  local tokstub="$TMP/tok_stub.sh"
+  cat >"$tokstub" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+n="$(cat "$COUNTER" 2>/dev/null || echo 0)"; n=$((n + 1)); echo "$n" >"$COUNTER"
+[ -n "${TOKEN_LOG_FILE:-}" ] && printf '{"attempt":%s}\n' "$n" >>"$TOKEN_LOG_FILE"
+printf '{"attempt":%s,"verdict":"stub"}\n' "$n"
+IFS=: read -ra codes <<<"${SEQ:-0}"
+idx=$((n - 1)); if [ "$idx" -ge "${#codes[@]}" ]; then idx=$((${#codes[@]} - 1)); fi
+exit "${codes[idx]}"
+SH
+  chmod +x "$tokstub"
+
+  local tok="$TMP/tokens.jsonl"
+  MODEL_AB_CMD="bash $tokstub" SEQ="2:0" TOKEN_LOG_FILE="$tok" \
+    run bash "$DISPATCH" --candidate c --incumbent i \
+      --sets "triage" --runs 3 --evals-dir "$TMP/evals"
+  [ "$status" -eq 0 ]
+  [ "$(_calls)" -eq 2 ]
+  # The canonical uploaded artifact holds ONLY the final (scored) attempt's records,
+  # never the abandoned infra attempt's — no blending / double-counting.
+  [ -f "$tok" ]
+  [ "$(wc -l <"$tok")" -eq 1 ]
+  [ "$(jq -r '.attempt' <"$tok")" = "2" ]
+  # Each attempt's partial records were kept in a distinguishable per-attempt file.
+  [ "$(jq -r '.attempt' <"$tok.attempt1")" = "1" ]
+  [ "$(jq -r '.attempt' <"$tok.attempt2")" = "2" ]
+}
 
 @test "exit 2 with NO evidence JSON (hard error) is not retried" {
   # A stub that always exits 2 but prints an ::error:: line (not JSON), mimicking

@@ -104,20 +104,28 @@ mad_validate_sets() {
   return 0
 }
 
-# mad_incompatible_set <evals_dir> <set> — return 1 (and print the set) if the set
-# cannot be faithfully A/B'd by model-ab.sh. model-ab.sh pins ONLY the triage model
-# chain (CLAUDE_TRIAGE_MODEL_CHAIN) and drives every arm through run_triage. A set
-# whose scorer.json declares `engine: persona` is scored on the DEEP model chain,
-# which the arm pin does NOT vary — so both the candidate and incumbent arms would
-# run the same default model and the "non-regression" verdict would be meaningless
-# (#1952). An absent scorer.json / engine defaults to the triage tier (matching
-# run-eval.sh's `.engine // "triage"`), which IS compatible with the triage-chain pin.
+# mad_incompatible_set <evals_dir> <set> — return 1 (and print the set) unless the
+# set can be faithfully A/B'd by model-ab.sh. model-ab.sh pins ONLY the triage model
+# chain (CLAUDE_TRIAGE_MODEL_CHAIN) and drives every arm through run_triage, so ONLY
+# a triage-tier set is comparable: a `engine: persona` set is scored on the DEEP
+# model chain the arm pin does NOT vary — both arms would run the same default model
+# and the "non-regression" verdict would be meaningless (#1952). An absent scorer.json
+# / absent engine defaults to the triage tier (matching run-eval.sh's `.engine //
+# "triage"`), which IS compatible. Every OTHER case must be rejected OFFLINE too:
+# a malformed/unreadable scorer.json (jq fails) or an unknown engine value ("foo")
+# is neither triage nor persona, so run-eval.sh would reject it (exit 2) only AFTER
+# both paid probe calls have run — so fail validation now unless the parsed engine
+# is EXACTLY "triage" (#1952, codex P2). Note the `.engine // "triage"` default only
+# fires on absent/null; a jq PARSE failure prints nothing, which we capture as the
+# empty string below so it is rejected rather than silently degraded to triage.
 mad_incompatible_set() {
   local evals_dir="${1:-}" set="${2:-}" scorer engine
   scorer="$evals_dir/$set/scorer.json"
   [ -f "$scorer" ] || return 0
-  engine="$(jq -r '.engine // "triage"' "$scorer" 2>/dev/null || echo triage)"
-  if [ "$engine" = "persona" ]; then
+  if ! engine="$(jq -r '.engine // "triage"' "$scorer" 2>/dev/null)"; then
+    engine=""
+  fi
+  if [ "$engine" != "triage" ]; then
     printf '%s\n' "$set"
     return 1
   fi
@@ -227,7 +235,7 @@ main() {
   local s incompat
   for s in "${sets[@]}"; do
     if ! incompat="$(mad_incompatible_set "$evals_dir" "$s")"; then
-      die "incompatible set '$incompat' — its scorer.json declares engine 'persona', which model-ab.sh's triage-chain pin cannot vary per arm (triage-engine sets only)"
+      die "incompatible set '$incompat' — its scorer.json must declare a triage-tier engine (model-ab.sh pins only the triage model chain; a persona, unknown, or malformed/unreadable engine cannot be faithfully A/B'd per arm — triage-engine sets only)"
     fi
   done
 
@@ -252,6 +260,16 @@ main() {
     ab_cmd_array=(bash "$script_dir/model-ab.sh")
   fi
 
+  # Per-attempt token log rotation: when a retried infra attempt has already made
+  # some model calls, model-ab.sh -> run-eval.sh -> engine.sh APPEND per-call
+  # records to TOKEN_LOG_FILE, and those records carry no attempt identifier. A
+  # single shared file would therefore BLEND an abandoned attempt's partial calls
+  # with the final attempt's, over- or asymmetrically counting the per-model cost
+  # the workflow uploads as identical-input evidence (#1952, codex P2). Give each
+  # attempt its OWN log; after the loop, promote ONLY the final attempt's file to
+  # the canonical TOKEN_LOG_FILE the workflow uploads.
+  local token_log="${TOKEN_LOG_FILE:-}" attempt_log=""
+
   # Retry loop: re-run ONLY on infra (exit 2), up to `runs` attempts; a scored
   # verdict (0 accept / 1 regression) is final and is never re-run.
   local attempt=0 rc=0 out=""
@@ -264,7 +282,13 @@ main() {
     # dispatch would validate one corpus but score another — the child would fall
     # back to its own default, so the accept/regression verdict would describe a
     # different held-out set than the one we checked (#1952, codeant nitpick).
-    out="$(EVALS_DIR="$evals_dir" "${ab_cmd_array[@]}" "$candidate" "$incumbent" "${sets[@]}")"
+    if [ -n "$token_log" ]; then
+      attempt_log="${token_log}.attempt${attempt}"
+      : >"$attempt_log"
+      out="$(EVALS_DIR="$evals_dir" TOKEN_LOG_FILE="$attempt_log" "${ab_cmd_array[@]}" "$candidate" "$incumbent" "${sets[@]}")"
+    else
+      out="$(EVALS_DIR="$evals_dir" "${ab_cmd_array[@]}" "$candidate" "$incumbent" "${sets[@]}")"
+    fi
     rc=$?
     set -e
     if [ "$rc" -ne 2 ]; then
@@ -282,6 +306,16 @@ main() {
       echo "::warning::model-ab-dispatch: attempt $attempt classed infra (exit 2) — retrying (up to $runs)" >&2
     fi
   done
+
+  # Promote ONLY the final attempt's token log to the canonical path the workflow
+  # uploads, so the identical-inputs cost artifact reflects exactly the scored (or
+  # last infra) attempt and never double-counts calls from an abandoned retry
+  # (#1952, codex P2). The per-attempt files are left in place for inspection; the
+  # upload step globs only the canonical TOKEN_LOG_FILE. Skip an empty final log so
+  # a run that logged nothing leaves no spurious (empty) artifact.
+  if [ -n "$token_log" ] && [ -n "$attempt_log" ] && [ -s "$attempt_log" ]; then
+    cp -f "$attempt_log" "$token_log"
+  fi
 
   # Pass the final evidence JSON through unchanged (stdout + optional --out).
   if [ -n "$out_file" ]; then
