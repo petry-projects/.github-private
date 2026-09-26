@@ -6,6 +6,11 @@ set -euo pipefail
 # Usage:
 #   model-ab-dispatch.sh --candidate M --incumbent M \
 #     [--sets "triage deep-review"] [--runs N] [--evals-dir DIR] [--out FILE]
+#     [--validate-only]
+#
+# --validate-only runs the offline input checks (clamp + set validation) and exits
+# WITHOUT invoking any arm — the workflow calls it before the paid probe so an
+# invalid dispatch spends zero model tokens (#1952).
 #
 # .github/workflows/model-ab.yml is deliberately thin; the two pieces of logic
 # that MUST be exercised offline (before a live run spends tokens) live here and
@@ -46,6 +51,12 @@ set -euo pipefail
 
 MAD_RUNS_MIN=1
 MAD_RUNS_MAX=3
+# Upper bound on the number of distinct sets a single dispatch may request. Even
+# distinct sets multiply live cost (a candidate/incumbent pair per set), so the
+# `runs` clamp alone does not bound per-attempt spend — the set count is an
+# independent multiplier. Cap it (comfortably above the two documented sets) so a
+# fat-fingered or adversarial input can never fan out to an unbounded matrix (#1952).
+MAD_MAX_SETS=8
 
 # mad_clamp_runs <value> — print the run budget clamped to [1,3]. A value that is
 # not a positive integer (empty, non-numeric, fractional, <=0) degrades to the
@@ -56,8 +67,19 @@ mad_clamp_runs() {
     printf '%s\n' "$MAD_RUNS_MIN"
     return 0
   fi
-  # Strip leading zeros safely; base-10 arithmetic on the validated integer.
-  local n=$((10#$v))
+  # Strip leading zeros so "003" is decimal 3 (not octal) and an all-zero string
+  # collapses to "0" (clamped to the floor below).
+  local stripped="${v#"${v%%[!0]*}"}"
+  [ -z "$stripped" ] && stripped="0"
+  # Overflow guard (#1952): a digit-only value with MORE digits than MAD_RUNS_MAX
+  # can only exceed the cap, so clamp WITHOUT arithmetic. `$((10#$v))` on a value
+  # beyond the 64-bit range aborts the shell — crashing instead of degrading to the
+  # documented max. Comparing digit-length first sidesteps that entirely.
+  if [ "${#stripped}" -gt "${#MAD_RUNS_MAX}" ]; then
+    printf '%s\n' "$MAD_RUNS_MAX"
+    return 0
+  fi
+  local n=$((10#$stripped))
   if [ "$n" -lt "$MAD_RUNS_MIN" ]; then n="$MAD_RUNS_MIN"; fi
   if [ "$n" -gt "$MAD_RUNS_MAX" ]; then n="$MAD_RUNS_MAX"; fi
   printf '%s\n' "$n"
@@ -82,6 +104,26 @@ mad_validate_sets() {
   return 0
 }
 
+# mad_incompatible_set <evals_dir> <set> — return 1 (and print the set) if the set
+# cannot be faithfully A/B'd by model-ab.sh. model-ab.sh pins ONLY the triage model
+# chain (CLAUDE_TRIAGE_MODEL_CHAIN) and drives every arm through run_triage. A set
+# whose scorer.json declares `engine: persona` is scored on the DEEP model chain,
+# which the arm pin does NOT vary — so both the candidate and incumbent arms would
+# run the same default model and the "non-regression" verdict would be meaningless
+# (#1952). An absent scorer.json / engine defaults to the triage tier (matching
+# run-eval.sh's `.engine // "triage"`), which IS compatible with the triage-chain pin.
+mad_incompatible_set() {
+  local evals_dir="${1:-}" set="${2:-}" scorer engine
+  scorer="$evals_dir/$set/scorer.json"
+  [ -f "$scorer" ] || return 0
+  engine="$(jq -r '.engine // "triage"' "$scorer" 2>/dev/null || echo triage)"
+  if [ "$engine" = "persona" ]; then
+    printf '%s\n' "$set"
+    return 1
+  fi
+  return 0
+}
+
 # ── I/O orchestration ─────────────────────────────────────────────────────────
 
 die() {
@@ -99,7 +141,7 @@ main() {
   command -v jq >/dev/null 2>&1 || die "jq is required but not installed"
 
   local candidate="" incumbent="" sets_raw="triage deep-review" runs_raw="1"
-  local evals_dir="${EVALS_DIR:-$repo_root/evals}" out_file=""
+  local evals_dir="${EVALS_DIR:-$repo_root/evals}" out_file="" validate_only=false
   while [ "$#" -gt 0 ]; do
     case "$1" in
       # Explicit arity check + die (exit 2), NOT ${2:?…}: the :? expansion aborts
@@ -110,6 +152,7 @@ main() {
       --runs)      [ "$#" -ge 2 ] || die "--runs needs a value";      runs_raw="$2";  shift 2 ;;
       --evals-dir) [ "$#" -ge 2 ] || die "--evals-dir needs a directory"; evals_dir="$2"; shift 2 ;;
       --out)       [ "$#" -ge 2 ] || die "--out needs a file";        out_file="$2";  shift 2 ;;
+      --validate-only) validate_only=true; shift ;;
       -h|--help)   grep '^#' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; return 0 ;;
       --) shift; break ;;
       -*) die "unknown option: $1" ;;
@@ -121,10 +164,35 @@ main() {
   [ -n "$incumbent" ] || die "usage: model-ab-dispatch.sh --candidate M --incumbent M [--sets S] [--runs N]"
   [ -n "$evals_dir" ] || die "evals_dir is empty — would check root directory; set EVALS_DIR or use --evals-dir"
 
+  # Reject multiline input outright: `read -ra <<<"$sets_raw"` consumes only the
+  # FIRST line, so a value like $'triage\ndeep-review' would silently validate and
+  # score just `triage` yet return an accept verdict for the WHOLE request (#1952).
+  # The workflow passes a single-line space-separated string; anything multiline is
+  # a malformed dispatch — fail fast rather than score a partial matrix.
+  case "$sets_raw" in
+    *$'\n'*) die "multiline --sets is not accepted — pass a single space-separated line" ;;
+  esac
+
   # Split the whitespace-delimited sets input into an array (the workflow passes a
   # single string, e.g. "triage deep-review").
   local sets=()
   read -ra sets <<<"$sets_raw"
+
+  # Reject duplicate set names: a repeated set (e.g. "triage triage") would run a
+  # full candidate/incumbent pair PER occurrence, so `runs` would no longer bound
+  # per-attempt spend — input length would (#1952). Reject-on-dup keeps the cost cap
+  # meaningful and surfaces the fat-fingered input.
+  local i j
+  for (( i = 0; i < ${#sets[@]}; i++ )); do
+    for (( j = i + 1; j < ${#sets[@]}; j++ )); do
+      [ "${sets[i]}" = "${sets[j]}" ] && die "duplicate set '${sets[i]}' in --sets — list each set at most once"
+    done
+  done
+
+  # Bound the set matrix even for distinct names (#1952).
+  if [ "${#sets[@]}" -gt "$MAD_MAX_SETS" ]; then
+    die "too many sets (${#sets[@]} > $MAD_MAX_SETS) — narrow the --sets list"
+  fi
 
   # Fail fast on an unknown set BEFORE any arm runs (AC #1) — no token is spent.
   local bad
@@ -135,7 +203,24 @@ main() {
     die "unknown set '$bad' — no evals/$bad/holdout under $evals_dir (frozen held-out sets only)"
   fi
 
+  # Reject sets model-ab.sh cannot faithfully compare: a persona-engine set is
+  # scored on the deep chain the triage-chain arm pin does not vary (#1952).
+  local s incompat
+  for s in "${sets[@]}"; do
+    if ! incompat="$(mad_incompatible_set "$evals_dir" "$s")"; then
+      die "incompatible set '$incompat' — its scorer.json declares engine 'persona', which model-ab.sh's triage-chain pin cannot vary per arm (triage-engine sets only)"
+    fi
+  done
+
   local runs; runs="$(mad_clamp_runs "$runs_raw")"
+
+  # --validate-only: the input checks above ARE the whole job. The workflow runs
+  # this before the paid liveness/effort probe so an invalid dispatch spends zero
+  # model tokens (#1952). Everything above has passed by here.
+  if [ "$validate_only" = true ]; then
+    echo "model-ab-dispatch: inputs valid (sets: ${sets[*]}; runs: $runs)"
+    return 0
+  fi
 
   # The A/B command. Default to the real model-ab.sh; tests override MODEL_AB_CMD.
   local ab_cmd="${MODEL_AB_CMD:-bash $script_dir/model-ab.sh}"
@@ -147,12 +232,25 @@ main() {
     attempt=$((attempt + 1))
     rc=0
     set +e
+    # Forward the SAME evals_dir we validated against to model-ab.sh (it reads
+    # EVALS_DIR from the env, default <repo>/evals). Without this, a `--evals-dir`
+    # dispatch would validate one corpus but score another — the child would fall
+    # back to its own default, so the accept/regression verdict would describe a
+    # different held-out set than the one we checked (#1952, codeant nitpick).
     # shellcheck disable=SC2086 # ab_cmd is an intentional command+args split
-    out="$($ab_cmd "$candidate" "$incumbent" "${sets[@]}")"
+    out="$(EVALS_DIR="$evals_dir" $ab_cmd "$candidate" "$incumbent" "${sets[@]}")"
     rc=$?
     set -e
     if [ "$rc" -ne 2 ]; then
       break            # scored verdict (accept/regression) — final, do not retry
+    fi
+    # Exit 2 is overloaded in model-ab.sh: a genuine INFRA verdict emits its
+    # evidence JSON on stdout, whereas a deterministic hard/usage error (die():
+    # missing tool, bad usage, held-out immutability violation) emits an `::error::`
+    # line and NO JSON. Retry ONLY the transient infra verdict — re-running a hard
+    # error just burns budget on a guaranteed-identical failure (#1952, codex P2).
+    if ! jq -e . >/dev/null 2>&1 <<<"$out"; then
+      break
     fi
     if [ "$attempt" -lt "$runs" ]; then
       echo "::warning::model-ab-dispatch: attempt $attempt classed infra (exit 2) — retrying (up to $runs)" >&2

@@ -79,10 +79,42 @@ jobs:
       TOKEN_LOG_FILE: ${{ github.workspace }}/model-ab-tokens.jsonl
 
     steps:
+      - name: Reject non-main dispatch ref
+        # workflow_dispatch can target ANY branch or tag, but this A/B produces the
+        # official go/no-go evidence for the deep-tier promotion — it must score the
+        # MERGED main tree, never a stale or unreviewed branch's scripts/prompts/
+        # corpus. Fail closed (AGENTS.md #1776) on any ref other than main so branch
+        # state can never masquerade as post-merge evidence (#1952).
+        env:
+          GH_REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          if [ "$GH_REF" != "refs/heads/main" ]; then
+            echo "::error::model-ab must be dispatched from main (got '$GH_REF') — the A/B scores the merged tree, not branch state"
+            exit 1
+          fi
+
       - name: Checkout agent repo
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
+          # Pin to main as well as rejecting non-main above: the checked-out tree
+          # that gets scored is the merged baseline, not the dispatched ref (#1952).
+          ref: refs/heads/main
           persist-credentials: false
+
+      - name: Validate dispatch inputs (offline — spends no tokens)
+        # Run the wrapper's OFFLINE input validation (runs clamp + set existence /
+        # dedup / count-cap / engine-compat) BEFORE the paid liveness/effort probe,
+        # so a fat-fingered dispatch (unknown, duplicated, or persona-engine set) is
+        # rejected without spending a single model token (#1952). This reuses the
+        # exact logic the A/B step depends on — one source of truth, no drift.
+        run: |
+          set -euo pipefail
+          bash scripts/evals/model-ab-dispatch.sh --validate-only \
+            --candidate "$CANDIDATE" \
+            --incumbent "$INCUMBENT" \
+            --sets "$SETS" \
+            --runs "$RUNS"
 
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
@@ -124,7 +156,13 @@ jobs:
           # 1) Liveness: does the candidate answer at all?
           live_rc=0
           claude --print --model "$CANDIDATE" --output-format json <<<"$prompt" > probe.json 2>probe.err || live_rc=$?
-          result_txt="$(extract_engine_text claude probe.json)"
+          # extract_engine_text returns nonzero when jq cannot parse the probe file;
+          # sourcing token-metrics.sh enabled errexit, so an unguarded assignment
+          # would abort the step before it records the result or writes the summary.
+          # Capture the status and leave the text empty so the check records FAIL.
+          if ! result_txt="$(extract_engine_text claude probe.json)"; then
+            result_txt=""
+          fi
           if [ "$live_rc" -eq 0 ] && [ -n "$result_txt" ]; then
             liveness="PASS"
           else
@@ -135,7 +173,10 @@ jobs:
           # 2) Effort probe: is `--effort high` accepted by this model/CLI?
           effort_rc=0
           claude --print --model "$CANDIDATE" --effort high --output-format json <<<"$prompt" > effort.json 2>effort.err || effort_rc=$?
-          effort_txt="$(extract_engine_text claude effort.json)"
+          # Same errexit guard as the liveness assignment above (#1952 CodeRabbit).
+          if ! effort_txt="$(extract_engine_text claude effort.json)"; then
+            effort_txt=""
+          fi
           if [ "$effort_rc" -eq 0 ] && [ -n "$effort_txt" ]; then
             effort="accepted"
           else

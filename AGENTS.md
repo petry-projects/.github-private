@@ -263,6 +263,16 @@ calling it a regression, and treat CI as authoritative.**
   `scripts/lib/holdout-guard.sh` (tests: `tests/test_holdout_guard.bats`). It must not be removed by template
   syncs. If the org template gains a held-out immutability equivalent, remove this exception and defer to the
   template instead.
+- **Exception:** `model-ab.yml` (#1950, epic #1895) is a documented repo-specific workflow with no
+  corresponding org template in `standards/workflows/`. It is a `workflow_dispatch`-ONLY (no schedule, no
+  `pull_request`) maintainer action that runs the Opus 5.5-vs-4.8 held-out non-regression A/B
+  (`scripts/evals/model-ab.sh` via the testable wrapper `scripts/evals/model-ab-dispatch.sh`, tests in
+  `tests/test_model_ab_dispatch.bats`) plus a candidate liveness/effort probe. It is in the same
+  org-private-automation class as `skill-eval-report.yml` (runs eval scripts against a frozen held-out
+  corpus with a fixed judge), not a thin caller stub. It is dispatched only from `main` (a ref guard fails
+  any other ref) so the A/B always scores the merged tree, and its inputs are validated offline before any
+  paid model call. It must not be removed by template syncs. If the org template gains a model A/B
+  equivalent, remove this exception and defer to the template instead.
 - **Exception:** `auto-rebase-retry.yml` is a documented repo-specific workflow with no corresponding org
   template in `standards/workflows/`. It is a `workflow_run` handler that self-heals a *failed* Auto-rebase
   run by re-running its failed jobs (bounded by `run_attempt`) — the gap left by the conflict-only sentinel
