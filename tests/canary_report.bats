@@ -1,0 +1,372 @@
+#!/usr/bin/env bats
+# Tests for scripts/canary_report.sh — pure canary go/no-go rendering.
+# Network I/O (collect_repo_jsonl / main) is not exercised here.
+# Run locally: bats tests/canary_report.bats
+
+setup() {
+  # shellcheck source=scripts/canary_report.sh
+  source "${BATS_TEST_DIRNAME}/../scripts/canary_report.sh"
+
+  DIR="$(mktemp -d)"
+  FILE="$DIR/records.jsonl"
+
+  # Neutralise the maintainer-default time windows so the fixtures below are
+  # scored purely on their model split (window filtering is a main()-level concern
+  # exercised via its own knobs). Each test may override these.
+  export CANARY_CANDIDATE="claude-opus-5-5"
+  export CANARY_INCUMBENT="claude-opus-4-8"
+  export CANARY_WORKFLOW="pr-review"
+  export CANARY_TIER="deep"
+  export CANARY_SINCE=""
+  export CANARY_UNTIL=""
+  export CANARY_BASELINE_SINCE=""
+  export CANARY_BASELINE_UNTIL=""
+}
+
+teardown() {
+  rm -rf "$DIR"
+}
+
+# mkrec <file> <ts> <workflow> <tier> <model> <in> <cr> <cw> <out> <context> <duration_ms|"">
+mkrec() {
+  local file="$1" ts="$2" wf="$3" tier="$4" model="$5" inp="$6" cr="$7" cw="$8" out="$9" ctx="${10}" dur="${11}"
+  local durfield="null"
+  [ -n "$dur" ] && durfield="$dur"
+  printf '{"ts":"%s","workflow":"%s","tier":"%s","model":"%s","input_tokens":%d,"cache_read_tokens":%d,"cache_creation_tokens":%d,"output_tokens":%d,"context":"%s","duration_ms":%s}\n' \
+    "$ts" "$wf" "$tier" "$model" "$inp" "$cr" "$cw" "$out" "$ctx" "$durfield" >> "$file"
+}
+
+# Five candidate PRs (opus-5-5) that clear every bar vs five incumbent
+# invocations (opus-4-8). Token usage identical per call so the deltas are the
+# pure price difference; candidate durations are 30% faster.
+seed_pass() {
+  local i
+  for i in 1 2 3 4 5; do
+    mkrec "$FILE" "2026-09-26T10:0${i}:00Z" pr-review deep claude-opus-5-5 \
+      1000 1000 0 100 "https://github.com/petry-projects/.github-private/pull/${i}" 700
+    mkrec "$FILE" "2026-09-20T10:0${i}:00Z" pr-review deep claude-opus-4-8 \
+      1000 1000 0 100 "https://github.com/petry-projects/.github-private/pull/10${i}" 1000
+  done
+}
+
+# ---------------------------------------------------------------------------
+# Overall PASS
+# ---------------------------------------------------------------------------
+
+@test "render_canary_report: all three bars clear → PASS, exit 0" {
+  seed_pass
+  run render_canary_report "$DIR"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"- cost: PASS"* ]]
+  [[ "$output" == *"- cache_read: PASS"* ]]
+  [[ "$output" == *"- latency: PASS"* ]]
+  [[ "$output" == *"**Overall verdict:** PASS"* ]]
+}
+
+@test "render_canary_report: reports per-arm invocation and distinct-PR counts" {
+  seed_pass
+  run render_canary_report "$DIR"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"- candidate invocations: 5"* ]]
+  [[ "$output" == *"- candidate distinct PRs: 5"* ]]
+  [[ "$output" == *"- incumbent invocations: 5"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# FAIL per metric
+# ---------------------------------------------------------------------------
+
+@test "render_canary_report: candidate not 20% cheaper per invocation → cost FAIL, exit 1" {
+  local i
+  for i in 1 2 3 4 5; do
+    # Higher candidate output makes per-invocation cost exceed the incumbent.
+    mkrec "$FILE" "2026-09-26T10:0${i}:00Z" pr-review deep claude-opus-5-5 \
+      1000 1000 0 300 "https://github.com/petry-projects/.github-private/pull/${i}" 700
+    mkrec "$FILE" "2026-09-20T10:0${i}:00Z" pr-review deep claude-opus-4-8 \
+      1000 1000 0 100 "https://github.com/petry-projects/.github-private/pull/10${i}" 1000
+  done
+  run render_canary_report "$DIR"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"- cost: FAIL"* ]]
+  [[ "$output" == *"**Overall verdict:** FAIL"* ]]
+}
+
+@test "render_canary_report: cache-read cost not 50% lower → cache_read FAIL, exit 1" {
+  local i
+  for i in 1 2 3 4 5; do
+    # Candidate reads a lot more cache: cache-read cost reduction falls below 50%
+    # while per-invocation cost still clears its 20% bar.
+    mkrec "$FILE" "2026-09-26T10:0${i}:00Z" pr-review deep claude-opus-5-5 \
+      900 2000 0 100 "https://github.com/petry-projects/.github-private/pull/${i}" 700
+    mkrec "$FILE" "2026-09-20T10:0${i}:00Z" pr-review deep claude-opus-4-8 \
+      1000 1000 0 100 "https://github.com/petry-projects/.github-private/pull/10${i}" 1000
+  done
+  run render_canary_report "$DIR"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"- cache_read: FAIL"* ]]
+  [[ "$output" == *"- cost: PASS"* ]]
+  [[ "$output" == *"**Overall verdict:** FAIL"* ]]
+}
+
+@test "render_canary_report: candidate not 20% faster → latency FAIL, exit 1" {
+  local i
+  for i in 1 2 3 4 5; do
+    mkrec "$FILE" "2026-09-26T10:0${i}:00Z" pr-review deep claude-opus-5-5 \
+      1000 1000 0 100 "https://github.com/petry-projects/.github-private/pull/${i}" 1000
+    mkrec "$FILE" "2026-09-20T10:0${i}:00Z" pr-review deep claude-opus-4-8 \
+      1000 1000 0 100 "https://github.com/petry-projects/.github-private/pull/10${i}" 1000
+  done
+  run render_canary_report "$DIR"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"- latency: FAIL"* ]]
+  [[ "$output" == *"- cost: PASS"* ]]
+  [[ "$output" == *"**Overall verdict:** FAIL"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# INSUFFICIENT
+# ---------------------------------------------------------------------------
+
+@test "render_canary_report: fewer than 5 distinct candidate PRs → INSUFFICIENT, exit 2" {
+  local i
+  for i in 1 2 3 4; do
+    mkrec "$FILE" "2026-09-26T10:0${i}:00Z" pr-review deep claude-opus-5-5 \
+      1000 1000 0 100 "https://github.com/petry-projects/.github-private/pull/${i}" 700
+  done
+  for i in 1 2 3 4 5; do
+    mkrec "$FILE" "2026-09-20T10:0${i}:00Z" pr-review deep claude-opus-4-8 \
+      1000 1000 0 100 "https://github.com/petry-projects/.github-private/pull/10${i}" 1000
+  done
+  run render_canary_report "$DIR"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"- cost: INSUFFICIENT"* ]]
+  [[ "$output" == *"**Overall verdict:** INSUFFICIENT"* ]]
+}
+
+@test "render_canary_report: fewer than 5 durations per arm → latency INSUFFICIENT (never a one-pair PASS), exit 2" {
+  # Five candidate PRs and five incumbent invocations clear cost/cache, but only
+  # ONE call per arm carries a duration_ms. A single fast pair must not score a
+  # latency PASS — the sample floor (min invocations) applies to durations too.
+  local i
+  for i in 1 2 3 4 5; do
+    local cdur="" idur=""
+    [ "$i" -eq 1 ] && { cdur=700; idur=1000; }
+    mkrec "$FILE" "2026-09-26T10:0${i}:00Z" pr-review deep claude-opus-5-5 \
+      1000 1000 0 100 "https://github.com/petry-projects/.github-private/pull/${i}" "$cdur"
+    mkrec "$FILE" "2026-09-20T10:0${i}:00Z" pr-review deep claude-opus-4-8 \
+      1000 1000 0 100 "https://github.com/petry-projects/.github-private/pull/10${i}" "$idur"
+  done
+  run render_canary_report "$DIR"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"- latency: INSUFFICIENT"* ]]
+  [[ "$output" == *"- cost: PASS"* ]]
+  [[ "$output" == *"**Overall verdict:** INSUFFICIENT"* ]]
+}
+
+@test "_fmt_pct: preserves the sign of a negative fraction (regression, not reduction)" {
+  run _fmt_pct 0.2;  [ "$output" = "20%" ]
+  run _fmt_pct -0.2; [ "$output" = "-20%" ]
+  run _fmt_pct 0.5;  [ "$output" = "50%" ]
+}
+
+@test "_combine_verdict: an operational error (>2) dominates every verdict" {
+  # A section that failed to render (exit 3) must never be collapsed into a verdict:
+  # it dominates PASS/FAIL/INSUFFICIENT so main() surfaces the failed run.
+  run _combine_verdict 0 3; [ "$output" = "3" ]
+  run _combine_verdict 3 0; [ "$output" = "3" ]
+  run _combine_verdict 1 3; [ "$output" = "3" ]
+  run _combine_verdict 3 2; [ "$output" = "3" ]
+  # Without an operational error the FAIL > INSUFFICIENT > PASS ordering still holds.
+  run _combine_verdict 0 1; [ "$output" = "1" ]
+  run _combine_verdict 0 2; [ "$output" = "2" ]
+  run _combine_verdict 0 0; [ "$output" = "0" ]
+}
+
+@test "render_canary_report: an incumbent call in the candidate window is a fallback, not hidden" {
+  # A deep-tier incumbent call AFTER the canary cut (rollout still partly on the old
+  # channel) is excluded from the candidate arm by model and from the incumbent arm
+  # by the baseline window — so it must surface in the fallback table rather than
+  # vanish, or candidate records could PASS while hiding a non-candidate rollout.
+  seed_pass
+  # An incumbent (opus-4-8) call inside the candidate window (at/after 2026-09-25).
+  export CANARY_SINCE="2026-09-25T00:00:00Z"
+  export CANARY_BASELINE_SINCE="2026-09-19T00:00:00Z"
+  export CANARY_BASELINE_UNTIL="2026-09-25T00:00:00Z"
+  mkrec "$FILE" "2026-09-26T12:00:00Z" pr-review deep claude-opus-4-8 \
+    1000 1000 0 100 "https://github.com/petry-projects/.github-private/pull/777" 900
+  run render_canary_report "$DIR"
+  [[ "$output" == *"Deep-tier fallback calls (excluded from both arms)"* ]]
+  [[ "$output" == *"claude-opus-4-8"* ]]
+}
+
+@test "render_canary_report: no non-null duration on either arm → latency INSUFFICIENT (never PASS), exit 2" {
+  local i
+  for i in 1 2 3 4 5; do
+    mkrec "$FILE" "2026-09-26T10:0${i}:00Z" pr-review deep claude-opus-5-5 \
+      1000 1000 0 100 "https://github.com/petry-projects/.github-private/pull/${i}" ""
+    mkrec "$FILE" "2026-09-20T10:0${i}:00Z" pr-review deep claude-opus-4-8 \
+      1000 1000 0 100 "https://github.com/petry-projects/.github-private/pull/10${i}" ""
+  done
+  run render_canary_report "$DIR"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"- latency: INSUFFICIENT"* ]]
+  # Cost/cache are computable and clear their bars, but a missing latency signal
+  # must block an overall PASS.
+  [[ "$output" == *"- cost: PASS"* ]]
+  [[ "$output" == *"**Overall verdict:** INSUFFICIENT"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# Unpriced-model accounting
+# ---------------------------------------------------------------------------
+
+@test "render_canary_report: unpriced candidate records are counted and reported, never dropped" {
+  local i
+  for i in 1 2 3 4 5; do
+    # A model with no row in model-pricing.tsv → unpriced, but still a real call.
+    mkrec "$FILE" "2026-09-26T10:0${i}:00Z" pr-review deep claude-opus-5-5 \
+      1000 1000 0 100 "https://github.com/petry-projects/.github-private/pull/${i}" 700
+    mkrec "$FILE" "2026-09-20T10:0${i}:00Z" pr-review deep claude-opus-4-8 \
+      1000 1000 0 100 "https://github.com/petry-projects/.github-private/pull/10${i}" 1000
+  done
+  # Add two unpriced candidate calls on new PRs (dated before opus-5-5 pricing began).
+  mkrec "$FILE" "2026-09-01T10:00:00Z" pr-review deep claude-opus-5-5 \
+    1000 1000 0 100 "https://github.com/petry-projects/.github-private/pull/91" 700
+  mkrec "$FILE" "2026-09-01T10:01:00Z" pr-review deep claude-opus-5-5 \
+    1000 1000 0 100 "https://github.com/petry-projects/.github-private/pull/92" 700
+  run render_canary_report "$DIR"
+  # 7 candidate invocations total; 2 of them unpriced but still counted.
+  [[ "$output" == *"- candidate invocations: 7"* ]]
+  [[ "$output" == *"- candidate unpriced records: 2"* ]]
+}
+
+@test "render_canary_report: a partially unpriced INCUMBENT arm blocks a cost/cache PASS" {
+  # Both arms clear the bars on their priced records, but one incumbent call is
+  # unpriced (dated before opus-4-* pricing took effect). An unpriced incumbent must
+  # make cost/cache INSUFFICIENT — never a PASS against only the priced subset.
+  local i
+  for i in 1 2 3 4 5; do
+    mkrec "$FILE" "2026-09-26T10:0${i}:00Z" pr-review deep claude-opus-5-5 \
+      1000 1000 0 100 "https://github.com/petry-projects/.github-private/pull/${i}" 700
+    mkrec "$FILE" "2026-09-20T10:0${i}:00Z" pr-review deep claude-opus-4-8 \
+      1000 1000 0 100 "https://github.com/petry-projects/.github-private/pull/10${i}" 1000
+  done
+  # One unpriced incumbent call (opus-4-8 predates its 2025-11-01 pricing row).
+  mkrec "$FILE" "2025-10-01T10:00:00Z" pr-review deep claude-opus-4-8 \
+    1000 1000 0 100 "https://github.com/petry-projects/.github-private/pull/199" 1000
+  run render_canary_report "$DIR"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"- incumbent unpriced records: 1"* ]]
+  [[ "$output" == *"- cost: INSUFFICIENT"* ]]
+  [[ "$output" == *"- cache_read: INSUFFICIENT"* ]]
+  [[ "$output" == *"**Overall verdict:** INSUFFICIENT"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# Controlled (model-ab) mode — records carry the producer's own labels
+# ---------------------------------------------------------------------------
+
+@test "render_canary_report: controlled mode selects arms by model, ignoring workflow/tier labels" {
+  # The model-ab producer drives both arms through run_triage without setting
+  # TOKEN_WORKFLOW, so its records are labeled workflow=unknown / tier=triage, NOT
+  # the real-PR pr-review/deep labels. Controlled mode must still find both arms by
+  # model alone — otherwise --model-ab-dir is permanently INSUFFICIENT.
+  local i
+  for i in 1 2 3 4 5; do
+    mkrec "$FILE" "2026-09-26T10:0${i}:00Z" unknown triage claude-opus-5-5 \
+      1000 1000 0 100 "" 700
+    mkrec "$FILE" "2026-09-26T11:0${i}:00Z" unknown triage claude-opus-4-8 \
+      1000 1000 0 100 "" 1000
+  done
+  CANARY_MODE=controlled run render_canary_report "$DIR"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"- candidate invocations: 5"* ]]
+  [[ "$output" == *"- incumbent invocations: 5"* ]]
+  [[ "$output" == *"- cost: PASS"* ]]
+  [[ "$output" == *"- cache_read: PASS"* ]]
+  [[ "$output" == *"- latency: PASS"* ]]
+  [[ "$output" == *"**Overall verdict:** PASS"* ]]
+}
+
+@test "render_canary_report: real mode still filters out non-pr-review/deep records" {
+  # The same producer-labeled records must NOT enter the real-PR arms — real mode
+  # keeps the pr-review/deep predicates, so both arms are empty → INSUFFICIENT.
+  local i
+  for i in 1 2 3 4 5; do
+    mkrec "$FILE" "2026-09-26T10:0${i}:00Z" unknown triage claude-opus-5-5 \
+      1000 1000 0 100 "" 700
+    mkrec "$FILE" "2026-09-26T11:0${i}:00Z" unknown triage claude-opus-4-8 \
+      1000 1000 0 100 "" 1000
+  done
+  run render_canary_report "$DIR"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"- candidate invocations: 0"* ]]
+  [[ "$output" == *"**Overall verdict:** INSUFFICIENT"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# Corrupt evidence must never score
+# ---------------------------------------------------------------------------
+
+@test "render_canary_report: a malformed JSONL file aborts before scoring (never a bogus PASS)" {
+  seed_pass
+  # A second file with invalid JSON: annotation (jq) fails; scoring must abort with
+  # the OPERATIONAL code (>2, distinct from any verdict) rather than PASS on whatever
+  # partial rows were emitted — a failed run must not read as a valid INSUFFICIENT.
+  printf '{not valid json\n' > "$DIR/corrupt.jsonl"
+  run render_canary_report "$DIR"
+  [ "$status" -eq 3 ]
+  [[ "$output" != *"**Overall verdict:** PASS"* ]]
+}
+
+@test "render_canary_report: a structurally invalid record aborts scoring (operational error, exit 3)" {
+  # Valid-JSON but structurally wrong evidence must not be silently discarded or
+  # coerced to placeholders/zeros: an incomplete token_usage object (missing
+  # output_tokens) makes the sample partial, so scoring aborts with the operational
+  # code rather than scoring only the surviving rows into a bogus verdict (#1953).
+  seed_pass
+  printf '{"ts":"2026-09-26T10:09:00Z","workflow":"pr-review","tier":"deep","model":"claude-opus-5-5","input_tokens":1000,"cache_read_tokens":1000,"cache_creation_tokens":0,"context":"https://github.com/petry-projects/.github-private/pull/9"}\n' > "$DIR/partial.jsonl"
+  run render_canary_report "$DIR"
+  [ "$status" -eq 3 ]
+  [[ "$output" != *"**Overall verdict:** PASS"* ]]
+}
+
+@test "render_canary_report: a non-object record aborts scoring (operational error, exit 3)" {
+  seed_pass
+  printf '[1,2,3]\n' > "$DIR/array.jsonl"
+  run render_canary_report "$DIR"
+  [ "$status" -eq 3 ]
+}
+
+@test "render_canary_report: recognized non-token audit kinds are skipped, not scored" {
+  # finding_verification / lsp_cold_start records share the token JSONL channel but
+  # are not token_usage — they must be skipped (never abort, never counted), so a
+  # clean PASS sample still scores PASS when audit records are interleaved.
+  seed_pass
+  printf '{"kind":"finding_verification","ts":"2026-09-26T10:00:00Z","workflow":"pr-review","tier":"deep","outcome":"confirmed"}\n' >> "$FILE"
+  printf '{"kind":"lsp_cold_start","ts":"2026-09-26T10:00:00Z","workflow":"pr-review"}\n' >> "$FILE"
+  run render_canary_report "$DIR"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"- candidate invocations: 5"* ]]
+  [[ "$output" == *"**Overall verdict:** PASS"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# ISO-8601 bound canonicalization
+# ---------------------------------------------------------------------------
+
+@test "_norm_iso: canonicalizes UTC bounds to seconds precision" {
+  run _norm_iso "2026-09-25T14:07Z";    [ "$status" -eq 0 ]; [ "$output" = "2026-09-25T14:07:00Z" ]
+  run _norm_iso "2026-09-25T14:07:30Z"; [ "$status" -eq 0 ]; [ "$output" = "2026-09-25T14:07:30Z" ]
+  run _norm_iso "2026-09-25T14:07";     [ "$status" -eq 0 ]; [ "$output" = "2026-09-25T14:07:00Z" ]
+  run _norm_iso "2026-09-25T14:07:30";  [ "$status" -eq 0 ]; [ "$output" = "2026-09-25T14:07:30Z" ]
+  run _norm_iso "";                     [ "$status" -eq 0 ]; [ "$output" = "" ]
+}
+
+@test "_norm_iso: rejects bounds not lexically comparable with UTC timestamps" {
+  # A numeric offset is the same instant as a different UTC string — rejecting it
+  # fails closed instead of silently scoring the wrong window.
+  run _norm_iso "2026-09-25T15:07:00+01:00"; [ "$status" -ne 0 ]
+  run _norm_iso "2026-09-25T14:07:00.123Z";  [ "$status" -ne 0 ]
+  run _norm_iso "garbage";                   [ "$status" -ne 0 ]
+}
