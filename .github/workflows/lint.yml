@@ -75,6 +75,7 @@ jobs:
             tests/test_spec_drift.bats \
             tests/test_spec_drift_eval.bats \
             tests/token_report.bats \
+            tests/canary_report.bats \
             tests/reviewer_report.bats \
             tests/test_pr_review_miss_rate.bats \
             tests/test_miss_harvest.bats \
