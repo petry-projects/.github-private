@@ -898,18 +898,40 @@ _claude_chain_invoke() {
 }
 
 # _now_ms
-# Prints wall-clock time in milliseconds. Uses `date +%s%3N` where the %3N
-# nanosecond field is supported (GNU date on the CI runners); falls back to
-# seconds × 1000 when it is not (e.g. macOS/BSD date, where %3N is not expanded
-# and yields non-numeric output), so latency capture degrades to second
-# resolution rather than emitting garbage. Never aborts the caller.
+# Prints wall-clock time in milliseconds, or nothing when no clock is readable.
+# Prefers bash 5's $EPOCHREALTIME (no subshell or `date` fork per call; the
+# fraction separator may be `.` or `,` depending on locale). Otherwise falls back
+# to `date +%s%3N` (GNU), then `date +%s` × 1000 where %3N is unsupported (macOS/
+# BSD). If even that fails it prints nothing, so _elapsed_ms records null rather
+# than a fake 0 ms. Never aborts the caller.
 _now_ms() {
+  if [ -n "${EPOCHREALTIME:-}" ]; then
+    local _sec="${EPOCHREALTIME%[.,]*}" _frac="${EPOCHREALTIME#*[.,]}000"
+    printf '%s%s' "$_sec" "${_frac:0:3}"
+    return 0
+  fi
   local t
-  t="$(date +%s%3N 2>/dev/null || echo "")"
+  t="$(date +%s%3N 2>/dev/null || true)"
   case "$t" in
-    ''|*[!0-9]*) t="$(( $(date +%s 2>/dev/null || echo 0) * 1000 ))" ;;
+    ''|*[!0-9]*)
+      t="$(date +%s 2>/dev/null || true)"
+      case "$t" in
+        ''|*[!0-9]*) t="" ;;
+        *) t="$(( t * 1000 ))" ;;
+      esac
+      ;;
   esac
   printf '%s' "$t"
+}
+
+# _elapsed_ms <start_ms> <end_ms>
+# Prints end - start, or nothing when either stamp is missing/non-numeric or the
+# clock went backwards, so the token record carries null instead of a bogus value.
+_elapsed_ms() {
+  case "${1:-}" in ''|*[!0-9]*) return 0 ;; esac
+  case "${2:-}" in ''|*[!0-9]*) return 0 ;; esac
+  [ "$2" -ge "$1" ] || return 0
+  printf '%s' "$(( $2 - $1 ))"
 }
 
 # _record_engine_tokens <tier> <engine> <model> <prompt_file> [output_file] [duration_ms]
@@ -1069,7 +1091,7 @@ run_triage() {
         ;;
     esac
     _t_end="$(_now_ms)"
-    _dur=$(( _t_end - _t_start )); [ "$_dur" -lt 0 ] && _dur=""
+    _dur="$(_elapsed_ms "$_t_start" "$_t_end")"
     if [ "$rc" -eq 0 ]; then
       local _triage_used
       if [ "$REVIEW_ENGINE" = "claude" ] && [ -n "${_CLAUDE_CHAIN_MODEL_USED:-}" ]; then
@@ -1229,7 +1251,7 @@ run_agentic() {
       ;;
   esac
   _t_end="$(_now_ms)"
-  _dur=$(( _t_end - _t_start )); [ "$_dur" -lt 0 ] && _dur=""
+  _dur="$(_elapsed_ms "$_t_start" "$_t_end")"
   if [ "$rc" -eq 0 ]; then
     local _agentic_used="$model"
     if [ "$REVIEW_ENGINE" = "claude" ] && [ -n "${_CLAUDE_CHAIN_MODEL_USED:-}" ]; then
@@ -1369,7 +1391,7 @@ run_writer() {
   esac
 
   _t_end="$(_now_ms)"
-  _dur=$(( _t_end - _t_start )); [ "$_dur" -lt 0 ] && _dur=""
+  _dur="$(_elapsed_ms "$_t_start" "$_t_end")"
   if [ "$rc" -eq 0 ]; then
     local _writer_used="$model"
     if [ "$REVIEW_ENGINE" = "claude" ] && [ -n "${_CLAUDE_CHAIN_MODEL_USED:-}" ]; then
@@ -1798,7 +1820,7 @@ run_duck() {
       ;;
   esac
   _t_end="$(_now_ms)"
-  _dur=$(( _t_end - _t_start )); [ "$_dur" -lt 0 ] && _dur=""
+  _dur="$(_elapsed_ms "$_t_start" "$_t_end")"
   if [ "$rc" -eq 0 ]; then
     _record_engine_tokens "duck" "$DUCK_ENGINE" "$model" "$prompt_file" "$_tok_tmp" "$_dur"
   fi

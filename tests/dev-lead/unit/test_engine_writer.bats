@@ -420,6 +420,35 @@ STUB
 
 # ── per-call latency (duration_ms) tests (#1949) ──────────────────────────────
 
+@test "duration: _elapsed_ms prints end-start, and nothing for missing, non-numeric or backwards stamps" {
+  _source_engine "claude"
+  [ "$(_elapsed_ms 1000 1250)" = "250" ]
+  [ "$(_elapsed_ms 1000 1000)" = "0" ]
+  [ -z "$(_elapsed_ms "" 1250)" ]
+  [ -z "$(_elapsed_ms 1000 "")" ]
+  [ -z "$(_elapsed_ms 1000 12x)" ]
+  [ -z "$(_elapsed_ms 2000 1000)" ]
+}
+
+@test "duration: _now_ms returns 13-digit epoch ms via EPOCHREALTIME and via the date fallback" {
+  _source_engine "claude"
+  run _now_ms
+  [ "$status" -eq 0 ]
+  [[ "$output" =~ ^[0-9]{13}$ ]]
+  # Without EPOCHREALTIME the date fallback must still yield epoch ms.
+  run bash -c "$(declare -f _now_ms); unset EPOCHREALTIME; _now_ms"
+  [ "$status" -eq 0 ]
+  [[ "$output" =~ ^[0-9]{13}$ ]]
+}
+
+@test "duration: _now_ms prints nothing (so duration_ms is null, not 0) when no clock is readable" {
+  _source_engine "claude"
+  # No EPOCHREALTIME and no `date` on PATH: must print nothing rather than 0.
+  run bash -c "$(declare -f _now_ms); unset EPOCHREALTIME; PATH=/nonexistent; _now_ms"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
 @test "duration: run_agentic deep tier emits a positive duration_ms through a stubbed engine" {
   _source_engine "claude"
   export STUB_ENGINE_EXIT=0
