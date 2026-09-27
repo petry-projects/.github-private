@@ -37,6 +37,18 @@ setup() {
   [ "$output" = "3.00 0.30 3.75 15.00" ]
 }
 
+# The bare alias `claude-sonnet-5` is the real model id (#1957); the
+# `claude-sonnet-5-*` glob does not match it, so it has its own rows.
+@test "price_for: bare claude-sonnet-5 is priced (intro window) — #1957" {
+  run price_for "claude-sonnet-5" "2026-07-15"
+  [ "$output" = "2.00 0.20 2.50 10.00" ]
+}
+
+@test "price_for: bare claude-sonnet-5 is priced (standard window) — #1957" {
+  run price_for "claude-sonnet-5" "2026-09-27"
+  [ "$output" = "3.00 0.30 3.75 15.00" ]
+}
+
 @test "price_for: more-specific glob wins (opus-4-1 legacy = \$15, not \$5)" {
   run price_for "claude-opus-4-1-20250805" "2026-06-07"
   [ "$output" = "15.00 1.50 18.75 75.00" ]

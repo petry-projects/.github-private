@@ -119,9 +119,9 @@ set_engine_config() {
       ENGINE_TRIAGE_MODEL="claude-haiku-4-5-20251001"
       ENGINE_DEEP_MODEL="claude-opus-5-5"
       ENGINE_AUDIT_MODEL="claude-fable-5"
-      ENGINE_ACTION_MODEL="claude-sonnet-5-0"
+      ENGINE_ACTION_MODEL="claude-sonnet-5"
       ENGINE_SINGLE_MODEL="claude-fable-5"
-      ENGINE_LABEL="triage: haiku 4.5 [sonnet 5] → deep: opus 5.5 [sonnet 5] + duck: o4-mini → audit: fable 5"
+      ENGINE_LABEL="triage: haiku 4.5 [sonnet 5] → deep: opus 5.5 [opus 4.8, sonnet 5] + duck: o4-mini → audit: fable 5"
       ENGINE_SINGLE_LABEL="single-reviewer mode: fable 5"
       # Cross-engine rubber duck: use Copilot when Claude is primary
       DUCK_ENGINE="copilot"
@@ -136,7 +136,7 @@ set_engine_config() {
       #   - adaptive thinking only; budget_tokens/temperature/top_p/top_k removed
       #   - omit thinking param entirely (disabled returns 400 on fable-5)
       #   - min cacheable prefix: fable-5 = 2048 tok, opus-4-8 = 4096 tok
-      # Sonnet 5 default (#1100, epic #1095): claude-sonnet-5-0 is now the
+      # Sonnet 5 default (#1100, epic #1095): claude-sonnet-5 is now the
       # default sonnet across the triage, deep, and action chains, fully
       # replacing claude-sonnet-4-6 (which #1098 first wired as a non-default
       # fallback candidate). It is the sonnet fallback hop in triage/deep and
@@ -144,13 +144,18 @@ set_engine_config() {
       # ring→stable graduation is human-gated and NOT part of this change. The
       # daily cap is shared across Claude models (#206), so per-tier fallback
       # only helps per-model RPM/TPM, not the subscription cap.
-      CLAUDE_TRIAGE_MODEL_CHAIN="${CLAUDE_TRIAGE_MODEL_CHAIN:-claude-haiku-4-5-20251001,claude-sonnet-5-0}"
+      # The ID is `claude-sonnet-5` — the `claude-sonnet-5-0` spelling shipped
+      # by #1100 does not exist and 404s, so every sonnet hop silently fell
+      # through to the next model (#1957).
+      CLAUDE_TRIAGE_MODEL_CHAIN="${CLAUDE_TRIAGE_MODEL_CHAIN:-claude-haiku-4-5-20251001,claude-sonnet-5}"
       # Deep tier swapped opus-4-8 → opus-5-5 (#1898, epic #1895 Phase 2): the
-      # highest-cost tier now rides the cheaper, higher-benchmark model. Sonnet
-      # 5.0 is kept as the 2nd hop so the rate-limit cascade shape is unchanged.
-      CLAUDE_DEEP_MODEL_CHAIN="${CLAUDE_DEEP_MODEL_CHAIN:-claude-opus-5-5,claude-sonnet-5-0}"
+      # highest-cost tier now rides the cheaper, higher-benchmark model.
+      # opus-4-8 is the known-good 2nd hop (#1957): if opus-5-5 is throttled or
+      # unavailable, a deep review degrades to the model it replaced instead of
+      # failing. Sonnet 5 stays as the last in-Claude hop.
+      CLAUDE_DEEP_MODEL_CHAIN="${CLAUDE_DEEP_MODEL_CHAIN:-claude-opus-5-5,claude-opus-4-8,claude-sonnet-5}"
       CLAUDE_AUDIT_MODEL_CHAIN="${CLAUDE_AUDIT_MODEL_CHAIN:-claude-fable-5,claude-opus-4-8,claude-opus-4-7}"
-      CLAUDE_ACTION_MODEL_CHAIN="${CLAUDE_ACTION_MODEL_CHAIN:-claude-sonnet-5-0,claude-opus-4-8}"
+      CLAUDE_ACTION_MODEL_CHAIN="${CLAUDE_ACTION_MODEL_CHAIN:-claude-sonnet-5,claude-opus-4-8}"
       CLAUDE_SINGLE_MODEL_CHAIN="${CLAUDE_SINGLE_MODEL_CHAIN:-claude-fable-5,claude-opus-4-8,claude-opus-4-7}"
       ;;
     gemini)
@@ -330,6 +335,13 @@ _TOKEN_LIB="$(dirname "${BASH_SOURCE[0]}")/lib/token-metrics.sh"
 [ -f "$_TOKEN_LIB" ] && source "$_TOKEN_LIB" 2>/dev/null || true
 unset _TOKEN_LIB
 
+# Credential redaction (redact_secrets) for the Claude chain hop log. Non-fatal:
+# when the helper is missing, _claude_log_hop records only its header line.
+_REDACT_LIB="$(dirname "${BASH_SOURCE[0]}")/lib/redact.sh"
+# shellcheck source=lib/redact.sh
+[ -f "$_REDACT_LIB" ] && source "$_REDACT_LIB" 2>/dev/null || true
+unset _REDACT_LIB
+
 # _rate_limit_pattern
 # Single source of truth for the rate-limit regex used by both is_rate_limited
 # (text) and is_rate_limited_files (paths). Patterns intentionally excluded to
@@ -337,6 +349,11 @@ unset _TOKEN_LIB
 #   - bare "exhausted" (too broad: matches "retry attempts exhausted", OS errors, etc.)
 #     Retained as "token.*exhaust" / "out of.*token" for the specific token-depletion case.
 #   - CLI syntax errors ("Invalid command format", "unknown flag", etc.) — see is_cli_error.
+#   - the old Claude-specific "claude.*usage|usage.*claude": every
+#     `claude --output-format json` envelope carries the model name and a "usage"
+#     object, so it matched ANY failed call — a 404 unknown model or a 400 bad
+#     request was reported as throttling and silently skipped (#1957). Real
+#     Claude caps still match "usage limit" / "hit your limit" / 429 below.
 _rate_limit_pattern() {
   local _pat
   _pat="hit your limit|rate[ -]?limit|resets [0-9]+(am|pm)|reached.*limit" # soft cap / throttle
@@ -345,7 +362,6 @@ _rate_limit_pattern() {
   _pat="$_pat|out of.*token|token.*exhaust"                            # token depletion
   _pat="$_pat|overloaded_error|service.*overload|overload.*error"      # service overload
   _pat="$_pat|([^0-9]|^)529([^0-9]|$)"                               # HTTP 529
-  _pat="$_pat|claude.*usage|usage.*claude"                             # Claude-specific cap
   _pat="$_pat|plan.*limit|subscription.*limit|billing.*limit|daily.*limit|monthly.*limit|weekly.*limit"
   _pat="$_pat|([^0-9]|^)402([^0-9]|$)"                               # HTTP 402 (payment)
   _pat="$_pat|tokens_limit_reached|body too large|([^0-9]|^)413([^0-9]|$)" # Context / Request size
@@ -748,13 +764,102 @@ _gemini_chain_invoke() {
   return "$final_rc"
 }
 
+# _claude_hop_failure_class <stdout_file> <stderr_file>
+# Classifies one failed (rc != 0) `claude --print` hop for _claude_chain_invoke.
+# Prints exactly one of:
+#   rate_limit        throttle / cap / overload (HTTP 429, 529, 402, 413, or
+#                     _rate_limit_pattern text) — the next model may have headroom
+#   model_unavailable HTTP 404 — the model id is unknown or not provisioned
+#   invalid_request   HTTP 400 — this model rejected the request shape
+#   server_error      other HTTP 5xx — transient API failure
+#   error             anything else — not worth retrying on another model
+# With --output-format json a failed call prints a result envelope carrying
+# is_error / api_error_status next to the model name and a "usage" object. The
+# status code is authoritative when present, and only the envelope's .result text
+# is regex-scanned otherwise — never its metadata, which is what made every
+# Claude error look like throttling (#1957). Plain-text output is scanned as-is.
+_claude_hop_failure_class() {
+  local out="$1" err="$2" status="" result_tmp="" is_json=0 cls="error"
+  if [ -n "$out" ] && [ -s "$out" ] && command -v jq >/dev/null 2>&1 \
+     && jq -es 'any(.[]; type == "object" and has("type"))' "$out" >/dev/null 2>&1; then
+    is_json=1
+    status="$(jq -rs '[.[] | select(type == "object" and .is_error == true)] | last
+                      | (.api_error_status // empty) | tostring' "$out" 2>/dev/null || true)"
+  fi
+  case "$status" in
+    429|529|402|413) printf 'rate_limit'; return 0 ;;
+    404) printf 'model_unavailable'; return 0 ;;
+    400) printf 'invalid_request'; return 0 ;;
+    5[0-9][0-9]) printf 'server_error'; return 0 ;;
+    [0-9]*) printf 'error'; return 0 ;;
+  esac
+  if [ "$is_json" -eq 1 ]; then
+    result_tmp="$(mktemp 2>/dev/null)" || result_tmp=""
+    if [ -n "$result_tmp" ]; then
+      jq -rs '[.[] | select(type == "object")] | last | (.result // empty) | tostring' \
+        "$out" > "$result_tmp" 2>/dev/null || true
+      is_rate_limited_files "$result_tmp" "$err" && cls="rate_limit"
+      rm -f "$result_tmp"
+    else
+      is_rate_limited_files "$err" && cls="rate_limit"
+    fi
+  else
+    is_rate_limited_files "$out" "$err" && cls="rate_limit"
+  fi
+  printf '%s' "$cls"
+}
+
+# _claude_log_hop <model> <rc> <class> <stdout_file> <stderr_file>
+# Appends a failed hop's error to the hop log so an earlier hop's real error
+# survives — only the final hop's output reaches the caller (#1957). The log is
+# CLAUDE_CHAIN_HOP_LOG, defaulting under $RUNNER_TEMP/cascade/ (uploaded with the
+# pr-review debug artifact); outside Actions with no override it is off.
+# Kept deliberately narrow because it lands in an artifact: for a JSON envelope
+# only its error fields (is_error, api_error_status, subtype, .result) — non-JSON
+# stdout is omitted, since it may be a raw agent transcript — plus the head of
+# stderr, each capped at 1000 bytes and passed through redact_secrets. Without redact_secrets only the header line is
+# written. Written to a file, never stderr: callers scan our stderr with
+# is_rate_limited, and replaying a throttled hop's text there would make a
+# successful fallback look like a provider rate-limit. Best-effort; never fails
+# the caller.
+_claude_log_hop() {
+  local log="${CLAUDE_CHAIN_HOP_LOG:-}" out="${4:-}" err="${5:-}"
+  if [ -z "$log" ] && [ -n "${RUNNER_TEMP:-}" ]; then
+    log="$RUNNER_TEMP/cascade/claude-chain-hops.log"
+  fi
+  [ -n "$log" ] || return 0
+  mkdir -p "$(dirname "$log")" 2>/dev/null || return 0
+  {
+    printf '=== %s model=%s rc=%s class=%s\n' \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)" "$1" "$2" "$3"
+    if declare -F redact_secrets >/dev/null 2>&1; then
+      if [ -f "$out" ]; then
+        printf -- '--- error\n'
+        { jq -cs '[.[] | select(type == "object")] | last
+                  | {is_error, api_error_status, subtype, result}' "$out" 2>/dev/null \
+            || printf '(non-JSON stdout omitted)'; } \
+          | head -c 1000 | redact_secrets
+        printf '\n'
+      fi
+      if [ -f "$err" ] && [ -s "$err" ]; then
+        printf -- '--- stderr\n'
+        head -c 1000 "$err" 2>/dev/null | redact_secrets
+        printf '\n'
+      fi
+    fi
+  } >> "$log" 2>/dev/null || true
+}
+
 # _claude_chain_invoke <chain_csv> <prompt_file> <timeout_sec> [extra_args...]
 # Walks a comma-separated list of Claude models, invoking `claude --print --model X`
-# with the given extra arguments. The first model whose run does NOT trigger
-# is_rate_limited() wins: its captured stdout is written to fd1, stderr to fd2,
-# and its exit code is returned. Rate-limited attempts are discarded and the
-# next model is tried. If every model in the chain rate-limits, returns 2 and
-# writes the parsed reset time to /tmp/dev-lead-rate-limit-reset.
+# with the given extra arguments. A failed hop is classified by
+# _claude_hop_failure_class: throttling, an unavailable model (404), a rejected
+# request (400) or a 5xx is logged (a ::warning:: naming the reason, plus the
+# hop's output in the hop log) and the next model is tried; any other failure
+# propagates immediately. The final attempt's stdout is written to fd1, stderr to
+# fd2. If the chain runs out and its LAST hop was throttled, returns 2 and writes
+# the parsed reset time to /tmp/dev-lead-rate-limit-reset (the caller's
+# cross-provider fallback signal); otherwise returns that hop's own exit code.
 #
 # Empty chain → no-op return 0 (callers should fall back to the single-model
 # legacy path; this is only used when CLAUDE_*_MODEL_CHAIN is set).
@@ -789,7 +894,7 @@ _claude_chain_invoke() {
 
   local stdout_tmp="" stderr_tmp=""
   local final_stdout="" final_stderr="" final_model="" final_rc=0
-  local rc=0 attempted=0 all_rl=1
+  local rc=0 attempted=0 succeeded=0 last_cls=""
   local model
 
   for model in "${models[@]}"; do
@@ -829,23 +934,31 @@ _claude_chain_invoke() {
 
     if [ "$rc" -eq 0 ]; then
       final_rc=0
-      all_rl=0
+      succeeded=1
       break
     fi
-    # File-based rate-limit detection — avoids loading large agent output into
-    # a shell variable via $(cat ...) (OOM risk on big captures).
-    if ! is_rate_limited_files "$stdout_tmp" "$stderr_tmp"; then
-      # Non-rate-limit failure — propagate immediately, do not try next model.
-      final_rc="$rc"
-      all_rl=0
-      break
-    fi
-    # Rate-limited; record diagnosis and try the next model.
-    # Phrasing intentionally avoids "rate-limit"/"429"/"quota" etc. — those
-    # tokens match is_rate_limited()/_rate_limit_pattern, and downstream
+    final_rc="$rc"
+    # File-based classification — avoids loading large agent output into a
+    # shell variable via $(cat ...) (OOM risk on big captures).
+    last_cls="$(_claude_hop_failure_class "$stdout_tmp" "$stderr_tmp")"
+    _claude_log_hop "$model" "$rc" "$last_cls" "$stdout_tmp" "$stderr_tmp"
+    # Warning phrasing intentionally avoids "rate-limit"/"429"/"quota" etc. —
+    # those tokens match is_rate_limited()/_rate_limit_pattern, and downstream
     # callers (e.g. review-one-pr.sh) that scan our stderr would then
     # misclassify a successful chain fallback as a provider rate-limit.
-    echo "::warning::[claude] model $model throttled (rc=$rc) — trying next in chain" >&2
+    case "$last_cls" in
+      rate_limit)
+        echo "::warning::[claude] model $model throttled (rc=$rc) — trying next in chain" >&2 ;;
+      model_unavailable)
+        echo "::warning::[claude] model $model unavailable (HTTP 404: unknown or not provisioned) — trying next in chain" >&2 ;;
+      invalid_request)
+        echo "::warning::[claude] model $model rejected the request (HTTP 400) — trying next in chain" >&2 ;;
+      server_error)
+        echo "::warning::[claude] model $model hit an API server error (HTTP 5xx) — trying next in chain" >&2 ;;
+      *)
+        # Any other failure — propagate immediately, do not try the next model.
+        break ;;
+    esac
   done
 
   # Empty/whitespace-only chain → configuration error, not a rate-limit. Returning
@@ -855,8 +968,12 @@ _claude_chain_invoke() {
     return 1
   fi
 
-  # If every attempt was rate-limited, parse the last reset time and return 2.
-  if [ "$all_rl" -eq 1 ]; then
+  # Chain exhausted with the last hop throttled → parse its reset time and
+  # return 2. Keyed on the LAST hop because callers such as review-one-pr.sh
+  # decide on the cross-provider fallback by scanning the final hop's output,
+  # which only carries a rate-limit signal when that hop was throttled. A chain
+  # ending on a 404/400/5xx returns that hop's own code: an honest failure.
+  if [ "$succeeded" -eq 0 ] && [ "$last_cls" = "rate_limit" ]; then
     parse_reset_time_files "$final_stdout" "$final_stderr"
     final_rc=2
   fi
@@ -1082,11 +1199,15 @@ run_triage() {
         fi
         ;;
       copilot)
-        # In triage mode, we deny all tools to keep it fast and restricted.
+        # In triage mode, deny the mutating tools to keep it fast and restricted.
+        # The rule format is a tool kind (`shell`, `write`, `shell(cmd)`); a bare
+        # `*` is rejected ("Invalid rule format: *"), which broke this fallback
+        # outright (#1957). Tools not explicitly allowed are not auto-approved
+        # in non-interactive -p mode either.
         if [ -n "$_tok_tmp" ]; then
-          copilot_chat "$prompt_file" "$TRIAGE_TIMEOUT_SEC" --deny-tool "*" | tee "$_tok_tmp" || rc=${PIPESTATUS[0]}
+          copilot_chat "$prompt_file" "$TRIAGE_TIMEOUT_SEC" --deny-tool shell --deny-tool write | tee "$_tok_tmp" || rc=${PIPESTATUS[0]}
         else
-          copilot_chat "$prompt_file" "$TRIAGE_TIMEOUT_SEC" --deny-tool "*" || rc=$?
+          copilot_chat "$prompt_file" "$TRIAGE_TIMEOUT_SEC" --deny-tool shell --deny-tool write || rc=$?
         fi
         ;;
     esac
