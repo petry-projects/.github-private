@@ -287,14 +287,35 @@ jobs:
         # before any runner setup is burned.
         #
         # Gated on REVIEW_ENGINE=claude (the default, and the engine that was in the
-        # outage): the copilot/gemini engines authenticate with their own credentials
+        # outage) AND on AI_ENGINES enabling claude — a claude primary that AI_ENGINES
+        # leaves out is replaced by the first enabled engine, so it needs no token.
+        # The copilot/gemini engines authenticate with their own credentials
         # and install claude only best-effort, so they legitimately run WITHOUT this
         # token — failing them here would be a regression, not the fail-loud we want.
         env:
           REVIEW_ENGINE: ${{ vars.REVIEW_ENGINE || (startsWith(vars.AI_ENGINES, 'gemini') && 'gemini') || (startsWith(vars.AI_ENGINES, 'copilot') && 'copilot') || 'claude' }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
         run: |
-          if [ "$REVIEW_ENGINE" = "claude" ] && [ -z "$CLAUDE_CODE_OAUTH_TOKEN" ]; then
+          # Is Claude enabled? Only a valid AI_ENGINES list that omits claude turns it
+          # off; empty or invalid values fall back to the default chain, which includes
+          # claude (scripts/lib/engine-chain.sh — mirrored inline because this runs
+          # before the scripts are checked out).
+          claude_enabled=true
+          spec="$(printf '%s' "${AI_ENGINES:-}" | tr '[:upper:],' '[:lower:] ')"
+          if [ -n "${spec// /}" ]; then
+            set -f
+            known=true; has_claude=false
+            for e in $spec; do
+              case "$e" in
+                claude) has_claude=true ;;
+                gemini|copilot) ;;
+                *) known=false ;;
+              esac
+            done
+            set +f
+            if [ "$known" = true ] && [ "$has_claude" = false ]; then claude_enabled=false; fi
+          fi
+          if [ "$REVIEW_ENGINE" = "claude" ] && [ "$claude_enabled" = true ] && [ -z "$CLAUDE_CODE_OAUTH_TOKEN" ]; then
             msg="CLAUDE_CODE_OAUTH_TOKEN is not provided to pr-review."
             msg="$msg To pause deliberately, set AGENTS_PAUSED=true Actions variable"
             msg="$msg instead of withholding the secret (see #1525)."

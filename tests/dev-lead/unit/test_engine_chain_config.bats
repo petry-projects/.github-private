@@ -294,3 +294,28 @@ _batch() {
   [[ "$output" == *"no fallback available"* ]]
   rm -rf "$BDIR"
 }
+
+# ── dev-lead-preflight.sh: Claude token required only when AI_ENGINES enables claude ──
+
+_preflight() {
+  bash -c "unset GITHUB_STEP_SUMMARY CLAUDE_CODE_OAUTH_TOKEN; bash '$SCRIPT_DIR/scripts/dev-lead-preflight.sh'"
+}
+
+@test "preflight: Claude token required by default" {
+  run _preflight
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"Required secret not set: CLAUDE_CODE_OAUTH_TOKEN"* ]]
+}
+
+@test "preflight: Claude token optional when AI_ENGINES leaves claude out" {
+  export AI_ENGINES="gemini,copilot"
+  run _preflight
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"claude not in AI_ENGINES"* ]]
+}
+
+@test "preflight: an invalid AI_ENGINES still requires the Claude token (default chain)" {
+  export AI_ENGINES="gemini,cluade"
+  run _preflight
+  [ "$status" -eq 1 ]
+}
