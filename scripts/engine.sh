@@ -168,8 +168,8 @@ export REVIEW_MCP_CONFIG REVIEW_MCP_ALLOWED_TOOLS REVIEW_MCP_DEBUG
 # applies only when <engine> is the explicitly configured AI_DUCK_ENGINE (a model
 # id is engine-specific, so it must never follow the duck onto another engine).
 _duck_model_for() {
-  local engine="$1" wanted
-  wanted="$(printf '%s' "${AI_DUCK_ENGINE:-}" | tr '[:upper:]' '[:lower:]')"
+  local engine="$1" wanted="${AI_DUCK_ENGINE:-}"
+  wanted="${wanted,,}"
   if [ -n "${AI_DUCK_MODEL:-}" ] && [ "$engine" = "$wanted" ]; then
     printf '%s' "$AI_DUCK_MODEL"
     return 0
@@ -179,9 +179,10 @@ _duck_model_for() {
     claude)
       m="$(ai_models_chain claude duck)" ;;
     gemini)
-      # AI_MODELS_GEMINI duck=…, else the flash tier's primary model.
+      # AI_MODELS_GEMINI duck=…, else the flash tier's primary model (same
+      # precedence as set_engine_config: the explicit chain, then the override).
       m="$(ai_models_configured gemini duck)"
-      [ -n "$m" ] || m="${GEMINI_FLASH_MODEL:-$(ai_models_chain gemini flash)}" ;;
+      [ -n "$m" ] || m="${GEMINI_FLASH_MODEL_CHAIN:-${GEMINI_FLASH_MODEL:-$(ai_models_chain gemini flash)}}" ;;
     copilot)
       m="$(ai_model_label "${COPILOT_API_MODEL:-$DEFAULT_COPILOT_API_MODEL}")" ;;
   esac
@@ -232,11 +233,11 @@ set_engine_config() {
       # set, replacing just the first model.
       if [ -z "${GEMINI_FLASH_MODEL_CHAIN:-}" ]; then
         GEMINI_FLASH_MODEL_CHAIN="$(ai_models_chain gemini flash)"
-        [ -z "${GEMINI_FLASH_MODEL:-}" ] || GEMINI_FLASH_MODEL_CHAIN="$(ai_models_with_first "$GEMINI_FLASH_MODEL" "$GEMINI_FLASH_MODEL_CHAIN")"
+        [ -z "${GEMINI_FLASH_MODEL:-}" ] || GEMINI_FLASH_MODEL_CHAIN="$(ai_models_replace_first "$GEMINI_FLASH_MODEL" "$GEMINI_FLASH_MODEL_CHAIN")"
       fi
       if [ -z "${GEMINI_PRO_MODEL_CHAIN:-}" ]; then
         GEMINI_PRO_MODEL_CHAIN="$(ai_models_chain gemini pro)"
-        [ -z "${GEMINI_PRO_MODEL:-}" ] || GEMINI_PRO_MODEL_CHAIN="$(ai_models_with_first "$GEMINI_PRO_MODEL" "$GEMINI_PRO_MODEL_CHAIN")"
+        [ -z "${GEMINI_PRO_MODEL:-}" ] || GEMINI_PRO_MODEL_CHAIN="$(ai_models_replace_first "$GEMINI_PRO_MODEL" "$GEMINI_PRO_MODEL_CHAIN")"
       fi
       local _gflash _gpro
       _gflash="$(_engine_chain_first "$GEMINI_FLASH_MODEL_CHAIN")"
@@ -273,7 +274,7 @@ set_engine_config() {
       # Cross-engine rubber duck: use Gemini when Copilot is primary
       DUCK_ENGINE="gemini"
       DUCK_MODEL="$(_duck_model_for gemini)"
-      ENGINE_LABEL="triage: $_cmodel → deep: $_cmodel + duck: $DUCK_MODEL → audit: $_cmodel (GitHub Models API)"
+      ENGINE_LABEL="triage: $_cmodel → deep: $_cmodel + duck: $(ai_model_label "$DUCK_MODEL") → audit: $_cmodel (GitHub Models API)"
       ENGINE_SINGLE_LABEL="single-reviewer mode: $_cmodel (GitHub Models API)"
       # No in-engine chain for Copilot — single GitHub Models endpoint.
       CLAUDE_TRIAGE_MODEL_CHAIN=""

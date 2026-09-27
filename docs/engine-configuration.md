@@ -36,7 +36,8 @@ variable edit, not a code change. The parsing and the defaults are in
 Each entry is `<key>=<model>[,<fallback>,…]`. Separate entries with `;` or new
 lines. Keys are case-insensitive and spaces around names are ignored. A key you
 leave out keeps its default. A chain is walked left to right on a rate limit,
-before the next engine in `AI_ENGINES` is tried.
+before the next engine in `AI_ENGINES` is tried. The `duck` and `model` keys take
+one model; given several, they warn and use the first.
 
 | Variable | Key | Used for | Default |
 |---|---|---|---|

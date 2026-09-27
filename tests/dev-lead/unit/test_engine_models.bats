@@ -114,7 +114,7 @@ _engine() {
 @test "gemini: GEMINI_PRO_MODEL replaces only the first model of the configured chain" {
   export AI_MODELS_GEMINI="pro=gemini-p1,gemini-p2" GEMINI_PRO_MODEL="gemini-x"
   run _engine gemini GEMINI_PRO_MODEL_CHAIN ENGINE_DEEP_MODEL
-  [[ "$output" == *"GEMINI_PRO_MODEL_CHAIN=gemini-x,gemini-p1,gemini-p2"* ]]
+  [[ "$output" == *"GEMINI_PRO_MODEL_CHAIN=gemini-x,gemini-p2"* ]]
   [[ "$output" == *"ENGINE_DEEP_MODEL=gemini-x"* ]]
 }
 
@@ -153,6 +153,29 @@ _engine() {
   export AI_MODELS_GEMINI="duck=gemini-d1"
   run _engine copilot DUCK_MODEL
   [[ "$output" == *"DUCK_MODEL=gemini-d1"* ]]
+}
+
+@test "copilot: the Gemini duck model follows GEMINI_FLASH_MODEL_CHAIN, then GEMINI_FLASH_MODEL" {
+  export GEMINI_FLASH_MODEL_CHAIN="gemini-c1,gemini-c2" GEMINI_FLASH_MODEL="gemini-x"
+  run _engine copilot DUCK_MODEL
+  [[ "$output" == *"DUCK_MODEL=gemini-c1"* ]]
+  unset GEMINI_FLASH_MODEL_CHAIN
+  run _engine copilot DUCK_MODEL
+  [[ "$output" == *"DUCK_MODEL=gemini-x"* ]]
+}
+
+@test "problems: a duck or copilot model key given several models warns and keeps the first" {
+  export AI_MODELS_COPILOT="model=openai/gpt-5-mini,openai/o4-mini" AI_MODELS_CLAUDE="duck=claude-sonnet-5,claude-opus-4-8"
+  [ "$(ai_models_chain copilot model)" = "openai/gpt-5-mini" ]
+  [ "$(ai_models_chain claude duck)" = "claude-sonnet-5" ]
+  run ai_models_problems
+  [[ "$output" == *"AI_MODELS_COPILOT: 'model' takes one model — only 'openai/gpt-5-mini' is used"* ]]
+  [[ "$output" == *"AI_MODELS_CLAUDE: 'duck' takes one model — only 'claude-sonnet-5' is used"* ]]
+}
+
+@test "copilot: the log label shows the duck's short name" {
+  run _engine copilot ENGINE_LABEL
+  [[ "$output" == *"duck: gemini-3.8-flash →"* ]]
 }
 
 # ── Warnings ──────────────────────────────────────────────────────────────────

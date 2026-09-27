@@ -15,10 +15,12 @@
 #
 #   Claude tiers  triage (classify)   deep (agentic review)   audit (security)
 #                 action (dev-lead writer)   single (single-reviewer mode)
-#                 duck (model when Claude is the rubber duck; first entry only)
+#                 duck (model when Claude is the rubber duck; one model)
 #   Gemini        flash → triage + action;   pro → deep + audit + single;
 #                 duck (model when Gemini is the rubber duck; default: flash's first)
-#   Copilot       model (GitHub Models id for every tier; first entry only)
+#   Copilot       model (GitHub Models id for every tier; one model — the
+#                 GitHub Models client has no in-engine chain)
+#   A duck or model key given several models warns and keeps the first.
 #
 # Precedence per key, highest first:
 #   1. the specific env var kept for existing callers: CLAUDE_<TIER>_MODEL_CHAIN,
@@ -84,7 +86,8 @@ _ai_models_trim() {
 
 # _ai_models_var <provider> — the variable name, e.g. AI_MODELS_CLAUDE.
 _ai_models_var() {
-  printf 'AI_MODELS_%s' "$(printf '%s' "${1:-}" | tr '[:lower:]' '[:upper:]')"
+  local provider="${1:-}"
+  printf 'AI_MODELS_%s' "${provider^^}"
 }
 
 # _ai_models_scan <provider> <mode> [key]
@@ -107,7 +110,8 @@ _ai_models_scan() {
       [ "$mode" = problems ] && printf "%s: '%s' is not <key>=<models> — ignored\n" "$var" "$entry"
       continue
     fi
-    key="$(_ai_models_trim "${entry%%=*}" | tr '[:upper:]' '[:lower:]')"
+    key="$(_ai_models_trim "${entry%%=*}")"
+    key="${key,,}"
     value="${entry#*=}"
     if [[ " $(_ai_models_keys "$provider") " != *" $key "* ]]; then
       [ "$mode" = problems ] && printf "%s: unknown key '%s' (expected: %s) — ignored\n" \
@@ -130,6 +134,10 @@ _ai_models_scan() {
       [ "$mode" = problems ] && [[ "$value" =~ ^[,[:space:]]*$ ]] && printf "%s: '%s' lists no model — default used\n" "$var" "$key"
       continue
     fi
+    if [[ "$chain" == *,* ]] && { [ "$key" = duck ] || [ "$key" = model ]; }; then
+      [ "$mode" = problems ] && printf "%s: '%s' takes one model — only '%s' is used\n" "$var" "$key" "${chain%%,*}"
+      chain="${chain%%,*}"
+    fi
     [ "$key" = "$want" ] && found="$chain"
   done
   [ "$mode" = get ] && printf '%s' "$found"
@@ -150,14 +158,14 @@ ai_models_chain() {
   printf '%s' "$c"
 }
 
-# ai_models_with_first <first> <chain> — <chain> with <first> moved to the front
-# (the GEMINI_FLASH_MODEL / GEMINI_PRO_MODEL override: replace the primary, keep
-# the rest of the chain as fallbacks).
-ai_models_with_first() {
+# ai_models_replace_first <first> <chain> — <chain> with its first model replaced
+# by <first> (the GEMINI_FLASH_MODEL / GEMINI_PRO_MODEL override: swap the primary,
+# keep the rest of the chain as fallbacks, so a retired primary is not retried).
+ai_models_replace_first() {
   local first="$1" chain="$2" out="$1" m
   local -a others=()
   IFS=',' read -r -a others <<< "$chain"
-  for m in "${others[@]}"; do
+  for m in "${others[@]:1}"; do
     [ -n "$m" ] && [ "$m" != "$first" ] && out="$out,$m"
   done
   printf '%s' "$out"
@@ -180,7 +188,7 @@ ai_model_label() {
   case "$m" in
     claude-*)
       m="${m#claude-}"
-      m="$(printf '%s' "$m" | sed -E 's/-[0-9]{8}$//')"
+      [[ "$m" =~ -[0-9]{8}$ ]] && m="${m%-*}"
       family="${m%%-*}"
       ver="${m#"$family"}"
       ver="${ver#-}"
