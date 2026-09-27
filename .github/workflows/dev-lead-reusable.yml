@@ -169,7 +169,7 @@ jobs:
           # before the scripts are checked out).
           claude_enabled=true
           spec="$(printf '%s' "${AI_ENGINES:-}" | tr '[:upper:],' '[:lower:] ')"
-          if [ -n "${spec// /}" ]; then
+          if [ -n "${spec//[[:space:]]/}" ]; then
             set -f
             known=true; has_claude=false
             for e in $spec; do
@@ -722,7 +722,7 @@ jobs:
           # before the scripts are checked out).
           claude_enabled=true
           spec="$(printf '%s' "${AI_ENGINES:-}" | tr '[:upper:],' '[:lower:] ')"
-          if [ -n "${spec// /}" ]; then
+          if [ -n "${spec//[[:space:]]/}" ]; then
             set -f
             known=true; has_claude=false
             for e in $spec; do

@@ -460,3 +460,25 @@ _run_duck_probe() {
   [ -n "$pat" ]
   grep -qF "_BATCH_LICENSE_DENIED_RE=\"$pat\"" "$SCRIPT_DIR/scripts/review-batch.sh"
 }
+
+@test "duck: an engine rate-limited earlier in the batch (AI_ENGINES_RATE_LIMITED) is not chosen as the duck" {
+  run bash -c "export REVIEW_ENGINE=gemini AI_ENGINES_RATE_LIMITED=claude; unset AI_DUCK_ENGINE AI_DUCK_MODEL CLAUDE_AVAILABLE GEMINI_AVAILABLE COPILOT_AVAILABLE; source '$SCRIPT_DIR/scripts/engine.sh' >/dev/null 2>&1; select_duck_engine"
+  [[ "$output" != claude* ]]
+  [[ "$output" == copilot* ]]
+}
+
+@test "batch: a rate-limited engine is exported to child processes (AI_ENGINES_RATE_LIMITED)" {
+  _setup_batch
+  cat > "$BDIR/scripts/review-one-pr.sh" <<'EOS'
+#!/bin/bash
+printf '%s rl=[%s]\n' "$REVIEW_ENGINE" "${AI_ENGINES_RATE_LIMITED:-}" >> engine_calls.txt
+v="MOCK_RC_${REVIEW_ENGINE}"
+exit "${!v:-0}"
+EOS
+  chmod +x "$BDIR/scripts/review-one-pr.sh"
+  export MOCK_RC_claude=2
+  run _batch
+  [ "$status" -eq 0 ]
+  grep -q '^gemini rl=\[claude\]$' "$BDIR/engine_calls.txt"
+  rm -rf "$BDIR"
+}

@@ -110,9 +110,12 @@ ai_engine_primary() {
   fi
 }
 
-# ai_engine_available <engine> — 0 when <engine> is enabled and the pre-flight
-# probe (validate_engines) has not marked it unavailable. A flag that was never
-# set counts as available, so callers outside a probed run keep working.
+# ai_engine_available <engine> — 0 when <engine> is enabled, the pre-flight
+# probe (validate_engines) has not marked it unavailable, and review-batch.sh
+# has not recorded it in AI_ENGINES_RATE_LIMITED (engines that hit a rate limit
+# earlier in the batch; exported so child processes such as the rubber-duck
+# selection in review-one-pr.sh skip them too). A flag that was never set
+# counts as available, so callers outside a probed run keep working.
 ai_engine_available() {
   local flag
   case "${1:-}" in
@@ -122,6 +125,7 @@ ai_engine_available() {
     *) return 1 ;;
   esac
   ai_engine_enabled "$1" || return 1
+  [[ " ${AI_ENGINES_RATE_LIMITED:-} " != *" $1 "* ]] || return 1
   [ "$flag" != "false" ]
 }
 
