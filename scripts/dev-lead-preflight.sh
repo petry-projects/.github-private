@@ -41,7 +41,21 @@ echo "────────────────────────�
 
 FAILED=0
 
-check_required "CLAUDE_CODE_OAUTH_TOKEN" "Claude Code CLI authentication" || FAILED=1
+# The Claude token is required only when AI_ENGINES enables claude
+# (scripts/lib/engine-chain.sh); a Gemini/Copilot-only chain runs without it.
+CLAUDE_REQUIRED=required
+_PREFLIGHT_CHAIN_LIB="$(dirname "${BASH_SOURCE[0]}")/lib/engine-chain.sh"
+# shellcheck source=lib/engine-chain.sh
+[ -f "$_PREFLIGHT_CHAIN_LIB" ] && source "$_PREFLIGHT_CHAIN_LIB"
+if declare -F ai_engine_enabled >/dev/null 2>&1 && ! ai_engine_enabled claude; then
+  CLAUDE_REQUIRED=optional
+fi
+
+if [ "$CLAUDE_REQUIRED" = required ]; then
+  check_required "CLAUDE_CODE_OAUTH_TOKEN" "Claude Code CLI authentication" || FAILED=1
+else
+  check_optional "CLAUDE_CODE_OAUTH_TOKEN" "Claude Code CLI authentication (claude not in AI_ENGINES)"
+fi
 
 check_optional "GH_PAT_WORKFLOWS" "workflow file pushes and repository_dispatch"
 check_optional "GOOGLE_API_KEY" "Gemini engine fallback"
@@ -69,7 +83,7 @@ if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
       fi
     }
 
-    _row "CLAUDE_CODE_OAUTH_TOKEN" "Claude Code CLI authentication" "required"
+    _row "CLAUDE_CODE_OAUTH_TOKEN" "Claude Code CLI authentication" "$CLAUDE_REQUIRED"
     _row "GH_PAT_WORKFLOWS" "Workflow file pushes and repository_dispatch"
     _row "GOOGLE_API_KEY" "Gemini engine fallback"
     _row "GH_PAT" "Copilot engine"

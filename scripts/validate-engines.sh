@@ -6,8 +6,14 @@
 #
 # After validate_engines() returns the following vars are exported:
 #   CLAUDE_AVAILABLE   — "true" if claude CLI + CLAUDE_CODE_OAUTH_TOKEN are present
-#   GEMINI_AVAILABLE   — "true" if gemini CLI + GOOGLE_API_KEY are present
+#   GEMINI_AVAILABLE   — "true" if gemini CLI + at least one Gemini key with
+#                        credits (GOOGLE_API_KEY, GOOGLE_API_KEY_2, _3) are present
 #   COPILOT_AVAILABLE  — "true" if gh copilot is usable with COPILOT_GITHUB_TOKEN
+#                        (a classic ghp_ PAT is not: Copilot rejects it)
+#
+# Engines left out of AI_ENGINES (scripts/lib/engine-chain.sh) are reported as
+# disabled and not probed — turning an engine off is a configuration choice, not
+# a degraded state, so it gets a notice rather than a warning.
 #
 # For each unavailable fallback engine a ::warning:: annotation is emitted that
 # includes the exact command an operator needs to fix the gap — so the log is
@@ -19,25 +25,29 @@
 #
 # Always exits 0.  Degraded state is recorded but never aborts the run.
 
-# _gemini_billing_probe
-# Makes a minimal REST call to the Gemini API to detect depleted prepayment
-# credits before the first PR review.  The Gemini CLI retries billing-exhaustion
-# errors 10× with backoff (~4 min total); detecting it here lets validate_engines
-# mark GEMINI_AVAILABLE=false immediately, skipping the wasted wait entirely.
-#
-# Returns 0 — billing OK or status undetermined (fail-open: Gemini proceeds).
-# Returns 1 — billing explicitly depleted (RESOURCE_EXHAUSTED detected).
-#
-# Requires: A Gemini API key (GOOGLE_API_KEY or secondary keys), curl (skips probe if curl is absent).
-_gemini_billing_probe() {
-  if ! command -v curl >/dev/null 2>&1; then
+# Engine chain (AI_ENGINES). Optional: when the library is absent every engine
+# counts as enabled, which is the pre-AI_ENGINES behaviour.
+_VALIDATE_ENGINES_CHAIN_LIB="$(dirname "${BASH_SOURCE[0]}")/lib/engine-chain.sh"
+# shellcheck source=lib/engine-chain.sh
+[ -f "$_VALIDATE_ENGINES_CHAIN_LIB" ] && source "$_VALIDATE_ENGINES_CHAIN_LIB"
+unset _VALIDATE_ENGINES_CHAIN_LIB
+
+# _validate_engine_enabled <engine> — 0 unless AI_ENGINES leaves <engine> out.
+_validate_engine_enabled() {
+  if declare -F ai_engine_enabled >/dev/null 2>&1; then
+    ai_engine_enabled "$1"
+  else
     return 0
   fi
+}
 
-  local _key="${GOOGLE_API_KEY:-${GEMINI_API_KEY:-${GOOGLE_API_KEY_2:-${GOOGLE_API_KEY_3}}}}"
-  [ -z "$_key" ] && return 0
-
-  local _raw _body
+# _gemini_probe_key <key> — minimal REST call with one Gemini key.
+# Returns 1 only when the response explicitly reports depleted prepayment
+# credits; any other outcome (success, network error, invalid key, transient
+# RESOURCE_EXHAUSTED quota) is "undetermined" and returns 0 (fail-open: Gemini
+# proceeds and fails loudly at call time if it really is broken).
+_gemini_probe_key() {
+  local _key="$1" _raw _body
   _raw=$(
     timeout 15 curl -sS --max-time 10 \
       -X POST \
@@ -47,17 +57,51 @@ _gemini_billing_probe() {
       -d '{"contents":[{"parts":[{"text":"Hi"}]}],"generationConfig":{"maxOutputTokens":1}}' \
       -w '\n%{http_code}' 2>/dev/null
   ) || true
-
   # Strip the trailing HTTP status code line appended by -w; check only the body.
   _body=$(printf '%s' "$_raw" | sed '$d')
-
   if printf '%s' "$_body" | grep -qiE "credits.*depleted"; then
     return 1
   fi
-
-  # Any non-billing error (invalid key, network error, etc.) is treated as
-  # undetermined — let Gemini proceed and fail loudly at call time if needed.
   return 0
+}
+
+# _gemini_billing_probe
+# Probes EVERY configured Gemini key (GEMINI_API_KEY / GOOGLE_API_KEY, then the
+# #1777 rotation keys GOOGLE_API_KEY_2 and GOOGLE_API_KEY_3; duplicates probed
+# once) to detect depleted prepayment credits before the first PR review. The
+# Gemini CLI retries billing exhaustion 10× with backoff (~4 min); detecting it
+# here lets validate_engines skip a dead engine immediately. _gemini_invoke
+# rotates across the same keys at call time, so Gemini is usable while ANY key
+# has credits — probing only the first key wrongly disabled Gemini whenever
+# that one key ran dry.
+#
+# Returns 0 — at least one key is OK or undetermined (fail-open).
+# Returns 1 — every configured key explicitly reports depleted credits.
+# Sets GEMINI_DEPLETED_KEYS to the NAMES (never values) of depleted keys.
+#
+# Requires: curl (skips the probe — returns 0 — when curl is absent).
+_gemini_billing_probe() {
+  GEMINI_DEPLETED_KEYS=""
+  if ! command -v curl >/dev/null 2>&1; then
+    return 0
+  fi
+  local _name _key _seen="" _any=0 _ok=0
+  for _name in GEMINI_API_KEY GOOGLE_API_KEY GOOGLE_API_KEY_2 GOOGLE_API_KEY_3; do
+    _key="${!_name:-}"
+    [ -z "$_key" ] && continue
+    case "$_seen" in
+      *"|${_key}|"*) continue ;;
+    esac
+    _seen="${_seen}|${_key}|"
+    _any=1
+    if _gemini_probe_key "$_key"; then
+      _ok=1
+    else
+      GEMINI_DEPLETED_KEYS="${GEMINI_DEPLETED_KEYS:+$GEMINI_DEPLETED_KEYS, }$_name"
+    fi
+  done
+  [ "$_any" -eq 0 ] && return 0
+  [ "$_ok" -eq 1 ]
 }
 
 validate_engines() {
@@ -75,8 +119,21 @@ validate_engines() {
     return 0
   fi
 
+  # ── Engine chain (AI_ENGINES) ───────────────────────────────────────────────
+  local _chain_problem="" _disabled=""
+  if declare -F ai_engine_chain_problem >/dev/null 2>&1; then
+    _chain_problem="$(ai_engine_chain_problem)"
+    if [ -n "$_chain_problem" ] && [ -z "${AI_ENGINES_PROBLEM_REPORTED:-}" ]; then
+      echo "::warning::$_chain_problem"
+      export AI_ENGINES_PROBLEM_REPORTED=1
+    fi
+    echo "::notice::Engine chain (AI_ENGINES): $(ai_engine_chain)"
+  fi
+
   # ── Claude ──────────────────────────────────────────────────────────────────
-  if command -v claude >/dev/null 2>&1 && [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+  if ! _validate_engine_enabled claude; then
+    _disabled="${_disabled:+$_disabled, }claude"
+  elif command -v claude >/dev/null 2>&1 && [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
     claude_ok=true
   fi
 
@@ -92,46 +149,73 @@ validate_engines() {
     fi
   }
 
-  if ! command -v gemini >/dev/null 2>&1; then
-    append_gemini_reason "Gemini CLI not installed (fix: npm install -g @google/gemini-cli)"
-  fi
-  # Check for any available Gemini API key: primary (GEMINI_API_KEY or GOOGLE_API_KEY)
-  # or secondary rotation keys (GOOGLE_API_KEY_2, GOOGLE_API_KEY_3) per issue #1777.
-  if [ -z "${GEMINI_API_KEY:-}" ] && [ -z "${GOOGLE_API_KEY:-}" ] && \
-     [ -z "${GOOGLE_API_KEY_2:-}" ] && [ -z "${GOOGLE_API_KEY_3:-}" ]; then
-    append_gemini_reason "No Gemini API key configured (set GOOGLE_API_KEY, GOOGLE_API_KEY_2, or GOOGLE_API_KEY_3)"
-  fi
-  if [ "${GEMINI_CLI_TRUST_WORKSPACE:-false}" != "true" ]; then
-    append_gemini_reason "GEMINI_CLI_TRUST_WORKSPACE is not true (fix: set in env or pass --skip-trust)"
-  fi
+  if ! _validate_engine_enabled gemini; then
+    _disabled="${_disabled:+$_disabled, }gemini"
+  else
+    if ! command -v gemini >/dev/null 2>&1; then
+      append_gemini_reason "Gemini CLI not installed (fix: npm install -g @google/gemini-cli)"
+    fi
+    # Check for any available Gemini API key: primary (GEMINI_API_KEY or GOOGLE_API_KEY)
+    # or secondary rotation keys (GOOGLE_API_KEY_2, GOOGLE_API_KEY_3) per issue #1777.
+    if [ -z "${GEMINI_API_KEY:-}" ] && [ -z "${GOOGLE_API_KEY:-}" ] && \
+       [ -z "${GOOGLE_API_KEY_2:-}" ] && [ -z "${GOOGLE_API_KEY_3:-}" ]; then
+      append_gemini_reason "No Gemini API key configured (set GOOGLE_API_KEY, GOOGLE_API_KEY_2, or GOOGLE_API_KEY_3)"
+    fi
+    if [ "${GEMINI_CLI_TRUST_WORKSPACE:-false}" != "true" ]; then
+      append_gemini_reason "GEMINI_CLI_TRUST_WORKSPACE is not true (fix: set in env or pass --skip-trust)"
+    fi
 
-  if [ -z "$gemini_reasons" ]; then
-    # All basic checks pass — probe the REST API for billing depletion.
-    # Depleted prepayment credits cause the Gemini CLI to retry 10× (~4 min)
-    # before surfacing the error; detecting it here lets us skip Gemini entirely
-    # and fall through to the next engine immediately.
-    if _gemini_billing_probe; then
-      gemini_ok=true
-    else
-      append_gemini_reason "prepayment credits depleted — replenish via Google AI Studio (https://aistudio.google.com/billing)"
+    if [ -z "$gemini_reasons" ]; then
+      # All basic checks pass — probe the REST API for billing depletion.
+      # Depleted prepayment credits cause the Gemini CLI to retry 10× (~4 min)
+      # before surfacing the error; detecting it here lets us skip Gemini entirely
+      # and fall through to the next engine immediately.
+      if _gemini_billing_probe; then
+        gemini_ok=true
+        if [ -n "${GEMINI_DEPLETED_KEYS:-}" ]; then
+          echo "::warning::Gemini key(s) with depleted prepayment credits: ${GEMINI_DEPLETED_KEYS} — Gemini stays available on the remaining key(s); replenish via Google AI Studio (https://aistudio.google.com/billing)"
+        fi
+      else
+        append_gemini_reason "prepayment credits depleted on every configured key (${GEMINI_DEPLETED_KEYS:-none}) — replenish via Google AI Studio (https://aistudio.google.com/billing)"
+      fi
+    fi
+
+    if [ -n "$gemini_reasons" ]; then
+      echo "::warning::Gemini fallback unavailable — ${gemini_reasons}. When Claude is rate-limited, runs will fall through to the next engine in AI_ENGINES."
     fi
   fi
 
-  if [ -n "$gemini_reasons" ]; then
-    echo "::warning::Gemini fallback unavailable — ${gemini_reasons}. When Claude is rate-limited, runs will fall through directly to Copilot."
-  fi
-
   # ── Copilot ─────────────────────────────────────────────────────────────────
-  # gh copilot is now a built-in; auth via COPILOT_GITHUB_TOKEN (user PAT with
-  # Copilot subscription).  Fall back to GH_TOKEN for non-production test paths.
-  if env GH_TOKEN="${COPILOT_GITHUB_TOKEN:-${GH_TOKEN:-}}" \
+  # gh copilot is now a built-in; auth via COPILOT_GITHUB_TOKEN (the PAT of the
+  # account holding the Copilot entitlement). A generic GH_TOKEN (workflow token,
+  # automation PAT) does NOT stand in for it: `gh copilot --version` succeeds on
+  # any token, so accepting GH_TOKEN reported Copilot available on runs whose
+  # review would then fail its smoke test or at call time (#1961 review).
+  # A classic PAT (ghp_) is rejected by Copilot at call time ("Classic Personal
+  # Access Tokens (ghp_) are not supported by Copilot"), so `gh copilot
+  # --version` succeeding proves nothing — report it unavailable up front, the
+  # same rule dev-lead's fallback applies (#1495, #1960).
+  local _copilot_tok="${COPILOT_GITHUB_TOKEN:-}"
+  if ! _validate_engine_enabled copilot; then
+    _disabled="${_disabled:+$_disabled, }copilot"
+  elif [ -z "$_copilot_tok" ]; then
+    echo "::warning::Copilot unavailable — COPILOT_GITHUB_TOKEN is not set. Provide a fine-grained PAT with the Copilot entitlement or remove copilot from AI_ENGINES."
+  elif [[ "$_copilot_tok" == ghp_* ]]; then
+    echo "::warning::Copilot unavailable — COPILOT_GITHUB_TOKEN is a classic PAT (ghp_), which Copilot rejects. Use a fine-grained PAT or remove copilot from AI_ENGINES."
+  elif env GH_TOKEN="$_copilot_tok" \
        gh copilot --version >/dev/null 2>&1; then
     copilot_ok=true
+  fi
+
+  if [ -n "$_disabled" ]; then
+    echo "::notice::Engine(s) disabled by AI_ENGINES, not probed: ${_disabled}"
   fi
 
   export CLAUDE_AVAILABLE="$claude_ok"
   export GEMINI_AVAILABLE="$gemini_ok"
   export COPILOT_AVAILABLE="$copilot_ok"
+  # Names only (never values): engine.sh's _gemini_api_keys tries these last.
+  export GEMINI_DEPLETED_KEYS="${GEMINI_DEPLETED_KEYS:-}"
 
   _emit_engine_summary "$claude_ok" "$gemini_ok" "$copilot_ok"
 }

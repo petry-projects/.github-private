@@ -15,6 +15,8 @@ setup() {
   export PATH="$TEST_DIR/bin:$PATH"
 
   cp "$BATS_TEST_DIRNAME/../scripts/review-batch.sh" "scripts/"
+  mkdir -p "scripts/lib"
+  cp "$BATS_TEST_DIRNAME/../scripts/lib/engine-chain.sh" "scripts/lib/"
 
   cat > "scripts/validate-engines.sh" <<'EOF'
 validate_engines() {
