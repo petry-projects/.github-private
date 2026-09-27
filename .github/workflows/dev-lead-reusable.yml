@@ -134,7 +134,16 @@ jobs:
       # (#1425). vars.TRUSTED_BOTS still overrides for an emergency pin.
       TRUSTED_BOTS: ${{ vars.TRUSTED_BOTS || '' }}
       TRIGGER_PHRASES: ${{ vars.TRIGGER_PHRASES || '@dev-lead' }}
-      DEV_LEAD_ENGINE: ${{ vars.DEV_LEAD_ENGINE || 'claude' }}
+      # Engine configuration (scripts/lib/engine-chain.sh, docs/engine-configuration.md):
+      # AI_ENGINES is the ordered list of enabled engines (first = primary; the
+      # legacy DEV_LEAD_ENGINES name is still honoured); DEV_LEAD_ENGINE is a
+      # legacy primary override — leave it unset to let AI_ENGINES decide.
+      AI_ENGINES: ${{ vars.AI_ENGINES || vars.DEV_LEAD_ENGINES || '' }}
+      DEV_LEAD_ENGINE: ${{ vars.DEV_LEAD_ENGINE || (startsWith(vars.AI_ENGINES || vars.DEV_LEAD_ENGINES, 'gemini') && 'gemini') || (startsWith(vars.AI_ENGINES || vars.DEV_LEAD_ENGINES, 'copilot') && 'copilot') || 'claude' }}
+      AI_DUCK_ENGINE: ${{ vars.AI_DUCK_ENGINE || '' }}
+      AI_DUCK_MODEL: ${{ vars.AI_DUCK_MODEL || '' }}
+      GEMINI_FLASH_MODEL: ${{ vars.GEMINI_FLASH_MODEL || '' }}
+      GEMINI_PRO_MODEL: ${{ vars.GEMINI_PRO_MODEL || '' }}
       DEV_LEAD_DRY_RUN: ${{ vars.DEV_LEAD_DRY_RUN || 'false' }}
       DEEP_TIMEOUT_SEC: ${{ vars.DEEP_TIMEOUT_SEC || '' }}
       ACTION_TIMEOUT_SEC: ${{ vars.ACTION_TIMEOUT_SEC || '' }}
@@ -149,10 +158,34 @@ jobs:
       - name: Engine token preflight (#1525)
         # With the secret declaration relaxed to required:false, presence is
         # enforced here instead — one actionable line, not a secrets-evaluation
-        # stack error on every event.
+        # stack error on every event. Skipped when AI_ENGINES leaves claude out.
         env:
+          AI_ENGINES: ${{ vars.AI_ENGINES || vars.DEV_LEAD_ENGINES || '' }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
         run: |
+          # Is Claude enabled? Only a valid AI_ENGINES list that omits claude turns it
+          # off; empty or invalid values fall back to the default chain, which includes
+          # claude (scripts/lib/engine-chain.sh — mirrored inline because this runs
+          # before the scripts are checked out).
+          claude_enabled=true
+          spec="$(printf '%s' "${AI_ENGINES:-}" | tr '[:upper:],' '[:lower:] ')"
+          if [ -n "${spec//[[:space:]]/}" ]; then
+            set -f
+            known=true; has_claude=false
+            for e in $spec; do
+              case "$e" in
+                claude) has_claude=true ;;
+                gemini|copilot) ;;
+                *) known=false ;;
+              esac
+            done
+            set +f
+            if [ "$known" = true ] && [ "$has_claude" = false ]; then claude_enabled=false; fi
+          fi
+          if [ "$claude_enabled" = false ]; then
+            echo "claude not in AI_ENGINES (${AI_ENGINES}) — CLAUDE_CODE_OAUTH_TOKEN not required"
+            exit 0
+          fi
           if [ -z "$CLAUDE_CODE_OAUTH_TOKEN" ]; then
             msg="CLAUDE_CODE_OAUTH_TOKEN is not provided to dev-lead-reusable."
             msg="$msg To pause deliberately, set AGENTS_PAUSED=true Actions variable"
@@ -680,8 +713,32 @@ jobs:
     steps:
       - name: Engine token preflight (#1525)
         env:
+          AI_ENGINES: ${{ vars.AI_ENGINES || vars.DEV_LEAD_ENGINES || '' }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
         run: |
+          # Is Claude enabled? Only a valid AI_ENGINES list that omits claude turns it
+          # off; empty or invalid values fall back to the default chain, which includes
+          # claude (scripts/lib/engine-chain.sh — mirrored inline because this runs
+          # before the scripts are checked out).
+          claude_enabled=true
+          spec="$(printf '%s' "${AI_ENGINES:-}" | tr '[:upper:],' '[:lower:] ')"
+          if [ -n "${spec//[[:space:]]/}" ]; then
+            set -f
+            known=true; has_claude=false
+            for e in $spec; do
+              case "$e" in
+                claude) has_claude=true ;;
+                gemini|copilot) ;;
+                *) known=false ;;
+              esac
+            done
+            set +f
+            if [ "$known" = true ] && [ "$has_claude" = false ]; then claude_enabled=false; fi
+          fi
+          if [ "$claude_enabled" = false ]; then
+            echo "claude not in AI_ENGINES (${AI_ENGINES}) — CLAUDE_CODE_OAUTH_TOKEN not required"
+            exit 0
+          fi
           if [ -z "$CLAUDE_CODE_OAUTH_TOKEN" ]; then
             msg="CLAUDE_CODE_OAUTH_TOKEN is not provided to dev-lead-reusable."
             msg="$msg To pause deliberately, set AGENTS_PAUSED=true Actions variable"

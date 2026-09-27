@@ -95,6 +95,9 @@ skip_reason_from() {
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=validate-engines.sh
 source "$SCRIPT_DIR/validate-engines.sh"
+# Engine chain (AI_ENGINES): which engines are enabled and their fallback order.
+# shellcheck source=lib/engine-chain.sh
+source "$SCRIPT_DIR/lib/engine-chain.sh"
 validate_engines
 
 # Short-circuit before any engine switching or smoke tests when there is
@@ -109,17 +112,32 @@ if [ ! -s "$PRS_FILE" ]; then
   exit 0
 fi
 
-# Honor the billing probe: if the primary engine was flagged unavailable by
-# validate_engines (e.g., Gemini billing depleted), switch to the fallback engine
-# immediately so no PR invocation pays the per-call retry delay for a known-bad engine.
-if [ "${REVIEW_ENGINE:-claude}" = "gemini" ] && [ "${GEMINI_AVAILABLE:-false}" != "true" ]; then
-  if [ "${COPILOT_AVAILABLE:-false}" = "true" ]; then
-    echo "::warning::Primary Gemini engine unavailable per pre-flight probe — switching to Copilot for this batch"
-    export REVIEW_ENGINE=copilot
-  else
-    echo "::error::Primary Gemini engine unavailable and Copilot fallback also unavailable (gh copilot not installed or COPILOT_GITHUB_TOKEN not set) — aborting batch"
+# Primary engine: REVIEW_ENGINE when AI_ENGINES enables it, otherwise the first
+# engine in AI_ENGINES — a disabled engine is never used.
+_requested_engine="${REVIEW_ENGINE:-}"
+REVIEW_ENGINE="$(ai_engine_primary "$_requested_engine")"
+export REVIEW_ENGINE
+if [ -n "$_requested_engine" ] && [ "$_requested_engine" != "$REVIEW_ENGINE" ]; then
+  echo "::warning::REVIEW_ENGINE=$_requested_engine is not enabled in AI_ENGINES ($(ai_engine_chain)) — using $REVIEW_ENGINE"
+fi
+unset _requested_engine
+
+# Honor the pre-flight probe: if the primary engine was flagged unavailable by
+# validate_engines (e.g. Gemini credits depleted on every key, Copilot on a
+# classic PAT), start the batch on the first available engine in AI_ENGINES so
+# no PR invocation pays the per-call retry delay for a known-bad engine.
+if ! ai_engine_available "$REVIEW_ENGINE"; then
+  _start_engine="$(ai_engine_first_available)"
+  if [ -n "$_start_engine" ]; then
+    echo "::warning::Primary $(ai_engine_label "$REVIEW_ENGINE") engine unavailable per pre-flight probe — switching to $(ai_engine_label "$_start_engine") for this batch"
+    export REVIEW_ENGINE="$_start_engine"
+  elif [ "$REVIEW_ENGINE" != "claude" ]; then
+    echo "::error::Primary $(ai_engine_label "$REVIEW_ENGINE") engine unavailable and no other engine in AI_ENGINES ($(ai_engine_chain)) is available (e.g. Copilot fallback also unavailable: gh copilot not installed, classic PAT, or COPILOT_GITHUB_TOKEN not set) — aborting batch"
     exit 1
+  else
+    echo "::warning::Claude unavailable per pre-flight probe and no other engine in AI_ENGINES ($(ai_engine_chain)) is available — continuing on Claude"
   fi
+  unset _start_engine
 fi
 
 # ---------------------------------------------------------------------------
@@ -208,6 +226,51 @@ abort_reason=""
 total_candidates=$(grep -c . "$PRS_FILE" || true)
 
 # Per-PR capture buffer for run_review_capture / skip_reason_from (issue #898).
+# _chain_has_later_engine <engine> — 0 when AI_ENGINES lists any engine after
+# <engine> (available or not).
+_chain_has_later_engine() {
+  local e seen=0
+  for e in $(ai_engine_chain); do
+    if [ "$seen" -eq 1 ]; then
+      return 0
+    fi
+    [ "$e" = "${1:-}" ] && seen=1
+  done
+  return 1
+}
+
+# Engines that hit a genuine rate limit earlier in this batch. They keep their
+# *_AVAILABLE flag (the probe found them usable), but re-invoking one on a later
+# PR — or as a rubber duck — only burns another call. Exported, and honoured by
+# ai_engine_available, so candidate selection here and duck selection in the
+# review-one-pr.sh child process both skip them.
+export AI_ENGINES_RATE_LIMITED=""
+_mark_rate_limited() {
+  [[ " $AI_ENGINES_RATE_LIMITED " == *" $1 "* ]] || export AI_ENGINES_RATE_LIMITED="${AI_ENGINES_RATE_LIMITED:+$AI_ENGINES_RATE_LIMITED }$1"
+}
+_mark_unavailable() {
+  case "$1" in
+    claude) export CLAUDE_AVAILABLE=false ;;
+    gemini) export GEMINI_AVAILABLE=false ;;
+    copilot) export COPILOT_AVAILABLE=false ;;
+  esac
+}
+
+# Copilot licensing/policy denial (#1546): deterministic, not a rate limit, so
+# review-one-pr.sh exits non-zero rather than 2 or 55. Same phrases as
+# engine.sh's _license_denied_pattern (a bats case keeps the two in sync).
+_BATCH_LICENSE_DENIED_RE="(access denied by policy settings|not supported by copilot)"
+# _runtime_unavailable <rc> [fallback] — exit codes that mean "this engine
+# cannot run here" rather than "rate-limited": 55 (setup/runtime unavailable),
+# 127 on a fallback (binary missing), or a Copilot policy denial in the output.
+_runtime_unavailable() {
+  local rc="$1"
+  [ "$rc" -eq 55 ] && return 0
+  [ "${2:-}" = fallback ] && [ "$rc" -eq 127 ] && return 0
+  [ "$REVIEW_ENGINE" = copilot ] && [ "$rc" -ne 0 ] && [ "$rc" -ne 2 ] && [ "$rc" -ne 100 ] \
+    && grep -qiE "$_BATCH_LICENSE_DENIED_RE" "$REVIEW_OUT" 2>/dev/null
+}
+
 REVIEW_OUT=$(mktemp) || { echo "::error::Failed to create temporary file for review capture" >&2; exit 1; }
 trap 'rm -f "$REVIEW_OUT"' EXIT
 
@@ -225,55 +288,79 @@ while IFS= read -r pr_url; do
   fi
 
   echo "::group::Reviewing $pr_url"
+  # An earlier PR may have marked the current engine unavailable or found it
+  # rate-limited; start this PR on the first engine that is still usable. Once
+  # a rate limit has hit (AI_ENGINES_RATE_LIMITED non-empty) and nothing usable is
+  # left, stop the session instead of re-invoking an exhausted engine per PR.
+  if ! ai_engine_available "$REVIEW_ENGINE"; then
+    _start_engine="$(ai_engine_first_available)"
+    if [ -n "$_start_engine" ]; then
+      echo "::notice::$(ai_engine_label "$REVIEW_ENGINE") unavailable or rate-limited earlier in this batch — reviewing on $(ai_engine_label "$_start_engine")"
+      export REVIEW_ENGINE="$_start_engine"
+    elif [ -n "$AI_ENGINES_RATE_LIMITED" ]; then
+      echo "::error::Every engine in AI_ENGINES ($(ai_engine_chain)) is rate-limited or unavailable in this batch — stopping; the next scheduled run retries"
+      processed=$((processed - 1))
+      session_aborted=1
+      abort_pr="$pr_url"
+      abort_reason="every engine rate-limited or unavailable"
+      echo "::endgroup::"
+      break
+    fi
+    unset _start_engine
+  fi
   rc=0
   run_review_capture "$pr_url" || rc=$?
 
   # Treat known engine-unavailable setup/runtime errors as fallback-eligible
-  if [ "$rc" -eq 55 ]; then
+  if _runtime_unavailable "$rc"; then
     echo "::warning::Engine ${REVIEW_ENGINE:-claude} unavailable at runtime (exit $rc) — treating as fallback-eligible"
+    [ "$rc" -ne 55 ] && _mark_unavailable "$REVIEW_ENGINE"
     rc=2
+  elif [ "$rc" -eq 2 ]; then
+    _mark_rate_limited "$REVIEW_ENGINE"
   fi
 
-  # Exit code 2 = engine rate-limited.
-  # Fallback chain: claude -> gemini -> copilot (issue #1777 deprioritizes Copilot).
-  if [ "$rc" -eq 2 ] && [ "${REVIEW_ENGINE:-claude}" = "claude" ]; then
-    # Prefer Gemini as the first cross-provider fallback.
-    if [ "${GEMINI_AVAILABLE:-false}" = "true" ]; then
-      echo "::warning::Claude rate limit hit — switching to Gemini engine for remaining PRs"
-      export REVIEW_ENGINE=gemini
-      engine_fallbacks=$((engine_fallbacks + 1))
-      fallback_engines="${fallback_engines:+$fallback_engines, }gemini"
-      rc=0
-      run_review_capture "$pr_url" || rc=$?
-
-      # Handle Gemini engine-unavailable setup/runtime errors post-fallback
-      if [ "$rc" -eq 55 ] || [ "$rc" -eq 127 ]; then
-        echo "::warning::Gemini engine unavailable at runtime (exit $rc) — falling through to Copilot"
-        rc=2
-        export REVIEW_ENGINE=gemini # ensure the next block catches it
-      fi
-    else
-      echo "::warning::Claude rate limit hit but Gemini fallback unavailable — falling through to Copilot"
-      rc=2
-      export REVIEW_ENGINE=gemini # Set to gemini so the next block catches it
-    fi
-  fi
-
-  if [[ "$rc" -eq 2 && "${REVIEW_ENGINE}" = "gemini" ]]; then
-    # Use the availability flag set by validate_engines() at startup.
-    if [[ "${COPILOT_AVAILABLE:-false}" != "true" ]]; then
-      echo "::warning::Copilot fallback unavailable — skipping $pr_url and continuing batch"
-      post_engine_unavailable_notice "$pr_url" "$REVIEW_ENGINE"
-      failed=$((failed + 1))
-      echo "::endgroup::"
-      continue
-    fi
-    echo "::warning::Gemini rate limit hit — switching to Copilot engine for remaining PRs"
-    export REVIEW_ENGINE=copilot
+  # Exit code 2 = engine rate-limited. Walk the configured chain (AI_ENGINES,
+  # default claude → gemini → copilot; #1777 put Gemini before Copilot) forward
+  # from the current engine, skipping engines that are disabled or that the
+  # pre-flight probe marked unavailable. The switch sticks for the remaining PRs.
+  _fallback_unavailable=0
+  while [ "$rc" -eq 2 ]; do
+    _next_engine="$(ai_engine_next_available "$REVIEW_ENGINE")"
+    [ -z "$_next_engine" ] && break
+    echo "::warning::$(ai_engine_label "$REVIEW_ENGINE") rate limit hit — switching to $(ai_engine_label "$_next_engine") engine for remaining PRs"
+    export REVIEW_ENGINE="$_next_engine"
     engine_fallbacks=$((engine_fallbacks + 1))
-    fallback_engines="${fallback_engines:+$fallback_engines, }copilot"
+    fallback_engines="${fallback_engines:+$fallback_engines, }$_next_engine"
     rc=0
     run_review_capture "$pr_url" || rc=$?
+    # Engine-unavailable setup/runtime errors on a fallback: mark the engine
+    # unavailable for the rest of the batch and keep walking the chain.
+    # _fallback_unavailable tracks the LAST engine tried: a later engine that
+    # is genuinely rate-limited clears it, so an exhausted chain still aborts.
+    _fallback_unavailable=0
+    if _runtime_unavailable "$rc" fallback; then
+      _fallback_unavailable=1
+      echo "::warning::$(ai_engine_label "$REVIEW_ENGINE") engine unavailable at runtime (exit $rc) — trying the next engine in AI_ENGINES"
+      _mark_unavailable "$REVIEW_ENGINE"
+      rc=2
+    elif [ "$rc" -eq 2 ]; then
+      _mark_rate_limited "$REVIEW_ENGINE"
+    fi
+  done
+  unset _next_engine
+
+  # Still rate-limited with later engines configured but none available (e.g.
+  # Gemini out of credits, Copilot on a classic PAT), or the last fallback tried
+  # was unavailable at runtime rather than rate-limited: skip this PR with one
+  # notice and keep the batch going. Only a genuinely rate-limited, exhausted
+  # chain falls through to the session-abort branch below.
+  if [ "$rc" -eq 2 ] && { _chain_has_later_engine "$REVIEW_ENGINE" || [ "$_fallback_unavailable" -eq 1 ]; }; then
+    echo "::warning::No later engine in AI_ENGINES ($(ai_engine_chain)) is available after $(ai_engine_label "$REVIEW_ENGINE") — skipping $pr_url and continuing batch"
+    post_engine_unavailable_notice "$pr_url" "$REVIEW_ENGINE"
+    failed=$((failed + 1))
+    echo "::endgroup::"
+    continue
   fi
 
   case "$rc" in
