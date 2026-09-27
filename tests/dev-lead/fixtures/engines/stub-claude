@@ -70,11 +70,16 @@ fi
 if [ "$output_format" = "json" ] && [ -n "$api_status" ]; then
   # Mirror a failed `claude --print --output-format json` call: the envelope
   # still names the model and carries a usage object.
-  jq -cn --arg result "$response" --arg model "$model" --argjson st "$api_status" \
-    '{type:"result", subtype:"success", is_error:true, api_error_status:$st,
-      result:$result, model:$model,
-      usage:{input_tokens:0, cache_read_input_tokens:0,
-             cache_creation_input_tokens:0, output_tokens:0}}'
+  if command -v jq >/dev/null 2>&1; then
+    jq -cn --arg result "$response" --arg model "$model" --argjson st "$api_status" \
+      '{type:"result", subtype:"success", is_error:true, api_error_status:$st,
+        result:$result, model:$model,
+        usage:{input_tokens:0, cache_read_input_tokens:0,
+               cache_creation_input_tokens:0, output_tokens:0}}'
+  else
+    printf '{"type":"result","subtype":"success","is_error":true,"api_error_status":%s,"result":"%s","model":"%s","usage":{"input_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"output_tokens":0}}\n' \
+      "$api_status" "$response" "$model"
+  fi
 elif [ "$output_format" = "json" ]; then
   # Mirror `claude --print --output-format json`: a result envelope with usage.
   read -r _in _cr _cw _out <<< "${STUB_CLAUDE_USAGE:-100 20 30 40}"

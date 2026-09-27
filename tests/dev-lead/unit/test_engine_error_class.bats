@@ -174,16 +174,19 @@ teardown() {
 }
 
 @test "hop log: only the envelope's error fields are kept, with secrets redacted" {
+  # Dummy token assembled at runtime so no token-shaped literal is committed
+  # (the gitleaks secret scan would flag one).
+  local _tok="ghp_""abcdefghijklmnopqrstuvwxyz0123456789"
   export STUB_ENGINE_EXIT_BY_MODEL="claude-a=1|claude-b=0"
   export STUB_CLAUDE_ERROR_STATUS_BY_MODEL="claude-a=400"
-  export STUB_ENGINE_RESPONSE_BY_MODEL="claude-a=bad request; echoed ghp_abcdefghijklmnopqrstuvwxyz0123456789|claude-b=ok"
+  export STUB_ENGINE_RESPONSE_BY_MODEL="claude-a=bad request; echoed ${_tok}|claude-b=ok"
 
   run _claude_chain_invoke "claude-a,claude-b" "$TEST_PROMPT" 30
 
   [ "$status" -eq 0 ]
   grep -q '"api_error_status":400' "$CLAUDE_CHAIN_HOP_LOG"
   grep -q "REDACTED-GH-TOKEN" "$CLAUDE_CHAIN_HOP_LOG"
-  ! grep -q "ghp_abcdefghijklmnopqrstuvwxyz0123456789" "$CLAUDE_CHAIN_HOP_LOG"
+  ! grep -qF "$_tok" "$CLAUDE_CHAIN_HOP_LOG"
   # Envelope metadata beyond the error fields (model, usage) is not copied.
   ! grep -q '"usage"' "$CLAUDE_CHAIN_HOP_LOG"
 }

@@ -39,3 +39,9 @@ e27ed0f3d755e58b9d5ccc30e8eec835bb0ccb68:tests/test_miss_harvest.bats:github-pat
 # these entries suppress those findings. Not a real credential.
 b37877721cd419b963b86d970c26cc3383761e33:tests/dev-lead/unit/test_fewshot_assemble.bats:github-pat:33
 b37877721cd419b963b86d970c26cc3383761e33:tests/dev-lead/unit/test_fewshot_assemble.bats:github-pat:85
+
+# commit beddd2c (#1957 hop-log redaction test): a literal dummy ghp_ token fed
+# through redact_secrets to prove it is scrubbed. The next commit assembles the
+# token at runtime, so only this historical commit carries the literal.
+beddd2cfaa173b620df231e9be476131100738e3:tests/dev-lead/unit/test_engine_error_class.bats:github-pat:179
+beddd2cfaa173b620df231e9be476131100738e3:tests/dev-lead/unit/test_engine_error_class.bats:github-pat:186
