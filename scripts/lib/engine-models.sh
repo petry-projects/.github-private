@@ -85,9 +85,9 @@ _ai_models_trim() {
 }
 
 # _ai_models_var <provider> — the variable name, e.g. AI_MODELS_CLAUDE.
+# (tr, not ${var^^}: scripts stay runnable on Bash 3.2, as engine-chain.sh is.)
 _ai_models_var() {
-  local provider="${1:-}"
-  printf 'AI_MODELS_%s' "${provider^^}"
+  printf 'AI_MODELS_%s' "$(printf '%s' "${1:-}" | tr '[:lower:]' '[:upper:]')"
 }
 
 # _ai_models_scan <provider> <mode> [key]
@@ -103,15 +103,14 @@ _ai_models_scan() {
   spec="${spec//$'\r'/;}"
   spec="${spec//$'\n'/;}"
   IFS=';' read -r -a entries <<< "$spec"
-  for entry in "${entries[@]}"; do
+  for entry in ${entries[@]+"${entries[@]}"}; do
     entry="$(_ai_models_trim "$entry")"
     [ -n "$entry" ] || continue
     if [[ "$entry" != *=* ]]; then
       [ "$mode" = problems ] && printf "%s: '%s' is not <key>=<models> — ignored\n" "$var" "$entry"
       continue
     fi
-    key="$(_ai_models_trim "${entry%%=*}")"
-    key="${key,,}"
+    key="$(_ai_models_trim "${entry%%=*}" | tr '[:upper:]' '[:lower:]')"
     value="${entry#*=}"
     if [[ " $(_ai_models_keys "$provider") " != *" $key "* ]]; then
       [ "$mode" = problems ] && printf "%s: unknown key '%s' (expected: %s) — ignored\n" \
@@ -120,7 +119,7 @@ _ai_models_scan() {
     fi
     IFS=',' read -r -a models <<< "$value"
     chain=""
-    for m in "${models[@]}"; do
+    for m in ${models[@]+"${models[@]}"}; do
       m="$(_ai_models_trim "$m")"
       [ -n "$m" ] || continue
       if [[ ! "$m" =~ ^[A-Za-z0-9][A-Za-z0-9._:/@-]*$ ]]; then
@@ -168,7 +167,7 @@ ai_models_replace_first() {
   local first="$1" chain="$2" out="$1" m
   local -a others=()
   IFS=',' read -r -a others <<< "$chain"
-  for m in "${others[@]:1}"; do
+  for m in ${others[@]+"${others[@]:1}"}; do
     [ -n "$m" ] && [ "$m" != "$first" ] && out="$out,$m"
   done
   printf '%s' "$out"
@@ -217,7 +216,7 @@ ai_models_label_chain() {
   local -a ms=()
   IFS=',' read -r -a ms <<< "$chain"
   first="$(ai_model_label "${ms[0]:-}")"
-  for m in "${ms[@]:1}"; do
+  for m in ${ms[@]+"${ms[@]:1}"}; do
     [ -n "$m" ] && fallbacks="${fallbacks:+$fallbacks, }$(ai_model_label "$m")"
   done
   if [ -n "$fallbacks" ]; then printf '%s [%s]' "$first" "$fallbacks"; else printf '%s' "$first"; fi

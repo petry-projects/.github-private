@@ -39,14 +39,16 @@ _VALIDATE_ENGINES_MODELS_LIB="$(dirname "${BASH_SOURCE[0]}")/lib/engine-models.s
 unset _VALIDATE_ENGINES_MODELS_LIB
 
 # _gemini_probe_model — the configured Gemini flash model (the tier the probe
-# stands in for), or gemini-3.8-flash when the models library is absent or the
-# configured id is not URL-safe.
+# stands in for), without Google's optional "models/" prefix; gemini-3.8-flash
+# when the models library is absent. Prints nothing when the configured id is
+# not URL-safe, so the caller skips the probe rather than probe another model.
 _gemini_probe_model() {
-  local m=""
+  local m="gemini-3.8-flash"
   if declare -F ai_models_gemini_flash_first >/dev/null 2>&1; then
     m="$(ai_models_gemini_flash_first)"
   fi
-  [[ "$m" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || m="gemini-3.8-flash"
+  m="${m#models/}"
+  [[ "$m" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || return 0
   printf '%s' "$m"
 }
 
@@ -69,6 +71,13 @@ _validate_engine_enabled() {
 _gemini_probe_key() {
   local _key="$1" _raw _body _code _model
   _model="$(_gemini_probe_model)"
+  if [ -z "$_model" ]; then
+    if [ -z "${_GEMINI_PROBE_MODEL_WARNED:-}" ]; then
+      echo "::warning::Gemini billing probe skipped: the configured flash model is not a probe-able id — credit depletion is undetermined." >&2
+      _GEMINI_PROBE_MODEL_WARNED=1
+    fi
+    return 0
+  fi
   _raw=$(
     timeout 15 curl -sS --max-time 10 \
       -X POST \

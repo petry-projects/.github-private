@@ -212,6 +212,36 @@ STUB
   grep -q "/models/gemini-c1:generateContent" "$BATS_TEST_TMPDIR/urls"
 }
 
+@test "probe: Google's models/ prefix is stripped; an unprobe-able id warns and skips" {
+  _probe_curl '{"candidates":[]}' 200
+  export AI_MODELS_GEMINI="flash=models/gemini-f1"
+  source "$SCRIPT_DIR/scripts/validate-engines.sh"
+  _gemini_probe_key fake
+  grep -q "/models/gemini-f1:generateContent" "$BATS_TEST_TMPDIR/urls"
+  rm -f "$BATS_TEST_TMPDIR/urls"
+  export AI_MODELS_GEMINI="flash=vendor/gemini-x"
+  run bash -c "source '$SCRIPT_DIR/scripts/validate-engines.sh'; _gemini_probe_key a; echo rc=\$?"
+  [[ "$output" == *"rc=0"* ]]
+  [[ "$output" == *"Gemini billing probe skipped"* ]]
+  [ ! -f "$BATS_TEST_TMPDIR/urls" ]
+}
+
+@test "headroom: the Claude probe uses the configured triage model and warns without headers" {
+  mkdir -p "$BATS_TEST_TMPDIR/bin"
+  cat > "$BATS_TEST_TMPDIR/bin/curl" <<'STUB'
+#!/bin/bash
+printf '%s\n' "$*" >> "$BATS_TEST_TMPDIR/args"
+printf 'HTTP/2 200\r\ncontent-type: application/json\r\n\r\n'
+STUB
+  chmod +x "$BATS_TEST_TMPDIR/bin/curl"
+  export PATH="$BATS_TEST_TMPDIR/bin:$PATH" BATS_TEST_TMPDIR
+  export AI_MODELS_CLAUDE="triage=claude-sonnet-5" ANTHROPIC_API_KEY="fake"
+  run bash -c "export REVIEW_ENGINE=claude; source '$SCRIPT_DIR/scripts/engine.sh' >/dev/null 2>&1; check_provider_headroom claude; echo rc=\$?; check_provider_headroom claude"
+  [[ "$output" == *"rc=0"* ]]
+  grep -q '"model":"claude-sonnet-5"' "$BATS_TEST_TMPDIR/args"
+  [ "$(grep -c "no rate-limit headers from claude-sonnet-5" <<< "$output")" = "1" ]
+}
+
 @test "probe: a not-found probe model warns once and stays fail-open" {
   _probe_curl '{"error":{"code":404,"message":"models/gemini-gone is not found","status":"NOT_FOUND"}}' 404
   export AI_MODELS_GEMINI="flash=gemini-gone"

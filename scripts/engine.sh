@@ -168,8 +168,8 @@ export REVIEW_MCP_CONFIG REVIEW_MCP_ALLOWED_TOOLS REVIEW_MCP_DEBUG
 # applies only when <engine> is the explicitly configured AI_DUCK_ENGINE (a model
 # id is engine-specific, so it must never follow the duck onto another engine).
 _duck_model_for() {
-  local engine="$1" wanted="${AI_DUCK_ENGINE:-}"
-  wanted="${wanted,,}"
+  local engine="$1" wanted
+  wanted="$(printf '%s' "${AI_DUCK_ENGINE:-}" | tr '[:upper:]' '[:lower:]')"
   if [ -n "${AI_DUCK_MODEL:-}" ] && [ "$engine" = "$wanted" ]; then
     printf '%s' "$AI_DUCK_MODEL"
     return 0
@@ -347,12 +347,16 @@ check_provider_headroom() {
     claude)
       # Probe the Anthropic API for rate-limit headers. Uses a minimal
       # 1-token request so the probe itself barely consumes quota.
-      local _resp remaining_tokens limit_tokens
+      # The probe model is the configured triage primary (AI_MODELS_CLAUDE /
+      # CLAUDE_TRIAGE_MODEL_CHAIN), so a retired default can't blind it.
+      local _resp remaining_tokens limit_tokens _hmodel
+      _hmodel="$(_engine_chain_first "${CLAUDE_TRIAGE_MODEL_CHAIN:-$(ai_models_chain claude triage)}")"
+      [[ "$_hmodel" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || _hmodel="claude-haiku-4-5-20251001"
       _resp=$(curl -s -D - -o /dev/null -X POST https://api.anthropic.com/v1/messages \
         -H "x-api-key: ${ANTHROPIC_API_KEY:-}" \
         -H "anthropic-version: 2023-06-01" \
         -H "content-type: application/json" \
-        --data-raw '{"model":"claude-haiku-4-5-20251001","max_tokens":1,"messages":[{"role":"user","content":"."}]}' \
+        --data-raw "{\"model\":\"${_hmodel}\",\"max_tokens\":1,\"messages\":[{\"role\":\"user\",\"content\":\".\"}]}" \
         2>/dev/null || true)
       remaining_tokens=$(printf '%s' "$_resp" | grep -i 'x-ratelimit-remaining-tokens:' \
         | cut -d: -f2 | tr -d '[:space:]' || true)
@@ -360,6 +364,11 @@ check_provider_headroom() {
         | cut -d: -f2 | tr -d '[:space:]' || true)
       if [[ "$remaining_tokens" =~ ^[0-9]+$ ]] && [[ "$limit_tokens" =~ ^[0-9]+$ ]] && [ "$limit_tokens" -gt 0 ]; then
         used_pct=$(( 100 - (remaining_tokens * 100 / limit_tokens) ))
+      elif [ -n "${ANTHROPIC_API_KEY:-}" ] && [ -z "${_HEADROOM_PROBE_WARNED:-}" ]; then
+        # With an API key the probe should return rate-limit headers; none means
+        # usage is unknown (e.g. the probe model is retired), not 0%.
+        echo "::warning::[headroom] claude — no rate-limit headers from ${_hmodel}; usage unknown, proceeding" >&2
+        _HEADROOM_PROBE_WARNED=1
       fi
       ;;
     gemini)
