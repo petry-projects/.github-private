@@ -234,6 +234,8 @@ EOF
   cat > "$BDIR/scripts/review-one-pr.sh" <<'EOF'
 #!/bin/bash
 printf '%s\n' "$REVIEW_ENGINE" >> engine_calls.txt
+o="MOCK_OUT_${REVIEW_ENGINE}"
+[ -n "${!o:-}" ] && printf '%s\n' "${!o}"
 v="MOCK_RC_${REVIEW_ENGINE}"
 exit "${!v:-0}"
 EOF
@@ -422,4 +424,39 @@ _run_duck_probe() {
 @test "duck: the automatic Gemini duck (Copilot primary) honours GEMINI_FLASH_MODEL" {
   run bash -c "export REVIEW_ENGINE=copilot GEMINI_FLASH_MODEL=gemini-custom; unset AI_DUCK_ENGINE AI_DUCK_MODEL; source '$SCRIPT_DIR/scripts/engine.sh' >/dev/null 2>&1; select_duck_engine"
   [ "$output" = "gemini gemini-custom" ]
+}
+
+@test "chain: a multi-line AI_ENGINES is parsed whole (newlines separate engines)" {
+  export AI_ENGINES=$'gemini\nclaude'
+  [ "$(ai_engine_chain)" = "gemini claude" ]
+  export AI_ENGINES=$'claude\ncluade'
+  [ "$(ai_engine_chain)" = "claude gemini copilot" ]
+  [[ "$(ai_engine_chain_problem)" == *"unknown engine"* ]]
+}
+
+@test "batch: a Copilot policy denial on a fallback continues the chain (not a hard failure)" {
+  _setup_batch
+  export AI_ENGINES="claude,copilot,gemini" MOCK_RC_claude=2 MOCK_RC_copilot=1 \
+    MOCK_OUT_copilot="Error: Access denied by policy settings"
+  run _batch
+  [ "$status" -eq 0 ]
+  [ "$(tr '\n' ' ' < "$BDIR/engine_calls.txt")" = "claude copilot gemini " ]
+  [[ "$output" == *"Review posted"* ]]
+  rm -rf "$BDIR"
+}
+
+@test "batch: an engine rate-limited on one PR is not re-invoked for the next; exhausted batch stops" {
+  _setup_batch
+  printf 'https://github.com/fake/pull/1\nhttps://github.com/fake/pull/2\n' > "$BDIR/prs.txt"
+  export MOCK_RC_claude=2 MOCK_RC_gemini=55 MOCK_RC_copilot=55
+  run bash -c "cd '$BDIR' && PATH='$BDIR/bin':\$PATH PRS_FILE=prs.txt CANDIDATE_LIMIT=2 MAX_PRS=2 DRY_RUN=true bash scripts/review-batch.sh"
+  [ "$(tr '\n' ' ' < "$BDIR/engine_calls.txt")" = "claude gemini copilot " ]
+  [[ "$output" == *"rate-limited or unavailable in this batch"* ]]
+  rm -rf "$BDIR"
+}
+
+@test "batch: the Copilot policy-denial phrases match engine.sh's _license_denied_pattern" {
+  pat="$(bash -c "source '$SCRIPT_DIR/scripts/engine.sh' >/dev/null 2>&1; _license_denied_pattern")"
+  [ -n "$pat" ]
+  grep -qF "_BATCH_LICENSE_DENIED_RE=\"$pat\"" "$SCRIPT_DIR/scripts/review-batch.sh"
 }

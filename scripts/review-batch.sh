@@ -239,6 +239,50 @@ _chain_has_later_engine() {
   return 1
 }
 
+# Engines that hit a genuine rate limit earlier in this batch. They keep their
+# *_AVAILABLE flag (the probe found them usable), but re-invoking one on a later
+# PR only burns another call, so candidate selection skips them.
+_batch_rate_limited=" "
+_mark_rate_limited() { [[ "$_batch_rate_limited" == *" $1 "* ]] || _batch_rate_limited="${_batch_rate_limited}$1 "; }
+_mark_unavailable() {
+  case "$1" in
+    claude) export CLAUDE_AVAILABLE=false ;;
+    gemini) export GEMINI_AVAILABLE=false ;;
+    copilot) export COPILOT_AVAILABLE=false ;;
+  esac
+}
+# _batch_usable <engine> — enabled, not marked unavailable, not rate-limited.
+_batch_usable() { ai_engine_available "$1" && [[ "$_batch_rate_limited" != *" $1 "* ]]; }
+_first_usable() {
+  local e
+  for e in $(ai_engine_chain); do
+    if _batch_usable "$e"; then printf '%s' "$e"; return 0; fi
+  done
+}
+# _next_usable_after <engine> — forward-only, like ai_engine_next_available,
+# additionally skipping engines rate-limited earlier in this batch.
+_next_usable_after() {
+  local e="$1"
+  while e="$(ai_engine_next_available "$e")" && [ -n "$e" ]; do
+    if _batch_usable "$e"; then printf '%s' "$e"; return 0; fi
+  done
+}
+
+# Copilot licensing/policy denial (#1546): deterministic, not a rate limit, so
+# review-one-pr.sh exits non-zero rather than 2 or 55. Same phrases as
+# engine.sh's _license_denied_pattern (a bats case keeps the two in sync).
+_BATCH_LICENSE_DENIED_RE="(access denied by policy settings|not supported by copilot)"
+# _runtime_unavailable <rc> [fallback] — exit codes that mean "this engine
+# cannot run here" rather than "rate-limited": 55 (setup/runtime unavailable),
+# 127 on a fallback (binary missing), or a Copilot policy denial in the output.
+_runtime_unavailable() {
+  local rc="$1"
+  [ "$rc" -eq 55 ] && return 0
+  [ "${2:-}" = fallback ] && [ "$rc" -eq 127 ] && return 0
+  [ "$REVIEW_ENGINE" = copilot ] && [ "$rc" -ne 0 ] && [ "$rc" -ne 2 ] && [ "$rc" -ne 100 ] \
+    && grep -qiE "$_BATCH_LICENSE_DENIED_RE" "$REVIEW_OUT" 2>/dev/null
+}
+
 REVIEW_OUT=$(mktemp) || { echo "::error::Failed to create temporary file for review capture" >&2; exit 1; }
 trap 'rm -f "$REVIEW_OUT"' EXIT
 
@@ -256,13 +300,23 @@ while IFS= read -r pr_url; do
   fi
 
   echo "::group::Reviewing $pr_url"
-  # A runtime failure on an earlier PR may have marked the current engine
-  # unavailable; start this PR on the first engine that still is.
-  if ! ai_engine_available "$REVIEW_ENGINE"; then
-    _start_engine="$(ai_engine_first_available)"
-    if [ -n "$_start_engine" ] && [ "$_start_engine" != "$REVIEW_ENGINE" ]; then
-      echo "::notice::$(ai_engine_label "$REVIEW_ENGINE") marked unavailable earlier in this batch — reviewing on $(ai_engine_label "$_start_engine")"
+  # An earlier PR may have marked the current engine unavailable or found it
+  # rate-limited; start this PR on the first engine that is still usable. Once
+  # a rate limit has hit (_batch_rate_limited non-empty) and nothing usable is
+  # left, stop the session instead of re-invoking an exhausted engine per PR.
+  if ! _batch_usable "$REVIEW_ENGINE"; then
+    _start_engine="$(_first_usable)"
+    if [ -n "$_start_engine" ]; then
+      echo "::notice::$(ai_engine_label "$REVIEW_ENGINE") unavailable or rate-limited earlier in this batch — reviewing on $(ai_engine_label "$_start_engine")"
       export REVIEW_ENGINE="$_start_engine"
+    elif [ -n "${_batch_rate_limited// /}" ]; then
+      echo "::error::Every engine in AI_ENGINES ($(ai_engine_chain)) is rate-limited or unavailable in this batch — stopping; the next scheduled run retries"
+      processed=$((processed - 1))
+      session_aborted=1
+      abort_pr="$pr_url"
+      abort_reason="every engine rate-limited or unavailable"
+      echo "::endgroup::"
+      break
     fi
     unset _start_engine
   fi
@@ -270,9 +324,12 @@ while IFS= read -r pr_url; do
   run_review_capture "$pr_url" || rc=$?
 
   # Treat known engine-unavailable setup/runtime errors as fallback-eligible
-  if [ "$rc" -eq 55 ]; then
+  if _runtime_unavailable "$rc"; then
     echo "::warning::Engine ${REVIEW_ENGINE:-claude} unavailable at runtime (exit $rc) — treating as fallback-eligible"
+    [ "$rc" -ne 55 ] && _mark_unavailable "$REVIEW_ENGINE"
     rc=2
+  elif [ "$rc" -eq 2 ]; then
+    _mark_rate_limited "$REVIEW_ENGINE"
   fi
 
   # Exit code 2 = engine rate-limited. Walk the configured chain (AI_ENGINES,
@@ -281,7 +338,7 @@ while IFS= read -r pr_url; do
   # pre-flight probe marked unavailable. The switch sticks for the remaining PRs.
   _fallback_unavailable=0
   while [ "$rc" -eq 2 ]; do
-    _next_engine="$(ai_engine_next_available "$REVIEW_ENGINE")"
+    _next_engine="$(_next_usable_after "$REVIEW_ENGINE")"
     [ -z "$_next_engine" ] && break
     echo "::warning::$(ai_engine_label "$REVIEW_ENGINE") rate limit hit — switching to $(ai_engine_label "$_next_engine") engine for remaining PRs"
     export REVIEW_ENGINE="$_next_engine"
@@ -294,15 +351,13 @@ while IFS= read -r pr_url; do
     # _fallback_unavailable tracks the LAST engine tried: a later engine that
     # is genuinely rate-limited clears it, so an exhausted chain still aborts.
     _fallback_unavailable=0
-    if [ "$rc" -eq 55 ] || [ "$rc" -eq 127 ]; then
+    if _runtime_unavailable "$rc" fallback; then
       _fallback_unavailable=1
       echo "::warning::$(ai_engine_label "$REVIEW_ENGINE") engine unavailable at runtime (exit $rc) — trying the next engine in AI_ENGINES"
-      case "$REVIEW_ENGINE" in
-        claude) export CLAUDE_AVAILABLE=false ;;
-        gemini) export GEMINI_AVAILABLE=false ;;
-        copilot) export COPILOT_AVAILABLE=false ;;
-      esac
+      _mark_unavailable "$REVIEW_ENGINE"
       rc=2
+    elif [ "$rc" -eq 2 ]; then
+      _mark_rate_limited "$REVIEW_ENGINE"
     fi
   done
   unset _next_engine

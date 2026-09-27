@@ -37,8 +37,9 @@ _ai_engine_spec() {
 _ai_engine_parse() {
   local spec="$1" t invalid=0
   local -a toks=() out=()
-  spec="${spec//,/ }"
-  spec="$(printf '%s' "$spec" | tr '[:upper:]' '[:lower:]')"
+  # Commas and any whitespace (newlines included — a multi-line variable must
+  # not silently parse as its first line) separate engines.
+  spec="$(printf '%s' "$spec" | tr ',\n\r\t' '    ' | tr '[:upper:]' '[:lower:]')"
   IFS=$' \t' read -r -a toks <<< "$spec"
   for t in "${toks[@]}"; do
     case "$t" in
