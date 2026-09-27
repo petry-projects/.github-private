@@ -18,8 +18,9 @@ set -euo pipefail
 #      the daily subscription cap is exhausted (cap is shared across all Claude
 #      models — see issue #206 for the proactive headroom guard).
 #   2. Cross-provider fallback — run_writer_with_fallback / review-batch.sh
-#      walk claude → gemini → copilot only after the in-engine chain is fully
-#      rate-limited (exit code 2 from the engine-layer call).
+#      walk the configured engine chain (AI_ENGINES, default claude → gemini →
+#      copilot; see scripts/lib/engine-chain.sh) only after the in-engine chain
+#      is fully rate-limited (exit code 2 from the engine-layer call).
 # Sonnet 5 rate-limit equalization (#1099): equalization makes each model's
 # RPM/TPM bucket the same SIZE across tiers, but does NOT merge them into one
 # shared bucket — layer-1 recovery above depends on the buckets being SEPARATE,
@@ -33,7 +34,24 @@ set -euo pipefail
 #   Records are written via scripts/lib/token-metrics.sh (estimate-based).
 #   Unset → zero overhead, zero behaviour change.
 
-REVIEW_ENGINE="${REVIEW_ENGINE:-claude}"
+# Configured engine chain (AI_ENGINES): which engines are enabled and in what
+# order. The primary is REVIEW_ENGINE when that is set AND enabled, otherwise
+# the first engine in AI_ENGINES — so a disabled engine is never used, even when
+# a legacy REVIEW_ENGINE / DEV_LEAD_ENGINE variable still names it.
+_ENGINE_CHAIN_LIB="$(dirname "${BASH_SOURCE[0]}")/lib/engine-chain.sh"
+# shellcheck source=lib/engine-chain.sh
+[ -f "$_ENGINE_CHAIN_LIB" ] && source "$_ENGINE_CHAIN_LIB"
+unset _ENGINE_CHAIN_LIB
+if declare -F ai_engine_primary >/dev/null 2>&1; then
+  _requested_engine="${REVIEW_ENGINE:-}"
+  REVIEW_ENGINE="$(ai_engine_primary "$_requested_engine")"
+  if [ -n "$_requested_engine" ] && [ "$_requested_engine" != "$REVIEW_ENGINE" ]; then
+    echo "::warning::REVIEW_ENGINE=$_requested_engine is not enabled in AI_ENGINES ($(ai_engine_chain)) — using $REVIEW_ENGINE" >&2
+  fi
+  unset _requested_engine
+else
+  REVIEW_ENGINE="${REVIEW_ENGINE:-claude}"
+fi
 export REVIEW_ENGINE
 
 # Cross-engine rubber-duck model (issue #773). The duck deliberately routes to
@@ -296,7 +314,10 @@ check_provider_headroom() {
       # external calls in unit tests and CI environments where the token is
       # unset or set to a placeholder value.
       local _tok="${COPILOT_GITHUB_TOKEN:-}"
-      if [[ -z "$_tok" ]] || [[ ! "$_tok" =~ ^(github_pat_|ghp_|ghs_) ]]; then
+      # A classic PAT (ghp_) counts as no valid token: Copilot rejects it at call
+      # time ("Classic Personal Access Tokens (ghp_) are not supported"), the same
+      # rule run_writer_with_fallback and validate-engines.sh apply (#1495, #1960).
+      if [[ -z "$_tok" ]] || [[ ! "$_tok" =~ ^(github_pat_|ghs_) ]]; then
         # No valid Copilot token → skip the engine (#1546). Proceeding fail-open
         # here let a dead Copilot tier (subscription ended) convert a transient
         # Claude 429 into a hard job failure; skipping lets the chain reach the
@@ -1651,36 +1672,20 @@ run_writer_with_fallback() {
         /tmp/dev-lead-timeout-budget \
         /tmp/dev-lead-timeout-elapsed
 
-  # Engine chain (#1546): DEV_LEAD_ENGINES is an optional org-wide kill-switch to
-  # drop an engine (e.g. an unlicensed Copilot) from the fallback chain without a
-  # code change. Comma- or space-separated; unrecognized/empty specs fall back to
-  # the full claude,gemini,copilot chain. Gemini is the preferred 2nd engine after
-  # Claude, with Copilot last (#1777). The primary REVIEW_ENGINE is tried first
-  # when it is enabled; the remaining enabled engines follow in default order.
-  local _chain_spec="${DEV_LEAD_ENGINES:-claude gemini copilot}"
-  _chain_spec="${_chain_spec//,/ }"
-  # Split with `read -r -a` (IFS scoped to this one command) so a spec containing
-  # glob metacharacters (e.g. "*") is never pathname-expanded, unlike an unquoted
-  # `for e in $_chain_spec`.
-  local -a _specs=()
-  IFS=' ' read -r -a _specs <<< "$_chain_spec"
+  # Engine chain: AI_ENGINES (org/repo variable; DEV_LEAD_ENGINES is the legacy
+  # #1546 name) enables engines and orders the fallbacks, so an engine can be
+  # dropped or re-ordered without a code change. Parsed by
+  # scripts/lib/engine-chain.sh: an unknown token (typo) invalidates the WHOLE
+  # value and the full default chain is used, so "claude,cluade" never becomes
+  # claude-only. The primary REVIEW_ENGINE is tried first when it is enabled;
+  # the remaining enabled engines follow in the configured order.
   local _enabled=()
-  local _spec_invalid=0
   local e
-  for e in "${_specs[@]}"; do
-    case "$e" in
-      claude|copilot|gemini)
-        [[ " ${_enabled[*]-} " == *" $e "* ]] || _enabled+=("$e") ;;
-      *)
-        _spec_invalid=1 ;;
-    esac
-  done
-  # An unrecognized token (typo, unknown engine) invalidates the WHOLE spec →
-  # fall back to the full default chain rather than silently accepting a partial
-  # subset that disables fallbacks (e.g. "claude,cluade" must NOT become
-  # claude-only). Matches the documented "unrecognized/empty specs fall back to
-  # the full chain" contract.
-  if [ "$_spec_invalid" -eq 1 ] || [ "${#_enabled[@]}" -eq 0 ]; then
+  if declare -F ai_engine_chain >/dev/null 2>&1; then
+    local -a _chain_engines=()
+    IFS=' ' read -r -a _chain_engines <<< "$(ai_engine_chain)"
+    _enabled=("${_chain_engines[@]}")
+  else
     _enabled=(claude gemini copilot)
   fi
 
@@ -1870,6 +1875,64 @@ sys.exit(1)
 # All three engine branches (claude, gemini, copilot) are reachable — the gemini
 # branch executes when REVIEW_ENGINE=copilot (copilot primary → gemini duck).
 # Output to stdout. Strips non-selected engine credentials to prevent cross-engine leakage.
+# _duck_model_for <engine> — the rubber-duck model for <engine>. AI_DUCK_MODEL
+# applies only when <engine> is the explicitly configured AI_DUCK_ENGINE (a model
+# id is engine-specific, so it must never follow the duck onto another engine).
+_duck_model_for() {
+  local engine="$1" wanted
+  wanted="$(printf '%s' "${AI_DUCK_ENGINE:-}" | tr '[:upper:]' '[:lower:]')"
+  if [ -n "${AI_DUCK_MODEL:-}" ] && [ "$engine" = "$wanted" ]; then
+    printf '%s' "$AI_DUCK_MODEL"
+    return 0
+  fi
+  case "$engine" in
+    claude)  printf '%s' "claude-sonnet-4-6" ;;
+    gemini)  printf '%s' "${GEMINI_FLASH_MODEL:-gemini-3.8-flash}" ;;
+    copilot) printf '%s' "o4-mini" ;;
+  esac
+}
+
+# select_duck_engine — prints "<engine> <model>" for the rubber-duck reviewer,
+# or "none" when no usable engine is left. Order of preference:
+#   1. AI_DUCK_ENGINE (org/repo variable) when it is enabled and available;
+#      "none" / "off" turns the duck off.
+#   2. set_engine_config's cross-engine default (DUCK_ENGINE / DUCK_MODEL) when
+#      that engine is enabled and available.
+#   3. the first other enabled, available engine in AI_ENGINES order.
+# "Available" is the validate_engines pre-flight flag (unset counts as
+# available), so a disabled or dead engine (e.g. Copilot on a classic PAT) is
+# skipped instead of failing on every review.
+select_duck_engine() {
+  local wanted e
+  wanted="$(printf '%s' "${AI_DUCK_ENGINE:-}" | tr '[:upper:]' '[:lower:]')"
+  case "$wanted" in
+    none|off|disabled|false)
+      printf 'none'
+      return 0 ;;
+    claude|gemini|copilot)
+      if ai_engine_available "$wanted"; then
+        printf '%s %s' "$wanted" "$(_duck_model_for "$wanted")"
+        return 0
+      fi
+      echo "::warning::AI_DUCK_ENGINE=$wanted is disabled or unavailable — choosing another rubber-duck engine" >&2 ;;
+    "") ;;
+    *)
+      echo "::warning::AI_DUCK_ENGINE='${AI_DUCK_ENGINE}' is not a known engine (claude, gemini, copilot, none) — choosing automatically" >&2 ;;
+  esac
+  if [ -n "${DUCK_ENGINE:-}" ] && ai_engine_available "$DUCK_ENGINE"; then
+    printf '%s %s' "$DUCK_ENGINE" "${DUCK_MODEL:-$(_duck_model_for "$DUCK_ENGINE")}"
+    return 0
+  fi
+  for e in $(ai_engine_chain); do
+    [ "$e" = "${REVIEW_ENGINE:-}" ] && continue
+    if ai_engine_available "$e"; then
+      printf '%s %s' "$e" "$(_duck_model_for "$e")"
+      return 0
+    fi
+  done
+  printf 'none'
+}
+
 run_duck() {
   local prompt_file="$1"
   local model="$2"

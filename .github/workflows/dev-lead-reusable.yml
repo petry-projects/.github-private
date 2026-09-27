@@ -134,7 +134,16 @@ jobs:
       # (#1425). vars.TRUSTED_BOTS still overrides for an emergency pin.
       TRUSTED_BOTS: ${{ vars.TRUSTED_BOTS || '' }}
       TRIGGER_PHRASES: ${{ vars.TRIGGER_PHRASES || '@dev-lead' }}
-      DEV_LEAD_ENGINE: ${{ vars.DEV_LEAD_ENGINE || 'claude' }}
+      # Engine configuration (scripts/lib/engine-chain.sh, docs/engine-configuration.md):
+      # AI_ENGINES is the ordered list of enabled engines (first = primary; the
+      # legacy DEV_LEAD_ENGINES name is still honoured); DEV_LEAD_ENGINE is a
+      # legacy primary override — leave it unset to let AI_ENGINES decide.
+      AI_ENGINES: ${{ vars.AI_ENGINES || vars.DEV_LEAD_ENGINES || '' }}
+      DEV_LEAD_ENGINE: ${{ vars.DEV_LEAD_ENGINE || (startsWith(vars.AI_ENGINES, 'gemini') && 'gemini') || (startsWith(vars.AI_ENGINES, 'copilot') && 'copilot') || 'claude' }}
+      AI_DUCK_ENGINE: ${{ vars.AI_DUCK_ENGINE || '' }}
+      AI_DUCK_MODEL: ${{ vars.AI_DUCK_MODEL || '' }}
+      GEMINI_FLASH_MODEL: ${{ vars.GEMINI_FLASH_MODEL || '' }}
+      GEMINI_PRO_MODEL: ${{ vars.GEMINI_PRO_MODEL || '' }}
       DEV_LEAD_DRY_RUN: ${{ vars.DEV_LEAD_DRY_RUN || 'false' }}
       DEEP_TIMEOUT_SEC: ${{ vars.DEEP_TIMEOUT_SEC || '' }}
       ACTION_TIMEOUT_SEC: ${{ vars.ACTION_TIMEOUT_SEC || '' }}

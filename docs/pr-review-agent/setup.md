@@ -23,7 +23,8 @@ Store these in the repository settings (`Settings → Secrets and variables → 
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `REVIEW_ENGINE` | `claude` | Primary review engine: `claude` or `copilot` |
+| `AI_ENGINES` | `claude,gemini,copilot` | Enabled engines in fallback order; the first is primary. See [engine configuration](../engine-configuration.md) |
+| `REVIEW_ENGINE` | Unset | Legacy primary override (`claude`, `gemini` or `copilot`); leave unset to let `AI_ENGINES` decide |
 | `LIVE_MODE` | `false` | If `true`, reviews are posted live; if `false`, dry-run only |
 | `DELEGATION_ORGS` | Empty | Comma-separated orgs where AI can auto-fix: `petry-projects,don-petry` |
 | `MAX_REVIEW_CYCLES` | `3` | Max review iterations before escalating to human |
