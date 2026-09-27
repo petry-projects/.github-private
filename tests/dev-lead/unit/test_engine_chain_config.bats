@@ -358,3 +358,23 @@ _preflight() {
   [ "$(ai_engine_chain)" = "claude gemini copilot" ]
   [ "$(ai_engine_primary copilot)" = "claude" ]
 }
+
+@test "chain problem: a separators-only AI_ENGINES is reported, not treated as unset" {
+  export AI_ENGINES=" , "
+  [ "$(ai_engine_chain)" = "claude gemini copilot" ]
+  [[ "$(ai_engine_chain_problem)" == *"lists no engine"* ]]
+}
+
+@test "keys: probe-depleted Gemini keys are tried last, not first" {
+  run bash -c "export GOOGLE_API_KEY=k1 GOOGLE_API_KEY_2=k2 GOOGLE_API_KEY_3=k3 GEMINI_DEPLETED_KEYS='GOOGLE_API_KEY'; unset GEMINI_API_KEY; source '$SCRIPT_DIR/scripts/engine.sh' >/dev/null 2>&1; _gemini_api_keys | tr '\n' ' '"
+  [ "$status" -eq 0 ]
+  [ "$output" = "k2 k3 k1 " ]
+}
+
+@test "validate: the depleted key names are exported for the engine's key rotation" {
+  _setup_validate_bin
+  export GOOGLE_API_KEY=k1 GOOGLE_API_KEY_2=k2 MOCK_DEPLETED_KEYS="k1"
+  run bash -c "export PATH='$VBIN':\$PATH GEMINI_CLI_TRUST_WORKSPACE=true CLAUDE_CODE_OAUTH_TOKEN=x; unset GITHUB_STEP_SUMMARY GEMINI_API_KEY; source '$SCRIPT_DIR/scripts/validate-engines.sh' >/dev/null 2>&1; validate_engines >/dev/null 2>&1; bash -c 'echo \"D=\$GEMINI_DEPLETED_KEYS\"'"
+  [[ "$output" == *"D=GOOGLE_API_KEY"* ]]
+  rm -rf "$VBIN"
+}

@@ -211,6 +211,8 @@ validate_engines() {
   export CLAUDE_AVAILABLE="$claude_ok"
   export GEMINI_AVAILABLE="$gemini_ok"
   export COPILOT_AVAILABLE="$copilot_ok"
+  # Names only (never values): engine.sh's _gemini_api_keys tries these last.
+  export GEMINI_DEPLETED_KEYS="${GEMINI_DEPLETED_KEYS:-}"
 
   _emit_engine_summary "$claude_ok" "$gemini_ok" "$copilot_ok"
 }

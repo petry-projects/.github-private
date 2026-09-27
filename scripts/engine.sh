@@ -593,17 +593,26 @@ copilot_chat() {
 # skipped; duplicate values (the common case where GEMINI_API_KEY == GOOGLE_API_KEY,
 # both wired to the same secret) collapse to one entry. Emits nothing when no key
 # is configured, so callers can distinguish "no keys" from "one or more keys".
+# Keys the pre-flight billing probe found depleted (GEMINI_DEPLETED_KEYS, a
+# comma-separated list of variable NAMES from validate-engines.sh) are moved to
+# the end rather than dropped: the healthy keys are tried first, so a depleted
+# first key no longer costs a full billing-retry cycle on every call, and the
+# depleted ones stay as a last resort in case credits were topped up mid-run.
 _gemini_api_keys() {
-  local k seen=""
-  for k in "${GEMINI_API_KEY:-}" "${GOOGLE_API_KEY:-}" \
-           "${GOOGLE_API_KEY_2:-}" "${GOOGLE_API_KEY_3:-}"; do
+  local _name k seen="" _depleted="" _skip=", ${GEMINI_DEPLETED_KEYS:-}, "
+  for _name in GEMINI_API_KEY GOOGLE_API_KEY GOOGLE_API_KEY_2 GOOGLE_API_KEY_3; do
+    k="${!_name:-}"
     [ -z "$k" ] && continue
     case "$seen" in
       *"|${k}|"*) continue ;;
     esac
     seen="${seen}|${k}|"
+    case "$_skip" in
+      *", ${_name}, "*) _depleted="${_depleted}${k}"$'\n'; continue ;;
+    esac
     printf '%s\n' "$k"
   done
+  [ -z "$_depleted" ] || printf '%s' "$_depleted"
 }
 
 # _gemini_invoke <prompt_file> <timeout_sec> <model> [extra_args...]

@@ -68,8 +68,11 @@ ai_engine_chain() {
 ai_engine_chain_problem() {
   local spec parsed
   spec="$(_ai_engine_spec)"
-  [ -n "${spec//[[:space:],]/}" ] || return 0
-  if ! parsed="$(_ai_engine_parse "$spec")" || [ -z "$parsed" ]; then
+  [ -n "$spec" ] || return 0
+  if [ -z "${spec//[[:space:],]/}" ]; then
+    printf "AI_ENGINES='%s' lists no engine — using the default chain '%s'" \
+      "$spec" "$AI_ENGINES_DEFAULT"
+  elif ! parsed="$(_ai_engine_parse "$spec")" || [ -z "$parsed" ]; then
     printf "AI_ENGINES='%s' names an unknown engine (expected claude, gemini, copilot) — using the default chain '%s'" \
       "$spec" "$AI_ENGINES_DEFAULT"
   elif [[ "$spec" =~ ^[[:space:],] ]]; then
