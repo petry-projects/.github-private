@@ -25,6 +25,8 @@ setup() {
   echo '{"comments":[]}' > "$GH_VIEW_COMMENTS"
 
   cp "$BATS_TEST_DIRNAME/../scripts/review-batch.sh" "scripts/"
+  mkdir -p "scripts/lib"
+  cp "$BATS_TEST_DIRNAME/../scripts/lib/engine-chain.sh" "scripts/lib/"
 
   cat > "scripts/validate-engines.sh" <<'EOF'
 validate_engines() {
