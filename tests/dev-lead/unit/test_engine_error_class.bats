@@ -43,8 +43,9 @@ setup() {
 teardown() {
   rm -f "$GITHUB_ENV" "$GITHUB_OUTPUT" "$TEST_PROMPT" "$MODEL_RECORD" "${TOKEN_LOG_FILE:-}"
   rm -rf "$STUB_BIN_DIR"
-  [ -n "${CLAUDE_CHAIN_HOP_LOG:-}" ] && rm -rf "$(dirname "$CLAUDE_CHAIN_HOP_LOG")"
-  return 0
+  if [ -n "${CLAUDE_CHAIN_HOP_LOG:-}" ]; then
+    rm -rf "$(dirname "$CLAUDE_CHAIN_HOP_LOG")"
+  fi
   unset STUB_ENGINE_EXIT_BY_MODEL STUB_ENGINE_RESPONSE_BY_MODEL STUB_CLAUDE_ERROR_STATUS_BY_MODEL
   unset STUB_ENGINE_RECORD_MODELS TOKEN_LOG_FILE CLAUDE_CHAIN_HOP_LOG
 }
