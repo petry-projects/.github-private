@@ -320,17 +320,43 @@ jobs:
         run: bash .dev-lead/scripts/dev-lead-preflight.sh
 
       # ── Install engine CLIs ───────────────────────────────────────────────
+      - name: Resolve claude-code version
+        # A literal "latest" cache key never changes, so the first CLI ever cached
+        # was reused indefinitely (2.1.138 outlived the Opus 5.5 launch — #1957).
+        # Resolve it to the concrete npm version so a new release misses the cache,
+        # and install exactly that version on a miss (never re-resolve "latest");
+        # a pinned vars.CLAUDE_CODE_VERSION passes through unchanged.
+        id: claude_code_version
+        if: env.INTENT_TYPE != 'skip' && env.INTENT_TYPE != 'enable-auto-merge'
+        env:
+          REQUESTED_VERSION: ${{ env.CLAUDE_CODE_VERSION || vars.CLAUDE_CODE_VERSION || 'latest' }}
+        run: |
+          v="$REQUESTED_VERSION"
+          install="$v"
+          if [ "$v" = "latest" ]; then
+            v="$(npm view @anthropic-ai/claude-code version 2>/dev/null || true)"
+            if [ -n "$v" ]; then
+              install="$v"
+            else
+              v="latest-$(date -u +%G-w%V)"
+              echo "::warning::could not resolve the latest claude-code version; using weekly cache key $v"
+            fi
+          fi
+          echo "claude-code cache version: $v"
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "install=$install" >> "$GITHUB_OUTPUT"
+
       - name: Cache claude-code CLI
         if: env.INTENT_TYPE != 'skip' && env.INTENT_TYPE != 'enable-auto-merge'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.npm-global
-          key: claude-code-${{ vars.CLAUDE_CODE_VERSION || 'latest' }}-${{ runner.os }}
+          key: claude-code-${{ steps.claude_code_version.outputs.version }}-${{ runner.os }}
 
       - name: Install engine CLIs
         if: env.INTENT_TYPE != 'skip' && env.INTENT_TYPE != 'enable-auto-merge'
         env:
-          CLAUDE_CODE_VERSION: ${{ vars.CLAUDE_CODE_VERSION || 'latest' }}
+          CLAUDE_CODE_VERSION: ${{ steps.claude_code_version.outputs.install || vars.CLAUDE_CODE_VERSION || 'latest' }}
         run: |
           set -euo pipefail
           mkdir -p "$HOME/.npm-global"
@@ -341,6 +367,8 @@ jobs:
           if ! command -v claude >/dev/null 2>&1; then
             npm install -g "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
           fi
+          # Log the CLI version in use, cached or fresh (#1957).
+          echo "claude-code version: $(claude --version 2>/dev/null || echo unavailable)"
 
           case "$DEV_LEAD_ENGINE" in
             claude)
