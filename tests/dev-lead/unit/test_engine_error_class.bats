@@ -51,7 +51,7 @@ teardown() {
 
 @test "pattern: a failed-call JSON envelope (model name + usage) is NOT a rate limit" {
   run is_rate_limited '{"type":"result","is_error":true,"api_error_status":404,"model":"claude-sonnet-5-0","result":"There'"'"'s an issue with the selected model","usage":{"input_tokens":0,"output_tokens":0}}'
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
 }
 
 @test "pattern: genuine Claude caps are still rate limits" {
@@ -171,6 +171,34 @@ teardown() {
   grep -q "budget_tokens is not supported on this model" "$CLAUDE_CHAIN_HOP_LOG"
   # The winning hop is not logged as a failure.
   ! grep -q "model=claude-opus-4-8" "$CLAUDE_CHAIN_HOP_LOG"
+}
+
+@test "hop log: only the envelope's error fields are kept, with secrets redacted" {
+  export STUB_ENGINE_EXIT_BY_MODEL="claude-a=1|claude-b=0"
+  export STUB_CLAUDE_ERROR_STATUS_BY_MODEL="claude-a=400"
+  export STUB_ENGINE_RESPONSE_BY_MODEL="claude-a=bad request; echoed ghp_abcdefghijklmnopqrstuvwxyz0123456789|claude-b=ok"
+
+  run _claude_chain_invoke "claude-a,claude-b" "$TEST_PROMPT" 30
+
+  [ "$status" -eq 0 ]
+  grep -q '"api_error_status":400' "$CLAUDE_CHAIN_HOP_LOG"
+  grep -q "REDACTED-GH-TOKEN" "$CLAUDE_CHAIN_HOP_LOG"
+  ! grep -q "ghp_abcdefghijklmnopqrstuvwxyz0123456789" "$CLAUDE_CHAIN_HOP_LOG"
+  # Envelope metadata beyond the error fields (model, usage) is not copied.
+  ! grep -q '"usage"' "$CLAUDE_CHAIN_HOP_LOG"
+}
+
+@test "hop log: without redact_secrets only the header line is written" {
+  unset -f redact_secrets
+  export STUB_ENGINE_EXIT_BY_MODEL="claude-a=1|claude-b=0"
+  export STUB_CLAUDE_ERROR_STATUS_BY_MODEL="claude-a=400"
+  export STUB_ENGINE_RESPONSE_BY_MODEL="claude-a=some error text|claude-b=ok"
+
+  run _claude_chain_invoke "claude-a,claude-b" "$TEST_PROMPT" 30
+
+  [ "$status" -eq 0 ]
+  grep -q "model=claude-a rc=1 class=invalid_request" "$CLAUDE_CHAIN_HOP_LOG"
+  ! grep -q "some error text" "$CLAUDE_CHAIN_HOP_LOG"
 }
 
 @test "hop log: off when neither CLAUDE_CHAIN_HOP_LOG nor RUNNER_TEMP is set" {

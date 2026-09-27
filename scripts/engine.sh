@@ -335,6 +335,13 @@ _TOKEN_LIB="$(dirname "${BASH_SOURCE[0]}")/lib/token-metrics.sh"
 [ -f "$_TOKEN_LIB" ] && source "$_TOKEN_LIB" 2>/dev/null || true
 unset _TOKEN_LIB
 
+# Credential redaction (redact_secrets) for the Claude chain hop log. Non-fatal:
+# when the helper is missing, _claude_log_hop records only its header line.
+_REDACT_LIB="$(dirname "${BASH_SOURCE[0]}")/lib/redact.sh"
+# shellcheck source=lib/redact.sh
+[ -f "$_REDACT_LIB" ] && source "$_REDACT_LIB" 2>/dev/null || true
+unset _REDACT_LIB
+
 # _rate_limit_pattern
 # Single source of truth for the rate-limit regex used by both is_rate_limited
 # (text) and is_rate_limited_files (paths). Patterns intentionally excluded to
@@ -803,15 +810,20 @@ _claude_hop_failure_class() {
 }
 
 # _claude_log_hop <model> <rc> <class> <stdout_file> <stderr_file>
-# Appends a failed hop's captured output to the hop log so an earlier hop's real
-# error survives — only the final hop's output reaches the caller (#1957). The
-# log is CLAUDE_CHAIN_HOP_LOG, defaulting under $RUNNER_TEMP/cascade/ (uploaded
-# with the pr-review debug artifact); outside Actions with no override it is off.
-# Written to a file, never stderr: callers scan our stderr with is_rate_limited,
-# and replaying a throttled hop's text there would make a successful fallback
-# look like a provider rate-limit. Best-effort; never fails the caller.
+# Appends a failed hop's error to the hop log so an earlier hop's real error
+# survives — only the final hop's output reaches the caller (#1957). The log is
+# CLAUDE_CHAIN_HOP_LOG, defaulting under $RUNNER_TEMP/cascade/ (uploaded with the
+# pr-review debug artifact); outside Actions with no override it is off.
+# Kept deliberately narrow because it lands in an artifact: for a JSON envelope
+# only its error fields (is_error, api_error_status, subtype, .result), otherwise
+# the head of stdout, plus the head of stderr — each capped at 1000 bytes and
+# passed through redact_secrets. Without redact_secrets only the header line is
+# written. Written to a file, never stderr: callers scan our stderr with
+# is_rate_limited, and replaying a throttled hop's text there would make a
+# successful fallback look like a provider rate-limit. Best-effort; never fails
+# the caller.
 _claude_log_hop() {
-  local log="${CLAUDE_CHAIN_HOP_LOG:-}"
+  local log="${CLAUDE_CHAIN_HOP_LOG:-}" out="${4:-}" err="${5:-}"
   if [ -z "$log" ] && [ -n "${RUNNER_TEMP:-}" ]; then
     log="$RUNNER_TEMP/cascade/claude-chain-hops.log"
   fi
@@ -820,11 +832,21 @@ _claude_log_hop() {
   {
     printf '=== %s model=%s rc=%s class=%s\n' \
       "$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)" "$1" "$2" "$3"
-    printf -- '--- stdout (first 4000 bytes)\n'
-    head -c 4000 "$4" 2>/dev/null || true
-    printf '\n--- stderr (first 4000 bytes)\n'
-    head -c 4000 "$5" 2>/dev/null || true
-    printf '\n'
+    if declare -F redact_secrets >/dev/null 2>&1; then
+      if [ -f "$out" ]; then
+        printf -- '--- error\n'
+        { jq -cs '[.[] | select(type == "object")] | last
+                  | {is_error, api_error_status, subtype, result}' "$out" 2>/dev/null \
+            || head -c 1000 "$out" 2>/dev/null || true; } \
+          | head -c 1000 | redact_secrets
+        printf '\n'
+      fi
+      if [ -f "$err" ] && [ -s "$err" ]; then
+        printf -- '--- stderr\n'
+        head -c 1000 "$err" 2>/dev/null | redact_secrets
+        printf '\n'
+      fi
+    fi
   } >> "$log" 2>/dev/null || true
 }
 
