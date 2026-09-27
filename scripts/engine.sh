@@ -49,6 +49,16 @@ if declare -F ai_engine_primary >/dev/null 2>&1; then
     echo "::warning::REVIEW_ENGINE=$_requested_engine is not enabled in AI_ENGINES ($(ai_engine_chain)) — using $REVIEW_ENGINE" >&2
   fi
   unset _requested_engine
+  # Report an unusable AI_ENGINES here too: dev-lead sources engine.sh without
+  # running validate_engines. The exported flag keeps it to one warning per run.
+  if [ -z "${AI_ENGINES_PROBLEM_REPORTED:-}" ]; then
+    _chain_problem="$(ai_engine_chain_problem)"
+    if [ -n "$_chain_problem" ]; then
+      echo "::warning::$_chain_problem" >&2
+      export AI_ENGINES_PROBLEM_REPORTED=1
+    fi
+    unset _chain_problem
+  fi
 else
   REVIEW_ENGINE="${REVIEW_ENGINE:-claude}"
 fi
@@ -212,11 +222,11 @@ set_engine_config() {
       ENGINE_AUDIT_MODEL="o4-mini"
       ENGINE_ACTION_MODEL="o4-mini"
       ENGINE_SINGLE_MODEL="o4-mini"
-      ENGINE_LABEL="triage: o4-mini → deep: o4-mini + duck: gemini-3.8-flash → audit: o4-mini (GitHub Models API)"
+      ENGINE_LABEL="triage: o4-mini → deep: o4-mini + duck: ${GEMINI_FLASH_MODEL:-gemini-3.8-flash} → audit: o4-mini (GitHub Models API)"
       ENGINE_SINGLE_LABEL="single-reviewer mode: o4-mini (GitHub Models API)"
       # Cross-engine rubber duck: use Gemini when Copilot is primary
       DUCK_ENGINE="gemini"
-      DUCK_MODEL="gemini-3.8-flash"
+      DUCK_MODEL="${GEMINI_FLASH_MODEL:-gemini-3.8-flash}"
       # No in-engine chain for Copilot — single GitHub Models endpoint.
       CLAUDE_TRIAGE_MODEL_CHAIN=""
       CLAUDE_DEEP_MODEL_CHAIN=""

@@ -411,3 +411,15 @@ _run_duck_probe() {
   unset GEMINI_API_KEY
   [ "$(_run_duck_probe gemini-test gemini)" = "gemini-key=k2" ]
 }
+
+@test "engine.sh: an invalid AI_ENGINES is reported when sourced alone (dev-lead), once per run" {
+  run bash -c "export AI_ENGINES=claude,typo; unset AI_ENGINES_PROBLEM_REPORTED; source '$SCRIPT_DIR/scripts/engine.sh' 2>&1 >/dev/null | grep -c 'names an unknown engine'"
+  [ "$output" = "1" ]
+  run bash -c "export AI_ENGINES=claude,typo AI_ENGINES_PROBLEM_REPORTED=1; source '$SCRIPT_DIR/scripts/engine.sh' 2>&1 >/dev/null | grep -c 'names an unknown engine'"
+  [ "$output" = "0" ]
+}
+
+@test "duck: the automatic Gemini duck (Copilot primary) honours GEMINI_FLASH_MODEL" {
+  run bash -c "export REVIEW_ENGINE=copilot GEMINI_FLASH_MODEL=gemini-custom; unset AI_DUCK_ENGINE AI_DUCK_MODEL; source '$SCRIPT_DIR/scripts/engine.sh' >/dev/null 2>&1; select_duck_engine"
+  [ "$output" = "gemini gemini-custom" ]
+}

@@ -123,7 +123,10 @@ validate_engines() {
   local _chain_problem="" _disabled=""
   if declare -F ai_engine_chain_problem >/dev/null 2>&1; then
     _chain_problem="$(ai_engine_chain_problem)"
-    [ -n "$_chain_problem" ] && echo "::warning::$_chain_problem"
+    if [ -n "$_chain_problem" ] && [ -z "${AI_ENGINES_PROBLEM_REPORTED:-}" ]; then
+      echo "::warning::$_chain_problem"
+      export AI_ENGINES_PROBLEM_REPORTED=1
+    fi
     echo "::notice::Engine chain (AI_ENGINES): $(ai_engine_chain)"
   fi
 
