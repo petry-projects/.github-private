@@ -188,7 +188,10 @@ jobs:
       #   REVIEW_ENGINE  legacy primary override; leave unset to let AI_ENGINES decide.
       #   AI_DUCK_ENGINE rubber-duck engine (claude|gemini|copilot|none); default auto.
       #   AI_DUCK_MODEL  model for an explicit AI_DUCK_ENGINE.
-      #   GEMINI_FLASH_MODEL / GEMINI_PRO_MODEL  Gemini model ids (engine.sh defaults).
+      #   AI_MODELS_CLAUDE / AI_MODELS_GEMINI / AI_MODELS_COPILOT  each provider's
+      #                  model list, e.g. "deep=claude-opus-5-5,claude-opus-4-8; triage=…"
+      #                  (scripts/lib/engine-models.sh); omitted keys keep their defaults.
+      #   GEMINI_FLASH_MODEL / GEMINI_PRO_MODEL  replace just the first Gemini model.
       # The primary is derived here (expressions cannot split a list) from the
       # first AI_ENGINES entry; the scripts enforce the full list.
       AI_ENGINES: ${{ vars.AI_ENGINES || '' }}
@@ -197,6 +200,9 @@ jobs:
       AI_DUCK_MODEL: ${{ vars.AI_DUCK_MODEL || '' }}
       GEMINI_FLASH_MODEL: ${{ vars.GEMINI_FLASH_MODEL || '' }}
       GEMINI_PRO_MODEL: ${{ vars.GEMINI_PRO_MODEL || '' }}
+      AI_MODELS_CLAUDE: ${{ vars.AI_MODELS_CLAUDE || '' }}
+      AI_MODELS_GEMINI: ${{ vars.AI_MODELS_GEMINI || '' }}
+      AI_MODELS_COPILOT: ${{ vars.AI_MODELS_COPILOT || '' }}
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       # Copilot engine authenticates with don-petry's PAT (the account holds the
       # Copilot subscription entitlement, not a token scope). Prefer the collapsed

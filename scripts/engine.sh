@@ -64,6 +64,28 @@ else
 fi
 export REVIEW_ENGINE
 
+# Each provider's model list (AI_MODELS_CLAUDE / AI_MODELS_GEMINI /
+# AI_MODELS_COPILOT) and its defaults live in lib/engine-models.sh, so a retired
+# or renamed model is an Actions-variable edit, not a code change.
+_ENGINE_MODELS_LIB="$(dirname "${BASH_SOURCE[0]}")/lib/engine-models.sh"
+if [ ! -f "$_ENGINE_MODELS_LIB" ]; then
+  echo "::error::engine.sh: missing $_ENGINE_MODELS_LIB (model lists and defaults)" >&2
+  return 1 2>/dev/null || exit 1
+fi
+# shellcheck source=lib/engine-models.sh
+source "$_ENGINE_MODELS_LIB"
+unset _ENGINE_MODELS_LIB
+if [ -z "${AI_MODELS_PROBLEM_REPORTED:-}" ]; then
+  _models_problems="$(ai_models_problems)"
+  if [ -n "$_models_problems" ]; then
+    while IFS= read -r _models_line; do
+      echo "::warning::$_models_line" >&2
+    done <<< "$_models_problems"
+    export AI_MODELS_PROBLEM_REPORTED=1
+  fi
+  unset _models_problems _models_line
+fi
+
 # Cross-engine rubber-duck model (issue #773). The duck deliberately routes to
 # Copilot/o4-mini even when the primary engine is NOT copilot (e.g. the default
 # claude engine sets DUCK_ENGINE=copilot for adversarial diversity), so
@@ -71,7 +93,8 @@ export REVIEW_ENGINE
 # Default it here — engine-agnostic — so the duck always has a model under
 # `set -u`. The `copilot)` arm in set_engine_config re-applies the same default
 # (idempotent) for the primary-engine path.
-DEFAULT_COPILOT_API_MODEL="openai/o4-mini"
+DEFAULT_COPILOT_API_MODEL="$(ai_models_chain copilot model)"
+DEFAULT_COPILOT_API_MODEL="${DEFAULT_COPILOT_API_MODEL%%,*}"
 COPILOT_API_MODEL="${COPILOT_API_MODEL:-$DEFAULT_COPILOT_API_MODEL}"
 export COPILOT_API_MODEL
 
@@ -141,73 +164,93 @@ REVIEW_MCP_DEBUG="${REVIEW_MCP_DEBUG:-}"
 # the export also covers any future invocation via a separate child shell.
 export REVIEW_MCP_CONFIG REVIEW_MCP_ALLOWED_TOOLS REVIEW_MCP_DEBUG
 
+# _duck_model_for <engine> — the rubber-duck model for <engine>. AI_DUCK_MODEL
+# applies only when <engine> is the explicitly configured AI_DUCK_ENGINE (a model
+# id is engine-specific, so it must never follow the duck onto another engine).
+_duck_model_for() {
+  local engine="$1" wanted
+  wanted="$(printf '%s' "${AI_DUCK_ENGINE:-}" | tr '[:upper:]' '[:lower:]')"
+  if [ -n "${AI_DUCK_MODEL:-}" ] && [ "$engine" = "$wanted" ]; then
+    printf '%s' "$AI_DUCK_MODEL"
+    return 0
+  fi
+  local m
+  case "$engine" in
+    claude)
+      m="$(ai_models_chain claude duck)" ;;
+    gemini)
+      # AI_MODELS_GEMINI duck=…, else the flash tier's primary model.
+      m="$(ai_models_configured gemini duck)"
+      [ -n "$m" ] || m="${GEMINI_FLASH_MODEL:-$(ai_models_chain gemini flash)}" ;;
+    copilot)
+      m="$(ai_model_label "${COPILOT_API_MODEL:-$DEFAULT_COPILOT_API_MODEL}")" ;;
+  esac
+  _engine_chain_first "${m:-}"
+}
+
+# _engine_chain_first <chain> — the first model of a comma-separated chain,
+# whitespace trimmed (a chain from an env var may carry spaces).
+_engine_chain_first() {
+  local first="${1%%,*}"
+  printf '%s' "${first//[[:space:]]/}"
+}
+
 set_engine_config() {
   case "$REVIEW_ENGINE" in
     claude)
-      ENGINE_TRIAGE_MODEL="claude-haiku-4-5-20251001"
-      ENGINE_DEEP_MODEL="claude-opus-5-5"
-      ENGINE_AUDIT_MODEL="claude-fable-5"
-      ENGINE_ACTION_MODEL="claude-sonnet-5"
-      ENGINE_SINGLE_MODEL="claude-fable-5"
-      ENGINE_LABEL="triage: haiku 4.5 [sonnet 5] → deep: opus 5.5 [opus 4.8, sonnet 5] + duck: o4-mini → audit: fable 5"
-      ENGINE_SINGLE_LABEL="single-reviewer mode: fable 5"
+      # Per-tier in-Claude model fallback chains (comma-separated). On a rate
+      # limit a chain is walked left to right before the cross-provider fallback
+      # (AI_ENGINES) kicks in; per-model TPM/RPM buckets are independent, so
+      # swapping models within Claude often recovers without leaving the provider
+      # (the subscription cap is shared — #206). Source, highest first: the
+      # per-tier CLAUDE_<TIER>_MODEL_CHAIN env, then AI_MODELS_CLAUDE, then the
+      # defaults in lib/engine-models.sh (where the model notes live: Sonnet 5 id
+      # #1957, opus-5-5 deep #1898, Fable 5 thinking/caching rules).
+      CLAUDE_TRIAGE_MODEL_CHAIN="${CLAUDE_TRIAGE_MODEL_CHAIN:-$(ai_models_chain claude triage)}"
+      CLAUDE_DEEP_MODEL_CHAIN="${CLAUDE_DEEP_MODEL_CHAIN:-$(ai_models_chain claude deep)}"
+      CLAUDE_AUDIT_MODEL_CHAIN="${CLAUDE_AUDIT_MODEL_CHAIN:-$(ai_models_chain claude audit)}"
+      CLAUDE_ACTION_MODEL_CHAIN="${CLAUDE_ACTION_MODEL_CHAIN:-$(ai_models_chain claude action)}"
+      CLAUDE_SINGLE_MODEL_CHAIN="${CLAUDE_SINGLE_MODEL_CHAIN:-$(ai_models_chain claude single)}"
+      # Each tier's primary model is the first entry of its chain.
+      ENGINE_TRIAGE_MODEL="$(_engine_chain_first "$CLAUDE_TRIAGE_MODEL_CHAIN")"
+      ENGINE_DEEP_MODEL="$(_engine_chain_first "$CLAUDE_DEEP_MODEL_CHAIN")"
+      ENGINE_AUDIT_MODEL="$(_engine_chain_first "$CLAUDE_AUDIT_MODEL_CHAIN")"
+      ENGINE_ACTION_MODEL="$(_engine_chain_first "$CLAUDE_ACTION_MODEL_CHAIN")"
+      ENGINE_SINGLE_MODEL="$(_engine_chain_first "$CLAUDE_SINGLE_MODEL_CHAIN")"
       # Cross-engine rubber duck: use Copilot when Claude is primary
       DUCK_ENGINE="copilot"
-      DUCK_MODEL="o4-mini"
-      # Per-tier in-Claude model fallback chains (comma-separated).
-      # On rate-limit, the chain is walked left-to-right before the cross-provider
-      # fallback (claude → gemini → copilot) kicks in. Per-model TPM/RPM buckets
-      # are independent, so swapping models within Claude often recovers without
-      # leaving the provider. (Daily subscription cap is shared — see issue #206.)
-      # Override per workflow via env to tune cost/capability trade-offs.
-      # Fable 5 notes (honored by the claude CLI automatically):
-      #   - adaptive thinking only; budget_tokens/temperature/top_p/top_k removed
-      #   - omit thinking param entirely (disabled returns 400 on fable-5)
-      #   - min cacheable prefix: fable-5 = 2048 tok, opus-4-8 = 4096 tok
-      # Sonnet 5 default (#1100, epic #1095): claude-sonnet-5 is now the
-      # default sonnet across the triage, deep, and action chains, fully
-      # replacing claude-sonnet-4-6 (which #1098 first wired as a non-default
-      # fallback candidate). It is the sonnet fallback hop in triage/deep and
-      # the primary in action. The promotion rides the dev-lead canary rings;
-      # ring→stable graduation is human-gated and NOT part of this change. The
-      # daily cap is shared across Claude models (#206), so per-tier fallback
-      # only helps per-model RPM/TPM, not the subscription cap.
-      # The ID is `claude-sonnet-5` — the `claude-sonnet-5-0` spelling shipped
-      # by #1100 does not exist and 404s, so every sonnet hop silently fell
-      # through to the next model (#1957).
-      CLAUDE_TRIAGE_MODEL_CHAIN="${CLAUDE_TRIAGE_MODEL_CHAIN:-claude-haiku-4-5-20251001,claude-sonnet-5}"
-      # Deep tier swapped opus-4-8 → opus-5-5 (#1898, epic #1895 Phase 2): the
-      # highest-cost tier now rides the cheaper, higher-benchmark model.
-      # opus-4-8 is the known-good 2nd hop (#1957): if opus-5-5 is throttled or
-      # unavailable, a deep review degrades to the model it replaced instead of
-      # failing. Sonnet 5 stays as the last in-Claude hop.
-      CLAUDE_DEEP_MODEL_CHAIN="${CLAUDE_DEEP_MODEL_CHAIN:-claude-opus-5-5,claude-opus-4-8,claude-sonnet-5}"
-      CLAUDE_AUDIT_MODEL_CHAIN="${CLAUDE_AUDIT_MODEL_CHAIN:-claude-fable-5,claude-opus-4-8,claude-opus-4-7}"
-      CLAUDE_ACTION_MODEL_CHAIN="${CLAUDE_ACTION_MODEL_CHAIN:-claude-sonnet-5,claude-opus-4-8}"
-      CLAUDE_SINGLE_MODEL_CHAIN="${CLAUDE_SINGLE_MODEL_CHAIN:-claude-fable-5,claude-opus-4-8,claude-opus-4-7}"
+      DUCK_MODEL="$(ai_model_label "${COPILOT_API_MODEL:-$DEFAULT_COPILOT_API_MODEL}")"
+      ENGINE_LABEL="triage: $(ai_models_label_chain "$CLAUDE_TRIAGE_MODEL_CHAIN") → deep: $(ai_models_label_chain "$CLAUDE_DEEP_MODEL_CHAIN") + duck: $DUCK_MODEL → audit: $(ai_models_label_chain "$CLAUDE_AUDIT_MODEL_CHAIN")"
+      ENGINE_SINGLE_LABEL="single-reviewer mode: $(ai_models_label_chain "$CLAUDE_SINGLE_MODEL_CHAIN")"
       ;;
     gemini)
-      # Per-engine model overrides via env (env → default).
-      # GEMINI_FLASH_MODEL controls the speed/cost tier (triage + action).
-      # GEMINI_PRO_MODEL controls the quality tier (deep + audit + single).
-      local _gflash="${GEMINI_FLASH_MODEL:-gemini-3.8-flash}"
-      local _gpro="${GEMINI_PRO_MODEL:-gemini-2.5-pro}"
+      # In-Gemini model chains (comma-separated, walked left to right on a rate
+      # limit): flash = speed/cost tier (triage + action), pro = quality tier
+      # (deep + audit + single). Source, highest first: GEMINI_FLASH_MODEL_CHAIN /
+      # GEMINI_PRO_MODEL_CHAIN; then AI_MODELS_GEMINI (or the defaults in
+      # lib/engine-models.sh) with GEMINI_FLASH_MODEL / GEMINI_PRO_MODEL, when
+      # set, replacing just the first model.
+      if [ -z "${GEMINI_FLASH_MODEL_CHAIN:-}" ]; then
+        GEMINI_FLASH_MODEL_CHAIN="$(ai_models_chain gemini flash)"
+        [ -z "${GEMINI_FLASH_MODEL:-}" ] || GEMINI_FLASH_MODEL_CHAIN="$(ai_models_with_first "$GEMINI_FLASH_MODEL" "$GEMINI_FLASH_MODEL_CHAIN")"
+      fi
+      if [ -z "${GEMINI_PRO_MODEL_CHAIN:-}" ]; then
+        GEMINI_PRO_MODEL_CHAIN="$(ai_models_chain gemini pro)"
+        [ -z "${GEMINI_PRO_MODEL:-}" ] || GEMINI_PRO_MODEL_CHAIN="$(ai_models_with_first "$GEMINI_PRO_MODEL" "$GEMINI_PRO_MODEL_CHAIN")"
+      fi
+      local _gflash _gpro
+      _gflash="$(_engine_chain_first "$GEMINI_FLASH_MODEL_CHAIN")"
+      _gpro="$(_engine_chain_first "$GEMINI_PRO_MODEL_CHAIN")"
       ENGINE_TRIAGE_MODEL="$_gflash"
       ENGINE_DEEP_MODEL="$_gpro"
       ENGINE_AUDIT_MODEL="$_gpro"
       ENGINE_ACTION_MODEL="$_gflash"
       ENGINE_SINGLE_MODEL="$_gpro"
-      ENGINE_LABEL="triage: $_gflash → deep: $_gpro + duck: sonnet 4.6 → audit: $_gpro"
-      ENGINE_SINGLE_LABEL="single-reviewer mode: $_gpro"
       # Cross-engine rubber duck: use Claude for diversity
       DUCK_ENGINE="claude"
-      DUCK_MODEL="claude-sonnet-4-6"
-      # In-Gemini model fallback chains (comma-separated, walked left-to-right on rate-limit).
-      # Flash chain: 3.8-flash (speed/cost) → 2.5-pro (quality fallback on exhaustion).
-      # Pro chain: 2.5-pro (quality) → 2.0-flash (graceful degradation on exhaustion).
-      # Override per workflow via env to tune cost/capability trade-offs.
-      GEMINI_FLASH_MODEL_CHAIN="${GEMINI_FLASH_MODEL_CHAIN:-${_gflash},gemini-2.5-pro}"
-      GEMINI_PRO_MODEL_CHAIN="${GEMINI_PRO_MODEL_CHAIN:-${_gpro},gemini-2.0-flash}"
+      DUCK_MODEL="$(_duck_model_for claude)"
+      ENGINE_LABEL="triage: $(ai_models_label_chain "$GEMINI_FLASH_MODEL_CHAIN") → deep: $(ai_models_label_chain "$GEMINI_PRO_MODEL_CHAIN") + duck: $(ai_model_label "$DUCK_MODEL") → audit: $_gpro"
+      ENGINE_SINGLE_LABEL="single-reviewer mode: $(ai_models_label_chain "$GEMINI_PRO_MODEL_CHAIN")"
       # Clear the Claude-only chain vars so callers that check them unconditionally
       # do not accidentally apply a stale Claude chain to the Gemini engine.
       CLAUDE_TRIAGE_MODEL_CHAIN=""
@@ -217,16 +260,21 @@ set_engine_config() {
       CLAUDE_SINGLE_MODEL_CHAIN=""
       ;;
     copilot)
-      ENGINE_TRIAGE_MODEL="o4-mini"
-      ENGINE_DEEP_MODEL="o4-mini"
-      ENGINE_AUDIT_MODEL="o4-mini"
-      ENGINE_ACTION_MODEL="o4-mini"
-      ENGINE_SINGLE_MODEL="o4-mini"
-      ENGINE_LABEL="triage: o4-mini → deep: o4-mini + duck: ${GEMINI_FLASH_MODEL:-gemini-3.8-flash} → audit: o4-mini (GitHub Models API)"
-      ENGINE_SINGLE_LABEL="single-reviewer mode: o4-mini (GitHub Models API)"
+      # One GitHub Models id for every tier: COPILOT_API_MODEL, else
+      # AI_MODELS_COPILOT model=…, else openai/o4-mini (lib/engine-models.sh).
+      COPILOT_API_MODEL="${COPILOT_API_MODEL:-$DEFAULT_COPILOT_API_MODEL}"
+      local _cmodel
+      _cmodel="$(ai_model_label "$COPILOT_API_MODEL")"
+      ENGINE_TRIAGE_MODEL="$_cmodel"
+      ENGINE_DEEP_MODEL="$_cmodel"
+      ENGINE_AUDIT_MODEL="$_cmodel"
+      ENGINE_ACTION_MODEL="$_cmodel"
+      ENGINE_SINGLE_MODEL="$_cmodel"
       # Cross-engine rubber duck: use Gemini when Copilot is primary
       DUCK_ENGINE="gemini"
-      DUCK_MODEL="${GEMINI_FLASH_MODEL:-gemini-3.8-flash}"
+      DUCK_MODEL="$(_duck_model_for gemini)"
+      ENGINE_LABEL="triage: $_cmodel → deep: $_cmodel + duck: $DUCK_MODEL → audit: $_cmodel (GitHub Models API)"
+      ENGINE_SINGLE_LABEL="single-reviewer mode: $_cmodel (GitHub Models API)"
       # No in-engine chain for Copilot — single GitHub Models endpoint.
       CLAUDE_TRIAGE_MODEL_CHAIN=""
       CLAUDE_DEEP_MODEL_CHAIN=""
@@ -251,7 +299,7 @@ set_engine_config() {
   # claude) branch sets DUCK_ENGINE=copilot — and copilot_chat references a bare
   # $COPILOT_API_MODEL under `set -u`. Leaving it unset on a non-copilot primary
   # silently aborts the duck subprocess and skips tier-2 (#881).
-  COPILOT_API_MODEL="${COPILOT_API_MODEL:-openai/o4-mini}"
+  COPILOT_API_MODEL="${COPILOT_API_MODEL:-$DEFAULT_COPILOT_API_MODEL}"
 
   export ENGINE_TRIAGE_MODEL ENGINE_DEEP_MODEL ENGINE_AUDIT_MODEL
   export ENGINE_ACTION_MODEL ENGINE_SINGLE_MODEL
@@ -1894,23 +1942,6 @@ sys.exit(1)
 # All three engine branches (claude, gemini, copilot) are reachable — the gemini
 # branch executes when REVIEW_ENGINE=copilot (copilot primary → gemini duck).
 # Output to stdout. Strips non-selected engine credentials to prevent cross-engine leakage.
-# _duck_model_for <engine> — the rubber-duck model for <engine>. AI_DUCK_MODEL
-# applies only when <engine> is the explicitly configured AI_DUCK_ENGINE (a model
-# id is engine-specific, so it must never follow the duck onto another engine).
-_duck_model_for() {
-  local engine="$1" wanted
-  wanted="$(printf '%s' "${AI_DUCK_ENGINE:-}" | tr '[:upper:]' '[:lower:]')"
-  if [ -n "${AI_DUCK_MODEL:-}" ] && [ "$engine" = "$wanted" ]; then
-    printf '%s' "$AI_DUCK_MODEL"
-    return 0
-  fi
-  case "$engine" in
-    claude)  printf '%s' "claude-sonnet-4-6" ;;
-    gemini)  printf '%s' "${GEMINI_FLASH_MODEL:-gemini-3.8-flash}" ;;
-    copilot) printf '%s' "o4-mini" ;;
-  esac
-}
-
 # select_duck_engine — prints "<engine> <model>" for the rubber-duck reviewer,
 # or "none" when no usable engine is left. Order of preference:
 #   1. AI_DUCK_ENGINE (org/repo variable) when it is enabled and available;

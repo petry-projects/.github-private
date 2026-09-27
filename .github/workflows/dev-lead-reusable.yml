@@ -144,6 +144,10 @@ jobs:
       AI_DUCK_MODEL: ${{ vars.AI_DUCK_MODEL || '' }}
       GEMINI_FLASH_MODEL: ${{ vars.GEMINI_FLASH_MODEL || '' }}
       GEMINI_PRO_MODEL: ${{ vars.GEMINI_PRO_MODEL || '' }}
+      # Each provider's model list (scripts/lib/engine-models.sh).
+      AI_MODELS_CLAUDE: ${{ vars.AI_MODELS_CLAUDE || '' }}
+      AI_MODELS_GEMINI: ${{ vars.AI_MODELS_GEMINI || '' }}
+      AI_MODELS_COPILOT: ${{ vars.AI_MODELS_COPILOT || '' }}
       DEV_LEAD_DRY_RUN: ${{ vars.DEV_LEAD_DRY_RUN || 'false' }}
       DEEP_TIMEOUT_SEC: ${{ vars.DEEP_TIMEOUT_SEC || '' }}
       ACTION_TIMEOUT_SEC: ${{ vars.ACTION_TIMEOUT_SEC || '' }}
