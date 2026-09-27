@@ -185,6 +185,19 @@ _engine() {
   [[ "$output" == *"duck: gemini-3.8-flash →"* ]]
 }
 
+@test "persona parity: the live persona runner and run-eval's persona tier resolve the same deep model" {
+  local wf="$SCRIPT_DIR/.github/workflows/persona-runner-reusable.yml"
+  grep -q 'source scripts/lib/engine-models.sh' "$wf"
+  grep -q 'persona_model="$(ai_models_chain claude deep)"' "$wf"
+  grep -q -- '--model "$persona_model"' "$wf"
+  ! grep -q -- '--model claude-' "$wf"
+  export AI_MODELS_CLAUDE="deep=claude-opus-4-8,claude-sonnet-5"
+  local live
+  live="$(ai_models_chain claude deep)"; live="${live%%,*}"
+  run _engine claude ENGINE_DEEP_MODEL
+  [[ "$output" == *"ENGINE_DEEP_MODEL=$live"* ]]
+}
+
 # ── Gemini billing probe (validate-engines.sh) ───────────────────────────────
 
 # Puts a curl stub on PATH that records its URL and answers with <body> / <code>.
