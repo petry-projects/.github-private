@@ -61,7 +61,7 @@ jobs:
         # a pinned vars.CLAUDE_CODE_VERSION passes through unchanged.
         id: claude_code_version
         env:
-          REQUESTED_VERSION: ${{ vars.CLAUDE_CODE_VERSION || 'latest' }}
+          REQUESTED_VERSION: ${{ env.CLAUDE_CODE_VERSION || vars.CLAUDE_CODE_VERSION || 'latest' }}
         run: |
           v="$REQUESTED_VERSION"
           install="$v"

@@ -815,9 +815,9 @@ _claude_hop_failure_class() {
 # CLAUDE_CHAIN_HOP_LOG, defaulting under $RUNNER_TEMP/cascade/ (uploaded with the
 # pr-review debug artifact); outside Actions with no override it is off.
 # Kept deliberately narrow because it lands in an artifact: for a JSON envelope
-# only its error fields (is_error, api_error_status, subtype, .result), otherwise
-# the head of stdout, plus the head of stderr — each capped at 1000 bytes and
-# passed through redact_secrets. Without redact_secrets only the header line is
+# only its error fields (is_error, api_error_status, subtype, .result) — non-JSON
+# stdout is omitted, since it may be a raw agent transcript — plus the head of
+# stderr, each capped at 1000 bytes and passed through redact_secrets. Without redact_secrets only the header line is
 # written. Written to a file, never stderr: callers scan our stderr with
 # is_rate_limited, and replaying a throttled hop's text there would make a
 # successful fallback look like a provider rate-limit. Best-effort; never fails
@@ -837,7 +837,7 @@ _claude_log_hop() {
         printf -- '--- error\n'
         { jq -cs '[.[] | select(type == "object")] | last
                   | {is_error, api_error_status, subtype, result}' "$out" 2>/dev/null \
-            || head -c 1000 "$out" 2>/dev/null || true; } \
+            || printf '(non-JSON stdout omitted)'; } \
           | head -c 1000 | redact_secrets
         printf '\n'
       fi

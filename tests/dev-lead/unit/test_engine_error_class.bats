@@ -41,8 +41,10 @@ setup() {
 }
 
 teardown() {
-  rm -f "$GITHUB_ENV" "$GITHUB_OUTPUT" "$TEST_PROMPT" "$MODEL_RECORD" "$TOKEN_LOG_FILE"
-  rm -rf "$STUB_BIN_DIR" "$(dirname "$CLAUDE_CHAIN_HOP_LOG")"
+  rm -f "$GITHUB_ENV" "$GITHUB_OUTPUT" "$TEST_PROMPT" "$MODEL_RECORD" "${TOKEN_LOG_FILE:-}"
+  rm -rf "$STUB_BIN_DIR"
+  [ -n "${CLAUDE_CHAIN_HOP_LOG:-}" ] && rm -rf "$(dirname "$CLAUDE_CHAIN_HOP_LOG")"
+  return 0
   unset STUB_ENGINE_EXIT_BY_MODEL STUB_ENGINE_RESPONSE_BY_MODEL STUB_CLAUDE_ERROR_STATUS_BY_MODEL
   unset STUB_ENGINE_RECORD_MODELS TOKEN_LOG_FILE CLAUDE_CHAIN_HOP_LOG
 }
@@ -189,6 +191,20 @@ teardown() {
   ! grep -qF "$_tok" "$CLAUDE_CHAIN_HOP_LOG"
   # Envelope metadata beyond the error fields (model, usage) is not copied.
   ! grep -q '"usage"' "$CLAUDE_CHAIN_HOP_LOG"
+}
+
+@test "hop log: non-JSON stdout is omitted, never copied raw" {
+  # Text mode (no TOKEN_LOG_FILE): stdout is a plain transcript, not an envelope.
+  unset TOKEN_LOG_FILE
+  export STUB_ENGINE_EXIT_BY_MODEL="claude-a=1|claude-b=0"
+  export STUB_ENGINE_RESPONSE_BY_MODEL="claude-a=429 too many requests; transcript line|claude-b=ok"
+
+  run _claude_chain_invoke "claude-a,claude-b" "$TEST_PROMPT" 30
+
+  [ "$status" -eq 0 ]
+  grep -q "model=claude-a rc=1 class=rate_limit" "$CLAUDE_CHAIN_HOP_LOG"
+  grep -q "(non-JSON stdout omitted)" "$CLAUDE_CHAIN_HOP_LOG"
+  ! grep -q "transcript line" "$CLAUDE_CHAIN_HOP_LOG"
 }
 
 @test "hop log: without redact_secrets only the header line is written" {
