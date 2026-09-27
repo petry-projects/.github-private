@@ -181,8 +181,22 @@ jobs:
       BOT_USER: ${{ vars.BOT_USER || 'donpetry-bot' }}
       TARGET_ORG: ${{ vars.TARGET_ORG || 'petry-projects' }}
       AGENT_REPO: ${{ github.repository }}
-      # Review engine: "claude" or "copilot". Controls which CLI and models are used.
-      REVIEW_ENGINE: ${{ vars.REVIEW_ENGINE || 'claude' }}
+      # Engine configuration — switch providers with Actions variables, no code
+      # change (scripts/lib/engine-chain.sh, docs/engine-configuration.md):
+      #   AI_ENGINES     ordered list of enabled engines, e.g. "claude,gemini,copilot";
+      #                  an engine not listed is never used; the first is primary.
+      #   REVIEW_ENGINE  legacy primary override; leave unset to let AI_ENGINES decide.
+      #   AI_DUCK_ENGINE rubber-duck engine (claude|gemini|copilot|none); default auto.
+      #   AI_DUCK_MODEL  model for an explicit AI_DUCK_ENGINE.
+      #   GEMINI_FLASH_MODEL / GEMINI_PRO_MODEL  Gemini model ids (engine.sh defaults).
+      # The primary is derived here (expressions cannot split a list) from the
+      # first AI_ENGINES entry; the scripts enforce the full list.
+      AI_ENGINES: ${{ vars.AI_ENGINES || '' }}
+      REVIEW_ENGINE: ${{ vars.REVIEW_ENGINE || (startsWith(vars.AI_ENGINES, 'gemini') && 'gemini') || (startsWith(vars.AI_ENGINES, 'copilot') && 'copilot') || 'claude' }}
+      AI_DUCK_ENGINE: ${{ vars.AI_DUCK_ENGINE || '' }}
+      AI_DUCK_MODEL: ${{ vars.AI_DUCK_MODEL || '' }}
+      GEMINI_FLASH_MODEL: ${{ vars.GEMINI_FLASH_MODEL || '' }}
+      GEMINI_PRO_MODEL: ${{ vars.GEMINI_PRO_MODEL || '' }}
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       # Copilot engine authenticates with don-petry's PAT (the account holds the
       # Copilot subscription entitlement, not a token scope). Prefer the collapsed
@@ -272,15 +286,38 @@ jobs:
         # during the 2026-08-23..30 outage. First step so a missing token is caught
         # before any runner setup is burned.
         #
-        # Gated on REVIEW_ENGINE=claude (the default, and the engine that was in the
-        # outage): the copilot/gemini engines authenticate with their own credentials
+        # Gated on the EFFECTIVE primary engine being claude — REVIEW_ENGINE as
+        # scripts/lib/engine-chain.sh's ai_engine_primary resolves it against
+        # AI_ENGINES (mirrored inline: this step runs before checkout). A valid
+        # AI_ENGINES list decides; REVIEW_ENGINE wins only when that list enables
+        # it; an empty list means the default chain claude,gemini,copilot, and an
+        # invalid one means the default chain AND the default primary (claude).
+        # The copilot/gemini engines authenticate with their own credentials
         # and install claude only best-effort, so they legitimately run WITHOUT this
         # token — failing them here would be a regression, not the fail-loud we want.
         env:
-          REVIEW_ENGINE: ${{ vars.REVIEW_ENGINE || 'claude' }}
+          REVIEW_ENGINE: ${{ vars.REVIEW_ENGINE || (startsWith(vars.AI_ENGINES, 'gemini') && 'gemini') || (startsWith(vars.AI_ENGINES, 'copilot') && 'copilot') || 'claude' }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
         run: |
-          if [ "$REVIEW_ENGINE" = "claude" ] && [ -z "$CLAUDE_CODE_OAUTH_TOKEN" ]; then
+          effective_primary() {
+            local pref spec e chain="" valid=true first
+            pref="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+            spec="$(printf '%s' "${AI_ENGINES:-}" | tr '[:upper:],' '[:lower:] ')"
+            set -f
+            for e in $spec; do
+              case "$e" in
+                claude|gemini|copilot) case " $chain " in *" $e "*) ;; *) chain="$chain $e" ;; esac ;;
+                *) valid=false ;;
+              esac
+            done
+            set +f
+            if [ "$valid" = false ]; then chain=""; pref=""; fi
+            [ -n "${chain// /}" ] || chain=" claude gemini copilot"
+            if [ -n "$pref" ] && [[ "$chain " == *" $pref "* ]]; then printf '%s' "$pref"; return; fi
+            first="${chain# }"
+            printf '%s' "${first%% *}"
+          }
+          if [ "$(effective_primary "$REVIEW_ENGINE")" = "claude" ] && [ -z "$CLAUDE_CODE_OAUTH_TOKEN" ]; then
             msg="CLAUDE_CODE_OAUTH_TOKEN is not provided to pr-review."
             msg="$msg To pause deliberately, set AGENTS_PAUSED=true Actions variable"
             msg="$msg instead of withholding the secret (see #1525)."
