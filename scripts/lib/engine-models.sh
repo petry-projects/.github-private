@@ -93,7 +93,7 @@ _ai_models_var() {
 # _ai_models_scan <provider> <mode> [key]
 #   mode=get      prints the normalised chain for [key] ("" when not configured)
 #   mode=problems prints one line per unusable entry
-# The last valid entry for a key wins.
+# The last entry for a key wins; when it is unusable, the default applies.
 _ai_models_scan() {
   local provider="$1" mode="$2" want="${3:-}" var spec entry key value m chain found=""
   local -a entries=() models=()
@@ -132,6 +132,9 @@ _ai_models_scan() {
     done
     if [ -z "$chain" ]; then
       [ "$mode" = problems ] && [[ "$value" =~ ^[,[:space:]]*$ ]] && printf "%s: '%s' lists no model — default used\n" "$var" "$key"
+      # The last entry for a key wins even when unusable: drop an earlier one so
+      # the default applies, as the warning says.
+      [ "$key" = "$want" ] && found=""
       continue
     fi
     if [[ "$chain" == *,* ]] && { [ "$key" = duck ] || [ "$key" = model ]; }; then

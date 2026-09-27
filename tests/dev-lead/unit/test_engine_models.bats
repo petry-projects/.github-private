@@ -60,6 +60,13 @@ _engine() {
   [[ "$output" == *"invalid model id 'claude opus'"* ]]
 }
 
+@test "parse: an unusable last entry for a key drops an earlier one (the default applies)" {
+  export AI_MODELS_CLAUDE="deep=claude-sonnet-5; deep=not valid"
+  [ "$(ai_models_chain claude deep)" = "claude-opus-5-5,claude-opus-4-8,claude-sonnet-5" ]
+  export AI_MODELS_CLAUDE="deep=claude-sonnet-5; deep=,"
+  [ "$(ai_models_chain claude deep)" = "claude-opus-5-5,claude-opus-4-8,claude-sonnet-5" ]
+}
+
 @test "problems: an invalid model id drops the whole entry (no half-parsed chain)" {
   export AI_MODELS_GEMINI='pro=gemini-3.1-pro-preview,gem!ni'
   [ "$(ai_models_chain gemini pro)" = "gemini-3.1-pro-preview,gemini-3.8-flash" ]
