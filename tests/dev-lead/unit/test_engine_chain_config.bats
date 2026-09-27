@@ -352,3 +352,9 @@ _preflight() {
   [[ "$output" != *"SESSION ABORTED"* ]]
   rm -rf "$BDIR"
 }
+
+@test "primary: an invalid AI_ENGINES ignores the derived override → default primary" {
+  export AI_ENGINES="copilot,typo"
+  [ "$(ai_engine_chain)" = "claude gemini copilot" ]
+  [ "$(ai_engine_primary copilot)" = "claude" ]
+}

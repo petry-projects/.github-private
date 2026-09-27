@@ -87,10 +87,18 @@ ai_engine_enabled() {
 
 # ai_engine_primary [preferred] — <preferred> when it is enabled, otherwise the
 # first engine in the chain. Pass the legacy REVIEW_ENGINE / DEV_LEAD_ENGINE.
+# An INVALID AI_ENGINES value means full defaults, primary included: the
+# workflows derive REVIEW_ENGINE / DEV_LEAD_ENGINE from the raw value's first
+# token, so honouring <preferred> there would let "copilot,typo" still make
+# Copilot primary (#1961 review).
 ai_engine_primary() {
-  local pref chain
+  local pref chain spec
   pref="$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
   chain="$(ai_engine_chain)"
+  spec="$(_ai_engine_spec)"
+  if [ -n "${spec//[[:space:],]/}" ] && ! _ai_engine_parse "$spec" >/dev/null; then
+    pref=""
+  fi
   if [ -n "$pref" ] && [[ " $chain " == *" $pref "* ]]; then
     printf '%s' "$pref"
   else
