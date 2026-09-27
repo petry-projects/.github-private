@@ -378,3 +378,36 @@ _preflight() {
   [[ "$output" == *"D=GOOGLE_API_KEY"* ]]
   rm -rf "$VBIN"
 }
+
+@test "batch: an unavailable middle fallback does not mask a rate-limited last engine → session abort" {
+  _setup_batch
+  export MOCK_RC_claude=2 MOCK_RC_gemini=55 MOCK_RC_copilot=2
+  run _batch
+  [ "$status" -eq 1 ]
+  [[ "$output" != *"skipping https://github.com/fake/pull/1 and continuing batch"* ]]
+  [ "$(tr '\n' ' ' < "$BDIR/engine_calls.txt")" = "claude gemini copilot " ]
+  rm -rf "$BDIR"
+}
+
+_run_duck_probe() {
+  local p; p="$(mktemp)"; echo "duck prompt" > "$p"
+  bash -c "source '$SCRIPT_DIR/scripts/engine.sh' >/dev/null 2>&1
+    copilot_chat() { echo \"copilot-model=\$COPILOT_API_MODEL\"; }
+    _gemini_invoke() { echo \"gemini-key=\$GOOGLE_API_KEY\"; }
+    DUCK_ENGINE=\"\$2\"
+    run_duck '$p' \"\$1\"" _ "$1" "$2" 2>/dev/null
+  rm -f "$p"
+}
+
+@test "duck: an explicit AI_DUCK_MODEL reaches the Copilot call; the default label does not" {
+  export AI_DUCK_ENGINE=copilot AI_DUCK_MODEL=gpt-test COPILOT_API_MODEL=openai/o4-mini
+  [ "$(_run_duck_probe gpt-test copilot)" = "copilot-model=gpt-test" ]
+  unset AI_DUCK_MODEL
+  [ "$(_run_duck_probe o4-mini copilot)" = "copilot-model=openai/o4-mini" ]
+}
+
+@test "duck: a Gemini duck uses key rotation (probe-depleted key tried last)" {
+  export GOOGLE_API_KEY=k1 GOOGLE_API_KEY_2=k2 GEMINI_DEPLETED_KEYS=GOOGLE_API_KEY
+  unset GEMINI_API_KEY
+  [ "$(_run_duck_probe gemini-test gemini)" = "gemini-key=k2" ]
+}

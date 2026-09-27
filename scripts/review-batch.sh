@@ -291,6 +291,9 @@ while IFS= read -r pr_url; do
     run_review_capture "$pr_url" || rc=$?
     # Engine-unavailable setup/runtime errors on a fallback: mark the engine
     # unavailable for the rest of the batch and keep walking the chain.
+    # _fallback_unavailable tracks the LAST engine tried: a later engine that
+    # is genuinely rate-limited clears it, so an exhausted chain still aborts.
+    _fallback_unavailable=0
     if [ "$rc" -eq 55 ] || [ "$rc" -eq 127 ]; then
       _fallback_unavailable=1
       echo "::warning::$(ai_engine_label "$REVIEW_ENGINE") engine unavailable at runtime (exit $rc) — trying the next engine in AI_ENGINES"

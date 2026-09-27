@@ -1985,11 +1985,13 @@ run_duck() {
       unset CLAUDE_CODE_OAUTH_TOKEN 2>/dev/null || true
       unset ANTHROPIC_API_KEY 2>/dev/null || true
       unset COPILOT_GITHUB_TOKEN 2>/dev/null || true
+      # A single-model chain, so the duck gets the same per-key rotation (and
+      # probe-depleted keys last) as the other Gemini tiers.
       if [ -n "$_tok_tmp" ]; then
-        _gemini_invoke "$prompt_file" "$DUCK_TIMEOUT_SEC" "$model" \
+        _gemini_chain_invoke "$model" "$prompt_file" "$DUCK_TIMEOUT_SEC" \
           --approval-mode auto_edit | tee "$_tok_tmp" || rc=${PIPESTATUS[0]}
       else
-        _gemini_invoke "$prompt_file" "$DUCK_TIMEOUT_SEC" "$model" \
+        _gemini_chain_invoke "$model" "$prompt_file" "$DUCK_TIMEOUT_SEC" \
           --approval-mode auto_edit || rc=$?
       fi
       ;;
@@ -1998,6 +2000,12 @@ run_duck() {
       unset ANTHROPIC_API_KEY 2>/dev/null || true
       unset GOOGLE_API_KEY 2>/dev/null || true
       unset GEMINI_API_KEY 2>/dev/null || true
+      # An explicit AI_DUCK_MODEL (the only way <model> equals it — see
+      # _duck_model_for) overrides COPILOT_API_MODEL for this call; the built-in
+      # default label stays a label and COPILOT_API_MODEL decides.
+      if [ -n "${AI_DUCK_MODEL:-}" ] && [ "$model" = "$AI_DUCK_MODEL" ]; then
+        local -x COPILOT_API_MODEL="$model"
+      fi
       # Do NOT tee stdout to OUTPUT_FILE — same rationale as run_agentic copilot
       # branch: the prompt writes verdict JSON directly via the Bash tool.
       if [ -n "$_tok_tmp" ]; then
