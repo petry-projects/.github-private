@@ -109,7 +109,8 @@ for wf in "${WORKFLOWS[@]}"; do
   # never reach the retry lane (losing per-PR serialization among retries). The
   # old ordinary client_payload.pr_number branch is gone — this PR routes
   # repository_dispatch straight to the dedicated retry lane.
-  check_concurrency_order "$wf" "dev-lead-retry-pr-" "dev-lead-run-" "retry lane before run-id fallback"
+  check_concurrency_order "$wf" "dev-lead-retry-pr-" "dev-lead-run-" "PR retry lane before run-id fallback"
+  check_concurrency_order "$wf" "dev-lead-retry-issue-" "dev-lead-run-" "issue retry lane before run-id fallback"
 done
 
 echo ""
