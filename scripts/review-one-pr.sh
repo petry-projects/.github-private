@@ -1382,8 +1382,15 @@ if [ "${FEWSHOT_ENABLED:-false}" = "true" ]; then
 fi
 
 # --- Tier 2: Deep review + Rubber duck (parallel, cross-engine) ---
+# Pick the duck engine from the configured chain (AI_DUCK_ENGINE / AI_ENGINES):
+# a disabled or pre-flight-unavailable engine is skipped rather than failing on
+# every review; "none" means no usable duck engine is left.
+if declare -F select_duck_engine >/dev/null 2>&1; then
+  read -r DUCK_ENGINE DUCK_MODEL <<< "$(select_duck_engine)"
+  DUCK_MODEL="${DUCK_MODEL:-}"
+fi
 echo "    [tier2] type=$TRIAGE_TYPE specialist=$DEEP_TIER_PROMPT"
-echo "    [tier2] deep review ($ENGINE_DEEP_MODEL) + rubber duck ($DUCK_MODEL via $DUCK_ENGINE)"
+echo "    [tier2] deep review ($ENGINE_DEEP_MODEL) + rubber duck (${DUCK_MODEL:-none} via ${DUCK_ENGINE:-none})"
 
 # Launch both reviewers in parallel — different model families for diversity.
 # Stdout (model text output) and stderr (process errors) are kept separate so
@@ -1397,7 +1404,9 @@ DEEP_PID=$!
 
 DUCK_OUTPUT="/tmp/cascade/rubber-duck.json"
 DUCK_PID=""
-if [ "${DUCK_ENGINE:-}" = "gemini" ] && [ "${GEMINI_AVAILABLE:-false}" != "true" ]; then
+if [ "${DUCK_ENGINE:-none}" = "none" ]; then
+  echo "::notice::Skipping rubber-duck reviewer — no enabled, available engine for it (AI_DUCK_ENGINE / AI_ENGINES, pre-flight probe)"
+elif [ "${DUCK_ENGINE:-}" = "gemini" ] && [ "${GEMINI_AVAILABLE:-false}" != "true" ]; then
   echo "::notice::Skipping Gemini duck reviewer — GEMINI_AVAILABLE=false per pre-flight probe"
 else
   (
