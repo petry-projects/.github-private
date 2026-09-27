@@ -319,3 +319,36 @@ _preflight() {
   run _preflight
   [ "$status" -eq 1 ]
 }
+
+# ── #1961 review follow-ups ───────────────────────────────────────────────────
+
+@test "primary: the override is case-insensitive (REVIEW_ENGINE=GEMINI)" {
+  export AI_ENGINES="claude,gemini"
+  [ "$(ai_engine_primary GEMINI)" = "gemini" ]
+}
+
+@test "chain problem: a leading space or comma is reported (workflow primary derivation)" {
+  export AI_ENGINES=" gemini,claude"
+  [ "$(ai_engine_chain)" = "gemini claude" ]
+  [[ "$(ai_engine_chain_problem)" == *"starts with a space or comma"* ]]
+}
+
+@test "validate: a generic GH_TOKEN does not make Copilot available" {
+  _setup_validate_bin
+  local tok="github_pat_""abc"
+  unset COPILOT_GITHUB_TOKEN
+  export GH_TOKEN="$tok" GOOGLE_API_KEY=k1
+  run _validate
+  [[ "$output" == *"P=false"* ]]
+  [[ "$output" == *"COPILOT_GITHUB_TOKEN is not set"* ]]
+  rm -rf "$VBIN"
+}
+
+@test "batch: last fallback unavailable at runtime (exit 55) → skip PR, no session abort" {
+  _setup_batch
+  export AI_ENGINES="claude,gemini" MOCK_RC_claude=2 MOCK_RC_gemini=55
+  run _batch
+  [[ "$output" == *"skipping https://github.com/fake/pull/1 and continuing batch"* ]]
+  [[ "$output" != *"SESSION ABORTED"* ]]
+  rm -rf "$BDIR"
+}

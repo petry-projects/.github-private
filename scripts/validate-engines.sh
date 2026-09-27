@@ -183,15 +183,20 @@ validate_engines() {
   fi
 
   # ── Copilot ─────────────────────────────────────────────────────────────────
-  # gh copilot is now a built-in; auth via COPILOT_GITHUB_TOKEN (user PAT with
-  # Copilot subscription).  Fall back to GH_TOKEN for non-production test paths.
+  # gh copilot is now a built-in; auth via COPILOT_GITHUB_TOKEN (the PAT of the
+  # account holding the Copilot entitlement). A generic GH_TOKEN (workflow token,
+  # automation PAT) does NOT stand in for it: `gh copilot --version` succeeds on
+  # any token, so accepting GH_TOKEN reported Copilot available on runs whose
+  # review would then fail its smoke test or at call time (#1961 review).
   # A classic PAT (ghp_) is rejected by Copilot at call time ("Classic Personal
   # Access Tokens (ghp_) are not supported by Copilot"), so `gh copilot
   # --version` succeeding proves nothing — report it unavailable up front, the
   # same rule dev-lead's fallback applies (#1495, #1960).
-  local _copilot_tok="${COPILOT_GITHUB_TOKEN:-${GH_TOKEN:-}}"
+  local _copilot_tok="${COPILOT_GITHUB_TOKEN:-}"
   if ! _validate_engine_enabled copilot; then
     _disabled="${_disabled:+$_disabled, }copilot"
+  elif [ -z "$_copilot_tok" ]; then
+    echo "::warning::Copilot unavailable — COPILOT_GITHUB_TOKEN is not set. Provide a fine-grained PAT with the Copilot entitlement or remove copilot from AI_ENGINES."
   elif [[ "$_copilot_tok" == ghp_* ]]; then
     echo "::warning::Copilot unavailable — COPILOT_GITHUB_TOKEN is a classic PAT (ghp_), which Copilot rejects. Use a fine-grained PAT or remove copilot from AI_ENGINES."
   elif env GH_TOKEN="$_copilot_tok" \

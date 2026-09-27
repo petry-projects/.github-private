@@ -72,6 +72,11 @@ ai_engine_chain_problem() {
   if ! parsed="$(_ai_engine_parse "$spec")" || [ -z "$parsed" ]; then
     printf "AI_ENGINES='%s' names an unknown engine (expected claude, gemini, copilot) — using the default chain '%s'" \
       "$spec" "$AI_ENGINES_DEFAULT"
+  elif [[ "$spec" =~ ^[[:space:],] ]]; then
+    # The workflows derive the primary with startsWith(vars.AI_ENGINES, …),
+    # which cannot skip leading separators.
+    printf "AI_ENGINES='%s' starts with a space or comma — the workflows read the primary engine from the start of the value, so start it with an engine name" \
+      "$spec"
   fi
 }
 
@@ -83,7 +88,8 @@ ai_engine_enabled() {
 # ai_engine_primary [preferred] — <preferred> when it is enabled, otherwise the
 # first engine in the chain. Pass the legacy REVIEW_ENGINE / DEV_LEAD_ENGINE.
 ai_engine_primary() {
-  local pref="${1:-}" chain
+  local pref chain
+  pref="$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
   chain="$(ai_engine_chain)"
   if [ -n "$pref" ] && [[ " $chain " == *" $pref "* ]]; then
     printf '%s' "$pref"

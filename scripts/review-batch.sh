@@ -279,6 +279,7 @@ while IFS= read -r pr_url; do
   # default claude → gemini → copilot; #1777 put Gemini before Copilot) forward
   # from the current engine, skipping engines that are disabled or that the
   # pre-flight probe marked unavailable. The switch sticks for the remaining PRs.
+  _fallback_unavailable=0
   while [ "$rc" -eq 2 ]; do
     _next_engine="$(ai_engine_next_available "$REVIEW_ENGINE")"
     [ -z "$_next_engine" ] && break
@@ -291,6 +292,7 @@ while IFS= read -r pr_url; do
     # Engine-unavailable setup/runtime errors on a fallback: mark the engine
     # unavailable for the rest of the batch and keep walking the chain.
     if [ "$rc" -eq 55 ] || [ "$rc" -eq 127 ]; then
+      _fallback_unavailable=1
       echo "::warning::$(ai_engine_label "$REVIEW_ENGINE") engine unavailable at runtime (exit $rc) — trying the next engine in AI_ENGINES"
       case "$REVIEW_ENGINE" in
         claude) export CLAUDE_AVAILABLE=false ;;
@@ -303,10 +305,11 @@ while IFS= read -r pr_url; do
   unset _next_engine
 
   # Still rate-limited with later engines configured but none available (e.g.
-  # Gemini out of credits, Copilot on a classic PAT): skip this PR with one
-  # notice and keep the batch going. Only a genuinely exhausted chain (no later
-  # engine configured at all) falls through to the session-abort branch below.
-  if [ "$rc" -eq 2 ] && _chain_has_later_engine "$REVIEW_ENGINE"; then
+  # Gemini out of credits, Copilot on a classic PAT), or the last fallback tried
+  # was unavailable at runtime rather than rate-limited: skip this PR with one
+  # notice and keep the batch going. Only a genuinely rate-limited, exhausted
+  # chain falls through to the session-abort branch below.
+  if [ "$rc" -eq 2 ] && { _chain_has_later_engine "$REVIEW_ENGINE" || [ "$_fallback_unavailable" -eq 1 ]; }; then
     echo "::warning::No later engine in AI_ENGINES ($(ai_engine_chain)) is available after $(ai_engine_label "$REVIEW_ENGINE") — skipping $pr_url and continuing batch"
     post_engine_unavailable_notice "$pr_url" "$REVIEW_ENGINE"
     failed=$((failed + 1))
