@@ -303,8 +303,7 @@ jobs:
           # An invalid list also means the default primary, Claude, whatever
           # REVIEW_ENGINE the expression above derived from its first token.
           claude_enabled=true
-          claude_primary=false
-          [ "$(printf '%s' "$REVIEW_ENGINE" | tr '[:upper:]' '[:lower:]')" = "claude" ] && claude_primary=true
+          chain_invalid=false
           spec="$(printf '%s' "${AI_ENGINES:-}" | tr '[:upper:],' '[:lower:] ')"
           if [ -n "${spec// /}" ]; then
             set -f
@@ -318,9 +317,9 @@ jobs:
             done
             set +f
             if [ "$known" = true ] && [ "$has_claude" = false ]; then claude_enabled=false; fi
-            if [ "$known" = false ]; then claude_primary=true; fi
+            if [ "$known" = false ]; then chain_invalid=true; fi
           fi
-          if [ "$claude_primary" = true ] && [ "$claude_enabled" = true ] && [ -z "$CLAUDE_CODE_OAUTH_TOKEN" ]; then
+          if { [ "${REVIEW_ENGINE,,}" = "claude" ] || [ "$chain_invalid" = true ]; } && [ "$claude_enabled" = true ] && [ -z "$CLAUDE_CODE_OAUTH_TOKEN" ]; then
             msg="CLAUDE_CODE_OAUTH_TOKEN is not provided to pr-review."
             msg="$msg To pause deliberately, set AGENTS_PAUSED=true Actions variable"
             msg="$msg instead of withholding the secret (see #1525)."
