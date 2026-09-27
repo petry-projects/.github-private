@@ -179,10 +179,9 @@ _duck_model_for() {
     claude)
       m="$(ai_models_chain claude duck)" ;;
     gemini)
-      # AI_MODELS_GEMINI duck=…, else the flash tier's primary model (same
-      # precedence as set_engine_config: the explicit chain, then the override).
+      # AI_MODELS_GEMINI duck=…, else the flash tier's primary model.
       m="$(ai_models_configured gemini duck)"
-      [ -n "$m" ] || m="${GEMINI_FLASH_MODEL_CHAIN:-${GEMINI_FLASH_MODEL:-$(ai_models_chain gemini flash)}}" ;;
+      [ -n "$m" ] || m="$(ai_models_gemini_flash_first)" ;;
     copilot)
       m="$(ai_model_label "${COPILOT_API_MODEL:-$DEFAULT_COPILOT_API_MODEL}")" ;;
   esac

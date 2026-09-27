@@ -31,6 +31,24 @@ _VALIDATE_ENGINES_CHAIN_LIB="$(dirname "${BASH_SOURCE[0]}")/lib/engine-chain.sh"
 # shellcheck source=lib/engine-chain.sh
 [ -f "$_VALIDATE_ENGINES_CHAIN_LIB" ] && source "$_VALIDATE_ENGINES_CHAIN_LIB"
 unset _VALIDATE_ENGINES_CHAIN_LIB
+# Provider model lists (AI_MODELS_*). Optional: without it the probe uses the
+# built-in flash model.
+_VALIDATE_ENGINES_MODELS_LIB="$(dirname "${BASH_SOURCE[0]}")/lib/engine-models.sh"
+# shellcheck source=lib/engine-models.sh
+[ -f "$_VALIDATE_ENGINES_MODELS_LIB" ] && source "$_VALIDATE_ENGINES_MODELS_LIB"
+unset _VALIDATE_ENGINES_MODELS_LIB
+
+# _gemini_probe_model — the configured Gemini flash model (the tier the probe
+# stands in for), or gemini-3.8-flash when the models library is absent or the
+# configured id is not URL-safe.
+_gemini_probe_model() {
+  local m=""
+  if declare -F ai_models_gemini_flash_first >/dev/null 2>&1; then
+    m="$(ai_models_gemini_flash_first)"
+  fi
+  [[ "$m" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || m="gemini-3.8-flash"
+  printf '%s' "$m"
+}
 
 # _validate_engine_enabled <engine> — 0 unless AI_ENGINES leaves <engine> out.
 _validate_engine_enabled() {
@@ -45,22 +63,32 @@ _validate_engine_enabled() {
 # Returns 1 only when the response explicitly reports depleted prepayment
 # credits; any other outcome (success, network error, invalid key, transient
 # RESOURCE_EXHAUSTED quota) is "undetermined" and returns 0 (fail-open: Gemini
-# proceeds and fails loudly at call time if it really is broken).
+# proceeds and fails loudly at call time if it really is broken). The probe
+# calls the configured flash model; when that model is not found the depletion
+# check cannot run, so it warns once instead of passing silently.
 _gemini_probe_key() {
-  local _key="$1" _raw _body
+  local _key="$1" _raw _body _code _model
+  _model="$(_gemini_probe_model)"
   _raw=$(
     timeout 15 curl -sS --max-time 10 \
       -X POST \
       -H "Content-Type: application/json" \
       -H "X-Goog-Api-Key: ${_key}" \
-      "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent" \
+      "https://generativelanguage.googleapis.com/v1beta/models/${_model}:generateContent" \
       -d '{"contents":[{"parts":[{"text":"Hi"}]}],"generationConfig":{"maxOutputTokens":1}}' \
       -w '\n%{http_code}' 2>/dev/null
   ) || true
   # Strip the trailing HTTP status code line appended by -w; check only the body.
   _body=$(printf '%s' "$_raw" | sed '$d')
+  _code=$(printf '%s' "$_raw" | tail -n 1)
   if printf '%s' "$_body" | grep -qiE "credits.*depleted"; then
     return 1
+  fi
+  if [ "$_code" = "404" ] || printf '%s' "$_body" | grep -qiE "no longer available|is not found|NOT_FOUND"; then
+    if [ -z "${_GEMINI_PROBE_MODEL_WARNED:-}" ]; then
+      echo "::warning::Gemini billing probe: model '${_model}' was not found — credit depletion is undetermined. Check AI_MODELS_GEMINI flash / GEMINI_FLASH_MODEL." >&2
+      _GEMINI_PROBE_MODEL_WARNED=1
+    fi
   fi
   return 0
 }

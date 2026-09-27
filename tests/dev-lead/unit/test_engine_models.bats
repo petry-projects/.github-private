@@ -185,6 +185,41 @@ _engine() {
   [[ "$output" == *"duck: gemini-3.8-flash →"* ]]
 }
 
+# ── Gemini billing probe (validate-engines.sh) ───────────────────────────────
+
+# Puts a curl stub on PATH that records its URL and answers with <body> / <code>.
+_probe_curl() {
+  mkdir -p "$BATS_TEST_TMPDIR/bin"
+  printf '%s\n' "$1" > "$BATS_TEST_TMPDIR/body"
+  printf '%s\n' "$2" > "$BATS_TEST_TMPDIR/code"
+  cat > "$BATS_TEST_TMPDIR/bin/curl" <<'STUB'
+#!/bin/bash
+for a in "$@"; do case "$a" in https://*) echo "$a" >> "$BATS_TEST_TMPDIR/urls" ;; esac; done
+cat "$BATS_TEST_TMPDIR/body" "$BATS_TEST_TMPDIR/code"
+STUB
+  chmod +x "$BATS_TEST_TMPDIR/bin/curl"
+  export PATH="$BATS_TEST_TMPDIR/bin:$PATH" BATS_TEST_TMPDIR
+}
+
+@test "probe: the Gemini billing probe calls the configured flash model" {
+  _probe_curl '{"candidates":[]}' 200
+  export AI_MODELS_GEMINI="flash=gemini-f1,gemini-f2"
+  source "$SCRIPT_DIR/scripts/validate-engines.sh"
+  _gemini_probe_key fake
+  grep -q "/models/gemini-f1:generateContent" "$BATS_TEST_TMPDIR/urls"
+  export GEMINI_FLASH_MODEL_CHAIN="gemini-c1"
+  _gemini_probe_key fake
+  grep -q "/models/gemini-c1:generateContent" "$BATS_TEST_TMPDIR/urls"
+}
+
+@test "probe: a not-found probe model warns once and stays fail-open" {
+  _probe_curl '{"error":{"code":404,"message":"models/gemini-gone is not found","status":"NOT_FOUND"}}' 404
+  export AI_MODELS_GEMINI="flash=gemini-gone"
+  run bash -c "source '$SCRIPT_DIR/scripts/validate-engines.sh'; _gemini_probe_key a; echo rc=\$?; _gemini_probe_key b"
+  [[ "$output" == *"rc=0"* ]]
+  [ "$(grep -c "model 'gemini-gone' was not found" <<< "$output")" = "1" ]
+}
+
 # ── Warnings ──────────────────────────────────────────────────────────────────
 
 @test "engine.sh: a bad AI_MODELS_* entry warns once per run" {

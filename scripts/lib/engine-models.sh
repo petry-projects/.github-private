@@ -174,6 +174,16 @@ ai_models_replace_first() {
   printf '%s' "$out"
 }
 
+# ai_models_gemini_flash_first — the Gemini flash tier's primary model, with the
+# same precedence set_engine_config applies: GEMINI_FLASH_MODEL_CHAIN, then
+# GEMINI_FLASH_MODEL, then AI_MODELS_GEMINI flash / the default. Used where one
+# flash model is needed outside the chain walk (the Gemini duck, the billing probe).
+ai_models_gemini_flash_first() {
+  local c="${GEMINI_FLASH_MODEL_CHAIN:-${GEMINI_FLASH_MODEL:-$(ai_models_chain gemini flash)}}"
+  c="${c%%,*}"
+  printf '%s' "${c//[[:space:]]/}"
+}
+
 # ai_models_problems — one line per unusable AI_MODELS_* entry, all providers.
 ai_models_problems() {
   local p
