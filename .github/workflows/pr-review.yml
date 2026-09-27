@@ -316,11 +316,36 @@ jobs:
             echo "::warning::could not resolve pr-review identity from manifest; using fallback BOT_USER=$BOT_USER"
           fi
 
+      - name: Resolve claude-code version
+        # A literal "latest" cache key never changes, so the first CLI ever cached
+        # was reused indefinitely (2.1.138 outlived the Opus 5.5 launch — #1957).
+        # Resolve it to the concrete npm version so a new release misses the cache,
+        # and install exactly that version on a miss (never re-resolve "latest");
+        # a pinned vars.CLAUDE_CODE_VERSION passes through unchanged.
+        id: claude_code_version
+        env:
+          REQUESTED_VERSION: ${{ env.CLAUDE_CODE_VERSION || vars.CLAUDE_CODE_VERSION || 'latest' }}
+        run: |
+          v="$REQUESTED_VERSION"
+          install="$v"
+          if [ "$v" = "latest" ]; then
+            v="$(npm view @anthropic-ai/claude-code version 2>/dev/null || true)"
+            if [ -n "$v" ]; then
+              install="$v"
+            else
+              v="latest-$(date -u +%G-w%V)"
+              echo "::warning::could not resolve the latest claude-code version; using weekly cache key $v"
+            fi
+          fi
+          echo "claude-code cache version: $v"
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "install=$install" >> "$GITHUB_OUTPUT"
+
       - name: Cache claude-code CLI
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.npm-global
-          key: claude-code-${{ env.CLAUDE_CODE_VERSION }}-${{ runner.os }}
+          key: claude-code-${{ steps.claude_code_version.outputs.version }}-${{ runner.os }}
 
       - name: Verify auth scopes
         # Inlined from scripts/verify-auth-scopes.sh so this step is self-contained
@@ -392,6 +417,8 @@ jobs:
           fi
 
       - name: Install review engine CLIs
+        env:
+          CLAUDE_CODE_VERSION: ${{ steps.claude_code_version.outputs.install || vars.CLAUDE_CODE_VERSION || 'latest' }}
         run: |
           set -euo pipefail
 
@@ -427,7 +454,9 @@ jobs:
               echo "claude-code cache hit: $(claude --version)"
               return 0
             fi
-            npm_install_retry "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}"
+            npm_install_retry "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" || return 1
+            # Log the version actually in use on a fresh install too (#1957).
+            echo "claude-code installed: $(claude --version 2>/dev/null || echo unavailable)"
           }
 
           case "$REVIEW_ENGINE" in

@@ -14,6 +14,12 @@
 #                        Default "100 20 30 40".
 #   STUB_ENGINE_RECORD_ARGS  — if set to a writable path, the full argv of every
 #                              invocation is appended as one line for inspection.
+#   STUB_CLAUDE_ERROR_STATUS_BY_MODEL  — pipe-delimited "model=http_status" pairs.
+#                        When --output-format json is requested and the model
+#                        matches, the envelope is an API error (is_error:true,
+#                        api_error_status:<status>, zero usage) with the resolved
+#                        response as its .result text — the shape the real CLI
+#                        prints for a 404 unknown model or a 400 bad request.
 if [ -n "${STUB_ENGINE_RECORD_ARGS:-}" ]; then
   printf '%s\n' "$*" >> "$STUB_ENGINE_RECORD_ARGS" 2>/dev/null || true
 fi
@@ -50,7 +56,31 @@ if [ -n "${STUB_ENGINE_RESPONSE_BY_MODEL:-}" ] && [ -n "$model" ]; then
   done
 fi
 
-if [ "$output_format" = "json" ]; then
+# Resolve API error status: per-model only (no default).
+api_status=""
+if [ -n "${STUB_CLAUDE_ERROR_STATUS_BY_MODEL:-}" ] && [ -n "$model" ]; then
+  IFS='|' read -ra _spairs <<< "$STUB_CLAUDE_ERROR_STATUS_BY_MODEL"
+  for _sp in "${_spairs[@]}"; do
+    case "$_sp" in
+      "$model="*) api_status="${_sp#"$model="}"; break ;;
+    esac
+  done
+fi
+
+if [ "$output_format" = "json" ] && [ -n "$api_status" ]; then
+  # Mirror a failed `claude --print --output-format json` call: the envelope
+  # still names the model and carries a usage object.
+  if command -v jq >/dev/null 2>&1; then
+    jq -cn --arg result "$response" --arg model "$model" --argjson st "$api_status" \
+      '{type:"result", subtype:"success", is_error:true, api_error_status:$st,
+        result:$result, model:$model,
+        usage:{input_tokens:0, cache_read_input_tokens:0,
+               cache_creation_input_tokens:0, output_tokens:0}}'
+  else
+    printf '{"type":"result","subtype":"success","is_error":true,"api_error_status":%s,"result":"%s","model":"%s","usage":{"input_tokens":0,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"output_tokens":0}}\n' \
+      "$api_status" "$response" "$model"
+  fi
+elif [ "$output_format" = "json" ]; then
   # Mirror `claude --print --output-format json`: a result envelope with usage.
   read -r _in _cr _cw _out <<< "${STUB_CLAUDE_USAGE:-100 20 30 40}"
   if command -v jq >/dev/null 2>&1; then
