@@ -212,6 +212,19 @@ _engine() {
   [[ "$output" == *"after=openai/t1"* ]]
 }
 
+@test "copilot: the writer uses the tier model_for_intent picked (fix-issue → deep)" {
+  local p; p="$BATS_TEST_TMPDIR/prompt"; echo "prompt" > "$p"
+  export AI_MODELS_COPILOT="triage=openai/t1; deep=openai/d1; action=openai/a1"
+  run bash -c "export REVIEW_ENGINE=copilot; source '$SCRIPT_DIR/scripts/engine.sh' >/dev/null 2>&1
+    copilot_chat() { echo \"model=\$COPILOT_API_MODEL\"; }
+    run_writer '$p' \"\$(model_for_intent fix-issue)\" 2>/dev/null | grep '^model='
+    run_writer '$p' \"\$(model_for_intent fix-ci)\" 2>/dev/null | grep '^model='
+    run_writer '$p' openai/pinned 2>/dev/null | grep '^model='"
+  [ "${lines[0]}" = "model=openai/d1" ]
+  [ "${lines[1]}" = "model=openai/a1" ]
+  [ "${lines[2]}" = "model=openai/pinned" ]
+}
+
 @test "copilot: an explicit COPILOT_API_MODEL still wins for every tier" {
   export AI_MODELS_COPILOT="triage=openai/gpt-5-mini; deep=openai/gpt-5" COPILOT_API_MODEL="openai/o4-mini"
   run _engine copilot COPILOT_API_MODEL ENGINE_DEEP_MODEL

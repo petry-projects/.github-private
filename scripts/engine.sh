@@ -1614,9 +1614,24 @@ run_writer() {
       fi
       ;;
     copilot)
-      # Self-sufficient write support via gh copilot --yolo
-      local _copilot_tier_model
-      _copilot_tier_model="$(ai_models_copilot_model action)"
+      # Self-sufficient write support via gh copilot --yolo. <model> is a tier's
+      # ENGINE_*_MODEL (model_for_intent picks deep for fix-issue/human), so map
+      # it back to that tier's Copilot id; a full vendor/model id is used as is;
+      # anything else falls back to the action tier.
+      local _copilot_tier_model _copilot_writer_tier=action
+      case "$model" in
+        "${ENGINE_ACTION_MODEL:-}") _copilot_writer_tier=action ;;
+        "${ENGINE_DEEP_MODEL:-}")   _copilot_writer_tier=deep ;;
+        "${ENGINE_TRIAGE_MODEL:-}") _copilot_writer_tier=triage ;;
+        "${ENGINE_AUDIT_MODEL:-}")  _copilot_writer_tier=audit ;;
+        "${ENGINE_SINGLE_MODEL:-}") _copilot_writer_tier=single ;;
+        */*)                        _copilot_writer_tier="" ;;
+      esac
+      if [ -n "$_copilot_writer_tier" ]; then
+        _copilot_tier_model="$(ai_models_copilot_model "$_copilot_writer_tier")"
+      else
+        _copilot_tier_model="$model"
+      fi
       local -x COPILOT_API_MODEL="$_copilot_tier_model"
       if [ -n "$_tmp" ]; then
         copilot_chat "$prompt_file" "$ACTION_TIMEOUT_SEC" --yolo 2>&1 | tee "$_tmp" || rc=${PIPESTATUS[0]}
