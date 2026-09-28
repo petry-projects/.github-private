@@ -150,17 +150,26 @@ fi
 # e.g. the deep model is caught here too. Without the models library, the one
 # COPILOT_API_MODEL every tier used.
 #
-# _copilot_smoke_test <level> — level is `error` (Copilot is primary: the
-# caller aborts the batch) or `warning` (Copilot is only a fallback: the caller
-# marks it unavailable so the chain skips it). Returns 1 on the first failure.
+# _copilot_smoke_test <level> [duck] — level is `error` (Copilot is primary:
+# the caller aborts the batch) or `warning` (Copilot is only a fallback: the
+# caller marks it unavailable so the chain skips it). With `duck`, probes only
+# the Copilot duck model, when it differs from every tier model. Returns 1 on
+# the first failure.
 # ---------------------------------------------------------------------------
 _copilot_smoke_test() {
-  local level="$1" models="" tier model payload rc raw http body text
+  local level="$1" only="${2:-}" models="" tier model payload rc raw http body text
   if declare -F ai_models_copilot_model >/dev/null 2>&1; then
     for tier in triage deep audit action single; do
       model="$(ai_models_copilot_model "$tier")"
       case " $models " in *" $model "*) ;; *) models="${models:+$models }$model" ;; esac
     done
+    if [ "$only" = duck ]; then
+      model="$(ai_models_copilot_model duck)"
+      case " $models " in *" $model "*) return 0 ;; esac
+      models="$model"
+    fi
+  elif [ "$only" = duck ]; then
+    return 0
   fi
   if [ -z "$models" ]; then
     models="${COPILOT_API_MODEL:-}"
@@ -243,6 +252,14 @@ elif ai_engine_available copilot && [ -n "${COPILOT_GITHUB_TOKEN:-}" ]; then
     echo "::warning::Copilot fallback marked unavailable for this batch — the chain skips it"
     export COPILOT_AVAILABLE=false
   fi
+fi
+# A separate Copilot duck model (AI_MODELS_COPILOT duck=…) is probed on its
+# own. The duck is advisory, so a failure is a warning only: it neither aborts
+# the batch nor takes Copilot out of the chain, but it names the bad model
+# before every PR's second opinion silently fails on it.
+if ai_engine_available copilot && [ -n "${COPILOT_GITHUB_TOKEN:-}" ]; then
+  _copilot_smoke_test warning duck || \
+    echo "::warning::Copilot rubber-duck model unavailable — fix AI_MODELS_COPILOT duck=; reviews continue without a Copilot second opinion"
 fi
 
 actual=0

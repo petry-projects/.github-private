@@ -236,3 +236,23 @@ EOS
   [ -f copilot_called.txt ]
 }
 
+@test "batch: a bad Copilot duck model only warns (the batch and the chain carry on)" {
+  _copilot_smoke_setup
+  export REVIEW_ENGINE="claude" AI_MODELS_COPILOT="duck=openai/duck-typo" BAD_MODELS="openai/duck-typo"
+  run bash scripts/review-batch.sh
+  echo "$output" >&2
+  [ "$status" -eq 0 ]
+  grep -qx 'openai/duck-typo' smoke_models.txt
+  [[ "$output" == *"Copilot rubber-duck model unavailable"* ]]
+  [[ "$output" != *"Copilot fallback marked unavailable"* ]]
+  [ -f copilot_called.txt ]
+}
+
+@test "batch: a Copilot duck model that matches a tier model is not probed twice" {
+  _copilot_smoke_setup
+  export AI_MODELS_COPILOT="triage=openai/t1; duck=openai/t1"
+  run bash scripts/review-batch.sh
+  echo "$output" >&2
+  [ "$(grep -c '^openai/t1$' smoke_models.txt)" = "1" ]
+}
+
