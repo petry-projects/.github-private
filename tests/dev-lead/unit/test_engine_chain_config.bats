@@ -408,6 +408,11 @@ _run_duck_probe() {
   [ "$(_run_duck_probe o4-mini copilot)" = "copilot-model=openai/o4-mini" ]
 }
 
+@test "duck: AI_DUCK_MODEL reaches the Copilot call only when AI_DUCK_ENGINE is copilot" {
+  export AI_DUCK_ENGINE=gemini AI_DUCK_MODEL=o4-mini COPILOT_API_MODEL=openai/o4-mini
+  [ "$(_run_duck_probe o4-mini copilot)" = "copilot-model=openai/o4-mini" ]
+}
+
 @test "duck: a Gemini duck uses key rotation (probe-depleted key tried last)" {
   export GOOGLE_API_KEY=k1 GOOGLE_API_KEY_2=k2 GEMINI_DEPLETED_KEYS=GOOGLE_API_KEY
   unset GEMINI_API_KEY

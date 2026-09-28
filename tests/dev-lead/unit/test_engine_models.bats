@@ -187,6 +187,16 @@ _engine() {
   [[ "$output" == *"ENGINE_ACTION_MODEL=o4-mini"* ]]
 }
 
+@test "copilot: ENGINE_*_MODEL keep the id (vendor prefix dropped), not the display label" {
+  export AI_MODELS_COPILOT="deep=anthropic/claude-sonnet-5; duck=openai/gpt-5-mini"
+  run _engine copilot ENGINE_DEEP_MODEL ENGINE_TRIAGE_MODEL ENGINE_LABEL
+  [[ "$output" == *"ENGINE_DEEP_MODEL=claude-sonnet-5 "* ]]
+  [[ "$output" == *"ENGINE_TRIAGE_MODEL=o4-mini "* ]]
+  [[ "$output" == *"deep: sonnet 5 "* ]]
+  run _engine claude DUCK_MODEL
+  [[ "$output" == *"DUCK_MODEL=gpt-5-mini"* ]]
+}
+
 @test "copilot: each call sends its own tier's model (deep, action, duck)" {
   local p; p="$BATS_TEST_TMPDIR/prompt"; echo "prompt" > "$p"
   export AI_MODELS_COPILOT="triage=openai/t1; deep=openai/d1; action=openai/a1; duck=openai/k1"
@@ -264,8 +274,9 @@ _engine() {
   local wf="$SCRIPT_DIR/.github/workflows/persona-runner-reusable.yml"
   grep -q 'source scripts/lib/engine-models.sh' "$wf"
   grep -q 'persona_chain="$(ai_models_chain claude deep)"' "$wf"
-  grep -q -- '--model "$persona_model"' "$wf"
-  grep -q -- '--fallback-model "$persona_fallback"' "$wf"
+  grep -q -- 'persona_model_args=(--model "$persona_model")' "$wf"
+  grep -q -- '[ -z "$persona_fallback" ] || persona_model_args+=(--fallback-model "$persona_fallback")' "$wf"
+  grep -q -- '"${persona_model_args\[@\]}"' "$wf"
   grep -q 'ai_models_problems' "$wf"
   ! grep -q -- '--model claude-' "$wf"
   ! grep -q -- '--fallback-model opus' "$wf"

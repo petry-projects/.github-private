@@ -187,7 +187,9 @@ _duck_model_for() {
       # AI_MODELS_GEMINI duck=…, else the triage chain's primary model.
       m="$(ai_models_gemini_chain duck)" ;;
     copilot)
-      m="$(ai_model_label "$(ai_models_copilot_model duck)")" ;;
+      # The id without its vendor prefix, as ENGINE_*_MODEL (token records).
+      m="$(ai_models_copilot_model duck)"
+      m="${m#*/}" ;;
   esac
   _engine_chain_first "${m:-}"
 }
@@ -224,7 +226,7 @@ set_engine_config() {
       # Cross-engine rubber duck: use Copilot when Claude is primary
       DUCK_ENGINE="copilot"
       DUCK_MODEL="$(_duck_model_for copilot)"
-      ENGINE_LABEL="triage: $(ai_models_label_chain "$CLAUDE_TRIAGE_MODEL_CHAIN") → deep: $(ai_models_label_chain "$CLAUDE_DEEP_MODEL_CHAIN") + duck: $DUCK_MODEL → audit: $(ai_models_label_chain "$CLAUDE_AUDIT_MODEL_CHAIN")"
+      ENGINE_LABEL="triage: $(ai_models_label_chain "$CLAUDE_TRIAGE_MODEL_CHAIN") → deep: $(ai_models_label_chain "$CLAUDE_DEEP_MODEL_CHAIN") + duck: $(ai_model_label "$DUCK_MODEL") → audit: $(ai_models_label_chain "$CLAUDE_AUDIT_MODEL_CHAIN")"
       ENGINE_SINGLE_LABEL="single-reviewer mode: $(ai_models_label_chain "$CLAUDE_SINGLE_MODEL_CHAIN")"
       ;;
     gemini)
@@ -263,16 +265,20 @@ set_engine_config() {
       # tier), else AI_MODELS_COPILOT, else openai/o4-mini. Each Copilot call
       # sets COPILOT_API_MODEL to its tier's model.
       COPILOT_API_MODEL="${COPILOT_API_MODEL:-$DEFAULT_COPILOT_API_MODEL}"
-      ENGINE_TRIAGE_MODEL="$(ai_model_label "$(ai_models_copilot_model triage)")"
-      ENGINE_DEEP_MODEL="$(ai_model_label "$(ai_models_copilot_model deep)")"
-      ENGINE_AUDIT_MODEL="$(ai_model_label "$(ai_models_copilot_model audit)")"
-      ENGINE_ACTION_MODEL="$(ai_model_label "$(ai_models_copilot_model action)")"
-      ENGINE_SINGLE_MODEL="$(ai_model_label "$(ai_models_copilot_model single)")"
+      # ENGINE_*_MODEL keep the id without its vendor prefix (openai/o4-mini →
+      # o4-mini): token records and the pricing table key on it, so it must not
+      # be the display label.
+      local _cm
+      _cm="$(ai_models_copilot_model triage)"; ENGINE_TRIAGE_MODEL="${_cm#*/}"
+      _cm="$(ai_models_copilot_model deep)";   ENGINE_DEEP_MODEL="${_cm#*/}"
+      _cm="$(ai_models_copilot_model audit)";  ENGINE_AUDIT_MODEL="${_cm#*/}"
+      _cm="$(ai_models_copilot_model action)"; ENGINE_ACTION_MODEL="${_cm#*/}"
+      _cm="$(ai_models_copilot_model single)"; ENGINE_SINGLE_MODEL="${_cm#*/}"
       # Cross-engine rubber duck: use Gemini when Copilot is primary
       DUCK_ENGINE="gemini"
       DUCK_MODEL="$(_duck_model_for gemini)"
-      ENGINE_LABEL="triage: $ENGINE_TRIAGE_MODEL → deep: $ENGINE_DEEP_MODEL + duck: $(ai_model_label "$DUCK_MODEL") → audit: $ENGINE_AUDIT_MODEL (GitHub Models API)"
-      ENGINE_SINGLE_LABEL="single-reviewer mode: $ENGINE_SINGLE_MODEL (GitHub Models API)"
+      ENGINE_LABEL="triage: $(ai_model_label "$ENGINE_TRIAGE_MODEL") → deep: $(ai_model_label "$ENGINE_DEEP_MODEL") + duck: $(ai_model_label "$DUCK_MODEL") → audit: $(ai_model_label "$ENGINE_AUDIT_MODEL") (GitHub Models API)"
+      ENGINE_SINGLE_LABEL="single-reviewer mode: $(ai_model_label "$ENGINE_SINGLE_MODEL") (GitHub Models API)"
       # No in-engine chain for Copilot — single GitHub Models endpoint.
       CLAUDE_TRIAGE_MODEL_CHAIN=""
       CLAUDE_DEEP_MODEL_CHAIN=""
@@ -2062,11 +2068,14 @@ run_duck() {
       unset ANTHROPIC_API_KEY 2>/dev/null || true
       unset GOOGLE_API_KEY 2>/dev/null || true
       unset GEMINI_API_KEY 2>/dev/null || true
-      # An explicit AI_DUCK_MODEL (the only way <model> equals it — see
-      # _duck_model_for) is the model for this call; otherwise <model> is only a
-      # label and the duck key decides (ai_models_copilot_model duck).
-      local _copilot_duck_model="$model"
-      if [ -z "${AI_DUCK_MODEL:-}" ] || [ "$model" != "$AI_DUCK_MODEL" ]; then
+      # An explicit AI_DUCK_MODEL for a Copilot duck (see _duck_model_for) is the
+      # model for this call; otherwise <model> is only a label and the duck key
+      # decides (ai_models_copilot_model duck).
+      local _copilot_duck_model _copilot_duck_wanted
+      _copilot_duck_wanted="$(printf '%s' "${AI_DUCK_ENGINE:-}" | tr '[:upper:]' '[:lower:]')"
+      if [ "$_copilot_duck_wanted" = copilot ] && [ -n "${AI_DUCK_MODEL:-}" ] && [ "$model" = "$AI_DUCK_MODEL" ]; then
+        _copilot_duck_model="$model"
+      else
         _copilot_duck_model="$(ai_models_copilot_model duck)"
       fi
       local -x COPILOT_API_MODEL="$_copilot_duck_model"

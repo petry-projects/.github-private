@@ -268,8 +268,9 @@ jobs:
           export PATH="$HOME/.npm-global/bin:$PATH"
           # The deep tier's chain (AI_MODELS_CLAUDE deep=…, else the default) —
           # run-eval.sh scores `engine: persona` on the same chain. The CLI takes
-          # one fallback, so the chain's 2nd model is it (`opus` when the chain
-          # has one model). A bad AI_MODELS_* entry is named, not silently ignored.
+          # one fallback, so the chain's 2nd model is it; a one-model chain gets
+          # no fallback, so the persona never runs a model the chain left out. A
+          # bad AI_MODELS_* entry is named, not silently ignored.
           # shellcheck source=scripts/lib/engine-models.sh
           source scripts/lib/engine-models.sh
           while IFS= read -r _models_line; do
@@ -278,7 +279,8 @@ jobs:
           persona_chain="$(ai_models_chain claude deep)"
           persona_model="${persona_chain%%,*}"
           persona_fallback="$(printf '%s' "$persona_chain" | cut -s -d, -f2)"
-          persona_fallback="${persona_fallback:-opus}"
+          persona_model_args=(--model "$persona_model")
+          [ -z "$persona_fallback" ] || persona_model_args+=(--fallback-model "$persona_fallback")
 
           {
             echo "You are running headless for persona '${PERSONA}'. The work item details and summoner are provided in the environment variables SOURCE_REPO, ITEM_NUMBER, COMMENT_URL, and REQUESTED_BY."
@@ -299,8 +301,7 @@ jobs:
           claude --print \
             --permission-mode bypassPermissions \
             --allowedTools Bash \
-            --model "$persona_model" \
-            --fallback-model "$persona_fallback" \
+            "${persona_model_args[@]}" \
             --effort high \
             -p "$(cat /tmp/persona-prompt.txt)" > "$_out" 2>&1 || _rc=$?
 
