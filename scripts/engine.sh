@@ -92,10 +92,15 @@ fi
 # copilot_chat() may dereference COPILOT_API_MODEL regardless of REVIEW_ENGINE.
 # Default it here — engine-agnostic — so the duck always has a model under
 # `set -u`. The `copilot)` arm in set_engine_config re-applies the same default
-# (idempotent) for the primary-engine path.
-DEFAULT_COPILOT_API_MODEL="$(ai_models_chain copilot model)"
-DEFAULT_COPILOT_API_MODEL="${DEFAULT_COPILOT_API_MODEL%%,*}"
-COPILOT_API_MODEL="${COPILOT_API_MODEL:-$DEFAULT_COPILOT_API_MODEL}"
+# (idempotent) for the primary-engine path. Each Copilot call then sets the
+# model of its own tier (ai_models_copilot_model); COPILOT_API_MODEL_DEFAULTED
+# records that this value is our default, not the caller's override.
+DEFAULT_COPILOT_API_MODEL="$(ai_models_copilot_model triage)"
+if [ -z "${COPILOT_API_MODEL:-}" ] || [ "$COPILOT_API_MODEL" = "${COPILOT_API_MODEL_DEFAULTED:-}" ]; then
+  COPILOT_API_MODEL="$DEFAULT_COPILOT_API_MODEL"
+  COPILOT_API_MODEL_DEFAULTED="$DEFAULT_COPILOT_API_MODEL"
+  export COPILOT_API_MODEL_DEFAULTED
+fi
 export COPILOT_API_MODEL
 
 # Per-tier timeouts (seconds). The job-level cap (120min in dev-lead-reusable.yml)
@@ -179,11 +184,10 @@ _duck_model_for() {
     claude)
       m="$(ai_models_chain claude duck)" ;;
     gemini)
-      # AI_MODELS_GEMINI duck=…, else the flash tier's primary model.
-      m="$(ai_models_configured gemini duck)"
-      [ -n "$m" ] || m="$(ai_models_gemini_flash_first)" ;;
+      # AI_MODELS_GEMINI duck=…, else the triage chain's primary model.
+      m="$(ai_models_gemini_chain duck)" ;;
     copilot)
-      m="$(ai_model_label "${COPILOT_API_MODEL:-$DEFAULT_COPILOT_API_MODEL}")" ;;
+      m="$(ai_model_label "$(ai_models_copilot_model duck)")" ;;
   esac
   _engine_chain_first "${m:-}"
 }
@@ -219,38 +223,32 @@ set_engine_config() {
       ENGINE_SINGLE_MODEL="$(_engine_chain_first "$CLAUDE_SINGLE_MODEL_CHAIN")"
       # Cross-engine rubber duck: use Copilot when Claude is primary
       DUCK_ENGINE="copilot"
-      DUCK_MODEL="$(ai_model_label "${COPILOT_API_MODEL:-$DEFAULT_COPILOT_API_MODEL}")"
+      DUCK_MODEL="$(_duck_model_for copilot)"
       ENGINE_LABEL="triage: $(ai_models_label_chain "$CLAUDE_TRIAGE_MODEL_CHAIN") → deep: $(ai_models_label_chain "$CLAUDE_DEEP_MODEL_CHAIN") + duck: $DUCK_MODEL → audit: $(ai_models_label_chain "$CLAUDE_AUDIT_MODEL_CHAIN")"
       ENGINE_SINGLE_LABEL="single-reviewer mode: $(ai_models_label_chain "$CLAUDE_SINGLE_MODEL_CHAIN")"
       ;;
     gemini)
       # In-Gemini model chains (comma-separated, walked left to right on a rate
-      # limit): flash = speed/cost tier (triage + action), pro = quality tier
-      # (deep + audit + single). Source, highest first: GEMINI_FLASH_MODEL_CHAIN /
-      # GEMINI_PRO_MODEL_CHAIN; then AI_MODELS_GEMINI (or the defaults in
-      # lib/engine-models.sh) with GEMINI_FLASH_MODEL / GEMINI_PRO_MODEL, when
-      # set, replacing just the first model.
-      if [ -z "${GEMINI_FLASH_MODEL_CHAIN:-}" ]; then
-        GEMINI_FLASH_MODEL_CHAIN="$(ai_models_chain gemini flash)"
-        [ -z "${GEMINI_FLASH_MODEL:-}" ] || GEMINI_FLASH_MODEL_CHAIN="$(ai_models_replace_first "$GEMINI_FLASH_MODEL" "$GEMINI_FLASH_MODEL_CHAIN")"
-      fi
-      if [ -z "${GEMINI_PRO_MODEL_CHAIN:-}" ]; then
-        GEMINI_PRO_MODEL_CHAIN="$(ai_models_chain gemini pro)"
-        [ -z "${GEMINI_PRO_MODEL:-}" ] || GEMINI_PRO_MODEL_CHAIN="$(ai_models_replace_first "$GEMINI_PRO_MODEL" "$GEMINI_PRO_MODEL_CHAIN")"
-      fi
-      local _gflash _gpro
-      _gflash="$(_engine_chain_first "$GEMINI_FLASH_MODEL_CHAIN")"
-      _gpro="$(_engine_chain_first "$GEMINI_PRO_MODEL_CHAIN")"
-      ENGINE_TRIAGE_MODEL="$_gflash"
-      ENGINE_DEEP_MODEL="$_gpro"
-      ENGINE_AUDIT_MODEL="$_gpro"
-      ENGINE_ACTION_MODEL="$_gflash"
-      ENGINE_SINGLE_MODEL="$_gpro"
+      # limit), one per tier: ai_models_gemini_chain <tier> (lib/engine-models.sh)
+      # — GEMINI_FLASH_MODEL_CHAIN / GEMINI_PRO_MODEL_CHAIN, then AI_MODELS_GEMINI
+      # (or the defaults) with GEMINI_FLASH_MODEL / GEMINI_PRO_MODEL, when set,
+      # replacing just the first model. The call sites resolve the chain again, so
+      # nothing computed here is exported.
+      local _gtriage _gdeep _gaudit _gsingle
+      _gtriage="$(ai_models_gemini_chain triage)"
+      _gdeep="$(ai_models_gemini_chain deep)"
+      _gaudit="$(ai_models_gemini_chain audit)"
+      _gsingle="$(ai_models_gemini_chain single)"
+      ENGINE_TRIAGE_MODEL="$(_engine_chain_first "$_gtriage")"
+      ENGINE_DEEP_MODEL="$(_engine_chain_first "$_gdeep")"
+      ENGINE_AUDIT_MODEL="$(_engine_chain_first "$_gaudit")"
+      ENGINE_ACTION_MODEL="$(_engine_chain_first "$(ai_models_gemini_chain action)")"
+      ENGINE_SINGLE_MODEL="$(_engine_chain_first "$_gsingle")"
       # Cross-engine rubber duck: use Claude for diversity
       DUCK_ENGINE="claude"
       DUCK_MODEL="$(_duck_model_for claude)"
-      ENGINE_LABEL="triage: $(ai_models_label_chain "$GEMINI_FLASH_MODEL_CHAIN") → deep: $(ai_models_label_chain "$GEMINI_PRO_MODEL_CHAIN") + duck: $(ai_model_label "$DUCK_MODEL") → audit: $_gpro"
-      ENGINE_SINGLE_LABEL="single-reviewer mode: $(ai_models_label_chain "$GEMINI_PRO_MODEL_CHAIN")"
+      ENGINE_LABEL="triage: $(ai_models_label_chain "$_gtriage") → deep: $(ai_models_label_chain "$_gdeep") + duck: $(ai_model_label "$DUCK_MODEL") → audit: $(ai_models_label_chain "$_gaudit")"
+      ENGINE_SINGLE_LABEL="single-reviewer mode: $(ai_models_label_chain "$_gsingle")"
       # Clear the Claude-only chain vars so callers that check them unconditionally
       # do not accidentally apply a stale Claude chain to the Gemini engine.
       CLAUDE_TRIAGE_MODEL_CHAIN=""
@@ -260,21 +258,21 @@ set_engine_config() {
       CLAUDE_SINGLE_MODEL_CHAIN=""
       ;;
     copilot)
-      # One GitHub Models id for every tier: COPILOT_API_MODEL, else
-      # AI_MODELS_COPILOT model=…, else openai/o4-mini (lib/engine-models.sh).
+      # One GitHub Models id per tier: ai_models_copilot_model <tier>
+      # (lib/engine-models.sh) — COPILOT_API_MODEL when the caller set it (every
+      # tier), else AI_MODELS_COPILOT, else openai/o4-mini. Each Copilot call
+      # sets COPILOT_API_MODEL to its tier's model.
       COPILOT_API_MODEL="${COPILOT_API_MODEL:-$DEFAULT_COPILOT_API_MODEL}"
-      local _cmodel
-      _cmodel="$(ai_model_label "$COPILOT_API_MODEL")"
-      ENGINE_TRIAGE_MODEL="$_cmodel"
-      ENGINE_DEEP_MODEL="$_cmodel"
-      ENGINE_AUDIT_MODEL="$_cmodel"
-      ENGINE_ACTION_MODEL="$_cmodel"
-      ENGINE_SINGLE_MODEL="$_cmodel"
+      ENGINE_TRIAGE_MODEL="$(ai_model_label "$(ai_models_copilot_model triage)")"
+      ENGINE_DEEP_MODEL="$(ai_model_label "$(ai_models_copilot_model deep)")"
+      ENGINE_AUDIT_MODEL="$(ai_model_label "$(ai_models_copilot_model audit)")"
+      ENGINE_ACTION_MODEL="$(ai_model_label "$(ai_models_copilot_model action)")"
+      ENGINE_SINGLE_MODEL="$(ai_model_label "$(ai_models_copilot_model single)")"
       # Cross-engine rubber duck: use Gemini when Copilot is primary
       DUCK_ENGINE="gemini"
       DUCK_MODEL="$(_duck_model_for gemini)"
-      ENGINE_LABEL="triage: $_cmodel → deep: $_cmodel + duck: $(ai_model_label "$DUCK_MODEL") → audit: $_cmodel (GitHub Models API)"
-      ENGINE_SINGLE_LABEL="single-reviewer mode: $_cmodel (GitHub Models API)"
+      ENGINE_LABEL="triage: $ENGINE_TRIAGE_MODEL → deep: $ENGINE_DEEP_MODEL + duck: $(ai_model_label "$DUCK_MODEL") → audit: $ENGINE_AUDIT_MODEL (GitHub Models API)"
+      ENGINE_SINGLE_LABEL="single-reviewer mode: $ENGINE_SINGLE_MODEL (GitHub Models API)"
       # No in-engine chain for Copilot — single GitHub Models endpoint.
       CLAUDE_TRIAGE_MODEL_CHAIN=""
       CLAUDE_DEEP_MODEL_CHAIN=""
@@ -308,7 +306,6 @@ set_engine_config() {
   export CLAUDE_TRIAGE_MODEL_CHAIN CLAUDE_DEEP_MODEL_CHAIN
   export CLAUDE_AUDIT_MODEL_CHAIN CLAUDE_ACTION_MODEL_CHAIN
   export CLAUDE_SINGLE_MODEL_CHAIN
-  export GEMINI_FLASH_MODEL_CHAIN GEMINI_PRO_MODEL_CHAIN
 }
 
 # Initial config
@@ -1285,7 +1282,9 @@ run_triage() {
         fi
         ;;
       gemini)
-        local _triage_gemini_chain="${GEMINI_FLASH_MODEL_CHAIN:-$ENGINE_TRIAGE_MODEL}"
+        local _triage_gemini_chain
+        _triage_gemini_chain="$(ai_models_gemini_chain triage)"
+        _triage_gemini_chain="${_triage_gemini_chain:-$ENGINE_TRIAGE_MODEL}"
         if [ -n "$_tok_tmp" ]; then
           _GEMINI_CHAIN_MODEL_USED=""
           _gemini_chain_invoke "$_triage_gemini_chain" "$prompt_file" "$TRIAGE_TIMEOUT_SEC" \
@@ -1301,6 +1300,9 @@ run_triage() {
         # `*` is rejected ("Invalid rule format: *"), which broke this fallback
         # outright (#1957). Tools not explicitly allowed are not auto-approved
         # in non-interactive -p mode either.
+        local _copilot_tier_model
+        _copilot_tier_model="$(ai_models_copilot_model triage)"
+        local -x COPILOT_API_MODEL="$_copilot_tier_model"
         if [ -n "$_tok_tmp" ]; then
           copilot_chat "$prompt_file" "$TRIAGE_TIMEOUT_SEC" --deny-tool shell --deny-tool write | tee "$_tok_tmp" || rc=${PIPESTATUS[0]}
         else
@@ -1430,19 +1432,18 @@ run_agentic() {
       fi
       ;;
     gemini)
-      # Capability-aware chain selection: flash chain for speed tiers, pro chain
-      # for quality tiers. Honor explicit model pin when it differs from the tier default.
-      local _agentic_gemini_chain _gemini_tier_default=""
+      # The tier's own chain (AI_MODELS_GEMINI deep/audit/single/action). Honor
+      # explicit model pin when it differs from the tier default.
+      local _agentic_gemini_chain _gemini_tier_default="" _gemini_tier
       case "$tier" in
-        deep)   _agentic_gemini_chain="${GEMINI_PRO_MODEL_CHAIN:-$model}"
-                _gemini_tier_default="${ENGINE_DEEP_MODEL:-}" ;;
-        audit)  _agentic_gemini_chain="${GEMINI_PRO_MODEL_CHAIN:-$model}"
-                _gemini_tier_default="${ENGINE_AUDIT_MODEL:-}" ;;
-        single) _agentic_gemini_chain="${GEMINI_PRO_MODEL_CHAIN:-$model}"
-                _gemini_tier_default="${ENGINE_SINGLE_MODEL:-}" ;;
-        *)      _agentic_gemini_chain="${GEMINI_FLASH_MODEL_CHAIN:-$model}"
-                _gemini_tier_default="${ENGINE_ACTION_MODEL:-}" ;;
+        deep)   _gemini_tier_default="${ENGINE_DEEP_MODEL:-}" ;;
+        audit)  _gemini_tier_default="${ENGINE_AUDIT_MODEL:-}" ;;
+        single) _gemini_tier_default="${ENGINE_SINGLE_MODEL:-}" ;;
+        *)      _gemini_tier_default="${ENGINE_ACTION_MODEL:-}" ;;
       esac
+      case "$tier" in deep|audit|single) _gemini_tier="$tier" ;; *) _gemini_tier=action ;; esac
+      _agentic_gemini_chain="$(ai_models_gemini_chain "$_gemini_tier")"
+      _agentic_gemini_chain="${_agentic_gemini_chain:-$model}"
       if [ -n "$_gemini_tier_default" ] && [ "$model" != "$_gemini_tier_default" ]; then
         _agentic_gemini_chain="$model"
       fi
@@ -1461,6 +1462,12 @@ run_agentic() {
       # write the verdict JSON directly to $OUTPUT_FILE via the Bash tool.
       # Teeing stdout (which includes assistant text and tool transcripts)
       # would overwrite that file and corrupt the JSON.
+      local _copilot_tier_model
+      case "$tier" in
+        deep|audit|single) _copilot_tier_model="$(ai_models_copilot_model "$tier")" ;;
+        *)                 _copilot_tier_model="$(ai_models_copilot_model action)" ;;
+      esac
+      local -x COPILOT_API_MODEL="$_copilot_tier_model"
       if [ -n "$_tok_tmp" ]; then
         copilot_chat "$prompt_file" "$DEEP_TIMEOUT_SEC" --yolo | tee "$_tok_tmp" || rc=${PIPESTATUS[0]}
       else
@@ -1584,8 +1591,10 @@ run_writer() {
       fi
       ;;
     gemini)
-      # Flash chain for writer (action) tier; honor explicit model pin.
-      local _writer_gemini_chain="${GEMINI_FLASH_MODEL_CHAIN:-$model}"
+      # The action tier's chain for the writer; honor explicit model pin.
+      local _writer_gemini_chain
+      _writer_gemini_chain="$(ai_models_gemini_chain action)"
+      _writer_gemini_chain="${_writer_gemini_chain:-$model}"
       if [ -n "${ENGINE_ACTION_MODEL:-}" ] && [ "$model" != "$ENGINE_ACTION_MODEL" ]; then
         _writer_gemini_chain="$model"
       fi
@@ -1600,6 +1609,9 @@ run_writer() {
       ;;
     copilot)
       # Self-sufficient write support via gh copilot --yolo
+      local _copilot_tier_model
+      _copilot_tier_model="$(ai_models_copilot_model action)"
+      local -x COPILOT_API_MODEL="$_copilot_tier_model"
       if [ -n "$_tmp" ]; then
         copilot_chat "$prompt_file" "$ACTION_TIMEOUT_SEC" --yolo 2>&1 | tee "$_tmp" || rc=${PIPESTATUS[0]}
       else
@@ -2051,11 +2063,13 @@ run_duck() {
       unset GOOGLE_API_KEY 2>/dev/null || true
       unset GEMINI_API_KEY 2>/dev/null || true
       # An explicit AI_DUCK_MODEL (the only way <model> equals it — see
-      # _duck_model_for) overrides COPILOT_API_MODEL for this call; the built-in
-      # default label stays a label and COPILOT_API_MODEL decides.
-      if [ -n "${AI_DUCK_MODEL:-}" ] && [ "$model" = "$AI_DUCK_MODEL" ]; then
-        local -x COPILOT_API_MODEL="$model"
+      # _duck_model_for) is the model for this call; otherwise <model> is only a
+      # label and the duck key decides (ai_models_copilot_model duck).
+      local _copilot_duck_model="$model"
+      if [ -z "${AI_DUCK_MODEL:-}" ] || [ "$model" != "$AI_DUCK_MODEL" ]; then
+        _copilot_duck_model="$(ai_models_copilot_model duck)"
       fi
+      local -x COPILOT_API_MODEL="$_copilot_duck_model"
       # Do NOT tee stdout to OUTPUT_FILE — same rationale as run_agentic copilot
       # branch: the prompt writes verdict JSON directly via the Bash tool.
       if [ -n "$_tok_tmp" ]; then

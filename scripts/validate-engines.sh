@@ -38,14 +38,15 @@ _VALIDATE_ENGINES_MODELS_LIB="$(dirname "${BASH_SOURCE[0]}")/lib/engine-models.s
 [ -f "$_VALIDATE_ENGINES_MODELS_LIB" ] && source "$_VALIDATE_ENGINES_MODELS_LIB"
 unset _VALIDATE_ENGINES_MODELS_LIB
 
-# _gemini_probe_model — the configured Gemini flash model (the tier the probe
+# _gemini_probe_model — the configured Gemini triage model (the tier the probe
 # stands in for), without Google's optional "models/" prefix; gemini-3.8-flash
 # when the models library is absent. Prints nothing when the configured id is
 # not URL-safe, so the caller skips the probe rather than probe another model.
 _gemini_probe_model() {
   local m="gemini-3.8-flash"
-  if declare -F ai_models_gemini_flash_first >/dev/null 2>&1; then
-    m="$(ai_models_gemini_flash_first)"
+  if declare -F ai_models_gemini_chain >/dev/null 2>&1; then
+    m="$(ai_models_gemini_chain triage)"
+    m="${m%%,*}"
   fi
   m="${m#models/}"
   [[ "$m" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || return 0
@@ -95,7 +96,7 @@ _gemini_probe_key() {
   fi
   if [ "$_code" = "404" ] || printf '%s' "$_body" | grep -qiE "no longer available|is not found|NOT_FOUND"; then
     if [ -z "${_GEMINI_PROBE_MODEL_WARNED:-}" ]; then
-      echo "::warning::Gemini billing probe: model '${_model}' was not found — credit depletion is undetermined. Check AI_MODELS_GEMINI flash / GEMINI_FLASH_MODEL." >&2
+      echo "::warning::Gemini billing probe: model '${_model}' was not found — credit depletion is undetermined. Check AI_MODELS_GEMINI triage / GEMINI_FLASH_MODEL." >&2
       _GEMINI_PROBE_MODEL_WARNED=1
     fi
   fi

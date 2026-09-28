@@ -190,8 +190,11 @@ jobs:
       #   AI_DUCK_MODEL  model for an explicit AI_DUCK_ENGINE.
       #   AI_MODELS_CLAUDE / AI_MODELS_GEMINI / AI_MODELS_COPILOT  each provider's
       #                  model list, e.g. "deep=claude-opus-5-5,claude-opus-4-8; triage=…"
-      #                  (scripts/lib/engine-models.sh); omitted keys keep their defaults.
-      #   GEMINI_FLASH_MODEL / GEMINI_PRO_MODEL  replace just the first Gemini model.
+      #                  (scripts/lib/engine-models.sh). Every provider takes the same
+      #                  keys: triage, deep, audit, action, single, duck. Omitted keys
+      #                  keep their defaults.
+      #   GEMINI_FLASH_MODEL / GEMINI_PRO_MODEL  replace just the first Gemini model
+      #                  (triage + action / deep + audit + single).
       # The primary is derived here (expressions cannot split a list) from the
       # first AI_ENGINES entry; the scripts enforce the full list.
       AI_ENGINES: ${{ vars.AI_ENGINES || '' }}

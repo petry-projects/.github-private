@@ -5,27 +5,32 @@
 # renamed model is a variable edit rather than a code change and a release:
 #
 #   AI_MODELS_CLAUDE   triage=… ; deep=… ; audit=… ; action=… ; single=… ; duck=…
-#   AI_MODELS_GEMINI   flash=… ; pro=… ; duck=…
-#   AI_MODELS_COPILOT  model=…
+#   AI_MODELS_GEMINI   (the same keys)
+#   AI_MODELS_COPILOT  (the same keys)
 #
 # Each entry is <key>=<model>[,<fallback>,…]. Entries are separated by ';' or
 # newlines; spaces are ignored; keys are case-insensitive. A key that is left out
 # keeps its default (ai_models_default). Chains are walked left to right on a
 # rate limit, before any cross-provider fallback (AI_ENGINES).
 #
-#   Claude tiers  triage (classify)   deep (agentic review)   audit (security)
-#                 action (dev-lead writer)   single (single-reviewer mode)
-#                 duck (model when Claude is the rubber duck; one model)
-#   Gemini        flash → triage + action;   pro → deep + audit + single;
-#                 duck (model when Gemini is the rubber duck; default: flash's first)
-#   Copilot       model (GitHub Models id for every tier; one model — the
-#                 GitHub Models client has no in-engine chain)
-#   A duck or model key given several models warns and keeps the first.
+# Every provider takes the same keys, one per task:
+#   triage  classify the PR            deep    agentic review
+#   audit   security audit             action  dev-lead writer
+#   single  single-reviewer mode
+#   duck    the model used when this provider is the rubber duck (one model;
+#           default: Claude sonnet 4.6, Gemini and Copilot the triage model)
+# Copilot takes one model per key: the GitHub Models client has no in-engine
+# chain. A duck key, or any Copilot key, given several models warns and keeps
+# the first.
 #
 # Precedence per key, highest first:
-#   1. the specific env var kept for existing callers: CLAUDE_<TIER>_MODEL_CHAIN,
-#      GEMINI_FLASH_MODEL_CHAIN / GEMINI_PRO_MODEL_CHAIN, GEMINI_FLASH_MODEL /
-#      GEMINI_PRO_MODEL (replace only the first model), COPILOT_API_MODEL;
+#   1. the env vars kept for existing callers:
+#        Claude   CLAUDE_<TIER>_MODEL_CHAIN (the whole chain);
+#        Gemini   GEMINI_FLASH_MODEL_CHAIN (triage + action) and
+#                 GEMINI_PRO_MODEL_CHAIN (deep + audit + single) replace the
+#                 whole chain; GEMINI_FLASH_MODEL / GEMINI_PRO_MODEL replace
+#                 only its first model;
+#        Copilot  COPILOT_API_MODEL (every key);
 #   2. AI_MODELS_<PROVIDER>;
 #   3. ai_models_default.
 # An unknown key or a malformed model id drops that entry (its default applies);
@@ -60,18 +65,21 @@ ai_models_default() {
     # gemini-2.5-pro is withdrawn for new keys ("no longer available to new
     # users … use models/gemini-3.1-pro-preview", #1960), so the quality tier
     # uses 3.1-pro-preview and degrades to the flash model that is known to work.
-    gemini:flash)  printf '%s' "gemini-3.8-flash,gemini-3.1-pro-preview" ;;
-    gemini:pro)    printf '%s' "gemini-3.1-pro-preview,gemini-3.8-flash" ;;
-    copilot:model) printf '%s' "openai/o4-mini" ;;
+    # No gemini/copilot duck default: the duck follows the triage model.
+    gemini:triage|gemini:action)
+      printf '%s' "gemini-3.8-flash,gemini-3.1-pro-preview" ;;
+    gemini:deep|gemini:audit|gemini:single)
+      printf '%s' "gemini-3.1-pro-preview,gemini-3.8-flash" ;;
+    copilot:triage|copilot:deep|copilot:audit|copilot:action|copilot:single)
+      printf '%s' "openai/o4-mini" ;;
   esac
 }
 
-# _ai_models_keys <provider> — the keys AI_MODELS_<PROVIDER> accepts.
+# _ai_models_keys <provider> — the keys AI_MODELS_<PROVIDER> accepts (the same
+# for every provider).
 _ai_models_keys() {
   case "${1:-}" in
-    claude)  printf '%s' "triage deep audit action single duck" ;;
-    gemini)  printf '%s' "flash pro duck" ;;
-    copilot) printf '%s' "model" ;;
+    claude|gemini|copilot) printf '%s' "triage deep audit action single duck" ;;
   esac
 }
 
@@ -136,7 +144,7 @@ _ai_models_scan() {
       [ "$key" = "$want" ] && found=""
       continue
     fi
-    if [[ "$chain" == *,* ]] && { [ "$key" = duck ] || [ "$key" = model ]; }; then
+    if [[ "$chain" == *,* ]] && { [ "$key" = duck ] || [ "$provider" = copilot ]; }; then
       [ "$mode" = problems ] && printf "%s: '%s' takes one model — only '%s' is used\n" "$var" "$key" "${chain%%,*}"
       chain="${chain%%,*}"
     fi
@@ -173,14 +181,51 @@ ai_models_replace_first() {
   printf '%s' "$out"
 }
 
-# ai_models_gemini_flash_first — the Gemini flash tier's primary model, with the
-# same precedence set_engine_config applies: GEMINI_FLASH_MODEL_CHAIN, then
-# GEMINI_FLASH_MODEL, then AI_MODELS_GEMINI flash / the default. Used where one
-# flash model is needed outside the chain walk (the Gemini duck, the billing probe).
-ai_models_gemini_flash_first() {
-  local c="${GEMINI_FLASH_MODEL_CHAIN:-${GEMINI_FLASH_MODEL:-$(ai_models_chain gemini flash)}}"
-  c="${c%%,*}"
-  printf '%s' "${c//[[:space:]]/}"
+# ai_models_gemini_chain <key> — the Gemini chain for <key>, resolved when it is
+# used rather than stored, so a child shell that re-sources engine.sh gets the
+# same answer. triage and action honour GEMINI_FLASH_MODEL_CHAIN /
+# GEMINI_FLASH_MODEL; deep, audit and single honour GEMINI_PRO_MODEL_CHAIN /
+# GEMINI_PRO_MODEL; duck is AI_MODELS_GEMINI duck=…, else the triage chain's
+# first model.
+ai_models_gemini_chain() {
+  local key="${1:-}" group first c
+  case "$key" in
+    triage|action)      group="${GEMINI_FLASH_MODEL_CHAIN:-}"; first="${GEMINI_FLASH_MODEL:-}" ;;
+    deep|audit|single)  group="${GEMINI_PRO_MODEL_CHAIN:-}";   first="${GEMINI_PRO_MODEL:-}" ;;
+    duck)
+      c="$(ai_models_configured gemini duck)"
+      [ -n "$c" ] || { c="$(ai_models_gemini_chain triage)"; c="${c%%,*}"; }
+      printf '%s' "$c"
+      return 0 ;;
+    *) return 0 ;;
+  esac
+  if [ -n "${group//[[:space:],]/}" ]; then
+    printf '%s' "${group//[[:space:]]/}"
+    return 0
+  fi
+  c="$(ai_models_chain gemini "$key")"
+  first="${first//[[:space:]]/}"
+  [ -z "$first" ] || c="$(ai_models_replace_first "$first" "$c")"
+  printf '%s' "$c"
+}
+
+# ai_models_copilot_model <key> — the one GitHub Models id Copilot uses for
+# <key>: COPILOT_API_MODEL when the caller set it (every key), else
+# AI_MODELS_COPILOT, else the default; duck falls back to the triage model.
+# engine.sh defaults COPILOT_API_MODEL to the triage model and records that
+# default in COPILOT_API_MODEL_DEFAULTED, so a value it set itself (inherited by
+# a child shell) is not mistaken for the caller's.
+ai_models_copilot_model() {
+  local key="${1:-}" m=""
+  if [ -n "${COPILOT_API_MODEL:-}" ] && [ "$COPILOT_API_MODEL" != "${COPILOT_API_MODEL_DEFAULTED:-}" ]; then
+    m="$COPILOT_API_MODEL"
+  else
+    m="$(ai_models_configured copilot "$key")"
+    [ -n "$m" ] || [ "$key" != duck ] || key=triage
+    [ -n "$m" ] || m="$(ai_models_chain copilot "$key")"
+  fi
+  m="${m%%,*}"
+  printf '%s' "${m//[[:space:]]/}"
 }
 
 # ai_models_problems — one line per unusable AI_MODELS_* entry, all providers.

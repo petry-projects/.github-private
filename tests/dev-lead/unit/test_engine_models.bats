@@ -11,7 +11,7 @@ setup() {
   unset CLAUDE_TRIAGE_MODEL_CHAIN CLAUDE_DEEP_MODEL_CHAIN CLAUDE_AUDIT_MODEL_CHAIN
   unset CLAUDE_ACTION_MODEL_CHAIN CLAUDE_SINGLE_MODEL_CHAIN
   unset GEMINI_FLASH_MODEL GEMINI_PRO_MODEL GEMINI_FLASH_MODEL_CHAIN GEMINI_PRO_MODEL_CHAIN
-  unset COPILOT_API_MODEL AI_ENGINES AI_DUCK_ENGINE AI_DUCK_MODEL
+  unset COPILOT_API_MODEL COPILOT_API_MODEL_DEFAULTED AI_ENGINES AI_DUCK_ENGINE AI_DUCK_MODEL
   # shellcheck source=../../../scripts/lib/engine-models.sh
   source "$LIB"
 }
@@ -26,11 +26,29 @@ _engine() {
 
 # ── Parsing ───────────────────────────────────────────────────────────────────
 
-@test "parse: unset → defaults (Claude deep chain, Gemini pro is 3.1-pro-preview)" {
+@test "parse: unset → defaults (Claude deep chain, Gemini deep is 3.1-pro-preview)" {
   [ "$(ai_models_chain claude deep)" = "claude-opus-5-5,claude-opus-4-8,claude-sonnet-5" ]
-  [ "$(ai_models_chain gemini pro)" = "gemini-3.1-pro-preview,gemini-3.8-flash" ]
-  [ "$(ai_models_chain copilot model)" = "openai/o4-mini" ]
+  [ "$(ai_models_chain gemini triage)" = "gemini-3.8-flash,gemini-3.1-pro-preview" ]
+  [ "$(ai_models_chain gemini action)" = "gemini-3.8-flash,gemini-3.1-pro-preview" ]
+  [ "$(ai_models_chain gemini deep)" = "gemini-3.1-pro-preview,gemini-3.8-flash" ]
+  [ "$(ai_models_chain gemini audit)" = "gemini-3.1-pro-preview,gemini-3.8-flash" ]
+  [ "$(ai_models_chain gemini single)" = "gemini-3.1-pro-preview,gemini-3.8-flash" ]
+  [ "$(ai_models_chain copilot deep)" = "openai/o4-mini" ]
   [ -z "$(ai_models_problems)" ]
+}
+
+@test "keys: every provider takes triage, deep, audit, action, single and duck" {
+  local p
+  for p in claude gemini copilot; do
+    [ "$(_ai_models_keys "$p")" = "triage deep audit action single duck" ]
+  done
+  export AI_MODELS_GEMINI="flash=gemini-f1; pro=gemini-p1" AI_MODELS_COPILOT="model=openai/gpt-5-mini"
+  [ "$(ai_models_chain gemini triage)" = "gemini-3.8-flash,gemini-3.1-pro-preview" ]
+  [ "$(ai_models_chain copilot triage)" = "openai/o4-mini" ]
+  run ai_models_problems
+  [[ "$output" == *"AI_MODELS_GEMINI: unknown key 'flash'"* ]]
+  [[ "$output" == *"AI_MODELS_GEMINI: unknown key 'pro'"* ]]
+  [[ "$output" == *"AI_MODELS_COPILOT: unknown key 'model'"* ]]
 }
 
 @test "parse: '; ' and newlines separate entries; keys are case-insensitive; spaces ignored" {
@@ -43,10 +61,10 @@ _engine() {
 }
 
 @test "parse: duplicate models collapse; the last entry for a key wins" {
-  export AI_MODELS_GEMINI="pro=gemini-a,gemini-a,gemini-b; pro=gemini-c"
-  [ "$(ai_models_chain gemini pro)" = "gemini-c" ]
-  export AI_MODELS_GEMINI="pro=gemini-a,gemini-a,gemini-b"
-  [ "$(ai_models_chain gemini pro)" = "gemini-a,gemini-b" ]
+  export AI_MODELS_GEMINI="deep=gemini-a,gemini-a,gemini-b; deep=gemini-c"
+  [ "$(ai_models_chain gemini deep)" = "gemini-c" ]
+  export AI_MODELS_GEMINI="deep=gemini-a,gemini-a,gemini-b"
+  [ "$(ai_models_chain gemini deep)" = "gemini-a,gemini-b" ]
 }
 
 @test "problems: unknown key, missing '=', invalid id and empty list are reported and ignored" {
@@ -68,8 +86,8 @@ _engine() {
 }
 
 @test "problems: an invalid model id drops the whole entry (no half-parsed chain)" {
-  export AI_MODELS_GEMINI='pro=gemini-3.1-pro-preview,gem!ni'
-  [ "$(ai_models_chain gemini pro)" = "gemini-3.1-pro-preview,gemini-3.8-flash" ]
+  export AI_MODELS_GEMINI='deep=gemini-3.1-pro-preview,gem!ni'
+  [ "$(ai_models_chain gemini deep)" = "gemini-3.1-pro-preview,gemini-3.8-flash" ]
   [[ "$(ai_models_problems)" == *"invalid model id 'gem!ni'"* ]]
 }
 
@@ -109,27 +127,46 @@ _engine() {
 
 # ── Gemini via engine.sh ──────────────────────────────────────────────────────
 
-@test "gemini: AI_MODELS_GEMINI sets the flash and pro chains" {
-  export AI_MODELS_GEMINI="flash=gemini-f1,gemini-f2; pro=gemini-p1"
-  run _engine gemini GEMINI_FLASH_MODEL_CHAIN GEMINI_PRO_MODEL_CHAIN ENGINE_TRIAGE_MODEL ENGINE_DEEP_MODEL
-  [[ "$output" == *"GEMINI_FLASH_MODEL_CHAIN=gemini-f1,gemini-f2"* ]]
-  [[ "$output" == *"GEMINI_PRO_MODEL_CHAIN=gemini-p1"* ]]
-  [[ "$output" == *"ENGINE_TRIAGE_MODEL=gemini-f1"* ]]
-  [[ "$output" == *"ENGINE_DEEP_MODEL=gemini-p1"* ]]
+@test "gemini: AI_MODELS_GEMINI sets each tier's chain on its own" {
+  export AI_MODELS_GEMINI="triage=gemini-t1,gemini-t2; action=gemini-a1; deep=gemini-d1; audit=gemini-u1; single=gemini-s1"
+  run _engine gemini ENGINE_TRIAGE_MODEL ENGINE_ACTION_MODEL ENGINE_DEEP_MODEL ENGINE_AUDIT_MODEL ENGINE_SINGLE_MODEL ENGINE_LABEL
+  [[ "$output" == *"ENGINE_TRIAGE_MODEL=gemini-t1 "* ]]
+  [[ "$output" == *"ENGINE_ACTION_MODEL=gemini-a1 "* ]]
+  [[ "$output" == *"ENGINE_DEEP_MODEL=gemini-d1 "* ]]
+  [[ "$output" == *"ENGINE_AUDIT_MODEL=gemini-u1 "* ]]
+  [[ "$output" == *"ENGINE_SINGLE_MODEL=gemini-s1 "* ]]
+  [[ "$output" == *"triage: gemini-t1 [gemini-t2]"* ]]
+  [ "$(ai_models_gemini_chain triage)" = "gemini-t1,gemini-t2" ]
+  [ "$(ai_models_gemini_chain audit)" = "gemini-u1" ]
 }
 
-@test "gemini: GEMINI_PRO_MODEL replaces only the first model of the configured chain" {
-  export AI_MODELS_GEMINI="pro=gemini-p1,gemini-p2" GEMINI_PRO_MODEL="gemini-x"
-  run _engine gemini GEMINI_PRO_MODEL_CHAIN ENGINE_DEEP_MODEL
-  [[ "$output" == *"GEMINI_PRO_MODEL_CHAIN=gemini-x,gemini-p2"* ]]
-  [[ "$output" == *"ENGINE_DEEP_MODEL=gemini-x"* ]]
+@test "gemini: each call uses its own tier's chain (writer → action, audit → audit)" {
+  local p; p="$BATS_TEST_TMPDIR/prompt"; echo "prompt" > "$p"
+  export AI_MODELS_GEMINI="triage=gemini-t1; action=gemini-a1; deep=gemini-d1; audit=gemini-u1"
+  run bash -c "export REVIEW_ENGINE=gemini; source '$SCRIPT_DIR/scripts/engine.sh' >/dev/null 2>&1
+    _gemini_chain_invoke() { echo \"chain=\$1\"; }
+    run_writer '$p' 2>/dev/null | grep '^chain='
+    run_agentic '$p' \"\$ENGINE_AUDIT_MODEL\" audit 2>/dev/null | grep '^chain='"
+  [[ "$output" == *"chain=gemini-a1"* ]]
+  [[ "$output" == *"chain=gemini-u1"* ]]
 }
 
-@test "gemini: GEMINI_PRO_MODEL_CHAIN wins over both" {
-  export AI_MODELS_GEMINI="pro=gemini-p1" GEMINI_PRO_MODEL="gemini-x" GEMINI_PRO_MODEL_CHAIN="gemini-c1,gemini-c2"
-  run _engine gemini GEMINI_PRO_MODEL_CHAIN ENGINE_DEEP_MODEL
-  [[ "$output" == *"GEMINI_PRO_MODEL_CHAIN=gemini-c1,gemini-c2"* ]]
-  [[ "$output" == *"ENGINE_DEEP_MODEL=gemini-c1"* ]]
+@test "gemini: GEMINI_FLASH_MODEL / GEMINI_PRO_MODEL replace only the first model of each tier in their group" {
+  export AI_MODELS_GEMINI="deep=gemini-d1,gemini-d2; audit=gemini-u1,gemini-u2" GEMINI_PRO_MODEL="gemini-x"
+  run _engine gemini ENGINE_DEEP_MODEL ENGINE_AUDIT_MODEL
+  [[ "$output" == *"ENGINE_DEEP_MODEL=gemini-x "* ]]
+  [[ "$output" == *"ENGINE_AUDIT_MODEL=gemini-x"* ]]
+  [ "$(ai_models_gemini_chain deep)" = "gemini-x,gemini-d2" ]
+  [ "$(ai_models_gemini_chain audit)" = "gemini-x,gemini-u2" ]
+  [ "$(ai_models_gemini_chain triage)" = "gemini-3.8-flash,gemini-3.1-pro-preview" ]
+}
+
+@test "gemini: GEMINI_PRO_MODEL_CHAIN wins over both for deep, audit and single" {
+  export AI_MODELS_GEMINI="deep=gemini-d1; single=gemini-s1" GEMINI_PRO_MODEL="gemini-x" GEMINI_PRO_MODEL_CHAIN="gemini-c1, gemini-c2"
+  run _engine gemini ENGINE_DEEP_MODEL ENGINE_SINGLE_MODEL
+  [[ "$output" == *"ENGINE_DEEP_MODEL=gemini-c1 "* ]]
+  [[ "$output" == *"ENGINE_SINGLE_MODEL=gemini-c1"* ]]
+  [ "$(ai_models_gemini_chain single)" = "gemini-c1,gemini-c2" ]
 }
 
 @test "gemini: the Claude duck model comes from AI_MODELS_CLAUDE duck=" {
@@ -141,23 +178,61 @@ _engine() {
 
 # ── Copilot via engine.sh ─────────────────────────────────────────────────────
 
-@test "copilot: AI_MODELS_COPILOT model= sets COPILOT_API_MODEL and the tier labels" {
-  export AI_MODELS_COPILOT="model=openai/gpt-5-mini"
+@test "copilot: AI_MODELS_COPILOT sets each tier's model; a key left out keeps the default" {
+  export AI_MODELS_COPILOT="triage=openai/gpt-5-mini; deep=openai/gpt-5"
+  run _engine copilot COPILOT_API_MODEL ENGINE_TRIAGE_MODEL ENGINE_DEEP_MODEL ENGINE_ACTION_MODEL
+  [[ "$output" == *"COPILOT_API_MODEL=openai/gpt-5-mini "* ]]
+  [[ "$output" == *"ENGINE_TRIAGE_MODEL=gpt-5-mini "* ]]
+  [[ "$output" == *"ENGINE_DEEP_MODEL=gpt-5 "* ]]
+  [[ "$output" == *"ENGINE_ACTION_MODEL=o4-mini"* ]]
+}
+
+@test "copilot: each call sends its own tier's model (deep, action, duck)" {
+  local p; p="$BATS_TEST_TMPDIR/prompt"; echo "prompt" > "$p"
+  export AI_MODELS_COPILOT="triage=openai/t1; deep=openai/d1; action=openai/a1; duck=openai/k1"
+  run bash -c "export REVIEW_ENGINE=copilot; source '$SCRIPT_DIR/scripts/engine.sh' >/dev/null 2>&1
+    copilot_chat() { echo \"model=\$COPILOT_API_MODEL\"; }
+    run_agentic '$p' \"\$ENGINE_DEEP_MODEL\" deep 2>/dev/null | grep '^model='
+    run_writer '$p' 2>/dev/null | grep '^model='
+    DUCK_ENGINE=copilot run_duck '$p' k1 2>/dev/null | grep '^model='
+    echo \"after=\$COPILOT_API_MODEL\""
+  [[ "$output" == *"model=openai/d1"* ]]
+  [[ "$output" == *"model=openai/a1"* ]]
+  [[ "$output" == *"model=openai/k1"* ]]
+  [[ "$output" == *"after=openai/t1"* ]]
+}
+
+@test "copilot: an explicit COPILOT_API_MODEL still wins for every tier" {
+  export AI_MODELS_COPILOT="triage=openai/gpt-5-mini; deep=openai/gpt-5" COPILOT_API_MODEL="openai/o4-mini"
   run _engine copilot COPILOT_API_MODEL ENGINE_DEEP_MODEL
-  [[ "$output" == *"COPILOT_API_MODEL=openai/gpt-5-mini"* ]]
-  [[ "$output" == *"ENGINE_DEEP_MODEL=gpt-5-mini"* ]]
+  [[ "$output" == *"COPILOT_API_MODEL=openai/o4-mini "* ]]
+  [[ "$output" == *"ENGINE_DEEP_MODEL=o4-mini"* ]]
 }
 
-@test "copilot: an explicit COPILOT_API_MODEL still wins" {
-  export AI_MODELS_COPILOT="model=openai/gpt-5-mini" COPILOT_API_MODEL="openai/o4-mini"
-  run _engine copilot COPILOT_API_MODEL
-  [[ "$output" == *"COPILOT_API_MODEL=openai/o4-mini"* ]]
+@test "copilot: a child shell that re-sources engine.sh keeps the per-tier models" {
+  export AI_MODELS_COPILOT="triage=openai/t1; deep=openai/d1"
+  run bash -c "export REVIEW_ENGINE=copilot; source '$SCRIPT_DIR/scripts/engine.sh' >/dev/null 2>&1
+    bash -c \"source '$SCRIPT_DIR/scripts/engine.sh' >/dev/null 2>&1; echo deep=\\\$ENGINE_DEEP_MODEL api=\\\$COPILOT_API_MODEL\""
+  [[ "$output" == *"deep=d1 api=openai/t1"* ]]
 }
 
-@test "copilot: the Gemini duck model comes from AI_MODELS_GEMINI duck=, else flash" {
+@test "claude: the Copilot duck model comes from AI_MODELS_COPILOT duck=, else triage" {
+  export AI_MODELS_COPILOT="triage=openai/t1"
+  run _engine claude DUCK_ENGINE DUCK_MODEL
+  [[ "$output" == *"DUCK_ENGINE=copilot "* ]]
+  [[ "$output" == *"DUCK_MODEL=t1"* ]]
+  export AI_MODELS_COPILOT="triage=openai/t1; duck=openai/k1"
+  run _engine claude DUCK_MODEL
+  [[ "$output" == *"DUCK_MODEL=k1"* ]]
+}
+
+@test "copilot: the Gemini duck model comes from AI_MODELS_GEMINI duck=, else triage" {
   run _engine copilot DUCK_MODEL
   [[ "$output" == *"DUCK_MODEL=gemini-3.8-flash"* ]]
-  export AI_MODELS_GEMINI="duck=gemini-d1"
+  export AI_MODELS_GEMINI="triage=gemini-t1"
+  run _engine copilot DUCK_MODEL
+  [[ "$output" == *"DUCK_MODEL=gemini-t1"* ]]
+  export AI_MODELS_GEMINI="triage=gemini-t1; duck=gemini-d1"
   run _engine copilot DUCK_MODEL
   [[ "$output" == *"DUCK_MODEL=gemini-d1"* ]]
 }
@@ -171,12 +246,12 @@ _engine() {
   [[ "$output" == *"DUCK_MODEL=gemini-x"* ]]
 }
 
-@test "problems: a duck or copilot model key given several models warns and keeps the first" {
-  export AI_MODELS_COPILOT="model=openai/gpt-5-mini,openai/o4-mini" AI_MODELS_CLAUDE="duck=claude-sonnet-5,claude-opus-4-8"
-  [ "$(ai_models_chain copilot model)" = "openai/gpt-5-mini" ]
+@test "problems: a duck key, or any Copilot key, given several models warns and keeps the first" {
+  export AI_MODELS_COPILOT="deep=openai/gpt-5-mini,openai/o4-mini" AI_MODELS_CLAUDE="duck=claude-sonnet-5,claude-opus-4-8"
+  [ "$(ai_models_chain copilot deep)" = "openai/gpt-5-mini" ]
   [ "$(ai_models_chain claude duck)" = "claude-sonnet-5" ]
   run ai_models_problems
-  [[ "$output" == *"AI_MODELS_COPILOT: 'model' takes one model — only 'openai/gpt-5-mini' is used"* ]]
+  [[ "$output" == *"AI_MODELS_COPILOT: 'deep' takes one model — only 'openai/gpt-5-mini' is used"* ]]
   [[ "$output" == *"AI_MODELS_CLAUDE: 'duck' takes one model — only 'claude-sonnet-5' is used"* ]]
 }
 
@@ -217,9 +292,9 @@ STUB
   export PATH="$BATS_TEST_TMPDIR/bin:$PATH" BATS_TEST_TMPDIR
 }
 
-@test "probe: the Gemini billing probe calls the configured flash model" {
+@test "probe: the Gemini billing probe calls the configured triage model" {
   _probe_curl '{"candidates":[]}' 200
-  export AI_MODELS_GEMINI="flash=gemini-f1,gemini-f2"
+  export AI_MODELS_GEMINI="triage=gemini-f1,gemini-f2"
   source "$SCRIPT_DIR/scripts/validate-engines.sh"
   _gemini_probe_key fake
   grep -q "/models/gemini-f1:generateContent" "$BATS_TEST_TMPDIR/urls"
@@ -230,12 +305,12 @@ STUB
 
 @test "probe: Google's models/ prefix is stripped; an unprobe-able id warns and skips" {
   _probe_curl '{"candidates":[]}' 200
-  export AI_MODELS_GEMINI="flash=models/gemini-f1"
+  export AI_MODELS_GEMINI="triage=models/gemini-f1"
   source "$SCRIPT_DIR/scripts/validate-engines.sh"
   _gemini_probe_key fake
   grep -q "/models/gemini-f1:generateContent" "$BATS_TEST_TMPDIR/urls"
   rm -f "$BATS_TEST_TMPDIR/urls"
-  export AI_MODELS_GEMINI="flash=vendor/gemini-x"
+  export AI_MODELS_GEMINI="triage=vendor/gemini-x"
   run bash -c "source '$SCRIPT_DIR/scripts/validate-engines.sh'; _gemini_probe_key a; echo rc=\$?"
   [[ "$output" == *"rc=0"* ]]
   [[ "$output" == *"Gemini billing probe skipped"* ]]
@@ -260,7 +335,7 @@ STUB
 
 @test "probe: a not-found probe model warns once and stays fail-open" {
   _probe_curl '{"error":{"code":404,"message":"models/gemini-gone is not found","status":"NOT_FOUND"}}' 404
-  export AI_MODELS_GEMINI="flash=gemini-gone"
+  export AI_MODELS_GEMINI="triage=gemini-gone"
   run bash -c "source '$SCRIPT_DIR/scripts/validate-engines.sh'; _gemini_probe_key a; echo rc=\$?; _gemini_probe_key b"
   [[ "$output" == *"rc=0"* ]]
   [ "$(grep -c "model 'gemini-gone' was not found" <<< "$output")" = "1" ]

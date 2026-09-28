@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# Unit tests for engine.sh — Gemini flash model tier assignments, chains, and fallback.
+# Unit tests for engine.sh — Gemini model tier assignments, chains, and fallback.
 #
 # Verifies that gemini-3.8-flash (the preferred flash model, #1777) is wired into
 # the speed-first tiers and gemini-3.1-pro-preview is the quality-first tier for the
@@ -82,30 +82,33 @@ _source_engine() {
 
 # ── Fallback chain configuration ──────────────────────────────────────────────
 
-@test "gemini-3.8: GEMINI_FLASH_MODEL_CHAIN starts with gemini-3.8-flash" {
+@test "gemini-3.8: the triage chain starts with gemini-3.8-flash" {
   _source_engine "gemini"
   local first
-  first="${GEMINI_FLASH_MODEL_CHAIN%%,*}"
-  first="${first// /}"
+  first="$(ai_models_gemini_chain triage)"
+  first="${first%%,*}"
   [ "$first" = "gemini-3.8-flash" ]
 }
 
-@test "gemini-3.8: GEMINI_FLASH_MODEL_CHAIN includes gemini-3.1-pro-preview as fallback" {
+@test "gemini-3.8: the triage and action chains fall back to gemini-3.1-pro-preview" {
   _source_engine "gemini"
-  [[ "$GEMINI_FLASH_MODEL_CHAIN" == *"gemini-3.1-pro-preview"* ]]
+  [[ "$(ai_models_gemini_chain triage)" == *"gemini-3.1-pro-preview"* ]]
+  [[ "$(ai_models_gemini_chain action)" == *"gemini-3.1-pro-preview"* ]]
 }
 
-@test "gemini-3.8: GEMINI_PRO_MODEL_CHAIN starts with gemini-3.1-pro-preview" {
+@test "gemini-3.8: the deep chain starts with gemini-3.1-pro-preview" {
   _source_engine "gemini"
   local first
-  first="${GEMINI_PRO_MODEL_CHAIN%%,*}"
-  first="${first// /}"
+  first="$(ai_models_gemini_chain deep)"
+  first="${first%%,*}"
   [ "$first" = "gemini-3.1-pro-preview" ]
 }
 
-@test "gemini-3.8: GEMINI_PRO_MODEL_CHAIN includes gemini-3.8-flash as fallback" {
+@test "gemini-3.8: the deep, audit and single chains fall back to gemini-3.8-flash" {
   _source_engine "gemini"
-  [[ "$GEMINI_PRO_MODEL_CHAIN" == *"gemini-3.8-flash"* ]]
+  [[ "$(ai_models_gemini_chain deep)" == *"gemini-3.8-flash"* ]]
+  [[ "$(ai_models_gemini_chain audit)" == *"gemini-3.8-flash"* ]]
+  [[ "$(ai_models_gemini_chain single)" == *"gemini-3.8-flash"* ]]
 }
 
 # ── Env var overrides ─────────────────────────────────────────────────────────
@@ -127,10 +130,9 @@ _source_engine() {
 @test "gemini-3.8: GEMINI_FLASH_MODEL_CHAIN env var override honored" {
   export GEMINI_FLASH_MODEL_CHAIN="gemini-2.0-flash,gemini-2.5-pro"
   _source_engine "gemini"
-  local first
-  first="${GEMINI_FLASH_MODEL_CHAIN%%,*}"
-  first="${first// /}"
-  [ "$first" = "gemini-2.0-flash" ]
+  [ "$(ai_models_gemini_chain triage)" = "gemini-2.0-flash,gemini-2.5-pro" ]
+  [ "$(ai_models_gemini_chain action)" = "gemini-2.0-flash,gemini-2.5-pro" ]
+  [ "$ENGINE_TRIAGE_MODEL" = "gemini-2.0-flash" ]
 }
 
 # ── Intent dispatch returns correct tier models ───────────────────────────────
