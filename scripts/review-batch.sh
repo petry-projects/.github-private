@@ -150,18 +150,33 @@ fi
 if [ "${REVIEW_ENGINE:-claude}" = "copilot" ]; then
   echo "==> Copilot engine pre-flight: testing GitHub Models API"
 
-  _smoke_model="${COPILOT_API_MODEL:-}"
-  if [ -z "$_smoke_model" ]; then
-    # shellcheck source=engine.sh
-    source "$SCRIPT_DIR/engine.sh" > /dev/null || {
-      echo "::error::Copilot pre-flight: failed to source engine.sh — check REVIEW_ENGINE and file path" >&2
-      exit 1
-    }
-    _smoke_model="${COPILOT_API_MODEL:-openai/o4-mini}"
+  # Every distinct model a tier will call (AI_MODELS_COPILOT gives each tier its
+  # own), so a typo in e.g. the deep model is a setup failure here rather than
+  # a per-PR engine failure later. Without the models library, the one
+  # COPILOT_API_MODEL every tier used.
+  _smoke_models=""
+  if declare -F ai_models_copilot_model >/dev/null 2>&1; then
+    for _smoke_tier in triage deep audit action single; do
+      _smoke_model="$(ai_models_copilot_model "$_smoke_tier")"
+      case " $_smoke_models " in *" $_smoke_model "*) ;; *) _smoke_models="${_smoke_models:+$_smoke_models }$_smoke_model" ;; esac
+    done
+    unset _smoke_tier
+  fi
+  if [ -z "$_smoke_models" ]; then
+    _smoke_models="${COPILOT_API_MODEL:-}"
+    if [ -z "$_smoke_models" ]; then
+      # shellcheck source=engine.sh
+      source "$SCRIPT_DIR/engine.sh" > /dev/null || {
+        echo "::error::Copilot pre-flight: failed to source engine.sh — check REVIEW_ENGINE and file path" >&2
+        exit 1
+      }
+      _smoke_models="${COPILOT_API_MODEL:-openai/o4-mini}"
+    fi
   fi
 
-  _smoke_payload_file=$(mktemp) || { echo "::error::Copilot pre-flight: mktemp failed" >&2; exit 1; }
-  python3 -c "
+  for _smoke_model in $_smoke_models; do
+    _smoke_payload_file=$(mktemp) || { echo "::error::Copilot pre-flight: mktemp failed" >&2; exit 1; }
+    python3 -c "
 import json, sys
 sys.stdout.write(json.dumps({
     'model': sys.argv[1],
@@ -170,46 +185,47 @@ sys.stdout.write(json.dumps({
     'temperature': 0,
 }))
 " "$_smoke_model" > "$_smoke_payload_file" || {
+      rm -f "$_smoke_payload_file"
+      echo "::error::Copilot pre-flight: failed to build smoke-test JSON payload" >&2
+      exit 1
+    }
+
+    _smoke_rc=0
+    _smoke_raw=$(
+      timeout 30 curl -sSL \
+        -H "Authorization: Bearer ${COPILOT_GITHUB_TOKEN:?COPILOT_GITHUB_TOKEN not set for copilot engine}" \
+        -H "Content-Type: application/json" \
+        -H "X-GitHub-Api-Version: 2022-11-28" \
+        https://models.github.ai/inference/chat/completions \
+        --data-binary @"$_smoke_payload_file" \
+        -w '\n%{http_code}'
+    ) || _smoke_rc=$?
     rm -f "$_smoke_payload_file"
-    echo "::error::Copilot pre-flight: failed to build smoke-test JSON payload" >&2
-    exit 1
-  }
 
-  _smoke_rc=0
-  _smoke_raw=$(
-    timeout 30 curl -sSL \
-      -H "Authorization: Bearer ${COPILOT_GITHUB_TOKEN:?COPILOT_GITHUB_TOKEN not set for copilot engine}" \
-      -H "Content-Type: application/json" \
-      -H "X-GitHub-Api-Version: 2022-11-28" \
-      https://models.github.ai/inference/chat/completions \
-      --data-binary @"$_smoke_payload_file" \
-      -w '\n%{http_code}'
-  ) || _smoke_rc=$?
-  rm -f "$_smoke_payload_file"
+    if [ "$_smoke_rc" -ne 0 ]; then
+      echo "::error::Copilot pre-flight failed: curl exited $_smoke_rc — check COPILOT_GITHUB_TOKEN and network connectivity"
+      exit 1
+    fi
 
-  if [ "$_smoke_rc" -ne 0 ]; then
-    echo "::error::Copilot pre-flight failed: curl exited $_smoke_rc — check COPILOT_GITHUB_TOKEN and network connectivity"
-    exit 1
-  fi
+    _smoke_http=$(printf '%s' "$_smoke_raw" | tail -n 1)
+    _smoke_body=$(printf '%s' "$_smoke_raw" | head -n -1)
 
-  _smoke_http=$(printf '%s' "$_smoke_raw" | tail -n 1)
-  _smoke_body=$(printf '%s' "$_smoke_raw" | head -n -1)
+    if [ "$_smoke_http" -ge 400 ]; then
+      echo "::error::Copilot pre-flight failed: GitHub Models API returned HTTP $_smoke_http for model '${_smoke_model}'"
+      echo "  Response: $_smoke_body"
+      echo "  Check COPILOT_GITHUB_TOKEN permissions and that model '${_smoke_model}' is available."
+      echo "  Override the model via AI_MODELS_COPILOT or the COPILOT_API_MODEL env var if needed."
+      exit 1
+    fi
 
-  if [ "$_smoke_http" -ge 400 ]; then
-    echo "::error::Copilot pre-flight failed: GitHub Models API returned HTTP $_smoke_http for model '${_smoke_model}'"
-    echo "  Response: $_smoke_body"
-    echo "  Check COPILOT_GITHUB_TOKEN permissions and that model '${_smoke_model}' is available."
-    echo "  Override the model via the COPILOT_API_MODEL env var if needed."
-    exit 1
-  fi
-
-  _smoke_text=$(printf '%s' "$_smoke_body" | python3 -c "
+    _smoke_text=$(printf '%s' "$_smoke_body" | python3 -c "
 import json, sys
 d = json.load(sys.stdin)
 print(d.get('choices', [{}])[0].get('message', {}).get('content', '(empty)'))
 " 2>/dev/null || echo "(parse failed)")
-  echo "::notice::Copilot pre-flight passed — model=${_smoke_model} response='${_smoke_text}'"
-  unset _smoke_model _smoke_payload_file _smoke_rc _smoke_raw _smoke_http _smoke_body _smoke_text
+    echo "::notice::Copilot pre-flight passed — model=${_smoke_model} response='${_smoke_text}'"
+  done
+  unset _smoke_models _smoke_model _smoke_payload_file _smoke_rc _smoke_raw _smoke_http _smoke_body _smoke_text
 fi
 
 actual=0

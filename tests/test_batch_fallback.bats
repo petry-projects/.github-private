@@ -170,3 +170,47 @@ EOF
   [ "$status" -eq 1 ]
   [[ "$output" == *"Copilot fallback also unavailable"* ]]
 }
+
+# Sets up the Copilot smoke test with the real models library: validate-engines.sh
+# sources it (as the real one does), and a curl stub records each probed model,
+# answering 404 for any model listed in $BAD_MODELS.
+_copilot_smoke_setup() {
+  cp "$BATS_TEST_DIRNAME/../scripts/lib/engine-models.sh" "scripts/lib/"
+  cat > "scripts/validate-engines.sh" <<'EOS'
+source "$(dirname "${BASH_SOURCE[0]}")/lib/engine-models.sh"
+validate_engines() {
+  export CLAUDE_AVAILABLE="true" GEMINI_AVAILABLE="true" COPILOT_AVAILABLE="true"
+}
+EOS
+  cat > "$TEST_DIR/bin/curl" <<'EOS'
+#!/bin/bash
+for a in "$@"; do case "$a" in @*) f="${a#@}" ;; esac; done
+m="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["model"])' "$f")"
+echo "$m" >> "$TEST_DIR/smoke_models.txt"
+case " ${BAD_MODELS:-} " in *" $m "*) echo '{"error":"unknown model"}'; echo '404'; exit 0 ;; esac
+echo '{"choices":[{"message":{"content":"ready"}}]}'
+echo '200'
+EOS
+  chmod +x "$TEST_DIR/bin/curl"
+  unset COPILOT_API_MODEL COPILOT_API_MODEL_DEFAULTED
+  export REVIEW_ENGINE="copilot"
+}
+
+@test "batch: the Copilot smoke test probes every distinct tier model once" {
+  _copilot_smoke_setup
+  export AI_MODELS_COPILOT="triage=openai/t1; deep=openai/d1; audit=openai/d1"
+  run bash scripts/review-batch.sh
+  echo "$output" >&2
+  [ "$(tr '\n' ' ' < smoke_models.txt)" = "openai/t1 openai/d1 openai/o4-mini " ]
+  [[ "$output" == *"Copilot pre-flight passed — model=openai/d1"* ]]
+}
+
+@test "batch: an unavailable Copilot deep model fails the smoke test up front" {
+  _copilot_smoke_setup
+  export AI_MODELS_COPILOT="triage=openai/t1; deep=openai/typo" BAD_MODELS="openai/typo"
+  run bash scripts/review-batch.sh
+  echo "$output" >&2
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"returned HTTP 404 for model 'openai/typo'"* ]]
+  [ ! -f copilot_called.txt ]
+}
