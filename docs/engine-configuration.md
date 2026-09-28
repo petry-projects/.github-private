@@ -119,8 +119,8 @@ example `deep: opus 5.5 [opus 4.8, sonnet 5]`.
   before the first review. Disabled engines are reported with a notice and not
   probed. The primary is skipped when the probe finds it unusable, and a
   rate-limit fallback skips every unusable engine:
-  - Gemini is usable while **any** of `GOOGLE_API_KEY`, `GOOGLE_API_KEY_2` and
-    `GOOGLE_API_KEY_3` has credits. The run warns, by key name, about any key
+  - Gemini is usable while **any** of `GOOGLE_API_KEY`, `GOOGLE_API_KEY_2`,
+    `GOOGLE_API_KEY_3` and `GOOGLE_API_KEY_4` has credits. The run warns, by key name, about any key
     that is depleted.
   - Copilot is unusable with a classic PAT (`ghp_`), which Copilot rejects.
 - **Rate limits.** On a rate limit (exit 2), pr-review moves forward through

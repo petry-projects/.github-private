@@ -659,7 +659,7 @@ copilot_chat() {
 # _gemini_api_keys
 # Prints the ordered, de-duplicated list of configured Gemini API keys, one per
 # line: the primary (GEMINI_API_KEY, then GOOGLE_API_KEY) followed by the extra
-# resilience keys GOOGLE_API_KEY_2 and GOOGLE_API_KEY_3 (#1777). Empty vars are
+# resilience keys GOOGLE_API_KEY_2, GOOGLE_API_KEY_3 and GOOGLE_API_KEY_4 (#1777). Empty vars are
 # skipped; duplicate values (the common case where GEMINI_API_KEY == GOOGLE_API_KEY,
 # both wired to the same secret) collapse to one entry. Emits nothing when no key
 # is configured, so callers can distinguish "no keys" from "one or more keys".
@@ -670,7 +670,7 @@ copilot_chat() {
 # depleted ones stay as a last resort in case credits were topped up mid-run.
 _gemini_api_keys() {
   local _name k seen="" _depleted="" _skip=", ${GEMINI_DEPLETED_KEYS:-}, "
-  for _name in GEMINI_API_KEY GOOGLE_API_KEY GOOGLE_API_KEY_2 GOOGLE_API_KEY_3; do
+  for _name in GEMINI_API_KEY GOOGLE_API_KEY GOOGLE_API_KEY_2 GOOGLE_API_KEY_3 GOOGLE_API_KEY_4; do
     k="${!_name:-}"
     [ -z "$k" ] && continue
     case "$seen" in
@@ -1837,10 +1837,10 @@ run_writer_with_fallback() {
     # missing/placeholder Copilot token (#1591): record it so a Gemini-only run
     # with no key yields the distinct non-retryable `unconfigured` reason rather
     # than the retryable `engine-error`. Retrying cannot conjure an API key. The
-    # extra resilience keys (GOOGLE_API_KEY_2/_3, #1777) also count as configured,
+    # extra resilience keys (GOOGLE_API_KEY_2/_3/_4, #1777) also count as configured,
     # so a run authenticated only by a secondary key is NOT treated as a config-gap.
     if [ "$engine" = "gemini" ] && [ -z "$(_gemini_api_keys)" ]; then
-      echo "::warning::Skipping gemini fallback: no Gemini API key configured (GEMINI_API_KEY / GOOGLE_API_KEY / GOOGLE_API_KEY_2 / GOOGLE_API_KEY_3) — configuration gap, not a rate limit" >&2
+      echo "::warning::Skipping gemini fallback: no Gemini API key configured (GEMINI_API_KEY / GOOGLE_API_KEY / GOOGLE_API_KEY_2 / GOOGLE_API_KEY_3 / GOOGLE_API_KEY_4) — configuration gap, not a rate limit" >&2
       any_unconfigured=1
       continue
     fi

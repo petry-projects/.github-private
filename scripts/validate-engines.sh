@@ -7,7 +7,7 @@
 # After validate_engines() returns the following vars are exported:
 #   CLAUDE_AVAILABLE   — "true" if claude CLI + CLAUDE_CODE_OAUTH_TOKEN are present
 #   GEMINI_AVAILABLE   — "true" if gemini CLI + at least one Gemini key with
-#                        credits (GOOGLE_API_KEY, GOOGLE_API_KEY_2, _3) are present
+#                        credits (GOOGLE_API_KEY, GOOGLE_API_KEY_2, _3, _4) are present
 #   COPILOT_AVAILABLE  — "true" if gh copilot is usable with COPILOT_GITHUB_TOKEN
 #                        (a classic ghp_ PAT is not: Copilot rejects it)
 #
@@ -105,8 +105,8 @@ _gemini_probe_key() {
 
 # _gemini_billing_probe
 # Probes EVERY configured Gemini key (GEMINI_API_KEY / GOOGLE_API_KEY, then the
-# #1777 rotation keys GOOGLE_API_KEY_2 and GOOGLE_API_KEY_3; duplicates probed
-# once) to detect depleted prepayment credits before the first PR review. The
+# #1777 rotation keys GOOGLE_API_KEY_2, GOOGLE_API_KEY_3 and GOOGLE_API_KEY_4;
+# duplicates probed once) to detect depleted prepayment credits before the first PR review. The
 # Gemini CLI retries billing exhaustion 10× with backoff (~4 min); detecting it
 # here lets validate_engines skip a dead engine immediately. _gemini_invoke
 # rotates across the same keys at call time, so Gemini is usable while ANY key
@@ -124,7 +124,7 @@ _gemini_billing_probe() {
     return 0
   fi
   local _name _key _seen="" _any=0 _ok=0
-  for _name in GEMINI_API_KEY GOOGLE_API_KEY GOOGLE_API_KEY_2 GOOGLE_API_KEY_3; do
+  for _name in GEMINI_API_KEY GOOGLE_API_KEY GOOGLE_API_KEY_2 GOOGLE_API_KEY_3 GOOGLE_API_KEY_4; do
     _key="${!_name:-}"
     [ -z "$_key" ] && continue
     case "$_seen" in
@@ -194,10 +194,11 @@ validate_engines() {
       append_gemini_reason "Gemini CLI not installed (fix: npm install -g @google/gemini-cli)"
     fi
     # Check for any available Gemini API key: primary (GEMINI_API_KEY or GOOGLE_API_KEY)
-    # or secondary rotation keys (GOOGLE_API_KEY_2, GOOGLE_API_KEY_3) per issue #1777.
+    # or secondary rotation keys (GOOGLE_API_KEY_2, _3, _4) per issue #1777.
     if [ -z "${GEMINI_API_KEY:-}" ] && [ -z "${GOOGLE_API_KEY:-}" ] && \
-       [ -z "${GOOGLE_API_KEY_2:-}" ] && [ -z "${GOOGLE_API_KEY_3:-}" ]; then
-      append_gemini_reason "No Gemini API key configured (set GOOGLE_API_KEY, GOOGLE_API_KEY_2, or GOOGLE_API_KEY_3)"
+       [ -z "${GOOGLE_API_KEY_2:-}" ] && [ -z "${GOOGLE_API_KEY_3:-}" ] && \
+       [ -z "${GOOGLE_API_KEY_4:-}" ]; then
+      append_gemini_reason "No Gemini API key configured (set GOOGLE_API_KEY, GOOGLE_API_KEY_2, GOOGLE_API_KEY_3 or GOOGLE_API_KEY_4)"
     fi
     if [ "${GEMINI_CLI_TRUST_WORKSPACE:-false}" != "true" ]; then
       append_gemini_reason "GEMINI_CLI_TRUST_WORKSPACE is not true (fix: set in env or pass --skip-trust)"

@@ -1,7 +1,7 @@
 #!/usr/bin/env bats
 # Unit tests for engine.sh — additional Gemini API keys for resilience (#1777).
 #
-# GOOGLE_API_KEY_2 and GOOGLE_API_KEY_3 are extra keys the gemini engine rotates
+# GOOGLE_API_KEY_2, GOOGLE_API_KEY_3 and GOOGLE_API_KEY_4 are extra keys the gemini engine rotates
 # through, per model, when the current key is rate-limited — so a per-key quota
 # exhaustion no longer forces an immediate model downgrade or a cross-provider
 # hop while another key still has headroom.
@@ -18,7 +18,7 @@ setup() {
 
   unset GEMINI_FLASH_MODEL GEMINI_PRO_MODEL
   unset GEMINI_FLASH_MODEL_CHAIN GEMINI_PRO_MODEL_CHAIN
-  unset GEMINI_API_KEY GOOGLE_API_KEY GOOGLE_API_KEY_2 GOOGLE_API_KEY_3
+  unset GEMINI_API_KEY GOOGLE_API_KEY GOOGLE_API_KEY_2 GOOGLE_API_KEY_3 GOOGLE_API_KEY_4
 
   STUB_BIN_DIR="$BATS_TEST_TMPDIR/bin"
   mkdir -p "$STUB_BIN_DIR"
@@ -44,7 +44,7 @@ setup() {
 
 teardown() {
   rm -f /tmp/dev-lead-failure-reason
-  unset GEMINI_API_KEY GOOGLE_API_KEY GOOGLE_API_KEY_2 GOOGLE_API_KEY_3
+  unset GEMINI_API_KEY GOOGLE_API_KEY GOOGLE_API_KEY_2 GOOGLE_API_KEY_3 GOOGLE_API_KEY_4
   unset STUB_ENGINE_EXIT_BY_MODEL STUB_ENGINE_RESPONSE_BY_MODEL
   unset STUB_ENGINE_EXIT_BY_KEY STUB_ENGINE_RESPONSE_BY_KEY
   unset STUB_ENGINE_RECORD_MODELS STUB_ENGINE_RECORD_KEYS
@@ -87,6 +87,16 @@ _source_engine() {
   [ "${lines[1]}" = "kb" ]
   [ "${lines[2]}" = "kd" ]
   [ "${#lines[@]}" -eq 3 ]
+}
+
+@test "keys: _gemini_api_keys lists GOOGLE_API_KEY_4 last" {
+  export GOOGLE_API_KEY="k1" GOOGLE_API_KEY_2="k2" GOOGLE_API_KEY_3="k3" GOOGLE_API_KEY_4="k4"
+  _source_engine "gemini"
+
+  run _gemini_api_keys
+  [ "$status" -eq 0 ]
+  [ "${lines[3]}" = "k4" ]
+  [ "${#lines[@]}" -eq 4 ]
 }
 
 @test "keys: _gemini_api_keys emits nothing when no key is configured" {
@@ -190,4 +200,25 @@ _source_engine() {
 
   [ "$status" -eq 0 ]
   grep -q "secondary-key" "$KEY_RECORD"
+}
+
+@test "config: gemini attempted when only GOOGLE_API_KEY_4 is set (not skipped)" {
+  export DEV_LEAD_ENGINES="gemini"
+  export GOOGLE_API_KEY_4="fourth-key"
+  export STUB_ENGINE_EXIT=0
+  _source_engine "gemini"
+
+  run run_writer_with_fallback "$TEST_PROMPT"
+
+  [ "$status" -eq 0 ]
+  grep -q "fourth-key" "$KEY_RECORD"
+}
+
+@test "config: the pre-flight counts GOOGLE_API_KEY_4 as a configured Gemini key" {
+  # No curl on PATH → the billing probe fails open, so only the key check decides.
+  run env -i PATH="$STUB_BIN_DIR:/usr/bin:/bin" GEMINI_CLI_TRUST_WORKSPACE=true AI_ENGINES=gemini \
+    GOOGLE_API_KEY_4=fourth-key bash -c "hash -r; curl() { return 127; }; command() { [ \"\$2\" = curl ] && return 1; builtin command \"\$@\"; }
+      source '$SCRIPT_DIR/scripts/validate-engines.sh'; validate_engines; echo GEMINI_AVAILABLE=\$GEMINI_AVAILABLE"
+  [[ "$output" != *"No Gemini API key configured"* ]]
+  [[ "$output" == *"GEMINI_AVAILABLE=true"* ]]
 }
