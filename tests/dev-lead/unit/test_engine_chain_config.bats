@@ -401,6 +401,20 @@ _run_duck_probe() {
   rm -f "$p"
 }
 
+@test "duck: a Claude or Copilot duck gets none of the Gemini keys (rotation keys included)" {
+  local p; p="$(mktemp)"; echo "duck prompt" > "$p"
+  run bash -c "export GOOGLE_API_KEY=k1 GOOGLE_API_KEY_2=k2 GOOGLE_API_KEY_3=k3 GOOGLE_API_KEY_4=k4 GEMINI_API_KEY=k0
+    source '$SCRIPT_DIR/scripts/engine.sh' >/dev/null 2>&1
+    _keys() { echo \"\$1-keys=[\${GOOGLE_API_KEY:-}\${GOOGLE_API_KEY_2:-}\${GOOGLE_API_KEY_3:-}\${GOOGLE_API_KEY_4:-}\${GEMINI_API_KEY:-}]\"; }
+    _claude_chain_invoke() { _keys claude; }
+    copilot_chat() { _keys copilot; }
+    DUCK_ENGINE=claude run_duck '$p' claude-sonnet-4-6 2>/dev/null
+    DUCK_ENGINE=copilot run_duck '$p' o4-mini 2>/dev/null"
+  rm -f "$p"
+  [[ "$output" == *"claude-keys=[]"* ]]
+  [[ "$output" == *"copilot-keys=[]"* ]]
+}
+
 @test "duck: an explicit AI_DUCK_MODEL reaches the Copilot call; the default label does not" {
   export AI_DUCK_ENGINE=copilot AI_DUCK_MODEL=gpt-test COPILOT_API_MODEL=openai/o4-mini
   [ "$(_run_duck_probe gpt-test copilot)" = "copilot-model=gpt-test" ]

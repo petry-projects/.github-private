@@ -1555,6 +1555,17 @@ run_persona() {
 run_writer() {
   local prompt_file="$1"
   local model="${2:-$ENGINE_ACTION_MODEL}"
+  # <model> is normally a tier's ENGINE_*_MODEL (model_for_intent picks deep
+  # for fix-issue/human, triage for human-pr): map it back to that tier so the
+  # writer walks the tier's whole chain. Empty means an explicit pin.
+  local _writer_tier=""
+  case "$model" in
+    "${ENGINE_ACTION_MODEL:-}") _writer_tier=action ;;
+    "${ENGINE_DEEP_MODEL:-}")   _writer_tier=deep ;;
+    "${ENGINE_TRIAGE_MODEL:-}") _writer_tier=triage ;;
+    "${ENGINE_AUDIT_MODEL:-}")  _writer_tier=audit ;;
+    "${ENGINE_SINGLE_MODEL:-}") _writer_tier=single ;;
+  esac
 
   if [ "${DEV_LEAD_DRY_RUN:-false}" = "true" ]; then
     echo "  [dry-run] run_writer: would invoke $REVIEW_ENGINE with prompt $(wc -l < "$prompt_file") lines"
@@ -1577,12 +1588,12 @@ run_writer() {
   _t_start="$(_now_ms)"
   case "$REVIEW_ENGINE" in
     claude)
-      # See run_agentic — honor caller's explicit model pin when it differs
-      # from the tier default. Chain only applies when the caller used the
-      # default action model for this engine.
-      local _writer_chain="${CLAUDE_ACTION_MODEL_CHAIN:-$model}"
-      if [ -n "${ENGINE_ACTION_MODEL:-}" ] && [ "$model" != "$ENGINE_ACTION_MODEL" ]; then
-        _writer_chain="$model"
+      # The selected tier's chain (CLAUDE_<TIER>_MODEL_CHAIN); an explicit
+      # model pin that matches no tier runs alone.
+      local _writer_chain="$model" _writer_chain_var
+      if [ -n "$_writer_tier" ]; then
+        _writer_chain_var="CLAUDE_$(printf '%s' "$_writer_tier" | tr '[:lower:]' '[:upper:]')_MODEL_CHAIN"
+        _writer_chain="${!_writer_chain_var:-$model}"
       fi
       if [ -n "$_tmp" ]; then
         _claude_chain_invoke "$_writer_chain" "$prompt_file" "$ACTION_TIMEOUT_SEC" \
@@ -1597,12 +1608,11 @@ run_writer() {
       fi
       ;;
     gemini)
-      # The action tier's chain for the writer; honor explicit model pin.
-      local _writer_gemini_chain
-      _writer_gemini_chain="$(ai_models_gemini_chain action)"
-      _writer_gemini_chain="${_writer_gemini_chain:-$model}"
-      if [ -n "${ENGINE_ACTION_MODEL:-}" ] && [ "$model" != "$ENGINE_ACTION_MODEL" ]; then
-        _writer_gemini_chain="$model"
+      # The selected tier's chain; an explicit model pin runs alone.
+      local _writer_gemini_chain="$model"
+      if [ -n "$_writer_tier" ]; then
+        _writer_gemini_chain="$(ai_models_gemini_chain "$_writer_tier")"
+        _writer_gemini_chain="${_writer_gemini_chain:-$model}"
       fi
       if [ -n "$_tmp" ]; then
         _GEMINI_CHAIN_MODEL_USED=""
@@ -1614,24 +1624,15 @@ run_writer() {
       fi
       ;;
     copilot)
-      # Self-sufficient write support via gh copilot --yolo. <model> is a tier's
-      # ENGINE_*_MODEL (model_for_intent picks deep for fix-issue/human), so map
-      # it back to that tier's Copilot id; a full vendor/model id is used as is;
-      # anything else falls back to the action tier.
-      local _copilot_tier_model _copilot_writer_tier=action
-      case "$model" in
-        "${ENGINE_ACTION_MODEL:-}") _copilot_writer_tier=action ;;
-        "${ENGINE_DEEP_MODEL:-}")   _copilot_writer_tier=deep ;;
-        "${ENGINE_TRIAGE_MODEL:-}") _copilot_writer_tier=triage ;;
-        "${ENGINE_AUDIT_MODEL:-}")  _copilot_writer_tier=audit ;;
-        "${ENGINE_SINGLE_MODEL:-}") _copilot_writer_tier=single ;;
-        */*)                        _copilot_writer_tier="" ;;
+      # Self-sufficient write support via gh copilot --yolo: the selected
+      # tier's Copilot id; a full vendor/model pin is used as is; anything
+      # else falls back to the action tier.
+      local _copilot_tier_model
+      case "$_writer_tier:$model" in
+        :*/*) _copilot_tier_model="$model" ;;
+        :*)   _copilot_tier_model="$(ai_models_copilot_model action)" ;;
+        *)    _copilot_tier_model="$(ai_models_copilot_model "$_writer_tier")" ;;
       esac
-      if [ -n "$_copilot_writer_tier" ]; then
-        _copilot_tier_model="$(ai_models_copilot_model "$_copilot_writer_tier")"
-      else
-        _copilot_tier_model="$model"
-      fi
       local -x COPILOT_API_MODEL="$_copilot_tier_model"
       if [ -n "$_tmp" ]; then
         copilot_chat "$prompt_file" "$ACTION_TIMEOUT_SEC" --yolo 2>&1 | tee "$_tmp" || rc=${PIPESTATUS[0]}
@@ -2042,7 +2043,8 @@ run_duck() {
   case "$DUCK_ENGINE" in
     claude)
       unset COPILOT_GITHUB_TOKEN 2>/dev/null || true
-      unset GOOGLE_API_KEY 2>/dev/null || true
+      # Every Gemini key, rotation keys included: the duck has shell tools.
+      unset GOOGLE_API_KEY GOOGLE_API_KEY_2 GOOGLE_API_KEY_3 GOOGLE_API_KEY_4 2>/dev/null || true
       unset GEMINI_API_KEY 2>/dev/null || true
       # Thread the opt-in MCP config (no-op when REVIEW_MCP_CONFIG is unset).
       _mcp_review_flags "Bash,Read,Grep,Glob"
@@ -2081,7 +2083,8 @@ run_duck() {
     copilot)
       unset CLAUDE_CODE_OAUTH_TOKEN 2>/dev/null || true
       unset ANTHROPIC_API_KEY 2>/dev/null || true
-      unset GOOGLE_API_KEY 2>/dev/null || true
+      # Every Gemini key, rotation keys included: the duck has shell tools.
+      unset GOOGLE_API_KEY GOOGLE_API_KEY_2 GOOGLE_API_KEY_3 GOOGLE_API_KEY_4 2>/dev/null || true
       unset GEMINI_API_KEY 2>/dev/null || true
       # An explicit AI_DUCK_MODEL for a Copilot duck (see _duck_model_for) is the
       # model for this call; otherwise <model> is only a label and the duck key

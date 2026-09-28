@@ -214,3 +214,25 @@ EOS
   [[ "$output" == *"returned HTTP 404 for model 'openai/typo'"* ]]
   [ ! -f copilot_called.txt ]
 }
+
+@test "batch: a bad model on a fallback Copilot marks Copilot unavailable, not the batch failed" {
+  _copilot_smoke_setup
+  export REVIEW_ENGINE="claude" AI_MODELS_COPILOT="deep=openai/typo" BAD_MODELS="openai/typo"
+  run bash scripts/review-batch.sh
+  echo "$output" >&2
+  [[ "$output" == *"Copilot fallback pre-flight"* ]]
+  [[ "$output" == *"::warning::Copilot pre-flight failed: GitHub Models API returned HTTP 404 for model 'openai/typo'"* ]]
+  [[ "$output" == *"Copilot fallback marked unavailable for this batch"* ]]
+  [ ! -f copilot_called.txt ]
+}
+
+@test "batch: a healthy fallback Copilot passes its pre-flight and stays in the chain" {
+  _copilot_smoke_setup
+  export REVIEW_ENGINE="claude"
+  run bash scripts/review-batch.sh
+  echo "$output" >&2
+  [[ "$output" == *"Copilot pre-flight passed — model=openai/o4-mini"* ]]
+  [[ "$output" != *"marked unavailable"* ]]
+  [ -f copilot_called.txt ]
+}
+

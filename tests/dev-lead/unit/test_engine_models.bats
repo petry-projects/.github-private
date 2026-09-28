@@ -225,6 +225,24 @@ _engine() {
   [ "${lines[2]}" = "model=openai/pinned" ]
 }
 
+@test "writer: fix-issue walks the deep tier's whole chain on Gemini and Claude" {
+  local p; p="$BATS_TEST_TMPDIR/prompt"; echo "prompt" > "$p"
+  export AI_MODELS_GEMINI="deep=gemini-d1,gemini-d2; action=gemini-a1"
+  run bash -c "export REVIEW_ENGINE=gemini; source '$SCRIPT_DIR/scripts/engine.sh' >/dev/null 2>&1
+    _gemini_chain_invoke() { echo \"chain=\$1\"; }
+    run_writer '$p' \"\$(model_for_intent fix-issue)\" 2>/dev/null | grep '^chain='
+    run_writer '$p' gemini-pinned 2>/dev/null | grep '^chain='"
+  [ "${lines[0]}" = "chain=gemini-d1,gemini-d2" ]
+  [ "${lines[1]}" = "chain=gemini-pinned" ]
+  export AI_MODELS_CLAUDE="deep=claude-opus-5-5,claude-opus-4-8; action=claude-sonnet-5"
+  run bash -c "export REVIEW_ENGINE=claude; source '$SCRIPT_DIR/scripts/engine.sh' >/dev/null 2>&1
+    _claude_chain_invoke() { echo \"chain=\$1\"; }
+    run_writer '$p' \"\$(model_for_intent fix-issue)\" 2>/dev/null | grep '^chain='
+    run_writer '$p' \"\$(model_for_intent fix-ci)\" 2>/dev/null | grep '^chain='"
+  [ "${lines[0]}" = "chain=claude-opus-5-5,claude-opus-4-8" ]
+  [ "${lines[1]}" = "chain=claude-sonnet-5" ]
+}
+
 @test "copilot: an explicit COPILOT_API_MODEL still wins for every tier" {
   export AI_MODELS_COPILOT="triage=openai/gpt-5-mini; deep=openai/gpt-5" COPILOT_API_MODEL="openai/o4-mini"
   run _engine copilot COPILOT_API_MODEL ENGINE_DEEP_MODEL
