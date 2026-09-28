@@ -243,6 +243,17 @@ _engine() {
   [ "${lines[1]}" = "chain=claude-sonnet-5" ]
 }
 
+@test "writer: tiers sharing a primary keep their own chains (the tier is passed, not inferred)" {
+  local p; p="$BATS_TEST_TMPDIR/prompt"; echo "prompt" > "$p"
+  export AI_MODELS_GEMINI="deep=gemini-same,gemini-deep-fb; action=gemini-same,gemini-action-fb"
+  run bash -c "export REVIEW_ENGINE=gemini DEV_LEAD_ENGINES=gemini GOOGLE_API_KEY=k1; source '$SCRIPT_DIR/scripts/engine.sh' >/dev/null 2>&1
+    _gemini_chain_invoke() { echo \"chain=\$1\"; }
+    run_writer_with_fallback '$p' fix-issue 2>/dev/null | grep '^chain='
+    run_writer_with_fallback '$p' fix-ci 2>/dev/null | grep '^chain='"
+  [ "${lines[0]}" = "chain=gemini-same,gemini-deep-fb" ]
+  [ "${lines[1]}" = "chain=gemini-same,gemini-action-fb" ]
+}
+
 @test "copilot: an explicit COPILOT_API_MODEL still wins for every tier" {
   export AI_MODELS_COPILOT="triage=openai/gpt-5-mini; deep=openai/gpt-5" COPILOT_API_MODEL="openai/o4-mini"
   run _engine copilot COPILOT_API_MODEL ENGINE_DEEP_MODEL

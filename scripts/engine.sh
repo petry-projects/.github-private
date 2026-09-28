@@ -327,11 +327,22 @@ echo "    engine: $REVIEW_ENGINE ($ENGINE_LABEL)"
 #   fix-issue, human            → ENGINE_DEEP_MODEL   (full agentic work)
 #   * (unknown/empty)           → ENGINE_ACTION_MODEL (safe default)
 model_for_intent() {
+  case "$(tier_for_intent "${1:-}")" in
+    triage) echo "$ENGINE_TRIAGE_MODEL" ;;
+    deep)   echo "$ENGINE_DEEP_MODEL"   ;;
+    *)      echo "$ENGINE_ACTION_MODEL" ;;
+  esac
+}
+
+# tier_for_intent <intent_type> — the tier name model_for_intent picks from
+# (triage | action | deep). run_writer_with_fallback passes it to run_writer so
+# the writer walks that tier's chain even when two tiers share a primary model.
+tier_for_intent() {
   case "${1:-}" in
-    human-pr|fix-bot-comment)   echo "$ENGINE_TRIAGE_MODEL" ;;
-    fix-reviews|fix-ci|rebase)  echo "$ENGINE_ACTION_MODEL" ;;
-    fix-issue|human)            echo "$ENGINE_DEEP_MODEL"   ;;
-    *)                          echo "$ENGINE_ACTION_MODEL" ;;
+    human-pr|fix-bot-comment)   echo triage ;;
+    fix-reviews|fix-ci|rebase)  echo action ;;
+    fix-issue|human)            echo deep   ;;
+    *)                          echo action ;;
   esac
 }
 
@@ -1555,11 +1566,11 @@ run_persona() {
 run_writer() {
   local prompt_file="$1"
   local model="${2:-$ENGINE_ACTION_MODEL}"
-  # <model> is normally a tier's ENGINE_*_MODEL (model_for_intent picks deep
-  # for fix-issue/human, triage for human-pr): map it back to that tier so the
-  # writer walks the tier's whole chain. Empty means an explicit pin.
-  local _writer_tier=""
-  case "$model" in
+  # [tier] (tier_for_intent) names the tier whose whole chain the writer walks.
+  # Without it, <model> is mapped back to the tier whose ENGINE_*_MODEL it is
+  # (action first); empty means an explicit pin that runs alone.
+  local _writer_tier="${3:-}"
+  [ -n "$_writer_tier" ] || case "$model" in
     "${ENGINE_ACTION_MODEL:-}") _writer_tier=action ;;
     "${ENGINE_DEEP_MODEL:-}")   _writer_tier=deep ;;
     "${ENGINE_TRIAGE_MODEL:-}") _writer_tier=triage ;;
@@ -1871,11 +1882,12 @@ run_writer_with_fallback() {
     # Re-evaluate model names for the new engine so model_for_intent returns
     # the correct engine-specific model for the requested tier.
     set_engine_config
-    local model
+    local model tier
     model="$(model_for_intent "$intent")"
+    tier="$(tier_for_intent "$intent")"
     local rc=0 _t_start _t_end
     _t_start=$(date +%s)
-    run_writer "$prompt_file" "$model" || rc=$?
+    run_writer "$prompt_file" "$model" "$tier" || rc=$?
     _t_end=$(date +%s)
     export REVIEW_ENGINE="$saved"
     # Restore original config for subsequent PRs in the same session
