@@ -169,12 +169,27 @@ REVIEW_MCP_DEBUG="${REVIEW_MCP_DEBUG:-}"
 # the export also covers any future invocation via a separate child shell.
 export REVIEW_MCP_CONFIG REVIEW_MCP_ALLOWED_TOOLS REVIEW_MCP_DEBUG
 
+# _ai_duck_engines — AI_DUCK_ENGINE as a list: its entries lower-cased, in
+# order, space-separated. Commas and any whitespace separate entries, as in
+# AI_ENGINES ("gemini,claude" = a Gemini duck, then a Claude one).
+_ai_duck_engines() {
+  printf '%s' "${AI_DUCK_ENGINE:-}" | tr ',\n\r\t' '    ' | tr '[:upper:]' '[:lower:]' \
+    | tr -s ' ' | sed 's/^ //; s/ $//'
+}
+
+# _ai_duck_first — the first entry of AI_DUCK_ENGINE (empty when unset).
+_ai_duck_first() {
+  local list
+  list="$(_ai_duck_engines)"
+  printf '%s' "${list%% *}"
+}
+
 # _duck_model_for <engine> — the rubber-duck model for <engine>. AI_DUCK_MODEL
-# applies only when <engine> is the explicitly configured AI_DUCK_ENGINE (a model
+# applies only when <engine> is the first engine AI_DUCK_ENGINE lists (a model
 # id is engine-specific, so it must never follow the duck onto another engine).
 _duck_model_for() {
   local engine="$1" wanted
-  wanted="$(printf '%s' "${AI_DUCK_ENGINE:-}" | tr '[:upper:]' '[:lower:]')"
+  wanted="$(_ai_duck_first)"
   if [ -n "${AI_DUCK_MODEL:-}" ] && [ "$engine" = "$wanted" ]; then
     printf '%s' "$AI_DUCK_MODEL"
     return 0
@@ -801,8 +816,9 @@ _gemini_chain_invoke() {
       else
         local _had_gk="${GOOGLE_API_KEY+x}" _had_gmk="${GEMINI_API_KEY+x}"
         local _saved_gk="${GOOGLE_API_KEY:-}" _saved_gmk="${GEMINI_API_KEY:-}"
-        local _key
+        local _key _key_n=0
         for _key in "${_api_keys[@]}"; do
+          _key_n=$((_key_n + 1))
           export GOOGLE_API_KEY="$_key" GEMINI_API_KEY="$_key"
           rc=0
           _gemini_invoke "$prompt_file" "$timeout_sec" "$model" "${extra_args[@]}" \
@@ -810,6 +826,10 @@ _gemini_chain_invoke() {
           [ "$rc" -eq 0 ] && break
           # Only a rate-limit rotates to the next key; a hard failure stops here.
           is_rate_limited_files "$stdout_tmp" "$stderr_tmp" || break
+          # By position, never the key: the log shows how far rotation got.
+          if [ "$_key_n" -lt "${#_api_keys[@]}" ]; then
+            echo "::notice::[gemini] model $model: API key $_key_n of ${#_api_keys[@]} throttled — trying the next key" >&2
+          fi
         done
         # Restore the caller's original key env for subsequent models/engines.
         if [ -n "$_had_gk" ]; then export GOOGLE_API_KEY="$_saved_gk"; else unset GOOGLE_API_KEY; fi
@@ -1991,53 +2011,139 @@ sys.exit(1)
 " "$raw" > "$dest" 2>/dev/null
 }
 
-# run_duck <prompt_file> <model>
-# Cross-engine adversarial "rubber duck" review.
-# DUCK_ENGINE is set by engine.sh init: claude→copilot, gemini→claude, copilot→gemini.
-# All three engine branches (claude, gemini, copilot) are reachable — the gemini
-# branch executes when REVIEW_ENGINE=copilot (copilot primary → gemini duck).
-# Output to stdout. Strips non-selected engine credentials to prevent cross-engine leakage.
-# select_duck_engine — prints "<engine> <model>" for the rubber-duck reviewer,
-# or "none" when no usable engine is left. Order of preference:
-#   1. AI_DUCK_ENGINE (org/repo variable) when it is enabled and available;
-#      "none" / "off" turns the duck off.
-#   2. set_engine_config's cross-engine default (DUCK_ENGINE / DUCK_MODEL) when
-#      that engine is enabled and available.
-#   3. the first other enabled, available engine in AI_ENGINES order.
-# "Available" is the validate_engines pre-flight flag (unset counts as
-# available), so a disabled or dead engine (e.g. Copilot on a classic PAT) is
-# skipped instead of failing on every review.
-select_duck_engine() {
-  local wanted e
-  wanted="$(printf '%s' "${AI_DUCK_ENGINE:-}" | tr '[:upper:]' '[:lower:]')"
-  case "$wanted" in
-    none|off|disabled|false)
-      printf 'none'
-      return 0 ;;
-    claude|gemini|copilot)
-      if ai_engine_available "$wanted"; then
-        printf '%s %s' "$wanted" "$(_duck_model_for "$wanted")"
-        return 0
-      fi
-      echo "::warning::AI_DUCK_ENGINE=$wanted is disabled or unavailable — choosing another rubber-duck engine" >&2 ;;
-    "") ;;
-    *)
-      echo "::warning::AI_DUCK_ENGINE='${AI_DUCK_ENGINE}' is not a known engine (claude, gemini, copilot, none) — choosing automatically" >&2 ;;
-  esac
-  if [ -n "${DUCK_ENGINE:-}" ] && ai_engine_available "$DUCK_ENGINE"; then
-    printf '%s %s' "$DUCK_ENGINE" "${DUCK_MODEL:-$(_duck_model_for "$DUCK_ENGINE")}"
-    return 0
-  fi
-  for e in $(ai_engine_chain); do
-    [ "$e" = "${REVIEW_ENGINE:-}" ] && continue
-    if ai_engine_available "$e"; then
-      printf '%s %s' "$e" "$(_duck_model_for "$e")"
-      return 0
-    fi
+# duck_engine_candidates — prints one "<engine> <model>" line per rubber-duck
+# engine to try, in order; prints nothing when no usable engine is left.
+#   1. The engines AI_DUCK_ENGINE lists (e.g. "gemini,claude"), in order. An
+#      entry "none" (or off/disabled/false) ends the list: nothing after it,
+#      and nothing chosen automatically, is tried. AI_DUCK_ENGINE=none alone
+#      turns the duck off.
+#   2. set_engine_config's cross-engine default (DUCK_ENGINE / DUCK_MODEL).
+#   3. The other engines in AI_ENGINES order, except the primary REVIEW_ENGINE.
+# Only enabled, available engines are listed. "Available" is the
+# validate_engines pre-flight flag (unset counts as available) and
+# AI_ENGINES_RATE_LIMITED, so a disabled or dead engine (e.g. Copilot on a
+# classic PAT) is skipped instead of failing on every review. A listed engine
+# that is skipped, or an unknown entry, logs one ::warning::.
+duck_engine_candidates() {
+  local t e m out="" stop=0
+  for t in $(_ai_duck_engines); do
+    case "$t" in
+      none|off|disabled|false)
+        stop=1
+        break ;;
+      claude|gemini|copilot)
+        [[ " $out " == *" $t "* ]] && continue
+        if ai_engine_available "$t"; then
+          out="$out $t"
+        else
+          echo "::warning::AI_DUCK_ENGINE lists $t, which is disabled or unavailable — skipping it" >&2
+        fi ;;
+      *)
+        echo "::warning::AI_DUCK_ENGINE='${AI_DUCK_ENGINE}': '$t' is not a known engine (claude, gemini, copilot, none) — skipping it" >&2 ;;
+    esac
   done
-  printf 'none'
+  if [ "$stop" -eq 0 ]; then
+    for e in ${DUCK_ENGINE:-} $(ai_engine_chain); do
+      [[ " $out " == *" $e "* ]] && continue
+      # The primary is a duck only when AI_DUCK_ENGINE lists it (same vendor,
+      # other model); the cross-engine default never names the primary.
+      [ "$e" = "${REVIEW_ENGINE:-}" ] && continue
+      ai_engine_available "$e" && out="$out $e"
+    done
+  fi
+  for e in $out; do
+    if [ "$e" = "${DUCK_ENGINE:-}" ] && [ -n "${DUCK_MODEL:-}" ]; then
+      m="$DUCK_MODEL"
+    else
+      m="$(_duck_model_for "$e")"
+    fi
+    printf '%s %s\n' "$e" "$m"
+  done
 }
 
+# select_duck_engine — prints "<engine> <model>" for the first rubber-duck
+# engine (duck_engine_candidates), or "none" when no usable engine is left.
+select_duck_engine() {
+  local first
+  first="$(duck_engine_candidates)"
+  first="${first%%$'\n'*}"
+  printf '%s' "${first:-none}"
+}
+
+# run_duck_chain <prompt_file> [candidates]
+# Runs the rubber duck on each "<engine> <model>" line of <candidates>
+# (default: duck_engine_candidates) until one writes a valid verdict to
+# $OUTPUT_FILE. An engine that ends without a verdict (throttled on every model
+# and key, an auth or policy failure, no JSON written) hands over to the next,
+# the way a throttled Gemini key hands over to the next key. A timeout (exit
+# 124 or 137) stops the chain, so a slow duck cannot add a second timeout to
+# the review. Each attempt runs in a subshell, because run_duck drops the other
+# engines' credentials and the next candidate needs its own. No fallback starts
+# once DUCK_TIMEOUT_SEC has passed since the first attempt began, so the whole
+# chain stays under two duck timeouts. Writes
+# "<engine> <model>" of the verdict's engine to ${OUTPUT_FILE}.engine, and
+# returns 0 when a verdict was written, otherwise the last attempt's exit code
+# (1 when there was nothing to try).
+run_duck_chain() {
+  local prompt_file="$1" candidates e m rc=1 n=0 total tried="" out_tmp err_tmp
+  local _started="$SECONDS"
+  if [ "$#" -ge 2 ]; then
+    candidates="$2"
+  else
+    candidates="$(duck_engine_candidates)"
+  fi
+  rm -f "${OUTPUT_FILE}.engine"
+  total="$(printf '%s\n' "$candidates" | grep -c '[^[:space:]]' || true)"
+  while read -r e m; do
+    [ -n "$e" ] && [ "$e" != none ] || continue
+    n=$((n + 1))
+    if [ -n "$tried" ]; then
+      if [ $((SECONDS - _started)) -ge "${DUCK_TIMEOUT_SEC:-300}" ]; then
+        echo "::notice::[duck] not trying $e ($m): the duck's ${DUCK_TIMEOUT_SEC:-300}s budget is spent" >&2
+        break
+      fi
+      echo "::notice::[duck] trying $e ($m), duck engine $n of $total" >&2
+    fi
+    tried="${tried:+$tried, }$e"
+    rm -f "$OUTPUT_FILE"
+    out_tmp="$(mktemp)"
+    err_tmp="$(mktemp)"
+    rc=0
+    ( DUCK_ENGINE="$e"; DUCK_MODEL="$m"; run_duck "$prompt_file" "$m" ) \
+      < /dev/null > "$out_tmp" 2> "$err_tmp" || rc=$?
+    cat "$out_tmp"
+    cat "$err_tmp" >&2
+    if [ -s "$OUTPUT_FILE" ] && jq empty "$OUTPUT_FILE" 2>/dev/null; then
+      rm -f "$out_tmp" "$err_tmp"
+      printf '%s %s\n' "$e" "$m" > "${OUTPUT_FILE}.engine"
+      return 0
+    fi
+    if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
+      rm -f "$out_tmp" "$err_tmp"
+      echo "::warning::[duck] $e ($m) timed out — not trying another duck engine" >&2
+      return "$rc"
+    fi
+    # Phrasing avoids _rate_limit_pattern tokens, as in the chain walkers.
+    if is_rate_limited_files "$out_tmp" "$err_tmp"; then
+      echo "::warning::[duck] $e ($m) throttled (exit $rc) and wrote no verdict" >&2
+    else
+      echo "::warning::[duck] $e ($m) wrote no verdict (exit $rc)" >&2
+    fi
+    rm -f "$out_tmp" "$err_tmp"
+    [ "$rc" -ne 0 ] || rc=1
+  done <<< "$candidates"
+  if [ -n "$tried" ]; then
+    echo "::notice::[duck] no duck engine produced a verdict (tried: $tried) — continuing with the deep review only" >&2
+  fi
+  return "$rc"
+}
+
+# run_duck <prompt_file> <model>
+# Cross-engine adversarial "rubber duck" review on DUCK_ENGINE (one engine;
+# run_duck_chain walks the fallbacks). The engine.sh init default is
+# claude→copilot, gemini→claude, copilot→gemini, and all three branches are
+# reachable. Output to stdout. Strips non-selected engine credentials to
+# prevent cross-engine leakage.
 run_duck() {
   local prompt_file="$1"
   local model="$2"
@@ -2098,11 +2204,12 @@ run_duck() {
       # Every Gemini key, rotation keys included: the duck has shell tools.
       unset GOOGLE_API_KEY GOOGLE_API_KEY_2 GOOGLE_API_KEY_3 GOOGLE_API_KEY_4 2>/dev/null || true
       unset GEMINI_API_KEY 2>/dev/null || true
-      # An explicit AI_DUCK_MODEL for a Copilot duck (see _duck_model_for) is the
-      # model for this call; otherwise <model> is only a label and the duck key
-      # decides (ai_models_copilot_model duck).
+      # An explicit AI_DUCK_MODEL for a Copilot duck (AI_DUCK_ENGINE lists
+      # copilot first; see _duck_model_for) is the model for this call;
+      # otherwise <model> is only a label and the duck key decides
+      # (ai_models_copilot_model duck).
       local _copilot_duck_model _copilot_duck_wanted
-      _copilot_duck_wanted="$(printf '%s' "${AI_DUCK_ENGINE:-}" | tr '[:upper:]' '[:lower:]')"
+      _copilot_duck_wanted="$(_ai_duck_first)"
       if [ "$_copilot_duck_wanted" = copilot ] && [ -n "${AI_DUCK_MODEL:-}" ] && [ "$model" = "$AI_DUCK_MODEL" ]; then
         _copilot_duck_model="$model"
       else

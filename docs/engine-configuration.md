@@ -12,8 +12,8 @@ The parsing lives in [`scripts/lib/engine-chain.sh`](../scripts/lib/engine-chain
 | Variable | Default | Meaning |
 |---|---|---|
 | `AI_ENGINES` | `claude,gemini,copilot` | Ordered list of **enabled** engines. An engine that is not listed is never used, not even as a fallback. The order is the fallback order, and the **first** entry is the primary engine. |
-| `AI_DUCK_ENGINE` | automatic | Engine for pr-review's rubber-duck second opinion: `claude`, `gemini`, `copilot`, or `none` to turn it off. |
-| `AI_DUCK_MODEL` | engine default | Model id for the duck. Used only when the duck runs on the engine named in `AI_DUCK_ENGINE`. |
+| `AI_DUCK_ENGINE` | automatic | Ordered list of engines for pr-review's rubber-duck second opinion, e.g. `gemini,claude`. Each entry is `claude`, `gemini` or `copilot`. If an engine returns no verdict, the next one runs. `none` alone turns the duck off. |
+| `AI_DUCK_MODEL` | engine default | Model id for the duck. Used only on the **first** engine in `AI_DUCK_ENGINE`. |
 | `AI_MODELS_CLAUDE` | see below | Claude's model list: one chain per task. |
 | `AI_MODELS_GEMINI` | see below | Gemini's model list, with the same keys. |
 | `AI_MODELS_COPILOT` | see below | Copilot's model list, with the same keys (one model per key). |
@@ -106,6 +106,8 @@ example `deep: opus 5.5 [opus 4.8, sonnet 5]`.
 | Make Gemini primary, Claude the fallback | `AI_ENGINES=gemini,claude` |
 | Claude only, no cross-provider fallback | `AI_ENGINES=claude` |
 | Keep the duck on Claude (same vendor, different model) | `AI_DUCK_ENGINE=claude`, `AI_DUCK_MODEL=claude-sonnet-5` |
+| Duck on Gemini, then Claude if Gemini is throttled | `AI_DUCK_ENGINE=gemini,claude` |
+| Duck on Gemini only, no automatic fallback | `AI_DUCK_ENGINE=gemini,none` |
 | Turn the duck off | `AI_DUCK_ENGINE=none` |
 | Replace a retired Gemini deep-review model | `AI_MODELS_GEMINI=deep=<new-model>,gemini-3.8-flash` |
 | Pin Claude's deep review to Opus 4.8 | `AI_MODELS_CLAUDE=deep=claude-opus-4-8,claude-sonnet-5` |
@@ -128,11 +130,27 @@ example `deep: opus 5.5 [opus 4.8, sonnet 5]`.
   the batch. If later engines are configured but none is usable, the PR is
   skipped with one notice and the batch continues. If the chain has no later
   engine at all, the session stops and retries on the next scheduled run.
-- **Rubber duck.** The duck prefers `AI_DUCK_ENGINE`, then the built-in
-  cross-engine default (Copilot when Claude is primary, Claude when Gemini is
-  primary, Gemini when Copilot is primary). After that it takes the first other
-  usable engine in `AI_ENGINES`. When none is usable, the duck is skipped with a
-  notice instead of failing on every review.
+- **Rubber duck.** The duck has its own fallback list. The engines in
+  `AI_DUCK_ENGINE` come first, in order. Next is the built-in cross-engine
+  default: Copilot when Claude is primary, Claude when Gemini is primary, and
+  Gemini when Copilot is primary. Last are the other usable engines in
+  `AI_ENGINES`. The primary engine is on the list only when `AI_DUCK_ENGINE`
+  names it.
+  - Disabled and unusable engines are left off the list. An unknown name is
+    skipped with a `::warning::`.
+  - An entry `none` ends the list, so `gemini,none` means Gemini or no duck.
+  - If an engine returns no verdict, the next engine on the list runs. The cause
+    can be a rate limit on every model and key, an auth or policy failure, or no
+    JSON. The fallback works the way Gemini key rotation does, one level up.
+  - A timeout ends the list, so a slow duck can't add a second timeout to the
+    review.
+  - The log names each engine tried. The duck's verdict line and the synthesis
+    name the engine that answered. If no engine answers, the review continues
+    without the duck and logs one notice.
+- **Gemini key rotation.** Every Gemini call, the duck included, tries each
+  configured key in turn for a model before moving to the next model. The log
+  names each throttled key by its position ("API key 1 of 3"), never by its
+  value.
 - **Model chains inside a provider** (for example Claude's deep tier
   `claude-opus-5-5 → claude-opus-4-8 → claude-sonnet-5`) are walked before any
   cross-provider fallback. Set them with `AI_MODELS_*` (above).

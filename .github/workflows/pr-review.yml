@@ -189,8 +189,10 @@ jobs:
       #   AI_ENGINES     ordered list of enabled engines, e.g. "claude,gemini,copilot";
       #                  an engine not listed is never used; the first is primary.
       #   REVIEW_ENGINE  legacy primary override; leave unset to let AI_ENGINES decide.
-      #   AI_DUCK_ENGINE rubber-duck engine (claude|gemini|copilot|none); default auto.
-      #   AI_DUCK_MODEL  model for an explicit AI_DUCK_ENGINE.
+      #   AI_DUCK_ENGINE ordered rubber-duck engines, e.g. "gemini,claude": the next
+      #                  runs when one returns no verdict; "none" alone turns it off;
+      #                  default auto.
+      #   AI_DUCK_MODEL  model for the first AI_DUCK_ENGINE entry.
       #   AI_MODELS_CLAUDE / AI_MODELS_GEMINI / AI_MODELS_COPILOT  each provider's
       #                  model list, e.g. "deep=claude-opus-5-5,claude-opus-4-8; triage=…"
       #                  (scripts/lib/engine-models.sh). Every provider takes the same

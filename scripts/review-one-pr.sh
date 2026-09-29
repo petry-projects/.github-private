@@ -1382,15 +1382,30 @@ if [ "${FEWSHOT_ENABLED:-false}" = "true" ]; then
 fi
 
 # --- Tier 2: Deep review + Rubber duck (parallel, cross-engine) ---
-# Pick the duck engine from the configured chain (AI_DUCK_ENGINE / AI_ENGINES):
-# a disabled or pre-flight-unavailable engine is skipped rather than failing on
-# every review; "none" means no usable duck engine is left.
-if declare -F select_duck_engine >/dev/null 2>&1; then
-  read -r DUCK_ENGINE DUCK_MODEL <<< "$(select_duck_engine)"
-  DUCK_MODEL="${DUCK_MODEL:-}"
+# The duck engines to try, in order (AI_DUCK_ENGINE / AI_ENGINES): a disabled
+# or pre-flight-unavailable engine is skipped rather than failing on every
+# review, and run_duck_chain falls back to the next when one writes no verdict.
+# An empty list means no usable duck engine is left.
+DUCK_CANDIDATES=""
+if declare -F duck_engine_candidates >/dev/null 2>&1; then
+  DUCK_CANDIDATES="$(duck_engine_candidates)"
+elif [ -n "${DUCK_ENGINE:-}" ]; then
+  DUCK_CANDIDATES="$DUCK_ENGINE ${DUCK_MODEL:-}"
 fi
+# A Gemini duck also needs the pre-flight probe to have passed (unset counts as
+# unavailable here, unlike ai_engine_available).
+if [ "${GEMINI_AVAILABLE:-false}" != "true" ] && grep -q '^gemini ' <<< "$DUCK_CANDIDATES"; then
+  echo "::notice::Skipping the Gemini duck — GEMINI_AVAILABLE=false per pre-flight probe"
+  DUCK_CANDIDATES="$(grep -v '^gemini ' <<< "$DUCK_CANDIDATES" || true)"
+fi
+DUCK_ENGINE="none"
+DUCK_MODEL=""
+if [ -n "$DUCK_CANDIDATES" ]; then
+  read -r DUCK_ENGINE DUCK_MODEL <<< "${DUCK_CANDIDATES%%$'\n'*}"
+fi
+DUCK_FALLBACKS="$(sed -n '2,$p' <<< "$DUCK_CANDIDATES" | awk '{printf "%s%s (%s)", (NR>1?", ":""), $1, $2}')"
 echo "    [tier2] type=$TRIAGE_TYPE specialist=$DEEP_TIER_PROMPT"
-echo "    [tier2] deep review ($ENGINE_DEEP_MODEL) + rubber duck (${DUCK_MODEL:-none} via ${DUCK_ENGINE:-none})"
+echo "    [tier2] deep review ($ENGINE_DEEP_MODEL) + rubber duck (${DUCK_MODEL:-none} via ${DUCK_ENGINE:-none}${DUCK_FALLBACKS:+; fallback: $DUCK_FALLBACKS})"
 
 # Launch both reviewers in parallel — different model families for diversity.
 # Stdout (model text output) and stderr (process errors) are kept separate so
@@ -1404,10 +1419,16 @@ DEEP_PID=$!
 
 DUCK_OUTPUT="/tmp/cascade/rubber-duck.json"
 DUCK_PID=""
+rm -f "$DUCK_OUTPUT" "${DUCK_OUTPUT}.engine"
 if [ "${DUCK_ENGINE:-none}" = "none" ]; then
   echo "::notice::Skipping rubber-duck reviewer — no enabled, available engine for it (AI_DUCK_ENGINE / AI_ENGINES, pre-flight probe)"
-elif [ "${DUCK_ENGINE:-}" = "gemini" ] && [ "${GEMINI_AVAILABLE:-false}" != "true" ]; then
-  echo "::notice::Skipping Gemini duck reviewer — GEMINI_AVAILABLE=false per pre-flight probe"
+elif declare -F run_duck_chain >/dev/null 2>&1; then
+  (
+    export OUTPUT_FILE="$DUCK_OUTPUT"
+    run_duck_chain prompts/rubber-duck.md "$DUCK_CANDIDATES" \
+      > /tmp/cascade/duck.log 2>&1
+  ) &
+  DUCK_PID=$!
 else
   (
     export OUTPUT_FILE="$DUCK_OUTPUT"
@@ -1464,6 +1485,11 @@ apply_finding_verification "$OUTPUT_FILE" "${TOKEN_WORKFLOW:-pr-review}" "deep" 
 
 # Wait for duck to finish (deep succeeded)
 [ -n "$DUCK_PID" ] && wait $DUCK_PID || true
+# The engine that wrote the verdict (a fallback when the first had none), so
+# synthesis and the summary name the duck that actually ran.
+if [ -s "${DUCK_OUTPUT}.engine" ]; then
+  read -r DUCK_ENGINE DUCK_MODEL < "${DUCK_OUTPUT}.engine"
+fi
 
 DEEP_DECISION=$(jq -r '.decision' "$OUTPUT_FILE")
 DEEP_RISK=$(jq -r '.risk' "$OUTPUT_FILE")
@@ -1475,7 +1501,7 @@ if [ -s "$DUCK_OUTPUT" ] && jq empty "$DUCK_OUTPUT" 2>/dev/null; then
   DUCK_DECISION=$(jq -r '.decision' "$DUCK_OUTPUT")
   DUCK_RISK=$(jq -r '.risk' "$DUCK_OUTPUT")
   DUCK_VALID=true
-  echo "    [tier2] duck: decision=$DUCK_DECISION risk=$DUCK_RISK"
+  echo "    [tier2] duck ($DUCK_ENGINE): decision=$DUCK_DECISION risk=$DUCK_RISK"
 else
   echo "    [tier2] rubber duck did not produce valid JSON — continuing with deep review only"
   cat /tmp/cascade/duck.log 2>/dev/null || true

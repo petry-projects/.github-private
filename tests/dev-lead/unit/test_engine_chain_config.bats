@@ -144,6 +144,128 @@ _duck() {
   [ "$output" = "copilot o4-mini" ]
 }
 
+_candidates() {
+  bash -c "source '$SCRIPT_DIR/scripts/engine.sh' >/dev/null 2>&1; duck_engine_candidates"
+}
+
+@test "duck: AI_DUCK_ENGINE is an ordered list — its engines first, then the automatic ones" {
+  export REVIEW_ENGINE=claude AI_DUCK_ENGINE="Gemini, claude"
+  run _candidates
+  [ "${lines[0]}" = "gemini gemini-3.8-flash" ]
+  [ "${lines[1]}" = "claude claude-sonnet-4-6" ]
+  [ "${lines[2]}" = "copilot o4-mini" ]
+  [ "${#lines[@]}" -eq 3 ]
+  run _duck
+  [ "$output" = "gemini gemini-3.8-flash" ]
+}
+
+@test "duck: 'none' ends the AI_DUCK_ENGINE list (no automatic engines after it)" {
+  export REVIEW_ENGINE=claude AI_DUCK_ENGINE="gemini,none"
+  run _candidates
+  [ "$output" = "gemini gemini-3.8-flash" ]
+}
+
+@test "duck: an unknown or unavailable AI_DUCK_ENGINE entry is skipped with a warning" {
+  export REVIEW_ENGINE=claude AI_DUCK_ENGINE="typo,gemini,claude" GEMINI_AVAILABLE=false
+  run bash -c "source '$SCRIPT_DIR/scripts/engine.sh' >/dev/null 2>&1; duck_engine_candidates 2>&1"
+  [[ "$output" == *"'typo' is not a known engine"* ]]
+  [[ "$output" == *"lists gemini, which is disabled or unavailable"* ]]
+  [[ "$output" == *"claude claude-sonnet-4-6"* ]]
+  [[ "$output" != *"gemini gemini"* ]]
+}
+
+@test "duck: AI_DUCK_MODEL applies to the first AI_DUCK_ENGINE entry only" {
+  export REVIEW_ENGINE=claude AI_DUCK_ENGINE="claude,gemini" AI_DUCK_MODEL=claude-sonnet-5
+  run _candidates
+  [ "${lines[0]}" = "claude claude-sonnet-5" ]
+  [ "${lines[1]}" = "gemini gemini-3.8-flash" ]
+}
+
+# _duck_chain <candidates> — run_duck_chain with run_duck stubbed. A gemini duck
+# is throttled (exit 2, no verdict), or fails (exit 1) with MOCK_DUCK_gemini=fail;
+# a claude duck drops GOOGLE_API_KEY (as the real one does) and writes a verdict,
+# or fails with MOCK_DUCK_claude=fail; copilot times out. $DC/calls records each
+# engine tried and the Gemini key it could see.
+_duck_chain() {
+  bash -c "source '$SCRIPT_DIR/scripts/engine.sh' >/dev/null 2>&1
+    run_duck() {
+      echo \"\$DUCK_ENGINE keys=[\${GOOGLE_API_KEY:-}]\" >> '$DC/calls'
+      case \"\$DUCK_ENGINE\" in
+        gemini)
+          if [ \"\${MOCK_DUCK_gemini:-}\" = fail ]; then echo 'some error' >&2; return 1; fi
+          echo 'quota exceeded 429' >&2; return 2 ;;
+        claude)
+          unset GOOGLE_API_KEY
+          [ \"\${MOCK_DUCK_claude:-}\" = fail ] && return 1
+          echo '{\"decision\":\"approve\",\"risk\":\"LOW\"}' > \"\$OUTPUT_FILE\" ;;
+        copilot) return 124 ;;
+      esac
+    }
+    export OUTPUT_FILE='$DC/duck.json'
+    rc=0; run_duck_chain /dev/null \"\$1\" || rc=\$?
+    echo \"rc=\$rc\"" _ "$1" 2>&1
+}
+
+@test "duck chain: a throttled first engine falls back to the next, which writes the verdict" {
+  DC="$(mktemp -d)"
+  export GOOGLE_API_KEY=k1
+  run _duck_chain $'gemini gemini-3.8-flash\nclaude claude-sonnet-4-6'
+  [[ "$output" == *"rc=0"* ]]
+  [[ "$output" == *"[duck] gemini (gemini-3.8-flash) throttled (exit 2) and wrote no verdict"* ]]
+  [[ "$output" == *"[duck] trying claude (claude-sonnet-4-6), duck engine 2 of 2"* ]]
+  [ "$(cat "$DC/duck.json.engine")" = "claude claude-sonnet-4-6" ]
+  jq -e '.decision == "approve"' "$DC/duck.json"
+  rm -rf "$DC"
+}
+
+@test "duck chain: each attempt gets its own credentials (a Claude duck's key scrub does not leak)" {
+  DC="$(mktemp -d)"
+  export GOOGLE_API_KEY=k1 MOCK_DUCK_claude=fail MOCK_DUCK_gemini=fail
+  run _duck_chain $'claude claude-sonnet-4-6\ngemini gemini-3.8-flash'
+  [ "$(cat "$DC/calls")" = $'claude keys=[k1]\ngemini keys=[k1]' ]
+  [[ "$output" == *"[duck] gemini (gemini-3.8-flash) wrote no verdict (exit 1)"* ]]
+  [[ "$output" == *"rc=1"* ]]
+  rm -rf "$DC"
+}
+
+@test "duck chain: a timeout stops the chain (no second timeout added to the review)" {
+  DC="$(mktemp -d)"
+  run _duck_chain $'copilot o4-mini\nclaude claude-sonnet-4-6'
+  [[ "$output" == *"rc=124"* ]]
+  [[ "$output" == *"copilot (o4-mini) timed out"* ]]
+  [ "$(cat "$DC/calls")" = "copilot keys=[]" ]
+  [ ! -e "$DC/duck.json.engine" ]
+  rm -rf "$DC"
+}
+
+@test "duck chain: no fallback starts once the duck's time budget is spent" {
+  DC="$(mktemp -d)"
+  export DUCK_TIMEOUT_SEC=0
+  run _duck_chain $'gemini gemini-3.8-flash\nclaude claude-sonnet-4-6'
+  [[ "$output" == *"not trying claude (claude-sonnet-4-6): the duck's 0s budget is spent"* ]]
+  [ "$(cat "$DC/calls")" = "gemini keys=[]" ]
+  [[ "$output" == *"rc=2"* ]]
+  rm -rf "$DC"
+}
+
+@test "duck chain: no engine writes a verdict → non-zero exit and one notice naming them" {
+  DC="$(mktemp -d)"
+  run _duck_chain $'gemini gemini-3.8-flash'
+  [[ "$output" == *"rc=2"* ]]
+  [[ "$output" == *"no duck engine produced a verdict (tried: gemini)"* ]]
+  [ ! -e "$DC/duck.json" ]
+  run _duck_chain ""
+  [[ "$output" == *"rc=1"* ]]
+  [[ "$output" != *"tried:"* ]]
+  rm -rf "$DC"
+}
+
+@test "review-one-pr.sh runs the duck through run_duck_chain with every candidate" {
+  grep -q 'DUCK_CANDIDATES="$(duck_engine_candidates)"' "$SCRIPT_DIR/scripts/review-one-pr.sh"
+  grep -q 'run_duck_chain prompts/rubber-duck.md "$DUCK_CANDIDATES"' "$SCRIPT_DIR/scripts/review-one-pr.sh"
+  grep -q 'read -r DUCK_ENGINE DUCK_MODEL < "${DUCK_OUTPUT}.engine"' "$SCRIPT_DIR/scripts/review-one-pr.sh"
+}
+
 # ── validate-engines.sh probes ────────────────────────────────────────────────
 
 _setup_validate_bin() {
