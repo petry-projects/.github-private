@@ -250,6 +250,9 @@ jobs:
         id: advise
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # Claude model list (scripts/lib/engine-models.sh): the persona runs the
+          # deep tier's primary, the same model run-eval.sh scores it on.
+          AI_MODELS_CLAUDE: ${{ vars.AI_MODELS_CLAUDE || '' }}
           # github.token: reads the PUBLIC source repo, cannot post to it (scoped
           # to THIS repo). The agent deliberately never receives a posting PAT.
           GH_TOKEN: ${{ github.token }}
@@ -263,6 +266,21 @@ jobs:
         run: |
           set -euo pipefail
           export PATH="$HOME/.npm-global/bin:$PATH"
+          # The deep tier's chain (AI_MODELS_CLAUDE deep=…, else the default) —
+          # run-eval.sh scores `engine: persona` on the same chain. The CLI takes
+          # one fallback, so the chain's 2nd model is it; a one-model chain gets
+          # no fallback, so the persona never runs a model the chain left out. A
+          # bad AI_MODELS_* entry is named, not silently ignored.
+          # shellcheck source=scripts/lib/engine-models.sh
+          source scripts/lib/engine-models.sh
+          while IFS= read -r _models_line; do
+            [ -n "$_models_line" ] && echo "::warning::$_models_line"
+          done <<< "$(ai_models_problems)"
+          persona_chain="$(ai_models_chain claude deep)"
+          persona_model="${persona_chain%%,*}"
+          persona_fallback="$(printf '%s' "$persona_chain" | cut -s -d, -f2)"
+          persona_model_args=(--model "$persona_model")
+          [ -z "$persona_fallback" ] || persona_model_args+=(--fallback-model "$persona_fallback")
 
           {
             echo "You are running headless for persona '${PERSONA}'. The work item details and summoner are provided in the environment variables SOURCE_REPO, ITEM_NUMBER, COMMENT_URL, and REQUESTED_BY."
@@ -274,7 +292,7 @@ jobs:
 
           _out=$(mktemp) || exit 1
           _rc=0
-          # --effort high: claude-opus-5-5's default reasoning effort is `medium`.
+          # --effort high: the deep model's (claude-opus-5-5) default reasoning effort is `medium`.
           # The persona advisory runs on the deep (Opus) tier, which pins `--effort
           # high` in scripts/engine.sh (#1898). Pin it here too so the live runtime
           # matches the eval-parity posture run_persona scores (run-eval.sh routes
@@ -283,8 +301,7 @@ jobs:
           claude --print \
             --permission-mode bypassPermissions \
             --allowedTools Bash \
-            --model claude-opus-5-5 \
-            --fallback-model opus \
+            "${persona_model_args[@]}" \
             --effort high \
             -p "$(cat /tmp/persona-prompt.txt)" > "$_out" 2>&1 || _rc=$?
 
