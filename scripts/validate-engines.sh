@@ -7,7 +7,7 @@
 # After validate_engines() returns the following vars are exported:
 #   CLAUDE_AVAILABLE   — "true" if claude CLI + CLAUDE_CODE_OAUTH_TOKEN are present
 #   GEMINI_AVAILABLE   — "true" if gemini CLI + at least one Gemini key with
-#                        credits (GOOGLE_API_KEY, GOOGLE_API_KEY_2, _3) are present
+#                        credits (GOOGLE_API_KEY, GOOGLE_API_KEY_2, _3, _4) are present
 #   COPILOT_AVAILABLE  — "true" if gh copilot is usable with COPILOT_GITHUB_TOKEN
 #                        (a classic ghp_ PAT is not: Copilot rejects it)
 #
@@ -31,6 +31,27 @@ _VALIDATE_ENGINES_CHAIN_LIB="$(dirname "${BASH_SOURCE[0]}")/lib/engine-chain.sh"
 # shellcheck source=lib/engine-chain.sh
 [ -f "$_VALIDATE_ENGINES_CHAIN_LIB" ] && source "$_VALIDATE_ENGINES_CHAIN_LIB"
 unset _VALIDATE_ENGINES_CHAIN_LIB
+# Provider model lists (AI_MODELS_*). Optional: without it the probe uses the
+# built-in flash model.
+_VALIDATE_ENGINES_MODELS_LIB="$(dirname "${BASH_SOURCE[0]}")/lib/engine-models.sh"
+# shellcheck source=lib/engine-models.sh
+[ -f "$_VALIDATE_ENGINES_MODELS_LIB" ] && source "$_VALIDATE_ENGINES_MODELS_LIB"
+unset _VALIDATE_ENGINES_MODELS_LIB
+
+# _gemini_probe_model — the configured Gemini triage model (the tier the probe
+# stands in for), without Google's optional "models/" prefix; gemini-3.8-flash
+# when the models library is absent. Prints nothing when the configured id is
+# not URL-safe, so the caller skips the probe rather than probe another model.
+_gemini_probe_model() {
+  local m="gemini-3.8-flash"
+  if declare -F ai_models_gemini_chain >/dev/null 2>&1; then
+    m="$(ai_models_gemini_chain triage)"
+    m="${m%%,*}"
+  fi
+  m="${m#models/}"
+  [[ "$m" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || return 0
+  printf '%s' "$m"
+}
 
 # _validate_engine_enabled <engine> — 0 unless AI_ENGINES leaves <engine> out.
 _validate_engine_enabled() {
@@ -45,30 +66,47 @@ _validate_engine_enabled() {
 # Returns 1 only when the response explicitly reports depleted prepayment
 # credits; any other outcome (success, network error, invalid key, transient
 # RESOURCE_EXHAUSTED quota) is "undetermined" and returns 0 (fail-open: Gemini
-# proceeds and fails loudly at call time if it really is broken).
+# proceeds and fails loudly at call time if it really is broken). The probe
+# calls the configured flash model; when that model is not found the depletion
+# check cannot run, so it warns once instead of passing silently.
 _gemini_probe_key() {
-  local _key="$1" _raw _body
+  local _key="$1" _raw _body _code _model
+  _model="$(_gemini_probe_model)"
+  if [ -z "$_model" ]; then
+    if [ -z "${_GEMINI_PROBE_MODEL_WARNED:-}" ]; then
+      echo "::warning::Gemini billing probe skipped: the configured flash model is not a probe-able id — credit depletion is undetermined." >&2
+      _GEMINI_PROBE_MODEL_WARNED=1
+    fi
+    return 0
+  fi
   _raw=$(
     timeout 15 curl -sS --max-time 10 \
       -X POST \
       -H "Content-Type: application/json" \
       -H "X-Goog-Api-Key: ${_key}" \
-      "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent" \
+      "https://generativelanguage.googleapis.com/v1beta/models/${_model}:generateContent" \
       -d '{"contents":[{"parts":[{"text":"Hi"}]}],"generationConfig":{"maxOutputTokens":1}}' \
       -w '\n%{http_code}' 2>/dev/null
   ) || true
   # Strip the trailing HTTP status code line appended by -w; check only the body.
   _body=$(printf '%s' "$_raw" | sed '$d')
+  _code=$(printf '%s' "$_raw" | tail -n 1)
   if printf '%s' "$_body" | grep -qiE "credits.*depleted"; then
     return 1
+  fi
+  if [ "$_code" = "404" ] || printf '%s' "$_body" | grep -qiE "no longer available|is not found|NOT_FOUND"; then
+    if [ -z "${_GEMINI_PROBE_MODEL_WARNED:-}" ]; then
+      echo "::warning::Gemini billing probe: model '${_model}' was not found — credit depletion is undetermined. Check AI_MODELS_GEMINI triage / GEMINI_FLASH_MODEL." >&2
+      _GEMINI_PROBE_MODEL_WARNED=1
+    fi
   fi
   return 0
 }
 
 # _gemini_billing_probe
 # Probes EVERY configured Gemini key (GEMINI_API_KEY / GOOGLE_API_KEY, then the
-# #1777 rotation keys GOOGLE_API_KEY_2 and GOOGLE_API_KEY_3; duplicates probed
-# once) to detect depleted prepayment credits before the first PR review. The
+# #1777 rotation keys GOOGLE_API_KEY_2, GOOGLE_API_KEY_3 and GOOGLE_API_KEY_4;
+# duplicates probed once) to detect depleted prepayment credits before the first PR review. The
 # Gemini CLI retries billing exhaustion 10× with backoff (~4 min); detecting it
 # here lets validate_engines skip a dead engine immediately. _gemini_invoke
 # rotates across the same keys at call time, so Gemini is usable while ANY key
@@ -86,7 +124,7 @@ _gemini_billing_probe() {
     return 0
   fi
   local _name _key _seen="" _any=0 _ok=0
-  for _name in GEMINI_API_KEY GOOGLE_API_KEY GOOGLE_API_KEY_2 GOOGLE_API_KEY_3; do
+  for _name in GEMINI_API_KEY GOOGLE_API_KEY GOOGLE_API_KEY_2 GOOGLE_API_KEY_3 GOOGLE_API_KEY_4; do
     _key="${!_name:-}"
     [ -z "$_key" ] && continue
     case "$_seen" in
@@ -156,10 +194,11 @@ validate_engines() {
       append_gemini_reason "Gemini CLI not installed (fix: npm install -g @google/gemini-cli)"
     fi
     # Check for any available Gemini API key: primary (GEMINI_API_KEY or GOOGLE_API_KEY)
-    # or secondary rotation keys (GOOGLE_API_KEY_2, GOOGLE_API_KEY_3) per issue #1777.
+    # or secondary rotation keys (GOOGLE_API_KEY_2, _3, _4) per issue #1777.
     if [ -z "${GEMINI_API_KEY:-}" ] && [ -z "${GOOGLE_API_KEY:-}" ] && \
-       [ -z "${GOOGLE_API_KEY_2:-}" ] && [ -z "${GOOGLE_API_KEY_3:-}" ]; then
-      append_gemini_reason "No Gemini API key configured (set GOOGLE_API_KEY, GOOGLE_API_KEY_2, or GOOGLE_API_KEY_3)"
+       [ -z "${GOOGLE_API_KEY_2:-}" ] && [ -z "${GOOGLE_API_KEY_3:-}" ] && \
+       [ -z "${GOOGLE_API_KEY_4:-}" ]; then
+      append_gemini_reason "No Gemini API key configured (set GOOGLE_API_KEY, GOOGLE_API_KEY_2, GOOGLE_API_KEY_3 or GOOGLE_API_KEY_4)"
     fi
     if [ "${GEMINI_CLI_TRUST_WORKSPACE:-false}" != "true" ]; then
       append_gemini_reason "GEMINI_CLI_TRUST_WORKSPACE is not true (fix: set in env or pass --skip-trust)"
