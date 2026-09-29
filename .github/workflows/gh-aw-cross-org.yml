@@ -33,6 +33,10 @@ env:
   SOURCE_REPO: ${{ github.event.client_payload.source_repo }}
   BOT_USER: ${{ vars.BOT_USER || 'donpetry-bot' }}
   DEV_LEAD_ENGINE: ${{ vars.DEV_LEAD_ENGINE || 'claude' }}
+  # Each provider's model list (scripts/lib/engine-models.sh); unset = defaults.
+  AI_MODELS_CLAUDE: ${{ vars.AI_MODELS_CLAUDE || '' }}
+  AI_MODELS_GEMINI: ${{ vars.AI_MODELS_GEMINI || '' }}
+  AI_MODELS_COPILOT: ${{ vars.AI_MODELS_COPILOT || '' }}
   DEV_LEAD_DRY_RUN: ${{ vars.DEV_LEAD_DRY_RUN || 'false' }}
   GH_TOKEN: ${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS }}
 

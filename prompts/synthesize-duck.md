@@ -16,7 +16,7 @@ a single combined verdict.
 - `$DEEP_RESULT` — path to the primary deep review JSON.
 - `$DUCK_RESULT` — path to the rubber duck review JSON.
 - `$OUTPUT_FILE` — path where you MUST write your combined verdict.
-- `$DUCK_ENGINE` — which engine ran the rubber duck (`claude` or `copilot`).
+- `$DUCK_ENGINE` — which engine ran the rubber duck (`claude`, `gemini` or `copilot`).
 - `$DUCK_MODEL` — which model ran the rubber duck.
 
 ## Steps
