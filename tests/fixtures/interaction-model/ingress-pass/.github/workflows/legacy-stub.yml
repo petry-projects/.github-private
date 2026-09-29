@@ -1,0 +1,10 @@
+name: legacy-stub
+# FIXTURE — a pre-collapse single-role caller stub. Backward-compat: it still
+# classifies as EXACTLY ONE §4 row (no role qualifier).
+on:
+  pull_request:
+    types: [opened]
+jobs:
+  run:
+    uses: petry-projects/.github-private/.github/workflows/dev-lead-reusable.yml@dev-lead/v1-stable
+    secrets: inherit
