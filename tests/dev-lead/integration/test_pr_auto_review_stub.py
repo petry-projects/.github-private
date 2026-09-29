@@ -10,7 +10,7 @@ calling job with `if: github.actor != 'dependabot[bot]'` so it skips cleanly bef
 reusable's checkout. Dependabot PRs are handled by dependabot-automerge.yml and never need
 the review-agent dispatch.
 
-Regression guard: dropping the Dependabot guard (or repinning off the @pr-auto-review/v1-next
+Regression guard: dropping the Dependabot guard (or repinning off the @pr-auto-review/v1-stable
 channel) reintroduces the failure class.
 """
 from __future__ import annotations
@@ -24,7 +24,7 @@ except ImportError:
 
 WORKFLOW = ".github/workflows/pr-auto-review.yml"
 REUSABLE = "petry-projects/.github/.github/workflows/pr-auto-review-reusable.yml"
-EXPECTED_REF = "@pr-auto-review/v1-next"
+EXPECTED_REF = "@pr-auto-review/v1-stable"
 DEPENDABOT_ACTOR = "dependabot[bot]"
 
 
@@ -69,7 +69,7 @@ def main() -> int:
             failures.append(
                 f"  Wrong ref: {ref!r}\n"
                 f"  Expected:  '{REUSABLE}{EXPECTED_REF}'\n"
-                "  Reason: first-party reusable must stay on the @pr-auto-review/v1-next\n"
+                "  Reason: first-party reusable must stay on the @pr-auto-review/v1-stable\n"
                 "  moving channel (AGENTS.md §Release channel tags)."
             )
 

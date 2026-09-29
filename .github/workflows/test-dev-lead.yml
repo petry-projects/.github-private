@@ -268,5 +268,5 @@ jobs:
           persist-credentials: false
       - name: Install PyYAML
         run: python3 -m pip install --quiet --only-binary ":all:" pyyaml==6.0.3
-      - name: Validate pr-auto-review.yml skips Dependabot and pins @pr-auto-review/v1-next
+      - name: Validate pr-auto-review.yml skips Dependabot and pins @pr-auto-review/v1-stable
         run: python3 tests/dev-lead/integration/test_pr_auto_review_stub.py
