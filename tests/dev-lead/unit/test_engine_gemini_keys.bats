@@ -127,11 +127,11 @@ _source_engine() {
 }
 
 @test "rotate: each throttled key is logged by position, never by value" {
-  export GEMINI_API_KEY="secret-key-one"
-  export GOOGLE_API_KEY_2="secret-key-two"
-  export GOOGLE_API_KEY_3="secret-key-three"
-  export STUB_ENGINE_EXIT_BY_KEY="secret-key-one=1|secret-key-two=1|secret-key-three=0"
-  export STUB_ENGINE_RESPONSE_BY_KEY="secret-key-one=429 too many requests|secret-key-two=429 too many requests|secret-key-three=ok from key3"
+  export GEMINI_API_KEY="fake-a"
+  export GOOGLE_API_KEY_2="fake-b"
+  export GOOGLE_API_KEY_3="fake-c"
+  export STUB_ENGINE_EXIT_BY_KEY="fake-a=1|fake-b=1|fake-c=0"
+  export STUB_ENGINE_RESPONSE_BY_KEY="fake-a=429 too many requests|fake-b=429 too many requests|fake-c=ok from key3"
   _source_engine "gemini"
 
   run _gemini_chain_invoke "gemini-3.8-flash" "$TEST_PROMPT" 30 --approval-mode auto_edit
@@ -141,7 +141,7 @@ _source_engine() {
   [[ "$output" == *"API key 1 of 3 throttled — trying the next key"* ]]
   [[ "$output" == *"API key 2 of 3 throttled — trying the next key"* ]]
   [[ "$output" != *"API key 3 of 3"* ]]
-  [[ "$output" != *"secret-key"* ]]
+  [[ "$output" != *"fake-"* ]]
 }
 
 @test "rotate: all keys rate-limited on a model → falls through to next model" {
