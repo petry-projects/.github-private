@@ -180,3 +180,9 @@ targetRules = ["github-pat"]
 condition = "AND"
 paths = ['''^tests/dev-lead/unit/test_fix_issue\.bats$''']
 regexes = ['''ghp_classicPATplaceholder0000000000000000''']
+
+[[allowlists]]
+description = "Suppress test fixture API key patterns in test_engine_gemini_keys.bats (Gemini key rotation tests)"
+condition = "AND"
+paths = ['''^tests/dev-lead/unit/test_engine_gemini_keys\.bats$''']
+regexes = ['''secret-key''']
