@@ -25,6 +25,7 @@ Store these in the repository settings (`Settings → Secrets and variables → 
 |----------|---------|---------|
 | `AI_ENGINES` | `claude,gemini,copilot` | Enabled engines in fallback order; the first is primary. See [engine configuration](../engine-configuration.md) |
 | `REVIEW_ENGINE` | Unset | Legacy primary override (`claude`, `gemini` or `copilot`); leave unset to let `AI_ENGINES` decide |
+| `AI_MODELS_CLAUDE` / `AI_MODELS_GEMINI` / `AI_MODELS_COPILOT` | Built-in lists | Each provider's model list, e.g. `deep=claude-opus-5-5,claude-opus-4-8`. See [engine configuration](../engine-configuration.md#model-lists-ai_models_) |
 | `LIVE_MODE` | `false` | If `true`, reviews are posted live; if `false`, dry-run only |
 | `DELEGATION_ORGS` | Empty | Comma-separated orgs where AI can auto-fix: `petry-projects,don-petry` |
 | `MAX_REVIEW_CYCLES` | `3` | Max review iterations before escalating to human |

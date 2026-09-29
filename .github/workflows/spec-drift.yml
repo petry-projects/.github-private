@@ -121,6 +121,10 @@ jobs:
         env:
           # Cheap-tier only; the detector self-limits to a single run_triage call.
           REVIEW_ENGINE: ${{ vars.REVIEW_ENGINE || 'claude' }}
+          # Each provider's model list (scripts/lib/engine-models.sh); unset = defaults.
+          AI_MODELS_CLAUDE: ${{ vars.AI_MODELS_CLAUDE || '' }}
+          AI_MODELS_GEMINI: ${{ vars.AI_MODELS_GEMINI || '' }}
+          AI_MODELS_COPILOT: ${{ vars.AI_MODELS_COPILOT || '' }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           SPEC_DRIFT_REPO: ${{ github.repository }}
           SPEC_DRIFT_STORY: ${{ steps.resolve.outputs.story }}
