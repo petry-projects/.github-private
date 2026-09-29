@@ -73,7 +73,7 @@ jobs:
       pull-requests: read
       checks: read
       actions: read
-    uses: petry-projects/.github/.github/workflows/pr-auto-review-reusable.yml@pr-auto-review/v1-next  # NOSONAR(githubactions:S7637) first-party channel ref
+    uses: petry-projects/.github/.github/workflows/pr-auto-review-reusable.yml@pr-auto-review/v1-stable  # NOSONAR(githubactions:S7637) first-party channel ref
     secrets:
       # Canonical-first fallback (.github-private#1326). The reusable resolves this
       # secret BY NAME, so only the VALUE changes — the passed key stays named
