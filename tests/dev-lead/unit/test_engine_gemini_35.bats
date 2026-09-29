@@ -1,14 +1,14 @@
 #!/usr/bin/env bats
-# Unit tests for engine.sh — Gemini flash model tier assignments, chains, and fallback.
+# Unit tests for engine.sh — Gemini model tier assignments, chains, and fallback.
 #
 # Verifies that gemini-3.8-flash (the preferred flash model, #1777) is wired into
-# the speed-first tiers and gemini-2.5-pro remains the quality-first tier for the
+# the speed-first tiers and gemini-3.1-pro-preview is the quality-first tier for the
 # gemini engine:
 #   triage  → gemini-3.8-flash  (was gemini-3.5-flash)
 #   action  → gemini-3.8-flash  (was gemini-3.5-flash)
-#   deep    → gemini-2.5-pro    (unchanged)
-#   audit   → gemini-2.5-pro    (unchanged)
-#   single  → gemini-2.5-pro    (unchanged)
+#   deep    → gemini-3.1-pro-preview (gemini-2.5-pro withdrawn, #1960)
+#   audit   → gemini-3.1-pro-preview (gemini-2.5-pro withdrawn, #1960)
+#   single  → gemini-3.1-pro-preview (gemini-2.5-pro withdrawn, #1960)
 
 SCRIPT_DIR="$(cd "$(dirname "$BATS_TEST_FILENAME")/../../.." && pwd)"
 ENGINE_SCRIPT="$SCRIPT_DIR/scripts/engine.sh"
@@ -22,6 +22,7 @@ setup() {
 
   unset GEMINI_FLASH_MODEL GEMINI_PRO_MODEL
   unset GEMINI_FLASH_MODEL_CHAIN GEMINI_PRO_MODEL_CHAIN
+  unset AI_MODELS_GEMINI
 
   STUB_BIN_DIR="$BATS_TEST_TMPDIR/bin"
   mkdir -p "$STUB_BIN_DIR"
@@ -43,6 +44,7 @@ setup() {
 teardown() {
   unset GEMINI_FLASH_MODEL GEMINI_PRO_MODEL
   unset GEMINI_FLASH_MODEL_CHAIN GEMINI_PRO_MODEL_CHAIN
+  unset AI_MODELS_GEMINI
   unset STUB_ENGINE_EXIT_BY_MODEL STUB_ENGINE_RESPONSE_BY_MODEL
   unset STUB_ENGINE_RECORD_MODELS STUB_ENGINE_EXIT STUB_ENGINE_RESPONSE
 }
@@ -65,47 +67,50 @@ _source_engine() {
   [ "$ENGINE_ACTION_MODEL" = "gemini-3.8-flash" ]
 }
 
-@test "gemini-3.8: ENGINE_DEEP_MODEL is gemini-2.5-pro (quality tier unchanged)" {
+@test "gemini-3.8: ENGINE_DEEP_MODEL is gemini-3.1-pro-preview" {
   _source_engine "gemini"
-  [ "$ENGINE_DEEP_MODEL" = "gemini-2.5-pro" ]
+  [ "$ENGINE_DEEP_MODEL" = "gemini-3.1-pro-preview" ]
 }
 
-@test "gemini-3.8: ENGINE_AUDIT_MODEL is gemini-2.5-pro (quality tier unchanged)" {
+@test "gemini-3.8: ENGINE_AUDIT_MODEL is gemini-3.1-pro-preview" {
   _source_engine "gemini"
-  [ "$ENGINE_AUDIT_MODEL" = "gemini-2.5-pro" ]
+  [ "$ENGINE_AUDIT_MODEL" = "gemini-3.1-pro-preview" ]
 }
 
-@test "gemini-3.8: ENGINE_SINGLE_MODEL is gemini-2.5-pro (quality tier unchanged)" {
+@test "gemini-3.8: ENGINE_SINGLE_MODEL is gemini-3.1-pro-preview" {
   _source_engine "gemini"
-  [ "$ENGINE_SINGLE_MODEL" = "gemini-2.5-pro" ]
+  [ "$ENGINE_SINGLE_MODEL" = "gemini-3.1-pro-preview" ]
 }
 
 # ── Fallback chain configuration ──────────────────────────────────────────────
 
-@test "gemini-3.8: GEMINI_FLASH_MODEL_CHAIN starts with gemini-3.8-flash" {
+@test "gemini-3.8: the triage chain starts with gemini-3.8-flash" {
   _source_engine "gemini"
   local first
-  first="${GEMINI_FLASH_MODEL_CHAIN%%,*}"
-  first="${first// /}"
+  first="$(ai_models_gemini_chain triage)"
+  first="${first%%,*}"
   [ "$first" = "gemini-3.8-flash" ]
 }
 
-@test "gemini-3.8: GEMINI_FLASH_MODEL_CHAIN includes gemini-2.5-pro as fallback" {
+@test "gemini-3.8: the triage and action chains fall back to gemini-3.1-pro-preview" {
   _source_engine "gemini"
-  [[ "$GEMINI_FLASH_MODEL_CHAIN" == *"gemini-2.5-pro"* ]]
+  [[ "$(ai_models_gemini_chain triage)" == *"gemini-3.1-pro-preview"* ]]
+  [[ "$(ai_models_gemini_chain action)" == *"gemini-3.1-pro-preview"* ]]
 }
 
-@test "gemini-3.8: GEMINI_PRO_MODEL_CHAIN starts with gemini-2.5-pro" {
+@test "gemini-3.8: the deep chain starts with gemini-3.1-pro-preview" {
   _source_engine "gemini"
   local first
-  first="${GEMINI_PRO_MODEL_CHAIN%%,*}"
-  first="${first// /}"
-  [ "$first" = "gemini-2.5-pro" ]
+  first="$(ai_models_gemini_chain deep)"
+  first="${first%%,*}"
+  [ "$first" = "gemini-3.1-pro-preview" ]
 }
 
-@test "gemini-3.8: GEMINI_PRO_MODEL_CHAIN includes gemini-2.0-flash as fallback" {
+@test "gemini-3.8: the deep, audit and single chains fall back to gemini-3.8-flash" {
   _source_engine "gemini"
-  [[ "$GEMINI_PRO_MODEL_CHAIN" == *"gemini-2.0-flash"* ]]
+  [[ "$(ai_models_gemini_chain deep)" == *"gemini-3.8-flash"* ]]
+  [[ "$(ai_models_gemini_chain audit)" == *"gemini-3.8-flash"* ]]
+  [[ "$(ai_models_gemini_chain single)" == *"gemini-3.8-flash"* ]]
 }
 
 # ── Env var overrides ─────────────────────────────────────────────────────────
@@ -127,10 +132,9 @@ _source_engine() {
 @test "gemini-3.8: GEMINI_FLASH_MODEL_CHAIN env var override honored" {
   export GEMINI_FLASH_MODEL_CHAIN="gemini-2.0-flash,gemini-2.5-pro"
   _source_engine "gemini"
-  local first
-  first="${GEMINI_FLASH_MODEL_CHAIN%%,*}"
-  first="${first// /}"
-  [ "$first" = "gemini-2.0-flash" ]
+  [ "$(ai_models_gemini_chain triage)" = "gemini-2.0-flash,gemini-2.5-pro" ]
+  [ "$(ai_models_gemini_chain action)" = "gemini-2.0-flash,gemini-2.5-pro" ]
+  [ "$ENGINE_TRIAGE_MODEL" = "gemini-2.0-flash" ]
 }
 
 # ── Intent dispatch returns correct tier models ───────────────────────────────
@@ -149,11 +153,11 @@ _source_engine() {
   [ "$result" = "gemini-3.8-flash" ]
 }
 
-@test "gemini-3.8: model_for_intent(fix-issue) returns gemini-2.5-pro (deep)" {
+@test "gemini-3.8: model_for_intent(fix-issue) returns gemini-3.1-pro-preview (deep)" {
   _source_engine "gemini"
   local result
   result="$(model_for_intent "fix-issue")"
-  [ "$result" = "gemini-2.5-pro" ]
+  [ "$result" = "gemini-3.1-pro-preview" ]
 }
 
 # ── ENGINE_LABEL reflects new models ─────────────────────────────────────────
@@ -242,16 +246,16 @@ _source_engine() {
 
 # ── End-to-end: run_writer uses flash chain on rate-limit ────────────────────
 
-@test "gemini-3.8 writer: gemini-3.8-flash rate-limited → gemini-2.5-pro tried via GEMINI_FLASH_MODEL_CHAIN" {
+@test "gemini-3.8 writer: gemini-3.8-flash rate-limited → gemini-3.1-pro-preview tried via GEMINI_FLASH_MODEL_CHAIN" {
   _source_engine "gemini"
-  export STUB_ENGINE_EXIT_BY_MODEL="gemini-3.8-flash=1|gemini-2.5-pro=0"
-  export STUB_ENGINE_RESPONSE_BY_MODEL="gemini-3.8-flash=too many requests (429)|gemini-2.5-pro=pro result"
+  export STUB_ENGINE_EXIT_BY_MODEL="gemini-3.8-flash=1|gemini-3.1-pro-preview=0"
+  export STUB_ENGINE_RESPONSE_BY_MODEL="gemini-3.8-flash=too many requests (429)|gemini-3.1-pro-preview=pro result"
 
   run run_writer "$TEST_PROMPT"
 
   [ "$status" -eq 0 ]
   grep -q "gemini-3.8-flash" "$MODEL_RECORD"
-  grep -q "gemini-2.5-pro" "$MODEL_RECORD"
+  grep -q "gemini-3.1-pro-preview" "$MODEL_RECORD"
 }
 
 @test "gemini-3.8 writer: custom GEMINI_FLASH_MODEL_CHAIN env override is honored" {
@@ -267,8 +271,8 @@ _source_engine() {
 
 @test "gemini-3.8 writer: both models rate-limited → exit 2 (cross-provider fallback signal)" {
   _source_engine "gemini"
-  export STUB_ENGINE_EXIT_BY_MODEL="gemini-3.8-flash=1|gemini-2.5-pro=1"
-  export STUB_ENGINE_RESPONSE_BY_MODEL="gemini-3.8-flash=quota exceeded|gemini-2.5-pro=quota exceeded"
+  export STUB_ENGINE_EXIT_BY_MODEL="gemini-3.8-flash=1|gemini-3.1-pro-preview=1"
+  export STUB_ENGINE_RESPONSE_BY_MODEL="gemini-3.8-flash=quota exceeded|gemini-3.1-pro-preview=quota exceeded"
 
   run run_writer "$TEST_PROMPT"
 
