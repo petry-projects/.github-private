@@ -69,6 +69,7 @@ concurrency:
 
 jobs:
   pr-auto-review:
+    if: github.actor != 'dependabot[bot]' && github.event.pull_request.user.login != 'dependabot[bot]'
     permissions:
       pull-requests: read
       checks: read
