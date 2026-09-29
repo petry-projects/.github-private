@@ -1497,13 +1497,19 @@ echo "    [tier2] deep: decision=$DEEP_DECISION risk=$DEEP_RISK"
 
 # Validate rubber duck (optional — graceful degradation if it fails)
 DUCK_VALID=false
-if [ -s "$DUCK_OUTPUT" ] && jq empty "$DUCK_OUTPUT" 2>/dev/null; then
+_duck_ok=false
+if declare -F duck_verdict_valid >/dev/null 2>&1; then
+  duck_verdict_valid "$DUCK_OUTPUT" && _duck_ok=true
+elif [ -s "$DUCK_OUTPUT" ] && jq empty "$DUCK_OUTPUT" 2>/dev/null; then
+  _duck_ok=true
+fi
+if [ "$_duck_ok" = true ]; then
   DUCK_DECISION=$(jq -r '.decision' "$DUCK_OUTPUT")
   DUCK_RISK=$(jq -r '.risk' "$DUCK_OUTPUT")
   DUCK_VALID=true
   echo "    [tier2] duck ($DUCK_ENGINE): decision=$DUCK_DECISION risk=$DUCK_RISK"
 else
-  echo "    [tier2] rubber duck did not produce valid JSON — continuing with deep review only"
+  echo "    [tier2] rubber duck did not produce a valid verdict — continuing with deep review only"
   cat /tmp/cascade/duck.log 2>/dev/null || true
 fi
 

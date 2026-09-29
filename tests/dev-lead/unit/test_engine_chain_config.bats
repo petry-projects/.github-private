@@ -198,7 +198,9 @@ _duck_chain() {
           unset GOOGLE_API_KEY
           [ \"\${MOCK_DUCK_claude:-}\" = fail ] && return 1
           echo '{\"decision\":\"approve\",\"risk\":\"LOW\"}' > \"\$OUTPUT_FILE\" ;;
-        copilot) return 124 ;;
+        copilot)
+          if [ \"\${MOCK_DUCK_copilot:-}\" = nodecision ]; then echo '{\"error\":\"bad response\"}' > \"\$OUTPUT_FILE\"; return 0; fi
+          return 124 ;;
       esac
     }
     export OUTPUT_FILE='$DC/duck.json'
@@ -226,6 +228,27 @@ _duck_chain() {
   [[ "$output" == *"[duck] gemini (gemini-3.8-flash) wrote no verdict (exit 1)"* ]]
   [[ "$output" == *"rc=1"* ]]
   rm -rf "$DC"
+}
+
+@test "duck chain: valid JSON without a decision is not a verdict — the next engine runs" {
+  DC="$(mktemp -d)"
+  export MOCK_DUCK_copilot=nodecision
+  run _duck_chain $'copilot o4-mini\nclaude claude-sonnet-4-6'
+  [[ "$output" == *"rc=0"* ]]
+  [[ "$output" == *"[duck] copilot (o4-mini) wrote no verdict (exit 0)"* ]]
+  [ "$(cat "$DC/duck.json.engine")" = "claude claude-sonnet-4-6" ]
+  rm -rf "$DC"
+}
+
+@test "duck_verdict_valid: needs an approve/escalate decision" {
+  f="$(mktemp)"
+  run bash -c "source '$SCRIPT_DIR/scripts/engine.sh' >/dev/null 2>&1
+    for j in '{\"decision\":\"approve\"}' '{\"decision\":\"ESCALATE\",\"risk\":\"HIGH\"}' '{}' '{\"error\":\"x\"}' '{\"decision\":null}' '{\"decision\":\"maybe\"}' 'not json'; do
+      printf '%s' \"\$j\" > '$f'; if duck_verdict_valid '$f'; then echo ok; else echo no; fi
+    done
+    : > '$f'; duck_verdict_valid '$f' && echo ok || echo no"
+  rm -f "$f"
+  [ "$(echo $output)" = "ok ok no no no no no no" ]
 }
 
 @test "duck chain: a timeout stops the chain (no second timeout added to the review)" {

@@ -2070,11 +2070,23 @@ select_duck_engine() {
   printf '%s' "${first:-none}"
 }
 
+# duck_verdict_valid <file> — 0 when <file> holds a rubber-duck verdict: JSON
+# whose .decision is one prompts/rubber-duck.md allows (approve or escalate,
+# any case). Valid JSON without one (e.g. {} or an error object) is not a
+# verdict, so the duck chain moves on instead of synthesizing null values.
+duck_verdict_valid() {
+  [ -s "${1:-}" ] || return 1
+  jq -e '(.decision | type == "string") and
+         ((.decision | ascii_downcase) as $d | ["approve", "escalate"] | index($d) != null)' \
+    "$1" >/dev/null 2>&1
+}
+
 # run_duck_chain <prompt_file> [candidates]
 # Runs the rubber duck on each "<engine> <model>" line of <candidates>
 # (default: duck_engine_candidates) until one writes a valid verdict to
-# $OUTPUT_FILE. An engine that ends without a verdict (throttled on every model
-# and key, an auth or policy failure, no JSON written) hands over to the next,
+# $OUTPUT_FILE (duck_verdict_valid). An engine that ends without a verdict
+# (throttled on every model and key, an auth or policy failure, no JSON, or
+# JSON without a decision) hands over to the next,
 # the way a throttled Gemini key hands over to the next key. A timeout (exit
 # 124 or 137) stops the chain, so a slow duck cannot add a second timeout to
 # the review. Each attempt runs in a subshell, because run_duck drops the other
@@ -2113,7 +2125,7 @@ run_duck_chain() {
       < /dev/null > "$out_tmp" 2> "$err_tmp" || rc=$?
     cat "$out_tmp"
     cat "$err_tmp" >&2
-    if [ -s "$OUTPUT_FILE" ] && jq empty "$OUTPUT_FILE" 2>/dev/null; then
+    if duck_verdict_valid "$OUTPUT_FILE"; then
       rm -f "$out_tmp" "$err_tmp"
       printf '%s %s\n' "$e" "$m" > "${OUTPUT_FILE}.engine"
       return 0
