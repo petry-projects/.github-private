@@ -40,6 +40,14 @@ EOF
 export COPILOT_API_MODEL="openai/o4-mini"
 EOF
 
+  # GitHub Models stub for the Copilot fallback pre-flight: always "ready".
+  cat > "$TEST_DIR/bin/curl" <<'EOF'
+#!/bin/bash
+echo '{"choices":[{"message":{"content":"ready"}}]}'
+echo '200'
+EOF
+  chmod +x "$TEST_DIR/bin/curl"
+
   # Every engine reports rate-limited (exit 2) for this PR.
   cat > "scripts/review-one-pr.sh" <<'EOF'
 #!/bin/bash
