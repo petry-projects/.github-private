@@ -44,10 +44,9 @@ in the standard
 ([Classification of current agentic workflows](./agentic-interaction-model.md#4-classification-of-current-agentic-workflows)),
 in the fixed column order `Workflow (path) | Class | timer_role | Justification`. The
 bidirectional completeness check (a workflow absent from both this table and the exclusion
-list will fail CI) is planned for Story 4 / `validate-interaction-model` (#1406) and is not
-yet enforced; keep the table in sync by convention until that check lands. If the role is CI
-infrastructure or a thin caller stub rather than an agentic role, add it to the §4
-**exclusion list** instead, with a one-line reason.
+list will fail CI) is **enforced** by Story 4 / `validate-interaction-model` (#1406): keep the
+table in sync or CI fails. If the role is CI infrastructure or a thin caller stub rather than
+an agentic role, add it to the §4 **exclusion list** instead, with a one-line reason.
 
 ## Step 2 — Author the interaction contract (the Story-1 shape)
 
@@ -230,8 +229,7 @@ budget/stop-marker consistency ([§9](./agentic-interaction-model.md#9-the-cost-
 A contract that fails these checks blocks the PR.
 
 The **full cross-check** — verifying that a workflow's `on:` block, its §4 classification
-row, and its contract all agree — is **planned** for Story 4 /
+row, and its contract all agree — is **enforced** by Story 4 /
 [#1406](https://github.com/petry-projects/.github-private/issues/1406)
 ([`validate-interaction-model`](./agentic-interaction-model.md#10-how-this-document-is-enforced)).
-Until that check lands, keep the three artefacts in sync by convention; a mismatch will not
-block merge today but will fail CI once Story 4 ships.
+Keep the three artefacts in sync; a mismatch fails CI and blocks merge.
