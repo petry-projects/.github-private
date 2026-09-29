@@ -64,15 +64,43 @@ else
 fi
 export REVIEW_ENGINE
 
+# Each provider's model list (AI_MODELS_CLAUDE / AI_MODELS_GEMINI /
+# AI_MODELS_COPILOT) and its defaults live in lib/engine-models.sh, so a retired
+# or renamed model is an Actions-variable edit, not a code change.
+_ENGINE_MODELS_LIB="$(dirname "${BASH_SOURCE[0]}")/lib/engine-models.sh"
+if [ ! -f "$_ENGINE_MODELS_LIB" ]; then
+  echo "::error::engine.sh: missing $_ENGINE_MODELS_LIB (model lists and defaults)" >&2
+  return 1 2>/dev/null || exit 1
+fi
+# shellcheck source=lib/engine-models.sh
+source "$_ENGINE_MODELS_LIB"
+unset _ENGINE_MODELS_LIB
+if [ -z "${AI_MODELS_PROBLEM_REPORTED:-}" ]; then
+  _models_problems="$(ai_models_problems)"
+  if [ -n "$_models_problems" ]; then
+    while IFS= read -r _models_line; do
+      echo "::warning::$_models_line" >&2
+    done <<< "$_models_problems"
+    export AI_MODELS_PROBLEM_REPORTED=1
+  fi
+  unset _models_problems _models_line
+fi
+
 # Cross-engine rubber-duck model (issue #773). The duck deliberately routes to
 # Copilot/o4-mini even when the primary engine is NOT copilot (e.g. the default
 # claude engine sets DUCK_ENGINE=copilot for adversarial diversity), so
 # copilot_chat() may dereference COPILOT_API_MODEL regardless of REVIEW_ENGINE.
 # Default it here — engine-agnostic — so the duck always has a model under
 # `set -u`. The `copilot)` arm in set_engine_config re-applies the same default
-# (idempotent) for the primary-engine path.
-DEFAULT_COPILOT_API_MODEL="openai/o4-mini"
-COPILOT_API_MODEL="${COPILOT_API_MODEL:-$DEFAULT_COPILOT_API_MODEL}"
+# (idempotent) for the primary-engine path. Each Copilot call then sets the
+# model of its own tier (ai_models_copilot_model); COPILOT_API_MODEL_DEFAULTED
+# records that this value is our default, not the caller's override.
+DEFAULT_COPILOT_API_MODEL="$(ai_models_copilot_model triage)"
+if [ -z "${COPILOT_API_MODEL:-}" ] || [ "$COPILOT_API_MODEL" = "${COPILOT_API_MODEL_DEFAULTED:-}" ]; then
+  COPILOT_API_MODEL="$DEFAULT_COPILOT_API_MODEL"
+  COPILOT_API_MODEL_DEFAULTED="$DEFAULT_COPILOT_API_MODEL"
+  export COPILOT_API_MODEL_DEFAULTED
+fi
 export COPILOT_API_MODEL
 
 # Per-tier timeouts (seconds). The job-level cap (120min in dev-lead-reusable.yml)
@@ -141,73 +169,103 @@ REVIEW_MCP_DEBUG="${REVIEW_MCP_DEBUG:-}"
 # the export also covers any future invocation via a separate child shell.
 export REVIEW_MCP_CONFIG REVIEW_MCP_ALLOWED_TOOLS REVIEW_MCP_DEBUG
 
+# _ai_duck_engines — AI_DUCK_ENGINE as a list: its entries lower-cased, in
+# order, space-separated. Commas and any whitespace separate entries, as in
+# AI_ENGINES ("gemini,claude" = a Gemini duck, then a Claude one).
+_ai_duck_engines() {
+  printf '%s' "${AI_DUCK_ENGINE:-}" | tr ',\n\r\t' '    ' | tr '[:upper:]' '[:lower:]' \
+    | tr -s ' ' | sed 's/^ //; s/ $//'
+}
+
+# _ai_duck_first — the first entry of AI_DUCK_ENGINE (empty when unset).
+_ai_duck_first() {
+  local list
+  list="$(_ai_duck_engines)"
+  printf '%s' "${list%% *}"
+}
+
+# _duck_model_for <engine> — the rubber-duck model for <engine>. AI_DUCK_MODEL
+# applies only when <engine> is the first engine AI_DUCK_ENGINE lists (a model
+# id is engine-specific, so it must never follow the duck onto another engine).
+_duck_model_for() {
+  local engine="$1" wanted
+  wanted="$(_ai_duck_first)"
+  if [ -n "${AI_DUCK_MODEL:-}" ] && [ "$engine" = "$wanted" ]; then
+    printf '%s' "$AI_DUCK_MODEL"
+    return 0
+  fi
+  local m
+  case "$engine" in
+    claude)
+      m="$(ai_models_chain claude duck)" ;;
+    gemini)
+      # AI_MODELS_GEMINI duck=…, else the triage chain's primary model.
+      m="$(ai_models_gemini_chain duck)" ;;
+    copilot)
+      # The id without its vendor prefix, as ENGINE_*_MODEL (token records).
+      m="$(ai_models_copilot_model duck)"
+      m="${m#*/}" ;;
+  esac
+  _engine_chain_first "${m:-}"
+}
+
+# _engine_chain_first <chain> — the first model of a comma-separated chain,
+# whitespace trimmed (a chain from an env var may carry spaces).
+_engine_chain_first() {
+  local first="${1%%,*}"
+  printf '%s' "${first//[[:space:]]/}"
+}
+
 set_engine_config() {
   case "$REVIEW_ENGINE" in
     claude)
-      ENGINE_TRIAGE_MODEL="claude-haiku-4-5-20251001"
-      ENGINE_DEEP_MODEL="claude-opus-5-5"
-      ENGINE_AUDIT_MODEL="claude-fable-5"
-      ENGINE_ACTION_MODEL="claude-sonnet-5"
-      ENGINE_SINGLE_MODEL="claude-fable-5"
-      ENGINE_LABEL="triage: haiku 4.5 [sonnet 5] → deep: opus 5.5 [opus 4.8, sonnet 5] + duck: o4-mini → audit: fable 5"
-      ENGINE_SINGLE_LABEL="single-reviewer mode: fable 5"
+      # Per-tier in-Claude model fallback chains (comma-separated). On a rate
+      # limit a chain is walked left to right before the cross-provider fallback
+      # (AI_ENGINES) kicks in; per-model TPM/RPM buckets are independent, so
+      # swapping models within Claude often recovers without leaving the provider
+      # (the subscription cap is shared — #206). Source, highest first: the
+      # per-tier CLAUDE_<TIER>_MODEL_CHAIN env, then AI_MODELS_CLAUDE, then the
+      # defaults in lib/engine-models.sh (where the model notes live: Sonnet 5 id
+      # #1957, opus-5-5 deep #1898, Fable 5 thinking/caching rules).
+      CLAUDE_TRIAGE_MODEL_CHAIN="${CLAUDE_TRIAGE_MODEL_CHAIN:-$(ai_models_chain claude triage)}"
+      CLAUDE_DEEP_MODEL_CHAIN="${CLAUDE_DEEP_MODEL_CHAIN:-$(ai_models_chain claude deep)}"
+      CLAUDE_AUDIT_MODEL_CHAIN="${CLAUDE_AUDIT_MODEL_CHAIN:-$(ai_models_chain claude audit)}"
+      CLAUDE_ACTION_MODEL_CHAIN="${CLAUDE_ACTION_MODEL_CHAIN:-$(ai_models_chain claude action)}"
+      CLAUDE_SINGLE_MODEL_CHAIN="${CLAUDE_SINGLE_MODEL_CHAIN:-$(ai_models_chain claude single)}"
+      # Each tier's primary model is the first entry of its chain.
+      ENGINE_TRIAGE_MODEL="$(_engine_chain_first "$CLAUDE_TRIAGE_MODEL_CHAIN")"
+      ENGINE_DEEP_MODEL="$(_engine_chain_first "$CLAUDE_DEEP_MODEL_CHAIN")"
+      ENGINE_AUDIT_MODEL="$(_engine_chain_first "$CLAUDE_AUDIT_MODEL_CHAIN")"
+      ENGINE_ACTION_MODEL="$(_engine_chain_first "$CLAUDE_ACTION_MODEL_CHAIN")"
+      ENGINE_SINGLE_MODEL="$(_engine_chain_first "$CLAUDE_SINGLE_MODEL_CHAIN")"
       # Cross-engine rubber duck: use Copilot when Claude is primary
       DUCK_ENGINE="copilot"
-      DUCK_MODEL="o4-mini"
-      # Per-tier in-Claude model fallback chains (comma-separated).
-      # On rate-limit, the chain is walked left-to-right before the cross-provider
-      # fallback (claude → gemini → copilot) kicks in. Per-model TPM/RPM buckets
-      # are independent, so swapping models within Claude often recovers without
-      # leaving the provider. (Daily subscription cap is shared — see issue #206.)
-      # Override per workflow via env to tune cost/capability trade-offs.
-      # Fable 5 notes (honored by the claude CLI automatically):
-      #   - adaptive thinking only; budget_tokens/temperature/top_p/top_k removed
-      #   - omit thinking param entirely (disabled returns 400 on fable-5)
-      #   - min cacheable prefix: fable-5 = 2048 tok, opus-4-8 = 4096 tok
-      # Sonnet 5 default (#1100, epic #1095): claude-sonnet-5 is now the
-      # default sonnet across the triage, deep, and action chains, fully
-      # replacing claude-sonnet-4-6 (which #1098 first wired as a non-default
-      # fallback candidate). It is the sonnet fallback hop in triage/deep and
-      # the primary in action. The promotion rides the dev-lead canary rings;
-      # ring→stable graduation is human-gated and NOT part of this change. The
-      # daily cap is shared across Claude models (#206), so per-tier fallback
-      # only helps per-model RPM/TPM, not the subscription cap.
-      # The ID is `claude-sonnet-5` — the `claude-sonnet-5-0` spelling shipped
-      # by #1100 does not exist and 404s, so every sonnet hop silently fell
-      # through to the next model (#1957).
-      CLAUDE_TRIAGE_MODEL_CHAIN="${CLAUDE_TRIAGE_MODEL_CHAIN:-claude-haiku-4-5-20251001,claude-sonnet-5}"
-      # Deep tier swapped opus-4-8 → opus-5-5 (#1898, epic #1895 Phase 2): the
-      # highest-cost tier now rides the cheaper, higher-benchmark model.
-      # opus-4-8 is the known-good 2nd hop (#1957): if opus-5-5 is throttled or
-      # unavailable, a deep review degrades to the model it replaced instead of
-      # failing. Sonnet 5 stays as the last in-Claude hop.
-      CLAUDE_DEEP_MODEL_CHAIN="${CLAUDE_DEEP_MODEL_CHAIN:-claude-opus-5-5,claude-opus-4-8,claude-sonnet-5}"
-      CLAUDE_AUDIT_MODEL_CHAIN="${CLAUDE_AUDIT_MODEL_CHAIN:-claude-fable-5,claude-opus-4-8,claude-opus-4-7}"
-      CLAUDE_ACTION_MODEL_CHAIN="${CLAUDE_ACTION_MODEL_CHAIN:-claude-sonnet-5,claude-opus-4-8}"
-      CLAUDE_SINGLE_MODEL_CHAIN="${CLAUDE_SINGLE_MODEL_CHAIN:-claude-fable-5,claude-opus-4-8,claude-opus-4-7}"
+      DUCK_MODEL="$(_duck_model_for copilot)"
+      ENGINE_LABEL="triage: $(ai_models_label_chain "$CLAUDE_TRIAGE_MODEL_CHAIN") → deep: $(ai_models_label_chain "$CLAUDE_DEEP_MODEL_CHAIN") + duck: $(ai_model_label "$DUCK_MODEL") → audit: $(ai_models_label_chain "$CLAUDE_AUDIT_MODEL_CHAIN")"
+      ENGINE_SINGLE_LABEL="single-reviewer mode: $(ai_models_label_chain "$CLAUDE_SINGLE_MODEL_CHAIN")"
       ;;
     gemini)
-      # Per-engine model overrides via env (env → default).
-      # GEMINI_FLASH_MODEL controls the speed/cost tier (triage + action).
-      # GEMINI_PRO_MODEL controls the quality tier (deep + audit + single).
-      local _gflash="${GEMINI_FLASH_MODEL:-gemini-3.8-flash}"
-      local _gpro="${GEMINI_PRO_MODEL:-gemini-2.5-pro}"
-      ENGINE_TRIAGE_MODEL="$_gflash"
-      ENGINE_DEEP_MODEL="$_gpro"
-      ENGINE_AUDIT_MODEL="$_gpro"
-      ENGINE_ACTION_MODEL="$_gflash"
-      ENGINE_SINGLE_MODEL="$_gpro"
-      ENGINE_LABEL="triage: $_gflash → deep: $_gpro + duck: sonnet 4.6 → audit: $_gpro"
-      ENGINE_SINGLE_LABEL="single-reviewer mode: $_gpro"
+      # In-Gemini model chains (comma-separated, walked left to right on a rate
+      # limit), one per tier: ai_models_gemini_chain <tier> (lib/engine-models.sh)
+      # — GEMINI_FLASH_MODEL_CHAIN / GEMINI_PRO_MODEL_CHAIN, then AI_MODELS_GEMINI
+      # (or the defaults) with GEMINI_FLASH_MODEL / GEMINI_PRO_MODEL, when set,
+      # replacing just the first model. The call sites resolve the chain again, so
+      # nothing computed here is exported.
+      local _gtriage _gdeep _gaudit _gsingle
+      _gtriage="$(ai_models_gemini_chain triage)"
+      _gdeep="$(ai_models_gemini_chain deep)"
+      _gaudit="$(ai_models_gemini_chain audit)"
+      _gsingle="$(ai_models_gemini_chain single)"
+      ENGINE_TRIAGE_MODEL="$(_engine_chain_first "$_gtriage")"
+      ENGINE_DEEP_MODEL="$(_engine_chain_first "$_gdeep")"
+      ENGINE_AUDIT_MODEL="$(_engine_chain_first "$_gaudit")"
+      ENGINE_ACTION_MODEL="$(_engine_chain_first "$(ai_models_gemini_chain action)")"
+      ENGINE_SINGLE_MODEL="$(_engine_chain_first "$_gsingle")"
       # Cross-engine rubber duck: use Claude for diversity
       DUCK_ENGINE="claude"
-      DUCK_MODEL="claude-sonnet-4-6"
-      # In-Gemini model fallback chains (comma-separated, walked left-to-right on rate-limit).
-      # Flash chain: 3.8-flash (speed/cost) → 2.5-pro (quality fallback on exhaustion).
-      # Pro chain: 2.5-pro (quality) → 2.0-flash (graceful degradation on exhaustion).
-      # Override per workflow via env to tune cost/capability trade-offs.
-      GEMINI_FLASH_MODEL_CHAIN="${GEMINI_FLASH_MODEL_CHAIN:-${_gflash},gemini-2.5-pro}"
-      GEMINI_PRO_MODEL_CHAIN="${GEMINI_PRO_MODEL_CHAIN:-${_gpro},gemini-2.0-flash}"
+      DUCK_MODEL="$(_duck_model_for claude)"
+      ENGINE_LABEL="triage: $(ai_models_label_chain "$_gtriage") → deep: $(ai_models_label_chain "$_gdeep") + duck: $(ai_model_label "$DUCK_MODEL") → audit: $(ai_models_label_chain "$_gaudit")"
+      ENGINE_SINGLE_LABEL="single-reviewer mode: $(ai_models_label_chain "$_gsingle")"
       # Clear the Claude-only chain vars so callers that check them unconditionally
       # do not accidentally apply a stale Claude chain to the Gemini engine.
       CLAUDE_TRIAGE_MODEL_CHAIN=""
@@ -217,16 +275,25 @@ set_engine_config() {
       CLAUDE_SINGLE_MODEL_CHAIN=""
       ;;
     copilot)
-      ENGINE_TRIAGE_MODEL="o4-mini"
-      ENGINE_DEEP_MODEL="o4-mini"
-      ENGINE_AUDIT_MODEL="o4-mini"
-      ENGINE_ACTION_MODEL="o4-mini"
-      ENGINE_SINGLE_MODEL="o4-mini"
-      ENGINE_LABEL="triage: o4-mini → deep: o4-mini + duck: ${GEMINI_FLASH_MODEL:-gemini-3.8-flash} → audit: o4-mini (GitHub Models API)"
-      ENGINE_SINGLE_LABEL="single-reviewer mode: o4-mini (GitHub Models API)"
+      # One GitHub Models id per tier: ai_models_copilot_model <tier>
+      # (lib/engine-models.sh) — COPILOT_API_MODEL when the caller set it (every
+      # tier), else AI_MODELS_COPILOT, else openai/o4-mini. Each Copilot call
+      # sets COPILOT_API_MODEL to its tier's model.
+      COPILOT_API_MODEL="${COPILOT_API_MODEL:-$DEFAULT_COPILOT_API_MODEL}"
+      # ENGINE_*_MODEL keep the id without its vendor prefix (openai/o4-mini →
+      # o4-mini): token records and the pricing table key on it, so it must not
+      # be the display label.
+      local _cm
+      _cm="$(ai_models_copilot_model triage)"; ENGINE_TRIAGE_MODEL="${_cm#*/}"
+      _cm="$(ai_models_copilot_model deep)";   ENGINE_DEEP_MODEL="${_cm#*/}"
+      _cm="$(ai_models_copilot_model audit)";  ENGINE_AUDIT_MODEL="${_cm#*/}"
+      _cm="$(ai_models_copilot_model action)"; ENGINE_ACTION_MODEL="${_cm#*/}"
+      _cm="$(ai_models_copilot_model single)"; ENGINE_SINGLE_MODEL="${_cm#*/}"
       # Cross-engine rubber duck: use Gemini when Copilot is primary
       DUCK_ENGINE="gemini"
-      DUCK_MODEL="${GEMINI_FLASH_MODEL:-gemini-3.8-flash}"
+      DUCK_MODEL="$(_duck_model_for gemini)"
+      ENGINE_LABEL="triage: $(ai_model_label "$ENGINE_TRIAGE_MODEL") → deep: $(ai_model_label "$ENGINE_DEEP_MODEL") + duck: $(ai_model_label "$DUCK_MODEL") → audit: $(ai_model_label "$ENGINE_AUDIT_MODEL") (GitHub Models API)"
+      ENGINE_SINGLE_LABEL="single-reviewer mode: $(ai_model_label "$ENGINE_SINGLE_MODEL") (GitHub Models API)"
       # No in-engine chain for Copilot — single GitHub Models endpoint.
       CLAUDE_TRIAGE_MODEL_CHAIN=""
       CLAUDE_DEEP_MODEL_CHAIN=""
@@ -251,7 +318,7 @@ set_engine_config() {
   # claude) branch sets DUCK_ENGINE=copilot — and copilot_chat references a bare
   # $COPILOT_API_MODEL under `set -u`. Leaving it unset on a non-copilot primary
   # silently aborts the duck subprocess and skips tier-2 (#881).
-  COPILOT_API_MODEL="${COPILOT_API_MODEL:-openai/o4-mini}"
+  COPILOT_API_MODEL="${COPILOT_API_MODEL:-$DEFAULT_COPILOT_API_MODEL}"
 
   export ENGINE_TRIAGE_MODEL ENGINE_DEEP_MODEL ENGINE_AUDIT_MODEL
   export ENGINE_ACTION_MODEL ENGINE_SINGLE_MODEL
@@ -260,7 +327,6 @@ set_engine_config() {
   export CLAUDE_TRIAGE_MODEL_CHAIN CLAUDE_DEEP_MODEL_CHAIN
   export CLAUDE_AUDIT_MODEL_CHAIN CLAUDE_ACTION_MODEL_CHAIN
   export CLAUDE_SINGLE_MODEL_CHAIN
-  export GEMINI_FLASH_MODEL_CHAIN GEMINI_PRO_MODEL_CHAIN
 }
 
 # Initial config
@@ -276,11 +342,22 @@ echo "    engine: $REVIEW_ENGINE ($ENGINE_LABEL)"
 #   fix-issue, human            → ENGINE_DEEP_MODEL   (full agentic work)
 #   * (unknown/empty)           → ENGINE_ACTION_MODEL (safe default)
 model_for_intent() {
+  case "$(tier_for_intent "${1:-}")" in
+    triage) echo "$ENGINE_TRIAGE_MODEL" ;;
+    deep)   echo "$ENGINE_DEEP_MODEL"   ;;
+    *)      echo "$ENGINE_ACTION_MODEL" ;;
+  esac
+}
+
+# tier_for_intent <intent_type> — the tier name model_for_intent picks from
+# (triage | action | deep). run_writer_with_fallback passes it to run_writer so
+# the writer walks that tier's chain even when two tiers share a primary model.
+tier_for_intent() {
   case "${1:-}" in
-    human-pr|fix-bot-comment)   echo "$ENGINE_TRIAGE_MODEL" ;;
-    fix-reviews|fix-ci|rebase)  echo "$ENGINE_ACTION_MODEL" ;;
-    fix-issue|human)            echo "$ENGINE_DEEP_MODEL"   ;;
-    *)                          echo "$ENGINE_ACTION_MODEL" ;;
+    human-pr|fix-bot-comment)   echo triage ;;
+    fix-reviews|fix-ci|rebase)  echo action ;;
+    fix-issue|human)            echo deep   ;;
+    *)                          echo action ;;
   esac
 }
 
@@ -299,12 +376,16 @@ check_provider_headroom() {
     claude)
       # Probe the Anthropic API for rate-limit headers. Uses a minimal
       # 1-token request so the probe itself barely consumes quota.
-      local _resp remaining_tokens limit_tokens
+      # The probe model is the configured triage primary (AI_MODELS_CLAUDE /
+      # CLAUDE_TRIAGE_MODEL_CHAIN), so a retired default can't blind it.
+      local _resp remaining_tokens limit_tokens _hmodel
+      _hmodel="$(_engine_chain_first "${CLAUDE_TRIAGE_MODEL_CHAIN:-$(ai_models_chain claude triage)}")"
+      [[ "$_hmodel" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || _hmodel="claude-haiku-4-5-20251001"
       _resp=$(curl -s -D - -o /dev/null -X POST https://api.anthropic.com/v1/messages \
         -H "x-api-key: ${ANTHROPIC_API_KEY:-}" \
         -H "anthropic-version: 2023-06-01" \
         -H "content-type: application/json" \
-        --data-raw '{"model":"claude-haiku-4-5-20251001","max_tokens":1,"messages":[{"role":"user","content":"."}]}' \
+        --data-raw "{\"model\":\"${_hmodel}\",\"max_tokens\":1,\"messages\":[{\"role\":\"user\",\"content\":\".\"}]}" \
         2>/dev/null || true)
       remaining_tokens=$(printf '%s' "$_resp" | grep -i 'x-ratelimit-remaining-tokens:' \
         | cut -d: -f2 | tr -d '[:space:]' || true)
@@ -312,6 +393,11 @@ check_provider_headroom() {
         | cut -d: -f2 | tr -d '[:space:]' || true)
       if [[ "$remaining_tokens" =~ ^[0-9]+$ ]] && [[ "$limit_tokens" =~ ^[0-9]+$ ]] && [ "$limit_tokens" -gt 0 ]; then
         used_pct=$(( 100 - (remaining_tokens * 100 / limit_tokens) ))
+      elif [ -n "${ANTHROPIC_API_KEY:-}" ] && [ -z "${_HEADROOM_PROBE_WARNED:-}" ]; then
+        # With an API key the probe should return rate-limit headers; none means
+        # usage is unknown (e.g. the probe model is retired), not 0%.
+        echo "::warning::[headroom] claude — no rate-limit headers from ${_hmodel}; usage unknown, proceeding" >&2
+        _HEADROOM_PROBE_WARNED=1
       fi
       ;;
     gemini)
@@ -599,7 +685,7 @@ copilot_chat() {
 # _gemini_api_keys
 # Prints the ordered, de-duplicated list of configured Gemini API keys, one per
 # line: the primary (GEMINI_API_KEY, then GOOGLE_API_KEY) followed by the extra
-# resilience keys GOOGLE_API_KEY_2 and GOOGLE_API_KEY_3 (#1777). Empty vars are
+# resilience keys GOOGLE_API_KEY_2, GOOGLE_API_KEY_3 and GOOGLE_API_KEY_4 (#1777). Empty vars are
 # skipped; duplicate values (the common case where GEMINI_API_KEY == GOOGLE_API_KEY,
 # both wired to the same secret) collapse to one entry. Emits nothing when no key
 # is configured, so callers can distinguish "no keys" from "one or more keys".
@@ -610,7 +696,7 @@ copilot_chat() {
 # depleted ones stay as a last resort in case credits were topped up mid-run.
 _gemini_api_keys() {
   local _name k seen="" _depleted="" _skip=", ${GEMINI_DEPLETED_KEYS:-}, "
-  for _name in GEMINI_API_KEY GOOGLE_API_KEY GOOGLE_API_KEY_2 GOOGLE_API_KEY_3; do
+  for _name in GEMINI_API_KEY GOOGLE_API_KEY GOOGLE_API_KEY_2 GOOGLE_API_KEY_3 GOOGLE_API_KEY_4; do
     k="${!_name:-}"
     [ -z "$k" ] && continue
     case "$seen" in
@@ -730,8 +816,9 @@ _gemini_chain_invoke() {
       else
         local _had_gk="${GOOGLE_API_KEY+x}" _had_gmk="${GEMINI_API_KEY+x}"
         local _saved_gk="${GOOGLE_API_KEY:-}" _saved_gmk="${GEMINI_API_KEY:-}"
-        local _key
+        local _key _key_n=0
         for _key in "${_api_keys[@]}"; do
+          _key_n=$((_key_n + 1))
           export GOOGLE_API_KEY="$_key" GEMINI_API_KEY="$_key"
           rc=0
           _gemini_invoke "$prompt_file" "$timeout_sec" "$model" "${extra_args[@]}" \
@@ -739,6 +826,10 @@ _gemini_chain_invoke() {
           [ "$rc" -eq 0 ] && break
           # Only a rate-limit rotates to the next key; a hard failure stops here.
           is_rate_limited_files "$stdout_tmp" "$stderr_tmp" || break
+          # By position, never the key: the log shows how far rotation got.
+          if [ "$_key_n" -lt "${#_api_keys[@]}" ]; then
+            echo "::notice::[gemini] model $model: API key $_key_n of ${#_api_keys[@]} throttled — trying the next key" >&2
+          fi
         done
         # Restore the caller's original key env for subsequent models/engines.
         if [ -n "$_had_gk" ]; then export GOOGLE_API_KEY="$_saved_gk"; else unset GOOGLE_API_KEY; fi
@@ -1228,7 +1319,9 @@ run_triage() {
         fi
         ;;
       gemini)
-        local _triage_gemini_chain="${GEMINI_FLASH_MODEL_CHAIN:-$ENGINE_TRIAGE_MODEL}"
+        local _triage_gemini_chain
+        _triage_gemini_chain="$(ai_models_gemini_chain triage)"
+        _triage_gemini_chain="${_triage_gemini_chain:-$ENGINE_TRIAGE_MODEL}"
         if [ -n "$_tok_tmp" ]; then
           _GEMINI_CHAIN_MODEL_USED=""
           _gemini_chain_invoke "$_triage_gemini_chain" "$prompt_file" "$TRIAGE_TIMEOUT_SEC" \
@@ -1244,6 +1337,9 @@ run_triage() {
         # `*` is rejected ("Invalid rule format: *"), which broke this fallback
         # outright (#1957). Tools not explicitly allowed are not auto-approved
         # in non-interactive -p mode either.
+        local _copilot_tier_model
+        _copilot_tier_model="$(ai_models_copilot_model triage)"
+        local -x COPILOT_API_MODEL="$_copilot_tier_model"
         if [ -n "$_tok_tmp" ]; then
           copilot_chat "$prompt_file" "$TRIAGE_TIMEOUT_SEC" --deny-tool shell --deny-tool write | tee "$_tok_tmp" || rc=${PIPESTATUS[0]}
         else
@@ -1388,19 +1484,18 @@ run_agentic() {
       fi
       ;;
     gemini)
-      # Capability-aware chain selection: flash chain for speed tiers, pro chain
-      # for quality tiers. Honor explicit model pin when it differs from the tier default.
-      local _agentic_gemini_chain _gemini_tier_default=""
+      # The tier's own chain (AI_MODELS_GEMINI deep/audit/single/action). Honor
+      # explicit model pin when it differs from the tier default.
+      local _agentic_gemini_chain _gemini_tier_default="" _gemini_tier
       case "$tier" in
-        deep)   _agentic_gemini_chain="${GEMINI_PRO_MODEL_CHAIN:-$model}"
-                _gemini_tier_default="${ENGINE_DEEP_MODEL:-}" ;;
-        audit)  _agentic_gemini_chain="${GEMINI_PRO_MODEL_CHAIN:-$model}"
-                _gemini_tier_default="${ENGINE_AUDIT_MODEL:-}" ;;
-        single) _agentic_gemini_chain="${GEMINI_PRO_MODEL_CHAIN:-$model}"
-                _gemini_tier_default="${ENGINE_SINGLE_MODEL:-}" ;;
-        *)      _agentic_gemini_chain="${GEMINI_FLASH_MODEL_CHAIN:-$model}"
-                _gemini_tier_default="${ENGINE_ACTION_MODEL:-}" ;;
+        deep)   _gemini_tier_default="${ENGINE_DEEP_MODEL:-}" ;;
+        audit)  _gemini_tier_default="${ENGINE_AUDIT_MODEL:-}" ;;
+        single) _gemini_tier_default="${ENGINE_SINGLE_MODEL:-}" ;;
+        *)      _gemini_tier_default="${ENGINE_ACTION_MODEL:-}" ;;
       esac
+      case "$tier" in deep|audit|single) _gemini_tier="$tier" ;; *) _gemini_tier=action ;; esac
+      _agentic_gemini_chain="$(ai_models_gemini_chain "$_gemini_tier")"
+      _agentic_gemini_chain="${_agentic_gemini_chain:-$model}"
       if [ -n "$_gemini_tier_default" ] && [ "$model" != "$_gemini_tier_default" ]; then
         _agentic_gemini_chain="$model"
       fi
@@ -1419,6 +1514,12 @@ run_agentic() {
       # write the verdict JSON directly to $OUTPUT_FILE via the Bash tool.
       # Teeing stdout (which includes assistant text and tool transcripts)
       # would overwrite that file and corrupt the JSON.
+      local _copilot_tier_model
+      case "$tier" in
+        deep|audit|single) _copilot_tier_model="$(ai_models_copilot_model "$tier")" ;;
+        *)                 _copilot_tier_model="$(ai_models_copilot_model action)" ;;
+      esac
+      local -x COPILOT_API_MODEL="$_copilot_tier_model"
       if [ -n "$_tok_tmp" ]; then
         copilot_chat "$prompt_file" "$DEEP_TIMEOUT_SEC" --yolo | tee "$_tok_tmp" || rc=${PIPESTATUS[0]}
       else
@@ -1500,6 +1601,17 @@ run_persona() {
 run_writer() {
   local prompt_file="$1"
   local model="${2:-$ENGINE_ACTION_MODEL}"
+  # [tier] (tier_for_intent) names the tier whose whole chain the writer walks.
+  # Without it, <model> is mapped back to the tier whose ENGINE_*_MODEL it is
+  # (action first); empty means an explicit pin that runs alone.
+  local _writer_tier="${3:-}"
+  [ -n "$_writer_tier" ] || case "$model" in
+    "${ENGINE_ACTION_MODEL:-}") _writer_tier=action ;;
+    "${ENGINE_DEEP_MODEL:-}")   _writer_tier=deep ;;
+    "${ENGINE_TRIAGE_MODEL:-}") _writer_tier=triage ;;
+    "${ENGINE_AUDIT_MODEL:-}")  _writer_tier=audit ;;
+    "${ENGINE_SINGLE_MODEL:-}") _writer_tier=single ;;
+  esac
 
   if [ "${DEV_LEAD_DRY_RUN:-false}" = "true" ]; then
     echo "  [dry-run] run_writer: would invoke $REVIEW_ENGINE with prompt $(wc -l < "$prompt_file") lines"
@@ -1522,12 +1634,12 @@ run_writer() {
   _t_start="$(_now_ms)"
   case "$REVIEW_ENGINE" in
     claude)
-      # See run_agentic — honor caller's explicit model pin when it differs
-      # from the tier default. Chain only applies when the caller used the
-      # default action model for this engine.
-      local _writer_chain="${CLAUDE_ACTION_MODEL_CHAIN:-$model}"
-      if [ -n "${ENGINE_ACTION_MODEL:-}" ] && [ "$model" != "$ENGINE_ACTION_MODEL" ]; then
-        _writer_chain="$model"
+      # The selected tier's chain (CLAUDE_<TIER>_MODEL_CHAIN); an explicit
+      # model pin that matches no tier runs alone.
+      local _writer_chain="$model" _writer_chain_var
+      if [ -n "$_writer_tier" ]; then
+        _writer_chain_var="CLAUDE_$(printf '%s' "$_writer_tier" | tr '[:lower:]' '[:upper:]')_MODEL_CHAIN"
+        _writer_chain="${!_writer_chain_var:-$model}"
       fi
       if [ -n "$_tmp" ]; then
         _claude_chain_invoke "$_writer_chain" "$prompt_file" "$ACTION_TIMEOUT_SEC" \
@@ -1542,10 +1654,11 @@ run_writer() {
       fi
       ;;
     gemini)
-      # Flash chain for writer (action) tier; honor explicit model pin.
-      local _writer_gemini_chain="${GEMINI_FLASH_MODEL_CHAIN:-$model}"
-      if [ -n "${ENGINE_ACTION_MODEL:-}" ] && [ "$model" != "$ENGINE_ACTION_MODEL" ]; then
-        _writer_gemini_chain="$model"
+      # The selected tier's chain; an explicit model pin runs alone.
+      local _writer_gemini_chain="$model"
+      if [ -n "$_writer_tier" ]; then
+        _writer_gemini_chain="$(ai_models_gemini_chain "$_writer_tier")"
+        _writer_gemini_chain="${_writer_gemini_chain:-$model}"
       fi
       if [ -n "$_tmp" ]; then
         _GEMINI_CHAIN_MODEL_USED=""
@@ -1557,7 +1670,16 @@ run_writer() {
       fi
       ;;
     copilot)
-      # Self-sufficient write support via gh copilot --yolo
+      # Self-sufficient write support via gh copilot --yolo: the selected
+      # tier's Copilot id; a full vendor/model pin is used as is; anything
+      # else falls back to the action tier.
+      local _copilot_tier_model
+      case "$_writer_tier:$model" in
+        :*/*) _copilot_tier_model="$model" ;;
+        :*)   _copilot_tier_model="$(ai_models_copilot_model action)" ;;
+        *)    _copilot_tier_model="$(ai_models_copilot_model "$_writer_tier")" ;;
+      esac
+      local -x COPILOT_API_MODEL="$_copilot_tier_model"
       if [ -n "$_tmp" ]; then
         copilot_chat "$prompt_file" "$ACTION_TIMEOUT_SEC" --yolo 2>&1 | tee "$_tmp" || rc=${PIPESTATUS[0]}
       else
@@ -1762,10 +1884,10 @@ run_writer_with_fallback() {
     # missing/placeholder Copilot token (#1591): record it so a Gemini-only run
     # with no key yields the distinct non-retryable `unconfigured` reason rather
     # than the retryable `engine-error`. Retrying cannot conjure an API key. The
-    # extra resilience keys (GOOGLE_API_KEY_2/_3, #1777) also count as configured,
+    # extra resilience keys (GOOGLE_API_KEY_2/_3/_4, #1777) also count as configured,
     # so a run authenticated only by a secondary key is NOT treated as a config-gap.
     if [ "$engine" = "gemini" ] && [ -z "$(_gemini_api_keys)" ]; then
-      echo "::warning::Skipping gemini fallback: no Gemini API key configured (GEMINI_API_KEY / GOOGLE_API_KEY / GOOGLE_API_KEY_2 / GOOGLE_API_KEY_3) — configuration gap, not a rate limit" >&2
+      echo "::warning::Skipping gemini fallback: no Gemini API key configured (GEMINI_API_KEY / GOOGLE_API_KEY / GOOGLE_API_KEY_2 / GOOGLE_API_KEY_3 / GOOGLE_API_KEY_4) — configuration gap, not a rate limit" >&2
       any_unconfigured=1
       continue
     fi
@@ -1795,11 +1917,12 @@ run_writer_with_fallback() {
     # Re-evaluate model names for the new engine so model_for_intent returns
     # the correct engine-specific model for the requested tier.
     set_engine_config
-    local model
+    local model tier
     model="$(model_for_intent "$intent")"
+    tier="$(tier_for_intent "$intent")"
     local rc=0 _t_start _t_end
     _t_start=$(date +%s)
-    run_writer "$prompt_file" "$model" || rc=$?
+    run_writer "$prompt_file" "$model" "$tier" || rc=$?
     _t_end=$(date +%s)
     export REVIEW_ENGINE="$saved"
     # Restore original config for subsequent PRs in the same session
@@ -1903,70 +2026,151 @@ sys.exit(1)
 " "$raw" > "$dest" 2>/dev/null
 }
 
-# run_duck <prompt_file> <model>
-# Cross-engine adversarial "rubber duck" review.
-# DUCK_ENGINE is set by engine.sh init: claude→copilot, gemini→claude, copilot→gemini.
-# All three engine branches (claude, gemini, copilot) are reachable — the gemini
-# branch executes when REVIEW_ENGINE=copilot (copilot primary → gemini duck).
-# Output to stdout. Strips non-selected engine credentials to prevent cross-engine leakage.
-# _duck_model_for <engine> — the rubber-duck model for <engine>. AI_DUCK_MODEL
-# applies only when <engine> is the explicitly configured AI_DUCK_ENGINE (a model
-# id is engine-specific, so it must never follow the duck onto another engine).
-_duck_model_for() {
-  local engine="$1" wanted
-  wanted="$(printf '%s' "${AI_DUCK_ENGINE:-}" | tr '[:upper:]' '[:lower:]')"
-  if [ -n "${AI_DUCK_MODEL:-}" ] && [ "$engine" = "$wanted" ]; then
-    printf '%s' "$AI_DUCK_MODEL"
-    return 0
+# duck_engine_candidates — prints one "<engine> <model>" line per rubber-duck
+# engine to try, in order; prints nothing when no usable engine is left.
+#   1. The engines AI_DUCK_ENGINE lists (e.g. "gemini,claude"), in order. An
+#      entry "none" (or off/disabled/false) ends the list: nothing after it,
+#      and nothing chosen automatically, is tried. AI_DUCK_ENGINE=none alone
+#      turns the duck off.
+#   2. set_engine_config's cross-engine default (DUCK_ENGINE / DUCK_MODEL).
+#   3. The other engines in AI_ENGINES order, except the primary REVIEW_ENGINE.
+# Only enabled, available engines are listed. "Available" is the
+# validate_engines pre-flight flag (unset counts as available) and
+# AI_ENGINES_RATE_LIMITED, so a disabled or dead engine (e.g. Copilot on a
+# classic PAT) is skipped instead of failing on every review. A listed engine
+# that is skipped, or an unknown entry, logs one ::warning::.
+duck_engine_candidates() {
+  local t e m out="" stop=0
+  for t in $(_ai_duck_engines); do
+    case "$t" in
+      none|off|disabled|false)
+        stop=1
+        break ;;
+      claude|gemini|copilot)
+        [[ " $out " == *" $t "* ]] && continue
+        if ai_engine_available "$t"; then
+          out="$out $t"
+        else
+          echo "::warning::AI_DUCK_ENGINE lists $t, which is disabled or unavailable — skipping it" >&2
+        fi ;;
+      *)
+        echo "::warning::AI_DUCK_ENGINE='${AI_DUCK_ENGINE}': '$t' is not a known engine (claude, gemini, copilot, none) — skipping it" >&2 ;;
+    esac
+  done
+  if [ "$stop" -eq 0 ]; then
+    for e in ${DUCK_ENGINE:-} $(ai_engine_chain); do
+      [[ " $out " == *" $e "* ]] && continue
+      # The primary is a duck only when AI_DUCK_ENGINE lists it (same vendor,
+      # other model); the cross-engine default never names the primary.
+      [ "$e" = "${REVIEW_ENGINE:-}" ] && continue
+      ai_engine_available "$e" && out="$out $e"
+    done
   fi
-  case "$engine" in
-    claude)  printf '%s' "claude-sonnet-4-6" ;;
-    gemini)  printf '%s' "${GEMINI_FLASH_MODEL:-gemini-3.8-flash}" ;;
-    copilot) printf '%s' "o4-mini" ;;
-  esac
+  for e in $out; do
+    if [ "$e" = "${DUCK_ENGINE:-}" ] && [ -n "${DUCK_MODEL:-}" ]; then
+      m="$DUCK_MODEL"
+    else
+      m="$(_duck_model_for "$e")"
+    fi
+    printf '%s %s\n' "$e" "$m"
+  done
 }
 
-# select_duck_engine — prints "<engine> <model>" for the rubber-duck reviewer,
-# or "none" when no usable engine is left. Order of preference:
-#   1. AI_DUCK_ENGINE (org/repo variable) when it is enabled and available;
-#      "none" / "off" turns the duck off.
-#   2. set_engine_config's cross-engine default (DUCK_ENGINE / DUCK_MODEL) when
-#      that engine is enabled and available.
-#   3. the first other enabled, available engine in AI_ENGINES order.
-# "Available" is the validate_engines pre-flight flag (unset counts as
-# available), so a disabled or dead engine (e.g. Copilot on a classic PAT) is
-# skipped instead of failing on every review.
+# select_duck_engine — prints "<engine> <model>" for the first rubber-duck
+# engine (duck_engine_candidates), or "none" when no usable engine is left.
 select_duck_engine() {
-  local wanted e
-  wanted="$(printf '%s' "${AI_DUCK_ENGINE:-}" | tr '[:upper:]' '[:lower:]')"
-  case "$wanted" in
-    none|off|disabled|false)
-      printf 'none'
-      return 0 ;;
-    claude|gemini|copilot)
-      if ai_engine_available "$wanted"; then
-        printf '%s %s' "$wanted" "$(_duck_model_for "$wanted")"
-        return 0
-      fi
-      echo "::warning::AI_DUCK_ENGINE=$wanted is disabled or unavailable — choosing another rubber-duck engine" >&2 ;;
-    "") ;;
-    *)
-      echo "::warning::AI_DUCK_ENGINE='${AI_DUCK_ENGINE}' is not a known engine (claude, gemini, copilot, none) — choosing automatically" >&2 ;;
-  esac
-  if [ -n "${DUCK_ENGINE:-}" ] && ai_engine_available "$DUCK_ENGINE"; then
-    printf '%s %s' "$DUCK_ENGINE" "${DUCK_MODEL:-$(_duck_model_for "$DUCK_ENGINE")}"
-    return 0
+  local first
+  first="$(duck_engine_candidates)"
+  first="${first%%$'\n'*}"
+  printf '%s' "${first:-none}"
+}
+
+# duck_verdict_valid <file> — 0 when <file> holds a rubber-duck verdict: JSON
+# whose .decision is one prompts/rubber-duck.md allows (approve or escalate,
+# any case). Valid JSON without one (e.g. {} or an error object) is not a
+# verdict, so the duck chain moves on instead of synthesizing null values.
+duck_verdict_valid() {
+  [ -s "${1:-}" ] || return 1
+  jq -e '(.decision | type == "string") and
+         ((.decision | ascii_downcase) as $d | ["approve", "escalate"] | index($d) != null)' \
+    "$1" >/dev/null 2>&1
+}
+
+# run_duck_chain <prompt_file> [candidates]
+# Runs the rubber duck on each "<engine> <model>" line of <candidates>
+# (default: duck_engine_candidates) until one writes a valid verdict to
+# $OUTPUT_FILE (duck_verdict_valid). An engine that ends without a verdict
+# (throttled on every model and key, an auth or policy failure, no JSON, or
+# JSON without a decision) hands over to the next,
+# the way a throttled Gemini key hands over to the next key. A timeout (exit
+# 124 or 137) stops the chain, so a slow duck cannot add a second timeout to
+# the review. Each attempt runs in a subshell, because run_duck drops the other
+# engines' credentials and the next candidate needs its own. No fallback starts
+# once DUCK_TIMEOUT_SEC has passed since the first attempt began, so the whole
+# chain stays under two duck timeouts. Writes
+# "<engine> <model>" of the verdict's engine to ${OUTPUT_FILE}.engine, and
+# returns 0 when a verdict was written, otherwise the last attempt's exit code
+# (1 when there was nothing to try).
+run_duck_chain() {
+  local prompt_file="$1" candidates e m rc=1 n=0 total tried="" out_tmp err_tmp
+  local _started="$SECONDS"
+  if [ "$#" -ge 2 ]; then
+    candidates="$2"
+  else
+    candidates="$(duck_engine_candidates)"
   fi
-  for e in $(ai_engine_chain); do
-    [ "$e" = "${REVIEW_ENGINE:-}" ] && continue
-    if ai_engine_available "$e"; then
-      printf '%s %s' "$e" "$(_duck_model_for "$e")"
+  rm -f "${OUTPUT_FILE}.engine"
+  total="$(printf '%s\n' "$candidates" | grep -c '[^[:space:]]' || true)"
+  while read -r e m; do
+    [ -n "$e" ] && [ "$e" != none ] || continue
+    n=$((n + 1))
+    if [ -n "$tried" ]; then
+      if [ $((SECONDS - _started)) -ge "${DUCK_TIMEOUT_SEC:-300}" ]; then
+        echo "::notice::[duck] not trying $e ($m): the duck's ${DUCK_TIMEOUT_SEC:-300}s budget is spent" >&2
+        break
+      fi
+      echo "::notice::[duck] trying $e ($m), duck engine $n of $total" >&2
+    fi
+    tried="${tried:+$tried, }$e"
+    rm -f "$OUTPUT_FILE"
+    out_tmp="$(mktemp)"
+    err_tmp="$(mktemp)"
+    rc=0
+    ( DUCK_ENGINE="$e"; DUCK_MODEL="$m"; run_duck "$prompt_file" "$m" ) \
+      < /dev/null > "$out_tmp" 2> "$err_tmp" || rc=$?
+    cat "$out_tmp"
+    cat "$err_tmp" >&2
+    if duck_verdict_valid "$OUTPUT_FILE"; then
+      rm -f "$out_tmp" "$err_tmp"
+      printf '%s %s\n' "$e" "$m" > "${OUTPUT_FILE}.engine"
       return 0
     fi
-  done
-  printf 'none'
+    if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
+      rm -f "$out_tmp" "$err_tmp"
+      echo "::warning::[duck] $e ($m) timed out — not trying another duck engine" >&2
+      return "$rc"
+    fi
+    # Phrasing avoids _rate_limit_pattern tokens, as in the chain walkers.
+    if is_rate_limited_files "$out_tmp" "$err_tmp"; then
+      echo "::warning::[duck] $e ($m) throttled (exit $rc) and wrote no verdict" >&2
+    else
+      echo "::warning::[duck] $e ($m) wrote no verdict (exit $rc)" >&2
+    fi
+    rm -f "$out_tmp" "$err_tmp"
+    [ "$rc" -ne 0 ] || rc=1
+  done <<< "$candidates"
+  if [ -n "$tried" ]; then
+    echo "::notice::[duck] no duck engine produced a verdict (tried: $tried) — continuing with the deep review only" >&2
+  fi
+  return "$rc"
 }
 
+# run_duck <prompt_file> <model>
+# Cross-engine adversarial "rubber duck" review on DUCK_ENGINE (one engine;
+# run_duck_chain walks the fallbacks). The engine.sh init default is
+# claude→copilot, gemini→claude, copilot→gemini, and all three branches are
+# reachable. Output to stdout. Strips non-selected engine credentials to
+# prevent cross-engine leakage.
 run_duck() {
   local prompt_file="$1"
   local model="$2"
@@ -1984,7 +2188,8 @@ run_duck() {
   case "$DUCK_ENGINE" in
     claude)
       unset COPILOT_GITHUB_TOKEN 2>/dev/null || true
-      unset GOOGLE_API_KEY 2>/dev/null || true
+      # Every Gemini key, rotation keys included: the duck has shell tools.
+      unset GOOGLE_API_KEY GOOGLE_API_KEY_2 GOOGLE_API_KEY_3 GOOGLE_API_KEY_4 2>/dev/null || true
       unset GEMINI_API_KEY 2>/dev/null || true
       # Thread the opt-in MCP config (no-op when REVIEW_MCP_CONFIG is unset).
       _mcp_review_flags "Bash,Read,Grep,Glob"
@@ -2023,14 +2228,21 @@ run_duck() {
     copilot)
       unset CLAUDE_CODE_OAUTH_TOKEN 2>/dev/null || true
       unset ANTHROPIC_API_KEY 2>/dev/null || true
-      unset GOOGLE_API_KEY 2>/dev/null || true
+      # Every Gemini key, rotation keys included: the duck has shell tools.
+      unset GOOGLE_API_KEY GOOGLE_API_KEY_2 GOOGLE_API_KEY_3 GOOGLE_API_KEY_4 2>/dev/null || true
       unset GEMINI_API_KEY 2>/dev/null || true
-      # An explicit AI_DUCK_MODEL (the only way <model> equals it — see
-      # _duck_model_for) overrides COPILOT_API_MODEL for this call; the built-in
-      # default label stays a label and COPILOT_API_MODEL decides.
-      if [ -n "${AI_DUCK_MODEL:-}" ] && [ "$model" = "$AI_DUCK_MODEL" ]; then
-        local -x COPILOT_API_MODEL="$model"
+      # An explicit AI_DUCK_MODEL for a Copilot duck (AI_DUCK_ENGINE lists
+      # copilot first; see _duck_model_for) is the model for this call;
+      # otherwise <model> is only a label and the duck key decides
+      # (ai_models_copilot_model duck).
+      local _copilot_duck_model _copilot_duck_wanted
+      _copilot_duck_wanted="$(_ai_duck_first)"
+      if [ "$_copilot_duck_wanted" = copilot ] && [ -n "${AI_DUCK_MODEL:-}" ] && [ "$model" = "$AI_DUCK_MODEL" ]; then
+        _copilot_duck_model="$model"
+      else
+        _copilot_duck_model="$(ai_models_copilot_model duck)"
       fi
+      local -x COPILOT_API_MODEL="$_copilot_duck_model"
       # Do NOT tee stdout to OUTPUT_FILE — same rationale as run_agentic copilot
       # branch: the prompt writes verdict JSON directly via the Bash tool.
       if [ -n "$_tok_tmp" ]; then
