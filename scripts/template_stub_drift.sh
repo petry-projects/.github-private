@@ -103,8 +103,8 @@ template_drift_allowlisted() {
 # A reference row is a file the manifest ENROLLS for post-collapse byte-identity
 # coverage but which seed-repo-template.sh deliberately never seeds into
 # repo-template until a pilot repo's per-role stubs collapse into it. It lives in
-# the --emit-workflow-only REFERENCE_MANIFEST of seed-repo-template.sh (reachable
-# for hashing, but never written by --emit into the seeded set). Until #1729's
+# the --emit-workflow REFERENCE_MANIFEST of seed-repo-template.sh (reachable
+# for hashing, but never written by _seed_repo into the seeded set). Until #1729's
 # pilot lands the collapse, the template has no such file, so a reference row
 # reports MISSING every run — but the GENERIC "re-seed via seed-repo-template.sh"
 # remedy can never clear that warning (seed deliberately won't emit it) and, worse,

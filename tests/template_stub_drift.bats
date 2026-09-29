@@ -176,7 +176,7 @@ setup() {
 
 @test "template_drift_is_reference: a normal covered stub is NOT a reference row (#1729)" {
   run template_drift_is_reference ".github/workflows/dev-lead.yml"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
 }
 
 @test "annotate: a MISSING reference row does NOT print the generic re-seed remedy and does not fail (#1729)" {
