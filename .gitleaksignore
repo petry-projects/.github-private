@@ -45,3 +45,7 @@ b37877721cd419b963b86d970c26cc3383761e33:tests/dev-lead/unit/test_fewshot_assemb
 # token at runtime, so only this historical commit carries the literal.
 beddd2cfaa173b620df231e9be476131100738e3:tests/dev-lead/unit/test_engine_error_class.bats:github-pat:179
 beddd2cfaa173b620df231e9be476131100738e3:tests/dev-lead/unit/test_engine_error_class.bats:github-pat:186
+# commit 94ef4ea (#1972 duck fallback): a Gemini key-rotation test used the fake
+# key value in STUB_ENGINE_RESPONSE_BY_KEY that matched generic-api-key; the next commit
+# renamed the fixtures to low-entropy values. Test data, not a credential.
+94ef4eae37ae11c110d0dc55dcf77d1c7168ee02:tests/dev-lead/unit/test_engine_gemini_keys.bats:generic-api-key:134
