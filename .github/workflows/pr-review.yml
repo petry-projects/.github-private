@@ -43,6 +43,9 @@ on:
       GOOGLE_API_KEY_3:
         # Extra Gemini API key for per-key rotation on rate-limit (#1777).
         required: false
+      GOOGLE_API_KEY_4:
+        # Extra Gemini API key for per-key rotation on rate-limit (#1777).
+        required: false
       GH_PAT_DON_PETRY:
         # don-petry's write/workflows PAT, also exposed as COPILOT_GITHUB_TOKEN for
         # the Copilot review engine (Copilot access is an account-subscription
@@ -186,9 +189,17 @@ jobs:
       #   AI_ENGINES     ordered list of enabled engines, e.g. "claude,gemini,copilot";
       #                  an engine not listed is never used; the first is primary.
       #   REVIEW_ENGINE  legacy primary override; leave unset to let AI_ENGINES decide.
-      #   AI_DUCK_ENGINE rubber-duck engine (claude|gemini|copilot|none); default auto.
-      #   AI_DUCK_MODEL  model for an explicit AI_DUCK_ENGINE.
-      #   GEMINI_FLASH_MODEL / GEMINI_PRO_MODEL  Gemini model ids (engine.sh defaults).
+      #   AI_DUCK_ENGINE ordered rubber-duck engines, e.g. "gemini,claude": the next
+      #                  runs when one returns no verdict; "none" alone turns it off;
+      #                  default auto.
+      #   AI_DUCK_MODEL  model for the first AI_DUCK_ENGINE entry.
+      #   AI_MODELS_CLAUDE / AI_MODELS_GEMINI / AI_MODELS_COPILOT  each provider's
+      #                  model list, e.g. "deep=claude-opus-5-5,claude-opus-4-8; triage=…"
+      #                  (scripts/lib/engine-models.sh). Every provider takes the same
+      #                  keys: triage, deep, audit, action, single, duck. Omitted keys
+      #                  keep their defaults.
+      #   GEMINI_FLASH_MODEL / GEMINI_PRO_MODEL  replace just the first Gemini model
+      #                  (triage + action / deep + audit + single).
       # The primary is derived here (expressions cannot split a list) from the
       # first AI_ENGINES entry; the scripts enforce the full list.
       AI_ENGINES: ${{ vars.AI_ENGINES || '' }}
@@ -197,6 +208,9 @@ jobs:
       AI_DUCK_MODEL: ${{ vars.AI_DUCK_MODEL || '' }}
       GEMINI_FLASH_MODEL: ${{ vars.GEMINI_FLASH_MODEL || '' }}
       GEMINI_PRO_MODEL: ${{ vars.GEMINI_PRO_MODEL || '' }}
+      AI_MODELS_CLAUDE: ${{ vars.AI_MODELS_CLAUDE || '' }}
+      AI_MODELS_GEMINI: ${{ vars.AI_MODELS_GEMINI || '' }}
+      AI_MODELS_COPILOT: ${{ vars.AI_MODELS_COPILOT || '' }}
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
       # Copilot engine authenticates with don-petry's PAT (the account holds the
       # Copilot subscription entitlement, not a token scope). Prefer the collapsed
@@ -209,6 +223,7 @@ jobs:
       GEMINI_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
       GOOGLE_API_KEY_2: ${{ secrets.GOOGLE_API_KEY_2 }}
       GOOGLE_API_KEY_3: ${{ secrets.GOOGLE_API_KEY_3 }}
+      GOOGLE_API_KEY_4: ${{ secrets.GOOGLE_API_KEY_4 }}
       GEMINI_CLI_TRUST_WORKSPACE: "true"
       # Event-triggered runs respect LIVE_MODE (same semantics as the former schedule).
       # repository_dispatch (mention) always runs live.
