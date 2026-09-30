@@ -485,8 +485,16 @@ STUB
 
 @test "family: unknown family warns and fails" {
   run ai_model_for_family gpt
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
   [[ "$output" == *"unknown family"* ]]
   run ai_model_for_family ""
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
+}
+
+@test "family: an invalid per-tier override id falls back to the default" {
+  export CLAUDE_DEEP_MODEL_CHAIN="bad id"
+  run ai_model_for_family opus
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"claude-opus-5-5"* ]]
+  [[ "$output" == *"invalid model id"* ]]
 }

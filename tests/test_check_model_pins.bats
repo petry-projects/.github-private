@@ -18,7 +18,7 @@ teardown() {
   mkdir -p "$SANDBOX/scripts"
   printf '%s\n' '#!/usr/bin/env bash' 'claude --model claude-sonnet-4-6' > "$SANDBOX/scripts/foo.sh"
   run bash "$CHECK" "$SANDBOX"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
   [[ "$output" == *"scripts/foo.sh:2"* ]]
 }
 
@@ -60,7 +60,7 @@ teardown() {
   mkdir -p "$SANDBOX/scripts"
   printf '%s\n' 'x=claude-fable-5' > "$SANDBOX/scripts/foo.sh"
   run bash "$CHECK" "$SANDBOX"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
 }
 
 # The final gate: the real repository must be clean.

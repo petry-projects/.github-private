@@ -94,7 +94,9 @@ for field in ("name", "trigger", "engine", "permissions"):
 # provider can be added without a code change.
 families = {"opus", "sonnet", "haiku"}
 engine = fm.get("engine", "")
-if engine and engine not in families and not engine.startswith("claude"):
+if engine and not isinstance(engine, str):
+    print(f"aw compile: {path}: warning: engine must be a string, got {type(engine).__name__}", file=sys.stderr)
+elif engine and engine not in families and not engine.startswith("claude"):
     print(f"aw compile: {path}: warning: unknown engine {engine!r} (name a family: opus|sonnet|haiku)", file=sys.stderr)
 
 # Validate output mode if present
@@ -269,33 +271,64 @@ print(body)
 PYEOF
 )"
 
-  # Select engine from frontmatter
-  local engine
+  # Select the model from frontmatter. `engine:` names the RUNNER (e.g. claude);
+  # the model family lives in `models.<engine>` (a list, first entry wins). A bare
+  # family or concrete id in `engine:` is still honoured for legacy specs.
+  local engine model
   engine="$(python3 - "$wf_file" <<'PYEOF'
 import sys, re, yaml
 path = sys.argv[1]
 with open(path, encoding='utf-8') as f:
     text = f.read()
 m = re.match(r'^---\n(.*?)\n---\n', text, re.DOTALL)
-fm = yaml.safe_load(m.group(1))
+fm = yaml.safe_load(m.group(1)) or {}
 print(fm.get("engine", "sonnet"))
 PYEOF
 )"
+  model="$(python3 - "$wf_file" <<'PYEOF'
+import sys, re, yaml
+path = sys.argv[1]
+with open(path, encoding='utf-8') as f:
+    text = f.read()
+m = re.match(r'^---\n(.*?)\n---\n', text, re.DOTALL)
+fm = yaml.safe_load(m.group(1)) or {}
+engine = fm.get("engine", "sonnet")
+models = fm.get("models") or {}
+val = models.get(engine) if isinstance(models, dict) else None
+if isinstance(val, list):
+    val = val[0] if val else ""
+print(val if isinstance(val, str) else "")
+PYEOF
+)"
 
-  # Validate engine to prevent command injection before passing to claude
-  if [[ ! "$engine" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]]; then
-    echo "aw run: invalid engine value: $engine" >&2
+  # The value to pass to Claude: the configured model (models.<engine>), else the
+  # engine value itself when it already names a family or concrete id (legacy).
+  local want="$model"
+  if [[ -z "$want" ]]; then
+    case "$engine" in
+      opus|sonnet|haiku|claude-*) want="$engine" ;;
+      *)
+        echo "aw run: no model configured for engine '$engine' (set models.$engine: [<family>])" >&2
+        exit 1
+        ;;
+    esac
+  fi
+
+  # Validate the model to prevent command injection before passing to claude.
+  if [[ ! "$want" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]]; then
+    echo "aw run: invalid model value: $want" >&2
     exit 1
   fi
 
   # Resolve a model FAMILY (opus|sonnet|haiku) to the current concrete id at run
   # time, so the workflow names a family and never pins a version (#1979). A
   # concrete id (claude-*) an operator set is passed through unchanged.
-  case "$engine" in
+  local engine_model="$want"
+  case "$want" in
     opus|sonnet|haiku)
       # shellcheck source=lib/engine-models.sh
       source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/engine-models.sh"
-      engine="$(ai_model_for_family "$engine")"
+      engine_model="$(ai_model_for_family "$want")"
       ;;
   esac
 
@@ -303,7 +336,7 @@ PYEOF
   local result rc=0 prompt_file
   prompt_file="$(mktemp)"
   printf '%s\n' "$prompt" > "$prompt_file"
-  result="$(claude --model "$engine" --print --output-format text < "$prompt_file" 2>/dev/null)" || rc=$?
+  result="$(claude --model "$engine_model" --print --output-format text < "$prompt_file" 2>/dev/null)" || rc=$?
   rm -f "$prompt_file"
   if [[ $rc -ne 0 ]]; then
     echo "aw run: claude invocation failed" >&2

@@ -43,7 +43,12 @@ set -euo pipefail
 # source never needs a PATH command — main()'s jq/claude guards must be the first
 # thing to fail when the environment is stripped bare.
 # shellcheck source=scripts/lib/engine-models.sh
-source "${BASH_SOURCE[0]%/*}/lib/engine-models.sh"
+# ${BASH_SOURCE[0]%/*} leaves a slash-less invocation (e.g. `bash
+# mcp_connectivity_check.sh` from the scripts dir) as the filename itself, so
+# guard the strip and default to the current directory when there is no slash.
+_mcp_lib_dir="."
+[[ "${BASH_SOURCE[0]}" == */* ]] && _mcp_lib_dir="${BASH_SOURCE[0]%/*}"
+source "$_mcp_lib_dir/lib/engine-models.sh"
 
 REVIEW_MCP_CONFIG_DEFAULT_PATH="${REVIEW_MCP_CONFIG_DEFAULT_PATH:-.github/review-mcp.json}"
 

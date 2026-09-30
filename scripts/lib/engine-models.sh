@@ -293,7 +293,7 @@ ai_models_fable_deprecation() {
 # AI_MODELS_CLAUDE (via ai_models_chain), then the built-in default. An unknown
 # family warns and returns non-zero. Bash 3.2-safe.
 ai_model_for_family() {
-  local family="${1:-}" tier var chain
+  local family="${1:-}" tier var chain model
   case "$family" in
     opus)   tier=deep;   var=CLAUDE_DEEP_MODEL_CHAIN ;;
     sonnet) tier=action; var=CLAUDE_ACTION_MODEL_CHAIN ;;
@@ -304,8 +304,17 @@ ai_model_for_family() {
   esac
   chain="${!var:-}"
   [ -n "${chain//[[:space:],]/}" ] || chain="$(ai_models_chain claude "$tier")"
-  chain="${chain%%,*}"
-  printf '%s' "${chain//[[:space:]]/}"
+  model="$(_ai_models_trim "${chain%%,*}")"
+  # Validate the resolved id. ai_models_chain paths already validate via
+  # _ai_models_scan, but the per-tier CLAUDE_<TIER>_MODEL_CHAIN override is read
+  # raw above — a malformed value like "bad id" would otherwise reach the caller
+  # and fail the Claude invocation. Fall back to the built-in default on a bad id.
+  if [[ ! "$model" =~ ^[A-Za-z0-9][A-Za-z0-9._:/@-]*$ ]]; then
+    printf '::warning::ai_model_for_family: %s has an invalid model id %s — default used\n' "$var" "$model" >&2
+    chain="$(ai_models_default claude "$tier")"
+    model="$(_ai_models_trim "${chain%%,*}")"
+  fi
+  printf '%s' "${model//[[:space:]]/}"
 }
 
 # ai_model_label <model> — a short name for log lines:

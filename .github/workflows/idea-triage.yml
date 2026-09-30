@@ -90,14 +90,25 @@ jobs:
       # operator supplied is passed through unchanged.
       - name: Resolve model
         id: model
+        env:
+          # Read the dispatch input via env, never interpolated into the shell
+          # source, so a quote in the value can't break out and inject commands.
+          REQUESTED_MODEL: ${{ inputs.model }}
         run: |
           source scripts/lib/engine-models.sh
-          want='${{ inputs.model }}'
+          want="$REQUESTED_MODEL"
           [ -n "$want" ] || want=sonnet
           case "$want" in
             opus|sonnet|haiku) model="$(ai_model_for_family "$want")" ;;
             *)                 model="$want" ;;
           esac
+          # The id is spliced into claude_args unquoted below, so it must be a
+          # single safe token (no whitespace, not option-like) or it would split
+          # into unintended CLI arguments.
+          if [[ ! "$model" =~ ^[A-Za-z0-9][A-Za-z0-9._:/@-]*$ ]]; then
+            echo "::error::invalid model id: $model" >&2
+            exit 1
+          fi
           echo "model=$model" >> "$GITHUB_OUTPUT"
 
       - name: Rank ripeness and refresh the queue

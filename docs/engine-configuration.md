@@ -120,8 +120,10 @@ the chains stay the single source of truth:
 Overrides are honoured with the same precedence engine.sh uses: the per-tier
 `CLAUDE_<TIER>_MODEL_CHAIN` env first, then `AI_MODELS_CLAUDE`, then the built-in
 default. An operator who supplies a concrete `claude-*` id still has it honoured
-verbatim (workflow inputs and gh-aw `engine:`/`models:` accept both a family and a
-full id).
+verbatim. In gh-aw front-matter the model family is named in `models:` (e.g.
+`models: { claude: [sonnet] }`), which accepts both a family and a full id;
+`engine:` selects the runner engine (`claude`), not the model. Workflow `model`
+inputs likewise accept a family or a full id.
 
 Token records keep the **resolved** id: families resolve before the engine is
 called, so `TOKEN_LOG_FILE` records the concrete model, not the family name.

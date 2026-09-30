@@ -37,7 +37,17 @@ is_allowed() {
 found=0
 for d in "${SCAN_DIRS[@]}"; do
   [ -d "$ROOT/$d" ] || continue
-  while IFS= read -r hit; do
+  # Capture matches. grep exits 0 (match), 1 (no match — expected/clean) or >1
+  # (a real scan error: missing grep, unreadable tree). Never mask >1 with
+  # `|| true` — that would report a false clean and let hard pins pass; fail loud.
+  hits=""
+  hits="$(grep -rnIE "$PATTERN" "$ROOT/$d" 2>/dev/null)" && rc=0 || rc=$?
+  if [ "$rc" -gt 1 ]; then
+    echo "::error::check-model-pins: scan of '$d' failed (grep exit $rc) — cannot certify clean." >&2
+    exit 2
+  fi
+  [ -n "$hits" ] || continue
+  while IFS= read -r hit || [ -n "$hit" ]; do
     [ -n "$hit" ] || continue
     file="${hit%%:*}"
     rel="${file#"$ROOT"/}"
@@ -46,7 +56,7 @@ for d in "${SCAN_DIRS[@]}"; do
     # Reprint with a repo-relative path for readable CI annotations.
     printf '%s\n' "${rel}:${hit#*:}"
     found=1
-  done < <(grep -rnIE "$PATTERN" "$ROOT/$d" 2>/dev/null || true)
+  done <<< "$hits"
 done
 
 if [ "$found" -ne 0 ]; then

@@ -566,7 +566,9 @@ scattered ids.
   it returns the current id for the family, honouring `CLAUDE_<TIER>_MODEL_CHAIN`
   then `AI_MODELS_CLAUDE` then the built-in default. A shell caller sources the lib
   and calls the function; a workflow adds a resolve step that writes the id to a
-  step output. gh-aw front-matter (`engine:` / `models:`) names the family directly.
+  step output. In gh-aw front-matter, `engine:` names the runner engine (e.g.
+  `claude`) and the model family is named in `models:` (e.g.
+  `models: { claude: [sonnet] }`) — the family does not go in `engine:`.
 - **An operator-supplied concrete `claude-*` id is still honoured** — workflow
   `model` inputs default to a family but pass a full id through unchanged.
 - **Token records keep the resolved id**: families resolve before the engine runs,
