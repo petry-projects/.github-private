@@ -27,14 +27,16 @@ setup() {
   [ "$output" = "2.00 0.20 2.50 10.00" ]
 }
 
-@test "price_for: sonnet 5 standard window — exact boundary (2026-09-01) → \$3 / \$0.30 / \$3.75 / \$15" {
+# The 2026-09-01 increase to $3/$15 was cancelled (pricing page footnote 3), so the
+# $2/$10 launch rate is now the standard price — the boundary row is corrected to $2.
+@test "price_for: sonnet 5 at cancelled-increase boundary (2026-09-01) → still \$2 / \$0.20 / \$2.50 / \$10" {
   run price_for "claude-sonnet-5-20261231" "2026-09-01"
-  [ "$output" = "3.00 0.30 3.75 15.00" ]
+  [ "$output" = "2.00 0.20 2.50 10.00" ]
 }
 
-@test "price_for: sonnet 5 standard window (after 2026-09-01) → \$3 / \$0.30 / \$3.75 / \$15" {
+@test "price_for: sonnet 5 after 2026-09-01 → still \$2 / \$0.20 / \$2.50 / \$10 (increase cancelled)" {
   run price_for "claude-sonnet-5-20261231" "2026-09-02"
-  [ "$output" = "3.00 0.30 3.75 15.00" ]
+  [ "$output" = "2.00 0.20 2.50 10.00" ]
 }
 
 # The bare alias `claude-sonnet-5` is the real model id (#1957); the
@@ -44,9 +46,9 @@ setup() {
   [ "$output" = "2.00 0.20 2.50 10.00" ]
 }
 
-@test "price_for: bare claude-sonnet-5 is priced (standard window) — #1957" {
+@test "price_for: bare claude-sonnet-5 is priced (after 2026-09-01) — #1957" {
   run price_for "claude-sonnet-5" "2026-09-27"
-  [ "$output" = "3.00 0.30 3.75 15.00" ]
+  [ "$output" = "2.00 0.20 2.50 10.00" ]
 }
 
 # Sonnet 5.5 (#1978): the `claude-sonnet-5-5*` glob (17 literal chars) is more
@@ -65,10 +67,11 @@ setup() {
 }
 
 # The bare `claude-sonnet-5` id keeps its own rows and is unaffected by the new
-# 5-5 row — proving the two ids are priced independently.
-@test "price_for: bare claude-sonnet-5 unaffected by the 5-5 row (standard window) — #1978" {
+# 5-5 row — proving the two ids are priced independently. Both now resolve to the
+# $2/$10 standard rate (the sonnet-5 September increase was cancelled).
+@test "price_for: bare claude-sonnet-5 unaffected by the 5-5 row — #1978" {
   run price_for "claude-sonnet-5" "2026-10-01"
-  [ "$output" = "3.00 0.30 3.75 15.00" ]
+  [ "$output" = "2.00 0.20 2.50 10.00" ]
 }
 
 @test "price_for: more-specific glob wins (opus-4-1 legacy = \$15, not \$5)" {

@@ -198,7 +198,7 @@ _source_engine() {
 # as a non-default fallback candidate). It is the sonnet fallback hop in triage/
 # deep and the primary in action. The promotion rides the dev-lead canary rings.
 
-@test "sonnet-5 default: triage chain default is haiku → sonnet-5-5 → claude-sonnet-5" {
+@test "sonnet-5.5 default: triage chain default is haiku → sonnet-5-5 → claude-sonnet-5" {
   _source_engine "claude"
   [ "$CLAUDE_TRIAGE_MODEL_CHAIN" = "claude-haiku-4-5-20251001,claude-sonnet-5-5,claude-sonnet-5" ]
   [[ "$CLAUDE_TRIAGE_MODEL_CHAIN" != *"claude-sonnet-4-6"* ]]
