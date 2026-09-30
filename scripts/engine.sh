@@ -290,9 +290,10 @@ select_duck_engine() {
 # "gemini-3.8-flash [sonnet 5.5]"), or "off" when no engine is left. It reads
 # duck_engine_candidates, so the label names what the duck will actually try
 # (AI_DUCK_ENGINE, the cross-engine default, then AI_ENGINES) instead of only
-# the cross-engine default. Like review-one-pr.sh, it leaves out a Gemini duck
-# the pre-flight probe found unusable (GEMINI_AVAILABLE=false). The candidates'
-# warnings are dropped here: the duck logs them itself when it runs.
+# the cross-engine default. It lists a Gemini duck only when the pre-flight
+# probe passed (GEMINI_AVAILABLE=true), the same test review-one-pr.sh applies
+# before it runs the duck, so an unset flag leaves Gemini out of both. The
+# candidates' warnings are dropped here: the duck logs them itself when it runs.
 _duck_label() {
   local e m chain=""
   if ! declare -F ai_engine_available >/dev/null 2>&1; then
@@ -301,7 +302,7 @@ _duck_label() {
   fi
   while read -r e m; do
     [ -n "$e" ] || continue
-    [ "$e" = gemini ] && [ "${GEMINI_AVAILABLE:-}" = false ] && continue
+    [ "$e" = gemini ] && [ "${GEMINI_AVAILABLE:-}" != true ] && continue
     chain="${chain:+$chain,}${m:-$e}"
   done <<< "$(duck_engine_candidates 2>/dev/null)"
   if [ -n "$chain" ]; then
