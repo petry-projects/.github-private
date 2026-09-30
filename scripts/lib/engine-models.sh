@@ -48,19 +48,28 @@
 #   - Deep swapped opus-4-8 → opus-5-5 (#1898, epic #1895 Phase 2). opus-4-8 is
 #     the known-good 2nd hop (#1957), so a throttled or unavailable opus-5-5
 #     degrades to the model it replaced instead of failing; sonnet 5 is last.
-#   - Fable 5 (honoured by the claude CLI automatically): adaptive thinking only
-#     (budget_tokens/temperature/top_p/top_k removed); omit the thinking param
-#     entirely (disabled returns 400); min cacheable prefix fable-5 = 2048 tok,
-#     opus-4-8 = 4096 tok.
+#   - Audit and single swapped fable-5 → opus-5-5 (#1901, epic #1895 Phase 3),
+#     deprecating Fable 5: the engine no longer depends on Fable, which opus-5-5
+#     outperforms at lower cost, so reviews run one current model family end to
+#     end. Both keep opus-4-8 as the known-good 2nd hop and opus-4-7 as the last.
+#   - opus-5-5's CLI/API default reasoning effort is `medium` (levels
+#     low/medium/high/xhigh/max); the deep, audit and single tiers pin
+#     `--effort high` in engine.sh's run_agentic so moving off Fable does not
+#     silently lower their reasoning effort (triage/action keep the default).
+#     Min cacheable prefix opus-4-8 = 4096 tok.
+#   - Fable 5 is deprecated but not removed: a chain that still names a
+#     claude-fable-* model (AI_MODELS_CLAUDE or CLAUDE_<TIER>_MODEL_CHAIN) is
+#     honoured as a stop-gap and warns once per run (ai_models_fable_deprecation);
+#     its price rows stay in model-pricing.tsv for historical token records.
 #   - The subscription cap is shared across Claude models (#206), so an
 #     in-Claude chain only helps with per-model RPM/TPM limits.
 ai_models_default() {
   case "${1:-}:${2:-}" in
     claude:triage) printf '%s' "claude-haiku-4-5-20251001,claude-sonnet-5" ;;
     claude:deep)   printf '%s' "claude-opus-5-5,claude-opus-4-8,claude-sonnet-5" ;;
-    claude:audit)  printf '%s' "claude-fable-5,claude-opus-4-8,claude-opus-4-7" ;;
+    claude:audit)  printf '%s' "claude-opus-5-5,claude-opus-4-8,claude-opus-4-7" ;;
     claude:action) printf '%s' "claude-sonnet-5,claude-opus-4-8" ;;
-    claude:single) printf '%s' "claude-fable-5,claude-opus-4-8,claude-opus-4-7" ;;
+    claude:single) printf '%s' "claude-opus-5-5,claude-opus-4-8,claude-opus-4-7" ;;
     claude:duck)   printf '%s' "claude-sonnet-4-6" ;;
     # gemini-2.5-pro is withdrawn for new keys ("no longer available to new
     # users … use models/gemini-3.1-pro-preview", #1960), so the quality tier
@@ -234,6 +243,27 @@ ai_models_problems() {
   for p in claude gemini copilot; do
     _ai_models_scan "$p" problems
   done
+}
+
+# ai_models_fable_deprecation — one deprecation line when a *configured* Claude
+# chain still names a claude-fable-* model, else nothing. Fable 5 is deprecated
+# (#1901, epic #1895 Phase 3): audit/single now default to claude-opus-5-5. A
+# configured Fable model is still HONOURED as a stop-gap (this warns, it does not
+# reject), so an operator can pin it while migrating. Sources checked: the
+# per-tier CLAUDE_<TIER>_MODEL_CHAIN envs and AI_MODELS_CLAUDE.
+ai_models_fable_deprecation() {
+  local key chain var found=""
+  for key in triage deep audit action single; do
+    var="CLAUDE_$(printf '%s' "$key" | tr '[:lower:]' '[:upper:]')_MODEL_CHAIN"
+    chain="${!var:-}"
+    case ",${chain// /}," in *,claude-fable-*) found=1 ;; esac
+  done
+  for key in triage deep audit action single duck; do
+    chain="$(ai_models_configured claude "$key")"
+    case ",$chain," in *,claude-fable-*) found=1 ;; esac
+  done
+  [ -n "$found" ] || return 0
+  printf '%s' "claude-fable-* is deprecated (#1901): audit/single now default to claude-opus-5-5 (chain claude-opus-5-5,claude-opus-4-8,claude-opus-4-7). The configured Fable model is still honoured as a stop-gap — repoint it to claude-opus-5-5."
 }
 
 # ai_model_label <model> — a short name for log lines:
