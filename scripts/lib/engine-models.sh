@@ -253,15 +253,29 @@ ai_models_problems() {
 # per-tier CLAUDE_<TIER>_MODEL_CHAIN envs and AI_MODELS_CLAUDE.
 ai_models_fable_deprecation() {
   local key chain var found=""
+  # Static tier→var map (not printf|tr): pure parameter expansion, no per-tier
+  # subshell. Bash 3.2-safe.
   for key in triage deep audit action single; do
-    var="CLAUDE_$(printf '%s' "$key" | tr '[:lower:]' '[:upper:]')_MODEL_CHAIN"
+    case "$key" in
+      triage) var="CLAUDE_TRIAGE_MODEL_CHAIN" ;;
+      deep)   var="CLAUDE_DEEP_MODEL_CHAIN" ;;
+      audit)  var="CLAUDE_AUDIT_MODEL_CHAIN" ;;
+      action) var="CLAUDE_ACTION_MODEL_CHAIN" ;;
+      single) var="CLAUDE_SINGLE_MODEL_CHAIN" ;;
+    esac
     chain="${!var:-}"
     case ",${chain// /}," in *,claude-fable-*) found=1 ;; esac
   done
-  for key in triage deep audit action single duck; do
-    chain="$(ai_models_configured claude "$key")"
-    case ",$chain," in *,claude-fable-*) found=1 ;; esac
-  done
+  # One tr subshell to fold AI_MODELS_CLAUDE to lowercase (keys are
+  # case-insensitive, ${var,,} is Bash 4+), then a single per-key pattern match
+  # over the whole spec — the six ai_models_configured command substitutions this
+  # replaces each forked a subshell.
+  local lower
+  lower="$(printf '%s' "${AI_MODELS_CLAUDE:-}" | tr '[:upper:]' '[:lower:]')"
+  case ",${lower// /}," in
+    *triage=*claude-fable-*|*deep=*claude-fable-*|*audit=*claude-fable-*|*action=*claude-fable-*|*single=*claude-fable-*|*duck=*claude-fable-*)
+      found=1 ;;
+  esac
   [ -n "$found" ] || return 0
   printf '%s' "claude-fable-* is deprecated (#1901): audit/single now default to claude-opus-5-5 (chain claude-opus-5-5,claude-opus-4-8,claude-opus-4-7). The configured Fable model is still honoured as a stop-gap — repoint it to claude-opus-5-5."
 }
