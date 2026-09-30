@@ -2,7 +2,11 @@
 on:
   issues:
     types: [opened]
-engine: sonnet
+engine: claude
+
+models:
+  claude: [sonnet]
+
 permissions:
   issues: read
 safe-outputs:
