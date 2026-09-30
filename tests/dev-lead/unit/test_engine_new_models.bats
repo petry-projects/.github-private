@@ -1,13 +1,13 @@
 #!/usr/bin/env bats
-# Unit tests for engine.sh — new Claude model tier assignments and chains.
+# Unit tests for engine.sh — Claude model tier assignments and chains.
 #
-# Verifies that Fable 5 (claude-fable-5) and Opus 4.8 (claude-opus-4-8) are
+# Verifies that Opus 5.5 (claude-opus-5-5) and Opus 4.8 (claude-opus-4-8) are
 # wired into the correct tiers and fallback chains for the claude engine:
 #   triage  → haiku-4-5    (unchanged)
 #   action  → sonnet-5   (#1100, was sonnet-4-6)
 #   deep    → opus-5-5     (#1898, was opus-4-8)
-#   audit   → fable-5      (was opus-4-7)
-#   single  → fable-5      (was opus-4-7)
+#   audit   → opus-5-5     (#1901, was fable-5, deprecating Fable)
+#   single  → opus-5-5     (#1901, was fable-5, deprecating Fable)
 
 SCRIPT_DIR="$(cd "$(dirname "$BATS_TEST_FILENAME")/../../.." && pwd)"
 ENGINE_SCRIPT="$SCRIPT_DIR/scripts/engine.sh"
@@ -56,14 +56,14 @@ _source_engine() {
 
 # ── Tier default model assignments ───────────────────────────────────────────
 
-@test "new-models: ENGINE_AUDIT_MODEL is claude-fable-5 for claude engine" {
+@test "new-models: ENGINE_AUDIT_MODEL is claude-opus-5-5 for claude engine (#1901)" {
   _source_engine "claude"
-  [ "$ENGINE_AUDIT_MODEL" = "claude-fable-5" ]
+  [ "$ENGINE_AUDIT_MODEL" = "claude-opus-5-5" ]
 }
 
-@test "new-models: ENGINE_SINGLE_MODEL is claude-fable-5 for claude engine" {
+@test "new-models: ENGINE_SINGLE_MODEL is claude-opus-5-5 for claude engine (#1901)" {
   _source_engine "claude"
-  [ "$ENGINE_SINGLE_MODEL" = "claude-fable-5" ]
+  [ "$ENGINE_SINGLE_MODEL" = "claude-opus-5-5" ]
 }
 
 @test "new-models: ENGINE_DEEP_MODEL is claude-opus-5-5 for claude engine (#1898)" {
@@ -83,12 +83,13 @@ _source_engine() {
 
 # ── Fallback chain configuration ──────────────────────────────────────────────
 
-@test "new-models: CLAUDE_AUDIT_MODEL_CHAIN starts with claude-fable-5" {
+@test "new-models: CLAUDE_AUDIT_MODEL_CHAIN starts with claude-opus-5-5 (#1901)" {
   _source_engine "claude"
   local first
   first="${CLAUDE_AUDIT_MODEL_CHAIN%%,*}"
   first="${first// /}"
-  [ "$first" = "claude-fable-5" ]
+  [ "$first" = "claude-opus-5-5" ]
+  [[ "$CLAUDE_AUDIT_MODEL_CHAIN" != *"claude-fable-5"* ]]
 }
 
 @test "new-models: CLAUDE_AUDIT_MODEL_CHAIN includes claude-opus-4-8 as second element" {
@@ -105,12 +106,13 @@ _source_engine() {
   [[ "$CLAUDE_AUDIT_MODEL_CHAIN" == *"claude-opus-4-7"* ]]
 }
 
-@test "new-models: CLAUDE_SINGLE_MODEL_CHAIN starts with claude-fable-5" {
+@test "new-models: CLAUDE_SINGLE_MODEL_CHAIN starts with claude-opus-5-5 (#1901)" {
   _source_engine "claude"
   local first
   first="${CLAUDE_SINGLE_MODEL_CHAIN%%,*}"
   first="${first// /}"
-  [ "$first" = "claude-fable-5" ]
+  [ "$first" = "claude-opus-5-5" ]
+  [[ "$CLAUDE_SINGLE_MODEL_CHAIN" != *"claude-fable-5"* ]]
 }
 
 @test "new-models: CLAUDE_SINGLE_MODEL_CHAIN includes claude-opus-4-8 as second element" {
@@ -165,28 +167,31 @@ _source_engine() {
 
 # ── Chain fallback behaviour with new models ──────────────────────────────────
 
-@test "new-models: audit fable-5 rate-limited → opus-4-8 tried" {
+@test "new-models: audit opus-5-5 rate-limited → opus-4-8 tried (#1901)" {
   _source_engine "claude"
-  export STUB_ENGINE_EXIT_BY_MODEL="claude-fable-5=1|claude-opus-4-8=0"
-  export STUB_ENGINE_RESPONSE_BY_MODEL="claude-fable-5=hit your limit|claude-opus-4-8=audit ok"
+  export STUB_ENGINE_EXIT_BY_MODEL="claude-opus-5-5=1|claude-opus-4-8=0"
+  export STUB_ENGINE_RESPONSE_BY_MODEL="claude-opus-5-5=hit your limit|claude-opus-4-8=audit ok"
 
-  run run_agentic "$TEST_PROMPT" "claude-fable-5" "audit"
+  run run_agentic "$TEST_PROMPT" "claude-opus-5-5" "audit"
 
   [ "$status" -eq 0 ]
-  grep -q "claude-fable-5" "$MODEL_RECORD"
+  grep -q "claude-opus-5-5" "$MODEL_RECORD"
   grep -q "claude-opus-4-8" "$MODEL_RECORD"
   [[ "$output" == *"audit ok"* ]]
   [[ "$output" != *"hit your limit"* ]]
 }
 
-@test "new-models: audit chain fully exhausted → exit 2" {
+@test "new-models: audit chain fully exhausted → exit 2 (#1901)" {
   _source_engine "claude"
-  export STUB_ENGINE_EXIT_BY_MODEL="claude-fable-5=1|claude-opus-4-8=1|claude-opus-4-7=1"
-  export STUB_ENGINE_RESPONSE_BY_MODEL="claude-fable-5=429 too many|claude-opus-4-8=429 too many|claude-opus-4-7=429 too many"
+  export STUB_ENGINE_EXIT_BY_MODEL="claude-opus-5-5=1|claude-opus-4-8=1|claude-opus-4-7=1"
+  export STUB_ENGINE_RESPONSE_BY_MODEL="claude-opus-5-5=429 too many|claude-opus-4-8=429 too many|claude-opus-4-7=429 too many"
 
-  run run_agentic "$TEST_PROMPT" "claude-fable-5" "audit"
+  run run_agentic "$TEST_PROMPT" "claude-opus-5-5" "audit"
 
   [ "$status" -eq 2 ]
+  grep -q "claude-opus-5-5" "$MODEL_RECORD"
+  grep -q "claude-opus-4-8" "$MODEL_RECORD"
+  grep -q "claude-opus-4-7" "$MODEL_RECORD"
 }
 
 @test "new-models: deep opus-5-5 rate-limited → opus-4-8 safety hop tried (#1957)" {

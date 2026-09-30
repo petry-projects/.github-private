@@ -59,9 +59,9 @@ Defaults:
 |---|---|---|---|
 | `triage` | `claude-haiku-4-5-20251001,claude-sonnet-5` | `gemini-3.8-flash,gemini-3.1-pro-preview` | `openai/o4-mini` |
 | `deep` | `claude-opus-5-5,claude-opus-4-8,claude-sonnet-5` | `gemini-3.1-pro-preview,gemini-3.8-flash` | `openai/o4-mini` |
-| `audit` | `claude-fable-5,claude-opus-4-8,claude-opus-4-7` | `gemini-3.1-pro-preview,gemini-3.8-flash` | `openai/o4-mini` |
+| `audit` | `claude-opus-5-5,claude-opus-4-8,claude-opus-4-7` | `gemini-3.1-pro-preview,gemini-3.8-flash` | `openai/o4-mini` |
 | `action` | `claude-sonnet-5,claude-opus-4-8` | `gemini-3.8-flash,gemini-3.1-pro-preview` | `openai/o4-mini` |
-| `single` | `claude-fable-5,claude-opus-4-8,claude-opus-4-7` | `gemini-3.1-pro-preview,gemini-3.8-flash` | `openai/o4-mini` |
+| `single` | `claude-opus-5-5,claude-opus-4-8,claude-opus-4-7` | `gemini-3.1-pro-preview,gemini-3.8-flash` | `openai/o4-mini` |
 | `duck` | `claude-sonnet-4-6` | the first `triage` model | the `triage` model |
 
 Example, Claude with two tasks changed (the others keep their defaults):
