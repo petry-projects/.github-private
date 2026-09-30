@@ -11,7 +11,7 @@ setup() {
   unset CLAUDE_TRIAGE_MODEL_CHAIN CLAUDE_DEEP_MODEL_CHAIN CLAUDE_AUDIT_MODEL_CHAIN
   unset CLAUDE_ACTION_MODEL_CHAIN CLAUDE_SINGLE_MODEL_CHAIN
   unset GEMINI_FLASH_MODEL GEMINI_PRO_MODEL GEMINI_FLASH_MODEL_CHAIN GEMINI_PRO_MODEL_CHAIN
-  unset COPILOT_API_MODEL COPILOT_API_MODEL_DEFAULTED AI_ENGINES AI_DUCK_ENGINE AI_DUCK_MODEL
+  unset COPILOT_API_MODEL COPILOT_API_MODEL_DEFAULTED AI_ENGINES AI_DUCK_ENGINE AI_DUCK_MODEL GEMINI_AVAILABLE
   # shellcheck source=../../../scripts/lib/engine-models.sh
   source "$LIB"
 }
@@ -317,8 +317,55 @@ _engine() {
 }
 
 @test "copilot: the log label shows the duck's short name" {
+  export GEMINI_AVAILABLE=true
   run _engine copilot ENGINE_LABEL
-  [[ "$output" == *"duck: gemini-3.8-flash →"* ]]
+  [[ "$output" == *"duck: gemini-3.8-flash"* ]]
+}
+
+# The duck part of ENGINE_LABEL names what the duck actually tries, in order
+# (duck_engine_candidates), not only set_engine_config's cross-engine default:
+# a Claude primary with AI_DUCK_ENGINE=gemini,claude used to read "duck: o4-mini".
+# A Gemini duck is listed only after the pre-flight probe passed
+# (GEMINI_AVAILABLE=true), as review-one-pr.sh requires before it runs one.
+@test "duck label: lists the AI_DUCK_ENGINE chain in order, fallbacks in brackets" {
+  export AI_ENGINES="claude,gemini" AI_DUCK_ENGINE="gemini,claude" GEMINI_AVAILABLE=true
+  export AI_MODELS_GEMINI="duck=gemini-duck-a" AI_MODELS_CLAUDE="duck=claude-sonnet-5"
+  run _engine claude ENGINE_LABEL
+  [[ "$output" == *"+ duck: gemini-duck-a [sonnet 5] → audit:"* ]]
+  [[ "$output" != *"o4-mini"* ]]
+}
+
+@test "duck label: AI_DUCK_MODEL shows on the first listed engine only" {
+  export AI_ENGINES="claude,gemini" AI_DUCK_ENGINE="gemini,claude" AI_DUCK_MODEL="gemini-duck-b" GEMINI_AVAILABLE=true
+  export AI_MODELS_CLAUDE="duck=claude-sonnet-5"
+  run _engine claude ENGINE_LABEL
+  [[ "$output" == *"+ duck: gemini-duck-b [sonnet 5] → audit:"* ]]
+}
+
+@test "duck label: leaves out a Gemini duck unless the pre-flight probe passed" {
+  export AI_ENGINES="claude,gemini" AI_DUCK_ENGINE="gemini,claude"
+  export AI_MODELS_GEMINI="duck=gemini-duck-a" AI_MODELS_CLAUDE="duck=claude-sonnet-5"
+  local flag
+  for flag in false unset; do
+    if [ "$flag" = unset ]; then unset GEMINI_AVAILABLE; else export GEMINI_AVAILABLE="$flag"; fi
+    run _engine claude ENGINE_LABEL
+    [[ "$output" == *"+ duck: sonnet 5 → audit:"* ]]
+    [[ "$output" != *"gemini-duck-a"* ]]
+  done
+}
+
+@test "duck label: AI_DUCK_ENGINE=none reads 'duck: off'" {
+  export AI_DUCK_ENGINE="none"
+  run _engine claude ENGINE_LABEL
+  [[ "$output" == *"+ duck: off → audit:"* ]]
+}
+
+@test "duck label: matches the duck_engine_candidates order" {
+  export AI_ENGINES="claude,gemini,copilot" AI_DUCK_ENGINE="gemini" GEMINI_AVAILABLE=true
+  export AI_MODELS_GEMINI="duck=gemini-duck-a" AI_MODELS_COPILOT="duck=openai/gpt-duck"
+  run bash -c "export REVIEW_ENGINE=claude; source '$SCRIPT_DIR/scripts/engine.sh' >/dev/null 2>&1; duck_engine_candidates 2>/dev/null | awk '{print \$2}' | paste -sd, -; echo \"\$ENGINE_LABEL\""
+  [ "${lines[0]}" = "gemini-duck-a,gpt-duck" ]
+  [[ "${lines[1]}" == *"+ duck: gemini-duck-a [gpt-duck] → audit:"* ]]
 }
 
 @test "persona parity: the live persona runner and run-eval's persona tier resolve the same deep model" {
