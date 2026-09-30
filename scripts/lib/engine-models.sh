@@ -18,7 +18,7 @@
 #   audit   security audit             action  dev-lead writer
 #   single  single-reviewer mode
 #   duck    the model used when this provider is the rubber duck (one model;
-#           default: Claude sonnet 4.6, Gemini and Copilot the triage model)
+#           default: Claude sonnet 5.5, Gemini and Copilot the triage model)
 # Copilot takes one model per key: the GitHub Models client has no in-engine
 # chain. A duck key, or any Copilot key, given several models warns and keeps
 # the first.
@@ -41,13 +41,15 @@
 # ai_models_default <provider> <key> — the built-in chain for <provider>/<key>.
 #
 # Claude notes:
-#   - Sonnet 5 (#1100, epic #1095) is the default sonnet across triage, deep and
-#     action, replacing claude-sonnet-4-6. The id is `claude-sonnet-5`: the
-#     `claude-sonnet-5-0` spelling shipped by #1100 does not exist and 404s, so
-#     every sonnet hop silently fell through to the next model (#1957).
+#   - Sonnet 5.5 (#1978, epic #1095 Phase 3) is the default sonnet across triage,
+#     deep, action and duck, replacing claude-sonnet-5 as the primary. sonnet-5
+#     stays one hop behind as the known-good sonnet safety hop (its id is bare
+#     `claude-sonnet-5`: the `claude-sonnet-5-0` spelling shipped by #1100 404s,
+#     so every hop to it silently fell through — #1957). audit/single are opus
+#     tiers and keep claude-sonnet-5 out entirely.
 #   - Deep swapped opus-4-8 → opus-5-5 (#1898, epic #1895 Phase 2). opus-4-8 is
 #     the known-good 2nd hop (#1957), so a throttled or unavailable opus-5-5
-#     degrades to the model it replaced instead of failing; sonnet 5 is last.
+#     degrades to the model it replaced instead of failing; sonnet 5.5 is last.
 #   - Audit and single swapped fable-5 → opus-5-5 (#1901, epic #1895 Phase 3),
 #     deprecating Fable 5: the engine no longer depends on Fable, which opus-5-5
 #     outperforms at lower cost, so reviews run one current model family end to
@@ -65,12 +67,12 @@
 #     in-Claude chain only helps with per-model RPM/TPM limits.
 ai_models_default() {
   case "${1:-}:${2:-}" in
-    claude:triage) printf '%s' "claude-haiku-4-5-20251001,claude-sonnet-5" ;;
-    claude:deep)   printf '%s' "claude-opus-5-5,claude-opus-4-8,claude-sonnet-5" ;;
+    claude:triage) printf '%s' "claude-haiku-4-5-20251001,claude-sonnet-5-5,claude-sonnet-5" ;;
+    claude:deep)   printf '%s' "claude-opus-5-5,claude-opus-4-8,claude-sonnet-5-5" ;;
     claude:audit)  printf '%s' "claude-opus-5-5,claude-opus-4-8,claude-opus-4-7" ;;
-    claude:action) printf '%s' "claude-sonnet-5,claude-opus-4-8" ;;
+    claude:action) printf '%s' "claude-sonnet-5-5,claude-sonnet-5,claude-opus-4-8" ;;
     claude:single) printf '%s' "claude-opus-5-5,claude-opus-4-8,claude-opus-4-7" ;;
-    claude:duck)   printf '%s' "claude-sonnet-4-6" ;;
+    claude:duck)   printf '%s' "claude-sonnet-5-5" ;;
     # gemini-2.5-pro is withdrawn for new keys ("no longer available to new
     # users … use models/gemini-3.1-pro-preview", #1960), so the quality tier
     # uses 3.1-pro-preview and degrades to the flash model that is known to work.

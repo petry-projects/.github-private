@@ -152,7 +152,7 @@ _candidates() {
   export REVIEW_ENGINE=claude AI_DUCK_ENGINE="Gemini, claude"
   run _candidates
   [ "${lines[0]}" = "gemini gemini-3.8-flash" ]
-  [ "${lines[1]}" = "claude claude-sonnet-4-6" ]
+  [ "${lines[1]}" = "claude claude-sonnet-5-5" ]
   [ "${lines[2]}" = "copilot o4-mini" ]
   [ "${#lines[@]}" -eq 3 ]
   run _duck
@@ -170,7 +170,7 @@ _candidates() {
   run bash -c "source '$SCRIPT_DIR/scripts/engine.sh' >/dev/null 2>&1; duck_engine_candidates 2>&1"
   [[ "$output" == *"'typo' is not a known engine"* ]]
   [[ "$output" == *"lists gemini, which is disabled or unavailable"* ]]
-  [[ "$output" == *"claude claude-sonnet-4-6"* ]]
+  [[ "$output" == *"claude claude-sonnet-5-5"* ]]
   [[ "$output" != *"gemini gemini"* ]]
 }
 

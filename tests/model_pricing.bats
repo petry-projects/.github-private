@@ -49,6 +49,28 @@ setup() {
   [ "$output" = "3.00 0.30 3.75 15.00" ]
 }
 
+# Sonnet 5.5 (#1978): the `claude-sonnet-5-5*` glob (17 literal chars) is more
+# specific than `claude-sonnet-5-*` (16), so a claude-sonnet-5-5 record resolves
+# to its own row — never leaking into the general sonnet-5 rate. Prices verified
+# against https://platform.claude.com/docs/en/about-claude/pricing (2026-09-28):
+# input $2 / cache-read $0.20 / 5m cache-write $2.50 / output $10.
+@test "price_for: sonnet 5.5 pinned at effective_from (2026-09-28) → \$2 / \$0.20 / \$2.50 / \$10 — #1978" {
+  run price_for "claude-sonnet-5-5" "2026-09-28"
+  [ "$output" = "2.00 0.20 2.50 10.00" ]
+}
+
+@test "price_for: sonnet 5.5 beats the claude-sonnet-5-* glob after 2026-09-01 — #1978" {
+  run price_for "claude-sonnet-5-5" "2026-10-01"
+  [ "$output" = "2.00 0.20 2.50 10.00" ]
+}
+
+# The bare `claude-sonnet-5` id keeps its own rows and is unaffected by the new
+# 5-5 row — proving the two ids are priced independently.
+@test "price_for: bare claude-sonnet-5 unaffected by the 5-5 row (standard window) — #1978" {
+  run price_for "claude-sonnet-5" "2026-10-01"
+  [ "$output" = "3.00 0.30 3.75 15.00" ]
+}
+
 @test "price_for: more-specific glob wins (opus-4-1 legacy = \$15, not \$5)" {
   run price_for "claude-opus-4-1-20250805" "2026-06-07"
   [ "$output" = "15.00 1.50 18.75 75.00" ]
