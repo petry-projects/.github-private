@@ -11,7 +11,7 @@ setup() {
   unset CLAUDE_TRIAGE_MODEL_CHAIN CLAUDE_DEEP_MODEL_CHAIN CLAUDE_AUDIT_MODEL_CHAIN
   unset CLAUDE_ACTION_MODEL_CHAIN CLAUDE_SINGLE_MODEL_CHAIN
   unset GEMINI_FLASH_MODEL GEMINI_PRO_MODEL GEMINI_FLASH_MODEL_CHAIN GEMINI_PRO_MODEL_CHAIN
-  unset COPILOT_API_MODEL COPILOT_API_MODEL_DEFAULTED AI_ENGINES AI_DUCK_ENGINE AI_DUCK_MODEL
+  unset COPILOT_API_MODEL COPILOT_API_MODEL_DEFAULTED AI_ENGINES AI_DUCK_ENGINE AI_DUCK_MODEL GEMINI_AVAILABLE
   # shellcheck source=../../../scripts/lib/engine-models.sh
   source "$LIB"
 }
@@ -337,6 +337,14 @@ _engine() {
   export AI_MODELS_CLAUDE="duck=claude-sonnet-5"
   run _engine claude ENGINE_LABEL
   [[ "$output" == *"+ duck: gemini-duck-b [sonnet 5] → audit:"* ]]
+}
+
+@test "duck label: leaves out a Gemini duck the pre-flight probe marked unavailable" {
+  export AI_ENGINES="claude,gemini" AI_DUCK_ENGINE="gemini,claude" GEMINI_AVAILABLE=false
+  export AI_MODELS_GEMINI="duck=gemini-duck-a" AI_MODELS_CLAUDE="duck=claude-sonnet-5"
+  run _engine claude ENGINE_LABEL
+  [[ "$output" == *"+ duck: sonnet 5 → audit:"* ]]
+  [[ "$output" != *"gemini-duck-a"* ]]
 }
 
 @test "duck label: AI_DUCK_ENGINE=none reads 'duck: off'" {
