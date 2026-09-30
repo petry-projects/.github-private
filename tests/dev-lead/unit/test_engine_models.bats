@@ -101,14 +101,23 @@ _engine() {
 
 # ── Claude via engine.sh ──────────────────────────────────────────────────────
 
-@test "claude: defaults unchanged (chains, per-tier primaries, label)" {
-  run _engine claude CLAUDE_DEEP_MODEL_CHAIN ENGINE_TRIAGE_MODEL ENGINE_DEEP_MODEL ENGINE_AUDIT_MODEL ENGINE_ACTION_MODEL ENGINE_SINGLE_MODEL
+@test "claude: defaults (chains, per-tier primaries) — audit/single on opus-5-5 (#1901)" {
+  run _engine claude CLAUDE_DEEP_MODEL_CHAIN CLAUDE_AUDIT_MODEL_CHAIN CLAUDE_SINGLE_MODEL_CHAIN ENGINE_TRIAGE_MODEL ENGINE_DEEP_MODEL ENGINE_AUDIT_MODEL ENGINE_ACTION_MODEL ENGINE_SINGLE_MODEL
   [[ "$output" == *"CLAUDE_DEEP_MODEL_CHAIN=claude-opus-5-5,claude-opus-4-8,claude-sonnet-5"* ]]
+  [[ "$output" == *"CLAUDE_AUDIT_MODEL_CHAIN=claude-opus-5-5,claude-opus-4-8,claude-opus-4-7"* ]]
+  [[ "$output" == *"CLAUDE_SINGLE_MODEL_CHAIN=claude-opus-5-5,claude-opus-4-8,claude-opus-4-7"* ]]
   [[ "$output" == *"ENGINE_TRIAGE_MODEL=claude-haiku-4-5-20251001"* ]]
   [[ "$output" == *"ENGINE_DEEP_MODEL=claude-opus-5-5"* ]]
-  [[ "$output" == *"ENGINE_AUDIT_MODEL=claude-fable-5"* ]]
+  [[ "$output" == *"ENGINE_AUDIT_MODEL=claude-opus-5-5"* ]]
   [[ "$output" == *"ENGINE_ACTION_MODEL=claude-sonnet-5"* ]]
-  [[ "$output" == *"ENGINE_SINGLE_MODEL=claude-fable-5"* ]]
+  [[ "$output" == *"ENGINE_SINGLE_MODEL=claude-opus-5-5"* ]]
+  [[ "$output" != *"claude-fable-5"* ]]
+}
+
+@test "claude: default log label reads 'audit: opus 5.5 [opus 4.8, opus 4.7]' (#1901)" {
+  run _engine claude ENGINE_LABEL ENGINE_SINGLE_LABEL
+  [[ "$output" == *"audit: opus 5.5 [opus 4.8, opus 4.7]"* ]]
+  [[ "$output" == *"single-reviewer mode: opus 5.5 [opus 4.8, opus 4.7]"* ]]
 }
 
 @test "claude: AI_MODELS_CLAUDE sets the tier chain, its primary and the log label" {
@@ -400,5 +409,48 @@ STUB
   run bash -c "export REVIEW_ENGINE=claude AI_MODELS_GEMINI='typo=x'; source '$SCRIPT_DIR/scripts/engine.sh' 2>&1 >/dev/null | grep -c \"AI_MODELS_GEMINI: unknown key 'typo'\""
   [ "$output" = "1" ]
   run bash -c "export REVIEW_ENGINE=claude AI_MODELS_GEMINI='typo=x' AI_MODELS_PROBLEM_REPORTED=1; source '$SCRIPT_DIR/scripts/engine.sh' 2>&1 >/dev/null | grep -c 'AI_MODELS_GEMINI'"
+  [ "$output" = "0" ]
+}
+
+# ── Fable 5 deprecation warning (#1901) ─────────────────────────────────────────
+# Fable 5 is deprecated: audit/single now default to claude-opus-5-5. A chain that
+# still NAMES a claude-fable-* model (via AI_MODELS_CLAUDE or a per-tier
+# CLAUDE_<TIER>_MODEL_CHAIN) is still HONOURED as a stop-gap, but warns once.
+
+@test "fable-deprecation: detector fires for a configured fable chain, silent by default" {
+  source "$LIB"
+  [ -z "$(ai_models_fable_deprecation)" ]
+  export AI_MODELS_CLAUDE="audit=claude-fable-5,claude-opus-4-8"
+  [[ "$(ai_models_fable_deprecation)" == *"claude-fable"* ]]
+  [[ "$(ai_models_fable_deprecation)" == *"claude-opus-5-5"* ]]
+  unset AI_MODELS_CLAUDE
+  export CLAUDE_SINGLE_MODEL_CHAIN="claude-fable-5"
+  [[ "$(ai_models_fable_deprecation)" == *"claude-fable"* ]]
+}
+
+@test "fable-deprecation: engine.sh warns once via AI_MODELS_CLAUDE and still honours the model" {
+  run bash -c "export REVIEW_ENGINE=claude AI_MODELS_CLAUDE='audit=claude-fable-5,claude-opus-4-8'
+    _w=\"\$(mktemp)\"
+    source '$SCRIPT_DIR/scripts/engine.sh' 2>\"\$_w\" >/dev/null
+    echo \"AUDIT=\$ENGINE_AUDIT_MODEL\"
+    echo \"WARN=\$(grep -c 'deprecated' \"\$_w\")\"
+    rm -f \"\$_w\""
+  # The configured Fable model is honoured (not rejected).
+  [[ "$output" == *"AUDIT=claude-fable-5"* ]]
+  # Exactly one deprecation warning line.
+  [[ "$output" == *"WARN=1"* ]]
+}
+
+@test "fable-deprecation: warns once per run (CLAUDE_AUDIT_MODEL_CHAIN), suppressed by the flag" {
+  run bash -c "export REVIEW_ENGINE=claude CLAUDE_AUDIT_MODEL_CHAIN='claude-fable-5,claude-opus-4-8'
+    source '$SCRIPT_DIR/scripts/engine.sh' 2>&1 >/dev/null | grep -c 'claude-fable-\* .*deprecated'"
+  [ "$output" = "1" ]
+  run bash -c "export REVIEW_ENGINE=claude CLAUDE_AUDIT_MODEL_CHAIN='claude-fable-5,claude-opus-4-8' AI_MODELS_FABLE_WARNED=1
+    source '$SCRIPT_DIR/scripts/engine.sh' 2>&1 >/dev/null | grep -c 'deprecated'"
+  [ "$output" = "0" ]
+}
+
+@test "fable-deprecation: no warning when no fable model is configured (defaults)" {
+  run bash -c "export REVIEW_ENGINE=claude; source '$SCRIPT_DIR/scripts/engine.sh' 2>&1 >/dev/null | grep -c 'fable'"
   [ "$output" = "0" ]
 }
