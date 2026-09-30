@@ -85,6 +85,16 @@ if [ -z "${AI_MODELS_PROBLEM_REPORTED:-}" ]; then
   fi
   unset _models_problems _models_line
 fi
+# Fable 5 is deprecated (#1901): warn once per run when a configured chain still
+# names a claude-fable-* model, but still honour it (a stop-gap, not a rejection).
+if [ -z "${AI_MODELS_FABLE_WARNED:-}" ]; then
+  _fable_warn="$(ai_models_fable_deprecation)"
+  if [ -n "$_fable_warn" ]; then
+    echo "::warning::$_fable_warn" >&2
+    export AI_MODELS_FABLE_WARNED=1
+  fi
+  unset _fable_warn
+fi
 
 # Cross-engine rubber-duck model (issue #773). The duck deliberately routes to
 # Copilot/o4-mini even when the primary engine is NOT copilot (e.g. the default
@@ -226,7 +236,8 @@ set_engine_config() {
       # (the subscription cap is shared — #206). Source, highest first: the
       # per-tier CLAUDE_<TIER>_MODEL_CHAIN env, then AI_MODELS_CLAUDE, then the
       # defaults in lib/engine-models.sh (where the model notes live: Sonnet 5 id
-      # #1957, opus-5-5 deep #1898, Fable 5 thinking/caching rules).
+      # #1957, opus-5-5 deep #1898, opus-5-5 audit/single + Fable 5 deprecation
+      # #1901, the effort-pin rule).
       CLAUDE_TRIAGE_MODEL_CHAIN="${CLAUDE_TRIAGE_MODEL_CHAIN:-$(ai_models_chain claude triage)}"
       CLAUDE_DEEP_MODEL_CHAIN="${CLAUDE_DEEP_MODEL_CHAIN:-$(ai_models_chain claude deep)}"
       CLAUDE_AUDIT_MODEL_CHAIN="${CLAUDE_AUDIT_MODEL_CHAIN:-$(ai_models_chain claude audit)}"
@@ -1458,15 +1469,15 @@ run_agentic() {
       else
         _mcp_review_flags "$_allowed_tools"
       fi
-      # Deep-tier reasoning-effort pin (#1898 AC-3; Story-2/#1897 AC-4 finding):
+      # Reasoning-effort pin (#1898 AC-3; #1901 AC-2; Story-2/#1897 AC-4 finding):
       # claude-opus-5-5's CLI/API default reasoning effort is `medium` (levels
-      # low/medium/high/xhigh/max) — below `high`. The deep tier is the
-      # highest-cost agentic tier (deep review, dev-lead fix-issue, persona
-      # advisory), so it explicitly pins `--effort high`. ONLY the deep tier does
-      # this: audit/action/single keep the CLI default (they run cheaper models
-      # where the extra thinking spend is not warranted).
+      # low/medium/high/xhigh/max) — below `high`. The deep, audit and single
+      # tiers all run opus-5-5 (audit/single moved off Fable in #1901), so each
+      # explicitly pins `--effort high` — otherwise dropping Fable would silently
+      # lower audit/single reasoning effort. triage/action keep the CLI default
+      # (they run cheaper models where the extra thinking spend is not warranted).
       local _effort_args=()
-      [ "$tier" = "deep" ] && _effort_args=(--effort high)
+      case "$tier" in deep|audit|single) _effort_args=(--effort high) ;; esac
       if [ -n "$_tok_tmp" ]; then
         _claude_chain_invoke "$_agentic_chain" "$prompt_file" "$DEEP_TIMEOUT_SEC" \
           --permission-mode acceptEdits \
