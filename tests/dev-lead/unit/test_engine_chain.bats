@@ -176,15 +176,16 @@ _source_engine() {
   ! grep -q "claude-sonnet-5" "$MODEL_RECORD"
 }
 
-@test "agentic: audit tier fable-5 rate-limited → opus-4-8 tried (CLAUDE_AUDIT_MODEL_CHAIN)" {
+@test "agentic: audit tier opus-5-5 rate-limited → opus-4-8 tried (CLAUDE_AUDIT_MODEL_CHAIN, #1901)" {
   _source_engine "claude"
-  # Default CLAUDE_AUDIT_MODEL_CHAIN = fable-5,opus-4-8,opus-4-7 — fable-5 is first
-  export STUB_ENGINE_EXIT_BY_MODEL="claude-fable-5=1|claude-opus-4-8=0"
-  export STUB_ENGINE_RESPONSE_BY_MODEL="claude-fable-5=usage limit reached|claude-opus-4-8=audit ok"
+  # Default CLAUDE_AUDIT_MODEL_CHAIN = opus-5-5,opus-4-8,opus-4-7 — opus-5-5 is first
+  export STUB_ENGINE_EXIT_BY_MODEL="claude-opus-5-5=1|claude-opus-4-8=0"
+  export STUB_ENGINE_RESPONSE_BY_MODEL="claude-opus-5-5=usage limit reached|claude-opus-4-8=audit ok"
 
-  run run_agentic "$TEST_PROMPT" "claude-fable-5" "audit"
+  run run_agentic "$TEST_PROMPT" "claude-opus-5-5" "audit"
 
   [ "$status" -eq 0 ]
+  grep -q "claude-opus-5-5" "$MODEL_RECORD"
   grep -q "claude-opus-4-8" "$MODEL_RECORD"
 }
 
@@ -403,11 +404,13 @@ _source_engine() {
   grep -q "claude-opus-4-8" "$MODEL_RECORD"
 }
 
-# ── #1898 AC-3: deep-tier reasoning-effort pin (opus-5-5 CLI default is medium) ─
+# ── #1898 AC-3 / #1901 AC-2: reasoning-effort pin (opus-5-5 CLI default is medium) ─
 # Story-2 (#1897) AC-4 finding: claude-opus-5-5's CLI/API default reasoning effort
-# is `medium`, below `high`. Since the deep tier is the highest-cost agentic tier,
-# it pins `--effort high` — and ONLY the deep tier. audit/action/single/triage
-# keep the CLI default. These guard that scoping.
+# is `medium`, below `high`. #1898 pinned `--effort high` on the deep tier;
+# #1901 moves audit + single onto opus-5-5 too, so the pin now also covers those
+# two tiers (deep|audit|single). triage and action keep the CLI default (they run
+# cheaper models where the extra thinking spend is not warranted). These guard
+# that scoping.
 
 @test "effort (#1898): deep tier passes --effort high to claude" {
   _source_engine "claude"
@@ -424,7 +427,7 @@ _source_engine() {
   rm -f "$args_rec"
 }
 
-@test "effort (#1898): audit tier does NOT pass --effort (deep-tier only)" {
+@test "effort (#1901): audit tier passes --effort high to claude (opus-5-5)" {
   _source_engine "claude"
   local args_rec
   args_rec="$(mktemp)"
@@ -432,10 +435,25 @@ _source_engine() {
   export STUB_ENGINE_RECORD_ARGS="$args_rec"
   export STUB_ENGINE_EXIT=0
 
-  run run_agentic "$TEST_PROMPT" "claude-fable-5" "audit"
+  run run_agentic "$TEST_PROMPT" "claude-opus-5-5" "audit"
 
   [ "$status" -eq 0 ]
-  ! grep -q -- "--effort" "$args_rec"
+  grep -q -- "--effort high" "$args_rec"
+  rm -f "$args_rec"
+}
+
+@test "effort (#1901): single tier passes --effort high to claude (opus-5-5)" {
+  _source_engine "claude"
+  local args_rec
+  args_rec="$(mktemp)"
+  [ $? -eq 0 ] || exit 1
+  export STUB_ENGINE_RECORD_ARGS="$args_rec"
+  export STUB_ENGINE_EXIT=0
+
+  run run_agentic "$TEST_PROMPT" "claude-opus-5-5" "single"
+
+  [ "$status" -eq 0 ]
+  grep -q -- "--effort high" "$args_rec"
   rm -f "$args_rec"
 }
 
