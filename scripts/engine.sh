@@ -226,6 +226,92 @@ _engine_chain_first() {
   printf '%s' "${first//[[:space:]]/}"
 }
 
+# duck_engine_candidates — prints one "<engine> <model>" line per rubber-duck
+# engine to try, in order; prints nothing when no usable engine is left.
+#   1. The engines AI_DUCK_ENGINE lists (e.g. "gemini,claude"), in order. An
+#      entry "none" (or off/disabled/false) ends the list: nothing after it,
+#      and nothing chosen automatically, is tried. AI_DUCK_ENGINE=none alone
+#      turns the duck off.
+#   2. set_engine_config's cross-engine default (DUCK_ENGINE / DUCK_MODEL).
+#   3. The other engines in AI_ENGINES order, except the primary REVIEW_ENGINE.
+# Only enabled, available engines are listed. "Available" is the
+# validate_engines pre-flight flag (unset counts as available) and
+# AI_ENGINES_RATE_LIMITED, so a disabled or dead engine (e.g. Copilot on a
+# classic PAT) is skipped instead of failing on every review. A listed engine
+# that is skipped, or an unknown entry, logs one ::warning::.
+duck_engine_candidates() {
+  local t e m out="" stop=0
+  for t in $(_ai_duck_engines); do
+    case "$t" in
+      none|off|disabled|false)
+        stop=1
+        break ;;
+      claude|gemini|copilot)
+        [[ " $out " == *" $t "* ]] && continue
+        if ai_engine_available "$t"; then
+          out="$out $t"
+        else
+          echo "::warning::AI_DUCK_ENGINE lists $t, which is disabled or unavailable — skipping it" >&2
+        fi ;;
+      *)
+        echo "::warning::AI_DUCK_ENGINE='${AI_DUCK_ENGINE}': '$t' is not a known engine (claude, gemini, copilot, none) — skipping it" >&2 ;;
+    esac
+  done
+  if [ "$stop" -eq 0 ]; then
+    for e in ${DUCK_ENGINE:-} $(ai_engine_chain); do
+      [[ " $out " == *" $e "* ]] && continue
+      # The primary is a duck only when AI_DUCK_ENGINE lists it (same vendor,
+      # other model); the cross-engine default never names the primary.
+      [ "$e" = "${REVIEW_ENGINE:-}" ] && continue
+      ai_engine_available "$e" && out="$out $e"
+    done
+  fi
+  for e in $out; do
+    if [ "$e" = "${DUCK_ENGINE:-}" ] && [ -n "${DUCK_MODEL:-}" ]; then
+      m="$DUCK_MODEL"
+    else
+      m="$(_duck_model_for "$e")"
+    fi
+    printf '%s %s\n' "$e" "$m"
+  done
+}
+
+# select_duck_engine — prints "<engine> <model>" for the first rubber-duck
+# engine (duck_engine_candidates), or "none" when no usable engine is left.
+select_duck_engine() {
+  local first
+  first="$(duck_engine_candidates)"
+  first="${first%%$'\n'*}"
+  printf '%s' "${first:-none}"
+}
+
+# _duck_label — the rubber duck's models for ENGINE_LABEL, in the order the duck
+# tries them: the first model, then its fallbacks in brackets (e.g.
+# "gemini-3.8-flash [sonnet 5.5]"), or "off" when no engine is left. It reads
+# duck_engine_candidates, so the label names what the duck will actually try
+# (AI_DUCK_ENGINE, the cross-engine default, then AI_ENGINES) instead of only
+# the cross-engine default. It lists a Gemini duck only when the pre-flight
+# probe passed (GEMINI_AVAILABLE=true), the same test review-one-pr.sh applies
+# before it runs the duck, so an unset flag leaves Gemini out of both. The
+# candidates' warnings are dropped here: the duck logs them itself when it runs.
+_duck_label() {
+  local e m chain=""
+  if ! declare -F ai_engine_available >/dev/null 2>&1; then
+    ai_model_label "${DUCK_MODEL:-}"
+    return 0
+  fi
+  while read -r e m; do
+    [ -n "$e" ] || continue
+    [ "$e" = gemini ] && [ "${GEMINI_AVAILABLE:-}" != true ] && continue
+    chain="${chain:+$chain,}${m:-$e}"
+  done <<< "$(duck_engine_candidates 2>/dev/null)"
+  if [ -n "$chain" ]; then
+    ai_models_label_chain "$chain"
+  else
+    printf 'off'
+  fi
+}
+
 set_engine_config() {
   case "$REVIEW_ENGINE" in
     claude)
@@ -252,7 +338,7 @@ set_engine_config() {
       # Cross-engine rubber duck: use Copilot when Claude is primary
       DUCK_ENGINE="copilot"
       DUCK_MODEL="$(_duck_model_for copilot)"
-      ENGINE_LABEL="triage: $(ai_models_label_chain "$CLAUDE_TRIAGE_MODEL_CHAIN") → deep: $(ai_models_label_chain "$CLAUDE_DEEP_MODEL_CHAIN") + duck: $(ai_model_label "$DUCK_MODEL") → audit: $(ai_models_label_chain "$CLAUDE_AUDIT_MODEL_CHAIN")"
+      ENGINE_LABEL="triage: $(ai_models_label_chain "$CLAUDE_TRIAGE_MODEL_CHAIN") → deep: $(ai_models_label_chain "$CLAUDE_DEEP_MODEL_CHAIN") + duck: $(_duck_label) → audit: $(ai_models_label_chain "$CLAUDE_AUDIT_MODEL_CHAIN")"
       ENGINE_SINGLE_LABEL="single-reviewer mode: $(ai_models_label_chain "$CLAUDE_SINGLE_MODEL_CHAIN")"
       ;;
     gemini)
@@ -275,7 +361,7 @@ set_engine_config() {
       # Cross-engine rubber duck: use Claude for diversity
       DUCK_ENGINE="claude"
       DUCK_MODEL="$(_duck_model_for claude)"
-      ENGINE_LABEL="triage: $(ai_models_label_chain "$_gtriage") → deep: $(ai_models_label_chain "$_gdeep") + duck: $(ai_model_label "$DUCK_MODEL") → audit: $(ai_models_label_chain "$_gaudit")"
+      ENGINE_LABEL="triage: $(ai_models_label_chain "$_gtriage") → deep: $(ai_models_label_chain "$_gdeep") + duck: $(_duck_label) → audit: $(ai_models_label_chain "$_gaudit")"
       ENGINE_SINGLE_LABEL="single-reviewer mode: $(ai_models_label_chain "$_gsingle")"
       # Clear the Claude-only chain vars so callers that check them unconditionally
       # do not accidentally apply a stale Claude chain to the Gemini engine.
@@ -303,7 +389,7 @@ set_engine_config() {
       # Cross-engine rubber duck: use Gemini when Copilot is primary
       DUCK_ENGINE="gemini"
       DUCK_MODEL="$(_duck_model_for gemini)"
-      ENGINE_LABEL="triage: $(ai_model_label "$ENGINE_TRIAGE_MODEL") → deep: $(ai_model_label "$ENGINE_DEEP_MODEL") + duck: $(ai_model_label "$DUCK_MODEL") → audit: $(ai_model_label "$ENGINE_AUDIT_MODEL") (GitHub Models API)"
+      ENGINE_LABEL="triage: $(ai_model_label "$ENGINE_TRIAGE_MODEL") → deep: $(ai_model_label "$ENGINE_DEEP_MODEL") + duck: $(_duck_label) → audit: $(ai_model_label "$ENGINE_AUDIT_MODEL") (GitHub Models API)"
       ENGINE_SINGLE_LABEL="single-reviewer mode: $(ai_model_label "$ENGINE_SINGLE_MODEL") (GitHub Models API)"
       # No in-engine chain for Copilot — single GitHub Models endpoint.
       CLAUDE_TRIAGE_MODEL_CHAIN=""
@@ -2021,65 +2107,6 @@ while pos >= 0:
     pos = text.find('{', pos + 1)
 sys.exit(1)
 " "$raw" > "$dest" 2>/dev/null
-}
-
-# duck_engine_candidates — prints one "<engine> <model>" line per rubber-duck
-# engine to try, in order; prints nothing when no usable engine is left.
-#   1. The engines AI_DUCK_ENGINE lists (e.g. "gemini,claude"), in order. An
-#      entry "none" (or off/disabled/false) ends the list: nothing after it,
-#      and nothing chosen automatically, is tried. AI_DUCK_ENGINE=none alone
-#      turns the duck off.
-#   2. set_engine_config's cross-engine default (DUCK_ENGINE / DUCK_MODEL).
-#   3. The other engines in AI_ENGINES order, except the primary REVIEW_ENGINE.
-# Only enabled, available engines are listed. "Available" is the
-# validate_engines pre-flight flag (unset counts as available) and
-# AI_ENGINES_RATE_LIMITED, so a disabled or dead engine (e.g. Copilot on a
-# classic PAT) is skipped instead of failing on every review. A listed engine
-# that is skipped, or an unknown entry, logs one ::warning::.
-duck_engine_candidates() {
-  local t e m out="" stop=0
-  for t in $(_ai_duck_engines); do
-    case "$t" in
-      none|off|disabled|false)
-        stop=1
-        break ;;
-      claude|gemini|copilot)
-        [[ " $out " == *" $t "* ]] && continue
-        if ai_engine_available "$t"; then
-          out="$out $t"
-        else
-          echo "::warning::AI_DUCK_ENGINE lists $t, which is disabled or unavailable — skipping it" >&2
-        fi ;;
-      *)
-        echo "::warning::AI_DUCK_ENGINE='${AI_DUCK_ENGINE}': '$t' is not a known engine (claude, gemini, copilot, none) — skipping it" >&2 ;;
-    esac
-  done
-  if [ "$stop" -eq 0 ]; then
-    for e in ${DUCK_ENGINE:-} $(ai_engine_chain); do
-      [[ " $out " == *" $e "* ]] && continue
-      # The primary is a duck only when AI_DUCK_ENGINE lists it (same vendor,
-      # other model); the cross-engine default never names the primary.
-      [ "$e" = "${REVIEW_ENGINE:-}" ] && continue
-      ai_engine_available "$e" && out="$out $e"
-    done
-  fi
-  for e in $out; do
-    if [ "$e" = "${DUCK_ENGINE:-}" ] && [ -n "${DUCK_MODEL:-}" ]; then
-      m="$DUCK_MODEL"
-    else
-      m="$(_duck_model_for "$e")"
-    fi
-    printf '%s %s\n' "$e" "$m"
-  done
-}
-
-# select_duck_engine — prints "<engine> <model>" for the first rubber-duck
-# engine (duck_engine_candidates), or "none" when no usable engine is left.
-select_duck_engine() {
-  local first
-  first="$(duck_engine_candidates)"
-  first="${first%%$'\n'*}"
-  printf '%s' "${first:-none}"
 }
 
 # duck_verdict_valid <file> — 0 when <file> holds a rubber-duck verdict: JSON
