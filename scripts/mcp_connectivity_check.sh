@@ -38,6 +38,13 @@
 
 set -euo pipefail
 
+# Model family → current id resolver (#1979): name a family, never pin a version.
+# Resolve the lib dir with parameter expansion (no external `dirname`) so this
+# source never needs a PATH command — main()'s jq/claude guards must be the first
+# thing to fail when the environment is stripped bare.
+# shellcheck source=scripts/lib/engine-models.sh
+source "${BASH_SOURCE[0]%/*}/lib/engine-models.sh"
+
 REVIEW_MCP_CONFIG_DEFAULT_PATH="${REVIEW_MCP_CONFIG_DEFAULT_PATH:-.github/review-mcp.json}"
 
 # ---------------------------------------------------------------------------
@@ -148,7 +155,7 @@ main() {
   fi
 
   local model timeout servers today
-  model="${MCP_CHECK_MODEL:-claude-haiku-4-5-20251001}"
+  model="${MCP_CHECK_MODEL:-$(ai_model_for_family haiku)}"
   timeout="${MCP_CHECK_TIMEOUT:-120}"
   servers="$(jq -r '(.mcpServers // {}) | keys | join(", ")' "$cfg" 2>/dev/null || true)"
   today="$(date -u +%Y-%m-%d)"

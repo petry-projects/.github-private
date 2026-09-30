@@ -88,14 +88,14 @@ for field in ("name", "trigger", "engine", "permissions"):
     if field not in fm:
         errors.append(f"missing required field: {field!r}")
 
-# Validate engine — warn on unknown but don't fail (new models can be added without a code change)
-known_engines = {
-    "claude-sonnet-4-6", "claude-sonnet-5", "claude-haiku-4-5-20251001",
-    "claude-opus-4-7", "claude-haiku-4-5",
-}
+# Validate engine — accept a model FAMILY (opus|sonnet|haiku), resolved to the
+# current id at run time by ai_model_for_family (#1979), or any concrete claude-*
+# id an operator pins deliberately. Warn (never fail) on anything else so a new
+# provider can be added without a code change.
+families = {"opus", "sonnet", "haiku"}
 engine = fm.get("engine", "")
-if engine and engine not in known_engines:
-    print(f"aw compile: {path}: warning: unknown engine {engine!r}", file=sys.stderr)
+if engine and engine not in families and not engine.startswith("claude"):
+    print(f"aw compile: {path}: warning: unknown engine {engine!r} (name a family: opus|sonnet|haiku)", file=sys.stderr)
 
 # Validate output mode if present
 output_mode = fm.get("output")
@@ -278,7 +278,7 @@ with open(path, encoding='utf-8') as f:
     text = f.read()
 m = re.match(r'^---\n(.*?)\n---\n', text, re.DOTALL)
 fm = yaml.safe_load(m.group(1))
-print(fm.get("engine", "claude-sonnet-4-6"))
+print(fm.get("engine", "sonnet"))
 PYEOF
 )"
 
@@ -287,6 +287,17 @@ PYEOF
     echo "aw run: invalid engine value: $engine" >&2
     exit 1
   fi
+
+  # Resolve a model FAMILY (opus|sonnet|haiku) to the current concrete id at run
+  # time, so the workflow names a family and never pins a version (#1979). A
+  # concrete id (claude-*) an operator set is passed through unchanged.
+  case "$engine" in
+    opus|sonnet|haiku)
+      # shellcheck source=lib/engine-models.sh
+      source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/engine-models.sh"
+      engine="$(ai_model_for_family "$engine")"
+      ;;
+  esac
 
   # Call Claude — write prompt to a temp file to avoid echo with user-controlled data
   local result rc=0 prompt_file

@@ -280,6 +280,34 @@ ai_models_fable_deprecation() {
   printf '%s' "claude-fable-* is deprecated (#1901): audit/single now default to claude-opus-5-5 (chain claude-opus-5-5,claude-opus-4-8,claude-opus-4-7). The configured Fable model is still honoured as a stop-gap — repoint it to claude-opus-5-5."
 }
 
+# ai_model_for_family <family> — the current concrete model id for a Claude model
+# FAMILY (opus|sonnet|haiku), so callers name a family and never pin a version
+# (#1979, companion petry-projects/.github#1199). The families map to the tiers
+# whose primary is that family, and the id is that tier's chain FIRST model — the
+# existing chains stay the single source of truth:
+#     opus   → deep    (default primary claude-opus-5-5)
+#     sonnet → action  (default primary claude-sonnet-5)
+#     haiku  → triage  (default primary claude-haiku-4-5-20251001)
+# Overrides are honoured with the same precedence engine.sh uses: the per-tier
+# CLAUDE_<TIER>_MODEL_CHAIN env first (ai_models_chain does not read it), then
+# AI_MODELS_CLAUDE (via ai_models_chain), then the built-in default. An unknown
+# family warns and returns non-zero. Bash 3.2-safe.
+ai_model_for_family() {
+  local family="${1:-}" tier var chain
+  case "$family" in
+    opus)   tier=deep;   var=CLAUDE_DEEP_MODEL_CHAIN ;;
+    sonnet) tier=action; var=CLAUDE_ACTION_MODEL_CHAIN ;;
+    haiku)  tier=triage; var=CLAUDE_TRIAGE_MODEL_CHAIN ;;
+    *)
+      printf '::warning::ai_model_for_family: unknown family %s (expected opus|sonnet|haiku)\n' "$family" >&2
+      return 1 ;;
+  esac
+  chain="${!var:-}"
+  [ -n "${chain//[[:space:],]/}" ] || chain="$(ai_models_chain claude "$tier")"
+  chain="${chain%%,*}"
+  printf '%s' "${chain//[[:space:]]/}"
+}
+
 # ai_model_label <model> — a short name for log lines:
 #   claude-haiku-4-5-20251001 → haiku 4.5, claude-opus-5-5 → opus 5.5,
 #   claude-sonnet-5 → sonnet 5, openai/o4-mini → o4-mini; others unchanged.
