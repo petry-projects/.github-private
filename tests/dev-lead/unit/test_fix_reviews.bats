@@ -5000,6 +5000,6 @@ _resolved_bot_comment() {
   run bash "$FIX_REVIEWS_SCRIPT" 2>&1
 
   [ "$status" -eq 1 ]
-  ! grep -q 'classifier:RESOLVED' "$MINLOG"
+  [ ! -s "$MINLOG" ]
   [[ "$output" == *"predates the last edit"* ]]
 }
