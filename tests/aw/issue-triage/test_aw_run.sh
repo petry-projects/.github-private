@@ -260,6 +260,16 @@ else fail "compile: a runner engine with no model must fail" "status=$status: $o
 status=0; output=$(bash "$REPO_ROOT/scripts/aw.sh" compile "$spec_dir/badmodel.md" 2>&1) || status=$?
 if [[ $status -ne 0 ]] && echo "$output" | grep -q "must be a family"; then ok "compile: a mis-cased family (Sonnet) fails"
 else fail "compile: a non-family, non-claude-* model must fail" "status=$status: $output"; fi
+# Other runners keep the warn-only rule, so a new provider needs no code change.
+printf -- '---\nname: t\ntrigger:\n  issues: {}\nengine: copilot\npermissions: {}\nmodels:\n  copilot: [gpt-5]\n---\nbody\n' > "$spec_dir/copilot.md"
+status=0; bash "$REPO_ROOT/scripts/aw.sh" compile "$spec_dir/copilot.md" >/dev/null 2>&1 || status=$?
+if [[ $status -eq 0 ]]; then ok "compile: a non-claude runner with its own model still passes"
+else fail "compile: the claude-only model check must not fail other runners" "status=$status"; fi
+# A list-valued engine can't key models.<engine>; compile must reject it.
+printf -- '---\nname: t\ntrigger:\n  issues: {}\nengine: [claude]\npermissions: {}\n---\nbody\n' > "$spec_dir/listengine.md"
+status=0; output=$(bash "$REPO_ROOT/scripts/aw.sh" compile "$spec_dir/listengine.md" 2>&1) || status=$?
+if [[ $status -ne 0 ]] && echo "$output" | grep -q "engine must be a string"; then ok "compile: a list-valued engine fails"
+else fail "compile: a non-string engine must fail" "status=$status: $output"; fi
 rm -rf "$spec_dir"
 
 # ---------------------------------------------------------------------------

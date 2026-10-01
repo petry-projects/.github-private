@@ -95,14 +95,17 @@ for field in ("name", "trigger", "engine", "permissions"):
 families = {"opus", "sonnet", "haiku"}
 engine = fm.get("engine", "")
 if engine and not isinstance(engine, str):
-    print(f"aw compile: {path}: warning: engine must be a string, got {type(engine).__name__}", file=sys.stderr)
+    # `aw run` cannot use a non-string engine (it keys models.<engine> by it), so
+    # this is an error, not a warning.
+    errors.append(f"engine must be a string, got {type(engine).__name__}")
 elif engine and engine not in families and not engine.startswith("claude"):
     print(f"aw compile: {path}: warning: unknown engine {engine!r} (name a family: opus|sonnet|haiku)", file=sys.stderr)
 
-# A runner-style engine (e.g. `claude`, not a family or claude-* id) takes its model
-# from models.<engine>; `aw run` hard-fails without one, so fail compile the same
-# way. The model itself must be a family or a concrete claude-* id.
-if isinstance(engine, str) and engine and engine not in families and not engine.startswith("claude-"):
+# The `claude` runner takes its model from models.claude; `aw run` hard-fails
+# without one, so fail compile the same way. The model itself must be a family or
+# a concrete claude-* id. Other runners keep the warn-only rule above, so a new
+# provider can still be added without a code change.
+if engine == "claude":
     models = fm.get("models") or {}
     val = models.get(engine) if isinstance(models, dict) else None
     if isinstance(val, list):
@@ -295,7 +298,11 @@ with open(path, encoding='utf-8') as f:
     text = f.read()
 m = re.match(r'^---\n(.*?)\n---\n', text, re.DOTALL)
 fm = yaml.safe_load(m.group(1)) or {}
-print(fm.get("engine", "sonnet"))
+engine = fm.get("engine", "sonnet")
+if not isinstance(engine, str):
+    print(f"aw run: engine must be a string, got {type(engine).__name__}", file=sys.stderr)
+    sys.exit(1)
+print(engine)
 PYEOF
 )"
   model="$(python3 - "$wf_file" <<'PYEOF'
@@ -307,7 +314,7 @@ m = re.match(r'^---\n(.*?)\n---\n', text, re.DOTALL)
 fm = yaml.safe_load(m.group(1)) or {}
 engine = fm.get("engine", "sonnet")
 models = fm.get("models") or {}
-val = models.get(engine) if isinstance(models, dict) else None
+val = models.get(engine) if isinstance(models, dict) and isinstance(engine, str) else None
 if isinstance(val, list):
     val = val[0] if val else ""
 print(val if isinstance(val, str) else "")
