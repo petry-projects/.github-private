@@ -344,6 +344,19 @@ _codex_json() {
   [ "$status" -eq 1 ]
 }
 
+# The pattern is anchored to the body start (^): a finding-bearing Codex comment that
+# merely QUOTES the notice sentence further down (not as its first line) does NOT
+# match and still blocks — so a genuine finding is never silently dropped.
+@test "#1993: a Codex comment that only quotes the notice (not at body start) still blocks → 1" {
+  local body="## Codex Review — could not complete
+
+Earlier this run reported: You have reached your Codex usage limits for code reviews.
+
+**P1** Possible null dereference in scripts/foo.sh:42 — guard the lookup before use."
+  _run_check "$(_codex_json chatgpt-codex-connector "$body")"
+  [ "$status" -eq 1 ]
+}
+
 # ────────────────────────────────────────────────────────────────────
 # INTEGRATION / WIRING TESTS (review-one-pr.sh)
 # ────────────────────────────────────────────────────────────────────

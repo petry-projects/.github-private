@@ -169,7 +169,7 @@ TSV
 @test "info-status: a source without an info-status pattern is not listed" {
   local patterns
   patterns="$(reviewer_sources_info_status_patterns)"
-  # These six sources carry "-" in the info_status_pattern column, so none may
+  # These seven sources carry "-" in the info_status_pattern column, so none may
   # appear — enumerate every one (mirroring the check-run negative test) so giving
   # any unlisted source a non-"-" pattern must fail this test rather than pass
   # silently and weaken the gate's fail-closed guarantee.
@@ -179,6 +179,7 @@ TSV
   [[ "$patterns" != *"qodo-code-review"* ]]
   [[ "$patterns" != *"codeant-ai"* ]]
   [[ "$patterns" != *"graphite-app"* ]]
+  [[ "$patterns" != *"cubic-dev-ai"* ]]
 }
 
 @test "info-status: helper propagates a missing-manifest failure" {
