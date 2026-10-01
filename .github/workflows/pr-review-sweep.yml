@@ -12,13 +12,19 @@ name: PR Review Agent — Stuck-Review Sweep
 # lifting (CI gating, idempotency) still lives in review-one-pr.sh; the sweep
 # only decides WHAT to re-trigger via pr-review-trigger.yml.
 #
-# Latency (#898): the scheduled sweep is the GUARANTEED backstop (≤15 min). On
-# top of it, a `workflow_run: completed` trigger gives a near-instant fast path —
-# when a core CI workflow finishes, the sweep runs SCOPED to just that run's PR(s)
-# (scripts/sweep-stuck-reviews.sh derives them from the event payload), so a PR
-# that just went green is re-reviewed in seconds instead of waiting for the next
-# cron tick. The fast path can never strand a PR: if it matches nothing (fork PR,
-# push to a branch, or CI still pending) the scheduled sweep still catches it.
+# Latency (#898): the scheduled sweep is a BEST-EFFORT backstop, NOT a guaranteed
+# ≤15-min one — GitHub's cron scheduler drops scheduled runs under load, so the
+# real interval between cron ticks stretches to hours during busy periods
+# (observed 3-7 h, #1952). Two paths cover that gap:
+#   • a `workflow_run: completed` trigger gives a near-instant fast path — when a
+#     core CI workflow finishes, the sweep runs SCOPED to just that run's PR(s)
+#     (scripts/sweep-stuck-reviews.sh derives them from the event payload), so a PR
+#     that just went green is re-reviewed in seconds;
+#   • for a PR DEFERRED on an un-elapsed rate-limit marker whose reset is near, the
+#     sweep ARMS pr-review-delayed-retry.yml (#1994), a deterministic retry that
+#     fires within minutes of the reset without depending on the cron.
+# Neither path can strand a PR: whatever they miss, a later cron tick still catches
+# — the cron is the eventual, not the time-bounded, backstop.
 #
 # NOTE: the re-dispatch runs as GH_PAT_WORKFLOWS (a PAT with workflow /
 # actions:write scope), NOT the default GITHUB_TOKEN — GitHub will not start a
@@ -34,8 +40,11 @@ name: PR Review Agent — Stuck-Review Sweep
 
 on:
   schedule:
-    # Every 15 min (offset to avoid contending with other crons) — the guaranteed
-    # backstop bounding worst-case re-review latency when the fast path misses.
+    # Every 15 min (offset to avoid contending with other crons) — the EVENTUAL
+    # backstop. Best-effort only: GitHub drops scheduled runs under load, so the
+    # effective interval stretches to hours when busy (#1952). The workflow_run
+    # fast path and the armed pr-review-delayed-retry.yml (#1994) are what bound
+    # latency; this cron just guarantees nothing is lost forever.
     - cron: '2,17,32,47 * * * *'
   workflow_run:
     # Event-driven fast path (#898): a core CI workflow finishing is the signal
