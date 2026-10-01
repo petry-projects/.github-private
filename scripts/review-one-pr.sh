@@ -1036,23 +1036,35 @@ unset _gh_meta_err _gh_diff_err _gh_diff_tmp _gh_meta_err_content _gh_diff_err_c
 # Best-effort: a fetch failure degrades to "(none)" rather than failing the run.
 _owner_repo=$(echo "$PR_URL" | sed -E 's|https://github.com/([^/]+/[^/]+)/pull/.*|\1|')
 _pr_num=${PR_URL##*/}
-# Derive advisory bot list from the gate script — single source of truth so
-# adding a new bot to ADVISORY_BOTS is automatically reflected here.
-_adv_bots=$(
-  # shellcheck source=lib/advisory-review-gate.sh
-  source "$SCRIPT_DIR/lib/advisory-review-gate.sh" 2>/dev/null
-  [[ ${#ADVISORY_BOTS[@]} -gt 0 ]] && printf '%s\n' "${!ADVISORY_BOTS[@]}" | sort | jq -R . | jq -s .
-) || _adv_bots=''
-if [[ -z "$_adv_bots" ]]; then
-  _adv_bots='["chatgpt-codex-connector","copilot-pull-request-reviewer","gemini-code-assist","sonarqubecloud"]'
+# Derive the triage-feedback bot set from the reviewer-source registry's
+# dev-lead-trusted projection — deliberately NOT the advisory-wait gate set.
+# The gate waits only on advisory_gate=yes bots (5 since #1997), but the triage
+# tier (which has NO tools) must still SEE the findings of every dev-lead-trusted
+# bot — including copilot/codex/qodo, which #1997 dropped from the approval-wait
+# quorum yet kept trusted. Scoping this to the gate set would silently hide those
+# trusted findings from triage, re-opening the Codex-P1-on-#458 blind spot the
+# block above exists to close (codeant/cubic #2003 review).
+_triage_bots=$(
+  # shellcheck source=lib/reviewer-sources.sh
+  source "$SCRIPT_DIR/lib/reviewer-sources.sh" 2>/dev/null
+  _tl=$(reviewer_sources_trusted_logins 2>/dev/null) \
+    && [[ -n "$_tl" ]] \
+    && printf '%s\n' "$_tl" | sort | jq -R . | jq -s .
+) || _triage_bots=''
+if [[ -z "$_triage_bots" ]]; then
+  # Last-resort fallback when sourcing the registry fails. Must equal the
+  # dev_lead_trusted=yes set in scripts/lib/reviewer-sources.tsv (all 9 sources —
+  # the trusted set is broader than the 5-bot advisory-wait set). Kept in sync by
+  # tests/test_reviewer_sources.bats ("_triage_bots literal fallback == registry ...").
+  _triage_bots='["chatgpt-codex-connector","codeant-ai","coderabbitai","copilot-pull-request-reviewer","cubic-dev-ai","gemini-code-assist","graphite-app","qodo-code-review","sonarqubecloud"]'
 fi
-ADVISORY_REVIEW_BODIES=$(echo "$PR_SNAPSHOT" | jq -r --argjson bots "$_adv_bots" --arg head "$PR_HEAD_SHA" '
+ADVISORY_REVIEW_BODIES=$(echo "$PR_SNAPSHOT" | jq -r --argjson bots "$_triage_bots" --arg head "$PR_HEAD_SHA" '
   [(.reviews // [])[] | select([.author.login] | inside($bots)) | select(.commit.oid == $head)]
   | group_by(.author.login) | map(sort_by(.submittedAt) | last)
   | map(select(.body != null and .body != ""))
   | .[] | "--- \(.author.login) review (\(.state), \(.submittedAt)) ---\n\(.body[0:800])"
 ' 2>/dev/null || true)
-ADVISORY_PR_COMMENTS=$(echo "$PR_SNAPSHOT" | jq -r --argjson bots "$_adv_bots" '
+ADVISORY_PR_COMMENTS=$(echo "$PR_SNAPSHOT" | jq -r --argjson bots "$_triage_bots" '
   [(.comments // [])[] | select([.author.login] | inside($bots))]
   | group_by(.author.login) | map(sort_by(.createdAt) | last)
   | map(select(.body != null and .body != ""))
@@ -1064,7 +1076,7 @@ ADVISORY_PR_COMMENTS=$(echo "$PR_SNAPSHOT" | jq -r --argjson bots "$_adv_bots" '
 # without slurping the sort/limit would apply per page, not across all pages.
 # gh rejects --slurp together with --jq, so pipe to external jq instead.
 ADVISORY_INLINE_COMMENTS=$(gh api "repos/$_owner_repo/pulls/$_pr_num/comments" --paginate --slurp 2>/dev/null \
-  | jq -r --argjson bots "$_adv_bots" --arg head "$PR_HEAD_SHA" '
+  | jq -r --argjson bots "$_triage_bots" --arg head "$PR_HEAD_SHA" '
       add
       | map(select([.user.login | sub("\\[bot\\]$"; "")] | inside($bots)))
       | map(select(.commit_id == $head))
@@ -1074,7 +1086,7 @@ ADVISORY_INLINE_COMMENTS=$(gh api "repos/$_owner_repo/pulls/$_pr_num/comments" -
 ADVISORY_BOT_FEEDBACK=$(printf '%s\n%s\n%s' "$ADVISORY_REVIEW_BODIES" "$ADVISORY_PR_COMMENTS" "$ADVISORY_INLINE_COMMENTS")
 # Cap total size so huge bot histories can't blow up the prompt.
 ADVISORY_BOT_FEEDBACK="${ADVISORY_BOT_FEEDBACK:0:8000}"
-unset _owner_repo _pr_num _adv_bots ADVISORY_REVIEW_BODIES ADVISORY_PR_COMMENTS ADVISORY_INLINE_COMMENTS
+unset _owner_repo _pr_num _triage_bots ADVISORY_REVIEW_BODIES ADVISORY_PR_COMMENTS ADVISORY_INLINE_COMMENTS
 
 # Downstream-impact pass (epic #748). Gated default-off behind the Story 5
 # feature flag so that, when disabled, the triage prompt is byte-identical to
