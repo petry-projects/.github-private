@@ -56,6 +56,12 @@ per-set candidate/incumbent scores and the verdict here:
 
 ### 2. Realized cost delta (Story 1)
 
+> **Update (2026-09-30, #1978 / PR #1982):** the scheduled 2026-09-01 increase to
+> `$3/$15` was cancelled, so Sonnet 5's `$2/$10` launch rate is now its standard price
+> (Anthropic pricing page, footnote 3). `scripts/lib/model-pricing.tsv` was corrected
+> to match. The `$3/$15` standard-window figures below reflect what was announced when
+> this record was written; they never took effect.
+
 Prices are data, priced through the single source of truth
 [`scripts/lib/model-pricing.tsv`](../../scripts/lib/model-pricing.tsv) via
 [`scripts/lib/model-pricing.sh`](../../scripts/lib/model-pricing.sh) (`cost_usd`). The
@@ -183,6 +189,12 @@ first verifying the blob changed. Record the gate result per transition:
 | Rationale | *one paragraph* |
 
 ## Deadline contingency (2026-08-31)
+
+> **Update (2026-09-30, #1978 / PR #1982):** the scheduled 2026-09-01 increase to
+> `$3/$15` was cancelled, so Sonnet 5's `$2/$10` launch rate is now its standard price
+> (Anthropic pricing page, footnote 3). `scripts/lib/model-pricing.tsv` was corrected
+> to match. The `$3/$15` standard-window plan below reflects what was announced when
+> this record was written; that rate never took effect.
 
 The intro-pricing deadline is real: `$2/$10` closes 2026-08-31, after which the standard
 `$3/$15` applies. If the canary/eval evidence is **not conclusive by 2026-08-31**, the
