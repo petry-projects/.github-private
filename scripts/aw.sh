@@ -331,6 +331,12 @@ PYEOF
       engine_model="$(ai_model_for_family "$want")"
       ;;
   esac
+  # Re-validate the resolved id: an operator override chain can supply it, so it
+  # must still be a single safe token before it reaches `claude --model`.
+  if [[ ! "$engine_model" =~ ^[A-Za-z0-9][A-Za-z0-9._:/@-]*$ ]]; then
+    echo "aw run: invalid resolved model: $engine_model" >&2
+    exit 1
+  fi
 
   # Call Claude — write prompt to a temp file to avoid echo with user-controlled data
   local result rc=0 prompt_file
