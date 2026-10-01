@@ -95,6 +95,20 @@ else
   SCHEDULED_SWEEP=false
 fi
 
+# Deterministic delayed-retry arming (#1994). When the sweep DEFERS a rate-limited
+# PR whose reset is still in the future but within DELAYED_RETRY_HORIZON_SEC, it
+# arms pr-review-delayed-retry.yml to fire close to <reset> instead of relying on
+# the best-effort schedule cron (which GitHub drops under load — observed 3-7 h
+# instead of 15 min, #1952). A reset BEYOND the horizon is left to the cron
+# backstop. ARM_DELAYED_RETRY=false disables arming — the mode the delayed retry
+# itself uses when it delegates back to this sweep, so a retry can never re-arm.
+ARM_DELAYED_RETRY="${ARM_DELAYED_RETRY:-true}"
+DELAYED_RETRY_WORKFLOW="${DELAYED_RETRY_WORKFLOW:-pr-review-delayed-retry.yml}"
+DELAYED_RETRY_HORIZON_SEC="${DELAYED_RETRY_HORIZON_SEC:-3600}"
+case "$DELAYED_RETRY_HORIZON_SEC" in
+  ''|*[!0-9]*) DELAYED_RETRY_HORIZON_SEC=3600 ;;
+esac
+
 # Use GITHUB_REF as --ref only when it is a branch or tag (supports testing on
 # feature branches); a pull-request merge ref is not dispatchable.
 REF_FLAGS=()
@@ -160,6 +174,7 @@ echo ""
 inspected=0
 stuck=0
 dispatched=0
+armed=0
 
 # dispatch_review <pr_url> <label> [force]
 # Re-dispatch a review through the normal trigger. Honours DRY_RUN and updates
@@ -187,6 +202,42 @@ dispatch_review() {
     echo "    dispatched review for $_url"
   else
     echo "::warning::sweep: failed to dispatch review for $_url"
+  fi
+}
+
+# arm_delayed_retry <pr_url> <head_sha> <reset_iso> <reset_epoch> <now_epoch>
+# Deterministic near-reset retry (#1994). Called from the rate-limit DEFER branch:
+# when a PR is withheld on an un-elapsed reset that is within
+# DELAYED_RETRY_HORIZON_SEC, dispatch pr-review-delayed-retry.yml, which sleeps
+# until <reset>, re-checks the marker still applies at the same head, then
+# re-dispatches the review through THIS sweep (scoped to the one PR). This gives a
+# retry bounded to minutes after reset without depending on the best-effort cron.
+# Resets beyond the horizon are left to the cron backstop. Idempotency and
+# cross-PR isolation live in the retry workflow's per-(PR, head) concurrency group;
+# a newer push changes the head so the stale armed retry no-ops. Honours DRY_RUN
+# and is bounded by MAX_DISPATCH. No-op when ARM_DELAYED_RETRY=false — the mode the
+# retry uses when it delegates back here, so it can never re-arm itself.
+arm_delayed_retry() {
+  local _url="$1" _sha="$2" _reset="$3" _reset_epoch="$4" _now_epoch="$5"
+  [ "$ARM_DELAYED_RETRY" = "true" ] || return 0
+  [ -n "$_reset_epoch" ] || return 0
+  local _delta=$(( _reset_epoch - _now_epoch ))
+  { [ "$_delta" -gt 0 ] && [ "$_delta" -le "$DELAYED_RETRY_HORIZON_SEC" ]; } || return 0
+  if [ "$armed" -ge "$MAX_DISPATCH" ]; then
+    echo "    arm skipped $_url — reached MAX_DISPATCH=$MAX_DISPATCH armed retries this sweep"
+    return 0
+  fi
+  if [ "$DRY_RUN_BOOL" = "true" ]; then
+    echo "    dry-run: would arm delayed retry for $_url (not_before=$_reset, head ${_sha:0:8})"
+    armed=$((armed + 1))
+    return 0
+  fi
+  if gh workflow run "$DELAYED_RETRY_WORKFLOW" --repo "$AGENT_REPO" "${REF_FLAGS[@]}" \
+       -f pr_url="$_url" -f head_sha="$_sha" -f not_before="$_reset"; then
+    armed=$((armed + 1))
+    echo "    armed delayed retry for $_url (not_before=$_reset, head ${_sha:0:8})"
+  else
+    echo "::warning::sweep: failed to arm delayed retry for $_url"
   fi
 }
 
@@ -330,6 +381,7 @@ while IFS= read -r pr_url; do
       dispatch_review "$pr_url" "rate-limited (reset $rl_reset elapsed, head ${head_sha:0:8})"
     else
       echo "  defer $pr_url — rate-limited until $rl_reset (head ${head_sha:0:8})"
+      arm_delayed_retry "$pr_url" "$head_sha" "$rl_reset" "$reset_epoch" "$now_epoch"
     fi
     continue
   fi
@@ -389,4 +441,4 @@ while IFS= read -r pr_url; do
 done < "$candidates_file"
 
 echo ""
-echo "Sweep summary: inspected $inspected candidate(s), $stuck stuck-green, $dispatched review(s) dispatched."
+echo "Sweep summary: inspected $inspected candidate(s), $stuck stuck-green, $dispatched review(s) dispatched, $armed delayed retr$([ "$armed" -eq 1 ] && echo y || echo ies) armed."

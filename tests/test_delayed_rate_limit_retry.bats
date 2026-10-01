@@ -1,0 +1,168 @@
+#!/usr/bin/env bats
+# Unit tests for scripts/delayed-rate-limit-retry.sh (issue #1994).
+#
+# When pr-review defers a PR on an un-elapsed rate-limit marker whose reset is
+# near, the sweep ARMS a deterministic delayed retry by dispatching
+# pr-review-delayed-retry.yml, which runs this script. The script sleeps until
+# not_before, re-checks the marker still applies at the SAME head, then delegates
+# back to the sweep (scoped to that one PR, ARM_DELAYED_RETRY=false so it cannot
+# re-arm itself) to re-dispatch the review through the normal trigger — never
+# force-review. A newer push (changed head SHA) supersedes the armed retry, which
+# then no-ops.
+#
+# gh is mocked exactly as in test_sweep_stuck_reviews.bats: `gh pr view <url>`
+# returns a per-PR fixture, `gh workflow run ...` is logged so we can assert on
+# the dispatched command. The script delegates to the REAL sweep so these are
+# genuine end-to-end checks of the retry path.
+#
+# Run with: bats tests/test_delayed_rate_limit_retry.bats
+
+REPO_ROOT="$(cd "$(dirname "$BATS_TEST_FILENAME")/.." && pwd)"
+RETRY="$REPO_ROOT/scripts/delayed-rate-limit-retry.sh"
+WORKFLOW="$REPO_ROOT/.github/workflows/pr-review-delayed-retry.yml"
+
+PAST_RESET='2000-01-01T00:00:00Z'
+
+setup() {
+  MOCK_BIN="$(mktemp -d)"
+  FIXTURE_DIR="$(mktemp -d)"
+  GH_LOG="$(mktemp)"
+  export MOCK_BIN FIXTURE_DIR GH_LOG
+  export PATH="$MOCK_BIN:$PATH"
+  export AGENT_REPO="petry-projects/.github-private"
+
+  cat > "$MOCK_BIN/gh" <<'EOF'
+#!/usr/bin/env bash
+case "$1" in
+  pr)
+    if [ "$2" = "view" ]; then
+      url="$3"
+      num="${url##*/}"
+      f="$FIXTURE_DIR/pr_${num}.json"
+      if [ -f "$f" ]; then cat "$f"; exit 0; fi
+      echo "no fixture for $url" >&2
+      exit 1
+    fi
+    ;;
+  workflow)
+    printf '%s\n' "$*" >> "$GH_LOG"
+    exit 0
+    ;;
+esac
+exit 0
+EOF
+  chmod +x "$MOCK_BIN/gh"
+}
+
+teardown() {
+  rm -rf "${MOCK_BIN:-}" "${FIXTURE_DIR:-}"
+  rm -f "${GH_LOG:-}"
+}
+
+# write_pr <num> <reviewDecision> <rollup-json> [head] [reviews-json] [comments-json] [labels-json]
+write_pr() {
+  local num="$1" decision="$2" rollup="$3" head="${4-deadbeef}" reviews="${5:-[]}" comments="${6:-[]}" labels="${7:-[]}"
+  jq -n --arg d "$decision" --argjson r "$rollup" --arg h "$head" \
+        --argjson rv "$reviews" --argjson cm "$comments" --argjson lb "$labels" \
+    '{headRefOid:$h, reviewDecision:$d, statusCheckRollup:$r, reviews:$rv, comments:$cm, labels:($lb | map({name:.}))}' \
+    > "$FIXTURE_DIR/pr_${num}.json"
+}
+
+ROLLUP_PASS='[{"name":"CI","status":"COMPLETED","conclusion":"SUCCESS"}]'
+
+# rl_comment <head> <reset-iso>: a rate-limited withhold marker comment body array.
+rl_comment() {
+  printf '[{"body":"<!-- pr-review-agent rate-limited v1 sha=%s status=rate-limited reset=%s -->\\n\\nAdvisory bots were rate-limited."}]' "$1" "$2"
+}
+
+url_for() { echo "https://github.com/petry-projects/demo/pull/$1"; }
+
+# ---------------------------------------------------------------------------
+# Supersession: a newer push (changed head SHA) makes the armed retry a no-op.
+# ---------------------------------------------------------------------------
+@test "retry no-ops when the head SHA has advanced (newer push supersedes)" {
+  write_pr 2001 "REVIEW_REQUIRED" "$ROLLUP_PASS" "newhead01" "[]" "$(rl_comment armedold01 "$PAST_RESET")"
+  export PR_URL; PR_URL="$(url_for 2001)"
+  export HEAD_SHA="armedold01" NOT_BEFORE="$PAST_RESET"
+
+  run bash "$RETRY"
+  [ "$status" -eq 0 ]
+  [ ! -s "$GH_LOG" ]
+  [[ "$output" == *"superseded"* || "$output" == *"no-op"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# Happy path: marker still applies at head → delegate to the sweep, which
+# re-dispatches the review through the normal trigger (never force).
+# ---------------------------------------------------------------------------
+@test "retry re-dispatches via the sweep when the marker still applies at head" {
+  write_pr 2002 "REVIEW_REQUIRED" "$ROLLUP_PASS" "armed02" "[]" "$(rl_comment armed02 "$PAST_RESET")"
+  export PR_URL; PR_URL="$(url_for 2002)"
+  export HEAD_SHA="armed02" NOT_BEFORE="$PAST_RESET"
+
+  run bash "$RETRY"
+  [ "$status" -eq 0 ]
+  grep -qF -- "workflow run pr-review-trigger.yml" "$GH_LOG"
+  grep -qF -- "-f pr_url=$(url_for 2002)" "$GH_LOG"
+  ! grep -qF -- "force_review" "$GH_LOG"
+  # Must not re-arm itself (no recursive delayed-retry dispatch).
+  ! grep -qF -- "pr-review-delayed-retry.yml" "$GH_LOG"
+}
+
+# ---------------------------------------------------------------------------
+# Already resolved: a standing verdict at head means the retry must not fire.
+# ---------------------------------------------------------------------------
+@test "retry no-ops when the head already has a standing verdict" {
+  local comments
+  comments='[{"body":"<!-- pr-review-agent rate-limited v1 sha=armed03 status=rate-limited reset='"$PAST_RESET"' -->"},{"body":"<!-- pr-review-agent v1 sha=armed03 --> <!-- decision=fix-requested risk=low -->"}]'
+  write_pr 2003 "REVIEW_REQUIRED" "$ROLLUP_PASS" "armed03" "[]" "$comments"
+  export PR_URL; PR_URL="$(url_for 2003)"
+  export HEAD_SHA="armed03" NOT_BEFORE="$PAST_RESET"
+
+  run bash "$RETRY"
+  [ "$status" -eq 0 ]
+  [ ! -s "$GH_LOG" ]
+}
+
+# ---------------------------------------------------------------------------
+# DRY_RUN passes through to the delegated sweep: it logs intent, dispatches
+# nothing.
+# ---------------------------------------------------------------------------
+@test "retry honours DRY_RUN (delegates but dispatches nothing)" {
+  write_pr 2004 "REVIEW_REQUIRED" "$ROLLUP_PASS" "armed04" "[]" "$(rl_comment armed04 "$PAST_RESET")"
+  export PR_URL; PR_URL="$(url_for 2004)"
+  export HEAD_SHA="armed04" NOT_BEFORE="$PAST_RESET" DRY_RUN=true
+
+  run bash "$RETRY"
+  [ "$status" -eq 0 ]
+  [ ! -s "$GH_LOG" ]
+}
+
+# ---------------------------------------------------------------------------
+# A PR that cannot be fetched (deleted / no access) is a safe no-op, never an
+# error that strands the run.
+# ---------------------------------------------------------------------------
+@test "retry no-ops safely when the PR cannot be fetched" {
+  export PR_URL; PR_URL="$(url_for 2099)"
+  export HEAD_SHA="whatever" NOT_BEFORE="$PAST_RESET"
+
+  run bash "$RETRY"
+  [ "$status" -eq 0 ]
+  [ ! -s "$GH_LOG" ]
+}
+
+# ---------------------------------------------------------------------------
+# Concurrency (AC2): the retry workflow groups per PR + head SHA so two retries
+# for different PRs land in different concurrency lanes and never cancel each
+# other (nor the sweep, whose group name is unrelated).
+# ---------------------------------------------------------------------------
+@test "delayed-retry workflow groups per-PR+head so retries never cancel each other" {
+  [ -f "$WORKFLOW" ]
+  # The concurrency group must key on BOTH pr_url (different PRs → different lanes,
+  # so retries never cancel each other, nor the unrelated sweep group) and head_sha
+  # (a newer push gets its own lane).
+  run grep -E '^[[:space:]]*group:' "$WORKFLOW"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"inputs.pr_url"* ]]
+  [[ "$output" == *"inputs.head_sha"* ]]
+}
