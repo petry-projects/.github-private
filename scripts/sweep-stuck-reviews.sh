@@ -95,6 +95,20 @@ else
   SCHEDULED_SWEEP=false
 fi
 
+# Deterministic delayed-retry arming (#1994). When the sweep DEFERS a rate-limited
+# PR whose reset is still in the future but within DELAYED_RETRY_HORIZON_SEC, it
+# arms pr-review-delayed-retry.yml to fire close to <reset> instead of relying on
+# the best-effort schedule cron (which GitHub drops under load — observed 3-7 h
+# instead of 15 min, #1952). A reset BEYOND the horizon is left to the cron
+# backstop. ARM_DELAYED_RETRY=false disables arming — the mode the delayed retry
+# itself uses when it delegates back to this sweep, so a retry can never re-arm.
+ARM_DELAYED_RETRY="${ARM_DELAYED_RETRY:-true}"
+DELAYED_RETRY_WORKFLOW="${DELAYED_RETRY_WORKFLOW:-pr-review-delayed-retry.yml}"
+DELAYED_RETRY_HORIZON_SEC="${DELAYED_RETRY_HORIZON_SEC:-3600}"
+case "$DELAYED_RETRY_HORIZON_SEC" in
+  ''|*[!0-9]*) DELAYED_RETRY_HORIZON_SEC=3600 ;;
+esac
+
 # Use GITHUB_REF as --ref only when it is a branch or tag (supports testing on
 # feature branches); a pull-request merge ref is not dispatchable.
 REF_FLAGS=()
@@ -140,8 +154,10 @@ elif [[ "${GITHUB_EVENT_NAME:-}" == "workflow_run" && -n "${GITHUB_EVENT_PATH:-}
   # CI-completion kick (#898): inspect only the completing run's PR(s). The
   # REVIEW_REQUIRED + CI-green + not-reviewed-at-head gate below still decides, so
   # a too-early fire (some checks still pending) simply skips and the next
-  # completing workflow re-fires. The scheduled sweep remains the guaranteed
-  # backstop, so this fast path can never strand a PR if it matches nothing.
+  # completing workflow re-fires. The scheduled sweep remains the backstop, so
+  # this fast path can never strand a PR if it matches nothing — but the cron is
+  # best-effort (GitHub delays or drops scheduled runs under load, #1952); the
+  # time-bound rate-limit case is covered by the armed delayed retry (#1994).
   prs_from_workflow_run_event "$GITHUB_EVENT_PATH" > "$candidates_file" || true
 else
   bash "$SCRIPT_DIR/list-prs.sh" > "$candidates_file" || true
@@ -160,6 +176,7 @@ echo ""
 inspected=0
 stuck=0
 dispatched=0
+armed=0
 
 # dispatch_review <pr_url> <label> [force]
 # Re-dispatch a review through the normal trigger. Honours DRY_RUN and updates
@@ -190,10 +207,82 @@ dispatch_review() {
   fi
 }
 
+# arm_delayed_retry <pr_url> <head_sha> <reset_iso> <reset_epoch> <now_epoch>
+# Deterministic near-reset retry (#1994). Called from the rate-limit DEFER branch:
+# when a PR is withheld on an un-elapsed reset that is within
+# DELAYED_RETRY_HORIZON_SEC, dispatch pr-review-delayed-retry.yml, which sleeps
+# until <reset>, re-checks the marker still applies at the same head, then
+# re-dispatches the review through THIS sweep (scoped to the one PR). This gives a
+# retry bounded to minutes after reset without depending on the best-effort cron.
+# Resets beyond the horizon are left to the cron backstop. Idempotency and
+# cross-PR isolation live in the retry workflow's per-(PR, head) concurrency group;
+# a newer push changes the head so the stale armed retry no-ops. Honours DRY_RUN
+# and shares the single MAX_DISPATCH budget with normal dispatches (dispatched +
+# armed), so one sweep never issues more than MAX_DISPATCH requests total. No-op
+# when ARM_DELAYED_RETRY=false — the mode the
+# retry uses when it delegates back here, so it can never re-arm itself.
+arm_delayed_retry() {
+  local _url="$1" _sha="$2" _reset="$3" _reset_epoch="$4" _now_epoch="$5"
+  [ "$ARM_DELAYED_RETRY" = "true" ] || return 0
+  [ -n "$_reset_epoch" ] || return 0
+  local _delta=$(( _reset_epoch - _now_epoch ))
+  { [ "$_delta" -gt 0 ] && [ "$_delta" -le "$DELAYED_RETRY_HORIZON_SEC" ]; } || return 0
+  if [ "$(( dispatched + armed ))" -ge "$MAX_DISPATCH" ]; then
+    echo "    arm skipped $_url — reached MAX_DISPATCH=$MAX_DISPATCH (dispatches + armed retries) this sweep"
+    return 0
+  fi
+  if [ "$DRY_RUN_BOOL" = "true" ]; then
+    echo "    dry-run: would arm delayed retry for $_url (not_before=$_reset, head ${_sha:0:8})"
+    armed=$((armed + 1))
+    return 0
+  fi
+  # Dedup across sweep invocations (#1994). The retry workflow's per-(PR, head)
+  # concurrency group only COLLAPSES concurrent runs — it does not stop this
+  # sweep from re-dispatching on every defer tick (the 15-min cron, and the
+  # workflow_run fast path that fires on each CI completion org-wide), and each
+  # re-dispatch's cancel-in-progress would kill and restart the already-sleeping
+  # runner. So skip arming when a queued/in-progress retry already exists for
+  # this exact (PR, head): the run-name carries "<pr_url> @ <head_sha>", which
+  # gh exposes as displayTitle. Fail OPEN — a query error falls through to arm so
+  # a transient gh failure can never strand the retry.
+  if delayed_retry_in_flight "$_url" "$_sha"; then
+    echo "    arm skipped $_url — a delayed retry is already in flight for head ${_sha:0:8}"
+    return 0
+  fi
+  if gh workflow run "$DELAYED_RETRY_WORKFLOW" --repo "$AGENT_REPO" "${REF_FLAGS[@]}" \
+       -f pr_url="$_url" -f head_sha="$_sha" -f not_before="$_reset"; then
+    armed=$((armed + 1))
+    echo "    armed delayed retry for $_url (not_before=$_reset, head ${_sha:0:8})"
+  else
+    # A failed attempt still spends a MAX_DISPATCH slot, so a transient dispatch
+    # error cannot turn one sweep into a retry storm across every candidate.
+    armed=$((armed + 1))
+    echo "::warning::sweep: failed to arm delayed retry for $_url (attempt counted against MAX_DISPATCH)"
+  fi
+}
+
+# delayed_retry_in_flight <pr_url> <head_sha>
+# True when a queued or in-progress pr-review-delayed-retry run already exists for
+# this exact (PR, head). Matches on the run-name the retry workflow sets
+# ("pr-review-delayed-retry <pr_url> @ <head_sha>"), surfaced by gh as
+# displayTitle. Fails OPEN (returns false) on any query error so a transient gh
+# failure never suppresses a needed arm.
+delayed_retry_in_flight() {
+  local _url="$1" _sha="$2" _runs
+  _runs=$(gh run list --repo "$AGENT_REPO" --workflow "$DELAYED_RETRY_WORKFLOW" \
+            --event workflow_dispatch --limit 50 \
+            --json status,displayTitle 2>/dev/null) || return 1
+  [ -n "$_runs" ] || return 1
+  jq -e --arg title "$_url @ $_sha" '
+    any(.[]?; (.status == "queued" or .status == "in_progress")
+             and ((.displayTitle // "") | endswith($title)))' \
+    <<< "$_runs" >/dev/null 2>&1
+}
+
 while IFS= read -r pr_url; do
   [ -z "$pr_url" ] && continue
-  if [ "$dispatched" -ge "$MAX_DISPATCH" ]; then
-    echo "::notice::sweep: reached MAX_DISPATCH=$MAX_DISPATCH — deferring remaining PRs to the next sweep"
+  if [ "$(( dispatched + armed ))" -ge "$MAX_DISPATCH" ]; then
+    echo "::notice::sweep: reached MAX_DISPATCH=$MAX_DISPATCH (dispatches + armed retries) — deferring remaining PRs to the next sweep"
     break
   fi
   inspected=$((inspected + 1))
@@ -330,6 +419,7 @@ while IFS= read -r pr_url; do
       dispatch_review "$pr_url" "rate-limited (reset $rl_reset elapsed, head ${head_sha:0:8})"
     else
       echo "  defer $pr_url — rate-limited until $rl_reset (head ${head_sha:0:8})"
+      arm_delayed_retry "$pr_url" "$head_sha" "$rl_reset" "$reset_epoch" "$now_epoch"
     fi
     continue
   fi
@@ -389,4 +479,4 @@ while IFS= read -r pr_url; do
 done < "$candidates_file"
 
 echo ""
-echo "Sweep summary: inspected $inspected candidate(s), $stuck stuck-green, $dispatched review(s) dispatched."
+echo "Sweep summary: inspected $inspected candidate(s), $stuck stuck-green, $dispatched review(s) dispatched, $armed delayed retr$([ "$armed" -eq 1 ] && echo y || echo ies) armed."
