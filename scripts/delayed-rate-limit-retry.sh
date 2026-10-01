@@ -97,7 +97,7 @@ if ! snapshot=$(gh pr view "$PR_URL" --json headRefOid 2>/dev/null); then
   echo "  no-op: could not fetch $PR_URL (deleted, no access, or rate-limited) — leaving to the cron sweep"
   exit 0
 fi
-current_head=$(jq -r '.headRefOid // ""' <<< "$snapshot")
+current_head=$(jq -r '.headRefOid? // ""' <<< "$snapshot" || echo "")
 if [ -z "$current_head" ]; then
   echo "  no-op: current head SHA empty for $PR_URL — leaving to the cron sweep"
   exit 0
@@ -114,7 +114,7 @@ fi
 #    cannot re-arm another retry, and the event name is unset so the #1408
 #    scheduled-narrowing does not apply to this targeted retry.
 # ---------------------------------------------------------------------------
-one_pr_file="$(mktemp)"
+one_pr_file="$(mktemp)" || { echo "::error::Failed to create temporary file"; exit 1; }
 trap 'rm -f "$one_pr_file"' EXIT
 printf '%s\n' "$PR_URL" > "$one_pr_file"
 

@@ -215,7 +215,9 @@ dispatch_review() {
 # Resets beyond the horizon are left to the cron backstop. Idempotency and
 # cross-PR isolation live in the retry workflow's per-(PR, head) concurrency group;
 # a newer push changes the head so the stale armed retry no-ops. Honours DRY_RUN
-# and is bounded by MAX_DISPATCH. No-op when ARM_DELAYED_RETRY=false — the mode the
+# and shares the single MAX_DISPATCH budget with normal dispatches (dispatched +
+# armed), so one sweep never issues more than MAX_DISPATCH requests total. No-op
+# when ARM_DELAYED_RETRY=false — the mode the
 # retry uses when it delegates back here, so it can never re-arm itself.
 arm_delayed_retry() {
   local _url="$1" _sha="$2" _reset="$3" _reset_epoch="$4" _now_epoch="$5"
@@ -223,8 +225,8 @@ arm_delayed_retry() {
   [ -n "$_reset_epoch" ] || return 0
   local _delta=$(( _reset_epoch - _now_epoch ))
   { [ "$_delta" -gt 0 ] && [ "$_delta" -le "$DELAYED_RETRY_HORIZON_SEC" ]; } || return 0
-  if [ "$armed" -ge "$MAX_DISPATCH" ]; then
-    echo "    arm skipped $_url — reached MAX_DISPATCH=$MAX_DISPATCH armed retries this sweep"
+  if [ "$(( dispatched + armed ))" -ge "$MAX_DISPATCH" ]; then
+    echo "    arm skipped $_url — reached MAX_DISPATCH=$MAX_DISPATCH (dispatches + armed retries) this sweep"
     return 0
   fi
   if [ "$DRY_RUN_BOOL" = "true" ]; then
@@ -243,8 +245,8 @@ arm_delayed_retry() {
 
 while IFS= read -r pr_url; do
   [ -z "$pr_url" ] && continue
-  if [ "$dispatched" -ge "$MAX_DISPATCH" ]; then
-    echo "::notice::sweep: reached MAX_DISPATCH=$MAX_DISPATCH — deferring remaining PRs to the next sweep"
+  if [ "$(( dispatched + armed ))" -ge "$MAX_DISPATCH" ]; then
+    echo "::notice::sweep: reached MAX_DISPATCH=$MAX_DISPATCH (dispatches + armed retries) — deferring remaining PRs to the next sweep"
     break
   fi
   inspected=$((inspected + 1))

@@ -416,6 +416,35 @@ near_reset() {
   [[ "$output" == *"arm"* ]]
 }
 
+@test "MAX_DISPATCH is a shared budget across dispatches and delayed arms (not 2x)" {
+  # One stuck-green PR (dispatch) + one near-reset PR (arm). With MAX_DISPATCH=1,
+  # once the dispatch is spent the arm must be skipped — a single sweep may issue
+  # at most MAX_DISPATCH requests TOTAL, never MAX_DISPATCH of each.
+  local reset; reset="$(near_reset)"
+  write_pr 19945 "REVIEW_REQUIRED" "$ROLLUP_PASS" "sg19945"                                  # stuck-green → dispatch
+  write_pr 19946 "REVIEW_REQUIRED" "$ROLLUP_PASS" "rl19946" "[]" "$(rl_comment rl19946 "$reset")"  # near-reset → arm
+  { url_for 19945; url_for 19946; } > "$SWEEP_PRS_FILE"
+  export MAX_DISPATCH=1
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(grep -c 'workflow run' "$GH_LOG")" -eq 1 ]
+  grep -qF -- "-f pr_url=$(url_for 19945)" "$GH_LOG"
+  ! grep -qF -- "workflow run pr-review-delayed-retry.yml" "$GH_LOG"
+}
+
+@test "MAX_DISPATCH caps armed retries too (two near-reset PRs, only one arms)" {
+  local reset; reset="$(near_reset)"
+  write_pr 19947 "REVIEW_REQUIRED" "$ROLLUP_PASS" "rl19947" "[]" "$(rl_comment rl19947 "$reset")"
+  write_pr 19948 "REVIEW_REQUIRED" "$ROLLUP_PASS" "rl19948" "[]" "$(rl_comment rl19948 "$reset")"
+  { url_for 19947; url_for 19948; } > "$SWEEP_PRS_FILE"
+  export MAX_DISPATCH=1
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(grep -c -- 'workflow run pr-review-delayed-retry.yml' "$GH_LOG")" -eq 1 ]
+}
+
 # ---------------------------------------------------------------------------
 # Event-driven fast path (#898): a `workflow_run: completed` kick scopes the
 # sweep to the completing run's PR(s) via the event payload, so a PR that just
