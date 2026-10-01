@@ -38,12 +38,14 @@ set -euo pipefail
 # (advisory_gate=yes) by tests/test_reviewer_sources.bats.
 _advisory_gate_load_fallback_bots() {
   # shellcheck disable=SC2034
+  # Advisory-wait set is 5 since #1997 dropped copilot-pull-request-reviewer,
+  # chatgpt-codex-connector and qodo-code-review (zero countable reviews across eight
+  # consecutive PRs, measured 2026-09-23). They stay dev-lead-trusted and on the
+  # scorecard (see RATE_LIMIT_NOTICE_BOTS below — still ALL sources); they leave only
+  # this approval-wait set.
   declare -gA ADVISORY_BOTS=(
     [gemini-code-assist]="Gemini Code Assist (advisory)"
-    [copilot-pull-request-reviewer]="Copilot PR Reviewer (advisory)"
     [sonarqubecloud]="SonarCloud (advisory)"
-    [chatgpt-codex-connector]="Codex (advisory, newer bot)"
-    [qodo-code-review]="Qodo Merge (advisory)"
     [codeant-ai]="CodeAnt (advisory)"
     [graphite-app]="Graphite (advisory)"
     [cubic-dev-ai]="cubic (advisory)"
