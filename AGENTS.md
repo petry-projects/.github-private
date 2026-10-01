@@ -237,10 +237,19 @@ calling it a regression, and treat CI as authoritative.**
   `holdout-guard.yml` is exempt for the same reason. Add new gate workflows of this class to that list.
 - **Exception:** `pr-review-sweep.yml` (stuck-review sweep, #573/#898) is a documented repo-specific
   workflow with no corresponding org template in `standards/workflows/`. It re-dispatches reviews for PRs
-  that went green after a ci-pending/ci-failing skip, via two triggers: a scheduled cron (the guaranteed
-  ≤15-min backstop) and a `workflow_run: completed` fast path (#898) that scopes the sweep to the
-  completing CI run's PR(s) for near-instant re-review. It must not be removed by template syncs. If the org
-  template gains an equivalent re-trigger sweep, remove this exception and defer to the template instead.
+  that went green after a ci-pending/ci-failing skip, via two triggers: a scheduled cron (the EVENTUAL
+  backstop — best-effort only, since GitHub drops crons under load, #1952) and a `workflow_run: completed`
+  fast path (#898) that scopes the sweep to the completing CI run's PR(s) for near-instant re-review. It must
+  not be removed by template syncs. If the org template gains an equivalent re-trigger sweep, remove this
+  exception and defer to the template instead.
+- **Exception:** `pr-review-delayed-retry.yml` (deterministic rate-limit retry, #1994) is a documented
+  repo-specific workflow with no corresponding org template in `standards/workflows/`. It is a Class-1
+  (`workflow_dispatch`-only) companion to `pr-review-sweep.yml`: when the sweep defers a PR on an un-elapsed
+  rate-limit marker whose `reset` is within a bounded horizon, it arms this workflow, which sleeps until the
+  reset, re-checks the marker still applies at the same head, then re-dispatches through the sweep — so a
+  rate-limited review retries within minutes of its reset instead of waiting for the best-effort cron. Its
+  in-run sleep is an armed delay, not an `on: schedule` timer, so it is Class 1 by declaration. It must not be
+  removed by template syncs. If the org template gains an equivalent, remove this exception and defer to it.
 - **Exception:** `readme-refresh.yml` (weekly org README refresh) is a documented repo-specific workflow
   with no corresponding org template in `standards/workflows/`. It regenerates the four org "meta-repo"
   READMEs (public + member-only org profiles, and the `.github` / `.github-private` repo landing pages)
