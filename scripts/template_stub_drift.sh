@@ -115,6 +115,34 @@ template_drift_allowlisted() {
   return 1
 }
 
+# ── Reference rows (#1729, AC #12) ────────────────────────────────────────────
+# A reference row is a file the manifest ENROLLS for post-collapse byte-identity
+# coverage but which seed-repo-template.sh deliberately never seeds into
+# repo-template until a pilot repo's per-role stubs collapse into it. It lives in
+# the --emit-workflow REFERENCE_MANIFEST of seed-repo-template.sh (reachable
+# for hashing, but never written by _seed_repo into the seeded set). Until #1729's
+# pilot lands the collapse, the template has no such file, so a reference row
+# reports MISSING every run — but the GENERIC "re-seed via seed-repo-template.sh"
+# remedy can never clear that warning (seed deliberately won't emit it) and, worse,
+# following it means hand-copying a live executing ingress into every new repo
+# ahead of the pilot (#1729 AC #12). A reference row therefore gets a distinct,
+# NON-ACTIONABLE notice instead of the generic remedy. When #1729's pilot collapse
+# lands, this file is seeded in the SAME change that retires the per-role stubs it
+# replaces, and its row stops being a reference row.
+readonly -a TEMPLATE_DRIFT_REFERENCE=(
+  ".github/workflows/agent-ingress.yml"
+)
+
+# template_drift_is_reference <path> — return 0 if the path is a reference row
+# (enrolled for coverage but intentionally not seeded yet). Pure.
+template_drift_is_reference() {
+  local path="${1:-}" r
+  for r in "${TEMPLATE_DRIFT_REFERENCE[@]}"; do
+    [ "$r" = "$path" ] && return 0
+  done
+  return 1
+}
+
 # template_drift_covered — print the covered file paths (manifest minus allowlist),
 # one per line. Pure: writes stdout only.
 template_drift_covered() {
@@ -241,8 +269,17 @@ template_drift_annotate() {
         fi
         ;;
       MISSING)
-        printf '::warning file=%s::Template stub %s is MISSING from %s (expected blob %s) — re-seed via scripts/seed-repo-template.sh.\n' \
-          "$file" "$file" "$TEMPLATE_REPO" "${expected:0:12}"
+        if template_drift_is_reference "$file"; then
+          # Reference row: enrolled for post-collapse coverage but intentionally
+          # NOT seeded yet (#1729 AC #12). Emit a non-actionable notice — never
+          # the generic re-seed remedy, which can never clear here and would push
+          # a live executing ingress into every new repo ahead of the pilot.
+          printf '::notice file=%s::Template reference %s is expected but intentionally NOT seeded into %s yet (ADR-0007 / #1729) — seed-repo-template.sh deliberately never emits it until the pilot repo collapse lands. This is NOT actionable: do not hand-seed it to silence this. It will be seeded in the same change that retires the per-role stubs it replaces. See AGENTS.md -> Template drift guard.\n' \
+            "$file" "$file" "$TEMPLATE_REPO"
+        else
+          printf '::warning file=%s::Template stub %s is MISSING from %s (expected blob %s) — re-seed via scripts/seed-repo-template.sh.\n' \
+            "$file" "$file" "$TEMPLATE_REPO" "${expected:0:12}"
+        fi
         ;;
     esac
   done < "$f"

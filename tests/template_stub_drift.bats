@@ -176,6 +176,49 @@ setup() {
 }
 
 # ---------------------------------------------------------------------------
+# #1729 (AC #12) — reference rows: agent-ingress.yml is enrolled as an EXPECTED
+# file for post-collapse byte-identity coverage, but seed-repo-template.sh
+# deliberately never seeds it into repo-template until a pilot repo collapses
+# (it lives in the --emit-workflow-only REFERENCE_MANIFEST). A MISSING reference
+# row must therefore NOT print the generic "re-seed via seed-repo-template.sh"
+# remedy — that remedy can never clear the warning and points maintainers at a
+# premature live ingress. It gets a distinct, non-actionable notice instead.
+# ---------------------------------------------------------------------------
+
+@test "template_drift_is_reference: agent-ingress.yml is a reference row (#1729)" {
+  run template_drift_is_reference ".github/workflows/agent-ingress.yml"
+  [ "$status" -eq 0 ]
+}
+
+@test "template_drift_is_reference: a normal covered stub is NOT a reference row (#1729)" {
+  run template_drift_is_reference ".github/workflows/dev-lead.yml"
+  [ "$status" -eq 1 ]
+}
+
+@test "annotate: a MISSING reference row does NOT print the generic re-seed remedy and does not fail (#1729)" {
+  tsv="$(mktemp)"
+  printf '%s\t%s\t%s\t%s\n' ".github/workflows/agent-ingress.yml" "MISSING" "" "$EXPECTED" >> "$tsv"
+  run template_drift_annotate "$tsv"
+  [ "$status" -eq 0 ]
+  # Non-actionable: the generic re-seed remedy must not appear for a reference row.
+  [[ "$output" != *"re-seed via scripts/seed-repo-template.sh"* ]]
+  # It is still surfaced, but as a non-actionable notice naming this story.
+  [[ "$output" == *"::notice"* ]]
+  [[ "$output" == *"agent-ingress.yml"* ]]
+  [[ "$output" == *"1729"* ]]
+  rm -f "$tsv"
+}
+
+@test "annotate: a MISSING non-reference row still prints the generic re-seed remedy (#1729 regression)" {
+  tsv="$(mktemp)"
+  printf '%s\t%s\t%s\t%s\n' "CLAUDE.md" "MISSING" "" "$EXPECTED" >> "$tsv"
+  run template_drift_annotate "$tsv"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"re-seed via scripts/seed-repo-template.sh"* ]]
+  rm -f "$tsv"
+}
+
+# ---------------------------------------------------------------------------
 # stub_drift_row (reused) classifies a template file end-to-end.
 # ---------------------------------------------------------------------------
 
