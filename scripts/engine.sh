@@ -1407,9 +1407,17 @@ run_triage() {
       claude)
         local _triage_chain="${CLAUDE_TRIAGE_MODEL_CHAIN:-$ENGINE_TRIAGE_MODEL}"
         if [ -n "$_tok_tmp" ]; then
+          # Redirect to the token sidecar and re-emit with `cat`, rather than piping
+          # through `| tee`: a pipe runs _claude_chain_invoke in a SUBSHELL, so the
+          # _CLAUDE_CHAIN_MODEL_USED it exports (the model that ACTUALLY produced the
+          # output, after any rate-limit fallback) never reaches this shell — the
+          # token record was then mis-attributed to the chain head (#1952, cubic P2).
+          # Running it in THIS shell preserves the final model for the record below.
+          _CLAUDE_CHAIN_MODEL_USED=""
           _claude_chain_invoke "$_triage_chain" "$prompt_file" "$TRIAGE_TIMEOUT_SEC" \
             --disallowed-tools "Bash,Read,Write,Edit,Grep,Glob,WebFetch,WebSearch,Task,TodoWrite,NotebookEdit" \
-            | tee "$_tok_tmp" || rc=${PIPESTATUS[0]}
+            >"$_tok_tmp" || rc=$?
+          cat "$_tok_tmp"
         else
           _claude_chain_invoke "$_triage_chain" "$prompt_file" "$TRIAGE_TIMEOUT_SEC" \
             --disallowed-tools "Bash,Read,Write,Edit,Grep,Glob,WebFetch,WebSearch,Task,TodoWrite,NotebookEdit" \
@@ -1454,22 +1462,12 @@ run_triage() {
       elif [ "$REVIEW_ENGINE" = "gemini" ] && [ -n "${_GEMINI_CHAIN_MODEL_USED:-}" ]; then
         _triage_used="$_GEMINI_CHAIN_MODEL_USED"
       else
-        # In token-logging mode the invoke ran inside a `| tee` pipeline SUBSHELL,
-        # so _CLAUDE/_GEMINI_CHAIN_MODEL_USED were set there and never reached this
-        # shell. Falling back to ENGINE_TRIAGE_MODEL here mis-attributes a PINNED
-        # chain (e.g. the model-ab A/B's claude-opus-5-5 / -4-8 arms, which set  # model-pin-ok: example of A/B test's specific pinned versions (#1950, #1952)
-        # CLAUDE_TRIAGE_MODEL_CHAIN) to the tier default — corrupting the per-model
-        # cost record. Record the HEAD of the pinned chain instead: the model that
-        # ran absent a fallback (for a single-id pin that IS the model used). #1952.
-        local _head_chain=""
-        case "$REVIEW_ENGINE" in
-          claude) _head_chain="${_triage_chain:-}" ;;
-          gemini) _head_chain="${_triage_gemini_chain:-}" ;;
-        esac
-        _head_chain="${_head_chain%%,*}"
-        _head_chain="${_head_chain#"${_head_chain%%[![:space:]]*}"}"
-        _head_chain="${_head_chain%"${_head_chain##*[![:space:]]}"}"
-        _triage_used="${_head_chain:-$ENGINE_TRIAGE_MODEL}"
+        # No chain published the final model (copilot, or an engine that does not set
+        # _*_CHAIN_MODEL_USED): fall back to the tier default. The claude and gemini
+        # invokes above now run in THIS shell (redirect/process-substitution, not a
+        # `| tee` subshell), so a PINNED or fallen-back model is captured by the two
+        # branches above rather than mis-recorded as the chain head here (#1952).
+        _triage_used="$ENGINE_TRIAGE_MODEL"
       fi
       _record_engine_tokens "triage" "$REVIEW_ENGINE" "$_triage_used" "$prompt_file" "$_tok_tmp" "$_dur"
       _record_model_used "$_triage_used"

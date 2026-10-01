@@ -60,7 +60,16 @@ concurrency:
 jobs:
   model-ab:
     runs-on: ubuntu-latest
-    timeout-minutes: 60  # 2 models x N held-out sets + a live probe (AC #5)
+    # Budget (AC #5): the default matrix is 2 models x {triage (5 cases, 1 call) +
+    # deep-review (5 cases, generator + judge = 2 calls)} = 30 sequential model
+    # calls, plus 2 liveness/effort probes. Every child call is itself bounded
+    # (run_triage by TRIAGE_TIMEOUT_SEC, the probes by PROBE_TIMEOUT_SECS with
+    # --kill-after), so the job always makes forward progress and can never hang
+    # indefinitely; 120 min gives comfortable headroom over a realistic worst case
+    # so a slow-but-live run is never cancelled before it emits a verdict (#1952,
+    # codex P2). Transient blips are absorbed by run_triage's cheap per-call retry,
+    # NOT by re-running the whole paid matrix.
+    timeout-minutes: 120
     permissions:
       contents: read  # actions/checkout only — this workflow writes nothing
     env:
@@ -97,9 +106,12 @@ jobs:
       - name: Checkout agent repo
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
-          # Pin to main as well as rejecting non-main above: the checked-out tree
-          # that gets scored is the merged baseline, not the dispatched ref (#1952).
-          ref: refs/heads/main
+          # The non-main guard above already rejects any ref but main; pin the
+          # checkout to github.sha (the exact main commit that triggered this
+          # dispatch) rather than refs/heads/main, so a push that lands between
+          # dispatch and checkout cannot swap the scored tree out from under the
+          # run — the evidence is tied to one reviewed commit (#1952).
+          ref: ${{ github.sha }}
           persist-credentials: false
 
       - name: Validate dispatch inputs (offline — spends no tokens)
@@ -121,13 +133,41 @@ jobs:
         with:
           node-version: '20'
 
+      - name: Resolve claude-code version
+        # A literal "latest" cache key never changes, so the first CLI ever cached
+        # was reused indefinitely (2.1.138 outlived the Opus 5.5 launch — #1957).
+        # Resolve it to the concrete npm version so a new release misses the cache,
+        # and install exactly that version on a miss (never re-resolve "latest");
+        # a pinned vars.CLAUDE_CODE_VERSION passes through unchanged (#1952, mirrors
+        # skill-eval-report.yml).
+        id: claude_code_version
+        env:
+          REQUESTED_VERSION: ${{ env.CLAUDE_CODE_VERSION || vars.CLAUDE_CODE_VERSION || 'latest' }}
+        run: |
+          v="$REQUESTED_VERSION"
+          install="$v"
+          if [ "$v" = "latest" ]; then
+            v="$(npm view @anthropic-ai/claude-code version 2>/dev/null || true)"
+            if [ -n "$v" ]; then
+              install="$v"
+            else
+              v="latest-$(date -u +%G-w%V)"
+              echo "::warning::could not resolve the latest claude-code version; using weekly cache key $v"
+            fi
+          fi
+          echo "claude-code cache version: $v"
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "install=$install" >> "$GITHUB_OUTPUT"
+
       - name: Cache claude-code CLI
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: ~/.npm-global
-          key: claude-code-${{ env.CLAUDE_CODE_VERSION }}-${{ runner.os }}
+          key: claude-code-${{ steps.claude_code_version.outputs.version }}-${{ runner.os }}
 
       - name: Install Claude Code CLI
+        env:
+          CLAUDE_CODE_VERSION: ${{ steps.claude_code_version.outputs.install || vars.CLAUDE_CODE_VERSION || 'latest' }}
         run: |
           mkdir -p "$HOME/.npm-global"
           npm config set prefix "$HOME/.npm-global"
@@ -154,17 +194,20 @@ jobs:
           prompt="Reply with the single word: pong."
 
           # Bound EACH probe so a stalled `claude` call cannot consume the whole
-          # 60-min job timeout and starve the A/B step: on job cancellation the A/B
+          # job timeout and starve the A/B step: on job cancellation the A/B
           # never runs, and continue-on-error (which applies only AFTER a step
           # finishes) would NOT save it (#1952, codex P1). `timeout` exits 124 on
           # expiry — a nonzero rc the liveness/effort checks below already treat as
           # FAIL / rejected-or-unsupported, so the probe fails OPEN and the A/B
-          # still produces its verdict.
+          # still produces its verdict. --kill-after sends SIGKILL if the CLI
+          # ignores the initial SIGTERM, so a wedged process can't outlive the
+          # bound and keep starving the job (#1952).
           probe_timeout="${PROBE_TIMEOUT_SECS:-300}"
+          probe_kill_after="${PROBE_KILL_AFTER:-30s}"
 
           # 1) Liveness: does the candidate answer at all?
           live_rc=0
-          timeout "$probe_timeout" claude --print --model "$CANDIDATE" --output-format json <<<"$prompt" > probe.json 2>probe.err || live_rc=$?
+          timeout --kill-after="$probe_kill_after" "$probe_timeout" claude --print --model "$CANDIDATE" --output-format json <<<"$prompt" > probe.json 2>probe.err || live_rc=$?
           # extract_engine_text returns nonzero when jq cannot parse the probe file;
           # sourcing token-metrics.sh enabled errexit, so an unguarded assignment
           # would abort the step before it records the result or writes the summary.
@@ -181,7 +224,7 @@ jobs:
 
           # 2) Effort probe: is `--effort high` accepted by this model/CLI?
           effort_rc=0
-          timeout "$probe_timeout" claude --print --model "$CANDIDATE" --effort high --output-format json <<<"$prompt" > effort.json 2>effort.err || effort_rc=$?
+          timeout --kill-after="$probe_kill_after" "$probe_timeout" claude --print --model "$CANDIDATE" --effort high --output-format json <<<"$prompt" > effort.json 2>effort.err || effort_rc=$?
           # Same errexit guard as the liveness assignment above (#1952 CodeRabbit).
           if ! effort_txt="$(extract_engine_text claude effort.json)"; then
             effort_txt=""
@@ -255,6 +298,19 @@ jobs:
 
           # Propagate model-ab.sh's verdict as the job's exit status (AC #2).
           exit "$rc"
+
+      - name: Upload A/B evidence JSON
+        # The machine-readable go/no-go record (verdict, per-set scores, judge model)
+        # that backs the epic's non-regression metric — upload it as a durable
+        # artifact, not just the rendered step summary. always() so a regression (rc=1)
+        # or infra (rc=2) run still surfaces its evidence instead of discarding it;
+        # the exit status is the gate, the artifact is the receipt (#1952).
+        if: always() && hashFiles('model-ab-evidence.json') != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: model-ab-evidence-${{ github.run_id }}
+          path: model-ab-evidence.json
+          if-no-files-found: warn
 
       - name: Upload per-arm token log
         # AC #3: the identical-inputs token JSONL for BOTH models — #1899's cost

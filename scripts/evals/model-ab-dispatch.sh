@@ -132,6 +132,47 @@ mad_incompatible_set() {
   return 0
 }
 
+# mad_validate_set_prereqs <evals_dir> <prompts_dir> <set> — return 0 iff the set
+# has the fixtures run-eval.sh needs to actually SCORE it: the held-out cases file,
+# a skill prompt (flat prompts/<set>.md OR the persona advisory prompts/<set>/
+# advisory.md), and — when scorer.json selects llm-judge — a judge_prompt pointing
+# at a real file. mad_validate_sets only proves the holdout DIRECTORY exists; a set
+# whose dir exists but whose cases.jsonl / prompt / judge prompt is missing would
+# sail past validation and only die INSIDE run-eval.sh, AFTER the paid liveness/
+# effort probe has already spent tokens (#1952). Mirror run-eval.sh's own die()
+# preconditions here so the dispatch fails offline. On failure prints a short
+# reason the caller names in its error. Keep this in sync with run-eval.sh's
+# cases_file / prompt_file_base / llm-judge resolution.
+mad_validate_set_prereqs() {
+  local evals_dir="${1:-}" prompts_dir="${2:-}" set="${3:-}" scorer mode judge_rel
+  if [ ! -f "$evals_dir/$set/holdout/cases.jsonl" ]; then
+    echo "missing held-out cases ($evals_dir/$set/holdout/cases.jsonl)"
+    return 1
+  fi
+  if [ ! -f "$prompts_dir/$set.md" ] && [ ! -f "$prompts_dir/$set/advisory.md" ]; then
+    echo "missing skill prompt ($prompts_dir/$set.md or $prompts_dir/$set/advisory.md)"
+    return 1
+  fi
+  scorer="$evals_dir/$set/scorer.json"
+  [ -f "$scorer" ] || return 0
+  if ! mode="$(jq -r '.mode // "deterministic"' "$scorer" 2>/dev/null)"; then
+    echo "unreadable scorer.json ($scorer)"
+    return 1
+  fi
+  if [ "$mode" = "llm-judge" ]; then
+    judge_rel="$(jq -r '.judge_prompt // ""' "$scorer" 2>/dev/null || true)"
+    if [ -z "$judge_rel" ]; then
+      echo "scorer.json selects llm-judge but sets no judge_prompt ($scorer)"
+      return 1
+    fi
+    if [ ! -f "$evals_dir/$judge_rel" ]; then
+      echo "judge prompt not found ($evals_dir/$judge_rel)"
+      return 1
+    fi
+  fi
+  return 0
+}
+
 # ── I/O orchestration ─────────────────────────────────────────────────────────
 
 die() {
@@ -150,6 +191,9 @@ main() {
 
   local candidate="" incumbent="" sets_raw="triage deep-review" runs_raw="1"
   local evals_dir="${EVALS_DIR:-$repo_root/evals}" out_file="" validate_only=false
+  # Prompt root mirrors run-eval.sh's EVAL_PROMPTS_DIR so the offline prereq check
+  # resolves the SAME skill-prompt tree the child will score against (#1952).
+  local prompts_dir="${EVAL_PROMPTS_DIR:-$repo_root/prompts}"
   while [ "$#" -gt 0 ]; do
     case "$1" in
       # Explicit arity check + die (exit 2), NOT ${2:?…}: the :? expansion aborts
@@ -239,6 +283,16 @@ main() {
     fi
   done
 
+  # Reject a set whose holdout dir exists but whose scoring fixtures (cases.jsonl,
+  # skill prompt, llm-judge judge prompt) are missing — otherwise the dispatch only
+  # fails INSIDE run-eval.sh, after the paid probe already spent tokens (#1952).
+  local prereq
+  for s in "${sets[@]}"; do
+    if ! prereq="$(mad_validate_set_prereqs "$evals_dir" "$prompts_dir" "$s")"; then
+      die "set '$s' is not scorable — $prereq"
+    fi
+  done
+
   local runs; runs="$(mad_clamp_runs "$runs_raw")"
 
   # --validate-only: the input checks above ARE the whole job. The workflow runs
@@ -302,8 +356,21 @@ main() {
     if ! jq -e . >/dev/null 2>&1 <<<"$out"; then
       break
     fi
+    # Retry only when EVERY set is infra. A verdict-infra run can still be MIXED —
+    # some sets scored (accept) while others throttled — because model-ab.sh's
+    # precedence makes any infra set downgrade the whole verdict to infra. Re-running
+    # such a run would re-run the sets that ALREADY produced a scored number, which
+    # the maintainer decision forbids (a scored arm is final). So retry only when no
+    # set carries a non-infra outcome; a mixed result is accepted as-is (#1952,
+    # codex/cubic P2). Evidence lacking a `.sets` array (e.g. a test stub) yields a
+    # zero count and is therefore treated as all-infra — still retryable.
+    local scored_sets
+    scored_sets="$(jq '[.sets[]? | select(.outcome != "infra")] | length' <<<"$out" 2>/dev/null || echo 0)"
+    if [ "${scored_sets:-0}" -gt 0 ]; then
+      break
+    fi
     if [ "$attempt" -lt "$runs" ]; then
-      echo "::warning::model-ab-dispatch: attempt $attempt classed infra (exit 2) — retrying (up to $runs)" >&2
+      echo "::warning::model-ab-dispatch: attempt $attempt classed all-infra (exit 2) — retrying (up to $runs)" >&2
     fi
   done
 

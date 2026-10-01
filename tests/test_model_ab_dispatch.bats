@@ -25,8 +25,19 @@ setup() {
   TMP="$(mktemp -d "$BATS_TEST_TMPDIR/model_ab_dispatch.XXXXXX")"
   [ -n "$TMP" ] && [ -d "$TMP" ] || return 1
 
-  # Minimal held-out tree: only the holdout DIRECTORIES need exist for validation.
+  # Held-out tree: the dispatcher now also checks the SCORING fixtures run-eval.sh
+  # needs (cases.jsonl + a skill prompt) so an unscorable set is rejected offline,
+  # before the paid probe (#1952). Give both default sets a case file, and a prompt
+  # tree EVAL_PROMPTS_DIR points at, so the end-to-end tests reach execution.
   mkdir -p "$TMP/evals/triage/holdout" "$TMP/evals/deep-review/holdout"
+  printf '{"id":"c1","input":"x","expected":{"escalate":false,"risk":"low"}}\n' \
+    >"$TMP/evals/triage/holdout/cases.jsonl"
+  printf '{"id":"c1","input":"x","expected":{"escalate":false,"risk":"low"}}\n' \
+    >"$TMP/evals/deep-review/holdout/cases.jsonl"
+  mkdir -p "$TMP/prompts"
+  printf '# triage\n'      >"$TMP/prompts/triage.md"
+  printf '# deep-review\n' >"$TMP/prompts/deep-review.md"
+  export EVAL_PROMPTS_DIR="$TMP/prompts"
 
   # Scripted model-ab.sh stub. Emits one exit code per invocation from SEQ (a
   # colon-separated list; the last value repeats once exhausted) and records how
@@ -299,6 +310,93 @@ _calls() { cat "$COUNTER"; }
   [ "$status" -eq 2 ]
   [[ "$output" == *"incompatible set 'weird-set'"* ]]
   [ "$(_calls)" = "" ] || [ "$(_calls)" = "0" ]
+}
+
+# ── set-prereq validation: a holdout dir alone is not enough to SCORE a set ─────
+
+@test "mad_validate_set_prereqs rejects a set missing cases / prompt / judge prompt (#1952)" {
+  # shellcheck source=/dev/null
+  source "$DISPATCH"
+  # triage/deep-review have cases + prompts from setup() -> accepted.
+  run mad_validate_set_prereqs "$TMP/evals" "$TMP/prompts" triage
+  [ "$status" -eq 0 ]
+  # A set whose holdout dir exists but has no cases.jsonl is NOT scorable.
+  mkdir -p "$TMP/evals/no-cases/holdout"
+  printf '# no-cases\n' >"$TMP/prompts/no-cases.md"
+  run mad_validate_set_prereqs "$TMP/evals" "$TMP/prompts" no-cases
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"missing held-out cases"* ]]
+  # A set with cases but no skill prompt (flat or advisory) is NOT scorable.
+  mkdir -p "$TMP/evals/no-prompt/holdout"
+  printf '{"id":"c1","input":"x","expected":{}}\n' >"$TMP/evals/no-prompt/holdout/cases.jsonl"
+  run mad_validate_set_prereqs "$TMP/evals" "$TMP/prompts" no-prompt
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"missing skill prompt"* ]]
+  # An llm-judge set whose judge_prompt file is absent is NOT scorable.
+  printf '{"mode":"llm-judge","engine":"triage","judge_prompt":"judges/gone.md"}\n' \
+    >"$TMP/evals/deep-review/scorer.json"
+  run mad_validate_set_prereqs "$TMP/evals" "$TMP/prompts" deep-review
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"judge prompt not found"* ]]
+}
+
+@test "a set with a holdout dir but no cases.jsonl is rejected end-to-end BEFORE any arm runs (#1952)" {
+  mkdir -p "$TMP/evals/empty-set/holdout"
+  printf '# empty-set\n' >"$TMP/prompts/empty-set.md"
+  MODEL_AB_CMD="bash $STUB" SEQ="0" \
+    run bash "$DISPATCH" --candidate c --incumbent i \
+      --sets "triage empty-set" --runs 1 --evals-dir "$TMP/evals"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"set 'empty-set' is not scorable"* ]]
+  [ "$(_calls)" = "" ] || [ "$(_calls)" = "0" ]
+}
+
+# ── retry policy: a MIXED infra verdict (some set scored) is NOT re-run ────────
+
+@test "a verdict-infra run with at least one SCORED set is NOT retried (#1952)" {
+  # Stub emits evidence with a .sets array: one set accepted (scored), one infra,
+  # and exits 2 (model-ab.sh's infra verdict precedence). The wrapper must NOT retry
+  # it even with runs=3 — re-running would re-score the already-scored set.
+  local mixedstub="$TMP/mixed_stub.sh"
+  cat >"$mixedstub" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+n="$(cat "$COUNTER" 2>/dev/null || echo 0)"; n=$((n + 1)); echo "$n" >"$COUNTER"
+printf '{"verdict":"infra","sets":[{"skill":"triage","outcome":"accept"},{"skill":"deep-review","outcome":"infra"}]}\n'
+exit 2
+SH
+  chmod +x "$mixedstub"
+  MODEL_AB_CMD="bash $mixedstub" \
+    run bash "$DISPATCH" --candidate c --incumbent i \
+      --sets "triage deep-review" --runs 3 --evals-dir "$TMP/evals"
+  [ "$status" -eq 2 ]
+  [ "$(_calls)" -eq 1 ]            # mixed verdict: single attempt, no retry
+}
+
+@test "a verdict-infra run where ALL sets are infra IS retried (#1952)" {
+  # All sets infra -> nothing was scored -> retry is safe and expected. Exit 2 then
+  # 0 to prove the retry happens and the scored verdict wins.
+  local allinfra="$TMP/allinfra_stub.sh"
+  cat >"$allinfra" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+n="$(cat "$COUNTER" 2>/dev/null || echo 0)"; n=$((n + 1)); echo "$n" >"$COUNTER"
+IFS=: read -ra codes <<<"${SEQ:-2}"
+idx=$((n - 1)); if [ "$idx" -ge "${#codes[@]}" ]; then idx=$((${#codes[@]} - 1)); fi
+rc="${codes[idx]}"
+if [ "$rc" -eq 2 ]; then
+  printf '{"verdict":"infra","sets":[{"skill":"triage","outcome":"infra"},{"skill":"deep-review","outcome":"infra"}]}\n'
+else
+  printf '{"verdict":"accept","sets":[{"skill":"triage","outcome":"accept"},{"skill":"deep-review","outcome":"accept"}]}\n'
+fi
+exit "$rc"
+SH
+  chmod +x "$allinfra"
+  MODEL_AB_CMD="bash $allinfra" SEQ="2:0" \
+    run --separate-stderr bash "$DISPATCH" --candidate c --incumbent i \
+      --sets "triage deep-review" --runs 3 --evals-dir "$TMP/evals"
+  [ "$status" -eq 0 ]
+  [ "$(_calls)" -eq 2 ]            # all-infra attempt retried, scored on attempt 2
 }
 
 # ── --validate-only: offline gate that spends no tokens ───────────────────────

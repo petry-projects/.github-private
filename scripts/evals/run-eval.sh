@@ -415,16 +415,20 @@ jq -s --arg skill "$skill" \
 
 # Decide the exit code. Classify failing cases as infra (engine exited non-zero —
 # throttle/outage, the model never answered) vs. quality (engine exited zero but
-# the answer was wrong/unparseable). If ANY failing case has infra issues, the skill
-# was never fully scored: exit 2 -> outcome=error, so a transient throttle mixed
-# with partial quality scores cannot produce a verdict (#920). Only quality-only
-# failures keep exit 1.
+# the answer was wrong/unparseable). A QUALITY miss takes PRECEDENCE over infra: a
+# case the model answered wrong is a conclusive regression and must BLOCK (exit 1),
+# even when a SEPARATE case was throttled. Downgrading a known regression to infra/
+# un-scored (exit 2) just because another case throttled would let a candidate that
+# genuinely regressed escape the blocking signal — and in the model-ab flow exit 2
+# marks the whole arm un-scored, so the regression>infra verdict precedence never
+# fires (#1952, codex/cubic P2). Only an ALL-infra failure set (no quality miss
+# anywhere) is un-scored -> 2; this matches the exit-code contract in the header.
 failed="$(jq -s 'map(select(.pass | not)) | length' "$results")"
 if [ "$failed" -eq 0 ]; then
   exit 0
 fi
-infra_failed="$(jq -s 'map(select((.pass | not) and ((.engine_rc // 0) != 0))) | length' "$results")"
-if [ "$infra_failed" -gt 0 ]; then
-  exit 2
+quality_failed="$(jq -s 'map(select((.pass | not) and ((.engine_rc // 0) == 0))) | length' "$results")"
+if [ "$quality_failed" -gt 0 ]; then
+  exit 1
 fi
-exit 1
+exit 2
