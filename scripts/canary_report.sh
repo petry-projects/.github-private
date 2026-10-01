@@ -417,7 +417,7 @@ render_canary_report() {
     if [ -n "$allowed" ]; then
       capped="$(mktemp)" || { echo "ERROR: failed to create temporary file" >&2; return 3; }
       awk -F'\t' -v allow="$allowed" 'BEGIN { n = split(allow, a, "\n"); for (k = 1; k <= n; k++) keep[a[k]] = 1 }
-        $9 in keep { print }' "$cand_file" > "$capped"
+        $9 == "" || $9 in keep { print }' "$cand_file" > "$capped"
       mv "$capped" "$cand_file"
     fi
   fi
