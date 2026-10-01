@@ -373,6 +373,28 @@ SH
   [ "$(_calls)" -eq 1 ]            # mixed verdict: single attempt, no retry
 }
 
+@test "a set with outcome=infra but a scored arm is NOT retried (#1952)" {
+  # model-ab.sh sets a set's `outcome` to "infra" when EITHER arm is unscored, so an
+  # unscored incumbent hides a scored candidate behind an infra outcome. The retry
+  # gate must honour the per-arm candidate_scored/incumbent_scored booleans — a set
+  # with any scored arm blocks the retry even when its aggregate outcome is infra,
+  # else the wrapper would re-run the already-scored candidate.
+  local armstub="$TMP/arm_stub.sh"
+  cat >"$armstub" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+n="$(cat "$COUNTER" 2>/dev/null || echo 0)"; n=$((n + 1)); echo "$n" >"$COUNTER"
+printf '{"verdict":"infra","sets":[{"skill":"triage","outcome":"infra","candidate_scored":true,"incumbent_scored":false}]}\n'
+exit 2
+SH
+  chmod +x "$armstub"
+  MODEL_AB_CMD="bash $armstub" \
+    run bash "$DISPATCH" --candidate c --incumbent i \
+      --sets "triage" --runs 3 --evals-dir "$TMP/evals"
+  [ "$status" -eq 2 ]
+  [ "$(_calls)" -eq 1 ]            # a scored arm blocks the retry despite outcome=infra
+}
+
 @test "a verdict-infra run where ALL sets are infra IS retried (#1952)" {
   # All sets infra -> nothing was scored -> retry is safe and expected. Exit 2 then
   # 0 to prove the retry happens and the scored verdict wins.
@@ -419,8 +441,6 @@ SH
   [ "$(_calls)" = "" ] || [ "$(_calls)" = "0" ]
 }
 
-# ── retry policy: a deterministic hard error (exit 2, no JSON) is NOT retried ──
-
 # ── token-log rotation: the canonical artifact holds ONLY the final attempt ────
 
 @test "retried attempts write separate token logs; only the final attempt is promoted (#1952)" {
@@ -455,6 +475,8 @@ SH
   [ "$(jq -r '.attempt' <"$tok.attempt1")" = "1" ]
   [ "$(jq -r '.attempt' <"$tok.attempt2")" = "2" ]
 }
+
+# ── retry policy: a deterministic hard error (exit 2, no JSON) is NOT retried ──
 
 @test "exit 2 with NO evidence JSON (hard error) is not retried" {
   # A stub that always exits 2 but prints an ::error:: line (not JSON), mimicking

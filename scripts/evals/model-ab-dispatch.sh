@@ -356,16 +356,21 @@ main() {
     if ! jq -e . >/dev/null 2>&1 <<<"$out"; then
       break
     fi
-    # Retry only when EVERY set is infra. A verdict-infra run can still be MIXED —
-    # some sets scored (accept) while others throttled — because model-ab.sh's
-    # precedence makes any infra set downgrade the whole verdict to infra. Re-running
-    # such a run would re-run the sets that ALREADY produced a scored number, which
-    # the maintainer decision forbids (a scored arm is final). So retry only when no
-    # set carries a non-infra outcome; a mixed result is accepted as-is (#1952,
-    # codex/cubic P2). Evidence lacking a `.sets` array (e.g. a test stub) yields a
-    # zero count and is therefore treated as all-infra — still retryable.
+    # Retry only when EVERY arm is infra. A verdict-infra run can still be MIXED —
+    # some arms scored while others throttled — because model-ab.sh's precedence
+    # makes any infra arm downgrade the whole set's outcome to infra AND the whole
+    # verdict to infra. Re-running such a run would re-run the arms that ALREADY
+    # produced a scored number, which the maintainer decision forbids (a scored arm
+    # is final). A set's `outcome` is "infra" when EITHER arm is unscored, so it
+    # alone hides a scored candidate behind an unscored incumbent (or vice versa) —
+    # count the per-arm `candidate_scored`/`incumbent_scored` booleans too, so a set
+    # with any scored arm blocks the retry even when its aggregate outcome is infra
+    # (#1952, coderabbit). Retry only when no set carries a non-infra outcome AND no
+    # arm scored; a mixed result is accepted as-is (#1952, codex/cubic P2). Evidence
+    # lacking a `.sets` array (e.g. a test stub) yields a zero count and is therefore
+    # treated as all-infra — still retryable.
     local scored_sets
-    scored_sets="$(jq '[.sets[]? | select(.outcome != "infra")] | length' <<<"$out" 2>/dev/null || echo 0)"
+    scored_sets="$(jq '[.sets[]? | select(.outcome != "infra" or .candidate_scored == true or .incumbent_scored == true)] | length' <<<"$out" 2>/dev/null || echo 0)"
     if [ "${scored_sets:-0}" -gt 0 ]; then
       break
     fi
