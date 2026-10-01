@@ -137,6 +137,15 @@ AUDIT_TIMEOUT_SEC="${AUDIT_TIMEOUT_SEC:-1200}"
 ACTION_TIMEOUT_SEC="${ACTION_TIMEOUT_SEC:-2100}"
 DUCK_TIMEOUT_SEC="${DUCK_TIMEOUT_SEC:-300}"
 
+# Grace period after the per-call SIGTERM before `timeout` escalates to SIGKILL.
+# Plain `timeout <sec>` only sends SIGTERM; GNU `timeout` then waits INDEFINITELY
+# for a child that ignores it, so a wedged CLI can outlive its stage budget and
+# blow through the job's timeout-minutes backstop (e.g. starving the model-ab
+# matrix mid-A/B, #1952 cubic P2). `--kill-after` sends SIGKILL this long after
+# the initial SIGTERM so no external-CLI call can outlive timeout_sec + grace,
+# mirroring the probe step in model-ab.yml. Override via ENGINE_KILL_AFTER.
+ENGINE_KILL_AFTER="${ENGINE_KILL_AFTER:-30s}"
+
 # Retry config for transient errors. We treat exit codes that look like
 # network/process flakiness (137/143=signal kills) as retryable. A per-tier
 # stage timeout (124=GNU timeout) is NOT retried (#1028): re-running at the same
@@ -774,7 +783,7 @@ copilot_chat() {
 
   # We use -p for the prompt. Redirect /dev/null to stdin to ensure
   # non-interactive mode.
-  timeout "$timeout_sec" gh copilot \
+  timeout --kill-after="$ENGINE_KILL_AFTER" "$timeout_sec" gh copilot \
     --model "$COPILOT_API_MODEL" \
     -p "$prompt_text" \
     -s "$@" < /dev/null
@@ -834,7 +843,7 @@ _gemini_invoke() {
     if [ -n "$_json_tmp" ]; then
       local rc=0
       # stderr intentionally NOT redirected — flows to caller for rate-limit checks.
-      timeout "$timeout_sec" gemini --prompt "" --model "$model" "${extra_args[@]}" \
+      timeout --kill-after="$ENGINE_KILL_AFTER" "$timeout_sec" gemini --prompt "" --model "$model" "${extra_args[@]}" \
         --output-format json < "$prompt_file" > "$_json_tmp" || rc=$?
       if [ "$rc" -eq 0 ]; then
         parse_engine_usage gemini "$_json_tmp" || true
@@ -849,7 +858,7 @@ _gemini_invoke() {
   fi
 
   # Estimate path (logging off, or mktemp failed): plain text output.
-  timeout "$timeout_sec" gemini --prompt "" --model "$model" "${extra_args[@]}" \
+  timeout --kill-after="$ENGINE_KILL_AFTER" "$timeout_sec" gemini --prompt "" --model "$model" "${extra_args[@]}" \
     --output-format text < "$prompt_file"
 }
 
@@ -1138,7 +1147,7 @@ _claude_chain_invoke() {
     rc=0
 
     if [ -n "$stdout_tmp" ] && [ -n "$stderr_tmp" ]; then
-      timeout "$timeout_sec" claude --print --model "$model" "${fmt_args[@]}" "${extra_args[@]}" \
+      timeout --kill-after="$ENGINE_KILL_AFTER" "$timeout_sec" claude --print --model "$model" "${fmt_args[@]}" "${extra_args[@]}" \
         < "$prompt_file" > "$stdout_tmp" 2> "$stderr_tmp" || rc=$?
     else
       # mktemp failure (one or both) — clean up the partial tmp before degrading
@@ -1147,7 +1156,7 @@ _claude_chain_invoke() {
       [ -n "$stderr_tmp" ] && rm -f "$stderr_tmp"
       [ -n "$final_stdout" ] && rm -f "$final_stdout"
       [ -n "$final_stderr" ] && rm -f "$final_stderr"
-      timeout "$timeout_sec" claude --print --model "$model" "${extra_args[@]}" \
+      timeout --kill-after="$ENGINE_KILL_AFTER" "$timeout_sec" claude --print --model "$model" "${extra_args[@]}" \
         < "$prompt_file" || rc=$?
       _CLAUDE_CHAIN_MODEL_USED="$model"
       export _CLAUDE_CHAIN_MODEL_USED
@@ -1401,15 +1410,33 @@ run_triage() {
   fi
   while [ "$attempt" -le "$RETRY_MAX_ATTEMPTS" ]; do
     rc=0
+    # Whether the claude redirect path still owes its buffered stdout to the caller
+    # (reset per attempt). The gemini/copilot branches tee during the call, so they
+    # leave this at 0 — only the claude redirect defers its emit (see below).
+    local _tok_emit_pending=0
     [ -n "$_tok_tmp" ] && : > "$_tok_tmp"
     _t_start="$(_now_ms)"
     case "$REVIEW_ENGINE" in
       claude)
         local _triage_chain="${CLAUDE_TRIAGE_MODEL_CHAIN:-$ENGINE_TRIAGE_MODEL}"
         if [ -n "$_tok_tmp" ]; then
+          # Redirect to the token sidecar and re-emit with `cat`, rather than piping
+          # through `| tee`: a pipe runs _claude_chain_invoke in a SUBSHELL, so the
+          # _CLAUDE_CHAIN_MODEL_USED it exports (the model that ACTUALLY produced the
+          # output, after any rate-limit fallback) never reaches this shell — the
+          # token record was then mis-attributed to the chain head (#1952, cubic P2).
+          # Running it in THIS shell preserves the final model for the record below.
+          _CLAUDE_CHAIN_MODEL_USED=""
           _claude_chain_invoke "$_triage_chain" "$prompt_file" "$TRIAGE_TIMEOUT_SEC" \
             --disallowed-tools "Bash,Read,Write,Edit,Grep,Glob,WebFetch,WebSearch,Task,TodoWrite,NotebookEdit" \
-            | tee "$_tok_tmp" || rc=${PIPESTATUS[0]}
+            >"$_tok_tmp" || rc=$?
+          # Defer the emit instead of `cat`-ing unconditionally: a failed attempt
+          # that will be RETRIED must not leak its partial bytes ahead of the
+          # retry's clean verdict into the caller's $(...) capture (the retry would
+          # be CONCATENATED behind this attempt, contaminating rate-limit detection
+          # and verdict parsing). Emitted below only on success or a final,
+          # un-retried failure (#1952, cubic P2).
+          _tok_emit_pending=1
         else
           _claude_chain_invoke "$_triage_chain" "$prompt_file" "$TRIAGE_TIMEOUT_SEC" \
             --disallowed-tools "Bash,Read,Write,Edit,Grep,Glob,WebFetch,WebSearch,Task,TodoWrite,NotebookEdit" \
@@ -1448,12 +1475,19 @@ run_triage() {
     _t_end="$(_now_ms)"
     _dur="$(_elapsed_ms "$_t_start" "$_t_end")"
     if [ "$rc" -eq 0 ]; then
+      # Success: hand the buffered output to the caller now (claude redirect path).
+      [ "$_tok_emit_pending" -eq 1 ] && cat "$_tok_tmp"
       local _triage_used
       if [ "$REVIEW_ENGINE" = "claude" ] && [ -n "${_CLAUDE_CHAIN_MODEL_USED:-}" ]; then
         _triage_used="$_CLAUDE_CHAIN_MODEL_USED"
       elif [ "$REVIEW_ENGINE" = "gemini" ] && [ -n "${_GEMINI_CHAIN_MODEL_USED:-}" ]; then
         _triage_used="$_GEMINI_CHAIN_MODEL_USED"
       else
+        # No chain published the final model (copilot, or an engine that does not set
+        # _*_CHAIN_MODEL_USED): fall back to the tier default. The claude and gemini
+        # invokes above now run in THIS shell (redirect/process-substitution, not a
+        # `| tee` subshell), so a PINNED or fallen-back model is captured by the two
+        # branches above rather than mis-recorded as the chain head here (#1952).
         _triage_used="$ENGINE_TRIAGE_MODEL"
       fi
       _record_engine_tokens "triage" "$REVIEW_ENGINE" "$_triage_used" "$prompt_file" "$_tok_tmp" "$_dur"
@@ -1461,13 +1495,32 @@ run_triage() {
       [ -n "$_tok_tmp" ] && rm -f "$_tok_tmp"
       return 0
     fi
+    # Distinguish a `timeout --kill-after` budget-exhaustion SIGKILL from a genuine
+    # transient signal kill — both surface as 137 (128+9), but only the former is
+    # non-retryable. Every triage engine call above is wrapped by `timeout
+    # --kill-after`, so when a call exits 137 AFTER consuming its full
+    # TRIAGE_TIMEOUT_SEC budget, `timeout` force-killed a process that ignored the
+    # initial SIGTERM — the same budget-exhausted condition as a plain 124 stage
+    # timeout, which re-running at the same budget would only repeat (#1028). An
+    # early 137 (e.g. an OOM kill well under budget) keeps is_transient_failure's
+    # retry. Collapse only the at-budget case to 124 so it takes the NON-retryable
+    # timeout path, using the latency run_triage already measured (#1952 cubic P1).
+    if [ "$rc" -eq 137 ] && [ -n "$_dur" ] && [ "$_dur" -ge "$(( TRIAGE_TIMEOUT_SEC * 1000 ))" ]; then
+      rc=124
+    fi
     if [ "$attempt" -lt "$RETRY_MAX_ATTEMPTS" ] && is_transient_failure "$rc"; then
+      # Retrying: the deferred stdout of this failed attempt is intentionally
+      # DROPPED (the loop top truncates $_tok_tmp) so only the retry's output
+      # reaches the caller's capture (#1952, cubic P2).
       local delay=$(( RETRY_BASE_DELAY_SEC * (2 ** (attempt - 1)) ))
       echo "    [triage] transient failure (exit $rc), retrying in ${delay}s (attempt $((attempt + 1))/$RETRY_MAX_ATTEMPTS)" >&2
       sleep "$delay"
       attempt=$((attempt + 1))
       continue
     fi
+    # Final (un-retried) failure: emit the last attempt's bytes so the caller's
+    # rate-limit detection still sees them (#1952, cubic P2).
+    [ "$_tok_emit_pending" -eq 1 ] && cat "$_tok_tmp"
     [ -n "$_tok_tmp" ] && rm -f "$_tok_tmp"
     return "$rc"
   done
