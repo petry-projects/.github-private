@@ -310,8 +310,8 @@ render_canary_report() {
   local dir="$1"
   local candidate incumbent workflow tier since until b_since b_until
   local max_prs min_prs min_inv cost_bar cache_bar latency_bar label mode
-  candidate="${CANARY_CANDIDATE:-claude-opus-5-5}"
-  incumbent="${CANARY_INCUMBENT:-claude-opus-4-8}"
+  candidate="${CANARY_CANDIDATE:-claude-opus-5-5}"  # model-pin-ok: maintainer default for testing this pure scorer (#1951)
+  incumbent="${CANARY_INCUMBENT:-claude-opus-4-8}"  # model-pin-ok: maintainer default for testing this pure scorer (#1951)
   workflow="${CANARY_WORKFLOW:-pr-review}"
   tier="${CANARY_TIER:-deep}"
   since="${CANARY_SINCE-}"
@@ -327,7 +327,8 @@ render_canary_report() {
   label="${CANARY_LABEL-Canary go/no-go — real PRs}"
   mode="${CANARY_MODE-real}"
 
-  local enriched; enriched="$(mktemp)" || { echo "ERROR: failed to create temporary file" >&2; return 3; }
+  local enriched
+  enriched="$(mktemp)" || { echo "ERROR: failed to create temporary file" >&2; return 3; }
   # main() calls render_canary_report in an `||` list, which disables errexit for the
   # whole function — so a failing canary_annotate (a malformed JSONL file, a jq error)
   # would NOT abort on its own and rendering would score whatever partial rows landed
@@ -637,7 +638,7 @@ _usage() {
 
 main() {
   local repo="petry-projects/.github-private"
-  local candidate="claude-opus-5-5" incumbent="claude-opus-4-8"
+  local candidate="claude-opus-5-5" incumbent="claude-opus-4-8"  # model-pin-ok: maintainer defaults for testing this standalone utility (#1951)
   local workflow="pr-review" tier="deep"
   local since="" until=""
   local b_since="2026-09-11T14:07Z" b_until="2026-09-25T14:07Z"
