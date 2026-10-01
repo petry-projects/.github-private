@@ -1,0 +1,114 @@
+name: PR Review Agent — Delayed Rate-Limit Retry
+
+# The run name carries pr_url + head_sha so the sweep's arm_delayed_retry can
+# dedup against an already in-flight retry (gh run list --json displayTitle)
+# instead of re-dispatching on every defer tick (#1994).
+run-name: "pr-review-delayed-retry ${{ inputs.pr_url }} @ ${{ inputs.head_sha }}"
+
+# Deterministic near-reset retry for a rate-limited PR review (#1994).
+#
+# WHY. When pr-review withholds approval because an advisory reviewer is rate-
+# limited, it stamps a marker carrying a `reset=<ISO>`. The ONLY thing that
+# re-dispatches the review after that reset is the scheduled pr-review-sweep.yml
+# cron — which GitHub drops under load (observed 3-7 h instead of every 15 min,
+# #1952). This workflow is ARMED on demand by the sweep's defer branch (a
+# workflow_dispatch with pr_url / head_sha / not_before) when the reset is near.
+# It sleeps until the reset, re-checks the marker still applies at the same head,
+# then delegates to the sweep scoped to that one PR — re-dispatching the review
+# through exactly the path the sweep uses, never force-reviewing.
+#
+# CLASSIFICATION (docs/agentic-interaction-model.md §4). Class 1 by declaration:
+# `workflow_dispatch` only, no `schedule` and no `timer_role`. The in-run sleep is
+# a deterministic delay anchored to an armed `not_before`, NOT a scheduled trigger
+# — it is the FIX for the convergence-clock pattern, not an instance of it. The
+# cron sweep remains the guaranteed backstop if this retry no-ops or is cancelled.
+#
+# NOTE — the re-dispatch requires a PAT, not GITHUB_TOKEN: GitHub will not start a
+# new run from a workflow_dispatch fired with the default GITHUB_TOKEN (loop
+# prevention), and the bot comment PAT lacks actions:write (HTTP 403). Same
+# constraint as pr-review-sweep.yml / scripts/initiative-planner/redispatch.sh.
+#
+# This workflow has no corresponding org template in standards/workflows/ and is
+# documented as a repo-specific exception in AGENTS.md; template syncs must not
+# remove it.
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_url:
+        description: "PR html_url whose rate-limited review to retry"
+        required: true
+        type: string
+      head_sha:
+        description: "Head SHA the rate-limit marker was armed on (supersession guard)"
+        required: true
+        type: string
+      not_before:
+        description: "ISO-8601 reset time to wait for before retrying"
+        required: false
+        default: ""
+        type: string
+      dry_run:
+        description: "If true, delegate in dry-run (log, do not dispatch)"
+        required: false
+        default: "false"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  # Per-(PR, head SHA) lane so a delayed retry NEVER cancels another PR's retry
+  # (distinct pr_url) or the full sweep (unrelated group name). cancel-in-progress
+  # collapses a re-arm of the SAME (PR, head) — fired by a later sweep tick while
+  # this one still sleeps — onto one live retry, giving the "one armed retry per
+  # (PR, head SHA)" idempotency without duplicate sleeping runners (#1994 AC3). A
+  # newer push changes head_sha → a new lane → the stale retry no-ops on its own
+  # supersession guard.
+  group: pr-review-delayed-retry-${{ inputs.pr_url }}-${{ inputs.head_sha }}
+  cancel-in-progress: true
+
+jobs:
+  retry:
+    runs-on: ubuntu-latest
+    # Hard ceiling above the default arming horizon (3600s) + buffer so a runner
+    # can never sleep unbounded; the script also caps its own sleep at 3720s. The
+    # extra headroom over that cap leaves room for checkout, the wake-time
+    # `gh pr view`, and the delegated sweep's API calls under the slow-API load
+    # this workflow exists to survive, so the dispatch is never killed mid-flight.
+    timeout-minutes: 70
+    steps:
+      - name: Checkout agent repo
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Guard — workflow-dispatch PAT present and bound to don-petry
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS }}
+        run: |
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "::error::GH_PAT_WORKFLOWS is required — GITHUB_TOKEN cannot start a dispatched run and the bot comment PAT lacks actions:write."
+            exit 1
+          fi
+          # Fail closed unless the PAT authenticates as the manifest-declared
+          # don-petry account. A non-empty but MISBOUND GH_PAT_DON_PETRY/
+          # GH_PAT_WORKFLOWS would dispatch the retry under the wrong identity,
+          # corrupting this workflow's audit trail and the loop-prevention
+          # identity. Both secret names are don-petry's PAT (WORKFLOWS is the
+          # deprecated alias), so this never rejects the legitimate fallback.
+          actor="$(gh api user --jq '.login' 2>/dev/null || echo '')"
+          if [ "${actor}" != "don-petry" ]; then
+            echo "::error::dispatch PAT authenticates as '${actor:-<unknown>}', not the manifest-declared don-petry account — refusing to dispatch under the wrong identity."
+            exit 1
+          fi
+
+      - name: Run delayed rate-limit retry
+        env:
+          # PAT with workflow/actions:write scope required: GITHUB_TOKEN cannot
+          # start dispatched workflow runs, and the bot comment PAT lacks the
+          # actions:write scope (HTTP 403 on the dispatch).
+          GH_TOKEN: ${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS }}
+          PR_URL: ${{ inputs.pr_url }}
+          HEAD_SHA: ${{ inputs.head_sha }}
+          NOT_BEFORE: ${{ inputs.not_before }}
+          DRY_RUN: ${{ inputs.dry_run || 'false' }}
+        run: bash scripts/delayed-rate-limit-retry.sh
