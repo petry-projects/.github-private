@@ -206,6 +206,10 @@ _body_matches_pattern() {
   # on must not clear, or a finding-bearing body could be swallowed.
   run _body_matches_pattern "$pat" "Earlier this run reported: You have reached your Codex usage limits for code reviews."
   [ "$status" -eq 1 ]
+  # Anchored to the end of the notice sentence too: review prose that OPENS with the
+  # notice's own words and then carries a finding must not clear.
+  run _body_matches_pattern "$pat" "You have reached your Codex usage limits for code reviews, but the dashboard numbers are stale — the cap math is the real bug."
+  [ "$status" -eq 1 ]
 }
 
 @test "info-status: coderabbitai matches its review-limit notice, not a review (#1995)" {
@@ -215,6 +219,9 @@ _body_matches_pattern() {
   run _body_matches_pattern "$pat" "Review limit reached — you have used up your prepaid credits."
   [ "$status" -eq 0 ]
   run _body_matches_pattern "$pat" "Consider guarding against a nil pointer before dereferencing \`cfg\` here."
+  [ "$status" -eq 1 ]
+  # Review prose reusing the notice's leading literal must not clear.
+  run _body_matches_pattern "$pat" "Review limit reached handling is too broad — this code path should be narrower."
   [ "$status" -eq 1 ]
 }
 
@@ -228,6 +235,9 @@ _body_matches_pattern() {
   run _body_matches_pattern "$pat" "Qodo Merge has reached your monthly usage limit for pull-request reviews on this repository. Reviews will resume when the limit resets."
   [ "$status" -eq 0 ]
   run _body_matches_pattern "$pat" "Suggestion: extract this block into a helper to reduce duplication."
+  [ "$status" -eq 1 ]
+  # Review prose reusing the notice's leading literal must not clear.
+  run _body_matches_pattern "$pat" "Qodo reviews are paused because the health check failed — lean on monitoring instead."
   [ "$status" -eq 1 ]
 }
 
