@@ -405,6 +405,21 @@ EOF
   [ "$(_get_env INTENT_REASON)" = "info-status-notice" ]
 }
 
+@test "reviews: unreadable registry → Codex notice routes normally with a visible warning (#1993)" {
+  # TRUSTED_BOTS is preset (setup), so the top-level registry bootstrap never runs;
+  # the info-status classifier must fail closed AND say so rather than silently
+  # falling back to a full fix-bot-comment engine run.
+  export GITHUB_EVENT_NAME="issue_comment"
+  export GITHUB_EVENT_PATH="$FIXTURES_DIR/issue_comment_codex_usage_limit.json"
+  export REVIEWER_SOURCES_MANIFEST="/nonexistent/reviewer-sources.tsv"
+
+  run bash "$INTENT_SCRIPT"
+
+  [ "$status" -eq 0 ]
+  [ "$(_get_env INTENT_TYPE)" = "fix-bot-comment" ]
+  [[ "$output" == *"::warning::dev-lead-intent: could not read info_status patterns"* ]]
+}
+
 @test "reviews: issue_comment Codex finding (not the usage-limit notice) → fix-bot-comment (#1993)" {
   # Only the registered usage-limit pattern is skipped; any other Codex issue
   # comment must still route to fix-bot-comment so a real finding is not dropped.

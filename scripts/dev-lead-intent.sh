@@ -175,15 +175,27 @@ matches_info_status_pattern() {
   local bare="${login%"[bot]"}"
   local reg_sh patterns pattern result
   reg_sh="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/reviewer-sources.sh"
-  [ -f "$reg_sh" ] || return 1
+  # A registry failure still fails closed (the comment routes normally), but it
+  # is surfaced: a silent fallback would quietly bring back the engine run this
+  # skip exists to save.
+  if [ ! -f "$reg_sh" ]; then
+    echo "::warning::dev-lead-intent: reviewer-sources helper not found at $reg_sh — info-status skip disabled, routing normally" >&2
+    return 1
+  fi
   # Source in a subshell so the registry helper never leaks into this classifier.
-  patterns="$(
+  if ! patterns="$(
     # shellcheck source=scripts/lib/reviewer-sources.sh
     source "$reg_sh" 2>/dev/null && reviewer_sources_info_status_patterns 2>/dev/null
-  )" || return 1
+  )"; then
+    echo "::warning::dev-lead-intent: could not read info_status patterns from the reviewer-sources registry — info-status skip disabled, routing normally" >&2
+    return 1
+  fi
   pattern="$(printf '%s\n' "$patterns" | awk -F'\t' -v l="$bare" '$1==l {print $2; exit}')" || return 1
   [ -n "$pattern" ] || return 1
-  result="$(jq -nr --arg b "$body" --arg p "$pattern" '($b | test($p))' 2>/dev/null)" || return 1
+  if ! result="$(jq -nr --arg b "$body" --arg p "$pattern" '($b | test($p))' 2>/dev/null)"; then
+    echo "::warning::dev-lead-intent: info_status_pattern for ${bare} failed to evaluate — routing normally" >&2
+    return 1
+  fi
   [ "$result" = "true" ]
 }
 
