@@ -292,6 +292,24 @@ _body_matches_pattern() {
   [ "$from_gate" = "$from_reg" ]
 }
 
+@test "consistency: advisory gate ADVISORY_BOTS built-in fallback == registry advisory-gate projection (#1997)" {
+  # The test above sources a READABLE registry, so ADVISORY_BOTS is the runtime projection
+  # and the gate's built-in _advisory_gate_load_fallback_bots literal is never exercised.
+  # Force the fallback by pointing REVIEWER_SOURCES_MANIFEST at a nonexistent file, then
+  # assert the literal's MEMBERS (not merely the count — the unreadable-registry test in
+  # tests/dev-lead/unit/test_advisory_review_gate.bats only checks BOTS=5) equal the
+  # advisory_gate=yes projection. Without this, a wrong 5-bot fallback (e.g. keeping qodo
+  # and dropping codeant) would pass CI and diverge gate behavior whenever the registry is
+  # unreadable (#2003 cubic/codeant review).
+  local from_fallback from_reg
+  from_fallback="$(REVIEWER_SOURCES_MANIFEST=/nonexistent/reviewer-sources.tsv bash -c "
+    source '$REPO_ROOT/scripts/lib/advisory-review-gate.sh'
+    printf '%s\n' \"\${!ADVISORY_BOTS[@]}\"
+  " | sort)"
+  from_reg="$(reviewer_sources_advisory_gate_logins | sort)"
+  [ "$from_fallback" = "$from_reg" ]
+}
+
 @test "consistency: advisory gate RATE_LIMIT_NOTICE_BOTS == registry (all sources)" {
   # shellcheck source=scripts/lib/advisory-review-gate.sh
   source "$REPO_ROOT/scripts/lib/advisory-review-gate.sh"
@@ -308,6 +326,32 @@ _body_matches_pattern() {
   from_report="$(_sorted "${REVIEWER_BOTS[@]}")"
   from_reg="$(reviewer_sources_logins | sort)"
   [ "$from_report" = "$from_reg" ]
+}
+
+@test "consistency: review-one-pr.sh _triage_bots literal fallback == registry trusted projection (#1997)" {
+  # review-one-pr.sh inlines advisory findings for the tool-less triage tier. It derives
+  # the bot set by sourcing the registry (reviewer_sources_trusted_logins — the
+  # dev-lead-trusted set, which is BROADER than the advisory-wait gate set), and carries a
+  # hardcoded `_triage_bots='[…]'` literal as a last-resort fallback for when that sourcing
+  # fails. That literal must agree with the trusted projection, or triage silently loses the
+  # findings of trusted bots (copilot/codex/qodo) that #1997 dropped from the approval-wait
+  # quorum but kept trusted (#2003 codeant/cubic review).
+  #
+  # Assert EXACTLY ONE literal exists before comparing: `head -1` would let a second, stale
+  # `_triage_bots='[…]'` later in the file carry the real fallback value while this guard
+  # passed against the first (#2003 cubic P3). No other gate catches this — the duplicate-decl
+  # gate covers functions only.
+  local literal_matches
+  literal_matches="$(grep -oE "_triage_bots='\[[^]]*\]'" "$REPO_ROOT/scripts/review-one-pr.sh")"
+  [ "$(printf '%s' "$literal_matches" | grep -c .)" -eq 1 ] || {
+    echo "expected exactly one _triage_bots literal in review-one-pr.sh, got: $literal_matches" >&2
+    return 1
+  }
+  local literal from_literal from_reg
+  literal="$(printf '%s\n' "$literal_matches" | sed "s/^_triage_bots='//; s/'\$//")"
+  from_literal="$(printf '%s' "$literal" | jq -r '.[]' | sort)"
+  from_reg="$(reviewer_sources_trusted_logins | sort)"
+  [ "$from_literal" = "$from_reg" ]
 }
 
 @test "consistency: every registry source has a scorecard display label" {
