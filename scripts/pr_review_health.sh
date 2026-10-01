@@ -33,6 +33,10 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib/pr-review-sweep-metrics.sh"
 # shellcheck source=scripts/lib/run-attribution.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib/run-attribution.sh"
 
+# Model family → current id resolver (#1979): name a family, never pin a version.
+# shellcheck source=scripts/lib/engine-models.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lib/engine-models.sh"
+
 LOOKBACK_DAYS="${LOOKBACK_DAYS:-1}"
 WORKFLOW_REPO="${AGENT_REPO:-petry-projects/.github-private}"
 WORKFLOW_FILE="pr-review-trigger.yml"
@@ -345,7 +349,7 @@ echo "Invoking Claude for log analysis..."
 # Claude writes errors to stdout (not stderr), so they'd silently land in
 # $REPORT_FILE with the stdout redirect below.  Wrap in `if !` so a non-zero
 # exit surfaces the file contents to the Actions log before aborting.
-if ! claude --print --model claude-sonnet-4-6 --no-session-persistence >> "$REPORT_FILE" <<PROMPT
+if ! claude --print --model "$(ai_model_for_family sonnet)" --no-session-persistence >> "$REPORT_FILE" <<PROMPT
 You are analyzing GitHub Actions workflow run logs for the PR Review Agent.
 
 ## Context

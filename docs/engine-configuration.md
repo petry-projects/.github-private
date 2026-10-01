@@ -98,6 +98,43 @@ that tier keeps its default. Each problem is logged once per run as a
 `::warning::`. The run log's `engine:` line shows the chains in use, for
 example `deep: opus 5.5 [opus 4.8, sonnet 5.5]`.
 
+## Model selection — name a family, never pin a version
+
+The org standard (#1979, companion
+[`petry-projects/.github#1199`](https://github.com/petry-projects/.github/issues/1199)):
+callers name a model **family** — `opus`, `sonnet`, or `haiku` — and let the
+resolver return the current concrete id. A model swap is then one edit to the
+chains above, not a hunt for hard-coded ids across the tree.
+
+`ai_model_for_family <family>` in
+[`scripts/lib/engine-models.sh`](../scripts/lib/engine-models.sh) maps each family
+to the tier whose primary it is and returns that tier's chain **first** model, so
+the chains stay the single source of truth:
+
+| Family | Tier |
+|---|---|
+| `opus` | `deep` |
+| `sonnet` | `action` |
+| `haiku` | `triage` |
+
+Overrides are honoured with the same precedence engine.sh uses: the per-tier
+`CLAUDE_<TIER>_MODEL_CHAIN` env first, then `AI_MODELS_CLAUDE`, then the built-in
+default. An operator who supplies a concrete `claude-*` id still has it honoured
+verbatim. In gh-aw front-matter the model family is named in `models:` (e.g.
+`models: { claude: [sonnet] }`), which accepts both a family and a full id;
+`engine:` selects the runner engine (`claude`), not the model. Workflow `model`
+inputs likewise accept a family or a full id.
+
+Token records keep the **resolved** id: families resolve before the engine is
+called, so `TOKEN_LOG_FILE` records the concrete model, not the family name.
+
+`scripts/check-model-pins.sh` (run in `lint.yml`) fails CI when a concrete
+`claude-<family>-<version>` id appears under `.github/`, `scripts/`, `prompts/`,
+`agents/`, or `personas/`. When a concrete id is genuinely required — the eval
+judge held fixed for confound control, the ET baseline anchor, a last-resort
+fallback — mark that line `# model-pin-ok: <reason>`; the resolver and the price
+table are allow-listed.
+
 ## Common switches
 
 | Goal | Set |

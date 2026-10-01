@@ -477,7 +477,8 @@ check_provider_headroom() {
       # CLAUDE_TRIAGE_MODEL_CHAIN), so a retired default can't blind it.
       local _resp remaining_tokens limit_tokens _hmodel
       _hmodel="$(_engine_chain_first "${CLAUDE_TRIAGE_MODEL_CHAIN:-$(ai_models_chain claude triage)}")"
-      [[ "$_hmodel" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || _hmodel="claude-haiku-4-5-20251001"
+      # Last-resort probe id when the configured triage chain is malformed — a known-good literal.
+      [[ "$_hmodel" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || _hmodel="claude-haiku-4-5-20251001" # model-pin-ok: last-resort fallback
       _resp=$(curl -s -D - -o /dev/null -X POST https://api.anthropic.com/v1/messages \
         -H "x-api-key: ${ANTHROPIC_API_KEY:-}" \
         -H "anthropic-version: 2023-06-01" \
@@ -1541,7 +1542,7 @@ run_agentic() {
         _mcp_review_flags "$_allowed_tools"
       fi
       # Reasoning-effort pin (#1898 AC-3; #1901 AC-2; Story-2/#1897 AC-4 finding):
-      # claude-opus-5-5's CLI/API default reasoning effort is `medium` (levels
+      # the deep tier model's CLI/API default reasoning effort is `medium` (levels
       # low/medium/high/xhigh/max) — below `high`. The deep, audit and single
       # tiers all run opus-5-5 (audit/single moved off Fable in #1901), so each
       # explicitly pins `--effort high` — otherwise dropping Fable would silently

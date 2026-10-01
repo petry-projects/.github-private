@@ -15,13 +15,12 @@ set -euo pipefail
 #   DRY_RUN                 — if true, generate + diff only; no branch/PR (default: false)
 #   GH_TOKEN                — GitHub PAT with repo write on both target repos
 #   CLAUDE_CODE_OAUTH_TOKEN — Claude auth (read by the claude CLI)
-#   CLAUDE_MODEL            — model id (default: claude-sonnet-4-6)
+#   CLAUDE_MODEL            — model id override; defaults to the current 'sonnet' family id
 #   ACTION_TIMEOUT_SEC      — per-target claude timeout (default: 300)
 #   README_REFRESH_OUTPUT_DIR — if set, copy each generated file here (debug/dry-run inspection)
 
 ORG="${ORG:-petry-projects}"
 DRY_RUN="${DRY_RUN:-false}"
-CLAUDE_MODEL="${CLAUDE_MODEL:-claude-sonnet-4-6}"
 ACTION_TIMEOUT_SEC="${ACTION_TIMEOUT_SEC:-300}"
 BRANCH="chore/readme-refresh"
 LABEL="readme-refresh"
@@ -35,6 +34,11 @@ PROMPT_TEMPLATE="$REPO_ROOT/prompts/aw/readme-refresh.md"
 
 # shellcheck source=scripts/lib/git-identity.sh
 source "$SCRIPT_DIR/lib/git-identity.sh"
+
+# Model family → current id resolver (#1979): name a family, never pin a version.
+# shellcheck source=scripts/lib/engine-models.sh
+source "$SCRIPT_DIR/lib/engine-models.sh"
+CLAUDE_MODEL="${CLAUDE_MODEL:-$(ai_model_for_family sonnet)}"
 
 log()    { echo "[readme-refresh] $*" >&2; }
 notice() { echo "::notice::readme-refresh: $*"; }
