@@ -22,6 +22,16 @@ teardown() {
   [[ "$output" == *"scripts/foo.sh:2"* ]]
 }
 
+# The legacy version-first form (claude-3-5-sonnet-20241022) is a concrete
+# pin too and must not slip past the family-first pattern.
+@test "check: a legacy version-first id fails too" {
+  mkdir -p "$SANDBOX/scripts"
+  printf '%s\n' '#!/usr/bin/env bash' 'claude --model claude-3-5-sonnet-20241022' > "$SANDBOX/scripts/foo.sh"
+  run bash "$CHECK" "$SANDBOX"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"scripts/foo.sh:2"* ]]
+}
+
 # A family name is the sanctioned form and must pass.
 @test "check: a family name passes" {
   mkdir -p "$SANDBOX/scripts"

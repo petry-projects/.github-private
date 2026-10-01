@@ -551,8 +551,10 @@ STUB
 
 @test "family: an invalid per-tier override id falls back to the default" {
   export CLAUDE_DEEP_MODEL_CHAIN="bad id"
+  local default_chain
+  default_chain="$(ai_models_default claude deep)"
   run ai_model_for_family opus
   [ "$status" -eq 0 ]
-  [[ "$output" == *"claude-opus-5-5"* ]]
+  [[ "$output" == *"${default_chain%%,*}"* ]]
   [[ "$output" == *"invalid model id"* ]]
 }

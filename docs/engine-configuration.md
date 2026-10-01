@@ -111,11 +111,11 @@ chains above, not a hunt for hard-coded ids across the tree.
 to the tier whose primary it is and returns that tier's chain **first** model, so
 the chains stay the single source of truth:
 
-| Family | Tier | Current primary |
-|---|---|---|
-| `opus` | `deep` | `claude-opus-5-5` |
-| `sonnet` | `action` | `claude-sonnet-5` |
-| `haiku` | `triage` | `claude-haiku-4-5-20251001` |
+| Family | Tier |
+|---|---|
+| `opus` | `deep` |
+| `sonnet` | `action` |
+| `haiku` | `triage` |
 
 Overrides are honoured with the same precedence engine.sh uses: the per-tier
 `CLAUDE_<TIER>_MODEL_CHAIN` env first, then `AI_MODELS_CLAUDE`, then the built-in

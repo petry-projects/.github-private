@@ -22,7 +22,9 @@ set -euo pipefail
 ROOT="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 
 SCAN_DIRS=(.github scripts prompts agents personas)
-PATTERN='claude-(opus|sonnet|haiku|fable)-[0-9]'
+# Family-first ids (claude-<family>-<N>…) and the legacy version-first form
+# (claude-<N>-<N>-<family>-<date>).
+PATTERN='claude-((opus|sonnet|haiku|fable)-[0-9]|[0-9]+(-[0-9]+)?-(opus|sonnet|haiku|fable))'
 
 # Allow-listed paths (relative to ROOT). These files legitimately name concrete
 # ids: the resolver defines the family→id mapping, the price table records rates.
