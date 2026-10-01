@@ -43,6 +43,8 @@ jobs:
       - name: Run issue-triage (staged)
         id: run
         env:
+          # Operator model override for aw.sh's family resolver (#1979).
+          AI_MODELS_CLAUDE: ${{ vars.AI_MODELS_CLAUDE || '' }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
           ISSUE_TITLE: ${{ github.event.issue.title }}

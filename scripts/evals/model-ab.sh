@@ -5,8 +5,8 @@ set -euo pipefail
 # Usage:
 #   model-ab.sh <candidate_model> <incumbent_model> [skill ...]
 #
-# Scores a CANDIDATE model (e.g. a claude-sonnet-5-* id) against an INCUMBENT
-# model (claude-sonnet-4-6) on one or more held-out sets (default: triage and
+# Scores a CANDIDATE model (e.g. a next-gen sonnet id) against an INCUMBENT
+# model (the current sonnet) on one or more held-out sets (default: triage and
 # deep-review) by driving scripts/evals/run-eval.sh once per (model, set) arm.
 # It reads the two aggregate scores directly and applies a `>=` NON-REGRESSION
 # bar per set — deliberately NOT gate.sh's strict `>` (that is the skill-edit
@@ -27,7 +27,7 @@ set -euo pipefail
 # depends on BOTH the generator AND the judge model. If pinning the generator also
 # moved the judge, a judge-model change would confound the comparison. This script
 # therefore wraps EVAL_JUDGE_CMD in a shim that re-pins the chain to a FIXED judge
-# model (AB_JUDGE_MODEL, default claude-sonnet-4-6) before delegating — so only the
+# model (AB_JUDGE_MODEL, a fixed sonnet id) before delegating — so only the
 # generator varies across the two arms. (triage is deterministic and never invokes
 # the judge, so the shim is inert there.)
 #
@@ -45,7 +45,7 @@ set -euo pipefail
 # reward-hacking / held-out-immutability invariant byte-for-byte.
 #
 # Env overrides (mirroring gate.sh, so offline tests stay network-free):
-#   AB_JUDGE_MODEL   fixed judge model held across both arms (default: claude-sonnet-4-6)
+#   AB_JUDGE_MODEL   fixed judge model held across both arms (default: a fixed sonnet id)
 #   EVAL_ENGINE_CMD  base generator command (default: run_triage)
 #   EVAL_JUDGE_CMD   base judge command      (default: run_triage)
 #   EVALS_DIR        held-out cases root      (default: <repo>/evals); read-only
@@ -63,7 +63,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 SCORER="$SCRIPT_DIR/run-eval.sh"
 
 EVALS_DIR="${EVALS_DIR:-$REPO_ROOT/evals}"
-AB_JUDGE_MODEL="${AB_JUDGE_MODEL:-claude-sonnet-4-6}"
+AB_JUDGE_MODEL="${AB_JUDGE_MODEL:-claude-sonnet-4-6}" # model-pin-ok: eval judge held FIXED across arms for confound control (must not float with a family)
 EVAL_ENGINE_CMD="${EVAL_ENGINE_CMD:-run_triage}"
 EVAL_JUDGE_CMD="${EVAL_JUDGE_CMD:-run_triage}"
 
