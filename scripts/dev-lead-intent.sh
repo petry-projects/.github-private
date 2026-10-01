@@ -172,7 +172,7 @@ is_dev_lead_authored() {
 # comment is then routed normally.
 matches_info_status_pattern() {
   local login="$1" body="$2"
-  local bare="${login%\[bot\]}"
+  local bare="${login%"[bot]"}"
   local reg_sh patterns pattern result
   reg_sh="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/reviewer-sources.sh"
   [ -f "$reg_sh" ] || return 1
@@ -181,7 +181,7 @@ matches_info_status_pattern() {
     # shellcheck source=scripts/lib/reviewer-sources.sh
     source "$reg_sh" 2>/dev/null && reviewer_sources_info_status_patterns 2>/dev/null
   )" || return 1
-  pattern="$(printf '%s\n' "$patterns" | awk -F'\t' -v l="$bare" '$1==l {print $2; exit}')"
+  pattern="$(printf '%s\n' "$patterns" | awk -F'\t' -v l="$bare" '$1==l {print $2; exit}')" || return 1
   [ -n "$pattern" ] || return 1
   result="$(jq -nr --arg b "$body" --arg p "$pattern" '($b | test($p))' 2>/dev/null)" || return 1
   [ "$result" = "true" ]
