@@ -336,6 +336,11 @@ _notice_json() {
   [ "$status" -eq 0 ]
 }
 
+@test "AC1(#1995): Qodo monthly-usage-limit notice clears → 0" {
+  _run_check "$(_notice_json qodo-code-review "Qodo Merge has reached your monthly usage limit for pull-request reviews on this repository. Reviews will resume when the limit resets.")"
+  [ "$status" -eq 0 ]
+}
+
 @test "AC2(#1995): a real Qodo review body still blocks → 1" {
   _run_check "$(_notice_json qodo-code-review "Suggestion: extract this block into a helper to reduce duplication.")"
   [ "$status" -eq 1 ]

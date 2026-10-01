@@ -196,9 +196,12 @@ _body_matches_pattern() {
   [ -n "$pat" ]
   run _body_matches_pattern "$pat" "You have reached your Codex usage limits for code reviews. You can see your limits in the Codex usage dashboard."
   [ "$status" -eq 0 ]
+  # The shorter notice variant this repo has also observed must clear too (fixtures/reviewer_pr_node.json).
+  run _body_matches_pattern "$pat" "You have reached your Codex usage limit."
+  [ "$status" -eq 0 ]
   # A real Codex review body that merely discusses a limit must NOT be swallowed.
   run _body_matches_pattern "$pat" "The cubic free trial ended handling is too broad — this code path should be narrower."
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
 }
 
 @test "info-status: coderabbitai matches its review-limit notice, not a review (#1995)" {
@@ -208,7 +211,7 @@ _body_matches_pattern() {
   run _body_matches_pattern "$pat" "Review limit reached — you have used up your prepaid credits."
   [ "$status" -eq 0 ]
   run _body_matches_pattern "$pat" "Consider guarding against a nil pointer before dereferencing \`cfg\` here."
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
 }
 
 @test "info-status: qodo-code-review matches its trial-ended notice, not a review (#1995)" {
@@ -217,8 +220,11 @@ _body_matches_pattern() {
   [ -n "$pat" ]
   run _body_matches_pattern "$pat" "Qodo reviews are paused because your trial has ended."
   [ "$status" -eq 0 ]
+  # The monthly-usage-limit notice variant this repo has observed must clear too (fixtures/events/advisory_qodo_rate_limited.json).
+  run _body_matches_pattern "$pat" "Qodo Merge has reached your monthly usage limit for pull-request reviews on this repository. Reviews will resume when the limit resets."
+  [ "$status" -eq 0 ]
   run _body_matches_pattern "$pat" "Suggestion: extract this block into a helper to reduce duplication."
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
 }
 
 @test "info-status: helper propagates a missing-manifest failure" {
