@@ -502,3 +502,71 @@ STUB
   run bash -c "export REVIEW_ENGINE=claude; source '$SCRIPT_DIR/scripts/engine.sh' 2>&1 >/dev/null | grep -c 'fable'"
   [ "$output" = "0" ]
 }
+
+# ── ai_model_for_family (#1979) ────────────────────────────────────────────────
+
+# The expected ids come from the default chains, not literals, so a model
+# upgrade (e.g. #1978's Sonnet 5.5) never needs this test edited: that is the
+# point of the family standard (#1979).
+@test "family: each family resolves to its tier's current primary" {
+  local deep action triage
+  deep="$(ai_models_chain claude deep)";     deep="${deep%%,*}"
+  action="$(ai_models_chain claude action)"; action="${action%%,*}"
+  triage="$(ai_models_chain claude triage)"; triage="${triage%%,*}"
+  [ "$(ai_model_for_family opus)" = "$deep" ]
+  [ "$(ai_model_for_family sonnet)" = "$action" ]
+  [ "$(ai_model_for_family haiku)" = "$triage" ]
+  [[ "$deep" == claude-opus-* ]]
+  [[ "$action" == claude-sonnet-* ]]
+  [[ "$triage" == claude-haiku-* ]]
+}
+
+@test "family: AI_MODELS_CLAUDE override wins (single source of truth)" {
+  export AI_MODELS_CLAUDE="deep=claude-opus-4-8,claude-sonnet-5"
+  [ "$(ai_model_for_family opus)" = "claude-opus-4-8" ]
+}
+
+@test "family: per-tier CLAUDE_<TIER>_MODEL_CHAIN override wins" {
+  export CLAUDE_ACTION_MODEL_CHAIN="claude-sonnet-4-6,claude-opus-4-8"
+  [ "$(ai_model_for_family sonnet)" = "claude-sonnet-4-6" ]
+  export CLAUDE_DEEP_MODEL_CHAIN="claude-opus-4-7"
+  [ "$(ai_model_for_family opus)" = "claude-opus-4-7" ]
+  export CLAUDE_TRIAGE_MODEL_CHAIN="claude-haiku-4-5-20251001,claude-sonnet-5"
+  [ "$(ai_model_for_family haiku)" = "claude-haiku-4-5-20251001" ]
+}
+
+@test "family: per-tier env takes precedence over AI_MODELS_CLAUDE" {
+  export AI_MODELS_CLAUDE="deep=claude-opus-4-8"
+  export CLAUDE_DEEP_MODEL_CHAIN="claude-opus-4-7,claude-opus-4-8"
+  [ "$(ai_model_for_family opus)" = "claude-opus-4-7" ]
+}
+
+@test "family: a set-but-malformed per-tier var does not hand precedence to AI_MODELS_CLAUDE" {
+  export AI_MODELS_CLAUDE="deep=claude-opus-4-8"
+  export CLAUDE_DEEP_MODEL_CHAIN=","
+  local default_chain model
+  default_chain="$(ai_models_default claude deep)"
+  model="$(ai_model_for_family opus 2>/dev/null)"
+  [ "$model" = "${default_chain%%,*}" ]
+  run ai_model_for_family opus
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"invalid model id"* ]]
+}
+
+@test "family: unknown family warns and fails" {
+  run ai_model_for_family gpt
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"unknown family"* ]]
+  run ai_model_for_family ""
+  [ "$status" -eq 1 ]
+}
+
+@test "family: an invalid per-tier override id falls back to the default" {
+  export CLAUDE_DEEP_MODEL_CHAIN="bad id"
+  local default_chain
+  default_chain="$(ai_models_default claude deep)"
+  run ai_model_for_family opus
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"${default_chain%%,*}"* ]]
+  [[ "$output" == *"invalid model id"* ]]
+}

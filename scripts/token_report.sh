@@ -82,6 +82,7 @@ annotate_records() {
   local dir="$1"
   local files=("$dir"/*.jsonl)
   [ -e "${files[0]}" ] || return 0   # no JSONL files → no rows
+  local _et_baseline_default="claude-haiku-4-5" # model-pin-ok: ET baseline anchor — must stay fixed so historical ET multipliers never drift
   jq -r 'select(type == "object")
     | select((.kind // "token_usage") == "token_usage")
     # Drop empty, model-less records (no model AND zero usage): they are not priced
@@ -103,7 +104,7 @@ annotate_records() {
       # counts any JSON number (e.g. 12.5, 1e3) rather than silently dropping it.
       (.duration_ms | if type == "number" and . >= 0 then floor else null end)
     ] | @tsv' "${files[@]}" 2>/dev/null \
-  | awk -F'\t' -v table="${PRICING_TABLE:-}" -v baseline="${ET_BASELINE_MODEL:-claude-haiku-4-5}" '
+  | awk -F'\t' -v table="${PRICING_TABLE:-}" -v baseline="${ET_BASELINE_MODEL:-$_et_baseline_default}" '
       function glob2re(g,   re) {
         re = g
         gsub(/[.[\]()^$+{}|\\]/, "\\\\&", re); gsub(/\*/, ".*", re); gsub(/\?/, ".", re)
