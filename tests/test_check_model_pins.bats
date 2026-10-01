@@ -78,3 +78,16 @@ teardown() {
   run bash "$CHECK" "$SCRIPT_DIR"
   [ "$status" -eq 0 ]
 }
+
+# A grep scan error (exit >1) must fail loud with status 2, never a false clean.
+# A PATH shim forces the error so the case also holds when tests run as root
+# (where chmod 000 would not block the read).
+@test "check: a grep scan error fails loud (exit 2), not a false clean" {
+  mkdir -p "$SANDBOX/scripts" "$SANDBOX/bin"
+  printf '%s\n' '#!/usr/bin/env bash' 'claude --model claude-sonnet-4-6' > "$SANDBOX/scripts/foo.sh"
+  printf '%s\n' '#!/usr/bin/env bash' 'exit 2' > "$SANDBOX/bin/grep"
+  chmod +x "$SANDBOX/bin/grep"
+  PATH="$SANDBOX/bin:$PATH" run bash "$CHECK" "$SANDBOX"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"cannot certify clean"* ]]
+}

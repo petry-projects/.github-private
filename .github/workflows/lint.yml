@@ -5,6 +5,8 @@ on:
     paths:
       - 'scripts/**'
       - '.github/workflows/**'
+      # All of .github, not just workflows: check-model-pins scans the whole dir.
+      - '.github/**'
       - 'tests/**'
       - 'prompts/**'
       - 'agents/**'
@@ -25,6 +27,7 @@ on:
       - 'tests/**'
       - 'prompts/**'
       - '.github/workflows/**'
+      - '.github/**'  # check-model-pins scans all of .github
   workflow_dispatch:
 
 permissions:

@@ -290,7 +290,7 @@ ai_models_fable_deprecation() {
 # whose primary is that family, and the id is that tier's chain FIRST model — the
 # existing chains stay the single source of truth:
 #     opus   → deep    (default primary claude-opus-5-5)
-#     sonnet → action  (default primary claude-sonnet-5)
+#     sonnet → action  (default primary claude-sonnet-5-5)
 #     haiku  → triage  (default primary claude-haiku-4-5-20251001)
 # Overrides are honoured with the same precedence engine.sh uses: the per-tier
 # CLAUDE_<TIER>_MODEL_CHAIN env first (ai_models_chain does not read it), then
@@ -307,7 +307,10 @@ ai_model_for_family() {
       return 1 ;;
   esac
   chain="${!var:-}"
-  [ -n "${chain//[[:space:],]/}" ] || chain="$(ai_models_chain claude "$tier")"
+  # Only an EMPTY per-tier var counts as absent (engine.sh's ${VAR:-…} rule). A
+  # set-but-malformed value (",") must not let AI_MODELS_CLAUDE win; it fails the
+  # id check below and falls back to the built-in default.
+  [ -n "$chain" ] || chain="$(ai_models_chain claude "$tier")"
   model="$(_ai_models_trim "${chain%%,*}")"
   # Validate the resolved id. ai_models_chain paths already validate via
   # _ai_models_scan, but the per-tier CLAUDE_<TIER>_MODEL_CHAIN override is read

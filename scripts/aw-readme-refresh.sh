@@ -21,7 +21,6 @@ set -euo pipefail
 
 ORG="${ORG:-petry-projects}"
 DRY_RUN="${DRY_RUN:-false}"
-CLAUDE_MODEL="${CLAUDE_MODEL:-}"
 ACTION_TIMEOUT_SEC="${ACTION_TIMEOUT_SEC:-300}"
 BRANCH="chore/readme-refresh"
 LABEL="readme-refresh"

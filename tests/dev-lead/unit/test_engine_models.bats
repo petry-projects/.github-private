@@ -541,6 +541,17 @@ STUB
   [ "$(ai_model_for_family opus)" = "claude-opus-4-7" ]
 }
 
+@test "family: a set-but-malformed per-tier var does not hand precedence to AI_MODELS_CLAUDE" {
+  export AI_MODELS_CLAUDE="deep=claude-opus-4-8"
+  export CLAUDE_DEEP_MODEL_CHAIN=","
+  local default_chain model
+  default_chain="$(ai_models_default claude deep)"
+  model="$(ai_model_for_family opus 2>/dev/null)"
+  [ "$model" = "${default_chain%%,*}" ]
+  run ai_model_for_family opus
+  [[ "$output" == *"invalid model id"* ]]
+}
+
 @test "family: unknown family warns and fails" {
   run ai_model_for_family gpt
   [ "$status" -eq 1 ]

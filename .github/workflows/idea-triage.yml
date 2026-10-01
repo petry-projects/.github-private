@@ -100,7 +100,8 @@ jobs:
           [ -n "$want" ] || want=sonnet
           case "$want" in
             opus|sonnet|haiku) model="$(ai_model_for_family "$want")" ;;
-            *)                 model="$want" ;;
+            claude-*)          model="$want" ;;
+            *)                 echo "::error::invalid model: $want (expected opus|sonnet|haiku, or a concrete claude-* id)" >&2; exit 1 ;;
           esac
           # The id is spliced into claude_args unquoted below, so it must be a
           # single safe token (no whitespace, not option-like) or it would split

@@ -7,7 +7,7 @@ Part of the GitHub Agentic Workflows rollout (internal discussion: [petry-projec
 When a new issue is opened or reopened, this workflow:
 
 1. Checks the existing label count. If the issue already has **2 or more labels** it exits silently (no-op).
-2. Calls Claude (`claude-sonnet-4-6`) with the issue title and body to classify the issue.
+2. Calls Claude with the issue title and body to classify the issue. The spec names the `sonnet` model family (`models:`), which `aw.sh` resolves to the current Sonnet id at run time via `ai_model_for_family`.
 3. Selects up to 3 labels from the allowed set and writes a single welcoming comment that asks the most relevant clarifying question.
 
 All of this happens within 60 seconds of the issue being opened.
@@ -51,7 +51,7 @@ been validated by `safe-output`.
 `gh aw compile` validates every `.md` workflow definition file. It checks:
 
 - Required frontmatter fields: `name`, `trigger`, `engine`, `permissions`
-- Engine is a known Claude model identifier
+- Engine is a model family (`opus`, `sonnet`, `haiku`) or a Claude runner/model id
 - `output` is `staged` or `live` (if present)
 - Trigger is a non-empty event mapping
 - Workflow body (instructions) is not empty
