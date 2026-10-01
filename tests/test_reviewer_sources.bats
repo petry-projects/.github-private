@@ -255,6 +255,29 @@ _body_matches_pattern() {
   [ "$status" -eq 1 ]
 }
 
+# Each pattern matches the bot's COMPLETE known notice body and is anchored at
+# both ends, so the real notices posted on this repo clear while a notice followed
+# by finding text still blocks (CodeRabbit security review on #2000).
+@test "info-status: the real Codex, Qodo and CodeRabbit notice bodies clear (#1995)" {
+  run _body_matches_pattern "$(_info_pattern_for chatgpt-codex-connector)" $'You have reached your Codex usage limits for code reviews. You can see your limits in the [Codex usage dashboard](https://chatgpt.com/codex/cloud/settings/usage).\nTo continue using code reviews, you can upgrade your account or add credits to your account and enable them for code reviews in your [settings](https://chatgpt.com/codex/cloud/settings/code-review).'
+  [ "$status" -eq 0 ]
+  run _body_matches_pattern "$(_info_pattern_for qodo-code-review)" $'<!-- qodo:billing-blocked -->\n\n**ⓘ Qodo reviews are paused because your trial has ended.** Ask your workspace admin to add credits to resume reviews. [Manage billing](https://app.qodo.ai/account/billing/manage-subscription?traffic_source=pr_comment)'
+  [ "$status" -eq 0 ]
+  run _body_matches_pattern "$(_info_pattern_for coderabbitai)" "Review limit reached — you have used up your prepaid credits."
+  [ "$status" -eq 0 ]
+}
+
+@test "info-status: a complete notice FOLLOWED by finding text does not clear (#1995)" {
+  run _body_matches_pattern "$(_info_pattern_for chatgpt-codex-connector)" $'You have reached your Codex usage limits for code reviews.\n\n**P1** Possible null dereference in scripts/foo.sh:42.'
+  [ "$status" -eq 1 ]
+  run _body_matches_pattern "$(_info_pattern_for qodo-code-review)" $'**ⓘ Qodo reviews are paused because your trial has ended.** Also: parseConfig skips the bound check.'
+  [ "$status" -eq 1 ]
+  run _body_matches_pattern "$(_info_pattern_for qodo-code-review)" "Qodo Merge has reached your monthly usage limit for pull-request reviews on this repository. Also: the retry loop never terminates."
+  [ "$status" -eq 1 ]
+  run _body_matches_pattern "$(_info_pattern_for coderabbitai)" $'Review limit reached — you have used up your prepaid credits.\n\nActionable: guard cfg before use.'
+  [ "$status" -eq 1 ]
+}
+
 @test "info-status: helper propagates a missing-manifest failure" {
   REVIEWER_SOURCES_MANIFEST="/nonexistent/reviewer-sources.tsv" \
     run reviewer_sources_info_status_patterns
