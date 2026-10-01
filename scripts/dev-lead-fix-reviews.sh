@@ -965,7 +965,7 @@ resolve_dispositioned_comments() {
   local reopen_ids reverify_ids rid
   reopen_ids=$(maintainer_gate_reopen_candidates "$all_comments" "$bot_user" 2>/dev/null \
     | jq -r '.[]?' 2>/dev/null || true)
-  while IFS= read -r rid || [ -n "$rid" ]; do
+  while IFS= read -r rid; do
     [ -z "$rid" ] && continue
     if gh api graphql -f query='mutation($id:ID!){unminimizeComment(input:{subjectId:$id}){unminimizedComment{isMinimized}}}' \
         -f id="$rid" >/dev/null 2>&1; then
@@ -1064,8 +1064,20 @@ resolve_dispositioned_comments() {
         'first(.[] | select(.id == $id)) | .lastEditedAt // ""' 2>/dev/null || echo "")
       local chosen_created straddles="false" sid sid_created
       chosen_created=$(printf '%s' "${selection:-}" | jq -r '.chosen.createdAt // ""' 2>/dev/null || echo "")
+      local stale_rc=0
+      cdv_disposition_is_stale "$edited_at" "$chosen_created" || stale_rc=$?
+      if [ "$stale_rc" -eq 2 ]; then
+        # Unreadable edit/disposition timestamp: fail closed — re-open the comment.
+        if gh api graphql -f query='mutation($id:ID!){unminimizeComment(input:{subjectId:$id}){unminimizedComment{isMinimized}}}' \
+            -f id="$cid" >/dev/null 2>&1; then
+          echo "::notice::unminimized comment ${cid} — unreadable edit/disposition timestamp (#2008)"
+        else
+          echo "::warning::failed to unminimize comment ${cid} with an unreadable edit/disposition timestamp (#2008)"
+        fi
+        continue
+      fi
       if [ "${auth_count:-0}" -gt 1 ] && [ -n "$chosen_created" ] \
-         && ! cdv_disposition_is_stale "$edited_at" "$chosen_created"; then
+         && [ "$stale_rc" -ne 0 ]; then
         for sid in "${superseded_ids[@]:-}"; do
           [ -z "$sid" ] && continue
           sid_created=$(printf '%s' "$all_comments" | jq -r --arg id "$sid" \
@@ -1099,6 +1111,12 @@ resolve_dispositioned_comments() {
       fixed)
         if [ "$pass_outcome" = "failed" ]; then
           echo "::notice::skipping comment ${cid} — a \`fixed\` disposition is not certified on a failed pass (its commit may not have been pushed); leaving open (#1992)"
+          if [ "$reverify" = "true" ]; then
+            # Already RESOLVED with a stale body: fail closed by re-opening it.
+            gh api graphql -f query='mutation($id:ID!){unminimizeComment(input:{subjectId:$id}){unminimizedComment{isMinimized}}}' \
+              -f id="$cid" >/dev/null 2>&1 \
+              || echo "::warning::failed to unminimize comment ${cid} after a failed post-edit re-verification (#2008)"
+          fi
           continue
         fi
         # Bind the `fixed` evidence to THIS pass's commit — not merely any ancestor

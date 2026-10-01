@@ -480,7 +480,7 @@ SHIM
   pats=$'coderabbitai\tReview limit reached'
   body=$'Review limit reached\n<!-- architecture_review_start -->\n**Retained concerns**\n- **Medium · security · inferred:** real finding.\n<!-- architecture_review_end -->'
   run bash -c "source '$MRC'; mrc_bot_body_matches coderabbitai \"\$2\" \"\$1\"" _ "$pats" "$body"
-  [ "$status" -ne 0 ]
+  [ "$status" -eq 1 ]
   # The same permissive pattern on a finding-free body is still authorized.
   run bash -c "source '$MRC'; mrc_bot_body_matches coderabbitai 'Review limit reached' \"\$1\"" _ "$pats"
   [ "$status" -eq 0 ]

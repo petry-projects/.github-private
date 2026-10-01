@@ -206,7 +206,12 @@ readonly _MAINTAINER_GATE_DISP_JQ_DEFS='
     | ([$b | scan("<!-- dev-lead:comment-disposition ([^>]*?) -->") | .[0]]) as $dl
     | ([$b | scan("<!-- maintainer-resolve ([^>]*?) -->") | .[0]]) as $mr
     | ( if ($dl | length) == 1 and ($dl[0] | attr("id")) == $cid
-        then {createdAt: $c, kind: ($dl[0] | attr("disposition"))} else empty end ),
+        then ($dl[0] | attr("disposition")) as $k
+          | if (["fixed","answered","invalid","out-of-scope","informational"] | index($k)) != null
+               and ($k != "fixed" or (($dl[0] | attr("sha")) | test("^[0-9a-f]{40}$")))
+               and ($k != "out-of-scope" or (($dl[0] | attr("ref")) != ""))
+            then {createdAt: $c, kind: $k} else empty end
+        else empty end ),
       ( $mr[] | select(attr("id") == $cid) | {createdAt: $c, kind: "maintainer-resolve"} );
   def latest_cover($all; $cid):
     [ $all[] | objects | select(trusted_reply) | covers($cid) ]
