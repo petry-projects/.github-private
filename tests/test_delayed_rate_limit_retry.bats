@@ -246,6 +246,30 @@ url_for() { echo "https://github.com/petry-projects/demo/pull/$1"; }
   [[ "$output" == *"below horizon+buffer (7260s)"* ]]
 }
 
+# The sweep reads rate-limit markers from reviews AND comments, so the wake-time
+# check must too, or a marker posted in a review body strands the retry.
+@test "retry re-dispatches when the armed head's marker is in a REVIEW body" {
+  write_pr 2015 "REVIEW_REQUIRED" "$ROLLUP_PASS" "armed15" "$(rl_comment armed15 "$PAST_RESET")" "[]"
+  export PR_URL; PR_URL="$(url_for 2015)"
+  export HEAD_SHA="armed15" NOT_BEFORE="$PAST_RESET"
+
+  run bash "$RETRY"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"no rate-limit marker for head"* ]]
+}
+
+# Leading-zero durations are base 10, not octal (0600 must mean 600, not 384).
+@test "leading-zero horizon/buffer values are parsed as base 10" {
+  write_pr 2016 "REVIEW_REQUIRED" "$ROLLUP_PASS" "armed16" "[]" "$(rl_comment armed16 "$PAST_RESET")"
+  export PR_URL; PR_URL="$(url_for 2016)"
+  export HEAD_SHA="armed16" NOT_BEFORE="$PAST_RESET" \
+    DELAYED_RETRY_HORIZON_SEC=0600 DELAYED_RETRY_BUFFER_SEC=060 DELAYED_RETRY_MAX_SLEEP_SEC=0100
+
+  run bash "$RETRY"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"below horizon+buffer (660s)"* ]]
+}
+
 # ---------------------------------------------------------------------------
 # Concurrency (AC2): the retry workflow groups per PR + head SHA so two retries
 # for different PRs land in different concurrency lanes and never cancel each

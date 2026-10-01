@@ -60,6 +60,10 @@ case "$DELAYED_RETRY_HORIZON_SEC" in ''|*[!0-9]*) DELAYED_RETRY_HORIZON_SEC=3600
 # delegated sweep would re-defer and, with ARM_DELAYED_RETRY=false, could not
 # re-arm, leaving the PR to the best-effort cron (#1994). An explicit lower
 # value is raised to the floor, with a warning.
+# Force base 10: the digit-only checks above admit a leading zero, which bash
+# arithmetic would otherwise read as octal (0600 -> 384).
+DELAYED_RETRY_HORIZON_SEC=$(( 10#$DELAYED_RETRY_HORIZON_SEC ))
+DELAYED_RETRY_BUFFER_SEC=$(( 10#$DELAYED_RETRY_BUFFER_SEC ))
 _min_sleep=$(( DELAYED_RETRY_HORIZON_SEC + DELAYED_RETRY_BUFFER_SEC ))
 case "$DELAYED_RETRY_MAX_SLEEP_SEC" in
   '') DELAYED_RETRY_MAX_SLEEP_SEC="$_min_sleep" ;;
@@ -67,6 +71,7 @@ case "$DELAYED_RETRY_MAX_SLEEP_SEC" in
     echo "::warning::delayed-rate-limit-retry: DELAYED_RETRY_MAX_SLEEP_SEC='$DELAYED_RETRY_MAX_SLEEP_SEC' is not a number — using horizon+buffer (${_min_sleep}s)"
     DELAYED_RETRY_MAX_SLEEP_SEC="$_min_sleep" ;;
   *)
+    DELAYED_RETRY_MAX_SLEEP_SEC=$(( 10#$DELAYED_RETRY_MAX_SLEEP_SEC ))
     if [ "$DELAYED_RETRY_MAX_SLEEP_SEC" -lt "$_min_sleep" ]; then
       echo "::warning::delayed-rate-limit-retry: DELAYED_RETRY_MAX_SLEEP_SEC=${DELAYED_RETRY_MAX_SLEEP_SEC}s is below horizon+buffer (${_min_sleep}s) — raising it so the retry wakes after reset"
       DELAYED_RETRY_MAX_SLEEP_SEC="$_min_sleep"
@@ -95,7 +100,7 @@ echo "  Not before: ${NOT_BEFORE:-<none>}"
 # landed during the sleep (#1994).
 still_applicable() {
   local _phase="$1" _snapshot _current_head _state _has_marker
-  if ! _snapshot=$(gh pr view "$PR_URL" --json headRefOid,state,comments 2>/dev/null); then
+  if ! _snapshot=$(gh pr view "$PR_URL" --json headRefOid,state,comments,reviews 2>/dev/null); then
     echo "  no-op ($_phase): could not fetch $PR_URL (deleted, no access, or rate-limited) — leaving to the cron sweep"
     return 1
   fi
@@ -114,7 +119,7 @@ still_applicable() {
     return 1
   fi
   _has_marker=$(jq -r --arg m "<!-- pr-review-agent rate-limited v1 sha=${HEAD_SHA} " \
-    '[.comments[]? | (.body // "") | select(contains($m))] | length > 0' <<< "$_snapshot" 2>/dev/null || echo "false")
+    '[((.reviews // []) + (.comments // []))[]? | (.body // "" | tostring) | select(contains($m))] | length > 0' <<< "$_snapshot" 2>/dev/null || echo "false")
   if [ "$_has_marker" != "true" ]; then
     echo "  no-op ($_phase): no rate-limit marker for head ${HEAD_SHA:0:8} — nothing armed to retry"
     return 1
