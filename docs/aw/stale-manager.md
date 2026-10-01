@@ -16,7 +16,7 @@ Part of the [GitHub Agentic Workflows rollout](https://github.com/petry-projects
    - Has `stale` label but was recently updated → remove `stale`
    - Past staleness threshold, no `stale` label → warn (add label + comment)
    - Has `stale` label, grace period elapsed → close
-4. **Comment** — Claude (`claude-sonnet-4-6`) generates a contextual warning or
+4. **Comment** — Claude (the `sonnet` model family, resolved to the current id at run time) generates a contextual warning or
    closing comment based on the item's title and body.
 5. **Act** — in live mode, labels are applied, comments are posted, and eligible
    items are closed via the GitHub API.
