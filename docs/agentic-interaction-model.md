@@ -200,6 +200,7 @@ keeps its own file) carries **no** job qualifier and remains exactly one row.
 | `.github/workflows/persona-runner.yml` | 1 | — | `repository_dispatch:[persona-mention]` — PAT-backed dispatch receiver for persona invocations; no schedule. |
 | `.github/workflows/initiative-planner.yml` | 1 | — | `workflow_dispatch` only — human-explicit bridge for the `discussion:[labeled]` signal that cannot be subscribed to inline; §2 Class 1 by declaration (no schedule, no `timer_role`). |
 | `.github/workflows/pr-auto-review.yml` | 1 | — | `workflow_run:[completed]`, `check_suite:[completed]`, `pull_request_review:[submitted, dismissed]`, `pull_request:[opened, reopened, synchronize, ready_for_review]` — multi-event readiness gate; no schedule. |
+| `.github/workflows/pr-review-delayed-retry.yml` | 1 | — | `workflow_dispatch` only — armed on demand by `pr-review-sweep.yml` to retry a rate-limited PR review near its `reset` without depending on the best-effort cron (#1994). §2 Class 1 by declaration (no schedule, no `timer_role`); the in-run sleep is a deterministic armed delay anchored to `not_before`, not a scheduled trigger — the fix for the convergence-clock pattern, not an instance of it. |
 | `.github/workflows/pr-review-sweep.yml` | 2 | backstop | `schedule: '2,17,32,47 * * * *'` backstop **plus** `workflow_run:[completed]` fast path (#898) scoped to the completing CI run's PR(s); idempotent, per-branch `cancel-in-progress`. |
 | `.github/workflows/initiative-driver.yml` | 2 | safety-net | `issues:[closed, labeled]` fast path **plus** `schedule: '23 */6 * * *'` explicitly "safety net for missed close events"; sweeps every open `initiative:auto` epic idempotently. |
 | `.github/workflows/dev-lead-retry.yml` | 2 | self-heal | `schedule: '15 */2 * * *'` + `workflow_dispatch`; re-dispatches `status=rate-limited` PRs once the limit clears. **Leak flagged in §6** — no event fast-path, so it behaves as a de-facto convergence clock rather than a true backstop. |
@@ -294,8 +295,10 @@ Where a PAT bridge is not available or not warranted, a **Class 2 backstop timer
 reconcile the missed event on a cadence. The timer does not preserve the event — it
 re-discovers the actionable state by scanning — so it **must** satisfy the full timer
 contract in §6 (stop condition, idempotency, human-gated markers). `pr-review-sweep.yml`'s
-scheduled backstop is exactly this: the guaranteed ≤15-min net under its `workflow_run`
-fast path.
+scheduled backstop is exactly this: the net under its `workflow_run` fast path, nominally
+≤15 min but best-effort — GitHub delays or drops scheduled runs under load (observed 3–7 h
+in #1952), so a time-bound retry must not rely on it (the rate-limit case is armed explicitly by
+`pr-review-delayed-retry.yml`, #1994).
 
 **Never** attempt to cross the boundary by having `GITHUB_TOKEN` emit the triggering event
 and hoping it fires — it will not, and the failure is silent.
@@ -621,7 +624,7 @@ explicit, not tribal.
 `scripts/lib/pr-runaway-detect.sh`, §9 rule 2) — it never labels, comments, or halts. It flags an
 open PR that is **CI-green + `REVIEW_REQUIRED`, not reviewed at head, with no agent activity and no
 pending triggering event, idle longer than `STALL_MIN_AGE_MINUTES` (default 30 min — double the
-sweep's ≤15-min backstop cadence; **#1408 must re-derive this default when the sweep cadence
+sweep's nominal ≤15-min backstop cadence, which GitHub does not guarantee; **#1408 must re-derive this default when the sweep cadence
 is narrowed** so it remains ≥ 2× the new backstop interval)**. It is **fail-quiet on intentional stops**: a PR carrying
 `needs-human-review` (checked via `pr_has_escalation_label`, §6.2.3), `dev-lead:hands-off`, or
 `initiative:hold` (checked via a `STALL_HOLD_LABELS` loop) is never reported. The
@@ -655,7 +658,7 @@ scoping) of `pr-review-sweep.yml` / `dev-lead-retry.yml`. To revert:
 
 1. **Identify** the merged narrowing PR(s) for #1407 / #1408 (labelled against those issues).
 2. **Revert** them — `git revert <merge-sha>` for each, in reverse merge order — restoring
-   `pr-review-sweep.yml`'s guaranteed backstop cadence (`schedule: '2,17,32,47 * * * *'`, ≤15 min)
+   `pr-review-sweep.yml`'s backstop cadence (`schedule: '2,17,32,47 * * * *'`, nominally ≤15 min)
    and `dev-lead-retry.yml`'s `schedule: '15 */2 * * *'`. Do **not** hand-edit the cron to a
    guessed value; restore the exact pre-narrowing lines from history so the backstop returns to its
    proven state.
