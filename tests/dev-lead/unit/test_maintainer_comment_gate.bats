@@ -321,6 +321,15 @@ _notice_json() {
   [ "$status" -eq 1 ]
 }
 
+@test "AC2(#1995): a Codex comment that only quotes the notice (not at body start) still blocks → 1" {
+  _run_check "$(_notice_json chatgpt-codex-connector "## Codex Review — could not complete
+
+Earlier this run reported: You have reached your Codex usage limits for code reviews.
+
+**P1** Possible null dereference in scripts/foo.sh:42 — guard the lookup before use.")"
+  [ "$status" -eq 1 ]
+}
+
 @test "AC1(#1995): CodeRabbit review-limit notice clears → 0" {
   _run_check "$(_notice_json coderabbitai "Review limit reached — you have used up your prepaid credits.")"
   [ "$status" -eq 0 ]

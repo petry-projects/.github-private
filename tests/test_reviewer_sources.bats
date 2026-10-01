@@ -202,6 +202,10 @@ _body_matches_pattern() {
   # A real Codex review body that merely discusses a limit must NOT be swallowed.
   run _body_matches_pattern "$pat" "The cubic free trial ended handling is too broad — this code path should be narrower."
   [ "$status" -eq 1 ]
+  # Anchored to the body start (#1993): a comment that only QUOTES the notice later
+  # on must not clear, or a finding-bearing body could be swallowed.
+  run _body_matches_pattern "$pat" "Earlier this run reported: You have reached your Codex usage limits for code reviews."
+  [ "$status" -eq 1 ]
 }
 
 @test "info-status: coderabbitai matches its review-limit notice, not a review (#1995)" {
