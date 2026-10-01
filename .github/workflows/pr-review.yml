@@ -194,7 +194,7 @@ jobs:
       #                  default auto.
       #   AI_DUCK_MODEL  model for the first AI_DUCK_ENGINE entry.
       #   AI_MODELS_CLAUDE / AI_MODELS_GEMINI / AI_MODELS_COPILOT  each provider's
-      #                  model list, e.g. "deep=claude-opus-5-5,claude-opus-4-8; triage=…"
+      #                  model list, e.g. "deep=<opus id>,<fallback id>; triage=…"
       #                  (scripts/lib/engine-models.sh). Every provider takes the same
       #                  keys: triage, deep, audit, action, single, duck. Omitted keys
       #                  keep their defaults.

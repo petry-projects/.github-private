@@ -16,7 +16,7 @@ workflow_dispatch:         # Manual trigger for testing
 
 ## Engine
 
-Claude (`claude-sonnet-4-6` for comment generation; deterministic bash for staleness math).
+Claude (the `sonnet` family for comment generation; deterministic bash for staleness math).
 
 ## Permissions
 

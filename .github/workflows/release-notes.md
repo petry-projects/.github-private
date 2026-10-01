@@ -17,7 +17,7 @@ on:
 
 ## Engine
 
-Claude (`claude-sonnet-4-6` for changelog content generation).
+Claude (the `sonnet` family for changelog content generation).
 
 ## Permissions
 
