@@ -93,9 +93,12 @@ _run_check() {
   [ "$status" -eq 1 ]
 }
 
-# AC9(b): an undispositioned qodo-code-review comment blocks.
-@test "AC9b: undispositioned qodo-code-review comment → 1 (block)" {
-  local json='{"comments":[{"author":{"login":"qodo-code-review"},"body":"<!-- qodo:billing-blocked --> Qodo reviews are paused because your trial has ended.","createdAt":"2026-09-13T04:23:06Z","isMinimized":false,"minimizedReason":""}]}'
+# AC9(b): an undispositioned qodo-code-review FINDING blocks. (Its trial-ended
+# service notice is now auto-cleared via an info_status_pattern, #1995 — covered
+# by the #1995 tests below — so this case uses a genuine finding, which carries no
+# info-status pattern and must still block.)
+@test "AC9b: undispositioned qodo-code-review finding → 1 (block)" {
+  local json='{"comments":[{"author":{"login":"qodo-code-review"},"body":"PR Review: `parseConfig` does not validate the timeout bound before use.","createdAt":"2026-09-13T04:23:06Z","isMinimized":false,"minimizedReason":""}]}'
   _run_check "$json"
   [ "$status" -eq 1 ]
 }
@@ -286,6 +289,108 @@ _sonar_json() {
   local json='{"comments":[{"author":{"login":"don-petry"},"body":"<!-- maintainer-resolve author=sonarqubecloud by=don-petry -->\nCleared: quality gate passed on the current head.","isMinimized":false,"minimizedReason":""}]}'
   _run_check "$json"
   [ "$status" -eq 0 ]
+}
+
+# ────────────────────────────────────────────────────────────────────
+# #1995 — the info-status classifier generalized beyond SonarCloud: Codex,
+# CodeRabbit and Qodo post service notices carrying NO finding (usage-limit /
+# review-limit / trial-ended). Each now declares an info_status_pattern, so a
+# matching notice is auto-cleared (→0) with no dev-lead and no human, while a
+# real review body from the SAME bot carries no pattern match and still blocks
+# (→1). The notice bodies are this repo's own history (#1902/#1887/#1873).
+# ────────────────────────────────────────────────────────────────────
+
+_notice_json() {
+  # _notice_json <login> <body> — a one-comment, un-minimized gate snapshot.
+  jq -cn --arg l "$1" --arg b "$2" \
+    '{reviews:[], comments:[{author:{login:$l}, body:$b, isMinimized:false, minimizedReason:""}]}'
+}
+
+@test "AC1(#1995): Codex usage-limit notice clears → 0" {
+  _run_check "$(_notice_json chatgpt-codex-connector "You have reached your Codex usage limits for code reviews. You can see your limits in the Codex usage dashboard.")"
+  [ "$status" -eq 0 ]
+}
+
+@test "AC1(#1995): Codex usage-limit notice with a [bot] suffix login clears → 0" {
+  _run_check "$(_notice_json 'chatgpt-codex-connector[bot]' "You have reached your Codex usage limits for code reviews. You can see your limits in the Codex usage dashboard.")"
+  [ "$status" -eq 0 ]
+}
+
+@test "AC2(#1995): a real Codex review body still blocks → 1" {
+  _run_check "$(_notice_json chatgpt-codex-connector "The cubic free trial ended handling is too broad — this code path should be narrower.")"
+  [ "$status" -eq 1 ]
+}
+
+# #1993: the Codex pattern is case-sensitive (jq test()) and pinned to the
+# chatgpt-codex-connector login — a lower-cased variant, or the SAME notice text
+# from a different author, is not cleared.
+@test "#1993: a lower-cased Codex notice does not match (case-sensitive) → 1" {
+  _run_check "$(_notice_json chatgpt-codex-connector "you have reached your codex usage limits for code reviews.")"
+  [ "$status" -eq 1 ]
+}
+
+@test "#1993: the Codex usage-limit text from a different author still blocks → 1" {
+  _run_check "$(_notice_json some-impersonator "You have reached your Codex usage limits for code reviews. You can see your limits in the Codex usage dashboard.")"
+  [ "$status" -eq 1 ]
+}
+
+@test "AC2(#1995): a Codex comment that only quotes the notice (not at body start) still blocks → 1" {
+  _run_check "$(_notice_json chatgpt-codex-connector "## Codex Review — could not complete
+
+Earlier this run reported: You have reached your Codex usage limits for code reviews.
+
+**P1** Possible null dereference in scripts/foo.sh:42 — guard the lookup before use.")"
+  [ "$status" -eq 1 ]
+}
+
+@test "AC1(#1995): CodeRabbit review-limit notice clears → 0" {
+  _run_check "$(_notice_json coderabbitai "Review limit reached — you have used up your prepaid credits.")"
+  [ "$status" -eq 0 ]
+}
+
+@test "AC2(#1995): a real CodeRabbit review body still blocks → 1" {
+  _run_check "$(_notice_json coderabbitai "Consider guarding against a nil pointer before dereferencing \`cfg\` here.")"
+  [ "$status" -eq 1 ]
+}
+
+@test "AC1(#1995): Qodo trial-ended notice clears → 0" {
+  _run_check "$(_notice_json qodo-code-review "Qodo reviews are paused because your trial has ended.")"
+  [ "$status" -eq 0 ]
+}
+
+@test "AC1(#1995): Qodo trial-ended notice with its HTML marker prefix clears → 0" {
+  _run_check "$(_notice_json qodo-code-review "<!-- qodo:billing-blocked --> Qodo reviews are paused because your trial has ended.")"
+  [ "$status" -eq 0 ]
+}
+
+@test "AC2(#1995): a Qodo review that mentions the trial notice mid-body still blocks → 1" {
+  _run_check "$(_notice_json qodo-code-review "The handling of the case where Qodo reviews are paused because your trial has ended is too lenient.")"
+  [ "$status" -eq 1 ]
+}
+
+@test "AC2(#1995): a CodeRabbit review that mentions the limit notice mid-body still blocks → 1" {
+  _run_check "$(_notice_json coderabbitai "The error handling is broken. Review limit reached — you have used up your prepaid credits feature needs better UX.")"
+  [ "$status" -eq 1 ]
+}
+
+@test "AC1(#1995): Qodo's real trial notice (marker + bold ⓘ + billing link) clears → 0" {
+  _run_check "$(_notice_json qodo-code-review $'<!-- qodo:billing-blocked -->\n\n**ⓘ Qodo reviews are paused because your trial has ended.** Ask your workspace admin to add credits to resume reviews. [Manage billing](https://app.qodo.ai/account/billing/manage-subscription?traffic_source=pr_comment)')"
+  [ "$status" -eq 0 ]
+}
+
+@test "AC2(#1995): a Codex notice followed by a finding still blocks → 1" {
+  _run_check "$(_notice_json chatgpt-codex-connector $'You have reached your Codex usage limits for code reviews.\n\n**P1** Possible null dereference in scripts/foo.sh:42.')"
+  [ "$status" -eq 1 ]
+}
+
+@test "AC1(#1995): Qodo monthly-usage-limit notice clears → 0" {
+  _run_check "$(_notice_json qodo-code-review "Qodo Merge has reached your monthly usage limit for pull-request reviews on this repository. Reviews will resume when the limit resets.")"
+  [ "$status" -eq 0 ]
+}
+
+@test "AC2(#1995): a real Qodo review body still blocks → 1" {
+  _run_check "$(_notice_json qodo-code-review "Suggestion: extract this block into a helper to reduce duplication.")"
+  [ "$status" -eq 1 ]
 }
 
 # ────────────────────────────────────────────────────────────────────

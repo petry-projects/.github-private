@@ -86,6 +86,25 @@ exit 1
 SH
   chmod +x "$STUB_MIXED"
 
+  # Stub engine for a MIXED quality+infra run: answers the approve case WRONG with
+  # a clean exit (rc 0 -> quality miss), and throttles the escalate case (rc!=0 ->
+  # infra). Pins the quality-miss-takes-precedence rule: a run with >=1 quality miss
+  # must exit 1 (regression) even when another case was merely throttled (#1952).
+  STUB_QUALITY_PLUS_INFRA="$TMP/stub_quality_plus_infra.sh"
+  cat >"$STUB_QUALITY_PLUS_INFRA" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+prompt="$1"
+if grep -q MARKER_APPROVE "$prompt"; then
+  # expected escalate=false; answer escalate=true -> wrong, but a clean exit.
+  echo '{"escalate": true, "risk": "HIGH", "signals": [], "summary": "wrong answer"}'
+  exit 0
+fi
+echo '::warning::[claude] all models throttled (rc=1)' >&2
+exit 1
+SH
+  chmod +x "$STUB_QUALITY_PLUS_INFRA"
+
   # Stub engine that wraps its (correct) JSON decision in a ```json markdown
   # fence — the live Haiku-tier output the strict parser used to reject, which
   # produced the production triage 0/5 (every case `got null`, #762).
@@ -274,6 +293,25 @@ SH
   # The failing case ran the engine successfully (rc 0) — a quality miss, not infra.
   esc="$(jq -c '.cases[] | select(.id=="case-escalate")' <<<"$output")"
   [ "$(jq -r '.engine_rc' <<<"$esc")" = "0" ]
+}
+
+@test "a quality miss alongside a throttled case still exits 1 (quality beats infra, #1952)" {
+  # One case answered WRONG with a clean exit (quality miss), the other throttled
+  # (infra). A known regression must BLOCK (exit 1) rather than be downgraded to
+  # infra/un-scored (exit 2) just because a separate case throttled — otherwise in
+  # the model-ab flow the whole arm reads un-scored and the regression escapes.
+  EVALS_DIR="$TMP/evals" EVAL_ENGINE_CMD="$STUB_QUALITY_PLUS_INFRA" \
+    run --separate-stderr bash "$SCORER" triage
+  [ "$status" -eq 1 ]
+  [ "$(jq '.failed' <<<"$output")" -eq 2 ]
+  # The wrong-but-answered case is a quality miss (engine_rc 0); the throttled case
+  # is infra (engine_rc != 0) — the quality miss drives the exit-1 verdict.
+  ap="$(jq -c '.cases[] | select(.id=="case-approve")' <<<"$output")"
+  [ "$(jq -r '.pass'      <<<"$ap")" = "false" ]
+  [ "$(jq -r '.engine_rc' <<<"$ap")" = "0" ]
+  esc="$(jq -c '.cases[] | select(.id=="case-escalate")' <<<"$output")"
+  [ "$(jq -r '.pass'      <<<"$esc")" = "false" ]
+  [ "$(jq -r '.engine_rc' <<<"$esc")" != "0" ]
 }
 
 @test "unparseable output with a clean engine exit is a regression, not infra -> exit 1 (#920)" {
@@ -726,6 +764,29 @@ SH
   [ "$status" -eq 1 ]
   [ "$(jq '.failed' <<<"$output")" -eq 2 ]
   [ "$(jq '.cases[0].score' <<<"$output")" = "0" ]
+}
+
+@test "llm-judge mode: a FAILED judge invocation (nonzero exit) is infra -> exit 2, not a scored 0 (#1952)" {
+  _setup_judge_skill
+  # Judge stub that ALWAYS exits nonzero (throttle/timeout/outage): the candidate is
+  # never actually graded. This must classify infra (exit 2), NOT a scored quality
+  # miss (exit 1) — otherwise two unavailable-judge arms compare as 0>=0 and the A/B
+  # falsely accepts. Distinct from the unparseable-but-answered judge (exit 0) above.
+  JUDGE_STUB="$TMP/judge_fail.sh"
+  cat >"$JUDGE_STUB" <<'SH'
+#!/usr/bin/env bash
+echo "::error::judge throttled" >&2
+exit 2
+SH
+  chmod +x "$JUDGE_STUB"
+
+  EVALS_DIR="$TMP/evals" EVAL_ENGINE_CMD="$SKILL_STUB" EVAL_JUDGE_CMD="$JUDGE_STUB" \
+    run --separate-stderr bash "$SCORER" deep-review
+  [ "$status" -eq 2 ]              # infra/un-scored, NOT a quality regression
+  # Every failing case carries a nonzero engine_rc (the judge's status folded in),
+  # so the aggregate classifies infra rather than a scored 0.
+  [ "$(jq '[.cases[] | select(.engine_rc != 0)] | length' <<<"$output")" -eq 2 ]
+  [ "$(jq '[.cases[] | select(.pass)] | length' <<<"$output")" -eq 0 ]
 }
 
 @test "llm-judge mode: the judge prompt carries both the expected ref and the candidate" {
