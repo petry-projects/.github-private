@@ -141,7 +141,8 @@ Some bot comments are pure **operational notices**, not code findings: a rate-li
    # Idempotency (#1992): skip if a non-minimized reply you authored already
    # carries a well-formed non-`fixed` disposition marker for this node id (the
    # same shape the harness parser accepts, so a quoted or malformed marker never
-   # suppresses the reply). The newest 100 comments are checked, which is where
+   # suppresses the reply). The node id is matched literally (split on the exact
+   # marker prefix); only the disposition tail is a regex. The newest 100 comments are checked, which is where
    # an earlier pass's reply lives. An unreadable check fails closed (no post). bot_user is your account; only your own
    # disposition counts (a reply from any other author must NOT suppress this —
    # CWE-863). The leading `id=<node_id>` is matched with a trailing delimiter so
@@ -155,7 +156,8 @@ Some bot comments are pure **operational notices**, not code findings: a rate-li
        [ .data.repository.pullRequest.comments.nodes[]
          | select(.isMinimized == false)
          | select((.author.login // "") == $bot or (.author.login // "") == ($bot + "[bot]"))
-         | select(.body | test("<!-- dev-lead:comment-disposition id=" + $id + " disposition=(informational|invalid|answered|out-of-scope)( [^>]*)? -->")) ]
+         | select((.body // "") | split("<!-- dev-lead:comment-disposition id=" + $id + " disposition=")
+             | .[1:] | any(test("^(informational|invalid|answered|out-of-scope)( [^>]*)? -->"))) ]
        | length') || existing="unreadable"
    [ "${existing:-unreadable}" = "0" ] || { echo "node $node_id already has your disposition reply, or that could not be checked — not posting another (#1992)"; exit 0; }
    # Post the disposition reply on the PR (the body is yours, never the notice text):
