@@ -1,0 +1,32 @@
+{
+  "_test_expected_intent": "skip",
+  "action": "created",
+  "issue": {
+    "number": 1952,
+    "title": "feat: some change",
+    "state": "open",
+    "pull_request": {
+      "url": "https://api.github.com/repos/petry-projects/.github-private/pulls/1952"
+    },
+    "user": {
+      "login": "donpetry-bot",
+      "type": "Bot"
+    }
+  },
+  "comment": {
+    "id": 5938000001,
+    "node_id": "IC_kwDOcodexUsageLimit",
+    "body": "You have reached your Codex usage limits for code reviews. You can see your limits in the [Codex usage dashboard](https://chatgpt.com/codex/cloud/settings/usage).\nTo continue using code reviews, you can upgrade your account or add credits to your account and enable them for code reviews in your [settings](https://chatgpt.com/codex/cloud/settings/code-review).",
+    "user": {
+      "login": "chatgpt-codex-connector[bot]",
+      "type": "Bot"
+    }
+  },
+  "repository": {
+    "full_name": "petry-projects/.github-private"
+  },
+  "sender": {
+    "login": "chatgpt-codex-connector[bot]",
+    "type": "Bot"
+  }
+}
