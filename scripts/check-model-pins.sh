@@ -18,6 +18,7 @@ set -euo pipefail
 #
 # Usage: check-model-pins.sh [root]   (root defaults to the repo root)
 # Exit:  0 clean · 1 one or more unmarked pins (each printed as file:line)
+#        2 a scan error (grep failed), so the tree cannot be certified clean
 
 ROOT="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 

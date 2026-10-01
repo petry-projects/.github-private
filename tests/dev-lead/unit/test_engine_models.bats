@@ -549,6 +549,7 @@ STUB
   model="$(ai_model_for_family opus 2>/dev/null)"
   [ "$model" = "${default_chain%%,*}" ]
   run ai_model_for_family opus
+  [ "$status" -eq 0 ]
   [[ "$output" == *"invalid model id"* ]]
 }
 

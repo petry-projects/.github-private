@@ -234,7 +234,7 @@ args="$(cat "$mock_dir/args" 2>/dev/null || true)"
 want="$(bash -c 'source "$1/scripts/lib/engine-models.sh"; ai_model_for_family sonnet' _ "$REPO_ROOT")"
 model="$(printf '%s\n' "$args" | sed -n 's/.*--model \([^ ]*\).*/\1/p')"
 rm -rf "$mock_dir"
-if [[ $status -eq 0 && "$model" == claude-sonnet-* && "$model" == "$want" ]]; then
+if [[ $status -eq 0 && -n "$want" && "$model" == "$want" ]]; then
   ok "run: issue-triage calls claude --model $model (sonnet family, not 'claude')"
 else
   fail "run: issue-triage must pass the resolved sonnet id to --model" "got status=$status model='$model' want='$want' args='$args' output='$run_out'"
@@ -251,9 +251,9 @@ write_spec() {
 write_spec ok 'models:\n  claude: [sonnet]\n'
 write_spec nomodel ''
 write_spec badmodel 'models:\n  claude: [Sonnet]\n'
-status=0; bash "$REPO_ROOT/scripts/aw.sh" compile "$spec_dir/ok.md" >/dev/null 2>&1 || status=$?
+status=0; output=$(bash "$REPO_ROOT/scripts/aw.sh" compile "$spec_dir/ok.md" 2>&1) || status=$?
 if [[ $status -eq 0 ]]; then ok "compile: engine claude with models.claude [sonnet] passes"
-else fail "compile: a valid family model must pass" "status=$status"; fi
+else fail "compile: a valid family model must pass" "status=$status: $output"; fi
 status=0; output=$(bash "$REPO_ROOT/scripts/aw.sh" compile "$spec_dir/nomodel.md" 2>&1) || status=$?
 if [[ $status -ne 0 ]] && echo "$output" | grep -q "needs a model"; then ok "compile: engine claude without models.claude fails"
 else fail "compile: a runner engine with no model must fail" "status=$status: $output"; fi
@@ -262,9 +262,9 @@ if [[ $status -ne 0 ]] && echo "$output" | grep -q "must be a family"; then ok "
 else fail "compile: a non-family, non-claude-* model must fail" "status=$status: $output"; fi
 # Other runners keep the warn-only rule, so a new provider needs no code change.
 printf -- '---\nname: t\ntrigger:\n  issues: {}\nengine: copilot\npermissions: {}\nmodels:\n  copilot: [gpt-5]\n---\nbody\n' > "$spec_dir/copilot.md"
-status=0; bash "$REPO_ROOT/scripts/aw.sh" compile "$spec_dir/copilot.md" >/dev/null 2>&1 || status=$?
+status=0; output=$(bash "$REPO_ROOT/scripts/aw.sh" compile "$spec_dir/copilot.md" 2>&1) || status=$?
 if [[ $status -eq 0 ]]; then ok "compile: a non-claude runner with its own model still passes"
-else fail "compile: the claude-only model check must not fail other runners" "status=$status"; fi
+else fail "compile: the claude-only model check must not fail other runners" "status=$status: $output"; fi
 # A list-valued engine can't key models.<engine>; compile must reject it.
 printf -- '---\nname: t\ntrigger:\n  issues: {}\nengine: [claude]\npermissions: {}\n---\nbody\n' > "$spec_dir/listengine.md"
 status=0; output=$(bash "$REPO_ROOT/scripts/aw.sh" compile "$spec_dir/listengine.md" 2>&1) || status=$?

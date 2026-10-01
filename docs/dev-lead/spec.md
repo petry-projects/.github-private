@@ -660,16 +660,16 @@ No external script. Runs entirely as a `run:` shell block within the job.
 
 ### 9.3 Inherited from `engine.sh`
 
-Per-engine model names are controlled by the same env vars used by the PR Review Agent. The Claude
-defaults are the first model of each tier's chain in `scripts/lib/engine-models.sh` (the single source
+Per-engine model names are controlled by the same env vars used by the PR Review Agent. Each default
+is the first model of that provider's tier chain in `scripts/lib/engine-models.sh` (the single source
 of truth), so this table names the chain, not a concrete id:
 
 | Variable | Claude default | Gemini default | Copilot default |
 |---|---|---|---|
-| `ENGINE_TRIAGE_MODEL` | `triage` chain primary (haiku family) | `gemini-2.0-flash` | `o4-mini` |
-| `ENGINE_ACTION_MODEL` | `action` chain primary (sonnet family) | `gemini-2.5-pro` | `o4-mini` |
-| `ENGINE_DEEP_MODEL` | `deep` chain primary (opus family) | `gemini-2.5-pro` | `o4-mini` |
-| `ENGINE_SINGLE_MODEL` | `single` chain primary (opus family) | `gemini-2.5-pro` | `o4-mini` |
+| `ENGINE_TRIAGE_MODEL` | `triage` chain primary (haiku family) | `triage` chain primary (Flash) | `o4-mini` |
+| `ENGINE_ACTION_MODEL` | `action` chain primary (sonnet family) | `action` chain primary (Flash) | `o4-mini` |
+| `ENGINE_DEEP_MODEL` | `deep` chain primary (opus family) | `deep` chain primary (Pro) | `o4-mini` |
+| `ENGINE_SINGLE_MODEL` | `single` chain primary (opus family) | `single` chain primary (Pro) | `o4-mini` |
 
 ---
 
