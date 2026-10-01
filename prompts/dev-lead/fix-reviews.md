@@ -126,6 +126,7 @@ done
 **Skip** (do not disposition, never reply to):
 
 - any comment already `isMinimized: true` with `minimizedReason` = `RESOLVED` — it is done;
+- any comment that **already has a disposition** — a non-minimized comment authored by our bot account carrying a parseable `<!-- dev-lead:comment-disposition id=<this comment's id> … -->` marker already exists in the list. You dispositioned it on an earlier pass; the harness simply has not minimized it yet (it resolves them after this step). Posting a **second** disposition is the defect behind #1952/#1953 — it stacks duplicate replies that deadlock the gate ("expected exactly one authorized disposition reply, found N"). Leave it alone; the harness collapses any duplicate that does slip through to exactly one and minimizes the rest OUTDATED (#1992);
 - **our own** automation comments — those authored by our bot account or carrying one of our markers (`<!-- pr-review-agent … -->`, `<!-- persona:… -->`, `<!-- dev-lead … -->` including your own `<!-- dev-lead:comment-disposition … -->` replies, `<!-- dependency-advisory -->`). **Never answer your own disposition reply** — doing so would loop forever (#860 / #1813 AC7).
 
 For **every other** comment (bot or human alike — a bot conflict report or trial-ended notice is still a finding), research it, then post **exactly one** reply comment that states specifically what you found/did (never just "done"), ending with **one** disposition marker. Post the reply with `gh pr comment ${PR_NUMBER} --body "…"`; pass the `id` node id from the query above verbatim:

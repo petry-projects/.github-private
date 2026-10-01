@@ -969,41 +969,45 @@ resolve_dispositioned_comments() {
     is_human=$(printf '%s' "$all_comments" | jq -r --arg id "$cid" \
       'first(.[] | select(.id == $id)) | if (.author?.__typename // "") == "User" then "true" else "false" end' 2>/dev/null || echo "false")
 
-    # Locate OUR disposition reply for this comment id: a comment AUTHORED BY OUR
-    # BOT ACCOUNT (BOT_USER, or its GraphQL-stripped login) whose parseable
-    # disposition marker cites id=<cid>. Restricting to our account is an
-    # authorization gate (CWE-863): without it, an EXTERNAL commenter could post a
-    # marker citing a candidate id plus a real PR SHA and trick the harness into
-    # minimizing the original comment as RESOLVED. cdv_parse_disposition rejects
-    # malformed/ambiguous markers, so an unverifiable reply never matches. Require
-    # EXACTLY ONE authorized disposition (AC7) — zero or many fail closed. Bodies
-    # are base64-framed to survive newlines.
+    # Locate OUR disposition reply(ies) for this comment id and collapse any
+    # duplicates to ONE (#1992). cdv_select_disposition is the pure selector: it
+    # keeps only replies authored by OUR BOT ACCOUNT (BOT_USER or its
+    # GraphQL-stripped login) — the authorization gate (CWE-863): a disposition
+    # from any other author never counts and can never win, so an external
+    # commenter cannot smuggle a marker citing a candidate id past this gate. It
+    # ignores already-minimized replies and anything cdv_parse_disposition rejects
+    # (fail closed), then picks the LATEST by createdAt (deterministic tie-break on
+    # node id). The pre-#1992 resolver required EXACTLY ONE and failed closed on
+    # more, so a comment dispositioned-but-not-minimized in one pass accumulated a
+    # second disposition on the next and then stuck forever (#1952/#1953). Now the
+    # extra replies are reported as `superseded` and minimized OUTDATED below so the
+    # authorized count converges to one — which also makes a second disposition the
+    # engine posts harmless (AC1: idempotency enforced by rejecting the duplicate
+    # after the engine returns, since the model posts replies via its own shell).
     reply_body=""
-    local c_body_b64 c_body parsed pid auth_count=0
-    while IFS= read -r c_body_b64 || [ -n "$c_body_b64" ]; do
-      [ -z "$c_body_b64" ] && continue
-      c_body=$(printf '%s' "$c_body_b64" | base64 -d 2>/dev/null || true)
-      parsed=$(cdv_parse_disposition "$c_body" 2>/dev/null) || continue
-      pid=$(printf '%s' "$parsed" | jq -r '.id // ""' 2>/dev/null || echo "")
-      [ "$pid" = "$cid" ] || continue
-      auth_count=$((auth_count + 1))
-      reply_body="$c_body"
-      disp_json="$parsed"
-    done < <(printf '%s' "$all_comments" | jq -r \
-      --arg botuser "$bot_user" '
-        def bot_stripped: ($botuser | if endswith("[bot]") then .[0:-5] else . end);
-        .[] | objects
-        | (.author?.login // "" | tostring) as $l
-        | select($l == $botuser or $l == bot_stripped)
-        | (.body // "") | @base64' 2>/dev/null)
+    disp_json="{}"
+    local selection chosen_reply_id auth_count=0
+    local superseded_ids=()
+    if selection=$(cdv_select_disposition "$cid" "$bot_user" "$all_comments" 2>/dev/null); then
+      auth_count=$(printf '%s' "$selection" | jq -r '.auth_count // 0' 2>/dev/null || echo "0")
+      disp_json=$(printf '%s' "$selection" | jq -c '.chosen.disposition // {}' 2>/dev/null || echo "{}")
+      chosen_reply_id=$(printf '%s' "$selection" | jq -r '.chosen.id // ""' 2>/dev/null || echo "")
+      # The invalid/answered/informational evidence check below reads the chosen
+      # reply's FULL body (non-empty beyond the marker), so recover it by node id.
+      reply_body=$(printf '%s' "$all_comments" | jq -r --arg id "$chosen_reply_id" \
+        'first(.[] | select(.id == $id)) | .body // ""' 2>/dev/null || echo "")
+      while IFS= read -r sid || [ -n "$sid" ]; do
+        [ -z "$sid" ] && continue
+        superseded_ids+=("$sid")
+      done < <(printf '%s' "$selection" | jq -r '.superseded[]? // empty' 2>/dev/null || true)
+    fi
 
-    if [ -z "$reply_body" ]; then
+    if [ "${auth_count:-0}" -lt 1 ] || [ -z "$chosen_reply_id" ]; then
       echo "::notice::skipping comment ${cid} — no authorized dev-lead disposition reply from ${bot_user} found; leaving open (#1813)"
       continue
     fi
-    if [ "$auth_count" -ne 1 ]; then
-      echo "::notice::skipping comment ${cid} — expected exactly one authorized disposition reply, found ${auth_count}; leaving open (#1813)"
-      continue
+    if [ "$auth_count" -gt 1 ]; then
+      echo "::notice::comment ${cid} has ${auth_count} authorized disposition replies from ${bot_user}; selecting latest ${chosen_reply_id} and marking ${#superseded_ids[@]} superseded reply(ies) OUTDATED (#1992)"
     fi
 
     disposition=$(printf '%s' "$disp_json" | jq -r '.disposition // ""' 2>/dev/null || echo "")
@@ -1066,6 +1070,20 @@ resolve_dispositioned_comments() {
         -f id="$cid" >/dev/null 2>&1; then
       resolved_count=$((resolved_count + 1))
       echo "::notice::minimized comment ${cid} RESOLVED (disposition=${disposition} is_human=${is_human})"
+      # Converge duplicates to one (#1992): minimize every superseded disposition
+      # reply OUTDATED so a later pass sees exactly one authorized disposition.
+      # Done only after the original is RESOLVED, so a reply is never hidden unless
+      # its comment is genuinely addressed.
+      local sid
+      for sid in "${superseded_ids[@]:-}"; do
+        [ -z "$sid" ] && continue
+        if gh api graphql -f query='mutation($id:ID!){minimizeComment(input:{subjectId:$id,classifier:OUTDATED}){minimizedComment{isMinimized}}}' \
+            -f id="$sid" >/dev/null 2>&1; then
+          echo "::notice::minimized superseded disposition reply ${sid} OUTDATED (#1992)"
+        else
+          echo "::warning::failed to minimize superseded disposition reply ${sid} OUTDATED"
+        fi
+      done
     else
       echo "::warning::failed to minimize comment ${cid} RESOLVED"
     fi
@@ -2114,6 +2132,17 @@ case "$INTENT_TYPE" in
           try_enable_auto_merge
         fi
       fi
+    else
+      # Don't orphan dispositions on a failed/timed-out pass (#1992). The engine
+      # may have posted disposition replies and then errored or hit the writer-tier
+      # timeout (exit 124) before commit_and_push ran. Each disposition is verified
+      # on its own terms, so running the resolver here is safe: a `fixed` fails
+      # closed because this pass did not advance the head, while an
+      # invalid/answered/informational/out-of-scope with evidence still clears.
+      # (A hard action-budget SIGKILL that kills the process mid-step can't be
+      # recovered in-process — but the next pass self-heals via the idempotent
+      # posting + duplicate recovery above.)
+      resolve_dispositioned_comments "fix-reviews"
     fi
     exit "$rc"
     ;;
@@ -2167,6 +2196,10 @@ case "$INTENT_TYPE" in
         try_enable_auto_merge
       fi
       try_enable_auto_merge
+    else
+      # Don't orphan dispositions on a failed/timed-out pass (#1992) — see the
+      # fix-reviews failure branch above for why running the resolver here is safe.
+      resolve_dispositioned_comments "fix-bot-comment"
     fi
     exit "$rc"
     ;;
@@ -2265,6 +2298,10 @@ case "$INTENT_TYPE" in
       if [ "${_REVIEW_ESCALATED:-0}" -ne 1 ] && [ "${_REVIEW_INCOMPLETE:-0}" -ne 1 ]; then
         try_enable_auto_merge
       fi
+    else
+      # Don't orphan dispositions on a failed/timed-out pass (#1992) — see the
+      # fix-reviews failure branch above for why running the resolver here is safe.
+      resolve_dispositioned_comments "review-changes"
     fi
     exit "$rc"
     ;;

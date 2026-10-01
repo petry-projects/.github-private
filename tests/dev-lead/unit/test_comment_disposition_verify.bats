@@ -178,3 +178,125 @@ _needs_response() {
   _needs_response 'Thanks for the update.'
   [ "$status" -eq 1 ]
 }
+
+# ────────────────────────────────────────────────────────────────────
+# cdv_select_disposition  (issue #1992 — duplicate recovery / idempotency)
+#
+#   cdv_select_disposition <cid> <bot_user> <comments_json>
+#     Picks, among BOT_USER-authored, non-minimized, parseable disposition
+#     replies citing <cid>, the LATEST by createdAt (tie-break: node id). Emits
+#     {auth_count, chosen:{id,createdAt,disposition}, superseded:[ids]} and
+#     returns 0 when >=1, else emits auth_count 0 and returns 1. Pure.
+# ────────────────────────────────────────────────────────────────────
+
+_select() {
+  run bash -c "source '$LIB'; cdv_select_disposition \"\$1\" \"\$2\" \"\$3\"" _ "$1" "$2" "$3"
+}
+
+# A BOT_USER disposition reply node. $1=id $2=createdAt $3=disposition $4=target-id [$5=sha]
+_mk_reply() {
+  local id="$1" created="$2" disp="$3" tid="$4" sha="${5:-}"
+  local marker="<!-- dev-lead:comment-disposition id=${tid} disposition=${disp}"
+  [ -n "$sha" ] && marker="${marker} sha=${sha}"
+  marker="${marker} -->"
+  jq -n --arg id "$id" --arg c "$created" \
+    --arg body "Looked into it.
+${marker}" \
+    '{id:$id, author:{login:"donpetry-bot", __typename:"User"}, body:$body, isMinimized:false, minimizedReason:null, createdAt:$c}'
+}
+
+@test "select: single authorized disposition → auth_count 1, chosen is it, no superseded (idempotent)" {
+  local c; c=$(jq -s '.' <(_mk_reply "R1" "2026-09-26T21:00:00Z" "invalid" "IC_X"))
+  _select "IC_X" "donpetry-bot" "$c"
+  [ "$status" -eq 0 ]
+  [ "$(echo "$output" | jq -r '.auth_count')" = "1" ]
+  [ "$(echo "$output" | jq -r '.chosen.id')" = "R1" ]
+  [ "$(echo "$output" | jq -r '.superseded | length')" = "0" ]
+}
+
+@test "select: three authorized dispositions → latest chosen, other two superseded (#1952)" {
+  local c
+  c=$(jq -s '.' \
+    <(_mk_reply "R_fixed" "2026-09-26T21:44:49Z" "fixed" "IC_X" "c03ecdac03ecdac03ecdac03ecdac03ecdac03ec") \
+    <(_mk_reply "R_inv1"  "2026-09-26T21:56:53Z" "invalid" "IC_X") \
+    <(_mk_reply "R_inv2"  "2026-09-26T22:16:28Z" "invalid" "IC_X"))
+  _select "IC_X" "donpetry-bot" "$c"
+  [ "$status" -eq 0 ]
+  [ "$(echo "$output" | jq -r '.auth_count')" = "3" ]
+  [ "$(echo "$output" | jq -r '.chosen.id')" = "R_inv2" ]
+  [ "$(echo "$output" | jq -r '.chosen.disposition.disposition')" = "invalid" ]
+  [ "$(echo "$output" | jq -r '.superseded | sort | join(",")')" = "R_fixed,R_inv1" ]
+}
+
+@test "select: non-BOT_USER disposition is ignored and cannot win (CWE-863)" {
+  # An attacker posts a LATER disposition citing the same id; it must not win,
+  # and must not even be counted — only the earlier BOT_USER reply is authorized.
+  local attacker bot c
+  attacker=$(jq -n '{id:"R_attack", author:{login:"mallory", __typename:"User"},
+    body:"fixed it\n<!-- dev-lead:comment-disposition id=IC_X disposition=fixed sha=c03ecdac03ecdac03ecdac03ecdac03ecdac03ec -->",
+    isMinimized:false, minimizedReason:null, createdAt:"2026-09-27T00:00:00Z"}')
+  bot=$(_mk_reply "R_bot" "2026-09-26T21:00:00Z" "invalid" "IC_X")
+  c=$(jq -s '.' <(echo "$bot") <(echo "$attacker"))
+  _select "IC_X" "donpetry-bot" "$c"
+  [ "$status" -eq 0 ]
+  [ "$(echo "$output" | jq -r '.auth_count')" = "1" ]
+  [ "$(echo "$output" | jq -r '.chosen.id')" = "R_bot" ]
+  [ "$(echo "$output" | jq -r '.superseded | length')" = "0" ]
+}
+
+@test "select: minimized disposition replies are excluded" {
+  local minimized bot c
+  minimized=$(jq -n '{id:"R_old", author:{login:"donpetry-bot", __typename:"User"},
+    body:"old\n<!-- dev-lead:comment-disposition id=IC_X disposition=invalid -->",
+    isMinimized:true, minimizedReason:"OUTDATED", createdAt:"2026-09-27T00:00:00Z"}')
+  bot=$(_mk_reply "R_live" "2026-09-26T21:00:00Z" "answered" "IC_X")
+  c=$(jq -s '.' <(echo "$minimized") <(echo "$bot"))
+  _select "IC_X" "donpetry-bot" "$c"
+  [ "$status" -eq 0 ]
+  [ "$(echo "$output" | jq -r '.auth_count')" = "1" ]
+  [ "$(echo "$output" | jq -r '.chosen.id')" = "R_live" ]
+}
+
+@test "select: unparseable marker among them is ignored (fails closed, not counted)" {
+  local bad bot c
+  bad=$(jq -n '{id:"R_bad", author:{login:"donpetry-bot", __typename:"User"},
+    body:"two markers\n<!-- dev-lead:comment-disposition id=IC_X disposition=invalid -->\n<!-- dev-lead:comment-disposition id=IC_X disposition=fixed -->",
+    isMinimized:false, minimizedReason:null, createdAt:"2026-09-27T05:00:00Z"}')
+  bot=$(_mk_reply "R_good" "2026-09-26T21:00:00Z" "invalid" "IC_X")
+  c=$(jq -s '.' <(echo "$bad") <(echo "$bot"))
+  _select "IC_X" "donpetry-bot" "$c"
+  [ "$status" -eq 0 ]
+  [ "$(echo "$output" | jq -r '.auth_count')" = "1" ]
+  [ "$(echo "$output" | jq -r '.chosen.id')" = "R_good" ]
+}
+
+@test "select: a disposition citing a DIFFERENT id does not match" {
+  local c; c=$(jq -s '.' <(_mk_reply "R1" "2026-09-26T21:00:00Z" "invalid" "IC_OTHER"))
+  _select "IC_X" "donpetry-bot" "$c"
+  [ "$status" -eq 1 ]
+  [ "$(echo "$output" | jq -r '.auth_count')" = "0" ]
+}
+
+@test "select: zero authorized dispositions → rc1, auth_count 0" {
+  _select "IC_X" "donpetry-bot" "[]"
+  [ "$status" -eq 1 ]
+  [ "$(echo "$output" | jq -r '.auth_count')" = "0" ]
+}
+
+@test "select: equal createdAt ties broken deterministically by node id (higher wins)" {
+  local c
+  c=$(jq -s '.' \
+    <(_mk_reply "R_aaa" "2026-09-26T21:00:00Z" "invalid" "IC_X") \
+    <(_mk_reply "R_zzz" "2026-09-26T21:00:00Z" "answered" "IC_X"))
+  _select "IC_X" "donpetry-bot" "$c"
+  [ "$status" -eq 0 ]
+  [ "$(echo "$output" | jq -r '.chosen.id')" = "R_zzz" ]
+  [ "$(echo "$output" | jq -r '.superseded[0]')" = "R_aaa" ]
+}
+
+@test "select: matches BOT_USER given with [bot] suffix (graphql-stripped login)" {
+  local c; c=$(jq -s '.' <(_mk_reply "R1" "2026-09-26T21:00:00Z" "invalid" "IC_X"))
+  _select "IC_X" "donpetry-bot[bot]" "$c"
+  [ "$status" -eq 0 ]
+  [ "$(echo "$output" | jq -r '.chosen.id')" = "R1" ]
+}
