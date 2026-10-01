@@ -289,6 +289,62 @@ _sonar_json() {
 }
 
 # ────────────────────────────────────────────────────────────────────
+# #1993 — Codex "usage limits" notice auto-cleared via the same classifier
+# ────────────────────────────────────────────────────────────────────
+
+# The exact top-level notice chatgpt-codex-connector re-posts on every push once
+# its review credits run out (byte-identical across all 13 on #1952).
+_codex_usage_body() {
+  printf '%s' "You have reached your Codex usage limits for code reviews. You can see your limits in the [Codex usage dashboard](https://chatgpt.com/codex/cloud/settings/usage).
+To continue using code reviews, you can upgrade your account or add credits to your account and enable them for code reviews in your [settings](https://chatgpt.com/codex/cloud/settings/code-review)."
+}
+_codex_json() {
+  # _codex_json <login> <body>
+  jq -cn --arg l "$1" --arg b "$2" \
+    '{reviews:[], comments:[{author:{login:$l}, body:$b, isMinimized:false, minimizedReason:""}]}'
+}
+
+# A Codex usage-limit notice carries no finding and is auto-cleared with no
+# dev-lead and no human — the classifier is keyed off the reviewer-source
+# registry (chatgpt-codex-connector + its info_status_pattern).
+@test "#1993: Codex usage-limit notice is addressed → 0 (clear)" {
+  _run_check "$(_codex_json chatgpt-codex-connector "$(_codex_usage_body)")"
+  [ "$status" -eq 0 ]
+}
+
+# The App login may surface with a [bot] suffix; it must still match the bare login.
+@test "#1993: Codex usage-limit notice with a [bot]-suffixed login clears → 0" {
+  _run_check "$(_codex_json 'chatgpt-codex-connector[bot]' "$(_codex_usage_body)")"
+  [ "$status" -eq 0 ]
+}
+
+# A Codex comment carrying a real finding does NOT match the pattern and still blocks.
+@test "#1993: a Codex comment with a real finding still blocks → 1" {
+  local body="## Codex Review
+
+**P1** Possible null dereference in scripts/foo.sh:42 — guard the lookup before use.
+
+\`\`\`suggestion
+[ -n \"\$x\" ] || return 1
+\`\`\`"
+  _run_check "$(_codex_json chatgpt-codex-connector "$body")"
+  [ "$status" -eq 1 ]
+}
+
+# The match is case-sensitive (jq test()): a lower-cased variant does not clear.
+@test "#1993: a lower-cased Codex notice does not match (case-sensitive) → 1" {
+  _run_check "$(_codex_json chatgpt-codex-connector "you have reached your codex usage limits for code reviews.")"
+  [ "$status" -eq 1 ]
+}
+
+# The pattern is pinned to the chatgpt-codex-connector login: the SAME text from a
+# different author (a human, or another bot with no pattern) is NOT cleared.
+@test "#1993: the same usage-limit text from a different author still blocks → 1" {
+  _run_check "$(_codex_json some-impersonator "$(_codex_usage_body)")"
+  [ "$status" -eq 1 ]
+}
+
+# ────────────────────────────────────────────────────────────────────
 # INTEGRATION / WIRING TESTS (review-one-pr.sh)
 # ────────────────────────────────────────────────────────────────────
 

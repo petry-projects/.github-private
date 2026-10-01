@@ -390,6 +390,36 @@ EOF
   [ "$(_get_env INTENT_TYPE)" = "rebase" ]
 }
 
+@test "reviews: issue_comment Codex usage-limit notice → skip info-status-notice (#1993)" {
+  # A chatgpt-codex-connector "usage limits" notice carries no finding and the
+  # maintainer-comment gate already auto-clears it (#1918). dev-lead must skip it
+  # BEFORE the engine runs rather than spending a fix-bot-comment run dispositioning
+  # a comment the gate treats as addressed.
+  export GITHUB_EVENT_NAME="issue_comment"
+  export GITHUB_EVENT_PATH="$FIXTURES_DIR/issue_comment_codex_usage_limit.json"
+
+  run bash "$INTENT_SCRIPT"
+
+  [ "$status" -eq 0 ]
+  [ "$(_get_env INTENT_TYPE)" = "skip" ]
+  [ "$(_get_env INTENT_REASON)" = "info-status-notice" ]
+}
+
+@test "reviews: issue_comment Codex finding (not the usage-limit notice) → fix-bot-comment (#1993)" {
+  # Only the registered usage-limit pattern is skipped; any other Codex issue
+  # comment must still route to fix-bot-comment so a real finding is not dropped.
+  local ev="$BATS_TEST_TMPDIR/codex_finding.json"
+  jq '.comment.body = "Codex found a potential bug in scripts/foo.sh — please guard the lookup."' \
+    "$FIXTURES_DIR/issue_comment_codex_usage_limit.json" > "$ev"
+  export GITHUB_EVENT_NAME="issue_comment"
+  export GITHUB_EVENT_PATH="$ev"
+
+  run bash "$INTENT_SCRIPT"
+
+  [ "$status" -eq 0 ]
+  [ "$(_get_env INTENT_TYPE)" = "fix-bot-comment" ]
+}
+
 @test "reviews: issue_comment trusted-bot on already-closed PR → skip pr-already-closed" {
   # Regression guard for issue #405: a SonarQube comment on a merged PR used to
   # trigger fix-bot-comment, which then crashed at checkout_pr_in_worktree because

@@ -160,6 +160,33 @@ is_dev_lead_authored() {
   return 1
 }
 
+# matches_info_status_pattern <login> <body>
+# Returns 0 (true) iff <login> is a registered reviewer source that declares an
+# info_status_pattern and <body> matches it (case-sensitive, jq test() — the same
+# classifier the maintainer-comment gate uses, #1918). Such a comment is a KNOWN
+# CLEAN informational status re-post (e.g. Codex's "usage limits" notice) that
+# carries no finding and needs no disposition, so dev-lead skips it BEFORE the
+# engine runs instead of spending a fix-bot-comment run on a comment the gate
+# already auto-clears (#1993). FAILS CLOSED to "no match" (returns 1) if the
+# registry cannot be read or the login declares no pattern — an unclassifiable
+# comment is then routed normally.
+matches_info_status_pattern() {
+  local login="$1" body="$2"
+  local bare="${login%\[bot\]}"
+  local reg_sh patterns pattern result
+  reg_sh="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/reviewer-sources.sh"
+  [ -f "$reg_sh" ] || return 1
+  # Source in a subshell so the registry helper never leaks into this classifier.
+  patterns="$(
+    # shellcheck source=scripts/lib/reviewer-sources.sh
+    source "$reg_sh" 2>/dev/null && reviewer_sources_info_status_patterns 2>/dev/null
+  )" || return 1
+  pattern="$(printf '%s\n' "$patterns" | awk -F'\t' -v l="$bare" '$1==l {print $2; exit}')"
+  [ -n "$pattern" ] || return 1
+  result="$(jq -nr --arg b "$body" --arg p "$pattern" '($b | test($p))' 2>/dev/null)" || return 1
+  [ "$result" = "true" ]
+}
+
 # ── read event ───────────────────────────────────────────────────────────────
 
 EVENT_NAME="${GITHUB_EVENT_NAME:-}"
@@ -462,6 +489,17 @@ case "$EVENT_NAME" in
       # sentinel above and the on-mention branch below are intentionally exempt.
       if ! is_dev_lead_authored; then
         emit_skip "not-dev-lead-authored"
+        exit 0
+      fi
+      # #1993: a KNOWN CLEAN info-status notice from a registered source (e.g.
+      # Codex's "usage limits" notice) carries no finding, and the maintainer-
+      # comment gate already auto-clears it (#1918). Skip BEFORE the engine runs
+      # so dev-lead does not spend a fix-bot-comment pass dispositioning a comment
+      # the gate treats as addressed. Only this issue-comment path is scoped —
+      # Codex's findings arrive as reviews / inline review comments (fix-reviews),
+      # which never match this pattern and must still be addressed.
+      if matches_info_status_pattern "$commenter" "$comment_body"; then
+        emit_skip "info-status-notice"
         exit 0
       fi
       emit_intent "fix-bot-comment" "trusted-bot-comment" "$context"

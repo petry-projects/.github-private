@@ -154,16 +154,27 @@ TSV
   [[ "$sonar" == *"0 Security Hotspots"* ]]
 }
 
+@test "info-status: chatgpt-codex-connector declares the usage-limit info-status pattern (#1993)" {
+  local patterns
+  patterns="$(reviewer_sources_info_status_patterns)"
+  local codex
+  codex="$(printf '%s\n' "$patterns" | awk -F'\t' '$1=="chatgpt-codex-connector"{print $2}')"
+  # Anchored on the notice's distinctive first sentence (@don-petry: all 13 notices
+  # on #1952 are byte-identical and start with it). It must NOT reach into Codex's
+  # finding-bearing output, which arrives as PR reviews / inline review comments
+  # the gate never scans.
+  [[ "$codex" == *"You have reached your Codex usage limits for code reviews"* ]]
+}
+
 @test "info-status: a source without an info-status pattern is not listed" {
   local patterns
   patterns="$(reviewer_sources_info_status_patterns)"
-  # These seven sources carry "-" in the info_status_pattern column, so none may
+  # These six sources carry "-" in the info_status_pattern column, so none may
   # appear — enumerate every one (mirroring the check-run negative test) so giving
   # any unlisted source a non-"-" pattern must fail this test rather than pass
   # silently and weaken the gate's fail-closed guarantee.
   [[ "$patterns" != *"copilot-pull-request-reviewer"* ]]
   [[ "$patterns" != *"gemini-code-assist"* ]]
-  [[ "$patterns" != *"chatgpt-codex-connector"* ]]
   [[ "$patterns" != *"coderabbitai"* ]]
   [[ "$patterns" != *"qodo-code-review"* ]]
   [[ "$patterns" != *"codeant-ai"* ]]
