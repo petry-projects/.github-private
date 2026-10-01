@@ -505,10 +505,20 @@ STUB
 
 # ── ai_model_for_family (#1979) ────────────────────────────────────────────────
 
+# The expected ids come from the default chains, not literals, so a model
+# upgrade (e.g. #1978's Sonnet 5.5) never needs this test edited: that is the
+# point of the family standard (#1979).
 @test "family: each family resolves to its tier's current primary" {
-  [ "$(ai_model_for_family opus)" = "claude-opus-5-5" ]
-  [ "$(ai_model_for_family sonnet)" = "claude-sonnet-5" ]
-  [ "$(ai_model_for_family haiku)" = "claude-haiku-4-5-20251001" ]
+  local deep action triage
+  deep="$(ai_models_chain claude deep)";     deep="${deep%%,*}"
+  action="$(ai_models_chain claude action)"; action="${action%%,*}"
+  triage="$(ai_models_chain claude triage)"; triage="${triage%%,*}"
+  [ "$(ai_model_for_family opus)" = "$deep" ]
+  [ "$(ai_model_for_family sonnet)" = "$action" ]
+  [ "$(ai_model_for_family haiku)" = "$triage" ]
+  [[ "$deep" == claude-opus-* ]]
+  [[ "$action" == claude-sonnet-* ]]
+  [[ "$triage" == claude-haiku-* ]]
 }
 
 @test "family: AI_MODELS_CLAUDE override wins (single source of truth)" {

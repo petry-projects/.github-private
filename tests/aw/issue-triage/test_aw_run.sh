@@ -217,6 +217,29 @@ fi
 rm -f "$tmp"
 
 # ---------------------------------------------------------------------------
+# Test: aw run passes Claude a concrete model id resolved from the spec's
+# family (models.claude: [sonnet]), never the engine name `claude` (#1979)
+# ---------------------------------------------------------------------------
+mock_dir=$(mktemp -d)
+cat > "$mock_dir/claude" <<MOCK
+#!/bin/sh
+printf '%s\n' "\$*" > "$mock_dir/args"
+echo '{"labels":["bug"],"comment":"ok"}'
+MOCK
+chmod +x "$mock_dir/claude"
+PATH="$mock_dir:$PATH" bash "$REPO_ROOT/scripts/aw.sh" run issue-triage \
+  --fixture "$FIXTURES/scenario-1-bug.json" --staged >/dev/null 2>&1 || true
+args="$(cat "$mock_dir/args" 2>/dev/null || true)"
+want="$(bash -c 'source "$1/scripts/lib/engine-models.sh"; ai_model_for_family sonnet' _ "$REPO_ROOT")"
+model="$(printf '%s\n' "$args" | sed -n 's/.*--model \([^ ]*\).*/\1/p')"
+rm -rf "$mock_dir"
+if [[ "$model" == claude-sonnet-* && "$model" == "$want" ]]; then
+  ok "run: issue-triage calls claude --model $model (sonnet family, not 'claude')"
+else
+  fail "run: issue-triage must pass the resolved sonnet id to --model" "got model='$model' want='$want' args='$args'"
+fi
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 echo ""
