@@ -256,6 +256,8 @@ url_for() { echo "https://github.com/petry-projects/demo/pull/$1"; }
   run bash "$RETRY"
   [ "$status" -eq 0 ]
   [[ "$output" != *"no rate-limit marker for head"* ]]
+  grep -qF -- "workflow run pr-review-trigger.yml" "$GH_LOG"
+  grep -qF -- "-f pr_url=$(url_for 2015)" "$GH_LOG"
 }
 
 # Leading-zero durations are base 10, not octal (0600 must mean 600, not 384).
