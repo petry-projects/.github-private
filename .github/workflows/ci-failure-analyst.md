@@ -11,7 +11,7 @@ permissions:
 engine: claude
 
 models:
-  claude: [claude-sonnet-4-6]
+  claude: [sonnet]
 
 tools:
   github:
