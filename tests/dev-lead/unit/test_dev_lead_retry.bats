@@ -159,3 +159,60 @@ _marker() {
   [[ "$output" == *"[dry-run] would dispatch"* ]]
   [ ! -f "$PAYLOAD_FILE" ]
 }
+
+# ── #2008: sweep trigger for bot comments edited after their disposition ──────
+# CodeRabbit edits ONE summary comment in place (e.g. appending a Security
+# Architecture finding). dev-lead only fires on CREATED comments, and the caller
+# stub's `on:` is standards-owned, so the safety-net sweep re-dispatches a
+# fix-reviews pass when a RESOLVED bot comment was edited after its latest
+# dev-lead disposition. It is deduplicated against dev-lead's own run markers: a
+# fix-reviews run marker posted at/after the edit means a pass already saw the
+# edited body, so CodeRabbit's frequent progress edits don't each spawn a run.
+
+# _sweep_nodes <lastEditedAt> <disposition_createdAt> [run_marker_createdAt]
+_sweep_nodes() {
+  jq -cn --arg e "$1" --arg d "$2" --arg r "${3:-}" '
+    [ {id:"IC_cr", author:{login:"coderabbitai", __typename:"Bot"}, authorAssociation:"NONE",
+       body:"summary", createdAt:"2026-10-01T19:12:40Z", isMinimized:true, minimizedReason:"RESOLVED",
+       lastEditedAt:$e},
+      {id:"IC_d", author:{login:"don-petry", __typename:"User"}, authorAssociation:"OWNER",
+       body:"notice\n<!-- dev-lead:comment-disposition id=IC_cr disposition=informational -->",
+       createdAt:$d, isMinimized:false, minimizedReason:null, lastEditedAt:null} ]
+    + (if $r == "" then [] else [
+      {id:"IC_run", author:{login:"don-petry", __typename:"User"}, authorAssociation:"OWNER",
+       body:"<!-- dev-lead-fix-reviews pr=2000 sha=abc intent=fix-reviews status=no-changes -->",
+       createdAt:$r, isMinimized:false, minimizedReason:null, lastEditedAt:null} ] end)'
+}
+
+@test "sweep(#2008): a bot comment edited after its dev-lead disposition needs a fix-reviews dispatch" {
+  run stale_disposition_needs_dispatch "$(_sweep_nodes 2026-10-01T20:35:00Z 2026-10-01T19:23:54Z)" 2000
+  [ "$status" -eq 0 ]
+}
+
+@test "sweep(#2008): an edit BEFORE the disposition needs no dispatch" {
+  run stale_disposition_needs_dispatch "$(_sweep_nodes 2026-10-01T19:20:00Z 2026-10-01T19:23:54Z)" 2000
+  [ "$status" -eq 1 ]
+}
+
+@test "sweep(#2008): deduplicated — a dev-lead run marker posted after the edit suppresses the dispatch" {
+  run stale_disposition_needs_dispatch "$(_sweep_nodes 2026-10-01T20:35:00Z 2026-10-01T19:23:54Z 2026-10-01T20:36:15Z)" 2000
+  [ "$status" -eq 1 ]
+  # A run marker that PREDATES the edit does not suppress it.
+  run stale_disposition_needs_dispatch "$(_sweep_nodes 2026-10-01T20:35:00Z 2026-10-01T19:23:54Z 2026-10-01T19:24:23Z)" 2000
+  [ "$status" -eq 0 ]
+}
+
+@test "sweep(#2008): a run marker for a DIFFERENT PR does not suppress the dispatch" {
+  run stale_disposition_needs_dispatch "$(_sweep_nodes 2026-10-01T20:35:00Z 2026-10-01T19:23:54Z 2026-10-01T20:36:15Z)" 20
+  [ "$status" -eq 0 ]
+}
+
+@test "sweep(#2008): unreadable comment data never dispatches (no guessing)" {
+  run stale_disposition_needs_dispatch "not json" 2000
+  [ "$status" -eq 1 ]
+}
+
+@test "sweep(#2008): scan_pr_for_rate_limits consults the stale-disposition check" {
+  grep -q 'stale_disposition_needs_dispatch' "$RETRY_SCRIPT"
+  grep -q 'lastEditedAt' "$RETRY_SCRIPT"
+}

@@ -114,7 +114,7 @@ while :; do
   page=$(gh api graphql -f query='query($owner:String!,$repo:String!,$pr:Int!,$cursor:String){
     repository(owner:$owner,name:$repo){ pullRequest(number:$pr){
       comments(first:100, after:$cursor){
-        nodes{ id author{login __typename} body isMinimized minimizedReason }
+        nodes{ id author{login __typename} body isMinimized minimizedReason createdAt lastEditedAt }
         pageInfo{ hasNextPage endCursor } } } } }' \
     -F owner="${REPO%%/*}" -F repo="${REPO##*/}" -F pr="${PR_NUMBER}" -F cursor="${cursor}")
   echo "$page" | jq -c '.data.repository.pullRequest.comments.nodes[]'   # process this page
@@ -125,14 +125,24 @@ done
 
 **Skip** (do not disposition, never reply to):
 
-- any comment already `isMinimized: true` with `minimizedReason` = `RESOLVED` — it is done;
-- any comment that **already has a non-`fixed` disposition** — a non-minimized comment authored by our bot account carrying a parseable `<!-- dev-lead:comment-disposition id=<this comment's id> disposition=invalid|answered|informational|out-of-scope … -->` marker already exists in the list. You dispositioned it on an earlier pass; the harness simply has not minimized it yet (it resolves them after this step, and also after a failed pass). Posting a **second** disposition is the defect behind #1952/#1953. Leave it alone (#1992).
+- any comment already `isMinimized: true` with `minimizedReason` = `RESOLVED` — it is done, **unless it was edited after your latest disposition of it** (see *Edited comments* below);
+- any comment that **already has a non-`fixed` disposition** — a non-minimized comment authored by our bot account carrying a parseable `<!-- dev-lead:comment-disposition id=<this comment's id> disposition=invalid|answered|informational|out-of-scope … -->` marker already exists in the list, **and the comment's `lastEditedAt` is not later than that reply's `createdAt`**. You dispositioned it on an earlier pass; the harness simply has not minimized it yet (it resolves them after this step, and also after a failed pass). Posting a **second** disposition is the defect behind #1952/#1953. Leave it alone (#1992).
   **Exception — an existing `disposition=fixed` that is still not minimized was never verified.** The harness only accepts a `fixed` sha produced by the pass that cites it, so an earlier pass's `fixed` reply cannot clear on its own (typically that pass timed out before pushing). Do **not** skip it: check whether the fix is actually on this branch.
   - **Not on the branch:** redo it and post a fresh `fixed` disposition citing this pass's commit.
   - **Already on the branch** (an earlier pass pushed it and died before the harness verified it): there is no commit from this pass to cite, and the harness rejects a `fixed` sha from an earlier pass. Post an `answered` disposition instead, naming the commit that already contains the fix as the evidence.
 
   The harness keeps the latest authorized disposition and minimizes the older ones OUTDATED;
 - **our own** automation comments — those authored by our bot account or carrying one of our markers (`<!-- pr-review-agent … -->`, `<!-- persona:… -->`, `<!-- dev-lead … -->` including your own `<!-- dev-lead:comment-disposition … -->` replies, `<!-- dependency-advisory -->`). **Never answer your own disposition reply** — doing so would loop forever (#860 / #1813 AC7).
+
+**Edited comments — a disposition covers only the body it judged (#2008).** Bots edit their comments in place. CodeRabbit in particular rewrites one summary comment on every push and can **append a new finding** to it after you dispositioned it (PR #2000: a Security Architecture finding added about an hour after an `informational` disposition, then never addressed). When a comment's `lastEditedAt` is **later** than the `createdAt` of your latest disposition reply for it, that disposition is **stale**. Re-read the current body and post a **fresh** disposition covering it, even if the comment is still minimized `RESOLVED`. The maintainer-comment gate re-blocks such a comment, and the harness re-opens it (unminimizes it) if no fresh disposition arrives. A disposition at or after the last edit is current; leave it alone.
+
+**CodeRabbit summary comments are a set of sections, not one notice (#2008).** CodeRabbit's summary (the comment starting `<!-- This is an auto-generated comment: summarize by coderabbit.ai -->`) bundles independently throttled outputs, each between its own HTML markers. Read **every** section before choosing a disposition:
+
+- `<!-- This is an auto-generated comment: rate limited by coderabbit.ai -->` … `<!-- end of … rate limited … -->` — the **code review** was throttled ("Review limit reached", "You've used all free OSS reviews…"). This block speaks **only for itself**. It does **not** mean the comment carries no findings.
+- `<!-- architecture_review_start -->` … `<!-- architecture_review_end -->` — the **Security Architecture Review**. It is **not** throttled with the code review and can carry real findings while the rate-limit block is showing. Every **Retained concerns** item, every severity-labelled item (`**Medium · security · …**`, `High`, `Critical`, …), and every **Hardening Proposals** item is a finding.
+- `Actionable comments posted: N` (N > 0), **Outside diff range comments**, and **Nitpick comments** — review findings that may exist only in this comment, never as review threads.
+
+Address **each** finding, then post **one** reply that lists every finding and what you did about it. End it with one marker: `fixed` with the verifying `sha=` if you changed code for any of them (say how the rest were handled), otherwise `answered`, `invalid` or `out-of-scope` with the reason. **`informational` is allowed only when every finding-bearing section is empty or says "no issues"**. The harness refuses an `informational` disposition on a body that carries a finding-bearing section, so the comment would stay open.
 
 For **every other** comment (bot or human alike — a bot conflict report or trial-ended notice is still a finding), research it, then post **exactly one** reply comment that states specifically what you found/did (never just "done"), ending with **one** disposition marker. Post the reply with `gh pr comment ${PR_NUMBER} --body "…"`; pass the `id` node id from the query above verbatim:
 
@@ -148,7 +158,7 @@ For **every other** comment (bot or human alike — a bot conflict report or tri
 | `out-of-scope` | the finding is real but belongs elsewhere | `ref=#<n>` a tracking issue that **exists**; open one first if needed |
 | `invalid` | the finding is wrong / a false positive | a reply body with concrete reasoning (non-empty beyond the marker) |
 | `answered` | the comment asked a question you answer in the reply | a reply body that actually answers it |
-| `informational` | a notice with no action needed (e.g. a trial-ended notice) | a reply body noting the acknowledgement; route any follow-up to **one** tracking issue per repo (see below) |
+| `informational` | a notice with no action needed (e.g. a trial-ended notice), and **no** finding-bearing section anywhere in the comment | a reply body noting the acknowledgement; route any follow-up to **one** tracking issue per repo (see below) |
 
 **Emit exactly one marker per reply.** A reply with zero or more-than-one marker, an unknown disposition word, a `fixed` without a 40-hex `sha`, or an `out-of-scope` without `ref` is **unverifiable** — the harness leaves the comment open. Cite the real SHA / real issue.
 

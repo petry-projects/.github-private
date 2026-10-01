@@ -174,9 +174,11 @@ teardown() {
   # three irreducible timeout-branch hooks (deduplicated via _record_partial_evidence)
   # are here. Raised 515→560 for the #1903 cubic registration (author-scoped
   # trial-ended detector, fallback list, notice bots list, pattern accessor, and
-  # comprehensive test coverage for false positive protection). This still guards
-  # the original intent: no polling loops, no ballooning.
-  [ "$lines" -lt 560 ]
+  # comprehensive test coverage for false positive protection). Raised 560→600 for
+  # #2008: the section-aware CodeRabbit rate-limit scope (a shared jq def that both
+  # detectors apply). This still guards the original intent: no polling loops, no
+  # ballooning.
+  [ "$lines" -lt 600 ]
 }
 
 # ────────────────────────────────────────────────────────────────────
@@ -684,6 +686,63 @@ MOCK_EOF
   local gate_script="$SCRIPT_DIR/lib/advisory-review-gate.sh"
   run bash -c "source '$gate_script'; detect_advisory_rate_limit '{\"reviews\":[],\"comments\":[]}'"
   [ "$status" -eq 1 ]
+}
+
+# ── #2008: section-aware CodeRabbit rate-limit detection ───────────────────────
+# CodeRabbit posts ONE summary comment, edited in place, that carries two
+# independently throttled outputs. Its rate-limit detection must look ONLY inside
+# the `rate limited by coderabbit.ai` marker block (a walkthrough that merely
+# discusses rate limits is not a notice), must order by the comment's last-edit
+# time, and a summary that carries a Security Architecture Review section is
+# CodeRabbit evidence — never "rate-limited, no evidence".
+
+_cr_summary() {
+  # _cr_summary <inner-markdown> — wrap content in CodeRabbit's summary markers.
+  printf '<!-- This is an auto-generated comment: summarize by coderabbit.ai -->\n%s\n<!-- tips_start -->\n<!-- tips_end -->' "$1"
+}
+
+_cr_rl_block() {
+  printf '<!-- This is an auto-generated comment: rate limited by coderabbit.ai -->\n> [!WARNING]\n> ## Review limit reached\n>\n> You'"'"'ve used all free OSS reviews for now.\n<!-- end of auto-generated comment: rate limited by coderabbit.ai -->'
+}
+
+_detect_cr() {
+  # _detect_cr <body> [createdAt] [lastEditedAt] [extra-reviews-json]
+  local json
+  json=$(jq -cn --arg b "$1" --arg c "${2:-2026-06-07T10:00:00Z}" --arg e "${3:-}" --argjson r "${4:-[]}" '
+    {reviews:$r, comments:[{author:{login:"coderabbitai"}, createdAt:$c, body:$b}
+      + (if $e == "" then {} else {lastEditedAt:$e} end)]}')
+  run bash -c "source '$SCRIPT_DIR/lib/advisory-review-gate.sh'; detect_advisory_rate_limit \"\$1\"" _ "$json"
+}
+
+@test "detect_advisory_rate_limit(#2008): a CodeRabbit walkthrough that merely mentions rate limits is NOT a notice" {
+  _detect_cr "$(_cr_summary $'<!-- walkthrough_start -->\n## Walkthrough\nAdds a rate limit to the API client; a 429 "Too many requests" response now backs off. Usage limit reached errors are retried.\n<!-- walkthrough_end -->')"
+  [ "$status" -eq 1 ]
+}
+
+@test "detect_advisory_rate_limit(#2008): a CodeRabbit summary with the rate-limited marker block IS detected" {
+  _detect_cr "$(_cr_summary "$(_cr_rl_block)"$'\n<!-- walkthrough_start -->\nTests only.\n<!-- walkthrough_end -->')"
+  [ "$status" -eq 0 ]
+}
+
+@test "detect_advisory_rate_limit(#2008): PR #2000's body (throttled code review + security finding) is NOT 'no CodeRabbit evidence'" {
+  _detect_cr "$(cat "$SCRIPT_DIR/../tests/fixtures/coderabbit/pr2000-ratelimited-with-security-finding.md")"
+  [ "$status" -eq 1 ]
+}
+
+@test "detect_advisory_rate_limit(#2008): the CodeRabbit summary is ordered by its last-edit time, not creation" {
+  # Created 10:00 (before a real 11:00 review) but EDITED at 12:00 into a
+  # rate-limit notice: the edit is the latest CodeRabbit state → detected.
+  local reviews='[{"author":{"login":"coderabbitai"},"state":"COMMENTED","submittedAt":"2026-06-07T11:00:00Z","body":"Looks fine."}]'
+  _detect_cr "$(_cr_summary "$(_cr_rl_block)")" "2026-06-07T10:00:00Z" "2026-06-07T12:00:00Z" "$reviews"
+  [ "$status" -eq 0 ]
+  # Without the edit time the 11:00 review is the latest → not detected.
+  _detect_cr "$(_cr_summary "$(_cr_rl_block)")" "2026-06-07T10:00:00Z" "" "$reviews"
+  [ "$status" -eq 1 ]
+}
+
+@test "Advisory gate(#2008): get_advisory_bot_states classifies comments via the section-aware scope" {
+  grep -q '_ADVISORY_RL_SCOPE_JQ' "$SCRIPT_DIR/lib/advisory-review-gate.sh"
+  [ "$(grep -c '_ADVISORY_RL_SCOPE_JQ' "$SCRIPT_DIR/lib/advisory-review-gate.sh")" -ge 3 ]
 }
 
 # ────────────────────────────────────────────────────────────────────

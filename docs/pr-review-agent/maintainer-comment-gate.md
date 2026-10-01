@@ -1,4 +1,4 @@
-# Maintainer issue-comment gate (issues #1290, #1813, #1918)
+# Maintainer issue-comment gate (issues #1290, #1813, #1918, #2008)
 
 > **Redesigned in [#1813](https://github.com/petry-projects/.github-private/issues/1813)
 > and [#1918](https://github.com/petry-projects/.github-private/issues/1918).** The
@@ -77,7 +77,11 @@ has an operational consequence. A comment blocks approval until it is minimized
   `[0 New issues]` and `[0 Security Hotspots]` lines, so a `Quality Gate failed`
   comment, or one still reporting new issues or hotspots, does **not** match and still
   blocks. An unreadable registry degrades to "clear nothing", never to clearing
-  something it cannot classify.
+  something it cannot classify. **A pattern never clears a body with a
+  finding-bearing section (#2008).** Such sections include a Security Architecture
+  Review with retained concerns, a non-zero `Actionable comments posted`, and
+  Outside-diff or Nitpick comments (`reviewer_sources_finding_section_pattern`). A
+  notice covers only itself, never the findings beside it.
 
 Everything else — a bot comment with a finding, a bot with no registered pattern, an
 *unknown* author, or any human comment — blocks. This is the fail-closed default: an
@@ -106,6 +110,32 @@ minimized with classifier `RESOLVED`. In practice:
   actor type (`__typename == Bot`), or the invoking viewer.
 - **A registered clean info-status bot comment auto-clears (#1918)** — see the scope
   section above; no disposition action is needed for it.
+- **Edits re-open a bot's comment (#2008).** CodeRabbit edits ONE summary comment
+  in place, and it holds independently throttled outputs. Its code review can show
+  a rate-limit block while its Security Architecture Review still reports findings
+  (PR #2000). The edit that appended that finding came after the comment had been
+  dispositioned `informational` and minimized, and nothing ever addressed it. So a
+  `RESOLVED` comment by a registered reviewer bot stays cleared only while its
+  latest covering disposition still holds. The covering disposition is the latest
+  non-minimized `dev-lead:comment-disposition id=<node>` or
+  `maintainer-resolve … id=<node>` reply from our account or a repo
+  OWNER/MEMBER/COLLABORATOR. The comment re-blocks when either:
+  - its `lastEditedAt` is later than that disposition's `createdAt`, or it was
+    edited with no covering disposition at all; or
+  - the covering disposition is `informational` but the body carries a
+    finding-bearing section. Dispositioning only the notice never clears findings.
+
+  `gh pr view` carries no edit time, so `review-one-pr.sh` merges each comment's
+  `lastEditedAt` in (`maintainer_gate_merge_edit_times`). `updatedAt` is never
+  used, because non-edit mutations such as minimizing move it. On the dev-lead
+  side:
+  - the harness unminimizes such a comment, so it is visibly open;
+  - it refuses an `informational` disposition on a finding-bearing body;
+  - it re-verifies a fresh disposition posted after an edit;
+  - the `dev-lead-retry.sh` sweep re-dispatches a fix-reviews pass when no
+    successful pass has run since the edit. That dedup means CodeRabbit's progress
+    edits cost one run, not one per edit. dev-lead only fires on created
+    comments, and the caller stub's `on:` is standards-owned.
 - If you only want to *chat* (e.g. "LGTM") without requesting a change, leave an
   **approving review** rather than a plain comment — a review is not an issue comment,
   and it also positively signals "no changes needed".
@@ -125,6 +155,10 @@ So:
   recur disguised as a legitimate hold (#1813 AC8), so a scheduled run retries rather
   than approving blind. The gate makes **no** `gh`/network calls — it reuses the
   snapshot the caller already fetched — so there is no push-time lookup left to fail.
+- A `RESOLVED` registered-bot comment whose **edit time cannot be read** (#2008)
+  also fails closed (return 2). Examples: an edited comment whose `lastEditedAt`
+  lookup failed, or a malformed timestamp. The gate cannot tell whether it
+  changed after its disposition.
 
 ### Bypass
 

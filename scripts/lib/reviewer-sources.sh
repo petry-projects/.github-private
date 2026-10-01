@@ -102,6 +102,28 @@ reviewer_sources_info_status_patterns() {
     "$REVIEWER_SOURCES_MANIFEST"
 }
 
+# reviewer_sources_finding_section_pattern
+#   The case-sensitive regex (jq test()) that recognizes a FINDING-BEARING section
+#   inside a reviewer bot's comment (#2008). CodeRabbit posts ONE summary comment,
+#   edited in place, carrying independently throttled outputs: a rate-limited code
+#   review can sit next to a Security Architecture Review that still reports real
+#   findings (PR #2000). A body this matches carries a finding, so:
+#     * no info_status_pattern may clear it (maintainer-comment-gate.sh and the
+#       maintainer-resolve-comment.sh bot path refuse it), and
+#     * an `informational` disposition never covers it (the gate and the
+#       dev-lead harness refuse it) — each finding needs a real disposition.
+#   Matched sections:
+#     * an `architecture_review` section (terminated or not) carrying Retained
+#       concerns, Hardening Proposals, a severity-labelled item, or a non-minimal
+#       risk rating. A "Minimal" section with none of those is clean.
+#     * a non-zero "Actionable comments posted: N".
+#     * "Outside diff range comments" or "Nitpick comments" with any count but 0.
+#   Fail closed: it errs toward matching. A false match only costs a real
+#   disposition; a missed one lets a finding be waved away.
+reviewer_sources_finding_section_pattern() {
+  printf '%s\n' '<!-- architecture_review_start -->(?:(?!<!-- architecture_review_end -->)[\s\S])*?(?:Retained concerns|Hardening Proposals|\*\*(?:Critical|High|Medium|Moderate|Low|Major|Minor)\s*·|Security architecture risk:\*\*\s*_[^_]*?(?:Low|Moderate|Medium|Elevated|High|Critical|Severe))|Actionable comments posted:\s*[1-9]|Outside diff range comments(?!\s*\(\s*0\s*\))|Nitpick comments(?!\s*\(\s*0\s*\))'
+}
+
 # reviewer_sources_trusted_bots_csv
 #   dev-lead's webhook-facing trusted set: each trusted login with a "[bot]"
 #   suffix, joined by commas. This is exactly the TRUSTED_BOTS default.

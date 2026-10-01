@@ -4386,6 +4386,35 @@ GITEOF
   grep -q "#1340" "$p"
 }
 
+# ── Prompt guidance (#2008): a CodeRabbit summary is a set of sections ─────────
+
+@test "fix-bot-comment prompt: CodeRabbit summary is a set of sections; a rate-limit block covers only itself (#2008)" {
+  local p="$SCRIPT_DIR/prompts/dev-lead/fix-bot-comment.md"
+  grep -q "architecture_review_start" "$p"
+  grep -q "rate limited by coderabbit.ai" "$p"
+  grep -q "Retained concerns" "$p"
+  grep -q "Hardening Proposals" "$p"
+  grep -q "Actionable comments posted" "$p"
+  grep -q "Outside diff range" "$p"
+  grep -qi "covers \*\*only its own section\*\*" "$p"
+  grep -q "\*\*\`informational\` is allowed only when every finding-bearing section is empty" "$p"
+}
+
+@test "fix-bot-comment prompt: a disposition older than the last edit no longer counts (#2008)" {
+  local p="$SCRIPT_DIR/prompts/dev-lead/fix-bot-comment.md"
+  grep -q "lastEditedAt" "$p"
+  grep -q '(.createdAt // "") >= \$edited' "$p"
+}
+
+@test "fix-reviews prompt: section-aware CodeRabbit dispositions and edited-comment re-open (#2008)" {
+  local p="$SCRIPT_DIR/prompts/dev-lead/fix-reviews.md"
+  grep -q "architecture_review_start" "$p"
+  grep -q "Retained concerns" "$p"
+  grep -q "Outside diff range" "$p"
+  grep -q "lastEditedAt" "$p"
+  grep -q "\*\*\`informational\` is allowed only when every finding-bearing section is empty" "$p"
+}
+
 # ── Review-application evidence (#1567): status=applied requires the commit to ──
 # ── be non-trivial AND touch the region the review named. ──────────────────────
 
@@ -4865,4 +4894,96 @@ _orig_comment() {
   # minimized (the attacker's forged marker never counts).
   [ ! -s "$MINLOG" ]
   [[ "$output" == *"no authorized dev-lead disposition reply"* ]]
+}
+
+# ── #2008: edits re-open a dispositioned comment; a notice never clears findings ──
+# CodeRabbit edits ONE summary comment in place. A disposition that predates the
+# latest edit no longer covers the body, so the harness UNMINIMIZES a RESOLVED bot
+# comment whose latest disposition is stale (the gate blocks on it again and the
+# next pass sees it as open). A fresh disposition posted after the edit is
+# re-verified, and an `informational` disposition never verifies on a
+# finding-bearing body (PR #2000's rate-limit block + Security Architecture finding).
+
+_cr_fixture() { cat "$SCRIPT_DIR/tests/fixtures/coderabbit/$1"; }
+
+# _resolved_bot_comment <lastEditedAt|null> [body]
+_resolved_bot_comment() {
+  jq -nc --arg e "$1" --arg b "${2:-Walkthrough only.}" '{id:"IC_ORIG", author:{login:"coderabbitai", __typename:"Bot"},
+    body:$b, isMinimized:true, minimizedReason:"RESOLVED", createdAt:"2026-09-26T20:00:00Z",
+    lastEditedAt:(if $e == "null" then null else $e end)}'
+}
+
+@test "resolve_dispositioned_comments(#2008): a RESOLVED bot comment edited AFTER its disposition is unminimized (re-opened)" {
+  local nodes
+  nodes=$(jq -sc '.' \
+    <(_resolved_bot_comment "2026-09-26T22:00:00Z") \
+    <(_disp_reply "R1" "2026-09-26T21:00:00Z" "informational" "IC_ORIG"))
+  _setup_disposition_pass "$nodes"
+
+  run bash "$FIX_REVIEWS_SCRIPT" 2>&1
+
+  [ "$status" -eq 1 ]
+  grep -Eq 'unminimizeComment.*id=IC_ORIG' "$MINLOG"
+  ! grep -q 'classifier:RESOLVED' "$MINLOG"
+  [[ "$output" == *"edited after its latest disposition"* ]]
+}
+
+@test "resolve_dispositioned_comments(#2008): a RESOLVED bot comment edited BEFORE its disposition is left alone" {
+  local nodes
+  nodes=$(jq -sc '.' \
+    <(_resolved_bot_comment "2026-09-26T20:30:00Z") \
+    <(_disp_reply "R1" "2026-09-26T21:00:00Z" "informational" "IC_ORIG"))
+  _setup_disposition_pass "$nodes"
+
+  run bash "$FIX_REVIEWS_SCRIPT" 2>&1
+
+  [ "$status" -eq 1 ]
+  [ ! -s "$MINLOG" ]
+}
+
+@test "resolve_dispositioned_comments(#2008): a fresh disposition after the edit is re-verified; the stale one goes OUTDATED, nothing is unminimized" {
+  local nodes
+  nodes=$(jq -sc '.' \
+    <(_resolved_bot_comment "2026-09-26T21:30:00Z") \
+    <(_disp_reply "R1" "2026-09-26T21:00:00Z" "informational" "IC_ORIG") \
+    <(_disp_reply "R2" "2026-09-26T22:00:00Z" "answered" "IC_ORIG"))
+  _setup_disposition_pass "$nodes"
+
+  run bash "$FIX_REVIEWS_SCRIPT" 2>&1
+
+  [ "$status" -eq 1 ]
+  grep -Eq 'classifier:OUTDATED.*id=R1' "$MINLOG"
+  ! grep -q 'unminimizeComment' "$MINLOG"
+  ! grep -Eq 'id=R2' "$MINLOG"
+}
+
+@test "resolve_dispositioned_comments(#2008): an \`informational\` disposition on PR #2000's body (rate-limit + security finding) does NOT resolve it" {
+  local orig nodes
+  orig=$(jq -nc --arg b "$(_cr_fixture pr2000-ratelimited-with-security-finding.md)" '{id:"IC_ORIG", author:{login:"coderabbitai", __typename:"Bot"},
+    body:$b, isMinimized:false, minimizedReason:null, createdAt:"2026-09-26T20:00:00Z", lastEditedAt:"2026-09-26T20:35:00Z"}')
+  nodes=$(jq -sc '.' <(echo "$orig") <(_disp_reply "R1" "2026-09-26T21:00:00Z" "informational" "IC_ORIG"))
+  _setup_disposition_pass "$nodes"
+
+  run bash "$FIX_REVIEWS_SCRIPT" 2>&1
+
+  [ "$status" -eq 1 ]
+  [ ! -s "$MINLOG" ]
+  [[ "$output" == *"finding-bearing"* ]]
+}
+
+@test "resolve_dispositioned_comments(#2008): a clean CodeRabbit summary dispositioned \`informational\` still resolves" {
+  local orig nodes
+  orig=$(jq -nc --arg b "$(_cr_fixture summary-clean.md)" '{id:"IC_ORIG", author:{login:"coderabbitai", __typename:"Bot"},
+    body:$b, isMinimized:false, minimizedReason:null, createdAt:"2026-09-26T20:00:00Z", lastEditedAt:null}')
+  nodes=$(jq -sc '.' <(echo "$orig") <(_disp_reply "R1" "2026-09-26T21:00:00Z" "informational" "IC_ORIG"))
+  _setup_disposition_pass "$nodes"
+
+  run bash "$FIX_REVIEWS_SCRIPT" 2>&1
+
+  [ "$status" -eq 1 ]
+  grep -Eq 'classifier:RESOLVED.*id=IC_ORIG' "$MINLOG"
+}
+
+@test "resolve_dispositioned_comments(#2008): the comment query fetches lastEditedAt" {
+  grep -q 'lastEditedAt' "$FIX_REVIEWS_SCRIPT"
 }
