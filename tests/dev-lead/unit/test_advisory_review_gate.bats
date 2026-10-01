@@ -176,9 +176,11 @@ teardown() {
   # trial-ended detector, fallback list, notice bots list, pattern accessor, and
   # comprehensive test coverage for false positive protection). Raised 560→600 for
   # #2008: the section-aware CodeRabbit rate-limit scope (a shared jq def that both
-  # detectors apply). This still guards the original intent: no polling loops, no
+  # detectors apply). Raised 600→615 for #2008's producer-path edit-time merge
+  # (get_advisory_bot_states merges lastEditedAt via maintainer_gate_merge_edit_times
+  # before classifying). This still guards the original intent: no polling loops, no
   # ballooning.
-  [ "$lines" -lt 600 ]
+  [ "$lines" -lt 615 ]
 }
 
 # ────────────────────────────────────────────────────────────────────
