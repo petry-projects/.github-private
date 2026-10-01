@@ -90,6 +90,9 @@ jobs:
       - name: Run health check
         env:
           GH_TOKEN: ${{ secrets.DON_PETRY_BOT_GH_PAT }}
+          # Export the model override variable so ai_model_for_family honours
+          # operator-configured model chains (vars.AI_MODELS_CLAUDE).
+          AI_MODELS_CLAUDE: ${{ vars.AI_MODELS_CLAUDE }}
         run: bash scripts/pr_review_health.sh
 
       - name: Truncate report if needed

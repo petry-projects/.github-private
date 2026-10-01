@@ -88,14 +88,32 @@ for field in ("name", "trigger", "engine", "permissions"):
     if field not in fm:
         errors.append(f"missing required field: {field!r}")
 
-# Validate engine — warn on unknown but don't fail (new models can be added without a code change)
-known_engines = {
-    "claude-sonnet-4-6", "claude-sonnet-5", "claude-haiku-4-5-20251001",
-    "claude-opus-4-7", "claude-haiku-4-5",
-}
+# Validate engine — accept a model FAMILY (opus|sonnet|haiku), resolved to the
+# current id at run time by ai_model_for_family (#1979), or any concrete claude-*
+# id an operator pins deliberately. Warn (never fail) on anything else so a new
+# provider can be added without a code change.
+families = {"opus", "sonnet", "haiku"}
 engine = fm.get("engine", "")
-if engine and engine not in known_engines:
-    print(f"aw compile: {path}: warning: unknown engine {engine!r}", file=sys.stderr)
+if not isinstance(engine, str):
+    # `aw run` cannot use a non-string engine (it keys models.<engine> by it), so
+    # this is an error, not a warning. No truth check: null/0/false fail too.
+    errors.append(f"engine must be a string, got {type(engine).__name__}")
+elif engine and engine not in families and not engine.startswith("claude"):
+    print(f"aw compile: {path}: warning: unknown engine {engine!r} (name a family: opus|sonnet|haiku)", file=sys.stderr)
+
+# The `claude` runner takes its model from models.claude; `aw run` hard-fails
+# without one, so fail compile the same way. The model itself must be a family or
+# a concrete claude-* id. Other runners keep the warn-only rule above, so a new
+# provider can still be added without a code change.
+if engine == "claude":
+    models = fm.get("models") or {}
+    val = models.get(engine) if isinstance(models, dict) else None
+    if isinstance(val, list):
+        val = val[0] if val else None
+    if not val:
+        errors.append(f"engine {engine!r} needs a model: set models.{engine}: [<family>]")
+    elif not isinstance(val, str) or not (val in families or val.startswith("claude-")):
+        errors.append(f"models.{engine} must be a family (opus|sonnet|haiku) or a claude-* id, got {val!r}")
 
 # Validate output mode if present
 output_mode = fm.get("output")
@@ -269,22 +287,74 @@ print(body)
 PYEOF
 )"
 
-  # Select engine from frontmatter
-  local engine
+  # Select the model from frontmatter. `engine:` names the RUNNER (e.g. claude);
+  # the model family lives in `models.<engine>` (a list, first entry wins). A bare
+  # family or concrete id in `engine:` is still honoured for legacy specs.
+  local engine model
   engine="$(python3 - "$wf_file" <<'PYEOF'
 import sys, re, yaml
 path = sys.argv[1]
 with open(path, encoding='utf-8') as f:
     text = f.read()
 m = re.match(r'^---\n(.*?)\n---\n', text, re.DOTALL)
-fm = yaml.safe_load(m.group(1))
-print(fm.get("engine", "claude-sonnet-4-6"))
+fm = yaml.safe_load(m.group(1)) or {}
+engine = fm.get("engine", "sonnet")
+if not isinstance(engine, str):
+    print(f"aw run: engine must be a string, got {type(engine).__name__}", file=sys.stderr)
+    sys.exit(1)
+print(engine)
+PYEOF
+)"
+  model="$(python3 - "$wf_file" <<'PYEOF'
+import sys, re, yaml
+path = sys.argv[1]
+with open(path, encoding='utf-8') as f:
+    text = f.read()
+m = re.match(r'^---\n(.*?)\n---\n', text, re.DOTALL)
+fm = yaml.safe_load(m.group(1)) or {}
+engine = fm.get("engine", "sonnet")
+models = fm.get("models") or {}
+val = models.get(engine) if isinstance(models, dict) and isinstance(engine, str) else None
+if isinstance(val, list):
+    val = val[0] if val else ""
+print(val if isinstance(val, str) else "")
 PYEOF
 )"
 
-  # Validate engine to prevent command injection before passing to claude
-  if [[ ! "$engine" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]]; then
-    echo "aw run: invalid engine value: $engine" >&2
+  # The value to pass to Claude: the configured model (models.<engine>), else the
+  # engine value itself when it already names a family or concrete id (legacy).
+  local want="$model"
+  if [[ -z "$want" ]]; then
+    case "$engine" in
+      opus|sonnet|haiku|claude-*) want="$engine" ;;
+      *)
+        echo "aw run: no model configured for engine '$engine' (set models.$engine: [<family>])" >&2
+        exit 1
+        ;;
+    esac
+  fi
+
+  # Validate the model to prevent command injection before passing to claude.
+  if [[ ! "$want" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]*$ ]]; then
+    echo "aw run: invalid model value: $want" >&2
+    exit 1
+  fi
+
+  # Resolve a model FAMILY (opus|sonnet|haiku) to the current concrete id at run
+  # time, so the workflow names a family and never pins a version (#1979). A
+  # concrete id (claude-*) an operator set is passed through unchanged.
+  local engine_model="$want"
+  case "$want" in
+    opus|sonnet|haiku)
+      # shellcheck source=lib/engine-models.sh
+      source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/engine-models.sh"
+      engine_model="$(ai_model_for_family "$want")"
+      ;;
+  esac
+  # Re-validate the resolved id: an operator override chain can supply it, so it
+  # must still be a single safe token before it reaches `claude --model`.
+  if [[ ! "$engine_model" =~ ^[A-Za-z0-9][A-Za-z0-9._:/@-]*$ ]]; then
+    echo "aw run: invalid resolved model: $engine_model" >&2
     exit 1
   fi
 
@@ -292,7 +362,7 @@ PYEOF
   local result rc=0 prompt_file
   prompt_file="$(mktemp)"
   printf '%s\n' "$prompt" > "$prompt_file"
-  result="$(claude --model "$engine" --print --output-format text < "$prompt_file" 2>/dev/null)" || rc=$?
+  result="$(claude --model "$engine_model" --print --output-format text < "$prompt_file" 2>/dev/null)" || rc=$?
   rm -f "$prompt_file"
   if [[ $rc -ne 0 ]]; then
     echo "aw run: claude invocation failed" >&2

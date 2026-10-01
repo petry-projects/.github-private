@@ -12,6 +12,10 @@
 
 set -euo pipefail
 
+# Model family → current id resolver (#1979): name a family, never pin a version.
+# shellcheck source=scripts/lib/engine-models.sh
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/engine-models.sh"
+
 PR_NUMBER="${PR_NUMBER:?PR_NUMBER is required}"
 REPO="${REPO:?REPO is required}"
 SKIP_BOT_PRS="${SKIP_BOT_PRS:-true}"
@@ -160,7 +164,7 @@ echo "Invoking Claude for dependency risk assessment..."
 attempt=1
 while :; do
   claude_rc=0
-  claude --print --model claude-sonnet-4-6 --no-session-persistence \
+  claude --print --model "$(ai_model_for_family sonnet)" --no-session-persistence \
     > "$ADVISORY_FILE" < "$PROMPT_FILE" 2> "$CLAUDE_ERR" || claude_rc=$?
   [ "$claude_rc" -eq 0 ] && break
   cat "$CLAUDE_ERR" >> "$ADVISORY_FILE"

@@ -556,6 +556,36 @@ run to `remediate=live` for the configured pilot.
 - Scripts must be POSIX-compatible shell (`#!/usr/bin/env bash` with `set -euo pipefail`).
 - No hardcoded tokens or secrets — use `$GITHUB_TOKEN` from the environment.
 
+### Model selection — name a family, never pin a version
+
+Name a model **family** — `opus`, `sonnet`, or `haiku` — and resolve it to the
+current concrete id at run time; do **not** hard-pin `claude-<family>-<version>`
+ids across the tree (#1979, companion
+[`petry-projects/.github#1199`](https://github.com/petry-projects/.github/issues/1199)).
+A model swap should be one edit to the chains in
+[`scripts/lib/engine-models.sh`](./scripts/lib/engine-models.sh), not a hunt for
+scattered ids.
+
+- **Resolve with `ai_model_for_family <family>`** (`scripts/lib/engine-models.sh`):
+  it returns the current id for the family, honouring `CLAUDE_<TIER>_MODEL_CHAIN`
+  then `AI_MODELS_CLAUDE` then the built-in default. A shell caller sources the lib
+  and calls the function; a workflow adds a resolve step that writes the id to a
+  step output. In gh-aw front-matter, `engine:` names the runner engine (e.g.
+  `claude`) and the model family is named in `models:` (e.g.
+  `models: { claude: [sonnet] }`) — the family does not go in `engine:`.
+- **An operator-supplied concrete `claude-*` id is still honoured** — workflow
+  `model` inputs default to a family but pass a full id through unchanged.
+- **Token records keep the resolved id**: families resolve before the engine runs,
+  so `TOKEN_LOG_FILE` records the concrete model, not the family name.
+- **`scripts/check-model-pins.sh`** (the `check-model-pins` job in `lint.yml`) fails
+  when a concrete id appears under `.github/`, `scripts/`, `prompts/`, `agents/`, or
+  `personas/`. When a concrete id is genuinely required (eval judge held fixed, ET
+  baseline anchor, last-resort fallback), mark that line `# model-pin-ok: <reason>`;
+  the resolver and `model-pricing.tsv` are allow-listed.
+
+See [`docs/engine-configuration.md`](./docs/engine-configuration.md) §"Model
+selection" for the family→tier→id table.
+
 ### Agent identity & credential secrets
 
 Every persona/agent declares the GitHub account it **acts as** — the login it

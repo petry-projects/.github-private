@@ -15,7 +15,7 @@ Part of the [GitHub Agentic Workflows rollout](https://github.com/petry-projects
    and lists merged PRs associated with those commits via the GitHub API.
 4. **Filter** — keeps only PRs labeled `feat` or `fix` (configurable via `CHANGELOG_LABELS`).
    If none remain, the workflow exits without opening a PR.
-5. **Generate** — Claude (`claude-sonnet-4-6`) produces Keep-a-Changelog entries
+5. **Generate** — Claude (the `sonnet` model family, resolved to the current id at run time) produces Keep-a-Changelog entries
    grouped by `### Added` / `### Fixed` / `### Changed`.
 6. **Apply** — if `CHANGELOG.md` does not exist, it is created with the standard header.
    The new entries are prepended under `## [Unreleased]`.
