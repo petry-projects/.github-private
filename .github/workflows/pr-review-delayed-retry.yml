@@ -1,5 +1,10 @@
 name: PR Review Agent — Delayed Rate-Limit Retry
 
+# The run name carries pr_url + head_sha so the sweep's arm_delayed_retry can
+# dedup against an already in-flight retry (gh run list --json displayTitle)
+# instead of re-dispatching on every defer tick (#1994).
+run-name: "pr-review-delayed-retry ${{ inputs.pr_url }} @ ${{ inputs.head_sha }}"
+
 # Deterministic near-reset retry for a rate-limited PR review (#1994).
 #
 # WHY. When pr-review withholds approval because an advisory reviewer is rate-
@@ -66,19 +71,33 @@ concurrency:
 jobs:
   retry:
     runs-on: ubuntu-latest
-    # Hard ceiling just above the default arming horizon (3600s) + buffer so a
-    # runner can never sleep unbounded; the script also caps its own sleep.
-    timeout-minutes: 65
+    # Hard ceiling above the default arming horizon (3600s) + buffer so a runner
+    # can never sleep unbounded; the script also caps its own sleep at 3720s. The
+    # extra headroom over that cap leaves room for checkout, the wake-time
+    # `gh pr view`, and the delegated sweep's API calls under the slow-API load
+    # this workflow exists to survive, so the dispatch is never killed mid-flight.
+    timeout-minutes: 70
     steps:
       - name: Checkout agent repo
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-      - name: Guard — workflow-dispatch PAT present
+      - name: Guard — workflow-dispatch PAT present and bound to don-petry
         env:
           GH_TOKEN: ${{ secrets.GH_PAT_DON_PETRY || secrets.GH_PAT_WORKFLOWS }}
         run: |
           if [ -z "${GH_TOKEN}" ]; then
             echo "::error::GH_PAT_WORKFLOWS is required — GITHUB_TOKEN cannot start a dispatched run and the bot comment PAT lacks actions:write."
+            exit 1
+          fi
+          # Fail closed unless the PAT authenticates as the manifest-declared
+          # don-petry account. A non-empty but MISBOUND GH_PAT_DON_PETRY/
+          # GH_PAT_WORKFLOWS would dispatch the retry under the wrong identity,
+          # corrupting this workflow's audit trail and the loop-prevention
+          # identity. Both secret names are don-petry's PAT (WORKFLOWS is the
+          # deprecated alias), so this never rejects the legitimate fallback.
+          actor="$(gh api user --jq '.login' 2>/dev/null || echo '')"
+          if [ "${actor}" != "don-petry" ]; then
+            echo "::error::dispatch PAT authenticates as '${actor:-<unknown>}', not the manifest-declared don-petry account — refusing to dispatch under the wrong identity."
             exit 1
           fi
 

@@ -61,6 +61,42 @@ echo "  PR:         $PR_URL"
 echo "  Armed head: ${HEAD_SHA:0:8}"
 echo "  Not before: ${NOT_BEFORE:-<none>}"
 
+# still_applicable <phase>
+# The armed retry must still apply: the PR open, un-merged, and at the SAME head
+# the marker was armed on. Returns non-zero (caller no-ops) when it does not.
+# Run BOTH before sleeping and after waking: the pre-sleep call aborts a runner
+# whose PR was already pushed/merged in the arming→start gap so it never sleeps
+# the full hour just to no-op, and the post-sleep call catches a push/merge that
+# landed during the sleep (#1994).
+still_applicable() {
+  local _phase="$1" _snapshot _current_head _state
+  if ! _snapshot=$(gh pr view "$PR_URL" --json headRefOid,state 2>/dev/null); then
+    echo "  no-op ($_phase): could not fetch $PR_URL (deleted, no access, or rate-limited) — leaving to the cron sweep"
+    return 1
+  fi
+  _current_head=$(jq -r '.headRefOid? // ""' <<< "$_snapshot" || echo "")
+  _state=$(jq -r '.state? // ""' <<< "$_snapshot" || echo "")
+  if [ -z "$_current_head" ]; then
+    echo "  no-op ($_phase): current head SHA empty for $PR_URL — leaving to the cron sweep"
+    return 1
+  fi
+  if [ "$_state" = "MERGED" ] || [ "$_state" = "CLOSED" ]; then
+    echo "  no-op ($_phase): PR is $_state — nothing to retry"
+    return 1
+  fi
+  if [ "$_current_head" != "$HEAD_SHA" ]; then
+    echo "  no-op ($_phase): head advanced ${HEAD_SHA:0:8} -> ${_current_head:0:8} — superseded by a newer push; its event drives a fresh review"
+    return 1
+  fi
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# 0. Pre-sleep guard — abort early if the PR was already superseded/merged
+#    before this runner even started, instead of sleeping the full hour.
+# ---------------------------------------------------------------------------
+still_applicable "pre-sleep" || exit 0
+
 # ---------------------------------------------------------------------------
 # 1. Sleep until NOT_BEFORE + buffer (bounded by the safety ceiling).
 # ---------------------------------------------------------------------------
@@ -91,21 +127,10 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 2. Supersession guard — the armed head must still be the current head.
+# 2. Supersession guard — the armed head must still be the current head after
+#    the sleep (a push/merge may have landed mid-sleep).
 # ---------------------------------------------------------------------------
-if ! snapshot=$(gh pr view "$PR_URL" --json headRefOid 2>/dev/null); then
-  echo "  no-op: could not fetch $PR_URL (deleted, no access, or rate-limited) — leaving to the cron sweep"
-  exit 0
-fi
-current_head=$(jq -r '.headRefOid? // ""' <<< "$snapshot" || echo "")
-if [ -z "$current_head" ]; then
-  echo "  no-op: current head SHA empty for $PR_URL — leaving to the cron sweep"
-  exit 0
-fi
-if [ "$current_head" != "$HEAD_SHA" ]; then
-  echo "  no-op: head advanced ${HEAD_SHA:0:8} -> ${current_head:0:8} — superseded by a newer push; its event drives a fresh review"
-  exit 0
-fi
+still_applicable "post-sleep" || exit 0
 
 # ---------------------------------------------------------------------------
 # 3. Delegate to the sweep scoped to this one PR. The sweep re-validates the

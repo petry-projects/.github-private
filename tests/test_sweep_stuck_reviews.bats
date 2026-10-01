@@ -413,7 +413,10 @@ near_reset() {
   run bash "$SCRIPT"
   [ "$status" -eq 0 ]
   [ ! -s "$GH_LOG" ]
-  [[ "$output" == *"arm"* ]]
+  # Assert on the dry-run arming INTENT, not the always-printed summary line: the
+  # old `*"arm"*` match also hit "... delayed retries armed." so it passed even if
+  # the dry-run branch were dropped entirely.
+  [[ "$output" == *"dry-run: would arm delayed retry"* ]]
 }
 
 @test "MAX_DISPATCH is a shared budget across dispatches and delayed arms (not 2x)" {
@@ -443,6 +446,41 @@ near_reset() {
   run bash "$SCRIPT"
   [ "$status" -eq 0 ]
   [ "$(grep -c -- 'workflow run pr-review-delayed-retry.yml' "$GH_LOG")" -eq 1 ]
+}
+
+@test "defer does not re-arm when a delayed retry is already in flight (#1994 dedup)" {
+  local reset; reset="$(near_reset)"
+  write_pr 19949 "REVIEW_REQUIRED" "$ROLLUP_PASS" "rl19949" "[]" "$(rl_comment rl19949 "$reset")"
+  url_for 19949 > "$SWEEP_PRS_FILE"
+
+  # gh run list reports an in-progress retry whose run-name (displayTitle) ends in
+  # "<pr_url> @ <head_sha>" for this exact (PR, head) — so arm_delayed_retry must
+  # dedup and dispatch nothing new.
+  cat > "$MOCK_BIN/gh" <<EOF
+#!/usr/bin/env bash
+case "\$1" in
+  pr)
+    if [ "\$2" = "view" ]; then
+      url="\$3"; num="\${url##*/}"; f="\$FIXTURE_DIR/pr_\${num}.json"
+      if [ -f "\$f" ]; then cat "\$f"; exit 0; fi
+      echo "no fixture for \$url" >&2; exit 1
+    fi ;;
+  run)
+    # gh run list --json status,displayTitle ...
+    printf '%s' '[{"status":"in_progress","displayTitle":"pr-review-delayed-retry $(url_for 19949) @ rl19949"}]'
+    exit 0 ;;
+  workflow)
+    printf '%s\n' "\$*" >> "\$GH_LOG"; exit 0 ;;
+esac
+exit 0
+EOF
+  chmod +x "$MOCK_BIN/gh"
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ ! -s "$GH_LOG" ]
+  [[ "$output" == *"arm skipped"* ]]
+  [[ "$output" == *"already in flight"* ]]
 }
 
 # ---------------------------------------------------------------------------

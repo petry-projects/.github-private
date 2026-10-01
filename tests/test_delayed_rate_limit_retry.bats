@@ -23,6 +23,13 @@ WORKFLOW="$REPO_ROOT/.github/workflows/pr-review-delayed-retry.yml"
 
 PAST_RESET='2000-01-01T00:00:00Z'
 
+# A reset a few seconds out, so the script actually EXERCISES the wait path
+# (sleep_secs > 0) rather than the "reset already elapsed" shortcut.
+near_future_reset() {
+  date -u -d '+2 seconds' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+    || date -u -v+2S +%Y-%m-%dT%H:%M:%SZ
+}
+
 setup() {
   MOCK_BIN="$(mktemp -d)"
   FIXTURE_DIR="$(mktemp -d)"
@@ -106,6 +113,28 @@ url_for() { echo "https://github.com/petry-projects/demo/pull/$1"; }
   grep -qF -- "-f pr_url=$(url_for 2002)" "$GH_LOG"
   ! grep -qF -- "force_review" "$GH_LOG"
   # Must not re-arm itself (no recursive delayed-retry dispatch).
+  ! grep -qF -- "pr-review-delayed-retry.yml" "$GH_LOG"
+}
+
+# ---------------------------------------------------------------------------
+# Wait path: a near-FUTURE reset must make the script actually sleep until
+# reset+buffer and THEN fire via the sweep — the core behaviour of this PR. The
+# past-reset cases above only hit the "reset already elapsed" shortcut, so the
+# sleep computation would never be exercised without this case.
+# ---------------------------------------------------------------------------
+@test "retry waits for a near-future reset, then re-dispatches via the sweep" {
+  local reset; reset="$(near_future_reset)"
+  write_pr 2005 "REVIEW_REQUIRED" "$ROLLUP_PASS" "armed05" "[]" "$(rl_comment armed05 "$reset")"
+  export PR_URL; PR_URL="$(url_for 2005)"
+  export HEAD_SHA="armed05" NOT_BEFORE="$reset" DELAYED_RETRY_BUFFER_SEC=0
+
+  run bash "$RETRY"
+  [ "$status" -eq 0 ]
+  # It must have taken the WAIT path (sleep_secs > 0), not the elapsed shortcut.
+  [[ "$output" == *"until reset+buffer"* ]]
+  # And after waking it still re-dispatches the review through the normal trigger.
+  grep -qF -- "workflow run pr-review-trigger.yml" "$GH_LOG"
+  grep -qF -- "-f pr_url=$(url_for 2005)" "$GH_LOG"
   ! grep -qF -- "pr-review-delayed-retry.yml" "$GH_LOG"
 }
 

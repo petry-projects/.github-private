@@ -234,6 +234,19 @@ arm_delayed_retry() {
     armed=$((armed + 1))
     return 0
   fi
+  # Dedup across sweep invocations (#1994). The retry workflow's per-(PR, head)
+  # concurrency group only COLLAPSES concurrent runs — it does not stop this
+  # sweep from re-dispatching on every defer tick (the 15-min cron, and the
+  # workflow_run fast path that fires on each CI completion org-wide), and each
+  # re-dispatch's cancel-in-progress would kill and restart the already-sleeping
+  # runner. So skip arming when a queued/in-progress retry already exists for
+  # this exact (PR, head): the run-name carries "<pr_url> @ <head_sha>", which
+  # gh exposes as displayTitle. Fail OPEN — a query error falls through to arm so
+  # a transient gh failure can never strand the retry.
+  if delayed_retry_in_flight "$_url" "$_sha"; then
+    echo "    arm skipped $_url — a delayed retry is already in flight for head ${_sha:0:8}"
+    return 0
+  fi
   if gh workflow run "$DELAYED_RETRY_WORKFLOW" --repo "$AGENT_REPO" "${REF_FLAGS[@]}" \
        -f pr_url="$_url" -f head_sha="$_sha" -f not_before="$_reset"; then
     armed=$((armed + 1))
@@ -241,6 +254,24 @@ arm_delayed_retry() {
   else
     echo "::warning::sweep: failed to arm delayed retry for $_url"
   fi
+}
+
+# delayed_retry_in_flight <pr_url> <head_sha>
+# True when a queued or in-progress pr-review-delayed-retry run already exists for
+# this exact (PR, head). Matches on the run-name the retry workflow sets
+# ("pr-review-delayed-retry <pr_url> @ <head_sha>"), surfaced by gh as
+# displayTitle. Fails OPEN (returns false) on any query error so a transient gh
+# failure never suppresses a needed arm.
+delayed_retry_in_flight() {
+  local _url="$1" _sha="$2" _runs
+  _runs=$(gh run list --repo "$AGENT_REPO" --workflow "$DELAYED_RETRY_WORKFLOW" \
+            --event workflow_dispatch --limit 50 \
+            --json status,displayTitle 2>/dev/null) || return 1
+  [ -n "$_runs" ] || return 1
+  jq -e --arg title "$_url @ $_sha" '
+    any(.[]?; (.status == "queued" or .status == "in_progress")
+             and ((.displayTitle // "") | endswith($title)))' \
+    <<< "$_runs" >/dev/null 2>&1
 }
 
 while IFS= read -r pr_url; do
