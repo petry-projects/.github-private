@@ -154,8 +154,10 @@ elif [[ "${GITHUB_EVENT_NAME:-}" == "workflow_run" && -n "${GITHUB_EVENT_PATH:-}
   # CI-completion kick (#898): inspect only the completing run's PR(s). The
   # REVIEW_REQUIRED + CI-green + not-reviewed-at-head gate below still decides, so
   # a too-early fire (some checks still pending) simply skips and the next
-  # completing workflow re-fires. The scheduled sweep remains the guaranteed
-  # backstop, so this fast path can never strand a PR if it matches nothing.
+  # completing workflow re-fires. The scheduled sweep remains the backstop, so
+  # this fast path can never strand a PR if it matches nothing — but the cron is
+  # best-effort (GitHub delays or drops scheduled runs under load, #1952); the
+  # time-bound rate-limit case is covered by the armed delayed retry (#1994).
   prs_from_workflow_run_event "$GITHUB_EVENT_PATH" > "$candidates_file" || true
 else
   bash "$SCRIPT_DIR/list-prs.sh" > "$candidates_file" || true
@@ -252,7 +254,10 @@ arm_delayed_retry() {
     armed=$((armed + 1))
     echo "    armed delayed retry for $_url (not_before=$_reset, head ${_sha:0:8})"
   else
-    echo "::warning::sweep: failed to arm delayed retry for $_url"
+    # A failed attempt still spends a MAX_DISPATCH slot, so a transient dispatch
+    # error cannot turn one sweep into a retry storm across every candidate.
+    armed=$((armed + 1))
+    echo "::warning::sweep: failed to arm delayed retry for $_url (attempt counted against MAX_DISPATCH)"
   fi
 }
 

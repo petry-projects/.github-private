@@ -31,7 +31,11 @@
 #   HEAD_SHA                   (required) the head the rate-limit marker was armed on
 #   NOT_BEFORE                 ISO-8601 reset time to wait for (the marker's reset=)
 #   DELAYED_RETRY_BUFFER_SEC   seconds added after NOT_BEFORE before retrying (default 120)
-#   DELAYED_RETRY_MAX_SLEEP_SEC safety ceiling on the sleep (default 3720)
+#   DELAYED_RETRY_HORIZON_SEC  the sweep's arming horizon (default 3600; same variable
+#                              and default as sweep-stuck-reviews.sh)
+#   DELAYED_RETRY_MAX_SLEEP_SEC safety ceiling on the sleep (default and floor:
+#                              HORIZON + BUFFER, so an armed retry always wakes
+#                              after reset+buffer)
 #   AGENT_REPO                 owner/repo hosting the trigger workflow (passed to the sweep)
 #   SWEEP_SCRIPT               path to sweep-stuck-reviews.sh (default: sibling script)
 #   DRY_RUN                    "true"/"1" → delegate in dry-run (log, never dispatch)
@@ -46,10 +50,28 @@ NOT_BEFORE="${NOT_BEFORE:-}"
 AGENT_REPO="${AGENT_REPO:-petry-projects/.github-private}"
 SWEEP_SCRIPT="${SWEEP_SCRIPT:-$SCRIPT_DIR/sweep-stuck-reviews.sh}"
 DELAYED_RETRY_BUFFER_SEC="${DELAYED_RETRY_BUFFER_SEC:-120}"
-DELAYED_RETRY_MAX_SLEEP_SEC="${DELAYED_RETRY_MAX_SLEEP_SEC:-3720}"
+DELAYED_RETRY_HORIZON_SEC="${DELAYED_RETRY_HORIZON_SEC:-3600}"
+DELAYED_RETRY_MAX_SLEEP_SEC="${DELAYED_RETRY_MAX_SLEEP_SEC:-}"
 
 case "$DELAYED_RETRY_BUFFER_SEC" in ''|*[!0-9]*) DELAYED_RETRY_BUFFER_SEC=120 ;; esac
-case "$DELAYED_RETRY_MAX_SLEEP_SEC" in ''|*[!0-9]*) DELAYED_RETRY_MAX_SLEEP_SEC=3720 ;; esac
+case "$DELAYED_RETRY_HORIZON_SEC" in ''|*[!0-9]*) DELAYED_RETRY_HORIZON_SEC=3600 ;; esac
+# The sleep ceiling is derived from the arming side's horizon + this buffer, the
+# one place both meet. A ceiling below that would wake before reset+buffer: the
+# delegated sweep would re-defer and, with ARM_DELAYED_RETRY=false, could not
+# re-arm, leaving the PR to the best-effort cron (#1994). An explicit lower
+# value is raised to the floor, with a warning.
+_min_sleep=$(( DELAYED_RETRY_HORIZON_SEC + DELAYED_RETRY_BUFFER_SEC ))
+case "$DELAYED_RETRY_MAX_SLEEP_SEC" in
+  '') DELAYED_RETRY_MAX_SLEEP_SEC="$_min_sleep" ;;
+  *[!0-9]*)
+    echo "::warning::delayed-rate-limit-retry: DELAYED_RETRY_MAX_SLEEP_SEC='$DELAYED_RETRY_MAX_SLEEP_SEC' is not a number — using horizon+buffer (${_min_sleep}s)"
+    DELAYED_RETRY_MAX_SLEEP_SEC="$_min_sleep" ;;
+  *)
+    if [ "$DELAYED_RETRY_MAX_SLEEP_SEC" -lt "$_min_sleep" ]; then
+      echo "::warning::delayed-rate-limit-retry: DELAYED_RETRY_MAX_SLEEP_SEC=${DELAYED_RETRY_MAX_SLEEP_SEC}s is below horizon+buffer (${_min_sleep}s) — raising it so the retry wakes after reset"
+      DELAYED_RETRY_MAX_SLEEP_SEC="$_min_sleep"
+    fi ;;
+esac
 
 if [ -z "$PR_URL" ] || [ -z "$HEAD_SHA" ]; then
   echo "::error::delayed-rate-limit-retry: PR_URL and HEAD_SHA are required"
@@ -62,15 +84,18 @@ echo "  Armed head: ${HEAD_SHA:0:8}"
 echo "  Not before: ${NOT_BEFORE:-<none>}"
 
 # still_applicable <phase>
-# The armed retry must still apply: the PR open, un-merged, and at the SAME head
-# the marker was armed on. Returns non-zero (caller no-ops) when it does not.
+# The armed retry must still apply: the PR open, un-merged, at the SAME head the
+# marker was armed on, and that head's rate-limit marker still present. Returns
+# non-zero (caller no-ops) when it does not. Without the marker check, a retry
+# whose marker was removed would fall through the delegated sweep's ordinary
+# REVIEW_REQUIRED + green-CI path and launch a plain review instead of no-oping.
 # Run BOTH before sleeping and after waking: the pre-sleep call aborts a runner
 # whose PR was already pushed/merged in the arming→start gap so it never sleeps
 # the full hour just to no-op, and the post-sleep call catches a push/merge that
 # landed during the sleep (#1994).
 still_applicable() {
-  local _phase="$1" _snapshot _current_head _state
-  if ! _snapshot=$(gh pr view "$PR_URL" --json headRefOid,state 2>/dev/null); then
+  local _phase="$1" _snapshot _current_head _state _has_marker
+  if ! _snapshot=$(gh pr view "$PR_URL" --json headRefOid,state,comments 2>/dev/null); then
     echo "  no-op ($_phase): could not fetch $PR_URL (deleted, no access, or rate-limited) — leaving to the cron sweep"
     return 1
   fi
@@ -86,6 +111,12 @@ still_applicable() {
   fi
   if [ "$_current_head" != "$HEAD_SHA" ]; then
     echo "  no-op ($_phase): head advanced ${HEAD_SHA:0:8} -> ${_current_head:0:8} — superseded by a newer push; its event drives a fresh review"
+    return 1
+  fi
+  _has_marker=$(jq -r --arg m "<!-- pr-review-agent rate-limited v1 sha=${HEAD_SHA} " \
+    '[.comments[]? | (.body // "") | select(contains($m))] | length > 0' <<< "$_snapshot" 2>/dev/null || echo "false")
+  if [ "$_has_marker" != "true" ]; then
+    echo "  no-op ($_phase): no rate-limit marker for head ${HEAD_SHA:0:8} — nothing armed to retry"
     return 1
   fi
   return 0

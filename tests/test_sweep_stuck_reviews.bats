@@ -448,6 +448,37 @@ near_reset() {
   [ "$(grep -c -- 'workflow run pr-review-delayed-retry.yml' "$GH_LOG")" -eq 1 ]
 }
 
+@test "a failed arm attempt still spends a MAX_DISPATCH slot (no retry storm on dispatch errors)" {
+  local reset; reset="$(near_reset)"
+  write_pr 19950 "REVIEW_REQUIRED" "$ROLLUP_PASS" "rl19950" "[]" "$(rl_comment rl19950 "$reset")"
+  write_pr 19951 "REVIEW_REQUIRED" "$ROLLUP_PASS" "rl19951" "[]" "$(rl_comment rl19951 "$reset")"
+  { url_for 19950; url_for 19951; } > "$SWEEP_PRS_FILE"
+  export MAX_DISPATCH=1
+
+  # Every `gh workflow run` fails: the first arm attempt must consume the only
+  # slot so the second PR is not attempted at all.
+  cat > "$MOCK_BIN/gh" <<'EOF2'
+#!/usr/bin/env bash
+case "$1" in
+  pr)
+    if [ "$2" = "view" ]; then
+      url="$3"; num="${url##*/}"; f="$FIXTURE_DIR/pr_${num}.json"
+      if [ -f "$f" ]; then cat "$f"; exit 0; fi
+      echo "no fixture for $url" >&2; exit 1
+    fi ;;
+  run) printf '[]'; exit 0 ;;
+  workflow) printf '%s\n' "$*" >> "$GH_LOG"; exit 1 ;;
+esac
+exit 0
+EOF2
+  chmod +x "$MOCK_BIN/gh"
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(grep -c -- 'workflow run pr-review-delayed-retry.yml' "$GH_LOG")" -eq 1 ]
+  [[ "$output" == *"failed to arm delayed retry"* ]]
+}
+
 @test "defer does not re-arm when a delayed retry is already in flight (#1994 dedup)" {
   local reset; reset="$(near_reset)"
   write_pr 19949 "REVIEW_REQUIRED" "$ROLLUP_PASS" "rl19949" "[]" "$(rl_comment rl19949 "$reset")"

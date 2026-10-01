@@ -66,12 +66,12 @@ teardown() {
   rm -f "${GH_LOG:-}"
 }
 
-# write_pr <num> <reviewDecision> <rollup-json> [head] [reviews-json] [comments-json] [labels-json]
+# write_pr <num> <reviewDecision> <rollup-json> [head] [reviews-json] [comments-json] [labels-json] [state]
 write_pr() {
-  local num="$1" decision="$2" rollup="$3" head="${4-deadbeef}" reviews="${5:-[]}" comments="${6:-[]}" labels="${7:-[]}"
+  local num="$1" decision="$2" rollup="$3" head="${4-deadbeef}" reviews="${5:-[]}" comments="${6:-[]}" labels="${7:-[]}" state="${8:-OPEN}"
   jq -n --arg d "$decision" --argjson r "$rollup" --arg h "$head" \
-        --argjson rv "$reviews" --argjson cm "$comments" --argjson lb "$labels" \
-    '{headRefOid:$h, reviewDecision:$d, statusCheckRollup:$r, reviews:$rv, comments:$cm, labels:($lb | map({name:.}))}' \
+        --argjson rv "$reviews" --argjson cm "$comments" --argjson lb "$labels" --arg s "$state" \
+    '{headRefOid:$h, state:$s, reviewDecision:$d, statusCheckRollup:$r, reviews:$rv, comments:$cm, labels:($lb | map({name:.}))}' \
     > "$FIXTURE_DIR/pr_${num}.json"
 }
 
@@ -178,6 +178,72 @@ url_for() { echo "https://github.com/petry-projects/demo/pull/$1"; }
   run bash "$RETRY"
   [ "$status" -eq 0 ]
   [ ! -s "$GH_LOG" ]
+}
+
+# ---------------------------------------------------------------------------
+# A merged or closed PR makes the armed retry a no-op, even at the armed head.
+# ---------------------------------------------------------------------------
+@test "retry no-ops when the PR was merged" {
+  write_pr 2010 "APPROVED" "$ROLLUP_PASS" "armed10" "[]" "$(rl_comment armed10 "$PAST_RESET")" "[]" "MERGED"
+  export PR_URL; PR_URL="$(url_for 2010)"
+  export HEAD_SHA="armed10" NOT_BEFORE="$PAST_RESET"
+
+  run bash "$RETRY"
+  [ "$status" -eq 0 ]
+  [ ! -s "$GH_LOG" ]
+  [[ "$output" == *"PR is MERGED"* ]]
+}
+
+@test "retry no-ops when the PR was closed" {
+  write_pr 2011 "REVIEW_REQUIRED" "$ROLLUP_PASS" "armed11" "[]" "$(rl_comment armed11 "$PAST_RESET")" "[]" "CLOSED"
+  export PR_URL; PR_URL="$(url_for 2011)"
+  export HEAD_SHA="armed11" NOT_BEFORE="$PAST_RESET"
+
+  run bash "$RETRY"
+  [ "$status" -eq 0 ]
+  [ ! -s "$GH_LOG" ]
+  [[ "$output" == *"PR is CLOSED"* ]]
+}
+
+# ---------------------------------------------------------------------------
+# The armed head's rate-limit marker must still exist at wake time. Without it
+# the delegated sweep would launch an ordinary review for a green
+# REVIEW_REQUIRED PR, so the stale retry must no-op instead.
+# ---------------------------------------------------------------------------
+@test "retry no-ops when the rate-limit marker for the armed head is gone" {
+  write_pr 2012 "REVIEW_REQUIRED" "$ROLLUP_PASS" "armed12" "[]" "[]"
+  export PR_URL; PR_URL="$(url_for 2012)"
+  export HEAD_SHA="armed12" NOT_BEFORE="$PAST_RESET"
+
+  run bash "$RETRY"
+  [ "$status" -eq 0 ]
+  [ ! -s "$GH_LOG" ]
+  [[ "$output" == *"no rate-limit marker for head"* ]]
+}
+
+@test "retry no-ops when the only marker is for a different head" {
+  write_pr 2013 "REVIEW_REQUIRED" "$ROLLUP_PASS" "armed13" "[]" "$(rl_comment otherhead13 "$PAST_RESET")"
+  export PR_URL; PR_URL="$(url_for 2013)"
+  export HEAD_SHA="armed13" NOT_BEFORE="$PAST_RESET"
+
+  run bash "$RETRY"
+  [ "$status" -eq 0 ]
+  [ ! -s "$GH_LOG" ]
+}
+
+# ---------------------------------------------------------------------------
+# The sleep ceiling is derived from horizon + buffer; an explicit lower value is
+# raised to that floor so the retry never wakes before reset+buffer.
+# ---------------------------------------------------------------------------
+@test "a max-sleep below horizon+buffer is raised to the floor with a warning" {
+  write_pr 2014 "REVIEW_REQUIRED" "$ROLLUP_PASS" "armed14" "[]" "$(rl_comment armed14 "$PAST_RESET")"
+  export PR_URL; PR_URL="$(url_for 2014)"
+  export HEAD_SHA="armed14" NOT_BEFORE="$PAST_RESET" \
+    DELAYED_RETRY_HORIZON_SEC=7200 DELAYED_RETRY_BUFFER_SEC=60 DELAYED_RETRY_MAX_SLEEP_SEC=100
+
+  run bash "$RETRY"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"below horizon+buffer (7260s)"* ]]
 }
 
 # ---------------------------------------------------------------------------
