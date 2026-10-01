@@ -1044,7 +1044,11 @@ _adv_bots=$(
   [[ ${#ADVISORY_BOTS[@]} -gt 0 ]] && printf '%s\n' "${!ADVISORY_BOTS[@]}" | sort | jq -R . | jq -s .
 ) || _adv_bots=''
 if [[ -z "$_adv_bots" ]]; then
-  _adv_bots='["chatgpt-codex-connector","copilot-pull-request-reviewer","gemini-code-assist","sonarqubecloud"]'
+  # Last-resort fallback when sourcing the gate (ADVISORY_BOTS, a registry projection)
+  # fails. Must equal the advisory_gate=yes set in scripts/lib/reviewer-sources.tsv — the
+  # 5-bot advisory-wait set since #1997 dropped copilot/codex/qodo. Kept in sync by
+  # tests/test_reviewer_sources.bats ("_adv_bots literal fallback == registry ...").
+  _adv_bots='["codeant-ai","cubic-dev-ai","gemini-code-assist","graphite-app","sonarqubecloud"]'
 fi
 ADVISORY_REVIEW_BODIES=$(echo "$PR_SNAPSHOT" | jq -r --argjson bots "$_adv_bots" --arg head "$PR_HEAD_SHA" '
   [(.reviews // [])[] | select([.author.login] | inside($bots)) | select(.commit.oid == $head)]

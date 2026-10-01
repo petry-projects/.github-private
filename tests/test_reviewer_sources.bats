@@ -225,6 +225,24 @@ TSV
   [ "$from_report" = "$from_reg" ]
 }
 
+@test "consistency: review-one-pr.sh _adv_bots literal fallback == registry advisory-gate projection (#1997)" {
+  # review-one-pr.sh derives its advisory-bot list by sourcing the gate (ADVISORY_BOTS,
+  # itself a registry projection), but carries a hardcoded `_adv_bots='[…]'` literal as
+  # a last-resort fallback for when that sourcing fails. That literal is the fourth copy
+  # of the advisory set and must agree with the registry, or the triage prompt's advisory
+  # denominator silently diverges from the recorded policy (#1997). This test extracts the
+  # literal and asserts it equals the advisory-gate projection — it would have caught the
+  # pre-#1997 drift where the literal still listed the original four bots.
+  local literal
+  literal="$(grep -oE "_adv_bots='\[[^]]*\]'" "$REPO_ROOT/scripts/review-one-pr.sh" | head -1 \
+    | sed "s/^_adv_bots='//; s/'\$//")"
+  [ -n "$literal" ] || { echo "could not extract _adv_bots literal from review-one-pr.sh" >&2; return 1; }
+  local from_literal from_reg
+  from_literal="$(printf '%s' "$literal" | jq -r '.[]' | sort)"
+  from_reg="$(reviewer_sources_advisory_gate_logins | sort)"
+  [ "$from_literal" = "$from_reg" ]
+}
+
 @test "consistency: every registry source has a scorecard display label" {
   # shellcheck source=scripts/reviewer_report.sh
   source "$REPO_ROOT/scripts/reviewer_report.sh"
