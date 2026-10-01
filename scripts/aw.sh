@@ -99,6 +99,19 @@ if engine and not isinstance(engine, str):
 elif engine and engine not in families and not engine.startswith("claude"):
     print(f"aw compile: {path}: warning: unknown engine {engine!r} (name a family: opus|sonnet|haiku)", file=sys.stderr)
 
+# A runner-style engine (e.g. `claude`, not a family or claude-* id) takes its model
+# from models.<engine>; `aw run` hard-fails without one, so fail compile the same
+# way. The model itself must be a family or a concrete claude-* id.
+if isinstance(engine, str) and engine and engine not in families and not engine.startswith("claude-"):
+    models = fm.get("models") or {}
+    val = models.get(engine) if isinstance(models, dict) else None
+    if isinstance(val, list):
+        val = val[0] if val else None
+    if not val:
+        errors.append(f"engine {engine!r} needs a model: set models.{engine}: [<family>]")
+    elif not isinstance(val, str) or not (val in families or val.startswith("claude-")):
+        errors.append(f"models.{engine} must be a family (opus|sonnet|haiku) or a claude-* id, got {val!r}")
+
 # Validate output mode if present
 output_mode = fm.get("output")
 if output_mode and output_mode not in ("staged", "live"):

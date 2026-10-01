@@ -21,6 +21,9 @@ set -euo pipefail
 
 ROOT="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 
+# docs/ is deliberately NOT scanned: docs legitimately cite concrete ids (pricing
+# history, override examples, migration notes). Describe a workflow's model by
+# its family there; this gate covers the code and config that actually run.
 SCAN_DIRS=(.github scripts prompts agents personas)
 # Family-first ids (claude-<family>-<N>…) and the legacy version-first form
 # (claude-<N>-<N>-<family>-<date>).

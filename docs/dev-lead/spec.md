@@ -660,14 +660,16 @@ No external script. Runs entirely as a `run:` shell block within the job.
 
 ### 9.3 Inherited from `engine.sh`
 
-Per-engine model names are controlled by the same env vars used by the PR Review Agent:
+Per-engine model names are controlled by the same env vars used by the PR Review Agent. The Claude
+defaults are the first model of each tier's chain in `scripts/lib/engine-models.sh` (the single source
+of truth), so this table names the chain, not a concrete id:
 
 | Variable | Claude default | Gemini default | Copilot default |
 |---|---|---|---|
-| `ENGINE_TRIAGE_MODEL` | `claude-haiku-4-5-20251001` | `gemini-2.0-flash` | `o4-mini` |
-| `ENGINE_ACTION_MODEL` | `claude-sonnet-4-6` | `gemini-2.5-pro` | `o4-mini` |
-| `ENGINE_DEEP_MODEL` | `claude-sonnet-4-6` | `gemini-2.5-pro` | `o4-mini` |
-| `ENGINE_SINGLE_MODEL` | `claude-opus-4-7` | `gemini-2.5-pro` | `o4-mini` |
+| `ENGINE_TRIAGE_MODEL` | `triage` chain primary (haiku family) | `gemini-2.0-flash` | `o4-mini` |
+| `ENGINE_ACTION_MODEL` | `action` chain primary (sonnet family) | `gemini-2.5-pro` | `o4-mini` |
+| `ENGINE_DEEP_MODEL` | `deep` chain primary (opus family) | `gemini-2.5-pro` | `o4-mini` |
+| `ENGINE_SINGLE_MODEL` | `single` chain primary (opus family) | `gemini-2.5-pro` | `o4-mini` |
 
 ---
 
