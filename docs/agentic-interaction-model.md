@@ -295,8 +295,8 @@ reconcile the missed event on a cadence. The timer does not preserve the event �
 re-discovers the actionable state by scanning — so it **must** satisfy the full timer
 contract in §6 (stop condition, idempotency, human-gated markers). `pr-review-sweep.yml`'s
 scheduled backstop is exactly this: the net under its `workflow_run` fast path, nominally
-≤15 min but best-effort — GitHub delays or drops scheduled runs under load (observed 3–7 h,
-#1952), so a time-bound retry must not rely on it (the rate-limit case is armed explicitly by
+≤15 min but best-effort — GitHub delays or drops scheduled runs under load (observed 3–7 h
+in #1952), so a time-bound retry must not rely on it (the rate-limit case is armed explicitly by
 `pr-review-delayed-retry.yml`, #1994).
 
 **Never** attempt to cross the boundary by having `GITHUB_TOKEN` emit the triggering event
