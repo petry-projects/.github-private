@@ -337,6 +337,184 @@ FUTURE_RESET='2999-01-01T00:00:00Z'
 }
 
 # ---------------------------------------------------------------------------
+# Deterministic delayed-retry arming (issue #1994).
+#
+# When the sweep DEFERS a PR on an un-elapsed rate-limit marker whose reset is
+# within DELAYED_RETRY_HORIZON_SEC (default 3600s), it ARMS a delayed retry by
+# dispatching pr-review-delayed-retry.yml with -f pr_url / -f head_sha /
+# -f not_before=<reset>. A reset BEYOND the horizon falls back to the cron sweep
+# (no arm). Arming is suppressed when ARM_DELAYED_RETRY=false — the path the
+# delayed retry itself takes when it delegates back to the sweep, so it can never
+# re-arm itself into a loop. All existing future-reset tests use FUTURE_RESET
+# (year 2999), which is far beyond any horizon, so they never arm.
+# ---------------------------------------------------------------------------
+
+# A reset ~30 minutes out — inside the default 3600s arming horizon.
+near_reset() {
+  date -u -d '+30 minutes' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+    || date -u -v+30M +%Y-%m-%dT%H:%M:%SZ
+}
+
+@test "near-reset defer arms exactly one delayed retry (not an immediate review)" {
+  local reset; reset="$(near_reset)"
+  write_pr 1994 "REVIEW_REQUIRED" "$ROLLUP_PASS" "rl1994" "[]" "$(rl_comment rl1994 "$reset")"
+  url_for 1994 > "$SWEEP_PRS_FILE"
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(grep -c -- 'workflow run pr-review-delayed-retry.yml' "$GH_LOG")" -eq 1 ]
+  grep -qF -- "-f pr_url=$(url_for 1994)" "$GH_LOG"
+  grep -qF -- "-f head_sha=rl1994" "$GH_LOG"
+  grep -qF -- "-f not_before=$reset" "$GH_LOG"
+  # Deferred, so the review itself is NOT re-dispatched now.
+  ! grep -qF -- "workflow run pr-review-trigger.yml" "$GH_LOG"
+}
+
+@test "far-reset defer arms no delayed retry (falls back to the cron sweep)" {
+  write_pr 19941 "REVIEW_REQUIRED" "$ROLLUP_PASS" "rl19941" "[]" "$(rl_comment rl19941 "$FUTURE_RESET")"
+  url_for 19941 > "$SWEEP_PRS_FILE"
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ ! -s "$GH_LOG" ]
+  [[ "$output" == *"defer"* ]]
+}
+
+@test "configurable horizon: a reset beyond DELAYED_RETRY_HORIZON_SEC does not arm" {
+  local reset; reset="$(near_reset)"   # ~30 min out
+  write_pr 19942 "REVIEW_REQUIRED" "$ROLLUP_PASS" "rl19942" "[]" "$(rl_comment rl19942 "$reset")"
+  url_for 19942 > "$SWEEP_PRS_FILE"
+  export DELAYED_RETRY_HORIZON_SEC=60   # 1-min horizon; a 30-min reset is beyond it
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ ! -s "$GH_LOG" ]
+  [[ "$output" == *"defer"* ]]
+}
+
+@test "ARM_DELAYED_RETRY=false suppresses arming (the retry-delegation path)" {
+  local reset; reset="$(near_reset)"
+  write_pr 19943 "REVIEW_REQUIRED" "$ROLLUP_PASS" "rl19943" "[]" "$(rl_comment rl19943 "$reset")"
+  url_for 19943 > "$SWEEP_PRS_FILE"
+  export ARM_DELAYED_RETRY=false
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ ! -s "$GH_LOG" ]
+  [[ "$output" == *"defer"* ]]
+}
+
+@test "near-reset arming honours DRY_RUN (logs intent, dispatches nothing)" {
+  local reset; reset="$(near_reset)"
+  write_pr 19944 "REVIEW_REQUIRED" "$ROLLUP_PASS" "rl19944" "[]" "$(rl_comment rl19944 "$reset")"
+  url_for 19944 > "$SWEEP_PRS_FILE"
+  export DRY_RUN=true
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ ! -s "$GH_LOG" ]
+  # Assert on the dry-run arming INTENT, not the always-printed summary line: the
+  # old `*"arm"*` match also hit "... delayed retries armed." so it passed even if
+  # the dry-run branch were dropped entirely.
+  [[ "$output" == *"dry-run: would arm delayed retry"* ]]
+}
+
+@test "MAX_DISPATCH is a shared budget across dispatches and delayed arms (not 2x)" {
+  # One stuck-green PR (dispatch) + one near-reset PR (arm). With MAX_DISPATCH=1,
+  # once the dispatch is spent the arm must be skipped — a single sweep may issue
+  # at most MAX_DISPATCH requests TOTAL, never MAX_DISPATCH of each.
+  local reset; reset="$(near_reset)"
+  write_pr 19945 "REVIEW_REQUIRED" "$ROLLUP_PASS" "sg19945"                                  # stuck-green → dispatch
+  write_pr 19946 "REVIEW_REQUIRED" "$ROLLUP_PASS" "rl19946" "[]" "$(rl_comment rl19946 "$reset")"  # near-reset → arm
+  { url_for 19945; url_for 19946; } > "$SWEEP_PRS_FILE"
+  export MAX_DISPATCH=1
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(grep -c 'workflow run' "$GH_LOG")" -eq 1 ]
+  grep -qF -- "-f pr_url=$(url_for 19945)" "$GH_LOG"
+  ! grep -qF -- "workflow run pr-review-delayed-retry.yml" "$GH_LOG"
+}
+
+@test "MAX_DISPATCH caps armed retries too (two near-reset PRs, only one arms)" {
+  local reset; reset="$(near_reset)"
+  write_pr 19947 "REVIEW_REQUIRED" "$ROLLUP_PASS" "rl19947" "[]" "$(rl_comment rl19947 "$reset")"
+  write_pr 19948 "REVIEW_REQUIRED" "$ROLLUP_PASS" "rl19948" "[]" "$(rl_comment rl19948 "$reset")"
+  { url_for 19947; url_for 19948; } > "$SWEEP_PRS_FILE"
+  export MAX_DISPATCH=1
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(grep -c -- 'workflow run pr-review-delayed-retry.yml' "$GH_LOG")" -eq 1 ]
+}
+
+@test "a failed arm attempt still spends a MAX_DISPATCH slot (no retry storm on dispatch errors)" {
+  local reset; reset="$(near_reset)"
+  write_pr 19950 "REVIEW_REQUIRED" "$ROLLUP_PASS" "rl19950" "[]" "$(rl_comment rl19950 "$reset")"
+  write_pr 19951 "REVIEW_REQUIRED" "$ROLLUP_PASS" "rl19951" "[]" "$(rl_comment rl19951 "$reset")"
+  { url_for 19950; url_for 19951; } > "$SWEEP_PRS_FILE"
+  export MAX_DISPATCH=1
+
+  # Every `gh workflow run` fails: the first arm attempt must consume the only
+  # slot so the second PR is not attempted at all.
+  cat > "$MOCK_BIN/gh" <<'EOF2'
+#!/usr/bin/env bash
+case "$1" in
+  pr)
+    if [ "$2" = "view" ]; then
+      url="$3"; num="${url##*/}"; f="$FIXTURE_DIR/pr_${num}.json"
+      if [ -f "$f" ]; then cat "$f"; exit 0; fi
+      echo "no fixture for $url" >&2; exit 1
+    fi ;;
+  run) printf '[]'; exit 0 ;;
+  workflow) printf '%s\n' "$*" >> "$GH_LOG"; exit 1 ;;
+esac
+exit 0
+EOF2
+  chmod +x "$MOCK_BIN/gh"
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$(grep -c -- 'workflow run pr-review-delayed-retry.yml' "$GH_LOG")" -eq 1 ]
+  [[ "$output" == *"failed to arm delayed retry"* ]]
+}
+
+@test "defer does not re-arm when a delayed retry is already in flight (#1994 dedup)" {
+  local reset; reset="$(near_reset)"
+  write_pr 19949 "REVIEW_REQUIRED" "$ROLLUP_PASS" "rl19949" "[]" "$(rl_comment rl19949 "$reset")"
+  url_for 19949 > "$SWEEP_PRS_FILE"
+
+  # gh run list reports an in-progress retry whose run-name (displayTitle) ends in
+  # "<pr_url> @ <head_sha>" for this exact (PR, head) — so arm_delayed_retry must
+  # dedup and dispatch nothing new.
+  cat > "$MOCK_BIN/gh" <<EOF
+#!/usr/bin/env bash
+case "\$1" in
+  pr)
+    if [ "\$2" = "view" ]; then
+      url="\$3"; num="\${url##*/}"; f="\$FIXTURE_DIR/pr_\${num}.json"
+      if [ -f "\$f" ]; then cat "\$f"; exit 0; fi
+      echo "no fixture for \$url" >&2; exit 1
+    fi ;;
+  run)
+    # gh run list --json status,displayTitle ...
+    printf '%s' '[{"status":"in_progress","displayTitle":"pr-review-delayed-retry $(url_for 19949) @ rl19949"}]'
+    exit 0 ;;
+  workflow)
+    printf '%s\n' "\$*" >> "\$GH_LOG"; exit 0 ;;
+esac
+exit 0
+EOF
+  chmod +x "$MOCK_BIN/gh"
+
+  run bash "$SCRIPT"
+  [ "$status" -eq 0 ]
+  [ ! -s "$GH_LOG" ]
+  [[ "$output" == *"arm skipped"* ]]
+  [[ "$output" == *"already in flight"* ]]
+}
+
+# ---------------------------------------------------------------------------
 # Event-driven fast path (#898): a `workflow_run: completed` kick scopes the
 # sweep to the completing run's PR(s) via the event payload, so a PR that just
 # went green is re-reviewed in seconds instead of waiting for the cron backstop.
