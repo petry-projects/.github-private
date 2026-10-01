@@ -248,6 +248,7 @@ keeps its own file) carries **no** job qualifier and remains exactly one row.
 > | `.github/workflows/persona-runner-reusable.yml` | Reusable workflow — invoked via `workflow_call`, not a direct entrypoint |
 > | `.github/workflows/pr-review.yml` | Reusable workflow — invoked via `workflow_call`, not a direct entrypoint |
 > | `.github/workflows/repair-pr-approvals.yml` | Manual admin tool — `workflow_dispatch` only, no automated agentic trigger |
+> | `.github/workflows/model-ab.yml` | Manual maintainer eval tool — `workflow_dispatch` only, no schedule/automated trigger, no agent→agent interaction (#1950) |
 
 ---
 
