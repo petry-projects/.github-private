@@ -27,14 +27,16 @@ setup() {
   [ "$output" = "2.00 0.20 2.50 10.00" ]
 }
 
-@test "price_for: sonnet 5 standard window — exact boundary (2026-09-01) → \$3 / \$0.30 / \$3.75 / \$15" {
+# The 2026-09-01 increase to $3/$15 was cancelled (pricing page footnote 3), so the
+# $2/$10 launch rate is now the standard price — the boundary row is corrected to $2.
+@test "price_for: sonnet 5 at cancelled-increase boundary (2026-09-01) → still \$2 / \$0.20 / \$2.50 / \$10" {
   run price_for "claude-sonnet-5-20261231" "2026-09-01"
-  [ "$output" = "3.00 0.30 3.75 15.00" ]
+  [ "$output" = "2.00 0.20 2.50 10.00" ]
 }
 
-@test "price_for: sonnet 5 standard window (after 2026-09-01) → \$3 / \$0.30 / \$3.75 / \$15" {
+@test "price_for: sonnet 5 after 2026-09-01 → still \$2 / \$0.20 / \$2.50 / \$10 (increase cancelled)" {
   run price_for "claude-sonnet-5-20261231" "2026-09-02"
-  [ "$output" = "3.00 0.30 3.75 15.00" ]
+  [ "$output" = "2.00 0.20 2.50 10.00" ]
 }
 
 # The bare alias `claude-sonnet-5` is the real model id (#1957); the
@@ -44,9 +46,32 @@ setup() {
   [ "$output" = "2.00 0.20 2.50 10.00" ]
 }
 
-@test "price_for: bare claude-sonnet-5 is priced (standard window) — #1957" {
+@test "price_for: bare claude-sonnet-5 is priced (after 2026-09-01) — #1957" {
   run price_for "claude-sonnet-5" "2026-09-27"
-  [ "$output" = "3.00 0.30 3.75 15.00" ]
+  [ "$output" = "2.00 0.20 2.50 10.00" ]
+}
+
+# Sonnet 5.5 (#1978): the `claude-sonnet-5-5*` glob (17 literal chars) is more
+# specific than `claude-sonnet-5-*` (16), so a claude-sonnet-5-5 record resolves
+# to its own row — never leaking into the general sonnet-5 rate. Prices verified
+# against https://platform.claude.com/docs/en/about-claude/pricing (2026-09-28):
+# input $2 / cache-read $0.20 / 5m cache-write $2.50 / output $10.
+@test "price_for: sonnet 5.5 pinned at effective_from (2026-09-28) → \$2 / \$0.20 / \$2.50 / \$10 — #1978" {
+  run price_for "claude-sonnet-5-5" "2026-09-28"
+  [ "$output" = "2.00 0.20 2.50 10.00" ]
+}
+
+@test "price_for: sonnet 5.5 beats the claude-sonnet-5-* glob after 2026-09-01 — #1978" {
+  run price_for "claude-sonnet-5-5" "2026-10-01"
+  [ "$output" = "2.00 0.20 2.50 10.00" ]
+}
+
+# The bare `claude-sonnet-5` id keeps its own rows and is unaffected by the new
+# 5-5 row — proving the two ids are priced independently. Both now resolve to the
+# $2/$10 standard rate (the sonnet-5 September increase was cancelled).
+@test "price_for: bare claude-sonnet-5 unaffected by the 5-5 row — #1978" {
+  run price_for "claude-sonnet-5" "2026-10-01"
+  [ "$output" = "2.00 0.20 2.50 10.00" ]
 }
 
 @test "price_for: more-specific glob wins (opus-4-1 legacy = \$15, not \$5)" {
@@ -101,6 +126,25 @@ setup() {
   rm -f "$PRICING_TABLE"
   [ "$before" = "10.00 1.00 12.50 40.00" ]
   [ "$after"  = "8.00 0.80 10.00 32.00" ]
+}
+
+# #1978 AC-1: a claude-sonnet-5-5 record resolves to the claude-sonnet-5-5* row,
+# not claude-sonnet-5-*. The production rows share one rate, so only a fixture
+# with distinct rates can tell the two rows apart.
+@test "price_for: claude-sonnet-5-5* beats claude-sonnet-5-* (distinct fixture rates) — #1978" {
+  PRICING_TABLE="$(mktemp)"
+  {
+    printf 'claude-sonnet-5-*\t2026-06-30\t1.00\t0.10\t1.25\t5.00\n'
+    printf 'claude-sonnet-5-5*\t2026-09-28\t7.00\t0.70\t8.75\t35.00\n'
+    printf 'claude-sonnet-5\t2026-06-30\t3.00\t0.30\t3.75\t15.00\n'
+  } > "$PRICING_TABLE"
+  five_five="$(price_for "claude-sonnet-5-5" "2026-10-01")"
+  dated_five="$(price_for "claude-sonnet-5-20261231" "2026-10-01")"
+  bare_five="$(price_for "claude-sonnet-5" "2026-10-01")"
+  rm -f "$PRICING_TABLE"
+  [ "$five_five"  = "7.00 0.70 8.75 35.00" ]
+  [ "$dated_five" = "1.00 0.10 1.25 5.00" ]
+  [ "$bare_five"  = "3.00 0.30 3.75 15.00" ]
 }
 
 @test "price_for: date before the earliest effective_from → empty (no retroactive guess)" {
