@@ -277,14 +277,20 @@ _mrc_minimized_reason() {
 # #1918 review: the registered-bot path must require a GitHub App actor. A PERSON
 # whose login happens to equal a registered bot login (e.g. a user account named
 # `sonarqubecloud`) must be refused like any other human — never minimized.
+# A SonarCloud clean-status body that matches its registered info_status_pattern.
+SONAR_PASS_JSON_BODY='**Quality Gate passed**\\n[0 New issues]\\n[0 Security Hotspots]'
+
 _mrc_fake_gh() {
-  # $1 = author __typename. Writes a `gh` shim on PATH that answers the one GraphQL
-  # read and records any other call (a minimize or reply would be a failure).
+  # $1 = author __typename, $2 = author login (default sonarqubecloud), $3 = the
+  # comment body as a JSON string fragment (default a matching SonarCloud clean
+  # status). Writes a `gh` shim on PATH that answers the one GraphQL read and
+  # records any other call (a minimize or reply would be a failure).
+  local login="${2:-sonarqubecloud}" body="${3:-$SONAR_PASS_JSON_BODY}"
   local bin="$BATS_TEST_TMPDIR/bin"; mkdir -p "$bin"
   cat > "$bin/gh" <<SHIM
 #!/usr/bin/env bash
 if [[ "\$*" == *"viewer{login}"* ]]; then
-  printf '%s' '{"data":{"viewer":{"login":"don-petry"},"node":{"author":{"__typename":"$1","login":"sonarqubecloud"},"isMinimized":false,"minimizedReason":null,"url":"https://github.com/o/r/pull/1#issuecomment-1"}}}'
+  printf '%s' '{"data":{"viewer":{"login":"don-petry"},"node":{"author":{"__typename":"$1","login":"$login"},"body":"$body","isMinimized":false,"minimizedReason":null,"url":"https://github.com/o/r/pull/1#issuecomment-1"}}}'
   exit 0
 fi
 echo "\$*" >> "$BATS_TEST_TMPDIR/gh-writes.log"
@@ -310,6 +316,44 @@ SHIM
   [ -s "$BATS_TEST_TMPDIR/gh-writes.log" ]
 }
 
+# #1995 review: registering a bot that ALSO posts findings (Codex, CodeRabbit,
+# Qodo) must not let the bot path minimize those findings. The body must match
+# the author's info_status_pattern, not just the login.
+@test "#1995: a registered bot's FINDING (body does not match its pattern) is refused (exit 3, no write)" {
+  _mrc_fake_gh Bot chatgpt-codex-connector '**P1** Possible null dereference in scripts/foo.sh:42 — guard the lookup.'
+  run bash "$MRC" "IC_kwDOfake1" --reason "status only"
+  [ "$status" -eq 3 ]
+  echo "$output" | grep -qi "info_status_pattern"
+  [ ! -s "$BATS_TEST_TMPDIR/gh-writes.log" ]
+}
+
+@test "#1995: a registered bot's matching NOTICE is still authorized for the bot path" {
+  _mrc_fake_gh Bot chatgpt-codex-connector 'You have reached your Codex usage limits for code reviews. You can see your limits in the Codex usage dashboard.'
+  run bash "$MRC" "IC_kwDOfake1" --reason "usage-limit notice"
+  [ "$status" -ne 3 ]
+  [ -s "$BATS_TEST_TMPDIR/gh-writes.log" ]
+}
+
+@test "#1995: a SonarCloud 'Quality Gate failed' comment is refused on the bot path" {
+  _mrc_fake_gh Bot sonarqubecloud '**Quality Gate failed**\\n[3 New issues]'
+  run bash "$MRC" "IC_kwDOfake1" --reason "status only"
+  [ "$status" -eq 3 ]
+  [ ! -s "$BATS_TEST_TMPDIR/gh-writes.log" ]
+}
+
+@test "#1995: mrc_bot_body_matches is login-pinned and fails closed" {
+  local pats
+  pats=$'chatgpt-codex-connector\t^You have reached your Codex usage limits?( for code reviews)?\\.'
+  run bash -c "source '$MRC'; mrc_bot_body_matches 'chatgpt-codex-connector[bot]' 'You have reached your Codex usage limit.' \"\$1\"" _ "$pats"
+  [ "$status" -eq 0 ]
+  run bash -c "source '$MRC'; mrc_bot_body_matches 'someone-else' 'You have reached your Codex usage limit.' \"\$1\"" _ "$pats"
+  [ "$status" -ne 0 ]
+  run bash -c "source '$MRC'; mrc_bot_body_matches 'chatgpt-codex-connector' '' \"\$1\"" _ "$pats"
+  [ "$status" -ne 0 ]
+  run bash -c "source '$MRC'; mrc_bot_body_matches 'chatgpt-codex-connector' 'You have reached your Codex usage limit.' ''"
+  [ "$status" -ne 0 ]
+}
+
 # #1920 review: the reply-idempotency lookup must (a) only accept an existing
 # reply the invoking maintainer authored — a forged marker from any other login
 # must NOT suppress the audit reply (CWE-345) — and (b) fail closed if the
@@ -323,7 +367,7 @@ _mrc_gh_reply_shim() {
 #!/usr/bin/env bash
 args="\$*"
 if [[ "\$args" == *"viewer{login}"* ]]; then
-  printf '%s' '{"data":{"viewer":{"login":"don-petry"},"node":{"author":{"__typename":"Bot","login":"sonarqubecloud"},"isMinimized":false,"minimizedReason":null,"url":"https://github.com/o/r/pull/1#issuecomment-1"}}}'
+  printf '%s' '{"data":{"viewer":{"login":"don-petry"},"node":{"author":{"__typename":"Bot","login":"sonarqubecloud"},"body":"$SONAR_PASS_JSON_BODY","isMinimized":false,"minimizedReason":null,"url":"https://github.com/o/r/pull/1#issuecomment-1"}}}'
   exit 0
 fi
 if [[ "\$args" == *"minimizeComment"* ]]; then
