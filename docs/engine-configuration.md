@@ -57,12 +57,12 @@ Defaults:
 
 | Key | `AI_MODELS_CLAUDE` | `AI_MODELS_GEMINI` | `AI_MODELS_COPILOT` |
 |---|---|---|---|
-| `triage` | `claude-haiku-4-5-20251001,claude-sonnet-5` | `gemini-3.8-flash,gemini-3.1-pro-preview` | `openai/o4-mini` |
-| `deep` | `claude-opus-5-5,claude-opus-4-8,claude-sonnet-5` | `gemini-3.1-pro-preview,gemini-3.8-flash` | `openai/o4-mini` |
+| `triage` | `claude-haiku-4-5-20251001,claude-sonnet-5-5,claude-sonnet-5` | `gemini-3.8-flash,gemini-3.1-pro-preview` | `openai/o4-mini` |
+| `deep` | `claude-opus-5-5,claude-opus-4-8,claude-sonnet-5-5` | `gemini-3.1-pro-preview,gemini-3.8-flash` | `openai/o4-mini` |
 | `audit` | `claude-opus-5-5,claude-opus-4-8,claude-opus-4-7` | `gemini-3.1-pro-preview,gemini-3.8-flash` | `openai/o4-mini` |
-| `action` | `claude-sonnet-5,claude-opus-4-8` | `gemini-3.8-flash,gemini-3.1-pro-preview` | `openai/o4-mini` |
+| `action` | `claude-sonnet-5-5,claude-sonnet-5,claude-opus-4-8` | `gemini-3.8-flash,gemini-3.1-pro-preview` | `openai/o4-mini` |
 | `single` | `claude-opus-5-5,claude-opus-4-8,claude-opus-4-7` | `gemini-3.1-pro-preview,gemini-3.8-flash` | `openai/o4-mini` |
-| `duck` | `claude-sonnet-4-6` | the first `triage` model | the `triage` model |
+| `duck` | `claude-sonnet-5-5` | the first `triage` model | the `triage` model |
 
 Example, Claude with two tasks changed (the others keep their defaults):
 
@@ -96,7 +96,7 @@ keep working:
 An unknown key, an entry without `=`, or a malformed model id is ignored, and
 that tier keeps its default. Each problem is logged once per run as a
 `::warning::`. The run log's `engine:` line shows the chains in use, for
-example `deep: opus 5.5 [opus 4.8, sonnet 5]`.
+example `deep: opus 5.5 [opus 4.8, sonnet 5.5]`.
 
 ## Model selection — name a family, never pin a version
 
@@ -189,5 +189,5 @@ table are allow-listed.
   names each throttled key by its position ("API key 1 of 3"), never by its
   value.
 - **Model chains inside a provider** (for example Claude's deep tier
-  `claude-opus-5-5 → claude-opus-4-8 → claude-sonnet-5`) are walked before any
+  `claude-opus-5-5 → claude-opus-4-8 → claude-sonnet-5-5`) are walked before any
   cross-provider fallback. Set them with `AI_MODELS_*` (above).

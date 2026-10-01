@@ -27,7 +27,7 @@ _engine() {
 # ── Parsing ───────────────────────────────────────────────────────────────────
 
 @test "parse: unset → defaults (Claude deep chain, Gemini deep is 3.1-pro-preview)" {
-  [ "$(ai_models_chain claude deep)" = "claude-opus-5-5,claude-opus-4-8,claude-sonnet-5" ]
+  [ "$(ai_models_chain claude deep)" = "claude-opus-5-5,claude-opus-4-8,claude-sonnet-5-5" ]
   [ "$(ai_models_chain gemini triage)" = "gemini-3.8-flash,gemini-3.1-pro-preview" ]
   [ "$(ai_models_chain gemini action)" = "gemini-3.8-flash,gemini-3.1-pro-preview" ]
   [ "$(ai_models_chain gemini deep)" = "gemini-3.1-pro-preview,gemini-3.8-flash" ]
@@ -57,7 +57,7 @@ _engine() {
   [ "$(ai_models_chain claude triage)" = "claude-sonnet-5" ]
   [ "$(ai_models_chain claude audit)" = "claude-fable-5" ]
   # an omitted key keeps its default
-  [ "$(ai_models_chain claude action)" = "claude-sonnet-5,claude-opus-4-8" ]
+  [ "$(ai_models_chain claude action)" = "claude-sonnet-5-5,claude-sonnet-5,claude-opus-4-8" ]
 }
 
 @test "parse: duplicate models collapse; the last entry for a key wins" {
@@ -69,8 +69,8 @@ _engine() {
 
 @test "problems: unknown key, missing '=', invalid id and empty list are reported and ignored" {
   export AI_MODELS_CLAUDE="deeep=claude-opus-4-8; claude-sonnet-5; deep=claude opus; triage=,"
-  [ "$(ai_models_chain claude deep)" = "claude-opus-5-5,claude-opus-4-8,claude-sonnet-5" ]
-  [ "$(ai_models_chain claude triage)" = "claude-haiku-4-5-20251001,claude-sonnet-5" ]
+  [ "$(ai_models_chain claude deep)" = "claude-opus-5-5,claude-opus-4-8,claude-sonnet-5-5" ]
+  [ "$(ai_models_chain claude triage)" = "claude-haiku-4-5-20251001,claude-sonnet-5-5,claude-sonnet-5" ]
   run ai_models_problems
   [[ "$output" == *"unknown key 'deeep'"* ]]
   [[ "$output" == *"'claude-sonnet-5' is not <key>=<models>"* ]]
@@ -80,9 +80,9 @@ _engine() {
 
 @test "parse: an unusable last entry for a key drops an earlier one (the default applies)" {
   export AI_MODELS_CLAUDE="deep=claude-sonnet-5; deep=not valid"
-  [ "$(ai_models_chain claude deep)" = "claude-opus-5-5,claude-opus-4-8,claude-sonnet-5" ]
+  [ "$(ai_models_chain claude deep)" = "claude-opus-5-5,claude-opus-4-8,claude-sonnet-5-5" ]
   export AI_MODELS_CLAUDE="deep=claude-sonnet-5; deep=,"
-  [ "$(ai_models_chain claude deep)" = "claude-opus-5-5,claude-opus-4-8,claude-sonnet-5" ]
+  [ "$(ai_models_chain claude deep)" = "claude-opus-5-5,claude-opus-4-8,claude-sonnet-5-5" ]
 }
 
 @test "problems: an invalid model id drops the whole entry (no half-parsed chain)" {
@@ -95,21 +95,22 @@ _engine() {
   [ "$(ai_model_label claude-haiku-4-5-20251001)" = "haiku 4.5" ]
   [ "$(ai_model_label claude-opus-5-5)" = "opus 5.5" ]
   [ "$(ai_model_label claude-sonnet-5)" = "sonnet 5" ]
+  [ "$(ai_model_label claude-sonnet-5-5)" = "sonnet 5.5" ]
   [ "$(ai_model_label openai/o4-mini)" = "o4-mini" ]
   [ "$(ai_models_label_chain claude-opus-5-5,claude-opus-4-8,claude-sonnet-5)" = "opus 5.5 [opus 4.8, sonnet 5]" ]
 }
 
 # ── Claude via engine.sh ──────────────────────────────────────────────────────
 
-@test "claude: defaults (chains, per-tier primaries) — audit/single on opus-5-5 (#1901)" {
+@test "claude: defaults (chains, per-tier primaries) — audit/single on opus-5-5 (#1901), sonnet 5.5 default (#1978)" {
   run _engine claude CLAUDE_DEEP_MODEL_CHAIN CLAUDE_AUDIT_MODEL_CHAIN CLAUDE_SINGLE_MODEL_CHAIN ENGINE_TRIAGE_MODEL ENGINE_DEEP_MODEL ENGINE_AUDIT_MODEL ENGINE_ACTION_MODEL ENGINE_SINGLE_MODEL
-  [[ "$output" == *"CLAUDE_DEEP_MODEL_CHAIN=claude-opus-5-5,claude-opus-4-8,claude-sonnet-5"* ]]
+  [[ "$output" == *"CLAUDE_DEEP_MODEL_CHAIN=claude-opus-5-5,claude-opus-4-8,claude-sonnet-5-5"* ]]
   [[ "$output" == *"CLAUDE_AUDIT_MODEL_CHAIN=claude-opus-5-5,claude-opus-4-8,claude-opus-4-7"* ]]
   [[ "$output" == *"CLAUDE_SINGLE_MODEL_CHAIN=claude-opus-5-5,claude-opus-4-8,claude-opus-4-7"* ]]
   [[ "$output" == *"ENGINE_TRIAGE_MODEL=claude-haiku-4-5-20251001"* ]]
   [[ "$output" == *"ENGINE_DEEP_MODEL=claude-opus-5-5"* ]]
   [[ "$output" == *"ENGINE_AUDIT_MODEL=claude-opus-5-5"* ]]
-  [[ "$output" == *"ENGINE_ACTION_MODEL=claude-sonnet-5"* ]]
+  [[ "$output" == *"ENGINE_ACTION_MODEL=claude-sonnet-5-5"* ]]
   [[ "$output" == *"ENGINE_SINGLE_MODEL=claude-opus-5-5"* ]]
   [[ "$output" != *"claude-fable-5"* ]]
 }
