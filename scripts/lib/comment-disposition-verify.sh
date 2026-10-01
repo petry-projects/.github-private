@@ -170,6 +170,109 @@ cdv_authorize() {
   return 0
 }
 
+# cdv_select_disposition <cid> <bot_user> <comments_json>
+#   Duplicate recovery / idempotency (#1992). The pre-#1992 resolver required
+#   EXACTLY ONE authorized disposition per comment and failed closed on more, so
+#   a comment that was dispositioned but not minimized in the same pass could
+#   never converge: each later pass posted a second disposition, the resolver
+#   then skipped the comment forever, and the maintainer gate deadlocked (#1952,
+#   #1953). This picks ONE disposition deterministically so N authorized replies
+#   collapse to one that the caller verifies + minimizes, while the rest are
+#   reported as superseded for the caller to minimize OUTDATED.
+#
+#   Among the comments in <comments_json> (the PR's issue-comment nodes, each
+#   {id, author{login,__typename}, body, isMinimized, minimizedReason, createdAt})
+#   it keeps only replies that are ALL of:
+#     - authored by <bot_user> (login == bot_user or its [bot]-stripped form) —
+#       the authorization gate (CWE-863): a disposition from any other author
+#       never counts and can never win, so an external commenter cannot smuggle a
+#       marker citing a candidate id past the resolver;
+#     - explicitly NOT minimized (isMinimized == false; a missing or unreadable
+#       value fails closed, and a superseded reply we minimized on a prior pass
+#       stops counting, so the count truly converges to one);
+#     - carrying a well-formed ISO-8601 createdAt (an unreadable timestamp could
+#       otherwise win the "latest" comparison, so it fails closed);
+#     - parseable by cdv_parse_disposition AND citing id=<cid> (an unparseable or
+#       mis-targeted marker is ignored — fail closed, never guessed).
+#   Of those it selects the LATEST by createdAt, tie-broken by node id (lexical,
+#   higher wins) so the choice is fully deterministic. Recommends the latest per
+#   the issue, and the latest reflects dev-lead's most recent research.
+#
+#   Emits compact JSON and returns 0 when >=1 authorized disposition is found:
+#     {auth_count:N, chosen:{id,createdAt,disposition:{…}}, superseded:[id,…]}
+#   Emits {auth_count:0, chosen:null, superseded:[]} and returns 1 when none.
+#   Pure — no gh/git/network (jq + cdv_parse_disposition only).
+cdv_select_disposition() {
+  local cid="${1:-}" bot_user="${2:-}" comments_json="${3:-}"
+  if [[ -z "$cid" || -z "$comments_json" ]]; then
+    echo '{"auth_count":0,"chosen":null,"superseded":[]}'
+    return 1
+  fi
+  local bot_stripped="$bot_user"
+  [[ "$bot_user" == *"[bot]" ]] && bot_stripped="${bot_user%\[bot\]}"
+
+  # Base64-frame each candidate record so bodies with newlines/quotes survive the
+  # read loop. jq does the author + not-minimized filtering; cdv_parse_disposition
+  # (bash) does the per-reply parse because it is the single source of truth.
+  local records
+  records=$(printf '%s' "$comments_json" | jq -r \
+    --arg botuser "$bot_user" --arg botstripped "$bot_stripped" '
+      (.[]? // empty) | objects
+      | (.author?.login // "" | tostring) as $l
+      | select($l == $botuser or $l == $botstripped)
+      | select(.isMinimized == false)
+      | select((.createdAt // "" | tostring) | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))
+      | {id:(.id // ""), createdAt:.createdAt, body:(.body // "")} | @base64
+    ' 2>/dev/null || true)
+
+  local auth_count=0 chosen_id="" chosen_created="" chosen_disp=""
+  local superseded=()
+  local rec rec_json rid rcreated rbody parsed pid newer
+  while IFS= read -r rec; do
+    [[ -z "$rec" ]] && continue
+    rec_json=$(printf '%s' "$rec" | base64 -d 2>/dev/null || true)
+    [[ -z "$rec_json" ]] && continue
+    rbody=$(printf '%s' "$rec_json" | jq -r '.body // ""' 2>/dev/null || echo "")
+    rid=$(printf '%s' "$rec_json" | jq -r '.id // ""' 2>/dev/null || echo "")
+    rcreated=$(printf '%s' "$rec_json" | jq -r '.createdAt // ""' 2>/dev/null || echo "")
+    parsed=$(cdv_parse_disposition "$rbody" 2>/dev/null) || continue
+    pid=$(printf '%s' "$parsed" | jq -r '.id // ""' 2>/dev/null || echo "")
+    [[ "$pid" == "$cid" ]] || continue
+    auth_count=$((auth_count + 1))
+    newer="false"
+    if [[ -z "$chosen_id" ]]; then
+      newer="true"
+    elif [[ "$rcreated" > "$chosen_created" ]]; then
+      newer="true"
+    elif [[ "$rcreated" == "$chosen_created" && "$rid" > "$chosen_id" ]]; then
+      newer="true"
+    fi
+    if [[ "$newer" == "true" ]]; then
+      [[ -n "$chosen_id" ]] && superseded+=("$chosen_id")
+      chosen_id="$rid"
+      chosen_created="$rcreated"
+      chosen_disp="$parsed"
+    else
+      superseded+=("$rid")
+    fi
+  done <<< "$records"
+
+  if [[ "$auth_count" -eq 0 ]]; then
+    echo '{"auth_count":0,"chosen":null,"superseded":[]}'
+    return 1
+  fi
+
+  local sup_json
+  sup_json=$(printf '%s\n' "${superseded[@]:-}" | jq -R . | jq -s 'map(select(. != ""))' 2>/dev/null || echo "[]")
+  jq -c -n \
+    --argjson ac "$auth_count" \
+    --arg cid2 "$chosen_id" \
+    --arg cc "$chosen_created" \
+    --argjson disp "$chosen_disp" \
+    --argjson sup "$sup_json" \
+    '{auth_count:$ac, chosen:{id:$cid2, createdAt:$cc, disposition:$disp}, superseded:$sup}' 2>/dev/null
+}
+
 # cdv_reply_needs_response <bot_reply_body>
 #   Loop safety (#860 / AC7): a bot that replies AFTER our disposition is answered
 #   again ONLY if it raises a genuinely NEW finding — boilerplate/acknowledgements
