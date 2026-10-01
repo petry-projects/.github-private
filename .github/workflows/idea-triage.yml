@@ -94,6 +94,9 @@ jobs:
           # Read the dispatch input via env, never interpolated into the shell
           # source, so a quote in the value can't break out and inject commands.
           REQUESTED_MODEL: ${{ inputs.model }}
+          # Export the model override variable so ai_model_for_family honours
+          # operator-configured model chains (vars.AI_MODELS_CLAUDE).
+          AI_MODELS_CLAUDE: ${{ vars.AI_MODELS_CLAUDE }}
         run: |
           source scripts/lib/engine-models.sh
           want="$REQUESTED_MODEL"
