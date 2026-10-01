@@ -26,6 +26,10 @@ ACTION_TIMEOUT_SEC="${ACTION_TIMEOUT_SEC:-120}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROMPTS_DIR="${PROMPTS_DIR:-$SCRIPT_DIR/../prompts}"
 
+# Model family → current id resolver (#1979): name a family, never pin a version.
+# shellcheck source=scripts/lib/engine-models.sh
+source "$SCRIPT_DIR/lib/engine-models.sh"
+
 log()  { echo "[release-notes] $*" >&2; }
 notice() { echo "::notice::release-notes: $*"; }
 warn() { echo "::warning::release-notes: $*"; }
@@ -165,7 +169,7 @@ generate_changelog_block() {
   case "$REVIEW_ENGINE" in
     claude)
       content=$(timeout "$ACTION_TIMEOUT_SEC" claude --print \
-        --model "claude-sonnet-4-6" \
+        --model "$(ai_model_for_family sonnet)" \
         --disallowed-tools "Bash,Read,Write,Edit,Grep,Glob,WebFetch,WebSearch,Task,TodoWrite,NotebookEdit" \
         < "$tmp_prompt" 2>/dev/null) || content=""
       ;;

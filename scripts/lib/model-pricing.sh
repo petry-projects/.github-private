@@ -15,13 +15,13 @@
 #
 # Environment:
 #   PRICING_TABLE       — path to the TSV (default: alongside this script)
-#   ET_BASELINE_MODEL   — model whose input price is ET's "1.0" (default claude-haiku-4-5)
+#   ET_BASELINE_MODEL   — model whose input price is ET's "1.0" (default claude-haiku-4-5) # model-pin-ok: ET baseline anchor — must stay fixed so historical ET multipliers never drift
 
 # Resolve the table path once, relative to this file (works when sourced from anywhere).
 if [ -z "${PRICING_TABLE:-}" ]; then
   PRICING_TABLE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/model-pricing.tsv"
 fi
-: "${ET_BASELINE_MODEL:=claude-haiku-4-5}"
+: "${ET_BASELINE_MODEL:=claude-haiku-4-5}" # model-pin-ok: ET baseline anchor — must stay fixed so historical ET multipliers never drift
 
 # price_for <model> [iso_date]
 # Echoes "input cache_read cache_write output" (USD/MTok) for the rate in effect at
