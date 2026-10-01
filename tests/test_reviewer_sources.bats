@@ -154,32 +154,81 @@ TSV
   [[ "$sonar" == *"0 Security Hotspots"* ]]
 }
 
-@test "info-status: chatgpt-codex-connector declares the usage-limit info-status pattern (#1993)" {
-  local patterns
-  patterns="$(reviewer_sources_info_status_patterns)"
-  local codex
-  codex="$(printf '%s\n' "$patterns" | awk -F'\t' '$1=="chatgpt-codex-connector"{print $2}')"
-  # Anchored on the notice's distinctive first sentence (@don-petry: all 13 notices
-  # on #1952 are byte-identical and start with it). It must NOT reach into Codex's
-  # finding-bearing output, which arrives as PR reviews / inline review comments
-  # the gate never scans.
-  [[ "$codex" == *"You have reached your Codex usage limits for code reviews"* ]]
-}
-
 @test "info-status: a source without an info-status pattern is not listed" {
   local patterns
   patterns="$(reviewer_sources_info_status_patterns)"
-  # These seven sources carry "-" in the info_status_pattern column, so none may
+  # These sources carry "-" in the info_status_pattern column, so none may
   # appear — enumerate every one (mirroring the check-run negative test) so giving
   # any unlisted source a non-"-" pattern must fail this test rather than pass
-  # silently and weaken the gate's fail-closed guarantee.
+  # silently and weaken the gate's fail-closed guarantee. codeant-ai and
+  # graphite-app are finding-producing reviewers and must stay out (#1995).
   [[ "$patterns" != *"copilot-pull-request-reviewer"* ]]
   [[ "$patterns" != *"gemini-code-assist"* ]]
-  [[ "$patterns" != *"coderabbitai"* ]]
-  [[ "$patterns" != *"qodo-code-review"* ]]
   [[ "$patterns" != *"codeant-ai"* ]]
   [[ "$patterns" != *"graphite-app"* ]]
   [[ "$patterns" != *"cubic-dev-ai"* ]]
+}
+
+# ── Generalized info-status patterns for service notices (issue #1995) ────────
+#
+# #1918 added info_status_pattern for sonarqubecloud only. Every other reviewer
+# that posts a service notice carrying NO finding (a usage-limit / trial-ended /
+# "review limit reached" message) was still undispositionable and stranded the
+# approval gate. #1995 declares tightly-anchored patterns for those notices.
+#
+# Each pattern must (AC #3) MATCH the real notice body and NOT match a real review
+# body from the same bot. _info_pattern_for reads the stored pattern; the gate
+# applies it via jq test() (case-sensitive), so these tests do the same.
+
+_info_pattern_for() {
+  reviewer_sources_info_status_patterns | awk -F'\t' -v l="$1" '$1==l{print $2}'
+}
+
+# _body_matches_pattern <pattern> <body> — 0 iff <body> matches <pattern> under
+# the exact jq test() semantics the maintainer-comment gate uses.
+_body_matches_pattern() {
+  jq -ne --arg p "$1" --arg b "$2" '$b | test($p)' >/dev/null
+}
+
+@test "info-status: chatgpt-codex-connector matches its Codex usage-limit notice, not a review (#1995)" {
+  local pat
+  pat="$(_info_pattern_for chatgpt-codex-connector)"
+  [ -n "$pat" ]
+  run _body_matches_pattern "$pat" "You have reached your Codex usage limits for code reviews. You can see your limits in the Codex usage dashboard."
+  [ "$status" -eq 0 ]
+  # The shorter notice variant this repo has also observed must clear too (fixtures/reviewer_pr_node.json).
+  run _body_matches_pattern "$pat" "You have reached your Codex usage limit."
+  [ "$status" -eq 0 ]
+  # A real Codex review body that merely discusses a limit must NOT be swallowed.
+  run _body_matches_pattern "$pat" "The cubic free trial ended handling is too broad — this code path should be narrower."
+  [ "$status" -eq 1 ]
+  # Anchored to the body start (#1993): a comment that only QUOTES the notice later
+  # on must not clear, or a finding-bearing body could be swallowed.
+  run _body_matches_pattern "$pat" "Earlier this run reported: You have reached your Codex usage limits for code reviews."
+  [ "$status" -eq 1 ]
+}
+
+@test "info-status: coderabbitai matches its review-limit notice, not a review (#1995)" {
+  local pat
+  pat="$(_info_pattern_for coderabbitai)"
+  [ -n "$pat" ]
+  run _body_matches_pattern "$pat" "Review limit reached — you have used up your prepaid credits."
+  [ "$status" -eq 0 ]
+  run _body_matches_pattern "$pat" "Consider guarding against a nil pointer before dereferencing \`cfg\` here."
+  [ "$status" -eq 1 ]
+}
+
+@test "info-status: qodo-code-review matches its trial-ended notice, not a review (#1995)" {
+  local pat
+  pat="$(_info_pattern_for qodo-code-review)"
+  [ -n "$pat" ]
+  run _body_matches_pattern "$pat" "Qodo reviews are paused because your trial has ended."
+  [ "$status" -eq 0 ]
+  # The monthly-usage-limit notice variant this repo has observed must clear too (fixtures/events/advisory_qodo_rate_limited.json).
+  run _body_matches_pattern "$pat" "Qodo Merge has reached your monthly usage limit for pull-request reviews on this repository. Reviews will resume when the limit resets."
+  [ "$status" -eq 0 ]
+  run _body_matches_pattern "$pat" "Suggestion: extract this block into a helper to reduce duplication."
+  [ "$status" -eq 1 ]
 }
 
 @test "info-status: helper propagates a missing-manifest failure" {
