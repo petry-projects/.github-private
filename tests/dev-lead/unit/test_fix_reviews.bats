@@ -4807,6 +4807,31 @@ _orig_comment() {
   [[ "$output" == *"selecting latest R3"* ]]
 }
 
+@test "resolve_dispositioned_comments: the #1952 shape (fixed, then invalid twice) resolves on the latest invalid; the stale fixed is OUTDATED (#1992)" {
+  # #1952's CodeAnt comment carried a `fixed sha=…` from one pass and two later
+  # `invalid` replies. The `fixed` sha was not produced by THIS pass so it can
+  # never verify, but it is not the latest: the latest `invalid` (with evidence)
+  # wins, resolves the comment, and both earlier replies are minimized OUTDATED.
+  local fixed nodes
+  fixed=$(jq -nc '{id:"R1", author:{login:"donpetry-bot", __typename:"User"},
+    body:"Fixed the null path.\n<!-- dev-lead:comment-disposition id=IC_ORIG disposition=fixed sha=c03ecdaea49cb873ca29ac0ca905c2d92ecbd3ce -->",
+    isMinimized:false, minimizedReason:null, createdAt:"2026-09-26T21:44:49Z"}')
+  nodes=$(jq -sc '.' \
+    <(_orig_comment) \
+    <(echo "$fixed") \
+    <(_disp_reply "R2" "2026-09-26T21:56:53Z" "invalid" "IC_ORIG") \
+    <(_disp_reply "R3" "2026-09-26T22:16:28Z" "invalid" "IC_ORIG"))
+  _setup_disposition_pass "$nodes"
+
+  run bash "$FIX_REVIEWS_SCRIPT" 2>&1
+
+  [ "$status" -ne 0 ]
+  grep -Eq 'classifier:RESOLVED.*id=IC_ORIG' "$MINLOG"
+  grep -Eq 'classifier:OUTDATED.*id=R1' "$MINLOG"
+  grep -Eq 'classifier:OUTDATED.*id=R2' "$MINLOG"
+  ! grep -Eq 'id=R3' "$MINLOG"
+}
+
 @test "resolve_dispositioned_comments: a non-BOT_USER disposition cannot resolve the comment (CWE-863)" {
   local attacker nodes
   attacker=$(jq -nc '{id:"R_attack", author:{login:"mallory", __typename:"User"},
