@@ -63,7 +63,10 @@ jobs:
     # Budget (AC #5): the default matrix is 2 models x {triage (5 cases, 1 call) +
     # deep-review (5 cases, generator + judge = 2 calls)} = 30 sequential model
     # calls, all driven through run_triage and so each bounded by TRIAGE_TIMEOUT_SEC
-    # (the probes by PROBE_TIMEOUT_SECS with --kill-after). The dispatcher re-runs the
+    # — hard-bounded: engine.sh runs every CLI call under `timeout --kill-after`, so a
+    # call that ignores SIGTERM is SIGKILLed after ENGINE_KILL_AFTER and can never
+    # outlive its budget (the probes likewise, by PROBE_TIMEOUT_SECS with --kill-after).
+    # The dispatcher re-runs the
     # WHOLE matrix on an all-infra attempt, up to `runs` (clamped 1..3), so the
     # worst-case wall time is runs x 30 calls, NOT 30 — the retry multiplier must fit
     # the job timeout too (#1952, cubic P1). At the stock 300s/call the matrix alone

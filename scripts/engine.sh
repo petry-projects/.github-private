@@ -137,6 +137,15 @@ AUDIT_TIMEOUT_SEC="${AUDIT_TIMEOUT_SEC:-1200}"
 ACTION_TIMEOUT_SEC="${ACTION_TIMEOUT_SEC:-2100}"
 DUCK_TIMEOUT_SEC="${DUCK_TIMEOUT_SEC:-300}"
 
+# Grace period after the per-call SIGTERM before `timeout` escalates to SIGKILL.
+# Plain `timeout <sec>` only sends SIGTERM; GNU `timeout` then waits INDEFINITELY
+# for a child that ignores it, so a wedged CLI can outlive its stage budget and
+# blow through the job's timeout-minutes backstop (e.g. starving the model-ab
+# matrix mid-A/B, #1952 cubic P2). `--kill-after` sends SIGKILL this long after
+# the initial SIGTERM so no external-CLI call can outlive timeout_sec + grace,
+# mirroring the probe step in model-ab.yml. Override via ENGINE_KILL_AFTER.
+ENGINE_KILL_AFTER="${ENGINE_KILL_AFTER:-30s}"
+
 # Retry config for transient errors. We treat exit codes that look like
 # network/process flakiness (137/143=signal kills) as retryable. A per-tier
 # stage timeout (124=GNU timeout) is NOT retried (#1028): re-running at the same
@@ -774,7 +783,7 @@ copilot_chat() {
 
   # We use -p for the prompt. Redirect /dev/null to stdin to ensure
   # non-interactive mode.
-  timeout "$timeout_sec" gh copilot \
+  timeout --kill-after="$ENGINE_KILL_AFTER" "$timeout_sec" gh copilot \
     --model "$COPILOT_API_MODEL" \
     -p "$prompt_text" \
     -s "$@" < /dev/null
@@ -834,7 +843,7 @@ _gemini_invoke() {
     if [ -n "$_json_tmp" ]; then
       local rc=0
       # stderr intentionally NOT redirected — flows to caller for rate-limit checks.
-      timeout "$timeout_sec" gemini --prompt "" --model "$model" "${extra_args[@]}" \
+      timeout --kill-after="$ENGINE_KILL_AFTER" "$timeout_sec" gemini --prompt "" --model "$model" "${extra_args[@]}" \
         --output-format json < "$prompt_file" > "$_json_tmp" || rc=$?
       if [ "$rc" -eq 0 ]; then
         parse_engine_usage gemini "$_json_tmp" || true
@@ -849,7 +858,7 @@ _gemini_invoke() {
   fi
 
   # Estimate path (logging off, or mktemp failed): plain text output.
-  timeout "$timeout_sec" gemini --prompt "" --model "$model" "${extra_args[@]}" \
+  timeout --kill-after="$ENGINE_KILL_AFTER" "$timeout_sec" gemini --prompt "" --model "$model" "${extra_args[@]}" \
     --output-format text < "$prompt_file"
 }
 
@@ -1138,7 +1147,7 @@ _claude_chain_invoke() {
     rc=0
 
     if [ -n "$stdout_tmp" ] && [ -n "$stderr_tmp" ]; then
-      timeout "$timeout_sec" claude --print --model "$model" "${fmt_args[@]}" "${extra_args[@]}" \
+      timeout --kill-after="$ENGINE_KILL_AFTER" "$timeout_sec" claude --print --model "$model" "${fmt_args[@]}" "${extra_args[@]}" \
         < "$prompt_file" > "$stdout_tmp" 2> "$stderr_tmp" || rc=$?
     else
       # mktemp failure (one or both) — clean up the partial tmp before degrading
@@ -1147,7 +1156,7 @@ _claude_chain_invoke() {
       [ -n "$stderr_tmp" ] && rm -f "$stderr_tmp"
       [ -n "$final_stdout" ] && rm -f "$final_stdout"
       [ -n "$final_stderr" ] && rm -f "$final_stderr"
-      timeout "$timeout_sec" claude --print --model "$model" "${extra_args[@]}" \
+      timeout --kill-after="$ENGINE_KILL_AFTER" "$timeout_sec" claude --print --model "$model" "${extra_args[@]}" \
         < "$prompt_file" || rc=$?
       _CLAUDE_CHAIN_MODEL_USED="$model"
       export _CLAUDE_CHAIN_MODEL_USED
