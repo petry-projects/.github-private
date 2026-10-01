@@ -360,6 +360,16 @@ Earlier this run reported: You have reached your Codex usage limits for code rev
   [ "$status" -eq 1 ]
 }
 
+@test "AC1(#1995): Qodo's real trial notice (marker + bold ⓘ + billing link) clears → 0" {
+  _run_check "$(_notice_json qodo-code-review $'<!-- qodo:billing-blocked -->\n\n**ⓘ Qodo reviews are paused because your trial has ended.** Ask your workspace admin to add credits to resume reviews. [Manage billing](https://app.qodo.ai/account/billing/manage-subscription?traffic_source=pr_comment)')"
+  [ "$status" -eq 0 ]
+}
+
+@test "AC2(#1995): a Codex notice followed by a finding still blocks → 1" {
+  _run_check "$(_notice_json chatgpt-codex-connector $'You have reached your Codex usage limits for code reviews.\n\n**P1** Possible null dereference in scripts/foo.sh:42.')"
+  [ "$status" -eq 1 ]
+}
+
 @test "AC1(#1995): Qodo monthly-usage-limit notice clears → 0" {
   _run_check "$(_notice_json qodo-code-review "Qodo Merge has reached your monthly usage limit for pull-request reviews on this repository. Reviews will resume when the limit resets.")"
   [ "$status" -eq 0 ]
