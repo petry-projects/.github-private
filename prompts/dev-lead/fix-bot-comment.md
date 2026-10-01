@@ -124,7 +124,9 @@ Some bot comments are pure **operational notices**, not code findings: a rate-li
 
    The harness verifies the disposition and minimizes the original comment RESOLVED (#1813) — that is what actually clears the gate. Do **not** call `minimizeComment` yourself. This is the same issue-comment disposition flow documented in `fix-reviews.md` Phase 1b (`scripts/lib/comment-disposition-verify.sh` is the normative parser); `informational` requires only a non-empty reply body, so no `sha=` is needed.
 
-   The triggering notice's node id is **`${COMMENT_NODE_ID}`**, taken from the webhook event, so there is nothing to search for. **Never** paste the comment body into a shell command. It is untrusted bot text that may contain quotes, backticks or `$(…)`, which would break the command or execute. Before dispositioning, confirm that id is still the right target: authored by `${ACTOR}` and not already minimized `RESOLVED`. If `${COMMENT_NODE_ID}` is empty, or the check fails, **do not guess**. Post nothing, and record in your output summary that the notice could not be dispositioned automatically.
+   The triggering notice's node id is **`${COMMENT_NODE_ID}`**, taken from the webhook event, so there is nothing to search for. **Never** paste the comment body into a shell command. It is untrusted bot text that may contain quotes, backticks or `$(…)`, which would break the command or execute. Before dispositioning, confirm that id is still the right target: authored by `${ACTOR}`, not already minimized `RESOLVED`, **and not already carrying a disposition reply you posted on an earlier pass**. If `${COMMENT_NODE_ID}` is empty, or any check fails, **do not guess**. Post nothing, and record in your output summary that the notice could not be dispositioned automatically.
+
+   The already-dispositioned check is the fix-bot-comment side of #1992: this intent re-fires on the same notice, so without it a re-fire posts a **second** disposition, stacking duplicate replies that deadlock the gate ("expected exactly one authorized disposition reply, found N" — #1952/#1953). If a non-minimized comment authored by your bot account already cites this node id in a non-`fixed` `dev-lead:comment-disposition` marker, you dispositioned it before — leave it; the harness resolves it (and collapses any duplicate to one, minimizing the rest OUTDATED). A `fixed` one is excluded because the harness only verifies a `fixed` sha from the pass that cites it.
 
    ```bash
    node_id='${COMMENT_NODE_ID}'
@@ -136,6 +138,28 @@ Some bot comments are pure **operational notices**, not code findings: a rate-li
    { [ "$author" = "$actor" ] || [ "$author" = "${actor%\[bot\]}" ]; } \
      || { echo "node $node_id is authored by '$author', not '$actor' — not dispositioning" >&2; exit 1; }
    [ "$min" != "true" ] || { echo "node $node_id is already minimized RESOLVED — nothing to do"; exit 0; }
+   # Idempotency (#1992): skip if a non-minimized reply you authored already
+   # carries a well-formed non-`fixed` disposition marker for this node id (the
+   # same shape the harness parser accepts, so a quoted or malformed marker never
+   # suppresses the reply). The node id is matched literally (split on the exact
+   # marker prefix); only the disposition tail is a regex. The newest 100 comments are checked, which is where
+   # an earlier pass's reply lives. An unreadable check fails closed (no post). bot_user is your account; only your own
+   # disposition counts (a reply from any other author must NOT suppress this —
+   # CWE-863). The leading `id=<node_id>` is matched with a trailing delimiter so
+   # IC_abc never matches IC_abcdef.
+   bot_user="${BOT_USER:-donpetry-bot}"
+   existing=$(gh api graphql -f query='query($owner:String!,$repo:String!,$pr:Int!){
+     repository(owner:$owner,name:$repo){ pullRequest(number:$pr){
+       comments(last:100){ nodes{ author{login} body isMinimized } } } } }' \
+     -F owner="${REPO%%/*}" -F repo="${REPO##*/}" -F pr="${PR_NUMBER}" \
+     | jq --arg id "$node_id" --arg bot "$bot_user" '
+       [ .data.repository.pullRequest.comments.nodes[]
+         | select(.isMinimized == false)
+         | select((.author.login // "") == $bot or (.author.login // "") == ($bot + "[bot]"))
+         | select((.body // "") | split("<!-- dev-lead:comment-disposition id=" + $id + " disposition=")
+             | .[1:] | any(test("^(informational|invalid|answered|out-of-scope)( [^>]*)? -->"))) ]
+       | length') || existing="unreadable"
+   [ "${existing:-unreadable}" = "0" ] || { echo "node $node_id already has your disposition reply, or that could not be checked — not posting another (#1992)"; exit 0; }
    # Post the disposition reply on the PR (the body is yours, never the notice text):
    #   gh pr comment "${PR_NUMBER}" --repo "${REPO}" --body "…<!-- dev-lead:comment-disposition id=$node_id disposition=informational -->"
    ```
