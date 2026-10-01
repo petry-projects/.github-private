@@ -94,9 +94,9 @@ for field in ("name", "trigger", "engine", "permissions"):
 # provider can be added without a code change.
 families = {"opus", "sonnet", "haiku"}
 engine = fm.get("engine", "")
-if engine and not isinstance(engine, str):
+if not isinstance(engine, str):
     # `aw run` cannot use a non-string engine (it keys models.<engine> by it), so
-    # this is an error, not a warning.
+    # this is an error, not a warning. No truth check: null/0/false fail too.
     errors.append(f"engine must be a string, got {type(engine).__name__}")
 elif engine and engine not in families and not engine.startswith("claude"):
     print(f"aw compile: {path}: warning: unknown engine {engine!r} (name a family: opus|sonnet|haiku)", file=sys.stderr)

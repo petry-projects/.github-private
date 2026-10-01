@@ -270,6 +270,11 @@ printf -- '---\nname: t\ntrigger:\n  issues: {}\nengine: [claude]\npermissions: 
 status=0; output=$(bash "$REPO_ROOT/scripts/aw.sh" compile "$spec_dir/listengine.md" 2>&1) || status=$?
 if [[ $status -ne 0 ]] && echo "$output" | grep -q "engine must be a string"; then ok "compile: a list-valued engine fails"
 else fail "compile: a non-string engine must fail" "status=$status: $output"; fi
+# A falsy non-string engine (null) must fail too, as it does in aw run.
+printf -- '---\nname: t\ntrigger:\n  issues: {}\nengine: null\npermissions: {}\n---\nbody\n' > "$spec_dir/nullengine.md"
+status=0; output=$(bash "$REPO_ROOT/scripts/aw.sh" compile "$spec_dir/nullengine.md" 2>&1) || status=$?
+if [[ $status -ne 0 ]] && echo "$output" | grep -q "engine must be a string"; then ok "compile: a null engine fails"
+else fail "compile: a falsy non-string engine must fail" "status=$status: $output"; fi
 rm -rf "$spec_dir"
 
 # ---------------------------------------------------------------------------
