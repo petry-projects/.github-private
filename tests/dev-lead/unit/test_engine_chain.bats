@@ -191,12 +191,12 @@ _source_engine() {
   grep -q "claude-opus-4-8" "$MODEL_RECORD"
 }
 
-# ── Sonnet 5 default wiring (#1100, epic #1095) ───────────────────────────────
-# Sonnet 5 (claude-sonnet-5; #1100 shipped the invalid id claude-sonnet-5-0,
-# corrected by #1957) is now the DEFAULT sonnet across the triage, deep,
-# and action chains, fully replacing claude-sonnet-4-6 (which #1098 first wired
-# as a non-default fallback candidate). It is the sonnet fallback hop in triage/
-# deep and the primary in action. The promotion rides the dev-lead canary rings.
+# ── Sonnet 5.5 default wiring (#1978; Sonnet 5 before it: #1100, epic #1095) ──
+# Sonnet 5.5 (claude-sonnet-5-5) is the DEFAULT sonnet across the triage, deep
+# and action chains: the sonnet hop in triage and deep, and the primary in
+# action. Sonnet 5 (bare claude-sonnet-5; #1100 shipped the invalid id
+# claude-sonnet-5-0, corrected by #1957) stays one hop behind it in triage and
+# action as the known-good sonnet. The promotion rides the dev-lead canary rings.
 
 @test "sonnet-5.5 default: triage chain default is haiku → sonnet-5-5 → claude-sonnet-5" {
   _source_engine "claude"

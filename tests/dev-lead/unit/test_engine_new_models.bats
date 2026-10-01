@@ -138,6 +138,8 @@ _source_engine() {
   first="${CLAUDE_ACTION_MODEL_CHAIN%%,*}"
   first="${first// /}"
   [ "$first" = "claude-sonnet-5-5" ]
+  # sonnet-5 is the in-family safety hop between sonnet-5-5 and opus-4-8.
+  [[ ",${CLAUDE_ACTION_MODEL_CHAIN// /}," == *",claude-sonnet-5-5,claude-sonnet-5,claude-opus-4-8,"* ]]
   # opus-4-8 is the cross-family safety hop; opus-4-7 must not appear.
   [[ "$CLAUDE_ACTION_MODEL_CHAIN" == *"claude-opus-4-8"* ]]
   [[ "$CLAUDE_ACTION_MODEL_CHAIN" != *"claude-opus-4-7"* ]]

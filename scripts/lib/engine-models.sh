@@ -42,11 +42,13 @@
 #
 # Claude notes:
 #   - Sonnet 5.5 (#1978, epic #1095 Phase 3) is the default sonnet across triage,
-#     deep, action and duck, replacing claude-sonnet-5 as the primary. sonnet-5
-#     stays one hop behind as the known-good sonnet safety hop (its id is bare
-#     `claude-sonnet-5`: the `claude-sonnet-5-0` spelling shipped by #1100 404s,
-#     so every hop to it silently fell through — #1957). audit/single are opus
-#     tiers and keep claude-sonnet-5 out entirely.
+#     deep, action and duck. In triage and action it replaces claude-sonnet-5 as
+#     the sonnet hop and sonnet-5 stays one hop behind it as the known-good
+#     sonnet safety hop (its id is bare `claude-sonnet-5`: the `claude-sonnet-5-0`
+#     spelling shipped by #1100 404s, so every hop to it silently fell through —
+#     #1957). Deep's known-good hop is opus-4-8 (see below), so its sonnet tail is
+#     sonnet 5.5 alone, as #1978 AC-2 specifies. audit/single are opus tiers and
+#     keep sonnet out entirely.
 #   - Deep swapped opus-4-8 → opus-5-5 (#1898, epic #1895 Phase 2). opus-4-8 is
 #     the known-good 2nd hop (#1957), so a throttled or unavailable opus-5-5
 #     degrades to the model it replaced instead of failing; sonnet 5.5 is last.

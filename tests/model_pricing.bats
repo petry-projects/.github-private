@@ -128,6 +128,25 @@ setup() {
   [ "$after"  = "8.00 0.80 10.00 32.00" ]
 }
 
+# #1978 AC-1: a claude-sonnet-5-5 record resolves to the claude-sonnet-5-5* row,
+# not claude-sonnet-5-*. The production rows share one rate, so only a fixture
+# with distinct rates can tell the two rows apart.
+@test "price_for: claude-sonnet-5-5* beats claude-sonnet-5-* (distinct fixture rates) — #1978" {
+  PRICING_TABLE="$(mktemp)"
+  {
+    printf 'claude-sonnet-5-*\t2026-06-30\t1.00\t0.10\t1.25\t5.00\n'
+    printf 'claude-sonnet-5-5*\t2026-09-28\t7.00\t0.70\t8.75\t35.00\n'
+    printf 'claude-sonnet-5\t2026-06-30\t3.00\t0.30\t3.75\t15.00\n'
+  } > "$PRICING_TABLE"
+  five_five="$(price_for "claude-sonnet-5-5" "2026-10-01")"
+  dated_five="$(price_for "claude-sonnet-5-20261231" "2026-10-01")"
+  bare_five="$(price_for "claude-sonnet-5" "2026-10-01")"
+  rm -f "$PRICING_TABLE"
+  [ "$five_five"  = "7.00 0.70 8.75 35.00" ]
+  [ "$dated_five" = "1.00 0.10 1.25 5.00" ]
+  [ "$bare_five"  = "3.00 0.30 3.75 15.00" ]
+}
+
 @test "price_for: date before the earliest effective_from → empty (no retroactive guess)" {
   PRICING_TABLE="$(mktemp)"
   printf 'test-model*\t2026-03-01\t8.00\t0.80\t10.00\t32.00\n' > "$PRICING_TABLE"
