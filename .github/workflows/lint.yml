@@ -5,6 +5,8 @@ on:
     paths:
       - 'scripts/**'
       - '.github/workflows/**'
+      # All of .github, not just workflows: check-model-pins scans the whole dir.
+      - '.github/**'
       - 'tests/**'
       - 'prompts/**'
       - 'agents/**'
@@ -25,6 +27,7 @@ on:
       - 'tests/**'
       - 'prompts/**'
       - '.github/workflows/**'
+      - '.github/**'  # check-model-pins scans all of .github
   workflow_dispatch:
 
 permissions:
@@ -42,6 +45,18 @@ jobs:
         # are literal markdown, not shell expressions — suppress info-level noise.
         # -x: follow source directives (scripts use # shellcheck source= annotations).
         run: find scripts -name "*.sh" -exec shellcheck --severity=warning -x {} +
+
+  # Enforce the model-selection standard (#1979): no concrete Claude model id may
+  # be hard-pinned outside the allowed files. Callers name a family (opus|sonnet|
+  # haiku); a deliberate concrete id must carry a `model-pin-ok:` marker.
+  check-model-pins:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: check model pins
+        run: bash scripts/check-model-pins.sh
 
   bats:
     runs-on: ubuntu-latest
@@ -85,6 +100,8 @@ jobs:
             tests/pr_review_outcomes.bats \
             tests/pr_review_sweep_metrics.bats \
             tests/model_pricing.bats \
+            tests/test_check_model_pins.bats \
+            tests/test_model_pin_token_log.bats \
             tests/dev-lead/unit/test_engine_chain_config.bats \
             tests/dev-lead/unit/test_engine_models.bats \
             tests/test_review_cycle.bats \

@@ -28,6 +28,10 @@ ACTION_TIMEOUT_SEC="${ACTION_TIMEOUT_SEC:-120}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROMPTS_DIR="${PROMPTS_DIR:-$SCRIPT_DIR/../prompts}"
 
+# Model family → current id resolver (#1979): name a family, never pin a version.
+# shellcheck source=scripts/lib/engine-models.sh
+source "$SCRIPT_DIR/lib/engine-models.sh"
+
 SUMMARY_ROWS=()
 ACTIONS_TAKEN=0
 ACTIONS_SKIPPED=0
@@ -111,7 +115,7 @@ generate_comment() {
   case "$REVIEW_ENGINE" in
     claude)
       comment=$(timeout "$ACTION_TIMEOUT_SEC" claude --print \
-        --model "claude-sonnet-4-6" \
+        --model "$(ai_model_for_family sonnet)" \
         --disallowed-tools "Bash,Read,Write,Edit,Grep,Glob,WebFetch,WebSearch,Task,TodoWrite,NotebookEdit" \
         < "$tmp_prompt" 2>/dev/null) || comment=""
       ;;
