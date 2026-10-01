@@ -1401,6 +1401,10 @@ run_triage() {
   fi
   while [ "$attempt" -le "$RETRY_MAX_ATTEMPTS" ]; do
     rc=0
+    # Whether the claude redirect path still owes its buffered stdout to the caller
+    # (reset per attempt). The gemini/copilot branches tee during the call, so they
+    # leave this at 0 — only the claude redirect defers its emit (see below).
+    local _tok_emit_pending=0
     [ -n "$_tok_tmp" ] && : > "$_tok_tmp"
     _t_start="$(_now_ms)"
     case "$REVIEW_ENGINE" in
@@ -1417,7 +1421,13 @@ run_triage() {
           _claude_chain_invoke "$_triage_chain" "$prompt_file" "$TRIAGE_TIMEOUT_SEC" \
             --disallowed-tools "Bash,Read,Write,Edit,Grep,Glob,WebFetch,WebSearch,Task,TodoWrite,NotebookEdit" \
             >"$_tok_tmp" || rc=$?
-          cat "$_tok_tmp"
+          # Defer the emit instead of `cat`-ing unconditionally: a failed attempt
+          # that will be RETRIED must not leak its partial bytes ahead of the
+          # retry's clean verdict into the caller's $(...) capture (the retry would
+          # be CONCATENATED behind this attempt, contaminating rate-limit detection
+          # and verdict parsing). Emitted below only on success or a final,
+          # un-retried failure (#1952, cubic P2).
+          _tok_emit_pending=1
         else
           _claude_chain_invoke "$_triage_chain" "$prompt_file" "$TRIAGE_TIMEOUT_SEC" \
             --disallowed-tools "Bash,Read,Write,Edit,Grep,Glob,WebFetch,WebSearch,Task,TodoWrite,NotebookEdit" \
@@ -1456,6 +1466,8 @@ run_triage() {
     _t_end="$(_now_ms)"
     _dur="$(_elapsed_ms "$_t_start" "$_t_end")"
     if [ "$rc" -eq 0 ]; then
+      # Success: hand the buffered output to the caller now (claude redirect path).
+      [ "$_tok_emit_pending" -eq 1 ] && cat "$_tok_tmp"
       local _triage_used
       if [ "$REVIEW_ENGINE" = "claude" ] && [ -n "${_CLAUDE_CHAIN_MODEL_USED:-}" ]; then
         _triage_used="$_CLAUDE_CHAIN_MODEL_USED"
@@ -1475,12 +1487,18 @@ run_triage() {
       return 0
     fi
     if [ "$attempt" -lt "$RETRY_MAX_ATTEMPTS" ] && is_transient_failure "$rc"; then
+      # Retrying: the deferred stdout of this failed attempt is intentionally
+      # DROPPED (the loop top truncates $_tok_tmp) so only the retry's output
+      # reaches the caller's capture (#1952, cubic P2).
       local delay=$(( RETRY_BASE_DELAY_SEC * (2 ** (attempt - 1)) ))
       echo "    [triage] transient failure (exit $rc), retrying in ${delay}s (attempt $((attempt + 1))/$RETRY_MAX_ATTEMPTS)" >&2
       sleep "$delay"
       attempt=$((attempt + 1))
       continue
     fi
+    # Final (un-retried) failure: emit the last attempt's bytes so the caller's
+    # rate-limit detection still sees them (#1952, cubic P2).
+    [ "$_tok_emit_pending" -eq 1 ] && cat "$_tok_tmp"
     [ -n "$_tok_tmp" ] && rm -f "$_tok_tmp"
     return "$rc"
   done

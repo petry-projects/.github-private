@@ -338,6 +338,36 @@ _calls() { cat "$COUNTER"; }
   run mad_validate_set_prereqs "$TMP/evals" "$TMP/prompts" deep-review
   [ "$status" -eq 1 ]
   [[ "$output" == *"judge prompt not found"* ]]
+  # A scorer.json naming a mode run-eval.sh does not support (anything but
+  # deterministic / llm-judge) is rejected OFFLINE — run-eval.sh would otherwise
+  # die only AFTER the paid probe (#1952).
+  printf '{"mode":"weird","engine":"triage"}\n' >"$TMP/evals/triage/scorer.json"
+  run mad_validate_set_prereqs "$TMP/evals" "$TMP/prompts" triage
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"unsupported scorer mode 'weird'"* ]]
+}
+
+@test "an unsupported scorer mode is rejected end-to-end BEFORE any arm runs (#1952)" {
+  printf '{"mode":"weird","engine":"triage"}\n' >"$TMP/evals/triage/scorer.json"
+  MODEL_AB_CMD="bash $STUB" SEQ="0" \
+    run bash "$DISPATCH" --candidate c --incumbent i \
+      --sets "triage" --runs 1 --evals-dir "$TMP/evals"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"unsupported scorer mode 'weird'"* ]]
+  [ "$(_calls)" = "" ] || [ "$(_calls)" = "0" ]
+}
+
+@test "an inherited SKILL_PROMPT_FILE is rejected BEFORE any arm runs (#1952)" {
+  # model-ab scores each skill at its incumbent prompt and supports no override;
+  # run-eval.sh honors SKILL_PROMPT_FILE above EVAL_PROMPTS_DIR, so an inherited
+  # value would make the child score one file for every set while the preflight
+  # validated the per-set tree. Reject it rather than silently diverge.
+  SKILL_PROMPT_FILE="$TMP/prompts/triage.md" MODEL_AB_CMD="bash $STUB" SEQ="0" \
+    run bash "$DISPATCH" --candidate c --incumbent i \
+      --sets "triage" --runs 1 --evals-dir "$TMP/evals"
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"SKILL_PROMPT_FILE is set"* ]]
+  [ "$(_calls)" = "" ] || [ "$(_calls)" = "0" ]
 }
 
 @test "a set with a holdout dir but no cases.jsonl is rejected end-to-end BEFORE any arm runs (#1952)" {
@@ -362,7 +392,7 @@ _calls() { cat "$COUNTER"; }
 #!/usr/bin/env bash
 set -euo pipefail
 n="$(cat "$COUNTER" 2>/dev/null || echo 0)"; n=$((n + 1)); echo "$n" >"$COUNTER"
-printf '{"verdict":"infra","sets":[{"skill":"triage","outcome":"accept"},{"skill":"deep-review","outcome":"infra"}]}\n'
+printf '{"verdict":"infra","sets":[{"skill":"triage","outcome":"pass"},{"skill":"deep-review","outcome":"infra"}]}\n'
 exit 2
 SH
   chmod +x "$mixedstub"
@@ -409,7 +439,7 @@ rc="${codes[idx]}"
 if [ "$rc" -eq 2 ]; then
   printf '{"verdict":"infra","sets":[{"skill":"triage","outcome":"infra"},{"skill":"deep-review","outcome":"infra"}]}\n'
 else
-  printf '{"verdict":"accept","sets":[{"skill":"triage","outcome":"accept"},{"skill":"deep-review","outcome":"accept"}]}\n'
+  printf '{"verdict":"accept","sets":[{"skill":"triage","outcome":"pass"},{"skill":"deep-review","outcome":"pass"}]}\n'
 fi
 exit "$rc"
 SH

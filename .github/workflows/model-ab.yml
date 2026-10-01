@@ -62,14 +62,19 @@ jobs:
     runs-on: ubuntu-latest
     # Budget (AC #5): the default matrix is 2 models x {triage (5 cases, 1 call) +
     # deep-review (5 cases, generator + judge = 2 calls)} = 30 sequential model
-    # calls, plus 2 liveness/effort probes. Every child call is itself bounded
-    # (run_triage by TRIAGE_TIMEOUT_SEC, the probes by PROBE_TIMEOUT_SECS with
-    # --kill-after), so the job always makes forward progress and can never hang
-    # indefinitely; 120 min gives comfortable headroom over a realistic worst case
-    # so a slow-but-live run is never cancelled before it emits a verdict (#1952,
-    # codex P2). Transient blips are absorbed by run_triage's cheap per-call retry,
-    # NOT by re-running the whole paid matrix.
-    timeout-minutes: 120
+    # calls, all driven through run_triage and so each bounded by TRIAGE_TIMEOUT_SEC
+    # (the probes by PROBE_TIMEOUT_SECS with --kill-after). The dispatcher re-runs the
+    # WHOLE matrix on an all-infra attempt, up to `runs` (clamped 1..3), so the
+    # worst-case wall time is runs x 30 calls, NOT 30 — the retry multiplier must fit
+    # the job timeout too (#1952, cubic P1). At the stock 300s/call the matrix alone
+    # is 150 min and runs=3 is 450 min, which exceeds GitHub's 360-min job ceiling, so
+    # a tighter per-call budget is pinned for THIS job via TRIAGE_TIMEOUT_SEC below:
+    # 180s is still several times a triage/judge call's typical latency, and a call
+    # killed at 180s classes INFRA (re-run, never a false regression) — so the tighter
+    # bound costs at worst an inconclusive run, never a wrong verdict. Worst case:
+    # 3 x (30 x 180s) matrix + 2 x 300s probes (run once) ~= 280 min, so 300 min gives
+    # headroom while still never false-cancelling a slow-but-live run mid-matrix.
+    timeout-minutes: 300
     permissions:
       contents: read  # actions/checkout only — this workflow writes nothing
     env:
@@ -82,6 +87,11 @@ jobs:
       INCUMBENT: ${{ inputs.incumbent }}
       SETS: ${{ inputs.sets }}
       RUNS: ${{ inputs.runs }}
+      # Per-call budget for the A/B matrix (every arm runs through run_triage). Pinned
+      # tighter than engine.sh's 300s stock so runs x 30 calls fits timeout-minutes
+      # above even on the clamped-max runs=3 retry path (#1952, cubic P1). A call that
+      # overruns this classes INFRA (re-run), never a false regression.
+      TRIAGE_TIMEOUT_SEC: "180"
       # Every arm (both models, both sets) logs per-call token records to this
       # single JSONL, giving #1899 cost figures for both models on IDENTICAL inputs
       # (AC #3). engine.sh honors TOKEN_LOG_FILE; unset would be a silent no-op.

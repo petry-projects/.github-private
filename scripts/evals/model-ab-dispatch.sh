@@ -159,17 +159,28 @@ mad_validate_set_prereqs() {
     echo "unreadable scorer.json ($scorer)"
     return 1
   fi
-  if [ "$mode" = "llm-judge" ]; then
-    judge_rel="$(jq -r '.judge_prompt // ""' "$scorer" 2>/dev/null || true)"
-    if [ -z "$judge_rel" ]; then
-      echo "scorer.json selects llm-judge but sets no judge_prompt ($scorer)"
+  # run-eval.sh accepts ONLY deterministic and llm-judge; any other mode is a hard
+  # die() there — but only AFTER the paid probe already spent tokens. Reject an
+  # unsupported mode offline here too, mirroring run-eval.sh's own `case $SCORER_MODE`
+  # (#1952, cubic P2). Keep this list in sync with run-eval.sh.
+  case "$mode" in
+    deterministic) ;;
+    llm-judge)
+      judge_rel="$(jq -r '.judge_prompt // ""' "$scorer" 2>/dev/null || true)"
+      if [ -z "$judge_rel" ]; then
+        echo "scorer.json selects llm-judge but sets no judge_prompt ($scorer)"
+        return 1
+      fi
+      if [ ! -f "$evals_dir/$judge_rel" ]; then
+        echo "judge prompt not found ($evals_dir/$judge_rel)"
+        return 1
+      fi
+      ;;
+    *)
+      echo "unsupported scorer mode '$mode' ($scorer) — expected deterministic or llm-judge"
       return 1
-    fi
-    if [ ! -f "$evals_dir/$judge_rel" ]; then
-      echo "judge prompt not found ($evals_dir/$judge_rel)"
-      return 1
-    fi
-  fi
+      ;;
+  esac
   return 0
 }
 
@@ -215,6 +226,15 @@ main() {
   [ -n "$candidate" ] || die "usage: model-ab-dispatch.sh --candidate M --incumbent M [--sets S] [--runs N]"
   [ -n "$incumbent" ] || die "usage: model-ab-dispatch.sh --candidate M --incumbent M [--sets S] [--runs N]"
   [ -n "$evals_dir" ] || die "evals_dir is empty — would check root directory; set EVALS_DIR or use --evals-dir"
+
+  # model-ab scores each skill at its INCUMBENT prompt and supports no prompt
+  # override (model-ab.sh leaves SKILL_PROMPT_FILE at run-eval.sh's default). But
+  # run-eval.sh honors SKILL_PROMPT_FILE ABOVE EVAL_PROMPTS_DIR, so an inherited
+  # value would make the child score that ONE file for every set while this
+  # preflight validated the per-set prompt tree under $prompts_dir — validation
+  # would then disagree with what is actually scored. Reject the override outright
+  # rather than silently diverge (#1952, cubic P2).
+  [ -z "${SKILL_PROMPT_FILE:-}" ] || die "SKILL_PROMPT_FILE is set ('${SKILL_PROMPT_FILE}') — model-ab scores each skill at its incumbent prompt and accepts no prompt override; unset it before dispatch"
 
   # Each arm must name EXACTLY ONE model. A value with a comma or whitespace is
   # forwarded verbatim to model-ab.sh as CLAUDE_TRIAGE_MODEL_CHAIN, where
