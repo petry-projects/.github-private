@@ -1495,6 +1495,19 @@ run_triage() {
       [ -n "$_tok_tmp" ] && rm -f "$_tok_tmp"
       return 0
     fi
+    # Distinguish a `timeout --kill-after` budget-exhaustion SIGKILL from a genuine
+    # transient signal kill — both surface as 137 (128+9), but only the former is
+    # non-retryable. Every triage engine call above is wrapped by `timeout
+    # --kill-after`, so when a call exits 137 AFTER consuming its full
+    # TRIAGE_TIMEOUT_SEC budget, `timeout` force-killed a process that ignored the
+    # initial SIGTERM — the same budget-exhausted condition as a plain 124 stage
+    # timeout, which re-running at the same budget would only repeat (#1028). An
+    # early 137 (e.g. an OOM kill well under budget) keeps is_transient_failure's
+    # retry. Collapse only the at-budget case to 124 so it takes the NON-retryable
+    # timeout path, using the latency run_triage already measured (#1952 cubic P1).
+    if [ "$rc" -eq 137 ] && [ -n "$_dur" ] && [ "$_dur" -ge "$(( TRIAGE_TIMEOUT_SEC * 1000 ))" ]; then
+      rc=124
+    fi
     if [ "$attempt" -lt "$RETRY_MAX_ATTEMPTS" ] && is_transient_failure "$rc"; then
       # Retrying: the deferred stdout of this failed attempt is intentionally
       # DROPPED (the loop top truncates $_tok_tmp) so only the retry's output

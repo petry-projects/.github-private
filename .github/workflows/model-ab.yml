@@ -74,10 +74,16 @@ jobs:
     # a tighter per-call budget is pinned for THIS job via TRIAGE_TIMEOUT_SEC below:
     # 180s is still several times a triage/judge call's typical latency, and a call
     # killed at 180s classes INFRA (re-run, never a false regression) — so the tighter
-    # bound costs at worst an inconclusive run, never a wrong verdict. Worst case:
-    # 3 x (30 x 180s) matrix + 2 x 300s probes (run once) ~= 280 min, so 300 min gives
-    # headroom while still never false-cancelling a slow-but-live run mid-matrix.
-    timeout-minutes: 300
+    # bound costs at worst an inconclusive run, never a wrong verdict. Worst case
+    # MUST count the per-call kill grace (the earlier 280-min figure omitted it, which
+    # CodeRabbit flagged): a SIGTERM-ignoring call runs TRIAGE_TIMEOUT_SEC +
+    # ENGINE_KILL_AFTER (180s + 30s) before `timeout` SIGKILLs it, so the retried
+    # matrix is 3 x 30 x 210s = 315 min; the two probes at PROBE_TIMEOUT_SECS +
+    # PROBE_KILL_AFTER (300s + 30s) run once = 11 min; plus a few min of checkout/
+    # install/validate setup ~= 330 min. timeout-minutes is pinned at 345 so the job
+    # can always return its verdict on the clamped-max runs=3 retry path, while still
+    # staying under GitHub's 360-min job ceiling (#1952 CodeRabbit).
+    timeout-minutes: 345
     permissions:
       contents: read  # actions/checkout only — this workflow writes nothing
     env:
