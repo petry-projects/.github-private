@@ -509,6 +509,17 @@ _disp() {
   [ "$status" -eq 0 ]
 }
 
+@test "#2008 AC3: a never-edited RESOLVED finding-bearing bot comment with NO disposition blocks → 1" {
+  _run_check "$(_edit_json coderabbitai "$(cat "$CR_FIXTURES/pr2000-ratelimited-with-security-finding.md")" true null)"
+  [ "$status" -eq 1 ]
+}
+
+@test "#2008 AC3: a reply carrying both an informational and a maintainer-resolve marker cannot mask findings → 1" {
+  local replies='[{"id":"IC_both","author":{"login":"don-petry"},"authorAssociation":"OWNER","body":"<!-- dev-lead:comment-disposition id=IC_cr disposition=informational -->\n<!-- maintainer-resolve author=coderabbitai by=don-petry id=IC_cr -->","createdAt":"2026-10-01T21:30:00Z","isMinimized":false,"minimizedReason":""}]'
+  _run_check "$(_edit_json coderabbitai "$(cat "$CR_FIXTURES/pr2000-ratelimited-with-security-finding.md")" true "2026-10-01T21:15:56Z" "$replies")"
+  [ "$status" -eq 1 ]
+}
+
 @test "#2008 AC5: a clean CodeRabbit summary (no findings in any section) can be dispositioned informational → 0" {
   _run_check "$(_edit_json coderabbitai "$(cat "$CR_FIXTURES/summary-clean.md")" true "2026-10-01T19:20:00Z" "$(_disp 2026-10-01T19:23:54Z informational)")"
   [ "$status" -eq 0 ]

@@ -995,7 +995,7 @@ resolve_dispositioned_comments() {
 
   local resolved_count=0
   local cid is_human cur_minimized reply_body disp_json disposition sha ref verified
-  local reverify edited_at
+  local reverify edited_at chosen_created stale_rc
   while IFS= read -r cid || [ -n "$cid" ]; do
     [ -z "$cid" ] && continue
 
@@ -1064,7 +1064,7 @@ resolve_dispositioned_comments() {
         'first(.[] | select(.id == $id)) | .lastEditedAt // ""' 2>/dev/null || echo "")
       local chosen_created straddles="false" sid sid_created
       chosen_created=$(printf '%s' "${selection:-}" | jq -r '.chosen.createdAt // ""' 2>/dev/null || echo "")
-      local stale_rc=0
+      stale_rc=0
       cdv_disposition_is_stale "$edited_at" "$chosen_created" || stale_rc=$?
       if [ "$stale_rc" -eq 2 ]; then
         # Unreadable edit/disposition timestamp: fail closed — re-open the comment.
@@ -1115,7 +1115,7 @@ resolve_dispositioned_comments() {
             # Already RESOLVED with a stale body: fail closed by re-opening it.
             gh api graphql -f query='mutation($id:ID!){unminimizeComment(input:{subjectId:$id}){unminimizedComment{isMinimized}}}' \
               -f id="$cid" >/dev/null 2>&1 \
-              || echo "::warning::failed to unminimize comment ${cid} after a failed post-edit re-verification (#2008)"
+              || echo "::error::failed to unminimize comment ${cid} after a failed post-edit re-verification (#2008)" >&2
           fi
           continue
         fi
@@ -1203,6 +1203,19 @@ resolve_dispositioned_comments() {
           echo "::warning::failed to minimize superseded disposition reply ${rsid} OUTDATED"
         fi
       done
+      continue
+    fi
+
+    # An un-minimized candidate must not be hidden from a disposition that predates
+    # its last edit (#2008 AC1): that judged an older body. Stale → leave visible
+    # for a fresh disposition; unreadable timestamp → fail closed, also visible.
+    edited_at=$(printf '%s' "$all_comments" | jq -r --arg id "$cid" \
+      'first(.[] | select(.id == $id)) | .lastEditedAt // ""' 2>/dev/null || echo "")
+    chosen_created=$(printf '%s' "${selection:-}" | jq -r '.chosen.createdAt // ""' 2>/dev/null || echo "")
+    stale_rc=0
+    cdv_disposition_is_stale "$edited_at" "$chosen_created" || stale_rc=$?
+    if [ "$stale_rc" -ne 1 ]; then
+      echo "::notice::not minimizing comment ${cid} — its disposition predates the last edit (${edited_at}) or a timestamp is unreadable; needs a fresh disposition (#2008)"
       continue
     fi
 

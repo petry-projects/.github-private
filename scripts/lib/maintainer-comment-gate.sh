@@ -175,11 +175,15 @@ _maintainer_gate_registered_logins_json() {
 #                   "maintainer-resolve" for the maintainer escape hatch's reply
 #                   (which pins id=<node>). A reply carrying more than one
 #                   dev-lead disposition marker is malformed and covers nothing,
-#                   matching cdv_parse_disposition.
+#                   matching cdv_parse_disposition. latest_cover breaks a
+#                   createdAt tie in favour of `informational`, so a reply that
+#                   also carries a maintainer-resolve marker cannot mask it.
 #   resolved_verdict($all; $findre) — for a comment minimized RESOLVED: "block"
 #                   when it was edited and no covering disposition exists, when it
 #                   was edited strictly after its latest one, or when that one is
-#                   `informational` but the body is finding-bearing; "unreadable"
+#                   `informational` but the body is finding-bearing, or when it
+#                   has no covering disposition at all and the body is
+#                   finding-bearing; "unreadable"
 #                   when its edit time cannot be read; else "clear".
 #   edit_state    — the comment's last-edit time; "never" when the comment was
 #                   never edited; "unreadable" when the edit time cannot be read.
@@ -215,7 +219,7 @@ readonly _MAINTAINER_GATE_DISP_JQ_DEFS='
       ( $mr[] | select(attr("id") == $cid) | {createdAt: $c, kind: "maintainer-resolve"} );
   def latest_cover($all; $cid):
     [ $all[] | objects | select(trusted_reply) | covers($cid) ]
-    | sort_by(.createdAt) | last;
+    | sort_by([.createdAt, (if .kind == "informational" then 1 else 0 end)]) | last;
   def edit_state:
     if has("lastEditedAt") then
       (if .lastEditedAt == null then "never"
@@ -228,7 +232,7 @@ readonly _MAINTAINER_GATE_DISP_JQ_DEFS='
     | latest_cover($all; (.id // "" | tostring)) as $cov
     | if $e == "unreadable" then "unreadable"
       elif $e != "never" and ($cov == null or $e > $cov.createdAt) then "block"
-      elif $cov != null and $cov.kind == "informational"
+      elif ($cov == null or $cov.kind == "informational")
            and ((.body // "") | tostring | test($findre)) then "block"
       else "clear" end;
 '

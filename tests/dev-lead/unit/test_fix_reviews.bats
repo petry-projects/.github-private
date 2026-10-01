@@ -4987,3 +4987,19 @@ _resolved_bot_comment() {
 @test "resolve_dispositioned_comments(#2008): the comment query fetches lastEditedAt" {
   grep -q 'createdAt lastEditedAt }' "$FIX_REVIEWS_SCRIPT"
 }
+
+@test "resolve_dispositioned_comments(#2008 AC1): an UN-minimized bot comment edited after its only disposition is NOT minimized" {
+  local nodes
+  nodes=$(jq -sc '.' \
+    <(jq -nc '{id:"IC_ORIG", author:{login:"coderabbitai", __typename:"Bot"},
+      body:"Walkthrough only.", isMinimized:false, minimizedReason:null,
+      createdAt:"2026-09-26T20:00:00Z", lastEditedAt:"2026-09-26T22:00:00Z"}') \
+    <(_disp_reply "R1" "2026-09-26T21:00:00Z" "answered" "IC_ORIG"))
+  _setup_disposition_pass "$nodes"
+
+  run bash "$FIX_REVIEWS_SCRIPT" 2>&1
+
+  [ "$status" -eq 1 ]
+  ! grep -q 'classifier:RESOLVED' "$MINLOG"
+  [[ "$output" == *"predates the last edit"* ]]
+}
